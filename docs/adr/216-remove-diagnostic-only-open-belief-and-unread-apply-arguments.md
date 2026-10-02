@@ -8,7 +8,7 @@ summary: |-
   コードを読んで確認した(2026-10-02、develop `db93ce88`)。いずれも挙動に影響しない。これらを撤去して、`Option<bool>` の「未知を false にする」罠(BUG-113、ADR-098 決定1-b)の読み手を減らす。
   新しい型や gate は足さない(ADR-215 の決定 A の「型で塞ぐ」案は、Opus レビューで消費者の撤去が先と指摘され、取り下げた)。撤去後に残る読み手を数え直してから、型が要るかを別途判断する。
 status: |-
-  提案(2026-10-02)。Opus 敵対的レビュー round2 で方針は採用可、R2 の形・`confirmed_at_ms`・R3・撤去に追従する規約/ツール・検証計画の修正条件が付き、本文に反映済み。未実装。
+  提案(2026-10-02)。Opus 敵対的レビュー round3 で収束(round2 の修正条件と、round3 の2点〈`gji_last_io_ms` は消さない、R2 の回帰テスト主張を弱める〉を本文に反映済み)。未実装。
 related_adr:
   - "ADR-087"
   - "ADR-098"
@@ -47,7 +47,7 @@ ADR-215 の草稿は、`Option<bool>` の罠(未知を `unwrap_or(false)` で確
    - 呼び出し元は `runtime/ime_refresh.rs:958` の1箇所だけで、`None` を直書きしている(drift correction の OFF 方向回復。ADR-214 の決定 0 の表にも「`applied` に `None` を直書き」とある)。
    - この関数は `build_ime_control_view(applied)` → `apply_ime_open_with_view` の2行の委譲でしかない。
 4. **`confirmed_at_ms()`(`state/ime_model.rs:189`)の本番の読み手は `output/ime_apply_planner.rs:87` だけ。** R1 の後は読み手がゼロになる(テスト `ime_model.rs:1730-1742` のみ)。`Confirmed { at_ms }` を読むのは `to_pair()` と `confirmed_at_ms()` だけなので、R1+R2 の後、`at_ms` は `record_confirmed`(`ime_model.rs:561`)と `executor.rs:984` で書かれて `Debug` 出力にしか出ない値になる(`AppliedImeState` は serialize されない)。rustc の dead_code も `cargo machete` もこれは検出しない。
-5. **`ObservedState` の `candidate_visible`・`gji_monitor_ok` の読み手は `executor.rs:917,919` だけ**で、R1 の後はフィールドとして書かれるだけになる(`ime_decision_view.rs:45,51,72,74,94,96`)。`gji_last_io_ms`(`:48`)は既に読み手がゼロ。`gji_monitor_ok` の doc(「`GjiDirectStrategy` の `is_applicable` ゲートに使用」)は既に古い(実際の判定は `observed.active_ime_kind`、`ime_controller.rs:108,141`)。`candidate_was_seen` は `DecisionInputs`(ADR-171)でも読まれるので残る。`TSF_OBS` 側のアクセサは他の読み手がいるので残す。
+5. **`ObservedState` の `candidate_visible`・`gji_monitor_ok` の読み手は `executor.rs:917,919` だけ**で、R1 の後はフィールドとして書かれるだけになる(`ime_decision_view.rs:45,51,72,74,94,96`。Opus round3 が `obs.`/`view.observed.`/分割代入のいずれの形でも他に読み手がないことを確認)。**`gji_last_io_ms`(`:48`)は読み手がいる**(`runtime/key_pipeline.rs:310-311` が `obs.gji_last_io_ms` を読み、`compute_focus_probe_grace` に渡す)ので消さない(round2 でこれを「読み手ゼロ」としたのは誤りで、round3 で訂正した)。`gji_monitor_ok` の doc(「`GjiDirectStrategy` の `is_applicable` ゲートに使用」)は既に古い(実際の判定は `observed.active_ime_kind`、`ime_controller.rs:108,141`)。`candidate_was_seen` は `DecisionInputs`(ADR-171)でも読まれるので残る。`TSF_OBS` 側のアクセサは他の読み手がいるので残す。
 6. **`AppliedImeState::applied_open()`(`state/ime_model.rs:153-172`)の doc は古い。** すでに存在しない `WarmupImeOn`/`warmup_ime_on()`/`resolve_warmup_ime_on` を参照し、
    production の呼び出し元を「1箇所＋橋渡し」と書くが、現在は4箇所(`ime_model.rs:616`、`:942`、`:970`、`runtime/message_handlers.rs:960`)。
 
@@ -61,7 +61,7 @@ ADR-215 の草稿は、`Option<bool>` の罠(未知を `unwrap_or(false)` で確
   - `apply_ime_open_with_view`/`apply_ime_open_with_belief` から `belief` 引数を除く。`executor.rs` の `belief_inputs` の組み立て(`:910-924`)、`[dispatch-ime] belief:` のログ、`:860-905` の `OpenBeliefInputs`/`belief.confident` の経緯を説明する
     コメント、`ime_refresh.rs` の `OpenBelief` の手組みを削除する。
   - `reduce()` だけを検証していたテスト(`ime_apply_planner.rs` 内、`executor.rs` の `chrome_intent_confident` 系)を削除する。`output/mod.rs` の `pub(crate) use` と `architecture_guard.rs:5000` の `DECISION3_FILES` から該当ファイルを外す。
-  - **R1 で読み手がゼロになるものも同じ R1 で削除する**: `ObservedState` の `candidate_visible`・`gji_monitor_ok`・`gji_last_io_ms`(`ime_controller.rs:761,808` のテスト用構築子も追従)、`confirmed_at_ms()` とそのテスト。
+  - **R1 で読み手がゼロになるものも同じ R1 で削除する**: `ObservedState` の `candidate_visible`・`gji_monitor_ok`(`gji_last_io_ms` は読み手がいるので残す)、`confirmed_at_ms()` とそのテスト。
     `at_ms` フィールド自体(`Confirmed { open, at_ms }`)を消すかは、`PartialEq` の意味(同じ `open` で時刻だけ違う `Confirmed` 同士が等しくなる)と、ADR-214 の `Sent`/`Confirmed` 分離で時刻を使う可能性があるため、
     **R1 では消さず、「`at_ms` は R1 の後、書かれるだけの値になる」と本 ADR に記録して、ADR-214 の再開判断に渡す**。
   - `[apply-ime] open={open} eff={} conf={} → outcome=..` は `eff`/`conf` を除いた `[apply-ime] open={open} → outcome=..` にする。`outcome=` の部分は bug report の引用や解析が使うので**そのまま残す**。
@@ -73,6 +73,8 @@ ADR-215 の草稿は、`Option<bool>` の罠(未知を `unwrap_or(false)` で確
     (**1-in-1-out**: 許可リストへの追加と、項目の削除が対。コミット本文に書く)。
   - `architecture_guard.rs:1487` の `.apply_ime_open_with_belief(` は 1 → **0 で残す**(`.apply_ime_open_with_applied(` の 0 と同じ「復活したら気づく」ガード)。`.apply_ime_open_with_view(` は 2 のまま。
   - `crates/xtask-adr-evidence/src/main.rs:227` の対象名のハードコードから `apply_ime_open_with_belief` を消す(宣言から消えた名前は `continue` で飛ばされるので CI は落ちないが、古くなる)。
+  - `platform.rs` の `apply_ime_open_with_view` の `#[allow(clippy::unused_self)]` の理由コメント(「兄弟メソッド `apply_ime_open_with_belief` から `self.` 記法で呼ばれるため」)は、兄弟メソッドが消えるので「`PlatformRuntime` 委譲メソッド群との API 配置の一貫性」だけに直す(`&self` は未使用のままなので allow は要る)。
+  - `RESTRICTED_CALLS` の変更と `architecture_guard.rs:1487` の件数の変更は**同じコミット**で行う(dylint ジョブが、`ir_apply_drift_correction` が許可リストにない状態を落とす)。
   - この R3 は間接層の撤去であり、`None` を直書きする供給元の数は変えない。
 - **R2: `Option<(bool, u64)>` を `Option<bool>` にする。ただし `explicit_press_applied_pair` の3引数の形は保つ。**
   - `AppliedImeState::to_pair()`/`ImeModel::applied_pair()` を、開閉だけを返す形にする(既存の `applied_open()` と重なるので、重なる場合は `applied_pair()` を削除して `applied_open()` に寄せる)。
@@ -80,8 +82,14 @@ ADR-215 の草稿は、`Option<bool>` の罠(未知を `unwrap_or(false)` で確
     ADR-214 `:67` の表も追従させる)。**`explicit_press_shadow_on` との一本化はしない。** `has_press` は呼び出し元ごとに違う値(`executor.rs` は TsfNative の例外込みの `unknowns_applied`、`key_pipeline.rs` は `press.is_some()`)で、
     条件を呼び出し元の `if` に移すと、書き違いが L3' の実機 A/B の前に、TsfNative × GJI で押下ごとに単発の `VK_IME_OFF`(「@」)を出す。この書き違いは `explicit_press_exhaustive` では検出できない
     (モデルが `state/explicit_press.rs:873-879` で条件を自前で再実装していて、`cfg(windows)` の `runtime/` の呼び出しを通らないため)。
-  - **モデルを本番と同じヘルパーに寄せる**: `explicit_press.rs:873-879` と `:1012-1017` の自前の `if` を、このヘルパーの呼び出しに置き換える。そうすれば `explicit_press_exhaustive` が、本番と同じヘルパーを通る(今より保証が強くなる)。
-    これは `fix-requires-evidence.md` の (a)(回帰テスト)に相当するので、コミット本文でそう主張する。
+  - **モデルを本番と同じヘルパーに寄せる**: `explicit_press.rs:873-879` と `:1012-1017` の自前の `if` を、このヘルパーの呼び出しに置き換える。`explicit_press_exhaustive` が降格の判定の中身について本番と同じヘルパーを通るので、
+    モデルと本番の判定が乖離しなくなる。ただし**共有されるのは降格の判定だけ**で、`has_press` に渡す引数の計算は別々に書かれたまま残る。
+    - Engine 経路のモデルは `has_press && engine_press_unknowns_applied(state.profile.is_effectively_tsf_native())`(`has_press` は `mode.has_press_id() && !state.was_down`)、`executor.rs:713-718` は `press.is_some() && engine_press_unknowns_applied(..)`、`key_pipeline.rs` は `press.is_some()`。
+    - shadow 経路のモデル(`explicit_press.rs:1012-1017`)の条件は `has_press` ではなく、降格するのが `!(mode.has_press_id() && state.was_down)` のとき(押下 ID の無いモードでは PR #408 の「無条件に降格」を再現する)。ヘルパーへ寄せるときの第3引数はこの式で、`has_press` と書くと非 press-id モードの期待値が変わる(`explicit_press_exhaustive` の期待値が変わるので検出はされる)。
+    - **この R2 は `refactor` であり、(a)(回帰テスト)の主張はしない。** executor の引数の書き違いは `cfg(windows)` の `runtime/` 配下にあり、Linux のテストでは検出できない。
+      部分的に押さえるのは `architecture_guard.rs:5867,5885` の文字列ガードと `engine_press_unknowns_applied_except_tsf_native_until_l3_prime`(`ime_actuation_decision.rs:876`)だけで、書き違いの実害は L3' の実機 A/B で定数ごと消える
+      例外(`ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE`)の範囲に限られる。引数の計算も共有する案(`engine_press_demotes_applied(has_press, effectively_tsf_native)` を純粋関数にして executor とモデルから呼ぶ)は、
+      ロジックは増えないが関数が1つ増えるので、**今回は採らない**(実装時に書き違いの懸念が強いと判断したら追加する)。
   - `build_ime_control_view(applied: Option<bool>)` に変える。`architecture_guard.rs:5867,5885` の文字列ガードは、改名した場合だけ更新する(意図=押下の order で `applied` を未知にすること、は変えない)。
 - **R4: `applied_open()` の doc を現状に直す。** `WarmupImeOn` への言及を削除し、4つの呼び出し元と、「省略の根拠に使うなら Confirmed かを確認する」という ADR-214 の注意だけを残す。
 
@@ -108,7 +116,7 @@ ADR-215 の草稿は、`Option<bool>` の罠(未知を `unwrap_or(false)` で確
 
 - **コンパイルが通ること自体が、本 ADR の主張(消費者がいない)の証明。** 各コミットで `cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows --tests --lib`、`cargo test --lib`、
   `architecture_guard`・`layer_boundary_guard`、`mise run pre-push`、`xtask-adr-evidence`(CI の `adr-evidence-consistency`)。
-- **R2: モデルと本番が同じヘルパーを通ること。** `explicit_press_exhaustive` の期待値を**変えずに**通ること(押下の有無 × `applied` の3状態 × open の2値 × TsfNative かどうか)。
+- **R2: モデルと本番が降格の判定について同じヘルパーを通ること(引数の計算は対象外)。** `explicit_press_exhaustive` の期待値を**変えずに**通ること(押下の有無 × `applied` の3状態 × open の2値 × TsfNative かどうか)。
 - **`windows-build` の E2E `sc-*` シナリオ**で、journal の `ActuationDecision`(`gate_shadow_known`/`gate_shadow_on`/`first_command`)と I2 `Unwarranted` 件数が develop と同じ分布になること。
   R2 は view の `shadow_on` の供給を変えるので、ここが挙動の本当の確認になる。実機は確認しない(挙動を変えない削除のため)。
 - `ime_key_sequence_golden.rs` と ADR-163 のコーパス再生(`bug-131`)は、R1〜R3 が触る「view の組み立て」と「ログ専用の値」を通らないので、変更前後で必ず同じ結果になる。**回帰していないことの一般的な確認に過ぎない**
@@ -122,7 +130,7 @@ ADR-215 の草稿は、`Option<bool>` の罠(未知を `unwrap_or(false)` で確
 - **見落とした消費者**: コンパイルが通れば消費者はいない、という前提で進める。各コミットで `windows-build` CI を確認する。
 - **ADR-214 の本文**(`to_pair()` で `Sent` を未知として扱う記述)は、R2 の後は `applied_open()` の話に読み替える必要がある。ADR-214 は保留中なので、本文への追記は R2 の実装時に行う。
 - **IME actuation の合流点・belief の領域に触れる**(`fix-requires-evidence.md` の再発ファミリー)。R1・R3 は `refactor`(挙動を変えない削除)で、コミット本文に「挙動を変えない削除であり、既存のテスト/ガードとコンパイルで確認した」旨を書く。
-  R2 は view の `shadow_on` の供給経路(BUG-113)を書き換えるため、「モデルと本番が同じヘルパーを通る」変更を (a) の回帰テストとして主張する。
+  R2 は view の `shadow_on` の供給経路(BUG-113)を書き換えるが、`refactor` として扱い (a) の主張はしない(上の R2 のとおり、引数の計算は共有されず、`windows-build` の E2E の journal 分布が実質的な確認になる)。
 
 ## 参考
 
