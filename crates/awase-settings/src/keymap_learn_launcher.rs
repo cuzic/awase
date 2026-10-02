@@ -145,10 +145,18 @@ pub fn spawn_learning_process(exe_path: &Path, mode: LearnMode) -> io::Result<Ch
     if let Some(flag) = mode.flag() {
         command.arg(flag);
     }
-    command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // 学習プロセスはコンソールサブシステムのexeなので、GUI(設定画面)から起動すると
+    // 黒いコンソール窓が出る。窓が前面を奪って学習窓のフォーカスを失わせ、
+    // 「フォーカス喪失」による試行無効化の原因にもなりうる。出力はパイプで受けるので
+    // コンソールは不要。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command.spawn()
 }
 
 /// 子プロセスの標準出力を1行ずつ読み、パースできた行だけ`on_line`へ渡す。
