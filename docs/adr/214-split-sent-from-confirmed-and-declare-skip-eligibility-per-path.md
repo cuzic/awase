@@ -10,7 +10,8 @@ summary: |-
   (C) 経路(窓プロファイルと書き込み機構の組)ごとに、効果を観測で確認できるか(閉ループ/準閉ループ/開ループ)と、省略してよい根拠を1か所で宣言し、開ループの経路は状態の推測を根拠に省略しない、の2つを決める。
   新しい台帳や gate は足さない。ADR-212 により押下以外の書き込みが減っているため、着手の前提条件(決定0)として、省略の根拠に `applied` を使っている押下以外の経路が現在も残っているかを先に測る。
 status: |-
-  提案(2026-10-02 下書き、未レビュー)。決定0(前提条件の確認)は実施済み(「決定 0 の結果」節): 省略の根拠に `applied` を使う押下以外の経路は、トレイ起点の Engine コマンド(P1)に限られ、決定の層では省略されることを特性テストで確認(実機の頻度と実害は未確認)。TsfNative の Engine 経路(P3)は ADR-208 L3' と同じ変更になるため、決定 1 の適用は L3' と一本化する。Opus レビュー未実施。
+  保留(2026-10-02、所有者判断)。決定0(経路の確認)まで実施し、P1(トレイ起点の Engine コマンドの `SetOpen` が、stale な `applied` で GjiDirect の送信を省かれる)は決定の層では特性テストで確認済み。
+  実機での頻度と実害は未確認で、実機の確認はユーザー承認が要るため、決定1(`Sent`/`Confirmed` の分離)・決定2(経路ごとの宣言)は実装しない。再開条件は「保留の理由と再開条件」節。
 related_adr:
   - "ADR-098"
   - "ADR-108"
@@ -122,6 +123,20 @@ belief と actuation の記録の取り違えと同じ型であり、BUG-141(GJI
 - 開ループの経路で省略をやめることは、冪等な絶対指定が二重に効かない前提に立つ。BUG-46 型の「awase の送信と物理キーの二重作用」では、この前提が崩れうる。
   物理キーの配送判断(`PhysicalKeyDisposition::plan`)との組み合わせを、決定 0 の列挙に含める。
 - 本 ADR の事実は、コードを読んだ範囲に限る。hook watchdog の canary、chrome GJI reinit、eager warmup の経路、ADR-108 と ADR-080 の本文全体は読んでいない。
+
+## 保留の理由と再開条件(2026-10-02、所有者判断)
+
+- **保留の理由**: 決定0の結果、対象はトレイ起点の Engine コマンド(P1)と TsfNative の Engine 経路(P3、ADR-208 L3' と一本化)に縮んだ。P1 は決定の層では確認できたが、実機で起きる頻度と、省略後に自然回復するかが未確認。
+  実機の確認には承認が要る。実害が小さい可能性が残るため、案 B・C の全体を実装する根拠はまだない。
+- **この時点で残したもの**: 経路の棚卸し(決定0の結果の節)、P1 の特性テスト2本(`engine::tests::…::on_command_force_engine_on_emits_set_open_without_press_only_when_belief_is_off`、
+  `state::ime_model::tests::adr214_p1_press_none_set_open_is_elided_by_stale_applied_in_gji_blind_window`)。テストは現状の挙動を固定するだけで、直すべき挙動の宣言ではない。
+  P1 を直す場合は、このテストの期待値を更新する。
+- **再開条件**(いずれか):
+  1. 実機・不具合報告・journal で、belief OFF × `applied=Confirmed(true)` の食い違いのあとにトレイの「状態をリセット」等が効かなかった、という報告か記録が出た。
+  2. ADR-208 L3'(TsfNative の Engine 経路で `applied` を省略の根拠から外す)の実機 A/B に進む。そのときは本 ADR の決定1と一本化できるかを再検討する。
+  3. 押下以外の書き込みを根拠に、BUG-141 型の握りつぶしが新たに報告された。
+- **再開時の最小の選択肢**: P1 だけなら、`press=None` かつユーザー操作起点(トレイ)の `SetOpen` に限って `applied` を未知にする小さな変更で足りる可能性がある(案 B 全体は不要)。実機の確認で食い違いが出ないと分かれば、本 ADR は却下してよい。
+- **未読のまま**: hook watchdog の canary、chrome GJI reinit、eager warmup の経路、`open_chain.rs` の2関数と `set_ime_open_ordered` の ImmCross 経路の再読、ADR-108・ADR-080 の本文全体、`applied_open()` の消費者のうち `ime_model.rs:942`・`:970`、`message_handlers.rs:960`。
 
 ## 参考
 
