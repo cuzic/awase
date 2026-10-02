@@ -8,7 +8,7 @@ summary: |-
   代わりに、`files_with_calls` を集めて期待と突き合わせる同一ブロックが 1209・1265・1896・1945 に複製されている点だけを、struct も enum も新ファイルも作らない
   ヘルパー関数 1 本にまとめる(数え方の組み合わせはヘルパー内で固定)。各テストの名前・doc コメント・個別実行はそのまま残す。dylint と実際に重なっている対象(`ENTRY_POINTS`・`ime_event_guard` の 4 variant)には触れず、削除候補として別に挙げる。
 status: |-
-  提案(2026-10-02)。Opus round1 で方針転換、round2(Must 1 件: dylint 分類の事実誤り)を反映、round3 の再確認待ち。未実装。
+  提案(2026-10-02)。Opus round1 で方針転換、round2(Must 1 件: dylint 分類の事実誤り)を反映、round3 で収束(Must なし)、Should 2 点を反映済み。未実装。
 related_adr:
   - "ADR-129"
   - "ADR-132"
@@ -56,7 +56,7 @@ fn assert_production_call_sites(needle: &str, known: &[(&str, usize)], why: &str
 
 同値テストは Region・Unit・Scope のどれかが変わる移行に限る(本 ADR の範囲では変えないので不要。ブロックが同一であることは差分で分かる)。各テストについて次を手で確かめる。
 
-1. 該当ファイルに呼び出しを 1 行足すと落ちる。
+1. 呼び出しを 1 行足すと落ちる。足す場所は **`known` にあるファイルと、`known` に無いファイルの両方**で試す(後者は全体走査が効いていることの確認)。
 2. `known` の件数を 1 変えると落ちる。
 
 落ちたときの出力に needle・想定・実際・`why` が含まれることも、このときに確認する。1265 のように後ろに構造検査が続くテストでは、ヘルパーの後の構造検査が引き続き実行されること(ヘルパー側で早期 return しない)を確認する。
@@ -67,7 +67,7 @@ fn assert_production_call_sites(needle: &str, known: &[(&str, usize)], why: &str
 - **対象外(b) 例外つき**: 962(ファイルごとに needle が違う)、2321(第 2 部に `src/ime.rs` の除外、第 1 部は否定ガードの混在)、2366/2613/5719(特定ファイル除外。5719 は needle と組)、1700(複数 needle の合計)、4554(`src/` 外の走査)。
 - **対象外(a) 構造検査**: `extract_fn_body`/`extract_all_balanced_blocks` を使う部分(4375 の `per_fn_expectations` など)。
 - **対象外(c) dylint と実際に重なっているもの**: 1436 の `ENTRY_POINTS`(`.set_ime_open(`/`.apply_ime_open_with_view(` は `RESTRICTED_CALLS` と xtask で照合済み)。注意: **2321・2526 は dylint の対象でも置き換え予定でもない**(`apply_mechanism(`・`set_ime_open_then_conv_for_target(`・`set_ime_open_cross_process_async(` はどれも `RESTRICTED_CALLS` に無く、ADR-161 D1 M2 の TB2 は `.apply_ime_open_with_view(` の 1 件で完了済み。移すタスクは起票されていない)。
-- **削除候補(別途検討)**: `lints/ime_event_guard` の `ALLOWED_FNS`/`RESTRICTED_VARIANTS` が見ている variant と重なるテキストガード 4 本。491 `panic_reset_event_is_limited…`、511 `hwnd_cache_restored…`、3686 の `ModeKeyPassedThrough`(と、重なりを確認できるもの)。削除前に確認すること: テキストのガードは Linux の CI(`ci.yml:47`)で毎回走るが dylint は別ジョブ(`ci.yml:125`、約 17 分)なので、dylint ジョブが required check か、lint 水準が `Warn` 宣言でも `DYLINT_RUSTFLAGS="-D warnings"` で失敗扱いになるかを確かめる。
+- **削除候補(別途検討)**: `lints/ime_event_guard` の `ALLOWED_FNS`/`RESTRICTED_VARIANTS` と、**構築元の関数の限定が重なる**テキストガード 4 本。491 `panic_reset_event_is_limited…`、511 `hwnd_cache_restored…`、3686 の `ModeKeyPassedThrough`、5420 の `KeyEffectPredicted`。ただし dylint が見るのは構築式(`ExprKind::Struct`)だけで、許可も関数名で判定する。**許可された関数の中での件数(491・511・5420)と、パターン・定義の固定(3686)は dylint では守られない**ので、削除できるのは重なる部分(構築元の限定)だけで、5420 のように前半の件数部分のみが対象になるものもある。重ならない部分は残す。削除前に確認すること: テキストのガードは Linux の CI(`ci.yml:47`)で毎回走るが dylint は別ジョブ(`ci.yml:125`、約 17 分)なので、dylint ジョブが required check か、lint 水準が `Warn` 宣言でも `DYLINT_RUSTFLAGS="-D warnings"` で失敗扱いになるかを確かめる。
 - 当初案の「コメントを除いて数え直す」は行わない。件数が変わる修正は本 ADR の範囲外。参考: `InputRelay` をコメント除外で数えると `ime_controller.rs` 1→0、`open_chain.rs` 4→0、`class_names.rs` 12→9、`physical_disposition.rs` 2→1。0 になる 2 エントリは否定ガードにしかならず、InputRelay ゲートの存在は 4355 の `decide_gate(` 固定が担うので、別 PR で「数え直す」でなく「削除する」ことを検討する。
 
 ### D4: 中止基準
