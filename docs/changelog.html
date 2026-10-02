@@ -144,11 +144,13 @@ footer p{margin:0.3rem 0}
 <li>上の「今まで無視されていた設定が有効になる」設定があるときは、起動時のログに「以前は無視されていた設定 N 件が有効になりました」と該当項目を出す（トレイ通知・設定画面には出さない）</li>
 </ul>
 </li>
+<li><p><strong>撤去した設定 <code>general.gji_thumb_key_ime_toggle</code>（設定画面の「GJI の状態依存トグルをベストエフォートで追従する」）と <code>general.dbe_mode_key_policy</code>（隠し設定）が <code>true</code>／<code>passthrough</code> のまま残っているときは、起動時にトレイで通知する。</strong> 値は無視され、設定画面で保存すると行は消える。GJI の状態依存トグルは IME のキー設定から自動で判定する。既定値（<code>false</code>／<code>suppress</code>）のままなら何も出ない</p>
+</li>
 <li><p><strong><code>keys.engine_on_ime_key</code>/<code>engine_off_ime_key</code>（エンジン ON/OFF 時に IME のモードキーを送る上級者向け設定）を撤去した（ADR-207）。</strong> 既定は無効で設定画面にも無かったが、2026-08-15 より前に設定画面で一度でも保存した人の <code>config.toml</code> には旧既定（<code>VK_DBE_DBCSCHAR</code>/<code>VK_DBE_SBCSCHAR</code>）が残っていて、エンジンの ON/OFF に合わせて全角/半角モードを送る機能が有効だった。更新するとそれが止まる。<code>config.toml</code> に残っていても無視され、起動時に通知が出る（設定画面で保存するとその行は消える）。代わりの設定は無い。IME の開閉は <code>keys.ime_on</code>/<code>ime_off</code> で設定できる</p>
 </li>
 <li><p><code>keys.ime_detect.on</code>/<code>off</code> の既定を空にした（以前は <code>IMEオン</code>/<code>IMEオフ</code>）。IMEオン/IMEオフ キー（VK_IME_ON/OFF）の追随は、指定しなくても自動で行われる（入力言語の判定が一時的に日本語でないと出る環境でも追随するよう直した）。書いてある値はそのまま使われる</p>
 </li>
-<li><p><strong><code>keys.ime_toggle</code> の既定を空にした（以前は <code>VK_KANJI</code>＝半角/全角）。</strong> <code>config.toml</code> に <code>VK_KANJI</code> を明示している場合はその設定を尊重し、消さない</p>
+<li><p><strong><code>keys.ime_toggle</code> の既定を空にした（以前は <code>VK_KANJI</code>＝半角/全角）。</strong> v1 の設定画面が書き出した旧既定値（<code>ime_toggle = [&quot;VK_KANJI&quot;]</code>、<code>ime_detect</code> の <code>IMEオン</code>/<code>IMEオフ</code>）と<strong>ちょうど同じ</strong>値は、読み込み時に空として扱い、設定画面で保存するとファイルからも消える（旧既定に別のキーを足した設定や、別のキーは尊重する）</p>
 </li>
 <li><p><strong>無変換/変換の単独タップの動作を整理した（ADR-206）。<code>muhenkan_solo_tap_ime_action</code>/<code>henkan_solo_tap_ime_action</code> を撤去した。</strong></p>
 <ul>
