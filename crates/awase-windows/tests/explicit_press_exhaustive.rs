@@ -2,7 +2,7 @@
 //! ADR-208 L0: 明示キー押下の配送 `explicit_press_delivery_with` の全列挙テストと、現状の反例の golden。
 //!
 //! 状態空間（belief 2 × applied 5 × is_japanese 2 × profile 7 × kind 2 × current_focus 2 × 観測 3 × IntentStore 3 ×
-//! candidate_was_seen 2 × chord 2 × win 2 × was_down 2 = 80,640 状態）× キー 12 種 = 829,440 通りの押下を全列挙し
+//! candidate_was_seen 2 × chord 2 × win 2 × was_down 2 = 120,960 状態）× キー 12 種 = 1,451,520 通りの押下を全列挙し
 //! （実 IME の初期値 R∈{false,true} も掛けると約 166 万通り）、次の性質を検査する。
 //!
 //! - **P1 (INV-L1)**: 対象押下（非リピート・Win 押下中を除く）の `Delivery` が、配送か書き込みの**ちょうど一方**
@@ -163,6 +163,10 @@ const CLASSES: &[(&str, &str)] = &[
         "S-2: is_japanese_ime=false。授権が下りない（Engine のコンボ・0x16/0x1A）／漢字(0x19)・F13 が昇格せず握る・配送だけになる。L2 で解消（押下の授権と非リピートの昇格が is_japanese_ime を問わない）",
     ),
     (
+        "K1_kanji_unidentified_by_design",
+        "仕様（所有者決定）: 0x19 は IME が TIP で未同定（英語 IME・IME 無しの窓・第三者 IME・起動直後）かつ is_japanese_ime=false のとき昇格しない（Alt+` 等への副作用を避ける）。S-2 の残りではない",
+    ),
+    (
         "S3_shadow_noop_suppressed",
         "S-3: shadow no-op（belief が既に向きと一致）は書かず、物理は Suppress される（ImmCross）",
     ),
@@ -205,6 +209,8 @@ fn p1_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> Option<&'static s
         // `is_japanese_ime` が偽の no-op を S-2 と誤分類していたのを直した）。
         Ok(Resolution::PassThrough) => Some(if d.reason == ElisionReason::ShadowNoop {
             "A1_noop_pass_through"
+        } else if !eff_jp && key == ExplicitKey::Kanji && !s.ime_identified {
+            "K1_kanji_unidentified_by_design"
         } else if !eff_jp {
             "S2_not_japanese"
         } else {
@@ -217,6 +223,11 @@ fn p1_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> Option<&'static s
             ElisionReason::Unwarranted if !s.current_focus_known => "S4_focus_none_unwarranted",
             ElisionReason::Unwarranted if key == ExplicitKey::EngineOff && s.ctrl_chord => {
                 "L9_chord_filtered_unwarranted"
+            }
+            ElisionReason::NotPromoted
+                if !eff_jp && key == ExplicitKey::Kanji && !s.ime_identified =>
+            {
+                "K1_kanji_unidentified_by_design"
             }
             ElisionReason::NotPromoted if !eff_jp => "S2_not_japanese",
             ElisionReason::ShadowNoop => "S3_shadow_noop_suppressed",
@@ -261,6 +272,7 @@ fn complexity(s: &PressState) -> u32 {
         + u32::from(!s.is_japanese_ime)
         + u32::from(s.profile != PressProfile::ImmCross)
         + u32::from(s.ime_kind != ImeKindId::Gji)
+        + u32::from(!s.ime_identified)
         + u32::from(!s.current_focus_known)
         + u32::from(s.actuating_obs.is_some())
         + u32::from(s.intent.is_some())
@@ -925,6 +937,7 @@ fn sync_route_that_sent_nothing_releases_the_reservation_but_async_does_not() {
         is_japanese_ime: false,
         profile: PressProfile::ImmUnavailable,
         ime_kind: ImeKindId::Gji,
+        ime_identified: true,
         current_focus_known: false,
         actuating_obs: None,
         intent: None,
@@ -1138,6 +1151,7 @@ fn shadow_never_overrides_an_earlier_engine_reservation() {
         is_japanese_ime: true,
         profile: PressProfile::ImmCross,
         ime_kind: ImeKindId::Gji,
+        ime_identified: true,
         current_focus_known: true,
         actuating_obs: None,
         intent: None,
@@ -1216,4 +1230,26 @@ fn s2_and_s4_are_resolved_by_l2() {
             rep.p1.classes.get(class).and_then(|c| c.example.as_ref())
         );
     }
+}
+
+/// 0x19 は TIP 未同定かつ `is_japanese_ime=false` のときだけ昇格しない（仕様、所有者決定。K1）。同定済みなら `is_japanese_ime` の
+/// 誤判定でも昇格して書く。
+#[test]
+fn kanji_is_promoted_when_identified_and_not_when_unidentified_by_design() {
+    let judge = StoreJudge::default();
+    let mut k1 = 0u64;
+    for s in PressState::all().filter(|s| !s.was_down && !s.win_held) {
+        let d = delivery(&judge, &s, ExplicitKey::Kanji);
+        let promoted = d.reason != ElisionReason::NotPromoted;
+        assert_eq!(
+            promoted,
+            s.is_japanese_ime || s.ime_identified,
+            "{}",
+            fmt_state(&s, ExplicitKey::Kanji, None)
+        );
+        if !promoted {
+            k1 += 1;
+        }
+    }
+    assert!(k1 > 0);
 }

@@ -92,15 +92,17 @@ pub enum ShadowIntentKind {
 /// 授権が `is_japanese_ime` を問うので、昇格して belief だけ反転し書かれない食い違いを作らない）。`is_japanese_ime` は
 /// belief のスコープ判定（0xF0〜0xF4 の物理受信で上げる ADR-093）のままで、上げる規則は変えない。
 ///
-/// 注意: F13〜F24・0xF3/0xF4 の役割由来 `shadow_action` は IME 未同定なら `enrich_key_role` が付けない（`None`）ので昇格の
-/// 前提はそこで守られるが、**0x19 は GJI 以外では hook の静的値（Toggle）のまま**（`kanji_shadow_action` の `KeepStatic`）なので、
-/// IME 未同定でも昇格しうる（英語 IME・US 配列の Alt+` でも出る、ADR-093）。
+/// **0x19 だけは、`is_japanese_ime` の代わりに「IME が TIP で同定済み」（`ime_identified`、本番は `table_ime_kind().is_some()`）を条件に
+/// 残す**（所有者決定）。F13〜F24・0xF3/0xF4 の役割由来 `shadow_action` は IME 未同定なら `enrich_key_role` が付けない（`None`）ので
+/// 同定で守られるが、0x19 は GJI 以外では hook の静的値（Toggle）のまま（`kanji_shadow_action` の `KeepStatic`）なので、条件を外すと
+/// 英語 IME・IME 無しの窓・US 配列の Alt+` の 0x19 でも belief 反転と書き込みが起きる。同定済みなら `is_japanese_ime` の誤判定でも昇格する。
 ///
 /// `is_japanese_ime` は呼び出し時点の belief（0xF0〜0xF4 の物理受信による上げは呼び出し側が先に反映する）。
 #[must_use]
 pub(crate) fn select_shadow_intent(
     event: &RawKeyEvent,
     is_japanese_ime: bool,
+    ime_identified: bool,
 ) -> Option<(ShadowImeAction, ShadowIntentKind)> {
     if let Some(a) = event.ime_relevance.sync_direction {
         return Some((a, ShadowIntentKind::SyncKey));
@@ -114,7 +116,13 @@ pub(crate) fn select_shadow_intent(
         // （awase のワーカースレッドの HKL 由来で偽になりうる）を問わず採用する。
         return Some((a, ShadowIntentKind::PhysicalImeKey));
     }
-    if is_japanese_ime || !event.was_down {
+    // 非リピートの押下は `is_japanese_ime` を問わない。ただし 0x19 は GJI 以外では hook の静的 Toggle のままなので、
+    // IME が TIP で同定済みのときだけ昇格する（英語 IME・IME 無しの窓・US 配列の Alt+` に副作用を及ぼさない）。
+    let is_kanji = matches!(
+        crate::vk::VkCodeExt::ime_kind(event.vk_code),
+        Some(crate::vk::ImeKeyKind::Kanji)
+    );
+    if is_japanese_ime || (!event.was_down && (!is_kanji || ime_identified)) {
         return event
             .ime_relevance
             .shadow_action
@@ -427,6 +435,10 @@ pub struct PressState {
     pub is_japanese_ime: bool,
     pub profile: PressProfile,
     pub ime_kind: ImeKindId,
+    /// TIP で IME が同定済みか（本番は `tsf_obs().table_ime_kind().is_some()`: GJI、または CLSID で同定できた MS-IME 本体）。
+    /// 偽（英語 IME・IME 無しの窓・第三者 IME・起動直後）は `ime_kind` が `MsIme`（既定の推定）のときだけ取りうる。
+    /// 0x19 の shadow 昇格の条件（ADR-208 D2、所有者決定）。
+    pub ime_identified: bool,
     /// `ImeModel::current_focus()` が `Some` か。
     pub current_focus_known: bool,
     /// 鮮度内（3s）の Actuating 観測の open 値（`ObservationStore::derive_actuating`）。
@@ -444,7 +456,7 @@ pub struct PressState {
 }
 
 impl PressState {
-    /// 状態空間の全列挙（キー種別を除く。69,120 通り）。順序は決定的。
+    /// 状態空間の全列挙（キー種別を除く。120,960 通り）。順序は決定的。
     pub fn all() -> impl Iterator<Item = Self> {
         const B: [bool; 2] = [false, true];
         const OBS: [Option<bool>; 3] = [None, Some(false), Some(true)];
@@ -453,7 +465,11 @@ impl PressState {
             for applied in AppliedKnowledge::ALL {
                 for is_japanese_ime in B {
                     for profile in PressProfile::ALL {
-                        for ime_kind in [ImeKindId::Gji, ImeKindId::MsIme] {
+                        for (ime_kind, ime_identified) in [
+                            (ImeKindId::Gji, true),
+                            (ImeKindId::MsIme, true),
+                            (ImeKindId::MsIme, false),
+                        ] {
                             for current_focus_known in B {
                                 for actuating_obs in OBS {
                                     for intent in OBS {
@@ -467,6 +483,7 @@ impl PressState {
                                                             is_japanese_ime,
                                                             profile,
                                                             ime_kind,
+                                                            ime_identified,
                                                             current_focus_known,
                                                             actuating_obs,
                                                             intent,
@@ -847,13 +864,14 @@ pub fn explicit_press_delivery_after(
             let event = key
                 .event(state.was_down)
                 .expect("Shadow 経路のキーは必ず RawKeyEvent を持つ");
-            let intent_kind = select_shadow_intent(&event, is_japanese_ime).filter(|(_, kind)| {
-                // L2 前（参考）: `shadow_action` 由来の昇格（0x19・0xF3/F4・F13）は `is_japanese_ime` が真のときだけ。
-                mode.has_l2()
-                    || is_japanese_ime
-                    || *kind == ShadowIntentKind::SyncKey
-                    || crate::vk::is_static_idempotent_open_key(event.vk_code)
-            });
+            let intent_kind = select_shadow_intent(&event, is_japanese_ime, state.ime_identified)
+                .filter(|(_, kind)| {
+                    // L2 前（参考）: `shadow_action` 由来の昇格（0x19・0xF3/F4・F13）は `is_japanese_ime` が真のときだけ。
+                    mode.has_l2()
+                        || is_japanese_ime
+                        || *kind == ShadowIntentKind::SyncKey
+                        || crate::vk::is_static_idempotent_open_key(event.vk_code)
+                });
             let resolved = intent_kind.map(|(action, _)| action.resolve(state.belief_open));
             let flips = resolved.is_some_and(|new_val| new_val != state.belief_open);
             let app_profile = state.profile.app_profile();
@@ -1138,6 +1156,7 @@ mod tests {
             is_japanese_ime: true,
             profile: PressProfile::ImmUnavailable,
             ime_kind: ImeKindId::Gji,
+            ime_identified: true,
             current_focus_known: true,
             actuating_obs: None,
             intent: None,
@@ -1150,11 +1169,11 @@ mod tests {
 
     #[test]
     fn state_space_size_is_pinned() {
-        // belief 2 × applied 5 × japanese 2 × profile 7 × kind 2 × focus 2 × obs 3 × intent 3 ×
+        // belief 2 × applied 5 × japanese 2 × profile 7 × (kind, 同定) 3 × focus 2 × obs 3 × intent 3 ×
         // candidate 2 × chord 2 × win 2 × was_down 2
         assert_eq!(
             PressState::all().count(),
-            2 * 5 * 2 * 7 * 2 * 2 * 3 * 3 * 2 * 2 * 2 * 2
+            2 * 5 * 2 * 7 * 3 * 2 * 3 * 3 * 2 * 2 * 2 * 2
         );
         assert_eq!(ExplicitKey::ALL.len(), 12);
     }
@@ -1286,14 +1305,14 @@ mod tests {
         // 同期キーは is_japanese_ime を問わず SyncKey。
         for jp in [false, true] {
             assert_eq!(
-                select_shadow_intent(&ev(ExplicitKey::SyncOn), jp),
+                select_shadow_intent(&ev(ExplicitKey::SyncOn), jp, false),
                 Some((ShadowImeAction::TurnOn, ShadowIntentKind::SyncKey))
             );
         }
         // 0x16/0x1A は is_japanese_ime を問わず PhysicalImeKey。
         for jp in [false, true] {
             assert_eq!(
-                select_shadow_intent(&ev(ExplicitKey::StaticOff), jp),
+                select_shadow_intent(&ev(ExplicitKey::StaticOff), jp, false),
                 Some((ShadowImeAction::TurnOff, ShadowIntentKind::PhysicalImeKey))
             );
         }
@@ -1304,11 +1323,18 @@ mod tests {
             ExplicitKey::RoleFkeyToggle,
         ] {
             for jp in [false, true] {
+                // 0x19 は TIP 同定済みのときだけ（所有者決定）。他は同定を問わない。
                 assert_eq!(
-                    select_shadow_intent(&ev(k), jp),
+                    select_shadow_intent(&ev(k), jp, true),
                     Some((ShadowImeAction::Toggle, ShadowIntentKind::PhysicalImeKey)),
                     "{k:?} jp={jp}"
                 );
+                let unidentified = select_shadow_intent(&ev(k), jp, false);
+                if k == ExplicitKey::Kanji && !jp {
+                    assert_eq!(unidentified, None, "0x19 は未同定・非日本語では昇格しない");
+                } else {
+                    assert!(unidentified.is_some(), "{k:?} jp={jp}");
+                }
             }
         }
         // リピート（押下 ID なし）は従来どおり is_japanese_ime が真のときだけ（偽で昇格すると belief だけ反転し、
@@ -1318,18 +1344,21 @@ mod tests {
             e.was_down = true;
             e
         };
-        assert_eq!(select_shadow_intent(&rep(ExplicitKey::Kanji), false), None);
-        assert!(select_shadow_intent(&rep(ExplicitKey::Kanji), true).is_some());
+        assert_eq!(
+            select_shadow_intent(&rep(ExplicitKey::Kanji), false, true),
+            None
+        );
+        assert!(select_shadow_intent(&rep(ExplicitKey::Kanji), true, false).is_some());
         // F13 の自動リピート Down は昇格しない。
         assert_eq!(
-            select_shadow_intent(&rep(ExplicitKey::RoleFkeyToggle), true),
+            select_shadow_intent(&rep(ExplicitKey::RoleFkeyToggle), true, true),
             None
         );
         // 同じリピートでも 0xF3 は昇格する（0xF3/0xF4・0x19 の挙動は変えない）。
-        assert!(select_shadow_intent(&rep(ExplicitKey::HzToggle), true).is_some());
+        assert!(select_shadow_intent(&rep(ExplicitKey::HzToggle), true, true).is_some());
         // 意図を持たないキーは常に None。
         for k in [ExplicitKey::PhysOnlyMode, ExplicitKey::ThumbPlain] {
-            assert_eq!(select_shadow_intent(&ev(k), true), None, "{k:?}");
+            assert_eq!(select_shadow_intent(&ev(k), true, true), None, "{k:?}");
         }
     }
 
@@ -1476,7 +1505,7 @@ mod tests {
     }
 
     /// L0 の「挙動を変えない」の機械的な確認: 旧 `plan` + 旧 shadow 判断の合成と、新 `explicit_press_delivery_with(.., Legacy)`
-    /// を、全列挙空間（状態 69,120 × キー 12 × 3 種の判定器）で比べて差分 0。
+    /// を、全列挙空間（状態 120,960 × キー 12 × 3 種の判定器）で比べて差分 0。
     #[test]
     fn legacy_mode_matches_the_pre_extraction_composition_everywhere() {
         let judges: [&dyn Fn(&PressState, ExplicitKey) -> (RefOut, Delivery); 3] = [
@@ -1518,7 +1547,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 80_640 * 12 * 3);
+        assert_eq!(checked, 120_960 * 12 * 3);
     }
 
     /// 固定点（D4）: Legacy との差は「昇格した no-op で plan(false) が Suppress の押下が書く」ことだけ。
@@ -1883,7 +1912,7 @@ mod tests {
     }
 
     /// 逐語コピーとの差分 0（L0 の「挙動を変えない」の、移動後の同一関数どうしの比較を避けた確認）。
-    /// 全 `PressState`（69,120）× 12 キー（イベントを持つ 10 種）× KeyDown/KeyUp × `shadow_toggled` × 4 プロファイル × 2 種別で
+    /// 全 `PressState`（120,960）× 12 キー（イベントを持つ 10 種）× KeyDown/KeyUp × `shadow_toggled` × 4 プロファイル × 2 種別で
     /// 配送を、`is_japanese_ime` で intent 選択を、chord × target でフィルタ条件を比べる。
     #[test]
     fn new_implementations_match_the_verbatim_legacy_copies() {
@@ -1894,16 +1923,18 @@ mod tests {
                     continue;
                 };
                 // L2（ADR-208 D2）: 新実装が逐語コピーと違うのは、`is_japanese_ime` が偽の**非リピート**の
-                // `shadow_action` 昇格だけ（「真だったとしたら」の結果になる）。
-                let expected_jp = s.is_japanese_ime || !ev.was_down;
+                // `shadow_action` 昇格（0xF3/F4・F13 は無条件、0x19 は TIP 同定済みのときだけ。「真だったとしたら」の結果になる）。
+                let is_kanji = key == ExplicitKey::Kanji;
+                let expected_jp =
+                    s.is_japanese_ime || (!ev.was_down && (!is_kanji || s.ime_identified));
                 assert_eq!(
-                    select_shadow_intent(&ev, s.is_japanese_ime),
+                    select_shadow_intent(&ev, s.is_japanese_ime, s.ime_identified),
                     legacy_select_shadow_intent(&ev, expected_jp),
                     "{key:?} {s:?}"
                 );
                 if s.is_japanese_ime || ev.was_down {
                     assert_eq!(
-                        select_shadow_intent(&ev, s.is_japanese_ime),
+                        select_shadow_intent(&ev, s.is_japanese_ime, s.ime_identified),
                         legacy_select_shadow_intent(&ev, s.is_japanese_ime),
                         "{key:?} {s:?}"
                     );
@@ -1935,6 +1966,6 @@ mod tests {
                 );
             }
         }
-        assert_eq!(plan_cases, 80_640 * 10 * 2 * 2);
+        assert_eq!(plan_cases, 120_960 * 10 * 2 * 2);
     }
 }
