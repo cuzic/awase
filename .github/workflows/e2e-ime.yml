@@ -113,7 +113,7 @@ jobs:
             if ime == 'msime': flags.append('--msime')
             return cfg(f"tsx-{'raw-' if raw else ''}{name}", 'observe', check='typing', ime=ime, awase='false' if raw else 'true', runs=runs, wait=wait, stress=' '.join(flags))
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
-          # sc-keymatrix-*(ADR-208 L3b): 「ずれの作り方 × 明示キー」行列(判定は check_keymatrix.py、観測のみ=expect=observe)。1構成=1ジョブで、セルごとに内部10試行。
+          # sc-keymatrix-*(ADR-208 L3b): 「ずれの作り方 × 明示キー」行列(判定は check_keymatrix.py)。expect=pass(MS-IME × 実 Chrome の abs/tog だけは同 job に fresh 対照が無く例外セルが STUCK になるので observe、対照は e2・e2-tog が担う)。1構成=1ジョブで、セルごとに内部10試行。
           # セルの書式 `<key>=<kind>:<gap>`: key=VK の16進(ctrl+ 前置でマーカー付き注入の物理 Ctrl 付き) / kind=on・off・tog / gap=sync・close・open・fresh。
           # 既定の sc-* や only='sc-*' には含めない(下の plan の除外)。only='sc-keymatrix-*' か完全一致で回す。
           # keys: abs=絶対キー用(Ctrl+変換/Ctrl+無変換に加えて、無変換/変換の単独タップを bare の keys.ime_off/ime_on にする=ADR-206 の役割由来)、
@@ -124,13 +124,13 @@ jobs:
               c = ['ctrl+1c=on:close', 'ctrl+1d=off:open', 'ctrl+1c=on:sync', 'ctrl+1d=off:sync', '1c=on:close', '1d=off:open', '16=on:close', '1a=off:open']
               return c + (['f2=on:close'] if msime else [])
             return ['1d=tog:sync', '1d=tog:close', '1d=tog:open', 'f3=tog:close', 'f3=tog:open', '19=tog:close', '19=tog:open']
-          def km(name, win, ime_name, cells, grp, wait=1800):
+          def km(name, win, ime_name, cells, grp, wait=1800, expect='pass'):
             msime = ime_name == 'msime'
             common = dict(ime='msime' if msime else 'gji', keymap=2 if (msime and win == 'chrome') else 1, runs=1, wait=wait, keys=KM_KEYS[grp], check='keymatrix')
             cs = ','.join(cells)
             if win == 'chrome':
-              return cfg(name, 'observe', chrome=f"--keymatrix={cs} --settle=800{' --msime' if msime else ''}", **common)
-            return cfg(name, 'observe', stress=f"--form={win} --mode=keymatrix --km-cells={cs} --layout=@REPO@/layout/nicola_keytop.yab{' --msime' if msime else ''}", **common)
+              return cfg(name, expect, chrome=f"--keymatrix={cs} --settle=800{' --msime' if msime else ''}", **common)
+            return cfg(name, expect, stress=f"--form={win} --mode=keymatrix --km-cells={cs} --layout=@REPO@/layout/nicola_keytop.yab{' --msime' if msime else ''}", **common)
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
             cfg('baseline', 'pass'),
@@ -425,12 +425,14 @@ jobs:
             # --- ADR-208 L3b: ずれの作り方 × 明示キー行列(only='sc-keymatrix-*' で回す)。窓=edit(ImmCross)/tsf(TsfNative 相当)/chrome(実 Chrome=Imm32Unavailable)、IME=GJI(ATOK プリセット)/MS-IME 本体。 ---
             # abs=絶対キー(Ctrl+変換/Ctrl+無変換/単独タップ変換・無変換/0x16/0x1A、MS-IME は F2 も)を、実 IME を外から閉/開した後と ずれなしで押す(1押下で一致するか)。
             # tog=トグル(無変換の単独タップ=keys.ime_toggle、0xF3、0x19)を外から閉/開した後に押す(2押下以内で一致するか)。
-            *[km(f'sc-keymatrix-{grp}-{win}-{ime_name}', win, ime_name, km_cells(grp, ime_name == 'msime'), grp)
+            *[km(f'sc-keymatrix-{grp}-{win}-{ime_name}', win, ime_name, km_cells(grp, ime_name == 'msime'), grp,
+                 expect='observe' if (win == 'chrome' and ime_name == 'msime') else 'pass')
               for grp in ('abs', 'tog') for win in ('edit', 'tsf', 'chrome') for ime_name in ('gji', 'msime')],
             # E2(ADR-208 決定4): awase を再起動して belief・applied が未知の状態(fresh)で OFF 系を押す対照。同じ job の open/sync セルと失敗率を比べ、
             # 例外(MS-IME × 実 Chrome の OFF)なら新鮮でも同じ率で閉じない=ENV_EXCEPTION、新鮮だと閉じるなら内部状態による固着=STUCK(バグ)。
+            # ctrl+1c=on:fresh は MS-IME で INVALID(初回CI: fresh の前提の揃えが成立しない)なので GJI だけに置く。
             *[km(f'sc-keymatrix-e2-{ime_name}-chrome', 'chrome', ime_name,
-                 ['ctrl+1d=off:fresh', 'ctrl+1d=off:open', 'ctrl+1d=off:sync', '1d=off:fresh', '1d=off:open', 'ctrl+1c=on:fresh'], 'abs', wait=2400)
+                 ['ctrl+1d=off:fresh', 'ctrl+1d=off:open', 'ctrl+1d=off:sync', '1d=off:fresh', '1d=off:open'] + (['ctrl+1c=on:fresh'] if ime_name == 'gji' else []), 'abs', wait=2400)
               for ime_name in ('msime', 'gji')],
             # E2 のトグル版: abs の e2 は絶対キーだけなので、トグルの OFF 方向の STUCK(MS-IME × 実 Chrome の 1d/f3/19)が例外(a)か内部固着かを切り分ける。
             # fresh(awase 再起動=belief・applied 未知、実 IME=開)の tog セルを、同じキー・種別の open/sync セルと同じ job で比べる(msime が認定対象、gji が対照)。
@@ -1263,7 +1265,7 @@ jobs:
                 kv = dict(re.findall(r'(\w+)=(\S+)', l))
                 km_rows.append(f"| {c['name']} | {kv.get('cell')} | {kv.get('verdict')} | {kv.get('pass')} | {kv.get('target')} | {kv.get('made')}/{kv.get('n')} | {kv.get('c1')} | {kv.get('c2')} | {kv.get('late')} | {kv.get('stuck')} | {kv.get('gap_not_made')}/{kv.get('invalid')} | {kv.get('e2')} {kv.get('fresh_fail_rate')} |")
           if km_rows:
-            out += ["", "## ADR-208 L3b ずれの作り方 × 明示キー行列(sc-keymatrix-*、観測のみ)", "",
+            out += ["", "## ADR-208 L3b ずれの作り方 × 明示キー行列(sc-keymatrix-*)", "",
                     "セル=`キー=種別:ずれ`(種別 on/off=絶対、tog=トグル。ずれ close=awase に ON を書かせた後に実 IME を外から閉じる(S-1)、open=OFF を書かせた後に外から開く、fresh=awase 再起動直後で belief・applied が未知、sync=ずれなし)。"
                     "made/n=ずれを作れた試行/全試行。c1/c2/late/stuck=1押下目/2押下目/3押下目で目標に一致/3回押しても不一致。"
                     "判定: CONVERGED_1=全試行が1押下で一致 / CONVERGED_2=2押下まで(トグルなら合格、絶対キーは1押下の保証違反) / CONVERGED_LATE / STUCK=固着 / "
