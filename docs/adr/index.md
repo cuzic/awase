@@ -224,7 +224,7 @@
 | [215](215-derive-variant-name-and-display-tables.md) | variant 名・Display の手書き対応表を strum/thiserror の derive に置き換える(ADR-139 決定4の一部を上書き) | 提案(Opusレビュー round1 で採用可)。実装済み・未マージ |
 | [216](216-remove-diagnostic-only-open-belief-and-unread-apply-arguments.md) | 診断ログ専用の OpenBelief と、読まれない applied の時刻・常に None の引数を撤去する | R1〜R4 実装済み(CI 確認待ち) |
 | [218](218-shared-helper-for-architecture-guard-call-site-pins.md) | architecture_guard の呼び出し元固定ガードの重複を共通ヘルパー1本で除く(宣言テーブルは見送り) | 提案(Opus round3 待ち) |
-| [219](219-engine-test-helpers-instead-of-scenario-dsl.md) | エンジンテストは既存ヘルパーの使い回しと純粋な対応表の撤去で読みやすくする(DSLは見送り) | 提案(Opus round3 待ち) |
+| [219](219-engine-test-helpers-instead-of-scenario-dsl.md) | エンジンテストは既存ヘルパーの使い回しと純粋な対応表の撤去で読みやすくする(DSLは見送り) | 提案(Opus round3 で収束、採用可) |
 | [220](220-key-name-tables-keep-as-is-add-capture-table-test.md) | キー名表の単一ソース化は見送り、キャプチャ表の検証テスト1本だけ足す | 見送り(Opus 収束確認待ち) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
