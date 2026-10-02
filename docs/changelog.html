@@ -146,12 +146,32 @@ footer p{margin:0.3rem 0}
 </li>
 <li><p><strong>MS-IME 本体で、無変換/変換に割り当てられた「値 2（トグル）」を、IME のオン/オフを切り替えるキーとして扱うようにした。</strong> 入力中でも切り替わり、未確定の文字列は確定される（捨てられる）。CI では値 2 を作れないため、実際の切り替えは実機では未検証</p>
 </li>
+<li><p><strong>明示的な IME キー（Ctrl+変換/無変換、かな、半角/全角、漢字など）を押すと、awase の内部状態がどうであっても、最大 2 回の押下で実際の IME がキーの意味に一致するようにした（ADR-208）。</strong> 「何度押しても変わらない」固着をなくすための保証</p>
+<ul>
+<li>絶対指定のキー（IME オン/オフ、Ctrl+変換/無変換）は 1 回、トグルは 2 回以内で一致する。モードのずれが起きること自体は許容する</li>
+<li>変えた点: 古い内部状態を理由に絶対指定キーの送信を省かない／IME の種類が未判定でも押下の送信を許可する／IME が既に一致していて awase がキーを握りつぶす窓では、キーの意味どおりに書く</li>
+<li>CI（Windows 実機、各 10 試行）で、Chrome・EDIT・TSF 窓 × Google 日本語入力・MS-IME 本体を確認した。MS-IME 本体 × 実 Chrome の OFF 方向だけは、awase を再起動した直後でも同じ率で閉じないため環境の制約として扱う（既知の制限）。Windows Terminal + Google 日本語入力と、InputRelay の窓は今回の対象外</li>
+</ul>
+</li>
+<li><p><strong>IME への先回り・補正の書き込みを減らした（ADR-212/213）。</strong> ユーザーの操作を引き金にしない <code>VK_IME_ON</code>/<code>VK_IME_OFF</code> の自動送信（Enter ごとの先回り送信、Ctrl を離したときの再送、エンジン ON/OFF に連動した IME の開閉など）を撤去し、IME の状態は観測して追随する方針にした。半角/全角の OFF→ON は、明示的な操作として 1 回だけ送る</p>
+<ul>
+<li>起動直後に、IME を閉じていても awase が開けに行くことはなくなった（BUG-163）</li>
+</ul>
+</li>
+<li><p><strong>Google 日本語入力の MS-IME プリセットで、変換キー・F13 で IME が開くとき、Engine が追随するようにした（ADR-209/211）。</strong> 読み取れない窓（Chrome・Windows Terminal など）で、IME は開くのに NICOLA が OFF のまま（<code>ka</code> と出る）だった問題への対処。学習表がなくても、<code>config1.db</code> から開閉の挙動を予測する</p>
+</li>
+<li><p><strong>キー効果の学習（<code>awase-keymap-learn</code>）を速く・確実に終わるようにした。</strong> 古いカスタム表が残る構成で <code>73/84</code> のまま進まない問題（BUG-178）を直し、実機で約 99 秒で完走することを確認した。学習結果を内蔵表より優先する（ADR-196）</p>
+</li>
 </ul>
 <h3>修正</h3>
 <ul>
 <li><strong>Google 日本語入力 + Windows Terminal など（TSF ネイティブ）で、カタカナになったあと物理のひらがなキーで戻れなくなる不具合を修正（BUG-173）。</strong> 物理のひらがなキー（F2 相当）を常に IME へ渡すようにした。最初にカタカナへ入る契機は未特定。実機での確認は未実施</li>
 <li><strong>Chrome + Google 日本語入力で、他のプログラムなど外部から IME を閉じられると、閉じたまま awase が ON と思い込み、ローマ字がそのまま入る不具合を修正（BUG-172、ADR-205）。</strong> 外部から送られた IME キーの直後 300ms だけ状態を監視し、開閉が閉じに変わったときだけ実際の状態に追随する（awase は開け直さない）。<strong>Google 日本語入力 + Chrome など IMM32 が使えない窓に限る</strong>（MS-IME・メモ帳などは対象外）。CI では追随 10/10。追随後にモードキーを押した挙動と実機は未検証</li>
 <li><strong>Chrome + Google 日本語入力で、超高速の打鍵（2〜10ms 間隔）中に、入力中の未確定文字が全部消えることがある不具合を修正（BUG-168）。</strong> 再確認が 2 回続いたあとの回復処理が IME を OFF→ON し直していた。通常の速度ではほぼ起きない</li>
+<li><strong>Google 日本語入力 + Edge（Google Meet など）で、IME を OFF→ON したあとの最初の語が欠けたり、入力中の文字が消えたりする不具合を修正（BUG-170/171、ADR-203）。</strong> 物理キーで ON にしても内部の状態が追随せず、毎打鍵が「初回扱い」になって確認に失敗し、未確定の文字を消していた</li>
+<li><strong>MS-IME 本体 + Chrome で、awase を起動したあとに開いた Chrome に、IME 操作なしで <code>ka</code> と打つと <code>kiu</code> になる不具合を修正（BUG-179）。</strong> 入力方式の判定を、アクティブな入力方式が変わった場合でも MS-IME 本体と同定できるようにした</li>
+<li><strong>IME OFF やフォーカス変更のあとに、前の入力の候補窓の開閉通知が残り、次の入力の最初に誤って配られる不具合を修正（BUG-180）</strong></li>
+<li><strong>Ctrl を離すたびに awase が <code>VK_IME_ON</code> を送っていたのをやめた（BUG-173/174）。</strong> Windows Terminal + Google 日本語入力で「@」が出る報告の被疑箇所だったため撤去した（原因だったかの実機確認は未実施）</li>
 </ul>
 <h2>[1.21.0] - 2026-09-21</h2>
 <h3>追加</h3>
