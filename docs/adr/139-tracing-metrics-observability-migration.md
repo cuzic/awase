@@ -469,7 +469,7 @@ pub fn absorb(&mut self, envelope: JournalEnvelope) {
    形にした）を実質的に巻き戻す。判別子文字列は enum の型自体に `as_str()` を生やす
    のではなく、**`journal.rs` 内に閉じた private fn**として実装する（`ConvClassifyCall`
    等が保持する `awase::engine::InputModeState` のような core crate の型に手を入れず、
-   ADR-019 の依存追加議論を避けるため）。この文字列値は journal の JSON シリアライズ
+   ADR-019 の依存追加議論を避けるため）。**【追記 2026-10-02、ADR-215 が上書き】** この「journal.rs 内に閉じた private fn」と「core crate の型に手を入れない」は、ADR-215 で `strum::IntoStaticStr` の derive に置き換えた（core crate への `strum` 依存の追加を含む。ADR-019 の禁止事項には当たらない）。この文字列値は journal の JSON シリアライズ
    （serde、variant 名そのまま）と**同じ表記に揃える** — tracing 側で独自の
    snake_case 等を作ると、`log_excerpt`（JSON）を見る人と `app_log_excerpt`
    （awase.log）を見る人とで語彙が食い違い、不具合報告の triage を混乱させる。
