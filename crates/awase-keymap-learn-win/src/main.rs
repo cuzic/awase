@@ -621,16 +621,23 @@ mod app {
         }
     }
 
+    /// 進捗・結果の分母。モデルの推定(`estimated`)より実機が多くの`Status`に到達した場合は、
+    /// 観測済みの`Status`数×キー数まで引き上げる(`cell`が分母を超える`168/84`を避ける)。
+    fn effective_total_cells(table: &Table, estimated: u32) -> u32 {
+        estimated.max(table.observed_status_count() as u32 * KEYS.len() as u32)
+    }
+
     /// 進捗(現在何セル目/推定残り時間)を標準出力へ運ぶsinkを作る(ADR-195段階6)。
     /// awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
     /// 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR本文
     /// 「段階6」節参照)。表本体はここでは一切標準出力へ出さない。
-    fn make_progress_sink(total_cells: u32) -> impl FnMut(&Stats, &Table) {
+    fn make_progress_sink(estimated_total_cells: u32) -> impl FnMut(&Stats, &Table) {
         move |stats, table| {
             if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
                 return;
             }
             let cell = table.covered1() as u32;
+            let total_cells = effective_total_cells(table, estimated_total_cells);
             let elapsed_ms = stats.timeline.last().map_or(0.0, |&(ms, _, _)| ms);
             // 経過時間からの単純な線形外挿。0除算・未進捗時はeta不明(-1)を返す。
             let eta_ms = if cell == 0 || cell >= total_cells {
@@ -906,6 +913,7 @@ mod app {
         // 汚染された観測(外部からの書き込み・物理入力・フォーカス喪失)は
         // `Executor::press`が表への記録を既に見送っているが、無効化が多発した
         // セッションは表の残りのセルの信頼性も疑わしいため、書き出さない。
+        let total_cells = effective_total_cells(&executor.table, total_cells);
         exit_if_session_failed(
             &executor,
             strategy,

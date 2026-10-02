@@ -92,6 +92,16 @@ impl Table {
             .map_or(0, |v| v.iter().map(|o| o.ctx).collect::<HashSet<_>>().len())
     }
 
+    /// これまでに観測したセルが持つ`Status`の種類数。進捗の分母を実測へ合わせるのに使う
+    /// (モデルの推定より実機が多くの状態に到達すると、推定の分母を超えて`168/84`になる)。
+    pub fn observed_status_count(&self) -> usize {
+        self.cells
+            .keys()
+            .map(|(status, _)| *status)
+            .collect::<HashSet<_>>()
+            .len()
+    }
+
     pub const fn covered1(&self) -> usize {
         self.covered1
     }
@@ -180,6 +190,17 @@ mod tests {
             status: st(o),
             disp: Disposition::None,
         }
+    }
+
+    #[test]
+    fn observed_status_count_counts_distinct_statuses_not_cells() {
+        let mut t = Table::new();
+        assert_eq!(t.observed_status_count(), 0);
+        // 同じStatusの複数キーは1つ、別のStatusは別に数える(進捗の分母を実測へ合わせる用)。
+        t.record(st(true), 0, None, out(true));
+        t.record(st(true), 1, None, out(true));
+        t.record(st(false), 0, None, out(false));
+        assert_eq!(t.observed_status_count(), 2);
     }
 
     #[test]
