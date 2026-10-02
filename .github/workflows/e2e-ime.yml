@@ -432,6 +432,11 @@ jobs:
             *[km(f'sc-keymatrix-e2-{ime_name}-chrome', 'chrome', ime_name,
                  ['ctrl+1d=off:fresh', 'ctrl+1d=off:open', 'ctrl+1d=off:sync', '1d=off:fresh', '1d=off:open', 'ctrl+1c=on:fresh'], 'abs', wait=2400)
               for ime_name in ('msime', 'gji')],
+            # E2 のトグル版: abs の e2 は絶対キーだけなので、トグルの OFF 方向の STUCK(MS-IME × 実 Chrome の 1d/f3/19)が例外(a)か内部固着かを切り分ける。
+            # fresh(awase 再起動=belief・applied 未知、実 IME=開)の tog セルを、同じキー・種別の open/sync セルと同じ job で比べる(msime が認定対象、gji が対照)。
+            *[km(f'sc-keymatrix-e2-tog-{ime_name}-chrome', 'chrome', ime_name,
+                 ['1d=tog:fresh', '1d=tog:open', '1d=tog:sync', 'f3=tog:fresh', 'f3=tog:open', '19=tog:fresh', '19=tog:open'], 'tog', wait=2400)
+              for ime_name in ('msime', 'gji')],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',

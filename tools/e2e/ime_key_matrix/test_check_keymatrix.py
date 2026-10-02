@@ -172,6 +172,25 @@ class E2(unittest.TestCase):
         c = cell_of(ck.analyze(self.e2_job(9, 1)), "ctrl+1d=off:open")
         self.assertEqual(c["verdict"], "STUCK")
 
+    def tog_job(self, drift_fail, fresh_fail, ime="msime", n=10):
+        # トグルの OFF 方向: 押す前は開(r0=True)、目標は閉(False)。3押下しても開のままなら STUCK。
+        def mk(cell, gap, fails):
+            return [trial(cell, [True, True, True] if i < fails else [True, False], "tog", gap, True, False, typed=True, n=i)
+                    for i in range(n)]
+        return job(mk("1d=tog:open", "open", drift_fail) + mk("1d=tog:fresh", "fresh", fresh_fail),
+                   form="chrome", ime=ime, evidence="typed")
+
+    def test_toggle_env_exception_when_fresh_fails_similarly(self):
+        c = cell_of(ck.analyze(self.tog_job(10, 9)), "1d=tog:open")
+        self.assertEqual(c["verdict"], "ENV_EXCEPTION")
+        self.assertEqual(c["e2"], "fresh_similar")
+
+    def test_toggle_stays_stuck_when_fresh_succeeds(self):
+        # 新鮮だと2押下以内で閉じる=内部状態による固着(バグ)。
+        c = cell_of(ck.analyze(self.tog_job(10, 0)), "1d=tog:open")
+        self.assertEqual(c["verdict"], "STUCK")
+        self.assertEqual(c["e2"], "fresh_ok")
+
     def test_no_exception_outside_the_closed_list(self):
         # GJI × Chrome の OFF が失敗しても例外として認めない(例外は MS-IME × 実 Chrome の OFF 方向だけ)。
         r = ck.analyze(self.e2_job(9, 9, ime="gji"))
