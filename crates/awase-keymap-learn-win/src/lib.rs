@@ -5,6 +5,7 @@
 //! 所有する。
 
 pub mod phase_timing;
+pub mod progress_estimate;
 pub mod reconvert_cells;
 pub mod settle_tuning;
 

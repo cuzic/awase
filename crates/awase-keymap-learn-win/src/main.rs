@@ -31,6 +31,7 @@ mod app {
     use awase_keymap_learn::verify::{
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
+    use awase_keymap_learn_win::progress_estimate::{ProgressEstimator, Snapshot};
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
     use awase_keymap_learn_win::RealImeDriver;
@@ -621,25 +622,46 @@ mod app {
         }
     }
 
-    /// 進捗(現在何セル目/推定残り時間)を標準出力へ運ぶsinkを作る(ADR-195段階6)。
-    /// awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
-    /// 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR本文
-    /// 「段階6」節参照)。表本体はここでは一切標準出力へ出さない。
-    fn make_progress_sink(total_cells: u32) -> impl FnMut(&Stats, &Table) {
+    /// 進捗・結果の分母。モデルの推定(`estimated`)より実機が多くの`Status`に到達した場合は、
+    /// 観測済みの`Status`数×キー数まで引き上げる(`cell`が分母を超える`168/84`を避ける)。
+    fn effective_total_cells(table: &Table, estimated: u32) -> u32 {
+        estimated.max(table.observed_status_count() as u32 * KEYS.len() as u32)
+    }
+
+    /// 進捗(現在何セル目/打鍵数ベースの進捗率/推定残り時間)を標準出力へ運ぶsinkを作る
+    /// (ADR-195段階6)。awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
+    /// 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR本文「段階6」節参照)。
+    /// 表本体はここでは一切標準出力へ出さない。分母(`expected_presses`)は
+    /// [`awase_keymap_learn_win::progress_estimate`]が最悪ケースから縮めていく。
+    fn make_progress_sink(
+        estimated_total_cells: u32,
+        max_statuses: u32,
+    ) -> impl FnMut(&Stats, &Table) {
+        let mut estimator = ProgressEstimator::new();
         move |stats, table| {
             if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
                 return;
             }
             let cell = table.covered1() as u32;
+            let total_cells = effective_total_cells(table, estimated_total_cells);
             let elapsed_ms = stats.timeline.last().map_or(0.0, |&(ms, _, _)| ms);
-            // 経過時間からの単純な線形外挿。0除算・未進捗時はeta不明(-1)を返す。
-            let eta_ms = if cell == 0 || cell >= total_cells {
+            let presses = stats.presses;
+            let expected = estimator.expected_presses(Snapshot {
+                presses,
+                covered_cells: cell,
+                observed_statuses: table.observed_status_count() as u32,
+                keys: KEYS.len() as u32,
+                max_statuses,
+            });
+            // その端末の1打鍵あたりの実測からの線形外挿(固定の秒数は使わない)。
+            let eta_ms = if presses == 0 {
                 -1.0
             } else {
-                elapsed_ms / f64::from(cell) * f64::from(total_cells - cell)
+                elapsed_ms / f64::from(presses) * f64::from(expected - presses)
             };
             println!(
-                "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0}"
+                "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0} \
+                 presses={presses} expected_presses={expected}"
             );
             let _ = std::io::stdout().flush();
         }
@@ -866,7 +888,7 @@ mod app {
         let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
 
         let total_cells = model.distinct_status_count() as u32 * KEYS.len() as u32;
-        executor.set_progress_sink(make_progress_sink(total_cells));
+        executor.set_progress_sink(make_progress_sink(total_cells, model.states.len() as u32));
 
         let req = Req::default();
         run(
@@ -906,6 +928,7 @@ mod app {
         // 汚染された観測(外部からの書き込み・物理入力・フォーカス喪失)は
         // `Executor::press`が表への記録を既に見送っているが、無効化が多発した
         // セッションは表の残りのセルの信頼性も疑わしいため、書き出さない。
+        let total_cells = effective_total_cells(&executor.table, total_cells);
         exit_if_session_failed(
             &executor,
             strategy,

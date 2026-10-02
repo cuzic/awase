@@ -1123,7 +1123,10 @@ impl SettingsApp {
             .ok()
             .map(|stderr| {
                 std::thread::spawn(move || {
-                    keymap_learn_launcher::drain_learning_stderr_lines(stderr)
+                    keymap_learn_launcher::drain_learning_stderr_lines_logged(
+                        stderr,
+                        keymap_learn_launcher::learning_log_path().as_deref(),
+                    )
                 })
             });
         // Arc<Mutex<Child>>で共有し、UIの「キャンセル」ボタン・on_exit・読み取りスレッドの
@@ -3343,18 +3346,8 @@ impl SettingsApp {
 
             if let Some(p) = self.keymap_learn_progress {
                 ui.add_space(4.0);
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "進捗バー表示用の概算、精度は問題にならない"
-                )]
-                let fraction = if p.total == 0 {
-                    0.0
-                } else {
-                    p.cell as f32 / p.total as f32
-                };
-                ui.add(
-                    egui::ProgressBar::new(fraction).text(format!("{}/{}セル", p.cell, p.total)),
-                );
+                let fraction = p.fraction();
+                ui.add(egui::ProgressBar::new(fraction).text(format!("{:.0}%", fraction * 100.0)));
                 if let Some(eta_ms) = p.eta_ms {
                     ui.label(format!("残り約{:.0}秒", eta_ms / 1000.0));
                 }

@@ -24,6 +24,29 @@ pub struct LearnProgress {
     pub elapsed_ms: f64,
     /// 残り時間の単純な線形外挿。未進捗・全セル完了時は`None`。
     pub eta_ms: Option<f64>,
+    /// これまでの打鍵数。進捗率は(セル数でなく)これで出す: セル数は序盤で頭打ちになり、
+    /// 終盤に動かなくなるため。古い学習プロセスは出さない(`None`)。
+    pub presses: Option<u32>,
+    /// 想定打鍵数(超えそうなら押下数+1へ伸びる)。
+    pub expected_presses: Option<u32>,
+}
+
+impl LearnProgress {
+    /// 進捗率(0.0〜0.99)。完了前は99%で止め、完了は結果行で示す。打鍵数が無い古い出力は
+    /// セル数で代用する。
+    #[must_use]
+    pub fn fraction(&self) -> f32 {
+        let (done, total) = match (self.presses, self.expected_presses) {
+            (Some(p), Some(e)) if e > 0 => (p, e),
+            _ => (self.cell, self.total),
+        };
+        if total == 0 {
+            return 0.0;
+        }
+        #[expect(clippy::cast_precision_loss, reason = "進捗バー表示用の概算")]
+        let f = done as f32 / total as f32;
+        f.min(0.99)
+    }
 }
 
 /// 学習プロセスの最終結果。
@@ -115,6 +138,8 @@ pub fn parse_learn_line(line: &str) -> Option<LearnLine> {
                 total,
                 elapsed_ms,
                 eta_ms,
+                presses: field("presses").and_then(|v| v.parse().ok()),
+                expected_presses: field("expected_presses").and_then(|v| v.parse().ok()),
             }))
         }
         "result" => match field("status")? {
@@ -217,8 +242,39 @@ pub fn take_learning_stderr(child: &mut Child) -> io::Result<ChildStderr> {
 /// 用途は想定しない。
 #[must_use]
 pub fn drain_learning_stderr_lines(stderr: ChildStderr) -> Option<String> {
+    drain_learning_stderr_lines_logged(stderr, None)
+}
+
+/// 学習ログの保存先(`%LOCALAPPDATA%\awase\keymap-learn.log`)。汚染の原因調査は
+/// 最終行だけでは足りず、直近イベントを含む全行が要るためファイルへ残す。
+#[must_use]
+pub fn learning_log_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    Some(
+        std::path::PathBuf::from(base)
+            .join("awase")
+            .join("keymap-learn.log"),
+    )
+}
+
+/// [`drain_learning_stderr_lines`]に加え、全行を`log_path`へ書き出す(起動のたびに作り直す)。
+#[must_use]
+pub fn drain_learning_stderr_lines_logged(
+    stderr: ChildStderr,
+    log_path: Option<&std::path::Path>,
+) -> Option<String> {
+    use std::io::Write;
+    let mut log = log_path.and_then(|path| {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::File::create(path).ok()
+    });
     let mut last = None;
     for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        if let Some(file) = log.as_mut() {
+            let _ = writeln!(file, "{line}");
+        }
         if !line.trim().is_empty() {
             last = Some(line);
         }
@@ -240,7 +296,32 @@ mod tests {
                 total: 280,
                 elapsed_ms: 12345.0,
                 eta_ms: Some(6789.0),
+                presses: None,
+                expected_presses: None,
             }))
+        );
+    }
+
+    #[test]
+    fn parses_presses_and_fraction_never_exceeds_99_percent() {
+        let line = "progress cell=168 total=84 elapsed_ms=65000 eta_ms=0 presses=1500 expected_presses=1501";
+        let Some(LearnLine::Progress(p)) = parse_learn_line(line) else {
+            panic!("progress行としてパースできるはず");
+        };
+        assert_eq!((p.presses, p.expected_presses), (Some(1500), Some(1501)));
+        // セルが分母を超えていても、打鍵数ベースなので100%を超えない・逆戻りしない。
+        assert!(
+            p.fraction() <= 0.99 && p.fraction() > 0.9,
+            "{}",
+            p.fraction()
+        );
+        let old = "progress cell=42 total=84 elapsed_ms=1 eta_ms=1";
+        let Some(LearnLine::Progress(o)) = parse_learn_line(old) else {
+            panic!("古い形式もパースできるはず");
+        };
+        assert!(
+            (o.fraction() - 0.5).abs() < 1e-6,
+            "古い出力はセル数で代用する"
         );
     }
 
@@ -305,6 +386,8 @@ mod tests {
             total: 2,
             elapsed_ms: 0.0,
             eta_ms: None,
+            presses: None,
+            expected_presses: None,
         });
         let result = LearnLine::Result(LearnOutcome::Success);
         let adopt = LearnLine::Adopt(true);
@@ -391,6 +474,8 @@ mod tests {
                     total: 2,
                     elapsed_ms: 10.0,
                     eta_ms: Some(5.0),
+                    presses: None,
+                    expected_presses: None,
                 }),
                 LearnLine::Result(LearnOutcome::Success),
             ]
