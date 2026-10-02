@@ -225,7 +225,7 @@
 | [216](216-remove-diagnostic-only-open-belief-and-unread-apply-arguments.md) | 診断ログ専用の OpenBelief と、読まれない applied の時刻・常に None の引数を撤去する | R1〜R4 実装済み(CI 確認待ち) |
 | [218](218-shared-helper-for-architecture-guard-call-site-pins.md) | architecture_guard の呼び出し元固定ガードの重複を共通ヘルパー1本で除く(宣言テーブルは見送り) | 提案(Opus round2 待ち) |
 | [219](219-engine-test-helpers-instead-of-scenario-dsl.md) | エンジンテストはヘルパー2つとキー表の集約で読みやすくする(DSLは見送り) | 提案(Opus round2 待ち) |
-| [220](220-single-source-key-name-table.md) | キー名の対応表を 1 つの宣言に集める | 提案(Opus レビュー待ち) |
+| [220](220-key-name-tables-keep-as-is-add-capture-table-test.md) | キー名表の単一ソース化は見送り、キャプチャ表の検証テスト1本だけ足す | 見送り(Opus round2 待ち) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
