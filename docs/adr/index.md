@@ -214,7 +214,7 @@
 | [205](205-observe-external-ime-close-in-imm32-unavailable-windows.md) | Imm32Unavailable(Chrome)で外部注入の IME キーによる close を窓内の 1→0 遷移観測で実状態へ追随する(BUG-172) | 採択・実装済み(CI 検証済み、実機未) |
 | [206](206-thumb-solo-tap-follows-role-suppress-and-inject.md) | 無変換/変換の単独タップ再設計(役割があれば生キー抑止＋belief に従う明示注入、なければ Suppress/Passthrough。`*_solo_tap_ime_action` 撤去) | opus 4ラウンドで収束・実装済み(実機A/B未検証) |
 | [207](207-keys-ime-detect-default-empty-and-remove-engine-ime-keys.md) | keys.ime_detect.on/off の既定を空に、engine_on/off_ime_key(Engine ON/OFF 時の IME モードキー能動送信)を撤去 | 採択・実装済み(実機/CI 確認は未実施) |
-| [208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md) | 明示的な IME キーを押すと、内部状態が何であっても最大2回の押下で実 IME が一致する(固着ゼロの保証) | 採用(2026-10-01、L0・L1 実装済み・L2 から未実装。L0〜L3 は v2 のブロッカー) |
+| [208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md) | 明示的な IME キーを押すと、内部状態が何であっても最大2回の押下で実 IME が一致する(固着ゼロの保証) | 採用(2026-10-01、L0〜L2 実装済み・L3 から未実装。L0〜L3 は v2 のブロッカー) |
 | [209](209-predict-open-effect-from-gji-config-when-not-learned.md) | GJI の MS-IME プリセットでは TSF の窓で変換が IME を開く(モードは閉じる前のまま)。読めない窓の打鍵時予測に「変換で開く」を足し、素通しの変換に Engine を追随させる(ADR-186/191/199/206) | 実装済み(2026-09-30)。Opus round3 で収束。実機A/B・CI検証は未 |
 | [210](210-learned-table-hidden-state-converting-and-last-key.md) | 学習表の状態に「変換中」と「直前キーの文脈」を加える | 保留(2026-09-30)、Opus レビューで現案は不採用 |
 | [211](211-predict-open-close-from-gji-keymap-for-passive-keys.md) | GJI の MS-IME/MOBILE プリセットの F13(閉状態からだけ IME を開く受動のキー)で Engine が追随するよう打鍵時に「開く」と予測する。キーマップ全体からの一般化は需要確認まで見送り(実 Chrome CI の実測、Opus round1、ADR-199/209) | 採用(2026-09-30)。決定1・2 実装済み(PR #396)、決定3(通過マーク)は見送り |
