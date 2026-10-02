@@ -18,7 +18,7 @@
 //! 入力先ごとの差は `target.rs` の `InputTarget` に閉じ込めてある(読む・空にする・前面へ戻す・フォーカス確認・終了)。
 //! 新しい入力先は `InputTarget` を実装して `target::launch` に 1 行足すだけでよく、シナリオ側は触らない。
 //! Zoom・UWP は CI で安定して動かせない(フォーカス/起動が不確定でストレスと切り分けられない)ので対象外。
-//! 別プロセスの入力先は自プロセスの HIMC を持たないため、`--mode=drift|drift-on` は使えない(abort する)。
+//! 別プロセスの入力先は自プロセスの HIMC を持たないため、`--mode=drift|drift-on|keymatrix` は使えない(abort する)。
 //!
 //! ## 摂動(`perturb.rs`、すべて既定オフ)
 //! 連続打鍵では作れない実利用に近い状況を試行に差し込む: `--cold` / `--pause-after=N --pause-ms=MS` / `--idle=MS` /
@@ -26,7 +26,7 @@
 //! 指定した摂動は `config` レコードの `perturb` に記録される。
 //!
 //! ## フラグ
-//! `--form=edit|multi|rich|tsf|chromebar|chromepage|bugreport`(`--chrome-path=PATH` で Chrome を指定) / `--mode=nicola|raw|drift|drift-on|reopen` / `--interval=MS`(1文字あたりの間隔。既定20) /
+//! `--form=edit|multi|rich|tsf|chromebar|chromepage|bugreport`(`--chrome-path=PATH` で Chrome を指定) / `--mode=nicola|raw|drift|drift-on|keymatrix|reopen` / `--interval=MS`(1文字あたりの間隔。既定20) /
 //! `--trials=N`(種別ごとの試行数。既定4。`--mode=drift` では試行回数として使う) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
@@ -60,6 +60,8 @@
 //! `--drift-off-ctrl-muhenkan` では直接 close の代わりに、マーカー付き SendInput で
 //! Ctrl↓→無変換↓→無変換↑→Ctrl↑を送る。debug awase はこの注入を物理キーとして扱う。
 //!
+//! `--mode=keymatrix`(ADR-208 L3b): 「ずれの作り方 × 明示キー」行列。詳細は `keymatrix.rs` 冒頭。判定は check_keymatrix.py。
+//!
 //! `--mode=reopen`(ADR-203 e2e (c)、BUG-170 の実機確認): 「OFF 前に1語確定 → 物理 OFF(`VK_IME_OFF`)→ `--reopen-gap`(既定600ms、1秒以内)後に
 //! 物理 ON(`--reopen-on-key`、既定は GJI 0x16・MS-IME 0xF2。GJI の ATOK プリセットで 0xF2 は ON にならないことを run 36555043470 で確認)→ 即打鍵(`--reopen-type-delay`、既定0)」を `--trials` 回。別プロセスの入力先(Chrome)でも動く
 //! (実 IME の開閉は読まず、入力先のテキストと awase.log で判定する)。記録は `reopen_pre` / `reopen_on` / `reopen_typed`。判定は check_reopen.py。`--settle-read`(Chrome 等の描画遅れ対策)にも対応する。
@@ -79,6 +81,7 @@
 #![windows_subsystem = "windows"]
 #![allow(unsafe_code)]
 
+mod keymatrix;
 mod perturb;
 mod target;
 mod uia;
@@ -1461,6 +1464,7 @@ fn worker(form: Form) {
     let drift = mode_arg.as_deref() == Some("drift");
     let drift_on = mode_arg.as_deref() == Some("drift-on");
     let reopen = mode_arg.as_deref() == Some("reopen");
+    let keymatrix = mode_arg.as_deref() == Some("keymatrix");
     let startup = mode_arg.as_deref() == Some("startup");
     let startup_on = arg_value("--startup-ime=").as_deref() == Some("on");
     let iv_ms: f64 = arg_value("--interval=")
@@ -1505,7 +1509,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if reopen {"reopen"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if reopen {"reopen"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "no_awase":has_flag("--no-awase"),"startup_skip_refocus2":has_flag("--startup-skip-refocus2"),
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
@@ -1577,6 +1581,11 @@ fn worker(form: Form) {
     }
     if drift_on {
         drift_on_scenario(child, &cells);
+        finish();
+        return;
+    }
+    if keymatrix {
+        keymatrix::keymatrix_scenario(child, &cells);
         finish();
         return;
     }
@@ -1707,10 +1716,12 @@ fn main() {
     };
     // drift 系は自プロセスの窓の HIMC を直接観測/操作するので、別プロセスの入力先とは組み合わせられない。
     // 入力先(Chrome など)を起動する前に弾く。
-    if matches!(arg_value("--mode=").as_deref(), Some("drift" | "drift-on"))
-        && !matches!(form, Form::Edit | Form::Multi | Form::Rich | Form::Tsf)
+    if matches!(
+        arg_value("--mode=").as_deref(),
+        Some("drift" | "drift-on" | "keymatrix")
+    ) && !matches!(form, Form::Edit | Form::Multi | Form::Rich | Form::Tsf)
     {
-        log("[FATAL] 引数エラー: --mode=drift|drift-on は --form=edit|multi|rich|tsf でのみ使える");
+        log("[FATAL] 引数エラー: --mode=drift|drift-on|keymatrix は --form=edit|multi|rich|tsf でのみ使える");
         std::process::exit(2);
     }
     unsafe {

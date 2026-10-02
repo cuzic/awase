@@ -12,12 +12,16 @@
 //! （`AWASE_TEST_INJECTION=1` の awase が物理キー扱いする目印付き）で注入する。専用プロファイルで
 //! Chrome を起動するので、ユーザーの Chrome には触れない。
 //!
+//! `--keymatrix=<key>=<kind>:<gap>,...`(ADR-208 L3b): 「ずれの作り方 × 明示キー」行列。形式・記録は `typing_stress/keymatrix.rs` と同じ(ここでは `KM {json}` の行で出す)。
+//! 判定は check_keymatrix.py。実 Chrome は IME の開閉を API で読めない(TsfNative)ので、押下ごとの打鍵(k,a)の結果を主証拠にする。
+//!
 //! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--chrome=<chrome.exe>] [--log=<path>]`
 //!   `--no-awase`: awase を止めた対照実験（かなのとき `か` を期待）。既定は awase 起動中（NICOLA を期待）。
 //! 実行中は Windows 機のキーボード・マウスに触らない。
 
 use std::io::{Read, Write as _};
 use std::net::{TcpListener, TcpStream};
+use std::os::windows::process::CommandExt as _;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -197,18 +201,18 @@ fn utc_stamp() -> String {
 
 fn scan_for(vk: u32) -> u16 {
     match vk {
-        0x1D => 0x7B,        // 無変換
-        0x1C => 0x79,        // 変換
-        0xF2 => 0x70,        // ひらがな
-        0xF0 => 0x3A,        // 英数
-        0xF1 => 0x70,        // カタカナ(Shift 付きのひらがなキー)
-        0xF3 | 0xF4 => 0x29, // 半角/全角
-        0x7C => 0x64,        // F13
-        0x7D => 0x65,        // F14
-        0x4B => 0x25,        // K
-        0x41 => 0x1E,        // A
-        0xA0 => 0x2A,        // LShift
-        0xA2 => 0x1D,        // LCtrl
+        0x1D => 0x7B,               // 無変換
+        0x1C => 0x79,               // 変換
+        0xF2 => 0x70,               // ひらがな
+        0xF0 => 0x3A,               // 英数
+        0xF1 => 0x70,               // カタカナ(Shift 付きのひらがなキー)
+        0xF3 | 0xF4 | 0x19 => 0x29, // 半角/全角・漢字
+        0x7C => 0x64,               // F13
+        0x7D => 0x65,               // F14
+        0x4B => 0x25,               // K
+        0x41 => 0x1E,               // A
+        0xA0 => 0x2A,               // LShift
+        0xA2 => 0x1D,               // LCtrl
         _ => 0,
     }
 }
@@ -727,6 +731,228 @@ fn activate_msime_profile(log: &mut Log) {
     }
 }
 
+/// `--keymatrix=` のセル指定(`typing_stress/keymatrix.rs` と同じ書式)。
+#[derive(Clone)]
+struct KmCell {
+    label: String,
+    key: String,
+    vk: u32,
+    ctrl: bool,
+    /// `on` / `off` / `tog`
+    kind: &'static str,
+    /// `sync` / `close` / `open` / `fresh`
+    gap: &'static str,
+}
+
+impl KmCell {
+    /// ずれを作った直後に実 IME がとるべき状態(押す前の状態)。
+    fn r0(&self) -> bool {
+        match self.gap {
+            "close" => false,
+            "open" => true,
+            _ => self.kind != "on",
+        }
+    }
+
+    /// キーの意味に一致した状態(トグルは押す前の状態の反転)。
+    fn target(&self) -> bool {
+        match self.kind {
+            "on" => true,
+            "off" => false,
+            _ => !self.r0(),
+        }
+    }
+}
+
+fn km_parse_cell(spec: &str) -> Result<KmCell, String> {
+    let (key, rest) = spec
+        .split_once('=')
+        .ok_or_else(|| format!("セル指定に '=' が無い: {spec}"))?;
+    let (kind, gap) = rest
+        .split_once(':')
+        .ok_or_else(|| format!("セル指定に ':' が無い: {spec}"))?;
+    let ctrl = key.starts_with("ctrl+");
+    let hex = key.strip_prefix("ctrl+").unwrap_or(key);
+    let vk = u32::from_str_radix(hex.trim_start_matches("0x"), 16)
+        .map_err(|e| format!("キーが16進でない: {key}: {e}"))?;
+    let kind: &'static str = match kind {
+        "on" => "on",
+        "off" => "off",
+        "tog" => "tog",
+        other => return Err(format!("kind が不正: {other}")),
+    };
+    let gap: &'static str = match gap {
+        "sync" => "sync",
+        "close" => "close",
+        "open" => "open",
+        "fresh" => "fresh",
+        other => return Err(format!("gap が不正: {other}")),
+    };
+    if (gap == "close" && kind == "off") || (gap == "open" && kind == "on") {
+        return Err(format!(
+            "意味と一致した状態から始まる組み合わせは測定にならない: {spec}"
+        ));
+    }
+    Ok(KmCell {
+        label: spec.to_string(),
+        key: key.to_string(),
+        vk,
+        ctrl,
+        kind,
+        gap,
+    })
+}
+
+fn km_send_key(c: &KmCell) {
+    if c.ctrl {
+        send_key(0xA2, true);
+        sleep(40);
+        send_key(c.vk, true);
+        sleep(60);
+        send_key(c.vk, false);
+        sleep(30);
+        send_key(0xA2, false);
+    } else {
+        send_key(c.vk, true);
+        sleep(60);
+        send_key(c.vk, false);
+    }
+}
+
+fn km_kill_awase() {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/IM", "awase.exe"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(0x0800_0000)
+        .status();
+}
+
+fn km_start_awase() -> bool {
+    let Some(exe) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("awase.exe")))
+    else {
+        return false;
+    };
+    let Some(dir) = exe.parent() else {
+        return false;
+    };
+    // RUST_LOG / AWASE_TEST_INJECTION は CI のステップが chrome_probe に渡した環境変数を引き継ぐ。
+    std::process::Command::new(&exe)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(0x0800_0000)
+        .spawn()
+        .is_ok()
+}
+
+fn km_open_of(c: Class) -> Option<bool> {
+    match c {
+        Class::Nicola | Class::RomajiKana => Some(true),
+        Class::Plain | Class::NicolaLiteral => Some(false),
+        Class::Empty | Class::Other => None,
+    }
+}
+
+/// `--keymatrix=`。実 Chrome の検証ページを前面にしてから呼ぶ。`awase` が false の対照は対象外(awase を再起動して比べる構成のため)。
+fn run_keymatrix(p: &mut Probe, spec: &str, args: &[String]) {
+    let arg_u64 = |key: &str, default: u64| -> u64 {
+        args.iter()
+            .find_map(|a| a.strip_prefix(key).and_then(|v| v.parse().ok()))
+            .unwrap_or(default)
+    };
+    let mut cells = Vec::new();
+    for s in spec.split(',').filter(|s| !s.is_empty()) {
+        match km_parse_cell(s) {
+            Ok(c) => cells.push(c),
+            Err(e) => {
+                p.log.line(&format!("KM_ABORT {e}"));
+                return;
+            }
+        }
+    }
+    let n = arg_u64("--km-n=", 10);
+    let wait_ms = arg_u64("--km-wait=", 1000);
+    let max_press = arg_u64("--km-max-press=", 3);
+    let fresh_settle = arg_u64("--km-fresh-settle=", 10_000);
+    let msime = args.iter().any(|a| a == "--msime");
+    let labels: Vec<String> = cells.iter().map(|c| c.label.clone()).collect();
+    p.log.line(&format!(
+        "KM_CONFIG {}",
+        serde_json::json!({"form":"chrome","ime":if msime {"msime"} else {"gji"},"cells":labels,
+            "n":n,"wait_ms":wait_ms,"max_press":max_press,"fresh_settle_ms":fresh_settle,"evidence":"typed"})
+    ));
+    for cell in &cells {
+        for i in 0..n {
+            p.focus_lost = false;
+            bring_to_front();
+            let r0 = cell.r0();
+            let target = cell.target();
+            let setup = if r0 { Setup::Kana } else { Setup::Off };
+            let mut fresh = serde_json::Value::Null;
+            let pre_ok = match cell.gap {
+                "sync" => ensure(p, setup, true),
+                "close" => {
+                    let ok = ensure(p, Setup::Kana, true);
+                    let _ = ime_control(0x0006, 0);
+                    ok
+                }
+                "open" => {
+                    let ok = ensure(p, Setup::Off, true);
+                    let _ = ime_control(0x0006, 1);
+                    ok
+                }
+                _ => {
+                    // fresh: awase を落とした間に IME 自身に状態をそろえさせ(awase=false の判定で確認)、awase を起動し直す。
+                    km_kill_awase();
+                    sleep(1500);
+                    bring_to_front();
+                    let aligned = ensure(p, setup, false);
+                    let started = km_start_awase();
+                    sleep(fresh_settle);
+                    bring_to_front();
+                    sleep(500);
+                    fresh = serde_json::json!({"aligned":aligned,"started":started});
+                    aligned && started
+                }
+            };
+            sleep(wait_ms);
+            let pre_api = ime_control(0x0005, 0).map(|v| v != 0);
+            let utc0 = utc_stamp();
+            let mut presses = Vec::new();
+            if pre_ok {
+                for pi in 1..=max_press {
+                    let utc = utc_stamp();
+                    km_send_key(cell);
+                    sleep(500);
+                    let api500 = ime_control(0x0005, 0).map(|v| v != 0);
+                    let got = p.probe_logged("keymatrix 押下後");
+                    let api_after = ime_control(0x0005, 0).map(|v| v != 0);
+                    let typed_open = km_open_of(got);
+                    presses.push(
+                        serde_json::json!({"i":pi,"utc":utc,"api500":api500,"api2000":api_after,
+                        "typed":got.label(),"typed_open":typed_open}),
+                    );
+                    if p.focus_lost || typed_open == Some(target) {
+                        break;
+                    }
+                    sleep(1000);
+                }
+            }
+            p.log.line(&format!(
+                "KM {}",
+                serde_json::json!({"type":"km_trial","cell":cell.label,"key":cell.key,"kind":cell.kind,
+                    "gap":cell.gap,"n":i,"r0":r0,"target":target,"utc":utc0,"pre_ok":pre_ok,
+                    "pre_api":pre_api,"presses":presses,"focus_lost":p.focus_lost,"fresh":fresh})
+            ));
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let repeat: usize = args
@@ -860,6 +1086,14 @@ fn main() {
             p.log
                 .line(&format!("RESULT FAIL: 期待=ka 実際={}", got.label()));
         }
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
+    // `--keymatrix=<cells>`(ADR-208 L3b): 「ずれの作り方 × 明示キー」行列。形式は `run_keymatrix` を参照。
+    if let Some(spec) = args.iter().find_map(|a| a.strip_prefix("--keymatrix=")) {
+        bring_to_front();
+        run_keymatrix(&mut p, spec, &args);
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();
         return;
