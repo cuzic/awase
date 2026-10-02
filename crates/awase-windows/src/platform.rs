@@ -1164,8 +1164,8 @@ impl WindowsPlatform {
     ///
     /// `tsf_obs()` の重複呼び出しを避けるため view は呼び出し元が一度だけ構築して渡す。
     /// 戦略選択と実行は [`crate::ime_controller::ImeController`] が唯一の SSOT として担う。
-    // 兄弟メソッド apply_ime_open_with_belief から `self.` 記法で呼ばれるため、
-    // また PlatformRuntime 委譲メソッド群との一貫した API 配置のため `&self` を維持する。
+    // PlatformRuntime 委譲メソッド群との一貫した API 配置のため
+    // `&self` を維持する。
     #[allow(clippy::unused_self)]
     pub(crate) fn apply_ime_open_with_view(
         &self,
@@ -1179,21 +1179,6 @@ impl WindowsPlatform {
         let (outcome, record) = crate::ime_controller::ImeController::apply(order, view);
         tracing::debug!("[apply-ime] open={open} → outcome={outcome:?}");
         (outcome, record)
-    }
-
-    /// `applied` から view を構築して [`Self::apply_ime_open_with_view`] に委譲する。
-    ///
-    /// 呼び出し元が view を持たない場合（refresh / probe 完了後等）のラッパー。
-    pub(crate) fn apply_ime_open_with_belief(
-        &self,
-        order: crate::state::actuation_chain::ActuationOrder,
-        applied: Option<(bool, u64)>,
-    ) -> (
-        awase::platform::ImeOpenOutcome,
-        crate::state::actuation_decision_record::ActuationDecisionRecord,
-    ) {
-        let view = self.build_ime_control_view(applied);
-        self.apply_ime_open_with_view(order, &view)
     }
 
     /// `set_ime_open`（トレイトメソッド）の `ActuationOrder` 版

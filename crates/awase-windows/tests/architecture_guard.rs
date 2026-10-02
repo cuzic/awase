@@ -94,7 +94,7 @@ fn list_src_files() -> Vec<String> {
 ///
 /// 3つのテスト（`user_ime_on_paths_are_paired_with_eisu_reset` /
 /// `focus_probe_observation_is_limited_to_real_probe_path` /
-/// `apply_ime_open_with_belief_call_sites_are_accounted_for`）がそれぞれ
+/// `ime_open_actuation_entry_points_are_accounted_for`）がそれぞれ
 /// ローカル関数として同一実装を持っていたため、トップレベルへ集約した。
 fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir({}): {e}", dir.display())) {
@@ -1404,8 +1404,10 @@ fn any_observation_replay_door_is_not_used_in_production() {
 }
 
 /// 実 IME actuation 入口 6 種（`apply_ime_open_with_belief` / `_with_view` /
-/// `_with_applied` / `set_ime_open` / `apply_ime_open`）の
-/// **呼び出し箇所数**を、入口ごとに crate 全域で固定する
+/// `_with_applied` / `set_ime_open` / `set_ime_open_ordered` / `apply_ime_open`）の
+/// **呼び出し箇所数**を、入口ごとに crate 全域で固定する（`_with_belief` と
+/// `_with_applied` は ADR-216 R3 / ADR-179 で呼び出し元がなくなり、0 のまま
+/// 「復活したら気づく」ために残している）
 /// （各関数の定義行 `fn ...(` は数えない）。
 ///
 /// これは「唯一の窓口」への統合テストではなく、**新しい未レビューの呼び出し元が
@@ -1484,11 +1486,10 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // **2026-09-19（ADR-185）**: `key_pipeline.rs::kp_apply_conv_engine_sync`の`DirectInput`分岐
         // （半角英数検出時のIME OFF実送信、BUG-146）を撤去したため 2→1（残りは`ime_refresh.rs`の
         // drift correction のみ）。
-        (".apply_ime_open_with_belief(", 1),
-        // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
-        // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
-        // （`apply_ime_open_with_belief` からの委譲であって `apply_ime_open_with_applied`
-        // からではないため ADR-098 決定2 の影響を受けない。）
+        // ADR-216 R3: 唯一の呼び出し元にインライン化し、1→0。
+        // 死んだ API が復活したら気づくためガードは残す。
+        (".apply_ime_open_with_belief(", 0),
+        // 外部 2（executor.rs engine decision / ime_refresh.rs drift correction）。
         //
         // **2026-09-08（ADR-121 D3）**: `mod.rs::reassert_explicit_physical_key`
         // （物理IMEキーno-op時の冪等再送、BUG-37部分対策）が新規追加され 3→4。
@@ -1499,6 +1500,8 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         //
         // **2026-09-19（同日、force-on撤去）**: `mod.rs::force_on_and_correct_romaji`
         // （表 #6、force-ON 実送信の内部委譲元）も撤去し、3→2に戻った。
+        // **2026-10-02（ADR-216 R3）**: drift correction の薄いラッパーを
+        // インライン化したため、直接呼び出し元の内訳だけが変わった。
         (".apply_ime_open_with_view(", 2),
         // ADR-098 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
         // TsfNative 強制 ON ブロック）を撤去し、メソッド自体も削除した。

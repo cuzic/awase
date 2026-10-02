@@ -86,10 +86,10 @@ ADR-179（旧178）領域A撤去（コミット`f83084b3`/`621bf93c`、2026-09-1
 
 （表記上「4関数」と呼んでいるが、`dispatch_ime_set_open`を含めると実質5関数。
 `lints/actuation_call_guard/src/lib.rs::RESTRICTED_CALLS`の`apply_ime_open_with_view`
-エントリは現在「`dispatch_ime_set_open`と`apply_ime_open_with_belief`の2箇所のみ」と
+エントリは現在「`dispatch_ime_set_open`と`ir_apply_drift_correction`の2箇所のみ」と
 コメントされている——つまり`ImeController::apply`や`open_chain.rs`の3関数は
 `apply_ime_open_with_view`を直接は呼んでおらず、別の合流点〈`set_ime_open`/
-`send_input_safe`/`send_ime_control`/`apply_ime_open_with_belief`のどれか〉を
+`send_input_safe`/`send_ime_control`/`apply_ime_open_with_view`のどれか〉を
 経由している可能性が高い。最初のステップでここを確定させること。）
 
 参考: 姉妹タスク
@@ -115,7 +115,7 @@ cargo-mutantsで判明している。今回の棚卸しで「この判定は本�
 ### 2. `lints/actuation_call_guard/src/lib.rs::RESTRICTED_CALLS` を突き合わせる
 
 各合流点が実際にどのチョークポイント（`set_ime_open`/`send_input_safe`/
-`send_ime_control`/`apply_ime_open_with_view`/`apply_ime_open_with_belief`）を
+`send_ime_control`/`apply_ime_open_with_view`）を
 呼んでいるかを確認する。同じチョークポイントを呼んでいる合流点同士は統合候補の
 第一候補になる。
 

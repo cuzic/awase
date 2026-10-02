@@ -626,7 +626,7 @@ impl Runtime {
     // - non-ImmCross（GJI/TsfNative/Blacklist、Chrome/Windows Terminal 等）:
     //   set_ime_open は can_use_imm32_cross_process=false で no-op になるため使えない。
     //   （撤去済みの）apply_force_on_for_imm_broken は ON 方向専用で OFF 方向の乖離は担当しなかったため、
-    //   ここで strategy chain 経由の apply_ime_open_with_belief（実 VK 送信）を使う
+    //   ここで view を構築し、strategy chain 経由の apply_ime_open_with_view（実 VK 送信）を使う
     //   （2026-07-08 実機: Windows Terminal/Chrome + GJI で IME OFF コンボ送信後、
     //   Engine 内部は即 OFF になるが OS 側 IME は ON のまま固定される不具合。
     //   set_ime_open の戻り値を見ずに mirror_applied_open_with_ts で belief だけ
@@ -948,7 +948,8 @@ impl Runtime {
         } else {
             // set_ime_open は IMM32専用で Blacklist/TsfNative では no-op のため、
             // （撤去済みの）apply_force_on_for_imm_broken と同じ strategy chain 経由の実送信を使う。
-            let (outcome, mut record) = self.platform.apply_ime_open_with_belief(order, None);
+            let view = self.platform.build_ime_control_view(None);
+            let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view);
             // /code-review指摘（PR #201 wave3）: この同期記録点は`caller`が
             // 常に`None`のままで、`site=Sync`の他の呼び出し元と記録上区別
             // できなかった（B-2、PR #201パターンに揃える）。
