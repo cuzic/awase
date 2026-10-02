@@ -24,8 +24,8 @@ use awase_windows::vk::{VK_CONVERT, VK_NONCONVERT, VkCodeExt, parse_key_combo};
 
 use super::{
     ALT_IMPERSONATION_OPTIONS, IME_MODE_KEY_OPTIONS, KEYMAP_MAIN_KEYS, SOLO_REPEAT_EXTRA_OPTIONS,
-    THUMB_KEY_OPTIONS, format_combo, keymap_from_key_options, keymap_to_key_options,
-    parse_combo_str, physical_key_options,
+    THUMB_KEY_OPTIONS, egui, egui_key_to_internal, format_combo, keymap_from_key_options,
+    keymap_to_key_options, parse_combo_str, physical_key_options,
 };
 
 /// 修飾キーの全8通り `(ctrl, shift, alt)`。
@@ -204,5 +204,31 @@ fn hand_written_modifiers_survive_gui_parse() {
     assert!(
         lost.is_empty(),
         "GUI の読み手が修飾キーを落とす入力がある: {lost:#?}"
+    );
+}
+
+/// ADR-220 D2: キャプチャ表 `egui_key_to_internal` が返す内部名を、実際の読み手が読めること。
+/// 候補表(`*_OPTIONS`)はこのファイルの他のテストが見ているが、キー押下で内部名を書き込む
+/// キャプチャ表は見ていなかった。`from_name` が知らない名前を書くと、設定 GUI では割り当てが
+/// 成功したように見え、実行時は起動診断に警告を出してそのルールが捨てられる。
+/// `from` 側は `parse_key_combo`(`combo_accepts`)、`to` 側は `from_name` が読み手。
+#[test]
+fn egui_capture_names_are_accepted_by_their_readers() {
+    let mut failures = BTreeSet::new();
+    let mut checked = 0usize;
+    for key in egui::Key::ALL {
+        let Some(internal) = egui_key_to_internal(*key) else {
+            continue;
+        };
+        checked += 1;
+        if !combo_accepts(internal) {
+            failures.insert(format!("{key:?}|{internal}"));
+        }
+    }
+    // egui の更新でキー名が変わり `_ => None` に落ち続けても、検査が空振りしないための下限。
+    assert!(checked > 60, "検査件数が少なすぎる: {checked}");
+    assert!(
+        failures.is_empty(),
+        "キャプチャ表が書く内部名を読み手が読めない: {failures:#?}"
     );
 }
