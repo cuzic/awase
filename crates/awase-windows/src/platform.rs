@@ -1130,21 +1130,21 @@ impl WindowsPlatform {
 
     /// `apply_ime_open` 用の `ImeControlView` を構築する。
     ///
-    /// `applied` には呼び出し元が持つ `ImeModel.applied_pair()` の戻り値を渡す。
+    /// `applied` には呼び出し元が持つ `AppliedImeState::applied_open()` の戻り値を渡す。
     /// `None`（未適用・`AppliedImeState::Unknown`）は `ControlLog.shadow_on`
     /// の `None`（未知）へそのまま伝播する——`Some(false)`（確認済み OFF）
     /// と潰して混同してはならない（BUG-113 Blocker、docs/known-bugs.md 参照）。
     #[tracing::instrument(level = "debug", skip_all, fields(?applied))]
     pub(crate) fn build_ime_control_view(
         &self,
-        applied: Option<(bool, u64)>,
+        applied: Option<bool>,
     ) -> crate::state::ImeControlView<'_> {
         let class_name = if self.focus.is_focused() {
             self.focus.class_name()
         } else {
             ""
         };
-        let shadow_on = applied.map(|(open, _applied_at_ms)| open);
+        let shadow_on = applied;
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,

@@ -122,6 +122,7 @@ ADR-215 の草稿は、`Option<bool>` の罠(未知を `unwrap_or(false)` で確
 - `ime_key_sequence_golden.rs` と ADR-163 のコーパス再生(`bug-131`)は、R1〜R3 が触る「view の組み立て」と「ログ専用の値」を通らないので、変更前後で必ず同じ結果になる。**回帰していないことの一般的な確認に過ぎない**
   (`windows-build` で実行されること、コーパスの再生が差分ゼロであること)。
 - 撤去で消えた行数は、R1 実装後の `git diff --stat` で **438 行**（12 files changed, 10 insertions(+), 438 deletions(-)）。
+- R2 の後の実測は、`git diff --stat` で **85 行削除**（11 files changed, 69 insertions(+), 85 deletions(-)）。
 
 ## 未確定・リスク
 

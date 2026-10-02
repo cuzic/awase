@@ -56,7 +56,7 @@ use crate::focus::class_names::AppImeProfile;
 use crate::state::actuation_chain::WriteMechanism;
 use crate::state::ime_actuation_decision::{
     decide_attempt, decide_chain, decide_gate, engine_press_unknowns_applied,
-    explicit_press_shadow_on, DecisionInputs, DecisionSite, GateResult,
+    explicit_press_applied_pair, DecisionInputs, DecisionSite, GateResult,
 };
 use crate::state::ime_event::ImePolicyProfile;
 use crate::state::ime_kind::ImeKindId;
@@ -869,14 +869,13 @@ pub fn explicit_press_delivery_after(
                 explicit_press: has_press && mode.has_l2(),
             };
             // executor は `applied_snapshot` を渡す。L1（押下 ID あり）は `applied` が向きと一致していても未知にして
-            // already-matched 省略を外す（D1。`explicit_press_applied_pair` と同じ `explicit_press_shadow_on`）。
-            let shadow_on = if has_press
-                && engine_press_unknowns_applied(state.profile.is_effectively_tsf_native())
-            {
-                explicit_press_shadow_on(state.applied.open(), target)
-            } else {
-                state.applied.open()
-            };
+            // already-matched 省略を外す（D1。本番と同じ `explicit_press_applied_pair`）。
+            let shadow_on = explicit_press_applied_pair(
+                state.applied.open(),
+                target,
+                has_press
+                    && engine_press_unknowns_applied(state.profile.is_effectively_tsf_native()),
+            );
             let (write, reason) = attempt_write(
                 state,
                 target,
@@ -1010,12 +1009,11 @@ pub fn explicit_press_delivery_after(
             }
             // `kp_shadow_actuate`: `applied` が向きと一致するなら view の `shadow_on` を未知にする（M1、PR #408）。
             // L1 では押下 ID を持つ押下だけ（リピートは従来の `applied` の already-matched 省略。`explicit_press_applied_pair`）。
-            let applied_open = state.applied.open();
-            let shadow_on = if mode.has_press_id() && state.was_down {
-                applied_open
-            } else {
-                explicit_press_shadow_on(applied_open, new_val)
-            };
+            let shadow_on = explicit_press_applied_pair(
+                state.applied.open(),
+                new_val,
+                !(mode.has_press_id() && state.was_down),
+            );
             let (write, reason) = attempt_write(state, new_val, shadow_on, req, judge, None);
             Delivery {
                 physical,
@@ -1194,6 +1192,7 @@ pub fn state_after_press(state: &PressState, key: ExplicitKey, d: &Delivery) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ime_actuation_decision::explicit_press_shadow_on;
     use crate::state::key_sequence_policy;
     use crate::vk::VkCodeExt as _;
 

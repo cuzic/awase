@@ -718,7 +718,7 @@ impl DecisionExecutor {
             );
         let mut view = platform.build_ime_control_view(
             crate::state::ime_actuation_decision::explicit_press_applied_pair(
-                self.applied_snapshot.to_pair(),
+                self.applied_snapshot.applied_open(),
                 open,
                 unknowns_applied,
             ),
@@ -931,20 +931,6 @@ mod tests {
     use crate::state::AppliedImeState;
 
     // AppliedImeState ヘルパーメソッドのテスト
-    #[test]
-    fn applied_ime_state_to_pair() {
-        assert_eq!(AppliedImeState::Unknown.to_pair(), None);
-        assert_eq!(AppliedImeState::Optimistic(true).to_pair(), Some((true, 0)));
-        assert_eq!(
-            AppliedImeState::Confirmed {
-                open: false,
-                at_ms: 42
-            }
-            .to_pair(),
-            Some((false, 42))
-        );
-    }
-
     #[test]
     fn applied_ime_state_applied_open() {
         assert_eq!(AppliedImeState::Unknown.applied_open(), None);

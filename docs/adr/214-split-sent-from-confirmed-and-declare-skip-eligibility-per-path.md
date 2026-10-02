@@ -94,7 +94,8 @@ belief と actuation の記録の取り違えと同じ型であり、BUG-141(GJI
    - `AppliedImeState` に `Sent{open, at_ms}` を足す(API が成功を返しただけ。実 IME の観測は未確認)。`Confirmed` は**観測で確認できた**場合だけに限る
      (読み戻して一致した、完了通知に対応する観測が届いた、等)。
    - 書き込みの完了が `Applied`/`AppliedWithoutSendInput`/`AlreadyMatched` で届いたとき、読み戻せない経路(Blind)は `Sent`、読み戻せて一致を確認した経路は `Confirmed` にする。
-   - **送信の省略の根拠は `Confirmed` だけ**とする(`applied_open()` の証拠用アクセサの契約を、型で強制する)。`Sent` は `to_pair()` で未知(`None`)として扱う。
+   - **送信の省略の根拠は `Confirmed` だけ**とする(`applied_open()` の証拠用アクセサの契約を、型で強制する)。`Sent` は未知(`None`)として扱う。
+     ADR-216 R2 で時刻を捨てるだけだった `to_pair()` は撤去され、現在この記述は `applied_open()` が `Sent` を `None` に射影する話として読み替える。
      `Optimistic` との関係: `Optimistic` は ImmCross async の事前更新で、意味は `Sent` に近い。統合できるかは実装時に確認し、できなければ並置する。
    - 影響: Blind の窓では、`press=None` の書き込みが省略されなくなり、送信が増える方向に変わる。レイテンシと副作用(BUG-46 型の二重作用)は、決定 0 の測定とリプレイの差分で確認する。
 2. **C: 経路ごとに、確認手段と省略の根拠を1か所で宣言する**。

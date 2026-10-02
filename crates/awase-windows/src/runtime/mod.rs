@@ -963,9 +963,13 @@ impl Runtime {
 
     /// 現在の shadow model から `ImeControlView` を構築する。
     pub(crate) fn shadow_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
-        let mut view = self
-            .platform
-            .build_ime_control_view(self.platform_state.ime.model().applied_pair());
+        let mut view = self.platform.build_ime_control_view(
+            self.platform_state
+                .ime
+                .model()
+                .applied_state()
+                .applied_open(),
+        );
         view.belief_input_mode = self.platform_state.ime.input_mode();
         view
     }
