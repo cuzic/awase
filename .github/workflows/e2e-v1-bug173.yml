@@ -63,13 +63,13 @@ jobs:
       matrix:
         include:
           # BUG-174: フォーカス直後(cold)に打鍵せず Ctrl+Shift を繰り返し、Ctrl↑ の CtrlUp warmup(VK_IME_ON 自己注入)の件数と「@」の有無を見る。
-          # chrome.exe は force_tsf に入れる(is_tsf_mode=true、Windows Terminal/WezTerm と同じ注入モード)。
-          - { name: a-ctrlshift, arm: a, awase: 'true', tsf: 'true', run: 1, probe_args: '--ctrl-shift=8 --chords=6' }
-          - { name: a-ctrlshift, arm: a, awase: 'true', tsf: 'true', run: 2, probe_args: '--ctrl-shift=8 --chords=6' }
-          - { name: a-ctrlshift, arm: a, awase: 'true', tsf: 'true', run: 3, probe_args: '--ctrl-shift=8 --chords=6' }
-          - { name: b-ctrlshift, arm: b, awase: 'true', tsf: 'true', run: 1, probe_args: '--ctrl-shift=8 --chords=6' }
-          - { name: b-ctrlshift, arm: b, awase: 'true', tsf: 'true', run: 2, probe_args: '--ctrl-shift=8 --chords=6' }
-          - { name: b-ctrlshift, arm: b, awase: 'true', tsf: 'true', run: 3, probe_args: '--ctrl-shift=8 --chords=6' }
+          # force_tsf には入れない(仮説: 第4回で force_tsf の Chrome は Ctrl↑ が reinject 経由(run_passthrough_pipeline の手順 A で先に返る)になり CtrlUp が 0 件だった。通常経路なら発火するはず)。
+          - { name: a-ctrlshift, arm: a, awase: 'true', tsf: 'false', run: 1, probe_args: '--ctrl-shift=8 --chords=6' }
+          - { name: a-ctrlshift, arm: a, awase: 'true', tsf: 'false', run: 2, probe_args: '--ctrl-shift=8 --chords=6' }
+          - { name: a-ctrlshift, arm: a, awase: 'true', tsf: 'false', run: 3, probe_args: '--ctrl-shift=8 --chords=6' }
+          - { name: b-ctrlshift, arm: b, awase: 'true', tsf: 'false', run: 1, probe_args: '--ctrl-shift=8 --chords=6' }
+          - { name: b-ctrlshift, arm: b, awase: 'true', tsf: 'false', run: 2, probe_args: '--ctrl-shift=8 --chords=6' }
+          - { name: b-ctrlshift, arm: b, awase: 'true', tsf: 'false', run: 3, probe_args: '--ctrl-shift=8 --chords=6' }
           - { name: control-ctrlshift-noawase, arm: a, awase: 'false', tsf: 'false', run: 1, probe_args: '--ctrl-shift=8 --chords=6' }
     steps:
       - uses: actions/checkout@v4
