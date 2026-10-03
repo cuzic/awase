@@ -32,7 +32,7 @@ mod app {
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
     use awase_keymap_learn_win::progress_estimate::{
-        ProgressEstimator, Snapshot, REMEASURE_PRESSES_PER_CELL,
+        LinearProgress, Snapshot, REMEASURE_PRESSES_PER_CELL,
     };
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
@@ -635,12 +635,13 @@ mod app {
     /// (ADR-195段階6)。awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
     /// 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR本文「段階6」節参照)。
     /// 表本体はここでは一切標準出力へ出さない。分母(`expected_presses`)は
-    /// [`awase_keymap_learn_win::progress_estimate`]が最悪ケースから縮めていく。
+    /// [`awase_keymap_learn_win::progress_estimate`]が打鍵数を時間へ換算し、割合・残り時間が
+    /// 線形に近づくようならす。
     fn make_progress_sink(
         estimated_total_cells: u32,
         max_statuses: u32,
-    ) -> (impl FnMut(&Stats, &Table), Rc<RefCell<ProgressEstimator>>) {
-        let estimator = Rc::new(RefCell::new(ProgressEstimator::new()));
+    ) -> (impl FnMut(&Stats, &Table), Rc<RefCell<LinearProgress>>) {
+        let estimator = Rc::new(RefCell::new(LinearProgress::new()));
         let handle = Rc::clone(&estimator);
         let sink = move |stats: &Stats, table: &Table| {
             if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
@@ -650,18 +651,18 @@ mod app {
             let total_cells = effective_total_cells(table, estimated_total_cells);
             let elapsed_ms = stats.timeline.last().map_or(0.0, |&(ms, _, _)| ms);
             let presses = stats.presses;
-            let expected = estimator.borrow_mut().expected_presses(Snapshot {
+            let snapshot = Snapshot {
                 presses,
                 covered_cells: cell,
                 observed_statuses: table.observed_status_count() as u32,
                 keys: KEYS.len() as u32,
                 max_statuses,
-            });
-            // その端末の1打鍵あたりの実測からの線形外挿(固定の秒数は使わない)。
-            let eta_ms = if presses == 0 {
-                -1.0
-            } else {
-                elapsed_ms / f64::from(presses) * f64::from(expected - presses)
+            };
+            // 打鍵数の見積りを時間へ換算し、総所要時間を経過時間に対してなだらかにしか
+            // 動かさない(割合・残り時間が線形に近づく)。
+            let (eta_ms, expected) = match estimator.borrow_mut().update(snapshot, elapsed_ms) {
+                Some(d) => (d.eta_ms, d.expected_presses),
+                None => (-1.0, presses + 1),
             };
             println!(
                 "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0} \
