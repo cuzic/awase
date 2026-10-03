@@ -121,11 +121,13 @@ impl ProgressEstimator {
 /// 総所要時間の見積りが1秒の経過で動いてよい量(経過時間に対する比)。1未満なら、
 /// 割合(`経過/総時間`)は単調増加・残り時間(`総時間-経過`)は単調減少になる。
 const SLEW: f64 = 0.5;
-/// 見積りを超過しても残り時間をここまでは下回らせない(0秒・100%に張り付かない)。
-/// 経過時間に対する比と、絶対値の下限の大きい方を、超過した最初の時点で固定する。
-/// 超過しているときは残りが分からないので「まだ少しかかる」程度を示し続ける。
+/// 見積りが尽きた(超過した)時点の残り時間。経過時間に対する比と、絶対値の下限の大きい方。
+/// 以降は実時間と同じ速さで減らし、終わりそうなら0秒・ほぼ100%へ向かって加速する
+/// (固定したままだと、実機で終了の約2秒前から98%・残り2.7秒で止まって見えた)。
 const MIN_ETA_FRACTION: f64 = 0.02;
 const MIN_ETA_MS: f64 = 300.0;
+/// 超過を減らし続けても、残り時間をこれ未満にはしない(0秒・100%に見せるのは完了の結果行)。
+const FLOOR_ETA_MS: f64 = 200.0;
 /// 速さ(1打鍵あたりの時間)が落ち着くまで残り時間を出さない打鍵数。起動直後は
 /// 1打鍵あたりが遅く(実機: 10打鍵時点で約140ms、100打鍵以降は約94ms)、外挿すると
 /// 総時間が大きく過大になる(実機: 初期見積り239秒、実際138.5秒)。
@@ -145,8 +147,8 @@ pub struct LinearProgress {
     estimator: ProgressEstimator,
     total_ms: Option<f64>,
     last_elapsed_ms: f64,
-    /// 見積りを超過した最初の時点で固めた残り時間の下限(以降は伸ばさず、残りが増えないようにする)。
-    eta_floor_ms: Option<f64>,
+    /// 見積りが尽きた最初の時点の(残り時間, 経過ms)。以降は実時間と同じ速さで減らす下限にする。
+    eta_floor: Option<(f64, f64)>,
     /// 巡回後の局面に入った時点の(打鍵数, 経過ms)。
     tail_start: Option<(u32, f64)>,
 }
@@ -210,11 +212,12 @@ impl LinearProgress {
             None => raw_total,
             Some(t) => t + (raw_total - t).clamp(-SLEW * dt, SLEW * dt),
         };
-        let floor = self
-            .eta_floor_ms
-            .unwrap_or_else(|| MIN_ETA_MS.max(MIN_ETA_FRACTION * elapsed_ms));
+        let floor = match self.eta_floor {
+            Some((eta0, at)) => (eta0 - (elapsed_ms - at)).max(FLOOR_ETA_MS),
+            None => MIN_ETA_MS.max(MIN_ETA_FRACTION * elapsed_ms),
+        };
         if slewed < elapsed_ms + floor {
-            self.eta_floor_ms.get_or_insert(floor);
+            self.eta_floor.get_or_insert((floor, elapsed_ms));
         }
         let total = slewed.max(elapsed_ms + floor);
         self.total_ms = Some(total);
@@ -321,8 +324,9 @@ mod tests {
             );
             assert!((f - e / end).abs() < 0.08, "{e}: {f} vs {}", e / end);
         }
+        // 終わりそうなタイミングで0秒・ほぼ100%へ向かう(修正前は98%・残り2.7秒で止まった)。
         let (e, f, eta) = *rows.last().unwrap();
-        assert!(f > 0.96 && eta < 5_000.0, "終了時: {e} {f} {eta}");
+        assert!(f > 0.99 && eta < 1_000.0, "終了時: {e} {f} {eta}");
     }
 
     #[test]
@@ -347,24 +351,20 @@ mod tests {
     }
 
     #[test]
-    fn overrunning_the_estimate_does_not_stick_at_zero() {
-        // 実際が見積りの1.4倍かかっても、残りは増えず、すぐ0にも張り付かない。
+    fn overrunning_the_estimate_counts_down_to_a_small_floor() {
+        // 実際が見積りの1.4倍かかる場合: 見積りが尽きたら残りは実時間どおり減って小さな下限
+        // (FLOOR_ETA_MS)へ向かい、増えない。下限には達しうる(超過分は残りが分からない。
+        // 終わりそうなら0秒へ加速することを優先した、見積りが外れたときの代償)。
         let mut lp = LinearProgress::new();
         let mut prev_eta = f64::MAX;
-        let mut stuck = 0;
-        let mut n = 0;
         for presses in (100..=2600).step_by(10) {
             let covered = (presses * 168 / 870).min(168);
             let d = lp.update(snap(presses, covered, 12), f64::from(presses) * 75.0);
             let eta = d.eta_ms.unwrap();
             assert!(eta <= prev_eta + 1e-6, "{presses}: {eta} > {prev_eta}");
+            assert!(eta >= FLOOR_ETA_MS - 1e-6, "{presses}: {eta}");
             prev_eta = eta;
-            n += 1;
-            if eta < 1000.0 {
-                stuck += 1;
-            }
         }
-        assert!(stuck * 20 <= n, "{stuck}/{n}");
     }
 
     #[test]
