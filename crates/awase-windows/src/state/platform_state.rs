@@ -1588,12 +1588,6 @@ impl ImeStateHub {
     pub(crate) fn clear_last_intent_for_test(&mut self) {
         self.shadow_model.last_intent = None;
     }
-
-    /// 現在呼び出し元がないが診断用アクセサとして残す。
-    #[allow(dead_code)]
-    pub(crate) fn last_intent_source(&self) -> Option<UserIntentSource> {
-        self.shadow_model.last_intent.as_ref().map(|i| i.source)
-    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

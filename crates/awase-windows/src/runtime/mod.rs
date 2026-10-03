@@ -497,17 +497,6 @@ impl Runtime {
         }
     }
 
-    /// 現在のフォーカスエポック。`focus_fence().epoch` の薄いラッパー
-    /// ——epoch と hwnd のペアリング/鮮度が意味を持たない（片方だけで十分な）
-    /// 呼び出し元向け。PR 109 コードレビュー軽微3の指摘により、現時点で
-    /// epoch 単独の呼び出し元は無いが API として意図的に残す
-    /// （`focus_hwnd()` と対称、Task3-c 参照）。
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn focus_epoch(&self) -> crate::state::probe_admission::FocusEpoch {
-        self.focus_fence().epoch
-    }
-
     /// 現在のフォーカス hwnd。`focus_fence().hwnd` の薄いラッパー
     /// ——epoch と hwnd のペアリング/鮮度が意味を持たない（片方だけで十分な）
     /// 呼び出し元向け。
