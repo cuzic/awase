@@ -430,14 +430,17 @@ jobs:
               for grp in ('abs', 'tog') for win in ('edit', 'tsf', 'chrome') for ime_name in ('gji', 'msime')],
             # E2(ADR-208 決定4): awase を再起動して belief・applied が未知の状態(fresh)で OFF 系を押す対照。同じ job の open/sync セルと失敗率を比べ、
             # 例外(MS-IME × 実 Chrome の OFF)なら新鮮でも同じ率で閉じない=ENV_EXCEPTION、新鮮だと閉じるなら内部状態による固着=STUCK(バグ)。
+            # MS-IME × 実 Chrome の e2/e2-tog は observe(open セルが GAP_NOT_MADE 0/10 で、--strict だと判定不能になる。CI run 36951828252・36957521623)。
             # ctrl+1c=on:fresh は MS-IME で INVALID(初回CI: fresh の前提の揃えが成立しない)なので GJI だけに置く。
             *[km(f'sc-keymatrix-e2-{ime_name}-chrome', 'chrome', ime_name,
-                 ['ctrl+1d=off:fresh', 'ctrl+1d=off:open', 'ctrl+1d=off:sync', '1d=off:fresh', '1d=off:open'] + (['ctrl+1c=on:fresh'] if ime_name == 'gji' else []), 'abs', wait=2400)
+                 ['ctrl+1d=off:fresh', 'ctrl+1d=off:open', 'ctrl+1d=off:sync', '1d=off:fresh', '1d=off:open'] + (['ctrl+1c=on:fresh'] if ime_name == 'gji' else []), 'abs', wait=2400,
+                 expect='observe' if ime_name == 'msime' else 'pass')
               for ime_name in ('msime', 'gji')],
             # E2 のトグル版: abs の e2 は絶対キーだけなので、トグルの OFF 方向の STUCK(MS-IME × 実 Chrome の 1d/f3/19)が例外(a)か内部固着かを切り分ける。
             # fresh(awase 再起動=belief・applied 未知、実 IME=開)の tog セルを、同じキー・種別の open/sync セルと同じ job で比べる(msime が認定対象、gji が対照)。
             *[km(f'sc-keymatrix-e2-tog-{ime_name}-chrome', 'chrome', ime_name,
-                 ['1d=tog:fresh', '1d=tog:open', '1d=tog:sync', 'f3=tog:fresh', 'f3=tog:open', '19=tog:fresh', '19=tog:open'], 'tog', wait=2400)
+                 ['1d=tog:fresh', '1d=tog:open', '1d=tog:sync', 'f3=tog:fresh', 'f3=tog:open', '19=tog:fresh', '19=tog:open'], 'tog', wait=2400,
+                 expect='observe' if ime_name == 'msime' else 'pass')
               for ime_name in ('msime', 'gji')],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
@@ -973,7 +976,7 @@ jobs:
           } elseif ('${{ matrix.cfg.check }}' -eq 'keymatrix') {
             # ADR-208 L3b: 「ずれの作り方 × 明示キー」行列。実 Chrome は chrome_probe.log、自前窓は typing_stress.log を読む。
             $kmlog = if ('${{ matrix.cfg.chrome }}' -ne '') { 'dist\chrome_probe.log' } else { 'dist\typing_stress.log' }
-            python tools\e2e\ime_key_matrix\check_keymatrix.py --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
+            python tools\e2e\ime_key_matrix\check_keymatrix.py ${{ matrix.cfg.expect == 'pass' && '--strict' || '' }} --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'startup') {
             python tools\e2e\ime_key_matrix\check_startup.py --json startup.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {

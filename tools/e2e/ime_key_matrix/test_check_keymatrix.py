@@ -124,6 +124,36 @@ class Verdicts(unittest.TestCase):
         ts = [abs_off([False], n=i) for i in range(6)]
         self.assertFalse(cell_of(ck.analyze(job(ts)), "ctrl+1d=off:open")["meets_n"])
 
+    def test_strict_gap_not_made_only_is_invalid(self):
+        ts = [abs_off([False], pre_api=False, n=i) for i in range(10)]
+        r = ck.analyze(job(ts), strict=True)
+        self.assertEqual(r["verdict"], "INVALID")
+        self.assertTrue(r["invalid"])
+        self.assertEqual(ck.analyze(job(ts), strict=False)["verdict"], "PASS")  # observe は従来どおり
+
+    def test_strict_meets_n_shortfall_is_invalid(self):
+        ts = [abs_off([False], n=i) for i in range(6)]
+        self.assertEqual(ck.analyze(job(ts), strict=True)["verdict"], "INVALID")
+        self.assertEqual(ck.analyze(job(ts))["verdict"], "PASS")
+
+    def test_strict_full_cell_passes(self):
+        ts = [abs_off([False], n=i) for i in range(10)]
+        self.assertEqual(ck.analyze(job(ts), strict=True)["verdict"], "PASS")
+
+    def test_strict_real_failure_stays_fail(self):
+        ts = [abs_off([True, True, True, True], n=i) for i in range(6)]
+        self.assertEqual(ck.analyze(job(ts), strict=True)["verdict"], "FAIL")
+
+    def test_strict_exit_code_is_3(self):
+        ts = [abs_off([False], pre_api=False, n=i) for i in range(10)]
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "ts.log")
+            with open(p, "w", encoding="utf-8") as f:
+                for rec in job(ts):
+                    f.write("[TS-JSON] " + json.dumps(rec) + "\n")
+            self.assertEqual(ck.main(["--strict", p]), 3)
+            self.assertEqual(ck.main([p]), 0)
+
 
 class ChromeEvidence(unittest.TestCase):
     def test_typed_state_is_primary_in_chrome(self):
