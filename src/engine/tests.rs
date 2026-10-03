@@ -3188,7 +3188,7 @@ fn test_yab_value_to_action_literal_empty() {
 
 #[test]
 fn test_yab_value_to_action_special() {
-    use crate::yab::SpecialKey;
+    use crate::types::SpecialKey;
     let action = yab_value_to_action(&YabValue::Special(SpecialKey::Backspace));
     assert!(matches!(
         action,
@@ -3820,7 +3820,7 @@ fn test_romaji_value_in_layout() {
 
 #[test]
 fn test_special_value_in_layout() {
-    use crate::yab::SpecialKey;
+    use crate::types::SpecialKey;
     let mut layout = make_layout();
     layout
         .normal

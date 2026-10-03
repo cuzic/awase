@@ -3,7 +3,6 @@
 //! フォーカス検出・注入モード決定に関する型定義モジュール。
 //!
 //! 以前は `runtime::mod` に置かれていたが、focus 層に移動した（逆依存解消）。
-//! `runtime` は `pub use crate::focus::classifier::*` で後方互換性を維持する。
 
 use awase::config::{AppOverrideEntry, AppOverrides};
 use std::sync::{OnceLock, RwLock};

@@ -10,8 +10,7 @@ use anyhow::{bail, Context, Result};
 use crate::kana_table::KanaTable;
 use crate::scanmap::{KeyboardModel, PhysicalPos};
 
-// Re-export SpecialKey for backward compatibility (previously defined here)
-pub use crate::types::SpecialKey;
+use crate::types::SpecialKey;
 use crate::types::VkCode;
 
 /// .yab ファイルからパースされた値
