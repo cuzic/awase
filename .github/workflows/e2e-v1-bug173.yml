@@ -61,14 +61,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 各 (アーム, awase の有無) を3回(別VM)。対照は awase なしなのでアームは a 固定(バイナリは使わない)。
-          - { name: a-awase, arm: a, awase: 'true', run: 1 }
-          - { name: a-awase, arm: a, awase: 'true', run: 2 }
-          - { name: a-awase, arm: a, awase: 'true', run: 3 }
-          - { name: b-awase, arm: b, awase: 'true', run: 1 }
-          - { name: b-awase, arm: b, awase: 'true', run: 2 }
-          - { name: b-awase, arm: b, awase: 'true', run: 3 }
-          - { name: control-noawase, arm: a, awase: 'false', run: 1 }
+          # 第1回(force_tsf なし): 物理 F2 は a でも全件 Allow で、Suppress 分岐に入らなかった(is_tsf_mode=false)。結果は無差(a・b とも 6 PASS/18 FAIL)。
+          # 第2回: chrome.exe を force_tsf に入れて is_tsf_mode=true にし(Windows Terminal/WezTerm と同じ注入モード)、Suppress 分岐を通す。
+          - { name: a-tsf, arm: a, awase: 'true', tsf: 'true', run: 1 }
+          - { name: a-tsf, arm: a, awase: 'true', tsf: 'true', run: 2 }
+          - { name: a-tsf, arm: a, awase: 'true', tsf: 'true', run: 3 }
+          - { name: b-tsf, arm: b, awase: 'true', tsf: 'true', run: 1 }
+          - { name: b-tsf, arm: b, awase: 'true', tsf: 'true', run: 2 }
+          - { name: b-tsf, arm: b, awase: 'true', tsf: 'true', run: 3 }
+          - { name: control-noawase, arm: a, awase: 'false', tsf: 'false', run: 1 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -115,6 +116,13 @@ jobs:
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
           Push-Location dist
+          if ('${{ matrix.tsf }}' -eq 'true') {
+            # Chrome を force_tsf に入れる(is_tsf_mode=true にして、物理 F2 の Suppress 分岐を通す)。
+            $cfg = Get-Content config.toml -Raw
+            $cfg = $cfg -replace '(?m)^force_tsf = \[\s*$', ("force_tsf = [`r`n    { process = `"chrome.exe`", class = `"Chrome_WidgetWin_1`" },")
+            [IO.File]::WriteAllText("$PWD\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
+            Select-String -Path config.toml -Pattern 'chrome.exe'
+          }
           # awase を先に起動して TIP を検出させてから、Chrome を起動して打鍵する(develop の e2e-ime.yml の chrome 構成と同じ順序)。
           if ('${{ matrix.awase }}' -ne 'false') {
             Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
