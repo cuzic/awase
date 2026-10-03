@@ -1270,6 +1270,72 @@ fn main() {
         let _ = child.kill();
         return;
     }
+    // `--ctrl-shift=N`(v1 BUG-174 の A/B 検証。検証ブランチ専用): かなにそろえ、フォーカスを外して戻し(awase は cold 化する)、
+    // 打鍵せずに Ctrl↓→Shift↓→Ctrl↑→Shift↑ を `--chords=K`(既定6)回繰り返す(不具合報告 01M3NJYRQ5ZBYTKV55FV06KETP の操作)。
+    // Ctrl↑ のたびに awase が cold なら VK_IME_ON を自己注入する(CtrlUp warmup)。その後ページの内容を読み、「@」が出たら FAIL。
+    // awase 側の注入件数は awase.log の `[composition-fsm] EmitWarmup (CtrlUp)` を数える(ワークフロー側)。
+    if let Some(n) = args.iter().find_map(|a| {
+        a.strip_prefix("--ctrl-shift=")
+            .and_then(|v| v.parse::<usize>().ok())
+    }) {
+        let chords: usize = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--chords=").and_then(|v| v.parse().ok()))
+            .unwrap_or(6);
+        let (mut ok, mut bad, mut invalid) = (0usize, 0usize, 0usize);
+        for i in 0..n {
+            p.log.line(&format!("[CTRLSHIFT {}/{n}]", i + 1));
+            p.focus_lost = false;
+            bring_to_front();
+            if !ensure(&mut p, Setup::Kana, awase) {
+                p.log.line("RESULT INVALID: 前提状態(かな)にできなかった");
+                invalid += 1;
+                continue;
+            }
+            let away = focus_away();
+            sleep(300);
+            let back = bring_to_front();
+            p.log.line(&format!("REFOCUS away={away} back={back}"));
+            sleep(300);
+            p.log.line(&format!("CTRLSHIFT-BEGIN chords={chords}"));
+            for _ in 0..chords {
+                send_key(0xA2, true); // Ctrl↓
+                sleep(40);
+                send_key(0xA0, true); // Shift↓
+                sleep(40);
+                send_key(0xA2, false); // Ctrl↑
+                sleep(40);
+                send_key(0xA0, false); // Shift↑
+                sleep(250);
+            }
+            p.log.line("CTRLSHIFT-END");
+            sleep(300);
+            let snap = p.command("snap", "snap");
+            let (text, focused) = match &snap {
+                Some(e) => (e.value.clone(), e.focus),
+                None => (String::new(), false),
+            };
+            p.log
+                .line(&format!("CTRLSHIFT text={text:?} focused={focused}"));
+            let _ = p.command("clear", "cleared");
+            if !focused {
+                p.log.line("RESULT INVALID: ページのフォーカスが外れた");
+                invalid += 1;
+            } else if text.contains('@') {
+                p.log.line(&format!("RESULT FAIL: 「@」が出た text={text:?}"));
+                bad += 1;
+            } else {
+                p.log.line(&format!("RESULT PASS: 「@」なし text={text:?}"));
+                ok += 1;
+            }
+        }
+        p.log.line(&format!(
+            "SUMMARY PASS={ok} RECOVER=0 FAIL={bad} INVALID={invalid}"
+        ));
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
     let mut pass = 0usize;
     let mut fail = 0usize;
     let mut invalid = 0usize;

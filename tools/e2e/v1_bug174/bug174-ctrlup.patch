@@ -1,0 +1,144 @@
+diff --git a/crates/awase-windows/src/platform.rs b/crates/awase-windows/src/platform.rs
+index 7e3f35e2..24d94834 100644
+--- a/crates/awase-windows/src/platform.rs
++++ b/crates/awase-windows/src/platform.rs
+@@ -692,19 +692,6 @@ impl WindowsPlatform {
+         );
+     }
+ 
+-    /// Ctrl↑ を `CompositionFsm` に通知し、cold 状態なら warmup を再送する。
+-    ///
+-    /// 唯一の呼び出し元（executor の `handle_ctrl_up_recovery`）は
+-    /// `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
+-    pub(crate) fn composition_ctrl_up(&mut self, warmup_ime_on: awase::platform::WarmupImeOn) {
+-        let warm = self.output.is_composition_warm();
+-        self.feed_composition_event(
+-            crate::tsf::composition_fsm::CompositionEvent::CtrlUp { warm },
+-            warmup_ime_on,
+-            crate::output::WarmupOrigin::Gated,
+-        );
+-    }
+-
+     /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown を `CompositionFsm` に通知する。
+     /// 戻り値 `true` なら物理 F2 を consume すべき（TSF mode、`ConsumeF2` action）。
+     ///
+diff --git a/crates/awase-windows/src/runtime/executor.rs b/crates/awase-windows/src/runtime/executor.rs
+index b61324cb..68b244aa 100644
+--- a/crates/awase-windows/src/runtime/executor.rs
++++ b/crates/awase-windows/src/runtime/executor.rs
+@@ -512,7 +512,7 @@ impl DecisionExecutor {
+     ///
+     /// 段階:
+     ///   A. [transport] KeyUp 対称性 — deferred Down に対応する Up も reinject に揃える
+-    ///   B. [platform]  確認キー KeyUp warmup / Ctrl↑ cold recovery（副作用のみ）
++    ///   B. [platform]  確認キー KeyUp の保留 warmup 解除（副作用のみ）
+     ///   C. [transport] output guard defer — 出力 in-flight 中は reinject 経由で順序保証
+     ///   D. [platform]  確認キー KeyDown passthrough 後処理（副作用のみ）
+     ///   → PassThrough
+@@ -532,7 +532,6 @@ impl DecisionExecutor {
+ 
+         // B. [platform] 副作用（defer されても FSM は進める）
+         self.try_pending_warmup_on_keyup(platform, ime, raw_event);
+-        self.handle_ctrl_up_recovery(platform, ime, raw_event);
+ 
+         // C. [transport] output guard defer
+         let in_flight_ms = platform.output_in_flight_ms();
+@@ -615,24 +614,6 @@ impl DecisionExecutor {
+         }
+     }
+ 
+-    /// Ctrl↑: cold 状態であれば eager_warmup_sent_ms をリセット（この→kおの バグ対策）。
+-    /// Ctrl が WezTerm に届いている間、GJI TSF 初期化が中断される可能性がある。
+-    /// Ctrl↑ を起点としてタイマーを再計測し GJI recovery 時間（500ms）を確保する。
+-    /// cold 判定・warmup 送信は `CompositionFsm`（CtrlUp）に委譲する。副作用のみ。
+-    fn handle_ctrl_up_recovery(
+-        &self,
+-        platform: &mut WindowsPlatform,
+-        ime: &ImeStateHub,
+-        raw_event: &RawKeyEvent,
+-    ) {
+-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
+-        if !is_key_down && raw_event.vk_code.is_ctrl_variant() {
+-            platform.composition_ctrl_up(
+-                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
+-            );
+-        }
+-    }
+-
+     /// Space/Enter/Esc KeyDown の直接 passthrough: warm+TSF または cold の composition 確定処理。
+     /// 副作用のみで CallbackResult は返さない。
+     fn handle_confirm_key_passthrough(
+diff --git a/crates/awase-windows/src/tsf/composition_fsm.rs b/crates/awase-windows/src/tsf/composition_fsm.rs
+index 595661c0..948153fb 100644
+--- a/crates/awase-windows/src/tsf/composition_fsm.rs
++++ b/crates/awase-windows/src/tsf/composition_fsm.rs
+@@ -1,7 +1,7 @@
+ //! TSF composition の warmup タイミングを管理する FSM。
+ //!
+ //! executor に散在していた `pending_warmup_on_keyup: bool` のミニ FSM を
+-//! 状態として昇格させ、confirm キー（Space/Enter/Esc）・物理 F2・Ctrl↑ 等の
++//! 状態として昇格させ、confirm キー（Space/Enter/Esc）・物理 F2 等の
+ //! passthrough イベントから「いつ eager warmup を送るか」を決定する。
+ //!
+ //! ## 設計
+@@ -41,8 +41,6 @@ use awase::types::VkCode;
+ /// warmup を発火させる理由（診断用）。
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum WarmupReason {
+-    /// cold 状態の Ctrl↑（GJI recovery 再計測）
+-    CtrlUp,
+     /// TSF mode の物理 F2 を consume した代替 warmup
+     NativeF2,
+     /// cold / 非 TSF confirm キー KeyDown 直後の即時 warmup
+@@ -83,8 +81,6 @@ pub(crate) enum CompositionEvent {
+     },
+     /// 確定キー KeyUp
+     ConfirmKeyUp { vk: VkCode },
+-    /// Ctrl KeyUp（cold 状態で eager warmup リセット）
+-    CtrlUp { warm: bool },
+     /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown。`warm` は現況（`tsf_mode=false` 側でのみ参照）。
+     NativeF2Down { tsf_mode: bool, warm: bool },
+ }
+@@ -255,18 +251,6 @@ impl TimedStateMachine for CompositionFsm {
+                 Response::consume()
+             }
+ 
+-            // ── CtrlUp ─────────────────────────────────────────────────────
+-            CompositionEvent::CtrlUp { warm } => {
+-                if warm {
+-                    Response::consume()
+-                } else {
+-                    // cold 状態の Ctrl↑: GJI recovery のために warmup を再送する。
+-                    Response::emit_one(CompositionAction::EmitWarmup {
+-                        reason: WarmupReason::CtrlUp,
+-                    })
+-                }
+-            }
+-
+             // ── NativeF2Down ───────────────────────────────────────────────
+             CompositionEvent::NativeF2Down { tsf_mode, warm } => {
+                 if tsf_mode {
+@@ -502,23 +486,4 @@ mod tests {
+             r.actions
+         );
+     }
+-
+-    #[test]
+-    fn ctrl_up_while_cold_emits_warmup() {
+-        let mut fsm = CompositionFsm::new();
+-        let r = fsm.on_event(CompositionEvent::CtrlUp { warm: false });
+-        assert_eq!(
+-            r.actions,
+-            vec![CompositionAction::EmitWarmup {
+-                reason: WarmupReason::CtrlUp
+-            }]
+-        );
+-    }
+-
+-    #[test]
+-    fn ctrl_up_while_warm_is_noop() {
+-        let mut fsm = CompositionFsm::new();
+-        let r = fsm.on_event(CompositionEvent::CtrlUp { warm: true });
+-        assert!(r.actions.is_empty());
+-    }
+ }
