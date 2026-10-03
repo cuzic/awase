@@ -508,7 +508,7 @@ footer p{margin-bottom:0.3rem}
       <ul>
         <li><strong>Select layout</strong> — Lists the .yab files in <code>layouts_dir</code>. Selecting one switches the layout immediately</li>
         <li><strong>Settings...</strong> — Opens the Settings window</li>
-        <li><strong>Clear learning cache</strong> — Deletes the IME's learning-data cache</li>
+        <li><strong>Clear IME-control learning cache</strong> — Deletes the per-app record of whether IMM32 can control the IME (<code>[imm_capability]</code> in <code>cache.toml</code>). Use it to recover from a mislearned entry. The keymap learning table (<code>keymap-learn-table.json</code>) is not deleted</li>
         <li><strong>Restart process</strong> — Fully restarts the process when input misbehaves (see <a href="#panic-reset">"Emergency operations & reset"</a> for details)</li>
         <li><strong>Auto-start</strong> — Enables/disables auto-start at logon (checked = enabled)</li>
         <li><strong>Restart as administrator</strong> — Restarts awase elevated via UAC. This lets it work even with apps that require administrator privileges (some games, for example)</li>
