@@ -346,6 +346,14 @@ fn execute<D: ImeDriver>(
         if over(exec, req) {
             return Step::Done;
         }
+        match k {
+            EdgeKind::Press { .. } => {
+                exec.stats.plan_presses_left = exec.stats.plan_presses_left.saturating_sub(1);
+            }
+            EdgeKind::Reset { .. } => {
+                exec.stats.plan_resets_left = exec.stats.plan_resets_left.saturating_sub(1);
+            }
+        }
         if exec.should_reset() && matches!(k, EdgeKind::Press { .. }) {
             exec.note_forced_reset();
             exec.reset();
@@ -441,10 +449,12 @@ fn tour<D: ImeDriver>(
         if over(exec, req) {
             let need = need_fn(exec, g);
             diag_unmet(exec, g, &need, "over");
+            clear_plan_left(exec);
             return;
         }
         let need = need_fn(exec, g);
         if need.iter().all(|n| *n == 0) {
+            clear_plan_left(exec);
             return;
         }
         let mut start = cur_node(exec, g).unwrap_or(g.initial_node);
@@ -455,15 +465,36 @@ fn tour<D: ImeDriver>(
         }
         let Some(plan) = cpp_plan(g, &need, start, rng, shuffle) else {
             diag_unmet(exec, g, &need, "no_plan");
+            clear_plan_left(exec);
             return;
         };
+        set_plan_left(exec, &plan, &need);
         if matches!(execute(exec, g, &plan, req), Step::Done) && need_fn(exec, g) == need {
             diag_unmet(exec, g, &need, "no_progress");
+            clear_plan_left(exec);
             return; // 進まなかった(必須辺に到達できない等)
         }
     }
     let need = need_fn(exec, g);
     diag_unmet(exec, g, &need, "loop_end");
+    clear_plan_left(exec);
+}
+
+/// 計画を立てたとき、残りの打鍵数・リセット数・必要観測数を`Stats`へ出す(進捗の見積り用)。
+fn set_plan_left<D: ImeDriver>(exec: &mut Executor<D>, plan: &[EdgeKind], need: &[u32]) {
+    let presses = plan
+        .iter()
+        .filter(|k| matches!(k, EdgeKind::Press { .. }))
+        .count();
+    exec.stats.plan_presses_left = u32::try_from(presses).unwrap_or(u32::MAX);
+    exec.stats.plan_resets_left = u32::try_from(plan.len() - presses).unwrap_or(u32::MAX);
+    exec.stats.need_left = need.iter().sum();
+}
+
+fn clear_plan_left<D: ImeDriver>(exec: &mut Executor<D>) {
+    exec.stats.plan_presses_left = 0;
+    exec.stats.plan_resets_left = 0;
+    exec.stats.need_left = 0;
 }
 
 fn s0<D: ImeDriver>(exec: &mut Executor<D>, g: &Graph, req: &Req) {
