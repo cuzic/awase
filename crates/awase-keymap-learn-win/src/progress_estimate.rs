@@ -59,6 +59,20 @@ const MIN_PRESSES_FOR_ETA: u32 = 100;
 const TAIL_RATE_RATIO: f64 = 0.62;
 const TAIL_OBSERVE_PRESSES: u32 = 30;
 
+/// やり直しの計画(`plan_presses_left`)に対する、実際の残り打鍵数の比の逆数。計画は強制リセットや
+/// 計画のずれ(再計画)の分を含まないため、実際は計画より約12%多い。CIの3環境(ATOK/GJI MS-IME
+/// プリセット/MS-IME本体)で、やり直しの開始時点の 計画/実際 = 0.86/0.85/0.90。
+const PLAN_ACCURACY: f64 = 0.87;
+/// やり直しの1打鍵あたり ÷ 巡回の直近[`RATE_WINDOW_PRESSES`]打鍵の1打鍵あたり。巡回の平均より
+/// 巡回の直近の速さの方が、起動直後の遅さ・リセットの偏りを含まず安定する。実測 0.88/0.79/0.88
+/// (ATOK/GJI MS-IMEプリセット/MS-IME本体)。やり直しが始まって[`TAIL_OBSERVE_PRESSES`]打鍵
+/// たまったら実測を使う。
+const RETRY_RATE_RATIO: f64 = 0.85;
+/// ウォークの1打鍵あたり ÷ やり直しの1打鍵あたり(ウォークはリセットが無い)。実測 0.89/0.92/0.99。
+const WALK_RATE_RATIO: f64 = 0.93;
+/// 巡回の「直近の速さ」を測る窓(打鍵数)。
+const RATE_WINDOW_PRESSES: u32 = 150;
+
 /// 検証ウォークの進み具合。
 #[derive(Debug, Clone, Copy)]
 pub struct WalkProgress {
@@ -72,6 +86,26 @@ pub struct WalkProgress {
     pub max_attempts: u32,
     /// ウォークが終わった(以降は再測定だけが残る)。
     pub finished: bool,
+}
+
+/// 学習の局面(学習プロセスが印を立てる)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// 巡回(`strategy::tour`)。状態が次々に見つかり、終わる打鍵数が環境で大きく違うので、
+    /// 残り時間は出さない。
+    Tour,
+    /// 巡回が戻った後のやり直し(非決定セルの再訪)。計画の残りから見積もれる。
+    Retry,
+    /// 検証ウォーク以降。
+    Walk,
+}
+
+/// 学習側が持つ、今の計画の残り(`Stats::plan_presses_left`)と局面。
+#[derive(Debug, Clone, Copy)]
+pub struct PlanInfo {
+    pub phase: Phase,
+    /// 今の計画に残っている打鍵数。
+    pub plan_presses_left: u32,
 }
 
 /// ある時点の学習の状況。
@@ -89,6 +123,8 @@ pub struct Snapshot {
     pub expected_statuses: u32,
     /// 検証ウォーク中ならその進み具合。
     pub walk: Option<WalkProgress>,
+    /// 学習側の計画の残り・局面(無ければ従来どおり、巡回後も推定で見積もる)。
+    pub plan: Option<PlanInfo>,
 }
 
 /// 局面別の残り打鍵数の見積り。
@@ -111,6 +147,10 @@ impl ProgressEstimator {
     /// 学習後に判明した追加の作業量(打鍵数。内蔵表との不一致セルの再測定など)を足す。
     pub fn add_extra_tail(&mut self, presses: f64) {
         self.extra_tail += presses;
+    }
+
+    fn extra_tail(&self) -> f64 {
+        self.extra_tail
     }
 
     /// 局面別の残り打鍵数 `(セル巡回の残り, それ以降の残り)`。
@@ -195,6 +235,10 @@ pub struct LinearProgress {
     tail_start: Option<(u32, f64)>,
     /// 検証ウォークに入った時点の(打鍵数, 経過ms)。
     walk_start: Option<(u32, f64)>,
+    /// やり直しに入った時点の(打鍵数, 経過ms)。
+    retry_start: Option<(u32, f64)>,
+    /// 直近の(打鍵数, 経過ms)。巡回の直近の速さを測る。
+    window: std::collections::VecDeque<(u32, f64)>,
 }
 
 impl LinearProgress {
@@ -217,6 +261,14 @@ impl LinearProgress {
                 .max(f64::from(s.presses) + 1.0)
                 .ceil() as u32,
         };
+        self.window.push_back((s.presses, elapsed_ms));
+        while self
+            .window
+            .front()
+            .is_some_and(|&(p, _)| s.presses - p > RATE_WINDOW_PRESSES)
+        {
+            self.window.pop_front();
+        }
         if s.presses < MIN_PRESSES_FOR_ETA || elapsed_ms <= 0.0 {
             return by_presses;
         }
@@ -229,31 +281,78 @@ impl LinearProgress {
         if s.walk.is_some() && self.walk_start.is_none() {
             self.walk_start = Some((s.presses, elapsed_ms));
         }
-        let (rate_cells, mut rate_tail) = if let Some((p0, e0)) = self.tail_start {
-            let rate_cells = e0 / f64::from(p0.max(1));
-            let n = s.presses - p0;
-            let rate_tail = if n >= TAIL_OBSERVE_PRESSES {
-                (elapsed_ms - e0) / f64::from(n)
-            } else {
-                rate_cells * TAIL_RATE_RATIO
-            };
-            (rate_cells, rate_tail)
-        } else {
-            let rate = elapsed_ms / f64::from(s.presses);
-            (rate, rate * TAIL_RATE_RATIO)
-        };
-        if let Some((p0, e0)) = self.walk_start {
-            let n = s.presses - p0;
-            if n >= TAIL_OBSERVE_PRESSES {
-                rate_tail = (elapsed_ms - e0) / f64::from(n);
-            }
+        let phase = s.plan.map(|p| p.phase);
+        // 巡回から後半へ入った最初の更新。巡回中は残り時間を出していないので、ここで見積りを
+        // 計画からの値へ一気に下げてよい(上げる向きだけゆるやかにする)。
+        let mut entering_post_tour = false;
+        if phase.is_some_and(|ph| ph != Phase::Tour) && self.retry_start.is_none() {
+            self.retry_start = Some((s.presses, elapsed_ms));
+            entering_post_tour = true;
         }
-        let raw_total = elapsed_ms + cells * rate_cells + tail * rate_tail;
+        let raw_total = match (s.plan, phase) {
+            // 巡回が戻った後は、学習側の計画の残りと局面別の実測の速さから見積もる。
+            (Some(plan), Some(ph)) if ph != Phase::Tour => {
+                let (p0, e0) = self.window.front().copied().unwrap_or((0, 0.0));
+                let rate_tour = if s.presses > p0 {
+                    (elapsed_ms - e0) / f64::from(s.presses - p0)
+                } else {
+                    elapsed_ms / f64::from(s.presses)
+                };
+                let rate_retry = match self.retry_start {
+                    Some((rp, re))
+                        if s.presses - rp >= TAIL_OBSERVE_PRESSES && ph == Phase::Retry =>
+                    {
+                        (elapsed_ms - re) / f64::from(s.presses - rp)
+                    }
+                    _ => rate_tour * RETRY_RATE_RATIO,
+                };
+                let rate_walk = match self.walk_start {
+                    Some((wp, we)) if s.presses - wp >= TAIL_OBSERVE_PRESSES => {
+                        (elapsed_ms - we) / f64::from(s.presses - wp)
+                    }
+                    _ => rate_retry * WALK_RATE_RATIO,
+                };
+                if s.walk.is_some() {
+                    // ウォーク(と、その後の再測定): 残りは`remaining_parts`の末尾の枠。
+                    elapsed_ms + tail * rate_walk
+                } else if ph == Phase::Retry {
+                    let retry_left = f64::from(plan.plan_presses_left) / PLAN_ACCURACY;
+                    elapsed_ms
+                        + retry_left * rate_retry
+                        + (VERIFY_WALK_PRESSES + self.estimator.extra_tail()) * rate_walk
+                } else {
+                    elapsed_ms + (VERIFY_WALK_PRESSES + self.estimator.extra_tail()) * rate_walk
+                }
+            }
+            _ => {
+                let (rate_cells, mut rate_tail) = if let Some((p0, e0)) = self.tail_start {
+                    let rate_cells = e0 / f64::from(p0.max(1));
+                    let n = s.presses - p0;
+                    let rate_tail = if n >= TAIL_OBSERVE_PRESSES {
+                        (elapsed_ms - e0) / f64::from(n)
+                    } else {
+                        rate_cells * TAIL_RATE_RATIO
+                    };
+                    (rate_cells, rate_tail)
+                } else {
+                    let rate = elapsed_ms / f64::from(s.presses);
+                    (rate, rate * TAIL_RATE_RATIO)
+                };
+                if let Some((p0, e0)) = self.walk_start {
+                    let n = s.presses - p0;
+                    if n >= TAIL_OBSERVE_PRESSES {
+                        rate_tail = (elapsed_ms - e0) / f64::from(n);
+                    }
+                }
+                elapsed_ms + cells * rate_cells + tail * rate_tail
+            }
+        };
 
         let dt = (elapsed_ms - self.last_elapsed_ms).max(0.0);
         self.last_elapsed_ms = elapsed_ms;
         let slewed = match self.total_ms {
             None => raw_total,
+            Some(t) if entering_post_tour && raw_total < t => raw_total,
             Some(t) => t + (raw_total - t).clamp(-SLEW_DOWN * dt, SLEW_UP * dt),
         };
         let floor = match self.eta_floor {
@@ -267,8 +366,11 @@ impl LinearProgress {
         self.total_ms = Some(total);
 
         let expected_presses = (f64::from(s.presses) * total / elapsed_ms).ceil() as u32;
+        // 巡回の間は残り時間を出さない(状態が次々に見つかり、巡回の長さが終わるまで分からない)。
+        // 割合は見積りの総時間から出す。
+        let hide_eta = phase == Some(Phase::Tour);
         Display {
-            eta_ms: Some(total - elapsed_ms),
+            eta_ms: (!hide_eta).then_some(total - elapsed_ms),
             expected_presses: expected_presses.max(s.presses + 1),
         }
     }
@@ -286,6 +388,7 @@ mod tests {
             keys: 14,
             expected_statuses: 6,
             walk: None,
+            plan: None,
         }
     }
 
@@ -383,6 +486,7 @@ mod tests {
                     keys: 14,
                     expected_statuses,
                     walk,
+                    plan: None,
                 },
                 elapsed,
             );
@@ -534,6 +638,141 @@ mod tests {
         for w in out.windows(2) {
             if w[0].0 >= 0.5 * end && w[1].0 - w[0].0 < 5_000.0 {
                 assert!(w[1].2 < w[0].2 - 0.0 || w[1].0 - w[0].0 < 2_000.0, "{w:?}");
+            }
+        }
+    }
+
+    /// 学習側の計画の残り・局面つきの実測(`tests/fixtures/progress_plan_*.csv`、列は
+    /// cell,total,elapsed_ms,presses,statuses,plan_presses,phase)。
+    const PLAN_RUNS: [(&str, &str); 3] = [
+        (
+            "GJI(MS-IMEプリセット)",
+            include_str!("../tests/fixtures/progress_plan_gji_msimepreset.csv"),
+        ),
+        (
+            "GJI(ATOKプリセット)",
+            include_str!("../tests/fixtures/progress_plan_gji_atok.csv"),
+        ),
+        (
+            "MS-IME本体",
+            include_str!("../tests/fixtures/progress_plan_msime_native.csv"),
+        ),
+    ];
+
+    /// 再生した1行: (局面, 経過ms, 割合, 残りms または`None`)。
+    type PlanRow = (u32, f64, f64, Option<f64>);
+
+    /// 計画つきの実測を再生する。ウォークの進み具合は、始まりから終わりまで予測ステップが
+    /// 0→300へ線形に進むとして作る。総所要時間も返す。
+    fn replay_plan(csv: &str, expected_statuses: u32) -> (f64, Vec<PlanRow>) {
+        let rows: Vec<Vec<u32>> = csv
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split(',').map(|x| x.parse().unwrap()).collect())
+            .collect();
+        let walk_start = rows.iter().find(|r| r[6] >= 2).unwrap()[3];
+        let walk_end = rows.last().unwrap()[3];
+        let mut lp = LinearProgress::new();
+        let (mut end_ms, mut out) = (0.0, Vec::new());
+        for v in rows {
+            let (cell, elapsed, presses, statuses) = (v[0], f64::from(v[2]), v[3], v[4]);
+            let phase = match v[6] {
+                0 => Phase::Tour,
+                1 => Phase::Retry,
+                _ => Phase::Walk,
+            };
+            let walk = (presses >= walk_start).then(|| {
+                let done =
+                    f64::from(presses - walk_start + 1) / f64::from(walk_end - walk_start + 1);
+                WalkProgress {
+                    predicted: (300.0 * done).round() as u32,
+                    target: 300,
+                    attempts: presses - walk_start + 1,
+                    max_attempts: 1500,
+                    finished: presses >= walk_end,
+                }
+            });
+            let d = lp.update(
+                Snapshot {
+                    presses,
+                    covered_cells: cell,
+                    observed_statuses: statuses,
+                    keys: 14,
+                    expected_statuses,
+                    walk,
+                    plan: Some(PlanInfo {
+                        phase,
+                        plan_presses_left: v[5],
+                    }),
+                },
+                elapsed,
+            );
+            end_ms = elapsed;
+            out.push((
+                v[6],
+                elapsed,
+                f64::from(presses) / f64::from(d.expected_presses),
+                d.eta_ms,
+            ));
+        }
+        (end_ms, out)
+    }
+
+    fn plan_expected_statuses(name: &str) -> u32 {
+        if name == "MS-IME本体" {
+            15
+        } else {
+            6
+        }
+    }
+
+    #[test]
+    fn plan_runs_show_no_eta_during_the_tour_and_a_close_one_after() {
+        // 巡回の間は残り時間を出さない。やり直し以降は、計画の残りと局面別の実測の速さから
+        // 見積もり、全環境で誤差10秒未満(巡回後の長さの定数に頼っていた旧版はATOKで23秒)。
+        for (name, csv) in PLAN_RUNS {
+            let (end, rows) = replay_plan(csv, plan_expected_statuses(name));
+            for &(phase, e, _, eta) in &rows {
+                if phase == 0 {
+                    assert!(eta.is_none(), "{name}: 巡回中に残り時間が出た: {e}");
+                } else {
+                    let eta =
+                        eta.unwrap_or_else(|| panic!("{name}: やり直し以降は残り時間が要る: {e}"));
+                    assert!(
+                        (eta - (end - e)).abs() < 10_000.0,
+                        "{name}: {e}: eta {eta} vs {}",
+                        end - e
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_runs_fraction_tracks_time_and_ends_at_full() {
+        for (name, csv) in PLAN_RUNS {
+            let (end, rows) = replay_plan(csv, plan_expected_statuses(name));
+            for &(_, e, f, _) in &rows {
+                // 序盤(巡回)は巡回の長さが分からず外れる。それでも直線から2割以内。
+                assert!((f - e / end).abs() < 0.2, "{name}: {e}: {f} vs {}", e / end);
+            }
+            let (_, e, f, eta) = *rows.last().unwrap();
+            assert!(
+                f > 0.99 && eta.unwrap() < 1_500.0,
+                "{name}: 終了時 {e} {f} {eta:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_runs_progress_and_eta_are_monotonic() {
+        for (name, csv) in PLAN_RUNS {
+            let (_, rows) = replay_plan(csv, plan_expected_statuses(name));
+            for w in rows.windows(2) {
+                assert!(w[1].2 + 2e-3 >= w[0].2, "{name}: 割合が下がった: {w:?}");
+                if let (Some(a), Some(b)) = (w[0].3, w[1].3) {
+                    assert!(b <= a + 1e-6, "{name}: 残りが増えた: {w:?}");
+                }
             }
         }
     }

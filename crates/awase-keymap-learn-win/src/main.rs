@@ -32,7 +32,7 @@ mod app {
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
     use awase_keymap_learn_win::progress_estimate::{
-        LinearProgress, Snapshot, WalkProgress, REMEASURE_PRESSES_PER_CELL,
+        LinearProgress, Phase, PlanInfo, Snapshot, WalkProgress, REMEASURE_PRESSES_PER_CELL,
     };
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
@@ -677,6 +677,14 @@ mod app {
                         max_attempts: VERIFICATION_WALK_MAX_STEPS as u32,
                         finished,
                     }),
+                plan: Some(PlanInfo {
+                    phase: match phase.get() {
+                        0 => Phase::Tour,
+                        1 => Phase::Retry,
+                        _ => Phase::Walk,
+                    },
+                    plan_presses_left: stats.plan_presses_left,
+                }),
             };
             // 打鍵数の見積りを時間へ換算し、総所要時間を経過時間に対してなだらかにしか
             // 動かさない(割合・残り時間が線形に近づく)。
