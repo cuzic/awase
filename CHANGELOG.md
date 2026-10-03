@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-> **v2 の開発版。** v1（最後は 1.21.1）との違いの全体像と、設定の移行は [docs/migration-v1-to-v2.md](docs/migration-v1-to-v2.md) にまとめている。
+## [2.0.0] - 2026-10-03
+
+> **v2 の最初の正式版。v1 は 2.0.0 の公開をもって保守終了。** v1（最後は 1.21.1）との違いの全体像と、設定の移行は [docs/migration-v1-to-v2.md](docs/migration-v1-to-v2.md) にまとめている。
 > 大きな方針転換は 2 つ: ① IME の状態は IME 自身を正とし、awase は先回り・補正の書き込みをやめて観測・予測に追随する（ADR-191・212・213）、② キーの役割はユーザーの IME キー設定から逆算する（ADR-199）。
 
 ### 追加
