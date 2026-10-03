@@ -531,6 +531,9 @@ struct SettingsApp {
         Option<std::sync::mpsc::Receiver<Result<keymap_learn_launcher::LearnLine, String>>>,
     /// 直近に受信した進捗（UI表示用、進捗行が来るたびに更新）。
     keymap_learn_progress: Option<keymap_learn_launcher::LearnProgress>,
+    /// 学習が成功で終わった(進捗を100%・残り0秒で表示する)。進捗の割合は完了前は99%で
+    /// 止めるため、結果行を受けてから切り替える。
+    keymap_learn_finished: bool,
     /// 学習プロセスの最終結果、または起動失敗のエラーメッセージ
     /// （どちらもここに文字列化して保持、`keymap_learn_rx`が`None`になった後も残す）。
     keymap_learn_status: Option<String>,
@@ -768,6 +771,7 @@ impl SettingsApp {
             adr192_replacement_preview: None,
             keymap_learn_rx: None,
             keymap_learn_progress: None,
+            keymap_learn_finished: false,
             keymap_learn_status: None,
             keymap_learn_child: None,
             keymap_learn_stderr_handle: None,
@@ -1146,6 +1150,7 @@ impl SettingsApp {
         self.keymap_learn_rx = Some(rx);
         self.keymap_learn_mode = mode;
         self.keymap_learn_progress = None;
+        self.keymap_learn_finished = false;
         self.keymap_learn_status = Some("起動中…".to_string());
     }
 
@@ -1253,6 +1258,11 @@ impl SettingsApp {
                     self.keymap_learn_status = Some("測定中…".to_string());
                 }
                 Ok(Ok(keymap_learn_launcher::LearnLine::Result(outcome))) => {
+                    self.keymap_learn_finished = matches!(
+                        outcome,
+                        keymap_learn_launcher::LearnOutcome::Success
+                            | keymap_learn_launcher::LearnOutcome::SuccessWithWarnings
+                    );
                     self.keymap_learn_status = Some(match outcome {
                         keymap_learn_launcher::LearnOutcome::Success => {
                             "完了しました。".to_string()
@@ -3329,9 +3339,12 @@ impl SettingsApp {
 
             if let Some(p) = self.keymap_learn_progress {
                 ui.add_space(4.0);
-                let fraction = p.fraction();
+                let finished = self.keymap_learn_finished;
+                let fraction = if finished { 1.0 } else { p.fraction() };
                 ui.add(egui::ProgressBar::new(fraction).text(format!("{:.0}%", fraction * 100.0)));
-                if let Some(eta_ms) = p.eta_ms {
+                if finished {
+                    ui.label("残り約0秒");
+                } else if let Some(eta_ms) = p.eta_ms {
                     ui.label(format!("残り約{:.0}秒", eta_ms / 1000.0));
                 }
             }
@@ -6030,6 +6043,7 @@ mod layout_tab_repro {
             adr192_replacement_preview: None,
             keymap_learn_rx: None,
             keymap_learn_progress: None,
+            keymap_learn_finished: false,
             keymap_learn_status: None,
             keymap_learn_child: None,
             keymap_learn_stderr_handle: None,
