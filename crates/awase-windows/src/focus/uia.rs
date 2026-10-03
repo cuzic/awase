@@ -171,7 +171,7 @@ unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind
 /// COM が初期化済みのスレッドから呼び出すこと
 #[must_use]
 #[tracing::instrument(level = "debug", skip_all)]
-pub fn uia_classify_focus(automation: &IUIAutomation, _hwnd: HWND) -> UiaClassifyResult {
+pub fn uia_classify_focus(automation: &IUIAutomation) -> UiaClassifyResult {
     // SAFETY: automation は CoCreateInstance が返した有効な IUIAutomation COM オブジェクト。
     //         GetFocusedElement は COM が初期化済みのスレッドから呼び出されることが
     //         呼出元のコメントで保証されている。
@@ -264,7 +264,7 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
                 Ok(SendableHwnd(hwnd)) => {
                     // GetFocusedElement はシステムのフォーカス要素を取得するため hwnd を直接使用しない。
                     // hwnd は WM_FOCUS_KIND_UPDATE の LPARAM で返し、メインスレッド側で検証に使う。
-                    let result = uia_classify_focus(&automation, hwnd);
+                    let result = uia_classify_focus(&automation);
                     let has_info =
                         result.focus_kind != FocusKind::Undetermined || result.app_kind.is_some();
 

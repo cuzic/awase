@@ -593,9 +593,9 @@ pub(crate) fn reset_candidate_was_seen() {
 ///
 /// 決定分岐の呼び出し元（`probe_fsm.rs`/`literal_detect_fsm.rs`/`gji_warmup_coro.rs`）は
 /// `TsfEnvSnapshot::literal_session_confirmed_gen` 経由の比較へ移行済み（belief 監査、
-/// `.claude/rules/ime-belief-architecture.md` 参照）。本関数自体は削除せず残すが、
-/// 現状クレート内に非テストの呼び出し元がないため `#[allow(dead_code)]` を付与する。
-#[allow(dead_code)]
+/// `.claude/rules/ime-belief-architecture.md` 参照）。現在の呼び出し元は
+/// `tsf/probe.rs::evidence_now` のみで、journal に記録する診断専用の値
+/// （`LiteralEvidence::literal_session_confirmed`）を作るために使う。
 pub(crate) fn literal_session_confirmed(current_cold_seq: Generation) -> bool {
     let confirmed_gen = TSF_OBS
         .literal_session_confirmed_gen

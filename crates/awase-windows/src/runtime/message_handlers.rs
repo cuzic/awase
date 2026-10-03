@@ -1439,31 +1439,9 @@ struct GjiCustomKeymapFields {
     mode_toggle_kana_type_keys: Option<Vec<String>>,
 }
 
-/// `ime_kind == Gji`のときにのみ埋まる、GJIの「採用系」フィールド
-/// （ADR-148）。
-#[derive(Default)]
-struct GjiAdoptedFields {
-    henkan_adopted_kind: Option<String>,
-    muhenkan_adopted_kind: Option<String>,
-    henkan_adopted_route: Option<String>,
-    muhenkan_adopted_route: Option<String>,
-    thumb_key_ime_warning: Option<String>,
-}
-
-/// `ime_kind == MsIme`のときにのみ埋まる、MS-IMEの「採用系」フィールド
-/// （ADR-148）。フィールド名の共通前置についてはGJI側
-/// `GjiCustomKeymapFields`のdoc参照。
-#[derive(Default)]
-#[allow(clippy::struct_field_names)]
-struct MsImeAdoptedFields {
-    adopted_ime_toggle_combos: Option<Vec<String>>,
-    adopted_muhenkan_delegate: Option<String>,
-    adopted_henkan_delegate: Option<String>,
-}
-
 /// GJI（`config1.db`）から、無変換/変換キーのIME意味論・キーマップ設定を
-/// 要約する（ADR-148）。「生値・分類系」は`ime_kind`に関わらず常に計算し、
-/// 「採用系」は、ADR-191で採用（代行・上書き）の機構を撤去したため常に`None`。
+/// 要約する（ADR-148）。「生値・分類系」は`ime_kind`に関わらず常に計算する
+/// （ADR-191で撤去した「採用系」はADR-217でフィールドごと削除した）。
 ///
 /// 報告生成時点の`config1.db`を
 /// 都度読み直す（Runtime側に`GjiRawConfig`のキャッシュは存在しないため。
@@ -1546,17 +1524,6 @@ fn build_bug_report_gji_keymap_summary(
 
     let muhenkan_dedicated_fn_key_configured = app.muhenkan_dedicated_fn_key_configured();
 
-    // ADR-191: GJI/MS-IMEの設定からの自動採用（代行・上書き）は撤去した。`*_adopted_*`/
-    // `thumb_key_ime_warning`は互換のためスキーマに残すが、常に`None`（採用の概念が無い）。
-    let adopted_fields = GjiAdoptedFields::default();
-    let GjiAdoptedFields {
-        henkan_adopted_kind,
-        muhenkan_adopted_kind,
-        henkan_adopted_route,
-        muhenkan_adopted_route,
-        thumb_key_ime_warning,
-    } = adopted_fields;
-
     crate::bug_report::BugReportGjiKeymapSummary {
         config1_db_status,
         session_keymap,
@@ -1571,18 +1538,13 @@ fn build_bug_report_gji_keymap_summary(
         mode_toggle_kana_type_keys,
         henkan_classified_kind,
         muhenkan_classified_kind,
-        henkan_adopted_kind,
-        muhenkan_adopted_kind,
-        henkan_adopted_route,
-        muhenkan_adopted_route,
-        thumb_key_ime_warning,
         muhenkan_dedicated_fn_key_configured,
     }
 }
 
 /// MS-IME「キーとタッチのカスタマイズ」（シンプルキー割当て）のレジストリ
 /// 値を要約する（ADR-148）。生のDWORD5個は`ime_kind`に関わらず常に読む。
-/// `adopted_*`は`ime_kind == MsIme`のときのみ`Some`（Opus敵対的レビュー
+/// `adopted_ime_toggle_combos`は`ime_kind == MsIme`のときのみ`Some`（Opus敵対的レビュー
 /// G1、GJI側と同じ理由）。
 fn build_bug_report_msime_key_assignment_summary(
     app: &Runtime,
@@ -1591,32 +1553,20 @@ fn build_bug_report_msime_key_assignment_summary(
     let raw_dwords = crate::msime_key_assignment::read_raw_key_assignment_dwords();
     let muhenkan_dedicated_fn_key_configured = app.muhenkan_dedicated_fn_key_configured();
 
-    let adopted_fields = if ime_kind == crate::bug_report::BugReportImeKind::MsIme {
+    // ADR-191: 無変換/変換の「open軸への肩代わり(delegate)」採用は撤去した（以前は
+    // レジストリ値から「採用した」と称して値を返しており、ADR-148 の診断を誤らせた、
+    // レビュー指摘C-M5）。ADR-217で常に`None`だった`adopted_*_delegate`はフィールドごと削除した。
+    let adopted_ime_toggle_combos = if ime_kind == crate::bug_report::BugReportImeKind::MsIme {
         let toggle_assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
         let combos = toggle_assignment.to_combos(app.space_is_thumb_key());
         // Opus敵対的コードレビューM-1: 空でも`Some(vec![])`にする。
         // `ime_kind == MsIme`の枝に入った時点で「採用値を計算した」ことは
         // 確定しているため、`None`（GJI側`ime_*_keys`同様「非該当」の意味）
         // と「採用ゼロ件」を区別する。
-        let adopted_ime_toggle_combos =
-            Some(combos.iter().copied().map(parsed_key_combo_label).collect());
-
-        // ADR-191: 無変換/変換の「open軸への肩代わり(delegate)」採用は撤去した。
-        // 互換のためスキーマには残すが常に`None`（以前はレジストリ値から「採用した」と
-        // 称して値を返しており、ADR-148 の診断を誤らせた、レビュー指摘C-M5）。
-        MsImeAdoptedFields {
-            adopted_ime_toggle_combos,
-            adopted_muhenkan_delegate: None,
-            adopted_henkan_delegate: None,
-        }
+        Some(combos.iter().copied().map(parsed_key_combo_label).collect())
     } else {
-        MsImeAdoptedFields::default()
+        None
     };
-    let MsImeAdoptedFields {
-        adopted_ime_toggle_combos,
-        adopted_muhenkan_delegate,
-        adopted_henkan_delegate,
-    } = adopted_fields;
 
     crate::bug_report::BugReportMsImeKeyAssignmentSummary {
         is_key_assignment_enabled: raw_dwords.is_key_assignment_enabled,
@@ -1625,8 +1575,6 @@ fn build_bug_report_msime_key_assignment_summary(
         key_assignment_ctrl_space: raw_dwords.key_assignment_ctrl_space,
         key_assignment_shift_space: raw_dwords.key_assignment_shift_space,
         adopted_ime_toggle_combos,
-        adopted_muhenkan_delegate,
-        adopted_henkan_delegate,
         muhenkan_dedicated_fn_key_configured,
     }
 }

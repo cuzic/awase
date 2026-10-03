@@ -189,17 +189,18 @@ pub struct BugReportStateSnapshot {
 /// GJI（`config1.db`）から抽出した、無変換/変換キーのIME意味論・
 /// キーマップ設定の要約（ADR-148）。
 ///
-/// フィールドは大きく2種類に分かれる:
-/// - **生値・分類系**（`session_keymap`/`custom_keymap_table_present`/
-///   `custom_keymap_table_is_effective`/`ime_*_keys`/`mode_*_keys`/
-///   `henkan_classified_kind`/`muhenkan_classified_kind`）:
-///   `config1.db`の内容を解釈するだけの計算で、現在のアクティブIME
-///   （`ime_kind`）に関わらず常に計算する。
-/// - **採用系**（`henkan_adopted_kind`/`muhenkan_adopted_kind`/
-///   `henkan_adopted_route`/`muhenkan_adopted_route`/
-///   `thumb_key_ime_warning`）: ADR-191で採用（代行・上書き）の機構を撤去したため、
-///   GJI側は常に`None`。報告のスキーマ互換のためにフィールドだけ残している
-///   （MS-IME側の`adopted_*_delegate`も同様に常に`None`。`adopted_ime_toggle_combos`だけが残る）。
+/// フィールドは`config1.db`の内容を解釈するだけの**生値・分類系**
+/// （`session_keymap`/`custom_keymap_table_present`/
+/// `custom_keymap_table_is_effective`/`ime_*_keys`/`mode_*_keys`/
+/// `henkan_classified_kind`/`muhenkan_classified_kind`）で、現在のアクティブIME
+/// （`ime_kind`）に関わらず常に計算する。
+///
+/// ADR-191で撤去した「採用系」（`henkan_adopted_kind`/`muhenkan_adopted_kind`/
+/// `henkan_adopted_route`/`muhenkan_adopted_route`/`thumb_key_ime_warning`）は、
+/// ADR-217でフィールドごと削除した（常に`None`だったため）。`SCHEMA_VERSION`は
+/// 上げない（サーバは`schema_version`が一致しない報告を拒否する）。`deny_unknown_fields`
+/// を付けていないので、これらのキーを持つ旧JSONも読める
+/// （`gji_keymap_summary_with_removed_adopted_keys_still_deserializes`）。
 ///
 /// # この型の安全性が依存している前提（レビューF7・S-2）
 ///
@@ -250,29 +251,19 @@ pub struct BugReportGjiKeymapSummary {
     /// `"Toggle"`。
     pub henkan_classified_kind: Option<String>,
     pub muhenkan_classified_kind: Option<String>,
-    /// ADR-191で採用の機構を撤去したため、常に`None`（互換のためスキーマに残す）。
-    pub henkan_adopted_kind: Option<String>,
-    pub muhenkan_adopted_kind: Option<String>,
-    /// ADR-191で採用の機構を撤去したため、常に`None`（互換のためスキーマに残す）。
-    pub henkan_adopted_route: Option<String>,
-    pub muhenkan_adopted_route: Option<String>,
-    /// ADR-191で採用の機構を撤去したため、常に`None`（互換のためスキーマに残す）。
-    pub thumb_key_ime_warning: Option<String>,
     /// `muhenkan_solo_tap_dedicated_fn_key`が設定済みか。`true`の場合、
     /// GJI/MS-IME共通の意味を持つため両summary型に同じフィールドを持たせる
-    /// （ADR-191で`*_adopted_route`は常に`None`になったが、専用Fnキーの有無自体は
-    /// 診断に有用なので残す）。
+    /// （専用Fnキーの有無自体は診断に有用なので残す）。
     pub muhenkan_dedicated_fn_key_configured: bool,
 }
 
 /// MS-IME「キーとタッチのカスタマイズ」（シンプルキー割当て）のレジストリ
 /// 値の要約（ADR-148）。
 ///
-/// フィールドの生値/採用系の区別は[`BugReportGjiKeymapSummary`]と同じ
-/// 考え方: 生のDWORD5個は`ime_kind`に関わらず常に読む。`adopted_*`は
-/// `adopted_ime_toggle_combos`は`ime_kind == MsIme`のときのみ`Some`（MS-IMEが
-/// 非アクティブなら、そのレジストリ値をawaseは採用していない）。
-/// `adopted_*_delegate`はADR-191で撤去したため常に`None`。
+/// 生のDWORD5個は`ime_kind`に関わらず常に読む。`adopted_ime_toggle_combos`は
+/// `ime_kind == MsIme`のときのみ`Some`（MS-IMEが非アクティブなら、そのレジストリ値を
+/// awaseは採用していない）。`adopted_*_delegate`はADR-191で撤去し、ADR-217で
+/// フィールドごと削除した（[`BugReportGjiKeymapSummary`]のdoc参照）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct BugReportMsImeKeyAssignmentSummary {
     pub is_key_assignment_enabled: Option<u32>,
@@ -283,10 +274,6 @@ pub struct BugReportMsImeKeyAssignmentSummary {
     /// `"Ctrl+Space"`/`"Shift+Space"`のような表現。`ime_kind == MsIme`の
     /// ときのみ`Some`。
     pub adopted_ime_toggle_combos: Option<Vec<String>>,
-    /// ADR-191で無変換/変換のdelegate採用を撤去したため、常に`None`
-    /// （互換のためスキーマに残す）。
-    pub adopted_muhenkan_delegate: Option<String>,
-    pub adopted_henkan_delegate: Option<String>,
     /// [`BugReportGjiKeymapSummary::muhenkan_dedicated_fn_key_configured`]
     /// と同じ意味。
     pub muhenkan_dedicated_fn_key_configured: bool,
@@ -1154,11 +1141,6 @@ mod tests {
             mode_toggle_kana_type_keys: Some(vec![]),
             henkan_classified_kind: Some("On".to_owned()),
             muhenkan_classified_kind: Some("Off".to_owned()),
-            henkan_adopted_kind: Some("On".to_owned()),
-            muhenkan_adopted_kind: Some("Off".to_owned()),
-            henkan_adopted_route: None,
-            muhenkan_adopted_route: None,
-            thumb_key_ime_warning: None,
             muhenkan_dedicated_fn_key_configured: false,
         }
     }
@@ -1171,8 +1153,6 @@ mod tests {
             key_assignment_ctrl_space: Some(0),
             key_assignment_shift_space: Some(0),
             adopted_ime_toggle_combos: None,
-            adopted_muhenkan_delegate: None,
-            adopted_henkan_delegate: None,
             muhenkan_dedicated_fn_key_configured: false,
         }
     }
@@ -1458,6 +1438,37 @@ mod tests {
         v.as_object_mut().unwrap().remove("keymap_learn");
         let parsed: BugReportDiagnostics = serde_json::from_value(v).expect("旧形式を読めること");
         assert_eq!(parsed.keymap_learn, None);
+    }
+
+    /// ADR-217の回帰: 削除した「採用系」フィールドを持つ旧診断JSONを読めること。
+    /// `deny_unknown_fields`を付けると、R2に溜まった過去の報告・旧ビルドが書いた
+    /// 診断JSONが読めなくなる（`load_diagnostics`の`.ok()`で既存診断も全部消える）。
+    #[test]
+    fn gji_keymap_summary_with_removed_adopted_keys_still_deserializes() {
+        let mut v = serde_json::to_value(test_gji_keymap_summary()).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.insert("henkan_adopted_kind".to_owned(), serde_json::json!("On"));
+        o.insert("muhenkan_adopted_kind".to_owned(), serde_json::json!("Off"));
+        o.insert("henkan_adopted_route".to_owned(), serde_json::json!(null));
+        o.insert("muhenkan_adopted_route".to_owned(), serde_json::json!(null));
+        o.insert("thumb_key_ime_warning".to_owned(), serde_json::json!(null));
+        let parsed: BugReportGjiKeymapSummary =
+            serde_json::from_value(v).expect("旧形式のJSONを読めること");
+        assert_eq!(parsed, test_gji_keymap_summary());
+
+        let mut v = serde_json::to_value(test_msime_key_assignment_summary()).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.insert(
+            "adopted_muhenkan_delegate".to_owned(),
+            serde_json::json!(null),
+        );
+        o.insert(
+            "adopted_henkan_delegate".to_owned(),
+            serde_json::json!("On"),
+        );
+        let parsed: BugReportMsImeKeyAssignmentSummary =
+            serde_json::from_value(v).expect("旧形式のJSONを読めること");
+        assert_eq!(parsed, test_msime_key_assignment_summary());
     }
 
     fn test_legacy_msime_keymap_summary() -> BugReportLegacyMsImeKeymapSummary {

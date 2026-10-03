@@ -83,7 +83,7 @@ impl Runtime {
             }
         }
 
-        self.kp_stage_focus_probe(&mut event);
+        self.kp_stage_focus_probe();
         self.kp_stage_idle_conv_check(&event);
         // ADR-208 D1（PR #419 Opus M-4）: 同じ打鍵で Engine が `SetOpen` を出すキー（`keys.ime_on/off/toggle`・自動検出トグル等）
         // では、shadow の書き込みを抑止して Engine に任せる（衝突を書く前に静的に解く）。ctx は shadow の判断**前**の
@@ -298,7 +298,7 @@ impl Runtime {
     }
 
     /// フォーカス切替直後の非同期プローブ
-    fn kp_stage_focus_probe(&mut self, _event: &mut RawKeyEvent) {
+    fn kp_stage_focus_probe(&mut self) {
         // Step 5: focus_transition_pending: bool は InputBarrier::FocusTransition に置換。
         // 最初のキー入力で barrier を consume する (one-shot 動作維持)。
         if !self.platform_state.ime.consume_focus_barrier() {

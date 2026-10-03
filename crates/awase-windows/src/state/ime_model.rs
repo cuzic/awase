@@ -45,7 +45,8 @@ pub(crate) enum ImeApplyAcceptance {
 }
 
 impl ImeApplyAcceptance {
-    #[allow(dead_code)]
+    // 呼び出し元 `runtime/mod.rs`（`#[cfg(windows)]`）が非 Windows には存在しない。
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) const fn drives_composition_side_effects(self) -> bool {
         matches!(self, Self::Accepted)
     }

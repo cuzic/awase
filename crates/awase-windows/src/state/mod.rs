@@ -66,9 +66,10 @@ pub mod ime_actuation;
 // 移した。ungated にして、`explicit_press` の全列挙テストが本番と同じ判断コードを Linux で呼べるようにする。
 pub mod physical_disposition;
 // ADR-208 L0: 明示キー押下 1 回の配送（物理の届け方と awase の書き込み）を既存の判断の合成として決める純粋関数と、
-// その全列挙テストの入力型。本番は L0 では `select_shadow_intent`/`engine_set_open_filtered_by_chord` だけを呼ぶ
-// （それ以外は L1 以降）ため、`explicit_press_delivery_with` 等は非テストビルドでは未使用になる。
-#[allow(dead_code)]
+// その全列挙テストの入力型。ungated にして全列挙テストを Linux で回すため、本番の呼び出し元の一部
+// （`runtime/key_pipeline.rs` の `select_shadow_intent`/`shadow_noop_write_target`/`ShadowIntentKind`）が
+// Windows 専用である非 Windows ビルドでは、それらが未使用になる。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod explicit_press;
 // ADR-208 L1: 「この押下で既に書いた」の予約（`last_written_press`）と同一押下の二重送信の防御・衝突の優先順位（純粋）。
 pub mod press_ledger;
@@ -76,10 +77,10 @@ pub mod press_ledger;
 // 規則を Linux で全数テストするため）。実 write は Windows 側の
 // `MechanismWriter` 実装（`ime_controller.rs`）が担う。
 pub mod actuation_chain;
-// ADR-081 Phase 0 試験実装（未配線）。app_ime_policy と同じ ungated パターンで
-// Linux 上の `cargo test -p awase-windows --lib` から実行できるようにする。
-// 呼び出し元は Windows/非 Windows どちらにも現時点で存在しない
-// （配線は Phase 1 のスコープ）ため、両ターゲットで dead_code を許可する。
+// ADR-081 Phase 1a/1b/1c の「コード構造についての契約宣言」とそのテストのみのモジュール
+// （本番の呼び出し元は無い）。Phase 1d/1e は ADR-090 §2.F で凍結した。app_ime_policy と
+// 同じ ungated パターンで Linux 上の `cargo test -p awase-windows --lib` から実行できるようにし、
+// 両ターゲットで dead_code を許可する。
 #[allow(dead_code)]
 pub mod ime_profile_driver;
 // ADR-089 §2.4: `GjiFsm` 同期義務（INV-42/43）。ADR-081 Phase 1c の共有 GJI 機構
@@ -99,8 +100,9 @@ pub mod eisu_recovery;
 // actuation 決定出力が Windows-gated 型を state 層へ持ち込まないための境界型。
 pub mod conv_after_open;
 // ADR-163 TH1b-1: IME actuation の「何を送るか」を Win32 I/O から切り離した
-// 純粋決定関数。まだどこからも呼ばれない追加のみのモジュールで、配線は別タスク。
-#[allow(dead_code)]
+// 純粋決定関数。本番は `ime_controller.rs`/`journal.rs`（TH1b-2b で配線済み）から呼ばれる。
+// ungated なので、呼び出し元が Windows 専用の非 Windows ビルドでは未使用になる。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod ime_actuation_decision;
 // ADR-163 Part B（TH1c）: attempt単位の決定点ジャーナルスキーマとcrate内
 // 再生ハーネス。ime_actuation_decisionと同じ「追加のみ、本番経路への配線は

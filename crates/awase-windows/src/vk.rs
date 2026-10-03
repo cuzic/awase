@@ -774,8 +774,8 @@ pub fn parse_key_combo(s: &str) -> Option<awase::config::ParsedKeyCombo> {
 /// 実装は `awase-vkmap` crate に切り出し済み（2026-08-24、design doc §7.1）。
 /// `awaza`（別リポジトリのTSF実装）が `awase-windows` 一式の重い依存を
 /// 引き込まずにこの表だけを再利用できるようにするため。ここでは
-/// 既存呼び出し元との互換性のためre-exportのみ行う。
-pub use awase_vkmap::vk_to_pos;
+/// `VkCode::to_pos` から使うために取り込むだけで、re-exportはしない。
+use awase_vkmap::vk_to_pos;
 
 // ── 文字→VK 変換テーブル（output/resolve.rs から移動）───────────────────────
 

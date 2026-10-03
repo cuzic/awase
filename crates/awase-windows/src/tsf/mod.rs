@@ -52,8 +52,6 @@ pub(crate) mod warmup;
 mod win_event_obs;
 
 #[cfg(windows)]
-pub use awase::gate::GateAction;
-#[cfg(windows)]
 pub use tsf_gate::{
     GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, TsfReadiness, WARMUP_TIMEOUT_MS,
 };

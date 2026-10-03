@@ -7,10 +7,10 @@ summary: |-
   使い手が無いことを確認できたもの(re-export・未使用引数・呼び出し元ゼロの関数)は撤去または私的 `use` へ格下げする。
   本番で使われているのに `#[allow(dead_code)]` とコメントだけが古くなっているものは、allow とコメントを直す(コードは消さない)。
   不具合報告 JSON の常に None のフィールドは、SCHEMA_VERSION を上げずに削除する。
-  `GjiAction::SendInput` 系・`compute_active`・config.rs の旧キー受理は残す。`Tab::AppRules` は所有者の判断待ちで本 ADR の範囲外。
+  `GjiAction::SendInput` 系・`compute_active`・config.rs の旧キー受理は残す。`Tab::AppRules` は、所有者の判断(案内していない機能で使用者がいない)で設定画面だけを削除する(config.toml の項目は残す)。
   IME actuation 入口の診断専用コード・常に None の引数は ADR-216 の範囲なので、本 ADR では扱わない。
 status: |-
-  提案(2026-10-02)。Opus 敵対的レビュー round1 の指摘(`compute_active` を A から外す、`pub use` は私的 `use` に格下げ、C の各項目に判定)と round2 の事実誤り修正を反映済み。round2 で収束(設計上の論点なし、round3 不要)。C3 は所有者の判断待ち。未実装。
+  提案(2026-10-02)。Opus 敵対的レビュー round1 の指摘(`compute_active` を A から外す、`pub use` は私的 `use` に格下げ、C の各項目に判定)と round2 の事実誤り修正を反映済み。round2 で収束(設計上の論点なし、round3 不要)。A・B・C1・C3 を実装済み(2026-10-02、`refactor/adr217-remove-dead-compat` の6コミット + status 更新、PR 経由でマージ待ち)。C2 はコメント訂正のみで実施せず。C3 は所有者の判断で画面を削除した。
 related_adr:
   - "ADR-148"
   - "ADR-158"
@@ -74,16 +74,16 @@ ADR-158 の方針(複雑性は減らす方向に報酬がない)に沿い、使�
 |---|---|---|
 | **C1** 不具合報告 JSON の常に `None` のフィールド(`bug_report.rs` の `*_adopted_*`・`thumb_key_ime_warning`、`message_handlers.rs` の `GjiAdoptedFields`・`MsImeAdoptedFields` の `adopted_*_delegate`) | **今回やる(最後の独立コミット)** | 読み手は調べ尽くした。サーバ(`services/report-worker/src/index.ts:86`)は中身を検証せず不透明に扱う。Rust 側に `deny_unknown_fields` は無く、`Option` の欠落は `None` になるので、exe の版が食い違っても両方向で壊れない。分析スキル・テスト fixture にも言及は無い。ADR-191 以前の報告では値があり、以後は `null` なので、キーごと消えた方が「その版には機構が無い」と明確に伝わる。**`SCHEMA_VERSION`(`bug_report.rs:36`、現在3)は上げない**——`index.ts:519` は `schema_version !== SCHEMA_VERSION` を拒否するため、上げると Worker を再デプロイするまで新クライアントの報告が全て弾かれる。範囲: `bug_report.rs` の doc とフィールド・fixture(`:1157-1175`)、`message_handlers.rs:1442-1462`・`:1549-1630`(`MsImeAdoptedFields` は `adopted_ime_toggle_combos` だけになるので `Option<Vec<String>>` 1つにする)。ADR-148 に「ADR-217 でフィールド削除」と1行追記する |
 | **C2** `GjiAction::SendInput`/`SendInputDirect`/`PendingInput`(`tsf/gji_fsm.rs`) | **やらない(コメントの訂正のみ)** | `PendingInput` は `SendInput` の中身であるだけでなく、`GjiEvent::KeyInput` の payload(`gji_fsm.rs:238`、生成は `vk_send.rs:210,388`)であり `OnCold`/`Warming` の pending バッファ(`:177,192,409,433,489`)でもある。`DiscardPending { count }` の件数もここから出る。`SendInput` 系だけを消すとテストの観測点を失うだけでバッファは残り、全部消すなら FSM の状態の形(バッファ→カウンタ)の変更になる。それは warmup/cold-start 系の再発ファミリーに入り、得るものは String の確保1つ分。`gji_fsm.rs:78-79` の doc を「`KeyInput` の payload と `DiscardPending.count` の元。romaji の中身はテストだけが見る」に直す程度 |
-| **C3** `awase-settings` の `Tab::AppRules`(`main.rs:45` と `tab_app_rules`) | **所有者に1問。答えが出るまで本 ADR の範囲外** | 互換コードではなく製品判断(GUI に戻すか)。消す場合は `main.rs:39-45`・`:3364-3494`(`tab_app_rules`)・`:4217-4222`・`:4313`・専用フィールド `new_override_bufs`/`new_pb_key`/`new_pb_process`/`new_pb_class`(`:469-475`、初期化 `:742-746`・`:6215-6217`)・テスト `:6418-6422` まで要る(フィールドを残すと dead_code が連鎖する) |
+| **C3** `awase-settings` の `Tab::AppRules`(アプリ別上書き force_text/force_bypass/force_vk/force_tsf と `post_bypass` の設定画面。2026-08-26 の `1a3dcf5c` から非表示) | **画面だけ削除する(所有者判断、2026-10-02)** | 互換コードではなく製品判断だった。所有者の判断: 使い方を案内していない機能なので使用者はいない。**config.toml の項目(`app_overrides.force_*`・`post_bypass`)は残す**(既存ユーザーの設定ファイルとの互換、および config 側で動作は生きているため。画面の削除は挙動を変えない)。削除範囲: `Tab::AppRules` と `tab_app_rules`・`override_list_ui`・専用バッファ(`new_override_bufs`・`new_pb_*`)・テストの呼び出し。将来 UI を作り直すなら、自動判定できない「素通し」(`force_bypass`/`disable_apps`)だけを、フォーカス中アプリの登録ボタンつきで出す案を出発点にする(`force_vk`/`force_tsf`/`force_text` は自動判定の不具合として直すべきもので、UI で隠さない) |
 | **C4** `explicit_press` の allow | **今回やる** | B に統合した |
 
 ## 決定
 
 1. **A を実施する**。`pub use` は削除でなく私的な `use` への格下げ(定義元モジュール自身が使うため)。
 2. **B を実施する**。allow とコメントを実態に直し、コードは消さない。Linux の扱いは各項目に書いたとおり(`cfg_attr` が要るのは ungated 定義で呼び出し元が windows のもの)。
-3. **C1 を実施する**(`SCHEMA_VERSION` は据え置く)。**C2 はコメント訂正のみ**。C3 は所有者の判断待ち。
+3. **C1 を実施する**(`SCHEMA_VERSION` は据え置く)。**C2 はコメント訂正のみ**。C3 は画面だけ削除する(config.toml の項目は残す)。
 4. コミットは1コミット1種類、すべて `refactor` 型(挙動不変、fix ではないので fix-requires-evidence の対象外と本文に1行書く。`.githooks/pre-push` の警告は出うるがブロックはしない):
-   (i) re-export の格下げ・削除、(ii) 未使用引数、(iii) 呼び出し元ゼロの関数、(iv-a) 関数単位の allow とコメントの訂正(`literal_session_confirmed`・`drives_composition_side_effects`・`ime_profile_driver` のコメント)、(iv-b) モジュール単位の allow の `cfg_attr` 化(`explicit_press`・`ime_actuation_decision`。Windows clippy で局所 allow が増えたら理由を本文に書く)、(v) C1(不具合報告 JSON)。
+   (i) re-export の格下げ・削除、(ii) 未使用引数、(iii) 呼び出し元ゼロの関数、(iv-a) 関数単位の allow とコメントの訂正(`literal_session_confirmed`・`drives_composition_side_effects`・`ime_profile_driver` のコメント)、(iv-b) モジュール単位の allow の `cfg_attr` 化(`explicit_press`・`ime_actuation_decision`。Windows clippy で局所 allow が増えたら理由を本文に書く)、(v) C1(不具合報告 JSON)、(vi) C3(設定画面 `Tab::AppRules` の削除)。
    (v) を最後にするのは、外部の読み手がいる唯一の項目なので、単独で revert できるようにするため。
 5. **ADR-216 のマージ後の `develop` から切り直して実装する**。**衝突はない**: ADR-216 の実装ブランチ(`5363c2b1`、R1〜R4 実装済み)の diff は、ADR-217 の対象行と1つも重ならない(`key_pipeline.rs` は1268行付近のみ、`ime_model.rs` は56行以降、`runtime/mod.rs` は963行以降、`state/mod.rs` には触れない)。どの hunk も ADR-217 の対象行より後ろにあり、マージ後も行番号はずれない。したがって順序の制約は無く、ADR-216 のマージが遅れるなら先に進めてよい。ADR-216 が先にマージされる見込みなので、マージ後の `develop` から切るのを既定とする。
 6. 新しい型・gate・抽象は足さない(`#[expect(dead_code)]` への置き換えも採らない: Linux/Windows と `cfg(test)` の組み合わせで「満たされなかった」警告が片方のターゲットだけに出て、`cfg_attr` の組み合わせが増える)。
@@ -124,7 +124,6 @@ cargo test -p awase-windows --lib bug_report      # C1(fixture の更新)
 
 ## 未確定・リスク
 
-- C3(`Tab::AppRules`)は所有者の判断待ち。聞き方: 「アプリ別上書き(force_text/bypass/vk/tsf)の GUI を将来戻す予定はありますか? 無ければ `tab_app_rules`(約130行)と専用フィールド4つを消します(git に残るので戻せます)」。
 - B の `cfg_attr` 化で Windows の clippy に新しい警告が出る項目があれば、局所 allow に倒す(モジュール全体には戻さない)。実装時に確認する。
 - ADR-216 は実装済み・マージ待ち(`5363c2b1`)。diff が重ならないことは確認済みで、順序は任意。
 

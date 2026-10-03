@@ -36,13 +36,6 @@ enum Tab {
     Keymap,
     DisableApps,
     Calibration,
-    // サイドパネルから外しているため未構築（今後の課題として実装は保持）。
-    // disable_apps 部分のみ `DisableApps` タブへ切り出し済み（2026-08-26、
-    // BUG-90）。残る force_text/force_bypass/force_vk/force_tsf は
-    // プロセス名+クラス名の両方が必要な、より高度な上書き設定のため
-    // 引き続き非表示（config.toml の直接編集に委ねる）。
-    #[allow(dead_code)]
-    AppRules,
     Layout,
     Advanced,
 }
@@ -465,14 +458,8 @@ struct SettingsApp {
     new_keymap_to_main: String,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
-    // アプリ別タブ add-buffers: (process, class) × force_text/force_bypass/force_vk/force_tsf
-    new_override_bufs: [(String, String); 4],
     // disable_apps add-buffer（プロセス名のみ、class 不要）
     new_disable_app: String,
-    // post_bypass add-buffers
-    new_pb_key: String,
-    new_pb_process: String,
-    new_pb_class: String,
     // ── 配列編集タブの状態（旧 awase-yab-editor バイナリを統合） ──
     layout: YabLayout,
     layout_file_path: Option<PathBuf>,
@@ -739,11 +726,7 @@ impl SettingsApp {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
-            new_override_bufs: Default::default(),
             new_disable_app: String::new(),
-            new_pb_key: String::new(),
-            new_pb_process: String::new(),
-            new_pb_class: String::new(),
             // 配列編集タブの状態は「配列編集」タブを開くまで読み込まない
             // （ensure_layout_loaded 参照）。起動時に毎回 .yab を同期的に
             // 読み込むと、ウィンドウ生成〜最初の描画までの間が延び、実機で
@@ -3257,11 +3240,11 @@ impl SettingsApp {
     }
 
     /// 「アプリ無効化」タブ（`disable_apps`）。プロセス名のみで完結する単純な
-    /// 設定のため、`tab_app_rules`（force_text/force_bypass/force_vk/force_tsf、
-    /// プロセス名+クラス名の両方が必要でGUI化を見送っている）とは切り離して
-    /// 常時表示する（2026-08-26、BUG-90: PowerToys Mouse Without Borders 使用中
-    /// に物理「英数」キーが効かない不具合の回避策としてユーザーが自分で
+    /// 設定のため常時表示する（2026-08-26、BUG-90: PowerToys Mouse Without Borders
+    /// 使用中に物理「英数」キーが効かない不具合の回避策としてユーザーが自分で
     /// `disable_apps` に中継ウィンドウのプロセス名を追加できるようにする）。
+    /// アプリ別上書き（force_text/force_bypass/force_vk/force_tsf、`post_bypass`）の
+    /// 設定画面は ADR-217 で撤去した（config.toml の直接編集では引き続き有効）。
     fn tab_disable_apps(&mut self, ui: &mut egui::Ui) {
         ui.heading("アプリを無効化");
         ui.label(
@@ -3358,137 +3341,6 @@ impl SettingsApp {
                 ui.label(status);
             }
         }
-    }
-
-    #[expect(clippy::too_many_lines)]
-    fn tab_app_rules(&mut self, ui: &mut egui::Ui) {
-        ui.heading("アプリ別オーバーライド");
-        ui.label(
-            "特定アプリでの awase の挙動を上書きします。\n\
-             プロセス名・クラス名は両方必須で、完全一致（大文字小文字は区別しない）です。\n\
-             クラス名はログの [focus-sync] 行などで確認できます。",
-        );
-        ui.add_space(8.0);
-
-        let [buf_text, buf_bypass, buf_vk, buf_tsf] = &mut self.new_override_bufs;
-        override_list_ui(
-            ui,
-            "ov_text",
-            "テキスト入力扱いを強制 (force_text)",
-            "フォーカス分類を強制的に TextInput にします。\nNICOLA 変換が効かないアプリで有効にします。",
-            &mut self.config.app_overrides.force_text,
-            buf_text,
-            &mut self.status,
-        );
-        override_list_ui(
-            ui,
-            "ov_bypass",
-            "素通しを強制 (force_bypass)",
-            "フォーカス分類を強制的に NonText にし、全キーを変換せず OS に通します。\nゲーム等、awase を効かせたくないアプリで有効にします。",
-            &mut self.config.app_overrides.force_bypass,
-            buf_bypass,
-            &mut self.status,
-        );
-        override_list_ui(
-            ui,
-            "ov_vk",
-            "VK 注入を強制 (force_vk)",
-            "文字出力を VK Batched 方式（IME に composition させる）に強制します。",
-            &mut self.config.app_overrides.force_vk,
-            buf_vk,
-            &mut self.status,
-        );
-        override_list_ui(
-            ui,
-            "ov_tsf",
-            "TSF 注入を強制 (force_tsf)",
-            "文字出力を TSF Sequential 方式に強制します。\nWezTerm 等の TSF ネイティブアプリで使用します。",
-            &mut self.config.app_overrides.force_tsf,
-            buf_tsf,
-            &mut self.status,
-        );
-
-        ui.separator();
-        ui.heading("プレフィックスキー素通し (post_bypass)");
-        ui.label(
-            "Ctrl+キー（tmux prefix 等）が素通しされた直後の次の1キーを\n\
-             NICOLA 変換せずそのまま通します。\n\
-             プロセス名・クラス名は部分一致で、空欄はすべてにマッチします。",
-        );
-        ui.add_space(4.0);
-        let mut rm = None;
-        for (i, rule) in self.config.post_bypass.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "    {} / process={} / class={}",
-                    rule.key,
-                    if rule.process.is_empty() {
-                        "(すべて)"
-                    } else {
-                        &rule.process
-                    },
-                    if rule.class.is_empty() {
-                        "(すべて)"
-                    } else {
-                        &rule.class
-                    },
-                ));
-                if ui
-                    .small_button("x")
-                    .on_hover_text("押すと: この行を削除します。")
-                    .clicked()
-                {
-                    rm = Some(i);
-                }
-            });
-        }
-        if let Some(i) = rm {
-            self.config.post_bypass.remove(i);
-        }
-        let pb_key_hover = "Ctrl+このキーが素通しされた直後の次の1キーを NICOLA 変換せず\nそのまま通します（tmux の Ctrl+B 等の prefix キー用）。";
-        ui.horizontal(|ui| {
-            ui.label("Ctrl+").on_hover_text(pb_key_hover);
-            main_key_combo(
-                ui,
-                "new_pb_key",
-                &mut self.new_pb_key,
-                pb_key_hover,
-                physical_key_options(),
-            );
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_pb_process)
-                    .desired_width(120.0)
-                    .hint_text("プロセス名 (部分一致)"),
-            )
-            .on_hover_text("対象プロセス名（部分一致）。空欄はすべてのプロセスにマッチします。");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_pb_class)
-                    .desired_width(120.0)
-                    .hint_text("クラス名 (部分一致)"),
-            )
-            .on_hover_text("対象ウィンドウのクラス名（部分一致）。空欄はすべてにマッチします。");
-            if ui
-                .button("+追加")
-                .on_hover_text("押すと: 上で組み立てたルールを一覧に追加します。")
-                .clicked()
-            {
-                if self.new_pb_key.is_empty() {
-                    self.status = "キーが未選択のため追加できません。".to_string();
-                } else {
-                    // ランタイムの parse は "Ctrl+<キー>" 形式（Ctrl 必須）を要求する
-                    self.config.post_bypass.push(awase::config::PostBypassRule {
-                        key: format_combo(
-                            true,
-                            false,
-                            false,
-                            &std::mem::take(&mut self.new_pb_key),
-                        ),
-                        process: std::mem::take(&mut self.new_pb_process),
-                        class: std::mem::take(&mut self.new_pb_class),
-                    });
-                }
-            }
-        });
     }
 
     #[expect(clippy::too_many_lines)]
@@ -4214,12 +4066,10 @@ impl eframe::App for SettingsApp {
             .default_width(100.0)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
-                // 「アプリ別」(AppRules) は高度な機能（force_text/force_bypass/
-                // force_vk/force_tsf、プロセス名+クラス名の両方が必要）のため
-                // GUI 化を見送り、config.toml の直接編集に委ねている。
-                // tab_app_rules の実装自体は残してある。disable_apps 部分だけは
-                // プロセス名のみで完結する単純な設定のため、2026-08-26（BUG-90）
-                // に「アプリ無効化」タブとして切り出して表示するようにした。
+                // アプリ別上書き（force_text/force_bypass/force_vk/force_tsf、
+                // `post_bypass`）の画面は ADR-217 で撤去した（config.toml の直接編集に
+                // 委ねる）。disable_apps だけはプロセス名のみで完結する単純な設定のため、
+                // 2026-08-26（BUG-90）に「アプリ無効化」タブとして切り出して表示している。
                 //
                 // 「配列編集」(Layout) は 2026-07-06 に「配列プレビューの実装が
                 // まだ固まっていない」として一旦非表示にしていたが、layouts_dir の
@@ -4310,7 +4160,6 @@ impl eframe::App for SettingsApp {
                     Tab::Keymap => self.tab_keymap(ui),
                     Tab::DisableApps => self.tab_disable_apps(ui),
                     Tab::Calibration => self.tab_calibration(ui),
-                    Tab::AppRules => self.tab_app_rules(ui),
                     Tab::Layout => self.tab_layout(ui),
                     Tab::Advanced => self.tab_advanced(ui),
                 });
@@ -4329,77 +4178,9 @@ impl eframe::App for SettingsApp {
 
 // ── Reusable UI helpers ──
 
-/// アプリ別オーバーライド1カテゴリ分のリスト UI（完全一致・両フィールド必須）。
-fn override_list_ui(
-    ui: &mut egui::Ui,
-    id: &str,
-    label: &str,
-    tooltip: &str,
-    entries: &mut Vec<awase::config::AppOverrideEntry>,
-    buf: &mut (String, String),
-    status: &mut String,
-) {
-    ui.label(label).on_hover_text(tooltip);
-    let mut rm = None;
-    for (i, e) in entries.iter().enumerate() {
-        ui.horizontal(|ui| {
-            ui.label(format!("    {} / {}", e.process, e.class));
-            if ui
-                .small_button("x")
-                .on_hover_text("押すと: この行を削除します。")
-                .clicked()
-            {
-                rm = Some(i);
-            }
-        })
-        .response
-        .on_hover_text(tooltip);
-    }
-    if let Some(i) = rm {
-        entries.remove(i);
-    }
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut buf.0)
-                .desired_width(150.0)
-                .hint_text("プロセス名 (例: msedge.exe)")
-                .id(egui::Id::new(format!("{id}_proc"))),
-        )
-        .on_hover_text("対象プロセスの実行ファイル名です。完全一致で判定します。");
-        ui.add(
-            egui::TextEdit::singleline(&mut buf.1)
-                .desired_width(200.0)
-                .hint_text("クラス名 (完全一致)")
-                .id(egui::Id::new(format!("{id}_class"))),
-        )
-        .on_hover_text(
-            "対象ウィンドウのクラス名です。完全一致で判定します。\nログの [focus-sync] 行などで確認できます。",
-        );
-        if ui
-            .button("+追加")
-            .on_hover_text("押すと: 入力したプロセス名・クラス名の組み合わせを一覧に追加します。")
-            .clicked()
-        {
-            if buf.0.is_empty() || buf.1.is_empty() {
-                // 以前は無言で何も起きなかった（ベストプラクティスレビュー指摘、
-                // `process_keymap_capture` の拒否理由表示と同じ系統の問題）。
-                *status = "プロセス名・クラス名の両方を入力してください。".to_string();
-            } else {
-                entries.push(awase::config::AppOverrideEntry {
-                    process: std::mem::take(&mut buf.0),
-                    class: std::mem::take(&mut buf.1),
-                });
-            }
-        }
-    });
-    ui.add_space(8.0);
-}
-
 /// `disable_apps`（プロセス名のみでアプリ全体を無効化するリスト）編集 UI。
 ///
-/// `override_list_ui` はプロセス名+クラス名の2フィールド固定で密結合なため、
-/// プロセス名のみの入力欄を別関数として新設した（トレイト/クロージャ導入は
-/// 40行の関数には過剰）。
+/// プロセス名のみの入力欄（クラス名は不要）。
 fn process_list_ui(
     ui: &mut egui::Ui,
     id: &str,
@@ -6212,11 +5993,7 @@ mod layout_tab_repro {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
-            new_override_bufs: <[(String, String); 4]>::default(),
             new_disable_app: String::new(),
-            new_pb_key: String::new(),
-            new_pb_process: String::new(),
-            new_pb_class: String::new(),
             layout_file_path_buf: layout_path.display().to_string(),
             layout_file_path: Some(layout_path),
             layout,
@@ -6366,10 +6143,10 @@ mod layout_tab_repro {
         }
     }
 
-    /// `tab_basic`/`tab_keymap`/`tab_disable_apps`/`tab_app_rules`/
+    /// `tab_basic`/`tab_keymap`/`tab_disable_apps`/
     /// `tab_advanced` がパニックしないことを固定する（2026-08-15、ホバー
     /// ヒント拡充で全タブに手を入れたため追加。`tab_disable_apps` は
-    /// 2026-08-26 BUG-90 で `tab_app_rules` から切り出した際に追加。
+    /// 2026-08-26 BUG-90 で追加。
     /// `full_tab_layout_render_with_real_config_does_not_panic` と同じ
     /// パターン）。`tab_keymap`は既存ルールが無いと空一覧の分岐しか通らない
     /// ため、ダミーの `KeymapRule` を1件足して非空分岐（`main_key_combo`/
@@ -6414,11 +6191,6 @@ mod layout_tab_repro {
         let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
             eframe::egui::CentralPanel::default().show(ctx, |ui| {
                 app.tab_disable_apps(ui);
-            });
-        });
-        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
-            eframe::egui::CentralPanel::default().show(ctx, |ui| {
-                app.tab_app_rules(ui);
             });
         });
         let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
