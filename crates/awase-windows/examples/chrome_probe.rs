@@ -1297,6 +1297,10 @@ fn main() {
             let back = bring_to_front();
             p.log.line(&format!("REFOCUS away={away} back={back}"));
             sleep(300);
+            // CI では focus_away が失敗して(away=false)cold にならなかったので、確定キー(Enter)で cold にする
+            // (ConfirmKeyDown が composition を cold にマークする。打鍵しないので warm には戻らない)。
+            p.press(0x0D, false, 40);
+            sleep(150);
             p.log.line(&format!("CTRLSHIFT-BEGIN chords={chords}"));
             for _ in 0..chords {
                 send_key(0xA2, true); // Ctrl↓
