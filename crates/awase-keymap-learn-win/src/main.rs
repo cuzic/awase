@@ -664,7 +664,8 @@ mod app {
             let (eta_ms, expected) = (d.eta_ms.unwrap_or(-1.0), d.expected_presses);
             let line = format!(
                 "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0} \
-                 presses={presses} expected_presses={expected}"
+                 presses={presses} expected_presses={expected} statuses={}",
+                snapshot.observed_statuses
             );
             println!("{line}");
             // 診断: 標準出力は設定画面が読むだけでログに残らないため、`keymap-learn.log`
