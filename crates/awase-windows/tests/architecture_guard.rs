@@ -3684,9 +3684,7 @@ fn mode_key_passed_through_event_is_dispatched_from_one_place() {
         let production = non_comment_lines(production_code_only(&content));
         let count = production.matches("ModeKeyPassedThrough").count();
         let expected = match rel.as_str() {
-            "state/platform_state.rs" => 1,
-            "state/ime_model.rs" => 1,
-            "state/ime_event.rs" => 1,
+            "state/platform_state.rs" | "state/ime_model.rs" | "state/ime_event.rs" => 1,
             _ => 0,
         };
         assert_eq!(
@@ -4943,10 +4941,10 @@ fn hook_callback_log_call_count_is_pinned() {
     let start = content
         .find(START_MARKER)
         .unwrap_or_else(|| panic!("marker {START_MARKER:?} not found in hook.rs"));
-    let end = content[start..]
-        .find(END_MARKER)
-        .map(|i| start + i)
-        .unwrap_or_else(|| panic!("marker {END_MARKER:?} not found after hook_callback"));
+    let end = content[start..].find(END_MARKER).map_or_else(
+        || panic!("marker {END_MARKER:?} not found after hook_callback"),
+        |i| start + i,
+    );
     let body = &content[start..end];
 
     let count = body.matches("tracing::trace!").count()
@@ -5104,10 +5102,10 @@ fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
     let start = content
         .find(START_MARKER)
         .unwrap_or_else(|| panic!("marker {START_MARKER:?} not found in journal.rs"));
-    let end = content[start..]
-        .find(END_MARKER)
-        .map(|i| start + i)
-        .unwrap_or_else(|| panic!("marker {END_MARKER:?} not found after {START_MARKER:?}"));
+    let end = content[start..].find(END_MARKER).map_or_else(
+        || panic!("marker {END_MARKER:?} not found after {START_MARKER:?}"),
+        |i| start + i,
+    );
     let block = non_comment_lines(&content[start..end]);
 
     assert!(

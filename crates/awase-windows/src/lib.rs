@@ -32,6 +32,9 @@ pub mod hook_channel;
 pub mod journal_policy;
 pub(crate) mod lifetime_counter;
 pub mod msime_key_assignment;
+// 本番の呼び出し元（`read_legacy_toggle_assignment`/`read_legacy_compat_mode_enabled`）は
+// `#[cfg(windows)]` のため、純粋なパース部分は非 Windows では未使用になる（テストは Linux で回す）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod msime_legacy_keymap;
 pub mod scancode_map;
 pub mod scanmap;
