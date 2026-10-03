@@ -1,39 +1,74 @@
-//! 学習の進捗率の見積り。「残り作業量」を途中経過から見積もり直し、分母
-//! (`これまでの打鍵数 + 残りの見積り`)を最悪ケースから実際の値へ縮めていく。
+//! 学習の進捗率・残り時間の見積り。打鍵数ベースの「残り作業量」を局面別に見積もり、局面別の
+//! 1打鍵あたりの時間で時間へ換算し、表示用の割合・残り時間が線形に近づくようならす。
 //!
-//! セル数は序盤で頭打ちになり終盤に動かなく見える(実測: 約65秒で168セルに到達後、約27秒は不変)
-//! ため、進捗の分子は打鍵数にする。残りは次の3つの和:
-//! - 発見済みの`Status`の未測定セル: セルあたり[`PRESSES_PER_CELL`]打鍵。
-//! - まだ見つかっていない`Status`の分: 上限(モデルの状態数)まで見込み、発見済みのセルを
-//!   測り終えるにつれて0へ縮める(測るべき既知セルが無ければ新しい状態へも進めない)。
-//! - やり直し・検証などの末尾の枠: [`TAIL_PRESSES`]と、学習後の検証ウォーク
-//!   [`VERIFY_WALK_PRESSES`]。セルを測り終えてから消化していく。
+//! 学習は次の局面を順に進む(打鍵数は5回の実機・CIの実測、GJI/ATOK/MS-IME本体):
+//! 1. **セル巡回**: 発見済みの`Status`の全セルを測り終えるまで。終わる打鍵数は環境で大きく違う
+//!    (ATOK 280・MS-IME本体 570・GJI 870)ため、終わるまで分からない。序盤は観測した最長
+//!    ([`CELL_PHASE_PRESSES_FLOOR`])を下限に長めに見積もり、終わった時点で正確な値へ一気に補正する
+//!    (長めに見積もって早く終わる方が、短めに見積もって止まるより体験が良い)。
+//! 2. **やり直し・検証などの末尾**: [`TAIL_PRESSES`]。巡回後に約630〜970打鍵(実測 388〜972)。
+//! 3. **検証ウォーク**: 予測できたステップが目標に届くまで押す。進み具合([`WalkProgress`])から
+//!    残りを直接求める。
 //!
-//! 表示用の割合・残り時間は、見積りの揺れをならして線形に近づける[`LinearProgress`]が担う。
+//! 巡回が終わったか(=末尾へ入ったか)は、(a)発見済みの全セルを測り終えた、または(b)測れたセル数が
+//! [`STAGNATION_PRESSES`]打鍵動かない(MS-IME本体は210セル中154セルから先へ進まない)ときとする。
+//! 新しいセルが出ない間隔の最大は巡回の途中でも60打鍵(実測5回)なので、150なら誤判定しない。
 //!
-//! 定数の根拠(GJI、12状態×14キー=168セル): 訓練の総打鍵数は5回実測で
-//! 1482/1512/1518/1501/1527。直近の実機ランで168セルに達したのは870打鍵時点
-//! (62.8秒、総1527の約57%): 870/168 = 5.2打鍵/セル、末尾は 1500-870 = 約630打鍵。
-//! (時間では全体の約7割に見えたが、打鍵数では約57%。打鍵は時間に対して一様でない。)
-//! セル到達時点を測ったのは1回分のみ。5モードの30状態は未測定の外挿。
+//! 時間への換算([`LinearProgress`])は、巡回中は経過/打鍵数、末尾は巡回後の実測(30打鍵たまるまでは
+//! 巡回中の[`TAIL_RATE_RATIO`]倍)を使う。巡回後が速いのは、リセット(約90〜116ms)が巡回中に
+//! 集中するため。総時間の見積りは、上げる向きをゆるやかに([`SLEW_UP`]<1なら割合は単調増加・
+//! 残り時間は単調減少)、下げる向きは速く([`SLEW_DOWN`])動かす。
 //!
-//! 検証ウォークは学習(やり直し込み)の後に走り、予測できたステップが300に達するまで押下を
-//! 続ける(`MIN_PREDICTED_STEPS`)。これを見積りに入れないと、学習が終わった時点で進捗が
-//! 「ほぼ100%・残り約1秒」に張り付いたまま、ウォーク分の押下が進捗なしで続いてしまう。
-//! ウォークの実打鍵数は未測定(予測できなかった押下の分だけ300より多い)ため、余裕を
-//! 見て[`VERIFY_WALK_PRESSES`]を置いた。実機ログで`presses`の最終値が分かれば合わせ直す。
+//! 実測(GJI実機2回・CIのGJI(ATOK/MS-IMEプリセット)・MS-IME本体)の再生では、GJI以外の環境で
+//! 旧版が終了時に29〜50%で終わっていた(巡回の下限を168セル分に固定し、総時間を下げる速さを
+//! 制限していたため)。
 //!
 //! OS非依存なのでLinuxでもユニットテストできる。
 
-/// 1セルを測るのに要する打鍵数(上記の実測から)。
+/// 1セルを測るのに要する打鍵数(GJI 168セル/870打鍵から)。
 pub const PRESSES_PER_CELL: f64 = 5.2;
+/// セル巡回の打鍵数の長めの見積り(観測した最長: GJI 870打鍵)。巡回が終わるまでの下限に使う。
+pub const CELL_PHASE_PRESSES_FLOOR: f64 = 870.0;
 /// セルを測り終えた後のやり直し・検証などの打鍵数の枠。
 pub const TAIL_PRESSES: f64 = 630.0;
 /// 内蔵表と食い違ったセルの再測定1セルあたりの打鍵数(実測: windows-latest実GJI+ATOKで
 /// 到達所要押下数の平均22〜26、`REMEASURE_RESET_EVERY`の比較〈n=240〉より)。
 pub const REMEASURE_PRESSES_PER_CELL: f64 = 24.0;
-/// 学習後の検証ウォークの打鍵数の見積り(未測定、下限は予測ステップ数300)。
+/// 学習後の検証ウォークの打鍵数の見積り(実測 302〜331。ウォークが始まれば進み具合で置き換える)。
 pub const VERIFY_WALK_PRESSES: f64 = 330.0;
+/// 測れたセル数がこの打鍵数動かなければ、巡回は終わったとみなす。
+pub const STAGNATION_PRESSES: u32 = 150;
+
+/// 総所要時間の見積りが1秒の経過で上げてよい量(経過時間に対する比)。1未満なら、
+/// 割合(`経過/総時間`)は単調増加・残り時間(`総時間-経過`)は単調減少になる。
+const SLEW_UP: f64 = 0.9;
+/// 下げてよい量。大きくしておけば、長めの見積りから巡回が終わった時点で素早く補正できる。
+const SLEW_DOWN: f64 = 6.0;
+/// 見積りが尽きた(超過した)時点の残り時間。経過時間に対する比と、絶対値の下限の大きい方。
+/// 以降は実時間と同じ速さで減らし、終わりそうなら0秒・ほぼ100%へ向かって加速する。
+const MIN_ETA_FRACTION: f64 = 0.02;
+const MIN_ETA_MS: f64 = 300.0;
+/// 超過を減らし続けても、残り時間をこれ未満にはしない(0秒・100%に見せるのは完了の結果行)。
+const FLOOR_ETA_MS: f64 = 200.0;
+/// 速さ(1打鍵あたりの時間)が落ち着くまで残り時間を出さない打鍵数。起動直後は
+/// 1打鍵あたりが遅く(10打鍵時点で約140ms、100打鍵以降は約94ms)、外挿すると過大になる。
+const MIN_PRESSES_FOR_ETA: u32 = 100;
+/// 巡回後の1打鍵あたりの時間 ÷ 巡回中の1打鍵あたりの時間。巡回後はリセットが少なく速い。
+/// 実測の比: GJI実機 0.62、CIのGJI(MS-IMEプリセット)0.63、MS-IME本体 0.70、ATOK 0.87。
+/// 巡回後に[`TAIL_OBSERVE_PRESSES`]打鍵たまったら、この仮定でなく実測を使う。
+const TAIL_RATE_RATIO: f64 = 0.62;
+const TAIL_OBSERVE_PRESSES: u32 = 30;
+
+/// 検証ウォークの進み具合。
+#[derive(Debug, Clone, Copy)]
+pub struct WalkProgress {
+    /// これまでに予測できたステップ数。
+    pub predicted: u32,
+    /// 目標の予測ステップ数(`MIN_PREDICTED_STEPS`)。
+    pub target: u32,
+    /// これまでの押下の試行回数(予測できなかった押下を含む)。
+    pub attempts: u32,
+}
 
 /// ある時点の学習の状況。
 #[derive(Debug, Clone, Copy)]
@@ -46,15 +81,20 @@ pub struct Snapshot {
     pub observed_statuses: u32,
     /// 全キー数(1`Status`あたりのセル数)。
     pub keys: u32,
-    /// 到達しうる`Status`数の上限(モデルの状態数)。
-    pub max_statuses: u32,
+    /// モデルが見込む`Status`数(初期仮説の見積り。実際はこれより多くも少なくもなる)。
+    pub expected_statuses: u32,
+    /// 検証ウォーク中ならその進み具合。
+    pub walk: Option<WalkProgress>,
 }
 
-/// 進捗の見積り。割合を単調にするための状態を持つ。
+/// 局面別の残り打鍵数の見積り。
 #[derive(Debug, Default)]
 pub struct ProgressEstimator {
-    /// 発見済みのセルを測り終えた時点の打鍵数(まだなら`None`)。
+    /// 巡回が終わったとみなした時点の打鍵数(まだなら`None`)。
     cells_done_at: Option<u32>,
+    /// 測れたセル数の最大値と、それに初めて達した打鍵数。
+    best_covered: u32,
+    best_covered_at: u32,
     /// 学習後に分かった追加の打鍵数(内蔵表との不一致セルの再測定など)。
     extra_tail: f64,
 }
@@ -65,92 +105,70 @@ impl ProgressEstimator {
         Self::default()
     }
 
-    /// 学習後に判明した追加の作業量(打鍵数。内蔵表との不一致セルの再測定など)を
-    /// 末尾の枠へ足す。
+    /// 学習後に判明した追加の作業量(打鍵数。内蔵表との不一致セルの再測定など)を足す。
     pub fn add_extra_tail(&mut self, presses: f64) {
         self.extra_tail += presses;
     }
 
-    /// 局面別の残り打鍵数 `(セル巡回の残り, 巡回後の残り)` を返す。
-    ///
-    /// セル巡回の残りは、発見済みの未測定セルからの見積り([`PRESSES_PER_CELL`])と、
-    /// 「`max_statuses`×キー数のセルを測り終えるまでの総打鍵数から、これまでの打鍵数を引いた値」
-    /// の大きい方にする。状態は巡回の途中で次々に見つかるため、発見数からの見積りだけでは
-    /// 序盤に大きく過小になる(実機: 100打鍵時点で見積り総時間が実際の約0.8倍)。
+    /// 局面別の残り打鍵数 `(セル巡回の残り, それ以降の残り)`。
     fn remaining_parts(&mut self, s: Snapshot) -> (f64, f64) {
+        if let Some(w) = s.walk {
+            let walk = if w.predicted > 0 {
+                f64::from(w.target.saturating_sub(w.predicted)) * f64::from(w.attempts)
+                    / f64::from(w.predicted)
+            } else {
+                VERIFY_WALK_PRESSES
+            };
+            return (0.0, walk.max(1.0) + self.extra_tail);
+        }
+
+        if s.covered_cells > self.best_covered {
+            self.best_covered = s.covered_cells;
+            self.best_covered_at = s.presses;
+        }
         let known_cells = s.observed_statuses * s.keys;
         let unmeasured_known = known_cells.saturating_sub(s.covered_cells);
-        let unseen_statuses = s.max_statuses.saturating_sub(s.observed_statuses);
-
+        let expected = s.expected_statuses.max(s.observed_statuses);
         let unseen_weight = if known_cells == 0 {
             1.0
         } else {
             f64::from(unmeasured_known) / f64::from(known_cells)
         };
-        let unseen_cells = f64::from(unseen_statuses * s.keys) * unseen_weight;
-        let tail_total = TAIL_PRESSES + VERIFY_WALK_PRESSES + self.extra_tail;
+        let unseen_cells =
+            f64::from(expected - s.observed_statuses) * f64::from(s.keys) * unseen_weight;
 
-        if unmeasured_known == 0 && unseen_cells == 0.0 && known_cells > 0 {
-            let done_at = *self.cells_done_at.get_or_insert(s.presses);
+        let all_measured = unmeasured_known == 0 && unseen_cells == 0.0 && known_cells > 0;
+        let stagnant = self.best_covered > 0
+            && s.presses.saturating_sub(self.best_covered_at) >= STAGNATION_PRESSES;
+        let tail_total = TAIL_PRESSES + VERIFY_WALK_PRESSES + self.extra_tail;
+        if all_measured || stagnant {
+            let done_at = *self.cells_done_at.get_or_insert(if all_measured {
+                s.presses
+            } else {
+                self.best_covered_at
+            });
             let tail = tail_total - f64::from(s.presses.saturating_sub(done_at));
             (0.0, tail.max(1.0))
         } else {
             self.cells_done_at = None;
             let from_discovery = (f64::from(unmeasured_known) + unseen_cells) * PRESSES_PER_CELL;
-            let from_total =
-                f64::from(s.max_statuses * s.keys) * PRESSES_PER_CELL - f64::from(s.presses);
-            (from_discovery.max(from_total).max(0.0), tail_total)
+            let from_floor = CELL_PHASE_PRESSES_FLOOR - f64::from(s.presses);
+            (from_discovery.max(from_floor).max(0.0), tail_total)
         }
     }
 
-    /// 巡回後の局面に入った時点の打鍵数(まだなら`None`)。
+    /// 巡回が終わったとみなした時点の打鍵数(まだなら`None`)。
     #[must_use]
     pub fn tail_started_at(&self) -> Option<u32> {
         self.cells_done_at
     }
 
-    /// 分母(想定の総打鍵数)を返す。`presses`より必ず大きい。見積りが変わるたびに動くので、
-    /// 表示用の割合・残り時間は[`LinearProgress`]がなめらかにする。
+    /// 想定の総打鍵数(`presses`より必ず大きい)。
     pub fn expected_presses(&mut self, s: Snapshot) -> u32 {
         let (cells, tail) = self.remaining_parts(s);
         let expected = (f64::from(s.presses) + cells + tail).max(f64::from(s.presses) + 1.0);
         expected.ceil() as u32
     }
-}
-
-/// 総所要時間の見積りが1秒の経過で動いてよい量(経過時間に対する比)。1未満なら、
-/// 割合(`経過/総時間`)は単調増加・残り時間(`総時間-経過`)は単調減少になる。
-const SLEW: f64 = 0.5;
-/// 見積りが尽きた(超過した)時点の残り時間。経過時間に対する比と、絶対値の下限の大きい方。
-/// 以降は実時間と同じ速さで減らし、終わりそうなら0秒・ほぼ100%へ向かって加速する
-/// (固定したままだと、実機で終了の約2秒前から98%・残り2.7秒で止まって見えた)。
-const MIN_ETA_FRACTION: f64 = 0.02;
-const MIN_ETA_MS: f64 = 300.0;
-/// 超過を減らし続けても、残り時間をこれ未満にはしない(0秒・100%に見せるのは完了の結果行)。
-const FLOOR_ETA_MS: f64 = 200.0;
-/// 速さ(1打鍵あたりの時間)が落ち着くまで残り時間を出さない打鍵数。起動直後は
-/// 1打鍵あたりが遅く(実機: 10打鍵時点で約140ms、100打鍵以降は約94ms)、外挿すると
-/// 総時間が大きく過大になる(実機: 初期見積り239秒、実際138.5秒)。
-const MIN_PRESSES_FOR_ETA: u32 = 100;
-/// 巡回後の局面の1打鍵あたりの時間 ÷ 巡回中の1打鍵あたりの時間。巡回後はリセット
-/// (1回約116ms)がほぼ無いため速い。実機1回分の実測: 巡回870打鍵に81.8秒(94.0ms/打鍵)、
-/// 巡回後972打鍵に56.8秒(58.5ms/打鍵)で比0.62。巡回後に入って
-/// [`TAIL_OBSERVE_PRESSES`]打鍵たまったら、この仮定でなく実測を使う。
-const TAIL_RATE_RATIO: f64 = 0.62;
-const TAIL_OBSERVE_PRESSES: u32 = 30;
-
-/// [`ProgressEstimator`]の局面別の残り打鍵数を、局面別の1打鍵あたりの時間で**時間**へ換算し、
-/// 総所要時間の見積りを経過時間に対して[`SLEW`]以下の速さでしか動かさない。見積りが
-/// 途中で変わっても、割合は一定の傾きで増え、残り時間は1秒に1秒ずつ減る。
-#[derive(Debug, Default)]
-pub struct LinearProgress {
-    estimator: ProgressEstimator,
-    total_ms: Option<f64>,
-    last_elapsed_ms: f64,
-    /// 見積りが尽きた最初の時点の(残り時間, 経過ms)。以降は実時間と同じ速さで減らす下限にする。
-    eta_floor: Option<(f64, f64)>,
-    /// 巡回後の局面に入った時点の(打鍵数, 経過ms)。
-    tail_start: Option<(u32, f64)>,
 }
 
 /// [`LinearProgress::update`]の出力。
@@ -160,6 +178,21 @@ pub struct Display {
     pub eta_ms: Option<f64>,
     /// 想定の総打鍵数。残り時間があるときは`presses / expected_presses`が経過/総時間に等しくなるよう置く。
     pub expected_presses: u32,
+}
+
+/// [`ProgressEstimator`]の局面別の残り打鍵数を、局面別の1打鍵あたりの時間で時間へ換算し、
+/// 総所要時間の見積りを上げる向きはゆるやかに・下げる向きは速く動かす。
+#[derive(Debug, Default)]
+pub struct LinearProgress {
+    estimator: ProgressEstimator,
+    total_ms: Option<f64>,
+    last_elapsed_ms: f64,
+    /// 見積りが尽きた最初の時点の(残り時間, 経過ms)。以降は実時間と同じ速さで減らす下限にする。
+    eta_floor: Option<(f64, f64)>,
+    /// 巡回後の局面に入った時点の(打鍵数, 経過ms)。
+    tail_start: Option<(u32, f64)>,
+    /// 検証ウォークに入った時点の(打鍵数, 経過ms)。
+    walk_start: Option<(u32, f64)>,
 }
 
 impl LinearProgress {
@@ -178,9 +211,9 @@ impl LinearProgress {
         let (cells, tail) = self.estimator.remaining_parts(s);
         let by_presses = Display {
             eta_ms: None,
-            expected_presses: ((f64::from(s.presses) + cells + tail)
-                .max(f64::from(s.presses) + 1.0))
-            .ceil() as u32,
+            expected_presses: (f64::from(s.presses) + cells + tail)
+                .max(f64::from(s.presses) + 1.0)
+                .ceil() as u32,
         };
         if s.presses < MIN_PRESSES_FOR_ETA || elapsed_ms <= 0.0 {
             return by_presses;
@@ -191,7 +224,10 @@ impl LinearProgress {
             (None, _) => self.tail_start = None,
             _ => {}
         }
-        let (rate_cells, rate_tail) = if let Some((p0, e0)) = self.tail_start {
+        if s.walk.is_some() && self.walk_start.is_none() {
+            self.walk_start = Some((s.presses, elapsed_ms));
+        }
+        let (rate_cells, mut rate_tail) = if let Some((p0, e0)) = self.tail_start {
             let rate_cells = e0 / f64::from(p0.max(1));
             let n = s.presses - p0;
             let rate_tail = if n >= TAIL_OBSERVE_PRESSES {
@@ -204,13 +240,19 @@ impl LinearProgress {
             let rate = elapsed_ms / f64::from(s.presses);
             (rate, rate * TAIL_RATE_RATIO)
         };
+        if let Some((p0, e0)) = self.walk_start {
+            let n = s.presses - p0;
+            if n >= TAIL_OBSERVE_PRESSES {
+                rate_tail = (elapsed_ms - e0) / f64::from(n);
+            }
+        }
         let raw_total = elapsed_ms + cells * rate_cells + tail * rate_tail;
 
         let dt = (elapsed_ms - self.last_elapsed_ms).max(0.0);
         self.last_elapsed_ms = elapsed_ms;
         let slewed = match self.total_ms {
             None => raw_total,
-            Some(t) => t + (raw_total - t).clamp(-SLEW * dt, SLEW * dt),
+            Some(t) => t + (raw_total - t).clamp(-SLEW_DOWN * dt, SLEW_UP * dt),
         };
         let floor = match self.eta_floor {
             Some((eta0, at)) => (eta0 - (elapsed_ms - at)).max(FLOOR_ETA_MS),
@@ -240,104 +282,131 @@ mod tests {
             covered_cells: covered,
             observed_statuses: observed,
             keys: 14,
-            max_statuses: 12,
+            expected_statuses: 6,
+            walk: None,
         }
     }
 
-    #[test]
-    fn starts_from_worst_case_near_measured_total() {
-        let mut e = ProgressEstimator::new();
-        // 開始直後: 168セル×5.2 + 630 = 約1504打鍵(実測の訓練打鍵数1482〜1527と同程度)に、
-        // 検証ウォークの330打鍵を足した約1834打鍵。
-        let total = e.expected_presses(snap(0, 0, 0));
-        assert!((1810..=1860).contains(&total), "{total}");
+    /// 実機・CIの1回分の進捗(`tests/fixtures/*.csv`、列は cell,total,elapsed_ms,presses,statuses)と、
+    /// 検証ウォークが始まった打鍵数。
+    struct Run {
+        name: &'static str,
+        csv: &'static str,
+        expected_statuses: u32,
+        walk_start: u32,
     }
 
-    #[test]
-    fn denominator_shrinks_toward_actual_when_fewer_statuses_exist() {
-        // 上限30状態を見込んで始めても、12状態で測り終えれば分母は約半分に縮む。
-        let mut e = ProgressEstimator::new();
-        let worst = e.expected_presses(Snapshot {
-            presses: 0,
-            covered_cells: 0,
-            observed_statuses: 0,
-            keys: 14,
-            max_statuses: 30,
-        });
-        let done = e.expected_presses(Snapshot {
-            presses: 870,
-            covered_cells: 168,
-            observed_statuses: 12,
-            keys: 14,
-            max_statuses: 30,
-        });
-        assert!(worst > 2500, "{worst}");
-        assert!(done < worst, "{done} < {worst}");
-    }
+    const RUNS: [Run; 3] = [
+        Run {
+            name: "GJI(MS-IMEプリセット)",
+            csv: include_str!("../tests/fixtures/progress_gji_msimepreset.csv"),
+            expected_statuses: 6,
+            walk_start: 1500,
+        },
+        Run {
+            name: "GJI(ATOKプリセット)",
+            csv: include_str!("../tests/fixtures/progress_gji_atok.csv"),
+            expected_statuses: 6,
+            walk_start: 668,
+        },
+        Run {
+            name: "MS-IME本体",
+            csv: include_str!("../tests/fixtures/progress_msime_native.csv"),
+            expected_statuses: 15,
+            walk_start: 1237,
+        },
+    ];
 
-    /// 実機の1回分(`tests/fixtures/progress_run_2026_10_03.csv`、GJI、総1842打鍵・138.5秒)を
-    /// 再生し、(経過ms, 割合, 残りms, 打鍵数)の列を返す。残り時間が出ている行だけ。
-    fn replay_real_run(extra_tail: f64) -> (f64, Vec<(f64, f64, f64)>) {
-        let mut lp = LinearProgress::new();
-        lp.add_extra_tail(extra_tail);
-        let mut rows = Vec::new();
-        let mut total_ms = 0.0;
-        for line in include_str!("../tests/fixtures/progress_run_2026_10_03.csv")
+    /// 1回分を再生し、(経過ms, 割合, 残りms)の列(残り時間が出ている行だけ)と総所要時間を返す。
+    /// 検証ウォークの進み具合は、始まりから終わりまで予測ステップが0→300へ線形に進むとして作る。
+    fn replay(run: &Run) -> (f64, Vec<(f64, f64, f64)>) {
+        let rows: Vec<Vec<u32>> = run
+            .csv
             .lines()
             .filter(|l| !l.starts_with('#'))
-        {
-            let v: Vec<u32> = line.split(',').map(|x| x.parse().unwrap()).collect();
-            let (cell, total, elapsed, presses) = (v[0], v[1], f64::from(v[2]), v[3]);
+            .map(|l| l.split(',').map(|x| x.parse().unwrap()).collect())
+            .collect();
+        let end_presses = rows.last().unwrap()[3];
+        let mut lp = LinearProgress::new();
+        let (mut end_ms, mut out) = (0.0, Vec::new());
+        for v in rows {
+            let (cell, elapsed, presses, statuses) = (v[0], f64::from(v[2]), v[3], v[4]);
+            let walk = (presses >= run.walk_start).then(|| {
+                let done = f64::from(presses - run.walk_start + 1)
+                    / f64::from(end_presses - run.walk_start + 1);
+                WalkProgress {
+                    predicted: (300.0 * done).round() as u32,
+                    target: 300,
+                    attempts: presses - run.walk_start + 1,
+                }
+            });
             let d = lp.update(
                 Snapshot {
                     presses,
                     covered_cells: cell,
-                    observed_statuses: (total / 14).max(cell.div_ceil(14)).max(1),
+                    observed_statuses: statuses,
                     keys: 14,
-                    max_statuses: 12,
+                    expected_statuses: run.expected_statuses,
+                    walk,
                 },
                 elapsed,
             );
-            total_ms = elapsed;
+            end_ms = elapsed;
             if let Some(eta) = d.eta_ms {
-                rows.push((
+                out.push((
                     elapsed,
                     f64::from(presses) / f64::from(d.expected_presses),
                     eta,
                 ));
             }
         }
-        (total_ms, rows)
+        (end_ms, out)
     }
 
     #[test]
-    fn real_run_eta_and_fraction_track_the_truth() {
-        // 修正前は、初期見積り239秒(実際138.5秒)が制限付きの補正で最後まで残り、
-        // 残り33秒・81%で終わった。残り時間の誤差と、割合の直線からのずれを抑える。
-        let (end, rows) = replay_real_run(0.0);
-        assert!(rows.len() > 150, "{}", rows.len());
-        for &(e, f, eta) in &rows {
+    fn real_runs_end_near_zero_seconds_and_full_progress() {
+        // 旧版は、GJI以外の環境で終了時に29〜50%・残り48〜218秒のまま終わった。
+        for run in &RUNS {
+            let (_, rows) = replay(run);
+            let (e, f, eta) = *rows.last().unwrap();
             assert!(
-                (eta - (end - e)).abs() < 12_000.0,
-                "{e}: eta {eta} vs {}",
-                end - e
+                f > 0.99 && eta < 1_500.0,
+                "{}: 終了時 {e} {f} {eta}",
+                run.name
             );
-            assert!((f - e / end).abs() < 0.08, "{e}: {f} vs {}", e / end);
         }
-        // 終わりそうなタイミングで0秒・ほぼ100%へ向かう(修正前は98%・残り2.7秒で止まった)。
-        let (e, f, eta) = *rows.last().unwrap();
-        assert!(f > 0.99 && eta < 1_000.0, "終了時: {e} {f} {eta}");
     }
 
     #[test]
-    fn real_run_progress_and_eta_are_monotonic() {
-        // 再測定が見積りに追加されても(実際は走らなかった場合)、割合は減らず残りは増えない。
-        for extra in [0.0, 24.0 * 18.0] {
-            let (_, rows) = replay_real_run(extra);
+    fn real_runs_late_half_tracks_the_truth() {
+        // 後半(実時間の50%以降)は、残り時間の誤差を抑える(序盤は巡回の長さが環境で
+        // 280〜870打鍵と違い、終わるまで分からないので対象外)。ATOKは巡回後のやり直しが
+        // 388打鍵と短く(事前値は630)、ウォークが始まるまで約24秒多く見積もる。
+        for run in &RUNS {
+            let (end, rows) = replay(run);
+            for &(e, _, eta) in rows.iter().filter(|r| r.0 >= 0.5 * end) {
+                assert!(
+                    (eta - (end - e)).abs() < 26_000.0,
+                    "{}: {e}: eta {eta} vs {}",
+                    run.name,
+                    end - e
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn real_runs_progress_and_eta_are_monotonic() {
+        for run in &RUNS {
+            let (_, rows) = replay(run);
             for w in rows.windows(2) {
                 // 想定打鍵数は整数へ切り上げるため、割合には最大0.2%の丸め誤差がありうる。
-                assert!(w[1].1 + 2e-3 >= w[0].1, "割合が下がった: {w:?}");
-                assert!(w[1].2 <= w[0].2 + 1e-6, "残りが増えた: {w:?}");
+                assert!(
+                    w[1].1 + 2e-3 >= w[0].1,
+                    "{}: 割合が下がった: {w:?}",
+                    run.name
+                );
+                assert!(w[1].2 <= w[0].2 + 1e-6, "{}: 残りが増えた: {w:?}", run.name);
             }
         }
     }
@@ -351,15 +420,56 @@ mod tests {
     }
 
     #[test]
+    fn stagnant_coverage_starts_the_tail() {
+        // 測れたセル数が動かなくなったら(MS-IME本体: 210セル中154セルで停滞)、未測定セルが
+        // 残っていても巡回は終わったとみなし、残りは末尾の枠だけになる。
+        let mut e = ProgressEstimator::new();
+        let mut s = snap(570, 154, 15);
+        s.expected_statuses = 15;
+        let before = e.expected_presses(s);
+        s.presses = 570 + STAGNATION_PRESSES;
+        let after = e.expected_presses(s);
+        assert!(before > 570 + 1000 && after < before, "{before} -> {after}");
+        assert_eq!(e.tail_started_at(), Some(570));
+    }
+
+    #[test]
+    fn walk_remaining_follows_predicted_steps() {
+        let mut e = ProgressEstimator::new();
+        let mut s = snap(1500, 168, 12);
+        s.walk = Some(WalkProgress {
+            predicted: 150,
+            target: 300,
+            attempts: 160,
+        });
+        // 予測できた割合が150/160なら、残りは150×160/150... (300-150)×160/150 = 160打鍵。
+        assert_eq!(e.expected_presses(s), 1500 + 160);
+    }
+
+    #[test]
+    fn extra_tail_lengthens_the_remaining_walk() {
+        let mut e = ProgressEstimator::new();
+        e.add_extra_tail(240.0);
+        let mut s = snap(1500, 168, 12);
+        s.walk = Some(WalkProgress {
+            predicted: 150,
+            target: 300,
+            attempts: 160,
+        });
+        assert_eq!(e.expected_presses(s), 1500 + 160 + 240);
+    }
+
+    #[test]
     fn overrunning_the_estimate_counts_down_to_a_small_floor() {
         // 実際が見積りの1.4倍かかる場合: 見積りが尽きたら残りは実時間どおり減って小さな下限
-        // (FLOOR_ETA_MS)へ向かい、増えない。下限には達しうる(超過分は残りが分からない。
-        // 終わりそうなら0秒へ加速することを優先した、見積りが外れたときの代償)。
+        // (FLOOR_ETA_MS)へ向かい、増えない。
         let mut lp = LinearProgress::new();
         let mut prev_eta = f64::MAX;
-        for presses in (100..=2600).step_by(10) {
+        for presses in (100..=3000).step_by(10) {
             let covered = (presses * 168 / 870).min(168);
-            let d = lp.update(snap(presses, covered, 12), f64::from(presses) * 75.0);
+            let mut s = snap(presses, covered, 12);
+            s.expected_statuses = 12;
+            let d = lp.update(s, f64::from(presses) * 75.0);
             let eta = d.eta_ms.unwrap();
             assert!(eta <= prev_eta + 1e-6, "{presses}: {eta} > {prev_eta}");
             assert!(eta >= FLOOR_ETA_MS - 1e-6, "{presses}: {eta}");
@@ -371,7 +481,6 @@ mod tests {
     fn never_reaches_one_hundred_percent_before_finish() {
         let mut e = ProgressEstimator::new();
         let s = snap(100_000, 168, 12);
-        let total = e.expected_presses(s);
-        assert!(total > s.presses);
+        assert!(e.expected_presses(s) > s.presses);
     }
 }

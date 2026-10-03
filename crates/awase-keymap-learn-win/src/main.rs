@@ -32,7 +32,7 @@ mod app {
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
     use awase_keymap_learn_win::progress_estimate::{
-        LinearProgress, Snapshot, REMEASURE_PRESSES_PER_CELL,
+        LinearProgress, Snapshot, WalkProgress, REMEASURE_PRESSES_PER_CELL,
     };
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
@@ -40,7 +40,7 @@ mod app {
     use awase_windows::state::ime_kind::TipIdentity;
     use awase_windows::state::key_effect_predictor::TableKey;
     use awase_windows::state::key_effect_runtime::current_fingerprint_probe;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     const KEYS: [u32; 14] = [
@@ -241,15 +241,21 @@ mod app {
     /// [`MIN_PREDICTED_STEPS`]に達するまで押下を続ける。[`VERIFICATION_WALK_MAX_STEPS`]
     /// (押下の試行回数)に達しても届かなければ打ち切って返す(`judge_self_verification`が
     /// `InsufficientSamples`として不採用にする)。
+    ///
+    /// `progress`には、押下の前に(予測できたステップ数, 押下の試行回数)を書く。進捗の見積りが
+    /// ウォークの残りを実測の進み具合から求めるため(終了後も最後の値を残す)。
     fn run_verification_walk<D: ImeDriver>(
         exec: &mut Executor<D>,
         rng: &mut Rng,
         trace: bool,
+        progress: &Cell<Option<(u32, u32)>>,
     ) -> ScoreReport {
         exec.set_recording(false);
         let mut walk = Vec::new();
         let mut attempts = 0usize;
+        let mut predicted = 0usize;
         let report = loop {
+            progress.set(Some((predicted as u32, attempts as u32)));
             // opus-adversarial-consult round2 N3対応: セッション監視が既に
             // 失敗と判定していたら、採点にならない押下を続けない。
             if exec.driver.should_abort() {
@@ -272,6 +278,7 @@ mod app {
                 }
             }
             let report = score_walk(&exec.table, DEFAULT_MIN_MINORITY, &walk);
+            predicted = report.predicted();
             if report.predicted() >= MIN_PREDICTED_STEPS || attempts >= VERIFICATION_WALK_MAX_STEPS
             {
                 break report;
@@ -494,7 +501,8 @@ mod app {
         });
         executor.reset();
         let seed = fresh_walk_seed();
-        let score = run_verification_walk(&mut executor, &mut Rng::new(seed), false);
+        let score =
+            run_verification_walk(&mut executor, &mut Rng::new(seed), false, &Cell::new(None));
         if executor.driver.session_failed() {
             return Err("interference");
         }
@@ -639,7 +647,8 @@ mod app {
     /// 線形に近づくようならす。
     fn make_progress_sink(
         estimated_total_cells: u32,
-        max_statuses: u32,
+        expected_statuses: u32,
+        walk_progress: Rc<Cell<Option<(u32, u32)>>>,
     ) -> (impl FnMut(&Stats, &Table), Rc<RefCell<LinearProgress>>) {
         let estimator = Rc::new(RefCell::new(LinearProgress::new()));
         let handle = Rc::clone(&estimator);
@@ -656,7 +665,14 @@ mod app {
                 covered_cells: cell,
                 observed_statuses: table.observed_status_count() as u32,
                 keys: KEYS.len() as u32,
-                max_statuses,
+                expected_statuses,
+                walk: walk_progress
+                    .get()
+                    .map(|(predicted, attempts)| WalkProgress {
+                        predicted,
+                        target: MIN_PREDICTED_STEPS as u32,
+                        attempts,
+                    }),
             };
             // 打鍵数の見積りを時間へ換算し、総所要時間を経過時間に対してなだらかにしか
             // 動かさない(割合・残り時間が線形に近づく)。
@@ -914,7 +930,12 @@ mod app {
         let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
 
         let total_cells = model.distinct_status_count() as u32 * KEYS.len() as u32;
-        let (progress_sink, estimator) = make_progress_sink(total_cells, model.states.len() as u32);
+        let walk_progress = Rc::new(Cell::new(None));
+        let (progress_sink, estimator) = make_progress_sink(
+            total_cells,
+            model.distinct_status_count() as u32,
+            Rc::clone(&walk_progress),
+        );
         executor.set_progress_sink(progress_sink);
 
         let req = Req::default();
@@ -982,7 +1003,7 @@ mod app {
         let walk_seed = fresh_walk_seed();
         let mut walk_rng = Rng::new(walk_seed);
         let trace_walk = std::env::args().any(|arg| arg == TRACE_WALK_FLAG);
-        let score = run_verification_walk(&mut executor, &mut walk_rng, trace_walk);
+        let score = run_verification_walk(&mut executor, &mut walk_rng, trace_walk, &walk_progress);
 
         // ADR196-T2決定1b項目7〜8: 既知構成なら内蔵表との突き合わせ→再測定。学習・検証と
         // 同じセッション監視の下で行うため、後続のセッション失敗判定より前に実行する。
