@@ -369,6 +369,9 @@ pub struct EnvProbe {
     started: bool,
     /// 設定画面がフォーカスを失っている間だけ`true`（[`Self::observe_window_focus`]）。
     window_was_unfocused: bool,
+    /// 読み出し元（`main.rs::refresh_keymap_table_state`）は `#[cfg(windows)]` のため、
+    /// 非 Windows では未使用になる。
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub process_start: std::time::SystemTime,
 }
 

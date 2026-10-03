@@ -32,9 +32,7 @@ mod tests {
         for conv in ConvAfterOpenId::ALL {
             // match の網羅性で「ALL に載せ忘れた variant」を検出する。
             match conv {
-                ConvAfterOpenId::Skip
-                | ConvAfterOpenId::Write(None)
-                | ConvAfterOpenId::Write(Some(_)) => {}
+                ConvAfterOpenId::Skip | ConvAfterOpenId::Write(None | Some(_)) => {}
             }
         }
         assert_eq!(ConvAfterOpenId::ALL.len(), 3);

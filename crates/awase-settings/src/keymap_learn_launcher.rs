@@ -228,21 +228,12 @@ pub fn take_learning_stdout(child: &mut Child) -> io::Result<ChildStdout> {
 /// (code-review指摘: 従来`spawn_learning_process`は標準エラーを`Stdio::null()`で
 /// 捨てており、このモジュールのdocコメントが謳う「標準出力・標準エラーをパイプで
 /// 受け取る」と実装が食い違っていた)。呼び出し側は失敗理由をユーザーに提示するため、
-/// これを別スレッドで読み切ってから使う([`drain_learning_stderr_lines`]参照)。
+/// これを別スレッドで読み切ってから使う([`drain_learning_stderr_lines_logged`]参照)。
 pub fn take_learning_stderr(child: &mut Child) -> io::Result<ChildStderr> {
     child
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("子プロセスのstderrが取得できない(既に取得済み?)"))
-}
-
-/// `stderr`を1行ずつ読み、空でない最後の行を返す(無ければ`None`)。
-/// `result status=failure`の直前に`print_result_line`が書く1行の理由
-/// メッセージをそのままUIへ出すのが目的で、複数行のログを蓄積・解析する
-/// 用途は想定しない。
-#[must_use]
-pub fn drain_learning_stderr_lines(stderr: ChildStderr) -> Option<String> {
-    drain_learning_stderr_lines_logged(stderr, None)
 }
 
 /// 学習ログの保存先(`%LOCALAPPDATA%\awase\keymap-learn.log`)。汚染の原因調査は
@@ -257,7 +248,10 @@ pub fn learning_log_path() -> Option<std::path::PathBuf> {
     )
 }
 
-/// [`drain_learning_stderr_lines`]に加え、全行を`log_path`へ書き出す(起動のたびに作り直す)。
+/// `stderr`を1行ずつ読み、空でない最後の行を返す(無ければ`None`)。
+/// `result status=failure`の直前に`print_result_line`が書く1行の理由
+/// メッセージをそのままUIへ出すのが目的で、複数行のログを蓄積・解析する
+/// 用途は想定しない。`log_path`が`Some`なら全行をそこへも書き出す(起動のたびに作り直す)。
 #[must_use]
 pub fn drain_learning_stderr_lines_logged(
     stderr: ChildStderr,
@@ -425,7 +419,7 @@ mod tests {
     }
 
     /// `take_learning_stdout`/`take_learning_stderr`/`drain_learning_output`/
-    /// `drain_learning_stderr_lines`をモック子プロセス相手に実際に動かす統合テスト
+    /// `drain_learning_stderr_lines_logged`をモック子プロセス相手に実際に動かす統合テスト
     /// (docs/tasks/adr195-t6-adr176-wizard-integration.mdの完了条件「子プロセス起動・
     /// 標準出力パースのテスト(Windows実機またはモックプロセスでの検証)」に対応)。
     ///
@@ -482,7 +476,7 @@ mod tests {
         );
     }
 
-    /// `drain_learning_stderr_lines`(失敗理由の抽出)を同じ自己再起動トリックで検証する。
+    /// `drain_learning_stderr_lines_logged`(失敗理由の抽出)を同じ自己再起動トリックで検証する。
     #[test]
     fn spawns_real_child_process_and_parses_its_stderr_reason() {
         let exe = std::env::current_exe().expect("current_exe");
@@ -507,7 +501,7 @@ mod tests {
         let stderr = take_learning_stderr(&mut child).expect("stderrパイプの取得に失敗");
         let mut lines = Vec::new();
         drain_learning_output(stdout, |line| lines.push(line)).expect("stdoutの読み取りに失敗");
-        let reason = drain_learning_stderr_lines(stderr);
+        let reason = drain_learning_stderr_lines_logged(stderr, None);
         let _ = child.wait();
 
         assert_eq!(lines, vec![LearnLine::Result(LearnOutcome::Failure)]);

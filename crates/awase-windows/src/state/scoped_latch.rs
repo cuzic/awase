@@ -38,10 +38,13 @@ impl<S: Copy + PartialEq, T: Copy> ScopedOneShot<S, T> {
         }
     }
 
+    // 呼び出し元（`runtime/message_handlers.rs`）は `#[cfg(windows)]` のため、非 Windows では未使用。
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn disarm(&mut self) -> Option<T> {
         self.armed.take().map(|(_, payload)| payload)
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) const fn is_armed(&self) -> bool {
         self.armed.is_some()
     }
