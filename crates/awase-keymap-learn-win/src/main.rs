@@ -32,7 +32,7 @@ mod app {
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
     use awase_keymap_learn_win::progress_estimate::{
-        LinearProgress, Snapshot, WalkProgress, REMEASURE_PRESSES_PER_CELL,
+        LinearProgress, Phase, PlanInfo, Snapshot, WalkProgress, REMEASURE_PRESSES_PER_CELL,
     };
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
@@ -650,6 +650,7 @@ mod app {
         estimated_total_cells: u32,
         expected_statuses: u32,
         walk_progress: Rc<Cell<Option<(u32, u32, bool)>>>,
+        phase: Rc<Cell<u8>>,
     ) -> (impl FnMut(&Stats, &Table), Rc<RefCell<LinearProgress>>) {
         let estimator = Rc::new(RefCell::new(LinearProgress::new()));
         let handle = Rc::clone(&estimator);
@@ -676,6 +677,14 @@ mod app {
                         max_attempts: VERIFICATION_WALK_MAX_STEPS as u32,
                         finished,
                     }),
+                plan: Some(PlanInfo {
+                    phase: match phase.get() {
+                        0 => Phase::Tour,
+                        1 => Phase::Retry,
+                        _ => Phase::Walk,
+                    },
+                    plan_presses_left: stats.plan_presses_left,
+                }),
             };
             // 打鍵数の見積りを時間へ換算し、総所要時間を経過時間に対してなだらかにしか
             // 動かさない(割合・残り時間が線形に近づく)。
@@ -683,8 +692,14 @@ mod app {
             let (eta_ms, expected) = (d.eta_ms.unwrap_or(-1.0), d.expected_presses);
             let line = format!(
                 "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0} \
-                 presses={presses} expected_presses={expected} statuses={}",
-                snapshot.observed_statuses
+                 presses={presses} expected_presses={expected} statuses={} \
+                 plan_presses={} plan_resets={} need={} resets={} phase={}",
+                snapshot.observed_statuses,
+                stats.plan_presses_left,
+                stats.plan_resets_left,
+                stats.need_left,
+                stats.resets,
+                phase.get()
             );
             println!("{line}");
             // 診断: 標準出力は設定画面が読むだけでログに残らないため、`keymap-learn.log`
@@ -934,10 +949,13 @@ mod app {
 
         let total_cells = model.distinct_status_count() as u32 * KEYS.len() as u32;
         let walk_progress = Rc::new(Cell::new(None));
+        // 局面の印(診断用): 0=巡回, 1=やり直し(巡回が戻った後), 2=ウォーク以降。
+        let phase = Rc::new(Cell::new(0u8));
         let (progress_sink, estimator) = make_progress_sink(
             total_cells,
             model.distinct_status_count() as u32,
             Rc::clone(&walk_progress),
+            Rc::clone(&phase),
         );
         executor.set_progress_sink(progress_sink);
 
@@ -951,6 +969,7 @@ mod app {
             &req,
             &mut rng,
         );
+        phase.set(1);
         retry_nondeterministic_cells_once(
             &mut executor,
             &prior,
@@ -1006,6 +1025,7 @@ mod app {
         let walk_seed = fresh_walk_seed();
         let mut walk_rng = Rng::new(walk_seed);
         let trace_walk = std::env::args().any(|arg| arg == TRACE_WALK_FLAG);
+        phase.set(2);
         let score = run_verification_walk(&mut executor, &mut walk_rng, trace_walk, &walk_progress);
 
         // ADR196-T2決定1b項目7〜8: 既知構成なら内蔵表との突き合わせ→再測定。学習・検証と
