@@ -1112,7 +1112,7 @@ impl SettingsApp {
                 std::thread::spawn(move || {
                     keymap_learn_launcher::drain_learning_stderr_lines_logged(
                         stderr,
-                        keymap_learn_launcher::learning_log_path().as_deref(),
+                        keymap_learn_launcher::learning_log_path(mode).as_deref(),
                     )
                 })
             });
