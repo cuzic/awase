@@ -182,6 +182,7 @@
 | [BUG-178](BUG-178.md) | GJI(session_keymap=2 + 古い custom 表が残る構成)の実機で awase-keymap-learn-win が cell=73/84 のまま 22 分以上進まず終了しない |
 | [BUG-179](BUG-179.md) | CI の MS-IME 構成で awase 起動後に起動した Chrome へ IME 操作なしで k,a を打つと kiu になる |
 | [BUG-180](BUG-180.md) | 候補窓 SHOW/HIDE の保留 latch が IME OFF・フォーカス変更で捨てられず、次の drain で前セッションの StartComposition が配られる |
+| [BUG-181](BUG-181.md) | `hook.rs`の`physical_key_state`がVK単位のため、Down=0xF2/Up=0xF0の物理ひらがなキーの2回目以降の押下が押下IDを失う |
 
 ## その他の資料
 

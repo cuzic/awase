@@ -507,6 +507,33 @@ pub const fn should_release_thumb_latch(
     armed_identity.0 != 0 && armed_identity.0 == keyup_identity.0
 }
 
+/// 物理キー押下の VK 記録（`hook.rs::HookState::physical_down_vk_by_identity`）の
+/// 添字。`thumb_latch_identity`（scan + 拡張ビット）を 0..512 に写す。scan=0 や
+/// 範囲外は記録しない（`None`、従来どおり VK 単位の判定だけになる）。
+#[must_use]
+pub const fn physical_identity_slot(scan: awase::types::ScanCode, extended: bool) -> Option<usize> {
+    if scan.0 == 0 || scan.0 > 0xFF {
+        return None;
+    }
+    Some(thumb_latch_identity(scan, extended).0 as usize)
+}
+
+/// KeyUp で、同じ物理キーの KeyDown 時に記録した VK の「押下中」枠を落とすべきか
+/// 判定する純粋関数。
+///
+/// `VK_DBE_HIRAGANA` の物理キーは Down=0xF2・Up=0xF0 で届く（BUG-131）ため、
+/// VK 単位の `physical_key_state` だと 0xF2 の枠が Up で落ちず、2 回目以降の Down が
+/// `was_down=true`（自動リピート扱い）になり押下 ID が付かない。`recorded` は Down で
+/// 記録した VK（0 = 記録なし）。記録があり Up の VK と異なるときだけ、その VK を返す。
+#[must_use]
+pub const fn stale_down_vk_on_up(recorded: VkCode, up_vk: VkCode) -> Option<VkCode> {
+    if recorded.0 != 0 && recorded.0 != up_vk.0 {
+        Some(recorded)
+    } else {
+        None
+    }
+}
+
 /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
 #[must_use]
 pub const fn is_passthrough(vk_code: VkCode) -> bool {
@@ -1028,10 +1055,10 @@ mod tests {
     use super::{
         ascii_to_vk, build_symbol_to_vk, interpret_combo, is_ime_mode_key_for_ime,
         is_static_idempotent_open_key, is_synthetic_dbe_ime_hotkey, may_change_ime,
-        parse_key_combo, reinject_scan_code, should_release_thumb_latch,
-        should_upgrade_is_japanese_ime, thumb_latch_identity, vk_may_mutate_conv, vk_pair_to_ascii,
-        ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_IME_OFF, VK_IME_ON, VK_LEFT, VK_RETURN, VK_SPACE,
-        VK_UP,
+        parse_key_combo, physical_identity_slot, reinject_scan_code, should_release_thumb_latch,
+        should_upgrade_is_japanese_ime, stale_down_vk_on_up, thumb_latch_identity,
+        vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_IME_OFF,
+        VK_IME_ON, VK_LEFT, VK_RETURN, VK_SPACE, VK_UP,
     };
     use awase::types::ScanCode;
 
@@ -1281,6 +1308,104 @@ mod tests {
     #[test]
     fn should_upgrade_is_japanese_ime_false_for_physical_unrelated_vk() {
         assert!(!should_upgrade_is_japanese_ime(false, VkCode(0x41))); // 'A'
+    }
+
+    // ── BUG-181: stale_down_vk_on_up / physical_identity_slot ──
+
+    /// hook.rs の物理キー状態（VK 単位の was_down 配列 + identity→Down VK 記録）を
+    /// 模した小さな状態機械。`event` は (is_down, vk, scan, extended) で、返り値は
+    /// その Down の `was_down`（Up では false）。
+    struct PhysSim {
+        down: std::collections::HashMap<u16, bool>,
+        rec: std::collections::HashMap<usize, u16>,
+    }
+
+    impl PhysSim {
+        fn new() -> Self {
+            Self {
+                down: std::collections::HashMap::new(),
+                rec: std::collections::HashMap::new(),
+            }
+        }
+
+        fn event(&mut self, is_down: bool, vk: u16, scan: u32, ext: bool) -> bool {
+            let was = self.down.insert(vk, is_down).unwrap_or(false);
+            let slot = physical_identity_slot(ScanCode(scan), ext);
+            if is_down {
+                if !was {
+                    if let Some(i) = slot {
+                        self.rec.insert(i, vk);
+                    }
+                }
+            } else if let Some(i) = slot {
+                let recorded = self.rec.insert(i, 0).unwrap_or(0);
+                if let Some(v) = stale_down_vk_on_up(VkCode(recorded), VkCode(vk)) {
+                    self.down.insert(v.0, false);
+                }
+            }
+            was
+        }
+    }
+
+    #[test]
+    fn hiragana_second_press_is_fresh_after_asymmetric_up() {
+        let mut s = PhysSim::new();
+        assert!(!s.event(true, 0xF2, 0x70, false));
+        s.event(false, 0xF0, 0x70, false);
+        assert!(!s.event(true, 0xF2, 0x70, false));
+    }
+
+    #[test]
+    fn alternating_hankaku_zenkaku_all_fresh() {
+        let mut s = PhysSim::new();
+        for i in 0..8 {
+            let (d, u) = if i % 2 == 0 {
+                (0xF3, 0xF4)
+            } else {
+                (0xF4, 0xF3)
+            };
+            assert!(!s.event(true, d, 0x29, false), "press {i}");
+            s.event(false, u, 0x29, false);
+        }
+    }
+
+    #[test]
+    fn real_auto_repeat_stays_was_down() {
+        let mut s = PhysSim::new();
+        assert!(!s.event(true, 0xF2, 0x70, false));
+        assert!(s.event(true, 0xF2, 0x70, false));
+        assert!(s.event(true, 0xF2, 0x70, false));
+    }
+
+    #[test]
+    fn same_scan_different_extended_do_not_clear_each_other() {
+        let mut s = PhysSim::new();
+        // Left Alt (非拡張) と Right Alt (拡張) は scan 0x38 が同一。
+        s.event(true, 0xA4, 0x38, false);
+        s.event(true, 0xA5, 0x38, true);
+        // Right Alt が Up を 0x12 で受けても Left Alt の枠は落とさない。
+        s.event(false, 0x12, 0x38, true);
+        assert!(s.event(true, 0xA4, 0x38, false), "left alt still down");
+    }
+
+    #[test]
+    fn scan_zero_is_unchanged() {
+        assert_eq!(physical_identity_slot(ScanCode(0), false), None);
+        assert_eq!(physical_identity_slot(ScanCode(0), true), None);
+        let mut s = PhysSim::new();
+        assert!(!s.event(true, 0xF2, 0, false));
+        s.event(false, 0xF0, 0, false);
+        assert!(s.event(true, 0xF2, 0, false), "従来どおり固着する");
+    }
+
+    #[test]
+    fn stale_down_vk_on_up_cases() {
+        assert_eq!(stale_down_vk_on_up(VkCode(0), VkCode(0xF0)), None);
+        assert_eq!(stale_down_vk_on_up(VkCode(0xF0), VkCode(0xF0)), None);
+        assert_eq!(
+            stale_down_vk_on_up(VkCode(0xF2), VkCode(0xF0)),
+            Some(VkCode(0xF2))
+        );
     }
 
     // ── BUG-132: should_release_thumb_latch / thumb_latch_identity ──

@@ -4962,6 +4962,28 @@ fn hook_callback_log_call_count_is_pinned() {
     );
 }
 
+/// BUG-181: `hook_callback` は物理 Up で `stale_down_vk_on_up` を呼び、Down 時に
+/// 記録した VK の押下枠を落とす（Down=0xF2/Up=0xF0 の物理ひらがなキーで
+/// `was_down` が固着し押下 ID を失うのを防ぐ）。この呼び出しが消えると再発する。
+#[test]
+fn hook_callback_clears_stale_down_vk_on_up() {
+    let content = read_crate_file("src/hook.rs");
+    let start = content
+        .find("unsafe extern \"system\" fn hook_callback(")
+        .expect("hook_callback not found");
+    let body = &content[start..];
+    for needle in [
+        "crate::vk::stale_down_vk_on_up(",
+        "crate::vk::physical_identity_slot(",
+        "physical_down_vk_by_identity",
+    ] {
+        assert!(
+            body.contains(needle),
+            "hook_callback から {needle} の呼び出しが消えています（BUG-181）"
+        );
+    }
+}
+
 /// リポジトリルート相対のファイルを読む（`read_crate_file` は crate ルート
 /// 相対専用のため、`.claude/`・`.githooks/` はこちらを使う）。
 fn read_repo_root_file(rel_path: &str) -> String {
