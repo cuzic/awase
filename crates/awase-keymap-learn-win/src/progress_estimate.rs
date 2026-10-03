@@ -10,9 +10,10 @@
 //! 3. **検証ウォーク**: 予測できたステップが目標に届くまで押す。進み具合([`WalkProgress`])から
 //!    残りを直接求める。
 //!
-//! 巡回が終わったか(=末尾へ入ったか)は、(a)発見済みの全セルを測り終えた、または(b)測れたセル数が
-//! [`STAGNATION_PRESSES`]打鍵動かない(MS-IME本体は210セル中154セルから先へ進まない)ときとする。
-//! 新しいセルが出ない間隔の最大は巡回の途中でも60打鍵(実測5回)なので、150なら誤判定しない。
+//! 巡回が終わったか(=末尾へ入ったか)は、発見済みの全セルを測り終えたこと(`all_measured`)で
+//! 判定する(5回の実測すべてでこれで決まった)。測れたセル数が一時的に動かなくなっても、巡回の
+//! 途中なら巡回のままにする(「動かない打鍵数」で末尾と見なすと、巡回の途中で止まった環境で
+//! 残りを約19秒少なく見積もり、その後ほぼ動かなくなる。Opus相談2の再現)。
 //!
 //! 時間への換算([`LinearProgress`])は、巡回中は経過/打鍵数、末尾は巡回後の実測(30打鍵たまるまでは
 //! 巡回中の[`TAIL_RATE_RATIO`]倍)を使う。巡回後が速いのは、リセット(約90〜116ms)が巡回中に
@@ -36,8 +37,6 @@ pub const TAIL_PRESSES: f64 = 630.0;
 pub const REMEASURE_PRESSES_PER_CELL: f64 = 24.0;
 /// 学習後の検証ウォークの打鍵数の見積り(実測 302〜331。ウォークが始まれば進み具合で置き換える)。
 pub const VERIFY_WALK_PRESSES: f64 = 330.0;
-/// 測れたセル数がこの打鍵数動かなければ、巡回は終わったとみなす。
-pub const STAGNATION_PRESSES: u32 = 150;
 
 /// 総所要時間の見積りが1秒の経過で上げてよい量(経過時間に対する比)。1未満なら、
 /// 割合(`経過/総時間`)は単調増加・残り時間(`総時間-経過`)は単調減少になる。
@@ -68,6 +67,10 @@ pub struct WalkProgress {
     pub target: u32,
     /// これまでの押下の試行回数(予測できなかった押下を含む)。
     pub attempts: u32,
+    /// 押下の試行回数の上限(`VERIFICATION_WALK_MAX_STEPS`)。残りの見積りをこれで切る。
+    pub max_attempts: u32,
+    /// ウォークが終わった(以降は再測定だけが残る)。
+    pub finished: bool,
 }
 
 /// ある時点の学習の状況。
@@ -92,9 +95,8 @@ pub struct Snapshot {
 pub struct ProgressEstimator {
     /// 巡回が終わったとみなした時点の打鍵数(まだなら`None`)。
     cells_done_at: Option<u32>,
-    /// 測れたセル数の最大値と、それに初めて達した打鍵数。
-    best_covered: u32,
-    best_covered_at: u32,
+    /// ウォークが終わった時点の打鍵数(再測定の消化を数える起点)。
+    walk_done_at: Option<u32>,
     /// 学習後に分かった追加の打鍵数(内蔵表との不一致セルの再測定など)。
     extra_tail: f64,
 }
@@ -113,19 +115,24 @@ impl ProgressEstimator {
     /// 局面別の残り打鍵数 `(セル巡回の残り, それ以降の残り)`。
     fn remaining_parts(&mut self, s: Snapshot) -> (f64, f64) {
         if let Some(w) = s.walk {
+            if w.finished {
+                // ウォークが終わったら残りは再測定だけ。打鍵が進んだ分だけ消化する(消化を
+                // 引かないと、再測定の間ずっと残りが減らず、割合が止まって見える)。
+                let at = *self.walk_done_at.get_or_insert(s.presses);
+                let left = self.extra_tail - f64::from(s.presses.saturating_sub(at));
+                return (0.0, left.max(1.0));
+            }
             let walk = if w.predicted > 0 {
                 f64::from(w.target.saturating_sub(w.predicted)) * f64::from(w.attempts)
                     / f64::from(w.predicted)
             } else {
                 VERIFY_WALK_PRESSES
             };
-            return (0.0, walk.max(1.0) + self.extra_tail);
+            // 予測できる割合が低い環境では、上限(試行回数)で打ち切られる。
+            let cap = f64::from(w.max_attempts.saturating_sub(w.attempts));
+            return (0.0, walk.min(cap).max(1.0) + self.extra_tail);
         }
 
-        if s.covered_cells > self.best_covered {
-            self.best_covered = s.covered_cells;
-            self.best_covered_at = s.presses;
-        }
         let known_cells = s.observed_statuses * s.keys;
         let unmeasured_known = known_cells.saturating_sub(s.covered_cells);
         let expected = s.expected_statuses.max(s.observed_statuses);
@@ -138,15 +145,9 @@ impl ProgressEstimator {
             f64::from(expected - s.observed_statuses) * f64::from(s.keys) * unseen_weight;
 
         let all_measured = unmeasured_known == 0 && unseen_cells == 0.0 && known_cells > 0;
-        let stagnant = self.best_covered > 0
-            && s.presses.saturating_sub(self.best_covered_at) >= STAGNATION_PRESSES;
         let tail_total = TAIL_PRESSES + VERIFY_WALK_PRESSES + self.extra_tail;
-        if all_measured || stagnant {
-            let done_at = *self.cells_done_at.get_or_insert(if all_measured {
-                s.presses
-            } else {
-                self.best_covered_at
-            });
+        if all_measured {
+            let done_at = *self.cells_done_at.get_or_insert(s.presses);
             let tail = tail_total - f64::from(s.presses.saturating_sub(done_at));
             (0.0, tail.max(1.0))
         } else {
@@ -287,6 +288,16 @@ mod tests {
         }
     }
 
+    fn walk(predicted: u32, attempts: u32, finished: bool) -> Option<WalkProgress> {
+        Some(WalkProgress {
+            predicted,
+            target: 300,
+            attempts,
+            max_attempts: 1500,
+            finished,
+        })
+    }
+
     /// 実機・CIの1回分の進捗(`tests/fixtures/*.csv`、列は cell,total,elapsed_ms,presses,statuses)と、
     /// 検証ウォークが始まった打鍵数。
     struct Run {
@@ -296,7 +307,13 @@ mod tests {
         walk_start: u32,
     }
 
-    const RUNS: [Run; 3] = [
+    const RUNS: [Run; 4] = [
+        Run {
+            name: "GJI(実機)",
+            csv: include_str!("../tests/fixtures/progress_gji_local.csv"),
+            expected_statuses: 6,
+            walk_start: 1510,
+        },
         Run {
             name: "GJI(MS-IMEプリセット)",
             csv: include_str!("../tests/fixtures/progress_gji_msimepreset.csv"),
@@ -317,27 +334,44 @@ mod tests {
         },
     ];
 
-    /// 1回分を再生し、(経過ms, 割合, 残りms)の列(残り時間が出ている行だけ)と総所要時間を返す。
-    /// 検証ウォークの進み具合は、始まりから終わりまで予測ステップが0→300へ線形に進むとして作る。
-    fn replay(run: &Run) -> (f64, Vec<(f64, f64, f64)>) {
-        let rows: Vec<Vec<u32>> = run
-            .csv
+    /// 再生する1行: (測れたセル数, 経過ms, 打鍵数, 発見済みの状態数)。
+    type Row = (u32, f64, u32, u32);
+
+    fn parse(run: &Run) -> Vec<Row> {
+        run.csv
             .lines()
             .filter(|l| !l.starts_with('#'))
-            .map(|l| l.split(',').map(|x| x.parse().unwrap()).collect())
-            .collect();
-        let end_presses = rows.last().unwrap()[3];
+            .map(|l| {
+                let v: Vec<u32> = l.split(',').map(|x| x.parse().unwrap()).collect();
+                (v[0], f64::from(v[2]), v[3], v[4])
+            })
+            .collect()
+    }
+
+    /// 行列を再生し、(経過ms, 割合, 残りms)の列(残り時間が出ている行だけ)と総所要時間を返す。
+    /// 検証ウォークは`walk_start`〜`walk_end`打鍵で、予測できたステップが0→300へ線形に進む
+    /// として作る。`walk_end`を過ぎた行は、ウォークが終わった(再測定だけが残る)状態にする。
+    /// `extra`は学習後に判明した再測定の打鍵数(ウォークの前に足す)。
+    fn replay_rows(
+        rows: &[Row],
+        expected_statuses: u32,
+        walk_start: u32,
+        walk_end: u32,
+        extra: f64,
+    ) -> (f64, Vec<(f64, f64, f64)>) {
         let mut lp = LinearProgress::new();
+        lp.add_extra_tail(extra);
         let (mut end_ms, mut out) = (0.0, Vec::new());
-        for v in rows {
-            let (cell, elapsed, presses, statuses) = (v[0], f64::from(v[2]), v[3], v[4]);
-            let walk = (presses >= run.walk_start).then(|| {
-                let done = f64::from(presses - run.walk_start + 1)
-                    / f64::from(end_presses - run.walk_start + 1);
+        for &(cell, elapsed, presses, statuses) in rows {
+            let walk = (presses >= walk_start).then(|| {
+                let done = f64::from(presses.min(walk_end) - walk_start + 1)
+                    / f64::from(walk_end - walk_start + 1);
                 WalkProgress {
                     predicted: (300.0 * done).round() as u32,
                     target: 300,
-                    attempts: presses - run.walk_start + 1,
+                    attempts: presses.min(walk_end) - walk_start + 1,
+                    max_attempts: 1500,
+                    finished: presses >= walk_end,
                 }
             });
             let d = lp.update(
@@ -346,7 +380,7 @@ mod tests {
                     covered_cells: cell,
                     observed_statuses: statuses,
                     keys: 14,
-                    expected_statuses: run.expected_statuses,
+                    expected_statuses,
                     walk,
                 },
                 elapsed,
@@ -361,6 +395,12 @@ mod tests {
             }
         }
         (end_ms, out)
+    }
+
+    fn replay(run: &Run) -> (f64, Vec<(f64, f64, f64)>) {
+        let rows = parse(run);
+        let walk_end = rows.last().unwrap().2;
+        replay_rows(&rows, run.expected_statuses, run.walk_start, walk_end, 0.0)
     }
 
     #[test]
@@ -411,6 +451,92 @@ mod tests {
         }
     }
 
+    /// 末尾に再測定(`extra`打鍵を45ms/打鍵)を足した実行を再生する。
+    fn replay_with_remeasure(run: &Run, extra: u32) -> (f64, Vec<(f64, f64, f64)>) {
+        let mut rows = parse(run);
+        let &(cell, mut el, mut p, statuses) = rows.last().unwrap();
+        let walk_end = p;
+        for _ in 0..extra / 10 {
+            p += 10;
+            el += 450.0;
+            rows.push((cell, el, p, statuses));
+        }
+        replay_rows(
+            &rows,
+            run.expected_statuses,
+            run.walk_start,
+            walk_end,
+            f64::from(extra),
+        )
+    }
+
+    #[test]
+    fn remeasure_after_the_walk_does_not_stall_the_progress() {
+        // 再測定(18セル×24=432打鍵)が残る実行でも、最後の20%の時間に割合が十分進む
+        // (単調性だけでは検出できない: 再測定の消化を引かないと、残りが減らず割合が
+        // 87〜88%のまま約20秒止まり、最後に100%へ跳んだ)。
+        for run in &RUNS {
+            let (end, rows) = replay_with_remeasure(run, 432);
+            let at = |t: f64| rows.iter().find(|r| r.0 >= t * end).unwrap().1;
+            assert!(
+                at(1.0) - at(0.8) > 0.12,
+                "{}: {} -> {}",
+                run.name,
+                at(0.8),
+                at(1.0)
+            );
+            let (e, f, eta) = *rows.last().unwrap();
+            assert!(
+                f > 0.99 && eta < 1_500.0,
+                "{}: 終了時 {e} {f} {eta}",
+                run.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_pause_in_the_cell_phase_is_not_mistaken_for_the_end() {
+        // 巡回の途中で、測れたセル数が200打鍵(60ms/打鍵)動かなくなっても、末尾へ入ったと
+        // 誤判定しない(動かない打鍵数で判定すると、残りを約19秒少なく見積もり、その後
+        // 約22秒ほぼ動かなかった)。
+        let run = &RUNS[1];
+        let mut rows = parse(run);
+        let at = rows.iter().position(|r| r.2 >= 600).unwrap();
+        let (cell, mut el, mut p, statuses) = rows[at];
+        let mut paused = rows[..=at].to_vec();
+        for _ in 0..20 {
+            p += 10;
+            el += 600.0;
+            paused.push((cell, el, p, statuses));
+        }
+        let shift_p = p - rows[at].2;
+        let shift_e = el - rows[at].1;
+        for r in &mut rows[at + 1..] {
+            paused.push((r.0, r.1 + shift_e, r.2 + shift_p, r.3));
+        }
+        let walk_end = paused.last().unwrap().2;
+        let (end, out) = replay_rows(
+            &paused,
+            run.expected_statuses,
+            run.walk_start + shift_p,
+            walk_end,
+            0.0,
+        );
+        for &(e, _, eta) in out.iter().filter(|r| r.0 >= 0.5 * end) {
+            assert!(
+                (eta - (end - e)).abs() < 26_000.0,
+                "{e}: eta {eta} vs {}",
+                end - e
+            );
+        }
+        // 停滞の後も残りは減り続ける(2秒以上動かない区間が無い)。
+        for w in out.windows(2) {
+            if w[0].0 >= 0.5 * end && w[1].0 - w[0].0 < 5_000.0 {
+                assert!(w[1].2 < w[0].2 - 0.0 || w[1].0 - w[0].0 < 2_000.0, "{w:?}");
+            }
+        }
+    }
+
     #[test]
     fn eta_is_withheld_until_speed_settles() {
         let mut lp = LinearProgress::new();
@@ -420,43 +546,37 @@ mod tests {
     }
 
     #[test]
-    fn stagnant_coverage_starts_the_tail() {
-        // 測れたセル数が動かなくなったら(MS-IME本体: 210セル中154セルで停滞)、未測定セルが
-        // 残っていても巡回は終わったとみなし、残りは末尾の枠だけになる。
-        let mut e = ProgressEstimator::new();
-        let mut s = snap(570, 154, 15);
-        s.expected_statuses = 15;
-        let before = e.expected_presses(s);
-        s.presses = 570 + STAGNATION_PRESSES;
-        let after = e.expected_presses(s);
-        assert!(before > 570 + 1000 && after < before, "{before} -> {after}");
-        assert_eq!(e.tail_started_at(), Some(570));
-    }
-
-    #[test]
     fn walk_remaining_follows_predicted_steps() {
         let mut e = ProgressEstimator::new();
         let mut s = snap(1500, 168, 12);
-        s.walk = Some(WalkProgress {
-            predicted: 150,
-            target: 300,
-            attempts: 160,
-        });
-        // 予測できた割合が150/160なら、残りは150×160/150... (300-150)×160/150 = 160打鍵。
+        s.walk = walk(150, 160, false);
+        // 予測できた割合が150/160なら、残りは(300-150)×160/150 = 160打鍵。
         assert_eq!(e.expected_presses(s), 1500 + 160);
     }
 
     #[test]
-    fn extra_tail_lengthens_the_remaining_walk() {
+    fn walk_remaining_is_capped_by_the_attempt_limit() {
+        // 予測できる割合が低い環境でも、残りは試行回数の上限(1500)を超えない。
+        let mut e = ProgressEstimator::new();
+        let mut s = snap(1500, 168, 12);
+        s.walk = walk(10, 1400, false);
+        assert_eq!(e.expected_presses(s), 1500 + 100);
+    }
+
+    #[test]
+    fn remeasure_is_consumed_after_the_walk_finishes() {
         let mut e = ProgressEstimator::new();
         e.add_extra_tail(240.0);
         let mut s = snap(1500, 168, 12);
-        s.walk = Some(WalkProgress {
-            predicted: 150,
-            target: 300,
-            attempts: 160,
-        });
+        s.walk = walk(150, 160, false);
         assert_eq!(e.expected_presses(s), 1500 + 160 + 240);
+        s.presses = 1700;
+        s.walk = walk(300, 300, true);
+        assert_eq!(e.expected_presses(s), 1700 + 240);
+        s.presses = 1800;
+        assert_eq!(e.expected_presses(s), 1800 + 140);
+        s.presses = 2000;
+        assert_eq!(e.expected_presses(s), 2000 + 1);
     }
 
     #[test]

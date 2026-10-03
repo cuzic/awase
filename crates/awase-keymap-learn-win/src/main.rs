@@ -248,14 +248,14 @@ mod app {
         exec: &mut Executor<D>,
         rng: &mut Rng,
         trace: bool,
-        progress: &Cell<Option<(u32, u32)>>,
+        progress: &Cell<Option<(u32, u32, bool)>>,
     ) -> ScoreReport {
         exec.set_recording(false);
         let mut walk = Vec::new();
         let mut attempts = 0usize;
         let mut predicted = 0usize;
         let report = loop {
-            progress.set(Some((predicted as u32, attempts as u32)));
+            progress.set(Some((predicted as u32, attempts as u32, false)));
             // opus-adversarial-consult round2 N3対応: セッション監視が既に
             // 失敗と判定していたら、採点にならない押下を続けない。
             if exec.driver.should_abort() {
@@ -284,6 +284,7 @@ mod app {
                 break report;
             }
         };
+        progress.set(Some((predicted as u32, attempts as u32, true)));
         exec.set_recording(true);
         report
     }
@@ -648,7 +649,7 @@ mod app {
     fn make_progress_sink(
         estimated_total_cells: u32,
         expected_statuses: u32,
-        walk_progress: Rc<Cell<Option<(u32, u32)>>>,
+        walk_progress: Rc<Cell<Option<(u32, u32, bool)>>>,
     ) -> (impl FnMut(&Stats, &Table), Rc<RefCell<LinearProgress>>) {
         let estimator = Rc::new(RefCell::new(LinearProgress::new()));
         let handle = Rc::clone(&estimator);
@@ -668,10 +669,12 @@ mod app {
                 expected_statuses,
                 walk: walk_progress
                     .get()
-                    .map(|(predicted, attempts)| WalkProgress {
+                    .map(|(predicted, attempts, finished)| WalkProgress {
                         predicted,
                         target: MIN_PREDICTED_STEPS as u32,
                         attempts,
+                        max_attempts: VERIFICATION_WALK_MAX_STEPS as u32,
+                        finished,
                     }),
             };
             // 打鍵数の見積りを時間へ換算し、総所要時間を経過時間に対してなだらかにしか
