@@ -665,6 +665,12 @@ mod tests {
     /// 計画つきの実測を再生する。ウォークの進み具合は、始まりから終わりまで予測ステップが
     /// 0→300へ線形に進むとして作る。総所要時間も返す。
     fn replay_plan(csv: &str, expected_statuses: u32) -> (f64, Vec<PlanRow>) {
+        replay_plan_with(csv, expected_statuses, 0)
+    }
+
+    /// `unmeasured`個のセルが最後まで測れないまま終わる実行として再生する(測れたセル数から
+    /// 引く。巡回の打ち切り・汚染・矛盾で記録できないセルが残るケース)。
+    fn replay_plan_with(csv: &str, expected_statuses: u32, unmeasured: u32) -> (f64, Vec<PlanRow>) {
         let rows: Vec<Vec<u32>> = csv
             .lines()
             .filter(|l| !l.starts_with('#'))
@@ -675,7 +681,8 @@ mod tests {
         let mut lp = LinearProgress::new();
         let (mut end_ms, mut out) = (0.0, Vec::new());
         for v in rows {
-            let (cell, elapsed, presses, statuses) = (v[0], f64::from(v[2]), v[3], v[4]);
+            let (cell, elapsed, presses, statuses) =
+                (v[0].saturating_sub(unmeasured), f64::from(v[2]), v[3], v[4]);
             let phase = match v[6] {
                 0 => Phase::Tour,
                 1 => Phase::Retry,
@@ -745,6 +752,29 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn plan_runs_with_unmeasured_cells_left_still_count_down_to_zero() {
+        // 測れないセルが残ったまま巡回が終わっても(打ち切り・汚染・矛盾)、巡回後の残りは
+        // 学習側の計画と局面から出すので、旧版のように「未測定セルが無いと後半の作業量が
+        // 減らない」ことは起きない: やり直し以降は誤差10秒未満、終了時は99%超・残り1.5秒未満。
+        for (name, csv) in PLAN_RUNS {
+            let (end, rows) = replay_plan_with(csv, plan_expected_statuses(name), 12);
+            for &(phase, e, _, eta) in rows.iter().filter(|r| r.0 >= 1) {
+                let eta = eta.unwrap_or_else(|| panic!("{name}: 残り時間が要る: {e}"));
+                assert!(
+                    (eta - (end - e)).abs() < 10_000.0,
+                    "{name}: {e}: eta {eta} vs {} (phase {phase})",
+                    end - e
+                );
+            }
+            let (_, e, f, eta) = *rows.last().unwrap();
+            assert!(
+                f > 0.99 && eta.unwrap() < 1_500.0,
+                "{name}: 終了時 {e} {f} {eta:?}"
+            );
         }
     }
 
