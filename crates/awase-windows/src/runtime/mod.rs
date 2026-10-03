@@ -2337,6 +2337,21 @@ impl Runtime {
         // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         self.platform_state.ime.apply_panic_reset(tick_ms);
+        // 非 Imm32 窓（Chrome/Edge=Imm32Unavailable, TsfNative）では上の OFF→ON が走らず、
+        // belief を ON に戻しただけでは実 IME が開かない（ADR-213 P2c で撤去した ActivationSync が
+        // パニック後の最初の打鍵で肩代わりしていた、BUG-182）。Engine の decision と同じ executor 経路
+        // （`dispatch_ime_set_open`）へ SetOpen(true) を積む。授権は PanicReset ガード（SafetyValve）、
+        // 押下に由来しない起案なので press=None。`apply_panic_reset` が `applied` を未知に落とした後に積む。
+        if !self.can_use_imm32_cross_process() {
+            let mut effects = awase::engine::EffectVec::new();
+            effects.push(awase::engine::Effect::Ime(
+                awase::engine::ImeEffect::SetOpen {
+                    open: true,
+                    press: None,
+                },
+            ));
+            self.execute_decision(awase::engine::Decision::pass_through_with(effects));
+        }
         // Step 4: chord barrier も clear (旧 ctrl_bypass_hold 相当)
         self.platform_state.ime.clear_input_barrier();
         self.platform_state.gate.sync_key_gate.clear();

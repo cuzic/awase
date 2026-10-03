@@ -504,6 +504,45 @@ fn panic_reset_event_is_limited_to_apply_panic_reset() {
 
 /// `ImeEvent::HwndCacheRestored` は `apply_hwnd_cache_restore` のみが dispatch する。
 ///
+/// BUG-182: `panic_reset` は非 Imm32 窓（Chrome/Edge・TsfNative）では OFF→ON を直列実行しないので、
+/// `apply_panic_reset` の後に `ImeEffect::SetOpen { open: true, press: None }` を executor 経路
+/// （`execute_decision`）へ積まなければ実 IME が開かない。ADR-213 P2c で ActivationSync を撤去した際、
+/// パニックがこの暗黙の利用者だったことを見落とした回帰の再発防止（テキスト照合）。
+#[test]
+fn panic_reset_non_imm32_branch_queues_set_open() {
+    let content = read_crate_file("src/runtime/mod.rs");
+    let production = production_code_only(&content);
+    let start = production
+        .find("pub fn panic_reset(")
+        .expect("panic_reset が見つからない");
+    let body = &production[start..];
+    let end = body
+        .find("\n    }\n")
+        .expect("panic_reset の終端が見つからない");
+    let body = &body[..end];
+    let apply = body
+        .find("apply_panic_reset(")
+        .expect("panic_reset は apply_panic_reset を呼ぶこと");
+    let branch = body
+        .find("if !self.can_use_imm32_cross_process()")
+        .expect("panic_reset に非 Imm32 分岐が必要（BUG-182）");
+    assert!(
+        branch > apply,
+        "非 Imm32 分岐は apply_panic_reset（applied の未知化）の後に置くこと"
+    );
+    let tail = &body[branch..];
+    assert!(
+        tail.contains("ImeEffect::SetOpen")
+            && tail.contains("open: true")
+            && tail.contains("press: None"),
+        "panic_reset の非 Imm32 分岐は ImeEffect::SetOpen {{ open: true, press: None }} を積むこと"
+    );
+    assert!(
+        tail.contains("self.execute_decision("),
+        "SetOpen は新しい起案口を作らず既存の executor 経路（execute_decision）へ積むこと"
+    );
+}
+
 /// `PanicReset` と対になる、キャッシュ復元専用の非ユーザー意図イベント。
 /// `desired_open` を回復するが `last_intent` を設定しないため、ユーザーの能動的操作と
 /// 区別され、後続の実観測が `effective_open()` を上書きできる。
@@ -1685,7 +1724,9 @@ fn applied_direct_assignments_are_accounted_for() {
         // 7→8 / platform_state 2→1（ADR-208 L0）。`ImeStateHub::record_confirmed` の `applied` 書き込み
         // （generation=None の完了記録）を、全列挙テストが本物の遷移を通せるよう `ImeModel::confirm_applied`
         // へ移した（挙動不変。`record_confirmed` はこれを呼ぶだけ）。書き込み点の総数は変わらない。
-        ("src/state/ime_model.rs", 8),
+        // 8→9。`PanicReset`のreduce内で、全面リセット時にappliedを`Unknown`へ落とす1件を追加
+        // （BUG-182。`reduce()`内の正規書き込み）。
+        ("src/state/ime_model.rs", 9),
         ("src/state/platform_state.rs", 1),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
