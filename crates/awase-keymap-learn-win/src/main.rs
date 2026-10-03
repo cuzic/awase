@@ -966,10 +966,12 @@ mod app {
         if tip_at_start == TipIdentity::MsImeNative {
             blank_idle_reconvert_predictions(&mut pending_cells);
         }
-        let remeasure_targets = count_remeasure_targets(tip_at_start, &pending_cells);
+        let remeasure_targets =
+            u32::try_from(count_remeasure_targets(tip_at_start, &pending_cells))
+                .unwrap_or(u32::MAX);
         estimator
             .borrow_mut()
-            .add_extra_tail(remeasure_targets as f64 * REMEASURE_PRESSES_PER_CELL);
+            .add_extra_tail(f64::from(remeasure_targets) * REMEASURE_PRESSES_PER_CELL);
 
         // C-7: 検証ウォーク専用の乱数(学習本体とは独立、時刻由来のシード)。
         let walk_seed = fresh_walk_seed();
