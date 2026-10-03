@@ -6,7 +6,8 @@
 //! - 発見済みの`Status`の未測定セル: セルあたり[`PRESSES_PER_CELL`]打鍵。
 //! - まだ見つかっていない`Status`の分: 上限(モデルの状態数)まで見込み、発見済みのセルを
 //!   測り終えるにつれて0へ縮める(測るべき既知セルが無ければ新しい状態へも進めない)。
-//! - やり直し・検証などの末尾の枠: [`TAIL_PRESSES`]。セルを測り終えてから消化していく。
+//! - やり直し・検証などの末尾の枠: [`TAIL_PRESSES`]と、学習後の検証ウォーク
+//!   [`VERIFY_WALK_PRESSES`]。セルを測り終えてから消化していく。
 //!
 //! 割合は一度出した値より下げない(分母の見積りが伸びても逆戻りさせない)。
 //!
@@ -16,12 +17,20 @@
 //! (時間では全体の約7割に見えたが、打鍵数では約57%。打鍵は時間に対して一様でない。)
 //! セル到達時点を測ったのは1回分のみ。5モードの30状態は未測定の外挿。
 //!
+//! 検証ウォークは学習(やり直し込み)の後に走り、予測できたステップが300に達するまで押下を
+//! 続ける(`MIN_PREDICTED_STEPS`)。これを見積りに入れないと、学習が終わった時点で進捗が
+//! 「ほぼ100%・残り約1秒」に張り付いたまま、ウォーク分の押下が進捗なしで続いてしまう。
+//! ウォークの実打鍵数は未測定(予測できなかった押下の分だけ300より多い)ため、余裕を
+//! 見て[`VERIFY_WALK_PRESSES`]を置いた。実機ログで`presses`の最終値が分かれば合わせ直す。
+//!
 //! OS非依存なのでLinuxでもユニットテストできる。
 
 /// 1セルを測るのに要する打鍵数(上記の実測から)。
 pub const PRESSES_PER_CELL: f64 = 5.2;
 /// セルを測り終えた後のやり直し・検証などの打鍵数の枠。
 pub const TAIL_PRESSES: f64 = 630.0;
+/// 学習後の検証ウォークの打鍵数の見積り(未測定、下限は予測ステップ数300)。
+pub const VERIFY_WALK_PRESSES: f64 = 330.0;
 
 /// ある時点の学習の状況。
 #[derive(Debug, Clone, Copy)]
@@ -70,10 +79,11 @@ impl ProgressEstimator {
         let cells_remaining = f64::from(unmeasured_known) + unseen_cells;
         let tail_remaining = if unmeasured_known == 0 && unseen_cells == 0.0 && known_cells > 0 {
             let done_at = *self.cells_done_at.get_or_insert(s.presses);
-            (TAIL_PRESSES - f64::from(s.presses.saturating_sub(done_at))).max(1.0)
+            (TAIL_PRESSES + VERIFY_WALK_PRESSES - f64::from(s.presses.saturating_sub(done_at)))
+                .max(1.0)
         } else {
             self.cells_done_at = None;
-            TAIL_PRESSES
+            TAIL_PRESSES + VERIFY_WALK_PRESSES
         };
 
         let remaining = cells_remaining * PRESSES_PER_CELL + tail_remaining;
@@ -105,9 +115,10 @@ mod tests {
     #[test]
     fn starts_from_worst_case_near_measured_total() {
         let mut e = ProgressEstimator::new();
-        // 開始直後: 168セル×5.2 + 630 = 約1504打鍵(実測の訓練打鍵数1482〜1527と同程度)。
+        // 開始直後: 168セル×5.2 + 630 = 約1504打鍵(実測の訓練打鍵数1482〜1527と同程度)に、
+        // 検証ウォークの330打鍵を足した約1834打鍵。
         let total = e.expected_presses(snap(0, 0, 0));
-        assert!((1480..=1530).contains(&total), "{total}");
+        assert!((1810..=1860).contains(&total), "{total}");
     }
 
     #[test]
@@ -123,7 +134,7 @@ mod tests {
             snap(870, 168, 12),
             snap(1200, 168, 12),
             snap(1480, 168, 12),
-            snap(1600, 168, 12),
+            snap(1800, 168, 12),
         ];
         for s in steps {
             let total = e.expected_presses(s);

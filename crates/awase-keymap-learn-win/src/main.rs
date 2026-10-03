@@ -229,9 +229,9 @@ mod app {
         )
     }
 
-    /// 進捗sinkは学習の巡回にだけ意味があるので、ここでは無効化する(有効なままだと
-    /// `recording=false`の間もpressごとに呼ばれ、cell数が増えないのにelapsed_msだけ
-    /// 伸びる不審な進捗行が出る)。
+    /// 進捗sinkは有効のままにする。進捗は打鍵数ベース(`progress_estimate`が検証ウォーク分も
+    /// 分母に含める)なので、cell数が増えなくても進捗は進む。無効化すると学習本体の終了時点で
+    /// 「残り約1秒」に張り付いたままウォークが続いてしまう。
     ///
     /// C-2対応: 固定回数ではなく、予測できたステップ数([`ScoreReport::predicted`])が
     /// [`MIN_PREDICTED_STEPS`]に達するまで押下を続ける。[`VERIFICATION_WALK_MAX_STEPS`]
@@ -242,7 +242,6 @@ mod app {
         rng: &mut Rng,
         trace: bool,
     ) -> ScoreReport {
-        exec.set_progress_sink(|_, _| {});
         exec.set_recording(false);
         let mut walk = Vec::new();
         let mut attempts = 0usize;
