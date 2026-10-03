@@ -10,7 +10,7 @@ summary: |-
   `GjiAction::SendInput` 系・`compute_active`・config.rs の旧キー受理は残す。`Tab::AppRules` は所有者の判断待ちで本 ADR の範囲外。
   IME actuation 入口の診断専用コード・常に None の引数は ADR-216 の範囲なので、本 ADR では扱わない。
 status: |-
-  提案(2026-10-02)。Opus 敵対的レビュー round1 の指摘(`compute_active` を A から外す、`pub use` は私的 `use` に格下げ、C の各項目に判定)と round2 の事実誤り修正を反映済み。round2 で収束(設計上の論点なし、round3 不要)。C3 は所有者の判断待ち。未実装。
+  提案(2026-10-02)。Opus 敵対的レビュー round1 の指摘(`compute_active` を A から外す、`pub use` は私的 `use` に格下げ、C の各項目に判定)と round2 の事実誤り修正を反映済み。round2 で収束(設計上の論点なし、round3 不要)。A・B・C1 を実装済み(2026-10-02、`refactor/adr217-remove-dead-compat` の5コミット、PR 経由でマージ待ち)。C2 はコメント訂正のみで実施せず。C3 は所有者の判断待ち(機能の説明を受けてから決める)。
 related_adr:
   - "ADR-148"
   - "ADR-158"
