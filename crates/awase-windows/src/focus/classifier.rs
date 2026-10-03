@@ -253,7 +253,7 @@ impl ImmCapabilityStore {
             pending_unavailable: std::collections::HashMap::new(),
         };
         if loaded.ignored_legacy_entries > 0 {
-            store.save();
+            let _ = store.save();
         }
         store
     }
@@ -270,7 +270,23 @@ impl ImmCapabilityStore {
             .entry(process_name)
             .or_default()
             .insert(class_name, cap);
-        self.save();
+        let _ = self.save();
+    }
+
+    /// 学習済みの IMM 能力（メモリ上のキャッシュと、`cache.toml` の `[imm_capability]`）と、
+    /// 確定前の「疑い」カウントを全て捨てる。誤学習（BUG-56・BUG-107）の GUI 上の回復手段
+    /// （トレイの「IME 制御の学習キャッシュをクリア」、BUG-108）。捨てた学習済みエントリ数と、
+    /// `cache.toml` へ反映できたか（`false` なら再起動で旧エントリが戻る）を返す。
+    ///
+    /// `[injection_mode]` など `cache.toml` の他セクションと、学習表
+    /// （`keymap-learn-table.json`）には触れない。ファイルが読めない・壊れている・書けない
+    /// ときは `save_section` が上書きせず警告し、メモリだけが空になる（2つ目が `false`）。
+    pub(crate) fn clear(&mut self) -> (usize, bool) {
+        let removed = count_imm_capability_entries(&self.cache);
+        self.cache.clear();
+        self.pending_unavailable.clear();
+        let persisted = self.save();
+        (removed, persisted)
     }
 
     /// `ImmGetDefaultIMEWnd`=NULL の観測を記録する。閾値回連続で観測されて初めて
@@ -373,7 +389,7 @@ impl ImmCapabilityStore {
         }
     }
 
-    fn save(&self) {
+    fn save(&self) -> bool {
         let mut section = toml::Table::new();
         for (process_name, process_cache) in &self.cache {
             let mut process_section = toml::Table::new();
@@ -386,11 +402,14 @@ impl ImmCapabilityStore {
             }
             section.insert(process_name.clone(), toml::Value::Table(process_section));
         }
-        save_section(&self.base_dir, "imm_capability", section);
-        tracing::debug!(
-            "Saved IMM capability cache: {} entries",
-            count_imm_capability_entries(&self.cache)
-        );
+        let saved = save_section(&self.base_dir, "imm_capability", section);
+        if saved {
+            tracing::debug!(
+                "Saved IMM capability cache: {} entries",
+                count_imm_capability_entries(&self.cache)
+            );
+        }
+        saved
     }
 
     #[cfg(test)]
@@ -406,17 +425,43 @@ fn count_imm_capability_entries(cache: &ImmCapabilityCache) -> usize {
 // ── キャッシュファイル共通 write ヘルパー ──────────────────────────────────────
 
 /// `cache.toml` の指定セクションだけを更新し、他のセクションを保持して上書き保存する。
-fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::Table) {
+fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::Table) -> bool {
     let path = base_dir.join(CACHE_FILENAME);
-    let mut root: toml::Table = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| c.parse().ok())
-        .unwrap_or_default();
+    // 既存ファイルがあるのに読めない・パースできない場合は、他セクションを消さないよう上書きしない。
+    let mut root: toml::Table = match std::fs::read_to_string(&path) {
+        Ok(c) => match c.parse() {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    "Skip saving [{section_name}]: {} is not valid TOML: {e}",
+                    path.display()
+                );
+                return false;
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => {
+            tracing::warn!(
+                "Skip saving [{section_name}]: cannot read {}: {e}",
+                path.display()
+            );
+            return false;
+        }
+    };
     root.insert(section_name.to_string(), toml::Value::Table(section));
-    let content = toml::to_string_pretty(&root).unwrap_or_default();
-    if let Err(e) = std::fs::write(&path, &content) {
+    let content = match toml::to_string_pretty(&root) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to serialize cache for {}: {e}", path.display());
+            return false;
+        }
+    };
+    // 書き込み途中の中断で cache.toml が壊れ、次回保存で他セクションが消えるのを防ぐ。
+    if let Err(e) = awase::fs_atomic::write_atomic(&path, content.as_bytes()) {
         tracing::warn!("Failed to save cache to {}: {e}", path.display());
+        return false;
     }
+    true
 }
 
 // ── InjectionModeStore ────────────────────────────────────────────────────────
@@ -484,7 +529,7 @@ impl InjectionModeStore {
         for class_name in &self.tsf_classes {
             section.insert(class_name.clone(), toml::Value::String("tsf".to_string()));
         }
-        save_section(&self.base_dir, "injection_mode", section);
+        let _ = save_section(&self.base_dir, "injection_mode", section);
         tracing::debug!(
             "Saved injection mode cache: {} TSF classes",
             self.tsf_classes.len()
@@ -589,6 +634,67 @@ mod imm_capability_store_tests {
         assert_eq!(
             store.get("some-other-app.exe", "Window Class"),
             Some(ImmCapability::Unavailable)
+        );
+    }
+
+    /// BUG-108: クリアは `[imm_capability]` だけを空にし、`[injection_mode]` 等の他セクションは残す。
+    /// メモリ上のキャッシュも空になり、再読み込みしても復活しない。
+    #[test]
+    fn clear_empties_imm_capability_section_and_keeps_other_sections() {
+        let dir = temp_dir();
+        std::fs::write(
+            dir.join(CACHE_FILENAME),
+            "[injection_mode]\n\"Some.Class\" = \"tsf\"\n",
+        )
+        .expect("write cache.toml");
+        let mut store = ImmCapabilityStore::new(dir.clone());
+        store.learn(
+            "a.exe".to_string(),
+            "Cls".to_string(),
+            ImmCapability::Unavailable,
+        );
+        store.learn("b.exe".to_string(), "Cls".to_string(), ImmCapability::Works);
+        store.record_null_probe("c.exe".to_string(), "Cls".to_string());
+        assert_eq!(store.len(), 2);
+
+        assert_eq!(store.clear(), (2, true));
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.get("a.exe", "Cls"), None);
+        // 確定前の疑いも消える: クリア後の1回の NULL 観測では確定しない（閾値は2回）。
+        store.record_null_probe("c.exe".to_string(), "Cls".to_string());
+        assert_eq!(store.get("c.exe", "Cls"), None);
+
+        let content = std::fs::read_to_string(dir.join(CACHE_FILENAME)).expect("read cache.toml");
+        let table: toml::Table = content.parse().expect("parse cache.toml");
+        let imm = table.get("imm_capability").and_then(toml::Value::as_table);
+        assert!(imm.is_none_or(toml::Table::is_empty), "{content}");
+        assert!(
+            table.contains_key("injection_mode"),
+            "他セクションが消えた: {content}"
+        );
+        assert_eq!(
+            ImmCapabilityStore::new(dir).len(),
+            0,
+            "再読み込みで復活した"
+        );
+    }
+
+    /// cache.toml が壊れていて書き戻せないとき、クリアは「反映できなかった」を返す
+    /// （メモリだけ空、ファイルは他セクションごと無傷）。
+    #[test]
+    fn clear_reports_failure_when_cache_toml_is_unwritable() {
+        let dir = temp_dir();
+        let mut store = ImmCapabilityStore::new(dir.clone());
+        store.learn("a.exe".to_string(), "Cls".to_string(), ImmCapability::Works);
+        std::fs::write(dir.join(CACHE_FILENAME), "this is = not [valid toml")
+            .expect("corrupt cache.toml");
+
+        assert_eq!(store.clear(), (1, false));
+        assert_eq!(store.len(), 0);
+        let content = std::fs::read_to_string(dir.join(CACHE_FILENAME)).expect("read cache.toml");
+        assert_eq!(
+            content, "this is = not [valid toml",
+            "壊れたファイルを上書きした"
         );
     }
 
