@@ -223,6 +223,7 @@
 | [214](214-split-sent-from-confirmed-and-declare-skip-eligibility-per-path.md) | IME への書き込みの「送った」と「観測で確認した」を型で分け、送信を省略してよい根拠を経路ごとに宣言する | 保留(2026-10-02。決定0の経路確認と P1 の特性テストまで。実機の実害が未確認のため実装せず、再開条件は ADR 本文) |
 | [215](215-derive-variant-name-and-display-tables.md) | variant 名・Display の手書き対応表を strum/thiserror の derive に置き換える(ADR-139 決定4の一部を上書き) | 提案(Opusレビュー round1 で採用可)。実装済み・未マージ |
 | [216](216-remove-diagnostic-only-open-belief-and-unread-apply-arguments.md) | 診断ログ専用の OpenBelief と、読まれない applied の時刻・常に None の引数を撤去する | R1〜R4 実装済み(CI 確認待ち) |
+| [217](217-remove-dead-compat-and-unused-parameters.md) | 後方互換の名目だけが残るコード・未使用引数・古くなった dead_code allow を撤去する | 提案(Opusレビュー round2 で収束)。C3 は所有者判断待ち。未実装 |
 | [218](218-shared-helper-for-architecture-guard-call-site-pins.md) | architecture_guard の呼び出し元固定ガードの重複を共通ヘルパー1本で除く(宣言テーブルは見送り) | 提案(Opus round3 で収束、採用可) |
 | [219](219-engine-test-helpers-instead-of-scenario-dsl.md) | エンジンテストは既存ヘルパーの使い回しと純粋な対応表の撤去で読みやすくする(DSLは見送り) | 提案(Opus round3 で収束、採用可) |
 | [220](220-key-name-tables-keep-as-is-add-capture-table-test.md) | キー名表の単一ソース化は見送り、キャプチャ表の検証テスト1本だけ足す | 見送り。テスト1本実装済み。vk.rs内のvk_keys!統合とLEGACY撤去はPR #430(D1を一部上書き) |
