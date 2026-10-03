@@ -1,0 +1,173 @@
+# BUG-173 の v1 向け A/B 検証(検証専用ブランチ ci/v1-e2e-bug173。develop/v1-develop へはマージしない)。
+# 目的: v1 では物理ひらがなキー(F2)が「GJI + TSFネイティブ(実Chrome)」で Suppress されるが、本当に実害があるか(F2 が効かないか)を測る。
+#   アーム a = v1-develop そのまま(F2 は Suppress、埋め合わせ kp_restore_hiragana は composition_warm 時のみ)
+#   アーム b = a + develop の d4d7c8b1(BUG-173 の中核: F2 を常に Allow)。tools/e2e/v1_bug173/bug173-core.patch
+#   対照 = awase なし(--no-awase): GJI だけで同じケースが通ること
+# 実機の再現ログ: 不具合報告 01M3NJ784NKMH120HM6QGKF7W7(v1.21.0)。
+# 判定は chrome_probe の各ケースの RESULT(PASS/RECOVER/FAIL/INVALID)。F2 を使うのは「かな→ひらがな=半角英数」「半角英数→ひらがな=かな」と、
+# 各ケースの setup(ensure)内のひらがな押下。
+name: e2e-v1-bug173
+
+on:
+  push:
+    branches: [ci/v1-e2e-bug173]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-v1-bug173-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [a, b]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e-v1
+          save-if: ${{ matrix.arm == 'a' }}
+      - name: アーム b だけ BUG-173 の中核パッチを当てる
+        if: matrix.arm == 'b'
+        shell: bash
+        run: |
+          git apply tools/e2e/v1_bug173/bug173-core.patch
+          git diff --stat
+      - name: awase と chrome_probe をビルド(デバッグ。AWASE_TEST_INJECTION はデバッグビルドでのみ有効)
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          cargo build -p awase-windows --example chrome_probe
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item target\debug\examples\chrome_probe.exe dist\
+          Copy-Item config.toml dist\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.arm }}
+          path: dist
+          retention-days: 3
+
+  e2e:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 各 (アーム, awase の有無) を3回(別VM)。対照は awase なしなのでアームは a 固定(バイナリは使わない)。
+          - { name: a-awase, arm: a, awase: 'true', run: 1 }
+          - { name: a-awase, arm: a, awase: 'true', run: 2 }
+          - { name: a-awase, arm: a, awase: 'true', run: 3 }
+          - { name: b-awase, arm: b, awase: 'true', run: 1 }
+          - { name: b-awase, arm: b, awase: 'true', run: 2 }
+          - { name: b-awase, arm: b, awase: 'true', run: 3 }
+          - { name: control-noawase, arm: a, awase: 'false', run: 1 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-${{ matrix.arm }}
+          path: dist
+
+      - name: Google 日本語入力をインストール(chocolatey、約30秒)
+        shell: pwsh
+        run: |
+          choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+
+      - name: 入力言語をja-JP + GJI に設定、キーマッププリセット(ATOK/MS-IME)の config1.db を書く
+        shell: pwsh
+        run: |
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          # キーマッププリセット(session_keymap): Mozc Config の field 41 (varint)。1=ATOK, 2=MS-IME。
+          # field 22 (check_default) = 0 で「既定のIMEにしますか」の初回ダイアログを出さない。
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $bytes = [System.Collections.Generic.List[byte]]::new()
+          $bytes.AddRange([byte[]](0xB0,0x01,0x00,0xC8,0x02,[byte]1))
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), $bytes.ToArray())
+          # 変換サーバー等はインストール時の既定設定で起動済みで、後から書いた config1.db を読み直さない。
+          # 終了させ、次に使われるとき(TIP が呼ぶとき)に新しい設定で起動し直させる。
+          # インストール直後に起動するツール/ウィザード(googleimejatool.exe)もここで終了する。
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+
+      - name: awase を起動し、chrome_probe を実行して判定する
+        shell: pwsh
+        run: |
+          $env:RUST_LOG = 'debug'
+          $env:AWASE_TEST_INJECTION = '1'
+          Push-Location dist
+          # awase を先に起動して TIP を検出させてから、Chrome を起動して打鍵する(develop の e2e-ime.yml の chrome 構成と同じ順序)。
+          if ('${{ matrix.awase }}' -ne 'false') {
+            Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+            Start-Sleep -Seconds 10
+          }
+          $probeArgs = '--repeat=3 --log=chrome_probe.log'
+          if ('${{ matrix.awase }}' -eq 'false') { $probeArgs += ' --no-awase' }
+          Start-Process -FilePath .\chrome_probe.exe -ArgumentList $probeArgs
+          $deadline = (Get-Date).AddSeconds(600)
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 2
+            if ((Test-Path chrome_probe.log) -and (Select-String -Path chrome_probe.log -Pattern '全ケース完了' -Quiet)) { break }
+          }
+          Pop-Location
+          $env:PYTHONUTF8 = '1'
+          python tools\e2e\ime_key_matrix\check_chrome_probe.py dist\chrome_probe.log | Tee-Object -FilePath result.txt
+          "rc=$LASTEXITCODE" | Out-File -FilePath rc.txt -Encoding ascii
+          # F2 の配送と埋め合わせの記録(アーム a では Suppress(tsf-f2) と [kana-mode-restore] の見送り/注入、アーム b では Allow)。
+          if (Test-Path dist\awase.log) {
+            Select-String -Path dist\awase.log -Pattern 'tsf-f2|kana-mode-restore|NativeF2|VK_DBE_HIRAGANA|vk=0xf2|0xF2' -Encoding utf8 | ForEach-Object { $_.Line } | Select-Object -First 400 | Set-Content f2-trace.txt -Encoding utf8
+            "f2-trace 行数: $((Get-Content f2-trace.txt).Count)" | Tee-Object -FilePath result.txt -Append
+          }
+          Get-Process awase, chrome, chrome_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ matrix.name }}-${{ matrix.run }}
+          path: |
+            result.txt
+            rc.txt
+            f2-trace.txt
+            dist/chrome_probe.log
+            dist/awase.log
+            awase-stderr.log
+          retention-days: 7
+
+  summary:
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: results
+      - name: アーム別の集計
+        shell: bash
+        run: |
+          set -u
+          for d in results/result-*; do
+            n=$(basename "$d")
+            echo "### $n"
+            grep -h -E '^集計|RESULT (FAIL|INVALID)' "$d/result.txt" 2>/dev/null | sed 's/^/  /' || echo "  (result.txt なし)"
+            echo "  F2 配送: Suppress(tsf-f2)=$(grep -c 'tsf-f2' "$d/f2-trace.txt" 2>/dev/null || echo 0) kana-mode-restore 見送り=$(grep -c '見送り' "$d/f2-trace.txt" 2>/dev/null || echo 0) 注入=$(grep -c '埋め合わせに' "$d/f2-trace.txt" 2>/dev/null || echo 0)"
+          done | tee "$GITHUB_STEP_SUMMARY"

@@ -957,6 +957,26 @@ fn build_raw_key_event(
     }
 }
 
+/// テストドライバ（`examples/chrome_probe.rs`）が注入するキーの `dwExtraInfo`。
+/// ドライバ側はこの定数を参照する（二重定義しない）。develop の `hook.rs` と同じ値。
+pub const TEST_INJECTION_MARKER: usize = 0x5350_494B;
+
+/// `AWASE_TEST_INJECTION=1` が設定されているとき、かつ目印が一致するときだけ true。
+/// **デバッグビルドでのみ有効**（リリースビルドでは常に false）。
+/// （develop の `43a400cc`・`7f13c4e5` を v1 の A/B 検証用に載せたもの。検証ブランチ専用で、マージしない）
+#[cfg(debug_assertions)]
+fn is_test_injection(extra_info: usize) -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    extra_info == TEST_INJECTION_MARKER
+        && *ENABLED
+            .get_or_init(|| std::env::var_os("AWASE_TEST_INJECTION").is_some_and(|v| v == "1"))
+}
+
+#[cfg(not(debug_assertions))]
+const fn is_test_injection(_extra_info: usize) -> bool {
+    false
+}
+
 /// 自己注入キーかどうかを判定する（無限ループ防止）。
 const fn is_self_injected(extra_info: usize) -> bool {
     extra_info == INJECTED_MARKER
@@ -1008,7 +1028,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
     let self_injected = is_self_injected(kb.dwExtraInfo);
 
-    let is_injected = (kb.flags.0 & LLKHF_INJECTED) != 0;
+    // テスト専用: `AWASE_TEST_INJECTION=1`(デバッグビルドのみ)のとき、目印付きの注入を物理キーとして扱う。
+    let is_injected = (kb.flags.0 & LLKHF_INJECTED) != 0 && !is_test_injection(kb.dwExtraInfo);
 
     // IME モードキー (VK_KANA/IME_ON/JUNJA/KANJI/IME_OFF/VK_DBE_*) 診断ログ。
     // 「Ctrl+無変換→Ctrl+変換 で IME-OFF Engine-ON になる」報告 (2026-07-06) の切り分け用:
