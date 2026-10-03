@@ -660,10 +660,8 @@ mod app {
             };
             // 打鍵数の見積りを時間へ換算し、総所要時間を経過時間に対してなだらかにしか
             // 動かさない(割合・残り時間が線形に近づく)。
-            let (eta_ms, expected) = match estimator.borrow_mut().update(snapshot, elapsed_ms) {
-                Some(d) => (d.eta_ms, d.expected_presses),
-                None => (-1.0, presses + 1),
-            };
+            let d = estimator.borrow_mut().update(snapshot, elapsed_ms);
+            let (eta_ms, expected) = (d.eta_ms.unwrap_or(-1.0), d.expected_presses);
             let line = format!(
                 "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0} \
                  presses={presses} expected_presses={expected}"
