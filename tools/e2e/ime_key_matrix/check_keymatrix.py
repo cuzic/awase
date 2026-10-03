@@ -36,7 +36,9 @@ fresh セルが無ければ STUCK のまま(`exception_candidate=true`、E2 未�
 物理 Ctrl の確認: ctrl+ のセルがあるとき、awase.log に `[engine-input] vk=0x<key> KeyDown … mods(c=true …` の行が全て
 `phys_ctrl=true` であること(1件も無い=注入が届かない、false が混じる=物理キー扱いでない)を要求し、満たさなければ ctrl+ のセルは INVALID。
 
-使い方: check_keymatrix.py [--json out.json] [--min-n 10] <typing_stress.log|chrome_probe.log> [awase.log]
+--strict(expect=pass の構成で指定): GAP_NOT_MADE のセル、または made < min_n のセルがあり、不合格が無ければ INVALID(rc=3)=判定不能。
+  指定しない(observe)ときは従来どおり、これらは合否に影響しない(E2 は同じ job の open と fresh の比較が設計なので、open 側が成立しない結果を PASS にしない)。
+使い方: check_keymatrix.py [--strict] [--json out.json] [--min-n 10] <typing_stress.log|chrome_probe.log> [awase.log]
 終了コード: 0=全セルが合格(または ENV_EXCEPTION / GAP_NOT_MADE) / 1=不合格のセルあり / 3=INVALID / 2=使い方の誤り
 出力の末尾に `KEYMATRIX_CELL:` を1セル1行、最後に `KEYMATRIX:` の要約1行。
 """
@@ -151,7 +153,7 @@ def trial_failed(kind: str, c: dict) -> bool:
     return c["kind"] in ("late", "stuck")
 
 
-def analyze(recs: list, awase_lines=None, min_n: int = 10) -> dict:
+def analyze(recs: list, awase_lines=None, min_n: int = 10, strict: bool = False) -> dict:
     cfg = next((r for r in recs if r.get("type") in ("km_config", "config")), {})
     form = cfg.get("form") or ""
     ime = cfg.get("ime") or ""
@@ -222,7 +224,20 @@ def analyze(recs: list, awase_lines=None, min_n: int = 10) -> dict:
     bad = [c for c in cells if c["verdict"] in ("STUCK", "CONVERGED_LATE")
            or (c["verdict"] == "CONVERGED_2" and c["kind"] != "tog")]
     invalid = bool(job_invalid) or any(c["verdict"] == "INVALID" for c in cells)
-    overall = "INVALID" if invalid else ("FAIL" if bad else "PASS")
+    # strict(expect=pass の構成): ずれを作れた試行が min_n に満たないセルは「測定になっていない」。合格に数えず、実際の不合格が
+    # 無いときだけ判定不能(INVALID)にする(不合格があればそちらを優先して FAIL)。
+    short = [c for c in cells if c["verdict"] == "GAP_NOT_MADE" or not c["meets_n"]] if strict else []
+    for c in short:
+        c["reason"] = c["reason"] or f"ずれを作れた試行が不足(made={c['made']} < {min_n})"
+    if invalid:
+        overall = "INVALID"
+    elif bad:
+        overall = "FAIL"
+    elif short:
+        overall = "INVALID"
+        job_invalid.append("ずれを作れなかった/試行不足のセル: " + ", ".join(c["cell"] for c in short))
+    else:
+        overall = "PASS"
     return {"verdict": overall, "cfg": cfg, "cells": cells, "invalid": job_invalid, "evidence": evidence}
 
 
@@ -276,6 +291,10 @@ def main(argv) -> int:
     args = list(argv)
     json_out = None
     min_n = 10
+    strict = False
+    if "--strict" in args:
+        strict = True
+        args.remove("--strict")
     if "--json" in args:
         i = args.index("--json")
         if i + 1 >= len(args):
@@ -306,7 +325,7 @@ def main(argv) -> int:
                 awase_lines = f.read().splitlines()
         except OSError:
             awase_lines = None
-    r = analyze(recs, awase_lines, min_n)
+    r = analyze(recs, awase_lines, min_n, strict)
     cfg = r["cfg"]
     print(f"入力先={cfg.get('form')} IME={cfg.get('ime')} 証拠={r['evidence']}")
     for x in r["invalid"]:

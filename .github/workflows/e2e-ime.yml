@@ -973,7 +973,7 @@ jobs:
           } elseif ('${{ matrix.cfg.check }}' -eq 'keymatrix') {
             # ADR-208 L3b: 「ずれの作り方 × 明示キー」行列。実 Chrome は chrome_probe.log、自前窓は typing_stress.log を読む。
             $kmlog = if ('${{ matrix.cfg.chrome }}' -ne '') { 'dist\chrome_probe.log' } else { 'dist\typing_stress.log' }
-            python tools\e2e\ime_key_matrix\check_keymatrix.py --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
+            python tools\e2e\ime_key_matrix\check_keymatrix.py ${{ matrix.cfg.expect == 'pass' && '--strict' || '' }} --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'startup') {
             python tools\e2e\ime_key_matrix\check_startup.py --json startup.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
