@@ -29,6 +29,9 @@
 pub const PRESSES_PER_CELL: f64 = 5.2;
 /// セルを測り終えた後のやり直し・検証などの打鍵数の枠。
 pub const TAIL_PRESSES: f64 = 630.0;
+/// 内蔵表と食い違ったセルの再測定1セルあたりの打鍵数(実測: windows-latest実GJI+ATOKで
+/// 到達所要押下数の平均22〜26、`REMEASURE_RESET_EVERY`の比較〈n=240〉より)。
+pub const REMEASURE_PRESSES_PER_CELL: f64 = 24.0;
 /// 学習後の検証ウォークの打鍵数の見積り(未測定、下限は予測ステップ数300)。
 pub const VERIFY_WALK_PRESSES: f64 = 330.0;
 
@@ -54,12 +57,26 @@ pub struct ProgressEstimator {
     cells_done_at: Option<u32>,
     /// これまでに出した最大の割合。
     max_fraction: f64,
+    /// 直近に返した(打鍵数, 分母)。[`Self::add_extra_tail`]が割合の下限を引き直すのに使う。
+    last: Option<(u32, u32)>,
+    /// 学習後に分かった追加の打鍵数(内蔵表との不一致セルの再測定など)。
+    extra_tail: f64,
 }
 
 impl ProgressEstimator {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 学習後に判明した追加の作業量(打鍵数)を末尾の枠へ足す。分母は伸びるので、割合は
+    /// この時点に限って下がりうる(下げないままだと、追加分の間ずっと「残り0秒・99%」に
+    /// 張り付く)。以降は再び単調。
+    pub fn add_extra_tail(&mut self, presses: f64) {
+        self.extra_tail += presses;
+        if let Some((p, e)) = self.last {
+            self.max_fraction = f64::from(p) / (f64::from(e) + presses);
+        }
     }
 
     /// 分母(想定の総打鍵数)を返す。`presses`より必ず大きい。割合(`presses / 戻り値`)は
@@ -79,11 +96,12 @@ impl ProgressEstimator {
         let cells_remaining = f64::from(unmeasured_known) + unseen_cells;
         let tail_remaining = if unmeasured_known == 0 && unseen_cells == 0.0 && known_cells > 0 {
             let done_at = *self.cells_done_at.get_or_insert(s.presses);
-            (TAIL_PRESSES + VERIFY_WALK_PRESSES - f64::from(s.presses.saturating_sub(done_at)))
-                .max(1.0)
+            (TAIL_PRESSES + VERIFY_WALK_PRESSES + self.extra_tail
+                - f64::from(s.presses.saturating_sub(done_at)))
+            .max(1.0)
         } else {
             self.cells_done_at = None;
-            TAIL_PRESSES + VERIFY_WALK_PRESSES
+            TAIL_PRESSES + VERIFY_WALK_PRESSES + self.extra_tail
         };
 
         let remaining = cells_remaining * PRESSES_PER_CELL + tail_remaining;
@@ -94,7 +112,9 @@ impl ProgressEstimator {
         }
         expected = expected.max(f64::from(s.presses) + 1.0);
         self.max_fraction = self.max_fraction.max(f64::from(s.presses) / expected);
-        expected.ceil() as u32
+        let result = expected.ceil() as u32;
+        self.last = Some((s.presses, result));
+        result
     }
 }
 
@@ -166,6 +186,19 @@ mod tests {
         });
         assert!(worst > 2500, "{worst}");
         assert!(done < worst, "{done} < {worst}");
+    }
+
+    #[test]
+    fn extra_tail_keeps_eta_from_sticking_at_the_end() {
+        let mut e = ProgressEstimator::new();
+        // 学習本体の終了直後(検証ウォークの前)に、再測定25セル分が判明した。
+        let before = e.expected_presses(snap(1500, 168, 12));
+        e.add_extra_tail(25.0 * REMEASURE_PRESSES_PER_CELL);
+        let after = e.expected_presses(snap(1510, 168, 12));
+        assert!(after >= before + 500, "{before} -> {after}");
+        // 再測定の途中でも、残りがあるうちは分母が押下数へ張り付かない。
+        let mid = e.expected_presses(snap(2000, 168, 12));
+        assert!(mid > 2000 + 100, "{mid}");
     }
 
     #[test]

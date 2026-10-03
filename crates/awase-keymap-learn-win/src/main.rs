@@ -31,13 +31,17 @@ mod app {
     use awase_keymap_learn::verify::{
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
-    use awase_keymap_learn_win::progress_estimate::{ProgressEstimator, Snapshot};
+    use awase_keymap_learn_win::progress_estimate::{
+        ProgressEstimator, Snapshot, REMEASURE_PRESSES_PER_CELL,
+    };
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
     use awase_keymap_learn_win::RealImeDriver;
     use awase_windows::state::ime_kind::TipIdentity;
     use awase_windows::state::key_effect_predictor::TableKey;
     use awase_windows::state::key_effect_runtime::current_fingerprint_probe;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     const KEYS: [u32; 14] = [
         0x1D, 0x1C, 0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1B, 0x0D, 0x20, 0x08, 0x41,
@@ -635,9 +639,10 @@ mod app {
     fn make_progress_sink(
         estimated_total_cells: u32,
         max_statuses: u32,
-    ) -> impl FnMut(&Stats, &Table) {
-        let mut estimator = ProgressEstimator::new();
-        move |stats, table| {
+    ) -> (impl FnMut(&Stats, &Table), Rc<RefCell<ProgressEstimator>>) {
+        let estimator = Rc::new(RefCell::new(ProgressEstimator::new()));
+        let handle = Rc::clone(&estimator);
+        let sink = move |stats: &Stats, table: &Table| {
             if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
                 return;
             }
@@ -645,7 +650,7 @@ mod app {
             let total_cells = effective_total_cells(table, estimated_total_cells);
             let elapsed_ms = stats.timeline.last().map_or(0.0, |&(ms, _, _)| ms);
             let presses = stats.presses;
-            let expected = estimator.expected_presses(Snapshot {
+            let expected = estimator.borrow_mut().expected_presses(Snapshot {
                 presses,
                 covered_cells: cell,
                 observed_statuses: table.observed_status_count() as u32,
@@ -663,6 +668,23 @@ mod app {
                  presses={presses} expected_presses={expected}"
             );
             let _ = std::io::stdout().flush();
+        };
+        (sink, handle)
+    }
+
+    /// 学習後の内蔵表との再測定の対象セル数(突き合わせ自体を行わない構成は0)。進捗の
+    /// 分母へ先に入れるために、検証ウォークの前に数える(`reconcile_against_bundled`と同じ判定)。
+    fn count_remeasure_targets(tip: TipIdentity, cells: &[PersistedCell]) -> usize {
+        use awase_windows::gji_charset_autodetect::{
+            bundled_preset_for_adjudication, BundledPresetLookup,
+        };
+        match bundled_preset_for_adjudication(tip) {
+            BundledPresetLookup::Known(preset) => {
+                awase_windows::state::key_effect_runtime::diff_against_bundled(cells, preset)
+                    .mismatched
+                    .len()
+            }
+            _ => 0,
         }
     }
 
@@ -887,7 +909,8 @@ mod app {
         let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
 
         let total_cells = model.distinct_status_count() as u32 * KEYS.len() as u32;
-        executor.set_progress_sink(make_progress_sink(total_cells, model.states.len() as u32));
+        let (progress_sink, estimator) = make_progress_sink(total_cells, model.states.len() as u32);
+        executor.set_progress_sink(progress_sink);
 
         let req = Req::default();
         run(
@@ -936,6 +959,17 @@ mod app {
             total_cells,
             decode_errors,
         );
+
+        // 再測定は不一致セルごとに目的のstatusへ到達するまで押すため、不一致が多いと
+        // 検証ウォーク後に長く続く。数が判明した時点で進捗の分母へ入れる。
+        let mut pending_cells = build_persisted_cells(&executor.table);
+        if tip_at_start == TipIdentity::MsImeNative {
+            blank_idle_reconvert_predictions(&mut pending_cells);
+        }
+        let remeasure_targets = count_remeasure_targets(tip_at_start, &pending_cells);
+        estimator
+            .borrow_mut()
+            .add_extra_tail(remeasure_targets as f64 * REMEASURE_PRESSES_PER_CELL);
 
         // C-7: 検証ウォーク専用の乱数(学習本体とは独立、時刻由来のシード)。
         let walk_seed = fresh_walk_seed();
