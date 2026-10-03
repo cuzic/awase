@@ -664,10 +664,15 @@ mod app {
                 Some(d) => (d.eta_ms, d.expected_presses),
                 None => (-1.0, presses + 1),
             };
-            println!(
+            let line = format!(
                 "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0} \
                  presses={presses} expected_presses={expected}"
             );
+            println!("{line}");
+            // 診断: 標準出力は設定画面が読むだけでログに残らないため、`keymap-learn.log`
+            // (標準エラーの保存先)へも写す。表示の推移を後から数値で検証できるようにする。
+            // 失敗理由は標準エラーの最後の非空行なので、失敗行は必ずこれより後に出る。
+            eprintln!("[progress] {line}");
             let _ = std::io::stdout().flush();
         };
         (sink, handle)
