@@ -763,6 +763,10 @@ msime_legacy_keymap.rs`として実装した。**当初方針（バイト長+ハ
 - [ADR-141](141-henkan-muhenkan-delegate-inactive-recovery.md) —
   `set_thumb_key_shadow_overrides`とdelegate-to-open-axisの関係
   （C2対策）。
+- [ADR-217](217-remove-dead-compat-and-unused-parameters.md) —
+  ADR-191で常に`None`になった「採用系」フィールド（`*_adopted_kind`/`*_adopted_route`/
+  `thumb_key_ime_warning`/`adopted_*_delegate`）をスキーマから削除した。
+  `SCHEMA_VERSION`は上げない（サーバが不一致を拒否するため）。
 - [experiment-logging](../../.claude/rules/experiment-logging.md) /
   [fix-requires-evidence](../../.claude/rules/fix-requires-evidence.md) —
   Phase 2着手時、実機調査の記録方法はこの2ルールに従う。
