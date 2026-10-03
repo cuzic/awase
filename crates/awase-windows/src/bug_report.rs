@@ -1458,8 +1458,14 @@ mod tests {
 
         let mut v = serde_json::to_value(test_msime_key_assignment_summary()).unwrap();
         let o = v.as_object_mut().unwrap();
-        o.insert("adopted_muhenkan_delegate".to_owned(), serde_json::json!(null));
-        o.insert("adopted_henkan_delegate".to_owned(), serde_json::json!("On"));
+        o.insert(
+            "adopted_muhenkan_delegate".to_owned(),
+            serde_json::json!(null),
+        );
+        o.insert(
+            "adopted_henkan_delegate".to_owned(),
+            serde_json::json!("On"),
+        );
         let parsed: BugReportMsImeKeyAssignmentSummary =
             serde_json::from_value(v).expect("旧形式のJSONを読めること");
         assert_eq!(parsed, test_msime_key_assignment_summary());
