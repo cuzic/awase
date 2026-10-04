@@ -22,7 +22,10 @@ fn every_integration_test_is_listed_in_ci() {
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
-        let name = path.file_stem().and_then(|s| s.to_str()).expect("file stem");
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("file stem");
         // `--test NAME` の後ろが空白・行末のときだけ一致とする(接頭辞の偶然一致を避ける)。
         let listed = ci.lines().any(|l| {
             !l.trim_start().starts_with('#')
