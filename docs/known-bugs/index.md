@@ -163,9 +163,9 @@
 | [BUG-159](BUG-159.md) | 解決済み(CI検証済み・実機未確認) | GJIで英数のまま半角/全角を閉→開すると、awaseが入力モードを英数→ひらがなに直し、Engineだけ ON になる(読めない窓) |
 | [BUG-160](BUG-160.md) | 解決済み(コード確認のみ) | Shift+無変換/変換で`ModeKeyConfig::Passthrough`を設定したユーザーには即座の素通しが効かず、NICOLAのチョード保留(PendingThumb)に入ってしまう |
 | [BUG-161](BUG-161.md) | 解決済み(コード確認のみ) | 旧UI「IMEオン/オフ」トグル(コード`CE`)は無変換/変換キーの実IME挙動を変えない、という2026-09-07記述の誤りが実機検証(7パターン)で判明 |
-| [BUG-162](BUG-162.md) | 解決済み(CI検証済み・実機未確認) | develop最新(2026-09-23)でADR-186撤去実験の`baseline`(期待PASS)がFAILする(`outcome=Unwarranted`が2件、未修正) |
+| [BUG-162](BUG-162.md) | 解決済み(閉ループ・CI 検証済み。残る限界も v2.0.0 で再現せず、2026-10-04) | develop最新(2026-09-23)でADR-186撤去実験の`baseline`(期待PASS)がFAILする(`outcome=Unwarranted`が2件、未修正) |
 | [BUG-163](BUG-163.md) | 解決済み(CI検証済み・実機未確認) | 起動直後の`desired_open=true`初期値により、IMEを閉じて起動するとdrift correctionが`set_ime_open(true)`を繰り返す(修正済み・CI確認済み、実機確認待ち) |
-| [BUG-164](BUG-164.md) | 未修正(現行コードに残存を確認) | 古い High 観測が新しい Medium 観測を隠す(`most_recent_trusted`/`derive_any`、鮮度窓3秒内は時刻を見ない、未修正) |
+| [BUG-164](BUG-164.md) | 構造は残存・症状は v2.0.0 の閉ループで再現せず(2026-10-04) | 古い High 観測が新しい Medium 観測を隠す(`most_recent_trusted`/`derive_any`、鮮度窓3秒内は時刻を見ない、未修正) |
 | [BUG-165](BUG-165.md) | 解決済み(CI検証済み・実機未確認) | TsfNative+GJI の高速打鍵で cold probe 中に `pending_deferred` 上限(32 VK)超過し文字が消える(修正済み・クローズ) |
 | [BUG-166](BUG-166.md) | 解決済み(CI検証済み・実機未確認) | MS-IME+EDIT で起動直後に `ime_on=Some(false)` を観測し Engine が約14秒OFFのままローマ字が生で入る(ハーネス修正済み・未再現でクローズ) |
 | [BUG-167](BUG-167.md) | 解決済み(コード確認のみ) | 設定GUIが書く `Ctrl+Shift+VK_F12` を `parse_hotkey` が `VK_VK_F12` と解釈し、エンジン切替ホットキーが無言で登録されない |
