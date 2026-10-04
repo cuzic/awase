@@ -16,7 +16,8 @@ import sys
 from collections import defaultdict
 
 TS = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+)Z\s")
-OUT = re.compile(r"\[key-output\]")
+# Engine の文字出力: TSF/VK 経路は `[key-output]`、Unicode 経路は `awase_windows::output: send_keys:`。
+OUT = re.compile(r"\[key-output\]|awase_windows::output: send_keys:")
 KEY = re.compile(r"\[lang-check:key\] vk=0x41 read=(Some\((?:true|false)\)|None) belief=(true|false)")
 
 
