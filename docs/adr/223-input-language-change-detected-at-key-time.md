@@ -8,7 +8,7 @@ summary: |-
   (D1)engine スレッドがキーリングから取り出した直後に、現在のフォーカス窓から都度引いたスレッドの HKL を読み、物理・外部注入を問わず(awase 自身の注入以外の)文字キーの KeyDown で食い違いを検知して更新する、
   (D2)段階 0 は記録のみ、(D3)表示を早めるには、切替キーの解放後に 1 回だけ読む(案E2)。ポーリングは足さない。
 status: |-
-  段階 0 の第 1 回測定は合格(Win32 窓のみ、PR #452)。窓種を増やした測定が残る。起草 r4(2026-10-04)。Opus r1(Blocker 2・Must 6・Should 5)、r2(Blocker 1・Must 5・Should 4)、r3(Blocker 0・Must 3・Should 4)、r4(収束。Must 2・追記のみ)の指摘を反映済み。段階 0 に着手してよい。実装なし。
+  段階 0 の測定は合格(Win32 窓・Chrome・UWP、PR #452)。設計を 2 点訂正した(WinEvent の hwnd をやめ、UWP のフレームは CoreWindow を読む)。Windows Terminal・コンソール・実機が残る。起草 r4(2026-10-04)。Opus r1(Blocker 2・Must 6・Should 5)、r2(Blocker 1・Must 5・Should 4)、r3(Blocker 0・Must 3・Should 4)、r4(収束。Must 2・追記のみ)の指摘を反映済み。段階 0 に着手してよい。実装なし。
 related_adr:
   - "ADR-093"
   - "ADR-129"
@@ -79,15 +79,11 @@ BUG-183(report `01M4047347…`、issue #445): MS-IME で入力言語のホット
   フック内で読むには、フォーカス窓の情報をスレッドをまたいで渡す共有状態(`HOOK_STATE` への `AtomicU32` など)が要り、書き漏れで古い tid が残る(Opus r2 N-B1 の案 a)。**採らない**。
   読むのは **engine スレッドがリングから取り出した直後(`INPUT_DEFER` へ入れる前)**。drain の再生はこの取り込み口を通らないので、ADR-129 の原則(再生時に「今」を読まない)も守れる。フックから取り込みまでの遅れは µs〜数 ms で、言語切替(きっかけのキーから 10〜20ms)より十分短い。
   読み取りの結果は `RawKeyEvent` の欄に書き、journal の key input レコードにも載せる(段階 0 の記録と再生の検証のため)。
-- **どのスレッドを読むか**: tid は保存しない。**フォーカスを受けた窓の hwnd を `Runtime` の欄に 1 つ保存**し、打鍵ごとにそこから `GetWindowThreadProcessId` で引く(非ブロッキング。窓が破棄されていれば `tid=0` → `None`、スレッド終了なら `GetKeyboardLayout` が 0 → `None`、tid の再利用の問題も起きない。Opus r2 N-M2)。
-  hwnd を書くのは **`EVENT_OBJECT_FOCUS` の WinEvent(`app/bootstrap.rs:855-892`、engine スレッドで同期に呼ばれ、フォーカスを受けた hwnd がその場で渡る)から入る `on_window_focus_event`(`runtime/mod.rs:1683-`)の 1 か所**。既存の `[focus-sync]` が同じ hwnd から class/pid を同期で引いて注入方式を即時更新しているのと同じ位置・同じ根拠で、デバウンス(約 50ms)や非同期の probe を待たない。
-  「未解決」状態やそれを解く経路は要らない(Opus r3 R3-M1。非同期のフォーカス解決は、`GetGUIThreadInfo` の失敗で `hwnd_addr: 0` を返す・世代が古いと棄却される経路があり、解き忘れると次のフォーカス変更まで D1 が止まる)。フォーカス直後の最初の打鍵から、新しい窓のスレッドを読める。
-  `GetGUIThreadInfo` は呼ばない(ハングしうる)。前面スレッドへのフォールバックもしない(UWP の `ApplicationFrameHost` の古い言語で誤って下げる危険)。
-  **hwnd を書く側の注意**(Opus r4):
-  - R4-M1(再入でフォーカス変更が失われる): 現状のコールバックは `LAST_FOCUS_HWND` を先に更新してから `with_app` を呼び、戻り値を捨てている(`bootstrap.rs:871-892`)。engine スレッドが `with_app` の中(モーダルループ等)にいる間にフォーカスが動くと、この変更は黙って失われ、続く同じ窓のイベントも重複として捨てられ、保存した hwnd が前の窓のまま残る。
-    hwnd の保存は `with_app_or_repost_with`(`lib.rs:266`。既存の `WM_ASYNC_IME_APPLY_COMPLETE`・`WM_FOCUS_KIND_UPDATE` が使う、取り損ねたら自スレッドへ再 post する仕組み)経由にし、`LAST_FOCUS_HWND` の更新は `with_app` が成功した後に移す。
-  - R4-M2(awase 自身の窓): フォーカスがトレイメニュー・ダイアログなど awase 自身の窓に移ると、読む tid が awase 自身のスレッドになり、D0 で直そうとしている「awase 自身のスレッドの HKL」をそのまま読んでしまう。hwnd の pid(`GetWindowThreadProcessId` の pid 出力)が自プロセスなら `None`(書き込まない)にする。
-  **残る弱点**(段階 0 で測る): (a) `EVENT_OBJECT_FOCUS` を出さずにフォーカスが移る窓では、前の窓の hwnd を読み続ける。全アプリ共通の入力方式なら同じ言語で害は無いが、「アプリごとに入力方式を設定する」設定では誤る可能性がある(D2 ④)。(b) 同一 hwnd の連続イベントは `LAST_FOCUS_HWND` で捨てられる(正しい)。(c) UWP ではフォーカスイベントの hwnd は通常アプリ側の `CoreWindow` で、言語が同期されるスレッドなので、`GetGUIThreadInfo` 経由より正しい見込みだが未測定(D2 ③)。(d) 従来のコンソールで `GetKeyboardLayout` が実際の言語を返さない問題は、コンソールアプリが自分のスレッドを読む場合の話で、conhost の窓のスレッドを読む場合は当たらない可能性がある(D2 ③で測る)。
+- **どのスレッドを読むか**(段階 0 の実測で r4 の設計を訂正した。下の「段階 0 の結果」参照): tid は保存せず、**既存の非同期のフォーカス解決(`GetGUIThreadInfo` 経由)が確定した実際のフォーカス窓**(`focus_hwnd()`)から、打鍵ごとに `GetWindowThreadProcessId` で引く(非ブロッキング。窓が破棄されていれば `tid=0` → `None`、スレッド終了なら `GetKeyboardLayout` が 0 → `None`、自プロセスの窓も `None`。tid の再利用の問題も起きない)。
+  **`EVENT_OBJECT_FOCUS` の WinEvent の hwnd は使わない。** r3/r4 の案(WinEvent が engine スレッドで同期に hwnd を渡すので、それを保存する)は、実測で誤りと分かった: 最後に届いたイベントが実際のフォーカスとは限らず、別プロセス(Windows Terminal の `InputSite` 窓)の遅れたイベントが最後になり、その英語のスレッドを読んで、日本語のままの打鍵を非日本語と誤検知した。
+  **UWP のフレーム窓(`ApplicationFrameWindow`、`ApplicationFrameHost` のスレッド)は、子の `CoreWindow`(アプリ側の入力スレッド)を引いて読む**(`FindWindowExW`)。見つからなければ「不明」。フレームのスレッドの言語は実際の入力スレッドと食い違う(段階 0 で偽陽性 16/16 の原因だった)。
+  `GetGUIThreadInfo` は打鍵ごとには呼ばない(ハングしうる)。前面スレッドへのフォールバックもしない。
+  **残る弱点**(段階 0 で測る): (a) 非同期のフォーカス解決は、フォーカス変更から約 50〜80ms 遅れる。その間の打鍵は前の窓のスレッドを読む。全アプリ共通の入力方式なら同じ言語で害は無いが、「アプリごとに入力方式を設定する」設定では誤る可能性がある(未測定、D2 ④)。(b) 従来のコンソールは `WM_INPUTLANGCHANGEREQUEST`・Alt+Shift とも言語が切り替わらず(8/8 切替できず)、この方法では真値が取れない。
 - **反映の場所**: `process_key_event` の先頭、`build_input_context`(`key_pipeline.rs:93-101`)**より前**。同じ打鍵の ctx に間に合い、その打鍵から通過になる。ここで反映するのは、取り込み口で `RawKeyEvent` に載せた値。
 - **対象**: awase 自身の注入(`is_self_injected`)**以外のすべての KeyDown**。物理に限らない(PowerToys・AutoHotkey・リモートデスクトップ経由のキーも対象。読む証拠は OS の HKL で、きっかけのキーの出自ではない。Opus r1 B2)。
   Ctrl/Alt/Win を押している間のキーは読まない(PassThrough でエンジンは変換しない。シェルのフライアウト中の前面窓の言語で往復する機会も減らす。Opus r1 S1)。Shift のみは読む。
@@ -119,29 +115,33 @@ E1(`Toggle` + `ImmGetHotKey`)と案F(`SetWinEventHook`)は採らない。E2 の�
 
 ### D4: 範囲(Opus r2 N-M4 で見積もりを補正)
 - 取り込み口での読み取り 1 か所と、`RawKeyEvent` の新しい欄、journal の key input レコードへの記載。
-- `on_window_focus_event` が受け取った hwnd を保存する `Runtime` の欄 1 つ(書き込みは `with_app_or_repost_with` 経由、自プロセスの窓は `None`)と、打鍵ごとの `GetWindowThreadProcessId` の呼び出し(「未解決」フラグとその解除経路は要らない)。
+- 既存の `focus_hwnd()`(非同期のフォーカス解決が確定した窓)を読むだけで、新しい状態の欄は要らない。打鍵ごとの `GetWindowThreadProcessId`・`GetKeyboardLayout` と、UWP のフレーム窓の子 `CoreWindow` の引き(自プロセスの窓は `None`)。
 - 純関数 `classify_layout_language` と `observe_layout_language`(`ImeEvent` は新設しない)。
 - ①②の読み先の修正(2 か所)と、②の `ime_on: Some(false)` 短絡・①の `known_not_japanese` 分岐の `None` 化。
 - 両方向の遷移での refresh 予約(1 行)。
 - 段階 2 のみ: E2 のタイマー 1 本。
 IME への書き込み(actuation)は増やさない。規模は数十行とテスト。複雑性予算の観点でも、増えるのは観測点 1 つ・欄 1 つ・状態 1 つ。
 
-## 段階 0 の結果(第 1 回、2026-10-04)
-実装: PR #452(`feat/adr223-stage0-lang-check`、記録のみ)。測定: `ci/adr223-stage0`(run 37175102765、windows-latest、MS-IME + ru-RU、プローブ自身の Win32 窓)。
-プローブ側の真値(切替の時刻・各打鍵の時刻)と、awase.log の `[lang-check:key]` を時刻で突き合わせた。
+## 段階 0 の結果(2026-10-04)
+実装: PR #452(`feat/adr223-stage0-lang-check`、記録のみ、挙動を変えない)。測定: `ci/adr223-stage0`(windows-latest、MS-IME + ru-RU)。プローブ側の真値と、awase.log の `[lang-check:key]` を時刻で突き合わせた。
+プローブ自身の窓は、切替の時刻と各打鍵の時刻が真値。Chrome・UWP は、窓の外から OS が持つ「実際のフォーカススレッド」の言語(`GetGUIThreadInfo`)を真値にした。
 
-| 方法 | 試行 | 偽陽性(対照の打鍵で false) | 陽性 1 打鍵目(マーカーあり) | 陽性 2 打鍵目(マーカーなし=外部注入) |
-|---|---|---|---|---|
-| Alt+Shift | 8 | 0/8 | 8/8 | 8/8 |
-| Win+Space | 8 | 0/8 | 8/8 | 8/8 |
-| 入力言語ホットキー(Alt+Shift+3) | 8 | 0/8 | 8/8 | 8/8 |
-| 言語切替の要求 | 8 | 0/8 | 8/8 | 8/8 |
-| 切替の直後にフォーカス移動 | 8 | 0/8 | 8/8 | 8/8 |
+### 経過(段階 0 が見つけた 2 つの誤り)
+1. **UWP のフレーム窓**: フォーカスイベントの hwnd が `ApplicationFrameWindow` のとき、そのスレッド(`ApplicationFrameHost`)の言語が、前の試行で切り替えた ru のまま残り、実際の入力スレッド(`CoreWindow`、日本語)と食い違った。日本語のままの打鍵を非日本語と読む**偽陽性が 16/16**。→ 子の `CoreWindow` を読むようにした。
+2. **WinEvent の hwnd の揺れ**: プローブが前面になる際に、別プロセスの `InputSite` 窓の遅れて届いたイベントが最後になり、英語のスレッドを読んで偽陽性になった(プローブ自身の窓で 8/8)。→ 読む窓を、非同期で確定したフォーカス窓にした。
+r3/r4 の「WinEvent が同期で渡す hwnd を保存すれば足りる」「UWP のフォーカスイベントの hwnd は通常 `CoreWindow`」という前提は、どちらも実測で誤りだった。**記録のみの段階 0 を先に入れたことで、belief を更新する前に見つかった。**
 
-不明(`None`)・検知漏れ・欠落は 0 件。**D2 の合格条件(偽陽性 0、陽性 N/N)を、この条件では満たした。** マーカーなしの外部注入でも検知できた(B2)。
+### 修正後の結果(run 37177177304)
+| 窓 | 方法 | 試行 | 偽陽性(日本語のままで false) | 切替後 1 打鍵目 | 2 打鍵目(マーカーなし) |
+|---|---|---|---|---|---|
+| プローブの Win32 窓 | Alt+Shift / Win+Space / ホットキー / 切替要求 / 切替直後のフォーカス移動 | 各 8 | 0/8 ずつ | 8/8 ずつ | 8/8 ずつ |
+| Chrome | Alt+Shift / 切替要求 | 各 8 | 0/8 ずつ | 8/8 ずつ | 8/8 ずつ |
+| UWP(設定アプリ) | Alt+Shift / 切替要求 | 各 8 | 0/8 ずつ | 8/8 ずつ | 8/8 ずつ |
+
+不明(`None`)・検知漏れ・欠落は 0 件。前面スレッドとフォーカススレッドの言語が食い違った例は、この測定では 0 件(UWP は、前面=`ApplicationFrameHost` と、フォーカス=アプリ側の `CoreWindow` でスレッドは別)。
 
 **この結果で言えないこと(段階 1 の前に残る)**:
-- 測ったのは、プローブ自身の Win32 窓だけ(`focus_key` の 2 つの窓は同じスレッドで、フォーカスが別スレッドに移る場合ではない)。Chrome・Windows Terminal・UWP(`ApplicationFrameWindow`)・コンソール(`ConsoleWindowClass`)は未測定。
+- Windows Terminal・従来のコンソール(言語が切り替わらず測定不能)は未測定。実機での確認が要る。
 - 「明示意図なし」の対照、「アプリごとに入力方式を設定する」設定、実機ログの収集は未実施。
 - N=8 は、窓種ごとに決まって起きる誤りの確認にはなるが、偶発的な誤りの検出力は無い。
 
