@@ -4,6 +4,7 @@ import {
   HttpError,
   incrementDailyRateLimit,
   MAX_BODY_BYTES,
+  MAX_LOG_GZ_BASE64_CHARS,
   parseAndValidatePayload,
   parseSemver,
   RELEASE_CACHE_KEY,
@@ -23,7 +24,11 @@ const validPayload = {
   description: "変換が意図通りに動きません",
   attach_log: true,
   log_excerpt: "journal excerpt",
+  // ADR-222: schema_version 3（旧クライアント）はこの 2 フィールドを送らない。受理後は
+  // null に正規化されるので、`toEqual` の比較を単純にするため、ここでは null を持たせる。
+  log_excerpt_gz: null,
   app_log_excerpt: "app log excerpt",
+  app_log_excerpt_gz: null,
   attach_state_snapshot: false,
   state_snapshot: null,
   attach_config: false,
@@ -71,6 +76,106 @@ class MemoryBucket {
     this.puts.push({ key, value });
   }
 }
+
+// Worker は解凍しないので、フィクスチャは固定の gzip(base64) 文字列でよい（生成: Python の
+// gzip.compress(text, mtime=0) を base64）。`H4sI` は gzip の先頭 1f 8b 08 の base64 表現。
+const GZIP_JOURNAL = "H4sIAAAAAAAC/4uuVipOLVSyMtRRSs0rKapUsqpWKqksSFWyUvJOrfTMKygtUaqtjQUAuTk7CScAAAA="; // [{"seq":1,"entry":{"type":"KeyInput"}}]
+const GZIP_APP_LOG = "H4sIAAAAAAAC/zMyMDLTNTTQNTAJMTCyMjKxMjDSMzQ0MDa0jFLw9HPzV0gsTyxOVSguSSwqSU3hAgBXnuEzLwAAAA=="; // 2026-10-04T02:24:02.110319Z INFO awase started
+const GZIP_EMPTY_ARRAY = "H4sIAAAAAAAC/4uOBQApu0wNAgAAAA=="; // []
+
+// ADR-222: schema_version 4（gzip + base64 のログ）。新クライアントは非圧縮の
+// log_excerpt / app_log_excerpt を null にして、`_gz` に入れて送る。
+const validPayloadV4 = {
+  ...validPayload,
+  schema_version: 4,
+  log_excerpt: null,
+  log_excerpt_gz: GZIP_JOURNAL,
+  app_log_excerpt: null,
+  app_log_excerpt_gz: GZIP_APP_LOG
+};
+
+describe("schema_version 4 (gzip logs, ADR-222)", () => {
+  it("accepts a schema_version 4 payload and keeps the gzip fields as they are", () => {
+    expect(parseAndValidatePayload(JSON.stringify(validPayloadV4))).toEqual(validPayloadV4);
+  });
+
+  it("still accepts schema_version 3 payloads (old clients, including the v1 maintenance line)", () => {
+    expect(parseAndValidatePayload(JSON.stringify(validPayload))).toEqual(validPayload);
+  });
+
+  it("rejects schema versions other than 3 and 4", () => {
+    for (const schema_version of [2, 5, "4", null]) {
+      expect(() =>
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, schema_version }))
+      ).toThrowError(expect.objectContaining({ status: 400, message: "unsupported_schema_version" }));
+    }
+  });
+
+  it("rejects the legacy plain-text log fields in schema_version 4", () => {
+    // 古い Worker が知らないフィールドを黙って捨てて 201 を返す事故の対になる検証:
+    // 4 のクライアントは非圧縮フィールドを使わない（両方ある報告は曖昧なので拒否する）。
+    for (const field of ["log_excerpt", "app_log_excerpt"]) {
+      expect(() =>
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, [field]: "plain" }))
+      ).toThrowError(
+        expect.objectContaining({ status: 400, message: "legacy_log_fields_not_allowed_in_schema_4" })
+      );
+    }
+  });
+
+  it("rejects gzip fields in schema_version 3", () => {
+    expect(() =>
+      parseAndValidatePayload(
+        JSON.stringify({ ...validPayload, log_excerpt_gz: GZIP_EMPTY_ARRAY })
+      )
+    ).toThrowError(expect.objectContaining({ status: 400, message: "gz_log_fields_require_schema_4" }));
+  });
+
+  it("rejects gzip fields unless attach_log is set", () => {
+    expect(() =>
+      parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, attach_log: false }))
+    ).toThrowError(expect.objectContaining({ status: 400, message: "log_excerpt_gz_requires_attach_log" }));
+  });
+
+  it("accepts null or absent gzip fields in schema_version 4 (attach_log without logs)", () => {
+    const { log_excerpt_gz: _a, app_log_excerpt_gz: _b, ...rest } = validPayloadV4;
+    expect(parseAndValidatePayload(JSON.stringify(rest))).toEqual({
+      ...rest,
+      log_excerpt_gz: null,
+      app_log_excerpt_gz: null
+    });
+  });
+
+  it("rejects gzip fields that are not valid base64 of a gzip stream", () => {
+    const bad: Array<[unknown, string]> = [
+      ["not base64!!", "log_excerpt_gz_invalid"],
+      // 長さが 4 の倍数でない。
+      ["H4sIAAA", "log_excerpt_gz_invalid"],
+      // base64 としては正しいが gzip ではない（先頭が H4sI でない）。
+      [Buffer.from("plain text, not gzip").toString("base64"), "log_excerpt_gz_invalid"],
+      [42, "log_excerpt_gz_invalid"]
+    ];
+    for (const [value, code] of bad) {
+      expect(() =>
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, log_excerpt_gz: value }))
+      ).toThrowError(expect.objectContaining({ status: 400, message: code }));
+    }
+  });
+
+  it("rejects an oversized gzip field before inspecting it further", () => {
+    const huge = "H4sI" + "A".repeat(MAX_LOG_GZ_BASE64_CHARS);
+    expect(() =>
+      parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, app_log_excerpt_gz: huge }))
+    ).toThrowError(expect.objectContaining({ status: 400, message: "app_log_excerpt_gz_too_large" }));
+  });
+
+  it("has a 2MiB body limit large enough for ten minutes of gzipped logs", () => {
+    expect(MAX_BODY_BYTES).toBe(2 * 1024 * 1024);
+    // 1 本の上限は、本体上限から他の項目の余裕（256KiB）を引いた値。2 本の合計は本体上限
+    // （`readBodyWithLimit`）が別に抑える。
+    expect(MAX_LOG_GZ_BASE64_CHARS).toBe(MAX_BODY_BYTES - 256 * 1024);
+  });
+});
 
 describe("payload validation", () => {
   it("accepts the documented payload shape", () => {

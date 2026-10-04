@@ -3,8 +3,18 @@ export interface Env {
   RATE_LIMIT_KV: KVNamespace;
 }
 
-export const SCHEMA_VERSION = 3;
-export const MAX_BODY_BYTES = 512 * 1024;
+/** ADR-222: 4。`log_excerpt_gz` / `app_log_excerpt_gz`（gzip + base64）を追加し、
+ * 非圧縮の `log_excerpt` / `app_log_excerpt` は 4 では常に null。 */
+export const SCHEMA_VERSION = 4;
+/** 受理する schema_version。3 は旧クライアント（v1 保守ラインを含め今後も送り続ける）。 */
+export const SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [3, 4];
+/** ADR-222: 512KiB → 2MiB（10 分ぶんのログを gzip して送るため）。512KiB は ADR-095 実装時の
+ * 暫定値で、Cloudflare 側の制約ではない。クライアント（awase-windows の `MAX_BODY_BYTES`）と同じ値。 */
+export const MAX_BODY_BYTES = 2 * 1024 * 1024;
+/** `log_excerpt_gz` / `app_log_excerpt_gz` 1 本あたりの base64 文字列の最大長。本体上限から、
+ * 他の項目（状態・設定・配列ファイル等。実測で通常 数十 KB）の余裕 256KiB を引いた値。
+ * 2 本の合計は本体上限（`readBodyWithLimit`）が別に抑える。 */
+export const MAX_LOG_GZ_BASE64_CHARS = MAX_BODY_BYTES - 256 * 1024;
 export const DAILY_REPORT_LIMIT_PER_IP = 20;
 export const RELEASE_CACHE_KEY = "latest-release:v1";
 
@@ -52,7 +62,7 @@ type SymptomCategory =
   | "Other";
 
 export interface BugReportPayload {
-  schema_version: 3;
+  schema_version: 3 | 4;
   app_version: string;
   os_version: string;
   ime_kind: ImeKind;
@@ -64,10 +74,15 @@ export interface BugReportPayload {
   description: string;
   attach_log: boolean;
   log_excerpt: string | null;
+  /** ADR-222（schema_version 4）。journal を gzip して base64 にしたもの。Worker は解凍せず、
+   * 形式（文字種・長さ・gzip の先頭バイト）だけを検証して、そのまま保存する。 */
+  log_excerpt_gz: string | null;
   /** 実際の `log::` 出力（awase.log）の末尾。BUG-34 横展開で追加（後方互換のため
    * 省略可能扱い＝クライアントが送らなくても null 扱いで受理する。旧クライアントの
    * 報告を拒否しないため、他の必須フィールドと違い optionalNullableString で読む）。 */
   app_log_excerpt: string | null;
+  /** ADR-222（schema_version 4）。awase.log を gzip して base64 にしたもの。 */
+  app_log_excerpt_gz: string | null;
   attach_state_snapshot: boolean;
   state_snapshot: Record<string, unknown> | null;
   attach_config: boolean;
@@ -516,9 +531,13 @@ export function validatePayload(value: unknown): BugReportPayload {
     throw new HttpError(400, "payload_must_be_object");
   }
 
-  if (value.schema_version !== SCHEMA_VERSION) {
+  if (
+    typeof value.schema_version !== "number" ||
+    !SUPPORTED_SCHEMA_VERSIONS.includes(value.schema_version)
+  ) {
     throw new HttpError(400, "unsupported_schema_version");
   }
+  const schemaVersion = value.schema_version as 3 | 4;
 
   const appVersion = requiredString(value, "app_version");
   const osVersion = requiredString(value, "os_version");
@@ -542,6 +561,9 @@ export function validatePayload(value: unknown): BugReportPayload {
   // 場合も null として受理する。log_excerpt 等の既存必須フィールドと違い、
   // このフィールドを送らない旧クライアントの報告を拒否してはならない。
   const appLogExcerpt = optionalNullableString(value, "app_log_excerpt");
+  // ADR-222: schema_version 4 の gzip フィールド。3 までのクライアントは送らない（null 扱い）。
+  const logExcerptGz = optionalNullableGzipBase64(value, "log_excerpt_gz");
+  const appLogExcerptGz = optionalNullableGzipBase64(value, "app_log_excerpt_gz");
   const attachStateSnapshot = requiredBoolean(value, "attach_state_snapshot");
   const stateSnapshot = requiredNullableRecord(value, "state_snapshot");
   const attachConfig = requiredBoolean(value, "attach_config");
@@ -568,6 +590,16 @@ export function validatePayload(value: unknown): BugReportPayload {
     throw new HttpError(400, "reported_at_must_be_rfc3339");
   }
 
+  if (schemaVersion === 4 && (logExcerpt !== null || appLogExcerpt !== null)) {
+    // 4 のクライアントは非圧縮フィールドを使わない。両方ある報告は曖昧なので拒否する。
+    throw new HttpError(400, "legacy_log_fields_not_allowed_in_schema_4");
+  }
+  if (schemaVersion === 3 && (logExcerptGz !== null || appLogExcerptGz !== null)) {
+    throw new HttpError(400, "gz_log_fields_require_schema_4");
+  }
+  if (!attachLog && (logExcerptGz !== null || appLogExcerptGz !== null)) {
+    throw new HttpError(400, "log_excerpt_gz_requires_attach_log");
+  }
   if (!attachLog && logExcerpt !== null) {
     throw new HttpError(400, "log_excerpt_requires_attach_log");
   }
@@ -606,7 +638,7 @@ export function validatePayload(value: unknown): BugReportPayload {
   }
 
   return {
-    schema_version: SCHEMA_VERSION,
+    schema_version: schemaVersion,
     app_version: appVersion,
     os_version: osVersion,
     ime_kind: imeKind,
@@ -618,7 +650,9 @@ export function validatePayload(value: unknown): BugReportPayload {
     description,
     attach_log: attachLog,
     log_excerpt: logExcerpt,
+    log_excerpt_gz: logExcerptGz,
     app_log_excerpt: appLogExcerpt,
+    app_log_excerpt_gz: appLogExcerptGz,
     attach_state_snapshot: attachStateSnapshot,
     state_snapshot: stateSnapshot,
     attach_config: attachConfig,
@@ -754,6 +788,34 @@ function optionalNullableString(value: Record<string, unknown>, field: string): 
     return fieldValue;
   }
   throw new HttpError(400, `${field}_invalid`);
+}
+
+/** ADR-222: gzip して base64 にした文字列（またはフィールド無し / null）。Worker は解凍しない
+ * （無料プランの CPU 時間と解凍爆弾を避ける）ので、形式だけを安く検証する: 長さの上限、
+ * base64 の文字種と 4 の倍数の長さ、gzip の先頭バイト（1f 8b 08 は base64 で `H4sI`）。
+ * 中身の検証・展開は、メンテナの手元（`bug-report-fetch`）で展開後サイズに上限を付けて行う。 */
+function optionalNullableGzipBase64(
+  value: Record<string, unknown>,
+  field: string
+): string | null {
+  const fieldValue = value[field];
+  if (fieldValue === undefined || fieldValue === null) {
+    return null;
+  }
+  if (typeof fieldValue !== "string") {
+    throw new HttpError(400, `${field}_invalid`);
+  }
+  if (fieldValue.length > MAX_LOG_GZ_BASE64_CHARS) {
+    throw new HttpError(400, `${field}_too_large`);
+  }
+  if (
+    fieldValue.length % 4 !== 0 ||
+    !fieldValue.startsWith("H4sI") ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(fieldValue)
+  ) {
+    throw new HttpError(400, `${field}_invalid`);
+  }
+  return fieldValue;
 }
 
 function requiredNullableRecord(
