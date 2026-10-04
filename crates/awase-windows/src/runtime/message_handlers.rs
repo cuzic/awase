@@ -1204,19 +1204,21 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                         hook_us: hook::now_timestamp_us(),
                     });
                 let evicted = app.platform_state.ime.journal.evicted_by_lane();
+                let oldest = app.platform_state.ime.journal.oldest_elapsed_ms_by_lane();
                 app.platform_state.ime.journal.record(
                     crate::journal::JournalEntry::DumpTriggered {
                         evicted_state: evicted.state,
                         evicted_timing: evicted.timing,
                         evicted_actuation: evicted.actuation,
                         evicted_key_input: evicted.key_input,
+                        oldest_elapsed_ms_state: oldest.state,
+                        oldest_elapsed_ms_timing: oldest.timing,
+                        oldest_elapsed_ms_actuation: oldest.actuation,
+                        oldest_elapsed_ms_key_input: oldest.key_input,
                     },
                 );
-                let dump_result = app
-                    .platform_state
-                    .ime
-                    .journal
-                    .dump_to_file_capped(crate::bug_report::LOG_EXCERPT_MAX_BYTES);
+                // ADR-222: ring の中身を全部出す（旧: 200KiB のバイト配分で間引いていた）。
+                let dump_result = app.platform_state.ime.journal.dump_to_file_for_report();
                 (dump_result, current_bug_report_diagnostics(app, ime_kind))
             }) else {
                 tracing::error!("[bug-report] runtime unavailable");
@@ -1980,6 +1982,7 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
             hook_us: hook::now_timestamp_us(),
         });
     let evicted = app.platform_state.ime.journal.evicted_by_lane();
+    let oldest = app.platform_state.ime.journal.oldest_elapsed_ms_by_lane();
     app.platform_state
         .ime
         .journal
@@ -1988,6 +1991,10 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
             evicted_timing: evicted.timing,
             evicted_actuation: evicted.actuation,
             evicted_key_input: evicted.key_input,
+            oldest_elapsed_ms_state: oldest.state,
+            oldest_elapsed_ms_timing: oldest.timing,
+            oldest_elapsed_ms_actuation: oldest.actuation,
+            oldest_elapsed_ms_key_input: oldest.key_input,
         });
     match app.platform_state.ime.journal.dump_to_file() {
         Ok(path) => {
