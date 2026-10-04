@@ -58,9 +58,8 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_typing_stress import parse  # noqa: E402
+from e2e_common import load_awase_timed as load_awase, ts_json_records as parse  # noqa: E402
 
-TIME = re.compile(r"T(\d\d:\d\d:\d\d\.\d{3})")
 PATTERNS = {
     "observed": re.compile(r"\[stage-observe\] observer_poll=Some|ObserverReported"),
     "drift": re.compile(r"\[drift\] correction:|Blacklist drift correction: apply_ime_open"),
@@ -74,20 +73,6 @@ TYPING_KEYS = ("conv_read", "reinit", "unicode")
 INTENT = re.compile(r"explicit_intent=(\S+)")
 MUHENKAN_DOWN = re.compile(r"\[engine-input\] vk=0x1D KeyDown")
 PHYS_CTRL = re.compile(r"mods\(c=true .*phys_ctrl=true")
-
-
-def load_awase(path: str) -> list:
-    """awase.log を (HH:MM:SS.mmm, 行) の列にする。読めなければ空。"""
-    out = []
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                m = TIME.search(line[:40])
-                if m:
-                    out.append((m.group(1), line))
-    except OSError:
-        pass
-    return out
 
 
 def window_counts(lines: list, t0, t1, keys) -> dict:

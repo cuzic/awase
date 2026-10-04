@@ -4,9 +4,13 @@
 
 使い方: check.py <スパイクのlog> <awaseのlog(スパイク起動時刻以降を抜粋したもの)>
 """
+import os
 import re
 import sys
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from e2e_common import count_focus_restores  # noqa: E402
 
 # STEP番号(1-10) → 期待。real_open/real_conv は押下 +400ms 時点の実IME(ImmGet*)。
 # engine: ('activated'|'deactivated', 許容ms) = 押下後その時間内にEngineが切り替わる
@@ -89,13 +93,7 @@ def main():
     events, unwarranted = parse_awase(sys.argv[2])
     # 実行の途中(手順1の記録以降)でスパイクがフォーカスを取り戻していたら、その回は無効(INVALID)。
     # フォーカス移動は awase の FocusChange(cold化・belief書き換え)を誘発し、結果を汚す。
-    invalid = 0
-    started = False
-    for line in open(sys.argv[1], encoding="utf-8").read().splitlines():
-        if "KEY [SCRIPT 1/10" in line:
-            started = True
-        if started and "[AUTO] フォーカス復帰" in line:
-            invalid += 1
+    invalid = count_focus_restores(open(sys.argv[1], encoding="utf-8").read().splitlines())
     if invalid:
         print(f"INVALID: 実行中にフォーカスが外れた({invalid}回)。この回は判定に使わない")
         return 3

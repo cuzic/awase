@@ -40,9 +40,9 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_typing_stress import parse, normalize  # noqa: E402
+from check_typing_stress import normalize  # noqa: E402
+from e2e_common import hms_to_ms as ms_of, load_awase_timed as load_awase, ts_json_records as parse  # noqa: E402
 
-TIME = re.compile(r"T(\d\d:\d\d:\d\d\.\d{3})")
 PATTERNS = {
     "stuck": re.compile(r"\[gji-fsm\] StartComposition while engine off"),
     "stale_escape": re.compile(r"stale confirm 検出.*escape=true"),
@@ -55,26 +55,6 @@ PATTERNS = {
 BAD = ("stuck", "stale_escape", "flush_escape")
 VK_SEND = re.compile(r"\[vk-send\] .*prepend_f2_warmup=(true|false)")
 CONFIRM = re.compile(r"per-VK: 全 \d+ VK 確認済み → セッション確認")
-
-
-def load_awase(path: str) -> list:
-    """awase.log を (HH:MM:SS.mmm, 行) の列にする。読めなければ空。"""
-    out = []
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                m = TIME.search(line[:40])
-                if m:
-                    out.append((m.group(1), line))
-    except OSError:
-        pass
-    return out
-
-
-def ms_of(hms: str) -> int:
-    h, m, rest = hms.split(":")
-    s, ms = rest.split(".")
-    return ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(ms)
 
 
 def count(lines: list, t0: str, t1: str) -> dict:

@@ -11,6 +11,7 @@ import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, __import__("os").path.dirname(__file__))
+from e2e_common import count_focus_restores  # noqa: E402
 import check  # noqa: E402  EXPECT / to_ms を共有
 
 TS = re.compile(r"^\[([\d:.]+)Z\]")
@@ -77,13 +78,7 @@ def main():
         t1 = max(v["press"] for v in st.values()) + 2000
         reasons = []
         # 起動直後のフォーカス取得は正常。手順1の記録以降にフォーカスが外れた回だけ無効(check.py と同じ条件)。
-        started = False
-        lost = 0
-        for ln in r["lines"]:
-            if "KEY [SCRIPT 1/10" in ln:
-                started = True
-            if started and "[AUTO] フォーカス復帰" in ln:
-                lost += 1
+        lost = count_focus_restores(r["lines"])
         if lost:
             reasons.append(f"実行中にフォーカス復帰{lost}回")
         if any(re.search(r"\] KEY \[", ln) and not re.search(r"\((auto|injected)\)", ln) for ln in r["lines"]):

@@ -7,12 +7,11 @@
   --evidence  awase.log の [msime-ready]・send_keys: mode=Vk・literal detect の件数と先頭数行を出す。
 `--no-awase` で走った回(config.no_awase)は awase 判定をせず、打鍵結果の分類(kana/ka/raw/other)だけを OBSERVE として出す。
 """
-import datetime as dt
 import json
 import re
 import sys
 
-from check_typing_stress import parse
+from e2e_common import hms_to_seconds as seconds, ts_json_records as parse
 
 TS = re.compile(r"T(\d\d:\d\d:\d\d\.\d{3})")
 ALIGN = re.compile(r"\[startup-align\].*desired=(true|false)")
@@ -23,11 +22,6 @@ ENGINE = re.compile(r"\[engine-input\]")
 START = re.compile(r"Keyboard Layout Emulator starting")
 EVIDENCE = (("msime_ready", re.compile(r"\[msime-ready\]")), ("send_keys_vk", re.compile(r"send_keys: mode=Vk")),
             ("literal_detect", re.compile(r"literal detect")))
-
-
-def seconds(s):
-    t = dt.datetime.strptime(s, "%H:%M:%S.%f")
-    return t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6
 
 
 def load_awase(path):

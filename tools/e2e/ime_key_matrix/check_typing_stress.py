@@ -15,8 +15,12 @@
 """
 import difflib
 import json
+import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from e2e_common import ts_json_records as parse  # noqa: E402,F401  (他の check_*.py が `from check_typing_stress import parse` で使う)
 
 
 def normalize(s: str) -> str:
@@ -55,20 +59,6 @@ def classify(expect: str, actual: str) -> dict:
             r["loss"] += max(0, len(es) - lit - sub)
             r["extra"] += max(0, rest - sub)
     return r
-
-
-def parse(path: str) -> list:
-    recs = []
-    with open(path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            i = line.find("[TS-JSON] ")
-            if i < 0:
-                continue
-            try:
-                recs.append(json.loads(line[i + len("[TS-JSON] "):]))
-            except json.JSONDecodeError:
-                pass
-    return recs
 
 
 def analyze(recs: list) -> dict:

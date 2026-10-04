@@ -7,22 +7,15 @@
 - text_post: OFF の後の本文(確定された文字が残っているか)。
 使い方: check_commitkm.py typing_stress.log
 """
-import json
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from e2e_common import ts_json_records  # noqa: E402
 
 
 def main():
-    trials = []
-    for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
-        i = line.find("[TS-JSON] ")
-        if i < 0:
-            continue
-        try:
-            r = json.loads(line[i + len("[TS-JSON] "):])
-        except ValueError:
-            continue
-        if r.get("type") == "km_trial":
-            trials.append(r)
+    trials = [r for r in ts_json_records(sys.argv[1]) if r.get("type") == "km_trial"]
     if not trials:
         print("COMMITKM: km_trial が0件(INVALID)")
         return 3

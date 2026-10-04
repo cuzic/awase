@@ -43,8 +43,12 @@ fresh セルが無ければ STUCK のまま(`exception_candidate=true`、E2 未�
 出力の末尾に `KEYMATRIX_CELL:` を1セル1行、最後に `KEYMATRIX:` の要約1行。
 """
 import json
+import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from e2e_common import ts_json_in_line  # noqa: E402
 
 KM_LINE = re.compile(r"\] KM (\{.*\})\s*$")
 KM_CONFIG_LINE = re.compile(r"\] KM_CONFIG (\{.*\})\s*$")
@@ -63,13 +67,12 @@ def load_records(path: str) -> list:
     recs = []
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
-            i = line.find("[TS-JSON] ")
-            if i >= 0:
-                try:
-                    recs.append(json.loads(line[i + len("[TS-JSON] "):]))
-                except json.JSONDecodeError:
-                    pass
+            r = ts_json_in_line(line)
+            if r is not None:
+                recs.append(r)
                 continue
+            if "[TS-JSON] " in line:
+                continue  # 壊れた JSON 行は読み飛ばす(KM 行としても読まない)
             m = KM_CONFIG_LINE.search(line)
             if m:
                 try:
