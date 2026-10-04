@@ -1380,6 +1380,18 @@ impl ImeStateHub {
         self.belief.is_japanese_ime = value;
     }
 
+    /// ADR-223 段階 1: 打鍵の取り込み時に読んだ入力言語で `is_japanese_ime` を更新する。
+    /// 不明(`None`)・同じ値なら何もしない。値が変わったら `true` を返す(呼び出し側が読み直しを 1 回だけ予約する)。
+    pub(crate) fn observe_layout_language(&mut self, read: Option<bool>) -> bool {
+        match read {
+            Some(japanese) if japanese != self.belief.is_japanese_ime => {
+                self.belief.is_japanese_ime = japanese;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn set_prev_conversion_mode(&mut self, value: Option<u32>) {
         self.belief.prev_conversion_mode = value;
     }
@@ -2438,6 +2450,7 @@ mod tests {
                 sync_direction: Some(ShadowImeAction::TurnOff),
                 is_ime_control: false,
                 is_ime_mode_key: false,
+                layout_japanese: None,
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),
