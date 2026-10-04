@@ -525,15 +525,78 @@ const VK_K: u32 = 0x4B;
 const VK_LSHIFT: u32 = 0xA0;
 
 const ALNUM_CASES: [AlnumCase; 9] = [
-    AlnumCase { name: "直接入力: ab", base: AlnumBase::Off, pre: &[], vks: &[VK_A, VK_B], shift_held: false, want: AlnumWant::Text("ab") },
-    AlnumCase { name: "直接入力: Shift 押しながら AB", base: AlnumBase::Off, pre: &[], vks: &[VK_A, VK_B], shift_held: true, want: AlnumWant::Text("AB") },
-    AlnumCase { name: "IME ON(かな): Shift 押しながら AB", base: AlnumBase::Kana, pre: &[], vks: &[VK_A, VK_B], shift_held: true, want: AlnumWant::Text("AB") },
-    AlnumCase { name: "半角英数: ab", base: AlnumBase::Alnum, pre: &[], vks: &[VK_A, VK_B], shift_held: false, want: AlnumWant::Text("ab") },
-    AlnumCase { name: "半角英数: Shift 押しながら AB", base: AlnumBase::Alnum, pre: &[], vks: &[VK_A, VK_B], shift_held: true, want: AlnumWant::Text("AB") },
-    AlnumCase { name: "全角英数: ab", base: AlnumBase::FullAlnum, pre: &[], vks: &[VK_A, VK_B], shift_held: false, want: AlnumWant::Text("ａｂ") },
-    AlnumCase { name: "全角英数: Shift 押しながら AB", base: AlnumBase::FullAlnum, pre: &[], vks: &[VK_A, VK_B], shift_held: true, want: AlnumWant::Text("ＡＢ") },
-    AlnumCase { name: "Shift 単独タップ→半角英数: ab", base: AlnumBase::Kana, pre: &[VK_LSHIFT], vks: &[VK_A, VK_B], shift_held: false, want: AlnumWant::Text("ab") },
-    AlnumCase { name: "Shift 単独タップ2回→かなに戻る: ka", base: AlnumBase::Kana, pre: &[VK_LSHIFT, VK_LSHIFT], vks: &[VK_K, VK_A], shift_held: false, want: AlnumWant::Kana },
+    AlnumCase {
+        name: "直接入力: ab",
+        base: AlnumBase::Off,
+        pre: &[],
+        vks: &[VK_A, VK_B],
+        shift_held: false,
+        want: AlnumWant::Text("ab"),
+    },
+    AlnumCase {
+        name: "直接入力: Shift 押しながら AB",
+        base: AlnumBase::Off,
+        pre: &[],
+        vks: &[VK_A, VK_B],
+        shift_held: true,
+        want: AlnumWant::Text("AB"),
+    },
+    AlnumCase {
+        name: "IME ON(かな): Shift 押しながら AB",
+        base: AlnumBase::Kana,
+        pre: &[],
+        vks: &[VK_A, VK_B],
+        shift_held: true,
+        want: AlnumWant::Text("AB"),
+    },
+    AlnumCase {
+        name: "半角英数: ab",
+        base: AlnumBase::Alnum,
+        pre: &[],
+        vks: &[VK_A, VK_B],
+        shift_held: false,
+        want: AlnumWant::Text("ab"),
+    },
+    AlnumCase {
+        name: "半角英数: Shift 押しながら AB",
+        base: AlnumBase::Alnum,
+        pre: &[],
+        vks: &[VK_A, VK_B],
+        shift_held: true,
+        want: AlnumWant::Text("AB"),
+    },
+    AlnumCase {
+        name: "全角英数: ab",
+        base: AlnumBase::FullAlnum,
+        pre: &[],
+        vks: &[VK_A, VK_B],
+        shift_held: false,
+        want: AlnumWant::Text("ａｂ"),
+    },
+    AlnumCase {
+        name: "全角英数: Shift 押しながら AB",
+        base: AlnumBase::FullAlnum,
+        pre: &[],
+        vks: &[VK_A, VK_B],
+        shift_held: true,
+        want: AlnumWant::Text("ＡＢ"),
+    },
+    AlnumCase {
+        name: "Shift 単独タップ→半角英数: ab",
+        base: AlnumBase::Kana,
+        pre: &[VK_LSHIFT],
+        vks: &[VK_A, VK_B],
+        shift_held: false,
+        want: AlnumWant::Text("ab"),
+    },
+    AlnumCase {
+        name: "Shift 単独タップ2回→かなに戻る: ka",
+        base: AlnumBase::Kana,
+        pre: &[VK_LSHIFT, VK_LSHIFT],
+        vks: &[VK_K, VK_A],
+        shift_held: false,
+        want: AlnumWant::Kana,
+    },
 ];
 
 struct Case {
@@ -2048,7 +2111,8 @@ fn main() {
                     p.press(0xF4, false, 60); // 全角キー: 半角英数 → 全角英数のはず(作れたかは次の打鍵で確かめる)
                     sleep(500);
                     let (t, _) = p.type_and_snap(&[VK_A], false);
-                    p.log.line(&format!("PROBE setup:全角英数にできたか text={t:?}"));
+                    p.log
+                        .line(&format!("PROBE setup:全角英数にできたか text={t:?}"));
                     if t != "ａ" {
                         p.log.line("RESULT INVALID: 全角英数にできなかった");
                         invalid += 1;
