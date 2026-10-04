@@ -578,3 +578,61 @@ fn q4_external_close_is_followed_with_adr205_and_never_reopened() {
         h.trace()
     );
 }
+
+// ── クセ Q-key-latency-gji: 物理キー押下から変化が観測されるまでの遅れ（Q3 より桁が大きい）──────
+//
+// 実測（ADR-176:84-86、n=9: 247/277/321/341/362/391/529/1687/2295ms）。擬似 IME では Q3 と同じ
+// `set_readback_lag_ms` の値を変えて表す。中央値 362ms と最大 2295ms を使う。
+
+/// 実測 n=9 の中央値（ms）。
+const KEY_LATENCY_MEDIAN_MS: u64 = 362;
+/// 実測の最大（ms）。
+const KEY_LATENCY_MAX_MS: u64 = 2295;
+
+/// 中央値の遅れの間に古い「開」を読み続けても（Poll を 100ms ごと）、明示意図が無ければ drift 補正で
+/// IME を書き換えず、遅れが過ぎた後の観測で belief が真の状態へ収束する。
+#[test]
+fn key_latency_median_stale_polls_do_not_write_and_converge() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)));
+    h.ime.set_readback_lag_ms(Some(KEY_LATENCY_MEDIAN_MS));
+    h.advance_ms(100)
+        .observe(Source::ImmCross)
+        .advance_ms(200)
+        .key(VK_MUHENKAN);
+    for _ in 0..3 {
+        h.advance_ms(100).observe(Source::Poll); // 古い「開」
+    }
+    h.advance_ms(KEY_LATENCY_MEDIAN_MS)
+        .observe(Source::ImmCross) // 遅れ後は閉
+        .advance_ms(100);
+    assert!(!h.ime.state().open, "無変換で閉じたまま\n{}", h.trace());
+    assert_ok(&h, p1_no_warranted_write_without_intent(&h));
+    assert!(
+        !h.writes
+            .iter()
+            .any(|w| w.origin == WriteOrigin::DriftCorrection),
+        "古い読み取りで drift 補正の書き込みが出ない\n{}",
+        h.trace()
+    );
+    assert_ok(&h, belief_matches_truth_at_end(&h));
+}
+
+/// 実測最大（2.3 秒）の遅れでも同じ: 500ms ごとの古い読みで書き込まず、遅れ後に収束する。
+#[test]
+fn key_latency_max_stale_polls_do_not_write_and_converge() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)));
+    h.ime.set_readback_lag_ms(Some(KEY_LATENCY_MAX_MS));
+    h.advance_ms(100)
+        .observe(Source::ImmCross)
+        .advance_ms(200)
+        .key(VK_MUHENKAN);
+    for _ in 0..4 {
+        h.advance_ms(500).observe(Source::Poll);
+    }
+    h.advance_ms(KEY_LATENCY_MAX_MS)
+        .observe(Source::ImmCross)
+        .advance_ms(100);
+    assert!(!h.ime.state().open, "無変換で閉じたまま\n{}", h.trace());
+    assert_ok(&h, p1_no_warranted_write_without_intent(&h));
+    assert_ok(&h, belief_matches_truth_at_end(&h));
+}

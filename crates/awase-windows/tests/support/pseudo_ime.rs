@@ -77,7 +77,7 @@ pub const QUIRKS: &[Quirk] = &[
         effect: "0xF3・0x1A とも 3 秒後も閉じたまま、awase の観測 0 件で Engine は ON のまま `kiu` が出る",
         evidence: "BUG-172.md:65-72(run 36540419485、1 台の CI 実機、各 10 試行)。補償通知(compartment)は 2〜5ms(サンプル数の記載なし)",
         ci: "BUG-172 の外部注入構成",
-        modeled: None,
+        modeled: Some("Setup::with_external_close_watch(Q4 と同一事象。閉ループの切替は Q4 の項を参照)"),
     },
     Quirk {
         id: "Q-key-latency-gji",
@@ -85,7 +85,7 @@ pub const QUIRKS: &[Quirk] = &[
         effect: "多くは 250〜400ms、最大 2.3 秒。Q3(モードキー通過後の IMM 再読 21〜62ms)とは観測条件が違い、62ms では収まらない",
         evidence: "ADR-176:84-86(n=9: 247/277/321/341/362/391/529/1687/2295ms)。SendMessageTimeoutW の elapsed は全サンプル 20ms 未満",
         ci: "ADR-176 の較正(日付は原文に無い)",
-        modeled: None,
+        modeled: Some("set_readback_lag_ms(Q3 と同じ切替で値だけ大きくする。中央値 362ms・最大 2295ms)"),
     },
     Quirk {
         id: "Q-imm-probe-bimodal",
