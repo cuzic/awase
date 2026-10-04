@@ -57,7 +57,7 @@ mod windows_probe {
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::Input::Ime::{
         ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
-        ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+        ImmGetDefaultIMEWnd, ImmReleaseContext, ImmSetOpenStatus, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -70,9 +70,9 @@ mod windows_probe {
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
         GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, PeekMessageW,
-        RegisterClassW, SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage,
+        RegisterClassW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage,
         CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW, WM_DESTROY, WNDCLASSW,
-        WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        WS_OVERLAPPEDWINDOW, WS_VISIBLE, WM_IME_CONTROL,
     };
 
     const WINDOW_CLASS_NAME: &str = "msime_native_composing_probe_window";
@@ -388,6 +388,90 @@ mod windows_probe {
         }
     }
 
+
+    /// `--off-methods`(ADR-221 D1、BUG-184 / issue #138): 未確定文字(「か」)がある状態で、IME を閉じる手段ごとに
+    /// 未確定文字・EDIT の本文・開閉がどうなるかを測る。1 行 1 試行の `OFFM {json}` を出す。
+    /// 手段は awase が実際に使う機構に対応する: `vk1a`(MsImeDirect の VK_IME_OFF)、`vk1a_x2`(Edge で見られた 2 回送信)、
+    /// `f0`(素の英数キー)、`imm_setopen0`(同一プロセスの ImmSetOpenStatus(FALSE)、ImmCross 相当)、
+    /// `wm_imc0`(他プロセス向けの WM_IME_CONTROL IMC_SETOPENSTATUS 0、ImmCross の実機構)、
+    /// `vk1a_then_imc0`(`fix/msime-off-composition-imc` の試作: VK_IME_OFF の後に IMC を補う)、`none`(対照)。
+    fn run_off_methods(edit: HWND, trials: usize) {
+        const IMC_SETOPENSTATUS: usize = 0x0006;
+        let wm_imc0 = |edit: HWND| {
+            // SAFETY: edit は有効な EDIT コントロール。デフォルト IME ウィンドウへ WM_IME_CONTROL を送る。
+            let ime_wnd = unsafe { ImmGetDefaultIMEWnd(edit) };
+            if ime_wnd.0.is_null() {
+                return;
+            }
+            let _ = unsafe {
+                SendMessageW(ime_wnd, WM_IME_CONTROL, Some(WPARAM(IMC_SETOPENSTATUS)), Some(LPARAM(0)))
+            };
+        };
+        let methods: [&str; 7] = [
+            "none",
+            "vk1a",
+            "vk1a_x2",
+            "f0",
+            "imm_setopen0",
+            "wm_imc0",
+            "vk1a_then_imc0",
+        ];
+        for method in methods {
+            for n in 0..trials {
+                // 前の試行の未確定文字を片づけて、IME を開いた状態から始める。
+                // SAFETY: テスト目的での注入。
+                unsafe { send_vk_tap(VK_ESCAPE) };
+                pump_messages(Duration::from_millis(200));
+                clear_edit_text(edit);
+                unsafe { send_vk_tap(VK_IME_ON) };
+                pump_messages(Duration::from_millis(300));
+                send_ascii_tap('k');
+                pump_messages(Duration::from_millis(120));
+                send_ascii_tap('a');
+                pump_messages(Duration::from_millis(300));
+                let before = read_conv_state(edit);
+                match method {
+                    "vk1a" => unsafe { send_vk_tap(VK_IME_OFF) },
+                    "vk1a_x2" => {
+                        unsafe { send_vk_tap(VK_IME_OFF) };
+                        pump_messages(Duration::from_millis(150));
+                        unsafe { send_vk_tap(VK_IME_OFF) };
+                    }
+                    "f0" => unsafe { send_vk_tap(0xF0) },
+                    "imm_setopen0" => {
+                        // SAFETY: edit は有効。himc は ImmGetContext で得て直後に解放する。
+                        let himc = unsafe { ImmGetContext(edit) };
+                        if !himc.is_invalid() {
+                            let _ = unsafe { ImmSetOpenStatus(himc, false) };
+                            let _ = unsafe { ImmReleaseContext(edit, himc) };
+                        }
+                    }
+                    "wm_imc0" => wm_imc0(edit),
+                    "vk1a_then_imc0" => {
+                        unsafe { send_vk_tap(VK_IME_OFF) };
+                        pump_messages(Duration::from_millis(100));
+                        wm_imc0(edit);
+                    }
+                    _ => {}
+                }
+                pump_messages(Duration::from_millis(500));
+                let after = read_conv_state(edit);
+                let text_mid = get_edit_text(edit);
+                // 残った未確定文字があれば Enter で確定させ、最終的に本文に何が残るかを見る。
+                unsafe { send_vk_tap(0x0D) };
+                pump_messages(Duration::from_millis(400));
+                let text_final = get_edit_text(edit);
+                let rec = serde_json::json!({
+                    "method": method, "n": n,
+                    "before": before, "after": after,
+                    "text_mid": text_mid, "text_final": text_final,
+                });
+                log(&format!("OFFM {rec}"));
+            }
+        }
+        log("[off-methods] done");
+    }
+
     /// 現在アクティブなキーボードTIPプロファイルを取得する。
     ///
     /// # Safety
@@ -513,6 +597,14 @@ mod windows_probe {
         pump_messages(Duration::from_millis(300));
         let _ = unsafe { SetFocus(Some(edit)) };
         pump_messages(Duration::from_millis(300));
+
+        if std::env::args().any(|a| a == "--off-methods") {
+            let trials = std::env::args()
+                .find_map(|a| a.strip_prefix("--trials=").and_then(|v| v.parse().ok()))
+                .unwrap_or(5);
+            run_off_methods(edit, trials);
+            return Ok(());
+        }
 
         let mut results = Vec::new();
 

@@ -1,0 +1,105 @@
+name: bug184-off-composition
+# ADR-221 D1(BUG-184 / issue #138): MS-IME 本体で、未確定文字(「か」)がある状態で IME を閉じる手段ごとに、
+# 未確定文字・EDIT の本文・開閉がどうなるかを測る(観測のみ、合否判定なし)。
+# 手段: none(対照) / vk1a / vk1a_x2 / f0(素の英数) / imm_setopen0 / wm_imc0 / vk1a_then_imc0(fix/msime-off-composition-imc の試作)
+# 結果は job の summary と artifact(OFFM 行)。ci/bug184-off-composition への push で回る。
+on:
+  push:
+    branches: [ci/bug184-off-composition]
+    paths:
+      - 'crates/awase-windows/examples/msime_native_composing_probe.rs'
+      - '.github/workflows/bug184-off-composition.yml'
+  workflow_dispatch:
+
+jobs:
+  measure:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        compat: ['false', 'true']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bug184
+      - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $list = Get-WinUserLanguageList
+          $list.Add("ja-JP")
+          Set-WinUserLanguageList -LanguageList $list -Force
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          "TIP_REGISTERED=$(Test-Path $tipKey) after $([int]$sw.Elapsed.TotalSeconds)s"
+          if (-not (Test-Path $tipKey)) {
+            Add-WindowsCapability -Online -Name 'Language.Basic~~~ja-JP~0.0.1.0' 2>&1 | Select-Object -Last 3
+            "TIP_REGISTERED(after capability)=$(Test-Path $tipKey) after $([int]$sw.Elapsed.TotalSeconds)s"
+          }
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          if ('${{ matrix.compat }}' -eq 'true') {
+            # 「以前のバージョンの Microsoft IME を使う」互換モード(報告者は旧タイプ)
+            $tsfBase = 'HKCU:\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-f03c-411b-9ce2-aa23e1171e36}'
+            New-Item -Path $tsfBase -Force | Out-Null
+            Set-ItemProperty -Path $tsfBase -Name NoTsf3Override2 -Value 1 -Type DWord -Force
+          }
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: プローブをビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --example msime_native_composing_probe
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\debug\examples\msime_native_composing_probe.exe dist\
+      - name: 測定(--off-methods)
+        shell: pwsh
+        run: |
+          Push-Location dist
+          Start-Process -FilePath .\msime_native_composing_probe.exe -ArgumentList '--off-methods --trials=8'
+          $deadline = (Get-Date).AddMinutes(15)
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 3
+            if ((Test-Path msime_native_composing_probe.log) -and (Select-String -Path msime_native_composing_probe.log -Pattern '\[off-methods\] done' -Quiet)) { break }
+          }
+          Pop-Location
+          if (Test-Path dist\msime_native_composing_probe.log) { Get-Content dist\msime_native_composing_probe.log -Encoding utf8 | Select-Object -Last 8 }
+      - name: 集計(summary)
+        if: always()
+        shell: python
+        run: |
+          import json, re, os, collections
+          rows = collections.defaultdict(collections.Counter)
+          path = os.path.join('dist', 'msime_native_composing_probe.log')
+          out = [f"## OFF 手段 × 未確定文字(互換モード={os.environ.get('COMPAT','?')})", "",
+                 "| 手段 | n | OFF後 open | OFF後 comp | 本文(OFF直後) | 本文(Enter後) |", "|---|---|---|---|---|---|"]
+          if os.path.exists(path):
+              for line in open(path, encoding='utf-8', errors='replace'):
+                  m = re.search(r'OFFM (\{.*\})', line)
+                  if not m: continue
+                  r = json.loads(m.group(1))
+                  a = r['after']
+                  rows[r['method']][(a.get('open_status'), a.get('comp_str'), r['text_mid'], r['text_final'])] += 1
+          for method, c in rows.items():
+              for (op, comp, mid, fin), n in c.most_common():
+                  out.append(f"| {method} | {n} | {op} | {comp!r} | {mid!r} | {fin!r} |")
+          if not rows:
+              out.append("| (OFFM 行なし) | | | | | |")
+          text = "\n".join(out)
+          print(text)
+          open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write(text + "\n")
+        env:
+          COMPAT: ${{ matrix.compat }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-bug184-compat-${{ matrix.compat }}
+          path: |
+            dist/msime_native_composing_probe.log
+            dist/msime_native_composing_probe_result.json
