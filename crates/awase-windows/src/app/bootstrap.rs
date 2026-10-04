@@ -718,23 +718,11 @@ pub(super) fn initialize_app(
 
     // [[post_bypass]] ルールをコンパイル（キー名パース + 小文字化）。
     // 解決できない・Ctrl+key 形式でないルールは診断に流す（ADR-201 決定2(a)。以前は無言で消えていた）。
-    let post_bypass_rules: Vec<crate::runtime::PostBypassEntry> = config
-        .post_bypass
-        .iter()
-        .filter_map(
-            |rule| match crate::config_diagnostics::resolve_post_bypass_key(rule) {
-                Ok(vk) => Some(crate::runtime::PostBypassEntry {
-                    vk,
-                    process: rule.process.to_lowercase(),
-                    class: rule.class.to_lowercase(),
-                }),
-                Err(w) => {
-                    diag.warn(w);
-                    None
-                }
-            },
-        )
-        .collect();
+    let (post_bypass_rules, post_bypass_warnings) =
+        crate::runtime::PostBypassEntry::compile_all(config);
+    for w in post_bypass_warnings {
+        diag.warn(w);
+    }
     if !post_bypass_rules.is_empty() {
         tracing::info!("[post_bypass] {} ルールをロード", post_bypass_rules.len());
     }

@@ -1,5 +1,5 @@
 ---
-id: ADR-225
+id: ADR-227
 title: |-
   RawTsfLiteralRecovery の give-up で文字が痕跡なく消える件(BUG-074)— 先に測り、方向は所有者が決める
 summary: |-
@@ -19,7 +19,7 @@ related_adr:
   - "ADR-212"
 ---
 
-# ADR-225: give-up で文字が消える件(BUG-074)
+# ADR-227: give-up で文字が消える件(BUG-074)
 
 ## 背景と事実
 

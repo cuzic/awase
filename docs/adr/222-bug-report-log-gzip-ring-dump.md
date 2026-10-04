@@ -39,7 +39,7 @@ related_adr:
   圧縮すれば journal 全体で数 KB〜十数 KB で、絞る理由が無い。`DumpTriggered` に**レーンごとの ring 内最古の時刻**(`oldest_elapsed_ms_*`)と追い出し件数を記録する。
   `truncate_journal_json_tail`(レーンを区別しない末尾切り)は、本体が上限を超えたときの**最終手段**として残した(圧縮前の上限を半分ずつ縮めて再圧縮。
   当初案の「時間窓を短くして再圧縮」は、打鍵以外のレーンが時間でなく件数で ring に入るため採らなかった)。縮めたことは journal の `ReportEdited` の印に残す(D11)。
-- **D2 打鍵 ring を最低 10 分に広げ、ダンプ時は打鍵だけを直近 10 分に絞る**: ring は最大頻度(約 4,750 件/10 分)でも溢れない 8,192 件(他レーンは State/Timing 2,048・Actuation 1,024)。
+- **D2 打鍵 ring を最低 10 分に広げ、ダンプ時は打鍵だけを直近 10 分に絞る**: ring は最大頻度(約 4,750 件/10 分)でも溢れない 8,192 件(他レーンは State/Timing 2,048・Actuation 1,024 → 6,144〈awase が送ったキーを記録する `SentInput` が同居するため、PR #468〉)。
   ただし通常の頻度では ring に 10 分をはるかに超えて(平均で約 104 分、報告直前の頻度で約 5.4 時間)溜まるので、**ダンプ時に KeyInput だけを直近 10 分に絞る**
   (`journal_policy::REPORT_KEY_INPUT_WINDOW_MS`。所有者が許容したのは「直近 10 分」の全打鍵。Opus round2 B-E1)。窓の判定は、畳み込まれた自動リピート(ADR-169)の
   `elapsed_ms`(最初の押下)ではなく `max(elapsed_ms, last_elapsed_ms)` で行う。他のレーンは全件出す(下の `LiteralDetect` を除く)

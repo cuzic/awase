@@ -2755,13 +2755,21 @@ impl SettingsApp {
                 );
             });
         }
-        if is_muhenkan_thumb_key(&self.config.general.left_thumb_key)
-            || is_muhenkan_thumb_key(&self.config.general.right_thumb_key)
-        {
+        let muhenkan_is_thumb = is_muhenkan_thumb_key(&self.config.general.left_thumb_key)
+            || is_muhenkan_thumb_key(&self.config.general.right_thumb_key);
+        let henkan_is_thumb = is_henkan_thumb_key(&self.config.general.left_thumb_key)
+            || is_henkan_thumb_key(&self.config.general.right_thumb_key);
+        let muhenkan_role = self.config.keys.has_bare_role_key("NONCONVERT");
+        let henkan_role = self.config.keys.has_bare_role_key("CONVERT");
+        let any_passthrough = (muhenkan_is_thumb
+            && !self.config.general.muhenkan_solo_tap_always_suppress)
+            || (henkan_is_thumb && !self.config.general.henkan_solo_tap_always_suppress);
+        if muhenkan_is_thumb {
             ui.indent("muhenkan_thumb_options", |ui| {
                 solo_tap_suppress_combo(
                     ui,
                     "無変換",
+                    muhenkan_role,
                     "MS-IME は無変換キー単独打鍵に既定で「かな切替」（IME オン相当）を\n\
                      割り当てているため、送出すると awase の管理外で IME モードが\n\
                      切り替わることがあります（2026-08-07 実機で確認）。",
@@ -2783,13 +2791,12 @@ impl SettingsApp {
         // 現状これを設定画面から有効化する経路は無い。無変換キー単独タップ
         // のすぐ下に変換キー単独タップが並ぶよう、この節を撤去した分だけ
         // 表示順も詰まる。
-        if is_henkan_thumb_key(&self.config.general.left_thumb_key)
-            || is_henkan_thumb_key(&self.config.general.right_thumb_key)
-        {
+        if henkan_is_thumb {
             ui.indent("henkan_thumb_options", |ui| {
                 solo_tap_suppress_combo(
                     ui,
                     "変換",
+                    henkan_role,
                     "MS-IME は変換キー単独打鍵に既定で「再変換」を割り当てており、\n\
                      設定次第では IME オン相当の割当ても可能なため、送出すると\n\
                      awase の管理外で IME モードが切り替わることがあります。",
@@ -2797,6 +2804,9 @@ impl SettingsApp {
                     &mut self.config.general.henkan_solo_tap_ignore_composing_guard,
                 );
             });
+        }
+        if any_passthrough {
+            ime_key_settings_hint(ui);
         }
         ui.add_space(8.0);
 
@@ -2848,20 +2858,20 @@ impl SettingsApp {
         });
         combo_key_list_ui(
             ui,
-            "IME ON",
+            "IME を強制的に ON にそろえるキー（モードずれ補正用）",
             "ime_on",
             &mut self.config.keys.ime_on,
             &mut self.new_ime_on,
-            "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
+            "IME を ON にそろえるキーの組み合わせです（モードずれの補正用）。\n押すたびに IME を ON の状態にそろえます。通常の IME 切替は IME 側のキー設定で行ってください。",
             &mut self.status,
         );
         combo_key_list_ui(
             ui,
-            "IME OFF",
+            "IME を強制的に OFF にそろえるキー（モードずれ補正用）",
             "ime_off",
             &mut self.config.keys.ime_off,
             &mut self.new_ime_off,
-            "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
+            "IME を OFF にそろえるキーの組み合わせです（モードずれの補正用）。\n押すたびに IME を OFF の状態にそろえます。通常の IME 切替は IME 側のキー設定で行ってください。",
             &mut self.status,
         );
         combo_key_list_ui(
@@ -4291,8 +4301,8 @@ fn solo_repeat_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &
 }
 
 /// 無変換/変換キー単独タップの抑制方針。実体は `*_solo_tap_always_suppress`/
-/// `*_solo_tap_ignore_composing_guard` の2boolだが、GUI上は「常に無視する」/
-/// 「常に送出する」の2択コンボボックスとして見せる。当初は変換候補ウィンドウ
+/// `*_solo_tap_ignore_composing_guard` の2boolだが、GUI上は「無効にする」/
+/// 「IME に任せる」の2択コンボボックスとして見せる。当初は変換候補ウィンドウ
 /// 表示中かどうかで挙動を変える中間状態も設けていたが、その判定（composing、
 /// UIA/MSAAのフォーカス監視に依存）自体がこのリポジトリでは何度も裏切ってきた
 /// 実績があり（例: BUG-11 の UIA キャッシュ汚染）、信頼できない判定を条件にした
@@ -4301,6 +4311,10 @@ fn solo_repeat_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &
 /// 従来通り2bool独立のまま変更しない——「常に送出する」選択時は
 /// `ignore_composing_guard`を`true`に固定することで、常にcomposing判定を
 /// 無視した一貫した挙動にする。
+///
+/// 文言は2026-10-04に「IME 側のキー設定で割り当てた機能を使うかどうか」が伝わる形へ改めた
+/// （旧ラベルは「常に無視する」/「常に送出する」で、何のために選ぶのかが読み取れず、
+/// `keys.ime_on` に無変換を入れたうえでパススルーにする誤用を招いていた）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SoloTapSuppressMode {
     AlwaysSuppress,
@@ -4330,25 +4344,26 @@ impl SoloTapSuppressMode {
 
     fn label(self) -> &'static str {
         match self {
-            Self::AlwaysSuppress => "常に無視する（既定）",
-            Self::PassThrough => "常に送出する（パススルー）",
+            Self::AlwaysSuppress => "無効にする（既定）",
+            Self::PassThrough => "IME に任せる（パススルー）",
         }
     }
 
     fn hover_text(self, key_label: &str, default_hijack_risk: &str) -> String {
         match self {
             Self::AlwaysSuppress => format!(
-                "{key_label}キーの単独タップを常に完全に無視します\n\
-                 （OS へ一切送出しません）。\n\
+                "NICOLA 入力中（IME ON）は、{key_label}キーを単独で押しても何も起きません。\n\
+                 awase が単独タップを飲み込み、IME にも送りません。\n\
                  {default_hijack_risk}\n\
-                 {key_label}キー本来の機能を Windows 全般で使いたい場合のみ\n\
-                 「常に送出する」にしてください。"
+                 親指キーとして他のキーと同時に押したときの動作は、この設定の影響を受けません。\n\
+                 IME のキー設定で{key_label}キーに割り当てた機能を使いたい場合は\n\
+                 「IME に任せる」にしてください。"
             ),
             Self::PassThrough => format!(
-                "{key_label}キーの単独タップを常に{key_label}キー本来の機能として\n\
-                 OS へ送出します。変換候補ウィンドウの表示有無では挙動を\n\
-                 変えません（この判定自体がフォーカス監視に依存し必ずしも\n\
-                 信頼できないため、中間の挙動は設けていません）。\n\
+                "NICOLA 入力中も、{key_label}キーの単独タップを IME へ送ります。\n\
+                 IME のキー設定で{key_label}キーに割り当てた機能\n\
+                 （IME のオン/オフ、再変換など）を使えます。\n\
+                 変換候補ウィンドウの表示有無では挙動を変えません。\n\
                  {default_hijack_risk}"
             ),
         }
@@ -4439,6 +4454,7 @@ fn keystroke_sequence_checkbox(
 fn solo_tap_suppress_combo(
     ui: &mut egui::Ui,
     key_label: &str,
+    role_overrides: bool,
     default_hijack_risk: &str,
     always_suppress: &mut bool,
     ignore_composing_guard: &mut bool,
@@ -4463,7 +4479,90 @@ fn solo_tap_suppress_combo(
             .response
             .on_hover_text(mode.hover_text(key_label, default_hijack_risk));
     });
+    if role_overrides && mode == SoloTapSuppressMode::PassThrough {
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 120, 0),
+            format!(
+                "{key_label}は keys.ime_on/ime_off/ime_toggle にも設定されています。この場合、単独タップは\n\
+                 「IME の状態をそろえる」動作になり、上の設定（IME に任せる）は効きません。\n\
+                 IME 側で割り当てた機能を使うには、{key_label}を keys.ime_* から外してください。"
+            ),
+        );
+    }
     mode.apply(always_suppress, ignore_composing_guard);
+}
+
+/// 「IME に任せる」を選んだ人向けに、IME 側のキー設定の場所を案内する。
+///
+/// IME ごとに設定の呼び方と場所が違う（Microsoft IME は「キーとタッチのカスタマイズ」、
+/// Google 日本語入力は「プロパティ」の「キー設定」）。設定画面を開く操作は OS・IME のバージョンに
+/// 依存しやすいので、Microsoft IME は設定ページ（`ms-settings:regionlanguage-jpnime`）を、
+/// Google 日本語入力は `GoogleIMEJaTool.exe --mode=config_dialog`（プロパティ）を開くだけに
+/// とどめ、画面内の遷移は自動化しない。開けない場合の逃げ道として、タスクトレイの IME アイコンから
+/// 開く手順を常に案内文として出す（ボタンが見つからない・起動に失敗しても手順が残る）。
+fn ime_key_settings_hint(ui: &mut egui::Ui) {
+    ui.indent("ime_key_settings_hint", |ui| {
+        ui.label(
+            "「IME に任せる」では、IME のキー設定で無変換/変換に割り当てた機能\n\
+             （IME のオン/オフ、再変換など）が使えます。割り当ては IME 側で行います。\n\
+             ・Microsoft IME: 「キーとタッチのカスタマイズ」\n\
+             ・Google 日本語入力: プロパティの「キー設定」（「コマンド」に機能を割り当てます）",
+        );
+        #[cfg(windows)]
+        {
+            ui.horizontal(|ui| {
+                if ui.button("Microsoft IME の設定を開く").clicked() {
+                    open_msime_settings();
+                }
+                if let Some(tool) = find_gji_tool()
+                    && ui.button("Google 日本語入力のプロパティを開く").clicked()
+                {
+                    open_gji_properties(&tool);
+                }
+            });
+        }
+        ui.label(
+            "ボタンで開けない場合: タスクトレイの IME アイコン（「あ」/「A」）を右クリックして\n\
+             「プロパティ」（Google 日本語入力）を選ぶか、設定アプリの「時刻と言語」→「言語と地域」→\n\
+             「日本語」→「言語のオプション」（Microsoft IME）から開いてください。",
+        );
+    });
+}
+
+/// Microsoft IME の設定ページを開く。`explorer.exe` に `ms-settings:` を渡す（コンソール窓が出ず、
+/// `unsafe` も要らない）。失敗しても何も起きないだけなので結果は見ない（案内文が逃げ道になる）。
+#[cfg(windows)]
+fn open_msime_settings() {
+    let _ = std::process::Command::new("explorer.exe")
+        .arg("ms-settings:regionlanguage-jpnime")
+        .spawn();
+}
+
+/// Google 日本語入力の設定ツール（`GoogleIMEJaTool.exe`）の場所。標準のインストール先
+/// （32bit 版の Program Files。実機 3.34.6260.0 で確認）と、念のため 64bit 側を探す。見つからなければ
+/// `None`（ボタンを出さず、案内文だけにする）。
+#[cfg(windows)]
+fn find_gji_tool() -> Option<std::path::PathBuf> {
+    ["ProgramFiles(x86)", "ProgramFiles"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(|base| {
+            std::path::PathBuf::from(base)
+                .join("Google")
+                .join("Google Japanese Input")
+                .join("GoogleIMEJaTool.exe")
+        })
+        .find(|path| path.is_file())
+}
+
+/// Google 日本語入力のプロパティ画面を開く（`--mode=config_dialog`、実機で「Google 日本語入力 プロパティ」
+/// ウィンドウが開くことを確認済み）。キー設定タブを直接開く引数は見つかっていないので、タブの選択は利用者が行う。
+/// 失敗しても何も起きないだけなので結果は見ない（案内文が逃げ道になる）。
+#[cfg(windows)]
+fn open_gji_properties(tool: &std::path::Path) {
+    let _ = std::process::Command::new(tool)
+        .arg("--mode=config_dialog")
+        .spawn();
 }
 
 /// `combo_key_list_ui` の「新規追加」行が保持する一時入力状態。

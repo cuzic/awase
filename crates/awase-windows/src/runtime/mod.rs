@@ -266,6 +266,32 @@ pub(crate) struct PostBypassEntry {
 }
 
 impl PostBypassEntry {
+    /// `[[post_bypass]]` をコンパイルする（キー名パース + 小文字化）。起動時
+    /// （`bootstrap`）とリロード（`apply_config_update`）の**唯一の構築点**
+    /// （BUG-103: 起動時だけ構築していたためリロードで反映されなかった）。
+    /// 解決できないルールは除外し、警告を2つ目の戻り値で返す（ADR-201 決定2(a)）。
+    pub(crate) fn compile_all(config: &ValidatedConfig) -> (Vec<Self>, Vec<String>) {
+        let mut warnings = Vec::new();
+        let rules = config
+            .post_bypass
+            .iter()
+            .filter_map(
+                |rule| match crate::config_diagnostics::resolve_post_bypass_key(rule) {
+                    Ok(vk) => Some(Self {
+                        vk,
+                        process: rule.process.to_lowercase(),
+                        class: rule.class.to_lowercase(),
+                    }),
+                    Err(w) => {
+                        warnings.push(w);
+                        None
+                    }
+                },
+            )
+            .collect();
+        (rules, warnings)
+    }
+
     pub(crate) fn matches(&self, vk: VkCode, process: &str, class: &str) -> bool {
         self.vk == vk
             && (self.process.is_empty() || process.to_lowercase().contains(self.process.as_str()))
@@ -2223,6 +2249,10 @@ impl Runtime {
         warnings.extend(keymap_warnings);
         self.all_keymaps = all_keymaps;
         self.recompute_active_keymaps();
+        // [[post_bypass]] の再構築（BUG-103）。構築は bootstrap と共通の `compile_all`。
+        let (post_bypass_rules, post_bypass_warnings) = PostBypassEntry::compile_all(config);
+        warnings.extend(post_bypass_warnings);
+        self.post_bypass_rules = post_bypass_rules;
         tracing::info!(
             "Config applied: threshold={}ms, speculative_delay={}ms",
             config.general.simultaneous_threshold_ms,

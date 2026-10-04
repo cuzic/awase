@@ -42,42 +42,42 @@
   "config_overrides": {
     "sc-dbe-msime-native": {
       "i2_unwarranted": {
-        "max": 3,
-        "observed_min": 3,
+        "max": 0,
+        "observed_min": 0,
         "bug": "BUG-162",
-        "measured": "3 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+        "measured": "0 件(run 37213231970、3回×全構成=計15回すべて 0)。旧上限 3 は run 36158074326 の実測で、根拠の機構(ActivationSync の SetOpen を warrant が拒否)は ADR-213 P2c(24672981)で撤去済み"
       }
     },
     "sc-kanji-msime-native": {
       "i2_unwarranted": {
-        "max": 2,
-        "observed_min": 2,
+        "max": 0,
+        "observed_min": 0,
         "bug": "BUG-162",
-        "measured": "2 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+        "measured": "0 件(run 37213231970、3回×全構成=計15回すべて 0)。旧上限 2 は run 36158074326 の実測で、根拠の機構(ActivationSync の SetOpen を warrant が拒否)は ADR-213 P2c(24672981)で撤去済み"
       }
     },
     "sc-kanji-gji-msime": {
       "i2_unwarranted": {
-        "max": 2,
-        "observed_min": 2,
+        "max": 0,
+        "observed_min": 0,
         "bug": "BUG-162",
-        "measured": "2 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+        "measured": "0 件(run 37213231970、3回×全構成=計15回すべて 0)。旧上限 2 は run 36158074326 の実測で、根拠の機構(ActivationSync の SetOpen を warrant が拒否)は ADR-213 P2c(24672981)で撤去済み"
       }
     },
     "sc-shift-msime-native": {
       "i2_unwarranted": {
-        "max": 3,
-        "observed_min": 3,
+        "max": 0,
+        "observed_min": 0,
         "bug": "BUG-162",
-        "measured": "3 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+        "measured": "0 件(run 37213231970、3回×全構成=計15回すべて 0)。旧上限 3 は run 36158074326 の実測で、根拠の機構(ActivationSync の SetOpen を warrant が拒否)は ADR-213 P2c(24672981)で撤去済み"
       }
     },
     "sc-shift-gji-msime": {
       "i2_unwarranted": {
-        "max": 3,
-        "observed_min": 3,
+        "max": 0,
+        "observed_min": 0,
         "bug": "BUG-162",
-        "measured": "3 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+        "measured": "0 件(run 37213231970、3回×全構成=計15回すべて 0)。旧上限 3 は run 36158074326 の実測で、根拠の機構(ActivationSync の SetOpen を warrant が拒否)は ADR-213 P2c(24672981)で撤去済み"
       }
     }
   }

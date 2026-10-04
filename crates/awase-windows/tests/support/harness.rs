@@ -20,6 +20,10 @@
 //!   ImmCross で warrant が下りない補正を検知の手前で見送る早期 return（BUG-163 の1段目、`b6ab8980`）。
 //!   Blind/Read の再送打ち切り・settle 待ち・conv ラッチは写していない。
 //!
+//! - `ImeStateHub::arm_external_change_watch`/`follow_external_change`（同、ADR-205）: 状態機械本体
+//!   （`ExternalChangeWatch`）は本物を呼び、追随の副作用（`ObserverPoll` 記録→意図削除→`ModeKeyPassedThrough`）だけ写す。
+//!   `Setup::with_external_close_watch(true)` のときだけ働く（ADR-205 の有無で結果が分かれるシナリオ用）。
+//!
 //! 写していない（このハーネスでは起きない）もの: 通過マーク（ADR-187 `ModeKeyPassLatch` →
 //! `ModeKeyPassedThrough`）、`ImeApplyRequested`/`applied` の往復、ForceGuard、TSF warmup、
 //! Engine の `on_input`（打鍵のかな変換。IME 側には文字キーをそのまま渡す）。
@@ -37,6 +41,7 @@ use awase::yab::YabLayout;
 use awase_windows::state::conv_classify::ConvSyncReason;
 use awase_windows::state::drift_correction::{check_drift_correction, DriftCorrection};
 use awase_windows::state::evidence::{ConvOpenInference, ImmCrossProbe, Observed, ObserverPoll};
+use awase_windows::state::external_change_watch::{ChangeVerdict, ExternalChangeWatch};
 use awase_windows::state::ime_event::{
     EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, ObservationConfidence,
     ObservationSource, UserIntentSource,
@@ -47,8 +52,9 @@ use awase_windows::state::key_effect_predictor::{KeyEffectKeymap, PredictInput, 
 use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant, WarrantContext};
 use awase_windows::state::probe_admission::{Admission, FocusFence, ImmLikeTicket};
 use awase_windows::state::TickMs;
+use awase_windows::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
 
-use super::pseudo_ime::{PseudoIme, TrueState, CONV_ALNUM};
+use super::pseudo_ime::{Grid, PseudoIme, TrueState, CONV_ALNUM};
 
 /// 本番の `GetTickCount64` に相当する tick の起点（0 付近だと TTL 計算が境界に寄るため）。
 const TICK_BASE: u64 = 1_000_000;
@@ -142,6 +148,10 @@ pub struct Setup {
     pub profile: ImePolicyProfile,
     /// TSF の composition（入力中）を観測できるアプリか。`PredictInput::composing` に効く。
     pub composing_visible: bool,
+    /// 擬似 IME の真値にする格子と、awase の予測器が引く同梱表（`session_keymap`）。既定は ATOK。
+    pub grid: Grid,
+    /// ADR-205（外部クローズの監視窓）が有効か。無効なら Q4（外部注入の閉じが観測されない）のまま。
+    pub external_close_watch: bool,
 }
 
 impl Setup {
@@ -152,7 +162,31 @@ impl Setup {
             initial,
             profile: ImePolicyProfile::ImmCross,
             composing_visible: true,
+            grid: Grid::Atok,
+            external_close_watch: false,
         }
+    }
+
+    /// 読めない窓（`Imm32Unavailable`、実 Chrome 相当）で、指定した真の初期状態から起動する。
+    #[must_use]
+    pub const fn imm32_unavailable(initial: TrueState) -> Self {
+        let mut s = Self::imm_cross(initial);
+        s.profile = ImePolicyProfile::Imm32Unavailable;
+        s
+    }
+
+    /// ADR-205 の監視窓を有効にする（無効のままなら修正前の挙動＝Q4）。
+    #[must_use]
+    pub const fn with_external_close_watch(mut self, on: bool) -> Self {
+        self.external_close_watch = on;
+        self
+    }
+
+    /// 擬似 IME の格子（と予測器の同梱表）を変える。
+    #[must_use]
+    pub const fn with_grid(mut self, grid: Grid) -> Self {
+        self.grid = grid;
+        self
     }
 }
 
@@ -176,7 +210,14 @@ pub struct Harness {
     pub writes: Vec<WriteCommand>,
     pub drift_fires: Vec<DriftFire>,
     pub predictions: Vec<PredictionRecord>,
+    /// 本番の `is_japanese_ime`（ADR-223 でキー入力時にレイアウト言語から更新される）。既定 true。
+    japanese_ime: bool,
+    /// ADR-205 の監視窓（フォアグラウンドのスコープは単一窓なので固定値）。
+    external_watch: ExternalChangeWatch<u32>,
 }
+
+/// ハーネスは単一のフォアグラウンドなのでスコープは固定。
+const WATCH_SCOPE: u32 = 1;
 
 impl Harness {
     /// awase を起動した直後の状態を作る（`ImeModel::new()`、観測なし、明示意図なし）。
@@ -187,12 +228,19 @@ impl Harness {
     #[must_use]
     pub fn start(setup: Setup) -> Self {
         let mut h = Self {
-            ime: PseudoIme::atok(setup.initial),
+            ime: PseudoIme::from_grid(setup.grid, setup.initial),
             model: ImeModel::new(),
             intents: IntentStore::default(),
             engine: make_engine(),
-            keymap: KeyEffectKeymap::from_config(Some(1), None, &[])
-                .expect("ATOK プリセット（session_keymap=1）"),
+            keymap: match setup.grid {
+                Grid::Atok => KeyEffectKeymap::from_config(Some(1), None, &[]),
+                Grid::GjiMsime => KeyEffectKeymap::from_config(Some(2), None, &[]),
+                // 本番は割り当て設定を読む。ここでは既定（割り当て未設定・互換モード不明）。
+                Grid::MsimeNative => {
+                    Some(KeyEffectKeymap::for_msime_native(false, None, None, None))
+                }
+            }
+            .expect("同梱表のあるキーマップ"),
             setup,
             base: Instant::now(),
             now_ms: 0,
@@ -205,6 +253,8 @@ impl Harness {
             writes: Vec::new(),
             drift_fires: Vec::new(),
             predictions: Vec::new(),
+            japanese_ime: true,
+            external_watch: ExternalChangeWatch::new(),
         };
         let fence = h.fence();
         h.reduce(ImeEvent::InitialFocusFenceEstablished { fence });
@@ -370,6 +420,58 @@ impl Harness {
         self
     }
 
+    /// 他プロセスが目印なしで注入した IME キー（Q4 の外部クローズ）。キーは擬似 IME に届くが、awase は belief を
+    /// 動かさない（BUG-14 分岐: 注入キーはユーザー意図に昇格しない）。ADR-205 有効なら監視窓を開く／延ばす
+    /// （`ImeStateHub::arm_external_change_watch` の写し、`state/platform_state.rs`）。
+    pub fn external_injected_key(&mut self, vk: u16) -> &mut Self {
+        self.ime.press(vk);
+        if self.setup.external_close_watch {
+            self.external_watch
+                .arm(WATCH_SCOPE, self.now_ms, MODE_KEY_PASS_MARK_WINDOW_MS);
+        }
+        self.settle(format!("external_injected_key(0x{vk:02X})"), None);
+        self
+    }
+
+    /// refresh の入口で prefetch 済みの開閉の読み（`IMC_GETOPENSTATUS`）を取り込む。読めない窓では通常の観測
+    /// （`ObserverPoll`）は belief へ届かない（Blacklist 分岐が捨てる）ので、ADR-205 の監視窓だけが取り込み口。
+    /// `ImeStateHub::follow_external_change`（`state/platform_state.rs`）の写し: `Changed(v)` なら
+    /// `ObserverPoll(v)` 記録 → 明示意図（`IntentStore`）削除 → `ModeKeyPassedThrough{align_desired, demote_applied}`。
+    pub fn prefetch_read(&mut self) -> &mut Self {
+        assert!(
+            matches!(self.setup.profile, ImePolicyProfile::Imm32Unavailable),
+            "prefetch_read は読めない窓（Imm32Unavailable）用"
+        );
+        let read = Some(self.ime.read_state().open);
+        if self.setup.external_close_watch {
+            let verdict = self.external_watch.observe(
+                WATCH_SCOPE,
+                self.now_ms,
+                MODE_KEY_PASS_MARK_WINDOW_MS,
+                read,
+            );
+            self.external_watch.record_read(WATCH_SCOPE, read);
+            if let ChangeVerdict::Changed(v) = verdict {
+                let fence = self.fence();
+                let Admission::Accept(accepted) = (ImmLikeTicket { fence }).admit(fence) else {
+                    unreachable!("同じ fence なので必ず受理される");
+                };
+                self.reduce(ImeEvent::ObserverReported(
+                    Observed::<ObserverPoll>::from_poll(&accepted, v).into(),
+                ));
+                if let Some(hwnd) = self.model.current_focus() {
+                    self.intents.remove(hwnd);
+                }
+                self.reduce(ImeEvent::ModeKeyPassedThrough {
+                    align_desired: true,
+                    demote_applied: true,
+                });
+            }
+        }
+        self.settle("prefetch_read".into(), None);
+        self
+    }
+
     // ── 読み取り ─────────────────────────────────────────────────────────
 
     #[must_use]
@@ -477,12 +579,19 @@ impl Harness {
         InputContext {
             ime_on: self.effective_open(),
             input_mode: self.model.input_mode(),
-            is_japanese_ime: true,
+            is_japanese_ime: self.japanese_ime,
             composing: false,
             modifiers: awase::engine::ModifierState::default(),
             left_thumb_down: None,
             right_thumb_down: None,
         }
+    }
+
+    /// 本番の `is_japanese_ime`(ADR-223: キー入力時にフォーカス窓のレイアウト言語から更新)を切り替える。既定は true。
+    /// false のとき Engine は非活性になり、推測に基づく書き込み(`issue_open_warrant`)は下りない(明示キー押下の order は影響を受けない)。
+    pub fn set_japanese_ime(&mut self, on: bool) -> &mut Self {
+        self.japanese_ime = on;
+        self
     }
 
     /// `ImeStateHub::apply_key_effect_prediction` の写し（`state/platform_state.rs`）。
@@ -510,7 +619,7 @@ impl Harness {
             guards: &self.model.force_guards,
             policy: &self.model.app_policy,
             desired_open: self.model.desired_open(),
-            is_japanese_ime: true,
+            is_japanese_ime: self.japanese_ime,
             now: self.now(),
             now_ms: TickMs(self.tick()),
         };

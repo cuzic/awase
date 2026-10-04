@@ -52,7 +52,7 @@ use support::invariants::{
     p2_no_stale_stage_after_unpredicted_key, p3_startup_aligns_desired_without_drift,
     predictions_agree_with_truth,
 };
-use support::pseudo_ime::{TrueStage, TrueState, CONV_ALNUM, CONV_HIRAGANA};
+use support::pseudo_ime::{Grid, TrueStage, TrueState, CONV_ALNUM, CONV_HIRAGANA};
 
 const VK_K: u16 = 0x4B;
 const VK_ESC: u16 = 0x1B;
@@ -464,4 +464,117 @@ fn q3_control_without_lag_reads_truth_immediately() {
     assert!(!h.ime.read_state().open);
     assert_ok(&h, p1_no_warranted_write_without_intent(&h));
     assert_ok(&h, belief_matches_truth_at_end(&h));
+}
+
+// ── ハーネスの忠実度(ADR-209 が約束した MS-IME の格子、ADR-223 の is_japanese_ime) ──────────────
+
+/// MS-IME プリセット（GJI、`msime.json`）の格子で、ATOK と同じ「ひらがなキー→打鍵→Enter 確定」を通す。
+/// 格子（`on-c10-none|hiragana`=`ON/0x19`、`on-c19-typing|enter`=`ON/0x19/確定`）と、awase の MSIME 同梱表で予測が一致し続けること。
+#[test]
+fn msime_grid_hiragana_key_then_typing_and_commit() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)).with_grid(Grid::GjiMsime));
+    h.advance_ms(100)
+        .observe(Source::ImmCross)
+        .advance_ms(200)
+        .key(VK_HIRAGANA)
+        .advance_ms(30)
+        .key(VK_K)
+        .advance_ms(80)
+        .key(VK_ENTER)
+        .advance_ms(300)
+        .observe(Source::ImmCross)
+        .advance_ms(100);
+    assert_eq!(h.ime.state(), state(true, CONV_HIRAGANA), "{}", h.trace());
+    assert_ok(&h, p1_no_warranted_write_without_intent(&h));
+    assert_ok(&h, belief_matches_truth_at_end(&h));
+}
+
+/// `is_japanese_ime=false`（入力言語が日本語でない、ADR-223）のとき、推測・補正に基づく書き込み(`issue_open_warrant`)は下りない。
+/// `explicit_intent_drift_correction_fires_with_warrant` と同じ列で、drift 補正の書き込みが出ず IME は開いたまま。
+#[test]
+fn non_japanese_ime_blocks_drift_correction_write() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_HIRAGANA)));
+    h.set_japanese_ime(false)
+        .advance_ms(100)
+        .observe(Source::ImmCross)
+        .advance_ms(200)
+        .block_writes(true)
+        .user_set_open(false)
+        .advance_ms(50)
+        .observe(Source::ImmCross)
+        .advance_ms(500)
+        .observe(Source::ImmCross);
+    assert!(
+        !h.writes
+            .iter()
+            .any(|w| w.origin == WriteOrigin::DriftCorrection),
+        "日本語 IME でなければ drift 補正の書き込みは出ない\n{}",
+        h.trace()
+    );
+}
+
+const VK_HANKAKU_ZENKAKU: u16 = 0xF3;
+
+/// 実 Chrome × GJI の外部クローズ（Q4、BUG-172）の入力列: 読めない窓で、明示意図（ユーザーの IME ON）を持った状態から、
+/// 他プロセスが目印なしの 0xF3 を注入して IME を閉じる。その後 refresh が prefetch 済みの読みを取り込む。
+fn q4_external_close_sequence(h: &mut Harness) {
+    h.advance_ms(100)
+        .user_set_open(true)
+        .advance_ms(100)
+        .prefetch_read() // 閉じる前の読み（基準値 = 開）
+        .advance_ms(400)
+        .external_injected_key(VK_HANKAKU_ZENKAKU)
+        .advance_ms(20)
+        .prefetch_read() // 注入の 20ms 後の refresh（監視窓の中）
+        .advance_ms(500)
+        .prefetch_read()
+        .advance_ms(1500)
+        .prefetch_read();
+}
+
+/// Q4 の症状（ADR-205 無し＝v2.0.0 より前）: IME は閉じているのに awase の belief は開のまま（観測が 0 件）。
+/// 明示意図が実状態を上書きし続けるので、Engine は ON のまま `kiu` が出る（BUG-172）。
+#[test]
+fn q4_external_close_is_not_observed_without_adr205() {
+    let mut h = Harness::start(Setup::imm32_unavailable(state(true, CONV_HIRAGANA)));
+    q4_external_close_sequence(&mut h);
+    assert!(
+        !h.ime.state().open,
+        "IME は外部の注入で閉じている\n{}",
+        h.trace()
+    );
+    let last = h.steps.last().expect("ステップあり");
+    assert!(
+        last.effective_open && last.explicit_intent,
+        "監視窓が無いと belief は開のまま（Q4）\n{}",
+        h.trace()
+    );
+}
+
+/// ADR-205 の回帰: 同じ入力列で、監視窓の中の 1→0 の読みを実状態として取り込み、意図を捨て desired を揃える。
+/// awase は IME を開け直さない（所有者方針: 書き込みなし）。
+#[test]
+fn q4_external_close_is_followed_with_adr205_and_never_reopened() {
+    let writes_before_close = 1; // user_set_open(true) の書き込み 1 件だけ
+    let mut h = Harness::start(
+        Setup::imm32_unavailable(state(true, CONV_HIRAGANA)).with_external_close_watch(true),
+    );
+    q4_external_close_sequence(&mut h);
+    assert!(
+        !h.ime.state().open,
+        "IME は閉じたまま（開け直さない）\n{}",
+        h.trace()
+    );
+    let last = h.steps.last().expect("ステップあり");
+    assert!(
+        !last.effective_open && !last.explicit_intent && !h.desired_open(),
+        "belief は閉へ追随し、意図は捨てられる\n{}",
+        h.trace()
+    );
+    assert_eq!(
+        h.writes.len(),
+        writes_before_close,
+        "追随のあとに awase の書き込みは無い（開け直さない）\n{}",
+        h.trace()
+    );
 }

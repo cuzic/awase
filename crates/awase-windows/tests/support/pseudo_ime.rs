@@ -42,6 +42,10 @@ pub struct Quirk {
 }
 
 /// 目録。Q1・Q2・Q5 は 2026-10-04 時点でリポジトリに記述が無く(別セッションの会話内のみ)、ここへは載せていない。
+/// 番号を振らない項目(`Q-` 始まり)は 2026-10-04 に docs の一次資料から洗い直して足した(数値・環境は原文で確認済み)。
+/// 証拠不足で載せていない候補: MS-IME の IMC write 着地遅延 ~250ms(BUG-015 追補6、撤回済み・1件)、
+/// Shift 単独タップ誤判定 478ms(BUG-015、観測1件)、OFF→ON 直後の cold 窓(BUG-013、データ点2つ・測定保留)、
+/// MS-IME 本体 CI の ImmCross ON write 失敗(ADR-186、CI の癖か欠陥か未切り分け)。
 pub const QUIRKS: &[Quirk] = &[
     Quirk {
         id: "Q3",
@@ -53,11 +57,11 @@ pub const QUIRKS: &[Quirk] = &[
     },
     Quirk {
         id: "Q4",
-        when: "実 Chrome(TSF 窓)で外部(言語バー・マウス)が IME を閉じたとき",
-        effect: "閉じたことが awase の観測経路に現れず、belief が開のまま残る",
-        evidence: "BUG-172 / ADR-205。runtime 側(観測経路)の現象で、擬似 IME の状態機械からは表現できない",
-        ci: "cal-driftrec 系(実 Chrome での再現は未確認)",
-        modeled: None,
+        when: "実 Chrome(TSF 窓)× GJI で、他プロセスが 0xF3/0x1A を注入して IME を閉じたとき(言語バー・マウス経由は未測定)",
+        effect: "IME は閉じる(IMC_GETOPENSTATUS 1→0)が awase の観測は 0 件で、belief が開のまま残る",
+        evidence: "BUG-172(2026-09-29、CI 10/10 再現、ObserverPoll=0・Imm32Unavailable=39、メモ帳は影響なし)。ADR-205 で修正済みで v2.0.0 に入り実機確認済み。runtime 側(観測経路)の現象で、擬似 IME の状態機械からは表現できない",
+        ci: "cal-driftrec 系・ADR-205 の外部クローズ検証(修正後は [external-change]×10、observed 0→10)",
+        modeled: Some("Setup::with_external_close_watch(閉ループ側の切替。無効=Q4の症状、有効=ADR-205の追随。クセそのものは擬似IMEの状態機械ではなく観測経路なので、観測側の状態機械ExternalChangeWatchを本物で呼ぶ)"),
     },
     Quirk {
         id: "Q6",
@@ -67,7 +71,52 @@ pub const QUIRKS: &[Quirk] = &[
         ci: "sc-offrca-*(chrome_probe --offrca=1a:typed_nc)",
         modeled: Some("set_off_ignored_while_composing(書き込み経路のみ。キー押下は ATOK の格子のまま)"),
     },
+    Quirk {
+        id: "Q-ext-off-chrome-gji",
+        when: "実 Chrome × GJI で外部から注入した OFF(Q4 と同一事象の測定側。修正前の実測を残す)",
+        effect: "0xF3・0x1A とも 3 秒後も閉じたまま、awase の観測 0 件で Engine は ON のまま `kiu` が出る",
+        evidence: "BUG-172.md:65-72(run 36540419485、1 台の CI 実機、各 10 試行)。補償通知(compartment)は 2〜5ms(サンプル数の記載なし)",
+        ci: "BUG-172 の外部注入構成",
+        modeled: None,
+    },
+    Quirk {
+        id: "Q-key-latency-gji",
+        when: "GJI で物理キー押下から `open` 遷移が観測されるまで",
+        effect: "多くは 250〜400ms、最大 2.3 秒。Q3(モードキー通過後の IMM 再読 21〜62ms)とは観測条件が違い、62ms では収まらない",
+        evidence: "ADR-176:84-86(n=9: 247/277/321/341/362/391/529/1687/2295ms)。SendMessageTimeoutW の elapsed は全サンプル 20ms 未満",
+        ci: "ADR-176 の較正(日付は原文に無い)",
+        modeled: None,
+    },
+    Quirk {
+        id: "Q-imm-probe-bimodal",
+        when: "IMM probe(SendMessageTimeout 50ms)。MS-IME 本体の CI",
+        effect: "応答時間は 50ms 境界の二峰性(成功は最大 50ms・時間切れは最小 50ms)。時間切れを「IMM 不可」と誤学習した",
+        evidence: "BUG-158.md:26-28(CI、n=7183、p99=59.5ms)。実際に IMM が使えないアプリが時間切れか即拒否かは判別不能(未確認)",
+        ci: "MS-IME 本体の CI 構成",
+        modeled: None,
+    },
 ];
+
+/// 真値にする生データの格子（`tools/e2e/ime_key_matrix/grid-tables/`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grid {
+    /// GJI の ATOK プリセット。
+    Atok,
+    /// GJI の MS-IME プリセット。
+    GjiMsime,
+    /// Microsoft IME 本体。
+    MsimeNative,
+}
+
+impl Grid {
+    const fn file(self) -> &'static str {
+        match self {
+            Self::Atok => "atok.json",
+            Self::GjiMsime => "msime.json",
+            Self::MsimeNative => "msime-native.json",
+        }
+    }
+}
 
 /// 入力中の段階（擬似 IME の真値）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +232,17 @@ impl PseudoIme {
     /// ATOK プリセットの生データ（`grid-tables/atok.json`）を真値にした擬似 IME。
     #[must_use]
     pub fn atok(initial: TrueState) -> Self {
-        let path = grid_path("atok.json");
+        Self::from_grid(Grid::Atok, initial)
+    }
+
+    /// 指定した格子の生データを真値にした擬似 IME。
+    ///
+    /// MS-IME の格子（`msime.json`=GJI の MS-IME プリセット、`msime-native.json`=MS-IME 本体）は conv の生値が
+    /// `0x13`/`0x1B` 等も取り、状態に `conv-muhenkan` 等が増える。ATOK と同じく生データに無い状態からの押下は panic する。
+    /// クセ Q6（MS-IME の入力中 OFF 無視）は格子に含まれないので、別途 `set_off_ignored_while_composing` で足す。
+    #[must_use]
+    pub fn from_grid(grid: Grid, initial: TrueState) -> Self {
+        let path = grid_path(grid.file());
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("{} が読めない: {e}", path.display()));
         let raw: HashMap<String, HashMap<String, u32>> = serde_json::from_str(&text)
@@ -217,6 +276,9 @@ impl PseudoIme {
         self.writes_blocked = blocked;
     }
 
+    /// 【経緯 2026-10-04】スイッチと単体テスト(下の `q6_*`)はあるが、閉ループのシナリオ(`closed_loop_scenarios.rs`)からはまだ
+    /// 呼ばれていない。BUG-185 は「対応しない」決定で、awase 側に検知したい挙動の修正が無く、シナリオにする根拠が無かったため。
+    /// MS-IME の入力中 OFF 書き込みを扱う修正・回帰が出たときの足場として残している。消費者が現れないまま長く残るなら削ってよい。
     /// クセ Q6: 入力中の OFF 書き込み(`write_open(false)`)が IME を閉じず、conv だけ半角英数にする(BUG-185、MS-IME)。
     /// 書き込み自体は「受理」される(`write_open` は true を返す)が、開閉は変わらない。入力中でなければ通常どおり閉じる。
     pub fn set_off_ignored_while_composing(&mut self, on: bool) {
@@ -233,6 +295,11 @@ impl PseudoIme {
     /// 実測（`tuning.rs` の `MODE_KEY_PASS_REREAD_MS` の注記、`mode_key_pass_timeline.py`）:
     /// ATOK プリセットのモードキー通過後、IMM 再読に変化が現れるまで min21 / median33 / p90 33 /
     /// max62ms。11ms 後の 1 回は古い状態を読んだ。真の状態（`state`）は変わらず、観測だけが遅れる。
+    ///
+    /// 【経緯 2026-10-04】これを使う現在のシナリオ(Q3 の3本)が確かめるのは「明示意図が無ければ古い読みで drift 補正が書かない」だけで、
+    /// 遅れの値(33ms でも 362ms でも 2295ms でも。Q-key-latency-gji の実測、ADR-176 n=9)を変えても通る分岐は同じ。
+    /// 値だけ変えたシナリオは新しい回帰検知にならないため足さなかった(PR #477 を閉じた)。遅れが意味を持つのは
+    /// 「明示意図がある状態で古い読みが来る」(BUG-162/163 系)シナリオを書くとき。これはその足場。
     pub fn set_readback_lag_ms(&mut self, ms: Option<u64>) {
         self.readback_lag_ms = ms;
     }
@@ -380,6 +447,24 @@ mod tests {
         conv: CONV_HIRAGANA,
         stage: TrueStage::Typing,
     };
+
+    /// 格子の違いが擬似 IME に現れること: 同じ「IME OFF・半角英数」で英数キーを押すと、ATOK は閉のまま、MS-IME 本体は開いてかなに戻る
+    /// （`off-c10-none|eisu`: atok.json=`OFF/0x10`、msime-native.json=`ON/0x19`）。
+    #[test]
+    fn grids_differ_on_eisu_from_closed_alnum() {
+        let start = TrueState {
+            open: false,
+            conv: CONV_ALNUM,
+            stage: TrueStage::None,
+        };
+        let mut atok = PseudoIme::from_grid(Grid::Atok, start);
+        atok.press(0xF0);
+        assert!(!atok.state().open);
+        let mut native = PseudoIme::from_grid(Grid::MsimeNative, start);
+        native.press(0xF0);
+        assert!(native.state().open);
+        assert_eq!(native.state().conv, CONV_HIRAGANA);
+    }
 
     #[test]
     fn q6_off_write_while_composing_keeps_open_and_changes_only_conv() {
