@@ -1806,13 +1806,15 @@ mod tests {
 
     #[test]
     fn to_json_emits_every_entry_without_byte_budget() {
+        // `mock_journal` は容量 10 の小さな ring。容量内（10 件）なら、バイト配分による
+        // 間引きも合成ヘッダ（旧 DumpTruncated）も無く、全件がそのまま出る。
         let (mut j, _mock) = mock_journal();
-        for _ in 0..200 {
+        for _ in 0..10 {
             j.record(make_state_entry());
         }
         let json = j.to_json().unwrap();
         let values: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
-        assert_eq!(values.len(), 200);
+        assert_eq!(values.len(), 10);
         assert!(values.iter().all(|v| v["entry"]["type"] != "DumpTruncated"));
     }
 
