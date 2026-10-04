@@ -288,6 +288,12 @@ impl Runtime {
         evidence: crate::tsf::literal_facts::GiveUpEvidence,
     ) {
         if !self.external_change_watch_applies() {
+            tracing::debug!(
+                "[giveup-follow] 対象外の窓(GJI×Imm32Unavailable でない)ので何もしない cold={} profile={:?} ime={:?}",
+                evidence.cold_seq,
+                self.platform.current_app_profile(),
+                crate::tsf::observer::tsf_obs().active_ime_kind()
+            );
             return;
         }
         let gen_now = self.platform.output.ime_mode_focus_gen.get();

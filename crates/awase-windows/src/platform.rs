@@ -268,6 +268,11 @@ impl WindowsPlatform {
                 }
                 crate::tsf::literal_facts::LiteralDetectTraceItem::Verdict(record) => {
                     if let Some(evidence) = self.giveup_tracker.note_record(&record) {
+                        tracing::debug!(
+                            "[giveup-follow] give-up の証拠を保持 cold={} focus_gen={}",
+                            evidence.cold_seq,
+                            evidence.focus_gen
+                        );
                         self.pending_giveup = Some(evidence);
                     }
                     let since_vk_sent_ms = self.pending_literal_vk.take().map_or(0, |pending| {
