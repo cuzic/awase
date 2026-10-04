@@ -1,0 +1,48 @@
+name: msi-upgrade-verify
+
+# リリース済みの実 MSI で、アップグレード(旧→新の上書きインストール)とアンインストールのあとも、ユーザーの config.toml・layout/*.yab が残るかを
+# windows-latest 上で確かめる(BUG-071、ADR-099/178)。ビルドは不要(配布物そのものを検証する)。判定は tools/e2e/msi_upgrade/run.py(約 5 分)。
+# 動く条件: ci/msi-upgrade-verify への push、手動起動(workflow_dispatch は既定ブランチ main にこのファイルがあるときだけ使える)。
+on:
+  push:
+    branches: [ci/msi-upgrade-verify]
+  workflow_dispatch:
+    inputs:
+      pairs:
+        description: '検証する (旧:新) の組(カンマ区切り)'
+        required: false
+        default: 'v1.21.2:v2.0.0,v1.20.0:v2.0.0,v1.20.0:v1.21.2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: msi-upgrade-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: MSI のアップグレード・アンインストールを検証
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+          GH_TOKEN: ${{ github.token }}
+          PAIRS: ${{ inputs.pairs || 'v1.21.2:v2.0.0,v1.20.0:v2.0.0,v1.20.0:v1.21.2' }}
+        run: python tools\e2e\msi_upgrade\run.py --out out --pairs "$env:PAIRS" --repo "${{ github.repository }}"
+      - name: 要約を表示
+        if: always()
+        shell: pwsh
+        run: if (Test-Path out\summary.md) { Get-Content out\summary.md -Encoding utf8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: msi-upgrade-verify-out
+          path: |
+            out/summary.md
+            out/results.json
+            out/logs/
+          retention-days: 7
