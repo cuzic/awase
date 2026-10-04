@@ -1647,20 +1647,6 @@ impl Runtime {
         ) {
             return;
         }
-        // 左Shift単独タップの半角英数持続トグル中は、OS の読み取りを凍結している。IME 側のモードキーが
-        // 素通しされたら、そのキーが次のモードを決める——トグルを手放して読み取りを再開する
-        // （手放さないと IME はかなに戻っても Engine は OFF のまま、`sc-table-*` の再現）。
-        if self
-            .platform_state
-            .gate
-            .half_width_alnum
-            .abandon_for_mode_key()
-        {
-            tracing::info!(
-                "[shift-conv-guard] IME 側のモードキー(vk=0x{:02X})が素通し → 半角英数トグルを手放す",
-                event.vk_code.0
-            );
-        }
         let now = hook::current_tick_ms();
         let readable = self.can_use_imm32_cross_process();
         self.platform_state

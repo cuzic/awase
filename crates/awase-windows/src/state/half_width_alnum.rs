@@ -289,17 +289,6 @@ impl HalfWidthAlnumState {
         self.toggle_held = true;
     }
 
-    /// IME 側のモードキー（変換・英数・ひらがななど、awase が素通しするもの）が押されたとき、
-    /// 持続トグルを OS 書き込みなしで手放す。戻り値は直前の `toggle_held`。
-    ///
-    /// `begin_restore_kana` と違い復元の SendInput/IMC 書き込みを伴わない——押されたキー自身が
-    /// 次のモードを決めるので、awase が先にかなへ戻すと二重になる。トグル中は OS の読み取りを
-    /// 凍結している（`ime_refresh.rs`・`kp_stage_idle_conv_check_inner`）ため、手放さないと
-    /// IME はかなに戻っても Engine は OFF のまま残る（`sc-table-*` の「Shift単独タップ後 → 変換/英数/ひらがな」）。
-    pub fn abandon_for_mode_key(&mut self) -> bool {
-        std::mem::replace(&mut self.toggle_held, false)
-    }
-
     // ── 状態照会 ──────────────────────────────────────────────────────
 
     #[must_use]
@@ -311,22 +300,6 @@ impl HalfWidthAlnumState {
 #[cfg(test)]
 mod tests {
     use super::{plan_half_width_alnum_action as plan, HalfWidthAlnumAction, ShiftKeyUpKind};
-
-    #[test]
-    fn abandon_for_mode_key_clears_toggle_without_a_restore_request() {
-        use super::HalfWidthAlnumState;
-        let mut st = HalfWidthAlnumState::default();
-        st.commit_enter_imc();
-        assert!(st.is_toggle_active());
-        // IME 側のモードキーが素通しされたら手放す。直前に有効だったことを返す。
-        assert!(st.abandon_for_mode_key());
-        assert!(!st.is_toggle_active());
-        // 既に無効なら何も起きない（二重呼び出しで復元を取りこぼさない・誤って立てない）。
-        assert!(!st.abandon_for_mode_key());
-        assert!(!st.is_toggle_active());
-        // 手放したあとの `begin_restore_kana`（フォーカス変更などの後続）は OS 書き込み不要と答える。
-        assert!(!st.begin_restore_kana());
-    }
 
     #[test]
     fn entry_only_on_inactive_left_shift_tap() {
