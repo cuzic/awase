@@ -499,6 +499,7 @@ jobs:
                 ('a-textarea', '', 'enter:typed_nc,enter+1a:typed_nc,ctrlm+1a:typed_nc,ctrlj+1a:typed_nc,ctrlenter+1a:typed_nc,shiftenter+1a:typed_nc,tab+1a:typed_nc'),
                 ('b-textarea', '', 'f6+1a:typed_nc,f7+1a:typed_nc,f8+1a:typed_nc,f9+1a:typed_nc,f10+1a:typed_nc,1a:typed_nc'),
                 ('c-textarea-nocomp', '', 'enter:notype,ctrlm:notype,ctrlj:notype,ctrlenter:notype,shiftenter:notype,tab:notype,f6:notype,f7:notype,f8:notype,f9:notype,f10:notype'),
+                ('e-uia-textarea', '', 'enter+1a:typed_nc,enter:notype,ctrlm+1a:typed_nc,ctrlenter+1a:typed_nc'),
                 ('d-input', ' --page=input', 'enter+1a:typed_nc,ctrlm+1a:typed_nc,ctrlj+1a:typed_nc,ctrlenter:notype,enter:notype,ctrlm:notype,ctrlj:notype,shiftenter:notype,tab:notype'),
               )],
             # 自前窓(edit=IMM32 の EDIT、tsf=RichEdit の TSF 窓): 確定キー(--km-commit)を composition 有り(--km-comp)/無しで押し、直後の本文と、続く OFF(1a)で閉じるかを見る。

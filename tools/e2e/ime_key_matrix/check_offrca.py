@@ -112,7 +112,11 @@ def main():
             if is_made(t):
                 k = repr(t.get("text_post"))
                 h[k] = h.get(k, 0) + 1
-        print(f"OFFRCA_TEXT: cell={cell} made={sum(h.values())} text_post={h}")
+        u = {}
+        for t in ts:
+            if is_made(t):
+                u[str(t.get("uia_comp"))] = u.get(str(t.get("uia_comp")), 0) + 1
+        print(f"OFFRCA_TEXT: cell={cell} made={sum(h.values())} text_post={h} uia_comp_before_action={u}")
     # 失敗(閉じなかった)試行と成功試行の page_events の代表例(IME がキーを処理したか・composition の終了を見る)。
     for cell, ts in cells.items():
         for label, sel in (("closed", [t for t in ts if t.get("closed_ms") is not None]), ("never", [t for t in ts if t.get("closed_ms") is None])):

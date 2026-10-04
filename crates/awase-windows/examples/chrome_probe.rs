@@ -1035,6 +1035,31 @@ fn settle_ms_or(args: &[String]) -> u64 {
         .unwrap_or(500)
 }
 
+/// ADR-222 方針C(composition の有無を読む手段の検討): フォーカス要素の UIA TextEditPattern::GetActiveComposition。
+/// 戻り値: "range"(composition あり)/"none"(パターン有り・composition 無し)/"nopattern"/"err:<段階>"。
+fn uia_active_composition() -> String {
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationTextEditPattern, UIA_TextEditPatternId,
+    };
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let Ok(a) = CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER) else {
+            return "err:create".into();
+        };
+        let Ok(el) = a.GetFocusedElement() else {
+            return "err:focus".into();
+        };
+        let Ok(pat) = el.GetCurrentPatternAs::<IUIAutomationTextEditPattern>(UIA_TextEditPatternId) else {
+            return "nopattern".into();
+        };
+        match pat.GetActiveComposition() {
+            Ok(_) => "range".into(),
+            Err(e) => format!("none({e:?})"),
+        }
+    }
+}
+
 fn or_api() -> Option<bool> {
     ime_control(0x0005, 0).map(|v| v != 0)
 }
@@ -1315,6 +1340,7 @@ fn run_offrca(
             } else {
                 ime_control(0x0001, 0)
             };
+            let uia_comp = if is_race { String::new() } else { uia_active_composition() };
             let ev_idx = p.shared.lock().unwrap().events.len();
             let utc = utc_stamp();
             let t_act = Instant::now();
@@ -1389,7 +1415,7 @@ fn run_offrca(
             p.log.line(&format!(
                 "OFFRCA {}",
                 serde_json::json!({"type":"or_trial","cell":cell,"action":action,"prep":prep,"n":i,
-                    "utc":utc,"prep_ok":prep_ok,"api_pre":api_pre,"desc":desc,"closed_ms":closed_ms,
+                    "utc":utc,"prep_ok":prep_ok,"api_pre":api_pre,"uia_comp":uia_comp,"desc":desc,"closed_ms":closed_ms,
                     "series":ser,"api_end":api_end,"typed":got.label(),"typed_open":typed_open,
                     "api_after_probe":api_after_probe,"text_post":text_post,"race_keys":race_keys,"typed2":got2.label(),"typed2_open":km_open_of(got2),"typed2_text":text2,"conv_pre":conv_pre,"conv_end":conv_end,"page_events":page_events,"then":then_res,"ladder":ladder_res,"focus_lost":p.focus_lost,
                     "awase":awase})
