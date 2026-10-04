@@ -10,34 +10,6 @@ pub enum LaneKind {
 }
 
 impl LaneKind {
-    #[must_use]
-    /// 不具合報告に載せる打鍵（KeyInput）の範囲（ADR-222 / Opus round2 B-E1）。
-    ///
-    /// 打鍵 ring は「最大頻度で 10 分が溢れない」容量（8,192 件）で、通常の頻度では
-    /// 10 分をはるかに超えて何時間ぶんも溜まる。所有者が許容したのは「直近 10 分」の
-    /// 全打鍵なので、ダンプ時に KeyInput だけをこの窓に絞る。
-    pub const REPORT_KEY_INPUT_WINDOW_MS: u64 = 10 * 60 * 1000;
-
-    /// 打鍵 entry が、ダンプ時点 `now_ms` から `window_ms` 以内か。
-    ///
-    /// 畳み込まれた自動リピート（ADR-169）は、envelope の `elapsed_ms` が最初の押下のまま
-    /// `last_elapsed_ms` だけが進む。11 分前に押し始めて今も押している打鍵を落とさないよう、
-    /// 新しい方（`max`）で判定する。
-    #[must_use]
-    pub const fn key_input_in_report_window(
-        elapsed_ms: u64,
-        last_elapsed_ms: u64,
-        now_ms: u64,
-        window_ms: u64,
-    ) -> bool {
-        let newest = if last_elapsed_ms > elapsed_ms {
-            last_elapsed_ms
-        } else {
-            elapsed_ms
-        };
-        newest >= now_ms.saturating_sub(window_ms)
-    }
-
     /// ADR-222: 不具合報告は ring の中身を全部ダンプする（旧: バイト配分で絞っていた）。
     ///
     /// 打鍵は最大頻度（実測 1 分最大 475 件、`awase.log.old` の `journal: key input`
@@ -45,6 +17,7 @@ impl LaneKind {
     /// 他レーンは、打鍵の多い時間帯に 10 分前後を保てるよう旧値の 2〜4 倍にする
     /// （常用時の実測では 15.6 時間の稼働で追い出し件数が state 2,676 /
     /// timing 6,626 / actuation 2,200 で、頻度は打鍵の 1/2〜1/8 程度）。
+    #[must_use]
     pub const fn capacity(self) -> usize {
         match self {
             Self::State | Self::Timing => 2048,
@@ -52,6 +25,33 @@ impl LaneKind {
             Self::KeyInput => 8192,
         }
     }
+}
+
+/// 不具合報告に載せる打鍵（KeyInput）の範囲（ADR-222 / Opus round2 B-E1）。
+///
+/// 打鍵 ring は「最大頻度で 10 分が溢れない」容量（8,192 件）で、通常の頻度では
+/// 10 分をはるかに超えて何時間ぶんも溜まる。所有者が許容したのは「直近 10 分」の
+/// 全打鍵なので、ダンプ時に KeyInput だけをこの窓に絞る。
+pub const REPORT_KEY_INPUT_WINDOW_MS: u64 = 10 * 60 * 1000;
+
+/// 打鍵 entry が、ダンプ時点 `now_ms` から `window_ms` 以内か。
+///
+/// 畳み込まれた自動リピート（ADR-169）は、envelope の `elapsed_ms` が最初の押下のまま
+/// `last_elapsed_ms` だけが進む。11 分前に押し始めて今も押している打鍵を落とさないよう、
+/// 新しい方（`max`）で判定する。
+#[must_use]
+pub const fn key_input_in_report_window(
+    elapsed_ms: u64,
+    last_elapsed_ms: u64,
+    now_ms: u64,
+    window_ms: u64,
+) -> bool {
+    let newest = if last_elapsed_ms > elapsed_ms {
+        last_elapsed_ms
+    } else {
+        elapsed_ms
+    };
+    newest >= now_ms.saturating_sub(window_ms)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
