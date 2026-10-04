@@ -1,0 +1,53 @@
+name: bug103-verify
+
+# BUG-103(`[[post_bypass]]` が設定リロードで反映されない)を windows-latest の実 awase.exe で確かめる。
+# config_verify_probe の caret モードで Ctrl+P を物理 Ctrl 扱いで注入し、awase.log の `[ctrl-bypass] post_bypass armed` を数える。
+# 起動時からルールありの対照と、ルールなしで起動して config.toml にルールを足し WM_RELOAD_CONFIG を投げる版を比べる(約 8 分)。
+# 動く条件: ci/bug103-verify への push、手動起動(workflow_dispatch は既定ブランチ main にこのファイルがあるときだけ使える)。
+on:
+  push:
+    branches: [ci/bug103-verify]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bug103-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+      - name: awase(デバッグ)と検証用 example をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          cargo build -p awase-windows --example config_verify_probe
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item target\debug\examples\config_verify_probe.exe dist\
+      - name: リロードで [[post_bypass]] が効くかを確かめる
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: python tools\e2e\config_verify\reload_post_bypass.py --dist dist --out out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bug103-verify-out
+          path: |
+            out/summary.md
+            out/results.json
+            out/logs/
+          retention-days: 7
