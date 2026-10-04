@@ -1200,7 +1200,11 @@ jobs:
             valid = n['pass_'] + n['fail']
             # expect=pass: 有効な回にFAILが1つも無い / expect=fail: 有効な回が全部PASSではない(=撤去で壊れた)。
             # 有効回が無ければ判定不能。
-            if valid == 0:
+            # expect=observe は何も表明しない構成なので、判定不能でもゲートは落とさない(表には『観測(判定不能)』と出す)。
+            # sc-t1e-f13-toggle(runs=1)が『実行中にフォーカスが外れた』で再現的に判定不能になりゲートが赤くなった件の対処。
+            if valid == 0 and c['expect'] == 'observe':
+              verdict = '観測(判定不能)'
+            elif valid == 0:
               verdict = '判定不能'
             elif c['expect'] == 'observe':
               verdict = '観測'
@@ -1208,7 +1212,7 @@ jobs:
               verdict = 'OK' if n['fail'] == 0 else 'NG(期待PASSだがFAIL有り)'
             else:
               verdict = 'OK' if n['fail'] > 0 else 'NG(期待FAILだが全PASS=撤去しても壊れない)'
-            bad |= verdict not in ('OK', '観測')
+            bad |= verdict not in ('OK', '観測', '観測(判定不能)')
             rows.append(f"| {c['name']} | {c['expect']} | {c.get('check','expect')} | {n['pass_']} | {n['fail']} | {n['invalid']} | {n['missing']} | {verdict} |")
           out = ["## e2e-ime 撤去実験", "", "| 構成 | 期待 | 判定方式 | PASS | FAIL | INVALID | 欠落 | 判定 |", "|---|---|---|---|---|---|---|---|"] + rows
           # 不変条件(check_invariants.py、上限は tools/e2e/ime_key_matrix/invariant_limits.json)。期待表とは別に集計する。
