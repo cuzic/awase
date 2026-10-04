@@ -344,23 +344,6 @@ jobs:
               for pn, km in (('atok', 1), ('msime', 2))
               for suf, aw, na, gen in (('', 'true', '', ''), ('-noawase', 'false', ' --no-awase', ''),
                                        ('-passthru', 'true', '', 'muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false'))],
-            # 英数入力の行列(2026-10-04、報告「無変換=左親指・Space=右親指・変換=IME 機能の人がブラウザで英数入力が不安定」の再現。観測のみ。only='sc-alnum-*' で回す。既定の sc-* には含めない)。
-            # 実 Chrome で 直接入力/IME ON+Shift(小指シフト面=全角英字が仕様)/半角英数/左Shift単独タップの持続半角英数 を `ab`/`AB`(Shift 押しながら)で打ち、出た文字を見る(chrome_probe --alnum)。
-            # awase は 左親指=無変換・右親指=Space・keys.ime_* は既定のまま(報告者は IME 側で変換などを割り当て、awase では設定していない)。half_width_alnum_toggle=all で GJI でも持続トグルを許可。
-            # -noawase は対照(IME 単体の挙動。IME ON+Shift は半角 AB、Shift 単独タップは awase の機能なので対照では FAIL が正常)。
-            *[cfg(f'sc-alnum-{imen}{suf}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=700, awase=aw,
-                  general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"',
-                  chrome=f'--alnum --repeat=2 --settle=800{ms}{na}')
-              for imen, ime, km, ms in (('gji', 'gji', 1, ''), ('msime', 'msime', 2, ' --msime'))
-              for suf, aw, na in (('', 'true', ''), ('-noawase', 'false', ' --no-awase'))],
-            # 試行錯誤用(2026-10-04): 無変換/変換/英数/ひらがな/左Shift単独タップ/Space/IME_ON をランダムに 40 回押し、毎回 ka を打って IME の実状態と Engine の食い違いを探す(chrome_probe --walk-seq)。
-            # IME 側の割り当ては GJI のプリセット(keymap 1=ATOK, 2=MS-IME)と MS-IME 本体の既定。無変換の単独タップは passthru=素通し/既定=Suppress の 2 通り。seed を変えて 3 本。観測のみ。only='sc-walkseq-*'。
-            *[cfg(f'sc-walkseq-{pn}-{pt}-s{seed}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=900, awase='true',
-                  general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,
-                  chrome=f'--walk-seq=40 --seed={seed} --settle=800{ms}')
-              for pn, ime, km, ms in (('gji-atok', 'gji', 1, ''), ('gji-msimepreset', 'gji', 2, ''), ('msime', 'msime', 2, ' --msime'))
-              for pt, gen in (('suppress', ''), ('passthru', '; muhenkan_solo_tap_always_suppress = false'))
-              for seed in (1, 2, 3)],
             # 遷移表(2026-10-04): 状態(直接入力/かな/半角英数/Shift単独タップ後) × キー(変換/無変換/英数/ひらがな/IME_ON/IME_OFF) の 24 セルを 2 周(chrome_probe --table)。観測のみ。only='sc-table-*'。
             *[cfg(f'sc-table-{pn}-{pt}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=1500, awase='true',
                   general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,
@@ -688,12 +671,12 @@ jobs:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-alnum-', 'sc-walkseq-', 'sc-table-'))
-                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-alnum-', 'sc-walkseq-', 'sc-table-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-alnum-', 'sc-walkseq-', 'sc-table-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])

@@ -228,8 +228,6 @@ fn scan_for(vk: u32) -> u16 {
         0x7D => 0x65,               // F14
         0x4B => 0x25,               // K
         0x41 => 0x1E,               // A
-        0x42 => 0x30,               // B
-        0x20 => 0x39,               // Space
         0x1B => 0x01,               // Esc
         0xA0 => 0x2A,               // LShift
         0xA2 => 0x1D,               // LCtrl
@@ -342,7 +340,7 @@ struct Probe {
     focus_lost: bool,
     /// true なら probe 後にページを空にしない(未確定の composition を残す。`--offrca` の `typed_nc` 用)。
     no_clear: bool,
-    /// true なら probe のあと Esc で未確定文字(MS-IME が残す `きう` など)を取り消してからページを空にする(`--alnum` 用)。
+    /// true なら probe のあと Esc で未確定文字(MS-IME が残す `きう` など)を取り消してからページを空にする(`--table` 用)。
     /// 空にするのはページの文字だけで IME の composition は残り、次の probe に `きうka` のように混ざって前提状態の判定が崩れる。
     cancel_after: bool,
 }
@@ -390,35 +388,6 @@ impl Probe {
             self.press(0x1B, false, 30);
             sleep(150);
         }
-    }
-
-    /// 任意のキー列を打って、ページに出た文字を返す(`--alnum` 用)。`shift_held` なら全体を通して左Shiftを押しっぱなしにする。
-    fn type_and_snap(&mut self, vks: &[u32], shift_held: bool) -> (String, bool) {
-        if shift_held {
-            send_key(0xA0, true);
-            sleep(40);
-        }
-        for &vk in vks {
-            self.press(vk, false, 30);
-            sleep(30);
-        }
-        if shift_held {
-            sleep(self.shift_tail_ms);
-            send_key(0xA0, false);
-        }
-        sleep(350);
-        let snap = self.command("snap", "snap");
-        let (text, focused) = match &snap {
-            Some(e) => (e.value.clone(), e.focus),
-            None => (String::new(), false),
-        };
-        if !focused {
-            self.focus_lost = true;
-        }
-        self.cancel_composition();
-        let _ = self.command("clear", "cleared");
-        sleep(150);
-        (text, focused)
     }
 
     /// `k`,`a` を打ち、出た文字で状態を判定する。終わったらページを空にする。
@@ -504,106 +473,7 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
     }
 }
 
-/// `--alnum`: 英数入力の状態 × 打鍵の行列(「ブラウザでの英数入力が不安定」報告の再現用、観測のみ)。
-/// 状態を作り(`pre` のキーを順に1回ずつ押す)、`a` `b` を打って(Shift を押しっぱなしにする場合もある)ページに出た文字を見る。
-#[derive(Clone, Copy)]
-enum AlnumBase {
-    /// IME OFF(直接入力)。
-    Off,
-    /// IME ON・かな。
-    Kana,
-    /// 半角英数(ひらがなキーで切り替えた IME ON の英数)。
-    Alnum,
-}
-
-enum AlnumWant {
-    Text(&'static str),
-    /// awase の有無で期待が違うもの(小指シフト面は全角英字が仕様、awase なしは IME 単体の半角)。
-    ByAwase {
-        with: &'static str,
-        without: &'static str,
-    },
-    /// かな入力に戻った(NICOLA 文字、awase なしなら `か`)。
-    Kana,
-}
-
-struct AlnumCase {
-    name: &'static str,
-    base: AlnumBase,
-    /// 状態を作ったあとに1回ずつ押すキー(0xA0=左Shift の単独タップで「IME-ON 半角英数」持続トグル)。
-    pre: &'static [u32],
-    /// 打つキー。
-    vks: &'static [u32],
-    shift_held: bool,
-    want: AlnumWant,
-}
-
-const VK_A: u32 = 0x41;
-const VK_B: u32 = 0x42;
-const VK_K: u32 = 0x4B;
 const VK_LSHIFT: u32 = 0xA0;
-
-const ALNUM_CASES: [AlnumCase; 7] = [
-    AlnumCase {
-        name: "直接入力: ab",
-        base: AlnumBase::Off,
-        pre: &[],
-        vks: &[VK_A, VK_B],
-        shift_held: false,
-        want: AlnumWant::Text("ab"),
-    },
-    AlnumCase {
-        name: "直接入力: Shift 押しながら AB",
-        base: AlnumBase::Off,
-        pre: &[],
-        vks: &[VK_A, VK_B],
-        shift_held: true,
-        want: AlnumWant::Text("AB"),
-    },
-    AlnumCase {
-        name: "IME ON(かな): Shift 押しながら AB(awase は小指シフト面=全角、対照は半角)",
-        base: AlnumBase::Kana,
-        pre: &[],
-        vks: &[VK_A, VK_B],
-        shift_held: true,
-        want: AlnumWant::ByAwase {
-            with: "ＡＢ",
-            without: "AB",
-        },
-    },
-    AlnumCase {
-        name: "半角英数: ab",
-        base: AlnumBase::Alnum,
-        pre: &[],
-        vks: &[VK_A, VK_B],
-        shift_held: false,
-        want: AlnumWant::Text("ab"),
-    },
-    AlnumCase {
-        name: "半角英数: Shift 押しながら AB",
-        base: AlnumBase::Alnum,
-        pre: &[],
-        vks: &[VK_A, VK_B],
-        shift_held: true,
-        want: AlnumWant::Text("AB"),
-    },
-    AlnumCase {
-        name: "Shift 単独タップ→半角英数: ab",
-        base: AlnumBase::Kana,
-        pre: &[VK_LSHIFT],
-        vks: &[VK_A, VK_B],
-        shift_held: false,
-        want: AlnumWant::Text("ab"),
-    },
-    AlnumCase {
-        name: "Shift 単独タップ2回→かなに戻る: ka",
-        base: AlnumBase::Kana,
-        pre: &[VK_LSHIFT, VK_LSHIFT],
-        vks: &[VK_K, VK_A],
-        shift_held: false,
-        want: AlnumWant::Kana,
-    },
-];
 
 struct Case {
     name: &'static str,
@@ -1704,8 +1574,7 @@ fn main() {
         log,
         focus_lost: false,
         no_clear: false,
-        cancel_after: std::env::args()
-            .any(|a| a == "--alnum" || a.starts_with("--walk-seq=") || a == "--table"),
+        cancel_after: std::env::args().any(|a| a == "--table"),
     };
     // `--tray-cmd=<ID>`(+ `--file-state=<path,...>`): トレイメニュー操作の再現。前後のファイル状態を FILE_STATE 行に出す。
     if let Some(id) = args.iter().find_map(|a| {
@@ -2190,185 +2059,6 @@ fn main() {
         }
         p.log.line(&format!(
             "SUMMARY PASS={pass} RECOVER={recover} FAIL={fail} INVALID={invalid}"
-        ));
-        p.log.line("=== 全ケース完了 ===");
-        let _ = child.kill();
-        return;
-    }
-    // `--walk-seq=N`(試行錯誤用): 無変換/変換/英数/ひらがな/左Shift単独タップ/Space をランダムに N 回押し、
-    // 毎回 `ka` を打って「IME の実状態と awase の Engine の食い違い」を探す。
-    // 有効な結果は awase あり=NICOLA 文字(IME かな+Engine ON)か `ka`(IME 英数+Engine OFF)、awase なし=`か`か `ka`。
-    // 食い違い=`か`(awase あり: IME はかななのに Engine OFF)・`kiu` のようなローマ字のまま(IME は英数なのに Engine ON)・その他。
-    // `--seed=S` で列を固定する。1 件でも食い違えば FAIL(1 回目が食い違いでも 400ms 後の 2 回目で一致すれば RECOVER)。
-    if let Some(n) = args.iter().find_map(|a| {
-        a.strip_prefix("--walk-seq=")
-            .and_then(|v| v.parse::<usize>().ok())
-    }) {
-        let seed = args
-            .iter()
-            .find_map(|a| {
-                a.strip_prefix("--seed=")
-                    .and_then(|v| v.parse::<u64>().ok())
-            })
-            .unwrap_or(1);
-        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-        let mut next = move || {
-            rng ^= rng << 13;
-            rng ^= rng >> 7;
-            rng ^= rng << 17;
-            rng
-        };
-        const ACTIONS: [(&str, u32); 7] = [
-            ("変換", 0x1C),
-            ("無変換", 0x1D),
-            ("英数", 0xF0),
-            ("ひらがな", 0xF2),
-            ("左Shift単独タップ", 0xA0),
-            ("Space", 0x20),
-            ("IME_ON", 0x16),
-        ];
-        let valid = |c: Class| {
-            if awase {
-                matches!(c, Class::Nicola | Class::Plain)
-            } else {
-                matches!(c, Class::RomajiKana | Class::Plain)
-            }
-        };
-        let (mut pass, mut fail, mut recover, mut invalid) = (0usize, 0usize, 0usize, 0usize);
-        p.log
-            .line(&format!("[CASE 1/1 run 1/1] ランダム列 seed={seed} n={n}"));
-        p.focus_lost = false;
-        if !bring_to_front() {
-            p.log.line("前面化に失敗");
-        }
-        if !ensure(&mut p, Setup::Kana, awase) {
-            p.log.line("RESULT INVALID: 前提状態にできなかった");
-            p.log.line("SUMMARY PASS=0 RECOVER=0 FAIL=0 INVALID=1");
-            let _ = child.kill();
-            return;
-        }
-        let mut trail: Vec<&str> = Vec::new();
-        for i in 1..=n {
-            let (name, vk) = ACTIONS[(next() % ACTIONS.len() as u64) as usize];
-            trail.push(name);
-            p.press(vk, false, 60);
-            sleep(settle_ms);
-            let got = p.probe_logged(&format!("step {i}/{n} {name} 後"));
-            if p.focus_lost {
-                p.log
-                    .line(&format!("RESULT INVALID: step {i} フォーカスが外れた"));
-                invalid += 1;
-                break;
-            }
-            if valid(got) {
-                pass += 1;
-                continue;
-            }
-            sleep(400);
-            let again = p.probe_logged(&format!("step {i}/{n} {name} 後 2回目"));
-            let tail = trail[trail.len().saturating_sub(4)..].join(" → ");
-            if valid(again) {
-                p.log.line(&format!(
-                    "RESULT RECOVER: step {i} 1回目は{}、2回目で一致 (直近: {tail})",
-                    got.label()
-                ));
-                recover += 1;
-            } else {
-                p.log.line(&format!(
-                    "RESULT FAIL: step {i} 食い違い={} (直近: {tail})",
-                    got.label()
-                ));
-                fail += 1;
-            }
-        }
-        p.log.line(&format!("列: {}", trail.join(" → ")));
-        p.log.line(&format!(
-            "SUMMARY PASS={pass} RECOVER={recover} FAIL={fail} INVALID={invalid}"
-        ));
-        p.log.line("=== 全ケース完了 ===");
-        let _ = child.kill();
-        return;
-    }
-    if args.iter().any(|a| a == "--alnum") {
-        let msime = args.iter().any(|a| a == "--msime");
-        let (mut pass, mut fail, mut invalid) = (0usize, 0usize, 0usize);
-        for r in 1..=repeat {
-            for (i, c) in ALNUM_CASES.iter().enumerate() {
-                p.log.line(&format!(
-                    "[CASE {}/{} run {r}/{repeat}] {}",
-                    i + 1,
-                    ALNUM_CASES.len(),
-                    c.name
-                ));
-                p.focus_lost = false;
-                if !bring_to_front() {
-                    p.log.line("前面化に失敗");
-                }
-                let setup = match c.base {
-                    AlnumBase::Off => Setup::Off,
-                    AlnumBase::Kana | AlnumBase::Alnum => Setup::Kana,
-                };
-                if !ensure(&mut p, setup, awase) {
-                    p.log.line("RESULT INVALID: 前提状態にできなかった");
-                    invalid += 1;
-                    continue;
-                }
-                if matches!(c.base, AlnumBase::Alnum) {
-                    // かな → 半角英数。GJI(ATOK プリセット)はひらがなキー(0xF2)、MS-IME は英数キー(0xF0)。
-                    p.press(if msime { 0xF0 } else { 0xF2 }, false, 60);
-                    sleep(500);
-                    let c = p.probe_logged("setup:半角英数にしたあと");
-                    if !matches!(c, Class::Plain | Class::NicolaLiteral) {
-                        p.log.line("RESULT INVALID: 半角英数にできなかった");
-                        invalid += 1;
-                        continue;
-                    }
-                }
-                for &k in c.pre {
-                    p.press(k, false, 60);
-                    sleep(500);
-                }
-                let (text, _) = p.type_and_snap(c.vks, c.shift_held);
-                p.log.line(&format!("PROBE action後: text={text:?}"));
-                // 持続トグルを使ったケースは、次のケースに状態を持ち越さないよう左Shift単独タップの回数が奇数なら戻す。
-                if c.pre.iter().filter(|&&k| k == VK_LSHIFT).count() % 2 == 1 {
-                    p.press(VK_LSHIFT, false, 60);
-                    sleep(500);
-                }
-                let ok = match c.want {
-                    AlnumWant::Text(w) => text == w,
-                    AlnumWant::ByAwase { with, without } => {
-                        text == if awase { with } else { without }
-                    }
-                    AlnumWant::Kana => matches!(classify(&text), Class::Nicola | Class::RomajiKana),
-                };
-                if p.focus_lost {
-                    p.log.line("RESULT INVALID: ページのフォーカスが外れた");
-                    invalid += 1;
-                } else if ok {
-                    p.log.line("RESULT PASS");
-                    pass += 1;
-                } else {
-                    p.log.line(&format!(
-                        "RESULT FAIL: 期待={} 実際={text:?}",
-                        match c.want {
-                            AlnumWant::Text(w) => w,
-                            AlnumWant::ByAwase { with, without } => {
-                                if awase {
-                                    with
-                                } else {
-                                    without
-                                }
-                            }
-                            AlnumWant::Kana => "かな",
-                        }
-                    ));
-                    fail += 1;
-                }
-            }
-        }
-        p.log.line(&format!(
-            "SUMMARY PASS={pass} RECOVER=0 FAIL={fail} INVALID={invalid}"
         ));
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();
