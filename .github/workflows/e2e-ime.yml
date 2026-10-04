@@ -476,6 +476,9 @@ jobs:
                 ('noawase', False, '16', '1a:typed_nc,1a_imc0:typed_nc,imc0:typed_nc,1a:notype'),
                 ('awase', True, 'ctrl1c', 'ctrl1d:typed_nc,ctrl1d:notype'),
               )],
+            # 第5ラウンド: 「以前のバージョンの Microsoft IME を使う」互換モード(NoTsf3Override2=1、旧 IME)でも同じか(legacy_custom='true' がそのレジストリを立てる。keystyle=Custom の表も入る点は交絡)。
+            cfg('sc-offrca-r5-legacy-noawase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='false', legacy_custom='true',
+                chrome="--offrca=1a:typed_nc,1a:notype,19:typed_nc,imc0:typed_nc,1a:typed_nc~b --or-then=16 --settle=800 --msime --no-awase"),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
