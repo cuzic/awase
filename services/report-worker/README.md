@@ -81,7 +81,16 @@ The plan could not be confirmed from the CLI/API (the maintainer OAuth token has
 - Dashboard → Workers & Pages → Plans (shows "Free" or "Paid").
 - Free: 10 ms CPU per request (I/O waits do not count). Paid: 30 s default.
 
-The CPU-bound part of an intake request is: decoding the body, `JSON.parse`, validation (one linear regex over each gzip field), and `JSON.stringify(stored, null, 2)` for R2. For a body near 2MiB the CI log of `test/index.test.ts` prints `[cpu] ... first-run=..ms warm-min=..ms` (Node/V8, a rough guide only; the real number is step 4).
+The CPU-bound part of an intake request is: decoding the body, `JSON.parse`, validation, and `JSON.stringify(stored)` for R2. Measured in CI (GitHub runner, Node/V8, same-run comparison in `test/index.test.ts`, which prints a `[cpu]` line) for a 1.75MiB body:
+
+| | first run | warm |
+| --- | --- | --- |
+| before the optimization (full-field regex + pretty-printed JSON) | 14.2 ms | 13.3 ms |
+| now (head/tail check + compact JSON) | 11.9 ms | 11.4 ms |
+
+So a body near the 2MiB limit is **around or above the Free limit even after the optimization**: decoding, parsing and re-serializing 1.75MiB of JSON costs about 11 ms on a CI runner by itself. The cost is roughly linear in the body size. A realistic report (ten minutes of typing, journal + awase.log gzipped) is about 0.3-1MiB, i.e. roughly 2-6 ms on the same scale. These are rough guides (CI runners vary run to run, and workerd is not Node); the real number is step 4.
+
+If the plan is Free, expect only unusually large reports to be at risk, and a failed intake is not silent: the client gets a 5xx and saves the report under `%TEMP%`.
 
 ### 1. Check the checks passed
 
@@ -128,7 +137,7 @@ Expected: cases 1-3 return 201 (v3 legacy, v4 small, v4 ~1.8MiB), case 4 returns
 | `outcome: exceededCpu` / HTTP 5xx on case 3 | Large reports fail; the client saves them locally | Option A or B below |
 
 - **A. Upgrade to Workers Paid** (about $5/month): no code change.
-- **B. Cap the body lower for the Free plan**: set `MAX_BODY_BYTES` (here and in `crates/awase-windows/src/bug_report.rs`) to a size whose measured `cpuTime` is under 10 ms (for example 1MiB), and ship the client change. Ten minutes of typing compresses to roughly 0.5MB, so 1MiB still holds it.
+- **B. Cap the body lower for the Free plan**: set `MAX_BODY_BYTES` (here and in `crates/awase-windows/src/bug_report.rs`) to a size whose measured `cpuTime` is under 10 ms (for example 1MiB, about 6 ms on the CI scale above), and ship the client change. Ten minutes of typing compresses to roughly 0.1-0.5MB, so 1MiB still holds it.
 - **C. Cheaper validation**: validate only the gzip header, length and a bounded prefix/suffix instead of scanning the whole field (weaker; only if A and B are rejected).
 
 ### 6. Delete the smoke-test reports
