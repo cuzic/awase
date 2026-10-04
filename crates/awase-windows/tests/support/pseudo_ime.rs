@@ -24,6 +24,51 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// クセの目録の1件。実 IME・アプリが「仕様に反して/表に無い形で」見せる挙動のうち、閉ループに影響するもの。
+/// 擬似 IME が模しているか(`modeled`)と、根拠・CI での再現手段を残す。新しいクセはここへ足す(最小スキーマ: when/effect/evidence/ci)。
+#[derive(Debug, Clone, Copy)]
+pub struct Quirk {
+    pub id: &'static str,
+    /// どの IME・アプリ・状態で起きるか。
+    pub when: &'static str,
+    /// 何が起きるか。
+    pub effect: &'static str,
+    /// 実測の根拠(ドキュメント・数値)。
+    pub evidence: &'static str,
+    /// CI 実機での再現手段(構成名・ワークフロー)。
+    pub ci: &'static str,
+    /// 擬似 IME が模しているか(模している場合のスイッチ名)。
+    pub modeled: Option<&'static str>,
+}
+
+/// 目録。Q1・Q2・Q5 は 2026-10-04 時点でリポジトリに記述が無く(別セッションの会話内のみ)、ここへは載せていない。
+pub const QUIRKS: &[Quirk] = &[
+    Quirk {
+        id: "Q3",
+        when: "ATOK プリセットのモードキー通過後(GJI)",
+        effect: "実 IME の変化が IMM 再読に現れるまで 21〜62ms かかり、その間の読み取りは古い状態を返す",
+        evidence: "tuning.rs MODE_KEY_PASS_REREAD_MS の注記、tools/e2e/ime_key_matrix/mode_key_pass_timeline.py(min21/median33/max62ms)",
+        ci: "e2e-ime の mode-key-pass 系(timeline)",
+        modeled: Some("set_readback_lag_ms"),
+    },
+    Quirk {
+        id: "Q4",
+        when: "実 Chrome(TSF 窓)で外部(言語バー・マウス)が IME を閉じたとき",
+        effect: "閉じたことが awase の観測経路に現れず、belief が開のまま残る",
+        evidence: "BUG-172 / ADR-205。runtime 側(観測経路)の現象で、擬似 IME の状態機械からは表現できない",
+        ci: "cal-driftrec 系(実 Chrome での再現は未確認)",
+        modeled: None,
+    },
+    Quirk {
+        id: "Q6",
+        when: "MS-IME 本体 × 未確定の文字(composition)が残っている間",
+        effect: "VK_IME_OFF / OFF 書き込みが IME を閉じず conv だけが半角英数(0x19→0x10)になる。入力中の文字は残る",
+        evidence: "BUG-185(対応しない決定 2026-10-04)、docs/tasks/msime-chrome-off-rca-2026-10-04.md R1〜R5(n=10、composition 有り 0/10・無し 10/10 閉じる)",
+        ci: "sc-offrca-*(chrome_probe --offrca=1a:typed_nc)",
+        modeled: Some("set_off_ignored_while_composing(書き込み経路のみ。キー押下は ATOK の格子のまま)"),
+    },
+];
+
 /// 入力中の段階（擬似 IME の真値）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrueStage {
@@ -130,6 +175,8 @@ pub struct PseudoIme {
     readback_lag_ms: Option<u64>,
     /// 直近の状態変更の `(時刻ms, 変更前の状態)`。
     last_change: Option<(u64, TrueState)>,
+    /// クセ Q6: 入力中(composition あり)の OFF 書き込みが閉じず conv だけ半角英数になる(MS-IME)。
+    off_ignored_while_composing: bool,
 }
 
 impl PseudoIme {
@@ -157,6 +204,7 @@ impl PseudoIme {
             clock_ms: 0,
             readback_lag_ms: None,
             last_change: None,
+            off_ignored_while_composing: false,
         }
     }
 
@@ -167,6 +215,12 @@ impl PseudoIme {
 
     pub fn set_writes_blocked(&mut self, blocked: bool) {
         self.writes_blocked = blocked;
+    }
+
+    /// クセ Q6: 入力中の OFF 書き込み(`write_open(false)`)が IME を閉じず、conv だけ半角英数にする(BUG-185、MS-IME)。
+    /// 書き込み自体は「受理」される(`write_open` は true を返す)が、開閉は変わらない。入力中でなければ通常どおり閉じる。
+    pub fn set_off_ignored_while_composing(&mut self, on: bool) {
+        self.off_ignored_while_composing = on;
     }
 
     /// 仮想時計を進める（`Harness::advance_ms` から呼ぶ）。
@@ -249,7 +303,17 @@ impl PseudoIme {
     /// awase からの開閉の書き込み。効いたら `true`。
     pub fn write_open(&mut self, open: bool) -> bool {
         let applied = !self.writes_blocked;
-        if applied {
+        if applied
+            && !open
+            && self.off_ignored_while_composing
+            && self.state.stage != TrueStage::None
+        {
+            // クセ Q6: 閉じず conv だけ変わる。入力中の段階も残る。
+            self.set_state(TrueState {
+                conv: CONV_ALNUM,
+                ..self.state
+            });
+        } else if applied {
             // 開閉だけを変える（ATOK の VK_IME_OFF は入力中を破棄するが、ここでは書き込みの有無だけを見る）。
             self.set_state(TrueState {
                 open,
@@ -304,5 +368,57 @@ const fn next_stage(prev: TrueStage, vk: u16, o: GridOutcome) -> TrueStage {
             0x1B => TrueStage::Typing,
             _ => prev,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TYPING: TrueState = TrueState {
+        open: true,
+        conv: CONV_HIRAGANA,
+        stage: TrueStage::Typing,
+    };
+
+    #[test]
+    fn q6_off_write_while_composing_keeps_open_and_changes_only_conv() {
+        let mut ime = PseudoIme::atok(TYPING);
+        ime.set_off_ignored_while_composing(true);
+        assert!(ime.write_open(false), "書き込みは受理される");
+        let s = ime.state();
+        assert!(s.open, "閉じない");
+        assert_eq!(s.conv, CONV_ALNUM, "conv だけ半角英数");
+        assert_eq!(s.stage, TrueStage::Typing, "入力中の文字は残る");
+    }
+
+    #[test]
+    fn q6_off_write_without_composition_closes() {
+        let mut ime = PseudoIme::atok(TrueState {
+            stage: TrueStage::None,
+            ..TYPING
+        });
+        ime.set_off_ignored_while_composing(true);
+        assert!(ime.write_open(false));
+        assert!(!ime.state().open, "入力中でなければ閉じる(10/10)");
+    }
+
+    #[test]
+    fn q6_control_without_switch_closes_even_while_composing() {
+        let mut ime = PseudoIme::atok(TYPING);
+        assert!(ime.write_open(false));
+        assert!(!ime.state().open);
+    }
+
+    #[test]
+    fn quirk_ids_are_unique_and_modeled_ones_name_a_switch() {
+        for (i, q) in QUIRKS.iter().enumerate() {
+            assert!(
+                QUIRKS[i + 1..].iter().all(|o| o.id != q.id),
+                "{} が重複",
+                q.id
+            );
+            assert!(!q.evidence.is_empty() && !q.when.is_empty());
+        }
     }
 }
