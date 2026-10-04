@@ -1689,10 +1689,6 @@ impl Runtime {
         hwnd_id: crate::state::ime_event::HwndId,
         now: std::time::Instant,
     ) {
-        // ADR-223 段階 0: 打鍵時の入力言語の記録が読む窓。この WinEvent は engine スレッドで同期に呼ばれ、
-        // フォーカスを受けた hwnd がその場で渡るので、非同期のフォーカス解決を待たずに保存できる。
-        self.lang_check.set_focus_hwnd(hwnd_id);
-
         self.platform_state
             .ime
             .try_set_focus_transition_barrier(hwnd_id, now);

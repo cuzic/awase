@@ -1,7 +1,9 @@
 //! ADR-223 段階 0: 打鍵の時点で、フォーカス窓のスレッドの入力言語を読んで**記録する**(belief は変えない)。
 //!
-//! - 読む窓は、`EVENT_OBJECT_FOCUS` の WinEvent(engine スレッドで同期に呼ばれる)から入る
-//!   `on_window_focus_event` が保存した hwnd(`set_focus_hwnd`)。tid は保存せず、打鍵ごとに hwnd から引く。
+//! - 読む窓は、既存の非同期のフォーカス解決(`GetGUIThreadInfo` 経由、`focus_hwnd()`)が確定した「実際のフォーカス窓」。
+//!   `EVENT_OBJECT_FOCUS` の WinEvent の hwnd は使わない(最後に届いたイベントが実際のフォーカスとは限らない。
+//!   ADR-223 段階 0 の測定で、別プロセスの `InputSite` 窓の遅れて届いたイベントが最後になり、英語のスレッドを読んで誤検知した)。
+//!   tid は保存せず、打鍵ごとに hwnd から引く。UWP のフレーム窓は子の `CoreWindow` のスレッドを読む(observer 側)。
 //! - 窓が無い・自プロセスの窓(トレイ・ダイアログ)・tid や HKL が取れないときは「不明」(`None`)。
 //!   awase 自身のスレッドの言語は読まない(ADR-223 D0・R4-M2)。
 //! - ログ: 値(読み取り・belief)が変わったときだけ `[lang-check]`(info)、打鍵ごとは `[lang-check:key]`(debug、CI 用)。
@@ -11,7 +13,6 @@ use crate::state::ime_event::HwndId;
 
 #[derive(Default)]
 pub(super) struct LangCheck {
-    focus_hwnd: Option<HwndId>,
     last_logged: Option<(Option<bool>, bool)>,
     keydowns: u64,
     mismatches: u64,
@@ -19,17 +20,13 @@ pub(super) struct LangCheck {
 }
 
 impl LangCheck {
-    pub(super) fn set_focus_hwnd(&mut self, hwnd: HwndId) {
-        self.focus_hwnd = Some(hwnd);
-    }
-
-    fn observe_keydown(&mut self, vk: u16, belief_japanese: bool) {
+    fn observe_keydown(&mut self, vk: u16, belief_japanese: bool, hwnd: Option<HwndId>) {
         self.keydowns += 1;
         let crate::observer::layout_observer::ThreadLanguage {
             japanese: read,
             tid,
             lang_id: lang,
-        } = read_thread_language(self.focus_hwnd);
+        } = read_thread_language(hwnd);
         match read {
             None => self.unknown += 1,
             Some(japanese) if japanese != belief_japanese => self.mismatches += 1,
@@ -65,6 +62,10 @@ impl super::Runtime {
             return;
         }
         let belief = self.platform_state.ime.belief.is_japanese_ime();
-        self.lang_check.observe_keydown(event.vk_code.0, belief);
+        // 既存の非同期のフォーカス解決が確定した実際のフォーカス窓。まだ無い(0)ときは「不明」。
+        let hwnd = self.focus_hwnd();
+        let hwnd = (hwnd.0 != 0).then_some(hwnd);
+        self.lang_check
+            .observe_keydown(event.vk_code.0, belief, hwnd);
     }
 }
