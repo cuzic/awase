@@ -2418,7 +2418,9 @@ mod tests {
         // なる。クライアントも同じ上限を見て縮める。
         let (preview, _) =
             build_payload_json_fitting(&input("説明", true, None), MAX_BODY_BYTES).unwrap();
-        let big = noisy_text(MAX_LOG_GZ_BASE64_CHARS * 3 / 4 + 200_000);
+        // ランダムな英数字は gzip + base64 後もほぼ元と同じ長さ（実測で約 0.99 倍）なので、
+        // 1 本の上限を確実に超えるよう、上限より大きく作る。
+        let big = noisy_text(MAX_LOG_GZ_BASE64_CHARS + 100_000);
         let (json, shrunk) = attach_logs_to_preview_json(
             &preview,
             true,
