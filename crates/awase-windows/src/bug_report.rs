@@ -1166,6 +1166,99 @@ pub fn unix_seconds_to_rfc3339(secs: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+/// `awase.log` から報告に付ける時間窓（ADR-222 D10。journal の打鍵と同じ 10 分）。
+pub const APP_LOG_WINDOW_SECS: i64 = 10 * 60;
+
+/// `2026-10-04T02:24:02.110319Z` のような RFC3339（UTC）の先頭 19 文字
+/// （`YYYY-MM-DDTHH:MM:SS`）を UNIX 秒にする。tracing の出力形式に合わせた最小実装で、
+/// 小数秒とタイムゾーン表記は無視する（awase.log は常に UTC の `Z`）。
+#[must_use]
+pub fn rfc3339_utc_to_unix_seconds(text: &str) -> Option<i64> {
+    let b = text.as_bytes();
+    if b.len() < 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let num = |range: std::ops::Range<usize>| -> Option<i64> {
+        let part = text.get(range)?;
+        if part.bytes().all(|c| c.is_ascii_digit()) {
+            part.parse().ok()
+        } else {
+            None
+        }
+    };
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60
+    {
+        return None;
+    }
+    // days_from_civil（civil_from_days の逆。Howard Hinnant のアルゴリズム）。
+    let y = year - i64::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// `awase.log` の本文を「行」の単位に分け、**最後の行の時刻から `window_secs` 以内**
+/// の行だけを返す（ADR-222 D10）。
+///
+/// 1 行 = 先頭が RFC3339 の時刻で始まる行 + それに続く時刻の無い継続行
+/// （panic のバックトレース等。直前の行に付ける）。最初の時刻行より前にある継続行は
+/// 捨てる。基準を壁時計の「いま」ではなく**ログ自身の最後の時刻**にするのは、
+/// 報告を開く時点ではもうログが書かれていない（トレイをクリックして固定した後）ため。
+#[must_use]
+pub fn recent_app_log_rows(text: &str, window_secs: i64) -> Vec<String> {
+    let mut rows: Vec<(i64, String)> = Vec::new();
+    for line in text.lines() {
+        if let Some(ts) = rfc3339_utc_to_unix_seconds(line) {
+            rows.push((ts, line.to_owned()));
+        } else if let Some((_, last)) = rows.last_mut() {
+            last.push('\n');
+            last.push_str(line);
+        }
+    }
+    let Some(latest) = rows.iter().map(|(ts, _)| *ts).max() else {
+        return Vec::new();
+    };
+    let cutoff = latest - window_secs;
+    rows.into_iter()
+        .filter(|(ts, _)| *ts >= cutoff)
+        .map(|(_, row)| row)
+        .collect()
+}
+
+/// journal の JSON 配列（`dump_to_file_for_report` の出力）を、1 entry = 1 行の文字列に分ける。
+/// 画面に表示して行単位で削除できるようにするため。
+pub fn journal_json_to_rows(json: &str) -> Result<Vec<String>, serde_json::Error> {
+    // `RawValue` は元の文字列をそのまま保つ（`Value` だと再シリアライズでキー順が変わる）。
+    let values: Vec<Box<serde_json::value::RawValue>> = serde_json::from_str(json)?;
+    Ok(values.iter().map(|v| v.get().to_owned()).collect())
+}
+
+/// `journal_json_to_rows` の逆。残っている行から journal の JSON 配列を作り直す。
+#[must_use]
+pub fn rows_to_journal_json(rows: &[String]) -> String {
+    let mut json = String::from("[");
+    for (index, row) in rows.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str(row);
+    }
+    json.push(']');
+    json
+}
+
 fn civil_from_days(days_since_epoch: u64) -> (i32, u32, u32) {
     let z = i64::try_from(days_since_epoch).unwrap_or(i64::MAX) + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -2029,6 +2122,62 @@ mod tests {
         assert!(bomb.len() < 4 * 1024);
         assert!(gunzip_base64(&bomb, 1024).is_err());
         assert!(gunzip_base64(&bomb, 2 << 20).is_ok());
+    }
+
+    #[test]
+    fn rfc3339_utc_to_unix_seconds_matches_unix_seconds_to_rfc3339() {
+        for secs in [0_u64, 951_782_400, 1_760_000_000, 1_790_000_000, 4_102_444_799] {
+            let text = unix_seconds_to_rfc3339(secs);
+            assert_eq!(
+                rfc3339_utc_to_unix_seconds(&format!("{text}.123456Z DEBUG x")),
+                Some(i64::try_from(secs).unwrap()),
+                "{text}"
+            );
+        }
+        assert_eq!(rfc3339_utc_to_unix_seconds("not a timestamp at all"), None);
+        assert_eq!(rfc3339_utc_to_unix_seconds("2026-13-04T02:24:02Z"), None);
+        assert_eq!(rfc3339_utc_to_unix_seconds("2026-10-04T02:24"), None);
+    }
+
+    #[test]
+    fn recent_app_log_rows_keeps_window_from_last_timestamp_and_joins_continuations() {
+        let text = "\
+2026-10-04T02:00:00.000000Z INFO old
+2026-10-04T02:13:59.999999Z INFO just outside
+2026-10-04T02:14:00.000000Z WARN boundary
+  stack frame 1
+  stack frame 2
+2026-10-04T02:24:00.000000Z DEBUG newest
+";
+        let rows = recent_app_log_rows(text, APP_LOG_WINDOW_SECS);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].starts_with("2026-10-04T02:14:00"));
+        assert!(rows[0].ends_with("stack frame 2"));
+        assert!(rows[0].contains("\n  stack frame 1\n"));
+        assert!(rows[1].ends_with("newest"));
+    }
+
+    #[test]
+    fn recent_app_log_rows_ignores_leading_continuations_and_empty_input() {
+        assert!(recent_app_log_rows("", 600).is_empty());
+        assert!(recent_app_log_rows("orphan line\nanother", 600).is_empty());
+        let rows = recent_app_log_rows("orphan\n2026-10-04T02:00:00Z INFO a", 600);
+        assert_eq!(rows, vec!["2026-10-04T02:00:00Z INFO a".to_owned()]);
+    }
+
+    #[test]
+    fn journal_rows_round_trip_and_deleting_a_row_removes_it_from_the_array() {
+        let json = r#"[{"seq":1,"entry":{"type":"A"}},{"seq":2},{"seq":3}]"#;
+        let mut rows = journal_json_to_rows(json).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows_to_journal_json(&rows), json);
+        rows.remove(1);
+        assert_eq!(
+            rows_to_journal_json(&rows),
+            r#"[{"seq":1,"entry":{"type":"A"}},{"seq":3}]"#
+        );
+        assert_eq!(rows_to_journal_json(&[]), "[]");
+        assert!(journal_json_to_rows("not json").is_err());
     }
 
     #[test]
