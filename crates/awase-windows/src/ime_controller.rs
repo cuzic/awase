@@ -295,6 +295,16 @@ pub(crate) fn apply_mechanism(
             }
             // SAFETY: 同上。
             if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                // 原因調査(docs/tasks/msime-chrome-off-rca-2026-10-04.md): MS-IME は TSF の入力先(実 Chrome・RichEdit)で
+                // 未確定の composition がある間の VK_IME_OFF を「閉じる」のでなく conv を 25→16(半角英数)に変えるだけで
+                // 開いたままにする(OS への単独注入=awase なしでも同じ、2回目の VK_IME_OFF は 0.4s 後でも閉じない)。
+                // 実 Chrome でも IMC_SETOPENSTATUS(0) は composition があっても 10/10 で閉じるので、OFF のときだけ補う。
+                // 試作(CI 検証用): 同期・タイムアウト付き。本番は ImmCross chain の第2機構として設計し直す。
+                if !open {
+                    // SAFETY: 同上(メインスレッドからの呼び出し)。
+                    let imc_ok = unsafe { crate::ime::set_ime_open_cross_process(false) };
+                    tracing::info!("[apply-ime] MS-IME direct: IMC_SETOPENSTATUS(0) 補完 ok={imc_ok}");
+                }
                 ImeOpenOutcome::Applied
             } else {
                 // Winキー押下中（デスクトップ切替等）で未送信。Applied 扱いにすると
