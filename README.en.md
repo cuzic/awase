@@ -33,7 +33,7 @@ For details on the technical design, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## End of maintenance for v1, and moving to v2
 
-With the release of awase v2.0.0 (2026-10-03), **the v1 line (1.x) is no longer maintained** (end-of-maintenance date: the v2.0.0 release date, 2026-10-03).
+With the release of awase v2.0.0 (2026-10-04), **the v1 line (1.x) is no longer maintained** (end-of-maintenance date: the v2.0.0 release date, 2026-10-04).
 v1 will receive no further bug fixes or features. The last v1 release is 1.21.1.
 
 - **We recommend upgrading to v2.** Download it from [GitHub Releases](https://github.com/cuzic/awase/releases). The full list of differences is in [docs/migration-v1-to-v2.md](docs/migration-v1-to-v2.md) (Japanese).

@@ -110,7 +110,7 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
-<h2>[2.0.0] - 2026-10-03</h2>
+<h2>[2.0.0] - 2026-10-04</h2>
 <blockquote>
 <p><strong>This is the first stable release of v2. With it, v1 (last release: 1.21.1) reaches end of maintenance.</strong> See <a href="https://github.com/cuzic/awase/blob/main/docs/migration-v1-to-v2.md">docs/migration-v1-to-v2.md</a> (in Japanese) for the full list of differences from v1 and notes on carrying your settings over.
 There are two big changes in v2: (1) the IME (Japanese input method) is now treated as the source of truth for its own state, and awase no longer operates the IME ahead of time; (2) awase now reads the key assignments you set in your IME and works out automatically what each key does.</p>
@@ -128,6 +128,7 @@ There are two big changes in v2: (1) the IME (Japanese input method) is now trea
 <li><strong>Warns about key assignments whose meaning depends on state (for example, keys that only work during composition).</strong> The settings window suggests replacing them with keys that have a clear on or off meaning. The warning can be switched off in the settings window.</li>
 <li><strong>awase reads your IME's key settings and works out whether Hankaku/Zenkaku, Kanji, F13&ndash;F24, Muhenkan and Henkan mean "on", "off" or "toggle".</strong> It uses the settings file for Google Japanese Input, the registry for Microsoft IME, or the learned results above.</li>
 <li><strong>Bug reports now include the state of the learned results and similar information.</strong> A list of running software can also be attached, but only if you agree. PowerToys' keyboard features (Keyboard Manager / Run) were added to the list of software that may conflict.</li>
+<li><strong>Bug reports now include the last 10 minutes of activity logs.</strong> Until now only 2&ndash;3 minutes were kept, so the moment a problem occurred could be missing. In the settings window you can review the logs to be attached and delete lines you do not want to send (deleted lines are not sent). The logs are compressed when sent, and if sending fails, awase shrinks them and retries.</li>
 <li><strong>awase now detects when it has stopped receiving keyboard input and recovers automatically.</strong></li>
 <li><strong>Arrow keys (`VK_LEFT` / `VK_UP` / `VK_RIGHT` / `VK_DOWN`) can now be used in `config.toml`.</strong></li>
 <li><strong>The settings window now saves only the items you changed.</strong> Comments in the file and items not shown in the window are kept. If you edit the file directly while the window is open, your edits are not overwritten.</li>
@@ -192,6 +193,8 @@ There are two big changes in v2: (1) the IME (Japanese input method) is now trea
 <li><strong>Microsoft IME: pressing the Hiragana key for the first time from direct input left the IME closed while NICOLA input turned on, so kana came out as half-width alphanumerics. Fixed.</strong> When the first IME operation timed out, the Hankaku/Zenkaku "toggle" key was closing an IME that was already open. It was replaced with an "on" key.</li>
 <li><strong>When the gap between a character key and Muhenkan/Henkan slightly exceeded the time treated as simultaneous, the thumb key reached the IME as it was and produced half-width alphanumerics. Fixed.</strong> This happened with a single tap of Muhenkan/Henkan set to Passthrough.</li>
 <li><strong>With only Muhenkan/Henkan set to Passthrough, Shift+Muhenkan/Henkan was not passed through cleanly and was briefly held. Fixed.</strong> It is now passed through immediately.</li>
+<li><strong>In Chrome, Edge and similar apps, after the "state has been reset" notice that appears when IME keys are pressed repeatedly, the IME stayed closed and raw romaji was typed. Fixed.</strong> The reset now actually opens the IME.</li>
+<li><strong>When you pressed the physical Hiragana key (the Katakana/Hiragana key) a second time or later, an IME on/off assignment could stop working. Fixed.</strong> This happened when on/off was assigned to the Hiragana key.</li>
 <li><strong>Brought in the fixes shipped in v1.21.1.</strong> Input beyond the temporary holding limit (32) was lost when typing fast (limit raised to 2048); the first IME mode key did not work in an app that already had focus when awase started; the tray's "Restart" rarely failed.</li>
 </ul>
 <h2>[1.21.0] - 2026-09-21</h2>
