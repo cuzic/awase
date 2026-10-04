@@ -59,7 +59,7 @@ const HEADER: &str = "\
 ";
 
 const FOLLOWUP_HEADER: &str = "\
-# ── VK 送信後の補完 write (ADR-221) ───────────────────────────────
+# ── VK 送信後の補完 write (ADR-222) ───────────────────────────────
 # 冪等モードキー（GjiDirect / MsImeDirect）の VK 送信の直後に同じ機構が続けて行う write。
 # MS-IME の OFF だけが同期 IMC_SETOPENSTATUS(0) を補う。GJI は IMC が効かない（API は閉になるが打鍵は
 # かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 起案 <TAB> profile <TAB> 補完（- = なし）。起案: press = 明示キー押下由来 / no-press = drift correction・
@@ -105,7 +105,7 @@ const KEY_DOC: &str = "\
 #         「ユーザーの意図的なカタカナ」と「内部の誤ったカタカナ」を区別できず、一度
 #         カタカナに入ると永久に復旧できないデッドロックの直接の前提だった。BUG-50 参照）。
 #   OFF → VK_IME_OFF (0x1A) = ime::send_ime_mode_key(VK_IME_OFF)（DirectInput へ、冪等）→ 続けて同期 IMC_SETOPENSTATUS(0)
-#         （ADR-221。MS-IME は未確定 composition が残る間の VK_IME_OFF では閉じず conv 25→16 になるだけのため）→ Applied。
+#         （ADR-222。MS-IME は未確定 composition が残る間の VK_IME_OFF では閉じず conv 25→16 になるだけのため）→ Applied。
 #         IMC の失敗・SendHealth cooldown 中の見送りでも outcome は Applied のまま（VK は送信済み、補完は best effort）。
 #   OFF が VK_IME_OFF（冪等）である根拠: 48a667a。VK_DBE_ALPHANUMERIC は半角英数（IME-ON）に
 #   留まるため不可、VK_KANJI はトグルのため不可。
@@ -195,7 +195,7 @@ fn ime_key_strategy_selection_matches_golden() {
     );
 }
 
-/// ADR-221: MS-IME の OFF の送信列は IMC(OFF) を含み、GJI と ON 方向は含まない（ゴールデン破損時の一次診断用）。
+/// ADR-222: MS-IME の OFF の送信列は IMC(OFF) を含み、GJI と ON 方向は含まない（ゴールデン破損時の一次診断用）。
 #[test]
 fn ms_ime_off_includes_imc_followup_and_gji_does_not() {
     assert_eq!(

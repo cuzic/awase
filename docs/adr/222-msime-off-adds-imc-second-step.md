@@ -1,5 +1,5 @@
 ---
-id: ADR-221
+id: ADR-222
 title: |-
   MS-IME の OFF は VK_IME_OFF の後に IMC_SETOPENSTATUS(0) を同じ機構の第2ステップとして補う
 summary: |-
@@ -14,7 +14,7 @@ related_adr:
   - "BUG-184"
 ---
 
-# ADR-221: MS-IME の OFF に IMC(OFF) の第2ステップを足す
+# ADR-222: MS-IME の OFF に IMC(OFF) の第2ステップを足す
 
 ## 背景(確定した原因)
 

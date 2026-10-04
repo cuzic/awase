@@ -202,7 +202,7 @@ pub(crate) fn apply_mechanism(
     mechanism: WriteMechanism,
     open: bool,
     view: &ImeControlView<'_>,
-    // ADR-221: この write が明示キー押下に由来するか（`ActuationOrder::press().is_some()`）。
+    // ADR-222: この write が明示キー押下に由来するか（`ActuationOrder::press().is_some()`）。
     // drift correction 等の押下に由来しない起案では IMC(OFF) の補完を発行しない。
     explicit_press: bool,
 ) -> ImeOpenOutcome {
@@ -299,7 +299,7 @@ pub(crate) fn apply_mechanism(
             }
             // SAFETY: 同上。
             if unsafe { crate::ime::send_ime_mode_key(vk) } {
-                // ADR-221: MS-IME は未確定 composition が残る間の VK_IME_OFF では閉じない（conv が 25→16 に
+                // ADR-222: MS-IME は未確定 composition が残る間の VK_IME_OFF では閉じない（conv が 25→16 に
                 // なるだけ）。同じ機構の第 2 ステップとして IMC(OFF) を補う。判断は純粋関数 `post_vk_followup`。
                 followup_after_vk(mechanism, open, explicit_press, view);
                 ImeOpenOutcome::Applied
@@ -362,7 +362,7 @@ pub(crate) fn apply_mechanism(
     }
 }
 
-/// ADR-221: VK 送信成功の直後の補完 write。補完するかは純粋関数 [`post_vk_followup`] が `(機構, 向き, 明示押下か)` で決める
+/// ADR-222: VK 送信成功の直後の補完 write。補完するかは純粋関数 [`post_vk_followup`] が `(機構, 向き, 明示押下か)` で決める
 /// （GjiDirect のアームからも同じ関数を通る＝決定表が実行時に配線されている）。
 ///
 /// 実行は `MsImeDirect` の OFF の `IMC_SETOPENSTATUS(0)` だけ。同期・タイムアウト付き。宛先は `romaji_pre_write` と同じ
@@ -372,7 +372,7 @@ pub(crate) fn apply_mechanism(
 /// `SendHealth` の cooldown 中は発行せず VK のみへ degrade する。ただし `romaji_pre_write` がゲートを外している理由
 /// （見送ると再試行が無く静かに固着する）は本補完にも当てはまる: 見送った OFF は修正前と同じ「半角英数に取り残される」
 /// 状態で outcome が `Applied` になる。結果は outcome にも `AttemptRecord` にも載らない（tracing ログのみ）。
-/// composition は取り消される（`text_post=''`、ADR-221 の影響範囲参照）。
+/// composition は取り消される（`text_post=''`、ADR-222 の影響範囲参照）。
 fn followup_after_vk(
     mechanism: WriteMechanism,
     open: bool,
@@ -510,7 +510,7 @@ fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView
 /// （`tsf_obs()` の二重呼び出しを避ける既存方針をそのまま維持）。
 struct SyncChainWriter<'v, 'a> {
     view: &'v ImeControlView<'a>,
-    /// ADR-221: order が明示キー押下に由来するか（`order.press().is_some()`）。
+    /// ADR-222: order が明示キー押下に由来するか（`order.press().is_some()`）。
     explicit_press: bool,
     attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
     attempts_len: usize,
@@ -838,7 +838,7 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
     }
 }
 
-/// キャラクタライゼーション用: VK 送信後の補完 write 名（ADR-221）。
+/// キャラクタライゼーション用: VK 送信後の補完 write 名（ADR-222）。
 ///
 /// `"-"` = 補完なし。`profile` は `characterize_strategy` と同じ形式。`followup_after_vk` と同じく `imm_cross_applicable(profile)`
 /// から `imm_cross_in_chain` を導く（本番の配線を golden が固定する）。

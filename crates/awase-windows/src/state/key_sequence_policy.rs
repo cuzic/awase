@@ -140,7 +140,7 @@ pub(crate) const fn ime_key_for(mechanism: KeyMechanism, op: ImeOperation) -> Vk
     }
 }
 
-/// VK 送信の**直後**に同じ機構が続けて行う補完 write（ADR-221）。
+/// VK 送信の**直後**に同じ機構が続けて行う補完 write（ADR-222）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PostVkFollowup {
     /// 補完なし（VK 1 発で完結する）。
@@ -149,7 +149,7 @@ pub(crate) enum PostVkFollowup {
     CloseViaImc,
 }
 
-/// 冪等モードキーの送信後に補完 write を足すか（ADR-221、`docs/tasks/msime-chrome-off-rca-2026-10-04.md`）。
+/// 冪等モードキーの送信後に補完 write を足すか（ADR-222、`docs/tasks/msime-chrome-off-rca-2026-10-04.md`）。
 ///
 /// MS-IME は TSF の入力先に未確定 composition が残っている間の `VK_IME_OFF` を「閉じる」でなく
 /// conv 25→16（半角英数）に変えるだけで開いたままにする。`IMC_SETOPENSTATUS(0)` は composition が
@@ -241,7 +241,7 @@ mod tests {
         assert!(!ms_ime_direct_applicable(ImeKindId::Gji));
     }
 
-    /// ADR-221: MS-IME の OFF だけが VK の後に IMC(OFF) を足す。GJI（IMC が効かない）・ON 方向・明示押下でない起案・
+    /// ADR-222: MS-IME の OFF だけが VK の後に IMC(OFF) を足す。GJI（IMC が効かない）・ON 方向・明示押下でない起案・
     /// ImmCross を含む chain（Standard の fallback）は足さない。
     #[test]
     fn post_vk_followup_only_for_explicit_ms_ime_close() {

@@ -100,7 +100,7 @@ impl ImmCrossOp {
 
 /// 非同期 writer。ImmCross だけが await し、残りは同期戦略へ委譲する。
 struct AsyncChainWriter {
-    /// ADR-221: order が明示キー押下に由来するか（`order.press().is_some()`）。
+    /// ADR-222: order が明示キー押下に由来するか（`order.press().is_some()`）。
     explicit_press: bool,
     /// 1 回だけ使える（`Actuation` 値のアフィン性と同じ理由で `Option`）。
     imm: Option<ImmCrossOp>,

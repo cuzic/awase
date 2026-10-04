@@ -1206,7 +1206,7 @@ fn run_offrca(
                     sleep(w);
                     ok
                 }
-                // ADR-221 の順序検証: `race<N>` = IME を開いた状態で `k`,`a` を打ち、**待ち・probe・ページ読みを挟まず**
+                // ADR-222 の順序検証: `race<N>` = IME を開いた状態で `k`,`a` を打ち、**待ち・probe・ページ読みを挟まず**
                 // `a` の KeyUp の N ms 後に OFF を出す(OFF 前に打った文字が `ka`(ASCII)に化けないかを `text_post` で見る)。
                 t if t.starts_with("race") => {
                     let ok = ensure(p, Setup::Kana, awase);

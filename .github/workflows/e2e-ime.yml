@@ -479,7 +479,7 @@ jobs:
             # 第5ラウンド: 「以前のバージョンの Microsoft IME を使う」互換モード(NoTsf3Override2=1、旧 IME)でも同じか(legacy_custom='true' がそのレジストリを立てる。keystyle=Custom の表も入る点は交絡)。
             cfg('sc-offrca-r5-legacy-noawase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='false', legacy_custom='true',
                 chrome="--offrca=1a:typed_nc,1a:notype,19:typed_nc,imc0:typed_nc,1a:typed_nc~b --or-then=16 --settle=800 --msime --no-awase"),
-            # ADR-221(常設の回帰): MS-IME × 実 Chrome で、未確定 composition を残したまま awase の OFF(Ctrl+無変換)を押しても実 IME が閉じる(MsImeDirect の OFF に IMC(OFF) を補う)。
+            # ADR-222(常設の回帰): MS-IME × 実 Chrome で、未確定 composition を残したまま awase の OFF(Ctrl+無変換)を押しても実 IME が閉じる(MsImeDirect の OFF に IMC(OFF) を補う)。
             # checkargs=--expect-closed で made 全試行の実打鍵が ASCII になることを要求(API の読み戻しは判定に使わない)。GJI は対照(IMC 補完を含めない=従来どおり VK のみで閉じる)。
             cfg('sc-offrca-fix-msime-awase', 'pass', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
                 chrome="--offrca=ctrl1d:typed_nc,ctrl1d:typed,ctrl1d:notype --or-then=ctrl1c --settle=800 --msime"),

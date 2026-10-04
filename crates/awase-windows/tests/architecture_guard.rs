@@ -2950,7 +2950,7 @@ fn sync_romaji_write_goes_through_a_captured_target() {
             }
         }
         sites.sort();
-        // ADR-221: `capture_blocking` は `romaji_pre_write`（ROMAN 補完）に加えて、`followup_after_vk`
+        // ADR-222: `capture_blocking` は `romaji_pre_write`（ROMAN 補完）に加えて、`followup_after_vk`
         // （MsImeDirect の OFF の IMC(OFF) 補完）が 1 回呼ぶ。2 本目の所在は下で関数単位に固定する。
         // 規律は同じではない: `romaji_pre_write` は `SendHealth` ゲートを意図的に外し、`followup_after_vk` はゲートを持つ。
         // `set_ime_romaji_mode_for_target_blocking` は従来どおり 1 箇所。
@@ -2963,7 +2963,7 @@ fn sync_romaji_write_goes_through_a_captured_target() {
             sites,
             vec![("src/ime_controller.rs".to_string(), expected)],
             "`{needle}` の本番呼び出し元は `ime_controller.rs` の \
-             `romaji_pre_write`（と、`capture_blocking` のみ ADR-221 の \
+             `romaji_pre_write`（と、`capture_blocking` のみ ADR-222 の \
              `followup_after_vk`）に固定されています（ADR-089 Phase C item 12）。\
              実際: {sites:?}"
         );
@@ -2983,7 +2983,7 @@ fn sync_romaji_write_goes_through_a_captured_target() {
              `decide_needs_romaji_pre_write` を迂回させないため、ADR-089 Phase C item 12）"
         );
     }
-    // 3. ADR-221: 2 本目の `capture_blocking` は `followup_after_vk` の中にあり、IMC(OFF) 補完の書き口
+    // 3. ADR-222: 2 本目の `capture_blocking` は `followup_after_vk` の中にあり、IMC(OFF) 補完の書き口
     //    `set_ime_open_for_actuation_target(` の呼び出し元もそこ 1 箇所だけ。
     let controller = read_crate_file("src/ime_controller.rs");
     assert_eq!(
@@ -2992,7 +2992,7 @@ fn sync_romaji_write_goes_through_a_captured_target() {
             "ActuationTarget::capture_blocking("
         ),
         1,
-        "`capture_blocking(` の 2 本目は `followup_after_vk` の中にあること（ADR-221）"
+        "`capture_blocking(` の 2 本目は `followup_after_vk` の中にあること（ADR-222）"
     );
     let mut imc_sites: Vec<(String, usize)> = Vec::new();
     for path in &files {
@@ -3007,7 +3007,7 @@ fn sync_romaji_write_goes_through_a_captured_target() {
     assert_eq!(
         imc_sites,
         vec![("src/ime_controller.rs".to_string(), 1)],
-        "`set_ime_open_for_actuation_target(` の呼び出し元は `followup_after_vk` の 1 箇所に固定（ADR-221）。実際: {imc_sites:?}"
+        "`set_ime_open_for_actuation_target(` の呼び出し元は `followup_after_vk` の 1 箇所に固定（ADR-222）。実際: {imc_sites:?}"
     );
 }
 

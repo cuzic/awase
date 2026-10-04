@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """chrome_probe --offrca の `OFFRCA {json}` 行を集計する(既定は判定せず、観測の表を出す。rc: 試行0件=3、それ以外 0)。
 
-`--expect-closed`(ADR-221、常設の回帰): 全セルで前提が成立した試行(made)の全てで、**実打鍵が ASCII になる(typed_closed)**ことを要求する。
+`--expect-closed`(ADR-222、常設の回帰): 全セルで前提が成立した試行(made)の全てで、**実打鍵が ASCII になる(typed_closed)**ことを要求する。
 `race<N>` セルは OFF 前に打った文字(text_post)が ASCII 化していないこと、`--or-then` のある試行は続く ON でかなに戻ること(then.open)も要求する。
 API の読み戻し(api_closed)は参考値で判定に使わない(修正自身が IMC(OFF) を書くので証拠にならず、GJI のように
 API だけ閉で打鍵はかなのままという既知の失敗を見逃す)。made が 0 のセルがあれば INVALID(3)、打鍵が閉でない試行があれば FAIL(1)。

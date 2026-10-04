@@ -133,7 +133,7 @@ jobs:
             hash        = "sha256:$hash"
             bin         = @("awase.exe")
             shortcuts   = @(, @("awase-settings.exe", "Awase Settings"))
-            persist     = @("config.toml", "layout", "data", "keymap-learn-table.json", "keymap-learn-last-attempt.json")
+            persist     = @("config.toml", "cache.toml", "update_check.json", "layout", "data", "keymap-learn-table.json", "keymap-learn-last-attempt.json")
           }
           New-Item -ItemType Directory -Force -Path "scoop-awase/bucket" | Out-Null
           $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath "scoop-awase/bucket/awase.json" -Encoding utf8NoBOM
