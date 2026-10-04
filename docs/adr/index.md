@@ -228,7 +228,7 @@
 | [219](219-engine-test-helpers-instead-of-scenario-dsl.md) | エンジンテストは既存ヘルパーの使い回しと純粋な対応表の撤去で読みやすくする(DSLは見送り) | 提案(Opus round3 で収束、採用可) |
 | [220](220-key-name-tables-keep-as-is-add-capture-table-test.md) | キー名表の単一ソース化は見送り、キャプチャ表の検証テスト1本だけ足す | 見送り。テスト1本実装済み。vk.rs内のvk_keys!統合とLEGACY撤去はPR #430(D1を一部上書き) |
 | [221](221-msime-ime-off-composition-loss-measure-first.md) | MS-IME の英数キー IME OFF で未確定文字が消える件は、修正の前に OS 側の挙動を実測する | 起草。Opus レビュー待ち |
-| [222](222-bug-report-log-time-window-xz.md) | 不具合報告のログを「直近10分」で決め、xz圧縮して送る | 提案(2026-10-04)。Opus レビュー待ち |
+| [222](222-bug-report-log-gzip-ring-dump.md) | 不具合報告のログは ring の中身を gzip して送る(打鍵は最低10分) | 採用(2026-10-04)。実装中 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
