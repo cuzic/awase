@@ -139,6 +139,11 @@ def summarize(report_path: Path, out_dir: Path) -> None:
     payload = data.get("payload", data)
 
     print(f"\n=== {report_path.stem} ===")
+    if "deploy smoke test" in str(payload.get("description", "")) or str(
+        payload.get("app_version", "")
+    ).endswith("-smoke"):
+        # scripts/report_worker_smoke.py が本番へ送った確認用の報告。トリアージに混ぜない。
+        print("  [SMOKE TEST] デプロイ後の確認用の報告です（調査の対象ではありません）。")
     for key, value in payload.items():
         if key in LARGE_TEXT_FIELDS and isinstance(value, str) and value:
             target = out_dir / f"{report_path.stem}.{LARGE_TEXT_FIELDS[key]}"
