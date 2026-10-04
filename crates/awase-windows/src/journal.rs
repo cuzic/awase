@@ -423,7 +423,8 @@ pub enum JournalEntry {
     /// **このエントリはダンプのたびに必ず1件生成される**ため、evicted の出力先とする。
     ///
     /// `oldest_elapsed_ms_*`（ADR-222）: ダンプ時点で各レーンの ring に残っている
-    /// 最古の entry の `elapsed_ms`（空のレーンは `None`）。不具合報告は ring の
+    /// 最古の entry の `elapsed_ms`（空のレーンは `None`）。**ring 内の値で、報告に載った
+    /// 範囲ではない**（打鍵と `LiteralDetect` は、ダンプ時にさらに直近 10 分へ絞られる）。不具合報告は ring の
     /// 中身を全部出す（バイト配分で絞らない）ので、調査する側が「各レーンが
     /// 何分前まで残っているか」を `DumpTriggered` の `elapsed_ms` との差で読める。
     DumpTriggered {
@@ -1419,7 +1420,8 @@ impl UnifiedJournal {
     /// 不具合報告用: ring の中身を**全部**、compact JSON で書き出す（ADR-222。
     /// 旧 `dump_to_file_capped` のバイト配分による間引きは廃止した）。
     ///
-    /// 打鍵（KeyInput）だけは直近 `REPORT_KEY_INPUT_WINDOW_MS`（10 分）に絞る
+    /// 入力文字が分かる entry（打鍵 KeyInput と `LiteralDetect`）だけは、直近
+    /// `REPORT_KEY_INPUT_WINDOW_MS`（10 分）に絞る
     /// （所有者が許容した範囲。ring は最大頻度で 10 分が溢れない容量なので、通常の
     /// 頻度では何時間ぶんも溜まっている。Opus round2 B-E1）。他のレーンは打鍵の
     /// 内容を含まないので全件出す。
@@ -1440,6 +1442,17 @@ impl UnifiedJournal {
                     now_ms,
                     crate::journal_policy::REPORT_KEY_INPUT_WINDOW_MS,
                 ),
+                // `LiteralDetect` の `romaji` は送信予定だった romaji そのもので、`trace` には vk 列が
+                // 入る（入力文字が分かる）。KeyInput と同じ窓にしないと、所有者が許容した直近 10 分より
+                // 前の入力文字が断片的に送られる（Opus round3 M-E5）。
+                JournalEntry::LiteralDetect { .. } => {
+                    crate::journal_policy::key_input_in_report_window(
+                        envelope.elapsed_ms,
+                        0,
+                        now_ms,
+                        crate::journal_policy::REPORT_KEY_INPUT_WINDOW_MS,
+                    )
+                }
                 _ => true,
             })
             .collect();

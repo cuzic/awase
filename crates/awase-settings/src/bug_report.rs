@@ -4,9 +4,9 @@ use std::sync::mpsc::{self, Receiver};
 use awase_windows::bug_report::{
     APP_LOG_WINDOW_SECS, BugReportDiagnostics, BugReportImeKind, BugReportInput,
     LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES, LogEditSummary, MAX_BODY_BYTES, MAX_SEND_ATTEMPTS,
-    RETENTION_HINT, RETRY_MIN_LOG_BYTES, SymptomCategory, attach_logs_with_budget,
-    build_payload_json_fitting, journal_json_to_rows, recent_app_log_rows, retry_budget_bytes,
-    rows_to_journal_json, should_retry_smaller, unix_seconds_to_rfc3339,
+    RETENTION_HINT, RETRY_MIN_LOG_BYTES, RetryPlan, SendFailure, SymptomCategory,
+    attach_logs_with_budget, build_payload_json_fitting, journal_json_to_rows, plan_retry,
+    recent_app_log_rows, retry_budget_bytes, rows_to_journal_json, unix_seconds_to_rfc3339,
 };
 
 /// `awase.log` が `info` レベルでまばらでも、末尾から最低これだけの行は付ける
@@ -133,6 +133,8 @@ enum SendOutcome {
         failed_attempts: u32,
         /// 失敗の理由（短くしたもの）。
         reason: String,
+        /// ログを縮めて再送するか（false なら、同じ大きさで待ってから再送する）。
+        shrinking: bool,
     },
     /// 送信内容を作れなかった（プレビュー JSON が壊れている、上限を超える等）。
     /// 作れていないので、ローカルへの保存もしない。
@@ -444,9 +446,15 @@ impl BugReportApp {
             Ok(SendOutcome::Retrying {
                 failed_attempts,
                 reason,
+                shrinking,
             }) => {
+                let action = if shrinking {
+                    "ログを縮めて再送します"
+                } else {
+                    "少し待って、同じ内容で再送します"
+                };
                 self.status = format!(
-                    "送信に失敗したため、ログを縮めて再送します（{failed_attempts}/{MAX_SEND_ATTEMPTS} 回目の失敗: {reason}）"
+                    "送信に失敗したため、{action}（{failed_attempts}/{MAX_SEND_ATTEMPTS} 回目の失敗: {reason}）"
                 );
                 // 途中経過なので、受信口は返して最終結果を待つ。
                 self.pending = Some(rx);
@@ -476,8 +484,11 @@ impl BugReportApp {
                 saved_payload,
             }) => {
                 self.status = match saved_payload {
+                    // 保存したファイルには、直近 10 分に入力した文字の記録が入っている
+                    // （gzip + base64 は符号化であって保護ではない）。再送する機能は無いので、
+                    // 開発者へ渡す場合以外は削除するよう、はっきり伝える（Opus round3 M-R4）。
                     Ok(saved_path) => format!(
-                        "送信できませんでした: {message}\n送信内容を {} に保存しました。後で手動で送ってください。",
+                        "送信できませんでした: {message}\n送信内容を {} に保存しました。このファイルには、直近10分に入力した文字の記録が含まれます。再送する機能はまだ無いので、開発者へ渡す場合以外は、不要になったら削除してください。",
                         saved_path.display()
                     ),
                     Err(save_error) => format!(
@@ -571,12 +582,14 @@ impl BugReportApp {
                 .map_or(0, str::len)
                 .max(app_log.as_deref().map_or(0, str::len));
             let mut first_body: Option<String> = None;
+            // 試した回数と、ログを縮めた回数（同じ大きさでの再送は縮めた回数に数えない）。
             let mut attempt: u32 = 0;
+            let mut shrinks: u32 = 0;
             let outcome = loop {
-                let start_budget = if attempt == 0 {
+                let start_budget = if shrinks == 0 {
                     LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES
                 } else {
-                    retry_budget_bytes(largest_log, attempt)
+                    retry_budget_bytes(largest_log, shrinks)
                 };
                 let attempt_edits = LogEditSummary {
                     send_attempt: attempt,
@@ -615,27 +628,39 @@ impl BugReportApp {
                     Ok(report_id) => {
                         break SendOutcome::Success {
                             report_id,
-                            shrunk: shrunk || attempt > 0,
+                            shrunk: shrunk || shrinks > 0,
                             attempts: attempt + 1,
                         };
                     }
-                    Err(message) => {
+                    Err(failure) => {
                         attempt += 1;
-                        if largest_log > RETRY_MIN_LOG_BYTES
-                            && should_retry_smaller(&message, attempt)
-                        {
-                            let _ = tx.send(SendOutcome::Retrying {
-                                failed_attempts: attempt,
-                                reason: message.chars().take(80).collect(),
-                            });
-                            continue;
-                        }
-                        break SendOutcome::Failure {
-                            saved_payload: save_failed_payload(
-                                first_body.as_deref().unwrap_or(&body),
-                            ),
-                            message,
+                        // ログが小さければ、縮めても本体はほとんど変わらないので縮めての再送はしない
+                        // （同じ大きさでの再送は、ログの大きさに関わらず意味がある）。
+                        let plan = match plan_retry(&failure, attempt) {
+                            RetryPlan::Shrink if largest_log <= RETRY_MIN_LOG_BYTES => {
+                                RetryPlan::GiveUp
+                            }
+                            other => other,
                         };
+                        match plan {
+                            RetryPlan::GiveUp => {
+                                break SendOutcome::Failure {
+                                    saved_payload: save_failed_payload(
+                                        first_body.as_deref().unwrap_or(&body),
+                                    ),
+                                    message: failure.to_string(),
+                                };
+                            }
+                            RetryPlan::Shrink => shrinks += 1,
+                            RetryPlan::SameSize { delay_secs } => {
+                                std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+                            }
+                        }
+                        let _ = tx.send(SendOutcome::Retrying {
+                            failed_attempts: attempt,
+                            reason: failure.to_string().chars().take(80).collect(),
+                            shrinking: matches!(plan, RetryPlan::Shrink),
+                        });
                     }
                 }
             };
@@ -974,7 +999,11 @@ fn draw_log_rows(
             {
                 delete_key_input_rows(rows);
             }
-            let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
+            // 実際の 1 行は `ui.horizontal`（高さは最低 `interact_size.y`）の中に小さなボタン 2 つと
+            // ラベルが並ぶ。宣言した高さより実際の行が高いと、スクロールの末尾で最新の行に届かない
+            // （Opus round2/round3 M-UI1。実機で要確認）ので、`interact_size.y` を下限にする。
+            let row_height = (ui.text_style_height(&egui::TextStyle::Monospace) + 4.0)
+                .max(ui.spacing().interact_size.y);
             let mut remove: Option<usize> = None;
             let mut remove_before: Option<usize> = None;
             egui::ScrollArea::vertical()
@@ -1036,6 +1065,12 @@ impl eframe::App for BugReportApp {
 
         self.poll_send_result();
         self.poll_log_loader(ctx);
+        // 送信中（再送を含め最悪で約 2 分）に閉じると、プロセスが終わって送信スレッドも止まり、
+        // 報告が消える（ローカル保存も行われない）。送信中は閉じさせない（Opus round3 m-R5）。
+        if self.pending.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            "送信中は閉じられません。完了までお待ちください。".clone_into(&mut self.status);
+        }
 
         // このフレームで最新のプレビュー/通知を描画できるよう、デバウンス
         // 完了判定はパネル描画より前に行う（描画後に行うと、更新結果は
@@ -1140,18 +1175,21 @@ fn escape_json_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// 受付に送る。成功したら report_id（201 でも本文を読めなかったときは `"(不明)"`）。
 #[cfg(target_os = "windows")]
-fn send_report(body: &str) -> Result<String, String> {
+fn send_report(body: &str) -> Result<String, SendFailure> {
     winhttp_send_report(body)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn send_report(_body: &str) -> Result<String, String> {
-    Err("WinHTTP 送信は Windows でのみ利用できます".to_owned())
+fn send_report(_body: &str) -> Result<String, SendFailure> {
+    Err(SendFailure::Transport(
+        "WinHTTP 送信は Windows でのみ利用できます".to_owned(),
+    ))
 }
 
 #[cfg(target_os = "windows")]
-fn winhttp_send_report(body: &str) -> Result<String, String> {
+fn winhttp_send_report(body: &str) -> Result<String, SendFailure> {
     use windows::Win32::Networking::WinHttp::{
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER,
         WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen,
@@ -1244,12 +1282,19 @@ fn winhttp_send_report(body: &str) -> Result<String, String> {
         )
         .map_err(|e| format!("WinHttpQueryHeaders: {e}"))?;
 
-        let response = read_response_body(request.0)?;
-        if status_code != 201 {
-            return Err(format!("HTTP {status_code}: {response}"));
+        // 201 は受付が**保存済み**という意味なので、本文（report_id）を読めなくても失敗にしない。
+        // 失敗にすると「応答が無い失敗」として再送され、確実に重複する（Opus round3 M-R1）。
+        let response = read_response_body(request.0);
+        if status_code == 201 {
+            return Ok(response
+                .ok()
+                .and_then(|text| parse_report_id(&text))
+                .unwrap_or_else(|| "(不明。送信は成功しています)".to_owned()));
         }
-        parse_report_id(&response)
-            .ok_or_else(|| "成功レスポンスに report_id がありません".to_owned())
+        return Err(SendFailure::Http {
+            status: u16::try_from(status_code).unwrap_or(u16::MAX),
+            body: response.unwrap_or_else(|e| format!("(本文を読めませんでした: {e})")),
+        });
     }
 }
 
