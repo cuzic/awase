@@ -99,6 +99,8 @@ sc-hz/kanji/dbe/shift の退行は B・C とも消えた(書き込み全停止�
 - **Opus B3 は今回の i4 の原因ではなく、未検証のまま残る**: IME が awase 以外の手段(言語バー・IME 自身が処理するキー)で閉じ、Engine が観測で deactivate する場合に、ActivationSync の OFF 方向が担っていた GjiFsm `ImeOff` 等が届かない件。P2b' の候補。
 - **検証に追加**: P2b 以降の CI では、各構成の run 1 で `attached to GJI process` の時刻が最初の送信より前か、`i4` と `PlanSkippedLiteral` の件数を develop と比べる。CI の複数回比較は、同じ ref への連続 dispatch が concurrency でキャンセルされるため、別ブランチ(`spike/*-repN`)で並列に流す。
 
+- **パニックリセットは ActivationSync に依存していた(BUG-182、2026-10-03)**: 非 Imm32 窓の `panic_reset` は belief を ON に戻すだけで、パニック前に Engine が非活性だった場合に限り、次の打鍵の ActivationSync が実 IME を開いていた。P2b/P2c の棚卸しで漏れていたため、`panic_reset` の非 Imm32 分岐が `SetOpen(true, press=None)` を executor 経路へ積み、`PanicReset` が `applied` を未知に落とす形で修正した。`apply_hwnd_cache_restore` も belief だけを書くが、キャッシュは予防的 actuation の撤去対象として意図的に書かない。
+
 ## 所有者決定(2026-10-01、起動直後の最初の内部状態と v2 の扱い)
 
 - **原則**: IME が ON なら NICOLA ON、IME が OFF なら NICOLA OFF。モードずれは許容するが、できるだけ少なくする。

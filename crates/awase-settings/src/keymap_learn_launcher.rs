@@ -236,22 +236,34 @@ pub fn take_learning_stderr(child: &mut Child) -> io::Result<ChildStderr> {
         .ok_or_else(|| io::Error::other("子プロセスのstderrが取得できない(既に取得済み?)"))
 }
 
-/// 学習ログの保存先(`%LOCALAPPDATA%\awase\keymap-learn.log`)。汚染の原因調査は
+/// モードごとのログのファイル名。学習のログ(`keymap-learn.log`)は、後から調べるために
+/// 直前の学習1回分を残す。「学習結果を使う」「軽量再検証」が同じファイルを作り直すと、
+/// 学習ログが消えてしまうため、別のファイルへ書く。
+#[must_use]
+pub const fn learning_log_file_name(mode: LearnMode) -> &'static str {
+    match mode {
+        LearnMode::Learn => "keymap-learn.log",
+        LearnMode::AdoptPendingJudgement => "keymap-learn-adopt.log",
+        LearnMode::Revalidate => "keymap-learn-revalidate.log",
+    }
+}
+
+/// 起動モード`mode`のログの保存先(`%LOCALAPPDATA%\awase\`の下)。汚染の原因調査は
 /// 最終行だけでは足りず、直近イベントを含む全行が要るためファイルへ残す。
 #[must_use]
-pub fn learning_log_path() -> Option<std::path::PathBuf> {
+pub fn learning_log_path(mode: LearnMode) -> Option<std::path::PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")?;
     Some(
         std::path::PathBuf::from(base)
             .join("awase")
-            .join("keymap-learn.log"),
+            .join(learning_log_file_name(mode)),
     )
 }
 
 /// `stderr`を1行ずつ読み、空でない最後の行を返す(無ければ`None`)。
 /// `result status=failure`の直前に`print_result_line`が書く1行の理由
 /// メッセージをそのままUIへ出すのが目的で、複数行のログを蓄積・解析する
-/// 用途は想定しない。`log_path`が`Some`なら全行をそこへも書き出す(起動のたびに作り直す)。
+/// 用途は想定しない。`log_path`が`Some`なら全行をそこへも書き出す(起動のたびに、そのモードのログだけを作り直す)。
 #[must_use]
 pub fn drain_learning_stderr_lines_logged(
     stderr: ChildStderr,
@@ -279,6 +291,18 @@ pub fn drain_learning_stderr_lines_logged(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_mode_writes_its_own_log_file() {
+        // 学習のログは、採用・軽量再検証で上書きされない。
+        let names = [
+            learning_log_file_name(LearnMode::Learn),
+            learning_log_file_name(LearnMode::AdoptPendingJudgement),
+            learning_log_file_name(LearnMode::Revalidate),
+        ];
+        assert_eq!(names[0], "keymap-learn.log");
+        assert!(names[0] != names[1] && names[0] != names[2] && names[1] != names[2]);
+    }
 
     #[test]
     fn parses_progress_line() {

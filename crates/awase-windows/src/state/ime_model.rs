@@ -768,6 +768,11 @@ impl ImeModel {
                 // has_user_explicit_intent() を汚染しない。
                 self.desired_open = target;
                 self.desired_is_placeholder = false;
+                // 全面リセットは awase 自身の直近の書き込みの記録（`applied`）も実状態の証拠として
+                // 信用しない。残すと、belief=ON・実IME=閉で固着した状況（`applied=Some(true)`）で
+                // 続く SetOpen(true) が already-matched として省略され、実IMEが開かない
+                // （BUG-182。`applied_open`のdoc・ADR-098決定1-b・BUG-156と同じ原則）。
+                self.applied = AppliedImeState::Unknown;
             }
             ImeEvent::HwndCacheRestored { target } => {
                 // HWND キャッシュ復元: 前回フォーカス時の desired_open を回復する。
@@ -3395,6 +3400,23 @@ mod tests {
         assert!(
             model.desired_open,
             "PanicReset は desired_open を target に設定する"
+        );
+    }
+
+    // BUG-182: 固着（applied=Some(true)・実IME=閉）からの SetOpen(true) が already-matched で
+    // 省略されないよう、PanicReset は applied を未知に落とす。
+    #[test]
+    fn panic_reset_demotes_applied_to_unknown() {
+        let mut model = ImeModel::new();
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 0,
+        };
+        model.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert_eq!(
+            model.applied.applied_open(),
+            None,
+            "PanicReset は applied を未知にする（already-matched 省略の根拠を残さない）"
         );
     }
 

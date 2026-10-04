@@ -8,6 +8,7 @@ mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
 mod key_pipeline;
+mod lang_check;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;
@@ -294,6 +295,8 @@ pub struct Runtime {
     layouts: Vec<LayoutEntry>,
     /// フォーカス追跡・IMM 能力学習・sync key 補完
     focus_tracker: focus_tracker::FocusTracker,
+    /// ADR-223 段階 0: 打鍵時の入力言語の記録(記録のみ、belief は変えない)
+    lang_check: lang_check::LangCheck,
     /// Platform 層の全状態
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
@@ -1427,6 +1430,7 @@ impl Runtime {
                 sync_on_keys,
                 sync_off_keys,
             ),
+            lang_check: lang_check::LangCheck::default(),
             platform_state,
             all_keymaps,
             post_bypass_rules,
@@ -2337,6 +2341,21 @@ impl Runtime {
         // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         self.platform_state.ime.apply_panic_reset(tick_ms);
+        // 非 Imm32 窓（Chrome/Edge=Imm32Unavailable, TsfNative）では上の OFF→ON が走らず、
+        // belief を ON に戻しただけでは実 IME が開かない（ADR-213 P2c で撤去した ActivationSync が
+        // パニック後の最初の打鍵で肩代わりしていた、BUG-182）。Engine の decision と同じ executor 経路
+        // （`dispatch_ime_set_open`）へ SetOpen(true) を積む。授権は PanicReset ガード（SafetyValve）、
+        // 押下に由来しない起案なので press=None。`apply_panic_reset` が `applied` を未知に落とした後に積む。
+        if !self.can_use_imm32_cross_process() {
+            let mut effects = awase::engine::EffectVec::new();
+            effects.push(awase::engine::Effect::Ime(
+                awase::engine::ImeEffect::SetOpen {
+                    open: true,
+                    press: None,
+                },
+            ));
+            self.execute_decision(awase::engine::Decision::pass_through_with(effects));
+        }
         // Step 4: chord barrier も clear (旧 ctrl_bypass_hold 相当)
         self.platform_state.ime.clear_input_barrier();
         self.platform_state.gate.sync_key_gate.clear();

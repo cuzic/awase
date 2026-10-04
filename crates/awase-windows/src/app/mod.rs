@@ -623,6 +623,8 @@ pub(crate) fn dispatch_engine_message(
 }
 
 fn handle_hook_key_event(event: awase::types::RawKeyEvent) {
+    // ADR-223 段階 0: 取り込み口で、フォーカス窓のスレッドの入力言語を記録する(記録のみ。再入時は何もしない)。
+    let _ = with_app(|app| app.lang_check_on_keydown(&event));
     if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
         let mods = event.modifier_snapshot;
         if let Some(is_on) = crate::panic_detect::get_panic_trigger_direction(

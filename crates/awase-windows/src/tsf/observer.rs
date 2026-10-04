@@ -109,6 +109,12 @@ pub struct TsfObservations {
     /// `send_romaji_as_tsf` や `TsfReadinessJudge` が参照する。
     pub(super) gji_last_io_ms: AtomicU64,
 
+    /// GJI モニターが GJI プロセスへ（再）接続した時刻 (GetTickCount64 ms)。0 = 未接続。
+    ///
+    /// 接続直後の `gji_last_io_ms` は、累積 I/O カウンタの初回読みを「変化」として数えた値（実際の IME 操作の
+    /// 証拠ではない）。`gji_io_is_attach_artifact` で区別する（BUG-176）。
+    pub(super) gji_attach_ms: AtomicU64,
+
     /// GJI プロセスの累積 WriteTransferCount（バイト数）。
     ///
     /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
@@ -267,6 +273,7 @@ impl TsfObservations {
             gji_candidate_show: ChangeCounter::new(),
             gji_candidate_visible: AtomicBool::new(false),
             gji_last_io_ms: AtomicU64::new(0),
+            gji_attach_ms: AtomicU64::new(0),
             gji_write_bytes: AtomicU64::new(0),
             gji_last_write_ms: AtomicU64::new(0),
             gji_write_ops: AtomicU64::new(0),
@@ -291,6 +298,12 @@ impl TsfObservations {
     #[must_use]
     pub fn gji_last_io_ms(&self) -> u64 {
         self.gji_last_io_ms.load(Ordering::Relaxed)
+    }
+
+    /// GJI モニターの最終接続時刻 (ms)。0 = 未接続。
+    #[must_use]
+    pub fn gji_attach_ms(&self) -> u64 {
+        self.gji_attach_ms.load(Ordering::Relaxed)
     }
 
     /// GJI モニターが利用可能かを読み取る（Acquire）。
@@ -483,6 +496,13 @@ pub(crate) fn tsf_obs() -> &'static TsfObservations {
 /// GJI プロセスの最終 I/O 変化時刻 (ms) を返す。0 = 未観測。live 読み取り。
 pub(crate) fn gji_last_io_ms() -> u64 {
     TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed)
+}
+
+/// `last_io_ms` が、モニター接続時の累積カウンタ初回読み（実 I/O ではない）のままか。
+/// 接続後に実 I/O があれば `last_io_ms` は `attach_ms` より後になる。純粋関数（BUG-176）。
+#[must_use]
+pub(crate) const fn gji_io_is_attach_artifact(last_io_ms: u64, attach_ms: u64) -> bool {
+    attach_ms > 0 && last_io_ms <= attach_ms
 }
 
 /// 現在時刻と最終 GJI I/O 時刻の差（アイドル時間）を ms で返す。
@@ -722,6 +742,18 @@ mod tests {
     /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック
     /// (`probe.rs`/`literal_detect_fsm.rs`と共有、詳細は`TSF_OBS_TEST_LOCK`のdoc参照)。
     use super::TSF_OBS_TEST_LOCK as TEST_LOCK;
+
+    /// BUG-176: 接続直後の `gji_last_io_ms`（累積カウンタ初回読み）は実 I/O ではない。接続後の実 I/O は区別できる。
+    #[test]
+    fn gji_io_attach_artifact_is_distinguished_from_real_io() {
+        // 未接続(0)は判定しない。
+        assert!(!gji_io_is_attach_artifact(500, 0));
+        // 接続時刻以前の値(接続時の初回読み)は実 I/O ではない。
+        assert!(gji_io_is_attach_artifact(1000, 1000));
+        assert!(gji_io_is_attach_artifact(990, 1000));
+        // 接続後に更新された値は実 I/O。
+        assert!(!gji_io_is_attach_artifact(1001, 1000));
+    }
 
     /// IME OFF/フォーカス変更で保留の SHOW/HIDE latch が捨てられ、次の drain で前セッションの
     /// `StartComposition` が配られない(ADR-213 P2b の CI で `StartComposition while engine off`)。
