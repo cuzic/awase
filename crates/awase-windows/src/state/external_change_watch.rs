@@ -73,6 +73,12 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
         });
     }
 
+    /// 開いている窓の基準値(ログ用)。窓が無い・基準値が無いなら `None`。
+    #[must_use]
+    pub fn baseline(&self) -> Option<bool> {
+        self.armed.and_then(|a| a.baseline)
+    }
+
     /// 窓が生きているか（消費しない）。スコープが変わった・窓が切れたなら破棄して `false`。
     pub fn live(&mut self, scope: S, now_ms: u64, window_ms: u64) -> bool {
         self.remaining_ms(scope, now_ms, window_ms).is_some()

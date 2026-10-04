@@ -421,6 +421,11 @@ impl ImeStateHub {
         );
     }
 
+    /// 監視窓の基準値(ログ用。ADR-227 の give-up 契機で、追随が起きなかった理由を区別する)。
+    pub(crate) fn external_change_baseline(&self) -> Option<bool> {
+        self.external_change_watch.baseline()
+    }
+
     /// 監視窓の残り時間(ms)。無い・切れた・フォアグラウンドが変わったなら`None`（`reschedule_ime_refresh`の読み直し予約用）。
     pub(crate) fn external_change_watch_remaining_ms(&mut self, now_ms: u64) -> Option<u64> {
         self.external_change_watch.remaining_ms(

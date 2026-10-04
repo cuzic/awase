@@ -133,6 +133,61 @@ pub struct LiteralDetectRecord {
     pub romaji: Option<String>,
 }
 
+/// give-up の証拠(ADR-227): 外部から実 IME が閉じられたと疑う根拠。runtime が読み直し(`follow_external_change`)の
+/// きっかけにするだけで、閉の観測としては書かない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GiveUpEvidence {
+    pub cold_seq: u64,
+    /// 一連の literal 疑いの**最初の VK 送信時**の `Output::ime_mode_focus_gen`。取り出し時の世代と一致しなければ捨てる。
+    pub focus_gen: u32,
+}
+
+/// `LiteralDetectRecord` の列から give-up の証拠を判定する純粋な状態機械(ADR-227)。
+///
+/// 最後の `CompositionConfirmed` 以降に `SuspectedLiteral` が 2 回以上あり、`StaleConfirm` が 1 度も無く、
+/// 最新の記録が give-up(`gave_up`)のときだけ証拠を返す。`consecutive` は StaleConfirm でも増えるので使わない
+/// (ADR-200 決定1 の否定的証拠と同じ数え方)。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct GiveUpTracker {
+    suspected: u32,
+    stale: bool,
+    focus_gen: Option<u32>,
+}
+
+impl GiveUpTracker {
+    /// VK を送ったとき(`LiteralDetectTraceItem::VkSent` の取り込み時)に呼ぶ。最初の送信時の世代だけ覚える。
+    pub fn note_vk_sent(&mut self, focus_gen: u32) {
+        self.focus_gen.get_or_insert(focus_gen);
+    }
+
+    /// verdict の記録を 1 件取り込む。条件を満たす give-up なら証拠を返し、内部状態を空に戻す。
+    pub fn note_record(&mut self, record: &LiteralDetectRecord) -> Option<GiveUpEvidence> {
+        match record.facts.verdict {
+            LiteralVerdict::CompositionConfirmed => {
+                *self = Self::default();
+                None
+            }
+            LiteralVerdict::StaleConfirm => {
+                self.stale = true;
+                None
+            }
+            LiteralVerdict::SuspectedLiteral => {
+                self.suspected += 1;
+                if !(record.gave_up && self.suspected >= 2 && !self.stale) {
+                    return None;
+                }
+                let focus_gen = self.focus_gen?;
+                *self = Self::default();
+                Some(GiveUpEvidence {
+                    cold_seq: record.cold_seq.value(),
+                    focus_gen,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum LiteralDetectTraceItem {
     VkSent {
@@ -147,3 +202,77 @@ pub enum LiteralDetectTraceItem {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct LiteralDetectTrace(pub(crate) Vec<LiteralDetectTraceItem>);
+
+#[cfg(test)]
+mod giveup_tracker_tests {
+    use super::*;
+
+    fn rec(verdict: LiteralVerdict, gave_up: bool) -> LiteralDetectRecord {
+        LiteralDetectRecord {
+            cold_seq: Generation::new(7),
+            facts: LiteralDetectFacts {
+                verdict,
+                route: DetectRoute::CheckNow,
+                path: DetectPath::PerVk,
+                target: DetectTarget::Tsf,
+                vk: Some(0x4B),
+                idx: 0,
+                last_idx: 0,
+                evidence: DetectEvidence::default(),
+            },
+            consecutive_before: u32::from(gave_up),
+            gave_up,
+            backs: 1,
+            escape_composition: false,
+            session_marked: false,
+            romaji: Some("ka".into()),
+        }
+    }
+
+    #[test]
+    fn two_suspected_literals_ending_in_give_up_yield_evidence_with_first_send_focus_gen() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(5);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
+        t.note_vk_sent(6); // 世代が変わっても最初の送信時の世代を使う
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
+            Some(GiveUpEvidence { cold_seq: 7, focus_gen: 5 })
+        );
+        // 証拠を返したら空に戻る
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+    }
+
+    #[test]
+    fn a_single_suspected_literal_is_not_enough() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(1);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+    }
+
+    #[test]
+    fn stale_confirm_in_the_chain_blocks_evidence() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(1);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::StaleConfirm, false)), None);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+    }
+
+    #[test]
+    fn composition_confirmed_resets_the_chain() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(1);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::CompositionConfirmed, false)), None);
+        t.note_vk_sent(1);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+    }
+
+    #[test]
+    fn without_a_recorded_send_there_is_no_focus_gen_so_no_evidence() {
+        let mut t = GiveUpTracker::default();
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+    }
+}

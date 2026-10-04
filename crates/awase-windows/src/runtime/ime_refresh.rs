@@ -278,6 +278,46 @@ impl Runtime {
         }
     }
 
+    /// ADR-227(BUG-074): `RawTsfLiteralRecovery` の give-up(否定的証拠 2 回以上・すべて SuspectedLiteral)を、
+    /// 「外部から実 IME が閉じられたかもしれない」という**読み直しのきっかけ**にする。give-up を閉の観測として
+    /// 書かない(推論しない)。監視窓(ADR-205)を開いて prefetch 済みの読みを照合し、基準値(直近の読み)から
+    /// 閉へ変わっていれば `follow_external_change` が追随する(意図を捨て desired を揃える。IME は書かない)。
+    /// 条件: GJI × Imm32Unavailable、プローブ開始時と同じ focus 世代、明示意図が ON のまま。
+    pub(crate) fn ir_follow_after_literal_giveup(
+        &mut self,
+        evidence: crate::tsf::literal_facts::GiveUpEvidence,
+    ) {
+        if !self.external_change_watch_applies() {
+            return;
+        }
+        let gen_now = self.platform.output.ime_mode_focus_gen.get();
+        if gen_now != evidence.focus_gen {
+            tracing::debug!(
+                "[giveup-follow] focus 世代が変わったので捨てる cold={} gen_at_probe={} gen_now={gen_now}",
+                evidence.cold_seq,
+                evidence.focus_gen
+            );
+            return;
+        }
+        let intent = self.platform_state.ime.explicit_intent();
+        if intent != Some(true) {
+            tracing::debug!(
+                "[giveup-follow] 明示意図が ON でないので何もしない cold={} explicit_intent={intent:?}",
+                evidence.cold_seq
+            );
+            return;
+        }
+        self.platform_state
+            .ime
+            .arm_external_change_watch(crate::hook::current_tick_ms());
+        tracing::info!(
+            "[giveup-follow] give-up を契機に読み直しを開始 cold={} baseline={:?}",
+            evidence.cold_seq,
+            self.platform_state.ime.external_change_baseline()
+        );
+        self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
+    }
+
     // ── Stage 4: Engine 通知と次回スケジュール ──
     //
     // Phase 4: Engine に RefreshState（active 遷移検知）
