@@ -2,6 +2,7 @@
 """chrome_probe --offrca の `OFFRCA {json}` 行を集計する(既定は判定せず、観測の表を出す。rc: 試行0件=3、それ以外 0)。
 
 `--expect-closed`(ADR-221、常設の回帰): 全セルで前提が成立した試行(made)の全てで、**実打鍵が ASCII になる(typed_closed)**ことを要求する。
+`race<N>` セルは OFF 前に打った文字(text_post)が ASCII 化していないこと、`--or-then` のある試行は続く ON でかなに戻ること(then.open)も要求する。
 API の読み戻し(api_closed)は参考値で判定に使わない(修正自身が IMC(OFF) を書くので証拠にならず、GJI のように
 API だけ閉で打鍵はかなのままという既知の失敗を見逃す)。made が 0 のセルがあれば INVALID(3)、打鍵が閉でない試行があれば FAIL(1)。
 
@@ -10,6 +11,7 @@ API だけ閉で打鍵はかなのままという既知の失敗を見逃す)。
 閉じなかった試行の ladder(別手段)の成否を、先頭試行(n=0)とそれ以降に分けて出す。
 """
 import json
+import re
 import sys
 
 
@@ -109,11 +111,25 @@ def main():
     if expect_closed:
         invalid = [c for c, v in res.items() if v["all"]["made"] == 0]
         bad = [c for c, v in res.items() if v["all"]["made"] > 0 and v["all"]["typed_closed"] != v["all"]["made"]]
+        # race<N>(打鍵の直後の OFF): OFF 前に打った文字が ASCII(`ka` 等)に化けていないこと(text_post)。
+        race_bad = [
+            c for c, ts in cells.items()
+            if ":race" in c
+            if any(re.search(r"[A-Za-z]", str(t.get("text_post") or "")) for t in ts if t.get("prep_ok") and t.get("api_pre") is True)
+        ]
+        # --or-then がある試行は、続く ON でかな入力に戻ること(半角英数 conv=16 に取り残されない)。
+        then_bad = [
+            c for c, ts in cells.items()
+            if any(t.get("then") and t["then"].get("open") is not True for t in ts if t.get("prep_ok") and t.get("api_pre") is True)
+        ]
         if invalid:
             print(f"OFFRCA_VERDICT: INVALID(前提が成立した試行が 0 のセル: {invalid})")
             return 3
         if bad:
             print(f"OFFRCA_VERDICT: FAIL(打鍵が ASCII にならなかった試行があるセル: {bad})")
+            return 1
+        if race_bad or then_bad:
+            print(f"OFFRCA_VERDICT: FAIL(race で OFF 前の文字が ASCII 化: {race_bad} / 続く ON でかなに戻らない: {then_bad})")
             return 1
         print(f"OFFRCA_VERDICT: PASS(全 {len(res)} セルで made 全試行の打鍵が ASCII になった)")
     return 0

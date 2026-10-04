@@ -2964,7 +2964,7 @@ fn sync_romaji_write_goes_through_a_captured_target() {
             vec![("src/ime_controller.rs".to_string(), expected)],
             "`{needle}` の本番呼び出し元は `ime_controller.rs` の \
              `romaji_pre_write`（と、`capture_blocking` のみ ADR-221 の \
-             `msime_close_followup_imc`）に固定されています（ADR-089 Phase C item 12）。\
+             `followup_after_vk`）に固定されています（ADR-089 Phase C item 12）。\
              実際: {sites:?}"
         );
     }

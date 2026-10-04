@@ -1178,6 +1178,7 @@ fn run_offrca(
             // 準備: IME を開く。
             let prep_tag = prep.split('~').next().unwrap_or(prep);
             let events_before = p.shared.lock().unwrap().events.len();
+            let mut race_api_pre: Option<bool> = None;
             let prep_ok = match prep_tag {
                 "typed_nc" | "typed_enter" | "typed_esc" => {
                     // composition を残したまま(clear しない)。enter/esc はその後に確定/取消してから page を空にする。
@@ -1204,6 +1205,19 @@ fn run_offrca(
                     sleep(w);
                     ok
                 }
+                // ADR-221 の順序検証: `race<N>` = IME を開いた状態で `k`,`a` を打ち、**待ち・probe・ページ読みを挟まず**
+                // `a` の KeyUp の N ms 後に OFF を出す(OFF 前に打った文字が `ka`(ASCII)に化けないかを `text_post` で見る)。
+                t if t.starts_with("race") => {
+                    let ok = ensure(p, Setup::Kana, awase);
+                    race_api_pre = or_api();
+                    let _ = p.command("clear", "cleared");
+                    let w: u64 = t["race".len()..].parse().unwrap_or(0);
+                    p.press(0x4B, false, 30);
+                    sleep(30);
+                    p.press(0x41, false, 10);
+                    sleep(w);
+                    ok
+                }
                 "notype" => {
                     p.press(0x16, false, 40);
                     sleep(1000);
@@ -1216,9 +1230,17 @@ fn run_offrca(
                 }
                 _ => ensure(p, Setup::Kana, awase),
             };
-            sleep(500);
-            let api_pre = or_api();
-            let conv_pre = ime_control(0x0001, 0);
+            // race<N> は OFF までの間に何も挟まない(api_pre は打鍵の前に読んだ値)。
+            let is_race = prep_tag.starts_with("race");
+            if !is_race {
+                sleep(500);
+            }
+            let api_pre = if is_race { race_api_pre } else { or_api() };
+            let conv_pre = if is_race {
+                None
+            } else {
+                ime_control(0x0001, 0)
+            };
             let ev_idx = p.shared.lock().unwrap().events.len();
             let utc = utc_stamp();
             let t_act = Instant::now();

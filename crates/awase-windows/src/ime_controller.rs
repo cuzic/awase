@@ -388,8 +388,12 @@ fn followup_after_vk(
         // VK を送らない機構はここへ来ない。
         WriteMechanism::ImmCross => return,
     };
-    if post_vk_followup(key_mechanism, ImeOperation::from_open(open), explicit_press)
-        != PostVkFollowup::CloseViaImc
+    if post_vk_followup(
+        key_mechanism,
+        ImeOperation::from_open(open),
+        explicit_press,
+        key_sequence_policy::imm_cross_applicable(view.focus.profile),
+    ) != PostVkFollowup::CloseViaImc
     {
         return;
     }
@@ -840,6 +844,7 @@ pub fn characterize_post_vk_followup(
     active_gji: bool,
     open: bool,
     explicit_press: bool,
+    imm_cross_in_chain: bool,
 ) -> &'static str {
     use crate::state::key_sequence_policy::{
         post_vk_followup, ImeOperation, KeyMechanism, PostVkFollowup,
@@ -849,7 +854,12 @@ pub fn characterize_post_vk_followup(
     } else {
         KeyMechanism::MsImeDirect
     };
-    match post_vk_followup(mechanism, ImeOperation::from_open(open), explicit_press) {
+    match post_vk_followup(
+        mechanism,
+        ImeOperation::from_open(open),
+        explicit_press,
+        imm_cross_in_chain,
+    ) {
         PostVkFollowup::None => "-",
         PostVkFollowup::CloseViaImc => "IMC_SETOPENSTATUS(0)",
     }

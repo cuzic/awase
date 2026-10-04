@@ -160,7 +160,13 @@ pub(crate) const fn post_vk_followup(
     mechanism: KeyMechanism,
     op: ImeOperation,
     explicit_press: bool,
+    imm_cross_in_chain: bool,
 ) -> PostVkFollowup {
+    // chain が ImmCross を既に試していた（Standard の fallback）なら、たった今失敗した IMC をメインスレッドで
+    // 同期に再送しない（効く見込みが低く、ブロックだけが増える。SendHealth ゲートもこの 1 回は抜ける）。
+    if imm_cross_in_chain {
+        return PostVkFollowup::None;
+    }
     // 明示キー押下に由来しない起案（drift correction・リピート）では、composition を取り消す補完を発行しない
     // （利用者が何も押していないのに打っている途中の未確定文字を消さない）。
     if !explicit_press {
@@ -235,30 +241,36 @@ mod tests {
         assert!(!ms_ime_direct_applicable(ImeKindId::Gji));
     }
 
-    /// ADR-221: MS-IME の OFF だけが VK の後に IMC(OFF) を足す。GJI（IMC が効かない）・ON 方向・明示押下でない起案は足さない。
+    /// ADR-221: MS-IME の OFF だけが VK の後に IMC(OFF) を足す。GJI（IMC が効かない）・ON 方向・明示押下でない起案・
+    /// ImmCross を含む chain（Standard の fallback）は足さない。
     #[test]
     fn post_vk_followup_only_for_explicit_ms_ime_close() {
         use ImeOperation::{Close, Open};
         use KeyMechanism::{GjiDirect, MsImeDirect};
         assert_eq!(
-            post_vk_followup(MsImeDirect, Close, true),
+            post_vk_followup(MsImeDirect, Close, true, false),
             PostVkFollowup::CloseViaImc
         );
         assert_eq!(
-            post_vk_followup(MsImeDirect, Open, true),
+            post_vk_followup(MsImeDirect, Open, true, false),
             PostVkFollowup::None
         );
         assert_eq!(
-            post_vk_followup(GjiDirect, Close, true),
+            post_vk_followup(GjiDirect, Close, true, false),
             PostVkFollowup::None
         );
         assert_eq!(
-            post_vk_followup(GjiDirect, Open, true),
+            post_vk_followup(GjiDirect, Open, true, false),
             PostVkFollowup::None
         );
         // drift correction 等（press 無し）は MS-IME の OFF でも足さない。
         assert_eq!(
-            post_vk_followup(MsImeDirect, Close, false),
+            post_vk_followup(MsImeDirect, Close, false, false),
+            PostVkFollowup::None
+        );
+        // Standard（ImmCross を先に試した fallback）は足さない。
+        assert_eq!(
+            post_vk_followup(MsImeDirect, Close, true, true),
             PostVkFollowup::None
         );
     }

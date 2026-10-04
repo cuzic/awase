@@ -483,9 +483,10 @@ jobs:
             # checkargs=--expect-closed で made 全試行の実打鍵が ASCII になることを要求(API の読み戻しは判定に使わない)。GJI は対照(IMC 補完を含めない=従来どおり VK のみで閉じる)。
             cfg('sc-offrca-fix-msime-awase', 'pass', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
                 chrome="--offrca=ctrl1d:typed_nc,ctrl1d:typed,ctrl1d:notype --or-then=ctrl1c --settle=800 --msime"),
-            # 直前の打鍵とのあいだの順序(IMC は SendMessage で入力キューを追い越しうる): 打鍵の確認の 0/10/20ms 後に OFF。`か` が ASCII `ka` に化ける新症状が出ないか(出れば typed_closed が崩れる)。
+            # 直前の打鍵とのあいだの順序(IMC は SendMessage で入力キューを追い越しうる): race<N> = 打鍵(k,a)の KeyUp の N ms 後に、待ち・probe を挟まず OFF。
+            # 判定は text_post(OFF 直後のページの文字)に ASCII が無いこと(`か` が `ka` に化けない)。ensure の settle・共通 sleep は race では飛ばす(chrome_probe.rs)。
             cfg('sc-offrca-fix-msime-race', 'pass', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
-                chrome="--offrca=ctrl1d:typed_w0,ctrl1d:typed_w10,ctrl1d:typed_w20 --settle=800 --msime"),
+                chrome="--offrca=ctrl1d:race0,ctrl1d:race10,ctrl1d:race20 --settle=800 --msime"),
             cfg('sc-offrca-fix-gji-awase', 'pass', check='offrca', ime='gji', keymap=1, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
                 chrome="--offrca=ctrl1d:typed_nc,ctrl1d:notype --settle=800"),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
