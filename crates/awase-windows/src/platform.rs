@@ -83,6 +83,15 @@ impl WindowsPlatform {
     }
 
     pub(crate) fn drain_journal_entries(&mut self) -> Vec<crate::journal::JournalEnvelope> {
+        // `win32::send_input_safe` が溜めた「awase が実際に送ったキー」を journal へ移す。
+        // 発行時刻は各 entry の `issue_us` に残る（seq/elapsed_ms は移した時刻で採番される）。
+        for batch in crate::win32::drain_sent_input_trace() {
+            self.push_journal_entry(crate::journal::JournalEntry::SentInput {
+                issue_us: batch.issue_us,
+                accepted: batch.accepted,
+                events: batch.events.into_iter().map(Into::into).collect(),
+            });
+        }
         std::mem::take(&mut self.pending_journal_entries)
     }
 

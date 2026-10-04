@@ -21,7 +21,9 @@ impl LaneKind {
     pub const fn capacity(self) -> usize {
         match self {
             Self::State | Self::Timing => 2048,
-            Self::Actuation => 1024,
+            // `SentInput`（awase が送ったキー、打鍵とほぼ同頻度）が同居するため、旧 1024 から広げた。
+            // 打鍵 8,192 件/最大頻度 10 分 ≒ 4,750 件に、他の actuation 系 ≒ 1,400 件を足した値。
+            Self::Actuation => 6144,
             Self::KeyInput => 8192,
         }
     }

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_KEYBOARD, KEYEVENTF_UNICODE,
+    SendInput, INPUT, INPUT_KEYBOARD, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, PostMessageW, GUITHREADINFO,
@@ -256,6 +256,68 @@ pub(crate) fn last_actuation_issue_us() -> u64 {
     LAST_ACTUATION_ISSUE_US.load(Ordering::Relaxed)
 }
 
+/// `send_input_safe` が送った 1 キーボードイベントの記録（不具合報告用、journal の
+/// `SentInput` へ変換される）。`INPUT` の生値のうち、送信内容の再構成に要るものだけを持つ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SentKeyEvent {
+    /// `wVk`。Unicode 送信（`KEYEVENTF_UNICODE`）では 0。
+    pub vk: u16,
+    /// `wScan`。Unicode 送信では UTF-16 code unit そのもの。
+    pub scan: u16,
+    pub up: bool,
+    pub unicode: bool,
+    /// `dwExtraInfo`（自己注入マーカー。どの送信経路かの識別に使う）。
+    pub marker: usize,
+}
+
+/// `send_input_safe` 1 回ぶん（= `SendInput` 1 回）の記録。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentInputBatch {
+    /// 発行直前の `hook::now_timestamp_us()`（KeyInput の `timestamp_us` と同じ系）。
+    pub issue_us: u64,
+    /// `SendInput` の戻り値（OS が受理したイベント数。`events.len()` より小さければ一部が捨てられた）。
+    pub accepted: u32,
+    pub events: Vec<SentKeyEvent>,
+}
+
+/// 未 drain の送信記録の上限。drain されない経路（ワーカースレッド等）で無限に溜めないため。
+const SENT_INPUT_TRACE_CAP: usize = 512;
+
+std::thread_local! {
+    /// 直近の `send_input_safe` の送信内容。キーボードフックと同じメインスレッドで積み、
+    /// `WindowsPlatform::drain_journal_entries` が journal の `SentInput` へ移す。
+    ///
+    /// 不具合報告で「awase が実際に何を送ったか」を追えなかった（LINE で「いまは」が
+    /// 「いいい」になった報告 01M43NK5P13Q7EQP7CS0N3X4ED。journal の `KeyInput` は物理入力のみで、
+    /// 送信側は IME 操作キー用の `[shadow-send]`〈debug ログ〉しか無かった）ための恒久診断。
+    static SENT_INPUT_TRACE: std::cell::RefCell<Vec<SentInputBatch>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 溜まった送信記録を全件取り出す。
+pub(crate) fn drain_sent_input_trace() -> Vec<SentInputBatch> {
+    SENT_INPUT_TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
+}
+
+fn sent_key_events(inputs: &[INPUT]) -> Vec<SentKeyEvent> {
+    inputs
+        .iter()
+        .filter(|input| input.r#type == INPUT_KEYBOARD)
+        .map(|input| {
+            // SAFETY: r#type == INPUT_KEYBOARD を確認済みなので Anonymous.ki は
+            //         このユニオンの有効なアクティブフィールドである。
+            let ki = unsafe { input.Anonymous.ki };
+            SentKeyEvent {
+                vk: ki.wVk.0,
+                scan: ki.wScan,
+                up: ki.dwFlags.contains(KEYEVENTF_KEYUP),
+                unicode: ki.dwFlags.contains(KEYEVENTF_UNICODE),
+                marker: ki.dwExtraInfo,
+            }
+        })
+        .collect()
+}
+
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
 ///
 /// BUG-34 横展開 Step0-a: このクレートの全 `SendInput` 呼び出しは本関数を
@@ -292,9 +354,25 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
         crate::shadow_send_trace::record_send_input(kind, &vks, issue_us);
     }
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
+    let issue_us = crate::hook::now_timestamp_us();
     // SAFETY: inputs スライスは呼び出し中有効であり、size は sizeof::<INPUT>() の正確な値。
     //         SendInput はスライスの範囲外を読まない。
-    unsafe { SendInput(inputs, size) }
+    let accepted = unsafe { SendInput(inputs, size) };
+    let events = sent_key_events(inputs);
+    if !events.is_empty() {
+        SENT_INPUT_TRACE.with(|trace| {
+            let mut trace = trace.borrow_mut();
+            if trace.len() >= SENT_INPUT_TRACE_CAP {
+                trace.remove(0);
+            }
+            trace.push(SentInputBatch {
+                issue_us,
+                accepted,
+                events,
+            });
+        });
+    }
+    accepted
 }
 
 /// `&str` を NUL 終端 UTF-16 `Vec<u16>` に変換する。

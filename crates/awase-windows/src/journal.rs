@@ -194,6 +194,42 @@ pub enum DeferredRecoveryOutcomeSummary {
     Flushed { vk_count: usize },
 }
 
+/// [`JournalEntry::SentInput`] の 1 イベント。`win32::SentKeyEvent` の書き出し用の形で、
+/// 1 報告に数千件載るため、既定値のフィールドは出さずに JSON を小さく保つ。
+#[derive(Debug, Serialize)]
+pub struct SentKeyEventSummary {
+    /// `wVk`。Unicode 送信では 0。
+    pub vk: u16,
+    /// `wScan`（Unicode 送信では UTF-16 code unit）。
+    pub scan: u16,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub up: bool,
+    /// Unicode 送信（`KEYEVENTF_UNICODE`）。`ch` はその code unit が単独の文字なら入る。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unicode: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ch: Option<char>,
+    /// `dwExtraInfo`（自己注入マーカー）。
+    pub marker: usize,
+}
+
+impl From<crate::win32::SentKeyEvent> for SentKeyEventSummary {
+    fn from(e: crate::win32::SentKeyEvent) -> Self {
+        Self {
+            vk: e.vk,
+            scan: e.scan,
+            up: e.up,
+            unicode: e.unicode,
+            ch: if e.unicode {
+                char::from_u32(u32::from(e.scan))
+            } else {
+                None
+            },
+            marker: e.marker,
+        }
+    }
+}
+
 /// ジャーナルに記録するイベントの種別
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
@@ -274,6 +310,19 @@ pub enum JournalEntry {
     /// 実機コーパスを抽出できるようにする。本variantの本番配線は163-T1b以降で行う。
     ActuationDecision {
         record: crate::state::actuation_decision_record::ActuationDecisionRecord,
+    },
+    /// awase 自身が `SendInput` で送ったキーボードイベント（`win32::send_input_safe` 1 回ぶん）。
+    ///
+    /// `KeyInput` は物理入力だけ（自己注入はフックで素通しされ記録されない）で、awase が
+    /// 実際に何を送ったか（romaji の VK 列・Unicode 文字・`SendInput` の受理件数）は
+    /// 従来 journal に無く、「入力と違う文字が出た」報告で原因を切り分けられなかった
+    /// （LINE で「いまは」→「いいい」、report 01M43NK5P13Q7EQP7CS0N3X4ED）。
+    /// `issue_us` は発行時刻（`KeyInput.timestamp_us` と同じ系）で、journal へ移す時刻とは別。
+    /// 入力文字が分かる内容なので、ダンプ時は `LiteralDetect` と同じく直近 10 分に絞る。
+    SentInput {
+        issue_us: u64,
+        accepted: u32,
+        events: Vec<SentKeyEventSummary>,
     },
     /// ADR-132 Phase 1: Blind GiveUp 到達時に、次段の設計判断に必要な観測・
     /// 送信・意図・環境情報だけを構造化して残す。
@@ -622,6 +671,7 @@ impl JournalEntry {
             | Self::DeferredRecoveryFlush { .. }
             | Self::GjiReinitRetryCompleted { .. } => LaneKind::Timing,
             Self::ImeActuation { .. }
+            | Self::SentInput { .. }
             | Self::ActuationDecision { .. }
             | Self::PressWriteClaim { .. }
             | Self::DriftGiveUpDiagnostic { .. }
@@ -823,6 +873,21 @@ impl JournalEntry {
                     policy = variant_name(record.policy),
                     action = variant_name(record.action),
                     "ime actuation"
+                );
+            }
+            Self::SentInput {
+                issue_us,
+                accepted,
+                events,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    issue_us,
+                    accepted,
+                    event_count = events.len(),
+                    "sent input"
                 );
             }
             Self::ActuationDecision { record } => {
@@ -1442,10 +1507,11 @@ impl UnifiedJournal {
                     now_ms,
                     crate::journal_policy::REPORT_KEY_INPUT_WINDOW_MS,
                 ),
+                // `SentInput` は送ったキーそのもの（入力文字が分かる）なので同じ窓に絞る。
                 // `LiteralDetect` の `romaji` は送信予定だった romaji そのもので、`trace` には vk 列が
                 // 入る（入力文字が分かる）。KeyInput と同じ窓にしないと、所有者が許容した直近 10 分より
                 // 前の入力文字が断片的に送られる（Opus round3 M-E5）。
-                JournalEntry::LiteralDetect { .. } => {
+                JournalEntry::LiteralDetect { .. } | JournalEntry::SentInput { .. } => {
                     crate::journal_policy::key_input_in_report_window(
                         envelope.elapsed_ms,
                         0,
@@ -1952,5 +2018,52 @@ mod tests {
         assert!(json.contains("SelfActuated"));
         assert!(json.contains("drift_correction_blind"));
         assert!(json.contains("\"action\": \"Send\""));
+    }
+
+    #[test]
+    fn sent_input_entry_serializes_romaji_vks_and_unicode_chars() {
+        use crate::win32::SentKeyEvent;
+
+        let ev = |vk, scan, up, unicode| SentKeyEvent {
+            vk,
+            scan,
+            up,
+            unicode,
+            marker: 0x5350_494B,
+        };
+        let (mut j, _mock) = mock_journal();
+        j.record(JournalEntry::SentInput {
+            issue_us: 123,
+            accepted: 3,
+            events: vec![
+                // romaji の VK 送信（'I' の down/up）と、Unicode 送信（'い'）。
+                ev(0x49, 0x17, false, false),
+                ev(0x49, 0x17, true, false),
+                ev(0, 0x3044, false, true),
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        });
+        let json = j.to_json().unwrap();
+        assert!(json.contains("SentInput"));
+        assert!(json.contains("\"accepted\": 3"));
+        // Unicode 送信は文字そのものが読める（「いいい」のような出力の突き合わせ用）。
+        assert!(json.contains("\"ch\": \"い\""));
+        // 既定値（up=false/unicode=false/ch=None）は出さず JSON を小さく保つ。
+        let down = SentKeyEventSummary::from(ev(0x49, 0x17, false, false));
+        let down_json = serde_json::to_string(&down).unwrap();
+        assert!(!down_json.contains("up") && !down_json.contains("unicode"));
+        assert!(!down_json.contains("ch"));
+    }
+
+    #[test]
+    fn sent_input_lives_in_actuation_lane() {
+        let entry = JournalEntry::SentInput {
+            issue_us: 0,
+            accepted: 0,
+            events: Vec::new(),
+        };
+        assert_eq!(entry.lane_kind(), LaneKind::Actuation);
     }
 }
