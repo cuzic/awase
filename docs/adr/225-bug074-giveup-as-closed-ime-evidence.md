@@ -8,7 +8,7 @@ summary: |-
   r2 レビュー(Must 2・Should 4)で、give-up 後は連続カウントが戻らず以後の打鍵が全部消える見込み(コード確認済み、実測は D0-3)と判明し、「失われるのは 1 文字」を前提にした比較を改めた。
   決定案: D0 で偽陽性率と give-up 後の挙動(BS を打たない案Kとの比較を含む)を測る。方向は 再オープン/案K(BS を打たず痕跡を残す)/通知/追随/受容 から、ADR-205 との整合として所有者が決める。起草者の推奨は D0 後に案K を第一候補、必要なら通知を併用。
 status: |-
-  起草 r3(2026-10-04)。Opus r1(Blocker 2・Must 7・Should 6)・r2(Must 2・Should 4)を反映し、r3 で収束(Blocker・Must なし)。実装なし。D0 の測定と所有者の方向決定が先。
+  起草 r3(2026-10-04)+D0 の結果追記(同日)。Opus r1(Blocker 2・Must 7・Should 6)・r2(Must 2・Should 4)を反映し、r3 で収束(Blocker・Must なし)。実装なし。D0 の測定と所有者の方向決定が先。
 related_adr:
   - "ADR-080"
   - "ADR-100"
@@ -37,6 +37,22 @@ related_adr:
 - 元の報告の状況(明示意図なし)で閉の観測を足すと、NICOLA が OFF になり再オープンもされず、フォーカス変更かモードキーまで固着する(実 IME は ON のまま、以後の打鍵が化ける)。
 - TsfNative は refresh tick が止まっており(`runtime/mod.rs:1120-1126`)、BUG-51 同様に記録と同時に `schedule_ime_refresh(20)` が要る。新ソースを `Actuating` にすると授権が下りず送信されない(`open_warrant.rs:180-208`)。
 - 「literal だから閉」は否定的証拠からの逆向き推論で、`GjiIoInference` の一方向方針に反する。`consecutive` は StaleConfirm でも増える(ADR-200)。
+
+## D0 の結果(2026-10-04、run 37212511286、ブランチ `ci/adr225-d0`、GJI×tsf〈自前 RichEdit〉、各 10 試行)
+
+| 構成 | 内容 | 結果 |
+| --- | --- | --- |
+| close-follow | 外部クローズ → かな単打 1 回 + 追加 3 回(150ms 間隔)=4 打 | **10/10 で give-up(各 2 回、`count=2,3`)**。画面は確定前・後とも `kaka`(期待 `かかかか`)。実 IME は最後まで閉(`open_after=False`)。明示意図は 10/10 で `Some(true)`、StaleConfirm は 0 |
+| close-follow-k | 同じ構成を、give-up で BS を打たない awase で | 10/10 で give-up。画面は `kkakka`(BS を打たないぶんローマ字の断片が残る)。実 IME は閉のまま |
+| noclose-idle | 外部クローズなし・25 秒 idle 後にフォーカスを外して戻し cold で 4 打 | **give-up 0/10**。画面は 10/10 で `かかかか`(期待どおり)。明示意図 `Some(true)` |
+
+読み取れること(RichEdit×GJI の範囲):
+
+- **D0-3**: r2 の見込み「以後の打鍵が全部消える」は**外れ**。2 回目以降の打鍵は生ローマ字(`ka`)として画面に出る(4 打で `kaka`)。消えるのは各 give-up の BS で消される分で、IME は閉じたまま・誰も開け直さない。ユーザーには「半分ローマ字、半分欠落」に見える。
+- **D0-1**: 外部クローズなしの cold(25 秒 idle+フォーカス移動)では give-up が **0/10**。偽陽性率は RichEdit では 0/10 だが、Windows Terminal・Chrome は未測定(代表性なし。案3 の採用条件は満たせない)。
+- **D0-2**: 明示意図は全試行 `Some(true)`、StaleConfirm は 0(この構成では否定的証拠は SuspectedLiteral 由来)。実機 journal に `explicit_intent` が載っているかは未確認。
+- **案K**: 痕跡は残るが `kkakka` のように汚れる。実 IME が閉じていることには気づけるが、見た目は良くならない。
+- **未測定**: D0-4(`VK_IME_ON` 単独の破壊性)、Windows Terminal・Chrome。
 
 ## 決定案
 
