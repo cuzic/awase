@@ -986,7 +986,7 @@ impl JournalEntry {
                     elapsed_ms,
                     cold_seq,
                     outcome = *outcome,
-                    baseline = ?baseline,
+                    baseline,
                     "give-up follow"
                 );
             }
