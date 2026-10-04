@@ -144,13 +144,13 @@ pub struct GiveUpEvidence {
 
 /// `LiteralDetectRecord` の列から give-up の証拠を判定する純粋な状態機械(ADR-227)。
 ///
-/// 最後の `CompositionConfirmed` 以降に `SuspectedLiteral` が 2 回以上あり、`StaleConfirm` が 1 度も無く、
-/// 最新の記録が give-up(`gave_up`)のときだけ証拠を返す。`consecutive` は StaleConfirm でも増えるので使わない
-/// (ADR-200 決定1 の否定的証拠と同じ数え方)。
+/// **途切れずに続いた** `SuspectedLiteral` が 2 回以上あり、最新の記録が give-up(`gave_up`)のときだけ証拠を返す。
+/// `CompositionConfirmed` と `StaleConfirm` はどちらも連鎖を切る(リセットする)。StaleConfirm を「以後ずっと拒否」の
+/// ラッチにすると、無関係な過去の StaleConfirm(CI の setup で出た)が以後の連鎖をすべて拒否した(ADR-227 の検証で判明)。
+/// `consecutive` は StaleConfirm でも増えるので使わない(ADR-200 決定1 の否定的証拠と同じ数え方)。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GiveUpTracker {
     suspected: u32,
-    stale: bool,
     focus_gen: Option<u32>,
 }
 
@@ -163,17 +163,13 @@ impl GiveUpTracker {
     /// verdict の記録を 1 件取り込む。条件を満たす give-up なら証拠を返し、内部状態を空に戻す。
     pub fn note_record(&mut self, record: &LiteralDetectRecord) -> Option<GiveUpEvidence> {
         match record.facts.verdict {
-            LiteralVerdict::CompositionConfirmed => {
+            LiteralVerdict::CompositionConfirmed | LiteralVerdict::StaleConfirm => {
                 *self = Self::default();
-                None
-            }
-            LiteralVerdict::StaleConfirm => {
-                self.stale = true;
                 None
             }
             LiteralVerdict::SuspectedLiteral => {
                 self.suspected += 1;
-                if !(record.gave_up && self.suspected >= 2 && !self.stale) {
+                if !(record.gave_up && self.suspected >= 2) {
                     return None;
                 }
                 let focus_gen = self.focus_gen?;
@@ -250,13 +246,29 @@ mod giveup_tracker_tests {
         assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
     }
 
+    /// 連鎖の途中に StaleConfirm が入ったら連鎖は切れる(ADR-200 の高速打鍵の誤検出型)。
     #[test]
-    fn stale_confirm_in_the_chain_blocks_evidence() {
+    fn stale_confirm_in_the_middle_of_the_chain_blocks_evidence() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(1);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::StaleConfirm, false)), None);
+        t.note_vk_sent(1);
+        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+    }
+
+    /// 連鎖が始まる前の(無関係な)StaleConfirm は以後をラッチしない(CI の setup で出た StaleConfirm が全試行を拒否した)。
+    #[test]
+    fn stale_confirm_before_the_chain_does_not_latch() {
         let mut t = GiveUpTracker::default();
         t.note_vk_sent(1);
         assert_eq!(t.note_record(&rec(LiteralVerdict::StaleConfirm, false)), None);
+        t.note_vk_sent(2);
         assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
+            Some(GiveUpEvidence { cold_seq: 7, focus_gen: 2 })
+        );
     }
 
     #[test]
