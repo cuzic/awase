@@ -150,7 +150,7 @@
 | [BUG-146](BUG-146.md) | 解決済み(コード確認のみ) | 半角英数（ObservedEisu）検出時にawaseがopen軸へfalseを書く（IMEはONのままなのにbelief/intentだけOFF扱い、起票のみ・未修正） |
 | [BUG-147](BUG-147.md) | 要確認 | awase起動中、まれに物理キー1押下がGJI(ATOKプリセット)に届かない（awase側ログは正常な通過→再注入。クリーンな条件では再現せず、原因未確定、ADR-186） |
 | [BUG-148](BUG-148.md) | 解決済み(CI検証済み・実機未確認) | awase起動時に既にフォーカスがあるアプリでは、プロセス切替まで明示IME意図が記録されず、FSM委譲のSetOpenが全てUnwarrantedでキーが飲み込まれる |
-| [BUG-149](BUG-149.md) | 要確認 | Chrome(TsfNative)で、ひらがなキー/Shift+無変換によるかな→半角英数のあと、EngineがOFFにならず英数なのにNICOLAが動き続ける（3/3再現、awase停止の対照は正常、原因は一部のみ特定、未修正、ADR-186） |
+| [BUG-149](BUG-149.md) | 未修正(CI で再現、2026-10-04) | Chrome(TsfNative)で、ひらがなキー/Shift+無変換によるかな→半角英数のあと、EngineがOFFにならず英数なのにNICOLAが動き続ける（3/3再現、awase停止の対照は正常、原因は一部のみ特定、未修正、ADR-186） |
 | [BUG-150](BUG-150.md) | 解決済み(CI検証済み・実機未確認) | ATOKプリセットで無変換/変換をパススルーする設定(既定)では、実IMEはGJIが開閉するのにEngineが追随しない（IME OFFでもEngine ONのまま） |
 | [BUG-151](BUG-151.md) | 解決済み(CI検証済み・実機未確認) | cold(awaseがまだIMEを書き込んでいない)状態で、ひらがなキーによるかな→半角英数の後にEngineがOFFにならないことがある(20ms再読み取りがSkipTyping) |
 | [BUG-152](BUG-152.md) | 解決済み(実機確認済み) | Microsoft IME本体で、最初のImmCross set-openがタイムアウトすると非冪等なVK_KANJIトグルが開いたIMEを閉じ、Engine ON + IME OFFになる |
@@ -172,7 +172,7 @@
 | [BUG-168](BUG-168.md) | 解決済み(CI検証済み・実機未確認) | Chrome+GJI で StaleConfirm 2連続 → reinit(IME OFF→ON)が入力中の未確定文字を全消失させる(修正済み・CI確認済み・実機未確認) |
 | [BUG-169](BUG-169.md) | 未修正(現行コードに残存を確認) | 設定GUIの n-gram ファイル欄を空にして保存しても、次の読み込みで既定のファイルに戻る(既存の制約・未修正) |
 | [BUG-170](BUG-170.md) | 解決済み(実機確認済み) | Unwarranted 経路で GjiFsm への同期が届かず OffCold に固着、毎打鍵 per-VK→StaleConfirm→ESC で未確定文字が消える(GJI+Edge/Meet。修正済み・実機検証済み(2026-09-30)・残作業あり) |
-| [BUG-171](BUG-171.md) | 未修正(現行コードに残存を確認) | per-VK confirm の StaleConfirm(escape=true)が途中の語で既存の未確定文字まで ESC で消す(未修正) |
+| [BUG-171](BUG-171.md) | 未修正(経路は CI で通る・文字の消失は未再現、2026-10-04) | per-VK confirm の StaleConfirm(escape=true)が途中の語で既存の未確定文字まで ESC で消す(未修正) |
 | [BUG-172](BUG-172.md) | 一部解決(GJI × 実 Chrome は解決済み・CI検証済み、MS-IME 側は修正せず) | MS-IME+TsfNative で IME が閉じていても、msime-ready ゲートが conv の NATIVE を「ON確認」と扱い生ローマ字が入る(CI観測、実機未確認) |
 | [BUG-173](BUG-173.md) | 解決済み(コード確認のみ・実機未確認) | GJI + TSFネイティブで物理ひらがなキー(0xF2)が常にSuppressされ、カタカナ固着から戻れない（ADR-100でwarmupがVK_IME_ON化し代替F2再送の契約が崩れていた） |
 | [BUG-174](BUG-174.md) | 機構撤去済み(原因かどうかは実機未確定) | Ctrl↑のたびに awase 自身が `VK_IME_ON` を注入していた(CtrlUp warmup)。「@」報告の被疑箇所として撤去(原因かは実機未確認) |
