@@ -177,6 +177,43 @@ describe("schema_version 4 (gzip logs, ADR-222)", () => {
   });
 });
 
+describe("CPU cost of the largest accepted report (ADR-222 deploy check)", () => {
+  // Workers Free プランの CPU 時間は 1 リクエスト 10ms。ADR-095 は「無料枠でカード登録なし」を
+  // 前提に Cloudflare を選んでおり、このアカウントは Free の可能性が高い（API ではプランを
+  // 確認できなかった）。本体上限 2MiB いっぱいの報告で、I/O を除く CPU 側の処理
+  // （本文の復号・JSON 解析・検証・R2 保存用の直列化）がどれだけかかるかを、CI のログに出す。
+  // Node の V8 は workerd と同じエンジンだが、ハード・JIT の状態は違うので目安であり、
+  // 本番の実測（`wrangler tail` の cpuTime、docs の手順）が正。落ちるのは極端に遅いときだけ。
+  it("reports the validation cost for a body near MAX_BODY_BYTES", () => {
+    const perField = Math.floor((MAX_BODY_BYTES - 300 * 1024) / 2 / 4) * 4;
+    const body = JSON.stringify({
+      ...validPayloadV4,
+      log_excerpt_gz: "H4sI" + "A".repeat(perField - 4),
+      app_log_excerpt_gz: "H4sI" + "B".repeat(perField - 4)
+    });
+    expect(body.length).toBeLessThanOrEqual(MAX_BODY_BYTES);
+    expect(body.length).toBeGreaterThan(MAX_BODY_BYTES - 400 * 1024);
+
+    const bytes = new TextEncoder().encode(body);
+    const runs: number[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const start = performance.now();
+      const text = new TextDecoder().decode(bytes);
+      const payload = parseAndValidatePayload(text);
+      JSON.stringify({ report_id: "x", received_at: "y", payload }, null, 2);
+      runs.push(performance.now() - start);
+    }
+    const [first] = runs;
+    const warm = Math.min(...runs.slice(1));
+    console.log(
+      `[cpu] body=${(body.length / 1024).toFixed(0)}KiB ` +
+        `first-run=${first?.toFixed(1)}ms warm-min=${warm.toFixed(1)}ms ` +
+        `(Workers Free の CPU 上限は 10ms/リクエスト)`
+    );
+    expect(first).toBeLessThan(500);
+  });
+});
+
 describe("payload validation", () => {
   it("accepts the documented payload shape", () => {
     expect(parseAndValidatePayload(JSON.stringify(validPayload))).toEqual(validPayload);
