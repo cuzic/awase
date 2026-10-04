@@ -281,14 +281,14 @@ mod giveup_tracker_tests {
     }
 
     #[test]
-    fn two_suspected_literals_ending_in_give_up_yield_evidence_with_first_send_focus_gen() {
+    fn two_suspected_literals_ending_in_give_up_yield_evidence_with_the_send_focus_gen() {
         let mut t = GiveUpTracker::default();
         t.note_vk_sent(5);
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
             None
         );
-        t.note_vk_sent(6); // 世代が変わっても最初の送信時の世代を使う
+        t.note_vk_sent(5); // 再送(同じ窓)
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
             Some(GiveUpEvidence {
