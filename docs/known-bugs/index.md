@@ -183,6 +183,7 @@
 | [BUG-179](BUG-179.md) | CI の MS-IME 構成で awase 起動後に起動した Chrome へ IME 操作なしで k,a を打つと kiu になる |
 | [BUG-182](BUG-182.md) | panic_reset が非 Imm32 窓（Chrome/Edge・TsfNative）で実 IME を開かない（ADR-213 P2c の ActivationSync 撤去による回帰） |
 | [BUG-180](BUG-180.md) | 候補窓 SHOW/HIDE の保留 latch が IME OFF・フォーカス変更で捨てられず、次の drain で前セッションの StartComposition が配られる |
+| [BUG-181](BUG-181.md) | `hook.rs`の`physical_key_state`がVK単位のため、Down=0xF2/Up=0xF0の物理ひらがなキーの2回目以降の押下が押下IDを失う |
 | [BUG-183](BUG-183.md) | 入力言語のホットキー経由でロシア語へ切り替えると、awase が日本語入力のまま残る(Alt+Shift・Win+Space では即座に非活性になる) |
 | [BUG-184](BUG-184.md) | MS-IME で物理 英数 キー(IME OFF)を Suppress して ImmCross で閉じる際、未確定文字を確定せず、消える疑い |
 | [BUG-185](BUG-185.md) | MS-IME × Chrome で、入力中の文字が残っている間の OFF が IME を閉じず半角英数になる(対応しない既知の制限) |

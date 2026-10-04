@@ -36,6 +36,8 @@ impl Runtime {
     #[expect(clippy::cognitive_complexity)]
     #[expect(clippy::too_many_lines)]
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
+        // ADR-223 段階 1: 取り込み時に読んだ入力言語を belief に反映する(ctx を組む前。同じ打鍵から通過になる)。
+        self.lang_check_apply(&event);
         self.enrich_ime_relevance(&mut event);
         self.enrich_key_role(&mut event);
         self.enrich_thumb_key_role(&event);

@@ -189,6 +189,11 @@ pub struct ImeRelevance {
     /// actuation を誘発しうる（読み取りと書き込みの時間的近接、実機A/Bで
     /// 「@」の独立した十分条件と確定済み、docs/known-bugs.md BUG-113参照）。
     pub is_ime_mode_key: bool,
+    /// 打鍵の取り込み時点で読んだ、フォーカス窓のスレッドの入力言語(日本語か)。`None` = 不明・読まなかった。
+    ///
+    /// プラットフォーム層が `handle_hook_key_event`(engine スレッドの取り込み口)で設定する。drain 再生でも、
+    /// 取り込み時点の値が運ばれる(ADR-129 と同じ原則)。Engine は参照しない([ADR-223](../docs/adr/223-input-language-change-detected-at-key-time.md))。
+    pub layout_japanese: Option<bool>,
 }
 
 // ── キーイベント ──
