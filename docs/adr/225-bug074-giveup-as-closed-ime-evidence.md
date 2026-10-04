@@ -6,9 +6,9 @@ summary: |-
   BUG-074: 外部から実 IME が閉じ belief が ON のままのとき、TsfNative×GJI の最初の打鍵は literal になり、回収も literal になって give-up し、文字が消える(CI 10/10)。
   r1 レビュー(Opus、Blocker 2・Must 7)で「give-up を Medium 観測にして drift correction に再オープンさせる」案は、明示意図があると belief が動かず、無いと drift が発火せず、元の報告(Windows Terminal・cold)では NICOLA を止めたまま戻らない、と判明し撤回した。
   r2 レビュー(Must 2・Should 4)で、give-up 後は連続カウントが戻らず以後の打鍵が全部消える見込み(コード確認済み、実測は D0-3)と判明し、「失われるのは 1 文字」を前提にした比較を改めた。
-  決定案: D0 で偽陽性率と give-up 後の挙動(BS を打たない案Kとの比較を含む)を測る。方向は 再オープン/案K(BS を打たず痕跡を残す)/通知/追随/受容 から、ADR-205 との整合として所有者が決める。起草者の推奨は D0 後に案K を第一候補、必要なら通知を併用。
+  決定: 所有者判断で追随(belief だけを実状態へ揃え IME には書かない)。D0 で偽陽性 0/30(RichEdit・実 Chrome・Windows Terminal)。Opus r4 で、追随が TsfNative の conv 推論で打ち消される恐れ(B1)・観測ソースの偽装・取り出し時点の遅れ等が判明し、設計を r5 に直した。
 status: |-
-  起草 r4(2026-10-04): 所有者判断=追随を受けて追随案の設計を追記。r3 までは Opus 収束済み、r4 は再レビュー待ち。D0 の結果は追記済み。Opus r1(Blocker 2・Must 7・Should 6)・r2(Must 2・Should 4)を反映し、r3 で収束(Blocker・Must なし)。実装なし。D0 の測定と所有者の方向決定が先。
+  起草 r5(2026-10-04): 所有者判断=追随。Opus r4(Blocker 1・Must 4・Should 6)を反映。Blocker B1(TsfNative で conv 推論が追随を打ち消す)は D0-5 の実測待ち。実装なし。Opus r1(Blocker 2・Must 7・Should 6)・r2(Must 2・Should 4)を反映し、r3 で収束(Blocker・Must なし)。実装なし。D0 の測定と所有者の方向決定が先。
 related_adr:
   - "ADR-080"
   - "ADR-100"
@@ -84,7 +84,7 @@ related_adr:
 | 3 追随 | 閉と判断したら Engine を OFF にそろえる(ADR-205 と同じ向き) | 方針が一貫 | D0-1 の偽陽性率がほぼ 0 でなければ不可。偽陽性は旧案と同じ害 |
 | 4 受容 | 記録のみ(known-bugs) | 変更なし | 外部クローズ後、打鍵が痕跡なく消える(全打鍵かは D0-3 待ち) |
 
-起草者の推奨: **D0(D0-3 に案Kの比較を含む)→ 案K を第一候補、必要なら案2 を併用**。案2 を出すなら N2(journal・フラグの分離)と、否定的証拠 2 回以上・配線・focus 世代照合が前提。D0 で偽陽性がほぼ 0 と示せ、かつ所有者が「外部クローズは打ち消してよい」と判断した場合に限り案1。案3 は偽陽性が測れてから。reinit の復活(C')・Unicode 直接送信(案J)は不採用(後者は偽陽性で二重出力)。
+**所有者の判断(2026-10-04)により案3(追随)を採る**。案K・案2・案1 は採らない(上の「所有者の判断」節と「追随案の設計」節)。reinit の復活(C')・Unicode 直接送信(案J)は不採用(後者は偽陽性で二重出力)。
 
 ### 案1・案2 に共通する事項(案K・案3・案4 は対象外)
 
@@ -106,29 +106,44 @@ related_adr:
 - D0-3 では、各打鍵の先頭 1 文字(`k` 等)だけが残る可能性があるので、残る文字列をそのまま記録する。
 - 既存テスト `raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark` の期待値更新と、`BUG-074.md` の更新を同じ PR で行う。
 
-## 追随案の設計(r4、所有者判断=追随、D0 の偽陽性 0/30 を受けて)
+## 追随案の設計(r5、Opus r4〈Blocker 1・Must 4・Should 6〉を反映)
 
-**D1(追随)**: give-up を「外部から実 IME が閉じられた」証拠として、**belief だけを実状態へ揃える**。IME には何も書かない・送信も増えない(ADR-205・ADR-212 と同じ向き)。再オープン案(旧 D1)・通知案は採らない。
+**D1(追随)**: give-up を「外部から実 IME が閉じられた」証拠として、**belief だけを実状態へ揃える**。IME には何も書かない・送信も増えない(ADR-205・ADR-212 と同じ向き)。再オープン案・通知案は採らない。
+
+### 前提となる未解決の Blocker(B1): TsfNative では追随が次の打鍵の conv 推論で打ち消されうる
+
+追随で `desired_open=false`・意図なし・`ObserverPoll` 相当(Medium)の状態にしても、Engine が OFF で awase が何も出力しない間に次の KeyDown で `should_run_idle_conv_check`(`src/engine/idle_check.rs:33-63`。Engine の状態を見ず TsfNative かだけが条件)が走り、閉じた IME の conv に **NATIVE ビットが残っていれば** `classify_conv_transition`(`state/conv_classify.rs:139-144`)が `ConvOpenInference(true)`(Medium)を記録し、`most_recent_trusted`(同 confidence なら新しい方)で `effective_open=true` に戻る。明示意図は捨てているので二度と追随せず、元の症状が恒久化する。ADR-205 は対象が `Imm32Unavailable` で idle-conv-check が走らないので同型ではない。
+
+- **確認済みの前半**: D0 の close-follow のログで、外部クローズ後も `[cold-diag] pre-send conv=0x00000009 NATIVE=true`(閉じた IME の conv に NATIVE が残る)。ただしその窓(`--form=tsf`)は `profile=Imm32Unavailable`(`Chrome_RenderWidgetHostHWND`)で idle-conv-check が走らない。
+- **未確認の後半(D0-5、先に測る)**: 実 TsfNative(Windows Terminal、`profile=TsfNative`)で、追随後に 600ms 以上空けた打鍵・さらに 3.5 秒(3 秒の鮮度窓)空けた打鍵で belief が開に戻るか。追随の実装を実験ブランチに入れて測る(下記)。
+- **対策案(D0-5 の結果で選ぶ)**: (a) 追随の観測を `ConvOpenInference` に負けない形にする(BUG-26 との衝突を確認)、(b) 追随の後、次の明示操作かフォーカス変更まで `NativeToggleShadowOff` の推論を抑止する、(c) TsfNative を対象から外す(D0 で効く構成が無くなる)。
+
+### 設計(B1 が解けた前提で)
 
 1. **証拠の条件(すべて満たすときだけ)**:
    - give-up(`RawTsfLiteralRecovery` で `consecutive>=1`)であること。
-   - その probe の verdict の否定的証拠が `SuspectedLiteral`(StaleConfirm でない)であること(`LiteralDetectRecord.facts`。D0 では StaleConfirm 0)。
-   - **`explicit_intent()==Some(true)`**(awase が明示操作で ON にしたのに literal になる=矛盾)。明示意図が無いとき(フォーカス直後など)は何もしない(r1 B2: 元の報告の状況で NICOLA を止めたまま戻らなくなるため)。
-   - 入力先の開閉を読み戻せない構成(TsfNative/Imm32Unavailable。読める窓には既存の観測がある)。
-2. **動作**: `ImeStateHub::follow_literal_giveup(tick, accepted)`(新設、`follow_external_change` の「Changed(false)」以降と同じ書き込み): `write_observer_poll(false)` で `ObserverReported`(`BeliefOnly`)を記録 → 現在窓の `IntentStore` の明示意図を削除 → `pass_through_observed(align_desired=true, demote_applied=true)`。結果は `desired_open=false`・Engine OFF(物理キーは素通し=実 IME が閉じているときの本来の入力)。`UserImeSetIntent`・`HeuristicDefault` は流用しない。
-3. **配線**: give-up は output 層(`dispatch_probe_actions`→`platform.rs::consume_literal_detect_trace`)で確定し、belief(`ImeStateHub`)は runtime 側にある。platform が `GiveUpEvidence { cold_seq, focus_gen }` を 1 件だけ保持し、runtime が次の出力後処理(`drain_output_post_send_effects` 相当)で取り出して `follow_literal_giveup` を呼ぶ(output 層から `ImeStateHub` に触れない。r1 M6)。`AcceptedObservation` のフェンスは**プローブ開始時の focus 世代**(ADR-101 追補2)。世代が違えば捨てる。
-4. **戻り**: 利用者が IME キーで開け直せば通常の明示意図(`PhysicalImeKey`)で ON に戻る。外部から再び開かれた場合は、TsfNative には読み戻しが無いので、次のフォーカス変更かモードキーまで OFF のまま(限界として受容)。
-5. **give-up の BS は現状のまま**(案K にしない)。失われるのは give-up した最初の 1 回の文字だけで、以後は素通しの生ローマ字が出る(D0 の `kaka` から、先頭の欠落だけが残る形に変わる想定)。素通しのローマ字として再送する案(D3)は ADR-100 の却下理由(完了通知・focus 世代)がそのまま残るので、本 ADR の範囲外。
-6. **ADR-212 との関係**: actuation(IME への書き込み)は増やさない。belief の書き込み元が 1 つ増えるだけで、複雑性予算(未発効)の対象は「`ObservationSource` と `follow_*` 入口が各 1」。
+   - **最後の CompositionConfirmed 以降の否定的証拠が 2 回以上、すべて `SuspectedLiteral`**(StaleConfirm でない)。`consume_literal_detect_trace`/`note_literal_detect_record` は両方の記録を受け取るので 2 回分を数える(既存の `negative_evidence_count` を配線し直す。Opus r4 M4)。
+   - **取り出した時点で `explicit_intent()==Some(true)`**(give-up から取り出しまでに物理 IME キーが押されていれば条件不成立で何もしない。r4 S1)。
+   - 入力先の開閉を読み戻せない構成(TsfNative/Imm32Unavailable)。Chrome の close-follow は未測定なので、測るまでは **TsfNative に絞る**(r4 S6)。
+2. **観測の型(r4 M1)**: `write_observer_poll` の流用は観測ソースの偽装(`evidence.rs:218`「周期ポーリング専用」、`ObserverPoll` は `Actuating`)で、`open_warrant` Step 3 が偽の Actuating 観測から「閉」を導いてしまう。**専用の evidence 型 `Observed<LiteralGiveUp>`**(confidence Medium、`authority()=BeliefOnly`、構築子は `gave_up && SuspectedLiteral` の `LiteralDetectRecord` からしか作れない witness)を新設する。`PerSourceObservations`・journal シリアライズ・`architecture_guard` の件数ガードも更新する。
+3. **動作**: `ImeStateHub::follow_literal_giveup(tick, accepted)`: `LiteralGiveUp` を記録 → 現在窓の `IntentStore` の明示意図を削除 → `pass_through_observed(align_desired=true, demote_applied=true)`。`align_desired` は `derive_any` が `Some` のときだけ効く(`ime_model.rs:935`)ので、新鮮な Medium の開の観測と衝突している場合に `desired_open` が true のまま意図だけ消える挙動を単体テストで固定し、扱いを決める(r4 S4)。追随の直後に Engine へ `RefreshState` を明示的に出す(refresh tick の外なので。r4 S3)。
+4. **取り出し口(r4 M2)**: give-up の確定経路は `Output::step_probe`→`WindowsPlatform::advance_tsf_probe`(`consume_literal_detect_trace`)→ runtime の `TIMER_TSF_PROBE` ハンドラ(`runtime/message_handlers.rs:502-513`)の 1 本。**`advance_tsf_probe()` の直後**に `app.platform.take_giveup_evidence()`(`drain_journal_entries` と同じ位置・同じ型)を置き、give-up と同じ tick で追随する(`drain_output_post_send_effects` は送信の**後**にしか呼ばれず、2 打鍵目も Engine ON のまま処理されて消えるので使わない)。予約済みの BS と INPUT_DEFER の再生は後の `handle_wm_drain_output_queue`(`flush_raw_tsf_literal_recovery` の後)が行うので、保留していた打鍵は Engine OFF の状態で再生される。この順序を実装で固定する。
+5. **focus 世代(r4 S2)**: 出力層の `output.ime_mode_focus_gen`(u32)と belief の `FocusFence { epoch, hwnd }` は別系統。**プローブ開始時に `ime_mode_focus_gen` を捕獲**し、取り出し時に一致を確かめてから `AcceptedObservation::for_sync(app.focus_fence())` を作る(`for_sync` 自体は照合しない。誤った世代の観測は後から除外されない)。
+6. **利用者に見える入力(r4 M3、r4 の説明を訂正)**: 追随後は Engine が OFF で awase は何も送らないので、物理キーがそのまま通り、出るのは**生ローマ字ではなく物理キーの QWERTY 文字**(NICOLA 配列の「か」の位置のキーの英字)。IME が閉じていて awase が無いときと同じ出力で、方針としては正しい。失われるのは give-up した最初の 1 モーラ(BS は現状のまま残す=案K にしない)。**親指キー(無変換・変換)も IME へそのまま届く**。GJI の閉状態で変換キーが「IME を有効化」に割り当たる構成では、親指シフトを押しただけで IME が開き、`KeyEffectPredicted` が開を予測しないと Engine OFF のまま IME だけ ON になる(以後の打鍵が GJI のローマ字入力になる)。CI で追随後に親指キーを含む打鍵を確認する。
+7. **効く範囲(限界、r4 S1)**: 明示意図が残るのは shadow-toggle の意図への昇格(`key_pipeline.rs:1019-1034`)か awase のコマンドで開いた後に限る。ADR-191 の予測経路(`KeyEffectPredicted`)で IME を開いた利用者は意図が常に `None` なので、**この追随は効かず元の症状が残る**。実機 journal に `explicit_intent` が載るかは未確認。
+8. **戻り**: 利用者が IME キーで開け直せば通常の明示意図で ON に戻る。外部から再び開かれた場合は、TsfNative には読み戻しが無いので、次のフォーカス変更かモードキーまで OFF のまま(限界として受容)。
+9. **ADR-212 との関係**: actuation は増やさない。belief の書き込み元が 1 つ増えるだけ(新 `ObservationSource` と `follow_*` 入口が各 1)。
 
-**検証**:
-- 単体(`state/platform_state.rs`、Linux): 明示意図 ON+give-up 証拠 ⇒ `desired_open=false`・意図が消える・`applied` が未確認へ落ちる / 明示意図なし ⇒ 不変 / focus 世代違い ⇒ 破棄 / StaleConfirm 由来 ⇒ 不変。`tests/closed_loop_scenarios.rs` にも同じ 3 件。
-- CI: `cal-d0-gji-close-follow` を回帰ゲートに流用し、追随後の 2〜4 打目が NICOLA 変換されず生ローマ字(IME が閉じている実状態と一致)で出ることを `check_giveup_d0.py` に判定として足す。偽陽性ガードは `cal-d0-gji-noclose-idle`・`cal-d0-gji-chrome-noclose-idle`・`cal-d0-gji-wt-noclose-idle` を引き続き 0 件で通す。長い連続入力の偽陽性は `ts-chrome` 系(高速打鍵)に give-up 件数の列を足して見る(未測定の限界)。
+### 検証計画(r4 S6 を反映)
+
+- **D0-5(先に測る)**: 実験ブランチ(`ci/adr225-d0`)に追随を入れ、**Windows Terminal(`wt_probe`)で外部クローズ→1 打(give-up)→700ms→1 打→3.5 秒→1 打→Enter**。awase.log の `ConvOpenInference`/`NativeToggleShadowOff`・belief の戻りと、画面の文字を記録する。打鍵間隔は 150ms ではなく B1 を検出できる値にする。
+- 単体(`state/platform_state.rs`、Linux): 明示意図 ON+証拠 2 回 ⇒ `desired_open=false`・意図が消える・`applied` が未確認へ落ちる / 明示意図なし ⇒ 不変 / focus 世代違い ⇒ 破棄 / 否定的証拠 1 回・StaleConfirm 混在 ⇒ 不変 / 新鮮な開の観測と衝突 ⇒ 決めた扱い / 追随後に conv 推論が来ても開に戻らない(B1 の対策)。
+- CI: 追随後の期待値は**物理キーの文字**。親指キーを含む打鍵。IME キーで開け直す戻り(shadow-toggle の意図経路と予測経路の両方)。偽陽性ガードは `cal-d0-gji-noclose-idle`・`cal-d0-gji-chrome-noclose-idle`・`cal-d0-gji-wt-noclose-idle` を 0 件で通す。長い連続入力・高速打鍵(`ts-chrome` 系に give-up 件数の列を足す)は未測定。
 - 実機の確認(ユーザー環境、Chrome・Windows Terminal)は CI では置き換えられないので、修正済みとは書かない。
 
 ## 守る規約
 
-- 再発ファミリー(warmup/IME belief/actuation 合流点)。回帰テストは `tests/closed_loop_scenarios.rs` 等(Linux)で固定: ①明示意図 ON+記録 ⇒ drift `Some`、②明示意図なし ⇒ `None` かつ `effective_open` 不変、③`CompositionConfirmed` 後 ⇒ `None`(S5)。`docs/known-bugs/BUG-074.md` も同じ PR で更新。
+- 再発ファミリー(warmup/IME belief/actuation 合流点)。回帰テストは上の「検証計画」の単体・CI。`docs/known-bugs/BUG-074.md` も同じ PR で更新。
 - belief 書き込みは `ObserverReported` 経由のみ(`UserImeSetIntent`・`HeuristicDefault` の流用は禁止)。
 - 設計の前に測る(D0 が先)。実機 Chrome の同一性が確認できるまで「修正済み」とは書かない。
 
