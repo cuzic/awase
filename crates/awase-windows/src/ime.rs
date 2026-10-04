@@ -50,6 +50,19 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     unsafe { set_ime_open_for_target(hwnd, open) }
 }
 
+/// 捕獲済みの [`ActuationTarget`] に `IMC_SETOPENSTATUS(open)` を書く（ADR-221、MsImeDirect の OFF 補完用）。
+///
+/// # Safety
+/// Calls Win32 APIs. Must be called from the main thread.
+#[must_use]
+pub(crate) unsafe fn set_ime_open_for_actuation_target(
+    target: ActuationTarget,
+    open: bool,
+) -> bool {
+    // SAFETY: 呼び出し元の安全性要件をそのまま満たす。
+    unsafe { set_ime_open_for_target(target.hwnd, open) }
+}
+
 /// [`set_ime_open_cross_process`] のターゲット指定版。
 ///
 /// 呼び出し時点の `GetGUIThreadInfo` を問い合わせず、`hwnd` に対して直接

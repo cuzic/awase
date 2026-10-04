@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""chrome_probe --offrca の `OFFRCA {json}` 行を集計する(判定はせず、観測の表を出す。rc: 試行0件=3、それ以外 0)。
+"""chrome_probe --offrca の `OFFRCA {json}` 行を集計する(既定は判定せず、観測の表を出す。rc: 試行0件=3、それ以外 0)。
+
+`--expect-closed`(ADR-221、常設の回帰): 全セルで前提が成立した試行(made)の全てが API 上閉じることを要求する。
+made が 0 のセルがあれば INVALID(3)、閉じなかった試行があれば FAIL(1)。
 
 使い方: check_offrca.py [--json out.json] chrome_probe.log
 各セル(`action:prep`)について、閉じるまでの時間の分布(打鍵せずの API ポーリング)・打鍵結果との一致・
@@ -68,6 +71,9 @@ def _then(made):
 def main():
     args = [a for a in sys.argv[1:]]
     out = None
+    expect_closed = "--expect-closed" in args
+    if expect_closed:
+        args.remove("--expect-closed")
     if "--json" in args:
         k = args.index("--json")
         out = args[k + 1]
@@ -99,6 +105,16 @@ def main():
                 print(f"OFFRCA_SAMPLE: cell={cell} {label} n={t['n']} conv={t.get('conv_pre')}->{t.get('conv_end')} events={t.get('page_events')} text_post={t.get('text_post')!r} typed1={t.get('typed')} typed2={t.get('typed2')}/{t.get('typed2_text')!r}")
     if out:
         json.dump(res, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    if expect_closed:
+        invalid = [c for c, v in res.items() if v["all"]["made"] == 0]
+        bad = [c for c, v in res.items() if v["all"]["made"] > 0 and v["all"]["api_closed"] != v["all"]["made"]]
+        if invalid:
+            print(f"OFFRCA_VERDICT: INVALID(前提が成立した試行が 0 のセル: {invalid})")
+            return 3
+        if bad:
+            print(f"OFFRCA_VERDICT: FAIL(閉じなかった試行があるセル: {bad})")
+            return 1
+        print(f"OFFRCA_VERDICT: PASS(全 {len(res)} セルで made 全試行が閉じた)")
     return 0
 
 

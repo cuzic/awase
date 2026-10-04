@@ -227,6 +227,7 @@
 | [218](218-shared-helper-for-architecture-guard-call-site-pins.md) | architecture_guard の呼び出し元固定ガードの重複を共通ヘルパー1本で除く(宣言テーブルは見送り) | 提案(Opus round3 で収束、採用可) |
 | [219](219-engine-test-helpers-instead-of-scenario-dsl.md) | エンジンテストは既存ヘルパーの使い回しと純粋な対応表の撤去で読みやすくする(DSLは見送り) | 提案(Opus round3 で収束、採用可) |
 | [220](220-key-name-tables-keep-as-is-add-capture-table-test.md) | キー名表の単一ソース化は見送り、キャプチャ表の検証テスト1本だけ足す | 見送り。テスト1本実装済み。vk.rs内のvk_keys!統合とLEGACY撤去はPR #430(D1を一部上書き) |
+| [221](221-msime-off-adds-imc-second-step.md) | MS-IME の OFF は VK_IME_OFF の後に IMC_SETOPENSTATUS(0) を第2ステップとして補う | 採用(2026-10-04)。実装済み・実機未確認。ADR-208 例外(a)を撤回 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

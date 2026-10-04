@@ -971,11 +971,11 @@ fn tsf_global_set_openclose(v: i32) -> String {
     // SAFETY: このスレッド(STA)で COM を初期化して TSF の大域 compartment を読み書きするだけ。
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
-        let tm: ITfThreadMgr = match CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)
-        {
-            Ok(t) => t,
-            Err(e) => return format!("ThreadMgr作成失敗:{e}"),
-        };
+        let tm: ITfThreadMgr =
+            match CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) {
+                Ok(t) => t,
+                Err(e) => return format!("ThreadMgr作成失敗:{e}"),
+            };
         let cid = match tm.Activate() {
             Ok(c) => c,
             Err(e) => return format!("Activate失敗:{e}"),
@@ -988,9 +988,7 @@ fn tsf_global_set_openclose(v: i32) -> String {
                 .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)
                 .map_err(|e| format!("GetCompartment失敗:{e}"))?;
             let rd = |c: &windows::Win32::UI::TextServices::ITfCompartment| {
-                c.GetValue()
-                    .ok()
-                    .and_then(|x| i32::try_from(&x).ok())
+                c.GetValue().ok().and_then(|x| i32::try_from(&x).ok())
             };
             let before = rd(&c);
             c.SetValue(cid, &VARIANT::from(v))
@@ -1167,7 +1165,8 @@ fn run_offrca(
                     <= before
                 {
                     if start.elapsed() > Duration::from_secs(40) {
-                        p.log.line("OFFRCA_ABORT 再起動した Chrome のページが読み込まれない");
+                        p.log
+                            .line("OFFRCA_ABORT 再起動した Chrome のページが読み込まれない");
                         return;
                     }
                     sleep(100);
@@ -1242,7 +1241,10 @@ fn run_offrca(
             let api_after_probe = or_api();
             // 2回目の打鍵: 1回目で古い composition の確定(かの再出現)が混ざっても、ここは現在のモードだけを表す。
             let (got2, text2, _) = p.probe();
-            p.log.line(&format!("PROBE offrca 後2回目: {} text={text2:?}", got2.label()));
+            p.log.line(&format!(
+                "PROBE offrca 後2回目: {} text={text2:?}",
+                got2.label()
+            ));
             let typed_open = km_open_of(got);
             // OFF の次に ON を押して、かなが入力できるか(半角英数に取り残されないか)。
             let then_res = if let Some(t) = &then {
@@ -1250,7 +1252,10 @@ fn run_offrca(
                 let d = or_do(t);
                 sleep(settle_ms_or(args));
                 let (c3, text3, _) = p.probe();
-                p.log.line(&format!("PROBE offrca then={t}: {} text={text3:?}", c3.label()));
+                p.log.line(&format!(
+                    "PROBE offrca then={t}: {} text={text3:?}",
+                    c3.label()
+                ));
                 serde_json::json!({"then":t,"desc":d,"class":c3.label(),"open":km_open_of(c3),"text":text3,"api":or_api()})
             } else {
                 serde_json::Value::Null

@@ -140,6 +140,32 @@ pub(crate) const fn ime_key_for(mechanism: KeyMechanism, op: ImeOperation) -> Vk
     }
 }
 
+/// VK 送信の**直後**に同じ機構が続けて行う補完 write（ADR-221）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PostVkFollowup {
+    /// 補完なし（VK 1 発で完結する）。
+    None,
+    /// `IMC_SETOPENSTATUS(0)`（同期、タイムアウト付き）で閉じを確定させる。
+    CloseViaImc,
+}
+
+/// 冪等モードキーの送信後に補完 write を足すか（ADR-221、`docs/tasks/msime-chrome-off-rca-2026-10-04.md`）。
+///
+/// MS-IME は TSF の入力先に未確定 composition が残っている間の `VK_IME_OFF` を「閉じる」でなく
+/// conv 25→16（半角英数）に変えるだけで開いたままにする。`IMC_SETOPENSTATUS(0)` は composition が
+/// 有っても閉じる。GJI は IMC が効かない（API は閉になるが打鍵は `か` のまま）ので対象外。
+/// ON 方向は VK_IME_ON で足りる（composition が有っても開く）ので対象外。
+#[must_use]
+pub(crate) const fn post_vk_followup(mechanism: KeyMechanism, op: ImeOperation) -> PostVkFollowup {
+    match (mechanism, op) {
+        (KeyMechanism::MsImeDirect, ImeOperation::Close) => PostVkFollowup::CloseViaImc,
+        (KeyMechanism::MsImeDirect, ImeOperation::Open)
+        | (KeyMechanism::GjiDirect, ImeOperation::Open | ImeOperation::Close) => {
+            PostVkFollowup::None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +224,19 @@ mod tests {
         // profile には依存しない。ImmCross × MsIme のフォールバックでも使う。
         assert!(ms_ime_direct_applicable(ImeKindId::MsIme));
         assert!(!ms_ime_direct_applicable(ImeKindId::Gji));
+    }
+
+    /// ADR-221: MS-IME の OFF だけが VK の後に IMC(OFF) を足す。GJI（IMC が効かない）と ON 方向は足さない。
+    #[test]
+    fn post_vk_followup_only_for_ms_ime_close() {
+        use ImeOperation::{Close, Open};
+        use KeyMechanism::{GjiDirect, MsImeDirect};
+        assert_eq!(
+            post_vk_followup(MsImeDirect, Close),
+            PostVkFollowup::CloseViaImc
+        );
+        assert_eq!(post_vk_followup(MsImeDirect, Open), PostVkFollowup::None);
+        assert_eq!(post_vk_followup(GjiDirect, Close), PostVkFollowup::None);
+        assert_eq!(post_vk_followup(GjiDirect, Open), PostVkFollowup::None);
     }
 }

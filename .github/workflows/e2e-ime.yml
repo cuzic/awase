@@ -426,7 +426,7 @@ jobs:
             # abs=絶対キー(Ctrl+変換/Ctrl+無変換/単独タップ変換・無変換/0x16/0x1A、MS-IME は F2 も)を、実 IME を外から閉/開した後と ずれなしで押す(1押下で一致するか)。
             # tog=トグル(無変換の単独タップ=keys.ime_toggle、0xF3、0x19)を外から閉/開した後に押す(2押下以内で一致するか)。
             *[km(f'sc-keymatrix-{grp}-{win}-{ime_name}', win, ime_name, km_cells(grp, ime_name == 'msime'), grp,
-                 expect='observe' if (win == 'chrome' and ime_name == 'msime') else 'pass')
+                 expect='pass')
               for grp in ('abs', 'tog') for win in ('edit', 'tsf', 'chrome') for ime_name in ('gji', 'msime')],
             # E2(ADR-208 決定4): awase を再起動して belief・applied が未知の状態(fresh)で OFF 系を押す対照。同じ job の open/sync セルと失敗率を比べ、
             # 例外(MS-IME × 実 Chrome の OFF)なら新鮮でも同じ率で閉じない=ENV_EXCEPTION、新鮮だと閉じるなら内部状態による固着=STUCK(バグ)。
@@ -479,6 +479,12 @@ jobs:
             # 第5ラウンド: 「以前のバージョンの Microsoft IME を使う」互換モード(NoTsf3Override2=1、旧 IME)でも同じか(legacy_custom='true' がそのレジストリを立てる。keystyle=Custom の表も入る点は交絡)。
             cfg('sc-offrca-r5-legacy-noawase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='false', legacy_custom='true',
                 chrome="--offrca=1a:typed_nc,1a:notype,19:typed_nc,imc0:typed_nc,1a:typed_nc~b --or-then=16 --settle=800 --msime --no-awase"),
+            # ADR-221(常設の回帰): MS-IME × 実 Chrome で、未確定 composition を残したまま awase の OFF(Ctrl+無変換)を押しても実 IME が閉じる(MsImeDirect の OFF に IMC(OFF) を補う)。
+            # checkargs=--expect-closed で made 全試行が閉じることを要求。GJI は対照(IMC 補完を含めない=従来どおり VK のみで閉じる)。
+            cfg('sc-offrca-fix-msime-awase', 'pass', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
+                chrome="--offrca=ctrl1d:typed_nc,ctrl1d:typed,ctrl1d:notype --or-then=ctrl1c --settle=800 --msime"),
+            cfg('sc-offrca-fix-gji-awase', 'pass', check='offrca', ime='gji', keymap=1, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
+                chrome="--offrca=ctrl1d:typed_nc,ctrl1d:notype --settle=800"),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -1020,7 +1026,7 @@ jobs:
             $kmlog = if ('${{ matrix.cfg.chrome }}' -ne '') { 'dist\chrome_probe.log' } else { 'dist\typing_stress.log' }
             python tools\e2e\ime_key_matrix\check_keymatrix.py --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'offrca') {
-            python tools\e2e\ime_key_matrix\check_offrca.py --json offrca.json dist\chrome_probe.log | Tee-Object -FilePath result.txt
+            python tools\e2e\ime_key_matrix\check_offrca.py --json offrca.json ${{ matrix.cfg.checkargs }} dist\chrome_probe.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'startup') {
             python tools\e2e\ime_key_matrix\check_startup.py --json startup.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {

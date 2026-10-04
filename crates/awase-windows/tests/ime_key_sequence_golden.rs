@@ -31,7 +31,7 @@
 
 use std::path::PathBuf;
 
-use awase_windows::ime_controller::characterize_strategy;
+use awase_windows::ime_controller::{characterize_post_vk_followup, characterize_strategy};
 
 /// 戦略選択テーブルの走査対象。`(active_ime_kind ラベル, active_gji, profile)`。
 ///
@@ -56,6 +56,13 @@ const HEADER: &str = "\
 # ImeController の is_applicable のみを評価した実行結果（apply は未実行）。
 # dispatch: apply = 通常経路 / async_fallback = async IMM が Failed を返した後の経路。
 # 列: active_ime_kind <TAB> profile <TAB> dispatch <TAB> selected_strategy
+";
+
+const FOLLOWUP_HEADER: &str = "\
+# ── VK 送信後の補完 write (ADR-221) ───────────────────────────────
+# 冪等モードキー（GjiDirect / MsImeDirect）の VK 送信の直後に同じ機構が続けて行う write。
+# MS-IME の OFF だけが同期 IMC_SETOPENSTATUS(0) を補う。GJI は IMC が効かない（API は閉になるが打鍵は
+# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 補完（- = なし）
 ";
 
 const KEY_DOC: &str = "\
@@ -95,7 +102,9 @@ const KEY_DOC: &str = "\
 #         KATAKANA ビット立ちなら送信をスキップするガードが必要だった。このガードが
 #         「ユーザーの意図的なカタカナ」と「内部の誤ったカタカナ」を区別できず、一度
 #         カタカナに入ると永久に復旧できないデッドロックの直接の前提だった。BUG-50 参照）。
-#   OFF → VK_IME_OFF (0x1A) = ime::send_ime_mode_key(VK_IME_OFF)（DirectInput へ、冪等）→ Applied。
+#   OFF → VK_IME_OFF (0x1A) = ime::send_ime_mode_key(VK_IME_OFF)（DirectInput へ、冪等）→ 続けて同期 IMC_SETOPENSTATUS(0)
+#         （ADR-221。MS-IME は未確定 composition が残る間の VK_IME_OFF では閉じず conv 25→16 になるだけのため）→ Applied。
+#         IMC の失敗・SendHealth cooldown 中の見送りでも outcome は Applied のまま（VK は送信済み、補完は best effort）。
 #   OFF が VK_IME_OFF（冪等）である根拠: 48a667a。VK_DBE_ALPHANUMERIC は半角英数（IME-ON）に
 #   留まるため不可、VK_KANJI はトグルのため不可。
 #   （履歴: 9c3f11e→668a131 revert、be3b056 で一時 VK_KANJI、48a667a で VK_IME_OFF に確定、
@@ -129,6 +138,14 @@ fn build_report() -> String {
         for (dispatch, skip_imm) in [("apply", false), ("async_fallback", true)] {
             let selected = characterize_strategy(active_gji, profile, skip_imm);
             out.push_str(&format!("{active}\t{profile}\t{dispatch}\t{selected}\n"));
+        }
+    }
+    out.push('\n');
+    out.push_str(FOLLOWUP_HEADER);
+    for (active, active_gji) in [("GJI", true), ("MS-IME", false)] {
+        for (op, open) in [("ON", true), ("OFF", false)] {
+            let f = characterize_post_vk_followup(active_gji, open);
+            out.push_str(&format!("{active}\t{op}\t{f}\n"));
         }
     }
     out.push('\n');
@@ -170,6 +187,18 @@ fn ime_key_strategy_selection_matches_golden() {
          UPDATE_GOLDEN=1 cargo test --test ime_key_sequence_golden -p awase-windows \
          で再生成し、差分の根拠を確認すること。"
     );
+}
+
+/// ADR-221: MS-IME の OFF の送信列は IMC(OFF) を含み、GJI と ON 方向は含まない（ゴールデン破損時の一次診断用）。
+#[test]
+fn ms_ime_off_includes_imc_followup_and_gji_does_not() {
+    assert_eq!(
+        characterize_post_vk_followup(false, false),
+        "IMC_SETOPENSTATUS(0)"
+    );
+    assert_eq!(characterize_post_vk_followup(false, true), "-");
+    assert_eq!(characterize_post_vk_followup(true, false), "-");
+    assert_eq!(characterize_post_vk_followup(true, true), "-");
 }
 
 /// 選択ロジックの不変条件をスモークテストとして固定する（ゴールデン破損時の一次診断用）。

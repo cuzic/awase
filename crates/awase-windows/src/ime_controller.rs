@@ -295,6 +295,11 @@ pub(crate) fn apply_mechanism(
             }
             // SAFETY: 同上。
             if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                // ADR-221: MS-IME は未確定 composition が残る間の VK_IME_OFF では閉じない（conv が 25→16 に
+                // なるだけ）。同じ機構の第 2 ステップとして IMC(OFF) を補う。判断は純粋関数 `post_vk_followup`。
+                if !open {
+                    msime_close_followup_imc(view);
+                }
                 ImeOpenOutcome::Applied
             } else {
                 // Winキー押下中（デスクトップ切替等）で未送信。Applied 扱いにすると
@@ -353,6 +358,43 @@ pub(crate) fn apply_mechanism(
             ImeOpenOutcome::AlreadyMatched
         }
     }
+}
+
+/// ADR-221: `MsImeDirect` の OFF の VK 送信後に行う `IMC_SETOPENSTATUS(0)` 補完。
+///
+/// 同期・タイムアウト付き。宛先は `romaji_pre_write` と同じ `ActuationTarget::capture_blocking`
+/// （`GetGUIThreadInfo` 30ms + フォールバック）。ブロックの上限は `SendMessageTimeoutW` の 150ms で、
+/// `send_ime_control_raw` が `SendHealth` へ実測を流す。直近に slow 判定があれば（cooldown 中）発行せず、
+/// 補完前（VK のみ）の挙動へ degrade する（フック経路を詰まらせない）。
+/// 失敗しても outcome は変えない（VK は送信済みで、補完は best effort）。
+/// composition は取り消される（`text_post=''`、ADR-221 の影響範囲参照）。
+fn msime_close_followup_imc(view: &ImeControlView<'_>) {
+    use crate::state::key_sequence_policy::{
+        post_vk_followup, ImeOperation, KeyMechanism, PostVkFollowup,
+    };
+    if post_vk_followup(KeyMechanism::MsImeDirect, ImeOperation::Close)
+        != PostVkFollowup::CloseViaImc
+    {
+        return;
+    }
+    if !crate::send_health::blocking_allowed(crate::hook::current_tick_ms()) {
+        tracing::info!(
+            "[apply-ime] MS-IME direct: IMC(OFF) 補完を見送り（SendHealth cooldown 中）"
+        );
+        return;
+    }
+    // SAFETY: `romaji_pre_write` と同じ。呼び出しチェーンはメインスレッド（フックまたはメッセージループ）。
+    let Some(target) =
+        (unsafe { crate::ime::ActuationTarget::capture_blocking(view.focus.focus_gen) })
+    else {
+        tracing::debug!(
+            "[apply-ime] MS-IME direct: IMC(OFF) 補完: capture 失敗（フォーカス無し）→ スキップ"
+        );
+        return;
+    };
+    // SAFETY: 同上。
+    let ok = unsafe { crate::ime::set_ime_open_for_actuation_target(target, false) };
+    tracing::info!("[apply-ime] MS-IME direct: IMC_SETOPENSTATUS(0) 補完 ok={ok}");
 }
 
 /// IME ON の直前に ROMAN ビットを補完する同期 IMC write
@@ -769,6 +811,23 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
         ImeController::first_applicable_name_skipping_imm(&view)
     } else {
         ImeController::first_applicable_name(&view)
+    }
+}
+
+/// キャラクタライゼーション用: VK 送信後の補完 write 名（ADR-221）。`"-"` = 補完なし。
+#[must_use]
+pub fn characterize_post_vk_followup(active_gji: bool, open: bool) -> &'static str {
+    use crate::state::key_sequence_policy::{
+        post_vk_followup, ImeOperation, KeyMechanism, PostVkFollowup,
+    };
+    let mechanism = if active_gji {
+        KeyMechanism::GjiDirect
+    } else {
+        KeyMechanism::MsImeDirect
+    };
+    match post_vk_followup(mechanism, ImeOperation::from_open(open)) {
+        PostVkFollowup::None => "-",
+        PostVkFollowup::CloseViaImc => "IMC_SETOPENSTATUS(0)",
     }
 }
 

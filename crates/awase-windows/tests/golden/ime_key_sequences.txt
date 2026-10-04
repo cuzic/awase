@@ -20,6 +20,15 @@ MS-IME	Imm32Unavailable	async_fallback	MsImeDirect
 MS-IME	TsfNative	apply	MsImeDirect
 MS-IME	TsfNative	async_fallback	MsImeDirect
 
+# ── VK 送信後の補完 write (ADR-221) ───────────────────────────────
+# 冪等モードキー（GjiDirect / MsImeDirect）の VK 送信の直後に同じ機構が続けて行う write。
+# MS-IME の OFF だけが同期 IMC_SETOPENSTATUS(0) を補う。GJI は IMC が効かない（API は閉になるが打鍵は
+# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 補完（- = なし）
+GJI	ON	-
+GJI	OFF	-
+MS-IME	ON	-
+MS-IME	OFF	IMC_SETOPENSTATUS(0)
+
 # ── 戦略別 送信キー / outcome ──────────────────────────────────────
 # ソース: crates/awase-windows/src/ime_controller.rs（apply は Win32 副作用のため未実行）。
 # 各戦略が open=true / open=false で送るキーと ImeOpenOutcome。根拠コミットを注記する。
@@ -56,7 +65,9 @@ MS-IME	TsfNative	async_fallback	MsImeDirect
 #         KATAKANA ビット立ちなら送信をスキップするガードが必要だった。このガードが
 #         「ユーザーの意図的なカタカナ」と「内部の誤ったカタカナ」を区別できず、一度
 #         カタカナに入ると永久に復旧できないデッドロックの直接の前提だった。BUG-50 参照）。
-#   OFF → VK_IME_OFF (0x1A) = ime::send_ime_mode_key(VK_IME_OFF)（DirectInput へ、冪等）→ Applied。
+#   OFF → VK_IME_OFF (0x1A) = ime::send_ime_mode_key(VK_IME_OFF)（DirectInput へ、冪等）→ 続けて同期 IMC_SETOPENSTATUS(0)
+#         （ADR-221。MS-IME は未確定 composition が残る間の VK_IME_OFF では閉じず conv 25→16 になるだけのため）→ Applied。
+#         IMC の失敗・SendHealth cooldown 中の見送りでも outcome は Applied のまま（VK は送信済み、補完は best effort）。
 #   OFF が VK_IME_OFF（冪等）である根拠: 48a667a。VK_DBE_ALPHANUMERIC は半角英数（IME-ON）に
 #   留まるため不可、VK_KANJI はトグルのため不可。
 #   （履歴: 9c3f11e→668a131 revert、be3b056 で一時 VK_KANJI、48a667a で VK_IME_OFF に確定、

@@ -2950,11 +2950,20 @@ fn sync_romaji_write_goes_through_a_captured_target() {
             }
         }
         sites.sort();
+        // ADR-221: `capture_blocking` は `romaji_pre_write`（ROMAN 補完）に加えて、
+        // `msime_close_followup_imc`（MsImeDirect の OFF の IMC(OFF) 補完）が同じ捕獲規律
+        // （同期・`SendHealth` 連動）で 1 回呼ぶ。`set_ime_romaji_mode_for_target_blocking` は従来どおり 1 箇所。
+        let expected = if needle == "ActuationTarget::capture_blocking(" {
+            2
+        } else {
+            1
+        };
         assert_eq!(
             sites,
-            vec![("src/ime_controller.rs".to_string(), 1)],
+            vec![("src/ime_controller.rs".to_string(), expected)],
             "`{needle}` の本番呼び出し元は `ime_controller.rs` の \
-             `romaji_pre_write` 1 箇所だけに固定されています（ADR-089 Phase C item 12）。\
+             `romaji_pre_write`（と、`capture_blocking` のみ ADR-221 の \
+             `msime_close_followup_imc`）に固定されています（ADR-089 Phase C item 12）。\
              実際: {sites:?}"
         );
     }
