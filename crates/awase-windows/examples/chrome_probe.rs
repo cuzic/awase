@@ -513,8 +513,6 @@ enum AlnumBase {
     Kana,
     /// 半角英数(ひらがなキーで切り替えた IME ON の英数)。
     Alnum,
-    /// 全角英数(半角英数から全角キー 0xF4 で作る。作れなければ INVALID)。
-    FullAlnum,
 }
 
 enum AlnumWant {
@@ -544,7 +542,7 @@ const VK_B: u32 = 0x42;
 const VK_K: u32 = 0x4B;
 const VK_LSHIFT: u32 = 0xA0;
 
-const ALNUM_CASES: [AlnumCase; 9] = [
+const ALNUM_CASES: [AlnumCase; 7] = [
     AlnumCase {
         name: "直接入力: ab",
         base: AlnumBase::Off,
@@ -587,22 +585,6 @@ const ALNUM_CASES: [AlnumCase; 9] = [
         vks: &[VK_A, VK_B],
         shift_held: true,
         want: AlnumWant::Text("AB"),
-    },
-    AlnumCase {
-        name: "全角英数: ab",
-        base: AlnumBase::FullAlnum,
-        pre: &[],
-        vks: &[VK_A, VK_B],
-        shift_held: false,
-        want: AlnumWant::Text("ａｂ"),
-    },
-    AlnumCase {
-        name: "全角英数: Shift 押しながら AB",
-        base: AlnumBase::FullAlnum,
-        pre: &[],
-        vks: &[VK_A, VK_B],
-        shift_held: true,
-        want: AlnumWant::Text("ＡＢ"),
     },
     AlnumCase {
         name: "Shift 単独タップ→半角英数: ab",
@@ -2108,6 +2090,7 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--alnum") {
+        let msime = args.iter().any(|a| a == "--msime");
         let (mut pass, mut fail, mut invalid) = (0usize, 0usize, 0usize);
         for r in 1..=repeat {
             for (i, c) in ALNUM_CASES.iter().enumerate() {
@@ -2123,27 +2106,20 @@ fn main() {
                 }
                 let setup = match c.base {
                     AlnumBase::Off => Setup::Off,
-                    AlnumBase::Kana => Setup::Kana,
-                    AlnumBase::Alnum | AlnumBase::FullAlnum => Setup::Alnum,
+                    AlnumBase::Kana | AlnumBase::Alnum => Setup::Kana,
                 };
                 if !ensure(&mut p, setup, awase) {
                     p.log.line("RESULT INVALID: 前提状態にできなかった");
                     invalid += 1;
                     continue;
                 }
-                if matches!(c.base, AlnumBase::FullAlnum) {
-                    // 全角キー(0xF4)では全角英数にならなかった(CI)。変換モードを直接 全角・英数(FULLSHAPE=0x08、NATIVE なし)にする。
-                    let r = ime_control(0x0002, 0x08);
-                    p.log.line(&format!(
-                        "setup:IMC_SETCONVERSIONMODE(0x08)={r:?} 取得={:?}",
-                        ime_control(0x0001, 0)
-                    ));
+                if matches!(c.base, AlnumBase::Alnum) {
+                    // かな → 半角英数。GJI(ATOK プリセット)はひらがなキー(0xF2)、MS-IME は英数キー(0xF0)。
+                    p.press(if msime { 0xF0 } else { 0xF2 }, false, 60);
                     sleep(500);
-                    let (t, _) = p.type_and_snap(&[VK_A], false);
-                    p.log
-                        .line(&format!("PROBE setup:全角英数にできたか text={t:?}"));
-                    if t != "ａ" {
-                        p.log.line("RESULT INVALID: 全角英数にできなかった");
+                    let c = p.probe_logged("setup:半角英数にしたあと");
+                    if !matches!(c, Class::Plain | Class::NicolaLiteral) {
+                        p.log.line("RESULT INVALID: 半角英数にできなかった");
                         invalid += 1;
                         continue;
                     }

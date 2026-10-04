@@ -345,9 +345,9 @@ jobs:
               for suf, aw, na, gen in (('', 'true', '', ''), ('-noawase', 'false', ' --no-awase', ''),
                                        ('-passthru', 'true', '', 'muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false'))],
             # 英数入力の行列(2026-10-04、報告「無変換=左親指・Space=右親指・変換=IME 機能の人がブラウザで英数入力が不安定」の再現。観測のみ。only='sc-alnum-*' で回す。既定の sc-* には含めない)。
-            # 実 Chrome で 直接入力/IME ON+Shift/半角英数/全角英数/左Shift単独タップの持続半角英数 を `ab`/`AB`(Shift 押しながら)で打ち、出た文字を見る(chrome_probe --alnum)。
+            # 実 Chrome で 直接入力/IME ON+Shift(小指シフト面=全角英字が仕様)/半角英数/左Shift単独タップの持続半角英数 を `ab`/`AB`(Shift 押しながら)で打ち、出た文字を見る(chrome_probe --alnum)。
             # awase は 左親指=無変換・右親指=Space・keys.ime_* は既定のまま(報告者は IME 側で変換などを割り当て、awase では設定していない)。half_width_alnum_toggle=all で GJI でも持続トグルを許可。
-            # -noawase は対照(IME 単体の挙動)。全角英数は半角英数から全角キー(0xF4)で作れた場合だけ判定(作れなければ INVALID)。
+            # -noawase は対照(IME 単体の挙動。IME ON+Shift は半角 AB、Shift 単独タップは awase の機能なので対照では FAIL が正常)。
             *[cfg(f'sc-alnum-{imen}{suf}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=700, awase=aw,
                   general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"',
                   chrome=f'--alnum --repeat=2 --settle=800{ms}{na}')
