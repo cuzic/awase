@@ -94,3 +94,14 @@ MS-IME 系 `sc-*` 5 構成の `invariant_limits.json` の `i2_unwarranted` 上�
 E の中身: (E1)チェッカーが読む事実を `JournalEntry` に載せ、テキストを journal から派生させる(独立した `tracing::debug!` を減らす)。(E2)出力を JSONL にし、チェッカーは `json.loads` で読む。
 **これは oracle 共有(A)とは別の価値**(正規表現の脆さ、書式変更で黙って 0 件になる問題の解消)を狙う。閉ループが写していない層の問題は解決しない。
 採否の前に必要な測定: 書式変更による「黙って 0 件」の実例の数、移行量(約 20 ファイルの正規表現と `testdata/*.awase.log`)、ログ量の増加(ADR-222 のリング gzip との関係)。
+
+### E の小さな試行(2026-10-04、PR 化)
+
+構造化には進まず、「Rust 側のログ文言が変わってチェッカーが黙って 0 件になる」ことだけを塞ぐ検査を足した:
+`tools/e2e/ime_key_matrix/test_log_anchors_in_rust_source.py`(27 個の断片 × 読むチェッカーの表)。
+- 各断片が Rust ソース(`src/`・`crates/`)に存在すること、およびチェッカーがその断片をまだ読んでいること(表の腐敗防止)を検査する。
+- 実機不要・数秒。PR の `invariants-unit`(`e2e-ime-smoke.yml`、`crates/awase-windows/**` の変更で起動)で走る。
+- 検出力の確認: `tsf/output.rs` の `[raw-tsf-literal] flush escape=` を一時的に書き換えると FAIL する。
+- 限界: tracing の構造化フィールド名(`seq=`・`outcome=`・`source=`)、書式引数で組み立てられる部分、行が実際に出る経路(到達性)は見ない。
+- 表を作る過程で、断片の多くが書式引数・構造化フィールドで組み立てられており(`send_keys: mode={:?}`、journal.rs の message + fields)、
+  「ソースの文字列リテラルを grep する」方式が成り立つのは固定部分に限ると分かった。構造化(E1/E2)に進む前に、この検査で足りるかを様子見する。
