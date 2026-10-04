@@ -1,0 +1,95 @@
+name: adr223-stage1
+# ADR-223 段階 1 の測定(belief を更新する版): 打鍵時の入力言語の記録(`[lang-check:key]`)を、lang_switch_probe 側の真値(切替の時刻・各打鍵の時刻)と突き合わせる。
+# 合格条件(D2): 偽陽性 0(対照の打鍵で false を読まない)、切替後の最初の文字キーで false を読めた件数が N/N。観測のみ(終了コードは変えない)。
+# ci/adr223-stage1 への push で回る。
+on:
+  push:
+    branches: [ci/adr223-stage1]
+    paths:
+      - 'crates/awase-windows/**'
+      - 'tools/e2e/adr223/**'
+      - '.github/workflows/adr223-stage0.yml'
+  workflow_dispatch:
+
+jobs:
+  measure:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: adr223s1
+      - name: 入力言語に ja-JP(Microsoft IME)と ru-RU を追加する
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $list = Get-WinUserLanguageList
+          $list.Add("ja-JP")
+          $list.Add("ru-RU")
+          Set-WinUserLanguageList -LanguageList $list -Force
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 8
+      - name: awase とプローブをビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          cargo build -p awase-windows --example lang_switch_probe
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item target\debug\examples\lang_switch_probe.exe dist\
+          Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
+          # 初回のクロスプロセス IMM プローブが遅いと awase が窓を「IMM不可」と誤学習するので、学習済みキャッシュを投入する。
+          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"lang_switch_probe.exe`"]`r`nEdit = `"works`"`r`n")
+      - name: 測定
+        shell: pwsh
+        run: |
+          $env:RUST_LOG = 'debug'
+          $env:AWASE_TEST_INJECTION = '1'
+          Push-Location dist
+          Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+          Start-Sleep -Seconds 10
+          Start-Process -FilePath .\lang_switch_probe.exe -ArgumentList '--stage0 --trials=8 --methods=altshift,winspace,hk3,request,focus_key'
+          $deadline = (Get-Date).AddMinutes(30)
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 3
+            if ((Test-Path lang_switch_probe.log) -and (Select-String -Path lang_switch_probe.log -Pattern '\[ls\] (done|ABORT)' -Quiet)) { break }
+          }
+          # 窓の種類別(UWP・Chrome)。awase を起動したのと同じステップで回す(別ステップだと、ステップ終了時に awase が終了させられる)。
+          # コンソールは WM_INPUTLANGCHANGEREQUEST・Alt+Shift とも言語が切り替わらず(8/8 切替できず)、真値が取れないので対象にしない。
+          foreach ($t in 'uwp', 'chrome') {
+            $log = "ext_$t.log"
+            Start-Process -FilePath .\lang_switch_probe.exe -ArgumentList "--stage0-ext=$t --trials=8 --log=$log"
+            $deadline2 = (Get-Date).AddMinutes(8)
+            while ((Get-Date) -lt $deadline2) {
+              Start-Sleep -Seconds 3
+              if ((Test-Path $log) -and (Select-String -Path $log -Pattern '\[ls\] (done|ABORT)' -Quiet)) { break }
+            }
+            Get-Process lang_switch_probe, SystemSettings, chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+          }
+          Pop-Location
+      - name: 集計(summary)
+        if: always()
+        shell: pwsh
+        run: |
+          $env:PYTHONUTF8 = '1'
+          if ((Test-Path dist\lang_switch_probe.log) -and (Test-Path dist\awase.log)) {
+            python tools\e2e\adr223\summarize_stage0.py dist\lang_switch_probe.log dist\awase.log
+            python tools\e2e\adr223\summarize_ext.py dist\awase.log dist\ext_uwp.log dist\ext_chrome.log
+          } else { "ログが無い(probe=$(Test-Path dist\lang_switch_probe.log) awase=$(Test-Path dist\awase.log))" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-adr223-stage1
+          path: |
+            dist/lang_switch_probe.log
+            dist/ext_*.log
+            dist/awase.log
+            awase-stderr.log
