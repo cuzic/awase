@@ -169,7 +169,9 @@ mod p {
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(vk),
-                    wScan: 0,
+                    // 文字キー(A=0x1E)はスキャンコードを付ける(awase が Char キーとして NICOLA 変換するため。typing_stress と同じ)。
+                    // スキャンコード 0 だと `key_class=Passthrough` になり、日本語のままでも変換されない。
+                    wScan: if vk == 0x41 { 0x1E } else { 0 },
                     dwFlags: if up {
                         KEYEVENTF_KEYUP
                     } else {
