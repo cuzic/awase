@@ -14,14 +14,18 @@ impl LaneKind {
     ///
     /// 打鍵は最大頻度（実測 1 分最大 475 件、`awase.log.old` の `journal: key input`
     /// 行の件数）で 10 分ぶん（約 4,750 件）が溢れない 8,192 件にする。
-    /// 他レーンは、打鍵の多い時間帯に 10 分前後を保てるよう旧値の 2〜4 倍にする
+    /// 他レーンは、打鍵の多い時間帯に 10 分前後を保てるよう旧値の 2〜4 倍にする（Actuation は
+    /// `SentInput` が同居するため例外で 6 倍。KeyInput は Down/Up 両方を数え、`SentInput` は
+    /// `SendInput` 1 回ごとなので、最大頻度では余裕が小さい）
     /// （常用時の実測では 15.6 時間の稼働で追い出し件数が state 2,676 /
     /// timing 6,626 / actuation 2,200 で、頻度は打鍵の 1/2〜1/8 程度）。
     #[must_use]
     pub const fn capacity(self) -> usize {
         match self {
             Self::State | Self::Timing => 2048,
-            Self::Actuation => 1024,
+            // `SentInput`（awase が送ったキー、打鍵とほぼ同頻度）が同居するため、旧 1024 から広げた。
+            // 打鍵 8,192 件/最大頻度 10 分 ≒ 4,750 件に、他の actuation 系 ≒ 1,400 件を足した値。
+            Self::Actuation => 6144,
             Self::KeyInput => 8192,
         }
     }
