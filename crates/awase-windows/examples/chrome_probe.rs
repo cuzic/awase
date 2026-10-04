@@ -229,6 +229,7 @@ fn scan_for(vk: u32) -> u16 {
         0x4B => 0x25,               // K
         0x41 => 0x1E,               // A
         0x42 => 0x30,               // B
+        0x1B => 0x01,               // Esc
         0xA0 => 0x2A,               // LShift
         0xA2 => 0x1D,               // LCtrl
         0x0D => 0x1C,               // Enter
@@ -340,6 +341,9 @@ struct Probe {
     focus_lost: bool,
     /// true なら probe 後にページを空にしない(未確定の composition を残す。`--offrca` の `typed_nc` 用)。
     no_clear: bool,
+    /// true なら probe のあと Esc で未確定文字(MS-IME が残す `きう` など)を取り消してからページを空にする(`--alnum` 用)。
+    /// 空にするのはページの文字だけで IME の composition は残り、次の probe に `きうka` のように混ざって前提状態の判定が崩れる。
+    cancel_after: bool,
 }
 
 impl Probe {
@@ -379,6 +383,14 @@ impl Probe {
         None
     }
 
+    /// `cancel_after` のとき、Esc で未確定文字を取り消す。
+    fn cancel_composition(&mut self) {
+        if self.cancel_after {
+            self.press(0x1B, false, 30);
+            sleep(150);
+        }
+    }
+
     /// 任意のキー列を打って、ページに出た文字を返す(`--alnum` 用)。`shift_held` なら全体を通して左Shiftを押しっぱなしにする。
     fn type_and_snap(&mut self, vks: &[u32], shift_held: bool) -> (String, bool) {
         if shift_held {
@@ -402,6 +414,7 @@ impl Probe {
         if !focused {
             self.focus_lost = true;
         }
+        self.cancel_composition();
         let _ = self.command("clear", "cleared");
         sleep(150);
         (text, focused)
@@ -427,6 +440,7 @@ impl Probe {
             .iter()
             .any(|e| e.kind == "keydown" && (e.key == "Process" || e.kc == "229"));
         if !self.no_clear {
+            self.cancel_composition();
             let _ = self.command("clear", "cleared");
         }
         sleep(150);
@@ -1707,6 +1721,7 @@ fn main() {
         log,
         focus_lost: false,
         no_clear: false,
+        cancel_after: std::env::args().any(|a| a == "--alnum"),
     };
     // `--tray-cmd=<ID>`(+ `--file-state=<path,...>`): トレイメニュー操作の再現。前後のファイル状態を FILE_STATE 行に出す。
     if let Some(id) = args.iter().find_map(|a| {
@@ -2117,7 +2132,12 @@ fn main() {
                     continue;
                 }
                 if matches!(c.base, AlnumBase::FullAlnum) {
-                    p.press(0xF4, false, 60); // 全角キー: 半角英数 → 全角英数のはず(作れたかは次の打鍵で確かめる)
+                    // 全角キー(0xF4)では全角英数にならなかった(CI)。変換モードを直接 全角・英数(FULLSHAPE=0x08、NATIVE なし)にする。
+                    let r = ime_control(0x0002, 0x08);
+                    p.log.line(&format!(
+                        "setup:IMC_SETCONVERSIONMODE(0x08)={r:?} 取得={:?}",
+                        ime_control(0x0001, 0)
+                    ));
                     sleep(500);
                     let (t, _) = p.type_and_snap(&[VK_A], false);
                     p.log
