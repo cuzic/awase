@@ -288,7 +288,8 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
         sync_direction: None, // set by runtime with config
         is_ime_control: vk.is_ime_control(),
         is_ime_mode_key: vk.is_ime_mode_key_for_ime(),
-        layout_japanese: None, // ADR-223: 取り込み口(handle_hook_key_event)が設定する
+        // ADR-223: 取り込み口(handle_hook_key_event)が設定する。分類の時点では常に None。
+        layout_japanese: None,
         // ADR-153 決定1: `kp_stage_shadow_ime_toggle`（ケース2/3）が
         // 実際に明示config actuationを発行した打鍵についてのみ後から立てる
         // マーカー。分類の時点では常にfalse。
