@@ -2,10 +2,11 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use awase_windows::bug_report::{
-    APP_LOG_WINDOW_SECS, BugReportDiagnostics, BugReportImeKind, BugReportInput, LogEditSummary,
-    MAX_BODY_BYTES, RETENTION_HINT, SymptomCategory, attach_logs_to_preview_json,
-    build_payload_json_fitting, journal_json_to_rows, recent_app_log_rows, rows_to_journal_json,
-    unix_seconds_to_rfc3339,
+    APP_LOG_WINDOW_SECS, BugReportDiagnostics, BugReportImeKind, BugReportInput,
+    LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES, LogEditSummary, MAX_BODY_BYTES, MAX_SEND_ATTEMPTS,
+    RETENTION_HINT, RETRY_MIN_LOG_BYTES, SymptomCategory, attach_logs_with_budget,
+    build_payload_json_fitting, journal_json_to_rows, recent_app_log_rows, retry_budget_bytes,
+    rows_to_journal_json, should_retry_smaller, unix_seconds_to_rfc3339,
 };
 
 /// `awase.log` が `info` レベルでまばらでも、末尾から最低これだけの行は付ける
@@ -121,8 +122,17 @@ fn load_logs(
 enum SendOutcome {
     Success {
         report_id: String,
-        /// 本体が上限を超え、圧縮前のログを古い側から縮めて送った。
+        /// 本体が上限を超えた、または失敗して再送したため、ログを古い側から縮めて送った。
         shrunk: bool,
+        /// 何回目の送信で成功したか（1 = 初回）。
+        attempts: u32,
+    },
+    /// 送信に失敗したので、ログを縮めて再送する（途中経過。最終結果ではない）。
+    Retrying {
+        /// ここまでに失敗した回数。
+        failed_attempts: u32,
+        /// 失敗の理由（短くしたもの）。
+        reason: String,
     },
     /// 送信内容を作れなかった（プレビュー JSON が壊れている、上限を超える等）。
     /// 作れていないので、ローカルへの保存もしない。
@@ -431,10 +441,30 @@ impl BugReportApp {
             return;
         };
         match rx.try_recv() {
-            Ok(SendOutcome::Success { report_id, shrunk }) => {
-                self.status = format!("送信しました。report_id: {report_id}");
+            Ok(SendOutcome::Retrying {
+                failed_attempts,
+                reason,
+            }) => {
+                self.status = format!(
+                    "送信に失敗したため、ログを縮めて再送します（{failed_attempts}/{MAX_SEND_ATTEMPTS} 回目の失敗: {reason}）"
+                );
+                // 途中経過なので、受信口は返して最終結果を待つ。
+                self.pending = Some(rx);
+            }
+            Ok(SendOutcome::Success {
+                report_id,
+                shrunk,
+                attempts,
+            }) => {
+                self.status = if attempts > 1 {
+                    format!(
+                        "送信しました（ログを縮めて {attempts} 回目で成功）。report_id: {report_id}"
+                    )
+                } else {
+                    format!("送信しました。report_id: {report_id}")
+                };
                 self.log_shrink_notice = shrunk.then(|| {
-                    "送信内容が上限を超えていたため、添付ログ(journal/awase.log)を古い側から切り詰めて送りました。"
+                    "添付ログ(journal/awase.log)は、送信の上限と失敗のため、古い側から切り詰めて送りました。"
                         .to_owned()
                 });
             }
@@ -530,31 +560,82 @@ impl BugReportApp {
         self.pending = Some(rx);
         "送信中です...".clone_into(&mut self.status);
         std::thread::spawn(move || {
-            let outcome = match attach_logs_to_preview_json(
-                &preview,
-                attach_log_checked,
-                journal_json.as_deref(),
-                app_log.as_deref(),
-                edits,
-                MAX_BODY_BYTES,
-            ) {
-                Err(e) => SendOutcome::NotBuilt {
-                    message: e.to_string(),
-                },
-                Ok((body, _)) if body.len() > MAX_BODY_BYTES => SendOutcome::NotBuilt {
-                    message: format!(
-                        "送信内容が大きすぎます({}KB > {}KB上限)。ログの行を削除するか、設定ファイル・配列ファイルの添付を外してください。",
-                        body.len() / 1024,
-                        MAX_BODY_BYTES / 1024,
-                    ),
-                },
-                Ok((body, shrunk)) => match send_report(&body) {
-                    Ok(report_id) => SendOutcome::Success { report_id, shrunk },
-                    Err(message) => SendOutcome::Failure {
-                        message,
-                        saved_payload: save_failed_payload(&body),
-                    },
-                },
+            // 失敗したら、ログを縮めて再送する（ADR-222）。Workers Free の CPU 超過
+            // （Error 1102、5xx）や本体上限（413）、タイムアウトで、大きい報告が
+            // 通らないときに、自動で小さくして通す。何を再送するかは
+            // `should_retry_smaller`、どれだけ縮めるかは `retry_budget_bytes`。
+            let largest_log = journal_json
+                .as_deref()
+                .map_or(0, str::len)
+                .max(app_log.as_deref().map_or(0, str::len));
+            let mut first_body: Option<String> = None;
+            let mut attempt: u32 = 0;
+            let outcome = loop {
+                let start_budget = if attempt == 0 {
+                    LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES
+                } else {
+                    retry_budget_bytes(largest_log, attempt)
+                };
+                let attempt_edits = LogEditSummary {
+                    send_attempt: attempt,
+                    ..edits
+                };
+                let (body, shrunk) = match attach_logs_with_budget(
+                    &preview,
+                    attach_log_checked,
+                    journal_json.as_deref(),
+                    app_log.as_deref(),
+                    attempt_edits,
+                    MAX_BODY_BYTES,
+                    start_budget,
+                ) {
+                    Ok(built) => built,
+                    Err(e) => {
+                        break SendOutcome::NotBuilt {
+                            message: e.to_string(),
+                        };
+                    }
+                };
+                if body.len() > MAX_BODY_BYTES {
+                    break SendOutcome::NotBuilt {
+                        message: format!(
+                            "送信内容が大きすぎます({}KB > {}KB上限)。ログの行を削除するか、設定ファイル・配列ファイルの添付を外してください。",
+                            body.len() / 1024,
+                            MAX_BODY_BYTES / 1024,
+                        ),
+                    };
+                }
+                // 失敗時にローカルへ保存するのは、縮める前（最も情報が多い）の送信内容。
+                if first_body.is_none() {
+                    first_body = Some(body.clone());
+                }
+                match send_report(&body) {
+                    Ok(report_id) => {
+                        break SendOutcome::Success {
+                            report_id,
+                            shrunk: shrunk || attempt > 0,
+                            attempts: attempt + 1,
+                        };
+                    }
+                    Err(message) => {
+                        attempt += 1;
+                        if largest_log > RETRY_MIN_LOG_BYTES
+                            && should_retry_smaller(&message, attempt)
+                        {
+                            let _ = tx.send(SendOutcome::Retrying {
+                                failed_attempts: attempt,
+                                reason: message.chars().take(80).collect(),
+                            });
+                            continue;
+                        }
+                        break SendOutcome::Failure {
+                            saved_payload: save_failed_payload(
+                                first_body.as_deref().unwrap_or(&body),
+                            ),
+                            message,
+                        };
+                    }
+                }
             };
             let _ = tx.send(outcome);
         });

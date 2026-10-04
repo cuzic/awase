@@ -1009,6 +1009,54 @@ pub fn build_payload_json_fitting(
 /// 本体上限から、他の項目（状態・設定・配列ファイル等）の余裕 256KiB を引いた値。
 pub const MAX_LOG_GZ_BASE64_CHARS: usize = MAX_BODY_BYTES - 256 * 1024;
 
+/// 送信の最大回数（初回 + 縮めての再送 3 回）。
+pub const MAX_SEND_ATTEMPTS: u32 = 4;
+/// ネットワーク失敗（応答が無い・タイムアウト等）での最大回数。縮めても直らない失敗
+/// （オフライン等）で、接続のタイムアウトを何度も待たせないよう、再送は 1 回だけにする。
+pub const MAX_NETWORK_SEND_ATTEMPTS: u32 = 2;
+/// ログの最大の 1 本がこれ以下なら、縮めても本体はほとんど変わらないので再送しない。
+pub const RETRY_MIN_LOG_BYTES: usize = 16 * 1024;
+
+/// 送信に失敗したとき、ログを縮めて再送する価値があるか（ADR-222）。
+///
+/// `error` は設定アプリの `send_report` のエラー文字列（`HTTP <status>: <body>`、
+/// それ以外はネットワーク側の失敗）。`attempts_done` はここまでに試した回数（1 以上）。
+/// - `HTTP 5xx`（Workers Free の CPU 超過 = Error 1102 を含む）・`HTTP 413`・
+///   `HTTP 400` で本文が `*_too_large`: 本体が大きいことが原因なので縮めて再送する。
+/// - `HTTP 429`（レート制限）・それ以外の `HTTP 4xx`: 縮めても直らない。再送しない。
+/// - 応答自体が無い（タイムアウト・切断）: 大きい本体のアップロードが遅い可能性があるので、
+///   1 回だけ縮めて再送する。
+#[must_use]
+pub fn should_retry_smaller(error: &str, attempts_done: u32) -> bool {
+    let Some(rest) = error.strip_prefix("HTTP ") else {
+        return attempts_done < MAX_NETWORK_SEND_ATTEMPTS;
+    };
+    let status: u16 = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(0);
+    let shrinkable = match status {
+        500..=599 | 413 => true,
+        400 => error.contains("_too_large"),
+        _ => false,
+    };
+    shrinkable && attempts_done < MAX_SEND_ATTEMPTS
+}
+
+/// 再送（`attempts_done` 回目の失敗の後）の、圧縮前の上限。最大の 1 本を半分・4 分の 1・8 分の 1 に
+/// 縮める（古い側から落ちる）。上限を一律に半分にするだけだと、ログが上限より小さいときに
+/// 何も縮まないため、ログ自身の大きさを基準にする。
+#[must_use]
+pub const fn retry_budget_bytes(largest_log_bytes: usize, attempts_done: u32) -> usize {
+    let shifted = largest_log_bytes >> attempts_done;
+    if shifted < 1024 {
+        1024
+    } else {
+        shifted
+    }
+}
+
 /// ユーザーが送信前にログ一覧から行を削除した件数（ADR-222 / Opus round2 M-A2）。
 ///
 /// journal の `ReportEdited` 行（印）として送信内容に残す。残さないと、ユーザーが
@@ -1018,6 +1066,9 @@ pub const MAX_LOG_GZ_BASE64_CHARS: usize = MAX_BODY_BYTES - 256 * 1024;
 pub struct LogEditSummary {
     pub journal_rows_deleted: usize,
     pub app_log_rows_deleted: usize,
+    /// 何回目の送信か（0 = 初回）。失敗して縮めて再送したとき、調査する側が
+    /// 「ログが短いのは再送で縮めたからだ」と分かるように印へ残す。
+    pub send_attempt: u32,
 }
 
 /// journal の JSON 配列（`[` で始まる）の先頭に、編集の印の行を差し込む。
@@ -1052,6 +1103,32 @@ pub fn attach_logs_to_preview_json(
     edits: LogEditSummary,
     max_body_bytes: usize,
 ) -> Result<(String, bool), BugReportPayloadError> {
+    attach_logs_with_budget(
+        preview_json,
+        attach_log_checked,
+        journal_json,
+        app_log,
+        edits,
+        max_body_bytes,
+        LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES,
+    )
+}
+
+/// `attach_logs_to_preview_json` と同じだが、圧縮前の上限 `start_budget_bytes` から始める。
+///
+/// 送信に失敗して縮めて再送するとき、前回より小さい上限（`retry_budget_bytes`）を渡す。
+/// 各ログは、この上限を超える分が古い側から落とされる。戻り値の bool は、上限未満へ
+/// 縮めたか（`start_budget_bytes` が `LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES` 未満、または
+/// 本体が収まらず半減した場合）。
+pub fn attach_logs_with_budget(
+    preview_json: &str,
+    attach_log_checked: bool,
+    journal_json: Option<&str>,
+    app_log: Option<&str>,
+    edits: LogEditSummary,
+    max_body_bytes: usize,
+    start_budget_bytes: usize,
+) -> Result<(String, bool), BugReportPayloadError> {
     let serde_json::Value::Object(mut object) = serde_json::from_str(preview_json)
         .map_err(|e| BugReportPayloadError::InvalidPreview(e.to_string()))?
     else {
@@ -1069,7 +1146,7 @@ pub fn attach_logs_to_preview_json(
     object.insert("log_excerpt".to_owned(), serde_json::Value::Null);
     object.insert("app_log_excerpt".to_owned(), serde_json::Value::Null);
     let to_value = |gz: Option<String>| gz.map_or(serde_json::Value::Null, Into::into);
-    let mut budget = LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES;
+    let mut budget = start_budget_bytes.min(LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES);
     let mut halvings = 0u32;
     loop {
         let shrunk = budget < LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES;
@@ -1083,6 +1160,7 @@ pub fn attach_logs_to_preview_json(
                             "type": "ReportEdited",
                             "journal_rows_deleted": edits.journal_rows_deleted,
                             "app_log_rows_deleted": edits.app_log_rows_deleted,
+                            "send_attempt": edits.send_attempt,
                             "shrunk": shrunk,
                             "budget_bytes": budget,
                         }
@@ -2387,6 +2465,7 @@ mod tests {
             LogEditSummary {
                 journal_rows_deleted: 7,
                 app_log_rows_deleted: 2,
+                send_attempt: 0,
             },
             MAX_BODY_BYTES,
         )
@@ -2460,6 +2539,98 @@ mod tests {
         assert!(shrunk);
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["app_log_excerpt_gz"].as_str().unwrap().len() <= MAX_LOG_GZ_BASE64_CHARS);
+    }
+
+    #[test]
+    fn should_retry_smaller_decides_by_failure_kind() {
+        // 本体が大きいことが原因の失敗は、縮めて再送する。Workers Free の CPU 超過
+        // （Error 1102）は 5xx で返る。
+        for e in [
+            "HTTP 500: {\"error\":\"internal_server_error\"}",
+            "HTTP 503: error code: 1102",
+            "HTTP 413: {\"error\":\"request_body_too_large\"}",
+            "HTTP 400: {\"error\":\"log_excerpt_gz_too_large\"}",
+        ] {
+            assert!(should_retry_smaller(e, 1), "{e}");
+            assert!(should_retry_smaller(e, MAX_SEND_ATTEMPTS - 1), "{e}");
+            assert!(!should_retry_smaller(e, MAX_SEND_ATTEMPTS), "{e}");
+        }
+        // 縮めても直らない失敗は再送しない。
+        for e in [
+            "HTTP 429: {\"error\":\"rate_limit_exceeded\"}",
+            "HTTP 400: {\"error\":\"unsupported_schema_version\"}",
+            "HTTP 400: {\"error\":\"log_excerpt_gz_invalid\"}",
+            "HTTP 404: not found",
+            "HTTP 418: teapot",
+        ] {
+            assert!(!should_retry_smaller(e, 1), "{e}");
+        }
+        // ネットワーク失敗（応答が無い）は 1 回だけ縮めて再送する。
+        for e in [
+            "WinHttpSendRequest: タイムアウト",
+            "WinHttpConnect に失敗しました",
+            "",
+        ] {
+            assert!(should_retry_smaller(e, 1), "{e}");
+            assert!(!should_retry_smaller(e, MAX_NETWORK_SEND_ATTEMPTS), "{e}");
+        }
+    }
+
+    #[test]
+    fn retry_budget_bytes_halves_the_largest_log_each_time_with_a_floor() {
+        assert_eq!(retry_budget_bytes(2_000_000, 1), 1_000_000);
+        assert_eq!(retry_budget_bytes(2_000_000, 2), 500_000);
+        assert_eq!(retry_budget_bytes(2_000_000, 3), 250_000);
+        assert_eq!(retry_budget_bytes(100, 1), 1024);
+        assert_eq!(retry_budget_bytes(0, 3), 1024);
+    }
+
+    #[test]
+    fn attach_logs_with_budget_shrinks_the_largest_log_and_marks_the_attempt() {
+        let (preview, _) =
+            build_payload_json_fitting(&input("説明", true, None), MAX_BODY_BYTES).unwrap();
+        let app_log = realistic_log_text(400_000);
+        let journal = format!("[{}]", vec![r#"{"seq":1}"#; 5000].join(","));
+        let attach = |attempt: u32, budget: usize| {
+            attach_logs_with_budget(
+                &preview,
+                true,
+                Some(&journal),
+                Some(&app_log),
+                LogEditSummary {
+                    send_attempt: attempt,
+                    ..LogEditSummary::default()
+                },
+                MAX_BODY_BYTES,
+                budget,
+            )
+            .unwrap()
+        };
+        let largest = journal.len().max(app_log.len());
+        let (full, full_shrunk) = attach(0, LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES);
+        assert!(!full_shrunk);
+        let mut previous = full.len();
+        for attempt in 1..=3_u32 {
+            let (json, shrunk) = attach(attempt, retry_budget_bytes(largest, attempt));
+            assert!(shrunk, "attempt {attempt}");
+            // 再送のたびに、送る本体が小さくなる。
+            assert!(
+                json.len() < previous,
+                "attempt {attempt}: {} !< {previous}",
+                json.len()
+            );
+            previous = json.len();
+            // 印に、再送で縮めたことが残る。
+            let sent: Vec<serde_json::Value> = serde_json::from_str(&sent_journal(&json)).unwrap();
+            assert_eq!(sent[0]["entry"]["send_attempt"], attempt);
+            assert_eq!(sent[0]["entry"]["shrunk"], true);
+        }
+        // 縮めても、残るのは新しい側（末尾）。
+        let (json, _) = attach(3, retry_budget_bytes(largest, 3));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let sent_log =
+            gunzip_base64(value["app_log_excerpt_gz"].as_str().unwrap(), 1 << 22).unwrap();
+        assert!(app_log.ends_with(&sent_log));
     }
 
     #[test]
