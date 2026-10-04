@@ -105,7 +105,7 @@
 | [BUG-100](BUG-100.md) | 機構撤去済み | `key_remap` の latch (`LATCHED_TARGET`) が KeyUp 消失や一部の swallow 経路で stuck する |
 | [BUG-101](BUG-101.md) | 解決済み(実機確認済み) | `Engine::on_input` の Phase 0 が Consume 済み KeyDown に対応する KeyUp を FSM に一切届けていない（2026-03-31 混… |
 | [BUG-102](BUG-102.md) | 解決済み(コード確認のみ) | 起動直後にフォーカスしていたアプリの `ImmCrossProbe`（High）観測が導出から外れ、Medium の定期ポーリングに負ける（bootstrap フェンス desyn… |
-| [BUG-103](BUG-103.md) | 未修正(CI で再現、2026-10-04) | `[[post_bypass]]` は `reload_config()` で反映されない（設定変更に再起動が必要） |
+| [BUG-103](BUG-103.md) | 修正済み・CI 検証待ち(2026-10-04) | `[[post_bypass]]` は `reload_config()` で反映されない（設定変更に再起動が必要） |
 | [BUG-104](BUG-104.md) | 解決済み(コード確認のみ) | 独自 `.yab` レイアウトが UTF-8 でないと起動時に無言でバンドル版へ差し替わる |
 | [BUG-105](BUG-105.md) | 解決済み(コード確認のみ) | NICOLA 3鍵仲裁が char1 解放済みなら無条件で char2 側を優先し、タイトな重なりでも無視する |
 | [BUG-106](BUG-106.md) | 未修正(根本原因未特定、検知・通知のみ実装) | Teams(WebView2/MS-IME) で送信 romaji VK が JIS かな配列として解釈される |
