@@ -336,10 +336,14 @@ jobs:
             # かな ON から ひらがなキー(0xF2)/Shift+無変換 を押して半角英数にしたあと Engine が追随するか(`ka`=追随、`kiu`/`き`=BUG-149 の症状)。chrome_probe 既定の8ケース
             # (うち「かな→ひらがな=半角英数」「かな→Shift+無変換=半角英数」が BUG-149)を 3 周。-noawase は awase なしの対照(GJI 単体なら `ka`)。
             # 結果は result.txt の `[CASE n/8 run r/3] <名前>` と `RESULT PASS/RECOVER/FAIL`、末尾の SUMMARY。ADR-191/205/209 で解消済みなら全 PASS。
-            *[cfg(f'sc-bug149-chrome-{pn}{suf}', 'observe', check='chromeprobe', keymap=km, runs=1, wait=600, awase=aw,
+            # -passthru: 無変換/変換の単独タップを素通し(`*_solo_tap_always_suppress = false`、BUG-150 が前提にした「パススルー設定」)にした版。
+            # 既定の Suppress(ADR-206 決定1)では単独タップは IME を動かさないので「かな→無変換=IME OFF」は設計どおり Engine ON のまま(2026-10-04、run 37187579784)。
+            # 素通しのとき、実 Chrome で IME が閉じて Engine が追随するか(BUG-150 の Chrome 版)を見る。
+            *[cfg(f'sc-bug149-chrome-{pn}{suf}', 'observe', check='chromeprobe', keymap=km, runs=1, wait=600, awase=aw, general=gen,
                   chrome=f'--repeat=3 --settle=800{na}')
               for pn, km in (('atok', 1), ('msime', 2))
-              for suf, aw, na in (('', 'true', ''), ('-noawase', 'false', ' --no-awase'))],
+              for suf, aw, na, gen in (('', 'true', '', ''), ('-noawase', 'false', ' --no-awase', ''),
+                                       ('-passthru', 'true', '', 'muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false'))],
             # ADR-211: MS-IME/MOBILE プリセットの F13(閉状態からだけ開く受動のキー)。実 Chrome(読めない窓)で、IME OFF から F13 を押して
             # Engine が追随する(NICOLA)こと(合否)。stale=古い表つき。noawase=対照(IME が実際に開く=`か`、awase なしの実挙動)。
             *[cfg(f'sc-adr211-chrome-msime-f13{suf}', exp, check='chromeprobe', keymap=2, runs=1, wait=500, custom_table=ct, awase=aw,
