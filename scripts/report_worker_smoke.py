@@ -6,20 +6,22 @@ ADR-222。Worker のデプロイ後に、本番（または `wrangler dev`）へ
 
   1. v3（旧クライアントの形式、非圧縮ログ）が 201 で受理される
   2. v4（gzip + base64）の小さい報告が 201 で受理される
-  3. v4 の大きい報告（本体 約 1.8MiB。既定）が 201 で受理される（所要時間も表示）
-  4. v4 に非圧縮の log_excerpt が付いていると 400 (legacy_log_fields_not_allowed_in_schema_4)
-  5. gzip でない文字列は 400 (log_excerpt_gz_invalid)
-  6. 本体が上限（2MiB）を超えると 413 (request_body_too_large)
+  3. v4 の現実的な報告（本体 約 400KiB。10 分ぶんの打鍵 + ログを gzip した大きさの見込み）が 201
+  4. v4 の大きい報告（本体 約 1.8MiB。上限近くのストレス）が 201 で受理される（所要時間も表示）
+  5. v4 に非圧縮の log_excerpt が付いていると 400 (legacy_log_fields_not_allowed_in_schema_4)
+  6. gzip でない文字列は 400 (log_excerpt_gz_invalid)
+  7. 本体が上限（2MiB）を超えると 413 (request_body_too_large)
 
 注意:
-  - 送信は 6 件。受付は **1 IP あたり 1 日 20 件**までなので、続けて何度も実行しない。
-    4〜6 は 400/413 で弾かれるためレート制限のカウントには入らない（検証が先に走る）が、
-    1〜3 は入る。
-  - 1〜3 は本番の R2 に実際に保存される。終わったら README の手順で削除すること。
+  - 送信は 7 件。受付は **1 IP あたり 1 日 20 件**までなので、続けて何度も実行しない。
+    5〜7 は 400/413 で弾かれるためレート制限のカウントには入らない（検証が先に走る）が、
+    1〜4 は入る。
+  - 1〜4 は本番の R2 に実際に保存される。終わったら README の手順で削除すること。
     報告本文は「ADR-222 deploy smoke test」と分かる文言にしてある。
   - Workers Free プランの CPU 上限（10ms/リクエスト）の確認は、このスクリプトの 3 を
     送りながら別の端末で `pnpm exec wrangler tail awase-report-worker --format json` を
-    見て、`cpuTime` と `outcome`（`exceededCpu` が出たら超過）を読む。
+    見て、`cpuTime` と `outcome`（`exceededCpu` が出たら超過）を読む。3 が現実的なサイズ、
+    4 が上限近くのストレス。「ふつうの報告は余裕、極端な報告だけ危うい」を見分ける。
 
 Usage:
     python3 scripts/report_worker_smoke.py [--endpoint URL] [--large-kib 1800]
@@ -105,6 +107,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
     parser.add_argument(
+        "--typical-kib", type=int, default=400,
+        help="3 の本体のおおよその大きさ（KiB、既定 400）",
+    )
+    parser.add_argument(
         "--large-kib", type=int, default=1800,
         help="3 の本体のおおよその大きさ（KiB、既定 1800。上限は 2048）",
     )
@@ -117,6 +123,11 @@ def main() -> int:
     legacy_v3 = base_payload(3)
     legacy_v3["log_excerpt"] = '[{"seq":1}]'
     legacy_v3["app_log_excerpt"] = "smoke v3"
+
+    typical_v4 = base_payload(4)
+    typical_per_field = max(1024, (args.typical_kib * 1024 - 2048) // 2)
+    typical_v4["log_excerpt_gz"] = incompressible_gzip_b64(typical_per_field)
+    typical_v4["app_log_excerpt_gz"] = incompressible_gzip_b64(typical_per_field)
 
     large_v4 = base_payload(4)
     # 2 本に半分ずつ。他の項目の分（約 1KiB）を引く。
@@ -137,10 +148,11 @@ def main() -> int:
     cases = [
         ("1 v3 旧形式（非圧縮ログ）", legacy_v3, 201, None),
         ("2 v4 小さい報告", small_v4, 201, None),
-        (f"3 v4 大きい報告 (~{args.large_kib}KiB)", large_v4, 201, None),
-        ("4 v4 に非圧縮フィールド", both_v4, 400, "legacy_log_fields_not_allowed_in_schema_4"),
-        ("5 gzip でない文字列", not_gzip, 400, "log_excerpt_gz_invalid"),
-        ("6 本体が 2MiB 超", oversize, 413, "request_body_too_large"),
+        (f"3 v4 現実的な報告 (~{args.typical_kib}KiB)", typical_v4, 201, None),
+        (f"4 v4 大きい報告 (~{args.large_kib}KiB)", large_v4, 201, None),
+        ("5 v4 に非圧縮フィールド", both_v4, 400, "legacy_log_fields_not_allowed_in_schema_4"),
+        ("6 gzip でない文字列", not_gzip, 400, "log_excerpt_gz_invalid"),
+        ("7 本体が 2MiB 超", oversize, 413, "request_body_too_large"),
     ]
 
     failed = 0

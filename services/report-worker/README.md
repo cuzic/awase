@@ -120,21 +120,21 @@ In a second terminal, watch the Worker (look at `cpuTime` and `outcome`; `exceed
 pnpm exec wrangler tail awase-report-worker --format json
 ```
 
-Then, from the repository root (6 requests; the per-IP limit is 20/day and cases 1-3 count against it, so do not run it repeatedly):
+Then, from the repository root (7 requests; the per-IP limit is 20/day and cases 1-4 count against it, so do not run it repeatedly):
 
 ```sh
 python3 scripts/report_worker_smoke.py
 ```
 
-Expected: cases 1-3 return 201 (v3 legacy, v4 small, v4 ~1.8MiB), case 4 returns 400 `legacy_log_fields_not_allowed_in_schema_4`, case 5 returns 400 `log_excerpt_gz_invalid`, case 6 returns 413.
+Expected: cases 1-4 return 201 (v3 legacy, v4 small, v4 realistic ~400KiB, v4 stress ~1.8MiB), case 5 returns 400 `legacy_log_fields_not_allowed_in_schema_4`, case 6 returns 400 `log_excerpt_gz_invalid`, case 7 returns 413. Read `cpuTime` for cases 3 (realistic) and 4 (stress) separately: the realistic one should be far under 10 ms.
 
 ### 5. Decide from the CPU result
 
-| `wrangler tail` for case 3 | Meaning | Action |
+| `wrangler tail` for case 4 (stress) | Meaning | Action |
 | --- | --- | --- |
 | `outcome: ok`, `cpuTime` < 10 ms | Within the Free limit | Done |
 | `cpuTime` 10 ms or more but `outcome: ok` | Over the Free limit on this run (the limit is enforced per request, so it can fail intermittently) | Treat as a failure: option A or B below |
-| `outcome: exceededCpu` / HTTP 5xx on case 3 | Large reports fail; the client saves them locally | Option A or B below |
+| `outcome: exceededCpu` / HTTP 5xx on case 4 | Large reports fail; the client saves them locally | Option A or B below (only needed if case 3 also fails, or you want large reports to work) |
 
 - **A. Upgrade to Workers Paid** (about $5/month): no code change.
 - **B. Cap the body lower for the Free plan**: set `MAX_BODY_BYTES` (here and in `crates/awase-windows/src/bug_report.rs`) to a size whose measured `cpuTime` is under 10 ms (for example 1MiB, about 6 ms on the CI scale above), and ship the client change. Ten minutes of typing compresses to roughly 0.1-0.5MB, so 1MiB still holds it.
