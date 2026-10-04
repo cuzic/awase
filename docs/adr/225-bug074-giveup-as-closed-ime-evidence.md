@@ -8,7 +8,7 @@ summary: |-
   r2 レビュー(Must 2・Should 4)で、give-up 後は連続カウントが戻らず以後の打鍵が全部消える見込み(コード確認済み、実測は D0-3)と判明し、「失われるのは 1 文字」を前提にした比較を改めた。
   決定: 所有者判断で追随(belief だけを実状態へ揃え IME には書かない)。D0 で偽陽性 0/30(RichEdit・実 Chrome・Windows Terminal)。Opus r4・r5 で、追随が TsfNative の conv 推論で打ち消される恐れ(B1)・観測ソースの偽装・取り出し時点の遅れ・再現窓が Imm32Unavailable であること・ADR-205 の柵の欠落等が判明し、設計を r6 に直した(Imm32Unavailable は give-up を読み直しのきっかけにする案、TsfNative は D0-5 の実測待ち)。
 status: |-
-  起草 r6(2026-10-04): 所有者判断=追随。Opus r4・r5 を反映。測定済みの `Imm32Unavailable`×GJI は「give-up を読み直しのきっかけにする」(i)、TsfNative は B1 を D0-5 で測ってから(ii)。実装なし。Opus r1(Blocker 2・Must 7・Should 6)・r2(Must 2・Should 4)を反映し、r3 で収束(Blocker・Must なし)。実装なし。D0 の測定と所有者の方向決定が先。
+  起草 r6(2026-10-04): 所有者判断=追随。Opus r4・r5・r6 を反映し、(i) は収束(r6 の Must 1 件を反映済み・再レビュー不要)。測定済みの `Imm32Unavailable`×GJI は「give-up を読み直しのきっかけにする」(i)、TsfNative は B1 を D0-5 で測ってから(ii)。実装なし。Opus r1(Blocker 2・Must 7・Should 6)・r2(Must 2・Should 4)を反映し、r3 で収束(Blocker・Must なし)。実装なし。D0 の測定と所有者の方向決定が先。
 related_adr:
   - "ADR-080"
   - "ADR-100"
@@ -125,11 +125,15 @@ D0 で再現できたのは **`Imm32Unavailable`×GJI**(自前 RichEdit 窓、`-
 
 1. **条件**: give-up(`RawTsfLiteralRecovery` で `consecutive>=1`)、**最後の CompositionConfirmed 以降の否定的証拠が 2 回以上すべて `SuspectedLiteral`**(r4 M4。`consume_literal_detect_trace`/`note_literal_detect_record` で数え、`negative_evidence_count` を配線し直す)、取り出した時点で `explicit_intent()==Some(true)`(r4 S1)、`profile=Imm32Unavailable`×GJI。
 2. **取り出し口(r4 M2)**: `advance_tsf_probe()` の直後(`runtime/message_handlers.rs:502-513`、`drain_journal_entries` と同じ位置)で `app.platform.take_giveup_evidence()`。`drain_output_post_send_effects` は送信の後にしか呼ばれないので使わない。予約済みの BS・INPUT_DEFER の再生は後段(`handle_wm_drain_output_queue`)なので、保留した打鍵は追随後の状態で再生される。
-3. **動作**: 読み直し(prefetch の開閉の読み)を要求する。結果は既存の `ImeStateHub::follow_external_change(read, …)` に渡す(監視窓の扱い・柵・`last_external_change_ms` は既存のまま)。**give-up を閉の観測として直接書かない**。窓の外の読みは捨てられる仕様なので、give-up を契機にした読みを監視窓の「基準値」として扱う方法(基準値=開 → 読み=閉で Changed)を実装時に決める(ADR-205 の `external_change_watch` の拡張が要る可能性。要設計確認)。
+3. **動作(r6 Opus 確認済み: 監視窓の拡張は不要)**: give-up の取り出し口で、(1) `arm_external_change_watch(now)`(`platform_state.rs:416`、既存の `kp_arm_external_change_watch` と同じ呼び方)を呼び、(2) 続けて `schedule_ime_refresh(MODE_KEY_PASS_REREAD_MS)` で最初の読み直しを予約する(2 回目以降は監視窓〈300ms〉が生きている間、`reschedule_ime_refresh` が 60ms ごとに予約する)。読みの結果は既存の `ImeStateHub::follow_external_change(read, …)` に渡る(柵・意図の削除・desired の揃えはそのまま引き継がれる)。**give-up を閉の観測として直接書かない**。`arm()` は同じスコープの直近の読み(`last_read`)を基準値に採る(`external_change_watch.rs:54-71`)。
+   - **基準値は `last_read` に限る**(belief・`desired_open` を基準値に入れない。入れると、読みが常に閉を返す環境〈ADR-205 が防いだもの〉で give-up のたびに偽の追随が起き、実 IME は ON なのに Engine が OFF になる=r1 B2 と同じ害)。
+   - **`last_read` が無いか閉なら何もしない**。
+   - 単体テスト 3 件: `last_read` が無い ⇒ 不変 / `last_read` が開で読みも開 ⇒ 不変 / スコープ違いの `last_read` ⇒ 不変。
+   - D0-5 では arm した時点の基準値(`last_read`)を awase.log に出す(追随が起きなかった理由を区別するため)。
 4. **focus 世代(r4 S2)**: プローブ開始時に `ime_mode_focus_gen` を捕獲し、取り出し時に一致を確かめてから `AcceptedObservation::for_sync(app.focus_fence())` を作る(`for_sync` は照合しない)。
 5. **Engine への通知(r4 S3)**: 追随の直後に `RefreshState` を出す。
 6. **利用者に見える入力(r4 M3)**: 追随後は Engine OFF で、出るのは**物理キーの QWERTY 文字**。失われるのは give-up した最初の 1 モーラ(BS は現状のまま)。親指キー(無変換・変換)が IME にそのまま届き、構成によっては IME が開く点を CI で確認する。
-7. **効く範囲(限界)**: 明示意図が残る利用者だけ。ADR-191 の予測経路(`KeyEffectPredicted`)で IME を開いた利用者は意図が常に `None` で、効かない。実機 journal に `explicit_intent` が載るかは未確認。外部から再び開かれた場合の戻りは既存のポーリングに任せる。
+7. **効く範囲(限界)**: 明示意図が残る利用者だけ(読み直しは実際の読みに基づくので、この条件は偽陽性の防止ではなく**効く範囲を狭めるだけ**。残す理由は、意図が無い状況〈フォーカス直後等〉では ADR-205 の監視窓の前提〈外部注入キー直後〉も成り立たず、挙動を変える根拠が無いため)。ADR-205 から引き継ぐ BUG-176(偽 OFF の疑い 1 件)がこの追随にも当てはまりうる。読みは GJI×実 Chrome で 1→0 を返す(ADR-205 の測定、追随 10/10)が、開いていても 0 を読む MS-IME×Chrome は対象外(GJI に限る)。ADR-191 の予測経路(`KeyEffectPredicted`)で IME を開いた利用者は意図が常に `None` で、効かない。実機 journal に `explicit_intent` が載るかは未確認。外部から再び開かれた場合の戻りは既存のポーリングに任せる。
 
 ### (ii) の設計候補(D0-5 の結果次第、旧 r5 の内容)
 
