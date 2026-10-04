@@ -44,7 +44,11 @@ jobs:
       # `#![cfg(windows)]`で消えたクレートを参照してFAILするため、追加するなら
       # `cargo test --doc -p timed-fsm` に限定すること)。
       - run: cargo nextest run --workspace --lib
-      - run: cargo nextest run -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard
+      # 2026-10-04: 下の6本(+ガード)は tests/ にありながらどの CI ジョブからも
+      # 実行されていなかった(`--test` に列挙しない統合テストは `--lib` にも含まれず
+      # 黙って走らない)。closed_loop_scenarios はこの穴で ADR-212 の回帰ガードとして
+      # 機能していなかった。追加漏れは ci_test_coverage_guard が検出する。
+      - run: cargo nextest run -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard --test closed_loop_scenarios --test journal_replay --test drift_correction_replay --test intent_store_effective_open --test explicit_press_exhaustive --test warmup_gate_focus_scope --test wix_installer_guard --test ci_test_coverage_guard
       # awase-settings はWindows専用ではなく非Windowsホストでもビルド可能な
       # ように意図的に維持されている（main.rs内に#[cfg(not(target_os =
       # "windows"))]の分岐が複数存在）。しかし他のCIジョブは全て
