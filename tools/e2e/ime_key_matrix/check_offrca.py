@@ -76,6 +76,12 @@ def main():
             f"typed_closed={a['typed_closed']} typed_open={a['typed_open']} "
             f"first(api_closed/made)={f['api_closed']}/{f['made']} rest(api_closed/made)={r['api_closed']}/{r['made']} ladder={a['ladder']}"
         )
+    # 失敗(閉じなかった)試行と成功試行の page_events の代表例(IME がキーを処理したか・composition の終了を見る)。
+    for cell, ts in cells.items():
+        for label, sel in (("closed", [t for t in ts if t.get("closed_ms") is not None]), ("never", [t for t in ts if t.get("closed_ms") is None])):
+            if sel:
+                t = sel[-1]
+                print(f"OFFRCA_SAMPLE: cell={cell} {label} n={t['n']} conv={t.get('conv_pre')}->{t.get('conv_end')} events={t.get('page_events')}")
     if out:
         json.dump(res, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     return 0

@@ -320,6 +320,8 @@ struct Probe {
     shared: Arc<Mutex<Shared>>,
     log: Log,
     focus_lost: bool,
+    /// true なら probe 後にページを空にしない(未確定の composition を残す。`--offrca` の `typed_nc` 用)。
+    no_clear: bool,
 }
 
 impl Probe {
@@ -378,7 +380,9 @@ impl Probe {
         let process = self.shared.lock().unwrap().events[before..]
             .iter()
             .any(|e| e.kind == "keydown" && (e.key == "Process" || e.kc == "229"));
-        let _ = self.command("clear", "cleared");
+        if !self.no_clear {
+            let _ = self.command("clear", "cleared");
+        }
         sleep(150);
         (classify(&text), text, process)
     }
@@ -1134,7 +1138,34 @@ fn run_offrca(
             p.focus_lost = false;
             bring_to_front();
             // 準備: IME を開く。
-            let prep_ok = match prep {
+            let prep_tag = prep.split('~').next().unwrap_or(prep);
+            let events_before = p.shared.lock().unwrap().events.len();
+            let prep_ok = match prep_tag {
+                "typed_nc" | "typed_enter" | "typed_esc" => {
+                    // composition を残したまま(clear しない)。enter/esc はその後に確定/取消してから page を空にする。
+                    let ok = ensure(p, Setup::Kana, awase);
+                    p.no_clear = true;
+                    let _ = p.probe();
+                    p.no_clear = false;
+                    match prep_tag {
+                        "typed_enter" => {
+                            p.press(0x0D, false, 40);
+                            sleep(400);
+                        }
+                        "typed_esc" => {
+                            p.press(0x1B, false, 40);
+                            sleep(400);
+                        }
+                        _ => {}
+                    }
+                    ok
+                }
+                t if t.starts_with("typed_w") => {
+                    let ok = ensure(p, Setup::Kana, awase);
+                    let w: u64 = t["typed_w".len()..].parse().unwrap_or(2000);
+                    sleep(w);
+                    ok
+                }
                 "notype" => {
                     p.press(0x16, false, 40);
                     sleep(1000);
@@ -1149,12 +1180,21 @@ fn run_offrca(
             };
             sleep(500);
             let api_pre = or_api();
+            let conv_pre = ime_control(0x0001, 0);
+            let ev_idx = p.shared.lock().unwrap().events.len();
             let utc = utc_stamp();
             let t_act = Instant::now();
             let desc = or_do(action);
             let (closed_ms, series) = or_poll(poll_ms, false);
-            let _ = t_act;
+            let _ = (t_act, events_before);
             let api_end = or_api();
+            let conv_end = ime_control(0x0001, 0);
+            // 動作から probe 前までにページが見たイベント(IME がキーを処理したか・composition が終わったか)。
+            let page_events: Vec<String> = p.shared.lock().unwrap().events[ev_idx..]
+                .iter()
+                .take(14)
+                .map(|e| format!("{}:{}:{}:{}", e.kind, e.key, e.kc, e.data))
+                .collect();
             let got = p.probe_logged("offrca 後");
             let api_after_probe = or_api();
             let typed_open = km_open_of(got);
@@ -1178,7 +1218,7 @@ fn run_offrca(
                 serde_json::json!({"type":"or_trial","cell":cell,"action":action,"prep":prep,"n":i,
                     "utc":utc,"prep_ok":prep_ok,"api_pre":api_pre,"desc":desc,"closed_ms":closed_ms,
                     "series":ser,"api_end":api_end,"typed":got.label(),"typed_open":typed_open,
-                    "api_after_probe":api_after_probe,"ladder":ladder_res,"focus_lost":p.focus_lost,
+                    "api_after_probe":api_after_probe,"conv_pre":conv_pre,"conv_end":conv_end,"page_events":page_events,"ladder":ladder_res,"focus_lost":p.focus_lost,
                     "awase":awase})
             ));
         }
@@ -1265,6 +1305,7 @@ fn main() {
         shared,
         log,
         focus_lost: false,
+        no_clear: false,
     };
     // `--storm=N`: 親指キー(無変換, NICOLAの既定の親指シフト)を使った通常タイピングをN回行う(BUG-149 レビューB1の確認用)。
     // 文字の判定はせず、awaseログの強制conv読み取りの件数を見る。

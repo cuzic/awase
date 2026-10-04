@@ -450,6 +450,10 @@ jobs:
                 ('gji-noawase', False, False, False, '1a:typed,1a:notype,19:typed,f3:typed,1d:typed,imc0:typed,tsf0:typed', 3000),
                 ('msime-noawase-relaunch', True, False, True, '1a:typed,1a:notype,imc0:typed,tsf0:typed', 3000),
                 ('msime-awase-relaunch', True, True, True, 'ctrl1d:typed,ctrl1d:notype', 3000),
+                # 第2ラウンド: 「打鍵(composition)の後の 0x1A が1回目だけ効かない」の条件。typed_nc=composition を残したまま(実運用の「打っている途中で OFF」)、
+                # typed_enter/typed_esc=確定/取消してから、typed_w<ms>=打鍵から OFF までの待ち。同じセルを~tagで繰り返して先頭試行の特殊性も見る。
+                ('r2-msime-noawase', True, False, False, '1a:typed,1a:typed_nc,1a:typed_enter,1a:typed_esc,1a:typed_w2000,1a:typed_w8000,1a:notype,1a:typed~b', 3000),
+                ('r2-msime-awase', True, True, False, 'ctrl1d:typed,ctrl1d:typed_nc,ctrl1d:typed_enter,ctrl1d:typed_w2000,ctrl1d:typed~b', 3000),
               )],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
