@@ -11,15 +11,6 @@ fn fullwidth_alpha_to_halfwidth() {
 }
 
 #[test]
-fn fullwidth_latin_letter_excludes_digits_and_symbols() {
-    assert!('Ａ'.is_fullwidth_latin_letter());
-    assert!('ｚ'.is_fullwidth_latin_letter());
-    assert!(!'０'.is_fullwidth_latin_letter());
-    assert!(!'！'.is_fullwidth_latin_letter());
-    assert!(!'A'.is_fullwidth_latin_letter());
-}
-
-#[test]
 fn fullwidth_digit_to_halfwidth() {
     assert_eq!('０'.to_halfwidth_ascii(), Some('0'));
     assert_eq!('９'.to_halfwidth_ascii(), Some('9'));

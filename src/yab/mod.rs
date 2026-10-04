@@ -420,8 +420,6 @@ pub struct YabLayout {
 pub trait FullwidthCharExt {
     /// 全角 ASCII 範囲 (U+FF01..U+FF5E) なら対応する半角文字を返す。
     fn to_halfwidth_ascii(self) -> Option<char>;
-    /// 全角ラテン文字（`Ａ`〜`Ｚ`・`ａ`〜`ｚ`）か。数字・記号は含まない。
-    fn is_fullwidth_latin_letter(&self) -> bool;
 }
 
 impl FullwidthCharExt for char {
@@ -434,10 +432,6 @@ impl FullwidthCharExt for char {
         } else {
             None
         }
-    }
-
-    fn is_fullwidth_latin_letter(&self) -> bool {
-        matches!(*self, '\u{FF21}'..='\u{FF3A}' | '\u{FF41}'..='\u{FF5A}')
     }
 }
 

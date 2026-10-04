@@ -228,6 +228,7 @@ fn scan_for(vk: u32) -> u16 {
         0x7D => 0x65,               // F14
         0x4B => 0x25,               // K
         0x41 => 0x1E,               // A
+        0x42 => 0x30,               // B
         0xA0 => 0x2A,               // LShift
         0xA2 => 0x1D,               // LCtrl
         0x0D => 0x1C,               // Enter
@@ -504,6 +505,11 @@ enum AlnumBase {
 
 enum AlnumWant {
     Text(&'static str),
+    /// awase の有無で期待が違うもの(小指シフト面は全角英字が仕様、awase なしは IME 単体の半角)。
+    ByAwase {
+        with: &'static str,
+        without: &'static str,
+    },
     /// かな入力に戻った(NICOLA 文字、awase なしなら `か`)。
     Kana,
 }
@@ -542,12 +548,15 @@ const ALNUM_CASES: [AlnumCase; 9] = [
         want: AlnumWant::Text("AB"),
     },
     AlnumCase {
-        name: "IME ON(かな): Shift 押しながら AB",
+        name: "IME ON(かな): Shift 押しながら AB(awase は小指シフト面=全角、対照は半角)",
         base: AlnumBase::Kana,
         pre: &[],
         vks: &[VK_A, VK_B],
         shift_held: true,
-        want: AlnumWant::Text("AB"),
+        want: AlnumWant::ByAwase {
+            with: "ＡＢ",
+            without: "AB",
+        },
     },
     AlnumCase {
         name: "半角英数: ab",
@@ -2132,6 +2141,9 @@ fn main() {
                 }
                 let ok = match c.want {
                     AlnumWant::Text(w) => text == w,
+                    AlnumWant::ByAwase { with, without } => {
+                        text == if awase { with } else { without }
+                    }
                     AlnumWant::Kana => matches!(classify(&text), Class::Nicola | Class::RomajiKana),
                 };
                 if p.focus_lost {
@@ -2145,6 +2157,13 @@ fn main() {
                         "RESULT FAIL: 期待={} 実際={text:?}",
                         match c.want {
                             AlnumWant::Text(w) => w,
+                            AlnumWant::ByAwase { with, without } => {
+                                if awase {
+                                    with
+                                } else {
+                                    without
+                                }
+                            }
                             AlnumWant::Kana => "かな",
                         }
                     ));
