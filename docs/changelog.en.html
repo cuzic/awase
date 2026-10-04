@@ -110,6 +110,16 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.21.2] - 2026-10-03</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed the tray menu's "Clear learning cache" doing nothing when selected</strong><ul>
+<li>Cause: the menu item's handler was never implemented, so nothing was deleted (the 1.19.0 release notes said "fixed", but it was not)</li>
+<li>Fix: it now deletes the per-app record of whether IMM32 can control the IME (<code>[imm_capability]</code> in <code>cache.toml</code>) and reports the number of entries removed. Use it to recover from a mislearned entry. The menu item is renamed "Clear IME-control learning cache"</li>
+<li>If <code>cache.toml</code> cannot be read, is corrupted, or cannot be written, it is left untouched and success is not reported (cache saving in general no longer overwrites a corrupted file with an empty one)</li>
+</ul>
+</li>
+</ul>
 <h2>[1.21.1] - 2026-09-27</h2>
 <h3>Changed</h3>
 <ul>
