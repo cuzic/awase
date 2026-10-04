@@ -13,6 +13,7 @@
 //! - `tsf`   : `RICHEDIT50W` を `Chrome_RenderWidgetHostHWND` へスーパークラス化(ADR-193)。awase から
 //!   `AppKind::TsfNative` 相当に見える決定的な入力先(親窓も `Chrome_WidgetWin_1`)。
 //! - `chromebar` / `chromepage` : 本物の Chrome(専用プロファイル。アドレスバー / ページ内 textarea)。UI Automation で読む。
+//! - `qt` : `line.exe`(tools/e2e/qt_line_input、Qt の QLineEdit 1つ)。LINE の症状の再現用。UI Automation で読む。
 //! - `bugreport` : 本物の `awase-settings.exe --bug-report` の「説明」欄。UI Automation で読む。
 //!
 //! 入力先ごとの差は `target.rs` の `InputTarget` に閉じ込めてある(読む・空にする・前面へ戻す・フォーカス確認・終了)。
@@ -26,7 +27,7 @@
 //! 指定した摂動は `config` レコードの `perturb` に記録される。
 //!
 //! ## フラグ
-//! `--form=edit|multi|rich|tsf|chromebar|chromepage|bugreport`(`--chrome-path=PATH` で Chrome を指定) / `--mode=nicola|raw|drift|drift-on|keymatrix|reopen` / `--interval=MS`(1文字あたりの間隔。既定20) /
+//! `--form=edit|multi|rich|tsf|chromebar|chromepage|bugreport|qt`(`--chrome-path=PATH` で Chrome を指定) / `--mode=nicola|raw|drift|drift-on|keymatrix|reopen` / `--interval=MS`(1文字あたりの間隔。既定20) /
 //! `--trials=N`(種別ごとの試行数。既定4。`--mode=drift` では試行回数として使う) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
@@ -248,6 +249,7 @@ enum Form {
     ChromeBar,
     ChromePage,
     BugReport,
+    Qt,
 }
 
 impl Form {
@@ -260,6 +262,7 @@ impl Form {
             "chromebar" => Some(Self::ChromeBar),
             "chromepage" => Some(Self::ChromePage),
             "bugreport" => Some(Self::BugReport),
+            "qt" => Some(Self::Qt),
             _ => None,
         }
     }
@@ -272,6 +275,7 @@ impl Form {
             Self::ChromeBar => "chromebar",
             Self::ChromePage => "chromepage",
             Self::BugReport => "bugreport",
+            Self::Qt => "qt",
         }
     }
 }
@@ -365,7 +369,7 @@ fn create_own_window(form: Form) {
                 700,
                 240,
             ),
-            Form::ChromeBar | Form::ChromePage | Form::BugReport => {
+            Form::ChromeBar | Form::ChromePage | Form::BugReport | Form::Qt => {
                 unreachable!("別プロセスの入力先は target::launch が扱う")
             }
             Form::Rich => ("RICHEDIT50W".into(), WS_BORDER.0 | ES_AUTOHSCROLL, 700, 240),

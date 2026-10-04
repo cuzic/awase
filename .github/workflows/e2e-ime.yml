@@ -35,7 +35,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress]
+    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/qt-line-repro]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -76,7 +76,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/qt-line-repro' && 'tsx-qt-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -600,6 +600,11 @@ jobs:
               for pause in (320, 500)],
             # Chrome の定常状態の取りこぼし(高速: 2ms)。
             *[tsx(f'{form}-gji-2ms', form, 'gji', 2, trials=8, runs=30, wait=1200) for form in ('chromepage', 'chromebar')],
+            # LINE(Qt 6.6.3)の「いまは→いいい」(報告 01M43NK5…、2026-10-04)の再現試行(観測のみ、ci/qt-line-repro か only='tsx-qt-*' で回す)。
+            # 入力先は line.exe(tools/e2e/qt_line_input、QLineEdit 1つ)。長 idle(GJI OnCold(Long))→ 前面を他窓にして戻す(--switch-focus)→ 打鍵。
+            *[tsx(f'qt-gji-{iv}ms-idle{idle}s', 'qt', 'gji', iv, extra=f'--idle={idle * 1000} --switch-focus --start-delay=100', kinds='single,mixed', trials=6, len=20, runs=6, wait=1500)
+              for iv in (40, 10)
+              for idle in (12,)],
             # BUG-171 の再現確認(2026-10-04 v2.0.0 の棚卸しで追加、観測のみ。only='tsx-bug171-*' で回す): 語の途中(10 文字目の直後)で止めてから打鍵を再開し、
             # 候補窓が可視の状態で per-VK confirm が StaleConfirm→ESC(escape=true、idx>=1)になり、既存の未確定文字まで消えるかを見る。
             # 検出は 2 つ: (1)入力先のテキストの消失(上の高速打鍵ストレスの表) (2)awase.log の StaleConfirm→escape=true を、直前の StartComposition の遷移元で
@@ -711,7 +716,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dist
-          key: e2e-bin-${{ matrix.cfg.name }}-${{ hashFiles('src/**', 'crates/**', 'Cargo.toml', 'Cargo.lock', 'config.toml', 'tools/e2e/ime_key_matrix/ablations/**') }}
+          key: e2e-bin-${{ matrix.cfg.name }}-${{ hashFiles('src/**', 'crates/**', 'tools/e2e/qt_line_input/**', 'Cargo.toml', 'Cargo.lock', 'config.toml', 'tools/e2e/ime_key_matrix/ablations/**') }}
       - uses: dtolnay/rust-toolchain@stable
         if: steps.bin.outputs.cache-hit != 'true'
       # 全構成で同じキー。依存のビルド結果は baseline だけが保存し、他は復元だけする(撤去でコンパイルされ直すのは自クレートのみ)。
@@ -727,6 +732,25 @@ jobs:
           bash "tools/e2e/ime_key_matrix/ablations/${{ matrix.cfg.mutator }}"
           git diff --stat
           test -n "$(git diff --stat)" || { echo "撤去が差分を作らなかった(コードが変わって撤去箇所が消えた?)"; exit 1; }
+      # tsx-qt-*(typing_stress --form=qt)の入力先 line.exe。baseline ビルドだけが作る。
+      - name: Qt をインストール
+        if: steps.bin.outputs.cache-hit != 'true' && matrix.cfg.name == 'baseline'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          cache: true
+      - name: line.exe(Qt QLineEdit)をビルド
+        if: steps.bin.outputs.cache-hit != 'true' && matrix.cfg.name == 'baseline'
+        shell: pwsh
+        run: |
+          cmake -S tools/e2e/qt_line_input -B qt-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build qt-build --config Release
+          New-Item -ItemType Directory -Force -Path dist-qt | Out-Null
+          Copy-Item qt-build\Release\line.exe dist-qt\
+          windeployqt --release --no-translations dist-qt\line.exe
       - name: awase とスパイクをビルド
         if: steps.bin.outputs.cache-hit != 'true'
         shell: pwsh
@@ -748,6 +772,7 @@ jobs:
           # tsx-bugreport-*(typing_stress --form=bugreport)が実体を起動するのに要る。typing_stress.exe と同じ dist\ に置く。
           if ('${{ matrix.cfg.name }}' -eq 'baseline') { Copy-Item target\debug\awase-settings.exe dist\ }
           Copy-Item target\debug\examples\chrome_probe.exe dist\
+          if ('${{ matrix.cfg.name }}' -eq 'baseline') { Copy-Item dist-qt\* dist\ -Recurse -Force }
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:

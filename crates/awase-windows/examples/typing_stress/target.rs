@@ -9,6 +9,7 @@
 //! | `edit`/`multi`/`rich`/`tsf`  | 自前で作る Win32 窓(`create_own_window`)       | `WM_GETTEXT`    | あり            |
 //! | `chromebar`/`chromepage`     | 本物の Chrome(専用プロファイル)                | UI Automation   | なし            |
 //! | `bugreport`                  | 本物の `awase-settings --bug-report`           | UI Automation   | なし            |
+//! | `qt`                         | `line.exe`(Qt QLineEdit、LINE の再現用)        | UI Automation   | なし            |
 //!
 //! HIMC が無い入力先では `real_ime_open` が `None` になるため、drift 系モード(実 IME の開閉を直接
 //! 観測/操作する)は使えない。
@@ -54,6 +55,7 @@ pub(crate) fn launch(form: Form) -> Box<dyn InputTarget> {
         Form::ChromeBar => Box::new(Chrome::launch(false)),
         Form::ChromePage => Box::new(Chrome::launch(true)),
         Form::BugReport => Box::new(BugReport::launch()),
+        Form::Qt => Box::new(QtLine::launch()),
     }
 }
 
@@ -385,6 +387,80 @@ impl InputTarget for BugReport {
         post_close();
         sleep_ms(500);
         // WM_CLOSE で閉じ損ねた場合の保険(次の構成・試行を巻き込まないため)。
+        kill_tree(self.pid);
+    }
+}
+
+// ---------------------------------------------------------------- Qt の QLineEdit(line.exe)
+
+/// LINE(Qt)の症状の再現用。自プロセスの exe と同じディレクトリの `line.exe`
+/// (tools/e2e/qt_line_input をプロセス名だけ LINE に合わせたもの)を起動し、唯一の Edit を読む。
+struct QtLine {
+    pid: u32,
+}
+
+impl QtLine {
+    fn launch() -> Self {
+        let exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("line.exe")))
+            .unwrap_or_else(|| PathBuf::from("line.exe"));
+        let pid = match std::process::Command::new(&exe).spawn() {
+            Ok(c) => c.id(),
+            Err(e) => fatal(&format!("line.exe の起動に失敗: {} {e}", exe.display())),
+        };
+        log(&format!("[init] line.exe 起動 pid={pid} exe={}", exe.display()));
+        let top = find_window(pid, &|h| title_of(h).contains("qt-line-input"), 60)
+            .unwrap_or_else(|| {
+                kill_tree(pid);
+                fatal("Qt 窓が見つからない(タイトル qt-line-input の可視窓なし)")
+            });
+        log(&format!("[init] qt top class={}", class_of(top)));
+        TOP.store(top.0 as isize, Ordering::SeqCst);
+        sleep_ms(800);
+        CHILD.store(top.0 as isize, Ordering::SeqCst);
+        Self { pid }
+    }
+
+    fn edit() -> Option<IUIAutomationElement> {
+        let mut edits =
+            uia::wait_edits(hwnd_of(&TOP), |e| (!e.is_empty()).then_some(e)).unwrap_or_default();
+        if edits.is_empty() {
+            log("[qt] Edit が見つからない");
+            return None;
+        }
+        Some(edits.remove(0))
+    }
+
+    fn focus_edit() {
+        if let Some(el) = Self::edit() {
+            // SAFETY: UIA 要素へのフォーカス設定のみ。
+            if let Err(e) = unsafe { el.SetFocus() } {
+                log(&format!("[qt] SetFocus 失敗: {e}"));
+            }
+            sleep_ms(150);
+        }
+    }
+}
+
+impl InputTarget for QtLine {
+    fn read(&self) -> String {
+        Self::edit().map_or_else(|| uia::NOT_FOUND.to_string(), |el| uia::read_value(&el))
+    }
+    fn clear(&self) {
+        Self::focus_edit();
+        uia::clear_focused();
+    }
+    fn refocus(&self) {
+        raise_top(300);
+        Self::focus_edit();
+    }
+    fn focus_ok(&self) -> bool {
+        foreground_is_top()
+    }
+    fn shutdown(&self) {
+        post_close();
+        sleep_ms(500);
         kill_tree(self.pid);
     }
 }
