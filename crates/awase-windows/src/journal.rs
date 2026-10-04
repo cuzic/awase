@@ -334,6 +334,14 @@ pub enum JournalEntry {
         reason: &'static str,
         elapsed_ms: u64,
     },
+    /// ADR-227(BUG-074): `RawTsfLiteralRecovery` の give-up を契機にした外部クローズの読み直しの判断。
+    /// `outcome` は `armed`(監視窓を開いて読み直す)/ `not_applicable` / `stale_focus` / `no_explicit_intent`。
+    /// `baseline` は arm した時点の基準値(直近の読み)。追随が起きなかった理由の切り分け用。
+    GiveUpFollow {
+        cold_seq: u64,
+        outcome: &'static str,
+        baseline: Option<bool>,
+    },
     /// IME open/close 適用の完了（ADR-086 §4 INV-18、Phase 3 item 2）。
     ///
     /// `record_ime_apply_result` は `generation.is_some()` のときだけ
@@ -676,6 +684,7 @@ impl JournalEntry {
             | Self::PressWriteClaim { .. }
             | Self::DriftGiveUpDiagnostic { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
+            | Self::GiveUpFollow { .. }
             | Self::ConvClassifyCall { .. }
             | Self::TimerFired { .. } => LaneKind::Actuation,
             Self::KeyInput { .. } => LaneKind::KeyInput,
@@ -964,6 +973,21 @@ impl JournalEntry {
                     reason = *reason,
                     interval_elapsed_ms,
                     "drift give-up interval ended"
+                );
+            }
+            Self::GiveUpFollow {
+                cold_seq,
+                outcome,
+                baseline,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    cold_seq,
+                    outcome = *outcome,
+                    baseline = ?baseline,
+                    "give-up follow"
                 );
             }
             Self::ImeOpenApplied {

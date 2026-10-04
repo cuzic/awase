@@ -156,17 +156,30 @@ pub struct GiveUpTracker {
 
 impl GiveUpTracker {
     /// VK を送ったとき(`LiteralDetectTraceItem::VkSent` の取り込み時)に呼ぶ。最初の送信時の世代だけ覚える。
+    ///
+    /// 保持している世代と違う世代で送られたら(フォーカスが変わった)連鎖を切って数え直す。古い窓の世代と数えかけの
+    /// 回数を新しい窓へ持ち越すと、新しい窓での最初の追随が世代の不一致で捨てられ 2 打鍵遅れる(PR #480 Opus r1 M1)。
     pub fn note_vk_sent(&mut self, focus_gen: u32) {
+        if self.focus_gen.is_some_and(|g| g != focus_gen) {
+            *self = Self::default();
+        }
         self.focus_gen.get_or_insert(focus_gen);
     }
 
     /// verdict の記録を 1 件取り込む。条件を満たす give-up なら証拠を返し、内部状態を空に戻す。
     pub fn note_record(&mut self, record: &LiteralDetectRecord) -> Option<GiveUpEvidence> {
         match record.facts.verdict {
-            LiteralVerdict::CompositionConfirmed | LiteralVerdict::StaleConfirm => {
+            // 連鎖を切る: 本物の確定、誤検出の疑い(StaleConfirm)、literal セッションの確定(SessionSkip)、
+            // literal 判定のスキップ(PlanSkippedLiteral)。
+            LiteralVerdict::CompositionConfirmed
+            | LiteralVerdict::StaleConfirm
+            | LiteralVerdict::SessionSkip
+            | LiteralVerdict::PlanSkippedLiteral => {
                 *self = Self::default();
                 None
             }
+            // 無視する(切りも数えもしない): 候補窓 veto の期限切れ、判定が出なかった中断(これらは literal の有無を言わない)。
+            LiteralVerdict::VetoExpired | LiteralVerdict::AbortedNoVerdict => None,
             LiteralVerdict::SuspectedLiteral => {
                 self.suspected += 1;
                 if !(record.gave_up && self.suspected >= 2) {
@@ -179,8 +192,50 @@ impl GiveUpTracker {
                     focus_gen,
                 })
             }
-            _ => None,
         }
+    }
+}
+
+/// give-up 証拠を受けたときの runtime の判断(純関数。Windows 専用コードから切り出して Linux でテストする)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GiveUpFollowDecision {
+    /// GJI × Imm32Unavailable の窓でない。
+    NotApplicable,
+    /// プローブ開始時から focus 世代が変わった。
+    StaleFocus,
+    /// 明示意図が ON でない。
+    NoExplicitIntent,
+    /// 監視窓を arm して読み直す。
+    Arm,
+}
+
+impl GiveUpFollowDecision {
+    #[must_use]
+    pub const fn outcome(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not_applicable",
+            Self::StaleFocus => "stale_focus",
+            Self::NoExplicitIntent => "no_explicit_intent",
+            Self::Arm => "armed",
+        }
+    }
+}
+
+#[must_use]
+pub fn giveup_follow_decision(
+    applies: bool,
+    gen_at_probe: u32,
+    gen_now: u32,
+    explicit_intent: Option<bool>,
+) -> GiveUpFollowDecision {
+    if !applies {
+        GiveUpFollowDecision::NotApplicable
+    } else if gen_at_probe != gen_now {
+        GiveUpFollowDecision::StaleFocus
+    } else if explicit_intent != Some(true) {
+        GiveUpFollowDecision::NoExplicitIntent
+    } else {
+        GiveUpFollowDecision::Arm
     }
 }
 
@@ -331,5 +386,88 @@ mod giveup_tracker_tests {
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
             None
         );
+    }
+
+    /// フォーカスが変わった(世代が違う)VK 送信で、古い窓の数えかけを持ち越さない(PR #480 Opus r1 M1)。
+    #[test]
+    fn a_new_focus_generation_restarts_the_chain() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(1);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None
+        );
+        t.note_vk_sent(2); // 窓が変わった
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None
+        );
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
+            Some(GiveUpEvidence {
+                cold_seq: 7,
+                focus_gen: 2
+            })
+        );
+    }
+
+    #[test]
+    fn session_skip_and_plan_skipped_literal_cut_the_chain() {
+        for v in [
+            LiteralVerdict::SessionSkip,
+            LiteralVerdict::PlanSkippedLiteral,
+        ] {
+            let mut t = GiveUpTracker::default();
+            t.note_vk_sent(1);
+            assert_eq!(
+                t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+                None
+            );
+            assert_eq!(t.note_record(&rec(v, false)), None);
+            t.note_vk_sent(1);
+            assert_eq!(
+                t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
+                None,
+                "{v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn veto_expired_and_aborted_are_neutral() {
+        for v in [
+            LiteralVerdict::VetoExpired,
+            LiteralVerdict::AbortedNoVerdict,
+        ] {
+            let mut t = GiveUpTracker::default();
+            t.note_vk_sent(1);
+            assert_eq!(
+                t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+                None
+            );
+            assert_eq!(t.note_record(&rec(v, false)), None);
+            assert!(
+                t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true))
+                    .is_some(),
+                "{v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn follow_decision_checks_applicability_then_focus_then_intent() {
+        use GiveUpFollowDecision::*;
+        assert_eq!(
+            giveup_follow_decision(false, 1, 1, Some(true)),
+            NotApplicable
+        );
+        assert_eq!(giveup_follow_decision(true, 1, 2, Some(true)), StaleFocus);
+        assert_eq!(giveup_follow_decision(true, 1, 1, None), NoExplicitIntent);
+        assert_eq!(
+            giveup_follow_decision(true, 1, 1, Some(false)),
+            NoExplicitIntent
+        );
+        assert_eq!(giveup_follow_decision(true, 1, 1, Some(true)), Arm);
+        assert_eq!(Arm.outcome(), "armed");
     }
 }

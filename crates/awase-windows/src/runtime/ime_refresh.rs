@@ -287,41 +287,42 @@ impl Runtime {
         &mut self,
         evidence: crate::tsf::literal_facts::GiveUpEvidence,
     ) {
-        if !self.external_change_watch_applies() {
-            tracing::debug!(
-                "[giveup-follow] 対象外の窓(GJI×Imm32Unavailable でない)ので何もしない cold={} profile={:?} ime={:?}",
-                evidence.cold_seq,
-                self.platform.current_app_profile(),
-                crate::tsf::observer::tsf_obs().active_ime_kind()
-            );
-            return;
-        }
+        use crate::tsf::literal_facts::GiveUpFollowDecision;
+        let applies = self.external_change_watch_applies();
         let gen_now = self.platform.output.ime_mode_focus_gen.get();
-        if gen_now != evidence.focus_gen {
-            tracing::debug!(
-                "[giveup-follow] focus 世代が変わったので捨てる cold={} gen_at_probe={} gen_now={gen_now}",
-                evidence.cold_seq,
-                evidence.focus_gen
-            );
-            return;
-        }
         let intent = self.platform_state.ime.explicit_intent();
-        if intent != Some(true) {
-            tracing::debug!(
-                "[giveup-follow] 明示意図が ON でないので何もしない cold={} explicit_intent={intent:?}",
-                evidence.cold_seq
-            );
-            return;
-        }
+        let decision = crate::tsf::literal_facts::giveup_follow_decision(
+            applies,
+            evidence.focus_gen,
+            gen_now,
+            intent,
+        );
+        let baseline = if decision == GiveUpFollowDecision::Arm {
+            self.platform_state
+                .ime
+                .arm_external_change_watch(crate::hook::current_tick_ms());
+            self.platform_state.ime.external_change_baseline()
+        } else {
+            None
+        };
+        tracing::info!(
+            "[giveup-follow] cold={} outcome={} gen_at_probe={} gen_now={gen_now} explicit_intent={intent:?} baseline={baseline:?}",
+            evidence.cold_seq,
+            decision.outcome(),
+            evidence.focus_gen
+        );
+        // 実機の不具合報告から追えるよう journal にも残す(attach_log が無くても、追随を試みたか・捨てた理由・基準値が分かる)。
         self.platform_state
             .ime
-            .arm_external_change_watch(crate::hook::current_tick_ms());
-        tracing::info!(
-            "[giveup-follow] give-up を契機に読み直しを開始 cold={} baseline={:?}",
-            evidence.cold_seq,
-            self.platform_state.ime.external_change_baseline()
-        );
-        self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
+            .journal
+            .record(crate::journal::JournalEntry::GiveUpFollow {
+                cold_seq: evidence.cold_seq,
+                outcome: decision.outcome(),
+                baseline,
+            });
+        if decision == GiveUpFollowDecision::Arm {
+            self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
+        }
     }
 
     // ── Stage 4: Engine 通知と次回スケジュール ──
