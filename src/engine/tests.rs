@@ -1570,6 +1570,29 @@ fn test_shift_face_returns_literal_via_ime() {
 }
 
 #[test]
+fn test_shift_face_fullwidth_latin_letter_becomes_halfwidth() {
+    // Shift 面の全角ラテン文字は半角 ASCII で出す（`ＡB` のように 1 文字目だけ全角になるのを防ぐ）。
+    let mut layout = make_layout();
+    layout.shift.insert(POS_A, lit('Ａ'));
+    let mut engine = TestHarness {
+        tracker: input_tracker::InputTracker::new(),
+        engine: NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
+    };
+
+    engine.on_event(Ev::down(VK_SHIFT).build());
+    let result = engine.on_event(Ev::down(VK_A).build());
+    result.assert_consumed();
+    assert!(matches!(result.actions[0], KeyAction::Char('A')));
+}
+
+#[test]
 fn test_shift_held_unlisted_key_passes_through() {
     let mut engine = make_engine_with_shift();
 

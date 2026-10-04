@@ -11,7 +11,7 @@ use crate::scanmap::PhysicalPos;
 use crate::types::{
     ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, SpecialKey, Timestamp, VkCode,
 };
-use crate::yab::{YabFace, YabLayout, YabValue};
+use crate::yab::{FullwidthCharExt, YabFace, YabLayout, YabValue};
 
 use super::consecutive_counter::ConsecutiveSoloCounter;
 use super::fsm_types::{
@@ -1436,6 +1436,16 @@ impl NicolaFsm {
     fn shift_face_reduce(&self, ev: &ClassifiedEvent) -> ParseAction {
         let face = self.get_face(Face::Shift);
         if let Some((action, kana)) = self.lookup_face(ev.pos, face) {
+            // Shift 面の全角ラテン文字（`Ａ`〜`Ｚ`・`ａ`〜`ｚ`）は半角 ASCII にして出す。
+            // 全角のまま Unicode 注入すると、Shift を押しながら打った英字が 1 文字目だけ
+            // 全角（`ＡB`）になり、IME 単体の `AB` と食い違う（2026-10-04、報告「ブラウザでの
+            // 英数入力が不安定」の再現 CI、GJI × 実 Chrome）。記号（`！` など）は従来どおり .yab の値。
+            let action = match action {
+                KeyAction::Char(c) if c.is_fullwidth_latin_letter() => {
+                    KeyAction::Char(c.to_halfwidth_ascii().unwrap_or(c))
+                }
+                other => other,
+            };
             ParseAction::Reduce {
                 actions: smallvec![action.clone()],
                 record: OutputUpdate::record(ev.scan_code, &action, kana),
