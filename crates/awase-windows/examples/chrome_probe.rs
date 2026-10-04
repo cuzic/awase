@@ -15,6 +15,11 @@
 //! `--keymatrix=<key>=<kind>:<gap>,...`(ADR-208 L3b): 「ずれの作り方 × 明示キー」行列。形式・記録は `typing_stress/keymatrix.rs` と同じ(ここでは `KM {json}` の行で出す)。
 //! 判定は check_keymatrix.py。実 Chrome は IME の開閉を API で読めない(TsfNative)ので、押下ごとの打鍵(k,a)の結果を主証拠にする。
 //!
+//! `--offrca=<action>:<prep>,...`(MS-IME × 実 Chrome の OFF が閉じない件の原因切り分け): 各セルで IME を開いてから `action` で閉じようとし、
+//! `IMC_GETOPENSTATUS` を 20ms 周期で `--or-poll=<ms>`(既定 4000)の間**打鍵せずに**ポーリングして閉じるまでの時間(遅延か、永久に閉じないか)を測る。
+//! その後 k,a を打って実際の IME 状態(打鍵結果)を確認する。`--or-ladder` は閉じなかった試行で別手段(再送・IMC・0xF3・0x19・TSF 大域 compartment)を順に試す。
+//! `--or-relaunch` は試行ごとに Chrome を起動し直す(ページ状態の蓄積の影響を切り分ける)。判定は check_offrca.py(`OFFRCA {json}` 行)。
+//!
 //! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--chrome=<chrome.exe>] [--log=<path>]`
 //!   `--no-awase`: awase を止めた対照実験（かなのとき `か` を期待）。既定は awase 起動中（NICOLA を期待）。
 //! 実行中は Windows 機のキーボード・マウスに触らない。
@@ -953,6 +958,233 @@ fn run_keymatrix(p: &mut Probe, spec: &str, args: &[String]) {
     }
 }
 
+/// `windows` の `ITfThreadMgr::GetGlobalCompartment` で大域の `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE` を書く(TSF 直接。結果を文字列で返す)。
+fn tsf_global_set_openclose(v: i32) -> String {
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::UI::TextServices::{
+        CLSID_TF_ThreadMgr, ITfThreadMgr, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+    };
+    // SAFETY: このスレッド(STA)で COM を初期化して TSF の大域 compartment を読み書きするだけ。
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
+        let tm: ITfThreadMgr = match CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)
+        {
+            Ok(t) => t,
+            Err(e) => return format!("ThreadMgr作成失敗:{e}"),
+        };
+        let cid = match tm.Activate() {
+            Ok(c) => c,
+            Err(e) => return format!("Activate失敗:{e}"),
+        };
+        let out = (|| -> Result<String, String> {
+            let gm = tm
+                .GetGlobalCompartment()
+                .map_err(|e| format!("GetGlobalCompartment失敗:{e}"))?;
+            let c = gm
+                .GetCompartment(&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)
+                .map_err(|e| format!("GetCompartment失敗:{e}"))?;
+            let rd = |c: &windows::Win32::UI::TextServices::ITfCompartment| {
+                c.GetValue()
+                    .ok()
+                    .and_then(|x| i32::try_from(&x).ok())
+            };
+            let before = rd(&c);
+            c.SetValue(cid, &VARIANT::from(v))
+                .map_err(|e| format!("SetValue失敗:{e} before={before:?}"))?;
+            let after = rd(&c);
+            Ok(format!("ok before={before:?} after={after:?}"))
+        })();
+        let _ = tm.Deactivate();
+        out.unwrap_or_else(|e| e)
+    }
+}
+
+fn spawn_chrome(chrome: &str, profile: &std::path::Path, port: u16) -> std::process::Child {
+    std::process::Command::new(chrome)
+        .args([
+            &format!("--user-data-dir={}", profile.display()),
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "--disable-sync",
+            &format!("--app=http://127.0.0.1:{port}/"),
+        ])
+        .spawn()
+        .expect("chrome を起動できません")
+}
+
+fn or_api() -> Option<bool> {
+    ime_control(0x0005, 0).map(|v| v != 0)
+}
+
+/// `--offrca` の動作。戻り値は注入したキーの説明。
+fn or_do(action: &str) -> String {
+    let tap = |vk: u32, hold: u64| {
+        send_key(vk, true);
+        sleep(hold);
+        send_key(vk, false);
+    };
+    match action {
+        "1a" => tap(0x1A, 60),
+        "1a_dbl" => {
+            tap(0x1A, 60);
+            sleep(150);
+            tap(0x1A, 60);
+        }
+        "19" => tap(0x19, 60),
+        "f3" => tap(0xF3, 60),
+        "f4" => tap(0xF4, 60),
+        "1d" => tap(0x1D, 60),
+        "f0" => tap(0xF0, 60),
+        "ctrl1d" => send_ctrl_muhenkan(),
+        "imc0" => {
+            let r = ime_control(0x0006, 0);
+            return format!("imc0 ret={r:?}");
+        }
+        "tsf0" => return format!("tsf0 {}", tsf_global_set_openclose(0)),
+        other => return format!("未知のaction:{other}"),
+    }
+    format!("key {action}")
+}
+
+fn or_poll(total_ms: u64, stop_when_closed: bool) -> (Option<u64>, Vec<(u64, Option<bool>)>) {
+    let t0 = Instant::now();
+    let mut series: Vec<(u64, Option<bool>)> = Vec::new();
+    let mut closed_ms = None;
+    let mut last: Option<Option<bool>> = None;
+    while t0.elapsed() < Duration::from_millis(total_ms) {
+        let v = or_api();
+        let t = u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if last != Some(v) {
+            series.push((t, v));
+            last = Some(v);
+        }
+        if v == Some(false) && closed_ms.is_none() {
+            closed_ms = Some(t);
+            if stop_when_closed {
+                break;
+            }
+        }
+        sleep(20);
+    }
+    (closed_ms, series)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_offrca(
+    p: &mut Probe,
+    spec: &str,
+    args: &[String],
+    awase: bool,
+    chrome: &str,
+    profile: &std::path::Path,
+    port: u16,
+    child: &mut std::process::Child,
+) {
+    let arg_u64 = |key: &str, default: u64| -> u64 {
+        args.iter()
+            .find_map(|a| a.strip_prefix(key).and_then(|v| v.parse().ok()))
+            .unwrap_or(default)
+    };
+    let n = arg_u64("--or-n=", 10);
+    let poll_ms = arg_u64("--or-poll=", 4000);
+    let ladder = args.iter().any(|a| a == "--or-ladder");
+    let relaunch = args.iter().any(|a| a == "--or-relaunch");
+    let msime = args.iter().any(|a| a == "--msime");
+    p.log.line(&format!(
+        "OFFRCA_CONFIG {}",
+        serde_json::json!({"ime":if msime {"msime"} else {"gji"},"awase":awase,"cells":spec,
+            "n":n,"poll_ms":poll_ms,"ladder":ladder,"relaunch":relaunch})
+    ));
+    for cell in spec.split(',').filter(|s| !s.is_empty()) {
+        let (action, prep) = cell.split_once(':').unwrap_or((cell, "typed"));
+        for i in 0..n {
+            if relaunch && i > 0 {
+                let _ = child.kill();
+                let _ = child.wait();
+                sleep(1500);
+                let before = p
+                    .shared
+                    .lock()
+                    .unwrap()
+                    .events
+                    .iter()
+                    .filter(|e| e.kind == "ready")
+                    .count();
+                *child = spawn_chrome(chrome, profile, port);
+                let start = Instant::now();
+                while p
+                    .shared
+                    .lock()
+                    .unwrap()
+                    .events
+                    .iter()
+                    .filter(|e| e.kind == "ready")
+                    .count()
+                    <= before
+                {
+                    if start.elapsed() > Duration::from_secs(40) {
+                        p.log.line("OFFRCA_ABORT 再起動した Chrome のページが読み込まれない");
+                        return;
+                    }
+                    sleep(100);
+                }
+                sleep(1500);
+            }
+            p.focus_lost = false;
+            bring_to_front();
+            // 準備: IME を開く。
+            let prep_ok = match prep {
+                "notype" => {
+                    p.press(0x16, false, 40);
+                    sleep(1000);
+                    or_api() == Some(true)
+                }
+                "imc" => {
+                    let _ = ime_control(0x0006, 1);
+                    sleep(800);
+                    or_api() == Some(true)
+                }
+                _ => ensure(p, Setup::Kana, awase),
+            };
+            sleep(500);
+            let api_pre = or_api();
+            let utc = utc_stamp();
+            let t_act = Instant::now();
+            let desc = or_do(action);
+            let (closed_ms, series) = or_poll(poll_ms, false);
+            let _ = t_act;
+            let api_end = or_api();
+            let got = p.probe_logged("offrca 後");
+            let api_after_probe = or_api();
+            let typed_open = km_open_of(got);
+            let mut ladder_res = Vec::new();
+            if ladder && closed_ms.is_none() && api_end == Some(true) {
+                for step in ["1a", "imc0", "f3", "19", "tsf0"] {
+                    let d = or_do(step);
+                    let (c2, _) = or_poll(1500, true);
+                    ladder_res.push(serde_json::json!({"step":step,"desc":d,"closed_ms":c2}));
+                    if c2.is_some() {
+                        break;
+                    }
+                }
+            }
+            let ser: Vec<serde_json::Value> = series
+                .iter()
+                .map(|(t, v)| serde_json::json!([t, v]))
+                .collect();
+            p.log.line(&format!(
+                "OFFRCA {}",
+                serde_json::json!({"type":"or_trial","cell":cell,"action":action,"prep":prep,"n":i,
+                    "utc":utc,"prep_ok":prep_ok,"api_pre":api_pre,"desc":desc,"closed_ms":closed_ms,
+                    "series":ser,"api_end":api_end,"typed":got.label(),"typed_open":typed_open,
+                    "api_after_probe":api_after_probe,"ladder":ladder_res,"focus_lost":p.focus_lost,
+                    "awase":awase})
+            ));
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let repeat: usize = args
@@ -1001,17 +1233,7 @@ fn main() {
     if args.iter().any(|a| a == "--msime") {
         activate_msime_profile(&mut log);
     }
-    let mut child = std::process::Command::new(&chrome)
-        .args([
-            &format!("--user-data-dir={}", profile.display()),
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-extensions",
-            "--disable-sync",
-            &format!("--app=http://127.0.0.1:{port}/"),
-        ])
-        .spawn()
-        .expect("chrome を起動できません");
+    let mut child = spawn_chrome(&chrome, &profile, port);
 
     // ページの ready を待つ。
     let start = Instant::now();
@@ -1094,6 +1316,16 @@ fn main() {
     if let Some(spec) = args.iter().find_map(|a| a.strip_prefix("--keymatrix=")) {
         bring_to_front();
         run_keymatrix(&mut p, spec, &args);
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
+    // `--offrca=<action>:<prep>,...`: 模式は run_offrca の doc を参照。
+    if let Some(spec) = args.iter().find_map(|a| a.strip_prefix("--offrca=")) {
+        bring_to_front();
+        run_offrca(
+            &mut p, spec, &args, awase, &chrome, &profile, port, &mut child,
+        );
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();
         return;

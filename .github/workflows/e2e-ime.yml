@@ -439,6 +439,18 @@ jobs:
             *[km(f'sc-keymatrix-e2-tog-{ime_name}-chrome', 'chrome', ime_name,
                  ['1d=tog:fresh', '1d=tog:open', '1d=tog:sync', 'f3=tog:fresh', 'f3=tog:open', '19=tog:fresh', '19=tog:open'], 'tog', wait=2400)
               for ime_name in ('msime', 'gji')],
+            # --- MS-IME × 実 Chrome の OFF が閉じない件の原因切り分け(only='sc-offrca-*' で回す。chrome_probe --offrca、判定なし・観測のみ) ---
+            # セル=`action:prep`。action=1a(0x1A)/19/f3/1d/f0/ctrl1d/imc0(IMC_SETOPENSTATUS 0)/tsf0(TSF 大域 compartment)。prep=typed(0x16+打鍵確認)/notype(0x16のみ)/imc(IMCで開く)。
+            # 打鍵せずに API(IMC_GETOPENSTATUS)を20ms周期で4秒ポーリング → 閉じるまでの時間。--or-ladder=閉じなかったら別手段を順に試す。--or-relaunch=試行ごとに Chrome 再起動。
+            *[cfg(f'sc-offrca-{name}', 'observe', check='offrca', ime='msime' if msime else 'gji', keymap=2 if msime else 1, runs=1, wait=wait, awase='true' if aw else 'false',
+                  chrome=f"--offrca={cells} --or-ladder --settle=800{' --msime' if msime else ''}{'' if aw else ' --no-awase'}{' --or-relaunch' if relaunch else ''}")
+              for name, msime, aw, relaunch, cells, wait in (
+                ('msime-noawase', True, False, False, '1a:typed,1a:notype,1a:imc,19:typed,f3:typed,1d:typed,imc0:typed,tsf0:typed', 3000),
+                ('msime-awase', True, True, False, '1a:typed,ctrl1d:typed,ctrl1d:notype,1d:typed,19:typed,imc0:typed,tsf0:typed', 3000),
+                ('gji-noawase', False, False, False, '1a:typed,1a:notype,19:typed,f3:typed,1d:typed,imc0:typed,tsf0:typed', 3000),
+                ('msime-noawase-relaunch', True, False, True, '1a:typed,1a:notype,imc0:typed,tsf0:typed', 3000),
+                ('msime-awase-relaunch', True, True, True, 'ctrl1d:typed,ctrl1d:notype', 3000),
+              )],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -563,12 +575,12 @@ jobs:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith('sc-keymatrix-')
-                       or any(o.startswith('sc-keymatrix-') and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -974,6 +986,8 @@ jobs:
             # ADR-208 L3b: 「ずれの作り方 × 明示キー」行列。実 Chrome は chrome_probe.log、自前窓は typing_stress.log を読む。
             $kmlog = if ('${{ matrix.cfg.chrome }}' -ne '') { 'dist\chrome_probe.log' } else { 'dist\typing_stress.log' }
             python tools\e2e\ime_key_matrix\check_keymatrix.py --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'offrca') {
+            python tools\e2e\ime_key_matrix\check_offrca.py --json offrca.json dist\chrome_probe.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'startup') {
             python tools\e2e\ime_key_matrix\check_startup.py --json startup.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
@@ -1047,6 +1061,7 @@ jobs:
             typing.json
             reopen.json
             keymatrix.json
+            offrca.json
             env.txt
             dist/compartment_notify_probe.log
             dist/compartment_notify_probe_diag.log
