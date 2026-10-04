@@ -260,3 +260,40 @@ S2 は「生キーで GJI 自身が確実に処理していた打鍵」を awase
   ただしハーネスは `SendInput` で注入したキーを送り、awase は注入イベントを対象にしない（`is_bare_thumb` は `!event.injected`、BUG-14）ので、**この構成は本 ADR の新分岐（物理の親指単独押下）を通らない**。
   PASS は「この設定で awase が追随を壊さない」ことの確認であり、Consume＋絶対指定 `SetOpen`・リピート・stale belief の挙動そのものは検証していない（`src/engine/tests.rs` の単体テストが代わりに固定）。
   実際の物理押下は実機 A/B でしか検証できない（`SendInput` 注入では物理キー状態が作れない、`feedback_sendinput_cannot_test_physical_key_state`）。
+
+## 追記(2026-10-04): 「IME に任せる(Passthrough)」の位置づけと設定画面の文言(PR #470)
+
+**報告:** `keys.ime_on` に無変換を入れたうえで無変換の単独タップをパススルーにすると期待どおり動かない。
+
+**結論: 設計どおりの挙動で、変更しない。** bare の `keys.ime_*`(`forced_open_action`)は `ModeKeyConfig` より優先され(決定の優先順位)、
+単独タップは絶対指定の `SetOpen` になって生キーは IME に届かない。IME ON のときだけ素通しにする案は**不採用**:
+エンジン(コア)は IME の状態を知らないので、プラットフォーム層が親指の KeyDown ごとに belief を見て役割を外す(`role_open_action` と同じ方式)ことになり、
+belief が読めない窓(TsfNative、BUG-149/150)でずれると「ON なのに素通しだけして何も起きない」「OFF なのにキーを握りつぶす」になる。
+IME を状態の正とする ADR-191 の方針とも逆向き。
+
+**位置づけの統一(所有者決定):**
+- `keys.ime_on/off/toggle` は、通常の IME 切替用ではなく、**モードずれが起きたときに awase と IME の状態を強制的にそろえる**キー。
+- IME のオン/オフ・確定・再変換などを無変換/変換で行いたい場合は、**IME 側のキー設定で割り当て**(Microsoft IME は「キーとタッチのカスタマイズ」、
+  Google 日本語入力はプロパティの「キー設定」の「コマンド」)、awase 側は単独タップを「IME に任せる(Passthrough)」にする。`keys.ime_*` には入れない。
+- 既定の「無効にする(Suppress)」は、NICOLA 入力中に単独タップを飲み込む(IME にも送らない)。IME 側の割り当ては動かない。
+
+**変更(PR #470。文言・警告・案内のみ、エンジンと hook は不変):**
+- 設定画面: 「常に無視する/常に送出する」→「無効にする/IME に任せる」。ホバーに用途を記載。
+- 設定画面: Passthrough 選択中に、そのキーが `keys.ime_*` にも入っていれば効かない旨をインライン警告。`keys.ime_on/off` のラベルを「強制的にそろえるキー(モードずれ補正用)」に変更。
+- 読み込み時の警告(`config.rs::validate_thumb_key_in_ime_combos`)に同じ旨を追加。`KeysConfig::has_bare_role_key` を設定画面と共有。
+- 設定画面に IME 側の設定を開くボタン: Microsoft IME は `ms-settings:regionlanguage-jpnime`(ページを開くだけ)、
+  Google 日本語入力は `GoogleIMEJaTool.exe --mode=config_dialog`(プロパティを開くだけ)。開けない場合の手順(タスクトレイの「あ」/「A」→「プロパティ」等)は常に案内文として出す。
+
+**実機確認(2026-10-04、dragonflyg4、GJI 3.34.6260.0):** `C:\Program Files (x86)\Google\Google Japanese Input\GoogleIMEJaTool.exe --mode=config_dialog` で
+「Google 日本語入力 プロパティ」ウィンドウが開く。exe 内の文字列調査でもキー設定タブを直接開く引数は見つからず、タブの選択は利用者が行う。
+他に `dictionary_tool`・`word_register_dialog`・`about_dialog` 等のモード名がある(未使用)。
+
+**採らなかったもの:** 設定アプリ内の「キーとタッチのカスタマイズ」ボタンを UIA で押して直接遷移する案。
+実証済み(`msime_key_assignment_settings_probe`)だが、AutomationId・表示言語・OS バージョン・互換モードに依存し、
+プローブは遷移のために `SystemSettings.exe` を `taskkill` するため製品機能には使えない(所有者判断: OS バージョン依存は避ける)。
+
+**未整理・未検証:**
+- 設定画面の 2 択は Passthrough 選択時に `ignore_composing_guard=true` を固定で書く(idle も composing も素通し)。`config.toml` を直接編集して
+  `*_solo_tap_always_suppress=false` だけ書くと「idle だけ素通し、composing 中は Suppress」になる(`ModeKeyConfig::from_legacy_bools`)。
+  この 3 状態目を 2 択に統合するかは、MS-IME で変換中に無変換を素通しして誤爆しないかの実測が先(未実施)。
+- Windows 実機での設定画面の見た目とボタンの動作は未確認(CI は windows-settings のビルド・テストまで)。
