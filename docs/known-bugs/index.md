@@ -183,6 +183,7 @@
 | [BUG-179](BUG-179.md) | CI の MS-IME 構成で awase 起動後に起動した Chrome へ IME 操作なしで k,a を打つと kiu になる |
 | [BUG-180](BUG-180.md) | 候補窓 SHOW/HIDE の保留 latch が IME OFF・フォーカス変更で捨てられず、次の drain で前セッションの StartComposition が配られる |
 | [BUG-183](BUG-183.md) | 入力言語のホットキー経由でロシア語へ切り替えると、awase が日本語入力のまま残る(Alt+Shift・Win+Space では即座に非活性になる) |
+| [BUG-184](BUG-184.md) | MS-IME で物理 英数 キー(IME OFF)を Suppress して ImmCross で閉じる際、未確定文字を確定せず、消える疑い |
 
 ## その他の資料
 
