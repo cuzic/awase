@@ -233,6 +233,7 @@
 | [224](224-closed-loop-hub-ungate-or-extract.md) | 閉ループが写している ImeStateHub の配線を、ungate(案A)か純粋関数への切り出し(案C)か。見逃しが出るまで着手しない | 起草(2026-10-04、未決定・実装なし) |
 | [225](225-journal-replay-ci-closed-loop-integration.md) | 報告 journal・CI 実機・閉ループ・replay の連携は、まず実害を測り(SP0)、抽出手順の縮小版だけを候補に残す | 見送り(2026-10-04、SP0: 直近10件で検知可能 0 件・弱い候補 2 件) |
 | [226](226-ci-realmachine-closed-loop-oracle-sharing.md) | CI 実機・閉ループ・replay の接続(oracle 共有 A〜D は見送り、ログ構造化 E は未レビュー) | A〜D 見送り(2026-10-04、Opus round1)。E は未決定 |
+| [227](227-bug074-giveup-as-closed-ime-evidence.md) | BUG-074: give-up で文字が痕跡なく消える件。先に測り(D0)、方向(再オープン/案K/通知/追随)は所有者が決める | 起草(2026-10-04、Opus r3 で収束・実装なし) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
