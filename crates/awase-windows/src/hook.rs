@@ -1,6 +1,6 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -76,6 +76,10 @@ struct HookState {
     /// 短押し（例: 200ms 未満）では Ctrl+I 直後の無変換 で IME OFF 誤発火を
     /// 避けるため修飾解放を生かし、長押しでのみ OS state を物理状態に再同期する。
     physical_key_down_at_ms: [AtomicU64; 256],
+    /// 物理キー（`vk::physical_identity_slot`＝scan+拡張ビット）ごとの、KeyDown で
+    /// `physical_key_state` を立てた VK（0 = 記録なし、BUG-181）。`VK_DBE_HIRAGANA` は
+    /// Down=0xF2・Up=0xF0 で届くため、Up で Down 側 VK の枠を落とすのに使う。
+    physical_down_vk_by_identity: [AtomicU16; 512],
     /// Alt なりすまし適用後の左親指キー押下時刻（µs）。0 = 押下されていない。
     left_thumb_down_at_us: AtomicU64,
     /// Alt なりすまし適用後の右親指キー押下時刻（µs）。0 = 押下されていない。
@@ -149,6 +153,7 @@ impl HookState {
             hook_tid_init_slot: AtomicU32::new(0),
             physical_key_state: [const { AtomicBool::new(false) }; 256],
             physical_key_down_at_ms: [const { AtomicU64::new(0) }; 256],
+            physical_down_vk_by_identity: [const { AtomicU16::new(0) }; 512],
             left_thumb_down_at_us: AtomicU64::new(0),
             right_thumb_down_at_us: AtomicU64::new(0),
             left_thumb_down_scan: AtomicU32::new(0),
@@ -467,6 +472,9 @@ pub fn reset_physical_key_state() {
         slot.store(false, Ordering::Relaxed);
     }
     for slot in &HOOK_STATE.physical_key_down_at_ms {
+        slot.store(0, Ordering::Relaxed);
+    }
+    for slot in &HOOK_STATE.physical_down_vk_by_identity {
         slot.store(0, Ordering::Relaxed);
     }
     HOOK_STATE.left_thumb_down_at_us.store(0, Ordering::Relaxed);
@@ -1544,6 +1552,30 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 0
             };
             slot.store(new_value, Ordering::Relaxed);
+        }
+        // BUG-181: Down/Up で VK が変わる物理キー（`VK_DBE_HIRAGANA` は Down=0xF2・
+        // Up=0xF0）では上の VK 単位の枠が Up で落ちず、次の Down が自動リピート扱い
+        // （`was_down=true`）になり押下 ID を失う。Down で記録した VK を同じ物理キーの
+        // Up で落とす。フックコールバック上ではログを出さない。
+        let extended = (kb.flags.0 & LLKHF_EXTENDED) != 0;
+        if let Some(i) = crate::vk::physical_identity_slot(scan, extended) {
+            if let Some(rec_slot) = HOOK_STATE.physical_down_vk_by_identity.get(i) {
+                if is_keydown {
+                    if !was_down {
+                        rec_slot.store(vk.0, Ordering::Relaxed);
+                    }
+                } else {
+                    let recorded = rec_slot.swap(0, Ordering::Relaxed);
+                    if let Some(stale) = crate::vk::stale_down_vk_on_up(VkCode(recorded), vk) {
+                        if let Some(s) = HOOK_STATE.physical_key_state.get(stale.0 as usize) {
+                            s.store(false, Ordering::Relaxed);
+                        }
+                        if let Some(s) = HOOK_STATE.physical_key_down_at_ms.get(stale.0 as usize) {
+                            s.store(0, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
         }
     }
 
