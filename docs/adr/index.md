@@ -231,7 +231,7 @@
 | [222](222-bug-report-log-gzip-ring-dump.md) | 不具合報告のログは ring の中身を gzip して送る(打鍵は最低10分) | 採用・実装済み(2026-10-04、PR #451、Opus round1/round2 反映・所有者決定: gzip・プレビュー読み… |
 | [223](223-input-language-change-detected-at-key-time.md) | 入力言語の切替を、打鍵の時点でフォーカス窓のスレッドの言語を読んで検知する(案C)。表示の即時更新は切替キー解放後に 1 回だけ読む(案E2)。購読もポーリングも使わない | 一部実装(段階 0 の測定は合格〈PR #452〉、段階 1 = 打鍵の取り込み時に読んだ入力言語で is_japanese_ime を… |
 | [224](224-closed-loop-hub-ungate-or-extract.md) | 閉ループが写している ImeStateHub の配線を、ungate(案A)か純粋関数への切り出し(案C)か。見逃しが出るまで着手しない | 起草(2026-10-04、未決定・実装なし) |
-| [225](225-journal-replay-ci-closed-loop-integration.md) | 報告 journal・CI 実機・閉ループ・replay の連携は、まず実害を測り(SP0)、抽出手順の縮小版だけを候補に残す | 起草(2026-10-04、Opus round1 反映・未決定・実装なし)。SP0 で 2 件未満なら見送り |
+| [225](225-journal-replay-ci-closed-loop-integration.md) | 報告 journal・CI 実機・閉ループ・replay の連携は、まず実害を測り(SP0)、抽出手順の縮小版だけを候補に残す | 見送り(2026-10-04、SP0: 直近10件で検知可能 0 件・弱い候補 2 件) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
