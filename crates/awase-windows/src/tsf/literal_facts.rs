@@ -229,21 +229,33 @@ mod giveup_tracker_tests {
     fn two_suspected_literals_ending_in_give_up_yield_evidence_with_first_send_focus_gen() {
         let mut t = GiveUpTracker::default();
         t.note_vk_sent(5);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None
+        );
         t.note_vk_sent(6); // 世代が変わっても最初の送信時の世代を使う
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
-            Some(GiveUpEvidence { cold_seq: 7, focus_gen: 5 })
+            Some(GiveUpEvidence {
+                cold_seq: 7,
+                focus_gen: 5
+            })
         );
         // 証拠を返したら空に戻る
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
+            None
+        );
     }
 
     #[test]
     fn a_single_suspected_literal_is_not_enough() {
         let mut t = GiveUpTracker::default();
         t.note_vk_sent(1);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
+            None
+        );
     }
 
     /// 連鎖の途中に StaleConfirm が入ったら連鎖は切れる(ADR-200 の高速打鍵の誤検出型)。
@@ -251,10 +263,19 @@ mod giveup_tracker_tests {
     fn stale_confirm_in_the_middle_of_the_chain_blocks_evidence() {
         let mut t = GiveUpTracker::default();
         t.note_vk_sent(1);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::StaleConfirm, false)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None
+        );
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::StaleConfirm, false)),
+            None
+        );
         t.note_vk_sent(1);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
+            None
+        );
     }
 
     /// 連鎖が始まる前の(無関係な)StaleConfirm は以後をラッチしない(CI の setup で出た StaleConfirm が全試行を拒否した)。
@@ -262,12 +283,21 @@ mod giveup_tracker_tests {
     fn stale_confirm_before_the_chain_does_not_latch() {
         let mut t = GiveUpTracker::default();
         t.note_vk_sent(1);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::StaleConfirm, false)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::StaleConfirm, false)),
+            None
+        );
         t.note_vk_sent(2);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None
+        );
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
-            Some(GiveUpEvidence { cold_seq: 7, focus_gen: 2 })
+            Some(GiveUpEvidence {
+                cold_seq: 7,
+                focus_gen: 2
+            })
         );
     }
 
@@ -275,16 +305,31 @@ mod giveup_tracker_tests {
     fn composition_confirmed_resets_the_chain() {
         let mut t = GiveUpTracker::default();
         t.note_vk_sent(1);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::CompositionConfirmed, false)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None
+        );
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::CompositionConfirmed, false)),
+            None
+        );
         t.note_vk_sent(1);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
+            None
+        );
     }
 
     #[test]
     fn without_a_recorded_send_there_is_no_focus_gen_so_no_evidence() {
         let mut t = GiveUpTracker::default();
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)), None);
-        assert_eq!(t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)), None);
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None
+        );
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
+            None
+        );
     }
 }
