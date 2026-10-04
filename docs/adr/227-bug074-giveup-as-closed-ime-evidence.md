@@ -8,7 +8,7 @@ summary: |-
   r2 レビュー(Must 2・Should 4)で、give-up 後は連続カウントが戻らず以後の打鍵が全部消える見込み(コード確認済み、実測は D0-3)と判明し、「失われるのは 1 文字」を前提にした比較を改めた。
   決定: 所有者判断で追随(belief だけを実状態へ揃え IME には書かない)。D0 で偽陽性 0/30(RichEdit・実 Chrome・Windows Terminal)。Opus r4・r5 で、追随が TsfNative の conv 推論で打ち消される恐れ(B1)・観測ソースの偽装・取り出し時点の遅れ・再現窓が Imm32Unavailable であること・ADR-205 の柵の欠落等が判明し、設計を r6 に直した(Imm32Unavailable は give-up を読み直しのきっかけにする案、TsfNative は D0-5 の実測待ち)。
 status: |-
-  起草 r6(2026-10-04): 所有者判断=追随。Opus r4・r5・r6 を反映し、(i) は収束(r6 の Must 1 件を反映済み・再レビュー不要)。測定済みの `Imm32Unavailable`×GJI は「give-up を読み直しのきっかけにする」(i)、TsfNative は B1 を D0-5 で測ってから(ii)。実装なし。Opus r1(Blocker 2・Must 7・Should 6)・r2(Must 2・Should 4)を反映し、r3 で収束(Blocker・Must なし)。実装なし。D0 の測定と所有者の方向決定が先。
+  D0-5 実測済み(2026-10-04): TsfNative は give-up が起きず推論追随は実装しない(下記)。起草 r6(2026-10-04): 所有者判断=追随。Opus r4・r5・r6 を反映し、(i) は収束(r6 の Must 1 件を反映済み・再レビュー不要)。測定済みの `Imm32Unavailable`×GJI は「give-up を読み直しのきっかけにする」(i)、TsfNative は B1 を D0-5 で測ってから(ii)。実装なし。Opus r1(Blocker 2・Must 7・Should 6)・r2(Must 2・Should 4)を反映し、r3 で収束(Blocker・Must なし)。実装なし。D0 の測定と所有者の方向決定が先。
 related_adr:
   - "ADR-080"
   - "ADR-100"
@@ -138,6 +138,14 @@ D0 で再現できたのは **`Imm32Unavailable`×GJI**(自前 RichEdit 窓、`-
 ### (ii) の設計候補(D0-5 の結果次第、旧 r5 の内容)
 
 専用の evidence 型 `Observed<LiteralGiveUp>`(Medium・`BeliefOnly`・`gave_up && SuspectedLiteral` の witness)を新設し、`follow_literal_giveup` が記録→意図削除→`pass_through_observed(align_desired=true)`。B1 の対策案: (a) `ConvOpenInference` に負けない形(BUG-26 との衝突を確認)、(b) 追随後〜次の明示操作/フォーカス変更まで `NativeToggleShadowOff` を抑止、(c) TsfNative を外す。`align_desired` が新鮮な開の観測と衝突したときの挙動を単体テストで固定する(r4 S4)。
+
+### D0-5 の結果(2026-10-04、run 37237143414、Windows Terminal 1.23・GJI・`profile=TsfNative`、`ci/adr227-verify`)
+
+- **外部クローズは Windows Terminal で実際に効く**(awase なしの対照 `cal-d0-gji-wt-close-control`、5 試行): `WM_IME_CONTROL`(`IMC_SETOPENSTATUS`)で `open_after=0`、直後の `k`,`a` は `ka`(閉)。M3(a)の懸念(IMM32 の操作が TSF の開閉に反映されない)は当たらなかった。
+- **TsfNative では give-up が起きない**(`cal-d0-gji-wt-close-follow`、8 試行): 外部クローズ後の +0.3 秒・+1 秒・+4.5 秒の打鍵がすべて**生ローマ字 `kiu`**(NICOLA の `き`,`う` を awase が romaji `ki`,`u` で送り、閉じた IME が literal で受ける)として画面に出る。`giveup=0 suspected=0`。literal 検出は cold の最初の送信でしか効かず(`PlanSkippedLiteral`・以後 warm)、**文字は消えず、belief(ON)・Engine(ON)は閉じた実 IME とずれたまま**。BUG-074 の「痕跡なく消える」とは別の症状(Engine ON×IME 閉の drift=画面に romaji が見える)。
+- **B1 の前提は確認**: 閉じた IME の conv に NATIVE ビットが残る(`conv=0x00000019`、`open_after=0` のとき)。追随で意図を捨てて belief を OFF にすれば、`idle-conv-check` の `has_native && !effective_open` が `ConvOpenInference(true)` を出しうる(次の打鍵で belief が開に戻る)。
+- **B1 の直接測定は成立しなかった**: 実験の推論追随(`cal-d0-gji-wt-close-follow-expfollow`、`AWASE_EXP_TSF_FOLLOW`)は、give-up 証拠が一度も出ないので発火せず、現ビルドと同じ結果。
+- **結論**: (ii) TsfNative の「give-up を閉の証拠にする推論追随」は、**Windows Terminal では発火条件(give-up)が起きないので効かず、B1 の危険(conv の NATIVE 残り)だけが残る。実装しない**。TsfNative の外部クローズで見える症状は、本 ADR の対象(give-up による文字消失)ではなく、「Engine ON × IME 閉」の drift(romaji が見える)として別に扱う。元の BUG-074 報告(Windows Terminal・cold・idle 後)は外部クローズではなく cold の give-up で、再現条件が違う(未再現)。
 
 ### 検証計画
 
