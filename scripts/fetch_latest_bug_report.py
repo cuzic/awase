@@ -60,6 +60,9 @@ def gunzip_base64(encoded: str, max_bytes: int = MAX_GUNZIP_BYTES) -> str:
     out = decompressor.decompress(raw, max_bytes + 1)
     if len(out) > max_bytes or decompressor.unconsumed_tail:
         raise ValueError(f"展開後のサイズが上限 {max_bytes} バイトを超えました")
+    if not decompressor.eof:
+        # 途中で切れた gzip を黙って一部だけ展開すると、調査の材料が欠けていることに気付けない。
+        raise ValueError("gzip が途中で切れています")
     return out.decode("utf-8")
 
 

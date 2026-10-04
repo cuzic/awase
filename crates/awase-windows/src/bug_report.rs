@@ -1005,18 +1005,51 @@ pub fn build_payload_json_fitting(
     Ok((json, 0))
 }
 
-/// 送信直前に、プレビュー JSON（ログ以外の項目。ユーザーが編集しうる）へ、
-/// 画面に表示している journal / awase.log の**現在の内容**を gzip して差し込む
-/// （ADR-222: プレビュー = 送信内容。ログは表示側で行を削除でき、消した行は
-/// 圧縮データに含まれない）。
+/// 1 本の gzip(base64) の最大長（Worker の `MAX_LOG_GZ_BASE64_CHARS` と同じ値）。
+/// 本体上限から、他の項目（状態・設定・配列ファイル等）の余裕 256KiB を引いた値。
+pub const MAX_LOG_GZ_BASE64_CHARS: usize = MAX_BODY_BYTES - 256 * 1024;
+
+/// ユーザーが送信前にログ一覧から行を削除した件数（ADR-222 / Opus round2 M-A2）。
 ///
-/// プレビュー JSON の `attach_log` が false ならログは付けない。本体が
-/// `max_body_bytes` を超えるときは、圧縮前の上限を半分ずつ縮めて再圧縮する
-/// （古い側から落ちる最終手段）。戻り値は `(送信する JSON, 縮めたか)`。
+/// journal の `ReportEdited` 行（印）として送信内容に残す。残さないと、ユーザーが
+/// 打鍵の行を消したのに、調査する側が「awase がキーを落とした」と誤読しうる
+/// （この ADR の発端の report も「打鍵が残らない」だった）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogEditSummary {
+    pub journal_rows_deleted: usize,
+    pub app_log_rows_deleted: usize,
+}
+
+/// journal の JSON 配列（`[` で始まる）の先頭に、編集の印の行を差し込む。
+fn with_edit_marker(journal: &str, marker: &str) -> String {
+    let Some(rest) = journal.trim_start().strip_prefix('[') else {
+        return journal.to_owned();
+    };
+    if rest.trim_start().starts_with(']') {
+        format!("[{marker}]")
+    } else {
+        format!("[{marker},{rest}")
+    }
+}
+
+/// 送信直前に、プレビュー JSON へ、画面に表示している journal / awase.log の現在の内容を gzip して差し込む。
+///
+/// ADR-222: プレビュー = 送信内容。ログは表示側で行を削除でき、消した行は圧縮データに
+/// 含まれない。プレビュー JSON はユーザーが編集しうるので、ログを送るかは
+/// **チェックボックスの値 `attach_log_checked` と、プレビューの `attach_log` の両方が
+/// true のときだけ**（Opus round2 B-A1: プレビューを編集済みだと古い `attach_log` が
+/// 残り、チェックボックスを外してもログが送られていた）。
+///
+/// 本体が `max_body_bytes` か 1 本の上限 `MAX_LOG_GZ_BASE64_CHARS` を超えるときは、
+/// 圧縮前の上限を半分ずつ縮めて再圧縮する（古い側から落ちる最終手段）。
+/// journal には、削除件数と縮めたかを記した `ReportEdited` の印の行を先頭に入れる。
+/// 戻り値は `(送信する JSON, 縮めたか)`。
 pub fn attach_logs_to_preview_json(
     preview_json: &str,
+    attach_log_checked: bool,
     journal_json: Option<&str>,
     app_log: Option<&str>,
+    edits: LogEditSummary,
     max_body_bytes: usize,
 ) -> Result<(String, bool), BugReportPayloadError> {
     let serde_json::Value::Object(mut object) = serde_json::from_str(preview_json)
@@ -1026,10 +1059,12 @@ pub fn attach_logs_to_preview_json(
             "最上位がオブジェクトではありません".to_owned(),
         ));
     };
-    let attach_log = object
-        .get("attach_log")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+    let attach_log = attach_log_checked
+        && object
+            .get("attach_log")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+    object.insert("attach_log".to_owned(), attach_log.into());
     object.insert("schema_version".to_owned(), SCHEMA_VERSION.into());
     object.insert("log_excerpt".to_owned(), serde_json::Value::Null);
     object.insert("app_log_excerpt".to_owned(), serde_json::Value::Null);
@@ -1037,9 +1072,27 @@ pub fn attach_logs_to_preview_json(
     let mut budget = LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES;
     let mut halvings = 0u32;
     loop {
+        let shrunk = budget < LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES;
         let journal_gz = if attach_log {
             journal_json
-                .map(|log| gzip_base64(&truncate_journal_json_tail(log, budget)))
+                .map(|log| {
+                    let marker = serde_json::json!({
+                        "seq": 0,
+                        "elapsed_ms": 0,
+                        "entry": {
+                            "type": "ReportEdited",
+                            "journal_rows_deleted": edits.journal_rows_deleted,
+                            "app_log_rows_deleted": edits.app_log_rows_deleted,
+                            "shrunk": shrunk,
+                            "budget_bytes": budget,
+                        }
+                    })
+                    .to_string();
+                    gzip_base64(&with_edit_marker(
+                        &truncate_journal_json_tail(log, budget),
+                        &marker,
+                    ))
+                })
                 .transpose()?
         } else {
             None
@@ -1051,11 +1104,16 @@ pub fn attach_logs_to_preview_json(
         } else {
             None
         };
+        let fits_field = journal_gz
+            .as_ref()
+            .into_iter()
+            .chain(app_log_gz.as_ref())
+            .all(|gz| gz.len() <= MAX_LOG_GZ_BASE64_CHARS);
         object.insert("log_excerpt_gz".to_owned(), to_value(journal_gz));
         object.insert("app_log_excerpt_gz".to_owned(), to_value(app_log_gz));
         let json = serde_json::to_string(&object)?;
-        if json.len() <= max_body_bytes || budget == 0 {
-            return Ok((json, budget < LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES));
+        if (json.len() <= max_body_bytes && fits_field) || budget == 0 {
+            return Ok((json, shrunk));
         }
         halvings += 1;
         budget = if halvings >= MAX_HALVINGS {
@@ -1221,15 +1279,23 @@ pub fn rfc3339_utc_to_unix_seconds(text: &str) -> Option<i64> {
     Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
-/// `awase.log` の本文を「行」の単位に分け、**最後の行の時刻から `window_secs` 以内**
-/// の行だけを返す（ADR-222 D10）。
+/// `awase.log` の本文を「行」の単位に分け、`now_unix` から `window_secs` 以内の行を返す。
 ///
-/// 1 行 = 先頭が RFC3339 の時刻で始まる行 + それに続く時刻の無い継続行
-/// （panic のバックトレース等。直前の行に付ける）。最初の時刻行より前にある継続行は
-/// 捨てる。基準を壁時計の「いま」ではなく**ログ自身の最後の時刻**にするのは、
-/// 報告を開く時点ではもうログが書かれていない（トレイをクリックして固定した後）ため。
+/// 1 行 = 先頭が RFC3339 の時刻で始まる行 + それに続く時刻の無い継続行（panic の
+/// バックトレース等。直前の行に付ける）。最初の時刻行より前の継続行は捨てる。
+///
+/// 基準は**壁時計の `now_unix`**（呼び出し側が渡す。`awase.log` の時刻は UTC の壁時計で
+/// 設定アプリの `SystemTime::now()` と同じ時計）。ログ自身の最後の時刻を基準にすると、
+/// 既定の `info` レベルでは行がまばらで最後の行が数十分前のことがあり、journal と時間帯が
+/// ずれる（Opus round2 M-C1）。同じ理由で、窓内の行が `min_rows` 未満でもログの末尾
+/// `min_rows` 行は残す（info では 10 分に 1 行も無いことがある）。
 #[must_use]
-pub fn recent_app_log_rows(text: &str, window_secs: i64) -> Vec<String> {
+pub fn recent_app_log_rows(
+    text: &str,
+    window_secs: i64,
+    now_unix: i64,
+    min_rows: usize,
+) -> Vec<String> {
     let mut rows: Vec<(i64, String)> = Vec::new();
     for line in text.lines() {
         if let Some(ts) = rfc3339_utc_to_unix_seconds(line) {
@@ -1239,14 +1305,13 @@ pub fn recent_app_log_rows(text: &str, window_secs: i64) -> Vec<String> {
             last.push_str(line);
         }
     }
-    let Some(latest) = rows.iter().map(|(ts, _)| *ts).max() else {
-        return Vec::new();
-    };
-    let cutoff = latest - window_secs;
-    rows.into_iter()
-        .filter(|(ts, _)| *ts >= cutoff)
-        .map(|(_, row)| row)
-        .collect()
+    let cutoff = now_unix - window_secs;
+    let first_in_window = rows
+        .iter()
+        .position(|(ts, _)| *ts >= cutoff)
+        .unwrap_or(rows.len());
+    let start = first_in_window.min(rows.len().saturating_sub(min_rows));
+    rows.into_iter().skip(start).map(|(_, row)| row).collect()
 }
 
 /// journal の JSON 配列（`dump_to_file_for_report` の出力）を、1 entry = 1 行の文字列に分ける。
@@ -2093,10 +2158,13 @@ mod tests {
                     "seq": i,
                     "elapsed_ms": i * 126,
                     "entry": {"type": "KeyInput", "event": {
-                        "vk_code": 65 + (i % 26), "scan_code": 30, "is_down": i % 2 == 0,
-                        "injected": false, "timestamp_us": 56_000_000_000_u64 + i * 126_000,
+                        "vk_code": 65 + (i % 26), "scan_code": 30 + (i % 17), "is_down": i % 2 == 0,
+                        "injected": false,
+                        // 実データのように、間隔・状態に揺らぎを入れる（一定だと実際より極端に圧縮される）。
+                        "timestamp_us": 56_000_000_000_u64 + i * 126_000 + (i * 7919) % 90_000,
                         "key_class": "Char", "alt": false, "ctrl": false, "shift": false},
-                        "state_before": "Idle", "state_after": "PendingChar(vk=0x41)",
+                        "state_before": format!("PendingChar(vk=0x{:02X})", 65 + ((i + 3) % 26)),
+                        "state_after": format!("PendingThumb(vk=0x{:02X},left={})", 65 + (i % 26), i % 3 == 0),
                         "decision": {"kind": "Consume", "effect_count": 0},
                         "physical": {"kind": "Allow"}, "repeat_count": 1,
                         "last_timestamp_us": 0, "last_elapsed_ms": 0}
@@ -2164,30 +2232,68 @@ mod tests {
         assert_eq!(rfc3339_utc_to_unix_seconds("2026-10-04T02:24"), None);
     }
 
+    const T_0224: i64 = 1_790_000_000; // 任意の基準時刻（秒）。行の時刻は下で相対的に作る。
+
+    fn log_line(offset_secs: i64, body: &str) -> String {
+        format!(
+            "{}.000000Z {body}",
+            unix_seconds_to_rfc3339((T_0224 + offset_secs) as u64).trim_end_matches('Z')
+        )
+    }
+
     #[test]
-    fn recent_app_log_rows_keeps_window_from_last_timestamp_and_joins_continuations() {
-        let text = "\
-2026-10-04T02:00:00.000000Z INFO old
-2026-10-04T02:13:59.999999Z INFO just outside
-2026-10-04T02:14:00.000000Z WARN boundary
-  stack frame 1
-  stack frame 2
-2026-10-04T02:24:00.000000Z DEBUG newest
-";
-        let rows = recent_app_log_rows(text, APP_LOG_WINDOW_SECS);
+    fn recent_app_log_rows_keeps_window_from_now_and_joins_continuations() {
+        let text = [
+            log_line(-1440, "INFO old"),
+            log_line(-601, "INFO just outside"),
+            log_line(-600, "WARN boundary"),
+            "  stack frame 1".to_owned(),
+            "  stack frame 2".to_owned(),
+            log_line(0, "DEBUG newest"),
+        ]
+        .join("\n");
+        let rows = recent_app_log_rows(&text, APP_LOG_WINDOW_SECS, T_0224, 0);
         assert_eq!(rows.len(), 2);
-        assert!(rows[0].starts_with("2026-10-04T02:14:00"));
         assert!(rows[0].ends_with("stack frame 2"));
-        assert!(rows[0].contains("\n  stack frame 1\n"));
+        assert!(rows[0].contains("WARN boundary\n  stack frame 1\n"));
         assert!(rows[1].ends_with("newest"));
     }
 
     #[test]
+    fn recent_app_log_rows_uses_now_not_the_last_log_line() {
+        // info レベルでは行がまばらで、最後の行が数十分前のことがある（Opus round2 M-C1）。
+        // 基準がログ自身の最後の時刻だと、journal（ダンプ時点まで）と時間帯がずれる。
+        let text = [log_line(-3600, "INFO a"), log_line(-1800, "INFO b")].join("\n");
+        assert!(recent_app_log_rows(&text, APP_LOG_WINDOW_SECS, T_0224, 0).is_empty());
+    }
+
+    #[test]
+    fn recent_app_log_rows_keeps_the_last_min_rows_even_outside_the_window() {
+        let text = [
+            log_line(-7200, "INFO 1"),
+            log_line(-3600, "INFO 2"),
+            log_line(-1800, "WARN 3"),
+        ]
+        .join("\n");
+        let rows = recent_app_log_rows(&text, APP_LOG_WINDOW_SECS, T_0224, 2);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].ends_with("INFO 2"));
+        assert!(rows[1].ends_with("WARN 3"));
+        // 窓内の行が min_rows より多ければ窓が優先される。
+        let text = [log_line(-10, "a"), log_line(-5, "b"), log_line(0, "c")].join("\n");
+        assert_eq!(
+            recent_app_log_rows(&text, APP_LOG_WINDOW_SECS, T_0224, 1).len(),
+            3
+        );
+    }
+
+    #[test]
     fn recent_app_log_rows_ignores_leading_continuations_and_empty_input() {
-        assert!(recent_app_log_rows("", 600).is_empty());
-        assert!(recent_app_log_rows("orphan line\nanother", 600).is_empty());
-        let rows = recent_app_log_rows("orphan\n2026-10-04T02:00:00Z INFO a", 600);
-        assert_eq!(rows, vec!["2026-10-04T02:00:00Z INFO a".to_owned()]);
+        assert!(recent_app_log_rows("", 600, T_0224, 0).is_empty());
+        assert!(recent_app_log_rows("orphan line\nanother", 600, T_0224, 0).is_empty());
+        let line = log_line(-5, "INFO a");
+        let rows = recent_app_log_rows(&format!("orphan\n{line}"), 600, T_0224, 0);
+        assert_eq!(rows, vec![line]);
     }
 
     #[test]
@@ -2205,6 +2311,11 @@ mod tests {
         assert!(journal_json_to_rows("not json").is_err());
     }
 
+    fn sent_journal(json: &str) -> String {
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        gunzip_base64(value["log_excerpt_gz"].as_str().unwrap(), 1 << 22).unwrap()
+    }
+
     #[test]
     fn attach_logs_to_preview_json_embeds_current_log_rows_only() {
         // プレビューで消した行は、送信内容（圧縮データ）に含まれない。
@@ -2213,8 +2324,10 @@ mod tests {
         let journal = r#"[{"seq":1},{"seq":3}]"#;
         let (json, shrunk) = attach_logs_to_preview_json(
             &preview,
+            true,
             Some(journal),
             Some("line-a\nline-c"),
+            LogEditSummary::default(),
             MAX_BODY_BYTES,
         )
         .unwrap();
@@ -2223,32 +2336,125 @@ mod tests {
         assert_eq!(value["schema_version"], SCHEMA_VERSION);
         assert!(value["log_excerpt"].is_null());
         assert!(value["app_log_excerpt"].is_null());
-        let sent_journal =
-            gunzip_base64(value["log_excerpt_gz"].as_str().unwrap(), 1 << 20).unwrap();
-        assert_eq!(sent_journal, journal);
-        assert!(!sent_journal.contains(r#""seq":2"#));
+        let sent: Vec<serde_json::Value> = serde_json::from_str(&sent_journal(&json)).unwrap();
+        // 先頭は編集の印、続いて残っている行（seq 2 は削除済みで含まれない）。
+        assert_eq!(sent[0]["entry"]["type"], "ReportEdited");
+        assert_eq!(sent[1]["seq"], 1);
+        assert_eq!(sent[2]["seq"], 3);
+        assert_eq!(sent.len(), 3);
         let sent_log =
             gunzip_base64(value["app_log_excerpt_gz"].as_str().unwrap(), 1 << 20).unwrap();
         assert_eq!(sent_log, "line-a\nline-c");
     }
 
     #[test]
-    fn attach_logs_to_preview_json_omits_logs_when_attach_log_is_false() {
+    fn attach_logs_to_preview_json_marks_user_deletions_and_shrinking() {
+        // ユーザーが行を消した事実を送信内容に残す（調査側が「awase がキーを落とした」と
+        // 誤読しないため。Opus round2 M-A2）。
+        let (preview, _) =
+            build_payload_json_fitting(&input("説明", true, None), MAX_BODY_BYTES).unwrap();
+        let (json, _) = attach_logs_to_preview_json(
+            &preview,
+            true,
+            Some("[]"),
+            None,
+            LogEditSummary {
+                journal_rows_deleted: 7,
+                app_log_rows_deleted: 2,
+            },
+            MAX_BODY_BYTES,
+        )
+        .unwrap();
+        let sent: Vec<serde_json::Value> = serde_json::from_str(&sent_journal(&json)).unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["entry"]["journal_rows_deleted"], 7);
+        assert_eq!(sent[0]["entry"]["app_log_rows_deleted"], 2);
+        assert_eq!(sent[0]["entry"]["shrunk"], false);
+    }
+
+    #[test]
+    fn attach_logs_to_preview_json_omits_logs_when_attach_log_is_false_in_preview() {
         let (preview, _) =
             build_payload_json_fitting(&input("説明", false, None), MAX_BODY_BYTES).unwrap();
-        let (json, _) =
-            attach_logs_to_preview_json(&preview, Some("[]"), Some("x"), MAX_BODY_BYTES).unwrap();
+        let (json, _) = attach_logs_to_preview_json(
+            &preview,
+            true,
+            Some("[]"),
+            Some("x"),
+            LogEditSummary::default(),
+            MAX_BODY_BYTES,
+        )
+        .unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(value["log_excerpt_gz"].is_null());
         assert!(value["app_log_excerpt_gz"].is_null());
     }
 
     #[test]
+    fn attach_logs_to_preview_json_obeys_the_checkbox_even_when_the_preview_is_stale() {
+        // Opus round2 B-A1: プレビューを一度でも編集すると作り直されず、`attach_log: true` が
+        // 古いまま残る。そのとき「ログを添付する」を外しても、ログが送られてはならない。
+        let (stale_preview, _) =
+            build_payload_json_fitting(&input("説明", true, None), MAX_BODY_BYTES).unwrap();
+        assert!(stale_preview.contains("\"attach_log\": true"));
+        let (json, _) = attach_logs_to_preview_json(
+            &stale_preview,
+            false, // チェックボックスは外れている
+            Some(r#"[{"seq":1}]"#),
+            Some("secret keystrokes"),
+            LogEditSummary::default(),
+            MAX_BODY_BYTES,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["attach_log"], false);
+        assert!(value["log_excerpt_gz"].is_null());
+        assert!(value["app_log_excerpt_gz"].is_null());
+    }
+
+    #[test]
+    fn attach_logs_to_preview_json_shrinks_when_one_field_exceeds_the_per_field_limit() {
+        // 本体は収まっても、1 本が Worker の上限 `MAX_LOG_GZ_BASE64_CHARS` を超えると 400 に
+        // なる。クライアントも同じ上限を見て縮める。
+        let (preview, _) =
+            build_payload_json_fitting(&input("説明", true, None), MAX_BODY_BYTES).unwrap();
+        let big = noisy_text(MAX_LOG_GZ_BASE64_CHARS * 3 / 4 + 200_000);
+        let (json, shrunk) = attach_logs_to_preview_json(
+            &preview,
+            true,
+            None,
+            Some(&big),
+            LogEditSummary::default(),
+            // 本体の上限には余裕があるが、1 本の上限を超える。
+            MAX_BODY_BYTES * 4,
+        )
+        .unwrap();
+        assert!(shrunk);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value["app_log_excerpt_gz"].as_str().unwrap().len() <= MAX_LOG_GZ_BASE64_CHARS);
+    }
+
+    #[test]
     fn attach_logs_to_preview_json_rejects_broken_preview() {
-        let err =
-            attach_logs_to_preview_json("{ not json", None, None, MAX_BODY_BYTES).unwrap_err();
+        let err = attach_logs_to_preview_json(
+            "{ not json",
+            true,
+            None,
+            None,
+            LogEditSummary::default(),
+            MAX_BODY_BYTES,
+        )
+        .unwrap_err();
         assert!(matches!(err, BugReportPayloadError::InvalidPreview(_)));
-        let err = attach_logs_to_preview_json("[1,2]", None, None, MAX_BODY_BYTES).unwrap_err();
+        let err = attach_logs_to_preview_json(
+            "[1,2]",
+            true,
+            None,
+            None,
+            LogEditSummary::default(),
+            MAX_BODY_BYTES,
+        )
+        .unwrap_err();
         assert!(matches!(err, BugReportPayloadError::InvalidPreview(_)));
     }
 

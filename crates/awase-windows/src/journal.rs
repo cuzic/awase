@@ -1418,14 +1418,44 @@ impl UnifiedJournal {
 
     /// 不具合報告用: ring の中身を**全部**、compact JSON で書き出す（ADR-222。
     /// 旧 `dump_to_file_capped` のバイト配分による間引きは廃止した）。
+    ///
+    /// 打鍵（KeyInput）だけは直近 `REPORT_KEY_INPUT_WINDOW_MS`（10 分）に絞る
+    /// （所有者が許容した範囲。ring は最大頻度で 10 分が溢れない容量なので、通常の
+    /// 頻度では何時間ぶんも溜まっている。Opus round2 B-E1）。他のレーンは打鍵の
+    /// 内容を含まないので全件出す。
     pub fn dump_to_file_for_report(&self) -> Result<std::path::PathBuf, DumpError> {
+        let started = std::time::Instant::now();
         let tick = crate::hook::current_tick_ms();
         let path = std::env::temp_dir().join(format!("awase_journal_{tick}.json"));
-        let json = serde_json::to_string(&self.entries_by_seq())?;
+        let now_ms = (self.clock.now() - self.start).as_millis() as u64;
+        let entries: Vec<&JournalEnvelope> = self
+            .entries_by_seq()
+            .into_iter()
+            .filter(|envelope| match &envelope.entry {
+                JournalEntry::KeyInput {
+                    last_elapsed_ms, ..
+                } => crate::journal_policy::key_input_in_report_window(
+                    envelope.elapsed_ms,
+                    *last_elapsed_ms,
+                    now_ms,
+                    crate::journal_policy::REPORT_KEY_INPUT_WINDOW_MS,
+                ),
+                _ => true,
+            })
+            .collect();
+        let json = serde_json::to_string(&entries)?;
         std::fs::write(&path, &json).map_err(|source| DumpError::Write {
             path: path.clone(),
             source,
         })?;
+        // ADR-222 D2: メインスレッド（キーボードフックと同じスレッド）で数 MB を
+        // シリアライズするため、実機ログで所要時間を確認できるようにする。
+        tracing::info!(
+            "[journal] report dump: {} entries, {} bytes, {} ms",
+            entries.len(),
+            json.len(),
+            started.elapsed().as_millis()
+        );
         Ok(path)
     }
 

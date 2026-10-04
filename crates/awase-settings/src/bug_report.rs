@@ -2,10 +2,15 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use awase_windows::bug_report::{
-    APP_LOG_WINDOW_SECS, BugReportDiagnostics, BugReportImeKind, BugReportInput, MAX_BODY_BYTES,
-    RETENTION_HINT, SymptomCategory, attach_logs_to_preview_json, build_payload_json_fitting,
-    journal_json_to_rows, recent_app_log_rows, rows_to_journal_json, unix_seconds_to_rfc3339,
+    APP_LOG_WINDOW_SECS, BugReportDiagnostics, BugReportImeKind, BugReportInput, LogEditSummary,
+    MAX_BODY_BYTES, RETENTION_HINT, SymptomCategory, attach_logs_to_preview_json,
+    build_payload_json_fitting, journal_json_to_rows, recent_app_log_rows, rows_to_journal_json,
+    unix_seconds_to_rfc3339,
 };
+
+/// `awase.log` が `info` レベルでまばらでも、末尾から最低これだけの行は付ける
+/// （10 分に 1 行も無いことがある。Opus round2 M-C1）。
+const APP_LOG_MIN_ROWS: usize = 200;
 use eframe::egui;
 
 #[derive(Debug, Clone)]
@@ -41,6 +46,17 @@ pub(crate) struct BugReportApp {
     /// 時刻で始まる行ごとに分けたもの。扱いは `journal_rows` と同じ。
     app_log_rows: Option<Vec<String>>,
     app_log_status: String,
+    /// 読み込み直後の行数。ユーザーが削除した件数（= 初期 - 現在）を、送信内容の
+    /// `ReportEdited` の印に残すために持つ。
+    journal_rows_initial: usize,
+    app_log_rows_initial: usize,
+    /// ログの読み込み結果の受け口。journal/awase.log（`.old` を含め最大 40MB）の読み込みと
+    /// 解析は、ウィンドウ生成の中で同期実行すると初回表示が遅れて背面で開く（BUG-73 の
+    /// 再発。Opus round2 M-C2）ので、別スレッドで行う。`Some` の間は送信できない。
+    log_loader: Option<Receiver<LoadedLogs>>,
+    /// 終了時に削除する一時ファイル（journal のダンプ・診断情報）。全打鍵が平文で入っており、
+    /// 送信の成否に関わらず残さない。送信失敗時の再送用ファイルは別（`save_failed_payload`）。
+    temp_files: Vec<PathBuf>,
     ime_kind: BugReportImeKind,
     diagnostics: BugReportDiagnostics,
     os_version: String,
@@ -73,6 +89,34 @@ pub(crate) struct BugReportApp {
     fonts_initialized: bool,
 }
 
+/// 別スレッドで読み込んだログ（行の一覧と状態文言）。
+#[derive(Debug)]
+struct LoadedLogs {
+    journal: (Option<Vec<String>>, String),
+    app_log: (Option<Vec<String>>, String),
+}
+
+impl Drop for BugReportApp {
+    fn drop(&mut self) {
+        // journal のダンプには直近 10 分の全打鍵が平文で入っている。送信の成否に関わらず
+        // ウィンドウを閉じるときに削除する（Opus round2 M-E4）。失敗しても無視する。
+        for path in &self.temp_files {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn load_logs(
+    journal_path: Option<&PathBuf>,
+    app_log_path: Option<&PathBuf>,
+    now_unix: i64,
+) -> LoadedLogs {
+    LoadedLogs {
+        journal: load_journal_rows(journal_path),
+        app_log: load_app_log_rows(app_log_path, now_unix),
+    }
+}
+
 #[derive(Debug)]
 enum SendOutcome {
     Success {
@@ -91,8 +135,39 @@ enum SendOutcome {
 
 impl BugReportApp {
     pub(crate) fn new(args: &BugReportArgs) -> Self {
-        let (journal_rows, journal_status) = load_journal_rows(args.journal_path.as_ref());
-        let (app_log_rows, app_log_status) = load_app_log_rows(args.app_log_path.as_ref());
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        // ログの読み込みは別スレッド（理由は `log_loader` のコメント）。添付するログが
+        // 無い（パスが無い）ときは待つ理由が無いので、その場で済ませる。
+        let (journal_rows, journal_status, app_log_rows, app_log_status, log_loader) =
+            if args.journal_path.is_none() && args.app_log_path.is_none() {
+                let loaded = load_logs(None, None, now_unix);
+                (
+                    loaded.journal.0,
+                    loaded.journal.1,
+                    loaded.app_log.0,
+                    loaded.app_log.1,
+                    None,
+                )
+            } else {
+                let (tx, rx) = mpsc::channel();
+                let (journal_path, app_log_path) =
+                    (args.journal_path.clone(), args.app_log_path.clone());
+                std::thread::spawn(move || {
+                    let _ = tx.send(load_logs(
+                        journal_path.as_ref(),
+                        app_log_path.as_ref(),
+                        now_unix,
+                    ));
+                });
+                let loading = "ログを読み込み中です…".to_owned();
+                (None, loading.clone(), None, loading, Some(rx))
+            };
+        let temp_files: Vec<PathBuf> = [args.journal_path.clone(), args.diagnostics_path.clone()]
+            .into_iter()
+            .flatten()
+            .collect();
         let reported_at = current_reported_at();
         let os_version = detect_os_version();
         let diagnostics = load_diagnostics(args.diagnostics_path.as_ref());
@@ -110,6 +185,10 @@ impl BugReportApp {
             journal_status,
             app_log_rows,
             app_log_status,
+            journal_rows_initial: 0,
+            app_log_rows_initial: 0,
+            log_loader,
+            temp_files,
             ime_kind: args.ime_kind,
             diagnostics,
             os_version,
@@ -303,7 +382,48 @@ impl BugReportApp {
         // ログは入れていないので、ここでは縮小は起きない（`used_budget` は未使用）。
         // 縮小の通知は送信時（`SendOutcome::Success::shrunk`）に出す。
         let _ = used_budget;
+        // ログはプレビューに入れていないので、`null` のままだと「ログが付かない」ように
+        // 見える。添付する場合は、送信時に何が入るかを値として示す（送信時にこの 2 項目は
+        // 必ず上書きされる）。
+        let json = if self.attach_log {
+            const PLACEHOLDER: &str =
+                "\"(送信時に、下のログ一覧に残っている行を圧縮して入れます)\"";
+            json.replace(
+                "\"log_excerpt_gz\": null",
+                &format!("\"log_excerpt_gz\": {PLACEHOLDER}"),
+            )
+            .replace(
+                "\"app_log_excerpt_gz\": null",
+                &format!("\"app_log_excerpt_gz\": {PLACEHOLDER}"),
+            )
+        } else {
+            json
+        };
         Ok((json, false))
+    }
+
+    /// 別スレッドで読み込んだログを受け取る。届くまでは定期的に再描画する。
+    fn poll_log_loader(&mut self, ctx: &egui::Context) {
+        let Some(rx) = self.log_loader.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(loaded) => {
+                self.journal_rows_initial = loaded.journal.0.as_ref().map_or(0, Vec::len);
+                self.app_log_rows_initial = loaded.app_log.0.as_ref().map_or(0, Vec::len);
+                (self.journal_rows, self.journal_status) = loaded.journal;
+                (self.app_log_rows, self.app_log_status) = loaded.app_log;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.log_loader = Some(rx);
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let failed = "ログの読み込みに失敗しました（ログは添付されません）。".to_owned();
+                self.journal_status.clone_from(&failed);
+                self.app_log_status = failed;
+            }
+        }
     }
 
     fn poll_send_result(&mut self) {
@@ -361,6 +481,9 @@ impl BugReportApp {
     /// 一本化しているのは「UI側」のみ（/code-review opus 指摘:
     /// このdocが一本化の範囲を誇張していた）。
     fn missing_send_requirement(&self) -> Option<&'static str> {
+        if self.log_loader.is_some() {
+            return Some("ログを読み込み中です。しばらくお待ちください。");
+        }
         if self.symptom_category.is_none() {
             return Some("症状カテゴリを選択してください。");
         }
@@ -392,14 +515,27 @@ impl BugReportApp {
         let preview = self.preview_json.clone();
         let journal_json = self.journal_rows.as_deref().map(rows_to_journal_json);
         let app_log = self.app_log_rows.as_ref().map(|rows| rows.join("\n"));
+        // 送るかどうかはチェックボックスの値で決める（プレビューを編集済みだと、プレビュー
+        // 内の `attach_log` は古いまま。Opus round2 B-A1）。削除件数は編集の印に残す。
+        let attach_log_checked = self.attach_log;
+        let edits = LogEditSummary {
+            journal_rows_deleted: self
+                .journal_rows_initial
+                .saturating_sub(self.journal_rows.as_ref().map_or(0, Vec::len)),
+            app_log_rows_deleted: self
+                .app_log_rows_initial
+                .saturating_sub(self.app_log_rows.as_ref().map_or(0, Vec::len)),
+        };
         let (tx, rx) = mpsc::channel();
         self.pending = Some(rx);
         "送信中です...".clone_into(&mut self.status);
         std::thread::spawn(move || {
             let outcome = match attach_logs_to_preview_json(
                 &preview,
+                attach_log_checked,
                 journal_json.as_deref(),
                 app_log.as_deref(),
+                edits,
                 MAX_BODY_BYTES,
             ) {
                 Err(e) => SendOutcome::NotBuilt {
@@ -444,7 +580,11 @@ fn load_journal_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
     };
     match journal_json_to_rows(&json) {
         Ok(rows) => {
-            let status = format!("添付ログ(journal): {} 行 ({})", rows.len(), path.display());
+            let status = format!(
+                "添付ログ(journal): {} 行（打鍵は直近10分）({})",
+                rows.len(),
+                path.display()
+            );
             (Some(rows), status)
         }
         Err(e) => (
@@ -461,7 +601,7 @@ fn load_journal_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
 ///
 /// 時刻で始まる行ごとに分ける。ローテーション直後は `awase.log` がほぼ空で、
 /// 直近の内容が `.old` 側にあるため、両方を読む。
-fn load_app_log_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
+fn load_app_log_rows(path: Option<&PathBuf>, now_unix: i64) -> (Option<Vec<String>>, String) {
     let Some(path) = path else {
         return (None, "添付ログ(awase.log): なし".to_owned());
     };
@@ -481,7 +621,12 @@ fn load_app_log_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
         }
         Err(_) => String::new(),
     };
-    let rows = recent_app_log_rows(&format!("{old}\n{current}"), APP_LOG_WINDOW_SECS);
+    let rows = recent_app_log_rows(
+        &format!("{old}\n{current}"),
+        APP_LOG_WINDOW_SECS,
+        now_unix,
+        APP_LOG_MIN_ROWS,
+    );
     let status = format!(
         "添付ログ(awase.log): 直近{}分 {} 行 ({})",
         APP_LOG_WINDOW_SECS / 60,
@@ -673,6 +818,7 @@ impl BugReportApp {
                 "bug_report_journal_rows",
                 "journal（キー入力・IME状態の記録）",
                 self.journal_rows.as_mut(),
+                BulkDelete::KeyInputRows,
             );
             ui.label(&self.app_log_status);
             draw_log_rows(
@@ -680,26 +826,74 @@ impl BugReportApp {
                 "bug_report_app_log_rows",
                 "awase.log（実行ログ）",
                 self.app_log_rows.as_mut(),
+                BulkDelete::None,
             );
         }
     }
 }
 
-/// ログの行一覧（読み取り専用。行の「削除」だけできる）。
+/// 一覧の見出し横に出す、種類別の一括削除ボタン（journal の打鍵行だけ）。
+#[derive(Clone, Copy)]
+enum BulkDelete {
+    None,
+    /// journal 用: `"type":"KeyInput"` の行（打鍵の記録）をすべて削除する。
+    KeyInputRows,
+}
+
+/// journal の行のうち、打鍵（KeyInput）の記録かどうか。`journal_json_to_rows` が出す
+/// compact JSON では `"type":"KeyInput"` と空白なしで並ぶ。
+fn is_key_input_row(row: &str) -> bool {
+    row.contains(r#""type":"KeyInput""#)
+}
+
+/// 行 `index` より前（古い側）をすべて削除する。削除した件数を返す。
+fn delete_rows_before(rows: &mut Vec<String>, index: usize) -> usize {
+    let n = index.min(rows.len());
+    rows.drain(..n);
+    n
+}
+
+/// 打鍵（KeyInput）の行をすべて削除する。削除した件数を返す。
+fn delete_key_input_rows(rows: &mut Vec<String>) -> usize {
+    let before = rows.len();
+    rows.retain(|row| !is_key_input_row(row));
+    before - rows.len()
+}
+
+/// ログの行一覧（読み取り専用。行の削除だけできる）。
 ///
-/// 数万行になりうるので、`ScrollArea::show_rows` で見えている行だけを描画する。複数行の行（panic の
-/// バックトレース等）は 1 行目だけを表示し、行数を添える（行の高さを一定に保つため）。
-/// 削除した行は `rows` から取り除かれ、送信内容（圧縮データ）に含まれない。
-fn draw_log_rows(ui: &mut egui::Ui, id: &str, title: &str, rows: Option<&mut Vec<String>>) {
+/// ADR-095 決定4 条件2「折りたたみ・非表示状態がデフォルトにならないこと」により、
+/// 既定で開く。数万行になりうるので `ScrollArea::show_rows` で見えている行だけを描画する。
+/// 複数行の行（panic のバックトレース等）は 1 行目と行数だけを表示するが、**行にマウスを
+/// 乗せると全文が出る**（ユーザー名を含むパスが 2 行目以降に入りうるため、全文を見られない
+/// まま送らない。Opus round2 B-E2）。削除は 1 行ずつのほか、「これより前をすべて削除」と
+/// （journal のみ）「打鍵の行をすべて削除」ができる。削除した行は `rows` から取り除かれ、
+/// 送信内容（圧縮データ）に含まれない。
+fn draw_log_rows(
+    ui: &mut egui::Ui,
+    id: &str,
+    title: &str,
+    rows: Option<&mut Vec<String>>,
+    bulk: BulkDelete,
+) {
     let Some(rows) = rows else {
         return;
     };
     egui::CollapsingHeader::new(format!("{title}（{} 行）", rows.len()))
         .id_salt(id)
-        .default_open(false)
+        .default_open(true)
         .show(ui, |ui| {
+            if matches!(bulk, BulkDelete::KeyInputRows)
+                && ui
+                    .button("打鍵（KeyInput）の行をすべて削除")
+                    .on_hover_text("入力した文字が分かる行（キー入力の記録）を一括で消します。\n原因調査には役立つ情報なので、消すと調べにくくなります。")
+                    .clicked()
+            {
+                delete_key_input_rows(rows);
+            }
             let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
             let mut remove: Option<usize> = None;
+            let mut remove_before: Option<usize> = None;
             egui::ScrollArea::vertical()
                 .id_salt(format!("{id}_scroll"))
                 .max_height(240.0)
@@ -714,6 +908,13 @@ fn draw_log_rows(ui: &mut egui::Ui, id: &str, title: &str, rows: Option<&mut Vec
                             if ui.small_button("削除").clicked() {
                                 remove = Some(index);
                             }
+                            if ui
+                                .small_button("以前を削除")
+                                .on_hover_text("この行より前（古い側）の行をすべて削除します。")
+                                .clicked()
+                            {
+                                remove_before = Some(index);
+                            }
                             let text = if extra > 0 {
                                 format!("{first}  (+{extra}行)")
                             } else {
@@ -722,11 +923,15 @@ fn draw_log_rows(ui: &mut egui::Ui, id: &str, title: &str, rows: Option<&mut Vec
                             ui.add(
                                 egui::Label::new(egui::RichText::new(text).monospace().small())
                                     .truncate(),
-                            );
+                            )
+                            // 切り詰められた行・複数行の行も、全文をここで確認できる。
+                            .on_hover_text(row.as_str());
                         });
                     }
                 });
-            if let Some(index) = remove {
+            if let Some(index) = remove_before {
+                delete_rows_before(rows, index);
+            } else if let Some(index) = remove {
                 rows.remove(index);
             }
         });
@@ -747,6 +952,7 @@ impl eframe::App for BugReportApp {
         }
 
         self.poll_send_result();
+        self.poll_log_loader(ctx);
 
         // このフレームで最新のプレビュー/通知を描画できるよう、デバウンス
         // 完了判定はパネル描画より前に行う（描画後に行うと、更新結果は
@@ -1083,5 +1289,147 @@ mod font_guard_tests {
         };
         let app = BugReportApp::new(&args);
         assert!(!app.fonts_initialized);
+    }
+}
+
+#[cfg(test)]
+mod log_rows_tests {
+    use super::{
+        BugReportApp, BugReportArgs, delete_key_input_rows, delete_rows_before, load_app_log_rows,
+        unix_seconds_to_rfc3339,
+    };
+    use std::path::PathBuf;
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        std::env::temp_dir().join(format!("awase_test_{}_{nanos}_{name}", std::process::id()))
+    }
+
+    #[test]
+    fn delete_rows_before_drops_older_rows_only() {
+        let mut rows: Vec<String> = (0..5).map(|i| i.to_string()).collect();
+        assert_eq!(delete_rows_before(&mut rows, 3), 3);
+        assert_eq!(rows, vec!["3", "4"]);
+        assert_eq!(delete_rows_before(&mut rows, 0), 0);
+        // 範囲外を指定しても panic せず、全部消えるだけ。
+        assert_eq!(delete_rows_before(&mut rows, 99), 2);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn delete_key_input_rows_removes_only_key_input_entries() {
+        let mut rows = vec![
+            r#"{"seq":1,"entry":{"type":"KeyInput","event":{"vk_code":65}}}"#.to_owned(),
+            r#"{"seq":2,"entry":{"type":"ImeEvent"}}"#.to_owned(),
+            r#"{"seq":3,"entry":{"type":"KeyInput","event":{"vk_code":66}}}"#.to_owned(),
+            r#"{"seq":4,"entry":{"type":"FocusTransition"}}"#.to_owned(),
+        ];
+        assert_eq!(delete_key_input_rows(&mut rows), 2);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| !r.contains("KeyInput")));
+    }
+
+    #[test]
+    fn load_app_log_rows_reads_old_and_current_files_and_windows_on_now() {
+        let now: i64 = 1_790_000_000;
+        let line = |offset: i64, body: &str| {
+            let ts = unix_seconds_to_rfc3339(u64::try_from(now + offset).unwrap());
+            format!("{}.000000Z {body}", ts.trim_end_matches('Z'))
+        };
+        let path = unique_temp_path("awase.log");
+        let mut old = path.as_os_str().to_os_string();
+        old.push(".old");
+        let old = PathBuf::from(old);
+        // 窓の外（古い）・窓の中（ローテーション前に書かれた分）・現行ファイルの分。
+        std::fs::write(
+            &old,
+            format!(
+                "{}\n{}\n",
+                line(-7200, "INFO ancient"),
+                line(-120, "INFO in-old")
+            ),
+        )
+        .unwrap();
+        std::fs::write(&path, format!("{}\n", line(-5, "WARN in-current"))).unwrap();
+
+        let (rows, status) = load_app_log_rows(Some(&path), now);
+        let _ = std::fs::remove_file(&old);
+        let _ = std::fs::remove_file(&path);
+        let rows = rows.expect("読めるはず");
+        // ancient は窓の外だが、末尾 `APP_LOG_MIN_ROWS`(200) 行は残すので全 3 行が残る。
+        assert_eq!(rows.len(), 3);
+        assert!(rows[1].ends_with("in-old") && rows[2].ends_with("in-current"));
+        assert!(status.contains("3 行"), "{status}");
+    }
+
+    #[test]
+    fn load_app_log_rows_reports_unreadable_and_absent_paths() {
+        let (rows, status) = load_app_log_rows(None, 0);
+        assert!(rows.is_none() && status.contains("なし"));
+        let (rows, status) = load_app_log_rows(Some(&unique_temp_path("missing.log")), 0);
+        assert!(
+            rows.is_none() && status.contains("読めませんでした"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn dropping_the_app_deletes_the_temporary_journal_dump() {
+        // journal のダンプには直近 10 分の全打鍵が平文で入っている。ウィンドウを閉じたら
+        // 送信の成否に関わらず残さない（Opus round2 M-E4）。
+        let journal = unique_temp_path("journal.json");
+        std::fs::write(&journal, "[]").unwrap();
+        let args = BugReportArgs {
+            journal_path: Some(journal.clone()),
+            ime_kind: awase_windows::bug_report::BugReportImeKind::Unknown,
+            diagnostics_path: None,
+            app_log_path: None,
+        };
+        let mut app = BugReportApp::new(&args);
+        // 読み込みスレッドが journal を開いている間は（Windows では）削除できないので、
+        // 読み込みの完了を待ってから閉じる。
+        let ctx = eframe::egui::Context::default();
+        for _ in 0..200 {
+            app.poll_log_loader(&ctx);
+            if app.log_loader.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(app.log_loader.is_none(), "ログの読み込みが終わらない");
+        drop(app);
+        assert!(!journal.exists(), "一時ファイルが残っている");
+    }
+
+    #[test]
+    fn send_is_blocked_while_logs_are_loading() {
+        let journal = unique_temp_path("journal2.json");
+        std::fs::write(&journal, "[]").unwrap();
+        let args = BugReportArgs {
+            journal_path: Some(journal.clone()),
+            ime_kind: awase_windows::bug_report::BugReportImeKind::Unknown,
+            diagnostics_path: None,
+            app_log_path: None,
+        };
+        let mut app = BugReportApp::new(&args);
+        // 読み込み中は、ログを落として送ってしまわないよう送信できない。
+        if app.log_loader.is_some() {
+            assert!(
+                app.missing_send_requirement()
+                    .is_some_and(|r| r.contains("読み込み中"))
+            );
+        }
+        let ctx = eframe::egui::Context::default();
+        for _ in 0..200 {
+            app.poll_log_loader(&ctx);
+            if app.log_loader.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        drop(app);
+        let _ = std::fs::remove_file(&journal);
     }
 }

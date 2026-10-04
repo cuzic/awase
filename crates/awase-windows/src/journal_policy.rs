@@ -11,6 +11,33 @@ pub enum LaneKind {
 
 impl LaneKind {
     #[must_use]
+    /// 不具合報告に載せる打鍵（KeyInput）の範囲（ADR-222 / Opus round2 B-E1）。
+    ///
+    /// 打鍵 ring は「最大頻度で 10 分が溢れない」容量（8,192 件）で、通常の頻度では
+    /// 10 分をはるかに超えて何時間ぶんも溜まる。所有者が許容したのは「直近 10 分」の
+    /// 全打鍵なので、ダンプ時に KeyInput だけをこの窓に絞る。
+    pub const REPORT_KEY_INPUT_WINDOW_MS: u64 = 10 * 60 * 1000;
+
+    /// 打鍵 entry が、ダンプ時点 `now_ms` から `window_ms` 以内か。
+    ///
+    /// 畳み込まれた自動リピート（ADR-169）は、envelope の `elapsed_ms` が最初の押下のまま
+    /// `last_elapsed_ms` だけが進む。11 分前に押し始めて今も押している打鍵を落とさないよう、
+    /// 新しい方（`max`）で判定する。
+    #[must_use]
+    pub const fn key_input_in_report_window(
+        elapsed_ms: u64,
+        last_elapsed_ms: u64,
+        now_ms: u64,
+        window_ms: u64,
+    ) -> bool {
+        let newest = if last_elapsed_ms > elapsed_ms {
+            last_elapsed_ms
+        } else {
+            elapsed_ms
+        };
+        newest >= now_ms.saturating_sub(window_ms)
+    }
+
     /// ADR-222: 不具合報告は ring の中身を全部ダンプする（旧: バイト配分で絞っていた）。
     ///
     /// 打鍵は最大頻度（実測 1 分最大 475 件、`awase.log.old` の `journal: key input`
@@ -238,6 +265,31 @@ pub fn coalesce_key_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_input_window_keeps_recent_and_drops_old_entries() {
+        let w = REPORT_KEY_INPUT_WINDOW_MS;
+        let now = 3_600_000;
+        assert!(key_input_in_report_window(now - w, 0, now, w));
+        assert!(!key_input_in_report_window(now - w - 1, 0, now, w));
+        assert!(key_input_in_report_window(now, 0, now, w));
+        // 起動直後（now < window）は全件が窓内。
+        assert!(key_input_in_report_window(0, 0, 1_000, w));
+    }
+
+    #[test]
+    fn key_input_window_uses_last_elapsed_for_coalesced_repeats() {
+        // 11 分前に押し始め、今も押し続けている打鍵（elapsed は最初の押下のまま）。
+        let w = REPORT_KEY_INPUT_WINDOW_MS;
+        let now = 3_600_000;
+        assert!(!key_input_in_report_window(now - w - 60_000, 0, now, w));
+        assert!(key_input_in_report_window(
+            now - w - 60_000,
+            now - 1_000,
+            now,
+            w
+        ));
+    }
 
     #[test]
     fn probe_tick_is_notable_for_each_fact() {
