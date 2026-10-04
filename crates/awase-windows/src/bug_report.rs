@@ -31,8 +31,10 @@ pub const LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// マシンでは肥大化しうる、opusコードレビュー指摘）。縮小ループに参加させる代わりに、
 /// 常に有限件数へ切り詰めることで `MAX_BODY_BYTES` 超過に寄与しないようにする。
 pub const RUNNING_PROCESSES_MAX_ENTRIES: usize = 500;
-/// ADR-222: 4。`log_excerpt_gz` / `app_log_excerpt_gz`（gzip + base64）を追加し、
-/// 非圧縮の `log_excerpt` / `app_log_excerpt` は新クライアントでは常に null にした。
+/// ADR-222: ログを gzip + base64 で送る版（4）。
+///
+/// `log_excerpt_gz` / `app_log_excerpt_gz` を追加し、非圧縮の `log_excerpt` /
+/// `app_log_excerpt` は新クライアントでは常に null にした。
 /// 古い Worker は知らないフィールドを黙って捨てて 201 を返す（ログだけが消える）ため、
 /// 上げて 400（`unsupported_schema_version`）で失敗させる。Worker を先にデプロイすること。
 pub const SCHEMA_VERSION: u8 = 4;

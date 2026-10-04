@@ -457,7 +457,8 @@ fn load_journal_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
     }
 }
 
-/// `awase.log`（ローテーションされた `.old` も含む）の直近 `APP_LOG_WINDOW_SECS` 秒を、
+/// `awase.log`（ローテーションされた `.old` も含む）の直近 `APP_LOG_WINDOW_SECS` 秒を行に分ける。
+///
 /// 時刻で始まる行ごとに分ける。ローテーション直後は `awase.log` がほぼ空で、
 /// 直近の内容が `.old` 側にあるため、両方を読む。
 fn load_app_log_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
@@ -684,8 +685,9 @@ impl BugReportApp {
     }
 }
 
-/// ログの行一覧（読み取り専用。行の「削除」だけできる）。数万行になりうるので、
-/// `ScrollArea::show_rows` で見えている行だけを描画する。複数行の行（panic の
+/// ログの行一覧（読み取り専用。行の「削除」だけできる）。
+///
+/// 数万行になりうるので、`ScrollArea::show_rows` で見えている行だけを描画する。複数行の行（panic の
 /// バックトレース等）は 1 行目だけを表示し、行数を添える（行の高さを一定に保つため）。
 /// 削除した行は `rows` から取り除かれ、送信内容（圧縮データ）に含まれない。
 fn draw_log_rows(ui: &mut egui::Ui, id: &str, title: &str, rows: Option<&mut Vec<String>>) {
