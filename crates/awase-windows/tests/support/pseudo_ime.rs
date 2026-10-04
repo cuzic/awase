@@ -42,6 +42,10 @@ pub struct Quirk {
 }
 
 /// 目録。Q1・Q2・Q5 は 2026-10-04 時点でリポジトリに記述が無く(別セッションの会話内のみ)、ここへは載せていない。
+/// 番号を振らない項目(`Q-` 始まり)は 2026-10-04 に docs の一次資料から洗い直して足した(数値・環境は原文で確認済み)。
+/// 証拠不足で載せていない候補: MS-IME の IMC write 着地遅延 ~250ms(BUG-015 追補6、撤回済み・1件)、
+/// Shift 単独タップ誤判定 478ms(BUG-015、観測1件)、OFF→ON 直後の cold 窓(BUG-013、データ点2つ・測定保留)、
+/// MS-IME 本体 CI の ImmCross ON write 失敗(ADR-186、CI の癖か欠陥か未切り分け)。
 pub const QUIRKS: &[Quirk] = &[
     Quirk {
         id: "Q3",
@@ -53,10 +57,10 @@ pub const QUIRKS: &[Quirk] = &[
     },
     Quirk {
         id: "Q4",
-        when: "実 Chrome(TSF 窓)で外部(言語バー・マウス)が IME を閉じたとき",
-        effect: "閉じたことが awase の観測経路に現れず、belief が開のまま残る",
-        evidence: "BUG-172 / ADR-205。runtime 側(観測経路)の現象で、擬似 IME の状態機械からは表現できない",
-        ci: "cal-driftrec 系(実 Chrome での再現は未確認)",
+        when: "実 Chrome(TSF 窓)× GJI で、他プロセスが 0xF3/0x1A を注入して IME を閉じたとき(言語バー・マウス経由は未測定)",
+        effect: "IME は閉じる(IMC_GETOPENSTATUS 1→0)が awase の観測は 0 件で、belief が開のまま残る",
+        evidence: "BUG-172(2026-09-29、CI 10/10 再現、ObserverPoll=0・Imm32Unavailable=39、メモ帳は影響なし)。ADR-205 で修正済みで v2.0.0 に入り実機確認済み。runtime 側(観測経路)の現象で、擬似 IME の状態機械からは表現できない",
+        ci: "cal-driftrec 系・ADR-205 の外部クローズ検証(修正後は [external-change]×10、observed 0→10)",
         modeled: None,
     },
     Quirk {
@@ -66,6 +70,30 @@ pub const QUIRKS: &[Quirk] = &[
         evidence: "BUG-185(対応しない決定 2026-10-04)、docs/tasks/msime-chrome-off-rca-2026-10-04.md R1〜R5(n=10、composition 有り 0/10・無し 10/10 閉じる)",
         ci: "sc-offrca-*(chrome_probe --offrca=1a:typed_nc)",
         modeled: Some("set_off_ignored_while_composing(書き込み経路のみ。キー押下は ATOK の格子のまま)"),
+    },
+    Quirk {
+        id: "Q-ext-off-chrome-gji",
+        when: "実 Chrome × GJI で外部から注入した OFF(Q4 と同一事象の測定側。修正前の実測を残す)",
+        effect: "0xF3・0x1A とも 3 秒後も閉じたまま、awase の観測 0 件で Engine は ON のまま `kiu` が出る",
+        evidence: "BUG-172.md:65-72(run 36540419485、1 台の CI 実機、各 10 試行)。補償通知(compartment)は 2〜5ms(サンプル数の記載なし)",
+        ci: "BUG-172 の外部注入構成",
+        modeled: None,
+    },
+    Quirk {
+        id: "Q-key-latency-gji",
+        when: "GJI で物理キー押下から `open` 遷移が観測されるまで",
+        effect: "多くは 250〜400ms、最大 2.3 秒。Q3(モードキー通過後の IMM 再読 21〜62ms)とは観測条件が違い、62ms では収まらない",
+        evidence: "ADR-176:84-86(n=9: 247/277/321/341/362/391/529/1687/2295ms)。SendMessageTimeoutW の elapsed は全サンプル 20ms 未満",
+        ci: "ADR-176 の較正(日付は原文に無い)",
+        modeled: None,
+    },
+    Quirk {
+        id: "Q-imm-probe-bimodal",
+        when: "IMM probe(SendMessageTimeout 50ms)。MS-IME 本体の CI",
+        effect: "応答時間は 50ms 境界の二峰性(成功は最大 50ms・時間切れは最小 50ms)。時間切れを「IMM 不可」と誤学習した",
+        evidence: "BUG-158.md:26-28(CI、n=7183、p99=59.5ms)。実際に IMM が使えないアプリが時間切れか即拒否かは判別不能(未確認)",
+        ci: "MS-IME 本体の CI 構成",
+        modeled: None,
     },
 ];
 
