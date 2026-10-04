@@ -1704,7 +1704,8 @@ fn main() {
         log,
         focus_lost: false,
         no_clear: false,
-        cancel_after: std::env::args().any(|a| a == "--alnum" || a.starts_with("--walk-seq=")),
+        cancel_after: std::env::args()
+            .any(|a| a == "--alnum" || a.starts_with("--walk-seq=") || a == "--table"),
     };
     // `--tray-cmd=<ID>`(+ `--file-state=<path,...>`): トレイメニュー操作の再現。前後のファイル状態を FILE_STATE 行に出す。
     if let Some(id) = args.iter().find_map(|a| {
@@ -2085,6 +2086,110 @@ fn main() {
         }
         p.log.line(&format!(
             "SUMMARY PASS={ok} RECOVER=0 FAIL={bad} INVALID={invalid}"
+        ));
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
+    // `--table`(試行錯誤用): 状態 × キーの遷移表。セルごとに状態を作り直し、キーを1回押して `ka` を打ち、IME の実状態と Engine の一致を見る。
+    // 状態=直接入力/かな/半角英数(IME のキーで)/Shift 単独タップ後の持続半角英数。キー=変換/無変換/英数/ひらがな/IME_ON/IME_OFF。
+    if args.iter().any(|a| a == "--table") {
+        let msime = args.iter().any(|a| a == "--msime");
+        const STATES: [&str; 4] = ["直接入力", "かな", "半角英数", "Shift単独タップ後"];
+        const KEYS: [(&str, u32); 6] = [
+            ("変換", 0x1C),
+            ("無変換", 0x1D),
+            ("英数", 0xF0),
+            ("ひらがな", 0xF2),
+            ("IME_ON", 0x16),
+            ("IME_OFF", 0x1A),
+        ];
+        let valid = |c: Class| {
+            if awase {
+                matches!(c, Class::Nicola | Class::Plain)
+            } else {
+                matches!(c, Class::RomajiKana | Class::Plain)
+            }
+        };
+        let (mut pass, mut fail, mut recover, mut invalid) = (0usize, 0usize, 0usize, 0usize);
+        let mut idx = 0usize;
+        for r in 1..=repeat {
+            for st in STATES {
+                for (kn, kvk) in KEYS {
+                    idx += 1;
+                    p.log.line(&format!(
+                        "[CASE {idx}/{} run {r}/{repeat}] {st} → {kn}",
+                        STATES.len() * KEYS.len() * repeat
+                    ));
+                    p.focus_lost = false;
+                    if !bring_to_front() {
+                        p.log.line("前面化に失敗");
+                    }
+                    let base = if st == "直接入力" {
+                        Setup::Off
+                    } else {
+                        Setup::Kana
+                    };
+                    if !ensure(&mut p, base, awase) {
+                        p.log.line("RESULT INVALID: 前提状態にできなかった");
+                        invalid += 1;
+                        continue;
+                    }
+                    match st {
+                        "半角英数" => {
+                            p.press(if msime { 0xF0 } else { 0xF2 }, false, 60);
+                            sleep(500);
+                            let c = p.probe_logged("setup:半角英数にしたあと");
+                            if !matches!(c, Class::Plain | Class::NicolaLiteral) {
+                                p.log.line("RESULT INVALID: 半角英数にできなかった");
+                                invalid += 1;
+                                continue;
+                            }
+                        }
+                        "Shift単独タップ後" => {
+                            p.press(VK_LSHIFT, false, 60);
+                            sleep(500);
+                            let c = p.probe_logged("setup:Shift単独タップのあと");
+                            if c != Class::Plain {
+                                p.log.line("RESULT INVALID: 持続半角英数にならなかった");
+                                invalid += 1;
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+                    p.press(kvk, false, 60);
+                    sleep(settle_ms);
+                    let got = p.probe_logged("キー後");
+                    if p.focus_lost {
+                        p.log.line("RESULT INVALID: フォーカスが外れた");
+                        invalid += 1;
+                    } else if valid(got) {
+                        p.log
+                            .line(&format!("RESULT PASS: {st} → {kn} = {}", got.label()));
+                        pass += 1;
+                    } else {
+                        sleep(400);
+                        let again = p.probe_logged("キー後 2回目");
+                        if valid(again) {
+                            p.log.line(&format!(
+                                "RESULT RECOVER: {st} → {kn} 1回目={}、2回目で一致",
+                                got.label()
+                            ));
+                            recover += 1;
+                        } else {
+                            p.log.line(&format!(
+                                "RESULT FAIL: {st} → {kn} 食い違い={}",
+                                got.label()
+                            ));
+                            fail += 1;
+                        }
+                    }
+                }
+            }
+        }
+        p.log.line(&format!(
+            "SUMMARY PASS={pass} RECOVER={recover} FAIL={fail} INVALID={invalid}"
         ));
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();

@@ -361,6 +361,12 @@ jobs:
               for pn, ime, km, ms in (('gji-atok', 'gji', 1, ''), ('gji-msimepreset', 'gji', 2, ''), ('msime', 'msime', 2, ' --msime'))
               for pt, gen in (('suppress', ''), ('passthru', '; muhenkan_solo_tap_always_suppress = false'))
               for seed in (1, 2, 3)],
+            # 遷移表(2026-10-04): 状態(直接入力/かな/半角英数/Shift単独タップ後) × キー(変換/無変換/英数/ひらがな/IME_ON/IME_OFF) の 24 セルを 2 周(chrome_probe --table)。観測のみ。only='sc-table-*'。
+            *[cfg(f'sc-table-{pn}-{pt}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=1500, awase='true',
+                  general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,
+                  chrome=f'--table --repeat=2 --settle=800{ms}')
+              for pn, ime, km, ms in (('gji-atok', 'gji', 1, ''), ('gji-msimepreset', 'gji', 2, ''), ('msime', 'msime', 2, ' --msime'))
+              for pt, gen in (('suppress', ''), ('passthru', '; muhenkan_solo_tap_always_suppress = false'))],
             # ADR-211: MS-IME/MOBILE プリセットの F13(閉状態からだけ開く受動のキー)。実 Chrome(読めない窓)で、IME OFF から F13 を押して
             # Engine が追随する(NICOLA)こと(合否)。stale=古い表つき。noawase=対照(IME が実際に開く=`か`、awase なしの実挙動)。
             *[cfg(f'sc-adr211-chrome-msime-f13{suf}', exp, check='chromeprobe', keymap=2, runs=1, wait=500, custom_table=ct, awase=aw,
@@ -682,12 +688,12 @@ jobs:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-alnum-', 'sc-walkseq-'))
-                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-alnum-', 'sc-walkseq-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-alnum-', 'sc-walkseq-', 'sc-table-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-alnum-', 'sc-walkseq-', 'sc-table-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-alnum-', 'sc-walkseq-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-alnum-', 'sc-walkseq-', 'sc-table-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
