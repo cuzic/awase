@@ -13,18 +13,16 @@ pub const REPORT_HOST: &str = "report.awase.cc";
 // 90 days as a practical review window with a clear deletion expectation.
 pub const RETENTION_HINT: &str = "約90日間保管後に自動削除";
 pub const DESCRIPTION_MAX_CHARS: usize = 4_000;
-/// journal/app_log それぞれの添付上限。
+/// journal/app_log それぞれの**圧縮前**テキストの上限（ADR-222）。
 ///
-/// 旧値の 256KiB は journal + app_log の2本をフル添付しただけで
-/// 256*2=512KiB = `MAX_BODY_BYTES` に達し、他のフィールド（内部状態
-/// スナップショット・設定ファイル・配列ファイル・description等）の
-/// ぶんだけ確実に超過する構造だった。実機で「送信のたびに必ず自動切り詰めが
-/// 発生する」と報告され、200KiB×2=400KiBを引いた単純計算では他フィールド
-/// 用に~112KiBのマージンとなるよう引き下げた（`serde_json::to_string_pretty`
-/// のインデント・エスケープ等のオーバーヘッドを含めた実測では、
-/// `full_size_journal_and_app_log_fit_within_max_body_bytes_without_shrinking`
-/// テストのケースで ~102KiB）。
-pub const LOG_EXCERPT_MAX_BYTES: usize = 200 * 1024;
+/// 旧 `LOG_EXCERPT_MAX_BYTES`（200KiB）は、非圧縮の JSON をそのまま本体に入れる
+/// 前提の値で、journal の打鍵が 165 秒・73 件しか残らない原因の一つだった
+/// （report `01M42BME26GDQ3CJ4F5DMGT0MP`）。今は gzip して送る（実測: journal
+/// 204,753B → 15,886B、awase.log 204,800B → 19,867B）ので、この値は
+/// 圧縮前の最終防衛線（メモリと圧縮時間の上限）にすぎず、通常は当たらない。
+/// 本体が `MAX_BODY_BYTES` に収まらないときだけ、これを半分ずつ縮めて再圧縮する
+/// （`build_payload_json_fitting` / `attach_logs_to_preview_json`）。
+pub const LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// `running_processes`（issue #165用、実行中プロセス名一覧）の件数上限。
 ///
 /// journal/app_log と違い `build_payload_json_fitting` の予算縮小ループの対象外
@@ -33,11 +31,15 @@ pub const LOG_EXCERPT_MAX_BYTES: usize = 200 * 1024;
 /// マシンでは肥大化しうる、opusコードレビュー指摘）。縮小ループに参加させる代わりに、
 /// 常に有限件数へ切り詰めることで `MAX_BODY_BYTES` 超過に寄与しないようにする。
 pub const RUNNING_PROCESSES_MAX_ENTRIES: usize = 500;
-pub const SCHEMA_VERSION: u8 = 3;
+/// ADR-222: 4。`log_excerpt_gz` / `app_log_excerpt_gz`（gzip + base64）を追加し、
+/// 非圧縮の `log_excerpt` / `app_log_excerpt` は新クライアントでは常に null にした。
+/// 古い Worker は知らないフィールドを黙って捨てて 201 を返す（ログだけが消える）ため、
+/// 上げて 400（`unsupported_schema_version`）で失敗させる。Worker を先にデプロイすること。
+pub const SCHEMA_VERSION: u8 = 4;
 /// `services/report-worker/src/index.ts` の `MAX_BODY_BYTES` と同じ値。
 /// サーバ側の 413 応答を待たず、送信前にクライアント側で分かりやすく警告する
 /// ための閾値としてのみ使う（サーバ側の実際の上限はサーバ側定数がSSOT）。
-pub const MAX_BODY_BYTES: usize = 512 * 1024;
+pub const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BugReportImeKind {
@@ -555,11 +557,19 @@ pub struct BugReportPayload {
     pub attach_layout: bool,
     pub layout_yab: Option<String>,
     pub attach_log: bool,
+    /// 非圧縮の journal。schema_version 3 までのクライアントが使っていた。
+    /// 4 以降は常に None（`log_excerpt_gz` を使う）。
     pub log_excerpt: Option<String>,
+    /// ADR-222: journal（`UnifiedJournal` の JSON 配列）を gzip して base64 にしたもの。
+    #[serde(default)]
+    pub log_excerpt_gz: Option<String>,
     /// 実際の `log::` 出力（`awase.log`）の末尾。`log_excerpt`（構造化 journal）
     /// には無い send_health/degrade 系の警告等を拾うための別系統の添付
     /// （BUG-34 横展開）。`attach_log` チェックボックスで両方まとめて制御する。
     pub app_log_excerpt: Option<String>,
+    /// ADR-222: `awase.log` を gzip して base64 にしたもの（`app_log_excerpt` の後継）。
+    #[serde(default)]
+    pub app_log_excerpt_gz: Option<String>,
     /// ADR-120 決定0a-report: 3キー仲裁の判定過程・訂正発生の観測カウンタ。
     /// 打鍵内容・かな1文字も含まない、起動からの累積カウンタのみ。
     pub attach_retro_eval_stats: bool,
@@ -788,6 +798,43 @@ pub enum BugReportPayloadError {
     DescriptionRequiredForOther,
     #[error("JSON シリアライズ失敗: {0}")]
     Serialize(#[from] serde_json::Error),
+    #[error("ログの圧縮に失敗: {0}")]
+    Compress(#[from] std::io::Error),
+    #[error("プレビューの JSON を読めません（編集で壊れた可能性があります）: {0}")]
+    InvalidPreview(String),
+}
+
+/// テキストを gzip して base64（標準アルファベット、パディングあり）にする（ADR-222）。
+/// Worker は `DecompressionStream('gzip')` で解凍できる（先頭は常に `H4sI`）。
+pub fn gzip_base64(text: &str) -> Result<String, std::io::Error> {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    let mut encoder =
+        flate2::write::GzEncoder::new(Vec::with_capacity(text.len() / 8), flate2::Compression::default());
+    encoder.write_all(text.as_bytes())?;
+    let bytes = encoder.finish()?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// `gzip_base64` の逆変換。調査・テスト用で、展開後のサイズに上限を設ける
+/// （受付は誰でも送れるため、解凍爆弾対策。ADR-222 D8）。
+pub fn gunzip_base64(encoded: &str, max_bytes: usize) -> Result<String, std::io::Error> {
+    use base64::Engine as _;
+    use std::io::Read as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(&bytes[..])
+        .take(max_bytes as u64 + 1)
+        .read_to_end(&mut out)?;
+    if out.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "展開後のサイズが上限を超えました",
+        ));
+    }
+    String::from_utf8(out).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// `build_payload` と同じだが、journal/app_log 添付の切り詰め上限
@@ -802,17 +849,19 @@ pub fn build_payload_with_log_budget(
     if input.symptom_category == SymptomCategory::Other && description.is_empty() {
         return Err(BugReportPayloadError::DescriptionRequiredForOther);
     }
-    let log_excerpt = if input.attach_log {
+    let log_excerpt_gz = if input.attach_log {
         input
             .journal_json
-            .map(|log| truncate_journal_json_tail(log, log_excerpt_max_bytes))
+            .map(|log| gzip_base64(&truncate_journal_json_tail(log, log_excerpt_max_bytes)))
+            .transpose()?
     } else {
         None
     };
-    let app_log_excerpt = if input.attach_log {
+    let app_log_excerpt_gz = if input.attach_log {
         input
             .app_log
-            .map(|log| truncate_text_tail(log, log_excerpt_max_bytes))
+            .map(|log| gzip_base64(&truncate_text_tail(log, log_excerpt_max_bytes)))
+            .transpose()?
     } else {
         None
     };
@@ -885,8 +934,10 @@ pub fn build_payload_with_log_budget(
         attach_layout: input.attach_layout,
         layout_yab,
         attach_log: input.attach_log,
-        log_excerpt,
-        app_log_excerpt,
+        log_excerpt: None,
+        log_excerpt_gz,
+        app_log_excerpt: None,
+        app_log_excerpt_gz,
         attach_retro_eval_stats: input.attach_retro_eval_stats,
         retro_eval_stats,
         attach_ime_keymap: input.attach_ime_keymap,
@@ -903,7 +954,7 @@ pub fn build_payload_with_log_budget(
 pub fn build_payload(
     input: &BugReportInput<'_>,
 ) -> Result<BugReportPayload, BugReportPayloadError> {
-    build_payload_with_log_budget(input, LOG_EXCERPT_MAX_BYTES)
+    build_payload_with_log_budget(input, LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES)
 }
 
 pub fn build_payload_json(input: &BugReportInput<'_>) -> Result<String, BugReportPayloadError> {
@@ -938,7 +989,7 @@ pub fn build_payload_json_fitting(
     input: &BugReportInput<'_>,
     max_body_bytes: usize,
 ) -> Result<(String, usize), BugReportPayloadError> {
-    let mut budget = LOG_EXCERPT_MAX_BYTES;
+    let mut budget = LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES;
     for _ in 0..MAX_HALVINGS {
         let json = serde_json::to_string_pretty(&build_payload_with_log_budget(input, budget)?)?;
         if json.len() <= max_body_bytes || budget == 0 {
@@ -948,6 +999,63 @@ pub fn build_payload_json_fitting(
     }
     let json = serde_json::to_string_pretty(&build_payload_with_log_budget(input, 0)?)?;
     Ok((json, 0))
+}
+
+/// 送信直前に、プレビュー JSON（ログ以外の項目。ユーザーが編集しうる）へ、
+/// 画面に表示している journal / awase.log の**現在の内容**を gzip して差し込む
+/// （ADR-222: プレビュー = 送信内容。ログは表示側で行を削除でき、消した行は
+/// 圧縮データに含まれない）。
+///
+/// プレビュー JSON の `attach_log` が false ならログは付けない。本体が
+/// `max_body_bytes` を超えるときは、圧縮前の上限を半分ずつ縮めて再圧縮する
+/// （古い側から落ちる最終手段）。戻り値は `(送信する JSON, 縮めたか)`。
+pub fn attach_logs_to_preview_json(
+    preview_json: &str,
+    journal_json: Option<&str>,
+    app_log: Option<&str>,
+    max_body_bytes: usize,
+) -> Result<(String, bool), BugReportPayloadError> {
+    let serde_json::Value::Object(mut object) = serde_json::from_str(preview_json)
+        .map_err(|e| BugReportPayloadError::InvalidPreview(e.to_string()))?
+    else {
+        return Err(BugReportPayloadError::InvalidPreview(
+            "最上位がオブジェクトではありません".to_owned(),
+        ));
+    };
+    let attach_log = object
+        .get("attach_log")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    object.insert("schema_version".to_owned(), SCHEMA_VERSION.into());
+    object.insert("log_excerpt".to_owned(), serde_json::Value::Null);
+    object.insert("app_log_excerpt".to_owned(), serde_json::Value::Null);
+    let to_value = |gz: Option<String>| gz.map_or(serde_json::Value::Null, Into::into);
+    let mut budget = LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES;
+    let mut halvings = 0u32;
+    loop {
+        let journal_gz = if attach_log {
+            journal_json
+                .map(|log| gzip_base64(&truncate_journal_json_tail(log, budget)))
+                .transpose()?
+        } else {
+            None
+        };
+        let app_log_gz = if attach_log {
+            app_log
+                .map(|log| gzip_base64(&truncate_text_tail(log, budget)))
+                .transpose()?
+        } else {
+            None
+        };
+        object.insert("log_excerpt_gz".to_owned(), to_value(journal_gz));
+        object.insert("app_log_excerpt_gz".to_owned(), to_value(app_log_gz));
+        let json = serde_json::to_string(&object)?;
+        if json.len() <= max_body_bytes || budget == 0 {
+            return Ok((json, budget < LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES));
+        }
+        halvings += 1;
+        budget = if halvings >= MAX_HALVINGS { 0 } else { budget / 2 };
+    }
 }
 
 #[must_use]
@@ -1537,7 +1645,7 @@ mod tests {
             Some(r#"[{"seq":1}]"#),
         ))
         .unwrap();
-        assert_eq!(payload.schema_version, 3);
+        assert_eq!(payload.schema_version, 4);
         assert_eq!(payload.ime_kind, "Gji");
         assert_eq!(
             payload.ime_product_name.as_deref(),
@@ -1553,10 +1661,16 @@ mod tests {
             payload.symptom_category,
             SymptomCategory::WrongCharacterOutput
         );
-        assert_eq!(payload.log_excerpt.as_deref(), Some(r#"[{"seq":1}]"#));
+        // ADR-222: 新クライアントは非圧縮フィールドを使わず gzip+base64 で送る。
+        assert_eq!(payload.log_excerpt, None);
+        assert_eq!(payload.app_log_excerpt, None);
         assert_eq!(
-            payload.app_log_excerpt.as_deref(),
-            Some("[2026-08-20T00:00:00Z INFO awase] started")
+            gunzip_base64(payload.log_excerpt_gz.as_deref().unwrap(), 1 << 20).unwrap(),
+            r#"[{"seq":1}]"#
+        );
+        assert_eq!(
+            gunzip_base64(payload.app_log_excerpt_gz.as_deref().unwrap(), 1 << 20).unwrap(),
+            "[2026-08-20T00:00:00Z INFO awase] started"
         );
     }
 
@@ -1670,32 +1784,36 @@ mod tests {
 
     #[test]
     fn log_is_attached_only_when_requested_and_truncated_by_utf8_boundary() {
-        let log =
-            serde_json::to_string(&vec!["あ".repeat((LOG_EXCERPT_MAX_BYTES / 3) + 10)]).unwrap();
-        let payload = build_payload(&input("説明", true, Some(&log))).unwrap();
-        let excerpt = payload.log_excerpt.unwrap();
-        assert!(excerpt.len() <= LOG_EXCERPT_MAX_BYTES);
+        let cap = 200 * 1024;
+        let log = serde_json::to_string(&vec!["あ".repeat((cap / 3) + 10)]).unwrap();
+        let payload =
+            build_payload_with_log_budget(&input("説明", true, Some(&log)), cap).unwrap();
+        let excerpt = gunzip_base64(payload.log_excerpt_gz.as_deref().unwrap(), 1 << 22).unwrap();
+        assert!(excerpt.len() <= cap);
         assert!(excerpt.is_char_boundary(excerpt.len()));
 
-        let detached = build_payload(&input("説明", false, Some(&log))).unwrap();
-        assert_eq!(detached.log_excerpt, None);
+        let detached =
+            build_payload_with_log_budget(&input("説明", false, Some(&log)), cap).unwrap();
+        assert_eq!(detached.log_excerpt_gz, None);
     }
 
     #[test]
     fn app_log_is_attached_only_when_requested_and_truncated_by_utf8_boundary() {
-        let long_log = "あ".repeat((LOG_EXCERPT_MAX_BYTES / 3) + 10);
+        let cap = 200 * 1024;
+        let long_log = "あ".repeat((cap / 3) + 10);
         let mut base = input("説明", true, Some("[]"));
         base.app_log = Some(&long_log);
-        let payload = build_payload(&base).unwrap();
-        let excerpt = payload.app_log_excerpt.unwrap();
-        assert!(excerpt.len() <= LOG_EXCERPT_MAX_BYTES);
+        let payload = build_payload_with_log_budget(&base, cap).unwrap();
+        let excerpt =
+            gunzip_base64(payload.app_log_excerpt_gz.as_deref().unwrap(), 1 << 22).unwrap();
+        assert!(excerpt.len() <= cap);
         assert!(excerpt.is_char_boundary(excerpt.len()));
         // 末尾優先: 切り詰め後は元テキストの末尾がそのまま残っている。
         assert!(long_log.ends_with(&excerpt));
 
         base.attach_log = false;
-        let detached = build_payload(&base).unwrap();
-        assert_eq!(detached.app_log_excerpt, None);
+        let detached = build_payload_with_log_budget(&base, cap).unwrap();
+        assert_eq!(detached.app_log_excerpt_gz, None);
     }
 
     #[test]
@@ -1744,15 +1862,18 @@ mod tests {
     #[test]
     fn payload_json_matches_schema_names() {
         let json = build_payload_json(&input("説明", true, Some("[]"))).unwrap();
-        assert!(json.contains("\"schema_version\": 3"));
+        assert!(json.contains("\"schema_version\": 4"));
         assert!(json.contains("\"ime_product_name\": \"Google 日本語入力\""));
         assert!(json.contains("\"keyboard_model\": \"Jis\""));
         assert!(json.contains("\"windows_keyboard_layout\": \"LANGID=0x0411 (Japanese=true)\""));
         assert!(json.contains("\"competing_software\": ["));
         assert!(json.contains("\"symptom_category\": \"WrongCharacterOutput\""));
         assert!(json.contains("\"attach_log\": true"));
-        assert!(json.contains("\"log_excerpt\": \"[]\""));
-        assert!(json.contains("\"app_log_excerpt\": \"[2026-08-20T00:00:00Z INFO awase] started\""));
+        // ADR-222: 非圧縮フィールドは常に null、本体は gzip(base64) の `_gz` に入る。
+        assert!(json.contains("\"log_excerpt\": null"));
+        assert!(json.contains("\"app_log_excerpt\": null"));
+        assert!(json.contains("\"log_excerpt_gz\": \"H4sI"));
+        assert!(json.contains("\"app_log_excerpt_gz\": \"H4sI"));
         assert!(json.contains("\"attach_state_snapshot\": true"));
         assert!(json.contains("\"state_snapshot\": {"));
         assert!(json.contains("\"send_health_last_elapsed_ms\": 12"));
@@ -1790,31 +1911,31 @@ mod tests {
     fn build_payload_json_fitting_keeps_full_budget_when_already_within_limit() {
         let (json, used_budget) =
             build_payload_json_fitting(&input("説明", true, Some("[]")), MAX_BODY_BYTES).unwrap();
-        assert_eq!(used_budget, LOG_EXCERPT_MAX_BYTES);
+        assert_eq!(used_budget, LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES);
         assert!(json.len() <= MAX_BODY_BYTES);
+    }
+
+    /// 圧縮してもほとんど縮まないテキスト（実ログの代わりに、予算縮小ロジックを
+    /// 確実に発火させる）。決定的な疑似乱数（xorshift）で英数字を並べる。
+    fn noisy_text(len: usize) -> String {
+        const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                ALPHABET[(x % ALPHABET.len() as u64) as usize] as char
+            })
+            .collect()
     }
 
     #[test]
     fn build_payload_json_fitting_shrinks_log_budget_to_stay_under_max_body_bytes() {
-        // journal と app_log を両方フルサイズ(LOG_EXCERPT_MAX_BYTES each)で
-        // 添付した場合でも、上限に対して十分小さい max_body_bytes を渡せば
-        // 縮小ロジックが機能することを確認する回帰テスト。journal は小さい
-        // 要素を大量に並べる（1要素が LOG_EXCERPT_MAX_BYTES を超えると
-        // truncate_journal_json_tail が丸ごと弾いて空配列になり、意図せず
-        // 予算を使い切らないため）。
-        //
-        // MAX_BODY_BYTES をそのまま使わない理由: LOG_EXCERPT_MAX_BYTES は
-        // 200KiB に調整済みで、journal+app_log の2本をフル添付しても
-        // 400KiB(< 512KiB=MAX_BODY_BYTES)に収まり、縮小自体が発生しなく
-        // なった（これは「送信のたびに必ず自動切り詰めが発生する」という
-        // 実機報告を受けた意図的な改善）。縮小ロジック自体の回帰を検知する
-        // ため、テストでは意図的に小さい上限を渡す。
-        let journal_items: Vec<_> = (0..4_000)
-            .map(|i| serde_json::json!({"seq": i, "payload": "x".repeat(80)}))
-            .collect();
-        let journal = serde_json::to_string(&journal_items).unwrap();
-        let app_log = "a".repeat(LOG_EXCERPT_MAX_BYTES);
-        let mut base = input("説明", true, Some(&journal));
+        // 圧縮しても大きいログを、上限に対して小さい max_body_bytes で送ると、
+        // 圧縮前の上限を半分ずつ縮めて収める（最終手段）ことの回帰テスト。
+        let app_log = noisy_text(1024 * 1024);
+        let mut base = input("説明", true, Some("[]"));
         base.app_log = Some(&app_log);
         let small_max_body_bytes = 200 * 1024;
         let (json, used_budget) = build_payload_json_fitting(&base, small_max_body_bytes).unwrap();
@@ -1824,33 +1945,133 @@ mod tests {
             json.len()
         );
         assert!(
-            used_budget < LOG_EXCERPT_MAX_BYTES,
+            used_budget < LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES,
             "予算が縮小されていない: {used_budget}"
         );
     }
 
+    /// 実際の awase.log（DEBUG）に近い行を `len` バイト以上並べる。タイムスタンプ・
+    /// ハンドル・経過時間が行ごとに変わるので、「同じ行の繰り返し」ほどは縮まない
+    /// （実ログは約 10 倍に圧縮された。このデータでそれより悪い側を確認する）。
+    fn realistic_log_text(len: usize) -> String {
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut out = String::with_capacity(len + 256);
+        let mut i: u64 = 0;
+        while out.len() < len {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            i += 1;
+            out.push_str(&format!(
+                "2026-10-04T02:24:{:02}.{:06}Z DEBUG awase_windows::imm: [ime-io] cross_process cmd=0x{:04x} kind=probe ime_wnd=HWND(0x{:x}) thread=ThreadId({}) issue_us={} elapsed_us={}\n",
+                (i / 1000) % 60,
+                (x >> 8) % 1_000_000,
+                x & 0xffff,
+                (x >> 20) & 0xfffff,
+                40_000 + (x >> 40) % 9_999,
+                56_000_000_000_u64 + i * 977 + (x >> 50),
+                x % 4_000,
+            ));
+        }
+        out
+    }
+
     #[test]
-    fn full_size_journal_and_app_log_fit_within_max_body_bytes_without_shrinking() {
-        // LOG_EXCERPT_MAX_BYTES を 256KiB から 200KiB に引き下げた理由そのもの
-        // の回帰テスト。旧値では journal(256KiB) + app_log(256KiB) だけで
-        // MAX_BODY_BYTES(512KiB) に達し、他のフィールドのぶんだけ確実に
-        // 超過して「送信のたびに必ず自動切り詰めが発生する」実機報告が
-        // あった。journal/app_log を両方フルサイズで添付しても、通常サイズの
-        // 他フィールドと合わせて MAX_BODY_BYTES に収まり、追加の予算縮小が
-        // 発生しないことを確認する。
-        let journal_items: Vec<_> = (0..4_000)
-            .map(|i| serde_json::json!({"seq": i, "payload": "x".repeat(80)}))
+    fn ten_minutes_of_heavy_typing_fits_within_max_body_bytes_without_shrinking() {
+        // ADR-222 の核心の回帰テスト: 10 分ぶんの打鍵（実測の最大頻度 1 分 475 件 ×
+        // 10 = 4,750 件、1 件約 420B → 約 2MB の非圧縮 JSON）と、awase.log の
+        // 10 分ぶん（DEBUG で約 2.2MB）を両方添付しても、縮小なしで本体上限に収まる。
+        // 旧仕様（非圧縮 200KiB ずつ）では打鍵が 165 秒・73 件しか残らなかった
+        // （report 01M42BME26GDQ3CJ4F5DMGT0MP）。
+        let journal_items: Vec<_> = (0..4_750)
+            .map(|i| {
+                serde_json::json!({
+                    "seq": i,
+                    "elapsed_ms": i * 126,
+                    "entry": {"type": "KeyInput", "event": {
+                        "vk_code": 65 + (i % 26), "scan_code": 30, "is_down": i % 2 == 0,
+                        "injected": false, "timestamp_us": 56_000_000_000_u64 + i * 126_000,
+                        "key_class": "Char", "alt": false, "ctrl": false, "shift": false},
+                        "state_before": "Idle", "state_after": "PendingChar(vk=0x41)",
+                        "decision": {"kind": "Consume", "effect_count": 0},
+                        "physical": {"kind": "Allow"}, "repeat_count": 1,
+                        "last_timestamp_us": 0, "last_elapsed_ms": 0}
+                })
+            })
             .collect();
         let journal = serde_json::to_string(&journal_items).unwrap();
-        let app_log = "a".repeat(LOG_EXCERPT_MAX_BYTES);
+        assert!(journal.len() > 1_500_000, "テストデータが小さすぎる: {}", journal.len());
+        // awase.log の 10 分ぶん（DEBUG で約 2.2MB。実測 3.7〜6.4KB/秒 × 600 秒）。
+        let app_log = realistic_log_text(2_200_000);
         let mut base = input("説明", true, Some(&journal));
         base.app_log = Some(&app_log);
         let (json, used_budget) = build_payload_json_fitting(&base, MAX_BODY_BYTES).unwrap();
         assert_eq!(
-            used_budget, LOG_EXCERPT_MAX_BYTES,
-            "journal/app_logフル添付だけで通常ケースの縮小が発生した: {used_budget}"
+            used_budget, LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES,
+            "10 分ぶんのログを添付しただけで縮小が発生した: {used_budget}"
         );
-        assert!(json.len() <= MAX_BODY_BYTES);
+        assert!(json.len() <= MAX_BODY_BYTES, "{} > {MAX_BODY_BYTES}", json.len());
+    }
+
+    #[test]
+    fn gzip_base64_round_trips_and_has_gzip_magic() {
+        let text = "日本語のログ\n".repeat(100);
+        let encoded = gzip_base64(&text).unwrap();
+        // gzip の先頭 1f 8b 08 は base64 で "H4sI"（Worker 側の検証にも使う）。
+        assert!(encoded.starts_with("H4sI"));
+        assert_eq!(gunzip_base64(&encoded, 1 << 20).unwrap(), text);
+    }
+
+    #[test]
+    fn gunzip_base64_rejects_oversized_expansion() {
+        // 受付は誰でも送れるので、調査側の解凍には展開後サイズの上限を設ける。
+        let bomb = gzip_base64(&"a".repeat(1 << 20)).unwrap();
+        assert!(bomb.len() < 4 * 1024);
+        assert!(gunzip_base64(&bomb, 1024).is_err());
+        assert!(gunzip_base64(&bomb, 2 << 20).is_ok());
+    }
+
+    #[test]
+    fn attach_logs_to_preview_json_embeds_current_log_rows_only() {
+        // プレビューで消した行は、送信内容（圧縮データ）に含まれない。
+        let (preview, _) =
+            build_payload_json_fitting(&input("説明", true, None), MAX_BODY_BYTES).unwrap();
+        let journal = r#"[{"seq":1},{"seq":3}]"#;
+        let (json, shrunk) =
+            attach_logs_to_preview_json(&preview, Some(journal), Some("line-a\nline-c"), MAX_BODY_BYTES)
+                .unwrap();
+        assert!(!shrunk);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["schema_version"], SCHEMA_VERSION);
+        assert!(value["log_excerpt"].is_null());
+        assert!(value["app_log_excerpt"].is_null());
+        let sent_journal =
+            gunzip_base64(value["log_excerpt_gz"].as_str().unwrap(), 1 << 20).unwrap();
+        assert_eq!(sent_journal, journal);
+        assert!(!sent_journal.contains(r#""seq":2"#));
+        let sent_log =
+            gunzip_base64(value["app_log_excerpt_gz"].as_str().unwrap(), 1 << 20).unwrap();
+        assert_eq!(sent_log, "line-a\nline-c");
+    }
+
+    #[test]
+    fn attach_logs_to_preview_json_omits_logs_when_attach_log_is_false() {
+        let (preview, _) =
+            build_payload_json_fitting(&input("説明", false, None), MAX_BODY_BYTES).unwrap();
+        let (json, _) =
+            attach_logs_to_preview_json(&preview, Some("[]"), Some("x"), MAX_BODY_BYTES).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value["log_excerpt_gz"].is_null());
+        assert!(value["app_log_excerpt_gz"].is_null());
+    }
+
+    #[test]
+    fn attach_logs_to_preview_json_rejects_broken_preview() {
+        let err = attach_logs_to_preview_json("{ not json", None, None, MAX_BODY_BYTES)
+            .unwrap_err();
+        assert!(matches!(err, BugReportPayloadError::InvalidPreview(_)));
+        let err = attach_logs_to_preview_json("[1,2]", None, None, MAX_BODY_BYTES).unwrap_err();
+        assert!(matches!(err, BugReportPayloadError::InvalidPreview(_)));
     }
 
     #[test]
