@@ -1200,7 +1200,11 @@ fn main() {
         a.strip_prefix("--bug176=")
             .and_then(|v| v.parse::<usize>().ok())
     }) {
-        let arg_of = |k: &str| args.iter().find_map(|a| a.strip_prefix(k)).map(str::to_string);
+        let arg_of = |k: &str| {
+            args.iter()
+                .find_map(|a| a.strip_prefix(k))
+                .map(str::to_string)
+        };
         let parse_hex = |s: String| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok();
         let vk = arg_of("--b176-vk=").and_then(parse_hex).unwrap_or(0x1A);
         let scan = arg_of("--b176-scan=").and_then(parse_hex).unwrap_or(0xF1);
@@ -1235,7 +1239,11 @@ fn main() {
                         ki: KEYBDINPUT {
                             wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
                             wScan: u16::try_from(scan).unwrap_or(0),
-                            dwFlags: if down { KEYBD_EVENT_FLAGS(0) } else { KEYEVENTF_KEYUP },
+                            dwFlags: if down {
+                                KEYBD_EVENT_FLAGS(0)
+                            } else {
+                                KEYEVENTF_KEYUP
+                            },
                             time: 0,
                             dwExtraInfo: 0,
                         },
@@ -1282,7 +1290,10 @@ fn main() {
                     other += 1;
                 }
             } else {
-                p.log.line(&format!("RESULT PASS: その他 open_late={open_late:?} 実際={}", got.label()));
+                p.log.line(&format!(
+                    "RESULT PASS: その他 open_late={open_late:?} 実際={}",
+                    got.label()
+                ));
                 other += 1;
             }
         }
