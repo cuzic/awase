@@ -487,6 +487,10 @@ jobs:
             # 判定は text_post(OFF 直後のページの文字)に ASCII が無いこと(`か` が `ka` に化けない)。ensure の settle・共通 sleep は race では飛ばす(chrome_probe.rs)。
             cfg('sc-offrca-fix-msime-race', 'pass', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
                 chrome="--offrca=ctrl1d:race0,ctrl1d:race10,ctrl1d:race20 --settle=800 --msime"),
+            # ADR-222 候補の実測(only='sc-offrca-cand-*' で回す。観測のみ): 未確定 composition を残して(typed_nc)から OFF する手段ごとに、IME が閉じるか・text_post に文字が確定して残るか・composition 無し(notype)で副作用が無いか。
+            # 手段: 1a=VK_IME_OFF(基準) / 19=VK_KANJI / 19g=開いているときだけ VK_KANJI / 1a_19g=VK_IME_OFF の後に開いたままなら VK_KANJI / conv0_1a=変換モード0→VK_IME_OFF / conv0=変換モード0のみ / imc0=IMC(OFF) / f0=英数。
+            cfg('sc-offrca-cand-msime-noawase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='false',
+                chrome="--offrca=1a:typed_nc,19:typed_nc,19g:typed_nc,1a_19g:typed_nc,conv0_1a:typed_nc,conv0:typed_nc,imc0:typed_nc,f0:typed_nc,19g:notype,1a_19g:notype --settle=800 --msime --no-awase"),
             cfg('sc-offrca-fix-gji-awase', 'pass', check='offrca', ime='gji', keymap=1, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
                 chrome="--offrca=ctrl1d:typed_nc,ctrl1d:notype --settle=800"),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',

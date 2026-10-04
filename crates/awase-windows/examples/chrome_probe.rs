@@ -1060,6 +1060,36 @@ fn or_do(action: &str) -> String {
             return format!("1a_imc0 ret={r:?}");
         }
         "19" => tap(0x19, 60),
+        // ADR-222 候補A: 実 IME の開閉を読み、開いているときだけ VK_KANJI(0x19、トグル=composition を確定して閉じる)。
+        "19g" => {
+            let api = or_api();
+            if api == Some(true) {
+                tap(0x19, 60);
+            }
+            return format!("19g api_before={api:?}");
+        }
+        // 候補A': VK_IME_OFF の後、開いたままなら(=composition で閉じなかった)VK_KANJI で確定して閉じる。
+        "1a_19g" => {
+            tap(0x1A, 60);
+            sleep(80);
+            let api = or_api();
+            if api == Some(true) {
+                tap(0x19, 60);
+            }
+            return format!("1a_19g api_mid={api:?}");
+        }
+        // 候補B: 変換モードを英数(0)にしてから VK_IME_OFF。
+        "conv0_1a" => {
+            let r = ime_control(0x0002, 0);
+            sleep(80);
+            tap(0x1A, 60);
+            return format!("conv0_1a ret={r:?}");
+        }
+        // 候補B': IMC_SETCONVERSIONMODE(0) だけ(composition が確定されるかの切り分け)。
+        "conv0" => {
+            let r = ime_control(0x0002, 0);
+            return format!("conv0 ret={r:?}");
+        }
         "f3" => tap(0xF3, 60),
         "f4" => tap(0xF4, 60),
         "1d" => tap(0x1D, 60),
