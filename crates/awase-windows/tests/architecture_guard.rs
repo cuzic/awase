@@ -1370,10 +1370,20 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
         "`ImeStateHub::effective_open()` が `effective_open_at()` へ委譲していません。"
     );
     assert_eq!(
-        count_real_calls(wrapper[0], "current_tick_ms("),
+        count_real_calls(wrapper[0], "self.clock.now_tick("),
         1,
-        "`ImeStateHub::effective_open()` が `hook::current_tick_ms()`（record 側と \
-         同じ時間軸）以外の時刻で IntentStore を評価しようとしています。"
+        "`ImeStateHub::effective_open()` が `self.clock.now_tick()` 以外の時刻で \
+         IntentStore を評価しようとしています。"
+    );
+    // 時間軸の同一性は「実機の HubClock が `hook::current_tick_ms` を読む」ことで保つ
+    // （旧: effective_open() が current_tick_ms() を直接呼んでいた。仮想時計を差し込めるよう
+    // HubClock 経由にした。実時計の tick の出所はここで固定する）。
+    assert_eq!(
+        count_real_calls(production, "HubClock::wall(crate::hook::current_tick_ms)"),
+        1,
+        "`ImeStateHub` の時計が `hook::current_tick_ms` の実時計ではありません。\
+         record 側（`runtime/key_pipeline.rs` の `hook::current_tick_ms()`）と TTL 判定の\
+         時間軸が食い違い、実機で IntentStore の上書きが沈黙します。"
     );
 }
 
