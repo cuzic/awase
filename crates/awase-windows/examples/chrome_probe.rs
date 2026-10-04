@@ -1824,7 +1824,8 @@ fn main() {
             ));
             let closed_at = Instant::now();
             if args.iter().any(|a| a == "--refocus") {
-                let away = focus_away();
+                // CI ではタスクバーへの SetForegroundWindow が拒否される(away=false)ので、別窓方式を先に試す(--settle-explicit と同じ)。
+                let away = focus_away_to_helper() || focus_away();
                 sleep(300);
                 let back = bring_to_front();
                 p.log.line(&format!("REFOCUS away={away} back={back}"));
