@@ -88,7 +88,9 @@ The CPU-bound part of an intake request is: decoding the body, `JSON.parse`, val
 | before the optimization (full-field regex + pretty-printed JSON) | 14.2 ms | 13.3 ms |
 | now (head/tail check + compact JSON) | 11.9 ms | 11.4 ms |
 
-So a body near the 2MiB limit is **around or above the Free limit even after the optimization**: decoding, parsing and re-serializing 1.75MiB of JSON costs about 11 ms on a CI runner by itself. The cost is roughly linear in the body size. A realistic report (ten minutes of typing, journal + awase.log gzipped) is about 0.3-1MiB, i.e. roughly 2-6 ms on the same scale. These are rough guides (CI runners vary run to run, and workerd is not Node); the real number is step 4.
+> **Production measurement (2026-10-04, Worker version `8cbcf745`, `wrangler tail`)** replaces the CI estimate below: `cpuTime` was 1 ms for a 1KiB report, **8 ms for a 399KiB report**, and **31 ms for a 1.8MiB report** (all `outcome: ok`, HTTP 201). That is about 16 ms per MiB on workerd (plus ~1.5 ms fixed), roughly 2.5x the Node/CI figure, so the realistic range below is too optimistic: a 0.5MB report costs about 9 ms and a 1MB report about 17 ms. That a 31 ms request still returned `ok` is consistent with either Workers Paid, or the Free plan's allowance for an isolate that only occasionally runs over (the docs say it is terminated once it hits the limit consistently); a single run cannot tell which. Check the plan in the dashboard.
+
+So a body near the 2MiB limit is **around or above the Free limit even after the optimization**: decoding, parsing and re-serializing 1.75MiB of JSON costs about 11 ms on a CI runner by itself. The cost is roughly linear in the body size. A realistic report (ten minutes of typing, journal + awase.log gzipped) is about 0.1-0.5MB (CI-scale estimate: 1-3 ms; production measurement above: about 2-9 ms). These are rough guides (CI runners vary run to run, and workerd is not Node); the real number is step 4.
 
 If the plan is Free, expect only unusually large reports to be at risk, and a failed intake is not silent: the client gets a 5xx and saves the report under `%TEMP%`.
 

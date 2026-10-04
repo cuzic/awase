@@ -61,8 +61,11 @@ related_adr:
 - **D8a Worker の CPU 時間(Workers Free は 10ms/リクエスト)**: プランは API で確認できなかった(OAuth トークンに権限なし)。ADR-095 の記録(無料枠を理由に選定・R2 有効化でカード登録なし)から Free を前提とする。
   CI(GitHub ランナー、Node/V8)での計測は、本体 1.75MiB で旧処理(全文の正規表現 + 整形つき直列化)13.3ms → 現行(先頭 4KiB と末尾だけの検証 + compact な直列化)11.4ms(warm、比 0.86)。
   復号・解析・直列化の基本コストだけで約 11ms あり、本体上限いっぱいの報告は Free の 10ms 前後かそれ以上になりうる。コストは本体の大きさにほぼ比例し、
-  現実的な報告(10 分ぶんの打鍵 + ログを gzip。0.3〜1MiB)は約 2〜6ms の見込み。実測は本番デプロイ後に `wrangler tail` の `cpuTime` で行い、超えるなら
-  Paid プラン / 本体上限の引き下げ(1MiB 等)/ 検証の軽量化から選ぶ(手順は `services/report-worker/README.md`)。R2 に保存する JSON は整形(インデント)しない。
+  **本番実測(2026-10-04、Worker `8cbcf745`、`wrangler tail`)**: `cpuTime` は 1KiB で 1ms、**399KiB で 8ms**、**1.8MiB で 31ms**(いずれも `outcome: ok`、201)。
+  workerd では 1MiB あたり約 16ms(+固定約 1.5ms)で、上の Node/CI の見積もりの約 2.5 倍。現実的な報告(10 分ぶんの打鍵 + ログを gzip で 0.1〜0.5MB)は
+  約 2〜9ms、1MB なら約 17ms。31ms でも `ok` だったのは、Workers Paid か、Free の「まれに上限を超える isolate への許容」(一貫して超えると打ち切られる)のどちらとも
+  矛盾せず、1 回の実行では区別できない。プランはダッシュボードで確認する。超えるなら Paid プラン / 本体上限の引き下げ(1MiB 等)/ 検証の軽量化から選ぶ
+  (手順は `services/report-worker/README.md`)。R2 に保存する JSON は整形(インデント)しない。
 - **D8 R2 には JSON 1 オブジェクトのまま保存する**: 巨大フィールドは base64 のまま保存し、調査スクリプトが解凍する(書き込みを分けると一部だけ失敗する状態が生じる)。
   調査スクリプト側は、解凍後のサイズに上限を設ける(解凍爆弾対策、例 64MiB)。
 - **D9 旧 D3(awase.log の間引き)・旧 D4(KeyInput の省略表現)は今回見送る**: 間引き対象([ime-io]、Timer set/killed、MSAA 分類)は
