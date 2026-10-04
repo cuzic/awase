@@ -503,6 +503,71 @@ fn focus_away() -> bool {
     }
 }
 
+/// Chrome/自前窓以外の別トップレベル窓(別スレッドの可視窓)。CI ではタスクバーへの `SetForegroundWindow` が拒否される(`focus_away` が
+/// `away=false`)ので、`--refocus` はこちらへ先に移す。chrome_probe.rs の同名関数と同じ作り。作成済みなら使い回す。
+fn helper_window() -> Option<HWND> {
+    static H: OnceLock<isize> = OnceLock::new();
+    let raw = *H.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<isize>();
+        std::thread::spawn(move || unsafe {
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("TYPINGSTRESS_AWAY"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                50,
+                50,
+                400,
+                200,
+                None,
+                None,
+                None,
+                None,
+            );
+            let _ = tx.send(hwnd.map_or(0, |h| h.0 as isize));
+            let mut msg = MSG::default();
+            while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&raw const msg);
+                DispatchMessageW(&raw const msg);
+            }
+        });
+        rx.recv_timeout(Duration::from_secs(5)).unwrap_or(0)
+    });
+    (raw != 0).then(|| HWND(raw as *mut _))
+}
+
+/// 別窓(`helper_window`)へフォーカスを移し、前面になったことを検証する。
+fn focus_away_to_helper() -> bool {
+    let Some(hwnd) = helper_window() else {
+        return false;
+    };
+    unsafe {
+        for _ in 0..3 {
+            let fg = GetForegroundWindow();
+            let fg_tid = if fg.0.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(fg, None)
+            };
+            let my_tid = GetCurrentThreadId();
+            let attached = fg_tid != 0
+                && fg_tid != my_tid
+                && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+            let _ = BringWindowToTop(hwnd);
+            let _ = SetForegroundWindow(hwnd);
+            SwitchToThisWindow(hwnd, true);
+            if attached {
+                let _ = AttachThreadInput(my_tid, fg_tid, false);
+            }
+            sleep_ms(200);
+            if GetForegroundWindow() == hwnd {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn own_refocus() {
     unsafe {
         let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_TS_FRONT, WPARAM(0), LPARAM(0));
@@ -1224,7 +1289,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         );
         // `--refocus`: 閉じた直後にフォーカスを一度外して戻す(awase のフォーカス変更経路=drift correction 再開の契機を通す)。
         if has_flag("--refocus") {
-            let away_ok = focus_away();
+            let away_ok = focus_away_to_helper() || focus_away();
             sleep_ms(300);
             refocus();
             rec(
