@@ -22,6 +22,9 @@
 //!
 //! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--chrome=<chrome.exe>] [--log=<path>]`
 //!   `--no-awase`: awase を止めた対照実験（かなのとき `か` を期待）。既定は awase 起動中（NICOLA を期待）。
+//! `--tray-cmd=<ID>` は awase のトレイウィンドウへメニュー選択と同じ WM_COMMAND を送る(ID は tray.rs の IDM_*。例: 52=IMM キャッシュのクリア)。
+//! `--file-state=<path>[,<path>...]` を併せて指定すると、送る前後でそのファイルの状態を `FILE_STATE` 行に出す(存在・長さ・FNV-1a。
+//! `unchanged=true/false` で「空のまま/不変」を判定できる。BUG-112/071 用)。ページ準備後・シナリオ開始前に1回行う。
 //! 実行中は Windows 機のキーボード・マウスに触らない。
 
 use std::io::{Read, Write as _};
@@ -46,8 +49,8 @@ use windows::Win32::UI::TextServices::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DispatchMessageW, FindWindowW, GetForegroundWindow,
-    GetMessageW, GetWindowThreadProcessId, SendMessageW, SetForegroundWindow, SwitchToThisWindow,
-    TranslateMessage, MSG, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    GetMessageW, GetWindowThreadProcessId, PostMessageW, SendMessageW, SetForegroundWindow,
+    SwitchToThisWindow, TranslateMessage, MSG, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 /// スパイクと同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
@@ -642,6 +645,26 @@ fn focus_away_to_helper() -> bool {
     false
 }
 
+/// ファイルの状態(存在・長さ・FNV-1a)。`--file-state` の前後比較用。存在しなければ None。
+fn file_state(path: &str) -> Option<(usize, u64)> {
+    let bytes = std::fs::read(path).ok()?;
+    let h = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3)
+    });
+    Some((bytes.len(), h))
+}
+
+/// awase のトレイウィンドウへ WM_COMMAND(メニュー選択と同じ)を投げる。トレイウィンドウが見つからなければ false。
+fn tray_command(id: u16) -> bool {
+    // SAFETY: 単発の FindWindowW/PostMessageW。
+    unsafe {
+        let Ok(tray) = FindWindowW(w!("awase_tray_window"), PCWSTR::null()) else {
+            return false;
+        };
+        PostMessageW(Some(tray), 0x0111, WPARAM(usize::from(id)), LPARAM(0)).is_ok()
+    }
+}
+
 fn focus_away() -> bool {
     unsafe {
         let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) else {
@@ -1212,6 +1235,40 @@ fn or_poll(total_ms: u64, stop_when_closed: bool) -> (Option<u64>, Vec<(u64, Opt
     (closed_ms, series)
 }
 
+/// Chrome を殺して起動し直し、ページの ready を待つ(`--or-relaunch` / `--bug176` の `--or-relaunch`。ページ状態の蓄積の影響を切り分ける)。
+/// 40 秒で ready にならなければ false。
+fn relaunch_chrome(
+    p: &mut Probe,
+    child: &mut std::process::Child,
+    chrome: &str,
+    profile: &std::path::Path,
+    port: u16,
+) -> bool {
+    let _ = child.kill();
+    let _ = child.wait();
+    sleep(1500);
+    let ready_count = |p: &Probe| {
+        p.shared
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .filter(|e| e.kind == "ready")
+            .count()
+    };
+    let before = ready_count(p);
+    *child = spawn_chrome(chrome, profile, port);
+    let start = Instant::now();
+    while ready_count(p) <= before {
+        if start.elapsed() > Duration::from_secs(40) {
+            return false;
+        }
+        sleep(100);
+    }
+    sleep(1500);
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_offrca(
     p: &mut Probe,
@@ -1246,38 +1303,10 @@ fn run_offrca(
     for cell in spec.split(',').filter(|s| !s.is_empty()) {
         let (action, prep) = cell.split_once(':').unwrap_or((cell, "typed"));
         for i in 0..n {
-            if relaunch && i > 0 {
-                let _ = child.kill();
-                let _ = child.wait();
-                sleep(1500);
-                let before = p
-                    .shared
-                    .lock()
-                    .unwrap()
-                    .events
-                    .iter()
-                    .filter(|e| e.kind == "ready")
-                    .count();
-                *child = spawn_chrome(chrome, profile, port);
-                let start = Instant::now();
-                while p
-                    .shared
-                    .lock()
-                    .unwrap()
-                    .events
-                    .iter()
-                    .filter(|e| e.kind == "ready")
-                    .count()
-                    <= before
-                {
-                    if start.elapsed() > Duration::from_secs(40) {
-                        p.log
-                            .line("OFFRCA_ABORT 再起動した Chrome のページが読み込まれない");
-                        return;
-                    }
-                    sleep(100);
-                }
-                sleep(1500);
+            if relaunch && i > 0 && !relaunch_chrome(p, child, chrome, profile, port) {
+                p.log
+                    .line("OFFRCA_ABORT 再起動した Chrome のページが読み込まれない");
+                return;
             }
             p.focus_lost = false;
             bring_to_front();
@@ -1531,6 +1560,33 @@ fn main() {
         focus_lost: false,
         no_clear: false,
     };
+    // `--tray-cmd=<ID>`(+ `--file-state=<path,...>`): トレイメニュー操作の再現。前後のファイル状態を FILE_STATE 行に出す。
+    if let Some(id) = args.iter().find_map(|a| {
+        a.strip_prefix("--tray-cmd=")
+            .and_then(|v| v.parse::<u16>().ok())
+    }) {
+        let paths: Vec<String> = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--file-state="))
+            .map(|v| {
+                v.split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let before: Vec<_> = paths.iter().map(|f| file_state(f)).collect();
+        let sent = tray_command(id);
+        p.log.line(&format!("TRAY_CMD id={id} sent={sent}"));
+        sleep(1500);
+        for (f, b) in paths.iter().zip(&before) {
+            let a = file_state(f);
+            p.log.line(&format!(
+                "FILE_STATE path={f} before={b:?} after={a:?} unchanged={}",
+                *b == a
+            ));
+        }
+    }
     // `--storm=N`: 親指キー(無変換, NICOLAの既定の親指シフト)を使った通常タイピングをN回行う(BUG-149 レビューB1の確認用)。
     // 文字の判定はせず、awaseログの強制conv読み取りの件数を見る。
     if let Some(n) = args.iter().find_map(|a| {
@@ -1682,7 +1738,7 @@ fn main() {
     // `--bug176=N`(BUG-176 の再現調査): 他プロセスが注入した VK_IME_OFF(目印なし)の直後に、実 IME の開閉(IMC_GETOPENSTATUS)を
     // 時系列で読み、その後 k,a を打って分類する。偽 OFF = 実 IME が開いたまま(open!=0)なのに Engine が OFF(`か`=RomajiKana)。
     // `--b176-mode=clean`: 毎試行 IME ON にそろえ直す。`restore`: 最初だけそろえ、以降は試行後に WM_IME_CONTROL で IME を開け直す(マウス操作相当、awase は知らない)。
-    // `--b176-vk=0x1A`(既定)・`--b176-scan=0xF1`(既定。実機の MapVirtualKey 相当)。
+    // `--b176-vk=0x1A`(既定)・`--b176-scan=0xF1`(既定。実機の MapVirtualKey 相当)。`--or-relaunch` で試行ごとに Chrome を起動し直す。
     if let Some(n) = args.iter().find_map(|a| {
         a.strip_prefix("--bug176=")
             .and_then(|v| v.parse::<usize>().ok())
@@ -1696,13 +1752,21 @@ fn main() {
         let vk = arg_of("--b176-vk=").and_then(parse_hex).unwrap_or(0x1A);
         let scan = arg_of("--b176-scan=").and_then(parse_hex).unwrap_or(0xF1);
         let restore = arg_of("--b176-mode=").as_deref() == Some("restore");
+        // `--or-relaunch`(--offrca と共通): 試行ごとに Chrome を起動し直す(ページ状態の蓄積の影響を切り分ける)。
+        let relaunch = args.iter().any(|a| a == "--or-relaunch");
         let (mut ok, mut falseoff, mut other, mut invalid) = (0usize, 0usize, 0usize, 0usize);
         p.log.line(&format!(
-            "B176 start n={n} vk=0x{vk:02X} scan=0x{scan:02X} mode={}",
+            "B176 start n={n} vk=0x{vk:02X} scan=0x{scan:02X} mode={} relaunch={relaunch}",
             if restore { "restore" } else { "clean" }
         ));
         for i in 0..n {
             p.log.line(&format!("[B176 {}/{n}]", i + 1));
+            if relaunch && i > 0 && !relaunch_chrome(&mut p, &mut child, &chrome, &profile, port) {
+                p.log
+                    .line("B176_ABORT 再起動した Chrome のページが読み込まれない");
+                invalid += 1;
+                break;
+            }
             p.focus_lost = false;
             bring_to_front();
             if i == 0 || !restore {
