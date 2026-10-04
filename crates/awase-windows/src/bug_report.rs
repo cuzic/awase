@@ -809,8 +809,10 @@ pub enum BugReportPayloadError {
 pub fn gzip_base64(text: &str) -> Result<String, std::io::Error> {
     use base64::Engine as _;
     use std::io::Write as _;
-    let mut encoder =
-        flate2::write::GzEncoder::new(Vec::with_capacity(text.len() / 8), flate2::Compression::default());
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::with_capacity(text.len() / 8),
+        flate2::Compression::default(),
+    );
     encoder.write_all(text.as_bytes())?;
     let bytes = encoder.finish()?;
     Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
@@ -838,7 +840,7 @@ pub fn gunzip_base64(encoded: &str, max_bytes: usize) -> Result<String, std::io:
 }
 
 /// `build_payload` と同じだが、journal/app_log 添付の切り詰め上限
-/// （既定は `LOG_EXCERPT_MAX_BYTES`）を呼び出し側で指定できる。
+/// （既定は `LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES`）を呼び出し側で指定できる。
 /// `build_payload_json_fitting` が `MAX_BODY_BYTES` に収まるまで
 /// この上限を段階的に縮小しながら再構築するために使う。
 pub fn build_payload_with_log_budget(
@@ -964,7 +966,7 @@ pub fn build_payload_json(input: &BugReportInput<'_>) -> Result<String, BugRepor
 /// `max_body_bytes` に収まるまで journal/app_log の添付を自動的に切り詰める。
 ///
 /// `build_payload_json` が生成した JSON が上限を超える場合、切り詰め上限
-/// （既定 `LOG_EXCERPT_MAX_BYTES`）を半分ずつ縮小しながら収まるまで
+/// （既定 `LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES`）を半分ずつ縮小しながら収まるまで
 /// 再構築する。他の添付（内部状態スナップショット・設定ファイル・配列
 /// ファイル）は縮小の対象にしない — これらは journal/app_log と違って
 /// 個々のユーザー環境で急に肥大化するものではなく、診断上も基本情報として
@@ -976,7 +978,7 @@ pub fn build_payload_json(input: &BugReportInput<'_>) -> Result<String, BugRepor
 /// 予算が 0 になっても収まらない場合はそこで打ち切り、その JSON をそのまま
 /// 返す（呼び出し側の `MAX_BODY_BYTES` チェックがフォールバックとして働く）。
 ///
-/// 半減を毎回底(0)まで繰り返すと最大 log2(LOG_EXCERPT_MAX_BYTES) ≈ 18 回
+/// 半減を毎回底(0)まで繰り返すと最大 log2(LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES) ≈ 18 回
 /// ペイロード全体（最大数百KB）を再シリアライズすることになり、これは
 /// UI スレッドから同期呼び出しされる場合に無視できないコストになる
 /// （journal/app_log 以外のフィールドだけで既に上限超過している場合、
@@ -1054,7 +1056,11 @@ pub fn attach_logs_to_preview_json(
             return Ok((json, budget < LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES));
         }
         halvings += 1;
-        budget = if halvings >= MAX_HALVINGS { 0 } else { budget / 2 };
+        budget = if halvings >= MAX_HALVINGS {
+            0
+        } else {
+            budget / 2
+        };
     }
 }
 
@@ -1194,7 +1200,11 @@ pub fn rfc3339_utc_to_unix_seconds(text: &str) -> Option<i64> {
     };
     let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
     let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
     {
         return None;
     }
@@ -1879,8 +1889,7 @@ mod tests {
     fn log_is_attached_only_when_requested_and_truncated_by_utf8_boundary() {
         let cap = 200 * 1024;
         let log = serde_json::to_string(&vec!["あ".repeat((cap / 3) + 10)]).unwrap();
-        let payload =
-            build_payload_with_log_budget(&input("説明", true, Some(&log)), cap).unwrap();
+        let payload = build_payload_with_log_budget(&input("説明", true, Some(&log)), cap).unwrap();
         let excerpt = gunzip_base64(payload.log_excerpt_gz.as_deref().unwrap(), 1 << 22).unwrap();
         assert!(excerpt.len() <= cap);
         assert!(excerpt.is_char_boundary(excerpt.len()));
@@ -2093,7 +2102,11 @@ mod tests {
             })
             .collect();
         let journal = serde_json::to_string(&journal_items).unwrap();
-        assert!(journal.len() > 1_500_000, "テストデータが小さすぎる: {}", journal.len());
+        assert!(
+            journal.len() > 1_500_000,
+            "テストデータが小さすぎる: {}",
+            journal.len()
+        );
         // awase.log の 10 分ぶん（DEBUG で約 2.2MB。実測 3.7〜6.4KB/秒 × 600 秒）。
         let app_log = realistic_log_text(2_200_000);
         let mut base = input("説明", true, Some(&journal));
@@ -2103,7 +2116,11 @@ mod tests {
             used_budget, LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES,
             "10 分ぶんのログを添付しただけで縮小が発生した: {used_budget}"
         );
-        assert!(json.len() <= MAX_BODY_BYTES, "{} > {MAX_BODY_BYTES}", json.len());
+        assert!(
+            json.len() <= MAX_BODY_BYTES,
+            "{} > {MAX_BODY_BYTES}",
+            json.len()
+        );
     }
 
     #[test]
@@ -2126,7 +2143,13 @@ mod tests {
 
     #[test]
     fn rfc3339_utc_to_unix_seconds_matches_unix_seconds_to_rfc3339() {
-        for secs in [0_u64, 951_782_400, 1_760_000_000, 1_790_000_000, 4_102_444_799] {
+        for secs in [
+            0_u64,
+            951_782_400,
+            1_760_000_000,
+            1_790_000_000,
+            4_102_444_799,
+        ] {
             let text = unix_seconds_to_rfc3339(secs);
             assert_eq!(
                 rfc3339_utc_to_unix_seconds(&format!("{text}.123456Z DEBUG x")),
@@ -2186,9 +2209,13 @@ mod tests {
         let (preview, _) =
             build_payload_json_fitting(&input("説明", true, None), MAX_BODY_BYTES).unwrap();
         let journal = r#"[{"seq":1},{"seq":3}]"#;
-        let (json, shrunk) =
-            attach_logs_to_preview_json(&preview, Some(journal), Some("line-a\nline-c"), MAX_BODY_BYTES)
-                .unwrap();
+        let (json, shrunk) = attach_logs_to_preview_json(
+            &preview,
+            Some(journal),
+            Some("line-a\nline-c"),
+            MAX_BODY_BYTES,
+        )
+        .unwrap();
         assert!(!shrunk);
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["schema_version"], SCHEMA_VERSION);
@@ -2216,8 +2243,8 @@ mod tests {
 
     #[test]
     fn attach_logs_to_preview_json_rejects_broken_preview() {
-        let err = attach_logs_to_preview_json("{ not json", None, None, MAX_BODY_BYTES)
-            .unwrap_err();
+        let err =
+            attach_logs_to_preview_json("{ not json", None, None, MAX_BODY_BYTES).unwrap_err();
         assert!(matches!(err, BugReportPayloadError::InvalidPreview(_)));
         let err = attach_logs_to_preview_json("[1,2]", None, None, MAX_BODY_BYTES).unwrap_err();
         assert!(matches!(err, BugReportPayloadError::InvalidPreview(_)));

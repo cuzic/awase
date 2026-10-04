@@ -16,11 +16,13 @@ Requires: `wrangler login` already done (checked via `wrangler whoami`).
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import subprocess
 import sys
 import tomllib
 import urllib.request
+import zlib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,6 +38,29 @@ LARGE_TEXT_FIELDS = {
     "config_toml": "config.toml",
     "layout_yab": "layout.yab",
 }
+
+# ADR-222（schema_version 4）: journal / awase.log は gzip して base64 にした
+# `*_gz` フィールドで届く（旧クライアント＝schema_version 3 は上の非圧縮フィールド）。
+# 展開した内容は、非圧縮フィールドと同じファイル名で書き出す。
+GZIP_TEXT_FIELDS = {
+    "log_excerpt_gz": "journal.json",
+    "app_log_excerpt_gz": "awase.log.txt",
+}
+
+# 展開後サイズの上限。受付は誰でも送れるため、数 KB の gzip が数 GB に展開される
+# 解凍爆弾を避ける（Worker は解凍しないので、展開はこのメンテナの手元で行う）。
+# 正規の 10 分ぶんのログは展開後でも数 MB〜十数 MB。
+MAX_GUNZIP_BYTES = 64 * 1024 * 1024
+
+
+def gunzip_base64(encoded: str, max_bytes: int = MAX_GUNZIP_BYTES) -> str:
+    """gzip + base64 の文字列を、展開後サイズに上限を付けて UTF-8 文字列に戻す。"""
+    raw = base64.b64decode(encoded, validate=True)
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    out = decompressor.decompress(raw, max_bytes + 1)
+    if len(out) > max_bytes or decompressor.unconsumed_tail:
+        raise ValueError(f"展開後のサイズが上限 {max_bytes} バイトを超えました")
+    return out.decode("utf-8")
 
 
 def load_wrangler_token() -> str:
@@ -116,6 +141,15 @@ def summarize(report_path: Path, out_dir: Path) -> None:
             target = out_dir / f"{report_path.stem}.{LARGE_TEXT_FIELDS[key]}"
             target.write_text(value)
             print(f"  {key}: <{len(value)} chars> -> {target}")
+        elif key in GZIP_TEXT_FIELDS and isinstance(value, str) and value:
+            target = out_dir / f"{report_path.stem}.{GZIP_TEXT_FIELDS[key]}"
+            try:
+                text = gunzip_base64(value)
+            except (ValueError, zlib.error) as e:
+                print(f"  {key}: <gzip {len(value)} chars> 展開できませんでした: {e}")
+                continue
+            target.write_text(text)
+            print(f"  {key}: <gzip {len(value)} chars -> {len(text)} chars> -> {target}")
         elif isinstance(value, str) and len(value) > 500:
             print(f"  {key}: <string, {len(value)} chars>")
         else:

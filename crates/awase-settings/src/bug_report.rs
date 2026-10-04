@@ -82,9 +82,7 @@ enum SendOutcome {
     },
     /// 送信内容を作れなかった（プレビュー JSON が壊れている、上限を超える等）。
     /// 作れていないので、ローカルへの保存もしない。
-    NotBuilt {
-        message: String,
-    },
+    NotBuilt { message: String },
     Failure {
         message: String,
         saved_payload: Result<PathBuf, String>,
@@ -392,10 +390,7 @@ impl BugReportApp {
         // 送信するのは「プレビュー（ログ以外）+ 画面に残っているログ行」。ログの圧縮は
         // 数 MB を扱うので、UI スレッドを止めないよう送信スレッド側で行う（ADR-222）。
         let preview = self.preview_json.clone();
-        let journal_json = self
-            .journal_rows
-            .as_deref()
-            .map(rows_to_journal_json);
+        let journal_json = self.journal_rows.as_deref().map(rows_to_journal_json);
         let app_log = self.app_log_rows.as_ref().map(|rows| rows.join("\n"));
         let (tx, rx) = mpsc::channel();
         self.pending = Some(rx);
@@ -440,7 +435,10 @@ fn load_journal_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
         Err(e) => {
             return (
                 None,
-                format!("添付ログ(journal)を読めませんでした: {} ({e})", path.display()),
+                format!(
+                    "添付ログ(journal)を読めませんでした: {} ({e})",
+                    path.display()
+                ),
             );
         }
     };
@@ -451,7 +449,10 @@ fn load_journal_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
         }
         Err(e) => (
             None,
-            format!("添付ログ(journal)を解析できませんでした: {} ({e})", path.display()),
+            format!(
+                "添付ログ(journal)を解析できませんでした: {} ({e})",
+                path.display()
+            ),
         ),
     }
 }
@@ -471,7 +472,10 @@ fn load_app_log_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
         Err(e) if old.is_empty() => {
             return (
                 None,
-                format!("添付ログ(awase.log)を読めませんでした: {} ({e})", path.display()),
+                format!(
+                    "添付ログ(awase.log)を読めませんでした: {} ({e})",
+                    path.display()
+                ),
             );
         }
         Err(_) => String::new(),

@@ -1095,10 +1095,10 @@ impl JournalEntry {
                     evicted_timing,
                     evicted_actuation,
                     evicted_key_input,
-                    ?oldest_elapsed_ms_state,
-                    ?oldest_elapsed_ms_timing,
-                    ?oldest_elapsed_ms_actuation,
-                    ?oldest_elapsed_ms_key_input,
+                    oldest_elapsed_ms_state,
+                    oldest_elapsed_ms_timing,
+                    oldest_elapsed_ms_actuation,
+                    oldest_elapsed_ms_key_input,
                     "dump triggered"
                 );
             }
