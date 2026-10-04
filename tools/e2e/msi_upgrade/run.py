@@ -80,10 +80,14 @@ def scenario(old_tag: str, new_tag: str, work: Path, logs: Path, repo: str):
     exe_old = sha(d / "awase.exe")
     cfg = d / "config.toml"
     yab = d / "layout" / "nicola.yab"
-    res.append(("旧版: awase.exe/config.toml/layout/nicola.yab が配置", (d / "awase.exe").exists() and cfg.exists() and yab.exists(),
-                f"exe={exe_old} cfg={cfg.exists()} yab={yab.exists()}"))
-    if not (cfg.exists() and yab.exists()):
-        return res
+    listing = sorted(str(q.relative_to(d)) for q in d.rglob("*") if q.is_file())[:30]
+    res.append(("旧版: awase.exe が配置", (d / "awase.exe").exists(), f"exe={exe_old} files={listing}"))
+    # 旧版の MSI が config.toml / layout/nicola.yab を同梱しないことがある(v1.20.0 など)。その場合はユーザー(アプリの初回起動)が作った状態を再現して続ける。
+    if not cfg.exists():
+        cfg.write_text("[general]\n", encoding="utf-8")
+    if not yab.exists():
+        yab.parent.mkdir(parents=True, exist_ok=True)
+        yab.write_text("; user layout\n", encoding="utf-8")
 
     # ユーザーが設定を書き換えた状態を作る
     cfg.write_text(cfg.read_text(encoding="utf-8") + f"\n{MARK_CFG}\n", encoding="utf-8")
