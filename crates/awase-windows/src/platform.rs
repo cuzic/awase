@@ -267,6 +267,13 @@ impl WindowsPlatform {
                     });
                 }
                 crate::tsf::literal_facts::LiteralDetectTraceItem::Verdict(record) => {
+                    tracing::debug!(
+                        "[giveup-follow] record verdict={:?} gave_up={} consecutive_before={} tracker_before={:?}",
+                        record.facts.verdict,
+                        record.gave_up,
+                        record.consecutive_before,
+                        self.giveup_tracker
+                    );
                     if let Some(evidence) = self.giveup_tracker.note_record(&record) {
                         tracing::debug!(
                             "[giveup-follow] give-up の証拠を保持 cold={} focus_gen={}",
