@@ -111,6 +111,7 @@ mod p {
     #[link(name = "imm32")]
     extern "system" {
         fn ImmSetHotKey(dw_hotkey: u32, modifiers: u32, vkey: u32, hkl: HKL) -> i32;
+        fn ImmGetHotKey(dw_hotkey: u32, modifiers: *mut u32, vkey: *mut u32, hkl: *mut HKL) -> i32;
     }
 
     static SHELL_MSG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -224,6 +225,28 @@ mod p {
                 LPARAM(hkl.0 as isize),
             )
         };
+    }
+
+    /// OS が実行時に持つ IME ホットキー(`ImmGetHotKey`)を、既知の ID 範囲で列挙してログに出す。レジストリの値と突き合わせる。
+    fn dump_hotkeys(lp: &str, tag: &str) {
+        let ids: Vec<u32> = [0x10u32, 0x11, 0x12, 0x30, 0x31, 0x32, 0x70, 0x71, 0x72]
+            .into_iter()
+            .chain(0x100..0x120)
+            .chain(0x200..0x210)
+            .collect();
+        for id in ids {
+            let (mut m, mut v, mut h) = (0u32, 0u32, HKL::default());
+            let ok = unsafe { ImmGetHotKey(id, &raw mut m, &raw mut v, &raw mut h) };
+            if ok != 0 {
+                log(
+                    lp,
+                    &format!(
+                        "HK {tag} id=0x{id:03X} mods=0x{m:08X} vk=0x{v:02X} hkl=0x{:08X}",
+                        h.0 as usize
+                    ),
+                );
+            }
+        }
     }
 
     pub fn run() -> anyhow::Result<()> {
@@ -415,6 +438,9 @@ mod p {
             return Ok(());
         }
         let list = hkls();
+        if args.iter().any(|a| a == "--dump-hotkeys") {
+            dump_hotkeys(&lp, "before");
+        }
         log(
             &lp,
             &format!(
@@ -433,6 +459,9 @@ mod p {
         let r1 = unsafe { ImmSetHotKey(0x100, 0x4005, 0x33, ru) };
         let r2 = unsafe { ImmSetHotKey(0x101, 0x4005, 0x31, ja) };
         log(&lp, &format!("[ls] ImmSetHotKey ru={r1} ja={r2}"));
+        if args.iter().any(|a| a == "--dump-hotkeys") {
+            dump_hotkeys(&lp, "after-set");
+        }
 
         let set_ja = || {
             request(ja);
@@ -460,6 +489,7 @@ mod p {
                 let mut t_focus: Option<u64> = None;
                 match m.as_str() {
                     "altshift" => chord(&[0xA4, 0xA0], None),
+                    "ctrlshift" => chord(&[0xA2, 0xA0], None),
                     "winspace" => chord(&[0x5B], Some(0x20)),
                     "hk3" | "hk3_focus" => chord(&[0xA4, 0xA0], Some(0x33)),
                     "request" | "request_focus" => request(ru),

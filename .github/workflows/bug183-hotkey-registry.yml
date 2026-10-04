@@ -1,0 +1,112 @@
+name: bug183-hotkey-registry
+# ADR-222 案E の調査: 言語切替ホットキーの「読み方」を実測する(観測のみ)。
+#  (1) ImmGetHotKey で OS が実行時に持つホットキーを列挙し、レジストリ(Hot Keys)の値と突き合わせる
+#  (2) HKCU\Keyboard Layout\Toggle の値(1=Alt+Shift、2=Ctrl+Shift、3=なし)を書き換え、SPI_SETLANGTOGGLE で反映してから
+#      Alt+Shift と Ctrl+Shift のどちらで言語が切り替わるかを測る
+#  (3) ImmSetHotKey で設定した値が、レジストリの形式(Key Modifiers / Virtual Key / Target IME)と同じ意味かを読み戻しで確認する
+# ci/bug183-lang-switch への push で回る。awase は起動しない。
+on:
+  push:
+    branches: [ci/bug183-lang-switch]
+    paths:
+      - '.github/workflows/bug183-hotkey-registry.yml'
+  workflow_dispatch:
+
+jobs:
+  measure:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bug183
+      - name: 入力言語に ja-JP(Microsoft IME)と ru-RU を追加する
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $list = Get-WinUserLanguageList
+          $list.Add("ja-JP")
+          $list.Add("ru-RU")
+          Set-WinUserLanguageList -LanguageList $list -Force
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 8
+      - name: プローブをビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --example lang_switch_probe
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\debug\examples\lang_switch_probe.exe dist\
+      - name: Toggle の値ごとに切替を測る
+        shell: pwsh
+        run: |
+          Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint a, uint b, IntPtr c, uint d);'
+          Push-Location dist
+          "--- Keyboard Layout\Toggle (初期)" | Out-File reg-toggle.txt -Encoding utf8
+          reg query "HKCU\Keyboard Layout\Toggle" 2>&1 | Out-File reg-toggle.txt -Append -Encoding utf8
+          foreach ($t in '1', '2', '3') {
+            New-Item -Path 'HKCU:\Keyboard Layout\Toggle' -Force | Out-Null
+            foreach ($n in 'Hotkey', 'Language Hotkey') { Set-ItemProperty -Path 'HKCU:\Keyboard Layout\Toggle' -Name $n -Value $t -Type String }
+            Set-ItemProperty -Path 'HKCU:\Keyboard Layout\Toggle' -Name 'Layout Hotkey' -Value '3' -Type String
+            $r = [W.U]::SystemParametersInfo(0x5B, 0, [IntPtr]::Zero, 0)   # SPI_SETLANGTOGGLE: レジストリを読み直させる
+            "toggle=$t SPI_SETLANGTOGGLE=$r" | Tee-Object -FilePath toggle-run.txt -Append
+            Start-Sleep -Seconds 3
+            $log = "ls_toggle$t.log"
+            $extra = if ($t -eq '1') { '--dump-hotkeys' } else { '' }
+            Start-Process -FilePath .\lang_switch_probe.exe -ArgumentList "--methods=altshift,ctrlshift --trials=3 --observe-ms=1500 --log=$log $extra"
+            $deadline = (Get-Date).AddMinutes(4)
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 2
+              if ((Test-Path $log) -and (Select-String -Path $log -Pattern '\[ls\] (done|ABORT)' -Quiet)) { break }
+            }
+            Get-Process lang_switch_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+          Pop-Location
+      - name: 集計
+        if: always()
+        shell: python
+        run: |
+          import glob, json, re, os
+          out = ["## ホットキー調査", ""]
+          out.append("### Toggle の値ごとの切替(layout_ms=言語が ru になるまでの ms、None=切り替わらなかった)")
+          out.append("")
+          out.append("| Toggle | 方法 | 試行ごとの layout_ms |")
+          out.append("|---|---|---|")
+          for t in "123":
+              p = f"dist/ls_toggle{t}.log"
+              if not os.path.exists(p):
+                  out.append(f"| {t} | (ログなし) | |"); continue
+              by = {}
+              for line in open(p, encoding="utf-8", errors="replace"):
+                  m = re.search(r"LS (\{.*\})", line)
+                  if m:
+                      r = json.loads(m.group(1)); by.setdefault(r["method"], []).append(r["layout_ms_after_inject"])
+              for method, v in by.items():
+                  out.append(f"| {t} | {method} | {v} |")
+          out.append("")
+          out.append("### ImmGetHotKey の列挙(Toggle=1 の実行の冒頭)")
+          out.append("")
+          p = "dist/ls_toggle1.log"
+          if os.path.exists(p):
+              for line in open(p, encoding="utf-8", errors="replace"):
+                  if line.startswith("HK ") or "ImmSetHotKey" in line:
+                      out.append("    " + line.rstrip())
+          text = "\n".join(out)
+          print(text.encode("utf-8", "replace").decode("utf-8"))
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8").write(text + "\n")
+        env:
+          PYTHONUTF8: '1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-bug183-hotkey
+          path: |
+            dist/ls_toggle*.log
+            dist/reg-toggle.txt
+            dist/toggle-run.txt
