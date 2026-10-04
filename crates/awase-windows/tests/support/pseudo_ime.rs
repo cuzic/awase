@@ -276,6 +276,9 @@ impl PseudoIme {
         self.writes_blocked = blocked;
     }
 
+    /// 【経緯 2026-10-04】スイッチと単体テスト(下の `q6_*`)はあるが、閉ループのシナリオ(`closed_loop_scenarios.rs`)からはまだ
+    /// 呼ばれていない。BUG-185 は「対応しない」決定で、awase 側に検知したい挙動の修正が無く、シナリオにする根拠が無かったため。
+    /// MS-IME の入力中 OFF 書き込みを扱う修正・回帰が出たときの足場として残している。消費者が現れないまま長く残るなら削ってよい。
     /// クセ Q6: 入力中の OFF 書き込み(`write_open(false)`)が IME を閉じず、conv だけ半角英数にする(BUG-185、MS-IME)。
     /// 書き込み自体は「受理」される(`write_open` は true を返す)が、開閉は変わらない。入力中でなければ通常どおり閉じる。
     pub fn set_off_ignored_while_composing(&mut self, on: bool) {
@@ -292,6 +295,11 @@ impl PseudoIme {
     /// 実測（`tuning.rs` の `MODE_KEY_PASS_REREAD_MS` の注記、`mode_key_pass_timeline.py`）:
     /// ATOK プリセットのモードキー通過後、IMM 再読に変化が現れるまで min21 / median33 / p90 33 /
     /// max62ms。11ms 後の 1 回は古い状態を読んだ。真の状態（`state`）は変わらず、観測だけが遅れる。
+    ///
+    /// 【経緯 2026-10-04】これを使う現在のシナリオ(Q3 の3本)が確かめるのは「明示意図が無ければ古い読みで drift 補正が書かない」だけで、
+    /// 遅れの値(33ms でも 362ms でも 2295ms でも。Q-key-latency-gji の実測、ADR-176 n=9)を変えても通る分岐は同じ。
+    /// 値だけ変えたシナリオは新しい回帰検知にならないため足さなかった(PR #477 を閉じた)。遅れが意味を持つのは
+    /// 「明示意図がある状態で古い読みが来る」(BUG-162/163 系)シナリオを書くとき。これはその足場。
     pub fn set_readback_lag_ms(&mut self, ms: Option<u64>) {
         self.readback_lag_ms = ms;
     }
