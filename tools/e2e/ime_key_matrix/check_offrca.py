@@ -28,8 +28,13 @@ def load(path):
     return rows
 
 
+def is_made(t):
+    """前提が成立した試行(IME ON・API=開・フォーカスを失っていない)。"""
+    return bool(t.get("prep_ok") and t.get("api_pre") is True and not t.get("focus_lost"))
+
+
 def summarize(trials):
-    made = [t for t in trials if t.get("prep_ok") and t.get("api_pre") is True and not t.get("focus_lost")]
+    made = [t for t in trials if is_made(t)]
     closed = [t for t in made if t.get("closed_ms") is not None]
     never = [t for t in made if t.get("closed_ms") is None]
     ms = sorted(t["closed_ms"] for t in closed)
@@ -112,16 +117,22 @@ def main():
         invalid = [c for c, v in res.items() if v["all"]["made"] == 0]
         bad = [c for c, v in res.items() if v["all"]["made"] > 0 and v["all"]["typed_closed"] != v["all"]["made"]]
         # race<N>(打鍵の直後の OFF): OFF 前に打った文字が ASCII(`ka` 等)に化けていないこと(text_post)。
+        # 正しく動いても text_post は空なので、打鍵がページへ届いた試行(race_keys>=1)だけを数える。
+        # 届いた試行が 0 のセルは空振り(Ctrl 救済で保留が捨てられた等)で INVALID。
+        race_cells = {c: ts for c, ts in cells.items() if ":race" in c}
+        race_void = [c for c, ts in race_cells.items() if not any(is_made(t) and t.get("race_keys", 0) >= 1 for t in ts)]
         race_bad = [
-            c for c, ts in cells.items()
-            if ":race" in c
-            if any(re.search(r"[A-Za-z]", str(t.get("text_post") or "")) for t in ts if t.get("prep_ok") and t.get("api_pre") is True)
+            c for c, ts in race_cells.items()
+            if any(re.search(r"[A-Za-z]", str(t.get("text_post") or "")) for t in ts if is_made(t) and t.get("race_keys", 0) >= 1)
         ]
         # --or-then がある試行は、続く ON でかな入力に戻ること(半角英数 conv=16 に取り残されない)。
         then_bad = [
             c for c, ts in cells.items()
-            if any(t.get("then") and t["then"].get("open") is not True for t in ts if t.get("prep_ok") and t.get("api_pre") is True)
+            if any(t.get("then") and t["then"].get("open") is not True for t in ts if is_made(t))
         ]
+        if race_void:
+            print(f"OFFRCA_VERDICT: INVALID(race で打鍵がページへ届いた試行が 0 のセル=空振り: {race_void})")
+            return 3
         if invalid:
             print(f"OFFRCA_VERDICT: INVALID(前提が成立した試行が 0 のセル: {invalid})")
             return 3

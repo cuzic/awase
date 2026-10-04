@@ -1179,6 +1179,7 @@ fn run_offrca(
             let prep_tag = prep.split('~').next().unwrap_or(prep);
             let events_before = p.shared.lock().unwrap().events.len();
             let mut race_api_pre: Option<bool> = None;
+            let mut race_ev0 = 0usize;
             let prep_ok = match prep_tag {
                 "typed_nc" | "typed_enter" | "typed_esc" => {
                     // composition を残したまま(clear しない)。enter/esc はその後に確定/取消してから page を空にする。
@@ -1211,6 +1212,7 @@ fn run_offrca(
                     let ok = ensure(p, Setup::Kana, awase);
                     race_api_pre = or_api();
                     let _ = p.command("clear", "cleared");
+                    race_ev0 = p.shared.lock().unwrap().events.len();
                     let w: u64 = t["race".len()..].parse().unwrap_or(0);
                     p.press(0x4B, false, 30);
                     sleep(30);
@@ -1257,6 +1259,21 @@ fn run_offrca(
                 .collect();
             // 動作直後のページの文字(残った composition が確定されたか)を、打鍵の前に読む。
             let text_post = p.command("snap", "snap").map(|e| e.value);
+            // race<N>: 打鍵(k,a。awase 経由なら注入された romaji や IME の Process)が OFF 直後までにページへ届いた件数。0 なら空振り(Ctrl 救済で保留が捨てられた等)。
+            let race_keys = if is_race {
+                p.shared.lock().unwrap().events[race_ev0..]
+                    .iter()
+                    .filter(|e| {
+                        e.kind == "keydown"
+                            && (e.key.eq_ignore_ascii_case("k")
+                                || e.key.eq_ignore_ascii_case("a")
+                                || e.key == "Process"
+                                || e.kc == "229")
+                    })
+                    .count()
+            } else {
+                0
+            };
             let _ = p.command("clear", "cleared");
             sleep(300);
             let got = p.probe_logged("offrca 後");
@@ -1302,7 +1319,7 @@ fn run_offrca(
                 serde_json::json!({"type":"or_trial","cell":cell,"action":action,"prep":prep,"n":i,
                     "utc":utc,"prep_ok":prep_ok,"api_pre":api_pre,"desc":desc,"closed_ms":closed_ms,
                     "series":ser,"api_end":api_end,"typed":got.label(),"typed_open":typed_open,
-                    "api_after_probe":api_after_probe,"text_post":text_post,"typed2":got2.label(),"typed2_open":km_open_of(got2),"typed2_text":text2,"conv_pre":conv_pre,"conv_end":conv_end,"page_events":page_events,"then":then_res,"ladder":ladder_res,"focus_lost":p.focus_lost,
+                    "api_after_probe":api_after_probe,"text_post":text_post,"race_keys":race_keys,"typed2":got2.label(),"typed2_open":km_open_of(got2),"typed2_text":text2,"conv_pre":conv_pre,"conv_end":conv_end,"page_events":page_events,"then":then_res,"ladder":ladder_res,"focus_lost":p.focus_lost,
                     "awase":awase})
             ));
         }

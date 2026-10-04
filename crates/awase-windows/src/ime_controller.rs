@@ -838,16 +838,29 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
     }
 }
 
-/// キャラクタライゼーション用: VK 送信後の補完 write 名（ADR-221）。`"-"` = 補完なし。
+/// キャラクタライゼーション用: VK 送信後の補完 write 名（ADR-221）。
+///
+/// `"-"` = 補完なし。`profile` は `characterize_strategy` と同じ形式。`followup_after_vk` と同じく `imm_cross_applicable(profile)`
+/// から `imm_cross_in_chain` を導く（本番の配線を golden が固定する）。
+///
+/// # Panics
+/// `profile` が `"Standard"` / `"Imm32Unavailable"` / `"TsfNative"` のいずれでもない場合。
 #[must_use]
 pub fn characterize_post_vk_followup(
     active_gji: bool,
     open: bool,
     explicit_press: bool,
-    imm_cross_in_chain: bool,
+    profile: &str,
 ) -> &'static str {
+    use crate::focus::class_names::AppImeProfile;
     use crate::state::key_sequence_policy::{
         post_vk_followup, ImeOperation, KeyMechanism, PostVkFollowup,
+    };
+    let profile = match profile {
+        "Standard" => AppImeProfile::Standard,
+        "Imm32Unavailable" => AppImeProfile::Imm32Unavailable,
+        "TsfNative" => AppImeProfile::TsfNative,
+        other => panic!("unknown profile: {other}"),
     };
     let mechanism = if active_gji {
         KeyMechanism::GjiDirect
@@ -858,7 +871,7 @@ pub fn characterize_post_vk_followup(
         mechanism,
         ImeOperation::from_open(open),
         explicit_press,
-        imm_cross_in_chain,
+        key_sequence_policy::imm_cross_applicable(profile),
     ) {
         PostVkFollowup::None => "-",
         PostVkFollowup::CloseViaImc => "IMC_SETOPENSTATUS(0)",

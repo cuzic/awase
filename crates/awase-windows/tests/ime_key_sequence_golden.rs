@@ -62,9 +62,9 @@ const FOLLOWUP_HEADER: &str = "\
 # ── VK 送信後の補完 write (ADR-221) ───────────────────────────────
 # 冪等モードキー（GjiDirect / MsImeDirect）の VK 送信の直後に同じ機構が続けて行う write。
 # MS-IME の OFF だけが同期 IMC_SETOPENSTATUS(0) を補う。GJI は IMC が効かない（API は閉になるが打鍵は
-# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 起案 <TAB> chain <TAB> 補完（- = なし）。起案: press = 明示キー押下由来 / no-press = drift correction・
-# エンジン切替ホットキー/トレイ等（press ID が載らない起案は composition を取り消す補完を発行しない）。chain: imm-in-chain = Standard
-# （ImmCross を先に試した fallback。たった今失敗した IMC を再送しない）/ no-imm = Imm32Unavailable・TsfNative。
+# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 起案 <TAB> profile <TAB> 補完（- = なし）。起案: press = 明示キー押下由来 / no-press = drift correction・
+# エンジン切替ホットキー/トレイ等（press ID が載らない起案は composition を取り消す補完を発行しない）。profile: Standard は ImmCross を先に試した fallback
+# （たった今失敗した IMC を再送しない）。imm_cross_applicable(profile) から導く（本番の followup_after_vk と同じ配線）。
 ";
 
 const KEY_DOC: &str = "\
@@ -147,9 +147,9 @@ fn build_report() -> String {
     for (active, active_gji) in [("GJI", true), ("MS-IME", false)] {
         for (op, open) in [("ON", true), ("OFF", false)] {
             for (press, explicit) in [("press", true), ("no-press", false)] {
-                for (chain, imm) in [("imm-in-chain", true), ("no-imm", false)] {
-                    let f = characterize_post_vk_followup(active_gji, open, explicit, imm);
-                    out.push_str(&format!("{active}\t{op}\t{press}\t{chain}\t{f}\n"));
+                for profile in ["Standard", "Imm32Unavailable", "TsfNative"] {
+                    let f = characterize_post_vk_followup(active_gji, open, explicit, profile);
+                    out.push_str(&format!("{active}\t{op}\t{press}\t{profile}\t{f}\n"));
                 }
             }
         }
@@ -199,19 +199,35 @@ fn ime_key_strategy_selection_matches_golden() {
 #[test]
 fn ms_ime_off_includes_imc_followup_and_gji_does_not() {
     assert_eq!(
-        characterize_post_vk_followup(false, false, true, false),
+        characterize_post_vk_followup(false, false, true, "TsfNative"),
         "IMC_SETOPENSTATUS(0)"
     );
-    assert_eq!(characterize_post_vk_followup(false, true, true, false), "-");
-    assert_eq!(characterize_post_vk_followup(true, false, true, false), "-");
-    assert_eq!(characterize_post_vk_followup(true, true, true, false), "-");
+    assert_eq!(
+        characterize_post_vk_followup(false, false, true, "Imm32Unavailable"),
+        "IMC_SETOPENSTATUS(0)"
+    );
+    assert_eq!(
+        characterize_post_vk_followup(false, true, true, "TsfNative"),
+        "-"
+    );
+    assert_eq!(
+        characterize_post_vk_followup(true, false, true, "TsfNative"),
+        "-"
+    );
+    assert_eq!(
+        characterize_post_vk_followup(true, true, true, "TsfNative"),
+        "-"
+    );
     // drift correction 等（press 無し）は MS-IME の OFF でも補わない。
     assert_eq!(
-        characterize_post_vk_followup(false, false, false, false),
+        characterize_post_vk_followup(false, false, false, "TsfNative"),
         "-"
     );
     // Standard（ImmCross を試した fallback）は補わない。
-    assert_eq!(characterize_post_vk_followup(false, false, true, true), "-");
+    assert_eq!(
+        characterize_post_vk_followup(false, false, true, "Standard"),
+        "-"
+    );
 }
 
 /// 選択ロジックの不変条件をスモークテストとして固定する（ゴールデン破損時の一次診断用）。

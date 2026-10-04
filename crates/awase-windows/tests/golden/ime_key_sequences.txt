@@ -23,25 +23,33 @@ MS-IME	TsfNative	async_fallback	MsImeDirect
 # ── VK 送信後の補完 write (ADR-221) ───────────────────────────────
 # 冪等モードキー（GjiDirect / MsImeDirect）の VK 送信の直後に同じ機構が続けて行う write。
 # MS-IME の OFF だけが同期 IMC_SETOPENSTATUS(0) を補う。GJI は IMC が効かない（API は閉になるが打鍵は
-# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 起案 <TAB> chain <TAB> 補完（- = なし）。起案: press = 明示キー押下由来 / no-press = drift correction・
-# エンジン切替ホットキー/トレイ等（press ID が載らない起案は composition を取り消す補完を発行しない）。chain: imm-in-chain = Standard
-# （ImmCross を先に試した fallback。たった今失敗した IMC を再送しない）/ no-imm = Imm32Unavailable・TsfNative。
-GJI	ON	press	imm-in-chain	-
-GJI	ON	press	no-imm	-
-GJI	ON	no-press	imm-in-chain	-
-GJI	ON	no-press	no-imm	-
-GJI	OFF	press	imm-in-chain	-
-GJI	OFF	press	no-imm	-
-GJI	OFF	no-press	imm-in-chain	-
-GJI	OFF	no-press	no-imm	-
-MS-IME	ON	press	imm-in-chain	-
-MS-IME	ON	press	no-imm	-
-MS-IME	ON	no-press	imm-in-chain	-
-MS-IME	ON	no-press	no-imm	-
-MS-IME	OFF	press	imm-in-chain	-
-MS-IME	OFF	press	no-imm	IMC_SETOPENSTATUS(0)
-MS-IME	OFF	no-press	imm-in-chain	-
-MS-IME	OFF	no-press	no-imm	-
+# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 起案 <TAB> profile <TAB> 補完（- = なし）。起案: press = 明示キー押下由来 / no-press = drift correction・
+# エンジン切替ホットキー/トレイ等（press ID が載らない起案は composition を取り消す補完を発行しない）。profile: Standard は ImmCross を先に試した fallback
+# （たった今失敗した IMC を再送しない）。imm_cross_applicable(profile) から導く（本番の followup_after_vk と同じ配線）。
+GJI	ON	press	Standard	-
+GJI	ON	press	Imm32Unavailable	-
+GJI	ON	press	TsfNative	-
+GJI	ON	no-press	Standard	-
+GJI	ON	no-press	Imm32Unavailable	-
+GJI	ON	no-press	TsfNative	-
+GJI	OFF	press	Standard	-
+GJI	OFF	press	Imm32Unavailable	-
+GJI	OFF	press	TsfNative	-
+GJI	OFF	no-press	Standard	-
+GJI	OFF	no-press	Imm32Unavailable	-
+GJI	OFF	no-press	TsfNative	-
+MS-IME	ON	press	Standard	-
+MS-IME	ON	press	Imm32Unavailable	-
+MS-IME	ON	press	TsfNative	-
+MS-IME	ON	no-press	Standard	-
+MS-IME	ON	no-press	Imm32Unavailable	-
+MS-IME	ON	no-press	TsfNative	-
+MS-IME	OFF	press	Standard	-
+MS-IME	OFF	press	Imm32Unavailable	IMC_SETOPENSTATUS(0)
+MS-IME	OFF	press	TsfNative	IMC_SETOPENSTATUS(0)
+MS-IME	OFF	no-press	Standard	-
+MS-IME	OFF	no-press	Imm32Unavailable	-
+MS-IME	OFF	no-press	TsfNative	-
 
 # ── 戦略別 送信キー / outcome ──────────────────────────────────────
 # ソース: crates/awase-windows/src/ime_controller.rs（apply は Win32 副作用のため未実行）。
