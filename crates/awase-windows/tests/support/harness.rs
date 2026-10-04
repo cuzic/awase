@@ -48,7 +48,7 @@ use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant, Warran
 use awase_windows::state::probe_admission::{Admission, FocusFence, ImmLikeTicket};
 use awase_windows::state::TickMs;
 
-use super::pseudo_ime::{PseudoIme, TrueState, CONV_ALNUM};
+use super::pseudo_ime::{Grid, PseudoIme, TrueState, CONV_ALNUM};
 
 /// 本番の `GetTickCount64` に相当する tick の起点（0 付近だと TTL 計算が境界に寄るため）。
 const TICK_BASE: u64 = 1_000_000;
@@ -142,6 +142,8 @@ pub struct Setup {
     pub profile: ImePolicyProfile,
     /// TSF の composition（入力中）を観測できるアプリか。`PredictInput::composing` に効く。
     pub composing_visible: bool,
+    /// 擬似 IME の真値にする格子と、awase の予測器が引く同梱表（`session_keymap`）。既定は ATOK。
+    pub grid: Grid,
 }
 
 impl Setup {
@@ -152,7 +154,15 @@ impl Setup {
             initial,
             profile: ImePolicyProfile::ImmCross,
             composing_visible: true,
+            grid: Grid::Atok,
         }
+    }
+
+    /// 擬似 IME の格子（と予測器の同梱表）を変える。
+    #[must_use]
+    pub const fn with_grid(mut self, grid: Grid) -> Self {
+        self.grid = grid;
+        self
     }
 }
 
@@ -176,6 +186,8 @@ pub struct Harness {
     pub writes: Vec<WriteCommand>,
     pub drift_fires: Vec<DriftFire>,
     pub predictions: Vec<PredictionRecord>,
+    /// 本番の `is_japanese_ime`（ADR-223 でキー入力時にレイアウト言語から更新される）。既定 true。
+    japanese_ime: bool,
 }
 
 impl Harness {
@@ -187,12 +199,19 @@ impl Harness {
     #[must_use]
     pub fn start(setup: Setup) -> Self {
         let mut h = Self {
-            ime: PseudoIme::atok(setup.initial),
+            ime: PseudoIme::from_grid(setup.grid, setup.initial),
             model: ImeModel::new(),
             intents: IntentStore::default(),
             engine: make_engine(),
-            keymap: KeyEffectKeymap::from_config(Some(1), None, &[])
-                .expect("ATOK プリセット（session_keymap=1）"),
+            keymap: match setup.grid {
+                Grid::Atok => KeyEffectKeymap::from_config(Some(1), None, &[]),
+                Grid::GjiMsime => KeyEffectKeymap::from_config(Some(2), None, &[]),
+                // 本番は割り当て設定を読む。ここでは既定（割り当て未設定・互換モード不明）。
+                Grid::MsimeNative => {
+                    Some(KeyEffectKeymap::for_msime_native(false, None, None, None))
+                }
+            }
+            .expect("同梱表のあるキーマップ"),
             setup,
             base: Instant::now(),
             now_ms: 0,
@@ -205,6 +224,7 @@ impl Harness {
             writes: Vec::new(),
             drift_fires: Vec::new(),
             predictions: Vec::new(),
+            japanese_ime: true,
         };
         let fence = h.fence();
         h.reduce(ImeEvent::InitialFocusFenceEstablished { fence });
@@ -477,12 +497,19 @@ impl Harness {
         InputContext {
             ime_on: self.effective_open(),
             input_mode: self.model.input_mode(),
-            is_japanese_ime: true,
+            is_japanese_ime: self.japanese_ime,
             composing: false,
             modifiers: awase::engine::ModifierState::default(),
             left_thumb_down: None,
             right_thumb_down: None,
         }
+    }
+
+    /// 本番の `is_japanese_ime`(ADR-223: キー入力時にフォーカス窓のレイアウト言語から更新)を切り替える。既定は true。
+    /// false のとき Engine は非活性になり、推測に基づく書き込み(`issue_open_warrant`)は下りない(明示キー押下の order は影響を受けない)。
+    pub fn set_japanese_ime(&mut self, on: bool) -> &mut Self {
+        self.japanese_ime = on;
+        self
     }
 
     /// `ImeStateHub::apply_key_effect_prediction` の写し（`state/platform_state.rs`）。
@@ -510,7 +537,7 @@ impl Harness {
             guards: &self.model.force_guards,
             policy: &self.model.app_policy,
             desired_open: self.model.desired_open(),
-            is_japanese_ime: true,
+            is_japanese_ime: self.japanese_ime,
             now: self.now(),
             now_ms: TickMs(self.tick()),
         };

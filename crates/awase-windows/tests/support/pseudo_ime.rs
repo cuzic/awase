@@ -69,6 +69,27 @@ pub const QUIRKS: &[Quirk] = &[
     },
 ];
 
+/// 真値にする生データの格子（`tools/e2e/ime_key_matrix/grid-tables/`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grid {
+    /// GJI の ATOK プリセット。
+    Atok,
+    /// GJI の MS-IME プリセット。
+    GjiMsime,
+    /// Microsoft IME 本体。
+    MsimeNative,
+}
+
+impl Grid {
+    const fn file(self) -> &'static str {
+        match self {
+            Self::Atok => "atok.json",
+            Self::GjiMsime => "msime.json",
+            Self::MsimeNative => "msime-native.json",
+        }
+    }
+}
+
 /// 入力中の段階（擬似 IME の真値）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrueStage {
@@ -183,7 +204,17 @@ impl PseudoIme {
     /// ATOK プリセットの生データ（`grid-tables/atok.json`）を真値にした擬似 IME。
     #[must_use]
     pub fn atok(initial: TrueState) -> Self {
-        let path = grid_path("atok.json");
+        Self::from_grid(Grid::Atok, initial)
+    }
+
+    /// 指定した格子の生データを真値にした擬似 IME。
+    ///
+    /// MS-IME の格子（`msime.json`=GJI の MS-IME プリセット、`msime-native.json`=MS-IME 本体）は conv の生値が
+    /// `0x13`/`0x1B` 等も取り、状態に `conv-muhenkan` 等が増える。ATOK と同じく生データに無い状態からの押下は panic する。
+    /// クセ Q6（MS-IME の入力中 OFF 無視）は格子に含まれないので、別途 `set_off_ignored_while_composing` で足す。
+    #[must_use]
+    pub fn from_grid(grid: Grid, initial: TrueState) -> Self {
+        let path = grid_path(grid.file());
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("{} が読めない: {e}", path.display()));
         let raw: HashMap<String, HashMap<String, u32>> = serde_json::from_str(&text)
@@ -380,6 +411,24 @@ mod tests {
         conv: CONV_HIRAGANA,
         stage: TrueStage::Typing,
     };
+
+    /// 格子の違いが擬似 IME に現れること: 同じ「IME OFF・半角英数」で英数キーを押すと、ATOK は閉のまま、MS-IME 本体は開いてかなに戻る
+    /// （`off-c10-none|eisu`: atok.json=`OFF/0x10`、msime-native.json=`ON/0x19`）。
+    #[test]
+    fn grids_differ_on_eisu_from_closed_alnum() {
+        let start = TrueState {
+            open: false,
+            conv: CONV_ALNUM,
+            stage: TrueStage::None,
+        };
+        let mut atok = PseudoIme::from_grid(Grid::Atok, start);
+        atok.press(0xF0);
+        assert!(!atok.state().open);
+        let mut native = PseudoIme::from_grid(Grid::MsimeNative, start);
+        native.press(0xF0);
+        assert!(native.state().open);
+        assert_eq!(native.state().conv, CONV_HIRAGANA);
+    }
 
     #[test]
     fn q6_off_write_while_composing_keeps_open_and_changes_only_conv() {
