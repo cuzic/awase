@@ -15,22 +15,89 @@
 
 #![allow(unsafe_code)]
 
+// `#[implement(...)]`（windows-rs）が生成する内部コードが pedantic/nursery deny に触れるため、マクロ生成部分にまとめて allow する
+// （`compartment_notify_probe.rs` と同じ扱い）。
+#[cfg(windows)]
+#[allow(clippy::ref_as_ptr, clippy::inline_always)]
+mod sinks {
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use windows::core::{implement, BOOL, GUID};
+    use windows::Win32::UI::TextServices::{
+        ITfActiveLanguageProfileNotifySink, ITfActiveLanguageProfileNotifySink_Impl,
+        ITfLanguageProfileNotifySink, ITfLanguageProfileNotifySink_Impl,
+    };
+
+    /// 通知イベント(epoch ms, 種別と詳細)。`shell`(HSHELL_*)・`tsf-act`・`tsf-langchange(d)` を共通で溜める。
+    pub static EVENTS: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+
+    pub fn push(text: String) {
+        let at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(0))
+            .unwrap_or(0);
+        if let Ok(mut v) = EVENTS.lock() {
+            v.push((at, text));
+        }
+    }
+
+    #[implement(ITfActiveLanguageProfileNotifySink)]
+    pub struct ActSink;
+
+    impl ITfActiveLanguageProfileNotifySink_Impl for ActSink_Impl {
+        fn OnActivated(
+            &self,
+            _rclsid: *const GUID,
+            _guidprofile: *const GUID,
+            factivated: BOOL,
+        ) -> windows::core::Result<()> {
+            push(format!("tsf-act activated={}", factivated.as_bool()));
+            Ok(())
+        }
+    }
+
+    #[implement(ITfLanguageProfileNotifySink)]
+    pub struct LangSink;
+
+    impl ITfLanguageProfileNotifySink_Impl for LangSink_Impl {
+        fn OnLanguageChange(&self, langid: u16) -> windows::core::Result<BOOL> {
+            // 変更を拒否しない(TRUE を返す)。
+            push(format!("tsf-langchange langid=0x{langid:04X}"));
+            Ok(BOOL(1))
+        }
+
+        fn OnLanguageChanged(&self) -> windows::core::Result<()> {
+            push("tsf-langchanged".to_string());
+            Ok(())
+        }
+    }
+}
+
 #[cfg(windows)]
 mod p {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use awase_windows::win32::to_wide;
-    use windows::core::PCWSTR;
+    use windows::core::{w, Interface as _, PCWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetKeyboardLayout, GetKeyboardLayoutList, SendInput, HKL, INPUT, INPUT_0, INPUT_KEYBOARD,
         KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
     };
+    use windows::Win32::UI::TextServices::{
+        CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfActiveLanguageProfileNotifySink,
+        ITfLanguageProfileNotifySink, ITfSource, ITfThreadMgr,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
-        GetWindowThreadProcessId, PeekMessageW, PostMessageW, RegisterClassW, SetForegroundWindow,
-        ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE,
-        SW_SHOW, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        GetWindowThreadProcessId, PeekMessageW, PostMessageW, RegisterClassW,
+        RegisterShellHookWindow, RegisterWindowMessageW, SetForegroundWindow, ShowWindow,
+        TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW,
+        WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     const WM_INPUTLANGCHANGEREQUEST: u32 = 0x0050;
@@ -46,7 +113,14 @@ mod p {
         fn ImmSetHotKey(dw_hotkey: u32, modifiers: u32, vkey: u32, hkl: HKL) -> i32;
     }
 
+    static SHELL_MSG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
     extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        let shell = SHELL_MSG.load(std::sync::atomic::Ordering::SeqCst);
+        if shell != 0 && msg == shell {
+            // wparam: HSHELL_LANGUAGE=8、HSHELL_WINDOWACTIVATED=4 など。lparam は HKL またはウィンドウ。
+            super::sinks::push(format!("shell wparam={} lparam=0x{:X}", wp.0, lp.0));
+        }
         unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
     }
 
@@ -249,6 +323,73 @@ mod p {
         let _ = unsafe { SetForegroundWindow(parent) };
         pump(Duration::from_millis(800));
 
+        // 購読(イベント)候補: ①シェルフック HSHELL_LANGUAGE ②TSF の ITfActiveLanguageProfileNotifySink(ThreadMgr)
+        // ③TSF の ITfLanguageProfileNotifySink(InputProcessorProfiles)。どれが言語切替で通知を出すかを測る。
+        let shell_msg = unsafe { RegisterWindowMessageW(w!("SHELLHOOK")) };
+        SHELL_MSG.store(shell_msg, std::sync::atomic::Ordering::SeqCst);
+        let shell_ok = unsafe { RegisterShellHookWindow(parent) }.as_bool();
+        log(
+            &lp,
+            &format!("[ls] RegisterShellHookWindow={shell_ok} msg=0x{shell_msg:X}"),
+        );
+        let _com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        let mut _keep: Vec<(ITfSource, u32, windows::core::IUnknown)> = Vec::new();
+        let thread_mgr: Option<ITfThreadMgr> =
+            unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) }.ok();
+        if let Some(tm) = &thread_mgr {
+            let _ = unsafe { tm.Activate() };
+            if let Ok(src) = tm.cast::<ITfSource>() {
+                let sink: windows::core::IUnknown = super::sinks::ActSink.into();
+                match unsafe {
+                    src.AdviseSink(
+                        &<ITfActiveLanguageProfileNotifySink as windows::core::Interface>::IID,
+                        &sink,
+                    )
+                } {
+                    Ok(c) => {
+                        log(
+                            &lp,
+                            &format!(
+                                "[ls] Advise ITfActiveLanguageProfileNotifySink ok cookie={c}"
+                            ),
+                        );
+                        _keep.push((src, c, sink));
+                    }
+                    Err(e) => log(
+                        &lp,
+                        &format!("[ls] Advise ITfActiveLanguageProfileNotifySink 失敗: {e:?}"),
+                    ),
+                }
+            }
+        }
+        let profiles: Option<windows::core::IUnknown> = unsafe {
+            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
+        }
+        .ok();
+        if let Some(pr) = &profiles {
+            if let Ok(src) = pr.cast::<ITfSource>() {
+                let sink: windows::core::IUnknown = super::sinks::LangSink.into();
+                match unsafe {
+                    src.AdviseSink(
+                        &<ITfLanguageProfileNotifySink as windows::core::Interface>::IID,
+                        &sink,
+                    )
+                } {
+                    Ok(c) => {
+                        log(
+                            &lp,
+                            &format!("[ls] Advise ITfLanguageProfileNotifySink ok cookie={c}"),
+                        );
+                        _keep.push((src, c, sink));
+                    }
+                    Err(e) => log(
+                        &lp,
+                        &format!("[ls] Advise ITfLanguageProfileNotifySink 失敗: {e:?}"),
+                    ),
+                }
+            }
+        }
+
         let list = hkls();
         log(
             &lp,
@@ -288,6 +429,9 @@ mod p {
                 set_ja();
                 let before = fg_lang();
                 LAYOUT_RU_AT.store(0, std::sync::atomic::Ordering::SeqCst);
+                if let Ok(mut v) = super::sinks::EVENTS.lock() {
+                    v.clear();
+                }
                 let t_inject = epoch_ms();
                 let mut t_focus: Option<u64> = None;
                 match m.as_str() {
@@ -317,10 +461,24 @@ mod p {
                 } else {
                     Some(ru_at.saturating_sub(t_inject))
                 };
+                let events: Vec<(i64, String)> = super::sinks::EVENTS
+                    .lock()
+                    .map(|v| {
+                        v.iter()
+                            .map(|(t, e)| {
+                                (
+                                    i64::try_from(*t).unwrap_or(0)
+                                        - i64::try_from(t_inject).unwrap_or(0),
+                                    e.clone(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let rec = serde_json::json!({
                     "method": m, "n": n, "lang_before": format!("0x{before:04X}"),
                     "t_inject_epoch_ms": t_inject, "t_focus_epoch_ms": t_focus, "layout_ms_after_inject": layout_ms,
-                    "lang_end": format!("0x{:04X}", fg_lang()),
+                    "lang_end": format!("0x{:04X}", fg_lang()), "events": events,
                 });
                 log(&lp, &format!("LS {rec}"));
             }

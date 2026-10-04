@@ -41,13 +41,23 @@ def main():
         first = deact[0] if deact else None
         rows[r["method"]].append(
             (r["n"], lay, None if first is None else round(first[0] - t0), None if first is None else first[2], r["lang_end"],
-             None if not r.get("t_focus_epoch_ms") else round(r["t_focus_epoch_ms"] - t0))
+             None if not r.get("t_focus_epoch_ms") else round(r["t_focus_epoch_ms"] - t0), r.get("events", []))
         )
     out = ["## BUG-183: 切替方法ごとの「実際の切替」と awase の非活性化の遅れ", "",
            "| 方法 | 試行 | 切替までの ms | awase 非活性までの ms(注入から) | 理由 | 最終言語 | フォーカス移動の ms |", "|---|---|---|---|---|---|---|"]
+    ev_rows = []
     for method, rs in rows.items():
-        for n, lay, d, why, end, fo in rs:
+        for n, lay, d, why, end, fo, evs in rs:
             out.append(f"| {method} | {n} | {lay} | {d} | {why} | {end} | {fo} |")
+            ev_rows.append((method, n, evs))
+    out.append("")
+    out.append("## 通知イベント(注入からの ms。HSHELL_LANGUAGE は `shell wparam=8`)")
+    out.append("")
+    out.append("| 方法 | 試行 | 通知(ms: 種別) |")
+    out.append("|---|---|---|")
+    for method, n, evs in ev_rows:
+        compact = " / ".join(f"{t}ms {e}" for t, e in evs if "wparam=4 " not in e)[:300]
+        out.append(f"| {method} | {n} | {compact or '(なし)'} |")
     out.append("")
     out.append("(切替までが None = 3.5 秒以内に言語が切り替わらなかった。非活性が None = 14 秒以内に Engine deactivated が出なかった)")
     text = "\n".join(out)
