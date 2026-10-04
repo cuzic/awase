@@ -79,7 +79,7 @@ v2 は方針を変えました。
 |---|---|
 | Google 日本語入力 + Windows Terminal などで、カタカナになったあと物理のひらがなキーで戻れない | BUG-173 |
 | Ctrl を離すたびに awase が `VK_IME_ON` を送る（WT + GJI で「@」の被疑箇所。原因だったかは実機未確認） | BUG-174 |
-| GJI + Edge（Meet など）で IME を OFF→ON した直後の語が欠ける・入力中の文字が消える | BUG-170・171 |
+| GJI + Edge（Meet など）で IME を OFF→ON した直後の語が欠ける・入力中の文字が消える | BUG-170 |
 | Chrome + GJI で超高速打鍵中に未確定文字が全部消える | BUG-168 |
 | Chrome + GJI で外部から IME を閉じられると、閉じたまま NICOLA が ON と思い込みローマ字が入る | BUG-172 |
 | 起動直後に awase が IME を開けに行く | BUG-163 |
