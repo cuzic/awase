@@ -555,6 +555,8 @@ impl BugReportApp {
             app_log_rows_deleted: self
                 .app_log_rows_initial
                 .saturating_sub(self.app_log_rows.as_ref().map_or(0, Vec::len)),
+            // 送信スレッドが、再送のたびに回数を入れる。
+            send_attempt: 0,
         };
         let (tx, rx) = mpsc::channel();
         self.pending = Some(rx);
