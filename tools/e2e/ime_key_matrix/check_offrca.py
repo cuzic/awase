@@ -49,7 +49,20 @@ def summarize(trials):
         typed_closed=len(typed_closed),
         typed_open=len(typed_open),
         ladder={k: f"{v[0]}/{v[1]}" for k, v in lad.items()},
+        then=_then(made),
     )
+
+
+def _then(made):
+    """`--or-then` の ON 側の結果(かな=かな入力できた / literal=ASCII のまま)を数える。"""
+    d = {}
+    for t in made:
+        th = t.get("then")
+        if not th:
+            continue
+        k = th.get("class", "?")
+        d[k] = d.get(k, 0) + 1
+    return d
 
 
 def main():
@@ -76,7 +89,7 @@ def main():
             f"OFFRCA_CELL: cell={cell} awase={ts[0].get('awase')} n={a['n']} made={a['made']} "
             f"api_closed={a['api_closed']} api_never={a['api_never']} closed_ms(min/med/max)={a['closed_ms_min']}/{a['closed_ms_med']}/{a['closed_ms_max']} "
             f"typed_closed={a['typed_closed']} typed_open={a['typed_open']} "
-            f"first(api_closed/made)={f['api_closed']}/{f['made']} rest(api_closed/made)={r['api_closed']}/{r['made']} ladder={a['ladder']}"
+            f"first(api_closed/made)={f['api_closed']}/{f['made']} rest(api_closed/made)={r['api_closed']}/{r['made']} ladder={a['ladder']} then={a['then']}"
         )
     # 失敗(閉じなかった)試行と成功試行の page_events の代表例(IME がキーを処理したか・composition の終了を見る)。
     for cell, ts in cells.items():

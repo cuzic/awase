@@ -1017,6 +1017,12 @@ fn spawn_chrome(chrome: &str, profile: &std::path::Path, port: u16) -> std::proc
         .expect("chrome を起動できません")
 }
 
+fn settle_ms_or(args: &[String]) -> u64 {
+    args.iter()
+        .find_map(|a| a.strip_prefix("--settle=").and_then(|v| v.parse().ok()))
+        .unwrap_or(500)
+}
+
 fn or_api() -> Option<bool> {
     ime_control(0x0005, 0).map(|v| v != 0)
 }
@@ -1061,6 +1067,14 @@ fn or_do(action: &str) -> String {
         "1d" => tap(0x1D, 60),
         "f0" => tap(0xF0, 60),
         "ctrl1d" => send_ctrl_muhenkan(),
+        "16" => tap(0x16, 40),
+        "ctrl1c" => {
+            send_key(0xA2, true);
+            sleep(40);
+            tap(0x1C, 60);
+            sleep(30);
+            send_key(0xA2, false);
+        }
         "imc0" => {
             let r = ime_control(0x0006, 0);
             return format!("imc0 ret={r:?}");
@@ -1114,6 +1128,11 @@ fn run_offrca(
     let poll_ms = arg_u64("--or-poll=", 4000);
     let ladder = args.iter().any(|a| a == "--or-ladder");
     let relaunch = args.iter().any(|a| a == "--or-relaunch");
+    // `--or-then=<action>`: OFF の動作と待ちの後に ON 側の動作(`16`/`ctrl1c`)を行い、k,a の結果(かな=ON が効いて入力できる)を見る。
+    let then = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--or-then="))
+        .map(str::to_string);
     let msime = args.iter().any(|a| a == "--msime");
     p.log.line(&format!(
         "OFFRCA_CONFIG {}",
@@ -1225,6 +1244,17 @@ fn run_offrca(
             let (got2, text2, _) = p.probe();
             p.log.line(&format!("PROBE offrca 後2回目: {} text={text2:?}", got2.label()));
             let typed_open = km_open_of(got);
+            // OFF の次に ON を押して、かなが入力できるか(半角英数に取り残されないか)。
+            let then_res = if let Some(t) = &then {
+                let _ = p.command("clear", "cleared");
+                let d = or_do(t);
+                sleep(settle_ms_or(args));
+                let (c3, text3, _) = p.probe();
+                p.log.line(&format!("PROBE offrca then={t}: {} text={text3:?}", c3.label()));
+                serde_json::json!({"then":t,"desc":d,"class":c3.label(),"open":km_open_of(c3),"text":text3,"api":or_api()})
+            } else {
+                serde_json::Value::Null
+            };
             let mut ladder_res = Vec::new();
             if ladder && closed_ms.is_none() && api_end == Some(true) {
                 for step in ["1a", "imc0", "f3", "19", "tsf0"] {
@@ -1245,7 +1275,7 @@ fn run_offrca(
                 serde_json::json!({"type":"or_trial","cell":cell,"action":action,"prep":prep,"n":i,
                     "utc":utc,"prep_ok":prep_ok,"api_pre":api_pre,"desc":desc,"closed_ms":closed_ms,
                     "series":ser,"api_end":api_end,"typed":got.label(),"typed_open":typed_open,
-                    "api_after_probe":api_after_probe,"text_post":text_post,"typed2":got2.label(),"typed2_open":km_open_of(got2),"typed2_text":text2,"conv_pre":conv_pre,"conv_end":conv_end,"page_events":page_events,"ladder":ladder_res,"focus_lost":p.focus_lost,
+                    "api_after_probe":api_after_probe,"text_post":text_post,"typed2":got2.label(),"typed2_open":km_open_of(got2),"typed2_text":text2,"conv_pre":conv_pre,"conv_end":conv_end,"page_events":page_events,"then":then_res,"ladder":ladder_res,"focus_lost":p.focus_lost,
                     "awase":awase})
             ));
         }

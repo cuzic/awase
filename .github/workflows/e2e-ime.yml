@@ -469,6 +469,13 @@ jobs:
                   stress=f"--form={win} --mode=keymatrix --km-cells=ctrl+1d=off:sync,1a=off:sync,19=tog:sync{' --km-comp' if comp else ''} --layout=@REPO@/layout/nicola_keytop.yab --msime",
                   keys=KM_KEYS['abs'])
               for win in ('edit', 'tsf') for comp in (True, False)],
+            # 第4ラウンド: OFF の後に ON を押して かなが入力できるか(--or-then。半角英数 conv=16 に取り残されないか=利用者に見える影響)。ladder なしで素の挙動を見る。
+            *[cfg(f'sc-offrca-r4-{name}', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true' if aw else 'false',
+                  chrome=f"--offrca={cells} --or-then={then} --settle=800 --msime{'' if aw else ' --no-awase'}")
+              for name, aw, then, cells in (
+                ('noawase', False, '16', '1a:typed_nc,1a_imc0:typed_nc,imc0:typed_nc,1a:notype'),
+                ('awase', True, 'ctrl1c', 'ctrl1d:typed_nc,ctrl1d:notype'),
+              )],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
