@@ -613,6 +613,22 @@ impl Default for KeysConfig {
 }
 
 impl KeysConfig {
+    /// `ime_on`/`ime_off`/`ime_toggle` のいずれかに、修飾キーなしで `canonical`
+    /// （`key_identity` の正規名。無変換=`"NONCONVERT"`、変換=`"CONVERT"`）のキーが入っているか。
+    ///
+    /// 親指の無変換/変換でこれが真なら、単独タップは「`SetOpen` で IME を絶対指定の状態に
+    /// そろえる」動作になり、生キーは IME へ届かない（単独タップを素通しにする設定より優先、ADR-206）。
+    #[must_use]
+    pub fn has_bare_role_key(&self, canonical: &str) -> bool {
+        [&self.ime_on, &self.ime_off, &self.ime_toggle]
+            .into_iter()
+            .flatten()
+            .any(|combo| {
+                let (mods, main) = split_combo(combo);
+                mods.is_empty() && key_identity(main) == canonical
+            })
+    }
+
     /// v1 の既定値と**ちょうど同じ**値を空として扱う（v2 の既定は空）。
     ///
     /// v1 の設定画面は全項目を書き出すので、旧既定（`ime_toggle = ["VK_KANJI"]`、
@@ -1226,14 +1242,25 @@ impl AppConfig {
             mods.is_empty() && key_identity(main) == key_identity(thumb_key)
         }
 
-        fn warn_for_field(field: &str, combos: &[String], thumb_key: &str, w: &mut Vec<String>) {
+        fn warn_for_field(
+            field: &str,
+            combos: &[String],
+            thumb_key: &str,
+            solo_tap_passthrough: bool,
+            w: &mut Vec<String>,
+        ) {
             if combos
                 .iter()
                 .any(|combo| is_bare_same_key(combo, thumb_key))
             {
                 let canonical = key_identity(thumb_key);
                 let is_supported = canonical == "NONCONVERT" || canonical == "CONVERT";
-                let detail = if is_supported {
+                let detail = if is_supported && solo_tap_passthrough {
+                    "このキーは同時打鍵かどうかの判定後、単独タップ確定時に強制ON/OFFが発火します。\
+                     この場合、単独タップを素通し（パススルー）にする設定は効きません。生のキーは IME に届かず、\
+                     IME が ON のときも ON にそろえる動作になります。IME 側のキー設定で無変換/変換に割り当てた機能を\
+                     使いたい場合は、このキーを keys.ime_on/ime_off/ime_toggle から外してください。"
+                } else if is_supported {
                     "このキーは同時打鍵かどうかの判定後、単独タップ確定時に強制ON/OFFが発火します。composing中も発火し、未確定文字列が破棄されるか確定されるかはIME実装に依存します。"
                 } else if field == "keys.ime_on" {
                     "このキーは同時打鍵（親指シフト入力）にも使うキーなので、IME が \
@@ -1262,9 +1289,20 @@ impl AppConfig {
         }
 
         for thumb_key in [g.left_thumb_key.as_str(), g.right_thumb_key.as_str()] {
-            warn_for_field("keys.ime_on", &keys.ime_on, thumb_key, w);
-            warn_for_field("keys.ime_off", &keys.ime_off, thumb_key, w);
-            warn_for_field("keys.ime_toggle", &keys.ime_toggle, thumb_key, w);
+            let passthrough = match key_identity(thumb_key).as_str() {
+                "NONCONVERT" => !g.muhenkan_solo_tap_always_suppress,
+                "CONVERT" => !g.henkan_solo_tap_always_suppress,
+                _ => false,
+            };
+            warn_for_field("keys.ime_on", &keys.ime_on, thumb_key, passthrough, w);
+            warn_for_field("keys.ime_off", &keys.ime_off, thumb_key, passthrough, w);
+            warn_for_field(
+                "keys.ime_toggle",
+                &keys.ime_toggle,
+                thumb_key,
+                passthrough,
+                w,
+            );
         }
     }
 
@@ -2494,6 +2532,47 @@ ime_toggle = []
         assert!(
             !warnings.iter().any(|w| w.contains("keys.ime_off")),
             "Ctrl+無変換 must not warn, got: {warnings:?}"
+        );
+    }
+
+    /// 無変換が `keys.ime_on` にあり、単独タップがパススルー設定のときだけ「パススルーは効かない」と警告する。
+    #[test]
+    fn test_validate_warns_passthrough_is_overridden_by_bare_role_key() {
+        let toml_str = r#"
+[general]
+left_thumb_key = "無変換"
+muhenkan_solo_tap_always_suppress = false
+
+[keys]
+ime_on = ["VK_NONCONVERT"]
+ime_off = []
+ime_toggle = []
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.keys.has_bare_role_key("NONCONVERT"));
+        assert!(!config.keys.has_bare_role_key("CONVERT"));
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("keys.ime_on")
+                    && w.contains("パススルー）にする設定は効きません")),
+            "passthrough + bare role key should warn, got: {warnings:?}"
+        );
+
+        // 既定（Suppress）なら従来の文言のまま。
+        let config: AppConfig = toml::from_str(&toml_str.replace(
+            "muhenkan_solo_tap_always_suppress = false",
+            "muhenkan_solo_tap_always_suppress = true",
+        ))
+        .unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("keys.ime_on")
+                    && !w.contains("パススルー）にする設定は効きません")),
+            "suppress + bare role key keeps the old message, got: {warnings:?}"
         );
     }
 

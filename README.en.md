@@ -172,6 +172,22 @@ Note: `left_thumb_key` / `right_thumb_key` must be set to the literal Japanese k
 | `engine_toggle_hotkey` | none | Hotkey to toggle thumb-shift/romaji input |
 | `keyboard_model` | `jis` | Physical keyboard layout. For a US layout use `"us"` (also change `default_layout` to `nicola_us.yab`) |
 
+### Solo taps of Muhenkan / Henkan and the IME's own key settings
+
+When Muhenkan / Henkan are your thumb keys, choose what a **solo tap** does in the settings window (or with `muhenkan_solo_tap_always_suppress` / `henkan_solo_tap_always_suppress`).
+
+| Option in the settings window | Behavior |
+|-------------------------------|----------|
+| Disable (default) | While NICOLA input is active (IME ON), a solo tap does nothing: awase swallows it and does not send it to the IME. |
+| Leave it to the IME (pass-through) | A solo tap is sent to the IME, so whatever you assigned to Muhenkan / Henkan in the IME's key settings (IME on/off, reconversion, ...) works. |
+
+To use Muhenkan / Henkan for IME on/off or reconversion, **assign the function in the IME's own key settings** and set awase to "Leave it to the IME".
+
+- Microsoft IME: "Key and touch customization" (the settings window has an "Open Microsoft IME settings" button that opens the settings page)
+- Google Japanese Input: "Key settings" in Properties (set "Mode", "Input key" and "Command"). The settings window has an "Open Google Japanese Input properties" button; if it does not open, right-click the "あ"/"A" icon in the taskbar and choose "Properties"
+
+`keys.ime_on` / `ime_off` / `ime_toggle` are not for everyday IME switching. They are keys that **force awase and the IME back into the same state** when the mode gets out of sync. If you put Muhenkan / Henkan there, a solo tap forces the state and the raw key never reaches the IME, even with "Leave it to the IME" (a warning is shown when the config is loaded).
+
 ### Confirm Modes
 
 | Mode | Characteristics |
