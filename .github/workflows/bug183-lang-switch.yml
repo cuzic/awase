@@ -60,6 +60,9 @@ jobs:
           # awase を先に起動して TIP を検出させてから、プローブを起動して切替を注入する。
           Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
           Start-Sleep -Seconds 10
+          # 背景リスナー(前面にならない別プロセス。awase と同じ条件で TSF 通知・シェルフックを受ける)
+          Start-Process -FilePath .\lang_switch_probe.exe -ArgumentList '--listen=900 --log=lang_switch_listener.log'
+          Start-Sleep -Seconds 5
           Start-Process -FilePath .\lang_switch_probe.exe -ArgumentList '--trials=4 --observe-ms=10000'
           $deadline = (Get-Date).AddMinutes(25)
           while ((Get-Date) -lt $deadline) {
@@ -74,7 +77,7 @@ jobs:
         run: |
           $env:PYTHONUTF8 = '1'
           if ((Test-Path dist\lang_switch_probe.log) -and (Test-Path dist\awase.log)) {
-            python tools\e2e\bug183\summarize.py dist\lang_switch_probe.log dist\awase.log
+            python tools\e2e\bug183\summarize.py dist\lang_switch_probe.log dist\awase.log dist\lang_switch_listener.log
           } else { "ログが無い(probe=$(Test-Path dist\lang_switch_probe.log) awase=$(Test-Path dist\awase.log))" }
       - uses: actions/upload-artifact@v4
         if: always()
@@ -82,5 +85,6 @@ jobs:
           name: result-bug183
           path: |
             dist/lang_switch_probe.log
+            dist/lang_switch_listener.log
             dist/awase.log
             awase-stderr.log

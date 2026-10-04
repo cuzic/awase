@@ -240,6 +240,9 @@ mod p {
             .map(str::to_string)
             .collect();
         let lp = arg("--log=").unwrap_or_else(|| "lang_switch_probe.log".into());
+        // `--listen=<秒>`: 前面にならない背景プロセスとして通知だけを受ける(awase と同じ条件)。通知は `EV` 行でログへ出す。
+        let listen_secs: Option<u64> = arg("--listen=").and_then(|v| v.parse().ok());
+        let listen = listen_secs.is_some();
         let observe_ms: u64 = arg("--observe-ms=")
             .and_then(|v| v.parse().ok())
             .unwrap_or(10_000);
@@ -272,7 +275,11 @@ mod p {
                 Default::default(),
                 PCWSTR(class.as_ptr()),
                 PCWSTR(title.as_ptr()),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                if listen {
+                    WS_OVERLAPPEDWINDOW
+                } else {
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE
+                },
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 600,
@@ -319,8 +326,10 @@ mod p {
                 None,
             )
         }?;
-        let _ = unsafe { ShowWindow(parent, SW_SHOW) };
-        let _ = unsafe { SetForegroundWindow(parent) };
+        if !listen {
+            let _ = unsafe { ShowWindow(parent, SW_SHOW) };
+            let _ = unsafe { SetForegroundWindow(parent) };
+        }
         pump(Duration::from_millis(800));
 
         // 購読(イベント)候補: ①シェルフック HSHELL_LANGUAGE ②TSF の ITfActiveLanguageProfileNotifySink(ThreadMgr)
@@ -390,6 +399,21 @@ mod p {
             }
         }
 
+        if let Some(secs) = listen_secs {
+            log(&lp, &format!("[ls] listener started secs={secs}"));
+            let end = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < end {
+                pump(Duration::from_millis(100));
+                let drained: Vec<(u64, String)> = super::sinks::EVENTS
+                    .lock()
+                    .map(|mut v| std::mem::take(&mut *v))
+                    .unwrap_or_default();
+                for (t, e) in drained {
+                    log(&lp, &format!("EV {t} {e}"));
+                }
+            }
+            return Ok(());
+        }
         let list = hkls();
         log(
             &lp,
