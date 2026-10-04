@@ -300,6 +300,12 @@ impl FocusTracker {
         self.imm_learning.learn(process_name, class_name, cap);
     }
 
+    /// 学習済みの IMM 能力を全て捨てる（BUG-108、トレイの学習キャッシュクリア）。
+    /// 捨てた件数と、`cache.toml` へ反映できたかを返す。次の `update` から静的分類に戻る。
+    pub(crate) fn clear_imm_capability_cache(&mut self) -> (usize, bool) {
+        self.imm_learning.clear()
+    }
+
     pub(crate) fn record_imm_null_probe(&mut self, process_name: String, class_name: String) {
         self.imm_learning
             .record_null_probe(process_name, class_name);

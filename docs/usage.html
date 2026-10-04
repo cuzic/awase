@@ -508,7 +508,7 @@ footer p{margin-bottom:0.3rem}
       <ul>
         <li><strong>配列選択</strong> — <code>layouts_dir</code> 内の .yab ファイルを一覧表示。選択するとレイアウトが即座に切り替わります</li>
         <li><strong>設定...</strong> — 設定画面を開きます</li>
-        <li><strong>学習キャッシュをクリア</strong> — IME の学習データキャッシュを削除します</li>
+        <li><strong>IME 制御の学習キャッシュをクリア</strong> — アプリごとに学習した「IMM32 で IME を制御できるか」の記録（<code>cache.toml</code> の <code>[imm_capability]</code>）を削除します。誤学習で入力がおかしくなったときの回復手段です。キーマップの学習表（<code>keymap-learn-table.json</code>）は削除されません</li>
         <li><strong>プロセスを再起動</strong> — 入力がおかしくなったときにプロセスを完全再起動します（詳細は<a href="#panic-reset">「緊急操作・リセット」</a>参照）</li>
         <li><strong>自動起動</strong> — ログオン時の自動起動を有効/無効にします（チェックで有効）</li>
         <li><strong>管理者として再起動</strong> — UAC で昇格して awase を再起動します。管理者権限を要求するアプリ（一部のゲームなど）でも動作するようになります</li>

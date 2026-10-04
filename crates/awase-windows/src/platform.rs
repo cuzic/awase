@@ -1786,6 +1786,11 @@ impl WindowsPlatform {
             .learn_imm_capability(process_name, class_name, cap);
     }
 
+    /// 学習済みの IMM 能力を全て捨てる（BUG-108）。捨てた件数と、`cache.toml` へ反映できたかを返す。
+    pub fn clear_imm_capability_cache(&mut self) -> (usize, bool) {
+        self.focus.clear_imm_capability_cache()
+    }
+
     /// `ImmGetDefaultIMEWnd`=NULL の観測を記録する（BUG-56: 閾値回連続で初めて確定）。
     pub fn record_imm_null_probe(&mut self, process_name: String, class_name: String) {
         self.focus.record_imm_null_probe(process_name, class_name);
