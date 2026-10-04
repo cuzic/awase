@@ -1,0 +1,61 @@
+name: bug112-probe
+
+# BUG-112(`awase-settings.exe` の窓で ImmGetDefaultIMEWnd が一時的に NULL を返し、ImmCapabilityStore が 2 回連続 NULL で Unavailable と誤確定する疑い)の
+# 前提の実測: 窓生成から ImmGetDefaultIMEWnd が non-NULL になるまでの実時間の分布を windows-latest で測る
+# (examples/spike_bug112_ime_wnd_race_probe.rs)。誤確定には 500ms 周期の 2 回連続 NULL(=約 500ms 以上の NULL 持続)が要る。
+# 動く条件: ci/bug112-probe への push、手動起動(workflow_dispatch は既定ブランチ main にこのファイルがあるときだけ使える)。
+on:
+  push:
+    branches: [ci/bug112-probe]
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: '試行回数'
+        required: false
+        default: '60'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bug112-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bug112-probe
+      - name: awase-settings とプローブをビルド
+        shell: pwsh
+        run: cargo build -p awase-settings --release; cargo build -p awase-windows --example spike_bug112_ime_wnd_race_probe --release
+      - name: 窓生成から ImmGetDefaultIMEWnd が non-NULL になるまでを測る
+        shell: pwsh
+        env:
+          ITER: ${{ inputs.iterations || '60' }}
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $exe = Resolve-Path target\release\awase-settings.exe
+          & target\release\examples\spike_bug112_ime_wnd_race_probe.exe "$exe" $env:ITER 2>&1 | Tee-Object -FilePath out\probe.txt
+      - name: 要約を表示
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path out\probe.txt) {
+            $lines = Get-Content out\probe.txt -Encoding utf8
+            $sum = @('# BUG-112 プローブ(窓生成→ImmGetDefaultIMEWnd non-NULL)', '', '```')
+            $sum += ($lines | Where-Object { $_ -match '^# ' -or $_ -match 'TIMEOUT|ERROR' })
+            $sum += '```'
+            $sum | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bug112-probe-out
+          path: out/
+          retention-days: 7
