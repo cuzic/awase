@@ -72,7 +72,7 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 
 ## E. リリース作業
 
-- [ ] **E1 v1 の保守終了の告知**: README・更新通知・Scoop の案内。v1 の最後のパッチを出すなら、v2 リリース前に `release-v1develop-to-v1main` で済ませる（`report.awase.cc` は `latest-release` を v1/v2 ラインごとに返す〈`0a38590a`〉）。
+- [ ] **E1 v1 の保守終了の告知**: **反映済み・マージ待ち**（ブランチ `docs/v2-e1-v1-eol`）。README.md / README.en.md に「v1 の保守終了と v2 への移行」節（保守終了日は v2.0.0 公開日 2026-10-03、v1 最終版 1.21.1、既知の問題、設定の移行点）を追加し、`docs/migration-v1-to-v2.md` §9 を同期した。v1 の最後のパッチは出さない（v1 のタグを push しない）前提。未了: GitHub Release 本文への告知文、`scoop-awase` 側の説明、`awase.cc`（docs/index*.html）への反映（所有者判断、下書き末尾の「E1 反映後の要判断」参照）。更新通知は worker 変更なし（v1.21.1 は v1 ライン内の最大=1.21.1 が返り通知なし、`0a38590a`）。
 - [x] **E2 backport の棚卸し**: 完了（`v2-e2-v1-backport-inventory-2026-09-29.md`）。重大と判定したのは BUG-173 のみで、**所有者決定（2026-09-29）により backport せず v2 への移行を案内する**。BUG-171・172 は develop でも未修正のため backport 不可。E1 の告知に『v1 に残る既知の問題』（同文書の一覧）を載せる。
 - [ ] **E3 リリース**: `release-develop-to-main`（CHANGELOG、2.0.0 への bump、タグ、GitHub Release）。`docs/changelog.en.html` も更新する。
 

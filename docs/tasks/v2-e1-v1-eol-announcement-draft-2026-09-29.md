@@ -1,6 +1,6 @@
 ---
 title: v2 リリース E1 — v1 保守終了の告知文 下書き（README・更新通知・Scoop・既知の問題）
-status: 下書き（2026-09-29）。実ファイル（README・docs/*.html・worker・Scoop）は未変更。「要確認」の決定待ち
+status: README・README.en・移行ガイド §9 は反映済み（2026-10-03、ブランチ docs/v2-e1-v1-eol、マージ待ち）。docs/*.html・worker・Scoop・GitHub Release 本文は未変更（末尾「E1 反映後の要判断」参照）
 created: 2026-09-29
 related_adr: ["ADR-205", "ADR-206", "ADR-207"]
 related_bugs: ["BUG-110", "BUG-142", "BUG-152", "BUG-163", "BUG-168", "BUG-169", "BUG-171", "BUG-172", "BUG-173"]
@@ -187,3 +187,16 @@ v2 側（新しいバイナリ）の通知は、v2 のバイナリが自バー�
 
 - 更新通知: v1.21.1 の利用者には v2 を通知しない。report worker は変更しない。案内は README と GitHub Release 本文。
 - Scoop: `scoop-awase` を v2 の latest にし、v1 用バケット `awase-v1` は残さない（v1 は GitHub Release から取得）。
+
+## E1 反映後の要判断（2026-10-03）
+
+反映済み: 保守終了日=v2.0.0 公開日（2026-10-03）、v1 最終版 1.21.1、呼称 v2.0.0、README 差し込み位置は「動作環境」の直前。「v2 で良くなった点（確認できたものだけ）」は「v2 で修正した主な不具合」に改め、実機未検証の項目はその旨を併記した。既知の問題は BUG ファイルの現状と照合し、BUG-110（v2 での状況を BUG ファイルから裏取りできず）と、v1 に関係する個別の追随問題（旧 4 番）は載せていない。
+
+所有者判断が要るもの（未反映）:
+
+1. **移行ガイドと BUG-171 の食い違い**: `docs/migration-v1-to-v2.md` §5 は BUG-170・171 を修正済みに挙げるが、`docs/known-bugs/BUG-171.md` は「未修正」（fix_commits 空）。README は BUG ファイル側（未修正）に合わせた。
+2. **Scoop の description**: `.github/workflows/release.yml` の「Update Scoop manifest」が、タグ push のたびに `awase.json` の `description` を固定文言で上書きする。本書 3 節の告知文を `awase.json` に載せても次のタグで消える。載せるなら workflow の変更が要る（外部公開に影響するので未実施）。
+3. **Scoop の persist**: 現行は `config.toml` `layout` `data` `keymap-learn-*.json`。v2 が exe 隣に書く `cache.toml`・`update_check.json` は含まれず、`scoop update` で消える可能性がある（影響の有無は未確認）。
+4. **GitHub Release 本文・awase.cc（docs/index*.html の Scoop コメントアウトと機能一覧の食い違い）・scoop-awase の README**: 未反映。
+5. **更新通知**: worker 変更は不要（決定どおり）。`current_version` 無しの v1.21.0 以下には v2 が通知される。v1.21.1 は通知なし。
+6. **BUG-176**（実機 Edge での偽 OFF 疑い）が未解消のまま、README には「原因は未特定」と書いた。リリース前に閉じるなら文言を更新する。
