@@ -1017,31 +1017,85 @@ pub const MAX_NETWORK_SEND_ATTEMPTS: u32 = 2;
 /// ログの最大の 1 本がこれ以下なら、縮めても本体はほとんど変わらないので再送しない。
 pub const RETRY_MIN_LOG_BYTES: usize = 16 * 1024;
 
-/// 送信に失敗したとき、ログを縮めて再送する価値があるか（ADR-222）。
+/// 送信の失敗（ADR-222 D13）。エラー文字列の先頭で種類を判断すると、文言を変えただけで
+/// 黙って壊れる（Opus round3）ので、HTTP の応答があった失敗と、応答が無い失敗を型で分ける。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendFailure {
+    /// HTTP の応答があった（201 以外）。
+    Http { status: u16, body: String },
+    /// 応答が無い（接続・送信・タイムアウト等）。メッセージは画面に出す文言。
+    Transport(String),
+}
+
+impl std::fmt::Display for SendFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Http { status, body } => write!(f, "HTTP {status}: {body}"),
+            Self::Transport(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for SendFailure {
+    fn from(message: String) -> Self {
+        Self::Transport(message)
+    }
+}
+
+/// サイズが原因ではない 5xx（受付側の一時的な障害）を、同じ大きさで再送する最大の試行回数。
+pub const MAX_SAME_SIZE_SEND_ATTEMPTS: u32 = 3;
+
+/// 失敗した後に何をするか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryPlan {
+    /// 再送しない。
+    GiveUp,
+    /// ログを縮めて、すぐ再送する。
+    Shrink,
+    /// 同じ大きさのまま、少し待って再送する（一時的な障害を、ログを捨てずに乗り切る）。
+    SameSize { delay_secs: u64 },
+}
+
+/// 送信に失敗したとき、どう再送するか（ADR-222 D13）。`attempts_done` はここまでに試した
+/// 回数（1 以上）。
 ///
-/// `error` は設定アプリの `send_report` のエラー文字列（`HTTP <status>: <body>`、
-/// それ以外はネットワーク側の失敗）。`attempts_done` はここまでに試した回数（1 以上）。
-/// - `HTTP 5xx`（Workers Free の CPU 超過 = Error 1102 を含む）・`HTTP 413`・
-///   `HTTP 400` で本文が `*_too_large`: 本体が大きいことが原因なので縮めて再送する。
-/// - `HTTP 429`（レート制限）・それ以外の `HTTP 4xx`: 縮めても直らない。再送しない。
+/// - 本体が大きいことが原因（`413`、`400` で本文が `*_too_large`、Workers Free の CPU 超過
+///   = Error 1102。本文に `1102` を含む）: **縮めて**再送（最大 `MAX_SEND_ATTEMPTS` 回）。
+/// - それ以外の `5xx`（R2 の一時障害、502/504 等）: 同じ大きさで、待ってから再送
+///   （最大 `MAX_SAME_SIZE_SEND_ATTEMPTS` 回、待ち時間は 3 秒 × 回数）。同じ大きさで通った
+///   はずのログを不要に捨てない（Opus round3 M-R2）。
+/// - `429`（レート制限）・それ以外の `4xx`: 縮めても直らない。再送しない。
 /// - 応答自体が無い（タイムアウト・切断）: 大きい本体のアップロードが遅い可能性があるので、
-///   1 回だけ縮めて再送する。
+///   1 回だけ縮めて再送（オフラインで接続のタイムアウトを何度も待たせない）。
 #[must_use]
-pub fn should_retry_smaller(error: &str, attempts_done: u32) -> bool {
-    let Some(rest) = error.strip_prefix("HTTP ") else {
-        return attempts_done < MAX_NETWORK_SEND_ATTEMPTS;
-    };
-    let status: u16 = rest
-        .split(|c: char| !c.is_ascii_digit())
-        .next()
-        .and_then(|digits| digits.parse().ok())
-        .unwrap_or(0);
-    let shrinkable = match status {
-        500..=599 | 413 => true,
-        400 => error.contains("_too_large"),
-        _ => false,
-    };
-    shrinkable && attempts_done < MAX_SEND_ATTEMPTS
+pub fn plan_retry(failure: &SendFailure, attempts_done: u32) -> RetryPlan {
+    match failure {
+        SendFailure::Transport(_) => {
+            if attempts_done < MAX_NETWORK_SEND_ATTEMPTS {
+                RetryPlan::Shrink
+            } else {
+                RetryPlan::GiveUp
+            }
+        }
+        SendFailure::Http { status, body } => {
+            let size_related = *status == 413
+                || (*status == 400 && body.contains("_too_large"))
+                || (matches!(status, 500..=599) && body.contains("1102"));
+            if size_related {
+                if attempts_done < MAX_SEND_ATTEMPTS {
+                    RetryPlan::Shrink
+                } else {
+                    RetryPlan::GiveUp
+                }
+            } else if matches!(status, 500..=599) && attempts_done < MAX_SAME_SIZE_SEND_ATTEMPTS {
+                RetryPlan::SameSize {
+                    delay_secs: 3 * u64::from(attempts_done),
+                }
+            } else {
+                RetryPlan::GiveUp
+            }
+        }
+    }
 }
 
 /// 再送（`attempts_done` 回目の失敗の後）の、圧縮前の上限。最大の 1 本を半分・4 分の 1・8 分の 1 に
@@ -1248,10 +1302,13 @@ fn truncate_json_values_tail(values: &[serde_json::Value], max_bytes: usize) -> 
             continue;
         };
         let cost = item.len() + usize::from(!selected.is_empty());
-        if used + cost <= max_bytes {
-            used += cost;
-            selected.push(item);
+        if used + cost > max_bytes {
+            // 入らない行で止める。さらに古い小さな行を拾い続けると、途中が抜けた journal に
+            // なり、抜けたことが調査する側には分からない（Opus round3）。
+            break;
         }
+        used += cost;
+        selected.push(item);
     }
     selected.reverse();
     let mut json = String::from("[");
@@ -2541,39 +2598,97 @@ mod tests {
         assert!(value["app_log_excerpt_gz"].as_str().unwrap().len() <= MAX_LOG_GZ_BASE64_CHARS);
     }
 
+    fn http(status: u16, body: &str) -> SendFailure {
+        SendFailure::Http {
+            status,
+            body: body.to_owned(),
+        }
+    }
+
     #[test]
-    fn should_retry_smaller_decides_by_failure_kind() {
-        // 本体が大きいことが原因の失敗は、縮めて再送する。Workers Free の CPU 超過
-        // （Error 1102）は 5xx で返る。
-        for e in [
-            "HTTP 500: {\"error\":\"internal_server_error\"}",
-            "HTTP 503: error code: 1102",
-            "HTTP 413: {\"error\":\"request_body_too_large\"}",
-            "HTTP 400: {\"error\":\"log_excerpt_gz_too_large\"}",
+    fn plan_retry_shrinks_only_for_size_related_failures() {
+        // 本体が大きいことが原因の失敗は縮めて再送する。Workers Free の CPU 超過
+        // （Error 1102）は 5xx で、本文に 1102 が入る。
+        for f in [
+            http(503, "error code: 1102"),
+            http(
+                500,
+                "<title>Worker exceeded resource limits | Error 1102</title>",
+            ),
+            http(413, r#"{"error":"request_body_too_large"}"#),
+            http(400, r#"{"error":"log_excerpt_gz_too_large"}"#),
         ] {
-            assert!(should_retry_smaller(e, 1), "{e}");
-            assert!(should_retry_smaller(e, MAX_SEND_ATTEMPTS - 1), "{e}");
-            assert!(!should_retry_smaller(e, MAX_SEND_ATTEMPTS), "{e}");
+            assert_eq!(plan_retry(&f, 1), RetryPlan::Shrink, "{f}");
+            assert_eq!(
+                plan_retry(&f, MAX_SEND_ATTEMPTS - 1),
+                RetryPlan::Shrink,
+                "{f}"
+            );
+            assert_eq!(plan_retry(&f, MAX_SEND_ATTEMPTS), RetryPlan::GiveUp, "{f}");
         }
-        // 縮めても直らない失敗は再送しない。
-        for e in [
-            "HTTP 429: {\"error\":\"rate_limit_exceeded\"}",
-            "HTTP 400: {\"error\":\"unsupported_schema_version\"}",
-            "HTTP 400: {\"error\":\"log_excerpt_gz_invalid\"}",
-            "HTTP 404: not found",
-            "HTTP 418: teapot",
+    }
+
+    #[test]
+    fn plan_retry_waits_and_resends_the_same_size_for_transient_5xx() {
+        // R2 の一時障害・502/504 は、同じ大きさで通ったはずのログを捨てずに、待ってから再送する。
+        for f in [
+            http(500, r#"{"error":"internal_server_error"}"#),
+            http(502, "bad gateway"),
+            http(504, "gateway timeout"),
         ] {
-            assert!(!should_retry_smaller(e, 1), "{e}");
+            assert_eq!(
+                plan_retry(&f, 1),
+                RetryPlan::SameSize { delay_secs: 3 },
+                "{f}"
+            );
+            assert_eq!(
+                plan_retry(&f, 2),
+                RetryPlan::SameSize { delay_secs: 6 },
+                "{f}"
+            );
+            assert_eq!(
+                plan_retry(&f, MAX_SAME_SIZE_SEND_ATTEMPTS),
+                RetryPlan::GiveUp,
+                "{f}"
+            );
         }
-        // ネットワーク失敗（応答が無い）は 1 回だけ縮めて再送する。
-        for e in [
-            "WinHttpSendRequest: タイムアウト",
-            "WinHttpConnect に失敗しました",
-            "",
+    }
+
+    #[test]
+    fn plan_retry_gives_up_when_shrinking_cannot_help() {
+        for f in [
+            http(429, r#"{"error":"rate_limit_exceeded"}"#),
+            http(400, r#"{"error":"unsupported_schema_version"}"#),
+            http(400, r#"{"error":"log_excerpt_gz_invalid"}"#),
+            http(404, "not found"),
+            http(418, "teapot"),
         ] {
-            assert!(should_retry_smaller(e, 1), "{e}");
-            assert!(!should_retry_smaller(e, MAX_NETWORK_SEND_ATTEMPTS), "{e}");
+            assert_eq!(plan_retry(&f, 1), RetryPlan::GiveUp, "{f}");
         }
+    }
+
+    #[test]
+    fn plan_retry_resends_once_smaller_when_there_is_no_response() {
+        for f in [
+            SendFailure::Transport("WinHttpSendRequest: タイムアウト".to_owned()),
+            SendFailure::from("WinHttpConnect に失敗しました".to_owned()),
+        ] {
+            assert_eq!(plan_retry(&f, 1), RetryPlan::Shrink, "{f}");
+            assert_eq!(
+                plan_retry(&f, MAX_NETWORK_SEND_ATTEMPTS),
+                RetryPlan::GiveUp,
+                "{f}"
+            );
+        }
+    }
+
+    #[test]
+    fn send_failure_display_keeps_the_http_status_and_body() {
+        assert_eq!(http(503, "x").to_string(), "HTTP 503: x");
+        assert_eq!(
+            SendFailure::Transport("接続できません".to_owned()).to_string(),
+            "接続できません"
+        );
     }
 
     #[test]

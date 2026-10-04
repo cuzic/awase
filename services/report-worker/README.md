@@ -92,7 +92,7 @@ The CPU-bound part of an intake request is: decoding the body, `JSON.parse`, val
 
 So a body near the 2MiB limit is **around or above the Free limit even after the optimization**: decoding, parsing and re-serializing 1.75MiB of JSON costs about 11 ms on a CI runner by itself. The cost is roughly linear in the body size. A realistic report (ten minutes of typing, journal + awase.log gzipped) is about 0.1-0.5MB (CI-scale estimate: 1-3 ms; production measurement above: about 2-9 ms). These are rough guides (CI runners vary run to run, and workerd is not Node); the real number is step 4.
 
-If the plan is Free, expect only unusually large reports to be at risk, and a failed intake is not silent: the client gets a 5xx and saves the report under `%TEMP%`.
+If the plan is Free, a large report that hits the limit is not lost: the client gets a 5xx whose body contains `1102`, and (see the client retry below) resends the report with the logs cut down, so it degrades to a shorter report instead of failing. Only if every attempt fails is the full report saved under `%TEMP%`.
 
 ### 1. Check the checks passed
 
@@ -128,20 +128,20 @@ Then, from the repository root (7 requests; the per-IP limit is 20/day and cases
 python3 scripts/report_worker_smoke.py
 ```
 
-Expected: cases 1-4 return 201 (v3 legacy, v4 small, v4 realistic ~400KiB, v4 stress ~1.8MiB), case 5 returns 400 `legacy_log_fields_not_allowed_in_schema_4`, case 6 returns 400 `log_excerpt_gz_invalid`, case 7 returns 413. Read `cpuTime` for cases 3 (realistic) and 4 (stress) separately: the realistic one should be far under 10 ms.
+Expected: cases 1-4 return 201 (v3 legacy, v4 small, v4 realistic ~400KiB, v4 stress ~1.8MiB), case 5 returns 400 `legacy_log_fields_not_allowed_in_schema_4`, case 6 returns 400 `log_excerpt_gz_invalid`, case 7 returns 413. Read `cpuTime` for cases 3 (realistic) and 4 (stress) separately. Measured on 2026-10-04 (Worker `8cbcf745`): about 8 ms for case 3 and 31 ms for case 4, so case 3 is *near* the Free limit, not far under it.
 
 ### 5. Decide from the CPU result
 
 | `wrangler tail` for case 4 (stress) | Meaning | Action |
 | --- | --- | --- |
 | `outcome: ok`, `cpuTime` < 10 ms | Within the Free limit | Done |
-| `cpuTime` 10 ms or more but `outcome: ok` | Over the Free limit on this run (the limit is enforced per request, so it can fail intermittently) | Treat as a failure: option A or B below |
-| `outcome: exceededCpu` / HTTP 5xx on case 4 | Large reports fail; the client saves them locally | Option A or B below (only needed if case 3 also fails, or you want large reports to work) |
+| `cpuTime` 10 ms or more but `outcome: ok` | Inconclusive: either Workers Paid, or the Free plan's allowance for an isolate that only occasionally runs over (the docs say it is terminated once it hits the limit *consistently*). The 2026-10-04 run (31 ms, `ok`) is this row. | **Confirm the plan in the dashboard** (Workers & Pages -> Plans). Paid: done. Free: option A or B below, or rely on the client retry |
+| `outcome: exceededCpu` / HTTP 5xx with `1102` on case 4 | Large reports are cut by the limit; the client retries with shorter logs | Option A or B below if case 3 (a realistic report) also fails; otherwise the retry is enough |
 
-- **Client retry (already shipped, ADR-222 D13)**: if an intake fails with a 5xx (which includes Error 1102), 413, or a `*_too_large` 400, the client resends the report with the largest log cut to 1/2, then 1/4, then 1/8 (oldest lines dropped first), up to 4 attempts in total; a failure with no response is retried once. 429 and other 4xx are not retried. So an oversized report on the Free plan degrades to a shorter report instead of failing, and the journal's `ReportEdited` marker records `send_attempt` and `shrunk`. Only the final failure is saved locally (the full, unshrunk body). A retry after a client-side timeout may create a duplicate report, and a failure after the KV rate-limit update counts once per attempt.
+- **Client retry (already shipped, ADR-222 D13)**: if an intake fails because the body is too big (413, a `*_too_large` 400, or a 5xx whose body contains `1102`), the client resends the report with the largest log cut to 1/2, then 1/4, then 1/8 (oldest lines dropped first), up to 4 attempts in total. Any other 5xx (a transient R2 problem, 502/504) is resent at the same size after 3 s, then 6 s (up to 3 attempts), so logs that would have gone through are not thrown away. A failure with no response is retried once, shorter. 429 and other 4xx are not retried. A 201 whose body cannot be read is treated as success (it was stored). So an oversized report on the Free plan degrades to a shorter report instead of failing, and the journal's `ReportEdited` marker records `send_attempt` and `shrunk`. Only the final failure is saved locally (the full, unshrunk body). A retry after a client-side timeout may create a duplicate report, and a failure after the KV rate-limit update counts once per attempt.
 - **A. Upgrade to Workers Paid** (about $5/month): no code change.
 - **B. Cap the body lower for the Free plan**: set `MAX_BODY_BYTES` (here and in `crates/awase-windows/src/bug_report.rs`) to a size whose measured `cpuTime` is under 10 ms (for example 1MiB, about 6 ms on the CI scale above), and ship the client change. Ten minutes of typing compresses to roughly 0.1-0.5MB, so 1MiB still holds it.
-- **C. Cheaper validation**: validate only the gzip header, length and a bounded prefix/suffix instead of scanning the whole field (weaker; only if A and B are rejected).
+- **C. Cheaper validation**: already done (head 4KiB + tail + length + `H4sI` instead of scanning the whole field, compact JSON for R2). It is worth about 2 ms of the ~13 ms at 1.75MiB; the rest is decoding, parsing and re-serializing the JSON, which cannot be cut without storing the raw body unvalidated.
 
 ### 6. Delete the smoke-test reports
 
