@@ -229,6 +229,7 @@ fn scan_for(vk: u32) -> u16 {
         0x4B => 0x25,               // K
         0x41 => 0x1E,               // A
         0x42 => 0x30,               // B
+        0x20 => 0x39,               // Space
         0x1B => 0x01,               // Esc
         0xA0 => 0x2A,               // LShift
         0xA2 => 0x1D,               // LCtrl
@@ -1703,7 +1704,7 @@ fn main() {
         log,
         focus_lost: false,
         no_clear: false,
-        cancel_after: std::env::args().any(|a| a == "--alnum"),
+        cancel_after: std::env::args().any(|a| a == "--alnum" || a.starts_with("--walk-seq=")),
     };
     // `--tray-cmd=<ID>`(+ `--file-state=<path,...>`): トレイメニュー操作の再現。前後のファイル状態を FILE_STATE 行に出す。
     if let Some(id) = args.iter().find_map(|a| {
@@ -2084,6 +2085,100 @@ fn main() {
         }
         p.log.line(&format!(
             "SUMMARY PASS={ok} RECOVER=0 FAIL={bad} INVALID={invalid}"
+        ));
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
+    // `--walk-seq=N`(試行錯誤用): 無変換/変換/英数/ひらがな/左Shift単独タップ/Space をランダムに N 回押し、
+    // 毎回 `ka` を打って「IME の実状態と awase の Engine の食い違い」を探す。
+    // 有効な結果は awase あり=NICOLA 文字(IME かな+Engine ON)か `ka`(IME 英数+Engine OFF)、awase なし=`か`か `ka`。
+    // 食い違い=`か`(awase あり: IME はかななのに Engine OFF)・`kiu` のようなローマ字のまま(IME は英数なのに Engine ON)・その他。
+    // `--seed=S` で列を固定する。1 件でも食い違えば FAIL(1 回目が食い違いでも 400ms 後の 2 回目で一致すれば RECOVER)。
+    if let Some(n) = args.iter().find_map(|a| {
+        a.strip_prefix("--walk-seq=")
+            .and_then(|v| v.parse::<usize>().ok())
+    }) {
+        let seed = args
+            .iter()
+            .find_map(|a| {
+                a.strip_prefix("--seed=")
+                    .and_then(|v| v.parse::<u64>().ok())
+            })
+            .unwrap_or(1);
+        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        const ACTIONS: [(&str, u32); 7] = [
+            ("変換", 0x1C),
+            ("無変換", 0x1D),
+            ("英数", 0xF0),
+            ("ひらがな", 0xF2),
+            ("左Shift単独タップ", 0xA0),
+            ("Space", 0x20),
+            ("IME_ON", 0x16),
+        ];
+        let valid = |c: Class| {
+            if awase {
+                matches!(c, Class::Nicola | Class::Plain)
+            } else {
+                matches!(c, Class::RomajiKana | Class::Plain)
+            }
+        };
+        let (mut pass, mut fail, mut recover, mut invalid) = (0usize, 0usize, 0usize, 0usize);
+        p.log
+            .line(&format!("[CASE 1/1 run 1/1] ランダム列 seed={seed} n={n}"));
+        p.focus_lost = false;
+        if !bring_to_front() {
+            p.log.line("前面化に失敗");
+        }
+        if !ensure(&mut p, Setup::Kana, awase) {
+            p.log.line("RESULT INVALID: 前提状態にできなかった");
+            p.log.line("SUMMARY PASS=0 RECOVER=0 FAIL=0 INVALID=1");
+            let _ = child.kill();
+            return;
+        }
+        let mut trail: Vec<&str> = Vec::new();
+        for i in 1..=n {
+            let (name, vk) = ACTIONS[(next() % ACTIONS.len() as u64) as usize];
+            trail.push(name);
+            p.press(vk, false, 60);
+            sleep(settle_ms);
+            let got = p.probe_logged(&format!("step {i}/{n} {name} 後"));
+            if p.focus_lost {
+                p.log
+                    .line(&format!("RESULT INVALID: step {i} フォーカスが外れた"));
+                invalid += 1;
+                break;
+            }
+            if valid(got) {
+                pass += 1;
+                continue;
+            }
+            sleep(400);
+            let again = p.probe_logged(&format!("step {i}/{n} {name} 後 2回目"));
+            let tail = trail[trail.len().saturating_sub(4)..].join(" → ");
+            if valid(again) {
+                p.log.line(&format!(
+                    "RESULT RECOVER: step {i} 1回目は{}、2回目で一致 (直近: {tail})",
+                    got.label()
+                ));
+                recover += 1;
+            } else {
+                p.log.line(&format!(
+                    "RESULT FAIL: step {i} 食い違い={} (直近: {tail})",
+                    got.label()
+                ));
+                fail += 1;
+            }
+        }
+        p.log.line(&format!("列: {}", trail.join(" → ")));
+        p.log.line(&format!(
+            "SUMMARY PASS={pass} RECOVER={recover} FAIL={fail} INVALID={invalid}"
         ));
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();
