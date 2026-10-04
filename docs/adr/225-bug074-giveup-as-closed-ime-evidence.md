@@ -54,6 +54,12 @@ related_adr:
 - **案K**: 痕跡は残るが `kkakka` のように汚れる。実 IME が閉じていることには気づけるが、見た目は良くならない。
 - **未測定**: D0-4(`VK_IME_ON` 単独の破壊性)、Windows Terminal・Chrome。
 
+## 所有者の判断(2026-10-04)
+
+- 外部から IME を閉じられた場合は**追随する(IME には書かない)**。ADR-205 と同じ向き。再オープン案(案1)は採らない。
+- ただし追随(案3)は**偽陽性がほぼ 0 と示せることが条件**(誤って閉と判断すると NICOLA が止まったままになる)。そのため方向の確定の前に、Windows Terminal と実 Chrome の偽陽性率を測る(RichEdit は 0/10 で済み)。
+- 測定: 実 Chrome は `cal-d0-gji-chrome-noclose-idle`(`GIVEUP_D0_CHROME` 行)。Windows Terminal は CI で使えるかを `d0-wt-check.yml` で先に調べる(使えなければ代替を決める)。
+
 ## 決定案
 
 ### D0 先に測る(観測のみ、挙動変更なし)
