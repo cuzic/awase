@@ -224,6 +224,7 @@ impl Harness {
     /// 時刻を進める（その後、drift 判定と Engine の再評価を1回行う）。
     pub fn advance_ms(&mut self, ms: u64) -> &mut Self {
         self.now_ms += ms;
+        self.ime.advance(ms);
         self.settle(format!("advance_ms({ms})"), None);
         self
     }
@@ -266,8 +267,8 @@ impl Harness {
 
     /// 擬似 IME の真の状態を `source` で観測する（読める窓の probe/poll 相当）。
     pub fn observe(&mut self, source: Source) -> &mut Self {
-        let truth = self.ime.state();
-        self.observe_value(source, truth.open)
+        let seen = self.ime.read_state();
+        self.observe_value(source, seen.open)
     }
 
     /// 開閉を明示した観測（観測が嘘をつく・古い状態を読む、の模擬に使う）。
@@ -301,7 +302,7 @@ impl Harness {
             ),
         };
         self.reduce(ImeEvent::ObserverReported(any));
-        let conv = self.ime.state().conv;
+        let conv = self.ime.read_state().conv;
         self.last_conv_raw = Some(conv);
         if open {
             let mode = if conv == CONV_ALNUM {
