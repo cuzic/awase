@@ -455,6 +455,20 @@ jobs:
                 ('r2-msime-noawase', True, False, False, '1a:typed,1a:typed_nc,1a:typed_enter,1a:typed_esc,1a:typed_w2000,1a:typed_w8000,1a:notype,1a:typed~b', 3000),
                 ('r2-msime-awase', True, True, False, 'ctrl1d:typed,ctrl1d:typed_nc,ctrl1d:typed_enter,ctrl1d:typed_w2000,ctrl1d:typed~b', 3000),
               )],
+            # 第3ラウンド: 原因=「未確定の composition がある間の VK_IME_OFF は commit+半角英数(conv 25→16)に化けて閉じない(2回目で閉じる)」の確認と、
+            # 候補の対策(二重送信 dbl0/dbl50/dbl/dbl400、1a+IMC)・GJI 対照・Chrome 以外の窓(edit/tsf の自前窓、--km-comp で composition を残して押す)での再現。
+            *[cfg(f'sc-offrca-r3-{name}', 'observe', check='offrca', ime='msime' if msime else 'gji', keymap=2 if msime else 1, runs=1, wait=3000, awase='true' if aw else 'false',
+                  chrome=f"--offrca={cells} --or-ladder --settle=800{' --msime' if msime else ''}{'' if aw else ' --no-awase'}")
+              for name, msime, aw, cells in (
+                ('msime-noawase', True, False, '1a:typed_nc,1a_dbl0:typed_nc,1a_dbl50:typed_nc,1a_dbl:typed_nc,1a_dbl400:typed_nc,1a_imc0:typed_nc,1a_dbl50:typed,1a_dbl50:notype'),
+                ('msime-awase', True, True, 'ctrl1d:typed_nc,ctrl1d:notype,ctrl1d:typed_nc~b'),
+                ('gji-noawase', False, False, '1a:typed_nc,1a_dbl50:typed_nc,imc0:typed_nc'),
+                ('gji-awase', False, True, 'ctrl1d:typed_nc,ctrl1d:notype'),
+              )],
+            *[cfg(f'sc-offrca-r3-km-{win}-msime{"-comp" if comp else "-nocomp"}', 'observe', check='keymatrix', ime='msime', keymap=1, runs=1, wait=1800,
+                  stress=f"--form={win} --mode=keymatrix --km-cells=ctrl+1d=off:sync,1a=off:sync,19=tog:sync{' --km-comp' if comp else ''} --layout=@REPO@/layout/nicola_keytop.yab --msime",
+                  keys=KM_KEYS['abs'])
+              for win in ('edit', 'tsf') for comp in (True, False)],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',

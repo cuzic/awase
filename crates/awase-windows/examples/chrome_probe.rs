@@ -1035,6 +1035,26 @@ fn or_do(action: &str) -> String {
             sleep(150);
             tap(0x1A, 60);
         }
+        "1a_dbl0" => {
+            tap(0x1A, 10);
+            tap(0x1A, 10);
+        }
+        "1a_dbl50" => {
+            tap(0x1A, 30);
+            sleep(50);
+            tap(0x1A, 30);
+        }
+        "1a_dbl400" => {
+            tap(0x1A, 60);
+            sleep(400);
+            tap(0x1A, 60);
+        }
+        "1a_imc0" => {
+            tap(0x1A, 60);
+            sleep(100);
+            let r = ime_control(0x0006, 0);
+            return format!("1a_imc0 ret={r:?}");
+        }
         "19" => tap(0x19, 60),
         "f3" => tap(0xF3, 60),
         "f4" => tap(0xF4, 60),
@@ -1195,8 +1215,15 @@ fn run_offrca(
                 .take(14)
                 .map(|e| format!("{}:{}:{}:{}", e.kind, e.key, e.kc, e.data))
                 .collect();
+            // 動作直後のページの文字(残った composition が確定されたか)を、打鍵の前に読む。
+            let text_post = p.command("snap", "snap").map(|e| e.value);
+            let _ = p.command("clear", "cleared");
+            sleep(300);
             let got = p.probe_logged("offrca 後");
             let api_after_probe = or_api();
+            // 2回目の打鍵: 1回目で古い composition の確定(かの再出現)が混ざっても、ここは現在のモードだけを表す。
+            let (got2, text2, _) = p.probe();
+            p.log.line(&format!("PROBE offrca 後2回目: {} text={text2:?}", got2.label()));
             let typed_open = km_open_of(got);
             let mut ladder_res = Vec::new();
             if ladder && closed_ms.is_none() && api_end == Some(true) {
@@ -1218,7 +1245,7 @@ fn run_offrca(
                 serde_json::json!({"type":"or_trial","cell":cell,"action":action,"prep":prep,"n":i,
                     "utc":utc,"prep_ok":prep_ok,"api_pre":api_pre,"desc":desc,"closed_ms":closed_ms,
                     "series":ser,"api_end":api_end,"typed":got.label(),"typed_open":typed_open,
-                    "api_after_probe":api_after_probe,"conv_pre":conv_pre,"conv_end":conv_end,"page_events":page_events,"ladder":ladder_res,"focus_lost":p.focus_lost,
+                    "api_after_probe":api_after_probe,"text_post":text_post,"typed2":got2.label(),"typed2_open":km_open_of(got2),"typed2_text":text2,"conv_pre":conv_pre,"conv_end":conv_end,"page_events":page_events,"ladder":ladder_res,"focus_lost":p.focus_lost,
                     "awase":awase})
             ));
         }

@@ -27,8 +27,10 @@ def summarize(trials):
     closed = [t for t in made if t.get("closed_ms") is not None]
     never = [t for t in made if t.get("closed_ms") is None]
     ms = sorted(t["closed_ms"] for t in closed)
-    typed_closed = [t for t in made if t.get("typed_open") is False]
-    typed_open = [t for t in made if t.get("typed_open") is True]
+    # 2回目の打鍵(古い composition の確定が混ざらない)があればそれを実際のモードの証拠にする。
+    ev = "typed2_open" if any("typed2_open" in t for t in made) else "typed_open"
+    typed_closed = [t for t in made if t.get(ev) is False]
+    typed_open = [t for t in made if t.get(ev) is True]
     lad = {}
     for t in never:
         for s in t.get("ladder", []):
@@ -81,7 +83,7 @@ def main():
         for label, sel in (("closed", [t for t in ts if t.get("closed_ms") is not None]), ("never", [t for t in ts if t.get("closed_ms") is None])):
             if sel:
                 t = sel[-1]
-                print(f"OFFRCA_SAMPLE: cell={cell} {label} n={t['n']} conv={t.get('conv_pre')}->{t.get('conv_end')} events={t.get('page_events')}")
+                print(f"OFFRCA_SAMPLE: cell={cell} {label} n={t['n']} conv={t.get('conv_pre')}->{t.get('conv_end')} events={t.get('page_events')} text_post={t.get('text_post')!r} typed1={t.get('typed')} typed2={t.get('typed2')}/{t.get('typed2_text')!r}")
     if out:
         json.dump(res, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     return 0

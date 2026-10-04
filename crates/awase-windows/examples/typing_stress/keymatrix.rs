@@ -296,6 +296,8 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     let wait_ms = int_arg("--km-wait=", 1000);
     let max_press = int_arg("--km-max-press=", 3);
     let fresh_settle = int_arg("--km-fresh-settle=", 8000);
+    // `--km-comp`(MS-IME×実 Chrome の OFF 切り分け): 押す前にかな単打を1回打って未確定の composition を残す。
+    let comp = std::env::args().any(|a| a == "--km-comp");
     let Some(probe) = cells[0]
         .iter()
         .find(|c| c.romaji == "ka")
@@ -307,7 +309,7 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     };
     rec(
         &json!({"type":"km_config","cells":km_cells.iter().map(|c| c.label.clone()).collect::<Vec<_>>(),
-        "n":n,"wait_ms":wait_ms,"max_press":max_press,"fresh_settle_ms":fresh_settle,"evidence":"api"}),
+        "n":n,"wait_ms":wait_ms,"max_press":max_press,"fresh_settle_ms":fresh_settle,"evidence":"api","comp":comp}),
     );
     for cell in &km_cells {
         for i in 0..n {
@@ -347,6 +349,10 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             sleep_ms(wait_ms);
             let pre_api = real_ime_open(child);
             let mut presses = Vec::new();
+            if comp && pre_ok && pre_api == Some(r0) {
+                press(probe.vk, probe.scan, 60);
+                sleep_ms(500);
+            }
             if pre_ok && pre_api == Some(r0) {
                 for p in 1..=max_press {
                     let utc = utc_hms();
