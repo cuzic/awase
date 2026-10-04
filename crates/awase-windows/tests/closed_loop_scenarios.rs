@@ -52,7 +52,7 @@ use support::invariants::{
     p2_no_stale_stage_after_unpredicted_key, p3_startup_aligns_desired_without_drift,
     predictions_agree_with_truth,
 };
-use support::pseudo_ime::{TrueStage, TrueState, CONV_ALNUM, CONV_HIRAGANA};
+use support::pseudo_ime::{Grid, TrueStage, TrueState, CONV_ALNUM, CONV_HIRAGANA};
 
 const VK_K: u16 = 0x4B;
 const VK_ESC: u16 = 0x1B;
@@ -464,4 +464,51 @@ fn q3_control_without_lag_reads_truth_immediately() {
     assert!(!h.ime.read_state().open);
     assert_ok(&h, p1_no_warranted_write_without_intent(&h));
     assert_ok(&h, belief_matches_truth_at_end(&h));
+}
+
+// ── ハーネスの忠実度(ADR-209 が約束した MS-IME の格子、ADR-223 の is_japanese_ime) ──────────────
+
+/// MS-IME プリセット（GJI、`msime.json`）の格子で、ATOK と同じ「ひらがなキー→打鍵→Enter 確定」を通す。
+/// 格子（`on-c10-none|hiragana`=`ON/0x19`、`on-c19-typing|enter`=`ON/0x19/確定`）と、awase の MSIME 同梱表で予測が一致し続けること。
+#[test]
+fn msime_grid_hiragana_key_then_typing_and_commit() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)).with_grid(Grid::GjiMsime));
+    h.advance_ms(100)
+        .observe(Source::ImmCross)
+        .advance_ms(200)
+        .key(VK_HIRAGANA)
+        .advance_ms(30)
+        .key(VK_K)
+        .advance_ms(80)
+        .key(VK_ENTER)
+        .advance_ms(300)
+        .observe(Source::ImmCross)
+        .advance_ms(100);
+    assert_eq!(h.ime.state(), state(true, CONV_HIRAGANA), "{}", h.trace());
+    assert_ok(&h, p1_no_warranted_write_without_intent(&h));
+    assert_ok(&h, belief_matches_truth_at_end(&h));
+}
+
+/// `is_japanese_ime=false`（入力言語が日本語でない、ADR-223）のとき、推測・補正に基づく書き込み(`issue_open_warrant`)は下りない。
+/// `explicit_intent_drift_correction_fires_with_warrant` と同じ列で、drift 補正の書き込みが出ず IME は開いたまま。
+#[test]
+fn non_japanese_ime_blocks_drift_correction_write() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_HIRAGANA)));
+    h.set_japanese_ime(false)
+        .advance_ms(100)
+        .observe(Source::ImmCross)
+        .advance_ms(200)
+        .block_writes(true)
+        .user_set_open(false)
+        .advance_ms(50)
+        .observe(Source::ImmCross)
+        .advance_ms(500)
+        .observe(Source::ImmCross);
+    assert!(
+        !h.writes
+            .iter()
+            .any(|w| w.origin == WriteOrigin::DriftCorrection),
+        "日本語 IME でなければ drift 補正の書き込みは出ない\n{}",
+        h.trace()
+    );
 }
