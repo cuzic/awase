@@ -277,6 +277,8 @@ pub struct SentInputBatch {
     pub issue_us: u64,
     /// `SendInput` の戻り値（OS が受理したイベント数。`events.len()` より小さければ一部が捨てられた）。
     pub accepted: u32,
+    /// 発行時に採番した journal の `(seq, elapsed_ms)`（[`install_sent_input_stamp_source`] 未設定なら `None`）。
+    pub stamp: Option<(u64, u64)>,
     pub events: Vec<SentKeyEvent>,
 }
 
@@ -284,19 +286,32 @@ pub struct SentInputBatch {
 const SENT_INPUT_TRACE_CAP: usize = 512;
 
 std::thread_local! {
-    /// 直近の `send_input_safe` の送信内容。キーボードフックと同じメインスレッドで積み、
-    /// `WindowsPlatform::drain_journal_entries` が journal の `SentInput` へ移す。
+    /// 直近の `send_input_safe` の送信内容。呼んだスレッドごとの thread_local で、
+    /// メインスレッドぶんだけ `WindowsPlatform::drain_journal_entries` が journal の `SentInput` へ移す
+    /// （ワーカースレッドから呼ばれたぶんは移されず、上限で古いものから捨てられる）。
     ///
     /// 不具合報告で「awase が実際に何を送ったか」を追えなかった（LINE で「いまは」が
     /// 「いいい」になった報告 01M43NK5P13Q7EQP7CS0N3X4ED。journal の `KeyInput` は物理入力のみで、
     /// 送信側は IME 操作キー用の `[shadow-send]`〈debug ログ〉しか無かった）ための恒久診断。
-    static SENT_INPUT_TRACE: std::cell::RefCell<Vec<SentInputBatch>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    static SENT_INPUT_TRACE: std::cell::RefCell<std::collections::VecDeque<SentInputBatch>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+
+    /// 発行時に journal の `(seq, elapsed_ms)` を採番する関数（`WindowsPlatform::new` が設定）。
+    /// `win32` が `journal` へ依存しないよう、関数として受ける。
+    static SENT_INPUT_STAMP_SOURCE: std::cell::RefCell<Option<Box<dyn Fn() -> (u64, u64)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`SentInputBatch::stamp`] の採番元を設定する（呼んだスレッドの `send_input_safe` にだけ効く）。
+pub(crate) fn install_sent_input_stamp_source(source: Box<dyn Fn() -> (u64, u64)>) {
+    let _ = SENT_INPUT_STAMP_SOURCE.try_with(|slot| *slot.borrow_mut() = Some(source));
 }
 
 /// 溜まった送信記録を全件取り出す。
 pub(crate) fn drain_sent_input_trace() -> Vec<SentInputBatch> {
-    SENT_INPUT_TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
+    SENT_INPUT_TRACE
+        .try_with(|trace| std::mem::take(&mut *trace.borrow_mut()).into())
+        .unwrap_or_default()
 }
 
 fn sent_key_events(inputs: &[INPUT]) -> Vec<SentKeyEvent> {
@@ -360,14 +375,20 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
     let accepted = unsafe { SendInput(inputs, size) };
     let events = sent_key_events(inputs);
     if !events.is_empty() {
-        SENT_INPUT_TRACE.with(|trace| {
+        // 診断用の記録なので、thread_local が破棄済み（スレッド終了処理中）でも panic させない。
+        let _ = SENT_INPUT_TRACE.try_with(|trace| {
+            let stamp = SENT_INPUT_STAMP_SOURCE
+                .try_with(|source| source.borrow().as_ref().map(|f| f()))
+                .ok()
+                .flatten();
             let mut trace = trace.borrow_mut();
             if trace.len() >= SENT_INPUT_TRACE_CAP {
-                trace.remove(0);
+                trace.pop_front();
             }
-            trace.push(SentInputBatch {
+            trace.push_back(SentInputBatch {
                 issue_us,
                 accepted,
+                stamp,
                 events,
             });
         });

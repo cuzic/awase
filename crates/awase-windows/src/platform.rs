@@ -67,6 +67,10 @@ impl WindowsPlatform {
         focus: FocusTracker,
         stamper: crate::journal::JournalStamper,
     ) -> Self {
+        let sent_input_stamper = stamper.clone();
+        crate::win32::install_sent_input_stamp_source(Box::new(move || {
+            sent_input_stamper.reserve()
+        }));
         Self {
             output,
             tray,
@@ -84,13 +88,28 @@ impl WindowsPlatform {
 
     pub(crate) fn drain_journal_entries(&mut self) -> Vec<crate::journal::JournalEnvelope> {
         // `win32::send_input_safe` が溜めた「awase が実際に送ったキー」を journal へ移す。
-        // 発行時刻は各 entry の `issue_us` に残る（seq/elapsed_ms は移した時刻で採番される）。
+        // seq/elapsed_ms は発行時に採番済み（`JournalStamper::reserve`）なので、遅れて drain
+        // されても因果順・10 分窓の判定は送信時刻のまま。
         for batch in crate::win32::drain_sent_input_trace() {
-            self.push_journal_entry(crate::journal::JournalEntry::SentInput {
+            let entry = crate::journal::JournalEntry::SentInput {
                 issue_us: batch.issue_us,
                 accepted: batch.accepted,
                 events: batch.events.into_iter().map(Into::into).collect(),
-            });
+            };
+            match batch.stamp {
+                Some((seq, elapsed_ms)) => {
+                    if self.pending_journal_entries.len() >= 4096 {
+                        self.pending_journal_entries.remove(0);
+                    }
+                    self.pending_journal_entries
+                        .push(crate::journal::JournalEnvelope {
+                            seq,
+                            elapsed_ms,
+                            entry,
+                        });
+                }
+                None => self.push_journal_entry(entry),
+            }
         }
         std::mem::take(&mut self.pending_journal_entries)
     }

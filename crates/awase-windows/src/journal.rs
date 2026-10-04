@@ -1199,6 +1199,19 @@ pub struct JournalStamper {
 }
 
 impl JournalStamper {
+    /// `(seq, elapsed_ms)` だけを先に採番する。`stamp` と同じ採番を、entry の中身が決まる
+    /// 前（`SendInput` の発行時）に行うためのもの。後で `JournalEnvelope` を同じ値で組み立てる。
+    ///
+    /// drain 時に採番すると、遅れて送ったキーが次の打鍵の `KeyInput` の後ろに並んだり、
+    /// ダンプの 10 分窓が送信時刻でなく drain 時刻で判定されたりする（ADR-096 B-4 が
+    /// 是正した「保留キューが drain 時刻で採番される」問題の再発）ため。
+    #[must_use]
+    pub fn reserve(&self) -> (u64, u64) {
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let elapsed_ms = (self.clock.now() - self.start).as_millis() as u64;
+        (seq, elapsed_ms)
+    }
+
     #[must_use]
     pub fn stamp(&self, entry: JournalEntry) -> JournalEnvelope {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
@@ -2065,5 +2078,30 @@ mod tests {
             events: Vec::new(),
         };
         assert_eq!(entry.lane_kind(), LaneKind::Actuation);
+    }
+
+    #[test]
+    fn sent_input_reserved_at_send_time_keeps_causal_order_when_absorbed_late() {
+        let (mut j, _mock) = mock_journal();
+        let stamper = j.stamper();
+        // 送信時に採番し、その後に別の entry が記録され、最後に（遅れて）SentInput が取り込まれる。
+        let (seq, elapsed_ms) = stamper.reserve();
+        let later_seq = j.record(make_state_entry());
+        assert!(later_seq > seq, "reserve は stamp と同じ連番を共有する");
+        j.absorb(JournalEnvelope {
+            seq,
+            elapsed_ms,
+            entry: JournalEntry::SentInput {
+                issue_us: 1,
+                accepted: 1,
+                events: Vec::new(),
+            },
+        });
+        let order: Vec<u64> = j.entries_by_seq().iter().map(|e| e.seq).collect();
+        assert_eq!(order, vec![seq, later_seq]);
+        assert!(matches!(
+            j.entries_by_seq()[0].entry,
+            JournalEntry::SentInput { .. }
+        ));
     }
 }
