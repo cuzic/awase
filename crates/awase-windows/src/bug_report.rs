@@ -1311,7 +1311,12 @@ pub fn recent_app_log_rows(
         .position(|(ts, _)| *ts >= cutoff)
         .unwrap_or(rows.len());
     let start = first_in_window.min(rows.len().saturating_sub(min_rows));
-    rows.into_iter().skip(start).map(|(_, row)| row).collect()
+    rows.into_iter()
+        .skip(start)
+        // `.old` と現行ファイルを連結すると、ファイル境界の空行が直前の行の末尾に
+        // 継続行として付く。行末の改行は取り除く。
+        .map(|(_, row)| row.trim_end_matches(['\n', '\r']).to_owned())
+        .collect()
 }
 
 /// journal の JSON 配列（`dump_to_file_for_report` の出力）を、1 entry = 1 行の文字列に分ける。
@@ -2285,6 +2290,27 @@ mod tests {
             recent_app_log_rows(&text, APP_LOG_WINDOW_SECS, T_0224, 1).len(),
             3
         );
+    }
+
+    #[test]
+    fn recent_app_log_rows_strips_trailing_blank_lines_from_a_file_boundary() {
+        // `.old` の末尾の改行 + 連結用の改行 + 現行ファイルの先頭、で空行が挟まる。
+        let old = format!("{}\n", log_line(-120, "INFO in-old"));
+        let current = format!("{}\n", log_line(-5, "WARN in-current"));
+        let rows = recent_app_log_rows(&format!("{old}\n{current}"), 600, T_0224, 0);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].ends_with("in-old"), "{:?}", rows[0]);
+        assert!(rows[1].ends_with("in-current"), "{:?}", rows[1]);
+        // CRLF のファイルでも行末が残らない。
+        let crlf = format!(
+            "{}\r\n{}\r\n",
+            log_line(-9, "INFO a"),
+            log_line(-8, "INFO b")
+        );
+        let rows = recent_app_log_rows(&crlf, 600, T_0224, 0);
+        assert!(rows
+            .iter()
+            .all(|r| !r.ends_with('\r') && !r.ends_with('\n')));
     }
 
     #[test]
