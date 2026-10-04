@@ -112,84 +112,86 @@ footer p{margin:0.3rem 0}
 <h2>[Unreleased]</h2>
 <h2>[2.0.0] - 2026-10-03</h2>
 <blockquote>
-<p><strong>v2 の最初の正式版。v1 は 2.0.0 の公開をもって保守終了。</strong> v1（最後は 1.21.1）との違いの全体像と、設定の移行は <a href="docs/migration-v1-to-v2.md">docs/migration-v1-to-v2.md</a> にまとめている。
-大きな方針転換は 2 つ: ① IME の状態は IME 自身を正とし、awase は先回り・補正の書き込みをやめて観測・予測に追随する（ADR-191・212・213）、② キーの役割はユーザーの IME キー設定から逆算する（ADR-199）。</p>
+<p><strong>v2 の最初の正式版です。これにあわせて v1（最後は 1.21.1）の保守を終了します。</strong> v1 との違いの全体と、設定を引き継ぐときの注意は <a href="docs/migration-v1-to-v2.md">docs/migration-v1-to-v2.md</a> にまとめています。
+v2 の大きな変更は 2 つです。① 日本語入力（IME）の状態は IME 自身を正しいものとし、awase が先回りして IME を操作することをやめました。② IME に設定したキー割り当てを読み取り、どのキーが何をするかを自動で判断するようになりました。</p>
 </blockquote>
+<h3>更新する前に知っておいてほしいこと</h3>
+<ul>
+<li><strong>これまで効いていなかった設定が、更新すると効き始めることがあります。</strong> 設定ファイル（<code>config.toml</code>）のキー名の読み方を統一した結果です。昔書いたまま忘れていたキー割り当てが突然動く可能性があるので、心当たりがあれば <code>config.toml</code> を確認してください（詳しくは「変更」の最初の 2 項目）。</li>
+<li><strong>一部の設定はなくなりました。</strong> 残っていても無視されます。起動時に通知が出ます（「変更」の該当項目）。</li>
+<li><strong>無変換・変換キーを 1 回だけ押したときの動作の設定が変わりました。</strong> 古い設定は自動で新しい形に移されます。</li>
+</ul>
 <h3>追加</h3>
 <ul>
-<li><strong>IME キー効果の学習（<code>awase-keymap-learn-win.exe</code>、ZIP・MSI・Scoop に同梱、ADR-195/196）</strong>: カスタムキー設定の IME でも、キーを押すと IME がどうなるかを実機で学習して表にし、実行時に使う。設定画面の較正パネルに、使用中の表の状態と「採用」「再検証」ボタンがある。学習結果は内蔵表より優先し、IME の版が変わると「要再検証」になる。<code>use_learned_keymap_table</code>（既定 <code>true</code>）で無効にできる</li>
-<li><strong>打鍵時の予測（ADR-191）</strong>: 物理のモードキーを押した時点で、表から IME の変化を予測して Engine へ即座に反映する（IME には書かない）。内蔵の予測表は ATOK・Google 日本語入力の MS-IME プリセット・Microsoft IME 本体の 3 構成</li>
-<li><strong>状態依存の IME モードキーの警告と置き換え（ADR-192）</strong>: 入力中だけ効くなど、状態によって意味が変わるキー割り当てを検出して警告し、設定画面で明示の ON/OFF キーへの置き換えを案内する。警告は設定画面で切り替えられる</li>
-<li><strong>キーの役割を IME の設定から逆算（ADR-199・202）</strong>: 半角/全角（0xF3/0xF4）・漢字（0x19）・F13〜F24・無変換/変換が、IME の設定上 ON/OFF/トグルかを読み取って扱いを決める（Google 日本語入力は <code>config1.db</code>、MS-IME 本体はレジストリ、または学習表）</li>
-<li><strong>不具合報告に、学習表の採否・自己検証・内蔵表との突き合わせ・キーマップ指紋を添付するようにした。</strong> 実行中プロセス名の一覧をオプトインで添付でき、PowerToys Keyboard Manager/Run を「併用で問題になりうるソフト」の候補に追加した</li>
-<li><strong>キーボードフックが入力を受けなくなった状態（hook_starved、issue #165）を検知して自己修復するようにした</strong></li>
-<li><strong><code>config.toml</code> のキー名に矢印キー（<code>VK_LEFT</code>/<code>UP</code>/<code>RIGHT</code>/<code>DOWN</code>）を指定できるようにした</strong></li>
-<li><strong>設定画面の保存を、変更した項目だけ書く方式にした（コメントと未知のキーを保つ、ADR-201）。</strong> 画面を開いている間に外から編集した内容を巻き込まない（三者比較）</li>
+<li><strong>IME の反応を自分の環境で学習する機能（<code>awase-keymap-learn-win.exe</code>）。</strong> キー割り当てを自分で変えている場合でも、「このキーを押すと IME がどうなるか」を実際に試して覚え、その結果を使います。設定画面の較正パネルで状態を確認でき、「採用」「再検証」ボタンがあります。学習結果は内蔵の表より優先され、IME のバージョンが変わると「要再検証」と表示されます。<code>use_learned_keymap_table = false</code> で無効にできます。</li>
+<li><strong>キーを押した瞬間に、IME の状態を予測して NICOLA 入力に反映するようになりました。</strong> ATOK、Google 日本語入力（MS-IME 風の設定）、Microsoft IME に対応しています。</li>
+<li><strong>入力中だけ働くなど、状態によって意味が変わるキー割り当てを警告するようにしました。</strong> 設定画面で、オン・オフがはっきりしたキーへの置き換えを案内します。警告は設定画面で切り替えられます。</li>
+<li><strong>IME のキー設定を読み取って、半角/全角・漢字・F13〜F24・無変換・変換が「オン」「オフ」「切り替え」のどれなのかを自動で判断するようになりました。</strong> Google 日本語入力は設定ファイル、Microsoft IME はレジストリ、または上の学習結果を使います。</li>
+<li><strong>不具合報告に、学習結果の状態などを添付するようにしました。</strong> 実行中のソフトの一覧も、同意した場合だけ添付できます。PowerToys のキーボード機能（Keyboard Manager / Run）も「併用で問題になりうるソフト」に加えました。</li>
+<li><strong>キーボード入力を受け取れなくなった状態を検知して、自動で復旧するようにしました。</strong></li>
+<li><strong><code>config.toml</code> で矢印キー（<code>VK_LEFT</code> / <code>VK_UP</code> / <code>VK_RIGHT</code> / <code>VK_DOWN</code>）を指定できるようにしました。</strong></li>
+<li><strong>設定画面の保存で、変更した項目だけを書き換えるようにしました。</strong> 設定ファイルのコメントや、画面にない項目は消えません。設定画面を開いている間にファイルを直接編集しても、その内容を上書きしません。</li>
 </ul>
 <h3>変更</h3>
 <ul>
-<li><p><strong><code>config.toml</code> のキー名の書き方を、どの設定項目でも同じ規則で読むようにした（ADR-201 段階1）。今まで黙って無視されていた設定が有効になる</strong></p>
-<ul>
-<li>規則: 前後の空白は無視、英字の大文字小文字は区別しない、先頭の <code>VK_</code> は付けても付けなくてもよい、<code>Enter</code>/<code>Esc</code>/<code>Space</code>/<code>Backspace</code>/<code>Tab</code>/<code>Delete</code> などの一般的な名前も使える。修飾キー（<code>Ctrl</code>/<code>Shift</code>/<code>Alt</code>）も同じ規則で、ホットキー・キー組み合わせ・設定画面で共通</li>
-<li>今まで無視されていて、更新すると<strong>有効になる</strong>例: <code>[[post_bypass]] key = &quot;Ctrl+J&quot;</code>（<code>VK_</code> 無し）、<code>keys.ime_detect</code> の <code>&quot;F13&quot;</code>、<code>keys.engine_on = [&quot;Ctrl+F12&quot;]</code>（今までは警告を出して捨てていた）、<code>muhenkan_solo_tap_dedicated_fn_key = &quot;F18&quot;</code>、<code>engine_toggle_hotkey = &quot;Ctrl+Shift+変換&quot;</code>（日本語名）、小文字の <code>&quot;ctrl+shift+vk_f12&quot;</code>、<code>left_thumb_key = &quot;left alt&quot;</code></li>
-<li><strong>昔書いたが効かないので忘れていた再割り当てや設定が、更新しただけで効き始めることがある。</strong> 心当たりがあれば <code>config.toml</code> を確認すること。<code>[[keymap]]</code>（実際の項目名は <code>[[keymaps]]</code>）の古い書き方は今回は対象外（別の段階で扱う）</li>
-<li>設定の検証（警告）も同じ規則になり、<code>left_thumb_key = &quot;カナ&quot;</code>（かなキーは KeyUp が来ないための警告）や <code>muhenkan_solo_tap_dedicated_fn_key = &quot;F18&quot;</code>（今までは「指定できない値」と誤って警告していた）などの判定が、表記によらず揃う</li>
-<li>設定画面のホットキー候補に「変換」「無変換」「かな」「漢字」を選んでも、ホットキーが無言で登録されない不具合（BUG-167 の残り）を修正</li>
+<li><strong><code>config.toml</code> のキー名の書き方を、どの設定でも同じルールで読むようにしました。これまで黙って無視されていた設定が、更新すると効き始めます。</strong><ul>
+<li>ルール: 前後の空白は無視、英字の大文字小文字は区別しない、先頭の <code>VK_</code> は付けても付けなくてもよい、<code>Enter</code> <code>Esc</code> <code>Space</code> <code>Backspace</code> <code>Tab</code> <code>Delete</code> などの一般的な名前も使えます。<code>Ctrl</code> <code>Shift</code> <code>Alt</code> も同じです。</li>
+<li>これまで無視されていて、<strong>効き始める</strong>例: <code>key = &quot;Ctrl+J&quot;</code>（<code>VK_</code> なし）、<code>F13</code>、<code>keys.engine_on = [&quot;Ctrl+F12&quot;]</code>、<code>muhenkan_solo_tap_dedicated_fn_key = &quot;F18&quot;</code>、<code>engine_toggle_hotkey = &quot;Ctrl+Shift+変換&quot;</code>（日本語名）、小文字の <code>&quot;ctrl+shift+vk_f12&quot;</code>、<code>left_thumb_key = &quot;left alt&quot;</code>。</li>
+<li><strong>昔書いたものの効かないので忘れていたキー割り当てが、更新しただけで動き出すことがあります。</strong> 心当たりがあれば <code>config.toml</code> を確認してください。</li>
+<li>設定の警告も同じルールで判定します。</li>
+<li>設定画面のホットキーに「変換」「無変換」「かな」「漢字」を選んでも登録されなかった不具合も直しました。</li>
 </ul>
 </li>
-<li><p><strong><code>config.toml</code> の間違いを黙って無視せず、警告として知らせるようにした（ADR-201 段階2）。旧表記 <code>[[keymap]]</code> が効くようになる</strong></p>
-<ul>
-<li>文書や過去の記述にある <code>[[keymap]]</code>（実際の項目名は <code>[[keymaps]]</code>）は、今までは無言で読まれず、キー割り当てが効かなかった。<strong>更新すると <code>[[keymap]]</code> の割り当てが効き始める</strong>（<code>[[keymaps]]</code> と両方あれば連結して読む）。心当たりがあれば <code>config.toml</code> を確認すること</li>
-<li>次の項目は、解決できない値があると警告が出る（トレイ通知とログ）: <code>[[post_bypass]]</code> の key、<code>[[keymaps]]</code> の from/to、<code>muhenkan_solo_tap_dedicated_fn_key</code>、<code>engine_toggle_hotkey</code>（名前が解決できない場合と、他のアプリが先に使っていて登録できない場合の両方）。設定を再読み込みしても、同じ内容ならトレイ通知は繰り返さない</li>
-<li>未知の項目名（<code>[general]</code> の綴り間違いなど）は、近い名前の候補つきで警告する。<strong>この警告はログと設定画面の警告欄だけ</strong>に出し、トレイ通知は出さない。撤去済みの項目（<code>apply_calibrated_mode_keys</code>・<code>[[calibration]]</code> など）は警告しない</li>
-<li>上の「今まで無視されていた設定が有効になる」設定があるときは、起動時のログに「以前は無視されていた設定 N 件が有効になりました」と該当項目を出す（トレイ通知・設定画面には出さない）</li>
+<li><strong><code>config.toml</code> の間違いを、黙って無視せず警告で知らせるようにしました。古い書き方の <code>[[keymap]]</code> も効くようになります。</strong><ul>
+<li>説明や過去の記述にあった <code>[[keymap]]</code>（正しくは <code>[[keymaps]]</code>）は、これまで読まれず、割り当てが効きませんでした。<strong>更新すると効き始めます。</strong> 心当たりがあれば確認してください。</li>
+<li>読み取れないキー名（<code>[[post_bypass]]</code> や <code>[[keymaps]]</code> の指定、<code>engine_toggle_hotkey</code> など）があると、トレイ通知とログで知らせます。他のアプリが先に使っていてホットキーを登録できないときも同様です。同じ内容なら、設定を再読み込みしても通知は繰り返しません。</li>
+<li>項目名の綴り間違いは、近い候補つきで警告します（ログと設定画面だけで、トレイには出しません）。</li>
+<li>これまで無視されていた設定が有効になったときは、起動時のログにその一覧を出します。</li>
 </ul>
 </li>
-<li><p><strong>撤去した設定 <code>general.gji_thumb_key_ime_toggle</code>（設定画面の「GJI の状態依存トグルをベストエフォートで追従する」）と <code>general.dbe_mode_key_policy</code>（隠し設定）が <code>true</code>／<code>passthrough</code> のまま残っているときは、起動時にトレイで通知する。</strong> 値は無視され、設定画面で保存すると行は消える。GJI の状態依存トグルは IME のキー設定から自動で判定する。既定値（<code>false</code>／<code>suppress</code>）のままなら何も出ない</p>
-</li>
-<li><p><strong><code>keys.engine_on_ime_key</code>/<code>engine_off_ime_key</code>（エンジン ON/OFF 時に IME のモードキーを送る上級者向け設定）を撤去した（ADR-207）。</strong> 既定は無効で設定画面にも無かったが、2026-08-15 より前に設定画面で一度でも保存した人の <code>config.toml</code> には旧既定（<code>VK_DBE_DBCSCHAR</code>/<code>VK_DBE_SBCSCHAR</code>）が残っていて、エンジンの ON/OFF に合わせて全角/半角モードを送る機能が有効だった。更新するとそれが止まる。<code>config.toml</code> に残っていても無視され、起動時に通知が出る（設定画面で保存するとその行は消える）。代わりの設定は無い。IME の開閉は <code>keys.ime_on</code>/<code>ime_off</code> で設定できる</p>
-</li>
-<li><p><code>keys.ime_detect.on</code>/<code>off</code> の既定を空にした（以前は <code>IMEオン</code>/<code>IMEオフ</code>）。IMEオン/IMEオフ キー（VK_IME_ON/OFF）の追随は、指定しなくても自動で行われる（入力言語の判定が一時的に日本語でないと出る環境でも追随するよう直した）。書いてある値はそのまま使われる</p>
-</li>
-<li><p><strong><code>keys.ime_toggle</code> の既定を空にした（以前は <code>VK_KANJI</code>＝半角/全角）。</strong> v1 の設定画面が書き出した旧既定値（<code>ime_toggle = [&quot;VK_KANJI&quot;]</code>、<code>ime_detect</code> の <code>IMEオン</code>/<code>IMEオフ</code>）と<strong>ちょうど同じ</strong>値は、読み込み時に空として扱い、設定画面で保存するとファイルからも消える（旧既定に別のキーを足した設定や、別のキーは尊重する）</p>
-</li>
-<li><p><strong>無変換/変換の単独タップの動作を整理した（ADR-206）。<code>muhenkan_solo_tap_ime_action</code>/<code>henkan_solo_tap_ime_action</code> を撤去した。</strong></p>
-<ul>
-<li>単独タップは Suppress／Passthrough の設定に従う。IME 側でそのキーが IME オン/オフ/トグルに割り当てられているとき（<code>keys.ime_on</code>/<code>ime_off</code> に書いた場合を含む）は、Passthrough のときだけ、生キーを抑止して awase が現在の状態に従って ON/OFF を明示的に送る。Suppress は IME を動かさない</li>
-<li>旧設定は読み込み時に <code>keys.ime_*</code> 相当へ移して警告する。同じキーの設定が既にあれば移行しない。設定画面で保存すると旧設定は消える</li>
-<li>「@」が出る問題（Windows Terminal + Google 日本語入力）に効くかの実機確認は未実施</li>
+<li><strong>なくなった設定が残っていると、起動時にトレイで知らせます。</strong> 対象は <code>general.gji_thumb_key_ime_toggle</code>（設定画面の「GJI の状態依存トグルをベストエフォートで追従する」）と <code>general.dbe_mode_key_policy</code> です。値は無視され、設定画面で保存すると消えます。初期値のままなら何も出ません。</li>
+<li><strong><code>keys.engine_on_ime_key</code> / <code>engine_off_ime_key</code> をなくしました。</strong> NICOLA 入力のオン・オフに合わせて IME の全角/半角を切り替える上級者向けの設定でした。2026-08-15 より前に設定画面で一度でも保存した方は、この機能が知らないうちに有効になっていたので、更新すると止まります。残っていても無視され、起動時に通知が出ます。代わりの設定はありません。IME の開閉は <code>keys.ime_on</code> / <code>ime_off</code> で設定できます。</li>
+<li><strong><code>keys.ime_detect.on</code> / <code>off</code> の初期値を空にしました。</strong> IMEオン・IMEオフのキー（<code>VK_IME_ON</code> / <code>VK_IME_OFF</code>）には、指定しなくても自動で追随します。書いてある値はそのまま使われます。</li>
+<li><strong><code>keys.ime_toggle</code> の初期値を空にしました（以前は半角/全角キー）。</strong> v1 の設定画面が自動で書いていた旧初期値とまったく同じ値は、読み込み時に空として扱い、設定画面で保存するとファイルからも消えます。別のキーを足している設定は、そのまま尊重されます。</li>
+<li><strong>無変換・変換を 1 回だけ押したときの動作を整理しました。</strong> <code>muhenkan_solo_tap_ime_action</code> / <code>henkan_solo_tap_ime_action</code> はなくなりました。<ul>
+<li>1 回押しは、設定の Suppress（そのキーを IME に渡さない）／Passthrough（そのまま渡す）に従います。IME 側でそのキーにオン・オフ・切り替えが割り当てられているとき（<code>keys.ime_on</code> / <code>ime_off</code> に書いた場合も含む）は、Passthrough のときだけ、awase がいまの状態に合わせてオン・オフを明示的に送ります。Suppress のときは IME を動かしません。</li>
+<li>古い設定は、読み込み時に新しい形へ移して警告します。同じキーの設定がすでにあれば移しません。</li>
 </ul>
 </li>
-<li><p><strong><code>confirm_mode</code> を <code>wait</code> と <code>ngram_predictive</code> の 2 択にした。</strong> 廃止済みの値は読み込み時に <code>wait</code> として扱って警告し、設定を保存すると <code>wait</code> に書き換わる</p>
-</li>
-<li><p><strong>MS-IME 本体で、無変換/変換に割り当てられた「値 2（トグル）」を、IME のオン/オフを切り替えるキーとして扱うようにした。</strong> 入力中でも切り替わり、未確定の文字列は確定される（捨てられる）。CI では値 2 を作れないため、実際の切り替えは実機では未検証</p>
-</li>
-<li><p><strong>明示的な IME キー（Ctrl+変換/無変換、かな、半角/全角、漢字など）を押すと、awase の内部状態がどうであっても、最大 2 回の押下で実際の IME がキーの意味に一致するようにした（ADR-208）。</strong> 「何度押しても変わらない」固着をなくすための保証</p>
-<ul>
-<li>絶対指定のキー（IME オン/オフ、Ctrl+変換/無変換）は 1 回、トグルは 2 回以内で一致する。モードのずれが起きること自体は許容する</li>
-<li>変えた点: 古い内部状態を理由に絶対指定キーの送信を省かない／IME の種類が未判定でも押下の送信を許可する／IME が既に一致していて awase がキーを握りつぶす窓では、キーの意味どおりに書く</li>
-<li>CI（Windows 実機、各 10 試行）で、Chrome・EDIT・TSF 窓 × Google 日本語入力・MS-IME 本体を確認した。MS-IME 本体 × 実 Chrome の OFF 方向だけは、awase を再起動した直後でも同じ率で閉じないため環境の制約として扱う（既知の制限）。Windows Terminal + Google 日本語入力と、InputRelay の窓は今回の対象外</li>
+<li><strong><code>confirm_mode</code> の選択肢を <code>wait</code> と <code>ngram_predictive</code> の 2 つにしました。</strong> 廃止された値は <code>wait</code> として読み込み、警告します。保存すると <code>wait</code> に書き換わります。</li>
+<li><strong>Microsoft IME で、無変換・変換に「オン/オフ切り替え」を割り当てている場合に対応しました。</strong> 入力の途中でも切り替わり、未確定の文字は確定されます（捨てられません）。</li>
+<li><strong>IME のオン・オフを決めるキー（Ctrl+変換・無変換、かな、半角/全角、漢字など）を押せば、awase の内部状態に関係なく、2 回以内の押下で実際の IME がキーの意味どおりになるようにしました。</strong> 「何度押しても変わらない」状態をなくすための保証です。<ul>
+<li>IME オン・オフのキーと Ctrl+変換・無変換は 1 回で、切り替えキーは 2 回以内で合います。</li>
+<li>Chrome・テキスト入力欄・TSF 対応の入力欄 × Google 日本語入力・Microsoft IME で、Windows の実機（各 10 回）で確認しました。</li>
+<li>既知の制限: Microsoft IME × Chrome では、「オフにする」方向だけ、awase を再起動した直後でも閉じないことがあります。Windows Terminal + Google 日本語入力と、入力を別プロセスに中継するタイプのアプリは、今回は対象外です。</li>
 </ul>
 </li>
-<li><p><strong>IME への先回り・補正の書き込みを減らした（ADR-212/213）。</strong> ユーザーの操作を引き金にしない <code>VK_IME_ON</code>/<code>VK_IME_OFF</code> の自動送信（Enter ごとの先回り送信、Ctrl を離したときの再送、エンジン ON/OFF に連動した IME の開閉など）を撤去し、IME の状態は観測して追随する方針にした。半角/全角の OFF→ON は、明示的な操作として 1 回だけ送る</p>
-<ul>
-<li>起動直後に、IME を閉じていても awase が開けに行くことはなくなった（BUG-163）</li>
+<li><strong>awase が IME へ先回りして行っていた操作を減らしました。</strong> ユーザーの操作が引き金でない IME のオン・オフ送信（Enter のたびの送信、Ctrl を離したときの再送、NICOLA のオン・オフに連動した IME の開閉など）をやめ、IME の状態を観察して追いかける方式にしました。半角/全角のオフ→オンは、明示的な操作として 1 回だけ送ります。<ul>
+<li>awase の起動直後に、閉じている IME を awase が勝手に開くことはなくなりました。</li>
 </ul>
 </li>
-<li><p><strong>Google 日本語入力の MS-IME プリセットで、変換キー・F13 で IME が開くとき、Engine が追随するようにした（ADR-209/211）。</strong> 読み取れない窓（Chrome・Windows Terminal など）で、IME は開くのに NICOLA が OFF のまま（<code>ka</code> と出る）だった問題への対処。学習表がなくても、<code>config1.db</code> から開閉の挙動を予測する</p>
-</li>
-<li><p><strong>キー効果の学習（<code>awase-keymap-learn</code>）を速く・確実に終わるようにした。</strong> 古いカスタム表が残る構成で <code>73/84</code> のまま進まない問題（BUG-178）を直し、実機で約 99 秒で完走することを確認した。学習結果を内蔵表より優先する（ADR-196）</p>
-</li>
+<li><strong>Google 日本語入力（MS-IME 風の設定）で、変換キーや F13 で IME が開いたとき、NICOLA 入力も追随するようにしました。</strong> IME の状態が読めないアプリ（Chrome、Windows Terminal など）で、IME は開くのに NICOLA 入力がオフのまま（<code>ka</code> と出る）だった問題への対処です。学習結果がなくても、設定ファイル（<code>config1.db</code>）から挙動を予測します。</li>
+<li><strong>キー効果の学習を、速く確実に終わるようにしました。</strong> 古いカスタム設定が残っていると途中（73/84）で止まり続けた問題を直し、実機で約 99 秒で終わることを確認しました。</li>
+<li><strong>半角英数モードになったことを検出しても、awase が IME を閉じなくなりました。</strong> 以前は、無変換などで半角英数に入ったことを検出すると、少しあとに IME を閉じて直接入力へ切り替えていました。いまは IME を開いたまま、モードの追跡だけを更新します。</li>
+<li><strong>アプリ内の更新確認が、v1・v2 それぞれの最新版を案内するようにしました。</strong> v1 のまま使っている方に、v2 系を最新版として案内することはありません。</li>
 </ul>
 <h3>修正</h3>
 <ul>
-<li><strong>Google 日本語入力 + Windows Terminal など（TSF ネイティブ）で、カタカナになったあと物理のひらがなキーで戻れなくなる不具合を修正（BUG-173）。</strong> 物理のひらがなキー（F2 相当）を常に IME へ渡すようにした。最初にカタカナへ入る契機は未特定。実機での確認は未実施</li>
-<li><strong>Chrome + Google 日本語入力で、他のプログラムなど外部から IME を閉じられると、閉じたまま awase が ON と思い込み、ローマ字がそのまま入る不具合を修正（BUG-172、ADR-205）。</strong> 外部から送られた IME キーの直後 300ms だけ状態を監視し、開閉が閉じに変わったときだけ実際の状態に追随する（awase は開け直さない）。<strong>Google 日本語入力 + Chrome など IMM32 が使えない窓に限る</strong>（MS-IME・メモ帳などは対象外）。CI では追随 10/10。追随後にモードキーを押した挙動と実機は未検証</li>
-<li><strong>Chrome + Google 日本語入力で、超高速の打鍵（2〜10ms 間隔）中に、入力中の未確定文字が全部消えることがある不具合を修正（BUG-168）。</strong> 再確認が 2 回続いたあとの回復処理が IME を OFF→ON し直していた。通常の速度ではほぼ起きない</li>
-<li><strong>Google 日本語入力 + Edge（Google Meet など）で、IME を OFF→ON したあとの最初の語が欠けたり、入力中の文字が消えたりする不具合を修正（BUG-170/171、ADR-203）。</strong> 物理キーで ON にしても内部の状態が追随せず、毎打鍵が「初回扱い」になって確認に失敗し、未確定の文字を消していた</li>
-<li><strong>MS-IME 本体 + Chrome で、awase を起動したあとに開いた Chrome に、IME 操作なしで <code>ka</code> と打つと <code>kiu</code> になる不具合を修正（BUG-179）。</strong> 入力方式の判定を、アクティブな入力方式が変わった場合でも MS-IME 本体と同定できるようにした</li>
-<li><strong>IME OFF やフォーカス変更のあとに、前の入力の候補窓の開閉通知が残り、次の入力の最初に誤って配られる不具合を修正（BUG-180）</strong></li>
-<li><strong>Ctrl を離すたびに awase が <code>VK_IME_ON</code> を送っていたのをやめた（BUG-173/174）。</strong> Windows Terminal + Google 日本語入力で「@」が出る報告の被疑箇所だったため撤去した（原因だったかの実機確認は未実施）</li>
+<li><strong>Google 日本語入力 + Windows Terminal などで、カタカナになったあと、物理のひらがなキーで戻れなくなる不具合を直しました。</strong> ひらがなキー（F2 相当）を常に IME へ渡すようにしました。最初にカタカナへ入るきっかけは特定できていません。</li>
+<li><strong>Chrome + Google 日本語入力で、他のプログラムなどに IME を閉じられると、awase は開いていると思い込んだままローマ字がそのまま入る不具合を直しました。</strong> 外部から IME キーが送られた直後の 0.3 秒だけ状態を見て、閉じたときだけ実際の状態に合わせます（awase が開け直すことはありません）。<strong>Google 日本語入力 + Chrome のように、IME の状態を直接読めないアプリが対象です</strong>（Microsoft IME やメモ帳は対象外）。自動テストでは 10 回中 10 回、追随できました。</li>
+<li><strong>Chrome + Google 日本語入力で、ごく速い打鍵（2〜10 ミリ秒間隔）をすると、入力中の未確定の文字がすべて消えることがある不具合を直しました。</strong> 通常の速さではほとんど起きません。</li>
+<li><strong>Google 日本語入力 + Edge（Google Meet など）で、IME をオフ→オンにしたあと、最初の言葉が欠けたり、入力中の文字が消えたりする不具合を直しました。</strong> 物理キーでオンにしても awase の内部状態が追いつかず、毎回「最初の入力」として扱って確認に失敗し、未確定の文字を消していました。</li>
+<li><strong>Microsoft IME + Chrome で、awase の起動後に開いた Chrome に、何も操作せず <code>ka</code> と打つと <code>kiu</code> になる不具合を直しました。</strong> 入力方式の判定が変わっても、Microsoft IME と正しく見分けられるようにしました。</li>
+<li><strong>IME をオフにしたりアプリを切り替えたりしたあと、前の入力の候補ウィンドウの通知が残り、次の入力の最初に誤って届く不具合を直しました。</strong></li>
+<li><strong>Ctrl を離すたびに awase が <code>VK_IME_ON</code> を送るのをやめました。</strong> Windows Terminal + Google 日本語入力で「@」が出る原因の疑いがあったためです。原因だったかどうかは、</li>
+<li><strong>タスクトレイの「学習キャッシュをクリア」が何もしない不具合を直しました。</strong> 1.19.0 のリリースノートには「修正」と書いていましたが、実際は直っていませんでした。IME の制御方法について覚えた内容を、実際に消すようにしました。<ul>
+<li>学習表（<code>keymap-learn-table.json</code>）や、<code>cache.toml</code> のほかの項目は消しません。メニュー名は「IME 制御の学習キャッシュをクリア」になりました。設定に反映できなかったときは、成功とは表示せず「再起動すると元に戻る」と知らせます。</li>
+</ul>
+</li>
+<li><strong>Microsoft IME で、直接入力の状態から最初にひらがなキーを押すと、IME は閉じたままなのに NICOLA 入力だけがオンになり、かなが半角英数で出てしまう不具合を直しました。</strong> 最初の IME 操作が時間切れになったときに、半角/全角の「切り替え」キーが、開いていた IME を閉じてしまっていました。「オンにする」キーに置き換えました。</li>
+<li><strong>文字キーと無変換・変換の押す間隔が、同時押しと見なす時間をわずかに超えると、親指キーがそのまま IME に届いて半角英数になる不具合を直しました。</strong> 無変換・変換の 1 回押しを Passthrough にしている設定で起きていました。</li>
+<li><strong>無変換・変換の設定だけを Passthrough にしている場合に、Shift+無変換・変換がうまく素通しされず、一瞬保留されてしまう不具合を直しました。</strong> すぐに素通しされるようにしました。</li>
+<li><strong>v1.21.1 に入っていた修正を取り込みました。</strong> 速く打ったときに一時待避の上限（32）を超えた入力が消える不具合（上限を 2048 に）、awase の起動時にすでに選ばれていたアプリで最初の IME モードキーが効かないことがある不具合、トレイの「再起動」がまれに失敗する不具合。</li>
 </ul>
 <h2>[1.21.0] - 2026-09-21</h2>
 <h3>追加</h3>
