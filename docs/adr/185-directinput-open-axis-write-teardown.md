@@ -18,6 +18,8 @@ summary: |-
   OFFにしても、TSFネイティブ窓のconvは`0x19`（ひらがな）のままで、convはON/OFFの証拠にならない。
   本ADRは、DirectInput分岐から、open軸のbelief書き込みと全てのactuationを撤去する（決定1）。
 status: |-
+  実装済み(f5338edc、v2.0.0 に含まれる、2026-10-04 確認。EngineSync::DirectInput は現行コードに無く、撤去済みと書くコメントのみ残る。BUG-146)。
+  旧(2026-10-04 更新前):
   **ドラフトv3（opus-adversarial-consult round1・round2反映、収束判定済み）**。実装着手可。
 related_adr:
   - "ADR-179"

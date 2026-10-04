@@ -3,13 +3,15 @@ id: ADR-044
 title: |-
   AppliedImeState と decide_kanji_apply — 保守性改善
 status: |-
-  採用済み
+  実装済み(一部撤去、2026-10-04 確認)。AppliedImeState は state/ime_model.rs に現存。decide_kanji_apply(実装名 kanji_needs_context_override)は KanjiToggle 機構撤去(ADR-190、feb49ffd)と ADR-216 R1(fbe90204)で撤去済み。旧: 採用済み
 related_adr:
   - "ADR-032"
   - "ADR-035"
 ---
 
 # ADR-044: AppliedImeState と decide_kanji_apply — 保守性改善
+
+> 状態更新(2026-10-04): 実装済み(一部撤去、2026-10-04 確認)。AppliedImeState は state/ime_model.rs に現存。decide_kanji_apply(実装名 kanji_needs_context_override)は KanjiToggle 機構撤去(ADR-190、feb49ffd)と ADR-216 R1(fbe90204)で撤去済み
 
 ## ステータス
 

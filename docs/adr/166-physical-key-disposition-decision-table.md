@@ -15,6 +15,8 @@ summary: |-
   opus-adversarial-consult3ラウンドで、当初「BUG-131が本報告の直接原因」としていた
   確定的な記述は、決定的な反証も確証も無い「有力仮説の一つ」へ格下げした
 status: |-
+  実装済み(PR #206、windows-build CI 実行済み)、v2.0.0 に含まれる。その後 `plan()` 本体は ADR-208 L0 で `state/physical_disposition.rs` へ移動。実機JIS検証は未実施のまま(要確認)。 (2026-10-04 更新)
+  (以下は更新前の記述)
   実装済み・PR #206でwindows-build CI実行済み。初回のwindows-build CIで、決定表
   テストが`plan()`自身の`debug_assert!`（injected==trueならshadow_toggledは必ず
   false、BUG-14ガード）に違反する無効な組み合わせ（injected&&shadow_toggled）を

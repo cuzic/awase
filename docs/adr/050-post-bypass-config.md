@@ -3,7 +3,7 @@ id: ADR-050
 title: |-
   post_bypass — バイパス後キーの NICOLA スキップ設定
 status: |-
-  採用済み
+  採用・実装済み([[post_bypass]] は src/config.rs・PostBypassEntry に現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-024"
   - "ADR-026"

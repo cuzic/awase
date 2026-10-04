@@ -3,7 +3,7 @@ id: ADR-067
 title: |-
   F21/F22 → VK_IME_ON/OFF への完全移行と config1.db バインド廃止
 status: |-
-  採用済み
+  採用・実装済み(VK_IME_ON/OFF 移行、config1.db パッチ系の gji_keybinds_ok・GjiSetup/GjiTeardown は現行コードに無い、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-034"
   - "ADR-057"

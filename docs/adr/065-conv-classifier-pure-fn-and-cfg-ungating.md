@@ -3,7 +3,7 @@ id: ADR-065
 title: |-
   conv 分類の純粋関数化と awase-windows の段階的プラットフォーム非依存化
 status: |-
-  採用済み
+  実装済み(一部撤去、2026-10-04 確認)。conv 分類の純粋関数化・should_run_idle_conv_check は現存。Charset(ひらがな/カタカナ×全角/半角)軸は ADR-094 で追跡ごと撤去(state/conv_mode.rs の NOTE)。旧: 採用済み
 related_adr:
   - "ADR-014"
   - "ADR-019"
@@ -12,6 +12,8 @@ related_adr:
 ---
 
 # ADR-065: conv 分類の純粋関数化と awase-windows の段階的プラットフォーム非依存化
+
+> 状態更新(2026-10-04): 実装済み(一部撤去、2026-10-04 確認)。conv 分類の純粋関数化・should_run_idle_conv_check は現存。Charset(ひらがな/カタカナ×全角/半角)軸は ADR-094 で追跡ごと撤去(state/conv_mode.rs の NOTE)
 
 ## ステータス
 

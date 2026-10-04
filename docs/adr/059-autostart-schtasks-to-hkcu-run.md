@@ -3,7 +3,7 @@ id: ADR-059
 title: |-
   自動起動: schtasks → HKCU\Run レジストリへの移行
 status: |-
-  採用済み
+  採用・実装済み(HKCU\Run 自動起動と migrate_from_schtasks は autostart.rs に現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-052"
 ---

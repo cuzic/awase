@@ -3,7 +3,7 @@ id: ADR-054
 title: |-
   PHYSICAL_KEY_STATE と LLKHF_INJECTED フィルタリング
 status: |-
-  採用済み
+  採用・実装済み(PHYSICAL_KEY_STATE・LLKHF_INJECTED/INJECTED_MARKER フィルタは hook.rs に現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-032"
   - "ADR-040"

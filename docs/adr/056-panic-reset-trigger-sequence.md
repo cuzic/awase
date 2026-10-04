@@ -3,7 +3,7 @@ id: ADR-056
 title: |-
   パニックリセットトリガー: 同一キー連打 → OFF→ON→OFF シーケンス
 status: |-
-  採用済み
+  採用・実装済み(RapidPressTracker・PanicTriggerCombo は panic_detect.rs・app/mod.rs に現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-032"
   - "ADR-052"

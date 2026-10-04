@@ -3,7 +3,7 @@ id: ADR-041
 title: |-
   フック再入時の修飾キー整合性保証
 status: |-
-  採用済み
+  実装済み(一部別構造、2026-10-04 確認)。OUTPUT_GATE・guard_held は現存。本文のフック側 is_modifier_key_up による即時 passthrough 分岐は現行コードに見当たらず、Down/Up 対称性は DecisionExecutor 内の PassthroughQueue が担う。旧: 採用済み
 related_adr:
   - "ADR-021"
   - "ADR-031"
@@ -11,6 +11,8 @@ related_adr:
 ---
 
 # ADR-041: フック再入時の修飾キー整合性保証
+
+> 状態更新(2026-10-04): 実装済み(一部別構造、2026-10-04 確認)。OUTPUT_GATE・guard_held は現存。本文のフック側 is_modifier_key_up による即時 passthrough 分岐は現行コードに見当たらず、Down/Up 対称性は DecisionExecutor 内の PassthroughQueue が担う
 
 ## ステータス
 

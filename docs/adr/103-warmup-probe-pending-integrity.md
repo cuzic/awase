@@ -5,6 +5,8 @@ title: |-
 summary: |-
   Warmup/Probe過渡期のpending取りこぼしとFSM整合性。`dispatch_probe_actions`の早期returnがdeferred VKフラッシュとGjiFsm通知の両方を飛ばす問題(BUG-27未解決follow-up)を、**段(stage)の終わりを型で強制する**形で閉じる: `DispatchResult::{Continue, Ended(StageEnd)}`+ラベル付きbreakで関数から`return`を消し、段末の後始末(deferred解放/GjiFsm通知/gate後始末)を`finish_probe_stage`1箇所に閉じる。注入の記録は`impl ProbeIo for Output`の注入メソッド自身が`note_stage_injection`で行い、`mark_cold_raw_tsf`が`note_stage_recovery`を立てる(リテラル回収を出した段はwarmを主張しない、INV-D)。gji_fsmのEndCompositionがColdKindを固定値で捏造する問題は`kind`の運搬と`ColdKind::probe_params()`一元化+`unwrap_or_default()`撤去(INV-C)で解消、pending破棄5箇所に`DiscardPending`を明示。post_bypassは汎用`ScopedOneShot<ForegroundScope, T>`+4値の純関数`classify_post_bypass_key`へ分解。**ラウンド6で根本設計へ転換**: 「6箇所から共通関数を呼ぶ」案は3箇所が出口ではなくflush点で実装不可能(per-VK confirmが全モーラで壊れる)と判明し撤回、per-VK列の輸送手段降格も1 tick 1 VKのため成立せずgateを段の入場条件に限定、`pending_gji_warmup`が段をまたぐ潜在バグ(BUG-83)と`LearnedTsf`のguard/probe_id未解放を新規発見
 status: |-
+  実装済み(PR #108)・一部機構は後続で撤去(2026-10-04 確認)。probe/pending の機構(output/probe_io.rs、tsf/probe.rs)は現存。eager warmup と、その grace(`WARMUP_GRACE_MS`)は ADR-212 P4(03a7996f)で撤去済み。実機ソークは記録なし。
+  旧(2026-10-04 更新前):
   実装済み（2026-08-26、PR #108でdevelopマージ済み、Windows実機ソーク未実施）
 related_adr:
   - "ADR-079"

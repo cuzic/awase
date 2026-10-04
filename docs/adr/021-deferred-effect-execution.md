@@ -5,7 +5,7 @@ title: |-
 summary: |-
   Effect 遅延実行（bounded ring + guard slot 含む）
 status: |-
-  採用済み
+  採用・実装済み(execute_from_hook・WM_EXECUTE_EFFECTS・drain_deferred は runtime/executor.rs・lib.rs に現存、2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 

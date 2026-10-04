@@ -3,11 +3,13 @@ id: ADR-0001
 title: |-
   IME 状態検出戦略
 status: |-
-  安定
+  履歴文書(2026-05-19 時点のスナップショット)。方針(shadow・3値意味論・IMM能力キャッシュ・TSFネイティブ識別)は実装済みだが「現在の設計」節は古い: ImeObservations/resolve_and_clear は a4db93e2 で撤去、TsfProvider/ImmProvider/HybridProvider と detect_ime_state() は現行コードに無い(ImeSnapshot/observer/ime_observer.rs に移行)。現行の判定は ADR-032/075/191(2026-10-04 確認)。旧: 安定
 related_adr: []
 ---
 
 # ADR 0001: IME 状態検出戦略
+
+> 状態更新(2026-10-04): 履歴文書(2026-05-19 時点のスナップショット)。方針(shadow・3値意味論・IMM能力キャッシュ・TSFネイティブ識別)は実装済みだが「現在の設計」節は古い: ImeObservations/resolve_and_clear は a4db93e2 で撤去、TsfProvider/ImmProvider/HybridProvider と detect_ime_state() は現行コードに無い(ImeSnapshot/observer/ime_observer.rs に移行)。現行の判定は ADR-032/075/191(2026-10-04 確認)
 
 **Status:** 安定（2026-05-19 現在）  
 **関連コミット:** `09ee3a9`, `58b13b2`, `164acd9`, `e1babb4`, `c8b8b31`, `cf1aeeb`, `82ab4e7`, `ce0dd02`, `41dabe1`

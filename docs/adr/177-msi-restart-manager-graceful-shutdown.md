@@ -3,6 +3,8 @@ id: ADR-177
 title: |-
   常駐中のMSIアップグレードは実機検証の結果コード変更不要と判明（Restart Managerが自律的に処理）
 status: |-
+  確定(コード変更不要、2026-09-17)、v2.0.0 時点でも同じ。 (2026-10-04 更新)
+  (以下は更新前の記述)
   **確定（2026-09-17）。コード変更不要、ADR-099 MF-4を解消。**
   opus-adversarial-consult round1〜4の4ラウンドを経て収束。round1で
   Blocker4件（実機観測ゼロで3変更決定）、round2でBlocker3件

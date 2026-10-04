@@ -3,7 +3,7 @@ id: ADR-034
 title: |-
   GJI Direct Strategy — Google 日本語入力との協調設計
 status: |-
-  採用済み
+  採用・実装済み(一部撤去、2026-10-04 確認)。GjiDirect による冪等 VK_IME_ON/OFF 制御は現存。『GJI 未導入時は KanjiToggle にフォールバック』は ADR-190(feb49ffd)で KanjiToggle 機構ごと撤去済み。旧: 採用済み
 related_adr:
   - "ADR-0003"
   - "ADR-033"
@@ -12,6 +12,8 @@ related_adr:
 ---
 
 # ADR-034: GJI Direct Strategy — Google 日本語入力との協調設計
+
+> 状態更新(2026-10-04): 採用・実装済み(一部撤去、2026-10-04 確認)。GjiDirect による冪等 VK_IME_ON/OFF 制御は現存。『GJI 未導入時は KanjiToggle にフォールバック』は ADR-190(feb49ffd)で KanjiToggle 機構ごと撤去済み
 
 ## ステータス
 

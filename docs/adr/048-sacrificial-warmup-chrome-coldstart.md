@@ -3,7 +3,7 @@ id: ADR-048
 title: |-
   SacrificialWarmup — Chrome cold-start の不可視プローブ方式
 status: |-
-  採用済み
+  撤去済み(d4956490、2026-07-18: 捨て駒キー機構〈StartSacrificialWarmup/SacrificialResend/SacrificialWarmupCoro〉を物理削除し per-VK confirm に一本化、2026-10-04 確認)。実機ソーク(cold=61〜74超、WezTerm/Chrome 双方で suspected literal ゼロ)で無破損を確認した上での撤去。旧: 採用済み(2026-06-24 実装、運用監視中)
 related_adr:
   - "ADR-034"
   - "ADR-046"
@@ -11,6 +11,8 @@ related_adr:
 ---
 
 # ADR-048: SacrificialWarmup — Chrome cold-start の不可視プローブ方式
+
+> 状態更新(2026-10-04): 撤去済み(d4956490、2026-07-18: 捨て駒キー機構〈StartSacrificialWarmup/SacrificialResend/SacrificialWarmupCoro〉を物理削除し per-VK confirm に一本化、2026-10-04 確認)。実機ソーク(cold=61〜74超、WezTerm/Chrome 双方で suspected literal ゼロ)で無破損を確認した上での撤去。
 
 ## ステータス
 

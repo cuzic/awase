@@ -3,11 +3,13 @@ id: ADR-029
 title: |-
   IME 状態検出の耐障害性と SSOT 設計
 status: |-
-  採用済み
+  採用・実装済み(一部撤去、2026-10-04 確認)。多層防御の Layer1/2(shadow 追跡・run_with_timeout 付きクロスプロセス検出)は現存。Layer3 の ime_force_on_guard による force-on(キャッシュ値の OS 書き戻し)は ADR-179 領域A 撤去(621bf93c、2026-09-18)で撤去済み。ITfCompartmentEventSink は ADR-205 の記述どおり本体コードに無い(examples・学習ドライバのみ)。旧: 採用済み
 related_adr: []
 ---
 
 # ADR 029: IME 状態検出の耐障害性と SSOT 設計
+
+> 状態更新(2026-10-04): 採用・実装済み(一部撤去、2026-10-04 確認)。多層防御の Layer1/2(shadow 追跡・run_with_timeout 付きクロスプロセス検出)は現存。Layer3 の ime_force_on_guard による force-on(キャッシュ値の OS 書き戻し)は ADR-179 領域A 撤去(621bf93c、2026-09-18)で撤去済み。ITfCompartmentEventSink は ADR-205 の記述どおり本体コードに無い(examples・学習ドライバのみ)
 
 ## ステータス
 

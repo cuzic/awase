@@ -5,6 +5,8 @@ title: |-
 summary: |-
   非同期観測の鮮度(ObservationTicketへのfocus_hwnd/intent_seq拡張)・drift confidence 3値化・generation=0番兵衝突の解消・key_pipelineの同期conv読み取り追い出し(BUG-34横展開)・SendInput/SetTimer戻り値の型化・型で保証されないunreachable!の除去・候補ウィンドウveto flicker指摘の撤回(再現しないと判明)・ForceOnReason::ProfilePolicy等の死んだ安全弁撤去
 status: |-
+  一部置換・多くは未実装のまま(2026-10-04 確認)。決定6-a・6-c・7 は ADR-106 が根本原因対応として置換。決定11-a(`ProfilePolicy` 撤去)は未実施で `ForceOnReason::ProfilePolicy` が state/force_guard.rs に現存。決定6-b・8・9・10・11-b・11-c の個別の実装有無は要確認(本確認では未検証)。
+  旧(2026-10-04 更新前):
   提案（未実装、2026-08-26）
 related_adr:
   - "ADR-098"

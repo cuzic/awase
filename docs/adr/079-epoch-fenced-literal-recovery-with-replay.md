@@ -3,11 +3,13 @@ id: ADR-079
 title: |-
   per-VK confirm の stale confirm 誤帰属と、ESC スコープを利用した epoch-fenced literal recovery + 限定 replay
 status: |-
-  提案中
+  一部実装(2026-10-04 確認)。Stage 1(StaleConfirm 検出と回収: per_vk_recovery_params・VetoDecision・StaleConfirm)は実装済みでコードに現存(tsf/warmup/literal_detect_fsm.rs 等)。Stage 2(quarantine → ESC + 再タイプ + 限定 replay)は未実装(quarantine 相当は現行コードに無い)。関連する再検討は ADR-122(保留、issue #149)。旧: 提案中(Stage 1 実装済み、BUG-35)
 related_adr: []
 ---
 
 # ADR-079: per-VK confirm の stale confirm 誤帰属と、ESC スコープを利用した epoch-fenced literal recovery + 限定 replay
+
+> 状態更新(2026-10-04): 一部実装(2026-10-04 確認)。Stage 1(StaleConfirm 検出と回収: per_vk_recovery_params・VetoDecision・StaleConfirm)は実装済みでコードに現存(tsf/warmup/literal_detect_fsm.rs 等)。Stage 2(quarantine → ESC + 再タイプ + 限定 replay)は未実装(quarantine 相当は現行コードに無い)。関連する再検討は ADR-122(保留、issue #149)。
 
 ## ステータス
 

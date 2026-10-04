@@ -5,6 +5,8 @@ title: |-
 summary: |-
   ADR-158採用Aの子ADR。当初案をround1で反証し「既存境界の棚卸しと未収束呼び出し元の特定」に組み替え。2026-09-09の実機スパイクでM1(送信機構はsend_input_safe/send_ime_control の2系統、SendInput:WM_IME_CONTROL比が2セッションとも約7〜8:1で再現性あり)・M6(journal非欠落)を実測で確定、M2(InputRelay gate)はテスト条件不足でMWB検証を当面見送り静的解析ベースで判断。さらに段階0の成果物を「棚卸し文書」から「ADR-161実証実験で検証済みのdylint宣言強制」に定義し直した
 status: |-
+  一部実装(残り: 段階2 TF2 の蓄積・突合せ〈意図的に撤回し未着手〉、TH1e)。段階0(TB0〜TB2、`lints/actuation_call_guard`)・段階1(TF1)は完了し v2.0.0 に含まれる(2026-10-04 コード確認)。 (2026-10-04 更新)
+  (以下は更新前の記述)
   起票。TJ2(単体レビュー)実施済み・round4反映済み。段階0(TB0/TB1/TB2、宣言強制のdylint許可リスト`lints/actuation_call_guard`)・段階1(TF1)は完了。段階2(TF2、`shadow_send_trace.rs`)はPR#193で実装済みだが送信内容の`tracing::debug!`ログ出力のみで、蓄積・突合せ(自動A/B)は`/code-review`指摘で意図的に撤回し未着手（再開条件はADR-163「TF2との突合せ」節）。再生側（決定点への再投入）は子ADR[163](163-actuation-decision-io-separation-and-replay-harness.md)が引き継ぎ、TH1a〜TH1dまで完了・TH1eのみ未着手。opus-adversarial-consult round2相当レビュー(2026-09-12)を実施・Must-fix5件・Should-fix5件・Nice-to-have1件を反映済み。2026-09-13、round4 TJ2 MF2が受容していた`send_ime_control`のSSOT希釈を[ADR-168](168-actuation-boundary-small-cleanups.md)で`probe_ime_control`/`actuate_ime_control`への分割により返済・完了
 related_adr:
   - "ADR-119"

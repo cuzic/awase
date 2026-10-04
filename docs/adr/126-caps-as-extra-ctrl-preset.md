@@ -5,6 +5,8 @@ title: |-
 summary: |-
   ADR-111（Caps(英数)⇔Left Ctrl 双方向入れ替え）に加え、片方向（Caps(英数)→Left Ctrl のみ、元の Ctrl キーは変更しない＝「Ctrl を2つにする」）のプリセットを追加する設計。実現方式は ADR-111 と同じ Scancode Map（レジストリ）のみを踏襲し、hook ベースの新しい仕組みは導入しない——ADR-111 が確立した「JIS 英数キー位置を hook で扱うのは構造的に危険」という結論を再検証した上で維持。`ScancodeMapPreset` enum でプリセットを一般化し、Swap/CapsAsExtraCtrl を排他選択にする
 status: |-
+  実装済み(コード確認のみ、2026-10-04)。Caps を追加 Ctrl にするプリセットの Scancode Map 実装(awase-settings の scancode_map_admin.rs、awase-windows の scancode_map.rs)が現存。実機ソークの記録は確認できず未実施。
+  旧(2026-10-04 更新前):
   **採用（Opus 2体4ラウンドの敵対的レビューで収束、実装済み）**
 related_adr:
   - "ADR-019"

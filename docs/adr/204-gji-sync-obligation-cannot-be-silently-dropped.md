@@ -11,6 +11,8 @@ summary: |-
   本 ADR は、コード差し引きで減る最小の整理(`ImeOpenOutcome::applied_open` の追加による `matches!`+`unreachable!()` の重複削除、`legacy_gji_sync_obligation` の網羅化、
   誤コメントの修正)と、新しい型を作らない検出(level 同期が B2・起動直後以外で出たら上流漏れ)だけを定める。D2・D3 と旧 D4 の新 journal 型は取り下げた。
 status: |-
+  採択(縮小版)・未実装のまま(v2.0.0 時点、コード確認: ImeOpenOutcome::ALL は存在せず、legacy_gji_sync_obligation が残る。docs/known-bugs/BUG-170.md の残作業に未完了として記載)。再開条件は ADR-203 の実機検証後。
+  旧(2026-10-04 更新前):
   採択(縮小版、2026-09-29)。opus-adversarial-consult round2 で条件付き収束(R2-1/R2-2 を反映済み)。実装未着手(ADR-203 の実機検証後)。
 related_adr:
   - "ADR-203"

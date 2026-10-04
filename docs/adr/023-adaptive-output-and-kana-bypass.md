@@ -3,11 +3,13 @@ id: ADR-023
 title: |-
   アプリ適応出力とかな入力バイパス
 status: |-
-  承認済み（実装完了）
+  実装済み(その後変更、2026-10-04 確認)。AppKind は現行 Win32/TsfNative/Uwp で、本 ADR の Chrome 区分は TsfNative に統合された。かな入力検出(detect_kana_input_method/IME_IS_KANA_INPUT)は現行コードに無く、ADR-068 の InputModeState(ObservedKana 等)に移行。send_char_as_vk は現存。旧: 承認済み（実装完了）
 related_adr: []
 ---
 
 # ADR 023: アプリ適応出力とかな入力バイパス
+
+> 状態更新(2026-10-04): 実装済み(その後変更、2026-10-04 確認)。AppKind は現行 Win32/TsfNative/Uwp で、本 ADR の Chrome 区分は TsfNative に統合された。かな入力検出(detect_kana_input_method/IME_IS_KANA_INPUT)は現行コードに無く、ADR-068 の InputModeState(ObservedKana 等)に移行。send_char_as_vk は現存
 
 ## ステータス
 

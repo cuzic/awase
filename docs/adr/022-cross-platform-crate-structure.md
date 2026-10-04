@@ -3,7 +3,7 @@ id: ADR-022
 title: |-
   クロスプラットフォームのクレート構造
 status: |-
-  採用
+  採用・実装済み(awase-windows/linux/macos・timed-fsm 等のクレート構造は現存、2026-10-04 確認)。旧: 採用
 related_adr: []
 ---
 

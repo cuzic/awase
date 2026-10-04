@@ -3,7 +3,7 @@ id: ADR-068
 title: |-
   JISかな・カタカナモードの完全サポート
 status: |-
-  採用済み
+  一部実装・一部撤去(2026-10-04 確認)。JISかな検出(ObservedKana)・ローマ字扱い(ObservedRomaji)・EXPLICIT_IME_SUPPRESS_MS は現存。カタカナ/ひらがなの区別を追う charset 軸は ADR-094(2026-08-17)で追跡ごと撤去、eager/cold warmup による conv 上書き問題は ADR-212 で eager warmup 自体を撤去。旧: 採用済み
 related_adr:
   - "ADR-048"
   - "ADR-052"
@@ -13,6 +13,8 @@ related_adr:
 ---
 
 # ADR-068: JISかな・カタカナモードの完全サポート
+
+> 状態更新(2026-10-04): 一部実装・一部撤去(2026-10-04 確認)。JISかな検出(ObservedKana)・ローマ字扱い(ObservedRomaji)・EXPLICIT_IME_SUPPRESS_MS は現存。カタカナ/ひらがなの区別を追う charset 軸は ADR-094(2026-08-17)で追跡ごと撤去、eager/cold warmup による conv 上書き問題は ADR-212 で eager warmup 自体を撤去
 
 ## ステータス
 

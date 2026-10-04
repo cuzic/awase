@@ -8,6 +8,8 @@ summary: |-
   この変更は ADR-139 決定4(判別子文字列は journal.rs 内に閉じた private fn で持ち、core crate の型に手を入れない)を上書きする。ADR-019(OS 非依存)が禁じるのは `windows-rs`・`cfg(target_os)`・VK 数値で、`strum` は該当しないため、core crate への依存追加は許容する。
   当初この ADR は、`Option<bool>` を3値の型にする決定 A と、bool 引数を enum にする決定 B も含んでいたが、Opus レビュー(round1)で、型を足す前に消費者を撤去するほうが先と指摘され取り下げた(ADR-216)。
 status: |-
+  実装済み・developマージ済み(PR #427 a612a832、v2.0.0 に含まれる)。
+  旧(2026-10-04 更新前):
   提案(2026-10-02)。Opus 敵対的レビュー(round1)で決定 C は採用可と判定された(条件: ADR-139 決定4の上書きの記録、doc コメントの修正。本ファイルと ADR-139 の追記で対応)。実装済み(`refactor/strum-thiserror-derive`、未マージ)。
 related_adr:
   - "ADR-019"

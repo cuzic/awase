@@ -3,7 +3,7 @@ id: ADR-045
 title: |-
   Dead Field 検出方針とプレースホルダーフィールド禁止原則
 status: |-
-  採用済み
+  採用・実施済み(dead field 検出方針、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-032"
   - "ADR-040"

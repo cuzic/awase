@@ -3,13 +3,15 @@ id: ADR-039
 title: |-
   TSF_OBS アクセス制御の 5 フェーズ段階的強化
 status: |-
-  採用済み
+  採用・実装済み(一部名称変更、2026-10-04 確認)。TSF_OBS は pub(in crate::tsf) で tsf/ 内に封じ込め(tsf/observer.rs)。aggregator・FocusProbeSnapshot は現行コードに無く、ImeObservationSnapshot は ImeControlView(state/ime_decision_view.rs)に置換された。旧: 採用済み
 related_adr:
   - "ADR-030"
   - "ADR-032"
 ---
 
 # ADR-039: TSF_OBS アクセス制御の 5 フェーズ段階的強化
+
+> 状態更新(2026-10-04): 採用・実装済み(一部名称変更、2026-10-04 確認)。TSF_OBS は pub(in crate::tsf) で tsf/ 内に封じ込め(tsf/observer.rs)。aggregator・FocusProbeSnapshot は現行コードに無く、ImeObservationSnapshot は ImeControlView(state/ime_decision_view.rs)に置換された
 
 ## ステータス
 

@@ -3,7 +3,7 @@ id: ADR-049
 title: |-
   TSF mode LiteralDetect と WezTerm long-idle warm 維持パターン
 status: |-
-  採用済み
+  一部撤去(2026-10-04 確認)。RawTsfLiteralRecovery・SuspectedLiteral による literal 検出・回収は現存。WezTerm long-idle 対策の NameChangeWait/eager F2 待機は d4956490 で撤去され per-VK confirm に一本化。旧: 採用済み
 related_adr:
   - "ADR-034"
   - "ADR-046"
@@ -11,6 +11,8 @@ related_adr:
 ---
 
 # ADR-049: TSF mode LiteralDetect と WezTerm long-idle warm 維持パターン
+
+> 状態更新(2026-10-04): 一部撤去(2026-10-04 確認)。RawTsfLiteralRecovery・SuspectedLiteral による literal 検出・回収は現存。WezTerm long-idle 対策の NameChangeWait/eager F2 待機は d4956490 で撤去され per-VK confirm に一本化
 
 ## ステータス
 

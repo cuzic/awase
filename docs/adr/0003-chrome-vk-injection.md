@@ -3,11 +3,13 @@ id: ADR-0003
 title: |-
   Chrome VK injection と F2 warmup
 status: |-
-  実験中
+  実験の記録(「実験中」は解消済み、2026-10-04 確認)。F2 先行送信+probe(案A)と send_f2_via_sendmessage(Phase 4)は d4956490(2026-07-18)で撤去され、現行コードに関数は無い(vk_send.rs にコメントのみ)。Chrome の VK 注入(InjectionMode::Vk)自体は現存、cold-start は per-VK confirm に一本化。旧: 実験中
 related_adr: []
 ---
 
 # ADR 0003: Chrome VK injection と F2 warmup
+
+> 状態更新(2026-10-04): 実験の記録(「実験中」は解消済み、2026-10-04 確認)。F2 先行送信+probe(案A)と send_f2_via_sendmessage(Phase 4)は d4956490(2026-07-18)で撤去され、現行コードに関数は無い(vk_send.rs にコメントのみ)。Chrome の VK 注入(InjectionMode::Vk)自体は現存、cold-start は per-VK confirm に一本化
 
 **Status:** 実験中（2026-05-19 現在、`SendMessageTimeout` 方式を試行）  
 **関連コミット:** `cfa42b9`, `698f4fd`, `d250ece`, `a444984`, `b61cbf9`, `7ad60ce`, `a852b56`, `c2a6052`, `9027d70`, `0b55b8d`, `907c5ba`, `a3cce29`, `8144412`

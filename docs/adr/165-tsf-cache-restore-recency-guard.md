@@ -5,6 +5,8 @@ title: |-
 summary: |-
   不具合報告01M27VXD4SPAD4STQ9TG1PZSCD起点。on_focus_process_changedのTsfNativeキャッシュ復元分岐（35230fd由来）が(pid,class_name)キーの粗さ（Windows.UI.Input.InputSite.WindowClassが複数の無関係なUWP窓を同一視）と重なり誤ってdesired_openをON復元、force-ONまで誤発火する経路を特定。opus-adversarial-consult round1で当初案（案A、経過時間のみのガード）が35230fdの救済シナリオを再び壊すため不採用と判明、hwnd一致を弁別子に加える案Eへ差し替え、round2で無条件hwnd一致化、round3でhwndの安定性が未検証と判明し実機ゲートを追加、round5でdragonflyg4実機検証によりround3の懸念を解消、round6の実装差分レビューでhwnd不一致時のログ欠如を指摘され追加
 status: |-
+  実装済み・実機確認済み(PR #203、`98b04e12`)、v2.0.0 に含まれる(2026-10-04 コード確認: `focus_tracking.rs::should_discard_imm_broken_cache`・`HwndImeSnapshot` 現存)。マージ後ソークは継続のまま。 (2026-10-04 更新)
+  (以下は更新前の記述)
   実装済み（ブランチfix/bug128-tsf-cache-restore-recency）。dragonflyg4実機で修正前後の動作を確認済み。WezTerm・仮想デスクトップ実往復・ペイン分割でのhwnd安定性はマージ後ソーク継続
 related_adr:
   - "ADR-087"

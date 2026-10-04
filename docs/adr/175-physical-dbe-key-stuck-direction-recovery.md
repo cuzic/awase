@@ -4,6 +4,8 @@ title: |-
   物理半角/全角キー（VK_DBE_SBCSCHAR/DBCSCHAR）の固定方向マッピングをやめ、
   Toggleとして解決することでIME ON固着を解消する（BUG-142）
 status: |-
+  置換(ADR-199 T4 の役割由来 `shadow_action` により置換)。本ADRの方式〈`keys.ime_detect.toggle` への追加〉の実装コミットは git log に無い(設計収束・実機A/Bのみ)。BUG-142 の v2 での再検証は未確認(BUG-142 の状態欄参照)。旧: round5 で収束・実装着手可 (2026-10-04 更新)
+  (以下は更新前の記述)
   **opus-adversarial-consult round5で収束・実装着手可（2026-09-15）。**
   round1が当初案（no-op N回連続検出→フォールバック送信）にBlocker5件・
   Major8件を検出し、提示した代替案（`keys.ime_detect.toggle`にこの2VKを

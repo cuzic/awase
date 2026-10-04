@@ -5,6 +5,8 @@ title: |-
 summary: |-
   起動シーケンスの入力消失・クラッシュ防止。Opus2体のドラフト→敵対的レビュー4ラウンド+追加検証で収束した初版を、その後の根本原因分析(ADR-105)を前提に全面改訂(2026-08-26)。OS所有マスク・Altなりすましラッチのフェーズ繰り上げ等リスクの高い決定を撤去し、hookコールバックのBox撤去(SPSCリング)・bootstrap専用focus scope入口による5層モデルの簡略化を追加。layoutsが空でのbootstrap panic対策は変更なし
 status: |-
+  実装済み(コード確認のみ、2026-10-04)。ADR-105 の HWND 通知(runtime/engine_window.rs)と hook_channel.rs が現存。Windows 実機ソークの記録は確認できず未実施。
+  旧(2026-10-04 更新前):
   実装済み（2026-08-26、Windows実機ソーク未実施）
 related_adr:
   - "ADR-103"

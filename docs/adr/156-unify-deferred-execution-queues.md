@@ -5,6 +5,8 @@ title: |-
 summary: |-
   ADR-121/123/128/129を「同じ2パターンの4インスタンス」とする初版仮説を、round1レビューが実コード照合で反証（正味はpending_deferred内の2窓口間1件、ライブグローバル参照1件のみ）。`DeferredExecutionQueue<T>`への大規模統合・`architecture_guard.rs`への横断ガード追加はいずれも根拠不成立で不採用、`fix-requires-evidence.md`表への追加のみ採用
 status: |-
+  不採用(大規模統合)・軽量策のみ実装済み、v2.0.0 時点でも同じ(2026-10-04 コード確認: `pending_deferred`・`INPUT_DEFER`・`RuntimeOutbox` 現存)。 (2026-10-04 更新)
+  (以下は更新前の記述)
   大規模統合は不採用・軽量策のみ実装済み。**pre-pushフック（`.git/hooks/pre-push`、未追跡）のregexに`input_defer.rs`/`runtime/message_handlers.rs`/`runtime/outbox.rs`が含まれていない自動化の穴を2026-09-08にユーザー同意のうえ修正済み**
 related_adr:
   - "ADR-121"

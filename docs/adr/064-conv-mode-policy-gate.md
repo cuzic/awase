@@ -3,7 +3,7 @@ id: ADR-064
 title: |-
   ConvModePolicy による conv mutation ゲートの導入
 status: |-
-  採用済み
+  撤去済み(ADR-094 で ConvModePolicy を全撤去、10f238b5、2026-08-17、2026-10-04 確認)。ConvModePolicy/AwaseLocked/conv_policy_from_belief は現行コードに無い。conv 書き込みのゲートは ConvModeAuthority(ADR-072 以降、AwaseOwned/UserOwned)が担う。ADR-085 の ConvModePolicy は別物で、これも ADR-094 で撤去。旧: 採用済み
 related_adr:
   - "ADR-023"
   - "ADR-046"
@@ -11,6 +11,8 @@ related_adr:
 ---
 
 # ADR-064: ConvModePolicy による conv mutation ゲートの導入
+
+> 状態更新(2026-10-04): 撤去済み(ADR-094 で ConvModePolicy を全撤去、10f238b5、2026-08-17、2026-10-04 確認)。ConvModePolicy/AwaseLocked/conv_policy_from_belief は現行コードに無い。conv 書き込みのゲートは ConvModeAuthority(ADR-072 以降、AwaseOwned/UserOwned)が担う。ADR-085 の ConvModePolicy は別物で、これも ADR-094 で撤去
 
 ## ステータス
 

@@ -3,7 +3,7 @@ id: ADR-036
 title: |-
   Runtime フィールド境界 API
 status: |-
-  採用済み
+  採用・実装済み(Runtime のフィールドは大半 private、platform のみ pub、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-004"
   - "ADR-014"

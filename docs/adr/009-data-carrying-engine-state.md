@@ -3,7 +3,7 @@ id: ADR-009
 title: |-
   データ付き enum による FSM 状態表現
 status: |-
-  採用済み
+  採用・実装済み(EngineState は src/engine/fsm_types.rs 等に現存、EnginePhase は現行コードに無い、2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 

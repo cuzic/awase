@@ -8,6 +8,8 @@ summary: |-
   代わりに、`files_with_calls` を集めて期待と突き合わせる同一ブロックが 1209・1265・1896・1945 に複製されている点だけを、struct も enum も新ファイルも作らない
   ヘルパー関数 1 本にまとめる(数え方の組み合わせはヘルパー内で固定)。各テストの名前・doc コメント・個別実行はそのまま残す。dylint と実際に重なっている対象(`ENTRY_POINTS`・`ime_event_guard` の 4 variant)には触れず、削除候補として別に挙げる。
 status: |-
+  提案のまま未実装(v2.0.0 時点、コード確認: assert_production_call_sites は architecture_guard.rs に無い)。PR #429 のタイトルは『DSL/宣言化の3候補は見送り』で、宣言テーブル案は取り下げ済み。縮小後のヘルパー案を実施するかは未決(要確認)。
+  旧(2026-10-04 更新前):
   提案(2026-10-02)。Opus round1 で方針転換、round2(Must 1 件: dylint 分類の事実誤り)を反映、round3 で収束(Must なし)、Should 2 点を反映済み。未実装。
 related_adr:
   - "ADR-129"

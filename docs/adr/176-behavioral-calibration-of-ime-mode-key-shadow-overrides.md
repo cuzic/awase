@@ -4,6 +4,8 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
+  撤去済み(ADR-195 学習に置換、ADR-198 決定3、2026-09-24 に撤去)。v2.0.0 にも較正UI・適用側は存在しない。 (2026-10-04 更新)
+  (以下は更新前の記述)
   **2026-09-24: 撤去済み（ADR-195 学習に置換）。** 較正結果を適用する側は
   ADR-191 `9dc52c89`（`apply_calibrated_mode_keys`削除）で撤去済み、測定UI・awase.exe側の
   仕組み（`calibration_ipc.rs`・`state/calibrated_mode_key.rs`・hook/focus_trackingの較正分岐・

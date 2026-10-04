@@ -3,7 +3,7 @@ id: ADR-033
 title: |-
   AppImeProfile — アプリ別 IME API 互換性分類
 status: |-
-  採用済み
+  採用・実装済み(列挙は変更、2026-10-04 確認)。AppImeProfile は現行 Standard/Imm32Unavailable/TsfNative/InputRelay(focus/class_names.rs)で、本文の Imm32Available/ImmCross/TsfOnly/KanjiToggle 列挙とは異なる。KanjiToggle 機構は ADR-190(feb49ffd)で撤去、is_imm_bridge_broken は現行コードに無い。旧: 採用済み
 related_adr:
   - "ADR-005"
   - "ADR-027"
@@ -11,6 +11,8 @@ related_adr:
 ---
 
 # ADR-033: AppImeProfile — アプリ別 IME API 互換性分類
+
+> 状態更新(2026-10-04): 採用・実装済み(列挙は変更、2026-10-04 確認)。AppImeProfile は現行 Standard/Imm32Unavailable/TsfNative/InputRelay(focus/class_names.rs)で、本文の Imm32Available/ImmCross/TsfOnly/KanjiToggle 列挙とは異なる。KanjiToggle 機構は ADR-190(feb49ffd)で撤去、is_imm_bridge_broken は現行コードに無い
 
 ## ステータス
 

@@ -3,11 +3,13 @@ id: ADR-005
 title: |-
   Shadow IME 状態追跡と IME トグルキー検出
 status: |-
-  採用済み
+  実装済み(一部撤去、2026-10-04 確認)。config の ime_sync は現行コードに無い。shadow 追跡は shadow_model/ImeStateHub(ADR-032)へ、IME キー判定は役割ベース(ADR-199)へ移行。旧: 採用済み
 related_adr: []
 ---
 
 # ADR-005: Shadow IME 状態追跡と IME トグルキー検出
+
+> 状態更新(2026-10-04): 実装済み(一部撤去、2026-10-04 確認)。config の ime_sync は現行コードに無い。shadow 追跡は shadow_model/ImeStateHub(ADR-032)へ、IME キー判定は役割ベース(ADR-199)へ移行
 
 ## ステータス
 採用

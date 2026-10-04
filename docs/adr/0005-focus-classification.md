@@ -3,11 +3,13 @@ id: ADR-0005
 title: |-
   フォーカス判定と AppKind 設計
 status: |-
-  安定
+  採用・実装済み(一部置換、2026-10-04 確認)。AppKind は現行 Win32/TsfNative/Uwp(focus/kinds.rs)、IMM_BRIDGE_BROKEN_CLASSES は AppImeProfile 導入(36593bcd)で集約され現行コードに無い。IMM capability 学習は focus/imm_learning.rs・cache.toml に現存。旧: 安定
 related_adr: []
 ---
 
 # ADR 0005: フォーカス判定と AppKind 設計
+
+> 状態更新(2026-10-04): 採用・実装済み(一部置換、2026-10-04 確認)。AppKind は現行 Win32/TsfNative/Uwp(focus/kinds.rs)、IMM_BRIDGE_BROKEN_CLASSES は AppImeProfile 導入(36593bcd)で集約され現行コードに無い。IMM capability 学習は focus/imm_learning.rs・cache.toml に現存
 
 **Status:** 安定（2026-05-19 現在）  
 **関連コミット:** `49eed58`, `b44f954`, `665986e`, `9641029`, `f4ad994`, `00f5711`, `d6442c3`, `a4b34be`, `5747ecc`, `e1babb4`, `ce0dd02`, `41dabe1`

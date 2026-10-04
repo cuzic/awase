@@ -5,6 +5,8 @@ title: |-
 summary: |-
   ADR-089 の型保護を実効化し、隣接 ADR の後始末を確定する — `issue_open_warrant()` の実配線（`ActuationOrder` による warrant の運搬、shadow→enforce の二段階）、`ConvergedReceipt` の制御フロー配線と `most_recent_trusted_after` の private 化、観測ストアの裏口の可視性縮小と「閉じられない witness」の理由確定、非同期チェーンの `caps` 再抽選化、dylint 2 crate を恒久的に実行時 lint とする決定、**ADR-081 Phase 1d/1e の凍結決定**、golden の stale な関数名。INV-47〜52、P22
 status: |-
+  一部実装(2026-10-04 本文の実施記録で確認)。項A(A-1 shadow 配線 e3bf7af2・A-2 `into_actuation` による強制、2026-09-19)・項B(ConvergedReceipt 配線 a33a94e2)・項C(観測ストアの裏口)・項E(dylint 残置)・項F(ADR-081 Phase 1d/1e 凍結 146934ec)・項G(golden 名)は実施済み。項D(非同期チェーンの caps 化)は実施記録なく未着手。実機ソーク未実施。
+  旧(2026-10-04 更新前):
   **項A: A-1（shadow配線）実施済み（2026-08-12）。A-2（強制）も実装済み・
   push待ち（2026-09-19、ユーザー指示によりリスクを受容し実機ソーク前に
   着手する方針へ転換——通常の「A-1ログ収集→入口ごと段階的に倒す」計画を

@@ -3,6 +3,8 @@ id: ADR-167
 title: |-
   Standardプロファイル×ImmCross失敗フォールバック時の随伴warmup重複送信
 status: |-
+  実装済み(PR #207)、v2.0.0 に含まれる(`ImeOpenOutcome::AppliedWithoutSendInput` 現存、2026-10-04 確認)。ただし本ADRが対象とした随伴 warmup 自体は ADR-212 P4 `03a7996f` で撤去済み。実機ソークは未実施のまま。 (2026-10-04 更新)
+  (以下は更新前の記述)
   実装完了（2026-09-12）。opus-adversarial-consult 1ラウンドで選択肢B
   （`ImeOpenOutcome`への`AppliedWithoutSendInput` variant追加）採用に
   収束。Linux上で`cargo test --lib`（1016件）・`cargo nextest run

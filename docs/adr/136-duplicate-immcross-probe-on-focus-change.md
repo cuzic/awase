@@ -5,6 +5,8 @@ title: |-
 summary: |-
   ユーザー依頼の「二重のactuation/probe」全体調査から出発。`AppImeProfile::Standard`のフォーカス変更で`read_ime_state_full_async()`が経路A(`spawn_ime_refresh`prefetch)・経路B(`on_focus_process_changed`内独立spawn)の2回発行される「無意味な重複」という当初仮説を立てたが、Opus敵対的レビュー（読み取り専用、実コード照合）で反証: 経路B=High confidence(`ImmCrossProbe`)、経路A=Medium confidence(`ObserverPoll`)で対等でない上、Alt-Tab等の典型ケース(idle~50ms<`TYPING_IDLE_MS`=500ms)では`SkipTyping`戦略により経路Aのsnap_Aが丸ごと消費されず経路Bだけが唯一の観測源になることが判明（候補1「Prefetched時に経路Bスキップ」はまさにこの典型ケースを狙い撃ちで潰す誤った決定、候補2「経路B削除」も同様に不採用）。epoch/fence照合も経路Aの方が構造的に弱いと判明。反証の過程でBUG-78(`disable_apps`)対象アプリでも経路Bが抑止されない非対称という別の実害候補を副産物として発見。副次的発見(probe_io.rsのpollループ重複、`ime_mode_focus_gen`のIME種別切替非対応)は当初仮説の反証と無関係に記録を継続
 status: |-
+  却下(変更なし)、v2.0.0 時点でも同じ。副産物のBUG-78非対称は別課題として切り出し済み。 (2026-10-04 更新)
+  (以下は更新前の記述)
   **却下（変更なし）。副産物のBUG-78非対称は別課題として切り出し**
 related_adr:
   - "ADR-075"

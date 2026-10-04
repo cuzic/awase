@@ -3,7 +3,7 @@ id: ADR-055
 title: |-
   無変換3連打によるエンジン OFF 緊急回復
 status: |-
-  採用済み
+  採用・実装済み(改称、2026-10-04 確認)。設定名は engine_off_solo_triple から engine_off_solo_repeat に改称(2026-08-25、旧名は serde alias)、必要連打回数は 3→5(2026-07-08 追補)。ConsecutiveSoloCounter は現存。旧: 採用済み
 related_adr:
   - "ADR-008"
   - "ADR-015"
@@ -12,6 +12,8 @@ related_adr:
 ---
 
 # ADR-055: 無変換3連打によるエンジン OFF 緊急回復
+
+> 状態更新(2026-10-04): 採用・実装済み(改称、2026-10-04 確認)。設定名は engine_off_solo_triple から engine_off_solo_repeat に改称(2026-08-25、旧名は serde alias)、必要連打回数は 3→5(2026-07-08 追補)。ConsecutiveSoloCounter は現存
 
 ## ステータス
 

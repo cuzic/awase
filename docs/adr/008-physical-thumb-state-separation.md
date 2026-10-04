@@ -3,7 +3,7 @@ id: ADR-008
 title: |-
   物理親指キー状態と FSM 解決ロジックの分離
 status: |-
-  採用済み
+  採用・実装済み(物理親指状態は InputTracker 側 left/right_thumb_down、FSM は PendingThumb 系状態で管理、2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 

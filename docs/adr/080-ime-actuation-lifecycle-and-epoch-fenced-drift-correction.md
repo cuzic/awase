@@ -5,7 +5,7 @@ title: |-
 summary: |-
   IME actuation の型付きトランザクション化 — Feedback（Read/Blind）で closed-loop/open-loop を表現し drift correction の無限/皆無ループを根治
 status: |-
-  Phase 1 実装済み（実機ソーク未実施）
+  Phase 1 実装済み(2026-10-04 確認)。FeedbackPolicy(Read/Blind)・decide_actuation_action・IME_ACTUATION_BLIND_MAX_ATTEMPTS・most_recent_trusted_after・Actuation は現行コードに現存、drift correction は ADR-212 P6(a)で『許可』として残す方針。実機データ: BUG-043 追記(2026-09-06、v1.19.0、Blind policy は意図通り機能)。Phase 2(単一窓口への統合)は未実施。旧: Phase 1 実装済み(実機ソーク未実施)
 related_adr:
   - "ADR-040"
   - "ADR-046"
@@ -14,6 +14,8 @@ related_adr:
 ---
 
 # ADR-080: IME actuation（VK送信/IMM32呼び出し）を型付きトランザクション化し、closed-loop/open-loop の区別と有限終端を構造で強制する
+
+> 状態更新(2026-10-04): Phase 1 実装済み(2026-10-04 確認)。FeedbackPolicy(Read/Blind)・decide_actuation_action・IME_ACTUATION_BLIND_MAX_ATTEMPTS・most_recent_trusted_after・Actuation は現行コードに現存、drift correction は ADR-212 P6(a)で『許可』として残す方針。実機データ: BUG-043 追記(2026-09-06、v1.19.0、Blind policy は意図通り機能)。Phase 2(単一窓口への統合)は未実施。
 
 ## ステータス
 

@@ -3,11 +3,13 @@ id: ADR-014
 title: |-
   Observer / Executor / Runtime の3層分離
 status: |-
-  採用済み
+  実装済み(移動・改名あり、2026-10-04 確認)。observer/ は crates/awase-windows/src/observer/ に、DecisionExecutor は runtime/executor.rs に現存。FocusObservation・EngineCommand::ImeObserved は現行コードに無い。旧: 採用済み
 related_adr: []
 ---
 
 # ADR-014: Observer / Executor / Runtime の3層分離
+
+> 状態更新(2026-10-04): 実装済み(移動・改名あり、2026-10-04 確認)。observer/ は crates/awase-windows/src/observer/ に、DecisionExecutor は runtime/executor.rs に現存。FocusObservation・EngineCommand::ImeObserved は現行コードに無い
 
 ## ステータス
 

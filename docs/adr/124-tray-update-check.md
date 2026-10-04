@@ -5,6 +5,8 @@ title: |-
 summary: |-
   タスクトレイ右クリックを唯一のトリガーにした更新確認。常駐フックプロセス `awase.exe` は通信せず、`awase-settings.exe --check-update` がWinHTTPでWorkerへ問い合わせる。状態は `update_check.json` に最小限だけ保存し、表示は `display()` で導出する。WorkerはGitHub latest releaseをKVでキャッシュし、URLは返さず、クライアントが検証済みSemVerからリリースページを組み立てる
 status: |-
+  実装済み(コード確認のみ、2026-10-04)。rev.12 の設計どおり通信主体は `awase-settings`(crates/awase-settings/src/update_check.rs)で、現存。
+  旧(2026-10-04 更新前):
   採用・実装中（2026-09-03）
 related_adr: []
 ---

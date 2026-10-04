@@ -5,7 +5,7 @@ title: |-
 summary: |-
   IME conv-mode belief の三分割（DesiredMode / EffectiveMode / ModeConstraint）— Imm32Unavailable/TsfNative 限定、Standard は観測駆動を維持
 status: |-
-  提案中
+  一部実装→縮小(2026-10-04 確認)。DesiredMode/EffectiveMode/ModeConstraint/ModeEvent/ModeEffect は現行コードに存在せず、型分割は未実装のまま。Phase 1a の ConvModeMgr::needs_conv_restore_write/mark_conv_restore_written も d4956490(2026-07-18)で撤去済み。後続では ADR-088 が DesiredMode の考え方を一部継承、conv 軸の charset 追跡は ADR-094 で撤去され、本 ADR の型分割は再開されていない。旧: 提案中(Phase 1a のみ実装済み、実機検証待ち)
 related_adr:
   - "ADR-029"
   - "ADR-074"
@@ -15,6 +15,8 @@ related_adr:
 ---
 
 # ADR-078: IME conv-mode belief の三分割（DesiredMode / EffectiveMode / ModeConstraint）と観測駆動書き込みの排除
+
+> 状態更新(2026-10-04): 一部実装→縮小(2026-10-04 確認)。DesiredMode/EffectiveMode/ModeConstraint/ModeEvent/ModeEffect は現行コードに存在せず、型分割は未実装のまま。Phase 1a の ConvModeMgr::needs_conv_restore_write/mark_conv_restore_written も d4956490(2026-07-18)で撤去済み。後続では ADR-088 が DesiredMode の考え方を一部継承、conv 軸の charset 追跡は ADR-094 で撤去され、本 ADR の型分割は再開されていない。
 
 ## ステータス
 

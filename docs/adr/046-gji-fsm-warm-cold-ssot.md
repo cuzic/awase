@@ -3,7 +3,7 @@ id: ADR-046
 title: |-
   GjiFsm — warm/cold 状態の FSM 一元管理
 status: |-
-  採用済み
+  実装済み(一部撤去、2026-10-04 確認)。GjiFsm は tsf/gji_fsm.rs に現存(OffCold/OnCold/OnWarm)。warmup 待機行列は d4956490(2026-07-18)で撤去され per-VK confirm に一本化。旧: 採用済み
 related_adr:
   - "ADR-040"
   - "ADR-042"
@@ -12,6 +12,8 @@ related_adr:
 ---
 
 # ADR-046: GjiFsm — warm/cold 状態の FSM 一元管理
+
+> 状態更新(2026-10-04): 実装済み(一部撤去、2026-10-04 確認)。GjiFsm は tsf/gji_fsm.rs に現存(OffCold/OnCold/OnWarm)。warmup 待機行列は d4956490(2026-07-18)で撤去され per-VK confirm に一本化
 
 ## ステータス
 

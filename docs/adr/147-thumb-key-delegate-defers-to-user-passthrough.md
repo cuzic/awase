@@ -5,6 +5,8 @@ title: |-
 summary: |-
   BUG-119: 無変換/変換の`delegate_to_open_axis`（ADR-092決定D Step4b、BUG-115のGJI/MS-IME自動検出で配線）が、ユーザーが設定画面で明示的に選んだ単独タップ「常に送出する（パススルー）」設定を一切参照せずに優先してしまい、GJI自身のカスタムキーマップ（例: Composition→確定）に物理キーが届かなくなる退行を修正。Opus敵対的レビューで「delegateの実消費点は3箇所あり、辞退を全方向に広げると`kp_stage_shadow_ime_toggle`の所有権判定が belief 追随を誤って止める」Blockerを検出、`TurnOn`方向限定の辞退に絞り込んで解消
 status: |-
+  撤去済み(delegate 機構〈`delegate_to_open_axis`〉は ADR-191 `06483afd` で撤去。単独タップの扱いは ADR-206 の「役割に従う」方式へ置換)。旧: 設計確定・実装済み(TurnOff/Toggle 方向は既知の限界) (2026-10-04 更新)
+  (以下は更新前の記述)
   設計確定・実装済み（Opusレビュー2ラウンドで収束）。`TurnOff`/`Toggle`方向は既知の限界として未解消のまま
 related_adr:
   - "ADR-091"

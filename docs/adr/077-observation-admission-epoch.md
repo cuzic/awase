@@ -3,7 +3,7 @@ id: ADR-077
 title: |-
   ObservationAdmission Layer — FocusEpoch による probe 受理ポリシー
 status: |-
-  採用済み
+  採用・実装済み(AcceptedObservation・FocusEpoch による admission は state/ 配下に現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-033"
   - "ADR-075"

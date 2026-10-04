@@ -20,6 +20,8 @@ related_adr:
 
 # ADR-176（IMEモードキー較正UI）実装タスク一覧
 
+> 状態更新(2026-10-04): 本タスク群の対象である ADR-176 の較正UI・適用側は撤去済み(ADR-195 学習に置換、ADR-198 決定3。ADR-176 本体の status 参照)。以下は撤去前の記録。
+
 [ADR-176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md)
 「決定（v5）」節の8決定を、実装可能な単位に分割したタスクリスト。
 `docs/adr/163-implementation-tasks.md`と同じ形式（内容・受け入れ基準・

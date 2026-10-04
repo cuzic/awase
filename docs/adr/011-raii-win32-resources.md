@@ -3,11 +3,13 @@ id: ADR-011
 title: |-
   RAII ガードによる Win32 リソース管理
 status: |-
-  採用済み
+  実装済み(一部、2026-10-04 確認)。HookGuard・HotKeyGuard・WinEventHookGuard は現存、TimerGuard は現行コードに存在しない。旧: 採用済み
 related_adr: []
 ---
 
 # ADR-011: RAII ガードによる Win32 リソース管理
+
+> 状態更新(2026-10-04): 実装済み(一部、2026-10-04 確認)。HookGuard・HotKeyGuard・WinEventHookGuard は現存、TimerGuard は現行コードに存在しない
 
 ## ステータス
 

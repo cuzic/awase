@@ -5,6 +5,8 @@ title: |-
 summary: |-
   冪等キー中心のIME制御 — open/romaji軸は既存対応を追認。charset軸(かな形状)は新しいbeliefを持たず、config1.dbの自動判定を主UXにベストエフォート助言を行う3層構成に収束(`CharsetSlot`によるbelief駆動の絶対制御機構は5ラウンドのpre-mortemと実機検証を経てMS-IME→GJIへ付け替えたのち最終的に不採用)。GJI向けは無変換単独打鍵を専用Fnキー(F21、Composition/Conversionのみ`SwitchKanaType`)へ変換する構成をconfig1.db自動判定で有効化、MS-IME向けは無変換=IME ON/OFFカスタマイズ済みなら決定1のopen軸機構で肩代わり、既定のまま素通しならGJI利用を推奨するポップアップを出す
 status: |-
+  一部実装・一部撤去(2026-10-04 確認)。決定(F21 1キー構成の推奨・MS-IME は自己責任)は本文のまま。自動判定・設定支援ポップアップ・config1.db 書き込みは 2026-09-02 に全撤去済み(手動設定のみ)、charset 軸の追跡は ADR-094(2026-08-17)で撤去済み。MS-IME 肩代わり機構は未実装。
+  旧(2026-10-04 更新前):
   **決定・実装未着手**（charset軸のSendInputによるGJI到達性・`ImmGetConversionStatus`での確認可能性はF15-F19の実機検証で証明済みだが、採用構成はF21 1キーのみの新設計。MS-IME肩代わり機構は未実装）。**2026-09-02: 自動判定・設定支援ポップアップ・config1.db書き込みは実装後に出荷されたが、実機での誤診断・ユーザー混乱を受けて全撤去(手動設定のみ残存、詳細はADR本文の追記参照)**
 related_adr:
   - "ADR-057"

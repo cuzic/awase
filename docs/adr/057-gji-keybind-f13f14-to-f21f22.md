@@ -3,7 +3,7 @@ id: ADR-057
 title: |-
   GJI キーバインド F13/F14 → F21/F22 への移行
 status: |-
-  **廃止済み（2026-06-28、ADR-067 に置換）**
+  廃止済み(2026-06-28、ADR-067 に置換)。v2.0.0 時点でも gji.rs・GjiSetup/GjiTeardown・gji_keybinds_ok は現行コードに無いことを確認(2026-10-04)。旧: 廃止済み(2026-06-28、ADR-067 に置換)
 related_adr:
   - "ADR-034"
   - "ADR-046"

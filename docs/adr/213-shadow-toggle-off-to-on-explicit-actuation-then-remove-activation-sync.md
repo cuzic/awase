@@ -10,6 +10,8 @@ summary: |-
   (2) 同じ打鍵の二重書き込みを strip で防ぐ(`apply` の already-matched 省略は GjiDirect のみ)、(3) `check_active_transition` 由来の ActivationSync だけを止め明示操作の SetOpen は残す、(4) ActivationSync が `on_ime_applied` で担っていた副作用の棚卸し、
   (5) 起動前から存在する窓で `ka` がリテラルになる挙動を P2b の revert 条件にする、(6) P2a/P2b/P2b'/P2c の段階を決める。Opus round1(2026-10-01)の指摘を反映。ADR-212 決定5 を更新し、ADR-191 の「EngineDecision」節は P2c で改訂する。
 status: |-
+  実装済み(P2a〜P2c・P2d-1・P2d-2 が v2.0.0 に含まれる。ActivationSync は現行コードに無い、2026-10-04 確認)。P2b' は未実装(P2b で取り残しが見えた場合のみ、B3 は未検証)。実機・起動前の窓の ka・StaleConfirm 件数は未検証。
+  旧(2026-10-04 更新前):
   採用(2026-10-01、Opus round1 反映済み)。実装状況: **P2a(PR #408)・P2b(PR #411)は develop にマージ済み**(2026-10-01、`sc-*` で期待表は develop と同一・I2 Unwarranted が全構成で 0・BUG-179 の `sc-p2-initial-chrome-msime` が 5/5、BUG-180〈PR #410〉の修正と併せて `i4` 超過は消えた。`docs/experiments.md` エントリ 30 参照)。P2c(`SetOpenOrigin`・`ImeEvent::EngineActivationSync`・`handle_engine_activation_sync`・shadow 同一目標 strip の撤去)はマージ済み(PR #412)。**P2d-1(C2 の縮小)はマージ済み**(PR #413、2026-10-01。`handle_conv_engine_on_sync` を削除し、`EngineSync::SetOpen` 分岐はログ1行と `ImeStateHub::release_panic_reset_guard_on_positive_evidence`〈`ForceOnReason::PanicReset` のみ除去〉だけ。`should_release_panic_guard` 純粋関数・`architecture_guard`・単体テストで固定。ジャーナルリプレイは `ImeStateHub` が host から見えないため未追加。実機・`ts-*` は未検証)。**P2d-2(C3 の撤去)は実装済み(PR #414)**: `strip_ime_set_open_if_settling`・`handle_engine_set_open` の settle フィルタ・`focus_transition_was_pending` のスナップショットと、strip した SetOpen の `schedule_settle_retry` 呼び出しを撤去(drift correction の settle 延期用の `schedule_settle_retry` は P6 まで残す)。判定の純粋関数 `settle_disposition` は SetOpen を落とす分岐自体が無くなったので作らず、`architecture_guard::settle_does_not_drop_explicit_set_open` で固定。P2b' は未実装(B3 は未検証)。実機・起動前の窓の `ka`・StaleConfirm 件数は未検証。
 related_adr:
   - "ADR-212"

@@ -5,6 +5,8 @@ title: |-
 summary: |-
   変換/無変換キーのdelegate-to-open-axisが、対象キーが親指キーでない場合や活性化条件を満たさない場合に不活性のまま復旧しない問題への対応
 status: |-
+  撤去済み(delegate 機構は ADR-191 `06483afd` で撤去、2026-10-04 確認。`route_thumb_key_action`・`turn_on_direction` は現コードに無い)。旧: 実装済み(PR #177)。要確認: `should_upgrade_is_japanese_ime`(vk.rs)は現存するが本ADR由来かは未精査。 (2026-10-04 更新)
+  (以下は更新前の記述)
   実装済み（PR #177でdevelopマージ済み）
 related_adr:
   - "ADR-092"

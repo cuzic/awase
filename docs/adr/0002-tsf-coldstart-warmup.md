@@ -3,12 +3,14 @@ id: ADR-0002
 title: |-
   TSF cold-start warmup 戦略
 status: |-
-  安定
+  履歴文書(2026-05-19 時点のスナップショット)。「現在の設計」節の warmup(eager F2 送信+EAGER_SETTLE_MS による settle 待機)は撤去済み: cold-start 待機行列・F2事前送信は d4956490(2026-07-18)で per-VK confirm に一本化、eager VK_IME_ON warmup は ADR-212 P4(03a7996f)で撤去。LiteralDetector による回収(Phase 10)は現存(2026-10-04 確認)。旧: 安定
 related_adr:
   - "ADR-030"
 ---
 
 # ADR 0002: TSF cold-start warmup 戦略
+
+> 状態更新(2026-10-04): 履歴文書(2026-05-19 時点のスナップショット)。「現在の設計」節の warmup(eager F2 送信+EAGER_SETTLE_MS による settle 待機)は撤去済み: cold-start 待機行列・F2事前送信は d4956490(2026-07-18)で per-VK confirm に一本化、eager VK_IME_ON warmup は ADR-212 P4(03a7996f)で撤去。LiteralDetector による回収(Phase 10)は現存(2026-10-04 確認)
 
 **Status:** 安定（2026-05-19 現在）  
 **関連コミット:** `1703fcf`, `4a1cbca`, `babce4c`, `99f56a2`, `2d4d85c`, `7ad60ce`, `b257f96`, `3034bc8`, `558c39f`, `b643bac`, `2b7c9be`, `51018e4`, `48d25f2`, `62ea4f6`, `a56e223`, `07fc40d`, `aea5a25`, `83d5707`, `4249846`, `dbda95f`, `b23c50f`, `c7dc3f2`, `b99053a`, `e7a8bc5`, `f2a36bf`

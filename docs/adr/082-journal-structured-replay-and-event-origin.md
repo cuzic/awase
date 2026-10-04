@@ -3,6 +3,8 @@ id: ADR-082
 title: |-
   `journal.rs` を「事後ログ」から「構造化リプレイ基盤」へ格上げし、出所・世代の規律を横断型 `EventOrigin` 1箇所に統合する
 status: |-
+  一部実装(決定1・決定2・Phase 0.5 は実装済み、リプレイの全面適用は未完、2026-10-04 コード確認)。`EventOrigin`(state/event_origin.rs)・構造化 `JournalEntry::ImeEvent{event}`・`ImeActuation`(journal.rs)は現存。BUG-41/BUG-33 へのリプレイ拡張は本文の実施記録(2026-08-01)のとおり。
+  旧(2026-10-04 更新前):
   第一歩・Phase 0.5 実装済み（全面適用は未着手）
 related_adr:
   - "ADR-065"

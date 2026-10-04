@@ -3,7 +3,7 @@ id: ADR-047
 title: |-
   TickableFsm / ImeWarmupStrategy — 出力層 FSM の抽象化
 status: |-
-  採用済み
+  実装済み(一部撤去、2026-10-04 確認)。TickableFsm・ImeWarmupStrategy は tsf/warmup/ に現存。ChromeProbe の捨て駒キー(SacrificialWarmup)機構は d4956490 で撤去。旧: 採用済み
 related_adr:
   - "ADR-002"
   - "ADR-034"
@@ -13,6 +13,8 @@ related_adr:
 ---
 
 # ADR-047: TickableFsm / ImeWarmupStrategy — 出力層 FSM の抽象化
+
+> 状態更新(2026-10-04): 実装済み(一部撤去、2026-10-04 確認)。TickableFsm・ImeWarmupStrategy は tsf/warmup/ に現存。ChromeProbe の捨て駒キー(SacrificialWarmup)機構は d4956490 で撤去
 
 ## ステータス
 

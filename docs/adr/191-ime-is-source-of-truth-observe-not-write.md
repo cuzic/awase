@@ -14,6 +14,8 @@ summary: |-
   (5)予測は物理キーの打鍵時点でbeliefへ反映し（`KeyEffectPredicted`、settle基準のfence）、観測は確認と訂正に回す。観測できないアプリ（TsfNative）では予測が唯一の信号になる。
   (6)成功基準は撤去量（追加は削除と対）。実装は`feat/adr191-remove-hardcoded-mode-keys`（PR #240〈`d777bcfe`〉でdevelopマージ済み）、実験の経緯と実測は補助資料[191-calibration-experiments.md]に置く。
 status: |-
+  実装済み(撤去ブランチ PR #240 ほか、v2.0.0 に含まれる、2026-10-04 確認)。決定6 の EngineDecision 系は ADR-213 P2c で ActivationSync を撤去(下記)。TsfNative・MS-IME 本体の一部は実機未確認のまま。『草案』の表記は古い。
+  旧(2026-10-04 更新前):
   **[ADR-213 P2c で一部改訂（2026-10-01）]** Engine が自動発行する `SetOpenOrigin::ActivationSync` を撤去（決定6の EngineDecision 系、本文「P1」節末尾に追記）。
   **[ADR-199 で一部置換（T7、2026-09-27）]** 決定1-1（静的に残す唯一の例外、round3 RM3「固定が常に勝つ」）は [ADR-199](199-derive-key-roles-from-user-ime-keymap.md)
   決定4に置き換わった（ユーザー設定から逆算した役割が勝つ）。本ADRの他の決定（IMEを状態の正とする方針、観測・予測の枠組み）は変わらない。

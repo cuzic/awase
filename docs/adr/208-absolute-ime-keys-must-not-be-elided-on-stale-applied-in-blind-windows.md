@@ -9,6 +9,8 @@ summary: |-
   保証は1押下ごとの配送不変条件 INV-L1(物理が届くか awase が書くかのちょうど一方)と収束条件 INV-L2(絶対指定は1回、トグルは2回以内)。設計は新しい gate を足さず、既存の省略・授権(`applied` の already-matched・warrant)を緩める
   D1〜D4+押下 id による BUG-113 の二重送信防止。検証は純粋な決定関数の全列挙テスト(Linux)→ CI の drift × キー行列。L0〜L3 を v2 のブロッカーにする。
 status: |-
+  一部実装(L0・L1・L2・L3a 実装済み。L3 の Chrome〈Imm32Unavailable〉適用は L1+L3a で成立済みと確認〈2026-10-02、コード変更なし〉。L3b の CI sc-keymatrix-* 14構成は expect=pass へ昇格済み〈efa9621a〉、MS-IME×実 Chrome の OFF は ENV_EXCEPTION=既知の制限〈BUG-185〉)。v2.0.0 に含まれる。未実装/未検証: L3'(TsfNative 等 × GJI の S-1 残 1,728 件、v2 ブロッカーにしない)、L4(InputRelay)、実機 A/B。
+  旧(2026-10-04 更新前):
   採用(2026-10-01、Opus round1 反映済み)。**L0 実装済み**(挙動不変の切り出し・差分 0 の確認・全列挙テスト・反例 golden。「L0 実装メモ」節)、**L1 実装済み**(押下 ID・applied の未知化・S-1 解消・BUG-113 の両立。「L1 実装メモ」節。実機・CI の drift × キー行列は未実施)、**L2 実装済み**(押下の授権と非リピートの shadow 昇格が `is_japanese_ime`・`current_focus` を問わない。S-2・S-4 を解消。「L2 実装メモ」節。実機・CI の非日本語構成は未実施)、**L3a(D4)実装済み**(shadow no-op で物理が Suppress される窓は書く。S-3 を解消。「L3a 実装メモ」節。実機・CI は未実施)、L3 の残り(Chrome への適用・CI の drift × キー行列・E2 の対照)から未実装。所有者決定: 全窓で必ず書く(物理押下ごとに1回、同一押下の二重送信のみ防ぐ)、『解消』は最大2回の押下、検証は決定表の網羅テスト→CI の行列、InputRelay は『awase が actuate しない窓では開閉キーを握りつぶさず素通し』、MS-IME × 実 Chrome の `VK_IME_OFF` が効かない件(BUG-172 対照)は例外として明記し別機構は後で検討、L0〜L3 を v2 のブロッカーにする(L3' は実機 A/B が条件で v2 のブロッカーにしない)。
 related_adr:
   - "ADR-205"

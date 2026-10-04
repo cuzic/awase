@@ -3,11 +3,13 @@ id: ADR-028
 title: |-
   フォーカスイベント処理の再設計
 status: |-
-  承認済み（未実装）
+  未実装(2026-10-04 確認)。本文の『デバウンス後のみ処理し即時の Engine 通知を削除』は設計どおりには入っていない: app/bootstrap.rs の win_event_proc は同一 HWND の連続イベントと hwnd=0 を早期 return するが、それ以外は即座に on_window_focus_event を呼ぶ。IME 再取得側は focus_debounce_ms(runtime/mod.rs)でデバウンス済み。旧: 承認済み（未実装）
 related_adr: []
 ---
 
 # ADR 028: フォーカスイベント処理の再設計
+
+> 状態更新(2026-10-04): 未実装(2026-10-04 確認)。本文の『デバウンス後のみ処理し即時の Engine 通知を削除』は設計どおりには入っていない: app/bootstrap.rs の win_event_proc は同一 HWND の連続イベントと hwnd=0 を早期 return するが、それ以外は即座に on_window_focus_event を呼ぶ。IME 再取得側は focus_debounce_ms(runtime/mod.rs)でデバウンス済み
 
 ## ステータス
 

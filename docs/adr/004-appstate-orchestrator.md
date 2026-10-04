@@ -3,11 +3,13 @@ id: ADR-004
 title: |-
   AppState をオーケストレータとして集約、依存方向の逆転
 status: |-
-  採用済み
+  採用・実装済み(改名、2026-10-04 確認)。AppState は bc85d358 で Runtime に改名(crates/awase-windows/src/runtime/mod.rs)、AppAction・KeyPatternTracker は現行コードに無い。オーケストレータ集約・依存方向逆転の方針は ADR-014/035/036 が継承。旧: 採用済み
 related_adr: []
 ---
 
 # ADR-004: AppState をオーケストレータとして集約、依存方向の逆転
+
+> 状態更新(2026-10-04): 採用・実装済み(改名、2026-10-04 確認)。AppState は bc85d358 で Runtime に改名(crates/awase-windows/src/runtime/mod.rs)、AppAction・KeyPatternTracker は現行コードに無い。オーケストレータ集約・依存方向逆転の方針は ADR-014/035/036 が継承
 
 ## ステータス
 採用

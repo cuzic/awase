@@ -5,6 +5,8 @@ title: |-
 summary: |-
   ADR-149「案D」の再検討として、delegate対象キーはawaseが一切actuateしない（belief追随のみ）方向を検証したが、「Appliedを詐称するとTsfNative唯一のON方向救済機構`apply_force_on_for_imm_broken`が構造的に永久停止する」というBlockerが見つかり保留
 status: |-
+  保留(未実装)のまま、実質見送り: 前提としていた force-on(`apply_force_on_for_imm_broken`)・delegate・eager warmup の各機構は v2 で撤去済み(ADR-179 領域A・ADR-191・ADR-212)。本ADR自体を正式に却下した記録は無い。旧: 将来構想として保留(未実装) (2026-10-04 更新)
+  (以下は更新前の記述)
   将来構想として保留（未実装）。ADR-149と同じBlockerを共有。**2026-09-08: ファイル本体が一度もcommitされていなかったことが判明、ADR-149 r3節を一次資料として本文を再構成し起票**
 related_adr:
   - "ADR-149"

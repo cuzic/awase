@@ -5,6 +5,8 @@ title: |-
 summary: |-
   `/code-review`（develop過去1週間差分、medium effort）でAngle A/Angle Altitudeが独立に発見したbelief破損リスクへの対応。`ImeModel::reduce()`のImeApplyRequestedアームが進行中pendingを警告ログのみで無条件上書きし、上書きされた古いgenerationの完了が`record_ime_apply_result`のgeneration厳密一致チェックで捨てられ`applied_open`が古いまま固定される問題。Opus 2体（提案役/批判役）によるレビューで収束。`applied`更新の可否・pending解決の可否・composition副作用駆動の可否という3つの独立した問いへ分解し、`ImeTransition`にfocus_epochをスタンプ、FocusChanged時点のgeneration watermarkで旧epoch完了の緩和受理を防ぎ、generation不一致でも同一epoch・同一targetの成功完了は`Optimistic`で`applied`更新、戻り値を`ImeApplyAcceptance`型にしてcomposition副作用ゲートは一切緩めない、`reduce()`冒頭のタイムアウトパージをmatch後に移動する。過程で`FocusChanged`が`applied`のみリセットし`pending`を残す既存欠陥（フォーカス跨ぎでforce-ON恒久封鎖）も発見・対象に格上げ
 status: |-
+  実装済み(コード確認のみ、2026-10-04)。`ime_model.rs` に決定1(focus_epoch)・決定2/5・決定4 の実装コメントが現存し、廃止対象の `last_confirmed_generation` は無い。実機ソークの記録は確認できず未実施。
+  旧(2026-10-04 更新前):
   採用・実装済み（2026-08-28、Windows実機ソーク未実施）
 related_adr:
   - "ADR-098"

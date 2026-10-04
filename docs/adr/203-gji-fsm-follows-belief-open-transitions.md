@@ -8,6 +8,8 @@ summary: |-
   全打鍵が cold 経路(per-VK confirm)を通り、StaleConfirm(約15%/語)で `escape=true` の VK_ESCAPE が送られ、未確定の直前文字ごと消える。
   75eb3f60(予測経路1点だけ ImeOn を足す)は点パッチであり、半角/全角・sync_direction・OFF 方向・外部開閉は塞がらない。本 ADR は同期の入口の選択(決定)を定める。
 status: |-
+  実装済み(2026-09-29)・CI 検証済み(e2e の sc-reopen-*/--require-sync が GjiFsm 同期を合否に含む。PR #387、run 36655470405 で GJI×tsf〈gap 300/600/900ms〉・変換キー・実 Chrome・MS-IME が全 PASS)。v2.0.0 に含まれる。実機確認は未実施(v2 チェックリスト D2 が未完了)。
+  旧(2026-10-04 更新前):
   起票(2026-09-29)。Opus round3 まで反映(検出点を `WindowsPlatform::send_keys` へ、OFF 同期を廃し ON 系イベントで Reopen、案C は別PR)、round4 で収束。実装済み(Linux/Windows 型検査・純粋関数/FSM/architecture_guard、2026-09-29、fix/bugreport-01M3NBQA)。windows-latest e2e・step 0・実機確認は未実施。
 related_adr:
   - "ADR-089"

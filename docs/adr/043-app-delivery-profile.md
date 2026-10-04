@@ -3,13 +3,15 @@ id: ADR-043
 title: |-
   AppDeliveryProfile — アプリ固有出力動作の宣言的集約
 status: |-
-  採用済み
+  未実装(提案のまま、2026-10-04 確認)。AppDeliveryProfile は現行コードに存在しない(旧 status『採用済み』は本文『このADRは未実装』と矛盾していた)。旧: 採用済み
 related_adr:
   - "ADR-004"
   - "ADR-033"
 ---
 
 # ADR-043: AppDeliveryProfile — アプリ固有出力動作の宣言的集約
+
+> 状態更新(2026-10-04): 未実装(提案のまま、2026-10-04 確認)。AppDeliveryProfile は現行コードに存在しない(旧 status『採用済み』は本文『このADRは未実装』と矛盾していた)
 
 **状態:** 提案（未実装）  
 **調査日:** 2026-06-04  

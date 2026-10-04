@@ -5,6 +5,8 @@ title: |-
 summary: |-
   ADR-149「案C」（別ADRへの分離を推奨、と記述されていた事項）の続報として起票。ADR-141のC2修正が明記する「`delegate_owned`ゲートは実行時に排他的に決める」という不変条件が、belief OFF→ON遷移の打鍵に限り成立していない（消費点2がbeliefを書き換えた後に消費点1がその書き換え後の値を読んで二重発火する）ことをADR-149が発見済み。ADR-153のB13/B14が確立した「one-shotマーカーをPendingThumbのライフタイムに結びつける」解法パターンの、明示config対象外キー（旧来の自動検出delegate経路）への転用を提案。opus-adversarial-consult round1でBlocker2件を検出（優先順位4へのフォールスルー案がBUG-123を再現・新規フィールドの根拠が誤り）、round2で反映しBlockerゼロで収束
 status: |-
+  撤去済み(対象の delegate 所有権判定〈`auto_delegate_open_axis_consumed`〉は ADR-191 `06483afd` 以降に撤去、2026-10-04 現コードに出現0件)。旧: 実装済み(2026-09-09、実機ソーク未実施) (2026-10-04 更新)
+  (以下は更新前の記述)
   **実装済み（2026-09-09）。`ImeRelevance`に`auto_delegate_open_axis_consumed`を新設、回帰テスト（エンジン側3件・architecture_guardのgrepガード2件・transport.rs::plan_tests1件）追加。cargo test --lib(1010件)・cargo nextest(119件)・clippy(pedantic/nursery込み)全green。Windows実機ソークは未実施**
 related_adr:
   - "ADR-141"

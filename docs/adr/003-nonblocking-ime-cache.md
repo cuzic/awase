@@ -3,11 +3,13 @@ id: ADR-003
 title: |-
   フックからブロッキング IME 検出を追い出し、キャッシュ化
 status: |-
-  採用済み
+  方針は現存、実装は置換(2026-10-04 確認)。IME_STATE_CACHE(AtomicU8)は b623523e で撤去され、後継は ADR-026(Preconditions/Platform層)・ADR-032(IME 状態 reducer)。フックからブロッキング IME 検出を追い出しメッセージループ側で更新する方針は現存。旧: 採用済み
 related_adr: []
 ---
 
 # ADR-003: フックからブロッキング IME 検出を追い出し、キャッシュ化
+
+> 状態更新(2026-10-04): 方針は現存、実装は置換(2026-10-04 確認)。IME_STATE_CACHE(AtomicU8)は b623523e で撤去され、後継は ADR-026(Preconditions/Platform層)・ADR-032(IME 状態 reducer)。フックからブロッキング IME 検出を追い出しメッセージループ側で更新する方針は現存
 
 ## ステータス
 採用

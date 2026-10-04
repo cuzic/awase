@@ -3,7 +3,7 @@ id: ADR-058
 title: |-
   InjectionMode の cache.toml 永続化
 status: |-
-  採用済み
+  採用・実装済み(InjectionModeStore は focus/classifier.rs、cache.toml の [injection_mode] ほか、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-004"
   - "ADR-033"

@@ -5,6 +5,8 @@ title: |-
 summary: |-
   `conv_mode_policy = force` — cold 転換時に awase トレイの目標 conv モードを強制する opt-in 設定。ADR-078 全面実装を待たない軽量な緩和策
 status: |-
+  撤去済み(ADR-094 で `conv_mode_policy` 設定と force ポリシーを全撤去、2026-08-17)。現行コードに `ConvModePolicy` 型・設定は無い(src/config.rs・output/conv_actuation.rs のコメントに撤去記録のみ)。
+  旧(2026-10-04 更新前):
   実装済み（デフォルト無効、実機ソーク未実施）
 related_adr:
   - "ADR-078"
@@ -14,6 +16,8 @@ related_adr:
 ---
 
 # ADR-085: `conv_mode_policy = force` — cold 転換時に awase トレイの目標 conv モードを強制する opt-in 設定
+
+> 状態更新(2026-10-04): `conv_mode_policy = force` は ADR-094 で撤去済み(v2.0.0 のコードに存在しない)。本文は歴史的記録。
 
 ## ステータス
 

@@ -3,7 +3,7 @@ id: ADR-062
 title: |-
   InjectionMode 事後昇格: GJI write_bytes 観測による自動昇格
 status: |-
-  採用済み
+  採用・実装済み(UnicodeLiteralObserverFsm・InjectionHint::ForceTsf は現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-004"
   - "ADR-047"

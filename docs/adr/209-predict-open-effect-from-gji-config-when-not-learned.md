@@ -7,6 +7,8 @@ summary: |-
   GitHub Actions(windows-latest、GJI の MS-IME プリセット、awase なし、run 36690572075)で、**実 Chrome(TSF)は開き、素の EDIT(IMM32)は開かない**ことを再現した。古い custom 表の有無は無関係(表なしでも同じ)。
   同梱表(`key_effect_table.rs`)は EDIT(IMM32)で学習したので、TSF の窓では変換について誤っている。実機で、確定後の変換は候補窓を出さず開くだけ、半角英数で閉じた後の変換は半角英数のまま開くことも確認した。
 status: |-
+  実装済み(2026-09-30、設定 general.predict_henkan_open_in_unreadable_windows 既定 true、v2.0.0 に含まれる)。CI で sc-adr209-chrome-msime*(ccb17771)により実 Chrome×MS-IME を検証、i2_unwarranted 超過の調査は BUG-179 に記録。実機未確認。
+  旧(2026-10-04 更新前):
   採用(2026-09-30)。v1(古い表を実効とみなす)は棄却。v2 は Opus round2 で Major 6件。X6・X7 の実機結果と指摘を反映した v3 が、Opus round3 で収束(新しい Major なし)。実装済み(2026-09-30、`feat/adr209-henkan-open-prediction`。設定 `general.predict_henkan_open_in_unreadable_windows`、既定 true)。実機A/B・CI検証はマージ後。
 related_adr:
   - "ADR-186"

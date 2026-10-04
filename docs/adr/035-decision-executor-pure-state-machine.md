@@ -3,7 +3,7 @@ id: ADR-035
 title: |-
   DecisionExecutor の純粋状態機械化
 status: |-
-  採用済み
+  採用・実装済み(DecisionExecutor は runtime/executor.rs に現存し applied_snapshot 等の小さな状態のみ保持、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-014"
   - "ADR-036"

@@ -23,6 +23,8 @@ summary: |-
   (foreign-injected IMEモードキーの遮断は別アプリで機能的キー注入を破壊する)
   により慎重な設計が必要。
 status: |-
+  要確認(実装なし。起票のみで v2.0.0 時点でも未実装)。前提機構が撤去・再設計されている: ADR-179 の Passthrough 実験4件は f3e1212e で revert、delegate_to_open_axis は ADR-191 で撤去、無変換/変換の単独タップは ADR-206 で役割ベースに再設計。一方、runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle は injected=false のひらがなキー(0xF2)を現在も物理キー扱いするため、外部エコーが IME OFF を巻き戻す現象自体が現行コードで残るかは裏取りできていない。
+  旧(2026-10-04 更新前):
   **ドラフト(起票、opus-adversarial-consult round1前)**。実装未着手。
 related_adr:
   - "ADR-179"

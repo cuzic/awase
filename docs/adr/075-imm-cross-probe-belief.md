@@ -3,7 +3,7 @@ id: ADR-075
 title: |-
   ImmCrossProbe による belief 補正 — Qt/GJI フォーカス時の IME 誤認識修正
 status: |-
-  採用済み
+  採用・実装済み(ObservationStore::derive_open・ImmCrossProbe による belief 補正は現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-032"
   - "ADR-033"

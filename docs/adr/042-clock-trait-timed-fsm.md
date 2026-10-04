@@ -3,7 +3,7 @@ id: ADR-042
 title: |-
   Clock トレイト抽象化と timed-fsm のテスト可能性
 status: |-
-  採用済み
+  採用・実装済み(Clock・MonotonicClock・ManualClock は crates/timed-fsm に現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-019"
   - "ADR-022"

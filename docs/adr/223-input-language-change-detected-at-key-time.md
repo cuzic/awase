@@ -8,6 +8,8 @@ summary: |-
   (D1)engine スレッドがキーリングから取り出した直後に、現在のフォーカス窓から都度引いたスレッドの HKL を読み、物理・外部注入を問わず(awase 自身の注入以外の)文字キーの KeyDown で食い違いを検知して更新する、
   (D2)段階 0 は記録のみ、(D3)表示を早めるには、切替キーの解放後に 1 回だけ読む(案E2)。ポーリングは足さない。
 status: |-
+  一部実装(段階 0 の測定は合格〈PR #452〉、段階 1 = 打鍵の取り込み時に読んだ入力言語で is_japanese_ime を更新する実装が合格〈PR #453、949290ac〉、いずれも v2.0.0 に含まれる)。Windows Terminal・コンソール・実機の確認が残る。
+  旧(2026-10-04 更新前):
   段階 0 の測定は合格(Win32 窓・Chrome・UWP、PR #452)。設計を 2 点訂正した(WinEvent の hwnd をやめ、UWP のフレームは CoreWindow を読む)。Windows Terminal・コンソール・実機が残る。起草 r4(2026-10-04)。Opus r1(Blocker 2・Must 6・Should 5)、r2(Blocker 1・Must 5・Should 4)、r3(Blocker 0・Must 3・Should 4)、r4(収束。Must 2・追記のみ)の指摘を反映済み。段階 0 に着手してよい。実装なし。
 related_adr:
   - "ADR-093"

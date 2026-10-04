@@ -5,6 +5,8 @@ title: |-
 summary: |-
   [GitHub Issue #118](https://github.com/cuzic/awase/issues/118)「やまぶきCV4D相当（句読点入力時の変換候補自動確定）」の実現機構を検討。`YabValue`/`KeyAction`に`ConfirmThenSend(Box<Self>)`を新設する個別実装案（確定実体は既存の`SpecialKey::Enter`送信経路の再利用、composing判定はプラットフォームの`send_keys()`直前で行う非対称設計、既定Offの隠しキルスイッチ等）を検討したが、専用variantとして先取り実装せず、**将来実装予定の汎用「打鍵列機能」（1セルに複数キーアクション列を定義できる機能、未着手）の一特殊ケース**として位置づけ直すことにした。本ファイルは調査結果をその設計時の入力資料として保持する
 status: |-
+  一部解決(2026-09-13 から変更なし、2026-10-04 確認)。確定付き `layout/nicola_kakutei.yab` は同梱され現存。専用 variant `ConfirmThenSend`(決定2〜6)は実装しないまま。
+  旧(2026-10-04 更新前):
   一部解決（2026-09-13）。ADR-115が実装済みの打鍵列構文（`。+CV4D`/`、+CV4D`、
   Composing判定なしの直接送信）をそのまま使い、確定付きの `layout/nicola_kakutei.yab`
   をバンドルして選択式で提供する形で決着。専用の `ConfirmThenSend` variant（本ADR

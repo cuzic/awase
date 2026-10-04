@@ -3,6 +3,8 @@ id: ADR-169
 title: |-
   journal `KeyInput` レーンの OS auto-repeat 畳み込みでダンプ予算窓を圧縮する
 status: |-
+  実装済み(決定1・1-b、v2.0.0 に含まれる、2026-10-04 コード確認: `journal.rs` の repeat_count 畳み込み現存)。実機ソーク・windows-build CI は当時未実施の記載のまま(要確認)。 (2026-10-04 更新)
+  (以下は更新前の記述)
   実装完了（決定1・決定1-b、ブランチ`feat/adr169-journal-key-input-repeat-coalescing`）。
   opus-adversarial-consult round1/round2で設計収束済み。実装後
   `/code-review opus`でKeyUp誤畳み込みの回帰を発見・修正済み

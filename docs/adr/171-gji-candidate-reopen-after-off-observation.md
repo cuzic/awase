@@ -3,6 +3,8 @@ id: ADR-171
 title: |-
   gji_direct_already_matchesが候補ウィンドウ再表示という既存のdesync証拠(candidate_was_seen)を無視して再送を握り潰す不具合を修正する(BUG-141)
 status: |-
+  実装済み(案Z、`040536bf`、PR #218 で develop マージ済み)・実機A/B実施済み、v2.0.0 に含まれる(2026-10-04 コード確認: `candidate_was_seen` 現存、BUG-141 参照)。 (2026-10-04 更新)
+  (以下は更新前の記述)
   起草・opus-adversarial-consult round1〜round5反映済み。**round5でBlocker
   ゼロ、収束。実装着手可**。round1・round2で当初案（belief/drift correction
   経由の自動補正、決定1-4）にBlocker合計8件が見つかり設計を全面転換、

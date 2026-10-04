@@ -10,6 +10,8 @@ summary: |-
   実機（GJI）で素の RichEdit と同じ結果（idle 0/6000/11000 各3回とも `きう`）。実 Chrome での BUG-002 型（cold-start のリテラル化）は
   実機で再現しなかった（有効 probe 20件すべて `きう`、RawTsfLiteralRecovery/SuspectedLiteral 0件）ので、Chrome cold-start 専用の新規測定装置は作らない。
 status: |-
+  採用・実装済み(スパイク成功に加え CI 配線済み: .github/workflows/e2e-ime.yml の入力先 tsf=RichEdit を Chrome_RenderWidgetHostHWND へスーパークラス化〈TsfNative 相当〉、crates/awase-windows/examples/richedit_tsf_probe.rs が現存、2026-10-04 確認)。下の『CI への配線は未着手』は古い。実施計画(193-implementation-tasks.md)は引き続き保留・参考。
+  旧(2026-10-04 更新前):
   **採用（スパイク成功、2026-09-21）**。土台は `examples/richedit_tsf_probe.rs`。CI（`e2e-ime.yml`）への配線は未着手（GJI 有効化の `--activate-gji` 相当が必要）。
   詳細な CI 化・idle 掃引の設計案は [193-implementation-tasks.md](193-implementation-tasks.md)（**保留・参考**。症状が再現した場合にだけ使う）。
 related_adr:

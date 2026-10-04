@@ -3,11 +3,13 @@ id: ADR-026
 title: |-
   Preconditions モデルと一元的キールーティング
 status: |-
-  承認済み（実装完了）
+  実装済み(一部撤去、2026-10-04 確認)。user_enabled・InputContext による Preconditions モデルは現存。IME_STATE_CACHE/ImeCacheState/ImeCacheEffect は b623523e で撤去、SENT_TO_ENGINE/TRACK_ONLY_KEYS/classify_route/sync_sent_to_engine は現行コードに無い(sync_sent_to_engine は 19081c40 で全廃)。旧: 承認済み（実装完了）
 related_adr: []
 ---
 
 # ADR 026: Preconditions モデルと一元的キールーティング
+
+> 状態更新(2026-10-04): 実装済み(一部撤去、2026-10-04 確認)。user_enabled・InputContext による Preconditions モデルは現存。IME_STATE_CACHE/ImeCacheState/ImeCacheEffect は b623523e で撤去、SENT_TO_ENGINE/TRACK_ONLY_KEYS/classify_route/sync_sent_to_engine は現行コードに無い(sync_sent_to_engine は 19081c40 で全廃)
 
 ## ステータス
 

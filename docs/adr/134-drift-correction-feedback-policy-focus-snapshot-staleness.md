@@ -5,6 +5,8 @@ title: |-
 summary: |-
   ADR-133（BUG-113）の実機調査中に発見したBUG-114の修正方針ADR。当初「`FocusChanged`発火の瞬間にプロファイル分類が一時的に誤った」という同一tick内レース説だったが、Opus敵対的レビューround1で「起動から最初のプロセス切替までapp_policyが一度も初期化されずRead既定のまま」というbootstrap窓が最有力機構と判明（レース説はコード上ほぼ成立しないことも判明）。round2でIMM学習閾値到達前の窓という第3の機構も追加特定。修正はD1c（起動時`InitialFocusFenceEstablished`でのapp_policy初期化、主対策）+D1/D1a（ライブ再導出+`ImePolicyProfile::InputRelay`追加、根本原因2向け補完）+D1b（未使用の`Blind::backoff`フィールドを実際に消費、残存バースト緩和）の3層構成に収束。`actuation_for`の「reuse時policy無視」不変条件・`AppImePolicy`のFocusChangedスナップショット設計自体（ADR-089 §2.5）は変更しない。`open_warrant.rs`等の他のスナップショット消費者は実害の種類が異なる（force-ON warrantの否認であって再送ストームではない）ことを明記した上でスコープ外
 status: |-
+  実装済み・実機確認済み(2026-09-05)、v2.0.0 に含まれる(develop 履歴上、2026-10-04 確認)。ただし D1c が関わった force-on bootstrap 系(`try_force_on_bootstrap`)は ADR-179 領域A(`621bf93c`)で後に撤去済み。 (2026-10-04 更新)
+  (以下は更新前の記述)
   **実装済み・実機で解決確認済み（2026-09-05）。2026-09-08にindex.mdの記載漏れを訂正**
 related_adr:
   - "ADR-089"

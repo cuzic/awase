@@ -8,6 +8,8 @@ summary: |-
   (2) StaleConfirm の romaji 再送(BUG-075 の重複)・猶予20msは変えない(引き金は猶予不足ではなく deferred 一括送出後の GJI 停止)。(3) 単体テストと CI の A/B、対照ハーネスの修正。
   未決: Escape 経路(per-VK idx≥1 の ESC)の破壊性、reinit の他の呼び出し元、実機での reinit 破壊性。
 status: |-
+  撤去済み(決定1 が対象とした give-up 後の VK_IME_OFF→ON reinit は ADR-212 P3〈PR #402、0a7f9067〉で機構ごと撤去、v2.0.0 時点で reinit 経路は無い。決定2〈StaleConfirm の romaji 再送・猶予20ms〉は変更なし)。
+  旧(2026-10-04 更新前):
   採用・決定1 実装済み(2026-09-26、`bc12ce95`、opus-adversarial-consult round1〜3 で収束)。決定3(b)(c) と未決事項はリスク節。
 related_adr:
   - "ADR-079"

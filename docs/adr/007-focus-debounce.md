@@ -3,7 +3,7 @@ id: ADR-007
 title: |-
   フォーカス変更時の IME キャッシュ更新デバウンス
 status: |-
-  採用済み
+  実装済み(統合、2026-10-04 確認)。50ms フォーカスデバウンスは focus_debounce_ms(runtime/mod.rs)として現存。TIMER_FOCUS_DEBOUNCE は ADR-027 で TIMER_IME_REFRESH に統合済み。旧: 採用済み
 related_adr: []
 ---
 

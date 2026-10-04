@@ -3,7 +3,7 @@ id: ADR-012
 title: |-
   VkCode / ScanCode newtype の全面適用
 status: |-
-  採用済み
+  採用・実装済み(VkCode/ScanCode newtype は awase-vkmap・src/types.rs・awase-windows/src/vk.rs に現存、2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 

@@ -3,11 +3,13 @@ id: ADR-024
 title: |-
   修飾キーの PassThrough 保証と ping ベースフック監視
 status: |-
-  承認済み（実装完了）
+  一部実装(一部置換、2026-10-04 確認)。Ctrl/Alt/Win の Engine バイパスは現存。ping ベースのフック監視(send_ping・VK_NONAME ping)は 19081c40(2026-05-26)で撤去され、無活動検出のみの watchdog に簡略化、issue #165 で hook_starved 自己修復が追加された(hook.rs・runtime/mod.rs)。旧: 承認済み（実装完了）
 related_adr: []
 ---
 
 # ADR 024: 修飾キーの PassThrough 保証と ping ベースフック監視
+
+> 状態更新(2026-10-04): 一部実装(一部置換、2026-10-04 確認)。Ctrl/Alt/Win の Engine バイパスは現存。ping ベースのフック監視(send_ping・VK_NONAME ping)は 19081c40(2026-05-26)で撤去され、無活動検出のみの watchdog に簡略化、issue #165 で hook_starved 自己修復が追加された(hook.rs・runtime/mod.rs)
 
 ## ステータス
 

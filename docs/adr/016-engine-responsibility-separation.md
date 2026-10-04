@@ -3,11 +3,13 @@ id: ADR-016
 title: |-
   Engine 内部の責務分離（5層構造）
 status: |-
-  採用済み
+  実装済み(一部変更、2026-10-04 確認)。engine.rs・fsm_adapter.rs・nicola_fsm.rs・confirm_policy.rs・timing.rs は現存。engine/ime_coordinator.rs は f5ee7682(2026-04-03)で Engine から撤去。確定モードは v2 A2(8ad6e970、2026-09-29)で ConfirmMode が Wait/NgramPredictive の2択に削減(旧値 speculative/two_phase/adaptive_timing は Wait として読む)。旧: 採用済み
 related_adr: []
 ---
 
 # ADR-016: Engine 内部の責務分離（5層構造）
+
+> 状態更新(2026-10-04): 実装済み(一部変更、2026-10-04 確認)。engine.rs・fsm_adapter.rs・nicola_fsm.rs・confirm_policy.rs・timing.rs は現存。engine/ime_coordinator.rs は f5ee7682(2026-04-03)で Engine から撤去。確定モードは v2 A2(8ad6e970、2026-09-29)で ConfirmMode が Wait/NgramPredictive の2択に削減(旧値 speculative/two_phase/adaptive_timing は Wait として読む)
 
 ## ステータス
 

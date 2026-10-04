@@ -3,7 +3,7 @@ id: ADR-027
 title: |-
   IME 状態リフレッシュと IME 制御キーの設計
 status: |-
-  承認済み（実装完了）
+  採用・実装済み(統合 IME リフレッシュタイマー TIMER_IME_REFRESH は現存、旧 TIMER_IME_POLL/TIMER_FOCUS_DEBOUNCE は現行コードに無い、2026-10-04 確認)。旧: 承認済み（実装完了）
 related_adr: []
 ---
 

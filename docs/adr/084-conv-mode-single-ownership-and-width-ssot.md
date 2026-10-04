@@ -3,6 +3,8 @@ id: ADR-084
 title: |-
   conv-mode の単一所有権と「出力の幅を IME に委譲しない」原則 — 物理シフト面・belief キャッシュ・送信保証の責務再配置
 status: |-
+  北極星仕様のまま・一部の前提が変更。`actuate_conv_mode` 単一窓口(INV-1)は現存(output/conv_actuation.rs)。ただし ADR-094(2026-08-17)で charset 軸の追跡と `conv_mode_policy` を撤去したため、charset/force に関する原則は適用対象外になった。原則 P1〜P5 全体への現行コードの適合度は要確認(本確認では検証していない)。
+  旧(2026-10-04 更新前):
   提案（北極星仕様、未実装）
 related_adr:
   - "ADR-033"

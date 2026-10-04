@@ -22,6 +22,8 @@ summary: |-
   `fallback_write`）から呼ぶ形に統合、`tests/architecture_guard.rs`の
   ガードを関数別カウントへ作り替えた。
 status: |-
+  実装済み(decision1: `is_input_relay()` へのゲート再検証統合、`c8bc1adc`、v2.0.0 に含まれる、2026-10-04 コード確認)。decision2 は見送り確定(却下)。 (2026-10-04 更新)
+  (以下は更新前の記述)
   **decision1: 実装済み・push予定。decision2: 3ラウンド検証の結果見送り
   確定（コスト>効果、`caller`要件が実装不能）。** より野心的な統合
   （ADR-090 §2.A A-2、warrant強制）は本ADRとは別に着手済み

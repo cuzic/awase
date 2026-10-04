@@ -3,7 +3,7 @@ id: ADR-002
 title: |-
   入力・処理・出力の3層分離
 status: |-
-  採用済み
+  採用・実装済み(InputTracker は src/engine/input_tracker.rs に現存、2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 

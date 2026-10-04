@@ -3,7 +3,7 @@ id: ADR-060
 title: |-
   競合ソフトウェア起動時チェック
 status: |-
-  採用済み
+  採用・実装済み(競合ソフト検出 CONFLICTS は app/bootstrap.rs に現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-043"
   - "ADR-052"

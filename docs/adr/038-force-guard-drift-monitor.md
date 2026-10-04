@@ -3,12 +3,14 @@ id: ADR-038
 title: |-
   ForceGuardSet / DriftMonitor 型分解
 status: |-
-  採用済み
+  実装済み(改名・縮小、2026-10-04 確認)。DriftMonitor は ObserveMissMonitor に改名(a1ecc102)、ForceGuardSet は state/force_guard.rs に現存するが ForceOnReason は PanicReset/ProfilePolicy のみ(BrokenAppBootstrap は force-on 撤去で削除、bab1429e)、force_on_until_ms は現行コードに無い。旧: 採用済み
 related_adr:
   - "ADR-032"
 ---
 
 # ADR-038: ForceGuardSet / DriftMonitor 型分解
+
+> 状態更新(2026-10-04): 実装済み(改名・縮小、2026-10-04 確認)。DriftMonitor は ObserveMissMonitor に改名(a1ecc102)、ForceGuardSet は state/force_guard.rs に現存するが ForceOnReason は PanicReset/ProfilePolicy のみ(BrokenAppBootstrap は force-on 撤去で削除、bab1429e)、force_on_until_ms は現行コードに無い
 
 ## ステータス
 

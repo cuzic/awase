@@ -3,7 +3,7 @@ id: ADR-013
 title: |-
   統一 Effect モデル（Decision / Effect パターン）
 status: |-
-  採用済み
+  採用・実装済み(Effect/Decision・execute_decision は現存、2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 

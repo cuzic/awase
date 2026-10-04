@@ -3,11 +3,13 @@ id: ADR-025
 title: |-
   TOML ベースのカスタマイズ設計
 status: |-
-  提案中
+  未実装(提案のまま、2026-10-04 確認)。本文の TOML+CSS 型 [class.*]/[style.*] カスケード設定は src/config.rs に存在しない。アプリ別設定は別機構で実装済み: アプリ別 keymap(ADR-037、現行表記 [[keymaps]])・app_overrides・[[post_bypass]](ADR-050)。旧: 提案中
 related_adr: []
 ---
 
 # ADR 025: TOML ベースのカスタマイズ設計
+
+> 状態更新(2026-10-04): 未実装(提案のまま、2026-10-04 確認)。本文の TOML+CSS 型 [class.*]/[style.*] カスケード設定は src/config.rs に存在しない。アプリ別設定は別機構で実装済み: アプリ別 keymap(ADR-037、現行表記 [[keymaps]])・app_overrides・[[post_bypass]](ADR-050)
 
 ## ステータス
 

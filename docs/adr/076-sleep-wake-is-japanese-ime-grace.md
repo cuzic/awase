@@ -3,7 +3,7 @@ id: ADR-076
 title: |-
   スリープ復帰後 is_japanese_ime 一時 false — grace 保護
 status: |-
-  採用済み
+  採用・実装済み(compute_focus_probe_grace・apply_focus_probe の grace 保護は現存、2026-10-04 確認)。旧: 採用済み
 related_adr:
   - "ADR-032"
   - "ADR-075"

@@ -5,6 +5,8 @@ title: |-
 summary: |-
   ADR-158採用Eの子ADR。複雑性予算制・ADRのTTL・敵対的レビューの向き先反転・known-bugs.mdのコード回帰を採択。opus-adversarial-consult round1(ADR-158側)で「`architecture_guard.rs`は増加のみ検知」という前提が誤りと判明し「ガード実装の変更」から「`expected`更新の運用規約変更」に訂正。2026-09-09、「宣言の強制とSSOT化」原則を反映し、E1の監視対象を「expected値(生成物)」から「宣言そのもの(dylint許可リスト)」に組み替え、round1 M4のADR-161との矛盾を解消。ただしキュー数・tuning定数数・ADR数は対応する宣言機構が無く予算制の対象外のまま。ADR-159の記録・再生基盤が実績を出すまで着手しないという依存はround1で妥当と確認済み
 status: |-
+  一部実装: ADR-158 TH2/TH3(ADR TTL・CI チェック等、`6637bed8`)は実装済み。E1(複雑性予算制)は `.claude/rules/complexity-budget.md` に起草済みだが TH1e 未達のため未発効(2026-10-04 確認)。旧: E2/E3 は着手可、E1/E4 は ADR-159 実績待ち。 (2026-10-04 更新)
+  (以下は更新前の記述)
   起票。TJ4(単体レビュー)実施済み・round4反映済み。E2/E3は着手可、E1/E4はADR-159実績(能力ベース)待ち
 related_adr:
   - "ADR-119"

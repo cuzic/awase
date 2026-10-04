@@ -5,6 +5,8 @@ title: |-
 summary: |-
   IME open/close belief における「内部信念」と「actuation の根拠」の分離 — `effective_open()` の二重用途（engine 挙動決定 と 外部書き込みの授権）を `OpenWarrant`/`WarrantBasis` で型分離。ADR-086 の根拠軸、INV-20〜28
 status: |-
+  一部実装・配線済み(2026-10-04 コード確認)。Phase 0〜2' の純粋ロジック(`issue_open_warrant`、state/open_warrant.rs)は現存。Phase 3 の配線は ADR-090 §2.A の A-1(全 actuation 入口への shadow 配線、e3bf7af2)・A-2(`into_actuation` による強制、2026-09-19)で実施済みで、`warrant_pending_adr087()` は削除済み。実機ソークの記録は確認できず未実施扱い。
+  旧(2026-10-04 更新前):
   Phase 0〜2' 純粋ロジック実装・テスト済み・Opus 最終確認 must-fix ゼロ（BUG-63）、Phase 3 配線・実機ソーク未着手
 related_adr:
   - "ADR-077"

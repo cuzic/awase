@@ -3,7 +3,7 @@ id: ADR-017
 title: |-
   TimingJudge によるタイミング判定の集中化
 status: |-
-  採用済み
+  採用・実装済み(TimingJudge の is_simultaneous/three_key_pairing は src/engine/timing.rs に現存、2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 

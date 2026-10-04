@@ -5,6 +5,8 @@ title: |-
 summary: |-
   IME 状態制御を Rust の型システムでどう表現するか — 型状態パターンの**局所適用**3箇所（`ObservationStore` の Actuating/BeliefOnly プール分離を関連型で排他化、`Actuation<Requested/Warranted/Verified>` チェーン、`ActuationReceipt` による `GjiFsm` 同期義務のアフィン型化）と、capability を **const 表 `caps(p,k)`** に据える決定。**trait 静的分岐は却下**（§4.1、再提案禁止）。ADR-088 の姉妹編（088=「何が壊れているか」／089=「型でどう表現するか」）。INV-38〜46
 status: |-
+  一部実装(Phase A/B/C 実装済み、2026-08-12。残課題は ADR-090 が引き取り、2026-10-04 コード確認)。`warrant_pending_adr087()` は ADR-090 A-1 で削除済み、`ConvergedReceipt`(state/ime_actuation.rs)は ADR-090 §2.B で読み戻し API へ配線済み、`record_belief` 等の観測ストア(state/observation_store.rs)は現存。非同期チェーンへの caps 適用(ADR-090 項D)は本文に実施記録なし。実機ソーク未実施。
+  旧(2026-10-04 更新前):
   **ドラフト**（Fable×Opus pre-mortem 4ラウンド + 起票後 Opus レビュー(round5、指摘10件反映)で収束。**Phase A/B/C すべて実装済み**（2026-08-12）——ただし `record`/`record_belief` の本番呼び出し元はゼロ（§9-10）、`issue_open_warrant()` も未配線で `warrant_pending_adr087()` が 2 箇所（§9-12）、`ConvergedReceipt` は制御フロー未接続（§9-16）、非同期チェーンは `caps` 未適用（§9-20）。**実機ソーク未実施**（申し送りは §9-17）。残課題の詳細化は ADR-090 が引き取った）
 related_adr:
   - "ADR-065"

@@ -5,6 +5,8 @@ title: |-
 summary: |-
   BUG-34追補4(eisuガード撤去)完了直後、「eager warmupもGJIなら不要では」という疑問を機にeager warmup/drift correction/TsfNative force-onブロックの3機構をOpus premortemで監査(BUG-69)。TsfNative force-onブロックは`ir_post_focus_change_snapshot`が常にfocus settle barrier内で呼ばれるため到達不能(F1)、同関数の`mirror_applied_open`が何もapplyせずbeliefを`applied=Confirmed`へ偽装しfocus_tracking.rsの「TsfNativeはapplied=Unknown維持」不変条件に違反、`apply_force_on_for_imm_broken`(BUG-16修正)のスパムガードを誤発火させ恒久的に無効化する(F2、核心)。結果TsfNative+GJIのフォーカス復帰時に発火する唯一のactuationはeager warmupのみとなり(F3)、そのscan付き`VK_DBE_HIRAGANA`はBUG-15追補7が「実IME確実ON時のみ」と禁止する危険な注入形態を無監査で行っていた(F4)。**ADR-087の「`AppliedImeState`がConfirmedに遷移する契機が無い」という前提がF2により誤りと判明**、Phase3配線着手前の再検証が必要。決定: F2修正(mirror_applied_openをTsfNativeで呼ばない)→force-onブロック撤去→eager warmupゲート強化、の順で段階的に実施。drift correctionはKEEP AS-IS
 status: |-
+  一部撤去・残りは実装済み(2026-10-04 確認)。決定0/1-a/1-b/2/4/6 の applied 偽装確定の停止・到達不能 force-on ブロック撤去は反映済み。決定1-c の force-on クールダウンと force-on 機構そのもの(`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`/`force_on_and_correct_romaji`)は ADR-179 領域A 2/3(621bf93c、2026-09-18)で撤去済みで現行コードに無い。実機での再現・ソークは記録なし。
+  旧(2026-10-04 更新前):
   **実装済み（クロスコンパイル検証のみ、Windows実機未検証、2026-08-21）**。決定0/1-a/1-b/1-c/2/4/6-a/6-b/6-cをコード反映済み、`cargo xwin check/build/clippy`全クリーン・Linuxで実行可能なテスト504件全成功。Windows実機での再現・検証・ソークは未実施
 related_adr:
   - "ADR-044"

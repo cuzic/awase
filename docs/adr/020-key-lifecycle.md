@@ -3,11 +3,13 @@ id: ADR-020
 title: |-
   KeyLifecycle による Down/Up ペア追跡
 status: |-
-  採用済み
+  実装済み(一部撤去、2026-10-04 確認)。KeyLifecycle は src/engine/key_lifecycle.rs に現存、SyncModifiers コマンドは f5ee7682(2026-04-03)で撤去され現行コードに無い。旧: 採用済み
 related_adr: []
 ---
 
 # ADR-020: KeyLifecycle による Down/Up ペア追跡
+
+> 状態更新(2026-10-04): 実装済み(一部撤去、2026-10-04 確認)。KeyLifecycle は src/engine/key_lifecycle.rs に現存、SyncModifiers コマンドは f5ee7682(2026-04-03)で撤去され現行コードに無い
 
 ## ステータス
 

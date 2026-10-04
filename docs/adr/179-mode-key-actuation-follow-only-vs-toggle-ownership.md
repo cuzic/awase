@@ -14,6 +14,8 @@ summary: |-
   GJI/MS-IME両側を対称に修正。round8で「収束。Blocker・Must-fixいずれも無し。
   実装着手可」との最終判定を得た。設計の紆余曲折はレビュー経緯節を参照。
 status: |-
+  一部実装・中核撤去(2026-10-04 確認): 決定1・2 は実装済みだったが、決定2 の `ModeKeyActuationOwner` は ADR-191 `502c6673` で撤去済み(現コードに出現0件)。領域A(reassert・force-on、`f83084b3`・`621bf93c`)の撤去は v2.0.0 に含まれる。Passthrough 実験コミット4件は PR #230(`0ba97a57`)で revert 済み。 (2026-10-04 更新)
+  (以下は更新前の記述)
   **収束済み（opus-adversarial-consult round1〜round8）。設計・スコープ・
   条件式のいずれにも未解決の欠陥は無いと判定された。実装フェーズへ持ち越す
   事項（実機A/Bの4象限、`schedule_settle_retry`を巻き込まない別関数化、

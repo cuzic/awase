@@ -3,7 +3,7 @@ id: ADR-0004
 title: |-
   InjectionMode 三分岐設計
 status: |-
-  安定
+  採用・実装済み(InjectionMode の Unicode/Vk/Tsf 3分岐は state/injection_mode.rs に現存、2026-10-04 確認)。旧: 安定
 related_adr: []
 ---
 

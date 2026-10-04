@@ -3,6 +3,8 @@ id: ADR-170
 title: |-
   コードスメル解消: belief reduce()分割(決定1のみ実施、決定2・3は調査のみで見送り)
 status: |-
+  一部実装: 決定1(`ImeModel::reduce()` の分岐抽出)は実装済み(#216、`ab116864`、develop に含まれる)。決定2・3 は見送り。旧: マージ前の最終検証待ち (2026-10-04 更新)
+  (以下は更新前の記述)
   opus-adversarial-consult round1〜round3反映済み・収束(Blockerゼロ)。決定2・3は見送り、決定1のみ実施済み。マージ前の最終検証待ち
 related_adr:
   - "ADR-087"

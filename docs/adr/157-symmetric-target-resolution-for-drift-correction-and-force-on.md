@@ -5,6 +5,8 @@ title: |-
 summary: |-
   BUG-110追補7（issue #189、MS-IME/Chrome）の二重SSOT問題に対し、当初「force-ONがdrift correctionの実行中バーストに調停で道を譲る」新機構を設計、opus-adversarial-consult 4ラウンドで収束・実装・実機ソークまで完了させた。しかしユーザー指摘（設計の複雑化）を受け再検討し、既存の`ConvOpenInference`除外ガードに`HeuristicDefault`を1バリアント加えるだけのシンプルな根本修正に置き換え
 status: |-
+  撤回済み(不採用)、v2.0.0 時点でも同じ。前提だった force-on 側(`apply_force_on_for_imm_broken`)は ADR-179 領域A で撤去済み。 (2026-10-04 更新)
+  (以下は更新前の記述)
   **撤回済み（不採用）。採用した修正はdocs/known-bugs.md BUG-110追補9を参照。round1の恒真化に関する知見のみ本ADRに保存**
 related_adr:
   - "ADR-087"

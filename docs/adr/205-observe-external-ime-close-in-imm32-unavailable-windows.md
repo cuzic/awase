@@ -8,6 +8,8 @@ summary: |-
   本 ADR は、目印なしの外部注入 IME キーで専用の短い監視窓(300ms)を立て、prefetch 済み snapshot で窓内に 1→0 の遷移を観測したときだけ
   実状態へ追随する(意図を捨て desired を揃える。awase は開け直さない)。新 I/O・新 actuation 合流点・新イベント種別なし。
 status: |-
+  採択・実装済み(PR #377 fd41bf88、v2.0.0 に含まれる)。CI 検証済み(GJI×実 Chrome で追随 10/10)。実機でも X5 で効果を確認(2026-09-30、dragonflyg4、docs/tasks/v2-device-verification-results-2026-09-30.md)。ただし偽 OFF の疑い1件が未解消(BUG-176)。モードキー押下後の期待状態の実機検証は未了。
+  旧(2026-10-04 更新前):
   採択・実装済み(2026-09-29、`fd41bf88`)。opus-adversarial-consult round5 で観測部は収束(D7 は ADR-208 へ切り出し)。CI 検証: GJI × 実 Chrome 注入で追随 10/10。実機・モードキー押下の検証は未了。
 related_adr:
   - "ADR-029"

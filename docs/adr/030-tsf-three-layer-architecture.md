@@ -3,7 +3,7 @@ id: ADR-030
 title: |-
   TSF 状態管理の3層分離アーキテクチャ
 status: |-
-  採用済み
+  採用・実装済み(拡張、2026-10-04 確認)。tsf/{observer,probe,output,probe_bridge}.rs は現存し tsf/warmup/ 等が追加された。WM_DRAIN_PROBE_QUEUE・PROBE_KEY_QUEUE・OBS_GJI_CANDIDATE_SHOW_SEQ は現行コードに無い(WM_DRAIN_OUTPUT_QUEUE に統合)。cold-start 待機行列は d4956490 で撤去。旧: 採用済み
 related_adr:
   - "ADR-046"
   - "ADR-047"
@@ -12,6 +12,8 @@ related_adr:
 ---
 
 # ADR-030: TSF 状態管理の3層分離アーキテクチャ
+
+> 状態更新(2026-10-04): 採用・実装済み(拡張、2026-10-04 確認)。tsf/{observer,probe,output,probe_bridge}.rs は現存し tsf/warmup/ 等が追加された。WM_DRAIN_PROBE_QUEUE・PROBE_KEY_QUEUE・OBS_GJI_CANDIDATE_SHOW_SEQ は現行コードに無い(WM_DRAIN_OUTPUT_QUEUE に統合)。cold-start 待機行列は d4956490 で撤去
 
 ## ステータス
 

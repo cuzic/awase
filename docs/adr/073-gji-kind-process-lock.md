@@ -3,7 +3,7 @@ id: ADR-073
 title: |-
   GJI 検出後は active_ime_kind をプロセス中固定（MS-IME への降格禁止）
 status: |-
-  採用済み
+  置換(2026-10-04 確認)。『GJI 検出後は active_ime_kind をプロセス中固定(MS-IME への降格禁止)』は現行コードに無い。BUG-17 の 8d97e832(2026-07-07)で ImeKindDebounce(2 tick 連続で同じ新種別を観測したら確定)に置換され、tsf/observer.rs::set_tsf_active_kind は『GJI ↔ MS-IME の動的切り替えに対応するため値は常に上書き』。notify_gji_clsid_found は現行コードに無い。旧: 採用済み
 related_adr:
   - "ADR-052"
   - "ADR-063"
@@ -11,6 +11,8 @@ related_adr:
 ---
 
 # ADR-073: GJI 検出後は active_ime_kind をプロセス中固定（MS-IME への降格禁止）
+
+> 状態更新(2026-10-04): 置換(2026-10-04 確認)。『GJI 検出後は active_ime_kind をプロセス中固定(MS-IME への降格禁止)』は現行コードに無い。BUG-17 の 8d97e832(2026-07-07)で ImeKindDebounce(2 tick 連続で同じ新種別を観測したら確定)に置換され、tsf/observer.rs::set_tsf_active_kind は『GJI ↔ MS-IME の動的切り替えに対応するため値は常に上書き』。notify_gji_clsid_found は現行コードに無い
 
 ## ステータス
 

@@ -3,7 +3,7 @@ id: ADR-071
 title: |-
   deferred VK キューの所有権を probe machine から TsfWarmupCoordinator へ移管
 status: |-
-  採用済み
+  実装済み(一部撤去、2026-10-04 確認)。deferred VK キューの TsfWarmupCoordinator 所有(pending_deferred)は現存。SacrificialWarmupCoro は d4956490 で撤去。旧: 採用済み
 related_adr:
   - "ADR-047"
   - "ADR-053"
@@ -11,6 +11,8 @@ related_adr:
 ---
 
 # ADR-071: deferred VK キューの所有権を probe machine から TsfWarmupCoordinator へ移管
+
+> 状態更新(2026-10-04): 実装済み(一部撤去、2026-10-04 確認)。deferred VK キューの TsfWarmupCoordinator 所有(pending_deferred)は現存。SacrificialWarmupCoro は d4956490 で撤去
 
 ## ステータス
 

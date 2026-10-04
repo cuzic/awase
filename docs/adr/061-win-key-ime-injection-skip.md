@@ -3,7 +3,7 @@ id: ADR-061
 title: |-
   Win キー押下中の IME キー注入スキップ
 status: |-
-  採用済み
+  実装済み(一部撤去、2026-10-04 確認)。send_ime_mode_key の Win キー押下中スキップ(hook::win_key_held)は現存。send_engine_state_ime_key(ADR-207 でエンジン ON/OFF の IME キー能動送信を撤去)と send_vk_dbe_hiragana_pair(eager warmup 撤去、ADR-212)は現行コードに無い。旧: 採用済み
 related_adr:
   - "ADR-048"
   - "ADR-054"
@@ -11,6 +11,8 @@ related_adr:
 ---
 
 # ADR-061: Win キー押下中の IME キー注入スキップ
+
+> 状態更新(2026-10-04): 実装済み(一部撤去、2026-10-04 確認)。send_ime_mode_key の Win キー押下中スキップ(hook::win_key_held)は現存。send_engine_state_ime_key(ADR-207 でエンジン ON/OFF の IME キー能動送信を撤去)と send_vk_dbe_hiragana_pair(eager warmup 撤去、ADR-212)は現行コードに無い
 
 ## ステータス
 

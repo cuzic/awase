@@ -3,6 +3,8 @@ id: ADR-083
 title: |-
   `InjectionMode`（文字送信経路）をGJI専用にper-VK確認方式へ統一する構想の検討記録
 status: |-
+  見送り(`InjectionMode` のGJI専用 per-VK 統一は NO-GO のまま、2026-10-04 時点で統一は未実施)。`InjectionMode` は現行コードに現存(state/injection_mode.rs)。観測専用の診断配線の現存は本確認では未検証。
+  旧(2026-10-04 更新前):
   検討フェーズ・統一自体は NO-GO（観測専用の診断配線のみ実施済み）
 related_adr:
   - "ADR-006"

@@ -3,7 +3,7 @@ id: ADR-031
 title: |-
   win32-async クレートの設計
 status: |-
-  採用済み
+  採用・実装済み(crates/win32-async は run_with_timeout・block_on 等とともに現存、2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 

@@ -3,13 +3,15 @@ id: ADR-037
 title: |-
   キーマップ再割当設計
 status: |-
-  採用済み
+  採用・実装済み(表記更新、2026-10-04 確認)。アプリ別キー再割当・HeldModifiers は現存。設定キーは現行 [[keymaps]]、本文の [[keymap]] は旧表記として合流読み込み(ADR-201 決定5、src/config.rs)。サンプルは ADR-114 で実質 superseded。旧: 採用済み
 related_adr:
   - "ADR-024"
   - "ADR-025"
 ---
 
 # ADR-037: キーマップ再割当設計
+
+> 状態更新(2026-10-04): 採用・実装済み(表記更新、2026-10-04 確認)。アプリ別キー再割当・HeldModifiers は現存。設定キーは現行 [[keymaps]]、本文の [[keymap]] は旧表記として合流読み込み(ADR-201 決定5、src/config.rs)。サンプルは ADR-114 で実質 superseded
 
 ## ステータス
 

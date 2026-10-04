@@ -3,11 +3,13 @@ id: ADR-001
 title: |-
   UIA FrameworkId ベースの IME 信頼度判定
 status: |-
-  採用済み
+  置換(部分)。UIA FrameworkId による Reliable/Unreliable/Unknown の信頼度(ImeReliability)は bf7ad3b5 で撤去済みで現行コードに無い。FrameworkId は focus/uia.rs::resolve_app_kind で AppKind 推定に転用され現存。IME 状態の信頼性は ADR-029/032/075 の観測 confidence モデルが担う(2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 
 # ADR-001: UIA FrameworkId ベースの IME 信頼度判定
+
+> 状態更新(2026-10-04): 置換(部分)。UIA FrameworkId による Reliable/Unreliable/Unknown の信頼度(ImeReliability)は bf7ad3b5 で撤去済みで現行コードに無い。FrameworkId は focus/uia.rs::resolve_app_kind で AppKind 推定に転用され現存。IME 状態の信頼性は ADR-029/032/075 の観測 confidence モデルが担う(2026-10-04 確認)
 
 ## ステータス
 採用

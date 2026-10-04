@@ -5,6 +5,8 @@ title: |-
 summary: |-
   [GitHub issue #148](https://github.com/cuzic/awase/issues/148)（Windows Terminal+GJIで「たとえば」が「ばたと」に文字脱落・順序入替）から起票。Opus 2体（architect/premortem）敵対的レビュー2ラウンド完了後、round2で提示された2点の検証項目を`report_id: 01M1JJD54XQXSEJTHHFKV1WKA1`の`app_log_excerpt`（journalでは追えないlog::生ログ層）を直接読んで確定させ、根本原因を確定させた。「た」のgive-upが予約したGJI reinitのポーリング完了を待つ間`pending_deferred`（と+え、3VK）のflushは保留されるが、この保留期間中に到着した「ば」が`pending_deferred`の存在を考慮しない`defer_if_probe_in_flight`（`has_pending_tsf()`のみ判定）を通り独立probeを開始して先に確定、`pending_deferred`が後から来たモーラに追い越される、という機序を特定。round0の「え+ば融合」仮説・round2で浮上した`discard_raw_recovery_if_focus_stale`（focus churn破棄）仮説はいずれも反証・不発火確認済みで棄却
 status: |-
+  一部実装(診断ログのみ、2026-10-04 確認)。診断(`TsfProbeStarted.pending_deferred_len`/`probe_id`、`DeferredRecoveryFlush`、`GjiReinitRetryCompleted`)は PR #151 で実装され現存(journal.rs)。根治の `defer_if_probe_in_flight` の gating 拡張は未実装で、`pending_deferred_len>0` の実観測を再開条件とする保留のまま。
+  旧(2026-10-04 更新前):
   **根本原因確定・decision確定（未実装）。ユーザー判断により実際の修正（`defer_if_probe_in_flight`のgating拡張）は次回`TsfProbeStarted.pending_deferred_len>0`が実際に観測されるまで見送り、再発時に仮説を機械的に確定できる診断ログ（`TsfProbeStarted.pending_deferred_len`/`probe_id`、`DeferredRecoveryFlush`、`GjiReinitRetryCompleted`）のみを実装（PR #151）**
 related_adr:
   - "ADR-095"

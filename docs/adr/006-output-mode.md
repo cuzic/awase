@@ -3,11 +3,13 @@ id: ADR-006
 title: |-
   出力モード選択 (per_key / batched / unicode)
 status: |-
-  採用済み
+  置換(2026-10-04 確認)。config の output_mode(per_key/batched/unicode)は 2026-07-06 に撤去され、per-window の InjectionMode(injection_hint+AppKind から自動決定)に完全置換(src/config.rs 冒頭 NOTE)。Unicode 直接注入の方針自体は InjectionMode::Unicode として存続。旧: 採用済み
 related_adr: []
 ---
 
 # ADR-006: 出力モード選択 (per_key / batched / unicode)
+
+> 状態更新(2026-10-04): 置換(2026-10-04 確認)。config の output_mode(per_key/batched/unicode)は 2026-07-06 に撤去され、per-window の InjectionMode(injection_hint+AppKind から自動決定)に完全置換(src/config.rs 冒頭 NOTE)。Unicode 直接注入の方針自体は InjectionMode::Unicode として存続
 
 ## ステータス
 採用
