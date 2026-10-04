@@ -270,7 +270,7 @@ impl PostBypassEntry {
     /// （`bootstrap`）とリロード（`apply_config_update`）の**唯一の構築点**
     /// （BUG-103: 起動時だけ構築していたためリロードで反映されなかった）。
     /// 解決できないルールは除外し、警告を2つ目の戻り値で返す（ADR-201 決定2(a)）。
-    pub(crate) fn compile_all(config: &awase::config::ValidatedConfig) -> (Vec<Self>, Vec<String>) {
+    pub(crate) fn compile_all(config: &ValidatedConfig) -> (Vec<Self>, Vec<String>) {
         let mut warnings = Vec::new();
         let rules = config
             .post_bypass
