@@ -56,6 +56,9 @@ pub mod app_suppression;
 // 「純粋判定を Linux でテストできるようにする」移設パターン。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod win_key_guard;
+// ADR-223 段階 0: 入力言語(HKL)の判定(純粋関数。Win32 を呼ばないので Linux でもテストできる)。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod layout_language;
 // ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
 // 配線はまだ無い（モジュール冒頭のスコープ節参照）。
 pub mod event_origin;

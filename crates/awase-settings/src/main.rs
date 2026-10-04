@@ -1112,7 +1112,7 @@ impl SettingsApp {
                 std::thread::spawn(move || {
                     keymap_learn_launcher::drain_learning_stderr_lines_logged(
                         stderr,
-                        keymap_learn_launcher::learning_log_path().as_deref(),
+                        keymap_learn_launcher::learning_log_path(mode).as_deref(),
                     )
                 })
             });
@@ -3345,7 +3345,11 @@ impl SettingsApp {
                 if finished {
                     ui.label("残り約0秒");
                 } else if let Some(eta_ms) = p.eta_ms {
-                    ui.label(format!("残り約{:.0}秒", eta_ms / 1000.0));
+                    // 切り捨てて表示する(1秒未満は「0秒」。四捨五入だと、終わる直前に「1秒」が残って見える)。
+                    ui.label(format!("残り約{:.0}秒", (eta_ms / 1000.0).floor().max(0.0)));
+                } else {
+                    // 巡回の間は、状態が次々に見つかり終わりが分からないため、残り時間を出さない。
+                    ui.label("残り時間を見積もり中…");
                 }
             }
 

@@ -422,6 +422,10 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         if monitor.is_none() && now >= next_attach_ms {
             if let Some(m) = GjiMonitor::try_attach() {
                 tracing::info!("[gji-monitor] attached to GJI process (I/O monitoring enabled)");
+                // 接続時刻を先に記録する（`last_change_ms` は累積カウンタの初回読みで立つ接続時点の値で、実 I/O ではない。BUG-176）。
+                TSF_OBS
+                    .gji_attach_ms
+                    .store(crate::hook::current_tick_ms(), Ordering::Relaxed);
                 TSF_OBS
                     .gji_last_io_ms
                     .store(m.last_change_ms(), Ordering::Relaxed);

@@ -52,6 +52,11 @@ pub struct Stats {
     pub anomalies: HashMap<Anomaly, u32>,
     /// 押下ごとの (経過ms, 1回以上測ったセル数, 2回以上測ったセル数)。
     pub timeline: Vec<(f64, usize, usize)>,
+    /// 巡回(`strategy::tour`)の今の計画に残っている打鍵数・リセット数・必要観測数(進捗の見積り用)。
+    /// 計画を立てるたびに更新し、実行で減らし、巡回が終わったら0にする。
+    pub plan_presses_left: u32,
+    pub plan_resets_left: u32,
+    pub need_left: u32,
 }
 
 /// IMEへの注入・観測・待機を内包するドライバ。

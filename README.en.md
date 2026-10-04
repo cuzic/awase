@@ -31,6 +31,57 @@ For details on the technical design, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
+## End of maintenance for v1, and moving to v2
+
+With the release of awase v2.0.0 (2026-10-03), **the v1 line (1.x) is no longer maintained** (end-of-maintenance date: the v2.0.0 release date, 2026-10-03).
+v1 will receive no further bug fixes or features. The last v1 release is 1.21.1.
+
+- **We recommend upgrading to v2.** Download it from [GitHub Releases](https://github.com/cuzic/awase/releases). The full list of differences is in [docs/migration-v1-to-v2.md](docs/migration-v1-to-v2.md) (Japanese).
+- Known problems that will not be fixed in v1 are listed in [Known issues remaining in v1](#known-issues-remaining-in-v1).
+- Your `config.toml` carries over, but a few settings change in v2. See
+  [Settings that change when moving from v1 to v2](#settings-that-change-when-moving-from-v1-to-v2).
+- The in-app update notification of v1.21.1 does not announce v2. Check this page or GitHub Releases.
+
+### Main bugs fixed in v2
+
+Items not yet checked on a real machine (physical keys, real apps) say so. Details are in the BUG records under `docs/known-bugs/` (Japanese).
+
+- Fixed: with Google Japanese Input in TSF-native apps such as Windows Terminal, the input could get stuck in katakana with no way back (BUG-173). Not yet fully verified on a real machine.
+- Fixed: with Google Japanese Input in Chrome, fast typing could erase the composition in progress (BUG-168). Awaiting CI and real-machine confirmation.
+- Fixed: with Google Japanese Input in Chrome-like windows, after another program injected a key that closed the IME, awase kept NICOLA on and plain romaji was typed (BUG-172). Confirmed in CI (Windows runners on GitHub Actions), and the effect was also seen on a real machine in Edge; however, one case of "IME still open but NICOLA turned off" was seen on a real machine and its cause is not identified (BUG-176). MS-IME is not covered.
+- Fixed: right after startup awase could try to open the IME even though you had closed it (BUG-163). Not verified on a real machine.
+- Key names in `config.toml` are now read by one common rule for every setting, and mistakes produce a warning instead of being silently ignored.
+- The single-tap behavior of Muhenkan/Henkan was reorganized (see the migration section; whether it fixes the "@" seen with Windows Terminal + Google Japanese Input is not verified on a real machine).
+
+### Known issues remaining in v1
+
+These remain in v1.21.1 and will not be fixed in v1.
+
+| What happens | When | Workaround | Status in v2 |
+|---|---|---|---|
+| Cannot return to hiragana; katakana keeps being typed (BUG-173) | Google Japanese Input + Windows Terminal etc. (TSF-native), after switching to katakana | Switch the IME again with Hankaku/Zenkaku | Fixed (not verified on a real machine) |
+| Composition in progress disappears during very fast typing (BUG-168) | Chrome/Edge + Google Japanese Input | Retype | Fixed (awaiting CI/real-machine confirmation) |
+| Composition in progress disappears in the middle of a word (BUG-171) | Chrome/Edge + Google Japanese Input, when typing after being idle | Retype; confirm before continuing | Not fixed in v2 either |
+| After another program closes the IME, NICOLA does not resume and plain romaji is typed (BUG-172) | Chrome-like windows + Google Japanese Input | Switch with a physical key (Hankaku/Zenkaku etc.) | Fixed (MS-IME not covered) |
+| With MS-IME, the first hiragana key does not work and the IME may close (BUG-152) | Only the first time, when the IME switch request times out | Press the hiragana key again | Fixed |
+| Right after startup the IME is switched back on several times even if you closed it (BUG-163) | Right after starting awase with the IME closed | Switch after a short while | Fixed (not verified on a real machine) |
+| Pressing Hankaku/Zenkaku repeatedly leaves the IME stuck on (BUG-142) | Windows Terminal + Google Japanese Input | Set `keys.ime_detect.toggle` | Permanent fix not yet done |
+| With MS-IME and Chrome, pressing OFF while text is still being composed does not close the IME and switches it to half-width alphanumeric (BUG-185) | MS-IME + Chrome-like windows | Press the ON key to return to kana. With Chrome, we recommend Google Japanese Input | Will not be fixed in v2 either (MS-IME behavior) |
+| Clearing the n-gram file field in the settings app reverts to the default, so it cannot be disabled (BUG-169) | Settings app | Edit `config.toml` directly | Not fixed in v2 either |
+
+### Settings that change when moving from v1 to v2
+
+Your `config.toml` carries over. These settings behave differently in v2.
+
+- **The default of `keys.ime_toggle` is now empty.** It used to be `VK_KANJI` (Hankaku/Zenkaku). If your `config.toml` explicitly contains `VK_KANJI`, it is respected and kept. The exact old default written by the v1 settings app (`["VK_KANJI"]`) is treated as empty and removed when you save.
+- **The defaults of `keys.ime_detect.on` / `off` are now empty** (they used to be `IMEオン` / `IMEオフ`). Following the IME On/Off keys works automatically without them. Values you wrote are used as before.
+- **`keys.engine_on_ime_key` / `engine_off_ime_key` were removed.** If you saved settings in the settings app before 2026-08-15, the old defaults may remain in your `config.toml` and the feature that sends a full-width/half-width mode key when the engine turns on/off may have been active. In v2 it stops (leftover values are ignored and a notice appears at startup; saving from the settings app removes the lines). There is no replacement. Use `keys.ime_on` / `ime_off` to open/close the IME.
+- **`muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action` were removed.** They are migrated to the equivalent `keys.ime_*` entries when loaded, with a warning (not migrated if the same key already has an entry). A single tap of Muhenkan/Henkan now follows the Suppress/Passthrough setting.
+- **`confirm_mode` now has two choices: `wait` and `ngram_predictive`.** Old values are treated as `wait` on load and rewritten to `wait` on save.
+- **Key-name parsing is now uniform.** Spellings that were silently ignored before (no `VK_`, lowercase, Japanese names, ...) now take effect, so a remap you forgot about may start working after the update. The old spelling `[[keymap]]` (correct: `[[keymaps]]`) also starts working.
+
+---
+
 ## Requirements
 
 - Windows 10 / 11 (64-bit)
