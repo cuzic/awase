@@ -378,6 +378,34 @@ impl Probe {
         None
     }
 
+    /// 任意のキー列を打って、ページに出た文字を返す(`--alnum` 用)。`shift_held` なら全体を通して左Shiftを押しっぱなしにする。
+    fn type_and_snap(&mut self, vks: &[u32], shift_held: bool) -> (String, bool) {
+        if shift_held {
+            send_key(0xA0, true);
+            sleep(40);
+        }
+        for &vk in vks {
+            self.press(vk, false, 30);
+            sleep(30);
+        }
+        if shift_held {
+            sleep(self.shift_tail_ms);
+            send_key(0xA0, false);
+        }
+        sleep(350);
+        let snap = self.command("snap", "snap");
+        let (text, focused) = match &snap {
+            Some(e) => (e.value.clone(), e.focus),
+            None => (String::new(), false),
+        };
+        if !focused {
+            self.focus_lost = true;
+        }
+        let _ = self.command("clear", "cleared");
+        sleep(150);
+        (text, focused)
+    }
+
     /// `k`,`a` を打ち、出た文字で状態を判定する。終わったらページを空にする。
     fn probe(&mut self) -> (Class, String, bool) {
         let before = self.shared.lock().unwrap().events.len();
@@ -459,6 +487,54 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
         }
     }
 }
+
+/// `--alnum`: 英数入力の状態 × 打鍵の行列(「ブラウザでの英数入力が不安定」報告の再現用、観測のみ)。
+/// 状態を作り(`pre` のキーを順に1回ずつ押す)、`a` `b` を打って(Shift を押しっぱなしにする場合もある)ページに出た文字を見る。
+#[derive(Clone, Copy)]
+enum AlnumBase {
+    /// IME OFF(直接入力)。
+    Off,
+    /// IME ON・かな。
+    Kana,
+    /// 半角英数(ひらがなキーで切り替えた IME ON の英数)。
+    Alnum,
+    /// 全角英数(半角英数から全角キー 0xF4 で作る。作れなければ INVALID)。
+    FullAlnum,
+}
+
+enum AlnumWant {
+    Text(&'static str),
+    /// かな入力に戻った(NICOLA 文字、awase なしなら `か`)。
+    Kana,
+}
+
+struct AlnumCase {
+    name: &'static str,
+    base: AlnumBase,
+    /// 状態を作ったあとに1回ずつ押すキー(0xA0=左Shift の単独タップで「IME-ON 半角英数」持続トグル)。
+    pre: &'static [u32],
+    /// 打つキー。
+    vks: &'static [u32],
+    shift_held: bool,
+    want: AlnumWant,
+}
+
+const VK_A: u32 = 0x41;
+const VK_B: u32 = 0x42;
+const VK_K: u32 = 0x4B;
+const VK_LSHIFT: u32 = 0xA0;
+
+const ALNUM_CASES: [AlnumCase; 9] = [
+    AlnumCase { name: "直接入力: ab", base: AlnumBase::Off, pre: &[], vks: &[VK_A, VK_B], shift_held: false, want: AlnumWant::Text("ab") },
+    AlnumCase { name: "直接入力: Shift 押しながら AB", base: AlnumBase::Off, pre: &[], vks: &[VK_A, VK_B], shift_held: true, want: AlnumWant::Text("AB") },
+    AlnumCase { name: "IME ON(かな): Shift 押しながら AB", base: AlnumBase::Kana, pre: &[], vks: &[VK_A, VK_B], shift_held: true, want: AlnumWant::Text("AB") },
+    AlnumCase { name: "半角英数: ab", base: AlnumBase::Alnum, pre: &[], vks: &[VK_A, VK_B], shift_held: false, want: AlnumWant::Text("ab") },
+    AlnumCase { name: "半角英数: Shift 押しながら AB", base: AlnumBase::Alnum, pre: &[], vks: &[VK_A, VK_B], shift_held: true, want: AlnumWant::Text("AB") },
+    AlnumCase { name: "全角英数: ab", base: AlnumBase::FullAlnum, pre: &[], vks: &[VK_A, VK_B], shift_held: false, want: AlnumWant::Text("ａｂ") },
+    AlnumCase { name: "全角英数: Shift 押しながら AB", base: AlnumBase::FullAlnum, pre: &[], vks: &[VK_A, VK_B], shift_held: true, want: AlnumWant::Text("ＡＢ") },
+    AlnumCase { name: "Shift 単独タップ→半角英数: ab", base: AlnumBase::Kana, pre: &[VK_LSHIFT], vks: &[VK_A, VK_B], shift_held: false, want: AlnumWant::Text("ab") },
+    AlnumCase { name: "Shift 単独タップ2回→かなに戻る: ka", base: AlnumBase::Kana, pre: &[VK_LSHIFT, VK_LSHIFT], vks: &[VK_K, VK_A], shift_held: false, want: AlnumWant::Kana },
+];
 
 struct Case {
     name: &'static str,
@@ -1939,6 +2015,81 @@ fn main() {
         }
         p.log.line(&format!(
             "SUMMARY PASS={ok} RECOVER=0 FAIL={bad} INVALID={invalid}"
+        ));
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
+    if args.iter().any(|a| a == "--alnum") {
+        let (mut pass, mut fail, mut invalid) = (0usize, 0usize, 0usize);
+        for r in 1..=repeat {
+            for (i, c) in ALNUM_CASES.iter().enumerate() {
+                p.log.line(&format!(
+                    "[CASE {}/{} run {r}/{repeat}] {}",
+                    i + 1,
+                    ALNUM_CASES.len(),
+                    c.name
+                ));
+                p.focus_lost = false;
+                if !bring_to_front() {
+                    p.log.line("前面化に失敗");
+                }
+                let setup = match c.base {
+                    AlnumBase::Off => Setup::Off,
+                    AlnumBase::Kana => Setup::Kana,
+                    AlnumBase::Alnum | AlnumBase::FullAlnum => Setup::Alnum,
+                };
+                if !ensure(&mut p, setup, awase) {
+                    p.log.line("RESULT INVALID: 前提状態にできなかった");
+                    invalid += 1;
+                    continue;
+                }
+                if matches!(c.base, AlnumBase::FullAlnum) {
+                    p.press(0xF4, false, 60); // 全角キー: 半角英数 → 全角英数のはず(作れたかは次の打鍵で確かめる)
+                    sleep(500);
+                    let (t, _) = p.type_and_snap(&[VK_A], false);
+                    p.log.line(&format!("PROBE setup:全角英数にできたか text={t:?}"));
+                    if t != "ａ" {
+                        p.log.line("RESULT INVALID: 全角英数にできなかった");
+                        invalid += 1;
+                        continue;
+                    }
+                }
+                for &k in c.pre {
+                    p.press(k, false, 60);
+                    sleep(500);
+                }
+                let (text, _) = p.type_and_snap(c.vks, c.shift_held);
+                p.log.line(&format!("PROBE action後: text={text:?}"));
+                // 持続トグルを使ったケースは、次のケースに状態を持ち越さないよう左Shift単独タップの回数が奇数なら戻す。
+                if c.pre.iter().filter(|&&k| k == VK_LSHIFT).count() % 2 == 1 {
+                    p.press(VK_LSHIFT, false, 60);
+                    sleep(500);
+                }
+                let ok = match c.want {
+                    AlnumWant::Text(w) => text == w,
+                    AlnumWant::Kana => matches!(classify(&text), Class::Nicola | Class::RomajiKana),
+                };
+                if p.focus_lost {
+                    p.log.line("RESULT INVALID: ページのフォーカスが外れた");
+                    invalid += 1;
+                } else if ok {
+                    p.log.line("RESULT PASS");
+                    pass += 1;
+                } else {
+                    p.log.line(&format!(
+                        "RESULT FAIL: 期待={} 実際={text:?}",
+                        match c.want {
+                            AlnumWant::Text(w) => w,
+                            AlnumWant::Kana => "かな",
+                        }
+                    ));
+                    fail += 1;
+                }
+            }
+        }
+        p.log.line(&format!(
+            "SUMMARY PASS={pass} RECOVER=0 FAIL={fail} INVALID={invalid}"
         ));
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();
