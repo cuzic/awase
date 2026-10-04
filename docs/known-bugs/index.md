@@ -182,6 +182,7 @@
 | [BUG-178](BUG-178.md) | GJI(session_keymap=2 + 古い custom 表が残る構成)の実機で awase-keymap-learn-win が cell=73/84 のまま 22 分以上進まず終了しない |
 | [BUG-179](BUG-179.md) | CI の MS-IME 構成で awase 起動後に起動した Chrome へ IME 操作なしで k,a を打つと kiu になる |
 | [BUG-180](BUG-180.md) | 候補窓 SHOW/HIDE の保留 latch が IME OFF・フォーカス変更で捨てられず、次の drain で前セッションの StartComposition が配られる |
+| [BUG-183](BUG-183.md) | 入力言語のホットキー経由でロシア語へ切り替えると、awase が日本語入力のまま残る(Alt+Shift・Win+Space では即座に非活性になる) |
 
 ## その他の資料
 
