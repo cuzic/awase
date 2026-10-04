@@ -491,6 +491,21 @@ jobs:
             # 手段: 1a=VK_IME_OFF(基準) / 19=VK_KANJI / 19g=開いているときだけ VK_KANJI / 1a_19g=VK_IME_OFF の後に開いたままなら VK_KANJI / conv0_1a=変換モード0→VK_IME_OFF / conv0=変換モード0のみ / imc0=IMC(OFF) / f0=英数。
             cfg('sc-offrca-cand-msime-noawase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='false',
                 chrome="--offrca=1a:typed_nc,19:typed_nc,19g:typed_nc,1a_19g:typed_nc,conv0_1a:typed_nc,conv0:typed_nc,imc0:typed_nc,f0:typed_nc,19g:notype,1a_19g:notype --settle=800 --msime --no-awase"),
+            # ADR-222 方針C(確定系キーの探索、観測のみ。only='sc-offrca-commit-*'): `<確定キー>+1a`=確定キーの 150ms 後に VK_IME_OFF。
+            # typed_nc=composition を残して押す(text_post に文字が残れば確定、空なら取り消し)。notype=composition 無し(副作用: 改行等が text_post に出るか)。--page=input は単一行 input。
+            *[cfg(f'sc-offrca-commit-msime-{name}', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='false',
+                  chrome=f"--offrca={cells} --or-poll=1500 --settle=800 --msime --no-awase{extra}")
+              for name, extra, cells in (
+                ('a-textarea', '', 'enter:typed_nc,enter+1a:typed_nc,ctrlm+1a:typed_nc,ctrlj+1a:typed_nc,ctrlenter+1a:typed_nc,shiftenter+1a:typed_nc,tab+1a:typed_nc'),
+                ('b-textarea', '', 'f6+1a:typed_nc,f7+1a:typed_nc,f8+1a:typed_nc,f9+1a:typed_nc,f10+1a:typed_nc,1a:typed_nc'),
+                ('c-textarea-nocomp', '', 'enter:notype,ctrlm:notype,ctrlj:notype,ctrlenter:notype,shiftenter:notype,tab:notype,f6:notype,f7:notype,f8:notype,f9:notype,f10:notype'),
+                ('d-input', ' --page=input', 'enter+1a:typed_nc,ctrlm+1a:typed_nc,ctrlj+1a:typed_nc,ctrlenter:notype,enter:notype,ctrlm:notype,ctrlj:notype,shiftenter:notype,tab:notype'),
+              )],
+            # 自前窓(edit=IMM32 の EDIT、tsf=RichEdit の TSF 窓): 確定キー(--km-commit)を composition 有り(--km-comp)/無しで押し、直後の本文と、続く OFF(1a)で閉じるかを見る。
+            *[cfg(f'sc-offrca-commit-km-{win}-{ck}-{"comp" if comp else "nocomp"}', 'observe', check='commitkm', ime='msime', keymap=1, runs=1, wait=1800,
+                  stress=f"--form={win} --mode=keymatrix --km-cells=1a=off:sync --km-n=10 --km-commit={ck}{' --km-comp' if comp else ''} --layout=@REPO@/layout/nicola_keytop.yab --msime",
+                  keys=KM_KEYS['abs'])
+              for win in ('edit', 'tsf') for ck in ('enter', 'ctrlm', 'ctrlj', 'ctrlenter', 'f6', 'f10') for comp in (True, False)],
             cfg('sc-offrca-fix-gji-awase', 'pass', check='offrca', ime='gji', keymap=1, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
                 chrome="--offrca=ctrl1d:typed_nc,ctrl1d:notype --settle=800"),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -1033,6 +1048,9 @@ jobs:
             # ADR-208 L3b: 「ずれの作り方 × 明示キー」行列。実 Chrome は chrome_probe.log、自前窓は typing_stress.log を読む。
             $kmlog = if ('${{ matrix.cfg.chrome }}' -ne '') { 'dist\chrome_probe.log' } else { 'dist\typing_stress.log' }
             python tools\e2e\ime_key_matrix\check_keymatrix.py --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'commitkm') {
+            python tools\e2e\ime_key_matrix\check_commitkm.py dist\typing_stress.log | Tee-Object -FilePath result.txt
+            $global:LASTEXITCODE = 0
           } elseif ('${{ matrix.cfg.check }}' -eq 'offrca') {
             python tools\e2e\ime_key_matrix\check_offrca.py --json offrca.json ${{ matrix.cfg.checkargs }} dist\chrome_probe.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'startup') {

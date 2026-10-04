@@ -105,6 +105,14 @@ def main():
             f"typed_closed={a['typed_closed']} typed_open={a['typed_open']} "
             f"first(api_closed/made)={f['api_closed']}/{f['made']} rest(api_closed/made)={r['api_closed']}/{r['made']} ladder={a['ladder']} then={a['then']}"
         )
+    # ADR-222 方針C: セルごとの text_post(動作直後にページへ残った文字)の分布。空=取り消し/何も無し、文字あり=確定、改行=副作用。
+    for cell, ts in cells.items():
+        h = {}
+        for t in ts:
+            if is_made(t):
+                k = repr(t.get("text_post"))
+                h[k] = h.get(k, 0) + 1
+        print(f"OFFRCA_TEXT: cell={cell} made={sum(h.values())} text_post={h}")
     # 失敗(閉じなかった)試行と成功試行の page_events の代表例(IME がキーを処理したか・composition の終了を見る)。
     for cell, ts in cells.items():
         for label, sel in (("closed", [t for t in ts if t.get("closed_ms") is not None]), ("never", [t for t in ts if t.get("closed_ms") is None])):

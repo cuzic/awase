@@ -181,7 +181,16 @@ fn handle(mut s: TcpStream, shared: &Arc<Mutex<Shared>>) {
         let c = shared.lock().unwrap().cmd.take().unwrap_or("");
         ("text/plain", c.to_string())
     } else {
-        ("text/html; charset=utf-8", PAGE.to_string())
+        // `--page=input`(ADR-222 候補の副作用測定): textarea でなく単一行 input にする。
+        let page = if std::env::args().any(|a| a == "--page=input") {
+            PAGE.replace(
+                r#"<textarea id="t" autofocus></textarea>"#,
+                r#"<input id="t" autofocus style="width:95%;font-size:18px">"#,
+            )
+        } else {
+            PAGE.to_string()
+        };
+        ("text/html; charset=utf-8", page)
     };
     let out = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{resp}",
@@ -218,6 +227,11 @@ fn scan_for(vk: u32) -> u16 {
         0x41 => 0x1E,               // A
         0xA0 => 0x2A,               // LShift
         0xA2 => 0x1D,               // LCtrl
+        0x0D => 0x1C,               // Enter
+        0x09 => 0x0F,               // Tab
+        0x4D => 0x32,               // M
+        0x4A => 0x24,               // J
+        0x75..=0x79 => u16::try_from(0x40 + (vk - 0x75)).unwrap_or(0), // F6..F10
         _ => 0,
     }
 }
@@ -1027,12 +1041,40 @@ fn or_api() -> Option<bool> {
 
 /// `--offrca` の動作。戻り値は注入したキーの説明。
 fn or_do(action: &str) -> String {
+    // `a+b` = a を行い 150ms 後に b を行う(例: `enter+1a` = 確定キーの後に VK_IME_OFF)。
+    if let Some((a, b)) = action.split_once('+') {
+        let da = or_do(a);
+        sleep(150);
+        let db = or_do(b);
+        return format!("{da} / {db}");
+    }
     let tap = |vk: u32, hold: u64| {
         send_key(vk, true);
         sleep(hold);
         send_key(vk, false);
     };
+    let chord = |m: u32, vk: u32| {
+        send_key(m, true);
+        sleep(40);
+        send_key(vk, true);
+        sleep(60);
+        send_key(vk, false);
+        sleep(30);
+        send_key(m, false);
+    };
     match action {
+        // ADR-222 方針C: 確定系の候補(composition を確定して本文に残すか、composition 無しで無害か)。
+        "enter" => tap(0x0D, 50),
+        "ctrlm" => chord(0xA2, 0x4D),
+        "ctrlj" => chord(0xA2, 0x4A),
+        "ctrlenter" => chord(0xA2, 0x0D),
+        "shiftenter" => chord(0xA0, 0x0D),
+        "tab" => tap(0x09, 50),
+        "f6" => tap(0x75, 50),
+        "f7" => tap(0x76, 50),
+        "f8" => tap(0x77, 50),
+        "f9" => tap(0x78, 50),
+        "f10" => tap(0x79, 50),
         "1a" => tap(0x1A, 60),
         "1a_dbl" => {
             tap(0x1A, 60);
