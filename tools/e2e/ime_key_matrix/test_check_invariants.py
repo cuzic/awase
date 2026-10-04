@@ -225,5 +225,31 @@ class Main(unittest.TestCase):
         self.assertEqual((rc, j["verdict"], j["counts"]["i2_unwarranted"], j["measured_config"]), (0, "OK", 1, True))
 
 
+
+class StaleConfirmI5(unittest.TestCase):
+    """I5(BUG-171): 語の2文字目以降(idx>=1)の StaleConfirm→escape=true を数える(情報のみ)。"""
+
+    @staticmethod
+    def stale(idx, escape, sec):
+        return (f"2026-10-04T00:00:{sec:02d}.000000Z  WARN awase_windows::tsf::probe_fsm: [literal-detect] cold=3 "
+                f"per-VK[{idx}/5] stale confirm 検出 → backspace は送らず romaji 再送のみ行う (vk=0x44 backs=0 escape={escape})")
+
+    def test_counts_mid_word_escape_only(self):
+        lines = [
+            "2026-10-04T00:00:00.000000Z  INFO awase: hook installed",
+            self.stale(0, "true", 1),   # 語の先頭: 数えない(総数のみ)
+            self.stale(1, "true", 2),   # 途中の語で ESC: 数える
+            self.stale(3, "true", 3),
+            self.stale(2, "false", 4),  # ESC なし: 総数のみ
+        ]
+        r = ci.analyze(lines, 10)
+        self.assertEqual(r["counts"]["i5_stale_confirm_total"], 4)
+        self.assertEqual(r["counts"]["i5_mid_word_stale_escape"], 2)
+        self.assertEqual(r["detail"]["mid_word_stale_escape_idx"], [1, 3])
+
+    def test_baseline_has_none(self):
+        r = ci.analyze(read("awase-baseline-excerpt.log"), 10)
+        self.assertEqual(r["counts"]["i5_mid_word_stale_escape"], 0)
+
 if __name__ == "__main__":
     unittest.main()

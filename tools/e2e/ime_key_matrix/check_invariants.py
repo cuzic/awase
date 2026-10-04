@@ -17,6 +17,8 @@
   I4  GjiFsm が OffCold のまま候補窓の表示(composition 開始)を受けた回数(`[gji-fsm] StartComposition while engine off`、
       BUG-170/ADR-203)。実 GJI は ON なのに GjiFsm への ON 同期が届かず OffCold に固着している証拠で、全打鍵が cold 経路
       (per-VK confirm)を通り StaleConfirm→ESC で未確定文字が消える。ImeOff 後の正常な OffCold では出ない。
+  I5  情報のみ(上限なし、BUG-171): per-VK confirm の StaleConfirm 回収の件数(i5_stale_confirm_total)と、そのうち語の2文字目以降
+      (idx>=1)で escape=true=既存の未確定文字まで VK_ESCAPE で消す経路の件数(i5_mid_word_stale_escape)。
   I3  情報のみ(上限なし): 自己注入の IME モードキー(`[hook] IME-mode vk=… down self_injected=true`)の件数と
       vk 別内訳、`[warrant-shadow] … would_have_blocked=true` の件数と chain/strategy 別内訳。
 
@@ -44,6 +46,9 @@ INTENT_RE = re.compile(r"explicit_intent=(\S+)")
 DRIFT_RE = re.compile(r"\[drift\] correction: .*?set_ime_open\((true|false)\)")
 DRIFT_SRC_RE = re.compile(r"source=(\w+)")
 GJI_STUCK_RE = re.compile(r"\[gji-fsm\] StartComposition while engine off")
+# I5(情報のみ): per-VK confirm の StaleConfirm 回収。idx>=1(語の2文字目以降)で escape=true なら、既存の未確定文字まで
+# VK_ESCAPE で消す経路(BUG-171)。probe_fsm.rs の warn! は 1 行(行継続のバックスラッシュで連結)で出る。
+STALE_CONFIRM_RE = re.compile(r"per-VK\[(\d+)/\d+\] stale confirm 検出.*escape=(true|false)")
 APPLIED_RE = re.compile(r"\bime open applied seq=(\d+)\b.*\boutcome=\"Unwarranted\"")
 HOOK_SELF_RE = re.compile(r"\[hook\] IME-mode vk=(0x[0-9A-Fa-f]+) down self_injected=true")
 WARRANT_RE = re.compile(r"\[warrant-shadow\] chain=(\S+) open=(\S+) .*?strategy: \"([^\"]*)\".*?would_have_blocked=true")
@@ -71,6 +76,8 @@ def analyze(lines, window_s):
     drifts = []  # dict(t, intent, target, source)
     unwarranted_seqs = []
     gji_stuck = 0
+    stale_total = 0
+    stale_mid_word_escape = []  # idx>=1 かつ escape=true の idx 一覧
     self_keys = {}
     warrant = {}
     for line in lines:
@@ -102,6 +109,12 @@ def analyze(lines, window_s):
         if GJI_STUCK_RE.search(line):
             gji_stuck += 1
             continue
+        mst = STALE_CONFIRM_RE.search(line)
+        if mst:
+            stale_total += 1
+            if int(mst.group(1)) >= 1 and mst.group(2) == "true":
+                stale_mid_word_escape.append(int(mst.group(1)))
+            continue
         mh = HOOK_SELF_RE.search(line)
         if mh:
             vk = mh.group(1).upper().replace("0X", "0x")
@@ -123,6 +136,8 @@ def analyze(lines, window_s):
             i4_gji_fsm_off_cold_composition=gji_stuck,
             i3_self_injected_ime_mode_keys=sum(self_keys.values()),
             i3_warrant_shadow_would_block=sum(warrant.values()),
+            i5_stale_confirm_total=stale_total,
+            i5_mid_word_stale_escape=len(stale_mid_word_escape),
         ),
         detail=dict(
             drifts=drifts,
@@ -131,6 +146,7 @@ def analyze(lines, window_s):
             unwarranted_seqs=unwarranted_seqs,
             self_injected_by_vk=dict(sorted(self_keys.items())),
             would_block_by_chain=dict(sorted(warrant.items())),
+            mid_word_stale_escape_idx=stale_mid_word_escape,
         ),
     )
 
@@ -204,16 +220,19 @@ def main(argv=None):
             print(f"  {row['key']:<30} {row['value']:>4}  {row['message']}")
         print(f"  {'i3_self_injected_ime_mode_keys':<30} {c['i3_self_injected_ime_mode_keys']:>4}  情報: {d['self_injected_by_vk']}")
         print(f"  {'i3_warrant_shadow_would_block':<30} {c['i3_warrant_shadow_would_block']:>4}  情報: {d['would_block_by_chain']}")
+        print(f"  {'i5_stale_confirm_total':<30} {c['i5_stale_confirm_total']:>4}  情報(BUG-171)")
+        print(f"  {'i5_mid_word_stale_escape':<30} {c['i5_mid_word_stale_escape']:>4}  情報(BUG-171、語の2文字目以降の StaleConfirm→ESC): {d['mid_word_stale_escape_idx']}")
         for dr in d["drifts"]:
             print(f"    drift +{dr['t']:.2f}s intent={dr['intent']} → set_ime_open({dr['target']}) source={dr['source']}")
         if d["drift_intent_unknown"]:
             print(f"  注意: 直前 {SAME_CYCLE_MS:g}ms 以内に explicit_intent= 行が無い drift が {d['drift_intent_unknown']} 件"
                   "(意図なしとして数えた。ログ書式の変更を疑う)")
     c = res.get("counts", {})
-    print("INVARIANTS: verdict={} rc={} i1_startup={} i1_total={} i2_unwarranted={} i3_self_keys={} i3_would_block={} i4_gji_stuck={}".format(
+    print("INVARIANTS: verdict={} rc={} i1_startup={} i1_total={} i2_unwarranted={} i3_self_keys={} i3_would_block={} i4_gji_stuck={} i5_stale={} i5_mid_word_esc={}".format(
         res["verdict"], res["rc"], c.get("i1_startup_drift_no_intent", "-"), c.get("i1_drift_no_intent_total", "-"),
         c.get("i2_unwarranted", "-"), c.get("i3_self_injected_ime_mode_keys", "-"),
-        c.get("i3_warrant_shadow_would_block", "-"), c.get("i4_gji_fsm_off_cold_composition", "-")))
+        c.get("i3_warrant_shadow_would_block", "-"), c.get("i4_gji_fsm_off_cold_composition", "-"),
+        c.get("i5_stale_confirm_total", "-"), c.get("i5_mid_word_stale_escape", "-")))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
             json.dump(res, f, ensure_ascii=False, indent=1)

@@ -332,6 +332,14 @@ jobs:
               for pn, km in (('atok', 1), ('msime', 2))
               for kn, kv in (('ime-on', '16'), ('henkan', '1c'), ('muhenkan', '1d'), ('eisu', 'f0'), ('hiragana', 'f2'),
                              ('hankaku', 'f3'), ('f13', '7c'), ('f14', '7d'))],
+            # BUG-149 の再現確認(2026-10-04 v2.0.0 の棚卸しで追加、観測のみ。only='sc-bug149-*' で回す。既定の sc-* には含めない): 実 Chrome(TsfNative)で、
+            # かな ON から ひらがなキー(0xF2)/Shift+無変換 を押して半角英数にしたあと Engine が追随するか(`ka`=追随、`kiu`/`き`=BUG-149 の症状)。chrome_probe 既定の8ケース
+            # (うち「かな→ひらがな=半角英数」「かな→Shift+無変換=半角英数」が BUG-149)を 3 周。-noawase は awase なしの対照(GJI 単体なら `ka`)。
+            # 結果は result.txt の `[CASE n/8 run r/3] <名前>` と `RESULT PASS/RECOVER/FAIL`、末尾の SUMMARY。ADR-191/205/209 で解消済みなら全 PASS。
+            *[cfg(f'sc-bug149-chrome-{pn}{suf}', 'observe', check='chromeprobe', keymap=km, runs=1, wait=600, awase=aw,
+                  chrome=f'--repeat=3 --settle=800{na}')
+              for pn, km in (('atok', 1), ('msime', 2))
+              for suf, aw, na in (('', 'true', ''), ('-noawase', 'false', ' --no-awase'))],
             # ADR-211: MS-IME/MOBILE プリセットの F13(閉状態からだけ開く受動のキー)。実 Chrome(読めない窓)で、IME OFF から F13 を押して
             # Engine が追随する(NICOLA)こと(合否)。stale=古い表つき。noawase=対照(IME が実際に開く=`か`、awase なしの実挙動)。
             *[cfg(f'sc-adr211-chrome-msime-f13{suf}', exp, check='chromeprobe', keymap=2, runs=1, wait=500, custom_table=ct, awase=aw,
@@ -582,6 +590,15 @@ jobs:
               for pause in (320, 500)],
             # Chrome の定常状態の取りこぼし(高速: 2ms)。
             *[tsx(f'{form}-gji-2ms', form, 'gji', 2, trials=8, runs=30, wait=1200) for form in ('chromepage', 'chromebar')],
+            # BUG-171 の再現確認(2026-10-04 v2.0.0 の棚卸しで追加、観測のみ。only='tsx-bug171-*' で回す): 語の途中(10 文字目の直後)で止めてから打鍵を再開し、
+            # 候補窓が可視の状態で per-VK confirm が StaleConfirm→ESC(escape=true、idx>=1)になり、既存の未確定文字まで消えるかを見る。
+            # 検出は 2 つ: (1)入力先のテキストの消失(上の高速打鍵ストレスの表) (2)awase.log の `per-VK[idx>=1] stale confirm 検出 … escape=true` の件数
+            # (不変条件の表の I5 mid-word、情報のみ)。対照の raw は名前が tsx-raw-bug171-*(only='tsx-bug171-*,tsx-raw-bug171-*' で一緒に回す)。pause500=猶予期間付近、pause8000=GJI idle 7000ms 超(OnCold(Medium) 経路)。
+            # tsf=TsfNative 相当(ADR-193)、chromepage=実 Chrome のページ内 textarea。raw=awase なしの対照(入力先+GJI 単体で同じ条件を受けられるか)。
+            *[tsx(f'bug171-{form}-gji-30ms-pause{pause}', form, 'gji', 30, extra=f'--pause-after=10 --pause-ms={pause}', kinds='single,mixed', trials=6, len=25, runs=6, wait=1500)
+              for form in ('chromepage', 'tsf') for pause in (500, 8000)],
+            *[tsx(f'bug171-{form}-gji-30ms-pause{pause}', form, 'gji', 30, raw=True, extra=f'--pause-after=10 --pause-ms={pause}', kinds='single,mixed', trials=6, len=25, runs=2, wait=1500)
+              for form in ('chromepage',) for pause in (500, 8000)],
             # 実利用に近い条件: アイドル → 別窓へ切替 → 入力先へ戻す → 100ms 後に打鍵。失敗は ready 直後の最初の 1〜2 試行に集中しやすい。
             *[tsx(f'{form}-gji-{iv}ms-idle{idle}s', form, 'gji', iv, extra=f'--idle={idle * 1000} --switch-focus --start-delay=100', kinds='single,mixed', trials=6, runs=6, wait=1500)
               for form in ('chromepage', 'chromebar') for iv in (30, 10, 2) for idle in (3, 20)],
@@ -644,12 +661,12 @@ jobs:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-'))
-                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -1199,7 +1216,7 @@ jobs:
               f = f"results/result-{c['name']}-{run}/invariants.json"
               if not os.path.exists(f):
                 inv_bad = True
-                inv_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | |")
+                inv_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - | - | |")
                 continue
               j = json.load(open(f, encoding='utf-8'))
               k = j.get('counts', {})
@@ -1207,13 +1224,13 @@ jobs:
               lower = ', '.join(r['key'] for r in j.get('rows', []) if '下げてよい' in r['message'])
               note = '; '.join(x for x in (over and f'超過: {over}', lower and f'上限を下げてよい: {lower}', j.get('reason', '')) if x)
               inv_bad |= j['verdict'] != 'OK'
-              inv_rows.append(f"| {c['name']} | {run} | {j['verdict']} | {k.get('i1_startup_drift_no_intent', '-')} | {k.get('i1_drift_no_intent_total', '-')} | {k.get('i2_unwarranted', '-')} | {k.get('i3_self_injected_ime_mode_keys', '-')} | {k.get('i3_warrant_shadow_would_block', '-')} | {note} |")
+              inv_rows.append(f"| {c['name']} | {run} | {j['verdict']} | {k.get('i1_startup_drift_no_intent', '-')} | {k.get('i1_drift_no_intent_total', '-')} | {k.get('i2_unwarranted', '-')} | {k.get('i3_self_injected_ime_mode_keys', '-')} | {k.get('i3_warrant_shadow_would_block', '-')} | {k.get('i5_stale_confirm_total', '-')} | {k.get('i5_mid_word_stale_escape', '-')} | {note} |")
           if inv_rows:
             gate = os.environ.get('GATE_MODE') == 'invariants'
             out += ["", "## 不変条件(異常検出器)" + ("(このrunの合否)" if gate else "(情報のみ、合否は上の表)"), "",
                     "上限と対応するBUGは tools/e2e/ime_key_matrix/invariant_limits.json。各回の詳細は result-*/invariants.txt。", "",
-                    "| 構成 | 回 | 判定 | I1 起動直後の意図なしdrift | I1 全体 | I2 Unwarranted | I3 自己注入IMEモードキー | I3 would_have_blocked | 備考 |",
-                    "|---|---|---|---|---|---|---|---|---|"] + inv_rows
+                    "| 構成 | 回 | 判定 | I1 起動直後の意図なしdrift | I1 全体 | I2 Unwarranted | I3 自己注入IMEモードキー | I3 would_have_blocked | I5 StaleConfirm(情報) | I5 途中の語のESC(BUG-171、情報) | 備考 |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|"] + inv_rows
           # 高速打鍵ストレス(ts-*): result.txt 末尾の TYPING_STRESS 行を表にする(崩れ方の内訳つき)。
           ts_rows = []
           for c in configs:
