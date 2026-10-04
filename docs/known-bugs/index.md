@@ -76,7 +76,7 @@
 | [BUG-068](BUG-068.md) | 要確認 | `Blind` drift correction の give-up 後再武装が「鮮度」を「新情報」の代理指標として使うため、TsfNative で短周期に再武装し VK_IME_… |
 | [BUG-069](BUG-069.md) | 解決済み(実機確認済み) | `ir_post_focus_change_snapshot` が belief を `applied=Confirmed` へ偽装し、TsfNative の force-on /… |
 | [BUG-070](BUG-070.md) | 解決済み(実機確認済み) | GJI 候補確定タイミングで eager warmup（`ConfirmKeyUp`）が GJI の `EndComposition` と競合し、`@` がリテラルとして漏れる |
-| [BUG-071](BUG-071.md) | 解決済み(コード確認のみ) | バージョンアップ時に `config.toml`/`layout/*.yab` が失われる（MSI の `MajorUpgrade` スケジューリング欠落 + ZIP アンインスト… |
+| [BUG-071](BUG-071.md) | 解決済み(CI検証済み・MSI のみ、ZIP と実機は未確認) | バージョンアップ時に `config.toml`/`layout/*.yab` が失われる（MSI の `MajorUpgrade` スケジューリング欠落 + ZIP アンインスト… |
 | [BUG-072](BUG-072.md) | 解決済み(実機確認済み) | タスクトレイ「不具合を報告」ウィンドウの日本語が文字化け（トーフ表示）する |
 | [BUG-073](BUG-073.md) | 解決済み(実機確認済み) | BUG-72修正の副作用で「不具合を報告」ウィンドウが背面のまま開き「一瞬表示されてすぐ消える」ように見える |
 | [BUG-074](BUG-074.md) | 要確認 | `RawTsfLiteralRecovery` の give-up（2連続 raw-tsf-literal）で文字が痕跡なく完全に失われる — BUG-29 が予告していた「次回の… |
