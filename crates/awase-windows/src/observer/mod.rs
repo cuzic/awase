@@ -8,3 +8,4 @@ pub mod focus_observer;
 pub mod gji_observer;
 pub mod ime_observer;
 pub mod kana_lock;
+pub mod layout_observer;
