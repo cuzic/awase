@@ -1,0 +1,48 @@
+name: closed-loop-ignored
+
+# `#[ignore]` を付けて残してある「既知の未修正バグを再現する」閉ループシナリオ(crates/awase-windows/tests/closed_loop_scenarios.rs)を --ignored で実行し、
+# 今も再現するか(=FAIL するか)を確かめる。FAIL が期待どおり(=バグが残っている)。PASS したらそのバグは直っているので #[ignore] を外せる。
+# 動く条件: ci/closed-loop-ignored への push、手動起動。結果は job summary に出る(このジョブ自体は常に成功で終える)。
+on:
+  push:
+    branches: [ci/closed-loop-ignored]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: closed-loop-ignored-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: closed-loop-ignored
+      - name: ignore 付きの再現シナリオを実行
+        run: |
+          set +e
+          cargo test -p awase-windows --test closed_loop_scenarios -- --ignored --nocapture --test-threads=1 2>&1 | tee out.txt
+          echo "rc=${PIPESTATUS[0]}" | tee -a out.txt
+          exit 0
+      - name: 要約
+        if: always()
+        run: |
+          {
+            echo "# closed_loop_scenarios の #[ignore] 付き再現シナリオ(--ignored)"
+            echo '```'
+            grep -E '^test |^test result|rc=|panicked|assertion' out.txt | head -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: closed-loop-ignored-out
+          path: out.txt
+          retention-days: 7
