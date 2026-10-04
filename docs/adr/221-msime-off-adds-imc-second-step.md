@@ -5,12 +5,13 @@ title: |-
 summary: |-
   TSF の入力先(実 Chrome 等)に未確定 composition が残っている間に MS-IME が VK_IME_OFF(0x1A)を受けると、閉じずに conv が 25→16 になるだけで開いたままになる(OS への単独注入=awase なしでも同じ、確定。docs/tasks/msime-chrome-off-rca-2026-10-04.md)。IMC_SETOPENSTATUS(0) は composition が有っても 10/10 閉じる。`MsImeDirect` の OFF だけ、VK 送信後に同期 IMC(OFF) を足す。新しい合流点・新しい許可呼び出し元は増やさない。ADR-208 決定4 例外(a)の理由(環境制約)は誤りで、本 ADR で訂正する。
 status: |-
-  採用(2026-10-04、所有者決定: v2.0.0 に含める)。実装済み(`ime_controller.rs::apply_mechanism`)。CI の MS-IME × Chrome/tsf の OFF 系は試作で全収束を確認済み(本実装の CI は PR 参照)。実機(Windows 11)での「打っている途中で無変換」の確認は未実施。
+  採用(2026-10-04、所有者決定: v2.0.0 に含める)。実装済み(`ime_controller.rs::followup_after_vk`)。Opus レビュー(重大3・中6)を反映済み。CI は PR 参照。実機(Windows 11)での「打っている途中で無変換」の確認は未実施。
 related_adr:
   - "ADR-208"
   - "ADR-163"
   - "ADR-180"
   - "ADR-089"
+  - "BUG-184"
 ---
 
 # ADR-221: MS-IME の OFF に IMC(OFF) の第2ステップを足す
@@ -26,20 +27,26 @@ related_adr:
 
 ## 決定
 
-1. **`MsImeDirect` の OFF(`ImeOperation::Close`)だけ**、`VK_IME_OFF` の送信が成功した直後に、同じ機構の第2ステップとして `IMC_SETOPENSTATUS(0)` を同期で書く。ON 方向(VK_IME_ON は composition が有っても開く)と GJI(IMC が効かない)には入れない。
-2. **「補完するか」は純粋関数 `state::key_sequence_policy::post_vk_followup(KeyMechanism, ImeOperation)`**(ungated、Linux でテスト)が決める。実行(Win32 呼び出し)は `ime_controller.rs::apply_mechanism` の `MsImeDirect` アームの 1 箇所(`msime_close_followup_imc`)。
-3. **同期経路(`ImeController::apply`→`SyncChainWriter::write`)と非同期経路(`open_chain::fallback_write`)は、どちらも `apply_mechanism` を通る**ので、同じ決定になる(新しい分岐を `open_chain.rs` に足さない)。`ImmCross` が先頭の窓(Standard)は従来どおり IMC で閉じるので影響しない。
-4. **ブロックの扱い**: 補完は `romaji_pre_write` と同じ前提(メインスレッド=フック/メッセージループ、`ActuationTarget::capture_blocking`=`GetGUIThreadInfo` 30ms+フォールバック、`SendMessageTimeoutW` 150ms=`send_ime_control_raw` が `SendHealth` へ実測を流す)。さらに `send_health::blocking_allowed` が偽(直近に slow 判定、cooldown 中)なら**発行せず従来(VK のみ)へ degrade**する。補完の失敗は outcome を変えない(VK は送信済み、best effort)。非同期化(offload)は、遅れて着弾した IMC が直後の ON キーを閉じる競合(BUG-34 型の fence 無し spurious write)を作るので採らない。
-5. **合流点・許可リスト**: `RESTRICTED_CALLS` は変更しない。`architecture_guard.rs::sync_romaji_write_goes_through_a_captured_target` の `ActuationTarget::capture_blocking(` の件数ピンは 1→2(`romaji_pre_write` + `msime_close_followup_imc`、同じ捕獲規律)に更新した。補完は既存の `set_ime_open_for_target`(= `actuate_ime_control` の許可呼び出し元)経由で、`apply_mechanism` の呼び出し元(2 箇所)も増えない。`decide_attempt` が返す `MechanismCommand`(journal・replay の凍結コーパス)は変えない(補完は `(mechanism, open)` から決定的に導かれるので、`ActuationDecisionRecord` の再生差分は 0)。
-6. 複雑性予算: 追加は純粋関数 1・関数 1・enum 1(合計約 +60 行、うちコメント多数)。新しい合流点・許可呼び出し元・tuning 定数は 0。
+1. **`MsImeDirect` の OFF(`ImeOperation::Close`)かつ明示キー押下由来の起案だけ**、`VK_IME_OFF` の送信が成功した直後に、同じ機構の第2ステップとして `IMC_SETOPENSTATUS(0)` を同期で書く。ON 方向(VK_IME_ON は composition が有っても開く)・GJI(IMC が効かない)・**押下に由来しない起案(`ActuationOrder::press()==None`: drift correction・リピート)には入れない**。
+2. **補完するかは純粋関数 `state::key_sequence_policy::post_vk_followup(機構, 向き, 明示押下か)`** が決め、`ime_controller.rs::followup_after_vk` が **`SendVk` の両アーム(GjiDirect・MsImeDirect)から実引数で呼ぶ**(決定表が実行時に配線されている。GJI のアームに IMC を足しても、`post_vk_followup` を変えても、テストと golden が検知する)。Win32 呼び出しは `followup_after_vk` の 1 箇所。`explicit_press` は `ImeController::apply` と `run_open_chain_async` が `order.press().is_some()` を `order` 消費前に取り、`SyncChainWriter`/`AsyncChainWriter` 経由で `apply_mechanism` へ渡す。
+3. **同期経路(`SyncChainWriter::write`)と非同期経路(`fallback_write`)はどちらも `apply_mechanism` を通る**ので同じ決定になる(`open_chain.rs` に分岐を足さない)。ImmCross 先頭の窓(Standard)は従来どおり IMC で閉じ、MsImeDirect を通らないので影響しない。
+4. **ブロックの扱い(既存の非同期 ImmCross より弱い)**: 既存の非同期 ImmCross は `offload` でワーカースレッドから `SendMessageTimeoutW` を呼ぶが、本補完はメインスレッド(フック/メッセージループ)で同期に呼ぶ。同等なのは `romaji_pre_write` と同期 ImmCross(`SetOpenCrossProcessSync`)だけ。上限は 150ms だが、`SMTO_ABORTIFHUNG` は呼び出し中に相手がハングし始めると最大 ~5s まで止まりうる(`send_health.rs`「初回の ~5s ブロックは防げない」)。`SendHealth::blocking_allowed` のゲートは「100ms 超が連続 2 回」で作動するので弱く、間に速い呼び出しがあると作動しない。待っている間は自スレッド宛て送信メッセージを処理する(再入、`fallback_write` の `with_app` は再入時に失敗する)。`romaji_pre_write` と違い OFF のたびに走るので頻度が高い。**この弱さを受容する**(RCA の `send_elapsed` は 0〜29ms)。ゲートで見送った場合は、`romaji_pre_write` がゲートを外した理由(再試行が無く静かに固着する)がそのまま当てはまり、修正前と同じ「半角英数に取り残される」状態で outcome は `Applied` になる。
+5. **offload を採らない理由**(訂正): 遅れて着弾する点は同期(`SendMessageTimeoutW` はタイムアウトしても取り消されず IME 窓が後で処理する)でも同じで、却下理由にならない。実際の理由は (a) outcome を同期で返したい(`ApplyOutcome` は `Applied` が VK 送信を意味する)、(b) `ActuationTarget`(HWND)を `Send` にする必要があり、offload 後の再入・世代照合の窓を新設する(BUG-34 型)ため。メインスレッドを止める代償は上記の受容。
+6. **合流点・許可リスト**: `RESTRICTED_CALLS` は変更しない(補完は `set_ime_open_for_target` = `actuate_ime_control` の許可呼び出し元経由)。ただし**新しい IMC_SETOPENSTATUS の書き口として `ime.rs::set_ime_open_for_actuation_target` を 1 つ足した**ので、`architecture_guard` で `capture_blocking(` の件数ピンを 1→2(`romaji_pre_write` + `followup_after_vk`)に更新し、2 本目の所在と `set_ime_open_for_actuation_target(` の呼び出し元(1 箇所)を関数単位で固定した。`apply_mechanism` の呼び出し元(2 箇所)は不変。
+7. **宛先の同一性は検証しない**: `ActuationTarget` は `capture_blocking`(`GetGUIThreadInfo` 30ms → `GetForegroundWindow`)が返す HWND と `focus_gen` を持つだけで、`set_ime_open_for_actuation_target` は照合しない(`focus_gen` は恒真の照合ですらない)。VK の着弾先と IMC の宛先は、Alt+Tab 直後などフォーカス遷移と重なれば別の窓になりうる(低頻度)。INV-14 を満たしているとは読まないこと。
+8. **記録**: 補完は `(mechanism, open, explicit_press)` から決まるが、**実際に IMC が届いたか**は `blocking_allowed`・`capture_blocking`・書き込みの成否で変わり、outcome(常に `Applied`)にも `AttemptRecord`/journal にも載らない(tracing の `[apply-ime] MS-IME direct: IMC_SETOPENSTATUS(0) 補完 ok=` ログのみ)。replay は `MechanismCommand`(`SendVk`)の再生差分 0 までしか証明しない。journal だけからは「VK のみで終わった」と「IMC まで届いた」を区別できない。
+9. 複雑性予算: 追加は純粋関数 1・enum 1・関数 1・引数 1(`explicit_press`)。新しい合流点・tuning 定数は 0。
 
 ## 副作用と影響範囲(「打っている途中で無変換」)
 
-- IMC 経由の閉じは **composition を取り消す**(`compositionupdate`→`compositionend`、`text_post=''`)。従来の VK だけの OFF は composition を残して半角英数にしていた(ただし IME は開いたままで、OFF にならない)。したがって**打っている途中で OFF を押すと、未確定の文字が消える**。Standard プロファイル(ImmCross)の窓では従来から同じ(BUG-184 が同じ症状の報告)。
-- 影響する操作: MS-IME 本体 × ImmCross を使わない窓(Imm32Unavailable=実 Chrome、TsfNative)の OFF 系(トグルの OFF、無変換単独タップ、Ctrl+無変換、ADR-208 D4)。GJI、ImmCross 先頭の窓は不変。
-- 利用者に見える変化: 修正前は「OFF のつもりが半角英数モードに取り残され、ON キーでかなに戻る」(害は小さい=RCA R4)。修正後は「OFF が確実に効くが、未確定文字は消える」。**この取捨は所有者が v2.0.0 に含めると決定した**。
-- 却下した代案: OFF の前に Enter 等で確定する(副作用が大きい)、`VK_KANJI`(確定して閉じるが、トグルで belief 依存、ADR-189)、OFF 前に `CPS_COMPLETE`(未検証、BUG-184 の次の一手)。未確定を残したまま閉じたい要望が実機で出たら、BUG-184 の「確定してから OFF」を別 ADR で扱い、本 ADR の補完の前段に置く。
-- **戻す条件**: 実機で「打っている途中の OFF で、VK のみのときより利用者が困る」(例: 確定済みの文字まで消える)が確認された場合、本補完を外して ADR-208 例外(a)に戻す。
+- IMC 経由の閉じは **composition を取り消す**(`compositionupdate`→`compositionend`、`text_post=''`)。従来の VK だけの OFF は composition を残して半角英数にしていた(ただし IME は開いたままで OFF にならない)。**打っている途中で OFF を押すと、未確定の文字が消える**。
+- **BUG-184 との関係**: BUG-184 は MS-IME × Chrome で「OFF で未確定文字が消える。確定してから OFF にしてほしい」という**実際の利用者の未対応の報告**(ImmCross 経路)で、本 ADR はその症状と**逆向き**の要望に対し、同じ症状を ImmCross を使わない窓(Imm32Unavailable/TsfNative)にも広げる。「戻す条件」(利用者が困ったら外す)は BUG-184 の報告で既に部分的に満たされていると読める。RCA の `text_post=''` は BUG-184 の「未確認: ImmSetOpenStatus(FALSE) で未確定が破棄されること」の証拠。**『確定してから OFF』の次の一手(`ImmNotifyIME(CPS_COMPLETE)`)は HIMC が他プロセスから取れず、`WM_IME_CONTROL` に確定コマンドも無いので、awase からはそのままでは実行できない見込み**(別 ADR の前段に置く逃げ道は現実的でない)。所有者が v2.0.0 に含めると決めた取捨はこの前提で再確認が要る。
+- **影響する起案の全列挙**(`apply_mechanism` の MsImeDirect の OFF に至る経路): Engine 由来の `dispatch_ime_set_open`、`kp_shadow_actuate`(トグルの OFF・無変換単独タップ・Ctrl+無変換・D4)は明示押下由来(`press` あり)で**補完する**。`runtime/ime_refresh.rs` の drift correction は押下に由来しない(`press=None`)ので**補完しない**(誰も押していないのに打っている途中の未確定文字を消さない。修正前と同じく VK のみ)。
+- **直らない経路**: (a) トレイメニューは最初から IMC。(b) 物理キーを Allow で OS へ通す OFF(英数 0xF0 等)・`shadow_action` の無い物理 `VK_IME_OFF` が Allow される場合は MS-IME 自身の処理で、composition 中は本 ADR が直した症状(閉じない)がそのまま残りうる。
+- GJI、ImmCross 先頭の窓は不変。
+- **IMC は VK より先に処理されうる**: `SendInput` は入力キュー経由、`WM_IME_CONTROL` は送信メッセージで、受け手が次にメッセージを取得したときにキュー上の入力より先に処理される。実際の順序は「IMC(0) で閉じる → キューに残った打鍵 → VK_IME_OFF(閉なので何もしない)」になりうる(コード上の順序は VK→IMC)。VK は composition が無いときの本来の経路・IMC が効かない窓の保険として残る。リスク: 直前に注入した romaji がまだ Chrome のキューにあるうちに IMC が処理されると、`か` が `ka`(ASCII)になる新症状。CI `sc-offrca-fix-msime-race` が打鍵の確認の 0/10/20ms 後の OFF でこれを測る(ただし awase 自身が注入した romaji の in-flight は再現できないので、実機の追確認が残る)。
+- 利用者に見える変化: 修正前は「OFF のつもりが半角英数に取り残され、ON キーでかなに戻る」(害は小さい=RCA R4)。修正後は「OFF が確実に効くが未確定文字は消える」。
+- **戻す条件**: 実機で「打っている途中の OFF で、VK のみのときより利用者が困る」(確定済みの文字まで消える、`か`→`ka` 化け等)が確認された場合、本補完を外して ADR-208 例外(a)に戻す。
 
 ## ADR-208 への訂正
 
@@ -47,6 +54,6 @@ ADR-208 決定4 の例外(a)(MS-IME × 実 Chrome の `VK_IME_OFF`)は「環境�
 
 ## 検証
 
-- 純粋関数: `key_sequence_policy.rs::post_vk_followup_only_for_ms_ime_close`。golden: `ime_key_sequence_golden.rs`(MS-IME の OFF の送信列は IMC(OFF) を含み、GJI と ON は含まない。Windows のみ)。
-- CI(常設、`e2e-ime.yml`): `sc-offrca-fix-msime-awase`(Ctrl+無変換、composition を残す/打鍵後/打鍵なしで、made 全試行が閉じる、`check_offrca.py --expect-closed`)、`sc-offrca-fix-gji-awase`(GJI 対照)、`sc-keymatrix-*-chrome-msime` を observe から pass へ昇格。
-- 実機: 未実施(Chrome で語を打っている途中に無変換 → 続く文字が ASCII か、未確定文字が消えるか)。
+- 純粋関数: `key_sequence_policy.rs::post_vk_followup_only_for_explicit_ms_ime_close`(press 無しを含む)。golden: `ime_key_sequence_golden.rs`(MS-IME の OFF・press ありだけ IMC を含み、GJI・ON・press 無しは含まない。Windows のみ)。ガード: `architecture_guard.rs::sync_romaji_write_goes_through_a_captured_target`。
+- CI(常設、`e2e-ime.yml`): `sc-offrca-fix-msime-awase`(Ctrl+無変換、composition を残す/打鍵後/打鍵なし)、`sc-offrca-fix-msime-race`(打鍵の 0/10/20ms 後)、`sc-offrca-fix-gji-awase`(GJI 対照)、`sc-keymatrix-*-chrome-msime` を observe から pass へ昇格。判定は `check_offrca.py --expect-closed` = **made 全試行で実打鍵が ASCII になること**(`typed_closed`)。API の読み戻し(`IMC_GETOPENSTATUS`)は修正自身が書く値なので判定に使わない。
+- 実機: 未実施(Chrome で語を打っている途中に無変換 → 続く文字が ASCII か、未確定文字が消えるか、`か`→`ka` 化けが出ないか)。

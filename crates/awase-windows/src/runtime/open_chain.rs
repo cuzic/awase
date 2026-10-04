@@ -100,6 +100,8 @@ impl ImmCrossOp {
 
 /// 非同期 writer。ImmCross だけが await し、残りは同期戦略へ委譲する。
 struct AsyncChainWriter {
+    /// ADR-221: order が明示キー押下に由来するか（`order.press().is_some()`）。
+    explicit_press: bool,
     /// 1 回だけ使える（`Actuation` 値のアフィン性と同じ理由で `Option`）。
     imm: Option<ImmCrossOp>,
     attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
@@ -140,7 +142,7 @@ impl AsyncMechanismWriter for AsyncChainWriter {
                 outcome
             }
             other => {
-                let (outcome, attempt) = fallback_write(other, open);
+                let (outcome, attempt) = fallback_write(other, open, self.explicit_press);
                 self.record_attempt(attempt);
                 outcome
             }
@@ -459,6 +461,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
 fn fallback_write(
     mechanism: WriteMechanism,
     open: bool,
+    explicit_press: bool,
 ) -> (ImeOpenOutcome, Option<AttemptRecord>) {
     // ADR-180決定1: `imm_cross_write`/`run_open_chain_async`と同じ理由で
     // `with_app`を内包する共有ゲートヘルパーへは統合しない——この関数自身が
@@ -523,7 +526,7 @@ fn fallback_write(
             );
             (
                 command,
-                crate::ime_controller::apply_mechanism(mechanism, open, &view),
+                crate::ime_controller::apply_mechanism(mechanism, open, &view, explicit_press),
             )
         } else {
             // ADR-117: ImmCross Failed → フォールスルーしたが結局どの機構にも
@@ -657,6 +660,7 @@ pub(crate) async fn run_open_chain_async(
     // 3値だけを`ActuationOrderRecord`として退避する（`order.clone()`で
     // warrantを複製しない）。
     let order_record = ActuationOrderRecord::from(&order);
+    let explicit_press = order.press().is_some();
     let Some(actuation) = order.into_actuation() else {
         if let Some(gate_inputs) = gate_inputs {
             let record = async_record(
@@ -684,6 +688,7 @@ pub(crate) async fn run_open_chain_async(
     };
     let actuation = actuation.verify(imm.verified_target());
     let mut writer = AsyncChainWriter {
+        explicit_press,
         imm: Some(imm),
         attempts: [None; MAX_WRITE_MECHANISMS],
         attempts_len: 0,

@@ -2950,9 +2950,10 @@ fn sync_romaji_write_goes_through_a_captured_target() {
             }
         }
         sites.sort();
-        // ADR-221: `capture_blocking` は `romaji_pre_write`（ROMAN 補完）に加えて、
-        // `msime_close_followup_imc`（MsImeDirect の OFF の IMC(OFF) 補完）が同じ捕獲規律
-        // （同期・`SendHealth` 連動）で 1 回呼ぶ。`set_ime_romaji_mode_for_target_blocking` は従来どおり 1 箇所。
+        // ADR-221: `capture_blocking` は `romaji_pre_write`（ROMAN 補完）に加えて、`followup_after_vk`
+        // （MsImeDirect の OFF の IMC(OFF) 補完）が 1 回呼ぶ。2 本目の所在は下で関数単位に固定する。
+        // 規律は同じではない: `romaji_pre_write` は `SendHealth` ゲートを意図的に外し、`followup_after_vk` はゲートを持つ。
+        // `set_ime_romaji_mode_for_target_blocking` は従来どおり 1 箇所。
         let expected = if needle == "ActuationTarget::capture_blocking(" {
             2
         } else {
@@ -2982,6 +2983,32 @@ fn sync_romaji_write_goes_through_a_captured_target() {
              `decide_needs_romaji_pre_write` を迂回させないため、ADR-089 Phase C item 12）"
         );
     }
+    // 3. ADR-221: 2 本目の `capture_blocking` は `followup_after_vk` の中にあり、IMC(OFF) 補完の書き口
+    //    `set_ime_open_for_actuation_target(` の呼び出し元もそこ 1 箇所だけ。
+    let controller = read_crate_file("src/ime_controller.rs");
+    assert_eq!(
+        count_real_calls(
+            extract_fn_body(&controller, "fn followup_after_vk"),
+            "ActuationTarget::capture_blocking("
+        ),
+        1,
+        "`capture_blocking(` の 2 本目は `followup_after_vk` の中にあること（ADR-221）"
+    );
+    let mut imc_sites: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "set_ime_open_for_actuation_target(");
+        if count > 0 {
+            imc_sites.push((path.clone(), count));
+        }
+    }
+    imc_sites.sort();
+    assert_eq!(
+        imc_sites,
+        vec![("src/ime_controller.rs".to_string(), 1)],
+        "`set_ime_open_for_actuation_target(` の呼び出し元は `followup_after_vk` の 1 箇所に固定（ADR-221）。実際: {imc_sites:?}"
+    );
 }
 
 // ── BUG-78: disable_apps（アプリ単位の awase 無効化 + Ctrl/Shift スタック復旧） ──

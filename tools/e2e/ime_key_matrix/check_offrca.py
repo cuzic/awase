@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """chrome_probe --offrca の `OFFRCA {json}` 行を集計する(既定は判定せず、観測の表を出す。rc: 試行0件=3、それ以外 0)。
 
-`--expect-closed`(ADR-221、常設の回帰): 全セルで前提が成立した試行(made)の全てが API 上閉じることを要求する。
-made が 0 のセルがあれば INVALID(3)、閉じなかった試行があれば FAIL(1)。
+`--expect-closed`(ADR-221、常設の回帰): 全セルで前提が成立した試行(made)の全てで、**実打鍵が ASCII になる(typed_closed)**ことを要求する。
+API の読み戻し(api_closed)は参考値で判定に使わない(修正自身が IMC(OFF) を書くので証拠にならず、GJI のように
+API だけ閉で打鍵はかなのままという既知の失敗を見逃す)。made が 0 のセルがあれば INVALID(3)、打鍵が閉でない試行があれば FAIL(1)。
 
 使い方: check_offrca.py [--json out.json] chrome_probe.log
 各セル(`action:prep`)について、閉じるまでの時間の分布(打鍵せずの API ポーリング)・打鍵結果との一致・
@@ -107,14 +108,14 @@ def main():
         json.dump(res, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     if expect_closed:
         invalid = [c for c, v in res.items() if v["all"]["made"] == 0]
-        bad = [c for c, v in res.items() if v["all"]["made"] > 0 and v["all"]["api_closed"] != v["all"]["made"]]
+        bad = [c for c, v in res.items() if v["all"]["made"] > 0 and v["all"]["typed_closed"] != v["all"]["made"]]
         if invalid:
             print(f"OFFRCA_VERDICT: INVALID(前提が成立した試行が 0 のセル: {invalid})")
             return 3
         if bad:
-            print(f"OFFRCA_VERDICT: FAIL(閉じなかった試行があるセル: {bad})")
+            print(f"OFFRCA_VERDICT: FAIL(打鍵が ASCII にならなかった試行があるセル: {bad})")
             return 1
-        print(f"OFFRCA_VERDICT: PASS(全 {len(res)} セルで made 全試行が閉じた)")
+        print(f"OFFRCA_VERDICT: PASS(全 {len(res)} セルで made 全試行の打鍵が ASCII になった)")
     return 0
 
 

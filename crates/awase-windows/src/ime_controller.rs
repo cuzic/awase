@@ -202,6 +202,9 @@ pub(crate) fn apply_mechanism(
     mechanism: WriteMechanism,
     open: bool,
     view: &ImeControlView<'_>,
+    // ADR-221: この write が明示キー押下に由来するか（`ActuationOrder::press().is_some()`）。
+    // drift correction 等の押下に由来しない起案では IMC(OFF) の補完を発行しない。
+    explicit_press: bool,
 ) -> ImeOpenOutcome {
     use crate::state::ime_actuation_decision::{decide_attempt, DecisionSite, MechanismCommand};
 
@@ -248,6 +251,7 @@ pub(crate) fn apply_mechanism(
             tracing::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
             // SAFETY: 同上。
             if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                followup_after_vk(mechanism, open, explicit_press, view);
                 if !open {
                     // ADR-171: この override 送信が候補ウィンドウ再表示という
                     // desync 証拠(candidate_was_seen)を消費したことを示す。
@@ -297,9 +301,7 @@ pub(crate) fn apply_mechanism(
             if unsafe { crate::ime::send_ime_mode_key(vk) } {
                 // ADR-221: MS-IME は未確定 composition が残る間の VK_IME_OFF では閉じない（conv が 25→16 に
                 // なるだけ）。同じ機構の第 2 ステップとして IMC(OFF) を補う。判断は純粋関数 `post_vk_followup`。
-                if !open {
-                    msime_close_followup_imc(view);
-                }
+                followup_after_vk(mechanism, open, explicit_press, view);
                 ImeOpenOutcome::Applied
             } else {
                 // Winキー押下中（デスクトップ切替等）で未送信。Applied 扱いにすると
@@ -360,19 +362,33 @@ pub(crate) fn apply_mechanism(
     }
 }
 
-/// ADR-221: `MsImeDirect` の OFF の VK 送信後に行う `IMC_SETOPENSTATUS(0)` 補完。
+/// ADR-221: VK 送信成功の直後の補完 write。補完するかは純粋関数 [`post_vk_followup`] が `(機構, 向き, 明示押下か)` で決める
+/// （GjiDirect のアームからも同じ関数を通る＝決定表が実行時に配線されている）。
 ///
-/// 同期・タイムアウト付き。宛先は `romaji_pre_write` と同じ `ActuationTarget::capture_blocking`
-/// （`GetGUIThreadInfo` 30ms + フォールバック）。ブロックの上限は `SendMessageTimeoutW` の 150ms で、
-/// `send_ime_control_raw` が `SendHealth` へ実測を流す。直近に slow 判定があれば（cooldown 中）発行せず、
-/// 補完前（VK のみ）の挙動へ degrade する（フック経路を詰まらせない）。
-/// 失敗しても outcome は変えない（VK は送信済みで、補完は best effort）。
+/// 実行は `MsImeDirect` の OFF の `IMC_SETOPENSTATUS(0)` だけ。同期・タイムアウト付き。宛先は `romaji_pre_write` と同じ
+/// `ActuationTarget::capture_blocking`（`GetGUIThreadInfo` 30ms + フォールバック）。**宛先の同一性は検証しない**
+/// （`focus_gen` は恒真の照合ですらない。VK の着弾先と IMC の宛先は、フォーカス遷移と重なれば別窓になりうる）。
+/// ブロックの上限は `SendMessageTimeoutW` の 150ms（ハング時は最大 ~5s、`send_health.rs` の限界参照）。
+/// `SendHealth` の cooldown 中は発行せず VK のみへ degrade する。ただし `romaji_pre_write` がゲートを外している理由
+/// （見送ると再試行が無く静かに固着する）は本補完にも当てはまる: 見送った OFF は修正前と同じ「半角英数に取り残される」
+/// 状態で outcome が `Applied` になる。結果は outcome にも `AttemptRecord` にも載らない（tracing ログのみ）。
 /// composition は取り消される（`text_post=''`、ADR-221 の影響範囲参照）。
-fn msime_close_followup_imc(view: &ImeControlView<'_>) {
+fn followup_after_vk(
+    mechanism: WriteMechanism,
+    open: bool,
+    explicit_press: bool,
+    view: &ImeControlView<'_>,
+) {
     use crate::state::key_sequence_policy::{
         post_vk_followup, ImeOperation, KeyMechanism, PostVkFollowup,
     };
-    if post_vk_followup(KeyMechanism::MsImeDirect, ImeOperation::Close)
+    let key_mechanism = match mechanism {
+        WriteMechanism::GjiDirect => KeyMechanism::GjiDirect,
+        WriteMechanism::MsImeDirect => KeyMechanism::MsImeDirect,
+        // VK を送らない機構はここへ来ない。
+        WriteMechanism::ImmCross => return,
+    };
+    if post_vk_followup(key_mechanism, ImeOperation::from_open(open), explicit_press)
         != PostVkFollowup::CloseViaImc
     {
         return;
@@ -490,6 +506,8 @@ fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView
 /// （`tsf_obs()` の二重呼び出しを避ける既存方針をそのまま維持）。
 struct SyncChainWriter<'v, 'a> {
     view: &'v ImeControlView<'a>,
+    /// ADR-221: order が明示キー押下に由来するか（`order.press().is_some()`）。
+    explicit_press: bool,
     attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
     attempts_len: usize,
 }
@@ -507,7 +525,7 @@ impl MechanismWriter for SyncChainWriter<'_, '_> {
             mechanism,
             open,
         );
-        let outcome = apply_mechanism(mechanism, open, self.view);
+        let outcome = apply_mechanism(mechanism, open, self.view, self.explicit_press);
         if self.attempts_len < MAX_WRITE_MECHANISMS {
             self.attempts[self.attempts_len] = Some(AttemptRecord {
                 inputs,
@@ -655,6 +673,7 @@ impl ImeController {
         log_shadow_warrant("sync", &order);
         let chain = caps_chain_for(view);
         let order_record = ActuationOrderRecord::from(&order);
+        let explicit_press = order.press().is_some();
         let Some(actuation) = order.into_actuation() else {
             let record = actuation_decision_record(
                 gate_inputs,
@@ -675,6 +694,7 @@ impl ImeController {
         let actuation = actuation.verify(VerifiedTarget::FocusImplicit);
         let mut writer = SyncChainWriter {
             view,
+            explicit_press,
             attempts: [None; MAX_WRITE_MECHANISMS],
             attempts_len: 0,
         };
@@ -816,7 +836,11 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
 
 /// キャラクタライゼーション用: VK 送信後の補完 write 名（ADR-221）。`"-"` = 補完なし。
 #[must_use]
-pub fn characterize_post_vk_followup(active_gji: bool, open: bool) -> &'static str {
+pub fn characterize_post_vk_followup(
+    active_gji: bool,
+    open: bool,
+    explicit_press: bool,
+) -> &'static str {
     use crate::state::key_sequence_policy::{
         post_vk_followup, ImeOperation, KeyMechanism, PostVkFollowup,
     };
@@ -825,7 +849,7 @@ pub fn characterize_post_vk_followup(active_gji: bool, open: bool) -> &'static s
     } else {
         KeyMechanism::MsImeDirect
     };
-    match post_vk_followup(mechanism, ImeOperation::from_open(open)) {
+    match post_vk_followup(mechanism, ImeOperation::from_open(open), explicit_press) {
         PostVkFollowup::None => "-",
         PostVkFollowup::CloseViaImc => "IMC_SETOPENSTATUS(0)",
     }

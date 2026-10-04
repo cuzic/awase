@@ -23,11 +23,16 @@ MS-IME	TsfNative	async_fallback	MsImeDirect
 # ── VK 送信後の補完 write (ADR-221) ───────────────────────────────
 # 冪等モードキー（GjiDirect / MsImeDirect）の VK 送信の直後に同じ機構が続けて行う write。
 # MS-IME の OFF だけが同期 IMC_SETOPENSTATUS(0) を補う。GJI は IMC が効かない（API は閉になるが打鍵は
-# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 補完（- = なし）
-GJI	ON	-
-GJI	OFF	-
-MS-IME	ON	-
-MS-IME	OFF	IMC_SETOPENSTATUS(0)
+# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 起案 <TAB> 補完（- = なし）。起案: press = 明示キー押下由来 / no-press = drift correction 等
+# （押下に由来しない起案は composition を取り消す補完を発行しない）。ImmCross 先頭の窓は MsImeDirect を通らないので対象外。
+GJI	ON	press	-
+GJI	ON	no-press	-
+GJI	OFF	press	-
+GJI	OFF	no-press	-
+MS-IME	ON	press	-
+MS-IME	ON	no-press	-
+MS-IME	OFF	press	IMC_SETOPENSTATUS(0)
+MS-IME	OFF	no-press	-
 
 # ── 戦略別 送信キー / outcome ──────────────────────────────────────
 # ソース: crates/awase-windows/src/ime_controller.rs（apply は Win32 副作用のため未実行）。

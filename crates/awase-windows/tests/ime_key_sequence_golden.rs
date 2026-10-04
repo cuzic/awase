@@ -62,7 +62,8 @@ const FOLLOWUP_HEADER: &str = "\
 # ── VK 送信後の補完 write (ADR-221) ───────────────────────────────
 # 冪等モードキー（GjiDirect / MsImeDirect）の VK 送信の直後に同じ機構が続けて行う write。
 # MS-IME の OFF だけが同期 IMC_SETOPENSTATUS(0) を補う。GJI は IMC が効かない（API は閉になるが打鍵は
-# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 補完（- = なし）
+# かなのまま）ので補わない。列: active_ime_kind <TAB> 操作 <TAB> 起案 <TAB> 補完（- = なし）。起案: press = 明示キー押下由来 / no-press = drift correction 等
+# （押下に由来しない起案は composition を取り消す補完を発行しない）。ImmCross 先頭の窓は MsImeDirect を通らないので対象外。
 ";
 
 const KEY_DOC: &str = "\
@@ -144,8 +145,10 @@ fn build_report() -> String {
     out.push_str(FOLLOWUP_HEADER);
     for (active, active_gji) in [("GJI", true), ("MS-IME", false)] {
         for (op, open) in [("ON", true), ("OFF", false)] {
-            let f = characterize_post_vk_followup(active_gji, open);
-            out.push_str(&format!("{active}\t{op}\t{f}\n"));
+            for (press, explicit) in [("press", true), ("no-press", false)] {
+                let f = characterize_post_vk_followup(active_gji, open, explicit);
+                out.push_str(&format!("{active}\t{op}\t{press}\t{f}\n"));
+            }
         }
     }
     out.push('\n');
@@ -193,12 +196,14 @@ fn ime_key_strategy_selection_matches_golden() {
 #[test]
 fn ms_ime_off_includes_imc_followup_and_gji_does_not() {
     assert_eq!(
-        characterize_post_vk_followup(false, false),
+        characterize_post_vk_followup(false, false, true),
         "IMC_SETOPENSTATUS(0)"
     );
-    assert_eq!(characterize_post_vk_followup(false, true), "-");
-    assert_eq!(characterize_post_vk_followup(true, false), "-");
-    assert_eq!(characterize_post_vk_followup(true, true), "-");
+    assert_eq!(characterize_post_vk_followup(false, true, true), "-");
+    assert_eq!(characterize_post_vk_followup(true, false, true), "-");
+    assert_eq!(characterize_post_vk_followup(true, true, true), "-");
+    // drift correction 等（press 無し）は MS-IME の OFF でも補わない。
+    assert_eq!(characterize_post_vk_followup(false, false, false), "-");
 }
 
 /// 選択ロジックの不変条件をスモークテストとして固定する（ゴールデン破損時の一次診断用）。
