@@ -8,6 +8,7 @@ mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
 mod key_pipeline;
+mod lang_check;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;
@@ -294,6 +295,8 @@ pub struct Runtime {
     layouts: Vec<LayoutEntry>,
     /// フォーカス追跡・IMM 能力学習・sync key 補完
     focus_tracker: focus_tracker::FocusTracker,
+    /// ADR-223 段階 0: 打鍵時の入力言語の記録(記録のみ、belief は変えない)
+    lang_check: lang_check::LangCheck,
     /// Platform 層の全状態
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
@@ -1427,6 +1430,7 @@ impl Runtime {
                 sync_on_keys,
                 sync_off_keys,
             ),
+            lang_check: lang_check::LangCheck::default(),
             platform_state,
             all_keymaps,
             post_bypass_rules,
@@ -1685,6 +1689,10 @@ impl Runtime {
         hwnd_id: crate::state::ime_event::HwndId,
         now: std::time::Instant,
     ) {
+        // ADR-223 段階 0: 打鍵時の入力言語の記録が読む窓。この WinEvent は engine スレッドで同期に呼ばれ、
+        // フォーカスを受けた hwnd がその場で渡るので、非同期のフォーカス解決を待たずに保存できる。
+        self.lang_check.set_focus_hwnd(hwnd_id);
+
         self.platform_state
             .ime
             .try_set_focus_transition_barrier(hwnd_id, now);
