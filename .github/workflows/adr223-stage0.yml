@@ -61,20 +61,17 @@ jobs:
             Start-Sleep -Seconds 3
             if ((Test-Path lang_switch_probe.log) -and (Select-String -Path lang_switch_probe.log -Pattern '\[ls\] (done|ABORT)' -Quiet)) { break }
           }
-          Pop-Location
-      - name: 窓の種類を増やした測定(コンソール・UWP・Chrome)
-        shell: pwsh
-        run: |
-          Push-Location dist
-          foreach ($t in 'console', 'uwp', 'chrome') {
+          # 窓の種類別(UWP・Chrome)。awase を起動したのと同じステップで回す(別ステップだと、ステップ終了時に awase が終了させられる)。
+          # コンソールは WM_INPUTLANGCHANGEREQUEST・Alt+Shift とも言語が切り替わらず(8/8 切替できず)、真値が取れないので対象にしない。
+          foreach ($t in 'uwp', 'chrome') {
             $log = "ext_$t.log"
             Start-Process -FilePath .\lang_switch_probe.exe -ArgumentList "--stage0-ext=$t --trials=8 --log=$log"
-            $deadline = (Get-Date).AddMinutes(8)
-            while ((Get-Date) -lt $deadline) {
+            $deadline2 = (Get-Date).AddMinutes(8)
+            while ((Get-Date) -lt $deadline2) {
               Start-Sleep -Seconds 3
               if ((Test-Path $log) -and (Select-String -Path $log -Pattern '\[ls\] (done|ABORT)' -Quiet)) { break }
             }
-            Get-Process lang_switch_probe, conhost, SystemSettings, chrome -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID -and $_.MainWindowTitle -match 'LSPROBE|Settings|設定|about:blank|Chrome' } | Stop-Process -Force -ErrorAction SilentlyContinue
+            Get-Process lang_switch_probe, SystemSettings, chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
           }
           Pop-Location
@@ -85,7 +82,7 @@ jobs:
           $env:PYTHONUTF8 = '1'
           if ((Test-Path dist\lang_switch_probe.log) -and (Test-Path dist\awase.log)) {
             python tools\e2e\adr223\summarize_stage0.py dist\lang_switch_probe.log dist\awase.log
-            python tools\e2e\adr223\summarize_ext.py dist\awase.log dist\ext_console.log dist\ext_uwp.log dist\ext_chrome.log
+            python tools\e2e\adr223\summarize_ext.py dist\awase.log dist\ext_uwp.log dist\ext_chrome.log
           } else { "ログが無い(probe=$(Test-Path dist\lang_switch_probe.log) awase=$(Test-Path dist\awase.log))" }
       - uses: actions/upload-artifact@v4
         if: always()
