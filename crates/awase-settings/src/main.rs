@@ -4496,8 +4496,10 @@ fn solo_tap_suppress_combo(
 ///
 /// IME ごとに設定の呼び方と場所が違う（Microsoft IME は「キーとタッチのカスタマイズ」、
 /// Google 日本語入力は「プロパティ」の「キー設定」）。設定画面を開く操作は OS・IME のバージョンに
-/// 依存しやすいので、Microsoft IME は設定ページ（`ms-settings:regionlanguage-jpnime`）を開くだけに
-/// とどめ、ページ内の遷移は自動化しない。Google 日本語入力は起動方法を確認できていないため案内文のみ。
+/// 依存しやすいので、Microsoft IME は設定ページ（`ms-settings:regionlanguage-jpnime`）を、
+/// Google 日本語入力は `GoogleIMEJaTool.exe --mode=config_dialog`（プロパティ）を開くだけに
+/// とどめ、画面内の遷移は自動化しない。開けない場合の逃げ道として、タスクトレイの IME アイコンから
+/// 開く手順を常に案内文として出す（ボタンが見つからない・起動に失敗しても手順が残る）。
 fn ime_key_settings_hint(ui: &mut egui::Ui) {
     ui.indent("ime_key_settings_hint", |ui| {
         ui.label(
@@ -4508,19 +4510,58 @@ fn ime_key_settings_hint(ui: &mut egui::Ui) {
         );
         #[cfg(windows)]
         {
-            if ui.button("Microsoft IME の設定を開く").clicked() {
-                open_msime_settings();
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Microsoft IME の設定を開く").clicked() {
+                    open_msime_settings();
+                }
+                if let Some(tool) = find_gji_tool()
+                    && ui.button("Google 日本語入力のプロパティを開く").clicked()
+                {
+                    open_gji_properties(&tool);
+                }
+            });
         }
+        ui.label(
+            "ボタンで開けない場合: タスクトレイの IME アイコン（「あ」/「A」）を右クリックして\n\
+             「プロパティ」（Google 日本語入力）を選ぶか、設定アプリの「時刻と言語」→「言語と地域」→\n\
+             「日本語」→「言語のオプション」（Microsoft IME）から開いてください。",
+        );
     });
 }
 
 /// Microsoft IME の設定ページを開く。`explorer.exe` に `ms-settings:` を渡す（コンソール窓が出ず、
-/// `unsafe` も要らない）。失敗しても何も起きないだけなので結果は見ない。
+/// `unsafe` も要らない）。失敗しても何も起きないだけなので結果は見ない（案内文が逃げ道になる）。
 #[cfg(windows)]
 fn open_msime_settings() {
     let _ = std::process::Command::new("explorer.exe")
         .arg("ms-settings:regionlanguage-jpnime")
+        .spawn();
+}
+
+/// Google 日本語入力の設定ツール（`GoogleIMEJaTool.exe`）の場所。標準のインストール先
+/// （32bit 版の Program Files。実機 3.34.6260.0 で確認）と、念のため 64bit 側を探す。見つからなければ
+/// `None`（ボタンを出さず、案内文だけにする）。
+#[cfg(windows)]
+fn find_gji_tool() -> Option<std::path::PathBuf> {
+    ["ProgramFiles(x86)", "ProgramFiles"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(|base| {
+            std::path::PathBuf::from(base)
+                .join("Google")
+                .join("Google Japanese Input")
+                .join("GoogleIMEJaTool.exe")
+        })
+        .find(|path| path.is_file())
+}
+
+/// Google 日本語入力のプロパティ画面を開く（`--mode=config_dialog`、実機で「Google 日本語入力 プロパティ」
+/// ウィンドウが開くことを確認済み）。キー設定タブを直接開く引数は見つかっていないので、タブの選択は利用者が行う。
+/// 失敗しても何も起きないだけなので結果は見ない（案内文が逃げ道になる）。
+#[cfg(windows)]
+fn open_gji_properties(tool: &std::path::Path) {
+    let _ = std::process::Command::new(tool)
+        .arg("--mode=config_dialog")
         .spawn();
 }
 

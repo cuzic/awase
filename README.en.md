@@ -184,7 +184,7 @@ When Muhenkan / Henkan are your thumb keys, choose what a **solo tap** does in t
 To use Muhenkan / Henkan for IME on/off or reconversion, **assign the function in the IME's own key settings** and set awase to "Leave it to the IME".
 
 - Microsoft IME: "Key and touch customization" (the settings window has an "Open Microsoft IME settings" button that opens the settings page)
-- Google Japanese Input: "Key settings" in Properties (set "Mode", "Input key" and "Command")
+- Google Japanese Input: "Key settings" in Properties (set "Mode", "Input key" and "Command"). The settings window has an "Open Google Japanese Input properties" button; if it does not open, right-click the "あ"/"A" icon in the taskbar and choose "Properties"
 
 `keys.ime_on` / `ime_off` / `ime_toggle` are not for everyday IME switching. They are keys that **force awase and the IME back into the same state** when the mode gets out of sync. If you put Muhenkan / Henkan there, a solo tap forces the state and the raw key never reaches the IME, even with "Leave it to the IME" (a warning is shown when the config is loaded).
 
