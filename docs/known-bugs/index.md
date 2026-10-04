@@ -79,7 +79,7 @@
 | [BUG-071](BUG-071.md) | 解決済み(CI検証済み・MSI のみ、ZIP と実機は未確認) | バージョンアップ時に `config.toml`/`layout/*.yab` が失われる（MSI の `MajorUpgrade` スケジューリング欠落 + ZIP アンインスト… |
 | [BUG-072](BUG-072.md) | 解決済み(実機確認済み) | タスクトレイ「不具合を報告」ウィンドウの日本語が文字化け（トーフ表示）する |
 | [BUG-073](BUG-073.md) | 解決済み(実機確認済み) | BUG-72修正の副作用で「不具合を報告」ウィンドウが背面のまま開き「一瞬表示されてすぐ消える」ように見える |
-| [BUG-074](BUG-074.md) | 未修正(CI で再現: 外部クローズ後の打鍵が give-up で消える、2026-10-04) | `RawTsfLiteralRecovery` の give-up（2連続 raw-tsf-literal）で文字が痕跡なく完全に失われる — BUG-29 が予告していた「次回の… |
+| [BUG-074](BUG-074.md) | 部分修正(2026-10-04、GJI×Imm32Unavailable のみ・TsfNative 未対応・実機未検証) | `RawTsfLiteralRecovery` の give-up（2連続 raw-tsf-literal）で文字が痕跡なく完全に失われる — BUG-29 が予告していた「次回の… |
 | [BUG-075](BUG-075.md) | 未修正 | `StaleConfirm` 回収が「先頭 VK は着弾していない」と無条件に仮定して romaji 全体を再送するため、着弾済みの子音が二重になり促音が増える |
 | [BUG-077](BUG-077.md) | 解決済み(コード確認のみ) | TsfNative でフォーカス復帰直後の最初のキーが resync 完了前に PassThrough でリテラル出力される（Alt+Tab 復帰直後の「rの」化） |
 | [BUG-078](BUG-078.md) | 解決済み(コード確認のみ) | リモートデスクトップ接続後にローカル側 Ctrl が押しっぱなしになる（Excel/iTunes で入力が壊れる） |
@@ -105,7 +105,7 @@
 | [BUG-100](BUG-100.md) | 機構撤去済み | `key_remap` の latch (`LATCHED_TARGET`) が KeyUp 消失や一部の swallow 経路で stuck する |
 | [BUG-101](BUG-101.md) | 解決済み(実機確認済み) | `Engine::on_input` の Phase 0 が Consume 済み KeyDown に対応する KeyUp を FSM に一切届けていない（2026-03-31 混… |
 | [BUG-102](BUG-102.md) | 解決済み(コード確認のみ) | 起動直後にフォーカスしていたアプリの `ImmCrossProbe`（High）観測が導出から外れ、Medium の定期ポーリングに負ける（bootstrap フェンス desyn… |
-| [BUG-103](BUG-103.md) | 修正済み・CI 検証待ち(2026-10-04) | `[[post_bypass]]` は `reload_config()` で反映されない（設定変更に再起動が必要） |
+| [BUG-103](BUG-103.md) | 修正済み(2026-10-04、実機未検証) | `[[post_bypass]]` は `reload_config()` で反映されない（設定変更に再起動が必要） |
 | [BUG-104](BUG-104.md) | 解決済み(コード確認のみ) | 独自 `.yab` レイアウトが UTF-8 でないと起動時に無言でバンドル版へ差し替わる |
 | [BUG-105](BUG-105.md) | 解決済み(コード確認のみ) | NICOLA 3鍵仲裁が char1 解放済みなら無条件で char2 側を優先し、タイトな重なりでも無視する |
 | [BUG-106](BUG-106.md) | 未修正(根本原因未特定、検知・通知のみ実装) | Teams(WebView2/MS-IME) で送信 romaji VK が JIS かな配列として解釈される |
