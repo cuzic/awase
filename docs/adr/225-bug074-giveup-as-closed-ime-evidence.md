@@ -52,8 +52,9 @@ related_adr:
 - **D0-1**: 外部クローズなしの cold(25 秒 idle+フォーカス移動)では give-up が **0/10**。偽陽性率は RichEdit では 0/10 だが、Windows Terminal・Chrome は未測定(代表性なし。案3 の採用条件は満たせない)。
 - **D0-2**: 明示意図は全試行 `Some(true)`、StaleConfirm は 0(この構成では否定的証拠は SuspectedLiteral 由来)。実機 journal に `explicit_intent` が載っているかは未確認。
 - **案K**: 痕跡は残るが `kkakka` のように汚れる。実 IME が閉じていることには気づけるが、見た目は良くならない。
-- **実 Chrome の偽陽性率(run 37213745139、`cal-d0-gji-chrome-noclose-idle`)**: 外部クローズなし・IME ON・25 秒 idle 後にフォーカスを外して戻して `k`,`a` を打つ 10 試行で、**give-up 0・suspected 0(literal 疑いも 0)**、10/10 で NICOLA 文字が出た。RichEdit と合わせて、この条件(単発の cold・短い打鍵)では偽陽性は出ていない。ただし長い連続入力・高速打鍵(ADR-200/BUG-168 の StaleConfirm 型)は測っていない。
-- **Windows Terminal**: windows-latest に Windows Terminal 1.23.20211.0(`wt.exe`)がある(run 37213735495)。打鍵の注入と出力の読み取りには専用の測定器(`wt_probe` 相当)が要り、未作成。
+- **実 Chrome の偽陽性率(run 37213745139、`cal-d0-gji-chrome-noclose-idle`)**: 外部クローズなし・IME ON・25 秒 idle 後にフォーカスを外して戻して `k`,`a` を打つ 10 試行で、**give-up 0・suspected 0(literal 疑いも 0)**、10/10 で NICOLA 文字が出た。RichEdit・Windows Terminal と合わせて、この条件(単発の cold・短い打鍵)では偽陽性は出ていない。ただし長い連続入力・高速打鍵(ADR-200/BUG-168 の StaleConfirm 型)は測っていない。
+- **Windows Terminal の偽陽性率(run 37227022397、`cal-d0-gji-wt-noclose-idle`、`wt_probe.exe`)**: windows-latest の Windows Terminal 1.23(`CASCADIA_HOSTING_WINDOW_CLASS`、PowerShell で標準入力を 1 行ずつ読んでファイルへ書く)に、外部クローズなし・IME ON・25 秒 idle 後にフォーカスを外して戻して `k`,`a` を打つ 10 試行で、**give-up 0・suspected 0**、10/10 で NICOLA 文字(`きう`)が出た。元の報告と同じ入力先でも、この条件では偽陽性は出ていない。
+  - 測定器の作り込みで分かった罠(再利用する人向け): ① `taskkill /im WindowsTerminal.exe` は runner 自身のコンソールホストを巻き込み、ジョブが「shutdown signal」で落ちる(窓を WM_CLOSE で閉じる)。② `wt.exe` は引数中の `;` をサブコマンド区切りと解釈する(`-EncodedCommand` で渡す)。③ IME の未確定文字は 1 回目の Enter では確定されるだけ(2 回押す)。④ .NET の `Console.In` は既定のコードページでかなを `?` に化けさせる(`InputEncoding` を UTF-8 に)。
 - **未測定**: D0-4(`VK_IME_ON` 単独の破壊性)、Windows Terminal・Chrome。
 
 ## 所有者の判断(2026-10-04)
