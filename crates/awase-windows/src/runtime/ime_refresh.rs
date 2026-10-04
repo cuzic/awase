@@ -278,6 +278,53 @@ impl Runtime {
         }
     }
 
+    /// ADR-227(BUG-074): `RawTsfLiteralRecovery` の give-up(否定的証拠 2 回以上・すべて SuspectedLiteral)を、
+    /// 「外部から実 IME が閉じられたかもしれない」という**読み直しのきっかけ**にする。give-up を閉の観測として
+    /// 書かない(推論しない)。監視窓(ADR-205)を開いて prefetch 済みの読みを照合し、基準値(直近の読み)から
+    /// 閉へ変わっていれば `follow_external_change` が追随する(意図を捨て desired を揃える。IME は書かない)。
+    /// 条件: GJI × Imm32Unavailable、プローブ開始時と同じ focus 世代、明示意図が ON のまま。
+    pub(crate) fn ir_follow_after_literal_giveup(
+        &mut self,
+        evidence: crate::tsf::literal_facts::GiveUpEvidence,
+    ) {
+        use crate::tsf::literal_facts::GiveUpFollowDecision;
+        let applies = self.external_change_watch_applies();
+        let gen_now = self.platform.output.ime_mode_focus_gen.get();
+        let intent = self.platform_state.ime.explicit_intent();
+        let decision = crate::tsf::literal_facts::giveup_follow_decision(
+            applies,
+            evidence.focus_gen,
+            gen_now,
+            intent,
+        );
+        let baseline = if decision == GiveUpFollowDecision::Arm {
+            self.platform_state
+                .ime
+                .arm_external_change_watch(crate::hook::current_tick_ms());
+            self.platform_state.ime.external_change_baseline()
+        } else {
+            None
+        };
+        tracing::info!(
+            "[giveup-follow] cold={} outcome={} gen_at_probe={} gen_now={gen_now} explicit_intent={intent:?} baseline={baseline:?}",
+            evidence.cold_seq,
+            decision.outcome(),
+            evidence.focus_gen
+        );
+        // 実機の不具合報告から追えるよう journal にも残す(attach_log が無くても、追随を試みたか・捨てた理由・基準値が分かる)。
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::GiveUpFollow {
+                cold_seq: evidence.cold_seq,
+                outcome: decision.outcome(),
+                baseline,
+            });
+        if decision == GiveUpFollowDecision::Arm {
+            self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
+        }
+    }
+
     // ── Stage 4: Engine 通知と次回スケジュール ──
     //
     // Phase 4: Engine に RefreshState（active 遷移検知）

@@ -510,6 +510,10 @@ pub(crate) unsafe fn handle_wm_timer(
             for entry in app.platform.drain_journal_entries() {
                 app.platform_state.ime.journal.absorb(entry);
             }
+            // ADR-227: give-up と同じ tick で、外部クローズの読み直し(追随の判定)を始める。
+            if let Some(evidence) = app.platform.take_giveup_evidence() {
+                app.ir_follow_after_literal_giveup(evidence);
+            }
         }
         Some(id) if id == TIMER_TSF_GATE => {
             app.platform.timer.kill(TIMER_TSF_GATE);

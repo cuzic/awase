@@ -3746,7 +3746,7 @@ fn mode_key_passed_through_event_is_dispatched_from_one_place() {
     }
 }
 
-/// ADR-205（BUG-172）: 外部変化の監視窓は、arm が `kp_stage_post_decision` の1箇所、追随（`follow_external_change`）が
+/// ADR-205（BUG-172）・ADR-227: 外部変化の監視窓は、arm が `kp_stage_post_decision` と `ir_follow_after_literal_giveup`（ADR-227 (i)）の各1箇所、追随（`follow_external_change`）が
 /// `ir_follow_external_change` の1箇所だけ。追随は `ObserverPoll` の記録 + 意図削除 + `ModeKeyPassedThrough` で、
 /// awase は IME を書かない（`apply_ime_open_*`/`set_ime_open`/`send_ime` 系をこのファイル群から呼ばない）。
 #[test]
@@ -3764,15 +3764,21 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
             .replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
         let production = non_comment_lines(production_code_only(&content));
+        // arm は 2 箇所: 外部注入の IME キー直後(`kp_arm_external_change_watch`、ADR-205)と、
+        // give-up を契機にした読み直し(`ir_follow_after_literal_giveup`、ADR-227 (i))。追随は 1 箇所のまま
+        // (give-up 契機の読みも既存の `ir_follow_external_change` に載る=新しい追随の入口は作らない)。
         for (needle, allowed) in [
-            (".arm_external_change_watch(", "runtime/key_pipeline.rs"),
-            (".follow_external_change(", "runtime/ime_refresh.rs"),
+            (
+                ".arm_external_change_watch(",
+                &["runtime/key_pipeline.rs", "runtime/ime_refresh.rs"][..],
+            ),
+            (".follow_external_change(", &["runtime/ime_refresh.rs"][..]),
         ] {
             let count = production.matches(needle).count();
-            let expected = usize::from(rel == allowed);
+            let expected = usize::from(allowed.contains(&rel.as_str()));
             assert_eq!(
                 count, expected,
-                "src/{rel} 内の {needle} の出現数が想定({expected})と異なります。ADR-205: 呼び出し元は {allowed} の1箇所に限定すること。"
+                "src/{rel} 内の {needle} の出現数が想定({expected})と異なります。ADR-205/227: 呼び出し元は {allowed:?} の各1箇所に限定すること。"
             );
         }
     }

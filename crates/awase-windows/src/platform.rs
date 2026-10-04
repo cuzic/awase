@@ -34,6 +34,9 @@ pub struct WindowsPlatform {
     suppressed_probe_ticks: u32,
     suppressed_literal_confirms: u16,
     pending_literal_vk: Option<PendingLiteralVk>,
+    /// ADR-227: give-up の証拠の判定(純粋)と、runtime が取り出すまでの 1 件。
+    giveup_tracker: crate::tsf::literal_facts::GiveUpTracker,
+    pending_giveup: Option<crate::tsf::literal_facts::GiveUpEvidence>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,6 +86,8 @@ impl WindowsPlatform {
             suppressed_probe_ticks: 0,
             suppressed_literal_confirms: 0,
             pending_literal_vk: None,
+            giveup_tracker: crate::tsf::literal_facts::GiveUpTracker::default(),
+            pending_giveup: None,
         }
     }
 
@@ -250,6 +255,8 @@ impl WindowsPlatform {
                     last_idx,
                     target,
                 } => {
+                    self.giveup_tracker
+                        .note_vk_sent(self.output.ime_mode_focus_gen.get());
                     self.pending_literal_vk = Some(PendingLiteralVk {
                         cold_seq,
                         vk,
@@ -260,6 +267,21 @@ impl WindowsPlatform {
                     });
                 }
                 crate::tsf::literal_facts::LiteralDetectTraceItem::Verdict(record) => {
+                    tracing::debug!(
+                        "[giveup-follow] record verdict={:?} gave_up={} consecutive_before={} tracker_before={:?}",
+                        record.facts.verdict,
+                        record.gave_up,
+                        record.consecutive_before,
+                        self.giveup_tracker
+                    );
+                    if let Some(evidence) = self.giveup_tracker.note_record(&record) {
+                        tracing::debug!(
+                            "[giveup-follow] give-up の証拠を保持 cold={} focus_gen={}",
+                            evidence.cold_seq,
+                            evidence.focus_gen
+                        );
+                        self.pending_giveup = Some(evidence);
+                    }
                     let since_vk_sent_ms = self.pending_literal_vk.take().map_or(0, |pending| {
                         crate::hook::current_tick_ms().saturating_sub(pending.sent_at_ms)
                     });
@@ -270,6 +292,13 @@ impl WindowsPlatform {
         if terminal_timer {
             self.flush_pending_literal_vk_as_aborted();
         }
+    }
+
+    /// ADR-227: give-up の証拠を 1 件取り出す(runtime の `TIMER_TSF_PROBE` が `advance_tsf_probe` の直後に呼ぶ)。
+    pub(crate) fn take_giveup_evidence(
+        &mut self,
+    ) -> Option<crate::tsf::literal_facts::GiveUpEvidence> {
+        self.pending_giveup.take()
     }
 
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
