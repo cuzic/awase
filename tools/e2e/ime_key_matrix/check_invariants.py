@@ -17,8 +17,10 @@
   I4  GjiFsm が OffCold のまま候補窓の表示(composition 開始)を受けた回数(`[gji-fsm] StartComposition while engine off`、
       BUG-170/ADR-203)。実 GJI は ON なのに GjiFsm への ON 同期が届かず OffCold に固着している証拠で、全打鍵が cold 経路
       (per-VK confirm)を通り StaleConfirm→ESC で未確定文字が消える。ImeOff 後の正常な OffCold では出ない。
-  I5  情報のみ(上限なし、BUG-171): per-VK confirm の StaleConfirm 回収の件数(i5_stale_confirm_total)と、そのうち語の2文字目以降
-      (idx>=1)で escape=true=既存の未確定文字まで VK_ESCAPE で消す経路の件数(i5_mid_word_stale_escape)。
+  I5  情報のみ(上限なし、BUG-171): per-VK confirm の StaleConfirm 回収の件数(i5_stale_confirm_total)と、そのうち idx>=1 で escape=true の件数。
+      直前の StartComposition の遷移元が OnCold/OffCold ならセッション最初の文字(i5_first_char_stale_escape、本文が安全とする側)、
+      それ以外(OnWarm/OnComposing 等)なら前の未確定文字がある途中の語(i5_mid_word_stale_escape、既存の未確定文字まで VK_ESCAPE で消しうる=BUG-171 の本体)。
+      idx は 1 つのかなのローマ字内の VK 位置で、語の位置ではない(2026-10-04 に取り違えて訂正)。
   I3  情報のみ(上限なし): 自己注入の IME モードキー(`[hook] IME-mode vk=… down self_injected=true`)の件数と
       vk 別内訳、`[warrant-shadow] … would_have_blocked=true` の件数と chain/strategy 別内訳。
 
@@ -48,6 +50,9 @@ DRIFT_SRC_RE = re.compile(r"source=(\w+)")
 GJI_STUCK_RE = re.compile(r"\[gji-fsm\] StartComposition while engine off")
 # I5(情報のみ): per-VK confirm の StaleConfirm 回収。idx>=1(語の2文字目以降)で escape=true なら、既存の未確定文字まで
 # VK_ESCAPE で消す経路(BUG-171)。probe_fsm.rs の warn! は 1 行(行継続のバックスラッシュで連結)で出る。
+# 直前の `gji fsm transition … trigger="StartComposition…" state_before="X"`。X が OnCold/OffCold なら「セッション最初の文字」(本文が安全とする側)、
+# それ以外(OnWarm/OnComposing 等)なら、前の未確定文字が既にある「途中の語」。
+START_COMP_RE = re.compile(r'trigger="StartComposition[^"]*"\s+state_before="([^"]+)"')
 STALE_CONFIRM_RE = re.compile(r"per-VK\[(\d+)/\d+\] stale confirm 検出.*escape=(true|false)")
 APPLIED_RE = re.compile(r"\bime open applied seq=(\d+)\b.*\boutcome=\"Unwarranted\"")
 HOOK_SELF_RE = re.compile(r"\[hook\] IME-mode vk=(0x[0-9A-Fa-f]+) down self_injected=true")
@@ -77,7 +82,9 @@ def analyze(lines, window_s):
     unwarranted_seqs = []
     gji_stuck = 0
     stale_total = 0
-    stale_mid_word_escape = []  # idx>=1 かつ escape=true の idx 一覧
+    stale_mid_word_escape = []  # idx>=1 かつ escape=true かつ「途中の語」の idx 一覧
+    stale_first_char_escape = 0  # 同条件でセッション最初の文字(安全とされる側)
+    last_start_state = None
     self_keys = {}
     warrant = {}
     for line in lines:
@@ -109,11 +116,17 @@ def analyze(lines, window_s):
         if GJI_STUCK_RE.search(line):
             gji_stuck += 1
             continue
+        msc = START_COMP_RE.search(line)
+        if msc:
+            last_start_state = msc.group(1)
         mst = STALE_CONFIRM_RE.search(line)
         if mst:
             stale_total += 1
             if int(mst.group(1)) >= 1 and mst.group(2) == "true":
-                stale_mid_word_escape.append(int(mst.group(1)))
+                if last_start_state is not None and not last_start_state.startswith(("OnCold", "OffCold")):
+                    stale_mid_word_escape.append(int(mst.group(1)))
+                else:
+                    stale_first_char_escape += 1
             continue
         mh = HOOK_SELF_RE.search(line)
         if mh:
@@ -138,6 +151,7 @@ def analyze(lines, window_s):
             i3_warrant_shadow_would_block=sum(warrant.values()),
             i5_stale_confirm_total=stale_total,
             i5_mid_word_stale_escape=len(stale_mid_word_escape),
+            i5_first_char_stale_escape=stale_first_char_escape,
         ),
         detail=dict(
             drifts=drifts,
@@ -221,6 +235,7 @@ def main(argv=None):
         print(f"  {'i3_self_injected_ime_mode_keys':<30} {c['i3_self_injected_ime_mode_keys']:>4}  情報: {d['self_injected_by_vk']}")
         print(f"  {'i3_warrant_shadow_would_block':<30} {c['i3_warrant_shadow_would_block']:>4}  情報: {d['would_block_by_chain']}")
         print(f"  {'i5_stale_confirm_total':<30} {c['i5_stale_confirm_total']:>4}  情報(BUG-171)")
+        print(f"  {'i5_first_char_stale_escape':<30} {c['i5_first_char_stale_escape']:>4}  情報(セッション最初の文字、設計上は安全とされる側)")
         print(f"  {'i5_mid_word_stale_escape':<30} {c['i5_mid_word_stale_escape']:>4}  情報(BUG-171、語の2文字目以降の StaleConfirm→ESC): {d['mid_word_stale_escape_idx']}")
         for dr in d["drifts"]:
             print(f"    drift +{dr['t']:.2f}s intent={dr['intent']} → set_ime_open({dr['target']}) source={dr['source']}")

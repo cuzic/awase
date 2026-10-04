@@ -227,23 +227,30 @@ class Main(unittest.TestCase):
 
 
 class StaleConfirmI5(unittest.TestCase):
-    """I5(BUG-171): 語の2文字目以降(idx>=1)の StaleConfirm→escape=true を数える(情報のみ)。"""
+    """I5(BUG-171): 前の未確定文字がある途中の語での StaleConfirm→escape=true だけを mid_word に数える(情報のみ)。"""
 
     @staticmethod
     def stale(idx, escape, sec):
         return (f"2026-10-04T00:00:{sec:02d}.000000Z  WARN awase_windows::tsf::probe_fsm: [literal-detect] cold=3 "
                 f"per-VK[{idx}/5] stale confirm 検出 → backspace は送らず romaji 再送のみ行う (vk=0x44 backs=0 escape={escape})")
 
-    def test_counts_mid_word_escape_only(self):
+    @staticmethod
+    def start(before, sec):
+        return (f"2026-10-04T00:00:{sec:02d}.000000Z DEBUG awase::journal: gji fsm transition seq=1 elapsed_ms=1 "
+                f'trigger="StartComposition(candidate SHOW)" state_before="{before}" state_after="OnComposing(Warm)"')
+
+    def test_first_char_vs_mid_word(self):
         lines = [
             "2026-10-04T00:00:00.000000Z  INFO awase: hook installed",
-            self.stale(0, "true", 1),   # 語の先頭: 数えない(総数のみ)
-            self.stale(1, "true", 2),   # 途中の語で ESC: 数える
-            self.stale(3, "true", 3),
-            self.stale(2, "false", 4),  # ESC なし: 総数のみ
+            self.start("OnCold(Long)", 1), self.stale(1, "true", 2),   # セッション最初の文字: first_char
+            self.start("OnComposing(Warm)", 3), self.stale(1, "true", 4),  # 途中の語: mid_word
+            self.stale(3, "true", 5),                                   # 同じ途中の語
+            self.stale(0, "true", 6),                                   # idx=0: どちらにも数えない(総数のみ)
+            self.stale(2, "false", 7),                                  # ESC なし: 総数のみ
         ]
         r = ci.analyze(lines, 10)
-        self.assertEqual(r["counts"]["i5_stale_confirm_total"], 4)
+        self.assertEqual(r["counts"]["i5_stale_confirm_total"], 5)
+        self.assertEqual(r["counts"]["i5_first_char_stale_escape"], 1)
         self.assertEqual(r["counts"]["i5_mid_word_stale_escape"], 2)
         self.assertEqual(r["detail"]["mid_word_stale_escape_idx"], [1, 3])
 

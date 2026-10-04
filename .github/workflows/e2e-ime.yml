@@ -596,8 +596,8 @@ jobs:
             *[tsx(f'{form}-gji-2ms', form, 'gji', 2, trials=8, runs=30, wait=1200) for form in ('chromepage', 'chromebar')],
             # BUG-171 の再現確認(2026-10-04 v2.0.0 の棚卸しで追加、観測のみ。only='tsx-bug171-*' で回す): 語の途中(10 文字目の直後)で止めてから打鍵を再開し、
             # 候補窓が可視の状態で per-VK confirm が StaleConfirm→ESC(escape=true、idx>=1)になり、既存の未確定文字まで消えるかを見る。
-            # 検出は 2 つ: (1)入力先のテキストの消失(上の高速打鍵ストレスの表) (2)awase.log の `per-VK[idx>=1] stale confirm 検出 … escape=true` の件数
-            # (不変条件の表の I5 mid-word、情報のみ)。対照の raw は名前が tsx-raw-bug171-*(only='tsx-bug171-*,tsx-raw-bug171-*' で一緒に回す)。pause500=猶予期間付近、pause8000=GJI idle 7000ms 超(OnCold(Medium) 経路)。
+            # 検出は 2 つ: (1)入力先のテキストの消失(上の高速打鍵ストレスの表) (2)awase.log の StaleConfirm→escape=true を、直前の StartComposition の遷移元で
+            # セッション最初の文字(OnCold)と前の未確定文字がある途中の語に分けた件数(不変条件の表の I5、情報のみ。2026-10-04 に idx を語位置と取り違えて訂正)。対照の raw は名前が tsx-raw-bug171-*(only='tsx-bug171-*,tsx-raw-bug171-*' で一緒に回す)。pause500=猶予期間付近、pause8000=GJI idle 7000ms 超(OnCold(Medium) 経路)。
             # tsf=TsfNative 相当(ADR-193)、chromepage=実 Chrome のページ内 textarea。raw=awase なしの対照(入力先+GJI 単体で同じ条件を受けられるか)。
             *[tsx(f'bug171-{form}-gji-30ms-pause{pause}', form, 'gji', 30, extra=f'--pause-after=10 --pause-ms={pause}', kinds='single,mixed', trials=6, len=25, runs=6, wait=1500)
               for form in ('chromepage', 'tsf') for pause in (500, 8000)],
@@ -1220,7 +1220,7 @@ jobs:
               f = f"results/result-{c['name']}-{run}/invariants.json"
               if not os.path.exists(f):
                 inv_bad = True
-                inv_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - | - | |")
+                inv_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - | - | - | |")
                 continue
               j = json.load(open(f, encoding='utf-8'))
               k = j.get('counts', {})
@@ -1228,13 +1228,13 @@ jobs:
               lower = ', '.join(r['key'] for r in j.get('rows', []) if '下げてよい' in r['message'])
               note = '; '.join(x for x in (over and f'超過: {over}', lower and f'上限を下げてよい: {lower}', j.get('reason', '')) if x)
               inv_bad |= j['verdict'] != 'OK'
-              inv_rows.append(f"| {c['name']} | {run} | {j['verdict']} | {k.get('i1_startup_drift_no_intent', '-')} | {k.get('i1_drift_no_intent_total', '-')} | {k.get('i2_unwarranted', '-')} | {k.get('i3_self_injected_ime_mode_keys', '-')} | {k.get('i3_warrant_shadow_would_block', '-')} | {k.get('i5_stale_confirm_total', '-')} | {k.get('i5_mid_word_stale_escape', '-')} | {note} |")
+              inv_rows.append(f"| {c['name']} | {run} | {j['verdict']} | {k.get('i1_startup_drift_no_intent', '-')} | {k.get('i1_drift_no_intent_total', '-')} | {k.get('i2_unwarranted', '-')} | {k.get('i3_self_injected_ime_mode_keys', '-')} | {k.get('i3_warrant_shadow_would_block', '-')} | {k.get('i5_stale_confirm_total', '-')} | {k.get('i5_first_char_stale_escape', '-')} | {k.get('i5_mid_word_stale_escape', '-')} | {note} |")
           if inv_rows:
             gate = os.environ.get('GATE_MODE') == 'invariants'
             out += ["", "## 不変条件(異常検出器)" + ("(このrunの合否)" if gate else "(情報のみ、合否は上の表)"), "",
                     "上限と対応するBUGは tools/e2e/ime_key_matrix/invariant_limits.json。各回の詳細は result-*/invariants.txt。", "",
-                    "| 構成 | 回 | 判定 | I1 起動直後の意図なしdrift | I1 全体 | I2 Unwarranted | I3 自己注入IMEモードキー | I3 would_have_blocked | I5 StaleConfirm(情報) | I5 途中の語のESC(BUG-171、情報) | 備考 |",
-                    "|---|---|---|---|---|---|---|---|---|---|---|"] + inv_rows
+                    "| 構成 | 回 | 判定 | I1 起動直後の意図なしdrift | I1 全体 | I2 Unwarranted | I3 自己注入IMEモードキー | I3 would_have_blocked | I5 StaleConfirm(情報) | I5 最初の文字のESC(情報) | I5 途中の語のESC(BUG-171、情報) | 備考 |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|"] + inv_rows
           # 高速打鍵ストレス(ts-*): result.txt 末尾の TYPING_STRESS 行を表にする(崩れ方の内訳つき)。
           ts_rows = []
           for c in configs:
