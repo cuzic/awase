@@ -1054,7 +1054,8 @@ fn uia_active_composition() -> String {
             return "nopattern".into();
         };
         match pat.GetActiveComposition() {
-            Ok(_) => "range".into(),
+            // 範囲が非 null でも空のことがある(composition 無し)ので、範囲の文字列も返す。
+            Ok(r) => format!("range:{:?}", r.GetText(-1).map(|b| b.to_string()).unwrap_or_default()),
             Err(e) => format!("none({e:?})"),
         }
     }
