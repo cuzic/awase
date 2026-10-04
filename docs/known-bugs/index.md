@@ -31,7 +31,7 @@
 | [BUG-022](BUG-022.md) | 解決済み(コード確認のみ) | MS Edge で Uwp⇔TsfNative フォーカス往復後、conv=Eisu(英数) に固着し nicola が入力できなくなる |
 | [BUG-023](BUG-023.md) | 解決済み(コード確認のみ) | 画面ロック中に離された修飾キーの KeyUp が失われ、Shift/Ctrl が恒久的に stuck する（修正済み・実機再現確認待ち） |
 | [BUG-024](BUG-024.md) | 解決済み(実機確認済み) | `is_partial_literal()` が romaji 自体の compose 結果ではなく warmup F2 への |
-| [BUG-025](BUG-025.md) | 要確認 | 左Shift単独タップによる「IME-ON 半角英数」持続トグル（BUG-15 hold方式の置換） |
+| [BUG-025](BUG-025.md) | 解決済み(CI検証済み・実機未確認、2026-10-04) | 左Shift単独タップによる「IME-ON 半角英数」持続トグル（BUG-15 hold方式の置換） |
 | [BUG-026](BUG-026.md) | 解決済み(コード確認のみ) | FocusChanged 直後 conv が既に NATIVE の場合、idle-conv-check の steady-state 分岐が engine 復帰を永久に見送る |
 | [BUG-027](BUG-027.md) | 解決済み(実機確認済み) | per-VK confirm ループが `vk_sent 未設定` を検出すると、リカバリなしで romaji（と巻き込んだ後続文字）を丸ごと失う |
 | [BUG-028](BUG-028.md) | 解決済み(コード確認のみ) | `flush_raw_tsf_literal_recovery` が `pending_gji_key_responses` を drain せず、`StartProbe` が数秒… |
