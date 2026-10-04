@@ -362,6 +362,24 @@ mod tests {
         let _ = std::fs::remove_file(&p);
     }
 
+    /// BUG-169 の再現(特性テスト): 設定 GUI が n-gram 欄を空にして保存(`ngram_file = None`)しても、TOML に null が無くキーごと消えるため、
+    /// 次の読み込みで既定値(`Some(..)`)に戻る。直して「空=無効」を表せるようになったら、期待値(`None` のまま)へ書き換えること。
+    #[test]
+    fn bug169_ngram_file_none_comes_back_as_default_after_save_and_reload() {
+        let p = write("bug169", "[general]\nsimultaneous_threshold_ms = 80\n");
+        let base = AppConfig::load(&p).unwrap();
+        assert!(base.general.ngram_file.is_some(), "既定は n-gram 有効");
+        let mut edited = base.clone();
+        edited.general.ngram_file = None;
+        save_edit(&edited, &base, &p).unwrap();
+        let reloaded = AppConfig::load(&p).unwrap();
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(
+            reloaded.general.ngram_file, base.general.ngram_file,
+            "BUG-169: None で保存しても既定値に戻る(今もある制約)"
+        );
+    }
+
     #[test]
     fn legacy_confirm_mode_is_rewritten_to_wait_on_save() {
         for old in ["speculative", "two_phase", "adaptive_timing"] {
