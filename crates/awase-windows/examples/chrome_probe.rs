@@ -1341,7 +1341,9 @@ fn run_offrca(
             } else {
                 ime_control(0x0001, 0)
             };
+            let t_uia = Instant::now();
             let uia_comp = if is_race { String::new() } else { uia_active_composition() };
+            let uia_ms = u64::try_from(t_uia.elapsed().as_millis()).unwrap_or(u64::MAX);
             let ev_idx = p.shared.lock().unwrap().events.len();
             let utc = utc_stamp();
             let t_act = Instant::now();
@@ -1416,7 +1418,7 @@ fn run_offrca(
             p.log.line(&format!(
                 "OFFRCA {}",
                 serde_json::json!({"type":"or_trial","cell":cell,"action":action,"prep":prep,"n":i,
-                    "utc":utc,"prep_ok":prep_ok,"api_pre":api_pre,"uia_comp":uia_comp,"desc":desc,"closed_ms":closed_ms,
+                    "utc":utc,"prep_ok":prep_ok,"api_pre":api_pre,"uia_comp":uia_comp,"uia_ms":uia_ms,"desc":desc,"closed_ms":closed_ms,
                     "series":ser,"api_end":api_end,"typed":got.label(),"typed_open":typed_open,
                     "api_after_probe":api_after_probe,"text_post":text_post,"race_keys":race_keys,"typed2":got2.label(),"typed2_open":km_open_of(got2),"typed2_text":text2,"conv_pre":conv_pre,"conv_end":conv_end,"page_events":page_events,"then":then_res,"ladder":ladder_res,"focus_lost":p.focus_lost,
                     "awase":awase})

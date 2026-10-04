@@ -502,11 +502,14 @@ jobs:
                 ('e-uia-textarea', '', 'enter+1a:typed_nc,enter:notype,ctrlm+1a:typed_nc,ctrlenter+1a:typed_nc'),
                 ('d-input', ' --page=input', 'enter+1a:typed_nc,ctrlm+1a:typed_nc,ctrlj+1a:typed_nc,ctrlenter:notype,enter:notype,ctrlm:notype,ctrlj:notype,shiftenter:notype,tab:notype'),
               )],
+            # awase 有り(Ctrl+無変換で OFF): 確定キー(注入)が awase に捕まらないか、確定後の OFF が閉じるか。
+            cfg('sc-offrca-commit-msime-f-awase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true',
+                chrome="--offrca=ctrl1d:typed_nc,enter+ctrl1d:typed_nc,ctrlm+ctrl1d:typed_nc,ctrlenter+ctrl1d:typed_nc,ctrlm:notype,ctrlenter:notype --or-poll=1500 --settle=800 --msime"),
             # 自前窓(edit=IMM32 の EDIT、tsf=RichEdit の TSF 窓): 確定キー(--km-commit)を composition 有り(--km-comp)/無しで押し、直後の本文と、続く OFF(1a)で閉じるかを見る。
             *[cfg(f'sc-offrca-commit-km-{win}-{ck}-{"comp" if comp else "nocomp"}', 'observe', check='commitkm', ime='msime', keymap=1, runs=1, wait=1800,
                   stress=f"--form={win} --mode=keymatrix --km-cells=1a=off:sync --km-n=10 --km-commit={ck}{' --km-comp' if comp else ''} --layout=@REPO@/layout/nicola_keytop.yab --msime",
                   keys=KM_KEYS['abs'])
-              for win in ('edit', 'tsf') for ck in ('enter', 'ctrlm', 'ctrlj', 'ctrlenter', 'f6', 'f10') for comp in (True, False)],
+              for win in ('edit', 'tsf') for ck in ('none', 'enter', 'ctrlm', 'ctrlj', 'ctrlenter', 'f6', 'f10') for comp in (True, False)],
             cfg('sc-offrca-fix-gji-awase', 'pass', check='offrca', ime='gji', keymap=1, runs=1, wait=3000, awase='true', checkargs='--expect-closed',
                 chrome="--offrca=ctrl1d:typed_nc,ctrl1d:notype --settle=800"),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
