@@ -40,6 +40,17 @@ jobs:
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 8
+      - name: 言語切替ホットキーのレジストリ設定を記録する(ADR-222 案E の調査)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $out = "dist\reg-hotkeys.txt"
+          foreach ($k in @('HKCU\Keyboard Layout\Toggle', 'HKCU\Control Panel\Input Method\Hot Keys', 'HKCU\Software\Microsoft\CTF\LangBar')) {
+            "=== reg export $k" | Out-File $out -Append -Encoding utf8
+            reg export "$k" "dist\_tmp.reg" /y 2>&1 | Out-File $out -Append -Encoding utf8
+            if (Test-Path "dist\_tmp.reg") { Get-Content "dist\_tmp.reg" -Encoding Unicode | Out-File $out -Append -Encoding utf8; Remove-Item "dist\_tmp.reg" }
+          }
+          Get-Content $out -Encoding utf8
       - name: awase とプローブをビルド
         shell: pwsh
         run: |
@@ -86,5 +97,6 @@ jobs:
           path: |
             dist/lang_switch_probe.log
             dist/lang_switch_listener.log
+            dist/reg-hotkeys.txt
             dist/awase.log
             awase-stderr.log
