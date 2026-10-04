@@ -162,6 +162,46 @@ describe("schema_version 4 (gzip logs, ADR-222)", () => {
     }
   });
 
+  it("checks the gzip field cheaply: head characters, length, magic and padding", () => {
+    const fillerOk = "H4sI" + "A".repeat(4096 + 4096) + "AAAA";
+    expect(fillerOk.length % 4).toBe(0);
+    const accept = (value: string): void => {
+      expect(
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, log_excerpt_gz: value }))
+          .log_excerpt_gz
+      ).toBe(value);
+    };
+    const reject = (value: string): void => {
+      expect(() =>
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, log_excerpt_gz: value }))
+      ).toThrowError(expect.objectContaining({ message: "log_excerpt_gz_invalid" }));
+    };
+    accept("H4sIAAAA");
+    accept("H4sIAAA=");
+    accept("H4sIAA==");
+    accept(fillerOk);
+    // 不正な末尾（パディング）。
+    reject("H4sIAAAA====");
+    reject("H4sIAA=A");
+    // 先頭 4KiB 以内の不正な文字は弾く。
+    reject("H4sI" + "A".repeat(100) + "!!!!" + "A".repeat(100));
+    // 長さが短すぎる・4 の倍数でない。
+    reject("H4sI");
+    reject("H4sIAAAAA");
+  });
+
+  it("does not scan the whole gzip field (CPU on Workers Free); a bad char past the head is accepted", () => {
+    // 全文の文字種は見ない（保存するだけ。壊れていれば調査側の b64decode(validate=True) が弾く）。
+    // この振る舞いは、本体 1.75MiB で全文の正規表現が約 4ms（Free の CPU 10ms の 4 割）かかるための
+    // 意図的な割り切りなので、テストで固定して、うっかり全文検証に戻さないようにする。
+    const value = "H4sI" + "A".repeat(8192) + "!" + "A".repeat(3) + "AAAA";
+    expect(value.length % 4).toBe(0);
+    expect(
+      parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, log_excerpt_gz: value }))
+        .log_excerpt_gz
+    ).toBe(value);
+  });
+
   it("rejects an oversized gzip field before inspecting it further", () => {
     const huge = "H4sI" + "A".repeat(MAX_LOG_GZ_BASE64_CHARS);
     expect(() =>
@@ -181,7 +221,9 @@ describe("CPU cost of the largest accepted report (ADR-222 deploy check)", () =>
   // Workers Free プランの CPU 時間は 1 リクエスト 10ms。ADR-095 は「無料枠でカード登録なし」を
   // 前提に Cloudflare を選んでおり、このアカウントは Free の可能性が高い（API ではプランを
   // 確認できなかった）。本体上限 2MiB いっぱいの報告で、I/O を除く CPU 側の処理
-  // （本文の復号・JSON 解析・検証・R2 保存用の直列化）がどれだけかかるかを、CI のログに出す。
+  // （本文の復号・JSON 解析・検証・R2 保存用の直列化。整形なし = ハンドラと同じ）がどれだけ
+  // かかるかを、CI のログに出す。最適化前（全文の正規表現 + 整形つき直列化）は本体 1.75MiB で
+  // first-run 13.7ms / warm 11.7ms だった。
   // Node の V8 は workerd と同じエンジンだが、ハード・JIT の状態は違うので目安であり、
   // 本番の実測（`wrangler tail` の cpuTime、docs の手順）が正。落ちるのは極端に遅いときだけ。
   it("reports the validation cost for a body near MAX_BODY_BYTES", () => {
@@ -200,7 +242,7 @@ describe("CPU cost of the largest accepted report (ADR-222 deploy check)", () =>
       const start = performance.now();
       const text = new TextDecoder().decode(bytes);
       const payload = parseAndValidatePayload(text);
-      JSON.stringify({ report_id: "x", received_at: "y", payload }, null, 2);
+      JSON.stringify({ report_id: "x", received_at: "y", payload });
       runs.push(performance.now() - start);
     }
     const [first] = runs;

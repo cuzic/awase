@@ -215,7 +215,9 @@ async function handleReportIntake(request: Request, env: Env): Promise<Response>
 
     await env.REPORT_BUCKET.put(
       key,
-      JSON.stringify(stored, null, 2),
+      // 整形（インデント）は付けない: 本体 1.75MiB で約 2ms の CPU 差があり（Workers Free は
+      // 10ms/リクエスト）、読む側（スクリプト・jq）は整形を要しない（ADR-222）。
+      JSON.stringify(stored),
       {
         httpMetadata: {
           contentType: "application/json; charset=utf-8"
@@ -790,10 +792,17 @@ function optionalNullableString(value: Record<string, unknown>, field: string): 
   throw new HttpError(400, `${field}_invalid`);
 }
 
-/** ADR-222: gzip して base64 にした文字列（またはフィールド無し / null）。Worker は解凍しない
- * （無料プランの CPU 時間と解凍爆弾を避ける）ので、形式だけを安く検証する: 長さの上限、
- * base64 の文字種と 4 の倍数の長さ、gzip の先頭バイト（1f 8b 08 は base64 で `H4sI`）。
- * 中身の検証・展開は、メンテナの手元（`bug-report-fetch`）で展開後サイズに上限を付けて行う。 */
+/** ADR-222: gzip して base64 にした文字列（またはフィールド無し / null）。Worker は解凍も復号もしない
+ * ので、形式だけを**安く**検証する（Workers Free の CPU 時間は 1 リクエスト 10ms。本体 1.75MiB で
+ * 全文を正規表現で舐めると約 4ms かかる。計測は README の「Deploying schema_version 4」）:
+ * 長さの上限、4 の倍数の長さ、gzip の先頭バイト（1f 8b 08 は base64 で `H4sI`）、先頭 4KiB の
+ * 文字種、末尾のパディング。全文の文字種は見ない（保存するだけで、壊れていれば調査側の
+ * `base64.b64decode(validate=True)` が弾く）。中身の検証・展開は、メンテナの手元
+ * （`bug-report-fetch`）で展開後サイズに上限を付けて行う。 */
+const GZ_BASE64_HEAD_CHECK_CHARS = 4096;
+const BASE64_BODY = /^[A-Za-z0-9+/]*$/;
+const BASE64_TAIL = /^(?:[A-Za-z0-9+/]{4}|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)$/;
+
 function optionalNullableGzipBase64(
   value: Record<string, unknown>,
   field: string
@@ -809,9 +818,11 @@ function optionalNullableGzipBase64(
     throw new HttpError(400, `${field}_too_large`);
   }
   if (
+    fieldValue.length < 8 ||
     fieldValue.length % 4 !== 0 ||
     !fieldValue.startsWith("H4sI") ||
-    !/^[A-Za-z0-9+/]*={0,2}$/.test(fieldValue)
+    !BASE64_BODY.test(fieldValue.slice(0, GZ_BASE64_HEAD_CHECK_CHARS).replace(/=+$/, "")) ||
+    !BASE64_TAIL.test(fieldValue.slice(-4))
   ) {
     throw new HttpError(400, `${field}_invalid`);
   }
