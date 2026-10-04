@@ -439,6 +439,79 @@ jobs:
             *[km(f'sc-keymatrix-e2-tog-{ime_name}-chrome', 'chrome', ime_name,
                  ['1d=tog:fresh', '1d=tog:open', '1d=tog:sync', 'f3=tog:fresh', 'f3=tog:open', '19=tog:fresh', '19=tog:open'], 'tog', wait=2400)
               for ime_name in ('msime', 'gji')],
+            # --- MS-IME × 実 Chrome の OFF が閉じない件の原因切り分け(only='sc-offrca-*' で回す。chrome_probe --offrca、判定なし・観測のみ) ---
+            # セル=`action:prep`。action=1a(0x1A)/19/f3/1d/f0/ctrl1d/imc0(IMC_SETOPENSTATUS 0)/tsf0(TSF 大域 compartment)。prep=typed(0x16+打鍵確認)/notype(0x16のみ)/imc(IMCで開く)。
+            # 打鍵せずに API(IMC_GETOPENSTATUS)を20ms周期で4秒ポーリング → 閉じるまでの時間。--or-ladder=閉じなかったら別手段を順に試す。--or-relaunch=試行ごとに Chrome 再起動。
+            *[cfg(f'sc-offrca-{name}', 'observe', check='offrca', ime='msime' if msime else 'gji', keymap=2 if msime else 1, runs=1, wait=wait, awase='true' if aw else 'false',
+                  chrome=f"--offrca={cells} --or-ladder --settle=800{' --msime' if msime else ''}{'' if aw else ' --no-awase'}{' --or-relaunch' if relaunch else ''}")
+              for name, msime, aw, relaunch, cells, wait in (
+                ('msime-noawase', True, False, False, '1a:typed,1a:notype,1a:imc,19:typed,f3:typed,1d:typed,imc0:typed,tsf0:typed', 3000),
+                ('msime-awase', True, True, False, '1a:typed,ctrl1d:typed,ctrl1d:notype,1d:typed,19:typed,imc0:typed,tsf0:typed', 3000),
+                ('gji-noawase', False, False, False, '1a:typed,1a:notype,19:typed,f3:typed,1d:typed,imc0:typed,tsf0:typed', 3000),
+                ('msime-noawase-relaunch', True, False, True, '1a:typed,1a:notype,imc0:typed,tsf0:typed', 3000),
+                ('msime-awase-relaunch', True, True, True, 'ctrl1d:typed,ctrl1d:notype', 3000),
+                # 第2ラウンド: 「打鍵(composition)の後の 0x1A が1回目だけ効かない」の条件。typed_nc=composition を残したまま(実運用の「打っている途中で OFF」)、
+                # typed_enter/typed_esc=確定/取消してから、typed_w<ms>=打鍵から OFF までの待ち。同じセルを~tagで繰り返して先頭試行の特殊性も見る。
+                ('r2-msime-noawase', True, False, False, '1a:typed,1a:typed_nc,1a:typed_enter,1a:typed_esc,1a:typed_w2000,1a:typed_w8000,1a:notype,1a:typed~b', 3000),
+                ('r2-msime-awase', True, True, False, 'ctrl1d:typed,ctrl1d:typed_nc,ctrl1d:typed_enter,ctrl1d:typed_w2000,ctrl1d:typed~b', 3000),
+              )],
+            # 第3ラウンド: 原因=「未確定の composition がある間の VK_IME_OFF は commit+半角英数(conv 25→16)に化けて閉じない(2回目で閉じる)」の確認と、
+            # 候補の対策(二重送信 dbl0/dbl50/dbl/dbl400、1a+IMC)・GJI 対照・Chrome 以外の窓(edit/tsf の自前窓、--km-comp で composition を残して押す)での再現。
+            *[cfg(f'sc-offrca-r3-{name}', 'observe', check='offrca', ime='msime' if msime else 'gji', keymap=2 if msime else 1, runs=1, wait=3000, awase='true' if aw else 'false',
+                  chrome=f"--offrca={cells} --or-ladder --settle=800{' --msime' if msime else ''}{'' if aw else ' --no-awase'}")
+              for name, msime, aw, cells in (
+                ('msime-noawase', True, False, '1a:typed_nc,1a_dbl0:typed_nc,1a_dbl50:typed_nc,1a_dbl:typed_nc,1a_dbl400:typed_nc,1a_imc0:typed_nc,1a_dbl50:typed,1a_dbl50:notype'),
+                ('msime-awase', True, True, 'ctrl1d:typed_nc,ctrl1d:notype,ctrl1d:typed_nc~b'),
+                ('gji-noawase', False, False, '1a:typed_nc,1a_dbl50:typed_nc,imc0:typed_nc'),
+                ('gji-awase', False, True, 'ctrl1d:typed_nc,ctrl1d:notype'),
+              )],
+            *[cfg(f'sc-offrca-r3-km-{win}-msime{"-comp" if comp else "-nocomp"}', 'observe', check='keymatrix', ime='msime', keymap=1, runs=1, wait=1800,
+                  stress=f"--form={win} --mode=keymatrix --km-cells=ctrl+1d=off:sync,1a=off:sync,19=tog:sync{' --km-comp' if comp else ''} --layout=@REPO@/layout/nicola_keytop.yab --msime",
+                  keys=KM_KEYS['abs'])
+              for win in ('edit', 'tsf') for comp in (True, False)],
+            # 第4ラウンド: OFF の後に ON を押して かなが入力できるか(--or-then。半角英数 conv=16 に取り残されないか=利用者に見える影響)。ladder なしで素の挙動を見る。
+            *[cfg(f'sc-offrca-r4-{name}', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true' if aw else 'false',
+                  chrome=f"--offrca={cells} --or-then={then} --settle=800 --msime{'' if aw else ' --no-awase'}")
+              for name, aw, then, cells in (
+                ('noawase', False, '16', '1a:typed_nc,1a_imc0:typed_nc,imc0:typed_nc,1a:notype'),
+                ('awase', True, 'ctrl1c', 'ctrl1d:typed_nc,ctrl1d:notype'),
+              )],
+            # 第5ラウンド: 「以前のバージョンの Microsoft IME を使う」互換モード(NoTsf3Override2=1、旧 IME)でも同じか(legacy_custom='true' がそのレジストリを立てる。keystyle=Custom の表も入る点は交絡)。
+            cfg('sc-offrca-r5-legacy-noawase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='false', legacy_custom='true',
+                chrome="--offrca=1a:typed_nc,1a:notype,19:typed_nc,imc0:typed_nc,1a:typed_nc~b --or-then=16 --settle=800 --msime --no-awase"),
+            # (記録のみ。補完は採用していない=BUG-185 は未対応の既知の制限なので observe。) 補完を入れた場合の回帰として書いた構成: MS-IME × 実 Chrome で、未確定 composition を残したまま awase の OFF(Ctrl+無変換)を押しても実 IME が閉じる(MsImeDirect の OFF に IMC(OFF) を補う)。
+            # checkargs=--expect-closed で made 全試行の実打鍵が ASCII になることを要求(API の読み戻しは判定に使わない)。GJI は対照(IMC 補完を含めない=従来どおり VK のみで閉じる)。
+            cfg('sc-offrca-fix-msime-awase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true',
+                chrome="--offrca=ctrl1d:typed_nc,ctrl1d:typed,ctrl1d:notype --or-then=ctrl1c --settle=800 --msime"),
+            # 直前の打鍵とのあいだの順序(IMC は SendMessage で入力キューを追い越しうる): race<N> = 打鍵(k,a)の KeyUp の N ms 後に、待ち・probe を挟まず OFF。
+            # 判定は text_post(OFF 直後のページの文字)に ASCII が無いこと(`か` が `ka` に化けない)。ensure の settle・共通 sleep は race では飛ばす(chrome_probe.rs)。
+            cfg('sc-offrca-fix-msime-race', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true',
+                chrome="--offrca=ctrl1d:race0,ctrl1d:race10,ctrl1d:race20 --settle=800 --msime"),
+            # BUG-185 候補の実測(only='sc-offrca-cand-*' で回す。観測のみ): 未確定 composition を残して(typed_nc)から OFF する手段ごとに、IME が閉じるか・text_post に文字が確定して残るか・composition 無し(notype)で副作用が無いか。
+            # 手段: 1a=VK_IME_OFF(基準) / 19=VK_KANJI / 19g=開いているときだけ VK_KANJI / 1a_19g=VK_IME_OFF の後に開いたままなら VK_KANJI / conv0_1a=変換モード0→VK_IME_OFF / conv0=変換モード0のみ / imc0=IMC(OFF) / f0=英数。
+            cfg('sc-offrca-cand-msime-noawase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='false',
+                chrome="--offrca=1a:typed_nc,19:typed_nc,19g:typed_nc,1a_19g:typed_nc,conv0_1a:typed_nc,conv0:typed_nc,imc0:typed_nc,f0:typed_nc,19g:notype,1a_19g:notype --settle=800 --msime --no-awase"),
+            # BUG-185 方針C(確定系キーの探索、観測のみ。only='sc-offrca-commit-*'): `<確定キー>+1a`=確定キーの 150ms 後に VK_IME_OFF。
+            # typed_nc=composition を残して押す(text_post に文字が残れば確定、空なら取り消し)。notype=composition 無し(副作用: 改行等が text_post に出るか)。--page=input は単一行 input。
+            *[cfg(f'sc-offrca-commit-msime-{name}', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='false',
+                  chrome=f"--offrca={cells} --or-poll=1500 --settle=800 --msime --no-awase{extra}")
+              for name, extra, cells in (
+                ('a-textarea', '', 'enter:typed_nc,enter+1a:typed_nc,ctrlm+1a:typed_nc,ctrlj+1a:typed_nc,ctrlenter+1a:typed_nc,shiftenter+1a:typed_nc,tab+1a:typed_nc'),
+                ('b-textarea', '', 'f6+1a:typed_nc,f7+1a:typed_nc,f8+1a:typed_nc,f9+1a:typed_nc,f10+1a:typed_nc,1a:typed_nc'),
+                ('c-textarea-nocomp', '', 'enter:notype,ctrlm:notype,ctrlj:notype,ctrlenter:notype,shiftenter:notype,tab:notype,f6:notype,f7:notype,f8:notype,f9:notype,f10:notype'),
+                ('e-uia-textarea', '', 'enter+1a:typed_nc,enter:notype,ctrlm+1a:typed_nc,ctrlenter+1a:typed_nc'),
+                ('d-input', ' --page=input', 'enter+1a:typed_nc,ctrlm+1a:typed_nc,ctrlj+1a:typed_nc,ctrlenter:notype,enter:notype,ctrlm:notype,ctrlj:notype,shiftenter:notype,tab:notype'),
+              )],
+            # awase 有り(Ctrl+無変換で OFF): 確定キー(注入)が awase に捕まらないか、確定後の OFF が閉じるか。
+            cfg('sc-offrca-commit-msime-f-awase', 'observe', check='offrca', ime='msime', keymap=2, runs=1, wait=3000, awase='true',
+                chrome="--offrca=ctrl1d:typed_nc,enter+ctrl1d:typed_nc,ctrlm+ctrl1d:typed_nc,ctrlenter+ctrl1d:typed_nc,ctrlm:notype,ctrlenter:notype --or-poll=1500 --settle=800 --msime"),
+            # 自前窓(edit=IMM32 の EDIT、tsf=RichEdit の TSF 窓): 確定キー(--km-commit)を composition 有り(--km-comp)/無しで押し、直後の本文と、続く OFF(1a)で閉じるかを見る。
+            *[cfg(f'sc-offrca-commit-km-{win}-{ck}-{"comp" if comp else "nocomp"}', 'observe', check='commitkm', ime='msime', keymap=1, runs=1, wait=1800,
+                  stress=f"--form={win} --mode=keymatrix --km-cells=1a=off:sync --km-n=10 --km-commit={ck}{' --km-comp' if comp else ''} --layout=@REPO@/layout/nicola_keytop.yab --msime",
+                  keys=KM_KEYS['abs'])
+              for win in ('edit', 'tsf') for ck in ('none', 'enter', 'ctrlm', 'ctrlj', 'ctrlenter', 'f6', 'f10') for comp in (True, False)],
+            cfg('sc-offrca-fix-gji-awase', 'observe', check='offrca', ime='gji', keymap=1, runs=1, wait=3000, awase='true',
+                chrome="--offrca=ctrl1d:typed_nc,ctrl1d:notype --settle=800"),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -568,12 +641,12 @@ jobs:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith('sc-keymatrix-')
-                       or any(o.startswith('sc-keymatrix-') and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -979,6 +1052,11 @@ jobs:
             # ADR-208 L3b: 「ずれの作り方 × 明示キー」行列。実 Chrome は chrome_probe.log、自前窓は typing_stress.log を読む。
             $kmlog = if ('${{ matrix.cfg.chrome }}' -ne '') { 'dist\chrome_probe.log' } else { 'dist\typing_stress.log' }
             python tools\e2e\ime_key_matrix\check_keymatrix.py --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'commitkm') {
+            python tools\e2e\ime_key_matrix\check_commitkm.py dist\typing_stress.log | Tee-Object -FilePath result.txt
+            $global:LASTEXITCODE = 0
+          } elseif ('${{ matrix.cfg.check }}' -eq 'offrca') {
+            python tools\e2e\ime_key_matrix\check_offrca.py --json offrca.json ${{ matrix.cfg.checkargs }} dist\chrome_probe.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'startup') {
             python tools\e2e\ime_key_matrix\check_startup.py --json startup.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
@@ -1055,6 +1133,7 @@ jobs:
             typing.json
             reopen.json
             keymatrix.json
+            offrca.json
             env.txt
             dist/compartment_notify_probe.log
             dist/compartment_notify_probe_diag.log

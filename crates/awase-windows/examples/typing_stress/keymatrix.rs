@@ -153,6 +153,41 @@ fn press_chord(vk: u32, scan: u16) {
     send_key(VK_LCONTROL, SCAN_LCONTROL, false);
 }
 
+/// `--km-commit=<名前>` の確定系キー(BUG-185 方針C)。(vk, scan, 修飾 vk)。
+fn commit_key(name: &str) -> Option<(u32, u16, Option<(u32, u16)>)> {
+    Some(match name {
+        "enter" => (0x0D, 0x1C, None),
+        "ctrlm" => (0x4D, 0x32, Some((VK_LCONTROL, SCAN_LCONTROL))),
+        "ctrlj" => (0x4A, 0x24, Some((VK_LCONTROL, SCAN_LCONTROL))),
+        "ctrlenter" => (0x0D, 0x1C, Some((VK_LCONTROL, SCAN_LCONTROL))),
+        "shiftenter" => (0x0D, 0x1C, Some((0xA0, 0x2A))),
+        "tab" => (0x09, 0x0F, None),
+        "f6" => (0x75, 0x40, None),
+        "f7" => (0x76, 0x41, None),
+        "f8" => (0x77, 0x42, None),
+        "f9" => (0x78, 0x43, None),
+        "f10" => (0x79, 0x44, None),
+        _ => return None,
+    })
+}
+
+fn send_commit_key(name: &str) {
+    let Some((vk, scan, m)) = commit_key(name) else {
+        return;
+    };
+    if let Some((mv, ms)) = m {
+        send_key(mv, ms, true);
+        sleep_ms(40);
+        send_key(vk, scan, true);
+        sleep_ms(60);
+        send_key(vk, scan, false);
+        sleep_ms(30);
+        send_key(mv, ms, false);
+    } else {
+        press(vk, scan, 50);
+    }
+}
+
 fn send_cell_key(c: &KmCell) {
     if c.ctrl {
         press_chord(c.vk, c.scan);
@@ -296,6 +331,9 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     let wait_ms = int_arg("--km-wait=", 1000);
     let max_press = int_arg("--km-max-press=", 3);
     let fresh_settle = int_arg("--km-fresh-settle=", 8000);
+    // `--km-comp`(MS-IME×実 Chrome の OFF 切り分け): 押す前にかな単打を1回打って未確定の composition を残す。
+    let comp = std::env::args().any(|a| a == "--km-comp");
+    let commit = arg_value("--km-commit=");
     let Some(probe) = cells[0]
         .iter()
         .find(|c| c.romaji == "ka")
@@ -307,7 +345,7 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     };
     rec(
         &json!({"type":"km_config","cells":km_cells.iter().map(|c| c.label.clone()).collect::<Vec<_>>(),
-        "n":n,"wait_ms":wait_ms,"max_press":max_press,"fresh_settle_ms":fresh_settle,"evidence":"api"}),
+        "n":n,"wait_ms":wait_ms,"max_press":max_press,"fresh_settle_ms":fresh_settle,"evidence":"api","comp":comp}),
     );
     for cell in &km_cells {
         for i in 0..n {
@@ -347,6 +385,19 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             sleep_ms(wait_ms);
             let pre_api = real_ime_open(child);
             let mut presses = Vec::new();
+            if comp && pre_ok && pre_api == Some(r0) {
+                press(probe.vk, probe.scan, 60);
+                sleep_ms(500);
+            }
+            // `--km-commit=<名前>`: 確定系キー(composition があれば確定して本文に残るか、無ければ副作用が無いか)。直後の本文を記録。
+            let mut text_commit = serde_json::Value::Null;
+            if let Some(ck) = &commit {
+                if pre_ok && pre_api == Some(r0) {
+                    send_commit_key(ck);
+                    sleep_ms(500);
+                    text_commit = json!(read_text(child));
+                }
+            }
             if pre_ok && pre_api == Some(r0) {
                 for p in 1..=max_press {
                     let utc = utc_hms();
@@ -363,6 +414,8 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             }
             let focus_lost = !focus_ok();
             let press_utc = utc_hms();
+            // 押下(OFF 等)の直後の本文(確定された文字が残っているか。空は取り消し)。
+            let text_post = read_text(child);
             clear_text(child);
             sleep_ms(200);
             press(probe.vk, probe.scan, 60);
@@ -373,7 +426,7 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             rec(
                 &json!({"type":"km_trial","cell":cell.label,"key":cell.key,"kind":cell.kind_name(),
                 "gap":cell.gap_name(),"n":i,"r0":r0,"target":target,"utc":utc0,"pre_ok":pre_ok,
-                "pre_api":pre_api,"presses":presses,"focus_lost":focus_lost,"fresh":fresh_info,
+                "pre_api":pre_api,"commit":commit,"text_commit":text_commit,"text_post":text_post,"presses":presses,"focus_lost":focus_lost,"fresh":fresh_info,
                 "typed":{"press_utc":press_utc,"text":text,"expect":probe.kana.to_string(),
                     "ok":text.trim() == probe.kana.to_string()}}),
             );
