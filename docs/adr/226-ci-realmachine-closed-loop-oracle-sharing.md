@@ -9,6 +9,7 @@ summary: |-
   候補: A 共通 oracle(閉ループ trace を実機ログと同じ行形式で出し、同じ `check_*.py` を掛ける、または不変条件を片方に統一)、B replay 差分による実機 CI の選択実行、C 実機で落ちたシナリオが閉ループで再現するかの自動判定、D 実機ログから擬似 IME の遅延を較正。
   決定: 設計を固めず、まず前提の確認(SP0')を行う。SP0' は「A の価値=実機と閉ループの oracle がずれた実例の有無」と「B/C/D の前提=ログ行から何が復元できるか」を、コード変更なしで測る。
 status: |-
+  A〜D は見送り(2026-10-04、Opus round1: 観察1・5 が不正確、SP0' の (a)(b)(d) はコードを読むだけで答えが出て着手条件を満たさない)。候補 E(ログの構造化・journal への事実の集約)は所有者の着想で、未レビュー・未決定。以下は起草時の記述:
   起草(2026-10-04、未決定・実装なし)。Opus レビュー1ラウンドを経て、SP0' の結果で採否を決める。
 related_adr:
   - "ADR-163"
@@ -61,3 +62,35 @@ CI 実機のシナリオ(`sc-*`、`ts-*`、`cal-*`)の入力は合成なので�
 - A1(ログ形式を揃える)と A2(統一)のどちらが小さいか。A1 は閉ループに「ログ風の出力」を足し、A2 は片方の oracle を消す。
 - ratchet 上限は実機の揺れ幅から決めた値なので、閉ループ(決定的)にそのまま適用できない可能性がある。
 - 閉ループは `on_input`・TSF warmup を写さない(ADR-224、ADR-225 P5)。共通 oracle でも、写されない症状は検査できない。
+
+## Opus レビュー(round1)の結果と訂正(2026-10-04)
+
+| 項目 | 訂正 |
+|---|---|
+| 観察1 二重実装 | 同じ性質は I1 ⇔ P3(drift の半分)の 1 組だけで、部分的。I2(warrant が下りず止まった書き込み)と P1(warrant が下りて通った書き込み)は表裏で別の性質。P3 に最も近い Python 側は `check_startup.py`、`belief_matches_truth_at_end` の実機版は `check_consistency.py`。BUG-162 の閉ループ側の検査は `harness.rs:580` の `assert!` に埋まっている |
+| 観察5 遅延 | 擬似 IME は実測較正済みの読み戻し遅延(`set_readback_lag_ms`、QUIRKS Q3、min21/median33/max62ms)を既に持つ。ADR-225 の F4 の「遅延だけ未較正」も同じ誤り。D の前提は満たされているが、`gji_last_io_ms` は warmup の入力で、ハーネスは warmup を写さないため、較正しても使う側が無い |
+| B | 復元不能: `actuation decision` の行は `chain[]`・`attempts[1..]`・`would_have_blocked`・`candidate_was_seen` を持たず、`replay_record` に必要なフィールドが無い。削減も成立しない: PR で走る実機 CI は `atok-passthrough-cold,baseline` の各1回のみで、`sc-*` は PR では走らない。選択実行は、決定差分ゼロで起きる種類(BUG-162/163/170/171)を見つけた run を飛ばす |
+| C | A に依存しない(判定は閉ループの既存検査で足りる)。本当の壁は、`on_input`・ForceGuard・warmup・GjiFsm・LiteralDetect・hook・`PhysicalKeyDisposition::plan` をハーネスが写さないこと。A1 で閉ループが作れる行は I1 だけ |
+| (c) の実例 | 閉ループが Linux CI で走り始めたのは 2026-10-04(`9ca12626`)で、0 件は構造的。唯一の候補(BUG-163 の別経路 `6f5ef659`)は、写していない層(ForceGuard)が原因で、oracle を共通にしても閉ループは通る = 分類(ii)。着手条件を「(i) oracle の違い」に限る |
+| A1 | ハーネスが本番の tracing 書式を真似る = 新しい「写し」。書式が変わると閉ループは黙って 0 件で通る。どちらの oracle も消せず、決定6(消せる重複の明記)を満たせない |
+| ratchet | 上限は CI の構成名・実機の揺れ幅(observed_min〜max)で決まり、決定的な閉ループには適用できない |
+
+SP0' の結果: (a) 1 組 < 3、(b) 作れるのは I1 の行だけ、(d) 復元不能。着手条件を満たさず、A〜D は見送る。
+
+## 別件(本 ADR の対象外、実害の修正)
+
+MS-IME 系 `sc-*` 5 構成の `invariant_limits.json` の `i2_unwarranted` 上限が 2〜3。根拠の機構(ActivationSync の `SetOpen`)は ADR-213 P2c(`24672981`)で撤去済みで、
+再計測記録が無い(BUG-162 の状態欄)。最大 3 件の退行が通る。`only='sc-*-msime-*,sc-*-gji-msime'` で回し、0 なら上限を 0 に下げる(JSON 1 ファイル・CI 1 回)。
+
+## 候補 E(未レビュー): ログの構造化・journal への事実の集約
+
+所有者の着想(2026-10-04): journal(リング、JSON)とテキストログの2系統を出しているのは筋が悪い。JSON(JSONL)に統一したい。
+
+測定した事実:
+- journal のイベントは、リング(JSON、ダンプ時のみ)と `awase::journal` ターゲットの tracing 行(`awase.log`)に二重に出ている。`JournalEntry` は `Serialize` のみ。
+- `check_*.py` の正規表現は、`check_invariants.py` 10、`check_startup.py` 9、`check_reopen.py` 9、`check_drift_recovery.py` 8、…。
+- `awase::journal` の行を読むのは 3 ファイル。journal に載っていない行(`explicit_intent=` が 10 箇所、`[drift] correction:`、`[gji-fsm]`、`[warrant-shadow]`、`[hook]`)にもチェッカーが依存する。
+
+E の中身: (E1)チェッカーが読む事実を `JournalEntry` に載せ、テキストを journal から派生させる(独立した `tracing::debug!` を減らす)。(E2)出力を JSONL にし、チェッカーは `json.loads` で読む。
+**これは oracle 共有(A)とは別の価値**(正規表現の脆さ、書式変更で黙って 0 件になる問題の解消)を狙う。閉ループが写していない層の問題は解決しない。
+採否の前に必要な測定: 書式変更による「黙って 0 件」の実例の数、移行量(約 20 ファイルの正規表現と `testdata/*.awase.log`)、ログ量の増加(ADR-222 のリング gzip との関係)。

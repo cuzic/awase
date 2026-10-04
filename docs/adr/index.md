@@ -232,7 +232,7 @@
 | [223](223-input-language-change-detected-at-key-time.md) | 入力言語の切替を、打鍵の時点でフォーカス窓のスレッドの言語を読んで検知する(案C)。表示の即時更新は切替キー解放後に 1 回だけ読む(案E2)。購読もポーリングも使わない | 一部実装(段階 0 の測定は合格〈PR #452〉、段階 1 = 打鍵の取り込み時に読んだ入力言語で is_japanese_ime を… |
 | [224](224-closed-loop-hub-ungate-or-extract.md) | 閉ループが写している ImeStateHub の配線を、ungate(案A)か純粋関数への切り出し(案C)か。見逃しが出るまで着手しない | 起草(2026-10-04、未決定・実装なし) |
 | [225](225-journal-replay-ci-closed-loop-integration.md) | 報告 journal・CI 実機・閉ループ・replay の連携は、まず実害を測り(SP0)、抽出手順の縮小版だけを候補に残す | 見送り(2026-10-04、SP0: 直近10件で検知可能 0 件・弱い候補 2 件) |
-| [226](226-ci-realmachine-closed-loop-oracle-sharing.md) | CI 実機・閉ループ・replay の接続: 不変条件(oracle)の二重実装の解消を、まず前提確認(SP0')で測る | 起草(2026-10-04、未決定・実装なし) |
+| [226](226-ci-realmachine-closed-loop-oracle-sharing.md) | CI 実機・閉ループ・replay の接続(oracle 共有 A〜D は見送り、ログ構造化 E は未レビュー) | A〜D 見送り(2026-10-04、Opus round1)。E は未決定 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
