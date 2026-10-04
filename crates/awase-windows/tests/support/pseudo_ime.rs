@@ -61,7 +61,7 @@ pub const QUIRKS: &[Quirk] = &[
         effect: "IME は閉じる(IMC_GETOPENSTATUS 1→0)が awase の観測は 0 件で、belief が開のまま残る",
         evidence: "BUG-172(2026-09-29、CI 10/10 再現、ObserverPoll=0・Imm32Unavailable=39、メモ帳は影響なし)。ADR-205 で修正済みで v2.0.0 に入り実機確認済み。runtime 側(観測経路)の現象で、擬似 IME の状態機械からは表現できない",
         ci: "cal-driftrec 系・ADR-205 の外部クローズ検証(修正後は [external-change]×10、observed 0→10)",
-        modeled: None,
+        modeled: Some("Setup::with_external_close_watch(閉ループ側の切替。無効=Q4の症状、有効=ADR-205の追随。クセそのものは擬似IMEの状態機械ではなく観測経路なので、観測側の状態機械ExternalChangeWatchを本物で呼ぶ)"),
     },
     Quirk {
         id: "Q6",

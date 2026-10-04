@@ -11,7 +11,7 @@ const MAX_EXTENSION_FACTOR: u64 = 2;
 
 /// 監視窓の判定結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChangeVerdict {
+pub enum ChangeVerdict {
     /// 窓が無い・切れた・スコープ違い・読めなかった・基準値と同じ。何もしない。
     NoEvidence,
     /// 窓の中で基準値と違う値を読んだ。実状態がこの値へ変わったので追随する。
@@ -29,14 +29,15 @@ struct Armed<S> {
 
 /// 外部変化の監視窓と、直近の読みの記録。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ExternalChangeWatch<S: Copy + PartialEq> {
+pub struct ExternalChangeWatch<S: Copy + PartialEq> {
     armed: Option<Armed<S>>,
     /// 全 refresh の入口で記録する直近の読み（スコープ付き）。基準値の初期値になる。
     last_read: Option<(S, bool)>,
 }
 
 impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
-    pub(crate) const fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             armed: None,
             last_read: None,
@@ -44,7 +45,7 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
     }
 
     /// 直近の読みを記録する（`None`〈読めなかった〉は記録しない）。`observe` の後に呼ぶ。
-    pub(crate) fn record_read(&mut self, scope: S, read: Option<bool>) {
+    pub fn record_read(&mut self, scope: S, read: Option<bool>) {
         if let Some(v) = read {
             self.last_read = Some((scope, v));
         }
@@ -52,7 +53,7 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
 
     /// 外部注入の IME キーを見たら呼ぶ。同じスコープの窓が生きていれば基準値を保ったまま延ばす
     /// （延長は最初の arm から `window_ms * 2` までで、窓の寿命は最大でその時点から `window_ms` 後＝`window_ms * 3`）。そうでなければ新しく開き、基準値は直近の読み（同じスコープ）。
-    pub(crate) fn arm(&mut self, scope: S, now_ms: u64, window_ms: u64) {
+    pub fn arm(&mut self, scope: S, now_ms: u64, window_ms: u64) {
         if let Some(a) = self.armed.as_mut() {
             let alive = a.scope == scope && now_ms.saturating_sub(a.last_arm_ms) <= window_ms;
             if alive {
@@ -73,12 +74,12 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
     }
 
     /// 窓が生きているか（消費しない）。スコープが変わった・窓が切れたなら破棄して `false`。
-    pub(crate) fn live(&mut self, scope: S, now_ms: u64, window_ms: u64) -> bool {
+    pub fn live(&mut self, scope: S, now_ms: u64, window_ms: u64) -> bool {
         self.remaining_ms(scope, now_ms, window_ms).is_some()
     }
 
     /// 窓の残り時間（ms）。無い・切れた・スコープ違いなら `None`（破棄する）。
-    pub(crate) fn remaining_ms(&mut self, scope: S, now_ms: u64, window_ms: u64) -> Option<u64> {
+    pub fn remaining_ms(&mut self, scope: S, now_ms: u64, window_ms: u64) -> Option<u64> {
         let a = self.armed?;
         let age = now_ms.saturating_sub(a.last_arm_ms);
         if a.scope != scope || age > window_ms {
@@ -90,7 +91,7 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
 
     /// prefetch 済みの読みを判定する。窓の中で基準値と違う値を読んだら `Changed`（窓を閉じる）。
     /// 基準値が無ければ最初の読みを基準値にする（変化とは扱わない）。
-    pub(crate) fn observe(
+    pub fn observe(
         &mut self,
         scope: S,
         now_ms: u64,
