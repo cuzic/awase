@@ -60,7 +60,7 @@ jobs:
           # awase を先に起動して TIP を検出させてから、プローブを起動して切替を注入する。
           Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
           Start-Sleep -Seconds 10
-          Start-Process -FilePath .\lang_switch_probe.exe -ArgumentList '--trials=6'
+          Start-Process -FilePath .\lang_switch_probe.exe -ArgumentList '--trials=4 --observe-ms=10000'
           $deadline = (Get-Date).AddMinutes(25)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 3

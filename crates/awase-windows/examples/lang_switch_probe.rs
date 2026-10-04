@@ -39,6 +39,8 @@ mod p {
     const LANG_JA: u16 = 0x0411;
     const LANG_RU: u16 = 0x0419;
 
+    static LAYOUT_RU_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     #[link(name = "imm32")]
     extern "system" {
         fn ImmSetHotKey(dw_hotkey: u32, modifiers: u32, vkey: u32, hkl: HKL) -> i32;
@@ -159,11 +161,21 @@ mod p {
         };
         let trials: usize = arg("--trials=").and_then(|v| v.parse().ok()).unwrap_or(6);
         let methods: Vec<String> = arg("--methods=")
-            .unwrap_or_else(|| "altshift,winspace,hk3,request".into())
+            .unwrap_or_else(|| "altshift,winspace,hk3,request,hk3_focus,request_focus".into())
             .split(',')
             .map(str::to_string)
             .collect();
         let lp = arg("--log=").unwrap_or_else(|| "lang_switch_probe.log".into());
+        let observe_ms: u64 = arg("--observe-ms=")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10_000);
+        // 前面スレッドの言語が ru になった最初の時刻(epoch ms)を 5ms 周期で記録する(キー注入中に切り替わっても拾えるように別スレッド)。
+        std::thread::spawn(|| loop {
+            if fg_lang() == LANG_RU && LAYOUT_RU_AT.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                LAYOUT_RU_AT.store(epoch_ms(), std::sync::atomic::Ordering::SeqCst);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        });
 
         let class = to_wide("lang_switch_probe_window");
         let hinst = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }
@@ -216,6 +228,23 @@ mod p {
                 None,
             )
         }?;
+        let title2 = to_wide("lang switch probe 2");
+        let parent2 = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                PCWSTR(class.as_ptr()),
+                PCWSTR(title2.as_ptr()),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                400,
+                200,
+                None,
+                None,
+                Some(hinst),
+                None,
+            )
+        }?;
         let _ = unsafe { ShowWindow(parent, SW_SHOW) };
         let _ = unsafe { SetForegroundWindow(parent) };
         pump(Duration::from_millis(800));
@@ -258,25 +287,39 @@ mod p {
                 let _ = unsafe { SetForegroundWindow(parent) };
                 set_ja();
                 let before = fg_lang();
+                LAYOUT_RU_AT.store(0, std::sync::atomic::Ordering::SeqCst);
                 let t_inject = epoch_ms();
+                let mut t_focus: Option<u64> = None;
                 match m.as_str() {
                     "altshift" => chord(&[0xA4, 0xA0], None),
                     "winspace" => chord(&[0x5B], Some(0x20)),
-                    "hk3" => chord(&[0xA4, 0xA0], Some(0x33)),
-                    "request" => request(ru),
+                    "hk3" | "hk3_focus" => chord(&[0xA4, 0xA0], Some(0x33)),
+                    "request" | "request_focus" => request(ru),
                     _ => {}
                 }
                 let t0 = Instant::now();
-                let mut layout_ms: Option<u64> = None;
-                while t0.elapsed() < Duration::from_millis(3500) {
-                    if fg_lang() == LANG_RU && layout_ms.is_none() {
-                        layout_ms = Some(u64::try_from(t0.elapsed().as_millis()).unwrap_or(0));
+                let mut focus_done = false;
+                while t0.elapsed() < Duration::from_millis(observe_ms) {
+                    // `*_focus`: 切替の 1.5 秒後にフォーカスを別窓へ移す(フォーカス変更が awase の再判定の契機になるかを見る)。
+                    if m.ends_with("_focus")
+                        && !focus_done
+                        && t0.elapsed() >= Duration::from_millis(1500)
+                    {
+                        let _ = unsafe { SetForegroundWindow(parent2) };
+                        t_focus = Some(epoch_ms());
+                        focus_done = true;
                     }
                     pump(Duration::from_millis(10));
                 }
+                let ru_at = LAYOUT_RU_AT.load(std::sync::atomic::Ordering::SeqCst);
+                let layout_ms: Option<u64> = if ru_at == 0 {
+                    None
+                } else {
+                    Some(ru_at.saturating_sub(t_inject))
+                };
                 let rec = serde_json::json!({
                     "method": m, "n": n, "lang_before": format!("0x{before:04X}"),
-                    "t_inject_epoch_ms": t_inject, "layout_ms_after_inject": layout_ms,
+                    "t_inject_epoch_ms": t_inject, "t_focus_epoch_ms": t_focus, "layout_ms_after_inject": layout_ms,
                     "lang_end": format!("0x{:04X}", fg_lang()),
                 });
                 log(&lp, &format!("LS {rec}"));

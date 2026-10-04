@@ -37,18 +37,19 @@ def main():
         r = json.loads(m.group(1))
         t0 = r["t_inject_epoch_ms"]
         lay = r["layout_ms_after_inject"]
-        deact = [e for e in ev if t0 <= e[0] <= t0 + 4000 and e[1] == "deact"]
+        deact = [e for e in ev if t0 <= e[0] <= t0 + 14000 and e[1] == "deact"]
         first = deact[0] if deact else None
         rows[r["method"]].append(
-            (r["n"], lay, None if first is None else round(first[0] - t0), None if first is None else first[2], r["lang_end"])
+            (r["n"], lay, None if first is None else round(first[0] - t0), None if first is None else first[2], r["lang_end"],
+             None if not r.get("t_focus_epoch_ms") else round(r["t_focus_epoch_ms"] - t0))
         )
     out = ["## BUG-183: 切替方法ごとの「実際の切替」と awase の非活性化の遅れ", "",
-           "| 方法 | 試行 | 切替までの ms | awase 非活性までの ms(注入から) | 理由 | 最終言語 |", "|---|---|---|---|---|---|"]
+           "| 方法 | 試行 | 切替までの ms | awase 非活性までの ms(注入から) | 理由 | 最終言語 | フォーカス移動の ms |", "|---|---|---|---|---|---|---|"]
     for method, rs in rows.items():
-        for n, lay, d, why, end in rs:
-            out.append(f"| {method} | {n} | {lay} | {d} | {why} | {end} |")
+        for n, lay, d, why, end, fo in rs:
+            out.append(f"| {method} | {n} | {lay} | {d} | {why} | {end} | {fo} |")
     out.append("")
-    out.append("(切替までが None = 3.5 秒以内に言語が切り替わらなかった。非活性が None = 4 秒以内に Engine deactivated が出なかった)")
+    out.append("(切替までが None = 3.5 秒以内に言語が切り替わらなかった。非活性が None = 14 秒以内に Engine deactivated が出なかった)")
     text = "\n".join(out)
     print(text)
     import os
