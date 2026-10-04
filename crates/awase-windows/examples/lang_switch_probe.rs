@@ -79,11 +79,12 @@ mod p {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use awase_windows::win32::to_wide;
-    use windows::core::{w, Interface as _, PCWSTR};
+    use windows::core::{w, Interface as _, BOOL, PCWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetKeyboardLayout, GetKeyboardLayoutList, SendInput, HKL, INPUT, INPUT_0, INPUT_KEYBOARD,
         KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
@@ -93,11 +94,12 @@ mod p {
         ITfLanguageProfileNotifySink, ITfSource, ITfThreadMgr,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
-        GetWindowThreadProcessId, PeekMessageW, PostMessageW, RegisterClassW,
-        RegisterShellHookWindow, RegisterWindowMessageW, SetForegroundWindow, ShowWindow,
-        TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW,
-        WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows, GetClassNameW,
+        GetForegroundWindow, GetGUIThreadInfo, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, PeekMessageW, PostMessageW, RegisterClassW, RegisterShellHookWindow,
+        RegisterWindowMessageW, SetForegroundWindow, ShowWindow, TranslateMessage, CS_HREDRAW,
+        CS_VREDRAW, CW_USEDEFAULT, GUITHREADINFO, MSG, PM_REMOVE, SW_SHOW, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     const WM_INPUTLANGCHANGEREQUEST: u32 = 0x0050;
@@ -252,6 +254,223 @@ mod p {
                 );
             }
         }
+    }
+
+    // ── ADR-223 段階 0(窓の種類を増やした測定)────────────────────────────────
+
+    fn class_of(hwnd: HWND) -> String {
+        let mut buf = [0u16; 256];
+        let n = unsafe { GetClassNameW(hwnd, &mut buf) };
+        usize::try_from(n)
+            .ok()
+            .filter(|n| *n > 0)
+            .map_or_else(String::new, |n| String::from_utf16_lossy(&buf[..n]))
+    }
+
+    fn title_of(hwnd: HWND) -> String {
+        let mut buf = [0u16; 256];
+        let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
+        usize::try_from(n)
+            .ok()
+            .filter(|n| *n > 0)
+            .map_or_else(String::new, |n| String::from_utf16_lossy(&buf[..n]))
+    }
+
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lp: LPARAM) -> BOOL {
+        let v = unsafe { &mut *(lp.0 as *mut Vec<isize>) };
+        v.push(hwnd.0 as isize);
+        BOOL(1)
+    }
+
+    fn top_windows() -> Vec<HWND> {
+        let mut v: Vec<isize> = Vec::new();
+        let _ = unsafe { EnumWindows(Some(enum_cb), LPARAM(&raw mut v as isize)) };
+        v.into_iter()
+            .map(|h| HWND(h as *mut core::ffi::c_void))
+            .collect()
+    }
+
+    /// OS が持つ「実際の入力先」の言語(真値)。`GetGUIThreadInfo` のフォーカス窓(無ければアクティブ窓)のスレッドと、前面窓のスレッドの両方を読む。
+    struct FocusInfo {
+        fg_class: String,
+        fg_tid: u32,
+        fg_lang: u16,
+        focus_class: String,
+        focus_tid: u32,
+        focus_lang: u16,
+    }
+
+    fn lang_of_tid(tid: u32) -> u16 {
+        if tid == 0 {
+            return 0;
+        }
+        let hkl = unsafe { GetKeyboardLayout(tid) };
+        (hkl.0 as usize & 0xFFFF) as u16
+    }
+
+    fn focus_info() -> FocusInfo {
+        let fg = unsafe { GetForegroundWindow() };
+        let fg_tid = unsafe { GetWindowThreadProcessId(fg, None) };
+        let mut gti = GUITHREADINFO {
+            cbSize: u32::try_from(size_of::<GUITHREADINFO>()).unwrap_or(0),
+            ..Default::default()
+        };
+        let ok = unsafe { GetGUIThreadInfo(0, &raw mut gti) }.is_ok();
+        let focus = if ok && !gti.hwndFocus.0.is_null() {
+            gti.hwndFocus
+        } else if ok {
+            gti.hwndActive
+        } else {
+            HWND::default()
+        };
+        let focus_tid = if focus.0.is_null() {
+            0
+        } else {
+            unsafe { GetWindowThreadProcessId(focus, None) }
+        };
+        FocusInfo {
+            fg_class: class_of(fg),
+            fg_tid,
+            fg_lang: lang_of_tid(fg_tid),
+            focus_class: if focus.0.is_null() {
+                String::new()
+            } else {
+                class_of(focus)
+            },
+            focus_tid,
+            focus_lang: lang_of_tid(focus_tid),
+        }
+    }
+
+    fn force_fg(hwnd: HWND) {
+        let fg = unsafe { GetForegroundWindow() };
+        let fg_tid = unsafe { GetWindowThreadProcessId(fg, None) };
+        let me = unsafe { GetCurrentThreadId() };
+        let attached =
+            fg_tid != 0 && fg_tid != me && unsafe { AttachThreadInput(me, fg_tid, true) }.as_bool();
+        let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+        let _ = unsafe { SetForegroundWindow(hwnd) };
+        if attached {
+            let _ = unsafe { AttachThreadInput(me, fg_tid, false) };
+        }
+    }
+
+    /// 対象アプリを起動して、前面にした窓を返す。`console`(conhost の ConsoleWindowClass)・`uwp`(設定アプリ = ApplicationFrameWindow)・`chrome`。
+    fn spawn_target(kind: &str, lp: &str) -> Option<HWND> {
+        let before: Vec<isize> = top_windows().into_iter().map(|h| h.0 as isize).collect();
+        match kind {
+            "console" => {
+                let _ = std::process::Command::new("conhost.exe")
+                    .args(["cmd.exe", "/k", "title LSPROBE_CONSOLE"])
+                    .spawn();
+            }
+            "uwp" => {
+                let _ = std::process::Command::new("cmd.exe")
+                    .args(["/c", "start", "", "ms-settings:"])
+                    .spawn();
+            }
+            "chrome" => {
+                let dir = std::env::temp_dir().join("lsprobe-chrome");
+                let exe = [
+                    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+                ]
+                .into_iter()
+                .find(|p| std::path::Path::new(p).exists())
+                .unwrap_or("chrome.exe");
+                let _ = std::process::Command::new(exe)
+                    .arg(format!("--user-data-dir={}", dir.display()))
+                    .args([
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "about:blank",
+                    ])
+                    .spawn();
+            }
+            _ => return None,
+        }
+        let want_class = match kind {
+            "console" => "ConsoleWindowClass",
+            "uwp" => "ApplicationFrameWindow",
+            _ => "Chrome_WidgetWin_1",
+        };
+        for _ in 0..60 {
+            pump(Duration::from_millis(250));
+            for h in top_windows() {
+                if before.contains(&(h.0 as isize)) || !unsafe { IsWindowVisible(h) }.as_bool() {
+                    continue;
+                }
+                let class = class_of(h);
+                let title = title_of(h);
+                let hit =
+                    class == want_class && (kind != "console" || title.contains("LSPROBE_CONSOLE"));
+                if hit {
+                    log(
+                        lp,
+                        &format!(
+                            "[ls] target={kind} hwnd=0x{:X} class={class} title={title:?}",
+                            h.0 as usize
+                        ),
+                    );
+                    return Some(h);
+                }
+            }
+        }
+        log(lp, &format!("[ls] ABORT target={kind} の窓が見つからない"));
+        None
+    }
+
+    /// `--stage0-ext=<console|uwp|chrome>`: 対象アプリを前面にして、切替前後の打鍵を送り、OS が持つ真値(フォーカススレッドと前面スレッドの言語)を記録する。
+    fn run_ext(lp: &str, kind: &str, trials: usize, ja: HKL, ru: HKL) {
+        let Some(target) = spawn_target(kind, lp) else {
+            return;
+        };
+        pump(Duration::from_millis(2500));
+        let tap = |extra: usize| {
+            key_ex(0x41, false, extra);
+            key_ex(0x41, true, extra);
+        };
+        for method in ["request", "altshift"] {
+            for n in 0..trials {
+                force_fg(target);
+                pump(Duration::from_millis(600));
+                request(ja);
+                let t0 = Instant::now();
+                while focus_info().focus_lang != LANG_JA
+                    && t0.elapsed() < Duration::from_millis(2500)
+                {
+                    pump(Duration::from_millis(20));
+                }
+                pump(Duration::from_millis(400));
+                let before = focus_info();
+                tap(TEST_MARKER);
+                let t_ctrl = epoch_ms();
+                pump(Duration::from_millis(300));
+                let t_inject = epoch_ms();
+                match method {
+                    "altshift" => chord(&[0xA4, 0xA0], None),
+                    _ => request(ru),
+                }
+                pump(Duration::from_millis(500));
+                let after = focus_info();
+                tap(TEST_MARKER);
+                let t_key1 = epoch_ms();
+                pump(Duration::from_millis(300));
+                tap(0);
+                let t_key2 = epoch_ms();
+                pump(Duration::from_millis(300));
+                let rec = serde_json::json!({
+                    "target": kind, "method": method, "n": n,
+                    "t_ctrl_epoch_ms": t_ctrl, "t_inject_epoch_ms": t_inject, "t_key1_epoch_ms": t_key1, "t_key2_epoch_ms": t_key2,
+                    "before": {"fg_class": before.fg_class, "fg_tid": before.fg_tid, "fg_lang": format!("0x{:04X}", before.fg_lang),
+                               "focus_class": before.focus_class, "focus_tid": before.focus_tid, "focus_lang": format!("0x{:04X}", before.focus_lang)},
+                    "after": {"fg_class": after.fg_class, "fg_tid": after.fg_tid, "fg_lang": format!("0x{:04X}", after.fg_lang),
+                              "focus_class": after.focus_class, "focus_tid": after.focus_tid, "focus_lang": format!("0x{:04X}", after.focus_lang)},
+                });
+                log(lp, &format!("LS0X {rec}"));
+            }
+        }
+        log(lp, "[ls] done");
     }
 
     pub fn run() -> anyhow::Result<()> {
@@ -464,6 +683,10 @@ mod p {
         let r1 = unsafe { ImmSetHotKey(0x100, 0x4005, 0x33, ru) };
         let r2 = unsafe { ImmSetHotKey(0x101, 0x4005, 0x31, ja) };
         log(&lp, &format!("[ls] ImmSetHotKey ru={r1} ja={r2}"));
+        if let Some(kind) = arg("--stage0-ext=") {
+            run_ext(&lp, &kind, trials, ja, ru);
+            return Ok(());
+        }
         if args.iter().any(|a| a == "--dump-hotkeys") {
             dump_hotkeys(&lp, "after-set");
         }
