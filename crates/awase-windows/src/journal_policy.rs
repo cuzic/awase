@@ -10,20 +10,48 @@ pub enum LaneKind {
 }
 
 impl LaneKind {
+    /// ADR-222: 不具合報告は ring の中身を全部ダンプする（旧: バイト配分で絞っていた）。
+    ///
+    /// 打鍵は最大頻度（実測 1 分最大 475 件、`awase.log.old` の `journal: key input`
+    /// 行の件数）で 10 分ぶん（約 4,750 件）が溢れない 8,192 件にする。
+    /// 他レーンは、打鍵の多い時間帯に 10 分前後を保てるよう旧値の 2〜4 倍にする
+    /// （常用時の実測では 15.6 時間の稼働で追い出し件数が state 2,676 /
+    /// timing 6,626 / actuation 2,200 で、頻度は打鍵の 1/2〜1/8 程度）。
     #[must_use]
     pub const fn capacity(self) -> usize {
         match self {
-            Self::State => 1024,
-            Self::Timing | Self::Actuation | Self::KeyInput => 512,
+            Self::State | Self::Timing => 2048,
+            Self::Actuation => 1024,
+            Self::KeyInput => 8192,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BudgetItem {
-    pub seq: u64,
-    pub lane: LaneKind,
-    pub bytes: usize,
+/// 不具合報告に載せる打鍵（KeyInput）の範囲（ADR-222 / Opus round2 B-E1）。
+///
+/// 打鍵 ring は「最大頻度で 10 分が溢れない」容量（8,192 件）で、通常の頻度では
+/// 10 分をはるかに超えて何時間ぶんも溜まる。所有者が許容したのは「直近 10 分」の
+/// 全打鍵なので、ダンプ時に KeyInput だけをこの窓に絞る。
+pub const REPORT_KEY_INPUT_WINDOW_MS: u64 = 10 * 60 * 1000;
+
+/// 打鍵 entry が、ダンプ時点 `now_ms` から `window_ms` 以内か。
+///
+/// 畳み込まれた自動リピート（ADR-169）は、envelope の `elapsed_ms` が最初の押下のまま
+/// `last_elapsed_ms` だけが進む。11 分前に押し始めて今も押している打鍵を落とさないよう、
+/// 新しい方（`max`）で判定する。
+#[must_use]
+pub const fn key_input_in_report_window(
+    elapsed_ms: u64,
+    last_elapsed_ms: u64,
+    now_ms: u64,
+    window_ms: u64,
+) -> bool {
+    let newest = if last_elapsed_ms > elapsed_ms {
+        last_elapsed_ms
+    } else {
+        elapsed_ms
+    };
+    newest >= now_ms.saturating_sub(window_ms)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -116,86 +144,6 @@ pub fn order_violation(tokens: impl IntoIterator<Item = u64>) -> Option<OrderVio
         previous = current;
     }
     None
-}
-
-const RESERVED_PERCENT: [(LaneKind, usize); 4] = [
-    (LaneKind::Timing, 35),
-    (LaneKind::State, 30),
-    (LaneKind::Actuation, 20),
-    (LaneKind::KeyInput, 15),
-];
-
-#[must_use]
-pub fn select_tail_within_budget(items: &[BudgetItem], max_bytes: usize) -> Vec<usize> {
-    if max_bytes < 2 {
-        return Vec::new();
-    }
-    let payload_budget = max_bytes - 2;
-    let mut selected = vec![false; items.len()];
-    let mut used = 0usize;
-
-    for (lane, percent) in RESERVED_PERCENT {
-        let lane_budget = payload_budget.saturating_mul(percent) / 100;
-        let mut lane_used = 0usize;
-        let mut indexes: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter_map(|(index, item)| (item.lane == lane).then_some(index))
-            .collect();
-        indexes.sort_by_key(|&index| std::cmp::Reverse(items[index].seq));
-        for index in indexes {
-            let cost = item_cost(items[index].bytes, used + lane_used > 0);
-            if lane_used + cost <= lane_budget && used + cost <= payload_budget {
-                selected[index] = true;
-                lane_used += cost;
-            }
-        }
-        used += lane_used;
-    }
-
-    let mut remaining: Vec<usize> = items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, _)| (!selected[index]).then_some(index))
-        .collect();
-    remaining.sort_by_key(|&index| {
-        (
-            lane_priority(items[index].lane),
-            std::cmp::Reverse(items[index].seq),
-        )
-    });
-    for index in remaining {
-        let cost = item_cost(items[index].bytes, used > 0);
-        if used + cost <= payload_budget {
-            selected[index] = true;
-            used += cost;
-        }
-    }
-
-    let mut indexes: Vec<usize> = selected
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, is_selected)| is_selected.then_some(index))
-        .collect();
-    indexes.sort_by_key(|&index| items[index].seq);
-    indexes
-}
-
-const fn lane_priority(lane: LaneKind) -> usize {
-    match lane {
-        LaneKind::Timing => 0,
-        LaneKind::State => 1,
-        LaneKind::Actuation => 2,
-        LaneKind::KeyInput => 3,
-    }
-}
-
-const fn item_cost(bytes: usize, needs_comma: bool) -> usize {
-    if needs_comma {
-        bytes + 1
-    } else {
-        bytes
-    }
 }
 
 // ── KeyInput auto-repeat 畳み込み（ADR-169） ────────────────────────────────
@@ -319,49 +267,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn select_tail_prefers_newer_entries_with_valid_array_overhead() {
-        let items = [
-            BudgetItem {
-                seq: 0,
-                lane: LaneKind::State,
-                bytes: 10,
-            },
-            BudgetItem {
-                seq: 1,
-                lane: LaneKind::State,
-                bytes: 10,
-            },
-            BudgetItem {
-                seq: 2,
-                lane: LaneKind::State,
-                bytes: 10,
-            },
-        ];
-        assert_eq!(select_tail_within_budget(&items, 24), vec![1, 2]);
+    fn key_input_window_keeps_recent_and_drops_old_entries() {
+        let w = REPORT_KEY_INPUT_WINDOW_MS;
+        let now = 3_600_000;
+        assert!(key_input_in_report_window(now - w, 0, now, w));
+        assert!(!key_input_in_report_window(now - w - 1, 0, now, w));
+        assert!(key_input_in_report_window(now, 0, now, w));
+        // 起動直後（now < window）は全件が窓内。
+        assert!(key_input_in_report_window(0, 0, 1_000, w));
     }
 
     #[test]
-    fn select_tail_uses_reserved_lanes_before_leftover() {
-        let items = [
-            BudgetItem {
-                seq: 10,
-                lane: LaneKind::KeyInput,
-                bytes: 10,
-            },
-            BudgetItem {
-                seq: 11,
-                lane: LaneKind::Timing,
-                bytes: 10,
-            },
-            BudgetItem {
-                seq: 12,
-                lane: LaneKind::State,
-                bytes: 10,
-            },
-        ];
-        let selected = select_tail_within_budget(&items, 24);
-        assert!(selected.contains(&1));
-        assert!(selected.contains(&2));
+    fn key_input_window_uses_last_elapsed_for_coalesced_repeats() {
+        // 11 分前に押し始め、今も押し続けている打鍵（elapsed は最初の押下のまま）。
+        let w = REPORT_KEY_INPUT_WINDOW_MS;
+        let now = 3_600_000;
+        assert!(!key_input_in_report_window(now - w - 60_000, 0, now, w));
+        assert!(key_input_in_report_window(
+            now - w - 60_000,
+            now - 1_000,
+            now,
+            w
+        ));
     }
 
     #[test]

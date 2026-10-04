@@ -13,7 +13,6 @@ use std::time::Duration;
 use serde::Serialize;
 
 pub use crate::journal_policy::LaneKind;
-use crate::journal_policy::{select_tail_within_budget, BudgetItem};
 
 pub const DEFAULT_CAPACITY: usize = 2048;
 pub const STATE_LANE_CAPACITY: usize = LaneKind::State.capacity();
@@ -417,29 +416,25 @@ pub enum JournalEntry {
     },
     /// `elapsed_ms` / OS tick / hook timestamp の対応を取るためのアンカー。
     ClockAnchor { tick_ms: u64, hook_us: u64 },
-    /// 添付用 capped JSON が古い entry を落としたことを示す合成ヘッダ。
-    DumpTruncated {
-        app_version: &'static str,
-        budget_bytes: usize,
-        total_entries: usize,
-        emitted_entries: usize,
-        dropped_state: usize,
-        dropped_timing: usize,
-        dropped_actuation: usize,
-        dropped_key_input: usize,
-    },
     /// ダンプトリガー発動
     ///
     /// `evicted_*`（ADR-169決定1-b）: 各レーンのリングバッファが容量超過で
     /// 完全に失った（`pop_front()`/満杯+古い遅延envelope破棄）累計件数。
-    /// `DumpTruncated.dropped_*`（200KiB byte予算段の間引き、切り詰めが
-    /// 実際に発生した場合にしか生成されない）とは別軸で、**このエントリは
-    /// ダンプのたびに必ず1件生成される**ため、evicted の主たる出力先とする。
+    /// **このエントリはダンプのたびに必ず1件生成される**ため、evicted の出力先とする。
+    ///
+    /// `oldest_elapsed_ms_*`（ADR-222）: ダンプ時点で各レーンの ring に残っている
+    /// 最古の entry の `elapsed_ms`（空のレーンは `None`）。不具合報告は ring の
+    /// 中身を全部出す（バイト配分で絞らない）ので、調査する側が「各レーンが
+    /// 何分前まで残っているか」を `DumpTriggered` の `elapsed_ms` との差で読める。
     DumpTriggered {
         evicted_state: usize,
         evicted_timing: usize,
         evicted_actuation: usize,
         evicted_key_input: usize,
+        oldest_elapsed_ms_state: Option<u64>,
+        oldest_elapsed_ms_timing: Option<u64>,
+        oldest_elapsed_ms_actuation: Option<u64>,
+        oldest_elapsed_ms_key_input: Option<u64>,
     },
 }
 
@@ -476,18 +471,13 @@ pub struct FocusEndpoint {
     pub focus_kind: String,
 }
 
-#[derive(Debug)]
-pub struct CappedJson {
-    pub json: String,
-    pub total_entries: usize,
-    pub emitted_entries: usize,
-    pub dropped_by_lane: [(LaneKind, usize); 4],
-    /// レーンのリングバッファ容量超過で完全に失われたエントリ数（ADR-169決定1-b）。
-    /// `dropped_by_lane`（200KiBのbyte予算段で間引かれた件数、ダンプが予算内に
-    /// 収まった場合はレーンごとに0）とは別軸——**こちらは `DumpTruncated` の
-    /// 生成有無に関わらず常にここに実値が入る**（`DumpTruncated`は切り詰め時
-    /// にしか生成されないヘッダのため、evicted の主たる出力先にはしない）。
-    pub evicted_by_lane: EvictedByLane,
+/// レーン別の ring 内最古 `elapsed_ms`（ADR-222）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OldestElapsedByLane {
+    pub state: Option<u64>,
+    pub timing: Option<u64>,
+    pub actuation: Option<u64>,
+    pub key_input: Option<u64>,
 }
 
 /// レーン別 eviction カウンタ（ADR-169決定1-b）。
@@ -556,7 +546,9 @@ struct JournalLane {
 impl JournalLane {
     fn new(capacity: usize) -> Self {
         Self {
-            buffer: VecDeque::with_capacity(capacity),
+            // ADR-222: 打鍵レーンは 8,192 件で、常用時に全量を事前確保すると約 2.3MB を
+            // 打鍵が無い時間帯も占有する。伸長は償却コストで足りるので事前確保は控えめにする。
+            buffer: VecDeque::with_capacity(capacity.min(512)),
             capacity,
             evicted: 0,
         }
@@ -620,7 +612,6 @@ impl JournalEntry {
             | Self::ImeOpenApplied { .. }
             | Self::FocusTransition { .. }
             | Self::ClockAnchor { .. }
-            | Self::DumpTruncated { .. }
             | Self::DumpTriggered { .. } => LaneKind::State,
             Self::GjiFsmTransition { .. }
             | Self::HookImeModeDiagnostic { .. }
@@ -1086,36 +1077,15 @@ impl JournalEntry {
                     "clock anchor"
                 );
             }
-            Self::DumpTruncated {
-                app_version,
-                budget_bytes,
-                total_entries,
-                emitted_entries,
-                dropped_state,
-                dropped_timing,
-                dropped_actuation,
-                dropped_key_input,
-            } => {
-                tracing::debug!(
-                    target: "awase::journal",
-                    seq,
-                    elapsed_ms,
-                    app_version = *app_version,
-                    budget_bytes,
-                    total_entries,
-                    emitted_entries,
-                    dropped_state,
-                    dropped_timing,
-                    dropped_actuation,
-                    dropped_key_input,
-                    "dump truncated"
-                );
-            }
             Self::DumpTriggered {
                 evicted_state,
                 evicted_timing,
                 evicted_actuation,
                 evicted_key_input,
+                oldest_elapsed_ms_state,
+                oldest_elapsed_ms_timing,
+                oldest_elapsed_ms_actuation,
+                oldest_elapsed_ms_key_input,
             } => {
                 tracing::debug!(
                     target: "awase::journal",
@@ -1125,6 +1095,10 @@ impl JournalEntry {
                     evicted_timing,
                     evicted_actuation,
                     evicted_key_input,
+                    oldest_elapsed_ms_state,
+                    oldest_elapsed_ms_timing,
+                    oldest_elapsed_ms_actuation,
+                    oldest_elapsed_ms_key_input,
                     "dump triggered"
                 );
             }
@@ -1405,6 +1379,19 @@ impl UnifiedJournal {
         Ok(serde_json::to_string_pretty(&entries)?)
     }
 
+    /// 各レーンの ring に残っている最古の entry の `elapsed_ms`（ADR-222）。
+    /// `DumpTriggered.oldest_elapsed_ms_*` の元。空のレーンは `None`。
+    #[must_use]
+    pub fn oldest_elapsed_ms_by_lane(&self) -> OldestElapsedByLane {
+        let oldest = |lane: &JournalLane| lane.buffer.iter().map(|e| e.elapsed_ms).min();
+        OldestElapsedByLane {
+            state: oldest(&self.lanes.state),
+            timing: oldest(&self.lanes.timing),
+            actuation: oldest(&self.lanes.actuation),
+            key_input: oldest(&self.lanes.key_input),
+        }
+    }
+
     /// 各レーンの `evicted`（リングバッファ容量超過による完全消失件数）の
     /// 現在値を snapshot する（ADR-169決定1-b）。
     #[must_use]
@@ -1415,98 +1402,6 @@ impl UnifiedJournal {
             actuation: self.lanes.actuation.evicted,
             key_input: self.lanes.key_input.evicted,
         }
-    }
-
-    pub fn to_json_capped(&self, max_bytes: usize) -> Result<CappedJson, DumpError> {
-        let entries = self.entries_by_seq();
-        let serialized: Vec<SerializedEnvelope> = entries
-            .iter()
-            .map(|envelope| {
-                let json = serde_json::to_string(envelope)?;
-                Ok(SerializedEnvelope {
-                    seq: envelope.seq,
-                    lane: envelope.entry.lane_kind(),
-                    json,
-                })
-            })
-            .collect::<Result<_, serde_json::Error>>()?;
-        let total_entries = serialized.len();
-        let total_json_bytes = json_array_len(serialized.iter().map(|e| e.json.len()));
-        if total_json_bytes <= max_bytes {
-            return Ok(CappedJson {
-                json: join_json_array(serialized.iter().map(|e| e.json.as_str())),
-                total_entries,
-                emitted_entries: total_entries,
-                dropped_by_lane: lane_counts(),
-                evicted_by_lane: self.evicted_by_lane(),
-            });
-        }
-
-        let mut header_len = 0usize;
-        let mut selected = Vec::new();
-        for _ in 0..4 {
-            let payload_budget = max_bytes.saturating_sub(header_len);
-            let items: Vec<BudgetItem> = serialized
-                .iter()
-                .map(|e| BudgetItem {
-                    seq: e.seq,
-                    lane: e.lane,
-                    bytes: e.json.len(),
-                })
-                .collect();
-            let next_selected = select_tail_within_budget(&items, payload_budget);
-            let dropped = dropped_by_lane(&serialized, &next_selected);
-            let next_header_len = truncation_header_json(
-                selected_min_seq(&serialized, &next_selected).unwrap_or(0),
-                max_bytes,
-                total_entries,
-                next_selected.len(),
-                dropped,
-            )?
-            .len()
-                + usize::from(!next_selected.is_empty());
-            if next_selected == selected && next_header_len == header_len {
-                break;
-            }
-            selected = next_selected;
-            header_len = next_header_len;
-        }
-
-        let mut selected_final = selected;
-        let dropped = dropped_by_lane(&serialized, &selected_final);
-        let mut parts = Vec::with_capacity(selected_final.len() + 1);
-        let header = truncation_header_json(
-            selected_min_seq(&serialized, &selected_final).unwrap_or(0),
-            max_bytes,
-            total_entries,
-            selected_final.len(),
-            dropped,
-        )?;
-        let header_included = header.len() + 2 <= max_bytes;
-        if header_included {
-            parts.push(header);
-        }
-        parts.extend(
-            selected_final
-                .iter()
-                .map(|&index| serialized[index].json.clone()),
-        );
-        let mut json = join_json_array(parts.iter().map(String::as_str));
-        while json.len() > max_bytes && parts.len() > 1 {
-            let remove_at = usize::from(header_included);
-            parts.remove(remove_at);
-            selected_final.remove(0);
-            json = join_json_array(parts.iter().map(String::as_str));
-        }
-        let dropped = dropped_by_lane(&serialized, &selected_final);
-
-        Ok(CappedJson {
-            json,
-            total_entries,
-            emitted_entries: selected_final.len(),
-            dropped_by_lane: dropped,
-            evicted_by_lane: self.evicted_by_lane(),
-        })
     }
 
     /// `%TEMP%/awase_journal_<tick_ms>.json` に書き出す。
@@ -1521,15 +1416,46 @@ impl UnifiedJournal {
         Ok(path)
     }
 
-    /// `%TEMP%/awase_journal_<tick_ms>.json` に添付用 capped JSON を書き出す。
-    pub fn dump_to_file_capped(&self, max_bytes: usize) -> Result<std::path::PathBuf, DumpError> {
+    /// 不具合報告用: ring の中身を**全部**、compact JSON で書き出す（ADR-222。
+    /// 旧 `dump_to_file_capped` のバイト配分による間引きは廃止した）。
+    ///
+    /// 打鍵（KeyInput）だけは直近 `REPORT_KEY_INPUT_WINDOW_MS`（10 分）に絞る
+    /// （所有者が許容した範囲。ring は最大頻度で 10 分が溢れない容量なので、通常の
+    /// 頻度では何時間ぶんも溜まっている。Opus round2 B-E1）。他のレーンは打鍵の
+    /// 内容を含まないので全件出す。
+    pub fn dump_to_file_for_report(&self) -> Result<std::path::PathBuf, DumpError> {
+        let started = std::time::Instant::now();
         let tick = crate::hook::current_tick_ms();
         let path = std::env::temp_dir().join(format!("awase_journal_{tick}.json"));
-        let capped = self.to_json_capped(max_bytes)?;
-        std::fs::write(&path, &capped.json).map_err(|source| DumpError::Write {
+        let now_ms = (self.clock.now() - self.start).as_millis() as u64;
+        let entries: Vec<&JournalEnvelope> = self
+            .entries_by_seq()
+            .into_iter()
+            .filter(|envelope| match &envelope.entry {
+                JournalEntry::KeyInput {
+                    last_elapsed_ms, ..
+                } => crate::journal_policy::key_input_in_report_window(
+                    envelope.elapsed_ms,
+                    *last_elapsed_ms,
+                    now_ms,
+                    crate::journal_policy::REPORT_KEY_INPUT_WINDOW_MS,
+                ),
+                _ => true,
+            })
+            .collect();
+        let json = serde_json::to_string(&entries)?;
+        std::fs::write(&path, &json).map_err(|source| DumpError::Write {
             path: path.clone(),
             source,
         })?;
+        // ADR-222 D2: メインスレッド（キーボードフックと同じスレッド）で数 MB を
+        // シリアライズするため、実機ログで所要時間を確認できるようにする。
+        tracing::info!(
+            "[journal] report dump: {} entries, {} bytes, {} ms",
+            entries.len(),
+            json.len(),
+            started.elapsed().as_millis()
+        );
         Ok(path)
     }
 
@@ -1546,102 +1472,6 @@ impl UnifiedJournal {
         entries.sort_by_key(|entry| entry.seq);
         entries
     }
-}
-
-struct SerializedEnvelope {
-    seq: u64,
-    lane: LaneKind,
-    json: String,
-}
-
-fn json_array_len(item_lens: impl Iterator<Item = usize>) -> usize {
-    let mut len = 2;
-    let mut first = true;
-    for item_len in item_lens {
-        if !first {
-            len += 1;
-        }
-        len += item_len;
-        first = false;
-    }
-    len
-}
-
-fn join_json_array<'a>(items: impl Iterator<Item = &'a str>) -> String {
-    let mut json = String::from("[");
-    for (index, item) in items.enumerate() {
-        if index > 0 {
-            json.push(',');
-        }
-        json.push_str(item);
-    }
-    json.push(']');
-    json
-}
-
-fn selected_min_seq(serialized: &[SerializedEnvelope], selected: &[usize]) -> Option<u64> {
-    selected.iter().map(|&index| serialized[index].seq).min()
-}
-
-fn dropped_by_lane(
-    serialized: &[SerializedEnvelope],
-    selected: &[usize],
-) -> [(LaneKind, usize); 4] {
-    let mut total = lane_counts();
-    let mut emitted = lane_counts();
-    for item in serialized {
-        *count_for_lane(&mut total, item.lane) += 1;
-    }
-    for &index in selected {
-        *count_for_lane(&mut emitted, serialized[index].lane) += 1;
-    }
-    [
-        (LaneKind::State, total[0].1.saturating_sub(emitted[0].1)),
-        (LaneKind::Timing, total[1].1.saturating_sub(emitted[1].1)),
-        (LaneKind::Actuation, total[2].1.saturating_sub(emitted[2].1)),
-        (LaneKind::KeyInput, total[3].1.saturating_sub(emitted[3].1)),
-    ]
-}
-
-fn lane_counts() -> [(LaneKind, usize); 4] {
-    [
-        (LaneKind::State, 0),
-        (LaneKind::Timing, 0),
-        (LaneKind::Actuation, 0),
-        (LaneKind::KeyInput, 0),
-    ]
-}
-
-fn count_for_lane(counts: &mut [(LaneKind, usize); 4], lane: LaneKind) -> &mut usize {
-    &mut counts
-        .iter_mut()
-        .find(|(candidate, _)| *candidate == lane)
-        .expect("all journal lanes are represented")
-        .1
-}
-
-fn truncation_header_json(
-    seq: u64,
-    budget_bytes: usize,
-    total_entries: usize,
-    emitted_entries: usize,
-    dropped: [(LaneKind, usize); 4],
-) -> Result<String, DumpError> {
-    let envelope = JournalEnvelope {
-        seq,
-        elapsed_ms: 0,
-        entry: JournalEntry::DumpTruncated {
-            app_version: env!("CARGO_PKG_VERSION"),
-            budget_bytes,
-            total_entries,
-            emitted_entries,
-            dropped_state: dropped[0].1,
-            dropped_timing: dropped[1].1,
-            dropped_actuation: dropped[2].1,
-            dropped_key_input: dropped[3].1,
-        },
-    };
-    Ok(serde_json::to_string(&envelope)?)
 }
 
 impl Default for UnifiedJournal {
@@ -1997,23 +1827,39 @@ mod tests {
     }
 
     #[test]
-    fn journal_to_json_capped_keeps_newer_tail_and_valid_json() {
+    fn report_lane_capacities_keep_ten_minutes_of_key_input() {
+        // ADR-222: 打鍵は実測の最大頻度（1 分 475 件）で 10 分ぶん（約 4,750 件）が
+        // ring から溢れないこと。この下限を割る変更は、不具合報告から打鍵が
+        // 欠ける（report 01M42BME26GDQ3CJ4F5DMGT0MP: 165 秒・73 件）再発になる。
+        assert!(KEY_INPUT_LANE_CAPACITY >= 475 * 10);
+    }
+
+    #[test]
+    fn to_json_emits_every_entry_without_byte_budget() {
+        // `mock_journal` は容量 10 の小さな ring。容量内（10 件）なら、バイト配分による
+        // 間引きも合成ヘッダ（旧 DumpTruncated）も無く、全件がそのまま出る。
         let (mut j, _mock) = mock_journal();
-        for _ in 0..20 {
+        for _ in 0..10 {
             j.record(make_state_entry());
         }
-        let capped = j.to_json_capped(700).unwrap();
-        assert!(capped.json.len() <= 700);
-        let values: Vec<serde_json::Value> = serde_json::from_str(&capped.json).unwrap();
-        let seqs: Vec<u64> = values.iter().map(|v| v["seq"].as_u64().unwrap()).collect();
-        assert!(seqs.contains(&19));
-        assert!(!seqs.contains(&0));
-        assert!(values
-            .first()
-            .is_some_and(|v| v["entry"]["type"] == "DumpTruncated"));
-        assert!(values
-            .first()
-            .is_some_and(|v| v["entry"]["app_version"] == env!("CARGO_PKG_VERSION")));
+        let json = j.to_json().unwrap();
+        let values: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(values.len(), 10);
+        assert!(values.iter().all(|v| v["entry"]["type"] != "DumpTruncated"));
+    }
+
+    #[test]
+    fn oldest_elapsed_ms_by_lane_reports_each_lane_separately() {
+        let (mut j, mock) = mock_journal();
+        let empty = j.oldest_elapsed_ms_by_lane();
+        assert_eq!(empty.state, None);
+        assert_eq!(empty.key_input, None);
+        j.record(make_state_entry());
+        mock.increment(Duration::from_millis(5));
+        j.record(make_state_entry());
+        let oldest = j.oldest_elapsed_ms_by_lane();
+        assert_eq!(oldest.state, Some(0));
+        assert_eq!(oldest.key_input, None);
     }
 
     #[test]

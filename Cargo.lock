@@ -561,6 +561,8 @@ dependencies = [
  "awase-gji-config",
  "awase-keymap-learn",
  "awase-vkmap",
+ "base64",
+ "flate2",
  "itertools",
  "measured-macro",
  "proptest",
@@ -578,6 +580,12 @@ dependencies = [
  "windows 0.62.2",
  "windows-core 0.62.2",
 ]
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bit-set"

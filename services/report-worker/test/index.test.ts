@@ -4,6 +4,7 @@ import {
   HttpError,
   incrementDailyRateLimit,
   MAX_BODY_BYTES,
+  MAX_LOG_GZ_BASE64_CHARS,
   parseAndValidatePayload,
   parseSemver,
   RELEASE_CACHE_KEY,
@@ -23,7 +24,11 @@ const validPayload = {
   description: "変換が意図通りに動きません",
   attach_log: true,
   log_excerpt: "journal excerpt",
+  // ADR-222: schema_version 3（旧クライアント）はこの 2 フィールドを送らない。受理後は
+  // null に正規化されるので、`toEqual` の比較を単純にするため、ここでは null を持たせる。
+  log_excerpt_gz: null,
   app_log_excerpt: "app log excerpt",
+  app_log_excerpt_gz: null,
   attach_state_snapshot: false,
   state_snapshot: null,
   attach_config: false,
@@ -71,6 +76,210 @@ class MemoryBucket {
     this.puts.push({ key, value });
   }
 }
+
+// Worker は解凍しないので、フィクスチャは固定の gzip(base64) 文字列でよい（生成: Python の
+// gzip.compress(text, mtime=0) を base64）。`H4sI` は gzip の先頭 1f 8b 08 の base64 表現。
+const GZIP_JOURNAL = "H4sIAAAAAAAC/4uuVipOLVSyMtRRSs0rKapUsqpWKqksSFWyUvJOrfTMKygtUaqtjQUAuTk7CScAAAA="; // [{"seq":1,"entry":{"type":"KeyInput"}}]
+const GZIP_APP_LOG = "H4sIAAAAAAAC/zMyMDLTNTTQNTAJMTCyMjKxMjDSMzQ0MDa0jFLw9HPzV0gsTyxOVSguSSwqSU3hAgBXnuEzLwAAAA=="; // 2026-10-04T02:24:02.110319Z INFO awase started
+const GZIP_EMPTY_ARRAY = "H4sIAAAAAAAC/4uOBQApu0wNAgAAAA=="; // []
+
+// ADR-222: schema_version 4（gzip + base64 のログ）。新クライアントは非圧縮の
+// log_excerpt / app_log_excerpt を null にして、`_gz` に入れて送る。
+const validPayloadV4 = {
+  ...validPayload,
+  schema_version: 4,
+  log_excerpt: null,
+  log_excerpt_gz: GZIP_JOURNAL,
+  app_log_excerpt: null,
+  app_log_excerpt_gz: GZIP_APP_LOG
+};
+
+describe("schema_version 4 (gzip logs, ADR-222)", () => {
+  it("accepts a schema_version 4 payload and keeps the gzip fields as they are", () => {
+    expect(parseAndValidatePayload(JSON.stringify(validPayloadV4))).toEqual(validPayloadV4);
+  });
+
+  it("still accepts schema_version 3 payloads (old clients, including the v1 maintenance line)", () => {
+    expect(parseAndValidatePayload(JSON.stringify(validPayload))).toEqual(validPayload);
+  });
+
+  it("rejects schema versions other than 3 and 4", () => {
+    for (const schema_version of [2, 5, "4", null]) {
+      expect(() =>
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, schema_version }))
+      ).toThrowError(expect.objectContaining({ status: 400, message: "unsupported_schema_version" }));
+    }
+  });
+
+  it("rejects the legacy plain-text log fields in schema_version 4", () => {
+    // 古い Worker が知らないフィールドを黙って捨てて 201 を返す事故の対になる検証:
+    // 4 のクライアントは非圧縮フィールドを使わない（両方ある報告は曖昧なので拒否する）。
+    for (const field of ["log_excerpt", "app_log_excerpt"]) {
+      expect(() =>
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, [field]: "plain" }))
+      ).toThrowError(
+        expect.objectContaining({ status: 400, message: "legacy_log_fields_not_allowed_in_schema_4" })
+      );
+    }
+  });
+
+  it("rejects gzip fields in schema_version 3", () => {
+    expect(() =>
+      parseAndValidatePayload(
+        JSON.stringify({ ...validPayload, log_excerpt_gz: GZIP_EMPTY_ARRAY })
+      )
+    ).toThrowError(expect.objectContaining({ status: 400, message: "gz_log_fields_require_schema_4" }));
+  });
+
+  it("rejects gzip fields unless attach_log is set", () => {
+    expect(() =>
+      parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, attach_log: false }))
+    ).toThrowError(expect.objectContaining({ status: 400, message: "log_excerpt_gz_requires_attach_log" }));
+  });
+
+  it("accepts null or absent gzip fields in schema_version 4 (attach_log without logs)", () => {
+    const { log_excerpt_gz: _a, app_log_excerpt_gz: _b, ...rest } = validPayloadV4;
+    expect(parseAndValidatePayload(JSON.stringify(rest))).toEqual({
+      ...rest,
+      log_excerpt_gz: null,
+      app_log_excerpt_gz: null
+    });
+  });
+
+  it("rejects gzip fields that are not valid base64 of a gzip stream", () => {
+    const bad: Array<[unknown, string]> = [
+      ["not base64!!", "log_excerpt_gz_invalid"],
+      // 長さが 4 の倍数でない。
+      ["H4sIAAA", "log_excerpt_gz_invalid"],
+      // base64 としては正しいが gzip ではない（先頭が H4sI でない）。
+      [Buffer.from("plain text, not gzip").toString("base64"), "log_excerpt_gz_invalid"],
+      [42, "log_excerpt_gz_invalid"]
+    ];
+    for (const [value, code] of bad) {
+      expect(() =>
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, log_excerpt_gz: value }))
+      ).toThrowError(expect.objectContaining({ status: 400, message: code }));
+    }
+  });
+
+  it("checks the gzip field cheaply: head characters, length, magic and padding", () => {
+    const fillerOk = "H4sI" + "A".repeat(4096 + 4096) + "AAAA";
+    expect(fillerOk.length % 4).toBe(0);
+    const accept = (value: string): void => {
+      expect(
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, log_excerpt_gz: value }))
+          .log_excerpt_gz
+      ).toBe(value);
+    };
+    const reject = (value: string): void => {
+      expect(() =>
+        parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, log_excerpt_gz: value }))
+      ).toThrowError(expect.objectContaining({ message: "log_excerpt_gz_invalid" }));
+    };
+    accept("H4sIAAAA");
+    accept("H4sIAAA=");
+    accept("H4sIAA==");
+    accept(fillerOk);
+    // 不正な末尾（パディング）。
+    reject("H4sIAAAA====");
+    reject("H4sIAA=A");
+    // 先頭 4KiB 以内の不正な文字は弾く。
+    reject("H4sI" + "A".repeat(100) + "!!!!" + "A".repeat(100));
+    // 長さが短すぎる・4 の倍数でない。
+    reject("H4sI");
+    reject("H4sIAAAAA");
+  });
+
+  it("does not scan the whole gzip field (CPU on Workers Free); a bad char past the head is accepted", () => {
+    // 全文の文字種は見ない（保存するだけ。壊れていれば調査側の b64decode(validate=True) が弾く）。
+    // この振る舞いは、本体 1.75MiB で全文の正規表現が約 4ms（Free の CPU 10ms の 4 割）かかるための
+    // 意図的な割り切りなので、テストで固定して、うっかり全文検証に戻さないようにする。
+    const value = "H4sI" + "A".repeat(8192) + "!" + "A".repeat(3) + "AAAA";
+    expect(value.length % 4).toBe(0);
+    expect(
+      parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, log_excerpt_gz: value }))
+        .log_excerpt_gz
+    ).toBe(value);
+  });
+
+  it("rejects an oversized gzip field before inspecting it further", () => {
+    const huge = "H4sI" + "A".repeat(MAX_LOG_GZ_BASE64_CHARS);
+    expect(() =>
+      parseAndValidatePayload(JSON.stringify({ ...validPayloadV4, app_log_excerpt_gz: huge }))
+    ).toThrowError(expect.objectContaining({ status: 400, message: "app_log_excerpt_gz_too_large" }));
+  });
+
+  it("has a 2MiB body limit large enough for ten minutes of gzipped logs", () => {
+    expect(MAX_BODY_BYTES).toBe(2 * 1024 * 1024);
+    // 1 本の上限は、本体上限から他の項目の余裕（256KiB）を引いた値。2 本の合計は本体上限
+    // （`readBodyWithLimit`）が別に抑える。
+    expect(MAX_LOG_GZ_BASE64_CHARS).toBe(MAX_BODY_BYTES - 256 * 1024);
+  });
+});
+
+describe("CPU cost of the largest accepted report (ADR-222 deploy check)", () => {
+  // Workers Free プランの CPU 時間は 1 リクエスト 10ms。ADR-095 は「無料枠でカード登録なし」を
+  // 前提に Cloudflare を選んでおり、このアカウントは Free の可能性が高い（API ではプランを
+  // 確認できなかった）。本体上限 2MiB いっぱいの報告で、I/O を除く CPU 側の処理
+  // （本文の復号・JSON 解析・検証・R2 保存用の直列化。整形なし = ハンドラと同じ）がどれだけ
+  // かかるかを、CI のログに出す。最適化前（全文の正規表現 + 整形つき直列化）は本体 1.75MiB で
+  // first-run 13.7ms / warm 11.7ms だった。
+  // Node の V8 は workerd と同じエンジンだが、ハード・JIT の状態は違うので目安であり、
+  // 本番の実測（`wrangler tail` の cpuTime、docs の手順）が正。落ちるのは極端に遅いときだけ。
+  it("reports the validation cost for a body near MAX_BODY_BYTES", () => {
+    const perField = Math.floor((MAX_BODY_BYTES - 300 * 1024) / 2 / 4) * 4;
+    const body = JSON.stringify({
+      ...validPayloadV4,
+      log_excerpt_gz: "H4sI" + "A".repeat(perField - 4),
+      app_log_excerpt_gz: "H4sI" + "B".repeat(perField - 4)
+    });
+    expect(body.length).toBeLessThanOrEqual(MAX_BODY_BYTES);
+    expect(body.length).toBeGreaterThan(MAX_BODY_BYTES - 400 * 1024);
+
+    const bytes = new TextEncoder().encode(body);
+    // 共有ランナーでは同じ処理でも実行ごとに大きくぶれる（最適化の前後で 13.7ms → 18.8ms と
+    // 逆転して見えた）ので、絶対値ではなく、同じ実行の中で「最適化前の処理」と「現在の処理」
+    // を並べて比べる。最適化前 = 全文の文字種の正規表現 2 本 + 整形つき直列化。
+    const fullScan = /^[A-Za-z0-9+/]*={0,2}$/;
+    const legacyPipeline = (): void => {
+      const text = new TextDecoder().decode(bytes);
+      const payload = parseAndValidatePayload(text);
+      fullScan.test(payload.log_excerpt_gz ?? "");
+      fullScan.test(payload.app_log_excerpt_gz ?? "");
+      JSON.stringify({ report_id: "x", received_at: "y", payload }, null, 2);
+    };
+    const currentPipeline = (): void => {
+      const text = new TextDecoder().decode(bytes);
+      const payload = parseAndValidatePayload(text);
+      JSON.stringify({ report_id: "x", received_at: "y", payload });
+    };
+    const measure = (run: () => void): { first: number; warm: number } => {
+      const times: number[] = [];
+      for (let i = 0; i < 8; i += 1) {
+        const start = performance.now();
+        run();
+        times.push(performance.now() - start);
+      }
+      return { first: times[0] ?? 0, warm: Math.min(...times.slice(1)) };
+    };
+    // 交互に測って、JIT・ランナーの状態の偏りを減らす。
+    measure(legacyPipeline);
+    measure(currentPipeline);
+    const legacy = measure(legacyPipeline);
+    const current = measure(currentPipeline);
+    console.log(
+      `[cpu] body=${(body.length / 1024).toFixed(0)}KiB ` +
+        `legacy(first=${legacy.first.toFixed(1)} warm=${legacy.warm.toFixed(1)})ms ` +
+        `current(first=${current.first.toFixed(1)} warm=${current.warm.toFixed(1)})ms ` +
+        `ratio=${(current.warm / legacy.warm).toFixed(2)} ` +
+        `(Workers Free の CPU 上限は 10ms/リクエスト)`
+    );
+    const first = current.first;
+    // 現在の処理は、全文検証・整形つき直列化より速いはず（余裕を見て 0.9 倍未満）。
+    expect(current.warm).toBeLessThan(legacy.warm * 0.9);
+    expect(first).toBeLessThan(500);
+  });
+});
 
 describe("payload validation", () => {
   it("accepts the documented payload shape", () => {

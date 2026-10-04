@@ -35,7 +35,7 @@ TH1dで実際に使った手順（1本目: 不具合報告`01M29KDNZ22KNY1FPXSKB
 
 1. **実機ダンプを入手する。** タスクトレイ「不具合を報告」経由の journal は
    `.claude/skills/bug-report-fetch`/`bug-report-latest` で取得できる
-   （`<report_id>.journal.json`として書き出される、`log_excerpt`フィールドの中身）。
+   （`<report_id>.journal.json`として書き出される、`log_excerpt`フィールドの中身。schema_version 4 以降は gzip+base64 の `log_excerpt_gz` を展開した中身で、スクリプトが同じファイル名で書き出す。ADR-222）。
    手元でホットキーダンプした`%TEMP%/awase_journal_<tick_ms>.json`でも同様。
 2. **`entry.type == "ActuationDecision"`のエントリだけ抽出し、`entry.record`を
    取り出す。**jq相当の処理（例）:

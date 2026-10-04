@@ -2,9 +2,16 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use awase_windows::bug_report::{
-    BugReportDiagnostics, BugReportImeKind, BugReportInput, LOG_EXCERPT_MAX_BYTES, MAX_BODY_BYTES,
-    RETENTION_HINT, SymptomCategory, build_payload_json_fitting, unix_seconds_to_rfc3339,
+    APP_LOG_WINDOW_SECS, BugReportDiagnostics, BugReportImeKind, BugReportInput,
+    LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES, LogEditSummary, MAX_BODY_BYTES, MAX_SEND_ATTEMPTS,
+    RETENTION_HINT, RETRY_MIN_LOG_BYTES, SymptomCategory, attach_logs_with_budget,
+    build_payload_json_fitting, journal_json_to_rows, recent_app_log_rows, retry_budget_bytes,
+    rows_to_journal_json, should_retry_smaller, unix_seconds_to_rfc3339,
 };
+
+/// `awase.log` が `info` レベルでまばらでも、末尾から最低これだけの行は付ける
+/// （10 分に 1 行も無いことがある。Opus round2 M-C1）。
+const APP_LOG_MIN_ROWS: usize = 200;
 use eframe::egui;
 
 #[derive(Debug, Clone)]
@@ -31,10 +38,26 @@ pub(crate) struct BugReportApp {
     /// issue #165（hook_starved）用（2026-09-28追記）。他の`attach_*`と異なり
     /// **既定オフ**（他アプリの起動状況が丸ごと分かるため開示範囲が広い）。
     attach_running_processes: bool,
-    journal_json: Option<String>,
+    /// journal（`UnifiedJournal` の JSON 配列）を 1 entry = 1 行に分けたもの
+    /// （ADR-222）。画面に表示し、行単位で削除できる。送信時に残っている行を
+    /// 配列に戻して gzip する（消した行は送信内容に含まれない）。
+    journal_rows: Option<Vec<String>>,
     journal_status: String,
-    app_log: Option<String>,
+    /// `awase.log`（`.old` も含む）の直近 `APP_LOG_WINDOW_SECS` 秒ぶんを、
+    /// 時刻で始まる行ごとに分けたもの。扱いは `journal_rows` と同じ。
+    app_log_rows: Option<Vec<String>>,
     app_log_status: String,
+    /// 読み込み直後の行数。ユーザーが削除した件数（= 初期 - 現在）を、送信内容の
+    /// `ReportEdited` の印に残すために持つ。
+    journal_rows_initial: usize,
+    app_log_rows_initial: usize,
+    /// ログの読み込み結果の受け口。journal/awase.log（`.old` を含め最大 40MB）の読み込みと
+    /// 解析は、ウィンドウ生成の中で同期実行すると初回表示が遅れて背面で開く（BUG-73 の
+    /// 再発。Opus round2 M-C2）ので、別スレッドで行う。`Some` の間は送信できない。
+    log_loader: Option<Receiver<LoadedLogs>>,
+    /// 終了時に削除する一時ファイル（journal のダンプ・診断情報）。全打鍵が平文で入っており、
+    /// 送信の成否に関わらず残さない。送信失敗時の再送用ファイルは別（`save_failed_payload`）。
+    temp_files: Vec<PathBuf>,
     ime_kind: BugReportImeKind,
     diagnostics: BugReportDiagnostics,
     os_version: String,
@@ -67,11 +90,53 @@ pub(crate) struct BugReportApp {
     fonts_initialized: bool,
 }
 
+/// 別スレッドで読み込んだログ（行の一覧と状態文言）。
+#[derive(Debug)]
+struct LoadedLogs {
+    journal: (Option<Vec<String>>, String),
+    app_log: (Option<Vec<String>>, String),
+}
+
+impl Drop for BugReportApp {
+    fn drop(&mut self) {
+        // journal のダンプには直近 10 分の全打鍵が平文で入っている。送信の成否に関わらず
+        // ウィンドウを閉じるときに削除する（Opus round2 M-E4）。失敗しても無視する。
+        for path in &self.temp_files {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn load_logs(
+    journal_path: Option<&PathBuf>,
+    app_log_path: Option<&PathBuf>,
+    now_unix: i64,
+) -> LoadedLogs {
+    LoadedLogs {
+        journal: load_journal_rows(journal_path),
+        app_log: load_app_log_rows(app_log_path, now_unix),
+    }
+}
+
 #[derive(Debug)]
 enum SendOutcome {
     Success {
         report_id: String,
+        /// 本体が上限を超えた、または失敗して再送したため、ログを古い側から縮めて送った。
+        shrunk: bool,
+        /// 何回目の送信で成功したか（1 = 初回）。
+        attempts: u32,
     },
+    /// 送信に失敗したので、ログを縮めて再送する（途中経過。最終結果ではない）。
+    Retrying {
+        /// ここまでに失敗した回数。
+        failed_attempts: u32,
+        /// 失敗の理由（短くしたもの）。
+        reason: String,
+    },
+    /// 送信内容を作れなかった（プレビュー JSON が壊れている、上限を超える等）。
+    /// 作れていないので、ローカルへの保存もしない。
+    NotBuilt { message: String },
     Failure {
         message: String,
         saved_payload: Result<PathBuf, String>,
@@ -80,32 +145,39 @@ enum SendOutcome {
 
 impl BugReportApp {
     pub(crate) fn new(args: &BugReportArgs) -> Self {
-        let (journal_json, journal_status) = match args.journal_path.as_ref() {
-            Some(path) => match std::fs::read_to_string(path) {
-                Ok(json) => (Some(json), format!("添付ログ: {}", path.display())),
-                Err(e) => (
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        // ログの読み込みは別スレッド（理由は `log_loader` のコメント）。添付するログが
+        // 無い（パスが無い）ときは待つ理由が無いので、その場で済ませる。
+        let (journal_rows, journal_status, app_log_rows, app_log_status, log_loader) =
+            if args.journal_path.is_none() && args.app_log_path.is_none() {
+                let loaded = load_logs(None, None, now_unix);
+                (
+                    loaded.journal.0,
+                    loaded.journal.1,
+                    loaded.app_log.0,
+                    loaded.app_log.1,
                     None,
-                    format!("添付ログを読めませんでした: {} ({e})", path.display()),
-                ),
-            },
-            None => (None, "添付ログ: なし".to_owned()),
-        };
-        let (app_log, app_log_status) = match args.app_log_path.as_ref() {
-            Some(path) => match std::fs::read_to_string(path) {
-                Ok(text) => (
-                    Some(text),
-                    format!("添付ログ(awase.log): {}", path.display()),
-                ),
-                Err(e) => (
-                    None,
-                    format!(
-                        "添付ログ(awase.log)を読めませんでした: {} ({e})",
-                        path.display()
-                    ),
-                ),
-            },
-            None => (None, "添付ログ(awase.log): なし".to_owned()),
-        };
+                )
+            } else {
+                let (tx, rx) = mpsc::channel();
+                let (journal_path, app_log_path) =
+                    (args.journal_path.clone(), args.app_log_path.clone());
+                std::thread::spawn(move || {
+                    let _ = tx.send(load_logs(
+                        journal_path.as_ref(),
+                        app_log_path.as_ref(),
+                        now_unix,
+                    ));
+                });
+                let loading = "ログを読み込み中です…".to_owned();
+                (None, loading.clone(), None, loading, Some(rx))
+            };
+        let temp_files: Vec<PathBuf> = [args.journal_path.clone(), args.diagnostics_path.clone()]
+            .into_iter()
+            .flatten()
+            .collect();
         let reported_at = current_reported_at();
         let os_version = detect_os_version();
         let diagnostics = load_diagnostics(args.diagnostics_path.as_ref());
@@ -119,10 +191,14 @@ impl BugReportApp {
             attach_retro_eval_stats: true,
             attach_ime_keymap: true,
             attach_running_processes: false,
-            journal_json,
+            journal_rows,
             journal_status,
-            app_log,
+            app_log_rows,
             app_log_status,
+            journal_rows_initial: 0,
+            app_log_rows_initial: 0,
+            log_loader,
+            temp_files,
             ime_kind: args.ime_kind,
             diagnostics,
             os_version,
@@ -149,7 +225,7 @@ impl BugReportApp {
                 "ログを添付する（journal + awase.log）",
             )
             .on_hover_text(attachment_hover_text(
-                "直近のキー入力イベント記録(journal)と実行ログ(awase.log)を\n送信内容に含めます。どのキーがいつどう処理されたかが分かり、\n原因調査に最も役立ちます。",
+                "直近約10分のすべてのキー入力イベント記録(journal)と、直近10分の実行ログ(awase.log)を\n送信内容に含めます（この間に打った文字はすべて含まれます）。どのキーがいつどう\n処理されたかが分かり、原因調査に最も役立ちます。含めたくない行は、下のログ一覧で\n「削除」できます。",
                 "これらのログは送信しません。",
             ))
             .changed();
@@ -270,9 +346,8 @@ impl BugReportApp {
         }
     }
 
-    /// プレビュー JSON を生成する。`MAX_BODY_BYTES` を超える場合は
-    /// journal/awase.log の添付上限（既定 `LOG_EXCERPT_MAX_BYTES`）を
-    /// 自動的に縮小して収まるまで再構築する（戻り値の bool が縮小の有無）。
+    /// プレビュー JSON（ログ以外の項目）を生成する。戻り値の bool は縮小の有無で、
+    /// ログを入れないので常に false（互換のため形を保っている）。
     fn generated_preview(&self) -> Result<(String, bool), String> {
         let symptom_category = self
             .symptom_category
@@ -289,8 +364,11 @@ impl BugReportApp {
                 symptom_category,
                 description: &self.description,
                 attach_log: self.attach_log,
-                journal_json: self.journal_json.as_deref(),
-                app_log: self.app_log.as_deref(),
+                // ログはプレビューに入れない（数 MB になり、編集可能な JSON に
+                // 埋めると UI が固まる）。画面下の一覧で行を削除でき、送信時に
+                // 残っている行を gzip して差し込む（`attach_logs_to_preview_json`）。
+                journal_json: None,
+                app_log: None,
                 state_snapshot: self.diagnostics.state_snapshot.clone(),
                 attach_state_snapshot: self.attach_state_snapshot,
                 config_toml: self.diagnostics.config_toml.as_deref(),
@@ -311,13 +389,51 @@ impl BugReportApp {
             MAX_BODY_BYTES,
         )
         .map_err(|e| e.to_string())?;
-        // used_budget < LOG_EXCERPT_MAX_BYTES だけでは「縮小を試みた」ことしか
-        // 分からず、縮小してもなお上限を超えているケース（journal/app_log
-        // 以外のフィールドが支配的）を「自動的に切り詰めました」という
-        // 成功通知として誤って表示してしまう。実際に上限内に収まった場合に
-        // 限り shrunk=true とする。
-        let shrunk = used_budget < LOG_EXCERPT_MAX_BYTES && json.len() <= MAX_BODY_BYTES;
-        Ok((json, shrunk))
+        // ログは入れていないので、ここでは縮小は起きない（`used_budget` は未使用）。
+        // 縮小の通知は送信時（`SendOutcome::Success::shrunk`）に出す。
+        let _ = used_budget;
+        // ログはプレビューに入れていないので、`null` のままだと「ログが付かない」ように
+        // 見える。添付する場合は、送信時に何が入るかを値として示す（送信時にこの 2 項目は
+        // 必ず上書きされる）。
+        let json = if self.attach_log {
+            const PLACEHOLDER: &str =
+                "\"(送信時に、下のログ一覧に残っている行を圧縮して入れます)\"";
+            json.replace(
+                "\"log_excerpt_gz\": null",
+                &format!("\"log_excerpt_gz\": {PLACEHOLDER}"),
+            )
+            .replace(
+                "\"app_log_excerpt_gz\": null",
+                &format!("\"app_log_excerpt_gz\": {PLACEHOLDER}"),
+            )
+        } else {
+            json
+        };
+        Ok((json, false))
+    }
+
+    /// 別スレッドで読み込んだログを受け取る。届くまでは定期的に再描画する。
+    fn poll_log_loader(&mut self, ctx: &egui::Context) {
+        let Some(rx) = self.log_loader.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(loaded) => {
+                self.journal_rows_initial = loaded.journal.0.as_ref().map_or(0, Vec::len);
+                self.app_log_rows_initial = loaded.app_log.0.as_ref().map_or(0, Vec::len);
+                (self.journal_rows, self.journal_status) = loaded.journal;
+                (self.app_log_rows, self.app_log_status) = loaded.app_log;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.log_loader = Some(rx);
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let failed = "ログの読み込みに失敗しました（ログは添付されません）。".to_owned();
+                self.journal_status.clone_from(&failed);
+                self.app_log_status = failed;
+            }
+        }
     }
 
     fn poll_send_result(&mut self) {
@@ -325,8 +441,35 @@ impl BugReportApp {
             return;
         };
         match rx.try_recv() {
-            Ok(SendOutcome::Success { report_id }) => {
-                self.status = format!("送信しました。report_id: {report_id}");
+            Ok(SendOutcome::Retrying {
+                failed_attempts,
+                reason,
+            }) => {
+                self.status = format!(
+                    "送信に失敗したため、ログを縮めて再送します（{failed_attempts}/{MAX_SEND_ATTEMPTS} 回目の失敗: {reason}）"
+                );
+                // 途中経過なので、受信口は返して最終結果を待つ。
+                self.pending = Some(rx);
+            }
+            Ok(SendOutcome::Success {
+                report_id,
+                shrunk,
+                attempts,
+            }) => {
+                self.status = if attempts > 1 {
+                    format!(
+                        "送信しました（ログを縮めて {attempts} 回目で成功）。report_id: {report_id}"
+                    )
+                } else {
+                    format!("送信しました。report_id: {report_id}")
+                };
+                self.log_shrink_notice = shrunk.then(|| {
+                    "添付ログ(journal/awase.log)は、送信の上限と失敗のため、古い側から切り詰めて送りました。"
+                        .to_owned()
+                });
+            }
+            Ok(SendOutcome::NotBuilt { message }) => {
+                self.status = format!("送信できませんでした: {message}");
             }
             Ok(SendOutcome::Failure {
                 message,
@@ -368,6 +511,9 @@ impl BugReportApp {
     /// 一本化しているのは「UI側」のみ（/code-review opus 指摘:
     /// このdocが一本化の範囲を誇張していた）。
     fn missing_send_requirement(&self) -> Option<&'static str> {
+        if self.log_loader.is_some() {
+            return Some("ログを読み込み中です。しばらくお待ちください。");
+        }
         if self.symptom_category.is_none() {
             return Some("症状カテゴリを選択してください。");
         }
@@ -394,29 +540,183 @@ impl BugReportApp {
             self.refresh_preview_if_unedited();
             self.pending_preview_refresh = None;
         }
-        let body = self.preview_json.clone();
-        if body.len() > MAX_BODY_BYTES {
-            self.status = format!(
-                "送信内容が大きすぎます({}KB > {}KB上限)。ログの自動切り詰めを試みても収まりませんでした。プレビューを直接編集するか、設定ファイル・配列ファイルの添付を外してください。",
-                body.len() / 1024,
-                MAX_BODY_BYTES / 1024,
-            );
-            return;
-        }
+        // 送信するのは「プレビュー（ログ以外）+ 画面に残っているログ行」。ログの圧縮は
+        // 数 MB を扱うので、UI スレッドを止めないよう送信スレッド側で行う（ADR-222）。
+        let preview = self.preview_json.clone();
+        let journal_json = self.journal_rows.as_deref().map(rows_to_journal_json);
+        let app_log = self.app_log_rows.as_ref().map(|rows| rows.join("\n"));
+        // 送るかどうかはチェックボックスの値で決める（プレビューを編集済みだと、プレビュー
+        // 内の `attach_log` は古いまま。Opus round2 B-A1）。削除件数は編集の印に残す。
+        let attach_log_checked = self.attach_log;
+        let edits = LogEditSummary {
+            journal_rows_deleted: self
+                .journal_rows_initial
+                .saturating_sub(self.journal_rows.as_ref().map_or(0, Vec::len)),
+            app_log_rows_deleted: self
+                .app_log_rows_initial
+                .saturating_sub(self.app_log_rows.as_ref().map_or(0, Vec::len)),
+            // 送信スレッドが、再送のたびに回数を入れる。
+            send_attempt: 0,
+        };
         let (tx, rx) = mpsc::channel();
         self.pending = Some(rx);
         "送信中です...".clone_into(&mut self.status);
         std::thread::spawn(move || {
-            let outcome = match send_report(&body) {
-                Ok(report_id) => SendOutcome::Success { report_id },
-                Err(message) => SendOutcome::Failure {
-                    message,
-                    saved_payload: save_failed_payload(&body),
-                },
+            // 失敗したら、ログを縮めて再送する（ADR-222）。Workers Free の CPU 超過
+            // （Error 1102、5xx）や本体上限（413）、タイムアウトで、大きい報告が
+            // 通らないときに、自動で小さくして通す。何を再送するかは
+            // `should_retry_smaller`、どれだけ縮めるかは `retry_budget_bytes`。
+            let largest_log = journal_json
+                .as_deref()
+                .map_or(0, str::len)
+                .max(app_log.as_deref().map_or(0, str::len));
+            let mut first_body: Option<String> = None;
+            let mut attempt: u32 = 0;
+            let outcome = loop {
+                let start_budget = if attempt == 0 {
+                    LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES
+                } else {
+                    retry_budget_bytes(largest_log, attempt)
+                };
+                let attempt_edits = LogEditSummary {
+                    send_attempt: attempt,
+                    ..edits
+                };
+                let (body, shrunk) = match attach_logs_with_budget(
+                    &preview,
+                    attach_log_checked,
+                    journal_json.as_deref(),
+                    app_log.as_deref(),
+                    attempt_edits,
+                    MAX_BODY_BYTES,
+                    start_budget,
+                ) {
+                    Ok(built) => built,
+                    Err(e) => {
+                        break SendOutcome::NotBuilt {
+                            message: e.to_string(),
+                        };
+                    }
+                };
+                if body.len() > MAX_BODY_BYTES {
+                    break SendOutcome::NotBuilt {
+                        message: format!(
+                            "送信内容が大きすぎます({}KB > {}KB上限)。ログの行を削除するか、設定ファイル・配列ファイルの添付を外してください。",
+                            body.len() / 1024,
+                            MAX_BODY_BYTES / 1024,
+                        ),
+                    };
+                }
+                // 失敗時にローカルへ保存するのは、縮める前（最も情報が多い）の送信内容。
+                if first_body.is_none() {
+                    first_body = Some(body.clone());
+                }
+                match send_report(&body) {
+                    Ok(report_id) => {
+                        break SendOutcome::Success {
+                            report_id,
+                            shrunk: shrunk || attempt > 0,
+                            attempts: attempt + 1,
+                        };
+                    }
+                    Err(message) => {
+                        attempt += 1;
+                        if largest_log > RETRY_MIN_LOG_BYTES
+                            && should_retry_smaller(&message, attempt)
+                        {
+                            let _ = tx.send(SendOutcome::Retrying {
+                                failed_attempts: attempt,
+                                reason: message.chars().take(80).collect(),
+                            });
+                            continue;
+                        }
+                        break SendOutcome::Failure {
+                            saved_payload: save_failed_payload(
+                                first_body.as_deref().unwrap_or(&body),
+                            ),
+                            message,
+                        };
+                    }
+                }
             };
             let _ = tx.send(outcome);
         });
     }
+}
+
+/// journal ファイルを読み、1 entry = 1 行に分ける。
+fn load_journal_rows(path: Option<&PathBuf>) -> (Option<Vec<String>>, String) {
+    let Some(path) = path else {
+        return (None, "添付ログ(journal): なし".to_owned());
+    };
+    let json = match std::fs::read_to_string(path) {
+        Ok(json) => json,
+        Err(e) => {
+            return (
+                None,
+                format!(
+                    "添付ログ(journal)を読めませんでした: {} ({e})",
+                    path.display()
+                ),
+            );
+        }
+    };
+    match journal_json_to_rows(&json) {
+        Ok(rows) => {
+            let status = format!(
+                "添付ログ(journal): {} 行（打鍵は直近10分）({})",
+                rows.len(),
+                path.display()
+            );
+            (Some(rows), status)
+        }
+        Err(e) => (
+            None,
+            format!(
+                "添付ログ(journal)を解析できませんでした: {} ({e})",
+                path.display()
+            ),
+        ),
+    }
+}
+
+/// `awase.log`（ローテーションされた `.old` も含む）の直近 `APP_LOG_WINDOW_SECS` 秒を行に分ける。
+///
+/// 時刻で始まる行ごとに分ける。ローテーション直後は `awase.log` がほぼ空で、
+/// 直近の内容が `.old` 側にあるため、両方を読む。
+fn load_app_log_rows(path: Option<&PathBuf>, now_unix: i64) -> (Option<Vec<String>>, String) {
+    let Some(path) = path else {
+        return (None, "添付ログ(awase.log): なし".to_owned());
+    };
+    let mut old_path = path.as_os_str().to_os_string();
+    old_path.push(".old");
+    let old = std::fs::read_to_string(PathBuf::from(old_path)).unwrap_or_default();
+    let current = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if old.is_empty() => {
+            return (
+                None,
+                format!(
+                    "添付ログ(awase.log)を読めませんでした: {} ({e})",
+                    path.display()
+                ),
+            );
+        }
+        Err(_) => String::new(),
+    };
+    let rows = recent_app_log_rows(
+        &format!("{old}\n{current}"),
+        APP_LOG_WINDOW_SECS,
+        now_unix,
+        APP_LOG_MIN_ROWS,
+    );
+    let status = format!(
+        "添付ログ(awase.log): 直近{}分 {} 行 ({})",
+        APP_LOG_WINDOW_SECS / 60,
+        rows.len(),
+        path.display()
+    );
+    (Some(rows), status)
 }
 
 fn load_diagnostics(path: Option<&PathBuf>) -> BugReportDiagnostics {
@@ -459,7 +759,7 @@ impl BugReportApp {
             let can_send = missing_requirement.is_none();
             let send_response = ui
                 .add_enabled(!pending && can_send, egui::Button::new("送信"))
-                .on_hover_text("押すと: 送信前プレビューの内容をそのまま awase 開発チームへ送信します。");
+                .on_hover_text("押すと: 送信前プレビュー（ログ以外）と、下のログ一覧に残っている行を awase 開発チームへ送信します。");
             // 無効化理由の文字列(format!)は、実際にボタンが無効な時だけ
             // 組み立てる（毎フレーム無条件に確保していたのを、活性化状態と
             // 同じ条件でガードして避ける。/code-review opus 指摘）。「送信中」
@@ -572,9 +872,9 @@ impl BugReportApp {
         ui.separator();
         // ツールチップを見出しラベル側にのみ付ける理由は上の「説明（任意）」
         // と同じ（編集中の本体に付けると内容の上に被さって隠れる）。
-        ui.label("送信前プレビュー（この内容を編集してから送信できます。折りたたまれず全文をスクロールして確認できます）")
+        ui.label("送信前プレビュー（ログ以外の項目。この内容を編集してから送信できます）")
             .on_hover_text(
-                "送信直前の実際のJSONです。ここを直接編集すると、その内容がそのまま\n送信されます。個人情報などが含まれていないか確認・修正できます。",
+                "送信する内容のうち、ログ以外の項目です。ここを直接編集すると、その内容が\nそのまま送信されます。個人情報などが含まれていないか確認・修正できます。\nログ(journal / awase.log)は数MBになるため、下の一覧で確認・行の削除をします。",
             );
         egui::ScrollArea::vertical()
             .id_salt("bug_report_preview_scroll")
@@ -589,7 +889,135 @@ impl BugReportApp {
                         .lock_focus(true),
                 );
             });
+
+        if self.attach_log {
+            ui.add_space(6.0);
+            ui.label(
+                "添付ログ（送信するのは、ここに残っている行を圧縮したものです。不要な行は「削除」で消せます）",
+            );
+            ui.label(&self.journal_status);
+            draw_log_rows(
+                ui,
+                "bug_report_journal_rows",
+                "journal（キー入力・IME状態の記録）",
+                self.journal_rows.as_mut(),
+                BulkDelete::KeyInputRows,
+            );
+            ui.label(&self.app_log_status);
+            draw_log_rows(
+                ui,
+                "bug_report_app_log_rows",
+                "awase.log（実行ログ）",
+                self.app_log_rows.as_mut(),
+                BulkDelete::None,
+            );
+        }
     }
+}
+
+/// 一覧の見出し横に出す、種類別の一括削除ボタン（journal の打鍵行だけ）。
+#[derive(Clone, Copy)]
+enum BulkDelete {
+    None,
+    /// journal 用: `"type":"KeyInput"` の行（打鍵の記録）をすべて削除する。
+    KeyInputRows,
+}
+
+/// journal の行のうち、打鍵（KeyInput）の記録かどうか。`journal_json_to_rows` が出す
+/// compact JSON では `"type":"KeyInput"` と空白なしで並ぶ。
+fn is_key_input_row(row: &str) -> bool {
+    row.contains(r#""type":"KeyInput""#)
+}
+
+/// 行 `index` より前（古い側）をすべて削除する。削除した件数を返す。
+fn delete_rows_before(rows: &mut Vec<String>, index: usize) -> usize {
+    let n = index.min(rows.len());
+    rows.drain(..n);
+    n
+}
+
+/// 打鍵（KeyInput）の行をすべて削除する。削除した件数を返す。
+fn delete_key_input_rows(rows: &mut Vec<String>) -> usize {
+    let before = rows.len();
+    rows.retain(|row| !is_key_input_row(row));
+    before - rows.len()
+}
+
+/// ログの行一覧（読み取り専用。行の削除だけできる）。
+///
+/// ADR-095 決定4 条件2「折りたたみ・非表示状態がデフォルトにならないこと」により、
+/// 既定で開く。数万行になりうるので `ScrollArea::show_rows` で見えている行だけを描画する。
+/// 複数行の行（panic のバックトレース等）は 1 行目と行数だけを表示するが、**行にマウスを
+/// 乗せると全文が出る**（ユーザー名を含むパスが 2 行目以降に入りうるため、全文を見られない
+/// まま送らない。Opus round2 B-E2）。削除は 1 行ずつのほか、「これより前をすべて削除」と
+/// （journal のみ）「打鍵の行をすべて削除」ができる。削除した行は `rows` から取り除かれ、
+/// 送信内容（圧縮データ）に含まれない。
+fn draw_log_rows(
+    ui: &mut egui::Ui,
+    id: &str,
+    title: &str,
+    rows: Option<&mut Vec<String>>,
+    bulk: BulkDelete,
+) {
+    let Some(rows) = rows else {
+        return;
+    };
+    egui::CollapsingHeader::new(format!("{title}（{} 行）", rows.len()))
+        .id_salt(id)
+        .default_open(true)
+        .show(ui, |ui| {
+            if matches!(bulk, BulkDelete::KeyInputRows)
+                && ui
+                    .button("打鍵（KeyInput）の行をすべて削除")
+                    .on_hover_text("入力した文字が分かる行（キー入力の記録）を一括で消します。\n原因調査には役立つ情報なので、消すと調べにくくなります。")
+                    .clicked()
+            {
+                delete_key_input_rows(rows);
+            }
+            let row_height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
+            let mut remove: Option<usize> = None;
+            let mut remove_before: Option<usize> = None;
+            egui::ScrollArea::vertical()
+                .id_salt(format!("{id}_scroll"))
+                .max_height(240.0)
+                .auto_shrink([false, true])
+                .show_rows(ui, row_height, rows.len(), |ui, range| {
+                    for index in range {
+                        let row = &rows[index];
+                        let mut lines = row.lines();
+                        let first = lines.next().unwrap_or("");
+                        let extra = lines.count();
+                        ui.horizontal(|ui| {
+                            if ui.small_button("削除").clicked() {
+                                remove = Some(index);
+                            }
+                            if ui
+                                .small_button("以前を削除")
+                                .on_hover_text("この行より前（古い側）の行をすべて削除します。")
+                                .clicked()
+                            {
+                                remove_before = Some(index);
+                            }
+                            let text = if extra > 0 {
+                                format!("{first}  (+{extra}行)")
+                            } else {
+                                first.to_owned()
+                            };
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(text).monospace().small())
+                                    .truncate(),
+                            )
+                            // 切り詰められた行・複数行の行も、全文をここで確認できる。
+                            .on_hover_text(row.as_str());
+                        });
+                    }
+                });
+            if let Some(index) = remove_before {
+                delete_rows_before(rows, index);
+            } else if let Some(index) = remove {
+                rows.remove(index);
+            }
+        });
 }
 
 impl eframe::App for BugReportApp {
@@ -607,6 +1035,7 @@ impl eframe::App for BugReportApp {
         }
 
         self.poll_send_result();
+        self.poll_log_loader(ctx);
 
         // このフレームで最新のプレビュー/通知を描画できるよう、デバウンス
         // 完了判定はパネル描画より前に行う（描画後に行うと、更新結果は
@@ -943,5 +1372,147 @@ mod font_guard_tests {
         };
         let app = BugReportApp::new(&args);
         assert!(!app.fonts_initialized);
+    }
+}
+
+#[cfg(test)]
+mod log_rows_tests {
+    use super::{
+        BugReportApp, BugReportArgs, delete_key_input_rows, delete_rows_before, load_app_log_rows,
+        unix_seconds_to_rfc3339,
+    };
+    use std::path::PathBuf;
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        std::env::temp_dir().join(format!("awase_test_{}_{nanos}_{name}", std::process::id()))
+    }
+
+    #[test]
+    fn delete_rows_before_drops_older_rows_only() {
+        let mut rows: Vec<String> = (0..5).map(|i| i.to_string()).collect();
+        assert_eq!(delete_rows_before(&mut rows, 3), 3);
+        assert_eq!(rows, vec!["3", "4"]);
+        assert_eq!(delete_rows_before(&mut rows, 0), 0);
+        // 範囲外を指定しても panic せず、全部消えるだけ。
+        assert_eq!(delete_rows_before(&mut rows, 99), 2);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn delete_key_input_rows_removes_only_key_input_entries() {
+        let mut rows = vec![
+            r#"{"seq":1,"entry":{"type":"KeyInput","event":{"vk_code":65}}}"#.to_owned(),
+            r#"{"seq":2,"entry":{"type":"ImeEvent"}}"#.to_owned(),
+            r#"{"seq":3,"entry":{"type":"KeyInput","event":{"vk_code":66}}}"#.to_owned(),
+            r#"{"seq":4,"entry":{"type":"FocusTransition"}}"#.to_owned(),
+        ];
+        assert_eq!(delete_key_input_rows(&mut rows), 2);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| !r.contains("KeyInput")));
+    }
+
+    #[test]
+    fn load_app_log_rows_reads_old_and_current_files_and_windows_on_now() {
+        let now: i64 = 1_790_000_000;
+        let line = |offset: i64, body: &str| {
+            let ts = unix_seconds_to_rfc3339(u64::try_from(now + offset).unwrap());
+            format!("{}.000000Z {body}", ts.trim_end_matches('Z'))
+        };
+        let path = unique_temp_path("awase.log");
+        let mut old = path.as_os_str().to_os_string();
+        old.push(".old");
+        let old = PathBuf::from(old);
+        // 窓の外（古い）・窓の中（ローテーション前に書かれた分）・現行ファイルの分。
+        std::fs::write(
+            &old,
+            format!(
+                "{}\n{}\n",
+                line(-7200, "INFO ancient"),
+                line(-120, "INFO in-old")
+            ),
+        )
+        .unwrap();
+        std::fs::write(&path, format!("{}\n", line(-5, "WARN in-current"))).unwrap();
+
+        let (rows, status) = load_app_log_rows(Some(&path), now);
+        let _ = std::fs::remove_file(&old);
+        let _ = std::fs::remove_file(&path);
+        let rows = rows.expect("読めるはず");
+        // ancient は窓の外だが、末尾 `APP_LOG_MIN_ROWS`(200) 行は残すので全 3 行が残る。
+        assert_eq!(rows.len(), 3);
+        assert!(rows[1].ends_with("in-old") && rows[2].ends_with("in-current"));
+        assert!(status.contains("3 行"), "{status}");
+    }
+
+    #[test]
+    fn load_app_log_rows_reports_unreadable_and_absent_paths() {
+        let (rows, status) = load_app_log_rows(None, 0);
+        assert!(rows.is_none() && status.contains("なし"));
+        let (rows, status) = load_app_log_rows(Some(&unique_temp_path("missing.log")), 0);
+        assert!(
+            rows.is_none() && status.contains("読めませんでした"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn dropping_the_app_deletes_the_temporary_journal_dump() {
+        // journal のダンプには直近 10 分の全打鍵が平文で入っている。ウィンドウを閉じたら
+        // 送信の成否に関わらず残さない（Opus round2 M-E4）。
+        let journal = unique_temp_path("journal.json");
+        std::fs::write(&journal, "[]").unwrap();
+        let args = BugReportArgs {
+            journal_path: Some(journal.clone()),
+            ime_kind: awase_windows::bug_report::BugReportImeKind::Unknown,
+            diagnostics_path: None,
+            app_log_path: None,
+        };
+        let mut app = BugReportApp::new(&args);
+        // 読み込みスレッドが journal を開いている間は（Windows では）削除できないので、
+        // 読み込みの完了を待ってから閉じる。
+        let ctx = eframe::egui::Context::default();
+        for _ in 0..200 {
+            app.poll_log_loader(&ctx);
+            if app.log_loader.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(app.log_loader.is_none(), "ログの読み込みが終わらない");
+        drop(app);
+        assert!(!journal.exists(), "一時ファイルが残っている");
+    }
+
+    #[test]
+    fn send_is_blocked_while_logs_are_loading() {
+        let journal = unique_temp_path("journal2.json");
+        std::fs::write(&journal, "[]").unwrap();
+        let args = BugReportArgs {
+            journal_path: Some(journal.clone()),
+            ime_kind: awase_windows::bug_report::BugReportImeKind::Unknown,
+            diagnostics_path: None,
+            app_log_path: None,
+        };
+        let mut app = BugReportApp::new(&args);
+        // 読み込み中は、ログを落として送ってしまわないよう送信できない。
+        if app.log_loader.is_some() {
+            assert!(
+                app.missing_send_requirement()
+                    .is_some_and(|r| r.contains("読み込み中"))
+            );
+        }
+        let ctx = eframe::egui::Context::default();
+        for _ in 0..200 {
+            app.poll_log_loader(&ctx);
+            if app.log_loader.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        drop(app);
+        let _ = std::fs::remove_file(&journal);
     }
 }

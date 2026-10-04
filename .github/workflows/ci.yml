@@ -184,6 +184,27 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # ADR-222: services/report-worker（不具合報告の受付 Worker）の型検査とテスト。
+  # これまで CI に無く、Worker の許可項目の追加漏れ（keymap_learn が黙って捨てられていた、
+  # b365324a）のような退行を手元の pnpm test に頼っていた。ローカルでビルド・テストを
+  # しない運用（ストレージと CPU の節約）にするため、CI で必ず走らせる。
+  report-worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/report-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test
+
   machete:
     runs-on: ubuntu-latest
     steps:
