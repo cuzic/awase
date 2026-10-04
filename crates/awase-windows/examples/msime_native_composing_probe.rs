@@ -56,8 +56,9 @@ mod windows_probe {
     };
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::Input::Ime::{
-        ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
-        ImmGetDefaultIMEWnd, ImmReleaseContext, ImmSetOpenStatus, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+        ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd,
+        ImmGetOpenStatus, ImmReleaseContext, ImmSetOpenStatus, IME_COMPOSITION_STRING,
+        IME_CONVERSION_MODE, IME_SENTENCE_MODE,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -70,9 +71,9 @@ mod windows_probe {
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
         GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, PeekMessageW,
-        RegisterClassW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage,
-        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW, WM_DESTROY, WNDCLASSW,
-        WS_OVERLAPPEDWINDOW, WS_VISIBLE, WM_IME_CONTROL,
+        RegisterClassW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow,
+        TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW,
+        WM_DESTROY, WM_IME_CONTROL, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     const WINDOW_CLASS_NAME: &str = "msime_native_composing_probe_window";
@@ -388,7 +389,6 @@ mod windows_probe {
         }
     }
 
-
     /// `--off-methods`(ADR-221 D1、BUG-184 / issue #138): 未確定文字(「か」)がある状態で、IME を閉じる手段ごとに
     /// 未確定文字・EDIT の本文・開閉がどうなるかを測る。1 行 1 試行の `OFFM {json}` を出す。
     /// 手段は awase が実際に使う機構に対応する: `vk1a`(MsImeDirect の VK_IME_OFF)、`vk1a_x2`(Edge で見られた 2 回送信)、
@@ -404,7 +404,12 @@ mod windows_probe {
                 return;
             }
             let _ = unsafe {
-                SendMessageW(ime_wnd, WM_IME_CONTROL, Some(WPARAM(IMC_SETOPENSTATUS)), Some(LPARAM(0)))
+                SendMessageW(
+                    ime_wnd,
+                    WM_IME_CONTROL,
+                    Some(WPARAM(IMC_SETOPENSTATUS)),
+                    Some(LPARAM(0)),
+                )
             };
         };
         let methods: [&str; 7] = [
