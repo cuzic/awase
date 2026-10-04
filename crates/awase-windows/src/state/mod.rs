@@ -157,6 +157,7 @@ pub mod focus_resync_policy;
 // issue #165 (hook_starved) 自己修復の純粋判定。focus_resync_policy と同じ
 // ungated パターン（Win32 API を呼ばず Linux でテストできる）。
 pub mod hook_watchdog;
+pub mod hub_clock;
 pub mod input_barrier;
 // output/types.rs から移設（InjectionHint 依存の From 実装のみ output/ に残す）。
 // 唯一の ungated 呼び出し元は tsf::gji_fsm。

@@ -34,6 +34,8 @@ pub(crate) struct ImeStateHub {
     pub(crate) belief: ImeBelief,
     /// IME 状態変更 event のリングバッファ (Step 0)。
     pub(crate) event_log: ImeEventLog,
+    /// 時刻の供給元（実機は実時計、閉ループ・テストは仮想時計。`state/hub_clock.rs`）。
+    pub(crate) clock: super::hub_clock::HubClock,
     /// 統合ジャーナル: エンジン + IME 両イベントを記録する。
     pub(crate) journal: UnifiedJournal,
 
@@ -132,6 +134,7 @@ impl ImeStateHub {
         Self {
             belief: ImeBelief::default(),
             event_log: ImeEventLog::default(),
+            clock: super::hub_clock::HubClock::wall(crate::hook::current_tick_ms),
             journal: UnifiedJournal::default(),
             shadow_model: ImeModel::default(),
             last_user_explicit_off_ms: 0,
@@ -181,7 +184,9 @@ impl ImeStateHub {
         }
         let event_for_journal = event.clone();
         let event_for_reduce = event.clone();
-        let time = self.event_log.record(event, tick_ms);
+        let time = self
+            .event_log
+            .record_at(event, tick_ms, self.clock.now_instant());
         let envelope = ImeEventEnvelope {
             time,
             event: event_for_reduce,
@@ -821,7 +826,7 @@ impl ImeStateHub {
     /// (30 秒) を必ず超え、**IntentStore 上書きが一度も発火しない**。合成 tick を
     /// 使うテストは必ず [`Self::effective_open_at`] を呼ぶこと。
     pub(crate) fn effective_open(&self) -> bool {
-        self.effective_open_at(TickMs(crate::hook::current_tick_ms()))
+        self.effective_open_at(TickMs(self.clock.now_tick()))
     }
 
     /// [`Self::effective_open`] の判定本体。`now_ms` を明示的に受け取る版。
@@ -834,8 +839,14 @@ impl ImeStateHub {
     /// タイムスタンプを注入する」原則に沿う。`effective_open()` が壁時計を
     /// 読んでいるのは、その 29 箇所ある runtime 側呼び出し元をまだ書き換えて
     /// いないため（追補4 の残タスク、`docs/known-bugs.md` BUG-51 追補4 参照）。
+    ///
+    /// `shadow_model` の根拠判定（観測の鮮度）に使う `Instant` は `self.clock` から取る
+    /// （旧実装は `shadow_model.effective_open()` が壁時計の `Instant::now()` を読んでいたため、
+    /// 仮想時計では `now_ms` と時間軸が食い違った。`state/hub_clock.rs`）。
     pub(crate) fn effective_open_at(&self, now_ms: TickMs) -> bool {
-        let shadow = self.shadow_model.effective_open();
+        let shadow = self
+            .shadow_model
+            .effective_open_at(self.clock.now_instant());
         let decision = self.intent_store.resolve_effective_open(
             self.shadow_model.current_focus(),
             shadow,
@@ -1190,7 +1201,7 @@ impl ImeStateHub {
         if update.increment_miss_count {
             self.shadow_model
                 .observe_miss_monitor
-                .record_miss(std::time::Instant::now());
+                .record_miss(self.clock.now_instant());
             let miss = self
                 .shadow_model
                 .observe_miss_monitor
@@ -1823,6 +1834,36 @@ mod tests {
             ps.ime.clear_last_intent_for_test();
         }
         ps
+    }
+
+    /// `HubClock` が `Instant` の供給元になっている: 手動時計を進めた量だけ、`dispatch_event` が
+    /// 付ける `EventTime::monotonic` が進む（壁時計を読んでいれば実測の数 µs しか進まない）。
+    #[test]
+    fn manual_hub_clock_drives_event_monotonic() {
+        let mut ps = ps_with_shadow(true, None, true);
+        ps.ime.clock = crate::state::hub_clock::HubClock::manual(10_000);
+        ps.ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::Command,
+            },
+            TickMs(ps.ime.clock.now_tick()),
+        );
+        ps.ime.clock.advance_ms(500);
+        ps.ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::Command,
+            },
+            TickMs(ps.ime.clock.now_tick()),
+        );
+        let recent = ps.ime.event_log.recent_vec(2);
+        let (newer, older) = (recent[0].time, recent[1].time);
+        assert_eq!(
+            newer.monotonic - older.monotonic,
+            std::time::Duration::from_millis(500)
+        );
+        assert_eq!(newer.tick_ms - older.tick_ms, 500);
     }
 
     // reset_stale_ime_on_for_imm_broken も同様に desired_open を書き換えない。

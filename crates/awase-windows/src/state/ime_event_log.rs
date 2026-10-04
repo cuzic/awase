@@ -38,9 +38,14 @@ impl ImeEventLog {
     /// `seq` は単調増加、`monotonic` は `Instant::now()`、
     /// `tick_ms` は呼び出し元が `GetTickCount64()` から取得して渡す。
     pub fn record(&mut self, event: ImeEvent, tick_ms: TickMs) -> EventTime {
+        self.record_at(event, tick_ms, Instant::now())
+    }
+
+    /// [`Self::record`] の `monotonic` 注入版（`ImeStateHub` の `HubClock` から呼ぶ。仮想時計で動かすため）。
+    pub fn record_at(&mut self, event: ImeEvent, tick_ms: TickMs, monotonic: Instant) -> EventTime {
         let time = EventTime {
             seq: self.next_seq,
-            monotonic: Instant::now(),
+            monotonic,
             tick_ms: tick_ms.0,
         };
         self.next_seq += 1;
