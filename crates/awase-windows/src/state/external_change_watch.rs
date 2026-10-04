@@ -36,6 +36,7 @@ pub struct ExternalChangeWatch<S: Copy + PartialEq> {
 }
 
 impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             armed: None,
