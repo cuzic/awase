@@ -1546,11 +1546,11 @@ fn test_shift_held_uses_shift_face() {
 
 #[test]
 fn test_shift_face_returns_literal_via_ime() {
-    // Shift 面の literal は .yab に書かれたまま Char で IME 経由に確定出力する
+    // Shift 面の literal（全角ラテン文字を除く。それは半角にする、下のテスト参照）は .yab に書かれたまま Char で IME 経由に確定出力する
     // （BUG-15 撤去により、これが Shift 面の唯一の挙動になった。旧
     // `test_shift_face_halfwidth_disabled_keeps_literal` を改称・簡略化）。
     let mut layout = make_layout();
-    layout.shift.insert(POS_A, lit('Ｋ'));
+    layout.shift.insert(POS_A, lit('＃'));
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
@@ -1566,7 +1566,7 @@ fn test_shift_face_returns_literal_via_ime() {
     engine.on_event(Ev::down(VK_SHIFT).build());
     let result = engine.on_event(Ev::down(VK_A).build());
     result.assert_consumed();
-    assert!(matches!(result.actions[0], KeyAction::Char('Ｋ')));
+    assert!(matches!(result.actions[0], KeyAction::Char('＃')));
 }
 
 #[test]
