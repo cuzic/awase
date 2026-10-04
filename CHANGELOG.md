@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ## [2.0.0] - 2026-10-04
 
-> **v2 の最初の正式版です。これにあわせて v1（最後は 1.21.1）の保守を終了します。** v1 との違いの全体と、設定を引き継ぐときの注意は [docs/migration-v1-to-v2.md](docs/migration-v1-to-v2.md) にまとめています。
+> **v2 の最初の正式版です。これにあわせて v1（最後は 1.21.2）の保守を終了します。** v1 との違いの全体と、設定を引き継ぐときの注意は [docs/migration-v1-to-v2.md](docs/migration-v1-to-v2.md) にまとめています。
 > v2 の大きな変更は 2 つです。① 日本語入力（IME）の状態は IME 自身を正しいものとし、awase が先回りして IME を操作することをやめました。② IME に設定したキー割り当てを読み取り、どのキーが何をするかを自動で判断するようになりました。
 
 ### 更新する前に知っておいてほしいこと

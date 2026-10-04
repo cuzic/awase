@@ -34,13 +34,13 @@ For details on the technical design, see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## End of maintenance for v1, and moving to v2
 
 With the release of awase v2.0.0 (2026-10-04), **the v1 line (1.x) is no longer maintained** (end-of-maintenance date: the v2.0.0 release date, 2026-10-04).
-v1 will receive no further bug fixes or features. The last v1 release is 1.21.1.
+v1 will receive no further bug fixes or features. The last v1 release is 1.21.2.
 
 - **We recommend upgrading to v2.** Download it from [GitHub Releases](https://github.com/cuzic/awase/releases). The full list of differences is in [docs/migration-v1-to-v2.md](docs/migration-v1-to-v2.md) (Japanese).
 - Known problems that will not be fixed in v1 are listed in [Known issues remaining in v1](#known-issues-remaining-in-v1).
 - Your `config.toml` carries over, but a few settings change in v2. See
   [Settings that change when moving from v1 to v2](#settings-that-change-when-moving-from-v1-to-v2).
-- The in-app update notification of v1.21.1 does not announce v2. Check this page or GitHub Releases.
+- The in-app update notification of v1.21.1 and later does not announce v2. Check this page or GitHub Releases.
 
 ### Main bugs fixed in v2
 
@@ -55,7 +55,7 @@ Items not yet checked on a real machine (physical keys, real apps) say so. Detai
 
 ### Known issues remaining in v1
 
-These remain in v1.21.1 and will not be fixed in v1.
+These remain in the last v1 release (1.21.2) and will not be fixed in v1.
 
 | What happens | When | Workaround | Status in v2 |
 |---|---|---|---|
