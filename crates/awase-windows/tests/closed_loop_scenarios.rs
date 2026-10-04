@@ -388,3 +388,80 @@ fn adr212_p6_drift_without_explicit_intent_does_not_write() {
         h.trace()
     );
 }
+
+// ── クセ Q3: 読み戻し遅延（実 IME の変化が IMM 再読に現れるまで数十 ms かかる）──────────────
+//
+// 実測（`tuning.rs` の `MODE_KEY_PASS_REREAD_MS` の注記、`tools/e2e/ime_key_matrix/mode_key_pass_timeline.py`）:
+// ATOK プリセットのモードキー通過後、変化が再読に現れるまで min21 / median33 / max62ms。
+// 11ms 後の 1 回は古い状態を読んだ。ここでは中央値の 33ms を使う。擬似 IME の真の状態は
+// 変わっていて、観測だけが遅れる（`PseudoIme::set_readback_lag_ms`）。
+
+/// クセ Q3 の遅延（ms、実測の中央値）。
+const READBACK_LAG_MS: u64 = 33;
+/// 押下の何 ms 後に読むか（実測で「古い状態を読んだ」例の 11ms）。
+const STALE_READ_AT_MS: u64 = 11;
+
+/// 擬似 IME 自体の確認: 状態変更の直後は変更前を読み、遅延が過ぎると真の状態を読む。
+#[test]
+fn q3_pseudo_ime_readback_is_stale_until_lag_elapses() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)));
+    h.ime.set_readback_lag_ms(Some(READBACK_LAG_MS));
+    h.advance_ms(100).key(VK_MUHENKAN); // 半角英数・入力中でない → 閉（格子 `on-c10-none|muhenkan`）
+    assert!(!h.ime.state().open, "真の状態は閉\n{}", h.trace());
+    assert!(
+        h.ime.read_state().open,
+        "直後の読み取りは古い（開）\n{}",
+        h.trace()
+    );
+    h.advance_ms(STALE_READ_AT_MS);
+    assert!(h.ime.read_state().open, "11ms 後もまだ古い\n{}", h.trace());
+    h.advance_ms(READBACK_LAG_MS - STALE_READ_AT_MS);
+    assert!(
+        !h.ime.read_state().open,
+        "遅延が過ぎたら真の状態\n{}",
+        h.trace()
+    );
+}
+
+/// クセ Q3 × 無変換で閉じた直後の Poll: 古い「開」を読んでも、明示意図が無いので awase は
+/// IME を書き換えず（P1・drift 補正の書き込みなし）、遅延後の観測で belief が真の状態へ収束する。
+#[test]
+fn q3_stale_poll_right_after_muhenkan_close_does_not_write_and_converges() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)));
+    h.ime.set_readback_lag_ms(Some(READBACK_LAG_MS));
+    h.advance_ms(100)
+        .observe(Source::ImmCross)
+        .advance_ms(200)
+        .key(VK_MUHENKAN)
+        .advance_ms(STALE_READ_AT_MS)
+        .observe(Source::Poll) // 古い「開」を読む
+        .advance_ms(READBACK_LAG_MS * 3)
+        .observe(Source::ImmCross) // 遅延後の読み取りは閉
+        .advance_ms(100);
+    assert!(!h.ime.state().open, "無変換で閉じたまま\n{}", h.trace());
+    assert_ok(&h, p1_no_warranted_write_without_intent(&h));
+    assert!(
+        !h.writes
+            .iter()
+            .any(|w| w.origin == WriteOrigin::DriftCorrection),
+        "古い読み取りで drift 補正の書き込みが出ない\n{}",
+        h.trace()
+    );
+    assert_ok(&h, belief_matches_truth_at_end(&h));
+}
+
+/// 対照: 遅延が無ければ（従来の擬似 IME）、同じ列で最初の Poll から真の状態を読む。
+#[test]
+fn q3_control_without_lag_reads_truth_immediately() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)));
+    h.advance_ms(100)
+        .observe(Source::ImmCross)
+        .advance_ms(200)
+        .key(VK_MUHENKAN)
+        .advance_ms(STALE_READ_AT_MS)
+        .observe(Source::Poll)
+        .advance_ms(100);
+    assert!(!h.ime.read_state().open);
+    assert_ok(&h, p1_no_warranted_write_without_intent(&h));
+    assert_ok(&h, belief_matches_truth_at_end(&h));
+}
