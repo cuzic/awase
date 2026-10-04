@@ -877,14 +877,11 @@ unsafe extern "system" fn win_event_proc(
     }
 
     let hwnd_isize = hwnd.0 as isize;
-    if LAST_FOCUS_HWND.load(AtomicOrdering::Relaxed) == hwnd_isize {
+    if LAST_FOCUS_HWND.swap(hwnd_isize, AtomicOrdering::Relaxed) == hwnd_isize {
         return;
     }
 
-    // ADR-223 R4-M1: `LAST_FOCUS_HWND` は `with_app` が成功してから更新する。再入(モーダルループ等)で
-    // `with_app` が `None` を返したのに更新すると、このフォーカス変更が黙って失われ、続く同じ窓のイベントも
-    // 重複として捨てられる。
-    let applied = with_app(|app| {
+    let _ = with_app(|app| {
         // Step 5: focus_transition_pending: bool は InputBarrier::FocusTransition に置換。
         // 実際の barrier 設定は FocusChanged event 経由で行う (runtime/mod.rs)。
         // ここでは旧 pending=true 相当の動作を維持するため、すぐに FocusTransition を立てる。
@@ -894,9 +891,6 @@ unsafe extern "system" fn win_event_proc(
         #[expect(clippy::cast_sign_loss)]
         app.on_window_focus_event(crate::state::ime_event::HwndId(hwnd_isize as usize), now);
     });
-    if applied.is_some() {
-        LAST_FOCUS_HWND.store(hwnd_isize, AtomicOrdering::Relaxed);
-    }
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
