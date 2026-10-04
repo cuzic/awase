@@ -237,21 +237,46 @@ describe("CPU cost of the largest accepted report (ADR-222 deploy check)", () =>
     expect(body.length).toBeGreaterThan(MAX_BODY_BYTES - 400 * 1024);
 
     const bytes = new TextEncoder().encode(body);
-    const runs: number[] = [];
-    for (let i = 0; i < 5; i += 1) {
-      const start = performance.now();
+    // 共有ランナーでは同じ処理でも実行ごとに大きくぶれる（最適化の前後で 13.7ms → 18.8ms と
+    // 逆転して見えた）ので、絶対値ではなく、同じ実行の中で「最適化前の処理」と「現在の処理」
+    // を並べて比べる。最適化前 = 全文の文字種の正規表現 2 本 + 整形つき直列化。
+    const fullScan = /^[A-Za-z0-9+/]*={0,2}$/;
+    const legacyPipeline = (): void => {
+      const text = new TextDecoder().decode(bytes);
+      const payload = parseAndValidatePayload(text);
+      fullScan.test(payload.log_excerpt_gz ?? "");
+      fullScan.test(payload.app_log_excerpt_gz ?? "");
+      JSON.stringify({ report_id: "x", received_at: "y", payload }, null, 2);
+    };
+    const currentPipeline = (): void => {
       const text = new TextDecoder().decode(bytes);
       const payload = parseAndValidatePayload(text);
       JSON.stringify({ report_id: "x", received_at: "y", payload });
-      runs.push(performance.now() - start);
-    }
-    const [first] = runs;
-    const warm = Math.min(...runs.slice(1));
+    };
+    const measure = (run: () => void): { first: number; warm: number } => {
+      const times: number[] = [];
+      for (let i = 0; i < 8; i += 1) {
+        const start = performance.now();
+        run();
+        times.push(performance.now() - start);
+      }
+      return { first: times[0] ?? 0, warm: Math.min(...times.slice(1)) };
+    };
+    // 交互に測って、JIT・ランナーの状態の偏りを減らす。
+    measure(legacyPipeline);
+    measure(currentPipeline);
+    const legacy = measure(legacyPipeline);
+    const current = measure(currentPipeline);
     console.log(
       `[cpu] body=${(body.length / 1024).toFixed(0)}KiB ` +
-        `first-run=${first?.toFixed(1)}ms warm-min=${warm.toFixed(1)}ms ` +
+        `legacy(first=${legacy.first.toFixed(1)} warm=${legacy.warm.toFixed(1)})ms ` +
+        `current(first=${current.first.toFixed(1)} warm=${current.warm.toFixed(1)})ms ` +
+        `ratio=${(current.warm / legacy.warm).toFixed(2)} ` +
         `(Workers Free の CPU 上限は 10ms/リクエスト)`
     );
+    const first = current.first;
+    // 現在の処理は、全文検証・整形つき直列化より速いはず（余裕を見て 0.9 倍未満）。
+    expect(current.warm).toBeLessThan(legacy.warm * 0.9);
     expect(first).toBeLessThan(500);
   });
 });
