@@ -52,7 +52,7 @@ All notable changes to this project will be documented in this file.
 - **IME のオン・オフを決めるキー（Ctrl+変換・無変換、かな、半角/全角、漢字など）を押せば、awase の内部状態に関係なく、2 回以内の押下で実際の IME がキーの意味どおりになるようにしました。** 「何度押しても変わらない」状態をなくすための保証です。
   - IME オン・オフのキーと Ctrl+変換・無変換は 1 回で、切り替えキーは 2 回以内で合います。
   - Chrome・テキスト入力欄・TSF 対応の入力欄 × Google 日本語入力・Microsoft IME で、Windows の実機（各 10 回）で確認しました。
-  - 既知の制限: Microsoft IME × Chrome では、「オフにする」方向だけ、awase を再起動した直後でも閉じないことがあります。Windows Terminal + Google 日本語入力と、入力を別プロセスに中継するタイプのアプリは、今回は対象外です。
+  - 既知の制限: Microsoft IME × Chrome では、入力中の文字が残っている間に「オフにする」キーを押すと、IME が閉じず半角英数になります（ON キーでかなに戻ります）。Google 日本語入力ではこの問題は起きません。Chrome で使う場合は Google 日本語入力をおすすめします。Windows Terminal + Google 日本語入力と、入力を別プロセスに中継するタイプのアプリは、今回は対象外です。
 - **awase が IME へ先回りして行っていた操作を減らしました。** ユーザーの操作が引き金でない IME のオン・オフ送信（Enter のたびの送信、Ctrl を離したときの再送、NICOLA のオン・オフに連動した IME の開閉など）をやめ、IME の状態を観察して追いかける方式にしました。半角/全角のオフ→オンは、明示的な操作として 1 回だけ送ります。
   - awase の起動直後に、閉じている IME を awase が勝手に開くことはなくなりました。
 - **Google 日本語入力（MS-IME 風の設定）で、変換キーや F13 で IME が開いたとき、NICOLA 入力も追随するようにしました。** IME の状態が読めないアプリ（Chrome、Windows Terminal など）で、IME は開くのに NICOLA 入力がオフのまま（`ka` と出る）だった問題への対処です。学習結果がなくても、設定ファイル（`config1.db`）から挙動を予測します。

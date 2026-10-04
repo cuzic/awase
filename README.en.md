@@ -66,6 +66,7 @@ These remain in v1.21.1 and will not be fixed in v1.
 | With MS-IME, the first hiragana key does not work and the IME may close (BUG-152) | Only the first time, when the IME switch request times out | Press the hiragana key again | Fixed |
 | Right after startup the IME is switched back on several times even if you closed it (BUG-163) | Right after starting awase with the IME closed | Switch after a short while | Fixed (not verified on a real machine) |
 | Pressing Hankaku/Zenkaku repeatedly leaves the IME stuck on (BUG-142) | Windows Terminal + Google Japanese Input | Set `keys.ime_detect.toggle` | Permanent fix not yet done |
+| With MS-IME and Chrome, pressing OFF while text is still being composed does not close the IME and switches it to half-width alphanumeric (BUG-185) | MS-IME + Chrome-like windows | Press the ON key to return to kana. With Chrome, we recommend Google Japanese Input | Will not be fixed in v2 either (MS-IME behavior) |
 | Clearing the n-gram file field in the settings app reverts to the default, so it cannot be disabled (BUG-169) | Settings app | Edit `config.toml` directly | Not fixed in v2 either |
 
 ### Settings that change when moving from v1 to v2
