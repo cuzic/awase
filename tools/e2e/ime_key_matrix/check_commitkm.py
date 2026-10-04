@@ -14,13 +14,15 @@ import sys
 def main():
     trials = []
     for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
-        i = line.find('{"type":"km_trial"')
+        i = line.find("[TS-JSON] ")
         if i < 0:
             continue
         try:
-            trials.append(json.loads(line[i:]))
+            r = json.loads(line[i + len("[TS-JSON] "):])
         except ValueError:
-            pass
+            continue
+        if r.get("type") == "km_trial":
+            trials.append(r)
     if not trials:
         print("COMMITKM: km_trial が0件(INVALID)")
         return 3
