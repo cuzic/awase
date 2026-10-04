@@ -30,7 +30,17 @@ pub(crate) fn observe_gji_after_focus(
     current_input_mode: InputModeState,
 ) -> GjiBlacklistObservation {
     let now_ms = crate::hook::current_tick_ms();
-    let last_io = crate::tsf::observer::tsf_obs().gji_last_io_ms();
+    let obs = crate::tsf::observer::tsf_obs();
+    let last_io = obs.gji_last_io_ms();
+    // 接続直後の最初の読みは実 I/O ではない（BUG-176: 初回セッションで GJI Converter が遅れて現れると、
+    // 外部から閉じられた直後に「GJI が動いた = ON」と誤読して追随結果を ON へ戻していた）。
+    if crate::tsf::observer::gji_io_is_attach_artifact(last_io, obs.gji_attach_ms()) {
+        tracing::debug!("[gji-poll] GJI I/O は接続直後の初回読み(実 I/O ではない) → skipped");
+        return GjiBlacklistObservation {
+            observer_poll_value: None,
+            input_mode_correction: None,
+        };
+    }
     let gji_after_focus = last_io > last_focus_change_ms;
 
     if last_io > 0 && gji_after_focus && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {

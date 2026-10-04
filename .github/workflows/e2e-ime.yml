@@ -557,6 +557,11 @@ jobs:
                 chrome='--close-ime=10 --settle=800 --msime'),
             cfg('cal-driftrec-chrome-gji', 'observe', check='chromeprobe', keymap=1, runs=1, wait=400,
                 chrome='--close-ime=10 --settle=800'),
+            # BUG-176 の再現調査(sc-bug176-*、観測のみ): 他プロセス注入(目印なし)の VK_IME_OFF の後、実 IME の開閉を時系列で読み、偽OFF(IME開のままEngine OFF)を探す。
+            # clean=毎試行 ON にそろえる / restore=試行後に外から IME を開け直す(マウス相当、awase の desired=false が残る)。Edge/Chrome × GJI。
+            *[cfg(f'sc-bug176-{br}-{mode}', 'observe', check='chromeprobe', keymap=1, runs=1, wait=600,
+                  chrome=f'--bug176=20 --b176-mode={mode} --browser={br} --settle=800')
+              for br in ('edge', 'chrome') for mode in ('clean', 'restore')],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
@@ -989,6 +994,9 @@ jobs:
             # focus 遷移まわりのログ(settle 中に SetOpen を落としていないか=`[focus-settle] SetOpen … stripped` が 0 件か)も結果に添える。
             if (Test-Path dist\awase.log) {
               $fs = @(Select-String -Path dist\awase.log -Pattern 'focus-settle|\[focus|FocusChanged|focus_changed' | ForEach-Object { $_.Line })
+              $ec = @(Select-String -Path dist\awase.log -Pattern 'external-change|relay-passthrough|\[reinject\]|Engine deactivated|Engine activated' | ForEach-Object { $_.Line })
+              "BUG176 awase.log: external-change/reinject/Engine 切替の行数=$($ec.Count) (external-change=$(@($ec | Where-Object { $_ -match 'external-change' }).Count))" | Tee-Object -FilePath result.txt -Append
+              $ec | Select-Object -First 80 | Tee-Object -FilePath result.txt -Append
               "focus 関連ログ件数(focus-settle を含む)=$($fs.Count)" | Tee-Object -FilePath result.txt -Append
               $fs | Select-Object -First 30 | Tee-Object -FilePath result.txt -Append
             }

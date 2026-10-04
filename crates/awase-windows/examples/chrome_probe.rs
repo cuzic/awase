@@ -965,9 +965,19 @@ fn main() {
         .iter()
         .find_map(|a| a.strip_prefix("--settle=").and_then(|v| v.parse().ok()))
         .unwrap_or(500);
-    let chrome_arg = args
+    let mut chrome_arg = args
         .iter()
         .find_map(|a| a.strip_prefix("--chrome=").map(str::to_string));
+    // `--browser=edge`(BUG-176 調査): Edge を使う(windows-latest にプリインストール)。
+    if chrome_arg.is_none() && args.iter().any(|a| a == "--browser=edge") {
+        chrome_arg = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .map(str::to_string);
+    }
     let log_path = args
         .iter()
         .find_map(|a| a.strip_prefix("--log=").map(str::to_string))
@@ -1177,6 +1187,118 @@ fn main() {
         }
         p.log.line(&format!(
             "SUMMARY PASS={ok} RECOVER=0 FAIL={bad} INVALID={invalid}"
+        ));
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
+    // `--bug176=N`(BUG-176 の再現調査): 他プロセスが注入した VK_IME_OFF(目印なし)の直後に、実 IME の開閉(IMC_GETOPENSTATUS)を
+    // 時系列で読み、その後 k,a を打って分類する。偽 OFF = 実 IME が開いたまま(open!=0)なのに Engine が OFF(`か`=RomajiKana)。
+    // `--b176-mode=clean`: 毎試行 IME ON にそろえ直す。`restore`: 最初だけそろえ、以降は試行後に WM_IME_CONTROL で IME を開け直す(マウス操作相当、awase は知らない)。
+    // `--b176-vk=0x1A`(既定)・`--b176-scan=0xF1`(既定。実機の MapVirtualKey 相当)。
+    if let Some(n) = args.iter().find_map(|a| {
+        a.strip_prefix("--bug176=")
+            .and_then(|v| v.parse::<usize>().ok())
+    }) {
+        let arg_of = |k: &str| {
+            args.iter()
+                .find_map(|a| a.strip_prefix(k))
+                .map(str::to_string)
+        };
+        let parse_hex = |s: String| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok();
+        let vk = arg_of("--b176-vk=").and_then(parse_hex).unwrap_or(0x1A);
+        let scan = arg_of("--b176-scan=").and_then(parse_hex).unwrap_or(0xF1);
+        let restore = arg_of("--b176-mode=").as_deref() == Some("restore");
+        let (mut ok, mut falseoff, mut other, mut invalid) = (0usize, 0usize, 0usize, 0usize);
+        p.log.line(&format!(
+            "B176 start n={n} vk=0x{vk:02X} scan=0x{scan:02X} mode={}",
+            if restore { "restore" } else { "clean" }
+        ));
+        for i in 0..n {
+            p.log.line(&format!("[B176 {}/{n}]", i + 1));
+            p.focus_lost = false;
+            bring_to_front();
+            if i == 0 || !restore {
+                if !ensure(&mut p, Setup::Kana, awase) {
+                    p.log.line("RESULT INVALID: 前提状態(かな)にできなかった");
+                    invalid += 1;
+                    continue;
+                }
+            } else {
+                // マウス等で外から IME を開け直した状態(awase の desired=false が残る)。
+                let _ = ime_control(0x0006, 1);
+                sleep(1500);
+            }
+            let before = ime_control(0x0005, 0);
+            // 他プロセスの注入(目印なし、scan 付き)。
+            let t0 = Instant::now();
+            for down in [true, false] {
+                let input = INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
+                            wScan: u16::try_from(scan).unwrap_or(0),
+                            dwFlags: if down {
+                                KEYBD_EVENT_FLAGS(0)
+                            } else {
+                                KEYEVENTF_KEYUP
+                            },
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                };
+                // SAFETY: 単発の SendInput。
+                unsafe {
+                    let _ = SendInput(&[input], size_of::<INPUT>() as i32);
+                }
+                if down {
+                    sleep(40);
+                }
+            }
+            let mut tl = String::new();
+            for cp in [20u64, 50, 100, 200, 300, 500, 1000, 2000] {
+                let rem = Duration::from_millis(cp).saturating_sub(t0.elapsed());
+                std::thread::sleep(rem);
+                tl.push_str(&format!(" {cp}ms={:?}", ime_control(0x0005, 0)));
+            }
+            let open_late = ime_control(0x0005, 0);
+            p.log.line(&format!("B176_TL before={before:?}{tl}"));
+            let got = p.probe_logged("注入2秒後");
+            if p.focus_lost {
+                p.log.line("RESULT INVALID: ページのフォーカスが外れた");
+                invalid += 1;
+                continue;
+            }
+            let open_now = matches!(open_late, Some(v) if v != 0);
+            if got == Class::RomajiKana || (open_now && got == Class::Plain) {
+                // IME が開いたまま(読みも `か` も開を示す)のに NICOLA が効かない = 偽 OFF。
+                p.log.line(&format!(
+                    "RESULT FAIL: 偽OFF(IME開のままEngine OFF) open_late={open_late:?} 実際={}",
+                    got.label()
+                ));
+                falseoff += 1;
+            } else if got == Class::Plain || got == Class::Nicola || got == Class::NicolaLiteral {
+                p.log.line(&format!(
+                    "RESULT PASS: 注入で閉じ 追随/未追随の別は実際で判定 open_late={open_late:?} 実際={}",
+                    got.label()
+                ));
+                if got == Class::Plain {
+                    ok += 1;
+                } else {
+                    other += 1;
+                }
+            } else {
+                p.log.line(&format!(
+                    "RESULT PASS: その他 open_late={open_late:?} 実際={}",
+                    got.label()
+                ));
+                other += 1;
+            }
+        }
+        p.log.line(&format!(
+            "SUMMARY PASS={ok} RECOVER=0 FAIL={falseoff} OTHER={other} INVALID={invalid}"
         ));
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();
