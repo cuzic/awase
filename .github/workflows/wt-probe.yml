@@ -1,0 +1,94 @@
+name: wt-probe
+
+# Windows Terminal を windows-latest の実機で制御できるかを測り(可否表)、BUG-113(Windows Terminal + GJI で物理半角/全角を押すと
+# 「@」が出る)の再現手順を実行する(tools/e2e/wt/、再現用の語彙の拡張。2026-10-05)。約 15 分。
+# 動く条件: ci/wt-probe・ci/vocab-windows-terminal への push、手動起動(workflow_dispatch は既定ブランチにこのファイルがあるときだけ使える)。
+# 判定は付けない(観測と可否表のみ)。e2e-ime.yml には組み込まない(別のハーネスで、共有ファイルを避けるため)。
+on:
+  push:
+    branches: [ci/wt-probe, ci/vocab-windows-terminal]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wt-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+      - name: awase(デバッグ)をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+      - name: 純粋部分の単体テスト
+        shell: pwsh
+        run: python -m unittest discover -s tools\e2e\wt -p 'test_*.py' -v
+
+      # e2e-ime.yml の e2e ジョブと同じ手順(GJI 導入 → 入力言語を ja-JP+GJI → ATOK プリセットの config1.db)。
+      - name: Google 日本語入力をインストール
+        shell: pwsh
+        run: choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+      - name: 入力言語を ja-JP + GJI に設定(ATOK プリセット)
+        shell: pwsh
+        run: |
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $bytes = [byte[]](0xB0,0x01,0x00,0xC8,0x02,1)
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), $bytes)
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+      - name: 環境の記録(wt.exe・pwsh・既存の Windows Terminal)
+        shell: pwsh
+        run: |
+          Get-Command wt.exe -ErrorAction SilentlyContinue | Format-List Source
+          Get-Command pwsh -ErrorAction SilentlyContinue | Format-List Source
+          Get-Process WindowsTerminal -ErrorAction SilentlyContinue | Format-Table Id, MainWindowTitle
+          Get-AppxPackage -Name Microsoft.WindowsTerminal -ErrorAction SilentlyContinue | Format-List Name, Version
+
+      - name: Windows Terminal を制御する
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: python tools\e2e\wt\wt_probe.py --dist dist --out out --phases V,I,B,N
+      - name: 概要を表示
+        if: always()
+        shell: pwsh
+        run: if (Test-Path out\summary.md) { Get-Content out\summary.md -Encoding utf8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wt-probe-out
+          path: |
+            out/summary.md
+            out/results.json
+            out/logs/
+            out/shots/
+            out/work/*.echo.txt
+          retention-days: 7
