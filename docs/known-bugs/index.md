@@ -188,6 +188,7 @@
 | [BUG-184](BUG-184.md) | 要確認(再現せず・要追加情報) | MS-IME で物理 英数 キー(IME OFF)を Suppress して ImmCross で閉じる際、未確定文字を確定せず、消える疑い |
 | [BUG-185](BUG-185.md) | 対応しない(既知の制限) | MS-IME × Chrome で、入力中の文字が残っている間の OFF が IME を閉じず半角英数になる(対応しない既知の制限) |
 | [BUG-186](BUG-186.md) | 未修正(CI で再現、原因判明・BUG-149 と同根) | 半角英数持続トグル中に IME 側のモードキー(変換・英数・ひらがな)でかなへ戻すと Engine が OFF のまま(`か`、実 Chrome) |
+| [BUG-187](BUG-187.md) | 保留(既知の制限扱い) | GJI(ATOKプリセット)が injected=false の VK_DBE_HIRAGANA を周期送信し IME OFF を巻き戻す |
 
 ## その他の資料
 
