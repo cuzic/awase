@@ -35,7 +35,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/qt-line-repro]
+    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -76,7 +76,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/qt-line-repro' && 'tsx-qt-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -600,14 +600,10 @@ jobs:
               for pause in (320, 500)],
             # Chrome の定常状態の取りこぼし(高速: 2ms)。
             *[tsx(f'{form}-gji-2ms', form, 'gji', 2, trials=8, runs=30, wait=1200) for form in ('chromepage', 'chromebar')],
-            # LINE(Qt 6.6.3)の「いまは→いいい」(報告 01M43NK5…、2026-10-04)の再現試行(観測のみ、ci/qt-line-repro か only='tsx-qt-*' で回す)。
-            # 入力先は line.exe(tools/e2e/qt_line_input、QLineEdit 1つ)。長 idle(GJI OnCold(Long))→ 前面を他窓にして戻す(--switch-focus)→ 打鍵。
-            # idle0=warm の対照(前面切替と打鍵のみ、長 idle なし)/ idle12・idle30=cold(GJI OnCold(Long)、LONG_IDLE_MS=10s 超)。
-            # 間隔は実利用に近い 120ms と、高速の 40ms。cold のときだけ出るなら idle0 の表では 0 のまま、idle12/30 でだけ増える。
-            # 2026-10-04 の初回(40/10ms×idle12s、各6回)は全 PASS。line.exe は Imm32Unavailable hard pre-sync と OnCold(Long) を通ったことをログで確認済み。
-            *[tsx(f'qt-gji-{iv}ms-idle{idle}s', 'qt', 'gji', iv, extra=(f'--idle={idle * 1000} ' if idle else '') + '--switch-focus --start-delay=100', kinds='single,mixed', trials=6, len=20, runs=4, wait=1500)
-              for iv in (120, 40)
-              for idle in (0, 12, 30)],
+            # Qt の入力先(--form=qt、line.exe = tools/e2e/qt_line_input の QLineEdit 1つ)の動作確認用の 1 構成。観測のみ、only='tsx-qt-*' で回す。
+            # LINE(Qt 6.6.3)の「いまは→いいい」(報告 01M43NK5…)の再現を試みた結果: 40/10/120ms × idle 0/12/30s の計 36 回は全 PASS(消失・リテラル化とも 0)。
+            # line.exe は Imm32Unavailable hard pre-sync と OnCold(Long) を通っており、Qt の素の入力欄 + cold では再現しない。
+            tsx('qt-gji-120ms-idle12s', 'qt', 'gji', 120, extra='--idle=12000 --switch-focus --start-delay=100', kinds='single,mixed', trials=6, len=20, runs=1, wait=1500),
             # BUG-171 の再現確認(2026-10-04 v2.0.0 の棚卸しで追加、観測のみ。only='tsx-bug171-*' で回す): 語の途中(10 文字目の直後)で止めてから打鍵を再開し、
             # 候補窓が可視の状態で per-VK confirm が StaleConfirm→ESC(escape=true、idx>=1)になり、既存の未確定文字まで消えるかを見る。
             # 検出は 2 つ: (1)入力先のテキストの消失(上の高速打鍵ストレスの表) (2)awase.log の StaleConfirm→escape=true を、直前の StartComposition の遷移元で
