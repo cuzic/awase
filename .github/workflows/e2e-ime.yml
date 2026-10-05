@@ -116,6 +116,17 @@ jobs:
             flags.append('--layout=@REPO@/layout/nicola_keytop.yab')
             if ime == 'msime': flags.append('--msime')
             return cfg(f"tsx-{'raw-' if raw else ''}{name}", 'observe', check='typing', ime=ime, awase='false' if raw else 'true', runs=runs, wait=wait, stress=' '.join(flags))
+          # tsx-susp-*(typing_stress の suspend.rs): GJI の変換サーバ(GoogleIMEJaConverter)を打鍵の途中で一時停止して応答を遅らせ、
+          # 時間窓系の BUG(BUG-171 の途中の語の StaleConfirm→ESC 等)を実機で当てにいく。判定は typing(消失/リテラル化の分類)、
+          # 効いたかは typing_stress.log の type:"suspend"(matched の PID・status)と awase.log の StaleConfirm/delay で見る(tools/e2e/ime_key_matrix/suspend_report.py)。
+          # 対照(control)は同じ打鍵で停止なし。only='tsx-susp-*' で回す(既定の only 空・sc-* には含まれない)。observe は期限(until)付き。
+          def susp(name, form, at_ms=None, dur_ms=None, proc='GoogleIMEJaConverter', iv=30, runs=3):
+            flags = [f'--form={form}', f'--interval={iv}', '--kinds=single,mixed', '--trials=6', '--len=25', '--settle-read',
+                     '--layout=@REPO@/layout/nicola_keytop.yab']
+            if at_ms is not None:
+              flags += [f'--suspend-proc={proc}', f'--suspend-at-ms={at_ms}', f'--suspend-ms={dur_ms}']
+            return cfg(f'tsx-susp-{name}', 'observe', check='typing', ime='gji', awase='true', runs=runs, wait=1500,
+                       stress=' '.join(flags), until='2026-11-04')
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           # sc-keymatrix-*(ADR-208 L3b): 「ずれの作り方 × 明示キー」行列(判定は check_keymatrix.py)。expect=pass(MS-IME × 実 Chrome の abs/tog だけは同 job に fresh 対照が無く例外セルが STUCK になるので observe、対照は e2・e2-tog が担う)。1構成=1ジョブで、セルごとに内部10試行。
           # セルの書式 `<key>=<kind>:<gap>`: key=VK の16進(ctrl+ 前置でマーカー付き注入の物理 Ctrl 付き) / kind=on・off・tog / gap=sync・close・open・fresh。
@@ -669,6 +680,12 @@ jobs:
             *[cfg(f'sc-bug176-{br}-{mode}', 'observe', check='chromeprobe', keymap=1, runs=1, wait=600,
                   chrome=f'--bug176=20 --b176-mode={mode} --browser={br} --settle=800')
               for br in ('edge', 'chrome') for mode in ('clean', 'restore')],
+            # 時間のずらし方(suspend.rs)。tsf=awase から TsfNative 相当に見える自前入力先、chromepage=実 Chrome。
+            susp('bug171-tsf-control', 'tsf'),
+            susp('bug171-tsf-d800', 'tsf', 300, 800),
+            susp('bug171-tsf-d2500', 'tsf', 300, 2500),
+            susp('bug171-chromepage-control', 'chromepage'),
+            susp('bug171-chromepage-d800', 'chromepage', 300, 800),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:

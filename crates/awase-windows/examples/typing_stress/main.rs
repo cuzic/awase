@@ -24,6 +24,7 @@
 //! 連続打鍵では作れない実利用に近い状況を試行に差し込む: `--cold` / `--pause-after=N --pause-ms=MS` / `--idle=MS` /
 //! `--switch-focus` / `--start-delay=MS` / `--interrupt=off_on|off|f2` / `--settle-read`。意味は `perturb.rs` の表を参照。
 //! 指定した摂動は `config` レコードの `perturb` に記録される。
+//! 相手(GJI の変換サーバ等)を遅くする摂動は `suspend.rs`(`--suspend-proc=NAME --suspend-at-ms=T --suspend-ms=D`)。
 //!
 //! ## フラグ
 //! `--form=edit|multi|rich|tsf|chromebar|chromepage|bugreport`(`--chrome-path=PATH` で Chrome を指定) / `--mode=nicola|raw|drift|drift-on|keymatrix|reopen` / `--interval=MS`(1文字あたりの間隔。既定20) /
@@ -83,6 +84,7 @@
 
 mod keymatrix;
 mod perturb;
+mod suspend;
 mod target;
 mod uia;
 
@@ -1524,6 +1526,7 @@ fn reopen_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
 fn worker(form: Form) {
     let child = hwnd_of(&CHILD);
     let perturb = perturb::Perturbation::from_args();
+    let suspend = suspend::Suspend::from_args();
     let mode_arg = arg_value("--mode=");
     let raw = mode_arg.as_deref() == Some("raw");
     let drift = mode_arg.as_deref() == Some("drift");
@@ -1578,8 +1581,11 @@ fn worker(form: Form) {
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "no_awase":has_flag("--no-awase"),"startup_skip_refocus2":has_flag("--startup-skip-refocus2"),
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
-        "child_class":class_of(child),"perturb":perturb.describe()}),
+        "child_class":class_of(child),"perturb":perturb.describe(),"suspend":suspend.as_ref().map(suspend::Suspend::describe)}),
     );
+    if let Some(sp) = &suspend {
+        sp.log_candidates();
+    }
     if cells.iter().any(Vec::is_empty) {
         rec(&json!({"type":"abort","reason":"候補セルが空(layout の読み取り失敗?)"}));
         finish();
@@ -1692,7 +1698,11 @@ fn worker(form: Form) {
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }
+            let suspender = suspend.as_ref().map(|sp| sp.arm(kind, t));
             let stats = run_schedule(&evs);
+            if let Some(h) = suspender {
+                let _ = h.join();
+            }
             perturb.after_inject(kind, t);
             // 最後の同時打鍵判定・出力の落ち着きを待ってから確定(Enter)。
             sleep_ms(300);
