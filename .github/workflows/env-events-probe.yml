@@ -1,0 +1,56 @@
+name: env-events-probe
+
+# 環境イベント(最小化/復元・ダイアログの Tab 移動・仮想デスクトップ切替・画面ロック)を windows-latest の実機で起こせるか測り、
+# awase 起動中の awase.log の反応を抜粋する(tools/e2e/env_events/、再現用の語彙の拡張)。約 10 分。
+# 動く条件: ci/env-events-probe への push、手動起動(workflow_dispatch は既定ブランチにこのファイルがあるときだけ使える)。
+# 画面ロックは解除できないので最後の相(C)にしてある。
+on:
+  push:
+    branches: [ci/env-events-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: env-events-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+      - name: awase(デバッグ)をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+      - name: 環境イベントを起こす
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: python tools\e2e\env_events\run.py --dist dist --out out
+      - name: 概要を表示
+        if: always()
+        shell: pwsh
+        run: if (Test-Path out\summary.md) { Get-Content out\summary.md -Encoding utf8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: env-events-probe-out
+          path: |
+            out/summary.md
+            out/results.json
+            out/logs/
+            out/work/*/probe.log
+          retention-days: 7
