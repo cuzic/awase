@@ -83,6 +83,15 @@
 6. **ADR status の裏取り**: 「一部実装」のうち残りの決定が撤去・置換済みのものを、
    git log で確認のうえ「縮小して完了」へ更新する（status 文言を鵜呑みにしない）。
 
+## 実施状況（2026-10-05）
+
+- 候補1 完了: Opus レビュー記録 40 本超を `docs/adr/review/` へ移動、リンク・索引を追随。
+- 候補2 完了: frontmatter が無かったレビュー記録 27 本に `type: companion-doc` を付与。
+  `NNN-implementation-tasks.md` 等の番号重複は補助資料として索引済みのため意図どおり。
+  `114` / `158` / `163` / `176` の status 空は本体 ADR ではなく補助資料側の話で、対応不要。
+- 候補3 完了（所有者判断）: ADR-160 見送り、ADR-161 一部実装・残り見送り、ADR-181 保留＋BUG-187 起票。
+- 残: 候補4〜6。既存の壊れたリンク 2 件（ADR-163→089、ADR-033→005）は今回の対象外。
+
 ## 注意
 
 - 索引・frontmatter の更新は `.claude/rules/docs-frontmatter-convention.md` に従う
