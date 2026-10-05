@@ -76,7 +76,7 @@ jobs:
         shell: pwsh
         env:
           PYTHONUTF8: '1'
-        run: python tools\e2e\wt\wt_probe.py --dist dist --out out --phases V,I,B,N
+        run: python tools\e2e\wt\wt_probe.py --dist dist --out out --phases V,I,B,N,S,H
       - name: 概要を表示
         if: always()
         shell: pwsh

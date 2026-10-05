@@ -172,18 +172,19 @@ def _send(items):
     return int(user32.SendInput(len(items), arr, ctypes.sizeof(INPUT)))
 
 
-def key(vk, up=False, marker=False):
-    """1 回の KeyDown または KeyUp(scan code 付き)。"""
-    scan = user32.MapVirtualKeyW(vk, 0)
+def key(vk, up=False, marker=False, scan=None):
+    """1 回の KeyDown または KeyUp(scan code 付き)。scan を渡すとそれを使う(実機の半角/全角は 0x29 など)。"""
+    if scan is None:
+        scan = user32.MapVirtualKeyW(vk, 0)
     flags = (KEYEVENTF_KEYUP if up else 0) | (KEYEVENTF_EXTENDEDKEY if vk in _EXTENDED else 0)
     return _send([_ki(vk, scan, flags, marker)])
 
 
-def press(vk, hold_ms=40, marker=False):
+def press(vk, hold_ms=40, marker=False, scan=None):
     """Down → hold_ms → Up。送れた入力の数(2 なら成功)。"""
-    n = key(vk, False, marker)
+    n = key(vk, False, marker, scan)
     time.sleep(hold_ms / 1000)
-    return n + key(vk, True, marker)
+    return n + key(vk, True, marker, scan)
 
 
 def chord(mods, vk, hold_ms=40, marker=False):

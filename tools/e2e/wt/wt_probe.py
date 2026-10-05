@@ -7,6 +7,8 @@
   B  bug113   awase+GJI で Windows Terminal に物理半角/全角(0xF3/0xF4、マーカー付き注入)を N 回押し、余計な「@」(U+0040)を数える。
               (docs/known-bugs/BUG-113.md の再現手順。Engine 有効のまま 1 回押す → 「@」が 1 文字出る)
   N  bug113-noawase  B と同じ操作を awase なしで(対照。「@」が出るなら awase 起因ではない)
+  S  bug113-scan    B の変種: 実機の半角/全角の scan code(0x29)を付け、回数を --presses2(既定 30)・間隔 0.6 秒に増やす
+  H  bug121         Ctrl+無変換(keys.ime_off 既定)を 20 回(BUG-121: 実 IME と belief がずれた直後に稀に「@」)。1 回ごとに外から IME を ON に戻してずれを作る
 使い方: python wt_probe.py --dist dist --out out [--phases V,I,B,N] [--presses 10]
 出力: out/results.json, out/summary.md, out/logs/*, out/shots/*.png
 判定は付けない(観測と可否表)。実機で何が起きたかの事実だけを残す。
@@ -205,7 +207,7 @@ def body_ime(results, out, tag, hwnd, echo, work):
     rec(results, type="ime_typing", tag=tag, sent=n, received=P.text_of(rows), counts=P.classify(rows))
 
 
-def make_body_bug113(presses):
+def make_body_bug113(presses, scan=None, gap=1.2):
     def body(results, out, tag, hwnd, echo, work):
         ime_on(results, tag)
         base = len(W.read_rows(echo))
@@ -213,15 +215,36 @@ def make_body_bug113(presses):
         for i in range(presses):
             vk = W.VK["SBCSCHAR"] if i % 2 == 0 else W.VK["DBCSCHAR"]  # 物理半角/全角は押すたびに 0xF3/0xF4 が交互に届く(BUG-113)
             t = int(time.time() * 1000)
-            n = W.press(vk, 60, marker=True)
-            time.sleep(1.2)
+            n = W.press(vk, 60, marker=True, scan=scan)
+            time.sleep(gap)
             rows = W.read_rows(echo)[base:]
-            rec(results, type="bug113_press", tag=tag, i=i + 1, vk=f"0x{vk:02X}", sent=n, received_so_far=P.text_of(rows), at_so_far=P.classify(rows)["at"], t=t)
+            rec(results, type="bug113_press", tag=tag, i=i + 1, vk=f"0x{vk:02X}", scan=scan, sent=n, received_so_far=P.text_of(rows), at_so_far=P.classify(rows)["at"], t=t)
         W.screenshot(str(out / "shots" / f"{tag}-after.png"))
         W.press(W.VK["RETURN"], 40, marker=True)
         time.sleep(1.5)
         rows = W.read_rows(echo)[base:]
         rec(results, type="bug113_result", tag=tag, presses=presses, received=P.text_of(rows), counts=P.classify(rows))
+    return body
+
+
+def make_body_bug121(presses):
+    def body(results, out, tag, hwnd, echo, work):
+        ime_on(results, tag)
+        base = len(W.read_rows(echo))
+        rec(results, type="bug121_begin", tag=tag, presses=presses)
+        for i in range(presses):
+            if i % 2 == 0:
+                W.press(W.VK["HIRAGANA"], 40, marker=True)  # 外から IME を ON に戻す(awase の OFF の後にずれを作る)
+                time.sleep(0.6)
+            n = W.chord([W.VK["CTRL"]], W.VK["NONCONVERT"], 50, marker=True)  # Ctrl+無変換(keys.ime_off 既定)
+            time.sleep(1.0)
+            rows = W.read_rows(echo)[base:]
+            rec(results, type="bug121_press", tag=tag, i=i + 1, sent=n, received_so_far=P.text_of(rows), at_so_far=P.classify(rows)["at"])
+        W.screenshot(str(out / "shots" / f"{tag}-after.png"))
+        W.press(W.VK["RETURN"], 40, marker=True)
+        time.sleep(1.5)
+        rows = W.read_rows(echo)[base:]
+        rec(results, type="bug121_result", tag=tag, presses=presses, received=P.text_of(rows), counts=P.classify(rows))
     return body
 
 
@@ -252,6 +275,9 @@ def md(results):
             o.append(f"| {tag} | 窓を閉じる | {r.get('closed')} | |")
         elif t == "ime_typing":
             o.append(f"| {tag} | IME ON で打鍵→確定 | 受信 `{r.get('received')}` | {r.get('counts')} |")
+        elif t == "bug121_result":
+            c = r.get("counts", {})
+            o.append(f"| {tag} | **BUG-121**: Ctrl+無変換を {r.get('presses')} 回 | 「@」={c.get('at')} 件 | 受信 `{r.get('received')}` / {c} |")
         elif t == "bug113_result":
             c = r.get("counts", {})
             o.append(f"| {tag} | **BUG-113**: 半角/全角を {r.get('presses')} 回 | 「@」={c.get('at')} 件 | 受信 `{r.get('received')}` / {c} |")
@@ -266,6 +292,7 @@ def main():
     ap.add_argument("--out", default="out")
     ap.add_argument("--phases", default="V,I,B,N")
     ap.add_argument("--presses", type=int, default=10)
+    ap.add_argument("--presses2", type=int, default=30)
     a = ap.parse_args()
     dist, out = Path(a.dist).resolve(), Path(a.out).resolve()
     repo = HERE.parents[2]
@@ -280,6 +307,10 @@ def main():
                 with_awase(results, out, dist, repo, "I-ime", True, body_ime)
             elif ph == "B":
                 with_awase(results, out, dist, repo, "B-bug113", True, make_body_bug113(a.presses))
+            elif ph == "S":
+                with_awase(results, out, dist, repo, "S-bug113-scan29", True, make_body_bug113(a.presses2, scan=0x29, gap=0.6))
+            elif ph == "H":
+                with_awase(results, out, dist, repo, "H-bug121", True, make_body_bug121(20))
             elif ph == "N":
                 with_awase(results, out, dist, repo, "N-bug113-noawase", False, make_body_bug113(a.presses))
         except Exception as e:  # 1 相の失敗で全体を止めない

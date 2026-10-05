@@ -9,7 +9,7 @@ Python(ctypes)+ PowerShell だけで、Rust のビルドは要らない(awase �
 | `wt_echo.ps1` | Windows Terminal の中で動く記録器。受け取ったキーの文字コードを 1 行ずつファイルへ(IME 確定のかな・余計な「@」・ローマ字リテラルを区別) |
 | `wt_uia.ps1` | UIA の TextPattern で画面のテキスト、タブ数を読む |
 | `wt_pure.py` + `test_wt_pure.py` | echo ログの解析と分類(OS 非依存、Linux で unittest) |
-| `wt_probe.py` | 相 V(可否表)・I(IME 越しの打鍵)・B(BUG-113 再現)・N(awase なしの対照)。判定は付けず観測だけ |
+| `wt_probe.py` | 相 V(可否表)・I(IME 越しの打鍵)・B(BUG-113 再現)・N(awase なしの対照)・S(実機の scan 0x29・30 回)・H(BUG-121 Ctrl+無変換)。判定は付けず観測だけ |
 
 使い方: `python tools/e2e/wt/wt_probe.py --dist dist --out out --phases V,I,B,N --presses 10`
 実機 run: `ci/wt-probe` への push で `.github/workflows/wt-probe.yml` が動く(結果は artifact `wt-probe-out` の `summary.md`)。
