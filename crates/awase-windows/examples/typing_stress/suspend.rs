@@ -24,7 +24,9 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_SUSPEND_RESUME};
-use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+};
 
 use crate::{arg_value, class_of, rec, utc_hms};
 
@@ -63,7 +65,14 @@ unsafe extern "system" fn win_cb(hwnd: HWND, lp: LPARAM) -> BOOL {
 fn ime_like(s: &str) -> bool {
     let l = s.to_ascii_lowercase();
     [
-        "google", "ime", "ctf", "mozc", "candidate", "cicero", "tf_", "input",
+        "google",
+        "ime",
+        "ctf",
+        "mozc",
+        "candidate",
+        "cicero",
+        "tf_",
+        "input",
     ]
     .iter()
     .any(|w| l.contains(w))
@@ -103,9 +112,11 @@ fn survey(kind: &str, n: usize, when: &str) {
         .filter(|(n, _)| ime_like(n))
         .map(|(n, p)| format!("{n}({p})"))
         .collect();
-    rec(&json!({"type":"suspend_survey","kind":kind,"n":n,"when":when,"utc":utc_hms(),
+    rec(
+        &json!({"type":"suspend_survey","kind":kind,"n":n,"when":when,"utc":utc_hms(),
         "procs":ime_procs,"proc_total":procs.len(),"windows":rows,"windows_total":wins.len(),
-        "default_ime_windows":default_ime_windows}));
+        "default_ime_windows":default_ime_windows}),
+    );
 }
 
 fn num(key: &str, default: u64) -> u64 {
