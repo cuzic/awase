@@ -417,6 +417,14 @@ jobs:
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab --msime'),
             cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900, checkargs='--require-cold --require-sync',
                 stress='--form=chromepage --mode=reopen --trials=6 --reopen-gap=600 --settle-read --layout=@REPO@/layout/nicola_keytop.yab'),
+            # 再現用の部品(未確定文字の独立読み取り、tools/e2e/ime_key_matrix/check_preedit.py、typing_stress --mode=preedit):
+            # かな 1〜2 打(確定前)で UIA GetActiveComposition / ImmGetCompositionString が「未確定あり」を読めるかを、入力先×IME×終端キーで測る可否表。
+            # BUG-184・171・168 の「未確定が消えた」判定に使う。観測のみ(期限までに読める手段が決まれば部品として固定する)。
+            *[cfg(f'sc-preedit-{form}-{ime_name}{suf}', 'observe', check='preedit', ime=ime, keymap=1, runs=1, wait=900 if form == 'chromepage' else 420, until='2026-11-04',
+                  stress=f'--form={form} --mode=preedit --trials=6 --settle-read --preedit-end={end} --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for form in ('chromepage', 'edit', 'rich', 'tsf')
+              for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
+              for suf, end in (('', 'enter'), ('-esc', 'esc')) if not (form in ('rich',) and ime_name == 'msime')],
             # sc-startup-msime-edit-off は ON キー後の最初の文字が 2/10 で EDIT に出なかった(real_ime_open=true、awase は Unicode 注入で送出済み)。
             # awase なしの対照で原因を切り分けるまで observe(合否に入れない)にする。
             *[cfg(f'sc-startup-{ime_name}-{app}-{state}', 'observe' if (ime_name, app, state) == ('msime', 'edit', 'off') else 'pass', check='startup', ime=ime, keymap=km, runs=2, wait=180,
@@ -675,12 +683,12 @@ jobs:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-'))
-                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -1087,6 +1095,8 @@ jobs:
             python tools\e2e\ime_key_matrix\check_drift_correction.py --json drift.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'reopen') {
             python tools\e2e\ime_key_matrix\check_reopen.py --json reopen.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'preedit') {
+            python tools\e2e\ime_key_matrix\check_preedit.py --json preedit.json dist\typing_stress.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'driftrecovery') {
             if ('${{ matrix.cfg.chrome }}' -ne '') {
               python tools\e2e\ime_key_matrix\check_drift_recovery_chrome.py dist\chrome_probe.log dist\awase.log | Tee-Object -FilePath result.txt
@@ -1203,6 +1213,7 @@ jobs:
             dist/typing_stress.log
             typing.json
             reopen.json
+            preedit.json
             keymatrix.json
             offrca.json
             env.txt
@@ -1452,6 +1463,25 @@ jobs:
                     "打鍵→vk-send=ON キー押下の打鍵から最初の [vk-send] まで(同時打鍵待ちと押下時間を含む、p50/最大 ms)、セッション確認=その [vk-send] から `per-VK 全 VK 確認済み → セッション確認` まで(ADR-203 D2 の定義、p50/最大 ms)。", "",
                     "| 構成 | 回 | 判定 | pass | fail | invalid | blind | require_cold | first_vk_cold | 打鍵→vk-send | セッション確認 |",
                     "|---|---|---|---|---|---|---|---|---|---|---|"] + reopen_rows
+          # 未確定文字の読み取り可否(sc-preedit-*、check_preedit.py): 手段ごとの right/wrong/unavailable を表にする。
+          pre_rows = []
+          for c in configs:
+            if c.get('check') != 'preedit':
+              continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/preedit.json"
+              if not os.path.exists(f):
+                pre_rows.append(f"| {c['name']} | {run} | 欠落 |" + " - |" * 7)
+                continue
+              j = json.load(open(f, encoding='utf-8'))
+              cn = j['counts']
+              rw = lambda m: f"{cn[m]['right']}/{cn[m]['wrong']}/{cn[m]['unavailable']}"
+              pre_rows.append(f"| {c['name']} | {run} | {j['verdict']} | {j.get('end')} | {j['methods']['uia']} ({rw('uia')}) | {j['methods']['imm']} ({rw('imm')}) | {j.get('n')} | {j.get('text_leak')} |")
+          if pre_rows:
+            out += ["", "## 未確定文字(preedit)の読み取り可否(sc-preedit-*、観測のみ)", "",
+                    "かな 1〜2 打(確定前)の phase で、手段が真値どおりに読めたか。括弧は 正解/誤り/読めず。READS=全部正解 / PARTIAL=誤りは無いが一部読めず / UNUSABLE=誤りがある、または正解が 0。"
+                    "uia=UIA GetActiveComposition(別プロセスでも可)、imm=自プロセスの窓の ImmGetCompositionString。text_leak=composing 中に本文へ出た件数(IMM32 窓では 0 のはず)。", "",
+                    "| 構成 | 回 | 判定 | 終端 | uia | imm | 試行 | text_leak |", "|---|---|---|---|---|---|---|---|"] + pre_rows
           # ADR-208 L3b(sc-keymatrix-*): result.txt の KEYMATRIX_CELL 行(1セル1行)を表にする。
           km_rows = []
           for c in configs:
