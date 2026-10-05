@@ -1,0 +1,23 @@
+name: vocab-suspend-verify
+
+# 相手プロセスの一時停止(typing_stress の suspend.rs)の実機検証。e2e-ime.yml を workflow_call で呼び、tsx-susp-*
+# (GJI の変換サーバを打鍵の途中で止めて BUG-171 を当てにいく構成+停止なしの対照)だけを回す。
+# 動く条件: ci/vocab-suspend-verify への push、手動起動。結果の読み方は tools/e2e/ime_key_matrix/suspend_report.py。
+on:
+  push:
+    branches: [ci/vocab-suspend-verify]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vocab-suspend-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suspend:
+    uses: ./.github/workflows/e2e-ime.yml
+    with:
+      only: 'tsx-susp-*'
