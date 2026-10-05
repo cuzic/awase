@@ -150,3 +150,11 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 **CI で作れない項目**: B3(a)(GJI の設定ダイアログで利用者が保存した CUSTOM 表に Hankaku/Zenkaku 行が残るか。ダイアログ操作は自動化できない。表の解釈自体は `sc-t1b-*` が見ている)、
 B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず作れない、PR #378)、D3 の物理 Ctrl 操作そのもの(SendInput は PHYSICAL_KEY_STATE を作れないため、CI は実 IME の直接 close でずれだけを代替)。
 単体テスト: `python3 -m unittest discover -s tools/e2e/ime_key_matrix -p 'test_*.py'`。
+
+## 結果の信頼性と observe 構成の運用(2026-10-05)
+
+- **run の汚れ**(`check_run_validity.py`、`cpu_sampler.ps1`): 物理キー(`[engine-input]` の extra=0x0)の混入と CPU 負荷(p95)を run ごとに記録し、summary に「run の汚れ」表を出す。
+  既定は情報のみ。リポジトリ変数 `E2E_VALIDITY_ENFORCE=1` で、汚れた run を INVALID(rc=3)にして期待表の判定から外す(強制する前に、extra=0 のままの注入が無いか件数を見ること)。
+- **Wilson 区間**(`stats_util.py`): 試行数が小さいので、typing 表に FAIL率の 95% 区間を併記する(0/10 でも上限は約 28%)。
+- **observe の期限**(`observe_audit.py`、`test_e2e_plan.py`): 新しい `expect=observe` には `until='YYYY-MM-DD'` が必須で、期限までに pass / fail(再現固定)/ 削除を決める。
+  既存分は `observe_grandfathered.txt` に載せ、縮める方向にだけ動かす。summary は有効回 2 回以上で全PASS/全FAIL の observe に昇格候補の目印を付ける。

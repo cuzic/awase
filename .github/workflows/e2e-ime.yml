@@ -91,13 +91,17 @@ jobs:
           # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)、
           # collect=判定せずログを回収し、「実行できなかった」(GRID-ABORT・完走マーカー無し・KEY 行0件)だけを rc=3=INVALID にする(cal-* 用。expect=observe と組み合わせる。解析はローカル)
           # expect: pass=全回PASS / fail=撤去や設定で壊れる(既知の問題を固定) / observe=結果を表に出すだけ(不安定・未確定の観測用)
+          # until: observe 構成の期限(YYYY-MM-DD)。observe は何も止めないので放置されやすい。新しい observe は until を必ず付け、期限までに
+          # pass(安定)/ fail(再現を固定、BUG と対応)/ 削除のどれかに決める。期限切れは test_e2e_plan.py が赤にする。
+          # 既存の observe は observe_grandfathered.txt に載せてあり(縮める方向にだけ動かす)、observe_audit.py が一覧する。
+          # summary は有効回が 2 回以上で全PASS なら『pass昇格候補』、全FAIL なら『fail固定候補』と出す。
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -932,6 +936,17 @@ jobs:
             echo "rc=3" > rc.txt
           fi
 
+      # run の汚れ(CPU 負荷)を後から判定するための記録。情報用で、失敗しても run には影響しない(check_run_validity.py)。
+      - name: CPU 負荷の記録を始める
+        if: steps.gate.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          try {
+            $p = Start-Process -FilePath pwsh -ArgumentList '-NoProfile','-File',"$PWD\tools\e2e\ime_key_matrix\cpu_sampler.ps1",'-Out',"$PWD\cpu.csv" -PassThru -WindowStyle Hidden
+            $p.Id | Out-File -FilePath cpu.pid -Encoding ascii
+          } catch { "cpu sampler 起動失敗: $_" }
+          exit 0
+
       - name: awase を起動し、スパイク --auto を実行して判定する
         id: run
         if: steps.gate.outputs.skip != 'true'
@@ -1151,6 +1166,32 @@ jobs:
           "inv_rc=$LASTEXITCODE" | Out-File -FilePath inv_rc.txt -Encoding ascii
           exit 0
 
+      # run の汚れ(物理キーの混入・CPU 負荷)を数える。BUG-147 は人の入力の混入を見落として誤認した前例。
+      # 既定は情報のみ(validity.json を summary が別の表で集計)。E2E_VALIDITY_ENFORCE=1 にすると、
+      # CONTAMINATED の run の rc を 3(INVALID)に書き換え、期待表の判定から外す。chrome_probe など一部の注入は
+      # extra=0 のままなので、強制する前に summary の「混入」列で件数を観察する。
+      - name: run の汚れ(物理キー混入・CPU 負荷)を数える
+        if: always() && steps.gate.outputs.skip != 'true' && matrix.cfg.awase != 'false' && matrix.cfg.probe == ''
+        shell: pwsh
+        env:
+          E2E_VALIDITY_ENFORCE: ${{ vars.E2E_VALIDITY_ENFORCE || '0' }}
+        run: |
+          $env:PYTHONUTF8 = '1'
+          if (Test-Path cpu.pid) { Stop-Process -Id ([int](Get-Content cpu.pid)) -Force -ErrorAction SilentlyContinue }
+          if (Test-Path dist\awase.log) {
+            $cpuArgs = @(); if (Test-Path cpu.csv) { $cpuArgs = @('--cpu', 'cpu.csv') }
+            python tools\e2e\ime_key_matrix\check_run_validity.py @cpuArgs --json validity.json dist\awase.log | Tee-Object -FilePath validity.txt
+            $vrc = $LASTEXITCODE
+            if ($vrc -eq 3 -and $env:E2E_VALIDITY_ENFORCE -eq '1' -and (Test-Path rc.txt)) {
+              $old = (Get-Content rc.txt -Raw).Trim()
+              if ($old -ne 'rc=3') {
+                "rc=3" | Out-File -FilePath rc.txt -Encoding ascii
+                "run が汚れているため INVALID(rc=3)に書き換え(元: $old)" | Tee-Object -FilePath validity.txt -Append
+              }
+            }
+          }
+          exit 0
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1174,6 +1215,9 @@ jobs:
             invariants.txt
             invariants.json
             inv_rc.txt
+            validity.txt
+            validity.json
+            cpu.csv
           retention-days: 7
 
   summary:
@@ -1181,6 +1225,10 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # Wilson 区間(stats_util.py)を使うため。
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/e2e/ime_key_matrix
       - uses: actions/download-artifact@v4
         with:
           pattern: result-*
@@ -1192,6 +1240,8 @@ jobs:
           GATE_MODE: ${{ inputs.gate_mode || '' }}
         run: |
           import json, os, re, sys
+          sys.path.insert(0, 'tools/e2e/ime_key_matrix')
+          from stats_util import format_rate
           configs = json.loads(os.environ['CONFIGS'])
           rows, bad = [], False
           for c in configs:
@@ -1213,12 +1263,18 @@ jobs:
             elif valid == 0:
               verdict = '判定不能'
             elif c['expect'] == 'observe':
-              verdict = '観測'
+              # 観測を放置しないための目印(合否には影響しない)。有効回が 2 回以上で結果が一方に揃っていれば、次の一手を示す。
+              if valid >= 2 and n['fail'] == 0:
+                verdict = '観測(全PASS=pass昇格候補)'
+              elif valid >= 2 and n['pass_'] == 0:
+                verdict = '観測(全FAIL=再現安定・fail固定候補)'
+              else:
+                verdict = '観測'
             elif c['expect'] == 'pass':
               verdict = 'OK' if n['fail'] == 0 else 'NG(期待PASSだがFAIL有り)'
             else:
               verdict = 'OK' if n['fail'] > 0 else 'NG(期待FAILだが全PASS=撤去しても壊れない)'
-            bad |= verdict not in ('OK', '観測', '観測(判定不能)')
+            bad |= not (verdict == 'OK' or verdict.startswith('観測'))
             rows.append(f"| {c['name']} | {c['expect']} | {c.get('check','expect')} | {n['pass_']} | {n['fail']} | {n['invalid']} | {n['missing']} | {verdict} |")
           out = ["## e2e-ime 撤去実験", "", "| 構成 | 期待 | 判定方式 | PASS | FAIL | INVALID | 欠落 | 判定 |", "|---|---|---|---|---|---|---|---|"] + rows
           # 不変条件(check_invariants.py、上限は tools/e2e/ime_key_matrix/invariant_limits.json)。期待表とは別に集計する。
@@ -1245,6 +1301,30 @@ jobs:
                     "上限と対応するBUGは tools/e2e/ime_key_matrix/invariant_limits.json。各回の詳細は result-*/invariants.txt。", "",
                     "| 構成 | 回 | 判定 | I1 起動直後の意図なしdrift | I1 全体 | I2 Unwarranted | I3 自己注入IMEモードキー | I3 would_have_blocked | I5 StaleConfirm(情報) | I5 最初の文字のESC(情報) | I5 途中の語のESC(BUG-171、情報) | 備考 |",
                     "|---|---|---|---|---|---|---|---|---|---|---|---|"] + inv_rows
+          # run の汚れ(check_run_validity.py): 物理キー(extra=0)の混入と CPU 負荷。既定は情報のみ(E2E_VALIDITY_ENFORCE=1 の run だけ rc を書き換え済み)。
+          val_rows, val_dirty = [], 0
+          for c in configs:
+            if c.get('awase') == 'false' or c.get('probe'):
+              continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/validity.json"
+              if not os.path.exists(f):
+                continue
+              j = json.load(open(f, encoding='utf-8'))
+              if j['verdict'] != 'CLEAN':
+                val_dirty += 1
+              fmt = lambda v: '-' if v is None else f'{v:.0f}'
+              val_rows.append(f"| {c['name']} | {run} | {j['verdict']} | {j['foreign_down']} | {fmt(j.get('cpu_p95'))} | {fmt(j.get('cpu_max'))} | {'; '.join(j.get('reasons', []))} |")
+          if val_rows:
+            # 汚れた run だけ先頭に出す(全件は長いので、汚れが無ければ件数だけ)。
+            dirty_rows = [r for r in val_rows if '| CONTAMINATED |' in r]
+            out += ["", f"## run の汚れ(物理キー混入・CPU 負荷。{len(val_rows)} 件中 {val_dirty} 件が汚れ、情報のみ)", "",
+                    "foreign=awase.log の `[engine-input]` で extra=0x0 の KeyDown 件数(人の入力、またはマーカー無しの注入。BUG-147 の教訓)。CPU=run 中の使用率 p95/最大(%)。"
+                    "強制(汚れた run を INVALID にする)はリポジトリ変数 E2E_VALIDITY_ENFORCE=1。", ""]
+            if dirty_rows:
+              out += ["| 構成 | 回 | 判定 | foreign KeyDown | CPU p95 | CPU 最大 | 理由 |", "|---|---|---|---|---|---|---|"] + dirty_rows
+            else:
+              out += ["汚れた run はなし。"]
           # 高速打鍵ストレス(ts-*): result.txt 末尾の TYPING_STRESS 行を表にする(崩れ方の内訳つき)。
           ts_rows = []
           for c in configs:
@@ -1259,14 +1339,17 @@ jobs:
                     line = l
               kv = dict(re.findall(r'(\w+)=(\S+)', line))
               if not kv:
-                ts_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - | - | - | - |")
+                ts_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - | - | - | - | - |")
                 continue
-              ts_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('fail')} | {kv.get('loss')} | {kv.get('extra')} | {kv.get('reorder')} | {kv.get('literal')} | {kv.get('substitute')} | {kv.get('inject_late_max_us')} | {kv.get('hook_seen_min_ratio')} |")
+              try: fail_rate = format_rate(int(kv.get('fail')), int(kv.get('trials')))
+              except (TypeError, ValueError): fail_rate = '-'
+              ts_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('fail')} | {fail_rate} | {kv.get('loss')} | {kv.get('extra')} | {kv.get('reorder')} | {kv.get('literal')} | {kv.get('substitute')} | {kv.get('inject_late_max_us')} | {kv.get('hook_seen_min_ratio')} |")
           if ts_rows:
             out += ["", "## 高速打鍵ストレス(ts-*・tsx-*、判定は入力先のテキストと期待文字列の比較。検出のみで合否には含めない)", "",
                     "loss=消失 / extra=余計 / reorder=入れ替わり / literal=ローマ字リテラル化 / substitute=別のかなに置換。注入遅れmax=予定時刻に対する実注入の最大遅れ(us)、フック到着比=自プロセスのLLフックに届いた数/送信数の最小(1.000で落ち無し)。", "",
-                    "| 構成 | 回 | 判定 | 試行 | FAIL試行 | 消失 | 余計 | 入れ替わり | リテラル化 | 置換 | 注入遅れmax(us) | フック到着比 |",
-                    "|---|---|---|---|---|---|---|---|---|---|---|---|"] + ts_rows
+                    "FAIL率=FAIL試行/試行の Wilson 95% 区間。n が小さいので『0 件』でも上限は 0 にならない(例 0/10 は 0〜28%)。", "",
+                    "| 構成 | 回 | 判定 | 試行 | FAIL試行 | FAIL率(95%区間) | 消失 | 余計 | 入れ替わり | リテラル化 | 置換 | 注入遅れmax(us) | フック到着比 |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|"] + ts_rows
           startup_rows = []
           for c in configs:
             if c.get('check') != 'startup': continue
