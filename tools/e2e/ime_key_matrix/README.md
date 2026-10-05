@@ -158,3 +158,19 @@ B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず
 - **Wilson 区間**(`stats_util.py`): 試行数が小さいので、typing 表に FAIL率の 95% 区間を併記する(0/10 でも上限は約 28%)。
 - **observe の期限**(`observe_audit.py`、`test_e2e_plan.py`): 新しい `expect=observe` には `until='YYYY-MM-DD'` が必須で、期限までに pass / fail(再現固定)/ 削除を決める。
   既存分は `observe_grandfathered.txt` に載せ、縮める方向にだけ動かす。summary は有効回 2 回以上で全PASS/全FAIL の observe に昇格候補の目印を付ける。
+
+## 未確定文字(preedit)の読み取り(`typing_stress --mode=preedit`、`check_preedit.py`)
+
+最終テキストとは別に「今、未確定文字があるか」を読む部品。`sc-preedit-*`(observe、既定・`sc-*` からは除外)を `preedit-verify.yml`(ci/preedit-verify への push)で回す。
+読み取り可否(run 37276470334、各 6 試行、GJI/MS-IME、終端=Enter。真値は「打鍵前 なし/かな打鍵中 あり/Enter 後 なし」):
+
+| 入力先 | uia(`GetActiveComposition`) | imm(`ImmGetCompositionString`) |
+|---|---|---|
+| 自前 `tsf`・`rich`(TSF) | 読める(GJI・MS-IME とも全 phase 正解) | 読める(同左) |
+| 自前 `edit`(IMM32) | 不可(`nopattern`) | 読める(GJI・MS-IME とも全 phase 正解) |
+| 実 Chrome(`chromepage`) | 打鍵前=none・打鍵中=composing は正解。**Enter 確定後も範囲を返し続ける**(1.5 秒後も同じ)ので「確定済み」と区別できない。ESC で取り消した後は none(GJI) | 不可(別プロセス) |
+
+注意: TSF 窓では `text`(`WM_GETTEXT`)にも未確定文字が出る(`text_leak`)ので、本文の読み戻しでは未確定と確定を区別できない。
+実 Chrome は未確定が無いとき空や U+FFFC でなく本文と無関係な文字列(`st` 等)を返すので、範囲が本文に含まれないときだけ composing とする。
+使いどころ: 「未確定が消えた」判定(BUG-184/171/168)は、本来あるはずの未確定に対して読み値が none かつ本文も空、で見る(Chrome の確定直後の誤 composing とは別の状況)。
+MS-IME は ESC 1 回で未確定を取り消さなかった(自前 edit/tsf・実 Chrome とも)ので、esc の後は真値を決めず観測のみ。TSF の `ITfContext` 直接読みは `ITfThreadMgr` がスレッド単位のため未実装。
