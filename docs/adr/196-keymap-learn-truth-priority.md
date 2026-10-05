@@ -11,7 +11,7 @@ summary: |-
   という2つの機構により、内蔵表が事実上の真実であり続ける。加えて(3)段階8の陳腐化検出は`config1.db`の
   中身の変化しか見ないため、GJI/Mozc自体のアップデートで内部挙動が変わっても検知できない。
   本ADRはこの3点を、ADR-195の段階4・6・8に対する決定の修正として定める。round1のopus-adversarial-consult
-  （`196-opus-review-round1.md`）で、削除対象の突き合わせがADR-195 round3 Blocker B-1（読めない窓での
+  （`review/196-opus-review-round1.md`）で、削除対象の突き合わせがADR-195 round3 Blocker B-1（読めない窓での
   誤予測の実害防止）の回答部品だったこと、自己検証は学習パイプライン自体の系統的な失敗（awaseが学習を
   横から操作するA'の崩れ）を原理的に検出できないこと、版フィンガープリント不一致での即時失効は
   カスタムキーマップ・Microsoft IME本体のユーザーを定期的に「予測なし」へ突き落とすことが指摘された。
@@ -215,11 +215,11 @@ ADR-195 round3 Blocker B-1は「読める窓でしか測れない自己検証だ
 - [ADR-191](191-ime-is-source-of-truth-observe-not-write.md)（予測表・学習の位置づけの前提）
 - [ADR-192](192-state-dependent-mode-key-warning-and-guided-override.md)（状態依存キーの検出。非目的S2で指摘した予測器との不整合は、本ADRではなくADR-192側の後続課題とする）
 - [ADR-186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md)（決定(c)、ATOKプリセット選択時に`custom_keymap_table`をGJIが無視するという実機知見。決定1cの既知構成判定で参照）
-- `docs/adr/196-opus-review-round1.md`（opus-adversarial-consult round1の指摘全文）
-- `docs/adr/196-opus-review-round2.md`（opus-adversarial-consult round2の指摘全文。A'自己診断の原理的欠陥〈NB1〉を検出）
-- `docs/adr/196-opus-review-round3.md`（opus-adversarial-consult round3の指摘全文。Blocker0件、設計の骨格が収束したと判定）
-- `docs/adr/196-opus-review-round4.md`（opus-adversarial-consult round4の指摘全文。round3の箇条書き挿入による内部参照番号ずれ3箇所を検出、Blocker0件）
-- `docs/adr/196-opus-review-round5.md`（opus-adversarial-consult round5の指摘全文。**最終判定: Blocker0件・Must-fix0件、実装着手可**）
+- `docs/adr/review/196-opus-review-round1.md`（opus-adversarial-consult round1の指摘全文）
+- `docs/adr/review/196-opus-review-round2.md`（opus-adversarial-consult round2の指摘全文。A'自己診断の原理的欠陥〈NB1〉を検出）
+- `docs/adr/review/196-opus-review-round3.md`（opus-adversarial-consult round3の指摘全文。Blocker0件、設計の骨格が収束したと判定）
+- `docs/adr/review/196-opus-review-round4.md`（opus-adversarial-consult round4の指摘全文。round3の箇条書き挿入による内部参照番号ずれ3箇所を検出、Blocker0件）
+- `docs/adr/review/196-opus-review-round5.md`（opus-adversarial-consult round5の指摘全文。**最終判定: Blocker0件・Must-fix0件、実装着手可**）
 
 
 > 注(2026-09-30、ADR-209): 読めない窓（TSF）の、閉状態×変換のセルだけは窓別の規則を学習表より先に引く（学習の入力先が素の EDIT で窓の種類を表せないため）。本ADRの「学習結果を優先」の例外。

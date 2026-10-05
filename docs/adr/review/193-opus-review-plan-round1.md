@@ -1,3 +1,12 @@
+---
+id: ADR-193-companion-193-opus-review-plan-round1
+title: |-
+  ADR-193 実装計画 敵対的レビュー round1
+type: companion-doc
+related_adr:
+  - "ADR-193"
+---
+
 # ADR-193 実装計画 敵対的レビュー round1
 
 対象: `docs/adr/193-implementation-tasks.md`（commit `837cb4f2`）
@@ -341,7 +350,7 @@ IMM プローブされない、`class_names.rs:19-35`」としているが、実
 
 - **frontmatter**: `id: ADR-193-companion-193-implementation-tasks` / `type: companion-doc` /
   `related_adr` は、`163-implementation-tasks.md`・`176-implementation-tasks.md` と同形。✓
-- **index.md**: `:357` に補助資料行あり（`| [193-implementation-tasks.md](...) | ADR-193 実装タスクリスト（Chrome idle-sweep E2E） | [193](...) |`）。✓
+- **index.md**: `:357` に補助資料行あり（`| [193-implementation-tasks.md](../...) | ADR-193 実装タスクリスト（Chrome idle-sweep E2E） | [193](../...) |`）。✓
 - **`fix-requires-evidence`**: 変更対象が `examples/` / `tools/` / `.github/workflows/` / docs のみで
   再発ファミリー（`src/` の warmup/focus/belief/conv/キー選択）に触れない、という整理は正しい。
   checker を Python 単体テスト + fixture で担保するのも趣旨に沿う。✓

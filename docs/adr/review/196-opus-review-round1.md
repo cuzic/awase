@@ -1,3 +1,12 @@
+---
+id: ADR-196-companion-196-opus-review-round1
+title: |-
+  ADR-196 opus-adversarial-consult round1
+type: companion-doc
+related_adr:
+  - "ADR-196"
+---
+
 # ADR-196 opus-adversarial-consult round1
 
 対象: `docs/adr/196-keymap-learn-truth-priority.md`（草案round0、起票直後）

@@ -1,3 +1,12 @@
+---
+id: ADR-184-companion-184-opus-review-round1
+title: |-
+  ADR-184 opus-adversarial-consult round1
+type: companion-doc
+related_adr:
+  - "ADR-184"
+---
+
 # ADR-184 opus-adversarial-consult round1
 
 対象: `docs/adr/184-gji-atok-muhenkan-toggle-awase-owned-eisu-hiragana.md`

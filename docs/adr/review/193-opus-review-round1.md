@@ -1,3 +1,12 @@
+---
+id: ADR-193-companion-193-opus-review-round1
+title: |-
+  ADR-193 敵対的レビュー round1
+type: companion-doc
+related_adr:
+  - "ADR-193"
+---
+
 # ADR-193 敵対的レビュー round1
 
 対象: `docs/adr/193-tsf-native-and-chromium-e2e-targets.md`（commit `b4137af7`）

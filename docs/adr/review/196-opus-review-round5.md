@@ -1,3 +1,12 @@
+---
+id: ADR-196-companion-196-opus-review-round5
+title: |-
+  ADR-196 opus-adversarial-consult round5
+type: companion-doc
+related_adr:
+  - "ADR-196"
+---
+
 # ADR-196 opus-adversarial-consult round5
 
 対象: `docs/adr/196-keymap-learn-truth-priority.md` rev4（HEAD `4b816bfb`）

@@ -22,7 +22,7 @@ related_adr:
 
 # ADR-190: MS-IMEのImmCross失敗後は冪等なVK_IME_ON/OFFへフォールバックする
 
-関連: [BUG-152](../known-bugs/BUG-152.md)、レビュー: [round1](190-opus-review-round1.md)、[round2](190-opus-review-round2.md)、[round3](190-opus-review-round3.md)(Blocker無し)。
+関連: [BUG-152](../known-bugs/BUG-152.md)、レビュー: [round1](review/190-opus-review-round1.md)、[round2](review/190-opus-review-round2.md)、[round3](review/190-opus-review-round3.md)(Blocker無し)。
 
 ## 背景と症状
 

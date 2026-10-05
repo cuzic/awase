@@ -47,7 +47,7 @@ status: |-
   （`read_legacy_compat_mode_enabled()`、`cargo test --lib`776件・clippy・architecture_guard/
   layer_boundary_guard113件いずれも緑）で、この撤回と無関係に独立して有効。
   `msime_legacy_keymap.rs`のmodule docは[BUG-161](../known-bugs/BUG-161.md)として訂正済み。
-  opus-adversarial-consult round1（`197-opus-review-round1.md`）のM1〜M5・S1〜S7は撤回した
+  opus-adversarial-consult round1（`review/197-opus-review-round1.md`）のM1〜M5・S1〜S7は撤回した
   決定1〜3が対象だったため未反映のままクローズする。develop未マージ、docs/known-bugs/BUG-161.md
   の新規作成が残作業。
 related_adr:
@@ -323,7 +323,7 @@ f03c-411b-9ce2-aa23e1171e36}\NoTsf3Override2`、dragonflyg4実機で`1`＝互換
 
 ### 決定1の前提は実機で否定された（2026-09-23 CI実機検証4パターン＋ユーザー本人の物理キー確認）
 
-round1レビューB1（`197-opus-review-round1.md`）は、ADR-148の実機確認が「変換キーを押すと
+round1レビューB1（`review/197-opus-review-round1.md`）は、ADR-148の実機確認が「変換キーを押すと
 IME ONになった」ことしか記録しておらず、**それは既定のNATURAL挙動（変換キーは元々OFF→ONに
 働く）と区別できない**、無変換キー（唯一区別できるはずのケース）は一度も実機で確認されて
 いない、と指摘した。この裏取りのため、GitHub Actions CI（windows-latest、`ci/e2e-ime.yml`に

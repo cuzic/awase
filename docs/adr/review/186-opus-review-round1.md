@@ -1,3 +1,12 @@
+---
+id: ADR-186-companion-186-opus-review-round1
+title: |-
+  ADR-186 敵対的レビュー round1
+type: companion-doc
+related_adr:
+  - "ADR-186"
+---
+
 # ADR-186 敵対的レビュー round1
 
 対象: `docs/adr/186-gji-atok-mode-key-measured-matrix-and-belief-follow.md`（worktree `spike-ime-key-matrix`、commit `48476670`）

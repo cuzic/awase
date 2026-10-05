@@ -1,3 +1,12 @@
+---
+id: ADR-190-companion-190-opus-review-round1
+title: |-
+  ADR-190 opus 敵対的レビュー round1
+type: companion-doc
+related_adr:
+  - "ADR-190"
+---
+
 # ADR-190 opus 敵対的レビュー round1
 
 対象: `docs/adr/190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md`（worktree

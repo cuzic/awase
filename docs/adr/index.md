@@ -384,6 +384,8 @@ ADR-032 で IME 状態モデルが reducer 化されたあと、運用で見つ�
 
 ## 補助資料（番号付きADR系列ではないもの）
 
+> Opusレビュー記録は `review/` サブディレクトリに置く（2026-10-05、番号重複の解消）。
+
 番号付きADR本体ではないが `docs/adr/` 配下にあり、frontmatterを持つファイル:
 
 | 資料 | 種別 | 関連ADR |
@@ -397,8 +399,16 @@ ADR-032 で IME 状態モデルが reducer 化されたあと、運用で見つ�
 | [193-implementation-tasks.md](193-implementation-tasks.md) | ADR-193 実装タスクリスト（Chrome idle-sweep E2E、保留・参考） | [193](193-richedit-superclass-tsf-native-e2e-target.md) |
 | [191-calibration-experiments.md](191-calibration-experiments.md) | ADR-191 較正・予測の実験の経緯と実測結果（格子・通知購読・CI高速化・文献調査・巡回シミュレータ） | [191](191-ime-is-source-of-truth-observe-not-write.md) |
 | [191-gji-state-scope-spec.md](191-gji-state-scope-spec.md) | ADR-191 GJI/MS-IME の開閉・変換モードの保持範囲（仕様調査：Mozc読解とCI実測） | [191](191-ime-is-source-of-truth-observe-not-write.md) |
-| [178-opus-review-round1.md](178-opus-review-round1.md)〜[round12.md](178-opus-review-round12.md) | ADR-178 v1〜v13（バックアップ+復元方式、破棄済み）敵対的レビュー記録（Opus round1〜12） | [178](178-msi-uninstall-preserve-userdata.md) |
-| [178-opus-review-v14.md](178-opus-review-v14.md) | ADR-178 v14（Permanent+自己修復方式、現行）敵対的レビュー記録 | [178](178-msi-uninstall-preserve-userdata.md) |
+| [review/178-opus-review-round1.md](review/178-opus-review-round1.md)〜[round12.md](review/178-opus-review-round12.md) | ADR-178 v1〜v13（バックアップ+復元方式、破棄済み）敵対的レビュー記録（Opus round1〜12） | [178](178-msi-uninstall-preserve-userdata.md) |
+| [review/178-opus-review-v14.md](review/178-opus-review-v14.md) | ADR-178 v14（Permanent+自己修復方式、現行）敵対的レビュー記録 | [178](178-msi-uninstall-preserve-userdata.md) |
+| [review/183-opus-review-round1.md](review/183-opus-review-round1.md) | ADR-183 Opus敵対的レビュー記録（round1） | [183](183-vk-kana-physical-delivery-passthrough.md) |
+| [review/184-opus-review-round1.md](review/184-opus-review-round1.md)〜[round6.md](review/184-opus-review-round6.md) | ADR-184 Opus敵対的レビュー記録（round1〜6） | [184](184-gji-atok-muhenkan-toggle-awase-owned-eisu-hiragana.md) |
+| [review/186-opus-review-round1.md](review/186-opus-review-round1.md)〜[round2.md](review/186-opus-review-round2.md) | ADR-186 Opus敵対的レビュー記録（round1〜2） | [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) |
+| [review/187-opus-review-round1.md](review/187-opus-review-round1.md)〜[round2.md](review/187-opus-review-round2.md) | ADR-187 Opus敵対的レビュー記録（round1〜2） | [187](187-atok-passthrough-mode-key-observed-belief-follow.md) |
+| [review/190-opus-review-round1.md](review/190-opus-review-round1.md)〜[round3.md](review/190-opus-review-round3.md) | ADR-190 Opus敵対的レビュー記録（round1〜3） | [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) |
+| [review/193-opus-review-round1.md](review/193-opus-review-round1.md)〜[round3.md](review/193-opus-review-round3.md)、[plan-round1.md](review/193-opus-review-plan-round1.md)〜[plan-round5.md](review/193-opus-review-plan-round5.md) | ADR-193 Opus敵対的レビュー記録（本体3ラウンド＋計画5ラウンド） | [193](193-richedit-superclass-tsf-native-e2e-target.md) |
+| [review/196-opus-review-round1.md](review/196-opus-review-round1.md)〜[round5.md](review/196-opus-review-round5.md) | ADR-196 Opus敵対的レビュー記録（round1〜5） | [196](196-keymap-learn-truth-priority.md) |
+| [review/197-opus-review-round1.md](review/197-opus-review-round1.md) | ADR-197 Opus敵対的レビュー記録（round1） | [197](197-msime-legacy-custom-keymap-runtime-warning.md) |
 
 ---
 

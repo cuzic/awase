@@ -1,3 +1,12 @@
+---
+id: ADR-193-companion-193-opus-review-round3
+title: |-
+  ADR-193 敵対的レビュー round3
+type: companion-doc
+related_adr:
+  - "ADR-193"
+---
+
 # ADR-193 敵対的レビュー round3
 
 対象: `docs/adr/193-extend-existing-e2e-harness-for-chromium-coldstart.md`（commit `5502e223`）

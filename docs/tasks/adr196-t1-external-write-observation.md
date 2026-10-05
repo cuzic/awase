@@ -129,6 +129,6 @@ round2で判明し撤回された。本タスクは、その代替である「�
 ## 関連
 
 - [ADR-196](../adr/196-keymap-learn-truth-priority.md) 決定1b
-- [ADR-196 opus-review-round2](../adr/196-opus-review-round2.md)（A'自己診断の原理的欠陥）
+- [ADR-196 opus-review-round2](../adr/review/196-opus-review-round2.md)（A'自己診断の原理的欠陥）
 - [ADR195-T1](adr195-t1-independent-learning-process.md)
 - [ADR195-T7](adr195-t7-safety-measures.md)（ユーザー入力の混入検出との関係）

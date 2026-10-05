@@ -1,3 +1,12 @@
+---
+id: ADR-190-companion-190-opus-review-round3
+title: |-
+  ADR-190 opus 敵対的レビュー round3（v4 = `d447c377` 対象）
+type: companion-doc
+related_adr:
+  - "ADR-190"
+---
+
 # ADR-190 opus 敵対的レビュー round3（v4 = `d447c377` 対象）
 
 worktree `/home/cuzic/rust-nicola-worktrees/ci-e2e-scenarios`、HEAD `d447c377` の実コードで

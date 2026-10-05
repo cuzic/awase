@@ -1,3 +1,12 @@
+---
+id: ADR-197-companion-197-opus-review-round1
+title: |-
+  ADR-197 敵対的レビュー round1（Opus、2026-09-23）
+type: companion-doc
+related_adr:
+  - "ADR-197"
+---
+
 # ADR-197 敵対的レビュー round1（Opus、2026-09-23）
 
 対象: `docs/adr/197-msime-legacy-custom-keymap-runtime-warning.md`（草案、commit `8f761b17`）

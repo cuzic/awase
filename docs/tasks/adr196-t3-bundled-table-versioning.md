@@ -78,5 +78,5 @@
 ## 関連
 
 - [ADR-196](../adr/196-keymap-learn-truth-priority.md) 決定1d
-- [ADR-196 opus-review-round2](../adr/196-opus-review-round2.md) S-a（比較方法の指摘）
+- [ADR-196 opus-review-round2](../adr/review/196-opus-review-round2.md) S-a（比較方法の指摘）
 - [ADR196-T5](adr196-t5-revalidation-not-invalidation.md)（版取得の共有関数）

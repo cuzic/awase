@@ -1,3 +1,12 @@
+---
+id: ADR-187-companion-187-opus-review-round1
+title: |-
+  ADR-187 ドラフトv1 opusレビュー round1
+type: companion-doc
+related_adr:
+  - "ADR-187"
+---
+
 # ADR-187 ドラフトv1 opusレビュー round1
 
 対象: `/home/cuzic/rust-nicola-worktrees/adr187-atok-passthrough-follow/docs/adr/187-atok-passthrough-mode-key-observed-belief-follow.md`

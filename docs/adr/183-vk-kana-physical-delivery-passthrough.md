@@ -24,7 +24,7 @@ summary: |-
   opus-adversarial-consultで確認するためのドラフト。
 status: |-
   **撤回済み（2026-09-19、実機検証により前提誤りと確定）**。opus-adversarial-consult
-  round1（`docs/adr/183-opus-review-round1.md`）が「対象VKが本当にVK_KANAか
+  round1（`docs/adr/review/183-opus-review-round1.md`）が「対象VKが本当にVK_KANAか
   未検証」「症状はconv軸(charset軸)の問題でADR-137 M-6/BUG-116と同一の
   可能性が高い」と指摘（M2/M1）。実機（Windows Terminal×GJI×TsfNative、
   RUST_LOG=debug）でIME ON・半角英数からかなキーを押す操作を4回検証した

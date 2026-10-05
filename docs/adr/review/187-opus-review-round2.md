@@ -1,3 +1,12 @@
+---
+id: ADR-187-companion-187-opus-review-round2
+title: |-
+  ADR-187 v2 opusレビュー round2
+type: companion-doc
+related_adr:
+  - "ADR-187"
+---
+
 # ADR-187 v2 opusレビュー round2
 
 対象: `docs/adr/187-atok-passthrough-mode-key-observed-belief-follow.md`（worktree `adr187-atok-passthrough-follow`）

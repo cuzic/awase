@@ -1,3 +1,12 @@
+---
+id: ADR-196-companion-196-opus-review-round2
+title: |-
+  ADR-196 opus-adversarial-consult round2
+type: companion-doc
+related_adr:
+  - "ADR-196"
+---
+
 # ADR-196 opus-adversarial-consult round2
 
 対象: `docs/adr/196-keymap-learn-truth-priority.md` rev1（HEAD `7feb17e9`）と、同コミットでのADR-195への置換マーカー追記

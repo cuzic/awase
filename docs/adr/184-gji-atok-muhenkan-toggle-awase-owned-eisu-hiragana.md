@@ -150,7 +150,7 @@ opus-adversarial-consult round1〜6で、ATOK判定の情報源混在（CUSTOM
 MS-IMEレジストリ経由の別の書き手がいること、ADR-176較正ウィザードの
 永続化スキーマへの影響、`resolve_pending_thumb_as_single`の戻り値型
 拡張（`ModeKeyRequest`）等、多数の理論的な論点が発見された
-（`docs/adr/184-opus-review-round1.md`〜`round6.md`）。これらは実在の
+（`docs/adr/review/184-opus-review-round1.md`〜`round6.md`）。これらは実在の
 懸念だが、**実機で問題が確認されるまでは対応しない**——先回りして
 設計を複雑にすることが、このリポジトリで繰り返されてきた「対症療法の
 積み重ね」パターンそのものだとユーザーが指摘したため（ADR-179（旧178）が

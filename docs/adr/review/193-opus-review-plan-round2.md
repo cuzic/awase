@@ -1,3 +1,12 @@
+---
+id: ADR-193-companion-193-opus-review-plan-round2
+title: |-
+  ADR-193 実装計画 敵対的レビュー round2
+type: companion-doc
+related_adr:
+  - "ADR-193"
+---
+
 # ADR-193 実装計画 敵対的レビュー round2
 
 対象: `docs/adr/193-implementation-tasks.md`（v2、commit `ef4ea1df`）、

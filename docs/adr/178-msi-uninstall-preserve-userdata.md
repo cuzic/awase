@@ -8,7 +8,7 @@ status: |-
   **起草中（v14、全面差し替え）。v1〜v13（バックアップ+復元方式、12ラウンド・
   Blocker20件）を破棄し、round1が当初提案していた方向へ回帰した、
   よりシンプルな設計に作り直した。実装・opus-adversarial-consultレビュー
-  （[178-opus-review-v14.md](178-opus-review-v14.md)、総合判定「実装
+  （[review/178-opus-review-v14.md](review/178-opus-review-v14.md)、総合判定「実装
   やり直し不要」）・Blocker2件/Major推奨5件/フォローアップ3件の反映・
   実機再検証（dragonflyg4、awase-1.20.9-x64.msi、基本動作の回帰無し
   ＋Blocker B2修正を実機確認）まですべて完了。残るのはMinor6件（任意）
@@ -26,7 +26,7 @@ related_adr:
 （dragonflyg4）は初回4項目に加え、opusレビュー反映後（B1/B2/M1/M2/M4/M6/M7）
 の最終再検証まで完了（awase-1.20.9-x64.msi、基本動作の回帰無し・Blocker
 B2修正を実機確認）。opus-adversarial-consultレビュー完了
-（[178-opus-review-v14.md](178-opus-review-v14.md)）、Blocker2件・
+（[review/178-opus-review-v14.md](review/178-opus-review-v14.md)）、Blocker2件・
 Major推奨5件・フォローアップ3件（M4/M6/M7）すべて反映済み。残るのは
 Minor6件（任意）とドキュメント更新のみ（未解決事項参照）。**
 
@@ -39,7 +39,7 @@ opus round1でBlocker 2件により却下→v2〜v13（「バックアップ+復
 
 v13時点でユーザーから「設計が長すぎないか、もっと根本的にシンプルな、業界標準の
 やり方はないのか」という指摘があった。round1のレビュー記録
-（[178-opus-review-round1.md](178-opus-review-round1.md) M5）を読み直すと、
+（[review/178-opus-review-round1.md](review/178-opus-review-round1.md) M5）を読み直すと、
 **round1自身が「選択肢D: ユーザーデータをMSIの管理下から完全に外し、アプリが
 自己生成する」という、v2以降とは異なるもっとシンプルな方向を既に提案していた**
 ことが分かった。この選択肢Dはv2以降のどのラウンドでも採用されなかった
@@ -94,7 +94,7 @@ MSIユーザーが実行すると、`config.toml`の全設定と配列編集タ�
 
 v1で検討した4つの選択肢（A: `Permanent="yes"`単独、B: カスタムアクションで
 退避→復元、C: 現状維持、D: MSI管理から完全除外）の詳細な比較検討は
-[178-opus-review-round1.md](178-opus-review-round1.md)に記録されている。
+[review/178-opus-review-round1.md](review/178-opus-review-round1.md)に記録されている。
 v14はA（B1/B2対応済み）とD（の一部、自己修復ロジック）を組み合わせた形になる。
 
 ## 実機検証結果（B1前提、2026-09-16、dragonflyg4、1.20.6 MSI。バックアップ+
@@ -158,7 +158,7 @@ MSI管理外のファイル・ディレクトリがアンインストールで�
 全体（KeyPathであるレジストリ値`HKCU\Software\awase\{ConfigFile,NicolaYab,...}`
 も含む）に効くため、ユーザーが手動で`%LOCALAPPDATA%\awase`を削除した後に
 再インストールすると、レジストリのKeyPathが残っている限り`NeverOverwrite`が
-働き、ファイルが再配置されない（詳細は[178-opus-review-round1.md](178-opus-review-round1.md)
+働き、ファイルが再配置されない（詳細は[review/178-opus-review-round1.md](review/178-opus-review-round1.md)
 B1参照）。**この実害は決定2の自己修復ロジックが無効化する**——MSIがファイルを
 配置しなくても、アプリが起動時に生成するため、「アプリが起動しない」という
 round1 B1の最悪のシナリオは発生しない。
@@ -390,7 +390,7 @@ awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
 ## 未解決事項 / 次のアクション
 
 1. opus-adversarial-consultによる新方針（v14）のレビュー: **完了**
-   （[178-opus-review-v14.md](178-opus-review-v14.md)）。総合判定は
+   （[review/178-opus-review-v14.md](review/178-opus-review-v14.md)）。総合判定は
    「実装をやり直す必要はない、設計の骨格は正しい」。Blocker2件（B1:
    自己修復配線を守るテストが無かった、B2: `default_config()`の
    `layouts_dir = "config"`が`.yab`の誤生成先に使われうる）を検出、
@@ -454,6 +454,6 @@ awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
 6. `purge.ps1`同梱: opusレビューQ3の判断により**不要**。代わりに
    `scripts/uninstall.ps1 -Purge`へ`Remove-Item HKCU:\Software\awase
    -Recurse`相当の1行を追加する方が低コストで同じ効果（M7、未実施）。
-7. v2〜v13のレビュー記録（`178-opus-review-round2.md`〜`round13.md`）は
+7. v2〜v13のレビュー記録（`review/178-opus-review-round2.md`〜`round13.md`）は
    歴史的記録として残す（削除しない）。index.mdの記述は「v1〜v13の経緯」を
    反映するよう更新する。

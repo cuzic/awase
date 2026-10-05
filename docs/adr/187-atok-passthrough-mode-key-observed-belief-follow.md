@@ -24,7 +24,7 @@ related_adr:
 
 # ADR-187: ATOKパススルーでの無変換/変換に対するEngine追随(follow方式)
 
-レビュー: [round1](187-opus-review-round1.md)、[round2](187-opus-review-round2.md)(観測型の設計の穴の洗い出し。本ADRの実装はこの指摘を反映)。
+レビュー: [round1](review/187-opus-review-round1.md)、[round2](review/187-opus-review-round2.md)(観測型の設計の穴の洗い出し。本ADRの実装はこの指摘を反映)。
 
 ## 背景
 

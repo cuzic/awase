@@ -1,3 +1,12 @@
+---
+id: ADR-186-companion-186-opus-review-round2
+title: |-
+  ADR-186 敵対的レビュー round2（v2 = commit `d82cfe08`）
+type: companion-doc
+related_adr:
+  - "ADR-186"
+---
+
 # ADR-186 敵対的レビュー round2（v2 = commit `d82cfe08`）
 
 ## 判定: **収束（Blocker 0）**

@@ -1,3 +1,12 @@
+---
+id: ADR-190-companion-190-opus-review-round2
+title: |-
+  ADR-190 opus 敵対的レビュー round2（v3 = `ad041e1b` 対象）
+type: companion-doc
+related_adr:
+  - "ADR-190"
+---
+
 # ADR-190 opus 敵対的レビュー round2（v3 = `ad041e1b` 対象）
 
 対象 worktree: `/home/cuzic/rust-nicola-worktrees/ci-e2e-scenarios`（HEAD `ad041e1b`）。
