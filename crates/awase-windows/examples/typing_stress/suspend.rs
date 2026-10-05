@@ -37,7 +37,9 @@ pub(crate) struct Suspend {
 }
 
 fn num(key: &str, default: u64) -> u64 {
-    arg_value(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+    arg_value(key)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// (名前, PID) の一覧。
@@ -54,8 +56,15 @@ fn processes() -> Vec<(String, u32)> {
     // SAFETY: snap は有効なスナップショット、e は dwSize 設定済み。
     if unsafe { Process32FirstW(snap, &raw mut e) }.is_ok() {
         loop {
-            let end = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-            out.push((String::from_utf16_lossy(&e.szExeFile[..end]), e.th32ProcessID));
+            let end = e
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(e.szExeFile.len());
+            out.push((
+                String::from_utf16_lossy(&e.szExeFile[..end]),
+                e.th32ProcessID,
+            ));
             // SAFETY: 同上。
             if unsafe { Process32NextW(snap, &raw mut e) }.is_err() {
                 break;
@@ -100,7 +109,9 @@ impl Suspend {
 
     /// 停止できるプロセス名の見当をつけるための一覧(IME・入力・Chrome らしい名前だけ)。
     pub(crate) fn log_candidates(&self) {
-        let want = ["google", "ime", "ctf", "mozc", "chrome", "text", "input", "msedge"];
+        let want = [
+            "google", "ime", "ctf", "mozc", "chrome", "text", "input", "msedge",
+        ];
         let list: Vec<String> = processes()
             .into_iter()
             .filter(|(n, _)| {
@@ -121,7 +132,9 @@ impl Suspend {
             let armed = Instant::now();
             std::thread::sleep(Duration::from_millis(at_ms));
             let Some((suspend, resume)) = nt_fns() else {
-                rec(&json!({"type":"suspend","kind":kind,"n":n,"error":"ntdll の Nt(Suspend|Resume)Process が見つからない"}));
+                rec(
+                    &json!({"type":"suspend","kind":kind,"n":n,"error":"ntdll の Nt(Suspend|Resume)Process が見つからない"}),
+                );
                 return;
             };
             let mut held: Vec<(String, u32, HANDLE, i32)> = Vec::new();
@@ -137,7 +150,9 @@ impl Suspend {
                         let st = unsafe { suspend(h) };
                         held.push((name, pid, h, st));
                     }
-                    Err(e) => rec(&json!({"type":"suspend_open_failed","name":name,"pid":pid,"error":e.to_string()})),
+                    Err(e) => rec(
+                        &json!({"type":"suspend_open_failed","name":name,"pid":pid,"error":e.to_string()}),
+                    ),
                 }
             }
             let t_susp = Instant::now();
@@ -149,13 +164,16 @@ impl Suspend {
                 let rst = unsafe { resume(h) };
                 // SAFETY: h は一度だけ閉じる。
                 let _ = unsafe { CloseHandle(h) };
-                matched.push(json!({"name":name,"pid":pid,"suspend_status":st,"resume_status":rst}));
+                matched
+                    .push(json!({"name":name,"pid":pid,"suspend_status":st,"resume_status":rst}));
             }
-            rec(&json!({"type":"suspend","kind":kind,"n":n,"matched":matched,
+            rec(
+                &json!({"type":"suspend","kind":kind,"n":n,"matched":matched,
                 "at_ms_req":at_ms,"dur_ms_req":dur_ms,
                 "at_ms_actual":u64::try_from(t_susp.duration_since(armed).as_millis()).unwrap_or(u64::MAX),
                 "dur_ms_actual":u64::try_from(t_susp.elapsed().as_millis()).unwrap_or(u64::MAX),
-                "suspended_utc":susp_utc,"resumed_utc":utc_hms()}));
+                "suspended_utc":susp_utc,"resumed_utc":utc_hms()}),
+            );
         })
     }
 }
