@@ -1,0 +1,23 @@
+name: vocab-renderer-verify
+
+# 候補窓の描画側(GoogleIMEJaRenderer)の一時停止と、止める対象の調査(typing_stress の --suspend-survey)の実機検証。
+# e2e-ime.yml を workflow_call で呼び、tsx-susp-survey-*(止めずに IME 関連のプロセス・窓を列挙)と
+# tsx-susp-rend-*(Renderer を停止)だけを回す。動く条件: ci/vocab-renderer-verify への push、手動起動。
+on:
+  push:
+    branches: [ci/vocab-renderer-verify]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: vocab-renderer-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  renderer:
+    uses: ./.github/workflows/e2e-ime.yml
+    with:
+      only: 'tsx-susp-survey-*,tsx-susp-rend-*'

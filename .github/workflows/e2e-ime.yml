@@ -120,9 +120,12 @@ jobs:
           # 時間窓系の BUG(BUG-171 の途中の語の StaleConfirm→ESC 等)を実機で当てにいく。判定は typing(消失/リテラル化の分類)、
           # 効いたかは typing_stress.log の type:"suspend"(matched の PID・status)と awase.log の StaleConfirm/delay で見る(tools/e2e/ime_key_matrix/suspend_report.py)。
           # 対照(control)は同じ打鍵で停止なし。only='tsx-susp-*' で回す(既定の only 空・sc-* には含まれない)。observe は期限(until)付き。
-          def susp(name, form, at_ms=None, dur_ms=None, proc='GoogleIMEJaConverter', iv=30, runs=3):
+          # survey=True: 止めずに、打鍵中のプロセス・窓(IME 関連)を type:"suspend_survey" で記録するだけ(止める対象の調査。--suspend-survey)。
+          def susp(name, form, at_ms=None, dur_ms=None, proc='GoogleIMEJaConverter', iv=30, runs=3, survey=False):
             flags = [f'--form={form}', f'--interval={iv}', '--kinds=single,mixed', '--trials=6', '--len=25', '--settle-read',
                      '--layout=@REPO@/layout/nicola_keytop.yab']
+            if survey:
+              flags += ['--suspend-survey', '--suspend-at-ms=300']
             if at_ms is not None:
               flags += [f'--suspend-proc={proc}', f'--suspend-at-ms={at_ms}', f'--suspend-ms={dur_ms}']
             return cfg(f'tsx-susp-{name}', 'observe', check='typing', ime='gji', awase='true', runs=runs, wait=1500,
@@ -702,6 +705,11 @@ jobs:
             susp('bug171-tsf-d2500', 'tsf', 300, 2500),
             susp('bug171-chromepage-control', 'chromepage'),
             susp('bug171-chromepage-d800', 'chromepage', 300, 800),
+            # 候補窓の描画側(GoogleIMEJaRenderer)を止める案(変換サーバ Converter を止めても下流に差が出なかったため)。
+            # survey=止める前に、候補窓・IME 関連プロセスと窓を列挙して対象を絞る調査(止めない)。rend=Renderer を停止。
+            susp('survey-tsf', 'tsf', survey=True),
+            susp('survey-chromepage', 'chromepage', survey=True),
+            *[susp(f'rend-{form}-d{d}', form, 300, d, proc='GoogleIMEJaRenderer') for form in ('tsf', 'chromepage') for d in (800, 2500)],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
