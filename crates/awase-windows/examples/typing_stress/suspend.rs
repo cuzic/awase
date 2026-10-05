@@ -7,6 +7,7 @@
 //! | `--suspend-proc=A,B`            | 一時停止する実行ファイル名(大文字小文字を区別しない部分一致。カンマ区切り) |
 //! | `--suspend-at-ms=T`             | 各試行の打鍵開始から T ms 後に停止する(既定 300)                        |
 //! | `--suspend-ms=D`                | D ms 後に再開する(既定 500、上限 10000)                                  |
+//! | `--suspend-survey`              | 停止の直前(と、停止対象が無いときは 1.2s 後にもう一度)に、IME 関連らしいプロセスと窓(クラス・所有 PID・可視)を `type:"suspend_survey"` で記録する。止める対象の見当をつける調査用 |
 //!
 //! 各試行の打鍵開始の直前にスレッドを起こし、`type:"suspend"` のレコードに「実際に停止できたプロセス(名前・PID・
 //! NTSTATUS)」と停止・再開の実時刻(`utc`)を残す。`matched` が空・status が非 0 なら停止は効いていない
@@ -16,15 +17,16 @@
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use windows::core::{s, w};
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::core::{s, w, BOOL};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_SUSPEND_RESUME};
+use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
 
-use crate::{arg_value, rec, utc_hms};
+use crate::{arg_value, class_of, rec, utc_hms};
 
 const MAX_SUSPEND_MS: u64 = 10_000;
 
@@ -34,6 +36,76 @@ pub(crate) struct Suspend {
     names: Vec<String>,
     at_ms: u64,
     dur_ms: u64,
+    survey: bool,
+}
+
+struct WinRow {
+    class: String,
+    pid: u32,
+    visible: bool,
+}
+
+unsafe extern "system" fn win_cb(hwnd: HWND, lp: LPARAM) -> BOOL {
+    // SAFETY: `lp` は `survey` が渡す、呼び出し中だけ生きている `Vec<WinRow>` へのポインタ。
+    unsafe {
+        let v = &mut *(lp.0 as *mut Vec<WinRow>);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+        v.push(WinRow {
+            class: class_of(hwnd),
+            pid,
+            visible: IsWindowVisible(hwnd).as_bool(),
+        });
+    }
+    true.into()
+}
+
+fn ime_like(s: &str) -> bool {
+    let l = s.to_ascii_lowercase();
+    [
+        "google", "ime", "ctf", "mozc", "candidate", "cicero", "tf_", "input",
+    ]
+    .iter()
+    .any(|w| l.contains(w))
+}
+
+/// どのプロセスが候補窓の描画・TSF 連携に関わるかを調べる記録。IME 関連らしい名前のプロセスと、
+/// IME 関連らしいクラス名か所有プロセスの窓を残す(全アプリに居る既定の IME 窓は件数だけ)。
+fn survey(kind: &str, n: usize, when: &str) {
+    let procs = processes();
+    let name_of = |pid: u32| {
+        procs
+            .iter()
+            .find(|(_, p)| *p == pid)
+            .map(|(n, _)| n.clone())
+            .unwrap_or_default()
+    };
+    let mut wins: Vec<WinRow> = Vec::new();
+    // SAFETY: `wins` は EnumWindows の同期呼び出しの間だけ参照される。
+    unsafe {
+        let _ = EnumWindows(Some(win_cb), LPARAM(&raw mut wins as isize));
+    }
+    let mut default_ime_windows = 0usize;
+    let mut rows = Vec::new();
+    for w in &wins {
+        if w.class == "IME" || w.class == "MSCTFIME UI" {
+            default_ime_windows += 1;
+            continue;
+        }
+        let pn = name_of(w.pid);
+        if ime_like(&w.class) || ime_like(&pn) {
+            rows.push(json!({"class":w.class,"pid":w.pid,"proc":pn,"visible":w.visible}));
+        }
+    }
+    rows.truncate(80);
+    let ime_procs: Vec<String> = procs
+        .iter()
+        .filter(|(n, _)| ime_like(n))
+        .map(|(n, p)| format!("{n}({p})"))
+        .collect();
+    rec(&json!({"type":"suspend_survey","kind":kind,"n":n,"when":when,"utc":utc_hms(),
+        "procs":ime_procs,"proc_total":procs.len(),"windows":rows,"windows_total":wins.len(),
+        "default_ime_windows":default_ime_windows}));
 }
 
 fn num(key: &str, default: u64) -> u64 {
@@ -88,23 +160,26 @@ fn nt_fns() -> Option<(NtProcFn, NtProcFn)> {
 
 impl Suspend {
     pub(crate) fn from_args() -> Option<Self> {
-        let names: Vec<String> = arg_value("--suspend-proc=")?
+        let names: Vec<String> = arg_value("--suspend-proc=")
+            .unwrap_or_default()
             .split(',')
             .map(|s| s.trim().to_ascii_lowercase())
             .filter(|s| !s.is_empty())
             .collect();
-        if names.is_empty() {
+        let survey = std::env::args().any(|a| a == "--suspend-survey");
+        if names.is_empty() && !survey {
             return None;
         }
         Some(Self {
             names,
             at_ms: num("--suspend-at-ms=", 300),
             dur_ms: num("--suspend-ms=", 500).min(MAX_SUSPEND_MS),
+            survey,
         })
     }
 
     pub(crate) fn describe(&self) -> serde_json::Value {
-        json!({"proc":self.names,"at_ms":self.at_ms,"dur_ms":self.dur_ms})
+        json!({"proc":self.names,"at_ms":self.at_ms,"dur_ms":self.dur_ms,"survey":self.survey})
     }
 
     /// 停止できるプロセス名の見当をつけるための一覧(IME・入力・Chrome らしい名前だけ)。
@@ -126,11 +201,20 @@ impl Suspend {
     /// 試行の打鍵開始の直前に呼ぶ。返したハンドルを打鍵の後で `join` する(再開まで待つ)。
     pub(crate) fn arm(&self, kind: &str, n: usize) -> std::thread::JoinHandle<()> {
         let names = self.names.clone();
-        let (at_ms, dur_ms) = (self.at_ms, self.dur_ms);
+        let (at_ms, dur_ms, do_survey) = (self.at_ms, self.dur_ms, self.survey);
         let kind = kind.to_string();
         std::thread::spawn(move || {
             let armed = Instant::now();
             std::thread::sleep(Duration::from_millis(at_ms));
+            if do_survey {
+                survey(&kind, n, "at");
+                if names.is_empty() {
+                    // 調査だけ(止める対象なし): 候補窓が出きった後の様子ももう一度残して終わる。
+                    std::thread::sleep(Duration::from_millis(1200));
+                    survey(&kind, n, "late");
+                    return;
+                }
+            }
             let Some((suspend, resume)) = nt_fns() else {
                 rec(
                     &json!({"type":"suspend","kind":kind,"n":n,"error":"ntdll の Nt(Suspend|Resume)Process が見つからない"}),
