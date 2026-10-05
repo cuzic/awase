@@ -1,0 +1,23 @@
+name: preedit-verify
+
+# 未確定文字(preedit)の読み取り可否(typing_stress --mode=preedit、check_preedit.py)を windows-latest の実機で測る。
+# e2e-ime.yml を workflow_call で呼び、sc-preedit-*(14 構成、各 1 回)だけを回す。全 sc-* は回さない。
+# 動く条件: ci/preedit-verify への push のみ(workflow_dispatch は既定ブランチにこのファイルが無いと使えない)。
+on:
+  push:
+    branches: [ci/preedit-verify]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: preedit-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preedit:
+    uses: ./.github/workflows/e2e-ime.yml
+    with:
+      only: 'sc-preedit-*'
+      runs: '1'
