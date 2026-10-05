@@ -1524,6 +1524,62 @@ mod tests {
         ));
     }
 
+    /// BUG-171 の前提条件を固定する特性テスト（未修正バグの現状挙動）。
+    ///
+    /// 未確定文字がある（`OnComposing`）状態で、実測 `gji_idle_ms` が Medium 閾値以上の
+    /// `CompositionReset` が来ると、`OnCold(Medium, NotStarted)` に落ちる。次の語は cold の
+    /// per-VK confirm 経路に入り、そこで `StaleConfirm`（idx>=1）になると
+    /// `per_vk_recovery_params(true, idx) == (0, true)`（ESC）が、前の未確定文字ごと composition を
+    /// 消す。実機・CI（`tsx-bug171*`）では未再現だが、この遷移自体は FSM 単体で決定的に起こせる。
+    /// idle は実時間で待たず `gji_idle_ms` を直接注入する（遅延注入）。
+    ///
+    /// BUG-171 を直したとき（語の途中では cold へ落とさない、または Stale の ESC を抑止）は
+    /// `OnCold` の期待を反転させること。
+    #[test]
+    fn bug171_composition_reset_while_composing_with_stale_idle_falls_to_cold() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        fsm.on_event(GjiEvent::StartComposition);
+        assert!(matches!(fsm.state(), GjiState::OnComposing { .. }));
+
+        // 境界: Medium 閾値の 1ms 手前では、未確定のまま warm を保つ（cold に落ちない）。
+        let r = fsm.on_event(GjiEvent::CompositionReset {
+            gji_idle_ms: tuning::MEDIUM_IDLE_PROBE_MS - 1,
+        });
+        r.assert_consumed();
+        assert!(matches!(fsm.state(), GjiState::OnWarm { .. }));
+
+        // 閾値ちょうどでは cold へ落ちる（OnComposing から）。
+        fsm.on_event(GjiEvent::StartComposition);
+        assert!(matches!(fsm.state(), GjiState::OnComposing { .. }));
+        fsm.on_event(GjiEvent::CompositionReset {
+            gji_idle_ms: tuning::MEDIUM_IDLE_PROBE_MS,
+        });
+        assert!(
+            matches!(
+                fsm.state(),
+                GjiState::OnCold {
+                    kind: ColdKind::Medium,
+                    probe: ProbeStatus::NotStarted,
+                    ..
+                }
+            ),
+            "OnComposing + Medium idle の CompositionReset は OnCold(Medium, NotStarted) に落ちる(BUG-171 の入口): {}",
+            fsm.state().state_label()
+        );
+
+        // 次の語の最初のキーで probe（cold の per-VK 確認経路）が始まる。
+        let r = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("k")));
+        assert!(
+            r.actions
+                .iter()
+                .any(|a| matches!(a, GjiAction::StartProbe { .. })),
+            "cold に落ちた直後の KeyInput は StartProbe を出す"
+        );
+    }
+
     /// `NativeF2Consumed` 経由でも同じ observation ゲートが効くことを確認する。
     #[test]
     fn native_f2_consumed_while_warm_and_fresh_stays_warm() {

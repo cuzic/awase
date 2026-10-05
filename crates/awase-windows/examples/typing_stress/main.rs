@@ -32,6 +32,7 @@
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
 //! `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH`。
+//! 打鍵の揺らぎ(`jitter.rs`、既定オフ): `--jit-iv=SIGMA` / `--jit-thumb=MIN_MS:MAX_MS` / `--jit-char-first=PCT`。
 //! `--mode=raw` は awase なしで、期待文字列と同じ内容をローマ字の生キーで同じ速度で注入する対照実験
 //! (入力先+IME 単体がその速度を受けられるかを、awase と切り離して見る)。
 //!
@@ -82,6 +83,7 @@
 #![windows_subsystem = "windows"]
 #![allow(unsafe_code)]
 
+mod jitter;
 mod keymatrix;
 mod perturb;
 mod suspend;
@@ -1527,6 +1529,7 @@ fn worker(form: Form) {
     let child = hwnd_of(&CHILD);
     let perturb = perturb::Perturbation::from_args();
     let suspend = suspend::Suspend::from_args();
+    let jit = jitter::Jitter::from_args();
     let mode_arg = arg_value("--mode=");
     let raw = mode_arg.as_deref() == Some("raw");
     let drift = mode_arg.as_deref() == Some("drift");
@@ -1581,7 +1584,7 @@ fn worker(form: Form) {
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "no_awase":has_flag("--no-awase"),"startup_skip_refocus2":has_flag("--startup-skip-refocus2"),
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
-        "child_class":class_of(child),"perturb":perturb.describe(),"suspend":suspend.as_ref().map(suspend::Suspend::describe)}),
+        "child_class":class_of(child),"perturb":perturb.describe(),"jitter":jit.describe(),"suspend":suspend.as_ref().map(suspend::Suspend::describe)}),
     );
     if let Some(sp) = &suspend {
         sp.log_candidates();
@@ -1688,6 +1691,8 @@ fn worker(form: Form) {
             let expect = expect_string(&seq);
             let mut evs = if raw {
                 raw_events(&seq, iv_us)
+            } else if jit.is_active() {
+                jitter::events(&seq, iv_us, &jit, trial_seed)
             } else {
                 nicola_events(&seq, iv_us)
             };

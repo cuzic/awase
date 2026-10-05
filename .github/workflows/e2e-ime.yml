@@ -581,6 +581,14 @@ jobs:
               for form in ('edit', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
               for iv in (10, 2)],
+            # --- 打鍵の揺らぎ比較(tsj-、examples/typing_stress/jitter.rs): 固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit)を同じ入力先・IME・seed で比べる。
+            # jit の分布の形は仮置き(範囲だけ docs/adr/182 の実機実測に合わせる: 親指↔文字の押下間隔 2〜93ms、文字先押しの割合 30%)。--jit-iv=0.5 は間隔の倍率の対数標準偏差。
+            # 既定の only 空では回さない(下の除外に tsj- を足してある)。only='tsj-*' で回す。観測のみ、until までに「揺らぎで loss/reorder/literal が増えるか」を決める。
+            *[cfg(f'tsj-{form}-gji-{mode}-{iv}ms', 'observe', check='typing', ime='gji', runs=4, wait=600, until='2026-11-04',
+                  stress=f'--form={form} --interval={iv} --trials=8 --kinds=thumb,mixed --layout=@REPO@/layout/nicola_keytop.yab{flags}')
+              for form in ('tsf', 'edit')
+              for mode, flags in (('base', ''), ('jit', ' --jit-iv=0.5 --jit-thumb=2:90 --jit-char-first=30'))
+              for iv in (20, 10)],
             # --- 拡張ストレス(tsx-): 実アプリを入力先にする / 実利用に近い摂動を足す構成。既定の ts-* には含めない(only='tsx-*' で回す)。---
             # 入力先(--form=、examples/typing_stress/target.rs): chromebar=Chrome のアドレスバー / chromepage=Chrome のページ内 textarea /
             # bugreport=awase-settings --bug-report の「説明」欄。別プロセスなので読み戻しは UI Automation。Chrome は GJI のみ。
@@ -697,7 +705,7 @@ jobs:
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
