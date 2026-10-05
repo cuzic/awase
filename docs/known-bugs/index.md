@@ -9,7 +9,7 @@
 |---|---|---|
 | [BUG-001](BUG-001.md) | 機構撤去済み | TSF cold-start — probe バジェット超過で1文字目がリテラルになる (WezTerm) |
 | [BUG-002](BUG-002.md) | 機構撤去済み | Chrome cold-start — probe タイミング想定外で1文字目がリテラルになる |
-| [BUG-003](BUG-003.md) | 要確認 | LiteralDetect 偽陽性（false positive CompositionConfirmed） |
+| [BUG-003](BUG-003.md) | 再現待ち | LiteralDetect 偽陽性（false positive CompositionConfirmed） |
 | [BUG-004](BUG-004.md) | 対応しない(既知の制限) | GJI モニター切断時のフォールバック |
 | [BUG-005](BUG-005.md) | 未修正(現行コードに残存を確認) | SessionExpired 閾値 (2000ms) が任意値 |
 | [BUG-006](BUG-006.md) | 機構撤去済み(本文の注記どおり) | focus_epoch のオーバーフロー ~~（解消済み）~~ |
@@ -68,7 +68,7 @@
 | [BUG-060](BUG-060.md) | 機構撤去済み(本文の「クローズ」どおり) | `conv_mode_policy = force` 運用中に LINE で全打鍵が「い」になる／IME が JIS かなになる（**クローズ**: 前提機構が ADR-094 で… |
 | [BUG-061](BUG-061.md) | 対応しない(既知の制限) | Windows Terminal + MS-IME で JIS かな入力に固定され復旧できない（**解決不能と確定**: Win32 にローマ字/かな入力方式を外部から切り替える公… |
 | [BUG-062](BUG-062.md) | 解決済み(実機確認済み) | 物理 Alt+VK_KANA（MS-IME の「ローマ字/JIS かな入力方式切替」ショートカット）を swallow して JIS かな固着を未然に防止（BUG-61 の根本原因… |
-| [BUG-063](BUG-063.md) | 要確認 | 仮想デスクトップ切替後 Windows Terminal で半角のつもりが「くした」とかな変換される（IME belief と actuation の根拠が未分離） |
+| [BUG-063](BUG-063.md) | 再現待ち | 仮想デスクトップ切替後 Windows Terminal で半角のつもりが「くした」とかな変換される（IME belief と actuation の根拠が未分離） |
 | [BUG-064](BUG-064.md) | 解決済み(実機確認済み) | config1.db に旧 awase 実験由来の残骸バインドが実在する（F13/F14/F21/F22、バグではなく既知の事実の記録） |
 | [BUG-065](BUG-065.md) | 解決済み(コード確認のみ) | `TSF_OBS_TEST_LOCK` 共有ロックが `.lock().unwrap()` で non-poison-resilient なため、1テストの真の失敗が無関係な10テ… |
 | [BUG-066](BUG-066.md) | 解決済み(コード確認のみ) | 全角ハイフンマイナス「－」が Chrome/Firefox 等（VK/TSF 送信経路）で長音「ー」に化ける（`build_symbol_to_vk` の VK_OEM_MINUS… |
@@ -95,7 +95,7 @@
 | [BUG-088](BUG-088.md) | 解決済み(コード確認のみ) | `HOOK_KEYS` リング overflow時にキーが無警告で消える（配送経路、ADR-102/105コードレビュー指摘2） |
 | [BUG-089](BUG-089.md) | 対応しない(既知の制限) | gate中にdeferされたCtrl+key（tmux prefix等）ではGJI composition キャンセルが効かない（ADR-102/105コードレビュー指摘4、未対応… |
 | [BUG-090](BUG-090.md) | 解決済み(コード確認のみ) | PowerToys「マウスなしでコンピューターを制御」(Mouse Without Borders) 使用中に物理「英数」キーが効かない（「かな」は効く、**追補で根本原因を特定・… |
-| [BUG-091](BUG-091.md) | 要確認 | ネイティブ Win32 マルチフィールドダイアログでのフィールド間 Tab 直後、進行中の FocusProbe/ImmCrossProbe/idle-conv-check の観測… |
+| [BUG-091](BUG-091.md) | 再現待ち | ネイティブ Win32 マルチフィールドダイアログでのフィールド間 Tab 直後、進行中の FocusProbe/ImmCrossProbe/idle-conv-check の観測… |
 | [BUG-092](BUG-092.md) | 解決済み(コード確認のみ) | BUG-33 追補 — `Imm32Unavailable`/`TsfNative` の shadow フォールバック観測 laundering を型で閉じた（ADR-106 決定… |
 | [BUG-093](BUG-093.md) | 機構撤去済み(v2 で該当コード自体が無く、症状は構造的に発生しない) | MS-IME の無変換単独タップ delegate が変換中 composition を破棄する |
 | [BUG-094](BUG-094.md) | 解決済み(コード確認のみ) | 親指キーを無変換/変換に選び直すと設定画面のドロップダウンが消える |
@@ -114,16 +114,16 @@
 | [BUG-109](BUG-109.md) | 解決済み(コード確認のみ) | `drain_pending_deferred_before_send_if_queue_only`（ADR-123 決定4-3）が recovery resend 自身の送信より… |
 | [BUG-110](BUG-110.md) | 要確認 | 物理IMEキー1回の低確度な検出で、NICOLA変換エンジンがフォーカス変更まで無期限停止する |
 | [BUG-111](BUG-111.md) | 解決済み(実機確認済み) | `run_ime_refresh` の 500ms 周期リフレッシュが実フォーカス変更の有無に関わらず `[imm-learning] profile 降格` ログを毎ティック再発… |
-| [BUG-112](BUG-112.md) | 要確認 | `ImmCapabilityStore` が `awase-settings.exe` を稀に `Unavailable` と誤学習し恒久化する（BUG-107 の「あ混入」の残存… |
+| [BUG-112](BUG-112.md) | 再現待ち | `ImmCapabilityStore` が `awase-settings.exe` を稀に `Unavailable` と誤学習し恒久化する（BUG-107 の「あ混入」の残存… |
 | [BUG-113](BUG-113.md) | 要確認 | Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actua… |
 | [BUG-114](BUG-114.md) | 解決済み(実機確認済み) | Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、dri… |
 | [BUG-115](BUG-115.md) | 解決済み(コード確認のみ) | `awase-gji-config` の `session_keymap` フィールド番号が誤っており、GJI が無変換/変換キーでIME ON/OFFを制御する overlay … |
 | [BUG-116](BUG-116.md) | 解決済み(実機確認済み) | Shift+物理かなキー（JIS配列 `VK_DBE_KATAKANA`）でカタカナ変換に切り替わらない（BUG-52修正のリグレッション、**決定1/2実装・実機確認済み**） |
-| [BUG-117](BUG-117.md) | 要確認(Chrome+GJI では再現せず、2026-10-04) | `UserImeSetIntent{source: PhysicalImeKey}` が発生源を検証せず `desired_open` を無条件上書きし、Edge(TsfNativ… |
+| [BUG-117](BUG-117.md) | 再現待ち(Chrome+GJI では再現せず、2026-10-04) | `UserImeSetIntent{source: PhysicalImeKey}` が発生源を検証せず `desired_open` を無条件上書きし、Edge(TsfNativ… |
 | [BUG-118](BUG-118.md) | 機構撤去済み | 無変換/変換 delegate-to-open-axis の `TurnOn` 方向が構造的に発火できず、GJI 自身が IME を ON にしても NICOLA 変換が起動しない… |
 | [BUG-119](BUG-119.md) | 機構撤去済み | GJI自動検出の無変換/変換 `delegate_to_open_axis` が、ユーザーが明示的に選んだ「常に送出する（パススルー）」設定を無視して物理キーを握りつぶす（**`T… |
 | [BUG-120](BUG-120.md) | 対応しない(既知の制限) | Windows Defenderが`Behavior:Win32/Persistence.A!.ml`としてawase.exeを誤検知（対策は補助的、未確認・恒久対策はコード署名） |
-| [BUG-121](BUG-121.md) | 要確認 | `Ctrl+無変換`（`keys.ime_off`既定ホットキー）が、実IME状態と belief がズレた直後に稀に「@」を誘発する（既存の独立バグ、develop回帰ではない・… |
+| [BUG-121](BUG-121.md) | 再現待ち | `Ctrl+無変換`（`keys.ime_off`既定ホットキー）が、実IME状態と belief がズレた直後に稀に「@」を誘発する（既存の独立バグ、develop回帰ではない・… |
 | [BUG-122](BUG-122.md) | 機構撤去済み | ADR-153決定1「ケース2」（無変換/変換単独タップの明示config、`"on"`方向）が、`IntentWitness::from_physical` の witness … |
 | [BUG-123](BUG-123.md) | 機構撤去済み | ADR-153決定1「ケース2」修正（BUG-122）後、`*_solo_tap_always_suppress = false`環境で無変換/変換キー単独タップがGJIへ二重の信… |
 | [BUG-124](BUG-124.md) | 機構撤去済み(「@」の再発可否は実機未確認) | ADR-153決定1「ケース3」の"off"×belief既にOFFを全面撤回したところ、GJI自身のTSFキー横取りによる「@」再現に逆戻りした（設計の見直し不足、同日中に「抑止… |
@@ -143,12 +143,12 @@
 | [BUG-139](BUG-139.md) | 解決済み(コード確認のみ) | ADR-163のActuationDecisionRecord診断が、with_app再入時のskipカウンタ二重加算と一部同期記録点のcaller未設定を持っていた（修正済み） |
 | [BUG-140](BUG-140.md) | 解決済み(コード確認のみ) | `right_thumb_key`と同じキーを`keys.ime_detect.on`に登録すると、変換キー単独タップ毎にIME再適用が暴発し、GJI自身の変換機能と競合+「あ」混入 |
 | [BUG-141](BUG-141.md) | 解決済み(コード確認のみ) | gji_direct_already_matchesがcandidate_was_seen desync証拠を無視し2・3回目のCtrl+無変換を無送信で握り潰す（ADR-171「案Z」で修正案起草済み） |
-| [BUG-142](BUG-142.md) | 要確認 | Windows Terminal + GJI、物理半角/全角キーの繰り返し押下でIME ON/Engine ONに固着。原因はshadow-toggleの固定方向no-op誤判定、keys.ime_detect.toggleでToggle解決に変えると実機A/Bで解消確定（ADR-175） |
+| [BUG-142](BUG-142.md) | 再現待ち | Windows Terminal + GJI、物理半角/全角キーの繰り返し押下でIME ON/Engine ONに固着。原因はshadow-toggleの固定方向no-op誤判定、keys.ime_detect.toggleでToggle解決に変えると実機A/Bで解消確定（ADR-175） |
 | [BUG-143](BUG-143.md) | 機構撤去済み | classify_mode_key_ime_actionがsession_keymap==CUSTOM以外ではcustom_keymap_tableを一切参照せず、実在するHenkan=IMEOn設定を無視していた（ADR-174、修正済み） |
 | [BUG-144](BUG-144.md) | 機構撤去済み | 較正probeループがフォーカス不一致時にtracker.tick()をスキップし、settle window外の値がpostとして混入しうる（ADR-176 176-T9a、コードレビューで発見・修正済み） |
 | [BUG-145](BUG-145.md) | 解決済み(コード確認のみ) | 文字→無変換/変換の押下間隔が閾値をわずかに超えると、チョードが文字単独+親指単独タップに割れ、生の親指VKがGJIへ届いて半角英数化する（ADR-182、決定1・1b・1c修正済み） |
 | [BUG-146](BUG-146.md) | 解決済み(コード確認のみ) | 半角英数（ObservedEisu）検出時にawaseがopen軸へfalseを書く（IMEはONのままなのにbelief/intentだけOFF扱い、起票のみ・未修正） |
-| [BUG-147](BUG-147.md) | 要確認 | awase起動中、まれに物理キー1押下がGJI(ATOKプリセット)に届かない（awase側ログは正常な通過→再注入。クリーンな条件では再現せず、原因未確定、ADR-186） |
+| [BUG-147](BUG-147.md) | 再現待ち | awase起動中、まれに物理キー1押下がGJI(ATOKプリセット)に届かない（awase側ログは正常な通過→再注入。クリーンな条件では再現せず、原因未確定、ADR-186） |
 | [BUG-148](BUG-148.md) | 解決済み(CI検証済み・実機未確認) | awase起動時に既にフォーカスがあるアプリでは、プロセス切替まで明示IME意図が記録されず、FSM委譲のSetOpenが全てUnwarrantedでキーが飲み込まれる |
 | [BUG-149](BUG-149.md) | 未修正(CI で再現、2026-10-04) | Chrome(TsfNative)で、ひらがなキー/Shift+無変換によるかな→半角英数のあと、EngineがOFFにならず英数なのにNICOLAが動き続ける（3/3再現、awase停止の対照は正常、原因は一部のみ特定、未修正、ADR-186） |
 | [BUG-150](BUG-150.md) | 一部解決(IMM で読める窓は CI 検証済み・実 Chrome の素通し設定では再現、2026-10-04) | ATOKプリセットで無変換/変換をパススルーする設定(既定)では、実IMEはGJIが開閉するのにEngineが追随しない（IME OFFでもEngine ONのまま） |
@@ -185,7 +185,7 @@
 | [BUG-180](BUG-180.md) | 解決済み(CI検証済み・実機未確認) | 候補窓 SHOW/HIDE の保留 latch が IME OFF・フォーカス変更で捨てられず、次の drain で前セッションの StartComposition が配られる |
 | [BUG-181](BUG-181.md) | 解決済み(コード確認のみ・実機未確認) | `hook.rs`の`physical_key_state`がVK単位のため、Down=0xF2/Up=0xF0の物理ひらがなキーの2回目以降の押下が押下IDを失う |
 | [BUG-183](BUG-183.md) | 解決済み(CI検証済み・実機未確認) | 入力言語のホットキー経由でロシア語へ切り替えると、awase が日本語入力のまま残る(Alt+Shift・Win+Space では即座に非活性になる) |
-| [BUG-184](BUG-184.md) | 要確認(再現せず・要追加情報) | MS-IME で物理 英数 キー(IME OFF)を Suppress して ImmCross で閉じる際、未確定文字を確定せず、消える疑い |
+| [BUG-184](BUG-184.md) | 再現待ち(再現せず・要追加情報) | MS-IME で物理 英数 キー(IME OFF)を Suppress して ImmCross で閉じる際、未確定文字を確定せず、消える疑い |
 | [BUG-185](BUG-185.md) | 対応しない(既知の制限) | MS-IME × Chrome で、入力中の文字が残っている間の OFF が IME を閉じず半角英数になる(対応しない既知の制限) |
 | [BUG-186](BUG-186.md) | 未修正(CI で再現、原因判明・BUG-149 と同根) | 半角英数持続トグル中に IME 側のモードキー(変換・英数・ひらがな)でかなへ戻すと Engine が OFF のまま(`か`、実 Chrome) |
 | [BUG-187](BUG-187.md) | 保留(既知の制限扱い) | GJI(ATOKプリセット)が injected=false の VK_DBE_HIRAGANA を周期送信し IME OFF を巻き戻す |

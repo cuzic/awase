@@ -3,7 +3,8 @@ id: ADR-074
 title: |-
   ObservedEisu 自動直接入力切替 — IME ON 英数モードを idle-conv-check で自動 OFF
 status: |-
-  一部撤去(2026-10-04 確認)。ObservedEisu の検出自体は現存。idle-conv-check が ObservedEisu を見て IME を自動 OFF にする EngineSync::DirectInput は ADR-185(f5338edc)で撤去された。旧: 採用済み
+  完了(縮小・一部撤去、2026-10-05 棚卸し): ObservedEisu の検出は現存、EngineSync::DirectInput は ADR-185 で撤去済み。残件なし。
+  旧(2026-10-05 更新前): 一部撤去(2026-10-04 確認)。ObservedEisu の検出自体は現存。idle-conv-check が ObservedEisu を見て IME を自動 OFF にする EngineSync::DirectInput は ADR-185(f5338edc)で撤去された。旧: 採用済み
 related_adr:
   - "ADR-032"
   - "ADR-038"

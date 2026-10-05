@@ -5,7 +5,8 @@ title: |-
 summary: |-
   BUG-74: RawTsfLiteralRecovery give-up で失われるromajiを、F6 focus世代照合・WM完了通知・Polling中deferred順序保護を前提に通常送信経路で1回だけretryする。ADR-100決定3の却下理由を前提条件として解消し、決定5(F6)も実装する
 status: |-
-  一部撤去(2026-10-04 確認)。give-up 後の VK_IME_OFF→ON reinit と focus-guard 付き retry(`PendingGjiReinitRetry` 等)は ADR-212 P3・P5(0a7f9067、2026-09-30)で撤去され、give-up は BS 掃除だけに縮退。現行コードに `PendingGjiReinitRetry` は無い。
+  完了(縮小・一部撤去、2026-10-05 棚卸し): give-up 後の reinit/retry は ADR-212 P3・P5 で撤去、BS 掃除だけに縮退。残件なし。
+  旧(2026-10-05 更新前): 一部撤去(2026-10-04 確認)。give-up 後の VK_IME_OFF→ON reinit と focus-guard 付き retry(`PendingGjiReinitRetry` 等)は ADR-212 P3・P5(0a7f9067、2026-09-30)で撤去され、give-up は BS 掃除だけに縮退。現行コードに `PendingGjiReinitRetry` は無い。
   旧(2026-10-04 更新前):
   採用・実装済み（2026-08-24、実機ソーク未実施）
 related_adr:
