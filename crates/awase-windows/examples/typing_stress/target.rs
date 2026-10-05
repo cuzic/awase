@@ -409,9 +409,12 @@ impl QtLine {
             Ok(c) => c.id(),
             Err(e) => fatal(&format!("line.exe の起動に失敗: {} {e}", exe.display())),
         };
-        log(&format!("[init] line.exe 起動 pid={pid} exe={}", exe.display()));
-        let top = find_window(pid, &|h| title_of(h).contains("qt-line-input"), 60)
-            .unwrap_or_else(|| {
+        log(&format!(
+            "[init] line.exe 起動 pid={pid} exe={}",
+            exe.display()
+        ));
+        let top =
+            find_window(pid, &|h| title_of(h).contains("qt-line-input"), 60).unwrap_or_else(|| {
                 kill_tree(pid);
                 fatal("Qt 窓が見つからない(タイトル qt-line-input の可視窓なし)")
             });

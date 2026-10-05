@@ -688,6 +688,9 @@ jobs:
           builds = [c for c in configs if c['bin'] == c['name']]
           if not any(c['bin'] == 'baseline' and c['name'] == 'baseline' for c in builds):
             builds.insert(0, cfg('baseline', 'pass'))
+          # tsx-qt-*(--form=qt)を回すときだけ baseline ビルドで Qt と line.exe を用意する(smoke などの PR ゲートに Qt の取得・ビルドを持ち込まない)。
+          need_qt = any(c['name'].startswith('tsx-qt-') for c in configs)
+          builds = [dict(b, qt='true' if need_qt and b['name'] == 'baseline' else 'false') for b in builds]
           # GitHub Actions の matrix は 1 ジョブあたり 256 要素まで。超えると e2e の matrix 生成で run 全体が失敗するので、
           # 何が原因か分かるメッセージで plan の段階で止める(only='ts-*,tsx-*' のような広い指定や runs の上書きで起きる)。
           n_jobs = sum(c['runs'] for c in configs)
@@ -715,7 +718,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dist
-          key: e2e-bin-${{ matrix.cfg.name }}-${{ hashFiles('src/**', 'crates/**', 'tools/e2e/qt_line_input/**', 'Cargo.toml', 'Cargo.lock', 'config.toml', 'tools/e2e/ime_key_matrix/ablations/**') }}
+          key: e2e-bin-${{ matrix.cfg.name }}-qt${{ matrix.cfg.qt }}-${{ hashFiles('src/**', 'crates/**', 'tools/e2e/qt_line_input/**', 'Cargo.toml', 'Cargo.lock', 'config.toml', 'tools/e2e/ime_key_matrix/ablations/**') }}
       - uses: dtolnay/rust-toolchain@stable
         if: steps.bin.outputs.cache-hit != 'true'
       # 全構成で同じキー。依存のビルド結果は baseline だけが保存し、他は復元だけする(撤去でコンパイルされ直すのは自クレートのみ)。
@@ -731,9 +734,9 @@ jobs:
           bash "tools/e2e/ime_key_matrix/ablations/${{ matrix.cfg.mutator }}"
           git diff --stat
           test -n "$(git diff --stat)" || { echo "撤去が差分を作らなかった(コードが変わって撤去箇所が消えた?)"; exit 1; }
-      # tsx-qt-*(typing_stress --form=qt)の入力先 line.exe。baseline ビルドだけが作る。
+      # tsx-qt-*(typing_stress --form=qt)の入力先 line.exe。tsx-qt-* を回すときの baseline ビルドだけが作る(plan の qt)。
       - name: Qt をインストール
-        if: steps.bin.outputs.cache-hit != 'true' && matrix.cfg.name == 'baseline'
+        if: steps.bin.outputs.cache-hit != 'true' && matrix.cfg.qt == 'true'
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.6.3'
@@ -742,14 +745,14 @@ jobs:
           arch: win64_msvc2019_64
           cache: true
       - name: line.exe(Qt QLineEdit)をビルド
-        if: steps.bin.outputs.cache-hit != 'true' && matrix.cfg.name == 'baseline'
+        if: steps.bin.outputs.cache-hit != 'true' && matrix.cfg.qt == 'true'
         shell: pwsh
         run: |
           cmake -S tools/e2e/qt_line_input -B qt-build -DCMAKE_BUILD_TYPE=Release
           cmake --build qt-build --config Release
           New-Item -ItemType Directory -Force -Path dist-qt | Out-Null
           Copy-Item qt-build\Release\line.exe dist-qt\
-          windeployqt --release --no-translations dist-qt\line.exe
+          windeployqt --release --no-translations --no-opengl-sw --no-system-d3d-compiler --no-compiler-runtime dist-qt\line.exe
       - name: awase とスパイクをビルド
         if: steps.bin.outputs.cache-hit != 'true'
         shell: pwsh
@@ -771,7 +774,7 @@ jobs:
           # tsx-bugreport-*(typing_stress --form=bugreport)が実体を起動するのに要る。typing_stress.exe と同じ dist\ に置く。
           if ('${{ matrix.cfg.name }}' -eq 'baseline') { Copy-Item target\debug\awase-settings.exe dist\ }
           Copy-Item target\debug\examples\chrome_probe.exe dist\
-          if ('${{ matrix.cfg.name }}' -eq 'baseline') { Copy-Item dist-qt\* dist\ -Recurse -Force }
+          if ('${{ matrix.cfg.qt }}' -eq 'true') { Copy-Item dist-qt\* dist\ -Recurse -Force }
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
@@ -1161,7 +1164,7 @@ jobs:
           $rc = $LASTEXITCODE
           "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
           "exit code: $rc"
-          Get-Process awase, awase-settings, ime_key_matrix_spike, typing_stress, chrome, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process awase, awase-settings, line, ime_key_matrix_spike, typing_stress, chrome, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
           exit 0
 
       # 不変条件(異常検出器): 上の期待表(rc.txt)とは別に数え、結果は invariants.json / inv_rc.txt に書く(summary が別の表で集計)。
