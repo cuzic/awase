@@ -40,7 +40,10 @@ const VK_ESCAPE: u32 = 0x1B;
 /// 実 Chrome は composition 無しのとき、空や U+FFFC のほか、本文と無関係な文字列(検証ページでは `s`・`st`)を返す
 /// ことが CI で分かった(run 37275701035)。そこで「空白・U+FFFC を除いて空」または「本文に含まれない」なら none とする。
 fn normalize(raw: &str, value: &str) -> String {
-    let t: String = raw.chars().filter(|c| *c != '\u{FFFC}' && !c.is_whitespace()).collect();
+    let t: String = raw
+        .chars()
+        .filter(|c| *c != '\u{FFFC}' && !c.is_whitespace())
+        .collect();
     if t.is_empty() || !value.contains(raw.trim()) {
         "none".into()
     } else {
@@ -115,7 +118,10 @@ fn imm_composition(child: HWND) -> String {
                 u32::try_from(bytes).unwrap_or(0),
             );
             let len = usize::try_from(n).unwrap_or(0) / 2;
-            format!("composing:{}", String::from_utf16_lossy(&buf[..len.min(buf.len())]))
+            format!(
+                "composing:{}",
+                String::from_utf16_lossy(&buf[..len.min(buf.len())])
+            )
         };
         let _ = ImmReleaseContext(child, himc);
         out
@@ -129,12 +135,16 @@ fn read_all(child: HWND, n: usize, phase: &str, settle: bool) {
     let uia_ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
     let imm = imm_composition(child);
     let text = read_text_maybe_settled(child, settle);
-    rec(&json!({"type":"preedit","n":n,"phase":phase,"utc":utc_hms(),
-        "uia":uia,"uia_raw":uia_raw,"uia_ms":uia_ms,"imm":imm,"value":value,"text":text}));
+    rec(
+        &json!({"type":"preedit","n":n,"phase":phase,"utc":utc_hms(),
+        "uia":uia,"uia_raw":uia_raw,"uia_ms":uia_ms,"imm":imm,"value":value,"text":text}),
+    );
 }
 
 pub(crate) fn preedit_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
-    let trials: usize = arg_value("--trials=").and_then(|v| v.parse().ok()).unwrap_or(6);
+    let trials: usize = arg_value("--trials=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(6);
     let end = arg_value("--preedit-end=").unwrap_or_else(|| "enter".into());
     if !matches!(end.as_str(), "enter" | "esc" | "none") {
         rec(&json!({"type":"abort","reason":format!("--preedit-end={end} は enter|esc|none")}));
@@ -145,13 +155,17 @@ pub(crate) fn preedit_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         rec(&json!({"type":"abort","reason":"preedit の打鍵に使う ka セルが無い"}));
         return;
     };
-    rec(&json!({"type":"preedit_config","end":end,"expect":probe.kana.to_string(),"trials":trials}));
+    rec(
+        &json!({"type":"preedit_config","end":end,"expect":probe.kana.to_string(),"trials":trials}),
+    );
     for n in 0..trials {
         if !focus_ok() {
             refocus();
         }
         if !focus_ok() {
-            rec(&json!({"type":"abort","reason":format!("preedit 試行前にフォーカスが外れた n={n}")}));
+            rec(
+                &json!({"type":"abort","reason":format!("preedit 試行前にフォーカスが外れた n={n}")}),
+            );
             return;
         }
         turn_ime_on(0);
