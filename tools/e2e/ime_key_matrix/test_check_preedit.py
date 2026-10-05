@@ -32,7 +32,9 @@ class Classify(unittest.TestCase):
         self.assertEqual(cp.truth("before", "enter"), "none")
         self.assertEqual(cp.truth("composing2", "esc"), "composing")
         self.assertIsNone(cp.truth("after", "none"))
-        self.assertEqual(cp.truth("after", "esc"), "none")
+        self.assertIsNone(cp.truth("after", "esc"))
+        self.assertEqual(cp.truth("after", "enter"), "none")
+        self.assertEqual(cp.truth("after_late", "enter"), "none")
 
 
 class Analyze(unittest.TestCase):
@@ -60,6 +62,12 @@ class Analyze(unittest.TestCase):
         self.assertEqual(cp.analyze([cfg()], done=True)["verdict"], "INVALID")
         self.assertEqual(cp.analyze([cfg()] + trial(0), done=False)["verdict"], "INVALID")
         self.assertEqual(cp.analyze([cfg(), {"type": "abort", "reason": "x"}] + trial(0), done=True)["verdict"], "INVALID")
+
+    def test_esc_after_is_observed_not_judged(self):
+        recs = [{"type": "preedit_config", "end": "esc"}, pe(0, "after", "composing:かか", "composing:かか")]
+        r = cp.analyze(recs, done=True)
+        self.assertEqual(r["counts"]["uia"]["wrong"], 0)
+        self.assertEqual(r["observed"]["uia/after"], {"composing": 1})
 
     def test_end_none_skips_after(self):
         recs = [{"type": "preedit_config", "end": "none"}, pe(0, "after", "composing:か")]

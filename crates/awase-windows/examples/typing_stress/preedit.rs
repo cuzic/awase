@@ -7,8 +7,8 @@
 //! 1 試行 = ON にそろえる →(before)→ かな 1 打 →(composing)→ もう 1 打 →(composing2)→ 終端キー →(after)。
 //! 各 phase で次の手段を同時に読み、`[TS-JSON]` に `preedit` 行として記録する(判定は check_preedit.py):
 //!  - `uia`   : フォーカス要素の UIA `TextEditPattern::GetActiveComposition`。別プロセスの入力先(実 Chrome 等)でも読める。
-//!              `composing:<文字列>` / `none` / `nopattern`(パターン非対応)/ `err:<段階>`。Chrome は composition 無しのとき
-//!              U+FFFC か空を返す(BUG-185 の調査 n≈70)ので、空・U+FFFC・空白だけは `none` に正規化する。
+//!              `composing:<文字列>` / `none` / `nopattern`(パターン非対応)/ `err:<段階>`。範囲の文字列(`uia_raw`)が空・U+FFFC・
+//!              本文(`value`)に含まれないときは `none` に正規化する(実 Chrome は無いときに `st` 等を返す)。
 //!  - `imm`   : 自プロセスの窓(`--form=edit|multi|rich|tsf`)の `ImmGetCompositionStringW(GCS_COMPSTR)`。別プロセスは `nohimc`。
 //!  - `value` : フォーカス要素の UIA ValuePattern(本文)。composition が本文に含まれて見えるかの参考。
 //!  - `text`  : 入力先の読み戻し(`WM_GETTEXT` / UIA)。composition 中に本文へ出ていないことの確認にも使う。
@@ -36,36 +36,41 @@ use crate::{
 
 const VK_ESCAPE: u32 = 0x1B;
 
-/// composition 無しの Chrome は U+FFFC(OBJECT REPLACEMENT)か空を返す。それらと空白だけなら無しとみなす。
-fn normalize(s: &str) -> String {
-    let t: String = s.chars().filter(|c| *c != '\u{FFFC}' && !c.is_whitespace()).collect();
-    if t.is_empty() {
+/// `GetActiveComposition` の範囲の文字列 `raw` を、`value`(同じ要素の本文)と突き合わせて composing/none に正規化する。
+/// 実 Chrome は composition 無しのとき、空や U+FFFC のほか、本文と無関係な文字列(検証ページでは `s`・`st`)を返す
+/// ことが CI で分かった(run 37275701035)。そこで「空白・U+FFFC を除いて空」または「本文に含まれない」なら none とする。
+fn normalize(raw: &str, value: &str) -> String {
+    let t: String = raw.chars().filter(|c| *c != '\u{FFFC}' && !c.is_whitespace()).collect();
+    if t.is_empty() || !value.contains(raw.trim()) {
         "none".into()
     } else {
-        format!("composing:{s}")
+        format!("composing:{raw}")
     }
 }
 
-/// フォーカス要素の UIA TextEditPattern::GetActiveComposition。
-fn uia_composition() -> String {
+/// フォーカス要素の UIA TextEditPattern::GetActiveComposition。戻りは (正規化した状態, 範囲の生の文字列)。
+fn uia_composition(value: &str) -> (String, String) {
     // SAFETY: UIA の COM 呼び出しのみ。
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         let Ok(a) =
             CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
         else {
-            return "err:create".into();
+            return ("err:create".into(), String::new());
         };
         let Ok(el) = a.GetFocusedElement() else {
-            return "err:focus".into();
+            return ("err:focus".into(), String::new());
         };
         let Ok(pat) = el.GetCurrentPatternAs::<IUIAutomationTextEditPattern>(UIA_TextEditPatternId)
         else {
-            return "nopattern".into();
+            return ("nopattern".into(), String::new());
         };
         match pat.GetActiveComposition() {
-            Ok(r) => normalize(&r.GetText(-1).map(|b| b.to_string()).unwrap_or_default()),
-            Err(_) => "none".into(), // null 範囲(composition 無し)
+            Ok(r) => {
+                let raw = r.GetText(-1).map(|b| b.to_string()).unwrap_or_default();
+                (normalize(&raw, value), raw)
+            }
+            Err(_) => ("none".into(), String::new()), // null 範囲(composition 無し)
         }
     }
 }
@@ -118,14 +123,14 @@ fn imm_composition(child: HWND) -> String {
 }
 
 fn read_all(child: HWND, n: usize, phase: &str, settle: bool) {
+    let value = uia_value();
     let t = std::time::Instant::now();
-    let uia = uia_composition();
+    let (uia, uia_raw) = uia_composition(&value);
     let uia_ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
     let imm = imm_composition(child);
-    let value = uia_value();
     let text = read_text_maybe_settled(child, settle);
     rec(&json!({"type":"preedit","n":n,"phase":phase,"utc":utc_hms(),
-        "uia":uia,"uia_ms":uia_ms,"imm":imm,"value":value,"text":text}));
+        "uia":uia,"uia_raw":uia_raw,"uia_ms":uia_ms,"imm":imm,"value":value,"text":text}));
 }
 
 pub(crate) fn preedit_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
@@ -166,6 +171,9 @@ pub(crate) fn preedit_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         }
         sleep_ms(700);
         read_all(child, n, "after", settle);
+        // 確定・取り消しの 1.5 秒後にもう一度読む(Chrome の UIA が確定後も範囲を返し続けるか=古い値かを見分ける)。
+        sleep_ms(1500);
+        read_all(child, n, "after_late", settle);
         // 次の試行に未確定を持ち越さない(none のときだけ。Enter で確定、本文は clear_text が消す)。
         if end == "none" {
             press(VK_RETURN, 0x1C, 50);

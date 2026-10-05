@@ -2,7 +2,7 @@
 """`typing_stress --mode=preedit` のログから、未確定文字(composition)の読み取り手段が使えるかを判定する。
 
 1 試行の phase(手順で真値が決まる): before=未確定なし / composing・composing2=未確定あり(かな 1〜2 打、確定前) /
-after=未確定なし(終端キー enter=確定・esc=取り消し。`--preedit-end=none` のときは判定しない)。
+after・after_late=未確定なし(終端キー enter=確定のときだけ判定。esc は IME で挙動が違い真値を決めず observed 集計のみ。none は判定しない。after_late は確定の 1.5 秒後)。
 手段ごとに各 phase の読み値を真値と比べる:
   right        真値どおり(composing なら `composing:<文字列>`、なしなら `none`)
   wrong        真値と逆(本当は未確定があるのに none、など)。この手段は判定に使えない
@@ -32,8 +32,10 @@ def truth(phase: str, end: str):
         return "composing"
     if phase == "before":
         return "none"
-    if phase == "after":
-        return None if end == "none" else "none"
+    # after は終端キーが enter(確定)のときだけ判定する。esc は IME で挙動が違う(MS-IME は 1 回では取り消さなかった、
+    # CI run 37275701035)ので真値を決めず、読み値の集計(observed)だけ出す。
+    if phase in ("after", "after_late"):
+        return "none" if end == "enter" else None
     return None
 
 
@@ -58,8 +60,14 @@ def analyze(recs: list, done: bool) -> dict:
     aborts = [r.get("reason", "") for r in recs if r.get("type") == "abort"]
     counts = {m: {"right": 0, "wrong": 0, "unavailable": 0} for m in METHODS}
     by_phase = {}
+    observed = {}
     leak = 0
     for r in reads:
+        for m in METHODS:
+            reading = r.get(m, "unavailable")
+            kind = "unavailable" if (reading in UNAVAILABLE or reading.startswith("err:")) else ("composing" if reading.startswith("composing:") else "none")
+            observed.setdefault(f"{m}/{r['phase']}", {}).setdefault(kind, 0)
+            observed[f"{m}/{r['phase']}"][kind] += 1
         want = truth(r["phase"], end)
         if want is None:
             continue
@@ -85,6 +93,7 @@ def analyze(recs: list, done: bool) -> dict:
         "counts": counts,
         "methods": {m: method_verdict(counts[m]) for m in METHODS},
         "by_phase": {f"{m}/{p}": v for (m, p), v in by_phase.items()},
+        "observed": observed,
         "text_leak": leak,
         "samples": [{k: r.get(k) for k in ("n", "phase", "uia", "imm", "value", "text")} for r in reads[:8]],
     }
@@ -112,6 +121,8 @@ def main(argv=None) -> int:
         print(f"PREEDIT_METHOD: method={m} verdict={res['methods'][m]} right={c['right']} wrong={c['wrong']} unavailable={c['unavailable']}")
     for k, v in sorted(res["by_phase"].items()):
         print(f"  {k}: {v}")
+    for k, v in sorted(res["observed"].items()):
+        print(f"  observed {k}: {v}")
     for s in res["samples"]:
         print(f"  sample: {s}")
     for why in res["invalid_reasons"]:
