@@ -4,10 +4,10 @@ title: |-
   Observation/Event の購読と消費
 summary: |-
   ADR-229「世界モデルの reduce 化と Effect 列の設計の検討結果」で未起草として残した「観測と Event の購読・消費」(Redux/Elm/Rack/ASGI から借りる案: 単一 Envelope = source/seq/time/scope/confidence、FocusScope、`subscriptions(&Model)`、ミドルウェア列)を、実害の記録(docs/known-bugs・既存 ADR)と W0 の実測(docs/tasks/world-model-write-inventory-2026-10-06/)に当てて選別した。主目的は撤去で、新しい型・trait・機構は足さない。
-  採る: (D1) 起動時のフォーカス確立(BUG-081 で作った別経路)で、定常の `FocusChanged` が入れる「スコープの同一性」のフィールドが足されるたびに漏れ、Event が 1 つずつ足された(BUG-102 fence・BUG-114 根本原因1 `app_policy`・BUG-148 `current_focus` の 3 件)。3 つの `Initial*` を 1 つにまとめ(ADR-134 D1c の元の設計に戻す)、`app_policy`・`current_focus` の代入を `reduce_` で始まる共有関数にし、モデル全体の `Debug` 比較の等価性テストで将来の漏れを捕まえる。(D2) 本番に読み手のいない `ImeEventLog` の 512 件のリングを撤去し、`seq` の採番だけを残す。(D3) `InputModeObserved`/`InputModeApplied` の `at: TickMs` は本番の全 7 か所で Envelope の `tick_ms` と同じ値なので撤去する。(S3) `on_focus_process_changed` の死んだ `reset_detect_state` 呼び出しを消す。
+  採る: (D1) 起動時のフォーカス確立(BUG-081 で作った別経路)で、定常の `FocusChanged` が入れる「スコープの同一性」のフィールドが足されるたびに漏れ、Event が 1 つずつ足された(BUG-102 fence・BUG-114 根本原因1 `app_policy`・BUG-148 `current_focus` の 3 件)。3 つの `Initial*` を 1 つにまとめ(ADR-134 D1c の元の設計に戻す)、起動時の腕に `app_policy`・`current_focus`・fence の 3 行を直接書き(共有関数は作らない)、モデル全体の `Debug` 比較の等価性テストで将来の食い違いを捕まえる。(D2) 本番に読み手のいない `ImeEventLog` の 512 件のリングを撤去し、`seq` の採番だけを残す。(D3) `InputModeObserved`/`InputModeApplied` の `at: TickMs` は本番の全 7 か所で Envelope の `tick_ms` と同じ値なので撤去する。(S3) `on_focus_process_changed` の死んだ `reset_detect_state` 呼び出しを消す。
   採らない: 全 Event 共通の Envelope、時刻の入口の一本化、admission の集約、フォーカスの入口と 9 種の型の 1 構造体化、フォーカス hwnd の写しの統合、`subscriptions(&Model)`、ミドルウェア列、全書き込みの reduce 化と journal からの完全再生、起動時プローブ失敗の窓(D1 でも残る残余)など。各々に考え直す条件を書く。
 status: |-
-  起草(2026-10-05)。Opus round1(Blocker なし、Must 3・Should 8・Nit 6)を反映。コードは変えていない。
+  起草(2026-10-05)。Opus round1(Blocker なし、Must 3・Should 8・Nit 6)・round2(Must 1・Nit 3)を反映。コードは変えていない。
 related_adr:
   - "ADR-229"
   - "ADR-032"
@@ -64,17 +64,17 @@ BUG-081 は同じ型の 1 件ではなく、別経路そのものを作った起
 
 ## 決定
 
-### D1: 起動時のフォーカス確立を 1 つの Event にし、同一性の代入を `FocusChanged` と共有する(実害: BUG-102・114・148)
+### D1: 起動時のフォーカス確立を 1 つの Event にし、`FocusChanged` との食い違いを等価性テストで固定する(実害: BUG-102・114・148)
 
 - 3 つの `Initial*` を、`FocusChanged` から `from` を除いたのと同じ形の 1 つの Event にまとめる: `InitialFocusScopeEstablished { to: HwndId, profile: ImePolicyProfile, focus_epoch: FocusEpoch }`(フィールド名・型は `FocusChanged` と同じ。新しい型は作らない)。起動時の 3 つの値が `FocusChanged` と同じ式で取れることは確認済み(`advance_focus_tracking` → `CurrentFocus::update_with_process_name` が `classified.hwnd` をそのまま `current.hwnd` に入れる〈`focus/current.rs:64`〉ので `focus_fence().hwnd == classified.hwnd`。`profile` は `current_app_profile()`、epoch は `platform_state.focus.focus_epoch`)。
-- reducer(M3 で確定):
-  - 共有する関数は `reduce_focus_changed` の**先頭 2 行**(`app_policy`・`current_focus`)だけを持ち、名前は `reduce_` で始める(例 `reduce_scope_identity`)。`architecture_guard.rs::reduce_helpers_are_called_only_from_reduce_body` が `fn reduce_` の定義を自動で拾い、`reduce()` の本体以外からの呼び出しを禁じる(ADR-170 の規約)ので、この関数も `reduce()` の外から呼べない。
-  - **fence は共有関数の外**(各腕)に置き、今の 2 つの口をそのまま呼ぶ: 定常は `clear_on_focus_change`(観測プールと drift を消す)、起動時は `establish_initial_fence`(消さず、1 回だけの `debug_assert!` つき)。fence を共有関数に入れると、起動時に観測プールと drift(belief の根拠と drift correction の入力)を消すことになり ADR-102 決定3-b に触れ、`establish_initial_fence` の 1 回性の検査も消える。
-  - `FocusChanged` の腕だけが、続けて belief 側のリセットを行う。
+- reducer(round1 M3・round2 M1-r2 で確定):
+  - **共有関数は作らない**。`InitialFocusScopeEstablished` の腕に、`self.app_policy = AppImePolicy::from_profile(profile)`・`self.current_focus = Some(to)`・`self.observations.establish_initial_fence(FocusFence{epoch: focus_epoch, hwnd: to})` の 3 行を直接書く。`reduce_focus_changed` の先頭 2 行との重複は、下の等価性テスト(モデル全体の `Debug` 比較)が食い違いを捕まえるので、構造で防がない。再発を防ぐ本体はテストである。`reduce_` で始まる共有関数にすると、既存のガード `reduce_helpers_are_called_only_from_reduce_body`(`reduce()` の本体からちょうど 1 回だけ呼ばれることを要求)に必ず落ちるので採らない。
+  - **fence は各腕がそれぞれの口を呼ぶ**: 定常は `clear_on_focus_change`(観測プールと drift を消す)、起動時は `establish_initial_fence`(消さず、1 回だけの `debug_assert!` つき)。起動時に `clear_on_focus_change` を通すと、観測プールと drift(belief の根拠と drift correction の入力)を消すことになり ADR-102 決定3-b に触れ、`establish_initial_fence` の 1 回性の検査も消える。
+  - `FocusChanged` の腕だけが、続けて belief 側のリセットを行う(変えない)。
 - 呼び出し元: `sync_initial_focus_fence`・`sync_initial_app_policy`・`sync_initial_focus_hwnd` の 3 関数を 1 つにする。統合した関数は、`advance_focus_tracking` の**後**(`current_app_profile()` が確定してから)に呼ぶ、という今の順序の要件を引き継ぐ。`dispatch_event(` を `establish_initial_focus_scope` の本体に直接書かない、という約束(`focus_tracking.rs:229-233` の doc)も保つ。ログは 3 行(`[focus-fence] bootstrap initial fence`・`[app-policy] bootstrap initial app_policy`・`[focus] bootstrap initial current_focus`)を、3 つの値(fence・profile・hwnd)を載せた 1 行にする(BUG-114 本文はこのログ行を解決の証拠に使っている。`tools/e2e/ime_key_matrix/test_log_anchors_in_rust_source.py` の ANCHORS には無いので CI は壊れない)。
-- 固定するテスト(すべて `state/ime_model.rs` の単体テストで Linux で回る。3 と 4 は既存の書き換え):
-  1. **等価性**(M1): `a`・`b` を `ImeModel::new()` で作り、同じ envelope で `a` に `FocusChanged{from: None, to, profile, focus_epoch}`、`b` に `InitialFocusScopeEstablished{to, profile, focus_epoch}` を通す。**起動時は違ってよいフィールドを手で挙げて** `a` から `b` へ写し(現状は `input_barrier` だけの見込み。`key_track` は `new()` の値と `KeyTrack::default()` が一致するかを実装時に確かめ、違えば一覧に足す)、`format!("{a:?}") == format!("{b:?}")` を要求する。`ImeModel` は `#[derive(Debug)]` なので、`reduce_focus_changed` に既定値以外を入れる新しいフィールドが足されると、このテストが落ち、「同一性か(起動時も入れる)/belief のリセットか(一覧に足す)」の判断を強制する。一覧に `input_barrier` が載ること自体が、「起動時は `FocusTransition` の settle を立てない」という今の意図の明文化になる。
-  2. **belief 不変**(M2): 既存の 3 本と同じ方式で 1 本にする。`fully_populated_model` に `app_policy`・`current_focus`・fence(`establish_initial_fence` で同じ値)を目的の値で入れてから `InitialFocusScopeEstablished` を流し、**モデル全体の `Debug` 表現が変わらない**ことを要求する。あわせて、未確立のモデルに流すと 3 つが入ることを確かめる。個別のフィールドを手書きで並べる形にはしない(`desired_is_placeholder` などが漏れるため)。
+- 固定するテスト(1・2 は `ime_model.rs`、3 は `ime_model.rs`/`platform_state.rs`、4 は `architecture_guard.rs`。いずれも Linux で回る〈`platform_state` は P4 で ungated〉。3 と 4 は既存の書き換え):
+  1. **等価性**(M1): `a`・`b` を `ImeModel::new()` で作り、同じ envelope で `a` に `FocusChanged{from: None, to, profile, focus_epoch}`、`b` に `InitialFocusScopeEstablished{to, profile, focus_epoch}` を通す。**起動時は違ってよいフィールドを手で挙げて** `a` から `b` へ写し(`input_barrier` 1 つで網羅することを round2 で確認済み。`key_track` は `new()` の値と `KeyTrack::default()` が一致する。写す行には、なぜ違ってよいか〈起動時は `FocusTransition` の settle を立てない、今の挙動〉をテストの中のコメントで一言書く)、`format!("{a:?}") == format!("{b:?}")` を要求する。`ImeModel` は `#[derive(Debug)]` なので、`reduce_focus_changed` に既定値以外を入れる新しいフィールドが足されると、このテストが落ち、「同一性か(起動時も入れる)/belief のリセットか(一覧に足す)」の判断を強制する。一覧に `input_barrier` が載ること自体が、「起動時は `FocusTransition` の settle を立てない」という今の意図の明文化になる。
+  2. **belief 不変**(M2): 既存の 3 本と同じ方式で 1 本にする。`fully_populated_model` に `app_policy`・`current_focus`・fence(`establish_initial_fence` で同じ値)を目的の値で入れてから(`app_policy`・`current_focus` の目的の値がフィクスチャの値と違うことを、既存テストと同じく `assert_ne!` で確かめてから)`InitialFocusScopeEstablished` を流し、**モデル全体の `Debug` 表現が変わらない**ことを要求する。あわせて、未確立のモデルに流すと 3 つが入ることを確かめる。個別のフィールドを手書きで並べる形にはしない(`desired_is_placeholder` などが漏れるため)。
   3. BUG-102 の回帰テスト `bootstrap_fence_desync_lets_medium_poll_override_high_probe`(`ime_model.rs`)と BUG-148 の回帰テスト `initial_focus_hwnd_lets_explicit_intent_be_recorded_before_first_focus_change`(`platform_state.rs`)は**消さず**、Event 名だけを書き換える(BUG ファイルから参照されている)。
   4. `architecture_guard.rs`: touches-only の 3 本(`initial_focus_fence_event_only_touches_the_fence`・`initial_app_policy_event_only_touches_app_policy`・`initial_focus_hwnd_event_only_touches_current_focus`)を、`InitialFocusScopeEstablished` の dispatch が 1 か所だけであることを固定する 1 本にする。`establish_initial_focus_scope_does_not_write_ime_belief`(`EXEMPT` と対象関数リスト、`dispatch_event(` ちょうど 1 件の assert 3 組、`advance_focus_tracking` の後に呼ぶ順序の assert)は 1 関数分に書き換える。`bootstrap_initial_focus_scope_precedes_ime_cache_initialization`(`run_all` での呼び出しが 1 回)は残す。新しい起動時経路の追加を捕まえるのは、等価性テストではなくこれらのガードの役目。
 - docs の書き換え: `ime_model.rs` の `current_focus` の doc(「`FocusChanged` の reducer でのみ更新する」は BUG-148 以降すでに誤り)、`observation_store.rs:506`・`probe_admission.rs:130`・`transition.rs:35` の Event 名。
@@ -108,7 +108,7 @@ BUG-081 は同じ型の 1 件ではなく、別経路そのものを作った起
 | 6 | `InputModeObserved`/`InputModeApplied` の `at` | S1 |
 | 7 | `on_focus_process_changed` の `reset_detect_state()` の条件付き呼び出し(`focus_tracking.rs:858-867`)。死んだコードと確認済み: `FocusChanged` の reduce が同じ 2 つ(`force_guards.clear`・`observe_miss_monitor.record_success`)を行った後、この行までに同期的に走るのは `apply_hwnd_cache_restore`・`reset_stale_ime_on_for_imm_broken`/`assume_closed_for_new_thread`・`presync_applied_open_on` だけで、本番の `force_guards.add`(`apply_panic_reset` のみ)も `record_miss`(`apply_ime_update` のみ)も呼ばれない | S3 |
 
-新しく足すもの: private な `reduce_` 関数 1 つ(D1)と等価性のテスト 1 本だけ。**新しい型・trait・Event の種類は 0**。行数は実装 PR で実測して本文に書く(ガード 3 本〈各約 50〜70 行〉と touches-only 3 本〈各約 40 行〉が 1 本ずつになるので、等価性テスト〈約 30 行〉を足しても純減の見込み)。旧来の Event・関数・ガードを残したまま新しいものを並べたら失敗とする。
+新しく足すもの: 等価性のテスト 1 本だけ(起動時の腕の 3 行は、消える 3 つの腕の置き換え)。**新しい型・trait・Event の種類は 0**。行数は実装 PR で実測して本文に書く(ガード 3 本〈各約 50〜70 行〉と touches-only 3 本〈各約 40 行〉が 1 本ずつになるので、等価性テスト〈約 30 行〉を足しても純減の見込み)。旧来の Event・関数・ガードを残したまま新しいものを並べたら失敗とする。
 
 ## 採らない案と理由
 
@@ -135,7 +135,7 @@ BUG-081 は同じ型の 1 件ではなく、別経路そのものを作った起
 | 段階 | 内容 | 撤去対象(目録の #) | 検証 | 取りやめ条件 |
 |---|---|---|---|---|
 | S1 | D2・D3 | 4・5・6 | Linux の `cargo nextest run --workspace --lib`(`ime_event_log`・`platform_state`〈P4 で ungated〉・`ime_model` の単体テスト、書き直した `manual_hub_clock_drives_event_monotonic`)、`golden_scenarios`、`journal.rs` の `event_seq`/`tick_ms` のテスト、`layer_boundary_guard`(`ime_event_log` を `CORE_MODULES` へ移す変更と C-6 のメッセージ)、`windows-cross-check`・`windows-build` | ①②のどちらかが成り立たない。その部分だけ取りやめ、残りは進める |
-| S2 | D1 | 1・2・3 | D1 のテスト 1〜4(Linux)、`windows-build`。CI の実機相当: BUG-148 は、当時の再現手順(`ci/e2e-ime` の構成。run 35484080057 が再現、35484314507 が対照)と同じく、awase を起動してフォーカスを一度も別プロセスへ移さずに無変換を押し、手順 5 が PASS し `[apply-ime] outcome=Unwarranted`(`attempts_len=0`)が出ないことを確かめて PR に書く。BUG-114 は CI で同じ症状を数えた前例が無いので、単体テスト(等価性・belief 不変)と統合後のログ行の目視のみとし、「実機未確認」と書く | belief 不変の主張を全体比較の 1 本で表せない、または等価性テストの「起動時は違ってよい」一覧が `input_barrier`(と `key_track`)を超えて増えるとき。その場合は Event を残し、等価性のテストだけを足す |
+| S2 | D1 | 1・2・3 | D1 のテスト 1〜4(Linux)、`windows-build`。CI の実機相当: BUG-148 は、当時の再現手順(`ci/e2e-ime` の構成。run 35484080057 が再現、35484314507 が対照)と同じく、awase を起動してフォーカスを一度も別プロセスへ移さずに無変換を押し、手順 5 が PASS し `[apply-ime] outcome=Unwarranted`(`attempts_len=0`)が出ないことを確かめて PR に書く。BUG-114 は CI で同じ症状を数えた前例が無いので、単体テスト(等価性・belief 不変)と統合後のログ行の目視のみとし、「実機未確認」と書く | belief 不変の主張を全体比較の 1 本で表せない、または等価性テストの「起動時は違ってよい」一覧が `input_barrier` を超えて増えるとき。その場合は Event を残し、等価性のテストだけを足す |
 | S3 | 目録 #7 | 7 | `cargo check --target x86_64-pc-windows-msvc -p awase-windows`(`runtime/` は gated なので Linux のテストは無い)、`windows-build`。固定するもの: 同じ消去は `FocusChanged` の reducer の `force_guards.clear_for_focus_change`・`record_success` が担い、それは既存の reducer のテストが固定している旨を PR に書く | ③で、区間に条件を真にしうる呼び出しが入っていたとき(その場合は撤去しない) |
 
 全段階の共通の後処理は ADR-229「移行のレシピ」に従う(`fix-requires-evidence.md` の表・`.githooks/pre-push`・`examine_globs` の見直し)。
@@ -149,7 +149,7 @@ BUG-081 は同じ型の 1 件ではなく、別経路そのものを作った起
 | ADR-102 決定3-b | 起動時は belief を書かない。D1 はこれを保ち、belief 不変の全体比較テストで固定する |
 | ADR-104・ADR-106 | fence/epoch による観測の admission。変えない |
 | ADR-134 D1c・ADR-186 | BUG-114・BUG-148 の修正。D1 は ADR-134 D1c の元の設計(1 つの Event)に戻すが、起動時に `app_policy`・`current_focus` を入れる効果は変えない |
-| ADR-170 | reduce のヘルパーは `reduce_` で始め、`reduce()` の本体からだけ呼ぶ。D1 の共有関数もこれに従う |
+| ADR-170 | reduce のヘルパーは `reduce_` で始め、`reduce()` の本体から 1 回だけ呼ぶ(`reduce_helpers_are_called_only_from_reduce_body`)。D1 は共有関数を作らないので、このガードは変えない |
 | ADR-224 | `ImeStateHub` の ungate。P4(#510)で済んでおり、D1〜D3 の単体テストは Linux で回る |
 | ADR-225 | journal からの再生・fixture 化の見送り。本 ADR は journal からの完全再生を目標にしない |
 | ADR-218〜220・ADR-180 決定2 | DSL・宣言テーブル・統合しても数が減らない統一の見送り。本 ADR は新しい部品を作らず、Event と関数を減らす |
@@ -157,3 +157,4 @@ BUG-081 は同じ型の 1 件ではなく、別経路そのものを作った起
 ## Opus レビューの記録
 
 - round1(2026-10-05): Blocker なし。Must 3(等価性テストの比較一覧がトートロジー → 「起動時は違ってよい」一覧+全体の `Debug` 比較、belief 不変テストを全体比較に、fence を共有関数の外に置き名前を `reduce_` で始める)・Should 8・Nit 6 を反映。旧 S0 の③(起動時の hwnd が同じ値)と④(`reset_detect_state` の条件が常に偽)は Opus が読みで確認したので、本文の事実に移した。
+- round2(2026-10-05): round1 の反映は正確。新しい Must 1(M1-r2: round1 M3 の「共有関数を `reduce_` で始める」は `reduce_helpers_are_called_only_from_reduce_body` に必ず落ちる)を、共有関数を作らず起動時の腕に 3 行を直接書く形で反映。等価性テストの「起動時は違ってよい」一覧は `input_barrier` 1 つで網羅(`key_track` は既定値と一致)と確認された。Nit 3 を反映。

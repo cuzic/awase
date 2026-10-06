@@ -236,7 +236,7 @@
 | [227](227-bug074-giveup-as-closed-ime-evidence.md) | BUG-074: give-up で文字が痕跡なく消える件。先に測り(D0)、方向(再オープン/案K/通知/追随)は所有者が決める | (i) 実装済み(PR #480・`900a5f3e`、2026-10-05、CI 検証済み・実機未検証): `Imm32Unavailable`×GJI の give-up を読み直しのきっかけにする(`take_gi |
 | [228](228-bug-report-legacy-msime-custom-key-table.md) | 不具合報告に旧互換 MS-IME のキー表の中身を、許可リスト+固定長の読める形で添付するか(ADR-148 の「読めず削れない」反対理由への答えが要る) | 見送り(2026-10-04、Opus r1: 案 B は動機の 2 件の調査を前に進めない・実装なし) |
 | [229](229-os-independent-core-and-dumb-windows-executor.md) | awase-windows を「Windows の dumb な実行役」に絞り、判断を Linux でテストできる側へ寄せる層の引き直し | FCIS で改訂(2026-10-06)。T1〜T7 は PR #492〜#495 でマージ済み。ADR-224 改訂・S2 を承認。P0・P1・RW・S2 を実装中 |
-| [232](232-observation-event-subscription-and-consumption.md) | Observation/Event の購読と消費 | 起草(2026-10-05)。Opus round1 反映済み |
+| [232](232-observation-event-subscription-and-consumption.md) | Observation/Event の購読と消費 | 起草(2026-10-05)。Opus round1・round2 反映済み |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
