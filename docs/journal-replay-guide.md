@@ -74,14 +74,14 @@ TH1dで実際に使った手順（1本目: 不具合報告`01M29KDNZ22KNY1FPXSKB
 
 1. `journal.rs::JournalEntry::ConvClassifyCall` — `classify_conv_transition` の実引数と戻り値を構造化して記録する専用エントリ。`kp_stage_idle_conv_check`（`runtime/key_pipeline.rs`）が呼び出しのたびに記録する。
 2. `state/conv_classify.rs::ConvClassifyFixture` — リプレイ専用の独立フォーマット（`Serialize`/`Deserialize` 両対応）。`JournalEntry` 全体は `KeyEventSummary` に `&'static str` を含み単純には `Deserialize` できないため、リプレイに必要なフィールドだけを持つ別構造体として定義している。
-3. `tests/journals/*.json` — `ConvClassifyFixture` の配列を保存したフィクスチャファイル群。
-4. `tests/journal_replay.rs` — `tests/journals/` 配下の全 JSON を読み込み、記録された入力で `classify_conv_transition` を再実行し、`expected` と一致するかを assert する。`conv_classify` モジュールは `#[cfg(windows)]` でゲートされていないため、**このテストは Linux ホストでもそのまま実行できる**（CI で常時実行可能）。
+3. `tests/journals/conv_classify/*.json` — `ConvClassifyFixture` の配列を保存したフィクスチャファイル群。
+4. `tests/journal_replay.rs` — `tests/journals/conv_classify/` 配下の全 JSON を `awase_replay::replay_dir`（`crates/awase-replay`、「1 ディレクトリ = 1 形式」の再生ハーネス）で読み込み、記録された入力で `classify_conv_transition` を再実行し、`expected` と一致するかを assert する。`conv_classify` モジュールは `#[cfg(windows)]` でゲートされていないため、**このテストは Linux ホストでもそのまま実行できる**（CI で常時実行可能）。
 
 ## バグに気づいたときの手順
 
 1. **修正する前に**、ホットキーでジャーナルをダンプする（Alt+変換 → Alt+無変換 を2回連続）。ダンプ先は `%TEMP%/awase_journal_<tick_ms>.json`。
 2. ダンプ JSON から、バグが起きた直前の `ConvClassifyCall` エントリを探す（`elapsed_ms` とログのタイムスタンプを突き合わせる）。
-3. `crates/awase-windows/tests/journals/` に新しい JSON ファイル（または既存ファイルへの追記）として、以下の形式で転記する:
+3. `crates/awase-windows/tests/journals/conv_classify/` に新しい JSON ファイル（または既存ファイルへの追記）として、以下の形式で転記する:
 
 ```json
 [

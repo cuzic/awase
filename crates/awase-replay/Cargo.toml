@@ -1,0 +1,24 @@
+[package]
+name = "awase-replay"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "journal 再生 fixture(1 ディレクトリ = 1 形式の JSON 配列)を読み、件ごとに検査する dev 専用ハーネス(ADR-229)"
+publish = false
+
+[lib]
+name = "awase_replay"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+doc_markdown = "allow"
