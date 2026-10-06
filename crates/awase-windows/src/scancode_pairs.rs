@@ -352,7 +352,9 @@ pub fn compute_swap_write(
         .iter()
         .map(|&(e, _)| e)
         .filter(|e| {
-            !is_removed(e) && !added_from.contains(&e.0) && removed_own.iter().any(|r| r.0 == e.0)
+            !is_removed(e)
+                && !added_from.contains(&e.0)
+                && (removed_own.iter().any(|r| r.0 == e.0) || replaced.iter().any(|r| r.0 == e.0))
         })
         .collect();
     let mut out = out_existing;
@@ -736,6 +738,16 @@ mod tests {
         // 何も消さない操作では何も報告しない。
         let same = compute_swap_write(&existing, &[], true).unwrap();
         assert!(same.revealed.is_empty());
+    }
+
+    #[test]
+    fn s2_1_caps_extra_ctrl_removing_a_left_ctrl_to_caps_entry_reports_same_from_entries() {
+        // Caps 追加 Ctrl を足すとき、他ツールの `左 Ctrl→Caps` は消える（組が入れ替えに読み替わるため）。
+        // 同じ from の `左 Ctrl→右 Alt` が残り、効き出しうるので revealed に出す。
+        let existing = vec![(LCTRL, CAPS), (LCTRL, SCANCODE_RIGHT_ALT)];
+        let plan = compute_swap_write(&existing, &[], true).unwrap();
+        assert_eq!(plan.displaced, vec![(LCTRL, CAPS)]);
+        assert_eq!(plan.revealed, vec![(LCTRL, SCANCODE_RIGHT_ALT)]);
     }
 
     // ---- 全列挙（小さな宇宙、E0 キーと 0 を含む） ----
