@@ -64,6 +64,7 @@ DRIFT_RE = re.compile(r"\[drift\] correction")
 READ_RE = re.compile(r"drift_correction_read")
 GAVE_UP_RE = re.compile(r"\[drift\] actuation gave up")
 REARM_RE = re.compile(r"\[drift\] fresh observation after give-up")
+PROCESS_CHANGE_RE = re.compile(r"focus transition .*changed_process=true")
 BLIND_MAX_ATTEMPTS = 5  # state/app_ime_policy.rs::IME_ACTUATION_BLIND_MAX_ATTEMPTS
 BURST_GAP_S = 2.0       # 実測の補正の間隔(20〜50ms)より十分長く、再武装の待ち(3 秒)より短い
 REARM_COOLDOWN_S = 3.0  # tuning.rs::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS
@@ -91,7 +92,7 @@ def judge_bug114(lines, t_close, t_second, expect_profile="TsfNative"):
     """awase.log の行から BUG-114 の判定を返す。時刻はすべて UTC の 0 時からの秒。
 
     drift 補正を数えるのは窓を閉じる(`t_close`)より前の行だけ(閉じる操作そのものが GJI I/O を起こし、
-    補正のきっかけになるため)。`t_second` は 2 回目のきっかけ(WT 内のペイン分割→閉じる)を始めた時刻。
+    補正のきっかけになるため)。`t_second` は 2 回目のきっかけ(同じ WT プロセスの補助窓へ前面を移して戻す)を始めた時刻。
     合否基準(走らせる前に確定):
       1. `[focus-scope] bootstrap initial scope:` が 1 行で profile=expect_profile
       2. `drift_correction_read` が 0 件
@@ -99,6 +100,8 @@ def judge_bug114(lines, t_close, t_second, expect_profile="TsfNative"):
       4. 連続した補正がどれも BLIND_MAX_ATTEMPTS 回以内で、`gave up` が 1 回以上(止まったこと)
       5. give-up 後の再武装(`fresh observation after give-up`)が 0 件。ただし 2 回目のきっかけが最後の gave up から
          REARM_COOLDOWN_S 以上後で、その後 REARM_TAIL_S 以上窓が開いていた回だけ確かめられる(そうでなければ INVALID)
+    前提: プロセスの切り替え(`focus transition … changed_process=true`)は起動時の 1 回だけ(2 回以上なら FocusChanged で
+    app_policy が作り直され、起動時経路を見ていないので INVALID)。
     FAIL(1・2・4・5 の違反)> INVALID > PASS。`reproduced` は BUG-114 の症状が出たか(2・4・5 のどれかに違反、
     1 の profile 違いは含めない)。修正を外した対照で「再現した」を機械的に判定するのに使う。
     """
@@ -109,8 +112,11 @@ def judge_bug114(lines, t_close, t_second, expect_profile="TsfNative"):
     c = {"profile": profiles[0] if len(profiles) == 1 else profiles,
          "read": sum(bool(READ_RE.search(ln)) for _, ln in timed),
          "drift": len(drift_t), "bursts": bursts(drift_t), "gave_up": len(gave_up_t),
-         "rearm": sum(bool(REARM_RE.search(ln)) for _, ln in timed)}
+         "rearm": sum(bool(REARM_RE.search(ln)) for _, ln in timed),
+         "process_changes": sum(bool(PROCESS_CHANGE_RE.search(ln)) for _, ln in timed)}
     invalid, failures, symptoms = [], [], []
+    if c["process_changes"] != 1:
+        invalid.append(f"プロセスの切り替えが起動時の 1 回でない({c['process_changes']})")
     if len(profiles) != 1:
         invalid.append(f"[focus-scope] bootstrap の行が1件でない({len(profiles)})")
     elif profiles[0] != expect_profile:

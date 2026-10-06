@@ -43,6 +43,7 @@ def _l(sec, msg):
 
 T0 = 10 * 3600  # 10:00:00 の 0 時からの秒
 SCOPE = _l(1, "[focus-scope] bootstrap initial scope: to=HwndId(1) profile=TsfNative focus_epoch=1")
+BOOT = _l(1, "focus transition seq=1 elapsed_ms=64 changed_process=true changed_window=true")
 
 
 class Bug114(unittest.TestCase):
@@ -52,8 +53,8 @@ class Bug114(unittest.TestCase):
     def gave_up(self, t):
         return [_l(t, "[drift] actuation gave up (Blind): x")]
 
-    def judge(self, lines, close=20.0, second=12.0):
-        return P.judge_bug114(lines, T0 + close, T0 + second)
+    def judge(self, lines, close=20.0, second=12.0, boot=True):
+        return P.judge_bug114(([BOOT] if boot else []) + lines, T0 + close, T0 + second)
 
     def test_bounded_burst_with_gave_up_passes(self):
         r = self.judge([SCOPE] + self.drift(5, 5) + self.gave_up(5.2))
@@ -99,6 +100,14 @@ class Bug114(unittest.TestCase):
 
     def test_missing_scope_line_is_invalid(self):
         self.assertEqual(self.judge(self.drift(5, 1) + self.gave_up(5.1))["verdict"], "INVALID")
+
+    def test_second_process_change_is_invalid(self):
+        extra = [_l(6, "focus transition seq=9 changed_process=true changed_window=true")]
+        r = self.judge([SCOPE] + self.drift(5, 5) + self.gave_up(5.2) + extra)
+        self.assertEqual(r["verdict"], "INVALID")
+
+    def test_missing_boot_transition_is_invalid(self):
+        self.assertEqual(self.judge([SCOPE] + self.drift(5, 5) + self.gave_up(5.2), boot=False)["verdict"], "INVALID")
 
     def test_bursts_split_by_gap(self):
         self.assertEqual(P.bursts([1.0, 1.4, 1.8, 5.0, 5.4]), [3, 2])

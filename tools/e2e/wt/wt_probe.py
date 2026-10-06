@@ -9,12 +9,13 @@
   N  bug113-noawase  B と同じ操作を awase なしで(対照。「@」が出るなら awase 起因ではない)
   S  bug113-scan    B の変種: 実機の半角/全角の scan code(0x29)を付け、回数を --presses2(既定 30)・間隔 0.6 秒に増やす
   H  bug121         Ctrl+無変換(keys.ime_off 既定)を 20 回(BUG-121: 実 IME と belief がずれた直後に稀に「@」)。1 回ごとに外から IME を ON に戻してずれを作る
-  E  bug114   BUG-114 の起動時経路: 端末を先に開いて前面にしてから awase を起動する(起動時のフォーカススコープが
-              Windows Terminal=TsfNative)。IME OFF キー → 実 IME を WM_IME_CONTROL(IMC_SETOPENSTATUS,1)で外から開く(desired=閉
-              と実 IME をずらす)→ WT 内でペインを分割して閉じる(1 回目のきっかけ)→ 4.5 秒 → もう一度分割して閉じる(2 回目、
-              give-up のクールダウン 3 秒明け)→ 4.5 秒 → 窓を閉じる。drift 補正を起こすのは打鍵ではなく、WT 内のフォーカス移動で
-              awase が観測する GJI I/O(ObserverPoll)。窓を閉じる操作も同じ経路を叩くので、判定は閉じる前の行だけを数える
-              (wt_pure.judge_bug114、合否を付ける唯一の相)。プロセスは変わらないので起動時の app_policy のまま
+  E  bug114   BUG-114 の起動時経路: 補助の WT 窓を開き、次に対象の WT 窓を開いて前面にしてから awase を起動する(起動時の
+              フォーカススコープが Windows Terminal=TsfNative)。IME OFF キー → 実 IME を WM_IME_CONTROL(IMC_SETOPENSTATUS,1)で
+              外から開く(desired=閉 と実 IME をずらす)→ 補助窓へ前面を移して戻す(1 回目のきっかけ)→ 5 秒 → もう一度(2 回目、
+              give-up のクールダウン 3 秒明け)→ 5 秒 → 窓を閉じる。drift 補正を起こすのは打鍵ではなく、同じ WT プロセス内の窓の
+              移動(FocusHwndUpdated)の後に awase が観測する GJI I/O(ObserverPoll)。キー操作(ペイン分割など)は SkipTyping で
+              観測が止まるので使わない。窓を閉じる操作も同じ経路を叩くので、判定は閉じる前の行だけを数える(wt_pure.judge_bug114、
+              合否を付ける唯一の相)。プロセスが変わると FocusChanged で app_policy が作り直されるので、判定はそれも数える
 使い方: python wt_probe.py --dist dist --out out [--phases V,I,B,N] [--presses 10]
 出力: out/results.json, out/summary.md, out/logs/*, out/shots/*.png
 判定は付けない(観測と可否表)。実機で何が起きたかの事実だけを残す。例外は相 E(BUG-114 の判定)。終了コードは --expect=pass なら PASS で 0、--expect=reproduce(修正を外した対照)なら
@@ -263,26 +264,38 @@ def utc_secs():
     return t % 86400
 
 
-def split_and_close_pane(hwnd):
-    """WT 内でペインを分割して閉じ、元のペインへ戻す(同じプロセス内のフォーカス移動。awase の FocusChanged は起きない)。"""
-    W.shortcut_split_pane()
-    time.sleep(1.5)
-    W.shortcut_close_pane()
-    time.sleep(1.5)
+def window_pid(hwnd):
+    pid = W.wt.DWORD(0)
+    W.user32.GetWindowThreadProcessId(W.wt.HWND(hwnd), W.ctypes.byref(pid))
+    return int(pid.value)
+
+
+def bounce_focus(hwnd, helper):
+    """同じ WT プロセスの補助窓へ前面を移して戻す(キーを使わない。キー操作の直後は SkipTyping で観測が止まる)。"""
+    W.foreground(helper)
+    time.sleep(2.0)
     W.foreground(hwnd)
+    time.sleep(1.0)
 
 
 def phase_bug114(results, out: Path, dist: Path, repo: Path, tag: str):
-    """端末を先に開いて前面にしてから awase を起動し(起動時スコープ=Windows Terminal)、desired=閉 のまま実 IME を外から開き、
-    WT 内のペイン分割→閉じるで drift 補正を起こす。別プロセスの窓へ移ると FocusChanged で app_policy が作り直され、起動時経路を見られない。"""
+    """補助窓 → 対象窓の順に WT を開き、対象窓が前面の状態で awase を起動する(起動時スコープ=Windows Terminal)。desired=閉 のまま
+    実 IME を外から開き、補助窓との間の前面移動で drift 補正を起こす。別プロセスの窓へ移ると FocusChanged で app_policy が作り直され、
+    起動時経路を見られないので、補助窓も同じ WT プロセスであることを記録する。"""
     work = out / "work" / tag
+    helper, _ = open_terminal(results, out, f"{tag}-helper")
     hwnd, echo = open_terminal(results, out, tag)
-    if hwnd is None:
+    if hwnd is None or helper is None:
+        for h in (hwnd, helper):
+            if h is not None:
+                finish_terminal(results, tag, h)
+        rec(results, type="bug114_result", tag=tag, verdict="INVALID", reproduced=False, counts={}, failures=[],
+            invalid=["WT の窓を開けなかった"])
         return
     proc = start_awase(dist, work, repo)
     rec(results, type="awase_start", tag=tag, running=proc.poll() is None, log_lines=len(awase_lines(work)),
-        foreground_is_terminal=W.foreground_hwnd() == hwnd)
-    t_first = t_second = t_close = None
+        foreground_is_terminal=W.foreground_hwnd() == hwnd, pid=window_pid(hwnd), helper_pid=window_pid(helper))
+    t_second = None
     try:
         W.foreground(hwnd)
         W.press(W.VK["IME_OFF"], 50, marker=True)
@@ -292,17 +305,18 @@ def phase_bug114(results, out: Path, dist: Path, repo: Path, tag: str):
         time.sleep(0.5)
         open_before_trigger = W.ime_control(hwnd, 0x0005)
         t_first = utc_secs()
-        split_and_close_pane(hwnd)
-        time.sleep(4.5)
+        bounce_focus(hwnd, helper)
+        time.sleep(5.0)
         t_second = utc_secs()
-        split_and_close_pane(hwnd)
-        time.sleep(4.5)
+        bounce_focus(hwnd, helper)
+        time.sleep(5.0)
         rec(results, type="bug114_drive", tag=tag, set_ret=set_ret, open_after_off=open_after_off,
             open_before_trigger=open_before_trigger, open_end=W.ime_control(hwnd, 0x0005),
             foreground_is_terminal=W.foreground_hwnd() == hwnd, t_first=t_first, t_second=t_second)
     finally:
         t_close = utc_secs()
         finish_terminal(results, tag, hwnd)
+        finish_terminal(results, f"{tag}-helper", helper)
         rec(results, type="awase_stop", tag=tag, result=stop_awase(proc))
         lines = awase_lines(work)
         (out / "logs").mkdir(parents=True, exist_ok=True)
