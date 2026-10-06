@@ -1390,37 +1390,92 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
     );
 }
 
-/// `ImeStateHub::with_clock` は任意の時計を受けるので、本番が実時計を使うことは
-/// `HubClock::wall(crate::hook::current_tick_ms)` の件数だけでは保証できない（#503 レビュー）。
+/// コメント（`/* .. */`・行頭の `//`・行末の `//`）を除く。コメントに書いた式で照合をすり抜けさせない。
+fn strip_comments(code: &str) -> String {
+    let mut no_block = String::new();
+    let mut rest = code;
+    while let Some(start) = rest.find("/*") {
+        no_block.push_str(&rest[..start]);
+        rest = match rest[start + 2..].find("*/") {
+            Some(end) => &rest[start + 2 + end + 2..],
+            None => "",
+        };
+    }
+    no_block.push_str(rest);
+    no_block
+        .replace('\r', "")
+        .lines()
+        .map(|l| l.find("//").map_or(l, |k| &l[..k]))
+        .filter(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `with_clock(` の呼び出し数。`new_with_clock(` など識別子の一部と、`fn with_clock(`（定義）は数えない。
+fn count_with_clock_calls(code: &str) -> usize {
+    code.lines()
+        .filter(|l| !l.contains("fn with_clock("))
+        .map(|l| {
+            l.match_indices("with_clock(")
+                .filter(|(i, _)| {
+                    l[..*i]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+                })
+                .count()
+        })
+        .sum()
+}
+
+/// `ImeStateHub.clock` への書き込み（`.clock = ..`、`&mut <path>.clock`、`clock: HubClock::..` の
+/// 構造体リテラル）の数。private でも子モジュール（`shell.rs`）と核の本番メソッドからは書けるため数える。
+fn count_clock_writes(code: &str) -> usize {
+    let mut n = 0;
+    for l in code.lines() {
+        let mut rest = l;
+        while let Some(k) = rest.find(".clock =") {
+            if !rest[k + ".clock =".len()..].starts_with('=') {
+                n += 1;
+            }
+            rest = &rest[k + 1..];
+        }
+        let mut rest = l;
+        while let Some(k) = rest.find("&mut ") {
+            let after = &rest[k + 5..];
+            let path: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                .collect();
+            if path.ends_with(".clock") || path == "clock" {
+                n += 1;
+            }
+            rest = after;
+        }
+        if l.trim_start().starts_with("clock:") && l.contains("HubClock::") {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// 殻の本番コードが渡す実時計の式（`effective_open_at` を検査する
+/// `effective_open_is_wired_to_the_intent_store_decision`の `HubClock::wall(..)` 件数の固定と同じ式）。
+const REAL_CLOCK_CALL: &str = "with_clock(HubClock::wall(crate::hook::current_tick_ms))";
+
 /// `with_clock(` の呼び出し元を、本番（`mod tests` を除く）では次の2か所だけに固定する:
 /// - `state/platform_state/shell.rs`（`new()` の殻。実時計）
 /// - `state/platform_state.rs` の `#[cfg(test)] impl PlatformState`（`for_test`）
 ///
-/// 違反（許可リスト外のファイル、件数違い、`for_test` が `#[cfg(test)]` の外）を説明で返す。
+/// 加えて、この2ファイルの本番コードで `clock` への書き込みが 0 件であること。
+/// すべての照合はコメントを除いてから行う。違反を説明で返す。
 fn with_clock_call_violations(sources: &[(String, String)]) -> Vec<String> {
     const SHELL: &str = "src/state/platform_state/shell.rs";
     const CORE: &str = "src/state/platform_state.rs";
     let mut out = Vec::new();
     for (path, content) in sources {
-        let production = production_code_only(content);
-        // `new_with_clock(` など識別子の一部は除き、`fn with_clock(`（定義）も数えない。
-        let calls = production
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .filter(|l| !l.contains("fn with_clock("))
-            .map(|l| {
-                l.match_indices("with_clock(")
-                    .filter(|(i, _)| {
-                        l[..*i]
-                            .chars()
-                            .next_back()
-                            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
-                    })
-                    .count()
-            })
-            .sum::<usize>();
-        // `ImeStateHub` のものに限らない `with_clock(`（journal.rs 等）は、本番の呼び出しが
-        // 無いことを前提に件数で見る。許可リスト外で出たら違反。
+        let production = strip_comments(production_code_only(content));
+        let calls = count_with_clock_calls(&production);
         let allowed = path == SHELL || path == CORE;
         if calls > 0 && !allowed {
             out.push(format!(
@@ -1431,14 +1486,21 @@ fn with_clock_call_violations(sources: &[(String, String)]) -> Vec<String> {
                 "{path}: with_clock( の呼び出しが {calls} 件（1件であること）"
             ));
         }
+        if allowed {
+            let writes = count_clock_writes(&production);
+            if writes != 0 {
+                out.push(format!(
+                    "{path}: clock への書き込み（代入・&mut・構造体リテラル）が {writes} 件（0件であること）"
+                ));
+            }
+        }
         if path == CORE && calls == 1 {
             // `#[cfg(test)] impl PlatformState { .. }` ブロックの**中身**に呼び出しがあること
             // （空の gated `impl` を残して外へ移すと、gate 文字列が前にあるだけでは通ってしまう）。
-            let norm = production.replace('\r', "");
             let gated: usize =
-                extract_all_balanced_blocks(&norm, "#[cfg(test)]\nimpl PlatformState {")
+                extract_all_balanced_blocks(&production, "#[cfg(test)]\nimpl PlatformState {")
                     .iter()
-                    .map(|b| b.matches("ImeStateHub::with_clock(").count())
+                    .map(|b| count_with_clock_calls(b))
                     .sum();
             if gated != 1 {
                 out.push(format!(
@@ -1447,12 +1509,11 @@ fn with_clock_call_violations(sources: &[(String, String)]) -> Vec<String> {
             }
         }
         if path == SHELL {
-            // 殻の1件は実時計を渡すこと（`:1382` 付近の `HubClock::wall(..)` 件数の固定と同じ式）。
+            // 殻の1件は実時計を渡すこと（空白を除いて照合）。
             let squeezed: String = production.chars().filter(|c| !c.is_whitespace()).collect();
-            let real = "with_clock(HubClock::wall(crate::hook::current_tick_ms))";
-            if squeezed.matches(real).count() != 1 {
+            if squeezed.matches(REAL_CLOCK_CALL).count() != 1 {
                 out.push(format!(
-                    "{path}: with_clock の引数が `{real}`（実時計）ではありません"
+                    "{path}: with_clock の引数が `{REAL_CLOCK_CALL}`（実時計）ではありません"
                 ));
             }
         }
@@ -1480,47 +1541,93 @@ fn with_clock_is_called_only_by_real_clock_shell_and_for_test() {
 
 #[test]
 fn with_clock_guard_detects_new_production_entry() {
-    let shell = (
-        "src/state/platform_state/shell.rs".to_string(),
-        "fn new() { Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)) }".to_string(),
-    );
-    let core = (
-        "src/state/platform_state.rs".to_string(),
-        "#[cfg(test)]\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n"
-            .to_string(),
-    );
-    let ok = vec![shell.clone(), core.clone()];
-    assert!(with_clock_call_violations(&ok).is_empty());
+    const SHELL: &str = "src/state/platform_state/shell.rs";
+    const CORE: &str = "src/state/platform_state.rs";
+    let shell_ok = "fn new() { Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)) }";
+    let core_ok =
+        "#[cfg(test)]\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n";
+    let build = |shell: &str, core: &str| {
+        vec![
+            (SHELL.to_string(), shell.to_string()),
+            (CORE.to_string(), core.to_string()),
+        ]
+    };
+    let has = |srcs: &[(String, String)], needle: &str| {
+        with_clock_call_violations(srcs)
+            .iter()
+            .any(|m| m.contains(needle))
+    };
+    assert!(with_clock_call_violations(&build(shell_ok, core_ok)).is_empty());
 
     // 新しい本番の入口（別ファイル）
-    let mut other = ok.clone();
+    let mut other = build(shell_ok, core_ok);
     other.push((
         "src/runtime/mod.rs".to_string(),
         "fn x() { ImeStateHub::with_clock(HubClock::manual()) }".to_string(),
     ));
-    assert!(!with_clock_call_violations(&other).is_empty());
-    // 殻が実時計以外（仮想時計・任意の関数）を渡す
-    let mut manual = ok.clone();
-    manual[0].1 = "fn new() { Self::with_clock(HubClock::manual(0)) }".to_string();
-    assert!(!with_clock_call_violations(&manual).is_empty());
-    // 空の gated `impl` を残し、`for_test` を外へ移す
-    let mut hollow = ok.clone();
-    hollow[1].1 = "#[cfg(test)]\nimpl PlatformState {\n}\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n".to_string();
-    assert!(!with_clock_call_violations(&hollow).is_empty());
-    // 殻にもう1件
-    let mut twice = ok.clone();
-    twice[0].1.push_str("\nfn y() { Self::with_clock(c) }");
-    assert!(!with_clock_call_violations(&twice).is_empty());
-    // for_test が `#[cfg(test)]` の外
-    let ungated = vec![
-        shell,
-        (
-            core.0,
-            "impl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n".to_string(),
+    assert!(has(&other, "許可リスト外"));
+    // 殻が実時計以外を渡す
+    assert!(has(
+        &build(
+            "fn new() { Self::with_clock(HubClock::manual(0)) }",
+            core_ok
         ),
-    ];
-    assert!(!with_clock_call_violations(&ungated).is_empty());
-    // `new_with_clock(` や `fn with_clock(` 定義は数えない
+        "実時計"
+    ));
+    // 実時計の式がコメントにしか無い（行コメント・ブロックコメント）
+    for c in [
+        "// with_clock(HubClock::wall(crate::hook::current_tick_ms))\nSelf::with_clock(HubClock::manual(0))",
+        "/* with_clock(HubClock::wall(crate::hook::current_tick_ms)) */ Self::with_clock(HubClock::manual(0))",
+    ] {
+        assert!(has(&build(c, core_ok), "実時計"), "{c}");
+    }
+    // 空の gated `impl` を残し、`for_test` を外へ移す
+    assert!(has(
+        &build(
+            shell_ok,
+            "#[cfg(test)]\nimpl PlatformState {\n}\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n"
+        ),
+        "for_test"
+    ));
+    // gated ブロックの doc コメントにだけ `ImeStateHub::with_clock(` がある（実呼び出しは外）
+    assert!(has(
+        &build(
+            shell_ok,
+            "#[cfg(test)]\nimpl PlatformState {\n /// ImeStateHub::with_clock(clock) と同じ\n fn helper() {}\n}\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n"
+        ),
+        "for_test"
+    ));
+    // 殻にもう1件
+    assert!(has(
+        &build(
+            &format!("{shell_ok}\nfn y() {{ Self::with_clock(c) }}"),
+            core_ok
+        ),
+        "1件であること"
+    ));
+    // for_test が `#[cfg(test)]` の外
+    assert!(has(
+        &build(
+            shell_ok,
+            "impl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n"
+        ),
+        "for_test"
+    ));
+    // clock への書き込み（代入・setter・&mut・構造体リテラル）
+    for (shell, core) in [
+        ("fn new() { let mut s = Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)); s.clock = HubClock::manual(0); s }", core_ok.to_string()),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn set(&mut self, c: C) {{ self.clock = c; }} }}")),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ std::mem::swap(&mut self.clock, &mut o); }} }}")),
+        (shell_ok, format!("{core_ok}fn z() {{ Self {{\n clock: HubClock::manual(0),\n }} }}")),
+    ] {
+        assert!(has(&build(shell, &core), "clock への書き込み"), "{shell} / {core}");
+    }
+    // `==` やコメント内の代入は書き込みではない。`new_with_clock(` や `fn with_clock(` 定義は数えない
+    assert!(with_clock_call_violations(&build(
+        shell_ok,
+        &format!("{core_ok}// self.clock = c;\nfn q() {{ a.clock == b }}")
+    ))
+    .is_empty());
     let neutral = vec![(
         "src/journal.rs".to_string(),
         "fn with_clock(c: C) {}\nlet j = UnifiedJournal::new_with_clock(1, c);".to_string(),
