@@ -32,7 +32,7 @@ pub struct ImeTransition {
     /// `ObservationStore::current_fence().epoch` と同じ値を使う。`FocusStore` 側の
     /// epoch とは混ぜないこと ——両者を揃えるイベントを落とすと即座にずれる。
     /// bootstrap で実際にずれていた（`FocusStore` 側が 1、`ObservationStore` 側が
-    /// 0 のまま）のが BUG-102 で、`ImeEvent::InitialFocusFenceEstablished` の新設に
+    /// 0 のまま）のが BUG-102 で、`ImeEvent::InitialFocusScopeEstablished`（旧 `InitialFocusFenceEstablished`）の新設に
     /// より現在は揃っている。それでも参照元は `current_fence()` に統一する
     /// ——ここで守りたいのは「`applied` を張り替えたのと同じ epoch か」であり、
     /// その張り替えを行う `FocusChanged` アームが書くのは `current_fence` 側だから。

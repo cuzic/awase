@@ -3140,7 +3140,11 @@ mod tests {
         // 起動時の初期フォーカスを確立した状態: 同じ操作で意図が IntentStore に保持される。
         let mut ps = ps_for_test();
         ps.ime.dispatch_event(
-            ImeEvent::InitialFocusHwndEstablished { hwnd: TARGET_HWND },
+            ImeEvent::InitialFocusScopeEstablished {
+                to: TARGET_HWND,
+                profile: ImePolicyProfile::TsfNative,
+                focus_epoch: 1,
+            },
             TickMs(0),
         );
         assert_eq!(ps.ime.model().current_focus(), Some(TARGET_HWND));

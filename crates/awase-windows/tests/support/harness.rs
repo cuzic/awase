@@ -141,7 +141,7 @@ pub struct StepRecord {
 #[derive(Debug, Clone, Copy)]
 pub struct Setup {
     pub initial: TrueState,
-    /// 起動時のアプリのプロファイル（`InitialAppPolicyEstablished`）。
+    /// 起動時のアプリのプロファイル（`InitialFocusScopeEstablished`）。
     pub profile: ImePolicyProfile,
     /// TSF の composition（入力中）を観測できるアプリか。`PredictInput::composing` に効く。
     pub composing_visible: bool,
@@ -249,11 +249,10 @@ impl Harness {
             japanese_ime: true,
         };
         h.hub.set_is_japanese_ime(true);
-        let fence = h.fence();
-        h.reduce(ImeEvent::InitialFocusFenceEstablished { fence });
-        h.reduce(ImeEvent::InitialFocusHwndEstablished { hwnd: h.focus });
-        h.reduce(ImeEvent::InitialAppPolicyEstablished {
+        h.reduce(ImeEvent::InitialFocusScopeEstablished {
+            to: h.focus,
             profile: setup.profile,
+            focus_epoch: h.epoch,
         });
         let ctx = h.ctx();
         let active = h.engine.compute_active(&ctx);
