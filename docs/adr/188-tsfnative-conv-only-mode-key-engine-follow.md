@@ -10,7 +10,7 @@ summary: |-
   強制チェック/E3=E2+Shiftガード中は再試行)を実機で比較し、E3が全ケースで最初の打鍵から正しい唯一の案だった。本ADRは実験の設計を
   実装に落とす前のレビュー対象で、フィールドの積み増しを最小にする形を探す。
 status: |-
-  第0段(計測)完了・第1段を再設計中(2026-10-06): 実 Chrome×GJI で、物理モードキー/FSM 再送出の最初の読み(31〜46ms)が既に遷移後の状態を示し、窓内に遷移途中の値は出ない(30 窓)。開閉と conv(かな 25・半角英数 16)が信頼できるため、窓内の読みを基準値なしで観測として採る案を Opus レビューに掛ける予定。実装はまだ。BUG-186 は範囲外。
+  第1段の設計を確定・追加計測中(2026-10-06、Opus r2 を反映): 基準値なしの観測案は採用(窓を閉じず、窓内の読みを belief と照合)。ただし R1(開閉は ADR-205 と同じ 3 副作用が要る)・R2(conv は NATIVE ビットだけで判定し、閉じているときは見ない。ROMAN から Kana を作らない)・R3(窓内で awase が書いたら窓を閉じる)・M2(変換中は arm しない)を満たすこと。実装前に GJI の MS-IME プリセット・変換中・長い idle 後を計測する。BUG-186 は範囲外。
   旧(2026-10-04 更新前):
   **ドラフト(実験のみ、未実装)**。レビュー対象。実験パッチ: `188-measurements/e3-experimental.patch`(実験用、そのまま採用しない)。
 related_adr:
@@ -128,9 +128,23 @@ related_adr:
 
 `ci/adr188-trace`(`13c23c54`、挙動不変のログのみ)を `sc-bug149-chrome-atok-passthru` で実行(run 37437413624、実 Chrome・GJI の ATOK・素通し・`profile=Imm32Unavailable`)。物理モードキー(素通し)と FSM 再送出の後、300ms の窓で 60ms ごとに prefetch の `(open, conv)` を出した。30 窓:
 
-- **最初の読みは 31〜46ms(中央値 31ms)で既に遷移後の状態**。窓内で値が変わった窓は 0 件(遷移途中の値は出なかった)。
-- 値は意味が通る: かな=conv 25(0x19)、半角英数=16(0x10)、無変換/変換→IME OFF の FSM 再送出は `open=false`。Shift+無変換(`vk=0x1D shift=true`)は `open=true conv=16`(半角英数)。直接入力→無変換/変換は `open=true conv=25`(かな ON)。
+- **最初の読みは 31〜46ms(中央値 31ms)で、以後 300ms の窓内は値が一定**(窓内で値が変わった窓は 0 件)。ただし 20ms のタイマーは約 31ms に丸められ、それより前の値は分からないので「遷移途中の値が出ない」とは言えない(訂正、Opus r2 M8)。
+- 値は意味が通る: かな=conv 25(0x19)、半角英数=16(0x10)、無変換/変換→IME OFF の FSM 再送出は `open=false`。Shift+無変換(`vk=0x1D shift=true`)は `open=true conv=16`(半角英数)。直接入力→無変換/変換は `open=true` で conv は 25 が多いが、6 窓中 1 窓は `conv=9`(ROMAN ビットなし、実際はローマ字入力で probe は PASS。R2)。
 - 追随が要る状況が実在する: FSM 再送出の窓(かな→無変換=IME OFF)6 件はすべて `open=false` だが `belief_open=true intent=Some(true)`。Shift+無変換の 3 件は `conv=16` だが belief は `ObservedEisu` でなくかな扱い(`belief_open=true`)。つまり**打鍵の約 31ms 後には実状態を読めており、読まれた値と awase の belief が食い違っている**。
 - 測れていない: arm 時点の最後の読み(基準値)の古さ(今回は基準値を持たない設計のため)。前提状態のセットアップでの awase の明示書き込みの有無は `intent=Some(true)` の多さから、明示意図が残る状況は日常的に起きる。
 
 **第1段の再設計案(基準値なし、Opus 再レビュー待ち)**: 先の案(窓の基準値との差分で追随)は、B2(基準値が古いと取りこぼしと逆追随)の弱点を持つ。しかし最初の読みが 31ms で既に遷移後の状態であり、遷移途中の値が出ないため、**基準値を持たず、窓内の読み(GJI×`Imm32Unavailable`、フォーカス・世代が同じ)を直接の観測として採る**ことができる見込み。すなわち、物理モードキー通過/FSM 再送出の後の窓内の prefetch を、`SkipTyping` で捨てる代わりに既存の観測(開閉は `write_observer_poll` 相当、conv は `InputModeObserved(ConvBitsInference)`)として classify を通して採用する。これなら無変換/変換・Shift+無変換・ひらがなを同じ経路で扱え、予測側の配線(executor からの `kp_predict_key_effect`)も不要になる。守る条件: M1(予測の fence 170ms との干渉)、M2(変換中は arm しない)、M3(`shadow_action`/`sync_direction` 付きは対象外)、M5(純関数・ROMAN から Kana を作らない)、M6(両軸を 1 回で反映)、BUG-14(意図への昇格をしない)。
+
+
+## 2026-10-06 追記4: Opus r2 の反映(第1段の確定設計)
+
+追記3 の基準値なしの観測案を再レビューした(Blocker 2・Must 4・Should 6)。案は採用してよいが、次を満たさないと動かない・退行する。
+
+- **R1(Blocker)**: 開閉を `write_observer_poll` だけで書いても Engine は OFF にならない(`effective_open_at` は IntentStore の意図を観測より優先する、`state/platform_state.rs:835-845`。計測の FSM 再送出 6 窓はすべて `intent=Some(true)`)。ADR-205 の `follow_external_change_in_scope` と同じ 3 つの副作用(`ObserverPoll` → `intent_store.remove` → `ModeKeyPassedThrough{align_desired:true, demote_applied:true}`)が要る。
+- **R2(Blocker)**: 既存の classify(ROMAN ビットを見る)を通すと、いま PASS のケースが FAIL になる。計測の「直接入力→無変換=かな ON」(`t=303031`)は `open=true conv=9`(ROMAN なし)が 300ms 続いたが実際はローマ字入力。**英数かどうかは NATIVE ビットだけで決め、開いていないときは conv を見ない**。`ObservedKana`/`ObservedRomaji` は作らず、`AssumedRomaji`/`ObservedEisu` のみ。
+- **R3(Must)**: 窓内で awase 自身が IME へ書いた(左 Shift の `VK_DBE_ALPHANUMERIC`、明示の SetOpen 等)後に、GJI の処理前の読みを採ると belief を逆戻しする(BUG-51 型)。書いたら窓を閉じる。`conv_mutation` は使わない(変換の再送出のたびに発火するため)。「arm 時刻 < `last_explicit_ime_action_ms` なら採らない」でフィールドを増やさずに書ける(全経路が更新していることを実装時に確認)。
+- **M2** 変換中(`ime_composition_active_now()`)は arm しない。**M7** 追随でも `last_external_change_ms` を更新する(Blacklist の `observe_gji_after_focus` に打ち消されないため)。**M5** GJI の MS-IME プリセット・変換中・長い idle 後の計測を実装前に行う。
+
+**実装(最小、既存の variant で足りる)**: (1) `state/external_change_watch.rs` の `Armed` に種別(`Baseline`=ADR-205、`Direct`=ADR-188)を足し、`Direct` は基準値を使わず窓内なら読みを返して窓を閉じない。(2) 純関数 `classify_direct_mode_key_read(open, conv)`(上記 R2 の規則、ungated)。(3) hub に `follow_external_change_in_scope` の隣のメソッド(開閉の食い違いは R1 の 3 副作用、conv は `InputModeObserved{ConvBitsInference, Medium}`、両軸を 1 回で)。(4) `ir_follow_external_change` に `snap.conversion_mode` も渡す。(5) arm は `kp_stage_mode_key_follow` の Shift の早期 return の前と executor の再送出の 2 箇所、条件は `external_change_watch_applies()` かつ変換中でない、20ms の予約付き。
+
+**合格条件(A/B)**: `sc-bug149-chrome-{atok,msime}-passthru` で無変換/変換/Shift+無変換が 3/3 PASS、**かつ「直接入力→無変換/変換=かな ON」が 3/3 PASS のまま**(R2 の回帰検知)。`--settle` を短くした構成で追随の遅れによる最初の文字の誤りを数値で残す(既知の限界)。`sc-table-{atok,msime}`(Shift 単独タップ後、R3)、既定 Suppress・`-noawase`・ADR-205 の構成は FAIL の集合が不変、MS-IME 本体で追随ログ 0 件。**回帰テスト**: 純関数の表(`(Some(false), 9|25)`→None、`(Some(true), 9)`→AssumedRomaji、`(Some(true), 16)`→ObservedEisu、`(Some(true), 25)`→AssumedRomaji、conv が None)、`Direct` 窓の単体テスト、`tests/closed_loop_scenarios.rs` の 5 シナリオ(意図が残ったまま再送出後に open=false を読む等)、`tests/architecture_guard.rs`。
