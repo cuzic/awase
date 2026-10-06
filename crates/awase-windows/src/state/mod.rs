@@ -198,6 +198,10 @@ pub mod transition;
 // 呼び出し元（executor.rs）は `#[cfg(windows)]` のため非 Windows では未使用。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod relay_plan;
+// FCIS F6: `output/mod.rs`・`output/vk_send.rs` の「probe/recovery 進行中は退避する」判断の核（純粋）。
+// 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod deferred_gate_plan;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
 // 実機（Windows）以外では呼び出し元（`runtime/`・`app/`）が無く、P5 でコアの境界に出す分だけを公開するまでは

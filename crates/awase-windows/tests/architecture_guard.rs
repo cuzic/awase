@@ -7239,3 +7239,38 @@ fn e12_e13_detectors_catch_violations() {
         "spawn_local(async move { let guard = X::OutputActiveGuard::begin(); f(); drop(guard); });";
     assert!(!e13_violations(inside).is_empty());
 }
+
+/// FCIS F6: `output/` の「probe/recovery 進行中は退避する」判断の核は `state/deferred_gate_plan.rs`。
+/// ADR-156 の defer 側（`defer_vks_if_probe_or_recovery_in_flight`）と drain 側
+/// （`drain_pending_deferred_before_send_if_queue_only`）は、どちらも `probe_or_recovery_block_reason`
+/// （= `plan_blocking`）を使い、`raw_recovery_owns_deferred()` の直接呼び出しは増やさない。
+#[test]
+fn deferred_gate_plan_defer_and_drain_windows_share_plan_blocking() {
+    let output = read_crate_file("src/output/mod.rs");
+    let prod = production_code_only(&output);
+    let defer = non_comment_lines(extract_fn_body(
+        prod,
+        "fn defer_vks_if_probe_or_recovery_in_flight(",
+    ));
+    assert!(
+        defer.contains("probe_or_recovery_block_reason(") && defer.contains("plan_defer("),
+        "defer 側は probe_or_recovery_block_reason と plan_defer を使うこと"
+    );
+    let reason = non_comment_lines(extract_fn_body(prod, "fn probe_or_recovery_block_reason("));
+    assert!(reason.contains("plan_blocking(") && reason.contains("needs_raw_recovery_read("));
+    let vk = read_crate_file("src/output/vk_send.rs");
+    let drain = non_comment_lines(extract_fn_body(
+        production_code_only(&vk),
+        "fn drain_pending_deferred_before_send_if_queue_only(",
+    ));
+    assert!(
+        drain.contains("probe_or_recovery_block_reason(true)")
+            && drain.contains("plan_drain_before_send("),
+        "drain 側は probe_or_recovery_block_reason(true) と plan_drain_before_send を使うこと"
+    );
+    assert!(
+        !drain.contains("raw_recovery_owns_deferred()")
+            && !defer.contains("raw_recovery_owns_deferred()"),
+        "raw_recovery_owns_deferred() は probe_or_recovery_block_reason の 1 箇所だけで読むこと"
+    );
+}
