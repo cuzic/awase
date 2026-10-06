@@ -258,6 +258,10 @@ impl PhysicalKeyDisposition {
     /// （PassThrough/Consume）であり、この配送判断（実際に OS へ届いたか）とは
     /// 独立している。この関数を journal に記録することで両者を突き合わせられる
     /// ようにする（`docs/known-bugs.md` BUG-90 参照）。
+    ///
+    /// 本番の呼び出し元（`runtime/key_pipeline.rs`）は `#[cfg(windows)]` のため、非 Windows の本番ビルドでは
+    /// 使い手が無い。`#[cfg(any(windows, test))]` で dead_code 警告を避ける（前例: `focus/thread_scope.rs`）。
+    #[cfg(any(windows, test))]
     pub(crate) fn suppress_reason(
         self,
         event: &RawKeyEvent,

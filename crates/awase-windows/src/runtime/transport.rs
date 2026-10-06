@@ -111,19 +111,105 @@ impl PhysicalKeyDisposition {
 mod plan_shell_tests {
     use super::*;
     use crate::state::ime_kind::ImeKindId;
+    use awase::types::{ImeRelevance, KeyClassification, ModifierState, ScanCode, ShadowImeAction};
 
-    /// `plan` は `plan_core(.., active_ime_kind.into())` の 1 行の殻。判断の決定表のテストは
-    /// `state/physical_disposition.rs` の `mod tests`（Linux でも走る、ADR-229 T1）にある。
-    /// ここでは殻の配線（`ActiveImeKind` → `ImeKindId` の写像）だけを見る。
+    /// 判断の決定表のテストは `state/physical_disposition.rs` の `mod tests`（Linux でも走る、ADR-229 T1）にある。
+    /// ここは殻 `plan`（= `plan_core(.., active_ime_kind.into())`）の配線だけを見る Windows 専用のテスト。
+
+    fn event(
+        vk_code: VkCode,
+        event_type: KeyEventType,
+        shadow_action: Option<ShadowImeAction>,
+    ) -> RawKeyEvent {
+        RawKeyEvent {
+            was_down: false,
+            press_id: None,
+            vk_code,
+            scan_code: ScanCode(0x1E),
+            event_type,
+            extra_info: 0,
+            timestamp: 0,
+            key_classification: KeyClassification::Passthrough,
+            physical_pos: None,
+            ime_relevance: ImeRelevance {
+                shadow_action,
+                ..ImeRelevance::default()
+            },
+            modifier_key: None,
+            modifier_snapshot: ModifierState::default(),
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
+            injected: false,
+        }
+    }
+
+    const PROFILES: [AppImeProfile; 4] = [
+        AppImeProfile::Standard,
+        AppImeProfile::Imm32Unavailable,
+        AppImeProfile::TsfNative,
+        AppImeProfile::InputRelay,
+    ];
+    const KINDS: [(ActiveImeKind, ImeKindId); 2] = [
+        (ActiveImeKind::GoogleJapaneseInput, ImeKindId::Gji),
+        (ActiveImeKind::MicrosoftIme, ImeKindId::MsIme),
+    ];
+
     #[test]
     fn plan_shell_maps_active_ime_kind_to_ime_kind_id() {
-        assert_eq!(
-            ImeKindId::from(ActiveImeKind::GoogleJapaneseInput),
-            ImeKindId::Gji
-        );
-        assert_eq!(
-            ImeKindId::from(ActiveImeKind::MicrosoftIme),
-            ImeKindId::MsIme
-        );
+        for (active, id) in KINDS {
+            assert_eq!(ImeKindId::from(active), id);
+        }
+    }
+
+    /// 殻 `plan` が、引数の順序・`shadow_toggled`・IME 種別を取り違えたり、`plan_core` の前に分岐を足したり
+    /// していないこと: 結果が `shadow_toggled` や kind で変わる代表イベント(無変換/変換、半角/全角の
+    /// `Some(Toggle)`、F2、F13 の役割キー、KeyDown/KeyUp)に対し、全プロファイル × 全 IME 種別 ×
+    /// `shadow_toggled` の全組合せで `plan == plan_core(.., kind.into())` を確かめる。
+    #[test]
+    fn plan_equals_plan_core_with_mapped_kind_for_representative_events() {
+        let toggle = Some(ShadowImeAction::Toggle);
+        let mut events: Vec<(&str, RawKeyEvent)> = Vec::new();
+        for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+            events.push(("kanji", event(crate::vk::VK_KANJI, event_type, None)));
+            events.push((
+                "kanji+toggle",
+                event(crate::vk::VK_KANJI, event_type, toggle),
+            ));
+            events.push(("convert", event(crate::vk::VK_CONVERT, event_type, None)));
+            events.push((
+                "nonconvert",
+                event(crate::vk::VK_NONCONVERT, event_type, None),
+            ));
+            events.push((
+                "sbcschar+toggle",
+                event(crate::vk::VK_DBE_SBCSCHAR, event_type, toggle),
+            ));
+            events.push((
+                "dbcschar+toggle",
+                event(crate::vk::VK_DBE_DBCSCHAR, event_type, toggle),
+            ));
+            events.push((
+                "hiragana(F2)",
+                event(crate::vk::VK_DBE_HIRAGANA, event_type, None),
+            ));
+            events.push((
+                "role-fkey(F13)+toggle",
+                event(crate::vk::VK_F13, event_type, toggle),
+            ));
+        }
+        for (label, ev) in &events {
+            for profile in PROFILES {
+                for (active, id) in KINDS {
+                    for shadow_toggled in [false, true] {
+                        assert_eq!(
+                            PhysicalKeyDisposition::plan(ev, profile, shadow_toggled, active),
+                            PhysicalKeyDisposition::plan_core(ev, profile, shadow_toggled, id),
+                            "{label} {:?} profile={profile:?} kind={active:?} shadow_toggled={shadow_toggled}",
+                            ev.event_type
+                        );
+                    }
+                }
+            }
+        }
     }
 }
