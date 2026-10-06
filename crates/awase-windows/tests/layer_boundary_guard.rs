@@ -521,6 +521,7 @@ const CORE_MODULES: &[&str] = &[
     "ime_actuation_decision",
     "ime_kind",
     "ime_read_strategy",
+    "ime_set_open_plan",
     "ime_update",
     "imm_evidence",
     "injection_mode",
