@@ -7,7 +7,7 @@ summary: |-
   5 件は 2 種類の機序: (i) 変換/無変換を MS-IME に通した 123〜263ms 後の「モードキー通過の読み直し」(打鍵中の除外を外した読み)で読んだ一過性の値(Flutter 3、BUG-189 の修正前の run)、(ii) 相手の IME 窓の応答が時間切れ寸前のときに読んだ値(wx・Java、conv プローブが 49.5ms 等)。
   決定(案、Opus レビューで収束させる): ObservedEisu の採用に確認を足す。確認は `is_eisu_evidence` の分岐ではなく**結果(`new_input_mode == Some(ObservedEisu)`)に掛ける**(`classify_transition` の英数遷移も同じ件を拾うため)。推奨は **F-before(1 回目の英数の読みは採らず「候補」として `state/belief.rs` に持ち、確認の読み直しで確定)+ B(`ime_on=None` の読みでは採らない。wx 型だけ)**。予測が英数のときは候補にせず即確定。G(候補を reducer に置く)は代案、A は単独では採らない、C(MS-IME は open=false)は前提が否定された。
 status: |-
-  起草中(2026-10-06)。Opus round1(Blocker 2・Must 5・Should 7・Nit 6)・round2(Must 3・Should 4・Nit 4)反映済み、round3 待ち。実装は未着手。
+  設計は収束(2026-10-06、Opus round3)。実装は未着手。先に診断ログで測定する。
 related_adr:
   - "ADR-074"
   - "ADR-084"
@@ -80,7 +80,9 @@ ObservedEisu の採用に、一過性の読みを弾く確認を足すか。足�
 
 - `schedule_ime_refresh`(`runtime/mod.rs:1079`)は単一のタイマーをリセットするだけで、毎 tick の最後に `ir_stage_notify` → `reschedule_ime_refresh`(`runtime/mod.rs:1133-1203`)が必ず 500ms(`ime_poll_interval_ms`)で上書きする。さらに `explicit_intent().is_some()` のときは早期 return で**ポーリング自体が止まる**(1200-1202 行)。通過マーク(ADR-187)と外部変化の監視窓(ADR-205)がこの優先順位表に枝を持っているのはこのため(1156-1192 行)。
 - F の確認の読み直しは、ADR-205 の枝と同じく、**explicit_intent の早期 return より前に「英数の候補が残っている間」の枝**として置く。打鍵中の除外を外すため、`decide_read_strategy`(`state/ime_read_strategy.rs:81`)の `ReadStrategyFacts` に事実を 1 つ足す(例: `eisu_candidate_pending`)。この関数には全組合せの表テスト `exhaustive_table_matches_original_branches` があるので、表の更新も回帰テストの一部になる。
-- **再利用:** `MODE_KEY_PASS_REREAD_MS`(60ms)の値と、`mode_key_pass_next_read_ms`(`state/mode_key_pass.rs`)の「直前の読みが失敗/遅延したら窓の終わりの 1 回に絞る」規則はそのまま使う。**60ms ごとに 50ms のプローブを重ねない**(BUG-158 の教訓、`runtime/mod.rs:1167-1172` のコメント)。**通過マーク(`ModeKeyPassMark`)そのものの流用は不可**: 窓の失効で `invalidate_intents`・`align_desired` が走り、意図と desired を書き換える副作用がある(`ime_refresh.rs:217-238`、`ir_stage_notify` 4a)。
+- **再利用:** `MODE_KEY_PASS_REREAD_MS`(60ms)の値と、`mode_key_pass_next_read_ms`(`state/mode_key_pass.rs`)の「直前の読みが**失敗**したら窓の終わりの 1 回に絞る」規則を使う。**この規則は成功か失敗(`ime_on` が取れたか。時間切れは失敗に数える)しか見ず、遅延は見ない**(`state/mode_key_pass.rs:293-303`)。Java の形(open が 16ms で成功・conv=0)は「成功」になり間引かれない。遅延も見るかは、一過性の値の長さの測定のあとで決める(新しい条件になる)。**60ms ごとに 50ms のプローブを重ねない**(BUG-158 の教訓、`runtime/mod.rs:1167-1172` のコメント)。**通過マーク(`ModeKeyPassMark`)そのものの流用は不可**: 窓の失効で `invalidate_intents`・`align_desired` が走り、意図と desired を書き換える副作用がある(`ime_refresh.rs:217-238`、`ir_stage_notify` 4a)。
+- **候補に寿命が要る**(上の関数は `remaining_ms`〈窓の残り〉を引数に取るため): 寿命の長さは tuning 定数(一過性の値の長さの測定から決める。tuning-constants.md)。**寿命が切れたら候補を捨てる(確定しない)。** 確認の読みが失敗し続ける(B で弾かれ続ける)と、候補が確定も破棄もされず、`reschedule_ime_refresh` の「候補が残っている間」の枝が予約を出し続けて通常のポーリング(と explicit_intent による停止)に戻らなくなるため。寿命切れで捨てた場合の代償: (ii) で応答が遅い間に本物の切替があると取りこぼす。次に成功した読みが新しい候補を作るので回復はする。
+- **候補にする条件は「新たに ObservedEisu へ変わる結果だけ」。** `classify_ime_snapshot` に渡る `current_input_mode` が既に ObservedEisu のとき(予測〈`KeyEffectPredicted` の mode=Eisu〉が先に belief を ObservedEisu にした場合)は、(a) が `None` を返すが (b) の `classify_transition` は prev が非英数なら `Some(ObservedEisu)` を返し直すので、**結果側のフィルタは `current_input_mode` が既に ObservedEisu のとき素通し(候補にしない)** とする。これで「予測が英数なら即確定」は追加の仕組み無しで成り立ち、`[eisu-adopt]` の「候補 → 確定」の統計も汚れない。予測の照合(`reconcile_key_effect_mode`、settle 170ms)で観測が無視される間に候補を作るかも、この条件で決まる。
 - 追加の IME I/O: 読み取り自体は prefetch で毎回走るが、F で 60ms の予約を足すと prefetch の回数自体が増える。候補が残っている間(確認で解消する短い間)に限る。
 
 ## 適用範囲
@@ -108,4 +110,4 @@ BUG-57 の守り(`ime_on == Some(false)` の conv=0 は証拠にしない)は (a
 
 ## 状態
 
-起草中。Opus round1・round2 反映済み、round3 待ち。
+**設計は収束**(2026-10-06、Opus round3 で「収束」)。round1(Blocker 2・Must 5・Should 7・Nit 6)・round2(Must 3・Should 4・Nit 4)・round3(Should 2・Nit 1)を反映済み。実装は未着手。次は診断ログ(`[eisu-adopt]`・一過性の値の長さ)を CI の MS-IME 構成で回し、結果をここに追記してから実装する。
