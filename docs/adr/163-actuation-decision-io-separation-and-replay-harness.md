@@ -656,7 +656,7 @@ TH1d（`tests/journals/actuation_decision/`へ既知バグ由来のfixtureを最
 
 ## TF2（`[shadow-send]`ログ）との突合せは将来課題に降格する（round1 M5）
 
-**追記（2026-10-06）: TF2（`shadow_send_trace.rs`）自体を消費者0のため撤去した。** 以下の突合せは将来課題のまま、前提となるログも無くなった。送信内容の記録は`win32.rs`の`SentInput`journalと`[ime-io]`ログが担う。
+**追記（2026-10-06）: TF2（`shadow_send_trace.rs`）自体を撤去した（予定された消費者（ime-passive-model-expected-results.md の INV-3/4/5 の判定器）はあるが、判定器は未実装・診断での使用実績0件・lparamを残さない判断（所有者承認、2026-10-06）で撤去した）。** 以下の突合せは将来課題のまま、前提となるログも無くなった。送信内容の記録は`win32.rs`の`SentInput`journalと`[ime-io]`ログが担う。
 
 当初案の「Part Bの再生結果とTF2の`[shadow-send]`ログを突き合わせる」は、TF2の
 現在の実装（`shadow_send_trace.rs:32`のdocが明記する通り`tracing::debug!`1行のみで

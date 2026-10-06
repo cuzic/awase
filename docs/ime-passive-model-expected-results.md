@@ -28,10 +28,10 @@ ADR-191 が誤りとして測定した部分（awase 経由で仕様から外れ
 |---|---|---|---|---|
 | INV-1 | **透過性**: 例外キー（INV-4）を除き、awase 有りの実IME（開閉・conv・入力中）の推移は、awase 無しと一致する | 決定1 実測2（Bで仕様から外れたのは awase の書き込みのため） | 同じ `--seq`/`--walk` を `awase=true` と `awase=false`（`*-noawase`）で回し、押下ごとの実IMEを比べる | **空白**（`*-noawase` は `observe` で表に出すだけ。比較器は `effect_learning.py --compare`（未マージ）に近いものがある） |
 | INV-2 | **追随**: 実IMEのかな=Engine ON、英数・直接入力=Engine OFF。各押下の後、一定時間（下記）以内に成り立つ。**ただし、表が「IME内部状態に依存する」と判定したキーは除く（§4）** | 決定1・3 | 押下の700ms後に打つ `k` の扱い（`PassThrough`=OFF）で Engine を読む | `check_consistency.py`（既存） |
-| INV-3 | **書き込みの最小性**: 例外キー以外の打鍵で、awase は IME 状態を変える送信をしない | 決定1（書いてよいのは開閉のみに作用するキー）・決定5 | awase.log の `[ime-io]`（actuation） 行（`channel=ImeControl`、および `channel=SendInput` の actuation 種別）を、押下ごとに数える | **空白**（ログは出ているが、数える判定器が無い） |
+| INV-3 | **書き込みの最小性**: 例外キー以外の打鍵で、awase は IME 状態を変える送信をしない | 決定1（書いてよいのは開閉のみに作用するキー）・決定5 | awase.log の `[shadow-send]` 行（`channel=ImeControl`、および `channel=SendInput` の actuation 種別）を、押下ごとに数える | **空白**（ログは出ているが、数える判定器が無い） |
 | INV-4 | **例外の限定**: awase が書いてよいのは、①冪等な `VK_IME_ON`/`VK_IME_OFF`（`keys.ime_on/off`、単独打鍵の `"on"`/`"off"`）、②トグルキー（ADR-189: 0x19/0xF3/0xF4、`keys.ime_toggle`）だけ | 決定1 | INV-3 の送信の内訳が①②に収まること | INV-3 と同じ（空白） |
-| INV-5 | **打鍵を失わない**: 物理キーを Suppress したなら、同じ効果の書き込みが必ず伴う。belief が低信頼（`applied` が Unknown）のときは Suppress せず素通し | 決定1 書き込みの規則 | Suppress した押下について、同じ押下に `[ime-io]`（actuation） があるか。低信頼状態から押して、実IMEが変化するか | **空白** |
-| INV-6 | **フォーカス**: 新しい窓のフォーカス直後、awase はその窓の IME へ書かない。belief は観測で新しい窓の実状態へ追随する | 決定1、決定5 P1 | 2窓を用意し、片方を IME ON にしてから他方へ移り、`[ime-io]`（actuation） が出ないことと、Engine が実IMEへ追随するまでの時間を測る | **空白**（シナリオ自体が無い） |
+| INV-5 | **打鍵を失わない**: 物理キーを Suppress したなら、同じ効果の書き込みが必ず伴う。belief が低信頼（`applied` が Unknown）のときは Suppress せず素通し | 決定1 書き込みの規則 | Suppress した押下について、同じ押下に `[shadow-send]` があるか。低信頼状態から押して、実IMEが変化するか | **空白** |
+| INV-6 | **フォーカス**: 新しい窓のフォーカス直後、awase はその窓の IME へ書かない。belief は観測で新しい窓の実状態へ追随する | 決定1、決定5 P1 | 2窓を用意し、片方を IME ON にしてから他方へ移り、`[shadow-send]` が出ないことと、Engine が実IMEへ追随するまでの時間を測る | **空白**（シナリオ自体が無い） |
 | INV-7 | **TsfNative**: 状態を読まないので INV-2 は要求しない。代わりに、①トグルキーは書き込みで反転しEngineが追随、②強制ON/OFF打鍵（`keys.ime_on/off`）で実IMEとEngineが同期する | 決定1（ADR-189 は残す）、TsfNative 節 | ADR-193 の RichEdit スーパークラスの入力先（TsfNative 扱い）で押す | **空白**（CI未配線） |
 
 **INV-2 の待ち時間**: 現行の判定は各押下の +1500ms で実IMEを読み、700ms 後の `k` で Engine を読む。ADR-191 の
@@ -159,8 +159,10 @@ ADR-191 実測5の「Bで仕様から外れた31件」は、撤去後は**仕様
 
 ## 5. 期待結果の例（IMEの状態 × キー）
 
+> 注（2026-10-06）: 本書の `[shadow-send]` は `shadow_send_trace` が出していたログ。同モジュールは撤去した（判定器は未実装・使用実績0件・lparam を残さない判断）。INV-3/4/5 の判定器は未定で、ImeControl の lparam が必要なら再導入する。
+
 「実IME」は IME 単体の仕様（Mozc の公開キーマップ、`atok.tsv`/`ms-ime.tsv` と実測）、「書き込み」は awase.log の
-`[ime-io]`（actuation） の件数（INV-3）。Engine は INV-2 から決まる（かな=ON、それ以外=OFF）。
+`[shadow-send]` の件数（INV-3）。Engine は INV-2 から決まる（かな=ON、それ以外=OFF）。
 
 | プリセット | 状態 | キー | 実IME（期待） | awase の書き込み | 備考 |
 |---|---|---|---|---|---|
@@ -182,7 +184,7 @@ ADR-191 実測5の「Bで仕様から外れた31件」は、撤去後は**仕様
 1. awase 無しでも期待とずれる → **期待表が間違い**（IMEの仕様の読み違い）。表を直す。ADR-191 実測の「Conversion/Suggestion/Prediction の
    状態を持たない仕様モデルの限界」は、この型（表に `observe` を付けて保留）。
 2. awase 無しでは期待どおりで、有りだとずれる（INV-1違反） → **実装がバグ**。awase が書き込んでいるか、追随が遅れている。
-   `[ime-io]`（actuation） の有無で切り分ける（書き込みが有れば INV-3/4 違反、無ければ観測の追随不良）。
+   `[shadow-send]` の有無で切り分ける（書き込みが有れば INV-3/4 違反、無ければ観測の追随不良）。
 3. 期待表も実装も正しいが、設計が想定していなかった状態がある → **ADR-191 を更新**（TsfNative の「観測できないアプリのずれは受け入れる」など）。
    期待表の変更は、必ず ADR とセットで行う。
 
@@ -190,7 +192,7 @@ ADR-191 実測5の「Bで仕様から外れた31件」は、撤去後は**仕様
 
 | 撤去候補 | 撤去後の期待 | 合否の測り方 |
 |---|---|---|
-| フォーカス変更時の強制OFF | フォーカス直後に `[ime-io]`（actuation） が出ない。belief が OFF で新しい窓の実IMEが ON のとき、Engine は観測で ON へ追随する | INV-6 のシナリオ（**要新設**）。追随に要する時間を測り、上限を決める |
+| フォーカス変更時の強制OFF | フォーカス直後に `[shadow-send]` が出ない。belief が OFF で新しい窓の実IMEが ON のとき、Engine は観測で ON へ追随する | INV-6 のシナリオ（**要新設**）。追随に要する時間を測り、上限を決める |
 | `shadow_effect`/`shadow_action` の決め打ち | §3 の3行が仕様どおり。INV-1/3 が成り立つ | `sc-*`・`atok-*`・`msime*` に INV-1/3 の判定を足す |
 | 単独タップ代行 | 入力中の無変換で未確定が消えない。書き込み 0 件 | `atok-optin` 系。旧設定 `gji_thumb_key_ime_toggle` は構成ごと削除 |
 | `dbe_mode_key_policy` | 設定の意味は「素通し（IMEに任せる）」に一本化されるか、設定ごと消える | ブランチの決定（設定UIの撤去が未実装）に従い、`sc-dbe-*` の suppress/passthrough を整理 |
@@ -216,7 +218,7 @@ ADR-191 実測5の「Bで仕様から外れた31件」は、撤去後は**仕様
 
 1. **第1段階の網羅テスト（§4.6）**: `predict` と belief 更新を全セルで検証する純粋関数のテスト。実機もフィクスチャも不要で、最も安く、100% を要求できる。
 2. **第2段階のリプレイテスト（§4.6）**: 未見データの A' walk をフィクスチャにし、一段予測の正答率がラチェットを下回らないことを見る。`KeyTrack` の効果は、追跡なしとの差で示す。
-3. **書き込み数の判定（INV-3/4/5）**: awase.log の `[ime-io]`（actuation） を押下ごとに数え、許可リスト（例外キー）と突き合わせる。
+3. **書き込み数の判定（INV-3/4/5）**: awase.log の `[shadow-send]` を押下ごとに数え、許可リスト（例外キー）と突き合わせる。
    スパイクの押下時刻と同じ時計で取れるので、`check_consistency.py` の `parse_engine` と同じ形で足せる見込み。
 4. **透過性の比較（INV-1）**: `awase=true` と `awase=false` の同じ列の実IME推移を比べる。
 5. **フォーカス切替シナリオ（INV-6）**: teardown-verification-guide §8-1 と同じ。
@@ -226,4 +228,4 @@ ADR-191 実測5の「Bで仕様から外れた31件」は、撤去後は**仕様
 
 - [ADR-191](adr/191-ime-is-source-of-truth-observe-not-write.md)（決定1〜6・実測・TsfNative 節）、ADR-186/187/189/192/193
 - `tools/e2e/ime_key_matrix/check_consistency.py`・`check_toggle.py`・`check.py`（判定器）、`effect_learning.py`（`ci/e2e-adr191`、未マージ）
-- ~~`crates/awase-windows/src/shadow_send_trace.rs`（`[ime-io]`（actuation））~~（2026-10-06 撤去。書き込みの数え方は `[ime-io] actuation`/`cross_process kind=actuation` のログと `SentInput` journal を使う）
+- ~~`crates/awase-windows/src/shadow_send_trace.rs`（`[shadow-send]`）~~（2026-10-06 撤去。判定器は未実装で、ImeControl の lparam が必要なら再導入する）
