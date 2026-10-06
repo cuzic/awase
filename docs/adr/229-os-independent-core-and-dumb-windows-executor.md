@@ -8,7 +8,7 @@ summary: |-
   提案: ポートを時間の性質で S(即時)・B(ブロックしうる、タイムアウトを戻り値の値に)・A(Cmd を出し結果は世代つき Event)に分けて注入する。まず同一 crate 内で gate を外し、crate の物理分割は最後。契約テストで偽物を本物に拘束する。フックの畳み込みは前提確認のあと別段階。
   2026-10-06 に FCIS(Functional Core, Imperative Shell)の原則で改訂(「FCIS による改訂」節。Tier-1 portable / Tier-2 pure core の 2 段、`HubClock` を標準形、handler trait の閉じた例外、核と殻の分割。実装タスクは docs/tasks/fcis-layering-tasks-2026-10-06.md)。注意: ADR-224(ungate か切り出し)は「見逃しの実例が出るまで着手しない」としており、その着手条件は満たしていない。本 ADR の主動機は障害の記録ではなく構造的なテスト容易性なので、所有者の判断が要る。
 status: |-
-  起草(2026-10-06)。Opus レビュー round1(着手単位の見定め、Blocker なし、`docs/adr/review/229-opus-review-round1.md`)を反映。所有者指示(2026-10-06)により、設計全体のレビューは行わず、「着手しやすい単位」(下記 T2・T1・T3・T5・T4・T7)だけ先行して進め、その後に考え直す。それ以外の段階は未着手。
+  起草(2026-10-06)。Opus レビュー round1(着手単位の見定め、Blocker なし、`docs/adr/review/229-opus-review-round1.md`)を反映。所有者指示(2026-10-06)により、「着手しやすい単位」(T2・T1・T3・T5・T4・T7)を先行して実装し、PR #492〜#495 としてマージ済み(2026-10-06、CI すべて green、Opus の PR レビューで Blocker・Must なし)。その後、FCIS(Functional Core, Imperative Shell)の原則で設計を Opus の複数ラウンドで収束させ、本 ADR に「FCIS による改訂」節を追加した(実装タスクは docs/tasks/fcis-layering-tasks-2026-10-06.md)。所有者の判断(2026-10-06): ADR-224 を改訂して段階 2 を核と殻の分割で進める、S2(physical_disposition.rs を自動チェックに足す)を実施する、1 turn の入口集約とフックの薄型化を将来の目標にする。P0・P1・RW・S2 を並行して実装中。
 related_adr:
   - "ADR-019"
   - "ADR-030"
@@ -185,12 +185,12 @@ fn procedure(..) {                         // shell
 
 R1 その場で gate を外す(T2・T3)、R2 時刻を引数にして gate を外す(T7)、R3 テストだけ移す(T1)、R4 型を**使い手の側**へ移す(T4: journal → win32 だった依存を win32 → journal に)、R5 核と殻の分割(P2)、R6 サンドイッチ分割(F)、R7 コルーチンの入力をスナップショットに。**共通の後処理**: `fix-requires-evidence.md` の表・`.githooks/pre-push` の正規表現・`.cargo/mutants-awase-windows.toml` の `examine_globs`・`decision3_…` の instrument 一覧・「Linux で実行されないから」のコメントと件数を見直す。**着手前に、テストが呼ぶ関数・型・定数・macro が gated 側にないかを必ず確認する**(PR #493 の教訓)。Linux で未使用の `pub(crate)` 項目には、テストも使うなら `#[cfg(any(windows, test))]`、使わないなら `#[cfg(windows)]`(`allow(dead_code)` は増やさない。外から到達できる `pub` 項目には何も付けない)。
 
-### 所有者の判断が要るもの(FCIS 改訂で追加・更新)
+### 所有者の判断(FCIS 改訂で追加・更新。2026-10-06 に回答済み)
 
-1. **ADR-224 の決定の改訂**: 段階 2 は ADR-224 の案A に当たる。懸念 (a)(ガードが広く壊れる)は根拠が無かった(ADR-224 に追記済み)、(b)(`foreground_scope` を stub にすると挙動が隠れる)は核と殻の分割(ハーネスが `_in_scope` に任意のスコープを渡せる)で解消する。「段階 2 は核と殻の分割の形で進める」に改訂するか。
-2. S2: `state/physical_disposition.rs` を `.githooks/pre-push`・`fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` に足すか(別 PR)。
-3. 1 turn の入口集約(`with_app` の入口を減らす)を将来の目標にするか。
-4. フックの薄型化・追記して reduce する形を、いつ・どの前提確認のあとに着手するか。
+1. **ADR-224 の決定の改訂 = 承認**: 段階 2 は ADR-224 の案A に当たる。懸念 (a)(ガードが広く壊れる)は根拠が無かった(ADR-224 に追記済み)、(b)(`foreground_scope` を stub にすると挙動が隠れる)は核と殻の分割(ハーネスが `_in_scope` に任意のスコープを渡せる)で解消する。**「段階 2 は核と殻の分割の形で進める」に改訂した**(ADR-224 に追記済み)。
+2. **S2 = 承認**: `state/physical_disposition.rs` を `.githooks/pre-push`・`fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` に足す(別 PR で実施中)。
+3. **1 turn の入口集約(`with_app` の入口を減らす)= 将来の目標にする**。着手は F の分割(P0〜P5・F1〜F6)が一段落し、前提(`spawn_local` の再入、B-1 の fail-open、`dispatch_engine_message` の非対称で何を守るか)を先に書いてから。
+4. **フックの薄型化・追記して reduce する形 = 将来の目標にする**。着手は前提確認(リングに載らない経路が `physical_key_state` を更新する、`RawKeyEvent` に拡張ビットと Alt なりすまし前の vk が無い、`KeyInput` が生入力を持たない、`held_modifiers` の鮮度要件)のあと。
 
 ## 段階と成功指標
 
@@ -222,7 +222,7 @@ R1 その場で gate を外す(T2・T3)、R2 時刻を引数にして gate を�
 | T4 | `journal.rs` の gate 解除(`SentKeyEvent` を ungated へ、dump の 2 関数を `#[cfg(windows)]`) | 22 | Linux で 22 本 pass |
 | T7 | `focus/hwnd_cache.rs` の `save`/`restore` に `now_ms` を渡してから gate 解除。期限切れのテストを追加(focus ファミリー、テスト追加が条件) | 新規 3〜5 | Linux で pass |
 
-結果(2026-10-06): T2・T3・T5 は PR #492、T1 は PR #493、T7 は PR #494、T4 は PR #495 で、いずれも CI が通った(マージは未実施)。#493 は初回に `suppress_reason` の置き場所(Windows 専用の `transport.rs` にあり、移したテストが Linux で見えなかった)と rustfmt で失敗し、修正した。Opus の PR レビュー round1 で #493 に Must 2 件(Linux の dead_code 警告、殻 `plan` を呼ぶテストが 0 本になったこと)が出て反映し、round2 の再確認で #492・#493・#494 に Blocker・Must なし(#495 は Opus レビュー待ち)。#494 の `focus/mod.rs` の `allow(dead_code)` は不要の見込みで、外す作業中。`state/physical_disposition.rs` が `.githooks/pre-push`・`fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` のどれにも載っていない件(Opus S2)は、所有者判断として未決定。
+結果(2026-10-06): T2・T3・T5 は PR #492、T1 は PR #493、T7 は PR #494、T4 は PR #495 で、いずれも CI が通り、2026-10-06 にマージした(`42bc25ea`)。#493 は初回に `suppress_reason` の置き場所(Windows 専用の `transport.rs` にあり、移したテストが Linux で見えなかった)と rustfmt で失敗し、修正した。Opus の PR レビュー round1 で #493 に Must 2 件(Linux の dead_code 警告、殻 `plan` を呼ぶテストが 0 本になったこと)が出て反映し、round2 の再確認で #492・#493・#494・#495 に Blocker・Must なし。#494 の `focus/mod.rs` の `allow(dead_code)` は不要と確認して外し、#495 の `allow` も `#[cfg(windows)]` に置き換えた(新しい `allow(dead_code)` は 0 か所)。`state/physical_disposition.rs` を自動チェック 3 か所に足す件(Opus S2)は、所有者の承認を得て実施中。
 
 取りやめ条件: Linux でコンパイルが通らない、または `allow(dead_code)` を足さないと警告が消えない(3 か所を超えたら止める。`allow` の削減という指標に逆行する)。1 本でも Linux で落ちるテストは、本番との差の発見なので BUG として扱う。
 

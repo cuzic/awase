@@ -230,13 +230,12 @@
 | [221](221-msime-ime-off-composition-loss-measure-first.md) | MS-IME の英数キー IME OFF で未確定文字が消える件は、修正の前に OS 側の挙動を実測する | 調査完了(2026-10-04)。D0/D1 の実測で現行機構では未確定文字の消失は再現せず。修正は選ばない。別セッションの OFF 補… |
 | [222](222-bug-report-log-gzip-ring-dump.md) | 不具合報告のログは ring の中身を gzip して送る(打鍵は最低10分) | 採用・実装済み(2026-10-04、PR #451、Opus round1/round2 反映・所有者決定: gzip・プレビュー読み… |
 | [223](223-input-language-change-detected-at-key-time.md) | 入力言語の切替を、打鍵の時点でフォーカス窓のスレッドの言語を読んで検知する(案C)。表示の即時更新は切替キー解放後に 1 回だけ読む(案E2)。購読もポーリングも使わない | 一部実装(段階 0 の測定は合格〈PR #452〉、段階 1 = 打鍵の取り込み時に読んだ入力言語で is_japanese_ime を… |
-| [224](224-closed-loop-hub-ungate-or-extract.md) | 閉ループが写している ImeStateHub の配線を、ungate(案A)か純粋関数への切り出し(案C)か。見逃しが出るまで着手しない | 起草(2026-10-04、未決定・実装なし) |
+| [224](224-closed-loop-hub-ungate-or-extract.md) | 閉ループが写している ImeStateHub の配線を、ungate(案A)か純粋関数への切り出し(案C)か。見逃しが出るまで着手しない | 改訂(2026-10-06、所有者判断): 段階 2 は ADR-229 の核と殻の分割で進める(着手条件を外した) |
 | [225](225-journal-replay-ci-closed-loop-integration.md) | 報告 journal・CI 実機・閉ループ・replay の連携は、まず実害を測り(SP0)、抽出手順の縮小版だけを候補に残す | 見送り(2026-10-04、SP0: 直近10件で検知可能 0 件・弱い候補 2 件) |
 | [226](226-ci-realmachine-closed-loop-oracle-sharing.md) | CI 実機・閉ループ・replay の接続(oracle 共有 A〜D は見送り、ログ構造化 E は未レビュー) | A〜D 見送り(2026-10-04、Opus round1)。E は未決定 |
 | [227](227-bug074-giveup-as-closed-ime-evidence.md) | BUG-074: give-up で文字が痕跡なく消える件。先に測り(D0)、方向(再オープン/案K/通知/追随)は所有者が決める | (i) 実装済み(PR #480・`900a5f3e`、2026-10-05、CI 検証済み・実機未検証): `Imm32Unavailable`×GJI の give-up を読み直しのきっかけにする(`take_gi |
 | [228](228-bug-report-legacy-msime-custom-key-table.md) | 不具合報告に旧互換 MS-IME のキー表の中身を、許可リスト+固定長の読める形で添付するか(ADR-148 の「読めず削れない」反対理由への答えが要る) | 見送り(2026-10-04、Opus r1: 案 B は動機の 2 件の調査を前に進めない・実装なし) |
-| [229](229-os-independent-core-and-dumb-windows-executor.md) | awase-windows を「Windows の dumb な実行役」に絞り、判断を Linux でテストできる側へ寄せる層の引き直し | 起草(2026-10-06)。Opus round1(着手単位の見定め)反映。着手しやすい単位(T2・T1・T3・T5・T4・T7)だけ先行、他は未着手 |
-| [229](229-os-independent-core-and-dumb-windows-executor.md) | awase-windows を dumb な実行役に絞り、判断を Linux でテストできる側へ寄せる層の引き直し(ポート S/B/A、同一 crate 内の ungate 先行、契約テスト)。ADR-224 の着手条件は未達なので所有者判断が要る | 起草(2026-10-06、未レビュー、実装なし) |
+| [229](229-os-independent-core-and-dumb-windows-executor.md) | awase-windows を「Windows の dumb な実行役」に絞り、判断を Linux でテストできる側へ寄せる層の引き直し | FCIS で改訂(2026-10-06)。T1〜T7 は PR #492〜#495 でマージ済み。ADR-224 改訂・S2 を承認。P0・P1・RW・S2 を実装中 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

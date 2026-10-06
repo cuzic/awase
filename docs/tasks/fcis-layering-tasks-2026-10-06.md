@@ -1,6 +1,6 @@
 ---
 title: FCIS による層の引き直し — 実装タスク表(ADR-229)
-status: 起草(2026-10-06)。Opus の FCIS 設計 round1・round2 を反映済み。round3 は差分確認。着手済みは T1〜T7(PR #492〜#495、CI green、マージ待ち)。P0〜P5・RW・F1〜F6 は未着手
+status: FCIS 設計は Opus round3 で収束(2026-10-06)。T1〜T7 は PR #492〜#495 でマージ済み(`42bc25ea`)。所有者判断済み(2026-10-06): ADR-224 改訂、S2 実施、1 turn 入口集約とフックの薄型化は将来の目標。P0・P1・RW・S2 は並行して実装中。P2〜P5・F1〜F6 は未着手
 created: 2026-10-06
 related_adr: ["ADR-229", "ADR-224", "ADR-163", "ADR-164", "ADR-180", "ADR-156", "ADR-129"]
 ---
@@ -20,7 +20,7 @@ related_adr: ["ADR-229", "ADR-224", "ADR-163", "ADR-164", "ADR-180", "ADR-156", 
 7. 実装後は Opus の PR レビュー(読み取り専用、形態 b: 指摘 → 修正 → 同じレビュアーに再確認)を受けてからマージする。マージは所有者の許可を得てから。
 8. **1 つの PR で ADR・ガード・実装の論点を混ぜない**(特に `CORE_MODULES` のガードは P0 として単独で入れる)。
 
-## 1. 済・進行中(Tier-1 の最初の弾。いずれも CI green、マージ待ち)
+## 1. 済(Tier-1 の最初の弾。PR #492〜#495 としてマージ済み、`42bc25ea`、2026-10-06)
 
 | ID | 内容 | PR | 新たに Linux で回るテスト |
 |---|---|---|---:|
@@ -31,7 +31,7 @@ related_adr: ["ADR-229", "ADR-224", "ADR-163", "ADR-164", "ADR-180", "ADR-156", 
 | T7 | `focus/hwnd_cache.rs` に `TickMs` を渡して gate を外す(R2)。6 本を追加 | #494 | 6(新規) |
 | T4 | `journal.rs` の gate 解除。`SentKeyEvent` を journal へ移す(R4) | #495 | 22 |
 
-マージ後: ADR-229 の gate 一覧から journal・ime_event_log・tsf_gate・hwnd_cache を外す。`README`(棚卸し)の数字は変えない(棚卸し時点の記録)。
+ADR-229 の gate 一覧からは journal・ime_event_log・tsf_gate・hwnd_cache が外れた。`README`(棚卸し)の数字は変えない(棚卸し時点の記録)。
 
 ## 2. 第 1 弾の次(Tier-1 の完成と Tier-2 の入口)
 
@@ -72,7 +72,7 @@ related_adr: ["ADR-229", "ADR-224", "ADR-163", "ADR-164", "ADR-180", "ADR-156", 
 - **最後**: `open_chain` の 3 関数(INV-45・BUG-34・ADR-119/180。**書き換えない**。F-D1 の例外 1 と F-D5-4 の範囲)、`on_focus_process_changed`(307 行)、`monitor_loop`(202 行)、`handle_hook_key_event` の defer 判断。journal replay で回帰網を先に張る。
 - **フックの薄型化(畳み込み)**: 前提確認(リングに載らない経路が `physical_key_state` を更新する、`RawKeyEvent` に拡張ビットと Alt なりすまし前の vk が無い、`KeyInput` が生入力を持たない、`held_modifiers` の鮮度要件)のあとに別段階で。
 - **crate の物理分割**: 最後。`architecture_guard.rs` がファイルパスの文字列リテラルを異なりで 76 種持つので、機械的に付け替えられる状態にしてから。
-- **所有者の判断待ち**: ① ADR-224 の決定の改訂(段階 2 を核と殻の分割で進める)、② S2(`state/physical_disposition.rs` を `.githooks/pre-push`・`fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` に足す。別 PR)、③ 1 turn の入口集約を将来の目標にするか、④ フックの薄型化の着手時期。
+- **所有者の判断(2026-10-06 に回答済み)**: ① ADR-224 の決定を改訂し、段階 2 を核と殻の分割で進める(承認。ADR-224 に追記済み)、② S2(`state/physical_disposition.rs` を `.githooks/pre-push`・`fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` に足す)を別 PR で実施する(承認。実装中)、③ 1 turn の入口集約を将来の目標にする(承認)、④ フックの薄型化を将来の目標にする(承認。着手は前提確認のあと)。
 
 ## 5. 失われやすい注意(Opus round2 の §4 から)
 

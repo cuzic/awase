@@ -7,7 +7,7 @@ summary: |-
   案A(`ImeStateHub`/`journal`/`ime_event_log` を host へ ungate)は `foreground_scope` を host 用 stub にするとスコープ失効など Windows 固有挙動が見えなくなり、`architecture_guard`(約6000行)・`layer_boundary_guard` のテキスト走査が広く壊れる。
   案C(写している配線だけを ungated な純粋関数へ切り出し、本番とハーネスの両方から呼ぶ)は影響範囲が小さい。写しが原因の見逃しは 2026-10-04 時点で実例なし。決定: 実例が出るまで着手しない。出たら案C を先に、案A はその後。
 status: |-
-  起草(2026-10-04、未決定・実装なし)。着手条件=「ハーネスの写しが本番とずれていたせいで閉ループが通ったまま実機/CI で不具合が出た」実例が1件出ること。
+  改訂(2026-10-06、所有者判断): 段階 2(`platform_state` の ungate)は ADR-229 の FCIS 設計に従い、「核(`_in_scope` 版)と殻(`foreground_scope()` を読む 1 行、`platform_state.rs` の子モジュール)の分割」の形で進める。案A の懸念 (a)(ガードが広く壊れる)は根拠が無く、(b)(スコープ失効が見えなくなる)は核と殻の分割で解消した。ハーネスの写しを本物に置き換える途中で、本物を呼ぶと結果が変わったら、それは写しのずれの実例として記録して止める。元の決定(起草 2026-10-04): 着手条件=「ハーネスの写しが本番とずれていたせいで閉ループが通ったまま実機/CI で不具合が出た」実例が1件出ること。
 related_adr:
   - "ADR-163"
   - "ADR-164"
@@ -51,3 +51,9 @@ related_adr:
 
 - 案A が懸念した「`architecture_guard`・`layer_boundary_guard` のテキスト走査が広く壊れる」は、**その場で gate を外すだけなら当てはまらない**(ADR-229 の Opus round1 で確認。ガード内の `cfg(windows)` はコメント 4 か所だけで、ガードはファイルをテキストとして読むので gate の有無に影響されない)。壊れるのはファイルや関数を移したとき、ガードが固定する文字列を変えたときだけ(例: `architecture_guard.rs:1382` の `HubClock::wall(crate::hook::current_tick_ms)`)。ガードの費用見積もりには根拠が無かった。`foreground_scope` を stub にすると挙動が隠れる、という懸念は別で、そちらは有効。
 - `ime_event_log`・`journal` の ungate は、形式上は案A の一部だが、ADR-229 の段階 0(着手しやすい単位 T3・T4)で扱う。着手条件(見逃しの実例)の判断は本 ADR の決定のまま変えない。`ImeStateHub`(`platform_state.rs`)の ungate は、ADR-229 でも後ろの段階で、案C が先という順番は変えない。
+
+## 改訂(2026-10-06、所有者判断。ADR-229)
+
+- ADR-229(FCIS による層の引き直し)の設計と実装タスク(`docs/tasks/fcis-layering-tasks-2026-10-06.md`)に従い、**案A の段階 2 を、核と殻の分割の形で進める**ことを、所有者が承認した。着手条件(見逃しの実例)は、この改訂で外す。
+- 進め方: P1(型移動)→ P2(核と殻の分割、まだ gated)→ P3(`for_test(HubClock)`)→ P4(`platform_state` の ungate、`ime_decision_view` は gated のまま)→ P5(ハーネスの写しを 1 系統ずつ本物に)。案C(写している配線だけを純粋関数に切り出す)は、P5 の途中で、ungate だけでは足りない写し(runtime/ 側の 2 系統)に F4 として当てる。
+- P5 で本物を呼ぶと結果が変わった場合は、**写しのずれの実例**として `docs/known-bugs/` に記録して止める(本 ADR の元の着手条件に当たる)。
