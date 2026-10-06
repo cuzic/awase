@@ -194,6 +194,10 @@ pub mod focus_probe_plan;
 #[cfg(any(windows, test))]
 pub mod msaa_role_plan;
 pub mod transition;
+// FCIS F3: `runtime/executor.rs` の execute_relay/drain_deferred/defer 側の「即時/キュー/ガード」判断の核（純粋）。
+// 呼び出し元（executor.rs）は `#[cfg(windows)]` のため非 Windows では未使用。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod relay_plan;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
 // 実機（Windows）以外では呼び出し元（`runtime/`・`app/`）が無く、P5 でコアの境界に出す分だけを公開するまでは

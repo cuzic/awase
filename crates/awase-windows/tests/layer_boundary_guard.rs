@@ -541,6 +541,7 @@ const CORE_MODULES: &[&str] = &[
     "platform_state",
     "post_bypass",
     "press_ledger",
+    "relay_plan",
     "scoped_latch",
     "state_dependent_key_warning",
     "transition",

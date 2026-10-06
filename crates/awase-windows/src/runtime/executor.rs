@@ -21,6 +21,7 @@ use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
 use crate::runtime::{PassthroughQueue, PhysicalKeyDisposition};
 use crate::state::platform_state::ImeStateHub;
+use crate::state::relay_plan;
 use crate::state::ConvModeAuthority;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
@@ -210,7 +211,6 @@ impl DecisionExecutor {
     /// `guard_held` に park 済みの Effect があれば最初にそれを試し、
     /// output guard 期間中なら `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
-    #[expect(clippy::useless_let_if_seq)]
     pub(crate) fn drain_deferred(
         &mut self,
         platform: &mut WindowsPlatform,
@@ -225,44 +225,69 @@ impl DecisionExecutor {
 
         // 1) 前回 park した ReinjectKey があれば最初に試す。
         //    guard 解除済みなら execute_one してから queue に進む (batching を継続)。
+        //    判断（park するか・guard 通過の持ち越し）は `relay_plan::plan_drain_step`。
         if let Some(event) = self.guard_held.take() {
-            if let Some(remaining) = self.reinject_wait_remaining(platform, &event) {
-                tracing::debug!(
-                    "[reinject-guard] held event, suspending for {remaining}ms (vk={:#04x})",
-                    event.vk_code,
-                );
-                self.park_in_guard(platform, event, remaining);
-                return sync_outcomes;
-            }
-            let effect = Effect::Input(InputEffect::ReinjectKey(event));
-            let generation = ime.model().pending_generation();
-            if let Some(o) = self.execute_one(platform, ime, effect, generation) {
-                sync_outcomes.push(o);
-            }
-            reinject_guard_passed = true;
-        }
-
-        // 2) queue を FIFO で drain。
-        while let Some(mut effect) = self.queue.pop_front() {
-            let is_reinject = matches!(effect, Effect::Input(InputEffect::ReinjectKey(_)));
-            if is_reinject && !reinject_guard_passed {
-                let Effect::Input(InputEffect::ReinjectKey(event)) = effect else {
-                    unreachable!("is_reinject was true")
-                };
-                if let Some(remaining) = self.reinject_wait_remaining(platform, &event) {
+            let wait = if relay_plan::drain_needs_wait_check(relay_plan::DrainItem::Held, false) {
+                self.reinject_wait_remaining(platform, &event)
+            } else {
+                None
+            };
+            let step = relay_plan::plan_drain_step(relay_plan::DrainItem::Held, false, wait);
+            match step.action {
+                relay_plan::DrainAction::Park { remaining } => {
                     tracing::debug!(
-                        "[reinject-guard] suspending drain for {remaining}ms (vk={:#04x})",
+                        "[reinject-guard] held event, suspending for {remaining}ms (vk={:#04x}) reason={:?}",
                         event.vk_code,
+                        step.reason,
                     );
                     self.park_in_guard(platform, event, remaining);
                     return sync_outcomes;
                 }
-                effect = Effect::Input(InputEffect::ReinjectKey(event));
-                reinject_guard_passed = true;
-            } else if !is_reinject {
-                // NICOLA 出力など reinject 以外の effect は mark_send を呼ぶので
-                // 次の reinject には再びガードを適用する。
-                reinject_guard_passed = false;
+                relay_plan::DrainAction::Execute { guard_passed_after } => {
+                    let effect = Effect::Input(InputEffect::ReinjectKey(event));
+                    let generation = ime.model().pending_generation();
+                    if let Some(o) = self.execute_one(platform, ime, effect, generation) {
+                        sync_outcomes.push(o);
+                    }
+                    reinject_guard_passed = guard_passed_after;
+                }
+            }
+        }
+
+        // 2) queue を FIFO で drain。
+        while let Some(effect) = self.queue.pop_front() {
+            let item = if matches!(effect, Effect::Input(InputEffect::ReinjectKey(_))) {
+                relay_plan::DrainItem::QueuedReinject
+            } else {
+                relay_plan::DrainItem::QueuedOther
+            };
+            // guard の判断が要るときだけ OS を読む（元の読む回数を変えない）。
+            let wait = match (
+                &effect,
+                relay_plan::drain_needs_wait_check(item, reinject_guard_passed),
+            ) {
+                (Effect::Input(InputEffect::ReinjectKey(event)), true) => {
+                    self.reinject_wait_remaining(platform, event)
+                }
+                _ => None,
+            };
+            let step = relay_plan::plan_drain_step(item, reinject_guard_passed, wait);
+            match step.action {
+                relay_plan::DrainAction::Park { remaining } => {
+                    let Effect::Input(InputEffect::ReinjectKey(event)) = effect else {
+                        unreachable!("Park は QueuedReinject のときだけ返る")
+                    };
+                    tracing::debug!(
+                        "[reinject-guard] suspending drain for {remaining}ms (vk={:#04x}) reason={:?}",
+                        event.vk_code,
+                        step.reason,
+                    );
+                    self.park_in_guard(platform, event, remaining);
+                    return sync_outcomes;
+                }
+                relay_plan::DrainAction::Execute { guard_passed_after } => {
+                    reinject_guard_passed = guard_passed_after;
+                }
             }
             let generation = ime.model().pending_generation();
             if let Some(o) = self.execute_one(platform, ime, effect, generation) {
@@ -303,19 +328,20 @@ impl DecisionExecutor {
         platform: &WindowsPlatform,
         event: &RawKeyEvent,
     ) -> Option<u64> {
-        if matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+        // `has_pending_tsf_work` / `output_in_flight_ms` は元と同じく必要なときだけ読む。
+        let confirm_held_by_tsf = matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && event.vk_code.is_composition_confirm_key()
-            && platform.has_pending_tsf_work()
-        {
-            return Some(10);
-        }
-
-        let elapsed = platform.output_in_flight_ms();
-        if elapsed < crate::tuning::OUTPUT_GUARD_MS {
-            Some(crate::tuning::OUTPUT_GUARD_MS - elapsed)
+            && platform.has_pending_tsf_work();
+        let output_elapsed_ms = if confirm_held_by_tsf {
+            0
         } else {
-            None
-        }
+            platform.output_in_flight_ms()
+        };
+        relay_plan::reinject_wait_remaining(relay_plan::ReinjectWaitFacts {
+            confirm_held_by_tsf,
+            output_elapsed_ms,
+            guard_ms: crate::tuning::OUTPUT_GUARD_MS,
+        })
     }
 
     /// ReinjectKey イベントを guard slot に park し、TIMER_OUTPUT_GUARD を再設定する。
@@ -378,11 +404,19 @@ impl DecisionExecutor {
         raw_event: &RawKeyEvent,
         physical: PhysicalKeyDisposition,
     ) -> BatchResult {
+        let kind = match &decision {
+            Decision::PassThrough => relay_plan::RelayDecisionKind::PassThrough,
+            Decision::PassThroughWith { .. } => relay_plan::RelayDecisionKind::PassThroughWith,
+            Decision::Consume { .. } => relay_plan::RelayDecisionKind::Consume,
+        };
+        let plan = relay_plan::plan_relay(relay_plan::RelayFacts { kind, physical });
+        // フックのコールバック上なので panic しうる `unreachable!` は使わず、Decision の種別ごとに
+        // plan の action を読む（種別と action の対応は `plan_relay_exhaustive` が固定）。
         match decision {
             Decision::PassThrough => {
                 // physical=Suppress（KANJI 物理キー抑止）の場合は OS に届けず Consume する。
                 // handle_passthrough の reinject/warmup 後処理も走らせない。
-                if physical == PhysicalKeyDisposition::Suppress {
+                if matches!(plan.action, relay_plan::RelayAction::ConsumeSuppressed) {
                     return BatchResult {
                         has_pending: self.has_pending(),
                         callback: CallbackResult::Consumed,
@@ -397,11 +431,14 @@ impl DecisionExecutor {
                 }
             }
             Decision::PassThroughWith { mut effects } => {
+                let reinject = matches!(
+                    plan.action,
+                    relay_plan::RelayAction::QueueFlush { reinject: true }
+                );
                 // flush 出力あり → Consume して flush + キー再注入を FIFO でキュー。
                 // physical=Suppress（KANJI 物理キー抑止）の場合は reinject を積まない。
-                let reinject = physical == PhysicalKeyDisposition::Allow;
                 tracing::debug!(
-                    "[relay-flush] PassThroughWith: queue {} effect(s){} (vk={:#04x} {})",
+                    "[relay-flush] PassThroughWith: queue {} effect(s){} (vk={:#04x} {}) reason={:?}",
                     effects.len(),
                     if reinject {
                         " + reinject"
@@ -413,6 +450,7 @@ impl DecisionExecutor {
                         awase::types::KeyEventType::KeyDown => "down",
                         awase::types::KeyEventType::KeyUp => "up",
                     },
+                    plan.reason,
                 );
                 if reinject {
                     effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
@@ -426,7 +464,7 @@ impl DecisionExecutor {
             }
             Decision::Consume { effects } => {
                 // Engine が消費 → Timer は即時実行（platform timer state を常に最新に保つ）、
-                // それ以外はキューに入れる。
+                // それ以外はキューに入れる（e12、判断は `relay_plan::plan_consume_effect`）。
                 //
                 // Timer を即時実行しない場合、drain 中に Kill/Set がキューに積まれたまま
                 // platform の current_os_id が更新されず、deferred_engine_timers の
@@ -434,13 +472,14 @@ impl DecisionExecutor {
                 // （例: PendingChar(S)→PendingChar(D) 遷移後に古い S のタイマーが発火）。
                 let mut sync_outcomes = Vec::new();
                 for effect in effects {
-                    if matches!(effect, Effect::Timer(_)) {
-                        let generation = ime.model().pending_generation();
-                        if let Some(o) = self.execute_one(platform, ime, effect, generation) {
-                            sync_outcomes.push(o);
+                    match relay_plan::plan_consume_effect(matches!(effect, Effect::Timer(_))) {
+                        relay_plan::EffectRoute::Immediate => {
+                            let generation = ime.model().pending_generation();
+                            if let Some(o) = self.execute_one(platform, ime, effect, generation) {
+                                sync_outcomes.push(o);
+                            }
                         }
-                    } else {
-                        self.queue.push_back(effect);
+                        relay_plan::EffectRoute::Queue => self.queue.push_back(effect),
                     }
                 }
                 BatchResult {
@@ -475,7 +514,8 @@ impl DecisionExecutor {
 
         // B. [transport] output guard defer
         let in_flight_ms = platform.output_in_flight_ms();
-        let output_in_flight = in_flight_ms < crate::tuning::OUTPUT_GUARD_MS;
+        let output_in_flight =
+            relay_plan::output_in_flight(in_flight_ms, crate::tuning::OUTPUT_GUARD_MS);
         // BUG-58: `self.has_pending()` は executor 自身の effect queue しか見ない。
         // `MsImeReadyCoro` の Phase 1（NATIVE 確認待ち、無出力）は
         // `OutputActiveGuard` を持たなくなった（`ms_ime_ready_coro.rs` 参照）ため、
