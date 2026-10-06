@@ -67,12 +67,17 @@ ADR-229 の gate 一覧からは journal・ime_event_log・tsf_gate・hwnd_cache
 
 | ID | 対象 | 注意 |
 |---|---|---|
-| F1 | `ir_decide_read_strategy`(36 行、`runtime/ime_refresh.rs`) | 最も易しい |
+| F1 | `ir_decide_read_strategy`(36 行、`runtime/ime_refresh.rs`) | 最も易しい。**同じ PR で、F1 の `decide` の再生 fixture を足すと同時に、dev-only crate `crates/awase-replay`(`publish = false`、依存は `serde`・`serde_json`、`awase-windows` の dev-dependency)を作り、再生ハーネス `replay_dir<T>(dir, check) -> ReplayReport` を取り出す**(ADR-229「FCIS の汎用部品の判断」)。既存の 4 か所(`journal_replay.rs`・`drift_correction_replay.rs`・`actuation_decision_record.rs` の fixture 読み込み)を移し、`journal_replay.rs` が直下を全部読む件は、直下の JSON を `tests/journals/conv_classify/` へ移して解消する(1 ディレクトリ = 1 形式)。`cargo machete` の dev-dep 誤検出に注意(最初の使い手と同じ PR で入れる) |
 | F2 | `dispatch_ime_set_open` の `plan_set_open`(`runtime/executor.rs`) | actuation 合流点のファミリー(ADR-119)。gate を再検出する 3 関数の設計(ADR-180)に触れない |
 | F3 | `execute_relay`/`drain_deferred` の計画/ガード状態機械 | **defer/replay キュー(ADR-156)。defer 側と drain 側の 2 窓口を、同じ PR で必ず対にする** |
 | F4 | `ir_apply_drift_correction` の `DriftPlan`。ハーネスの写しの残り 2 系統(`kp_stage_key_effect_track`/`kp_predict_key_effect`、`ir_apply_drift_correction` の前半)を本物に | 写し 7 → 1 への道 |
 | F5 | focus 系(`classify_focus`、`msaa_classify`、`resolve_focus_kind`、`learn_imm_capability_on_focus`)。「O が facts、core が判断」 | 条件付きの段階的な読み取りは F-D1 の handler 例外(MSAA までの同期の段階)。UIA は A 種の Cmd/Event。UIA 経路の削除(約 400 行)は別判断 |
 | F6 | Output(`vk_send` F 623 行、`output/mod` 576 行)の `Vec<Cmd>` 化 | `Output` の状態を `OutputState` へ(`RAW_TSF_LITERAL`、`OutputActiveGuard`)。`OutputActiveGuard` は `GateAcquire`/`GateRelease` を対に(ADR-156) |
+
+### F の分割の各 PR に含める「汎用でない」改善(ADR-229「FCIS の汎用部品の判断」)
+
+- 生の `u32` の `focus_gen`(22 か所)の newtype 化(取り違えを型で防ぐ。個別の PR)。
+- `decide` を出すときの入力型のうち、replay に使うものにだけ `serde` を足す(共通の trait は作らない)。
 
 ## 4. その後・保留
 

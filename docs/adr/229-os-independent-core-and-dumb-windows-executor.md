@@ -181,6 +181,28 @@ fn procedure(..) {                         // shell
 - crate の物理分割は最後(ファイル移動でガードが空振りするため)。
 - 指標: `CORE_MODULES` の件数(増やす)、違反のある ungated ファイルの件数(8 → 減らす)、「Linux で実行されないから」を理由にしたテキストガードの数(本物のテストに置き換えて減らす)、閉ループの写しの数(7。`platform_state` の ungate 後に P5 で 1 系統ずつ減らす。ungate 自体では減らない)、`#[cfg_attr(not(windows), allow(dead_code))]` の数(`grep -rn 'cfg_attr(not(windows)' crates/awase-windows/src` で 46 か所/11 ファイル。うち `allow(dead_code)` は 45、その他の `cfg_attr(not(windows), …)` が 1)。
 
+### FCIS の汎用部品(toolkit)の判断(2026-10-06、Opus toolkit round1、`docs/adr/review/229-opus-fcis-toolkit-round1.md`)
+
+所有者の方針は「StepCoro の拡張に限らず、FCIS を実現するための汎用部品を考える」。**先に設計せず、既存コードの使い手と重複を実測し、3 か所以上で同じ形が書かれているものだけを取り出す(rule of three)**。判定:
+
+| 候補 | 判定 |
+|---|---|
+| fixture の再生ハーネス(dir を読む → 型にする → 純関数を通す → 失敗を集める → 0 件を拒む) | **作る(唯一の該当)**。同じ約 20 行が 4 か所(`journal_replay.rs`・`drift_correction_replay.rs`・`state/actuation_decision_record.rs` ほか)。`journal_replay` が `tests/journals/` 直下の全 JSON を読むせいで別形式と衝突した実害の記録がある(`drift_correction_replay.rs:10-15`)。**置き場所は、workspace の非公開の小さな dev-only crate(`crates/awase-replay`、`publish = false`、依存は `serde`・`serde_json`)を `awase-windows` の dev-dependency に**。**順序は、F1 の PR で新しい使い手(F1 の `decide` の再生 fixture)と同時に作り、既存の 4 か所を移す**(先に作らない)。`journal_replay.rs` の直下の JSON は `tests/journals/conv_classify/` へ移す。判定(4b)は closure のまま。API は `replay_dir<T>(dir, check) -> ReplayReport` と `ReplayReport::assert_ok()` 程度 |
+| Facts の共通 trait | 作らない(総称として受け取る汎用コードが 0。derive がばらばら) |
+| Plan / Cmd | 既にある(`timed_fsm::Response<A, T>` は awase の 16 ファイルで使用) |
+| Handler / Executor trait | 形は 6 か所以上(`MechanismWriter`・`ProbeIo`・`WarrantJudge`・`GjiSyncSink`・`ImeDriver`・`InjectionSender`)だが、シグネチャがドメイン固有で、汎用の `Handler<Cmd>` にすると意味が消える。取り出すのは型ではなく規約(F-D1 の例外=閉じた列挙・偽物が必須) |
+| sync/async の二重化の共通化 | 作らない(awase の中では `MechanismWriter`/`AsyncMechanismWriter` の 1 組だけ。`timed_fsm` の `ActionExecutor`/`AsyncActionExecutor`/`TimerRuntime` は awase に使い手が 0) |
+| Clock の統合 | 作らない(使い手が 1 つずつ。`HubClock` の `Instant` + tick の 2 軸は `timed_fsm::Clock` で表せない) |
+| `StepCoro` の複数 effect 化・request/response 型 | 作らない(使い手 3 つは既にあり、request/response 型を求める使い手は 0。往復は `yield_step(ch, vec![Action]).await` の 1 行で、`prime()` で解決済み) |
+| Turn/Driver・`Tagged<T>` | 作らない(世代は `Generation`・`ApplyGeneration`・`PressId`・生の `u32` の `focus_gen` で意味が違い、`Tagged<T>` はドメインの区別を消す) |
+| 純粋さのガードの汎用化・契約テスト | 作らない(`CORE_MODULES` は 1 か所。契約テストは使い手 0 で後段) |
+
+**作る条件(何が起きたら作るか)**: Facts の trait=総称として受け取る汎用コードが 3 つ現れたとき。sync/async の共通化=対が 3 組に増えた、または片方だけを直した事故が記録されたとき。Clock の統合=`timed_fsm::Clock` を awase で使う箇所が現れ `HubClock` と同じ値を読む必要が出たとき。`StepCoro` の拡張=1 回の yield で別の種類の応答を待ち分ける warmup が 3 つ目として現れ、今の `Vec<ProbeAction>` + `ProbeTickInput` の形で書けないと示せたとき。`Tagged<T>`=世代の取り違えが BUG として記録されたとき(それでも先にやるのは newtype)。
+
+**汎用でない改善(toolkit ではなく、F の分割の各 PR の中で)**: ①生の `u32` の `focus_gen`(22 か所)の newtype 化(取り違えを型で防ぐ。S-C と同じ型付け)、②Facts のうち replay に使うものにだけ `serde` を足す(共通の trait は作らない)。
+
+**timed-fsm の使い方の方針**: awase は `timed_fsm` の FSM の型(`Response`・`TimerCommand`・`TimedStateMachine`・`StepCoro`)だけを使い、駆動側の trait(`Clock`・`ActionExecutor`・`AsyncActionExecutor`・`TimerRuntime`)は使っていない(Win32 のメッセージループと `HubClock` の 2 軸に合わないため、**未確認**だが使い手 0 の事実と整合する)。新しい部品でこれらと同種の trait を作らない(「既存の抽象に使い手 0 の半分があるうちは、同じ役割の抽象を新設しない」)。
+
 ### 移行のレシピ(全レシピ共通の後処理つき)
 
 R1 その場で gate を外す(T2・T3)、R2 時刻を引数にして gate を外す(T7)、R3 テストだけ移す(T1)、R4 型を**使い手の側**へ移す(T4: journal → win32 だった依存を win32 → journal に)、R5 核と殻の分割(P2)、R6 サンドイッチ分割(F)、R7 コルーチンの入力をスナップショットに。**共通の後処理**: `fix-requires-evidence.md` の表・`.githooks/pre-push` の正規表現・`.cargo/mutants-awase-windows.toml` の `examine_globs`・`decision3_…` の instrument 一覧・「Linux で実行されないから」のコメントと件数を見直す。**着手前に、テストが呼ぶ関数・型・定数・macro が gated 側にないかを必ず確認する**(PR #493 の教訓)。Linux で未使用の `pub(crate)` 項目には、テストも使うなら `#[cfg(any(windows, test))]`、使わないなら `#[cfg(windows)]`(`allow(dead_code)` は増やさない。外から到達できる `pub` 項目には何も付けない)。
