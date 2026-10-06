@@ -3,7 +3,7 @@
 //!
 //! 元の分岐を変えずに、判断だけを純粋関数へ出した。時刻は `crate::hook::current_tick_ms()` の `u64`（ms）で既に持たれており
 //! `Instant` は使われていない（`output/`・`tsf/` の本番コードに `Instant` は無い。`tsf/probe.rs` のテスト内の 3 箇所だけ）ので、事実は `u64` のまま渡す
-//! （V4 の前提は満たされている。番兵値〈`elapsed_ms == u64::MAX`・`last_unicode_ms == 0`〉は元の表現を保っている。`TickMs`/`HubClock` への置き換えは本 PR では要らない）。値の読み取り
+//! （全数表で固定できるので V4〈事実の型に `Instant` を入れない前提チェック〉は適用しない。番兵値〈`elapsed_ms == u64::MAX`・`last_unicode_ms == 0`〉は元の表現を保っている。`TickMs`/`HubClock` への置き換えは本 PR では要らない）。値の読み取り
 //! （`ms_since_last_send`・`gji_last_io_ms`・`tsf_gate.state()` など。いずれも Cell/atomic/RefCell の副作用の無い読み）と
 //! 実行（ログ・`spawn_local`・`install_pending_tsf`）は殻（`Output`）に残る。
 //!
