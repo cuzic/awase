@@ -103,10 +103,10 @@ journal を読むものは、不具合報告の診断(人・Claude)と replay(`t
 
 | 撤去 | 内容 | 前提 |
 |---|---|---|
-| #1 `[press-ledger]` の 3 行(`platform_state.rs:228,234,255`) | 派生の `press write claim` が同じフィールドを出す。リポジトリ全域の grep で読み手 0、診断での使用 0 | `:228`(衝突時)は info で、ADR-208 L1 の異常を示す唯一の利用者ログ。消してよいかは所有者に聞く(質問 1) |
-| #2 `[giveup-follow] cold=… outcome=…`(`ime_refresh.rs:301` だけ。`platform.rs:271,279` は残す) | 2026-10-04 の `d75c1d8b`(PR #480、BUG-074)で journal 記録と同時に足された行 | `gen_at_probe`・`gen_now`・`explicit_intent` は ADR-227 の世代の判定の根拠。足さずに消すか、`GiveUpFollow` に足すかを BUG-074 の担当に確認する。`BUG-074.md:319` の使い捨てブランチの確かめがどの行を見たかも確認する |
+| #1 `[press-ledger]` の 3 行(`platform_state.rs:228,234,255`) | 派生の `press write claim` が同じフィールドを出す。リポジトリ全域の grep で読み手 0、診断での使用 0 | `:228`(衝突時)は info で、ADR-208 L1 の異常を示す唯一の利用者ログ。消してよいかは所有者に聞く(質問 1)。消すときは `platform_state.rs:216` の doc(「衝突…はログ〈info〉と journal に残す」)も直す |
+| #2 `[giveup-follow] cold=… outcome=…`(`ime_refresh.rs:301` だけ。`platform.rs:271,279` は残す) | 2026-10-04 の `d75c1d8b`(PR #480、BUG-074)で journal 記録と同時に足された行 | `gen_at_probe`・`gen_now`・`explicit_intent` は ADR-227 の世代の判定の根拠。足さずに消すか、`GiveUpFollow` に足すかを BUG-074 の担当に確認する。`BUG-074.md:319` の使い捨てブランチ(`ci/adr225-d0`・`ci/adr227-verify`)は `git ls-remote origin` に無く、今動いている読み手は無い(round3 で確認)。**同じ PR で `BUG-074.md:319` を書き換える**(「CI ゲートを作り直すなら派生の `give-up follow` 行〈cold_seq・outcome・baseline〉を読む」)。接頭辞 `[giveup-follow]` は `platform.rs:271,279` も使うので、`\[giveup-follow\]` の正規表現でゲートを作ると、`ime_refresh.rs:301` を消しても別の行に当たって通ってしまう。読むべき行を名指しする |
 
-- 行数: 呼び出し 2 つ(#1 は 3 呼び出し)で合わせて 20〜30 行の撤去、追加 0(#2 でフィールドを足すなら +3 前後)。
+- 行数: `[press-ledger]` は `if/else` ごと約 16〜17 行(`platform_state.rs:226-238`・`:253-255`)、`[giveup-follow]` は約 6 行(`ime_refresh.rs:300-305`)。合計 約 22〜23 行の撤去、追加 0(#2 でフィールドを足すなら +3 前後)。
 - 検証: CI が green。加えて、消す断片が `tools/e2e/**/*.py`・`.github/workflows/*.yml`・`tools/e2e/ime_key_matrix/testdata/`・`docs/tasks/`・`crates/awase-windows/tests/*.rs` に無いことを、実装の PR で全域 grep し直す(27 断片の表だけでは足りない)。
 - 同じ PR で、表に無い既存の断片(`Blacklist drift correction`・`[engine-input] vk=`・`phys_ctrl=` など)を anchor 表に足すことを推奨する(撤去ではないが、後の撤去を安全にする前提)。
 - 取りやめ条件: 消す行の読み手が見つかる。または所有者が「利用者の既定ログに残す」と決める。
@@ -121,11 +121,11 @@ journal を読むものは、不具合報告の診断(人・Claude)と replay(`t
 | #6 `[ime-io] actuation SendInput` | 行 1 つ | `SentInput` の型に `kind` を足し、派生の行に vk・kind を出す。チェッカー 1 本 | 純増の見込み | 保留。派生の行で vk を出すと、所有者が派生の行を info にした場合(質問 1)、利用者の awase.log に構造化された VK 列が常に出る |
 | #7 `[hook] IME-mode` | 行 1 つ | `extra`・`since_actuation_us` を journal と派生の行に足す、チェッカー 1 本 | ほぼ同じ | 保留 |
 
-**入力内容の 1 か所化(#5・#10)**: README 段階 4 と一緒に判断する。`[key-output]` を消す・debug に下げると、利用者の awase.log から入力内容が消え、入力内容は窓のある journal だけになる(README E6)。
+**入力内容の 1 か所化(#5・#10)**: README 段階 4 と一緒に判断する。`[key-output]` に機械的な読み手は無い(`tools`・`.github`・`scripts`・testdata で 0)が、docs の診断の記述で使われている(round3 の数え方で 8 ファイル)。`[key-output]` を消す・debug に下げると、報告で遡れる入力内容が awase.log の 16MiB から journal の 10 分の窓まで縮み、所有者の「VK 列は必須」の趣旨(障害対応の材料)に逆行する。**取りやめ条件: README E6 で窓を外す・広げると決める前には進めない**。
 
 ## 5. 所有者に聞くこと
 
-1. 利用者の既定ログ(info)の扱い: 手書きの info/warn の行を消すと、利用者の awase.log から消える。報告の journal に残るのは、リングに収まる範囲だけ(2 節)。awase.log だけで診断する場面を残したいか。特に #1 の衝突時の行(ADR-208 L1 の異常)。
+1. 利用者の既定ログ(info)の扱い: 手書きの info/warn の行を消すと、利用者の awase.log から消える。報告の journal に残るのは、リングに収まる範囲だけ(2 節)。awase.log だけで診断する場面を残したいか。特に #1 の衝突時の行(ADR-208 L1 の異常)。なお報告の `attach_log` は journal と awase.log の両方をまとめて添付する(`bug_report.rs:570`・`:856`・`:864`)ので、添付ありの報告なら `PressWriteClaim` は journal に残る。失うのは、報告を使わずに awase.log だけを見る場面(issue に awase.log を貼るなど)に限られる。推奨: 消す(#1・#2 とも)。
 2. CI の判定が派生の行(`awase::journal`)を読むことにしてよいか。そのために `emit_tracing` に出すフィールドを増やしてよいか(ADR-139 の「主要フィールドのみ」の変更)。
 3. 報告で遡れる範囲が、awase.log(16MiB)からリング(Actuation 6144 件など)へ縮む可能性を受け入れるか。判断の前に典型的な報告 1 件で両者を測る(未測定)。
 4. #4 `[drift] correction` は残す、でよいか(推奨は残す)。
