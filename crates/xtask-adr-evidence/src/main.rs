@@ -197,7 +197,66 @@ fn to_repo_relative_candidate(path: &str) -> String {
     }
 }
 
+mod core_registry;
+
+/// FCIS V1: `core-registry <repo_root> <base_ref>`。`CORE_MODULES` に base 比で足された名前の
+/// 登録漏れを検査する。base が取れない・CORE_MODULES が読めないときは通さずに失敗する。
+fn run_core_registry(repo_root: &str, base_ref: &str) -> ExitCode {
+    let guard_rel = "crates/awase-windows/tests/layer_boundary_guard.rs";
+    let read = |rel: &str| {
+        std::fs::read_to_string(Path::new(repo_root).join(rel))
+            .unwrap_or_else(|e| panic!("failed to read {rel}: {e}"))
+    };
+    let head_src = read(guard_rel);
+    let head = match core_registry::parse_core_modules(&head_src) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("HEAD の {guard_rel}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let out = std::process::Command::new("git")
+        .args(["-C", repo_root, "show", &format!("{base_ref}:{guard_rel}")])
+        .output()
+        .expect("git を起動できない");
+    if !out.status.success() {
+        eprintln!(
+            "base {base_ref} の {guard_rel} を読めない: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return ExitCode::from(2);
+    }
+    let base = match core_registry::parse_core_modules(&String::from_utf8_lossy(&out.stdout)) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("base の {guard_rel}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let added = core_registry::added_modules(&base, &head);
+    println!("CORE_MODULES に追加された名前: {added:?}");
+    let violations = core_registry::check(&added, &read(".cargo/mutants-awase-windows.toml"));
+    if violations.is_empty() {
+        println!("登録漏れなし。");
+        ExitCode::SUCCESS
+    } else {
+        for v in &violations {
+            eprintln!("  - {v}");
+        }
+        ExitCode::FAILURE
+    }
+}
+
 fn main() -> ExitCode {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("core-registry") {
+        let root = args.next().unwrap_or_else(|| ".".to_string());
+        let Some(base) = args.next() else {
+            eprintln!("使い方: core-registry <repo_root> <base_ref>");
+            return ExitCode::from(2);
+        };
+        return run_core_registry(&root, &base);
+    }
     let repo_root = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
     let lint_path = Path::new(&repo_root).join("lints/actuation_call_guard/src/lib.rs");
     let src = std::fs::read_to_string(&lint_path)
