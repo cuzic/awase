@@ -62,3 +62,37 @@
 2. **次は BUG-145 で 2 件目を試す**。特に、記録の `TimerFired` の並びの方式で足りるか(仮想時計では BUG-105 が検出できなかったので、ここが本格化の可否を決める)。
 3. 記録側で 1 つ検討する価値があるのは、**`TimerFired` を `KeyInput` レーンに移す(または同じ容量にする)こと**。いまは `TimerFired` が先に追い出され、古い区間のタイマーの並びが分からない。フィールドの追加ではなくレーンの割り当ての変更で済む。
 4. 本格化するなら、先に `bootstrap.rs` のエンジンの組み立てを純粋な関数に切り出す。
+
+## 既存の actuation の再生(`replay_record`)との比較と、置き換えの見込み
+
+所有者の判断(2026-10-06): 凍結コーパスと古い journal は、新しいリプレイ基盤を作って置き換えるのと同時に捨てる。B5 の試作はその基盤の候補になる。以下はその前提での整理(試作では記録側に触れていない)。
+
+既存の再生一式: `state/actuation_decision_record.rs` の `#[cfg(test)] mod tests`(408 行目以降、約 880 行、テスト 15 本)、コーパス `tests/journals/actuation_decision/bug-131-report-01m29kdnz.json`(1440 行、37 レコード)、読み込みに `awase-replay::replay_dir`(この crate は `journal_replay.rs` など他の 3 本の再生テストも使う)。15 本のうちコーパスを読むのは `replay_all_actuation_decision_fixtures` の 1 本だけで、残りは手で組んだレコードの単体テスト。
+
+### (1) 何を検証でき、何を検証できないか
+
+| | B5(入力の再生、この試作) | `replay_record`(決定の再計算) |
+| --- | --- | --- |
+| 入力 | `KeyInput` の列(打鍵と時刻) | `ActuationDecision` の記録(`DecisionInputs`: profile・IME の種類・`shadow_on`・belief の入力モード、記録された `attempts`) |
+| 動かすコード | `Engine::on_input`/`on_timeout`(同時打鍵の判定、出力、タイマー、エンジンが出す `SetOpen` の要求) | `decide_gate`/`decide_chain`/`decide_attempt` と `run_chain`/`run_chain_async`(どの機構を試し、どこで打ち切ったか) |
+| 答えられる問い | エンジン側の不具合が HEAD で出るか(BUG-105 で確認) | 記録された入力に対して、HEAD の決定関数が記録と同じ決定を返すか(リファクタの回帰網) |
+| 答えられない問い | IME 制御の送信の決定。エンジンは `SetOpen { open, press }` を返すところまでで、送るかどうか・何を送るかは殻(`runtime/executor.rs::dispatch_ime_set_open`、`ImeStateHub` の belief・applied・押下台帳)と、IME からの観測で決まる。これらは `KeyInput` に無く、殻のコードは `cfg(windows)` | 打鍵からその actuation に至ったか(打鍵や belief の経緯は入力に無い)。IME が実際にどう応えたか(outcome は記録をそのまま返すだけ) |
+
+つまり両者は重ならない。B5 は actuation の決定を再生できず、`replay_record` はエンジンの判定を再生できない。IME とのやり取りが絡む不具合には、どちらも HEAD での再現に答えられない(README の結論と同じ)。
+
+### (2) B5 の本格化で既存の再生一式を置き換えられるか
+
+- **B5 だけでは置き換えられない**。actuation の決定の入力(`DecisionInputs`)は打鍵からは導けない。
+- ただし `ActuationDecision` の記録は本番の journal に既にあり(`JournalEntry::ActuationDecision { record }`、所有者判断で残す)、コーパスの形式は同じ `ActuationDecisionRecord` の配列。したがって、**journal のダンプ 1 本から `KeyInput` は B5 へ、`ActuationDecision` は `replay_record` へ流す読み込み**にすれば、コーパスを新しい形式のダンプ(新しい報告か CI のダンプ)に置き換えられる。記録側に足すフィールドは要らない。
+- 置き換えで消せるのはコーパス(1440 行)と、コーパス専用の読み込み(`replay_all_actuation_decision_fixtures`、約 15 行)くらい。`replay_record`・`ReplayWriter` と手組みの単体テスト(約 860 行)は、決定関数の回帰網として残ることになる(消すなら、同じことを全数表・単体テストで持つ必要がある)。
+- 打鍵から actuation まで通して再生するには、殻の `SetOpen` の処理と `ImeStateHub` の遷移を Linux で動かし、IME の観測の列(State レーンの `ImeEvent`)を入力にする必要がある。これは B6(閉ループ)の範囲で、殻の該当部分が `cfg(windows)` の外に出るまでは作れない。記録側では、`SetOpen` の要求と `ActuationDecision` の記録を結ぶ印(押下 ID か seq の対応)も要る。
+
+### (3) 新基盤の範囲の選択肢と行数の見込み
+
+| 案 | 中身 | 行数の見込み | 既存の再生一式 |
+| --- | --- | --- | --- |
+| A. エンジン入力の再生だけ | B5 を本格化(エンジンの組み立ての共有を含む) | 補助 約 390 行(試作のまま)+ `bootstrap.rs` からの切り出し(移動、純増は小) | コーパスとその 1 本を消す(-1440 行のデータ、約 -15 行)。決定関数の回帰網は手組みの 14 本だけで持つ |
+| B. 同じダンプから両方を再生(推奨) | A に、ダンプの封筒から `ActuationDecision` を取り出して `replay_record` に渡す読み込みを足す | A + 約 30〜50 行 | コーパスを新形式のダンプ 1 本に置き換える。`replay_record` 以下は残す |
+| C. 打鍵から actuation の決定まで通す | 殻の `SetOpen` 処理・`ImeStateHub` の遷移・IME の観測の列まで再生 | 未実測。殻のコードの移動を含めて 1000 行を超える見込み | 置き換えられるが、B6 と同じ規模 |
+
+推奨は B。A との差は小さく(数十行)、FCIS で決定関数が純粋になったので、本番で記録している `DecisionInputs` から決定を再計算する価値はそのまま残る。新形式のダンプ 1 本で両方の fixture を兼ねられる。C は IME とのやり取りを写す必要があり、B6 の判断(E1)と一緒に決める。
