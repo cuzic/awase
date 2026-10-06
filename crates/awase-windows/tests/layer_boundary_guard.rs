@@ -503,6 +503,7 @@ const CORE_MODULES: &[&str] = &[
     "conv_classify",
     "conv_mode",
     "drift_correction",
+    "drift_plan",
     "eisu_recovery",
     "event_origin",
     "evidence",
