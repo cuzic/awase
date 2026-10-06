@@ -55,6 +55,12 @@ ADR-229 の gate 一覧からは journal・ime_event_log・tsf_gate・hwnd_cache
 4. **FS/環境変数**: `std::fs`・`fs::` に加えて `File::open`、`Path::exists`/`metadata`。`env!`/`option_env!`/`include_str!` はコンパイル時の展開なので許可する。
 5. **`static`**: 不変も含めて一律に違反とする(不変の表は `const` にするか、そのファイルを `CORE_MODULES` に載せない)。
 
+### P4・P5 の前に決める: 可視性の方針(Opus の PR #500 レビュー S19)
+
+- **事実**: `ImeStateHub` とそのメソッドは `pub(crate)` で、`tests/` の統合テスト(閉ループのハーネス `tests/support/harness.rs` は別 crate 扱い)からは呼べない。そのため **P5(ハーネスの写しを本物の `ImeStateHub` の呼び出しに置き換える)は、可視性を変えないと書けない**。また P4 で gate を外すと、殻からしか呼ばれない private な `_in_scope`(約 10 個)が Linux で `never used` 警告になる。
+- **方針案(P3 のレビューで Opus に確認してから確定する)**: ハーネスが呼ぶ `ImeStateHub` と、その `_in_scope` 版・読み取りメソッドを `pub` にする(`#[doc(hidden)]` を付けるかは確認)。`pub` なら Linux でも dead_code 警告が出ず(`allow(dead_code)` を増やさない)、統合テストからも呼べる。代案: ハーネスを `src/` の `#[cfg(test)]` モジュールへ移す(可視性は不要になるが、統合テスト crate という構造と `ci_test_coverage_guard` の前提が変わる)。
+- **注意**: `pub` にすると、`awase-windows` の公開 API が増える。`awase-windows` は workspace の内部 crate(crates.io 非公開)なので、API の約束は発生しないが、`layer-boundaries.md` の規則との整合を確認する。
+
 ## 3. 第 3 弾(F の分割、Tier-2)
 
 **共通**: サンドイッチ(`observe` → core の `decide` → `execute`)。分けたファイルは P0 の `CORE_MODULES` に足す(同じ PR)。journal replay で、元の判断の入力が復元できるかを確かめる。いずれも、再発ファミリーのガード(`fix-requires-evidence.md` の表)と `decision3_…` の instrument 一覧を見直す。
