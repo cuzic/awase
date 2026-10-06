@@ -69,8 +69,7 @@ pub(crate) enum GateResult {
 /// 本ADRが対象とする4関数+これらが内部で辿る経路を表す。`ImmCrossWrite`は
 /// `runtime/open_chain.rs::imm_cross_write`、`FallbackWrite`は同`fallback_write`、
 /// `RunOpenChainAsync`は同`run_open_chain_async`冒頭のゲート、`DispatchImeSetOpen`は
-/// `runtime/executor.rs::dispatch_ime_set_open`。`ReassertExplicitPhysicalKey`/
-/// `ForceOnRomajiCorrection`/`ShadowToggleOff`/`ShadowToggleOn`は記録専用
+/// `runtime/executor.rs::dispatch_ime_set_open`。`ShadowToggleOff`/`ShadowToggleOn`は記録専用
 /// ラベルであり、command計算へは使わない（ADR-163 Part D B1）。
 ///
 /// # `ShadowToggleOff`/`ShadowToggleOn`（ADR-163 Part D S-8対応、2026-09-11）
@@ -82,8 +81,12 @@ pub(crate) enum GateResult {
 /// （`run_open_chain_async`自身の冒頭ゲート）を渡すため、`site`だけでは区別できない
 /// （`site`の意味を変えると`replay_record`のchain再導出・ImmCross command再計算
 /// スキップ判定に影響するため`site`自体は変更しない）。
-/// `ReassertExplicitPhysicalKey`/`ForceOnRomajiCorrection`と同じ`caller`
-/// （`ActuationDecisionRecord::caller`）による事後ラベル付けで解決する。
+/// `caller`（`ActuationDecisionRecord::caller`）による事後ラベル付けで解決する。
+///
+/// 撤去済みの `ReassertExplicitPhysicalKey`/`ForceOnRomajiCorrection` は、凍結コーパス
+/// `bug-131-report-01m29kdnz.json` の `caller` 15 件を `null` に書き換えた上で削除した
+/// （`caller` は `replay_record` が読まない診断ラベルで、再生結果は不変。ADR-163 D5 の追記参照）。
+/// `ForceOnBootstrap` は構築元ゼロとして #515 で削除済み。
 #[derive(
     strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
 )]
@@ -93,8 +96,6 @@ pub enum DecisionSite {
     FallbackWrite,
     RunOpenChainAsync,
     DispatchImeSetOpen,
-    ReassertExplicitPhysicalKey,
-    ForceOnRomajiCorrection,
     ShadowToggleOff,
     /// shadow toggle の OFF→ON 明示 actuation（ADR-213 決定1）。記録専用ラベル。
     ShadowToggleOn,
@@ -784,8 +785,6 @@ mod tests {
             DecisionSite::FallbackWrite,
             DecisionSite::RunOpenChainAsync,
             DecisionSite::DispatchImeSetOpen,
-            DecisionSite::ReassertExplicitPhysicalKey,
-            DecisionSite::ForceOnRomajiCorrection,
         ] {
             let (_, cmd) = decide_attempt(i, site, WriteMechanism::ImmCross, true);
             assert_eq!(cmd, None, "{site:?}");
