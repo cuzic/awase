@@ -136,6 +136,7 @@ pub(crate) use super::drift_correction::DriftCorrection;
 impl ImeStateHub {
     /// 時計を注入して初期化する。`hook` に依存しないので、テスト・閉ループは仮想時計
     /// （`HubClock::manual`）を渡せる。
+    ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
     pub fn with_clock(clock: super::hub_clock::HubClock) -> Self {
@@ -166,6 +167,7 @@ impl ImeStateHub {
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     /// state/ 層が `hook::current_tick_ms()` を直接呼ばないよう注入する。
+    ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     pub fn dispatch_event(&mut self, event: ImeEvent, tick_ms: TickMs) {
         // ユーザー明示の IME OFF/ON を永続タイムスタンプに反映する。
@@ -278,6 +280,7 @@ impl ImeStateHub {
     ///
     /// `ImeEvent::KeyEffectPredicted`の**唯一のdispatch元**。awaseはIMEへ書かない（生キーはそのまま通る）。
     /// 後から来る観測（settle後）が照合し、食い違えば観測が勝つ（`ImeModel::reduce`のfence）。
+    ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     pub fn apply_key_effect_prediction(
         &mut self,
@@ -420,6 +423,7 @@ impl ImeStateHub {
     // ── 外部変化の監視窓（ADR-205、BUG-172）──
 
     /// 外部注入の IME キーを見たら呼ぶ（読めない窓のみ）。現在のフォアグラウンドに対する監視窓を開く／延ばす。
+    ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     pub fn arm_external_change_watch_in_scope(
         &mut self,
@@ -459,6 +463,7 @@ impl ImeStateHub {
     /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。awase は IME を書かない。
     /// 開く・閉じるの両方向を同じ規則で追随する（呼び出し側が GJI × Imm32Unavailable に限る）。戻り値は追随した値。
     /// どのフォーカスでも直近の読みは記録する（基準値の初期値になる）。
+    ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     pub fn follow_external_change_in_scope(
         &mut self,
@@ -977,6 +982,7 @@ impl ImeStateHub {
     /// `ImeModel` への読み取り専用アクセス。
     ///
     /// 書き込みはすべて `dispatch_event()` 経由とすること。
+    ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
     pub fn model(&self) -> &ImeModel {
@@ -1017,6 +1023,7 @@ impl ImeStateHub {
     /// `now` / `now_ms` は呼び出し元が注入する（ADR-087 INV-23:
     /// `issue_open_warrant` は時刻を内部で取らない純粋関数。加えて `state/` 層は
     /// `hook::current_tick_ms()` を直接呼ばない規約）。
+    ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
     pub fn warrant_context(
@@ -1491,6 +1498,7 @@ impl ImeStateHub {
     /// 現在は 2 本のガードが二段で効く:
     /// - 「`IntentStore` へ record できるのは本メソッドだけ」＝ 前者
     /// - 「本メソッドを呼べるのは上記3箇所だけ」＝ 後者
+    ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     pub fn record_explicit_intent(
         &mut self,
