@@ -249,6 +249,34 @@ fn is_role_toggle_hz_key_down(event: &RawKeyEvent) -> bool {
         )
 }
 
+impl PhysicalKeyDisposition {
+    /// `Suppress` の場合のみ理由ラベルを返す（`kp_stage_execute` の debug log と
+    /// journal 記録（`JournalEntry::KeyInput::physical`）で共用し、2箇所が
+    /// 別々に判定ロジックを持って乖離することを防ぐ）。
+    ///
+    /// BUG-90 調査用: journal の `KeyInput.decision` は engine の意味論的判断
+    /// （PassThrough/Consume）であり、この配送判断（実際に OS へ届いたか）とは
+    /// 独立している。この関数を journal に記録することで両者を突き合わせられる
+    /// ようにする（`docs/known-bugs.md` BUG-90 参照）。
+    pub(crate) fn suppress_reason(
+        self,
+        event: &RawKeyEvent,
+        profile: AppImeProfile,
+    ) -> Option<&'static str> {
+        if self != Self::Suppress {
+            return None;
+        }
+        Some(if crate::vk::is_role_fkey(event.vk_code) {
+            // F13〜F24（ADR-199 決定18）。profile に依らず「awase が実際に書いた打鍵」だけ Suppress される。
+            "role-fkey"
+        } else if profile.can_use_imm32_cross_process() {
+            "imm-cross"
+        } else {
+            "imm32-off"
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,10 +422,7 @@ mod tests {
         ] {
             for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
                 for shadow_toggled in [false, true] {
-                    for active_ime_kind in [
-                        ImeKindId::Gji,
-                        ImeKindId::MsIme,
-                    ] {
+                    for active_ime_kind in [ImeKindId::Gji, ImeKindId::MsIme] {
                         let ev = non_kanji_event(event_type);
                         assert_eq!(
                             PhysicalKeyDisposition::plan_core(
@@ -588,12 +613,7 @@ mod tests {
             KeyEventType::KeyDown,
         ));
         assert_eq!(
-            PhysicalKeyDisposition::plan_core(
-                &ev,
-                AppImeProfile::TsfNative,
-                false,
-                ImeKindId::Gji
-            ),
+            PhysicalKeyDisposition::plan_core(&ev, AppImeProfile::TsfNative, false, ImeKindId::Gji),
             PhysicalKeyDisposition::Allow
         );
     }
@@ -606,12 +626,7 @@ mod tests {
             KeyEventType::KeyDown,
         );
         assert_eq!(
-            PhysicalKeyDisposition::plan_core(
-                &ev,
-                AppImeProfile::TsfNative,
-                false,
-                ImeKindId::Gji
-            ),
+            PhysicalKeyDisposition::plan_core(&ev, AppImeProfile::TsfNative, false, ImeKindId::Gji),
             PhysicalKeyDisposition::Suppress
         );
     }
@@ -623,12 +638,7 @@ mod tests {
             Some(ShadowImeAction::TurnOn),
         ));
         assert_eq!(
-            PhysicalKeyDisposition::plan_core(
-                &ev,
-                AppImeProfile::TsfNative,
-                false,
-                ImeKindId::Gji
-            ),
+            PhysicalKeyDisposition::plan_core(&ev, AppImeProfile::TsfNative, false, ImeKindId::Gji),
             PhysicalKeyDisposition::Allow
         );
     }
@@ -697,7 +707,12 @@ mod tests {
             for shadow_toggled in [false, true] {
                 let ev = kanji_event(KeyEventType::KeyUp, Some(ShadowImeAction::TurnOn));
                 assert_eq!(
-                    PhysicalKeyDisposition::plan_core(&ev, profile, shadow_toggled, active_ime_kind),
+                    PhysicalKeyDisposition::plan_core(
+                        &ev,
+                        profile,
+                        shadow_toggled,
+                        active_ime_kind
+                    ),
                     PhysicalKeyDisposition::Suppress,
                     "{label}: KANJI KeyUp は shadow_toggled={shadow_toggled} でも常に Suppress \
                      (二重制御による物理キー再送を防ぐ、BUG-46)"
@@ -786,12 +801,8 @@ mod tests {
             ShadowImeAction::Toggle,
             KeyEventType::KeyDown,
         );
-        let disposition = PhysicalKeyDisposition::plan_core(
-            &ev,
-            AppImeProfile::TsfNative,
-            false,
-            ImeKindId::Gji,
-        );
+        let disposition =
+            PhysicalKeyDisposition::plan_core(&ev, AppImeProfile::TsfNative, false, ImeKindId::Gji);
         assert_eq!(disposition, PhysicalKeyDisposition::Suppress);
         assert_eq!(
             disposition.suppress_reason(&ev, AppImeProfile::TsfNative),
@@ -827,7 +838,12 @@ mod tests {
                         }
                         {
                             assert_eq!(
-                                PhysicalKeyDisposition::plan_core(&ev, profile, false, active_ime_kind),
+                                PhysicalKeyDisposition::plan_core(
+                                    &ev,
+                                    profile,
+                                    false,
+                                    active_ime_kind
+                                ),
                                 PhysicalKeyDisposition::Allow,
                                 "{vk_label} / {label} / {event_type:?} / shift={shift}: \
                                  awase が書かないキーは IME へ素通し（ADR-191）"
@@ -963,10 +979,7 @@ mod tests {
         AppImeProfile::InputRelay,
     ];
     const ALL_EVENT_TYPES: [KeyEventType; 2] = [KeyEventType::KeyDown, KeyEventType::KeyUp];
-    const ALL_IME_KINDS: [ImeKindId; 2] = [
-        ImeKindId::Gji,
-        ImeKindId::MsIme,
-    ];
+    const ALL_IME_KINDS: [ImeKindId; 2] = [ImeKindId::Gji, ImeKindId::MsIme];
     const ALL_BOOLS: [bool; 2] = [false, true];
 
     /// `kanji_family_keyup_suppress_verdict_is_independent_of_specific_vk`が
@@ -985,12 +998,8 @@ mod tests {
                 for &injected in &ALL_BOOLS {
                     let mut ev = f2_event(event_type);
                     ev.injected = injected;
-                    let result = PhysicalKeyDisposition::plan_core(
-                        &ev,
-                        profile,
-                        false,
-                        ImeKindId::Gji,
-                    );
+                    let result =
+                        PhysicalKeyDisposition::plan_core(&ev, profile, false, ImeKindId::Gji);
                     rows.push(PlanRow {
                         vk_label: "VK_DBE_HIRAGANA",
                         event_type,
@@ -1049,12 +1058,8 @@ mod tests {
                     for &injected in &ALL_BOOLS {
                         let mut ev = henkan_muhenkan_event(vk, None, event_type);
                         ev.injected = injected;
-                        let result = PhysicalKeyDisposition::plan_core(
-                            &ev,
-                            profile,
-                            false,
-                            ImeKindId::Gji,
-                        );
+                        let result =
+                            PhysicalKeyDisposition::plan_core(&ev, profile, false, ImeKindId::Gji);
                         rows.push(PlanRow {
                             vk_label: if vk == crate::vk::VK_CONVERT {
                                 "VK_CONVERT"
@@ -1113,12 +1118,8 @@ mod tests {
                 for &injected in &ALL_BOOLS {
                     let mut ev = non_kanji_event(event_type);
                     ev.injected = injected;
-                    let result = PhysicalKeyDisposition::plan_core(
-                        &ev,
-                        profile,
-                        false,
-                        ImeKindId::Gji,
-                    );
+                    let result =
+                        PhysicalKeyDisposition::plan_core(&ev, profile, false, ImeKindId::Gji);
                     rows.push(PlanRow {
                         vk_label: "non-kanji",
                         event_type,
@@ -1240,10 +1241,7 @@ mod tests {
     fn fkey_disposition(ev: &RawKeyEvent, shadow_toggled: bool) -> PhysicalKeyDisposition {
         let mut seen = None;
         for profile in [AppImeProfile::Standard, AppImeProfile::TsfNative] {
-            for kind in [
-                ImeKindId::Gji,
-                ImeKindId::MsIme,
-            ] {
+            for kind in [ImeKindId::Gji, ImeKindId::MsIme] {
                 let d = PhysicalKeyDisposition::plan_core(ev, profile, shadow_toggled, kind);
                 assert!(
                     seen.is_none_or(|p| p == d),
@@ -1304,21 +1302,12 @@ mod tests {
         let mut ev = fkey_event(KeyEventType::KeyDown, false, Some(ShadowImeAction::Toggle));
         ev.injected = true;
         assert_eq!(
-            PhysicalKeyDisposition::plan_core(
-                &ev,
-                AppImeProfile::Standard,
-                false,
-                ImeKindId::Gji
-            ),
+            PhysicalKeyDisposition::plan_core(&ev, AppImeProfile::Standard, false, ImeKindId::Gji),
             PhysicalKeyDisposition::Allow
         );
         let ev = fkey_event(KeyEventType::KeyDown, false, Some(ShadowImeAction::Toggle));
-        let d = PhysicalKeyDisposition::plan_core(
-            &ev,
-            AppImeProfile::Standard,
-            true,
-            ImeKindId::Gji,
-        );
+        let d =
+            PhysicalKeyDisposition::plan_core(&ev, AppImeProfile::Standard, true, ImeKindId::Gji);
         assert_eq!(
             d.suppress_reason(&ev, AppImeProfile::Standard),
             Some("role-fkey")

@@ -8,34 +8,6 @@ use crate::vk::VkCodeExt as _;
 
 pub(crate) use crate::state::physical_disposition::PhysicalKeyDisposition;
 
-impl PhysicalKeyDisposition {
-    /// `Suppress` の場合のみ理由ラベルを返す（`kp_stage_execute` の debug log と
-    /// journal 記録（`JournalEntry::KeyInput::physical`）で共用し、2箇所が
-    /// 別々に判定ロジックを持って乖離することを防ぐ）。
-    ///
-    /// BUG-90 調査用: journal の `KeyInput.decision` は engine の意味論的判断
-    /// （PassThrough/Consume）であり、この配送判断（実際に OS へ届いたか）とは
-    /// 独立している。この関数を journal に記録することで両者を突き合わせられる
-    /// ようにする（`docs/known-bugs.md` BUG-90 参照）。
-    pub(crate) fn suppress_reason(
-        self,
-        event: &RawKeyEvent,
-        profile: AppImeProfile,
-    ) -> Option<&'static str> {
-        if self != Self::Suppress {
-            return None;
-        }
-        Some(if crate::vk::is_role_fkey(event.vk_code) {
-            // F13〜F24（ADR-199 決定18）。profile に依らず「awase が実際に書いた打鍵」だけ Suppress される。
-            "role-fkey"
-        } else if profile.can_use_imm32_cross_process() {
-            "imm-cross"
-        } else {
-            "imm32-off"
-        })
-    }
-}
-
 /// passthrough キーの Down/Up 対称性と output guard defer を管理するキュー。
 ///
 /// `check_output_guard_defer` で defer した KeyDown の VK を `deferred_vks` に記録し、
@@ -149,6 +121,9 @@ mod plan_shell_tests {
             ImeKindId::from(ActiveImeKind::GoogleJapaneseInput),
             ImeKindId::Gji
         );
-        assert_eq!(ImeKindId::from(ActiveImeKind::MicrosoftIme), ImeKindId::MsIme);
+        assert_eq!(
+            ImeKindId::from(ActiveImeKind::MicrosoftIme),
+            ImeKindId::MsIme
+        );
     }
 }
