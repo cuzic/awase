@@ -4236,6 +4236,13 @@ fn establish_initial_focus_scope_syncs_the_focus_scope() {
     // 順序判定もコメントを落としたテキストに対して行う（doc コメント中の関数名
     // 言及が `find` に先に当たると偽陽性/偽陰性になるため、件数カウント側の
     // `count_real_calls` と揃える）。
+    // ファイル全体でも呼び出しは1か所だけ（別の関数から2か所目を呼ぶ経路を捕まえる）。
+    assert_eq!(
+        count_real_calls(production_code_only(&content), "self.sync_initial_focus_scope("),
+        1,
+        "sync_initial_focus_scope の呼び出しは focus_tracking.rs 全体で establish_initial_focus_scope \
+         の1か所だけ（起動時経路を足すなら ADR-232 D1 を見直すこと）"
+    );
     let body_code = non_comment_lines(body);
     let idx = |needle: &str| {
         body_code

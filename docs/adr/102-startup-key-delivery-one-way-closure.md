@@ -250,6 +250,17 @@ reducer のアームも `ObservationStore::establish_initial_fence()`（`current
 （`state::ime_model::tests::initial_focus_fence_established_touches_only_the_fence`
 がモデル全体の `Debug` 一致で機械的に固定）。
 
+**追補（ADR-232 D1、2026-10-06）**: 上の追補は BUG-102 時点の記述で、その後 BUG-114・BUG-148 で
+`InitialAppPolicyEstablished`・`InitialFocusHwndEstablished` が足され、ADR-232 D1 で 3 つとも
+`ImeEvent::InitialFocusScopeEstablished { to, profile, focus_epoch }` 1 件にまとめた。現在の
+reducer のアームは `app_policy`・`current_focus`・`establish_initial_fence()`（fence）の 3 つを
+`FocusChanged` と同じ式で書き、これらを「スコープの同一性」であって belief ではないとして
+決定3-bに抵触しないとする。belief（`last_intent`・`applied`・`force_guards`・`input_barrier`・
+観測プール等）は書かない。固定は `initial_focus_scope_established_touches_only_the_scope_identity`
+（全体 `Debug` 比較）と `initial_focus_scope_matches_focus_changed_except_input_barrier`（等価性）。
+上の「`app_policy`/`current_focus` のいずれにも触れない」「`initial_focus_fence_established_touches_only_the_fence`」は
+当時の記述として残す。
+
 **なぜ必要になったか**: 擬似コードが列挙している `focus_epoch += 1` により live
 側フェンス（`Runtime::focus_fence()`）は `{epoch: 1, hwnd: 実 hwnd}` になるのに、
 `ObservationStore::current_fence` は `FocusChanged` / `FocusHwndUpdated` でしか

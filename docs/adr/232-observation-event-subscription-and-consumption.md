@@ -7,7 +7,7 @@ summary: |-
   採る: (D1) 起動時のフォーカス確立(BUG-081 で作った別経路)で、定常の `FocusChanged` が入れる「スコープの同一性」のフィールドが足されるたびに漏れ、Event が 1 つずつ足された(BUG-102 fence・BUG-114 根本原因1 `app_policy`・BUG-148 `current_focus` の 3 件)。3 つの `Initial*` を 1 つにまとめ(ADR-134 D1c の元の設計に戻す)、起動時の腕に `app_policy`・`current_focus`・fence の 3 行を直接書き(共有関数は作らない)、モデル全体の `Debug` 比較の等価性テストで将来の食い違いを捕まえる。(D2) 本番に読み手のいない `ImeEventLog` の 512 件のリングを撤去し、`seq` の採番だけを残す。(D3) `InputModeObserved`/`InputModeApplied` の `at: TickMs` は本番の全 7 か所で Envelope の `tick_ms` と同じ値なので撤去する。(S3) `on_focus_process_changed` の死んだ `reset_detect_state` 呼び出しを消す。
   採らない: 全 Event 共通の Envelope、時刻の入口の一本化、admission の集約、フォーカスの入口と 9 種の型の 1 構造体化、フォーカス hwnd の写しの統合、`subscriptions(&Model)`、ミドルウェア列、全書き込みの reduce 化と journal からの完全再生、起動時プローブ失敗の窓(D1 でも残る残余)など。各々に考え直す条件を書く。
 status: |-
-  起草(2026-10-05)。Opus round1(Blocker なし、Must 3・Should 8・Nit 6)・round2(Must 1・Nit 3)を反映。S0・S1(D2・D3)は PR #522 で実装(マージで確定)。D1(S2)は実装済み(マージで確定)。目録 #7(S3)は未実装。
+  起草(2026-10-05)。Opus round1(Blocker なし、Must 3・Should 8・Nit 6)・round2(Must 1・Nit 3)を反映。S0・S1(D2・D3)は PR #522 で実装(マージで確定)。D1(S2)は実装済み(マージで確定)。S2 の CI 確認の注記: 今の無変換は PassThrough で BUG-148 の委譲 `SetOpen` の失敗経路は通らないため、CI で言えるのは「起動時スコープのまま全手順 PASS・Unwarranted 0」まで。目録 #7(S3)は未実装。
 related_adr:
   - "ADR-229"
   - "ADR-032"

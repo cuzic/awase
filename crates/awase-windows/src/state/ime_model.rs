@@ -1315,8 +1315,8 @@ mod tests {
     /// `InitialFocusScopeEstablished` で別々に流し、**起動時は違ってよいフィールドを下で手で
     /// 挙げて写したうえで**、モデル全体の `Debug` が一致することを要求する。
     /// 新しいフィールドで落ちたら、「同一性なので起動時も入れる」か「belief のリセットなので
-    /// 下の一覧に足す」かを判断すること（一覧は `enter_scope_identity` のような共有の
-    /// 1 か所から取らない。取ると、このテストが比べる対象が実装と同じ式になりトートロジーになる）。
+    /// 下の一覧に足す」かを判断すること（一覧は共有の関数や定数から
+    /// 取らない。取ると、このテストが比べる対象が実装と同じ式になりトートロジーになる）。
     #[test]
     fn initial_focus_scope_matches_focus_changed_except_input_barrier() {
         let now = Instant::now();
@@ -1350,9 +1350,8 @@ mod tests {
 
         // 起動時は違ってよいフィールド（手で挙げる）:
         // - `input_barrier`: `FocusChanged` は `FocusTransition` の settle を立てる。起動時は
-        //   立てない（今の挙動。ADR-102 決定3-b で最初の IME 観測より前に belief 側の状態を
-        //   動かさない）。`key_track` は `new()` の値と `KeyTrack::default()` が一致するので
-        //   一覧に載らない。
+        //   立てない（今の挙動。3 つの旧 Event も立てていなかった）。`key_track` は `new()` の値と
+        //   `KeyTrack::default()` が一致するので一覧に載らない。
         b.input_barrier = a.input_barrier;
 
         assert_eq!(
