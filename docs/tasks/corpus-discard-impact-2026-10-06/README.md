@@ -13,6 +13,20 @@ title: |-
 調べた版は develop `0e4fccb7`(#525 マージ後)。Opus のレビューを反映した時点の develop は `47b1093b` で、差分は docs の 4 ファイルだけ、本書の対象のコードは変わっていない。
 ローカルでのビルド・テストはしていない。
 
+## 所有者の判断(2026-10-06、本書への回答)
+
+本書の §5 の問いへの回答。以下の節は回答前の分析として残し、進め方(§4)だけをこの判断に合わせて直した。
+
+| 問 | 判断 |
+|---|---|
+| Q1 撤去の範囲 | 捨ててよい。ただし、**新しいリプレイ基盤を作り、それに置き換えるのと同時に**進める。**今は撤去しない**。撤去は、新しい再生基盤(B5 の試作 → 本格化)への置き換えと同じ PR 群で行う。(A)(B)(C) のどれで消すかは、新基盤の範囲が決まってから決める((B) を既定の見込みとして残す) |
+| Q2 発効条件 | 規約には「そんなにこだわらなくていい」。complexity-budget.md は**未発効のまま据え置く**。② の道具(`awase.log` の送信列の差分)への投資はしない。発効条件の文言を書き直す docs の PR も優先度を下げ、今回は書き直さない(§2.5 の文案は記録として残す) |
+| Q3 E4 | 推奨どおり承認: E4 を E1 の能力の条件から切り離し、fix-requires-evidence.md `:22-27` の「(b) を将来、再生トレースの追加に置き換える予定」を撤回して (a) に寄せる(B5 の結果次第で再検討)。**実施は新基盤への置き換えの PR 群と同時** |
+| Q4 本番の `ActuationDecision` の記録 | 推奨どおり承認: 残す |
+| Q5 ADR-163 | 推奨どおり承認: status の先頭に「TH1e は取り下げ」を書き足す。**実施は新基盤への置き換えの PR 群と同時**(§3 の docs の追記もすべて同じ PR 群で行う) |
+| Q6 ADR-089 §9-15・ADR-225 S3 | 回答なし(推奨は「今は再評価しない」のまま) |
+| (関連) V1 の `core-registry-consistency`(#530) | しばらく必須チェックにしない(本書の範囲外、記録のみ) |
+
 ## 結論
 
 1. **撤去範囲は (B)「actuation_decision の再生一式」を推奨する。** (A) コーパス 1 本だけを消すと、
@@ -227,15 +241,18 @@ TH1e を証明できなかった。「実機の記録に由来すること」の
 
 ## 4. 進め方
 
+所有者の判断(冒頭)により、**撤去は新しい再生基盤への置き換えと同時に行う。今は何も撤去しない。** 順序は次のとおり。
+
 | 段階 | 内容 | 撤去 | 検証 | 取りやめ条件 |
 |---|---|---|---|---|
-| 1(docs) | Q1〜Q3 の回答を受けて、complexity-budget.md の発効条件(§2.5)と ADR-162・158・159・163・229 の追記を 1 本の PR にする | 文言だけ | Opus のレビュー(規約の変更なので)。`adr-evidence-consistency` などの docs の CI が green | 所有者が ①・② のどちらも採らない(③・④ を選ぶ場合は文案を作り直す) |
-| 2(コード、(B)) | コーパス・`replay_record`・RW・往復のテスト 3 本・`Deserialize` 一式(§1.1)・`#[serde(default)]` を消す。doc(§1.3)、`architecture_guard.rs:1834` の差し替え、journal-replay-guide・BUG-131 の追記を同じ PR に入れる | コード約 800 行、データ 1440 行、ガイド約 58 行 | CI だけで判定する(ローカルでビルドしない): nextest(Linux)・windows-cross-check・windows-build・clippy・`cargo machete`。`serde_json` は awase-windows の本番(journal)が使うので残る見込み | `Deserialize` を外した型に、別の使い手がいることが CI で分かった(その derive だけ残す)。所有者が本番の記録の形式の互換を求めた |
-| 3 | journal 検討メモの段階 2(drift correction の replay)と合わせて、`Generation`・`ObservationSource`・`FeedbackPolicy`・`ActuationAction` の `Deserialize` を外す | 段階 2 の見積もり(約 310 行)に、`Generation`・`ObservationSource` の 2 つを足す | 段階 2 と同じ | 段階 2 の取りやめ条件と同じ |
-| 4(別判断) | `MechanismCommand` の `unreachable!` の 2 variant の撤去(ADR-229 `:282`)。(B) で止める理由が無くなる | 未見積もり | 別の PR、CI | ADR-229 の棚卸し README §5 の判断に従う |
-| (5) | (C) は許可済みだが推奨しない。行うのは、所有者が conv_classify・ime_apply・read_strategy の fixture も捨てると改めて選んだときだけ | コード約 690 行、データ 348 行 | 同上。fix-requires-evidence.md の (a) の置き場所の記述と、BUG-008・BUG-146 などの「回帰テストあり」の記述も直す | B5 の試作で `awase-replay` を使う見込みが立った |
+| 0(今) | 何も撤去しない。凍結コーパス・`replay_record`・RW・`Deserialize` 一式はそのまま動かす。complexity-budget.md は未発効のまま、文言も変えない | 0 | — | — |
+| 1 | B5 の試作(BUG-105 の 1 件、`impl-b5-proto` が試作中)の結果を見る。再生側の行数と、何を再現できたかを確かめる | 0 | 試作の PR の CI | 試作が再現に失敗し、新基盤を作らないと決めた(その場合の撤去の扱いは、所有者に改めて聞く) |
+| 2 | 新基盤の範囲を決める。それに合わせて、撤去の範囲を (A)(B)(C) から選ぶ(既定の見込みは (B))。新基盤が `awase-replay` を使うかどうかで、(C) の可否も決まる | 0 | 範囲の決定を文書にする | — |
+| 3(置き換えと撤去、同じ PR 群) | 新基盤への置き換えと同じ PR 群で、選んだ範囲を撤去する((B) なら §1.1 のとおり: コーパス・`replay_record`・RW・往復のテスト 3 本・`Deserialize` 一式・`#[serde(default)]`、doc〈§1.3〉、`architecture_guard.rs:1834` の差し替え、journal-replay-guide)。docs の追記(§3: ADR-163 の「TH1e は取り下げ」、ADR-162・158・159・229、BUG-131、fix-requires-evidence.md `:22-27` の撤回〈Q3〉)も同じ PR 群に入れる。complexity-budget.md の発効条件の節は、TH1e とコーパスへの参照を消す最小限の追記にとどめ、未発効は変えない(§2.5 の文案の全面書き換えはしない) | (B) なら、コード約 800 行・データ 1440 行・ガイド約 58 行 | CI だけで判定する(ローカルでビルドしない): nextest(Linux)・windows-cross-check・windows-build・clippy・`cargo machete` | `Deserialize` を外した型に、別の使い手がいることが CI で分かった(その derive だけ残す)。所有者が本番の記録の形式の互換を求めた |
+| 4 | journal 検討メモの段階 2(drift correction の replay)と合わせて、`Generation`・`ObservationSource`・`FeedbackPolicy`・`ActuationAction` の `Deserialize` を外す。段階 2 も「新基盤と同時」の方針に入るかは、所有者に確かめる(未確認) | 段階 2 の見積もり(約 310 行)に、`Generation`・`ObservationSource` の 2 つを足す | 段階 2 と同じ | 段階 2 の取りやめ条件と同じ |
+| 5(別判断) | `MechanismCommand` の `unreachable!` の 2 variant の撤去(ADR-229 `:282`)。段階 3 でコーパスが消えた後に、止める理由が無くなる | 未見積もり | 別の PR、CI | ADR-229 の棚卸し README §5 の判断に従う |
 
-## 5. 所有者に聞くこと
+## 5. 所有者に聞くこと(回答済み、冒頭の「所有者の判断」を参照)
 
 1. **撤去の範囲**: (A) コーパスだけ/(B) actuation_decision の再生一式/(C) `tests/journals/` 全体と `awase-replay`(許可済み)。
    推奨: (B)。(A) だけでは 0 ファイルでテストが落ち、残る再生は本番を固定しない。(C) は許可の範囲内だが、凍結コーパスとは性質の違う correctness の回帰 fixture(BUG-08・BUG-146・ADR-108・F1)を巻き込む。
