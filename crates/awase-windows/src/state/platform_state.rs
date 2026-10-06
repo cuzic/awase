@@ -133,12 +133,20 @@ pub(crate) struct ImePollState {
 pub(crate) use super::drift_correction::DriftCorrection;
 
 impl ImeStateHub {
-    /// デフォルト値で初期化する。
+    /// デフォルト値で初期化する（実時計）。実機の構築口で、`hook` を読む実時計はここだけ。
+    #[cfg(windows)]
     pub(crate) fn new() -> Self {
+        use super::hub_clock::HubClock;
+        Self::with_clock(HubClock::wall(crate::hook::current_tick_ms))
+    }
+
+    /// 時計を注入して初期化する。`hook` に依存しないので、テスト・閉ループは仮想時計
+    /// （`HubClock::manual`）を渡せる。
+    pub(crate) fn with_clock(clock: super::hub_clock::HubClock) -> Self {
         Self {
             belief: ImeBelief::default(),
             event_log: ImeEventLog::default(),
-            clock: super::hub_clock::HubClock::wall(crate::hook::current_tick_ms),
+            clock,
             journal: UnifiedJournal::default(),
             shadow_model: ImeModel::default(),
             last_user_explicit_off_ms: 0,
@@ -1791,6 +1799,19 @@ impl PlatformState {
     }
 }
 
+#[cfg(test)]
+impl PlatformState {
+    /// 時計を注入して初期化するテスト用の構築口（`new()` は実時計 `hook::current_tick_ms` を読む）。
+    pub(crate) fn for_test(clock: super::hub_clock::HubClock) -> Self {
+        Self {
+            ime: ImeStateHub::with_clock(clock),
+            focus: FocusStore::new(),
+            gate: GateStore::new(),
+            keymap: KeymapStore::default(),
+        }
+    }
+}
+
 impl Default for PlatformState {
     fn default() -> Self {
         Self::new()
@@ -1801,6 +1822,22 @@ impl Default for PlatformState {
 mod tests {
     use super::*;
 
+    /// 仮想時計の基準 tick。実機（`GetTickCount64` = 起動からの経過）は通常 `IntentStore` の
+    /// どの TTL よりも十分大きいので、最大の TTL の 2 倍を取って同じ位置関係にする
+    /// （導出元は `tuning` の定数で、数値の直書きはしない）。
+    const BASE_TICK: u64 = {
+        let (on, off) = (
+            crate::tuning::EXPLICIT_ON_INTENT_TTL_MS,
+            crate::tuning::EXPLICIT_OFF_INTENT_TTL_MS,
+        );
+        (if on > off { on } else { off }) * 2
+    };
+
+    /// テスト共通の `PlatformState`: 仮想時計（進めない限り `BASE_TICK` で止まる）。
+    fn ps_for_test() -> PlatformState {
+        PlatformState::for_test(crate::state::hub_clock::HubClock::manual(BASE_TICK))
+    }
+
     /// shadow_model を直接設定するヘルパ:
     /// `set_intent=Some(source)` なら UserImeSetIntent を dispatch し last_intent を設定する。
     /// `set_intent=None` なら desired_open のみ直接書き換え、last_intent は空のままにする
@@ -1810,7 +1847,7 @@ mod tests {
         set_intent: Option<UserIntentSource>,
         is_japanese: bool,
     ) -> PlatformState {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         ps.ime.belief.is_japanese_ime = is_japanese;
         if let Some(source) = set_intent {
             ps.ime.dispatch_event(
@@ -1905,7 +1942,7 @@ mod tests {
 
     #[test]
     fn new_thread_assumption_yields_to_intent_store() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         ps.ime.belief.is_japanese_ime = true;
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
@@ -1990,7 +2027,7 @@ mod tests {
     /// (実際には何も送っていないため、どちらの状態か分からない)。
     #[test]
     fn unsafe_to_toggle_releases_pending_without_mirroring_applied() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         ps.ime.dispatch_event(
             ImeEvent::ImeApplyRequested {
                 target: true,
@@ -2029,7 +2066,7 @@ mod tests {
 
     #[test]
     fn not_owned_releases_pending_without_mirroring_applied() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         ps.ime.dispatch_event(
             ImeEvent::ImeApplyRequested {
                 target: true,
@@ -2058,7 +2095,7 @@ mod tests {
     /// stale として無視され pending に触れない。
     #[test]
     fn unsafe_to_toggle_with_stale_generation_does_not_touch_pending() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         ps.ime.dispatch_event(
             ImeEvent::ImeApplyRequested {
                 target: true,
@@ -2125,7 +2162,7 @@ mod tests {
     // SyncKey/PhysicalImeKey と同列に永続タイムスタンプへ含めてよい。
     #[test]
     fn command_source_updates_persistent_explicit_off_ms() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         ps.ime.dispatch_event(
             ImeEvent::UserImeSetIntent {
                 target: false,
@@ -2199,7 +2236,7 @@ mod tests {
 
     #[test]
     fn release_panic_guard_removes_only_panic_reset_reason() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         let guard = |reason| ForceGuard {
             reason,
             expires_at: None,
@@ -2223,7 +2260,7 @@ mod tests {
 
     #[test]
     fn release_panic_guard_does_not_record_intent_store_entry() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime.release_panic_reset_guard_on_positive_evidence();
         dispatch_conv_open_inference(&mut ps, true, 100);
@@ -2331,7 +2368,7 @@ mod tests {
     // 反対方向に競合し、短時間の ON/OFF 往復を起こしていた。
     #[test]
     fn check_drift_correction_ignores_heuristic_default_alone_without_explicit_intent() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         ps.ime.belief.is_japanese_ime = true;
         // Word 相当のウィンドウで明示 OFF。
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
@@ -2564,7 +2601,7 @@ mod tests {
     /// 実状態へ揃え、`effective_open()` が false になる。追随時刻も記録する（GJI I/O 推測の柵に使う）。
     #[test]
     fn follow_external_change_closes_belief_even_with_explicit_on_intent() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         assert!(ps.ime.effective_open_at(TickMs(110)), "明示 ON 直後は true");
@@ -2599,7 +2636,7 @@ mod tests {
     /// 監視窓の外（arm していない・窓が切れた後）の読みの変化では追随しない。
     #[test]
     fn follow_external_change_ignores_reads_outside_the_window() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         let _ = ps
@@ -2635,7 +2672,7 @@ mod tests {
     /// 開く方向（0→1）も同じ規則で追随する（適用窓の GJI 限定は呼び出し側の `external_change_watch_applies`）。
     #[test]
     fn follow_external_change_opens_belief_on_zero_to_one() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
         let _ = ps
@@ -2657,7 +2694,7 @@ mod tests {
     /// は false を維持することを確認する。
     #[test]
     fn effective_open_survives_focus_change_via_intent_store() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
         assert!(
@@ -2693,7 +2730,7 @@ mod tests {
     #[test]
     fn key_effect_open_prediction_replaces_stale_explicit_off_intent() {
         use crate::state::key_effect_predictor::{KeyTrack, PredictedEffect, Prediction, Stage};
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
         assert!(!ps.ime.effective_open_at(TickMs(110)), "明示OFF直後はfalse");
@@ -2719,7 +2756,7 @@ mod tests {
     #[test]
     fn key_effect_prediction_without_open_keeps_explicit_intent() {
         use crate::state::key_effect_predictor::{KeyTrack, PredictedEffect, Prediction, Stage};
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
         let no_open = Prediction {
@@ -2741,7 +2778,7 @@ mod tests {
 
     #[test]
     fn mode_key_pass_invalidation_without_mark_keeps_intents() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
         dispatch_conv_open_inference(&mut ps, true, 120);
@@ -2763,7 +2800,7 @@ mod tests {
 
     #[test]
     fn mode_key_pass_invalidation_drops_intents_and_follows_observation_within_window() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         let scope = test_foreground_scope();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
@@ -2816,7 +2853,7 @@ mod tests {
     /// ユーザーの操作を閉じ直さない（修正前は desired=false のまま「観測 true ≠ desired false」で発火した）。
     #[test]
     fn mode_key_pass_observation_aligns_desired_so_drift_correction_does_not_revert_user_key() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         let scope = test_foreground_scope();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         // 起動直後の明示OFF（スパイク/ユーザー）。desired=false、意図あり。
@@ -2852,7 +2889,7 @@ mod tests {
     /// 観測が無い窓（読めない窓）では、通過マークがあっても `desired_open` を書かない。
     #[test]
     fn mode_key_pass_without_observation_keeps_desired() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         let scope = test_foreground_scope();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
@@ -2870,7 +2907,7 @@ mod tests {
     /// 訂正する（BUG-157 の修正が、この必要な訂正を止めない）。
     #[test]
     fn drift_correction_still_fires_for_awase_write_without_mode_key_pass() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         write_open_observation_high(&mut ps, false, 130);
@@ -2886,7 +2923,7 @@ mod tests {
     /// 古い明示意図を捨てる（捨てないと `reschedule_ime_refresh` の早期returnでポーリングが止まったままになる）。
     #[test]
     fn mode_key_pass_expiry_drops_intents_when_no_observation_succeeded() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         let scope = test_foreground_scope();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
@@ -2920,7 +2957,7 @@ mod tests {
     /// 観測の成功で既に捨てた通過マークは、窓の終了で再度捨てない（通過より後の明示意図を守る）。
     #[test]
     fn mode_key_pass_expiry_does_nothing_after_successful_invalidation() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         let scope = test_foreground_scope();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
@@ -2947,7 +2984,7 @@ mod tests {
     /// 揃えた後は通常の drift correction に戻る（2回目は揃えない）。
     #[test]
     fn align_after_expired_pass_aligns_once_on_first_successful_observation() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         let scope = test_foreground_scope();
         let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
@@ -2986,7 +3023,7 @@ mod tests {
     /// 通過より後に awase 自身が書いた（`record_optimistic`）場合は揃えない（実IMEを信用せず drift correction が訂正する）。
     #[test]
     fn align_after_expired_pass_skips_when_awase_wrote_after_pass() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         let scope = test_foreground_scope();
         let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
@@ -3010,7 +3047,7 @@ mod tests {
     /// 別ウィンドウへの本物のフォーカス変更では、そのウィンドウ自身の観測に従うべき。
     #[test]
     fn effective_open_intent_store_does_not_leak_to_different_target() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
 
@@ -3039,7 +3076,7 @@ mod tests {
         // 後に観測が入ったときの `effective_open` で区別する（`effective_open_survives_focus_change_via_intent_store` と同じ観点）。
 
         // 初期フォーカス未設定（BUG-148 の状態）: 意図が IntentStore に記録されず、FocusChanged で意図が消えると観測に従う。
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         assert_eq!(ps.ime.model().current_focus(), None);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 200);
@@ -3051,7 +3088,7 @@ mod tests {
         );
 
         // 起動時の初期フォーカスを確立した状態: 同じ操作で意図が IntentStore に保持される。
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         ps.ime.dispatch_event(
             ImeEvent::InitialFocusHwndEstablished { hwnd: TARGET_HWND },
             TickMs(0),
@@ -3070,7 +3107,7 @@ mod tests {
     /// OFF 意図の TTL 超過後は IntentStore もフォールバックする（無期限固着はしない）。
     #[test]
     fn effective_open_intent_store_entry_expires_after_ttl() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 0);
         dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 0);
@@ -3094,7 +3131,7 @@ mod tests {
     /// （安全弁が古い明示意図に負けてはならない、時系列比較の余地なく常に最新の決定）。
     #[test]
     fn effective_open_panic_reset_overrides_stale_intent_store_entry() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 0);
         assert!(!ps.ime.effective_open_at(TickMs(0)));
@@ -3116,7 +3153,7 @@ mod tests {
     /// （pre-mortem #1 角度2）。
     #[test]
     fn dispatch_event_alone_does_not_record_intent_store_entry() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime.dispatch_event(
             ImeEvent::UserImeSetIntent {
@@ -3146,7 +3183,7 @@ mod tests {
     /// IntentStore に記録し、FocusChanged 後も維持される。
     #[test]
     fn write_sync_key_records_intent_store_entry_surviving_focus_change() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime
             .write_sync_key(sync_key_witness(), false, TickMs(100));
@@ -3161,7 +3198,7 @@ mod tests {
 
     #[test]
     fn write_physical_key_records_intent_store_entry_surviving_focus_change() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime
             .write_physical_key(physical_key_witness(), false, TickMs(100));
@@ -3179,7 +3216,7 @@ mod tests {
     /// スキップされ、古いキャッシュが残ったまま復帰することがある）。
     #[test]
     fn apply_hwnd_cache_restore_keeps_intent_newer_than_cache() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime
             .write_sync_key(sync_key_witness(), false, TickMs(500));
@@ -3204,7 +3241,7 @@ mod tests {
     /// キャッシュ復元を優先する（v1 と同じ「最新の決定が勝つ」原則）。
     #[test]
     fn apply_hwnd_cache_restore_discards_intent_older_than_cache() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime
             .write_sync_key(sync_key_witness(), false, TickMs(100));
@@ -3230,7 +3267,7 @@ mod tests {
     /// 「観測ゼロの推測が明示意図に勝つ」逆転を避ける（pre-mortem #2）。
     #[test]
     fn reset_stale_ime_on_for_imm_broken_preserves_valid_intent_store_entry() {
-        let mut ps = PlatformState::new();
+        let mut ps = ps_for_test();
         ps.ime.belief.is_japanese_ime = true;
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime
@@ -3271,7 +3308,7 @@ mod tests {
             ObservationSource::GjiIoInference,
             ObservationSource::HeuristicDefault,
         ] {
-            let mut ps = PlatformState::new();
+            let mut ps = ps_for_test();
             ps.ime.dispatch_event(
                 ImeEvent::InputModeObserved {
                     mode: InputModeState::ObservedKana,
