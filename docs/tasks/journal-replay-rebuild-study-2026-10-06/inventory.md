@@ -6,7 +6,7 @@ title: |-
 
 # journal とリプレイ基盤の棚卸し
 
-[README.md](README.md) の検討の前提となる事実の一覧。develop `777bf1db`(PR #517 のマージ)時点のコードで確かめた。
+[README.md](README.md) の検討の前提となる事実の一覧。develop `777bf1db`(PR #517 のマージ)時点のコードで確かめた。Opus レビューの指摘の裏取りは `1732f830`(#522 マージ後)で行い、変わった点は本文に書いた。
 行番号はこの時点のもの。確かめられなかったことは「未確認」と書く。パスは `crates/awase-windows/` からの相対パス(`src/…`・`tests/…`)。
 
 ## 1. 記録の系統(いま本番で何がどこに残るか)
@@ -17,13 +17,13 @@ title: |-
 | R2 | R1 から tracing への一方向の出力(ADR-139 決定4、`journal.rs:702-` の `emit_tracing`、約 380 行。`absorb`〈`journal.rs:1309`〉から呼ばれる) | `awase::journal` ターゲットの `debug!` 行 | `awase.log`。利用者の既定は `info`(`app/bootstrap.rs:152`)なので**利用者の awase.log には出ない**。CI は `RUST_LOG=debug`(`e2e-ime.yml:1017`) | CI のチェッカー。断片 `ime open applied`・`actuation decision`・`gji fsm transition`(`tools/e2e/ime_key_matrix/test_log_anchors_in_rust_source.py:46-49`) |
 | R3 | 自由な tracing 行 | テキスト | `awase.log`(awase-windows の src に tracing マクロ 740 か所、粗い grep の数) | CI のチェッカー 20 本(`check_*.py`)。読む断片は 27 個で、R2 由来は 3〜4 個、残りは R3 由来(同ファイル:22-49) |
 | R4 | `shadow_send_trace`(`src/shadow_send_trace.rs:52-62`、TF2) | `[shadow-send] …` の `debug!` 行 2 種 | `awase.log` | **0**。チェッカーも anchor 表も読まない。`tools/e2e/ime_key_matrix/testdata/awase-baseline-fixed-excerpt.log` にログの抜粋として現れるだけ |
-| R5 | `ImeEventLog`(`src/state/ime_event_log.rs:20`、容量 512) | `ImeEventEnvelope{EventTime{seq, monotonic: Instant, tick_ms}, event}` | メモリのみ | 本番の読み手 0(ADR-232 §背景)。撤去は PR #522(ADR-232 S1)で**未マージ** |
+| R5 | `ImeEventLog`(`src/state/ime_event_log.rs:20`、容量 512) | `ImeEventEnvelope{EventTime{seq, monotonic: Instant, tick_ms}, event}` | メモリのみ | 本番の読み手 0(ADR-232 §背景)。PR #522(ADR-232 S1)で撤去済み(`1732f830`) |
 | R6 | 不具合報告(ADR-095/222) | `BugReportPayload`(`src/bug_report.rs:545-`)。`log_excerpt_gz`=R1 の gzip+base64、`app_log_excerpt_gz`=awase.log | report-worker(`services/report-worker/src/index.ts:77`)→ R2 バケット | worker は journal を**解凍せず、形式だけ検証して保存**。journal の中身の形とは結合していない(結合しているのは payload の `schema_version`) |
 
-R1 への入口は3つある:
+R1 への入口(中継の数)は3つある。(a) のメソッドは `record` と `record_key_input`(オートリピートの畳み込みつき)の 2 つで、呼び出し元は 10 ファイルに散っている:
 (a)`UnifiedJournal::record` の直接呼び出し、(b)`WindowsPlatform::push_journal_entry`(`src/platform.rs:126`、`pending_journal_entries` 上限 4096。`output`/`tsf` が journal を直接参照できないガードのための中継)、
 (c)`win32::send_input_safe` が溜める `SENT_INPUT_TRACE`(`src/win32.rs:259-285`、上限 512。採番だけ発行時に `JournalStamper::reserve` で行う)。
-(b)(c)は `drain_journal_entries`(`platform.rs:93`)で R1 に移る。
+(b)(c)は `drain_journal_entries`(`platform.rs:93`)で R1 に移る。このほか、フックの IME モードキーの診断は `hook.rs:1393` の `Mutex<VecDeque>` に溜めて `message_handlers.rs:105` で吸い出す(4 つ目の中継)。
 
 ## 2. `JournalEntry` の全 variant と記録点(`src/journal.rs:253-505`、21 variant、`size_of == 264` 固定〈:518〉)
 
@@ -106,11 +106,14 @@ CI: `ci.yml:51` で `journal_replay`・`closed_loop_scenarios` などを Linux �
 ## 6. VK 列(入力内容)の扱い
 
 - 所有者の前提(2026-10-06 の訂正): 障害対応と replay のため、文字キーを含む VK 列を記録に残すのは必須。利用者が不具合報告の操作で共有する記録にはプライバシーの制約を置かない。ADR-225 P1(公開リポジトリなので ADR-095 の判断を迂回する)は、報告の共有については理由にならない。
-- 入力内容を含む variant は `KeyInput`(vk/scan)・`SentInput`(vk と Unicode の `ch`)・`LiteralDetect`(romaji・vk 列)。報告時は直近 10 分に絞っている(`journal.rs:1519-1545`)。`FocusTransition` はプロセス名を含む。
-- `KeyInput` は処理後の要約で、拡張ビットと Alt なりすまし前の vk を持たない(ADR-229 :110)。
-- 公開側: リポジトリは公開。`tests/journals/` の実報告由来の fixture は `bug-131-report-01m29kdnz.json`(`ActuationDecision` のみ、VK 列なし)の 1 本。実機 CI の入力は合成(ADR-226 決定5)。実利用者の入力文が公開リポジトリ・公開 CI ログに出る経路はいまは無い。
+- 入力内容を含む journal の variant は `KeyInput`(vk/scan)・`SentInput`(vk と Unicode の `ch`)・`LiteralDetect`(romaji・vk 列)。報告時は直近 10 分に絞っている(`journal.rs:1519-1545`)。`FocusTransition` はプロセス名を含む。
+- awase.log にも入力内容がある: `[key-output] KeyInput(batched|tsf): romaji=…`(`output/vk_send.rs:228`・`:406`)は **info** で、利用者の既定ログ(`app/bootstrap.rs:152`)に打鍵ごとに残る。報告の `app_log_excerpt_gz` は awase.log の末尾を圧縮前で最大 16MiB 載せる(`bug_report.rs:25`)。10 分の窓は journal にだけ掛かり、awase.log には掛からない。
+- `KeyInput` は vk・scan・down/up・injected・`timestamp_us`・alt/ctrl/shift を持つ。持たないのは拡張ビット・Alt なりすまし前の vk(ADR-229 :110)・畳み込まれたオートリピートの中間イベント、それにエンジンの InputContext(ime_on・input_mode・japanese・composing。`[engine-input]` の行 `runtime/key_pipeline.rs:153-157` にはある)。
+- 公開側: リポジトリは公開。自動の経路は無い: `tests/journals/` の実報告由来の fixture は `bug-131-report-01m29kdnz.json`(`ActuationDecision` のみ。vk に見える値は awase が送った IME 制御キー `SendVk` 22・26 だけで、利用者の文字キーの VK は含まない)の 1 本。実機 CI の入力は合成(ADR-226 決定5)。**手で貼る経路はある**: BUG-105(報告の入力文と打鍵の並びを本文と公開 issue #140 に記載、`BUG-105.md:15-19`)、BUG-050(`romaji="la"`・`"ki"`、`BUG-050.md:20,27`)。
 
 ## 7. 実害の記録との対応(`docs/known-bugs/`、183 件中 "journal" を含む 45 件)
+
+母集団の注意: この表は「本文に journal という語を含む BUG」の分類。journal かログ(awase.log・実機ログ・app_log・ログ解析)に触れる BUG は 96 件(粗い grep)で、ログだけに触れる 51 件は分類していない。報告・実機ログのタイミングからエンジンのテストで再現した BUG-105・145 は、journal という語を含まないのでこの表から漏れている。
 
 サブエージェントによる一次分類(本文の記述を grep で読んだもの。全件の精読はしていない。5 件を抜き取りで確認し、食い違いは無かった):
 
@@ -122,7 +125,7 @@ CI: `ci.yml:51` で `journal_replay`・`closed_loop_scenarios` などを Linux �
 | D: replay fixture が回帰テストとして作られた | 5(D だけ 4) | BUG-008・019・097・131・146 |
 | E: テスト名の列挙・設計上の言及だけ | 18 | — |
 
-- replay fixture が**退行を検知した記録は見つからなかった**(`git log -i --grep` で `replay`/`再生` と `落ち`/`失敗`/`検知` の組み合わせを探した。ヒットは fixture 自体の整備のコミットだけ)。
+- replay fixture が**退行を検知した記録は見つからなかった**(回帰網は手元で落ちて直ればコミットに痕跡が残らないので、需要の根拠にはしない)(`git log -i --grep` で `replay`/`再生` と `落ち`/`失敗`/`検知` の組み合わせを探した。ヒットは fixture 自体の整備のコミットだけ)。
 - ADR-225 SP0(直近 10 件):安全レーンの fixture があれば検知できたのは 0 件。8 件は修正と同じコミットで回帰テスト済み。
 - variant ごとの known-bugs での言及数: `LiteralDetect` 18、`KeyInput` 9、`ImeOpenApplied` 6、`ActuationDecision` 4、`FocusTransition` 4、`ImeActuation` 3、`GjiFsmTransition` 3、`ConvClassifyCall` 2、`HookImeModeDiagnostic` 2、その他 0〜1(`SentInput`・`PressWriteClaim`・`TimerFired`・`ClockAnchor`・`TsfProbeCompleted` は 0。`SentInput` と `PressWriteClaim` は新しいので 0 は当然)。
 
@@ -133,7 +136,7 @@ CI: `ci.yml:51` で `journal_replay`・`closed_loop_scenarios` などを Linux �
 | `src/journal.rs`(うちテスト :1672- 約 460、`emit_tracing` 約 380) | 2,133 |
 | `src/journal_policy.rs`(うちテスト :268-) | 617 |
 | `src/shadow_send_trace.rs` + 呼び出し 2 か所(`win32.rs:342`、`imm.rs:288`) | 62 + 2 |
-| `src/state/ime_event_log.rs`(#522 で撤去予定) | 177 |
+| `src/state/ime_event_log.rs`(#522 で撤去済み) | 177(撤去前) |
 | `src/state/actuation_decision_record.rs`(本番 :1-407、テスト :408-) | 1,288 |
 | `crates/awase-replay` | 176 |
 | `tests/journal_replay.rs` + `drift_correction_replay.rs` + `read_strategy_replay.rs` | 232 + 210 + 50 |
