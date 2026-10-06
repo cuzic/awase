@@ -49,6 +49,7 @@
 //!   `(mechanism, outcome)` を返す `ReplayWriter` で `Actuation<Verified>::
 //!   run_chain`/`run_chain_async` を走らせ、試した機構の列・打ち切り位置・最終
 //!   outcome が記録と一致するかを確認する（[`tests::replay_chain_scan`]）。
+//!   非 Sync のレコードの chain が `WriteMechanism::ALL` かも照合する。
 //!   残る推定: gate を `attempts` の空から逆算する点、非 Sync の ImmCross の
 //!   `is_applicable`（`AsyncChainWriter.imm.is_some()` は記録に無いので「ImmCross の
 //!   attempt があるか」で代用）、非 Sync の ImmCross の command の再計算。
@@ -545,6 +546,19 @@ mod tests {
             ));
         }
 
+        if record.site != DecisionSite::Sync && gate == GateResult::Proceed {
+            // 非 Sync は `WriteMechanism::ALL` 固定（`open_chain.rs` が常に ALL を渡す、
+            // ADR-163 round2 T2）。
+            let recorded_chain: Vec<WriteMechanism> =
+                used_chain(record).iter().filter_map(|m| *m).collect();
+            if recorded_chain.as_slice() != WriteMechanism::ALL.as_slice() {
+                failures.push(format!(
+                    "chain mismatch (async): recorded {recorded_chain:?} \
+                     != WriteMechanism::ALL"
+                ));
+            }
+        }
+
         if record.site == DecisionSite::Sync && gate == GateResult::Proceed {
             let recomputed = decide_chain(record.gate_inputs);
             let recorded_chain: Vec<WriteMechanism> =
@@ -684,6 +698,10 @@ mod tests {
     }
 
     /// 再生時の `is_applicable`。
+    ///
+    /// Sync の写像は `ime_controller.rs::strategy_for` → `ImmCrossProcessStrategy`/
+    /// `GjiDirectStrategy`/`MsImeDirectStrategy` の `is_applicable`（`ime_controller.rs`
+    /// 70・107・140 行付近）と同じ。本番側を変えたらここも変えること。
     ///
     /// Sync: `ImeController` の戦略と同じく `profile`/`kind`（`gate_inputs`）だけに
     /// 依存するので再計算できる。非 Sync: `AsyncChainWriter::is_applicable` は
@@ -1103,6 +1121,68 @@ mod tests {
             caller: None,
         };
         assert_eq!(replay_record(&record), Vec::<String>::new());
+    }
+
+    fn async_record(recorded: &[(WriteMechanism, ImeOpenOutcome)]) -> ActuationDecisionRecord {
+        let gate_inputs = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            None,
+            InputModeState::Unknown,
+        );
+        let site = DecisionSite::RunOpenChainAsync;
+        let mut attempts = [None; MAX_WRITE_MECHANISMS];
+        for (i, &(mechanism, outcome)) in recorded.iter().enumerate() {
+            attempts[i] = Some(AttemptRecord {
+                inputs: gate_inputs,
+                with_app_available: true,
+                mechanism,
+                // 非 Sync の ImmCross は decide_attempt が None を返す設計。
+                command: decide_attempt(gate_inputs, site, mechanism, true).1,
+                outcome,
+                shadow_on_before_bug113_override: None,
+                post_failed_reobservation: None,
+            });
+        }
+        ActuationDecisionRecord {
+            site,
+            gate_inputs,
+            order: order(true),
+            chain: chain(WriteMechanism::ALL).0,
+            chain_len: WriteMechanism::ALL.len(),
+            attempts,
+            attempts_len: recorded.len(),
+            caller: None,
+        }
+    }
+
+    #[test]
+    fn chain_scan_accepts_async_imm_cross_failed_then_gji_direct() {
+        let record = async_record(&[
+            (WriteMechanism::ImmCross, ImeOpenOutcome::Failed),
+            (WriteMechanism::GjiDirect, ImeOpenOutcome::Applied),
+        ]);
+        assert_eq!(replay_record(&record), Vec::<String>::new());
+    }
+
+    /// 残る推定の実例: ImmCross の attempt を落とした記録は、ImmCross を「適用外
+    /// （`imm` が None）」と見なすので通ってしまう。`imm.is_some()` は記録に残らず、
+    /// 欠落と「そもそも ImmCross 経路でなかった」を区別できない。
+    #[test]
+    fn chain_scan_cannot_distinguish_dropped_imm_cross_attempt_in_async_records() {
+        let record = async_record(&[(WriteMechanism::GjiDirect, ImeOpenOutcome::Applied)]);
+        assert_eq!(replay_record(&record), Vec::<String>::new());
+    }
+
+    #[test]
+    fn replay_detects_a_non_all_chain_in_async_records() {
+        let mut record = async_record(&[(WriteMechanism::GjiDirect, ImeOpenOutcome::Applied)]);
+        let (c, n) = chain_from_slice(&[WriteMechanism::GjiDirect]);
+        record.chain = c;
+        record.chain_len = n;
+        assert!(replay_record(&record)
+            .iter()
+            .any(|f| f.contains("chain mismatch (async)")));
     }
 
     // ── ディレクトリ走査（TH1d投入後に効き始める）───────────────────────────
