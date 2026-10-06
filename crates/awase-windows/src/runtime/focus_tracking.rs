@@ -443,7 +443,13 @@ impl Runtime {
         self.apply_app_disable_transition(classified.process_id, is_bootstrap);
 
         self.platform_state.ime.set_prev_conversion_mode(None);
-        self.platform_state.ime.clear_eisu_candidate();
+        // ADR-238: 英数モードの候補は、実際にフォーカス(プロセス/ウィンドウ)が変わったときだけ捨てる。
+        // この関数はフォーカスが変わらなくても読み取りのたびに走る(上の `prev_conversion_mode` のリセットも毎回走る)ので、
+        // ここで無条件に捨てると、候補が確認の読みの前に毎回消えて一度も確定しない(sc-dbe-msime-native の MS-IME の英数キーが
+        // 追随できなかった、run 37483627619)。
+        if process_changed || prev_hwnd != new_hwnd {
+            self.platform_state.ime.clear_eisu_candidate();
+        }
 
         (
             process_changed,

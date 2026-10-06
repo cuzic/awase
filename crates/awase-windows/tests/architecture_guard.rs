@@ -7351,3 +7351,28 @@ fn eisu_candidate_reread_is_scheduled_before_the_explicit_intent_early_return() 
         "observe が `eisu_candidate_pending` を組み立てて、打鍵中でも確認の読みを通すこと(ADR-238)"
     );
 }
+
+/// ADR-238(BUG-190): 英数モードの候補は、実際にフォーカスが変わったときだけ捨てる。`advance_focus_tracking` は
+/// フォーカスが変わらなくても読み取りのたびに走る(`set_prev_conversion_mode(None)` も毎回走る)ので、`clear_eisu_candidate()` を
+/// 無条件に呼ぶと候補が確認の読みの前に毎回消えて一度も確定しない(MS-IME の英数キーが Engine に追随しなくなる)。
+#[test]
+fn eisu_candidate_is_cleared_only_when_focus_actually_changes() {
+    let src = read_crate_file("src/runtime/focus_tracking.rs");
+    let body = extract_fn_body(production_code_only(&src), "fn advance_focus_tracking(");
+    let code = non_comment_lines(body);
+    let clear = code
+        .find("clear_eisu_candidate()")
+        .expect("advance_focus_tracking が英数の候補を捨てる(ADR-238)");
+    let guard = code
+        .find("process_changed || prev_hwnd != new_hwnd")
+        .expect("フォーカスが実際に変わったときだけ捨てる条件がある(ADR-238)");
+    assert!(
+        guard < clear,
+        "clear_eisu_candidate() は `process_changed || prev_hwnd != new_hwnd` の条件の中で呼ぶこと(無条件だと候補が一度も確定しない)"
+    );
+    assert_eq!(
+        code.matches("clear_eisu_candidate()").count(),
+        1,
+        "英数の候補を捨てる箇所は 1 つだけ"
+    );
+}

@@ -122,6 +122,12 @@ BUG-57 の守り(`ime_on == Some(false)` の conv=0 は証拠にしない)は (a
 - 診断ログ `[eisu-adopt]`(`decision=candidate|confirmed|rejected(ime_on=None)`)と `[skip-typing-read]` は残す。
 - 寿命は `EISU_CANDIDATE_LIFETIME_MS`=1500ms(通常の poll 500ms の 3 倍。`pending`)。
 
+## 実装中に分かったこと(2026-10-06、run 37483627619 の sc-dbe-msime-native)
+
+- **`advance_focus_tracking`(`runtime/focus_tracking.rs`)は、フォーカスが変わらなくても読み取りのたびに走り、末尾で `prev_conversion_mode` を毎回 `None` に戻している。** 実際に `[eisu-adopt]` の `prev_conv` は全件 `None`。すなわち**案 A(`prev_conversion_mode` で確認)は、この既存の挙動のために元から成り立たなかった**(ADR の「`prev_conversion_mode` は直前の読みではない」という指摘〈round1 M1〉の、もう 1 つの理由)。また (b) の `classify_transition`(prev が要る)は本番では事実上動かず、ObservedEisu を作るのは (a) だけに近い。
+- 実装の初版は `clear_eisu_candidate()` を同じ場所に無条件で置いたため、候補が確認の読みの前に毎回消え、**一度も確定しなかった**。MS-IME の英数キー(0xF0)で、実 IME は閉じる(open=0 conv=0x10)のに Engine が OFF に追随せず `sc-dbe-msime-native`(期待 PASS)が 3 回とも FAIL した(旧は (a) の 1 回採用で Engine が止まって PASS だった)。**修正:** 候補は `process_changed || prev_hwnd != new_hwnd` のときだけ捨てる。`tests/architecture_guard.rs::eisu_candidate_is_cleared_only_when_focus_actually_changes` で固定。
+- `prev_conversion_mode` の毎回リセット自体は既存の挙動で、今回は触らない(別件。`classify_transition` を生かす・消すかは別 ADR で)。
+
 ## 状態
 
 **設計は収束**(2026-10-06、Opus round3 で「収束」)。round1(Blocker 2・Must 5・Should 7・Nit 6)・round2(Must 3・Should 4・Nit 4)・round3(Should 2・Nit 1)を反映済み。**実装済み**(ブランチ diag/bug190-eisu-adopt、2026-10-06)、CI の確認中(MS-IME の ext 構成と、本物の英数切替を壊さないことの `msime-native*`・`sc-dbe-*`・`sc-shift-msime-native`・`msime-stale-table`)。実機未検証。
