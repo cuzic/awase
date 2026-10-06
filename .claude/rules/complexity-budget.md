@@ -54,8 +54,8 @@ round2相当レビュー2026-09-12で「送信列」という語を明確化—�
 
 2026-09-12時点で**TH1d（既知バグ由来fixtureの実機ダンプからの投入）まで完了**した
 （`tests/journals/actuation_decision/bug-131-report-01m29kdnz.json`、37レコード）。
-ADR-159段階2（TF2、送信内容のログ出力、`shadow_send_trace.rs`）はPR#193で実装済みだが
-蓄積・突合せ（自動A/B）は未着手のまま将来課題（ADR-163「TF2との突合せ」節参照）。
+ADR-159段階2（TF2、送信内容のログ出力、`shadow_send_trace.rs`）はPR#193で実装されたが
+蓄積・突合せ（自動A/B）は未着手のまま消費者0で、2026-10-06に撤去した（ADR-159段階2・ADR-163「TF2との突合せ」節の追記参照）。
 [ADR-163](../../docs/adr/163-actuation-decision-io-separation-and-replay-harness.md)が
 定める「決定点への再投入（再生）」側はTH1a〜TH1dまで完了し、**残る未達成条件はTH1e
 （凍結コーパスを使った実際の削除・統合+差分ゼロ再生証明、本ルールの発効条件そのもの）

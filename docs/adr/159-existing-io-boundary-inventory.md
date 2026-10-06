@@ -279,6 +279,8 @@ round4 TJ2 MF3で訂正: 従来「約1/6」「7〜8:1で一致」の2通りの�
 「段階1（記録・再生）」節の訂正を参照。
 
 **opus-adversarial-consult round2相当レビュー（2026-09-12）Must-fixで訂正・達成度の分離**:
+**追記（2026-10-06）: TF2は撤去した（理由: 消費者0。`[shadow-send]`を読む実装・ツール・CIが1件も無かった）。** 以下は当時の記録。
+
 PR#193で実装済みのTF2（`shadow_send_trace.rs`）は`tracing::debug!`によるログ出力のみで、
 蓄積・保持・突合せは一切行わない（同ファイル冒頭docが明記するとおり、当初案の
 `Mutex<VecDeque<..>>`リングバッファは`/code-review`指摘で撤回済み）。したがって
@@ -424,7 +426,7 @@ TJ3 M4）。正式な判断材料として使うには、半角/全角キー等�
    `app/bootstrap.rs::win_event_proc`/`runtime/engine_window.rs::engine_wnd_proc`/
    `tray.rs::tray_wnd_proc`）。
 6. ~~`send_input_safe`/`send_ime_control`への差分記録（段階2）の実装方式を設計する。~~
-   **TF2として着地**（`shadow_send_trace.rs`）——ただしログ出力のみで蓄積・突合せ（自動A/B）
+   **TF2として着地**（`shadow_send_trace.rs`、2026-10-06撤去）——ただしログ出力のみで蓄積・突合せ（自動A/B）
    は未着手、詳細は上記「段階2（シャドー実行）」節の訂正参照。
 7. 段階0でactuation合流点の再配置が必要と判明した場合は、ADR-151/152のBlockerへの対処を
    別途検討する（本ADRのスコープには含めない）。**未着手**（再配置自体がまだ提案されていない）。
