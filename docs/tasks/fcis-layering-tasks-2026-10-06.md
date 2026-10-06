@@ -79,6 +79,18 @@ ADR-229 の gate 一覧からは journal・ime_event_log・tsf_gate・hwnd_cache
 - 生の `u32` の `focus_gen`(22 か所)の newtype 化(取り違えを型で防ぐ。個別の PR)。
 - `decide` を出すときの入力型のうち、replay に使うものにだけ `serde` を足す(共通の trait は作らない)。
 
+## 3.5 世界モデルと Effect 列の検討結果から(2026-10-06、ADR-229 の同名の節、`docs/adr/review/229-opus-effect-plan-round1.md`)
+
+| ID | 内容 | 判定 | 根拠・注意 |
+|---|---|---|---|
+| E0 | Effect の署名の棚卸し(`MechanismCommand`・`ProbeAction`・`UiEffect`・`OutEffect`・`TimerCommand` などの全 variant。各々の順序の制約・冪等性・副作用) | 今すぐ可(読み取りのみ。W0 は完了) | 書き込みの吸収が危険な理由(BUG-141・ADR-208)の根拠表になる |
+| E1 | 決定関数が省略の理由を enum で返して journal に載せる(新しい解釈器は作らない) | 実際の調査で理由が足りなかった決定から 1 つずつ | `GateResult`・`suppress_reason`・`Delivery`・`FeedbackPolicy` の action が既にある |
+| BUG-098 | 世代の無い非同期の shadow toggle OFF の完了を、既存の世代(F-D5-2)で直す | 独立した修正タスク(挙動を変えうる。所有者の判断) | Plan の有無に関わらず効く唯一の実害対応 |
+| W-a | 失効判定のカウンタ 8 種類・生の `u32` の `focus_gen`(22 か所)の newtype 化 | F の分割の各 PR の中で | 取り違えを型で防ぐ。toolkit round1 でも指摘 |
+| W-b | 死んだフィールド `Runtime.state_dependent_key_warning_dialog` の削除 | 小さな撤去(挙動不変) | W0-b |
+| W-c | journal の `ImeEvent` の記録に時刻(`tick_ms`・`Instant`)と `seq` を足す | 再生の入力として足りるようにする。ADR 起草の前に所有者の判断 | W0-a。`event_log` は本番で読み手がいない |
+| E2〜E6 | `Try`・正規化と法則・`Bracket`・capability の網羅テスト・観測の購読 | **着手しない** | 待つ条件は `229-opus-effect-plan-round1.md` の §4(F の分割が 3 本進み、`run_chain` 以外に有限の機構を順に試す連鎖が 2 つ以上現れたら、など) |
+
 ## 4. その後・保留
 
 - **R7 コルーチン**: `tsf/probe.rs` の `LiteralDetector`/`TsfReadinessProbe` をスナップショット引数に → warmup コルーチン群(`tsf/warmup/`、F は `run_start` の 84 行だけ)。**baseline を `SendInput` の前に取る順序**(BUG-027/029/030/033、ADR-079)をテストで固定してから。スナップショット化で判定が最大 10ms 古くなる(epoch fence は 20ms)。

@@ -203,6 +203,17 @@ fn procedure(..) {                         // shell
 
 **timed-fsm の使い方の方針**: awase は `timed_fsm` の FSM の型(`Response`・`TimerCommand`・`TimedStateMachine`・`StepCoro`)だけを使い、駆動側の trait(`Clock`・`ActionExecutor`・`AsyncActionExecutor`・`TimerRuntime`)は使っていない(Win32 のメッセージループと `HubClock` の 2 軸に合わないため、**未確認**だが使い手 0 の事実と整合する)。新しい部品でこれらと同種の trait を作らない(「既存の抽象に使い手 0 の半分があるうちは、同じ役割の抽象を新設しない」)。
 
+### 世界モデルの reduce 化と Effect 列の設計の検討結果(2026-10-06)
+
+所有者の構想「ワールドモデルを Redux/Elm Architecture のように reduce する」「Event とワールドモデルから Effect 列をどう生成するか(代数的 Effect・圏論・Haskell の monad も調査して、根本的な設計変更を前提に)」を、調査(Redux・Elm・Rack・ASGI・代数的 Effect・free/freer monad・applicative/selective/monad・Mealy 機械・bracket・level-triggered な reconciliation)と実測(W0、`docs/tasks/world-model-write-inventory-2026-10-06/`)と Opus の評価で検討した。
+
+- **実測(W0)**: 世界モデルの書き込みが `reduce` を通る部分は小さい(`ImeEvent` は 20 variant、`ImeModel` 16 フィールド中 10、`ImeStateHub` のメソッド 53 個中 Event を出さないものが 27、`Runtime` の 40 フィールドは 0、グローバルは 0)。journal は時刻・seq を持たず、状態を再現できない。時刻の入口は 3 つ、reducer は 4 系統で互いに複写し合っている。
+- **Plan(平らな `Vec<Cmd>` に代わる型つきの項: `Try`・`Require(epoch)`・`Bracket`・`Spawn`・`Stage`)の設計案は採らない**(`docs/adr/review/229-effect-plan-design-draft-r1-rejected.md`、評価は `229-opus-effect-plan-round1.md`)。理由: (B1)drift correction は観測を引き金に IME へ書いている(ADR-212 P6(a) が「許可」として意図的に残した)ので、「Observation は Write を生成しない」「level-triggered は情報の収集だけ」は既に成り立たない。(M1)書き込みの吸収・正規化は、省略が押下を握りつぶした BUG-141・ADR-208 の方向と逆。(M2)Selective で表せるのは試す機構の集合だけで、効果の中身は `await` の後の観測で決まる(`fallback_write`)ので、閉じた決定関数への継続が要り、今の handler と同じ。(M3)Plan は `run_chain` と二重の表現になり、共通の Plan を解釈しているものが 0。(M4)`Bracket` の根拠が違う(release の漏れは RAII で既に無く、ADR-156 の事故は 2 窓口への条件の配線漏れ)。(M5)gate と失効の分離は挙動変更(今はフォーカスが変わっても新しい窓で判定し直して書く)で、Plan とは別の判断。ADR-218〜220(小さな言語)・ADR-180 決定2(統合しても機構の数は不変)と同型。
+- **採る方針(代案 A)**: 現状の延長。F の分割で `decide → Cmd` を増やし、連鎖は handler の例外(`run_chain`)のまま、再生は `awase-replay` + ReplayWriter、「なぜ省略したか」は各決定関数が理由の enum を返して journal に載せる。**根本的に変えるべきは判断の入口(F の分割)で、Effect 列の表現は F の分割の結果を見て決め直す**。
+- **今すぐ着手するもの(Opus の判定)**: E0(Effect の署名の棚卸し。各 variant の順序の制約・冪等性・副作用)、E1(新しい解釈器ではなく、実際の調査で理由が足りなかった決定から 1 つずつ、決定関数の理由の enum を journal に載せる)、BUG-098(世代の無い非同期の完了を、既存の世代 F-D5-2 で直す。Plan の有無に関わらず効く唯一の実害対応)。E2〜E6(`Try`・正規化と法則・`Bracket`・capability の網羅テスト・観測の購読)は、待つ条件(タスク表)を満たすまで着手しない。
+- **採る価値がある修正された理解**: 「drift correction(有界の再送つき)だけが、観測から書いてよい」(level か edge かではなく、許可された補正かどうか)。`effective_open_at(now)` は既に「証拠の view」(信念を証拠の導出にする案は、成り立つ部分が既にある。`FocusChanged` のリセット等の単調でない操作があるので全体の semilattice 化は成り立たない)。
+- **観測と Event の購読・消費**(Redux/Elm/Rack/ASGI から借りる案: 1 つの Envelope、FocusScope、`subscriptions`、middleware の列)は、W0 の実測で前提(`reduce` を通る部分が小さい、journal が時刻・seq を持たない、時刻の入口が 3 つ)が裏づけられたが、**ADR としては未起草**。小さな着手候補(失効カウンタ 8 種類の newtype 化、死んだフィールドの削除、journal の `ImeEvent` の記録に時刻と seq を足す)は、タスク表。
+
 ### 移行のレシピ(全レシピ共通の後処理つき)
 
 R1 その場で gate を外す(T2・T3)、R2 時刻を引数にして gate を外す(T7)、R3 テストだけ移す(T1)、R4 型を**使い手の側**へ移す(T4: journal → win32 だった依存を win32 → journal に)、R5 核と殻の分割(P2)、R6 サンドイッチ分割(F)、R7 コルーチンの入力をスナップショットに。**共通の後処理**: `fix-requires-evidence.md` の表・`.githooks/pre-push` の正規表現・`.cargo/mutants-awase-windows.toml` の `examine_globs`・`decision3_…` の instrument 一覧・「Linux で実行されないから」のコメントと件数を見直す。**着手前に、テストが呼ぶ関数・型・定数・macro が gated 側にないかを必ず確認する**(PR #493 の教訓)。Linux で未使用の `pub(crate)` 項目には、テストも使うなら `#[cfg(any(windows, test))]`、使わないなら `#[cfg(windows)]`(`allow(dead_code)` は増やさない。外から到達できる `pub` 項目には何も付けない)。
