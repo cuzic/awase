@@ -32,7 +32,7 @@
 | ファミリー | 主なファイル |
 | --- | --- |
 | warmup / cold-start | `output/tsf_warmup_coord.rs`, `output/probe_io.rs`, `tsf/`, `tuning.rs` |
-| focus 遷移 | `focus/`, `runtime/focus_tracking.rs`, `state/focus_classify_plan.rs`（同期分類の判断表、FCIS F5b）, `state/msaa_role_plan.rs`（MSAA ロール表、F5a） |
+| focus 遷移 | `focus/`, `runtime/focus_tracking.rs`, `state/focus_classify_plan.rs`（同期分類の判断表、FCIS F5b）, `state/focus_resolve_plan.rs`（override→キャッシュ→engine 活性の優先順位、F5c）, `state/msaa_role_plan.rs`（MSAA ロール表、F5a） |
 | IME belief | `focus/msaa.rs`（ロール表は `state/msaa_role_plan.rs`）, `state/ime_model.rs`, `state/observation_store.rs`, `state/platform_state.rs`（`ImeStateHub`・`check_drift_correction`）, `state/drift_correction.rs`（`evaluate_drift`、drift correction の検知の判定本体）, `state/drift_plan.rs`（FCIS F4、drift correction の再送・打ち切り・収束・授権見送りの決定。`runtime/ime_refresh.rs::ir_apply_drift_correction` はその実行）, `state/mode_key_pass.rs`（ADR-187、`desired_open`の揃え）, `state/key_effect_predictor.rs`/`state/key_effect_runtime.rs`/`state/key_effect_table.rs`（`KeyEffectPredicted`がbeliefを直接動かす）, `runtime/ime_coordinator.rs`, `focus/uia.rs`, `focus/msaa.rs` |
 | conv mode | `state/conv_mode.rs`, `focus/classify.rs`（判断表は `state/focus_classify_plan.rs`）, `output/conv_actuation.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
 | キー選択（IME ON/OFF に送る VK） | `ime_controller.rs`, `output/vk_send.rs`, `src/engine/nicola_fsm.rs::resolve_pending_thumb_as_single`（無変換/変換単独タップの`dedicated_fn_key`/bare `keys.ime_*`／IME設定由来の役割による`forced_open_action`＞`ModeKeyConfig`の優先順位〈旧`*_solo_tap_ime_action`はADR-206、旧`delegate_to_open_axis`はADR-191で撤去〉。エンジン非活性側の入口は`src/engine/engine.rs::thumb_open_role_action`、BUG-119でルート`awase`クレート側にも同ファミリーの再発が判明。`crates/awase-windows/`配下だけを見ていた本表・`.githooks/pre-push`双方の見落としを2026-09-06に追加して埋めた） |

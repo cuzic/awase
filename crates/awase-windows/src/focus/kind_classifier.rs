@@ -15,10 +15,9 @@ pub struct FocusKindResolution {
 
 /// `focus_kind` を決定する純粋関数（副作用なし）。
 ///
-/// 1. Config オーバーライドをチェック
-/// 2. キャッシュヒットをチェック
-/// 3. エンジンタイマー活性中はスキップ
-/// 4. `classify_focus` をワーカースレッドで実行（タイムアウト付き）
+/// 1〜3（Config オーバーライド → キャッシュヒット → エンジンタイマー活性中はスキップ）は
+/// `state/focus_resolve_plan.rs::decide_resolution` が決める。
+/// 4. 決まらなければ `classify_focus` をワーカースレッドで実行（タイムアウト付き）
 ///
 /// # Safety
 /// タイムアウト付きワーカースレッドから Win32 API を呼び出す。
@@ -29,36 +28,42 @@ pub unsafe fn resolve_focus_kind(
     hwnd: HWND,
 ) -> FocusKindResolution {
     use crate::focus::classify;
+    use crate::state::focus_resolve_plan::{
+        decide_resolution, Resolution, ResolveFacts, ResolveReason,
+    };
 
-    // 1. Config オーバーライドをチェック
-    if let Some(kind) = platform.focus.override_check(process_id, class_name) {
+    // observe: override（get_process_name で OS を読む）→ キャッシュ → engine 活性の順に、
+    // 前段が決まらなかったときだけ次を読む（読む順序と回数は元のまま）。
+    let config_override = platform.focus.override_check(process_id, class_name);
+    let cached = if config_override.is_none() {
+        platform.focus.cache_get(process_id, class_name)
+    } else {
+        None
+    };
+    let engine_busy =
+        config_override.is_none() && cached.is_none() && platform.is_engine_processing();
+
+    // decide（純粋、state/focus_resolve_plan.rs）
+    if let Resolution::Resolved {
+        kind,
+        reason,
+        overridden,
+    } = decide_resolution(ResolveFacts {
+        config_override,
+        cached,
+        engine_busy,
+    }) {
+        if reason == ResolveReason::EngineActive {
+            tracing::debug!("classify_focus skipped: engine timer active (user typing)");
+        }
         return FocusKindResolution {
             kind,
-            reason: "config override".to_string(),
-            overridden: true,
+            reason: reason.as_str().to_string(),
+            overridden,
         };
     }
 
-    // 2. キャッシュヒットをチェック
-    if let Some(cached) = platform.focus.cache_get(process_id, class_name) {
-        return FocusKindResolution {
-            kind: cached,
-            reason: "cache hit".to_string(),
-            overridden: false,
-        };
-    }
-
-    // 3. エンジンタイマー活性中はスキップ
-    if platform.is_engine_processing() {
-        tracing::debug!("classify_focus skipped: engine timer active (user typing)");
-        return FocusKindResolution {
-            kind: FocusKind::Undetermined,
-            reason: "skipped (engine active)".to_string(),
-            overridden: false,
-        };
-    }
-
-    // 4. classify_focus をワーカースレッドで実行
+    // execute: classify_focus をワーカースレッドで実行
     let hwnd_addr = hwnd.0 as usize;
     let classify_result =
         crate::win32::run_with_timeout(std::time::Duration::from_millis(300), move || {

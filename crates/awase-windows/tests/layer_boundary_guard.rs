@@ -512,6 +512,7 @@ const CORE_MODULES: &[&str] = &[
     "external_change_watch",
     "focus_classify_plan",
     "focus_probe_plan",
+    "focus_resolve_plan",
     "focus_resync_policy",
     "force_guard",
     "foreground_scope",
