@@ -1522,6 +1522,9 @@ impl UnifiedJournal {
     }
 
     /// `%TEMP%/awase_journal_<tick_ms>.json` に書き出す。
+    ///
+    /// 時刻の出所（`hook::current_tick_ms`）が Windows 専用のため `#[cfg(windows)]`。
+    #[cfg(windows)]
     pub fn dump_to_file(&self) -> Result<std::path::PathBuf, DumpError> {
         let tick = crate::hook::current_tick_ms();
         let path = std::env::temp_dir().join(format!("awase_journal_{tick}.json"));
@@ -1541,6 +1544,7 @@ impl UnifiedJournal {
     /// （所有者が許容した範囲。ring は最大頻度で 10 分が溢れない容量なので、通常の
     /// 頻度では何時間ぶんも溜まっている。Opus round2 B-E1）。他のレーンは打鍵の
     /// 内容を含まないので全件出す。
+    #[cfg(windows)]
     pub fn dump_to_file_for_report(&self) -> Result<std::path::PathBuf, DumpError> {
         let started = std::time::Instant::now();
         let tick = crate::hook::current_tick_ms();
