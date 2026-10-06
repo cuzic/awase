@@ -155,8 +155,8 @@ impl PhysicalDispositionSummary {
     /// `Some(reason)` なら `Suppress`、`None` なら `Allow`（disposition と reason は
     /// 定義上 1:1 に決まるため、disposition 自体を別引数で渡す必要はない）。
     ///
-    /// 呼び出し元（`runtime/`）は `#[cfg(windows)]` のため、非 Windows では未使用。
-    #[cfg_attr(not(windows), allow(dead_code))]
+    /// 呼び出し元（`runtime/`）は `#[cfg(windows)]` のため、同じ条件で定義する。
+    #[cfg(windows)]
     #[must_use]
     pub(crate) fn new(reason: Option<&'static str>) -> Self {
         reason.map_or(Self::Allow, |reason| Self::Suppress { reason })
