@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use awase::engine::InputModeState;
 
+use crate::state::TickMs;
 use crate::tuning::HWND_CACHE_MAX_AGE_MS;
 
 /// フォーカス切り替え時の IME 状態スナップショット（per-HWND キャッシュ用）
@@ -52,11 +53,12 @@ impl HwndImeCache {
         input_mode: InputModeState,
         from_explicit_off_intent: bool,
         old_hwnd: usize,
+        now: TickMs,
     ) {
         let snapshot = HwndImeSnapshot {
             ime_on,
             input_mode,
-            recorded_ms: crate::hook::current_tick_ms(),
+            recorded_ms: now.0,
             from_explicit_off_intent,
             hwnd: old_hwnd,
         };
@@ -68,7 +70,7 @@ impl HwndImeCache {
             snapshot.input_mode,
             snapshot.hwnd,
         );
-        let now_ms = snapshot.recorded_ms;
+        let now_ms = now.0;
         self.0
             .retain(|_, v| now_ms.saturating_sub(v.recorded_ms) <= HWND_CACHE_MAX_AGE_MS);
         self.0.insert((old_pid, old_class), snapshot);
@@ -79,10 +81,10 @@ impl HwndImeCache {
     /// キャッシュヒットかつ有効期限内の場合は `Some(HwndImeSnapshot)` を返す。
     /// キャッシュミスまたは期限切れの場合は `None` を返す。
     #[must_use]
-    pub fn restore(&self, new_pid: u32, new_class: &str) -> Option<HwndImeSnapshot> {
+    pub fn restore(&self, new_pid: u32, new_class: &str, now: TickMs) -> Option<HwndImeSnapshot> {
         let cache_key = (new_pid, new_class.to_string());
         if let Some(&snapshot) = self.0.get(&cache_key) {
-            let age_ms = crate::hook::current_tick_ms().saturating_sub(snapshot.recorded_ms);
+            let age_ms = now.saturating_sub(snapshot.recorded_ms);
             if age_ms <= HWND_CACHE_MAX_AGE_MS {
                 tracing::info!(
                     "HwndCache: restore [{} {}] ime_on={} mode={:?} hwnd={} ({}ms ago)",

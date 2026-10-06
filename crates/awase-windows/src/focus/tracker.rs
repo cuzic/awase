@@ -266,6 +266,7 @@ impl FocusTracker {
         ime_on: bool,
         input_mode: InputModeState,
         from_explicit_off_intent: bool,
+        now: crate::state::TickMs,
     ) {
         if !self.current.is_focused() {
             return;
@@ -277,15 +278,16 @@ impl FocusTracker {
             input_mode,
             from_explicit_off_intent,
             self.current.hwnd,
+            now,
         );
     }
 
     /// フォーカス入場時に新ウィンドウの IME 状態キャッシュを復元する。
     ///
     /// `self.current` の pid / class_name を使うため、`update()` の後に呼ぶこと。
-    pub(crate) fn restore_ime_state(&self) -> Option<HwndImeSnapshot> {
+    pub(crate) fn restore_ime_state(&self, now: crate::state::TickMs) -> Option<HwndImeSnapshot> {
         self.hwnd_ime_cache
-            .restore(self.current.pid, &self.current.class_name)
+            .restore(self.current.pid, &self.current.class_name, now)
     }
 
     // ── IMM 能力学習 ─────────────────────────────────────────────────────────

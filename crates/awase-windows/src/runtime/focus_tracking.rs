@@ -446,6 +446,7 @@ impl Runtime {
                     ime_on,
                     self.platform_state.ime.input_mode(),
                     from_explicit_off_intent,
+                    crate::state::TickMs(now_ms),
                 );
             } else {
                 tracing::debug!(
@@ -646,7 +647,10 @@ impl Runtime {
         );
 
         {
-            let cache_hit = self.platform.focus.restore_ime_state();
+            let cache_hit = self
+                .platform
+                .focus
+                .restore_ime_state(crate::state::TickMs(crate::hook::current_tick_ms()));
             let profile = self.platform.current_app_profile();
             let is_imm_broken = matches!(
                 profile,
