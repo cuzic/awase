@@ -659,7 +659,7 @@ impl Runtime {
 
     // ── ドリフト補正 ──
     //
-    // desired ≠ observed が DRIFT_CORRECTION_THRESHOLD_MS 以上続いた場合、再送する。
+    // desired ≠ observed（`evaluate_drift` が補正を要すると判定したずれ）が続く間、有界に再送する。
     //
     // - IMM32 クロスプロセス対応アプリ（LINE 等 ImmCross）: set_ime_open(desired) を使う。
     // - non-ImmCross（GJI/TsfNative/Blacklist、Chrome/Windows Terminal 等）:
@@ -699,14 +699,14 @@ impl Runtime {
         }
     }
 
-    fn ir_check_drift_correction(
+    fn ir_evaluate_drift(
         &self,
         now: std::time::Instant,
-    ) -> Option<crate::state::platform_state::DriftCorrection> {
-        let explicit_intent = self.platform_state.ime.explicit_intent();
-        self.platform_state
-            .ime
-            .check_drift_correction(now, explicit_intent)
+    ) -> Result<
+        crate::state::platform_state::DriftCorrection,
+        crate::state::drift_correction::NoDrift,
+    > {
+        self.platform_state.ime.evaluate_drift(now)
     }
 
     /// drift correction の observe（FCIS F4、殻）。判断に使う事実だけを集める。書かない。
@@ -714,10 +714,10 @@ impl Runtime {
     /// `imm_cross` 以降の事実は、`drift` があり settle 中でないときだけ読む（それ以外は
     /// `decide_drift_plan` が見ずに返すので、読まない＝元のコードと読む条件が同じ）。
     fn ir_observe_drift_facts(&self, now: std::time::Instant) -> DriftFacts {
-        // 稼働条件(`engine_enabled`/`japanese_ime`)が偽でも `check_drift_correction`・`default_feedback` は読む
-        // （純粋な読み取りで、影響は debug ログのみ。`decide_drift_plan` が `Idle(NotActive)` を返す）。
-        let drift = self.ir_check_drift_correction(now);
-        let settling = drift.is_some() && self.ime_apply_should_defer();
+        // 稼働条件(`engine_enabled`/`japanese_ime`)が偽でも `evaluate_drift`・`default_feedback` は読む
+        // （純粋な読み取りで、影響は debug ログのみ。`decide_drift_plan` が `Idle(EngineDisabled | NotJapaneseIme)` を返す）。
+        let drift = self.ir_evaluate_drift(now);
+        let settling = drift.is_ok() && self.ime_apply_should_defer();
         let mut facts = DriftFacts {
             now,
             engine_enabled: self.engine.is_user_enabled(),
@@ -732,7 +732,7 @@ impl Runtime {
             converged: false,
             fresh_evidence_after_giveup: false,
         };
-        let Some(drift) = drift.filter(|_| !settling) else {
+        let Some(drift) = drift.ok().filter(|_| !settling) else {
             return facts;
         };
         // 読み戻しの `since` は、決定側と同じ `resolve_actuation` で解決した試行から取る。
@@ -805,12 +805,19 @@ impl Runtime {
         // 検証されないまま今日まで放置されていた）。詳細は known-bugs.md BUG-20 追補参照。
         let now = std::time::Instant::now();
         let facts = self.ir_observe_drift_facts(now);
-        let act = match decide_drift_plan(&facts) {
-            DriftPlan::Idle(_) => return,
+        let plan = decide_drift_plan(&facts);
+        // E1: 送らない・打ち切る・収束とみなす・保留する決定の根拠（`plan.basis()`）は、殻がログに出すだけ。
+        let basis = plan.basis();
+        let act = match plan {
+            DriftPlan::Idle(reason) => {
+                // 毎 tick 通る（ずれが無いのが普通）ので trace。
+                tracing::trace!("[drift] 補正しない: {reason:?} basis={basis:?}");
+                return;
+            }
             DriftPlan::DeferToSettle { drift } => {
                 // 他の settle 対応経路（撤去済みの apply_force_on_for_imm_broken 等）と同じく settle 明けに必ず再試行する。
                 self.schedule_settle_retry(&format!(
-                    "drift correction skipped (settling): desired={} observed={}",
+                    "drift correction skipped (settling): desired={} observed={} basis={basis:?}",
                     drift.desired, drift.observed
                 ));
                 return;
@@ -836,7 +843,7 @@ impl Runtime {
         // - `Read`（ImmCross 等、実読み戻し可能）: `sent_at` 以降の trusted 観測が desired と
         //   一致すれば `Confirmed` として破棄、そうでなければ従来同様に再送する。
         //
-        // なお `ir_check_drift_correction`（=`check_drift_correction`）の乖離「検知」側は
+        // なお `ir_evaluate_drift`（=`evaluate_drift`）の乖離「検知」側は
         // ADR-080 Phase 1 では従来どおり `most_recent_trusted`（since フェンシングなし）を
         // 使い続ける。since フェンシング（`most_recent_trusted_after`）を使うのは
         // `Read` 収束「確認」側のみで、この非対称は ADR-080 が意図的に許容している。
@@ -859,7 +866,8 @@ impl Runtime {
             DriftStep::SkipWarrantWouldBlock => {
                 tracing::debug!(
                     "[drift] 授権が下りないため補正を見送る（検知しない）: desired={desired} \
-                     observed={observed} for {duration_ms}ms (source={:?} confidence={:?})",
+                     observed={observed} for {duration_ms}ms (source={:?} confidence={:?}) \
+                     basis={basis:?}",
                     drift.source,
                     drift.confidence,
                 );
@@ -913,7 +921,7 @@ impl Runtime {
                         );
                         tracing::debug!(
                             "[drift] actuation gave up (Blind): desired={desired} \
-                             observed={observed} converged={} attempts={}",
+                             observed={observed} converged={} attempts={} basis={basis:?}",
                             receipt.converged(),
                             receipt.attempts()
                         );
@@ -925,7 +933,8 @@ impl Runtime {
                         // discard した同じ tick では送らない（ロジックを単純に保つ）。
                         tracing::debug!(
                             "[drift] fresh observation after give-up → 試行を破棄して\
-                             再試行: desired={desired} observed={observed} attempts={act_attempts}"
+                             再試行: desired={desired} observed={observed} attempts={act_attempts} \
+                             basis={basis:?}"
                         );
                         self.discard_actuation();
                     }
@@ -939,7 +948,7 @@ impl Runtime {
                 // 何も書かない。
                 tracing::debug!(
                     "[drift] actuation confirmed (Read): desired={desired} \
-                     converged=true attempts={act_attempts} → 破棄"
+                     converged=true attempts={act_attempts} → 破棄 basis={basis:?}"
                 );
                 self.discard_actuation();
                 return;
