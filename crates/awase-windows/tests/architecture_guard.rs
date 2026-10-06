@@ -1957,13 +1957,13 @@ fn uia_async_focus_kind_handler_does_not_write_belief() {
 /// 判断は `state/drift_plan.rs` に移り、ここは計画の実行だけをする。
 const DRIFT_MATCH_MARKER: &str = "let send_path = match act.step {";
 /// 実送信ブロックの先頭にある `tracing::warn!` のメッセージ接頭辞。この直前で
-/// `match act_policy { ... }`（早期 return 分岐）が終わる。
+/// `match act.step { ... }`（早期 return 分岐）が終わる。
 const DRIFT_SEND_LOG_MARKER: &str = "[drift] correction: observed=";
 
-/// `ir_apply_drift_correction` の `match act_policy { ... }` ブロック（＝ `Blind`/`GaveUp`
-/// と `Read`/`Confirmed` の早期 return 分岐）だけを切り出す。
+/// `ir_apply_drift_correction`（execute）の `let send_path = match act.step { ... }` ブロック（＝
+/// `GiveUp`/`Confirmed`/`SkipWarrantWouldBlock` の早期 return 腕）だけを切り出す。
 ///
-/// 開始は `match act_policy {`、終了は実送信ブロックの先頭にある
+/// 開始は `let send_path = match act.step {`、終了は実送信ブロックの先頭にある
 /// `tracing::warn!("[drift] correction: observed=...")` の直前。この `tracing::warn!` より後は
 /// ADR-080 不変条件6 のスコープ外（乖離が確定して実際に `set_ime_open` する正規経路であり、
 /// そこで `dispatch_event(ImeEvent::DriftDetected {..})` を呼ぶのは正当）。したがって
@@ -2005,7 +2005,7 @@ fn extract_drift_correction_match_block(content: &str) -> &str {
 /// `check_drift_correction` が「観測 == desired」で乖離なしと誤認し、本来まだ実現できて
 /// いない目標を「達成済み」と勘違いする（＝同じ失敗モード）。
 ///
-/// 注意: `match act_policy { ... }` ブロックの**後**にある正規の実送信経路は
+/// 注意: `match act.step { ... }` ブロックの**後**にある正規の実送信経路は
 /// `dispatch_event(ImeEvent::DriftDetected {..})` を正当に呼ぶ。それは不変条件6の
 /// スコープ外なので、関数全体ではなく match ブロックのテキストだけを検査する
 /// (`extract_drift_correction_match_block` 参照)。仮にその `dispatch_event` を match
@@ -2033,7 +2033,7 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
     ] {
         assert!(
             !match_block.contains(forbidden),
-            "{path} の ir_apply_drift_correction 内 `match act_policy {{ ... }}` \
+            "{path} の ir_apply_drift_correction 内 `match act.step {{ ... }}` \
              （Blind/GaveUp・Read/Confirmed の早期 return 分岐）に、観測ストアへの \
              書き込みと思われるパターン `{forbidden}` が見つかりました。\n\
              ADR-080 不変条件6 により、GaveUp（および Read の deadline 超過/未収束）は \
@@ -3023,15 +3023,39 @@ fn drift_correction_does_not_detect_when_the_warrant_would_block() {
             "`SkipWarrantWouldBlock` の腕（return）は `{later}` より前になければならない（BUG-163）"
         );
     }
-    let diag_call = body
-        .find("ir_notify_drift_giveup_diagnostic(")
-        .expect("`ir_apply_drift_correction` に診断の呼び出しが必要");
     assert!(
-        body[diag_call..]
-            .find("DriftStep::SkipWarrantWouldBlock =>")
-            .is_some(),
-        "診断の呼び出しは計画の `notify_diagnostic` で守られ、`SkipWarrantWouldBlock` では false"
+        drift_diagnostic_call_is_guarded(body),
+        "診断バルーンの呼び出しは `if act.notify_diagnostic {{` の内側になければならない\
+         （外すと毎 tick バルーンが出る。ADR-132 / BUG-163）"
     );
+}
+
+/// `ir_notify_drift_giveup_diagnostic(` の呼び出しが、直前の `if act.notify_diagnostic {` の
+/// 直下（空白のみを挟む）にあるか。継続時間・通知済みの判定は関数側から `decide_drift_plan` へ移ったので、
+/// この `if` が唯一の防波堤である。
+fn drift_diagnostic_call_is_guarded(body: &str) -> bool {
+    let Some(at) = body.find("ir_notify_drift_giveup_diagnostic(") else {
+        return false;
+    };
+    let head = body[..at].trim_end();
+    // `self.` の前置きを除いてから、直前が `if` の開き括弧であることを見る。
+    let head = head.strip_suffix("self.").unwrap_or(head).trim_end();
+    head.ends_with("if act.notify_diagnostic {")
+}
+
+#[test]
+fn drift_diagnostic_guard_detects_an_unguarded_call() {
+    let guarded =
+        "if act.notify_diagnostic {\n    self.ir_notify_drift_giveup_diagnostic(a, b);\n}";
+    assert!(drift_diagnostic_call_is_guarded(guarded));
+    let unguarded = "self.ir_notify_drift_giveup_diagnostic(a, b);";
+    assert!(!drift_diagnostic_call_is_guarded(unguarded));
+    let wrong_cond = "if other {\n    self.ir_notify_drift_giveup_diagnostic(a, b);\n}";
+    assert!(!drift_diagnostic_call_is_guarded(wrong_cond));
+    let after_if =
+        "if act.notify_diagnostic {\n    x();\n}\nself.ir_notify_drift_giveup_diagnostic(a, b);";
+    assert!(!drift_diagnostic_call_is_guarded(after_if));
+    assert!(!drift_diagnostic_call_is_guarded("nothing"));
 }
 
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。

@@ -606,6 +606,18 @@ mod tests {
         if a.step == DriftStep::SkipWarrantWouldBlock {
             assert!(f.imm_cross && f.warrant_would_block && !a.notify_diagnostic);
         }
+        // BUG-68: クールダウン中は、新しい観測の証拠があっても再武装しない。
+        let cool = Duration::from_millis(crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS);
+        let in_cooldown = matches!(a.actuation.policy, FeedbackPolicy::Blind { .. })
+            && a.actuation.attempts >= MAX
+            && a.actuation.gave_up_at.is_some_and(|g| f.now < g + cool);
+        if in_cooldown {
+            assert_eq!(
+                a.step,
+                DriftStep::GiveUp(GiveUpPark::CooldownPending),
+                "BUG-68 {f:?}"
+            );
+        }
         // 再武装は parked 済みのときだけ。
         if a.step == DriftStep::GiveUp(GiveUpPark::Rearm) {
             assert!(a.actuation.gave_up_at.is_some());
