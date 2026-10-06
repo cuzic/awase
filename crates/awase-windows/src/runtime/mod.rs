@@ -1160,6 +1160,26 @@ impl Runtime {
             self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS.min(remaining + 1));
             return;
         }
+        // ADR-238(BUG-190): 英数モードの候補(1 回目の英数の読み)が寿命内の間は、確認の読み直しを予約する。
+        // 通常のポーリング間隔(500ms)で上書きしない。`explicit_intent` による停止(下の早期 return)より前に置く:
+        // 明示意図があるとポーリング自体が止まり、確認の読みが届かず候補が確定も破棄もされないため。
+        // 間隔は通過マークと同じ(`mode_key_pass_next_read_ms`、直前の読みが失敗したら寿命の終わりの 1 回に絞る。BUG-158)。
+        // 候補は寿命が切れたら捨てる(確定しない)ので、この枝は寿命内に限る。読めない窓(`can_use_imm32_cross_process` が
+        // false)では確認の読みができないので予約しない。
+        if self.can_use_imm32_cross_process() {
+            if let Some(remaining) = self
+                .platform_state
+                .ime
+                .eisu_candidate_remaining_ms(now_for_watch)
+            {
+                self.schedule_ime_refresh(crate::state::mode_key_pass::mode_key_pass_next_read_ms(
+                    self.last_ime_read_ok,
+                    remaining,
+                    crate::tuning::MODE_KEY_PASS_REREAD_MS,
+                ));
+                return;
+            }
+        }
         // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しを予約する。通常のポーリング間隔で
         // 上書きしない。意図を捨てた後は`explicit_intent()`が`None`になるため、ここで上書きすると読み直しが
         // 窓(300ms)より後(既定500ms)に飛び、最初の観測が古い状態を読んだ回で追随できない。
@@ -1380,6 +1400,7 @@ impl Runtime {
                 self.platform_state.ime.is_force_on_guard_active(),
                 self.platform_state.ime.input_mode(),
                 self.platform_state.ime.belief.prev_conversion_mode(),
+                self.platform_state.ime.belief.eisu_candidate(),
                 self.platform.focus.process_name(),
             )
         };

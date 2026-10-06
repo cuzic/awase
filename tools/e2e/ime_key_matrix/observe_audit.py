@@ -27,7 +27,7 @@ ONLY_ALL = ",".join([c + "*" for c in "abcdefghijklmnopqrstuvwxyz0123456789"] +
 def plan_source(workflow_path=WORKFLOW):
     """plan ジョブの python スクリプト本体(インデント除去済み)。matrix 上限チェックより前で切る。"""
     text = open(workflow_path, encoding="utf-8").read()
-    m = re.search(r"        run: \|\n(          import json, os, sys\n.*?)\n  build:\n", text, re.S)
+    m = re.search(r"        run: \|\n(          import fnmatch, json, os, sys\n.*?)\n  build:\n", text, re.S)
     if not m:
         raise RuntimeError("plan スクリプトが見つからない(e2e-ime.yml の構造が変わった?)")
     src = textwrap.dedent(m.group(1))

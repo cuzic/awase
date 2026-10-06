@@ -191,7 +191,7 @@
 | [BUG-187](BUG-187.md) | 対応しない(却下相当、現行機序なし) | GJI(ATOKプリセット)が injected=false の VK_DBE_HIRAGANA を周期送信し IME OFF を巻き戻す疑い |
 | [BUG-188](BUG-188.md) | 未修正(CI で再現、ADR-227 D0-5) | TsfNative(Windows Terminal)で外部から IME が閉じたあと、Engine ON × IME 閉の drift で生ローマ字が出る |
 | [BUG-189](BUG-189.md) | 修正実装済み・CI 確認待ち(ADR-233) | Flutter × MS-IME で古い ImmCrossProbe(High,false)が優先され打鍵の途中で Engine が一瞬 OFF になる |
-| [BUG-190](BUG-190.md) | 未調査(CI で低頻度に再現) | MS-IME 起動直後の最初の試行で Engine が NotRomajiInput で約3秒止まり全角英字が混じる |
+| [BUG-190](BUG-190.md) | 修正実装済み・CI 確認済み・実機未検証(ADR-238) | MS-IME の一過性の conv=0 を 1 回の読みで英数モードと採用して Engine が止まる |
 
 ## その他の資料
 

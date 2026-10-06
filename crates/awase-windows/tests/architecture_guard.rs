@@ -7315,3 +7315,64 @@ fn warm_send_wiring_detector_catches_violations() {
         1,
     ));
 }
+
+/// ADR-238(BUG-190): 英数モードの候補(1 回目の英数の読み)の確認の読み直しは、`reschedule_ime_refresh` の
+/// `explicit_intent` による停止(早期 return)より**前**に予約する。後ろに置くと、明示意図があるときにポーリング自体が止まり、
+/// 確認の読みが届かず候補が確定も破棄もされない(F が黙って 500ms〈または停止〉に戻る)。
+/// `runtime/` は `#[cfg(windows)]` で Linux のユニットテストが存在しないので、ソース走査で固定する。
+/// また、打鍵中の除外(`SkipTyping`)を外す事実(`eisu_candidate_pending`)が observe 側で組み立てられ、
+/// `decide_read_strategy` の検証経路に入っていることも固定する。
+#[test]
+fn eisu_candidate_reread_is_scheduled_before_the_explicit_intent_early_return() {
+    let src = read_crate_file("src/runtime/mod.rs");
+    let body = extract_fn_body(production_code_only(&src), "pub fn reschedule_ime_refresh(");
+    let code = non_comment_lines(body);
+    let pending = code
+        .find("eisu_candidate_remaining_ms(")
+        .expect("reschedule_ime_refresh に英数モードの候補の確認の読み直しの枝がある(ADR-238)");
+    let explicit = code
+        .find("explicit_intent().is_some()")
+        .expect("reschedule_ime_refresh に explicit_intent による停止がある");
+    assert!(
+        pending < explicit,
+        "英数の候補の読み直しは、explicit_intent による早期 return より前に予約すること(ADR-238、F が黙って戻らないように)"
+    );
+    assert!(
+        code.contains("mode_key_pass_next_read_ms("),
+        "確認の読み直しは通過マークと同じ間引き(`mode_key_pass_next_read_ms`、BUG-158)を使うこと(ADR-238)"
+    );
+    let refresh = read_crate_file("src/runtime/ime_refresh.rs");
+    let facts = extract_fn_body(
+        production_code_only(&refresh),
+        "fn ir_observe_read_strategy_facts(",
+    );
+    assert!(
+        non_comment_lines(facts).contains("eisu_candidate_pending"),
+        "observe が `eisu_candidate_pending` を組み立てて、打鍵中でも確認の読みを通すこと(ADR-238)"
+    );
+}
+
+/// ADR-238(BUG-190): 英数モードの候補は、実際にフォーカスが変わったときだけ捨てる。`advance_focus_tracking` は
+/// フォーカスが変わらなくても読み取りのたびに走る(`set_prev_conversion_mode(None)` も毎回走る)ので、`clear_eisu_candidate()` を
+/// 無条件に呼ぶと候補が確認の読みの前に毎回消えて一度も確定しない(MS-IME の英数キーが Engine に追随しなくなる)。
+#[test]
+fn eisu_candidate_is_cleared_only_when_focus_actually_changes() {
+    let src = read_crate_file("src/runtime/focus_tracking.rs");
+    let body = extract_fn_body(production_code_only(&src), "fn advance_focus_tracking(");
+    let code = non_comment_lines(body);
+    let clear = code
+        .find("clear_eisu_candidate()")
+        .expect("advance_focus_tracking が英数の候補を捨てる(ADR-238)");
+    let guard = code
+        .find("process_changed || prev_hwnd != new_hwnd")
+        .expect("フォーカスが実際に変わったときだけ捨てる条件がある(ADR-238)");
+    assert!(
+        guard < clear,
+        "clear_eisu_candidate() は `process_changed || prev_hwnd != new_hwnd` の条件の中で呼ぶこと(無条件だと候補が一度も確定しない)"
+    );
+    assert_eq!(
+        code.matches("clear_eisu_candidate()").count(),
+        1,
+        "英数の候補を捨てる箇所は 1 つだけ"
+    );
+}

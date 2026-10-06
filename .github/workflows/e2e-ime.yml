@@ -85,7 +85,7 @@ jobs:
           # workflow_call の runs 入力(空なら構成ごとの runs のまま)
           RUNS: ${{ inputs.runs || '' }}
         run: |
-          import json, os, sys
+          import fnmatch, json, os, sys
           # name: 構成名 / bin: 使うビルド成果物(撤去なしの構成は baseline を使い回す) / mutator: ablations/ 下のスクリプト
           # (空=変更なし) / args: スパイクの追加引数
           # keymap: GJI の session_keymap(1=ATOK, 2=MS-IME) / custom_table: config1.db に古い custom_keymap_table
@@ -735,7 +735,7 @@ jobs:
                   configs.append(_r)
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
-            configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
+            configs = [c for c in configs if any(fnmatch.fnmatchcase(c['name'], o) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
             configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-'))
