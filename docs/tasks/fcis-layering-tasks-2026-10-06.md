@@ -105,7 +105,7 @@ ADR-229 の gate 一覧からは journal・ime_event_log・tsf_gate・hwnd_cache
 2. handler 例外は閉じた列挙(`run_chain(_async)` と、条件付きの同期の効果を個別に列挙)。追加は ADR の改訂。
 3. F-D5 の 4 番目(非同期の handler は await の後に観測し直す)を、`open_chain` を書き換えない理由とともに残す。
 4. P2 の殻は 13 個で、`RECORDERS` の数え方を同じ PR で直す。「11 個・差分 0」と書き写さない。
-5. P3 はテストの構築の付け替え(36 か所、`effective_open()` を呼ぶ時間が意味を持つ 19 か所は `Manual`)を含む。P4 は殻の名前 16 か所・`foreground_scope()` 直接 9 か所のテストの書き換えを含む。
+5. P3 はテストの構築の付け替え(36 か所。うち時計を読むのは引数なしの `effective_open()` を呼ぶ 2 本だけ。「19 か所」は `effective_open()` という文字列の出現数で、`effective_open_at(..)` の呼び出し数ではない=実数は 33。Opus の #503 レビュー Should 3)を含む。P4 は殻の名前 16 か所・`foreground_scope()` 直接 9 か所のテストの書き換えを含む。
 6. 順序: P1 は #495 のマージ後。P2 → P3 は直列。RW は並行可。
 7. `HubClock` は Tier-2 の外(時計の実装そのもの)。`hub_clock.rs` 自身は `CORE_MODULES` に入らない。
 8. `CORE_MODULES` は「違反 0 のファイルだけ」で、許可リストは持たない。違反のある 8 ファイルの内訳(付録 B)は「殻へ出す候補」。
