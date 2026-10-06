@@ -83,9 +83,10 @@ pub(crate) enum GateResult {
 /// スキップ判定に影響するため`site`自体は変更しない）。
 /// `caller`（`ActuationDecisionRecord::caller`）による事後ラベル付けで解決する。
 ///
-/// 撤去済みの `ReassertExplicitPhysicalKey`/`ForceOnRomajiCorrection`/`ForceOnBootstrap`
-/// は、凍結コーパス `bug-131-report-01m29kdnz.json` の `caller` 15 件を `DispatchImeSetOpen`へ
-/// 書き換えた上で削除した（`caller` は `replay_record` が読まない診断ラベルで、再生結果は不変）。
+/// 撤去済みの `ReassertExplicitPhysicalKey`/`ForceOnRomajiCorrection` は、凍結コーパス
+/// `bug-131-report-01m29kdnz.json` の `caller` 15 件を `null` に書き換えた上で削除した
+/// （`caller` は `replay_record` が読まない診断ラベルで、再生結果は不変。ADR-163 D5 の追記参照）。
+/// `ForceOnBootstrap` は構築元ゼロとして #515 で削除済み。
 #[derive(
     strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
 )]
