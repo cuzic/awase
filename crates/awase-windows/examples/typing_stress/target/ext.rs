@@ -4,10 +4,11 @@
 //! `InputTarget` 実装を足す代わりに、`tools/e2e/input_forms/forms.toml` へ 1 項目書けば入力先が増える。
 //! この実装が持つのは「起動する・窓を探す・読み戻す・閉じる」の汎用部分だけで、入力先固有の知識は表に置く。
 //!
-//! 読み戻しは 2 種類(表の `read`):
+//! 読み戻しは 3 種類(表の `read`):
 //! - `dump`: 入力先(または補助プロセス `helper_*`)が、確定済みの本文を UTF-8 のファイル(`{dump}`)へ書き出し続ける。
 //!   UI Automation で読めない入力先(Java は Java Access Bridge が要る、Office は UNO で読む)向け。
-//! - `uia`: 窓内の最初の Edit を UI Automation で読む(Qt・wxWidgets・GTK など)。
+//! - `uia`: 窓内の最初の Edit を UI Automation で読む(Qt・wxWidgets・WinForms・WPF など)。
+//! - `clipboard`: 入力欄で Ctrl+A → Ctrl+C して、クリップボードを PowerShell で読む(Scintilla・Flutter など、上の 2 つで読めない入力先)。
 //!
 //! 表の文字列中の置換: `{repo}`=`--ext-repo=`、`{dump}`=書き出しファイル、`{profile}`/`{profile_url}`=この run 専用の
 //! 一時プロファイル(Office の `-env:UserInstallation=` 用)。
@@ -52,7 +53,7 @@ struct Spec {
     /// 起動した pid に限らず窓を探す(Office のように起動 exe が別プロセスへ引き継ぐ入力先)。
     #[serde(default)]
     any_pid: bool,
-    /// `dump`(既定)または `uia`。
+    /// `dump`(既定)/ `uia` / `clipboard`。
     #[serde(default)]
     read: String,
     /// `dump` を書く補助プロセス(例: Office 同梱の python で UNO から本文を読む)。
@@ -77,7 +78,14 @@ struct Ext {
     helper: Mutex<Option<Child>>,
     dump: PathBuf,
     profile: PathBuf,
-    uia: bool,
+    mode: ReadMode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadMode {
+    Dump,
+    Uia,
+    Clipboard,
 }
 
 const OFFICE_SEED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -138,8 +146,9 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
             .replace("{profile}", &profile.to_string_lossy())
     };
 
-    let exe = pick(&spec.exe)
-        .unwrap_or_else(|| fatal(&format!("{name}: 実行ファイルが見つからない {:?}", spec.exe)));
+    let exe_cands: Vec<String> = spec.exe.iter().map(subst).collect();
+    let exe = pick(&exe_cands)
+        .unwrap_or_else(|| fatal(&format!("{name}: 実行ファイルが見つからない {exe_cands:?}")));
     let args: Vec<String> = spec.args.iter().map(subst).collect();
     let spawned = match Command::new(&exe).args(&args).spawn() {
         Ok(c) => c.id(),
@@ -175,7 +184,8 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
         raise_top(500);
     }
 
-    let helper = pick(&spec.helper_exe).map(|hexe| {
+    let helper_cands: Vec<String> = spec.helper_exe.iter().map(subst).collect();
+    let helper = pick(&helper_cands).map(|hexe| {
         let hargs: Vec<String> = spec.helper_args.iter().map(subst).collect();
         let mut cmd = Command::new(&hexe);
         cmd.args(&hargs);
@@ -199,8 +209,12 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
         }
     });
 
-    let uia_read = spec.read == "uia";
-    if !uia_read {
+    let mode = match spec.read.as_str() {
+        "uia" => ReadMode::Uia,
+        "clipboard" => ReadMode::Clipboard,
+        _ => ReadMode::Dump,
+    };
+    if mode == ReadMode::Dump {
         // 書き出しファイルが現れるまで待つ(Office は補助プロセスが UNO へ接続できて初めて出る)。
         let ok = (0..180).any(|_| {
             sleep_ms(500);
@@ -224,7 +238,7 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
         helper: Mutex::new(helper),
         dump,
         profile,
-        uia: uia_read,
+        mode,
     })
 }
 
@@ -252,6 +266,33 @@ fn dismiss_dialogs(pid: u32, cls: &str) {
     }
 }
 
+/// 入力欄の全文をコピーして、クリップボードを読む。選択が残るので、続けて打つ前に `clear` を挟む前提(打鍵の試行間は clear が入る)。
+fn read_clipboard() -> String {
+    let ps = |script: &str| {
+        Command::new("powershell")
+            .args(["-NoProfile", "-Sta", "-Command", script])
+            .output()
+    };
+    let _ = ps("Set-Clipboard -Value ''");
+    crate::send_key(0x11, 0x1D, true);
+    sleep_ms(20);
+    crate::press(0x41, 0x1E, 30);
+    sleep_ms(60);
+    crate::press(0x43, 0x2E, 30);
+    crate::send_key(0x11, 0x1D, false);
+    sleep_ms(250);
+    match ps("[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw") {
+        Ok(o) => {
+            let t = String::from_utf8_lossy(&o.stdout).into_owned();
+            t.trim_end_matches(['\r', '\n']).to_string()
+        }
+        Err(e) => {
+            log(&format!("[ext] クリップボードを読めない: {e}"));
+            uia::NOT_FOUND.to_string()
+        }
+    }
+}
+
 fn log_helper_err(dump: &Path) {
     for ext in [".err", ".helper.log"] {
         let path = PathBuf::from(format!("{}{ext}", dump.display()));
@@ -265,17 +306,20 @@ fn log_helper_err(dump: &Path) {
 
 impl InputTarget for Ext {
     fn read(&self) -> String {
-        if self.uia {
-            let edits =
-                uia::wait_edits(hwnd_of(&TOP), |e| (!e.is_empty()).then_some(e)).unwrap_or_default();
-            return edits
-                .first()
-                .map_or_else(|| uia::NOT_FOUND.to_string(), uia::read_value);
+        match self.mode {
+            ReadMode::Uia => {
+                let edits = uia::wait_edits(hwnd_of(&TOP), |e| (!e.is_empty()).then_some(e))
+                    .unwrap_or_default();
+                edits
+                    .first()
+                    .map_or_else(|| uia::NOT_FOUND.to_string(), uia::read_value)
+            }
+            ReadMode::Clipboard => read_clipboard(),
+            ReadMode::Dump => std::fs::read(&self.dump).map_or_else(
+                |_| uia::NOT_FOUND.to_string(),
+                |b| String::from_utf8_lossy(&b).into_owned(),
+            ),
         }
-        std::fs::read(&self.dump).map_or_else(
-            |_| uia::NOT_FOUND.to_string(),
-            |b| String::from_utf8_lossy(&b).into_owned(),
-        )
     }
     fn clear(&self) {
         raise_top(200);

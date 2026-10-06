@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-libreoffice*,tsx-ext-openoffice*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-openoffice*,tsx-ext-wf-*,tsx-ext-wpf-*,tsx-ext-webview2*,tsx-ext-winui3-*,tsx-ext-qt-*,tsx-ext-javafx-*,tsx-ext-jbr-*,tsx-ext-wx-*,tsx-ext-electron-*,tsx-ext-notepadpp*,tsx-ext-flutter-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -723,7 +723,7 @@ jobs:
               for _iv in _spec.get('intervals', [30, 10]):
                 _c = tsx(f'ext-{_name}-{_ime}-{_iv}ms', 'ext', _ime, _iv,
                          extra=f'--ext={_name} --ext-manifest=@REPO@/tools/e2e/input_forms/forms.toml --ext-repo=@REPO@',
-                         kinds='single,thumb,mixed', trials=4, len=25, runs=2, wait=900)
+                         kinds='single,thumb,mixed', trials=4, len=25, runs=_spec.get('runs', 2), wait=900)
                 _c.update(setup=_spec.get('setup', 'none'), prepare=' ; '.join(_spec.get('prepare', [])), until='2026-12-01')
                 configs.append(_c)
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
@@ -832,7 +832,7 @@ jobs:
 
       # --- 入力先のセットアップ(宣言表 tools/e2e/input_forms/forms.toml の setup / prepare) ---
       - name: 入力先のセットアップ(Java)
-        if: matrix.cfg.setup == 'java'
+        if: contains(fromJSON('["java","javafx","jbr"]'), matrix.cfg.setup)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -849,6 +849,30 @@ jobs:
         run: |
           choco install openoffice -y --no-progress 2>&1 | Select-Object -Last 5
           Get-ChildItem 'C:\Program Files (x86)\OpenOffice 4\program\soffice.exe', 'C:\Program Files (x86)\OpenOffice 4\program\python.exe'
+      - name: 入力先のセットアップ(Qt)
+        if: matrix.cfg.setup == 'qt'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          cache: true
+      - name: 入力先のセットアップ(Flutter)
+        if: matrix.cfg.setup == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: 入力先のセットアップ(uv)
+        if: matrix.cfg.setup == 'wx'
+        uses: astral-sh/setup-uv@v5
+      - name: 入力先のセットアップ(tools/e2e/input_forms/setup/<setup>.ps1)
+        if: matrix.cfg.setup != '' && matrix.cfg.setup != 'none'
+        shell: pwsh
+        run: |
+          $script = "tools/e2e/input_forms/setup/${{ matrix.cfg.setup }}.ps1"
+          if (Test-Path $script) { & $script } else { Write-Host "$script は無い(専用ステップのみ)" }
       - name: 入力先の用意(prepare)
         if: matrix.cfg.prepare != ''
         shell: pwsh

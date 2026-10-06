@@ -16,7 +16,16 @@ sys.path.insert(0, _prog)
 os.environ["PATH"] = _prog + os.pathsep + os.environ.get("PATH", "")
 os.environ.setdefault("URE_BOOTSTRAP", "vnd.sun.star.pathname:" + os.path.join(_prog, "fundamental.ini"))
 
-import uno  # noqa: E402
+try:
+    import uno  # noqa: E402
+except ImportError:
+    # 診断: どこに uno があるか(typing_stress が helper.log をログへ写す)
+    sys.stderr.write("sys.executable=%s\nsys.version=%s\nsys.path=%s\n" % (sys.executable, sys.version, sys.path))
+    for root, dirs, files in os.walk(os.path.dirname(_prog)):
+        for n in files:
+            if "uno" in n.lower() and n.lower().endswith((".py", ".pyd", ".pyc")):
+                sys.stderr.write("found: %s\n" % os.path.join(root, n))
+    raise
 
 port = int(sys.argv[1])
 out = sys.argv[2]
