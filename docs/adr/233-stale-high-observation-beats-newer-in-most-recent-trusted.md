@@ -110,4 +110,4 @@ belief のフォールバック(`resolve_open_at` が明示意図・`KeyEffectPr
 
 ## 状態
 
-設計は収束(2026-10-06、Opus round3 で「収束」)。round1: Blocker 2・Must 5、round2: Must 3・Should 3・Nit 3 を反映済み。**実装は未着手**。実装前の測定は完了(下記「測定結果」、A' が 41/41 で正しい)。次は実装(別ブランチ・別 PR)。
+設計は収束(2026-10-06、Opus round3 で「収束」)。round1: Blocker 2・Must 5、round2: Must 3・Should 3・Nit 3 を反映済み。**実装済み**(ブランチ fix/bug189-most-recent-trusted、2026-10-06): `most_recent_trusted` を A' に、`_excluding`(drift)・`_after`(read_back)は不変。単体テスト・BUG-189 の列の再現テスト(旧い順位キーに戻すと失敗することを確認)。CI での実機確認は結果待ち。

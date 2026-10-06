@@ -237,7 +237,7 @@
 | [228](228-bug-report-legacy-msime-custom-key-table.md) | 不具合報告に旧互換 MS-IME のキー表の中身を、許可リスト+固定長の読める形で添付するか(ADR-148 の「読めず削れない」反対理由への答えが要る) | 見送り(2026-10-04、Opus r1: 案 B は動機の 2 件の調査を前に進めない・実装なし) |
 | [229](229-os-independent-core-and-dumb-windows-executor.md) | awase-windows を「Windows の dumb な実行役」に絞り、判断を Linux でテストできる側へ寄せる層の引き直し | FCIS で改訂(2026-10-06)。T1〜T7 は PR #492〜#495 でマージ済み。ADR-224 改訂・S2 を承認。P0・P1・RW・S2 を実装中 |
 | [232](232-observation-event-subscription-and-consumption.md) | Observation/Event の購読と消費 | 起草(2026-10-05)。Opus round1・round2 反映済み |
-| [233](233-stale-high-observation-beats-newer-in-most-recent-trusted.md) | 古い High 観測が新しい Medium 観測に勝つ件(BUG-189) | 設計収束(Opus round3)・実装前の測定済み(A' が 41/41 で正しい、2026-10-06)。実装は未着手 |
+| [233](233-stale-high-observation-beats-newer-in-most-recent-trusted.md) | 古い High 観測が新しい Medium 観測に勝つ件(BUG-189) | 設計収束(Opus round3)・実装前の測定済み(A' が 41/41 で正しい)。実装済み・CI 確認待ち(2026-10-06) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

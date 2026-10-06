@@ -190,7 +190,7 @@
 | [BUG-186](BUG-186.md) | 未修正(CI で再現、原因判明・BUG-149 と同根) | 半角英数持続トグル中に IME 側のモードキー(変換・英数・ひらがな)でかなへ戻すと Engine が OFF のまま(`か`、実 Chrome) |
 | [BUG-187](BUG-187.md) | 対応しない(却下相当、現行機序なし) | GJI(ATOKプリセット)が injected=false の VK_DBE_HIRAGANA を周期送信し IME OFF を巻き戻す疑い |
 | [BUG-188](BUG-188.md) | 未修正(CI で再現、ADR-227 D0-5) | TsfNative(Windows Terminal)で外部から IME が閉じたあと、Engine ON × IME 閉の drift で生ローマ字が出る |
-| [BUG-189](BUG-189.md) | 機序特定・未修正(CI で再現) | Flutter × MS-IME で古い ImmCrossProbe(High,false)が優先され打鍵の途中で Engine が一瞬 OFF になる |
+| [BUG-189](BUG-189.md) | 修正実装済み・CI 確認待ち(ADR-233) | Flutter × MS-IME で古い ImmCrossProbe(High,false)が優先され打鍵の途中で Engine が一瞬 OFF になる |
 
 ## その他の資料
 
