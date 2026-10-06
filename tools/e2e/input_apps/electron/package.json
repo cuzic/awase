@@ -1,0 +1,8 @@
+{
+  "name": "electron-form-input",
+  "version": "0.0.0",
+  "private": true,
+  "main": "main.js",
+  "pnpm": { "onlyBuiltDependencies": ["electron"] },
+  "devDependencies": { "electron": "^33.0.0" }
+}

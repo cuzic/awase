@@ -13,6 +13,7 @@
 //! - `tsf`   : `RICHEDIT50W` を `Chrome_RenderWidgetHostHWND` へスーパークラス化(ADR-193)。awase から
 //!   `AppKind::TsfNative` 相当に見える決定的な入力先(親窓も `Chrome_WidgetWin_1`)。
 //! - `chromebar` / `chromepage` : 本物の Chrome(専用プロファイル。アドレスバー / ページ内 textarea)。UI Automation で読む。
+//! - `ext` : 宣言表(tools/e2e/input_forms/forms.toml)の項目。`--ext=<名前>` `--ext-manifest=PATH` `--ext-repo=DIR`。Java・Office・wx・Qt など。
 //! - `bugreport` : 本物の `awase-settings.exe --bug-report` の「説明」欄。UI Automation で読む。
 //!
 //! 入力先ごとの差は `target.rs` の `InputTarget` に閉じ込めてある(読む・空にする・前面へ戻す・フォーカス確認・終了)。
@@ -253,6 +254,7 @@ enum Form {
     ChromeBar,
     ChromePage,
     BugReport,
+    Ext,
 }
 
 impl Form {
@@ -265,6 +267,7 @@ impl Form {
             "chromebar" => Some(Self::ChromeBar),
             "chromepage" => Some(Self::ChromePage),
             "bugreport" => Some(Self::BugReport),
+            "ext" => Some(Self::Ext),
             _ => None,
         }
     }
@@ -277,6 +280,7 @@ impl Form {
             Self::ChromeBar => "chromebar",
             Self::ChromePage => "chromepage",
             Self::BugReport => "bugreport",
+            Self::Ext => "ext",
         }
     }
 }
@@ -370,7 +374,7 @@ fn create_own_window(form: Form) {
                 700,
                 240,
             ),
-            Form::ChromeBar | Form::ChromePage | Form::BugReport => {
+            Form::ChromeBar | Form::ChromePage | Form::BugReport | Form::Ext => {
                 unreachable!("別プロセスの入力先は target::launch が扱う")
             }
             Form::Rich => ("RICHEDIT50W".into(), WS_BORDER.0 | ES_AUTOHSCROLL, 700, 240),

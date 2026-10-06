@@ -106,6 +106,10 @@ pub struct ImeStateHub {
     /// から更新するため `Cell`——`ImeStateHub` は単一 UI スレッドが所有する
     /// （`with_app` パターン）ため `!Sync` でも問題ない。
     intent_override_logged: std::cell::Cell<bool>,
+    /// 直近に返した `effective_open_at` の値(反転の診断ログ用、BUG-189)。値の判断には使わない。
+    last_effective_open: std::cell::Cell<Option<bool>>,
+    /// 直近に `[mrt-shadow]` を出した (旧, 新) の観測時刻(重複ログの抑止、ADR-233)。値の判断には使わない。
+    last_mrt_shadow: std::cell::Cell<Option<(std::time::Instant, std::time::Instant)>>,
 
     /// [`ImeStateHub::resolve_warmup_ime_on`] の `off_drift_active` ゲートが
     /// `ApplyGeneration` 専用アロケータ（ADR-106 決定1）。`event_log.next_seq()`
@@ -153,6 +157,8 @@ impl ImeStateHub {
             external_change_watch: super::external_change_watch::ExternalChangeWatch::new(),
             last_external_change_ms: 0,
             intent_override_logged: std::cell::Cell::new(false),
+            last_effective_open: std::cell::Cell::new(None),
+            last_mrt_shadow: std::cell::Cell::new(None),
             generation_alloc: super::GenerationAllocator::new(),
             press_ledger: super::press_ledger::PressLedger::default(),
         }
@@ -833,9 +839,8 @@ impl ImeStateHub {
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
     pub fn effective_open_at(&self, now_ms: TickMs) -> bool {
-        let shadow = self
-            .shadow_model
-            .effective_open_at(self.clock.now_instant());
+        let resolution = self.shadow_model.resolve_open_at(self.clock.now_instant());
+        let shadow = resolution.value;
         let decision = self.intent_store.resolve_effective_open(
             self.shadow_model.current_focus(),
             shadow,
@@ -869,6 +874,45 @@ impl ImeStateHub {
                     );
                     self.intent_override_logged.set(false);
                 }
+            }
+        }
+        // 診断(BUG-189): 実効値が反転した瞬間に、どの根拠(明示意図/予測/観測/フォールバック)で決まったかを 1 行残す。
+        // 値の判断には使わない。キー入力ごとに呼ばれるので、反転したときだけ出す。
+        if self
+            .last_effective_open
+            .replace(Some(decision.value))
+            .is_some_and(|prev| prev != decision.value)
+        {
+            tracing::info!(
+                "[effective-open-flip] → {} decided_by={:?} shadow_model={shadow} intent_store_override={}",
+                decision.value,
+                resolution.decided_by,
+                decision.value != shadow,
+            );
+        }
+        // 診断(ADR-233): フォールバックに落ちたとき、旧と案 A' で選ぶ観測が食い違えば 1 行出す(値の判断には使わない)。
+        let now_instant = self.clock.now_instant();
+        if let Some(sh) = self.shadow_model.fallback_shadow(now_instant) {
+            if sh.old.open != sh.new.open
+                && self.last_mrt_shadow.replace(Some((sh.old.at, sh.new.at)))
+                    != Some((sh.old.at, sh.new.at))
+            {
+                tracing::info!(
+                    "[mrt-shadow] old={}({:?},{:?},age={}ms,hwnd={:?},epoch={:?}) new={}({:?},{:?},age={}ms,hwnd={:?},epoch={:?}) final={}",
+                    sh.old.open,
+                    sh.old.source,
+                    sh.old.confidence,
+                    sh.old.age(now_instant).as_millis(),
+                    sh.old.hwnd,
+                    sh.old.focus_epoch,
+                    sh.new.open,
+                    sh.new.source,
+                    sh.new.confidence,
+                    sh.new.age(now_instant).as_millis(),
+                    sh.new.hwnd,
+                    sh.new.focus_epoch,
+                    decision.value,
+                );
             }
         }
         decision.value

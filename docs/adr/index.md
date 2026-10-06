@@ -239,6 +239,7 @@
 | [230](230-scancode-map-bijective-swap-editor.md) | Scancode Map を「全単射の入れ替えペア」で編集できる UI(ADR-111/126 の2プリセットの一般化) | 起草(2026-10-06、未レビュー、実装なし) |
 | [231](231-gji-custom-keymap-tsv-generator.md) | GJI カスタムキーマップの TSV 生成(プリセットの振る舞いをキーに割り当て、import は手動) | 起草(2026-10-06、未レビュー、実装なし) |
 | [232](232-observation-event-subscription-and-consumption.md) | Observation/Event の購読と消費 | 起草(2026-10-05)。Opus round1・round2 反映済み |
+| [233](233-stale-high-observation-beats-newer-in-most-recent-trusted.md) | 古い High 観測が新しい Medium 観測に勝つ件(BUG-189) | 設計収束(Opus round3)・実装前の測定済み(A' が 41/41 で正しい、2026-10-06)。実装は未着手 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
