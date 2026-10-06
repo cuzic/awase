@@ -34,8 +34,6 @@ warn_if_missing_evidence() {
     # （reassert_explicit_physical_key）で、どちらのファイルにも含まれていな
     # かったため新規追加した。
     local target='(crates/awase-windows/src/(hook\.rs|output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport|ime_refresh|message_handlers|outbox|mod)\.rs|state/(ime|conv_mode|observation_store|platform_state|mode_key_pass|key_effect_|press_ledger|explicit_press|physical_disposition|drift_plan|drift_correction|relay_plan|deferred_gate_plan|focus_classify_plan|focus_resolve_plan|msaa_role_plan)|ime_controller\.rs|ime\.rs|input_defer\.rs|platform\.rs|tuning\.rs)|src/engine/(nicola_fsm|engine)\.rs|lints/actuation_call_guard/src/lib\.rs)'
-||||||| parent of 9c9a1164 (refactor(focus): resolve_focus_kind の override・キャッシュ・engine 活性の優先順位を純粋関数に分ける(FCIS F5c))
-    local target='(crates/awase-windows/src/(hook\.rs|output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport|ime_refresh|message_handlers|outbox|mod)\.rs|state/(ime|conv_mode|observation_store|platform_state|mode_key_pass|key_effect_|press_ledger|explicit_press|physical_disposition|drift_plan|relay_plan|deferred_gate_plan|focus_classify_plan|focus_resolve_plan|msaa_role_plan)|ime_controller\.rs|ime\.rs|input_defer\.rs|platform\.rs|tuning\.rs)|src/engine/(nicola_fsm|engine)\.rs|lints/actuation_call_guard/src/lib\.rs)'
     # 2026-09-23: fix-requires-evidence.mdの「IME actuation合流点」行が
     # `lints/actuation_call_guard/src/lib.rs::RESTRICTED_CALLS`をSSOTとして
     # 参照しているのに対し、target正規表現が未カバーだった（CI
