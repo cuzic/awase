@@ -1432,12 +1432,27 @@ fn with_clock_call_violations(sources: &[(String, String)]) -> Vec<String> {
             ));
         }
         if path == CORE && calls == 1 {
+            // `#[cfg(test)] impl PlatformState { .. }` ブロックの**中身**に呼び出しがあること
+            // （空の gated `impl` を残して外へ移すと、gate 文字列が前にあるだけでは通ってしまう）。
             let norm = production.replace('\r', "");
-            let call_pos = norm.find("ImeStateHub::with_clock(");
-            let gate_pos = norm.find("#[cfg(test)]\nimpl PlatformState {");
-            if !matches!((call_pos, gate_pos), (Some(c), Some(g)) if g < c) {
+            let gated: usize =
+                extract_all_balanced_blocks(&norm, "#[cfg(test)]\nimpl PlatformState {")
+                    .iter()
+                    .map(|b| b.matches("ImeStateHub::with_clock(").count())
+                    .sum();
+            if gated != 1 {
                 out.push(format!(
                     "{path}: with_clock( の呼び出しが `#[cfg(test)] impl PlatformState`（for_test）の中にありません"
+                ));
+            }
+        }
+        if path == SHELL {
+            // 殻の1件は実時計を渡すこと（`:1382` 付近の `HubClock::wall(..)` 件数の固定と同じ式）。
+            let squeezed: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+            let real = "with_clock(HubClock::wall(crate::hook::current_tick_ms))";
+            if squeezed.matches(real).count() != 1 {
+                out.push(format!(
+                    "{path}: with_clock の引数が `{real}`（実時計）ではありません"
                 ));
             }
         }
@@ -1467,7 +1482,7 @@ fn with_clock_is_called_only_by_real_clock_shell_and_for_test() {
 fn with_clock_guard_detects_new_production_entry() {
     let shell = (
         "src/state/platform_state/shell.rs".to_string(),
-        "fn new() { Self::with_clock(HubClock::wall(f)) }".to_string(),
+        "fn new() { Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)) }".to_string(),
     );
     let core = (
         "src/state/platform_state.rs".to_string(),
@@ -1484,6 +1499,14 @@ fn with_clock_guard_detects_new_production_entry() {
         "fn x() { ImeStateHub::with_clock(HubClock::manual()) }".to_string(),
     ));
     assert!(!with_clock_call_violations(&other).is_empty());
+    // 殻が実時計以外（仮想時計・任意の関数）を渡す
+    let mut manual = ok.clone();
+    manual[0].1 = "fn new() { Self::with_clock(HubClock::manual(0)) }".to_string();
+    assert!(!with_clock_call_violations(&manual).is_empty());
+    // 空の gated `impl` を残し、`for_test` を外へ移す
+    let mut hollow = ok.clone();
+    hollow[1].1 = "#[cfg(test)]\nimpl PlatformState {\n}\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n".to_string();
+    assert!(!with_clock_call_violations(&hollow).is_empty());
     // 殻にもう1件
     let mut twice = ok.clone();
     twice[0].1.push_str("\nfn y() { Self::with_clock(c) }");

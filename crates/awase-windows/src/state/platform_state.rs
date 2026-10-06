@@ -39,7 +39,7 @@ pub(crate) struct ImeStateHub {
     /// IME 状態変更 event のリングバッファ (Step 0)。
     pub(crate) event_log: ImeEventLog,
     /// 時刻の供給元（実機は実時計、閉ループ・テストは仮想時計。`state/hub_clock.rs`）。
-    pub(crate) clock: super::hub_clock::HubClock,
+    clock: super::hub_clock::HubClock,
     /// 統合ジャーナル: エンジン + IME 両イベントを記録する。
     pub(crate) journal: UnifiedJournal,
 
