@@ -411,12 +411,12 @@ impl DecisionExecutor {
         };
         let plan = relay_plan::plan_relay(relay_plan::RelayFacts { kind, physical });
         // フックのコールバック上なので panic しうる `unreachable!` は使わず、Decision の種別ごとに
-        // plan の action を読む（種別と action の対応は `plan_relay_exhaustive` が固定）。
+        // plan を読む（種別と plan の対応は `plan_relay_exhaustive` が固定）。
         match decision {
             Decision::PassThrough => {
                 // physical=Suppress（KANJI 物理キー抑止）の場合は OS に届けず Consume する。
                 // handle_passthrough の reinject/warmup 後処理も走らせない。
-                if matches!(plan.action, relay_plan::RelayAction::ConsumeSuppressed) {
+                if matches!(plan, relay_plan::RelayPlan::PassThroughPhysicalSuppressed) {
                     return BatchResult {
                         has_pending: self.has_pending(),
                         callback: CallbackResult::Consumed,
@@ -431,10 +431,7 @@ impl DecisionExecutor {
                 }
             }
             Decision::PassThroughWith { mut effects } => {
-                let reinject = matches!(
-                    plan.action,
-                    relay_plan::RelayAction::QueueFlush { reinject: true }
-                );
+                let reinject = matches!(plan, relay_plan::RelayPlan::FlushWithReinject);
                 // flush 出力あり → Consume して flush + キー再注入を FIFO でキュー。
                 // physical=Suppress（KANJI 物理キー抑止）の場合は reinject を積まない。
                 tracing::debug!(
@@ -450,7 +447,7 @@ impl DecisionExecutor {
                         awase::types::KeyEventType::KeyDown => "down",
                         awase::types::KeyEventType::KeyUp => "up",
                     },
-                    plan.reason,
+                    plan,
                 );
                 if reinject {
                     effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));

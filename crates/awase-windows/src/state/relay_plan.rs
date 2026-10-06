@@ -3,7 +3,7 @@
 //!
 //! 元の分岐・順序を変えずに、判断だけを純粋関数へ出した。実行（`execute_one`・`OutputActiveGuard::begin()`・
 //! `spawn_local`・キューへの積み・`TIMER_OUTPUT_GUARD` の set/kill・SendInput）は `executor.rs` の殻に残る。
-//! 各 plan は**理由の enum** を返す（journal に載せる用。ADR-229 E1）。
+//! 各 plan は**理由の enum**（variant 名）を返す。現状 journal には載らず、`execute_relay` のログ（`{:?}`）にだけ出る。
 //!
 //! 固定する辺と対:
 //! - **e12**: `Decision::Consume` では Timer だけが即時に実行され、キューを追い越す（`plan_consume_effect`）。
@@ -37,65 +37,31 @@ pub(crate) struct RelayFacts {
     pub physical: PhysicalKeyDisposition,
 }
 
-/// `execute_relay` の決定。
+/// `execute_relay` の決定。variant 名が理由（現状は `execute_relay` のログに `{:?}` で出るだけで、journal には載らない）。
+/// 型が許す（実行の種類 × 理由）20 通りのうち、実際に返す 5 通りだけを持つ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RelayPlan {
-    pub action: RelayAction,
-    pub reason: RelayReason,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RelayAction {
+pub(crate) enum RelayPlan {
     /// 物理キーを抑止して Consume（passthrough パイプラインも reinject も走らせない）。
-    ConsumeSuppressed,
-    /// passthrough パイプラインを走らせ、その結果を返す。
-    RunPassthroughPipeline,
-    /// 効果をすべてキューへ積み、`reinject` が真ならキーの再注入を末尾に足す。Consumed、`has_pending=true`。
-    QueueFlush { reinject: bool },
-    /// 効果ごとに `plan_consume_effect` で即時/キューを分ける。Consumed。
-    ConsumeEffects,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RelayReason {
     PassThroughPhysicalSuppressed,
+    /// passthrough パイプラインを走らせ、その結果を返す。
     PassThroughIdle,
+    /// 効果をすべてキューへ積み、キーの再注入を末尾に足す。Consumed、`has_pending=true`。
     FlushWithReinject,
+    /// 効果をすべてキューへ積む（物理キー抑止のため再注入なし）。Consumed、`has_pending=true`。
     FlushPhysicalSuppressedNoReinject,
+    /// 効果ごとに `plan_consume_effect` で即時/キューを分ける。Consumed。
     EngineConsumed,
 }
 
 #[must_use]
 pub(crate) const fn plan_relay(facts: RelayFacts) -> RelayPlan {
     let suppress = matches!(facts.physical, PhysicalKeyDisposition::Suppress);
-    match facts.kind {
-        RelayDecisionKind::PassThrough => {
-            if suppress {
-                RelayPlan {
-                    action: RelayAction::ConsumeSuppressed,
-                    reason: RelayReason::PassThroughPhysicalSuppressed,
-                }
-            } else {
-                RelayPlan {
-                    action: RelayAction::RunPassthroughPipeline,
-                    reason: RelayReason::PassThroughIdle,
-                }
-            }
-        }
-        RelayDecisionKind::PassThroughWith => RelayPlan {
-            action: RelayAction::QueueFlush {
-                reinject: !suppress,
-            },
-            reason: if suppress {
-                RelayReason::FlushPhysicalSuppressedNoReinject
-            } else {
-                RelayReason::FlushWithReinject
-            },
-        },
-        RelayDecisionKind::Consume => RelayPlan {
-            action: RelayAction::ConsumeEffects,
-            reason: RelayReason::EngineConsumed,
-        },
+    match (facts.kind, suppress) {
+        (RelayDecisionKind::PassThrough, true) => RelayPlan::PassThroughPhysicalSuppressed,
+        (RelayDecisionKind::PassThrough, false) => RelayPlan::PassThroughIdle,
+        (RelayDecisionKind::PassThroughWith, true) => RelayPlan::FlushPhysicalSuppressedNoReinject,
+        (RelayDecisionKind::PassThroughWith, false) => RelayPlan::FlushWithReinject,
+        (RelayDecisionKind::Consume, _) => RelayPlan::EngineConsumed,
     }
 }
 
@@ -278,37 +244,21 @@ mod tests {
     #[test]
     fn plan_relay_exhaustive() {
         use PhysicalKeyDisposition::{Allow, Suppress};
-        use RelayAction::*;
         use RelayDecisionKind::*;
-        use RelayReason::*;
+        use RelayPlan::*;
         let table = [
-            (PassThrough, Allow, RunPassthroughPipeline, PassThroughIdle),
-            (
-                PassThrough,
-                Suppress,
-                ConsumeSuppressed,
-                PassThroughPhysicalSuppressed,
-            ),
-            (
-                PassThroughWith,
-                Allow,
-                QueueFlush { reinject: true },
-                FlushWithReinject,
-            ),
-            (
-                PassThroughWith,
-                Suppress,
-                QueueFlush { reinject: false },
-                FlushPhysicalSuppressedNoReinject,
-            ),
-            (Consume, Allow, ConsumeEffects, EngineConsumed),
-            (Consume, Suppress, ConsumeEffects, EngineConsumed),
+            (PassThrough, Allow, PassThroughIdle),
+            (PassThrough, Suppress, PassThroughPhysicalSuppressed),
+            (PassThroughWith, Allow, FlushWithReinject),
+            (PassThroughWith, Suppress, FlushPhysicalSuppressedNoReinject),
+            (Consume, Allow, EngineConsumed),
+            (Consume, Suppress, EngineConsumed),
         ];
         assert_eq!(table.len(), KINDS.len() * PHYS.len());
-        for (kind, physical, action, reason) in table {
+        for (kind, physical, plan) in table {
             assert_eq!(
                 plan_relay(RelayFacts { kind, physical }),
-                RelayPlan { action, reason },
+                plan,
                 "{kind:?} {physical:?}"
             );
         }
