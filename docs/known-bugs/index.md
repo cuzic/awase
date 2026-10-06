@@ -115,7 +115,7 @@
 | [BUG-110](BUG-110.md) | 要確認 | 物理IMEキー1回の低確度な検出で、NICOLA変換エンジンがフォーカス変更まで無期限停止する |
 | [BUG-111](BUG-111.md) | 解決済み(実機確認済み) | `run_ime_refresh` の 500ms 周期リフレッシュが実フォーカス変更の有無に関わらず `[imm-learning] profile 降格` ログを毎ティック再発… |
 | [BUG-112](BUG-112.md) | 再現待ち | `ImmCapabilityStore` が `awase-settings.exe` を稀に `Unavailable` と誤学習し恒久化する（BUG-107 の「あ混入」の残存… |
-| [BUG-113](BUG-113.md) | 要確認(再発なし・解決済みへの変更は所有者確認待ち) | Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actua… |
+| [BUG-113](BUG-113.md) | 解決済み(実機・CI で再発なし) | Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actua… |
 | [BUG-114](BUG-114.md) | 解決済み(実機確認済み) | Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、dri… |
 | [BUG-115](BUG-115.md) | 解決済み(コード確認のみ) | `awase-gji-config` の `session_keymap` フィールド番号が誤っており、GJI が無変換/変換キーでIME ON/OFFを制御する overlay … |
 | [BUG-116](BUG-116.md) | 解決済み(実機確認済み) | Shift+物理かなキー（JIS配列 `VK_DBE_KATAKANA`）でカタカナ変換に切り替わらない（BUG-52修正のリグレッション、**決定1/2実装・実機確認済み**） |
@@ -188,7 +188,7 @@
 | [BUG-184](BUG-184.md) | 再現待ち(再現せず・要追加情報) | MS-IME で物理 英数 キー(IME OFF)を Suppress して ImmCross で閉じる際、未確定文字を確定せず、消える疑い |
 | [BUG-185](BUG-185.md) | 対応しない(既知の制限) | MS-IME × Chrome で、入力中の文字が残っている間の OFF が IME を閉じず半角英数になる(対応しない既知の制限) |
 | [BUG-186](BUG-186.md) | 未修正(CI で再現、原因判明・BUG-149 と同根) | 半角英数持続トグル中に IME 側のモードキー(変換・英数・ひらがな)でかなへ戻すと Engine が OFF のまま(`か`、実 Chrome) |
-| [BUG-187](BUG-187.md) | 保留・再現待ち(現行機序未確認、所有者再確認待ち) | GJI(ATOKプリセット)が injected=false の VK_DBE_HIRAGANA を周期送信し IME OFF を巻き戻す疑い |
+| [BUG-187](BUG-187.md) | 対応しない(却下相当、現行機序なし) | GJI(ATOKプリセット)が injected=false の VK_DBE_HIRAGANA を周期送信し IME OFF を巻き戻す疑い |
 | [BUG-188](BUG-188.md) | 未修正(CI で再現、ADR-227 D0-5) | TsfNative(Windows Terminal)で外部から IME が閉じたあと、Engine ON × IME 閉の drift で生ローマ字が出る |
 
 ## その他の資料
