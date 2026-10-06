@@ -534,6 +534,7 @@ const CORE_MODULES: &[&str] = &[
     "observation_store",
     "open_warrant",
     "physical_disposition",
+    "platform_state",
     "post_bypass",
     "press_ledger",
     "scoped_latch",

@@ -187,9 +187,7 @@ pub mod focus_probe_plan;
 pub mod transition;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
-#[cfg(windows)]
 pub mod platform_state;
-#[cfg(windows)]
 pub use platform_state::PlatformState;
 
 #[cfg(windows)]
