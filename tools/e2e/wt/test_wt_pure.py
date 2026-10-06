@@ -37,45 +37,74 @@ class Echo(unittest.TestCase):
 
 
 def _l(sec, msg):
-    return f"2026-10-06T10:00:{sec:06.3f}Z DEBUG x: {msg}"
+    m, sec = divmod(sec, 60)
+    return f"2026-10-06T10:{int(m):02d}:{sec:06.3f}Z DEBUG x: {msg}"
 
 
+T0 = 10 * 3600  # 10:00:00 の 0 時からの秒
 SCOPE = _l(1, "[focus-scope] bootstrap initial scope: to=HwndId(1) profile=TsfNative focus_epoch=1")
 
 
 class Bug114(unittest.TestCase):
-    def drift(self, t0, n, step=0.4):
+    def drift(self, t0, n, step=0.03):
         return [_l(t0 + i * step, "[drift] correction: observed=true ≠ desired=false") for i in range(n)]
 
-    def test_bounded_burst_passes(self):
-        r = P.judge_bug114([SCOPE] + self.drift(5, 5) + [_l(7.5, "[drift] actuation gave up (Blind): x")])
-        self.assertEqual((r["verdict"], r["counts"]["bursts"], r["counts"]["gave_up"]), ("PASS", [5], 1))
+    def gave_up(self, t):
+        return [_l(t, "[drift] actuation gave up (Blind): x")]
 
-    def test_no_drift_is_invalid(self):
-        r = P.judge_bug114([SCOPE])
-        self.assertEqual(r["verdict"], "INVALID")
-        self.assertIn("0 件", r["invalid"][0])
+    def judge(self, lines, close=20.0, second=12.0):
+        return P.judge_bug114(lines, T0 + close, T0 + second)
 
-    def test_unbounded_burst_fails(self):
-        self.assertEqual(P.judge_bug114([SCOPE] + self.drift(5, 12))["verdict"], "FAIL")
+    def test_bounded_burst_with_gave_up_passes(self):
+        r = self.judge([SCOPE] + self.drift(5, 5) + self.gave_up(5.2))
+        self.assertEqual((r["verdict"], r["reproduced"], r["counts"]["bursts"]), ("PASS", False, [5]))
+
+    def test_burst_of_six_fails(self):
+        r = self.judge([SCOPE] + self.drift(5, 6) + self.gave_up(5.3))
+        self.assertEqual((r["verdict"], r["reproduced"]), ("FAIL", True))
+
+    def test_drift_without_gave_up_fails(self):
+        r = self.judge([SCOPE] + self.drift(5, 3))
+        self.assertEqual((r["verdict"], r["reproduced"]), ("FAIL", True))
 
     def test_read_policy_fails(self):
-        extra = [_l(5.1, 'origin=EventOrigin { source: SelfActuated { strategy: "drift_correction_read" } }')]
-        self.assertEqual(P.judge_bug114([SCOPE] + self.drift(5, 2) + extra)["verdict"], "FAIL")
+        extra = [_l(5.01, 'origin=EventOrigin { source: SelfActuated { strategy: "drift_correction_read" } }')]
+        self.assertTrue(self.judge([SCOPE] + self.drift(5, 2) + extra + self.gave_up(5.1))["reproduced"])
 
-    def test_other_profile_fails(self):
+    def test_one_rearm_fails(self):
+        extra = [_l(12.5, "[drift] fresh observation after give-up x")]
+        r = self.judge([SCOPE] + self.drift(5, 5) + self.gave_up(5.2) + extra)
+        self.assertEqual((r["verdict"], r["reproduced"]), ("FAIL", True))
+
+    def test_no_drift_is_invalid(self):
+        r = self.judge([SCOPE])
+        self.assertEqual((r["verdict"], r["reproduced"]), ("INVALID", False))
+
+    def test_drift_after_close_is_not_counted(self):
+        r = self.judge([SCOPE] + self.drift(25, 5) + self.gave_up(25.2))
+        self.assertEqual(r["verdict"], "INVALID")
+
+    def test_second_trigger_inside_cooldown_is_invalid(self):
+        r = self.judge([SCOPE] + self.drift(5, 5) + self.gave_up(5.2), second=7.0)
+        self.assertEqual(r["verdict"], "INVALID")
+
+    def test_close_right_after_second_trigger_is_invalid(self):
+        r = self.judge([SCOPE] + self.drift(5, 5) + self.gave_up(5.2), close=13.0)
+        self.assertEqual(r["verdict"], "INVALID")
+
+    def test_profile_mismatch_without_drift_is_not_reproduced(self):
         scope = SCOPE.replace("TsfNative", "ImmCross")
-        self.assertEqual(P.judge_bug114([scope] + self.drift(5, 1))["verdict"], "FAIL")
-
-    def test_repeated_rearm_fails(self):
-        extra = [_l(10 + i * 4, "[drift] fresh observation after give-up x") for i in range(3)]
-        self.assertEqual(P.judge_bug114([SCOPE] + self.drift(5, 1) + extra)["verdict"], "FAIL")
+        r = self.judge([scope])
+        self.assertEqual((r["verdict"], r["reproduced"]), ("FAIL", False))
 
     def test_missing_scope_line_is_invalid(self):
-        self.assertEqual(P.judge_bug114(self.drift(5, 1))["verdict"], "INVALID")
+        self.assertEqual(self.judge(self.drift(5, 1) + self.gave_up(5.1))["verdict"], "INVALID")
 
     def test_bursts_split_by_gap(self):
         self.assertEqual(P.bursts([1.0, 1.4, 1.8, 5.0, 5.4]), [3, 2])
+
+    def test_secs_of_day(self):
+        self.assertAlmostEqual(P.secs_of_day(_l(61.5, "x")), T0 + 61.5)
 
 
 if __name__ == "__main__":

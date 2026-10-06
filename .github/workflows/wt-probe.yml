@@ -4,7 +4,7 @@ name: wt-probe
 # 「@」が出る)の再現手順を実行する(tools/e2e/wt/、再現用の語彙の拡張。2026-10-05)。約 15 分。
 # 動く条件: ci/wt-probe・ci/vocab-windows-terminal への push、手動起動(workflow_dispatch は既定ブランチにこのファイルがあるときだけ使える)。
 # 判定は付けない(観測と可否表のみ)。e2e-ime.yml には組み込まない(別のハーネスで、共有ファイルを避けるため)。
-# ci/bug114-wt-startup への push は BUG-114 の相 D/E(下の bug114 ジョブ)だけを、修正あり/なし(ablations/a9)× 3 回で回す。
+# ci/bug114-wt-startup への push は BUG-114 の相 E(下の bug114 ジョブ)だけを、修正あり/なし(ablations/a9・a10)× 3 回で回す。
 on:
   push:
     branches: [ci/wt-probe, ci/vocab-windows-terminal, ci/bug114-wt-startup]
@@ -95,8 +95,9 @@ jobs:
             out/work/*.echo.txt
           retention-days: 7
 
-  # BUG-114(起動時の app_policy、ADR-134 D1c・ADR-232 D1): 端末を先に開いてから awase を起動し、起動時スコープのまま drift 補正を起こす。
-  # 判定は wt_pure.judge_bug114(合否基準は同関数の docstring)。nofix は修正を外したビルド(ablations/a9、起動時 profile を ImmCross に固定)。
+  # BUG-114(ADR-134): 端末を先に開いてから awase を起動し、起動時スコープのまま drift 補正を起こす(tools/e2e/wt/wt_probe.py の相 E)。
+  # 判定は wt_pure.judge_bug114(合否基準は同関数の docstring)。fix は PASS、修正を外した対照は「症状が出た」(reproduced)でジョブが通る。
+  # 期待どおりでなければジョブを落とす。nofix-a9 = D1c(起動時の app_policy)を外す、nofix-a10 = AnyFreshEvidence の除外(再武装)を外す。
   bug114:
     if: github.ref == 'refs/heads/ci/bug114-wt-startup'
     runs-on: windows-latest
@@ -104,7 +105,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [fix, nofix]
+        variant: [fix, nofix-a9, nofix-a10]
         run: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
@@ -113,11 +114,14 @@ jobs:
         with:
           shared-key: config-verify
           save-if: false
-      - name: 修正を外す(nofix のみ、ablations/a9)
-        if: matrix.variant == 'nofix'
+      - name: 修正を外す(nofix のみ、ablations/a9・a10)
+        if: matrix.variant != 'fix'
         shell: bash
         run: |
-          bash tools/e2e/ime_key_matrix/ablations/a9-bug114-immcross-bootstrap.sh
+          case "${{ matrix.variant }}" in
+            nofix-a9) bash tools/e2e/ime_key_matrix/ablations/a9-bug114-immcross-bootstrap.sh ;;
+            nofix-a10) bash tools/e2e/ime_key_matrix/ablations/a10-bug114-any-fresh-evidence.sh ;;
+          esac
           git diff --stat
           test -n "$(git diff --stat)" || { echo "撤去が差分を作らなかった"; exit 1; }
       - name: awase(デバッグ)をビルド
@@ -153,17 +157,14 @@ jobs:
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
 
-      - name: 相 D/E(BUG-114)を実行して判定する
-        id: judge
+      - name: 相 E(BUG-114)を実行して判定する(期待どおりでなければ落とす)
         shell: pwsh
         env:
           PYTHONUTF8: '1'
         run: |
-          python tools\e2e\wt\wt_probe.py --dist dist --out out --phases D,E
-          $rc = $LASTEXITCODE
-          "rc=$rc"
-          # 判定(0=PASS・1=FAIL・3=INVALID)は artifact と summary で読む。ここではジョブを落とさない。
-          exit 0
+          $expect = if ('${{ matrix.variant }}' -eq 'fix') { 'pass' } else { 'reproduce' }
+          python tools\e2e\wt\wt_probe.py --dist dist --out out --phases E --expect=$expect
+          exit $LASTEXITCODE
       - name: 概要を表示
         if: always()
         shell: pwsh

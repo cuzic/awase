@@ -56,7 +56,7 @@ def rows_between(rows, t0_ms, t1_ms):
     return [r for r in rows if t0_ms <= r[0] < t1_ms]
 
 
-# ---------------------------------------------------------------- BUG-114(相 D)の判定
+# ---------------------------------------------------------------- BUG-114(相 E)の判定
 
 TS_RE = re.compile(r"T(\d\d):(\d\d):(\d\d\.\d+)")
 SCOPE_RE = re.compile(r"\[focus-scope\] bootstrap initial scope:.*profile=(\w+)")
@@ -64,13 +64,14 @@ DRIFT_RE = re.compile(r"\[drift\] correction")
 READ_RE = re.compile(r"drift_correction_read")
 GAVE_UP_RE = re.compile(r"\[drift\] actuation gave up")
 REARM_RE = re.compile(r"\[drift\] fresh observation after give-up")
-CONV_OBS_RE = re.compile(r"\[idle-conv-check\] TsfNative: conv observation open=")
 BLIND_MAX_ATTEMPTS = 5  # state/app_ime_policy.rs::IME_ACTUATION_BLIND_MAX_ATTEMPTS
-BURST_GAP_S = 2.0       # 補正の間隔(DRIFT_CORRECTION_THRESHOLD_MS=400ms)より長く、再武装の待ち(3秒)より短い
-REARM_LIMIT = 3
+BURST_GAP_S = 2.0       # 実測の補正の間隔(20〜50ms)より十分長く、再武装の待ち(3 秒)より短い
+REARM_COOLDOWN_S = 3.0  # tuning.rs::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS
+REARM_TAIL_S = 2.0      # 2 回目のきっかけの後、窓を閉じるまでに最低限ほしい時間
 
 
-def _secs(line):
+def secs_of_day(line):
+    """awase.log の行頭の UTC 時刻(HH:MM:SS.fff)を 0 時からの秒にする。無ければ None。"""
     m = TS_RE.search(line[:40])
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
 
@@ -86,33 +87,47 @@ def bursts(times):
     return [len(b) for b in out]
 
 
-def judge_bug114(lines, expect_profile="TsfNative"):
-    """awase.log の行から BUG-114 の判定を返す(verdict=PASS/FAIL/INVALID、数えた値、理由)。
+def judge_bug114(lines, t_close, t_second, expect_profile="TsfNative"):
+    """awase.log の行から BUG-114 の判定を返す。時刻はすべて UTC の 0 時からの秒。
 
-    合否基準(走らせる前に確定): (1) `[focus-scope] bootstrap initial scope:` が1行で profile=expect_profile、
-    (2) `drift_correction_read` が0件、(3) drift 補正が1回以上(0回は INVALID=観測経路に乗っていない)、
-    (4) 連続した補正(間隔 BURST_GAP_S 以内)がどれも BLIND_MAX_ATTEMPTS 回以内、(5) give-up 後の再武装が REARM_LIMIT 回未満。
+    drift 補正を数えるのは窓を閉じる(`t_close`)より前の行だけ(閉じる操作そのものが GJI I/O を起こし、
+    補正のきっかけになるため)。`t_second` は 2 回目のきっかけ(WT 内のペイン分割→閉じる)を始めた時刻。
+    合否基準(走らせる前に確定):
+      1. `[focus-scope] bootstrap initial scope:` が 1 行で profile=expect_profile
+      2. `drift_correction_read` が 0 件
+      3. drift 補正が 1 回以上(0 回は INVALID=観測経路に乗っていない)
+      4. 連続した補正がどれも BLIND_MAX_ATTEMPTS 回以内で、`gave up` が 1 回以上(止まったこと)
+      5. give-up 後の再武装(`fresh observation after give-up`)が 0 件。ただし 2 回目のきっかけが最後の gave up から
+         REARM_COOLDOWN_S 以上後で、その後 REARM_TAIL_S 以上窓が開いていた回だけ確かめられる(そうでなければ INVALID)
+    FAIL(1・2・4・5 の違反)> INVALID > PASS。`reproduced` は BUG-114 の症状が出たか(2・4・5 のどれかに違反、
+    1 の profile 違いは含めない)。修正を外した対照で「再現した」を機械的に判定するのに使う。
     """
     profiles = [m.group(1) for ln in lines if (m := SCOPE_RE.search(ln))]
-    drift_t = [t for ln in lines if DRIFT_RE.search(ln) and (t := _secs(ln)) is not None]
+    timed = [(t, ln) for ln in lines if (t := secs_of_day(ln)) is not None and t < t_close]
+    drift_t = [t for t, ln in timed if DRIFT_RE.search(ln)]
+    gave_up_t = [t for t, ln in timed if GAVE_UP_RE.search(ln)]
     c = {"profile": profiles[0] if len(profiles) == 1 else profiles,
-         "read": sum(bool(READ_RE.search(ln)) for ln in lines),
-         "drift": len(drift_t), "bursts": bursts(drift_t),
-         "gave_up": sum(bool(GAVE_UP_RE.search(ln)) for ln in lines),
-         "rearm": sum(bool(REARM_RE.search(ln)) for ln in lines),
-         "conv_obs": sum(bool(CONV_OBS_RE.search(ln)) for ln in lines)}
-    invalid, failures = [], []
+         "read": sum(bool(READ_RE.search(ln)) for _, ln in timed),
+         "drift": len(drift_t), "bursts": bursts(drift_t), "gave_up": len(gave_up_t),
+         "rearm": sum(bool(REARM_RE.search(ln)) for _, ln in timed)}
+    invalid, failures, symptoms = [], [], []
     if len(profiles) != 1:
         invalid.append(f"[focus-scope] bootstrap の行が1件でない({len(profiles)})")
     elif profiles[0] != expect_profile:
         failures.append(f"起動時の profile={profiles[0]}(期待 {expect_profile})")
     if c["read"]:
-        failures.append(f"drift_correction_read={c['read']}(Blind であるべき)")
+        symptoms.append(f"drift_correction_read={c['read']}(Blind であるべき)")
     if not c["drift"]:
-        invalid.append("drift 補正 0 件(観測経路に乗っていない)")
-    if any(n > BLIND_MAX_ATTEMPTS for n in c["bursts"]):
-        failures.append(f"連続した補正が {BLIND_MAX_ATTEMPTS} 回を超えた bursts={c['bursts']}")
-    if c["rearm"] >= REARM_LIMIT:
-        failures.append(f"give-up 後の再武装が {c['rearm']} 回(連発)")
+        invalid.append("窓を閉じる前の drift 補正 0 件(観測経路に乗っていない)")
+    else:
+        if any(n > BLIND_MAX_ATTEMPTS for n in c["bursts"]):
+            symptoms.append(f"連続した補正が {BLIND_MAX_ATTEMPTS} 回を超えた bursts={c['bursts']}")
+        if not gave_up_t:
+            symptoms.append("drift 補正の後に gave up が無い(止まっていない)")
+    if c["rearm"]:
+        symptoms.append(f"give-up 後の再武装が {c['rearm']} 回")
+    elif gave_up_t and not (t_second >= gave_up_t[0] + REARM_COOLDOWN_S and t_close >= t_second + REARM_TAIL_S):
+        invalid.append("再武装を確かめる窓が無い(2 回目のきっかけがクールダウン明けでない/その後すぐ閉じた)")
+    failures += symptoms
     verdict = "FAIL" if failures else "INVALID" if invalid else "PASS"
-    return {"verdict": verdict, "counts": c, "failures": failures, "invalid": invalid}
+    return {"verdict": verdict, "reproduced": bool(symptoms), "counts": c, "failures": failures, "invalid": invalid}

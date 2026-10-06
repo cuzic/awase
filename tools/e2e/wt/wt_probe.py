@@ -9,13 +9,16 @@
   N  bug113-noawase  B と同じ操作を awase なしで(対照。「@」が出るなら awase 起因ではない)
   S  bug113-scan    B の変種: 実機の半角/全角の scan code(0x29)を付け、回数を --presses2(既定 30)・間隔 0.6 秒に増やす
   H  bug121         Ctrl+無変換(keys.ime_off 既定)を 20 回(BUG-121: 実 IME と belief がずれた直後に稀に「@」)。1 回ごとに外から IME を ON に戻してずれを作る
-  D  bug114-keys   BUG-114 の起動時経路: 端末を先に開いて前面にしてから awase を起動する(起動時のフォーカススコープが
-                   Windows Terminal=TsfNative)。フォーカスを動かさずに IME OFF キー → 1.8 秒待つ → 1.2 秒間隔で文字キーを 4 回
-                   (awase の idle conv check を通す)→ 10 秒待つ。awase.log を wt_pure.judge_bug114 で判定する(合否を付ける唯一の相)
-  E  bug114-forceopen  D の変種: IME OFF キーの後、実 IME を WM_IME_CONTROL(IMC_SETOPENSTATUS,1)で外から開いてから打つ
+  E  bug114   BUG-114 の起動時経路: 端末を先に開いて前面にしてから awase を起動する(起動時のフォーカススコープが
+              Windows Terminal=TsfNative)。IME OFF キー → 実 IME を WM_IME_CONTROL(IMC_SETOPENSTATUS,1)で外から開く(desired=閉
+              と実 IME をずらす)→ WT 内でペインを分割して閉じる(1 回目のきっかけ)→ 4.5 秒 → もう一度分割して閉じる(2 回目、
+              give-up のクールダウン 3 秒明け)→ 4.5 秒 → 窓を閉じる。drift 補正を起こすのは打鍵ではなく、WT 内のフォーカス移動で
+              awase が観測する GJI I/O(ObserverPoll)。窓を閉じる操作も同じ経路を叩くので、判定は閉じる前の行だけを数える
+              (wt_pure.judge_bug114、合否を付ける唯一の相)。プロセスは変わらないので起動時の app_policy のまま
 使い方: python wt_probe.py --dist dist --out out [--phases V,I,B,N] [--presses 10]
 出力: out/results.json, out/summary.md, out/logs/*, out/shots/*.png
-判定は付けない(観測と可否表)。実機で何が起きたかの事実だけを残す。例外は相 D/E(BUG-114 の判定、終了コード 0=PASS・1=FAIL・3=INVALID)。
+判定は付けない(観測と可否表)。実機で何が起きたかの事実だけを残す。例外は相 E(BUG-114 の判定)。終了コードは --expect=pass なら PASS で 0、--expect=reproduce(修正を外した対照)なら
+症状が出た(reproduced)で 0、それ以外は 1。
 """
 import argparse
 import json
@@ -252,11 +255,26 @@ def make_body_bug121(presses):
     return body
 
 
-# ---------------------------------------------------------------- 相 D / E(BUG-114)
+# ---------------------------------------------------------------- 相 E(BUG-114)
 
-def phase_bug114(results, out: Path, dist: Path, repo: Path, tag: str, force_open: bool):
-    """端末を先に開いて前面にしてから awase を起動し(起動時スコープ=Windows Terminal)、フォーカスを動かさずに
-    desired=閉 と実 IME をずらして drift 補正を起こす。別窓へ移ると FocusChanged で app_policy が作り直され、起動時経路を見られない。"""
+def utc_secs():
+    """UTC の 0 時からの秒(awase.log の時刻と突き合わせる)。"""
+    t = time.time()
+    return t % 86400
+
+
+def split_and_close_pane(hwnd):
+    """WT 内でペインを分割して閉じ、元のペインへ戻す(同じプロセス内のフォーカス移動。awase の FocusChanged は起きない)。"""
+    W.shortcut_split_pane()
+    time.sleep(1.5)
+    W.shortcut_close_pane()
+    time.sleep(1.5)
+    W.foreground(hwnd)
+
+
+def phase_bug114(results, out: Path, dist: Path, repo: Path, tag: str):
+    """端末を先に開いて前面にしてから awase を起動し(起動時スコープ=Windows Terminal)、desired=閉 のまま実 IME を外から開き、
+    WT 内のペイン分割→閉じるで drift 補正を起こす。別プロセスの窓へ移ると FocusChanged で app_policy が作り直され、起動時経路を見られない。"""
     work = out / "work" / tag
     hwnd, echo = open_terminal(results, out, tag)
     if hwnd is None:
@@ -264,27 +282,36 @@ def phase_bug114(results, out: Path, dist: Path, repo: Path, tag: str, force_ope
     proc = start_awase(dist, work, repo)
     rec(results, type="awase_start", tag=tag, running=proc.poll() is None, log_lines=len(awase_lines(work)),
         foreground_is_terminal=W.foreground_hwnd() == hwnd)
+    t_first = t_second = t_close = None
     try:
         W.foreground(hwnd)
         W.press(W.VK["IME_OFF"], 50, marker=True)
-        time.sleep(1.8)  # 明示 IME 操作直後は idle conv check が止まる(EXPLICIT_IME_SUPPRESS_MS=1500ms)
+        time.sleep(1.8)
         open_after_off = W.ime_control(hwnd, 0x0005)
-        set_ret = W.ime_control(hwnd, 0x0006, 1) if force_open else None
-        time.sleep(0.3)
-        open_before_keys = W.ime_control(hwnd, 0x0005)
-        for _ in range(4):
-            W.press(W.VK["A"], 60, marker=True)  # TYPING_IDLE_MS(500ms)を超える間隔で打つ
-            time.sleep(1.2)
-        time.sleep(10.0)
-        rec(results, type="bug114_drive", tag=tag, force_open=force_open, set_ret=set_ret, open_after_off=open_after_off,
-            open_before_keys=open_before_keys, open_end=W.ime_control(hwnd, 0x0005), foreground_is_terminal=W.foreground_hwnd() == hwnd)
+        set_ret = W.ime_control(hwnd, 0x0006, 1)
+        time.sleep(0.5)
+        open_before_trigger = W.ime_control(hwnd, 0x0005)
+        t_first = utc_secs()
+        split_and_close_pane(hwnd)
+        time.sleep(4.5)
+        t_second = utc_secs()
+        split_and_close_pane(hwnd)
+        time.sleep(4.5)
+        rec(results, type="bug114_drive", tag=tag, set_ret=set_ret, open_after_off=open_after_off,
+            open_before_trigger=open_before_trigger, open_end=W.ime_control(hwnd, 0x0005),
+            foreground_is_terminal=W.foreground_hwnd() == hwnd, t_first=t_first, t_second=t_second)
     finally:
+        t_close = utc_secs()
         finish_terminal(results, tag, hwnd)
         rec(results, type="awase_stop", tag=tag, result=stop_awase(proc))
         lines = awase_lines(work)
         (out / "logs").mkdir(parents=True, exist_ok=True)
         (out / "logs" / f"{tag}.awase.log").write_text("\n".join(lines), encoding="utf-8")
-        rec(results, type="bug114_result", tag=tag, **P.judge_bug114(lines))
+        if t_second is not None:
+            rec(results, type="bug114_result", tag=tag, t_close=t_close, **P.judge_bug114(lines, t_close, t_second))
+        else:
+            rec(results, type="bug114_result", tag=tag, verdict="INVALID", reproduced=False, counts={}, failures=[],
+                invalid=["手順が途中で止まった"])
 
 
 # ---------------------------------------------------------------- summary
@@ -318,7 +345,7 @@ def md(results):
             c = r.get("counts", {})
             o.append(f"| {tag} | **BUG-121**: Ctrl+無変換を {r.get('presses')} 回 | 「@」={c.get('at')} 件 | 受信 `{r.get('received')}` / {c} |")
         elif t == "bug114_result":
-            o.append(f"| {tag} | **BUG-114**: 起動時スコープのまま drift 補正 | {r.get('verdict')} | {r.get('counts')} {r.get('failures')} {r.get('invalid')} |")
+            o.append(f"| {tag} | **BUG-114**: 起動時スコープのまま drift 補正 | {r.get('verdict')} reproduced={r.get('reproduced')} | {r.get('counts')} {r.get('failures')} {r.get('invalid')} |")
         elif t == "bug113_result":
             c = r.get("counts", {})
             o.append(f"| {tag} | **BUG-113**: 半角/全角を {r.get('presses')} 回 | 「@」={c.get('at')} 件 | 受信 `{r.get('received')}` / {c} |")
@@ -334,6 +361,7 @@ def main():
     ap.add_argument("--phases", default="V,I,B,N")
     ap.add_argument("--presses", type=int, default=10)
     ap.add_argument("--presses2", type=int, default=30)
+    ap.add_argument("--expect", choices=["pass", "reproduce"], default="pass", help="相 E の期待(reproduce は修正を外した対照)")
     a = ap.parse_args()
     dist, out = Path(a.dist).resolve(), Path(a.out).resolve()
     repo = HERE.parents[2]
@@ -352,10 +380,8 @@ def main():
                 with_awase(results, out, dist, repo, "S-bug113-scan29", True, make_body_bug113(a.presses2, scan=0x29, gap=0.6))
             elif ph == "H":
                 with_awase(results, out, dist, repo, "H-bug121", True, make_body_bug121(20))
-            elif ph == "D":
-                phase_bug114(results, out, dist, repo, "D-bug114-keys", False)
             elif ph == "E":
-                phase_bug114(results, out, dist, repo, "E-bug114-forceopen", True)
+                phase_bug114(results, out, dist, repo, "E-bug114")
             elif ph == "N":
                 with_awase(results, out, dist, repo, "N-bug113-noawase", False, make_body_bug113(a.presses))
         except Exception as e:  # 1 相の失敗で全体を止めない
@@ -364,10 +390,12 @@ def main():
         (out / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
         (out / "summary.md").write_text(md(results), encoding="utf-8")
     print(md(results))
-    verdicts = [r["verdict"] for r in results if r.get("type") == "bug114_result"]
-    if not verdicts:
+    if "E" not in a.phases.split(","):
         return 0
-    return 1 if "FAIL" in verdicts else 3 if "INVALID" in verdicts else 0
+    got = [r for r in results if r.get("type") == "bug114_result"]
+    ok = bool(got) and all(r["verdict"] == "PASS" if a.expect == "pass" else r["reproduced"] for r in got)
+    print(f"BUG-114 expect={a.expect} verdicts={[r['verdict'] for r in got]} reproduced={[r['reproduced'] for r in got]} → {'OK' if ok else 'NG'}")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
