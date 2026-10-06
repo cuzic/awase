@@ -6799,7 +6799,10 @@ fn pub_fn_names(code: &str) -> Vec<String> {
     names
 }
 
-/// `pub` な戻り値（シグネチャの `->` 以降）に `needles` のどれかを名乗る `pub fn` の名前。
+/// `pub` なシグネチャが `needles` のどれかを名乗る `pub fn` の名前。見るのは (1) 戻り値（**最後の** `->` 以降。
+/// クロージャ型の `->` を戻り値と取り違えない）と (2) `Fn(`/`FnOnce(`/`FnMut(` の引数（`with_app` と同じ形:
+/// `f: impl FnOnce(&mut ImeStateHub) -> R`）。普通の引数として `&mut ImeStateHub` を受け取るだけのものは
+/// 呼び出し側が既にハブを持っているので対象外。
 fn pub_fns_returning(code: &str, needles: &[&str]) -> Vec<String> {
     let lines: Vec<&str> = code.lines().collect();
     let mut hits = Vec::new();
@@ -6816,10 +6819,55 @@ fn pub_fns_returning(code: &str, needles: &[&str]) -> Vec<String> {
                 break;
             }
         }
-        if let Some((_, ret)) = sig.split_once("->") {
-            if needles.iter().any(|n| ret.contains(n)) {
-                hits.push(name.to_string());
-            }
+        let mentions = |t: &str| needles.iter().any(|n| t.contains(n));
+        let returns_hub = sig.rsplit_once("->").is_some_and(|(_, ret)| mentions(ret));
+        let closure_takes_hub = ["Fn(", "FnOnce(", "FnMut("].iter().any(|f| {
+            sig.match_indices(f).any(|(at, _)| {
+                let args = &sig[at + f.len()..];
+                let mut depth = 1usize;
+                let end = args
+                    .char_indices()
+                    .find(|(_, c)| {
+                        depth += usize::from(*c == '(');
+                        depth -= usize::from(*c == ')');
+                        depth == 0
+                    })
+                    .map_or(args.len(), |(k, _)| k);
+                mentions(&args[..end])
+            })
+        });
+        if returns_hub || closure_takes_hub {
+            hits.push(name.to_string());
+        }
+    }
+    hits
+}
+
+/// ハブの名前を、別名・トレイト実装・他の型の `pub` フィールドで外へ出している行。
+/// - `type X = ..ハブ..;`（`pub` でなくても。別名で返されると名前の照合をすり抜ける）と、`use ..ハブ.. as X`
+/// - `impl Deref/AsRef/AsMut/Borrow ... for Runtime`、またはハブを名乗る型・型引数の同トレイトの `impl`
+/// - `pub name: ..ハブ..`（どの型のフィールドでも。`pub static` も同じ形）と、`struct W(pub ..ハブ..)`
+fn hub_exposure_lines(code: &str, needles: &[&str]) -> Vec<String> {
+    let mentions = |t: &str| needles.iter().any(|n| t.contains(n));
+    let mut hits = Vec::new();
+    for line in code.lines() {
+        let t = line.trim();
+        let is_alias = (t.starts_with("type ") || t.starts_with("pub type ")) && mentions(t);
+        let is_use_alias = t.contains("use ") && t.contains(" as ") && mentions(t);
+        let is_trait_impl = t.starts_with("impl") && {
+            let (tr, ty) = t.split_once(" for ").unwrap_or((t, ""));
+            ["Deref", "AsRef", "AsMut", "Borrow"]
+                .iter()
+                .any(|n| tr.contains(n))
+                && (mentions(tr) || mentions(ty) || ty.contains("Runtime"))
+        };
+        let is_pub_field = t.starts_with("pub ")
+            && !t.contains("fn ")
+            && !t.starts_with("pub use ")
+            && ((t.contains(':') && mentions(t))
+                || (t.contains("struct ") && t.contains("(pub ") && mentions(t)));
+        if is_alias || is_use_alias || is_trait_impl || is_pub_field {
+            hits.push(t.to_string());
         }
     }
     hits
@@ -6905,14 +6953,22 @@ fn production_hub_is_unreachable_from_outside_the_crate() {
         }),
         "`Runtime.platform_state` が pub になっています"
     );
-    // (3) `ImeStateHub`・`PlatformState` を名乗って返す `pub fn` が無い（`Self` は対象外）。
+    // (3) `ImeStateHub`・`PlatformState` を名乗って返す・クロージャへ渡す `pub fn`、別名、Deref 系の impl、pub フィールドが無い。
+    //     **検出できない形**（テキスト走査の限界）: ハブを名乗らない型を介する経路（ハブを private フィールドに持つ
+    //     型が `pub fn` で内部を返す、`impl<T> Trait for T` の総称実装、マクロ生成、`enum` の variant が運ぶもの、
+    //     `Box<dyn Any>` での型消去）。これらは `Runtime`・`PlatformState` に pub のメソッドを足すレビューで見ること。
     for rel in list_src_files() {
         let content = read_crate_file(&rel);
         let code = non_comment_lines(production_code_only(&content));
         let hits = pub_fns_returning(&code, &["PlatformState", "ImeStateHub"]);
         assert!(
             hits.is_empty(),
-            "`{rel}`: 本番のハブへの口になりうる pub fn があります: {hits:?}"
+            "`{rel}`: 本番のハブへの口になりうる pub fn があります（戻り値、または `with_app` と同じクロージャ引数）: {hits:?}"
+        );
+        let lines = hub_exposure_lines(&code, &["PlatformState", "ImeStateHub"]);
+        assert!(
+            lines.is_empty(),
+            "`{rel}`: 別名・Deref/AsMut 系の impl・pub フィールドでハブを外へ出しています: {lines:?}"
         );
     }
 }
@@ -6941,6 +6997,44 @@ fn platform_state_pub_fn_guard_detects_additions_and_recorders() {
         pub_fns_returning(code, &["PlatformState", "ImeStateHub"]),
         ["hub", "multi"]
     );
+
+    // `with_app` と同じ形（クロージャ引数で `&mut` を渡す）。最初の `->` はクロージャ型のもの。
+    let needles = ["PlatformState", "ImeStateHub"];
+    let closure = "    pub fn with_hub<R>(&mut self, f: impl FnOnce(&mut ImeStateHub) -> R) -> R {\n        f(&mut self.ime)\n    }\n";
+    assert_eq!(pub_fns_returning(closure, &needles), ["with_hub"]);
+    let bound = "    pub fn with_ps<F, R>(&mut self, f: F) -> R\n    where\n        F: FnMut(&mut PlatformState) -> R,\n    {\n        todo!()\n    }\n";
+    assert_eq!(pub_fns_returning(bound, &needles), ["with_ps"]);
+    // ハブを受け取るだけの通常の引数、無関係なクロージャは対象外。
+    assert!(pub_fns_returning(
+        "    pub fn feed(hub: &mut ImeStateHub, f: impl FnOnce(u32) -> u32) -> u32 {\n",
+        &needles
+    )
+    .is_empty());
+
+    // 別名・Deref 系の impl・他の型の pub フィールド・`use .. as`。
+    for bad in [
+        "type Hub = ImeStateHub;",
+        "pub type Hub = crate::state::platform_state::ImeStateHub;",
+        "use crate::PlatformState as Ps;",
+        "impl std::ops::DerefMut for Runtime {",
+        "impl AsMut<ImeStateHub> for PlatformState {",
+        "impl Deref for ImeStateHub {",
+        "pub hub: &'a mut ImeStateHub,",
+        "pub ps: PlatformState,",
+        "pub struct W(pub ImeStateHub);",
+    ] {
+        assert_eq!(hub_exposure_lines(bad, &needles).len(), 1, "{bad}");
+    }
+    for ok in [
+        "pub struct ImeStateHub {",
+        "pub use platform_state::PlatformState;",
+        "impl Default for PlatformState {",
+        "impl AsRef<str> for Thing {",
+        "pub(crate) ime: ImeStateHub,",
+        "pub fn new() -> Self {",
+    ] {
+        assert!(hub_exposure_lines(ok, &needles).is_empty(), "{ok}");
+    }
 }
 
 /// `runtime/ime_refresh.rs` の本番コードが、打鍵中判定を `is_typing`(`state/ime_read_strategy.rs`)経由で行い、
