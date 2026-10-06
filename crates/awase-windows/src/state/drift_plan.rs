@@ -611,7 +611,8 @@ mod tests {
         let in_cooldown = matches!(a.actuation.policy, FeedbackPolicy::Blind { .. })
             && a.actuation.attempts >= MAX
             && a.actuation.gave_up_at.is_some_and(|g| f.now < g + cool);
-        if in_cooldown {
+        // 授権で見送る補正は、方針の判断（打ち切り/再武装）より前に返る。
+        if in_cooldown && a.step != DriftStep::SkipWarrantWouldBlock {
             assert_eq!(
                 a.step,
                 DriftStep::GiveUp(GiveUpPark::CooldownPending),
