@@ -2,22 +2,30 @@
 title: FCIS・代数的 Effect・monad 風の書き方で可読性を上げる案の検討(検討のみ)
 created: 2026-10-06
 base: origin/develop 3c8ef62a(Opus レビューは 0e4fccb7 で照合。relay_plan.rs・execute_relay は変わっていない)
-status: 検討のみ。コードは変えていない。Opus レビュー round1(Blocker 0・Must 3・Should 6・Nit 5)を反映済み。所有者の判断待ち
+status: 検討のみ(この文書ではコードを変えていない)。Opus レビュー round1(Blocker 0・Must 3・Should 6・Nit 5)を反映済み。所有者の判断(2026-10-06)を反映済み: DSL は試作して読み比べたうえで採用しない、plan_relay は (ii)(PR #531)。残る質問は §5
 related_adr: ["ADR-229", "ADR-218", "ADR-219", "ADR-220", "ADR-090", "ADR-156", "ADR-180"]
 ---
 
 # FCIS・代数的 Effect・monad 風の書き方で可読性を上げる案の検討
 
-所有者の依頼(2026-10-06): 「ここまでの経験、知見を元にして、もっと FCIS と代数的 Effect、Haskell Monad 的な DSL による可読性向上を考慮して、改善できるアイデアを考えて」。実測は [evidence.md](evidence.md)。
+所有者の依頼(2026-10-06): 「ここまでの経験、知見を元にして、もっと FCIS と代数的 Effect、Haskell Monad 的な DSL による可読性向上を考慮して、改善できるアイデアを考えて」。実測は [evidence.md](evidence.md)、試作の読み比べは [monad-prototype-comparison.md](monad-prototype-comparison.md)。
+
+## 0. 所有者の判断(2026-10-06)
+
+| 質問 | 判断 | 結果 |
+|---|---|---|
+| monad 風の DSL(案 1・3・6〜8)は「やらない」でよいか | **小さく試作して、実際のコードで読み比べる** | `decide_read_strategy` を 4 版で書いて比べ、**採用しない**(実験ブランチ `experiment/monad-style-decision`、`7cbfb09a`。本番のコードは変えていない)。行数は 元 36・D(部品を切り出して早期 return のまま)35・A(標準の `ControlFlow` と `?`)48・B(自前の判定型と combinator)73・C(B + 通った段の蓄積)87。読みやすくなった分は monad 風の形ではなく、小さな関数の切り出し(D)から来ていた。詳細は [monad-prototype-comparison.md](monad-prototype-comparison.md) |
+| `relay_plan` を (i)(ii)(iii)(iv) のどれにするか | **(ii) を承認**(効果の列を持たない、5 variant の 1 つの enum) | PR #531(`refactor/relay-plan-effects-enum`、レビュー済み、2026-10-06 時点で未マージ)。差分は +27/−80 で純減 53 行(§4-2)。(i) にしなかった本当の理由は、`Effect` に `PartialEq` が無いこと |
+
 
 ## 1. 結論
 
-- **monad 風の型・combinator・マクロの DSL は勧めない**。
+- **monad 風の型・combinator・マクロの DSL は採用しない**(所有者の判断で試作して読み比べ、確かめた。§0)。
   1. 「途中で決まったら抜ける」(Haskell の `Maybe`/`Either` の do 記法で書くことの大半)は、Rust の `return`・`let … else`・`?` が既に持っている。実装済みの `decide_*` の早期 return は 2〜4 個で、上から下へ読める(evidence (b)-3)。自前の型に `?` を使う `Try` trait は stable Rust では実装できない。
   2. **抽象の層そのものが実害を作った記録がある**: BUG-027 は、委譲するラッパーが 1 メソッドだけ委譲し忘れ、trait の既定実装(何もしない)が黙って使われた不具合。汎用の Handler や combinator の層を足すと、この種類が増える。
   3. 却下済みの案(Plan/Effect-term、汎用の Handler/Facts ツールキット、宣言テーブル)と同じく、使い手が 1〜2 個の部品を足すことになる。
 - **代数的 effect の考え方は、このリポジトリで既に 2 つの形で取り入れている**(§2)。① 効果をデータで返し、殻が解釈する(engine の `Decision`)。② 1 か所で割り込む(合流点の許可リスト + lint)。広げない理由も記録がある。
-- **実害の記録があるのは、長い関数と、今のコードを説明していない古いコメントのほう**(evidence (a)(e))。優先順位はこの順にする: 第 1 に古いコメントの小さな整理(§4-1)、第 2 に `relay_plan` の形の見直し(§4-2、実害 0 件。作られて 1 日)。
+- **実害の記録があるのは、長い関数と、今のコードを説明していない古いコメントのほう**(evidence (a)(e))。`relay_plan` の形の見直し(§4-2、実害 0 件)は所有者の承認で (ii) を PR #531 で実施中。残る古いコメントの小さな整理(§4-1)は所有者の判断待ち。
 - Haskell から借りて効くのは monad ではなく「代数的データ型(enum)で、起こり得ない組を書けなくする」ほう(案 A)。ただし書き方の約束として足すのは 1 文で済み、既存のコードを先回りして直す必要はない。
 
 ## 2. 代数的 effect への答え(既にある形と、広げない理由)
@@ -37,9 +45,9 @@ related_adr: ["ADR-229", "ADR-218", "ADR-219", "ADR-220", "ADR-090", "ADR-156", 
 | 5 | 殻は判断の結果を 1 回だけ match し、腕の中で元の入力を見直さない | A とセット | `execute_relay` の 2 重の場合分けは F3 が持ち込んだ(F3 前は 1 回の match) |
 | 2 | 事実を 1 つの引数(`Facts`)にまとめる(Reader 風) | 既に大半できている | 7 ファイル中 5 つ。残り 4 関数(`plan_drain_step`・`plan_defer`・`plan_drain_before_send`・`plan_focus_probe`)は、次に触るときに struct にすると全数表の行も名前付きになる |
 | 4 | 型状態で順序を型にする(typestate) | 既にある・計画済み | `Actuation<Requested→Warranted→Verified>`(ADR-090)。並べ替えるとコンパイルが通らないので、走査テストを消せる(V5 の判定)。新設しない |
-| 1 | 理由を蓄積する判定の型 `Decision<T, Reason>`(Writer 風) | 勧めない | §2 の 3 行目 |
+| 1 | 理由を蓄積する判定の型 `Decision<T, Reason>`(Writer 風) | 採用しない(試作の版 B・C で確認) | §2 の 3 行目。版 C の「通った段の列」は `ReadReason` から一意に決まり、新しい情報が無かった |
 | 3 | `reduce(state, event) -> (state, Vec<Reason>)` | 勧めない | 返した理由を読む使い手が 0 |
-| 6 | 小さな combinator(`then`・`or_else`・`guard`) | 勧めない | 標準に `bool::then`・`Option::filter`・`is_some_and`・`let … else` がある(使用 45〜104 件)。層を足すと BUG-027 型が増える |
+| 6 | 小さな combinator(`then`・`or_else`・`guard`) | 採用しない(試作の版 B で確認。73 行で元の 2 倍) | 標準に `bool::then`・`Option::filter`・`is_some_and`・`let … else` がある(使用 45〜104 件)。層を足すと BUG-027 型が増える |
 | 7 | `given(facts).when(event).then(plan)` のテスト builder | 勧めない | 部品を足さずに、表の行を事実の struct リテラル(名前付きフィールド)で書けば足りる(案 2 の残りと同じ作業)。ADR-219 がシナリオ DSL を見送った理由と同じ |
 | 8 | マクロ DSL | 勧めない | ADR-218〜220 の判定を覆す実害の記録が無い |
 
@@ -52,7 +60,9 @@ related_adr: ["ADR-229", "ADR-218", "ADR-219", "ADR-220", "ADR-090", "ADR-156", 
 - **形**: `runtime/` の長い関数 3〜5 本(evidence (a) の表の上位)で、「今のコードと食い違う」「もう無いコードを説明する」コメントを消し、1 PR にする。
 - **取りやめ条件**: 対象の関数で消せる行が合計 30 行未満なら止める(数字は仮。所有者に確認)。どのコメントが古いかの判断がレビューで割れたら、その行は残す。
 
-### 4-2. 第 2: `relay_plan` の形(3 つの選択肢と推奨)
+### 4-2. 第 2: `relay_plan` の形(所有者が (ii) を承認、PR #531)
+
+**実績**: PR #531 で (ii) を実装し、差分は +27/−80 で**純減 53 行**(2026-10-06 時点、未マージ)。下の表の見込み(20〜35 行)より大きかった。以下は判断の前に出した比較(記録として残す)。
 
 `plan_relay` が決めているのは「物理キーが `Suppress` なら passthrough も reinject もしない」の 1 bit だけ。固定しているのは 6 行の全数表だけで、`architecture_guard` は `plan_relay` を参照しない(参照するのは e12 の `plan_consume_effect`・e13・c23 の閾値)。journal にも載らない(`journal-replay-rebuild-study-2026-10-06/inventory.md` の `plan_relay` の行)。理由の使い手は debug ログ 1 か所(`executor.rs:453`)。F3 前の `execute_relay`(`ce8de690^`)は `Decision` を 1 回だけ match し、腕の中で `physical == Suppress` を見る形だった。
 
@@ -63,23 +73,25 @@ related_adr: ["ADR-229", "ADR-218", "ADR-219", "ADR-220", "ADR-090", "ADR-156", 
 | (iii) | `plan_relay` と入力・出力の型を撤去し、殻を F3 前の 1 回の match に戻す。`plan_consume_effect`・閾値の対(e12・c23)は同じファイルに残す | 約 130〜140 行(`relay_plan.rs` の 23-100 行 + 表のテスト約 50 行 + 殻の写し約 10 行) | F3 の「事実 → 理由つきの Plan → 殻」の形(タスク表で「4 回できた、書き方として固定」)の 1 例を戻す |
 | (iv) | 何もしない | 0 | — |
 
-**推奨: (iii)、所有者が F3 の形を保ちたいなら (ii)**。理由: 判断が 1 bit で、ガードも journal も参照しないので、型を 5 つ持つ得が小さい。(i) は `Effect` が比較できないことで得が縮み、F3 は前日に Opus レビュー済みでマージされたので、作り替えの費用(レビュー 1 回)に見合わない。どれを選んでも Consume の腕(e12 の検出器が `plan_consume_effect(matches!(effect, Effect::Timer(_)))` を要求)は変えない。`execute_relay`/`drain_deferred` は defer/replay キューの再発ファミリー(ADR-156)なので、`DrainStep` は同じ PR に入れない。
+**判断前の推奨は (iii)、F3 の形を保つなら (ii) だった。所有者は (ii) を選んだ**。理由: 判断が 1 bit で、ガードも journal も参照しないので、型を 5 つ持つ得が小さい。(i) は `Effect` が比較できないことで得が縮み、F3 は前日に Opus レビュー済みでマージされたので、作り替えの費用(レビュー 1 回)に見合わない。どれを選んでも Consume の腕(e12 の検出器が `plan_consume_effect(matches!(effect, Effect::Timer(_)))` を要求)は変えない。`execute_relay`/`drain_deferred` は defer/replay キューの再発ファミリー(ADR-156)なので、`DrainStep` は同じ PR に入れない。
 
 ### 4-3. 書き方の約束(案 A)
 
 新しい一覧は作らず、タスク表の「書き方の明文化」(`fcis-layering-tasks-2026-10-06.md` の「`decide_*` は理由を持つ Plan の enum を返す」)に 1 文足す: 「理由から一意に決まる実行の種類は、別の enum として並べず `fn` で導く。殻がすべての腕で読むフィールドは struct に残してよい」。後半の基準で、`drift_plan` の `DriftAct { notify_diagnostic, .. }`(`step` が `SkipWarrantWouldBlock` なら常に false だが、殻が共通に読む)と `ReadDecision` の `typing_guard_bypassed` は対象外と説明できる。`ReadDecision` の `strategy` は殻(`ir_stage_strategy`)が運ぶ粗い見方なので、`ReadReason` から導く `fn` にするのが筋(次にこのファイルを触るとき。再生 fixture 11 件の `"strategy"` の行を消す必要がある)。
 
-## 5. 所有者に聞くこと
+## 5. 所有者に聞くこと(残るもの)
 
-1. 古いコメントの小さな試行(§4-1)をやるか。取りやめの基準(30 行未満なら止める、は仮)をどうするか。
-2. `relay_plan` を (i)(ii)(iii)(iv) のどれにするか。推奨は (iii)、F3 の形を保つなら (ii)。
-3. 案 A の 1 文を、タスク表の「書き方の明文化」に足すか。
-4. 代数的 effect は「効果をデータで返す(engine の `Decision`)と、合流点 + lint の形で既に取っている。汎用の handler は再入の実害で見送った」という整理(§2)でよいか。
-5. monad 風の DSL(案 1・3・6〜8)は「やらない」でよいか。
+回答済み: DSL(§0、試作して採用しない)、`relay_plan`(§0、(ii))。
+
+1. **長い関数の経緯コメントの整理**(§4-1): 「今のコードを説明していないコメントだけを消す」小さな試行(`runtime/` の長い関数 3〜5 本、1 PR)をやるか。取りやめの基準(消せる行が合計 30 行未満なら止める、は仮)をどうするか。経緯のコメントを一律に寄せることはしない(`docs/known-bugs.md` の要約を試して全て revert した前例があるため)。
+2. **書き方の約束の追記**(§4-3): 「理由から一意に決まる実行の種類は、別の enum として並べず `fn` で導く。殻がすべての腕で読むフィールドは struct に残してよい」を足すか。足すなら置き場所は、(a) タスク表 V2 の完了前チェック(実装者が PR を出す前に確かめる一覧)、(b) タスク表の「書き方の明文化」の節、のどちらか。私の推奨は (b)(V2 は機械的な後処理の漏れを拾う一覧で、書き方の規約の置き場ではないため。Opus レビュー Should-4)。
+3. **試作の版 D**(部品を切り出し、早期 return のまま。35 行で元と同じ長さ、`let mut` と 4 回の構造体リテラルが消える)を、`ime_read_strategy.rs` を次に触るときの任意の整理として入れてよいか(試作の文書 §1)。
+
+§2(代数的 effect は、engine の `Decision` と合流点 + lint の形で既に取っている)は、異論があれば知らせてほしい。
 
 ## 6. 確認できなかったこと
 
-- 純減の行数はどれも概算で、書いてコンパイルしたものではない(未確認)。
+- §4-2 の (i)(iii) の純減は概算で、書いてコンパイルしたものではない(未確認)。(ii) は PR #531 の実績(純減 53 行)。
 - §4-1 で消せる行数は数えていない(未確認)。
 - `std::ops::ControlFlow` に `?` を使える点は Rust の仕様の知識で、このリポジトリでは試していない。
 - `plan_relay` の `const fn` を外すことは、`crates/awase-windows/Cargo.toml` の `missing_const_for_fn = "allow"` と、`const fn` を要求するガードが無いことから、影響しないと判断した(コンパイルでは確かめていない)。

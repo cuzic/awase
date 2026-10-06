@@ -2,7 +2,7 @@
 title: monad 風の判定型を decide_read_strategy で試作して読み比べた結果
 created: 2026-10-06
 base: origin/develop 47b1093b
-branch: experiment/monad-style-decision(develop にマージしない・PR にしない)
+branch: experiment/monad-style-decision(試作のコードはこの実験ブランチだけにあり、develop にマージしない。この文書だけを可読性メモのディレクトリに取り込んだ)
 code: crates/awase-windows/src/state/ime_read_strategy.rs の monad_style モジュール
 related: README.md(可読性メモ)・evidence.md・ADR-218〜220・ADR-229
 ---
