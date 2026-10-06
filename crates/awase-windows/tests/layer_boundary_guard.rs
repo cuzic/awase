@@ -549,6 +549,7 @@ const CORE_MODULES: &[&str] = &[
     "scoped_latch",
     "state_dependent_key_warning",
     "transition",
+    "warm_send_plan",
     "win_key_guard",
 ];
 

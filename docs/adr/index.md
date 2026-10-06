@@ -240,6 +240,10 @@
 | [231](231-gji-custom-keymap-tsv-generator.md) | GJI カスタムキーマップの TSV 生成(プリセットの振る舞いをキーに割り当て、import は手動) | 起草(2026-10-06、未レビュー、実装なし) |
 | [232](232-observation-event-subscription-and-consumption.md) | Observation/Event の購読と消費 | 起草(2026-10-05)。Opus round1・round2 反映済み |
 | [233](233-stale-high-observation-beats-newer-in-most-recent-trusted.md) | 古い High 観測が新しい Medium 観測に勝つ件(BUG-189) | 設計収束(Opus round3)・実装前の測定済み(A' が 41/41 で正しい)。実装済み・CI 確認済み(Flutter × MS-IME 7/8 PASS、2026-10-06)。実機未検証 |
+| [234](234-core-modules-mutants-nightly.md) | 純粋な核(CORE_MODULES)の mutants の生き残りをテストに変える(読む人を先に決め、定期実行は網として後から) | 起草(2026-10-06)。Opus round1・round2 反映済み |
+| [235](235-app-ime-realmachine-matrix.md) | 実機 CI の各構成で、入力先の profile と awase がその経路を通った件数を summary に出す(D1・D3。D2 は条件付きの将来案) | 起草(2026-10-06)。Opus round1・round2 反映済み |
+| [236](236-conflict-marker-residue-check.md) | 衝突マーカーの残骸を CI(fmt ジョブ)で検出する | 起草(2026-10-06)。Opus round1・round2 反映済み |
+| [237](237-serialized-develop-merge.md) | develop へのマージ担当の手順を決める(古い base のままマージし、競合しない rebase を求めない) | 起草(2026-10-06)。Opus round1・round2 反映済み |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

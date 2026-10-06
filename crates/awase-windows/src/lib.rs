@@ -30,6 +30,8 @@ pub mod focus_resync;
 pub mod gji_charset_autodetect;
 pub mod hook_channel;
 pub mod journal_policy;
+#[cfg(test)]
+mod key_input_replay_tests;
 pub(crate) mod lifetime_counter;
 pub mod msime_key_assignment;
 // 本番の呼び出し元（`read_legacy_toggle_assignment`/`read_legacy_compat_mode_enabled`）は
