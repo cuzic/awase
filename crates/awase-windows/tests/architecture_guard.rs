@@ -6249,3 +6249,94 @@ fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
         "ime_refresh.rs（drift correction）は押下 ID を持たない: `with_press`/`claim_press_write` を呼んではならない"
     );
 }
+
+// ── FCIS P5a-1: `platform_state` の `pub fn` の集合を固定する ───────────────────────
+//
+// `ImeStateHub` を `pub` にしたのは、閉ループのハーネス（`tests/support/harness.rs`）が本物を呼ぶため。
+// 公開する面は「ハーネスが実際に呼ぶものだけ」に絞り、ここで名前の集合を固定する。**記録系
+// （`record_confirmed`・`record_optimistic`・`record_ime_apply_result` とその `_in_scope` 版。INV-A97-1）は
+// 絶対に `pub` にしない**（呼び出し元の件数固定が `RECORDERS` で効いているのは `pub(crate)` 以下のため）。
+// ハーネスの呼び出しが増えて `pub` を足すときは、この一覧と `harness.rs` の使い方を同じ PR で更新すること。
+
+const PLATFORM_STATE_PUB_FNS: &[&str] = &[
+    "advance_clock_ms",
+    "apply_key_effect_prediction",
+    "arm_external_change_watch_in_scope",
+    "clock",
+    "dispatch_event",
+    "effective_open_at",
+    "follow_external_change_in_scope",
+    "model",
+    "new", // `PlatformState::new`（`shell.rs`、実時計の構築口）
+    "record_explicit_intent",
+    "set_is_japanese_ime",
+    "warrant_context",
+    "with_clock",
+];
+
+/// `pub fn` / `pub const fn`（`pub(crate)` などは含まない）の名前を集める。
+fn pub_fn_names(code: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in code.lines() {
+        let t = line.trim_start();
+        let rest = t
+            .strip_prefix("pub const fn ")
+            .or_else(|| t.strip_prefix("pub fn "));
+        if let Some(rest) = rest {
+            let name = rest.split(['(', '<']).next().unwrap_or("").trim();
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+    names
+}
+
+/// 記録系の名前（`pub` にしてはならないもの）。
+fn recorder_pub_violation(names: &[String]) -> Option<String> {
+    names
+        .iter()
+        .find(|n| {
+            n.starts_with("record_confirmed")
+                || n.starts_with("record_optimistic")
+                || n.starts_with("record_ime_apply_result")
+        })
+        .map(|n| format!("記録系 `{n}` が pub fn になっています（INV-A97-1）"))
+}
+
+#[test]
+fn platform_state_pub_fns_are_fixed_and_exclude_recorders() {
+    let mut names = Vec::new();
+    for rel in [
+        "src/state/platform_state.rs",
+        "src/state/platform_state/shell.rs",
+    ] {
+        let content = read_crate_file(rel);
+        let code = non_comment_lines(production_code_only(&content));
+        names.extend(pub_fn_names(&code));
+    }
+    names.sort();
+    if let Some(v) = recorder_pub_violation(&names) {
+        panic!("{v}");
+    }
+    let expected: Vec<String> = PLATFORM_STATE_PUB_FNS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    assert_eq!(
+        names, expected,
+        "`platform_state` の `pub fn` の集合が想定と異なります。ハーネスが呼ぶものだけを pub にし、\
+         増減したら `PLATFORM_STATE_PUB_FNS` を更新してください。"
+    );
+}
+
+/// 上のガード自体が、`pub fn` の追加と記録系の公開を検出できることの確認。
+#[test]
+fn platform_state_pub_fn_guard_detects_additions_and_recorders() {
+    let code = "    pub fn a(&self) {}\n    pub const fn b(&self) {}\n    pub(crate) fn c(&self) {}\n    fn d(&self) {}\n    pub fn record_confirmed_in_scope(&mut self) {}\n";
+    let names = pub_fn_names(code);
+    assert_eq!(names, ["a", "b", "record_confirmed_in_scope"]);
+    assert!(recorder_pub_violation(&names).is_some());
+    assert!(
+        recorder_pub_violation(&["a".to_string(), "record_explicit_intent".to_string()]).is_none()
+    );
+}
