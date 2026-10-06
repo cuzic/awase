@@ -3364,7 +3364,17 @@ mod tests {
     #[test]
     fn dispatch_event_journals_event_time_seq_and_tick_ms() {
         let mut ps = ps_for_test();
+        // event_log だけを先に 3 つ進める（journal には載らない）。`ImeEventLog` と
+        // `UnifiedJournal` の seq はどちらも 0 始まりなので、揃ったままだと
+        // 「journal 自身の seq を event_seq に載せる」取り違えを検出できない。
+        let now = ps.ime.clock.now_instant();
+        for _ in 0..3 {
+            ps.ime
+                .event_log
+                .record_at(ImeEvent::PanicReset { target: true }, TickMs(1), now);
+        }
         let seq0 = ps.ime.event_log.next_seq();
+        assert_eq!(seq0, 3);
         ps.ime
             .dispatch_event(ImeEvent::PanicReset { target: true }, TickMs(111));
         ps.ime
@@ -3386,6 +3396,7 @@ mod tests {
         assert_eq!(ime_events[0]["tick_ms"].as_u64(), Some(111));
         assert_eq!(ime_events[1]["event_seq"].as_u64(), Some(seq0 + 1));
         assert_eq!(ime_events[1]["tick_ms"].as_u64(), Some(222));
+        // dispatch 1 回につき record_at がちょうど 1 回（配線ではなく採番回数の確認）。
         assert_eq!(ps.ime.event_log.next_seq(), seq0 + 2);
     }
 }
