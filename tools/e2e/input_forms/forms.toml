@@ -254,6 +254,7 @@ toolkit = "Flutter TextField"
 setup = "flutter"
 exe = ["{repo}/tools/e2e/input_apps/flutter/app/build/windows/x64/runner/Release/flutter_form_input.exe"]
 window = { title = "flutter_form_input" }
+click = true
 read = "clipboard"
 intervals = [20]
 runs = 1
