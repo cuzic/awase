@@ -5,7 +5,7 @@ title: |-
 summary: |-
   要望: IME キーや Ctrl/Alt などを入れ替えたい。現状は ADR-111(Caps⇔Ctrl)・ADR-126(Caps→追加 Ctrl)の2プリセットだけ。所有者判断(2026-10-06): 自由度は「全単射しか作れない」程度でよい。提案: 入れ替えペア `A⇄B` の集合を編集する UI に一般化する(Swap は1ペアとして読む。ADR-126 の片方向だけプリセットに残す)。Opus round1 の指摘で、(1)「awase が書いたエントリの所有を cache.toml に記録する」案は ADR-126 が却下済みで、置き場所としても不適(exe 隣の捨ててよい学習キャッシュ vs HKLM・全ユーザー)なので取り下げ、レジストリを唯一の真実とし全件を表示して、読んだ状態との差分で書く方式に改めた、(2)全単射の保証は awase のペアの中だけで、第三者エントリとの合成(多対一)をマージ関数で検査する、(3)読み戻し失敗時の巻き戻し・昇格側への受け渡しの比較交換・ADR-127 との整合を決定に加えた。ADR-110(hook ベース)は再導入しない。
 status: |-
-  起草(2026-10-06)。Opus round1(Blocker 2・Should-fix 7)・round2(Blocker 2〈英数の組の矛盾、他ツール1件で全部編集不能になる後退〉・Should-fix 5)反映済み(`docs/adr/review/230-opus-review-round{1,2}.md`)。round3(新 Blocker なし、Should-fix 1〈from 重複で解除できない取りこぼし〉・Note 3)反映済み。round3 修正の確認で収束(2026-10-06)。実装なし。実装なし。GJI 側は別 ADR(ADR-231)。
+  起草(2026-10-06)。Opus round1(Blocker 2・Should-fix 7)・round2(Blocker 2〈英数の組の矛盾、他ツール1件で全部編集不能になる後退〉・Should-fix 5)反映済み(`docs/adr/review/230-opus-review-round{1,2}.md`)。round3(新 Blocker なし、Should-fix 1〈from 重複で解除できない取りこぼし〉・Note 3)反映済み。round3 修正の確認で収束(2026-10-06)。段階1(純粋関数)は実装済み、段階2〜5は未着手。実装なし。GJI 側は別 ADR(ADR-231)。
 related_adr:
   - "ADR-110"
   - "ADR-111"
@@ -199,6 +199,12 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
 ## 実装の段階(提案)
 
 1. 純粋関数と検査(`awase-windows::scancode_map`、Linux でテスト。決定3 の表とプロパティテストを必須ケースにする)。
+   **実装済み(段階1、`crates/awase-windows/src/scancode_pairs.rs`)**: `detect_swap_pairs`・`compute_swap_write`・`Pair`・
+   `ALLOWED_SCANCODES`。決定3 の分類表と、削除の常時許可・恒等・往復・「悪くならない」の性質テストを含む。実装で決めた細部:
+   `Pair` は `(小さい scancode, 大きい scancode)` に正規化する(書き込む2エントリは `lo→hi`, `hi→lo` の順)/ 完全に同じエントリの
+   複製は、1つを消すなら全部消す/ Caps 追加 Ctrl との衝突検査は新規に作る分だけ(既存の同居状態も恒等・削除は通す)/
+   Caps 追加 Ctrl を新たに足すときは、他ツールの `左 Ctrl→Caps` も上書き対象にする(残すと入れ替えに読み替わるため)。
+   既存の `ScancodeMapPreset`/`compute_new_entries` はこの段階では変更していない(Swap の廃止と UI は段階3〜4)。
 2. ADR-127 への追記(決定5)。
 3. 昇格側の CLI(ペア集合・比較交換・巻き戻し)。
 4. `awase-settings` の UI(ペア編集、全件表示、競合・Displaced の確認、適用)。

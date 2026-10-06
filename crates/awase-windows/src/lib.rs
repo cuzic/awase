@@ -37,6 +37,7 @@ pub mod msime_key_assignment;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod msime_legacy_keymap;
 pub mod scancode_map;
+pub mod scancode_pairs;
 pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;
