@@ -6,7 +6,7 @@ summary: |-
   BUG-189: ImmCrossProbe(High)が `expires_at: None` で残り、打鍵中に観測の書き込みが止まって 3.0s(OBSERVATION_FRESH_WINDOW_MS)経つと、belief のフォールバック `most_recent_trusted` が `(confidence, at)` の順で比べるため、後から同じ読み取りで得た新しい ObserverPoll(Medium)より古い High が勝ち、実効 IME 状態が反転する(CI 8 回中 6 回、反転 26/26 が同根拠。継続は 0〜2196ms)。その間エンジンが止まり、親指キーが生のまま MS-IME へ渡る。
   決定(案): `resolve_open_at` のフォールバックだけ、順位キーを `(confidence >= Medium, at, confidence)` にする(A')。drift correction と read_back の比較式は変えない。
 status: |-
-  起草中(2026-10-06)。Opus round1・round2 反映済み(round2 の Must 3 件の差分確認待ち)。実装前に診断ログ(旧・新比較式の並記)を CI で回して測る。
+  設計は収束(2026-10-06、Opus round3)。実装は未着手。実装前に診断ログ(旧・新比較式の並記)を CI で回して測り、結果を追記する。
 related_adr:
   - "ADR-087"
   - "ADR-090"
@@ -100,4 +100,4 @@ belief のフォールバック(`resolve_open_at` が明示意図・`KeyEffectPr
 
 ## 状態
 
-Opus round1(Blocker 2・Must 5)と round2(Must 3・Should 3・Nit 3)を反映済み。round2 の判定は「Must 3 件を文言で直せば収束」で、差分の確認が済めば確定する。
+設計は収束(2026-10-06、Opus round3 で「収束」)。round1: Blocker 2・Must 5、round2: Must 3・Should 3・Nit 3 を反映済み。**実装は未着手**。実装の前に、上の「実装前の測定」の診断ログ(旧・新比較式の並記)を CI で回し、結果を本 ADR に追記する。
