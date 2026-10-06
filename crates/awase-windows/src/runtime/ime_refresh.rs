@@ -151,7 +151,19 @@ impl Runtime {
         // ADR-205: 打鍵中（SkipTyping）でも、prefetch 済みの開閉の読みを外部変化の監視窓に照合する（追加 I/O なし）。
         self.ir_follow_external_change(ime_snap);
         match strategy {
-            ImeReadStrategy::SkipTyping => {}
+            ImeReadStrategy::SkipTyping => {
+                // 診断(ADR-238、BUG-190): 打鍵中の除外で捨てる prefetch 済みの読みの値も残す(今はどこにも出ない)。
+                // 「一過性の conv=0 が 1 回で終わるか、応答の遅い間は続くか」を測るため。belief には反映しない。
+                if let Some(snap) = ime_snap {
+                    tracing::debug!(
+                        "[skip-typing-read] ime_on={:?} romaji={:?} conv={:?} probe_timed_out={}",
+                        snap.ime_on,
+                        snap.is_romaji,
+                        snap.conversion_mode.map(|v| format!("0x{v:08X}")),
+                        snap.probe_timed_out,
+                    );
+                }
+            }
             ImeReadStrategy::Blacklist => {
                 tracing::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
                 // GJI I/O 観測は active IME が GJI のときに限定する。MS-IME 使用中も

@@ -199,6 +199,27 @@ pub fn classify_ime_snapshot(
             })
     };
 
+    // 診断(ADR-238、BUG-190): ObservedEisu を採ったとき、どの分岐か・前回の conv・読みが時間切れだったかを 1 行残す。
+    // 挙動は変えない。直近のモードキー通過からの経過や open/conv プローブの所要時間は、
+    // `[mode-key-follow]` と `[ime-io] ... elapsed_us` の行で突き合わせる。
+    if new_input_mode == Some(InputModeState::ObservedEisu) {
+        let branch = if awase::engine::ConvMode::is_eisu_evidence(snap.ime_on, snap.conversion_mode)
+            == Some(true)
+        {
+            "a:is_eisu_evidence"
+        } else {
+            "b:classify_transition"
+        };
+        tracing::info!(
+            "[eisu-adopt] branch={branch} ime_on={:?} conv={:?} prev_conv={:?} current_mode={:?} probe_timed_out={}",
+            snap.ime_on,
+            snap.conversion_mode.map(|v| format!("0x{v:08X}")),
+            current_prev_conversion_mode.map(|v| format!("0x{v:08X}")),
+            current_input_mode,
+            snap.probe_timed_out,
+        );
+    }
+
     tracing::debug!(
         "IME snapshot: japanese={:?} ime_on={:?} romaji={:?} conv={:?} guard={}",
         snap.is_japanese_ime,
