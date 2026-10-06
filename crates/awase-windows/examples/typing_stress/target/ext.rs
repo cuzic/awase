@@ -20,7 +20,7 @@ use std::sync::Mutex;
 
 use serde::Deserialize;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 use super::{fatal, find_window, foreground_is_top, kill_tree, raise_top, title_of, InputTarget};
 use crate::uia;
@@ -170,6 +170,14 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
         let hargs: Vec<String> = spec.helper_args.iter().map(subst).collect();
         let mut cmd = Command::new(&hexe);
         cmd.args(&hargs);
+        // 補助プロセスの標準出力/エラーは {dump}.helper.log へ(起動に失敗した理由を残す)。
+        let hlog = format!("{}.helper.log", dump.display());
+        if let Ok(f) = std::fs::File::create(&hlog) {
+            if let Ok(f2) = f.try_clone() {
+                cmd.stdout(f2);
+            }
+            cmd.stderr(f);
+        }
         if let Some(dir) = Path::new(&hexe).parent().filter(|d| d.exists()) {
             cmd.current_dir(dir);
         }
@@ -212,10 +220,12 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
 }
 
 fn log_helper_err(dump: &Path) {
-    let err = PathBuf::from(format!("{}.err", dump.display()));
-    if let Ok(s) = std::fs::read_to_string(&err) {
-        for l in s.lines().take(40) {
-            log(&format!("[ext-helper] {l}"));
+    for ext in [".err", ".helper.log"] {
+        let path = PathBuf::from(format!("{}{ext}", dump.display()));
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            for l in s.lines().take(40) {
+                log(&format!("[ext-helper{ext}] {l}"));
+            }
         }
     }
 }
@@ -242,7 +252,21 @@ impl InputTarget for Ext {
         raise_top(400);
     }
     fn focus_ok(&self) -> bool {
-        foreground_is_top()
+        let ok = foreground_is_top();
+        if !ok {
+            // SAFETY: 前面窓の取得のみ。
+            let fg = unsafe { GetForegroundWindow() };
+            log(&format!(
+                "[ext] 前面窓が入力先ではない: 前面 class={} title={:?} pid={} / 入力先 class={} title={:?} pid={}",
+                class_of(fg),
+                title_of(fg),
+                pid_of(fg),
+                class_of(hwnd_of(&TOP)),
+                title_of(hwnd_of(&TOP)),
+                self.win_pid
+            ));
+        }
+        ok
     }
     fn shutdown(&self) {
         log_helper_err(&self.dump);
@@ -251,7 +275,7 @@ impl InputTarget for Ext {
         }
         kill_tree(self.win_pid);
         kill_tree(self.spawned);
-        for ext in ["", ".err", ".tmp"] {
+        for ext in ["", ".err", ".tmp", ".helper.log"] {
             let _ = std::fs::remove_file(format!("{}{ext}", self.dump.display()));
         }
         for _ in 0..5 {
