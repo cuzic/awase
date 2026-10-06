@@ -462,6 +462,15 @@ mod tests {
                 Some(OmissionBasis::FreshRead),
             ),
             (
+                // クールダウン後で新しい読み戻しが無い（parked のまま）も `FreshRead`。
+                DriftFacts {
+                    active: parked,
+                    fresh_evidence_after_giveup: false,
+                    ..facts(now + cool)
+                },
+                Some(OmissionBasis::FreshRead),
+            ),
+            (
                 DriftFacts {
                     active: Some(snap(read(), false, 0, now, None)),
                     converged: true,

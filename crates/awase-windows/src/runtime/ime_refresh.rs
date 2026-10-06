@@ -706,8 +706,7 @@ impl Runtime {
         crate::state::platform_state::DriftCorrection,
         crate::state::drift_correction::NoDrift,
     > {
-        let explicit_intent = self.platform_state.ime.explicit_intent();
-        self.platform_state.ime.evaluate_drift(now, explicit_intent)
+        self.platform_state.ime.evaluate_drift(now)
     }
 
     /// drift correction の observe（FCIS F4、殻）。判断に使う事実だけを集める。書かない。

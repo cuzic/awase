@@ -1048,19 +1048,16 @@ impl ImeStateHub {
     /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を、
     /// 超えていなければ理由（`NoDrift`、E1）を返す。
     ///
-    /// `explicit_intent`: [`Self::explicit_intent`] の値をそのまま渡す。
+    /// 明示意図は `evaluate_drift` が `model.last_intent` から作る（呼び出し側で渡さない）。
     ///
     /// `ConvOpenInference` は根拠にしない（BUG-173 追補3。`state/drift_correction.rs` 参照）。
-    /// `resolve_warmup_ime_on` が同じ述語を `matches!(.., Some(DriftCorrection { desired: false, observed: true, .. }))`
-    /// として使う（ADR-132/INV-B1'）。
     pub(crate) fn evaluate_drift(
         &self,
         now: std::time::Instant,
-        explicit_intent: Option<bool>,
     ) -> Result<DriftCorrection, super::drift_correction::NoDrift> {
         // 判定本体は ungated な `state/drift_correction.rs`（Linux の
         // `tests/closed_loop_scenarios.rs` から呼べるように移した。ロジックは不変）。
-        super::drift_correction::evaluate_drift(&self.shadow_model, now, explicit_intent)
+        super::drift_correction::evaluate_drift(&self.shadow_model, now)
     }
 
     /// [`Self::evaluate_drift`] から理由を捨てたもの。本番の呼び出し元は `evaluate_drift` に移ったので、
@@ -1069,9 +1066,8 @@ impl ImeStateHub {
     pub(crate) fn check_drift_correction(
         &self,
         now: std::time::Instant,
-        explicit_intent: Option<bool>,
     ) -> Option<DriftCorrection> {
-        self.evaluate_drift(now, explicit_intent).ok()
+        self.evaluate_drift(now).ok()
     }
 
     /// IME apply 完了を記録する（D: generation 照合 dispatch）。
@@ -2313,9 +2309,8 @@ mod tests {
         ps.ime
             .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         let now = std::time::Instant::now();
-        let explicit_intent = ps.ime.explicit_intent();
         assert_eq!(
-            ps.ime.check_drift_correction(now, explicit_intent),
+            ps.ime.check_drift_correction(now),
             None,
             "conv 推論だけを根拠にした drift は、明示意図があっても補正を発火させない"
         );
@@ -2329,8 +2324,8 @@ mod tests {
         let mut ps = ps_with_shadow(false, None, true);
         ps.ime
             .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
-        // 明示意図が無いので threshold=DRIFT_CORRECTION_THRESHOLD_MS。実時間 sleep を
-        // 避けるため drift.started_at を直接バックデートして閾値超過を模す。
+        // 明示意図が無いので `evaluate_drift` は最初の判定（`NotExplicitIntent`）で返る。乖離の追跡が
+        // 十分続いた状態を作るため drift.started_at を直接バックデートする。
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
             started_at: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_millis(
@@ -2339,10 +2334,9 @@ mod tests {
                 .expect("test instant can be backdated"),
         });
         let now = std::time::Instant::now();
-        let explicit_intent = ps.ime.explicit_intent();
-        assert_eq!(explicit_intent, None);
+        assert_eq!(ps.ime.explicit_intent(), None);
         assert_eq!(
-            ps.ime.check_drift_correction(now, explicit_intent),
+            ps.ime.check_drift_correction(now),
             None,
             "明示意図なしでは ConvOpenInference 単独で補正を発火させない"
         );
@@ -2354,9 +2348,8 @@ mod tests {
         ps.ime
             .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         let now = std::time::Instant::now();
-        let explicit_intent = ps.ime.explicit_intent();
         assert_eq!(
-            ps.ime.check_drift_correction(now, explicit_intent),
+            ps.ime.check_drift_correction(now),
             None,
             "desired と observed が一致していれば補正不要"
         );
@@ -2421,8 +2414,8 @@ mod tests {
             "desired_open は Word での明示 OFF のまま false（observed との食い違いが本題）"
         );
 
-        // 明示意図なしでは閾値が DRIFT_CORRECTION_THRESHOLD_MS になる
-        // （ConvOpenInference のテストと同様、実 sleep を避けるためバックデートする）。
+        // 明示意図なしでは `evaluate_drift` は最初の判定（`NotExplicitIntent`）で返る。
+        // （ConvOpenInference のテストと同様、乖離の追跡をバックデートして続いた状態を作る。）
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
             started_at: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_millis(
@@ -2431,10 +2424,9 @@ mod tests {
                 .expect("test instant can be backdated"),
         });
         let now = std::time::Instant::now();
-        let explicit_intent = ps.ime.explicit_intent();
-        assert_eq!(explicit_intent, None);
+        assert_eq!(ps.ime.explicit_intent(), None);
         assert_eq!(
-            ps.ime.check_drift_correction(now, explicit_intent),
+            ps.ime.check_drift_correction(now),
             None,
             "明示意図なしでは HeuristicDefault 単独で補正を発火させない（issue #189）"
         );
@@ -2924,9 +2916,7 @@ mod tests {
         });
         let now = std::time::Instant::now();
         assert!(
-            ps.ime
-                .check_drift_correction(now, ps.ime.explicit_intent())
-                .is_none(),
+            ps.ime.check_drift_correction(now).is_none(),
             "揃った後は、観測 == desired なので drift correction は発火しない"
         );
     }
@@ -2957,7 +2947,7 @@ mod tests {
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         write_open_observation_high(&mut ps, false, 130);
         let now = std::time::Instant::now();
-        let drift = ps.ime.check_drift_correction(now, ps.ime.explicit_intent());
+        let drift = ps.ime.check_drift_correction(now);
         assert!(
             matches!(drift, Some(DriftCorrection { desired: true, observed: false, .. })),
             "通過マークが無ければ desired（awaseの意図）と観測の乖離は従来どおり補正される: {drift:?}"
@@ -2979,7 +2969,7 @@ mod tests {
         let mut ps = setup();
         write_open_observation_high(&mut ps, false, 130);
         let t0 = std::time::Instant::now();
-        let ok = ps.ime.evaluate_drift(t0, ps.ime.explicit_intent());
+        let ok = ps.ime.evaluate_drift(t0);
         assert!(
             matches!(
                 ok,
@@ -2997,7 +2987,7 @@ mod tests {
             + std::time::Duration::from_millis(
                 crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS + 100,
             );
-        let stale = ps.ime.evaluate_drift(late, ps.ime.explicit_intent());
+        let stale = ps.ime.evaluate_drift(late);
         assert_eq!(stale, Err(NoDrift::StaleObservation), "{stale:?}");
         assert_eq!(stale.unwrap_err().basis(), OmissionBasis::Observation);
 
@@ -3007,9 +2997,7 @@ mod tests {
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
             started_at: std::time::Instant::now(),
         });
-        let matched = ps
-            .ime
-            .evaluate_drift(std::time::Instant::now(), ps.ime.explicit_intent());
+        let matched = ps.ime.evaluate_drift(std::time::Instant::now());
         assert_eq!(
             matched,
             Err(NoDrift::ObservationMatchesDesired),

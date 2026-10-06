@@ -1,11 +1,13 @@
 //! drift correction（`desired_open` ≠ 観測 の補正）の**判定本体**。
 //!
 //! 以前は `ImeStateHub::check_drift_correction`（`state/platform_state.rs`）の本体だったが、
-//! `platform_state.rs` は `#[cfg(windows)]` のため Linux ホストの
+//! `platform_state.rs` は `#[cfg(windows)]` だった時期があり、Linux ホストの
 //! `cargo test -p awase-windows` から呼べなかった。判定が読むのは `ImeModel`（ungated）の
-//! `desired_open()`・`last_intent`・`observations` だけなので、本体をこの ungated モジュールへ
-//! **そのまま**移し、`ImeStateHub::check_drift_correction` は委譲だけにした
-//! （判定ロジックは1行も変えていない。`tests/closed_loop_scenarios.rs` が Linux で呼ぶため）。
+//! `desired_open()`・`last_intent`・`observations` だけなので、本体をこの ungated モジュールへ移した
+//! （`tests/closed_loop_scenarios.rs` が Linux で呼ぶ）。明示意図は `last_intent` から本関数の中で作る
+//! （呼び出し側が別の値を渡せない）。FCIS E1 で、補正しない理由を [`NoDrift`] で返す
+//! [`evaluate_drift`] を判定本体にし、不要になった閾値の分岐と `HeuristicDefault` 単独の除外
+//! （明示意図の判定が先に返すので到達できなかった）を撤去した。
 //!
 //! 読み取り専用の純粋関数であり、belief（`desired_open`/`input_mode`）へは書かない
 //! （`.claude/rules/ime-belief-architecture.md` の書き込み点は `ImeModel::reduce()` のまま）。
@@ -13,7 +15,7 @@
 use super::ime_event::{ObservationConfidence, ObservationSource};
 use super::ime_model::ImeModel;
 
-/// [`check_drift_correction`] の戻り値（BUG-113残置課題）。
+/// [`evaluate_drift`] の成功時の値（BUG-113残置課題）。
 ///
 /// 旧 `(bool, bool, u64)` タプルから構造体化したのは、`ir_apply_drift_correction`
 /// （`runtime/ime_refresh.rs`）が drift の根拠（`source`）を、呼び出し元が
@@ -90,16 +92,14 @@ impl NoDrift {
 /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を、
 /// 超えていなければその理由を返す（判定本体。[`check_drift_correction`] は結果の `ok()`）。
 ///
-/// `explicit_intent`: `ImeStateHub::explicit_intent`（= `model.last_intent` の `target`）の値をそのまま渡す。
-///
-/// `ConvOpenInference` は根拠にしない（BUG-173 追補3）。`resolve_warmup_ime_on` が同じ述語を
-/// `matches!(.., Some(DriftCorrection { desired: false, observed: true, .. }))` として使う（ADR-132/INV-B1'）。
+/// `ConvOpenInference` は根拠にしない（BUG-173 追補3）。
 pub fn evaluate_drift(
     model: &ImeModel,
     now: std::time::Instant,
-    explicit_intent: Option<bool>,
 ) -> Result<DriftCorrection, NoDrift> {
     let desired = model.desired_open();
+    // 明示意図（`ImeStateHub::explicit_intent` と同じ値）。引数で受けず、ここで `last_intent` から作る。
+    let explicit_intent = model.last_intent.as_ref().map(|i| i.target);
 
     // ADR-212 P6: **ユーザーの明示操作の書き込みが届かなかったときの再試行だけ**を残す。`desired_open` が明示意図
     // （`explicit_intent`）と一致しないとき（古い desired の補正、窓キャッシュの復元〈`HwndCacheRestored`〉の押し付け、
@@ -113,10 +113,10 @@ pub fn evaluate_drift(
         .observations
         .drift_duration(now)
         .ok_or(NoDrift::NotDrifting)?;
-    // 継続時間の閾値は持たない（即時補正）。`explicit_intent` は呼び出し元が `model.last_intent` の `target` から
-    // 作るので、上の判定を通った時点で `last_intent` は必ず在り、かつては強い意図の閾値 0 だけが本番で
-    // 使われていた（`last_intent` 無しの閾値 `DRIFT_CORRECTION_THRESHOLD_MS` と、`HeuristicDefault` 単独の除外は、
-    // ADR-212 P6 の判定が先に返すので到達できなかった。issue #189 の状況は `explicit_intent=None` なのでここで止まる）。
+    // 継続時間の閾値は持たない（即時補正）。明示意図は `last_intent` から作っているので、上の判定を通った
+    // 時点で `last_intent` は必ず在り、かつての閾値は常に 0 だった（`last_intent` 無しの閾値
+    // `DRIFT_CORRECTION_THRESHOLD_MS` と `HeuristicDefault` 単独の除外は、この判定が先に返すので到達できなかった。
+    // issue #189 の状況は `last_intent` が消えて明示意図が無いのでここで止まる）。
 
     let max_age = std::time::Duration::from_millis(crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS);
     // `ConvOpenInference` は drift correction の根拠にしない（下記）。選んだ後に捨てると、同じ Medium の他ソースの
@@ -155,14 +155,15 @@ pub fn evaluate_drift(
 pub fn check_drift_correction(
     model: &ImeModel,
     now: std::time::Instant,
-    explicit_intent: Option<bool>,
 ) -> Option<DriftCorrection> {
-    evaluate_drift(model, now, explicit_intent).ok()
+    evaluate_drift(model, now).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ime_event::UserIntentSource;
+    use crate::state::ime_model::RecordedIntent;
     use crate::state::observation_store::ImeDrift;
     use std::time::Instant;
 
@@ -172,6 +173,14 @@ mod tests {
 
     /// 理由と根拠は、実際の入力から評価した結果で確かめる（対応表を写さない）。観測が要る理由は
     /// `platform_state` のテスト（`evaluate_drift_reports_*`）が確かめる。
+    fn with_intent(model: &mut ImeModel, target: bool) {
+        model.last_intent = Some(RecordedIntent {
+            target,
+            source: UserIntentSource::Command,
+            at_ms: 0,
+        });
+    }
+
     #[test]
     fn reasons_follow_the_early_returns_in_order() {
         let now = Instant::now();
@@ -180,23 +189,24 @@ mod tests {
 
         // 明示意図が無い／desired と違う → 他の事実（乖離の追跡）より先に見る。
         drifting_since(&mut model, now);
-        for explicit in [None, Some(!desired)] {
-            let r = evaluate_drift(&model, now, explicit);
-            assert_eq!(r, Err(NoDrift::NotExplicitIntent));
-            assert_eq!(r.unwrap_err().basis(), OmissionBasis::ExplicitIntent);
-        }
+        let r = evaluate_drift(&model, now);
+        assert_eq!(r, Err(NoDrift::NotExplicitIntent));
+        assert_eq!(r.unwrap_err().basis(), OmissionBasis::ExplicitIntent);
+        with_intent(&mut model, !desired);
+        assert_eq!(evaluate_drift(&model, now), Err(NoDrift::NotExplicitIntent));
 
         // 明示意図は一致するが乖離の追跡が無い。
+        with_intent(&mut model, desired);
         model.observations.drift = None;
-        let r = evaluate_drift(&model, now, Some(desired));
+        let r = evaluate_drift(&model, now);
         assert_eq!(r, Err(NoDrift::NotDrifting));
         assert_eq!(r.unwrap_err().basis(), OmissionBasis::Observation);
 
         // 追跡はあるが、信頼できる観測が無い。
         drifting_since(&mut model, now);
-        let r = evaluate_drift(&model, now, Some(desired));
+        let r = evaluate_drift(&model, now);
         assert_eq!(r, Err(NoDrift::NoTrustedObservation));
         assert_eq!(r.unwrap_err().basis(), OmissionBasis::Observation);
-        assert_eq!(check_drift_correction(&model, now, Some(desired)), None);
+        assert_eq!(check_drift_correction(&model, now), None);
     }
 }

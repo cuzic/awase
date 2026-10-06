@@ -648,8 +648,7 @@ impl Harness {
             });
         }
 
-        let explicit = self.hub.model().last_intent.as_ref().map(|i| i.target);
-        if let Some(drift) = check_drift_correction(self.hub.model(), self.now(), explicit) {
+        if let Some(drift) = check_drift_correction(self.hub.model(), self.now()) {
             // `ir_apply_drift_correction`（`runtime/ime_refresh.rs`）: ImmCross（書き込み経路が
             // `set_ime_open_ordered`）で warrant が下りない補正は、「検知」の手前で見送る（`b6ab8980`）。
             let warranted = self.warrant_for(drift.desired).is_some();
