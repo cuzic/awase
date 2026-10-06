@@ -101,7 +101,7 @@
 | [BUG-094](BUG-094.md) | 解決済み(コード確認のみ) | 親指キーを無変換/変換に選び直すと設定画面のドロップダウンが消える |
 | [BUG-095](BUG-095.md) | 解決済み(コード確認のみ) | `.yab`のクォート崩れリテラルが無警告で受理される（レイアウト検証不足） |
 | [BUG-097](BUG-097.md) | 解決済み(コード確認のみ) | IME apply pending 上書き後の旧成功完了が stale 扱いされ applied が固着する |
-| [BUG-098](BUG-098.md) | 未修正(現行コードに残存を確認) | generation なし非同期 shadow toggle OFF 完了は focus epoch ゲートを通らない |
+| [BUG-098](BUG-098.md) | 主な窓は M-3(`cf48bc67`)で閉じた。残りは小さな窓で実害の記録なし(2026-10-06 訂正、案 D) | generation なし非同期 shadow toggle の完了と focus epoch ゲート |
 | [BUG-100](BUG-100.md) | 機構撤去済み | `key_remap` の latch (`LATCHED_TARGET`) が KeyUp 消失や一部の swallow 経路で stuck する |
 | [BUG-101](BUG-101.md) | 解決済み(実機確認済み) | `Engine::on_input` の Phase 0 が Consume 済み KeyDown に対応する KeyUp を FSM に一切届けていない（2026-03-31 混… |
 | [BUG-102](BUG-102.md) | 解決済み(コード確認のみ) | 起動直後にフォーカスしていたアプリの `ImmCrossProbe`（High）観測が導出から外れ、Medium の定期ポーリングに負ける（bootstrap フェンス desyn… |
