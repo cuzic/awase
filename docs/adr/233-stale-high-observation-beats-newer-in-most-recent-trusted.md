@@ -110,4 +110,4 @@ belief のフォールバック(`resolve_open_at` が明示意図・`KeyEffectPr
 
 ## 状態
 
-設計は収束(2026-10-06、Opus round3 で「収束」)。round1: Blocker 2・Must 5、round2: Must 3・Should 3・Nit 3 を反映済み。**実装済み**(ブランチ fix/bug189-most-recent-trusted、2026-10-06): `most_recent_trusted` を A' に、`_excluding`(drift)・`_after`(read_back)は不変。単体テスト・BUG-189 の列の再現テスト(旧い順位キーに戻すと失敗することを確認)。CI での実機確認は結果待ち。
+設計は収束(2026-10-06、Opus round3 で「収束」)。round1: Blocker 2・Must 5、round2: Must 3・Should 3・Nit 3 を反映済み。**実装済み**(ブランチ fix/bug189-most-recent-trusted、2026-10-06): `most_recent_trusted` を A' に、`_excluding`(drift)・`_after`(read_back)は不変。単体テスト・BUG-189 の列の再現テスト(旧い順位キーに戻すと失敗することを確認)。CI の確認済み(run 37463797464、Flutter × MS-IME 8 回: PASS 7・INVALID 1、LibreOffice 12 回全 PASS、`MostRecentTrusted(ImmCrossProbe)`→false の反転 0 件)。実機は未検証。
