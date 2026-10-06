@@ -7,7 +7,7 @@
 //!
 //! **ADR-156 の窓口のうち、`plan_blocking` を共有するもの**:
 //! - defer 側: `Output::defer_vks_if_probe_or_recovery_in_flight`（`DeferGate::Enforced` は `check_raw_recovery=true`、
-//!   `Exempt` は `false`。この対応は純粋側では固定できず、`architecture_guard` の走査が固定する）。
+//!   `Exempt` は `false`。この対応は純粋側では固定できない。走査が固定するのは、共通コアの引数の流れと `defer_if_probe_in_flight`(true)・`..._recovery_exempt`(false) の呼び出し、drain の `(true)` まで。`defer_respecting_gate` の Enforced/Exempt の arm の入れ替えと、`defer_vk_if_probe_in_flight` の `true`→`false` は走査も純粋側のテストも検出しない(未固定)）。
 //! - drain-before-send 側: `Output::drain_pending_deferred_before_send_if_queue_only`（`Exempt` は何も読まずに戻り、
 //!   `Enforced` は `check_raw_recovery=true` で読む。ADR-128 で Exempt の早期 return が入ったので、「gate に関わらず
 //!   raw を見る」非対称は今は観測できない）。
