@@ -3,7 +3,7 @@ id: ADR-106
 title: |-
   fence 識別子の所有権是正と観測プロブナンスの型強制
 status: |-
-  一部実装(決定1〜4 実装済み・決定5 は未実装、2026-10-06 裏取り): `FocusFence`(state/probe_admission.rs)が現存し観測の受理は一本化済み。決定5(`Lease<P>`/`Captured<T>`)は型が 0 件で未実装。着手条件(統合対象が絞られる)は実質達成(使用サイトは ImmLikeTicket と ConvObservation の 2 系統)だが、両者は既に同じ FocusFence を共有し統合の動機が薄い。実施か棄却かは所有者判断。
+  完了(決定1〜4 実装済み・決定5 は見送り、2026-10-06 所有者判断): `FocusFence`(state/probe_admission.rs)が現存し観測の受理は一本化済み。決定5(`Lease<P>`/`Captured<T>`)は、使用サイト 2 系統(ImmLikeTicket・ConvObservation)が既に同じ FocusFence を共有し統合の動機が薄いため実施しない。再オープン条件: 世代・柵の取り違えによる不具合が新たな型で防げると示されたとき。
   旧(2026-10-04 更新前):
   **決定1〜4 実装済み・決定3は実機（dragonflyg4）で回帰修正を確認済み（2026-08-26）。** [ADR-104](104-observation-freshness-and-hardening.md) に対し
   Opus 2体による独立レビュー（ラウンド1）→相互攻撃（ラウンド2）の敵対的レビューを実施した結果、

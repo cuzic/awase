@@ -120,7 +120,7 @@
 | [103](103-warmup-probe-pending-integrity.md) | Warmup/Probe 過渡期の pending 取りこぼしと FSM 整合性 | 実装済み(PR #108)・一部機構は後続で撤去(2026-10-04 確認)。probe/pending の機構(output/pro… |
 | [104](104-observation-freshness-and-hardening.md) | 非同期観測の鮮度・Win32 戻り値・死んだ安全弁の整理 | 一部置換・多くは未実装(2026-10-06 裏取り): 決定6-a・6-c は ADR-106 で置換。決定7(同期 conv 読み取りの追い出し)は ADR-106 決定4 が前提工事のみで本体は見送り。未実装(コー |
 | [105](105-engine-thread-notification-via-hwnd.md) | エンジンスレッドへの通知はHWND宛のPostMessageWに統一する | 実装済み(コード確認のみ、2026-10-04)。`runtime/engine_window.rs` が現存。実機ソークの記録は確認で… |
-| [106](106-fence-ownership-and-observation-provenance.md) | fence 識別子の所有権是正と観測プロブナンスの型強制 | 一部実装(決定1〜4 実装済み・決定5 は未実装、2026-10-06 裏取り): `FocusFence`(state/probe_admission.rs)が現存し観測の受理は一本化済み。決定5(`Lease<P>` |
+| [106](106-fence-ownership-and-observation-provenance.md) | fence 識別子の所有権是正と観測プロブナンスの型強制 | 完了(決定1〜4 実装済み・決定5 は見送り、2026-10-06 所有者判断): `FocusFence`(state/probe_admission.rs)が現存し観測の受理は一本化済み。決定5(`Lease<P>` |
 | [107](107-bug25-gji-half-width-alnum-entry.md) | BUG-25 GJI 半角英数 entry の実現機構（自己注入の識別・修飾キー文脈・一度きりのトグル） | 実装済み(コード確認のみ、2026-10-04)。GJI 半角英数トグル(`HalfWidthAlnumState`、`send_gji… |
 | [108](108-ime-apply-pending-generation-ordering.md) | IME apply 完了の受理判定を「pending 一致」から3つの独立した問いへ分解する | 実装済み(コード確認のみ、2026-10-04)。`ime_model.rs` に決定1(focus_epoch)・決定2/5・決定4 … |
 | [109](109-yab-cv4d-punctuation-auto-confirm.md) | `.yab` 句読点確定サフィックス（やまぶき `CV4D` 相当）の実現機構 | 一部解決(2026-09-13 から変更なし、2026-10-04 確認)。確定付き `layout/nicola_kakutei.ya… |
@@ -133,7 +133,7 @@
 | [117](117-bug138-msime-composition-diagnostic-logging.md) | MS-IME「直接入力モード許可」時の英数キー文字消失（issue #138）切り分け用ログ | 実装済み(2026-09-02、挙動変更なしの診断ログ)。`ime_controller.rs` に `composition_acti… |
 | [118](118-teams-kana-lock-detection.md) | Teams(WebView2/MS-IME) のかな入力ロック検知と通知 | 実装済み(コード確認のみ、2026-10-04)。`WM_KANA_LOCK_WARNING_CHANGED`(lib.rs)と `tr… |
 | [119](119-injected-and-relay-key-consumption-invariant.md) | 注入キーイベントの取り扱い — 解釈しないものは消費もしない | 実装済み(コード確認のみ、2026-10-04)。`AppImeProfile::InputRelay` が現存し、物理キー配送の判定(… |
-| [120](120-retroactive-ngram-correction.md) | n-gram 事後訂正 — 後続文脈による曖昧決定の再評価と BACKSPACE 書き換え | 一部実装(Phase 0a のカウンタ・不具合報告への統合のみ、2026-10-06 裏取り): src/engine/retro_eval_stats.rs(f61f1092)と bug_report.rs の統合は実 |
+| [120](120-retroactive-ngram-correction.md) | n-gram 事後訂正 — 後続文脈による曖昧決定の再評価と BACKSPACE 書き換え | 棄却クローズ(2026-10-06、所有者判断): Phase 0a のカウンタ(src/engine/retro_eval_stats.rs、f61f1092)と不具合報告への統合は残す。決定2〜8(訂正出力)は、判断 |
 | [121](121-explicit-physical-ime-key-idempotent-reassert.md) | 物理 IME 訂正キーの no-op 時に、冪等な再送を追加で試みる（BUG-37 部分対策） | 撤去済み(2026-10-04 確認)。D1 の reassert(`reassert_explicit_physical_key`)は… |
 | [122](122-cold-start-per-vk-confirm-race-recovery.md) | GJI コールドスタート直後の per-VK confirm が「確認遅延」を「未着弾」と誤認し、回収送信が GJI 自身の非同期処理と競合してモーラが重複する（BUG-75 追加… | 保留(未実装、2026-10-04 確認)。案F(`grace_hold_verdict` の早期確定の修正)の実装コミットは無く、`g… |
 | [123](123-focus-resync-and-probe-defer-queue-composition-race.md) | `pending_deferred` の flush ガードが GJI reinit-retry 完了しか見ていないため、reinit 完了を待つ間に到着した別モーラが独立 pro… | 一部実装(診断ログのみ、2026-10-04 確認)。診断(`TsfProbeStarted.pending_deferred_len`… |
