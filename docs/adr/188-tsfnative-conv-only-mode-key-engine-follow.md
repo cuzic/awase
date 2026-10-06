@@ -10,7 +10,7 @@ summary: |-
   強制チェック/E3=E2+Shiftガード中は再試行)を実機で比較し、E3が全ケースで最初の打鍵から正しい唯一の案だった。本ADRは実験の設計を
   実装に落とす前のレビュー対象で、フィールドの積み増しを最小にする形を探す。
 status: |-
-  未実装・方針を段階化(2026-10-06、Opus 実装前レビュー Blocker 2・Must 6 を反映): 先の最小配線案はそのままでは動かない(物理の無変換/変換は arm の対象外、基準値が古いと取りこぼしと逆追随)。第0段=窓内の読み(t_ms, open, conv)をログに出すだけの計測、第1段=無変換/変換(Shift なし)は FSM 再送出時に予測(ADR-191 決定3)を当てる、第2段=監視窓の拡張は予測が効かない Shift+無変換だけに限る。第0段の結果が出るまで第1・2段は実装しない。BUG-186 は範囲外。
+  第0段(計測)完了・第1段を再設計中(2026-10-06): 実 Chrome×GJI で、物理モードキー/FSM 再送出の最初の読み(31〜46ms)が既に遷移後の状態を示し、窓内に遷移途中の値は出ない(30 窓)。開閉と conv(かな 25・半角英数 16)が信頼できるため、窓内の読みを基準値なしで観測として採る案を Opus レビューに掛ける予定。実装はまだ。BUG-186 は範囲外。
   旧(2026-10-04 更新前):
   **ドラフト(実験のみ、未実装)**。レビュー対象。実験パッチ: `188-measurements/e3-experimental.patch`(実験用、そのまま採用しない)。
 related_adr:
@@ -122,3 +122,15 @@ related_adr:
 - 第1段: 結果が良ければ executor の再送出で予測を当てる(`sc-bug149-chrome-atok-passthru` の無変換/変換が 3/3 PASS になるか)。
 - 第2段: Shift+無変換だけ監視窓を拡張(B2・M1〜M6 を満たす)。
 合格条件は修正前後の A/B で、既定 Suppress と awase なしの対照の FAIL の集合が変わらないこと、MS-IME 構成で `[external-change]` が 0 件、素通し設定で「打鍵→変換→確定」を繰り返しても変換中の追随が 0 件であること。回帰テストは `state/external_change_watch.rs` の純関数テストと `tests/closed_loop_scenarios.rs`、`tests/architecture_guard.rs` に置く。
+
+
+## 2026-10-06 追記3: 第0段(計測)の結果と、基準値なしの観測案
+
+`ci/adr188-trace`(`13c23c54`、挙動不変のログのみ)を `sc-bug149-chrome-atok-passthru` で実行(run 37437413624、実 Chrome・GJI の ATOK・素通し・`profile=Imm32Unavailable`)。物理モードキー(素通し)と FSM 再送出の後、300ms の窓で 60ms ごとに prefetch の `(open, conv)` を出した。30 窓:
+
+- **最初の読みは 31〜46ms(中央値 31ms)で既に遷移後の状態**。窓内で値が変わった窓は 0 件(遷移途中の値は出なかった)。
+- 値は意味が通る: かな=conv 25(0x19)、半角英数=16(0x10)、無変換/変換→IME OFF の FSM 再送出は `open=false`。Shift+無変換(`vk=0x1D shift=true`)は `open=true conv=16`(半角英数)。直接入力→無変換/変換は `open=true conv=25`(かな ON)。
+- 追随が要る状況が実在する: FSM 再送出の窓(かな→無変換=IME OFF)6 件はすべて `open=false` だが `belief_open=true intent=Some(true)`。Shift+無変換の 3 件は `conv=16` だが belief は `ObservedEisu` でなくかな扱い(`belief_open=true`)。つまり**打鍵の約 31ms 後には実状態を読めており、読まれた値と awase の belief が食い違っている**。
+- 測れていない: arm 時点の最後の読み(基準値)の古さ(今回は基準値を持たない設計のため)。前提状態のセットアップでの awase の明示書き込みの有無は `intent=Some(true)` の多さから、明示意図が残る状況は日常的に起きる。
+
+**第1段の再設計案(基準値なし、Opus 再レビュー待ち)**: 先の案(窓の基準値との差分で追随)は、B2(基準値が古いと取りこぼしと逆追随)の弱点を持つ。しかし最初の読みが 31ms で既に遷移後の状態であり、遷移途中の値が出ないため、**基準値を持たず、窓内の読み(GJI×`Imm32Unavailable`、フォーカス・世代が同じ)を直接の観測として採る**ことができる見込み。すなわち、物理モードキー通過/FSM 再送出の後の窓内の prefetch を、`SkipTyping` で捨てる代わりに既存の観測(開閉は `write_observer_poll` 相当、conv は `InputModeObserved(ConvBitsInference)`)として classify を通して採用する。これなら無変換/変換・Shift+無変換・ひらがなを同じ経路で扱え、予測側の配線(executor からの `kp_predict_key_effect`)も不要になる。守る条件: M1(予測の fence 170ms との干渉)、M2(変換中は arm しない)、M3(`shadow_action`/`sync_direction` 付きは対象外)、M5(純関数・ROMAN から Kana を作らない)、M6(両軸を 1 回で反映)、BUG-14(意図への昇格をしない)。
