@@ -596,10 +596,7 @@ impl Runtime {
     /// 避けるため、開く・閉じるの両方向とも GJI に限る（round: PR #377 Opus レビュー 1・2）。
     #[must_use]
     pub fn external_change_watch_applies(&self) -> bool {
-        self.platform.current_app_profile()
-            == crate::focus::class_names::AppImeProfile::Imm32Unavailable
-            && crate::tsf::observer::tsf_obs().active_ime_kind()
-                == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+        external_change_watch_applies_for(self.platform.current_app_profile())
     }
 
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
@@ -2575,4 +2572,14 @@ mod layout_entry_tests {
             0
         );
     }
+}
+
+/// `Runtime::external_change_watch_applies` の述語本体。executor（`Runtime` を持たない）からも同じ条件で呼ぶ（ADR-188）。
+#[must_use]
+pub(crate) fn external_change_watch_applies_for(
+    profile: crate::focus::class_names::AppImeProfile,
+) -> bool {
+    profile == crate::focus::class_names::AppImeProfile::Imm32Unavailable
+        && crate::tsf::observer::tsf_obs().active_ime_kind()
+            == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
 }

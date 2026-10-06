@@ -150,6 +150,8 @@ impl Runtime {
         );
         // ADR-205: 打鍵中（SkipTyping）でも、prefetch 済みの開閉の読みを外部変化の監視窓に照合する（追加 I/O なし）。
         self.ir_follow_external_change(ime_snap);
+        // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。
+        self.ir_follow_direct_mode_key_read(ime_snap);
         match strategy {
             ImeReadStrategy::SkipTyping => {}
             ImeReadStrategy::Blacklist => {
@@ -266,6 +268,36 @@ impl Runtime {
             tracing::info!(
                 "[external-change] 監視窓の中で開閉の読みが変わった → 実状態 open={open} へ追随 \
                  (意図を捨て desired を揃える。awase は IME を書かない)"
+            );
+        }
+    }
+
+    /// ADR-188（BUG-149/150 の Chrome 版）: 読めない窓（GJI × `Imm32Unavailable`）で、物理のモードキー（Shift 付き・FSM の
+    /// 再送出を含む）の直後の直接観測の窓の中に、prefetch 済みの開閉・conv の読みを belief と照合し、食い違う軸へ追随する。
+    /// 基準値は使わず、awase は IME を書かない。awase 自身が窓の後に書いていたら採らない（R3）。
+    fn ir_follow_direct_mode_key_read(&mut self, ime_snap: Option<&crate::ime::ImeSnapshot>) {
+        if !self.external_change_watch_applies() {
+            return;
+        }
+        let Some(snap) = ime_snap else {
+            return;
+        };
+        let now = crate::hook::current_tick_ms();
+        let accepted =
+            crate::state::probe_admission::AcceptedObservation::for_sync(self.focus_fence());
+        if let Some(follow) = self.platform_state.ime.follow_direct_read(
+            snap.ime_on,
+            snap.conversion_mode,
+            now,
+            crate::state::TickMs(now),
+            accepted,
+        ) {
+            tracing::info!(
+                "[direct-follow] モードキー直後の窓の中で実状態が belief と違った → open={:?} eisu={:?} へ追随 \
+                 (conv={:?}。意図を捨て desired を揃える。awase は IME を書かない)",
+                follow.open,
+                follow.eisu,
+                snap.conversion_mode,
             );
         }
     }

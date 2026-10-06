@@ -471,6 +471,92 @@ impl ImeStateHub {
         Some(v)
     }
 
+    // ── 直接観測の窓（ADR-188、BUG-149/150 の Chrome 版）──
+
+    /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（読めない窓＝GJI × `Imm32Unavailable` のみ）。直接観測の窓を開く／延ばす。
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn arm_direct_external_change_watch_in_scope(
+        &mut self,
+        now_ms: u64,
+        scope: crate::state::foreground_scope::ForegroundScope,
+    ) {
+        self.external_change_watch.arm_direct(
+            scope,
+            now_ms,
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        );
+    }
+
+    /// 直接観測の窓の中の prefetch 済みの読み（`read_open`・`read_conv`）を belief と照合し、食い違う軸へ追随する。
+    ///
+    /// 基準値を使わず（古い基準値による取りこぼし・逆追随が起きない）、窓も閉じない。追随は awase が IME を書かない:
+    /// - 開閉の食い違い: `ObserverPoll(v)` → 対象の明示意図を削除 → `ModeKeyPassedThrough{align_desired, demote_applied}`
+    ///   （ADR-205 と同じ 3 副作用。意図が残ると観測より優先されて Engine が OFF にならない、ADR-188 R1）。
+    /// - 英数かどうかの食い違い: `InputModeObserved{ConvBitsInference, Medium}`（NATIVE ビットだけで決める、R2）。
+    ///
+    /// awase 自身が窓の最後の arm 以後に IME へ書いていたら（`last_explicit_ime_action_ms`）、GJI の処理前の読みで belief を
+    /// 逆戻ししないよう採らない（R3）。窓が無い・Direct でない・スコープ違いなら何もしない。戻り値は追随した軸。
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn follow_direct_read_in_scope(
+        &mut self,
+        read_open: Option<bool>,
+        read_conv: Option<u32>,
+        now_ms: u64,
+        tick_ms: TickMs,
+        accepted: crate::state::probe_admission::AcceptedObservation,
+        scope: crate::state::foreground_scope::ForegroundScope,
+    ) -> Option<super::external_change_watch::DirectFollow> {
+        if !self.external_change_watch.direct_live(
+            scope,
+            now_ms,
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        ) {
+            return None;
+        }
+        let armed_at = self.external_change_watch.last_arm_ms()?;
+        if self.last_explicit_ime_action_ms >= armed_at {
+            return None;
+        }
+        let follow = super::external_change_watch::classify_direct_read(
+            read_open,
+            read_conv,
+            self.effective_open_at(tick_ms),
+            self.input_mode() == InputModeState::ObservedEisu,
+        );
+        if follow.is_none() {
+            return None;
+        }
+        if let Some(open) = follow.open {
+            self.write_observer_poll(open, tick_ms, accepted);
+            if let Some(hwnd) = self.shadow_model.current_focus() {
+                self.intent_store.remove(hwnd);
+            }
+            self.pass_through_observed(tick_ms, true, true);
+        }
+        if let Some(eisu) = follow.eisu {
+            let mode = if eisu {
+                InputModeState::ObservedEisu
+            } else {
+                InputModeState::AssumedRomaji {
+                    reason: awase::engine::AssumedReason::ImmBridgeBroken,
+                }
+            };
+            self.dispatch_event(
+                ImeEvent::InputModeObserved {
+                    mode,
+                    source: ObservationSource::ConvBitsInference,
+                    confidence: ObservationConfidence::Medium,
+                },
+                tick_ms,
+            );
+        }
+        // 追随の直後に、閉じる前の GJI I/O 推測が結果を上書きしない柵（ADR-205 と同じ、ADR-188 M7）。
+        self.last_external_change_ms = now_ms;
+        Some(follow)
+    }
+
     /// `ModeKeyPassedThrough` のdispatch元（ADR-187の「1箇所に限定」）。reducerは`last_intent`を捨て、
     /// `desired_open`を観測から導ける開閉へ揃える（BUG-157）。窓の間の揃えと、窓が切れた後の最初の成功観測での
     /// 揃え（BUG-158追補2）の両方がここを通る。
@@ -3464,5 +3550,199 @@ mod tests {
         assert_eq!(ime_events[1]["tick_ms"].as_u64(), Some(222));
         // dispatch 1 回につき record_at がちょうど 1 回（配線ではなく採番回数の確認）。
         assert_eq!(ps.ime.event_log.next_seq(), seq0 + 2);
+    }
+
+    // ── ADR-188: 直接観測の窓（基準値なし）──
+
+    fn direct_follow(
+        open: Option<bool>,
+        eisu: Option<bool>,
+    ) -> crate::state::external_change_watch::DirectFollow {
+        crate::state::external_change_watch::DirectFollow { open, eisu }
+    }
+
+    /// R1: 明示 ON の意図が残ったまま、直接観測の窓の中で閉じた実状態を読むと、意図を捨てて belief が閉になる
+    /// （意図は観測より優先されるので、`ObserverPoll` だけでは Engine が OFF にならない）。窓は閉じず、後から実状態が
+    /// 開に戻ればそれにも追随する（基準値が無いので古い基準値による取りこぼし・逆追随が起きない）。
+    #[test]
+    fn follow_direct_read_closes_belief_with_explicit_intent_and_keeps_window() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .record_confirmed_in_scope(true, 90, test_foreground_scope());
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(false),
+                Some(25),
+                1032,
+                TickMs(1032),
+                follow_fence(),
+                test_foreground_scope()
+            ),
+            Some(direct_follow(Some(false), None))
+        );
+        assert!(!ps.ime.effective_open_at(TickMs(1040)));
+        assert!(ps.ime.explicit_intent().is_none());
+        assert_eq!(ps.ime.last_external_change_ms(), 1032);
+        // 窓は閉じない。同じ読みの繰り返しでは何も起きない。
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(false),
+                Some(25),
+                1090,
+                TickMs(1090),
+                follow_fence(),
+                test_foreground_scope()
+            ),
+            None
+        );
+        // 後から実状態が開に戻れば、それにも追随する。
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(25),
+                1150,
+                TickMs(1150),
+                follow_fence(),
+                test_foreground_scope()
+            ),
+            Some(direct_follow(Some(true), None))
+        );
+        assert!(ps.ime.effective_open_at(TickMs(1160)));
+    }
+
+    /// R2: 英数かどうかは NATIVE ビットだけで決める。ROMAN ビットが無い `conv=9`(実測でローマ字入力のまま 300ms 続いた値)
+    /// では英数にしない。`conv=16`(NATIVE なし)で英数へ、`conv=25` でかな(ローマ字想定)へ戻る。
+    #[test]
+    fn follow_direct_read_decides_eisu_by_native_bit_only() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        let read = |ps: &mut PlatformState, conv: u32, t: u64| {
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(conv),
+                t,
+                TickMs(t),
+                follow_fence(),
+                test_foreground_scope(),
+            )
+        };
+        assert_eq!(
+            read(&mut ps, 9, 1032),
+            None,
+            "ROMAN なしの conv=9 は英数ではない"
+        );
+        assert_ne!(ps.ime.input_mode(), InputModeState::ObservedEisu);
+        assert_eq!(
+            read(&mut ps, 16, 1100),
+            Some(direct_follow(None, Some(true)))
+        );
+        assert_eq!(ps.ime.input_mode(), InputModeState::ObservedEisu);
+        assert_eq!(
+            read(&mut ps, 25, 1160),
+            Some(direct_follow(None, Some(false)))
+        );
+        assert!(matches!(
+            ps.ime.input_mode(),
+            InputModeState::AssumedRomaji { .. }
+        ));
+    }
+
+    /// R3: awase 自身が窓の最後の arm 以後に IME へ書いたら、GJI の処理前の読みで belief を逆戻ししない。
+    #[test]
+    fn follow_direct_read_ignores_reads_after_awase_wrote() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.note_explicit_ime_action(TickMs(1010));
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(false),
+                Some(25),
+                1032,
+                TickMs(1032),
+                follow_fence(),
+                test_foreground_scope()
+            ),
+            None
+        );
+        assert!(ps.ime.explicit_intent().is_some(), "意図は残る");
+        // 新しい物理キー(再 arm)の後の読みは採る。
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1200, test_foreground_scope());
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(false),
+                Some(25),
+                1232,
+                TickMs(1232),
+                follow_fence(),
+                test_foreground_scope()
+            ),
+            Some(direct_follow(Some(false), None))
+        );
+    }
+
+    /// 窓が無い・基準値方式(ADR-205)の窓・スコープ違い・窓切れでは、直接観測の追随をしない。
+    #[test]
+    fn follow_direct_read_requires_a_live_direct_window_in_scope() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        let follow = |ps: &mut PlatformState, t: u64, scope| {
+            ps.ime.follow_direct_read_in_scope(
+                Some(false),
+                Some(25),
+                t,
+                TickMs(t),
+                follow_fence(),
+                scope,
+            )
+        };
+        assert_eq!(
+            follow(&mut ps, 1032, test_foreground_scope()),
+            None,
+            "窓なし"
+        );
+        ps.ime
+            .arm_external_change_watch_in_scope(1000, test_foreground_scope());
+        assert_eq!(
+            follow(&mut ps, 1032, test_foreground_scope()),
+            None,
+            "基準値方式の窓では直接観測しない"
+        );
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        let other = crate::state::foreground_scope::ForegroundScope {
+            pid: 43,
+            hwnd: 0x9999,
+        };
+        assert_eq!(follow(&mut ps, 1032, other), None, "スコープ違い");
+        assert_eq!(
+            follow(&mut ps, 1040, test_foreground_scope()),
+            None,
+            "スコープ違いで窓は破棄済み"
+        );
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        assert_eq!(
+            follow(&mut ps, 1000 + 301, test_foreground_scope()),
+            None,
+            "窓切れ"
+        );
     }
 }

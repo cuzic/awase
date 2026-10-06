@@ -4406,6 +4406,21 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
                 ".follow_external_change_in_scope(",
                 &["state/platform_state/shell.rs"][..],
             ),
+            // ADR-188: 直接観測の窓（物理のモードキー通過・FSM 再送出）。arm は `kp_stage_mode_key_follow` と executor の再送出の各1箇所、
+            // 追随は `ir_follow_direct_mode_key_read` の1箇所だけ。殻は `_in_scope` 版をちょうど1回ずつ呼ぶ。
+            (
+                ".arm_direct_external_change_watch(",
+                &["runtime/key_pipeline.rs", "runtime/executor.rs"][..],
+            ),
+            (".follow_direct_read(", &["runtime/ime_refresh.rs"][..]),
+            (
+                ".arm_direct_external_change_watch_in_scope(",
+                &["state/platform_state/shell.rs"][..],
+            ),
+            (
+                ".follow_direct_read_in_scope(",
+                &["state/platform_state/shell.rs"][..],
+            ),
         ] {
             let count = production.matches(needle).count();
             let expected = usize::from(allowed.contains(&rel.as_str()));
@@ -4429,18 +4444,34 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
         ))
     };
     let mod_rs = read("runtime/mod.rs");
+    // 述語本体は `external_change_watch_applies_for`（ADR-188: executor は `Runtime` を持たないので同じ述語を共有する）。
     let pred = mod_rs
-        .split("fn external_change_watch_applies")
+        .split("fn external_change_watch_applies_for")
         .nth(1)
         .expect("述語が無い");
-    let pred = &pred[..pred.find("\n    }\n").unwrap_or(pred.len())];
+    let pred = &pred[..pred.find("\n}\n").unwrap_or(pred.len())];
     assert!(pred.contains("AppImeProfile::Imm32Unavailable"), "{pred}");
     assert!(
         pred.contains("ActiveImeKind::GoogleJapaneseInput"),
         "{pred}"
     );
+    assert!(
+        mod_rs.contains("external_change_watch_applies_for(self.platform.current_app_profile())"),
+        "Runtime::external_change_watch_applies は述語本体を呼ぶこと"
+    );
     assert!(read("runtime/key_pipeline.rs").contains("self.external_change_watch_applies()"));
     assert!(read("runtime/ime_refresh.rs").contains("self.external_change_watch_applies()"));
+    // ADR-188: executor の arm も同じ述語を通し、変換中は開かない。
+    let executor = read("runtime/executor.rs");
+    assert!(
+        executor.contains("external_change_watch_applies_for("),
+        "{executor}"
+    );
+    assert!(
+        executor.contains("ime_composition_active_now()"),
+        "executor の直接観測の arm は変換中を除外すること（ADR-188 M2）"
+    );
+    assert!(read("runtime/key_pipeline.rs").contains("ime_composition_active_now()"));
 }
 
 /// ADR-158 TE3 / PR #377 レビュー M6-1: `Runtime::can_use_imm32_cross_process` は `#[track_caller]` を持つ。
