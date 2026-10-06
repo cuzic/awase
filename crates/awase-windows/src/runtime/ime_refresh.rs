@@ -68,7 +68,7 @@ impl Runtime {
         }
 
         let strategy = self.ir_stage_strategy(&focus);
-        self.ir_stage_observe(&focus, &strategy, ime_snap);
+        self.ir_stage_observe(&focus, strategy, ime_snap);
         self.ir_stage_notify();
     }
 
@@ -136,7 +136,7 @@ impl Runtime {
     fn ir_stage_observe(
         &mut self,
         focus: &FocusInfo,
-        strategy: &ImeReadStrategy,
+        strategy: ImeReadStrategy,
         ime_snap: Option<&crate::ime::ImeSnapshot>,
     ) {
         tracing::debug!(
