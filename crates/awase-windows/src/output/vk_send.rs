@@ -577,10 +577,10 @@ impl Output {
         // GJI が応答するまで次のキーも unicode で送ることで race を回避する。
         let in_post_unicode_pending = {
             let last_unicode_ms = self.composition.last_unicode_transmit_ms();
-            warm_send_plan::is_post_unicode_pending(
+            warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts {
                 last_unicode_ms,
-                crate::tsf::observer::gji_last_io_ms(),
-            )
+                gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
+            })
         };
         let used_eager_path = if in_post_unicode_pending {
             tracing::debug!(
@@ -628,11 +628,11 @@ impl Output {
         // LiteralDetector が常にタイムアウト → SuspectedLiteral の false positive になる。
         // 長期静止時は composition が TSF で正常に処理されたと見なして LiteralDetect をスキップ。
         // 判断は `warm_send_plan::plan_literal_detect`（FCIS F6b）。
-        let probe_long_idle = warm_send_plan::is_long_idle(
-            crate::hook::current_tick_ms(),
-            crate::tsf::observer::gji_last_io_ms(),
-            crate::tuning::LONG_IDLE_MS,
-        );
+        let probe_long_idle = warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts {
+            now_ms: crate::hook::current_tick_ms(),
+            gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
+            threshold_ms: crate::tuning::LONG_IDLE_MS,
+        });
         let literal_detect =
             warm_send_plan::plan_literal_detect(warm_send_plan::LiteralDetectFacts {
                 gate_probing: self.tsf_gate.state() == crate::tsf::TsfGateState::Probing,

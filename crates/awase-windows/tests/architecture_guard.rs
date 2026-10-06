@@ -7201,34 +7201,51 @@ fn deferred_gate_wiring_detector_catches_violations() {
 }
 
 /// FCIS F6b: TSF 送信パイプラインの warm/cold・PendingGjiConfirm・LiteralDetect 設置の判断は
-/// `state/warm_send_plan.rs`。殻が純粋関数を使い、判断をインラインに書き戻していないことの違反を返す。
+/// `state/warm_send_plan.rs`。殻が純粋関数の**結果を使い**、判断をインラインに書き戻さず、
+/// 引数の取り違え・定数の差し替えをしていないことの違反を返す（空白を潰した文字列で照合する）。
 fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static str> {
+    fn squash(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
     let mut v = Vec::new();
-    let assess = non_comment_lines(extract_fn_body(
+    let assess = squash(&non_comment_lines(extract_fn_body(
         production_code_only(output_mod),
         "fn assess_warmth(",
-    ));
-    if !assess.contains("plan_warmth(")
-        || assess.contains("COMPOSITION_TIMEOUT_MS)") && assess.contains("elapsed >")
-    {
-        v.push(
-            "assess_warmth が plan_warmth を使っていない、または期限判定をインラインに書いている",
-        );
-    }
-    let warm = non_comment_lines(extract_fn_body(
-        production_code_only(vk_send),
-        "fn send_romaji_as_tsf_warm(",
-    ));
+    )));
     for needle in [
-        "is_post_unicode_pending(",
-        "is_long_idle(",
-        "plan_literal_detect(",
+        "warm_send_plan::plan_warmth(",
+        "session_expired:plan.session_expired",
+        "prepend_f2_warmup:plan.prepend_f2_warmup",
+        "composition_timeout_ms:crate::tuning::COMPOSITION_TIMEOUT_MS",
     ] {
-        if !warm.contains(needle) {
-            v.push("send_romaji_as_tsf_warm が warm_send_plan の判断関数を使っていない");
+        if !assess.contains(needle) {
+            v.push("assess_warmth が plan_warmth の結果/定数を使っていない");
         }
     }
-    if warm.contains(">= crate::tuning::LONG_IDLE_MS") || warm.contains("last_unicode_ms != 0") {
+    if assess.contains("elapsed>crate::tuning::COMPOSITION_TIMEOUT_MS")
+        || assess.contains("elapsed>")
+    {
+        v.push("assess_warmth が期限判定をインラインに書き戻している");
+    }
+    let warm = squash(&non_comment_lines(extract_fn_body(
+        production_code_only(vk_send),
+        "fn send_romaji_as_tsf_warm(",
+    )));
+    for needle in [
+        "warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts{last_unicode_ms,gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),})",
+        "warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts{now_ms:crate::hook::current_tick_ms(),gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),threshold_ms:crate::tuning::LONG_IDLE_MS,})",
+        "warm_send_plan::plan_literal_detect(",
+        "long_idle:probe_long_idle",
+        "matches!(literal_detect,warm_send_plan::LiteralDetectPlan::Install)",
+    ] {
+        if !warm.contains(needle) {
+            v.push("send_romaji_as_tsf_warm が warm_send_plan の結果/引数の形を使っていない");
+        }
+    }
+    if warm.contains(">=crate::tuning::LONG_IDLE_MS")
+        || warm.contains("last_unicode_ms!=0")
+        || warm.contains("TsfGateState::Probing&&")
+    {
         v.push("send_romaji_as_tsf_warm が判断をインラインに書き戻している");
     }
     v
@@ -7243,23 +7260,58 @@ fn warm_send_plan_is_wired_into_assess_warmth_and_tsf_warm_send() {
     assert!(v.is_empty(), "warm_send_plan の配線違反: {v:?}");
 }
 
-/// 違反例（plan_warmth を外してインラインに戻す、LONG_IDLE_MS をインラインで比較する）を検出できること（V2-3）。
+/// 違反例を検出できること（V2-3）。呼び出しを消す形だけでなく、**呼び出しを残したまま**判断をインラインに戻す・
+/// 引数を入れ替える・定数を差し替える形も試す。
 #[test]
 fn warm_send_wiring_detector_catches_violations() {
     let m = read_crate_file("src/output/mod.rs");
     let v = read_crate_file("src/output/vk_send.rs");
     assert!(warm_send_wiring_violations(&m, &v).is_empty());
-    let no_plan = m.replacen("warm_send_plan::plan_warmth(", "unused_plan(", 1);
-    assert_ne!(no_plan, m);
-    assert!(!warm_send_wiring_violations(&no_plan, &v).is_empty());
-    let inline_idle = v.replacen(
-        "warm_send_plan::is_long_idle(",
-        "unused(crate::tuning::LONG_IDLE_MS) >= crate::tuning::LONG_IDLE_MS || (",
+    let check_m = |mutated: String| {
+        assert_ne!(mutated, m);
+        assert!(!warm_send_wiring_violations(&mutated, &v).is_empty());
+    };
+    let check_v = |mutated: String| {
+        assert_ne!(mutated, v);
+        assert!(!warm_send_wiring_violations(&m, &mutated).is_empty());
+    };
+    // plan_warmth を残したまま結果を使わずインラインに戻す
+    check_m(m.replacen(
+        "session_expired: plan.session_expired,",
+        "session_expired: warm && elapsed > crate::tuning::COMPOSITION_TIMEOUT_MS,",
         1,
-    );
-    assert_ne!(inline_idle, v);
-    assert!(!warm_send_wiring_violations(&m, &inline_idle).is_empty());
-    let no_literal = v.replacen("warm_send_plan::plan_literal_detect(", "unused_literal(", 1);
-    assert_ne!(no_literal, v);
-    assert!(!warm_send_wiring_violations(&m, &no_literal).is_empty());
+    ));
+    check_m(m.replacen(
+        "prepend_f2_warmup: plan.prepend_f2_warmup,",
+        "prepend_f2_warmup: !warm,",
+        1,
+    ));
+    // 定数の差し替え
+    check_m(m.replacen(
+        "composition_timeout_ms: crate::tuning::COMPOSITION_TIMEOUT_MS,",
+        "composition_timeout_ms: crate::tuning::LONG_IDLE_MS,",
+        1,
+    ));
+    // 引数の入れ替え・定数の差し替え
+    check_v(v.replacen(
+        "now_ms: crate::hook::current_tick_ms(),",
+        "now_ms: crate::tsf::observer::gji_last_io_ms(),",
+        1,
+    ));
+    check_v(v.replacen(
+        "threshold_ms: crate::tuning::LONG_IDLE_MS,",
+        "threshold_ms: crate::tuning::COMPOSITION_TIMEOUT_MS,",
+        1,
+    ));
+    check_v(v.replacen(
+        "gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),\n            })",
+        "gji_last_io_ms: crate::hook::current_tick_ms(),\n            })",
+        1,
+    ));
+    // plan_literal_detect を残したまま結果を捨てる
+    check_v(v.replacen(
+        "matches!(literal_detect, warm_send_plan::LiteralDetectPlan::Install)",
+        "self.tsf_gate.state() == crate::tsf::TsfGateState::Probing",
+        1,
+    ));
 }

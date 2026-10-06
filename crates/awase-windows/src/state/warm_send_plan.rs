@@ -2,8 +2,8 @@
 //! 「GJI の応答待ちか」「LiteralDetect を仕掛けるか」の判断の核（FCIS F6b）。
 //!
 //! 元の分岐を変えずに、判断だけを純粋関数へ出した。時刻は `crate::hook::current_tick_ms()` の `u64`（ms）で既に持たれており
-//! `Instant` は使われていない（`output/`・`tsf/probe.rs` の本番コードに `Instant` は無い）ので、事実は `u64` のまま渡す
-//! （V4 の前提は満たされている。`TickMs`/`HubClock` への置き換えは本 PR では要らない）。値の読み取り
+//! `Instant` は使われていない（`output/`・`tsf/` の本番コードに `Instant` は無い。`tsf/probe.rs` のテスト内の 3 箇所だけ）ので、事実は `u64` のまま渡す
+//! （V4 の前提は満たされている。番兵値〈`elapsed_ms == u64::MAX`・`last_unicode_ms == 0`〉は元の表現を保っている。`TickMs`/`HubClock` への置き換えは本 PR では要らない）。値の読み取り
 //! （`ms_since_last_send`・`gji_last_io_ms`・`tsf_gate.state()` など。いずれも Cell/atomic/RefCell の副作用の無い読み）と
 //! 実行（ログ・`spawn_local`・`install_pending_tsf`）は殻（`Output`）に残る。
 //!
@@ -59,17 +59,33 @@ pub(crate) const fn plan_warmth(facts: WarmthFacts) -> WarmthPlan {
     }
 }
 
+/// `is_post_unicode_pending` の入力（名前付きで渡し、同じ型の `u64` の取り違えを防ぐ）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PostUnicodeFacts {
+    /// 最後に unicode 送信した時刻。0 = 一度も送信していない。
+    pub last_unicode_ms: u64,
+    pub gji_last_io_ms: u64,
+}
+
 /// unicode 送信の後、GJI がまだ I/O 応答していないか（`PendingGjiConfirm`）。
 /// 真なら次のキーも unicode で強制送信する（先頭 VK のリテラル化を避ける）。
 #[must_use]
-pub(crate) const fn is_post_unicode_pending(last_unicode_ms: u64, gji_last_io_ms: u64) -> bool {
-    last_unicode_ms != 0 && gji_last_io_ms <= last_unicode_ms
+pub(crate) const fn is_post_unicode_pending(facts: PostUnicodeFacts) -> bool {
+    facts.last_unicode_ms != 0 && facts.gji_last_io_ms <= facts.last_unicode_ms
+}
+
+/// `is_long_idle` の入力（名前付きで渡す）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LongIdleFacts {
+    pub now_ms: u64,
+    pub gji_last_io_ms: u64,
+    pub threshold_ms: u64,
 }
 
 /// 最後の GJI I/O から `threshold_ms` 以上経っているか。
 #[must_use]
-pub(crate) const fn is_long_idle(now_ms: u64, gji_last_io_ms: u64, threshold_ms: u64) -> bool {
-    now_ms.saturating_sub(gji_last_io_ms) >= threshold_ms
+pub(crate) const fn is_long_idle(facts: LongIdleFacts) -> bool {
+    facts.now_ms.saturating_sub(facts.gji_last_io_ms) >= facts.threshold_ms
 }
 
 /// `plan_literal_detect` の入力。
@@ -157,22 +173,37 @@ mod tests {
         }
     }
 
+    fn pending(last_unicode_ms: u64, gji_last_io_ms: u64) -> bool {
+        is_post_unicode_pending(PostUnicodeFacts {
+            last_unicode_ms,
+            gji_last_io_ms,
+        })
+    }
+
+    fn idle(now_ms: u64, gji_last_io_ms: u64, threshold_ms: u64) -> bool {
+        is_long_idle(LongIdleFacts {
+            now_ms,
+            gji_last_io_ms,
+            threshold_ms,
+        })
+    }
+
     #[test]
     fn post_unicode_pending_boundaries() {
-        assert!(!is_post_unicode_pending(0, 0)); // 一度も unicode 送信していない
-        assert!(!is_post_unicode_pending(0, 100));
-        assert!(is_post_unicode_pending(100, 99));
-        assert!(is_post_unicode_pending(100, 100)); // `<=` なので同時刻は応答待ち
-        assert!(!is_post_unicode_pending(100, 101));
+        assert!(!pending(0, 0)); // 一度も unicode 送信していない
+        assert!(!pending(0, 100));
+        assert!(pending(100, 99));
+        assert!(pending(100, 100)); // `<=` なので同時刻は応答待ち
+        assert!(!pending(100, 101));
     }
 
     #[test]
     fn long_idle_boundaries() {
-        assert!(!is_long_idle(1099, 100, 1000));
-        assert!(is_long_idle(1100, 100, 1000)); // `>=`
-        assert!(is_long_idle(1101, 100, 1000));
-        assert!(!is_long_idle(50, 100, 1000)); // saturating（過去の値は 0 扱い）
-        assert!(is_long_idle(50, 100, 0));
+        assert!(!idle(1099, 100, 1000));
+        assert!(idle(1100, 100, 1000)); // `>=`
+        assert!(idle(1101, 100, 1000));
+        assert!(!idle(50, 100, 1000)); // saturating（過去の値は 0 扱い）
+        assert!(idle(50, 100, 0));
     }
 
     #[test]
@@ -190,17 +221,13 @@ mod tests {
             let original = f.gate_probing && f.gji_active && !f.long_idle && !f.is_tsf_mode;
             let plan = plan_literal_detect(f);
             assert_eq!(plan == Install, original, "{f:?}");
-            // 理由は `&&` の評価順で最初に偽になった項。
-            let want = if !f.gate_probing {
-                Skip(GateNotProbing)
-            } else if !f.gji_active {
-                Skip(GjiNotActive)
-            } else if f.long_idle {
-                Skip(LongIdle)
-            } else if f.is_tsf_mode {
-                Skip(TsfMode)
-            } else {
-                Install
+            // 理由は `&&` の評価順で最初に偽になった項（手書きの表。実装の if 連鎖の写しにしない）。
+            let want = match (f.gate_probing, f.gji_active, f.long_idle, f.is_tsf_mode) {
+                (false, _, _, _) => Skip(GateNotProbing),
+                (true, false, _, _) => Skip(GjiNotActive),
+                (true, true, true, _) => Skip(LongIdle),
+                (true, true, false, true) => Skip(TsfMode),
+                (true, true, false, false) => Install,
             };
             assert_eq!(plan, want, "{f:?}");
         }
