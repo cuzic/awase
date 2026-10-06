@@ -187,6 +187,9 @@ pub mod focus_probe_plan;
 pub mod transition;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
+// 実機（Windows）以外では呼び出し元（`runtime/`・`app/`）が無く、P5 でコアの境界に出す分だけを公開するまでは
+// 未使用警告が出る。これまでの ungated モジュールと同じ扱い。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod platform_state;
 pub use platform_state::PlatformState;
 
