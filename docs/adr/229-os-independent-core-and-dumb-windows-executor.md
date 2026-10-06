@@ -212,7 +212,7 @@ fn procedure(..) {                         // shell
 - **採る方針(代案 A)**: 現状の延長。F の分割で `decide → Cmd` を増やし、連鎖は handler の例外(`run_chain`)のまま、再生は `awase-replay` + ReplayWriter、「なぜ省略したか」は各決定関数が理由の enum を返して journal に載せる。**根本的に変えるべきは判断の入口(F の分割)で、Effect 列の表現は F の分割の結果を見て決め直す**。
 - **今すぐ着手するもの(Opus の判定)**: E0(Effect の署名の棚卸し。各 variant の順序の制約・冪等性・副作用)、E1(新しい解釈器ではなく、実際の調査で理由が足りなかった決定から 1 つずつ、決定関数の理由の enum を journal に載せる)、BUG-098(世代の無い非同期の完了を、既存の世代 F-D5-2 で直す。Plan の有無に関わらず効く唯一の実害対応)。E2〜E6(`Try`・正規化と法則・`Bracket`・capability の網羅テスト・観測の購読)は、待つ条件(タスク表)を満たすまで着手しない。
 - **採る価値がある修正された理解**: 「drift correction(有界の再送つき)だけが、観測から書いてよい」(level か edge かではなく、許可された補正かどうか)。`effective_open_at(now)` は既に「証拠の view」(信念を証拠の導出にする案は、成り立つ部分が既にある。`FocusChanged` のリセット等の単調でない操作があるので全体の semilattice 化は成り立たない)。
-- **観測と Event の購読・消費**(Redux/Elm/Rack/ASGI から借りる案: 1 つの Envelope、FocusScope、`subscriptions`、middleware の列)は、W0 の実測で前提(`reduce` を通る部分が小さい、journal が時刻・seq を持たない、時刻の入口が 3 つ)が裏づけられたが、**ADR としては未起草**。小さな着手候補(失効カウンタ 8 種類の newtype 化、死んだフィールドの削除、journal の `ImeEvent` の記録に時刻と seq を足す)は、タスク表。
+- **観測と Event の購読・消費**(Redux/Elm/Rack/ASGI から借りる案: 1 つの Envelope、FocusScope、`subscriptions`、middleware の列)は、W0 の実測で前提(`reduce` を通る部分が小さい、journal が時刻・seq を持たない、時刻の入口が 3 つ)が裏づけられたが、**ADR としては未起草**。小さな着手候補(失効カウンタ 8 種類の newtype 化、(死んだフィールドの削除は、W0-b の誤検出だったので取りやめ)、journal の `ImeEvent` の記録に時刻と seq を足す)は、タスク表。
 
 ### 移行のレシピ(全レシピ共通の後処理つき)
 

@@ -87,7 +87,7 @@ ADR-229 の gate 一覧からは journal・ime_event_log・tsf_gate・hwnd_cache
 | E1 | 決定関数が省略の理由を enum で返して journal に載せる(新しい解釈器は作らない) | 実際の調査で理由が足りなかった決定から 1 つずつ | `GateResult`・`suppress_reason`・`Delivery`・`FeedbackPolicy` の action が既にある |
 | BUG-098 | 世代の無い非同期の shadow toggle OFF の完了を、既存の世代(F-D5-2)で直す | 独立した修正タスク(挙動を変えうる。所有者の判断) | Plan の有無に関わらず効く唯一の実害対応 |
 | W-a | 失効判定のカウンタ 8 種類・生の `u32` の `focus_gen`(22 か所)の newtype 化 | F の分割の各 PR の中で | 取り違えを型で防ぐ。toolkit round1 でも指摘 |
-| W-b | 死んだフィールド `Runtime.state_dependent_key_warning_dialog` の削除 | 小さな撤去(挙動不変) | W0-b |
+| W-b | ~~死んだフィールド `Runtime.state_dependent_key_warning_dialog` の削除~~ | **取りやめ(W0-b の誤検出)** | 実装担当が grep で確認したところ、`runtime/mod.rs:1609-1611` の `select(...)` で使われている。削除しない |
 | W-c | journal の `ImeEvent` の記録に時刻(`tick_ms`・`Instant`)と `seq` を足す | 再生の入力として足りるようにする。ADR 起草の前に所有者の判断 | W0-a。`event_log` は本番で読み手がいない |
 | E2〜E6 | `Try`・正規化と法則・`Bracket`・capability の網羅テスト・観測の購読 | **着手しない** | 待つ条件は `229-opus-effect-plan-round1.md` の §4(F の分割が 3 本進み、`run_chain` 以外に有限の機構を順に試す連鎖が 2 つ以上現れたら、など) |
 

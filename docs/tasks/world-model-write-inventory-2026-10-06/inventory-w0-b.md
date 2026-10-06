@@ -1,3 +1,5 @@
+> **訂正(2026-10-06)**: 本レポートの「`state_dependent_key_warning_dialog` は宣言と初期化だけで一度も使われていない死んだフィールド」は誤検出。`runtime/mod.rs:1609-1611` の `select(...)` で使われている(W-b の実装担当が確認)。
+
 # W0-b 棚卸し: PlatformState の hub 外 / Runtime / Focus / Output / Engine を保持・更新する経路
 
 対象: `origin/develop` @ `ee54b2de`(行番号はこの版の `crates/awase-windows/src/` 基準。`git archive` を scratchpad に展開して読んだ。読み取りのみ)。

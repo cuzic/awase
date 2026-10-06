@@ -24,7 +24,6 @@ related_adr: ["ADR-229", "ADR-212", "ADR-208", "ADR-164"]
 | reducer | 4 系統(`ImeModel`・エンジン・`GjiFsm`・`ProbeCoroState`)があり、互いに状態を複写し合っている |
 | 失効判定 | カウンタが 8 種類、フォーカス hwnd のコピーが 4 か所、`await` またぎの失効の手書きの値の一致比較(`last_explicit_ime_action_ms`、`key_pipeline.rs:425/664`)が分散 |
 | フォーカス遷移 | 入口 4〜5 個、書く関数 約 14 個、9 種の型にまたがる。`force_guards` と cold マークは 2 か所で二重に消している。WinEvent の入口は `ime_mode_focus_gen` を更新せず、デバウンス後の経路だけが更新する |
-| 死んだ状態 | `Runtime.state_dependent_key_warning_dialog`(宣言と初期化だけで、一度も使われていない) |
 
 ## Event 化の難度(グローバル、`inventory-w0-c.md`)
 
@@ -33,3 +32,7 @@ related_adr: ["ADR-229", "ADR-212", "ADR-208", "ADR-164"]
 ## 危険箇所
 
 `await` をまたぐ失効トークンの比較が 3 点に分散、`OUTPUT_GATE` と `FOCUS_RESYNC` の 2 ゲートの合成、`WinEventProc` の再入、問い合わせの名前の `&mut self` メソッドが OS の前面ウィンドウに依存して latch の状態を変える、`effective_open()` の値で `applied` を `Confirmed` に書く経路(`runtime/mod.rs:1409`、`ime_refresh.rs:618`)。
+
+## 訂正(2026-10-06)
+
+- 当初の集計にあった「死んだ状態 `Runtime.state_dependent_key_warning_dialog`(宣言と初期化だけで一度も使われていない)」は**誤検出**だった。実装担当(W-b)が grep で確認したところ、`runtime/mod.rs:1609-1611` で `self.state_dependent_key_warning_dialog.select(google_ime, gji_stamp, &warnings)` を呼び、返ってきた要求から `spawn_yes_dialog` で「設定を開きますか?」ダイアログを出しており、使われている(宣言 `:345-346`、初期化 `:1470-1471`)。W0-b の集計の他の数字も、この種の「未使用」の判定は、実装前に grep で裏取りすること。
