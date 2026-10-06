@@ -807,9 +807,8 @@ impl ImeStateHub {
     ///
     /// 判定本体は `IntentStore::resolve_effective_open()`（`state/intent_store.rs`、
     /// `#[cfg(windows)]` の**外**）にあり、本メソッドはそこに INFO ログの重複排除を
-    /// 被せるだけ。**このモジュールは `#[cfg(windows)]` なので、ここに書いた
-    /// `mod tests`（`cfg(test)`）は Linux の `cargo test -p awase-windows` では
-    /// 1 件も走らない**——Linux CI で毎回走る回帰は
+    /// 被せるだけ。このモジュールは ungated（FCIS P4）なので、ここに書いた
+    /// `mod tests` は Linux でも走る。判定本体だけの回帰は
     /// `tests/intent_store_effective_open.rs` にある。
     ///
     /// # 時刻の出どころ（追補4、2026-08-13 windows-build 失敗の原因）
@@ -2022,11 +2021,12 @@ mod tests {
             Some(ApplyGeneration::new(5).unwrap())
         );
 
-        let accepted = ps.ime.record_ime_apply_result(
+        let accepted = ps.ime.record_ime_apply_result_in_scope(
             true,
             awase::platform::ImeOpenOutcome::UnsafeToToggle,
             Some(ApplyGeneration::new(5).unwrap()),
             100,
+            test_foreground_scope(),
         );
 
         assert_eq!(
@@ -2057,11 +2057,12 @@ mod tests {
             TickMs(0),
         );
 
-        let accepted = ps.ime.record_ime_apply_result(
+        let accepted = ps.ime.record_ime_apply_result_in_scope(
             true,
             awase::platform::ImeOpenOutcome::NotOwned,
             Some(ApplyGeneration::new(5).unwrap()),
             100,
+            test_foreground_scope(),
         );
 
         assert_eq!(accepted, ImeApplyAcceptance::NotSent);
@@ -2086,11 +2087,12 @@ mod tests {
             TickMs(0),
         );
 
-        let accepted = ps.ime.record_ime_apply_result(
+        let accepted = ps.ime.record_ime_apply_result_in_scope(
             true,
             awase::platform::ImeOpenOutcome::UnsafeToToggle,
             Some(ApplyGeneration::new(4).unwrap()),
             100,
+            test_foreground_scope(),
         );
 
         assert_eq!(accepted, ImeApplyAcceptance::NotSent);
@@ -2587,18 +2589,30 @@ mod tests {
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         assert!(ps.ime.effective_open_at(TickMs(110)), "明示 ON 直後は true");
         // awase 自身の直近の書き込みの記録は ON（追随後の実状態 OFF と食い違う → 未確認へ落ちる、D6）。
-        ps.ime.record_confirmed(true, 90);
+        ps.ime
+            .record_confirmed_in_scope(true, 90, test_foreground_scope());
         assert!(ps.ime.model().applied_state().applied_open().is_some());
         // arm 前の直近の読み（基準値になる）。窓が無いので追随しない。
         assert_eq!(
-            ps.ime
-                .follow_external_change(Some(true), 900, TickMs(900), follow_fence()),
+            ps.ime.follow_external_change_in_scope(
+                Some(true),
+                900,
+                TickMs(900),
+                follow_fence(),
+                test_foreground_scope()
+            ),
             None
         );
-        ps.ime.arm_external_change_watch(1000);
+        ps.ime
+            .arm_external_change_watch_in_scope(1000, test_foreground_scope());
         assert_eq!(
-            ps.ime
-                .follow_external_change(Some(false), 1032, TickMs(1032), follow_fence()),
+            ps.ime.follow_external_change_in_scope(
+                Some(false),
+                1032,
+                TickMs(1032),
+                follow_fence(),
+                test_foreground_scope()
+            ),
             Some(false)
         );
         assert!(
@@ -2620,29 +2634,48 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
-        let _ = ps
-            .ime
-            .follow_external_change(Some(true), 900, TickMs(900), follow_fence());
+        let _ = ps.ime.follow_external_change_in_scope(
+            Some(true),
+            900,
+            TickMs(900),
+            follow_fence(),
+            test_foreground_scope(),
+        );
         // arm していない
         assert_eq!(
-            ps.ime
-                .follow_external_change(Some(false), 1032, TickMs(1032), follow_fence()),
+            ps.ime.follow_external_change_in_scope(
+                Some(false),
+                1032,
+                TickMs(1032),
+                follow_fence(),
+                test_foreground_scope()
+            ),
             None
         );
         // 窓が切れた後（arm 前の直近の読みを 1 にしてから arm し、窓内の最初の読みも 1 = 変化なし）
-        let _ = ps
-            .ime
-            .follow_external_change(Some(true), 1990, TickMs(1990), follow_fence());
-        ps.ime.arm_external_change_watch(2000);
-        let _ = ps
-            .ime
-            .follow_external_change(Some(true), 2010, TickMs(2010), follow_fence());
+        let _ = ps.ime.follow_external_change_in_scope(
+            Some(true),
+            1990,
+            TickMs(1990),
+            follow_fence(),
+            test_foreground_scope(),
+        );
+        ps.ime
+            .arm_external_change_watch_in_scope(2000, test_foreground_scope());
+        let _ = ps.ime.follow_external_change_in_scope(
+            Some(true),
+            2010,
+            TickMs(2010),
+            follow_fence(),
+            test_foreground_scope(),
+        );
         assert_eq!(
-            ps.ime.follow_external_change(
+            ps.ime.follow_external_change_in_scope(
                 Some(false),
                 2000 + crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS + 1,
                 TickMs(2400),
-                follow_fence()
+                follow_fence(),
+                test_foreground_scope()
             ),
             None
         );
@@ -2656,13 +2689,23 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
-        let _ = ps
-            .ime
-            .follow_external_change(Some(false), 900, TickMs(900), follow_fence());
-        ps.ime.arm_external_change_watch(1000);
+        let _ = ps.ime.follow_external_change_in_scope(
+            Some(false),
+            900,
+            TickMs(900),
+            follow_fence(),
+            test_foreground_scope(),
+        );
+        ps.ime
+            .arm_external_change_watch_in_scope(1000, test_foreground_scope());
         assert_eq!(
-            ps.ime
-                .follow_external_change(Some(true), 1040, TickMs(1040), follow_fence()),
+            ps.ime.follow_external_change_in_scope(
+                Some(true),
+                1040,
+                TickMs(1040),
+                follow_fence(),
+                test_foreground_scope()
+            ),
             Some(true)
         );
         assert!(ps.ime.effective_open_at(TickMs(1050)));

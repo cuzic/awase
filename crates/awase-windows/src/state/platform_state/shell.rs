@@ -1,6 +1,8 @@
 //! `ImeStateHub` の殻（FCIS P2）。`crate::win32::foreground_scope()`（OS を読む）をここで1回読み、
 //! 親の `platform_state.rs` にある核（`_in_scope` 版）へ渡す1行だけを置く。
 //!
+//! 実時計の構築口（`ImeStateHub::new`・`PlatformState::new`・`Default`）もここに置く（FCIS P4a）。
+//!
 //! メソッド名とシグネチャは分割前と同じ（`runtime/`・`app/` の呼び出し元は変えない）。
 //! 記録系（`record_*`）の呼び出し元の固定ガード（`tests/architecture_guard.rs` の `RECORDERS`）は、
 //! このファイルも走査し、`_in_scope` 版の呼び出しがファイルごとに固定件数であることを確認する
