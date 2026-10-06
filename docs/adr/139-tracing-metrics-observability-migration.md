@@ -63,7 +63,7 @@ related_adr:
   snapshot）に分かれていて一貫しない」ことに近い。
 - 独自の event-sourced ジャーナル基盤（`journal.rs`, `journal_policy.rs`,
   `tests/journal_replay.rs`）が既にあり、`state::ime_event::ImeEvent` 等の**ドメイン型を
-  そのまま**記録する（ADR-082 決定1）。`journal_replay.rs` は `tests/journals/*.json` に
+  そのまま**記録する（ADR-082 決定1）。`journal_replay.rs` は `tests/journals/conv_classify/*.json` に
   **手で転記・レビューした** fixture を読む決定論的リプレイ基盤であり、"tracing化すれば
   自動的に良くなる" 類のものではない。
 
@@ -372,7 +372,7 @@ journal の方向で統合する）は不採用と確定する。** 理由は以
    `JournalEntry::ImeEvent`（ADR-082 決定1 の主役、IME belief 系の中心）を含む経路で
    実際に発生し、決定論的リプレイの正確性要件を根本から壊す。
 
-なお `journal_replay.rs` が読むのは `tests/journals/*.json` に**手で転記・レビューした**
+なお `journal_replay.rs` が読むのは `tests/journals/conv_classify/*.json` に**手で転記・レビューした**
 fixture（`journal_replay.rs:22-24,35-40`）であり、発生源を `tracing` に一本化しても
 この人手の転記工程は消えない。Option B の便益はほぼゼロである。
 

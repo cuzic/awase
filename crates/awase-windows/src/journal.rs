@@ -301,7 +301,7 @@ pub enum JournalEntry {
     /// `classify_conv_transition` への呼び出し（引数+戻り値を構造化して記録）。
     ///
     /// リプレイ回帰テスト（`tests/journal_replay.rs`）の主要な入力源。実機で
-    /// ダンプしたジャーナルからこのエントリを取り出し、`tests/journals/` の
+    /// ダンプしたジャーナルからこのエントリを取り出し、`tests/journals/conv_classify/` の
     /// フィクスチャ形式（`ConvClassifyFixture`、`state/conv_classify.rs` 参照）に
     /// 転記することで、実際に観測された入力の組合せを恒久的な回帰テストに
     /// 変換できる。

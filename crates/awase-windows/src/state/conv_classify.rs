@@ -164,7 +164,7 @@ pub fn classify_conv_transition(
 // ── ジャーナル・リプレイ回帰基盤（P1）───────────────────────────────────────────
 
 /// 実機ジャーナル由来（または手作り）の `classify_conv_transition` 呼び出し1件を
-/// 表す固定フィクスチャ。`tests/journals/*.json` に配列として保存し、
+/// 表す固定フィクスチャ。`tests/journals/conv_classify/*.json` に配列として保存し、
 /// `tests/journal_replay.rs` が読み込んで再実行・照合する。
 ///
 /// `journal.rs::JournalEntry::ConvClassifyCall` が実機ダンプで記録する
