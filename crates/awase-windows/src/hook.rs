@@ -361,7 +361,7 @@ pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
 /// 自体は他キーには正常に応答していたため全面停止ではなく、Win キー固有の
 /// 経路でのみ KeyUp が失われたと考えられる）。
 ///
-/// `tsf/send.rs::send_eager_warmup_vk_pair` と `ime.rs::send_ime_mode_key`
+/// `tsf/send.rs::send_eager_warmup_vk_pair`(ADR-212 P4 で撤去済み) と `ime.rs::send_ime_mode_key`
 /// の両方が使う唯一の判定点（旧実装は各所で `is_physical_key_down` の OR を
 /// 個別に重複記述していた）。
 #[must_use]
@@ -418,7 +418,7 @@ pub fn alt_key_held() -> bool {
 /// Win/Alt ガード。`false` の場合、呼び出し元は注入をスキップすべき。
 ///
 /// Win: Win 押下中に送ると Win+VK として届き、Win↑ 時にスタートメニューが
-/// 開く（`tsf/send.rs::send_eager_warmup_vk_pair` と同じ判定点）。
+/// 開く（`tsf/send.rs::send_eager_warmup_vk_pair`(ADR-212 P4 で撤去済み) と同じ判定点）。
 ///
 /// Alt: Alt 押下中に合成 `VK_DBE_HIRAGANA` 等を送ると MS-IME の
 /// 「Alt+かな」ローマ字⇔JISかな直接入力切替ショートカット（BUG-61/62）と
