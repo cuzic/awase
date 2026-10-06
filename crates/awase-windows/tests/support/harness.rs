@@ -2,8 +2,9 @@
 //! キー・観測・フォーカス・時刻の進行を流し込んで「書き込み命令」を集める。
 //!
 //! 実際に呼ぶ awase の層（すべて Linux ホストで動く ungated なもの）:
-//! - `ImeModel::reduce`（belief の唯一の書き込み点）と `ImeModel::resolve_open_at`
-//! - `IntentStore::{record, lookup, resolve_effective_open, remove}`
+//! - `ImeStateHub`（本物。`with_clock(HubClock::manual(..))` で仮想時計）: `dispatch_event`（= `ImeModel::reduce` と
+//!   `event_log`・`journal`）、`effective_open_at`、`record_explicit_intent`、`apply_key_effect_prediction`、
+//!   `warrant_context`、`arm/follow_external_change_in_scope`、`IntentStore`・`ExternalChangeWatch` はハブが持つ
 //! - `KeyEffectKeymap::predict`（GJI ATOK プリセット、同梱表）
 //! - `open_warrant::issue_open_warrant`
 //! - `drift_correction::check_drift_correction`（旧 `ImeStateHub::check_drift_correction` の本体）
@@ -11,24 +12,20 @@
 //!
 //! Windows 専用（`#[cfg(windows)]`）で呼べないため、**数行の配線をここで写している**もの
 //! （写し元の行は各メソッドの doc に書く。写し元が変わったらここも直すこと）:
-//! - `ImeStateHub::apply_key_effect_prediction`（`state/platform_state.rs`）
-//! - `ImeStateHub::effective_open_at`（同）
-//! - `ImeStateHub::warrant_context`/`issue_actuation_order`（同）
-//! - `ImeStateHub::record_explicit_intent`/`write_*`（同）
+//! - `ImeStateHub::issue_actuation_order`/`write_*`（`state/platform_state.rs`。`warrant_context` までは本物）
 //! - `kp_stage_key_effect_track`/`kp_predict_key_effect`（`runtime/key_pipeline.rs`）
 //! - `ir_apply_drift_correction` の「検知へ進むか」まで（`runtime/ime_refresh.rs`）: `check_drift_correction` と、
 //!   ImmCross で warrant が下りない補正を検知の手前で見送る早期 return（BUG-163 の1段目、`b6ab8980`）。
 //!   Blind/Read の再送打ち切り・settle 待ち・conv ラッチは写していない。
 //!
-//! - `ImeStateHub::arm_external_change_watch`/`follow_external_change`（同、ADR-205）: 状態機械本体
-//!   （`ExternalChangeWatch`）は本物を呼び、追随の副作用（`ObserverPoll` 記録→意図削除→`ModeKeyPassedThrough`）だけ写す。
+//! - ADR-205 の外部変化の監視窓は本物（`arm/follow_external_change_in_scope`、追随の副作用もハブの中）を呼ぶ。
 //!   `Setup::with_external_close_watch(true)` のときだけ働く（ADR-205 の有無で結果が分かれるシナリオ用）。
 //!
 //! 写していない（このハーネスでは起きない）もの: 通過マーク（ADR-187 `ModeKeyPassLatch` →
 //! `ModeKeyPassedThrough`）、`ImeApplyRequested`/`applied` の往復、ForceGuard、TSF warmup、
 //! Engine の `on_input`（打鍵のかな変換。IME 側には文字キーをそのまま渡す）。
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use awase::config::ConfirmMode;
 use awase::engine::{
@@ -41,18 +38,17 @@ use awase::yab::YabLayout;
 use awase_windows::state::conv_classify::ConvSyncReason;
 use awase_windows::state::drift_correction::{check_drift_correction, DriftCorrection};
 use awase_windows::state::evidence::{ConvOpenInference, ImmCrossProbe, Observed, ObserverPoll};
-use awase_windows::state::external_change_watch::{ChangeVerdict, ExternalChangeWatch};
+use awase_windows::state::foreground_scope::ForegroundScope;
+use awase_windows::state::hub_clock::HubClock;
 use awase_windows::state::ime_event::{
-    EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, ObservationConfidence,
-    ObservationSource, UserIntentSource,
+    HwndId, ImeEvent, ImePolicyProfile, ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use awase_windows::state::ime_model::ImeModel;
-use awase_windows::state::intent_store::IntentStore;
 use awase_windows::state::key_effect_predictor::{KeyEffectKeymap, PredictInput, Prediction};
-use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant, WarrantContext};
+use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant};
+use awase_windows::state::platform_state::ImeStateHub;
 use awase_windows::state::probe_admission::{Admission, FocusFence, ImmLikeTicket};
 use awase_windows::state::TickMs;
-use awase_windows::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
 
 use super::pseudo_ime::{Grid, PseudoIme, TrueState, CONV_ALNUM};
 
@@ -193,14 +189,12 @@ impl Setup {
 /// 閉ループのハーネス本体。
 pub struct Harness {
     pub ime: PseudoIme,
-    model: ImeModel,
-    intents: IntentStore,
+    /// 本物の `ImeStateHub`（`ImeModel`・`IntentStore`・`ExternalChangeWatch`・仮想時計を持つ）。
+    hub: ImeStateHub,
     engine: Engine,
     keymap: KeyEffectKeymap,
     setup: Setup,
-    base: Instant,
     now_ms: u64,
-    seq: u64,
     focus: HwndId,
     epoch: u64,
     /// 直近に観測した conv の生値（`ImeBelief::prev_conversion_mode` 相当）。
@@ -212,12 +206,10 @@ pub struct Harness {
     pub predictions: Vec<PredictionRecord>,
     /// 本番の `is_japanese_ime`（ADR-223 でキー入力時にレイアウト言語から更新される）。既定 true。
     japanese_ime: bool,
-    /// ADR-205 の監視窓（フォアグラウンドのスコープは単一窓なので固定値）。
-    external_watch: ExternalChangeWatch<u32>,
 }
 
 /// ハーネスは単一のフォアグラウンドなのでスコープは固定。
-const WATCH_SCOPE: u32 = 1;
+const WATCH_SCOPE: ForegroundScope = ForegroundScope { pid: 1, hwnd: 0 };
 
 impl Harness {
     /// awase を起動した直後の状態を作る（`ImeModel::new()`、観測なし、明示意図なし）。
@@ -229,8 +221,7 @@ impl Harness {
     pub fn start(setup: Setup) -> Self {
         let mut h = Self {
             ime: PseudoIme::from_grid(setup.grid, setup.initial),
-            model: ImeModel::new(),
-            intents: IntentStore::default(),
+            hub: ImeStateHub::with_clock(HubClock::manual(TICK_BASE)),
             engine: make_engine(),
             keymap: match setup.grid {
                 Grid::Atok => KeyEffectKeymap::from_config(Some(1), None, &[]),
@@ -242,9 +233,7 @@ impl Harness {
             }
             .expect("同梱表のあるキーマップ"),
             setup,
-            base: Instant::now(),
             now_ms: 0,
-            seq: 0,
             focus: HwndId(0x1001),
             epoch: 1,
             last_conv_raw: None,
@@ -254,8 +243,8 @@ impl Harness {
             drift_fires: Vec::new(),
             predictions: Vec::new(),
             japanese_ime: true,
-            external_watch: ExternalChangeWatch::new(),
         };
+        h.hub.set_is_japanese_ime(true);
         let fence = h.fence();
         h.reduce(ImeEvent::InitialFocusFenceEstablished { fence });
         h.reduce(ImeEvent::InitialFocusHwndEstablished { hwnd: h.focus });
@@ -274,6 +263,7 @@ impl Harness {
     /// 時刻を進める（その後、drift 判定と Engine の再評価を1回行う）。
     pub fn advance_ms(&mut self, ms: u64) -> &mut Self {
         self.now_ms += ms;
+        self.hub.advance_clock_ms(ms);
         self.ime.advance(ms);
         self.settle(format!("advance_ms({ms})"), None);
         self
@@ -287,12 +277,12 @@ impl Harness {
         let truth_before = self.ime.state();
         let input = PredictInput {
             open: self.effective_open(),
-            mode: self.model.input_mode(),
+            mode: self.hub.model().input_mode(),
             conv_raw: self.last_conv_raw,
             composing: self.setup.composing_visible && self.ime.state().open && {
                 !matches!(truth_before.stage, super::pseudo_ime::TrueStage::None)
             },
-            track: self.model.key_track(),
+            track: self.hub.model().key_track(),
             unreadable: false,
             // 物理の無修飾の KeyDown で、エンジンが消費せず IME へ通した打鍵（上のコメント）なので、ゲートは真。
             passive_rule_eligible: true,
@@ -397,10 +387,8 @@ impl Harness {
             source: UserIntentSource::Command,
         });
         let now = TickMs(self.tick());
-        if let Some(hwnd) = self.model.current_focus() {
-            self.intents
-                .record(hwnd, open, UserIntentSource::Command, now);
-        }
+        self.hub
+            .record_explicit_intent(open, UserIntentSource::Command, now);
         self.issue_write(WriteOrigin::ExplicitUserCommand, open);
         self.settle(format!("user_set_open({open})"), None);
         self
@@ -422,12 +410,12 @@ impl Harness {
 
     /// 他プロセスが目印なしで注入した IME キー（Q4 の外部クローズ）。キーは擬似 IME に届くが、awase は belief を
     /// 動かさない（BUG-14 分岐: 注入キーはユーザー意図に昇格しない）。ADR-205 有効なら監視窓を開く／延ばす
-    /// （`ImeStateHub::arm_external_change_watch` の写し、`state/platform_state.rs`）。
+    /// （`ImeStateHub::arm_external_change_watch_in_scope`、本物）。
     pub fn external_injected_key(&mut self, vk: u16) -> &mut Self {
         self.ime.press(vk);
         if self.setup.external_close_watch {
-            self.external_watch
-                .arm(WATCH_SCOPE, self.now_ms, MODE_KEY_PASS_MARK_WINDOW_MS);
+            self.hub
+                .arm_external_change_watch_in_scope(self.now_ms, WATCH_SCOPE);
         }
         self.settle(format!("external_injected_key(0x{vk:02X})"), None);
         self
@@ -435,8 +423,8 @@ impl Harness {
 
     /// refresh の入口で prefetch 済みの開閉の読み（`IMC_GETOPENSTATUS`）を取り込む。読めない窓では通常の観測
     /// （`ObserverPoll`）は belief へ届かない（Blacklist 分岐が捨てる）ので、ADR-205 の監視窓だけが取り込み口。
-    /// `ImeStateHub::follow_external_change`（`state/platform_state.rs`）の写し: `Changed(v)` なら
-    /// `ObserverPoll(v)` 記録 → 明示意図（`IntentStore`）削除 → `ModeKeyPassedThrough{align_desired, demote_applied}`。
+    /// `ImeStateHub::follow_external_change_in_scope`（本物）: `Changed(v)` なら `ObserverPoll(v)` 記録 → 明示意図
+    /// （`IntentStore`）削除 → `ModeKeyPassedThrough{align_desired, demote_applied}` をハブの中で行う。
     pub fn prefetch_read(&mut self) -> &mut Self {
         assert!(
             matches!(self.setup.profile, ImePolicyProfile::Imm32Unavailable),
@@ -444,29 +432,17 @@ impl Harness {
         );
         let read = Some(self.ime.read_state().open);
         if self.setup.external_close_watch {
-            let verdict = self.external_watch.observe(
-                WATCH_SCOPE,
-                self.now_ms,
-                MODE_KEY_PASS_MARK_WINDOW_MS,
+            let fence = self.fence();
+            let Admission::Accept(accepted) = (ImmLikeTicket { fence }).admit(fence) else {
+                unreachable!("同じ fence なので必ず受理される");
+            };
+            let _followed = self.hub.follow_external_change_in_scope(
                 read,
+                self.now_ms,
+                TickMs(self.tick()),
+                accepted,
+                WATCH_SCOPE,
             );
-            self.external_watch.record_read(WATCH_SCOPE, read);
-            if let ChangeVerdict::Changed(v) = verdict {
-                let fence = self.fence();
-                let Admission::Accept(accepted) = (ImmLikeTicket { fence }).admit(fence) else {
-                    unreachable!("同じ fence なので必ず受理される");
-                };
-                self.reduce(ImeEvent::ObserverReported(
-                    Observed::<ObserverPoll>::from_poll(&accepted, v).into(),
-                ));
-                if let Some(hwnd) = self.model.current_focus() {
-                    self.intents.remove(hwnd);
-                }
-                self.reduce(ImeEvent::ModeKeyPassedThrough {
-                    align_desired: true,
-                    demote_applied: true,
-                });
-            }
         }
         self.settle("prefetch_read".into(), None);
         self
@@ -476,12 +452,12 @@ impl Harness {
 
     #[must_use]
     pub fn desired_open(&self) -> bool {
-        self.model.desired_open()
+        self.hub.model().desired_open()
     }
 
     #[must_use]
-    pub const fn model(&self) -> &ImeModel {
-        &self.model
+    pub fn model(&self) -> &ImeModel {
+        self.hub.model()
     }
 
     /// 経過を人が読める形で（失敗メッセージ用）。
@@ -540,45 +516,41 @@ impl Harness {
         TICK_BASE + self.now_ms
     }
 
+    /// ハブの仮想時計の現在の `Instant`（`advance_ms` で進める）。
     fn now(&self) -> Instant {
-        self.base + Duration::from_millis(self.now_ms)
+        self.hub.clock().now_instant()
     }
 
+    /// 本物の `ImeStateHub::dispatch_event`（`event_log` 記録 + `ImeModel::reduce` + journal）。
     fn reduce(&mut self, event: ImeEvent) {
-        self.seq += 1;
-        let envelope = ImeEventEnvelope {
-            time: EventTime {
-                seq: self.seq,
-                monotonic: self.now(),
-                tick_ms: self.tick(),
-            },
-            event,
-        };
-        self.model.reduce(&envelope);
+        self.hub.dispatch_event(event, TickMs(self.tick()));
     }
 
-    /// `ImeStateHub::effective_open_at` の写し（`state/platform_state.rs`）:
-    /// `IntentStore` の有効な明示意図が `ImeModel` の belief より優先する。
+    /// 本物の `ImeStateHub::effective_open_at`（`IntentStore` の有効な明示意図が `ImeModel` の belief より優先する）。
     fn effective_open(&self) -> bool {
-        let shadow = self.model.effective_open_at(self.now());
-        self.intents
-            .resolve_effective_open(self.model.current_focus(), shadow, TickMs(self.tick()))
-            .value
+        self.hub.effective_open_at(TickMs(self.tick()))
     }
 
     fn has_explicit_intent(&self) -> bool {
-        self.model.last_intent.is_some()
+        let now_ms = TickMs(self.tick());
+        self.hub.model().last_intent.is_some()
             || self
-                .model
+                .hub
+                .model()
                 .current_focus()
-                .and_then(|h| self.intents.lookup(h, TickMs(self.tick())))
+                .and_then(|h| {
+                    self.hub
+                        .warrant_context(self.now(), now_ms)
+                        .intent_store
+                        .lookup(h, now_ms)
+                })
                 .is_some()
     }
 
     fn ctx(&self) -> InputContext {
         InputContext {
             ime_on: self.effective_open(),
-            input_mode: self.model.input_mode(),
+            input_mode: self.hub.model().input_mode(),
             is_japanese_ime: self.japanese_ime,
             composing: false,
             modifiers: awase::engine::ModifierState::default(),
@@ -591,39 +563,19 @@ impl Harness {
     /// false のとき Engine は非活性になり、推測に基づく書き込み(`issue_open_warrant`)は下りない(明示キー押下の order は影響を受けない)。
     pub fn set_japanese_ime(&mut self, on: bool) -> &mut Self {
         self.japanese_ime = on;
+        self.hub.set_is_japanese_ime(on);
         self
     }
 
-    /// `ImeStateHub::apply_key_effect_prediction` の写し（`state/platform_state.rs`）。
+    /// 本物の `ImeStateHub::apply_key_effect_prediction`。
     fn apply_key_effect_prediction(&mut self, p: Prediction) {
-        if p.effect.is_noop() && p.track == self.model.key_track() {
-            return;
-        }
-        self.reduce(ImeEvent::KeyEffectPredicted {
-            open: p.effect.open,
-            mode: p.effect.mode,
-            track: p.track,
-        });
-        if p.effect.open.is_some() {
-            if let Some(hwnd) = self.model.current_focus() {
-                self.intents.remove(hwnd);
-            }
-        }
+        self.hub.apply_key_effect_prediction(p, TickMs(self.tick()));
     }
 
-    /// `ImeStateHub::warrant_context` + `issue_open_warrant` の写し（`state/platform_state.rs`）。
+    /// `ImeStateHub::warrant_context`（本物）+ `issue_open_warrant`（`issue_actuation_order` の写し）。
     fn warrant_for(&self, open: bool) -> Option<OpenWarrant> {
-        let ctx = WarrantContext {
-            intent_store: &self.intents,
-            obs: &self.model.observations,
-            guards: &self.model.force_guards,
-            policy: &self.model.app_policy,
-            desired_open: self.model.desired_open(),
-            is_japanese_ime: self.japanese_ime,
-            now: self.now(),
-            now_ms: TickMs(self.tick()),
-        };
-        let target = self.model.current_focus().unwrap_or(HwndId::NULL);
+        let ctx = self.hub.warrant_context(self.now(), TickMs(self.tick()));
+        let target = self.hub.model().current_focus().unwrap_or(HwndId::NULL);
         issue_open_warrant(open, target, &ctx)
     }
 
@@ -673,9 +625,14 @@ impl Harness {
         // `ir_align_placeholder_desired`（`runtime/ime_refresh.rs`）の写し（BUG-163、代案A）: 起動時の初期値のままの
         // `desired_open` を、明示意図が無く、観測から導ける開閉があるとき、最初の成功観測へ 1 回だけ揃える
         // （`ImeStateHub::align_placeholder_desired`、reducer は `ModeKeyPassedThrough { align_desired: true, demote_applied: false, }`）。
-        if self.model.desired_is_placeholder()
-            && self.model.last_intent.is_none()
-            && self.model.observations.derive_any(self.now()).is_some()
+        if self.hub.model().desired_is_placeholder()
+            && self.hub.model().last_intent.is_none()
+            && self
+                .hub
+                .model()
+                .observations
+                .derive_any(self.now())
+                .is_some()
         {
             self.reduce(ImeEvent::ModeKeyPassedThrough {
                 align_desired: true,
@@ -683,8 +640,8 @@ impl Harness {
             });
         }
 
-        let explicit = self.model.last_intent.as_ref().map(|i| i.target);
-        if let Some(drift) = check_drift_correction(&self.model, self.now(), explicit) {
+        let explicit = self.hub.model().last_intent.as_ref().map(|i| i.target);
+        if let Some(drift) = check_drift_correction(self.hub.model(), self.now(), explicit) {
             // `ir_apply_drift_correction`（`runtime/ime_refresh.rs`）: ImmCross（書き込み経路が
             // `set_ime_open_ordered`）で warrant が下りない補正は、「検知」の手前で見送る（`b6ab8980`）。
             let warranted = self.warrant_for(drift.desired).is_some();
@@ -713,9 +670,9 @@ impl Harness {
             at_ms: self.now_ms,
             label,
             truth: self.ime.state(),
-            desired_open: self.model.desired_open(),
+            desired_open: self.hub.model().desired_open(),
             effective_open: ctx.ime_on,
-            input_mode: self.model.input_mode(),
+            input_mode: self.hub.model().input_mode(),
             engine_active: self.engine.compute_active(&ctx),
             explicit_intent: self.has_explicit_intent(),
             observed_open,
