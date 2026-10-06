@@ -115,3 +115,86 @@ impl HwndImeCache {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PID: u32 = 100;
+    const CLASS: &str = "TestClass";
+    const T0: u64 = 1_000_000;
+
+    fn save_at(cache: &mut HwndImeCache, pid: u32, class: &str, hwnd: usize, at: u64) {
+        cache.save(
+            pid,
+            class.to_string(),
+            true,
+            InputModeState::ObservedKana,
+            false,
+            hwnd,
+            TickMs(at),
+        );
+    }
+
+    #[test]
+    fn restore_returns_saved_snapshot_within_max_age() {
+        let mut cache = HwndImeCache::new();
+        save_at(&mut cache, PID, CLASS, 0x10, T0);
+        let snap = cache
+            .restore(PID, CLASS, TickMs(T0 + HWND_CACHE_MAX_AGE_MS))
+            .expect("境界ちょうど（age == MAX_AGE）は有効");
+        assert!(snap.ime_on);
+        assert_eq!(snap.input_mode, InputModeState::ObservedKana);
+        assert_eq!(snap.recorded_ms, T0);
+        assert_eq!(snap.hwnd, 0x10);
+        assert!(!snap.from_explicit_off_intent);
+    }
+
+    #[test]
+    fn restore_returns_none_after_max_age() {
+        let mut cache = HwndImeCache::new();
+        save_at(&mut cache, PID, CLASS, 0x10, T0);
+        assert!(cache
+            .restore(PID, CLASS, TickMs(T0 + HWND_CACHE_MAX_AGE_MS + 1))
+            .is_none());
+    }
+
+    #[test]
+    fn restore_misses_for_different_pid_or_class() {
+        let mut cache = HwndImeCache::new();
+        save_at(&mut cache, PID, CLASS, 0x10, T0);
+        assert!(cache.restore(PID + 1, CLASS, TickMs(T0)).is_none());
+        assert!(cache.restore(PID, "Other", TickMs(T0)).is_none());
+        assert!(cache.restore(PID, CLASS, TickMs(T0)).is_some());
+    }
+
+    #[test]
+    fn save_overwrites_entry_with_same_key_keeping_new_hwnd() {
+        let mut cache = HwndImeCache::new();
+        save_at(&mut cache, PID, CLASS, 0x10, T0);
+        save_at(&mut cache, PID, CLASS, 0x20, T0 + 5);
+        let snap = cache.restore(PID, CLASS, TickMs(T0 + 5)).unwrap();
+        assert_eq!(snap.hwnd, 0x20);
+        assert_eq!(snap.recorded_ms, T0 + 5);
+        assert_eq!(cache.0.len(), 1);
+    }
+
+    #[test]
+    fn save_evicts_only_entries_older_than_max_age() {
+        let mut cache = HwndImeCache::new();
+        save_at(&mut cache, 1, CLASS, 0x1, T0);
+        save_at(&mut cache, 2, CLASS, 0x2, T0 + 10);
+        // pid=1 は期限切れ、pid=2 は境界ちょうどで残る時刻に別エントリを保存する。
+        save_at(&mut cache, 3, CLASS, 0x3, T0 + 10 + HWND_CACHE_MAX_AGE_MS);
+        assert!(!cache.0.contains_key(&(1, CLASS.to_string())));
+        assert!(cache.0.contains_key(&(2, CLASS.to_string())));
+        assert!(cache.0.contains_key(&(3, CLASS.to_string())));
+    }
+
+    #[test]
+    fn restore_before_recorded_time_saturates_to_zero_age() {
+        let mut cache = HwndImeCache::new();
+        save_at(&mut cache, PID, CLASS, 0x10, T0);
+        assert!(cache.restore(PID, CLASS, TickMs(T0 - 1)).is_some());
+    }
+}
