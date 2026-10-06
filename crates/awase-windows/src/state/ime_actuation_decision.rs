@@ -70,12 +70,12 @@ pub(crate) enum GateResult {
 /// `runtime/open_chain.rs::imm_cross_write`、`FallbackWrite`は同`fallback_write`、
 /// `RunOpenChainAsync`は同`run_open_chain_async`冒頭のゲート、`DispatchImeSetOpen`は
 /// `runtime/executor.rs::dispatch_ime_set_open`。`ReassertExplicitPhysicalKey`/
-/// `ForceOnRomajiCorrection`/`ShadowToggleOff`は記録専用
+/// `ForceOnRomajiCorrection`/`ShadowToggleOff`/`ShadowToggleOn`は記録専用
 /// ラベルであり、command計算へは使わない（ADR-163 Part D B1）。
 ///
-/// # `ShadowToggleOff`（ADR-163 Part D S-8対応、2026-09-11）
+/// # `ShadowToggleOff`/`ShadowToggleOn`（ADR-163 Part D S-8対応、2026-09-11）
 ///
-/// `run_open_chain_async`は`key_pipeline.rs`のshadow-toggle OFF経路と
+/// `run_open_chain_async`は`key_pipeline.rs`のshadow-toggle ON/OFF経路（ON は ADR-213）と
 /// `runtime/executor.rs::dispatch_ime_set_open`から呼ばれる（撤去済みの
 /// force-on bootstrap経路〈`ForceOnBootstrap`、`621bf93c`〉も以前は呼んでいた）。
 /// 後者は`site=DispatchImeSetOpen`を渡すのに対し、前者は`site=RunOpenChainAsync`

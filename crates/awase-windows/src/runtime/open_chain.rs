@@ -567,11 +567,11 @@ pub(crate) async fn run_open_chain_async(
     imm: ImmCrossOp,
     site: DecisionSite,
     // ADR-163 Part D S-8対応: `site`は呼び出し元（key_pipeline.rsの
-    // shadow-toggle OFF・executor.rsのdispatch_ime_set_open）のうち後者だけを
+    // shadow-toggleのON/OFF・executor.rsのdispatch_ime_set_open）のうち後者だけを
     // `DispatchImeSetOpen`として区別でき、前者は`RunOpenChainAsync`を渡すため
     // 記録上区別がつかなかった。`caller`は`ActuationDecisionRecord::caller`へそのまま
     // 転記する診断専用ラベルで、`site`と違いcommand再計算には一切使わない
-    // （`DecisionInputs`/`DecisionSite`のdoc「ShadowToggleOff」節参照）。
+    // （`DecisionInputs`/`DecisionSite`のdoc「ShadowToggleOff/ShadowToggleOn」節参照）。
     caller: Option<DecisionSite>,
 ) -> ImeOpenOutcome {
     // issue #136 / BUG-90 決定4: この関数は `order`/`imm` のみを受け取り
@@ -731,9 +731,10 @@ mod tests {
         assert_eq!(after, before + 1);
     }
 
-    // ADR-163 Part D S-8対応: `run_open_chain_async`の2つの呼び出し元
-    // （key_pipeline.rsのshadow-toggle OFF経路・runtime/mod.rsのforce-on
-    // bootstrap経路）は共に`site=RunOpenChainAsync`を渡すため、以前は
+    // ADR-163 Part D S-8対応: `run_open_chain_async`の呼び出し元
+    // （key_pipeline.rsのshadow-toggle ON/OFF経路）は`site=RunOpenChainAsync`を
+    // 渡し、executor.rsのdispatch_ime_set_open（`DispatchImeSetOpen`）と
+    // 区別できないため、以前は
     // `async_record`が`caller`を常に`None`に固定しており記録上区別できな
     // かった（`caller`引数を追加する前のS-8指摘そのもの）。`async_record`が
     // 渡された`caller`をそのまま`ActuationDecisionRecord.caller`へ転記し、
