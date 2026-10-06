@@ -160,6 +160,26 @@ const fn should_notify_diagnostic(duration_ms: u64, already_notified: bool) -> b
     duration_ms >= crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS && !already_notified
 }
 
+/// give-up 後のその tick の扱い（BUG-68: クールダウンが先、再武装の証拠はその後）。
+fn park_after_giveup(
+    gave_up_at: Option<std::time::Instant>,
+    now: std::time::Instant,
+    fresh_evidence: bool,
+) -> GiveUpPark {
+    gave_up_at.map_or(GiveUpPark::FirstTime, |gave_up_at| {
+        let elapsed = blind_rearm_cooldown_elapsed(
+            gave_up_at,
+            now,
+            crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS,
+        );
+        match (elapsed, fresh_evidence) {
+            (false, _) => GiveUpPark::CooldownPending,
+            (true, true) => GiveUpPark::Rearm,
+            (true, false) => GiveUpPark::StillParked,
+        }
+    })
+}
+
 /// 検知後の計画を決める。**元の `ir_apply_drift_correction` の判断の順序のまま**:
 /// 稼働条件 → ずれの有無 → settle → 試行の解決 → 授権 → 診断 → 方針ごとの打ち切り/収束/送信。
 #[must_use]
@@ -197,22 +217,11 @@ pub fn decide_drift_plan(f: &DriftFacts) -> DriftPlan {
     let step = match actuation.policy {
         FeedbackPolicy::Blind { .. } => {
             if actuation.policy.decide_action(actuation.attempts) == ActuationAction::GiveUp {
-                DriftStep::GiveUp(match actuation.gave_up_at {
-                    None => GiveUpPark::FirstTime,
-                    Some(gave_up_at) => {
-                        if !blind_rearm_cooldown_elapsed(
-                            gave_up_at,
-                            f.now,
-                            crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS,
-                        ) {
-                            GiveUpPark::CooldownPending
-                        } else if f.fresh_evidence_after_giveup {
-                            GiveUpPark::Rearm
-                        } else {
-                            GiveUpPark::StillParked
-                        }
-                    }
-                })
+                DriftStep::GiveUp(park_after_giveup(
+                    actuation.gave_up_at,
+                    f.now,
+                    f.fresh_evidence_after_giveup,
+                ))
             } else {
                 send
             }
