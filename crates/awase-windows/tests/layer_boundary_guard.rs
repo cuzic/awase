@@ -481,6 +481,15 @@ fn e1_send_message_confined_to_low_level_wrappers() {
 //    例外は 3 つだけ: `mod` 宣言の直前の `#[cfg(windows)]`、`#[cfg(any(windows, test))]`、
 //    lint を抑えるだけの `#[cfg_attr(not(windows), allow(...))]`（動作を切り替えない）。
 // 4. FS / 環境変数の読み取り。`env!`/`option_env!`/`include_str!` はコンパイル時展開なので対象外。
+//
+// 既知の限界（テキスト走査のため）:
+// - 偽陰性: (i) 複数行にまたがる属性（`#[cfg(all(\n windows, ..))]` は 1 行目に `windows` が無く見逃す）、
+//   (ii) 文字列中の `//` による行の切り落としと、エスケープした文字リテラル `'\"'` の扱い、
+//   (iii) 別名を通した時計（`use std::time::Instant as I; I::now()`）。
+// - 偽陽性側（安全）: `test_block_mask` は `#[cfg(test)]` の完全一致だけを見るので、
+//   `#[cfg(all(test, ..))]` の item は本番として走査される。
+// - `.exists()`・`.metadata(`・`read_to_string(` は FS 以外の同名メソッドでも当たる。出たら規則を
+//   増やさず、該当ファイルを `NOT_CORE_MODULES` に理由つきで置く。
 
 /// Tier-2 の対象（`state/<名前>.rs`）。`state/mod.rs` 自体は含めない（`#[cfg(windows)]` の再公開を持つ）。
 const CORE_MODULES: &[&str] = &[
@@ -623,8 +632,11 @@ fn is_static_item(code: &str) -> bool {
     code.contains("thread_local!") || strip_visibility(code).starts_with("static ")
 }
 
+/// `mod <名前>;`（セミコロンで終わる宣言）だけ。インラインの `mod x { ... }` は core のファイルに
+/// Windows コードを隠せてしまうので含めない（殻は別ファイルの子モジュールにする）。
 fn is_mod_decl(code: &str) -> bool {
-    strip_visibility(code).starts_with("mod ")
+    let t = strip_visibility(code);
+    t.starts_with("mod ") && t.trim_end().ends_with(';')
 }
 
 /// 規則 3 の対象か: `cfg`/`cfg_attr` 属性で `windows` の語を含み、かつ例外の 3 形でないもの。
@@ -846,6 +858,10 @@ mod core_guard_helper_tests {
         );
         assert_eq!(
             rules("#[cfg_attr(windows, derive(Debug))]\nstruct S;\n"),
+            ["cfg-windows"]
+        );
+        assert_eq!(
+            rules("#[cfg(windows)]\nmod shell { fn f() {} }\n"),
             ["cfg-windows"]
         );
         assert!(rules("#[cfg(windows)]\nmod shell;\n").is_empty());
