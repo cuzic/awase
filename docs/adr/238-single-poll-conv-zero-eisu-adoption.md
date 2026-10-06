@@ -128,6 +128,12 @@ BUG-57 の守り(`ime_on == Some(false)` の conv=0 は証拠にしない)は (a
 - 実装の初版は `clear_eisu_candidate()` を同じ場所に無条件で置いたため、候補が確認の読みの前に毎回消え、**一度も確定しなかった**。MS-IME の英数キー(0xF0)で、実 IME は閉じる(open=0 conv=0x10)のに Engine が OFF に追随せず `sc-dbe-msime-native`(期待 PASS)が 3 回とも FAIL した(旧は (a) の 1 回採用で Engine が止まって PASS だった)。**修正:** 候補は `process_changed || prev_hwnd != new_hwnd` のときだけ捨てる。`tests/architecture_guard.rs::eisu_candidate_is_cleared_only_when_focus_actually_changes` で固定。
 - `prev_conversion_mode` の毎回リセット自体は既存の挙動で、今回は触らない(別件。`classify_transition` を生かす・消すかは別 ADR で)。
 
+## 実装後の CI(2026-10-06、run 37486784708、MS-IME の ext 構成 68 run + 英数切替の consistency 構成)
+
+- **本物の英数切替(予測の無い/効かない形を含む)は壊れていない:** `sc-dbe-msime-native`(期待 PASS)3/3 OK、`msime-stale-table` 3/3 OK、`sc-dbe-gji-msime`・`sc-dbe-gji-atok`・`sc-shift-msime-native` 各 3/3 OK、`msime-native`・`msime-native-henkan`・`msime-native-noawase`・`sc-hz-msime-native` は全 PASS。`sc-dbe-msime-native` の英数キー(0xF0、MS-IME は open=0 conv=0x10)では `[eisu-adopt]` が「候補 6 → 確定 6」で、遅れは確認の読み 1 回(60ms 間隔)。
+- `tsx-ext` の MS-IME 68 run は PASS 67・INVALID 1(Flutter の準備確認、修正前から出ている別のばらつき)。`[eisu-adopt]` は 0 件(低頻度のため)。打鍵中の除外で捨てられた読み 5982 件のうち `conv=0x00000000` は 16 件(約 0.27%、前回は 3/5102)。採用されると Engine が止まる形の単発 conv=0 が、MS-IME では 0.06〜0.27% の読みで起きることが分かった。**この修正はそれらを候補にして確認で消す。**
+- **初版の回帰:** 候補を無条件に捨てていたため一度も確定せず、`sc-dbe-msime-native` が 3/3 FAIL した(上の「実装中に分かったこと」)。修正後は OK。**一過性の値の長さそのものの測定と、実機での確認は未了**(寿命 1500ms は `pending`)。
+
 ## 状態
 
-**設計は収束**(2026-10-06、Opus round3 で「収束」)。round1(Blocker 2・Must 5・Should 7・Nit 6)・round2(Must 3・Should 4・Nit 4)・round3(Should 2・Nit 1)を反映済み。**実装済み**(ブランチ diag/bug190-eisu-adopt、2026-10-06)、CI の確認中(MS-IME の ext 構成と、本物の英数切替を壊さないことの `msime-native*`・`sc-dbe-*`・`sc-shift-msime-native`・`msime-stale-table`)。実機未検証。
+**設計は収束**(2026-10-06、Opus round3 で「収束」)。round1(Blocker 2・Must 5・Should 7・Nit 6)・round2(Must 3・Should 4・Nit 4)・round3(Should 2・Nit 1)を反映済み。**実装済み・CI の確認済み**(2026-10-06、MS-IME の ext 構成と、本物の英数切替を壊さないことの `msime-native*`・`sc-dbe-*`・`sc-shift-msime-native`・`msime-stale-table`)。実機未検証。
