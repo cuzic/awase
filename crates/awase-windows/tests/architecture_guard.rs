@@ -1617,33 +1617,91 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
 ///   `process_deferred_keys`〈本番到達不能なデッドコード、決定5参照〉）。
 #[test]
 fn applied_state_recorders_call_sites_are_accounted_for() {
-    const RECORDERS: [(&str, usize); 2] = [(".record_optimistic(", 1), (".record_confirmed(", 5)];
+    // FCIS P2: 殻（`state/platform_state/shell.rs`）も走査し、ファイルごとの件数で固定する。
+    // 殻を除外すると、殻へ `.record_*_in_scope(` の呼び出しを足しても気づけない。
+    // 核の `record_ime_apply_result_in_scope` → `record_confirmed_in_scope` が従来の
+    // `record_ime_apply_result` → `record_confirmed` の1件、殻は各 `_in_scope` をちょうど1件。
+    // 殻を除く本番の呼び出し元の合計は分割前と同じ 1 / 5。
+    const SHELL: &str = "src/state/platform_state/shell.rs";
+    type Expected = &'static [(&'static str, usize)];
+    const RECORDERS: [(&[&str], Expected); 2] = [
+        (
+            &[".record_optimistic(", ".record_optimistic_in_scope("],
+            &[("src/runtime/ime_refresh.rs", 1), (SHELL, 1)],
+        ),
+        (
+            &[".record_confirmed(", ".record_confirmed_in_scope("],
+            &[
+                ("src/runtime/focus_tracking.rs", 1),
+                ("src/runtime/ime_refresh.rs", 1),
+                ("src/runtime/key_pipeline.rs", 1),
+                ("src/runtime/mod.rs", 1),
+                ("src/state/platform_state.rs", 1),
+                (SHELL, 1),
+            ],
+        ),
+    ];
 
     let files = list_src_files();
-    for (needle, expected) in RECORDERS {
-        let mut total = 0usize;
+    for (needles, expected) in RECORDERS {
         let mut breakdown: Vec<(String, usize)> = Vec::new();
         for path in &files {
             let content = read_crate_file(path);
             let production = production_code_only(&content);
-            let count = count_real_calls(production, needle);
+            let count: usize = needles
+                .iter()
+                .map(|n| count_real_calls(production, n))
+                .sum();
             if count > 0 {
-                total += count;
                 breakdown.push((path.clone(), count));
             }
         }
+        breakdown.sort();
+        let want: Vec<(String, usize)> = expected
+            .iter()
+            .map(|(p, c)| ((*p).to_string(), *c))
+            .collect();
+        let non_shell: usize = breakdown
+            .iter()
+            .filter(|(p, _)| p != SHELL)
+            .map(|(_, c)| c)
+            .sum();
         assert_eq!(
-            total, expected,
-            "`{needle}` の呼び出し箇所数が想定({expected})と異なります(実際: {total})。\
-             内訳: {breakdown:?}\n\
+            breakdown, want,
+            "`{}` の呼び出し箇所(ファイルごとの件数)が想定と異なります(殻を除く合計: {non_shell})。\
              ADR-098 決定0 INV-A97-1（`ImeModel.applied` は実際に OS への actuation を\
              試みた経路だけが書いてよい）を確認し、新しい呼び出しがそれに違反しないか\
              （belief を actuation の記録として書いていないか）確認した上でこの期待値を\
-             更新してください。既存の5箇所のうち3箇所（`ir_post_focus_change_snapshot`\
-             の非TsfNative分岐・`focus_tracking.rs` の hard pre-sync・\
-             `process_deferred_keys`〈dead code〉）は actuation を伴わない belief\
+             更新してください。既存の呼び出しのうち3箇所は actuation を伴わない belief\
              ミラーとして ADR-098 決定5 が明示的に許容した既知の例外です\
-             （`state/platform_state.rs` の `record_optimistic` doc 参照）。"
+             （`state/platform_state.rs` の `record_optimistic_in_scope` doc 参照）。",
+            needles[0]
+        );
+    }
+}
+
+/// FCIS P2: 殻（`shell.rs`）の各メソッドは「`foreground_scope()` を1回読んで、1つの `_in_scope` に
+/// 委譲するだけ」であることを固定する。殻に分岐・ループ・余計な呼び出しを足したら落ちる。
+#[test]
+fn shell_methods_only_read_scope_once_and_delegate() {
+    let content = read_crate_file("src/state/platform_state/shell.rs");
+    let code = non_comment_lines(production_code_only(&content));
+    let methods = code.matches("pub(crate) fn ").count();
+    assert!(methods >= 13, "殻のメソッド数が13未満です: {methods}");
+    assert_eq!(
+        code.matches("foreground_scope()").count(),
+        methods,
+        "殻の各メソッドは `foreground_scope()` をちょうど1回読むこと。"
+    );
+    assert_eq!(
+        code.matches("_in_scope(").count(),
+        methods,
+        "殻の各メソッドは `_in_scope` をちょうど1つ呼ぶこと。"
+    );
+    for banned in ["if ", "match ", "for ", "while ", "loop ", "let ", "?;"] {
+        assert!(
+            !code.contains(banned),
+            "殻に `{banned}` を書かないこと（委譲するだけ）。"
         );
     }
 }
@@ -3773,6 +3831,15 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
                 &["runtime/key_pipeline.rs", "runtime/ime_refresh.rs"][..],
             ),
             (".follow_external_change(", &["runtime/ime_refresh.rs"][..]),
+            // FCIS P2: 殻は `_in_scope` 版をちょうど1回ずつ呼ぶ（殻を除外しない）。
+            (
+                ".arm_external_change_watch_in_scope(",
+                &["state/platform_state/shell.rs"][..],
+            ),
+            (
+                ".follow_external_change_in_scope(",
+                &["state/platform_state/shell.rs"][..],
+            ),
         ] {
             let count = production.matches(needle).count();
             let expected = usize::from(allowed.contains(&rel.as_str()));

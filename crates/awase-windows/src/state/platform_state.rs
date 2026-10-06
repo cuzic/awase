@@ -17,6 +17,10 @@ use super::scoped_latch::ScopedOneShot;
 use super::{ApplyGeneration, TickMs};
 use crate::journal::{JournalEntry, UnifiedJournal};
 
+// OS（フォアグラウンド）を読む殻。核の `_in_scope` 版を呼ぶ1行だけを置く（FCIS P2）。
+#[cfg(windows)]
+mod shell;
+
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
 // ────────────────────────────────────────────────────────────────────────────
@@ -303,27 +307,31 @@ impl ImeStateHub {
     // 各メソッドのシグネチャは委譲前と変えていない（呼び出し元・テストの変更を避けるため）。
 
     /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。
-    pub(crate) fn arm_mode_key_pass_mark(&mut self, now_ms: u64, readable: bool) {
-        self.mode_key_pass_mark
-            .arm(crate::win32::foreground_scope(), now_ms, readable);
+    fn arm_mode_key_pass_mark_in_scope(
+        &mut self,
+        now_ms: u64,
+        readable: bool,
+        scope: crate::win32::ForegroundScope,
+    ) {
+        self.mode_key_pass_mark.arm(scope, now_ms, readable);
     }
 
     /// 立てた時点で読める窓だった通過マークが、窓の終了を待っているとき、その残り時間(ms)。
     /// 通過の途中で窓が読めなくなった（降格した）場合に、窓の終了時に`expire_mode_key_pass_mark`を呼ぶための
     /// 起床時刻に使う（読めない窓の`reschedule_ime_refresh`は通過マークが有効な間は何も予約しないため）。
-    pub(crate) fn mode_key_pass_expiry_wait_ms(&mut self, now_ms: u64) -> Option<u64> {
+    fn mode_key_pass_expiry_wait_ms_in_scope(
+        &mut self,
+        now_ms: u64,
+        scope: crate::win32::ForegroundScope,
+    ) -> Option<u64> {
         self.mode_key_pass_mark.expiry_wait_ms(
             now_ms,
-            crate::win32::foreground_scope(),
+            scope,
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         )
     }
 
     /// awaseが実際にIMEへ書いた（`applied`を更新した）ことを、有効な通過マークへ記録する（BUG-158追補2）。
-    fn note_awase_write_for_mode_key_pass(&mut self) {
-        self.note_awase_write_for_mode_key_pass_in_scope(crate::win32::foreground_scope());
-    }
-
     fn note_awase_write_for_mode_key_pass_in_scope(
         &mut self,
         scope: crate::win32::ForegroundScope,
@@ -342,18 +350,16 @@ impl ImeStateHub {
 
     /// 通過マークの窓が切れるまでの残り時間(ms)。マークが無い/フォアグラウンドが変わった/窓が切れていれば`None`。
     /// 観測が失敗した通過の後、読み直しを窓の終了時の1回に絞るために使う（BUG-158）。
-    pub(crate) fn mode_key_pass_window_remaining_ms(&mut self, now_ms: u64) -> Option<u64> {
+    fn mode_key_pass_window_remaining_ms_in_scope(
+        &mut self,
+        now_ms: u64,
+        scope: crate::win32::ForegroundScope,
+    ) -> Option<u64> {
         self.mode_key_pass_mark.window_remaining_ms(
             now_ms,
-            crate::win32::foreground_scope(),
+            scope,
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         )
-    }
-
-    /// 通過マークが有効か（消費しない）。フォアグラウンドが変わっていれば`peek`が失効させる。
-    /// typing-idleガードのバイパス判定用（`ir_decide_read_strategy`）。
-    pub(crate) fn mode_key_pass_mark_live(&mut self, now_ms: u64) -> bool {
-        self.mode_key_pass_mark_live_in_scope(now_ms, crate::win32::foreground_scope())
     }
 
     fn invalidate_intents_if_mode_key_pass_live_in_scope(
@@ -365,20 +371,13 @@ impl ImeStateHub {
         self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, false)
     }
 
-    /// 通過マークの窓が切れても、観測が一度も成功しなかった（`invalidated`のまま）ときに、古い明示意図を捨てる。
-    ///
-    /// 通過マークは「ユーザーの物理モードキーが通った。結果は分からないので、古い意図を根拠にしない」
-    /// という事実そのものである。意図の破棄を観測の成功だけに頼ると、読み取りが失敗し続ける環境
-    /// （MS-IME本体の`ime_on=None`）で意図が残り、`reschedule_ime_refresh`の早期returnでポーリングが止まったまま
-    /// 次のモードキーまで固まる（BUG-151 原因③の再発、BUG-158）。窓の終了で必ず捨て、ポーリングを再開させる。
-    /// 既に観測の成功で捨てた（`invalidated`）/窓の間は何もしない。
-    pub(crate) fn expire_mode_key_pass_mark(&mut self, now_ms: u64, tick_ms: TickMs) -> bool {
-        self.drop_intents_for_mode_key_pass_in_scope(
-            now_ms,
-            tick_ms,
-            crate::win32::foreground_scope(),
-            true,
-        )
+    fn expire_mode_key_pass_mark_in_scope(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+        scope: crate::win32::ForegroundScope,
+    ) -> bool {
+        self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, true)
     }
 
     /// 判断は `ModeKeyPassLatch::drop_decision`（Win32非依存）。ここは`PassEffect`の適用のみ。
@@ -413,12 +412,13 @@ impl ImeStateHub {
     // ── 外部変化の監視窓（ADR-205、BUG-172）──
 
     /// 外部注入の IME キーを見たら呼ぶ（読めない窓のみ）。現在のフォアグラウンドに対する監視窓を開く／延ばす。
-    pub(crate) fn arm_external_change_watch(&mut self, now_ms: u64) {
-        self.external_change_watch.arm(
-            crate::win32::foreground_scope(),
-            now_ms,
-            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
-        );
+    fn arm_external_change_watch_in_scope(
+        &mut self,
+        now_ms: u64,
+        scope: crate::win32::ForegroundScope,
+    ) {
+        self.external_change_watch
+            .arm(scope, now_ms, crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS);
     }
 
     /// 監視窓の基準値(ログ用。ADR-227 の give-up 契機で、追随が起きなかった理由を区別する)。
@@ -427,9 +427,13 @@ impl ImeStateHub {
     }
 
     /// 監視窓の残り時間(ms)。無い・切れた・フォアグラウンドが変わったなら`None`（`reschedule_ime_refresh`の読み直し予約用）。
-    pub(crate) fn external_change_watch_remaining_ms(&mut self, now_ms: u64) -> Option<u64> {
+    fn external_change_watch_remaining_ms_in_scope(
+        &mut self,
+        now_ms: u64,
+        scope: crate::win32::ForegroundScope,
+    ) -> Option<u64> {
         self.external_change_watch.remaining_ms(
-            crate::win32::foreground_scope(),
+            scope,
             now_ms,
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         )
@@ -446,14 +450,14 @@ impl ImeStateHub {
     /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。awase は IME を書かない。
     /// 開く・閉じるの両方向を同じ規則で追随する（呼び出し側が GJI × Imm32Unavailable に限る）。戻り値は追随した値。
     /// どのフォーカスでも直近の読みは記録する（基準値の初期値になる）。
-    pub(crate) fn follow_external_change(
+    fn follow_external_change_in_scope(
         &mut self,
         read: Option<bool>,
         now_ms: u64,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
+        scope: crate::win32::ForegroundScope,
     ) -> Option<bool> {
-        let scope = crate::win32::foreground_scope();
         let verdict = self.external_change_watch.observe(
             scope,
             now_ms,
@@ -521,18 +525,6 @@ impl ImeStateHub {
     /// 窓の間の観測が全て時間切れだった通過は、揃える機会が無いまま`observed ≠ desired`が続くため。
     /// 通過につき1回だけ。通過より後にawaseが書いた/新しい明示意図があるときは揃えない。
     /// 観測が成功したときに呼ぶ。揃えたら`true`。
-    pub(crate) fn align_after_expired_mode_key_pass(
-        &mut self,
-        now_ms: u64,
-        tick_ms: TickMs,
-    ) -> bool {
-        self.align_after_expired_mode_key_pass_in_scope(
-            now_ms,
-            tick_ms,
-            crate::win32::foreground_scope(),
-        )
-    }
-
     fn align_after_expired_mode_key_pass_in_scope(
         &mut self,
         now_ms: u64,
@@ -549,18 +541,6 @@ impl ImeStateHub {
         }
         self.pass_through_observed(tick_ms, true, false);
         true
-    }
-
-    pub(crate) fn invalidate_intents_if_mode_key_pass_live(
-        &mut self,
-        now_ms: u64,
-        tick_ms: TickMs,
-    ) -> bool {
-        self.invalidate_intents_if_mode_key_pass_live_in_scope(
-            now_ms,
-            tick_ms,
-            crate::win32::foreground_scope(),
-        )
     }
 
     /// 非同期送信済み・未確認の actuation を記録する（`applied = Optimistic`）。
@@ -585,8 +565,8 @@ impl ImeStateHub {
     /// `record_confirmed`/`record_optimistic` 呼び出しを追加する際は、
     /// この5箇所のどれとも異なる新規パターンなら actuation 由来かどうかを
     /// 必ず確認すること。
-    pub(crate) fn record_optimistic(&mut self, open: bool) {
-        self.note_awase_write_for_mode_key_pass();
+    fn record_optimistic_in_scope(&mut self, open: bool, scope: crate::win32::ForegroundScope) {
+        self.note_awase_write_for_mode_key_pass_in_scope(scope);
         self.shadow_model.applied = AppliedImeState::Optimistic(open);
         self.clear_pending_if_matches(open);
     }
@@ -596,8 +576,13 @@ impl ImeStateHub {
     /// ADR-098 決定6-a: 旧 `mirror_applied_open_with_ts(value, ts)`（`ts>0`）に相当。
     /// `at_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来、非ゼロ）。
     /// INV-A97-1 の既知の例外は `record_optimistic` の doc を参照。
-    pub(crate) fn record_confirmed(&mut self, open: bool, at_ms: u64) {
-        self.note_awase_write_for_mode_key_pass();
+    fn record_confirmed_in_scope(
+        &mut self,
+        open: bool,
+        at_ms: u64,
+        scope: crate::win32::ForegroundScope,
+    ) {
+        self.note_awase_write_for_mode_key_pass_in_scope(scope);
         self.shadow_model.confirm_applied(open, at_ms);
     }
 
@@ -1068,12 +1053,13 @@ impl ImeStateHub {
     ///
     /// generation を持たない既存5経路は現状維持。target 一致で pending を解放し、
     /// `record_confirmed` で `applied` を書く。
-    pub(crate) fn record_ime_apply_result(
+    fn record_ime_apply_result_in_scope(
         &mut self,
         open: bool,
         outcome: awase::platform::ImeOpenOutcome,
         generation: Option<ApplyGeneration>,
         ts: u64,
+        scope: crate::win32::ForegroundScope,
     ) -> ImeApplyAcceptance {
         let Some(generation) = generation else {
             let Some(effective) = super::ime_model::apply_result_effective_open(open, outcome)
@@ -1082,8 +1068,8 @@ impl ImeStateHub {
             };
             // `ts` は常に `current_tick_ms()`（非ゼロ）由来——`on_ime_apply_complete`
             // の唯一の呼び出し元（`runtime/mod.rs`）がそうしている。よって
-            // 常に `record_confirmed`（ADR-098 決定6-a）。
-            self.record_confirmed(effective, ts);
+            // 常に `record_confirmed_in_scope`（ADR-098 決定6-a）。
+            self.record_confirmed_in_scope(effective, ts, scope);
             return ImeApplyAcceptance::Accepted;
         };
 
