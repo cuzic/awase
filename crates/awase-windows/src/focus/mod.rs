@@ -17,7 +17,6 @@ pub use kinds::{AppKind, FocusKind};
 pub mod classifier;
 #[cfg(windows)]
 pub mod classify;
-#[cfg(windows)]
 pub mod hwnd_cache;
 #[cfg(windows)]
 pub mod imm_learning;
