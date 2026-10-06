@@ -6,7 +6,7 @@ summary: |-
   所有者の意図(2026-10-06): (1)Windows 依存側は命令(Cmd)を実行して結果を事象(Event)で返すだけの実行役にする、(2)判断を Linux でモック/スタブ/ダブルを使ってテストできる範囲を広げる、(3)フックスレッドを薄くする、(4)観測と判断を追記して最後に reduce する形にし、非同期 effect を使う。
   棚卸し(docs/tasks/layering-inventory-2026-10-06/、develop 9df983e4)で、awase-windows の本体約 48,850 行のうち移せる(P+P*)が約 25,230 行(52%)、うち新たに Linux でテストできるようになるのが約 17,500 行、分割が要る(F)が約 10,640 行(runtime/ と output/ に集中)と分かった。`platform_state.rs` の本体 1,813 行は Win32/unsafe/with_app を使わず、`use windows::` を持つのは 164 ファイル中 37。
   提案: ポートを時間の性質で S(即時)・B(ブロックしうる、タイムアウトを戻り値の値に)・A(Cmd を出し結果は世代つき Event)に分けて注入する。まず同一 crate 内で gate を外し、crate の物理分割は最後。契約テストで偽物を本物に拘束する。フックの畳み込みは前提確認のあと別段階。
-  注意: ADR-224(ungate か切り出し)は「見逃しの実例が出るまで着手しない」としており、その着手条件は満たしていない。本 ADR の主動機は障害の記録ではなく構造的なテスト容易性なので、所有者の判断が要る。
+  2026-10-06 に FCIS(Functional Core, Imperative Shell)の原則で改訂(「FCIS による改訂」節。Tier-1 portable / Tier-2 pure core の 2 段、`HubClock` を標準形、handler trait の閉じた例外、核と殻の分割。実装タスクは docs/tasks/fcis-layering-tasks-2026-10-06.md)。注意: ADR-224(ungate か切り出し)は「見逃しの実例が出るまで着手しない」としており、その着手条件は満たしていない。本 ADR の主動機は障害の記録ではなく構造的なテスト容易性なので、所有者の判断が要る。
 status: |-
   起草(2026-10-06)。Opus レビュー round1(着手単位の見定め、Blocker なし、`docs/adr/review/229-opus-review-round1.md`)を反映。所有者指示(2026-10-06)により、設計全体のレビューは行わず、「着手しやすい単位」(下記 T2・T1・T3・T5・T4・T7)だけ先行して進め、その後に考え直す。それ以外の段階は未着手。
 related_adr:
@@ -75,7 +75,7 @@ awase-windows の内部(まず同一 crate 内で gate を外す。crate 分割�
 
 Windows 側の関数は、belief・profile・gate を読んで分岐しない。F は「O が facts を返し、core が判断し、E が Cmd を実行する」に分ける。
 
-### D2: Win32 ポートは、1 ターンを止めるかどうかで分ける
+### D2: Win32 ポートは、1 ターンを止めるかどうかで分ける(**FCIS 改訂で置き換え。下記「FCIS による改訂」F-D1・F-D3 が正**)
 
 | 種類 | 性質 | 形 |
 |---|---|---|
@@ -117,6 +117,80 @@ Windows 側の関数は、belief・profile・gate を読んで分岐しない。
 - corophage / effing-mad の導入、`StepCoro` への `call` 追加(往復はすでに 1 行。BUG-27 追補2 の `vk_sent` 中断分岐を隠す)。
 - `open_chain` を最初に Cmd 化すること(観測と実行を分けると BUG-34 型の窓ができる。最後にやる)。
 - 命令列だけのための新しい DSL。
+
+## FCIS による改訂(2026-10-06、Opus の FCIS 設計レビュー round1・round2 を反映)
+
+Functional Core, Imperative Shell(FCIS)の原則で、D1〜D4・D6 を次のとおり改める。D2(ポートを core に注入する)は置き換える。実装タスクは [docs/tasks/fcis-layering-tasks-2026-10-06.md](../tasks/fcis-layering-tasks-2026-10-06.md)。レビュー記録は `docs/adr/review/229-opus-fcis-round1.md`・`229-opus-fcis-round2.md`。
+
+### 用語: Tier-1「portable」と Tier-2「pure core」(2 段)
+
+- **Tier-1「portable」= ungated**: `#[cfg(windows)]` が無く、Linux でコンパイルとテストができる。**コンパイラが守る**(ungated なモジュールが `crate::hook`・`crate::win32`・`crate::imm`・`runtime`・`with_app` を参照すると Linux のビルドが落ちる。PR #492〜#495 で実証)。段階 0〜2(ungate)は Tier-1 の作業。
+- **Tier-2「pure core」**: Tier-1 に加えて、①壁時計の直接読み取り(`Instant::now()`・`SystemTime::now()`)、②可変のグローバル(`static` + atomic/Mutex、`thread_local!`。不変のディスパッチ表は可)、③ファイル内の `#[cfg(windows)]` 項目(`mod` 宣言と `#[cfg(any(windows, test))]` は可)、④FS・環境変数・レジストリ、を持たない。**テキスト走査(`CORE_MODULES`)で守る**。F の分割(段階 3 以降)は Tier-2 の作業。
+- 「ungated(Linux でテストできる)」と「純粋」は別の性質。既に ungated な `state/` にも `Instant::now()`(`ime_model.rs`)や可変の static(`probe_admission.rs`)がある。「core」という語は、どちらの Tier かを必ず添えて使う。
+- turn は**エンジンスレッドだけ**に当てはまる。フックスレッドの同期判定と ADR-129 のスナップショットの埋め込みは turn の外。
+
+### F-D1: core は port を呼ばない。ただし handler trait の例外を、閉じた列挙で許す
+
+- 原則: core は Win32 を呼ばない。必要な値は、shell が先に読んで Facts として渡すか、core が Cmd を返し shell が実行して結果を Event で戻す。
+- **例外**: core のアルゴリズムが、**同じアルゴリズムの中で前の効果の結果が次の効果の選択を変える**場合に限り、効果の実行役(handler)の trait を引数に取ってよい(単に「読んでから書く」はサンドイッチで書く)。条件: ①handler の trait のメソッドはその効果だけを行い、他の環境を読まない、②trait は core に、本番の実装は shell に置き、**偽物の実装がテストに必ずある**、③**例外は下の列挙にある関数に限り、追加には本 ADR の改訂が要る**(trait 呼び出しは普通のメソッド呼び出しに見えるので、F-D6 のテキスト走査では検出できないため)。
+- **例外の列挙(閉じたリスト)**:
+  1. `Actuation<Verified>::run_chain(_async)<W: MechanismWriter / AsyncMechanismWriter>`(`state/actuation_chain.rs`)。型状態(ADR-090: warrant → verify を経ないと write できない)と ADR-163 の再生ハーネス(ReplayWriter)を支えているので、Cmd の状態機械には**書き換えない**。`romaji_pre_write`(条件付きの書き込み)は、この chain の前処理として扱う。
+  2. 条件付きの同期の効果(読むかどうか自体が判断に依存する場合): ImmCross が `Failed` のときの再読み取り(`post_failed_reobservation`)、focus の MSAA までの同期の段階的な分類。読み取りの handler(例: `trait ImeProbe`)を引数に取る形にするのは、**実装する PR で、その関数を本リストに追加する**ときに限る。UIA は非同期なので A 種の Cmd/Event とする。
+- 例外に入らないもの: warmup の `StepCoro`(Cmd を yield する標準形)。
+
+### F-D2: F(判断混在の手続き)の標準形 = サンドイッチ
+
+```
+fn procedure(..) {                         // shell
+    let facts = observe(..);               //   shell-in: 所有型の Facts
+    let plan  = decide(&state, &facts);    //   core(F-D1 の例外を除き純粋)
+    execute(plan);                         //   shell-out: Cmd を実行し、結果を Event で返す
+}
+```
+
+正しい実例: `decide_gate`/`decide_chain`/`decide_attempt`、`plan_core`、`explicit_press_delivery`、`DecisionInputs`(所有・Copy)、`ImeModel::reduce(&mut self, ..)`。実例ではないもの: `ObservedState`(gated な `ActiveImeKind` を持ち、構築時にグローバルを読む)・`FocusFacts<'a>`(借用)。これらは「借用ビューの所有化」の対象。
+
+### F-D3: 環境依存の除き方
+
+| 環境依存 | core での形 |
+|---|---|
+| 時刻 | 状態を持つ core: 注入された `HubClock`(`Wall { tick: fn() -> u64 }` / `Manual`、`state/hub_clock.rs`)を標準形とする。`Instant` と tick(ms)の 2 つの時間軸を 1 つの値で供給する。**時計の抽象を 4 つ目に増やさない**(既存は `HubClock`・`timed_fsm::Clock`/`ManualClock`・`quanta::Clock`)。状態を持たない関数: `now` を引数で受ける。壁時計を直接読むのは shell だけ。`hub_clock.rs` 自身は時計の実装なので Tier-2 の外 |
+| グローバル/`thread_local` | shell が読み、スナップショットを引数で渡す。副チャネルは戻り値に載せる |
+| 借用ビュー | 所有型の Facts(`DecisionInputs` に縮める) |
+| OS を読む関数(`foreground_scope()`) | **核と殻の分割**: `_in_scope(scope)` 版を core(`platform_state.rs`)に、`foreground_scope()` を読んで `_in_scope` を呼ぶ 1 行の殻を、`platform_state.rs` の**子モジュール**(`#[cfg(windows)] mod shell;`、`state/platform_state/shell.rs`)の `impl ImeStateHub` に置く(sibling ファイルだと private な `_in_scope` の可視性を広げる必要がある)。殻のメソッド名は今と同じなので runtime/ の呼び出し元は変更不要。関数ポインタ注入(`fn()` は状態を捕まえられず ADR-224 の懸念が残る)は採らない |
+| HWND / HIMC | HWND は `HwndId`/`WindowId`(`usize` の newtype)。HIMC は shell の中に閉じる(core に出さない) |
+| `with_app` | shell が turn の入口で借り、値にして core に渡す。**入口の集約(1 回に限る)は今回は決めない**(`spawn_local` の再入、B-1 の fail-open、`dispatch_engine_message` の非対称と衝突しうる。後段で、何を守るかを先に書く) |
+| ログ(`tracing`) | 許す。core の判断に読み戻さない。replay や不具合報告に要るものは、ログではなく戻り値か journal のレコードにする。ADR-139 の `emit_tracing` の検査と `decision3_instrument_targets_…` に注意 |
+| 状態の更新 | `&mut self` を許す(決定性は保たれる)。禁止するのは `&mut` 越しの隠れた環境(グローバル・時計・`with_app`) |
+
+### F-D4: コルーチン(warmup など)は core
+
+`StepCoro` の本体は `Cmd`(`ProbeAction`)を yield し `Event`(`ProbeTickInput`)を受け取る。OS を呼ばず、時計は tick 入力に載せる。`OutputActiveGuard`(RAII)は `wants_output_gate: bool` を値で返し、実体は shell が持つ。**defer と drain の 2 窓口(ADR-156)を片側だけにしない**。スナップショット引数化で判定が最大 10ms 古くなる(epoch fence は 20ms)ので、baseline を `SendInput` の前に取る順序(BUG-027/029/030/033、ADR-079)をテストで固定してから着手する。
+
+### F-D5: turn の不変条件(エンジンスレッドのみ)
+
+1. **同期の処理**(同期の handler、`ImeProbe` を含む)は、1 事象を `await` で止めずに 1 turn で最後まで処理する。BUG-34 型の「観測と実行の間の窓」を作らない。
+2. 実行結果は、**既存の世代・id を再利用**して由来を示す Event として戻し、古い結果は core が捨てる。新しい id を発明しない: フォーカス失効=`focus_gen`/`ime_mode_focus_gen`/`ActuationTarget::verify_still_current`、IME 反映要求=`ApplyGeneration`(ADR-106)、物理キー押下=`PressId`(ADR-208 L1)、warmup=`cold_seq: Generation`。
+3. `await` をまたぐ処理は、F-D1 の handler 例外か、core を状態機械にして shell が Event ごとに 1 ステップ進める。`open_chain` の 3 関数は**書き換えない**(INV-45・BUG-34・ADR-119/180)。
+4. **非同期の handler(`AsyncMechanismWriter`、`open_chain.rs` の `write` は ImmCross で `.await`)は、各 `.await` の後に、環境(view・gate・フォーカスの世代)を観測し直してから次の効果を選ぶ。`await` をまたいで借用も推測値も保持しない**(INV-45、`fallback_write` が機構ごとに view を作り直す、ADR-180 決定1 で 3 関数が独立に gate を再検出する)。
+
+### F-D6: 純粋さを守る仕組み
+
+- Tier-1: コンパイラ(ungate)。
+- Tier-2: `architecture_guard.rs` に、定数 `CORE_MODULES` とテスト 1 本。**許可リスト方式ではなく、「違反 0 のファイルだけを `CORE_MODULES` に載せる」方式**。`CORE_MODULES` の各ファイルの本番コード(`#[cfg(test)] mod tests` より前、コメント行を除く)が、Tier-2 の 4 つの規則(壁時計・可変 static/`thread_local!`・ファイル内の `#[cfg(windows)]` 項目・FS/環境変数/レジストリ)に違反しないことを確かめる。`mod` 宣言の `#[cfg(windows)]` と `#[cfg(any(windows, test))]` は規則の対象外。初期は ungated な `state/` の 53 ファイル中、違反 0 の **45 ファイル**(違反のある 8 ファイル: `hub_clock`・`ime_event`・`ime_model`・`ime_profile_driver`・`key_effect_predictor`・`key_effect_runtime`・`probe_admission`・`mod.rs`)。違反を直したファイルを順に足す。既存の `DECISION3_FILES` と同じ流儀で、新しい汎用機構は作らない(ADR-218〜220 が見送ったのは GuardRule 宣言テーブル + 汎用チェッカー)。
+- crate の物理分割は最後(ファイル移動でガードが空振りするため)。
+- 指標: `CORE_MODULES` の件数(増やす)、違反のある ungated ファイルの件数(8 → 減らす)、「Linux で実行されないから」を理由にしたテキストガードの数(本物のテストに置き換えて減らす)、閉ループの写しの数(7。`platform_state` の ungate 後に P5 で 1 系統ずつ減らす。ungate 自体では減らない)、`allow(dead_code)` の数(46 か所/11 ファイル)。
+
+### 移行のレシピ(全レシピ共通の後処理つき)
+
+R1 その場で gate を外す(T2・T3)、R2 時刻を引数にして gate を外す(T7)、R3 テストだけ移す(T1)、R4 型を**使い手の側**へ移す(T4: journal → win32 だった依存を win32 → journal に)、R5 核と殻の分割(P2)、R6 サンドイッチ分割(F)、R7 コルーチンの入力をスナップショットに。**共通の後処理**: `fix-requires-evidence.md` の表・`.githooks/pre-push` の正規表現・`.cargo/mutants-awase-windows.toml` の `examine_globs`・`decision3_…` の instrument 一覧・「Linux で実行されないから」のコメントと件数を見直す。**着手前に、テストが呼ぶ関数・型・定数・macro が gated 側にないかを必ず確認する**(PR #493 の教訓)。Linux で未使用の `pub(crate)` 項目には、テストも使うなら `#[cfg(any(windows, test))]`、使わないなら `#[cfg(windows)]`(`allow(dead_code)` は増やさない。外から到達できる `pub` 項目には何も付けない)。
+
+### 所有者の判断が要るもの(FCIS 改訂で追加・更新)
+
+1. **ADR-224 の決定の改訂**: 段階 2 は ADR-224 の案A に当たる。懸念 (a)(ガードが広く壊れる)は根拠が無かった(ADR-224 に追記済み)、(b)(`foreground_scope` を stub にすると挙動が隠れる)は核と殻の分割(ハーネスが `_in_scope` に任意のスコープを渡せる)で解消する。「段階 2 は核と殻の分割の形で進める」に改訂するか。
+2. S2: `state/physical_disposition.rs` を `.githooks/pre-push`・`fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` に足すか(別 PR)。
+3. 1 turn の入口集約(`with_app` の入口を減らす)を将来の目標にするか。
+4. フックの薄型化・追記して reduce する形を、いつ・どの前提確認のあとに着手するか。
 
 ## 段階と成功指標
 
