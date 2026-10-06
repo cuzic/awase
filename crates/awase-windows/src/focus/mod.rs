@@ -17,8 +17,6 @@ pub use kinds::{AppKind, FocusKind};
 pub mod classifier;
 #[cfg(windows)]
 pub mod classify;
-// 呼び出し元（`tracker.rs`）は `#[cfg(windows)]` のため、非 Windows では未使用になりうる。
-#[cfg_attr(not(windows), allow(dead_code))]
 pub mod hwnd_cache;
 #[cfg(windows)]
 pub mod imm_learning;
