@@ -1423,13 +1423,19 @@ fn strip_comments(code: &str) -> String {
                     i += 1;
                 }
             }
-        } else if c == 'r' && (i == 0 || !ident(b[i - 1])) && {
-            let mut j = i + 1;
-            while b.get(j) == Some(&'#') {
-                j += 1;
+        } else if c == 'r'
+            && (i == 0
+                || !ident(b[i - 1])
+                // `br#".."#`・`cr#".."#`（接頭辞つきの生文字列）
+                || (matches!(b[i - 1], 'b' | 'c') && (i == 1 || !ident(b[i - 2]))))
+            && {
+                let mut j = i + 1;
+                while b.get(j) == Some(&'#') {
+                    j += 1;
+                }
+                b.get(j) == Some(&'"')
             }
-            b.get(j) == Some(&'"')
-        } {
+        {
             // 生文字列 r##"..."##
             let mut j = i + 1;
             let mut hashes = 0;
@@ -1500,11 +1506,17 @@ fn count_with_clock_calls(code: &str) -> usize {
 
 /// `ImeStateHub.clock` への書き込みの数。private でも子モジュール（`platform_state/` 配下）と核の
 /// 本番メソッドからは書けるため数える。拾うもの: `.clock = ..`・`*clock = ..`（分配束縛）・
-/// `&mut <path>.clock`／`&mut (<path>.clock)`／`ref mut clock`。
+/// `&mut <path>.clock`／`&mut (<path>.clock)`／`ref mut clock`（`mem::replace`・`mem::swap`・`mem::take`
+/// は `&mut` で拾う）・`clock.clone_from(..)`（`HubClock` は `Clone` なので今すでに書き換えの手段）・
+/// 行内の分配束縛／リテラル `{ clock, .. }`・`{ clock: c, .. }`・`, clock: c`。
 ///
-/// 限界（拾えない）: `&mut self` を取るメソッド呼び出し（`self.clock.advance_ms(n)`。実時計では
-/// 何もしないが、将来 `HubClock` に `&mut self` の setter が増えたら抜け道）、`Cell`/`RefCell` 経由
-/// （今の `clock` は内部可変性を持たない enum で、型を変えれば diff に出る）。
+/// 限界（拾えない）:
+/// - 別名に束縛し直したあとの書き込み（`let c = &mut self.clock;` は `&mut` で拾えるが、
+///   `let Self { clock: c, .. } = self;` が複数行に分かれて `{` と同じ行に無い形、`let c = &mut *(..)` の
+///   ような経由）。
+/// - `&mut self` を取るメソッド呼び出し（`self.clock.advance_ms(n)` は今すでに存在する。実時計の `Wall` では
+///   何もしないが、実装が変われば抜け道）。`clone_from` 以外の `Clone`/`Default` 由来の書き換えも同様。
+/// - `Cell`/`RefCell` 経由（今の `clock` は内部可変性を持たない enum で、型を変えれば diff に出る）。
 fn count_clock_writes(code: &str) -> usize {
     let assign_after = |rest: &str| {
         let t = rest.trim_start();
@@ -1537,6 +1549,16 @@ fn count_clock_writes(code: &str) -> usize {
                 {
                     n += 1;
                 }
+            }
+            if after.starts_with(".clone_from(") {
+                n += 1;
+            }
+            let bt = before.trim_end();
+            let at = after.trim_start();
+            if (bt.ends_with('{') || bt.ends_with(','))
+                && (at.starts_with(':') || at.starts_with(',') || at.starts_with('}'))
+            {
+                n += 1;
             }
         }
     }
@@ -1727,6 +1749,23 @@ fn with_clock_guard_detects_new_production_entry() {
         (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ let Self {{ ref mut clock, .. }} = *self; }} }}")),
     ] {
         assert!(has(&build(shell, &core), "clock への書き込み"), "{shell} / {core}");
+    }
+    // 名前を変えた分配束縛・clone_from・接頭辞つき生文字列の後ろ
+    for body in [
+        "let Self { clock: c, .. } = self; *c = HubClock::manual(0);",
+        "self.clock.clone_from(&o);",
+        "let r = br#\"a\"/*\"#; self.clock = c;",
+        "let r = cr#\"a\"/*\"#; self.clock = c;",
+        "std::mem::replace(&mut self.clock, c);",
+        "std::mem::take(&mut self.clock);",
+    ] {
+        assert!(
+            has(
+                &build(shell_ok, &format!("{core_ok}fn m(&mut self) {{ {body} }}")),
+                "clock への書き込み"
+            ),
+            "{body}"
+        );
     }
     // 構造体リテラルの値が `HubClock::` で始まらない・短縮形（別の構築関数）
     for lit in [
