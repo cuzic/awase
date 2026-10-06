@@ -255,6 +255,7 @@ setup = "flutter"
 exe = ["{repo}/tools/e2e/input_apps/flutter/app/build/windows/x64/runner/Release/flutter_form_input.exe"]
 window = { title = "flutter_form_input" }
 click = true
-read = "clipboard"
+# クリップボード読みは Flutter では空だった(run 37419715235)。Flutter は UIA を問い合わせると意味ツリーを出すので UIA で読む。
+read = "uia"
 intervals = [20]
 runs = 1
