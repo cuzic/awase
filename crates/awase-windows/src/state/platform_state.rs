@@ -131,6 +131,7 @@ pub(crate) struct ImePollState {
     pub(crate) force_guard: bool,
     pub(crate) input_mode: InputModeState,
     pub(crate) prev_conv: Option<u32>,
+    pub(crate) eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
 }
 
 /// [`ImeStateHub::evaluate_drift`] の戻り値。定義は ungated な
@@ -960,6 +961,7 @@ impl ImeStateHub {
             force_guard: self.is_force_on_guard_active(),
             input_mode: self.input_mode(),
             prev_conv: self.belief.prev_conversion_mode(),
+            eisu_candidate: self.belief.eisu_candidate(),
         }
     }
 
@@ -1209,6 +1211,7 @@ impl ImeStateHub {
         );
         self.belief.is_japanese_ime = true;
         self.belief.prev_conversion_mode = None;
+        self.belief.eisu_candidate = None;
         self.shadow_model.observe_miss_monitor.record_success();
         self.shadow_model.force_guards.clear();
         self.shadow_model.force_guards.add(ForceGuard {
@@ -1290,6 +1293,35 @@ impl ImeStateHub {
         if let Some(conv) = update.new_prev_conversion_mode {
             self.belief.prev_conversion_mode = Some(conv);
         }
+        self.apply_eisu_candidate_update(update.eisu_candidate);
+    }
+
+    /// 英数モードの候補を更新する(ADR-238)。`apply_ime_update` と、`ImmCrossProbe` 経路(分類の結果の `input_mode` だけを
+    /// dispatch する)から呼ぶ。
+    pub(crate) fn apply_eisu_candidate_update(
+        &mut self,
+        update: crate::state::eisu_candidate::CandidateUpdate,
+    ) {
+        use crate::state::eisu_candidate::CandidateUpdate;
+        match update {
+            CandidateUpdate::Keep => {}
+            CandidateUpdate::Set(c) => self.belief.eisu_candidate = Some(c),
+            CandidateUpdate::Clear => self.belief.eisu_candidate = None,
+        }
+    }
+
+    /// 英数モードの候補の寿命の残り(ms)。候補が無い/寿命切れなら `None`(確認の読み直しの予約が使う)。
+    pub(crate) fn eisu_candidate_remaining_ms(&self, now_ms: u64) -> Option<u64> {
+        crate::state::eisu_candidate::candidate_remaining_ms(
+            self.belief.eisu_candidate(),
+            now_ms,
+            crate::tuning::EISU_CANDIDATE_LIFETIME_MS,
+        )
+    }
+
+    /// 英数モードの候補を捨てる(フォーカス変更時。`set_prev_conversion_mode(None)` と同じ場所で呼ぶ)。
+    pub(crate) fn clear_eisu_candidate(&mut self) {
+        self.belief.eisu_candidate = None;
     }
 
     /// `hwnd_cache` の復元結果を belief / shadow_model に反映する。

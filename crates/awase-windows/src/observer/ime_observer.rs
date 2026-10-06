@@ -145,6 +145,8 @@ pub fn classify_ime_snapshot(
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
+    // 英数モードの候補(ADR-238、BUG-190)。1 回目の英数の読みは採らずに候補にし、確認の読みで確定する。
+    current_eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
     // 呼び出し元が `!focus::class_names::is_own_ui_window(snap.focused_class, process_name)`
     // で算出する。false のとき input_mode 軸の観測を一切採用しない（BUG-106追補3・4:
     // awase自身のトレイ/設定画面へ一瞬フォーカスが移った際の観測を、ユーザーが
@@ -199,10 +201,37 @@ pub fn classify_ime_snapshot(
             })
     };
 
+    // ADR-238(BUG-190): 新たに ObservedEisu へ変わる結果は、1 回目を採らず候補にし、確認の読みで確定する。
+    // 確認は (a) is_eisu_evidence と (b) classify_transition の両方が作る結果に対して、結果側で掛ける。
+    let proposed_input_mode = new_input_mode;
+    let (new_input_mode, eisu_candidate) = if trust_input_mode {
+        crate::state::eisu_candidate::filter_eisu_adoption(
+            &crate::state::eisu_candidate::EisuFilterInput {
+                proposed: proposed_input_mode,
+                current_mode: current_input_mode,
+                ime_on: snap.ime_on,
+                conv: snap.conversion_mode,
+                conv_is_eisu: snap
+                    .conversion_mode
+                    .is_some_and(|c| awase::engine::ConvMode::from_u32(c).is_eisu()),
+                now_ms,
+                candidate: current_eisu_candidate,
+                lifetime_ms: crate::tuning::EISU_CANDIDATE_LIFETIME_MS,
+            },
+        )
+    } else {
+        (
+            new_input_mode,
+            crate::state::eisu_candidate::CandidateUpdate::Keep,
+        )
+    };
+
     // 診断(ADR-238、BUG-190): ObservedEisu を採ったとき、どの分岐か・前回の conv・読みが時間切れだったかを 1 行残す。
     // 挙動は変えない。直近のモードキー通過からの経過や open/conv プローブの所要時間は、
     // `[mode-key-follow]` と `[ime-io] ... elapsed_us` の行で突き合わせる。
-    if new_input_mode == Some(InputModeState::ObservedEisu) {
+    if proposed_input_mode == Some(InputModeState::ObservedEisu)
+        && current_input_mode != InputModeState::ObservedEisu
+    {
         let branch = if awase::engine::ConvMode::is_eisu_evidence(snap.ime_on, snap.conversion_mode)
             == Some(true)
         {
@@ -211,7 +240,12 @@ pub fn classify_ime_snapshot(
             "b:classify_transition"
         };
         tracing::info!(
-            "[eisu-adopt] branch={branch} ime_on={:?} conv={:?} prev_conv={:?} current_mode={:?} probe_timed_out={}",
+            "[eisu-adopt] decision={} branch={branch} ime_on={:?} conv={:?} prev_conv={:?} current_mode={:?} probe_timed_out={}",
+            match (new_input_mode, eisu_candidate) {
+                (Some(_), _) => "confirmed",
+                (None, crate::state::eisu_candidate::CandidateUpdate::Set(_)) => "candidate",
+                (None, _) => "rejected(ime_on=None)",
+            },
             snap.ime_on,
             snap.conversion_mode.map(|v| format!("0x{v:08X}")),
             current_prev_conversion_mode.map(|v| format!("0x{v:08X}")),
@@ -240,6 +274,7 @@ pub fn classify_ime_snapshot(
         } else {
             None
         },
+        eisu_candidate,
     }
 }
 
@@ -260,6 +295,7 @@ pub unsafe fn poll_and_classify_ime(
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
+    current_eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
     focus_process_name: &str,
 ) -> ImeUpdate {
     // read_ime_state_full は複数のブロッキング IMM32 API を連鎖呼び出しするため、
@@ -277,6 +313,7 @@ pub unsafe fn poll_and_classify_ime(
         current_force_on_guard_active,
         current_input_mode,
         current_prev_conversion_mode,
+        current_eisu_candidate,
         trust_input_mode,
     )
 }
@@ -332,6 +369,7 @@ mod tests {
             false, // current_force_on_guard_active
             InputModeState::Unknown,
             None,
+            None, // current_eisu_candidate
             true, // trust_input_mode
         );
         assert!(update.observer_poll.is_some());
@@ -353,6 +391,7 @@ mod tests {
             false, // current_force_on_guard_active
             InputModeState::Unknown,
             None,
+            None, // current_eisu_candidate
             true, // trust_input_mode
         );
         assert!(update.observer_poll.is_some());
@@ -374,6 +413,7 @@ mod tests {
             false, // current_force_on_guard_active
             InputModeState::Unknown,
             None,
+            None, // current_eisu_candidate
             true, // trust_input_mode
         );
         // known_not_japanese → (Some(false), false, true, true)
@@ -402,6 +442,7 @@ mod tests {
             false, // current_force_on_guard_active（ガードなし）
             InputModeState::Unknown,
             None,
+            None, // current_eisu_candidate
             true, // trust_input_mode
         );
         assert!(update.increment_miss_count);
@@ -423,6 +464,7 @@ mod tests {
             true, // current_force_on_guard_active = true
             InputModeState::Unknown,
             None,
+            None, // current_eisu_candidate
             true, // trust_input_mode
         );
         assert!(update.observer_poll.is_none());
@@ -446,6 +488,7 @@ mod tests {
             false, // current_force_on_guard_active
             InputModeState::Unknown,
             None,
+            None, // current_eisu_candidate
             true, // trust_input_mode
         );
         assert!(update.observer_poll.is_none());
@@ -474,6 +517,7 @@ mod tests {
             false,
             InputModeState::ObservedRomaji,
             Some(0x0000_0009), // 直前に信頼できたconv値
+            None,              // current_eisu_candidate
             false,             // trust_input_mode = false（信頼しない）
         );
         assert_eq!(update.new_input_mode, None);
@@ -501,9 +545,78 @@ mod tests {
             false,
             InputModeState::ObservedRomaji,
             None,
+            None, // current_eisu_candidate
             true, // trust_input_mode
         );
         assert_eq!(update.new_input_mode, Some(InputModeState::ObservedKana));
+    }
+
+    /// ADR-238(BUG-190): 前回 0x19 → 今回 conv=0 の孤立した 1 回(`classify_transition` の英数遷移が拾う形)は、
+    /// 採らずに候補にする。確認の読みでも英数なら確定する。`#[cfg(windows)]` なので Linux では走らない
+    /// (判定本体は `state/eisu_candidate.rs` の純粋関数のテストで固定している)。
+    #[test]
+    fn isolated_conv_zero_is_a_candidate_then_confirmed() {
+        let snap = ImeSnapshot {
+            is_japanese_ime: Some(true),
+            ime_on: Some(true),
+            conversion_mode: Some(0),
+            ..default_snap()
+        };
+        let first = classify_ime_snapshot(
+            &snap,
+            1000,
+            true,
+            false,
+            InputModeState::ObservedRomaji,
+            Some(0x19),
+            None,
+            true,
+        );
+        assert_eq!(first.new_input_mode, None, "孤立した 1 回は採らない");
+        let crate::state::eisu_candidate::CandidateUpdate::Set(cand) = first.eisu_candidate else {
+            panic!("候補になるはず: {:?}", first.eisu_candidate);
+        };
+        let second = classify_ime_snapshot(
+            &snap,
+            1060,
+            true,
+            false,
+            InputModeState::ObservedRomaji,
+            Some(0),
+            Some(cand),
+            true,
+        );
+        assert_eq!(
+            second.new_input_mode,
+            Some(InputModeState::ObservedEisu),
+            "確認の読みでも英数なら確定する"
+        );
+    }
+
+    /// ADR-238: `ime_on=None`(open の読みが時間切れ)の読みでは、conv=0 でも英数を採らず候補も作らない(wx 型)。
+    #[test]
+    fn conv_zero_with_unknown_open_status_is_never_adopted() {
+        let snap = ImeSnapshot {
+            is_japanese_ime: Some(true),
+            ime_on: None,
+            conversion_mode: Some(0),
+            ..default_snap()
+        };
+        let update = classify_ime_snapshot(
+            &snap,
+            1000,
+            true,
+            false,
+            InputModeState::ObservedRomaji,
+            Some(0x19),
+            None,
+            true,
+        );
+        assert_eq!(update.new_input_mode, None);
+        assert_eq!(
+            update.eisu_candidate,
+            crate::state::eisu_candidate::CandidateUpdate::Keep
+        );
     }
 }
 
@@ -521,6 +634,7 @@ pub fn classify_fetched_snapshot(
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
+    current_eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
     focus_process_name: &str,
 ) -> ImeUpdate {
     let trust_input_mode = !crate::focus::class_names::is_own_ui_window(
@@ -534,6 +648,7 @@ pub fn classify_fetched_snapshot(
         current_force_on_guard_active,
         current_input_mode,
         current_prev_conversion_mode,
+        current_eisu_candidate,
         trust_input_mode,
     )
 }

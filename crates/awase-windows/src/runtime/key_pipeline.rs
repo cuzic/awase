@@ -2872,8 +2872,12 @@ impl Runtime {
                                         ime.is_force_on_guard_active(),
                                         ime.input_mode(),
                                         ime.belief.prev_conversion_mode(),
+                                        ime.belief.eisu_candidate(),
                                         app.platform.focus.process_name(),
                                     );
+                                // ADR-238: 英数の候補も更新する(この経路は `input_mode` だけを dispatch するので、
+                                // 候補の更新を `apply_ime_update` 経由で受けられない)。
+                                ime.apply_eisu_candidate_update(update.eisu_candidate);
                                 if let Some(mode) = update.new_input_mode {
                                     use crate::state::ime_event::{
                                         ImeEvent, ObservationConfidence, ObservationSource,

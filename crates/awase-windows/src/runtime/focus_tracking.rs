@@ -443,6 +443,7 @@ impl Runtime {
         self.apply_app_disable_transition(classified.process_id, is_bootstrap);
 
         self.platform_state.ime.set_prev_conversion_mode(None);
+        self.platform_state.ime.clear_eisu_candidate();
 
         (
             process_changed,

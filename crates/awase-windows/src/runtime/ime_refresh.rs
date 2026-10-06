@@ -468,6 +468,11 @@ impl Runtime {
             applied_known: self.platform_state.ime.model().applied
                 != crate::state::ime_model::AppliedImeState::Unknown,
             shift_conv_guard_active,
+            eisu_candidate_pending: self
+                .platform_state
+                .ime
+                .eisu_candidate_remaining_ms(now)
+                .is_some(),
         }
     }
 
@@ -496,6 +501,7 @@ impl Runtime {
                     poll.force_guard,
                     poll.input_mode,
                     poll.prev_conv,
+                    poll.eisu_candidate,
                     &focus_process_name,
                 )
             },
@@ -507,6 +513,7 @@ impl Runtime {
                     poll.force_guard,
                     poll.input_mode,
                     poll.prev_conv,
+                    poll.eisu_candidate,
                     &focus_process_name,
                 )
             },

@@ -505,6 +505,7 @@ const CORE_MODULES: &[&str] = &[
     "deferred_gate_plan",
     "drift_correction",
     "drift_plan",
+    "eisu_candidate",
     "eisu_recovery",
     "event_origin",
     "evidence",

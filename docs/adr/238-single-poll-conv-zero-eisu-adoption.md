@@ -108,6 +108,20 @@ BUG-57 の守り(`ime_on == Some(false)` の conv=0 は証拠にしない)は (a
 4. **既存の判定の粗さの補正:** `check_consistency.py` は押下後 +700ms 前後と +1500ms の値しか見ない。押下から最初の `InputModeObserved(ObservedEisu)` / `Engine deactivated` までの ms を別に集計する。
 5. **予測の無い切替の observe 構成を足す:** ハーネスから外部の `ImmSetConversionStatus`(open のまま conv=0x0000/0x0010)を書き、20ms 間隔の打鍵を続けながら、Engine が止まるまでの時間を修正の有無で比べる(F/A の遅れの代償を測る唯一の手段)。
 
+## 測定結果(2026-10-06、診断ログ入り、MS-IME の ext 構成 68 run、run 37479619766)
+
+- `[eisu-adopt]` は 0 件(採用された件が無い。以前の頻度 5/約 300 run と整合する低頻度)。68 run は PASS 67・INVALID 1。
+- **打鍵中の除外(SkipTyping)で捨てられていた読み 5102 件のうち 3 件が `conv=0x00000000`**(`ime_on=Some(true)`、`probe_timed_out=false`)。3 件とも前後の読みは 0x19(±0.5s)で孤立し、**直前 1s 以内にモードキーの通過は無い**(javafx-area・javafx-field・wx-rich)。つまり、これまで見えていなかった第 3 の形: **MS-IME が約 0.06% の読みで、モードキーも応答遅延も無いのに単発の conv=0 を返す**。打鍵中は SkipTyping が捨てるので無害だが、打鍵が止まって通常の poll(500ms)が走ったときにこの値を読むと採用される。実利用でも、打鍵を始める直前の間に当たると、次の読みまでの最大約 500ms、先頭の打鍵が生のまま IME に渡る。
+- 一過性の値の長さ: 3 件とも次の読み(+0.506〜0.510s)で 0x19 に戻っていた(60ms 未満か 500ms 未満かは今回のログでは分からない)。確認の読みを 60ms 間隔にする設計の下では、60ms 未満の値は確認で消え、60〜500ms の値は確認でも英数を読みうる(その場合は寿命〈1500ms〉内の次の読みで 0x19 なら捨てるが、確認の読みも一過性の値なら確定してしまう)。**一過性の値の長さの測定は未了**(`EISU_CANDIDATE_LIFETIME_MS` は `pending`)。
+
+## 実装(ブランチ diag/bug190-eisu-adopt、PR は別)
+
+- `state/eisu_candidate.rs`(核、`CORE_MODULES` と mutants の `examine_globs` に登録): `filter_eisu_adoption`(結果側のフィルタ。新たに ObservedEisu へ変わる結果だけ候補にし、`ime_on=None` の読みは採らず、生きた候補があれば確定)、`candidate_remaining_ms`。テスト 9 本。
+- `state/belief.rs` に `eisu_candidate`(`prev_conversion_mode` と同じ扱い、`apply_ime_update` 経由で書き、フォーカス変更・panic reset で捨てる)。`ImeUpdate.eisu_candidate`。`observer/ime_observer.rs::classify_ime_snapshot` の `new_input_mode` にフィルタを掛ける((a) と (b) の両方を覆う)。ImmCrossProbe 経路は `apply_eisu_candidate_update` で候補も更新する。
+- 確認の読み直し: `reschedule_ime_refresh` の `explicit_intent` の早期 return より前に枝を置き(`tests/architecture_guard.rs::eisu_candidate_reread_is_scheduled_before_the_explicit_intent_early_return` で固定)、`ReadStrategyFacts.eisu_candidate_pending` で打鍵中の除外を外す(表テスト 256 通り)。間隔は `mode_key_pass_next_read_ms`(`MODE_KEY_PASS_REREAD_MS`=60ms、失敗したら寿命の終わりの 1 回)。
+- 診断ログ `[eisu-adopt]`(`decision=candidate|confirmed|rejected(ime_on=None)`)と `[skip-typing-read]` は残す。
+- 寿命は `EISU_CANDIDATE_LIFETIME_MS`=1500ms(通常の poll 500ms の 3 倍。`pending`)。
+
 ## 状態
 
-**設計は収束**(2026-10-06、Opus round3 で「収束」)。round1(Blocker 2・Must 5・Should 7・Nit 6)・round2(Must 3・Should 4・Nit 4)・round3(Should 2・Nit 1)を反映済み。実装は未着手。次は診断ログ(`[eisu-adopt]`・一過性の値の長さ)を CI の MS-IME 構成で回し、結果をここに追記してから実装する。
+**設計は収束**(2026-10-06、Opus round3 で「収束」)。round1(Blocker 2・Must 5・Should 7・Nit 6)・round2(Must 3・Should 4・Nit 4)・round3(Should 2・Nit 1)を反映済み。**実装済み**(ブランチ diag/bug190-eisu-adopt、2026-10-06)、CI の確認中(MS-IME の ext 構成と、本物の英数切替を壊さないことの `msime-native*`・`sc-dbe-*`・`sc-shift-msime-native`・`msime-stale-table`)。実機未検証。

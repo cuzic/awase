@@ -34,6 +34,9 @@ pub struct ImeBelief {
     /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
     /// None = まだ一度も取得できていない
     pub(in crate::state) prev_conversion_mode: Option<u32>,
+    /// 英数モードの「候補」(1 回目の英数の読み。確認の読みで確定する、ADR-238 / BUG-190)。
+    /// `prev_conversion_mode` と同じ扱い: 読みの結果として `apply_ime_update` 経由でだけ書き、フォーカス変更で捨てる。
+    pub(in crate::state) eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
 }
 
 impl Default for ImeBelief {
@@ -41,6 +44,7 @@ impl Default for ImeBelief {
         Self {
             is_japanese_ime: true,
             prev_conversion_mode: None,
+            eisu_candidate: None,
         }
     }
 }
@@ -57,5 +61,13 @@ impl ImeBelief {
     #[inline]
     pub(crate) const fn prev_conversion_mode(&self) -> Option<u32> {
         self.prev_conversion_mode
+    }
+
+    /// 英数モードの候補を返す(ADR-238)。
+    #[inline]
+    pub(crate) const fn eisu_candidate(
+        &self,
+    ) -> Option<crate::state::eisu_candidate::EisuCandidate> {
+        self.eisu_candidate
     }
 }

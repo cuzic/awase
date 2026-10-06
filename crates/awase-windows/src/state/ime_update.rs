@@ -27,4 +27,6 @@ pub struct ImeUpdate {
     pub new_input_mode: Option<InputModeState>,
     /// `prev_conversion_mode` に書くべき値（`Some` のときのみ更新すべき）
     pub new_prev_conversion_mode: Option<u32>,
+    /// 英数モードの候補の更新(ADR-238、BUG-190)。
+    pub eisu_candidate: crate::state::eisu_candidate::CandidateUpdate,
 }

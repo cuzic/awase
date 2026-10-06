@@ -59,6 +59,9 @@ pub struct ReadStrategyFacts {
     pub applied_known: bool,
     /// Shift 変換の安全網のブリップ中、または半角英数の持続トグル中。
     pub shift_conv_guard_active: bool,
+    /// 英数モードの候補(1 回目の英数の読み)が寿命内で、確認の読みを待っている(ADR-238)。打鍵中でも確認の読みを
+    /// 通す(打鍵中の除外で確認が上限なく遅れると、誤採用ではなく本物の切替の確定が遅れる)。
+    pub eisu_candidate_pending: bool,
 }
 
 /// 打鍵中か(最後のキー活動から [`TYPING_IDLE_MS`] 未満)。
@@ -86,7 +89,9 @@ pub fn decide_read_strategy(facts: &ReadStrategyFacts) -> ReadDecision {
         // Ctrl+無変換 等の明示的 IME 操作後、実際に OS 状態が変化したか即時検証する。
         // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
         let explicit_verify = !facts.skip_imm_query
-            && (facts.mode_key_pass_live || (facts.explicit_intent_present && facts.applied_known));
+            && (facts.mode_key_pass_live
+                || facts.eisu_candidate_pending
+                || (facts.explicit_intent_present && facts.applied_known));
         if !explicit_verify {
             return ReadDecision {
                 strategy: ImeReadStrategy::SkipTyping,
@@ -132,7 +137,7 @@ mod tests {
         let idles = [0, TYPING_IDLE_MS - 1, TYPING_IDLE_MS, TYPING_IDLE_MS + 1];
         let mut cases = 0;
         for idle_ms in idles {
-            for bits in 0u8..32 {
+            for bits in 0u8..64 {
                 let facts = ReadStrategyFacts {
                     idle_ms,
                     skip_imm_query: bits & 1 != 0,
@@ -140,10 +145,12 @@ mod tests {
                     explicit_intent_present: bits & 4 != 0,
                     applied_known: bits & 8 != 0,
                     shift_conv_guard_active: bits & 16 != 0,
+                    eisu_candidate_pending: bits & 32 != 0,
                 };
                 let typing = idle_ms < TYPING_IDLE_MS;
                 let verify = !facts.skip_imm_query
                     && (facts.mode_key_pass_live
+                        || facts.eisu_candidate_pending
                         || (facts.explicit_intent_present && facts.applied_known));
                 let expected = if typing && !verify {
                     (ImeReadStrategy::SkipTyping, ReadReason::TypingActive)
@@ -160,6 +167,6 @@ mod tests {
                 cases += 1;
             }
         }
-        assert_eq!(cases, 128);
+        assert_eq!(cases, 256);
     }
 }

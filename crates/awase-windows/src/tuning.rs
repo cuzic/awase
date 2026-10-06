@@ -40,6 +40,20 @@ pub const POST_IDLE_MARGIN_MS: u64 = 30;
 #[measured_macro::measured(pending = true)]
 pub const GJI_CONFIRM_WINDOW_MS: u64 = 500;
 
+/// 英数モードの「候補」の寿命 (ms)(ADR-238、BUG-190)。
+///
+/// 一過性の `conv=0x00000000` を 1 回の読みで `ObservedEisu` と採用しないよう、新たに英数へ変わる読みは候補として
+/// 持ち、この時間内の確認の読み(`MODE_KEY_PASS_REREAD_MS` 間隔で予約、または通常のポーリング 500ms)でも英数なら確定する。
+/// **実測**(CI `e2e-ime`、MS-IME、GitHub-hosted Windows ランナー): 打鍵中の除外で捨てられた読みを含む 5102 読み中、
+/// 孤立した conv=0 は 3 件で、3 件とも次の読み(+0.506〜0.510s)は 0x19 に戻っていた。採用された 5 件の Engine 停止
+/// (次の読みで 0x19 に戻るまで)は 0.079/0.094/0.58/1.02/3.22s(打鍵中の除外の回数に依存)。
+/// **導出**: 通常のポーリング間隔 500ms の 3 倍の 1500ms を寿命とする(確認の読みが打鍵中の除外で 1〜2 回飛んでも、
+/// 候補が生きている間に本物の切替を確定できる)。寿命を切れば候補は捨てる(確定しない)ので、読みが失敗し続けても
+/// 通常のポーリングに戻る。短すぎると本物の切替の確認が間に合わず、長すぎると一過性の値が別の一過性の値で確定する。
+/// 一過性の値の長さそのもの(+20/+60/+120ms の読み直し)は未測定のため `pending`。
+#[measured_macro::measured(pending = true)]
+pub const EISU_CANDIDATE_LIFETIME_MS: u64 = 1_500;
+
 /// `ObservationStore::derive_any` / `derive_actuating` が観測を鮮度ありと見なす窓 (ms)。
 ///
 /// この時間を超えた観測は無視する。フォーカス変更時に `clear_on_focus_change()` が
