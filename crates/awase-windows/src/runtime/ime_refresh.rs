@@ -3,6 +3,9 @@ use awase::engine::{EngineCommand, InputModeState, KanaLockHysteresis};
 
 use super::Runtime;
 use crate::state::ime_actuation::{ActuationAction, FeedbackPolicy};
+use crate::state::ime_read_strategy::{
+    decide_read_strategy, ImeReadStrategy, ReadReason, ReadStrategyFacts,
+};
 use crate::tuning::TYPING_IDLE_MS;
 
 // ── IoMode ──
@@ -17,19 +20,6 @@ enum IoMode<'m> {
         focus: Option<crate::focus::probe::FocusSnapshot>,
         ime: &'m crate::ime::ImeSnapshot,
     },
-}
-
-// ── ImeReadStrategy ──
-
-/// IME 読み取り方針の決定結果
-#[derive(Debug)]
-enum ImeReadStrategy {
-    /// タイピング中 — IMM/TSF を一切呼ばない
-    SkipTyping,
-    /// 既知ブラックリストクラス — shadow SSOT のみ使う
-    Blacklist,
-    /// OS をポーリングする通常パス
-    OsPoll,
 }
 
 // ── FocusInfo ──
@@ -418,7 +408,37 @@ impl Runtime {
 
     /// `&mut self` なのは、通過マーク(`ModeKeyPassMark`、`ScopedOneShot::peek`)がフォアグラウンド変更を見て自動失効させるため
     /// （ADR-187）。読み取り方針の決定そのものは副作用を持たない（失効は「マークが無効になった」という事実の反映だけ）。
+    ///
+    /// FCIS F1: `observe`（`ir_observe_read_strategy_facts`）→ 純粋な `decide_read_strategy`
+    /// （`state/ime_read_strategy.rs`）→ ここでの理由のログ、の順。
     fn ir_decide_read_strategy(&mut self, skip_imm_query: bool) -> ImeReadStrategy {
+        let facts = self.ir_observe_read_strategy_facts(skip_imm_query);
+        let decision = decide_read_strategy(&facts);
+        if decision.typing_guard_bypassed {
+            tracing::debug!(
+                "Explicit intent: bypassing typing-idle guard for IME verify (idle={}ms)",
+                facts.idle_ms
+            );
+        }
+        match decision.reason {
+            ReadReason::TypingActive => tracing::debug!(
+                "Skipping observer/SSOT write: typing active (idle={}ms)",
+                facts.idle_ms
+            ),
+            ReadReason::ShiftConvGuard => {
+                tracing::debug!("Skipping observer/SSOT write: shift-conv-guard 中");
+            }
+            ReadReason::ImmQuerySkipped | ReadReason::OsPoll => {}
+        }
+        decision.strategy
+    }
+
+    /// 読み取り方針の決定に要る事実を、グローバル・時計・状態から 1 度だけ読んで所有型にまとめる(shell-in)。
+    ///
+    /// 通過マークの有効判定(`mode_key_pass_mark_live`)はフォアグラウンド変更で失効する副作用を持つので、
+    /// 元の関数と同じ条件（打鍵中のときだけ）、同じ回数（1 回）で読む。
+    fn ir_observe_read_strategy_facts(&mut self, skip_imm_query: bool) -> ReadStrategyFacts {
+        // 最後のキー活動（物理キー押下 または VK/TSF 出力）からの経過時間。
         let last_activity = self.platform_state.gate.last_hook_activity_ms.max(
             crate::tsf::probe_bridge::OUTPUT_GATE
                 .last_vk_output_ms
@@ -426,44 +446,20 @@ impl Runtime {
         );
         let now = crate::hook::current_tick_ms();
         let idle_ms = now.saturating_sub(last_activity);
-        let is_typing = idle_ms < TYPING_IDLE_MS;
-
-        if is_typing {
-            // Ctrl+無変換 等の明示的 IME 操作後、実際に OS 状態が変化したか即時検証する。
-            // ImmCross async が "成功" 扱いでも組み合わせ中は IME が閉じないことがあるため、
-            // タイピングアイドルガードを回避して OsPoll を先行させる。
-            // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
-            let mode_key_pass_live = self.platform_state.ime.mode_key_pass_mark_live(now);
-            let explicit_verify = !skip_imm_query
-                && (mode_key_pass_live
-                    || (self.platform_state.ime.explicit_intent().is_some()
-                        && self.platform_state.ime.model().applied
-                            != crate::state::ime_model::AppliedImeState::Unknown));
-            if !explicit_verify {
-                tracing::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
-                return ImeReadStrategy::SkipTyping;
-            }
-            tracing::debug!(
-                "Explicit intent: bypassing typing-idle guard for IME verify (idle={idle_ms}ms)"
-            );
-        }
-
-        // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数
-        // 持続トグル中（`kp_stage_shift_conv_guard`）は OS poll を凍結する。
-        // conv=0x00000000 は awase 自身が意図的に設定した状態であり、観測して
-        // belief（input_mode=ObservedEisu 等）に反映してはならない。解放時の復元 +
-        // 既存の観測経路が事後に整合させる。
-        if self.platform_state.gate.half_width_alnum.is_guard_pending()
-            || self.platform_state.gate.half_width_alnum.is_toggle_active()
-        {
-            tracing::debug!("Skipping observer/SSOT write: shift-conv-guard 中");
-            return ImeReadStrategy::SkipTyping;
-        }
-
-        if skip_imm_query {
-            ImeReadStrategy::Blacklist
-        } else {
-            ImeReadStrategy::OsPoll
+        let mode_key_pass_live =
+            idle_ms < TYPING_IDLE_MS && self.platform_state.ime.mode_key_pass_mark_live(now);
+        // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数持続トグル中
+        // （`kp_stage_shift_conv_guard`）は OS poll を凍結する。
+        let shift_conv_guard_active = self.platform_state.gate.half_width_alnum.is_guard_pending()
+            || self.platform_state.gate.half_width_alnum.is_toggle_active();
+        ReadStrategyFacts {
+            idle_ms,
+            skip_imm_query,
+            mode_key_pass_live,
+            explicit_intent_present: self.platform_state.ime.explicit_intent().is_some(),
+            applied_known: self.platform_state.ime.model().applied
+                != crate::state::ime_model::AppliedImeState::Unknown,
+            shift_conv_guard_active,
         }
     }
 
