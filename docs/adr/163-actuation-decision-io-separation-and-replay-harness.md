@@ -48,8 +48,8 @@ developへマージ済み、TH1eのみ未着手（2026-09-12時点、実装順�
   「ディレクトリ不在」「fixture 0件」「レコード0件」の3段assertへ強化し、
   `cargo test -p awase-windows --lib`が669件greenを確認済み。抽出・変換手順は
   `docs/journal-replay-guide.md`「ActuationDecisionコーパスの扱い」節に追記(S10)。
-  (2026-10-06: このコーパスの`caller` 15件を`null`へ書き換えた。決定D5の追記と BUG-131.md 参照)
   （置き換えではなく維持、下記TH1d'とは並行タスクだった）。
+  (2026-10-06: このコーパスの`caller` 15件を`null`へ書き換えた。決定D5の追記と BUG-131.md 参照)
 - **TH1d'（新設、Part D）: bug report経由の実機コーパス自動収集: 実装・developマージ済み**
   （PR#201、2026-09-11）。opus-adversarial-consultを3ラウンド実施（Part D設計1回・
   実装タスク分割1回・PR全体のマージ前レビュー1回、計16件のBlocker・19件以上の
@@ -580,7 +580,7 @@ ImmCrossのattemptは再生で`continue`（skip）される（TH1eのスコー�
 `ForceOnRomajiCorrection`を追加し、TH1eの差分ゼロ検証の母数にスコープ外経路が無自覚に
 混入しないようにする。
 
-**追記(2026-10-06、PR #515・#520): この2 variantは削除した。** 両経路(`reassert_explicit_physical_key`/
+**追記(2026-10-06、PR #515(variant 削除)・#520(コーパス書き換え)): この2 variantは削除した。** 両経路(`reassert_explicit_physical_key`/
 `force_on_and_correct_romaji`)は ADR-178 領域A撤去(`f83084b3`/`621bf93c`)で本番から消え、構築元が
 無くなった。`DecisionSite`は`Deserialize`するため、凍結コーパス
 `tests/journals/actuation_decision/bug-131-report-01m29kdnz.json`(TH1d)の`"caller"`に名前が残る限り
