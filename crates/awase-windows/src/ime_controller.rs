@@ -197,7 +197,7 @@ pub(crate) fn mechanism_is_applicable(
 // 複雑さの総量は変わらず、むしろ呼び出し関係が追いにくくなる）、
 // それに倣う。
 #[allow(clippy::cognitive_complexity)]
-#[tracing::instrument(level = "debug", skip_all, fields(mechanism = ?mechanism, open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
+#[tracing::instrument(level = "debug", skip_all, fields(mechanism = ?mechanism, open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen.get()))]
 pub(crate) fn apply_mechanism(
     mechanism: WriteMechanism,
     open: bool,
