@@ -188,6 +188,7 @@ mod plan_shell_tests {
                 "dbcschar+toggle",
                 event(crate::vk::VK_DBE_DBCSCHAR, event_type, toggle),
             ));
+            events.push(("plain-key(A)", event(crate::vk::VK_A, event_type, None)));
             events.push((
                 "hiragana(F2)",
                 event(crate::vk::VK_DBE_HIRAGANA, event_type, None),
