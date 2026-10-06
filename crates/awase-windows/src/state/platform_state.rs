@@ -129,7 +129,7 @@ pub(crate) struct ImePollState {
     pub(crate) prev_conv: Option<u32>,
 }
 
-/// [`ImeStateHub::check_drift_correction`] の戻り値。定義は ungated な
+/// [`ImeStateHub::evaluate_drift`] の戻り値。定義は ungated な
 /// `state/drift_correction.rs` へ移した（Linux ホストのテストから判定本体を呼ぶため）。
 pub(crate) use super::drift_correction::DriftCorrection;
 
@@ -2962,6 +2962,60 @@ mod tests {
             matches!(drift, Some(DriftCorrection { desired: true, observed: false, .. })),
             "通過マークが無ければ desired（awaseの意図）と観測の乖離は従来どおり補正される: {drift:?}"
         );
+    }
+
+    /// `evaluate_drift` が返す理由と根拠を、観測を置いた実際の入力から確かめる（E1。対応表を写さない）。
+    #[test]
+    fn evaluate_drift_reports_why_it_did_not_fire_from_real_observations() {
+        use crate::state::drift_correction::{NoDrift, OmissionBasis};
+        let setup = || {
+            let mut ps = ps_for_test();
+            dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+            dispatch_and_record_explicit_intent(&mut ps, true, 100);
+            ps
+        };
+
+        // 観測が desired(開)と食い違う: 補正する（Ok）。
+        let mut ps = setup();
+        write_open_observation_high(&mut ps, false, 130);
+        let t0 = std::time::Instant::now();
+        let ok = ps.ime.evaluate_drift(t0, ps.ime.explicit_intent());
+        assert!(
+            matches!(
+                ok,
+                Ok(DriftCorrection {
+                    desired: true,
+                    observed: false,
+                    ..
+                })
+            ),
+            "{ok:?}"
+        );
+
+        // 同じ観測が古すぎる: Stale（観測が読み取り元）。`Instant` の減算を避け、先の時刻で評価する。
+        let late = t0
+            + std::time::Duration::from_millis(
+                crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS + 100,
+            );
+        let stale = ps.ime.evaluate_drift(late, ps.ime.explicit_intent());
+        assert_eq!(stale, Err(NoDrift::StaleObservation), "{stale:?}");
+        assert_eq!(stale.unwrap_err().basis(), OmissionBasis::Observation);
+
+        // 観測が desired と一致している（乖離の追跡だけが残っている）: ObservationMatchesDesired。
+        let mut ps = setup();
+        write_open_observation_high(&mut ps, true, 130);
+        ps.ime.shadow_model.observations.drift = Some(ImeDrift {
+            started_at: std::time::Instant::now(),
+        });
+        let matched = ps
+            .ime
+            .evaluate_drift(std::time::Instant::now(), ps.ime.explicit_intent());
+        assert_eq!(
+            matched,
+            Err(NoDrift::ObservationMatchesDesired),
+            "{matched:?}"
+        );
+        assert_eq!(matched.unwrap_err().basis(), OmissionBasis::Observation);
     }
 
     /// BUG-158: 通過マークの窓が切れても観測が一度も成功しなかったとき（読み取りが失敗し続ける環境）、

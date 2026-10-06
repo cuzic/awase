@@ -40,6 +40,7 @@ examine_globs = [
     "crates/awase-windows/src/state/physical_disposition.rs",
     "crates/awase-windows/src/state/transition.rs",
     "crates/awase-windows/src/state/drift_plan.rs",
+    "crates/awase-windows/src/state/drift_correction.rs",
     "crates/awase-windows/src/state/ime_set_open_plan.rs",
     "crates/awase-windows/src/state/msaa_role_plan.rs",
     "crates/awase-windows/src/state/focus_classify_plan.rs",

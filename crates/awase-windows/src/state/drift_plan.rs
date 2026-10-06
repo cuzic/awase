@@ -95,7 +95,7 @@ pub enum DriftIdle {
     EngineDisabled,
     /// 日本語 IME ではない。
     NotJapaneseIme,
-    /// 補正が要るずれが無い（理由は `check` の各早期 return、[`NoDrift`]）。
+    /// 補正が要るずれが無い（理由は `evaluate_drift` の各早期 return、[`NoDrift`]）。
     NoDrift(NoDrift),
 }
 
@@ -104,7 +104,8 @@ impl DriftIdle {
     #[must_use]
     pub const fn basis(self) -> OmissionBasis {
         match self {
-            Self::EngineDisabled | Self::NotJapaneseIme => OmissionBasis::Belief,
+            Self::EngineDisabled => OmissionBasis::EngineSetting,
+            Self::NotJapaneseIme => OmissionBasis::Belief,
             Self::NoDrift(reason) => reason.basis(),
         }
     }
@@ -387,7 +388,13 @@ mod tests {
             };
             let plan = decide_drift_plan(&f);
             assert_eq!(plan, DriftPlan::Idle(want));
-            assert_eq!(plan.basis(), Some(OmissionBasis::Belief));
+            // 読み取り元から: エンジン設定(`is_user_enabled`)が先、次に IME の信念(`is_japanese_ime`)。
+            let basis = if engine_enabled {
+                OmissionBasis::Belief
+            } else {
+                OmissionBasis::EngineSetting
+            };
+            assert_eq!(plan.basis(), Some(basis));
         }
     }
 
@@ -396,10 +403,8 @@ mod tests {
         for reason in [
             NoDrift::NotExplicitIntent,
             NoDrift::NotDrifting,
-            NoDrift::BelowThreshold,
             NoDrift::NoTrustedObservation,
             NoDrift::StaleObservation,
-            NoDrift::HeuristicDefaultOnly,
             NoDrift::ObservationMatchesDesired,
         ] {
             let f = DriftFacts {
@@ -407,8 +412,9 @@ mod tests {
                 ..facts(Instant::now())
             };
             let plan = decide_drift_plan(&f);
+            // 理由はそのまま運ばれる（根拠の正しさは `evaluate_drift` の入力から確かめるテスト側）。
             assert_eq!(plan, DriftPlan::Idle(DriftIdle::NoDrift(reason)));
-            assert_eq!(plan.basis(), Some(reason.basis()));
+            assert!(plan.basis().is_some());
         }
     }
 

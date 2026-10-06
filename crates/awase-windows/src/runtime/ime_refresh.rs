@@ -659,7 +659,7 @@ impl Runtime {
 
     // ── ドリフト補正 ──
     //
-    // desired ≠ observed が DRIFT_CORRECTION_THRESHOLD_MS 以上続いた場合、再送する。
+    // desired ≠ observed（`evaluate_drift` が補正を要すると判定したずれ）が続く間、有界に再送する。
     //
     // - IMM32 クロスプロセス対応アプリ（LINE 等 ImmCross）: set_ime_open(desired) を使う。
     // - non-ImmCross（GJI/TsfNative/Blacklist、Chrome/Windows Terminal 等）:
