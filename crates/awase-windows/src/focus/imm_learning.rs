@@ -3,6 +3,9 @@
 //! IMM32 クロスプロセス制御能力の学習（ImmGetDefaultIMEWnd による初回判定）
 
 use crate::focus::AppKind;
+use crate::state::imm_learning_plan::{
+    plan_imm_learning, plan_probe_result, ImmLearnPlan, ImmProbeRecord,
+};
 use windows::Win32::Foundation::HWND;
 
 /// ImmGetDefaultIMEWnd=NULL の場合、そのアプリの IMM32 制御を `Unavailable` と記録する。
@@ -42,43 +45,44 @@ pub unsafe fn learn_imm_capability_on_focus(
     class_name: &str,
     new_app_kind: AppKind,
 ) {
-    if new_app_kind != AppKind::Win32 {
-        return;
-    }
-    let process_name = process_name();
-    if process_name.is_empty() {
-        // `get_process_name` の失敗（保護/昇格プロセス等で `OpenProcess` が拒否される、
-        // または pid が既に終了している）を意図的にここで諦める。
-        //
-        // 代替案（学習を諦めずに空文字列をキーとして進める）は採らない: 空文字列が
-        // 「プロセス名を解決できない全プロセス」の共有バケツになり、本モジュール
-        // 冒頭のドキュメントが説明する BUG-107（`class_name` 単独キーが無関係な
-        // プロセスを巻き込む事故）を「プロセス名不明」という別の軸で再現してしまう。
-        //
-        // トレードオフ: プロセス名を解決できないウィンドウは `Imm32Unavailable` を
-        // 一切学習できず、フォーカスのたびに（学習済みならスキップされるはずの）
-        // ImmCross 経路を毎回試みることになる。ただし `state/actuation_chain.rs` の
-        // フォールバックチェーンが個々の失敗を吸収する設計のため、これは学習による
-        // 最適化を1件失うだけであり、誤った学習結果で他プロセスを巻き込む事故より
-        // 安全側に倒れる。
-        return;
-    }
-    if platform
-        .focus
-        .imm_capability(&process_name, class_name)
-        .is_some()
+    // observe → decide（純粋、state/imm_learning_plan.rs）。`process_name` は Win32 のときだけ、
+    // ちょうど 1 回評価する（上記ドキュメントの契約）。学習済みの照会は名前が空でないときだけ。
+    let process_name = if new_app_kind == AppKind::Win32 {
+        process_name()
+    } else {
+        String::new()
+    };
+    let already_learned = new_app_kind == AppKind::Win32
+        && !process_name.is_empty()
+        && platform
+            .focus
+            .imm_capability(&process_name, class_name)
+            .is_some();
+    if plan_imm_learning(new_app_kind, process_name.is_empty(), already_learned)
+        != ImmLearnPlan::Probe
     {
+        // 空のプロセス名で諦める理由（BUG-107）は `ImmLearnSkip::EmptyProcessName` の doc を参照。
+        // 代替案（空文字列をキーとして進める）は採らない: 「プロセス名を解決できない全プロセス」の
+        // 共有バケツになり、本モジュール冒頭が説明する BUG-107 を別の軸で再現する。
+        // トレードオフ: 名前を解決できないウィンドウは `Imm32Unavailable` を学習できず、
+        // フォーカスのたびに ImmCross 経路を試みるが、`state/actuation_chain.rs` のフォールバック
+        // チェーンが個々の失敗を吸収するため、誤学習で他プロセスを巻き込むより安全側。
         return;
     }
 
-    if unsafe { crate::imm::get_ime_wnd(hwnd) }.is_none() {
-        tracing::info!(
-            "IMM32 capability: ImmGetDefaultIMEWnd=NULL, 疑いを記録 \
-             (process={process_name}, class={class_name})。\
-             閾値回連続で観測されたら Unavailable として確定する（BUG-56対策）"
-        );
-        platform.record_imm_null_probe(process_name, class_name.to_string());
-    } else {
-        platform.clear_imm_pending_unavailable(&process_name, class_name);
+    // execute: ImmGetDefaultIMEWnd を読み、結果を記録する。
+    let ime_wnd_is_null = unsafe { crate::imm::get_ime_wnd(hwnd) }.is_none();
+    match plan_probe_result(ime_wnd_is_null) {
+        ImmProbeRecord::RecordNullProbe => {
+            tracing::info!(
+                "IMM32 capability: ImmGetDefaultIMEWnd=NULL, 疑いを記録 \
+                 (process={process_name}, class={class_name})。\
+                 閾値回連続で観測されたら Unavailable として確定する（BUG-56対策）"
+            );
+            platform.record_imm_null_probe(process_name, class_name.to_string());
+        }
+        ImmProbeRecord::ClearPending => {
+            platform.clear_imm_pending_unavailable(&process_name, class_name);
+        }
     }
 }

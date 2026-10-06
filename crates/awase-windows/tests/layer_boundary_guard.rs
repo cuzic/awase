@@ -528,6 +528,7 @@ const CORE_MODULES: &[&str] = &[
     "ime_set_open_plan",
     "ime_update",
     "imm_evidence",
+    "imm_learning_plan",
     "injection_mode",
     "input_barrier",
     "intent_store",
