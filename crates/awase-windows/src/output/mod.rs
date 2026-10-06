@@ -860,22 +860,18 @@ impl Output {
         self.defer_if_probe_or_recovery_in_flight(romaji, origin, false)
     }
 
-    /// `defer_if_probe_or_recovery_in_flight` と同じ「defer すべきか」の
-    /// 判定だけを、実際に defer せず覗き見る版。
-    /// `vk_send.rs::drain_pending_deferred_before_send_if_queue_only`
-    /// （ADR-123 決定4-3 drain-before-send）が、`pending_deferred` が
-    /// 「queue-only」（誰も blocking していないのに非空）かどうかを判定する
-    /// ために使う。`raw_recovery_owns_deferred()` の呼び出し箇所を
-    /// `output/mod.rs` 内に閉じておくため（INV-F 系の集約方針、
-    /// `tests/architecture_guard.rs::raw_recovery_owns_deferred_call_sites_are_accounted_for`
-    /// 参照）、`vk_send.rs` 側から直接呼ばずこの accessor 経由にする。
+    /// probe/recovery が進行中か（`probe_or_recovery_block_reason` の bool 版。ADR-203 の参照用）。
     pub(super) fn is_probe_or_recovery_blocking(&self, check_raw_recovery: bool) -> bool {
         self.probe_or_recovery_block_reason(check_raw_recovery)
             .is_some()
     }
 
     /// 判断は `deferred_gate_plan::plan_blocking`（FCIS F6）。`raw_recovery_owns_deferred()` は元の短絡評価と同じく
-    /// 必要なときだけ読む。
+    /// 必要なときだけ読む。`vk_send.rs::drain_pending_deferred_before_send_if_queue_only`（ADR-123 決定4-3）は、
+    /// `pending_deferred` が「queue-only」（誰も blocking していないのに非空）かを判定するためにこれを使う。
+    /// `raw_recovery_owns_deferred()` の呼び出し箇所を `output/mod.rs` 内に閉じておくため（INV-F 系の集約方針、
+    /// `tests/architecture_guard.rs::raw_recovery_owns_deferred_call_sites_are_accounted_for` 参照）、
+    /// `vk_send.rs` 側から直接呼ばずこの accessor 経由にする。
     pub(super) fn probe_or_recovery_block_reason(
         &self,
         check_raw_recovery: bool,

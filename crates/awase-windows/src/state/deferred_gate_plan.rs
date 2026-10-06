@@ -5,13 +5,18 @@
 //! 実行する（`push_deferred_vks`・`flush_pending_deferred_vks`・ログ）のは殻（`Output`）に残る。事実は bool と件数だけで、
 //! 時刻は持たない（V4 の対象外）。各 plan は理由の enum を返す（journal 用）。
 //!
-//! **ADR-156 の defer 側と drain 側の窓口は、同じ `plan_blocking` を共有する**:
+//! **ADR-156 の窓口のうち、`plan_blocking` を共有するもの**:
 //! - defer 側: `Output::defer_vks_if_probe_or_recovery_in_flight`（`DeferGate::Enforced` は `check_raw_recovery=true`、
-//!   `Exempt` は `false`）。
-//! - drain 側: `Output::drain_pending_deferred_before_send_if_queue_only`（`gate` に関わらず `raw_recovery` を見る。
-//!   `Exempt` は先に何もしない）。この非対称（ADR-128 round4-3）は `plan_drain_before_send` のテストが固定する。
-//! - `Output::probe_or_recovery_in_flight`（ADR-203）も `plan_blocking` 経由（`check_raw_recovery=true`）。
-//! - 対象外: `finish_probe_stage` の `raw_recovery_owns_deferred()`（stage 終了時の解放権の判断で、別の窓口。本 PR では触らない）。
+//!   `Exempt` は `false`。この対応は純粋側では固定できず、`architecture_guard` の走査が固定する）。
+//! - drain-before-send 側: `Output::drain_pending_deferred_before_send_if_queue_only`（`Exempt` は何も読まずに戻り、
+//!   `Enforced` は `check_raw_recovery=true` で読む。ADR-128 で Exempt の早期 return が入ったので、「gate に関わらず
+//!   raw を見る」非対称は今は観測できない）。
+//! - 参照: `Output::probe_or_recovery_in_flight`（ADR-203）。
+//!
+//! **`plan_blocking` を通らない窓口（同じ述語だが共有していない）**: 解放側の `finish_probe_stage`
+//! （`!raw_recovery_owns_deferred()` を直書き）・`take_pending_deferred_if_probe_idle`（`!has_pending_tsf()`）・
+//! `flush_stale_deferred_vks_after_recovery`、破棄側の `cancel_probe`、参照側の `step_probe` の `deferred_pending`。
+//! **`BlockReason` を足すときは、これらも見直すこと**（片方だけ配線する ADR-123→128 型の再発を防ぐ）。
 
 /// 退避（または drain の見送り）の理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +27,9 @@ pub(crate) enum BlockReason {
     RawRecoveryOwnsDeferred,
 }
 
-/// `plan_blocking` の入力。
+/// `plan_blocking` の入力。`raw_recovery_owns` を読んでいないとき（`needs_raw_recovery_read` が偽）は偽を渡す。
+/// 「`check_raw_recovery=false` かつ `raw_recovery_owns=true`」の組は殻からは来ない（読まないため）が、
+/// `plan_blocking` はその組でも raw を無視する（全数表で固定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BlockingFacts {
     pub has_pending_tsf: bool,
@@ -182,8 +189,9 @@ mod tests {
         assert_eq!(plan_drain_before_send(true, None, 1), Flush);
     }
 
-    /// ADR-128 round4-3 の非対称: defer 側は `Exempt` で raw recovery を無視するが、drain 側は
-    /// raw recovery が所有中なら（drain は Enforced のときだけ走り、その場合 check_raw_recovery=true なので）必ず見送る。
+    /// 純粋側が固定するのは事実の組合せだけ: `check_raw_recovery=false` は raw を無視し、`gate_enforced=false` の drain は
+    /// 何もしない。gate → `check_raw_recovery` の対応（Exempt の defer は false、Enforced の drain は true）は殻にあり、
+    /// `architecture_guard::deferred_gate_plan_defer_and_drain_windows_share_plan_blocking` が固定する。
     #[test]
     fn defer_and_drain_share_blocking_with_documented_asymmetry() {
         for tsf in [false, true] {
