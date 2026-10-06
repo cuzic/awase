@@ -472,33 +472,12 @@ pub enum JournalEntry {
     /// `app_log_excerpt` を直接読まないと確認できず、journal の
     /// `DumpTruncated` で欠落しうる弱点だった）。
     ///
-    /// GJI reinit retry 完了後の flush/discard は同じ意味論のデータだが、
-    /// `token`/`focus_matches` 等の周辺情報とまとめて記録した方が読みやすい
-    /// ため、本 variant ではなく `JournalEntry::GjiReinitRetryCompleted` の
-    /// `deferred_flushed`/`deferred_discarded` フィールドに記録する
-    /// （`platform.rs::complete_gji_reinit_retry`）。
+    /// GJI reinit retry 完了後の flush/discard を記録する
+    /// `JournalEntry::GjiReinitRetryCompleted` は、生成元（ADR-212 P3・P5 の reinit 撤去、`0a7f9067` で
+    /// `complete_gji_reinit_retry` が消えた）が無くなったため削除した。
     DeferredRecoveryFlush {
         trigger: &'static str,
         outcome: DeferredRecoveryOutcomeSummary,
-    },
-    /// GJI reinit（`VK_IME_OFF`→`VK_IME_ON`、`RawTsfLiteralRecovery` の
-    /// give-up 分岐が予約する）retry poll の完了（ADR-123）。
-    ///
-    /// `origin_focus_gen`（give-up 検出時点のフォーカス世代）と
-    /// `current_focus_gen`（poll 完了時点の世代）の一致・不一致が、
-    /// `pending_deferred` を安全に flush してよいか（focus_matches）を
-    /// 決める。この判定は従来 `tracing::debug!`/`tracing::warn!` のみで、journal
-    /// には一切現れなかった。
-    GjiReinitRetryCompleted {
-        token: u32,
-        status: String,
-        cold_seq: u64,
-        origin_focus_gen: u32,
-        current_focus_gen: u32,
-        focus_matches: bool,
-        retry_romaji_present: bool,
-        deferred_flushed: usize,
-        deferred_discarded: usize,
     },
     /// `elapsed_ms` / OS tick / hook timestamp の対応を取るためのアンカー。
     ClockAnchor { tick_ms: u64, hook_us: u64 },
@@ -705,8 +684,7 @@ impl JournalEntry {
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
             | Self::LiteralDetect { .. }
-            | Self::DeferredRecoveryFlush { .. }
-            | Self::GjiReinitRetryCompleted { .. } => LaneKind::Timing,
+            | Self::DeferredRecoveryFlush { .. } => LaneKind::Timing,
             Self::ImeActuation { .. }
             | Self::SentInput { .. }
             | Self::ActuationDecision { .. }
@@ -1162,33 +1140,6 @@ impl JournalEntry {
                     trigger = *trigger,
                     outcome = variant_name(outcome),
                     "deferred recovery flush"
-                );
-            }
-            Self::GjiReinitRetryCompleted {
-                token,
-                status,
-                cold_seq,
-                origin_focus_gen,
-                current_focus_gen,
-                focus_matches,
-                retry_romaji_present,
-                deferred_flushed,
-                deferred_discarded,
-            } => {
-                tracing::debug!(
-                    target: "awase::journal",
-                    seq,
-                    elapsed_ms,
-                    token,
-                    status = status.as_str(),
-                    cold_seq,
-                    origin_focus_gen,
-                    current_focus_gen,
-                    focus_matches,
-                    retry_romaji_present,
-                    deferred_flushed,
-                    deferred_discarded,
-                    "gji reinit retry completed"
                 );
             }
             Self::ClockAnchor { tick_ms, hook_us } => {

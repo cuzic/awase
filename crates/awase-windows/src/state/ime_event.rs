@@ -64,7 +64,7 @@ pub struct EventTime {
 
 /// ユーザー意図のソース。
 ///
-/// `UserImeSetIntent` / `UserImeToggleIntent` の `source` フィールドに使う。
+/// `UserImeSetIntent` の `source` フィールドに使う。
 /// 復旧操作 (`PanicReset`) や HWND キャッシュ復元 (`HwndCacheRestored`) は
 /// 専用イベントを持つため、このリストには含まない。
 /// `Recovery` や `HwndCache` をここに追加すると `desired_open` を
@@ -339,28 +339,12 @@ pub enum OpenApplyReason {
     /// `Engine::on_input`/`on_timeout` の `Decision::SetOpen` エフェクトによる、
     /// 通常のキー入力駆動の適用（`executor.rs::execute_one`/`dispatch_ime_set_open`）。
     EngineDecision,
-    /// IMM32 クロスプロセス制御が使えないアプリ（TsfNative 等）向けの、
-    /// `force_policy` によらない applied スロットル付き強制 ON
-    /// （撤去済みの `apply_force_on_for_imm_broken` の非 force 分岐、`f83084b3` 以前の挙動）。
-    ImmBrokenForceOn,
-    /// 未知 Imm32Unavailable アプリで IME 検出が連続失敗したときの一時 force-ON
-    /// （撤去済みの `try_force_on_bootstrap`、`621bf93c`）。
-    Bootstrap,
     /// 観測値（conv/IMC 読み取り）と belief の乖離を検出しての是正
     /// （`ir_apply_drift_correction`、`kp_apply_conv_engine_sync` の
     /// `EngineSync::DirectInput`（ADR-185で撤去済み） 分岐）。
     DriftCorrection,
     /// Shadow IME belief のトグル（`kp_stage_shadow_ime_toggle`）に伴う適用。
     ShadowToggle,
-    /// ADR-121 D1/D5: 物理IMEキー（`VK_DBE_HIRAGANA`、`TurnOn` 方向）が belief
-    /// 一致で no-op になったときの冪等な追加再送（`Runtime::
-    /// reassert_explicit_physical_key`）。「必ず直る」ではなく「試みる」
-    /// best-effort な書き込みであり、`applied` belief（`record_ime_apply_result`）
-    /// は更新しない——効果が確認できていない書き込みを確定した観測であるかの
-    /// ように記録すると BUG-69 型の belief 偽装と同型の危険を持ち込むため
-    /// （ADR-121 D3 参照）。既存の `ShadowToggle`/`ImmBrokenForceOn` と journal
-    /// 上で区別できるよう専用 variant にする。
-    ExplicitKeyReassert,
 }
 
 /// IME 状態モデルへの全 event。
@@ -373,9 +357,6 @@ pub enum OpenApplyReason {
 /// （`state::ime_actuation::ActuationRecord` と同じ方針）。
 #[derive(strum::IntoStaticStr, Debug, Clone, serde::Serialize)]
 pub enum ImeEvent {
-    /// ユーザー/awase が IME を toggle したい意図
-    UserImeToggleIntent { source: UserIntentSource },
-
     /// ユーザー/awase が IME を ON/OFF に設定したい意図
     UserImeSetIntent {
         target: bool,
@@ -617,12 +598,6 @@ pub enum ImeEvent {
         result: InputModeApplyResult,
         at: TickMs,
     },
-
-    /// ユーザーが入力モードを明示的に変更した。
-    ///
-    /// Ctrl+Caps・VK_DBE_ROMAN・VK_DBE_HIRAGANA などのユーザー操作で
-    /// input_mode が決定したときに通知する。
-    UserChangedInputMode { mode: InputModeState, at: TickMs },
 }
 
 impl ImeEvent {
