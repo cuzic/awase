@@ -10,7 +10,7 @@ summary: |-
   強制チェック/E3=E2+Shiftガード中は再試行)を実機で比較し、E3が全ケースで最初の打鍵から正しい唯一の案だった。本ADRは実験の設計を
   実装に落とす前のレビュー対象で、フィールドの積み増しを最小にする形を探す。
 status: |-
-  未実装・方針を再整理(2026-10-06): E2/E3(モードキー後 300ms の強制 idle-conv-check・新タイマー・GateStore 3 フィールド)は、ADR-205 の監視窓と重複し、prefetch が既に読んでいる値の二重取得になるため、そのままは実装しない。代わりに ADR-205 の監視窓を物理モードキー通過(Shift 付き・FSM 再送出を含む)でも arm し、照合を開閉+conv の NATIVE ビットに広げる最小配線案(GJI×Imm32Unavailable 限定)を本文の 2026-10-06 追記に記録。効果は CI 未検証。BUG-186(MS-IME 本体)は範囲外で別途。
+  未実装・方針を段階化(2026-10-06、Opus 実装前レビュー Blocker 2・Must 6 を反映): 先の最小配線案はそのままでは動かない(物理の無変換/変換は arm の対象外、基準値が古いと取りこぼしと逆追随)。第0段=窓内の読み(t_ms, open, conv)をログに出すだけの計測、第1段=無変換/変換(Shift なし)は FSM 再送出時に予測(ADR-191 決定3)を当てる、第2段=監視窓の拡張は予測が効かない Shift+無変換だけに限る。第0段の結果が出るまで第1・2段は実装しない。BUG-186 は範囲外。
   旧(2026-10-04 更新前):
   **ドラフト(実験のみ、未実装)**。レビュー対象。実験パッチ: `188-measurements/e3-experimental.patch`(実験用、そのまま採用しない)。
 related_adr:
@@ -106,3 +106,19 @@ related_adr:
 限界: GJI 限定、追随は最大 ~80ms 遅れ(E3 の「最初の打鍵から正しい」より弱い可能性)、基準値が古いと誤追随の恐れ。
 
 **範囲**: BUG-149 と BUG-150 の Chrome 版は含める(表題を「読めない窓で、物理モードキー通過後の開閉・conv の変化に追随する」に広げる)。BUG-186(MS-IME 本体×実 Chrome の持続トグル)は含めない。根が 3 つ重なる(トグル中の ShiftConvGuard 凍結、MS-IME の読みの信頼性が未測定、本体の表に「開・C10」のセルなし)ため、MS-IME の conv の読みを CI で測ってから別 ADR にする。
+
+
+## 2026-10-06 追記2: Opus 実装前レビューの反映(方針の段階化)
+
+先の「最小配線案」を実装前に敵対的レビューした結果(Blocker 2・Must 6・Should 5)、そのままでは動かないと判明した。主な指摘と対応:
+
+- **B1 arm 箇所が違う**: `kp_arm_external_change_watch` は `may_change_ime` のキーでしか呼ばれず、無変換/変換(0x1C/0x1D)はそこに含まれない。Shift+無変換は arm も 20ms の再読み予約も通らない(`reschedule_ime_refresh` 変更不要の前提も崩れる)。→ arm と最初の予約は `kp_stage_mode_key_follow` の Shift の早期 return の前、executor の再送出の箇所に別に置く。
+- **B2 基準値が古い**: 明示意図があると読めない窓ではポーリングが止まり、基準値が awase 自身の書き込み前のまま残る。最初の変化で窓を閉じる仕様と重なると、取りこぼしと逆追随(意図の削除)が起きる。→ `Changed` の後も窓を閉じず照合を続ける。awase が書いたら直近の読みを無効にし belief を基準にする(`conv_mutation` の控えは、FSM が変換を再送出するたびに追随を止めるため使わない)。
+- **M1** 予測の fence(170ms、`KEY_EFFECT_SETTLE_MS`)内の `Changed` は採用されない。予測が出たキーには arm しない。**M2** 変換中(composition)は arm しない(候補窓中の読み取り増加は BUG-113/34 のファミリー)。**M3** `shadow_action`/`sync_direction` を持つキーは arm の対象から外す(述語は `kp_stage_mode_key_follow` と同じ)。**M5** conv の追随は純関数を通し、hub 内から `InputModeObserved(ConvBitsInference)` で書く(ROMAN ビットから Kana を作らない)。**M6** 1 回の変化で開閉と英数の両軸を反映する。
+- **代案(採用)**: 無変換/変換(Shift なし)は FSM が再送出する時点で予測(ADR-191 決定3)を当てる。ひらがなが 3/3 PASS しているのと同じ仕組みで、conv も窓も基準値も要らない。監視窓の拡張は、予測表が修飾なしのキーだけのため予測が効かない **Shift+無変換だけ**に絞る。
+
+**段階**:
+- 第0段(ログのみ、挙動不変): GJI×Imm32Unavailable で、物理モードキー/再送出の後の窓内の prefetch の `(t_ms, open, conv)` の列を `[mode-key-trace]` として出す。測るのは、(a) 何 ms で値が変わるか、(b) 遷移中の値が出るか、(c) arm 時点の最後の読みの古さ、(d) 前提状態のセットアップで awase の明示書き込みが入るか。使い捨ての `ci/adr188-trace` ブランチで行い、develop にはマージしない。
+- 第1段: 結果が良ければ executor の再送出で予測を当てる(`sc-bug149-chrome-atok-passthru` の無変換/変換が 3/3 PASS になるか)。
+- 第2段: Shift+無変換だけ監視窓を拡張(B2・M1〜M6 を満たす)。
+合格条件は修正前後の A/B で、既定 Suppress と awase なしの対照の FAIL の集合が変わらないこと、MS-IME 構成で `[external-change]` が 0 件、素通し設定で「打鍵→変換→確定」を繰り返しても変換中の追随が 0 件であること。回帰テストは `state/external_change_watch.rs` の純関数テストと `tests/closed_loop_scenarios.rs`、`tests/architecture_guard.rs` に置く。
