@@ -1984,7 +1984,8 @@ mod tests {
         let (mut j, _mock) = mock_journal();
         j.record(make_state_entry());
         let values: Vec<serde_json::Value> = serde_json::from_str(&j.to_json().unwrap()).unwrap();
-        let entry = &values[0]["entry"]["ImeEvent"];
+        let entry = &values[0]["entry"];
+        assert_eq!(entry["type"].as_str(), Some("ImeEvent"));
         assert_eq!(entry["event_seq"].as_u64(), Some(7));
         assert_eq!(entry["tick_ms"].as_u64(), Some(1234));
         // journal 自身の seq/elapsed_ms とは別に載る
