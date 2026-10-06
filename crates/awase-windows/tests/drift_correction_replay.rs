@@ -20,8 +20,8 @@
 //!
 //! # ADR-082 Phase 0.5: 「新 variant 経由」の意味
 //!
-//! `journal.rs::JournalEntry::ImeActuation` 自体は `journal` モジュールが
-//! `#[cfg(windows)]` のため Linux からは参照できない。そこで variant のペイロード型
+//! `journal.rs::JournalEntry::ImeActuation` は（ADR-229 T4 で gate 解除済みのため）
+//! Linux からも参照できるが、このテストは variant のペイロード型
 //! `ActuationRecord`（`state/ime_actuation.rs`、プラットフォーム非依存）を Linux でも
 //! 共有し、リプレイはこの `ActuationRecord`（= journal に積まれるのと同一の構造化
 //! レコード）を `ActuationRecord::new` で構築して照合する。これにより「出所（常に

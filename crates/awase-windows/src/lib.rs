@@ -60,7 +60,6 @@ pub mod ime_diagnostic;
 pub(crate) mod imm;
 #[cfg(windows)]
 pub mod input_defer;
-#[cfg(windows)]
 pub mod journal;
 // `KeymapTable`/`find_match`/`filter_active` は純粋な値比較のみで Windows API に
 // 依存しないため ungated（ADR-114、Linux で `cargo test -p awase-windows --lib`

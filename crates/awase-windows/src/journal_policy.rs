@@ -152,10 +152,9 @@ pub fn order_violation(tokens: impl IntoIterator<Item = u64>) -> Option<OrderVio
 
 // ── KeyInput auto-repeat 畳み込み（ADR-169） ────────────────────────────────
 //
-// `journal.rs::DecisionKind`/`PhysicalDispositionSummary` は `#[cfg(windows)]`
-// 配下（`journal` モジュール自体がゲートされている）のため、Windows非依存で
-// あるべき本モジュールから直接参照できない。判定に必要な形だけをここに
-// 局所的に再定義し、`journal.rs` 側で実際の型からこちらへ変換して渡す。
+// `journal.rs::DecisionKind`/`PhysicalDispositionSummary` を本モジュールが直接
+// 参照すると依存の向きが逆転する（journal が本モジュールを使う側）。判定に必要な
+// 形だけをここに局所的に再定義し、`journal.rs` 側で実際の型からこちらへ変換して渡す。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyInputDecisionShape {

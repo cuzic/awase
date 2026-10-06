@@ -256,19 +256,8 @@ pub(crate) fn last_actuation_issue_us() -> u64 {
     LAST_ACTUATION_ISSUE_US.load(Ordering::Relaxed)
 }
 
-/// `send_input_safe` が送った 1 キーボードイベントの記録（不具合報告用、journal の
-/// `SentInput` へ変換される）。`INPUT` の生値のうち、送信内容の再構成に要るものだけを持つ。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SentKeyEvent {
-    /// `wVk`。Unicode 送信（`KEYEVENTF_UNICODE`）では 0。
-    pub vk: u16,
-    /// `wScan`。Unicode 送信では UTF-16 code unit そのもの。
-    pub scan: u16,
-    pub up: bool,
-    pub unicode: bool,
-    /// `dwExtraInfo`（自己注入マーカー。どの送信経路かの識別に使う）。
-    pub marker: usize,
-}
+// `SentKeyEvent` は Windows API に依存しない POD のため `journal` に定義がある（ADR-229 T4）。
+pub use crate::journal::SentKeyEvent;
 
 /// `send_input_safe` 1 回ぶん（= `SendInput` 1 回）の記録。
 #[derive(Debug, Clone, PartialEq, Eq)]

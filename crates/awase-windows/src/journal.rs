@@ -154,6 +154,9 @@ impl PhysicalDispositionSummary {
     /// `PhysicalKeyDisposition::suppress_reason` の戻り値をそのまま受け取る。
     /// `Some(reason)` なら `Suppress`、`None` なら `Allow`（disposition と reason は
     /// 定義上 1:1 に決まるため、disposition 自体を別引数で渡す必要はない）。
+    ///
+    /// 呼び出し元（`runtime/`）は `#[cfg(windows)]` のため、同じ条件で定義する。
+    #[cfg(windows)]
     #[must_use]
     pub(crate) fn new(reason: Option<&'static str>) -> Self {
         reason.map_or(Self::Allow, |reason| Self::Suppress { reason })
@@ -194,7 +197,21 @@ pub enum DeferredRecoveryOutcomeSummary {
     Flushed { vk_count: usize },
 }
 
-/// [`JournalEntry::SentInput`] の 1 イベント。`win32::SentKeyEvent` の書き出し用の形で、
+/// `send_input_safe` が送った 1 キーボードイベントの記録（不具合報告用、journal の
+/// `SentInput` へ変換される）。`INPUT` の生値のうち、送信内容の再構成に要るものだけを持つ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SentKeyEvent {
+    /// `wVk`。Unicode 送信（`KEYEVENTF_UNICODE`）では 0。
+    pub vk: u16,
+    /// `wScan`。Unicode 送信では UTF-16 code unit そのもの。
+    pub scan: u16,
+    pub up: bool,
+    pub unicode: bool,
+    /// `dwExtraInfo`（自己注入マーカー。どの送信経路かの識別に使う）。
+    pub marker: usize,
+}
+
+/// [`JournalEntry::SentInput`] の 1 イベント。[`SentKeyEvent`] の書き出し用の形で、
 /// 1 報告に数千件載るため、既定値のフィールドは出さずに JSON を小さく保つ。
 #[derive(Debug, Serialize)]
 pub struct SentKeyEventSummary {
@@ -213,8 +230,8 @@ pub struct SentKeyEventSummary {
     pub marker: usize,
 }
 
-impl From<crate::win32::SentKeyEvent> for SentKeyEventSummary {
-    fn from(e: crate::win32::SentKeyEvent) -> Self {
+impl From<SentKeyEvent> for SentKeyEventSummary {
+    fn from(e: SentKeyEvent) -> Self {
         Self {
             vk: e.vk,
             scan: e.scan,
@@ -296,7 +313,7 @@ pub enum JournalEntry {
     /// ことの検証など）。
     ///
     /// ペイロード `ActuationRecord`（`state/ime_actuation.rs`）は `state` 層に定義があり、
-    /// `#[cfg(windows)]` な本モジュールに依存せず Linux のリプレイテストからも同じ型で
+    /// 本モジュールに依存せず Linux のリプレイテストからも同じ型で
     /// 構築・検証できる。リプレイは `tests/drift_correction_replay.rs` が
     /// `DriftCorrectionFixture` 経由で行う。`ActuationRecord` は書き出し用に `Serialize`
     /// のみ（`origin` が `&'static str` を含み `Deserialize` 不可のため、fixture 側は
@@ -715,9 +732,8 @@ impl JournalEntry {
 // ——将来 variant が増えたときにコンパイルエラーで検知させるための唯一の
 // 安全装置。
 
-/// ADR-169: `journal_policy`（Windows非依存）は `DecisionKind`（`journal`
-/// モジュール自体が `#[cfg(windows)]` 配下）を直接参照できないため、比較用の
-/// 局所的な形（`KeyInputDecisionShape`）へここで変換する。
+/// ADR-169: `journal_policy` は `DecisionKind`（本モジュールの型）を直接参照
+/// しない設計のため、比較用の局所的な形（`KeyInputDecisionShape`）へここで変換する。
 fn decision_kind_shape(d: &DecisionKind) -> crate::journal_policy::KeyInputDecisionShape {
     use crate::journal_policy::KeyInputDecisionShape as Shape;
     match *d {
@@ -1508,6 +1524,9 @@ impl UnifiedJournal {
     }
 
     /// `%TEMP%/awase_journal_<tick_ms>.json` に書き出す。
+    ///
+    /// 時刻の出所（`hook::current_tick_ms`）が Windows 専用のため `#[cfg(windows)]`。
+    #[cfg(windows)]
     pub fn dump_to_file(&self) -> Result<std::path::PathBuf, DumpError> {
         let tick = crate::hook::current_tick_ms();
         let path = std::env::temp_dir().join(format!("awase_journal_{tick}.json"));
@@ -1527,6 +1546,7 @@ impl UnifiedJournal {
     /// （所有者が許容した範囲。ring は最大頻度で 10 分が溢れない容量なので、通常の
     /// 頻度では何時間ぶんも溜まっている。Opus round2 B-E1）。他のレーンは打鍵の
     /// 内容を含まないので全件出す。
+    #[cfg(windows)]
     pub fn dump_to_file_for_report(&self) -> Result<std::path::PathBuf, DumpError> {
         let started = std::time::Instant::now();
         let tick = crate::hook::current_tick_ms();
@@ -2059,8 +2079,6 @@ mod tests {
 
     #[test]
     fn sent_input_entry_serializes_romaji_vks_and_unicode_chars() {
-        use crate::win32::SentKeyEvent;
-
         let ev = |vk, scan, up, unicode| SentKeyEvent {
             vk,
             scan,
