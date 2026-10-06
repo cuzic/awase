@@ -100,8 +100,7 @@ impl PressClaim {
         )
     }
 
-    /// 同じ押下の別経路と衝突したか（向きが違う場合）。テストだけが使う(手書きの `[press-ledger]` ログ行の撤去後、本番の利用者は無い)。
-    #[cfg(test)]
+    /// 同じ押下の別経路と衝突したか（向きが違う場合）。ログ・journal に残す対象。
     #[must_use]
     pub const fn is_conflict(self) -> bool {
         matches!(

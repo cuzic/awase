@@ -143,3 +143,8 @@ L3 の「Imm32Unavailable(Chrome)への適用」は、新しい実装なしで *
 
 - モードずれ自体を防ぐこと(許容する)。drift correction の削減・撤去(ADR-212 P6)。
 - MS-IME × 実 Chrome の書き込み機構の再設計(例外、別件)。
+
+## 追記(2026-10-06): 衝突の info ログの撤去
+
+本文(決定2 D1 など)の「衝突は info ログにも残す」は、ログと journal の重複の整理(第 1 段階、所有者承認 2026-10-06)で撤去した。`[press-ledger]` の手書きのログ 3 行は無くなり、衝突は journal の `PressWriteClaim`(verdict に出る)と、その派生の debug 行 `press write claim`(`awase::journal`)にだけ残る。既定(info)の awase.log には衝突の情報は出ない。報告の添付(`attach_log`)ありなら journal に残る。
+
