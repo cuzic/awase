@@ -61,10 +61,19 @@ pub struct ReadStrategyFacts {
     pub shift_conv_guard_active: bool,
 }
 
+/// 打鍵中か(最後のキー活動から [`TYPING_IDLE_MS`] 未満)。**この判定の唯一の定義**。
+/// `observe`(`ir_observe_read_strategy_facts`)は、通過マークの有効判定を打鍵中のときだけ読むために、
+/// `decide_read_strategy` は決定のために、それぞれこの関数を呼ぶ。片方だけ閾値の式を変えると、
+/// 通過マークを読まないまま打鍵中扱いの `SkipTyping` に落ちる。
+#[must_use]
+pub const fn is_typing(idle_ms: u64) -> bool {
+    idle_ms < TYPING_IDLE_MS
+}
+
 /// 読み取り方針を決める。
 #[must_use]
 pub fn decide_read_strategy(facts: &ReadStrategyFacts) -> ReadDecision {
-    let is_typing = facts.idle_ms < TYPING_IDLE_MS;
+    let is_typing = is_typing(facts.idle_ms);
     let mut typing_guard_bypassed = false;
 
     if is_typing {
