@@ -88,7 +88,7 @@ P4 に書かれていなかった前提 2 つ(Opus の Must): **M12** `platform_
 
 | ID | 内容 | 判定 | 根拠・注意 |
 |---|---|---|---|
-| E0 | Effect の署名の棚卸し(`MechanismCommand`・`ProbeAction`・`UiEffect`・`OutEffect`・`TimerCommand` などの全 variant。各々の順序の制約・冪等性・副作用) | **済(2026-10-06)**。`docs/tasks/effect-signature-inventory-2026-10-06/`。54 enum・variant 244・命令約 65、暗黙の順序 22 件、吸収が危険な実例 7 件 | 書き込みの吸収が危険な理由(BUG-141・ADR-208)の根拠表になる |
+| E0 | Effect の署名の棚卸し(`MechanismCommand`・`ProbeAction`・`UiEffect`・`OutEffect`・`TimerCommand` などの全 variant。各々の順序の制約・冪等性・副作用) | **済(2026-10-06)**。`docs/tasks/effect-signature-inventory-2026-10-06/`。54 enum・variant 244・命令約 65、暗黙の順序 22 件、吸収が危険な実例 7 件 | 書き込みの吸収が危険な理由(BUG-141・ADR-208)の根拠表になる **所有者の方針(2026-10-06): 順序契約のテストは全体には作らない(ほとんどの処理は順序不要)。順序の制約は少数の依存辺(DAG)で、`docs/tasks/effect-signature-inventory-2026-10-06/dependency-edges.md` が正。F の分割の PR は、触る辺を本文に書き、その辺だけを固定するテストを足す** |
 | E1 | 決定関数が省略の理由を enum で返して journal に載せる(新しい解釈器は作らない) | 実際の調査で理由が足りなかった決定から 1 つずつ | `GateResult`・`suppress_reason`・`Delivery`・`FeedbackPolicy` の action が既にある |
 | BUG-098 | 世代の無い非同期の shadow toggle OFF の完了を、既存の世代(F-D5-2)で直す | 独立した修正タスク(挙動を変えうる。所有者の判断) | Plan の有無に関わらず効く唯一の実害対応 |
 | W-a | 失効判定のカウンタ 8 種類・生の `u32` の `focus_gen`(22 か所)の newtype 化 | F の分割の各 PR の中で | 取り違えを型で防ぐ。toolkit round1 でも指摘 |
