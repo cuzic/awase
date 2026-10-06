@@ -103,11 +103,12 @@ R1 への入口は3つある:
 
 CI: `ci.yml:51` で `journal_replay`・`closed_loop_scenarios` などを Linux で回す。実機 CI(`e2e-ime.yml` の `sc-*` 等)は **JSON journal をダンプしない**。判定は awase.log のテキスト(`check_*.py`)。`tools/`・`scripts/` で journal JSON を読むのは `scripts/fetch_latest_bug_report.py`(報告の取り出しだけ)と、リポジトリ外(未追跡)の `.claude/skills/bug-report-fetch` の手順。
 
-## 6. プライバシー
+## 6. VK 列(入力内容)の扱い
 
-- ADR-095 は報告を公開 issue にしない判断。リポジトリは公開(ADR-225 P1)。
-- 入力内容を含む variant は `KeyInput`・`SentInput`・`LiteralDetect`(報告では直近 10 分に絞る、`journal.rs:1519-1545`)。`FocusTransition` はプロセス名を含む。
-- 実機 CI の入力は合成なので、CI のログ・journal には利用者の入力は入らない(ADR-226 決定5)。
+- 所有者の前提(2026-10-06 の訂正): 障害対応と replay のため、文字キーを含む VK 列を記録に残すのは必須。利用者が不具合報告の操作で共有する記録にはプライバシーの制約を置かない。ADR-225 P1(公開リポジトリなので ADR-095 の判断を迂回する)は、報告の共有については理由にならない。
+- 入力内容を含む variant は `KeyInput`(vk/scan)・`SentInput`(vk と Unicode の `ch`)・`LiteralDetect`(romaji・vk 列)。報告時は直近 10 分に絞っている(`journal.rs:1519-1545`)。`FocusTransition` はプロセス名を含む。
+- `KeyInput` は処理後の要約で、拡張ビットと Alt なりすまし前の vk を持たない(ADR-229 :110)。
+- 公開側: リポジトリは公開。`tests/journals/` の実報告由来の fixture は `bug-131-report-01m29kdnz.json`(`ActuationDecision` のみ、VK 列なし)の 1 本。実機 CI の入力は合成(ADR-226 決定5)。実利用者の入力文が公開リポジトリ・公開 CI ログに出る経路はいまは無い。
 
 ## 7. 実害の記録との対応(`docs/known-bugs/`、183 件中 "journal" を含む 45 件)
 
