@@ -1624,7 +1624,15 @@ fn applied_state_recorders_call_sites_are_accounted_for() {
     // 殻を除く本番の呼び出し元の合計は分割前と同じ 1 / 5。
     const SHELL: &str = "src/state/platform_state/shell.rs";
     type Expected = &'static [(&'static str, usize)];
-    const RECORDERS: [(&[&str], Expected); 2] = [
+    const RECORDERS: [(&[&str], Expected); 3] = [
+        // `record_ime_apply_result` の呼び出し元（核の `_in_scope` を呼ぶのは殻の1件だけ）。
+        (
+            &[
+                ".record_ime_apply_result(",
+                ".record_ime_apply_result_in_scope(",
+            ],
+            &[("src/runtime/mod.rs", 1), (SHELL, 1)],
+        ),
         (
             &[".record_optimistic(", ".record_optimistic_in_scope("],
             &[("src/runtime/ime_refresh.rs", 1), (SHELL, 1)],
@@ -1680,29 +1688,73 @@ fn applied_state_recorders_call_sites_are_accounted_for() {
     }
 }
 
-/// FCIS P2: 殻（`shell.rs`）の各メソッドは「`foreground_scope()` を1回読んで、1つの `_in_scope` に
-/// 委譲するだけ」であることを固定する。殻に分岐・ループ・余計な呼び出しを足したら落ちる。
+/// 殻（`shell.rs`）の各メソッドが「`foreground_scope()` を1回読んで、1つの `_in_scope` に委譲するだけ」
+/// であることを、メソッドごとに確かめる。違反があれば説明を返す。
+fn shell_shape_violation(code: &str) -> Option<String> {
+    let mut parts = code.split("pub(crate) fn ");
+    parts.next(); // 最初のメソッドより前（`use`・`impl` の行）
+    let mut methods = 0usize;
+    for body in parts {
+        methods += 1;
+        let name = body.split('(').next().unwrap_or("?").trim();
+        let reads = body.matches("foreground_scope()").count();
+        if reads != 1 {
+            return Some(format!(
+                "`{name}`: foreground_scope() が {reads} 回（1回であること）"
+            ));
+        }
+        let calls = body.matches("_in_scope(").count();
+        if calls != 1 {
+            return Some(format!(
+                "`{name}`: `_in_scope(` の呼び出しが {calls} 個（1つであること）"
+            ));
+        }
+        // 式の中の判断（`&&`・`||`・クロージャの `|`・`?`・`=>`）も含め、委譲以外を書かせない。
+        for banned in [
+            "if ", "match ", "for ", "while ", "loop ", "let ", "?", "&&", "|", "=>",
+        ] {
+            if body.contains(banned) {
+                return Some(format!(
+                    "`{name}`: `{banned}` を含む（委譲するだけであること）"
+                ));
+            }
+        }
+    }
+    (methods < 13).then(|| format!("殻のメソッド数が13未満: {methods}"))
+}
+
 #[test]
 fn shell_methods_only_read_scope_once_and_delegate() {
     let content = read_crate_file("src/state/platform_state/shell.rs");
     let code = non_comment_lines(production_code_only(&content));
-    let methods = code.matches("pub(crate) fn ").count();
-    assert!(methods >= 13, "殻のメソッド数が13未満です: {methods}");
+    if let Some(v) = shell_shape_violation(&code) {
+        panic!("殻の形の違反: {v}");
+    }
+}
+
+/// `shell_shape_violation` 自体が、`if`/`match`/`for` で検出できない形も拾えることの確認。
+#[test]
+fn shell_shape_violation_detects_expression_level_decisions() {
+    let ok = "pub(crate) fn a(&mut self) -> bool {\n self.a_in_scope(crate::win32::foreground_scope())\n}\n";
+    let fourteen = ok.repeat(13);
+    // 13 個の正しい殻は通る（`pub(crate) fn ` で区切るため先頭に前置きを足す）。
     assert_eq!(
-        code.matches("foreground_scope()").count(),
-        methods,
-        "殻の各メソッドは `foreground_scope()` をちょうど1回読むこと。"
+        shell_shape_violation(&format!("impl X {{\n{fourteen}")),
+        None
     );
-    assert_eq!(
-        code.matches("_in_scope(").count(),
-        methods,
-        "殻の各メソッドは `_in_scope` をちょうど1つ呼ぶこと。"
-    );
-    for banned in ["if ", "match ", "for ", "while ", "loop ", "let ", "?;"] {
-        assert!(
-            !code.contains(banned),
-            "殻に `{banned}` を書かないこと（委譲するだけ）。"
-        );
+    for bad_body in [
+        "self.a_in_scope(foreground_scope()) && self.b",
+        "self.a_in_scope(foreground_scope()) || true",
+        "self.a_in_scope(foreground_scope()).then(|| 1)",
+        "self.a_in_scope(foreground_scope())?",
+        "self.a_in_scope(foreground_scope()); self.b_in_scope(foreground_scope())",
+        "self.a_in_scope(foreground_scope()); self.b_in_scope(s)",
+        "self.a_in_scope(s)",
+        "self.a_in_scope(foreground_scope(), foreground_scope())",
+    ] {
+        let bad = format!("pub(crate) fn bad(&mut self) {{ {bad_body} }}\n{fourteen}");
+        let code = format!("impl X {{\n{bad}");
+        assert!(shell_shape_violation(&code).is_some(), "{bad_body}");
     }
 }
 
