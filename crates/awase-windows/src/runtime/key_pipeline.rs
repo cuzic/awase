@@ -2216,7 +2216,7 @@ impl Runtime {
             // 書き込み全般に共通する構造的な制約であり、この箇所固有の先送りではない。
             // Win/Alt が押下中は VK_DBE_HIRAGANA 注入自体をスキップする。
             //
-            // Win: `tsf/send.rs::send_eager_warmup_vk_pair` と同じ理由
+            // Win: `tsf/send.rs::send_eager_warmup_vk_pair`(ADR-212 P4 で撤去済み) と同じ理由
             // （Win を押したまま送ると Win+F2 として届き、Win↑ 時にスタート
             // メニューが開く）。あちらは唯一の判定点 `hook::win_key_held()`
             // を使っており、ここも同じ関数を使うことで判定基準を統一する。

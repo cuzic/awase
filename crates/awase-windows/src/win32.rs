@@ -187,7 +187,7 @@ fn input_may_mutate_conv(input: &INPUT) -> bool {
 /// actuation が不可視になる経路が出て、測定したい対象が測定できなくなる本末転倒を招く。
 ///
 /// **`IME_KANJI_MARKER` だけでは不十分**（ADR-140コードレビュー指摘、MAJOR）:
-/// `tsf/send.rs::send_eager_warmup_vk_pair`（ADR-140が確認済みの3経路のうち
+/// `tsf/send.rs::send_eager_warmup_vk_pair`(ADR-212 P4 で撤去済み)（ADR-140が確認済みの3経路のうち
 /// warmup経路(c)）は`tsf/output.rs::make_tsf_key_input`経由で`TSF_MARKER`を
 /// 使い`IME_KANJI_MARKER`を使わないため、`IME_KANJI_MARKER`単独判定だと
 /// この経路のVK_IME_ON送信が診断ログに一切出ない「ログが無い＝発火していない」

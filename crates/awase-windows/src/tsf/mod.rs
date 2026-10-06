@@ -10,7 +10,8 @@
 //!   タイマー駆動で進め `ProbeAction` を emit（TickableFsm family / strategy）
 //! - `probe_bridge` — メッセージループ統合: OUTPUT_GATE / WM_DRAIN_OUTPUT_QUEUE
 //!
-//! windows crate に依存するサブモジュールは `#[cfg(windows)]`。windows crate 依存が
+//! windows crate、または gated なモジュール(`hook`・`tsf::observer` など)に依存するサブモジュールは
+//! `#[cfg(windows)]`。windows crate 依存が
 //! ゼロの `gji_fsm`（TSF composition の warm/cold 状態機械）・`literal_facts`・
 //! `tsf_gate`（TSF ゲート状態機械）は ungated にし、`cargo test -p awase-windows --lib`
 //! から Linux でも常時実行できるようにしている（ADR-082 決定1実施記録の次の一歩、
@@ -18,8 +19,7 @@
 //! 上記リストの相互参照は intra-doc link にすると非 Windows ビルドで解決できなく
 //! なるためプレーンテキストにしている。
 
-// ungated モジュール（`literal_facts`・`tsf_gate` も同様）。呼び出し元（warmup_strategy.rs）
-// は windows-gated のため非 Windows では未使用になる。
+// 呼び出し元（warmup_strategy.rs）は windows-gated のため非 Windows では未使用になる。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod gji_fsm;
 #[cfg(windows)]
