@@ -13,6 +13,7 @@
 //! Windows 専用（`#[cfg(windows)]`）で呼べないため、**数行の配線をここで写している**もの
 //! （写し元の行は各メソッドの doc に書く。写し元が変わったらここも直すこと）:
 //! - `ImeStateHub::issue_actuation_order`/`write_*`（`state/platform_state.rs`。`warrant_context` までは本物）
+//! - `ImeStateHub::align_placeholder_desired`（`settle` 内。本物は `pub(crate)`。次の段階で本物にする候補）
 //! - `kp_stage_key_effect_track`/`kp_predict_key_effect`（`runtime/key_pipeline.rs`）
 //! - `ir_apply_drift_correction` の「検知へ進むか」まで（`runtime/ime_refresh.rs`）: `check_drift_correction` と、
 //!   ImmCross で warrant が下りない補正を検知の手前で見送る早期 return（BUG-163 の1段目、`b6ab8980`）。
@@ -209,7 +210,10 @@ pub struct Harness {
 }
 
 /// ハーネスは単一のフォアグラウンドなのでスコープは固定。
-const WATCH_SCOPE: ForegroundScope = ForegroundScope { pid: 1, hwnd: 0 };
+const WATCH_SCOPE: ForegroundScope = ForegroundScope {
+    pid: 1,
+    hwnd: 0x1001,
+};
 
 impl Harness {
     /// awase を起動した直後の状態を作る（`ImeModel::new()`、観測なし、明示意図なし）。
@@ -512,7 +516,12 @@ impl Harness {
         }
     }
 
-    const fn tick(&self) -> u64 {
+    fn tick(&self) -> u64 {
+        debug_assert_eq!(
+            self.hub.clock().now_tick(),
+            TICK_BASE + self.now_ms,
+            "ハブの仮想時計とハーネスの経過時間がずれた"
+        );
         TICK_BASE + self.now_ms
     }
 
@@ -531,6 +540,7 @@ impl Harness {
         self.hub.effective_open_at(TickMs(self.tick()))
     }
 
+    /// `IntentStore` はハブの private なので、`warrant_context` の `intent_store`（読み取り専用の参照）経由で読む。
     fn has_explicit_intent(&self) -> bool {
         let now_ms = TickMs(self.tick());
         self.hub.model().last_intent.is_some()

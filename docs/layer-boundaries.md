@@ -120,9 +120,10 @@ ADR-032 で定義した 6 つの設計原則をコード上で守るためのチ
 
 **ルール**: `ImeModel::reduce()` で `desired_open = ...` への代入は次の 4 アームのみ。
 
-- `UserImeSetIntent` / `UserImeToggleIntent` — 真のユーザー意図。`last_intent` を設定する。
+- `UserImeSetIntent` — 真のユーザー意図。`last_intent` を設定する。
 - `PanicReset` — パニックリセット（全面復旧）。`apply_panic_reset` 専用。`last_intent` を設定しない。
 - `HwndCacheRestored` — HWND キャッシュ復元。`apply_hwnd_cache_restore` 専用。`last_intent` を設定しない。
+- `ModeKeyPassedThrough` — 通過させたモードキーの結果（ADR-191）。`align_desired` かつ観測から導ける開閉があるときだけ揃える。`last_intent` を捨てる。
 
 **Why**: ADR-032 設計原則 1。intent と observation の責務分離。
 `PanicReset` / `HwndCacheRestored` は「観測ではないが、ユーザー意図でもない、直接書き込みの正当な例外」として明示的に隔離されている（かつて `UserIntentSource::Recovery` / `HwndCache` としてユーザー意図を偽装し confidence ガードをバイパスしていた抜け道を、型ごと削除して専用イベントに分離した経緯がある）。両者は `last_intent` を設定しないため `has_user_explicit_intent()` を汚染せず、後続の実観測が `effective_open()` を上書きできる。詳細は `.claude/rules/ime-belief-architecture.md` を参照。
@@ -137,8 +138,8 @@ ADR-032 で定義した 6 つの設計原則をコード上で守るためのチ
 ```sh
 grep -rn "desired_open\s*=" crates/awase-windows/src/
 ```
-期待: `state/ime_model.rs` の reduce 内 `UserImeSetIntent` / `UserImeToggleIntent` /
-`PanicReset` / `HwndCacheRestored` アームのみ（初期化の `Default::default()` 等は除く）。
+期待: `state/ime_model.rs` の reduce 内 `UserImeSetIntent` / `PanicReset` /
+`HwndCacheRestored` / `ModeKeyPassedThrough` アームのみ（テスト専用の `set_desired_open_for_test` ・初期化の `Default::default()` 等を除く）。
 
 ### C-2: Observer は `ImeEvent::ObserverReported` 経由で報告
 

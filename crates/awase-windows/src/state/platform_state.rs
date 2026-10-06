@@ -1417,6 +1417,8 @@ impl ImeStateHub {
         );
     }
 
+    /// `belief.is_japanese_ime` を書く（`warrant_context` の材料）。
+    ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     pub fn set_is_japanese_ime(&mut self, value: bool) {
         self.belief.is_japanese_ime = value;
@@ -1483,6 +1485,10 @@ impl ImeStateHub {
     ///   `IntentWitness` が「注入されていない実キーイベント」を型で要求する）
     /// - `kp_stage_post_decision` の `SetOpenOrigin::ExplicitUserAction` 分岐
     ///   （IME ON/OFF コンボ、`applied=true` のときのみ）
+    ///
+    /// 例外: 閉ループのハーネス（`tests/support/harness.rs`）は `pub` なこのメソッドを直接呼ぶ
+    /// （自前で作ったハブにだけ。本番のハブには crate の外から届かない。
+    /// `tests/architecture_guard.rs::production_hub_is_unreachable_from_outside_the_crate`）。
     ///
     /// # どのガードが何を固定しているか（2026-08-13 訂正）
     ///
@@ -3391,5 +3397,47 @@ mod tests {
                 "source={source:?}: journalにObservationSourceの値が記録されていない: {json}"
             );
         }
+    }
+
+    /// W-c: `dispatch_event` が `record_at` の `EventTime`（`seq` と、呼び出し側が渡した `tick_ms`）を
+    /// journal の `ImeEvent` にそのまま載せる配線の検査（組み立てた値を記録するだけの
+    /// `journal::tests` では配線が見えない）。
+    #[test]
+    fn dispatch_event_journals_event_time_seq_and_tick_ms() {
+        let mut ps = ps_for_test();
+        // event_log だけを先に 3 つ進める（journal には載らない）。`ImeEventLog` と
+        // `UnifiedJournal` の seq はどちらも 0 始まりなので、揃ったままだと
+        // 「journal 自身の seq を event_seq に載せる」取り違えを検出できない。
+        let now = ps.ime.clock.now_instant();
+        for _ in 0..3 {
+            ps.ime
+                .event_log
+                .record_at(ImeEvent::PanicReset { target: true }, TickMs(1), now);
+        }
+        let seq0 = ps.ime.event_log.next_seq();
+        assert_eq!(seq0, 3);
+        ps.ime
+            .dispatch_event(ImeEvent::PanicReset { target: true }, TickMs(111));
+        ps.ime
+            .dispatch_event(ImeEvent::PanicReset { target: false }, TickMs(222));
+
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&ps.ime.journal.to_json().unwrap()).unwrap();
+        let ime_events: Vec<&serde_json::Value> = rows
+            .iter()
+            .map(|r| &r["entry"])
+            .filter(|e| e["type"].as_str() == Some("ImeEvent"))
+            .collect();
+        assert_eq!(
+            ime_events.len(),
+            2,
+            "ImeEvent の記録が 2 件でない: {rows:?}"
+        );
+        assert_eq!(ime_events[0]["event_seq"].as_u64(), Some(seq0));
+        assert_eq!(ime_events[0]["tick_ms"].as_u64(), Some(111));
+        assert_eq!(ime_events[1]["event_seq"].as_u64(), Some(seq0 + 1));
+        assert_eq!(ime_events[1]["tick_ms"].as_u64(), Some(222));
+        // dispatch 1 回につき record_at がちょうど 1 回（配線ではなく採番回数の確認）。
+        assert_eq!(ps.ime.event_log.next_seq(), seq0 + 2);
     }
 }

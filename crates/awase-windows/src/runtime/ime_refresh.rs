@@ -4,9 +4,8 @@ use awase::engine::{EngineCommand, InputModeState, KanaLockHysteresis};
 use super::Runtime;
 use crate::state::ime_actuation::{ActuationAction, FeedbackPolicy};
 use crate::state::ime_read_strategy::{
-    decide_read_strategy, ImeReadStrategy, ReadReason, ReadStrategyFacts,
+    decide_read_strategy, is_typing, ImeReadStrategy, ReadReason, ReadStrategyFacts,
 };
-use crate::tuning::TYPING_IDLE_MS;
 
 // ── IoMode ──
 
@@ -447,7 +446,7 @@ impl Runtime {
         let now = crate::hook::current_tick_ms();
         let idle_ms = now.saturating_sub(last_activity);
         let mode_key_pass_live =
-            idle_ms < TYPING_IDLE_MS && self.platform_state.ime.mode_key_pass_mark_live(now);
+            is_typing(idle_ms) && self.platform_state.ime.mode_key_pass_mark_live(now);
         // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数持続トグル中
         // （`kp_stage_shift_conv_guard`）は OS poll を凍結する。
         let shift_conv_guard_active = self.platform_state.gate.half_width_alnum.is_guard_pending()

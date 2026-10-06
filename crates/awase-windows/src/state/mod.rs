@@ -189,6 +189,9 @@ pub(crate) mod scoped_latch;
 // Linux で全数テストできるようにした。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod focus_probe_plan;
+// MSAA ロール値の表引き（純粋）。本番の呼び出し元 focus/msaa.rs は #[cfg(windows)]、Linux ではテストだけが使う。
+#[cfg(any(windows, test))]
+pub mod msaa_role_plan;
 pub mod transition;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────

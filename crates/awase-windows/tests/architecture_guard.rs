@@ -6250,13 +6250,17 @@ fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
     );
 }
 
-// ── FCIS P5a-1: `platform_state` の `pub fn` の集合を固定する ───────────────────────
+// ── FCIS P5a-1: `ImeStateHub` / `PlatformState` の公開面を固定する ─────────────────────
 //
 // `ImeStateHub` を `pub` にしたのは、閉ループのハーネス（`tests/support/harness.rs`）が本物を呼ぶため。
-// 公開する面は「ハーネスが実際に呼ぶものだけ」に絞り、ここで名前の集合を固定する。**記録系
+// 公開する面は「ハーネスが実際に呼ぶものだけ」に絞り、名前の集合をここで固定する。記録系
 // （`record_confirmed`・`record_optimistic`・`record_ime_apply_result` とその `_in_scope` 版。INV-A97-1）は
-// 絶対に `pub` にしない**（呼び出し元の件数固定が `RECORDERS` で効いているのは `pub(crate)` 以下のため）。
-// ハーネスの呼び出しが増えて `pub` を足すときは、この一覧と `harness.rs` の使い方を同じ PR で更新すること。
+// `pub` にしない。ただしこれは**入口を名前で絞る規律**であって、安全性の根拠ではない: `pub fn dispatch_event` が
+// あれば、`ImeApplyRequested → ImeApplySucceeded` や `ModeKeyPassedThrough{demote_applied}` を流して crate の外から
+// `applied` を書ける。本番に実害が無いのは、**本番のハブに crate の外から届く口が無い**から
+// （`Runtime.platform_state` は private、`PlatformState.ime` は `pub(crate)`）。この到達不能性が本当の不変条件で、
+// 下の `production_hub_is_unreachable_from_outside_the_crate` が固定する。ハーネスの呼び出しが増えて `pub` を
+// 足すときは、`PLATFORM_STATE_PUB_FNS` と `harness.rs` の使い方を同じ PR で更新すること。
 
 const PLATFORM_STATE_PUB_FNS: &[&str] = &[
     "advance_clock_ms",
@@ -6274,21 +6278,83 @@ const PLATFORM_STATE_PUB_FNS: &[&str] = &[
     "with_clock",
 ];
 
-/// `pub fn` / `pub const fn`（`pub(crate)` などは含まない）の名前を集める。
-fn pub_fn_names(code: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for line in code.lines() {
-        let t = line.trim_start();
-        let rest = t
-            .strip_prefix("pub const fn ")
-            .or_else(|| t.strip_prefix("pub fn "));
-        if let Some(rest) = rest {
-            let name = rest.split(['(', '<']).next().unwrap_or("").trim();
-            names.push(name.to_string());
+/// `pub` の直後の修飾子（`const`・`async`・`unsafe`・`extern "..."`）を読み飛ばして、`fn ` の後ろを返す。
+/// `pub(crate)` などの制限付きは対象外（`None`）。
+fn pub_fn_rest(line: &str) -> Option<&str> {
+    let mut rest = line.trim_start().strip_prefix("pub ")?;
+    loop {
+        if let Some(r) = rest.strip_prefix("fn ") {
+            return Some(r);
+        }
+        if let Some(r) = rest
+            .strip_prefix("const ")
+            .or_else(|| rest.strip_prefix("async "))
+            .or_else(|| rest.strip_prefix("unsafe "))
+        {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("extern ") {
+            // `extern "C" fn`
+            rest = r.trim_start();
+            if let Some(q) = rest.strip_prefix('"') {
+                rest = q.split_once('"').map_or("", |(_, t)| t).trim_start();
+            }
+        } else {
+            return None;
         }
     }
+}
+
+/// `pub fn`（修飾子付きを含む。`pub(crate)` などは含まない）の名前を集める。
+fn pub_fn_names(code: &str) -> Vec<String> {
+    let mut names: Vec<String> = code
+        .lines()
+        .filter_map(pub_fn_rest)
+        .map(|rest| {
+            rest.split(['(', '<'])
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .collect();
     names.sort();
     names
+}
+
+/// `pub` な戻り値（シグネチャの `->` 以降）に `needles` のどれかを名乗る `pub fn` の名前。
+fn pub_fns_returning(code: &str, needles: &[&str]) -> Vec<String> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut hits = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(rest) = pub_fn_rest(line) else {
+            continue;
+        };
+        let name = rest.split(['(', '<']).next().unwrap_or("").trim();
+        let mut sig = String::new();
+        for l in &lines[i..] {
+            sig.push_str(l);
+            sig.push(' ');
+            if l.contains('{') || l.trim_end().ends_with(';') {
+                break;
+            }
+        }
+        if let Some((_, ret)) = sig.split_once("->") {
+            if needles.iter().any(|n| ret.contains(n)) {
+                hits.push(name.to_string());
+            }
+        }
+    }
+    hits
+}
+
+/// 構造体のブロック内の `pub` フィールド（`pub(crate)` などは含まない）。
+fn pub_field_lines(block: &str) -> Vec<String> {
+    block
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("pub ") && l.contains(':') && !l.contains("fn "))
+        .map(str::to_string)
+        .collect()
 }
 
 /// 記録系の名前（`pub` にしてはならないもの）。
@@ -6306,13 +6372,25 @@ fn recorder_pub_violation(names: &[String]) -> Option<String> {
 #[test]
 fn platform_state_pub_fns_are_fixed_and_exclude_recorders() {
     let mut names = Vec::new();
-    for rel in [
-        "src/state/platform_state.rs",
-        "src/state/platform_state/shell.rs",
-    ] {
-        let content = read_crate_file(rel);
+    for rel in list_src_files() {
+        let content = read_crate_file(&rel);
         let code = non_comment_lines(production_code_only(&content));
-        names.extend(pub_fn_names(&code));
+        // `impl ImeStateHub {` / `impl PlatformState {` はどのファイルにあっても拾う（`runtime/executor.rs` など）。
+        for needle in ["impl ImeStateHub {", "impl PlatformState {"] {
+            for block in extract_all_balanced_blocks(&code, needle) {
+                names.extend(pub_fn_names(block));
+            }
+        }
+        // フィールド: `ImeStateHub`・`PlatformState` は `pub` フィールドを持たない（`shadow_model` 等を直接書かせない）。
+        for needle in ["pub struct ImeStateHub {", "pub struct PlatformState {"] {
+            for block in extract_all_balanced_blocks(&code, needle) {
+                let fields = pub_field_lines(block);
+                assert!(
+                    fields.is_empty(),
+                    "`{rel}`: `{needle}` に pub フィールドがあります（{fields:?}）。外から状態を直接書き換えられます"
+                );
+            }
+        }
     }
     names.sort();
     if let Some(v) = recorder_pub_violation(&names) {
@@ -6324,19 +6402,98 @@ fn platform_state_pub_fns_are_fixed_and_exclude_recorders() {
         .collect();
     assert_eq!(
         names, expected,
-        "`platform_state` の `pub fn` の集合が想定と異なります。ハーネスが呼ぶものだけを pub にし、\
+        "`ImeStateHub`/`PlatformState` の `pub fn` の集合が想定と異なります。ハーネスが呼ぶものだけを pub にし、\
          増減したら `PLATFORM_STATE_PUB_FNS` を更新してください。"
     );
 }
 
-/// 上のガード自体が、`pub fn` の追加と記録系の公開を検出できることの確認。
+/// 本番のハブに crate の外から届く口が無いこと（`pub dispatch_event` が安全である前提）。
+#[test]
+fn production_hub_is_unreachable_from_outside_the_crate() {
+    // (1) `PlatformState.ime` は `pub(crate)` のまま（上のテストが `pub` フィールドを禁じる）。
+    let ps = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/platform_state.rs",
+    )));
+    assert!(
+        ps.contains("pub(crate) ime: ImeStateHub"),
+        "`PlatformState.ime` が `pub(crate)` ではありません"
+    );
+    // (2) `Runtime.platform_state` は private。
+    let rt = non_comment_lines(production_code_only(&read_crate_file("src/runtime/mod.rs")));
+    assert!(
+        !rt.lines().any(|l| {
+            let t = l.trim_start();
+            t.starts_with("pub") && t.contains("platform_state:")
+        }),
+        "`Runtime.platform_state` が pub になっています"
+    );
+    // (3) `ImeStateHub`・`PlatformState` を名乗って返す `pub fn` が無い（`Self` は対象外）。
+    for rel in list_src_files() {
+        let content = read_crate_file(&rel);
+        let code = non_comment_lines(production_code_only(&content));
+        let hits = pub_fns_returning(&code, &["PlatformState", "ImeStateHub"]);
+        assert!(
+            hits.is_empty(),
+            "`{rel}`: 本番のハブへの口になりうる pub fn があります: {hits:?}"
+        );
+    }
+}
+
+/// 上のガード自体が、`pub fn` の追加・修飾子付き・記録系の公開・pub フィールド・ハブを返す口を検出できることの確認。
 #[test]
 fn platform_state_pub_fn_guard_detects_additions_and_recorders() {
-    let code = "    pub fn a(&self) {}\n    pub const fn b(&self) {}\n    pub(crate) fn c(&self) {}\n    fn d(&self) {}\n    pub fn record_confirmed_in_scope(&mut self) {}\n";
+    let code = "    pub fn a(&self) {}\n    pub const fn b(&self) {}\n    pub(crate) fn c(&self) {}\n    fn d(&self) {}\n    pub unsafe fn e(&self) {}\n    pub async fn f(&self) {}\n    pub extern \"C\" fn g(&self) {}\n    pub const unsafe fn h(&self) {}\n    pub fn record_confirmed_in_scope(&mut self) {}\n";
     let names = pub_fn_names(code);
-    assert_eq!(names, ["a", "b", "record_confirmed_in_scope"]);
+    assert_eq!(
+        names,
+        ["a", "b", "e", "f", "g", "h", "record_confirmed_in_scope"]
+    );
     assert!(recorder_pub_violation(&names).is_some());
     assert!(
         recorder_pub_violation(&["a".to_string(), "record_explicit_intent".to_string()]).is_none()
     );
+    let unsafe_rec = pub_fn_names("    pub unsafe fn record_confirmed(&mut self) {}\n");
+    assert!(recorder_pub_violation(&unsafe_rec).is_some());
+
+    let block = "{\n    pub(crate) belief: B,\n    pub shadow_model: M,\n    clock: C,\n    pub fn x(&self) {}\n}";
+    assert_eq!(pub_field_lines(block), ["pub shadow_model: M,"]);
+
+    let code = "    pub fn hub(&mut self) -> &mut ImeStateHub {\n        &mut self.ime\n    }\n    pub fn ok(&self) -> Self {\n        todo!()\n    }\n    pub fn multi(\n        &mut self,\n    ) -> &PlatformState {\n        todo!()\n    }\n";
+    assert_eq!(
+        pub_fns_returning(code, &["PlatformState", "ImeStateHub"]),
+        ["hub", "multi"]
+    );
+}
+
+/// `runtime/ime_refresh.rs` の本番コードが、打鍵中判定を `is_typing`(`state/ime_read_strategy.rs`)経由で行い、
+/// `TYPING_IDLE_MS` を直接比較していないこと。`runtime/` は Windows 限定で単体テストが observe を通らないため、
+/// `idle_ms < TYPING_IDLE_MS` に戻されても全数表(decide 側)は落ちない。それを文字列照合で固定する。
+fn ime_refresh_uses_is_typing_only(src: &str) -> bool {
+    let code = non_comment_lines(production_code_only(src));
+    !code.contains("TYPING_IDLE_MS") && code.contains("is_typing(")
+}
+
+#[test]
+fn read_strategy_observe_goes_through_is_typing() {
+    let src = read_crate_file("src/runtime/ime_refresh.rs");
+    assert!(
+        ime_refresh_uses_is_typing_only(&src),
+        "runtime/ime_refresh.rs が打鍵中判定を is_typing 経由で行っていません(TYPING_IDLE_MS を直接比較していないか、\
+         is_typing( を呼んでいるかを確認)。decide 側(state/ime_read_strategy.rs)と式がずれると、\
+         通過マークを読まないまま SkipTyping に落ちます。"
+    );
+}
+
+#[test]
+fn ime_refresh_is_typing_guard_detects_violations() {
+    assert!(ime_refresh_uses_is_typing_only(
+        "let m = is_typing(idle_ms) && live(now);\n// TYPING_IDLE_MS はコメント\n"
+    ));
+    assert!(!ime_refresh_uses_is_typing_only(
+        "let m = idle_ms < TYPING_IDLE_MS && live(now);\n"
+    ));
+    assert!(!ime_refresh_uses_is_typing_only("let m = live(now);\n"));
+    assert!(!ime_refresh_uses_is_typing_only(
+        "let m = is_typing(idle_ms);\nlet t = idle_ms <= crate::tuning::TYPING_IDLE_MS;\n"
+    ));
 }
