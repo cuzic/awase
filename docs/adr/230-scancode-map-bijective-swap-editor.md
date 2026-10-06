@@ -239,8 +239,10 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
    適用後・失敗後はレジストリを読み直す(昇格側が動いていない・書き込み前に止まった結果〈UAC のキャンセル・起動失敗・`Invalid`・
    `DisplaceNotApproved`・`BadArguments`〉では読み直さず、編集内容を保持する)。確認ダイアログを開いている間は編集を止める(非モーダルのため)。
    ワンクリックは JIS 以外の配列では JIS 専用キーを含むものを出さない(US 配列で「変換 ⇄ スペース」を作るとスペースが入力できなくなる)。
-   注意書きは読み込み時から足した/外したペアだけが対象(適用済みのペアに毎回出さない)。親指キーの判定は無変換・変換・スペース・
-   `Left Alt`/`Right Alt`・かな系(`VK_KANA`/`VK_DBE_HIRAGANA`/`VK_DBE_KATAKANA`)。Opus コードレビュー(PR #540 round1、Blocker なし・Should-fix 7)を反映。ウィンドウを閉じるとき、未適用の変更があれば破棄確認を出す(egui の `close_requested`)。
+   注意書きは読み込み時から足した/外したペアだけが対象(適用済みのペアに毎回出さない)。親指キーの判定は実際の解決規則 `alt_impersonation::resolve_thumb_key` をそのまま使い(大文字小文字・前後の空白を区別しない)、
+   無変換・変換・スペース・かな系(`VK_KANA`/`VK_DBE_HIRAGANA`/`VK_DBE_KATAKANA`)、Alt なりすまし(`Left Alt`/`Right Alt`)は
+   物理 Alt となりすまし先(無変換/変換)の物理キーの両方を返す(後者が親指として効くかは未確認、安全側)。
+   親指キーを含むペアの相手だけを変えたときは「位置が変わります」だけを出す(「元に戻ります」と並べない)。Opus コードレビュー(PR #540 round1〈Blocker なし・Should-fix 7〉・round2〈Should-fix 2〉)を反映。ウィンドウを閉じるとき、未適用の変更があれば破棄確認を出す(egui の `close_requested`)。
    **撤去**: `ScancodeMapPreset`/`ScancodeMapSelection`/`current_preset`/`compute_new_entries`/`detect_status`、`--scancode-map` CLI、
    `run_elevated_worker`/`request_elevated_change`/`read_status`(ADR-217。旧 Swap は1ペアとして、旧 CapsAsExtraCtrl はチェックボックスとして読める)。
 5. 実機確認。

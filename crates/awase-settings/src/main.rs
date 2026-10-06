@@ -3215,7 +3215,7 @@ impl SettingsApp {
             &self.config.general.right_thumb_key,
         ]
         .into_iter()
-        .filter_map(|name| thumb_key_scancode(name))
+        .flat_map(|name| thumb_key_scancodes(name))
         .collect()
     }
 
@@ -4908,34 +4908,43 @@ fn is_henkan_thumb_key(key: &str) -> bool {
     VkCode::from_name(key) == Some(awase_windows::vk::VK_CONVERT)
 }
 
-/// 設定の親指キー名に当たるスキャンコード（「キーの入れ替え」の注意書き用。無変換・変換・スペースだけ）。
-fn thumb_key_scancode(key: &str) -> Option<u16> {
+/// 設定の親指キー名に当たる物理キーのスキャンコード（「キーの入れ替え」の注意書き用）。
+///
+/// 実際に親指キーを決める規則（`alt_impersonation::resolve_thumb_key`。大文字小文字・前後の空白を区別しない）をそのまま使う。
+/// Alt なりすまし（`Left Alt`/`Right Alt`）のときは、物理 Alt のほかに、なりすまし先の VK（無変換/変換）の物理キーも
+/// 親指として効きうる（未確認）ので、安全側で両方を返す。
+fn thumb_key_scancodes(key: &str) -> Vec<u16> {
     use awase_windows::scancode_pairs::{
         SCANCODE_HENKAN, SCANCODE_KANA, SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN, SCANCODE_RIGHT_ALT,
         SCANCODE_SPACE,
     };
-    use awase_windows::vk::{VK_DBE_HIRAGANA, VK_DBE_KATAKANA, VK_KANA, VK_SPACE};
-    // Alt なりすまし（`hook.rs::resolve_thumb_key` と同じ目印の文字列）。VK 名ではないので先に判定する。
-    match key {
-        "Left Alt" => return Some(SCANCODE_LEFT_ALT),
-        "Right Alt" => return Some(SCANCODE_RIGHT_ALT),
-        _ => {}
+    use awase_windows::state::alt_impersonation::resolve_thumb_key;
+    use awase_windows::vk::{
+        VK_CONVERT, VK_DBE_HIRAGANA, VK_DBE_KATAKANA, VK_KANA, VK_NONCONVERT, VK_SPACE,
+    };
+    let Some((vk, impersonate)) = resolve_thumb_key(key) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if impersonate {
+        // なりすましの VK は、左 Alt が無変換・右 Alt が変換に固定されている。
+        out.push(if vk == VK_NONCONVERT {
+            SCANCODE_LEFT_ALT
+        } else {
+            SCANCODE_RIGHT_ALT
+        });
     }
-    if is_muhenkan_thumb_key(key) {
-        Some(SCANCODE_MUHENKAN)
-    } else if is_henkan_thumb_key(key) {
-        Some(SCANCODE_HENKAN)
-    } else if VkCode::from_name(key) == Some(VK_SPACE) {
-        Some(SCANCODE_SPACE)
-    } else if [VK_KANA, VK_DBE_HIRAGANA, VK_DBE_KATAKANA]
-        .iter()
-        .any(|&kana| VkCode::from_name(key) == Some(kana))
-    {
+    if vk == VK_NONCONVERT {
+        out.push(SCANCODE_MUHENKAN);
+    } else if vk == VK_CONVERT {
+        out.push(SCANCODE_HENKAN);
+    } else if vk == VK_SPACE {
+        out.push(SCANCODE_SPACE);
+    } else if [VK_KANA, VK_DBE_HIRAGANA, VK_DBE_KATAKANA].contains(&vk) {
         // JIS ではかなキー（かな/ひらがな/カタカナ）は物理的に同じ位置。
-        Some(SCANCODE_KANA)
-    } else {
-        None
+        out.push(SCANCODE_KANA);
     }
+    out
 }
 
 /// 「キーの入れ替え」セクションの読み取り結果と編集状態。
@@ -5382,31 +5391,37 @@ mod thumb_key_display_condition_tests {
         assert!(!is_muhenkan_thumb_key("VK_CONVERT"));
     }
 
-    /// 「キーの入れ替え」の注意書き用: 親指キー名（表記ゆれを含む）からスキャンコードへ（ADR-230 決定2、Opus レビュー S4）。
+    /// 「キーの入れ替え」の注意書き用: 親指キー名（表記ゆれを含む）から物理キーのスキャンコードへ（ADR-230 決定2）。
     #[test]
-    fn thumb_key_scancode_covers_the_notations_the_gui_can_store() {
+    fn thumb_key_scancodes_cover_the_notations_the_gui_and_config_can_store() {
         use awase_windows::scancode_pairs::{
             SCANCODE_HENKAN, SCANCODE_KANA, SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN,
             SCANCODE_RIGHT_ALT, SCANCODE_SPACE,
         };
         for (name, expected) in [
-            ("無変換", SCANCODE_MUHENKAN),
-            ("VK_NONCONVERT", SCANCODE_MUHENKAN),
-            ("変換", SCANCODE_HENKAN),
-            ("VK_CONVERT", SCANCODE_HENKAN),
-            ("Space", SCANCODE_SPACE),
-            ("VK_SPACE", SCANCODE_SPACE),
-            ("Left Alt", SCANCODE_LEFT_ALT),
-            ("Right Alt", SCANCODE_RIGHT_ALT),
-            ("かな", SCANCODE_KANA),
-            ("VK_KANA", SCANCODE_KANA),
-            ("VK_DBE_HIRAGANA", SCANCODE_KANA),
-            ("VK_DBE_KATAKANA", SCANCODE_KANA),
+            ("無変換", vec![SCANCODE_MUHENKAN]),
+            ("VK_NONCONVERT", vec![SCANCODE_MUHENKAN]),
+            ("変換", vec![SCANCODE_HENKAN]),
+            ("VK_CONVERT", vec![SCANCODE_HENKAN]),
+            ("Space", vec![SCANCODE_SPACE]),
+            ("VK_SPACE", vec![SCANCODE_SPACE]),
+            ("vk_space", vec![SCANCODE_SPACE]),
+            ("かな", vec![SCANCODE_KANA]),
+            ("VK_KANA", vec![SCANCODE_KANA]),
+            ("VK_DBE_HIRAGANA", vec![SCANCODE_KANA]),
+            ("VK_DBE_KATAKANA", vec![SCANCODE_KANA]),
+            // Alt なりすまし: 物理 Alt と、なりすまし先（左=無変換・右=変換）の物理キーの両方。
+            ("Left Alt", vec![SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN]),
+            ("Right Alt", vec![SCANCODE_RIGHT_ALT, SCANCODE_HENKAN]),
+            // config.toml の手書き（大文字小文字・前後の空白を区別しない、ADR-201 決定1）。
+            ("left alt", vec![SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN]),
+            (" Left Alt ", vec![SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN]),
+            ("RIGHT ALT", vec![SCANCODE_RIGHT_ALT, SCANCODE_HENKAN]),
         ] {
-            assert_eq!(thumb_key_scancode(name), Some(expected), "{name}");
+            assert_eq!(thumb_key_scancodes(name), expected, "{name}");
         }
-        assert_eq!(thumb_key_scancode("VK_A"), None);
-        assert_eq!(thumb_key_scancode(""), None);
+        assert!(thumb_key_scancodes("VK_A").is_empty());
+        assert!(thumb_key_scancodes("").is_empty());
     }
 
     /// 変換キー版。上記と対称。

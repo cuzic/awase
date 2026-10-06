@@ -291,10 +291,18 @@ impl EditorState {
             .filter(|p| !pairs.contains(p))
             .collect();
         let mut cautions = cautions(&added, thumb_scancodes);
+        // 足したペアにも同じキーがあれば（相手だけ変えた）、「元に戻る」ではなく「位置が変わる」が正しいので出さない。
+        let added_keys: Vec<u16> = added
+            .iter()
+            .flat_map(|p| [p.keys().0, p.keys().1])
+            .collect();
         for pair in &removed {
             for key in [pair.keys().0, pair.keys().1] {
                 let restored = Caution::ThumbKeyRestored { thumb: key };
-                if thumb_scancodes.contains(&key) && !cautions.contains(&restored) {
+                if thumb_scancodes.contains(&key)
+                    && !added_keys.contains(&key)
+                    && !cautions.contains(&restored)
+                {
                     cautions.push(restored);
                 }
             }
@@ -637,6 +645,17 @@ mod tests {
         let mut e = editor(&existing);
         e.remove_row(0);
         assert!(e.preview(&existing, &[MUH]).cautions.is_empty());
+    }
+
+    #[test]
+    fn changing_only_the_partner_of_a_thumb_key_pair_says_moved_not_restored() {
+        // 無変換 ⇄ スペース（親指キーは無変換）の相手を左 Alt に変える。「位置が変わる」だけが出る。
+        let existing = [(MUH, SPC), (SPC, MUH)];
+        let mut e = editor(&existing);
+        e.set_key(0, Side::A, Some(MUH));
+        e.set_key(0, Side::B, Some(LALT));
+        let p = e.preview(&existing, &[MUH]);
+        assert_eq!(p.cautions, vec![Caution::ThumbKeyMoved { thumb: MUH }]);
     }
 
     #[test]
