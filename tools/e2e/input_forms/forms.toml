@@ -72,6 +72,10 @@ helper_exe = ["C:/Program Files/LibreOffice/program/python.exe"]
 helper_args = ["{repo}/tools/e2e/office_forms/dump_text.py", "2002", "{dump}"]
 
 # Apache OpenOffice Writer(4.1.x、LibreOffice とは別系統の VCL)。
+# MS-IME の LibreOffice で 1/4 回だけ最初の試行が全角英字混じりで崩れた(run 21f13cef)。頻度を見るため回数を増やす。
+intervals = [30]
+runs = 6
+
 [forms.openoffice-writer]
 toolkit = "Apache OpenOffice Writer"
 setup = "openoffice"
@@ -87,6 +91,10 @@ helper_args = ["{repo}/tools/e2e/office_forms/dump_text.py", "2002", "{dump}"]
 
 # ---------------------------------------------------------------------------------------------
 # .NET(WinForms / WPF / WebView2)。tools/e2e/input_apps/dotnet、CI が dotnet publish で作る(setup/dotnet.ps1)。
+# MS-IME の LibreOffice で 1/4 回だけ最初の試行が全角英字混じりで崩れた(run 21f13cef)。頻度を見るため回数を増やす。
+intervals = [30]
+runs = 6
+
 [forms.wf-textbox]
 toolkit = "WinForms TextBox"
 setup = "dotnet"
