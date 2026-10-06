@@ -511,6 +511,7 @@ const CORE_MODULES: &[&str] = &[
     "focus_probe_plan",
     "focus_resync_policy",
     "force_guard",
+    "foreground_scope",
     "generation",
     "gji_direct_mechanism",
     "half_width_alnum",
@@ -519,6 +520,7 @@ const CORE_MODULES: &[&str] = &[
     "ime_actuation",
     "ime_actuation_decision",
     "ime_kind",
+    "ime_update",
     "imm_evidence",
     "injection_mode",
     "input_barrier",
@@ -653,8 +655,14 @@ fn is_forbidden_cfg_windows(attr: &str, next: Option<&str>) -> bool {
     if norm == "#[cfg(any(windows,test))]" {
         return false;
     }
-    if norm.starts_with("#[cfg_attr(not(windows),allow(") && norm.ends_with("))]") {
-        return false;
+    // `allow(lint, ..)` だけ。`allow(..), derive(..)` のように他の属性を足した形は通さない。
+    if let Some(inner) = norm
+        .strip_prefix("#[cfg_attr(not(windows),allow(")
+        .and_then(|r| r.strip_suffix("))]"))
+    {
+        if !inner.contains('(') && !inner.contains(')') {
+            return false;
+        }
     }
     if norm == "#[cfg(windows)]" && next.is_some_and(is_mod_decl) {
         return false;
@@ -868,6 +876,10 @@ mod core_guard_helper_tests {
         assert!(rules("#[cfg(windows)]\npub(crate) mod shell;\n").is_empty());
         assert!(rules("#[cfg(any(windows, test))]\nfn f() {}\n").is_empty());
         assert!(rules("#[cfg_attr(not(windows), allow(dead_code))]\nfn f() {}\n").is_empty());
+        assert_eq!(
+            rules("#[cfg_attr(not(windows), allow(dead_code), derive(Debug))]\nstruct S;\n"),
+            ["cfg-windows"]
+        );
         assert!(rules("#[cfg(unix)]\nfn f() {}\n").is_empty());
     }
 
