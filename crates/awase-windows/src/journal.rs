@@ -287,9 +287,12 @@ pub enum JournalEntry {
     /// `event_seq`/`tick_ms`（W-c）: `ImeEventLog` が採番した `EventTime` の
     /// `seq`（reducer の順序判断に使う番号）と `tick_ms`（`GetTickCount64` 由来）。
     /// `JournalEnvelope.seq`/`elapsed_ms` は journal 側の連番・経過時間で、reducer の入力
-    /// （`ImeEventEnvelope.time`）とは別系統なので、journal だけから `ImeModel` を再現する
-    /// 入力として足りるよう、イベントが既に持っている時刻をそのまま記録する。
-    /// `Instant`（`monotonic`）はシリアライズできないため記録しない。
+    /// （`ImeEventEnvelope.time`）とは別系統なので、イベントが既に持っている時刻を
+    /// そのまま記録する。これは journal から `ImeModel` を再現するための**第一歩**であり、
+    /// これだけでは再現に足りない。残るもの: `Instant`（`monotonic`）はシリアライズできず
+    /// 記録しない／`ImeEvent` は `Serialize` のみで `Deserialize` が無い／リングから
+    /// 捨てられた古い分の初期状態のスナップショットが無い／`reduce` を通らない
+    /// 書き込み（belief への直接書き込み等）は記録されない。
     ImeEvent {
         event: crate::state::ime_event::ImeEvent,
         event_seq: u64,
