@@ -236,7 +236,11 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
    候補から消える)/ 注意が要る組(英数と親指キー、親指キーの移動、スペース)・他ツールのエントリが消える・隠れたエントリが効き出しうる
    場合は、適用時に確認ダイアログ/ 適用後に確認つきの「今すぐ再起動」ボタン(`shutdown /r /t 5`)/ 壊れた値は警告を出して止まる
    (削除の操作は用意しない)。`expect` には生の値を順に読んだ列をそのまま渡し、読み取りは `parse_entries_strict`。
-   適用後・失敗後は必ずレジストリを読み直す。ウィンドウを閉じるとき、未適用の変更があれば破棄確認を出す(egui の `close_requested`)。
+   適用後・失敗後はレジストリを読み直す(昇格側が動いていない・書き込み前に止まった結果〈UAC のキャンセル・起動失敗・`Invalid`・
+   `DisplaceNotApproved`・`BadArguments`〉では読み直さず、編集内容を保持する)。確認ダイアログを開いている間は編集を止める(非モーダルのため)。
+   ワンクリックは JIS 以外の配列では JIS 専用キーを含むものを出さない(US 配列で「変換 ⇄ スペース」を作るとスペースが入力できなくなる)。
+   注意書きは読み込み時から足した/外したペアだけが対象(適用済みのペアに毎回出さない)。親指キーの判定は無変換・変換・スペース・
+   `Left Alt`/`Right Alt`・かな系(`VK_KANA`/`VK_DBE_HIRAGANA`/`VK_DBE_KATAKANA`)。Opus コードレビュー(PR #540 round1、Blocker なし・Should-fix 7)を反映。ウィンドウを閉じるとき、未適用の変更があれば破棄確認を出す(egui の `close_requested`)。
    **撤去**: `ScancodeMapPreset`/`ScancodeMapSelection`/`current_preset`/`compute_new_entries`/`detect_status`、`--scancode-map` CLI、
    `run_elevated_worker`/`request_elevated_change`/`read_status`(ADR-217。旧 Swap は1ペアとして、旧 CapsAsExtraCtrl はチェックボックスとして読める)。
 5. 実機確認。

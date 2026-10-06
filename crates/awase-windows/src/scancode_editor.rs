@@ -25,6 +25,7 @@ pub fn key_label(scancode: u16) -> String {
         SCANCODE_HENKAN => "変換".to_string(),
         SCANCODE_KANA => "かな".to_string(),
         SCANCODE_HANKAKU_ZENKAKU => "半角/全角".to_string(),
+        0 => "(無効)".to_string(),
         other => format!("0x{other:04X}"),
     }
 }
@@ -156,19 +157,21 @@ impl EditorState {
         }
     }
 
-    /// ワンクリックボタンで行を足せるか（2つのキーのどちらも他の行で使われておらず、Caps 追加 Ctrl と衝突しない）。
+    /// ワンクリックボタンで行を足せるか。2つのキーのどちらも他の行で使われておらず、Caps 追加 Ctrl と衝突せず、
+    /// JIS 配列でないときは JIS 専用キー（変換など）を含まない（US 配列にその物理キーは無く、スペースなどが入力できなくなる）。
     #[must_use]
-    pub fn quick_available(&self, quick: &QuickPair) -> bool {
+    pub fn quick_available(&self, quick: &QuickPair, jis: bool) -> bool {
         let blocked = |k: u16| {
             self.rows.iter().any(|r| r.uses(k))
                 || (self.caps_extra && (k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL))
+                || (!jis && is_jis_only(k))
         };
         !blocked(quick.a) && !blocked(quick.b)
     }
 
     /// ワンクリックボタン。[`Self::quick_available`] のときだけ行を足して `true`。
-    pub fn add_quick(&mut self, quick: &QuickPair) -> bool {
-        if !self.quick_available(quick) {
+    pub fn add_quick(&mut self, quick: &QuickPair, jis: bool) -> bool {
+        if !self.quick_available(quick, jis) {
             return false;
         }
         self.rows.push(Row {
@@ -275,8 +278,29 @@ impl EditorState {
     #[must_use]
     pub fn preview(&self, existing: &[Entry], thumb_scancodes: &[u16]) -> Preview {
         let pairs = self.pairs();
+        // 注意は、読み込み時から足したペア・外したペアだけが対象（適用済みのペアに毎回出すと、警告を読まずに押すようになる）。
+        let added: Vec<Pair> = pairs
+            .iter()
+            .copied()
+            .filter(|p| !self.initial_pairs.contains(p))
+            .collect();
+        let removed: Vec<Pair> = self
+            .initial_pairs
+            .iter()
+            .copied()
+            .filter(|p| !pairs.contains(p))
+            .collect();
+        let mut cautions = cautions(&added, thumb_scancodes);
+        for pair in &removed {
+            for key in [pair.keys().0, pair.keys().1] {
+                let restored = Caution::ThumbKeyRestored { thumb: key };
+                if thumb_scancodes.contains(&key) && !cautions.contains(&restored) {
+                    cautions.push(restored);
+                }
+            }
+        }
         Preview {
-            cautions: cautions(&pairs, thumb_scancodes),
+            cautions,
             plan: compute_swap_write(existing, &pairs, self.caps_extra),
         }
     }
@@ -291,6 +315,8 @@ pub enum Caution {
     ThumbKeyMoved { thumb: u16 },
     /// スペースを含む。スペースでの変換操作が入れ替え先のキーへ移る。
     SpaceMoved,
+    /// 親指キーに設定されているキーを含む既存のペアを外す。親指シフトの物理位置が元に戻る。
+    ThumbKeyRestored { thumb: u16 },
 }
 
 /// ペアの集合から、注意が要る組を挙げる（重複なし、出現順）。
@@ -335,6 +361,10 @@ pub fn caution_text(caution: Caution) -> String {
             key_label(thumb)
         ),
         Caution::SpaceMoved => "「スペース」を入れ替えます。スペースで変換する操作が、入れ替え先のキーに移ります。".to_string(),
+        Caution::ThumbKeyRestored { thumb } => format!(
+            "親指キーに設定している「{}」の入れ替えを外します。親指シフトを押す物理的な位置が、元に戻ります。",
+            key_label(thumb)
+        ),
     }
 }
 
@@ -497,7 +527,7 @@ mod tests {
     #[test]
     fn caps_extra_is_exclusive_with_rows_using_caps_or_left_ctrl() {
         let mut e = editor(&[]);
-        assert!(e.add_quick(&QUICK_PAIRS[0]));
+        assert!(e.add_quick(&QUICK_PAIRS[0], true));
         assert!(!e.caps_extra_available());
         assert!(!e.set_caps_extra(true));
         e.remove_row(0);
@@ -506,17 +536,17 @@ mod tests {
         e.add_row();
         let c = e.candidates(0, Side::A, true);
         assert!(!c.contains(&CAPS) && !c.contains(&LCTRL));
-        assert!(!e.add_quick(&QUICK_PAIRS[0]));
-        assert!(e.add_quick(&QUICK_PAIRS[1]));
+        assert!(!e.add_quick(&QUICK_PAIRS[0], true));
+        assert!(e.add_quick(&QUICK_PAIRS[1], true));
     }
 
     #[test]
     fn quick_pair_is_rejected_when_a_key_is_already_used() {
         let mut e = editor(&[]);
-        assert!(e.quick_available(&QUICK_PAIRS[1]));
-        assert!(e.add_quick(&QUICK_PAIRS[1])); // 変換 ⇄ スペース
-        assert!(!e.quick_available(&QUICK_PAIRS[1]));
-        assert!(!e.add_quick(&QUICK_PAIRS[1]));
+        assert!(e.quick_available(&QUICK_PAIRS[1], true));
+        assert!(e.add_quick(&QUICK_PAIRS[1], true)); // 変換 ⇄ スペース
+        assert!(!e.quick_available(&QUICK_PAIRS[1], true));
+        assert!(!e.add_quick(&QUICK_PAIRS[1], true));
         assert_eq!(e.rows().len(), 1);
     }
 
@@ -540,7 +570,7 @@ mod tests {
     fn preview_reports_the_write_and_flags_cautions() {
         let existing = [(MUH, 0x0099)];
         let mut e = editor(&existing);
-        assert!(e.add_quick(&QUICK_PAIRS[1])); // 変換 ⇄ スペース
+        assert!(e.add_quick(&QUICK_PAIRS[1], true)); // 変換 ⇄ スペース
         let thumb = [HEN];
         let p = e.preview(&existing, &thumb);
         let plan = p.plan.as_ref().expect("書ける");
@@ -571,6 +601,47 @@ mod tests {
         e.set_key(0, Side::A, Some(MUH));
         e.set_key(0, Side::B, Some(LALT));
         assert!(!e.preview(&[], &[]).needs_confirmation());
+    }
+
+    #[test]
+    fn quick_pair_with_a_jis_only_key_is_not_available_on_non_jis_layouts() {
+        let e = editor(&[]);
+        // 変換 ⇄ スペース: US 配列には変換の物理キーが無く、スペースが入力できなくなる。
+        assert!(!e.quick_available(&QUICK_PAIRS[1], false));
+        assert!(e.quick_available(&QUICK_PAIRS[1], true));
+        // 英数/Caps ⇄ 左 Ctrl は US 配列でも使える。
+        assert!(e.quick_available(&QUICK_PAIRS[0], false));
+        let mut e = editor(&[]);
+        assert!(!e.add_quick(&QUICK_PAIRS[1], false));
+        assert!(e.rows().is_empty());
+    }
+
+    #[test]
+    fn cautions_cover_only_added_or_removed_pairs_not_already_applied_ones() {
+        // 変換 ⇄ スペースが適用済みで、親指キーが変換。無関係な「左 Alt ⇄ かな」を足すだけなら、確認は要らない。
+        let existing = [(HEN, SPC), (SPC, HEN)];
+        let mut e = editor(&existing);
+        e.add_row();
+        e.set_key(1, Side::A, Some(LALT));
+        e.set_key(1, Side::B, Some(SCANCODE_KANA));
+        let p = e.preview(&existing, &[HEN]);
+        assert!(p.cautions.is_empty());
+        assert!(!p.needs_confirmation());
+        // 親指キーを含む既存のペアを外すときは、位置が元に戻ることを知らせる。
+        let mut e = editor(&existing);
+        e.remove_row(0);
+        let p = e.preview(&existing, &[HEN]);
+        assert_eq!(p.cautions, vec![Caution::ThumbKeyRestored { thumb: HEN }]);
+        assert!(caution_text(p.cautions[0]).contains("元に戻ります"));
+        // 親指キーでないペアを外すだけなら何も出ない。
+        let mut e = editor(&existing);
+        e.remove_row(0);
+        assert!(e.preview(&existing, &[MUH]).cautions.is_empty());
+    }
+
+    #[test]
+    fn zero_target_is_labelled_as_disabled() {
+        assert_eq!(key_label(0), "(無効)");
     }
 
     #[test]

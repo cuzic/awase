@@ -251,8 +251,14 @@ pub fn read_raw_entries() -> ScancodeMapRead {
 pub fn request_restart() -> Result<(), String> {
     #[cfg(windows)]
     {
-        std::process::Command::new("shutdown")
+        use std::os::windows::process::CommandExt as _;
+        // `CREATE_NO_WINDOW`: GUI の exe からコンソールプログラムを起動するとき、コンソール窓を一瞬出さない。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // exe と同じディレクトリが先に探されるので、System32 の絶対パスで呼ぶ。
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        std::process::Command::new(format!(r"{system_root}\System32\shutdown.exe"))
             .args(["/r", "/t", "5"])
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map(|_| ())
             .map_err(|e| format!("shutdown を起動できませんでした: {e}"))

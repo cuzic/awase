@@ -5,6 +5,8 @@ title: |-
 summary: |-
   「人気のある組み合わせに絞ってGUIを簡単にしたい」という要望を受け、ADR-110の汎用`key_remap`をCaps(英数)⇔Ctrl入れ替え1種類のプリセットへ絞り込む設計。Opus 2体の並列敵対的レビューとPowerToys実例調査（Issue #3397/#32344）で、フックベース方式（key_remap）はJIS英数キー位置と日本語IMEのShiftショートカット競合により構造的に危険と判明し、Scancode Map（レジストリ、ドライバレベルのスキャンコード置換）一本化に方針転換（r2）。さらに検討の結果、汎用key_remap GUIエディタも撤去（r3）、ADR-110機構自体をバックエンドごと撤回（r4、PR #123）。Scancode Mapのバイト列パース/生成/マージを純粋関数化しLinuxでテスト、既存値の無条件上書きを避けるマージロジック、`awase-settings.exe`自身を`--scancode-map on\|off`で自己昇格(`ShellExecuteExW`+`SEE_MASK_NOCLOSEPROCESS`)する昇格フローを実装（PR #124）
 status: |-
+  ADR-230 段階4(2026-10-06)で、このプリセット機構(`ScancodeMapPreset`/`ScancodeMapSelection`/`--scancode-map` CLI/3択の UI)は撤去・一般化された。Caps(英数)⇔左 Ctrl は「入れ替えペア」の1つ、Scancode Map のバイト列の読み書き(`scancode_map.rs`)と昇格フロー(決定3・4)は ADR-230 の `scancode_pairs.rs`/`scancode_apply.rs`/`awase-settings` の `--scancode-pairs` が引き継いでいる。実機ソークの記録は確認できず未実施。
+  旧(ADR-230 段階4 更新前):
   実装済み(コード確認のみ、2026-10-04)。Scancode Map 方式(`crates/awase-windows/src/scancode_map.rs`、`crates/awase-settings/src/scancode_map_admin.rs`)が現存。実機ソークの記録は確認できず未実施。
   旧(2026-10-04 更新前):
   採用・実装済み（2026-08-31、Windows実機ソーク未実施）

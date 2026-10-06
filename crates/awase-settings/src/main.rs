@@ -355,7 +355,8 @@ fn main() -> eframe::Result<()> {
 
     let adr192_warning_context = has_adr192_warning_context(&args);
 
-    // ADR-230 決定5: ペア集合の適用の昇格側エントリポイント（`--scancode-map` と同型のヘッドレス分岐）。
+    // ADR-230 決定5: ペア集合の適用の昇格側エントリポイント（`--bug-report` と同型のヘッドレス分岐。GUI は起動せず、
+    // レジストリ操作のみ行って終了コードで結果を返す）。
     if args.iter().any(|a| a == "--scancode-pairs") {
         let Some(spec) = arg_value(&args, "--scancode-pairs") else {
             tracing::error!("[scancode-pairs] --scancode-pairs に値がありません");
@@ -3136,11 +3137,6 @@ impl SettingsApp {
         self.scancode_map_section(ui);
     }
 
-    /// Caps(英数)⇔Ctrl 入れ替え / Caps(英数)→Ctrl 片方向複製プリセット
-    /// （ADR-111 / ADR-126）。Scancode Map（レジストリ、要昇格・要再起動）
-    /// 方式のみを提供する——ADR-110の
-    /// フックベース`key_remap`機構はJIS英数キー位置で日本語IMEと衝突する
-    /// 構造的リスクが判明したため撤回済み（`docs/adr/111-...md`参照）。
     /// 「キーの入れ替え」セクション（ADR-230）。Scancode Map（レジストリ、全ユーザー共通）のペア編集。
     ///
     /// ADR-127 の例外: このセクションの適用は画面共通の「適用」とは別の操作で、レジストリにだけ書く。
@@ -3163,6 +3159,9 @@ impl SettingsApp {
             self.config.general.keyboard_model,
             awase::scanmap::KeyboardModel::Jis
         );
+        let modal_open = self.scancode_apply_confirm.is_some()
+            || self.scancode_restart_confirm
+            || self.scancode_close_confirm;
         let mut action = ScancodeAction::None;
         match self.scancode_map_view.as_mut() {
             Some(ScancodeMapView::Corrupt) => {
@@ -3182,7 +3181,10 @@ impl SettingsApp {
                 }
             }
             Some(ScancodeMapView::Loaded(loaded)) => {
-                action = scancode_editor_ui(ui, loaded, jis);
+                // 確認ダイアログは非モーダルなので、開いている間は編集を止める（開いた後の編集が黙って捨てられるのを防ぐ）。
+                ui.add_enabled_ui(!modal_open, |ui| {
+                    action = scancode_editor_ui(ui, loaded, jis);
+                });
             }
             None => {}
         }
@@ -3198,8 +3200,11 @@ impl SettingsApp {
         if let Some(msg) = &self.scancode_map_last_message {
             ui.label(msg);
         }
-        if self.scancode_restart_pending && ui.button("今すぐ再起動…").clicked() {
-            self.scancode_restart_confirm = true;
+        if self.scancode_restart_pending {
+            ui.label("適用した変更は、再起動後に有効になります。");
+            if ui.button("今すぐ再起動…").clicked() {
+                self.scancode_restart_confirm = true;
+            }
         }
     }
 
@@ -3249,9 +3254,27 @@ impl SettingsApp {
     /// 自己昇格フロー（`scancode_map_admin::request_elevated_pairs_change`）を起動して完了を待ち、結果を表示し、
     /// レジストリを読み直す（ADR-230 決定5。失敗・巻き戻しの後も今の値を読み直して表示する）。
     fn run_scancode_apply(&mut self, request: &ApplyRequest) {
+        use awase_windows::scancode_apply::WorkerExit;
         use scancode_map_admin::ElevationOutcome;
         let outcome = scancode_map_admin::request_elevated_pairs_change(request);
         let success = matches!(outcome, ElevationOutcome::Success);
+        // 昇格側が動いていない・書き込み前に止まった結果は、レジストリが変わっていないので編集内容を保持する
+        // （読み直すと、UAC を誤って閉じただけで編集が消える）。それ以外は書き込まれた可能性があるので読み直す。
+        let registry_untouched = matches!(
+            outcome,
+            ElevationOutcome::Cancelled
+                | ElevationOutcome::LaunchError(_)
+                | ElevationOutcome::Rejected(
+                    WorkerExit::Invalid
+                        | WorkerExit::DisplaceNotApproved
+                        | WorkerExit::BadArguments
+                )
+        );
+        // 書き込みのあと元へ戻せず、起動時と違う値が残っているかもしれない。再起動すると効くので、再起動の案内を出す。
+        let may_have_changed_registry = matches!(
+            outcome,
+            ElevationOutcome::Rejected(WorkerExit::RollbackFailed)
+        );
         self.scancode_map_last_message = Some(match outcome {
             ElevationOutcome::Success => {
                 "適用しました。反映するには再起動が必要です（サインアウトでは反映されません）。"
@@ -3264,11 +3287,13 @@ impl SettingsApp {
             }
             ElevationOutcome::LaunchError(e) => format!("起動できませんでした: {e}"),
         });
-        if success {
+        if success || may_have_changed_registry {
             self.scancode_restart_pending = true;
         }
         // 操作直後にのみ再読み込みする（毎フレーム読まない）。
-        self.scancode_map_view = Some(load_scancode_view());
+        if !registry_untouched {
+            self.scancode_map_view = Some(load_scancode_view());
+        }
     }
 
     /// 適用前の確認ダイアログ（注意が要る組・他ツールのエントリが消える・隠れたエントリが効き出しうる）。
@@ -4172,6 +4197,9 @@ impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // ADR-126 D6: ウィンドウを閉じる操作には config/layout どちらの
         // 未保存確認も入れない。キャンセルボタンの復元操作だけを確認対象にする。
+        // 例外: 「キーの入れ替え」（ADR-230）の未適用の変更だけは、閉じるときに破棄確認を出す
+        // （`show_scancode_close_confirm_modal`、ADR-127 追記）。「破棄して閉じる」を選ぶと config 側の
+        // 未保存の編集も確認なしで失われる（D6 どおり）。
         self.update_ime_state(ctx);
         self.poll_pending_save(ctx);
         self.poll_keymap_learn(ctx);
@@ -4882,13 +4910,29 @@ fn is_henkan_thumb_key(key: &str) -> bool {
 
 /// 設定の親指キー名に当たるスキャンコード（「キーの入れ替え」の注意書き用。無変換・変換・スペースだけ）。
 fn thumb_key_scancode(key: &str) -> Option<u16> {
-    use awase_windows::scancode_pairs::{SCANCODE_HENKAN, SCANCODE_MUHENKAN, SCANCODE_SPACE};
+    use awase_windows::scancode_pairs::{
+        SCANCODE_HENKAN, SCANCODE_KANA, SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN, SCANCODE_RIGHT_ALT,
+        SCANCODE_SPACE,
+    };
+    use awase_windows::vk::{VK_DBE_HIRAGANA, VK_DBE_KATAKANA, VK_KANA, VK_SPACE};
+    // Alt なりすまし（`hook.rs::resolve_thumb_key` と同じ目印の文字列）。VK 名ではないので先に判定する。
+    match key {
+        "Left Alt" => return Some(SCANCODE_LEFT_ALT),
+        "Right Alt" => return Some(SCANCODE_RIGHT_ALT),
+        _ => {}
+    }
     if is_muhenkan_thumb_key(key) {
         Some(SCANCODE_MUHENKAN)
     } else if is_henkan_thumb_key(key) {
         Some(SCANCODE_HENKAN)
-    } else if VkCode::from_name(key) == Some(awase_windows::vk::VK_SPACE) {
+    } else if VkCode::from_name(key) == Some(VK_SPACE) {
         Some(SCANCODE_SPACE)
+    } else if [VK_KANA, VK_DBE_HIRAGANA, VK_DBE_KATAKANA]
+        .iter()
+        .any(|&kana| VkCode::from_name(key) == Some(kana))
+    {
+        // JIS ではかなキー（かな/ひらがな/カタカナ）は物理的に同じ位置。
+        Some(SCANCODE_KANA)
     } else {
         None
     }
@@ -5009,12 +5053,12 @@ fn scancode_editor_ui(
         }
         ui.label("よくある入れ替え:");
         for quick in &QUICK_PAIRS {
-            let available = editor.quick_available(quick);
+            let available = editor.quick_available(quick, jis);
             if ui
                 .add_enabled(available, egui::Button::new(quick.label))
                 .clicked()
             {
-                editor.add_quick(quick);
+                editor.add_quick(quick, jis);
             }
         }
     });
@@ -5336,6 +5380,33 @@ mod thumb_key_display_condition_tests {
         assert!(is_muhenkan_thumb_key("VK_NONCONVERT"));
         assert!(!is_muhenkan_thumb_key("変換"));
         assert!(!is_muhenkan_thumb_key("VK_CONVERT"));
+    }
+
+    /// 「キーの入れ替え」の注意書き用: 親指キー名（表記ゆれを含む）からスキャンコードへ（ADR-230 決定2、Opus レビュー S4）。
+    #[test]
+    fn thumb_key_scancode_covers_the_notations_the_gui_can_store() {
+        use awase_windows::scancode_pairs::{
+            SCANCODE_HENKAN, SCANCODE_KANA, SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN,
+            SCANCODE_RIGHT_ALT, SCANCODE_SPACE,
+        };
+        for (name, expected) in [
+            ("無変換", SCANCODE_MUHENKAN),
+            ("VK_NONCONVERT", SCANCODE_MUHENKAN),
+            ("変換", SCANCODE_HENKAN),
+            ("VK_CONVERT", SCANCODE_HENKAN),
+            ("Space", SCANCODE_SPACE),
+            ("VK_SPACE", SCANCODE_SPACE),
+            ("Left Alt", SCANCODE_LEFT_ALT),
+            ("Right Alt", SCANCODE_RIGHT_ALT),
+            ("かな", SCANCODE_KANA),
+            ("VK_KANA", SCANCODE_KANA),
+            ("VK_DBE_HIRAGANA", SCANCODE_KANA),
+            ("VK_DBE_KATAKANA", SCANCODE_KANA),
+        ] {
+            assert_eq!(thumb_key_scancode(name), Some(expected), "{name}");
+        }
+        assert_eq!(thumb_key_scancode("VK_A"), None);
+        assert_eq!(thumb_key_scancode(""), None);
     }
 
     /// 変換キー版。上記と対称。
