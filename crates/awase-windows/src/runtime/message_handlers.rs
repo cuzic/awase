@@ -833,8 +833,8 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
 /// `reason` は wparam の bit1 にエンコードする（BUG-34 横展開 D、2026-08-19）。
 /// 以前はこの経路の唯一の生成元が `executor.rs::dispatch_ime_set_open`
 /// （常に `EngineDecision`）だったため固定値にしていたが、
-/// `try_force_on_bootstrap`（`Bootstrap`、`621bf93c` で撤去済み）が2つ目の生成元として加わったため、
-/// 呼び出し元が申告した reason を実際に運ぶ必要がある。**`EngineDecision`・`Bootstrap`・`ShadowToggle` の3値のみエンコードする**（2 bit、ADR-213）。この async 経路に将来
+/// `try_force_on_bootstrap`（`621bf93c` で撤去済み）が2つ目の生成元として加わったため、
+/// 呼び出し元が申告した reason を実際に運ぶ必要がある。**`EngineDecision`・`ShadowToggle` の2値のみエンコードする**（2 bit、ADR-213）。この async 経路に将来
 /// 別の `OpenApplyReason` を渡す呼び出し元を追加する場合は、この関数と
 /// `decode_reason` のビット幅を拡張すること（さもないと未知の reason が
 /// 静かに `EngineDecision` に丸められる）。
@@ -876,9 +876,8 @@ fn encode_apply_wparam(
     open: bool,
 ) -> usize {
     let reason_code = match reason {
-        crate::state::ime_event::OpenApplyReason::Bootstrap => 1usize,
         // ADR-213: shadow toggle の ImmCross async 完了も運ぶ。
-        crate::state::ime_event::OpenApplyReason::ShadowToggle => 2,
+        crate::state::ime_event::OpenApplyReason::ShadowToggle => 2usize,
         crate::state::ime_event::OpenApplyReason::EngineDecision => 0,
         // この async 経路に渡す呼び出し元が無い reason。渡すなら上のビット幅を拡張すること。
         other => {
@@ -895,7 +894,6 @@ fn encode_apply_wparam(
 /// [`post_async_ime_apply_complete`] の reason bit の逆変換。
 fn decode_reason(wparam: usize) -> crate::state::ime_event::OpenApplyReason {
     match (wparam >> 1) & 3 {
-        1 => crate::state::ime_event::OpenApplyReason::Bootstrap,
         2 => crate::state::ime_event::OpenApplyReason::ShadowToggle,
         _ => crate::state::ime_event::OpenApplyReason::EngineDecision,
     }
@@ -2020,7 +2018,7 @@ mod apply_wparam_tests {
     #[test]
     fn apply_wparam_round_trips_reason_open_and_generation() {
         use crate::state::ime_event::OpenApplyReason as R;
-        for reason in [R::EngineDecision, R::Bootstrap, R::ShadowToggle] {
+        for reason in [R::EngineDecision, R::ShadowToggle] {
             for open in [false, true] {
                 let w = encode_apply_wparam(5, reason, open);
                 assert_eq!(decode_reason(w), reason, "reason {reason:?}");

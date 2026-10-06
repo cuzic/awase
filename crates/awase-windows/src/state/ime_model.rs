@@ -193,7 +193,7 @@ pub struct ImeModel {
     /// 入力モード（ローマ字/かな/英数/不明）の belief。
     ///
     /// H-3-b で追加。H-3-c で `ImeBelief::input_mode` への直接代入が
-    /// `InputModeObserved` / `InputModeApplied` / `UserChangedInputMode` イベント経由に
+    /// `InputModeObserved` / `InputModeApplied` イベント経由に
     /// 置換されるまでは shadow として記録するのみで本番判定には使わない。
     /// H-3-d で `ImeBelief::input_mode` が private 化されたのち、このフィールドが SSOT になる。
     ///
@@ -355,7 +355,7 @@ impl ImeModel {
     /// awase が IME をこうしたい状態（読み取り専用アクセサ）。
     ///
     /// `desired_open` フィールドは private。外部から書き込まず
-    /// `ImeEvent::UserImeSetIntent` / `UserImeToggleIntent` 経由で reducer を通すこと。
+    /// `ImeEvent::UserImeSetIntent` 経由で reducer を通すこと。
     /// 実効値が欲しい場合は `effective_open()` を使うこと（こちらは生の意図のみ）。
     #[must_use]
     pub const fn desired_open(&self) -> bool {
@@ -365,7 +365,7 @@ impl ImeModel {
     /// 入力モードの belief を返す（読み取り専用アクセサ）。
     ///
     /// `input_mode` フィールドは private。外部から書き込まず
-    /// `InputModeObserved` / `InputModeApplied` / `UserChangedInputMode` 経由で
+    /// `InputModeObserved` / `InputModeApplied` 経由で
     /// reducer を通すこと。
     #[must_use]
     pub const fn input_mode(&self) -> InputModeState {
@@ -401,7 +401,7 @@ impl ImeModel {
     /// false の場合は observation pool の `derive_any()` 結果を採用し、
     /// 観測が空なら `desired_open` にフォールバックする。
     ///
-    /// `last_intent` は `UserImeSetIntent` / `UserImeToggleIntent` のみが設定する。
+    /// `last_intent` は `UserImeSetIntent` のみが設定する。
     /// `PanicReset` / `HwndCacheRestored` は設定しないため、ここで除外不要。
     fn has_user_explicit_intent(&self) -> bool {
         self.last_intent.is_some()
@@ -716,7 +716,7 @@ impl ImeModel {
         true
     }
 
-    /// `UserImeToggleIntent`/`UserImeSetIntent` 共通の `last_intent` 記録。
+    /// `UserImeSetIntent` の `last_intent` 記録。
     fn record_intent(&mut self, target: bool, source: UserIntentSource, at_ms: u64) {
         self.last_intent = Some(RecordedIntent {
             target,
@@ -734,9 +734,9 @@ impl ImeModel {
     /// ImeApplyFailed)はADR-170決定1でprivateヘルパーへ抽出済み。
     // `event` は `fields(?envelope.event)` のようなDebug展開をしない
     // （PRコードレビュー指摘: journal→tracing fan-out〈決定4〉が同じ
-    // ImeEventを`event_kind = "UserImeToggleIntent"`のような判別子文字列で
-    // 出しているのに対し、ここでDebugフォーマットすると`event=UserImeToggleIntent
-    // { source: SyncKey }`という別の語彙が並び立ち、triageを混乱させる）。
+    // ImeEventを`event_kind = "UserImeSetIntent"`のような判別子文字列で
+    // 出しているのに対し、ここでDebugフォーマットすると`event=UserImeSetIntent
+    // { target: true, source: SyncKey }`という別の語彙が並び立ち、triageを混乱させる）。
     //
     // `ImeEvent` の全 variant を1つの `match` で振り分ける reducer で、分岐の数がそのまま複雑度になる。
     // 本体が長い分岐はヘルパーへ抽出済み（ADR-170）。`KeyEffectPredicted`/`ModeKeyPassedThrough` の
@@ -746,14 +746,6 @@ impl ImeModel {
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
         match envelope.event {
-            ImeEvent::UserImeToggleIntent { source } => {
-                self.key_effect = None;
-                self.key_track.stage = crate::state::key_effect_predictor::Stage::None;
-                let target = !self.desired_open;
-                self.desired_open = target;
-                self.desired_is_placeholder = false;
-                self.record_intent(target, source, envelope.time.tick_ms);
-            }
             ImeEvent::UserImeSetIntent { target, source } => {
                 self.key_effect = None;
                 self.key_track.stage = crate::state::key_effect_predictor::Stage::None;
@@ -855,10 +847,6 @@ impl ImeModel {
                 if result == InputModeApplyResult::Applied {
                     self.input_mode = mode;
                 }
-            }
-            ImeEvent::UserChangedInputMode { mode, .. } => {
-                // ユーザーの明示操作 → 観測と同等の信頼度で即時反映する。
-                self.input_mode = mode;
             }
             ImeEvent::FocusHwndUpdated { hwnd } => {
                 // 同一プロセス内の hwnd 変化のみ。epoch・観測プール・intent 等は
@@ -1438,15 +1426,6 @@ mod tests {
         ));
         assert!(!m.desired_is_placeholder());
 
-        let mut m = ImeModel::new();
-        m.reduce(&envelope(
-            1,
-            ImeEvent::UserImeToggleIntent {
-                source: UserIntentSource::SyncKey,
-            },
-        ));
-        assert!(!m.desired_is_placeholder());
-
         // 復旧操作・HWND キャッシュ復元。
         let mut m = ImeModel::new();
         m.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
@@ -1773,25 +1752,6 @@ mod tests {
         ));
         assert!(!model.desired_open);
         assert!(!model.last_intent.as_ref().unwrap().target);
-    }
-
-    #[test]
-    fn toggle_intent_flips_desired() {
-        let mut model = ImeModel::new(); // desired_open = true (default)
-        model.reduce(&envelope(
-            1,
-            ImeEvent::UserImeToggleIntent {
-                source: UserIntentSource::PhysicalImeKey,
-            },
-        ));
-        assert!(!model.desired_open);
-        model.reduce(&envelope(
-            2,
-            ImeEvent::UserImeToggleIntent {
-                source: UserIntentSource::PhysicalImeKey,
-            },
-        ));
-        assert!(model.desired_open);
     }
 
     #[test]

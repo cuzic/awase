@@ -53,7 +53,7 @@ pub fn check_drift_correction(
     }
 
     let dur = model.observations.drift_duration(now)?;
-    // last_intent は UserImeSetIntent / UserImeToggleIntent のみが設定する。
+    // last_intent は UserImeSetIntent のみが設定する。
     // PanicReset / HwndCacheRestored は設定しないため、is_some() で十分。
     // SyncKey / PhysicalImeKey / Command は全て閾値 0 (即時補正) の対象。
     let is_strong_intent = model.last_intent.is_some();
