@@ -6249,3 +6249,36 @@ fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
         "ime_refresh.rs（drift correction）は押下 ID を持たない: `with_press`/`claim_press_write` を呼んではならない"
     );
 }
+
+/// `runtime/ime_refresh.rs` の本番コードが、打鍵中判定を `is_typing`(`state/ime_read_strategy.rs`)経由で行い、
+/// `TYPING_IDLE_MS` を直接比較していないこと。`runtime/` は Windows 限定で単体テストが observe を通らないため、
+/// `idle_ms < TYPING_IDLE_MS` に戻されても全数表(decide 側)は落ちない。それを文字列照合で固定する。
+fn ime_refresh_uses_is_typing_only(src: &str) -> bool {
+    let code = non_comment_lines(production_code_only(src));
+    !code.contains("TYPING_IDLE_MS") && code.contains("is_typing(")
+}
+
+#[test]
+fn read_strategy_observe_goes_through_is_typing() {
+    let src = read_crate_file("src/runtime/ime_refresh.rs");
+    assert!(
+        ime_refresh_uses_is_typing_only(&src),
+        "runtime/ime_refresh.rs が打鍵中判定を is_typing 経由で行っていません(TYPING_IDLE_MS を直接比較していないか、\
+         is_typing( を呼んでいるかを確認)。decide 側(state/ime_read_strategy.rs)と式がずれると、\
+         通過マークを読まないまま SkipTyping に落ちます。"
+    );
+}
+
+#[test]
+fn ime_refresh_is_typing_guard_detects_violations() {
+    assert!(ime_refresh_uses_is_typing_only(
+        "let m = is_typing(idle_ms) && live(now);\n// TYPING_IDLE_MS はコメント\n"
+    ));
+    assert!(!ime_refresh_uses_is_typing_only(
+        "let m = idle_ms < TYPING_IDLE_MS && live(now);\n"
+    ));
+    assert!(!ime_refresh_uses_is_typing_only("let m = live(now);\n"));
+    assert!(!ime_refresh_uses_is_typing_only(
+        "let m = is_typing(idle_ms);\nlet t = idle_ms <= crate::tuning::TYPING_IDLE_MS;\n"
+    ));
+}
