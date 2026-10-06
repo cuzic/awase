@@ -1,5 +1,5 @@
 ---
-id: ADR-233
+id: ADR-240
 title: |-
   修正を外したビルド(ablation)との比較を、実機 CI シナリオを回帰の証拠と数える条件にする
 summary: |-
@@ -20,7 +20,7 @@ related_adr:
   - "ADR-232"
 ---
 
-# ADR-233: 修正を外したビルド(ablation)との比較を、実機 CI シナリオを回帰の証拠と数える条件にする
+# ADR-240: 修正を外したビルド(ablation)との比較を、実機 CI シナリオを回帰の証拠と数える条件にする
 
 ## 用語
 
@@ -218,7 +218,7 @@ PR の必須チェックにはしない(推奨、所有者に聞く 2)。nofix �
 ## 関連する既存文書への追記案(この ADR では書き換えない)
 
 - `.claude/rules/fix-requires-evidence.md:22-26`: 「将来的に……置き換える予定(未実装……)。」を削り、次に置き換える。
-  > 実機 CI のシナリオ(`e2e-ime.yml`・`wt-probe.yml` 等)を (a) と数えるのは、修正を外したビルド(`ablations/bug<NNN>-*.sh`)で同じ判定が症状を検出し、修正ありで PASS した場合に限る。判定基準は最初の run の前に書き、observed 件数を出し、mutator が書き換えた値そのものを判別の根拠にしない([ADR-233](../../docs/adr/233-ablation-ab-as-regression-evidence.md))。差が出なければ (b) に「CI では確かめられなかった」と書く。
+  > 実機 CI のシナリオ(`e2e-ime.yml`・`wt-probe.yml` 等)を (a) と数えるのは、修正を外したビルド(`ablations/bug<NNN>-*.sh`)で同じ判定が症状を検出し、修正ありで PASS した場合に限る。判定基準は最初の run の前に書き、observed 件数を出し、mutator が書き換えた値そのものを判別の根拠にしない([ADR-240](../../docs/adr/240-ablation-ab-as-regression-evidence.md))。差が出なければ (b) に「CI では確かめられなかった」と書く。
 - `docs/teardown-verification-guide.md:81-89`: `mutator` の説明に「nofix(BUG の修正を外す)は `bug<NNN>-*.sh`、機構の撤去実験は `aN-*.sh`」の 1 行。`:104` の「`a1`〜`a7`」を現状に直す。
 - `docs/known-bugs/BUG-114.md`: PR #534 の結論(差が出たか、届かなかったか)を run 番号つきで 1〜3 行。
 - `docs/known-bugs/BUG-170.md`: 「nofix(a8)で差が出たのは `--require-sync`(journal 上の同期)だけで、入力先のテキストでは差が出なかった(run 36654801007)」の 1 行。
