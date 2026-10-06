@@ -47,7 +47,10 @@ pub mod alt_impersonation;
 // を保持するため非 Windows でも使用される。
 pub mod generation;
 pub use generation::{ApplyGeneration, GenerationAllocator};
+// ADR-229 W-a: await をまたぐ失効判定に使う生の `u32` 世代 2 種(`Output::ime_mode_focus_gen`・
+// `shift_conv_guard_gen`)の型。ungated(Linux で `next`/比較をテストする)。
 pub mod app_ime_policy;
+pub mod focus_gen;
 // FCIS P1: 純粋なデータ型を ungated へ移したもの(元の場所から pub use で再公開)。
 pub mod foreground_scope;
 pub mod ime_update;

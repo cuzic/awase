@@ -80,7 +80,7 @@ pub(crate) enum ImmCrossOp {
         target: ActuationTarget,
         conv_after_open: ConvAfterOpen,
         /// 起案時点の focus 世代。`verify_still_current` の比較基準。
-        focus_gen: u32,
+        focus_gen: crate::state::focus_gen::FocusGen,
     },
     /// 宛先を捕獲しないクロスプロセス書き込み（shadow-toggle の OFF 経路）。
     ///
@@ -317,7 +317,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
                 conv_after_open,
                 || {
                     crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
-                        .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                        .unwrap_or_else(|| focus_gen.next())
                 },
             )
             .await;

@@ -983,13 +983,13 @@ pub async fn get_focused_hwnd_async() -> HWND {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ActuationTarget {
     hwnd: HWND,
-    focus_gen: u32,
+    focus_gen: crate::state::focus_gen::FocusGen,
 }
 
 impl ActuationTarget {
     /// 起案時点の hwnd を捕獲する。hwnd が取得できない場合（フォーカス無し等）は
     /// `None`。
-    pub(crate) async fn capture(focus_gen: u32) -> Option<Self> {
+    pub(crate) async fn capture(focus_gen: crate::state::focus_gen::FocusGen) -> Option<Self> {
         let hwnd = get_focused_hwnd_async().await;
         hwnd.non_null().map(|hwnd| Self { hwnd, focus_gen })
     }
@@ -1016,7 +1016,9 @@ impl ActuationTarget {
     ///
     /// # Safety
     /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-    pub(crate) unsafe fn capture_blocking(focus_gen: u32) -> Option<Self> {
+    pub(crate) unsafe fn capture_blocking(
+        focus_gen: crate::state::focus_gen::FocusGen,
+    ) -> Option<Self> {
         // SAFETY: 呼び出し元がメインスレッドであることを保証する。
         let hwnd = unsafe { get_focused_hwnd() };
         hwnd.non_null().map(|hwnd| Self { hwnd, focus_gen })
@@ -1039,7 +1041,10 @@ impl ActuationTarget {
     /// （「本経路は完全に同期的なため実際には常に一致するが、将来この経路に
     /// 非同期処理が挟まれた場合の回帰を防ぐため明示的に確認する」）と同じ
     /// 性質のガードである。
-    const fn verify_gen_only(self, current_focus_gen: u32) -> TargetVerifyOutcome {
+    fn verify_gen_only(
+        self,
+        current_focus_gen: crate::state::focus_gen::FocusGen,
+    ) -> TargetVerifyOutcome {
         if self.focus_gen == current_focus_gen {
             TargetVerifyOutcome::Current(self.hwnd)
         } else {
@@ -1066,7 +1071,7 @@ impl ActuationTarget {
     #[allow(clippy::future_not_send)]
     pub(crate) async fn verify_still_current(
         self,
-        read_current_focus_gen: impl FnOnce() -> u32,
+        read_current_focus_gen: impl FnOnce() -> crate::state::focus_gen::FocusGen,
     ) -> TargetVerifyOutcome {
         let current_hwnd = get_focused_hwnd_async().await;
         if self.focus_gen != read_current_focus_gen() {
@@ -1183,7 +1188,7 @@ pub(crate) enum AbortReason {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub(crate) unsafe fn set_ime_romaji_mode_for_target_blocking(
     target: ActuationTarget,
-    current_focus_gen: u32,
+    current_focus_gen: crate::state::focus_gen::FocusGen,
 ) -> ActuationOutcome {
     let hwnd = match target.verify_gen_only(current_focus_gen) {
         TargetVerifyOutcome::Current(hwnd) => hwnd,
@@ -1231,7 +1236,7 @@ pub(crate) unsafe fn set_ime_romaji_mode_for_target_blocking(
 pub(crate) async fn set_ime_conv_for_target(
     target: ActuationTarget,
     conv: Option<u32>,
-    read_current_focus_gen: impl FnOnce() -> u32,
+    read_current_focus_gen: impl FnOnce() -> crate::state::focus_gen::FocusGen,
 ) -> ActuationOutcome {
     match target.verify_still_current(read_current_focus_gen).await {
         TargetVerifyOutcome::GenStale => {
@@ -1348,7 +1353,7 @@ pub(crate) async fn set_ime_open_then_conv_for_target(
     target: ActuationTarget,
     open: bool,
     conv_after_open: ConvAfterOpen,
-    read_current_focus_gen: impl FnOnce() -> u32,
+    read_current_focus_gen: impl FnOnce() -> crate::state::focus_gen::FocusGen,
 ) -> ImmCrossOutcome {
     match target.verify_still_current(read_current_focus_gen).await {
         TargetVerifyOutcome::GenStale => {

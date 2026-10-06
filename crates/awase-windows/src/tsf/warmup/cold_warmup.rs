@@ -93,7 +93,7 @@ impl<'a> ColdWarmupSequence<'a> {
                 };
                 let outcome = crate::ime::set_ime_conv_for_target(target, None, || {
                     crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
-                        .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                        .unwrap_or_else(|| focus_gen.next())
                 })
                 .await;
                 tracing::debug!("[cold-diag] 結果: {outcome:?}");

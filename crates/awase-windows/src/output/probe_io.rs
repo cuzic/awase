@@ -158,7 +158,7 @@ impl Output {
     /// 挙動は変更していない。
     fn refresh_ime_mode_if_focus_matches(
         &self,
-        expected_focus_gen: u32,
+        expected_focus_gen: crate::state::focus_gen::FocusGen,
         conv: Option<u32>,
     ) -> bool {
         if self.ime_mode_focus_gen.get() != expected_focus_gen {

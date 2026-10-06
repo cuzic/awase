@@ -103,7 +103,7 @@ pub struct Output {
     /// フォーカス変更のたびにインクリメントし、`spawn_local` クロージャが取得時の世代を
     /// キャプチャする。コールバック到達時に現在値と一致しない（= その後に別のフォーカス変更
     /// が来た）場合は stale として破棄し、古いポーリング結果で ImeModeFsm を汚染しない。
-    pub(crate) ime_mode_focus_gen: std::cell::Cell<u32>,
+    pub(crate) ime_mode_focus_gen: std::cell::Cell<crate::state::focus_gen::FocusGen>,
     /// MS-IME confirm-then-transmit ゲート（BUG-13）の give-up latch。
     ///
     /// `start_ms_ime_ready_poll` が「期限まで IMC が一度も確認できなかった」ときに立てる。
@@ -148,7 +148,7 @@ pub struct Output {
     /// 再発する（pass-5 レビューで発見）。世代不一致のときはループを即座に
     /// 中断し、IMC write すら行わない（フォーカスが既に別の対象へ移っている
     /// 可能性があるため、無関係な書き込みもしない）。
-    pub(crate) shift_conv_guard_gen: std::cell::Cell<u32>,
+    pub(crate) shift_conv_guard_gen: std::cell::Cell<crate::state::focus_gen::ShiftConvGuardGen>,
     /// Unicode 送信後に GJI write 観測を行うフラグ。
     ///
     /// Platform::send_keys が Unicode モード + 未学習クラスのときにセットし、
@@ -268,10 +268,12 @@ impl Output {
             injection_mode: InjectionMode::Unicode,
             conv_mode: crate::state::ConvModeMgr::default(),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
-            ime_mode_focus_gen: std::cell::Cell::new(0),
+            ime_mode_focus_gen: std::cell::Cell::new(crate::state::focus_gen::FocusGen::INITIAL),
             ms_ime_gate_give_up: std::cell::Cell::new(false),
             confirm_gate_deadline_override_ms: std::cell::Cell::new(0),
-            shift_conv_guard_gen: std::cell::Cell::new(0),
+            shift_conv_guard_gen: std::cell::Cell::new(
+                crate::state::focus_gen::ShiftConvGuardGen::INITIAL,
+            ),
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
             conv_mutation_allowed: std::cell::Cell::new(false),
             runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
@@ -364,7 +366,7 @@ impl Output {
         let now_ms = crate::hook::current_tick_ms();
         self.ime_mode_fsm.borrow_mut().on_focus_changed(now_ms);
         self.ime_mode_focus_gen
-            .set(self.ime_mode_focus_gen.get().wrapping_add(1));
+            .set(self.ime_mode_focus_gen.get().next());
         // 新しいフォーカス先では IMC が読める可能性があるため give-up latch を解除する。
         self.ms_ime_gate_give_up.set(false);
         // ADR-084（BUG-49 追補2、Opus レビュー指摘2）: フォーカス変更は
@@ -389,8 +391,8 @@ impl Output {
     /// 2. 同関数の早期 return 分岐（かな入力コンテキスト前提が崩れた場合）。
     /// 3. フォーカス変更（`on_ime_mode_focus_changed`）。
     /// 4. `SetOpen(true)` 適用（`platform.rs`）。
-    pub(crate) fn bump_shift_conv_guard_gen(&self) -> u32 {
-        let next = self.shift_conv_guard_gen.get().wrapping_add(1);
+    pub(crate) fn bump_shift_conv_guard_gen(&self) -> crate::state::focus_gen::ShiftConvGuardGen {
+        let next = self.shift_conv_guard_gen.get().next();
         self.shift_conv_guard_gen.set(next);
         next
     }
@@ -402,7 +404,11 @@ impl Output {
     /// 変わった）場合は何もせず `false` を返す。`kp_restore_kana_from_half_width`
     /// の detached retry task が、自分より新しい hold の override を誤って
     /// 延長・上書きしないためのガード（pass-5 レビュー指摘、blocking）。
-    pub(crate) fn extend_confirm_gate_override(&self, owner_gen: u32, until_ms: u64) -> bool {
+    pub(crate) fn extend_confirm_gate_override(
+        &self,
+        owner_gen: crate::state::focus_gen::ShiftConvGuardGen,
+        until_ms: u64,
+    ) -> bool {
         if self.shift_conv_guard_gen.get() != owner_gen {
             return false;
         }
@@ -416,7 +422,10 @@ impl Output {
     /// 一致しない場合は何もしない — 既に次の hold が override を所有して
     /// いる可能性があり、それを誤ってクリアしてはならない（pass-5 レビュー
     /// 指摘、blocking。この不一致無視こそが本ガードの主目的）。
-    pub(crate) fn clear_confirm_gate_override(&self, owner_gen: u32) {
+    pub(crate) fn clear_confirm_gate_override(
+        &self,
+        owner_gen: crate::state::focus_gen::ShiftConvGuardGen,
+    ) {
         if self.shift_conv_guard_gen.get() == owner_gen {
             self.confirm_gate_deadline_override_ms.set(0);
         }
