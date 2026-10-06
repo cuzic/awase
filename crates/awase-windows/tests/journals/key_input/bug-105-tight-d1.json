@@ -1,0 +1,102 @@
+[
+  {
+    "seq": 1001,
+    "elapsed_ms": 5000000,
+    "entry": {
+      "type": "KeyInput",
+      "event": {
+        "vk_code": 76,
+        "scan_code": 38,
+        "is_down": true,
+        "injected": false,
+        "timestamp_us": 142690950741,
+        "key_class": "Char",
+        "alt": false,
+        "ctrl": false,
+        "shift": false
+      },
+      "state_before": "Idle",
+      "state_after": "PendingChar(vk=0x4C)",
+      "decision": { "kind": "Consume", "effect_count": 3 },
+      "physical": { "kind": "Allow" },
+      "repeat_count": 1,
+      "last_timestamp_us": 142690950741,
+      "last_elapsed_ms": 5000000
+    }
+  },
+  {
+    "seq": 1002,
+    "elapsed_ms": 5000012,
+    "entry": {
+      "type": "KeyInput",
+      "event": {
+        "vk_code": 28,
+        "scan_code": 121,
+        "is_down": true,
+        "injected": false,
+        "timestamp_us": 142690962441,
+        "key_class": "RightThumb",
+        "alt": false,
+        "ctrl": false,
+        "shift": false
+      },
+      "state_before": "PendingChar(vk=0x4C)",
+      "state_after": "PendingCharThumb(char=0x4C,thumb=0x1C,left=false,released_at=None)",
+      "decision": { "kind": "Consume", "effect_count": 3 },
+      "physical": { "kind": "Allow" },
+      "repeat_count": 1,
+      "last_timestamp_us": 142690962441,
+      "last_elapsed_ms": 5000012
+    }
+  },
+  {
+    "seq": 1003,
+    "elapsed_ms": 5000106,
+    "entry": {
+      "type": "KeyInput",
+      "event": {
+        "vk_code": 76,
+        "scan_code": 38,
+        "is_down": false,
+        "injected": false,
+        "timestamp_us": 142691057291,
+        "key_class": "Char",
+        "alt": false,
+        "ctrl": false,
+        "shift": false
+      },
+      "state_before": "PendingCharThumb(char=0x4C,thumb=0x1C,left=false,released_at=None)",
+      "state_after": "PendingCharThumb(char=0x4C,thumb=0x1C,left=false,released_at=Some(142691057291))",
+      "decision": { "kind": "Consume", "effect_count": 0 },
+      "physical": { "kind": "Allow" },
+      "repeat_count": 1,
+      "last_timestamp_us": 142691057291,
+      "last_elapsed_ms": 5000106
+    }
+  },
+  {
+    "seq": 1004,
+    "elapsed_ms": 5000112,
+    "entry": {
+      "type": "KeyInput",
+      "event": {
+        "vk_code": 65,
+        "scan_code": 30,
+        "is_down": true,
+        "injected": false,
+        "timestamp_us": 142691063215,
+        "key_class": "Char",
+        "alt": false,
+        "ctrl": false,
+        "shift": false
+      },
+      "state_before": "PendingCharThumb(char=0x4C,thumb=0x1C,left=false,released_at=Some(142691057291))",
+      "state_after": "Idle",
+      "decision": { "kind": "Consume", "effect_count": 3 },
+      "physical": { "kind": "Allow" },
+      "repeat_count": 1,
+      "last_timestamp_us": 142691063215,
+      "last_elapsed_ms": 5000112
+    }
+  }
+]
