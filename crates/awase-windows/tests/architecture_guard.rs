@@ -4710,8 +4710,8 @@ fn discard_pending_construction_is_limited_to_discard_pending_action() {
 
 /// `raw_recovery_owns_deferred` の呼び出し箇所は `finish_probe_stage`
 /// （ADR-103 決定4-e、INV-F: 段末の deferred 解放判断）と
-/// `defer_if_probe_in_flight`（ADR-123 変更A: 新規モーラを defer すべきか
-/// の判断、report_id `01M1KEGZ081YHJ1T2NC765SYYH`）の2箇所に限定する。
+/// `probe_or_recovery_block_reason`（旧 `defer_if_probe_in_flight` 系。ADR-123 変更A: 新規モーラを defer すべきか・
+/// drain-before-send してよいかの判断、FCIS F6 で `plan_blocking` 経由に集約、report_id `01M1KEGZ081YHJ1T2NC765SYYH`）の2箇所に限定する。
 /// 前者は「pending_deferred を今 flush してよいか」、後者は「新しい入力を
 /// pending_deferred に積むべきか」という別の問いに答えており、いずれも
 /// raw recovery が deferred キューの所有権を握っている間は手を出さない、
@@ -4729,7 +4729,7 @@ fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     assert_eq!(
         count, 2,
         "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(2 = \
-         finish_probe_stage + defer_if_probe_in_flight)と異なります(実際: {count})。"
+         finish_probe_stage + probe_or_recovery_block_reason)と異なります(実際: {count})。"
     );
 }
 
@@ -7238,4 +7238,110 @@ fn e12_e13_detectors_catch_violations() {
     let inside =
         "spawn_local(async move { let guard = X::OutputActiveGuard::begin(); f(); drop(guard); });";
     assert!(!e13_violations(inside).is_empty());
+}
+
+/// FCIS F6: `output/` の「probe/recovery 進行中は退避する」判断の核は `state/deferred_gate_plan.rs`。
+/// 配線の違反（ADR-156 の defer 側・drain 側の窓口のずれ）を返す。固定するのは次の 5 点:
+/// - defer 側の共通コアは `probe_or_recovery_block_reason(check_raw_recovery)`（引数は変数のまま）と `plan_defer` を使う。
+/// - `defer_if_probe_in_flight`（Enforced）は共通コアを `true`、`..._recovery_exempt`（Exempt）は `false` で呼ぶ
+///   （ADR-123 変更 A の自己 defer 回避。ここが崩れても純粋側のテストは落ちないので走査で固定する）。
+/// - drain 側は `probe_or_recovery_block_reason(true)` と `plan_drain_before_send` を使う。
+/// - `raw_recovery_owns_deferred()` は `probe_or_recovery_block_reason` の 1 箇所だけで読む（defer/drain の本体では読まない）。
+fn deferred_gate_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    let out = production_code_only(output_mod);
+    let core = non_comment_lines(extract_fn_body(
+        out,
+        "fn defer_vks_if_probe_or_recovery_in_flight(",
+    ));
+    if !core.contains("probe_or_recovery_block_reason(check_raw_recovery)")
+        || !core.contains("plan_defer(")
+    {
+        v.push("defer の共通コアが probe_or_recovery_block_reason(check_raw_recovery)/plan_defer を使っていない");
+    }
+    let enforced = non_comment_lines(extract_fn_body(out, "fn defer_if_probe_in_flight("));
+    if !enforced.contains("defer_if_probe_or_recovery_in_flight(romaji, origin, true)") {
+        v.push("Enforced の defer が check_raw_recovery=true で共通コアを呼んでいない");
+    }
+    let exempt = non_comment_lines(extract_fn_body(
+        out,
+        "fn defer_if_probe_in_flight_recovery_exempt(",
+    ));
+    if !exempt.contains("defer_if_probe_or_recovery_in_flight(romaji, origin, false)") {
+        v.push("Exempt の defer が check_raw_recovery=false で共通コアを呼んでいない");
+    }
+    let reason = non_comment_lines(extract_fn_body(out, "fn probe_or_recovery_block_reason("));
+    if !reason.contains("plan_blocking(")
+        || !reason.contains("needs_raw_recovery_read(")
+        || !reason.contains("self.raw_recovery_owns_deferred()")
+    {
+        v.push("probe_or_recovery_block_reason が plan_blocking/needs_raw_recovery_read/raw_recovery_owns_deferred を使っていない");
+    }
+    let drain = non_comment_lines(extract_fn_body(
+        production_code_only(vk_send),
+        "fn drain_pending_deferred_before_send_if_queue_only(",
+    ));
+    if !drain.contains("probe_or_recovery_block_reason(true)")
+        || !drain.contains("plan_drain_before_send(")
+    {
+        v.push(
+            "drain 側が probe_or_recovery_block_reason(true)/plan_drain_before_send を使っていない",
+        );
+    }
+    if drain.contains("raw_recovery_owns_deferred()")
+        || core.contains("raw_recovery_owns_deferred()")
+    {
+        v.push("raw_recovery_owns_deferred() を defer/drain の本体で直接読んでいる");
+    }
+    v
+}
+
+#[test]
+fn deferred_gate_plan_defer_and_drain_windows_share_plan_blocking() {
+    let v = deferred_gate_wiring_violations(
+        &read_crate_file("src/output/mod.rs"),
+        &read_crate_file("src/output/vk_send.rs"),
+    );
+    assert!(v.is_empty(), "deferred_gate_plan の配線違反: {v:?}");
+}
+
+/// 違反例（Exempt の `false` を `true` に、Enforced の `true` を `false` に、drain のリテラルを `false` に、
+/// 本体での直接読み取り）を検出できること（V2-3）。
+#[test]
+fn deferred_gate_wiring_detector_catches_violations() {
+    let m = read_crate_file("src/output/mod.rs");
+    let v = read_crate_file("src/output/vk_send.rs");
+    assert!(deferred_gate_wiring_violations(&m, &v).is_empty());
+
+    let exempt_true = m.replacen(
+        "self.defer_if_probe_or_recovery_in_flight(romaji, origin, false)",
+        "self.defer_if_probe_or_recovery_in_flight(romaji, origin, true)",
+        1,
+    );
+    assert_ne!(exempt_true, m);
+    assert!(!deferred_gate_wiring_violations(&exempt_true, &v).is_empty());
+
+    let enforced_false = m.replacen(
+        "self.defer_if_probe_or_recovery_in_flight(romaji, origin, true)",
+        "self.defer_if_probe_or_recovery_in_flight(romaji, origin, false)",
+        1,
+    );
+    assert_ne!(enforced_false, m);
+    assert!(!deferred_gate_wiring_violations(&enforced_false, &v).is_empty());
+
+    let drain_false = v.replacen(
+        "self.probe_or_recovery_block_reason(true)",
+        "self.probe_or_recovery_block_reason(false)",
+        1,
+    );
+    assert_ne!(drain_false, v);
+    assert!(!deferred_gate_wiring_violations(&m, &drain_false).is_empty());
+
+    let direct = v.replacen(
+        "let gate_enforced = gate == DeferGate::Enforced;",
+        "let gate_enforced = gate == DeferGate::Enforced && !self.raw_recovery_owns_deferred();",
+        1,
+    );
+    assert_ne!(direct, v);
+    assert!(!deferred_gate_wiring_violations(&m, &direct).is_empty());
 }

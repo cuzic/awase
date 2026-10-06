@@ -47,8 +47,8 @@ E0 の 22 件のうち、次の 5 件は、**順序ではなく別の種類の�
 | c19 | 再検査 | `decide_gate` を await の前後で毎回判定し直す。`with_app` を内包する共有ヘルパーにしない(再入でゲートが無効化) | ADR-180 決定 1、issue #136/BUG-90 |
 | c20 | 表 | `WM_*` の再入の扱い(`with_app` で捨てる vs `with_app_or_repost` で再 post)が handler ごとにバラバラ。捨ててよい WM の表が無い | issue #137 |
 | c21 | 対 | `INPUT_DEFER` の `defer_during_output`(post しない)と `replay_later`(post する)の非対称 | ADR-156 |
-| c22 | 対 | defer 側の `raw_recovery_owns_deferred()` は gate で切り替え、drain 側は gate に関わらず常に見る | ADR-128、round4-3 |
-| c23 | 対 | executor キューの defer 側(`run_passthrough_pipeline` の `output_in_flight`)と drain 側(`reinject_wait_remaining`)が同じ出力ガード閾値(`relay_plan::output_guard_remaining_ms`)を使う。残る非対称: defer 側 `has_pending` は `has_pending_tsf_work()` を OR(BUG-58)、drain 側は確定キー KeyDown のみ | ADR-156、ADR-123→128 | F3 で固定(`architecture_guard`・`relay_plan` の境界テスト)。c21・c22 は F3 では触らない |
+| c22 | 対 | defer 側の `raw_recovery_owns_deferred()` は gate で切り替え、drain 側は gate に関わらず常に見る | ADR-128、round4-3。**F6(#523)で一部固定**: Enforced の drain は `check_raw_recovery=true`、Exempt の defer は `false`、Enforced の defer は `true` を architecture_guard の走査が固定(`defer_respecting_gate` の arm 入れ替えと `defer_vk_if_probe_in_flight` の `true`→`false` は未固定)。Exempt の drain は ADR-128 の早期 return 以降、何も読まないので「常に見る」は観測不能。解放側(`finish_probe_stage` 等)は未配線 |
+| c23 | 対 | executor キューの defer 側(`run_passthrough_pipeline` の `output_in_flight`)と drain 側(`reinject_wait_remaining`)が同じ出力ガード閾値(`relay_plan::output_guard_remaining_ms`)を使う。残る非対称: defer 側 `has_pending` は `has_pending_tsf_work()` を OR(BUG-58)、drain 側は確定キー KeyDown のみ | ADR-156、ADR-123→128。F3 で固定(`architecture_guard`・`relay_plan` の境界テスト)。c21・c22 は F3 では触らない |
 
 ## 使い方
 
