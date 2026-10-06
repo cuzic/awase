@@ -16,6 +16,7 @@
 #   click        true=窓の中央をクリックして入力欄へフォーカスを入れる(WinUI 3 など)。
 #   profile_seed office=一時プロファイルに初回ダイアログ抑止の設定を書く。
 #   intervals    打鍵間隔(ms)。省略時は [30, 10]。
+#   raw_control  true=awase なしの対照(tsx-raw-ext-*)も回す。
 #   imes         回す IME。省略時は ["gji", "msime"]。
 #
 # 足す手順(例 wxWidgets): tools/e2e/ に最小アプリ(Edit 1つ、タイトル固定)を置く → prepare でビルド → read="uia" か dump で読む。
@@ -266,3 +267,5 @@ window = { title = "flutter_form_input" }
 read = "uia"
 intervals = [20]
 runs = 1
+# MS-IME で ready の「か」1 文字が「かかか」と重複した(run 37423541905)。awase なしの対照(tsx-raw-ext-*)で切り分ける。
+raw_control = true
