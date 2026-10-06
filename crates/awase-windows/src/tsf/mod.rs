@@ -37,8 +37,6 @@ pub mod probe;
 #[cfg(windows)]
 pub mod probe_bridge;
 #[cfg(windows)]
-pub mod send;
-#[cfg(windows)]
 pub(super) mod tip_detector;
 // ADR196-T2「1e前半」(opus-adversarial-consult 2026-09-23 A-5): tip_detectorモジュール自体は
 // pub(super)で閉じているが、学習プロセス(awase-keymap-learn-win)がこの1関数だけを
