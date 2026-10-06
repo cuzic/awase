@@ -7032,7 +7032,7 @@ fn e13_violations(body: &str) -> Vec<&'static str> {
     if !code[spawn..].contains("drop(guard)") {
         v.push("future の中で drop(guard) されていない");
     }
-    if code[begin..spawn].contains("drop(guard)") {
+    if begin < spawn && code[begin..spawn].contains("drop(guard)") {
         v.push("spawn_local の前で guard を drop している");
     }
     v
