@@ -33,7 +33,7 @@ mod shell;
 /// - `belief`        : input_mode / is_japanese_ime / prev_conversion_mode（IME ON/OFF 自体は shadow_model が SSOT）
 /// - `shadow_model`  : IME ON/OFF と force_guards / observe_miss_monitor を持つ SSOT
 #[derive(Debug)]
-pub(crate) struct ImeStateHub {
+pub struct ImeStateHub {
     /// input_mode・is_japanese_ime・prev_conversion_mode を保持する。
     pub(crate) belief: ImeBelief,
     /// IME 状態変更 event のリングバッファ (Step 0)。
@@ -136,7 +136,10 @@ pub(crate) use super::drift_correction::DriftCorrection;
 impl ImeStateHub {
     /// 時計を注入して初期化する。`hook` に依存しないので、テスト・閉ループは仮想時計
     /// （`HubClock::manual`）を渡せる。
-    pub(crate) fn with_clock(clock: super::hub_clock::HubClock) -> Self {
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub fn with_clock(clock: super::hub_clock::HubClock) -> Self {
         Self {
             belief: ImeBelief::default(),
             event_log: ImeEventLog::default(),
@@ -164,7 +167,9 @@ impl ImeStateHub {
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     /// state/ 層が `hook::current_tick_ms()` を直接呼ばないよう注入する。
-    pub(crate) fn dispatch_event(&mut self, event: ImeEvent, tick_ms: TickMs) {
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn dispatch_event(&mut self, event: ImeEvent, tick_ms: TickMs) {
         // ユーザー明示の IME OFF/ON を永続タイムスタンプに反映する。
         // FocusChanged で last_intent がクリアされても guard が機能し続けるよう、
         // ImeStateHub 側で独自に保持する。
@@ -275,7 +280,9 @@ impl ImeStateHub {
     ///
     /// `ImeEvent::KeyEffectPredicted`の**唯一のdispatch元**。awaseはIMEへ書かない（生キーはそのまま通る）。
     /// 後から来る観測（settle後）が照合し、食い違えば観測が勝つ（`ImeModel::reduce`のfence）。
-    pub(crate) fn apply_key_effect_prediction(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn apply_key_effect_prediction(
         &mut self,
         prediction: crate::state::key_effect_predictor::Prediction,
         tick_ms: TickMs,
@@ -416,7 +423,9 @@ impl ImeStateHub {
     // ── 外部変化の監視窓（ADR-205、BUG-172）──
 
     /// 外部注入の IME キーを見たら呼ぶ（読めない窓のみ）。現在のフォアグラウンドに対する監視窓を開く／延ばす。
-    fn arm_external_change_watch_in_scope(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn arm_external_change_watch_in_scope(
         &mut self,
         now_ms: u64,
         scope: crate::state::foreground_scope::ForegroundScope,
@@ -454,7 +463,9 @@ impl ImeStateHub {
     /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。awase は IME を書かない。
     /// 開く・閉じるの両方向を同じ規則で追随する（呼び出し側が GJI × Imm32Unavailable に限る）。戻り値は追随した値。
     /// どのフォーカスでも直近の読みは記録する（基準値の初期値になる）。
-    fn follow_external_change_in_scope(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn follow_external_change_in_scope(
         &mut self,
         read: Option<bool>,
         now_ms: u64,
@@ -840,7 +851,9 @@ impl ImeStateHub {
     /// `shadow_model` の根拠判定（観測の鮮度）に使う `Instant` は `self.clock` から取る
     /// （旧実装は `shadow_model.effective_open()` が壁時計の `Instant::now()` を読んでいたため、
     /// 仮想時計では `now_ms` と時間軸が食い違った。`state/hub_clock.rs`）。
-    pub(crate) fn effective_open_at(&self, now_ms: TickMs) -> bool {
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub fn effective_open_at(&self, now_ms: TickMs) -> bool {
         let shadow = self
             .shadow_model
             .effective_open_at(self.clock.now_instant());
@@ -969,8 +982,24 @@ impl ImeStateHub {
     /// `ImeModel` への読み取り専用アクセス。
     ///
     /// 書き込みはすべて `dispatch_event()` 経由とすること。
-    pub(crate) fn model(&self) -> &ImeModel {
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub fn model(&self) -> &ImeModel {
         &self.shadow_model
+    }
+
+    /// 時計（`Copy`）。`HubClock::now_instant`・`now_tick` で現在時刻を読む。
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub const fn clock(&self) -> super::hub_clock::HubClock {
+        self.clock
+    }
+
+    /// 仮想時計（`HubClock::Manual`）を進める。実時計では何もしない。
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn advance_clock_ms(&mut self, ms: u64) {
+        self.clock.advance_ms(ms);
     }
 
     // ── warrant（ADR-087 / ADR-090 §2.A）──────────────────────────────────
@@ -994,7 +1023,10 @@ impl ImeStateHub {
     /// `now` / `now_ms` は呼び出し元が注入する（ADR-087 INV-23:
     /// `issue_open_warrant` は時刻を内部で取らない純粋関数。加えて `state/` 層は
     /// `hook::current_tick_ms()` を直接呼ばない規約）。
-    pub(crate) fn warrant_context(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub fn warrant_context(
         &self,
         now: std::time::Instant,
         now_ms: TickMs,
@@ -1385,7 +1417,10 @@ impl ImeStateHub {
         );
     }
 
-    pub(crate) fn set_is_japanese_ime(&mut self, value: bool) {
+    /// `belief.is_japanese_ime` を書く（`warrant_context` の材料）。
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn set_is_japanese_ime(&mut self, value: bool) {
         self.belief.is_japanese_ime = value;
     }
 
@@ -1451,6 +1486,10 @@ impl ImeStateHub {
     /// - `kp_stage_post_decision` の `SetOpenOrigin::ExplicitUserAction` 分岐
     ///   （IME ON/OFF コンボ、`applied=true` のときのみ）
     ///
+    /// 例外: 閉ループのハーネス（`tests/support/harness.rs`）は `pub` なこのメソッドを直接呼ぶ
+    /// （自前で作ったハブにだけ。本番のハブには crate の外から届かない。
+    /// `tests/architecture_guard.rs::production_hub_is_unreachable_from_outside_the_crate`）。
+    ///
     /// # どのガードが何を固定しているか（2026-08-13 訂正）
     ///
     /// v3 のこの doc は当初「3箇所のみ（`tests/architecture_guard.rs` で出現数を
@@ -1465,7 +1504,9 @@ impl ImeStateHub {
     /// 現在は 2 本のガードが二段で効く:
     /// - 「`IntentStore` へ record できるのは本メソッドだけ」＝ 前者
     /// - 「本メソッドを呼べるのは上記3箇所だけ」＝ 後者
-    pub(crate) fn record_explicit_intent(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn record_explicit_intent(
         &mut self,
         target: bool,
         source: UserIntentSource,
