@@ -199,5 +199,4 @@ pub(crate) use ime_decision_view::{ControlLog, FocusFacts, ImeControlView, Obser
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod key_sequence_policy;
 
-#[cfg(windows)]
 pub mod ime_event_log;
