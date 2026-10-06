@@ -768,7 +768,7 @@ impl DecisionExecutor {
         let claim =
             ime.claim_press_write(press, open, crate::state::press_ledger::PressSource::Engine);
         let plan = crate::state::ime_set_open_plan::plan_set_open(
-            &crate::state::ime_set_open_plan::SetOpenFacts {
+            crate::state::ime_set_open_plan::SetOpenFacts {
                 claim,
                 imm_first: crate::ime_controller::ImeController::imm_cross_is_first_applicable(
                     &view,

@@ -56,7 +56,7 @@ pub(crate) const fn plan_set_open_gate(gate: GateResult) -> SetOpenGatePlan {
 
 /// claim と ImmCross 先頭判定から、省く／async／sync を決める。
 #[must_use]
-pub(crate) const fn plan_set_open(facts: &SetOpenFacts) -> SetOpenPlan {
+pub(crate) const fn plan_set_open(facts: SetOpenFacts) -> SetOpenPlan {
     if !facts.claim.writes() {
         SetOpenPlan::SkipAlreadyClaimed
     } else if facts.imm_first {
@@ -104,7 +104,7 @@ mod tests {
                     SetOpenPlan::SyncChain
                 };
                 assert_eq!(
-                    plan_set_open(&SetOpenFacts { claim, imm_first }),
+                    plan_set_open(SetOpenFacts { claim, imm_first }),
                     expected,
                     "{claim:?} imm_first={imm_first}"
                 );
@@ -120,7 +120,7 @@ mod tests {
                 PressClaim::ConflictKept { reserved: true },
             ] {
                 assert_eq!(
-                    plan_set_open(&SetOpenFacts { claim, imm_first }),
+                    plan_set_open(SetOpenFacts { claim, imm_first }),
                     SetOpenPlan::SkipAlreadyClaimed
                 );
             }
