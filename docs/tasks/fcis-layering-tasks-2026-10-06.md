@@ -200,7 +200,7 @@ ADR-229 は crate の物理分割を「最後」としていた(D4、F-D6、段�
 4. F6・E1 は、書き方の明文化と V4 を済ませてから。
 5. P5 の残りの写しの置き換えは優先度を下げる(根拠 5)。
 
-## 進捗と所有者の判断(2026-10-06 時点、develop `ae59ee2c`)
+## 進捗と所有者の判断(2026-10-06 時点、develop `e5567ddb`)
 
 上の各行は書き換えない。現在の状態はこの節が正(上の行の「実装中」「未マージ」などの注記は、この節で読み替える)。
 
@@ -222,8 +222,9 @@ ADR-229 は crate の物理分割を「最後」としていた(D4、F-D6、段�
 | `shadow_send_trace` の撤去 | #524 |
 | ログの重複の整理(第 1 段階) | #526 |
 | V1 | #530 |
+| `plan_relay` の action と reason の統合(案 (ii)) | #531 |
 
-レビュー中: F6b(#528)、W-a(#519)、`plan_relay` の action と reason の統合(#531)、F5c(#535、`resolve_focus_kind` の前段。レビュー済みで rebase 対応中)。
+レビュー・修正対応中: F6b(#528)、W-a(#519)、E1(#532)、B5 の試作(#533)、BUG-114 の Windows Terminal 構成(#534)、F5c(#535、`resolve_focus_kind` の前段)。閉じた: F5d(#536、下記)、実 Chrome の測定器(#529)。
 
 ### F5 の行への追記: F5d は分けない
 
@@ -245,12 +246,13 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 2. B4 + B5 を最小形で進める。
 3. 10 分の窓を外す。
 4. 決定関数の DSL は「小さく試作して読み比べる」を選び、結果は**不採用**(monad-proto、実験ブランチ `experiment/monad-style-decision`)。
-5. `plan_relay` は案 (ii) を承認(実装は #531、レビュー中)。
+5. `plan_relay` は案 (ii) を承認(#531 でマージ済み)。
 6. E1・F5・F6 の次の分割を優先する。
 7. ADR-232 は S0・S1・S2 を実施する(S1・S2 はマージ済み)。S3 は未着手・未承認。
 
 ### 未決・実施中
 
 - コーパスの影響のメモ: 所有者が判断済み(`e5567ddb`。`complexity-budget.md` は未発効のまま据え置く、撤去は新しい再生基盤と同時)。
-- B5 の試作: 実施中。
-- BUG-114 の Windows Terminal 構成: 実施中。
+- 可読性メモ(`docs/tasks/readability-ideas-study-2026-10-06/`)とコーパスの影響のメモ(`docs/tasks/corpus-discard-impact-2026-10-06/`)は develop に入っている。
+- B5 の試作: #533 でレビュー・修正対応中。
+- BUG-114 の Windows Terminal 構成(#534): CI で修正あり 3/3 PASS・修正なし 3/3 FAIL が出たが、Opus のレビューで「drift 補正を起こしていたのは打鍵ではなく終了処理の `WM_CLOSE` の後の観測」「基準 5(再武装が 0 件)は give-up から停止までがクールダウンより短く、構造上 FAIL になり得ない」と指摘され、修正対応中。**BUG-114 が CI で確かめられたとは、まだ言えない**。
