@@ -200,6 +200,8 @@ impl ImeStateHub {
         self.shadow_model.reduce(&envelope);
         self.journal.record(JournalEntry::ImeEvent {
             event: event_for_journal,
+            event_seq: time.seq,
+            tick_ms: time.tick_ms,
         });
     }
 

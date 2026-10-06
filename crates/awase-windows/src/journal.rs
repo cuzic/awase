@@ -283,8 +283,17 @@ pub enum JournalEntry {
     /// の自由文字列）を廃止し、実 `state::ime_event::ImeEvent` をそのまま記録する。
     /// これにより journal が「読める」だけでなく「型として取り出せる」形式になる
     /// （`source`/`target`/`confidence` 等を文字列パースなしで参照できる）。
+    ///
+    /// `event_seq`/`tick_ms`（W-c）: `ImeEventLog` が採番した `EventTime` の
+    /// `seq`（reducer の順序判断に使う番号）と `tick_ms`（`GetTickCount64` 由来）。
+    /// `JournalEnvelope.seq`/`elapsed_ms` は journal 側の連番・経過時間で、reducer の入力
+    /// （`ImeEventEnvelope.time`）とは別系統なので、journal だけから `ImeModel` を再現する
+    /// 入力として足りるよう、イベントが既に持っている時刻をそのまま記録する。
+    /// `Instant`（`monotonic`）はシリアライズできないため記録しない。
     ImeEvent {
         event: crate::state::ime_event::ImeEvent,
+        event_seq: u64,
+        tick_ms: u64,
     },
     /// `classify_conv_transition` への呼び出し（引数+戻り値を構造化して記録）。
     ///
@@ -858,11 +867,17 @@ impl JournalEntry {
                     "timer fired"
                 );
             }
-            Self::ImeEvent { event } => {
+            Self::ImeEvent {
+                event,
+                event_seq,
+                tick_ms,
+            } => {
                 tracing::debug!(
                     target: "awase::journal",
                     seq,
                     elapsed_ms,
+                    event_seq,
+                    tick_ms,
                     event_kind = variant_name(event),
                     "ime event"
                 );
@@ -1777,6 +1792,8 @@ mod tests {
     fn make_state_entry() -> JournalEntry {
         JournalEntry::ImeEvent {
             event: crate::state::ime_event::ImeEvent::PanicReset { target: true },
+            event_seq: 7,
+            tick_ms: 1234,
         }
     }
 
@@ -1960,6 +1977,19 @@ mod tests {
         assert!(json.starts_with('['));
         assert!(json.contains("ImeEvent"));
         assert!(json.contains("elapsed_ms"));
+    }
+
+    #[test]
+    fn ime_event_entry_records_event_time_and_seq() {
+        let (mut j, _mock) = mock_journal();
+        j.record(make_state_entry());
+        let values: Vec<serde_json::Value> = serde_json::from_str(&j.to_json().unwrap()).unwrap();
+        let entry = &values[0]["entry"];
+        assert_eq!(entry["type"].as_str(), Some("ImeEvent"));
+        assert_eq!(entry["event_seq"].as_u64(), Some(7));
+        assert_eq!(entry["tick_ms"].as_u64(), Some(1234));
+        // journal 自身の seq/elapsed_ms とは別に載る
+        assert_eq!(values[0]["seq"].as_u64(), Some(0));
     }
 
     #[test]
