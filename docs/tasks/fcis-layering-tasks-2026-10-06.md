@@ -48,7 +48,7 @@ ADR-229 の gate 一覧からは journal・ime_event_log・tsf_gate・hwnd_cache
 ### P0 の実装上の注意(Opus round3 S13)
 
 1. **テキストの切り方**: 「`#[cfg(test)] mod tests` より前、コメント行を除く」だけでは不十分。行末のコメント(`foo(); // Instant::now()`)、文字列リテラル(ログの文言に `std::fs` など)、`mod tests` 以外の名前のテストモジュール(PR #493 の `plan_shell_tests`)、`mod tests` より前の `#[cfg(test)] impl`/`#[cfg(test)] fn`(例: `platform_state.rs:1610` の `#[cfg(test)] impl ImeStateHub`)を見落とす。**`layer_boundary_guard.rs` の `code_lines`/`test_block_mask`(`:47-112`。コメントを除き、`#[cfg(test)]` が付いた item の本体を丸ごと覆う)を使う**のが最も確実。P0 のテストを `layer_boundary_guard.rs` 側に置くか、同じヘルパーを移す。
-2. **`#[cfg(windows)]` の検出**: 完全一致だけだと `#[cfg(all(windows, …))]`・`#[cfg(target_os = "windows")]`・`#[cfg_attr(windows, …)]` を見逃す。許可する形(`mod` 宣言の直前、`any(windows, test)`)を明示的に除いた上で、`cfg` の中に `windows` の語があれば違反とする。
+2. **`#[cfg(windows)]` の検出**: 完全一致だけだと `#[cfg(all(windows, …))]`・`#[cfg(target_os = "windows")]`・`#[cfg_attr(windows, …)]` を見逃す。許可する 3 つの形(セミコロンで終わる `mod <名前>;` 宣言の直前(**インラインの `mod x { … }` は不可**。PR #498 レビュー S15)、`any(windows, test)`、`cfg_attr(not(windows), allow(...))`(S16。`allow(` に限る))を明示的に除いた上で、`cfg` の中に `windows` の語があれば違反とする。
 3. **壁時計**: `Instant::now()`/`SystemTime::now()` に加えて、`quanta::Clock::new()`/`quanta::Instant::now()`(journal が使う)、`timed_fsm` の実時計も対象にする。
 4. **FS/環境変数**: `std::fs`・`fs::` に加えて `File::open`、`Path::exists`/`metadata`。`env!`/`option_env!`/`include_str!` はコンパイル時の展開なので許可する。
 5. **`static`**: 不変も含めて一律に違反とする(不変の表は `const` にするか、そのファイルを `CORE_MODULES` に載せない)。
