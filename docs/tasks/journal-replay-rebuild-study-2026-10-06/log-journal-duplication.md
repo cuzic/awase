@@ -35,13 +35,19 @@ journal の全 21 variant は、記録されると `UnifiedJournal::absorb`(`jou
 | 7 | フックが見た IME モードキー | `hook.rs:1487`(debug) `[hook] IME-mode vk=… self_injected=… scan=… extra=… since_actuation_us=…` | `HookImeModeDiagnostic`(フックのキュー → `message_handlers.rs:105`) | 同じ関数で両方を作り、journal は後で吸い出す | ログにだけ `extra`・`since_actuation_us`、journal にだけ `since_prev_ime_mode_ms` | `check_invariants.py`(`[hook] IME-mode vk=`) |
 | 8 | フォーカスのプロセス変化 | `runtime/focus_tracking.rs:607`(info) `FocusChange [pid→pid] class: stale ime_on=…` | `FocusTransition`(`:64`)+ `ImeEvent::FocusChanged` | 別の関数(同じファイル) | ログは belief の状態、journal はアプリ名・滞在時間・プロファイル | `e2e-ime.yml:1162` の grep(`FocusChanged`・`[focus` など。どの行に当たるかは未確認) |
 | 9 | ConvClassify の結果 | `key_pipeline.rs:803`(debug)・`:815`(info) `[idle-conv-check] TsfNative: conv=… → belief …` | `ConvClassifyCall`(`:788`) | 同じ関数 | 一部だけ重なる(ログは belief の変化、journal は分類の入力と結果) | なし |
-| 10 | ImeEvent の受理 | `state/ime_event_log.rs:53`(trace) `[ime-event seq=…] …` | `ImeEvent`(`platform_state.rs:206`) | 同じ流れ(`dispatch_event`) | 同じ | なし。PR #522(ADR-232 S1、未マージ)でリングごと消える |
+| 10 | ImeEvent の受理 | `state/ime_event_log.rs:53`(trace) `[ime-event seq=…] …` | `ImeEvent`(`platform_state.rs:206`) | 同じ流れ(`dispatch_event`) | 同じ | なし。PR #522(ADR-232 S1)で撤去済み(`1732f830`) |
+| 11 | awase が送った romaji(入力内容) | `output/vk_send.rs:228`・`:406`(**info**) `[key-output] KeyInput(batched\|tsf): romaji=… ime=…` | `SentInput`(送った VK 列・Unicode 文字。中継 `SENT_INPUT_TRACE`) | 別の関数(romaji を組み立てる `output` と、送る `win32::send_input_safe`) | ログは romaji の文字列と IME 種別、journal は実際に送った vk/scan・`accepted` | なし(27 断片・`.github`・`tools` に `key-output` の参照は無い) |
 
 部分的に重なるが層が違うもの(`output`/`tsf` は journal を直接参照できないガードがあり、journal は `platform.rs` が中継して書く):
 GjiFsm の遷移(`platform.rs:519,552,803,817` などの `[gji-fsm]` 行 ↔ `GjiFsmTransition`)、TSF probe(`output/tsf_warmup_coord.rs:223`・`tsf/warmup/probe_fsm.rs:667` の `[tsf-probe]` ↔ `TsfProbeStarted/Completed`)、
 literal 判定(`tsf/warmup/literal_detect_fsm.rs` の `[literal-detect]`・`[raw-tsf-literal]` ↔ `LiteralDetect`)、deferred の flush(`output/vk_send.rs:93`・`output/mod.rs:1324` ↔ `DeferredRecoveryFlush`)。
 これらは事象の粒度がそろっていない(ログは途中経過、journal は結果 1 件)ので、1 対 1 の重複かは事象ごとに見ないと言えない(**未確認**)。
 もう 1 つ、`on_ime_apply_complete` の `#[tracing::instrument]`(`runtime/mod.rs:900` 付近、`open`・`outcome`・`generation`・`reason`)は `ImeOpenApplied` と同じ値をスパンとして各行の前に付ける。
+
+#5 と #11 は入力内容(VK 列・romaji)の重複で、性質が他と違う:
+- #11 の `[key-output]` は info なので、利用者の awase.log に打鍵ごとに残り、報告の `app_log_excerpt_gz`(awase.log の末尾を圧縮前で最大 16MiB、`bug_report.rs:25`)に載る。journal の `KeyInput`・`SentInput`・`LiteralDetect` には報告時に直近 10 分の窓が掛かる(`journal.rs:1519-1545`)が、awase.log には掛からない。入力内容は今、窓のある journal と窓の無い awase.log の 2 か所にあり、範囲がそろっていない。
+- #5 の `[engine-input]` の行(debug)は、`KeyInput` に無いエンジンの InputContext(`[diag-ctx] ime_on=… japanese=… input_mode=… composing=…`、`key_pipeline.rs:156`)を持つ。これを `KeyInput` に移せば、重複が減るのと同時に、記録した `KeyInput` 列をエンジンに流す入力の再生(README の B5)の材料がそろう。
+- 重複を解消して入力内容を journal の 1 か所に寄せると、所有者の前提(VK 列は必須)を満たしたまま、報告に載る入力の範囲を 1 つの規則(窓)で決められるようになる。窓をどうするかは README E6。
 
 ### 1.3 片方にしか無い事象
 
@@ -52,7 +58,7 @@ literal 判定(`tsf/warmup/literal_detect_fsm.rs` の `[literal-detect]`・`[raw
 
 - 手書きの tracing の呼び出し: awase-windows の `src` に 740 か所(粗い grep、テストのモジュールを含む)。ルートの core `src` に 32 か所。
 - journal の variant: 21(派生のログ行も 21 種)。
-- 手書きの行と journal の組: 同じ関数で同じ事象を出す組 9(上の表の #1〜#7・#9・#10)、別の関数の組 1(#8)、層が違い 1 対 1 か未確認のもの 4 系統。#10 は #522 で消える。
+- 手書きの行と journal の組: 同じ関数で同じ事象を出す組 9(上の表の #1〜#7・#9・#10)、別の関数の組 2(#8・#11)、層が違い 1 対 1 か未確認のもの 4 系統。#10 は #522 で撤去済みなので、残りは 10 組。
 
 ## 2. 消費者
 
@@ -97,6 +103,8 @@ literal 判定(`tsf/warmup/literal_detect_fsm.rs` の `[literal-detect]`・`[raw
 
 **第 2 段階**: #4〜#7(チェッカーが読む組)を、チェッカー・testdata・anchor 表を同じ PR で派生の行の文言に書き換えて消す。1 組ずつ PR にし、各 PR で該当の実機 CI 構成を回して判定が変わらないことを確かめる。#6 は README B4 段階 1(`shadow_send_trace` の撤去)とまとめる。中継を経る #6・#7 は、行の順序を見るチェッカーがあるかを先に確かめる(**未確認**)。
 
+**第 2b 段階(入力内容の 1 か所化)**: #5 と #11。`[engine-input]` の InputContext と拡張ビットを `KeyInput` に移して `[engine-input]` の重複項目を消し(README 段階 4 と同じ PR)、`[key-output]` の romaji は `SentInput` と突き合わせて、journal 側で足りることを確かめてから消すか debug に下げる。`[key-output]` を消す・下げると、利用者の awase.log から入力内容が消え、入力内容は窓のある journal だけになる(README E6 の判断と一緒に決める)。
+
 **第 3 段階**: 層が違う 4 系統(GjiFsm・TSF probe・literal・deferred)は、F6 で Output が記録を返す形になってから、事象の粒度をそろえられるか見直す。
 
 ## 5. 所有者に聞くこと
@@ -105,6 +113,7 @@ literal 判定(`tsf/warmup/literal_detect_fsm.rs` の `[literal-detect]`・`[raw
 2. 第 2 段階で、チェッカー 5 本と testdata の文言を派生の行(`awase::journal` の `key input`・`ime actuation`・`sent input`・`hook ime-mode diagnostic`)へ書き換えてよいか。
 3. #2 の `gen_at_probe`・`gen_now`・`explicit_intent`、#4 の `source`・`confidence`、#5 の `delay`・`phys_ctrl` を journal に足すか(足すなら報告の journal が少し大きくなる)。
 4. #4 の `[drift] correction` は warn で、利用者のログにも出る唯一の drift 補正の痕跡。journal を正にして消してよいか。
+5. 入力内容(#5・#11)を journal の 1 か所に寄せてよいか。寄せると、利用者の awase.log の `[key-output]`(info)の romaji が消え(または debug になり)、報告に載る入力の範囲は journal の窓だけで決まる。窓を外すか広げるか(README E6)と一緒に決める。
 
 ## 確認できなかったこと
 
