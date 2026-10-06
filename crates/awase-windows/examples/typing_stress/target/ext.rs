@@ -19,8 +19,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 use serde::Deserialize;
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
+};
 
 use super::{fatal, find_window, foreground_is_top, kill_tree, raise_top, title_of, InputTarget};
 use crate::uia;
@@ -61,6 +63,9 @@ struct Spec {
     /// 一時プロファイルへ最初に書く設定(`office` = 初回起動のダイアログを出さない)。
     #[serde(default)]
     profile_seed: String,
+    /// 起動直後に出て前面を奪うダイアログの窓クラス(例: LibreOffice の "Welcome" は `SALSUBFRAME`)。同じ pid の可視窓を閉じる。
+    #[serde(default)]
+    dismiss_class: Option<String>,
     /// 窓が出てから入力を始めるまでの待ち(ms)。
     #[serde(default)]
     settle_ms: u64,
@@ -165,6 +170,10 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
         title_of(top)
     ));
     TOP.store(top.0 as isize, Ordering::SeqCst);
+    if let Some(cls) = spec.dismiss_class.as_deref() {
+        dismiss_dialogs(win_pid, cls);
+        raise_top(500);
+    }
 
     let helper = pick(&spec.helper_exe).map(|hexe| {
         let hargs: Vec<String> = spec.helper_args.iter().map(subst).collect();
@@ -217,6 +226,30 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
         profile,
         uia: uia_read,
     })
+}
+
+/// 起動直後のダイアログ(クラス `cls`、`pid` の可視窓)を、現れなくなるまで閉じる(最大 8 秒待つ)。
+fn dismiss_dialogs(pid: u32, cls: &str) {
+    let mut closed = 0;
+    for _ in 0..16 {
+        let want = cls.to_string();
+        match find_window(pid, &move |h| class_of(h) == want, 1) {
+            Some(h) => {
+                log(&format!(
+                    "[init] ダイアログを閉じる class={cls} title={:?}",
+                    title_of(h)
+                ));
+                // SAFETY: 他プロセスの窓への WM_CLOSE の送信のみ。
+                unsafe {
+                    let _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+                closed += 1;
+                sleep_ms(500);
+            }
+            None if closed > 0 => break,
+            None => sleep_ms(0),
+        }
+    }
 }
 
 fn log_helper_err(dump: &Path) {

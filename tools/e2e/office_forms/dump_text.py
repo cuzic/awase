@@ -4,11 +4,19 @@
 # 使い方: python.exe dump_text.py <ポート> <出力ファイル>
 # 例外は <出力ファイル>.err に追記する(typing_stress が終了時にログへ写す)。
 import io
+import os
 import sys
 import time
 import traceback
 
-import uno
+# 同梱 python.exe から素で起動すると uno を見つけられない(OpenOffice 4.1.x で ImportError)ので、
+# python.exe のあるフォルダ(= Office の program\)を検索パス・PATH・URE_BOOTSTRAP に足してから読み込む。
+_prog = os.path.dirname(os.path.abspath(sys.executable))
+sys.path.insert(0, _prog)
+os.environ["PATH"] = _prog + os.pathsep + os.environ.get("PATH", "")
+os.environ.setdefault("URE_BOOTSTRAP", "vnd.sun.star.pathname:" + os.path.join(_prog, "fundamental.ini"))
+
+import uno  # noqa: E402
 
 port = int(sys.argv[1])
 out = sys.argv[2]
