@@ -522,6 +522,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "awase-replay"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "awase-settings"
 version = "2.0.0"
 dependencies = [
@@ -560,6 +568,7 @@ dependencies = [
  "awase-build-support",
  "awase-gji-config",
  "awase-keymap-learn",
+ "awase-replay",
  "awase-vkmap",
  "base64",
  "flate2",

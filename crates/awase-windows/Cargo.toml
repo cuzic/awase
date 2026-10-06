@@ -57,6 +57,8 @@ path = "../win32-worker"
 version = "0.1.0"
 
 [dev-dependencies]
+# journal 再生 fixture のハーネス(ADR-229)。非公開の dev 専用 crate。
+awase-replay = { path = "../awase-replay" }
 # ADR-158 TI1: classify_*系の純粋関数へproptestを適用するスパイク。
 # 非gatedモジュール(state/conv_classify.rs)向けのためホストターゲットで動く
 # 通常のdev-dependenciesに置く(windows限定にしない)。
