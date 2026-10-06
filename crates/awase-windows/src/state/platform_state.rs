@@ -133,13 +133,6 @@ pub(crate) struct ImePollState {
 pub(crate) use super::drift_correction::DriftCorrection;
 
 impl ImeStateHub {
-    /// デフォルト値で初期化する（実時計）。実機の構築口で、`hook` を読む実時計はここだけ。
-    #[cfg(windows)]
-    pub(crate) fn new() -> Self {
-        use super::hub_clock::HubClock;
-        Self::with_clock(HubClock::wall(crate::hook::current_tick_ms))
-    }
-
     /// 時計を注入して初期化する。`hook` に依存しないので、テスト・閉ループは仮想時計
     /// （`HubClock::manual`）を渡せる。
     pub(crate) fn with_clock(clock: super::hub_clock::HubClock) -> Self {
@@ -1786,19 +1779,6 @@ pub struct PlatformState {
     pub(crate) keymap: KeymapStore,
 }
 
-impl PlatformState {
-    /// デフォルト値で初期化する
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            ime: ImeStateHub::new(),
-            focus: FocusStore::new(),
-            gate: GateStore::new(),
-            keymap: KeymapStore::default(),
-        }
-    }
-}
-
 #[cfg(test)]
 impl PlatformState {
     /// 時計を注入して初期化するテスト用の構築口（`new()` は実時計 `hook::current_tick_ms` を読む）。
@@ -1809,12 +1789,6 @@ impl PlatformState {
             gate: GateStore::new(),
             keymap: KeymapStore::default(),
         }
-    }
-}
-
-impl Default for PlatformState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
