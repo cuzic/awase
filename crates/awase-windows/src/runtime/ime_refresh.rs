@@ -297,12 +297,6 @@ impl Runtime {
         } else {
             None
         };
-        tracing::info!(
-            "[giveup-follow] cold={} outcome={} gen_at_probe={} gen_now={gen_now} explicit_intent={intent:?} baseline={baseline:?}",
-            evidence.cold_seq,
-            decision.outcome(),
-            evidence.focus_gen
-        );
         // 実機の不具合報告から追えるよう journal にも残す(attach_log が無くても、追随を試みたか・捨てた理由・基準値が分かる)。
         self.platform_state
             .ime

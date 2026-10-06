@@ -213,7 +213,7 @@ impl ImeStateHub {
     /// 戻り値の `writes()` が `false`（同じ押下で既に書いた）なら、呼び出し側は order を発行せず書かない。
     /// 押下 ID の無い order（`press=None`）は記録に触れず `Unpressed`（従来どおり `applied` の省略に任せる）。
     ///
-    /// 衝突（同じ押下で向きが違う経路）はログ（info）と journal に残す。優先順位は Engine の明示コンボ > shadow
+    /// 衝突（同じ押下で向きが違う経路）は journal（`PressWriteClaim`、派生の debug 行 `press write claim`）に残す。優先順位は Engine の明示コンボ > shadow
     /// （`state/press_ledger.rs` のモジュール doc）。
     pub(crate) fn claim_press_write(
         &mut self,
@@ -223,19 +223,6 @@ impl ImeStateHub {
     ) -> super::press_ledger::PressClaim {
         let claim = self.press_ledger.claim(press, open, source);
         if let Some(press) = press {
-            if claim.is_conflict() {
-                tracing::info!(
-                    "[press-ledger] 同一押下で向きが違う書き込み: press={press} source={} open={open} → {}",
-                    source.label(),
-                    claim.label()
-                );
-            } else {
-                tracing::debug!(
-                    "[press-ledger] press={press} source={} open={open} → {}",
-                    source.label(),
-                    claim.label()
-                );
-            }
             self.journal.record(JournalEntry::PressWriteClaim {
                 press: press.get(),
                 open,
@@ -251,9 +238,6 @@ impl ImeStateHub {
     pub(crate) fn release_press_write(&mut self, press: Option<awase::types::PressId>, open: bool) {
         if self.press_ledger.release(press, open) {
             if let Some(press) = press {
-                tracing::debug!(
-                    "[press-ledger] press={press} open={open} の書き込みは何も送らなかった → 予約を解く"
-                );
                 self.journal.record(JournalEntry::PressWriteClaim {
                     press: press.get(),
                     open,
