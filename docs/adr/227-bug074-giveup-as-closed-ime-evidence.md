@@ -8,7 +8,7 @@ summary: |-
   r2 レビュー(Must 2・Should 4)で、give-up 後は連続カウントが戻らず以後の打鍵が全部消える見込み(コード確認済み、実測は D0-3)と判明し、「失われるのは 1 文字」を前提にした比較を改めた。
   決定: 所有者判断で追随(belief だけを実状態へ揃え IME には書かない)。D0 で偽陽性 0/30(RichEdit・実 Chrome・Windows Terminal)。Opus r4・r5 で、追随が TsfNative の conv 推論で打ち消される恐れ(B1)・観測ソースの偽装・取り出し時点の遅れ・再現窓が Imm32Unavailable であること・ADR-205 の柵の欠落等が判明し、設計を r6 に直した(Imm32Unavailable は give-up を読み直しのきっかけにする案、TsfNative は D0-5 の実測待ち)。
 status: |-
-  D0-5 実測済み(2026-10-04): TsfNative は give-up が起きず推論追随は実装しない(下記)。起草 r6(2026-10-04): 所有者判断=追随。Opus r4・r5・r6 を反映し、(i) は収束(r6 の Must 1 件を反映済み・再レビュー不要)。測定済みの `Imm32Unavailable`×GJI は「give-up を読み直しのきっかけにする」(i)、TsfNative は B1 を D0-5 で測ってから(ii)。実装なし。Opus r1(Blocker 2・Must 7・Should 6)・r2(Must 2・Should 4)を反映し、r3 で収束(Blocker・Must なし)。実装なし。D0 の測定と所有者の方向決定が先。
+  (i) 実装済み(PR #480・`900a5f3e`、2026-10-05、CI 検証済み・実機未検証): `Imm32Unavailable`×GJI の give-up を読み直しのきっかけにする(`take_giveup_evidence`・`GiveUpTracker`)。(ii) TsfNative は D0-5 で give-up が起きないため実装しない。TsfNative の外部クローズで見える Engine ON × IME 閉 の drift は BUG-188 に起票。元の BUG-074 報告(WT・cold・外部クローズなし)は未再現。
 related_adr:
   - "ADR-080"
   - "ADR-100"

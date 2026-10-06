@@ -5,7 +5,7 @@ title: |-
 summary: |-
   force-write の単一規律 — 「観測を信じない書き込み」のトリガー条件（arm-on-focus/fire-on-intent）と書き込みターゲット同一性（ActuationTarget）。ADR-084 の姉妹編、INV-12〜19
 status: |-
-  完了(縮小・一部撤去、2026-10-05 棚卸し): force 依存部は機構ごと消滅(ADR-094・ADR-179)、ActuationTarget のみ現存。再開しない。
+  一部撤去・一部現存(2026-10-05 棚卸し): force-write のトリガー側と reassert・force-on は ADR-094・ADR-179 で撤去、ActuationTarget(ime.rs)は現存。Phase 4(INV-1/INV-19 のコンパイラ強制)は実施しない。同期 ImmCross の open write(`set_ime_open_cross_process`、ime_controller.rs から呼ばれる)は現存し、呼び出し元の撤去で到達不能かは未確認(削除候補)。
   旧(2026-10-05 更新前): 一部撤去・一部現存(2026-10-04 コード確認)。force-write のトリガー側(`conv_mode_policy`・force_pending 系)は ADR-094 で撤去、reassert・force-on 機構も ADR-179 領域A(f83084b3/621bf93c)で撤去済み。書き込みターゲット同一性(`ActuationTarget`、ime.rs)は現存。Phase 2〜4 のうち force 依存部分は機構ごと消滅。
   旧(2026-10-04 更新前):
   Phase 0〜1（INV-14 全経路移行）実装済み、Phase 2〜4 未着手、実機ソーク未実施

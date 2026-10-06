@@ -5,7 +5,7 @@ title: |-
 summary: |-
   ADR-158採用Dの子ADR。実証実験1〜6(syn事後スキャン・dylint・可視性+permitパターン・derive/関数形式/属性マクロ)ですべて実装・検証し、D1を「dylintによる宣言の強制→生成」に確定、D3(否定の宣言でexperiments.md反転史を防止)を新規採用。ADR-158〜162横断のopus-adversarial-consult round1(Must-fix5件)反映後、そこから作成した実装タスクリスト(158-implementation-tasks.md)のround2レビュー(Must-fix8件)でさらにD3の機構がホスト非対応(cfg(windows))と判明・訂正、判断基準に「存在/不在」の区別を追加
 status: |-
-  一部実装・残りは見送り(2026-10-05、所有者判断): dylint による宣言の強制など実証済み部分は現存。仕様ファイルからの生成機構(xtask)は実施せず見送り。
+  一部実装・残りは見送り(2026-10-05、所有者判断): D1 は dylint による宣言の強制(`lints/actuation_call_guard`)まで実施、表の生成機構(xtask)は見送り。D2 の proptest は `state/conv_classify.rs` の 1 関数のみで、残り 5 つの `classify_*` への適用は未着手(見送りかは未判断)。D3 は最小実装で完了。
   旧(2026-10-05 更新前): 要確認(未実装の可能性が高い): 仕様ファイルからの生成機構は 2026-10-04 時点のコード(xtask は `xtask-adr-evidence` のみ)に見当たらないが、見送り決定の記録は確認できなかった。旧: 起票、実証実験6件・round1〜5反映済み。 (2026-10-04 更新)
   (以下は更新前の記述)
   起票。実証実験6件+round1〜round5レビュー・TJ1(単体レビュー)反映済み
@@ -25,6 +25,8 @@ related_adr:
 # ADR-161: 散文の権威を剥奪し、機械可読な単一仕様から生成する＋純粋層にモデル検査をかける
 
 ## ステータス
+
+> 2026-10-05: 最新の status は先頭の frontmatter を参照(以下は起票時の記述)。
 
 **起票。[ADR-158](158-complexity-reduction-north-star.md)（北極星）の採用Dを分割・詳細化した
 子ADR。Aへの依存は解消済み（opus-adversarial-consult round1で論理的に不成立と判明）であり、

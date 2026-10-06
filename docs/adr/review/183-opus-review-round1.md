@@ -13,6 +13,7 @@ related_adr:
   - "ADR-137"
   - "ADR-100"
   - "ADR-119"
+type: companion-doc
 ---
 
 # ADR-183 opus-adversarial-consult round1

@@ -39,7 +39,7 @@ status: |-
   解決しようとしない**。配線を有効にした上で実機A/Bを行い、実際に
   観測された不具合だけをdocs/known-bugs/へ記録して個別に対処する。
 
-  opus-adversarial-consult round1〜6のログ（`docs/adr/184-opus-review-
+  opus-adversarial-consult round1〜6のログ（`docs/adr/review/184-opus-review-
   round{1..6}.md`）は、検討の過程で発見した実コードの事実（行番号、
   ADR-182が既にマージ済みであること等）の記録として残すが、
   round5〜6で組み立てた型設計・別フィールド案は**採用しない**。

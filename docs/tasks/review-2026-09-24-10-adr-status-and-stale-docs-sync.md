@@ -62,7 +62,7 @@ P1〜P3 のあいだに順序の依存はない。3つとも保留にしない�
   - 「領域」「撤去」が直後に続かない本文: `docs/known-bugs/BUG-146.md:31`（「ADR-178がforce-ONを撤去した」）、`docs/adr/182-*.md:558`、`184-gji-atok-muhenkan-toggle-*.md:154`。`180-*.md:51` は「ADR-178（`docs/adr/179-*.md`=ADR-179…）」とすでに対応を書いているので対象外。
   - frontmatter の `related_adr: "ADR-178"` が MSI の ADR を指してしまっているもの: `docs/known-bugs/BUG-135.md:6`、`BUG-136.md:6`、`docs/adr/185-directinput-open-axis-write-teardown.md:23`。ADR-179 に置き換える。
   - コード: `crates/awase-windows/src/runtime/key_pipeline.rs:1521` の「ADR-178 round4/round8」（2026-09-17）。`git log -S"ADR-178 round4/round8"` の導入コミットは `e475b600`「docs(adr-178): 設計をround3〜8まで発展させModeKeyActuationOwner案に収束」で、MSI 側ではなく**現 ADR-179 のレビュー round** を指す。置き換え対象（P2、コメントのみ）。
-  - opus レビュー記録（`review/184-opus-review-round3.md:33,304,311,478`、`round4.md:14,48`、`round6.md:304`）は当時の記録なので**書き換えない**。読み手は ADR-179 に追記する節の「旧称」の説明で対応を辿れる。
+  - opus レビュー記録（`review/184-opus-review-round3.md:42,313,320,487`、`round4.md:23,57`、`round6.md:313`）は当時の記録なので**書き換えない**。読み手は ADR-179 に追記する節の「旧称」の説明で対応を辿れる。
 
 ### 方針
 

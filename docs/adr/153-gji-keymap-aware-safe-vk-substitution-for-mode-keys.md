@@ -5,7 +5,7 @@ title: |-
 summary: |-
   BUG-113残置症状（半角状態で無変換キー単独タップ時にWindows Terminal+GJIで「@」）の機序を実機3段階検証で確定: GJI自身のTSFキー横取り（`ITfKeyEventSink`、GJIが無変換/変換に何らかのIME制御コマンドを割り当てている場合のみ発火）が原因。当初の「物理キーリマップ」案（ADR-110流用）はB1〜B3のBlockerで撤回、無変換/変換単独タップ確定後のIME ON/OFF/Toggleを、GJI/MS-IME自動検出に頼らずawase自身の明示config（`*_solo_tap_ime_action`）で直接指定できるようにする決定1に転換。opus-adversarial-consult r1〜r9で9ラウンドの敵対的レビューを経て収束（B1〜B14すべて解消）、3ケース分割（belief ON/OFF→ON遷移/OFF維持）・one-shotマーカー（B13/B14対策）・優先順位表拡張などの実装レベルの詳細まで確定
 status: |-
-  完了(置換済み、2026-10-05 棚卸し): 決定1 は ADR-206 で置換、自動採用は ADR-191 で撤去。残件なし。
+  置換済み・互換読込のみ残存(2026-10-05 棚卸し): 決定1 は ADR-206 で置換、自動採用(`*_delegate_to_open_axis`)は ADR-191 で撤去。`*_solo_tap_ime_action` は非推奨の読み込み互換として残る(src/config.rs、awase-settings で移行)。
   旧(2026-10-05 更新前): 一部置換(決定1の `*_solo_tap_ime_action` は ADR-206 で撤去・置換、GJI/MS-IME 設定からの自動採用〈`*_delegate_to_open_axis`〉は ADR-191 で撤去、2026-10-04 確認)。旧: 決定1実装済み(PR #185/#186) (2026-10-04 更新)
   (以下は更新前の記述)
   **ADR-206（2026-09-29）で決定1の `*_solo_tap_ime_action`（ケース1・ケース2/3改・M13・M19 例外・マーカー）を撤去し、bare `keys.ime_*`／IME 設定由来の役割による開閉（エンジンの特殊キー照合と FSM の単独タップ解決）に置換した。旧設定は親指キーのときだけ読込時に bare 相当へ移し警告する。**

@@ -22,6 +22,8 @@ related_adr:
 
 ## ステータス
 
+> 2026-10-05: 最新の status は先頭の frontmatter を参照(以下は起票時の記述)。
+
 **起票。[ADR-158](158-complexity-reduction-north-star.md)（北極星）の採用Cを分割・詳細化した
 子ADR。C1〜C3は原則採択のみで、実施可否はユーザー確認待ちのまま未確定。2026-09-09、実機スパイク
 の副産物としてC3の判断材料に予備実測を追加し、[ADR-161](161-single-source-spec-generation.md)
