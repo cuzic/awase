@@ -434,70 +434,28 @@ pub enum ImeEvent {
     /// （code review 2026-08-26 で発見された退行）。
     FocusHwndUpdated { hwnd: HwndId },
 
-    /// 起動直後（bootstrap）に確立した最初のフォーカススコープの同一性を
-    /// `ObservationStore::current_fence` へ同期する（BUG-102、ADR-102 決定3-b ×
-    /// ADR-106 決定3）。`establish_initial_focus_scope` からのみ dispatch される。
+    /// 起動直後（bootstrap）に確立した最初のフォーカススコープの同一性
+    /// （`app_policy`・`current_focus`・観測の fence）を入れる（ADR-232 D1）。
+    /// `establish_initial_focus_scope` からのみ dispatch される。
     ///
-    /// **belief を一切書かない。** 運ぶのは「今どの窓のどの epoch を見ているか」と
-    /// いう識別子だけで、IME が ON か OFF かの推測は含まない。reducer 側も
-    /// `ObservationStore::establish_initial_fence()`（fence 1 フィールドの差し替え）
-    /// しか行わず、`FocusChanged` が触る `app_policy` / `last_intent` / `applied` /
-    /// `force_guards` / `input_barrier` / `current_focus` / 観測
-    /// プールのいずれにも触れない。ADR-102 決定3-b の「最初の IME 観測より前に
-    /// belief を書き換えない」を守ったまま fence だけを揃えるための専用イベント。
+    /// `FocusChanged` から `from` を除いたのと同じ形（フィールド名・型も同じ）。
+    /// 旧 `InitialFocusFenceEstablished`（BUG-102）・`InitialAppPolicyEstablished`
+    /// （BUG-114 根本原因1、ADR-134 D1c）・`InitialFocusHwndEstablished`（BUG-148、
+    /// ADR-186）の 3 つを、`FocusChanged` が入れる「スコープの同一性」のフィールドが
+    /// 足されるたびに起動時の側が漏れて Event が 1 つずつ足された経緯を断つために
+    /// 1 つにまとめた。起動時の食い違いは `ime_model.rs` の等価性テストが捕まえる。
     ///
-    /// **これが無いと何が壊れるか（BUG-102）**: `establish_initial_focus_scope` は
-    /// `enter_focus_scope` で `FocusStore::focus_epoch` を 0→1 に進め、
-    /// `update_focus_info` で `platform.focus.current.hwnd` に実 hwnd を入れる。
-    /// つまり live 側フェンス（`Runtime::focus_fence()`）は `{epoch: 1, hwnd: 実 hwnd}`
-    /// になる。一方 `ObservationStore::current_fence` は `FocusChanged` /
-    /// `FocusHwndUpdated` でしか動かず、bootstrap ではどちらも dispatch しないため
-    /// `FocusFence::default()`（`{epoch: 0, hwnd: HwndId::NULL}`）のまま残る。
-    /// 結果、起動時にフォーカスされていたアプリの `ImmCrossProbe` 観測（live 側
-    /// フェンスでスタンプされる）が `ObservationStore::derive_filtered` の
-    /// `is_identity_ok` で stale 扱いされ、**別プロセスへ切り替えて戻る
-    /// （= `FocusChanged`）まで恒久的に導出から外れ続ける**。
-    ///
-    /// 影響を受けるのは `ImmCrossProbe`（High / `ActuatingPool`）1 ソースだけである
-    /// ——`is_identity_ok` は `FocusProbe` も照合対象にするが、`FocusProbe` は
-    /// `Low`（`state/evidence.rs`）であり `derive_filtered` の High 分岐
-    /// （`== High`）にも Medium 分岐（`>= Medium`）にも元から載らないため、
-    /// フェンスの一致・不一致で結論が変わらない。実害は 2 経路:
-    ///
-    /// - `ImeModel::resolve_open_at`: 解決順が `derive_any` →
-    ///   `most_recent_trusted`（**フェンス照合なし**）→ `desired_open` なので、
-    ///   ImmCrossProbe 以外に fresh な観測が無ければ `most_recent_trusted` が同じ
-    ///   ImmCrossProbe を拾い直し、値としては同じになる（症状なし）。一方
-    ///   `ObserverPoll` 等の fresh な Medium が併存すると `derive_any` がその
-    ///   Medium 単独合意を返し、**本来なら即採用されるはずの High を上書きする**。
-    /// - `state/open_warrant.rs::issue_open_warrant` Step 3（`derive_actuating`）:
-    ///   こちらには `most_recent_trusted` フォールバックが無い。ImmCrossProbe が
-    ///   外れると、根拠が `DirectRead` から Medium の `SingleIndirect` へ落ちるか、
-    ///   Actuating 観測が他に無ければ Step 3 自体が飛ばされ Step 4a/4b の
-    ///   `HeuristicGuess`（あるいは warrant 不発行）まで劣化する。
-    InitialFocusFenceEstablished {
-        fence: crate::state::probe_admission::FocusFence,
+    /// **belief は一切書かない**（ADR-102 決定3-b。IME が ON か OFF かの推測を含まない）。
+    /// reducer は `app_policy`・`current_focus`・`ObservationStore::establish_initial_fence()`
+    /// の 3 つだけを書き、`FocusChanged` が続けて行う belief 側のリセット
+    /// （`last_intent`・`applied`・`force_guards`・`input_barrier`・観測プール等）は行わない。
+    /// これを `clear_on_focus_change` で済ませないのは、観測プールと drift を消すと
+    /// 最初の IME 観測より前の状態に触れるため。
+    InitialFocusScopeEstablished {
+        to: HwndId,
+        profile: ImePolicyProfile,
+        focus_epoch: crate::state::probe_admission::FocusEpoch,
     },
-
-    /// 起動直後の初回フォーカス確立時、`app_policy` を live 側の profile 分類で
-    /// 初期化する（BUG-114 根本原因1、ADR-134 D1c）。
-    ///
-    /// `ImeModel::app_policy` の書き込み口は従来
-    /// `FocusChanged`（プロセス変更時のみ）と初期値
-    /// `AppImePolicy::standard()`（`ImmCross` 固定）の2箇所しかなかった。
-    /// 起動から最初のプロセス切替までの間（ユーザーが一度もアプリを
-    /// 切り替えない、ごく自然な使い方）は `app_policy.default_feedback`
-    /// が既定値 `Read` のまま固定され、TsfNative/Imm32Unavailable
-    /// （読み戻し不能で `Blind` が本来割り当てられるべきプロファイル）に
-    /// フォーカスしていても `Read` の無条件再送に陥る（実機で
-    /// `current_focus=None`・`live_policy=Blind`・`snapshot_policy=Read`
-    /// の食い違いを確認済み、`docs/known-bugs.md` BUG-114）。
-    ///
-    /// `InitialFocusFenceEstablished` とは意図的に**別イベント**にする——
-    /// あちらは「fence 1フィールドの差し替えのみ」という不変条件
-    /// （ADR-102 決定3-b、`initial_focus_fence_event_only_touches_the_fence`
-    /// が固定）を持ち、他の書き込みを一切混ぜてはならないため。
-    InitialAppPolicyEstablished { profile: ImePolicyProfile },
 
     /// 無変換/変換の生キーを GJI へ通過させた（ADR-187 follow 方式）。
     ///
@@ -538,21 +496,6 @@ pub enum ImeEvent {
         /// 無くても、追跡状態が変わる打鍵ではこのイベントを送る。
         track: crate::state::key_effect_predictor::KeyTrack,
     },
-
-    /// 起動直後の初回フォーカス確立時、`current_focus` を bootstrap で確立した
-    /// 前面 hwnd に設定する（BUG-148、ADR-186）。`establish_initial_focus_scope` からのみ
-    /// dispatch される。
-    ///
-    /// `ImeModel::current_focus` の書き込み口は従来 `FocusChanged`（プロセス変更時のみ）
-    /// しかなかった。起動時に既に対象アプリが前面にあると、最初のプロセス切替まで
-    /// `None` のままになり、`record_explicit_intent`（`current_focus()` が `None` だと
-    /// 何もしない）が空振り→`issue_open_warrant` Step 1 が外れ、委譲 SetOpen が全て
-    /// `Unwarranted` になってキーが飲み込まれる。
-    ///
-    /// **`current_focus` 以外の一切のフィールドに触れない**（belief を書かない）。
-    /// `InitialFocusFenceEstablished`/`InitialAppPolicyEstablished` と同じ理由で
-    /// 別イベントにする——あちらは1フィールドだけの差し替えという不変条件を持つ。
-    InitialFocusHwndEstablished { hwnd: HwndId },
 
     // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
     // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,

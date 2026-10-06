@@ -4067,12 +4067,10 @@ fn establish_initial_focus_scope_advances_focus_epoch_once() {
 fn establish_initial_focus_scope_does_not_write_ime_belief() {
     // (関数名, 禁止語) の組で例外を明示する。件数と中身は下の専用 assert が縛る。
     const EXEMPT: &[(&str, &str)] = &[
-        ("sync_initial_focus_fence", "dispatch_event("),
-        // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
-        // `sync_initial_focus_fence` と同じ理由で dispatch_event(` 1件だけ例外化する。
-        ("sync_initial_app_policy", "dispatch_event("),
-        // BUG-148/ADR-186: current_focus 初期化ヘルパー（同上、dispatch_event( 1件だけ例外）。
-        ("sync_initial_focus_hwnd", "dispatch_event("),
+        // ADR-232 D1: 起動時のフォーカス確立ヘルパー（旧 `sync_initial_focus_fence`・
+        // `sync_initial_app_policy`・`sync_initial_focus_hwnd` の 3 つを統合）。
+        // `dispatch_event(` 1件だけ例外化する。
+        ("sync_initial_focus_scope", "dispatch_event("),
     ];
 
     let content = read_crate_file("src/runtime/focus_tracking.rs");
@@ -4101,25 +4099,13 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
             "enter_focus_scope",
             extract_fn_body(&content, "fn enter_focus_scope"),
         ),
-        // BUG-102 で追加した fence 同期ヘルパー。`dispatch_event(` を1件だけ
-        // 持つため下の EXEMPT で除外するが、**残りの禁止語は他と同じく効かせる**
-        // ——対象リストへ載せないと、この関数に belief 書き込みを足しても
-        // どのテストも落ちない（2026-08-31 敵対的レビュー指摘3-a）。
+        // 起動時のフォーカス確立ヘルパー（ADR-232 D1、BUG-102・114・148）。`dispatch_event(` を
+        // 1件だけ持つため上の EXEMPT で除外するが、**残りの禁止語は他と同じく効かせる**
+        // ——対象リストへ載せないと、この関数に belief 書き込みを足してもどのテストも
+        // 落ちない（2026-08-31 敵対的レビュー指摘3-a）。
         (
-            "sync_initial_focus_fence",
-            extract_fn_body(&content, "fn sync_initial_focus_fence"),
-        ),
-        // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
-        // 同じ理由（対象リストへ載せないと belief 書き込みを足しても検知
-        // できない）で明示的に加える。
-        (
-            "sync_initial_app_policy",
-            extract_fn_body(&content, "fn sync_initial_app_policy"),
-        ),
-        // BUG-148/ADR-186 で追加した current_focus 初期化ヘルパー。同じ理由で対象に加える。
-        (
-            "sync_initial_focus_hwnd",
-            extract_fn_body(&content, "fn sync_initial_focus_hwnd"),
+            "sync_initial_focus_scope",
+            extract_fn_body(&content, "fn sync_initial_focus_scope"),
         ),
     ];
     for forbidden in [
@@ -4140,70 +4126,20 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         }
     }
 
-    // 例外を認めた `sync_initial_focus_fence` の `dispatch_event` は、fence 同期
-    // イベントちょうど1件でなければならない（BUG-102）。件数を縛らないと、
-    // 2つ目の dispatch（`FocusChanged` 等）をここに足しても既存テストが全て
-    // 緑のまま通ってしまう。
-    let sync_body = extract_fn_body(&content, "fn sync_initial_focus_fence");
+    // 例外を認めた `sync_initial_focus_scope` の `dispatch_event` は、起動時のフォーカス確立
+    // イベントちょうど1件でなければならない（BUG-102・114・148、ADR-232 D1）。件数を
+    // 縛らないと、2つ目の dispatch（`FocusChanged` 等）をここに足しても既存テストが
+    // 全て緑のまま通ってしまう。
+    let sync_body = extract_fn_body(&content, "fn sync_initial_focus_scope");
     assert_eq!(
         count_real_calls(sync_body, "dispatch_event("),
         1,
-        "sync_initial_focus_fence の dispatch_event はちょうど1件（fence 同期のみ）"
+        "sync_initial_focus_scope の dispatch_event はちょうど1件（起動時のフォーカス確立のみ）"
     );
     assert!(
-        non_comment_lines(sync_body).contains("ImeEvent::InitialFocusFenceEstablished"),
-        "sync_initial_focus_fence の唯一の dispatch は \
-         ImeEvent::InitialFocusFenceEstablished であること"
-    );
-
-    // BUG-114 根本原因1（ADR-134 D1c）: `sync_initial_app_policy` も同様に
-    // dispatch_event ちょうど1件、`InitialAppPolicyEstablished` のみであること。
-    let app_policy_sync_body = extract_fn_body(&content, "fn sync_initial_app_policy");
-    assert_eq!(
-        count_real_calls(app_policy_sync_body, "dispatch_event("),
-        1,
-        "sync_initial_app_policy の dispatch_event はちょうど1件（app_policy 初期化のみ）"
-    );
-    assert!(
-        non_comment_lines(app_policy_sync_body).contains("ImeEvent::InitialAppPolicyEstablished"),
-        "sync_initial_app_policy の唯一の dispatch は \
-         ImeEvent::InitialAppPolicyEstablished であること"
-    );
-
-    // BUG-148/ADR-186: `sync_initial_focus_hwnd` も dispatch_event ちょうど1件、
-    // `InitialFocusHwndEstablished` のみであること。
-    let focus_hwnd_sync_body = extract_fn_body(&content, "fn sync_initial_focus_hwnd");
-    assert_eq!(
-        count_real_calls(focus_hwnd_sync_body, "dispatch_event("),
-        1,
-        "sync_initial_focus_hwnd の dispatch_event はちょうど1件（current_focus 初期化のみ）"
-    );
-    assert!(
-        non_comment_lines(focus_hwnd_sync_body).contains("ImeEvent::InitialFocusHwndEstablished"),
-        "sync_initial_focus_hwnd の唯一の dispatch は \
-         ImeEvent::InitialFocusHwndEstablished であること"
-    );
-
-    // `establish_initial_focus_scope` は `sync_initial_app_policy` をちょうど1回、
-    // かつ `advance_focus_tracking`（`current_app_profile()` が正しい値を返す
-    // ようになる箇所）より後に呼ぶこと（ADR-134 D1c の実装位置要件）。
-    let bootstrap_body = extract_fn_body(&content, "fn establish_initial_focus_scope");
-    assert_eq!(
-        count_real_calls(bootstrap_body, "self.sync_initial_app_policy("),
-        1,
-        "establish_initial_focus_scope は sync_initial_app_policy をちょうど1回呼ぶこと"
-    );
-    let bootstrap_code = non_comment_lines(bootstrap_body);
-    let advance_idx = bootstrap_code
-        .find("self.advance_focus_tracking(")
-        .expect("establish_initial_focus_scope must call advance_focus_tracking");
-    let app_policy_idx = bootstrap_code
-        .find("self.sync_initial_app_policy(")
-        .expect("establish_initial_focus_scope must call sync_initial_app_policy");
-    assert!(
-        advance_idx < app_policy_idx,
-        "sync_initial_app_policy は advance_focus_tracking の後に呼ぶこと \
-         (先に呼ぶと current_app_profile() がまだ正しい値を返さない、ADR-134 D1c)"
+        non_comment_lines(sync_body).contains("ImeEvent::InitialFocusScopeEstablished"),
+        "sync_initial_focus_scope の唯一の dispatch は \
+         ImeEvent::InitialFocusScopeEstablished であること"
     );
 }
 
@@ -4271,34 +4207,42 @@ fn focus_hwnd_updated_dispatch_is_skipped_during_bootstrap() {
     );
 }
 
-/// BUG-102: bootstrap の `establish_initial_focus_scope` は、live 側フェンス
-/// （`Runtime::focus_fence()` = `enter_focus_scope` 後の epoch + `update_focus_info`
-/// 後の hwnd）を `ObservationStore::current_fence` へ同期しなければならない。
+/// BUG-102・114・148（ADR-232 D1）: bootstrap の `establish_initial_focus_scope` は、
+/// 起動時のフォーカススコープ（`app_policy`・`current_focus`・観測の fence）を
+/// `sync_initial_focus_scope` でちょうど1回 `ImeModel` へ入れなければならない。
 ///
 /// 同期が無いと、起動時にフォーカスされていたアプリで発生する `ImmCrossProbe`
 /// 観測（High / `ActuatingPool`）が `derive_filtered` の `is_identity_ok` で
 /// stale 扱いされ、ユーザーが別プロセスへ切り替えて戻る（= `FocusChanged`）まで
-/// 恒久的に導出から外れ続ける。
+/// 恒久的に導出から外れ続ける（BUG-102）。`app_policy` は既定値 `Read` のまま
+/// 固定され（BUG-114）、`current_focus` は `None` のまま明示意図が記録されない（BUG-148）。
 ///
-/// 呼び出し順序も固定する。`sync_initial_focus_fence` が読む `focus_fence()` の
-/// 2 軸は別々の場所で確定するため、**両方の後**でなければならない:
-/// epoch は `enter_focus_scope`、hwnd は `advance_focus_tracking`
-/// （→ `update_focus_info`）。どちらか一方でも前に置くと、確定前の古い値を
-/// fence として焼き付ける。
+/// 呼び出し順序も固定する。値の 3 つは別々の場所で確定するため、**両方の後**で
+/// なければならない: epoch は `enter_focus_scope`、hwnd・profile は
+/// `advance_focus_tracking`（→ `update_focus_info`・`current_app_profile()`）。
+/// どちらか一方でも前に置くと、確定前の古い値を焼き付ける。
 #[test]
-fn establish_initial_focus_scope_syncs_the_observation_fence() {
+fn establish_initial_focus_scope_syncs_the_focus_scope() {
     let content = read_crate_file("src/runtime/focus_tracking.rs");
     let body = extract_fn_body(&content, "fn establish_initial_focus_scope");
     assert_eq!(
-        count_real_calls(body, "self.sync_initial_focus_fence("),
+        count_real_calls(body, "self.sync_initial_focus_scope("),
         1,
-        "establish_initial_focus_scope は sync_initial_focus_fence をちょうど1回呼ぶこと \
+        "establish_initial_focus_scope は sync_initial_focus_scope をちょうど1回呼ぶこと \
          (BUG-102: ObservationStore 側の fence が既定値のまま残ると、起動直後の \
-         アプリの高信頼観測が次のプロセス変更まで導出から外れ続ける)"
+         アプリの高信頼観測が次のプロセス変更まで導出から外れ続ける。BUG-114: app_policy、\
+         BUG-148: current_focus も同様に最初のプロセス切替まで未確立になる)"
     );
     // 順序判定もコメントを落としたテキストに対して行う（doc コメント中の関数名
     // 言及が `find` に先に当たると偽陽性/偽陰性になるため、件数カウント側の
     // `count_real_calls` と揃える）。
+    // ファイル全体でも呼び出しは1か所だけ（別の関数から2か所目を呼ぶ経路を捕まえる）。
+    assert_eq!(
+        count_real_calls(production_code_only(&content), "self.sync_initial_focus_scope("),
+        1,
+        "sync_initial_focus_scope の呼び出しは focus_tracking.rs 全体で establish_initial_focus_scope \
+         の1か所だけ（起動時経路を足すなら ADR-232 D1 を見直すこと）"
+    );
     let body_code = non_comment_lines(body);
     let idx = |needle: &str| {
         body_code
@@ -4307,32 +4251,34 @@ fn establish_initial_focus_scope_syncs_the_observation_fence() {
     };
     let advance_idx = idx("self.advance_focus_tracking(");
     let enter_idx = idx("self.enter_focus_scope(");
-    let sync_idx = idx("self.sync_initial_focus_fence(");
+    let sync_idx = idx("self.sync_initial_focus_scope(");
     assert!(
         enter_idx < sync_idx,
-        "sync_initial_focus_fence は enter_focus_scope の後に呼ぶこと \
+        "sync_initial_focus_scope は enter_focus_scope の後に呼ぶこと \
          (先に呼ぶと epoch インクリメント前の古い fence を焼き付ける)"
     );
     assert!(
         advance_idx < sync_idx,
-        "sync_initial_focus_fence は advance_focus_tracking の後に呼ぶこと \
-         (先に呼ぶと update_focus_info 前の hwnd=NULL を fence に焼き付ける)"
+        "sync_initial_focus_scope は advance_focus_tracking の後に呼ぶこと \
+         (先に呼ぶと update_focus_info 前の hwnd=NULL や current_app_profile() 確定前の \
+         profile を焼き付ける、ADR-134 D1c)"
     );
 }
 
-/// BUG-102: `ImeEvent::InitialFocusFenceEstablished` は bootstrap 専用であり、
-/// dispatch 元は `sync_initial_focus_fence` の1箇所だけ。reducer 側のアームは
-/// `ObservationStore::establish_initial_fence()`（fence 1フィールドの差し替え）
-/// しか行わない。
+/// BUG-102・114・148（ADR-232 D1）: `ImeEvent::InitialFocusScopeEstablished` は bootstrap
+/// 専用であり、dispatch 元は `sync_initial_focus_scope` の1箇所だけ。reducer 側のアームは
+/// `app_policy`・`current_focus`・`ObservationStore::establish_initial_fence()` しか書かない。
 ///
 /// このイベントは「まだ一度も IME を観測していない時点で dispatch される」という、
 /// 他のどのイベントも持たない性質を持つ（ADR-102 決定3-b）。belief を書く処理が
 /// このアームや新しい呼び出し元に紛れ込むと、その不変条件が静かに壊れる。
 /// アーム本体が belief に触れないことは
-/// `state::ime_model::tests::initial_focus_fence_established_touches_only_the_fence`
-/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
+/// `state::ime_model::tests::initial_focus_scope_established_touches_only_the_scope_identity`
+/// が、`FocusChanged` との食い違いは
+/// `initial_focus_scope_matches_focus_changed_except_input_barrier` が実行時に固定し、
+/// ここでは「増えていないこと」だけを見る（新しい起動時経路の追加を捕まえるのはこのガード）。
 #[test]
-fn initial_focus_fence_event_only_touches_the_fence() {
+fn initial_focus_scope_event_is_dispatched_from_one_place() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
@@ -4344,9 +4290,9 @@ fn initial_focus_fence_event_only_touches_the_fence() {
     // パターンを検知できない（本ファイル冒頭 `list_src_files` の doc 参照）。
     let checks: &[(&str, &[(&str, usize)])] = &[
         (
-            "InitialFocusFenceEstablished",
+            "InitialFocusScopeEstablished",
             &[
-                // sync_initial_focus_fence（bootstrap 専用の唯一の dispatch 元）。
+                // sync_initial_focus_scope（bootstrap 専用の唯一の dispatch 元）。
                 ("runtime/focus_tracking.rs", 1),
                 // reducer のアーム。
                 ("state/ime_model.rs", 1),
@@ -4355,8 +4301,9 @@ fn initial_focus_fence_event_only_touches_the_fence() {
             ],
         ),
         (
-            // reducer のアームが fence の差し替え以外をしていないこと（呼び先の限定）。
-            // 先頭のドットにより `pub fn establish_initial_fence(`（定義）は数えない。
+            // reducer のアームが fence の入れ方を `establish_initial_fence`（観測プールと
+            // drift を消さない口）に限っていること。先頭のドットにより
+            // `pub fn establish_initial_fence(`（定義）は数えない。
             ".establish_initial_fence(",
             &[("state/ime_model.rs", 1)],
         ),
@@ -4368,8 +4315,8 @@ fn initial_focus_fence_event_only_touches_the_fence() {
             .to_string_lossy()
             .replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
-        // doc コメントでこのイベント名に言及しているファイル（`probe_admission.rs` の
-        // `FocusFence` 説明等）を数えないよう、コメント行を落としてから数える。
+        // doc コメントでこのイベント名に言及しているファイルを数えないよう、
+        // コメント行を落としてから数える。
         let production = non_comment_lines(production_code_only(&content));
         for (needle, expected) in checks {
             let count = production.matches(needle).count();
@@ -4384,53 +4331,6 @@ fn initial_focus_fence_event_only_touches_the_fence() {
                  このイベントは bootstrap（最初の IME 観測より前）でのみ dispatch される\
                  専用イベントです。新しい呼び出し元を足す前に、それが本当に「起動時の\
                  初回フォーカススコープ確立」なのかを確認してください（ADR-102 決定3-b）。"
-            );
-        }
-    }
-}
-
-/// BUG-114 根本原因1（ADR-134 D1c）: `ImeEvent::InitialAppPolicyEstablished` は
-/// bootstrap 専用であり、dispatch 元は `sync_initial_app_policy` の1箇所だけ。
-/// reducer 側のアームは `self.app_policy = AppImePolicy::from_profile(profile)`
-/// （app_policy 1フィールドの差し替え）しか行わない。
-///
-/// `initial_focus_fence_event_only_touches_the_fence` と同じ構造の監視テスト。
-/// アーム本体が app_policy 以外に触れないことは
-/// `state::ime_model::tests::initial_app_policy_established_touches_only_app_policy`
-/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
-#[test]
-fn initial_app_policy_event_only_touches_app_policy() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
-    let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
-
-    let checks: &[(&str, &[(&str, usize)])] = &[(
-        "InitialAppPolicyEstablished",
-        &[
-            ("runtime/focus_tracking.rs", 1),
-            ("state/ime_model.rs", 1),
-            ("state/ime_event.rs", 1),
-        ],
-    )];
-    for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
-        let production = non_comment_lines(production_code_only(&content));
-        for (needle, expected) in checks {
-            let count = production.matches(needle).count();
-            let expected_count = expected
-                .iter()
-                .find(|(f, _)| *f == rel)
-                .map_or(0, |(_, n)| *n);
-            assert_eq!(
-                count, expected_count,
-                "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
-                 {expected_count}, 実際: {count})。ADR-134 D1c 参照。"
             );
         }
     }
@@ -4558,52 +4458,6 @@ fn can_use_imm32_cross_process_wrapper_keeps_track_caller() {
     let prev2 = lines[idx - 2].trim();
     assert_eq!(prev, "#[track_caller]", "直前の行: {prev}");
     assert_eq!(prev2, "#[must_use]", "その前の行: {prev2}");
-}
-
-/// BUG-148/ADR-186: `ImeEvent::InitialFocusHwndEstablished` は bootstrap 専用であり、
-/// dispatch 元は `sync_initial_focus_hwnd` の1箇所だけ。reducer 側のアームは
-/// `self.current_focus = Some(hwnd)`（current_focus 1フィールドの差し替え）しか行わない。
-///
-/// `initial_app_policy_event_only_touches_app_policy` と同じ構造の監視テスト。
-/// アーム本体が current_focus 以外に触れないことは
-/// `state::ime_model::tests::initial_focus_hwnd_established_touches_only_current_focus`
-/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
-#[test]
-fn initial_focus_hwnd_event_only_touches_current_focus() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
-    let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
-
-    let checks: &[(&str, &[(&str, usize)])] = &[(
-        "InitialFocusHwndEstablished",
-        &[
-            ("runtime/focus_tracking.rs", 1),
-            ("state/ime_model.rs", 1),
-            ("state/ime_event.rs", 1),
-        ],
-    )];
-    for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
-        let production = non_comment_lines(production_code_only(&content));
-        for (needle, expected) in checks {
-            let count = production.matches(needle).count();
-            let expected_count = expected
-                .iter()
-                .find(|(f, _)| *f == rel)
-                .map_or(0, |(_, n)| *n);
-            assert_eq!(
-                count, expected_count,
-                "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
-                 {expected_count}, 実際: {count})。BUG-148/ADR-186 参照。"
-            );
-        }
-    }
 }
 
 // ── ADR-103 決定4: probe 段の唯一の出口 ────────────────────────────────────

@@ -503,7 +503,7 @@ impl ObservationStore {
     }
 
     /// 起動時（bootstrap）に確立した最初のフォーカススコープへ fence を合わせる
-    /// 3つ目の書き込み口（BUG-102）。`ImeEvent::InitialFocusFenceEstablished` の
+    /// 3つ目の書き込み口（BUG-102）。`ImeEvent::InitialFocusScopeEstablished` の
     /// reducer からのみ呼ぶ。
     ///
     /// `clear_on_focus_change()` との違い: **観測プールと drift をクリアしない**。

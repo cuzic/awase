@@ -127,9 +127,9 @@ pub type FocusEpoch = u64;
 /// ADR-106 本文が提案する `FocusIdentity` という名前は既にこの別の型が使っているため
 /// 採用せず、`FocusFence` とした。
 ///
-/// `serde::Serialize` は `ImeEvent::InitialFocusFenceEstablished`（journal へ
-/// 直列化される値、ADR-082 決定1）が両軸を1つの値として運ぶために必要
-/// （BUG-102）。書き出し専用のため `Deserialize` は導出しない。
+/// `serde::Serialize` は、かつて `ImeEvent::InitialFocusFenceEstablished`（journal へ
+/// 直列化される値、ADR-082 決定1、ADR-232 D1 で撤去）が両軸を1つの値として運ぶために
+/// 導出した（BUG-102）。書き出し専用のため `Deserialize` は導出しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct FocusFence {
     pub epoch: FocusEpoch,
