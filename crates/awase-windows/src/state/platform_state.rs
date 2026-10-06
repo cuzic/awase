@@ -371,6 +371,15 @@ impl ImeStateHub {
         self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, false)
     }
 
+    fn expire_mode_key_pass_mark_in_scope(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+        scope: crate::win32::ForegroundScope,
+    ) -> bool {
+        self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, true)
+    }
+
     /// 判断は `ModeKeyPassLatch::drop_decision`（Win32非依存）。ここは`PassEffect`の適用のみ。
     fn drop_intents_for_mode_key_pass_in_scope(
         &mut self,

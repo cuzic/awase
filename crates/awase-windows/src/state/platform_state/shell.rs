@@ -3,7 +3,8 @@
 //!
 //! メソッド名とシグネチャは分割前と同じ（`runtime/`・`app/` の呼び出し元は変えない）。
 //! 記録系（`record_*`）の呼び出し元の固定ガード（`tests/architecture_guard.rs` の `RECORDERS`）は、
-//! このファイルを走査から除外し、核の `_in_scope` 版の呼び出しを数える。
+//! このファイルも走査し、`_in_scope` 版の呼び出しがファイルごとに固定件数であることを確認する
+//! （`shell_methods_only_read_scope_once_and_delegate` が殻の中身も固定する）。
 
 use super::{ApplyGeneration, ImeApplyAcceptance, ImeStateHub};
 use crate::state::TickMs;
@@ -41,12 +42,7 @@ impl ImeStateHub {
     /// 次のモードキーまで固まる（BUG-151 原因③の再発、BUG-158）。窓の終了で必ず捨て、ポーリングを再開させる。
     /// 既に観測の成功で捨てた（`invalidated`）/窓の間は何もしない。
     pub(crate) fn expire_mode_key_pass_mark(&mut self, now_ms: u64, tick_ms: TickMs) -> bool {
-        self.drop_intents_for_mode_key_pass_in_scope(
-            now_ms,
-            tick_ms,
-            crate::win32::foreground_scope(),
-            true,
-        )
+        self.expire_mode_key_pass_mark_in_scope(now_ms, tick_ms, crate::win32::foreground_scope())
     }
 
     /// 外部注入の IME キーを見たら呼ぶ（読めない窓のみ）。現在のフォアグラウンドに対する監視窓を開く／延ばす。
