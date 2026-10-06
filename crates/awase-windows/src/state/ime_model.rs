@@ -54,6 +54,15 @@ impl ImeApplyAcceptance {
 
 // ── resolve_open_at 診断API（ADR-087 §5 Phase 0a item2/3） ──────────────────────
 
+/// [`ImeModel::fallback_shadow`] の戻り値(診断専用、ADR-233)。
+#[derive(Debug, Clone, Copy)]
+pub struct FallbackShadow {
+    /// 現行の `most_recent_trusted`(`(confidence, at)` の順)が選ぶ観測。
+    pub old: crate::state::observation_store::ImeObservation,
+    /// 案 A'(`(confidence >= Medium, at, confidence)` の順)が選ぶ観測。
+    pub new: crate::state::observation_store::ImeObservation,
+}
+
 /// `resolve_open_at()` の戻り値。`effective_open_at()` が返す `bool` に加えて、
 /// 「なぜその値になったか」を保持する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -487,6 +496,21 @@ impl ImeModel {
                 guard_override,
             },
         }
+    }
+
+    /// **診断専用**(ADR-233、BUG-189): `resolve_open_at` がフォールバック(明示意図なし・予測なし・`derive_any` が None)に
+    /// 落ちる状況で、旧(`most_recent_trusted`)と案 A' の選択を並べて返す。どちらかが無ければ `None`。本番の判断には使わない。
+    #[must_use]
+    pub fn fallback_shadow(&self, now: Instant) -> Option<FallbackShadow> {
+        if self.has_user_explicit_intent()
+            || self.key_effect.and_then(|p| p.open).is_some()
+            || self.observations.derive_any(now).is_some()
+        {
+            return None;
+        }
+        let old = *self.observations.most_recent_trusted(now)?;
+        let new = *self.observations.most_recent_trusted_a_prime(now)?;
+        Some(FallbackShadow { old, new })
     }
 
     /// generation 付きの apply 要求と完了（Engine 経路）を `reduce` に通す（ADR-208 L0 の全列挙テストのオラクル用）。

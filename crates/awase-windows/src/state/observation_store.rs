@@ -695,6 +695,23 @@ impl ObservationStore {
         self.most_recent_trusted_excluding(now, &[])
     }
 
+    /// **診断専用**(ADR-233、BUG-189): 案 A' の順位キー `(confidence >= Medium, at, confidence)` で選んだ観測。
+    /// 本番の判断には使わない(`platform_state.rs` の `[mrt-shadow]` ログが旧 `most_recent_trusted` と並べるためだけに呼ぶ)。
+    /// 実装(A' の本番導入)時は `resolve_open_at` 専用の比較式としてこの形に置き換える。
+    #[must_use]
+    pub fn most_recent_trusted_a_prime(&self, now: Instant) -> Option<&ImeObservation> {
+        self.per_source
+            .iter()
+            .filter(|o| !o.is_expired(now))
+            .max_by_key(|o| {
+                (
+                    o.confidence >= ObservationConfidence::Medium,
+                    o.at,
+                    o.confidence,
+                )
+            })
+    }
+
     /// [`most_recent_trusted`] と同じだが、指定した `ObservationSource` 群を選ぶ前に除外する。
     /// drift correction が `ConvOpenInference` を根拠にしない（BUG-173 追補3）ために、選んだ後に捨てる形にすると
     /// 同じ Medium の他ソース（`ObserverPoll` 等）の正当な観測まで覆い隠すので、選ぶ前に除外する（Opus round2 R2-2）。
@@ -1133,6 +1150,58 @@ mod tests {
             s.most_recent_trusted(now).map(|o| o.open),
             Some(false),
             "High confidence が勝つ"
+        );
+    }
+
+    /// ADR-233(BUG-189): 古い ICP(High,false)より新しい ObserverPoll(Medium,true)を採る。現行の `most_recent_trusted` は逆(High が勝つ)。
+    #[test]
+    fn a_prime_prefers_newer_medium_over_older_high() {
+        let mut s = ObservationStore::default();
+        let t0 = Instant::now();
+        let mut icp = obs(false, ObservationSource::ImmCrossProbe, t0);
+        icp.confidence = ObservationConfidence::High;
+        let poll = obs(
+            true,
+            ObservationSource::ObserverPoll,
+            t0 + Duration::from_secs(4),
+        );
+        rec(&mut s, icp);
+        rec(&mut s, poll);
+        let now = t0 + Duration::from_secs(8);
+        assert_eq!(s.most_recent_trusted(now).map(|o| o.open), Some(false));
+        assert_eq!(
+            s.most_recent_trusted_a_prime(now).map(|o| o.open),
+            Some(true)
+        );
+    }
+
+    /// ADR-233: 同時刻なら信頼度の高い方(決定性のタイブレーク)。Low は Medium 以上に負ける。
+    #[test]
+    fn a_prime_ties_go_to_higher_confidence_and_low_loses_to_medium() {
+        let mut s = ObservationStore::default();
+        let t0 = Instant::now();
+        let mut icp = obs(false, ObservationSource::ImmCrossProbe, t0);
+        icp.confidence = ObservationConfidence::High;
+        let poll = obs(true, ObservationSource::ObserverPoll, t0);
+        rec(&mut s, icp);
+        rec(&mut s, poll);
+        assert_eq!(
+            s.most_recent_trusted_a_prime(t0).map(|o| o.open),
+            Some(false),
+            "同時刻は High(ICP)"
+        );
+        let mut low = obs(
+            true,
+            ObservationSource::FocusProbe,
+            t0 + Duration::from_secs(5),
+        );
+        low.confidence = ObservationConfidence::Low;
+        rec(&mut s, low);
+        assert_eq!(
+            s.most_recent_trusted_a_prime(t0 + Duration::from_secs(6))
+                .map(|o| o.source),
+            Some(ObservationSource::ImmCrossProbe),
+            "新しい Low は Medium 以上に勝たない"
         );
     }
 

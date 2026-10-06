@@ -108,6 +108,8 @@ pub struct ImeStateHub {
     intent_override_logged: std::cell::Cell<bool>,
     /// 直近に返した `effective_open_at` の値(反転の診断ログ用、BUG-189)。値の判断には使わない。
     last_effective_open: std::cell::Cell<Option<bool>>,
+    /// 直近に `[mrt-shadow]` を出した (旧, 新) の観測時刻(重複ログの抑止、ADR-233)。値の判断には使わない。
+    last_mrt_shadow: std::cell::Cell<Option<(std::time::Instant, std::time::Instant)>>,
 
     /// [`ImeStateHub::resolve_warmup_ime_on`] の `off_drift_active` ゲートが
     /// `ApplyGeneration` 専用アロケータ（ADR-106 決定1）。`event_log.next_seq()`
@@ -156,6 +158,7 @@ impl ImeStateHub {
             last_external_change_ms: 0,
             intent_override_logged: std::cell::Cell::new(false),
             last_effective_open: std::cell::Cell::new(None),
+            last_mrt_shadow: std::cell::Cell::new(None),
             generation_alloc: super::GenerationAllocator::new(),
             press_ledger: super::press_ledger::PressLedger::default(),
         }
@@ -886,6 +889,31 @@ impl ImeStateHub {
                 resolution.decided_by,
                 decision.value != shadow,
             );
+        }
+        // 診断(ADR-233): フォールバックに落ちたとき、旧と案 A' で選ぶ観測が食い違えば 1 行出す(値の判断には使わない)。
+        let now_instant = self.clock.now_instant();
+        if let Some(sh) = self.shadow_model.fallback_shadow(now_instant) {
+            if sh.old.open != sh.new.open
+                && self.last_mrt_shadow.replace(Some((sh.old.at, sh.new.at)))
+                    != Some((sh.old.at, sh.new.at))
+            {
+                tracing::info!(
+                    "[mrt-shadow] old={}({:?},{:?},age={}ms,hwnd={:?},epoch={:?}) new={}({:?},{:?},age={}ms,hwnd={:?},epoch={:?}) final={}",
+                    sh.old.open,
+                    sh.old.source,
+                    sh.old.confidence,
+                    sh.old.age(now_instant).as_millis(),
+                    sh.old.hwnd,
+                    sh.old.focus_epoch,
+                    sh.new.open,
+                    sh.new.source,
+                    sh.new.confidence,
+                    sh.new.age(now_instant).as_millis(),
+                    sh.new.hwnd,
+                    sh.new.focus_epoch,
+                    decision.value,
+                );
+            }
         }
         decision.value
     }
