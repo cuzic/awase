@@ -725,11 +725,11 @@ impl DecisionExecutor {
         );
         view.belief_input_mode = self.belief_input_mode;
         let gate_inputs = (&view).into();
-        // 判断は `state/ime_set_open_plan.rs`（核）。ここは Facts を作る（shell-in）→ 決める → 実行する（shell-out）。
-        if crate::state::ime_set_open_plan::plan_set_open_gate(
+        // claim 以降の判断は `state/ime_set_open_plan.rs`（核）。ここは Facts を作る（shell-in）→ 決める → 実行する（shell-out）。
+        if matches!(
             crate::state::ime_actuation_decision::decide_gate(gate_inputs),
-        ) == crate::state::ime_set_open_plan::SetOpenGatePlan::RejectNotOwned
-        {
+            crate::state::ime_actuation_decision::GateResult::NotOwned
+        ) {
             // /code-review指摘（B-3、PR #201）: ADR-163がDecisionSite::
             // DispatchImeSetOpenを新設した理由は、この早期gate（下のimm_first
             // 判定・sync path双方より前の、executor側だけが持つ独立した

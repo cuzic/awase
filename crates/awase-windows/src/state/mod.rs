@@ -111,7 +111,7 @@ pub mod conv_after_open;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod ime_actuation_decision;
 // FCIS（ADR-229）: `executor.rs::dispatch_ime_set_open` の判断（gate・claim 結果・ImmCross 先頭か）の純粋部分。
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 pub mod ime_set_open_plan;
 // ADR-163 Part B（TH1c）: attempt単位の決定点ジャーナルスキーマとcrate内
 // 再生ハーネス。ime_actuation_decisionと同じ「追加のみ、本番経路への配線は
