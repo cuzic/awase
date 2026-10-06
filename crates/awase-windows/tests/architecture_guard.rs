@@ -1379,7 +1379,10 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
     // （旧: effective_open() が current_tick_ms() を直接呼んでいた。仮想時計を差し込めるよう
     // HubClock 経由にした。実時計の tick の出所はここで固定する）。
     assert_eq!(
-        count_real_calls(production, "HubClock::wall(crate::hook::current_tick_ms)"),
+        count_real_calls(
+            production_code_only(&read_crate_file("src/state/platform_state/shell.rs")),
+            "HubClock::wall(crate::hook::current_tick_ms)"
+        ),
         1,
         "`ImeStateHub` の時計が `hook::current_tick_ms` の実時計ではありません。\
          record 側（`runtime/key_pipeline.rs` の `hook::current_tick_ms()`）と TTL 判定の\
@@ -1730,6 +1733,24 @@ fn shell_methods_only_read_scope_once_and_delegate() {
     if let Some(v) = shell_shape_violation(&code) {
         panic!("殻の形の違反: {v}");
     }
+    // 最初の `pub(crate) fn` より前（形の検査の対象外）に置けるのは、構築口の 3 つだけ
+    // （`ImeStateHub::new`・`PlatformState::new`・`Default::default`）。ここに判断を書く抜け道を塞ぐ。
+    let preamble = code.split("pub(crate) fn ").next().unwrap_or("");
+    let fns: Vec<&str> = preamble
+        .split("fn ")
+        .skip(1)
+        .map(|b| b.split('(').next().unwrap_or("?").trim())
+        .collect();
+    assert_eq!(
+        fns,
+        ["new", "new", "default"],
+        "殻の先頭（形の検査の対象外）に構築口以外の関数があります"
+    );
+    assert_eq!(
+        preamble.matches("foreground_scope()").count(),
+        0,
+        "構築口が foreground_scope() を読んでいます"
+    );
 }
 
 /// `shell_shape_violation` 自体が、`if`/`match`/`for` で検出できない形も拾えることの確認。

@@ -87,13 +87,14 @@ pub(crate) struct ImeStateHub {
     /// 寿命判断そのものは `state/mode_key_pass.rs::ModeKeyPassLatch`（Win32非依存）に委譲する
     /// （design-patterns-review.md 提案3）。ここは副作用（`intent_store`/`dispatch_event`）を
     /// 適用する側に回る。
-    mode_key_pass_mark: ModeKeyPassLatch<crate::win32::ForegroundScope>,
+    mode_key_pass_mark: ModeKeyPassLatch<crate::state::foreground_scope::ForegroundScope>,
 
     /// 外部注入の IME キー直後だけ開く短い監視窓（ADR-205、BUG-172）。読めない窓（`Imm32Unavailable`）で、
     /// 窓の中の prefetch 済みの開閉の読みが基準値から変わったときだけ実状態へ追随する。寿命・基準値の判断は
     /// `state/external_change_watch.rs`（Win32非依存）に委譲し、ここは副作用の適用側。
-    external_change_watch:
-        super::external_change_watch::ExternalChangeWatch<crate::win32::ForegroundScope>,
+    external_change_watch: super::external_change_watch::ExternalChangeWatch<
+        crate::state::foreground_scope::ForegroundScope,
+    >,
 
     /// 最後に外部変化へ追随した時刻（ms）。追随の直後に、閉じる前の GJI I/O 推測が `ObserverPoll(true)` で
     /// 追随結果を上書きしないための柵（`observe_gji_after_focus` の第1引数）に使う（ADR-205 round3 m1）。
@@ -133,13 +134,6 @@ pub(crate) struct ImePollState {
 pub(crate) use super::drift_correction::DriftCorrection;
 
 impl ImeStateHub {
-    /// デフォルト値で初期化する（実時計）。実機の構築口で、`hook` を読む実時計はここだけ。
-    #[cfg(windows)]
-    pub(crate) fn new() -> Self {
-        use super::hub_clock::HubClock;
-        Self::with_clock(HubClock::wall(crate::hook::current_tick_ms))
-    }
-
     /// 時計を注入して初期化する。`hook` に依存しないので、テスト・閉ループは仮想時計
     /// （`HubClock::manual`）を渡せる。
     pub(crate) fn with_clock(clock: super::hub_clock::HubClock) -> Self {
@@ -319,7 +313,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         readable: bool,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) {
         self.mode_key_pass_mark.arm(scope, now_ms, readable);
     }
@@ -330,7 +324,7 @@ impl ImeStateHub {
     fn mode_key_pass_expiry_wait_ms_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<u64> {
         self.mode_key_pass_mark.expiry_wait_ms(
             now_ms,
@@ -342,7 +336,7 @@ impl ImeStateHub {
     /// awaseが実際にIMEへ書いた（`applied`を更新した）ことを、有効な通過マークへ記録する（BUG-158追補2）。
     fn note_awase_write_for_mode_key_pass_in_scope(
         &mut self,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) {
         self.mode_key_pass_mark.note_awase_write(scope);
     }
@@ -350,7 +344,7 @@ impl ImeStateHub {
     fn mode_key_pass_mark_live_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> bool {
         self.mode_key_pass_mark
             .live(now_ms, scope, crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS)
@@ -361,7 +355,7 @@ impl ImeStateHub {
     fn mode_key_pass_window_remaining_ms_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<u64> {
         self.mode_key_pass_mark.window_remaining_ms(
             now_ms,
@@ -374,7 +368,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         tick_ms: TickMs,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> bool {
         self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, false)
     }
@@ -383,7 +377,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         tick_ms: TickMs,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> bool {
         self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, true)
     }
@@ -393,7 +387,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         tick_ms: TickMs,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
         on_expiry: bool,
     ) -> bool {
         let Some(effect) = self.mode_key_pass_mark.drop_decision(
@@ -423,7 +417,7 @@ impl ImeStateHub {
     fn arm_external_change_watch_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) {
         self.external_change_watch
             .arm(scope, now_ms, crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS);
@@ -438,7 +432,7 @@ impl ImeStateHub {
     fn external_change_watch_remaining_ms_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<u64> {
         self.external_change_watch.remaining_ms(
             scope,
@@ -464,7 +458,7 @@ impl ImeStateHub {
         now_ms: u64,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<bool> {
         let verdict = self.external_change_watch.observe(
             scope,
@@ -537,7 +531,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         tick_ms: TickMs,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> bool {
         if !self.mode_key_pass_mark.align_after_expired(
             now_ms,
@@ -573,7 +567,11 @@ impl ImeStateHub {
     /// `record_confirmed`/`record_optimistic` 呼び出しを追加する際は、
     /// この5箇所のどれとも異なる新規パターンなら actuation 由来かどうかを
     /// 必ず確認すること。
-    fn record_optimistic_in_scope(&mut self, open: bool, scope: crate::win32::ForegroundScope) {
+    fn record_optimistic_in_scope(
+        &mut self,
+        open: bool,
+        scope: crate::state::foreground_scope::ForegroundScope,
+    ) {
         self.note_awase_write_for_mode_key_pass_in_scope(scope);
         self.shadow_model.applied = AppliedImeState::Optimistic(open);
         self.clear_pending_if_matches(open);
@@ -588,7 +586,7 @@ impl ImeStateHub {
         &mut self,
         open: bool,
         at_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) {
         self.note_awase_write_for_mode_key_pass_in_scope(scope);
         self.shadow_model.confirm_applied(open, at_ms);
@@ -1067,7 +1065,7 @@ impl ImeStateHub {
         outcome: awase::platform::ImeOpenOutcome,
         generation: Option<ApplyGeneration>,
         ts: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> ImeApplyAcceptance {
         let Some(generation) = generation else {
             let Some(effective) = super::ime_model::apply_result_effective_open(open, outcome)
@@ -1182,7 +1180,7 @@ impl ImeStateHub {
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     pub(crate) fn apply_ime_update(
         &mut self,
-        update: &crate::observer::ime_observer::ImeUpdate,
+        update: &crate::state::ime_update::ImeUpdate,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
@@ -1682,7 +1680,7 @@ pub(crate) struct GateStore {
     /// 同じ前景スコープ内でだけ NICOLA エンジンをスキップして直接 passthrough させる。
     /// tmux prefix (Ctrl+J) → コマンドキー (n/p) のように、
     /// prefix 直後のコマンドキーが NICOLA に横取りされる問題を防ぐ。
-    pub post_bypass: ScopedOneShot<crate::win32::ForegroundScope, PostBypassArm>,
+    pub post_bypass: ScopedOneShot<crate::state::foreground_scope::ForegroundScope, PostBypassArm>,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
     /// 左右Shift単独タップによる「IME-ON 半角英数」持続トグルの全状態
@@ -1786,19 +1784,6 @@ pub struct PlatformState {
     pub(crate) keymap: KeymapStore,
 }
 
-impl PlatformState {
-    /// デフォルト値で初期化する
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            ime: ImeStateHub::new(),
-            focus: FocusStore::new(),
-            gate: GateStore::new(),
-            keymap: KeymapStore::default(),
-        }
-    }
-}
-
 #[cfg(test)]
 impl PlatformState {
     /// 時計を注入して初期化するテスト用の構築口（`new()` は実時計 `hook::current_tick_ms` を読む）。
@@ -1809,12 +1794,6 @@ impl PlatformState {
             gate: GateStore::new(),
             keymap: KeymapStore::default(),
         }
-    }
-}
-
-impl Default for PlatformState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -2566,7 +2545,7 @@ mod tests {
         fn align_after_expired_pass_for_test(
             &mut self,
             now_ms: u64,
-            scope: crate::win32::ForegroundScope,
+            scope: crate::state::foreground_scope::ForegroundScope,
         ) -> bool {
             self.ime
                 .align_after_expired_mode_key_pass_in_scope(now_ms, TickMs(now_ms), scope)
@@ -2575,14 +2554,14 @@ mod tests {
 
     fn arm_mode_key_pass_mark_for_test(
         ps: &mut PlatformState,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
         now_ms: u64,
     ) {
         ps.ime.mode_key_pass_mark.arm(scope, now_ms, true);
     }
 
-    fn test_foreground_scope() -> crate::win32::ForegroundScope {
-        crate::win32::ForegroundScope {
+    fn test_foreground_scope() -> crate::state::foreground_scope::ForegroundScope {
+        crate::state::foreground_scope::ForegroundScope {
             pid: 42,
             hwnd: 0x1234,
         }
