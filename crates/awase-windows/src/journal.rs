@@ -194,7 +194,21 @@ pub enum DeferredRecoveryOutcomeSummary {
     Flushed { vk_count: usize },
 }
 
-/// [`JournalEntry::SentInput`] の 1 イベント。`win32::SentKeyEvent` の書き出し用の形で、
+/// `send_input_safe` が送った 1 キーボードイベントの記録（不具合報告用、journal の
+/// `SentInput` へ変換される）。`INPUT` の生値のうち、送信内容の再構成に要るものだけを持つ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SentKeyEvent {
+    /// `wVk`。Unicode 送信（`KEYEVENTF_UNICODE`）では 0。
+    pub vk: u16,
+    /// `wScan`。Unicode 送信では UTF-16 code unit そのもの。
+    pub scan: u16,
+    pub up: bool,
+    pub unicode: bool,
+    /// `dwExtraInfo`（自己注入マーカー。どの送信経路かの識別に使う）。
+    pub marker: usize,
+}
+
+/// [`JournalEntry::SentInput`] の 1 イベント。[`SentKeyEvent`] の書き出し用の形で、
 /// 1 報告に数千件載るため、既定値のフィールドは出さずに JSON を小さく保つ。
 #[derive(Debug, Serialize)]
 pub struct SentKeyEventSummary {
@@ -213,8 +227,8 @@ pub struct SentKeyEventSummary {
     pub marker: usize,
 }
 
-impl From<crate::win32::SentKeyEvent> for SentKeyEventSummary {
-    fn from(e: crate::win32::SentKeyEvent) -> Self {
+impl From<SentKeyEvent> for SentKeyEventSummary {
+    fn from(e: SentKeyEvent) -> Self {
         Self {
             vk: e.vk,
             scan: e.scan,
@@ -2059,7 +2073,6 @@ mod tests {
 
     #[test]
     fn sent_input_entry_serializes_romaji_vks_and_unicode_chars() {
-        use crate::win32::SentKeyEvent;
 
         let ev = |vk, scan, up, unicode| SentKeyEvent {
             vk,
