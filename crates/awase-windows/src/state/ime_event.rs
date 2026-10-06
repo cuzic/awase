@@ -15,8 +15,6 @@ use std::time::Instant;
 
 use awase::engine::InputModeState;
 
-use super::TickMs;
-
 /// HWND の Send-safe な表現 (raw pointer 値を usize で保持)。
 ///
 /// 実際の `HWND` は raw pointer を含むため Send/Sync ではない。
@@ -56,7 +54,7 @@ impl From<windows::Win32::Foundation::HWND> for HwndId {
 pub struct EventTime {
     /// 全 event を通じて単調増加する番号。順序判断はこれを使う。
     pub seq: u64,
-    /// `Instant::now()` で取得した単調時刻。経過時間計算に使う。
+    /// `HubClock::now_instant()` で取得した単調時刻。経過時間計算に使う。
     pub monotonic: Instant,
     /// `GetTickCount64()` 由来の ms。既存ログとの互換用。
     pub tick_ms: u64,
@@ -578,13 +576,12 @@ pub enum ImeEvent {
     /// 実際に外部 API/probe を呼んでいない場合はこのイベントを使わず、
     /// awase 自身の能動的な訂正は `InputModeApplied` を使うこと。
     ///
-    /// `at` は観測を取得したときの tick_ms（envelop time と一致することが多いが、
-    /// 非同期 probe が完了した時刻を明示したい場合は別値になることがある）。
+    /// 時刻は `ImeEventEnvelope::time` に集約する（ADR-232 D3 で `at` を撤去）。
+    /// 非同期 probe の観測は、呼び出し側が読み取り開始時刻を `dispatch_event` の `tick_ms` に渡す。
     InputModeObserved {
         mode: InputModeState,
         source: ObservationSource,
         confidence: ObservationConfidence,
-        at: TickMs,
     },
 
     /// awase が能動的に入力モードを変更した（または変更しようとした）。
@@ -596,7 +593,6 @@ pub enum ImeEvent {
         mode: InputModeState,
         strategy: InputModeApplyStrategy,
         result: InputModeApplyResult,
-        at: TickMs,
     },
 }
 
@@ -638,7 +634,7 @@ impl ImeEvent {
     }
 }
 
-/// Event log に積まれる envelope。時刻情報と event 本体をまとめる。
+/// `dispatch_event` が採番して reducer に渡す envelope。時刻情報と event 本体をまとめる。
 #[derive(Debug, Clone)]
 pub struct ImeEventEnvelope {
     pub time: EventTime,

@@ -36,7 +36,7 @@ mod shell;
 pub struct ImeStateHub {
     /// input_mode・is_japanese_ime・prev_conversion_mode を保持する。
     pub(crate) belief: ImeBelief,
-    /// IME 状態変更 event のリングバッファ (Step 0)。
+    /// IME 状態変更 event の `seq` 採番器（ADR-232 D2: 旧リングバッファは撤去）。
     pub(crate) event_log: ImeEventLog,
     /// 時刻の供給元（実機は実時計、閉ループ・テストは仮想時計。`state/hub_clock.rs`）。
     clock: super::hub_clock::HubClock,
@@ -160,9 +160,9 @@ impl ImeStateHub {
 }
 
 impl ImeStateHub {
-    /// Event を log に記録し、shadow_model にも reduce する (Step 1)。
+    /// Event に seq を採番し、shadow_model に reduce して journal に記録する (Step 1)。
     ///
-    /// `event_log.record()` だけを呼ぶより、こちらを使うと record + reduce が
+    /// `event_log.record_at()` だけを呼ぶより、こちらを使うと採番 + reduce が
     /// 同一 envelope で進む。write_* メソッドはこちらを使う。
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
@@ -193,18 +193,13 @@ impl ImeStateHub {
                 // （record_explicit_intent の doc 参照）が行う。
             }
         }
-        let event_for_journal = event.clone();
-        let event_for_reduce = event.clone();
         let time = self
             .event_log
-            .record_at(event, tick_ms, self.clock.now_instant());
-        let envelope = ImeEventEnvelope {
-            time,
-            event: event_for_reduce,
-        };
+            .record_at(&event, tick_ms, self.clock.now_instant());
+        let envelope = ImeEventEnvelope { time, event };
         self.shadow_model.reduce(&envelope);
         self.journal.record(JournalEntry::ImeEvent {
-            event: event_for_journal,
+            event: envelope.event,
             event_seq: time.seq,
             tick_ms: time.tick_ms,
         });
@@ -1174,7 +1169,6 @@ impl ImeStateHub {
                 mode: InputModeState::ObservedRomaji,
                 strategy: InputModeApplyStrategy::PanicReset,
                 result: InputModeApplyResult::Applied,
-                at: tick_ms,
             },
             tick_ms,
         );
@@ -1254,7 +1248,6 @@ impl ImeStateHub {
                     mode,
                     source: ObservationSource::ObserverPoll,
                     confidence: ObservationConfidence::Medium,
-                    at: tick_ms,
                 },
                 tick_ms,
             );
@@ -1316,7 +1309,6 @@ impl ImeStateHub {
                     mode,
                     strategy: InputModeApplyStrategy::CacheRestore,
                     result: InputModeApplyResult::Applied,
-                    at: tick_ms,
                 },
                 tick_ms,
             );
@@ -1887,32 +1879,25 @@ mod tests {
 
     /// `HubClock` が `Instant` の供給元になっている: 手動時計を進めた量だけ、`dispatch_event` が
     /// 付ける `EventTime::monotonic` が進む（壁時計を読んでいれば実測の数 µs しか進まない）。
+    ///
+    /// `monotonic` は journal に載らないので、reduce の結果に現れる Event で見る:
+    /// `FocusChanged` の reducer は `input_barrier` の `started_at` に `envelope.time.monotonic` を入れる。
     #[test]
     fn manual_hub_clock_drives_event_monotonic() {
-        let mut ps = ps_with_shadow(true, None, true);
+        let mut ps = ps_for_test();
         ps.ime.clock = crate::state::hub_clock::HubClock::manual(10_000);
-        ps.ime.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: true,
-                source: UserIntentSource::Command,
-            },
-            TickMs(ps.ime.clock.now_tick()),
-        );
+        let started_at = |ps: &PlatformState| match ps.ime.model().input_barrier {
+            Some(InputBarrier::FocusTransition { started_at, .. }) => started_at,
+            ref other => panic!("FocusTransition の barrier が立っていない: {other:?}"),
+        };
+        let tick = ps.ime.clock.now_tick();
+        dispatch_focus_changed(&mut ps, HwndId(1), 1, tick);
+        let older = started_at(&ps);
         ps.ime.clock.advance_ms(500);
-        ps.ime.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: false,
-                source: UserIntentSource::Command,
-            },
-            TickMs(ps.ime.clock.now_tick()),
-        );
-        let recent = ps.ime.event_log.recent_vec(2);
-        let (newer, older) = (recent[0].time, recent[1].time);
-        assert_eq!(
-            newer.monotonic - older.monotonic,
-            std::time::Duration::from_millis(500)
-        );
-        assert_eq!(newer.tick_ms - older.tick_ms, 500);
+        let tick = ps.ime.clock.now_tick();
+        dispatch_focus_changed(&mut ps, HwndId(2), 2, tick);
+        let newer = started_at(&ps);
+        assert_eq!(newer - older, std::time::Duration::from_millis(500));
     }
 
     // reset_stale_ime_on_for_imm_broken も同様に desired_open を書き換えない。
@@ -3379,7 +3364,6 @@ mod tests {
                     mode: InputModeState::ObservedKana,
                     source,
                     confidence: ObservationConfidence::Medium,
-                    at: TickMs(0),
                 },
                 TickMs(0),
             );
@@ -3412,7 +3396,7 @@ mod tests {
         for _ in 0..3 {
             ps.ime
                 .event_log
-                .record_at(ImeEvent::PanicReset { target: true }, TickMs(1), now);
+                .record_at(&ImeEvent::PanicReset { target: true }, TickMs(1), now);
         }
         let seq0 = ps.ime.event_log.next_seq();
         assert_eq!(seq0, 3);

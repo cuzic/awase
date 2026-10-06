@@ -73,7 +73,7 @@ ChatGPT に複雑度の整理を相談した結果、「異なる責務に分解
 ```
 crates/awase-windows/src/state/
 ├ ime_event.rs          — ImeEvent enum (10 variants), EventTime, IntentSource, etc.
-├ ime_event_log.rs      — ImeEventLog (512 entries ring buffer)
+├ ime_event_log.rs      — ImeEventLog (seq 採番器。512 件のリングは ADR-232 D2 で撤去)
 ├ ime_model.rs          — ImeModel (SSOT), 全 event を reduce
 ├ app_ime_policy.rs     — AppImePolicy (アプリ別ポリシー隔離)
 ├ observation_store.rs  — ObservationStore (per-source + drift)
@@ -161,7 +161,7 @@ crates/awase-windows/src/state/
 | ファイル | 役割 |
 |---------|------|
 | `crates/awase-windows/src/state/ime_event.rs` | ImeEvent enum 定義（10 variants） |
-| `crates/awase-windows/src/state/ime_event_log.rs` | リングバッファ |
+| `crates/awase-windows/src/state/ime_event_log.rs` | seq 採番器（旧リングバッファは ADR-232 D2 で撤去） |
 | `crates/awase-windows/src/state/ime_model.rs` | ImeModel reducer (SSOT) |
 | `crates/awase-windows/src/state/app_ime_policy.rs` | AppImePolicy |
 | `crates/awase-windows/src/state/observation_store.rs` | ObservationStore |
@@ -206,3 +206,5 @@ crates/awase-windows/src/state/
 - [ADR-029](029-ime-detection-resilience.md) — IME 検出の耐障害性と SSOT
 - [ADR-030](030-tsf-three-layer-architecture.md) — TSF 3 層分離
 - [docs/layer-boundaries.md](../layer-boundaries.md) — 6 設計原則を grep audit 化したルール集
+
+追記(ADR-232 D2): `ImeEventLog` の 512 件リングは本番に読み手が無かったため撤去し、`seq` の採番器だけを残した。再生・不具合報告に使う記録は journal(`event_seq`・`tick_ms` つき)。

@@ -1,6 +1,6 @@
 //! `ApplyGeneration` 専用アロケータ（ADR-106 決定1）。
 //!
-//! 旧 `allocate_event_generation` は `ImeEventLog.next_seq()`（診断用リング
+//! 旧 `allocate_event_generation` は `ImeEventLog.next_seq()`（当時の診断用リング
 //! バッファの通し番号、`&self` で読むだけ）をそのまま流用しており、一意性は
 //! 呼び出し元が必ず `dispatch_event` して `next_seq` を実際に進める、という
 //! 型で守られない契約にのみ依存していた（`generation = 0` が bootstrap 経路で
