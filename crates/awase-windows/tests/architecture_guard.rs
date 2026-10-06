@@ -1390,23 +1390,93 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
     );
 }
 
-/// コメント（`/* .. */`・行頭の `//`・行末の `//`）を除く。コメントに書いた式で照合をすり抜けさせない。
+/// コメント（行コメント・ネストするブロックコメント）だけを除く小さな字句走査。
+/// 文字列リテラル（`"..."`・`r#"..."#`）と文字リテラルの中の `//`・`/*` はコメント扱いしない
+/// （コメントや文字列の中の glob `tests/*.json` で、その後ろの本番コードが消えないように）。
+/// 除いたあと、空行を落として各行の末尾の空白も落とす。
 fn strip_comments(code: &str) -> String {
-    let mut no_block = String::new();
-    let mut rest = code;
-    while let Some(start) = rest.find("/*") {
-        no_block.push_str(&rest[..start]);
-        rest = match rest[start + 2..].find("*/") {
-            Some(end) => &rest[start + 2 + end + 2..],
-            None => "",
-        };
+    let b: Vec<char> = code.replace('\r', "").chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    while i < b.len() {
+        let c = b[i];
+        let next = b.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < b.len() && b[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            let mut depth = 1;
+            i += 2;
+            while i < b.len() && depth > 0 {
+                if b[i] == '/' && b.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if b[i] == '*' && b.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    if b[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            }
+        } else if c == 'r' && (i == 0 || !ident(b[i - 1])) && {
+            let mut j = i + 1;
+            while b.get(j) == Some(&'#') {
+                j += 1;
+            }
+            b.get(j) == Some(&'"')
+        } {
+            // 生文字列 r##"..."##
+            let mut j = i + 1;
+            let mut hashes = 0;
+            while b[j] == '#' {
+                hashes += 1;
+                j += 1;
+            }
+            j += 1; // 開き `"`
+            while j < b.len() {
+                if b[j] == '"' && (0..hashes).all(|k| b.get(j + 1 + k) == Some(&'#')) {
+                    j += 1 + hashes;
+                    break;
+                }
+                j += 1;
+            }
+            out.extend(&b[i..j.min(b.len())]);
+            i = j;
+        } else if c == '"' {
+            let mut j = i + 1;
+            while j < b.len() && b[j] != '"' {
+                j += if b[j] == '\\' { 2 } else { 1 };
+            }
+            let end = (j + 1).min(b.len());
+            out.extend(&b[i..end]);
+            i = end;
+        } else if c == '\'' {
+            // 文字リテラル（`'"'`・`'\n'`）はまとめて写す。lifetime（`'a`）は `'` だけ写す。
+            let end = if next == Some('\\') {
+                // `'\''` の2つ目の `'` を閉じと誤認しないよう、エスケープ文字の次から探す。
+                b.get(i + 3..)
+                    .and_then(|rest| rest.iter().position(|&x| x == '\'').map(|k| i + 3 + k + 1))
+            } else if b.get(i + 2) == Some(&'\'') {
+                Some(i + 3)
+            } else {
+                None
+            };
+            let end = end.unwrap_or(i + 1).min(b.len());
+            out.extend(&b[i..end]);
+            i = end;
+        } else {
+            out.push(c);
+            i += 1;
+        }
     }
-    no_block.push_str(rest);
-    no_block
-        .replace('\r', "")
-        .lines()
-        .map(|l| l.find("//").map_or(l, |k| &l[..k]))
-        .filter(|l| !l.trim().is_empty())
+    out.lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -1428,35 +1498,61 @@ fn count_with_clock_calls(code: &str) -> usize {
         .sum()
 }
 
-/// `ImeStateHub.clock` への書き込み（`.clock = ..`、`&mut <path>.clock`、`clock: HubClock::..` の
-/// 構造体リテラル）の数。private でも子モジュール（`shell.rs`）と核の本番メソッドからは書けるため数える。
+/// `ImeStateHub.clock` への書き込みの数。private でも子モジュール（`platform_state/` 配下）と核の
+/// 本番メソッドからは書けるため数える。拾うもの: `.clock = ..`・`*clock = ..`（分配束縛）・
+/// `&mut <path>.clock`／`&mut (<path>.clock)`／`ref mut clock`。
+///
+/// 限界（拾えない）: `&mut self` を取るメソッド呼び出し（`self.clock.advance_ms(n)`。実時計では
+/// 何もしないが、将来 `HubClock` に `&mut self` の setter が増えたら抜け道）、`Cell`/`RefCell` 経由
+/// （今の `clock` は内部可変性を持たない enum で、型を変えれば diff に出る）。
 fn count_clock_writes(code: &str) -> usize {
+    let assign_after = |rest: &str| {
+        let t = rest.trim_start();
+        t.starts_with('=') && !t.starts_with("==")
+    };
     let mut n = 0;
     for l in code.lines() {
-        let mut rest = l;
-        while let Some(k) = rest.find(".clock =") {
-            if !rest[k + ".clock =".len()..].starts_with('=') {
-                n += 1;
-            }
-            rest = &rest[k + 1..];
-        }
-        let mut rest = l;
-        while let Some(k) = rest.find("&mut ") {
-            let after = &rest[k + 5..];
-            let path: String = after
+        for (k, _) in l.match_indices("clock") {
+            let before = &l[..k];
+            let after = &l[k + "clock".len()..];
+            if after
                 .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-                .collect();
-            if path.ends_with(".clock") || path == "clock" {
-                n += 1;
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue; // `clocks` など
             }
-            rest = after;
-        }
-        if l.trim_start().starts_with("clock:") && l.contains("HubClock::") {
-            n += 1;
+            let dotted = before.ends_with('.');
+            let deref = before.ends_with('*');
+            if (dotted || deref) && assign_after(after) {
+                n += 1;
+            } else if before.trim_end().ends_with("ref mut") {
+                n += 1;
+            } else if let Some(m) = before.rfind("&mut ") {
+                // `&mut (self.clock)`・`&mut self.clock`・`&mut clock`
+                let mid = before[m + 5..].trim_start_matches('(');
+                if mid
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                {
+                    n += 1;
+                }
+            }
         }
     }
     n
+}
+
+/// 行頭の `clock:`・`clock,`（構造体リテラルの値・短縮形、フィールド宣言）の数。
+/// 期待値は `platform_state.rs`（フィールド宣言 1 + `with_clock` 本体の短縮形 1）の 2 件だけで、
+/// 他のファイルは 0 件。別の構築関数（`clock: c,` など）が増えたら件数が増えて落ちる。
+fn count_clock_field_lines(code: &str) -> usize {
+    code.lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with("clock:") || t.starts_with("clock,")
+        })
+        .count()
 }
 
 /// 殻の本番コードが渡す実時計の式（`effective_open_at` を検査する
@@ -1486,11 +1582,19 @@ fn with_clock_call_violations(sources: &[(String, String)]) -> Vec<String> {
                 "{path}: with_clock( の呼び出しが {calls} 件（1件であること）"
             ));
         }
-        if allowed {
+        // `clock` は private だが、`platform_state/` 配下の子モジュールには親の private が見える。
+        if path == CORE || path.starts_with("src/state/platform_state/") {
             let writes = count_clock_writes(&production);
             if writes != 0 {
                 out.push(format!(
-                    "{path}: clock への書き込み（代入・&mut・構造体リテラル）が {writes} 件（0件であること）"
+                    "{path}: clock への書き込み（代入・&mut・分配束縛）が {writes} 件（0件であること）"
+                ));
+            }
+            let want = usize::from(path == CORE) * 2;
+            let fields = count_clock_field_lines(&production);
+            if fields != want {
+                out.push(format!(
+                    "{path}: clock のフィールド行（宣言・リテラル・短縮形）が {fields} 件（{want}件であること）"
                 ));
             }
         }
@@ -1544,8 +1648,8 @@ fn with_clock_guard_detects_new_production_entry() {
     const SHELL: &str = "src/state/platform_state/shell.rs";
     const CORE: &str = "src/state/platform_state.rs";
     let shell_ok = "fn new() { Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)) }";
-    let core_ok =
-        "#[cfg(test)]\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n";
+    // フィールド宣言 1 + `with_clock` 本体の短縮形 1（行頭の `clock:`・`clock,`）を持つ最小の核。
+    let core_ok = "struct ImeStateHub {\n    clock: C,\n}\nimpl ImeStateHub {\n fn with_clock(clock: C) -> Self {\n Self {\n clock,\n }\n }\n}\n#[cfg(test)]\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n";
     let build = |shell: &str, core: &str| {
         vec![
             (SHELL.to_string(), shell.to_string()),
@@ -1613,15 +1717,63 @@ fn with_clock_guard_detects_new_production_entry() {
         ),
         "for_test"
     ));
-    // clock への書き込み（代入・setter・&mut・構造体リテラル）
+    // clock への書き込み（代入・setter・&mut・分配束縛・括弧つき &mut）
     for (shell, core) in [
         ("fn new() { let mut s = Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)); s.clock = HubClock::manual(0); s }", core_ok.to_string()),
         (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn set(&mut self, c: C) {{ self.clock = c; }} }}")),
         (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ std::mem::swap(&mut self.clock, &mut o); }} }}")),
-        (shell_ok, format!("{core_ok}fn z() {{ Self {{\n clock: HubClock::manual(0),\n }} }}")),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ let r = &mut (self.clock); }} }}")),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ let Self {{ clock, .. }} = self; *clock = c; }} }}")),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ let Self {{ ref mut clock, .. }} = *self; }} }}")),
     ] {
         assert!(has(&build(shell, &core), "clock への書き込み"), "{shell} / {core}");
     }
+    // 構造体リテラルの値が `HubClock::` で始まらない・短縮形（別の構築関数）
+    for lit in [
+        "clock: c,",
+        "clock: make_clock(),",
+        "clock,",
+        "clock: HubClock::manual(0),",
+    ] {
+        assert!(
+            has(
+                &build(
+                    shell_ok,
+                    &format!("{core_ok}fn z() {{ Self {{\n{lit}\n }} }}")
+                ),
+                "フィールド行"
+            ),
+            "{lit}"
+        );
+    }
+    // `platform_state/` 配下の別の子モジュールでの書き込み
+    let mut child = build(shell_ok, core_ok);
+    child.push((
+        "src/state/platform_state/other.rs".to_string(),
+        "fn f(h: &mut ImeStateHub) { h.clock = c; }".to_string(),
+    ));
+    assert!(has(&child, "other.rs: clock への書き込み"));
+    // M1: コメント内の glob `/*`（閉じない）の後ろの本番コード・文字列の `"/*"` の後ろが消えない
+    let mut glob = build(shell_ok, core_ok);
+    glob.push((
+        "src/state/other.rs".to_string(),
+        "/// tests/journals/*.json を使う\nfn x() { ImeStateHub::with_clock(HubClock::manual(0)) }"
+            .to_string(),
+    ));
+    assert!(has(&glob, "許可リスト外"));
+    let in_string = build(
+        shell_ok,
+        &format!("{core_ok}fn x(&mut self) {{ let g = \"/*\"; self.clock = c; }}"),
+    );
+    assert!(has(&in_string, "clock への書き込み"));
+    // 文字列内の `//`・生文字列・ネストしたブロックコメント・文字リテラルの `'"'`
+    let tricky = build(
+        shell_ok,
+        &format!(
+            "{core_ok}fn x() {{ let u = \"http://a\"; let r = r#\"/* \"#; let q = '\"'; /* a /* b */ c */ self.clock = c; }}"
+        ),
+    );
+    assert!(has(&tricky, "clock への書き込み"));
     // `==` やコメント内の代入は書き込みではない。`new_with_clock(` や `fn with_clock(` 定義は数えない
     assert!(with_clock_call_violations(&build(
         shell_ok,
@@ -1633,6 +1785,40 @@ fn with_clock_guard_detects_new_production_entry() {
         "fn with_clock(c: C) {}\nlet j = UnifiedJournal::new_with_clock(1, c);".to_string(),
     )];
     assert!(with_clock_call_violations(&neutral).is_empty());
+}
+
+/// M1: コメント内の glob（`tests/journals/*.json`）を持つ実在の 3 ファイルで、`strip_comments` が
+/// 本番コードを消さないこと（関数の定義行が、除去の前後で同じ数だけ残る）。
+#[test]
+fn strip_comments_keeps_production_code_in_files_with_glob_comments() {
+    for path in [
+        "src/state/actuation_decision_record.rs",
+        "src/state/conv_classify.rs",
+        "src/state/ime_actuation.rs",
+    ] {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let fn_lines = |text: &str| {
+            text.lines()
+                .filter(|l| {
+                    let t = l.trim_start();
+                    !t.starts_with("//")
+                        && (t.starts_with("fn ")
+                            || t.starts_with("pub fn ")
+                            || t.starts_with("pub(crate) fn "))
+                })
+                .count()
+        };
+        assert!(
+            fn_lines(production) > 0,
+            "{path}: 本番の関数が見つかりません"
+        );
+        assert_eq!(
+            fn_lines(&strip_comments(production)),
+            fn_lines(production),
+            "{path}: strip_comments が本番コードを消しています"
+        );
+    }
 }
 
 /// `UserIntentSource` をリテラルで名乗れるのは `write_set_open_request`
