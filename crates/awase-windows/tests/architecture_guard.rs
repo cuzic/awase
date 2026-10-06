@@ -1617,16 +1617,29 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
 ///   `process_deferred_keys`〈本番到達不能なデッドコード、決定5参照〉）。
 #[test]
 fn applied_state_recorders_call_sites_are_accounted_for() {
-    const RECORDERS: [(&str, usize); 2] = [(".record_optimistic(", 1), (".record_confirmed(", 5)];
+    // FCIS P2: `state/platform_state/shell.rs`（殻）は `foreground_scope()` を読んで核の
+    // `record_*_in_scope` へ委譲するだけなので走査から除外する。殻を数えて期待値を 6/2 にすると
+    // 「記録の呼び出し元が1つ増えた」ことと区別できなくなる。代わりに `_in_scope` 版の呼び出しも
+    // 同じ needle 群として数える（核の `record_ime_apply_result_in_scope` → `record_confirmed_in_scope`
+    // が従来の `record_ime_apply_result` → `record_confirmed` の1件に当たる）。合計は分割前と同じ 1 / 5。
+    const SHELL: &str = "src/state/platform_state/shell.rs";
+    const RECORDERS: [(&[&str], usize); 2] = [
+        (&[".record_optimistic(", ".record_optimistic_in_scope("], 1),
+        (&[".record_confirmed(", ".record_confirmed_in_scope("], 5),
+    ];
 
     let files = list_src_files();
-    for (needle, expected) in RECORDERS {
+    for (needles, expected) in RECORDERS {
+        let needle = needles[0];
         let mut total = 0usize;
         let mut breakdown: Vec<(String, usize)> = Vec::new();
-        for path in &files {
+        for path in files.iter().filter(|p| p.as_str() != SHELL) {
             let content = read_crate_file(path);
             let production = production_code_only(&content);
-            let count = count_real_calls(production, needle);
+            let count: usize = needles
+                .iter()
+                .map(|n| count_real_calls(production, n))
+                .sum();
             if count > 0 {
                 total += count;
                 breakdown.push((path.clone(), count));
@@ -3762,6 +3775,10 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
+        // FCIS P2: 殻（`foreground_scope()` を読んで核の `_in_scope` へ委譲するだけ）は走査しない。
+        if rel == "state/platform_state/shell.rs" {
+            continue;
+        }
         let content = fs::read_to_string(path).unwrap();
         let production = non_comment_lines(production_code_only(&content));
         // arm は 2 箇所: 外部注入の IME キー直後(`kp_arm_external_change_watch`、ADR-205)と、
