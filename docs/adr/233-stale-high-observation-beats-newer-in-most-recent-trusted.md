@@ -85,6 +85,16 @@ belief のフォールバック(`resolve_open_at` が明示意図・`KeyEffectPr
 2. **閉ループハーネス(`tests/support/harness.rs`、仮想時計 `state/hub_clock.rs`)または `ime_model.rs` の単体テストで BUG-189 の列を決定的に再現する:** ICP(false, High)@t0 → KeyEffect(F2→true)@t0+0.65s → ObserverPoll(true)@t0+4.5s(予測が消える)→ 3.01s 何も無い → `resolve_open_at`。旧は false、新は true。
 3. 長いアイドルの確認: アイドル中は poll が 500ms ごとに書くので `derive_any` が決め、フォールバックには来ない。poll が時間切れ(`ime_on=None`)を連続で起こす構成では来うる。`IME detection timed out` が 3s 以上続く区間を数え、そこで `[mrt-shadow]` が出たかを見る。
 
+## 測定結果(2026-10-06、診断ログ `[mrt-shadow]`、run 37436282234)
+
+`ObservationStore::most_recent_trusted_a_prime`(診断専用)と `ImeModel::fallback_shadow` を足し、`effective_open_at` が旧と A' の選択が食い違った件を 1 行出す(挙動は変えない)。tsx-ext-*(23 入力先 × GJI/MS-IME、計 150 ジョブ。Flutter × MS-IME は 8 回)で測った。
+
+- **`[mrt-shadow]` が出たのは Flutter × MS-IME(8 回中 7 回、18 件)と LibreOffice Writer(GJI 1 回 7 件、MS-IME 5 回中 4 回 25 件)だけ。他の 20 構成は 0 件。** 影響範囲の予測(Standard で ICP と ObserverPoll が両方プールにある窓だけ)どおり。
+- **全 50 件が「ImmCrossProbe(High)→ ObserverPoll(Medium)」、同じ hwnd・同じ focus epoch(`same_fence`)。** fence 違いの件は 0(D〈fence 照合〉の別 ADR の必要性を示す測定は今回は 0 件)。
+- **正解の定め方(空きの前後の poll〈`IME snapshot` の `ime_on`〉が一致し、間に `[apply-ime]`・IME キーの予測・`ModeKeyPassedThrough` が無い件):** 確定できたのは 41 件(Flutter 9、LibreOffice GJI 7、LibreOffice MS-IME 25)。**旧が正しかったのは 0 件、A' が正しかったのは 41 件。A' が誤った件は 0。** 判定不能は 9 件(Flutter、前後の poll が不一致または間に操作があった)で別集計とした。
+- **実害との対応:** Flutter × MS-IME は、`[mrt-shadow]` が出た 7 回がすべて FAIL(出なかった 1 回だけ PASS)。LibreOffice は反転が試行の間に落ちるため全 PASS(Opus round1 の予測どおり)。旧の挙動のまま回した測定なので自己汚染の可能性はあるが、「旧が正」が 0 件であることは自己汚染の向きとは無関係に A' を支持する。
+- **限界:** 負けるべき場面(新しい Medium が誤りで古い High が正しい)は、今回の入力先では観測されなかった(A' が選んだ ObserverPoll と古い ICP は常に同じ fence)。起きうる条件は、同一プロセス内の窓切替で ② の弱い ObserverPoll が入る場合(上記 S1)。実装後も `[mrt-shadow]`(新旧の食い違い)を残し、fence 違いの件を継続して数える。
+
 ## 回帰テスト(fix-requires-evidence の (a))
 
 - `ime_model.rs`: 上の列で旧 false・新 true。
@@ -94,10 +104,10 @@ belief のフォールバック(`resolve_open_at` が明示意図・`KeyEffectPr
 
 ## 未解決
 
-- 診断ログ入りの再実行で、LibreOffice の `Engine deactivated` が `MostRecentTrusted` かを確定する。
+- LibreOffice の `Engine deactivated` が `MostRecentTrusted` かは確定した(MS-IME 25 件・GJI 7 件の `[mrt-shadow]` と `[effective-open-flip]` が対応)。
 - drift 側(古い ICP が drift を止めている件)は別 BUG。
 - D(fence 照合)は別 ADR。
 
 ## 状態
 
-設計は収束(2026-10-06、Opus round3 で「収束」)。round1: Blocker 2・Must 5、round2: Must 3・Should 3・Nit 3 を反映済み。**実装は未着手**。実装の前に、上の「実装前の測定」の診断ログ(旧・新比較式の並記)を CI で回し、結果を本 ADR に追記する。
+設計は収束(2026-10-06、Opus round3 で「収束」)。round1: Blocker 2・Must 5、round2: Must 3・Should 3・Nit 3 を反映済み。**実装は未着手**。実装前の測定は完了(下記「測定結果」、A' が 41/41 で正しい)。次は実装(別ブランチ・別 PR)。
