@@ -358,7 +358,6 @@ impl Harness {
                 mode,
                 source: obs_source,
                 confidence,
-                at: TickMs(self.tick()),
             });
         }
         self.settle(format!("observe({source:?}, open={open})"), Some(open));

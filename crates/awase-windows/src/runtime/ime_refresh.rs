@@ -196,7 +196,6 @@ impl Runtime {
                                 mode,
                                 source: crate::state::ime_event::ObservationSource::GjiIoInference,
                                 confidence: crate::state::ime_event::ObservationConfidence::Medium,
-                                at: tick_ms,
                             },
                             tick_ms,
                         );

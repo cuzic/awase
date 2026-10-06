@@ -1124,7 +1124,6 @@ impl Runtime {
                 mode,
                 strategy,
                 result: crate::state::ime_event::InputModeApplyResult::Applied,
-                at: tick_ms,
             },
             tick_ms,
         );

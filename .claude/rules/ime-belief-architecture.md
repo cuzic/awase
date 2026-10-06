@@ -66,7 +66,7 @@ let update = crate::observer::ime_observer::classify_fetched_snapshot(
 if let Some(mode) = update.new_input_mode {
     app.platform_state.ime.dispatch_event(
         ImeEvent::InputModeObserved {
-            mode, source, confidence: ObservationConfidence::High, at: tick_ms,
+            mode, source, confidence: ObservationConfidence::High,
         },
         tick_ms,
     );
@@ -100,7 +100,6 @@ self.dispatch_event(
         mode: InputModeState::AssumedRomaji { .. },
         source: ObservationSource::ImmGetOpenStatus, // 嘘
         confidence: ObservationConfidence::High,
-        at: tick_ms,
     },
     tick_ms,
 );
@@ -111,7 +110,6 @@ self.dispatch_event(
         mode: InputModeState::AssumedRomaji { .. },
         strategy: InputModeApplyStrategy::PostSetOpenEisuReset,
         result: InputModeApplyResult::Applied,
-        at: tick_ms,
     },
     tick_ms,
 );

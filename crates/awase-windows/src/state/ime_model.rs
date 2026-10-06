@@ -490,7 +490,7 @@ impl ImeModel {
 
     /// generation 付きの apply 要求と完了（Engine 経路）を `reduce` に通す（ADR-208 L0 の全列挙テストのオラクル用）。
     ///
-    /// event_log を経由しない純粋モデル上の遷移で、本番は `ImeStateHub` が event_log 経由で `reduce` する。
+    /// `event_log` の採番を経由しない純粋モデル上の遷移で、本番は `ImeStateHub` が採番して `reduce` する。
     /// `reduce` の呼び出しを `ime_model.rs` 内（`self.reduce`）に留めるための薄い口。
     pub fn apply_engine_request_and_completion(
         &mut self,
@@ -821,17 +821,14 @@ impl ImeModel {
                 self.applied = AppliedImeState::Optimistic(desired);
             }
             ImeEvent::InputModeObserved {
-                mode,
-                confidence,
-                at,
-                ..
+                mode, confidence, ..
             } => {
                 // ON/OFF の derive_any() と同じ考え方: Low confidence 単独では
                 // belief を動かさない（記録のみ）。Medium+ のみ input_mode を上書きする。
                 if confidence >= ObservationConfidence::Medium {
                     // fence（ADR-191 決定3）: 最新の打鍵から settle 以内の観測は、IME がキーを処理する
                     // 前の古い状態を読んでいる恐れがあるため、予測した入力モードを上書きしない。
-                    if self.reconcile_key_effect_mode(mode, at.0) {
+                    if self.reconcile_key_effect_mode(mode, envelope.time.tick_ms) {
                         self.input_mode = mode;
                         // 観測が来たので、変換モードの追跡は観測（`prev_conversion_mode`）へ戻す。
                         self.key_track.conv = None;
@@ -2083,7 +2080,6 @@ mod tests {
                 mode: InputModeState::ObservedRomaji,
                 source: ObservationSource::ObserverPoll,
                 confidence: ObservationConfidence::Medium,
-                at: crate::state::TickMs(5000),
             },
         ));
         assert_eq!(model.key_track().conv, None, "観測が来たら追跡は観測へ戻る");
@@ -2136,7 +2132,6 @@ mod tests {
                 mode: InputModeState::ObservedRomaji,
                 source: ObservationSource::ObserverPoll,
                 confidence: ObservationConfidence::Medium,
-                at: crate::state::TickMs(stale),
             },
         ));
         assert!(!model.effective_open(), "古い観測は予測を上書きしない");
@@ -2168,7 +2163,6 @@ mod tests {
                 mode: InputModeState::ObservedRomaji,
                 source: ObservationSource::ObserverPoll,
                 confidence: ObservationConfidence::Medium,
-                at: crate::state::TickMs(at),
             },
         ));
         assert!(model.effective_open(), "settle 後の観測が勝つ");
@@ -2427,7 +2421,6 @@ mod tests {
                 mode: InputModeState::ObservedEisu,
                 source: ObservationSource::FocusProbe,
                 confidence: ObservationConfidence::Low,
-                at: crate::state::TickMs(0),
             },
         ));
         assert_eq!(
@@ -2446,7 +2439,6 @@ mod tests {
                 mode: InputModeState::ObservedEisu,
                 source: ObservationSource::ObserverPoll,
                 confidence: ObservationConfidence::Medium,
-                at: crate::state::TickMs(0),
             },
         ));
         assert_eq!(
@@ -3569,7 +3561,6 @@ mod tests {
                 mode: InputModeState::ObservedEisu,
                 strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                 result: InputModeApplyResult::Applied,
-                at: crate::state::TickMs(0),
             },
         ));
         assert_eq!(
@@ -3591,7 +3582,6 @@ mod tests {
                 mode: InputModeState::ObservedEisu,
                 strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                 result: InputModeApplyResult::Skipped,
-                at: crate::state::TickMs(0),
             },
         ));
         assert_eq!(

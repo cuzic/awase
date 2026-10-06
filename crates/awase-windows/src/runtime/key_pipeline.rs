@@ -823,7 +823,6 @@ impl Runtime {
                         mode: new_mode,
                         source: crate::state::ime_event::ObservationSource::ConvBitsInference,
                         confidence: crate::state::ime_event::ObservationConfidence::High,
-                        at: now_tick,
                     },
                     now_tick,
                 );
@@ -2884,7 +2883,6 @@ impl Runtime {
                                             mode,
                                             source: ObservationSource::ImmCrossProbe,
                                             confidence: ObservationConfidence::High,
-                                            at: tick_ms,
                                         },
                                         tick_ms,
                                     );

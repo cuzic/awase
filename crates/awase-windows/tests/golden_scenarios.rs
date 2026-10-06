@@ -461,7 +461,6 @@ fn scenario_10_user_intent_blocks_observation_but_hwnd_cache_does_not() {
 fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
     use awase::engine::{AssumedReason, InputModeState};
     use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
-    use awase_windows::state::TickMs;
 
     // 1. Edge へフォーカス + キャッシュ復元で stale な ObservedEisu を引き継ぐ
     let deadlocked = run_reducer(vec![
@@ -470,7 +469,6 @@ fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
             mode: InputModeState::ObservedEisu,
             strategy: InputModeApplyStrategy::CacheRestore,
             result: InputModeApplyResult::Applied,
-            at: TickMs(0),
         },
         // 2. ユーザーが物理かなキーで IME ON
         user_intent(true, UserIntentSource::PhysicalImeKey),
@@ -491,7 +489,6 @@ fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
             mode: InputModeState::ObservedEisu,
             strategy: InputModeApplyStrategy::CacheRestore,
             result: InputModeApplyResult::Applied,
-            at: TickMs(0),
         },
         user_intent(true, UserIntentSource::PhysicalImeKey),
     ];
@@ -501,7 +498,6 @@ fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
         },
         strategy: InputModeApplyStrategy::UserImeOnEisuReset,
         result: InputModeApplyResult::Applied,
-        at: TickMs(0),
     });
     let recovered = run_reducer(events);
     assert!(recovered.effective_open(), "IME ON が維持される");
@@ -522,7 +518,6 @@ fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
 fn scenario_12_gji_io_inference_corrects_stale_eisu() {
     use awase::engine::{AssumedReason, InputModeState};
     use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
-    use awase_windows::state::TickMs;
 
     let model = run_reducer(vec![
         focus_changed(ImePolicyProfile::Imm32Unavailable),
@@ -530,7 +525,6 @@ fn scenario_12_gji_io_inference_corrects_stale_eisu() {
             mode: InputModeState::ObservedEisu,
             strategy: InputModeApplyStrategy::CacheRestore,
             result: InputModeApplyResult::Applied,
-            at: TickMs(0),
         },
         ImeEvent::InputModeObserved {
             mode: InputModeState::AssumedRomaji {
@@ -538,7 +532,6 @@ fn scenario_12_gji_io_inference_corrects_stale_eisu() {
             },
             source: ObservationSource::GjiIoInference,
             confidence: ObservationConfidence::Medium,
-            at: TickMs(0),
         },
     ]);
     assert!(
@@ -559,7 +552,6 @@ fn scenario_13_hwnd_cache_restore_does_not_reinject_stale_eisu() {
     use awase::engine::InputModeState;
     use awase_windows::state::eisu_recovery::cache_restore_eisu_guard;
     use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
-    use awase_windows::state::TickMs;
 
     // 修正前の生キャッシュ値をそのまま適用した場合の再現（バグの固定）
     let unguarded = run_reducer(vec![
@@ -568,7 +560,6 @@ fn scenario_13_hwnd_cache_restore_does_not_reinject_stale_eisu() {
             mode: InputModeState::ObservedEisu,
             strategy: InputModeApplyStrategy::CacheRestore,
             result: InputModeApplyResult::Applied,
-            at: TickMs(0),
         },
     ]);
     assert!(
@@ -584,7 +575,6 @@ fn scenario_13_hwnd_cache_restore_does_not_reinject_stale_eisu() {
             mode: guarded_mode,
             strategy: InputModeApplyStrategy::CacheRestore,
             result: InputModeApplyResult::Applied,
-            at: TickMs(0),
         },
     ]);
     assert!(
@@ -604,7 +594,6 @@ fn scenario_14_turn_on_while_open_recovers_stale_eisu() {
     use awase::engine::{AssumedReason, InputModeState};
     use awase_windows::state::eisu_recovery::eisu_reset_on_turn_on_while_open;
     use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
-    use awase_windows::state::TickMs;
 
     // IME は open のまま (物理キーで既に ON 済み)、conv だけが Eisu に固着
     let deadlocked = run_reducer(vec![
@@ -614,7 +603,6 @@ fn scenario_14_turn_on_while_open_recovers_stale_eisu() {
             mode: InputModeState::ObservedEisu,
             source: ObservationSource::ObserverPoll,
             confidence: ObservationConfidence::Medium,
-            at: TickMs(0),
         },
     ]);
     assert!(deadlocked.effective_open(), "IME は open のまま");
@@ -641,14 +629,12 @@ fn scenario_14_turn_on_while_open_recovers_stale_eisu() {
             mode: InputModeState::ObservedEisu,
             source: ObservationSource::ObserverPoll,
             confidence: ObservationConfidence::Medium,
-            at: TickMs(0),
         },
     ];
     events.push(ImeEvent::InputModeApplied {
         mode: new_mode,
         strategy: InputModeApplyStrategy::UserTurnOnEisuReset,
         result: InputModeApplyResult::Applied,
-        at: TickMs(0),
     });
     let recovered = run_reducer(events);
     assert!(recovered.effective_open(), "IME ON が維持される");
@@ -673,7 +659,6 @@ fn scenario_14_turn_on_while_open_recovers_stale_eisu() {
 fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive() {
     use awase::engine::{AssumedReason, InputModeState};
     use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
-    use awase_windows::state::TickMs;
 
     // 前提: IME は既に ON でローマ字入力可能（通常のかな入力中）。
     let toggled_on = run_reducer(vec![
@@ -683,7 +668,6 @@ fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive
             mode: InputModeState::ObservedEisu,
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
-            at: TickMs(0),
         },
     ]);
     assert!(
@@ -703,7 +687,6 @@ fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive
             mode: InputModeState::ObservedEisu,
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
-            at: TickMs(0),
         },
         ImeEvent::InputModeApplied {
             mode: InputModeState::AssumedRomaji {
@@ -711,7 +694,6 @@ fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive
             },
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
-            at: TickMs(10),
         },
     ]);
     assert!(toggled_off.effective_open(), "IME ON は一貫して維持される");
@@ -725,7 +707,6 @@ fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive
 fn scenario_15_gji_half_width_alnum_toggle_keeps_ime_open() {
     use awase::engine::{AssumedReason, InputModeState};
     use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
-    use awase_windows::state::TickMs;
 
     let model = run_reducer(vec![
         focus_changed(ImePolicyProfile::TsfNative),
@@ -734,7 +715,6 @@ fn scenario_15_gji_half_width_alnum_toggle_keeps_ime_open() {
             mode: InputModeState::ObservedEisu,
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
-            at: TickMs(0),
         },
         ImeEvent::InputModeApplied {
             mode: InputModeState::AssumedRomaji {
@@ -742,7 +722,6 @@ fn scenario_15_gji_half_width_alnum_toggle_keeps_ime_open() {
             },
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
-            at: TickMs(10),
         },
     ]);
 
@@ -760,7 +739,6 @@ fn scenario_15_gji_half_width_alnum_toggle_keeps_ime_open() {
 fn scenario_15_duplicate_restore_does_not_toggle_belief_back_to_eisu() {
     use awase::engine::{AssumedReason, InputModeState};
     use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
-    use awase_windows::state::TickMs;
 
     let model = run_reducer(vec![
         focus_changed(ImePolicyProfile::TsfNative),
@@ -769,7 +747,6 @@ fn scenario_15_duplicate_restore_does_not_toggle_belief_back_to_eisu() {
             mode: InputModeState::ObservedEisu,
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
-            at: TickMs(0),
         },
         ImeEvent::InputModeApplied {
             mode: InputModeState::AssumedRomaji {
@@ -777,7 +754,6 @@ fn scenario_15_duplicate_restore_does_not_toggle_belief_back_to_eisu() {
             },
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
-            at: TickMs(10),
         },
         ImeEvent::InputModeApplied {
             mode: InputModeState::AssumedRomaji {
@@ -785,7 +761,6 @@ fn scenario_15_duplicate_restore_does_not_toggle_belief_back_to_eisu() {
             },
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
-            at: TickMs(20),
         },
     ]);
 

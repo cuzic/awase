@@ -361,7 +361,7 @@ fn c6_single_reduce_call_site() {
         1,
         "layer-boundaries.md C-6: 本番コードでの model.reduce() 呼出は 1 箇所\
          (platform_state.rs::reduce_with_envelope) のみのはずが {} 箇所ありました。\n\
-         全 ImeEvent は event_log.record() 経由で seq を付与すること。\n該当箇所:\n  {}",
+         全 ImeEvent は event_log.record_at() 経由で seq を付与すること。\n該当箇所:\n  {}",
         hits.len(),
         hits.join("\n  ")
     );
@@ -520,6 +520,7 @@ const CORE_MODULES: &[&str] = &[
     "hook_watchdog",
     "ime_actuation",
     "ime_actuation_decision",
+    "ime_event_log",
     "ime_kind",
     "ime_read_strategy",
     "ime_set_open_plan",
@@ -557,10 +558,6 @@ const NOT_CORE_MODULES: &[(&str, &str)] = &[
     (
         "ime_event",
         "#[cfg(windows)] impl HwndId / From<HWND>（殻へ出す候補）",
-    ),
-    (
-        "ime_event_log",
-        "Instant::now()（record_at を使う側へ寄せれば解消）",
     ),
     (
         "ime_model",

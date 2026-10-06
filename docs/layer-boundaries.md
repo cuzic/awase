@@ -221,14 +221,14 @@ grep -rn "ctrl_bypass_hold\|focus_transition_pending\|shadow_toggle_suppressed\|
 
 ### C-6: Event は seq 全順序
 
-**ルール**: 全 `ImeEvent` dispatch は `event_log.record()` 経由で seq が
+**ルール**: 全 `ImeEvent` dispatch は `event_log.record_at()` 経由で seq が
 付与される。reducer 内の順序判断は `envelope.time.seq` または
 `envelope.time.monotonic` を使う。`tick_ms` は表示用のみ。
 
 **Why**: ADR-032 設計原則 6。壁時計依存の排除、リプレイ可能性の確保。
 
 **禁則**:
-- `event_log.record()` を経由せず reducer を直接呼ぶ
+- `event_log.record_at()` を経由せず reducer を直接呼ぶ
 - reducer 内の判断で `SystemTime::now()` / wall clock を使う
 
 **検出**:
