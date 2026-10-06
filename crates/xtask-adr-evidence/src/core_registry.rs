@@ -18,7 +18,7 @@ pub fn parse_core_modules(src: &str) -> Result<Vec<String>, String> {
         .find("const CORE_MODULES")
         .ok_or("CORE_MODULES が無い")?;
     let rest = &src[start..];
-    let open = rest.find("&[").ok_or("CORE_MODULES の `&[` が無い")? + 2;
+    let open = rest.find("= &[").ok_or("CORE_MODULES の `= &[` が無い")? + 4;
     let end = rest[open..]
         .find("];")
         .ok_or("CORE_MODULES の `];` が無い")?
