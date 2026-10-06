@@ -37,6 +37,7 @@ examine_globs = [
     "crates/awase-windows/src/state/ime_event.rs",
     "crates/awase-windows/src/state/input_barrier.rs",
     "crates/awase-windows/src/state/probe_admission.rs",
+    "crates/awase-windows/src/state/physical_disposition.rs",
     "crates/awase-windows/src/state/transition.rs",
     "crates/awase-windows/src/focus/class_names.rs",
     "crates/awase-windows/src/focus/cache.rs",
