@@ -533,6 +533,7 @@ const CORE_MODULES: &[&str] = &[
     "keymap_latch",
     "layout_language",
     "mode_key_pass",
+    "msaa_role_plan",
     "observation_store",
     "open_warrant",
     "physical_disposition",
