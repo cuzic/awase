@@ -6975,3 +6975,56 @@ fn ime_refresh_is_typing_guard_detects_violations() {
         "let m = is_typing(idle_ms);\nlet t = idle_ms <= crate::tuning::TYPING_IDLE_MS;\n"
     ));
 }
+
+
+/// FCIS F3: relay の「即時/キュー/ガード」の判断は `state/relay_plan.rs` に出した。触る辺を固定する。
+/// - e12: `execute_relay` の Consume は Timer だけを即時に実行する（`plan_consume_effect` 経由。Immediate が Queue より先に実行される位置にある）。
+/// - e13: `handle_reinject` は `OutputActiveGuard::begin()` を `spawn_local` の**前**に取る。
+/// - c21・c22 の対（ADR-156）: defer 側（`run_passthrough_pipeline`）と drain 側（`reinject_wait_remaining`）が
+///   どちらも `relay_plan` の同じ閾値判断（`output_guard_remaining_ms` 系）を使う。片方だけ条件を足さないこと。
+#[test]
+fn relay_plan_edges_e12_e13_and_defer_drain_pair_are_pinned() {
+    let executor = read_crate_file("src/runtime/executor.rs");
+    let prod = production_code_only(&executor);
+
+    let relay = non_comment_lines(extract_fn_body(prod, "fn execute_relay("));
+    assert!(
+        relay.contains("plan_relay(") && relay.contains("plan_consume_effect("),
+        "execute_relay は判断を relay_plan::plan_relay / plan_consume_effect に委ねること（e12）"
+    );
+    assert!(
+        relay.contains("matches!(effect, Effect::Timer(_))"),
+        "execute_relay は Timer だけを即時の対象にすること（e12）"
+    );
+    let imm = relay.find("EffectRoute::Immediate").expect("Immediate arm");
+    let queue = relay.find("EffectRoute::Queue").expect("Queue arm");
+    assert!(
+        imm < queue,
+        "Immediate（Timer の即時実行）が Queue より先であること（e12）"
+    );
+
+    let reinject = non_comment_lines(extract_fn_body(prod, "fn handle_reinject("));
+    let begin = reinject
+        .find("OutputActiveGuard::begin()")
+        .expect("OutputActiveGuard::begin()");
+    let spawn = reinject.find("spawn_local(").expect("spawn_local(");
+    assert!(
+        begin < spawn,
+        "OutputActiveGuard::begin() は spawn_local の前に取ること（e13）"
+    );
+
+    let defer = non_comment_lines(extract_fn_body(prod, "fn run_passthrough_pipeline("));
+    let drain = non_comment_lines(extract_fn_body(prod, "fn reinject_wait_remaining("));
+    assert!(
+        defer.contains("relay_plan::output_in_flight("),
+        "defer 側（run_passthrough_pipeline）は relay_plan::output_in_flight を使うこと（c21・c22）"
+    );
+    assert!(
+        drain.contains("relay_plan::reinject_wait_remaining("),
+        "drain 側（reinject_wait_remaining）は relay_plan::reinject_wait_remaining を使うこと（c21・c22）"
+    );
+    assert!(
+        !defer.contains("< crate::tuning::OUTPUT_GUARD_MS") && !drain.contains("OUTPUT_GUARD_MS -"),
+        "出力ガードの閾値判断を executor.rs にインラインで書き戻さないこと（relay_plan に一本化）"
+    );
+}
