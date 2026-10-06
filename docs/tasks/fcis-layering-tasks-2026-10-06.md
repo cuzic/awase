@@ -146,3 +146,62 @@ P0 の初期対象は `state/` に限る(`state/` 以外を対象にするなら
 | `state/key_effect_runtime.rs` | `#[cfg(windows)]`(`:377`、`:385`、`:393`、`:408`、`:440`、`:816`)。学習済み表のパス解決・`fs::metadata`・読み込み | 殻へ(FS) |
 | `state/probe_admission.rs` | 可変の `static REJECTION_COUNTERS`(`:71`)、`#[cfg(windows)]` の関数(`:325`) | カウンタは shell へ |
 | `state/mod.rs` | `#[cfg(windows)]` 8 件。`mod` 宣言のほか、`pub(crate) use conv_mode::{…}`(`:32-35`)・`pub use platform_state::PlatformState`(`:189-190`)・`pub(crate) use ime_decision_view::{…}`(`:194-195`)など `use` の再公開を含む | **恒久的に `CORE_MODULES` に載せない**(モジュール宣言の集約ファイル。例外を `use` まで広げると、core のファイルに gated な再公開を置く抜け道になる) |
+
+## 進め方の見直し(2026-10-06、所有者承認)
+
+ここまでの実装(F1・F2・F3・F4・F5a、P0〜P5a-1)で分かったことに基づき、FCIS と代数的 effect の進め方を 5 点見直す。既存の行と節は書き換えない(並行する PR #513・#514・#517・#518・#520 との衝突を避けるため)。根拠の事実は develop `d703c5d0` 時点で、未マージの PR はそう明記する。新しいタスクの ID は `V1`〜(見直しの V)。`R1`〜`R7` は ADR-229 の移行のレシピが使っているので避けた。
+
+### 5 点の要約
+
+1. **機械的な指摘は、Opus に渡す前に自動で検出する**。Opus の PR レビューの Must に機械的なものが多かった。①新しい純粋モジュールを、`.githooks/pre-push` の正規表現・`.claude/rules/fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` の 3 か所に足し忘れた(F3・F4・F5a で 3 回)。②PR の本文が別の PR の本文で上書きされた(#513)。③本文の数値の誤り(#518 の「26 行 PASS」。実際は 24 PASS + `#[ignore]` 1)。④古い base に対する green。
+2. **文字列走査のガードを増やすより、コンパイラに守らせる**。ガードへの指摘は、ほぼガードのすり抜けだった。#513 の再確認 M1(`/*` を含むコメントで本番コードが消える。字句走査 `strip_comments` に置き換えた)、#518 の走査対象が 2 ファイル固定、`pub` の集合の固定(P5)は crate 境界が無いことの穴埋め。
+3. **代数的 effect は、ライブラリではなく慣習として進める**。「事実 → 理由つきの enum の Plan → 殻が実行」の形が F1・F2・F3・F4・F5a で自然に 5 回できた(rule of three の条件を満たす)。一方、汎用の Effect/Handler の部品は、どの F でも必要にならなかった(ADR-229 の toolkit の判断と、Plan 設計案の却下が正しかった傍証)。
+4. **再生できる形に揃えてから分割する**。再生 fixture が作れたのは `conv_classify` と `read_strategy`(F1)だけ。F3・F4 は事実の型に `Instant` が入っていたのが障壁で、全数表のテストで代用した。
+5. **辺の固定は、テキスト走査から型へ**。Opus が #517(F3、未マージ)のレビューで、e12・e13 を固定するソース走査のテストが違反例を検出できないと指摘した。
+
+### 慣習(代数的 effect、見直し 3)
+
+- `decide_*` の戻り値は、**理由を持つ Plan の enum** にする(例: 「省略する」variant が、なぜ省略するかを持つ)。
+- Plan の実行は、殻の **1 関数** にまとめる(`execute_*`)。
+- E1(省略の根拠を journal に載せる)は、新しい仕組みではなく Plan の理由の一部として扱う。
+- 汎用の Effect/Handler の型は作らない。部品化は、Plan の実行の重複が実際に増えて困ったときに検討する(ADR-229 toolkit の「作る条件」と同じ流儀)。
+
+### 新しいタスク
+
+| ID | 内容 | 前提 | 成否の判定 | 取りやめ条件 |
+|---|---|---|---|---|
+| **V1** | `crates/xtask-adr-evidence` の延長で、`layer_boundary_guard.rs` の `CORE_MODULES` の各項目が、`.githooks/pre-push` の正規表現・`fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` の `examine_globs` の 3 か所に載っているかを CI で検査する(ADR-158 TB2 と同じ流儀。既存の `adr-evidence-consistency` ジョブに足す) | なし | 3 か所のどれかから 1 項目を消すと CI が落ちる(PR 本文に、消して落ちることを確かめた手順を書く)。今の develop で green | 3 か所の役割が違い、全項目を 3 か所に載せることが正しくない(例: mutants に載せると遅すぎるファイル)と分かった。そのときは除外を理由つきで宣言する形にするか止めて報告 |
+| **V2** | 実装エージェント用の完了前チェック(下の「完了前チェック」)。docs のみ | なし | **済(本節)** | — |
+| **V3** | 字句走査(#513 で作られる `strip_comments`。文字列・生文字列・文字リテラル・行コメント・ネストするブロックコメント)を、テストの共通部品にする(`tests/support/` など)。`layer_boundary_guard.rs` の `code_lines`/`test_block_mask` と、`architecture_guard.rs` の各ガードが再利用する | #513 のマージ | 既存のガードの期待値が変わらない(変わったら、それはすり抜けの発見なので PR 本文に列挙する)。共通部品自体に、コメント・文字列の中の語を拾わないテスト | 置き換えでガードの意味が変わり、1 PR で収まらない |
+| **V4** | 新しい分割の前提チェック: 分割する関数の事実の型に `Instant` を入れず、`TickMs`/`HubClock` で持たせる。満たさない関数は、分割の前に時刻の持ち方を直す PR を先に出す(ADR-232 D2〈起草中、未マージ〉と同じ方向) | なし(以降の F の分割すべてに適用) | 分割の PR に、`decide` の再生 fixture か、fixture を作れない理由が書いてある | — |
+| **V5** | 辺の固定を型へ: e13(`OutputActiveGuard::begin()` を `spawn_local` の前に取る)を、ガードをタスクに所有権ごと渡す形など、型で表せるものから直す。型で表せない辺だけ、ソース走査のテストに残す(残す場合は、違反例を検出できることをテストで示す) | #517 のマージ | 順序を入れ替えるとコンパイルが通らない(PR 本文に手順)。e12・e13 の走査テストのうち型に置き換えた分を削除 | 型にすると `OutputActiveGuard` の寿命が変わる(ADR-156 の defer/drain 2 窓口に響く) |
+| **V6** | **crate 分割の前倒し(方針のみ。タスクとしては着手しない)**。下の「crate 分割の着手条件」を満たしたら、着手するかを所有者に諮る | 下記 | — | — |
+
+### 完了前チェック(実装エージェント用、V2)
+
+PR を Opus のレビューに出す前に、実装エージェントが自分で確かめる。
+
+1. 新しく足した純粋モジュールを、`CORE_MODULES`・`.githooks/pre-push` の正規表現・`fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` の `examine_globs` に載せたか(V1 が入るまでは手で)。
+2. `gh pr view <N> --json body` で、PR の本文が自分の PR のものか(別 PR の本文で上書きしていないか)。
+3. 本文の数値(PASS の数・件数・行数)を、CI のログ(§0-6)からそのまま写したか。`#[ignore]` の数も書く。
+4. `git merge-base --is-ancestor origin/develop HEAD` で、最新の develop の上にあるか。古い base の green を成否にしない。
+5. ソース走査のテストを足したなら、違反例を 1 つ作って検出できることを確かめたか(できないなら型か本物のテストに替える)。
+6. 事実の型に `Instant` を入れていないか(V4)。
+
+### crate 分割の着手条件(V6、方針のみ)
+
+ADR-229 D4・§4 は crate の物理分割を「最後」としていたが、見直し 2 により前倒しを方針とする。次の全てを満たしたら、着手するかを所有者に諮る。
+
+1. 今のガード修正の PR 群(#513・#517・#518)がマージされている。
+2. V3(字句走査の共通部品化)が済み、`architecture_guard.rs` のファイルパスの文字列リテラルを機械的に付け替えられる。
+3. `CORE_MODULES` が 60 ファイル以上(develop `d703c5d0` で 51)、かつ `NOT_CORE_MODULES` の 8 件のうち、殻へ出す候補(付録 B)の扱いが決まっている。
+
+期待する置き換え: windows に依存しない core crate を切り、`CORE_MODULES` の走査(Tier-2 の 4 規則のうち `#[cfg(windows)]` の検出)は crate の依存関係(windows-rs に依存しない)に、P5 の `pub` の集合を固定するガードは crate の可視性(`pub(crate)`)に置き換える。壁時計・`static`・FS の規則は crate を分けても走査で残る。
+
+### 優先順位の更新
+
+1. **起動時のフォーカス経路**(BUG-081/102/114/148。ADR-232 D1、起草中・未マージ): 実害の記録があるので最優先。
+2. V1・V3(機械的な検出と共通部品)。以降の全 PR の Opus レビューの手間を減らす。
+3. V4・V5、慣習(見直し 3)を F4(#514)・F3(#517)のマージ後の分割に適用する。
+4. **F6・E1** は、慣習(見直し 3)と V4(見直し 4)を済ませてから。
+5. **P5 の残りの写しの置き換えは優先度を下げる**: P5a-1(#518、未マージ)で 5 系統を同時に本物の `ImeStateHub` に置き換えたが、CI の `closed_loop_scenarios` は 24 PASS・失敗 0・`#[ignore]` 1 のままで、写しのずれは 1 件も見つからなかった。ignore 中の `conversion_esc_does_not_leave_stale_conv_stage` は本物のハブでは未確認。
