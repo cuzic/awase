@@ -21,7 +21,9 @@ use std::sync::Mutex;
 
 use serde::Deserialize;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, PostMessageW, SetCursorPos,
     WM_CLOSE,
