@@ -4173,7 +4173,7 @@ fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() 
 /// 別経路から迂回されうる、査読で指摘された最重要ポイント）。
 /// `production_code_only` は `#[cfg(test)]` の直後が文字どおり `mod tests` の
 /// ときしか test module を切り落とせない。`runtime/transport.rs` は
-/// `mod plan_tests` という別名を使っているため、共有ヘルパーのままだと
+/// `mod plan_shell_tests`（ADR-229 T1 前は `plan_tests`）という別名を使っているため、共有ヘルパーのままだと
 /// テストコード中の `InputRelay` 出現（回帰テストの引数等）まで「本番コード」
 /// として誤カウントする（レビュー指摘）。ここでは `#[cfg(test)]` の直後に
 /// 続く `mod <任意の識別子> {` を汎用的に検出して切り落とす、より厳密な版を
@@ -4852,7 +4852,7 @@ fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
 /// ADR-191/199: `plan()` の DBE 分岐が KeyDown を無条件に握りつぶすのは「awase が実際に書くキー」だけ
 /// （`enrich_key_role` が役割から `Some(Toggle)` を付けた 0xF3/0xF4。旧 `is_open_toggle_for`）であること、および
 /// BUG-116/ADR-137 決定2 の安全ガードが本番コードから消えていないことを固定する。
-/// `transport.rs::plan_tests` / `key_pipeline.rs` 内のユニットテストは
+/// `transport.rs::plan_shell_tests` / `key_pipeline.rs` 内のユニットテストは
 /// `runtime/mod.rs` の `#[cfg(windows)]` 配下にあり Linux では存在しないため
 /// （CLAUDE.md 参照）、この静的スキャンが Linux CI 側の唯一の防波堤になる。
 #[test]

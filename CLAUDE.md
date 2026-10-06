@@ -55,7 +55,7 @@ under `#![cfg(windows)]` and only assert for real in the `windows-build` CI job 
 
 The same applies one level deeper and less visibly: `crates/awase-windows/src/runtime/mod.rs`
 carries `#[cfg(windows)]` on the whole module tree, so any `#[cfg(test)]` unit test living inside
-`runtime/` (e.g. `runtime/open_chain.rs`, `runtime/transport.rs::plan_tests`) or inside any other
+`runtime/` (e.g. `runtime/open_chain.rs`, `runtime/key_pipeline.rs`) or inside any other
 `#[cfg(windows)]`-gated file (`ime_controller.rs`, `ime.rs`, `imm.rs`, `hook.rs`, ...) silently
 does not exist in the native-Linux test binary at all — it won't show up in `cargo test --list`,
 `cargo nextest list`, or even `strings` on the compiled binary, and there is no error or skip
