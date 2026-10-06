@@ -6977,54 +6977,132 @@ fn ime_refresh_is_typing_guard_detects_violations() {
 }
 
 
-/// FCIS F3: relay の「即時/キュー/ガード」の判断は `state/relay_plan.rs` に出した。触る辺を固定する。
-/// - e12: `execute_relay` の Consume は Timer だけを即時に実行する（`plan_consume_effect` 経由。Immediate が Queue より先に実行される位置にある）。
-/// - e13: `handle_reinject` は `OutputActiveGuard::begin()` を `spawn_local` の**前**に取る。
-/// - c21・c22 の対（ADR-156）: defer 側（`run_passthrough_pipeline`）と drain 側（`reinject_wait_remaining`）が
-///   どちらも `relay_plan` の同じ閾値判断（`output_guard_remaining_ms` 系）を使う。片方だけ条件を足さないこと。
+// ── FCIS F3: relay の「即時/キュー/ガード」の判断は `state/relay_plan.rs` に出した。固定する辺と対 ──
+// - e12: `execute_relay` の Consume は Timer だけを即時に実行する（Immediate の腕が `execute_one`、Queue の腕が `push_back`）。
+// - e13: `OutputActiveGuard::begin()` を `let guard =` で束縛し、`spawn_local` の前に取って、future の中で drop する
+//   （`handle_reinject` と `dispatch_ime_set_open` の async 経路の両方）。`let _ =` はその場で drop されるので違反。
+// - executor キューの defer 側（`run_passthrough_pipeline`）と drain 側（`reinject_wait_remaining`）の閾値の対（ADR-156）:
+//   どちらも `relay_plan` の同じ閾値判断を使う。**c21・c22（INPUT_DEFER 側の制約）はここでは固定していない。**
+
+/// e12 の違反（腕の入れ替え・Timer 判定の反転）を返す。
+fn e12_violations(execute_relay_body: &str) -> Vec<&'static str> {
+    let code = non_comment_lines(execute_relay_body);
+    let mut v = Vec::new();
+    if !code.contains("plan_consume_effect(matches!(effect, Effect::Timer(_)))") {
+        v.push("Timer 判定が `plan_consume_effect(matches!(effect, Effect::Timer(_)))` でない");
+    }
+    match (
+        code.find("EffectRoute::Immediate"),
+        code.find("EffectRoute::Queue"),
+    ) {
+        (Some(imm), Some(queue)) if imm < queue => {
+            let imm_arm = &code[imm..queue];
+            let queue_arm = &code[queue..];
+            if !imm_arm.contains("execute_one(") || imm_arm.contains("queue.push_back") {
+                v.push("Immediate の腕が execute_one でない");
+            }
+            if !queue_arm.contains("queue.push_back(effect)") || queue_arm.contains("execute_one(")
+            {
+                v.push("Queue の腕が push_back でない");
+            }
+        }
+        _ => v.push("Immediate/Queue の腕が見つからない、または順序が違う"),
+    }
+    v
+}
+
+/// e13 の違反を返す（begin は `let guard =` で束縛され、`spawn_local` の前にあり、future の中で drop される）。
+fn e13_violations(body: &str) -> Vec<&'static str> {
+    let code = non_comment_lines(body);
+    let mut v = Vec::new();
+    let Some(begin) = code.find("OutputActiveGuard::begin()") else {
+        return vec!["OutputActiveGuard::begin() が無い"];
+    };
+    let before =
+        code[..begin].trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == ':');
+    if !before.trim_end().ends_with("let guard =") {
+        v.push("begin() が `let guard =` で束縛されていない（`let _ =` は即 drop）");
+    }
+    let Some(spawn) = code.find("spawn_local(") else {
+        return vec!["spawn_local( が無い"];
+    };
+    if begin >= spawn {
+        v.push("begin() が spawn_local の前にない");
+    }
+    if !code[spawn..].contains("drop(guard)") {
+        v.push("future の中で drop(guard) されていない");
+    }
+    if code[begin..spawn].contains("drop(guard)") {
+        v.push("spawn_local の前で guard を drop している");
+    }
+    v
+}
+
 #[test]
 fn relay_plan_edges_e12_e13_and_defer_drain_pair_are_pinned() {
     let executor = read_crate_file("src/runtime/executor.rs");
     let prod = production_code_only(&executor);
 
-    let relay = non_comment_lines(extract_fn_body(prod, "fn execute_relay("));
-    assert!(
-        relay.contains("plan_relay(") && relay.contains("plan_consume_effect("),
-        "execute_relay は判断を relay_plan::plan_relay / plan_consume_effect に委ねること（e12）"
-    );
-    assert!(
-        relay.contains("matches!(effect, Effect::Timer(_))"),
-        "execute_relay は Timer だけを即時の対象にすること（e12）"
-    );
-    let imm = relay.find("EffectRoute::Immediate").expect("Immediate arm");
-    let queue = relay.find("EffectRoute::Queue").expect("Queue arm");
-    assert!(
-        imm < queue,
-        "Immediate（Timer の即時実行）が Queue より先であること（e12）"
-    );
+    let v = e12_violations(extract_fn_body(prod, "fn execute_relay("));
+    assert!(v.is_empty(), "e12 違反: {v:?}");
 
-    let reinject = non_comment_lines(extract_fn_body(prod, "fn handle_reinject("));
-    let begin = reinject
-        .find("OutputActiveGuard::begin()")
-        .expect("OutputActiveGuard::begin()");
-    let spawn = reinject.find("spawn_local(").expect("spawn_local(");
-    assert!(
-        begin < spawn,
-        "OutputActiveGuard::begin() は spawn_local の前に取ること（e13）"
-    );
+    let v = e13_violations(extract_fn_body(prod, "fn handle_reinject("));
+    assert!(v.is_empty(), "e13（reinject）違反: {v:?}");
+    let async_arm = extract_fn_body(prod, "fn dispatch_ime_set_open(");
+    let v = e13_violations(async_arm);
+    assert!(v.is_empty(), "e13（async actuation）違反: {v:?}");
 
     let defer = non_comment_lines(extract_fn_body(prod, "fn run_passthrough_pipeline("));
     let drain = non_comment_lines(extract_fn_body(prod, "fn reinject_wait_remaining("));
     assert!(
         defer.contains("relay_plan::output_in_flight("),
-        "defer 側（run_passthrough_pipeline）は relay_plan::output_in_flight を使うこと（c21・c22）"
+        "defer 側（run_passthrough_pipeline）は relay_plan::output_in_flight を使うこと"
     );
     assert!(
         drain.contains("relay_plan::reinject_wait_remaining("),
-        "drain 側（reinject_wait_remaining）は relay_plan::reinject_wait_remaining を使うこと（c21・c22）"
+        "drain 側（reinject_wait_remaining）は relay_plan::reinject_wait_remaining を使うこと"
+    );
+    // `OUTPUT_GUARD_MS` の出現は、この 2 形だけ（インラインの比較を書き戻さない）。
+    assert_eq!(
+        defer.matches("OUTPUT_GUARD_MS").count(),
+        1,
+        "defer 側の OUTPUT_GUARD_MS は 1 回だけ"
     );
     assert!(
-        !defer.contains("< crate::tuning::OUTPUT_GUARD_MS") && !drain.contains("OUTPUT_GUARD_MS -"),
-        "出力ガードの閾値判断を executor.rs にインラインで書き戻さないこと（relay_plan に一本化）"
+        defer.contains("output_in_flight(in_flight_ms, crate::tuning::OUTPUT_GUARD_MS)")
+            || defer.contains("output_in_flight(\n")
     );
+    assert_eq!(
+        drain.matches("OUTPUT_GUARD_MS").count(),
+        1,
+        "drain 側の OUTPUT_GUARD_MS は 1 回だけ"
+    );
+    assert!(drain.contains("guard_ms: crate::tuning::OUTPUT_GUARD_MS"));
+}
+
+#[test]
+fn e12_e13_detectors_catch_violations() {
+    let ok12 = "match plan_consume_effect(matches!(effect, Effect::Timer(_))) {\n EffectRoute::Immediate => { self.execute_one(a); }\n EffectRoute::Queue => self.queue.push_back(effect),\n }";
+    assert!(e12_violations(ok12).is_empty());
+    // 腕の中身の入れ替え
+    let swapped = ok12
+        .replace("self.execute_one(a);", "TMP")
+        .replace("self.queue.push_back(effect)", "self.execute_one(a)")
+        .replace("TMP", "self.queue.push_back(effect);");
+    assert!(!e12_violations(&swapped).is_empty());
+    // Timer 判定の反転
+    let inverted = ok12.replace("(matches!", "(!matches!");
+    assert!(!e12_violations(&inverted).is_empty());
+
+    let ok13 = "let guard = X::OutputActiveGuard::begin();\n spawn_local(async move { f(); drop(guard); });";
+    assert!(e13_violations(ok13).is_empty());
+    let dropped = "let _ = X::OutputActiveGuard::begin();\n spawn_local(async move { f(); });";
+    assert!(!e13_violations(dropped).is_empty());
+    let early = "let guard = X::OutputActiveGuard::begin();\n drop(guard);\n spawn_local(async move { f(); });";
+    assert!(!e13_violations(early).is_empty());
+    let after = "spawn_local(async move { f(); });\n let guard = X::OutputActiveGuard::begin();";
+    assert!(!e13_violations(after).is_empty());
+    let inside =
+        "spawn_local(async move { let guard = X::OutputActiveGuard::begin(); f(); drop(guard); });";
+    assert!(!e13_violations(inside).is_empty());
 }

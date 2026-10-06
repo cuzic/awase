@@ -227,7 +227,11 @@ impl DecisionExecutor {
         //    guard 解除済みなら execute_one してから queue に進む (batching を継続)。
         //    判断（park するか・guard 通過の持ち越し）は `relay_plan::plan_drain_step`。
         if let Some(event) = self.guard_held.take() {
-            let wait = self.reinject_wait_remaining(platform, &event);
+            let wait = if relay_plan::drain_needs_wait_check(relay_plan::DrainItem::Held, false) {
+                self.reinject_wait_remaining(platform, &event)
+            } else {
+                None
+            };
             let step = relay_plan::plan_drain_step(relay_plan::DrainItem::Held, false, wait);
             match step.action {
                 relay_plan::DrainAction::Park { remaining } => {
@@ -406,15 +410,19 @@ impl DecisionExecutor {
             Decision::Consume { .. } => relay_plan::RelayDecisionKind::Consume,
         };
         let plan = relay_plan::plan_relay(relay_plan::RelayFacts { kind, physical });
-        match (plan.action, decision) {
-            // physical=Suppress（KANJI 物理キー抑止）の場合は OS に届けず Consume する。
-            // handle_passthrough の reinject/warmup 後処理も走らせない。
-            (relay_plan::RelayAction::ConsumeSuppressed, _) => BatchResult {
-                has_pending: self.has_pending(),
-                callback: CallbackResult::Consumed,
-                sync_outcomes: Vec::new(),
-            },
-            (relay_plan::RelayAction::RunPassthroughPipeline, _) => {
+        // フックのコールバック上なので panic しうる `unreachable!` は使わず、Decision の種別ごとに
+        // plan の action を読む（種別と action の対応は `plan_relay_exhaustive` が固定）。
+        match decision {
+            Decision::PassThrough => {
+                // physical=Suppress（KANJI 物理キー抑止）の場合は OS に届けず Consume する。
+                // handle_passthrough の reinject/warmup 後処理も走らせない。
+                if matches!(plan.action, relay_plan::RelayAction::ConsumeSuppressed) {
+                    return BatchResult {
+                        has_pending: self.has_pending(),
+                        callback: CallbackResult::Consumed,
+                        sync_outcomes: Vec::new(),
+                    };
+                }
                 let callback = self.run_passthrough_pipeline(platform, raw_event);
                 BatchResult {
                     has_pending: self.has_pending(),
@@ -422,10 +430,11 @@ impl DecisionExecutor {
                     sync_outcomes: Vec::new(),
                 }
             }
-            (
-                relay_plan::RelayAction::QueueFlush { reinject },
-                Decision::PassThroughWith { mut effects },
-            ) => {
+            Decision::PassThroughWith { mut effects } => {
+                let reinject = matches!(
+                    plan.action,
+                    relay_plan::RelayAction::QueueFlush { reinject: true }
+                );
                 // flush 出力あり → Consume して flush + キー再注入を FIFO でキュー。
                 // physical=Suppress（KANJI 物理キー抑止）の場合は reinject を積まない。
                 tracing::debug!(
@@ -453,7 +462,7 @@ impl DecisionExecutor {
                     sync_outcomes: Vec::new(),
                 }
             }
-            (relay_plan::RelayAction::ConsumeEffects, Decision::Consume { effects }) => {
+            Decision::Consume { effects } => {
                 // Engine が消費 → Timer は即時実行（platform timer state を常に最新に保つ）、
                 // それ以外はキューに入れる（e12、判断は `relay_plan::plan_consume_effect`）。
                 //
@@ -479,7 +488,6 @@ impl DecisionExecutor {
                     sync_outcomes,
                 }
             }
-            _ => unreachable!("plan_relay は Decision の種別と対応する action だけを返す"),
         }
     }
 

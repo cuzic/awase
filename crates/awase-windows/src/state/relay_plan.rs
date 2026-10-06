@@ -5,13 +5,18 @@
 //! `spawn_local`・キューへの積み・`TIMER_OUTPUT_GUARD` の set/kill・SendInput）は `executor.rs` の殻に残る。
 //! 各 plan は**理由の enum** を返す（journal に載せる用。ADR-229 E1）。
 //!
-//! 触る辺（`docs/tasks/effect-signature-inventory-2026-10-06/dependency-edges.md`）:
+//! 固定する辺と対:
 //! - **e12**: `Decision::Consume` では Timer だけが即時に実行され、キューを追い越す（`plan_consume_effect`）。
-//! - **c21・c22 の defer 側と drain 側の対（ADR-156）**: defer 側（`run_passthrough_pipeline` の
-//!   `output_in_flight`）と drain 側（`reinject_wait_remaining`）が **同じ** `output_guard_remaining_ms`
-//!   を使う。片方だけ条件を足す事故（ADR-123→128）を、`defer_and_drain_share_output_guard_threshold` が固定する。
-//! - e13（`OutputActiveGuard::begin()` を `spawn_local` の前に取る順序）は殻の `handle_reinject` に残り、
-//!   本モジュールは触らない（順序は `executor.rs` のソース走査テストで固定）。
+//! - **executor キューの defer 側と drain 側の閾値の対（ADR-156。辺の表の c23 として追加）**:
+//!   defer 側（`run_passthrough_pipeline` の `output_in_flight`）と drain 側（`reinject_wait_remaining`）が
+//!   **同じ** `output_guard_remaining_ms` を使う。片方だけ条件を足す事故（ADR-123→128）を、
+//!   `defer_and_drain_share_output_guard_threshold` と境界値のテストが固定する。
+//!   **残る非対称（本モジュールは扱わない）**: defer 側の `has_pending` は `has_pending_tsf_work()` を OR する
+//!   （BUG-58）が、drain 側が TSF の保留を見るのは確定キーの KeyDown だけ。ここに条件を足すときは両窓口を見ること。
+//! - **c21・c22 は触らない**（`INPUT_DEFER` 側の制約。c21=`defer_during_output`/`replay_later` の post の非対称、
+//!   c22=`raw_recovery_owns_deferred()` の gate。F6 などで別途扱う）。
+//! - e13（`OutputActiveGuard::begin()` を `spawn_local` の前に取る順序）は殻（`handle_reinject` と
+//!   `dispatch_ime_set_open` の async 経路）に残り、本モジュールは触らない（`architecture_guard` で固定）。
 
 use super::physical_disposition::PhysicalKeyDisposition;
 
@@ -338,6 +343,29 @@ mod tests {
         }
     }
 
+    /// 境界（`<` と `<=` の取り違えを検出する。リテラルで固定）。
+    #[test]
+    fn output_guard_boundary_literals() {
+        assert_eq!(output_guard_remaining_ms(49, 50), Some(1));
+        assert_eq!(output_guard_remaining_ms(50, 50), None);
+        assert_eq!(output_guard_remaining_ms(51, 50), None);
+        assert_eq!(output_guard_remaining_ms(0, 50), Some(50));
+        assert_eq!(output_guard_remaining_ms(u64::MAX, 50), None);
+        assert!(output_in_flight(49, 50));
+        assert!(!output_in_flight(50, 50));
+        assert!(!output_in_flight(51, 50));
+        let wait = |elapsed| {
+            reinject_wait_remaining(ReinjectWaitFacts {
+                confirm_held_by_tsf: false,
+                output_elapsed_ms: elapsed,
+                guard_ms: 50,
+            })
+        };
+        assert_eq!(wait(49), Some(1));
+        assert_eq!(wait(50), None);
+        assert_eq!(wait(51), None);
+    }
+
     #[test]
     fn reinject_wait_confirm_key_takes_priority() {
         for elapsed in [0, 49, 50, u64::MAX] {
@@ -431,6 +459,27 @@ mod tests {
                 plan_drain_step(item, passed, wait),
                 DrainStep { action, reason },
                 "{item:?} passed={passed} wait={wait:?}"
+            );
+        }
+    }
+
+    /// 先頭が guard で park され、再開後は残りが wait を読まずに一括送出される。
+    #[test]
+    fn drain_resumes_after_park_and_batches_rest() {
+        let first = plan_drain_step(DrainItem::Held, false, Some(5));
+        assert_eq!(first.action, DrainAction::Park { remaining: 5 });
+        let resumed = plan_drain_step(DrainItem::Held, false, None);
+        let DrainAction::Execute { guard_passed_after } = resumed.action else {
+            panic!("再開は Execute");
+        };
+        for _ in 0..3 {
+            assert!(!drain_needs_wait_check(
+                DrainItem::QueuedReinject,
+                guard_passed_after
+            ));
+            assert_eq!(
+                plan_drain_step(DrainItem::QueuedReinject, guard_passed_after, None).reason,
+                DrainReason::ReinjectBatchedAfterGuard
             );
         }
     }
