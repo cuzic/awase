@@ -3,7 +3,7 @@
 //!
 //! 元の分岐・順序を変えずに、判断だけを純粋関数へ出した。実行（`execute_one`・`OutputActiveGuard::begin()`・
 //! `spawn_local`・キューへの積み・`TIMER_OUTPUT_GUARD` の set/kill・SendInput）は `executor.rs` の殻に残る。
-//! 各 plan は**理由の enum** を返す（journal に載せる用。ADR-229 E1）。
+//! 各 plan は**理由の enum**（variant 名）を返す。現状 journal には載らず、`execute_relay` のログ（`{:?}`）にだけ出る。
 //!
 //! 固定する辺と対:
 //! - **e12**: `Decision::Consume` では Timer だけが即時に実行され、キューを追い越す（`plan_consume_effect`）。
@@ -37,7 +37,7 @@ pub(crate) struct RelayFacts {
     pub physical: PhysicalKeyDisposition,
 }
 
-/// `execute_relay` の決定。variant 名が理由（journal・ログに `{:?}` で載せる。ADR-229 E1）。
+/// `execute_relay` の決定。variant 名が理由（現状は `execute_relay` のログに `{:?}` で出るだけで、journal には載らない）。
 /// 型が許す（実行の種類 × 理由）20 通りのうち、実際に返す 5 通りだけを持つ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelayPlan {
