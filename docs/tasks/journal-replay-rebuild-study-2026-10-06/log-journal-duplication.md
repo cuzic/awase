@@ -6,119 +6,137 @@ title: |-
 
 # ログと journal の重複の整理
 
-[README.md](README.md) の B4 段階 1 より先に、ログと journal の重複を減らす案を検討する。develop `777bf1db` 時点のコードで確かめた。
+[README.md](README.md) の B4 段階 1 より先に、ログと journal の重複を減らす案を検討する。初版は develop `777bf1db`、Opus レビュー(`opus-review-log-journal-dup`)の指摘の裏取りは `1732f830`(#522 マージ後)で行った。行番号は断りの無い限り `1732f830` のもの。
 パスは `crates/awase-windows/src/` からの相対パス。VK 列は残す前提(所有者の訂正、README 冒頭)。
 
 ## 1. 事実
 
-### 1.1 仕組みとして既にある「journal → ログ」
+### 1.1 「journal → ログ」の派生の行と、その限界
 
-journal の全 21 variant は、記録されると `UnifiedJournal::absorb`(`journal.rs:1309`)から `emit_tracing`(`journal.rs:806-1186`、約 380 行)で
-`debug!` の 1 行(ターゲット `awase::journal`、文言は `"key input"`・`"ime open applied"`・`"gji fsm transition"` など variant ごとに 1 種)として awase.log にも出る(ADR-139 決定4 Option C: journal を正とし、ログは派生)。
-つまり **journal に載る事象は、ログに既に必ず 1 行ある**。重複として整理すべきなのは、記録点の近くで**別に手書きした自由な tracing 行**が同じ事象を出しているもの。
+journal の全 21 variant は、記録されると `UnifiedJournal::absorb` から `emit_tracing`(`journal.rs:806-1186`、約 380 行)で `debug!` の 1 行(ターゲット `awase::journal`、文言は `"key input"`・`"ime open applied"` など variant ごとに 1 種)として awase.log にも出る(ADR-139 決定4 Option C)。
+ただし `emit_tracing` は意図的に「トップレベルの主要フィールド、または粗い判別子のみ」を出す(`journal.rs:717-720`)。**journal に載る事象はログに必ず 1 行あるが、journal のフィールドが全部ログに出るわけではない**。主なもの(実コードで照合):
 
-ログのレベルの差: 利用者の awase.log の既定は `info`(`app/bootstrap.rs:152`)なので、journal 由来の `debug!` 行は利用者のログには出ない(CI は `RUST_LOG=debug`、`e2e-ime.yml:1017`)。
-手書きの行のうち `info!`/`warn!` のものは利用者のログに出る。
+| variant | 派生の行に出るもの | 出ないもの |
+|---|---|---|
+| `ImeEvent` | `event_kind`(variant 名)・`event_seq`・`tick_ms` | 中身の全フィールド(`DriftDetected{desired, observed, duration_ms}`、`FocusChanged` の中身など) |
+| `SentInput` | `issue_us`・`accepted`・`event_count` | vk・`ch`。actuation の `kind` は `SentInput` の型自体に無い |
+| `KeyInput` | vk_code・is_down・injected・key_class・state_before/after・decision・physical・repeat | scan・`timestamp_us`・ctrl/alt/shift |
+| `HookImeModeDiagnostic` | vk・is_down・self_injected・injected・scan | `since_prev_ime_mode_ms` |
+| `ImeActuation` | target_open・attempts・policy・action | 出所の `source`・`confidence`(型にも無い) |
+| `ActuationDecision` | site・caller・open・gate の入力・最初の attempt の mechanism/command/outcome | 2 つ目以降の attempt |
 
-中継を経る journal の記録は、ログの行が出る時刻が事象の時刻ではなく journal に移った時刻になる: `pending_journal_entries`(`platform.rs:126`)、`SENT_INPUT_TRACE`(`win32.rs:259-285`)、フックの診断キュー(`hook.rs:1393` の `Mutex<VecDeque>`、`message_handlers.rs:105` で吸い出す。inventory.md §1 の入口 3 つに加えて 4 つ目の経路)。
+CI は JSON journal をダンプしない(inventory §5)ので、**CI から見た journal は派生の行そのもの**になる。
+利用者の awase.log の既定は `info`(`app/bootstrap.rs:152`)なので、派生の行(debug)は利用者のログには出ない。手書きの行のうち `info!`/`warn!` のものは出る。
+
+中継を経る journal の記録は、派生の行が出る時刻が事象の時刻ではなく journal に移った時刻になる: `pending_journal_entries`(`platform.rs:126`)、`SENT_INPUT_TRACE`(`win32.rs:259-285`)、フックの診断キュー(`hook.rs:1393`、inventory §1 の 4 つ目の中継)。
 
 ### 1.2 同じ事象を手書きのログ行と journal の両方に出している組
 
-| # | 事象 | 手書きのログ行(場所・レベル・文言の先頭) | journal | 記録点 | フィールドの差 | ログ行を機械的に読むもの |
-|---|---|---|---|---|---|---|
-| 1 | 押下 ID の書き込み予約 | `state/platform_state.rs:233`(info、衝突時)・`:239`(debug)・`:260`(debug、解除) `[press-ledger] press=… source=… open=… → …` | `PressWriteClaim`(`:244`・`:262`) | 同じ関数 | 同じ(press・open・source・verdict) | なし |
-| 2 | give-up 後の外部クローズの読み直し | `runtime/ime_refresh.rs:302`(info) `[giveup-follow] cold=… outcome=…` | `GiveUpFollow`(`:311`) | 同じ関数 | ログが多い: `gen_at_probe`・`gen_now`・`explicit_intent` | なし |
-| 3 | Blacklist 経路の drift correction の結果 | `ime_refresh.rs:1020`(info) `Blacklist drift correction: apply_ime_open(…) → …` | `ActuationDecision`(`:1018`)+ `ImeOpenApplied`(`on_ime_apply_complete` 経由) | 同じ関数 | journal が多い | なし |
-| 4 | drift correction の送信 | `ime_refresh.rs:958`(**warn**) `[drift] correction: observed=… ≠ desired=… for …ms → set_ime_open(…) (source=… confidence=…)` | `ImeActuation`(`:970`)+ `ImeEvent::DriftDetected{desired, observed, duration_ms}` | 同じ関数 | ログにだけ `source`・`confidence`。journal にだけ方針・試行回数・世代 | `check_startup.py`・`check_invariants.py`(断片 `[drift] correction`) |
-| 5 | 物理キー 1 件のエンジン処理 | `runtime/key_pipeline.rs:153`(debug) `[engine-input] vk=… ts=… delay=… state=…`、`:180`(CTRL MISMATCH) | `KeyInput`(`:229`) | 同じ関数(`kp_run_inner`) | ログにだけ `delay`・`phys_ctrl` 等、journal にだけ `state_before/after`・`decision`・`physical`・畳み込み | `check_startup.py`(`[engine-input]`)、`check_drift_recovery.py`・`check_drift_recovery_chrome.py`・`check_keymatrix.py`(`phys_ctrl=`、`e2e-ime.yml:463`) |
-| 6 | awase が SendInput で送ったキー | `win32.rs:338`(debug、actuation のときだけ) `[ime-io] actuation SendInput kind=… vk=…`、`:342` → `shadow_send_trace.rs`(debug) `[shadow-send] channel=SendInput …` | `SentInput`(中継 `SENT_INPUT_TRACE`) | 同じ関数(`send_input_safe`) | journal は全送信・`accepted`・Unicode の `ch`。`[ime-io]` は actuation の `kind` を持つ | `check_startup.py`(`[ime-io] actuation SendInput kind=`)。`[shadow-send]` は 0 |
-| 7 | フックが見た IME モードキー | `hook.rs:1487`(debug) `[hook] IME-mode vk=… self_injected=… scan=… extra=… since_actuation_us=…` | `HookImeModeDiagnostic`(フックのキュー → `message_handlers.rs:105`) | 同じ関数で両方を作り、journal は後で吸い出す | ログにだけ `extra`・`since_actuation_us`、journal にだけ `since_prev_ime_mode_ms` | `check_invariants.py`(`[hook] IME-mode vk=`) |
-| 8 | フォーカスのプロセス変化 | `runtime/focus_tracking.rs:607`(info) `FocusChange [pid→pid] class: stale ime_on=…` | `FocusTransition`(`:64`)+ `ImeEvent::FocusChanged` | 別の関数(同じファイル) | ログは belief の状態、journal はアプリ名・滞在時間・プロファイル | `e2e-ime.yml:1162` の grep(`FocusChanged`・`[focus` など。どの行に当たるかは未確認) |
-| 9 | ConvClassify の結果 | `key_pipeline.rs:803`(debug)・`:815`(info) `[idle-conv-check] TsfNative: conv=… → belief …` | `ConvClassifyCall`(`:788`) | 同じ関数 | 一部だけ重なる(ログは belief の変化、journal は分類の入力と結果) | なし |
-| 10 | ImeEvent の受理 | `state/ime_event_log.rs:53`(trace) `[ime-event seq=…] …` | `ImeEvent`(`platform_state.rs:206`) | 同じ流れ(`dispatch_event`) | 同じ | なし。PR #522(ADR-232 S1)で撤去済み(`1732f830`) |
-| 11 | awase が送った romaji(入力内容) | `output/vk_send.rs:228`・`:406`(**info**) `[key-output] KeyInput(batched\|tsf): romaji=… ime=…` | `SentInput`(送った VK 列・Unicode 文字。中継 `SENT_INPUT_TRACE`) | 別の関数(romaji を組み立てる `output` と、送る `win32::send_input_safe`) | ログは romaji の文字列と IME 種別、journal は実際に送った vk/scan・`accepted` | なし(27 断片・`.github`・`tools` に `key-output` の参照は無い) |
+記録点の近くを抜き取りで見たもの。これより多い可能性がある(下限。例えば `focus_tracking.rs:601,607` と `DriftGiveUpIntervalEnded`、`executor.rs:820` と `ActuationDecision` の近くにも手書きの行がある)。「フィールドの差」は journal の型との差で、派生の行との差は 1.1 の表を参照。
 
-部分的に重なるが層が違うもの(`output`/`tsf` は journal を直接参照できないガードがあり、journal は `platform.rs` が中継して書く):
-GjiFsm の遷移(`platform.rs:519,552,803,817` などの `[gji-fsm]` 行 ↔ `GjiFsmTransition`)、TSF probe(`output/tsf_warmup_coord.rs:223`・`tsf/warmup/probe_fsm.rs:667` の `[tsf-probe]` ↔ `TsfProbeStarted/Completed`)、
-literal 判定(`tsf/warmup/literal_detect_fsm.rs` の `[literal-detect]`・`[raw-tsf-literal]` ↔ `LiteralDetect`)、deferred の flush(`output/vk_send.rs:93`・`output/mod.rs:1324` ↔ `DeferredRecoveryFlush`)。
-これらは事象の粒度がそろっていない(ログは途中経過、journal は結果 1 件)ので、1 対 1 の重複かは事象ごとに見ないと言えない(**未確認**)。
-もう 1 つ、`on_ime_apply_complete` の `#[tracing::instrument]`(`runtime/mod.rs:900` 付近、`open`・`outcome`・`generation`・`reason`)は `ImeOpenApplied` と同じ値をスパンとして各行の前に付ける。
+| # | 事象 | 手書きのログ行(場所・レベル・文言の先頭) | journal | 記録点 | フィールドの差(型) | ログ行を機械的に読むもの | 診断での使用(known-bugs・triage / ADR、粗い grep) |
+|---|---|---|---|---|---|---|---|
+| 1 | 押下 ID の書き込み予約 | `state/platform_state.rs:228`(info、衝突時)・`:234`(debug)・`:255`(debug、解除) `[press-ledger] …` | `PressWriteClaim` | 同じ関数 | 同じ(派生の行も press・open・source・verdict を出す) | なし(リポジトリ全域の grep で 0) | 0 / 0 |
+| 2 | give-up 後の外部クローズの読み直し | `runtime/ime_refresh.rs:301`(info) `[giveup-follow] cold=… outcome=…`(同じ接頭辞の `platform.rs:271,279` は別の事象) | `GiveUpFollow` | 同じ関数 | ログが多い: `gen_at_probe`・`gen_now`・`explicit_intent` | develop 上は 0。ただし `BUG-074.md:319` は、使い捨てのブランチ(`ci/adr225-d0`・`ci/adr227-verify`、未マージ)の CI で awase.log の `[giveup-follow]` を見たと書く(どの行かは未確認) | 1 / 0 |
+| 3 | Blacklist 経路の drift correction の結果 | `ime_refresh.rs:1020` 付近(info) `Blacklist drift correction: apply_ime_open(…) → …` | `ActuationDecision` + `ImeOpenApplied` | 同じ関数 | journal が多い | **あり**: `tools/e2e/ime_key_matrix/check_drift_correction.py:28`(向きと結果を取り出す)、`check_drift_recovery.py:65`、`check_drift_recovery_chrome.py:5`。CI は `e2e-ime.yml:1128-1137` で呼び、集計の `drift_log_fired` を出す。人手の手順 `docs/tasks/v2-manual-verification-guide-2026-09-29.md:375` | 3 / 2 |
+| 4 | drift correction の送信 | `ime_refresh.rs:958` 付近(**warn**) `[drift] correction: observed=… ≠ desired=… …` | `ImeActuation` + `ImeEvent::DriftDetected` | 同じ関数 | ログにだけ `source`・`confidence`。journal にだけ方針・試行回数・世代 | `check_startup.py`・`check_invariants.py`・`check_drift_recovery*.py`。**`tests/architecture_guard.rs:2431` の `DRIFT_SEND_LOG_MARKER` がこの行の位置を BUG-43/163 系の順序ガードの目印にしている** | 13 / 9 |
+| 5 | 物理キー 1 件のエンジン処理 | `runtime/key_pipeline.rs:153`(debug) `[engine-input] vk=… ts=… delay=… state=… mods(c=… …) phys_ctrl=… [diag-ctx] ime_on=… …`、`:180`(CTRL MISMATCH) | `KeyInput` | 同じ関数(`kp_run_inner`) | ログにだけ `delay`・`phys_ctrl`・InputContext(diag-ctx)、journal にだけ `state_before/after`・`decision`・`physical`・畳み込み | `check_startup.py`、`check_drift_recovery.py`・`_chrome.py`・`check_keymatrix.py`(`phys_ctrl=`) | 12 / 3 |
+| 6 | awase が SendInput で送ったキー | `win32.rs:338`(debug、actuation のときだけ) `[ime-io] actuation SendInput kind=… vk=…`、`:342` → `[shadow-send] channel=SendInput …` | `SentInput` | 同じ関数(`send_input_safe`) | journal は全送信・`accepted`・`ch`。`[ime-io]` は actuation の `kind` を持つ | `check_startup.py`(`[ime-io] actuation SendInput kind=`)。`[shadow-send]` はコードの読み手 0、計画上の読み手あり(README 段階 1) | 1 / 5(`[ime-io] actuation`) |
+| 7 | フックが見た IME モードキー | `hook.rs:1487`(debug) `[hook] IME-mode vk=… extra=… since_actuation_us=…` | `HookImeModeDiagnostic` | 同じ関数で両方を作り、journal は後で吸い出す | ログにだけ `extra`・`since_actuation_us`、journal にだけ `since_prev_ime_mode_ms` | `check_invariants.py`(`[hook] IME-mode vk=`) | 11 / 6 |
+| 8 | フォーカスのプロセス変化 | `runtime/focus_tracking.rs:607`(info) `FocusChange [pid→pid] class: …` | `FocusTransition` + `ImeEvent::FocusChanged` | 別の関数 | ログは belief の状態、journal はアプリ名・滞在時間 | なし。`e2e-ime.yml:1162` の grep(`focus-settle\|\[focus\|FocusChanged\|focus_changed`)は `FocusChange [` には当たらず、派生の `ime event` 行の `event_kind=FocusChanged` と、手書きの `FocusChanged: …`(`ime_refresh.rs:387,398`)に当たる | 3 / 1 |
+| 9 | ConvClassify の結果 | `key_pipeline.rs:803`(debug)・`:815`(info) `[idle-conv-check] TsfNative: conv=… → belief …` | `ConvClassifyCall` | 同じ関数 | 一部だけ重なる | なし(未確認) | 未計数 |
+| 10 | awase が送った romaji(入力内容) | `output/vk_send.rs:228`・`:406`(**info**) `[key-output] KeyInput(batched\|tsf): romaji=…` | `SentInput` | 別の関数 | ログは romaji と IME 種別、journal は送った vk/scan・`accepted` | なし(`.github`・`tools` に参照 0) | 未計数 |
 
-#5 と #11 は入力内容(VK 列・romaji)の重複で、性質が他と違う:
-- #11 の `[key-output]` は info なので、利用者の awase.log に打鍵ごとに残り、報告の `app_log_excerpt_gz`(awase.log の末尾を圧縮前で最大 16MiB、`bug_report.rs:25`)に載る。journal の `KeyInput`・`SentInput`・`LiteralDetect` には報告時に直近 10 分の窓が掛かる(`journal.rs:1519-1545`)が、awase.log には掛からない。入力内容は今、窓のある journal と窓の無い awase.log の 2 か所にあり、範囲がそろっていない。
-- #5 の `[engine-input]` の行(debug)は、`KeyInput` に無いエンジンの InputContext(`[diag-ctx] ime_on=… japanese=… input_mode=… composing=…`、`key_pipeline.rs:156`)を持つ。これを `KeyInput` に移せば、重複が減るのと同時に、記録した `KeyInput` 列をエンジンに流す入力の再生(README の B5)の材料がそろう。
-- 重複を解消して入力内容を journal の 1 か所に寄せると、所有者の前提(VK 列は必須)を満たしたまま、報告に載る入力の範囲を 1 つの規則(窓)で決められるようになる。窓をどうするかは README E6。
+初版の #10(`ImeEventLog` の trace 行)は #522 で撤去済みなので外した。層が違い 1 対 1 か未確認のもの(GjiFsm の遷移、TSF probe、literal 判定、deferred の flush)は初版のとおりで、F6 の後に見直す(README 段階 3 と同じ前提)。
+
+#5 と #10 は入力内容(VK 列・romaji)の重複で、性質が他と違う:
+- #10 は info なので、利用者の awase.log に打鍵ごとに残り、報告の `app_log_excerpt_gz`(awase.log の末尾を圧縮前で最大 16MiB、`bug_report.rs:25`)に載る。journal の `KeyInput`・`SentInput`・`LiteralDetect` には報告時に直近 10 分の窓が掛かるが、awase.log には掛からない。入力内容は今、範囲の違う 2 か所にある。
+- #5 の `[engine-input]` は、`KeyInput` に無いエンジンの InputContext を持つ。これを `KeyInput` に移せば、重複が減るのと同時に、入力の再生(README B5)の材料がそろう。
 
 ### 1.3 片方にしか無い事象
 
-- journal だけ(ログは派生の 1 行だけ): `TimerFired`・`ClockAnchor`・`DumpTriggered`・`DriftGiveUpDiagnostic`・`DriftGiveUpIntervalEnded`・`TsfProbeCompleted`(結果)・大半の `ImeEvent`。
-- ログだけ: 手書きの行の大部分。CI が読むものだけ挙げても `[warrant-shadow]`・`would_have_blocked=`(`ime_controller.rs:558`)、`explicit_intent=`(`ime_refresh.rs:146,1120` ほか)、`[startup-align]`、`[msime-ready]`、`[vk-send]`、`send_keys: mode=`、`stale confirm 検出`、`[raw-tsf-literal] flush escape=`、`Engine (de)?activated`、`[hook-watchdog]`、`Hook watchdog`。
+- journal だけ(ログは派生の 1 行だけ): `TimerFired`・`ClockAnchor`・`DumpTriggered`・`DriftGiveUpDiagnostic`・`DriftGiveUpIntervalEnded`・大半の `ImeEvent`。
+- ログだけ: 手書きの行の大部分。CI が読むものでは `[warrant-shadow]`・`would_have_blocked=`、`explicit_intent=`、`[startup-align]`、`[msime-ready]`、`[vk-send]`、`send_keys: mode=`、`stale confirm 検出`、`[raw-tsf-literal] flush escape=`、`Engine (de)?activated`、`[hook-watchdog]` など。
 
 ### 1.4 件数
 
-- 手書きの tracing の呼び出し: awase-windows の `src` に 740 か所(粗い grep、テストのモジュールを含む)。ルートの core `src` に 32 か所。
-- journal の variant: 21(派生のログ行も 21 種)。
-- 手書きの行と journal の組: 同じ関数で同じ事象を出す組 9(上の表の #1〜#7・#9・#10)、別の関数の組 2(#8・#11)、層が違い 1 対 1 か未確認のもの 4 系統。#10 は #522 で撤去済みなので、残りは 10 組。
+- 手書きの tracing の呼び出し: awase-windows の `src` に 740 か所(粗い grep、テストのモジュールを含む)。core の `src` に 32 か所。
+- journal の variant: 21(派生の行も 21 種。`emit_tracing` の doc の「19 variant」は古い)。
+- 手書きの行と journal の組: 抜き取りで 10 組(同じ関数 8・別の関数 2)。下限。層が違い未確認のものが 4 系統。
 
 ## 2. 消費者
 
-| 消費者 | 読む形式 | 中身 |
-|---|---|---|
-| `tools/e2e/ime_key_matrix/check_*.py`(20 本) | awase.log のテキスト | `test_log_anchors_in_rust_source.py:22-49` の 27 断片。journal 由来(派生の行)は `ime open applied`・`actuation decision`・`gji fsm transition`・`literal detect` の 4、残り 23 は手書きの行 |
-| `.github/workflows` の grep | awase.log のテキスト | `e2e-ime.yml:1109`(`Engine (de)?activated`・`IME open axis delegated`・`outcome=Unwarranted`)、`:1162-1164`(フォーカス・external-change・reinject)、`e2e-uwp-inputsite-hook-watchdog-probe.yml:75,102`。27 断片の表には入っていない |
-| `tools/e2e/ime_key_matrix/testdata/*.awase.log`(22 本) | 実機ログの抜粋 | チェッカーの単体テストの入力。文言を変えると書き直しが要る |
-| report-worker | どちらも不透明 | journal・awase.log とも gzip+base64 のまま保存し、中身を見ない(`services/report-worker/src/index.ts:77`)。重複の整理で変更は要らない |
-| 不具合報告の診断(人・Claude、`bug-report-fetch` スキル) | journal(JSON)と awase.log の両方 | known-bugs で journal が役立ったのは 17 件(inventory §7)。awase.log の行を根拠にした記述も多い(BUG-109・110・170 など「journal と app_log の突き合わせ」) |
-| replay・`tests/journals/` | journal の型 | ログは読まない |
-| 閉ループ | どちらも読まない | `h.writes` など |
+awase.log の行を機械的に読むもの(全域 grep で数え直した):
+
+| 消費者 | 件数・中身 |
+|---|---|
+| `tools/e2e/**/*.py`(テストを除く 43 本) | awase.log か `awase::` か `[タグ]` の正規表現を読むのは 18 本(`check_*.py` 20 本のうち 8 本〈startup・invariants・reopen・run_validity・drift_correction・drift_recovery・drift_recovery_chrome・keymatrix〉、`e2e_common.py`・`mode_key_pass_timeline.py`・`suspend_report.py`・`effect_learning.py`・`run.py` など)。粗い grep なので、`in line` で読むものは漏れている可能性がある |
+| `test_log_anchors_in_rust_source.py` の 27 断片 | **全数ではない**。`Blacklist drift correction`・`[engine-input] vk=… KeyDown`・`mods(c=true .*phys_ctrl=true` などは表に無い |
+| `.github/workflows` の grep | `e2e-ime.yml:1109`・`:1162-1164`、`e2e-uwp-inputsite-hook-watchdog-probe.yml:75,102` |
+| `tools/e2e/ime_key_matrix/testdata/*.awase.log`(22 本) | チェッカーの単体テストの入力 |
+| `tests/architecture_guard.rs` | `[drift] correction: observed=` をガードの目印に使う(`:2431`) |
+| 人手の手順書 | `docs/tasks/v2-manual-verification-guide-2026-09-29.md:375` ほか(全数は未確認) |
+| 不具合の診断 | known-bugs・ADR で使われた行の件数は 1.2 の最右列 |
+| report-worker | journal・awase.log とも中身を見ない |
+
+journal を読むものは、不具合報告の診断(人・Claude)と replay(`tests/journals/`)。CI は読まない。
 
 どちらを正にするかで移行が要る消費者:
-- journal を正(手書きの行を消す)にすると、手書きの行を読むチェッカー(#4・#5・#6・#7 の 4 組に当たる 5 本)と testdata・anchor 表を、派生の行の文言(`ime actuation`・`key input`・`sent input`・`hook ime-mode diagnostic` とフィールド名)に書き換える。利用者の既定ログ(info)からは #1(衝突時)・#2・#3・#4・#8 の行が消える。
-- ログを正(journal の variant を消す)にすると、不具合報告の journal からその事象が消える。利用者のログは info なので、debug の行(#1 の通常時・#5・#6・#7)は報告のどこにも残らなくなる。`KeyInput` を消すことは VK 列を残す前提に反する。
+- journal を正(手書きの行を消す)にすると、手書きの行を読むチェッカー・architecture_guard・testdata・anchor 表・手順書を派生の行へ移す。**派生の行に足りないフィールド(1.1)を先に足す必要がある**。利用者の既定ログ(info)からは #1(衝突時)・#2・#3・#4・#8・#10 が消え、報告で遡れる範囲が変わる(下)。
+- ログを正(journal の variant を消す)にすると、報告の journal からその事象が消える。debug の行(#5・#6・#7)は利用者のログに出ないので、報告のどこにも残らない。入力内容については、awase.log に info の `[key-output]` の romaji が残るので入力文そのものは失われないが、再生に使える構造化された vk/scan とタイミング(`KeyInput`・`SentInput`)が失われ、VK 列を残す前提に反する。
+
+報告で遡れる範囲: awase.log は末尾を圧縮前で最大 16MiB、journal はレーンのリングで `State`/`Timing` 2048 件・`Actuation` 6144 件・`KeyInput` 8192 件(`journal_policy.rs:20-32`)。drift の送信は Actuation レーンで `ActuationDecision`・`SentInput` と同居する。典型的な報告でどちらが何分ぶんかは**未測定**。「起動直後しか残っていない」型の不足(BUG-095・104)が過去にある。
 
 ## 3. 選択肢
 
 | 案 | 内容 | 撤去 | 追加 | 移行する消費者 | リスク |
 |---|---|---|---|---|---|
-| (a) journal を正にする | 組になっている手書きの行を消し、ログは既存の派生の 1 行だけにする。手書きの行にしか無いフィールド(#2 の世代・意図、#4 の `source`・`confidence`、#5 の `delay`・`phys_ctrl`、#7 の `extra`・`since_actuation_us`)は、要るものだけ journal の variant に足す。新しいマクロ・仕組みは作らない(派生は ADR-139 で既にある) | 手書きの行 8〜9 組ぶん(1 呼び出し 3〜25 行、合計は実装時に実測。数十行の見込み) | journal のフィールド(要るものだけ)と `emit_tracing` の腕の更新 | チェッカー 5 本(`check_startup`・`check_invariants`・`check_drift_recovery`・`check_drift_recovery_chrome`・`check_keymatrix`)・testdata・anchor 表(#4〜#7 を含める場合) | 利用者の既定ログ(info)から行が消える(報告には journal が残る)。中継を経る #6・#7 は、派生の行が出る時刻・順序が変わる(チェッカーが前後関係を見ていれば壊れる、未確認)。報告の journal の形はフィールドの追加だけで、読み方の変更は小さい |
-| (b) ログを正にする | 組の journal の variant を消す | variant 最大 7 と `emit_tracing` の腕、フックのキュー、`SENT_INPUT_TRACE` など | 0 | 報告の診断手順 | 利用者のログ(info)に debug の行は出ないので、報告から事象が消える。`KeyInput`・`SentInput` を消すのは VK 列を残す前提に反する。**推奨しない** |
-| (c) 事象ごとに寄せる | 機械的な読み手が無い組(#1・#2・#3・#9)は (a)、チェッカーが手書きの行を読む組(#4〜#7)は当面そのまま(重複を残す) | (a) の一部 | (a) の一部 | なし(チェッカーは触らない) | 重複が残る組がある。残す組は「チェッカーの書き換えと引き換えに消せる」と記録しておく |
-
-却下済みとの照合: (a) は共通形式・DSL・宣言テーブルを作らず、既存の派生(ADR-139)を使うだけ。ADR-226 候補 E(チェッカーに journal の JSONL を読ませる)とは違い、チェッカーは awase.log のテキストを読み続ける。
+| (a) journal を正にする | 組の手書きの行を消し、派生の行に足りないフィールドを `emit_tracing` に足す | 手書きの行 | `emit_tracing` の腕のフィールド。`ImeEvent` の中身を出すには 20 variant ぶんの展開が要る(`architecture_guard` が `?`/`%` を禁じるので `Debug` で済ませられない) | チェッカー・architecture_guard・testdata・anchor 表・手順書 | 純減しない組がある(下の収支)。利用者の既定ログから行が消え、遡れる範囲がリングに縮む可能性。ADR-139 の「主要フィールドのみ」の方針を変える |
+| (b) ログを正にする | 組の journal の variant を消す | variant と中継 | 0 | 報告の診断手順 | 報告から事象が消える。構造化された VK 列が失われる(上)。**推奨しない** |
+| (c) 事象ごとに寄せる | 読み手が無く、派生の行で足りる組だけ (a)。それ以外は残す | (a) の一部 | ほぼ 0 | ほぼ無し | 重複が残る組がある |
 
 ## 4. 推奨
 
-推奨は (c) から始め、チェッカーの書き換えの費用を見て (a) に広げる。
+(c) で始める。(a) への拡大は、組ごとの収支が純減になる場合だけにする。
 
-**第 1 段階(最小)**: 機械的な読み手が無く、journal が同じかそれ以上の情報を持つ組の手書きの行を消す。
+**第 1 段階(最小)**: 2 行。
 
-| 撤去 | 内容 |
-|---|---|
-| #1 | `[press-ledger]` の 3 行(`platform_state.rs:233,239,260`)。フィールドは `PressWriteClaim` と同じ |
-| #3 | `Blacklist drift correction: …`(`ime_refresh.rs:1020`)。`ActuationDecision`・`ImeOpenApplied` が持つ |
-| #2 | `[giveup-follow] cold=… outcome=…`(`ime_refresh.rs:302`)。`gen_at_probe`・`gen_now`・`explicit_intent` を `GiveUpFollow` に足すか、要らないと判断して足さないかを先に決める(BUG-074 の調査で使われたかは未確認) |
+| 撤去 | 内容 | 前提 |
+|---|---|---|
+| #1 `[press-ledger]` の 3 行(`platform_state.rs:228,234,255`) | 派生の `press write claim` が同じフィールドを出す。リポジトリ全域の grep で読み手 0、診断での使用 0 | `:228`(衝突時)は info で、ADR-208 L1 の異常を示す唯一の利用者ログ。消してよいかは所有者に聞く(質問 1) |
+| #2 `[giveup-follow] cold=… outcome=…`(`ime_refresh.rs:301` だけ。`platform.rs:271,279` は残す) | 2026-10-04 の `d75c1d8b`(PR #480、BUG-074)で journal 記録と同時に足された行 | `gen_at_probe`・`gen_now`・`explicit_intent` は ADR-227 の世代の判定の根拠。足さずに消すか、`GiveUpFollow` に足すかを BUG-074 の担当に確認する。`BUG-074.md:319` の使い捨てブランチの確かめがどの行を見たかも確認する |
 
-- 検証: CI が green。特に `invariants-unit`(`test_log_anchors_in_rust_source.py` を含む)と `check_*.py` の単体テスト。消す行の断片は 27 断片の表にも workflow の grep にも無いことを、実装の PR で grep し直して確かめる。
-- 取りやめ条件: 消す行を読む消費者(チェッカー・workflow・リポジトリ外のスクリプト)が見つかる。または所有者が「利用者の既定ログ(info)にも残す」と決める(#1 の衝突時・#2・#3 は info)。
+- 行数: 呼び出し 2 つ(#1 は 3 呼び出し)で合わせて 20〜30 行の撤去、追加 0(#2 でフィールドを足すなら +3 前後)。
+- 検証: CI が green。加えて、消す断片が `tools/e2e/**/*.py`・`.github/workflows/*.yml`・`tools/e2e/ime_key_matrix/testdata/`・`docs/tasks/`・`crates/awase-windows/tests/*.rs` に無いことを、実装の PR で全域 grep し直す(27 断片の表だけでは足りない)。
+- 同じ PR で、表に無い既存の断片(`Blacklist drift correction`・`[engine-input] vk=`・`phys_ctrl=` など)を anchor 表に足すことを推奨する(撤去ではないが、後の撤去を安全にする前提)。
+- 取りやめ条件: 消す行の読み手が見つかる。または所有者が「利用者の既定ログに残す」と決める。
 
-**第 2 段階**: #4〜#7(チェッカーが読む組)を、チェッカー・testdata・anchor 表を同じ PR で派生の行の文言に書き換えて消す。1 組ずつ PR にし、各 PR で該当の実機 CI 構成を回して判定が変わらないことを確かめる。#6 は README B4 段階 1(`shadow_send_trace` の撤去)とまとめる。中継を経る #6・#7 は、行の順序を見るチェッカーがあるかを先に確かめる(**未確認**)。
+**第 2 段階(保留)**: チェッカーが読む組(#3〜#7)。組ごとの収支(見込み、未実測):
 
-**第 2b 段階(入力内容の 1 か所化)**: #5 と #11。`[engine-input]` の InputContext と拡張ビットを `KeyInput` に移して `[engine-input]` の重複項目を消し(README 段階 4 と同じ PR)、`[key-output]` の romaji は `SentInput` と突き合わせて、journal 側で足りることを確かめてから消すか debug に下げる。`[key-output]` を消す・下げると、利用者の awase.log から入力内容が消え、入力内容は窓のある journal だけになる(README E6 の判断と一緒に決める)。
+| 組 | 撤去 | 追加 | 収支 | 判断 |
+|---|---|---|---|---|
+| #3 Blacklist | 行 1 つ(3 行) | 派生の `actuation decision` で「Blacklist 経路の drift correction の結果」を 1 行で特定できるかは未確認(`caller` は出るが、outcome は最初の attempt の粗い判別子だけ)。チェッカー 3 本・CI の集計・手順書の書き換え | 純増の見込み | 保留。expect=observe の構成なので、消すと CI は green のまま `drift_log_fired` が 0 に化ける |
+| #4 `[drift] correction` | 行 1 つ(約 6 行) | `ImeEvent` の派生の行に `DriftDetected` の中身を出す展開(20 variant)か `ImeActuation` に `source`・`confidence`、architecture_guard の目印の付け替え、チェッカー 4 本 | 純増 | **推奨しない**。診断で最も使われた行(13 / 9)で、warn として利用者のログに出る唯一の drift 補正の痕跡 |
+| #5 `[engine-input]` | 重複項目 | `KeyInput` に InputContext・scan・修飾キー・拡張ビット、派生の行にも出すなら同数、チェッカー 4 本 | ほぼ同じか純増 | README 段階 4(B5)の一部としてなら価値がある(重複の解消のためだけなら保留) |
+| #6 `[ime-io] actuation SendInput` | 行 1 つ | `SentInput` の型に `kind` を足し、派生の行に vk・kind を出す。チェッカー 1 本 | 純増の見込み | 保留。派生の行で vk を出すと、所有者が派生の行を info にした場合(質問 1)、利用者の awase.log に構造化された VK 列が常に出る |
+| #7 `[hook] IME-mode` | 行 1 つ | `extra`・`since_actuation_us` を journal と派生の行に足す、チェッカー 1 本 | ほぼ同じ | 保留 |
 
-**第 3 段階**: 層が違う 4 系統(GjiFsm・TSF probe・literal・deferred)は、F6 で Output が記録を返す形になってから、事象の粒度をそろえられるか見直す。
+**入力内容の 1 か所化(#5・#10)**: README 段階 4 と一緒に判断する。`[key-output]` を消す・debug に下げると、利用者の awase.log から入力内容が消え、入力内容は窓のある journal だけになる(README E6)。
 
 ## 5. 所有者に聞くこと
 
-1. 利用者の既定ログ(`info`)の扱い: journal を正にすると、info/warn の手書きの行が利用者の awase.log から消える(報告に添付される journal には残る)。awase.log だけで診断する場面(報告を使わない issue など)を残したいか。残すなら、派生の行の一部を info にするか(ADR-139 は「常時肥大化を避けるため debug に統一」と決めている)、該当の組は (c) で手書きの行を残す。
-2. 第 2 段階で、チェッカー 5 本と testdata の文言を派生の行(`awase::journal` の `key input`・`ime actuation`・`sent input`・`hook ime-mode diagnostic`)へ書き換えてよいか。
-3. #2 の `gen_at_probe`・`gen_now`・`explicit_intent`、#4 の `source`・`confidence`、#5 の `delay`・`phys_ctrl` を journal に足すか(足すなら報告の journal が少し大きくなる)。
-4. #4 の `[drift] correction` は warn で、利用者のログにも出る唯一の drift 補正の痕跡。journal を正にして消してよいか。
-5. 入力内容(#5・#11)を journal の 1 か所に寄せてよいか。寄せると、利用者の awase.log の `[key-output]`(info)の romaji が消え(または debug になり)、報告に載る入力の範囲は journal の窓だけで決まる。窓を外すか広げるか(README E6)と一緒に決める。
+1. 利用者の既定ログ(info)の扱い: 手書きの info/warn の行を消すと、利用者の awase.log から消える。報告の journal に残るのは、リングに収まる範囲だけ(2 節)。awase.log だけで診断する場面を残したいか。特に #1 の衝突時の行(ADR-208 L1 の異常)。
+2. CI の判定が派生の行(`awase::journal`)を読むことにしてよいか。そのために `emit_tracing` に出すフィールドを増やしてよいか(ADR-139 の「主要フィールドのみ」の変更)。
+3. 報告で遡れる範囲が、awase.log(16MiB)からリング(Actuation 6144 件など)へ縮む可能性を受け入れるか。判断の前に典型的な報告 1 件で両者を測る(未測定)。
+4. #4 `[drift] correction` は残す、でよいか(推奨は残す)。
+5. 人手の確認手順(`v2-manual-verification-guide-2026-09-29.md` など)の書き換えを伴う撤去をしてよいか。
+6. 入力内容(#5・#10)を journal の 1 か所に寄せてよいか(README E6 の窓の判断と一緒に)。
 
 ## 確認できなかったこと
 
-- 層が違う 4 系統が 1 対 1 の重複かどうか。
+- 組の全数(抜き取りなので下限)。層が違う 4 系統が 1 対 1 か。
+- `in line` 方式で行を読む python の全数(正規表現の粗い grep で 18 本)。人手の手順書の全数。
 - 中継を経る記録(#6・#7)の派生の行の順序に依存するチェッカーの有無。
-- `e2e-ime.yml:1162` の grep がどの行(手書きの `FocusChange` か、派生の `ime event` の `FocusChanged` か)に当たっているか。
-- 撤去の行数の合計(実装の PR で実測する)。
-- リポジトリ外で awase.log の行を読むもの。
+- 報告で awase.log とリングが何分ぶん遡れるか。
+- #3 を派生の行で特定できるか。第 2 段階の行数(すべて見込み)。
+- `BUG-074.md:319` の使い捨てブランチの確かめが見た `[giveup-follow]` がどの行か。
