@@ -266,7 +266,8 @@ window = { title = "flutter_form_input" }
 # autofocus で入力欄にフォーカスが入る(窓中央のクリックは TextField の外に当たって外す)。クリップボード読みは Flutter では空だった。
 read = "uia"
 intervals = [20]
-runs = 4
+runs = 8
+imes = ["msime"]
 # run 37424423737: MS-IME は awase ありで FAIL(4/12 試行)、awase なしの対照は PASS。回数を増やして頻度を見る。
 # MS-IME で ready の「か」1 文字が「かかか」と重複した(run 37423541905)。awase なしの対照(tsx-raw-ext-*)で切り分ける。
 raw_control = true
