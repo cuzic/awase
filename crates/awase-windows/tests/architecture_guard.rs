@@ -7199,3 +7199,67 @@ fn deferred_gate_wiring_detector_catches_violations() {
     assert_ne!(direct, v);
     assert!(!deferred_gate_wiring_violations(&m, &direct).is_empty());
 }
+
+/// FCIS F6b: TSF 送信パイプラインの warm/cold・PendingGjiConfirm・LiteralDetect 設置の判断は
+/// `state/warm_send_plan.rs`。殻が純粋関数を使い、判断をインラインに書き戻していないことの違反を返す。
+fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    let assess = non_comment_lines(extract_fn_body(
+        production_code_only(output_mod),
+        "fn assess_warmth(",
+    ));
+    if !assess.contains("plan_warmth(")
+        || assess.contains("COMPOSITION_TIMEOUT_MS)") && assess.contains("elapsed >")
+    {
+        v.push(
+            "assess_warmth が plan_warmth を使っていない、または期限判定をインラインに書いている",
+        );
+    }
+    let warm = non_comment_lines(extract_fn_body(
+        production_code_only(vk_send),
+        "fn send_romaji_as_tsf_warm(",
+    ));
+    for needle in [
+        "is_post_unicode_pending(",
+        "is_long_idle(",
+        "plan_literal_detect(",
+    ] {
+        if !warm.contains(needle) {
+            v.push("send_romaji_as_tsf_warm が warm_send_plan の判断関数を使っていない");
+        }
+    }
+    if warm.contains(">= crate::tuning::LONG_IDLE_MS") || warm.contains("last_unicode_ms != 0") {
+        v.push("send_romaji_as_tsf_warm が判断をインラインに書き戻している");
+    }
+    v
+}
+
+#[test]
+fn warm_send_plan_is_wired_into_assess_warmth_and_tsf_warm_send() {
+    let v = warm_send_wiring_violations(
+        &read_crate_file("src/output/mod.rs"),
+        &read_crate_file("src/output/vk_send.rs"),
+    );
+    assert!(v.is_empty(), "warm_send_plan の配線違反: {v:?}");
+}
+
+/// 違反例（plan_warmth を外してインラインに戻す、LONG_IDLE_MS をインラインで比較する）を検出できること（V2-3）。
+#[test]
+fn warm_send_wiring_detector_catches_violations() {
+    let m = read_crate_file("src/output/mod.rs");
+    let v = read_crate_file("src/output/vk_send.rs");
+    assert!(warm_send_wiring_violations(&m, &v).is_empty());
+    let no_plan = m.replacen("warm_send_plan::plan_warmth(", "unused_plan(", 1);
+    assert_ne!(no_plan, m);
+    assert!(!warm_send_wiring_violations(&no_plan, &v).is_empty());
+    let inline_idle = v.replacen(
+        "warm_send_plan::is_long_idle(",
+        "unused(crate::tuning::LONG_IDLE_MS) >= crate::tuning::LONG_IDLE_MS || (",
+        1,
+    );
+    assert_ne!(inline_idle, v);
+    assert!(!warm_send_wiring_violations(&m, &inline_idle).is_empty());
+    let no_literal = v.replacen("warm_send_plan::plan_literal_detect(", "unused_literal(", 1);
+    assert_ne!(no_literal, v);
+    assert!(!warm_send_wiring_violations(&m, &no_literal).is_empty());
+}
