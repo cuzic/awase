@@ -880,7 +880,7 @@ fn encode_apply_wparam(
         crate::state::ime_event::OpenApplyReason::ShadowToggle => 2usize,
         crate::state::ime_event::OpenApplyReason::EngineDecision => 0,
         // この async 経路に渡す呼び出し元が無い reason。渡すなら上のビット幅を拡張すること。
-        other => {
+        other @ crate::state::ime_event::OpenApplyReason::DriftCorrection => {
             debug_assert!(
                 false,
                 "未対応の OpenApplyReason を async 完了に渡した: {other:?}"
