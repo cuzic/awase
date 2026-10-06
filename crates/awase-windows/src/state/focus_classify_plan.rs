@@ -255,6 +255,12 @@ mod tests {
     #[test]
     fn reason_display_strings_are_stable() {
         assert_eq!(ClassifyReason::NullHwnd.to_string(), "NullHwnd");
+        assert_eq!(ClassifyReason::NoImeStyle.to_string(), "NoImeStyle");
+        assert_eq!(ClassifyReason::ReadOnlyEdit.to_string(), "ReadOnlyEdit");
+        assert_eq!(
+            ClassifyReason::KnownNonTextClass("Button".into()).to_string(),
+            "KnownNonTextClass(Button)"
+        );
         assert_eq!(
             ClassifyReason::KnownTextClass("Edit".into()).to_string(),
             "KnownTextClass(Edit)"
