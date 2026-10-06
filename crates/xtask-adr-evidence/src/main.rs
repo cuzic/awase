@@ -208,9 +208,12 @@ fn run_core_registry(repo_root: &str, base_ref: &str) -> ExitCode {
             .unwrap_or_else(|e| panic!("failed to read {rel}: {e}"))
     };
     let head_src = read(guard_rel);
-    let Some(head) = core_registry::parse_core_modules(&head_src) else {
-        eprintln!("CORE_MODULES が {guard_rel} に見つからない");
-        return ExitCode::from(2);
+    let head = match core_registry::parse_core_modules(&head_src) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("HEAD の {guard_rel}: {e}");
+            return ExitCode::from(2);
+        }
     };
     let out = std::process::Command::new("git")
         .args(["-C", repo_root, "show", &format!("{base_ref}:{guard_rel}")])
@@ -223,27 +226,16 @@ fn run_core_registry(repo_root: &str, base_ref: &str) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let base_src = String::from_utf8_lossy(&out.stdout);
-    let Some(base) = core_registry::parse_core_modules(&base_src) else {
-        eprintln!("base の CORE_MODULES が読めない");
-        return ExitCode::from(2);
+    let base = match core_registry::parse_core_modules(&String::from_utf8_lossy(&out.stdout)) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("base の {guard_rel}: {e}");
+            return ExitCode::from(2);
+        }
     };
     let added = core_registry::added_modules(&base, &head);
-    println!(
-        "CORE_MODULES に追加された名前: {:?}",
-        added.iter().map(|m| &m.name).collect::<Vec<_>>()
-    );
-    let mutants = read(".cargo/mutants-awase-windows.toml");
-    let pre_push = read(".githooks/pre-push");
-    let fix_requires = read(".claude/rules/fix-requires-evidence.md");
-    let violations = core_registry::check(
-        &added,
-        &core_registry::Sources {
-            mutants: &mutants,
-            pre_push: &pre_push,
-            fix_requires: &fix_requires,
-        },
-    );
+    println!("CORE_MODULES に追加された名前: {added:?}");
+    let violations = core_registry::check(&added, &read(".cargo/mutants-awase-windows.toml"));
     if violations.is_empty() {
         println!("登録漏れなし。");
         ExitCode::SUCCESS

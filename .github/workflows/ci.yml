@@ -232,12 +232,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo run -p xtask-adr-evidence -- .
 
-  # FCIS V1: PR で CORE_MODULES(layer_boundary_guard.rs)に足された名前が、mutants 設定・
-  # pre-push の正規表現・fix-requires-evidence.md の表にも載っていることを確かめる
-  # (F2/F3/F4/F5a で登録が後追いになった再発の防止)。pull_request のときだけ動かし、
-  # base ブランチの先端を取得して比較する(develop への直接 push は対象外)。
+  # FCIS V1: PR で CORE_MODULES(layer_boundary_guard.rs)に足された名前が、mutants 設定
+  # (.cargo/mutants-awase-windows.toml)にも載っていることを確かめる(F2/F3/F4 で登録が
+  # 後追いになった再発の防止)。CORE_MODULES は develop 系にだけあるため、base が develop の
+  # pull_request のときだけ動かす(develop への直接 push は対象外)。
   core-registry-consistency:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.base_ref == 'develop'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
