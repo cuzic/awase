@@ -721,6 +721,8 @@ impl Runtime {
     /// `imm_cross` 以降の事実は、`drift` があり settle 中でないときだけ読む（それ以外は
     /// `decide_drift_plan` が見ずに返すので、読まない＝元のコードと読む条件が同じ）。
     fn ir_observe_drift_facts(&self, now: std::time::Instant) -> DriftFacts {
+        // 稼働条件(`engine_enabled`/`japanese_ime`)が偽でも `check_drift_correction`・`default_feedback` は読む
+        // （純粋な読み取りで、影響は debug ログのみ。`decide_drift_plan` が `Idle(NotActive)` を返す）。
         let drift = self.ir_check_drift_correction(now);
         let settling = drift.is_some() && self.ime_apply_should_defer();
         let mut facts = DriftFacts {

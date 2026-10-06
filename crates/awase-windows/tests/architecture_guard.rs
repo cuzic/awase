@@ -3158,6 +3158,57 @@ fn drift_diagnostic_call_is_guarded(body: &str) -> bool {
     head.ends_with("if act.notify_diagnostic {")
 }
 
+/// 診断バルーンの呼び出し（`.ir_notify_drift_giveup_diagnostic(`、定義の `fn ` を除く）の件数。
+fn count_drift_diagnostic_calls(text: &str) -> usize {
+    text.matches(".ir_notify_drift_giveup_diagnostic(").count()
+}
+
+/// 診断の呼び出しは全域で 1 件（`ir_apply_drift_correction` の `if act.notify_diagnostic` の内側だけ）。
+/// 2 件目や別関数からの呼び出しは、上の「最初の 1 件が守られているか」の照合では見えない。
+#[test]
+fn drift_diagnostic_is_called_from_exactly_one_site() {
+    let mut files = Vec::new();
+    walk_rs_files(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    let mut sites = Vec::new();
+    for f in files {
+        let content = production_code_only(&fs::read_to_string(&f).unwrap_or_default()).to_string();
+        let n = count_drift_diagnostic_calls(&content);
+        if n > 0 {
+            sites.push((f.display().to_string(), n));
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "診断の呼び出し元は ir_apply_drift_correction の 1 箇所だけ: {sites:?}"
+    );
+    assert!(
+        sites[0].0.ends_with("ime_refresh.rs") && sites[0].1 == 1,
+        "{sites:?}"
+    );
+}
+
+#[test]
+fn drift_diagnostic_call_count_detects_a_second_call() {
+    assert_eq!(
+        count_drift_diagnostic_calls("self.ir_notify_drift_giveup_diagnostic(a);"),
+        1
+    );
+    assert_eq!(
+        count_drift_diagnostic_calls(
+            "self.ir_notify_drift_giveup_diagnostic(a);\nself.ir_notify_drift_giveup_diagnostic(b);"
+        ),
+        2
+    );
+    assert_eq!(
+        count_drift_diagnostic_calls("fn ir_notify_drift_giveup_diagnostic("),
+        0
+    );
+}
+
 #[test]
 fn drift_diagnostic_guard_detects_an_unguarded_call() {
     let guarded =
