@@ -8,7 +8,12 @@ use awase::kana_table::KanaTable;
 use awase::scanmap::PhysicalPos;
 use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
-use awase_windows::scancode_map::{ScancodeMapPreset, ScancodeMapSelection};
+use awase_windows::scancode_apply::ApplyRequest;
+use awase_windows::scancode_editor::{
+    EditorState, QUICK_PAIRS, Side, confirmation_lines, key_label, swap_error_text,
+    worker_exit_text,
+};
+use awase_windows::scancode_pairs::{Detected, Entry, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
@@ -350,21 +355,6 @@ fn main() -> eframe::Result<()> {
 
     let adr192_warning_context = has_adr192_warning_context(&args);
 
-    // ADR-111決定4: 自己昇格フローの昇格側エントリポイント。GUIは起動せず
-    // レジストリ操作のみ行い、終了コードで結果を返す（`--bug-report`と
-    // 同型のヘッドレス分岐パターン）。
-    if args.iter().any(|a| a == "--scancode-map") {
-        let Some(mode) = arg_value(&args, "--scancode-map") else {
-            tracing::error!("[scancode-map] --scancode-map に値がありません");
-            std::process::exit(1);
-        };
-        let Some(selection) = ScancodeMapSelection::from_cli_arg(mode) else {
-            tracing::error!("[scancode-map] 不正な --scancode-map 値: {mode}");
-            std::process::exit(1);
-        };
-        std::process::exit(scancode_map_admin::run_elevated_worker(selection));
-    }
-
     // ADR-230 決定5: ペア集合の適用の昇格側エントリポイント（`--scancode-map` と同型のヘッドレス分岐）。
     if args.iter().any(|a| a == "--scancode-pairs") {
         let Some(spec) = arg_value(&args, "--scancode-pairs") else {
@@ -513,12 +503,19 @@ struct SettingsApp {
     /// バックグラウンドスレッドで実行し、この `Receiver` を毎フレーム
     /// ノンブロッキングでポーリングする。
     pending_save: Option<std::sync::mpsc::Receiver<PendingSaveResult>>,
-    /// Caps(英数)⇔Ctrl 入れ替えプリセット（ADR-111）の現在の Scancode Map
-    /// 状態キャッシュ。`None` はまだ一度も読んでいないことを示す（タブを
-    /// 開いた時と操作直後にのみ読み直す、毎フレーム `RegGetValueW` しない）。
-    scancode_map_status: Option<scancode_map_admin::ScancodeMapStatus>,
-    /// 直近の有効化/無効化操作の結果メッセージ（GUI表示用）。
+    /// 「キーの入れ替え」（ADR-230）の Scancode Map の読み取り結果と編集状態。`None` はまだ一度も読んでいないことを
+    /// 示す（タブを開いた時と操作直後にのみ読み直す、毎フレーム `RegGetValueW` しない）。
+    scancode_map_view: Option<ScancodeMapView>,
+    /// 直近の適用操作の結果メッセージ（GUI表示用）。
     scancode_map_last_message: Option<String>,
+    /// 適用の前に出す確認ダイアログの内容（注意が要る組・他ツールのエントリが消える等）。
+    scancode_apply_confirm: Option<ScancodeApplyConfirm>,
+    /// 適用に成功して再起動待ち（「今すぐ再起動」ボタンを出す）。
+    scancode_restart_pending: bool,
+    /// 「今すぐ再起動」の確認ダイアログを出している。
+    scancode_restart_confirm: bool,
+    /// 未適用の入れ替えの変更があるままウィンドウを閉じようとした（破棄確認を出している）。
+    scancode_close_confirm: bool,
     /// 起動時設定診断（ADR-116）: `config.validate()` 警告 + `layouts_dir`
     /// 内の全 `.yab` の読込失敗/`yab::lint()` 警告。`recompute_diagnostics()`
     /// で計算し、`config_path_panel` に表示する。空なら表示しない。
@@ -770,8 +767,12 @@ impl SettingsApp {
             pending_status_notes: Vec::new(),
             config_loaded_model,
             pending_save: None,
-            scancode_map_status: None,
+            scancode_map_view: None,
             scancode_map_last_message: None,
+            scancode_apply_confirm: None,
+            scancode_restart_pending: false,
+            scancode_restart_confirm: false,
+            scancode_close_confirm: false,
             startup_diagnostics: Vec::new(),
             // recompute_diagnostics() が直後に実体で上書きする。
             auto_start_registered: false,
@@ -3140,134 +3141,261 @@ impl SettingsApp {
     /// 方式のみを提供する——ADR-110の
     /// フックベース`key_remap`機構はJIS英数キー位置で日本語IMEと衝突する
     /// 構造的リスクが判明したため撤回済み（`docs/adr/111-...md`参照）。
+    /// 「キーの入れ替え」セクション（ADR-230）。Scancode Map（レジストリ、全ユーザー共通）のペア編集。
+    ///
+    /// ADR-127 の例外: このセクションの適用は画面共通の「適用」とは別の操作で、レジストリにだけ書く。
     fn scancode_map_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.heading("Caps(英数) / Ctrl プリセット");
+        ui.heading("キーの入れ替え");
         ui.label(
-            "CapsLock（JISキーボードでは英数キー）と左Ctrlの役割を変更します。\n\
-             Windows のレジストリ（Scancode Map）を書き換えるため、管理者権限の\n\
-             確認が1回表示されます。変更の反映には再起動が必要です（サインアウトでは\n\
-             反映されないことがあります）。\n\
-             この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続の\n\
-             セッション内では動作しません。",
+            "選んだ2つのキーを入れ替えます（Windows の Scancode Map）。管理者権限の確認が1回表示されます。\n\
+             変更の反映には再起動が必要です（サインアウトでは反映されません。高速スタートアップが\n\
+             有効だと、シャットダウンしても反映されないことがあります）。\n\
+             この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続のセッション内では動作しません。\n\
+             この画面の「適用」は、上の画面全体の「適用」とは別です（設定ファイルは保存しません）。",
         );
         ui.add_space(4.0);
 
-        if self.scancode_map_status.is_none() {
-            self.scancode_map_status = Some(scancode_map_admin::read_status());
+        if self.scancode_map_view.is_none() {
+            self.scancode_map_view = Some(load_scancode_view());
         }
-
-        match &self.scancode_map_status {
-            Some(scancode_map_admin::ScancodeMapStatus::Active {
-                preset,
-                extra_entries,
-            }) => {
-                let preset_name = match preset {
-                    ScancodeMapPreset::Swap => "Caps(英数) ⇔ Ctrl 入れ替え",
-                    ScancodeMapPreset::CapsAsExtraCtrl => "Caps(英数) を Ctrl として追加",
-                };
-                if *extra_entries == 0 {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(0, 140, 0),
-                        format!("✓ 有効: {preset_name}"),
-                    );
-                } else {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(0, 140, 0),
-                        format!(
-                            "✓ 有効: {preset_name}（他に awase と無関係な設定が {extra_entries} 件あります）"
-                        ),
-                    );
+        let jis = matches!(
+            self.config.general.keyboard_model,
+            awase::scanmap::KeyboardModel::Jis
+        );
+        let mut action = ScancodeAction::None;
+        match self.scancode_map_view.as_mut() {
+            Some(ScancodeMapView::Corrupt) => {
+                ui.colored_label(
+                    egui::Color32::RED,
+                    "レジストリの Scancode Map の形式が壊れているため、変更できません。\n\
+                     手動で削除するか、他のツールで直してください。",
+                );
+                if ui.button("読み直す").clicked() {
+                    action = ScancodeAction::Reload;
                 }
             }
-            Some(scancode_map_admin::ScancodeMapStatus::Inactive { extra_entries }) => {
-                if *extra_entries == 0 {
-                    ui.label("未設定");
-                } else {
-                    ui.label(format!(
-                        "未設定（awase と無関係な Scancode Map 設定が {extra_entries} 件あります）"
-                    ));
-                }
-            }
-            Some(scancode_map_admin::ScancodeMapStatus::ReadError(e)) => {
+            Some(ScancodeMapView::ReadError(e)) => {
                 ui.colored_label(egui::Color32::RED, format!("読み取りエラー: {e}"));
+                if ui.button("読み直す").clicked() {
+                    action = ScancodeAction::Reload;
+                }
             }
-            None => unreachable!("直前に read_status() で埋めている"),
+            Some(ScancodeMapView::Loaded(loaded)) => {
+                action = scancode_editor_ui(ui, loaded, jis);
+            }
+            None => {}
         }
-
-        // ラジオの選択値と有効/無効を1回の match で導出する（表示用の match
-        // とは別に保つが、この2つは1つにまとめておく——/code-review指摘:
-        // 同じ scancode_map_status を独立に3回 match/matches! すると、
-        // 将来 ScancodeMapStatus に variant が増えたときに一部の match
-        // だけ更新漏れが起きやすい）。
-        let (derived, is_read_error) = match &self.scancode_map_status {
-            Some(scancode_map_admin::ScancodeMapStatus::Active { preset, .. }) => (
-                match preset {
-                    ScancodeMapPreset::Swap => ScancodeMapSelection::Swap,
-                    ScancodeMapPreset::CapsAsExtraCtrl => ScancodeMapSelection::CapsAsExtraCtrl,
-                },
-                false,
-            ),
-            Some(scancode_map_admin::ScancodeMapStatus::ReadError(_)) => {
-                (ScancodeMapSelection::Off, true)
+        match action {
+            ScancodeAction::None => {}
+            ScancodeAction::Reload => {
+                self.scancode_map_view = Some(load_scancode_view());
+                self.scancode_map_last_message = None;
             }
-            _ => (ScancodeMapSelection::Off, false),
-        };
-        let mut selection = derived;
-        ui.add_enabled_ui(!is_read_error, |ui| {
-            ui.radio_value(&mut selection, ScancodeMapSelection::Off, "無効");
-            ui.radio_value(
-                &mut selection,
-                ScancodeMapSelection::Swap,
-                "Caps(英数) ⇔ Ctrl を入れ替える",
-            );
-            ui.radio_value(
-                &mut selection,
-                ScancodeMapSelection::CapsAsExtraCtrl,
-                "Caps(英数) を Ctrl として追加する\n\
-                 （Ctrl が2つになります。元の Ctrl キーはそのまま。\n\
-                 英数キー自体は使えなくなります）",
-            );
-        });
-        if selection != derived {
-            self.apply_scancode_map_change(selection);
+            ScancodeAction::Apply => self.request_scancode_apply(),
         }
 
         if let Some(msg) = &self.scancode_map_last_message {
             ui.label(msg);
         }
+        if self.scancode_restart_pending && ui.button("今すぐ再起動…").clicked() {
+            self.scancode_restart_confirm = true;
+        }
     }
 
-    /// プリセット変更時の処理。自己昇格フロー
-    /// （`scancode_map_admin::request_elevated_change`）を起動して完了を
-    /// 待ち、結果に応じてメッセージを表示し、状態キャッシュを読み直す
-    /// （ADR-111決定4・決定7、ADR-126決定4・決定5）。
-    fn apply_scancode_map_change(&mut self, selection: ScancodeMapSelection) {
+    /// 設定の親指キーに当たるスキャンコード（確認ダイアログの注意書き用）。
+    fn thumb_scancodes(&self) -> Vec<u16> {
+        [
+            &self.config.general.left_thumb_key,
+            &self.config.general.right_thumb_key,
+        ]
+        .into_iter()
+        .filter_map(|name| thumb_key_scancode(name))
+        .collect()
+    }
+
+    /// 適用ボタン。検査して、確認が要るなら確認ダイアログを出し、要らなければそのまま昇格して適用する。
+    fn request_scancode_apply(&mut self) {
+        let thumbs = self.thumb_scancodes();
+        let prepared = match &self.scancode_map_view {
+            Some(ScancodeMapView::Loaded(loaded)) => {
+                let preview = loaded.editor.preview(&loaded.entries, &thumbs);
+                match &preview.plan {
+                    Err(e) => Err(swap_error_text(*e)),
+                    Ok(plan) => Ok((
+                        ApplyRequest {
+                            pairs: loaded.editor.pairs(),
+                            caps_extra_ctrl: loaded.editor.caps_extra(),
+                            expected: loaded.entries.clone(),
+                            allow_displace: !plan.displaced.is_empty(),
+                        },
+                        preview
+                            .needs_confirmation()
+                            .then(|| confirmation_lines(&preview)),
+                    )),
+                }
+            }
+            _ => return,
+        };
+        match prepared {
+            Err(message) => self.scancode_map_last_message = Some(message),
+            Ok((request, Some(lines))) => {
+                self.scancode_apply_confirm = Some(ScancodeApplyConfirm { lines, request });
+            }
+            Ok((request, None)) => self.run_scancode_apply(&request),
+        }
+    }
+
+    /// 自己昇格フロー（`scancode_map_admin::request_elevated_pairs_change`）を起動して完了を待ち、結果を表示し、
+    /// レジストリを読み直す（ADR-230 決定5。失敗・巻き戻しの後も今の値を読み直して表示する）。
+    fn run_scancode_apply(&mut self, request: &ApplyRequest) {
         use scancode_map_admin::ElevationOutcome;
-        let outcome = scancode_map_admin::request_elevated_change(selection);
+        let outcome = scancode_map_admin::request_elevated_pairs_change(request);
+        let success = matches!(outcome, ElevationOutcome::Success);
         self.scancode_map_last_message = Some(match outcome {
-            ElevationOutcome::Success => match selection {
-                ScancodeMapSelection::Off => {
-                    "無効にしました。反映するには再起動してください。".to_string()
-                }
-                ScancodeMapSelection::Swap => {
-                    "入れ替えを有効にしました。反映するには再起動してください。".to_string()
-                }
-                ScancodeMapSelection::CapsAsExtraCtrl => {
-                    "Ctrl として追加する設定にしました。反映するには再起動してください。"
-                        .to_string()
-                }
-            },
+            ElevationOutcome::Success => {
+                "適用しました。反映するには再起動が必要です（サインアウトでは反映されません）。"
+                    .to_string()
+            }
             ElevationOutcome::Failed => "処理に失敗しました。".to_string(),
-            // プリセット変更（`--scancode-map`）の昇格側は `Rejected` を返さない。ペア適用（ADR-230）の UI で使う。
-            ElevationOutcome::Rejected(exit) => format!("処理に失敗しました({exit:?})。"),
+            ElevationOutcome::Rejected(exit) => worker_exit_text(exit).to_string(),
             ElevationOutcome::Cancelled => {
                 "キャンセルされました（管理者権限が必要です）。".to_string()
             }
             ElevationOutcome::LaunchError(e) => format!("起動できませんでした: {e}"),
         });
-        // 決定7: 操作直後にのみ再読み込みする（毎フレーム読まない）。
-        self.scancode_map_status = Some(scancode_map_admin::read_status());
+        if success {
+            self.scancode_restart_pending = true;
+        }
+        // 操作直後にのみ再読み込みする（毎フレーム読まない）。
+        self.scancode_map_view = Some(load_scancode_view());
+    }
+
+    /// 適用前の確認ダイアログ（注意が要る組・他ツールのエントリが消える・隠れたエントリが効き出しうる）。
+    fn show_scancode_apply_confirm_modal(&mut self, ctx: &egui::Context) {
+        let Some(confirm) = &self.scancode_apply_confirm else {
+            return;
+        };
+        let mut open = true;
+        let mut confirmed = false;
+        let mut cancelled = false;
+        egui::Window::new("入れ替えの確認")
+            .id(egui::Id::new("scancode_apply_confirm"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                for line in &confirm.lines {
+                    ui.label(format!("・{line}"));
+                }
+                ui.add_space(8.0);
+                ui.label("このまま適用しますか？（管理者権限の確認が表示されます）");
+                ui.horizontal(|ui| {
+                    if ui.button("適用する").clicked() {
+                        confirmed = true;
+                    }
+                    if ui.button("キャンセル").clicked() {
+                        cancelled = true;
+                    }
+                });
+            });
+        if confirmed {
+            if let Some(confirm) = self.scancode_apply_confirm.take() {
+                self.run_scancode_apply(&confirm.request);
+            }
+        } else if cancelled || !open {
+            self.scancode_apply_confirm = None;
+        }
+    }
+
+    /// 「今すぐ再起動」の確認ダイアログ。
+    fn show_scancode_restart_confirm_modal(&mut self, ctx: &egui::Context) {
+        if !self.scancode_restart_confirm {
+            return;
+        }
+        let mut open = true;
+        let mut confirmed = false;
+        let mut cancelled = false;
+        egui::Window::new("再起動の確認")
+            .id(egui::Id::new("scancode_restart_confirm"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(
+                    "5秒後にこのPCを再起動します。保存していない作業は失われます。\n\
+                     再起動しますか？",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("再起動する").clicked() {
+                        confirmed = true;
+                    }
+                    if ui.button("キャンセル").clicked() {
+                        cancelled = true;
+                    }
+                });
+            });
+        if confirmed {
+            self.scancode_restart_confirm = false;
+            if let Err(e) = scancode_map_admin::request_restart() {
+                self.scancode_map_last_message = Some(e);
+            }
+        } else if cancelled || !open {
+            self.scancode_restart_confirm = false;
+        }
+    }
+
+    /// 未適用の入れ替えの変更があるのにウィンドウを閉じようとしたときの破棄確認（ADR-127 追記）。
+    fn show_scancode_close_confirm_modal(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.scancode_has_unapplied_changes() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.scancode_close_confirm = true;
+        }
+        if !self.scancode_close_confirm {
+            return;
+        }
+        let mut open = true;
+        let mut discard = false;
+        let mut back = false;
+        egui::Window::new("未適用の変更")
+            .id(egui::Id::new("scancode_close_confirm"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(
+                    "「キーの入れ替え」に、まだ適用していない変更があります。\n\
+                     破棄して閉じますか？",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("破棄して閉じる").clicked() {
+                        discard = true;
+                    }
+                    if ui.button("戻る").clicked() {
+                        back = true;
+                    }
+                });
+            });
+        if discard {
+            self.scancode_close_confirm = false;
+            // 破棄を選んだので、編集状態を捨ててから閉じ直す。
+            self.scancode_map_view = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if back || !open {
+            self.scancode_close_confirm = false;
+        }
+    }
+
+    /// 入れ替えの編集に、まだ適用していない変更がある。
+    fn scancode_has_unapplied_changes(&self) -> bool {
+        matches!(
+            &self.scancode_map_view,
+            Some(ScancodeMapView::Loaded(loaded))
+                if loaded.editor.is_dirty() || loaded.editor.has_incomplete()
+        )
     }
 
     /// 「アプリ無効化」タブ（`disable_apps`）。プロセス名のみで完結する単純な
@@ -4095,6 +4223,9 @@ impl eframe::App for SettingsApp {
 
         self.config_path_panel(ctx);
         self.show_dangerous_save_confirm_modal(ctx);
+        self.show_scancode_apply_confirm_modal(ctx);
+        self.show_scancode_restart_confirm_modal(ctx);
+        self.show_scancode_close_confirm_modal(ctx);
         self.show_cancel_layout_confirm_modal(ctx);
         self.show_layout_discard_confirm_modal(ctx);
 
@@ -4747,6 +4878,194 @@ fn is_muhenkan_thumb_key(key: &str) -> bool {
 /// [`is_muhenkan_thumb_key`] の変換キー版。
 fn is_henkan_thumb_key(key: &str) -> bool {
     VkCode::from_name(key) == Some(awase_windows::vk::VK_CONVERT)
+}
+
+/// 設定の親指キー名に当たるスキャンコード（「キーの入れ替え」の注意書き用。無変換・変換・スペースだけ）。
+fn thumb_key_scancode(key: &str) -> Option<u16> {
+    use awase_windows::scancode_pairs::{SCANCODE_HENKAN, SCANCODE_MUHENKAN, SCANCODE_SPACE};
+    if is_muhenkan_thumb_key(key) {
+        Some(SCANCODE_MUHENKAN)
+    } else if is_henkan_thumb_key(key) {
+        Some(SCANCODE_HENKAN)
+    } else if VkCode::from_name(key) == Some(awase_windows::vk::VK_SPACE) {
+        Some(SCANCODE_SPACE)
+    } else {
+        None
+    }
+}
+
+/// 「キーの入れ替え」セクションの読み取り結果と編集状態。
+enum ScancodeMapView {
+    /// 読めた。
+    Loaded(Box<ScancodeMapLoaded>),
+    /// 値の形式が壊れている（変更しない）。
+    Corrupt,
+    /// 読み取りに失敗した。
+    ReadError(String),
+}
+
+struct ScancodeMapLoaded {
+    /// 生の値を順に読んだ列（比較交換の期待値。並べ替えない）。
+    entries: Vec<Entry>,
+    /// `entries` の分類（他ツールのエントリの一覧表示用）。
+    detected: Detected,
+    editor: EditorState,
+}
+
+/// 適用前の確認ダイアログの内容。
+struct ScancodeApplyConfirm {
+    lines: Vec<String>,
+    request: ApplyRequest,
+}
+
+/// セクションの描画結果（描画後に `&mut self` の処理を呼ぶため）。
+enum ScancodeAction {
+    None,
+    Reload,
+    Apply,
+}
+
+fn load_scancode_view() -> ScancodeMapView {
+    match scancode_map_admin::read_raw_entries() {
+        scancode_map_admin::ScancodeMapRead::Loaded(entries) => {
+            let detected = detect_swap_pairs(&entries);
+            let editor = EditorState::from_detected(&detected);
+            ScancodeMapView::Loaded(Box::new(ScancodeMapLoaded {
+                entries,
+                detected,
+                editor,
+            }))
+        }
+        scancode_map_admin::ScancodeMapRead::Corrupt => ScancodeMapView::Corrupt,
+        scancode_map_admin::ScancodeMapRead::Error(e) => ScancodeMapView::ReadError(e),
+    }
+}
+
+/// ペア編集の描画（ADR-230 段階4）。状態は `loaded.editor` が持ち、ここは描画と入力の反映だけ。
+fn scancode_editor_ui(
+    ui: &mut egui::Ui,
+    loaded: &mut ScancodeMapLoaded,
+    jis: bool,
+) -> ScancodeAction {
+    let mut action = ScancodeAction::None;
+
+    if !loaded.detected.unclaimed.is_empty() {
+        ui.label("他のツールが設定している項目（awase は変更しません）:");
+        for &((from, to), _) in &loaded.detected.unclaimed {
+            ui.label(format!("　{} → {}", key_label(from), key_label(to)));
+        }
+        ui.add_space(4.0);
+    }
+    for d in loaded.detected.pairs.iter().filter(|d| d.warning) {
+        let (a, b) = d.pair.keys();
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 120, 0),
+            format!(
+                "「{} ⇄ {}」は他のツールの設定と重なっています。削除すると、重なっていた設定が効き出す可能性があります。",
+                key_label(a),
+                key_label(b)
+            ),
+        );
+    }
+
+    let editor = &mut loaded.editor;
+    let mut remove: Option<usize> = None;
+    for i in 0..editor.rows().len() {
+        ui.horizontal(|ui| {
+            for side in [Side::A, Side::B] {
+                if matches!(side, Side::B) {
+                    ui.label("⇄");
+                }
+                let row = editor.rows()[i];
+                let current = match side {
+                    Side::A => row.a,
+                    Side::B => row.b,
+                };
+                let candidates = editor.candidates(i, side, jis);
+                let mut chosen = current;
+                egui::ComboBox::from_id_salt(("scancode_pair", i, matches!(side, Side::B)))
+                    .selected_text(current.map_or_else(|| "選択".to_string(), key_label))
+                    .show_ui(ui, |ui| {
+                        for key in candidates {
+                            ui.selectable_value(&mut chosen, Some(key), key_label(key));
+                        }
+                    });
+                if chosen != current {
+                    editor.set_key(i, side, chosen);
+                }
+            }
+            if ui.button("削除").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        editor.remove_row(i);
+    }
+
+    ui.horizontal(|ui| {
+        if ui.button("＋ ペアを追加").clicked() {
+            editor.add_row();
+        }
+        ui.label("よくある入れ替え:");
+        for quick in &QUICK_PAIRS {
+            let available = editor.quick_available(quick);
+            if ui
+                .add_enabled(available, egui::Button::new(quick.label))
+                .clicked()
+            {
+                editor.add_quick(quick);
+            }
+        }
+    });
+
+    let mut caps = editor.caps_extra();
+    let caps_enabled = caps || editor.caps_extra_available();
+    ui.add_enabled(
+        caps_enabled,
+        egui::Checkbox::new(
+            &mut caps,
+            "英数 / Caps を追加の Ctrl にする（元の左 Ctrl は残ります。英数キー自体は使えなくなります）",
+        ),
+    );
+    if caps != editor.caps_extra() {
+        editor.set_caps_extra(caps);
+    }
+
+    let dirty = editor.is_dirty();
+    let incomplete = editor.has_incomplete();
+    if incomplete {
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 120, 0),
+            "片方しか選んでいない行があります（両方選ぶか、削除してください）。",
+        );
+    } else if dirty {
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 120, 0),
+            "未適用の変更があります。",
+        );
+    }
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                dirty && !incomplete,
+                egui::Button::new("入れ替えを適用（要再起動）"),
+            )
+            .clicked()
+        {
+            action = ScancodeAction::Apply;
+        }
+        if ui
+            .add_enabled(dirty || incomplete, egui::Button::new("元に戻す"))
+            .clicked()
+        {
+            editor.reset();
+        }
+        if ui.button("読み直す").clicked() {
+            action = ScancodeAction::Reload;
+        }
+    });
+    action
 }
 
 /// 左親指/右親指キーの候補にのみ追加する、Alt なりすまし用エントリ。
@@ -6148,8 +6467,12 @@ mod layout_tab_repro {
             pending_status_notes: Vec::new(),
             config_loaded_model,
             pending_save: None,
-            scancode_map_status: None,
+            scancode_map_view: None,
             scancode_map_last_message: None,
+            scancode_apply_confirm: None,
+            scancode_restart_pending: false,
+            scancode_restart_confirm: false,
+            scancode_close_confirm: false,
             startup_diagnostics: Vec::new(),
             auto_start_registered: false,
             adr192_warning_context: false,

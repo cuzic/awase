@@ -236,7 +236,7 @@
 | [227](227-bug074-giveup-as-closed-ime-evidence.md) | BUG-074: give-up で文字が痕跡なく消える件。先に測り(D0)、方向(再オープン/案K/通知/追随)は所有者が決める | (i) 実装済み(PR #480・`900a5f3e`、2026-10-05、CI 検証済み・実機未検証): `Imm32Unavailable`×GJI の give-up を読み直しのきっかけにする(`take_gi |
 | [228](228-bug-report-legacy-msime-custom-key-table.md) | 不具合報告に旧互換 MS-IME のキー表の中身を、許可リスト+固定長の読める形で添付するか(ADR-148 の「読めず削れない」反対理由への答えが要る) | 見送り(2026-10-04、Opus r1: 案 B は動機の 2 件の調査を前に進めない・実装なし) |
 | [229](229-os-independent-core-and-dumb-windows-executor.md) | awase-windows を「Windows の dumb な実行役」に絞り、判断を Linux でテストできる側へ寄せる層の引き直し | FCIS で改訂(2026-10-06)。T1〜T7 は PR #492〜#495 でマージ済み。ADR-224 改訂・S2 を承認。P0・P1・RW・S2 を実装中 |
-| [230](230-scancode-map-bijective-swap-editor.md) | Scancode Map を「全単射の入れ替えペア」で編集できる UI(ADR-111/126 の2プリセットの一般化) | 設計は Opus 3 ラウンドで収束(2026-10-06)。段階1〜3(純粋関数・ADR-127 追記・昇格 CLI)実装済み(PR #501)、段階4(UI)・5(実機確認)は未着手 |
+| [230](230-scancode-map-bijective-swap-editor.md) | Scancode Map を「全単射の入れ替えペア」で編集できる UI(ADR-111/126 の2プリセットの一般化) | 設計は Opus 3 ラウンドで収束(2026-10-06)。段階1〜3は PR #501 でマージ、段階4(UI、Swap プリセット撤去)は実装済み(型検査・テストまで、実機操作は未)、段階5(実機確認)は未着手 |
 | [231](231-gji-custom-keymap-tsv-generator.md) | GJI カスタムキーマップの TSV 生成(プリセットの振る舞いをキーに割り当て、import は手動) | 起草(2026-10-06、未レビュー、実装なし) |
 | [232](232-observation-event-subscription-and-consumption.md) | Observation/Event の購読と消費 | 起草(2026-10-05)。Opus round1・round2 反映済み |
 | [233](233-stale-high-observation-beats-newer-in-most-recent-trusted.md) | 古い High 観測が新しい Medium 観測に勝つ件(BUG-189) | 設計収束(Opus round3)・実装前の測定済み(A' が 41/41 で正しい)。実装済み・CI 確認済み(Flutter × MS-IME 7/8 PASS、2026-10-06)。実機未検証 |
