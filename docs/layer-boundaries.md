@@ -223,7 +223,8 @@ grep -rn "ctrl_bypass_hold\|focus_transition_pending\|shadow_toggle_suppressed\|
 
 **ルール**: 全 `ImeEvent` dispatch は `event_log.record_at()` 経由で seq が
 付与される。reducer 内の順序判断は `envelope.time.seq` または
-`envelope.time.monotonic` を使う。`tick_ms` は表示用のみ。
+`envelope.time.monotonic` を使う。`tick_ms`（`GetTickCount64` 由来）は、
+キー効果の予測の照合など「ms 単位の経過」を見る箇所（`reconcile_key_effect_mode`）が読む。順序判断には使わない。
 
 **Why**: ADR-032 設計原則 6。壁時計依存の排除、リプレイ可能性の確保。
 

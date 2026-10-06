@@ -54,7 +54,7 @@ impl From<windows::Win32::Foundation::HWND> for HwndId {
 pub struct EventTime {
     /// 全 event を通じて単調増加する番号。順序判断はこれを使う。
     pub seq: u64,
-    /// `Instant::now()` で取得した単調時刻。経過時間計算に使う。
+    /// `HubClock::now_instant()` で取得した単調時刻。経過時間計算に使う。
     pub monotonic: Instant,
     /// `GetTickCount64()` 由来の ms。既存ログとの互換用。
     pub tick_ms: u64,
@@ -634,7 +634,7 @@ impl ImeEvent {
     }
 }
 
-/// Event log に積まれる envelope。時刻情報と event 本体をまとめる。
+/// `dispatch_event` が採番して reducer に渡す envelope。時刻情報と event 本体をまとめる。
 #[derive(Debug, Clone)]
 pub struct ImeEventEnvelope {
     pub time: EventTime,
