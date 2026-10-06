@@ -61,8 +61,9 @@ pub struct ReadStrategyFacts {
     pub shift_conv_guard_active: bool,
 }
 
-/// 打鍵中か(最後のキー活動から [`TYPING_IDLE_MS`] 未満)。**この判定の唯一の定義**。
-/// `observe`(`ir_observe_read_strategy_facts`)は、通過マークの有効判定を打鍵中のときだけ読むために、
+/// 打鍵中か(最後のキー活動から [`TYPING_IDLE_MS`] 未満)。
+///
+/// **この判定の唯一の定義**。`observe`(`ir_observe_read_strategy_facts`)は、通過マークの有効判定を打鍵中のときだけ読むために、
 /// `decide_read_strategy` は決定のために、それぞれこの関数を呼ぶ。片方だけ閾値の式を変えると、
 /// 通過マークを読まないまま打鍵中扱いの `SkipTyping` に落ちる。
 #[must_use]
