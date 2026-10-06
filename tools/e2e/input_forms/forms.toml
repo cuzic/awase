@@ -1,0 +1,80 @@
+# 入力先(入力フォーム)の宣言表。ここへ 1 項目足すだけで、CI(e2e-ime.yml の tsx-ext-*)が
+# 「その入力先 × IME(GJI / MS-IME) × 打鍵間隔」の高速打鍵ストレスを組み立てて回す。
+# 実装は crates/awase-windows/examples/typing_stress/target/ext.rs(`--form=ext --ext=<名前>`)。
+#
+# 項目のキー:
+#   toolkit      表示用の名前(Java Swing など)。
+#   setup        CI が入れておく物: java / libreoffice / openoffice / none(e2e-ime.yml の「入力先のセットアップ」)。
+#   prepare      CI で入力先を用意するコマンド(リポジトリ直下で pwsh 実行。例: javac)。
+#   exe / args   起動する実行ファイルの候補(最初に存在するもの)と引数。{repo} {dump} {profile} {profile_url} を置換する。
+#   window       窓の探し方(title=タイトルに含む / class=クラス名の完全一致)。any_pid=true は起動 pid に限らず探す。
+#   read         dump=本文をファイルへ書き出させて読む(既定) / uia=窓内の最初の Edit を UI Automation で読む。
+#   helper_*     dump を書く補助プロセス(Office の UNO 読み出しなど)。
+#   profile_seed office=一時プロファイルに初回ダイアログ抑止の設定を書く。
+#   intervals    打鍵間隔(ms)。省略時は [30, 10]。
+#   imes         回す IME。省略時は ["gji", "msime"]。
+#
+# 足す手順(例 wxWidgets): tools/e2e/ に最小アプリ(Edit 1つ、タイトル固定)を置く → prepare でビルド → read="uia" か dump で読む。
+# 何が動かないか(入力できる/文字が欠ける/リテラル化する)は、typing_stress が期待文字列と比べて分類する。
+
+[forms.java-swing-field]
+toolkit = "Java Swing (JTextField)"
+setup = "java"
+prepare = ["javac -encoding UTF-8 -d tools/e2e/java_forms tools/e2e/java_forms/JavaForm.java"]
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "-cp", "{repo}/tools/e2e/java_forms", "JavaForm", "swing", "{dump}"]
+window = { title = "java-form-input" }
+read = "dump"
+
+[forms.java-swing-area]
+toolkit = "Java Swing (JTextArea)"
+setup = "java"
+prepare = ["javac -encoding UTF-8 -d tools/e2e/java_forms tools/e2e/java_forms/JavaForm.java"]
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "-cp", "{repo}/tools/e2e/java_forms", "JavaForm", "swingarea", "{dump}"]
+window = { title = "java-form-input" }
+read = "dump"
+
+[forms.java-awt-field]
+toolkit = "Java AWT (TextField)"
+setup = "java"
+prepare = ["javac -encoding UTF-8 -d tools/e2e/java_forms tools/e2e/java_forms/JavaForm.java"]
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "-cp", "{repo}/tools/e2e/java_forms", "JavaForm", "awt", "{dump}"]
+window = { title = "java-form-input" }
+read = "dump"
+
+[forms.java-awt-area]
+toolkit = "Java AWT (TextArea)"
+setup = "java"
+prepare = ["javac -encoding UTF-8 -d tools/e2e/java_forms tools/e2e/java_forms/JavaForm.java"]
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "-cp", "{repo}/tools/e2e/java_forms", "JavaForm", "awtarea", "{dump}"]
+window = { title = "java-form-input" }
+read = "dump"
+
+# LibreOffice Writer: 本文は同梱 python の UNO で読む(UI Automation では読めない)。
+[forms.libreoffice-writer]
+toolkit = "LibreOffice Writer"
+setup = "libreoffice"
+exe = ["C:/Program Files/LibreOffice/program/soffice.exe"]
+args = ["-env:UserInstallation={profile_url}", "-accept=socket,host=127.0.0.1,port=2002;urp;", "-norestore", "-nologo", "-nofirststartwizard", "-writer"]
+window = { class = "SALFRAME", title = "Writer" }
+any_pid = true
+profile_seed = "office"
+read = "dump"
+helper_exe = ["C:/Program Files/LibreOffice/program/python.exe"]
+helper_args = ["{repo}/tools/e2e/office_forms/dump_text.py", "2002", "{dump}"]
+
+# Apache OpenOffice Writer(4.1.x、LibreOffice とは別系統の VCL)。
+[forms.openoffice-writer]
+toolkit = "Apache OpenOffice Writer"
+setup = "openoffice"
+exe = ["C:/Program Files (x86)/OpenOffice 4/program/soffice.exe"]
+args = ["-env:UserInstallation={profile_url}", "-accept=socket,host=127.0.0.1,port=2002;urp;", "-norestore", "-nologo", "-nofirststartwizard", "-writer"]
+window = { class = "SALFRAME", title = "Writer" }
+any_pid = true
+profile_seed = "office"
+read = "dump"
+helper_exe = ["C:/Program Files (x86)/OpenOffice 4/program/python.exe"]
+helper_args = ["{repo}/tools/e2e/office_forms/dump_text.py", "2002", "{dump}"]

@@ -10,6 +10,7 @@ name: e2e-ime
 # ci/e2e-scenarios ブランチへの push は、操作シナリオ(名前が sc- で始まる構成、下のplan参照)だけを回す。
 # ci/e2e-calibration ブランチへの push は、ADR-191 の学習/検証ラウンド(名前が cal- で始まる構成)だけを回す。
 # ci/e2e-typing-stress ブランチへの push は、高速打鍵ストレス(名前が ts- で始まる構成、examples/typing_stress/)だけを回す。
+# ci/e2e-java-office ブランチへの push は、宣言表 tools/e2e/input_forms/forms.toml の入力先(Java・Office 等、名前が tsx-ext- で始まる構成)だけを回す。
 # 実アプリ(Chrome・不具合報告フォーム)を入力先にする/摂動を足す拡張構成は tsx- で始まる。重いので既定では回さず、only='tsx-*' で回す。
 # (workflow_dispatch は既定ブランチにワークフローが無いと使えないので、構成を絞るには only 入力かこのブランチを使う)
 #
@@ -35,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress]
+    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -73,10 +74,11 @@ jobs:
       builds: ${{ steps.p.outputs.builds }}
       jobs: ${{ steps.p.outputs.jobs }}
     steps:
+      - uses: actions/checkout@v4
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -99,9 +101,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -711,6 +713,19 @@ jobs:
             susp('survey-chromepage', 'chromepage', survey=True),
             *[susp(f'rend-{form}-d{d}', form, 300, d, proc='GoogleIMEJaRenderer') for form in ('tsf', 'chromepage') for d in (800, 2500)],
           ]
+          # --- 宣言表の入力先(tsx-ext-*): tools/e2e/input_forms/forms.toml の各項目 × IME × 打鍵間隔。観測のみ、only='tsx-ext-*' で回す。---
+          # 入力先を足すときは forms.toml に 1 項目書く(このスクリプトは触らない)。setup/prepare は e2e ジョブの「入力先のセットアップ」が使う。
+          import tomllib
+          with open('tools/e2e/input_forms/forms.toml', 'rb') as _f:
+            _forms = tomllib.load(_f)['forms']
+          for _name, _spec in _forms.items():
+            for _ime in _spec.get('imes', ['gji', 'msime']):
+              for _iv in _spec.get('intervals', [30, 10]):
+                _c = tsx(f'ext-{_name}-{_ime}-{_iv}ms', 'ext', _ime, _iv,
+                         extra=f'--ext={_name} --ext-manifest=@REPO@/tools/e2e/input_forms/forms.toml --ext-repo=@REPO@',
+                         kinds='single,thumb,mixed', trials=4, len=25, runs=2, wait=900)
+                _c.update(setup=_spec.get('setup', 'none'), prepare=' ; '.join(_spec.get('prepare', [])), until='2026-12-01')
+                configs.append(_c)
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
@@ -814,6 +829,31 @@ jobs:
         with:
           name: bin-${{ matrix.cfg.bin }}
           path: dist
+
+      # --- 入力先のセットアップ(宣言表 tools/e2e/input_forms/forms.toml の setup / prepare) ---
+      - name: 入力先のセットアップ(Java)
+        if: matrix.cfg.setup == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 入力先のセットアップ(LibreOffice、chocolatey)
+        if: matrix.cfg.setup == 'libreoffice'
+        shell: pwsh
+        run: |
+          choco install libreoffice-fresh -y --no-progress 2>&1 | Select-Object -Last 5
+          Get-ChildItem 'C:\Program Files\LibreOffice\program\soffice.exe', 'C:\Program Files\LibreOffice\program\python.exe'
+      - name: 入力先のセットアップ(Apache OpenOffice、chocolatey)
+        if: matrix.cfg.setup == 'openoffice'
+        shell: pwsh
+        run: |
+          choco install openoffice -y --no-progress 2>&1 | Select-Object -Last 5
+          Get-ChildItem 'C:\Program Files (x86)\OpenOffice 4\program\soffice.exe', 'C:\Program Files (x86)\OpenOffice 4\program\python.exe'
+      - name: 入力先の用意(prepare)
+        if: matrix.cfg.prepare != ''
+        shell: pwsh
+        run: |
+          '${{ matrix.cfg.prepare }}' -split ' ; ' | ForEach-Object { Write-Host "> $_"; Invoke-Expression $_; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
 
       # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
       - name: Google 日本語入力をインストール(chocolatey、約30秒)
@@ -1195,7 +1235,7 @@ jobs:
           $rc = $LASTEXITCODE
           "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
           "exit code: $rc"
-          Get-Process awase, awase-settings, ime_key_matrix_spike, typing_stress, chrome, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process awase, awase-settings, java, javaw, soffice, soffice.bin, ime_key_matrix_spike, typing_stress, chrome, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
           exit 0
 
       # 不変条件(異常検出器): 上の期待表(rc.txt)とは別に数え、結果は invariants.json / inv_rc.txt に書く(summary が別の表で集計)。

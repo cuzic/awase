@@ -9,9 +9,12 @@
 //! | `edit`/`multi`/`rich`/`tsf`  | 自前で作る Win32 窓(`create_own_window`)       | `WM_GETTEXT`    | あり            |
 //! | `chromebar`/`chromepage`     | 本物の Chrome(専用プロファイル)                | UI Automation   | なし            |
 //! | `bugreport`                  | 本物の `awase-settings --bug-report`           | UI Automation   | なし            |
+//! | `ext`(`--ext=名前`)         | 宣言表 tools/e2e/input_forms/forms.toml の項目 | ファイル/UIA    | なし            |
 //!
 //! HIMC が無い入力先では `real_ime_open` が `None` になるため、drift 系モード(実 IME の開閉を直接
 //! 観測/操作する)は使えない。
+
+mod ext;
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -54,6 +57,7 @@ pub(crate) fn launch(form: Form) -> Box<dyn InputTarget> {
         Form::ChromeBar => Box::new(Chrome::launch(false)),
         Form::ChromePage => Box::new(Chrome::launch(true)),
         Form::BugReport => Box::new(BugReport::launch()),
+        Form::Ext => ext::launch(),
     }
 }
 
