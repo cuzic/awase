@@ -142,11 +142,13 @@ Windows 側の関数は、belief・profile・gate を読んで分岐しない。
 | ID | 内容 | 新たに Linux で回るテスト | 成否を決める CI |
 |---|---|---:|---|
 | T2 | `tsf/tsf_gate.rs` の gate 解除(`tsf/mod.rs` の 2 か所)。ADR-229「先に確かめること 1」(ungate 後にコンパイルが通るか)の最小の実地確認 | 19 | Linux の `cargo nextest run --workspace --lib` で `tsf::tsf_gate::tests::*` が 19 本 pass。`windows-cross-check`・`windows-build` が green |
-| T1 | `runtime/transport.rs::plan_tests`(30 本)を `state/physical_disposition.rs` へ移し `plan_core` で検査(移す先のモジュール名は `mod tests`。本番コードは不変)。**価値は最大**(配送判断の決定表、BUG-116/131/ADR-166) | 30 | Linux で `state::physical_disposition::tests::*` が 30 本 pass |
+| T1 | `runtime/transport.rs::plan_tests`(30 本)を `state/physical_disposition.rs` へ移し `plan_core` で検査(移す先のモジュール名は `mod tests`。本番の挙動は不変。ただしテストが呼ぶ純粋関数 `suppress_reason` を `physical_disposition.rs` へ移した。round1 レビューはこの移動が要ることを見落としていた。**着手前に、テストが呼ぶ関数・型・定数が gated 側にないかを必ず確認する**)。**価値は最大**(配送判断の決定表、BUG-116/131/ADR-166) | 30 | Linux で `state::physical_disposition::tests::*` が 30 本 pass |
 | T3 | `state/ime_event_log.rs` の gate 解除 | 5 | 同上 |
 | T5 | 空の `tsf/send.rs` の削除 | 0 | `windows-cross-check` |
 | T4 | `journal.rs` の gate 解除(`SentKeyEvent` を ungated へ、dump の 2 関数を `#[cfg(windows)]`) | 22 | Linux で 22 本 pass |
 | T7 | `focus/hwnd_cache.rs` の `save`/`restore` に `now_ms` を渡してから gate 解除。期限切れのテストを追加(focus ファミリー、テスト追加が条件) | 新規 3〜5 | Linux で pass |
+
+結果(2026-10-06): T2・T3・T5 は PR #492、T1 は PR #493、T7 は PR #494、T4 は PR #495 で、いずれも CI が通った(マージは未実施)。#493 は初回に `suppress_reason` の置き場所(Windows 専用の `transport.rs` にあり、移したテストが Linux で見えなかった)と rustfmt で失敗し、修正した。Opus の PR レビュー round1 で #493 に Must 2 件(Linux の dead_code 警告、殻 `plan` を呼ぶテストが 0 本になったこと)が出て反映し、round2 の再確認で #492・#493・#494 に Blocker・Must なし(#495 は Opus レビュー待ち)。#494 の `focus/mod.rs` の `allow(dead_code)` は不要の見込みで、外す作業中。`state/physical_disposition.rs` が `.githooks/pre-push`・`fix-requires-evidence.md` の表・`.cargo/mutants-awase-windows.toml` のどれにも載っていない件(Opus S2)は、所有者判断として未決定。
 
 取りやめ条件: Linux でコンパイルが通らない、または `allow(dead_code)` を足さないと警告が消えない(3 か所を超えたら止める。`allow` の削減という指標に逆行する)。1 本でも Linux で落ちるテストは、本番との差の発見なので BUG として扱う。
 
