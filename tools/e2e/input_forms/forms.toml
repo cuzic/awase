@@ -250,12 +250,20 @@ intervals = [20]
 
 # Flutter for Windows(独自の TSF 実装)。
 [forms.flutter-textfield]
-toolkit = "Flutter TextField"
+toolkit = "Flutter TextField (クリップボードで読む)"
 setup = "flutter"
 exe = ["{repo}/tools/e2e/input_apps/flutter/app/build/windows/x64/runner/Release/flutter_form_input.exe"]
 window = { title = "flutter_form_input" }
-click = true
-# クリップボード読みは Flutter では空だった(run 37419715235)。Flutter は UIA を問い合わせると意味ツリーを出すので UIA で読む。
+# autofocus で入力欄にフォーカスが入る。窓中央のクリックは TextField の外に当たってフォーカスを外した(run 37420154037)ので click しない。
+read = "clipboard"
+intervals = [20]
+runs = 1
+
+[forms.flutter-uia]
+toolkit = "Flutter TextField (UIA で読む)"
+setup = "flutter"
+exe = ["{repo}/tools/e2e/input_apps/flutter/app/build/windows/x64/runner/Release/flutter_form_input.exe"]
+window = { title = "flutter_form_input" }
 read = "uia"
 intervals = [20]
 runs = 1
