@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- WinForms / WPF / WebView2 の入力欄を 1 つだけ持つ窓(typing_stress --form=ext の入力先)。
+  <!-- WinForms / WPF / WebView2 の入力欄を 1 つだけ持つ窓(typing_stress の ext 入力先)。
        引数: <kind> [本文の書き出し先ファイル]。kind は Program.cs 参照。 -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>

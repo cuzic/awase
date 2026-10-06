@@ -11,7 +11,17 @@ import traceback
 
 # 同梱 python.exe から素で起動すると uno を見つけられない(OpenOffice 4.1.x で ImportError)ので、
 # python.exe のあるフォルダ(= Office の program\)を検索パス・PATH・URE_BOOTSTRAP に足してから読み込む。
-_prog = os.path.dirname(os.path.abspath(sys.executable))
+def _find_program_dir():
+    # LibreOffice は program\python.exe、OpenOffice は program\python-core-X\bin\python.exe が実体。pyuno.pyd/uno.py のある親を探す。
+    d = os.path.dirname(os.path.abspath(sys.executable))
+    for _ in range(4):
+        if os.path.exists(os.path.join(d, "pyuno.pyd")) or os.path.exists(os.path.join(d, "uno.py")):
+            return d
+        d = os.path.dirname(d)
+    return os.path.dirname(os.path.abspath(sys.executable))
+
+
+_prog = _find_program_dir()
 sys.path.insert(0, _prog)
 os.environ["PATH"] = _prog + os.pathsep + os.environ.get("PATH", "")
 os.environ.setdefault("URE_BOOTSTRAP", "vnd.sun.star.pathname:" + os.path.join(_prog, "fundamental.ini"))
@@ -21,7 +31,7 @@ try:
 except ImportError:
     # 診断: どこに uno があるか(typing_stress が helper.log をログへ写す)
     sys.stderr.write("sys.executable=%s\nsys.version=%s\nsys.path=%s\n" % (sys.executable, sys.version, sys.path))
-    for root, dirs, files in os.walk(os.path.dirname(_prog)):
+    for root, dirs, files in os.walk(os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))):
         for n in files:
             if "uno" in n.lower() and n.lower().endswith((".py", ".pyd", ".pyc")):
                 sys.stderr.write("found: %s\n" % os.path.join(root, n))

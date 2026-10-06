@@ -13,6 +13,7 @@
 #                clipboard=Ctrl+A,Ctrl+C してクリップボードを読む(UIA でも dump でも読めない入力先向け)。
 #   helper_*     dump を書く補助プロセス(Office の UNO 読み出しなど)。
 #   dismiss_class 起動直後に前面を奪うダイアログの窓クラス(同じ pid の窓を閉じる。LibreOffice の Welcome は SALSUBFRAME)。
+#   click        true=窓の中央をクリックして入力欄へフォーカスを入れる(WinUI 3 など)。
 #   profile_seed office=一時プロファイルに初回ダイアログ抑止の設定を書く。
 #   intervals    打鍵間隔(ms)。省略時は [30, 10]。
 #   imes         回す IME。省略時は ["gji", "msime"]。
@@ -147,6 +148,7 @@ setup = "winui"
 exe = ["{repo}/tools/e2e/input_apps/winui/out/WinUiForm.exe"]
 args = ["{dump}"]
 window = { title = "winui-form-input" }
+click = true
 read = "dump"
 intervals = [20]
 runs = 1
@@ -170,6 +172,8 @@ args = ["-Dfile.encoding=UTF-8", "--module-path", "{repo}/tools/e2e/input_apps/j
 window = { title = "javafx-form-input" }
 read = "dump"
 intervals = [20]
+# run 37416556532 で gji の 2 回中 1 回だけ、全試行が生キー列(awase が変換していない)になった。頻度を見るため増やす。
+runs = 6
 
 [forms.javafx-area]
 toolkit = "JavaFX TextArea"

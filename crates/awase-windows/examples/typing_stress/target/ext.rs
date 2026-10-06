@@ -20,9 +20,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 use serde::Deserialize;
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::{mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
+    GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, PostMessageW, SetCursorPos,
+    WM_CLOSE,
 };
 
 use super::{fatal, find_window, foreground_is_top, kill_tree, raise_top, title_of, InputTarget};
@@ -67,6 +69,9 @@ struct Spec {
     /// 起動直後に出て前面を奪うダイアログの窓クラス(例: LibreOffice の "Welcome" は `SALSUBFRAME`)。同じ pid の可視窓を閉じる。
     #[serde(default)]
     dismiss_class: Option<String>,
+    /// 窓の中央をクリックして入力欄へフォーカスを入れる(WinUI 3 など、前面化だけでは入力欄にフォーカスが入らない入力先)。
+    #[serde(default)]
+    click: bool,
     /// 窓が出てから入力を始めるまでの待ち(ms)。
     #[serde(default)]
     settle_ms: u64,
@@ -184,6 +189,10 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
         raise_top(500);
     }
 
+    if spec.click {
+        click_center(top);
+    }
+
     let helper_cands: Vec<String> = spec.helper_exe.iter().map(subst).collect();
     let helper = pick(&helper_cands).map(|hexe| {
         let hargs: Vec<String> = spec.helper_args.iter().map(subst).collect();
@@ -268,9 +277,12 @@ fn dismiss_dialogs(pid: u32, cls: &str) {
 
 /// 入力欄の全文をコピーして、クリップボードを読む。選択が残るので、続けて打つ前に `clear` を挟む前提(打鍵の試行間は clear が入る)。
 fn read_clipboard() -> String {
+    // コンソール窓を出さない(出すと前面を奪い、入力先のフォーカスが外れる)。
     let ps = |script: &str| {
+        use std::os::windows::process::CommandExt;
         Command::new("powershell")
             .args(["-NoProfile", "-Sta", "-Command", script])
+            .creation_flags(0x0800_0000)
             .output()
     };
     let _ = ps("Set-Clipboard -Value ''");
@@ -291,6 +303,25 @@ fn read_clipboard() -> String {
             uia::NOT_FOUND.to_string()
         }
     }
+}
+
+fn click_center(top: HWND) {
+    let mut r = RECT::default();
+    // SAFETY: 窓の矩形取得とカーソル移動・クリック注入のみ。
+    unsafe {
+        if GetWindowRect(top, &mut r).is_err() {
+            return;
+        }
+        raise_top(300);
+        let (x, y) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+        let _ = SetCursorPos(x, y);
+        sleep_ms(100);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        sleep_ms(50);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    }
+    log("[init] 窓の中央をクリックしてフォーカスを入れた");
+    sleep_ms(500);
 }
 
 fn log_helper_err(dump: &Path) {
