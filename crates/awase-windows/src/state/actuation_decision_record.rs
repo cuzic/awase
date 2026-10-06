@@ -45,6 +45,14 @@
 //!   attemptはTH1e完了まで自動差分証明の対象外**。これらは記録済み
 //!   `command`を人間の診断材料として保持するが、現時点の再生ハーネスでは
 //!   command再計算による一致確認を行わない。
+//! - **チェーン走査は再生する**（FCIS タスク RW）。記録済みの
+//!   `(mechanism, outcome)` を返す `ReplayWriter` で `Actuation<Verified>::
+//!   run_chain`/`run_chain_async` を走らせ、試した機構の列・打ち切り位置・最終
+//!   outcome が記録と一致するかを確認する（[`tests::replay_chain_scan`]）。
+//!   非 Sync のレコードの chain が `WriteMechanism::ALL` かも照合する。
+//!   残る推定: gate を `attempts` の空から逆算する点、非 Sync の ImmCross の
+//!   `is_applicable`（`AsyncChainWriter.imm.is_some()` は記録に無いので「ImmCross の
+//!   attempt があるか」で代用）、非 Sync の ImmCross の command の再計算。
 
 use awase::platform::ImeOpenOutcome;
 use std::mem::size_of;
@@ -401,11 +409,17 @@ impl<'de> serde::Deserialize<'de> for ActuationDecisionRecord {
 mod tests {
     use super::*;
     use crate::focus::class_names::AppImeProfile;
+    use crate::state::actuation_chain::{
+        falls_through, Actuation, AsyncMechanismWriter, MechanismWriter, Verified, VerifiedTarget,
+    };
     use crate::state::conv_after_open::ConvAfterOpenId;
     use crate::state::ime_actuation_decision::{
         decide_attempt, decide_chain, decide_gate, GateResult,
     };
+    use crate::state::ime_event::ObservationSource;
     use crate::state::ime_kind::ImeKindId;
+    use crate::state::key_sequence_policy;
+    use crate::state::open_warrant::{OpenWarrant, WarrantBasis};
     use awase::engine::InputModeState;
     use awase::types::VkCode;
 
@@ -532,6 +546,19 @@ mod tests {
             ));
         }
 
+        if record.site != DecisionSite::Sync && gate == GateResult::Proceed {
+            // 非 Sync は `WriteMechanism::ALL` 固定（`open_chain.rs` が常に ALL を渡す、
+            // ADR-163 round2 T2）。
+            let recorded_chain: Vec<WriteMechanism> =
+                used_chain(record).iter().filter_map(|m| *m).collect();
+            if recorded_chain.as_slice() != WriteMechanism::ALL.as_slice() {
+                failures.push(format!(
+                    "chain mismatch (async): recorded {recorded_chain:?} \
+                     != WriteMechanism::ALL"
+                ));
+            }
+        }
+
         if record.site == DecisionSite::Sync && gate == GateResult::Proceed {
             let recomputed = decide_chain(record.gate_inputs);
             let recorded_chain: Vec<WriteMechanism> =
@@ -597,6 +624,173 @@ mod tests {
             }
         }
 
+        failures.extend(replay_chain_scan(record));
+        failures
+    }
+
+    // ── チェーン走査の再生（ReplayWriter、FCIS タスク RW）────────────────────
+
+    /// 記録済みの `(mechanism, outcome)` の列を順に返す再生用 writer。
+    ///
+    /// `Actuation<Verified>::run_chain`/`run_chain_async`（本番と同じ走査コード）へ
+    /// 渡し、「どの機構を試し、どこで打ち切ったか」が記録と一致するかを検証する
+    /// （ADR-229 F-D1 の handler trait 例外）。`write` が呼ばれた機構は `calls` に
+    /// 記録し、`script` の同じ位置の機構と一致するときだけ記録済み outcome を返す
+    /// （不一致・記録切れは `Failed`。走査の食い違いは `calls` と記録の比較で検出する）。
+    struct ReplayWriter {
+        script: Vec<(WriteMechanism, ImeOpenOutcome)>,
+        applicable: Vec<WriteMechanism>,
+        calls: Vec<(WriteMechanism, bool)>,
+    }
+
+    impl ReplayWriter {
+        fn next_outcome(&mut self, mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
+            let index = self.calls.len();
+            self.calls.push((mechanism, open));
+            match self.script.get(index) {
+                Some(&(recorded, outcome)) if recorded == mechanism => outcome,
+                _ => ImeOpenOutcome::Failed,
+            }
+        }
+    }
+
+    impl MechanismWriter for ReplayWriter {
+        fn is_applicable(&self, mechanism: WriteMechanism) -> bool {
+            self.applicable.contains(&mechanism)
+        }
+        fn write(&mut self, mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
+            self.next_outcome(mechanism, open)
+        }
+    }
+
+    impl AsyncMechanismWriter for ReplayWriter {
+        fn is_applicable(&self, mechanism: WriteMechanism) -> bool {
+            self.applicable.contains(&mechanism)
+        }
+        async fn write(&mut self, mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
+            self.next_outcome(mechanism, open)
+        }
+    }
+
+    /// future を 1 回だけ poll して結果を取り出す。`ReplayWriter` は await 点を
+    /// 持たず即座に返すので必ず 1 回で完了する。
+    fn poll_once<F: std::future::Future>(fut: F) -> F::Output {
+        use std::task::{Context, Poll, Waker};
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut fut = Box::pin(fut);
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("ReplayWriter の future は yield しないはず"),
+        }
+    }
+
+    /// 走査の再生用の `Actuation<Verified>`。記録には warrant が無い（`would_have_blocked`
+    /// だけ）ので、公開 API（`request`→`warrant`→`verify`）で `target == open` の
+    /// 合成 warrant を作る。warrant は走査（`classify`/`falls_through`）に影響しない。
+    fn replay_actuation(open: bool) -> Actuation<Verified> {
+        Actuation::request(open)
+            .warrant(OpenWarrant {
+                target: open,
+                basis: WarrantBasis::DirectRead(ObservationSource::ImmGetOpenStatus),
+            })
+            .expect("warrant.target == open")
+            .verify(VerifiedTarget::FocusImplicit)
+    }
+
+    /// 再生時の `is_applicable`。
+    ///
+    /// Sync の写像は `ime_controller.rs::strategy_for` → `ImmCrossProcessStrategy`/
+    /// `GjiDirectStrategy`/`MsImeDirectStrategy` の `is_applicable`（`ime_controller.rs`
+    /// 70・107・140 行付近）と同じ。本番側を変えたらここも変えること。
+    ///
+    /// Sync: `ImeController` の戦略と同じく `profile`/`kind`（`gate_inputs`）だけに
+    /// 依存するので再計算できる。非 Sync: `AsyncChainWriter::is_applicable` は
+    /// ImmCross だけ `imm.is_some()`（記録には残らない）、他は常に真。ImmCross は
+    /// 「記録に ImmCross の attempt があるか」で代用する（残る推定）。
+    fn replay_applicable(
+        record: &ActuationDecisionRecord,
+        chain: &[WriteMechanism],
+    ) -> Vec<WriteMechanism> {
+        chain
+            .iter()
+            .copied()
+            .filter(|mechanism| {
+                if record.site == DecisionSite::Sync {
+                    match mechanism {
+                        WriteMechanism::ImmCross => {
+                            key_sequence_policy::imm_cross_applicable(record.gate_inputs.profile)
+                        }
+                        WriteMechanism::GjiDirect => {
+                            key_sequence_policy::gji_direct_applicable(record.gate_inputs.kind)
+                        }
+                        WriteMechanism::MsImeDirect => {
+                            key_sequence_policy::ms_ime_direct_applicable(record.gate_inputs.kind)
+                        }
+                    }
+                } else {
+                    *mechanism != WriteMechanism::ImmCross
+                        || used_attempts(record)
+                            .iter()
+                            .flatten()
+                            .any(|a| a.mechanism == WriteMechanism::ImmCross)
+                }
+            })
+            .collect()
+    }
+
+    /// 記録済みの chain・attempts を `run_chain`/`run_chain_async` で再走査し、
+    /// 試した機構の列・`open` 引数・最終 outcome が記録と一致しない点を返す。
+    /// Sync レコードは同期・非同期の両走査で検証する（両者の一致も兼ねる）。
+    fn replay_chain_scan(record: &ActuationDecisionRecord) -> Vec<String> {
+        let mut failures = Vec::new();
+        if decide_gate(record.gate_inputs) != GateResult::Proceed {
+            // NotOwned: chain の走査自体が起きない。
+            return failures;
+        }
+        let chain_vec: Vec<WriteMechanism> = used_chain(record).iter().filter_map(|m| *m).collect();
+        let script: Vec<(WriteMechanism, ImeOpenOutcome)> = used_attempts(record)
+            .iter()
+            .flatten()
+            .map(|a| (a.mechanism, a.outcome))
+            .collect();
+        let open = record.order.open;
+        let expected_calls: Vec<(WriteMechanism, bool)> =
+            script.iter().map(|&(m, _)| (m, open)).collect();
+        // 最後の write が `Failed`（フォールスルー）なら chain を使い切って `Failed`、
+        // それ以外ならその outcome で打ち切り。write が 1 件も無ければ `Failed`。
+        let expected_result = match script.last() {
+            Some(&(_, outcome)) if !falls_through(outcome) => outcome,
+            _ => ImeOpenOutcome::Failed,
+        };
+        let applicable = replay_applicable(record, &chain_vec);
+        let new_writer = || ReplayWriter {
+            script: script.clone(),
+            applicable: applicable.clone(),
+            calls: Vec::new(),
+        };
+
+        let mut sync_writer = new_writer();
+        let sync_result = replay_actuation(open).run_chain(&chain_vec, &mut sync_writer);
+        let mut async_writer = new_writer();
+        let async_result =
+            poll_once(replay_actuation(open).run_chain_async(&chain_vec, &mut async_writer));
+        for (label, calls, result) in [
+            ("sync", &sync_writer.calls, sync_result),
+            ("async", &async_writer.calls, async_result),
+        ] {
+            if *calls != expected_calls {
+                failures.push(format!(
+                    "chain scan mismatch ({label}): run_chain が試した機構 {calls:?} \
+                     != 記録された attempts {expected_calls:?}"
+                ));
+            }
+            if result != expected_result {
+                failures.push(format!(
+                    "chain scan result mismatch ({label}): run_chain={result:?} \
+                     != 記録から期待される {expected_result:?}"
+                ));
+            }
+        }
         failures
     }
 
@@ -629,7 +823,7 @@ mod tests {
     #[test]
     fn replay_accepts_a_hand_built_sync_gji_direct_record() {
         let gate_inputs = inputs(
-            AppImeProfile::Standard,
+            AppImeProfile::TsfNative,
             ImeKindId::Gji,
             None,
             InputModeState::Unknown,
@@ -809,7 +1003,7 @@ mod tests {
     #[test]
     fn replay_detects_a_tampered_command() {
         let gate_inputs = inputs(
-            AppImeProfile::Standard,
+            AppImeProfile::TsfNative,
             ImeKindId::Gji,
             Some(true), // already matches open=true → 本来 command は None
             InputModeState::Unknown,
@@ -929,7 +1123,148 @@ mod tests {
         assert_eq!(replay_record(&record), Vec::<String>::new());
     }
 
+    fn async_record(recorded: &[(WriteMechanism, ImeOpenOutcome)]) -> ActuationDecisionRecord {
+        let gate_inputs = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            None,
+            InputModeState::Unknown,
+        );
+        let site = DecisionSite::RunOpenChainAsync;
+        let mut attempts = [None; MAX_WRITE_MECHANISMS];
+        for (i, &(mechanism, outcome)) in recorded.iter().enumerate() {
+            attempts[i] = Some(AttemptRecord {
+                inputs: gate_inputs,
+                with_app_available: true,
+                mechanism,
+                // 非 Sync の ImmCross は decide_attempt が None を返す設計。
+                command: decide_attempt(gate_inputs, site, mechanism, true).1,
+                outcome,
+                shadow_on_before_bug113_override: None,
+                post_failed_reobservation: None,
+            });
+        }
+        ActuationDecisionRecord {
+            site,
+            gate_inputs,
+            order: order(true),
+            chain: chain(WriteMechanism::ALL).0,
+            chain_len: WriteMechanism::ALL.len(),
+            attempts,
+            attempts_len: recorded.len(),
+            caller: None,
+        }
+    }
+
+    #[test]
+    fn chain_scan_accepts_async_imm_cross_failed_then_gji_direct() {
+        let record = async_record(&[
+            (WriteMechanism::ImmCross, ImeOpenOutcome::Failed),
+            (WriteMechanism::GjiDirect, ImeOpenOutcome::Applied),
+        ]);
+        assert_eq!(replay_record(&record), Vec::<String>::new());
+    }
+
+    /// 残る推定の実例: ImmCross の attempt を落とした記録は、ImmCross を「適用外
+    /// （`imm` が None）」と見なすので通ってしまう。`imm.is_some()` は記録に残らず、
+    /// 欠落と「そもそも ImmCross 経路でなかった」を区別できない。
+    #[test]
+    fn chain_scan_cannot_distinguish_dropped_imm_cross_attempt_in_async_records() {
+        let record = async_record(&[(WriteMechanism::GjiDirect, ImeOpenOutcome::Applied)]);
+        assert_eq!(replay_record(&record), Vec::<String>::new());
+    }
+
+    #[test]
+    fn replay_detects_a_non_all_chain_in_async_records() {
+        let mut record = async_record(&[(WriteMechanism::GjiDirect, ImeOpenOutcome::Applied)]);
+        let (c, n) = chain_from_slice(&[WriteMechanism::GjiDirect]);
+        record.chain = c;
+        record.chain_len = n;
+        assert!(replay_record(&record)
+            .iter()
+            .any(|f| f.contains("chain mismatch (async)")));
+    }
+
     // ── ディレクトリ走査（TH1d投入後に効き始める）───────────────────────────
+
+    fn sync_attempt(
+        gate_inputs: DecisionInputs,
+        mechanism: WriteMechanism,
+        outcome: ImeOpenOutcome,
+    ) -> AttemptRecord {
+        AttemptRecord {
+            inputs: gate_inputs,
+            with_app_available: true,
+            mechanism,
+            command: decide_attempt(gate_inputs, DecisionSite::Sync, mechanism, true).1,
+            outcome,
+            shadow_on_before_bug113_override: None,
+            post_failed_reobservation: None,
+        }
+    }
+
+    /// Standard×GJI（chain = ImmCross→GjiDirect）の Sync レコード。
+    fn sync_standard_gji_record(
+        recorded: &[(WriteMechanism, ImeOpenOutcome)],
+    ) -> ActuationDecisionRecord {
+        let gate_inputs = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            None,
+            InputModeState::Unknown,
+        );
+        let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
+        let mut attempts = [None; MAX_WRITE_MECHANISMS];
+        for (i, &(mechanism, outcome)) in recorded.iter().enumerate() {
+            attempts[i] = Some(sync_attempt(gate_inputs, mechanism, outcome));
+        }
+        ActuationDecisionRecord {
+            site: DecisionSite::Sync,
+            gate_inputs,
+            order: order(true),
+            chain,
+            chain_len,
+            attempts,
+            attempts_len: recorded.len(),
+            caller: None,
+        }
+    }
+
+    #[test]
+    fn chain_scan_accepts_failed_fallthrough_to_next_mechanism() {
+        let record = sync_standard_gji_record(&[
+            (WriteMechanism::ImmCross, ImeOpenOutcome::Failed),
+            (WriteMechanism::GjiDirect, ImeOpenOutcome::Applied),
+        ]);
+        assert_eq!(replay_record(&record), Vec::<String>::new());
+    }
+
+    #[test]
+    fn chain_scan_detects_a_record_that_stopped_before_the_fallthrough() {
+        // ImmCross が Failed ならフォールスルーして GjiDirect も試すはずなのに、
+        // 記録には ImmCross の attempt しか無い。
+        let record =
+            sync_standard_gji_record(&[(WriteMechanism::ImmCross, ImeOpenOutcome::Failed)]);
+        let failures = replay_record(&record);
+        assert!(
+            failures.iter().any(|f| f.contains("chain scan mismatch")),
+            "{failures:?}"
+        );
+    }
+
+    #[test]
+    fn chain_scan_detects_an_attempt_recorded_after_a_terminal_outcome() {
+        // ImmCross が Applied で打ち切るはずなのに、後続の attempt が記録されている。
+        let record = sync_standard_gji_record(&[
+            (WriteMechanism::ImmCross, ImeOpenOutcome::Applied),
+            (WriteMechanism::GjiDirect, ImeOpenOutcome::Applied),
+        ]);
+        let failures = replay_record(&record);
+        assert!(
+            failures.iter().any(|f| f.contains("chain scan mismatch")),
+            "{failures:?}"
+        );
+    }
 
     fn fixture_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/journals/actuation_decision")
