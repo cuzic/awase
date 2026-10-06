@@ -79,13 +79,14 @@ pub(crate) const fn is_post_unicode_pending(facts: PostUnicodeFacts) -> bool {
 pub(crate) struct LongIdleFacts {
     pub now_ms: u64,
     pub gji_last_io_ms: u64,
-    pub threshold_ms: u64,
+    /// しきい値（ms）。
+    pub threshold: u64,
 }
 
 /// 最後の GJI I/O から `threshold_ms` 以上経っているか。
 #[must_use]
 pub(crate) const fn is_long_idle(facts: LongIdleFacts) -> bool {
-    facts.now_ms.saturating_sub(facts.gji_last_io_ms) >= facts.threshold_ms
+    facts.now_ms.saturating_sub(facts.gji_last_io_ms) >= facts.threshold
 }
 
 /// `plan_literal_detect` の入力。
@@ -184,7 +185,7 @@ mod tests {
         is_long_idle(LongIdleFacts {
             now_ms,
             gji_last_io_ms,
-            threshold_ms,
+            threshold: threshold_ms,
         })
     }
 

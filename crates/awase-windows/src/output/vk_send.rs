@@ -631,7 +631,7 @@ impl Output {
         let probe_long_idle = warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts {
             now_ms: crate::hook::current_tick_ms(),
             gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
-            threshold_ms: crate::tuning::LONG_IDLE_MS,
+            threshold: crate::tuning::LONG_IDLE_MS,
         });
         let literal_detect =
             warm_send_plan::plan_literal_detect(warm_send_plan::LiteralDetectFacts {

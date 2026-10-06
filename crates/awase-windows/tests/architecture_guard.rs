@@ -7233,7 +7233,7 @@ fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static 
     )));
     for needle in [
         "warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts{last_unicode_ms,gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),})",
-        "warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts{now_ms:crate::hook::current_tick_ms(),gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),threshold_ms:crate::tuning::LONG_IDLE_MS,})",
+        "warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts{now_ms:crate::hook::current_tick_ms(),gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),threshold:crate::tuning::LONG_IDLE_MS,})",
         "warm_send_plan::plan_literal_detect(",
         "long_idle:probe_long_idle",
         "matches!(literal_detect,warm_send_plan::LiteralDetectPlan::Install)",
@@ -7299,8 +7299,8 @@ fn warm_send_wiring_detector_catches_violations() {
         1,
     ));
     check_v(v.replacen(
-        "threshold_ms: crate::tuning::LONG_IDLE_MS,",
-        "threshold_ms: crate::tuning::COMPOSITION_TIMEOUT_MS,",
+        "threshold: crate::tuning::LONG_IDLE_MS,",
+        "threshold: crate::tuning::COMPOSITION_TIMEOUT_MS,",
         1,
     ));
     check_v(v.replacen(
