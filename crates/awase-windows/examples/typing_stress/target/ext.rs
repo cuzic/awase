@@ -353,8 +353,23 @@ impl InputTarget for Ext {
         }
     }
     fn clear(&self) {
-        raise_top(200);
-        uia::clear_focused();
+        // Flutter のように Ctrl+A → Backspace を取りこぼす入力先があるので、空になったか読んで、残っていたらやり直す(最大 4 回)。
+        // 空かどうかを読めない(読み損ね)ときは 1 回で済ませる。
+        for attempt in 0..4 {
+            raise_top(200);
+            uia::clear_focused();
+            sleep_ms(150);
+            let now = self.read();
+            if now.is_empty() || now.starts_with("<uia-") {
+                return;
+            }
+            log(&format!(
+                "[ext] clear が効かなかった(残り {} 文字)、やり直す attempt={}",
+                now.chars().count(),
+                attempt + 1
+            ));
+            sleep_ms(300);
+        }
     }
     fn refocus(&self) {
         raise_top(400);
