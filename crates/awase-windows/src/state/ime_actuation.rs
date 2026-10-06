@@ -254,7 +254,7 @@ pub fn blind_rearm_cooldown_elapsed(
 /// actuation 試行1回分の構造化レコード（ADR-082 Phase 0.5）。
 ///
 /// `journal.rs::JournalEntry::ImeActuation` が運ぶペイロード本体。型定義を `state` 層に
-/// 置くことで、`#[cfg(windows)]` な `journal` モジュールに依存せず Linux のリプレイテスト
+/// 置くことで、`journal` モジュールに依存せず Linux のリプレイテスト
 /// （`tests/drift_correction_replay.rs`）からも同じ型で構築・検証できる。Windows の
 /// journal 記録と Linux のリプレイが単一の型定義・単一の構築経路（`new`）を共有する
 /// （`.claude/rules/ime-belief-architecture.md`「構築経路を集約する」）。

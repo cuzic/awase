@@ -310,7 +310,7 @@ pub enum JournalEntry {
     /// ことの検証など）。
     ///
     /// ペイロード `ActuationRecord`（`state/ime_actuation.rs`）は `state` 層に定義があり、
-    /// `#[cfg(windows)]` な本モジュールに依存せず Linux のリプレイテストからも同じ型で
+    /// 本モジュールに依存せず Linux のリプレイテストからも同じ型で
     /// 構築・検証できる。リプレイは `tests/drift_correction_replay.rs` が
     /// `DriftCorrectionFixture` 経由で行う。`ActuationRecord` は書き出し用に `Serialize`
     /// のみ（`origin` が `&'static str` を含み `Deserialize` 不可のため、fixture 側は
@@ -729,9 +729,8 @@ impl JournalEntry {
 // ——将来 variant が増えたときにコンパイルエラーで検知させるための唯一の
 // 安全装置。
 
-/// ADR-169: `journal_policy`（Windows非依存）は `DecisionKind`（`journal`
-/// モジュール自体が `#[cfg(windows)]` 配下）を直接参照できないため、比較用の
-/// 局所的な形（`KeyInputDecisionShape`）へここで変換する。
+/// ADR-169: `journal_policy` は `DecisionKind`（本モジュールの型）を直接参照
+/// しない設計のため、比較用の局所的な形（`KeyInputDecisionShape`）へここで変換する。
 fn decision_kind_shape(d: &DecisionKind) -> crate::journal_policy::KeyInputDecisionShape {
     use crate::journal_policy::KeyInputDecisionShape as Shape;
     match *d {
@@ -2077,7 +2076,6 @@ mod tests {
 
     #[test]
     fn sent_input_entry_serializes_romaji_vks_and_unicode_chars() {
-
         let ev = |vk, scan, up, unicode| SentKeyEvent {
             vk,
             scan,
