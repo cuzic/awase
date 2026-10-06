@@ -33,9 +33,12 @@ title: |-
    - 純粋な `decide_*` の全数表は、これらの呼び出し箇所を通らない。
    - 閉ループのシナリオも通らない(`runtime/` と `ImeStateHub` を写しで代用している。`tests/closed_loop_scenarios.rs:12-23`)。
    - B5 の入力の再生(未試作)は、エンジンの出力までしか見ない。
-   - 実際に通るのは、windows-latest の実機 CI だけである。比較に要る `SentInput` の中身は debug 行に出ていない(件数だけ、`journal.rs:899-911`)。CI での JSON ダンプは、所有者の判断 E5 で「今はしない」。
+   - Windows の単体テストと `mutants-actuation-confluence-windows.yml` は `runtime/` に届く。ただし、SendInput を受け止める差し替え口が無いので、送信列は見られない。
+   - 送信列まで見られるのは、windows-latest の実機 CI(`RUST_LOG=debug` で `awase.log` を残す、`e2e-ime.yml:1017`)だけである。
+     主な送信の経路は、`awase.log` の debug 行に中身を出している(`[ime-mode] SendInput vk=…`、`→ Key(…)`・`→ Romaji(…)` など、§2.2)。そのため、CI の JSON ダンプ(E5)は必須ではない。
+     ただし、中身を出さない呼び出し元が一部あり、`awase.log` から送信列を組み立てて比べる道具もまだ無い。
    - したがって、代わりの条件を Linux 側の検査で書くと、「永久に満たせない(空文)」か「対象外の削除で満たして発効してしまう(安全装置の無い発効)」のどちらかになる。
-     所有者に選んでもらう(§2.4・Q2)。推奨は、当面は未発効のまま据え置くこと。条件は実機 CI での送信列の比較に書き換えておき、CI のダンプ(E5)を見直すときに一緒に判断する。
+     所有者に選んでもらう(§2.4・Q2)。推奨は、当面は未発効のまま据え置くこと。条件の文言は実機 CI での送信列の比較に書き換えておき、`awase.log` の送信列の差分の道具を作るときに一緒に判断する。
 
 ## 0. 確認した事実
 
@@ -49,7 +52,7 @@ title: |-
 | `awase-replay` の使い手は 5 か所ある。コーパスはそのうち 1 か所だけ | `actuation_decision_record.rs:1278`、`tests/journal_replay.rs:43,171`、`tests/drift_correction_replay.rs:57,125`、`tests/read_strategy_replay.rs:24,38` |
 | journal 検討メモの段階 2(drift correction の replay の撤去)は、まだ着手していない | `docs/tasks/journal-replay-rebuild-study-2026-10-06/README.md:82`。該当するブランチ・PR は無い |
 | 原本は git 履歴から取り出せる。投入時(`1fb073a3`)と #520 の書き換え前(`d703c5d0`)は同一の内容(sha256 `ab33e0e5…`、`BUG-131.md:52` と一致) | `git show d703c5d0:crates/awase-windows/tests/journals/actuation_decision/bug-131-report-01m29kdnz.json`。N-1 適用前の旧形式の生データは git に無く、R2 の報告 JSON にしか無い(R2 に今も残っているかは未確認) |
-| `SentInput` の debug 行は `issue_us`・`accepted`・`event_count` だけで、送ったキーの中身を出さない。中身は journal の JSON ダンプにしか無い | `journal.rs:899-911`、所有者の判断 E5(CI の JSON ダンプは今はしない) |
+| journal の `SentInput` の debug 行は `issue_us`・`accepted`・`event_count` だけで、送ったキーの中身を出さない。ただし、主な送信の経路は自分で `awase.log` に中身を出している(§2.2 の表)。実機 CI は `RUST_LOG=debug` で awase を起動し、`awase.log` を判定に使っている | `journal.rs:899-911`、`.github/workflows/e2e-ime.yml:1017`、journal 検討メモ `README.md:49`(`check_*.py` は `awase.log` の断片 27 個を読む) |
 
 ## 1. 影響の洗い出し(3 段階)
 
@@ -121,7 +124,7 @@ ADR-162 の依存節(`:233-240`)は、こう書いている。削除の安全性
 ### 2.2 何なら縛りの対象の削除を検査できるか
 
 縛りの対象は、`RESTRICTED_CALLS` の許可呼び出し元と `tuning.rs` の定数である(complexity-budget.md「ルール」節)。
-許可呼び出し元は、どれも I/O 側の関数である(`lints/actuation_call_guard/src/lib.rs:55-`。`send_input_safe` を呼ぶ `transmit`・`send_ime_mode_key`・`reinject` など。`actuate_ime_control` を呼ぶ `set_ime_open_for_target`。`apply_ime_open_with_view` を呼ぶ `dispatch_ime_set_open`・`ir_apply_drift_correction`)。
+許可呼び出し元は、どれも I/O 側の関数である(`lints/actuation_call_guard/src/lib.rs:58-`。`send_input_safe` を呼ぶ `transmit`・`send_ime_mode_key`・`reinject` など。`actuate_ime_control` を呼ぶ `set_ime_open_for_target`。`apply_ime_open_with_view` を呼ぶ `dispatch_ime_set_open`・`ir_apply_drift_correction`)。
 
 | 手段 | 縛りの対象の削除を検査できるか | できること | できないこと |
 |---|---|---|---|
@@ -130,22 +133,44 @@ ADR-162 の依存節(`:233-240`)は、こう書いている。削除の安全性
 | 閉ループのシナリオ(`tests/closed_loop_scenarios.rs`) | **できない** | `state/` の純粋な層(`ImeModel::reduce`・`check_drift_correction`・予測器)の合成と、時間・初期条件の持ち越しを検査する | `runtime/` と `ImeStateHub` は写しで代用している(`:12-23`)。本番の `runtime/` を壊しても落ちない |
 | P5(ハーネスの写しを本物に置き換える、ADR-229 タスク表 `:48`) | 一部だけ(予定) | `platform_state` の 5 系統が本物の呼び出しになる。drift・予測・warrant の配線の写しが無くなる | `runtime/` は `#[cfg(windows)]` のまま見えない。`output/`・`imm.rs` の I/O も対象外。完了しても、許可呼び出し元の削除は検査できない |
 | B5 の入力の再生(未試作、所有者の判断 E1) | **できない** | 記録した `KeyInput` 列を HEAD のエンジンに流し、タイマーの発火まで再現する(BUG-105・145 型) | エンジン(ルートの `awase` crate)の出力までで、`runtime/`・`output/` の送信は通らない |
-| 実機 CI での送信列の比較(windows-latest、`e2e-ime.yml` の `sc-*` など) | **できる(唯一)** | 変更の前と後で同じシナリオを流し、`SentInput` 列(または `actuation decision` の debug 行)を比べる。本物の `runtime/`・`output/`・`imm.rs` を通る。比べるのは送信列なので、いまの条件の趣旨にいちばん近い | 中身の比較には、`SentInput` の JSON ダンプが要る(debug 行は件数だけ、§0)。CI のダンプは E5 で「今はしない」。フォーカスを奪われるなどの非決定性があり、`continue-on-error` の部分集合がある。シナリオに無い入力は見ない。1 回の比較に実機ジョブ 2 回ぶんの時間がかかる。比べる道具(2 つの journal の `SentInput` 列の差分)はまだ無い |
+| Windows の単体テスト(`#[cfg(windows)]`、`runtime/`・`output/` に約 100 本、windows-build CI)と Windows の mutants(`mutants-actuation-confluence-windows.yml`、合流点の 5 関数、13 mutants、workflow_dispatch) | **できない**(送信を観測できない) | `runtime/` のコードに届き、決定的に動く。mutants は「変異を入れると検査が落ちるか」を確かめる形をそのまま持っている(② の後半に流用できる) | SendInput を受け止める差し替え口(fake の sink)が無い。`struct Fake*`・`Recording*` は `output/probe_io.rs:703`・`state/actuation_chain.rs:762`・`state/gji_direct_mechanism.rs:364` だけで、どれも送信の側ではない |
+| 実機 CI での送信列の比較(windows-latest、`e2e-ime.yml` の `sc-*` など) | **できる(唯一)** | 変更の前と後で同じシナリオを流し、`awase.log`(debug)から送信列を組み立てて比べる。本物の `runtime/`・`output/`・`imm.rs` を通る。比べるのは送信列なので、いまの条件の趣旨にいちばん近い。E5 の JSON ダンプは必須ではない(下の表) | 中身を出さない呼び出し元が一部ある(下の表)。比べる道具(2 つの `awase.log` から送信の行を抜き出し、時刻などを落として差分を取る)はまだ無い。フォーカスを奪われるなどの非決定性があり、`continue-on-error` の部分集合がある。シナリオに無い入力は見ない。1 回の比較に実機ジョブ 2 回ぶんの時間がかかる |
 | tuning 定数 | どの手段もできない | — | 時間の値の削除の安全性は、実機での実測でしか示せない(tuning-constants.md の実測の義務が既にある)。いまの条件でも同じだった |
+
+`send_input_safe` の許可呼び出し元 16 件が、`awase.log`(debug)に送信の中身を出すかどうか(develop `47b1093b` のコードで確認):
+
+| 許可呼び出し元 | 中身の行 | 判定 |
+|---|---|---|
+| `send_ime_mode_key`・`send_ime_mode_key_with_shift_release_prefix`(`ime.rs:133,192`) | `[ime-mode] SendInput vk=0x…`(`:160`・`:248`、SendInput の直前) | 出る |
+| `transmit`(`output/vk_send.rs:127`) | `[tsf-transmit] cold=… romaji=… → …`(`:145`)、`[h1-run] … unicode TSF`(`:164`) | 出る |
+| `send_key`・`send_ctrl_chord`・`send_unicode_char`・`send_vk_pair`(`output/key_injector.rs:93,114`、`output/vk_send.rs:183` ほか) | 関数の中には無い。呼び出し元の `output/mod.rs:718-771` が `→ SpecialKey`・`→ Key`・`→ KeyUp`・`→ Char`・`→ Romaji`・`→ KeySequence`・`→ CtrlChord` を出す | 出る(呼び出し元の行で) |
+| `send_vk_run_batch`(`output/key_injector.rs:202`) | 呼び出し元が `[vk-send] romaji=… batch {n} inputs`(`:245`) | 出る |
+| `reinject`(`lib.rs:365`) | `runtime/executor.rs:609` の経路は `[reinject] vk=… {dir}` を出す。`platform.rs:978` の `reinject_key` の経路には行が無い | 経路による |
+| `flush_raw_tsf_literal_backspaces`(`tsf/output.rs:163`) | `[raw-tsf-literal] flush escape=… backspace ×{n}`(`:185`) | 出る |
+| `kp_restore_kana_from_half_width`(`runtime/key_pipeline.rs:2162`) | `[shift-conv-guard] VK_DBE_HIRAGANA (scan 付き) 注入`(`:2267`) | 出る |
+| `inject_alt_menu_mask`(`hook.rs:447`)・`send_hook_watchdog_canary`(`hook.rs:1351`) | `… Ctrl down+up 注入 sent={sent}/2`(info・debug)。送る中身は固定 | 出る(中身は固定) |
+| `send_all_modifier_key_ups`(`runtime/mod.rs:2406`) | `Sent KeyUp for all modifier keys`。送るキーの組は関数の中で固定 | 出る(中身は固定) |
+| `send_keymap_target`(`output/held_modifiers.rs:113`) | 失敗時の warn(`:143`)だけ。成功時の行は、関数にも呼び出し元(`runtime/message_handlers.rs:300`)にも見つけていない | 出ない |
+| `toggle_caps_lock`(`ime.rs:1667`) | 関数の中には無い。呼び出し元(`runtime/message_handlers.rs:1260,1265`、`runtime/key_pipeline.rs:1562`)の一部に info の行がある | 経路による(未確認) |
+
+ほかの宣言の対象: `actuate_ime_control`(`set_ime_open_for_target`・`modify_conv_mode`)と `apply_ime_open_with_view`(`dispatch_ime_set_open`・`ir_apply_drift_correction`)の判断は、`actuation decision` の debug 行に `first_command`(SendVk のキーまで)が出る(`journal.rs:914-948`)。ImmCross の書き込み(`ImmSetOpenStatus` 相当)の値が行に出るかは未確認。
+**読み取り側の `probe_ime_control`(`capture_imc`・`get_ime_conversion_mode_for_hwnd`・`modify_conv_mode`・`detect_ime_open_for_hwnd`・`detect_ime_conversion_for_hwnd`・`read_ime_state_fast` の 6 件)** は、何も送らない。呼び出し元を消した影響は、送信列には間接的にしか表れない(読んだ値で判断が変わったときだけ)。② の送信列の比較では検査できないので、② の対象外とする。
+
+なお、行の接頭辞は許可呼び出し元と 1 対 1 ではない(`→ Key(…)` は複数の関数の送信をまとめて表す)。②で比べられるのは「送ったキーの列」であり、「どの許可呼び出し元が送ったか」ではない。
 
 ### 2.3 選択肢
 
 | 案 | 条件の中身 | 縛りの対象の削除を検査できるか | 緩むもの | 評価 |
 |---|---|---|---|---|
-| **① 当面は未発効のまま据え置く(推奨)** | 発効条件を ② の文言に書き換える。ただし、達成の期限は付けない。CI のダンプ(E5)を見直すときに、② の道具を作るかどうかを一緒に決める | — | 無し(縛りは効かないまま) | いまの状態と実質同じで、正直である。コーパスを捨てても、規約の効き方は変わらない(もともと満たせなかったので) |
-| ② 実機 CI での送信列の比較 | 「宣言の対象に触れる実際の削除・統合を 1 件、windows-latest の実機 CI で、変更の前と後に同じシナリオ群を流し、`SentInput` 列が一致することを示す。さらに、変更前のコードの消す経路に変異を入れて流すと、一致しなくなることを示す(空証明でない)」 | できる | 「N 本の記録トレース(実機の記録)」が、「実機でのシナリオの実行」に替わる(記録の出自が外れる。緩和)。比べる対象は送信列のまま | 趣旨にいちばん近い。前提として、CI の JSON ダンプ(E5 の見直し)と、2 つの journal の `SentInput` 列を比べる道具が要る。非決定性のため、比較は同じ構成を複数回流して多数決にする、などの決め事も要る |
+| **① 当面は未発効のまま据え置く(推奨)** | 発効条件を ② の文言に書き換える。ただし、達成の期限は付けない。`awase.log` の送信列の差分の道具を作るときに、② に進むかどうかを一緒に決める | — | 文言上は ② と同じ緩和(記録の出自 →「実機での実行」)を含む。未発効なので、実際の縛りの強さは変わらない | 実効はいまの状態と同じで、正直である。コーパスを捨てても、規約の効き方は変わらない(もともと満たせなかったので) |
+| ② 実機 CI での送信列の比較 | 「宣言の対象(送信側)に触れる実際の削除・統合を 1 件、windows-latest の実機 CI で、変更の前と後に同じシナリオ群を流し、`awase.log` から組み立てた送信列が一致することを示す。さらに、変更前のコードの消す経路に変異を入れて流すと、一致しなくなることを示す(空証明でない)」 | できる | 「N 本の記録トレース(実機の記録)」が、「実機でのシナリオの実行」に替わる(記録の出自が外れる。緩和)。比べる対象は送信列のまま | 趣旨にいちばん近い。E5 の JSON ダンプは必須ではない。前提として、(a) 2 つの `awase.log` から送信の行を抜き出して比べる道具、(b) 中身を出さない呼び出し元(`send_keymap_target`、`reinject_key` の経路、`toggle_caps_lock` の一部)の debug 行の追加か対象外の明記、(c) 消す経路を通り、変異の検査が成り立つシナリオがあることの確認、が要る。非決定性のため、同じ構成を複数回流して多数決にする、などの決め事も要る。読み取り側(`probe_ime_control`)の削除は対象外 |
 | ③ 対象を絞る | 「判断のロジックの抽出と許可リストの削除を 1 つの PR にし、ロジックの部分は変更前に凍結した全数表(出力に `MechanismCommand`〈送る/送らない、どのキー〉を含む)の一致と変異の検査で示す」 | **できない**。I/O の呼び出し箇所そのものは検査しないままになる | 2 つ緩む。(a) 記録の出自が外れる。(b) 比べる対象が、送信列(attempts・`MechanismCommand` の列)から純粋な関数の出力に替わる | 満たせば発効するが、発効後に義務になる削除(I/O の呼び出し元を消す削除)の安全は示されない。ADR-162 依存節が防ごうとした、検証できない削除の強制と同じになる。推奨しない |
 | ④ 能力の条件を外す | 「所有者が発効を宣言した時点で発効」 | — | 安全装置の要件そのものが無くなる(明確な緩和。縛りは最も早く効く) | ADR-162 の M5 の訂正を取り消す判断になる。推奨しない |
 
 **自己点検**: 初版(`10cb00d3`)は「全数表 + 変異の検査」を推奨し、「縛りを実質なくす変更にはなっていない」と書いた。これは誤りだった。
 全数表も閉ループも、縛りの対象(I/O 側の関数)の削除を検査できない。そのため初版の案は、満たせなければ空文になる。満たせば、対象外の削除で発効してしまう(③ と同じ)。
 本版では、検査できる唯一の手段(②)を条件の文言として残し、その道具ができるまでは発効しない(①)ことを推奨する。
-① は、いまより縛りを弱めも強めもしない。② の採否は、CI のダンプ(E5)と道具を作る費用の判断に依存する。
+① の実効は変わらない(未発効のまま)。ただし文言は ② の緩和(記録の出自 →「実機での実行」)を含む。② の採否は、`awase.log` の送信列の差分の道具を作る費用と、変異の検査が成り立つシナリオがあるかの確認に依存する。
 
 ### 2.4 書き直しても、規約はすぐには効かない
 
@@ -163,22 +188,24 @@ ADR-162 の依存節(`:233-240`)は、こう書いている。削除の安全性
 「配線確認」ではなく**能力ベース**である: 宣言の対象(`RESTRICTED_CALLS` の許可呼び出し元、または
 `tuning.rs` の定数)に触れる**実際の削除・統合を 1 件**行い、次の 2 点を示せたこと。
 
-1. windows-latest の実機 CI で、変更の前と後に同じシナリオ群を流し、`SentInput` 列
-   (送信列)が一致する。
+1. windows-latest の実機 CI で、変更の前と後に同じシナリオ群を流し、`awase.log`(debug)から
+   組み立てた送信列が一致する。
 2. 変更前のコードの、消す経路に変異を入れて同じシナリオ群を流すと、1. の列が一致しなくなる
    (シナリオが消す経路を通らない削除は、空証明として 1 件に数えない。ADR-163 round2 R5)。
 
 純粋な判断関数の全数表や、Linux の閉ループのシナリオは、宣言の対象(I/O 側の関数)を通らない
 ため、この条件の代わりにならない。I/O の順序の細部・`with_app` の再入頻度・実 cmd/lparam の
-バイト値は対象外とする。tuning 定数の削除は、tuning-constants.md の実測で示す。
+バイト値は対象外とする。読み取り側(`probe_ime_control` の許可呼び出し元)の削除は、送信列に
+直接表れないので対象外とする。tuning 定数の削除は、tuning-constants.md の実測で示す。
 
 2026-10-06 の改訂: 以前の条件は「N 本の決定レコードの再生で差分ゼロ」(ADR-163 TH1e、凍結コーパス
 `bug-131-report-01m29kdnz.json`)だったが、所有者の判断でコーパスと再生一式を撤去した。コーパスは
 37 件すべてが同期経路の GjiDirect で、再生ハーネスは非同期の writer を走らせないため、もともと
 TH1e を証明できなかった。「実機の記録に由来すること」の要件は、この改訂で「実機での実行」に
-替わった(緩和: 縛りが効く条件が満たしやすくなる)。比べる対象は送信列のまま。1. の比較に要る
-CI での journal のダンプと比較の道具はまだ無い(2026-10-06 時点)。作るかどうかは CI のダンプ
-(journal 検討メモ E5)を見直すときに決める。経緯は docs/tasks/corpus-discard-impact-2026-10-06/README.md。
+替わった(緩和: 縛りが効く条件が満たしやすくなる)。比べる対象は送信列のまま。主な送信の経路は
+`awase.log` の debug 行に中身を出すので、CI での journal の JSON ダンプは要らない。ただし、
+`awase.log` から送信列を組み立てて比べる道具はまだ無く、中身を出さない呼び出し元も一部ある
+(2026-10-06 時点)。道具を作るかどうかは、別途決める。経緯は docs/tasks/corpus-discard-impact-2026-10-06/README.md。
 この条件を満たす 1 件の実績と、所有者による発効の宣言があるまで、本ルールは参考文書のまま強制しない
 (期限は付けない)。
 ```
@@ -213,7 +240,7 @@ CI での journal のダンプと比較の道具はまだ無い(2026-10-06 時�
 1. **撤去の範囲**: (A) コーパスだけ/(B) actuation_decision の再生一式/(C) `tests/journals/` 全体と `awase-replay`(許可済み)。
    推奨: (B)。(A) だけでは 0 ファイルでテストが落ち、残る再生は本番を固定しない。(C) は許可の範囲内だが、凍結コーパスとは性質の違う correctness の回帰 fixture(BUG-08・BUG-146・ADR-108・F1)を巻き込む。
 2. **発効条件**: ① 未発効のまま据え置く(条件の文言は ② にする)/② 実機 CI での送信列の比較(CI のダンプと比較の道具を作る)/③ 対象を絞る(全数表。I/O は未検証)/④ 能力の条件を外す。
-   推奨: ①。縛りの対象(I/O 側の関数)の削除を検査できるのは ② だけで、② の道具はまだ無い。③・④ は「緩和」で、縛りが早く効く代わりに、強制される削除の安全を示す手段の要件が弱まる(③ は比べる対象も送信列から純粋な関数の出力に替わる)。
+   推奨: ①。縛りの対象(I/O 側の関数)の削除を検査できるのは ② だけである。② に E5 の JSON ダンプは要らない(`awase.log` の debug 行で足りる見込み)が、`awase.log` の送信列を比べる道具がまだ無く、変異の検査が成り立つシナリオがあるかも未確認である。① の文言は ② と同じ緩和(記録の出自 →「実機での実行」)を含むが、未発効なので実効は変わらない。③・④ は「緩和」で、縛りが早く効く代わりに、強制される削除の安全を示す手段の要件が弱まる(③ は比べる対象も送信列から純粋な関数の出力に替わる)。
 3. **E4(TH4、known-bugs のコードへの回帰)の扱い**: E4 はコードを消さない。散文の known-bugs を再生トレースへ移す作業で、本当の前提は「バグを再現できる媒体があること」である。
    (B) で、actuation の「再生トレース」という媒体は無くなる。問いは「E4 を E1 の能力の条件から切り離し、fix-requires-evidence.md `:22-27` の『(b) を将来、再生トレースの追加に置き換える予定』を撤回して (a)(回帰テスト)に寄せるか」。
    推奨: 切り離す。B5 の試作の結果次第で、再生の媒体として再検討する。ADR-162 round4 S1 が E4 を「コード削除を伴う」側に入れた分類も、その追記で見直す。
@@ -232,4 +259,5 @@ CI での journal のダンプと比較の道具はまだ無い(2026-10-06 時�
 - 不具合報告 01M29KDNZ22KNY1FPXSKBGMW7V の原本(R2 の JSON、N-1 適用前の旧形式)が今も残っているかどうか。
 - F2〜F5 の各 PR が、許可リストのエントリや tuning 定数を減らしたかどうか(§2.4)。
 - 実機 CI(`e2e-ime.yml`)のどのシナリオが、どの許可呼び出し元を通るか。② を採るときに、変異の検査が成り立つシナリオがあるかを先に確かめる必要がある。
+- `toggle_caps_lock` の呼び出し元のうち、どれが `awase.log` に行を出すか。ImmCross の書き込みの値(開閉の向き)が `awase.log` のどの行に出るか(`actuation decision` の `first_command` は SendVk のキーまでで、ImmCross の値は未確認)。
 - テストの行数と撤去の行数は、関数の境界からの試算である。実装の PR で正確な値を出す。
