@@ -4,9 +4,10 @@ name: wt-probe
 # 「@」が出る)の再現手順を実行する(tools/e2e/wt/、再現用の語彙の拡張。2026-10-05)。約 15 分。
 # 動く条件: ci/wt-probe・ci/vocab-windows-terminal への push、手動起動(workflow_dispatch は既定ブランチにこのファイルがあるときだけ使える)。
 # 判定は付けない(観測と可否表のみ)。e2e-ime.yml には組み込まない(別のハーネスで、共有ファイルを避けるため)。
+# ci/bug114-wt-startup への push は BUG-114 の相 D/E(下の bug114 ジョブ)だけを、修正あり/なし(ablations/a9)× 3 回で回す。
 on:
   push:
-    branches: [ci/wt-probe, ci/vocab-windows-terminal]
+    branches: [ci/wt-probe, ci/vocab-windows-terminal, ci/bug114-wt-startup]
   workflow_dispatch:
 
 permissions:
@@ -21,6 +22,7 @@ env:
 
 jobs:
   probe:
+    if: github.ref != 'refs/heads/ci/bug114-wt-startup'
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -85,6 +87,91 @@ jobs:
         if: always()
         with:
           name: wt-probe-out
+          path: |
+            out/summary.md
+            out/results.json
+            out/logs/
+            out/shots/
+            out/work/*.echo.txt
+          retention-days: 7
+
+  # BUG-114(起動時の app_policy、ADR-134 D1c・ADR-232 D1): 端末を先に開いてから awase を起動し、起動時スコープのまま drift 補正を起こす。
+  # 判定は wt_pure.judge_bug114(合否基準は同関数の docstring)。nofix は修正を外したビルド(ablations/a9、起動時 profile を ImmCross に固定)。
+  bug114:
+    if: github.ref == 'refs/heads/ci/bug114-wt-startup'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [fix, nofix]
+        run: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+          save-if: false
+      - name: 修正を外す(nofix のみ、ablations/a9)
+        if: matrix.variant == 'nofix'
+        shell: bash
+        run: |
+          bash tools/e2e/ime_key_matrix/ablations/a9-bug114-immcross-bootstrap.sh
+          git diff --stat
+          test -n "$(git diff --stat)" || { echo "撤去が差分を作らなかった"; exit 1; }
+      - name: awase(デバッグ)をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+      - name: 純粋部分の単体テスト
+        shell: pwsh
+        run: python -m unittest discover -s tools\e2e\wt -p 'test_*.py' -v
+      - name: Google 日本語入力をインストール
+        shell: pwsh
+        run: choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+      - name: 入力言語を ja-JP + GJI に設定(ATOK プリセット)
+        shell: pwsh
+        run: |
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $bytes = [byte[]](0xB0,0x01,0x00,0xC8,0x02,1)
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), $bytes)
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+      - name: 相 D/E(BUG-114)を実行して判定する
+        id: judge
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          python tools\e2e\wt\wt_probe.py --dist dist --out out --phases D,E
+          $rc = $LASTEXITCODE
+          "rc=$rc"
+          # 判定(0=PASS・1=FAIL・3=INVALID)は artifact と summary で読む。ここではジョブを落とさない。
+          exit 0
+      - name: 概要を表示
+        if: always()
+        shell: pwsh
+        run: if (Test-Path out\summary.md) { Get-Content out\summary.md -Encoding utf8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wt-bug114-${{ matrix.variant }}-${{ matrix.run }}
           path: |
             out/summary.md
             out/results.json

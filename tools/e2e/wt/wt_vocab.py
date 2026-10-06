@@ -9,6 +9,7 @@
   close(hwnd)          WM_CLOSE
   press(vk)/chord(…)   SendInput(scan code 付き。marker=True で AWASE_TEST_INJECTION の debug awase が物理キー扱い)
   type_unicode(s)      KEYEVENTF_UNICODE(IME を通さず文字を直接送る。可否の対照用)
+  ime_control(hwnd, …) 既定 IME 窓へ WM_IME_CONTROL(awase を通さず実 IME の開閉を読む/外から変える)
   shortcut_*           新規タブ・分割・ペイン/タブを閉じる(wt の既定のキー操作)
   uia_text(hwnd)       UIA の TextPattern で画面のテキストを読む(wt_uia.ps1)
   screenshot(path)     画面全体の PNG(実機で何が見えていたかの証拠)
@@ -97,6 +98,23 @@ def windows():
 
     user32.EnumWindows(EnumProc(cb), 0)
     return out
+
+
+def ime_control(hwnd, cmd, value=0):
+    """対象窓の既定 IME 窓へ WM_IME_CONTROL(cmd, value) を短いタイムアウト付きで送り、戻り値を返す。送れなければ None。
+    cmd: 0x0005=IMC_GETOPENSTATUS、0x0006=IMC_SETOPENSTATUS(Windows Terminal で外から閉じる操作が効くことは ADR-227 D0-5 で実測済み)。"""
+    imm32 = ctypes.WinDLL("imm32", use_last_error=True)
+    imm32.ImmGetDefaultIMEWnd.restype = wt.HWND
+    imm32.ImmGetDefaultIMEWnd.argtypes = [wt.HWND]
+    ime_wnd = imm32.ImmGetDefaultIMEWnd(wt.HWND(hwnd))
+    if not ime_wnd:
+        return None
+    send = user32.SendMessageTimeoutW
+    send.restype = ctypes.c_ssize_t
+    send.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM, wt.UINT, wt.UINT, ctypes.POINTER(ctypes.c_size_t)]
+    result = ctypes.c_size_t(0)
+    ok = send(ime_wnd, 0x0283, cmd, value, 0x0002, 500, ctypes.byref(result))  # WM_IME_CONTROL, SMTO_ABORTIFHUNG
+    return int(result.value) if ok else None
 
 
 def foreground_hwnd():
