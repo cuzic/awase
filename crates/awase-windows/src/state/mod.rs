@@ -110,6 +110,9 @@ pub mod conv_after_open;
 // ungated なので、呼び出し元が Windows 専用の非 Windows ビルドでは未使用になる。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod ime_actuation_decision;
+// FCIS（ADR-229）: `executor.rs::dispatch_ime_set_open` の判断（gate・claim 結果・ImmCross 先頭か）の純粋部分。
+#[cfg(any(windows, test))]
+pub mod ime_set_open_plan;
 // ADR-163 Part B（TH1c）: attempt単位の決定点ジャーナルスキーマとcrate内
 // 再生ハーネス。ime_actuation_decisionと同じ「追加のみ、本番経路への配線は
 // 別タスク（TH1d/TH1e）」のモジュール。
@@ -187,12 +190,16 @@ pub(crate) mod scoped_latch;
 // Linux で全数テストできるようにした。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod focus_probe_plan;
+// MSAA ロール値の表引き（純粋）。本番の呼び出し元 focus/msaa.rs は #[cfg(windows)]、Linux ではテストだけが使う。
+#[cfg(any(windows, test))]
+pub mod msaa_role_plan;
 pub mod transition;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
-#[cfg(windows)]
+// 実機（Windows）以外では呼び出し元（`runtime/`・`app/`）が無く、P5 でコアの境界に出す分だけを公開するまでは
+// 未使用警告が出る。これまでの ungated モジュールと同じ扱い。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod platform_state;
-#[cfg(windows)]
 pub use platform_state::PlatformState;
 
 #[cfg(windows)]

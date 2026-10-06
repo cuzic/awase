@@ -257,7 +257,7 @@ R1 その場で gate を外す(T2・T3)、R2 時刻を引数にして gate を�
 
 結果(2026-10-06): T2・T3・T5 は PR #492、T1 は PR #493、T7 は PR #494、T4 は PR #495 で、いずれも CI が通り、2026-10-06 にマージした(`42bc25ea`)。#493 は初回に `suppress_reason` の置き場所(Windows 専用の `transport.rs` にあり、移したテストが Linux で見えなかった)と rustfmt で失敗し、修正した。Opus の PR レビュー round1 で #493 に Must 2 件(Linux の dead_code 警告、殻 `plan` を呼ぶテストが 0 本になったこと)が出て反映し、round2 の再確認で #492・#493・#494・#495 に Blocker・Must なし。#494 の `focus/mod.rs` の `allow(dead_code)` は不要と確認して外し、#495 の `allow` も `#[cfg(windows)]` に置き換えた(新しい `allow(dead_code)` は 0 か所)。`state/physical_disposition.rs` を自動チェック 3 か所に足す件(Opus S2)は、所有者の承認を得て実施中。
 
-取りやめ条件: Linux でコンパイルが通らない、または `allow(dead_code)` を足さないと警告が消えない(3 か所を超えたら止める。`allow` の削減という指標に逆行する)。1 本でも Linux で落ちるテストは、本番との差の発見なので BUG として扱う。
+取りやめ条件: Linux でコンパイルが通らない、または **Windows でも消えない未使用が出る、あるいは `allow(dead_code)` をモジュール単位の 1 行(呼び出し元が Windows 側にあるモジュールの `#[cfg_attr(not(windows), allow(dead_code))]`)を超えて足す必要がある**(旧: 警告の件数が 3 か所を超えたら止める。P4(PR #510)で、条件の理由=`allow` で本当の未使用を見逃すこと、は Windows の clippy `-D warnings` が防ぐと分かり、件数での条件は実態に合わなかったので書き直した。Opus の PR #510 レビュー S23)。**P4 の記録**: `platform_state` の可視性は、方針の前提(未使用になるのは `_in_scope` 約 13 だけ)が誤りで、`ImeStateHub` のほぼ全体が Windows 側の呼び出し元だけだったため、`state/mod.rs` の `pub mod platform_state;` にモジュール単位の `#[cfg_attr(not(windows), allow(dead_code))]` 1 行になった(`not(windows)` の `allow(dead_code)` は 45 → 46。P5 では外れない。外せるのは、ハブを使う判断が ungated 側に移るか、crate を分けたとき)。1 本でも Linux で落ちるテストは、本番との差の発見なので BUG として扱う。
 
 今は着手しないもの: 時計の注入の一括(`hook::current_tick_ms()` の直接呼び出しは 151 か所・34 ファイル、`Instant::now()` は 158 か所)、`platform_state.rs` の ungate、型のまとめての切り出し、`tracker.rs`・`gji_observer.rs` の gate 解除、UIA 経路の削除、`MechanismCommand` の部分型化。理由は round1 レビューの §2 を参照。
 

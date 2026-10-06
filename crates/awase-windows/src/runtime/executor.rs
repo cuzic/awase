@@ -725,6 +725,7 @@ impl DecisionExecutor {
         );
         view.belief_input_mode = self.belief_input_mode;
         let gate_inputs = (&view).into();
+        // claim 以降の判断は `state/ime_set_open_plan.rs`（核）。ここは Facts を作る（shell-in）→ 決める → 実行する（shell-out）。
         if matches!(
             crate::state::ime_actuation_decision::decide_gate(gate_inputs),
             crate::state::ime_actuation_decision::GateResult::NotOwned
@@ -766,7 +767,15 @@ impl DecisionExecutor {
         // 書かない窓では予約しない。
         let claim =
             ime.claim_press_write(press, open, crate::state::press_ledger::PressSource::Engine);
-        if !claim.writes() {
+        let plan = crate::state::ime_set_open_plan::plan_set_open(
+            crate::state::ime_set_open_plan::SetOpenFacts {
+                claim,
+                imm_first: crate::ime_controller::ImeController::imm_cross_is_first_applicable(
+                    &view,
+                ),
+            },
+        );
+        if plan == crate::state::ime_set_open_plan::SetOpenPlan::SkipAlreadyClaimed {
             tracing::debug!(
                 "[dispatch-ime] 同じ押下で既に書いた（{}）→ 書かない press={press:?} open={open}",
                 claim.label()
@@ -774,8 +783,7 @@ impl DecisionExecutor {
             // 完了へ流す outcome は「送っていない」もの（`AlreadyMatched` だと書いていない押下が applied=Confirmed になる）。
             return Some((open, crate::state::press_ledger::DUPLICATE_OUTCOME));
         }
-        let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
-        if imm_first {
+        if plan == crate::state::ime_set_open_plan::SetOpenPlan::AsyncImmCross {
             // ── async path (ImmCross が選ばれるアプリ) ──
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックは
             // INPUT_DEFER へ退避され、SetOpen 進行中に新キーが engine に届かない。

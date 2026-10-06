@@ -1390,6 +1390,121 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
     );
 }
 
+/// `ImeStateHub::with_clock` は任意の時計を受けるので、本番が実時計を使うことは
+/// `HubClock::wall(crate::hook::current_tick_ms)` の件数だけでは保証できない（#503 レビュー）。
+/// `with_clock(` の呼び出し元を、本番（`mod tests` を除く）では次の2か所だけに固定する:
+/// - `state/platform_state/shell.rs`（`new()` の殻。実時計）
+/// - `state/platform_state.rs` の `#[cfg(test)] impl PlatformState`（`for_test`）
+///
+/// 違反（許可リスト外のファイル、件数違い、`for_test` が `#[cfg(test)]` の外）を説明で返す。
+fn with_clock_call_violations(sources: &[(String, String)]) -> Vec<String> {
+    const SHELL: &str = "src/state/platform_state/shell.rs";
+    const CORE: &str = "src/state/platform_state.rs";
+    let mut out = Vec::new();
+    for (path, content) in sources {
+        let production = production_code_only(content);
+        // `new_with_clock(` など識別子の一部は除き、`fn with_clock(`（定義）も数えない。
+        let calls = production
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| !l.contains("fn with_clock("))
+            .map(|l| {
+                l.match_indices("with_clock(")
+                    .filter(|(i, _)| {
+                        l[..*i]
+                            .chars()
+                            .next_back()
+                            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+                    })
+                    .count()
+            })
+            .sum::<usize>();
+        // `ImeStateHub` のものに限らない `with_clock(`（journal.rs 等）は、本番の呼び出しが
+        // 無いことを前提に件数で見る。許可リスト外で出たら違反。
+        let allowed = path == SHELL || path == CORE;
+        if calls > 0 && !allowed {
+            out.push(format!(
+                "{path}: with_clock( の本番呼び出し {calls} 件（許可リスト外）"
+            ));
+        } else if allowed && calls != 1 {
+            out.push(format!(
+                "{path}: with_clock( の呼び出しが {calls} 件（1件であること）"
+            ));
+        }
+        if path == CORE && calls == 1 {
+            let norm = production.replace('\r', "");
+            let call_pos = norm.find("ImeStateHub::with_clock(");
+            let gate_pos = norm.find("#[cfg(test)]\nimpl PlatformState {");
+            if !matches!((call_pos, gate_pos), (Some(c), Some(g)) if g < c) {
+                out.push(format!(
+                    "{path}: with_clock( の呼び出しが `#[cfg(test)] impl PlatformState`（for_test）の中にありません"
+                ));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn with_clock_is_called_only_by_real_clock_shell_and_for_test() {
+    let sources: Vec<(String, String)> = list_src_files()
+        .into_iter()
+        .map(|p| {
+            let c = read_crate_file(&p);
+            (p, c)
+        })
+        .collect();
+    let v = with_clock_call_violations(&sources);
+    assert!(
+        v.is_empty(),
+        "`with_clock(` の本番呼び出し元が想定と異なります: {v:?}。本番で `ImeStateHub` に任意の時計を\
+         渡す入口を増やすと、TTL 判定の時間軸（`hook::current_tick_ms`）が食い違う恐れがあります。\
+         実時計は `state/platform_state/shell.rs` の `new()` だけです。"
+    );
+}
+
+#[test]
+fn with_clock_guard_detects_new_production_entry() {
+    let shell = (
+        "src/state/platform_state/shell.rs".to_string(),
+        "fn new() { Self::with_clock(HubClock::wall(f)) }".to_string(),
+    );
+    let core = (
+        "src/state/platform_state.rs".to_string(),
+        "#[cfg(test)]\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n"
+            .to_string(),
+    );
+    let ok = vec![shell.clone(), core.clone()];
+    assert!(with_clock_call_violations(&ok).is_empty());
+
+    // 新しい本番の入口（別ファイル）
+    let mut other = ok.clone();
+    other.push((
+        "src/runtime/mod.rs".to_string(),
+        "fn x() { ImeStateHub::with_clock(HubClock::manual()) }".to_string(),
+    ));
+    assert!(!with_clock_call_violations(&other).is_empty());
+    // 殻にもう1件
+    let mut twice = ok.clone();
+    twice[0].1.push_str("\nfn y() { Self::with_clock(c) }");
+    assert!(!with_clock_call_violations(&twice).is_empty());
+    // for_test が `#[cfg(test)]` の外
+    let ungated = vec![
+        shell,
+        (
+            core.0,
+            "impl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n".to_string(),
+        ),
+    ];
+    assert!(!with_clock_call_violations(&ungated).is_empty());
+    // `new_with_clock(` や `fn with_clock(` 定義は数えない
+    let neutral = vec![(
+        "src/journal.rs".to_string(),
+        "fn with_clock(c: C) {}\nlet j = UnifiedJournal::new_with_clock(1, c);".to_string(),
+    )];
+    assert!(with_clock_call_violations(&neutral).is_empty());
+}
+
 /// `UserIntentSource` をリテラルで名乗れるのは `write_set_open_request`
 /// （`Command`）の 1 箇所だけ（ADR-089 §2.2・§7、INV-40）。
 ///
@@ -6205,4 +6320,37 @@ fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
         !refresh_prod.contains("with_press(") && !refresh_prod.contains("claim_press_write("),
         "ime_refresh.rs（drift correction）は押下 ID を持たない: `with_press`/`claim_press_write` を呼んではならない"
     );
+}
+
+/// `runtime/ime_refresh.rs` の本番コードが、打鍵中判定を `is_typing`(`state/ime_read_strategy.rs`)経由で行い、
+/// `TYPING_IDLE_MS` を直接比較していないこと。`runtime/` は Windows 限定で単体テストが observe を通らないため、
+/// `idle_ms < TYPING_IDLE_MS` に戻されても全数表(decide 側)は落ちない。それを文字列照合で固定する。
+fn ime_refresh_uses_is_typing_only(src: &str) -> bool {
+    let code = non_comment_lines(production_code_only(src));
+    !code.contains("TYPING_IDLE_MS") && code.contains("is_typing(")
+}
+
+#[test]
+fn read_strategy_observe_goes_through_is_typing() {
+    let src = read_crate_file("src/runtime/ime_refresh.rs");
+    assert!(
+        ime_refresh_uses_is_typing_only(&src),
+        "runtime/ime_refresh.rs が打鍵中判定を is_typing 経由で行っていません(TYPING_IDLE_MS を直接比較していないか、\
+         is_typing( を呼んでいるかを確認)。decide 側(state/ime_read_strategy.rs)と式がずれると、\
+         通過マークを読まないまま SkipTyping に落ちます。"
+    );
+}
+
+#[test]
+fn ime_refresh_is_typing_guard_detects_violations() {
+    assert!(ime_refresh_uses_is_typing_only(
+        "let m = is_typing(idle_ms) && live(now);\n// TYPING_IDLE_MS はコメント\n"
+    ));
+    assert!(!ime_refresh_uses_is_typing_only(
+        "let m = idle_ms < TYPING_IDLE_MS && live(now);\n"
+    ));
+    assert!(!ime_refresh_uses_is_typing_only("let m = live(now);\n"));
+    assert!(!ime_refresh_uses_is_typing_only(
+        "let m = is_typing(idle_ms);\nlet t = idle_ms <= crate::tuning::TYPING_IDLE_MS;\n"
+    ));
 }

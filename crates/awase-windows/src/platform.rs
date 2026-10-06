@@ -887,7 +887,7 @@ impl WindowsPlatform {
         // 件数を journal 化する。`JournalStamper::stamp` は push 時に
         // seq/elapsed_ms を採番するため、ここ（全送信直後、`drain_journal_entries`
         // より前）で変換しないと「flush が resend より前に発火した」ことを
-        // journal 上で示せず、`GjiReinitRetryCompleted` 等の後続entryより
+        // journal 上で示せず、後続entryより
         // 後ろの seq になってしまう（round: 実装後コードレビュー指摘）。
         //
         // `deferred_recovery_flush_is_notable` の判定はこの呼び出し元

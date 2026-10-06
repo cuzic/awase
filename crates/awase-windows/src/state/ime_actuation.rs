@@ -306,8 +306,8 @@ impl ActuationRecord {
 // 再構成している — 詳細は `DriftCorrectionFixture` のドキュメントコメント参照）。
 
 /// BUG-43 の実機ログを `FeedbackPolicy::decide_action` でリプレイするための固定フィクスチャ。
-/// `tests/journals/*.json` に配列として保存し、`tests/drift_correction_replay.rs`
-/// （または `journal_replay.rs`）が読み込んで再実行・照合する。
+/// `tests/journals/drift_correction/*.json` に配列として保存し、`tests/drift_correction_replay.rs`
+/// が読み込んで再実行・照合する。
 ///
 /// `ConvClassifyFixture`（`state/conv_classify.rs`）と同じ考え方だが、由来が異なる。
 /// `ConvClassifyFixture` は `journal.rs::JournalEntry::ConvClassifyCall` という
