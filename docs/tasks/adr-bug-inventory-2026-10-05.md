@@ -1,7 +1,7 @@
 # ADR / known-bugs 棚卸し (2026-10-05)
 
 調査時点: origin/develop `99a20f42`（PR #491 まで）に rebase した状態。初版は `72476ca0` 時点で
-作ったが、Opus レビュー（`opus-review-adr-bug-inventory`、2026-10-06）で PR #480 や #490 を
+作ったが、Opus レビュー（`opus-review-adr-bug-inventory`、2026-10-05）で PR #480 や #490 を
 取りこぼしていたため、本版で HEAD の `docs/known-bugs/index.md` から作り直した。
 集計は status 文言ベースで、git log による裏取りは「実施状況」に書いたものだけ。
 
@@ -77,7 +77,7 @@ BUG-004、051、052、061、089、120、126、185。
 - 起草中: 224。要対応: 183（Blocker 4件 / Must-fix 7件）。
 - 調査・記録: 018, 221 ほか。
 
-## 実施状況（2026-10-05〜06）
+## 実施状況（2026-10-05）
 
 - 候補1: Opus レビュー記録 40 本超を `docs/adr/review/` へ移動、リンク・索引を追随。
 - 候補2: frontmatter が無かったレビュー記録 27 本に `type: companion-doc` を付与。番号重複の
@@ -112,4 +112,4 @@ BUG-004、051、052、061、089、120、126、185。
 ## 注意
 
 - 索引・frontmatter の更新は `.claude/rules/docs-frontmatter-convention.md` に従う。
-- 件数は 2026-10-06 時点の HEAD 集計。以降の作業前に再集計すること。
+- 件数は 2026-10-05 時点の HEAD 集計。以降の作業前に再集計すること。
