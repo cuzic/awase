@@ -1,6 +1,7 @@
 use crate::state::deferred_gate_plan;
 use crate::state::event_origin::Generation;
 use crate::state::half_width_alnum::HalfWidthAlnumAction;
+use crate::state::warm_send_plan;
 use crate::tsf::warmup::probe_fsm::DeferredOrigin;
 use crate::vk::ascii_to_vk;
 use awase::types::{KeyAction, VkCode};
@@ -814,15 +815,21 @@ impl Output {
     /// composition の温度状態を評価する。
     #[must_use]
     pub(super) fn assess_warmth(&self) -> WarmthContext {
+        // 判断は `warm_send_plan::plan_warmth`（FCIS F6b）。読むのは副作用の無い Cell/RefCell だけ。
         let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
-        let session_expired =
-            warm && elapsed < u64::MAX && elapsed > crate::tuning::COMPOSITION_TIMEOUT_MS;
+        let plan = warm_send_plan::plan_warmth(warm_send_plan::WarmthFacts {
+            warm,
+            elapsed_ms: elapsed,
+            needs_f2_probe: self.warmup_coord.needs_f2_probe(),
+            composition_timeout_ms: crate::tuning::COMPOSITION_TIMEOUT_MS,
+        });
+        tracing::trace!("[warmth] reason={:?}", plan.reason);
         WarmthContext {
             warm,
             elapsed,
-            session_expired,
-            prepend_f2_warmup: (!warm || session_expired) && self.warmup_coord.needs_f2_probe(),
+            session_expired: plan.session_expired,
+            prepend_f2_warmup: plan.prepend_f2_warmup,
         }
     }
 

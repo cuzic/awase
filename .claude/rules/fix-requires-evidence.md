@@ -31,7 +31,7 @@
 
 | ファミリー | 主なファイル |
 | --- | --- |
-| warmup / cold-start | `output/tsf_warmup_coord.rs`, `output/probe_io.rs`, `tsf/`, `tuning.rs` |
+| warmup / cold-start | `state/warm_send_plan.rs`（FCIS F6b、warm/cold・PendingGjiConfirm・LiteralDetect 設置の判断の核）, `output/tsf_warmup_coord.rs`, `output/probe_io.rs`, `tsf/`, `tuning.rs` |
 | focus 遷移 | `focus/`, `runtime/focus_tracking.rs`, `state/focus_classify_plan.rs`（同期分類の判断表、FCIS F5b）, `state/focus_resolve_plan.rs`（override→キャッシュ→engine 活性の優先順位、F5c）, `state/msaa_role_plan.rs`（MSAA ロール表、F5a） |
 | IME belief | `focus/msaa.rs`（ロール表は `state/msaa_role_plan.rs`）, `state/ime_model.rs`, `state/observation_store.rs`, `state/platform_state.rs`（`ImeStateHub`・`check_drift_correction`）, `state/drift_correction.rs`（`evaluate_drift`、drift correction の検知の判定本体）, `state/drift_plan.rs`（FCIS F4、drift correction の再送・打ち切り・収束・授権見送りの決定。`runtime/ime_refresh.rs::ir_apply_drift_correction` はその実行）, `state/mode_key_pass.rs`（ADR-187、`desired_open`の揃え）, `state/key_effect_predictor.rs`/`state/key_effect_runtime.rs`/`state/key_effect_table.rs`（`KeyEffectPredicted`がbeliefを直接動かす）, `runtime/ime_coordinator.rs`, `focus/uia.rs`, `focus/msaa.rs` |
 | conv mode | `state/conv_mode.rs`, `focus/classify.rs`（判断表は `state/focus_classify_plan.rs`）, `output/conv_actuation.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
