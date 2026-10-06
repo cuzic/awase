@@ -10,7 +10,7 @@ summary: |-
   強制チェック/E3=E2+Shiftガード中は再試行)を実機で比較し、E3が全ケースで最初の打鍵から正しい唯一の案だった。本ADRは実験の設計を
   実装に落とす前のレビュー対象で、フィールドの積み増しを最小にする形を探す。
 status: |-
-  第1段の設計を確定・追加計測中(2026-10-06、Opus r2 を反映): 基準値なしの観測案は採用(窓を閉じず、窓内の読みを belief と照合)。ただし R1(開閉は ADR-205 と同じ 3 副作用が要る)・R2(conv は NATIVE ビットだけで判定し、閉じているときは見ない。ROMAN から Kana を作らない)・R3(窓内で awase が書いたら窓を閉じる)・M2(変換中は arm しない)を満たすこと。実装前に GJI の MS-IME プリセット・変換中・長い idle 後を計測する。BUG-186 は範囲外。
+  追加計測完了・第1段の実装へ(2026-10-06): GJI の MS-IME プリセット・変換中・30 秒 idle 後のいずれも、最初の読みは 31〜110ms で、以後 300ms の窓内は値が一定(計 100 窓超)。変換中に読み取りの異常は出なかった。基準値なしの観測(R1〜R3・M2・M7 を満たす)を実装し、`sc-bug149-chrome-*-passthru` の A/B で確認する。BUG-186 は範囲外。
   旧(2026-10-04 更新前):
   **ドラフト(実験のみ、未実装)**。レビュー対象。実験パッチ: `188-measurements/e3-experimental.patch`(実験用、そのまま採用しない)。
 related_adr:
@@ -148,3 +148,15 @@ related_adr:
 **実装(最小、既存の variant で足りる)**: (1) `state/external_change_watch.rs` の `Armed` に種別(`Baseline`=ADR-205、`Direct`=ADR-188)を足し、`Direct` は基準値を使わず窓内なら読みを返して窓を閉じない。(2) 純関数 `classify_direct_mode_key_read(open, conv)`(上記 R2 の規則、ungated)。(3) hub に `follow_external_change_in_scope` の隣のメソッド(開閉の食い違いは R1 の 3 副作用、conv は `InputModeObserved{ConvBitsInference, Medium}`、両軸を 1 回で)。(4) `ir_follow_external_change` に `snap.conversion_mode` も渡す。(5) arm は `kp_stage_mode_key_follow` の Shift の早期 return の前と executor の再送出の 2 箇所、条件は `external_change_watch_applies()` かつ変換中でない、20ms の予約付き。
 
 **合格条件(A/B)**: `sc-bug149-chrome-{atok,msime}-passthru` で無変換/変換/Shift+無変換が 3/3 PASS、**かつ「直接入力→無変換/変換=かな ON」が 3/3 PASS のまま**(R2 の回帰検知)。`--settle` を短くした構成で追随の遅れによる最初の文字の誤りを数値で残す(既知の限界)。`sc-table-{atok,msime}`(Shift 単独タップ後、R3)、既定 Suppress・`-noawase`・ADR-205 の構成は FAIL の集合が不変、MS-IME 本体で追随ログ 0 件。**回帰テスト**: 純関数の表(`(Some(false), 9|25)`→None、`(Some(true), 9)`→AssumedRomaji、`(Some(true), 16)`→ObservedEisu、`(Some(true), 25)`→AssumedRomaji、conv が None)、`Direct` 窓の単体テスト、`tests/closed_loop_scenarios.rs` の 5 シナリオ(意図が残ったまま再送出後に open=false を読む等)、`tests/architecture_guard.rs`。
+
+
+## 2026-10-06 追記5: 追加計測(M5)の結果
+
+使い捨てスパイク `ci/adr188-trace`(`1d85e501`)で、素通し設定の実 Chrome×GJI に対し、窓内の `(open, conv)` を測った(run 37464007197=MS-IME プリセット 27 窓、run 37470606468=変換中・30 秒 idle 後の 12 構成)。
+
+- **GJI の MS-IME プリセット**(27 窓): 窓内で値が変わった窓は 0 件。最初の読みは 31〜47ms。conv は 25/27/16 で、ROMAN ビットの有無は ATOK と同様にばらつく(NATIVE ビットだけで判定する R2 の方針を支持)。
+- **変換中**(`--compose-key`、k,a で未確定文字を作ってから 変換/無変換/Shift+無変換): 窓内の値は一定(開閉 true、conv 9=変換 / 16=無変換・Shift+無変換)。最初の読みは 31〜110ms(1 窓だけ 110ms)。読み取りの異常・ブロックは見えなかった。ただし測ったのは 1 試行あたり最大 5 窓で、候補窓が長く開いた場合や BUG-34/113 型の負荷は測れていない。**M2(変換中は arm しない)は、安全側の条件として残す**(`ime_composition_active_now()`、コストが小さい)。
+- **30 秒 idle の後**(`--idle-key`): 最初の読みは 31〜47ms で、すでに遷移後の状態(かな→無変換/変換=`open=false`、Shift+無変換=`conv=16`)。idle が最初の読みを遅らせる様子は無い。修正前の probe は、ATOK の無変換/変換/Shift+無変換が「ローマ字のまま(未追随)」、MS-IME プリセットの変換は「NICOLA 文字(Engine ON)」(変換は IME ON を保つので正しい)。
+- 補足: MS-IME プリセットの無変換で conv=27/19(0x1B/0x13、全角カタカナ)が出た。NATIVE ビットは立つので `AssumedRomaji` になり、R2 の方針で矛盾しない。probe の setup が `setup_kana=false` になる試行が ATOK の compose で 2 件あった(IME 状態の準備の失敗で、本件と無関係)。
+
+結論: 基準値なしの観測案(追記4)で第1段の実装に進んでよい。
