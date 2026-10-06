@@ -5,7 +5,7 @@ title: |-
 summary: |-
   要望: IME キーや Ctrl/Alt などを入れ替えたい。現状は ADR-111(Caps⇔Ctrl)・ADR-126(Caps→追加 Ctrl)の2プリセットだけ。所有者判断(2026-10-06): 自由度は「全単射しか作れない」程度でよい。提案: 入れ替えペア `A⇄B` の集合を編集する UI に一般化する(Swap は1ペアとして読む。ADR-126 の片方向だけプリセットに残す)。Opus round1 の指摘で、(1)「awase が書いたエントリの所有を cache.toml に記録する」案は ADR-126 が却下済みで、置き場所としても不適(exe 隣の捨ててよい学習キャッシュ vs HKLM・全ユーザー)なので取り下げ、レジストリを唯一の真実とし全件を表示して、読んだ状態との差分で書く方式に改めた、(2)全単射の保証は awase のペアの中だけで、第三者エントリとの合成(多対一)をマージ関数で検査する、(3)読み戻し失敗時の巻き戻し・昇格側への受け渡しの比較交換・ADR-127 との整合を決定に加えた。ADR-110(hook ベース)は再導入しない。
 status: |-
-  起草(2026-10-06)。Opus round1(Blocker 2・Should-fix 7)・round2(Blocker 2〈英数の組の矛盾、他ツール1件で全部編集不能になる後退〉・Should-fix 5)反映済み(`docs/adr/review/230-opus-review-round{1,2}.md`)。round3(新 Blocker なし、Should-fix 1〈from 重複で解除できない取りこぼし〉・Note 3)反映済み。round3 修正の確認で収束(2026-10-06)。段階1(純粋関数)・段階2(ADR-127 追記)・段階3(昇格 CLI)は実装済み、段階4(UI)・5(実機確認)は未着手。実装なし。GJI 側は別 ADR(ADR-231)。
+  起草(2026-10-06)、設計は Opus 3 ラウンドで収束(`docs/adr/review/230-opus-review-round{1,2,3}.md`)。段階1(純粋関数)・段階2(ADR-127 追記)・段階3(昇格 CLI)は実装済み(PR #501、Opus コードレビュー `230-opus-code-review-round1.md`〈Blocker 1・Should-fix 5〉を反映)。段階4(設定画面の UI。Swap プリセットの廃止を含む)・段階5(適用済み状態の実機確認)は未着手。GJI 側は別 ADR(ADR-231)。
 related_adr:
   - "ADR-110"
   - "ADR-111"
@@ -52,8 +52,8 @@ hook ベースの汎用リマップ(ADR-110)は、JIS の英数キー位置と�
 
 Set 1 スキャンコードを `u16`(上位バイトが E0)で持ち、`u8 + bool` に分けない(BUG-132 はフックの
 `KBDLLHOOKSTRUCT` で scan と拡張フラグが別フィールドになる層の話で、Scancode Map の u16 には当てはまらない。
-引用するなら「分けて持つと同型の取り違えが起きるので1つの値で持つ」)。表は `scancode_map.rs`(既に
-`SCANCODE_CAPS_EISU` などがある。`awase-vkmap` は VK→`PhysicalPos` の表でスキャンコードを持たない)に置く。
+引用するなら「分けて持つと同型の取り違えが起きるので1つの値で持つ」)。表は `scancode_pairs.rs`(`scancode_map.rs` の
+`SCANCODE_CAPS_EISU` などを使う。`awase-vkmap` は VK→`PhysicalPos` の表でスキャンコードを持たない)に置く。
 
 | キー | scancode | 備考 |
 |---|---|---|
@@ -100,15 +100,22 @@ Set 1 スキャンコードを `u16`(上位バイトが E0)で持ち、`u8 + boo
 - `compute_swap_write(existing, pairs, caps_extra_ctrl) -> Result<WritePlan, SwapError>`。`pairs` は**編集後のペア集合の全体**
   (差分ではない)。内部で `detect_swap_pairs(existing)` を呼び、既存の Pair のうち `pairs` に無いものを削除対象にし
   (決定4 の「差分で書く」)、「他ツールのエントリ(Unclaimed)」は保持して書き込み全体を作る。`WritePlan` は
-  `{entries: Vec<(u16,u16)>, displaced: Vec<Entry>}`。
-- **検査は「書き込み後の写像が、書き込み前より悪くならない」こと**: 多対一・from 重複を**新たに**作らない。
+  `{entries, displaced, revealed}`(`revealed` は下記)。
+- **検査は「書き込み後のエントリ列が、書き込み前より悪くならない」こと**: エントリ列として多対一・from 重複を**新たに**作らない
+  (未登録のキーは自分自身を出す・from 重複でどちらが効くかは OS 依存で未確認、という実効の写像までは保証しない。下の `revealed`)。
   - ペアのキーが他ツールのエントリの **to** に現れる → `SwapError::CollidesWithForeignTarget{entry}`
     (例: 他ツールの `X→A` と `A⇄B` は X と B が両方 A を出す多対一になるため新規には止める)。
   - ペアのキーが他ツールのエントリの **from** に現れる → そのエントリは上書きで消えるので `displaced` に入れ、UI が
     「他ツールのエントリ `A→Y` を消します」と事前に確認する。
   - そのほか `SwapError`: キーの重複・許可リスト外(新規作成のみ)・自己ペア `A⇄A`・`CapsAsExtraCtrl` とのキー衝突。
+  - **`displaced` は、追加するエントリと同じ値のものを含まない**(書く値が変わらないので確認は要らない)。
+  - **`revealed`**: 消すペア・Caps 追加 Ctrl と同じ from を持つ、残る他ツールのエントリ。from が重複していたとき OS がどちらを
+    効かせるかは未確認なので、消すと残った方が効き出しうる(Caps 追加 Ctrl を外す・ペアを外す・displaced を消す、どの操作でも)。
+    書き込みを止める理由にはせず、UI が**全ての経路で**警告する(S13 の「`A→Z` が効くようになります」を一般化したもの)。
+  - 消すものの照合は**値**で行い(同じ写像の複製は1つを消すなら全部消す)、残る他ツールのエントリとの多対一の検査は、
+    消えるもの(消すペアと同値の複製を含む)を除いて行う。
   - **削除だけの操作は常に通る**(読んだ時点で実在した2エントリを消すだけで、多対一も from 重複も新たに作らないので、
-    上の規則から導ける)。他ツールが1件足されても、awase が書いた入れ替えを awase から解除できる(現行からの後退を作らない)。
+    上の規則から導ける。ただし後述の `revealed`)。他ツールが1件足されても、awase が書いた入れ替えを awase から解除できる(現行からの後退を作らない)。
 - 出力順は「既存の保持分を既存の順、ペア分を末尾・入力順」に固定する(読み戻し検証が順序込みの一致比較
   〈`verified == new_entries`〉であり、ADR-126 M13 が順序を変えるなら多重集合比較にせよと警告しているため)。
 - `detect_swap_pairs(entries) -> {pairs, caps_extra_ctrl: bool, unclaimed: Vec<(Entry, Reason)>}`。**分類は配列にも許可リストにも
@@ -119,15 +126,20 @@ Set 1 スキャンコードを `u16`(上位バイトが E0)で持ち、`u8 + boo
   | `A→B`, `B→A`(他と交わらない) | Pair(許可リスト外でも Pair として読む。編集・削除は可、新規作成は許可リスト内のみ) |
   | `A→B`, `B→A` だが、別のエントリと交わっている(`C→A` など) | **Pair(警告つき)**。削除は常に許す。交わっている相手のエントリは Unclaimed |
   | `0x3A→0x1D` だけ | CapsAsExtraCtrl |
+  | `Caps` が採用済みペアのキーで、同値の複製または同じ from の `Caps→左 Ctrl` がある | Unclaimed(from 重複)。ペアと Caps 追加 Ctrl は排他 |
   | `A→B` だけ(上記以外) | Unclaimed |
   | `A→B`, `B→C`, `C→A`(3巡回) | Unclaimed |
   | `A→B`, `B→A` がそろい、さらに同じ from の別エントリ(`A→Z`)がある | `A⇄B` は **Pair(警告つき)**、`A→Z` は Unclaimed(理由: from 重複)。削除は `A→B`,`B→A` の2件だけを消す。UI は「削除すると `A→Z` が効くようになります」と警告する(`A→Z` は他ツールが書いた値そのもので、多対一も from 重複も新たには作らないので「悪くならない」規則と整合) |
   | 同じ from が2件(上記以外) | **重複したエントリだけ** Unclaimed(他のエントリの分類には波及させない) |
-  | `A→0x0000`(無効化)・`A→A`(恒等) | Unclaimed |
+  | `A→0x0000`(無効化)・`A→A`(恒等)・`0x0000→A` | Unclaimed |
 
-- プロパティテスト: `detect_swap_pairs(compute_swap_write(existing, pairs, c).entries)` の `pairs`・`caps_extra_ctrl` が入力と一致し、
-  `unclaimed` が「`existing` の Unclaimed から `displaced` を引いたもの」と一致する(保持の検査を括弧書きで済ませない)。比べるのは**エントリの集合だけで理由は比べない**(ペアの削除で他のエントリの分類理由は変わりうる)。生成器は from 重複・警告つきペア(`C→A` と交わる)を含む入力も作る。
-  加えて「削除だけの操作は常に Ok」「書き込み後の写像が書き込み前より悪くならない」。
+- 性質テスト(実装は、乱数による大きめの宇宙と、E0 キー・0 を含む小さな宇宙の**全列挙**〈エントリ3件以下〉の両方):
+  恒等(既存のペアとプリセットをそのまま渡すと入力と同じ列)/ 削除だけは常に成功/ 指定したペアは必ず読める/
+  Caps 追加 Ctrl は指定どおりに読める(ペアが `Caps⇄左 Ctrl` に読み替わる場合と、重なっていた他ツールの `Caps→左 Ctrl` が
+  単独になって読める場合を除く)/ 他ツールのエントリは、上書きされたもの・消したペアやプリセットと同じ写像の複製を除いて保持/
+  エントリ列として from 重複・多対一を増やさない。比べるのはエントリの集合だけで、分類の理由は比べない。ADR の初期案より弱いのは、
+  削除でペアが読めるようになる・同値の複製を全部消す、という実装の挙動を許すため(その方が現実的)。固定の回帰ケース:
+  Opus コードレビュー round1 の B1・S1・S2・N2〜N4。
 - 既存テスト `ambiguous_third_party_entry_colliding_with_swap_reverse_value_is_not_preserved`
   (`scancode_map.rs`)は、期待値を「`Caps⇄LCtrl` のペアに読む(従来の Swap 優先判定と同じ結果)」に更新して引き継ぐ。
   黙って消える問題は決定4 の全件表示で解消する。同様に `third_party_left_ctrl_remap_to_unrelated_key_survives_caps_extra_ctrl_enable_and_disable`
@@ -194,6 +206,8 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
 
 - `0x003A` を X と入れ替えたとき、Shift 分岐(`VK_CAPITAL`)が X の位置で起きるか。
 - Ctrl+Alt+Del(SAS)が入れ替え後のスキャンコードで判定されるか(決定2 の「締め出しの危険は低い」は推測)。
+- 同じ from のエントリが複数あるとき、キーボードクラスドライバがどちらを効かせるか(先勝ちか後勝ちか)。`detect_swap_pairs` は入力順で
+  どの組を「編集できるペア」にするかが変わるので、効いている組と一致するかは未確認(警告文言か実機確認で補う)。
 - 他ツールの `X→A` を保持して `A⇄B` を作ろうとしたとき、決定3 の検査が止めること(純粋関数テストで足りるが、実際の書き込み拒否も確認)。
 
 ## 実装の段階(提案)
@@ -211,9 +225,13 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
    `WorkerExit` の終了コード)。引数形式は `pairs=0038-007B;caps=0;expect=003A>001D,001D>003A;displace=0`(スキャンコードは常に4桁の16進)。
    比較交換(`expect` と書く直前の値の食い違いは `Changed` で書かない)・壊れた既存値は書かない(`ExistingCorrupt`)・
    他ツールのエントリを消すなら `displace=1` が要る(`DisplaceNotApproved`)・読み戻しが一致しなければ書く前の生のバイト列
-   (無ければ削除)へ戻す(`RolledBack`/`RollbackFailed`)。長さ 0 の既存値は失うものが無いので空として扱う。
+   (無ければ削除)へ戻す(`RolledBack`/`RollbackFailed`)。ただし読み戻した値が書いた値でも元の値でもない、正しく読める値のときは、
+   書き込みと読み戻しの間に他の書き手が書いたとみなして巻き戻さず `Changed` で返す(`classify_read_back`、他の書き手の変更を消さない)。長さ 0 の既存値は失うものが無いので空として扱う。
    UI から呼ぶ `request_elevated_pairs_change` は段階4まで未使用。既存の `--scancode-map` は変更していない。
-2. ADR-127 への追記(決定5)。
-3. 昇格側の CLI(ペア集合・比較交換・巻き戻し)。
-4. `awase-settings` の UI(ペア編集、全件表示、競合・Displaced の確認、適用)。
+4. `awase-settings` の UI(ペア編集、全件表示、競合・Displaced・Revealed の確認、適用)。所有者の決定(2026-10-06): ペア行+ドロップダウン、
+   「よくある入れ替え」のワンクリックボタン、注意が要る組(英数と親指キー、スペースの入れ替えなど)はペア行の下の注意書きと適用時の確認ダイアログ。
+   申し送り(Opus コードレビュー round1 N5): `expect` は**生の値を順に読んだ列**をそのまま渡す(`detect_swap_pairs` の結果から組み立て直すと
+   順序が変わり常に `Changed` になる)/ UI の読み取りは `parse_entries_strict` を使い、壊れた値は適用ボタンを出す前に知らせる/
+   `ElevationOutcome::Rejected` の各終了コードに利用者向けの文言を付ける(今は列挙子名のまま)/ `Changed`(書いた後を含む)のときは今の値を読み直させる/
+   壊れた値(count=0 など)は永久に `ExistingCorrupt` になるので、「壊れた値を削除する」明示操作を用意するかを決める。
 5. 実機確認。

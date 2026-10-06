@@ -122,7 +122,13 @@ pub fn detect_swap_pairs(entries: &[Entry]) -> Detected {
 
     // ペアは「(a,b) と (b,a) が両方ある、互いに別キー、キーが既存ペアと被らない」もの。入力順に最初のものを採る。
     for (i, &(a, b)) in entries.iter().enumerate() {
-        if used[i] || a == b || b == 0 || taken_keys.contains(&a) || taken_keys.contains(&b) {
+        if used[i]
+            || a == b
+            || a == 0
+            || b == 0
+            || taken_keys.contains(&a)
+            || taken_keys.contains(&b)
+        {
             continue;
         }
         let Some(j) = entries
@@ -140,10 +146,16 @@ pub fn detect_swap_pairs(entries: &[Entry]) -> Detected {
     }
 
     // Caps 追加 Ctrl: `Caps→左 Ctrl` が単独（逆向きがペアに取られていない）で残っている。
-    let caps_pos = entries
-        .iter()
-        .enumerate()
-        .position(|(i, &e)| !used[i] && e == (SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL));
+    // ただし Caps が採用済みペアのキーなら、同じ `Caps→左 Ctrl`（ペアの複製や、ペア `Caps⇄X` に重なる from 重複）は
+    // プリセットではなく from 重複の Unclaimed にする（ペアと Caps 追加 Ctrl は排他、ADR-230 決定1・決定3の表）。
+    let caps_pos = if taken_keys.contains(&SCANCODE_CAPS_EISU) {
+        None
+    } else {
+        entries
+            .iter()
+            .enumerate()
+            .position(|(i, &e)| !used[i] && e == (SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL))
+    };
     if let Some(i) = caps_pos {
         used[i] = true;
     }
@@ -212,8 +224,13 @@ pub struct WritePlan {
     /// レジストリへ書く全エントリ列。出力順は「既存の保持分を既存の順、新規ペアを末尾・入力順、
     /// 新規の Caps 追加 Ctrl をその後」に固定する（読み戻し検証が順序込みの一致比較のため）。
     pub entries: Vec<Entry>,
-    /// 上書きで消える他ツールのエントリ。UI が事前に確認する（ADR-230 決定3）。
+    /// 上書きで消える他ツールのエントリ。UI が事前に確認する（ADR-230 決定3）。追加するエントリと同じ値のものは含まない
+    /// （書く値が変わらないので確認は要らない）。
     pub displaced: Vec<Entry>,
+    /// この書き込みで、隠れていたかもしれないエントリが効き出す可能性があるもの。消すペア・Caps 追加 Ctrl と同じ from を持つ
+    /// 他ツールのエントリ（from が重複していたとき、OS がどちらを効かせるかは未確認なので、消すと残った方が効き出しうる）。
+    /// 書き込みを止める理由にはならず、UI が警告する。
+    pub revealed: Vec<Entry>,
 }
 
 /// 編集後のペア集合 `pairs`（差分ではなく全体）と Caps 追加 Ctrl の有無から、書き込む全エントリ列を作る。
@@ -280,10 +297,25 @@ pub fn compute_swap_write(
         added.push((SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL));
     }
 
-    // 4. 上書きで消える他ツールのエントリ（from が新規エントリの from と同じ）。
-    // Caps 追加 Ctrl を足すとき、他ツールの `左 Ctrl→Caps` が残ると組が入れ替え（ペア）に読み替わるので、これも消す。
+    // 4. 消すものを決める。外されたペア・外された Caps 追加 Ctrl のエントリ（removed_own）と、新規エントリの from と同じ
+    //    from を持つ他ツールのエントリ（replaced。Caps 追加 Ctrl を足すとき、他ツールの `左 Ctrl→Caps` が残ると組が
+    //    入れ替えに読み替わるので、これも消す）。いずれも**値**で消す（同じ写像の複製は1つを消すなら全部消す）。
+    let kept_pairs: Vec<Pair> = existing_pairs
+        .iter()
+        .copied()
+        .filter(|p| pairs.contains(p))
+        .collect();
+    let mut removed_own: Vec<Entry> = Vec::new();
+    for d in &detected.pairs {
+        if !kept_pairs.contains(&d.pair) {
+            removed_own.extend(d.pair.entries());
+        }
+    }
+    if detected.caps_extra_ctrl && !caps_extra_ctrl {
+        removed_own.push((SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL));
+    }
     let added_from: Vec<u16> = added.iter().map(|e| e.0).collect();
-    let displaced: Vec<Entry> = detected
+    let replaced: Vec<Entry> = detected
         .unclaimed
         .iter()
         .map(|&(e, _)| e)
@@ -292,10 +324,16 @@ pub fn compute_swap_write(
                 || (adds_caps && *e == (SCANCODE_LEFT_CTRL, SCANCODE_CAPS_EISU))
         })
         .collect();
+    let displaced: Vec<Entry> = replaced
+        .iter()
+        .copied()
+        .filter(|e| !added.contains(e))
+        .collect();
+    let is_removed = |e: &Entry| removed_own.contains(e) || replaced.contains(e);
 
-    // 5. 保持する他ツールのエントリと、新規エントリの to が同じなら、2つのキーが同じキーを出す多対一を新たに作る。
+    // 5. 残る他ツールのエントリの to と、新規エントリの to が同じなら、2つのキーが同じキーを出す多対一を新たに作る。
     for &(entry, _) in &detected.unclaimed {
-        if displaced.contains(&entry) {
+        if is_removed(&entry) {
             continue;
         }
         if let Some(&culprit) = added.iter().find(|&&(_, to)| to == entry.1) {
@@ -303,33 +341,26 @@ pub fn compute_swap_write(
         }
     }
 
-    // 6. 出力: 既存の順のまま、削除対象（外されたペア・外された Caps 追加 Ctrl・displaced）を除き、末尾に新規を足す。
-    let kept_pairs: Vec<Pair> = existing_pairs
+    // 6. 出力: 既存の順のまま、消すものを除き、末尾に新規を足す。
+    let out_existing: Vec<Entry> = existing
         .iter()
         .copied()
-        .filter(|p| pairs.contains(p))
+        .filter(|e| !is_removed(e))
         .collect();
-    let mut removed: Vec<Entry> = Vec::new();
-    for d in &detected.pairs {
-        if !kept_pairs.contains(&d.pair) {
-            removed.extend(d.pair.entries());
-        }
-    }
-    if detected.caps_extra_ctrl && !caps_extra_ctrl {
-        removed.push((SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL));
-    }
-    removed.extend(displaced.iter().copied());
-
-    // 同じ写像の複製（完全に同じエントリ）は、1つを消すなら全部消す（片方だけ残ると意図しない設定が残るため）。
-    let mut out: Vec<Entry> = existing
+    let revealed: Vec<Entry> = detected
+        .unclaimed
         .iter()
-        .copied()
-        .filter(|e| !removed.contains(e))
+        .map(|&(e, _)| e)
+        .filter(|e| {
+            !is_removed(e) && !added_from.contains(&e.0) && removed_own.iter().any(|r| r.0 == e.0)
+        })
         .collect();
+    let mut out = out_existing;
     out.extend(added);
     Ok(WritePlan {
         entries: out,
         displaced,
+        revealed,
     })
 }
 
@@ -621,6 +652,172 @@ mod tests {
         assert_eq!(off.entries, vec![third]);
     }
 
+    // ---- Opus コードレビュー round1(PR #501)の反例 ----
+
+    #[test]
+    fn b1_duplicate_of_a_pair_entry_is_not_taken_as_caps_extra_ctrl() {
+        // ペア Caps⇄LCtrl に同値の複製があっても、Caps 追加 Ctrl とは読まず from 重複の Unclaimed にする。
+        let existing = vec![(CAPS, LCTRL), (LCTRL, CAPS), (CAPS, LCTRL)];
+        let d = detect_swap_pairs(&existing);
+        assert_eq!(d.pairs.len(), 1);
+        assert!(!d.caps_extra_ctrl);
+        assert_eq!(
+            d.unclaimed,
+            vec![((CAPS, LCTRL), UnclaimedReason::DuplicateFrom)]
+        );
+        // ペアを残してチェックを外すだけ: 何も変わらない（左 Ctrl が消えて多対一になったりしない）。
+        let plan = compute_swap_write(&existing, &[pair(CAPS, LCTRL)], false).unwrap();
+        assert_eq!(plan.entries, existing);
+        // ペアを外して Caps 追加 Ctrl を入れる: 複製も含めて、Caps→左 Ctrl が1つだけ残る。
+        let plan = compute_swap_write(&existing, &[], true).unwrap();
+        assert_eq!(plan.entries, vec![(CAPS, LCTRL)]);
+        // ペアを残したまま Caps 追加 Ctrl を入れるのは排他で拒否する。
+        assert!(matches!(
+            compute_swap_write(&existing, &[pair(CAPS, LCTRL)], true),
+            Err(SwapError::CapsExtraConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn s1_caps_to_ctrl_overlapping_a_caps_pair_is_duplicate_from_not_caps_extra_ctrl() {
+        let d = detect_swap_pairs(&[(CAPS, MUH), (MUH, CAPS), (CAPS, LCTRL)]);
+        assert_eq!(
+            d.pairs,
+            vec![DetectedPair {
+                pair: pair(CAPS, MUH),
+                warning: true
+            }]
+        );
+        assert!(!d.caps_extra_ctrl);
+        assert_eq!(
+            d.unclaimed,
+            vec![((CAPS, LCTRL), UnclaimedReason::DuplicateFrom)]
+        );
+    }
+
+    #[test]
+    fn n2_replacing_a_pair_that_has_a_same_value_duplicate_is_not_a_false_collision() {
+        // 無変換⇄左Alt（複製つき）を外して、変換⇄左Alt にする、が1回でできる。
+        let existing = vec![(MUH, LALT), (LALT, MUH), (MUH, LALT)];
+        let plan = compute_swap_write(&existing, &[pair(HEN, LALT)], false).unwrap();
+        assert_eq!(plan.entries, pe(HEN, LALT));
+    }
+
+    #[test]
+    fn n3_displaced_excludes_entries_with_the_same_value_as_an_added_entry() {
+        // 無変換⇄変換 を、別の並びで読まれた同値のエントリがある状態から作る。書く値は変わらないので承認は要らない。
+        let existing = vec![(MUH, LALT), (LALT, MUH), (MUH, HEN), (HEN, MUH)];
+        // 先頭の無変換⇄左Alt が採用され、(MUH,HEN),(HEN,MUH) は Unclaimed。
+        let plan = compute_swap_write(&existing, &[pair(MUH, HEN)], false).unwrap();
+        assert_eq!(plan.entries, pe(MUH, HEN));
+        assert!(plan.displaced.is_empty());
+    }
+
+    #[test]
+    fn n4_pair_with_zero_key_is_not_a_pair() {
+        let d = detect_swap_pairs(&[(MUH, 0), (0, MUH)]);
+        assert!(d.pairs.is_empty());
+        assert_eq!(d.unclaimed.len(), 2);
+    }
+
+    #[test]
+    fn s2_removal_reports_entries_that_may_start_to_take_effect() {
+        // Caps 追加 Ctrl を外すと、同じ from の隠れていた `Caps→変換` が効き出しうる（OS の先勝ち/後勝ちは未確認）。
+        let existing = vec![
+            (CAPS, LCTRL),
+            (LALT, HEN),
+            (LALT, LCTRL),
+            (HEN, 0),
+            (CAPS, HEN),
+        ];
+        let plan = compute_swap_write(&existing, &[], false).unwrap();
+        assert_eq!(plan.revealed, vec![(CAPS, HEN)]);
+        assert!(plan.entries.contains(&(CAPS, HEN)));
+        // 何も消さない操作では何も報告しない。
+        let same = compute_swap_write(&existing, &[], true).unwrap();
+        assert!(same.revealed.is_empty());
+    }
+
+    // ---- 全列挙（小さな宇宙、E0 キーと 0 を含む） ----
+
+    #[test]
+    fn exhaustive_small_universe_keeps_the_invariants() {
+        const KEYS: [u16; 4] = [CAPS, LCTRL, MUH, SCANCODE_RIGHT_ALT];
+        const TOS: [u16; 5] = [CAPS, LCTRL, MUH, SCANCODE_RIGHT_ALT, 0];
+        let all_entries: Vec<Entry> = KEYS
+            .iter()
+            .chain(std::iter::once(&0))
+            .flat_map(|&f| TOS.iter().map(move |&t| (f, t)))
+            .collect();
+        // 許可リストの4キーで作れる、互いに素なペア集合（空、1組、2組）。
+        let mut pair_sets: Vec<Vec<Pair>> = vec![Vec::new()];
+        for (i, &a) in KEYS.iter().enumerate() {
+            for &b in &KEYS[i + 1..] {
+                pair_sets.push(vec![Pair::new(a, b)]);
+            }
+        }
+        pair_sets.push(vec![
+            Pair::new(CAPS, LCTRL),
+            Pair::new(MUH, SCANCODE_RIGHT_ALT),
+        ]);
+        pair_sets.push(vec![
+            Pair::new(CAPS, MUH),
+            Pair::new(LCTRL, SCANCODE_RIGHT_ALT),
+        ]);
+        pair_sets.push(vec![
+            Pair::new(CAPS, SCANCODE_RIGHT_ALT),
+            Pair::new(LCTRL, MUH),
+        ]);
+
+        let mut lists: Vec<Vec<Entry>> = vec![Vec::new()];
+        for &a in &all_entries {
+            lists.push(vec![a]);
+            for &b in &all_entries {
+                lists.push(vec![a, b]);
+                for &c in &all_entries {
+                    lists.push(vec![a, b, c]);
+                }
+            }
+        }
+        let mut ok = 0usize;
+        for existing in &lists {
+            let before = detect_swap_pairs(existing);
+            let before_pairs: Vec<Pair> = before.pairs.iter().map(|d| d.pair).collect();
+            // 何も変えない呼び出しは恒等、削除だけは常に成功する。
+            let same = compute_swap_write(existing, &before_pairs, before.caps_extra_ctrl)
+                .expect("恒等は常に通る");
+            assert_eq!(&same.entries, existing, "identity: {existing:?}");
+            let removal = compute_swap_write(existing, &[], false).expect("全削除は常に通る");
+            assert!(removal.entries.len() <= existing.len());
+            for pairs in &pair_sets {
+                for caps in [false, true] {
+                    let Ok(plan) = compute_swap_write(existing, pairs, caps) else {
+                        continue;
+                    };
+                    ok += 1;
+                    let after = detect_swap_pairs(&plan.entries);
+                    let got: Vec<Pair> = after.pairs.iter().map(|d| d.pair).collect();
+                    for p in pairs {
+                        assert!(
+                            got.contains(p),
+                            "existing={existing:?} pairs={pairs:?} caps={caps}"
+                        );
+                    }
+                    // 指定どおりの Caps 追加 Ctrl（ペアが Caps⇄左Ctrl に読み替わった場合と、重なっていた他ツールの
+                    // `Caps→左 Ctrl` が単独になった場合を除く）。
+                    assert!(
+                        after.caps_extra_ctrl == caps
+                            || (caps && got.contains(&Pair::new(CAPS, LCTRL)))
+                            || (after.caps_extra_ctrl
+                                && before.unclaimed.iter().any(|&(e, _)| e == (CAPS, LCTRL))),
+                        "existing={existing:?} pairs={pairs:?} caps={caps}"
+                    );
+                }
+            }
+        }
+        assert!(ok > 10_000, "検査した組が少なすぎる: {ok}");
+    }
+
     // ---- 性質テスト（決定論的な疑似乱数、依存なし） ----
 
     struct Rng(u64);
@@ -731,7 +928,11 @@ mod tests {
             }
             // Caps 追加 Ctrl は指定どおりに読める（現れた余分なペアに吸われた場合を除く）。
             assert!(
-                after.caps_extra_ctrl == caps || (caps && got.contains(&Pair::new(CAPS, LCTRL))),
+                after.caps_extra_ctrl == caps
+                    || (caps && got.contains(&Pair::new(CAPS, LCTRL)))
+                    // 消したペアと重なっていた他ツールの `Caps→左 Ctrl` が、単独になって Caps 追加 Ctrl に読めるようになった。
+                    || (after.caps_extra_ctrl
+                        && before.unclaimed.iter().any(|&(e, _)| e == (CAPS, LCTRL))),
                 "existing={existing:?} pairs={pairs:?} caps={caps}"
             );
             // 他ツールのエントリは、上書きされたもの・消したペアやプリセットと同じ写像の複製を除いて保持される。

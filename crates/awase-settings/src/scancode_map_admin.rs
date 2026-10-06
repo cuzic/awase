@@ -142,7 +142,7 @@ pub fn run_elevated_pairs_worker(spec: &str) -> i32 {
 #[cfg(windows)]
 fn run_elevated_pairs_worker_windows(spec: &str) -> i32 {
     use awase_windows::scancode_apply::{
-        ApplyRequest, Decision, WorkerExit, decide, read_back_matches,
+        ApplyRequest, Decision, ReadBack, WorkerExit, classify_read_back, decide,
     };
     use awase_windows::scancode_map as sm;
 
@@ -178,9 +178,22 @@ fn run_elevated_pairs_worker_windows(spec: &str) -> i32 {
         return WorkerExit::Failed.code();
     }
     match sm::read() {
-        Ok(raw) if read_back_matches(&entries, raw.as_deref()) => WorkerExit::Ok.code(),
-        other => {
-            tracing::error!("[scancode-pairs] 読み戻し検証が一致しない({other:?})。元の値へ戻す");
+        Ok(raw) => match classify_read_back(&entries, original.as_deref(), raw.as_deref()) {
+            ReadBack::Matches => WorkerExit::Ok.code(),
+            ReadBack::ForeignWrite => {
+                // 書き込みと読み戻しの間に他の書き手が書いた。巻き戻すとその変更を消すので、何もせず知らせる。
+                tracing::error!(
+                    "[scancode-pairs] 読み戻した値が書いた値でも元の値でもない。巻き戻さない"
+                );
+                WorkerExit::Changed.code()
+            }
+            ReadBack::Mismatch => {
+                tracing::error!("[scancode-pairs] 読み戻し検証が一致しない。元の値へ戻す");
+                rollback_windows(original.as_deref()).code()
+            }
+        },
+        Err(e) => {
+            tracing::error!("[scancode-pairs] 読み戻しに失敗({e})。元の値へ戻す");
             rollback_windows(original.as_deref()).code()
         }
     }

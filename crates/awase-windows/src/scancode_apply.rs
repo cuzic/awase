@@ -277,6 +277,34 @@ pub fn read_back_matches(written: &[Entry], raw: Option<&[u8]>) -> bool {
     })
 }
 
+/// 書いた直後の読み戻しの分類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadBack {
+    /// 書いた値と一致した。
+    Matches,
+    /// 書いた値でも元の値でもない、正しく読める値だった。書き込みと読み戻しの間に他の書き手が書いたとみなし、
+    /// 巻き戻さない（巻き戻すと他の書き手の変更を消す）。画面は今の値を読み直すこと。
+    ForeignWrite,
+    /// それ以外（値が無い・読めない・元の値のまま）。元へ戻す。
+    Mismatch,
+}
+
+/// 書いた直後に読み戻した生の値 `raw` を、書いたエントリ列 `written` と書く前の生の値 `original` に照らして分類する。
+#[must_use]
+pub fn classify_read_back(
+    written: &[Entry],
+    original: Option<&[u8]>,
+    raw: Option<&[u8]>,
+) -> ReadBack {
+    if read_back_matches(written, raw) {
+        ReadBack::Matches
+    } else if raw != original && raw.is_some_and(|bytes| parse_entries_strict(bytes).is_some()) {
+        ReadBack::ForeignWrite
+    } else {
+        ReadBack::Mismatch
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,6 +518,36 @@ mod tests {
             Decision::Write {
                 entries: Vec::new()
             }
+        );
+    }
+
+    #[test]
+    fn classify_read_back_separates_our_write_a_foreign_write_and_a_mismatch() {
+        let original = raw(&[(0x0010, 0x0011)]);
+        let written = [(MUH, LALT), (LALT, MUH)];
+        let ours = raw(&written);
+        let foreign = raw(&[(0x0010, 0x0022)]);
+        assert_eq!(
+            classify_read_back(&written, original.as_deref(), ours.as_deref()),
+            ReadBack::Matches
+        );
+        // 書いた値でも元の値でもない、正しく読める値は他の書き手。
+        assert_eq!(
+            classify_read_back(&written, original.as_deref(), foreign.as_deref()),
+            ReadBack::ForeignWrite
+        );
+        // 元の値のまま（書き込みが効いていない）・値が無い・壊れた値は巻き戻しへ。
+        assert_eq!(
+            classify_read_back(&written, original.as_deref(), original.as_deref()),
+            ReadBack::Mismatch
+        );
+        assert_eq!(
+            classify_read_back(&written, original.as_deref(), None),
+            ReadBack::Mismatch
+        );
+        assert_eq!(
+            classify_read_back(&written, original.as_deref(), Some(&[1, 2, 3])),
+            ReadBack::Mismatch
         );
     }
 
