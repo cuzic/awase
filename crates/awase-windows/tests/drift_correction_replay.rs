@@ -58,55 +58,53 @@ fn replay_all_drift_correction_fixtures() {
 }
 
 fn check_fixture(fixture: &DriftCorrectionFixture) -> Result<(), String> {
-    {
-        let mut errors = Vec::new();
-        // tick が 0 件の fixture は何も検査しないまま通るので失敗にする（件の単位を fixture にした際の
-        // カバレッジ後退を戻す。以前は tick の総数 0 で落ちた）。
-        if fixture.ticks.is_empty() {
+    let mut errors = Vec::new();
+    // tick が 0 件の fixture は何も検査しないまま通るので失敗にする（件の単位を fixture にした際の
+    // カバレッジ後退を戻す。以前は tick の総数 0 で落ちた）。
+    if fixture.ticks.is_empty() {
+        errors.push(format!(
+            "{}: ticks が 0 件（何も検査していない）",
+            fixture.name
+        ));
+    }
+    for tick in &fixture.ticks {
+        let record = record_for_tick(fixture, tick);
+
+        // (1) 判定（action）の照合。
+        if record.action != tick.expected {
             errors.push(format!(
-                "{}: ticks が 0 件（何も検査していない）",
-                fixture.name
+                "{} attempts={} observed_at_ms={:?}:\n  expected action: {:?}\n  actual action:   {:?}",
+                fixture.name, tick.attempts, tick.observed_at_ms, tick.expected, record.action,
             ));
         }
-        for tick in &fixture.ticks {
-            let record = record_for_tick(fixture, tick);
 
-            // (1) 判定（action）の照合。
-            if record.action != tick.expected {
-                errors.push(format!(
-                    "{} attempts={} observed_at_ms={:?}:\n  expected action: {:?}\n  actual action:   {:?}",
-                    fixture.name, tick.attempts, tick.observed_at_ms, tick.expected, record.action,
-                ));
-            }
-
-            // (2) 出所の照合: actuation は常に SelfActuated（物理でも外部注入でもない）。
-            let expected_source = EventSource::SelfActuated {
-                strategy: fixture.policy.strategy(),
-            };
-            if record.origin.source != expected_source {
-                errors.push(format!(
-                    "{} attempts={}: origin.source が SelfActuated でない: {:?}",
-                    fixture.name, tick.attempts, record.origin.source,
-                ));
-            }
-
-            // (3) 世代の配線: epoch は attempts と歩調を合わせて積まれる
-            //     （Actuation::advance_epoch）。fixture の epoch と record の epoch、
-            //     さらに attempts との一致を固定し、EventOrigin 配線の退行を検知する。
-            if record.origin.epoch != tick.epoch
-                || record.origin.epoch.value() != u64::from(tick.attempts)
-            {
-                errors.push(format!(
-                    "{} attempts={}: epoch 配線が壊れている: tick.epoch={:?} record.epoch={:?}",
-                    fixture.name, tick.attempts, tick.epoch, record.origin.epoch,
-                ));
-            }
+        // (2) 出所の照合: actuation は常に SelfActuated（物理でも外部注入でもない）。
+        let expected_source = EventSource::SelfActuated {
+            strategy: fixture.policy.strategy(),
+        };
+        if record.origin.source != expected_source {
+            errors.push(format!(
+                "{} attempts={}: origin.source が SelfActuated でない: {:?}",
+                fixture.name, tick.attempts, record.origin.source,
+            ));
         }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("\n"))
+
+        // (3) 世代の配線: epoch は attempts と歩調を合わせて積まれる
+        //     （Actuation::advance_epoch）。fixture の epoch と record の epoch、
+        //     さらに attempts との一致を固定し、EventOrigin 配線の退行を検知する。
+        if record.origin.epoch != tick.epoch
+            || record.origin.epoch.value() != u64::from(tick.attempts)
+        {
+            errors.push(format!(
+                "{} attempts={}: epoch 配線が壊れている: tick.epoch={:?} record.epoch={:?}",
+                fixture.name, tick.attempts, tick.epoch, record.origin.epoch,
+            ));
         }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
     }
 }
 
@@ -199,10 +197,14 @@ fn fixture_without_ticks_is_reported_as_failure() {
     let real = fixture_dir().join("bug-43-drift-correction-tight-loop.json");
     let mut value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(real).unwrap()).unwrap();
-    value[0]["ticks"] = serde_json::json!([]);
+    for fixture in value.as_array_mut().unwrap() {
+        fixture["ticks"] = serde_json::json!([]);
+    }
+    let fixtures = value.as_array().unwrap().len();
     std::fs::write(dir.join("empty.json"), value.to_string()).unwrap();
     let report = awase_replay::replay_dir::<DriftCorrectionFixture>(&dir, check_fixture);
-    assert_eq!(report.cases, 1);
-    assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
-    assert!(report.failures[0].contains("ticks が 0 件"));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(report.cases, fixtures);
+    assert_eq!(report.failures.len(), fixtures, "{:?}", report.failures);
+    assert!(report.failures.iter().all(|f| f.contains("ticks が 0 件")));
 }

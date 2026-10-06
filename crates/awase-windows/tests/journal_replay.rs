@@ -168,39 +168,65 @@ fn parse_ime_policy_profile(value: &str) -> ImePolicyProfile {
 #[test]
 fn replay_ime_apply_focus_epoch_fixtures() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/journals/ime_apply");
-    // 1 ディレクトリ = 1 形式のため、ケースは (fixture ごとの) 2 つの照合をまとめて 1 件として扱う。
-    // `replay_dir` は fixture を借用で渡すため、消費型の `apply_ime_replay_event` には clone して渡す。
-    awase_replay::replay_dir::<ImeEventReplayFixture>(&dir, |fixture| {
-        let mut model = ImeModel::new();
-        let base = std::time::Instant::now();
-        for (i, step) in fixture.events.iter().cloned().enumerate() {
-            apply_ime_replay_event(&mut model, i as u64 + 1, base, step);
-        }
-        let mut errors = Vec::new();
-        if model.applied_state() != fixture.expected_applied.to_state() {
-            errors.push(format!(
-                "applied_state: expected {:?}, actual {:?}",
-                fixture.expected_applied.to_state(),
-                model.applied_state()
-            ));
-        }
-        let pending = model.pending_generation().map(ApplyGeneration::get);
-        if pending != fixture.expected_pending_generation {
-            errors.push(format!(
-                "pending_generation: expected {:?}, actual {pending:?}",
-                fixture.expected_pending_generation
-            ));
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(format!(
-                "{} ({}): {}",
-                fixture.name,
-                fixture.note,
-                errors.join("; ")
-            ))
-        }
-    })
-    .assert_ok();
+    awase_replay::replay_dir::<ImeEventReplayFixture>(&dir, check_ime_apply).assert_ok();
+}
+
+/// 1 ディレクトリ = 1 形式のため、ケースは (fixture ごとの) 2 つの照合をまとめて 1 件として扱う。
+/// `replay_dir` は fixture を借用で渡すため、消費型の `apply_ime_replay_event` には clone して渡す。
+fn check_ime_apply(fixture: &ImeEventReplayFixture) -> Result<(), String> {
+    // events が 0 件の fixture は初期状態と期待値の一致だけで通ってしまうので失敗にする。
+    if fixture.events.is_empty() {
+        return Err(format!(
+            "{}: events が 0 件（何も再生していない）",
+            fixture.name
+        ));
+    }
+    let mut model = ImeModel::new();
+    let base = std::time::Instant::now();
+    for (i, step) in fixture.events.iter().cloned().enumerate() {
+        apply_ime_replay_event(&mut model, i as u64 + 1, base, step);
+    }
+    let mut errors = Vec::new();
+    if model.applied_state() != fixture.expected_applied.to_state() {
+        errors.push(format!(
+            "applied_state: expected {:?}, actual {:?}",
+            fixture.expected_applied.to_state(),
+            model.applied_state()
+        ));
+    }
+    let pending = model.pending_generation().map(ApplyGeneration::get);
+    if pending != fixture.expected_pending_generation {
+        errors.push(format!(
+            "pending_generation: expected {:?}, actual {pending:?}",
+            fixture.expected_pending_generation
+        ));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} ({}): {}",
+            fixture.name,
+            fixture.note,
+            errors.join("; ")
+        ))
+    }
+}
+
+/// `events: []` の fixture が失敗として報告されること（初期状態と期待値の一致だけで素通りしない）。
+#[test]
+fn ime_apply_fixture_without_events_is_reported_as_failure() {
+    let dir = std::env::temp_dir().join(format!("awase-ime-apply-empty-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("empty.json"),
+        r#"[{"name":"empty","note":"n","events":[],"expected_applied":"Unknown","expected_pending_generation":null}]"#,
+    )
+    .unwrap();
+    let report = awase_replay::replay_dir::<ImeEventReplayFixture>(&dir, check_ime_apply);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(report.cases, 1);
+    assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+    assert!(report.failures[0].contains("events が 0 件"));
 }

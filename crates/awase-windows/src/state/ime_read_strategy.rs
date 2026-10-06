@@ -63,9 +63,14 @@ pub struct ReadStrategyFacts {
 
 /// 打鍵中か(最後のキー活動から [`TYPING_IDLE_MS`] 未満)。
 ///
-/// **この判定の唯一の定義**。`observe`(`ir_observe_read_strategy_facts`)は、通過マークの有効判定を打鍵中のときだけ読むために、
-/// `decide_read_strategy` は決定のために、それぞれこの関数を呼ぶ。片方だけ閾値の式を変えると、
-/// 通過マークを読まないまま打鍵中扱いの `SkipTyping` に落ちる。
+/// 読み取り方針(`observe` と `decide_read_strategy`)での打鍵中判定の唯一の定義。
+/// `observe`(`ir_observe_read_strategy_facts`)は通過マークの有効判定を打鍵中のときだけ読むため、
+/// `decide_read_strategy` は決定のために、それぞれこの関数を呼ぶ。片方だけ式を変えると、
+/// 通過マークを読まないまま打鍵中扱いの `SkipTyping` に落ちる
+/// (`tests/architecture_guard.rs` が observe 側の経由を固定している)。
+///
+/// 対象外: `src/engine/idle_check.rs` の打鍵停止判定(idle-conv-check)は、起点が
+/// `output_in_flight_ms`・境界が `<=` で、この関数とは別の判定。寄せると idle=500ms の扱いと起点が変わる。
 #[must_use]
 pub const fn is_typing(idle_ms: u64) -> bool {
     idle_ms < TYPING_IDLE_MS
@@ -74,10 +79,10 @@ pub const fn is_typing(idle_ms: u64) -> bool {
 /// 読み取り方針を決める。
 #[must_use]
 pub fn decide_read_strategy(facts: &ReadStrategyFacts) -> ReadDecision {
-    let is_typing = is_typing(facts.idle_ms);
+    let typing = is_typing(facts.idle_ms);
     let mut typing_guard_bypassed = false;
 
-    if is_typing {
+    if typing {
         // Ctrl+無変換 等の明示的 IME 操作後、実際に OS 状態が変化したか即時検証する。
         // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
         let explicit_verify = !facts.skip_imm_query
