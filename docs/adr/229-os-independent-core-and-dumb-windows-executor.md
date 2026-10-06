@@ -136,6 +136,7 @@ Functional Core, Imperative Shell(FCIS)の原則で、D1〜D4・D6 を次のと�
 - **例外の列挙(閉じたリスト)**:
   1. `Actuation<Verified>::run_chain(_async)<W: MechanismWriter / AsyncMechanismWriter>`(`state/actuation_chain.rs`)。型状態(ADR-090: warrant → verify を経ないと write できない)と ADR-163 の再生ハーネス(ReplayWriter)を支えているので、Cmd の状態機械には**書き換えない**。`romaji_pre_write`(条件付きの書き込み)は、この chain の前処理として扱う。
   2. 条件付きの同期の効果(読むかどうか自体が判断に依存する場合): ImmCross が `Failed` のときの再読み取り(`post_failed_reobservation`)、focus の MSAA までの同期の段階的な分類。読み取りの handler(例: `trait ImeProbe`)を引数に取る形にするのは、**実装する PR で、その関数を本リストに追加する**ときに限る。UIA は非同期なので A 種の Cmd/Event とする。
+     - 追記(FCIS F5b、PR #527): `classify_focus` のスタイル・クラス名の段階は、結果を `Option` で返す純粋関数 2 つ(`decide_by_ex_style`・`decide_by_class`)と殻の `if` で書けたので、handler 例外は不要だった(判定不能なら殻が `msaa_classify` へ進む)。本リストには追加しない。
 - 例外に入らないもの: warmup の `StepCoro`(Cmd を yield する標準形)。
 
 ### F-D2: F(判断混在の手続き)の標準形 = サンドイッチ
