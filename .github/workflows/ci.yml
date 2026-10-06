@@ -232,6 +232,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo run -p xtask-adr-evidence -- .
 
+  # FCIS V1: PR で CORE_MODULES(layer_boundary_guard.rs)に足された名前が、mutants 設定・
+  # pre-push の正規表現・fix-requires-evidence.md の表にも載っていることを確かめる
+  # (F2/F3/F4/F5a で登録が後追いになった再発の防止)。pull_request のときだけ動かし、
+  # base ブランチの先端を取得して比較する(develop への直接 push は対象外)。
+  core-registry-consistency:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: base ブランチを取得
+        run: git fetch --depth=1 origin "${{ github.base_ref }}"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # 純粋関数の単体テスト(bin crate なので nextest --lib の対象外)
+      - run: cargo test -p xtask-adr-evidence
+      - run: cargo run -p xtask-adr-evidence -- core-registry . "origin/${{ github.base_ref }}"
+
   # ADR-162 E2/TH2: docs/adr/index.md の行に対応する本文ファイルが実在するかを
   # 確認する。ADR-151/152は「index.mdに行はあるが本文ファイルが一度もcommitされて
   # いなかった」まま他ADRから権威として参照され続けた(2026-09-08に判明)。この
