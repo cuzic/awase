@@ -196,6 +196,9 @@ pub mod msaa_role_plan;
 // 同期分類（ウィンドウスタイル・クラス名）の判断表（純粋）。本番の呼び出し元 focus/classify.rs は #[cfg(windows)]、Linux ではテストだけが使う。
 #[cfg(any(windows, test))]
 pub mod focus_classify_plan;
+// resolve_focus_kind の前段の優先順位（純粋）。本番の呼び出し元 focus/kind_classifier.rs は #[cfg(windows)]、Linux ではテストだけが使う。
+#[cfg(any(windows, test))]
+pub mod focus_resolve_plan;
 pub mod transition;
 // FCIS F3: `runtime/executor.rs` の execute_relay/drain_deferred/defer 側の「即時/キュー/ガード」判断の核（純粋）。
 // 呼び出し元（executor.rs）は `#[cfg(windows)]` のため非 Windows では未使用。
