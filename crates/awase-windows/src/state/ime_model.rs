@@ -57,9 +57,9 @@ impl ImeApplyAcceptance {
 /// [`ImeModel::fallback_shadow`] の戻り値(診断専用、ADR-233)。
 #[derive(Debug, Clone, Copy)]
 pub struct FallbackShadow {
-    /// 現行の `most_recent_trusted`(`(confidence, at)` の順)が選ぶ観測。
+    /// 旧い順位(`most_recent_trusted_excluding(now, &[])`、`(confidence, at)` の順)が選ぶ観測。
     pub old: crate::state::observation_store::ImeObservation,
-    /// 案 A'(`(confidence >= Medium, at, confidence)` の順)が選ぶ観測。
+    /// 現行の `most_recent_trusted`(案 A'、`(confidence >= Medium, at, confidence)` の順)が選ぶ観測。
     pub new: crate::state::observation_store::ImeObservation,
 }
 
@@ -432,10 +432,11 @@ impl ImeModel {
     /// - ユーザーの明示意図がある場合: `desired_open` を優先（観測で上書きしない）
     /// - 明示意図なし（フォーカス変化直後等）:
     ///   1. `derive_any()`（Medium+ の合意 / High 即採用）の結果を採用
-    ///   2. それが `None` なら `most_recent_trusted()`（confidence 不問、最新優先）
-    ///      にフォールバック。cache-miss 等の安全デフォルト推測（Low confidence の
-    ///      `HeuristicDefault`）はここでのみ効き、後から届いた実観測（Lowでも）が
-    ///      新しければそちらが優先される。
+    ///   2. それが `None` なら `most_recent_trusted()`（Medium 以上の中では最新優先、
+    ///      同時刻なら信頼度の高い方。ADR-233 案 A'）にフォールバック。cache-miss 等の
+    ///      安全デフォルト推測（Low confidence の `HeuristicDefault`）はここでのみ効き、
+    ///      Medium 以上の観測が 1 件でもあればそちらが優先される（Low は Medium 以上に
+    ///      勝たない。古い High が新しい Medium に勝つ BUG-189 を避けるため、High か Medium かでなく新しさで選ぶ）。
     ///   3. 観測が一切なければ `desired_open` にフォールバック
     /// - 最後に `force_guards` を適用（guard が active なら強制 ON。ただし
     ///   ヒューリスティック由来 guard はユーザーの明示的意図を
@@ -499,7 +500,8 @@ impl ImeModel {
     }
 
     /// **診断専用**(ADR-233、BUG-189): `resolve_open_at` がフォールバック(明示意図なし・予測なし・`derive_any` が None)に
-    /// 落ちる状況で、旧(`most_recent_trusted`)と案 A' の選択を並べて返す。どちらかが無ければ `None`。本番の判断には使わない。
+    /// 落ちる状況で、旧い順位(`most_recent_trusted_excluding`、信頼度優先)と現行(`most_recent_trusted`、案 A')の選択を並べて返す。
+    /// どちらかが無ければ `None`。本番の判断には使わない。`[mrt-shadow]` ログで新旧の食い違い(特に fence 違い)を継続して数える。
     #[must_use]
     pub fn fallback_shadow(&self, now: Instant) -> Option<FallbackShadow> {
         if self.has_user_explicit_intent()
@@ -508,8 +510,8 @@ impl ImeModel {
         {
             return None;
         }
-        let old = *self.observations.most_recent_trusted(now)?;
-        let new = *self.observations.most_recent_trusted_a_prime(now)?;
+        let old = *self.observations.most_recent_trusted_excluding(now, &[])?;
+        let new = *self.observations.most_recent_trusted(now)?;
         Some(FallbackShadow { old, new })
     }
 
@@ -2385,6 +2387,51 @@ mod tests {
              ため同じ観測を拾い、フォールバック先が DeriveMedium から \
              MostRecentTrusted に切り替わる——now が本当に効いている証拠"
         );
+    }
+
+    /// BUG-189 / ADR-233: ICP(High,false)がフォーカス時に 1 件だけ記録され、後から ObserverPoll(Medium,true)が入る列。
+    /// 観測の書き込みが止まって鮮度窓(3s)が尽きても、実効値は新しい観測(true)のままで、古い High(false)に戻らない
+    /// (時間経過だけで belief が変わる逆戻りが無いこと)。旧い順位 `(confidence, at)` では false に反転していた。
+    #[test]
+    fn bug189_stale_high_false_does_not_revert_newer_medium_true() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        let secs = std::time::Duration::from_secs_f64;
+        model.reduce(&envelope_at(
+            1,
+            t0,
+            0,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ImmCrossProbe,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            )),
+        ));
+        model.reduce(&envelope_at(
+            2,
+            t0 + secs(4.5),
+            4500,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+        // 新しい観測の直後(鮮度窓内): derive が Medium(true)を採る。
+        assert!(model.resolve_open_at(t0 + secs(5.0)).value);
+        // 最後の観測から 3.01s 何も書かれなかった後(古い High と新しい Medium が両方フォールバックに落ちる)。
+        let after_gap = model.resolve_open_at(t0 + secs(4.5 + 3.01));
+        assert!(after_gap.value, "古い ICP(High,false)に戻ってはいけない");
+        assert_eq!(
+            after_gap.decided_by.base,
+            BaseDecision::MostRecentTrusted(ObservationSource::ObserverPoll)
+        );
+        // 時間がさらに進んでも同じ(新しいイベントが無いまま belief が変わらない)。
+        assert!(model.resolve_open_at(t0 + secs(60.0)).value);
     }
 
     #[test]

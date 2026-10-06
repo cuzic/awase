@@ -1073,7 +1073,8 @@ impl Runtime {
             .ime
             .model()
             .observations
-            .most_recent_trusted(now);
+            // 診断の記録元(drift correction の根拠と同じ信頼度優先の順位のまま。ADR-233 の適用範囲)。
+            .most_recent_trusted_excluding(now, &[]);
         let sent_vk = vec![crate::journal::ImeVkDiagnostic {
             vk_code: if desired {
                 crate::vk::VK_IME_ON.0
