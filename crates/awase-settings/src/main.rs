@@ -5377,7 +5377,7 @@ mod capturing_index_adjustment_tests {
 
 #[cfg(test)]
 mod thumb_key_display_condition_tests {
-    use super::{is_henkan_thumb_key, is_muhenkan_thumb_key};
+    use super::{is_henkan_thumb_key, is_muhenkan_thumb_key, thumb_key_scancodes};
 
     /// `config.rs` の初期デフォルト値（漢字表記）でも、`THUMB_KEY_OPTIONS`
     /// ドロップダウン選択後の内部表記でも、無変換キー単独タップ設定の
