@@ -2421,17 +2421,19 @@ fn uia_async_focus_kind_handler_does_not_write_belief() {
     }
 }
 
-/// `match act_signature` 部分の開始マーカー。`ir_apply_drift_correction` の中で
-/// `FeedbackPolicy` を分岐する `match act_policy { ... }` ブロックの先頭。
-const DRIFT_MATCH_MARKER: &str = "match act_policy {";
+/// 早期 return 分岐の開始マーカー。`ir_apply_drift_correction`（FCIS F4 で observe→`decide_drift_plan`→
+/// execute に分けた後の execute）の中で、計画の `DriftStep` を分岐する `match act.step { ... }` の先頭。
+/// 旧 `match act_policy {`（`FeedbackPolicy` の分岐）に相当する。`Blind`/`GiveUp`・`Read`/`Confirmed` の
+/// 判断は `state/drift_plan.rs` に移り、ここは計画の実行だけをする。
+const DRIFT_MATCH_MARKER: &str = "let send_path = match act.step {";
 /// 実送信ブロックの先頭にある `tracing::warn!` のメッセージ接頭辞。この直前で
-/// `match act_policy { ... }`（早期 return 分岐）が終わる。
+/// `match act.step { ... }`（早期 return 分岐）が終わる。
 const DRIFT_SEND_LOG_MARKER: &str = "[drift] correction: observed=";
 
-/// `ir_apply_drift_correction` の `match act_policy { ... }` ブロック（＝ `Blind`/`GaveUp`
-/// と `Read`/`Confirmed` の早期 return 分岐）だけを切り出す。
+/// `ir_apply_drift_correction`（execute）の `let send_path = match act.step { ... }` ブロック（＝
+/// `GiveUp`/`Confirmed`/`SkipWarrantWouldBlock` の早期 return 腕）だけを切り出す。
 ///
-/// 開始は `match act_policy {`、終了は実送信ブロックの先頭にある
+/// 開始は `let send_path = match act.step {`、終了は実送信ブロックの先頭にある
 /// `tracing::warn!("[drift] correction: observed=...")` の直前。この `tracing::warn!` より後は
 /// ADR-080 不変条件6 のスコープ外（乖離が確定して実際に `set_ime_open` する正規経路であり、
 /// そこで `dispatch_event(ImeEvent::DriftDetected {..})` を呼ぶのは正当）。したがって
@@ -2473,7 +2475,7 @@ fn extract_drift_correction_match_block(content: &str) -> &str {
 /// `check_drift_correction` が「観測 == desired」で乖離なしと誤認し、本来まだ実現できて
 /// いない目標を「達成済み」と勘違いする（＝同じ失敗モード）。
 ///
-/// 注意: `match act_policy { ... }` ブロックの**後**にある正規の実送信経路は
+/// 注意: `match act.step { ... }` ブロックの**後**にある正規の実送信経路は
 /// `dispatch_event(ImeEvent::DriftDetected {..})` を正当に呼ぶ。それは不変条件6の
 /// スコープ外なので、関数全体ではなく match ブロックのテキストだけを検査する
 /// (`extract_drift_correction_match_block` 参照)。仮にその `dispatch_event` を match
@@ -2501,7 +2503,7 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
     ] {
         assert!(
             !match_block.contains(forbidden),
-            "{path} の ir_apply_drift_correction 内 `match act_policy {{ ... }}` \
+            "{path} の ir_apply_drift_correction 内 `match act.step {{ ... }}` \
              （Blind/GaveUp・Read/Confirmed の早期 return 分岐）に、観測ストアへの \
              書き込みと思われるパターン `{forbidden}` が見つかりました。\n\
              ADR-080 不変条件6 により、GaveUp（および Read の deadline 超過/未収束）は \
@@ -3431,17 +3433,54 @@ fn conv_write_call_sites_are_fixed_to_the_inventory() {
 ///
 /// `ir_apply_drift_correction` は、ImmCross の書き込み経路（`set_ime_open_ordered`、ADR-090 A-2 で
 /// `Unwarranted` を拒否する）で書けない補正を、journal・`DriftDetected`（`applied` を `Optimistic` に
-/// 偽装する）・バルーン通知へ流していた。`would_have_blocked()` の早期 return が、これらより前にあることを固定する。
+/// 偽装する）・バルーン通知へ流していた。
+///
+/// FCIS F4 で判断が `state/drift_plan.rs::decide_drift_plan` へ移った。固定する性質は 3 つ:
+/// 1. observe が `.would_have_blocked()` を読む（授権の事実が `DriftFacts` に載る）。
+/// 2. `decide_drift_plan` は、授権が下りない ImmCross を `SkipWarrantWouldBlock`（診断なし）で返す
+///    分岐を、診断の決定（`should_notify_diagnostic`）・方針ごとの打ち切り/収束/送信（`SendPath`）より**前**に持つ。
+/// 3. execute は `SkipWarrantWouldBlock` の腕で return し、journal・`DriftDetected`・`set_ime_open_ordered` は
+///    その腕より後ろにしか無い。
 #[test]
 fn drift_correction_does_not_detect_when_the_warrant_would_block() {
     let content = read_crate_file("src/runtime/ime_refresh.rs");
     let production = production_code_only(&content);
-    let body = extract_fn_body(production, "fn ir_apply_drift_correction");
-    let guard = body.find(".would_have_blocked()").expect(
-        "`ir_apply_drift_correction` に `would_have_blocked()` の早期 return が必要（BUG-163）",
+    let observe = extract_fn_body(production, "fn ir_observe_drift_facts");
+    assert!(
+        observe.contains(".would_have_blocked()"),
+        "`ir_observe_drift_facts` に `would_have_blocked()` の読み取りが必要（BUG-163）"
     );
+
+    let plan_src = read_crate_file("src/state/drift_plan.rs");
+    let plan_prod = production_code_only(&plan_src);
+    let decide = extract_fn_body(plan_prod, "pub fn decide_drift_plan");
+    let guard = decide
+        .find("f.imm_cross && f.warrant_would_block")
+        .expect("`decide_drift_plan` に授権が下りない ImmCross の早期分岐が必要（BUG-163）");
     for later in [
-        "ir_notify_drift_giveup_diagnostic(",
+        "should_notify_diagnostic(",
+        "SendPath::ImmCross",
+        "FeedbackPolicy::Blind",
+    ] {
+        let at = decide
+            .find(later)
+            .unwrap_or_else(|| panic!("`{later}` が `decide_drift_plan` に無い"));
+        assert!(
+            guard < at,
+            "授権の早期分岐は `{later}` より前になければならない（BUG-163）"
+        );
+    }
+    assert!(
+        decide[guard..].contains("notify_diagnostic: false")
+            && decide[guard..].contains("DriftStep::SkipWarrantWouldBlock"),
+        "授権が下りない補正は診断なしの `SkipWarrantWouldBlock` にする（BUG-163）"
+    );
+
+    let body = extract_fn_body(production, "fn ir_apply_drift_correction");
+    let skip_arm = body
+        .find("DriftStep::SkipWarrantWouldBlock =>")
+        .expect("execute に `SkipWarrantWouldBlock` の腕が必要（BUG-163）");
+    for later in [
         "ImeEvent::DriftDetected",
         "JournalEntry::ImeActuation",
         "set_ime_open_ordered(",
@@ -3450,10 +3489,94 @@ fn drift_correction_does_not_detect_when_the_warrant_would_block() {
             .find(later)
             .unwrap_or_else(|| panic!("`{later}` が `ir_apply_drift_correction` に無い"));
         assert!(
-            guard < at,
-            "`would_have_blocked()` の早期 return は `{later}` より前になければならない（BUG-163）"
+            skip_arm < at,
+            "`SkipWarrantWouldBlock` の腕（return）は `{later}` より前になければならない（BUG-163）"
         );
     }
+    assert!(
+        drift_diagnostic_call_is_guarded(body),
+        "診断バルーンの呼び出しは `if act.notify_diagnostic {{` の内側になければならない\
+         （外すと毎 tick バルーンが出る。ADR-132 / BUG-163）"
+    );
+}
+
+/// `ir_notify_drift_giveup_diagnostic(` の呼び出しが、直前の `if act.notify_diagnostic {` の
+/// 直下（空白のみを挟む）にあるか。継続時間・通知済みの判定は関数側から `decide_drift_plan` へ移ったので、
+/// この `if` が唯一の防波堤である。
+fn drift_diagnostic_call_is_guarded(body: &str) -> bool {
+    let Some(at) = body.find("ir_notify_drift_giveup_diagnostic(") else {
+        return false;
+    };
+    let head = body[..at].trim_end();
+    // `self.` の前置きを除いてから、直前が `if` の開き括弧であることを見る。
+    let head = head.strip_suffix("self.").unwrap_or(head).trim_end();
+    head.ends_with("if act.notify_diagnostic {")
+}
+
+/// 診断バルーンの呼び出し（`.ir_notify_drift_giveup_diagnostic(`、定義の `fn ` を除く）の件数。
+fn count_drift_diagnostic_calls(text: &str) -> usize {
+    text.matches(".ir_notify_drift_giveup_diagnostic(").count()
+}
+
+/// 診断の呼び出しは全域で 1 件（`ir_apply_drift_correction` の `if act.notify_diagnostic` の内側だけ）。
+/// 2 件目や別関数からの呼び出しは、上の「最初の 1 件が守られているか」の照合では見えない。
+#[test]
+fn drift_diagnostic_is_called_from_exactly_one_site() {
+    let mut files = Vec::new();
+    walk_rs_files(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    let mut sites = Vec::new();
+    for f in files {
+        let content = production_code_only(&fs::read_to_string(&f).unwrap_or_default()).to_string();
+        let n = count_drift_diagnostic_calls(&content);
+        if n > 0 {
+            sites.push((f.display().to_string(), n));
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "診断の呼び出し元は ir_apply_drift_correction の 1 箇所だけ: {sites:?}"
+    );
+    assert!(
+        sites[0].0.ends_with("ime_refresh.rs") && sites[0].1 == 1,
+        "{sites:?}"
+    );
+}
+
+#[test]
+fn drift_diagnostic_call_count_detects_a_second_call() {
+    assert_eq!(
+        count_drift_diagnostic_calls("self.ir_notify_drift_giveup_diagnostic(a);"),
+        1
+    );
+    assert_eq!(
+        count_drift_diagnostic_calls(
+            "self.ir_notify_drift_giveup_diagnostic(a);\nself.ir_notify_drift_giveup_diagnostic(b);"
+        ),
+        2
+    );
+    assert_eq!(
+        count_drift_diagnostic_calls("fn ir_notify_drift_giveup_diagnostic("),
+        0
+    );
+}
+
+#[test]
+fn drift_diagnostic_guard_detects_an_unguarded_call() {
+    let guarded =
+        "if act.notify_diagnostic {\n    self.ir_notify_drift_giveup_diagnostic(a, b);\n}";
+    assert!(drift_diagnostic_call_is_guarded(guarded));
+    let unguarded = "self.ir_notify_drift_giveup_diagnostic(a, b);";
+    assert!(!drift_diagnostic_call_is_guarded(unguarded));
+    let wrong_cond = "if other {\n    self.ir_notify_drift_giveup_diagnostic(a, b);\n}";
+    assert!(!drift_diagnostic_call_is_guarded(wrong_cond));
+    let after_if =
+        "if act.notify_diagnostic {\n    x();\n}\nself.ir_notify_drift_giveup_diagnostic(a, b);";
+    assert!(!drift_diagnostic_call_is_guarded(after_if));
+    assert!(!drift_diagnostic_call_is_guarded("nothing"));
 }
 
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。

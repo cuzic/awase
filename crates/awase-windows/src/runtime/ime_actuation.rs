@@ -6,7 +6,7 @@
 //! (`crate::state::ime_actuation`) 側にあり、こちらは生存期間を持つ実行時状態専用。
 //!
 //! 破棄・再構築の条件（ADR-080「状態の永続化先」節）:
-//! 1. `desired_open` が前回の `Actuation.target` と異なる値に変わった（`actuation_for`）。
+//! 1. `desired_open` が前回の `Actuation.target` と異なる値に変わった（`resolve_actuation`、`state/drift_plan.rs`）。
 //! 2. `FocusChanged`（`runtime/ime_refresh.rs::ir_notify_focus_changed`）。
 //! 3. `Resolution::Confirmed` 確定、または `Blind` が `GaveUp` した後に新しい観測
 //!    （＝外部で状況が動いた証拠）を検知した（呼び出し元が `discard_actuation` を呼ぶ）。
@@ -14,7 +14,8 @@
 //!    tick で新しい観測が来るのを待つ（ADR-080「有限 `Blind` からの復旧条件」）。
 
 use super::Runtime;
-use crate::state::event_origin::{EventOrigin, Generation};
+use crate::state::drift_plan::ActuationSnapshot;
+use crate::state::event_origin::EventOrigin;
 use crate::state::ime_actuation::FeedbackPolicy;
 
 /// 進行中の actuation 試行そのもの（`Copy` ではない、生存期間を持つ状態）。
@@ -44,6 +45,18 @@ pub(super) struct Actuation {
 }
 
 impl Actuation {
+    /// 純粋な判断（`state/drift_plan.rs`）へ渡す読み取り用の写し。
+    pub(super) const fn snapshot(&self) -> ActuationSnapshot {
+        ActuationSnapshot {
+            target: self.target,
+            policy: self.policy,
+            attempts: self.attempts,
+            sent_at: self.sent_at,
+            gave_up_at: self.gave_up_at,
+            origin: self.origin,
+        }
+    }
+
     /// 実送信して `attempts` を1つ進めるのに合わせ、`origin.epoch` も次の世代へ
     /// 進める。両者を1メソッドで動かし、`attempts` と `epoch` の歩調がずれない
     /// ことを構造的に保証する（呼び出し元が別々に更新して片方を忘れる事故を防ぐ）。
@@ -54,39 +67,26 @@ impl Actuation {
 }
 
 impl Runtime {
-    /// 目標値 `target` に対応する進行中の `Actuation` を返す。既存の
-    /// `active_actuation` の `target` が異なる場合（破棄条件1）は破棄して
-    /// 新規構築し、`attempts` を 0 にリセットする。同じ `target` なら
-    /// 既存の試行を再利用する（ADR-080 不変条件4）。
+    /// `resolve_actuation`（`state/drift_plan.rs`）が新規と決めた試行を据える。
     ///
-    /// 再利用時、引数 `policy` は無視される（既存試行が構築時に持った
-    /// `policy` がそのまま使われ続ける）。破棄条件は `target` の変化のみで
-    /// `policy` の変化は対象外のため、同じ `target` に対して呼び出しごとに
-    /// 異なる `policy` を渡しても反映されない。呼び出し元は同じ `target` の間
-    /// 常に同じ `policy` を渡す前提で設計すること。
-    pub(super) fn actuation_for(&mut self, target: bool, policy: FeedbackPolicy) -> &mut Actuation {
-        let reuse = self
-            .active_actuation
-            .as_ref()
-            .is_some_and(|a| a.target == target);
-        if !reuse {
-            self.active_actuation = Some(Actuation {
-                target,
-                policy,
-                attempts: 0,
-                sent_at: std::time::Instant::now(),
-                gave_up_at: None,
-                origin: policy.origin(Generation::INITIAL),
-            });
-        }
-        self.active_actuation
-            .as_mut()
-            .expect("active_actuation was set immediately above")
+    /// 目標値が変わった（破棄条件1）ときは、前の試行を置き換えて `attempts` を 0 に戻す。
+    /// 同じ `target` の試行は再利用され（ADR-080 不変条件4。この関数は呼ばれない）、再利用時は
+    /// 方針も引き継がれる——呼び出し元は同じ `target` の間、常に同じ方針を渡す前提で設計すること。
+    /// 判断（再利用か新規か）は純粋関数側、ここは据えるだけ。
+    pub(super) fn install_actuation(&mut self, snapshot: &ActuationSnapshot) {
+        self.active_actuation = Some(Actuation {
+            target: snapshot.target,
+            policy: snapshot.policy,
+            attempts: snapshot.attempts,
+            sent_at: snapshot.sent_at,
+            gave_up_at: snapshot.gave_up_at,
+            origin: snapshot.origin,
+        });
     }
 
     /// 進行中の actuation を破棄する。破棄条件2（FocusChanged）・3
     /// （`Resolution` 確定）で使う。次の observe tick で必要なら
-    /// `actuation_for` が新規構築する。
+    /// `resolve_actuation` が新規と決め、`install_actuation` が据える。
     ///
     /// `force_open_pending`（ADR-086 Phase 3）はここでは触らない。
     /// フォーカス変更時の武装/解除は `ir_post_focus_change_snapshot` に

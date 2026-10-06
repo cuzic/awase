@@ -124,6 +124,7 @@ pub mod evidence;
 // `#[cfg(windows)]` の `platform_state.rs` だけなので、非 Windows では未使用になる。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod drift_correction;
+pub mod drift_plan;
 pub mod force_guard;
 pub mod ime_event;
 // 呼び出し元（`imm.rs`・`observer/ime_observer.rs`）は `#[cfg(windows)]` のため、非 Windows では未使用。
