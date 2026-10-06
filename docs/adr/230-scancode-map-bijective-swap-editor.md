@@ -5,7 +5,7 @@ title: |-
 summary: |-
   要望: IME キーや Ctrl/Alt などを入れ替えたい。現状は ADR-111(Caps⇔Ctrl)・ADR-126(Caps→追加 Ctrl)の2プリセットだけ。所有者判断(2026-10-06): 自由度は「全単射しか作れない」程度でよい。提案: 入れ替えペア `A⇄B` の集合を編集する UI に一般化する(Swap は1ペアとして読む。ADR-126 の片方向だけプリセットに残す)。Opus round1 の指摘で、(1)「awase が書いたエントリの所有を cache.toml に記録する」案は ADR-126 が却下済みで、置き場所としても不適(exe 隣の捨ててよい学習キャッシュ vs HKLM・全ユーザー)なので取り下げ、レジストリを唯一の真実とし全件を表示して、読んだ状態との差分で書く方式に改めた、(2)全単射の保証は awase のペアの中だけで、第三者エントリとの合成(多対一)をマージ関数で検査する、(3)読み戻し失敗時の巻き戻し・昇格側への受け渡しの比較交換・ADR-127 との整合を決定に加えた。ADR-110(hook ベース)は再導入しない。
 status: |-
-  起草(2026-10-06)。Opus round1(Blocker 2・Should-fix 7)・round2(Blocker 2〈英数の組の矛盾、他ツール1件で全部編集不能になる後退〉・Should-fix 5)反映済み(`docs/adr/review/230-opus-review-round{1,2}.md`)。round3(新 Blocker なし、Should-fix 1〈from 重複で解除できない取りこぼし〉・Note 3)反映済み。round3 修正の確認で収束(2026-10-06)。段階1(純粋関数)は実装済み、段階2〜5は未着手。実装なし。GJI 側は別 ADR(ADR-231)。
+  起草(2026-10-06)。Opus round1(Blocker 2・Should-fix 7)・round2(Blocker 2〈英数の組の矛盾、他ツール1件で全部編集不能になる後退〉・Should-fix 5)反映済み(`docs/adr/review/230-opus-review-round{1,2}.md`)。round3(新 Blocker なし、Should-fix 1〈from 重複で解除できない取りこぼし〉・Note 3)反映済み。round3 修正の確認で収束(2026-10-06)。段階1(純粋関数)・段階2(ADR-127 追記)・段階3(昇格 CLI)は実装済み、段階4(UI)・5(実機確認)は未着手。実装なし。GJI 側は別 ADR(ADR-231)。
 related_adr:
   - "ADR-110"
   - "ADR-111"
@@ -204,7 +204,15 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
    `Pair` は `(小さい scancode, 大きい scancode)` に正規化する(書き込む2エントリは `lo→hi`, `hi→lo` の順)/ 完全に同じエントリの
    複製は、1つを消すなら全部消す/ Caps 追加 Ctrl との衝突検査は新規に作る分だけ(既存の同居状態も恒等・削除は通す)/
    Caps 追加 Ctrl を新たに足すときは、他ツールの `左 Ctrl→Caps` も上書き対象にする(残すと入れ替えに読み替わるため)。
-   既存の `ScancodeMapPreset`/`compute_new_entries` はこの段階では変更していない(Swap の廃止と UI は段階3〜4)。
+   既存の `ScancodeMapPreset`/`compute_new_entries` はこの段階では変更していない(Swap の廃止は UI と同時、段階4)。
+2. **実装済み(段階2)**: ADR-127 への追記(このセクションの適用は画面共通の適用と別操作で、レジストリにだけ書く)。
+3. **実装済み(段階3)**: 昇格 CLI `--scancode-pairs <spec>`(`awase-settings` の `scancode_map_admin::run_elevated_pairs_worker`)。
+   判断の核は純粋モジュール `crates/awase-windows/src/scancode_apply.rs`(`ApplyRequest` の直列化・`decide`・`read_back_matches`・
+   `WorkerExit` の終了コード)。引数形式は `pairs=0038-007B;caps=0;expect=003A>001D,001D>003A;displace=0`(スキャンコードは常に4桁の16進)。
+   比較交換(`expect` と書く直前の値の食い違いは `Changed` で書かない)・壊れた既存値は書かない(`ExistingCorrupt`)・
+   他ツールのエントリを消すなら `displace=1` が要る(`DisplaceNotApproved`)・読み戻しが一致しなければ書く前の生のバイト列
+   (無ければ削除)へ戻す(`RolledBack`/`RollbackFailed`)。長さ 0 の既存値は失うものが無いので空として扱う。
+   UI から呼ぶ `request_elevated_pairs_change` は段階4まで未使用。既存の `--scancode-map` は変更していない。
 2. ADR-127 への追記(決定5)。
 3. 昇格側の CLI(ペア集合・比較交換・巻き戻し)。
 4. `awase-settings` の UI(ペア編集、全件表示、競合・Displaced の確認、適用)。

@@ -365,6 +365,15 @@ fn main() -> eframe::Result<()> {
         std::process::exit(scancode_map_admin::run_elevated_worker(selection));
     }
 
+    // ADR-230 決定5: ペア集合の適用の昇格側エントリポイント（`--scancode-map` と同型のヘッドレス分岐）。
+    if args.iter().any(|a| a == "--scancode-pairs") {
+        let Some(spec) = arg_value(&args, "--scancode-pairs") else {
+            tracing::error!("[scancode-pairs] --scancode-pairs に値がありません");
+            std::process::exit(awase_windows::scancode_apply::WorkerExit::BadArguments.code());
+        };
+        std::process::exit(scancode_map_admin::run_elevated_pairs_worker(spec));
+    }
+
     let viewport = egui::ViewportBuilder::default()
         // 幅 760: サイドパネル(100) + 配列編集タブの最も幅を要する行（JIS 最上段
         // 13キー、ボタン min_size 40px + item_spacing 8px ≈ 616px）+ 余白/
@@ -3250,6 +3259,8 @@ impl SettingsApp {
                 }
             },
             ElevationOutcome::Failed => "処理に失敗しました。".to_string(),
+            // プリセット変更（`--scancode-map`）の昇格側は `Rejected` を返さない。ペア適用（ADR-230）の UI で使う。
+            ElevationOutcome::Rejected(exit) => format!("処理に失敗しました({exit:?})。"),
             ElevationOutcome::Cancelled => {
                 "キャンセルされました（管理者権限が必要です）。".to_string()
             }

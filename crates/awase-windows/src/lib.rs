@@ -36,6 +36,7 @@ pub mod msime_key_assignment;
 // `#[cfg(windows)]` のため、純粋なパース部分は非 Windows では未使用になる（テストは Linux で回す）。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod msime_legacy_keymap;
+pub mod scancode_apply;
 pub mod scancode_map;
 pub mod scancode_pairs;
 pub mod scanmap;
