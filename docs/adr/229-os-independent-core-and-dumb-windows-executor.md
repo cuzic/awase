@@ -125,7 +125,7 @@ Functional Core, Imperative Shell(FCIS)の原則で、D1〜D4・D6 を次のと�
 ### 用語: Tier-1「portable」と Tier-2「pure core」(2 段)
 
 - **Tier-1「portable」= ungated**: `#[cfg(windows)]` が無く、Linux でコンパイルとテストができる。**コンパイラが守る**(ungated なモジュールが `crate::hook`・`crate::win32`・`crate::imm`・`runtime`・`with_app` を参照すると Linux のビルドが落ちる。PR #492〜#495 で実証)。段階 0〜2(ungate)は Tier-1 の作業。
-- **Tier-2「pure core」**: Tier-1 に加えて、①壁時計の直接読み取り(`Instant::now()`・`SystemTime::now()`)、②可変のグローバル(`static` + atomic/Mutex、`thread_local!`。不変のディスパッチ表は可)、③ファイル内の `#[cfg(windows)]` 項目(`mod` 宣言と `#[cfg(any(windows, test))]` は可)、④FS・環境変数・レジストリ、を持たない。**テキスト走査(`CORE_MODULES`)で守る**。F の分割(段階 3 以降)は Tier-2 の作業。
+- **Tier-2「pure core」**: Tier-1 に加えて、①壁時計の直接読み取り(`Instant::now()`・`SystemTime::now()`)、②`static`(不変も含む。可変か不変かをテキスト走査で判定するのは難しいので一律)と `thread_local!`(不変の表は `const` にするか、そのファイルを `CORE_MODULES` に載せない)、③ファイル内の `#[cfg(windows)]` 項目(`mod` 宣言と `#[cfg(any(windows, test))]` は可)、④FS・環境変数・レジストリ、を持たない。**テキスト走査(`CORE_MODULES`)で守る**。F の分割(段階 3 以降)は Tier-2 の作業。
 - 「ungated(Linux でテストできる)」と「純粋」は別の性質。既に ungated な `state/` にも `Instant::now()`(`ime_model.rs`)や可変の static(`probe_admission.rs`)がある。「core」という語は、どちらの Tier かを必ず添えて使う。
 - turn は**エンジンスレッドだけ**に当てはまる。フックスレッドの同期判定と ADR-129 のスナップショットの埋め込みは turn の外。
 
@@ -177,9 +177,9 @@ fn procedure(..) {                         // shell
 ### F-D6: 純粋さを守る仕組み
 
 - Tier-1: コンパイラ(ungate)。
-- Tier-2: `architecture_guard.rs` に、定数 `CORE_MODULES` とテスト 1 本。**許可リスト方式ではなく、「違反 0 のファイルだけを `CORE_MODULES` に載せる」方式**。`CORE_MODULES` の各ファイルの本番コード(`#[cfg(test)] mod tests` より前、コメント行を除く)が、Tier-2 の 4 つの規則(壁時計・可変 static/`thread_local!`・ファイル内の `#[cfg(windows)]` 項目・FS/環境変数/レジストリ)に違反しないことを確かめる。`mod` 宣言の `#[cfg(windows)]` と `#[cfg(any(windows, test))]` は規則の対象外。初期は ungated な `state/` の 53 ファイル中、違反 0 の **45 ファイル**(違反のある 8 ファイル: `hub_clock`・`ime_event`・`ime_model`・`ime_profile_driver`・`key_effect_predictor`・`key_effect_runtime`・`probe_admission`・`mod.rs`)。違反を直したファイルを順に足す。既存の `DECISION3_FILES` と同じ流儀で、新しい汎用機構は作らない(ADR-218〜220 が見送ったのは GuardRule 宣言テーブル + 汎用チェッカー)。
+- Tier-2: `architecture_guard.rs` に、定数 `CORE_MODULES` とテスト 1 本。**許可リスト方式ではなく、「違反 0 のファイルだけを `CORE_MODULES` に載せる」方式**。`CORE_MODULES` の各ファイルの本番コード(`#[cfg(test)]` の item とコメントを除く。`layer_boundary_guard.rs` の `test_block_mask` を使う)が、Tier-2 の 4 つの規則(壁時計・`static`/`thread_local!`・ファイル内の `#[cfg(windows)]` 項目・FS/環境変数/レジストリ)に違反しないことを確かめる。`mod` 宣言の `#[cfg(windows)]` と `#[cfg(any(windows, test))]` は規則の対象外。初期は ungated な `state/` の 53 ファイル中、違反 0 の **45 ファイル**(origin/develop d0d42be6 時点。#492〜#495 のマージ後に再実測してから確定する。違反のある 8 ファイル: `hub_clock`・`ime_event`・`ime_model`・`ime_profile_driver`・`key_effect_predictor`・`key_effect_runtime`・`probe_admission`・`mod.rs`。`mod.rs` はモジュール宣言と `use` の再公開の集約ファイルなので、**恒久的に `CORE_MODULES` に載せない**)。違反を直したファイルを順に足す。既存の `DECISION3_FILES` と同じ流儀で、新しい汎用機構は作らない(ADR-218〜220 が見送ったのは GuardRule 宣言テーブル + 汎用チェッカー)。
 - crate の物理分割は最後(ファイル移動でガードが空振りするため)。
-- 指標: `CORE_MODULES` の件数(増やす)、違反のある ungated ファイルの件数(8 → 減らす)、「Linux で実行されないから」を理由にしたテキストガードの数(本物のテストに置き換えて減らす)、閉ループの写しの数(7。`platform_state` の ungate 後に P5 で 1 系統ずつ減らす。ungate 自体では減らない)、`allow(dead_code)` の数(46 か所/11 ファイル)。
+- 指標: `CORE_MODULES` の件数(増やす)、違反のある ungated ファイルの件数(8 → 減らす)、「Linux で実行されないから」を理由にしたテキストガードの数(本物のテストに置き換えて減らす)、閉ループの写しの数(7。`platform_state` の ungate 後に P5 で 1 系統ずつ減らす。ungate 自体では減らない)、`#[cfg_attr(not(windows), allow(dead_code))]` の数(`grep -rn 'cfg_attr(not(windows)' crates/awase-windows/src` で 46 か所/11 ファイル。うち `allow(dead_code)` は 45、その他の `cfg_attr(not(windows), …)` が 1)。
 
 ### 移行のレシピ(全レシピ共通の後処理つき)
 
