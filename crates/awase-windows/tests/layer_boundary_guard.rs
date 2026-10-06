@@ -425,11 +425,12 @@ fn d1_no_vk_magic_hex_outside_vk_rs() {
 // (VK_KANJI 等を KeyDown/KeyUp 両方 Consume する)。
 //
 // これは grep で表現しづらい *挙動* ルールであり、既存のユニットテストで十分カバー済み:
-//   crates/awase-windows/src/runtime/transport.rs
+//   crates/awase-windows/src/state/physical_disposition.rs (`mod tests`。旧 runtime/transport.rs の
+//   plan_tests、ADR-229 T1 で移動。Linux でも走る)
 //     fn immcross_suppresses_kanji_down_and_up_regardless_of_shadow_toggled()
 //   — AppImeProfile::Standard (=ImmCross) で KeyDown/KeyUp × shadow_toggled 全組合せに対し
-//     PhysicalKeyDisposition::plan() が常に Suppress を返すことを検証している (08b8661)。
-//   同ファイルの imm32_unavailable_* / non_kanji_event_always_allowed も併せて
+//     PhysicalKeyDisposition::plan_core() が常に Suppress を返すことを検証している (08b8661)。
+//   同モジュールの input_relay_*・injected_*・non_kanji_event_always_allowed・plan_matrix_covers_all_branches_without_panicking も併せて
 //   PhysicalKeyDisposition の全プロファイル挙動を固定している。
 // よって D-2 はこのファイルに新規テストを追加せず、既存テストでカバー済みと記録する。
 

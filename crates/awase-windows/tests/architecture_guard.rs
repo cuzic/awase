@@ -4173,7 +4173,7 @@ fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() 
 /// 別経路から迂回されうる、査読で指摘された最重要ポイント）。
 /// `production_code_only` は `#[cfg(test)]` の直後が文字どおり `mod tests` の
 /// ときしか test module を切り落とせない。`runtime/transport.rs` は
-/// `mod plan_tests` という別名を使っているため、共有ヘルパーのままだと
+/// `mod plan_shell_tests`（ADR-229 T1 前は `plan_tests`）という別名を使っているため、共有ヘルパーのままだと
 /// テストコード中の `InputRelay` 出現（回帰テストの引数等）まで「本番コード」
 /// として誤カウントする（レビュー指摘）。ここでは `#[cfg(test)]` の直後に
 /// 続く `mod <任意の識別子> {` を汎用的に検出して切り落とす、より厳密な版を
@@ -4852,9 +4852,10 @@ fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
 /// ADR-191/199: `plan()` の DBE 分岐が KeyDown を無条件に握りつぶすのは「awase が実際に書くキー」だけ
 /// （`enrich_key_role` が役割から `Some(Toggle)` を付けた 0xF3/0xF4。旧 `is_open_toggle_for`）であること、および
 /// BUG-116/ADR-137 決定2 の安全ガードが本番コードから消えていないことを固定する。
-/// `transport.rs::plan_tests` / `key_pipeline.rs` 内のユニットテストは
-/// `runtime/mod.rs` の `#[cfg(windows)]` 配下にあり Linux では存在しないため
-/// （CLAUDE.md 参照）、この静的スキャンが Linux CI 側の唯一の防波堤になる。
+/// 配送判断の決定表(BUG-116 の Shift+かな を含む)は `state/physical_disposition.rs` の `mod tests` が Linux でも
+/// 検査する(ADR-229 T1)。このスキャンは、その決定表が頼る本番側のトークン(役割由来の `Toggle` と 0xF3/0xF4 の組など)が
+/// 本番コードに残っていることと、`key_pipeline.rs`(`runtime/` は `#[cfg(windows)]` で、そのユニットテストは Linux に
+/// 存在しない、CLAUDE.md 参照)側の安全ガードを固定する補助。
 #[test]
 fn bug116_shift_katakana_guards_are_present_in_production_code() {
     // 配送判断の核は ADR-208 L0 で `state/physical_disposition.rs` へ移した（`transport.rs` の `plan` は殻）。
@@ -5651,7 +5652,9 @@ fn keys_ime_toggle_default_stays_empty_and_gui_jis_switch_follows_default() {
 
 /// BUG-173（Opus レビュー D1）: 物理 F2 を Suppress/握りつぶす経路が再導入されないこと、および
 /// KeyUp ラッチが `plan()` の直後・journal 記録と実配送の前に呼ばれることを固定する。
-/// runtime/ は Linux でテスト実行できない（CLAUDE.md）ため、この静的スキャンが唯一の検知手段。
+/// F2 の常時 Allow は `plan_core` 側にあり、`state/physical_disposition.rs` の `mod tests` が Linux でも検査する
+/// (ADR-229 T1)。`handle_reinject` と KeyUp ラッチの呼び出し順は runtime/ 側で、Linux でテスト実行できない
+/// （CLAUDE.md）ため、この静的スキャンが唯一の検知手段。
 #[test]
 fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
     // 1. plan() の F2 分岐は常に Allow（VK だけで決まり、TSF/warmup の状態で Suppress を返さない）
