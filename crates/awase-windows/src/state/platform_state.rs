@@ -3357,4 +3357,35 @@ mod tests {
             );
         }
     }
+
+    /// W-c: `dispatch_event` が `record_at` の `EventTime`（`seq` と、呼び出し側が渡した `tick_ms`）を
+    /// journal の `ImeEvent` にそのまま載せる配線の検査（組み立てた値を記録するだけの
+    /// `journal::tests` では配線が見えない）。
+    #[test]
+    fn dispatch_event_journals_event_time_seq_and_tick_ms() {
+        let mut ps = ps_for_test();
+        let seq0 = ps.ime.event_log.next_seq();
+        ps.ime
+            .dispatch_event(ImeEvent::PanicReset { target: true }, TickMs(111));
+        ps.ime
+            .dispatch_event(ImeEvent::PanicReset { target: false }, TickMs(222));
+
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&ps.ime.journal.to_json().unwrap()).unwrap();
+        let ime_events: Vec<&serde_json::Value> = rows
+            .iter()
+            .map(|r| &r["entry"])
+            .filter(|e| e["type"].as_str() == Some("ImeEvent"))
+            .collect();
+        assert_eq!(
+            ime_events.len(),
+            2,
+            "ImeEvent の記録が 2 件でない: {rows:?}"
+        );
+        assert_eq!(ime_events[0]["event_seq"].as_u64(), Some(seq0));
+        assert_eq!(ime_events[0]["tick_ms"].as_u64(), Some(111));
+        assert_eq!(ime_events[1]["event_seq"].as_u64(), Some(seq0 + 1));
+        assert_eq!(ime_events[1]["tick_ms"].as_u64(), Some(222));
+        assert_eq!(ps.ime.event_log.next_seq(), seq0 + 2);
+    }
 }
