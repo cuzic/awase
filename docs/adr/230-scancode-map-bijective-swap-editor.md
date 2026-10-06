@@ -5,7 +5,7 @@ title: |-
 summary: |-
   要望: IME キーや Ctrl/Alt などを入れ替えたい。現状は ADR-111(Caps⇔Ctrl)・ADR-126(Caps→追加 Ctrl)の2プリセットだけ。所有者判断(2026-10-06): 自由度は「全単射しか作れない」程度でよい。提案: 入れ替えペア `A⇄B` の集合を編集する UI に一般化する(Swap は1ペアとして読む。ADR-126 の片方向だけプリセットに残す)。Opus round1 の指摘で、(1)「awase が書いたエントリの所有を cache.toml に記録する」案は ADR-126 が却下済みで、置き場所としても不適(exe 隣の捨ててよい学習キャッシュ vs HKLM・全ユーザー)なので取り下げ、レジストリを唯一の真実とし全件を表示して、読んだ状態との差分で書く方式に改めた、(2)全単射の保証は awase のペアの中だけで、第三者エントリとの合成(多対一)をマージ関数で検査する、(3)読み戻し失敗時の巻き戻し・昇格側への受け渡しの比較交換・ADR-127 との整合を決定に加えた。ADR-110(hook ベース)は再導入しない。
 status: |-
-  起草(2026-10-06)、設計は Opus 3 ラウンドで収束(`docs/adr/review/230-opus-review-round{1,2,3}.md`)。段階1(純粋関数)・段階2(ADR-127 追記)・段階3(昇格 CLI)は実装済み(PR #501、Opus コードレビュー `230-opus-code-review-round1.md`〈Blocker 1・Should-fix 5〉を反映)。段階4(設定画面の UI。Swap プリセットの廃止を含む)・段階5(適用済み状態の実機確認)は未着手。GJI 側は別 ADR(ADR-231)。
+  起草(2026-10-06)、設計は Opus 3 ラウンドで収束(`docs/adr/review/230-opus-review-round{1,2,3}.md`)。段階1(純粋関数)・段階2(ADR-127 追記)・段階3(昇格 CLI)は実装済み(PR #501、Opus コードレビュー `230-opus-code-review-round1.md`〈Blocker 1・Should-fix 5〉を反映)。段階4(設定画面の UI。Swap プリセットの廃止を含む)も実装済み(CI の型検査・テストまで。実機での操作確認は未実施)。段階5(適用済み状態の実機確認)は未着手。GJI 側は別 ADR(ADR-231)。
 related_adr:
   - "ADR-110"
   - "ADR-111"
@@ -228,10 +228,21 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
    (無ければ削除)へ戻す(`RolledBack`/`RollbackFailed`)。ただし読み戻した値が書いた値でも元の値でもない、正しく読める値のときは、
    書き込みと読み戻しの間に他の書き手が書いたとみなして巻き戻さず `Changed` で返す(`classify_read_back`、他の書き手の変更を消さない)。長さ 0 の既存値は失うものが無いので空として扱う。
    UI から呼ぶ `request_elevated_pairs_change` は段階4まで未使用。既存の `--scancode-map` は変更していない。
-4. `awase-settings` の UI(ペア編集、全件表示、競合・Displaced・Revealed の確認、適用)。所有者の決定(2026-10-06): ペア行+ドロップダウン、
-   「よくある入れ替え」のワンクリックボタン、注意が要る組(英数と親指キー、スペースの入れ替えなど)はペア行の下の注意書きと適用時の確認ダイアログ。
-   申し送り(Opus コードレビュー round1 N5): `expect` は**生の値を順に読んだ列**をそのまま渡す(`detect_swap_pairs` の結果から組み立て直すと
-   順序が変わり常に `Changed` になる)/ UI の読み取りは `parse_entries_strict` を使い、壊れた値は適用ボタンを出す前に知らせる/
-   `ElevationOutcome::Rejected` の各終了コードに利用者向けの文言を付ける(今は列挙子名のまま)/ `Changed`(書いた後を含む)のときは今の値を読み直させる/
-   壊れた値(count=0 など)は永久に `ExistingCorrupt` になるので、「壊れた値を削除する」明示操作を用意するかを決める。
+4. **実装済み(段階4)**: `awase-settings` の「キーの入れ替え」セクション。状態と判断は純粋モジュール
+   `crates/awase-windows/src/scancode_editor.rs`(`EditorState`・候補の絞り込み・`QUICK_PAIRS`・`cautions`・確認ダイアログの文面・
+   エラーと終了コードの利用者向け文言。Linux でテスト)に置き、画面(`main.rs` の `scancode_map_section`/`scancode_editor_ui`)は
+   描画と入力の反映だけの薄い接着コードにした。所有者の決定(2026-10-06): ペア行+ドロップダウン/ワンクリックボタンは
+   「英数/Caps ⇄ 左 Ctrl」と「変換 ⇄ スペース」/ 「英数 / Caps を追加の Ctrl にする」はチェックボックスで残す(オンのとき Caps と左 Ctrl は
+   候補から消える)/ 注意が要る組(英数と親指キー、親指キーの移動、スペース)・他ツールのエントリが消える・隠れたエントリが効き出しうる
+   場合は、適用時に確認ダイアログ/ 適用後に確認つきの「今すぐ再起動」ボタン(`shutdown /r /t 5`)/ 壊れた値は警告を出して止まる
+   (削除の操作は用意しない)。`expect` には生の値を順に読んだ列をそのまま渡し、読み取りは `parse_entries_strict`。
+   適用後・失敗後はレジストリを読み直す(昇格側が動いていない・書き込み前に止まった結果〈UAC のキャンセル・起動失敗・`Invalid`・
+   `DisplaceNotApproved`・`BadArguments`〉では読み直さず、編集内容を保持する)。確認ダイアログを開いている間は編集を止める(非モーダルのため)。
+   ワンクリックは JIS 以外の配列では JIS 専用キーを含むものを出さない(US 配列で「変換 ⇄ スペース」を作るとスペースが入力できなくなる)。
+   注意書きは読み込み時から足した/外したペアだけが対象(適用済みのペアに毎回出さない)。親指キーの判定は実際の解決規則 `alt_impersonation::resolve_thumb_key` をそのまま使い(大文字小文字・前後の空白を区別しない)、
+   無変換・変換・スペース・かな系(`VK_KANA`/`VK_DBE_HIRAGANA`/`VK_DBE_KATAKANA`)、Alt なりすまし(`Left Alt`/`Right Alt`)は
+   物理 Alt となりすまし先(無変換/変換)の物理キーの両方を返す(後者が親指として効くかは未確認、安全側)。
+   親指キーを含むペアの相手だけを変えたときは「位置が変わります」だけを出す(「元に戻ります」と並べない)。Opus コードレビュー(PR #540 round1〈Blocker なし・Should-fix 7〉・round2〈Should-fix 2〉)を反映。ウィンドウを閉じるとき、未適用の変更があれば破棄確認を出す(egui の `close_requested`)。
+   **撤去**: `ScancodeMapPreset`/`ScancodeMapSelection`/`current_preset`/`compute_new_entries`/`detect_status`、`--scancode-map` CLI、
+   `run_elevated_worker`/`request_elevated_change`/`read_status`(ADR-217。旧 Swap は1ペアとして、旧 CapsAsExtraCtrl はチェックボックスとして読める)。
 5. 実機確認。

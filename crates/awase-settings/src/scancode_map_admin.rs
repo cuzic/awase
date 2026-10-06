@@ -1,124 +1,12 @@
-//! Caps(英数)⇔Ctrl 入れ替え / Caps(英数)→Ctrl 片方向複製プリセット
-//! （ADR-111 / ADR-126）の Scancode Map 適用フロー。
+//! 設定画面の「キーの入れ替え」（ADR-230）の Scancode Map 適用フロー（昇格側と非昇格側）。
 //!
-//! `awase-settings.exe` は既定では非昇格で起動する（BUG-79対策、
-//! `asInvoker`）。この機能の有効化/無効化ボタンが押されたときだけ、
-//! 自分自身を `--scancode-map swap` 等で `runas` 起動し、
-//! 昇格側プロセス（[`run_elevated_worker`]）がレジストリの読み取り・
-//! マージ・書き込み・読み戻し検証（`awase_windows::scancode_map` 参照、
-//! 決定3）を行う。非昇格側（[`request_elevated_change`]）は
-//! `ShellExecuteExW`+`SEE_MASK_NOCLOSEPROCESS` で起動したプロセスの終了を
-//! 待って終了コードを見る——`ShellExecuteW`（`tray.rs::restart_as_admin`が
-//! 使う方）はプロセスハンドルを返さず成否を確実に取得できないため、
+//! `awase-settings.exe` は既定では非昇格で起動する（BUG-79対策、`asInvoker`）。適用ボタンが押されたときだけ、
+//! 自分自身を `--scancode-pairs <spec>` で `runas` 起動し、昇格側プロセス（[`run_elevated_pairs_worker`]）が
+//! レジストリの再読み取り・比較交換・書き込み・読み戻し検証・巻き戻しを行う（判断の核は
+//! `awase_windows::scancode_apply`）。非昇格側（[`request_elevated_pairs_change`]）は
+//! `ShellExecuteExW`+`SEE_MASK_NOCLOSEPROCESS` で起動したプロセスの終了を待って終了コードを見る——
+//! `ShellExecuteW`（`tray.rs::restart_as_admin`が使う方）はプロセスハンドルを返さず成否を確実に取得できないため、
 //! こちらは意図的に別の API を使う（ADR-111決定4）。
-
-/// 昇格側プロセスのエントリポイント。`--scancode-map <selection>` を
-/// 検出したら GUI を起動せずこの関数を呼び、終了コードで結果を返す
-/// （`main()` の `--bug-report` と同型のヘッドレス分岐パターン）。
-///
-/// 戻り値: 成功時 `0`、失敗時 `1`（`awase-settings.exe` のプロセス終了
-/// コードとして使う。`ShellExecuteExW` 側が `GetExitCodeProcess` で読む）。
-#[must_use]
-pub fn run_elevated_worker(selection: awase_windows::scancode_map::ScancodeMapSelection) -> i32 {
-    #[cfg(windows)]
-    {
-        run_elevated_worker_windows(selection)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = selection;
-        tracing::error!("[scancode-map] このプラットフォームでは未対応");
-        1
-    }
-}
-
-#[cfg(windows)]
-fn run_elevated_worker_windows(
-    selection: awase_windows::scancode_map::ScancodeMapSelection,
-) -> i32 {
-    use awase_windows::scancode_map as sm;
-
-    let existing = match read_entries() {
-        Ok(entries) => entries,
-        Err(e) => {
-            tracing::error!("[scancode-map] 既存値の読み取りに失敗: {e}");
-            return 1;
-        }
-    };
-    let new_entries = sm::compute_new_entries(&existing, selection);
-    let write_result = match sm::build_bytes(&new_entries) {
-        Some(bytes) => sm::write(&bytes),
-        None => sm::delete(),
-    };
-    if let Err(e) = write_result {
-        tracing::error!("[scancode-map] 書き込みに失敗: {e}");
-        return 1;
-    }
-
-    // 決定3: 書き込み後に必ず読み戻し検証する。
-    match read_entries() {
-        Ok(verified) if verified == new_entries => 0,
-        Ok(_) => {
-            tracing::error!("[scancode-map] 読み戻し検証で内容が一致しない");
-            1
-        }
-        Err(e) => {
-            tracing::error!("[scancode-map] 読み戻し検証に失敗: {e}");
-            1
-        }
-    }
-}
-
-#[cfg(windows)]
-fn read_entries() -> Result<Vec<(u16, u16)>, String> {
-    use awase_windows::scancode_map as sm;
-    match sm::read()? {
-        Some(bytes) => Ok(sm::parse_entries(&bytes)),
-        None => Ok(Vec::new()),
-    }
-}
-
-/// 現在の Scancode Map の状態（GUI 表示用）。昇格不要（読み取りのみ）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub enum ScancodeMapStatus {
-    /// プリセットが有効（他の無関係なエントリが `extra_entries` 件ある）。
-    Active {
-        preset: awase_windows::scancode_map::ScancodeMapPreset,
-        extra_entries: usize,
-    },
-    /// プリセットは無効（値自体が未設定、または他のエントリのみ存在）。
-    Inactive { extra_entries: usize },
-    /// レジストリ読み取りに失敗。
-    ReadError(String),
-}
-
-/// 現在の Scancode Map の状態を読み取る（昇格不要）。
-#[must_use]
-pub fn read_status() -> ScancodeMapStatus {
-    #[cfg(windows)]
-    {
-        use awase_windows::scancode_map as sm;
-        match read_entries() {
-            Ok(entries) => {
-                let (preset, extra_entries) = sm::detect_status(&entries);
-                if let Some(preset) = preset {
-                    ScancodeMapStatus::Active {
-                        preset,
-                        extra_entries,
-                    }
-                } else {
-                    ScancodeMapStatus::Inactive { extra_entries }
-                }
-            }
-            Err(e) => ScancodeMapStatus::ReadError(e),
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        ScancodeMapStatus::ReadError("このプラットフォームでは未対応".to_string())
-    }
-}
 
 /// 昇格側プロセスのエントリポイント（ペア集合の適用、ADR-230 決定5）。`--scancode-pairs <spec>` を検出したら
 /// GUI を起動せずこの関数を呼び、[`awase_windows::scancode_apply::WorkerExit`] の終了コードで結果を返す。
@@ -225,7 +113,7 @@ fn rollback_windows(original: Option<&[u8]>) -> awase_windows::scancode_apply::W
 pub enum ElevationOutcome {
     /// 昇格・書き込み・読み戻し検証まで成功。
     Success,
-    /// 昇格プロセスは起動したが処理に失敗した（終了コード非0。ペア適用では、下の `Rejected` に当たらない失敗）。
+    /// 昇格プロセスは起動したが処理に失敗した（終了コード非0で、下の `Rejected` に当たらない失敗）。
     Failed,
     /// ペア集合の適用を、昇格側が理由つきで書かずに止めた、または元へ戻した（ADR-230 決定5）。
     /// `RolledBack`/`RollbackFailed` は書き込みを試みたあとの結果で、画面は今のレジストリを読み直して表示すること。
@@ -236,42 +124,12 @@ pub enum ElevationOutcome {
     LaunchError(String),
 }
 
-/// 自分自身を `--scancode-map <selection>` で `runas` 起動し、完了を待って
-/// 結果を返す（ADR-111決定4）。
-#[must_use]
-pub fn request_elevated_change(
-    selection: awase_windows::scancode_map::ScancodeMapSelection,
-) -> ElevationOutcome {
-    #[cfg(windows)]
-    {
-        request_elevated_change_windows(selection)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = selection;
-        ElevationOutcome::LaunchError("このプラットフォームでは未対応".to_string())
-    }
-}
-
 #[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-#[cfg(windows)]
-fn request_elevated_change_windows(
-    selection: awase_windows::scancode_map::ScancodeMapSelection,
-) -> ElevationOutcome {
-    match launch_elevated_windows(&format!("--scancode-map {}", selection.as_cli_arg())) {
-        Ok(0) => ElevationOutcome::Success,
-        Ok(_) => ElevationOutcome::Failed,
-        Err(outcome) => outcome,
-    }
-}
-
 /// ペア集合の適用を、自分自身を `--scancode-pairs <spec>` で `runas` 起動して依頼する（ADR-230 決定5）。
-// UI（ADR-230 段階4）から呼ぶまで未使用。
-#[allow(dead_code)]
 #[must_use]
 pub fn request_elevated_pairs_change(
     request: &awase_windows::scancode_apply::ApplyRequest,
@@ -353,4 +211,60 @@ fn launch_elevated_windows(params: &str) -> Result<u32, ElevationOutcome> {
         let _ = CloseHandle(sei.hProcess);
     }
     Ok(if got_exit_code.is_ok() { exit_code } else { 1 })
+}
+
+/// レジストリの Scancode Map を読んだ結果（設定画面の表示と、比較交換の期待値用。昇格不要）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScancodeMapRead {
+    /// 値が無い、または形式が正しい。`Vec` は生の値を**順に**読んだ列（`expect` にそのまま渡す。並べ替えない）。
+    Loaded(Vec<(u16, u16)>),
+    /// 値はあるが形式が壊れている（上書きすると失われるので、awase は変更しない）。
+    Corrupt,
+    /// 読み取りに失敗した。
+    Error(String),
+}
+
+/// 現在の Scancode Map を厳密に読む（壊れた値と空の値を区別する）。
+#[must_use]
+pub fn read_raw_entries() -> ScancodeMapRead {
+    #[cfg(windows)]
+    {
+        use awase_windows::scancode_apply::parse_entries_strict;
+        match awase_windows::scancode_map::read() {
+            Ok(None) => ScancodeMapRead::Loaded(Vec::new()),
+            Ok(Some(bytes)) if bytes.is_empty() => ScancodeMapRead::Loaded(Vec::new()),
+            Ok(Some(bytes)) => parse_entries_strict(&bytes)
+                .map_or(ScancodeMapRead::Corrupt, ScancodeMapRead::Loaded),
+            Err(e) => ScancodeMapRead::Error(e),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ScancodeMapRead::Error("このプラットフォームでは未対応".to_string())
+    }
+}
+
+/// OS を再起動する（5秒後。確認ダイアログを通したあとにだけ呼ぶこと）。
+///
+/// # Errors
+/// `shutdown` を起動できなかったとき。
+pub fn request_restart() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // `CREATE_NO_WINDOW`: GUI の exe からコンソールプログラムを起動するとき、コンソール窓を一瞬出さない。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // exe と同じディレクトリが先に探されるので、System32 の絶対パスで呼ぶ。
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        std::process::Command::new(format!(r"{system_root}\System32\shutdown.exe"))
+            .args(["/r", "/t", "5"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("shutdown を起動できませんでした: {e}"))
+    }
+    #[cfg(not(windows))]
+    {
+        Err("このプラットフォームでは未対応".to_string())
+    }
 }
