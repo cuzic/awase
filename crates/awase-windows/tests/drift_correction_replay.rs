@@ -54,8 +54,20 @@ fn fixture_dir() -> std::path::PathBuf {
 /// 再実行し、`expected` と一致するかを確認する。ケース 1 件 = フィクスチャ 1 件（tick は件内で全件照合）。
 #[test]
 fn replay_all_drift_correction_fixtures() {
-    awase_replay::replay_dir::<DriftCorrectionFixture>(&fixture_dir(), |fixture| {
+    awase_replay::replay_dir::<DriftCorrectionFixture>(&fixture_dir(), check_fixture).assert_ok();
+}
+
+fn check_fixture(fixture: &DriftCorrectionFixture) -> Result<(), String> {
+    {
         let mut errors = Vec::new();
+        // tick が 0 件の fixture は何も検査しないまま通るので失敗にする（件の単位を fixture にした際の
+        // カバレッジ後退を戻す。以前は tick の総数 0 で落ちた）。
+        if fixture.ticks.is_empty() {
+            errors.push(format!(
+                "{}: ticks が 0 件（何も検査していない）",
+                fixture.name
+            ));
+        }
         for tick in &fixture.ticks {
             let record = record_for_tick(fixture, tick);
 
@@ -95,8 +107,7 @@ fn replay_all_drift_correction_fixtures() {
         } else {
             Err(errors.join("\n"))
         }
-    })
-    .assert_ok();
+    }
 }
 
 /// BUG-43 固有の意味論的アサーション: 675ms の間に観測された 16 回の drift 検知
@@ -177,4 +188,21 @@ fn bug43_tight_loop_is_bounded_not_infinite() {
         Some(&ActuationAction::GiveUp),
         "16 tick分リプレイした最後まで有界打ち切りが維持されているはず"
     );
+}
+
+/// `ticks: []` の fixture が `replay_dir` 経由で失敗として報告されること（素通りの後退を固定する）。
+#[test]
+fn fixture_without_ticks_is_reported_as_failure() {
+    let dir = std::env::temp_dir().join(format!("awase-drift-empty-ticks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let real = fixture_dir().join("bug-43-drift-correction-tight-loop.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(real).unwrap()).unwrap();
+    value[0]["ticks"] = serde_json::json!([]);
+    std::fs::write(dir.join("empty.json"), value.to_string()).unwrap();
+    let report = awase_replay::replay_dir::<DriftCorrectionFixture>(&dir, check_fixture);
+    assert_eq!(report.cases, 1);
+    assert_eq!(report.failures.len(), 1, "{:?}", report.failures);
+    assert!(report.failures[0].contains("ticks が 0 件"));
 }
