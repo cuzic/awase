@@ -11,6 +11,25 @@ title: |-
 
 **所有者の前提**: (1) 過去の journal とリプレイ基盤はすべて捨ててよい。(2) 障害対応と replay のため、文字キーを含む VK 列を記録に残すのは必須。利用者が不具合報告の操作で共有する記録(サーバーへ)にはプライバシーの制約を置かない。本メモは VK 列を減らす・捨てる案を出さない(下の段階のどれも `KeyInput`・`SentInput`・`LiteralDetect` を減らさない)。公開リポジトリ・公開 issue に入力が出る経路は別に扱う(G 節)。
 
+## 所有者の判断(2026-10-06)
+
+下の E の 8 問への回答。段階の表(D)はこれに合わせて直した。
+
+| 問 | 判断 |
+|---|---|
+| E1 目的 | 診断の情報量(記録側の整理)と回帰網を先に。B5 は BUG-105 の 1 件で試作して再生側の行数を実測してから。B6 は試作の後に決める |
+| E2 凍結コーパス | **捨ててよい**(推奨の「残す」は採らない) |
+| E3 古い報告の journal | **すべて捨ててよい**。新しい形式で読めなくてよい |
+| E4 `shadow_send_trace` | 撤去する。**lparam は残さない**(PR #524) |
+| E5 CI の JSON ダンプ | 今はしない |
+| E6 報告 journal の 10 分の窓 | 外す。外す前に報告のサイズを 1 件で測る |
+| E7 B5 の再現列 | 人が数打鍵に縮め、期待値を人が書く。報告の入力文そのものはテストに書かない |
+| E8 公開 issue・known-bugs | 報告由来の入力文は要約して載せる |
+
+後続タスク(E2・E3 に伴うもの):
+- complexity-budget.md の発効条件(TH1e: 凍結コーパスでの削除・統合の差分ゼロ再生)を書き直す。コーパスを捨てると今の文言の条件は満たせなくなる。
+- コーパスを捨てる前に影響を洗い出す: `tests/journals/actuation_decision/` を読む `state/actuation_decision_record.rs` の再生テスト(`replay_record`・`replay_chain_scan`)と RW(#499、`ReplayWriter`)、コーパスの書き換えの経緯(#520、`BUG-131.md:51-54` の原本の記録)、ADR-163(TH1d・TH1e・Part D)の記述、`Generation` の `Deserialize`(段階 2 で「コーパスが使うので残す」としたもの。コーパスと一緒に外せるかもしれない)、complexity-budget.md・`fix-requires-evidence.md` の参照。
+
 ## 結論
 
 - **記録側**: 記録の系統と重複を減らす。先にログ(awase.log)と journal の重複を整理し(所有者の優先。log-journal-duplication.md)、続いて B4(1 回の判断につき殻で 1 レコード)を進める。診断の主経路は awase.log(known-bugs で journal かログに触れる 96 件のうち、ログだけのものが 51 件)なので、journal だけを作り直しても診断は良くならない。
@@ -58,9 +77,9 @@ ADR-225 F1 への答え: **IME とのやり取りが絡む不具合には、決�
 
 | 段階 | 内容 | 撤去 | 追加 | 検証 | 取りやめ条件 |
 |---|---|---|---|---|---|
-| 0 | ログと journal の重複の整理の第 1 段階(log-journal-duplication.md §4、`5d4946ad` で改訂済み): `[press-ledger]` の 3 行と `[giveup-follow]`(`ime_refresh.rs:301` だけ)の 2 つ。`Blacklist drift correction` は CI の読み手が 3 本あるので含めない | 20〜30 行 | 0(`GiveUpFollow` にフィールドを足すなら +3 前後) | CI が green。消す断片の全域 grep(同文書 §4) | 読み手が見つかる。所有者が利用者の既定ログに残すと決める |
-| 1(一時停止) | `shadow_send_trace` を消す | `src/shadow_send_trace.rs` 62 行と呼び出し 2 か所 | ImeControl の `lparam` を `[ime-io] cross_process` の行(`imm.rs:279-283`)に足す(フィールド 1 つ)。lparam(開閉の向き・conv の値)を残しているのは今は `shadow_send_trace::record_ime_control`(`imm.rs:286-287`)だけ | windows-cross-check・windows-build が green | 初版の「消費者 0」は誤り。コードの読み手は 0 だが、`docs/ime-passive-model-expected-results.md` が `[shadow-send]` を INV-3/4/5 の書き込み数の判定の基礎にしている(:163・:185・:193・:219・:229)。この文書は ADR-191(現行の方針、`d777bcfe` でマージ済み)の撤去の合否基準として書かれた。この判定を作る予定があるなら撤去しない(E4) |
-| 2 | drift correction の replay を消す(`ImeActuation` の記録自体は残す) | `DriftCorrectionFixture`/`DriftCorrectionTick`(doc 込み約 67 行、`state/ime_actuation.rs:293-359`)、`tests/drift_correction_replay.rs` 210 行、fixture 30 行、`ci.yml:51` の `--test drift_correction_replay`、fixture のためだけの `Deserialize` 2 つ(`FeedbackPolicy`〈`state/ime_actuation.rs:18`〉・`ActuationAction`〈`:210`、doc に「`DriftCorrectionFixture` の `expected` 用」と明記〉。他に `Deserialize` の使い手が無いことは実装の PR で確認する)。**`Generation` の `Deserialize`(`state/event_origin.rs:58`)は凍結コーパスの `ActuationDecisionRecord.epoch` が使うので残す**。`DriftCorrectionFixture` を参照する doc(`journal.rs:329-330`・`event_origin.rs:45,115`・`ime_event.rs:83`・`ime_actuation.rs:13,61-63,208`)の書き換え。合計 約 310 行 | 0 | BUG-43 の「試行が有界」は `state/drift_plan.rs:472`(max 以上で Send に戻らない)と `:601`(全数表で Blind は `attempts < MAX`)が既に固定している(確認済み)。CI が green | `drift_correction_replay.rs` だけが固定している性質が見つかる |
+| 0(実施中、impl-dup-s1) | ログと journal の重複の整理の第 1 段階(log-journal-duplication.md §4、`5d4946ad` で改訂済み): `[press-ledger]` の 3 行と `[giveup-follow]`(`ime_refresh.rs:301` だけ)の 2 つ。`Blacklist drift correction` は CI の読み手が 3 本あるので含めない | 20〜30 行 | 0(`GiveUpFollow` にフィールドを足すなら +3 前後) | CI が green。消す断片の全域 grep(同文書 §4) | 読み手が見つかる。所有者が利用者の既定ログに残すと決める |
+| 1(実施中、PR #524) | `shadow_send_trace` を消す | `src/shadow_send_trace.rs` 62 行と呼び出し 2 か所 | 0。所有者の判断(E4)で lparam は残さない。lparam(開閉の向き・conv の値)を残していたのは `shadow_send_trace::record_ime_control`(`imm.rs:286-287`)だけなので、ImeControl の値は記録から消える | windows-cross-check・windows-build が green | 初版の「消費者 0」は誤り。コードの読み手は 0 だが、`docs/ime-passive-model-expected-results.md` が `[shadow-send]` を INV-3/4/5 の書き込み数の判定の基礎にしている(:163・:185・:193・:219・:229)。この文書は ADR-191(現行の方針、`d777bcfe` でマージ済み)の撤去の合否基準として書かれた。所有者は撤去を選んだ(E4) |
+| 2 | drift correction の replay を消す(`ImeActuation` の記録自体は残す) | `DriftCorrectionFixture`/`DriftCorrectionTick`(doc 込み約 67 行、`state/ime_actuation.rs:293-359`)、`tests/drift_correction_replay.rs` 210 行、fixture 30 行、`ci.yml:51` の `--test drift_correction_replay`、fixture のためだけの `Deserialize` 2 つ(`FeedbackPolicy`〈`state/ime_actuation.rs:18`〉・`ActuationAction`〈`:210`、doc に「`DriftCorrectionFixture` の `expected` 用」と明記〉。他に `Deserialize` の使い手が無いことは実装の PR で確認する)。**`Generation` の `Deserialize`(`state/event_origin.rs:58`)は凍結コーパスの `ActuationDecisionRecord.epoch` が使うので残す**(コーパスを捨てる後続タスクで外せるか見直す)。`DriftCorrectionFixture` を参照する doc(`journal.rs:329-330`・`event_origin.rs:45,115`・`ime_event.rs:83`・`ime_actuation.rs:13,61-63,208`)の書き換え。合計 約 310 行 | 0 | BUG-43 の「試行が有界」は `state/drift_plan.rs:472`(max 以上で Send に戻らない)と `:601`(全数表で Blind は `attempts < MAX`)が既に固定している(確認済み)。CI が green | `drift_correction_replay.rs` だけが固定している性質が見つかる |
 | 3(F6 の後) | 中継の入口を 3 → 1(`pending_journal_entries`・`SENT_INPUT_TRACE` を F6 の戻り値に畳む。フックの診断キュー〈`hook.rs:1393`〉も対象) | 中継のバッファ | 0 の見込み | 発行時刻での採番(ADR-096 B-4)が保たれること | F6 で Output が記録を返す形にならない |
 | 4(B5 の最小形) | 記録: `KeyInput`(`KeyEventSummary`)に InputContext の 4 項目(ime_on・input_mode・japanese・composing、`[engine-input]` の `[diag-ctx]` と同じ値)・拡張ビット・`win` 修飾を足し、`[engine-input]` の行の同じ項目を消す。再生(テスト側): ①`KeyInput` 列 → `RawKeyEvent` 列の変換(親指の押下時刻は前のイベントから導く)、②HEAD のエンジンが返すタイマーを `timestamp_us` の仮想時計で発火させ `on_timeout` を呼ぶループ(BUG-105・145 の本体。記録の `TimerFired` は時刻の系が違うので使わない)、③エンジンの ON/OFF(InputContext の `ime_on` だけで足りるか、`state_before` から遷移を導くかを試作で決める)、④設定(閾値・`confirm_mode`・`speculative_delay_ms`)と n-gram(`set_ngram_model`、`nicola_fsm.rs:1012`。BUG-145 の閾値はこれで決まる)の読み込み | `[engine-input]` の行の重複項目(チェッカー `check_startup`・`check_drift_recovery*`・`check_keymatrix` の書き換えを伴う。log-journal-duplication.md の #5) | 記録側はフィールド 6 つ前後と `size_of` の固定の更新。再生側の行数は未実測 | まず BUG-105 の 1 件で試作し、既存のエンジンのテスト(`src/engine/tests.rs`)と同じ結果になること、試作の行数を測る。次に BUG-145 | 再生にエンジンの外(殻)の処理の写しが要ると分かる。なお `KeyInput` は Alt なりすまし・ラッチ・defer の後のイベントなので、ここまでの殻の処理は写さなくてよい(round3 で確認)。試作の行数が、得られる再現の価値(E1・E7)に見合わない |
 
@@ -68,7 +87,7 @@ ADR-225 F1 への答え: **IME とのやり取りが絡む不具合には、決�
 
 推奨しないもの: B1(用途は回帰網だけで、タスク表の最後の分割の時点で、その分割の Facts に限って作れば足りる)、B2(ADR-232 で却下済み、前提が大きい)、新しい再生の crate・形式。
 
-## E. 所有者に聞くこと(選択肢と推奨)
+## E. 所有者に聞いたこと(選択肢と推奨。回答は冒頭の「所有者の判断」)
 
 1. **作り直しの目的の優先順位**: (a) 報告から HEAD での再現テストを作る(B5・B6)/(b) FCIS の残りの分割の回帰網(決定の再計算)/(c) 診断の情報量(記録側の整理)。
    推奨: (c) と (b) を先に進め、(a) は B5 の最小形(段階 4)だけ。B6 は B5 の試作の結果を見てから。理由: (c) は撤去で費用が小さく、(b) はタスク表の予定に既にあり、(a) は実例がエンジン側の 2 件(BUG-105・145)で道具の費用が未実測のため。
@@ -83,13 +102,13 @@ ADR-225 F1 への答え: **IME とのやり取りが絡む不具合には、決�
 6. **報告の journal の 10 分の窓**: 外す/広げる/今のまま。
    推奨: 外す。入力内容は既に awase.log(`[key-output]`、info)に窓なしで載っているので、窓を外して新たに出るのは構造化された vk/scan とタイミングだけ。B5 の入力を長く取れる。報告のサイズの増え方は外す前に 1 件で測る(未測定)。
 7. **B5 を望むか、再現列を公開リポジトリのテストに書いてよいか**: 望む(数打鍵に縮めた再現列をテストに書く)/望まない。
-   推奨: 望む。ただし再現列は人が数打鍵に縮め、期待値を人が書く(BUG-105・145 の既存テストと同じ形)。報告の入力文そのものはテストに書かない。
+   推奨: 望む。ただし再現列は人が数打鍵に縮め、期待値を人が書く(BUG-105・145 の既存テストと同じ形)。報告の入力文そのものはテストに書かない。入力文として意味を持たない数打鍵なら、キーを名指ししてよい(BUG-105 の L・右親指・A のように、再現にはキー位置が要る)。E8 の「打鍵の並びは vk の種類とタイミングだけ」は、入力文が復元できる長さの列を公開側に載せない、という意味。
 8. **手で貼る経路(G 節 (c))の運用**: このまま許容/報告由来の入力文は要約して載せる/報告画面に同意の文言を足す。
    推奨: 報告由来の入力文は要約して載せる(例: 「3 文字の語で 2 文字目が化けた」と書き、打鍵の並びは vk の種類とタイミングだけにする)。量は 1〜数文字で実害は小さいが、規則が無いまま公開 issue に入っている(BUG-105)。
 
 ## F. 前提条件
 
-- 段階 0・2: 前提なし。段階 1: E4 の回答。段階 3: F6(未着手)。段階 4: E1・E7 の回答。分類器は記録した `key_class` を使えば要らない。HEAD の分類器で分類し直すなら、`classify_key`・`classify_ime_relevance` の `vk.rs` か `state/` への純粋な移動(約 20 行+α)が要る。
+- 段階 0・2: 前提なし。段階 1: E4 で撤去と回答済み(#524)。段階 3: F6(未着手)。段階 4: E1・E7 で回答済み(BUG-105 の試作から)。分類器は記録した `key_class` を使えば要らない。HEAD の分類器で分類し直すなら、`classify_key`・`classify_ime_relevance` の `vk.rs` か `state/` への純粋な移動(約 20 行+α)が要る。
 - 「代数的 effect の完成」は計画上の到達点として存在しない(Plan/Effect の項の設計は ADR-229 で却下、E2〜E6 は待つ条件つき)。待たずに、前提が揃った段階から進める。
 
 ## G. 公開リポジトリ・公開 issue への実利用者の入力の扱い(所有者の判断事項)
