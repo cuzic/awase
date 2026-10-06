@@ -14,7 +14,7 @@
 //!
 //! 核は OS・壁時計・グローバルに触れない。時刻は [`DriftFacts::now`] で受ける。
 
-use super::drift_correction::DriftCorrection;
+use super::drift_correction::{DriftCorrection, NoDrift, OmissionBasis};
 use super::event_origin::{EventOrigin, Generation};
 use super::ime_actuation::{blind_rearm_cooldown_elapsed, ActuationAction, FeedbackPolicy};
 
@@ -68,8 +68,8 @@ pub struct DriftFacts {
     pub engine_enabled: bool,
     /// `belief.is_japanese_ime()`。
     pub japanese_ime: bool,
-    /// [`super::drift_correction::check_drift_correction`] の結果。
-    pub drift: Option<DriftCorrection>,
+    /// [`super::drift_correction::evaluate_drift`] の結果（補正が要らないときはその理由）。
+    pub drift: Result<DriftCorrection, NoDrift>,
     /// フォーカス遷移の settle 中（`ime_apply_should_defer`）。
     pub settling: bool,
     /// 進行中の試行（無ければ `None`）。
@@ -91,10 +91,23 @@ pub struct DriftFacts {
 /// 何もしない理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriftIdle {
-    /// ユーザーがエンジンを止めている、または日本語 IME ではない。
-    NotActive,
-    /// 補正が要るずれが無い。
-    NoDrift,
+    /// ユーザーがエンジンを止めている。
+    EngineDisabled,
+    /// 日本語 IME ではない。
+    NotJapaneseIme,
+    /// 補正が要るずれが無い（理由は `check` の各早期 return、[`NoDrift`]）。
+    NoDrift(NoDrift),
+}
+
+impl DriftIdle {
+    /// 省略の根拠。
+    #[must_use]
+    pub const fn basis(self) -> OmissionBasis {
+        match self {
+            Self::EngineDisabled | Self::NotJapaneseIme => OmissionBasis::Belief,
+            Self::NoDrift(reason) => reason.basis(),
+        }
+    }
 }
 
 /// give-up（`Blind` が `max_attempts` 到達）したときの、その tick の扱い。いずれも再送しない。
@@ -132,6 +145,31 @@ pub enum SendPath {
     StrategyChain,
 }
 
+impl GiveUpPark {
+    /// 打ち切り・parked の根拠。
+    #[must_use]
+    pub const fn basis(self) -> OmissionBasis {
+        match self {
+            Self::FirstTime => OmissionBasis::AttemptBudget,
+            Self::CooldownPending => OmissionBasis::Cooldown,
+            Self::Rearm | Self::StillParked => OmissionBasis::FreshRead,
+        }
+    }
+}
+
+impl DriftStep {
+    /// 送らない・打ち切る・収束とみなす決定の根拠。実際に送る `Send` は `None`。
+    #[must_use]
+    pub const fn basis(self) -> Option<OmissionBasis> {
+        match self {
+            Self::SkipWarrantWouldBlock => Some(OmissionBasis::Warrant),
+            Self::GiveUp(park) => Some(park.basis()),
+            Self::Confirmed => Some(OmissionBasis::FreshRead),
+            Self::Send(_) => None,
+        }
+    }
+}
+
 /// 検知後の計画。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DriftAct {
@@ -153,6 +191,18 @@ pub enum DriftPlan {
         drift: DriftCorrection,
     },
     Act(DriftAct),
+}
+
+impl DriftPlan {
+    /// 送らない・打ち切る・収束とみなす・保留する決定の根拠（`Send` は `None`）。殻はこれをログに出すだけ。
+    #[must_use]
+    pub const fn basis(&self) -> Option<OmissionBasis> {
+        match self {
+            Self::Idle(idle) => Some(idle.basis()),
+            Self::DeferToSettle { .. } => Some(OmissionBasis::FocusSettle),
+            Self::Act(act) => act.step.basis(),
+        }
+    }
 }
 
 /// 診断を出すか。ずれの継続時間が再武装クールダウン以上で、このフォーカスで未通知のとき（ADR-132 Phase 1）。
@@ -184,11 +234,15 @@ fn park_after_giveup(
 /// 稼働条件 → ずれの有無 → settle → 試行の解決 → 授権 → 診断 → 方針ごとの打ち切り/収束/送信。
 #[must_use]
 pub fn decide_drift_plan(f: &DriftFacts) -> DriftPlan {
-    if !f.engine_enabled || !f.japanese_ime {
-        return DriftPlan::Idle(DriftIdle::NotActive);
+    if !f.engine_enabled {
+        return DriftPlan::Idle(DriftIdle::EngineDisabled);
     }
-    let Some(drift) = f.drift else {
-        return DriftPlan::Idle(DriftIdle::NoDrift);
+    if !f.japanese_ime {
+        return DriftPlan::Idle(DriftIdle::NotJapaneseIme);
+    }
+    let drift = match f.drift {
+        Ok(drift) => drift,
+        Err(reason) => return DriftPlan::Idle(DriftIdle::NoDrift(reason)),
     };
     if f.settling {
         return DriftPlan::DeferToSettle { drift };
@@ -298,7 +352,7 @@ mod tests {
             now,
             engine_enabled: true,
             japanese_ime: true,
-            drift: Some(drift(false, 0)),
+            drift: Ok(drift(false, 0)),
             settling: false,
             active: None,
             default_policy: blind(),
@@ -326,17 +380,94 @@ mod tests {
                 japanese_ime,
                 ..facts(now)
             };
-            assert_eq!(decide_drift_plan(&f), DriftPlan::Idle(DriftIdle::NotActive));
+            let want = if engine_enabled {
+                DriftIdle::NotJapaneseIme
+            } else {
+                DriftIdle::EngineDisabled
+            };
+            let plan = decide_drift_plan(&f);
+            assert_eq!(plan, DriftPlan::Idle(want));
+            assert_eq!(plan.basis(), Some(OmissionBasis::Belief));
         }
     }
 
     #[test]
-    fn idle_when_no_drift() {
-        let f = DriftFacts {
-            drift: None,
-            ..facts(Instant::now())
-        };
-        assert_eq!(decide_drift_plan(&f), DriftPlan::Idle(DriftIdle::NoDrift));
+    fn idle_when_no_drift_carries_the_reason_and_its_basis() {
+        for reason in [
+            NoDrift::NotExplicitIntent,
+            NoDrift::NotDrifting,
+            NoDrift::BelowThreshold,
+            NoDrift::NoTrustedObservation,
+            NoDrift::StaleObservation,
+            NoDrift::HeuristicDefaultOnly,
+            NoDrift::ObservationMatchesDesired,
+        ] {
+            let f = DriftFacts {
+                drift: Err(reason),
+                ..facts(Instant::now())
+            };
+            let plan = decide_drift_plan(&f);
+            assert_eq!(plan, DriftPlan::Idle(DriftIdle::NoDrift(reason)));
+            assert_eq!(plan.basis(), Some(reason.basis()));
+        }
+    }
+
+    #[test]
+    fn every_omission_names_its_basis_and_only_send_has_none() {
+        let now = Instant::now();
+        let cool = Duration::from_millis(crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS);
+        let parked = Some(snap(blind(), false, MAX, now, Some(now)));
+        let cases = [
+            (
+                DriftFacts {
+                    settling: true,
+                    ..facts(now)
+                },
+                Some(OmissionBasis::FocusSettle),
+            ),
+            (
+                DriftFacts {
+                    imm_cross: true,
+                    warrant_would_block: true,
+                    ..facts(now)
+                },
+                Some(OmissionBasis::Warrant),
+            ),
+            (
+                DriftFacts {
+                    active: Some(snap(blind(), false, MAX, now, None)),
+                    ..facts(now)
+                },
+                Some(OmissionBasis::AttemptBudget),
+            ),
+            (
+                DriftFacts {
+                    active: parked,
+                    ..facts(now)
+                },
+                Some(OmissionBasis::Cooldown),
+            ),
+            (
+                DriftFacts {
+                    active: parked,
+                    fresh_evidence_after_giveup: true,
+                    ..facts(now + cool)
+                },
+                Some(OmissionBasis::FreshRead),
+            ),
+            (
+                DriftFacts {
+                    active: Some(snap(read(), false, 0, now, None)),
+                    converged: true,
+                    ..facts(now)
+                },
+                Some(OmissionBasis::FreshRead),
+            ),
+            (facts(now), None),
+        ];
+        for (f, want) in cases {
+            assert_eq!(decide_drift_plan(&f).basis(), want, "{f:?}");
+        }
     }
 
     #[test]
@@ -392,7 +523,7 @@ mod tests {
         let now = Instant::now();
         let long = drift(false, 10_000);
         let blocked_imm = DriftFacts {
-            drift: Some(long),
+            drift: Ok(long),
             imm_cross: true,
             warrant_would_block: true,
             ..facts(now)
@@ -433,7 +564,7 @@ mod tests {
             (cool + 1, true, false),
         ] {
             let f = DriftFacts {
-                drift: Some(drift(false, dur)),
+                drift: Ok(drift(false, dur)),
                 diag_already_notified: notified,
                 ..facts(now)
             };
@@ -554,7 +685,8 @@ mod tests {
                                     engine_enabled: b(0),
                                     japanese_ime: b(1),
                                     drift: b(2)
-                                        .then(|| drift(false, if b(3) { 10_000 } else { 0 })),
+                                        .then(|| drift(false, if b(3) { 10_000 } else { 0 }))
+                                        .ok_or(NoDrift::NotDrifting),
                                     settling: b(4),
                                     active: Some(snap(policy, target, attempts, base, gave_up_at)),
                                     default_policy: policy,
@@ -575,10 +707,25 @@ mod tests {
 
     fn check_invariants(f: &DriftFacts) {
         let plan = decide_drift_plan(f);
+        // 省略の根拠は、実際に送る `Send` 以外の全ての計画にある（E1）。
+        assert_eq!(
+            plan.basis().is_none(),
+            matches!(
+                plan,
+                DriftPlan::Act(DriftAct {
+                    step: DriftStep::Send(_),
+                    ..
+                })
+            ),
+            "{f:?}"
+        );
         let active_ok = f.engine_enabled && f.japanese_ime;
-        let Some(d) = f.drift.filter(|_| active_ok) else {
-            assert!(matches!(plan, DriftPlan::Idle(_)), "{f:?}");
-            return;
+        let d = match f.drift {
+            Ok(d) if active_ok => d,
+            _ => {
+                assert!(matches!(plan, DriftPlan::Idle(_)), "{f:?}");
+                return;
+            }
         };
         if f.settling {
             assert_eq!(plan, DriftPlan::DeferToSettle { drift: d }, "{f:?}");

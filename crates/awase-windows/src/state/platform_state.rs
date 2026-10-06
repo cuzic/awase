@@ -1045,22 +1045,33 @@ impl ImeStateHub {
 
     // ── Desired state / drift correction ──
 
-    /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を返す。
+    /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を、
+    /// 超えていなければ理由（`NoDrift`、E1）を返す。
     ///
-    /// 戻り値: 補正が必要な場合 `Some(DriftCorrection { .. })`。
     /// `explicit_intent`: [`Self::explicit_intent`] の値をそのまま渡す。
     ///
     /// `ConvOpenInference` は根拠にしない（BUG-173 追補3。`state/drift_correction.rs` 参照）。
     /// `resolve_warmup_ime_on` が同じ述語を `matches!(.., Some(DriftCorrection { desired: false, observed: true, .. }))`
     /// として使う（ADR-132/INV-B1'）。
+    pub(crate) fn evaluate_drift(
+        &self,
+        now: std::time::Instant,
+        explicit_intent: Option<bool>,
+    ) -> Result<DriftCorrection, super::drift_correction::NoDrift> {
+        // 判定本体は ungated な `state/drift_correction.rs`（Linux の
+        // `tests/closed_loop_scenarios.rs` から呼べるように移した。ロジックは不変）。
+        super::drift_correction::evaluate_drift(&self.shadow_model, now, explicit_intent)
+    }
+
+    /// [`Self::evaluate_drift`] から理由を捨てたもの。本番の呼び出し元は `evaluate_drift` に移ったので、
+    /// これは既存の単体テスト（`check_drift_correction_*`）の窓口として残している。
+    #[cfg(test)]
     pub(crate) fn check_drift_correction(
         &self,
         now: std::time::Instant,
         explicit_intent: Option<bool>,
     ) -> Option<DriftCorrection> {
-        // 判定本体は ungated な `state/drift_correction.rs`（Linux の
-        // `tests/closed_loop_scenarios.rs` から呼べるように移した。ロジックは不変）。
-        super::drift_correction::check_drift_correction(&self.shadow_model, now, explicit_intent)
+        self.evaluate_drift(now, explicit_intent).ok()
     }
 
     /// IME apply 完了を記録する（D: generation 照合 dispatch）。
