@@ -8,7 +8,7 @@ summary: |-
   提案: ポートを時間の性質で S(即時)・B(ブロックしうる、タイムアウトを戻り値の値に)・A(Cmd を出し結果は世代つき Event)に分けて注入する。まず同一 crate 内で gate を外し、crate の物理分割は最後。契約テストで偽物を本物に拘束する。フックの畳み込みは前提確認のあと別段階。
   2026-10-06 に FCIS(Functional Core, Imperative Shell)の原則で改訂(「FCIS による改訂」節。Tier-1 portable / Tier-2 pure core の 2 段、`HubClock` を標準形、handler trait の閉じた例外、核と殻の分割。実装タスクは docs/tasks/fcis-layering-tasks-2026-10-06.md)。注意: ADR-224(ungate か切り出し)は「見逃しの実例が出るまで着手しない」としており、その着手条件は満たしていない。本 ADR の主動機は障害の記録ではなく構造的なテスト容易性なので、所有者の判断が要る。
 status: |-
-  起草(2026-10-06)。Opus レビュー round1(着手単位の見定め、Blocker なし、`docs/adr/review/229-opus-review-round1.md`)を反映。所有者指示(2026-10-06)により、「着手しやすい単位」(T2・T1・T3・T5・T4・T7)を先行して実装し、PR #492〜#495 としてマージ済み(2026-10-06、CI すべて green、Opus の PR レビューで Blocker・Must なし)。その後、FCIS(Functional Core, Imperative Shell)の原則で設計を Opus の複数ラウンドで収束させ、本 ADR に「FCIS による改訂」節を追加した(実装タスクは docs/tasks/fcis-layering-tasks-2026-10-06.md)。所有者の判断(2026-10-06): ADR-224 を改訂して段階 2 を核と殻の分割で進める、S2(physical_disposition.rs を自動チェックに足す)を実施する、1 turn の入口集約とフックの薄型化を将来の目標にする。P0・P1・RW・S2 を並行して実装中。
+  起草(2026-10-06)。Opus レビュー round1(着手単位の見定め、Blocker なし、`docs/adr/review/229-opus-review-round1.md`)を反映。所有者指示(2026-10-06)により、「着手しやすい単位」(T2・T1・T3・T5・T4・T7)を先行して実装し、PR #492〜#495 としてマージ済み(2026-10-06、CI すべて green、Opus の PR レビューで Blocker・Must なし)。その後、FCIS(Functional Core, Imperative Shell)の原則で設計を Opus の複数ラウンドで収束させ、本 ADR に「FCIS による改訂」節を追加した(実装タスクは docs/tasks/fcis-layering-tasks-2026-10-06.md)。所有者の判断(2026-10-06): ADR-224 を改訂して段階 2 を核と殻の分割で進める、S2(physical_disposition.rs を自動チェックに足す)を実施する、1 turn の入口集約とフックの薄型化を将来の目標にする。P0・P1・RW・S2 を並行して実装中。進め方の見直し 5 点(2026-10-06、所有者承認)を末尾の節に追記。決定の変更は D4 の「crate の物理分割は最後」を着手条件つきの前倒しにしたことだけ。
 related_adr:
   - "ADR-019"
   - "ADR-030"
@@ -136,6 +136,7 @@ Functional Core, Imperative Shell(FCIS)の原則で、D1〜D4・D6 を次のと�
 - **例外の列挙(閉じたリスト)**:
   1. `Actuation<Verified>::run_chain(_async)<W: MechanismWriter / AsyncMechanismWriter>`(`state/actuation_chain.rs`)。型状態(ADR-090: warrant → verify を経ないと write できない)と ADR-163 の再生ハーネス(ReplayWriter)を支えているので、Cmd の状態機械には**書き換えない**。`romaji_pre_write`(条件付きの書き込み)は、この chain の前処理として扱う。
   2. 条件付きの同期の効果(読むかどうか自体が判断に依存する場合): ImmCross が `Failed` のときの再読み取り(`post_failed_reobservation`)、focus の MSAA までの同期の段階的な分類。読み取りの handler(例: `trait ImeProbe`)を引数に取る形にするのは、**実装する PR で、その関数を本リストに追加する**ときに限る。UIA は非同期なので A 種の Cmd/Event とする。
+     - 追記(FCIS F5b、PR #527): `classify_focus` のスタイル・クラス名の段階は、結果を `Option` で返す純粋関数 2 つ(`decide_by_ex_style`・`decide_by_class`)と殻の `if` で書けたので、handler 例外は不要だった(判定不能なら殻が `msaa_classify` へ進む)。本リストには追加しない。
 - 例外に入らないもの: warmup の `StepCoro`(Cmd を yield する標準形)。
 
 ### F-D2: F(判断混在の手続き)の標準形 = サンドイッチ
@@ -257,7 +258,7 @@ R1 その場で gate を外す(T2・T3)、R2 時刻を引数にして gate を�
 
 結果(2026-10-06): T2・T3・T5 は PR #492、T1 は PR #493、T7 は PR #494、T4 は PR #495 で、いずれも CI が通り、2026-10-06 にマージした(`42bc25ea`)。#493 は初回に `suppress_reason` の置き場所(Windows 専用の `transport.rs` にあり、移したテストが Linux で見えなかった)と rustfmt で失敗し、修正した。Opus の PR レビュー round1 で #493 に Must 2 件(Linux の dead_code 警告、殻 `plan` を呼ぶテストが 0 本になったこと)が出て反映し、round2 の再確認で #492・#493・#494・#495 に Blocker・Must なし。#494 の `focus/mod.rs` の `allow(dead_code)` は不要と確認して外し、#495 の `allow` も `#[cfg(windows)]` に置き換えた(新しい `allow(dead_code)` は 0 か所)。`state/physical_disposition.rs` を自動チェック 3 か所に足す件(Opus S2)は、所有者の承認を得て実施中。
 
-取りやめ条件: Linux でコンパイルが通らない、または `allow(dead_code)` を足さないと警告が消えない(3 か所を超えたら止める。`allow` の削減という指標に逆行する)。1 本でも Linux で落ちるテストは、本番との差の発見なので BUG として扱う。
+取りやめ条件: Linux でコンパイルが通らない、または **Windows でも消えない未使用が出る、あるいは `allow(dead_code)` をモジュール単位の 1 行(呼び出し元が Windows 側にあるモジュールの `#[cfg_attr(not(windows), allow(dead_code))]`)を超えて足す必要がある**(旧: 警告の件数が 3 か所を超えたら止める。P4(PR #510)で、条件の理由=`allow` で本当の未使用を見逃すこと、は Windows の clippy `-D warnings` が防ぐと分かり、件数での条件は実態に合わなかったので書き直した。Opus の PR #510 レビュー S23)。**P4 の記録**: `platform_state` の可視性は、方針の前提(未使用になるのは `_in_scope` 約 13 だけ)が誤りで、`ImeStateHub` のほぼ全体が Windows 側の呼び出し元だけだったため、`state/mod.rs` の `pub mod platform_state;` にモジュール単位の `#[cfg_attr(not(windows), allow(dead_code))]` 1 行になった(`not(windows)` の `allow(dead_code)` は 45 → 46。P5 では外れない。外せるのは、ハブを使う判断が ungated 側に移るか、crate を分けたとき)。1 本でも Linux で落ちるテストは、本番との差の発見なので BUG として扱う。
 
 今は着手しないもの: 時計の注入の一括(`hook::current_tick_ms()` の直接呼び出しは 151 か所・34 ファイル、`Instant::now()` は 158 か所)、`platform_state.rs` の ungate、型のまとめての切り出し、`tracker.rs`・`gji_observer.rs` の gate 解除、UIA 経路の削除、`MechanismCommand` の部分型化。理由は round1 レビューの §2 を参照。
 
@@ -292,3 +293,28 @@ R1 その場で gate を外す(T2・T3)、R2 時刻を引数にして gate を�
 ## Opus レビュー計画
 
 複数ラウンドで、前提の誤り(既存との重複、ADR-224 との矛盾、順序の保証、`held_modifiers`、ガード書き換え量)を洗い出す。第1ラウンドの観点: (1) 実害の記録が弱いまま進める妥当性、(2) 段階 0〜2 の取りやめ条件の妥当性、(3) D2 のポート分類(S/B/A)が実コードに当てはまるか、(4) D6 の前提の網羅。
+
+## 進め方の見直し(2026-10-06、所有者承認)
+
+F の分割と P4・P5a-1 の実装で分かったことから、進め方を 5 点見直した。根拠の事実(コミットハッシュ・PR 番号)、新しいタスク V1〜V6、完了前チェック、優先順位は [タスク表の同名の節](../tasks/fcis-layering-tasks-2026-10-06.md) にだけ置く。
+
+**決定の変更は 1 つ**: D4・F-D6・段階表の 6 の「crate の物理分割は最後」を、タスク表 V6 の着手条件つきの前倒しに改める(着手は所有者に諮る)。「最後」の理由(ファイル移動でパスを文字列で持つガードが空振りする)には、着手条件(字句走査の共通部品化 V3 と、パスの機械的な付け替え)で答える。上の節の「最後」は、この着手条件で読み替える。他の決定は変えない。
+
+見直しの要約:
+
+1. 機械的な後処理の漏れ(Opus のレビュー後に足された例が 3 件)は、差分の CI 検査(V1)と完了前チェック(V2)で先に拾う。
+2. 走査ガードはすり抜けが続いたので、共通部品化(V3)し、crate 分割でコンパイラの保証に置き換える(上の決定の変更)。
+3. 「事実 → 理由つきの Plan の enum → 殻が実行」が F1〜F4 で 4 回できたので、代案 A と E1 を書き方として明文化する。汎用の Effect/Handler の部品は作らない(toolkit の「作る条件」は満たしていない)。
+4. 再生 fixture を作りたい分割では、事実の型の時刻を `TickMs` で持つ(V4。根拠は F4 の 1 件で、前提チェック 1 項目にとどめる。F-D3 は変えない)。
+5. 順序の辺は、型で表せるもの(e13)から型にし、表せないもの(e12)だけ走査テストに残す(V5)。
+
+優先順位: 起動時のフォーカス経路(ADR-232 D1)を、ADR-232 が承認されたら最優先にする。P5 の残りの写しの置き換えは下げる(5 系統を置き換えても写しのずれが見つからなかった)。
+
+## 進捗(2026-10-06 時点、develop `e5567ddb`)
+
+詳細と PR 番号は [タスク表の「進捗と所有者の判断」節](../tasks/fcis-layering-tasks-2026-10-06.md)。
+
+- F の分割は F1〜F4・F5a・F5b・F6 がマージ済み(F6b はレビュー中)。P4・V1 もマージ済み。
+- V1 は `CORE_MODULES` に足した名前の mutants への登録だけを、develop 向けの PR で検査する(pre-push と表は V2 で人が判断)。必須チェックにするかは未決。
+- V4 の訂正: `output/`・`tsf/` の本番コードは時刻を `u64` の tick で持っており、分割の前の `TickMs` 化は要らなかった(#528 の実測。マージ後に確定)。
+- 所有者の判断: 決定関数の DSL は試作して読み比べた結果、不採用。E1・F5・F6 の次の分割を優先する。

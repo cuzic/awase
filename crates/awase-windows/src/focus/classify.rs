@@ -9,55 +9,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::msaa::msaa_classify;
+use crate::state::focus_classify_plan::{decide_by_class, decide_by_ex_style, needs_edit_style};
 use crate::win32::HwndExt as _;
 
 pub use super::class_names::AppImeProfile;
 
-/// `WS_EX_NOIME` (0x0040_0000) — IME 入力を受け付けないウィンドウスタイル
-const WS_EX_NOIME: i32 = 0x0040_0000;
-
-/// `ES_READONLY` (0x0800) — 読み取り専用 Edit コントロール
-const ES_READONLY: i32 = 0x0800;
-
-/// フォーカス判定の結果と根拠
-#[derive(Debug)]
-pub struct ClassifyResult {
-    pub kind: FocusKind,
-    pub reason: ClassifyReason,
-}
-
-/// 判定根拠
-#[derive(Debug)]
-pub enum ClassifyReason {
-    /// hwnd が NULL
-    NullHwnd,
-    /// WS_EX_NOIME ウィンドウスタイル
-    NoImeStyle,
-    /// Edit コントロールの ES_READONLY
-    ReadOnlyEdit,
-    /// 既知のテキスト入力クラス名
-    KnownTextClass(String),
-    /// 既知の非テキストクラス名
-    KnownNonTextClass(String),
-    /// MSAA ロールによる判定
-    MsaaRole(String),
-    /// Phase 1-2 で判定不能
-    Undetermined,
-}
-
-impl std::fmt::Display for ClassifyReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NullHwnd => write!(f, "NullHwnd"),
-            Self::NoImeStyle => write!(f, "NoImeStyle"),
-            Self::ReadOnlyEdit => write!(f, "ReadOnlyEdit"),
-            Self::KnownTextClass(c) => write!(f, "KnownTextClass({c})"),
-            Self::KnownNonTextClass(c) => write!(f, "KnownNonTextClass({c})"),
-            Self::MsaaRole(r) => write!(f, "MsaaRole({r})"),
-            Self::Undetermined => write!(f, "Undetermined"),
-        }
-    }
-}
+pub use crate::state::focus_classify_plan::{ClassifyReason, ClassifyResult};
 
 /// フォーカス中のウィンドウがテキスト入力を受け付けるかを判定する
 ///
@@ -84,81 +41,19 @@ pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
     // SAFETY: hwnd は呼出元で NULL チェック済み。GWL_EXSTYLE は有効な nIndex 値であり、
     //         GetWindowLongW は有効な HWND に対して安全に呼び出せる。
     let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) };
-    if ex_style & WS_EX_NOIME != 0 {
-        return ClassifyResult {
-            kind: FocusKind::NonText,
-            reason: ClassifyReason::NoImeStyle,
-        };
+    if let Some(result) = decide_by_ex_style(ex_style) {
+        return result;
     }
 
-    // 3. クラス名による判定
+    // 3. クラス名（と Edit のときの GWL_STYLE）による判定
     let class_name = get_class_name_string(hwnd);
-    if !class_name.is_empty() {
-        // 既知のテキスト入力コントロール
-        if matches!(
-            class_name.as_str(),
-            "Edit"
-                | "RichEdit"
-                | "RichEdit20A"
-                | "RichEdit20W"
-                | "RICHEDIT50W"
-                | "RichEditD2DPT"
-                | "Scintilla"
-                | "ConsoleWindowClass"
-        ) {
-            // Edit コントロールの読み取り専用チェック
-            if class_name == "Edit" {
-                // SAFETY: hwnd は呼出元で NULL チェック済み。GWL_STYLE は有効な nIndex 値で、
-                //         GetWindowLongW は有効な HWND に対して安全に呼び出せる。
-                let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) };
-                if style & ES_READONLY != 0 {
-                    return ClassifyResult {
-                        kind: FocusKind::NonText,
-                        reason: ClassifyReason::ReadOnlyEdit,
-                    };
-                }
-            }
-            return ClassifyResult {
-                kind: FocusKind::TextInput,
-                reason: ClassifyReason::KnownTextClass(class_name),
-            };
-        }
-
-        // 既知の非テキストコントロール
-        if matches!(
-            class_name.as_str(),
-            "Button"
-                | "Static"
-                | "SysListView32"
-                | "SysTreeView32"
-                | "SysHeader32"
-                | "ToolbarWindow32"
-                | "msctls_statusbar32"
-                | "SysTabControl32"
-                | "msctls_trackbar32"
-                | "msctls_progress32"
-        ) {
-            return ClassifyResult {
-                kind: FocusKind::NonText,
-                reason: ClassifyReason::KnownNonTextClass(class_name),
-            };
-        }
-
-        // Windows シェルインフラ（デスクトップ切替アニメーション中に通過するホストウィンドウ）。
-        // Imm32Unavailable プロファイルで IME 制御不能なため NonText とみなす。
-        // NonText 判定により on_focus_process_changed の reset_to_off_for_tsf_native_cache_miss
-        // が回避され、仮想デスクトップ切替時に LINE 等で Engine OFF になる問題を防ぐ。
-        if matches!(
-            class_name.as_str(),
-            // Windows 11 エクスプローラー・タスクバーの XAML ホスト
-            // （IMM クロスプロセスクエリがタイムアウトするため Imm32Unavailable かつ TsfNative）
-            "XamlExplorerHostIslandWindow"
-        ) {
-            return ClassifyResult {
-                kind: FocusKind::NonText,
-                reason: ClassifyReason::KnownNonTextClass(class_name),
-            };
-        }
+    let edit_style = needs_edit_style(&class_name).then(|| {
+        // SAFETY: hwnd は呼出元で NULL チェック済み。GWL_STYLE は有効な nIndex 値で、
+        //         GetWindowLongW は有効な HWND に対して安全に呼び出せる。
+        unsafe { GetWindowLongW(hwnd, GWL_STYLE) }
+    });
+    if let Some(result) = decide_by_class(class_name, edit_style) {
+        return result;
     }
 
     // 4. MSAA (IAccessible) role による判定

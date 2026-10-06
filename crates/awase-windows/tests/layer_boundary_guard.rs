@@ -361,7 +361,7 @@ fn c6_single_reduce_call_site() {
         1,
         "layer-boundaries.md C-6: 本番コードでの model.reduce() 呼出は 1 箇所\
          (platform_state.rs::reduce_with_envelope) のみのはずが {} 箇所ありました。\n\
-         全 ImeEvent は event_log.record() 経由で seq を付与すること。\n該当箇所:\n  {}",
+         全 ImeEvent は event_log.record_at() 経由で seq を付与すること。\n該当箇所:\n  {}",
         hits.len(),
         hits.join("\n  ")
     );
@@ -502,12 +502,15 @@ const CORE_MODULES: &[&str] = &[
     "conv_after_open",
     "conv_classify",
     "conv_mode",
+    "deferred_gate_plan",
     "drift_correction",
+    "drift_plan",
     "eisu_recovery",
     "event_origin",
     "evidence",
     "explicit_press",
     "external_change_watch",
+    "focus_classify_plan",
     "focus_probe_plan",
     "focus_resync_policy",
     "force_guard",
@@ -519,7 +522,10 @@ const CORE_MODULES: &[&str] = &[
     "hook_watchdog",
     "ime_actuation",
     "ime_actuation_decision",
+    "ime_event_log",
     "ime_kind",
+    "ime_read_strategy",
+    "ime_set_open_plan",
     "ime_update",
     "imm_evidence",
     "injection_mode",
@@ -531,11 +537,14 @@ const CORE_MODULES: &[&str] = &[
     "keymap_latch",
     "layout_language",
     "mode_key_pass",
+    "msaa_role_plan",
     "observation_store",
     "open_warrant",
     "physical_disposition",
+    "platform_state",
     "post_bypass",
     "press_ledger",
+    "relay_plan",
     "scoped_latch",
     "state_dependent_key_warning",
     "transition",
@@ -552,10 +561,6 @@ const NOT_CORE_MODULES: &[(&str, &str)] = &[
     (
         "ime_event",
         "#[cfg(windows)] impl HwndId / From<HWND>（殻へ出す候補）",
-    ),
-    (
-        "ime_event_log",
-        "Instant::now()（record_at を使う側へ寄せれば解消）",
     ),
     (
         "ime_model",

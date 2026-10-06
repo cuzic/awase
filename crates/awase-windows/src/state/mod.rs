@@ -110,6 +110,9 @@ pub mod conv_after_open;
 // ungated なので、呼び出し元が Windows 専用の非 Windows ビルドでは未使用になる。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod ime_actuation_decision;
+// FCIS（ADR-229）: `executor.rs::dispatch_ime_set_open` の判断（gate・claim 結果・ImmCross 先頭か）の純粋部分。
+#[cfg(any(windows, test))]
+pub mod ime_set_open_plan;
 // ADR-163 Part B（TH1c）: attempt単位の決定点ジャーナルスキーマとcrate内
 // 再生ハーネス。ime_actuation_decisionと同じ「追加のみ、本番経路への配線は
 // 別タスク（TH1d/TH1e）」のモジュール。
@@ -121,6 +124,7 @@ pub mod evidence;
 // `#[cfg(windows)]` の `platform_state.rs` だけなので、非 Windows では未使用になる。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod drift_correction;
+pub mod drift_plan;
 pub mod force_guard;
 pub mod ime_event;
 // 呼び出し元（`imm.rs`・`observer/ime_observer.rs`）は `#[cfg(windows)]` のため、非 Windows では未使用。
@@ -138,7 +142,9 @@ pub mod external_change_watch;
 // 全数テストできる ungated な IME 種別を置く。変換は `tsf/observer.rs` の
 // `From<ActiveImeKind>` 1 箇所のみ。
 pub mod ime_kind;
+// FCIS F1: `runtime/ime_refresh.rs::ir_decide_read_strategy` の純粋な核（読み取り方針の決定と理由）。
 pub mod ime_model;
+pub mod ime_read_strategy;
 // ADR-087 Phase 1' 試験実装。app_ime_policy/ime_profile_driver と同じ ungated
 // パターンで Linux 上の `cargo test -p awase-windows --lib` から実行できるように
 // する。runtime への配線（既存 `ImeModel.last_intent` との統合）はまだ無い
@@ -184,12 +190,27 @@ pub(crate) mod scoped_latch;
 // Linux で全数テストできるようにした。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod focus_probe_plan;
+// MSAA ロール値の表引き（純粋）。本番の呼び出し元 focus/msaa.rs は #[cfg(windows)]、Linux ではテストだけが使う。
+#[cfg(any(windows, test))]
+pub mod msaa_role_plan;
+// 同期分類（ウィンドウスタイル・クラス名）の判断表（純粋）。本番の呼び出し元 focus/classify.rs は #[cfg(windows)]、Linux ではテストだけが使う。
+#[cfg(any(windows, test))]
+pub mod focus_classify_plan;
 pub mod transition;
+// FCIS F3: `runtime/executor.rs` の execute_relay/drain_deferred/defer 側の「即時/キュー/ガード」判断の核（純粋）。
+// 呼び出し元（executor.rs）は `#[cfg(windows)]` のため非 Windows では未使用。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod relay_plan;
+// FCIS F6: `output/mod.rs`・`output/vk_send.rs` の「probe/recovery 進行中は退避する」判断の核（純粋）。
+// 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod deferred_gate_plan;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
-#[cfg(windows)]
+// 実機（Windows）以外では呼び出し元（`runtime/`・`app/`）が無く、P5 でコアの境界に出す分だけを公開するまでは
+// 未使用警告が出る。これまでの ungated モジュールと同じ扱い。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod platform_state;
-#[cfg(windows)]
 pub use platform_state::PlatformState;
 
 #[cfg(windows)]

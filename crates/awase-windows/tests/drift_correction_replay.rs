@@ -7,13 +7,9 @@
 //! 対して試行回数を有界に打ち切る（`FeedbackPolicy::Blind::max_attempts` 到達後は
 //! `GiveUp` のまま `Send` に戻らない）ことを回帰テストとして固定する。
 //!
-//! `tests/journal_replay.rs`（`ConvClassifyFixture` 専用、`tests/journals/*.json` を
-//! フラットに読む）とは別ファイルに分離した。理由: `journal_replay.rs` は
-//! `tests/journals/` 直下の全 `*.json` を無条件に `ConvClassifyFixture` としてパースする
-//! ため、`DriftCorrectionFixture` 形式の JSON を同じ階層に置くとパース失敗で衝突する。
-//! 本テストのフィクスチャは衝突を避けるため `tests/journals/drift_correction/`
-//! サブディレクトリに置く（`journal_replay.rs` の `read_dir` は非再帰のため、
-//! サブディレクトリ内のファイルはそちらから見えない）。
+//! `tests/journals/` は「1 ディレクトリ = 1 形式」で、`DriftCorrectionFixture` 形式の JSON は
+//! `tests/journals/drift_correction/` に置く（`tests/journal_replay.rs` の `ConvClassifyFixture` は
+//! `tests/journals/conv_classify/`）。読み込みと件数の集計は `awase_replay::replay_dir`。
 //!
 //! `state::ime_actuation` は `#[cfg(windows)]` でゲートされていないため、
 //! `conv_classify` と同様このテストは Linux ホストでもそのまま実行できる。
@@ -49,92 +45,67 @@ fn record_for_tick(
     ActuationRecord::new(origin, BUG43_TARGET, fixture.policy, tick.attempts)
 }
 
-fn load_fixtures(path: &std::path::Path) -> Vec<DriftCorrectionFixture> {
-    let content = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("フィクスチャ読み込み失敗 {}: {e}", path.display()));
-    serde_json::from_str(&content)
-        .unwrap_or_else(|e| panic!("フィクスチャのJSONパース失敗 {}: {e}", path.display()))
-}
-
 fn fixture_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/journals/drift_correction")
 }
 
 /// `ConvClassifyFixture` リプレイ（`tests/journal_replay.rs`）と同じ形の per-tick 照合:
 /// フィクスチャに記録された `policy`/`attempts` の組で `FeedbackPolicy::decide_action` を
-/// 再実行し、`expected` と一致するかを確認する。
+/// 再実行し、`expected` と一致するかを確認する。ケース 1 件 = フィクスチャ 1 件（tick は件内で全件照合）。
 #[test]
 fn replay_all_drift_correction_fixtures() {
-    let dir = fixture_dir();
-    let mut failures = Vec::new();
-    let mut total = 0usize;
+    awase_replay::replay_dir::<DriftCorrectionFixture>(&fixture_dir(), check_fixture).assert_ok();
+}
 
-    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{} が読めない: {e}", dir.display()))
-        .map(|entry| entry.expect("dir entry read failed").path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-        .collect();
-    paths.sort();
+fn check_fixture(fixture: &DriftCorrectionFixture) -> Result<(), String> {
+    let mut errors = Vec::new();
+    // tick が 0 件の fixture は何も検査しないまま通るので失敗にする（件の単位を fixture にした際の
+    // カバレッジ後退を戻す。以前は tick の総数 0 で落ちた）。
+    if fixture.ticks.is_empty() {
+        errors.push(format!(
+            "{}: ticks が 0 件（何も検査していない）",
+            fixture.name
+        ));
+    }
+    for tick in &fixture.ticks {
+        let record = record_for_tick(fixture, tick);
 
-    for path in &paths {
-        for fixture in load_fixtures(path) {
-            for tick in &fixture.ticks {
-                total += 1;
-                let record = record_for_tick(&fixture, tick);
+        // (1) 判定（action）の照合。
+        if record.action != tick.expected {
+            errors.push(format!(
+                "{} attempts={} observed_at_ms={:?}:\n  expected action: {:?}\n  actual action:   {:?}",
+                fixture.name, tick.attempts, tick.observed_at_ms, tick.expected, record.action,
+            ));
+        }
 
-                // (1) 判定（action）の照合。
-                if record.action != tick.expected {
-                    failures.push(format!(
-                        "[{}] {} attempts={} observed_at_ms={:?}:\n  expected action: {:?}\n  actual action:   {:?}",
-                        path.file_name().unwrap_or_default().to_string_lossy(),
-                        fixture.name,
-                        tick.attempts,
-                        tick.observed_at_ms,
-                        tick.expected,
-                        record.action,
-                    ));
-                }
+        // (2) 出所の照合: actuation は常に SelfActuated（物理でも外部注入でもない）。
+        let expected_source = EventSource::SelfActuated {
+            strategy: fixture.policy.strategy(),
+        };
+        if record.origin.source != expected_source {
+            errors.push(format!(
+                "{} attempts={}: origin.source が SelfActuated でない: {:?}",
+                fixture.name, tick.attempts, record.origin.source,
+            ));
+        }
 
-                // (2) 出所の照合: actuation は常に SelfActuated（物理でも外部注入でもない）。
-                let expected_source = EventSource::SelfActuated {
-                    strategy: fixture.policy.strategy(),
-                };
-                if record.origin.source != expected_source {
-                    failures.push(format!(
-                        "[{}] {} attempts={}: origin.source が SelfActuated でない: {:?}",
-                        path.file_name().unwrap_or_default().to_string_lossy(),
-                        fixture.name,
-                        tick.attempts,
-                        record.origin.source,
-                    ));
-                }
-
-                // (3) 世代の配線: epoch は attempts と歩調を合わせて積まれる
-                //     （Actuation::advance_epoch）。fixture の epoch と record の epoch、
-                //     さらに attempts との一致を固定し、EventOrigin 配線の退行を検知する。
-                if record.origin.epoch != tick.epoch
-                    || record.origin.epoch.value() != u64::from(tick.attempts)
-                {
-                    failures.push(format!(
-                        "[{}] {} attempts={}: epoch 配線が壊れている: tick.epoch={:?} record.epoch={:?}",
-                        path.file_name().unwrap_or_default().to_string_lossy(),
-                        fixture.name,
-                        tick.attempts,
-                        tick.epoch,
-                        record.origin.epoch,
-                    ));
-                }
-            }
+        // (3) 世代の配線: epoch は attempts と歩調を合わせて積まれる
+        //     （Actuation::advance_epoch）。fixture の epoch と record の epoch、
+        //     さらに attempts との一致を固定し、EventOrigin 配線の退行を検知する。
+        if record.origin.epoch != tick.epoch
+            || record.origin.epoch.value() != u64::from(tick.attempts)
+        {
+            errors.push(format!(
+                "{} attempts={}: epoch 配線が壊れている: tick.epoch={:?} record.epoch={:?}",
+                fixture.name, tick.attempts, tick.epoch, record.origin.epoch,
+            ));
         }
     }
-
-    assert!(total > 0, "{} にフィクスチャが1件もない", dir.display());
-    assert!(
-        failures.is_empty(),
-        "{} 件のドリフト補正リプレイ不一致（実機で観測済みの入力に対する退行）:\n\n{}",
-        failures.len(),
-        failures.join("\n\n")
-    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 /// BUG-43 固有の意味論的アサーション: 675ms の間に観測された 16 回の drift 検知
@@ -150,7 +121,8 @@ fn replay_all_drift_correction_fixtures() {
 fn bug43_tight_loop_is_bounded_not_infinite() {
     let dir = fixture_dir();
     let path = dir.join("bug-43-drift-correction-tight-loop.json");
-    let fixtures = load_fixtures(&path);
+    let fixtures =
+        awase_replay::load_file::<DriftCorrectionFixture>(&path).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(fixtures.len(), 1, "BUG-43 フィクスチャは1件のはず");
     let fixture = &fixtures[0];
 
@@ -214,4 +186,25 @@ fn bug43_tight_loop_is_bounded_not_infinite() {
         Some(&ActuationAction::GiveUp),
         "16 tick分リプレイした最後まで有界打ち切りが維持されているはず"
     );
+}
+
+/// `ticks: []` の fixture が `replay_dir` 経由で失敗として報告されること（素通りの後退を固定する）。
+#[test]
+fn fixture_without_ticks_is_reported_as_failure() {
+    let dir = std::env::temp_dir().join(format!("awase-drift-empty-ticks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let real = fixture_dir().join("bug-43-drift-correction-tight-loop.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(real).unwrap()).unwrap();
+    for fixture in value.as_array_mut().unwrap() {
+        fixture["ticks"] = serde_json::json!([]);
+    }
+    let fixtures = value.as_array().unwrap().len();
+    std::fs::write(dir.join("empty.json"), value.to_string()).unwrap();
+    let report = awase_replay::replay_dir::<DriftCorrectionFixture>(&dir, check_fixture);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(report.cases, fixtures);
+    assert_eq!(report.failures.len(), fixtures, "{:?}", report.failures);
+    assert!(report.failures.iter().all(|f| f.contains("ticks が 0 件")));
 }

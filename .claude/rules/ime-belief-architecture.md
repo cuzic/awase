@@ -32,7 +32,7 @@ Apply       dispatch_event → reduce()  ← belief の唯一の書き込み点
 - **観測が何もない場合の安全デフォルト推測**（cache miss 等）: `ObserverReported { source: ObservationSource::HeuristicDefault, confidence: Low, .. }` を使う（`reset_to_off_for_tsf_native_cache_miss` を参照）。**`UserImeSetIntent` を使ってはならない** — ユーザー意図を偽装することになり、confidence ガードを完全にバイパスする。
 - `dispatch_event(ImeEvent::ObserverReported { .. })` を直接呼ぶのは上記メソッドの内部に限る
 
-### ユーザー意図 (`UserImeSetIntent` / `UserImeToggleIntent`) の `source`
+### ユーザー意図 (`UserImeSetIntent`) の `source`
 
 `UserIntentSource` は `SyncKey` / `PhysicalImeKey` / `Command` の3つのみ。**`Recovery` や `HwndCache` は列挙値として存在しない**（かつて存在し、ヒューリスティックな推測をユーザー意図として偽装する抜け道になっていたため、型ごと削除した）。
 
@@ -66,7 +66,7 @@ let update = crate::observer::ime_observer::classify_fetched_snapshot(
 if let Some(mode) = update.new_input_mode {
     app.platform_state.ime.dispatch_event(
         ImeEvent::InputModeObserved {
-            mode, source, confidence: ObservationConfidence::High, at: tick_ms,
+            mode, source, confidence: ObservationConfidence::High,
         },
         tick_ms,
     );
@@ -100,7 +100,6 @@ self.dispatch_event(
         mode: InputModeState::AssumedRomaji { .. },
         source: ObservationSource::ImmGetOpenStatus, // 嘘
         confidence: ObservationConfidence::High,
-        at: tick_ms,
     },
     tick_ms,
 );
@@ -111,7 +110,6 @@ self.dispatch_event(
         mode: InputModeState::AssumedRomaji { .. },
         strategy: InputModeApplyStrategy::PostSetOpenEisuReset,
         result: InputModeApplyResult::Applied,
-        at: tick_ms,
     },
     tick_ms,
 );

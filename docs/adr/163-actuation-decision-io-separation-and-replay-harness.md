@@ -49,6 +49,7 @@ developへマージ済み、TH1eのみ未着手（2026-09-12時点、実装順�
   `cargo test -p awase-windows --lib`が669件greenを確認済み。抽出・変換手順は
   `docs/journal-replay-guide.md`「ActuationDecisionコーパスの扱い」節に追記(S10)。
   （置き換えではなく維持、下記TH1d'とは並行タスクだった）。
+  (2026-10-06: このコーパスの`caller` 15件を`null`へ書き換えた。決定D5の追記と BUG-131.md 参照)
 - **TH1d'（新設、Part D）: bug report経由の実機コーパス自動収集: 実装・developマージ済み**
   （PR#201、2026-09-11）。opus-adversarial-consultを3ラウンド実施（Part D設計1回・
   実装タスク分割1回・PR全体のマージ前レビュー1回、計16件のBlocker・19件以上の
@@ -325,8 +326,10 @@ pub struct ActuationDecisionRecord {
     // 別の独立した5つ目の入口（両者が独立に同じ判定を持つのがADR-119の経緯そのもの）。
     // Sync に畳むと、executor側のゲートだけを削る回帰が記録上区別できなくなる。
     pub site: DecisionSite,  // Sync | ImmCrossWrite | FallbackWrite | RunOpenChainAsync |
-                             // DispatchImeSetOpen | ReassertExplicitPhysicalKey |
-                             // ForceOnRomajiCorrection
+                             // DispatchImeSetOpen | ShadowToggleOff | ShadowToggleOn |
+                             // BlacklistDriftCorrection
+                             // (2026-10-06: ReassertExplicitPhysicalKey / ForceOnRomajiCorrection は
+                             //  削除済み。決定D5の追記参照)
     pub gate_inputs: DecisionInputs,
     pub order: ActuationOrderRecord,
     pub chain: [Option<WriteMechanism>; 4],
@@ -577,6 +580,18 @@ ImmCrossのattemptは再生で`continue`（skip）される（TH1eのスコー�
 `ForceOnRomajiCorrection`を追加し、TH1eの差分ゼロ検証の母数にスコープ外経路が無自覚に
 混入しないようにする。
 
+**追記(2026-10-06、PR #515(variant 削除)・#520(コーパス書き換え)): この2 variantは削除した。** 両経路(`reassert_explicit_physical_key`/
+`force_on_and_correct_romaji`)は ADR-178 領域A撤去(`f83084b3`/`621bf93c`)で本番から消え、構築元が
+無くなった。`DecisionSite`は`Deserialize`するため、凍結コーパス
+`tests/journals/actuation_decision/bug-131-report-01m29kdnz.json`(TH1d)の`"caller"`に名前が残る限り
+消せなかったので、所有者の判断で**該当15件(`ReassertExplicitPhysicalKey` 13・`ForceOnRomajiCorrection` 2、
+全て`site: Sync`)の`caller`を`null`に書き換えた**。`DispatchImeSetOpen`への書き換えは、実在の
+dispatch 13件と区別できなくなり母数に混入するため採らない。`caller`は`replay_record`・
+`replay_chain_scan`が読まない診断ラベルなので再生結果は不変。**この15件がスコープ外2経路の記録であることは
+BUG-131.mdに残し、TH1eの母数の扱いは変えない**(`site: Sync`のまま、`caller=null`は他の`Sync`レコード9件と
+同じ形になる点に注意: 母数から除外するなら、このコーパスについてはBUG-131.mdの15件の記述で識別する)。
+原本の取り出し: `git show d703c5d0:crates/awase-windows/tests/journals/actuation_decision/bug-131-report-01m29kdnz.json`。
+
 #### 決定D6: `with_app`再入時の記録漏れは別カウンタで可視化する（解消はしない、S4対応）
 
 `UnifiedJournal`は`PlatformState`（`with_app`経由でのみ到達可能）の中にあるため、
@@ -640,6 +655,8 @@ TH1d（`tests/journals/actuation_decision/`へ既知バグ由来のfixtureを最
   `open_chain.rs`3関数・`dispatch_ime_set_open`）の間」でのみ再現・検出できる。
 
 ## TF2（`[shadow-send]`ログ）との突合せは将来課題に降格する（round1 M5）
+
+**追記（2026-10-06）: TF2（`shadow_send_trace.rs`）自体を撤去した（予定された消費者（ime-passive-model-expected-results.md の INV-3/4/5 の判定器）はあるが、判定器は未実装・診断での使用実績0件・lparamを残さない判断（所有者承認、2026-10-06）で撤去した）。** 以下の突合せは将来課題のまま、前提となるログも無くなった。送信内容の記録は`win32.rs`の`SentInput`journalと`[ime-io]`ログが担う。
 
 当初案の「Part Bの再生結果とTF2の`[shadow-send]`ログを突き合わせる」は、TF2の
 現在の実装（`shadow_send_trace.rs:32`のdocが明記する通り`tracing::debug!`1行のみで

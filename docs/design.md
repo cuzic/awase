@@ -175,7 +175,7 @@ IME の状態管理は「4 つの責務」に分離されています。
 ┌─────────────────────────────────────────────────────────┐
 │  Intent（ユーザーの意図）                                 │
 │  ImeModel::desired_open                                   │
-│  書き換えは UserImeSetIntent / UserImeToggleIntent のみ   │
+│  書き換えは UserImeSetIntent のみ                         │
 └─────────────────────────────────────────────────────────┘
             ↓ reduce()（PlatformState::reduce_with_envelope）
 ┌─────────────────────────────────────────────────────────┐
@@ -277,7 +277,7 @@ composition context が確立されたか確実に判断できないケースが
 | A-1 | `src/`（lib）は OS API 非依存 |
 | A-2 | Engine は `KeyClassification` / `ImeRelevance` / `PhysicalPos` のみ参照 |
 | B-1 | `with_app()` は `app/` / `runtime/` / `executor.rs` のみ呼び出し可 |
-| C-1 | `desired_open` への代入は `UserImeSetIntent` / `UserImeToggleIntent` アームのみ |
+| C-1 | `desired_open` への代入は `UserImeSetIntent` アーム(と専用復旧イベント)のみ |
 | C-2 | Observer は `ImeEvent::ObserverReported` 経由でのみ shadow model に報告 |
 | C-3 | Apply 完了 event は generation 照合必須 |
 | D-2 | ImmCross アプリには物理 IME キー（KANJI 等）を passthrough しない |

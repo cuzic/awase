@@ -265,7 +265,7 @@ std::thread_local! {
     ///
     /// 不具合報告で「awase が実際に何を送ったか」を追えなかった（LINE で「いまは」が
     /// 「いいい」になった報告 01M43NK5P13Q7EQP7CS0N3X4ED。journal の `KeyInput` は物理入力のみで、
-    /// 送信側は IME 操作キー用の `[shadow-send]`〈debug ログ〉しか無かった）ための恒久診断。
+    /// 送信側は `[ime-io]`〈debug ログ〉しか無かった）ための恒久診断。
     static SENT_INPUT_TRACE: std::cell::RefCell<std::collections::VecDeque<SentInputBatch>> =
         const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 
@@ -337,9 +337,6 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
         tracing::debug!(
             "[ime-io] actuation SendInput kind={kind} vk={vks:02X?} issue_us={issue_us}"
         );
-        // ADR-159 段階2(TF2、`shadow_send_trace`doc参照): 上と同一の条件で
-        // 実際の送信内容を構造化記録する。新しい条件は増やさない。
-        crate::shadow_send_trace::record_send_input(kind, &vks, issue_us);
     }
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
     let issue_us = crate::hook::now_timestamp_us();

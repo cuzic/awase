@@ -1,3 +1,4 @@
+use crate::state::deferred_gate_plan;
 use crate::state::event_origin::Generation;
 use crate::state::half_width_alnum::HalfWidthAlnumAction;
 use crate::tsf::warmup::probe_fsm::DeferredOrigin;
@@ -859,18 +860,31 @@ impl Output {
         self.defer_if_probe_or_recovery_in_flight(romaji, origin, false)
     }
 
-    /// `defer_if_probe_or_recovery_in_flight` と同じ「defer すべきか」の
-    /// 判定だけを、実際に defer せず覗き見る版。
-    /// `vk_send.rs::drain_pending_deferred_before_send_if_queue_only`
-    /// （ADR-123 決定4-3 drain-before-send）が、`pending_deferred` が
-    /// 「queue-only」（誰も blocking していないのに非空）かどうかを判定する
-    /// ために使う。`raw_recovery_owns_deferred()` の呼び出し箇所を
-    /// `output/mod.rs` 内に閉じておくため（INV-F 系の集約方針、
-    /// `tests/architecture_guard.rs::raw_recovery_owns_deferred_call_sites_are_accounted_for`
-    /// 参照）、`vk_send.rs` 側から直接呼ばずこの accessor 経由にする。
+    /// probe/recovery が進行中か（`probe_or_recovery_block_reason` の bool 版。ADR-203 の参照用）。
     pub(super) fn is_probe_or_recovery_blocking(&self, check_raw_recovery: bool) -> bool {
-        self.warmup_coord.has_pending_tsf()
-            || (check_raw_recovery && self.raw_recovery_owns_deferred())
+        self.probe_or_recovery_block_reason(check_raw_recovery)
+            .is_some()
+    }
+
+    /// 判断は `deferred_gate_plan::plan_blocking`（FCIS F6）。`raw_recovery_owns_deferred()` は元の短絡評価と同じく
+    /// 必要なときだけ読む。`vk_send.rs::drain_pending_deferred_before_send_if_queue_only`（ADR-123 決定4-3）は、
+    /// `pending_deferred` が「queue-only」（誰も blocking していないのに非空）かを判定するためにこれを使う。
+    /// `raw_recovery_owns_deferred()` の呼び出し箇所を `output/mod.rs` 内に閉じておくため（INV-F 系の集約方針、
+    /// `tests/architecture_guard.rs::raw_recovery_owns_deferred_call_sites_are_accounted_for` 参照）、
+    /// `vk_send.rs` 側から直接呼ばずこの accessor 経由にする。
+    pub(super) fn probe_or_recovery_block_reason(
+        &self,
+        check_raw_recovery: bool,
+    ) -> Option<deferred_gate_plan::BlockReason> {
+        let has_pending_tsf = self.warmup_coord.has_pending_tsf();
+        let raw_recovery_owns =
+            deferred_gate_plan::needs_raw_recovery_read(check_raw_recovery, has_pending_tsf)
+                && self.raw_recovery_owns_deferred();
+        deferred_gate_plan::plan_blocking(deferred_gate_plan::BlockingFacts {
+            has_pending_tsf,
+            check_raw_recovery,
+            raw_recovery_owns,
+        })
     }
 
     fn defer_if_probe_or_recovery_in_flight(
@@ -900,24 +914,29 @@ impl Output {
         check_raw_recovery: bool,
         log_desc: &str,
     ) -> bool {
-        if !self.is_probe_or_recovery_blocking(check_raw_recovery) {
-            return false;
-        }
-        // ADR-123 変更A+C 決定4-3: 件数上限を超える場合は defer を諦め、
-        // 通常送信経路（今日の挙動と同じ、probe保護なしの可能性あり）へ
-        // degrade する。「最も古いエントリから強制flush」は probe の
-        // per-VK confirm 中に生VKを割り込ませることになり危険なため採らない
-        // （`TsfWarmupCoordinator::would_exceed_deferred_cap` の doc コメント
-        // 参照）。この呼び出しが持つ VK 数（`vks.len()`）を渡して判定する
-        // ——1件だけを見て許可すると、複数VKからなるromajiの一括pushで
-        // 上限を超えうる（2026-09-03 code review指摘で修正）。
-        if self.warmup_coord.would_exceed_deferred_cap(vks.len()) {
-            tracing::error!(
-                "[pending-deferred] count limit exceeded, degrading to immediate send: \
-                 input={log_desc:?} origin={origin:?} vk_count={}",
-                vks.len()
-            );
-            return false;
+        let blocking = self.probe_or_recovery_block_reason(check_raw_recovery);
+        // 件数上限は進行中のときだけ読む（元の読む回数と同じ）。
+        let would_exceed_cap =
+            blocking.is_some() && self.warmup_coord.would_exceed_deferred_cap(vks.len());
+        match deferred_gate_plan::plan_defer(blocking, would_exceed_cap) {
+            deferred_gate_plan::DeferPlan::NotBlocked => return false,
+            // ADR-123 変更A+C 決定4-3: 件数上限を超える場合は defer を諦め、
+            // 通常送信経路（今日の挙動と同じ、probe保護なしの可能性あり）へ
+            // degrade する。「最も古いエントリから強制flush」は probe の
+            // per-VK confirm 中に生VKを割り込ませることになり危険なため採らない
+            // （`TsfWarmupCoordinator::would_exceed_deferred_cap` の doc コメント
+            // 参照）。この呼び出しが持つ VK 数（`vks.len()`）を渡して判定する
+            // ——1件だけを見て許可すると、複数VKからなるromajiの一括pushで
+            // 上限を超えうる（2026-09-03 code review指摘で修正）。
+            deferred_gate_plan::DeferPlan::DegradeCapExceeded(reason) => {
+                tracing::error!(
+                    "[pending-deferred] count limit exceeded, degrading to immediate send: \
+                     input={log_desc:?} origin={origin:?} vk_count={} reason={reason:?}",
+                    vks.len()
+                );
+                return false;
+            }
+            deferred_gate_plan::DeferPlan::Defer(_) => {}
         }
         tracing::debug!(
             "[tsf] probe/recovery in flight → deferred {} VK(s) for {:?}",

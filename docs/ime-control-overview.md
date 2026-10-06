@@ -470,7 +470,7 @@ VK_IME_ON/OFF や IMM32 SetOpen は冪等だが、物理 VK_KANJI は冪等で�
 |----------|------|
 | `state/ime_model.rs` | ImeModel SSOT（reducer） |
 | `state/ime_event.rs` | ImeEvent enum 10 variants |
-| `state/ime_event_log.rs` | 512 エントリリングバッファ |
+| `state/ime_event_log.rs` | seq 採番器（旧リングバッファは ADR-232 D2 で撤去） |
 | `state/observation_store.rs` | per-source 観測値ストア |
 | `state/transition.rs` | ImeTransition + generation 管理 |
 | `state/force_guard.rs` | ForceGuardSet + DriftMonitor |

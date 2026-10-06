@@ -1379,12 +1379,485 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
     // （旧: effective_open() が current_tick_ms() を直接呼んでいた。仮想時計を差し込めるよう
     // HubClock 経由にした。実時計の tick の出所はここで固定する）。
     assert_eq!(
-        count_real_calls(production, "HubClock::wall(crate::hook::current_tick_ms)"),
+        count_real_calls(
+            production_code_only(&read_crate_file("src/state/platform_state/shell.rs")),
+            "HubClock::wall(crate::hook::current_tick_ms)"
+        ),
         1,
         "`ImeStateHub` の時計が `hook::current_tick_ms` の実時計ではありません。\
          record 側（`runtime/key_pipeline.rs` の `hook::current_tick_ms()`）と TTL 判定の\
          時間軸が食い違い、実機で IntentStore の上書きが沈黙します。"
     );
+}
+
+/// コメント（行コメント・ネストするブロックコメント）だけを除く小さな字句走査。
+/// 文字列リテラル（`"..."`・`r#"..."#`）と文字リテラルの中の `//`・`/*` はコメント扱いしない
+/// （コメントや文字列の中の glob `tests/*.json` で、その後ろの本番コードが消えないように）。
+/// 除いたあと、空行を落として各行の末尾の空白も落とす。
+fn strip_comments(code: &str) -> String {
+    let b: Vec<char> = code.replace('\r', "").chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    while i < b.len() {
+        let c = b[i];
+        let next = b.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < b.len() && b[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            let mut depth = 1;
+            i += 2;
+            while i < b.len() && depth > 0 {
+                if b[i] == '/' && b.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if b[i] == '*' && b.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    if b[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            }
+        } else if c == 'r'
+            && (i == 0
+                || !ident(b[i - 1])
+                // `br#".."#`・`cr#".."#`（接頭辞つきの生文字列）
+                || (matches!(b[i - 1], 'b' | 'c') && (i == 1 || !ident(b[i - 2]))))
+            && {
+                let mut j = i + 1;
+                while b.get(j) == Some(&'#') {
+                    j += 1;
+                }
+                b.get(j) == Some(&'"')
+            }
+        {
+            // 生文字列 r##"..."##
+            let mut j = i + 1;
+            let mut hashes = 0;
+            while b[j] == '#' {
+                hashes += 1;
+                j += 1;
+            }
+            j += 1; // 開き `"`
+            while j < b.len() {
+                if b[j] == '"' && (0..hashes).all(|k| b.get(j + 1 + k) == Some(&'#')) {
+                    j += 1 + hashes;
+                    break;
+                }
+                j += 1;
+            }
+            out.extend(&b[i..j.min(b.len())]);
+            i = j;
+        } else if c == '"' {
+            let mut j = i + 1;
+            while j < b.len() && b[j] != '"' {
+                j += if b[j] == '\\' { 2 } else { 1 };
+            }
+            let end = (j + 1).min(b.len());
+            out.extend(&b[i..end]);
+            i = end;
+        } else if c == '\'' {
+            // 文字リテラル（`'"'`・`'\n'`）はまとめて写す。lifetime（`'a`）は `'` だけ写す。
+            let end = if next == Some('\\') {
+                // `'\''` の2つ目の `'` を閉じと誤認しないよう、エスケープ文字の次から探す。
+                b.get(i + 3..)
+                    .and_then(|rest| rest.iter().position(|&x| x == '\'').map(|k| i + 3 + k + 1))
+            } else if b.get(i + 2) == Some(&'\'') {
+                Some(i + 3)
+            } else {
+                None
+            };
+            let end = end.unwrap_or(i + 1).min(b.len());
+            out.extend(&b[i..end]);
+            i = end;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out.lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `with_clock(` の呼び出し数。`new_with_clock(` など識別子の一部と、`fn with_clock(`（定義）は数えない。
+fn count_with_clock_calls(code: &str) -> usize {
+    code.lines()
+        .filter(|l| !l.contains("fn with_clock("))
+        .map(|l| {
+            l.match_indices("with_clock(")
+                .filter(|(i, _)| {
+                    l[..*i]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+                })
+                .count()
+        })
+        .sum()
+}
+
+/// `ImeStateHub.clock` への書き込みの数。private でも子モジュール（`platform_state/` 配下）と核の
+/// 本番メソッドからは書けるため数える。拾うもの: `.clock = ..`・`*clock = ..`（分配束縛）・
+/// `&mut <path>.clock`／`&mut (<path>.clock)`／`ref mut clock`（`mem::replace`・`mem::swap`・`mem::take`
+/// は `&mut` で拾う）・`clock.clone_from(..)`（`HubClock` は `Clone` なので今すでに書き換えの手段）・
+/// 行内の分配束縛／リテラル `{ clock, .. }`・`{ clock: c, .. }`・`, clock: c`。
+///
+/// 限界（拾えない）:
+/// - 別名に束縛し直したあとの書き込み（`let c = &mut self.clock;` は `&mut` で拾えるが、
+///   `let Self { clock: c, .. } = self;` が複数行に分かれて `{` と同じ行に無い形、`let c = &mut *(..)` の
+///   ような経由）。
+/// - `&mut self` を取るメソッド呼び出し（`self.clock.advance_ms(n)` は今すでに存在する。実時計の `Wall` では
+///   何もしないが、実装が変われば抜け道）。`clone_from` 以外の `Clone`/`Default` 由来の書き換えも同様。
+/// - `Cell`/`RefCell` 経由（今の `clock` は内部可変性を持たない enum で、型を変えれば diff に出る）。
+fn count_clock_writes(code: &str) -> usize {
+    let assign_after = |rest: &str| {
+        let t = rest.trim_start();
+        t.starts_with('=') && !t.starts_with("==")
+    };
+    let mut n = 0;
+    for l in code.lines() {
+        for (k, _) in l.match_indices("clock") {
+            let before = &l[..k];
+            let after = &l[k + "clock".len()..];
+            if after
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue; // `clocks` など
+            }
+            let dotted = before.ends_with('.');
+            let deref = before.ends_with('*');
+            if (dotted || deref) && assign_after(after) {
+                n += 1;
+            } else if before.trim_end().ends_with("ref mut") {
+                n += 1;
+            } else if let Some(m) = before.rfind("&mut ") {
+                // `&mut (self.clock)`・`&mut self.clock`・`&mut clock`
+                let mid = before[m + 5..].trim_start_matches('(');
+                if mid
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                {
+                    n += 1;
+                }
+            }
+            if after.starts_with(".clone_from(") {
+                n += 1;
+            }
+            let bt = before.trim_end();
+            let at = after.trim_start();
+            if (bt.ends_with('{') || bt.ends_with(','))
+                && (at.starts_with(':') || at.starts_with(',') || at.starts_with('}'))
+            {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// 行頭の `clock:`・`clock,`（構造体リテラルの値・短縮形、フィールド宣言）の数。
+/// 期待値は `platform_state.rs`（フィールド宣言 1 + `with_clock` 本体の短縮形 1）の 2 件だけで、
+/// 他のファイルは 0 件。別の構築関数（`clock: c,` など）が増えたら件数が増えて落ちる。
+fn count_clock_field_lines(code: &str) -> usize {
+    code.lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with("clock:") || t.starts_with("clock,")
+        })
+        .count()
+}
+
+/// 殻の本番コードが渡す実時計の式（`effective_open_at` を検査する
+/// `effective_open_is_wired_to_the_intent_store_decision`の `HubClock::wall(..)` 件数の固定と同じ式）。
+const REAL_CLOCK_CALL: &str = "with_clock(HubClock::wall(crate::hook::current_tick_ms))";
+
+/// `with_clock(` の呼び出し元を、本番（`mod tests` を除く）では次の2か所だけに固定する:
+/// - `state/platform_state/shell.rs`（`new()` の殻。実時計）
+/// - `state/platform_state.rs` の `#[cfg(test)] impl PlatformState`（`for_test`）
+///
+/// 加えて、この2ファイルの本番コードで `clock` への書き込みが 0 件であること。
+/// すべての照合はコメントを除いてから行う。違反を説明で返す。
+fn with_clock_call_violations(sources: &[(String, String)]) -> Vec<String> {
+    const SHELL: &str = "src/state/platform_state/shell.rs";
+    const CORE: &str = "src/state/platform_state.rs";
+    let mut out = Vec::new();
+    for (path, content) in sources {
+        let production = strip_comments(production_code_only(content));
+        let calls = count_with_clock_calls(&production);
+        let allowed = path == SHELL || path == CORE;
+        if calls > 0 && !allowed {
+            out.push(format!(
+                "{path}: with_clock( の本番呼び出し {calls} 件（許可リスト外）"
+            ));
+        } else if allowed && calls != 1 {
+            out.push(format!(
+                "{path}: with_clock( の呼び出しが {calls} 件（1件であること）"
+            ));
+        }
+        // `clock` は private だが、`platform_state/` 配下の子モジュールには親の private が見える。
+        if path == CORE || path.starts_with("src/state/platform_state/") {
+            let writes = count_clock_writes(&production);
+            if writes != 0 {
+                out.push(format!(
+                    "{path}: clock への書き込み（代入・&mut・分配束縛）が {writes} 件（0件であること）"
+                ));
+            }
+            let want = usize::from(path == CORE) * 2;
+            let fields = count_clock_field_lines(&production);
+            if fields != want {
+                out.push(format!(
+                    "{path}: clock のフィールド行（宣言・リテラル・短縮形）が {fields} 件（{want}件であること）"
+                ));
+            }
+        }
+        if path == CORE && calls == 1 {
+            // `#[cfg(test)] impl PlatformState { .. }` ブロックの**中身**に呼び出しがあること
+            // （空の gated `impl` を残して外へ移すと、gate 文字列が前にあるだけでは通ってしまう）。
+            let gated: usize =
+                extract_all_balanced_blocks(&production, "#[cfg(test)]\nimpl PlatformState {")
+                    .iter()
+                    .map(|b| count_with_clock_calls(b))
+                    .sum();
+            if gated != 1 {
+                out.push(format!(
+                    "{path}: with_clock( の呼び出しが `#[cfg(test)] impl PlatformState`（for_test）の中にありません"
+                ));
+            }
+        }
+        if path == SHELL {
+            // 殻の1件は実時計を渡すこと（空白を除いて照合）。
+            let squeezed: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+            if squeezed.matches(REAL_CLOCK_CALL).count() != 1 {
+                out.push(format!(
+                    "{path}: with_clock の引数が `{REAL_CLOCK_CALL}`（実時計）ではありません"
+                ));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn with_clock_is_called_only_by_real_clock_shell_and_for_test() {
+    let sources: Vec<(String, String)> = list_src_files()
+        .into_iter()
+        .map(|p| {
+            let c = read_crate_file(&p);
+            (p, c)
+        })
+        .collect();
+    let v = with_clock_call_violations(&sources);
+    assert!(
+        v.is_empty(),
+        "`with_clock(` の本番呼び出し元が想定と異なります: {v:?}。本番で `ImeStateHub` に任意の時計を\
+         渡す入口を増やすと、TTL 判定の時間軸（`hook::current_tick_ms`）が食い違う恐れがあります。\
+         実時計は `state/platform_state/shell.rs` の `new()` だけです。"
+    );
+}
+
+#[test]
+fn with_clock_guard_detects_new_production_entry() {
+    const SHELL: &str = "src/state/platform_state/shell.rs";
+    const CORE: &str = "src/state/platform_state.rs";
+    let shell_ok = "fn new() { Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)) }";
+    // フィールド宣言 1 + `with_clock` 本体の短縮形 1（行頭の `clock:`・`clock,`）を持つ最小の核。
+    let core_ok = "struct ImeStateHub {\n    clock: C,\n}\nimpl ImeStateHub {\n fn with_clock(clock: C) -> Self {\n Self {\n clock,\n }\n }\n}\n#[cfg(test)]\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n";
+    let build = |shell: &str, core: &str| {
+        vec![
+            (SHELL.to_string(), shell.to_string()),
+            (CORE.to_string(), core.to_string()),
+        ]
+    };
+    let has = |srcs: &[(String, String)], needle: &str| {
+        with_clock_call_violations(srcs)
+            .iter()
+            .any(|m| m.contains(needle))
+    };
+    assert!(with_clock_call_violations(&build(shell_ok, core_ok)).is_empty());
+
+    // 新しい本番の入口（別ファイル）
+    let mut other = build(shell_ok, core_ok);
+    other.push((
+        "src/runtime/mod.rs".to_string(),
+        "fn x() { ImeStateHub::with_clock(HubClock::manual()) }".to_string(),
+    ));
+    assert!(has(&other, "許可リスト外"));
+    // 殻が実時計以外を渡す
+    assert!(has(
+        &build(
+            "fn new() { Self::with_clock(HubClock::manual(0)) }",
+            core_ok
+        ),
+        "実時計"
+    ));
+    // 実時計の式がコメントにしか無い（行コメント・ブロックコメント）
+    for c in [
+        "// with_clock(HubClock::wall(crate::hook::current_tick_ms))\nSelf::with_clock(HubClock::manual(0))",
+        "/* with_clock(HubClock::wall(crate::hook::current_tick_ms)) */ Self::with_clock(HubClock::manual(0))",
+    ] {
+        assert!(has(&build(c, core_ok), "実時計"), "{c}");
+    }
+    // 空の gated `impl` を残し、`for_test` を外へ移す
+    assert!(has(
+        &build(
+            shell_ok,
+            "#[cfg(test)]\nimpl PlatformState {\n}\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n"
+        ),
+        "for_test"
+    ));
+    // gated ブロックの doc コメントにだけ `ImeStateHub::with_clock(` がある（実呼び出しは外）
+    assert!(has(
+        &build(
+            shell_ok,
+            "#[cfg(test)]\nimpl PlatformState {\n /// ImeStateHub::with_clock(clock) と同じ\n fn helper() {}\n}\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n"
+        ),
+        "for_test"
+    ));
+    // 殻にもう1件
+    assert!(has(
+        &build(
+            &format!("{shell_ok}\nfn y() {{ Self::with_clock(c) }}"),
+            core_ok
+        ),
+        "1件であること"
+    ));
+    // for_test が `#[cfg(test)]` の外
+    assert!(has(
+        &build(
+            shell_ok,
+            "impl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n"
+        ),
+        "for_test"
+    ));
+    // clock への書き込み（代入・setter・&mut・分配束縛・括弧つき &mut）
+    for (shell, core) in [
+        ("fn new() { let mut s = Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)); s.clock = HubClock::manual(0); s }", core_ok.to_string()),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn set(&mut self, c: C) {{ self.clock = c; }} }}")),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ std::mem::swap(&mut self.clock, &mut o); }} }}")),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ let r = &mut (self.clock); }} }}")),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ let Self {{ clock, .. }} = self; *clock = c; }} }}")),
+        (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ let Self {{ ref mut clock, .. }} = *self; }} }}")),
+    ] {
+        assert!(has(&build(shell, &core), "clock への書き込み"), "{shell} / {core}");
+    }
+    // 名前を変えた分配束縛・clone_from・接頭辞つき生文字列の後ろ
+    for body in [
+        "let Self { clock: c, .. } = self; *c = HubClock::manual(0);",
+        "self.clock.clone_from(&o);",
+        "let r = br#\"a\"/*\"#; self.clock = c;",
+        "let r = cr#\"a\"/*\"#; self.clock = c;",
+        "std::mem::replace(&mut self.clock, c);",
+        "std::mem::take(&mut self.clock);",
+    ] {
+        assert!(
+            has(
+                &build(shell_ok, &format!("{core_ok}fn m(&mut self) {{ {body} }}")),
+                "clock への書き込み"
+            ),
+            "{body}"
+        );
+    }
+    // 構造体リテラルの値が `HubClock::` で始まらない・短縮形（別の構築関数）
+    for lit in [
+        "clock: c,",
+        "clock: make_clock(),",
+        "clock,",
+        "clock: HubClock::manual(0),",
+    ] {
+        assert!(
+            has(
+                &build(
+                    shell_ok,
+                    &format!("{core_ok}fn z() {{ Self {{\n{lit}\n }} }}")
+                ),
+                "フィールド行"
+            ),
+            "{lit}"
+        );
+    }
+    // `platform_state/` 配下の別の子モジュールでの書き込み
+    let mut child = build(shell_ok, core_ok);
+    child.push((
+        "src/state/platform_state/other.rs".to_string(),
+        "fn f(h: &mut ImeStateHub) { h.clock = c; }".to_string(),
+    ));
+    assert!(has(&child, "other.rs: clock への書き込み"));
+    // M1: コメント内の glob `/*`（閉じない）の後ろの本番コード・文字列の `"/*"` の後ろが消えない
+    let mut glob = build(shell_ok, core_ok);
+    glob.push((
+        "src/state/other.rs".to_string(),
+        "/// tests/journals/*.json を使う\nfn x() { ImeStateHub::with_clock(HubClock::manual(0)) }"
+            .to_string(),
+    ));
+    assert!(has(&glob, "許可リスト外"));
+    let in_string = build(
+        shell_ok,
+        &format!("{core_ok}fn x(&mut self) {{ let g = \"/*\"; self.clock = c; }}"),
+    );
+    assert!(has(&in_string, "clock への書き込み"));
+    // 文字列内の `//`・生文字列・ネストしたブロックコメント・文字リテラルの `'"'`
+    let tricky = build(
+        shell_ok,
+        &format!(
+            "{core_ok}fn x() {{ let u = \"http://a\"; let r = r#\"/* \"#; let q = '\"'; /* a /* b */ c */ self.clock = c; }}"
+        ),
+    );
+    assert!(has(&tricky, "clock への書き込み"));
+    // `==` やコメント内の代入は書き込みではない。`new_with_clock(` や `fn with_clock(` 定義は数えない
+    assert!(with_clock_call_violations(&build(
+        shell_ok,
+        &format!("{core_ok}// self.clock = c;\nfn q() {{ a.clock == b }}")
+    ))
+    .is_empty());
+    let neutral = vec![(
+        "src/journal.rs".to_string(),
+        "fn with_clock(c: C) {}\nlet j = UnifiedJournal::new_with_clock(1, c);".to_string(),
+    )];
+    assert!(with_clock_call_violations(&neutral).is_empty());
+}
+
+/// M1: コメント内の glob（`tests/journals/*.json`）を持つ実在の 3 ファイルで、`strip_comments` が
+/// 本番コードを消さないこと（関数の定義行が、除去の前後で同じ数だけ残る）。
+#[test]
+fn strip_comments_keeps_production_code_in_files_with_glob_comments() {
+    for path in [
+        "src/state/actuation_decision_record.rs",
+        "src/state/conv_classify.rs",
+        "src/state/ime_actuation.rs",
+    ] {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let fn_lines = |text: &str| {
+            text.lines()
+                .filter(|l| {
+                    let t = l.trim_start();
+                    !t.starts_with("//")
+                        && (t.starts_with("fn ")
+                            || t.starts_with("pub fn ")
+                            || t.starts_with("pub(crate) fn "))
+                })
+                .count()
+        };
+        assert!(
+            fn_lines(production) > 0,
+            "{path}: 本番の関数が見つかりません"
+        );
+        assert_eq!(
+            fn_lines(&strip_comments(production)),
+            fn_lines(production),
+            "{path}: strip_comments が本番コードを消しています"
+        );
+    }
 }
 
 /// `UserIntentSource` をリテラルで名乗れるのは `write_set_open_request`
@@ -1730,6 +2203,24 @@ fn shell_methods_only_read_scope_once_and_delegate() {
     if let Some(v) = shell_shape_violation(&code) {
         panic!("殻の形の違反: {v}");
     }
+    // 最初の `pub(crate) fn` より前（形の検査の対象外）に置けるのは、構築口の 3 つだけ
+    // （`ImeStateHub::new`・`PlatformState::new`・`Default::default`）。ここに判断を書く抜け道を塞ぐ。
+    let preamble = code.split("pub(crate) fn ").next().unwrap_or("");
+    let fns: Vec<&str> = preamble
+        .split("fn ")
+        .skip(1)
+        .map(|b| b.split('(').next().unwrap_or("?").trim())
+        .collect();
+    assert_eq!(
+        fns,
+        ["new", "new", "default"],
+        "殻の先頭（形の検査の対象外）に構築口以外の関数があります"
+    );
+    assert_eq!(
+        preamble.matches("foreground_scope()").count(),
+        0,
+        "構築口が foreground_scope() を読んでいます"
+    );
 }
 
 /// `shell_shape_violation` 自体が、`if`/`match`/`for` で検出できない形も拾えることの確認。
@@ -1930,17 +2421,19 @@ fn uia_async_focus_kind_handler_does_not_write_belief() {
     }
 }
 
-/// `match act_signature` 部分の開始マーカー。`ir_apply_drift_correction` の中で
-/// `FeedbackPolicy` を分岐する `match act_policy { ... }` ブロックの先頭。
-const DRIFT_MATCH_MARKER: &str = "match act_policy {";
+/// 早期 return 分岐の開始マーカー。`ir_apply_drift_correction`（FCIS F4 で observe→`decide_drift_plan`→
+/// execute に分けた後の execute）の中で、計画の `DriftStep` を分岐する `match act.step { ... }` の先頭。
+/// 旧 `match act_policy {`（`FeedbackPolicy` の分岐）に相当する。`Blind`/`GiveUp`・`Read`/`Confirmed` の
+/// 判断は `state/drift_plan.rs` に移り、ここは計画の実行だけをする。
+const DRIFT_MATCH_MARKER: &str = "let send_path = match act.step {";
 /// 実送信ブロックの先頭にある `tracing::warn!` のメッセージ接頭辞。この直前で
-/// `match act_policy { ... }`（早期 return 分岐）が終わる。
+/// `match act.step { ... }`（早期 return 分岐）が終わる。
 const DRIFT_SEND_LOG_MARKER: &str = "[drift] correction: observed=";
 
-/// `ir_apply_drift_correction` の `match act_policy { ... }` ブロック（＝ `Blind`/`GaveUp`
-/// と `Read`/`Confirmed` の早期 return 分岐）だけを切り出す。
+/// `ir_apply_drift_correction`（execute）の `let send_path = match act.step { ... }` ブロック（＝
+/// `GiveUp`/`Confirmed`/`SkipWarrantWouldBlock` の早期 return 腕）だけを切り出す。
 ///
-/// 開始は `match act_policy {`、終了は実送信ブロックの先頭にある
+/// 開始は `let send_path = match act.step {`、終了は実送信ブロックの先頭にある
 /// `tracing::warn!("[drift] correction: observed=...")` の直前。この `tracing::warn!` より後は
 /// ADR-080 不変条件6 のスコープ外（乖離が確定して実際に `set_ime_open` する正規経路であり、
 /// そこで `dispatch_event(ImeEvent::DriftDetected {..})` を呼ぶのは正当）。したがって
@@ -1982,7 +2475,7 @@ fn extract_drift_correction_match_block(content: &str) -> &str {
 /// `check_drift_correction` が「観測 == desired」で乖離なしと誤認し、本来まだ実現できて
 /// いない目標を「達成済み」と勘違いする（＝同じ失敗モード）。
 ///
-/// 注意: `match act_policy { ... }` ブロックの**後**にある正規の実送信経路は
+/// 注意: `match act.step { ... }` ブロックの**後**にある正規の実送信経路は
 /// `dispatch_event(ImeEvent::DriftDetected {..})` を正当に呼ぶ。それは不変条件6の
 /// スコープ外なので、関数全体ではなく match ブロックのテキストだけを検査する
 /// (`extract_drift_correction_match_block` 参照)。仮にその `dispatch_event` を match
@@ -2010,7 +2503,7 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
     ] {
         assert!(
             !match_block.contains(forbidden),
-            "{path} の ir_apply_drift_correction 内 `match act_policy {{ ... }}` \
+            "{path} の ir_apply_drift_correction 内 `match act.step {{ ... }}` \
              （Blind/GaveUp・Read/Confirmed の早期 return 分岐）に、観測ストアへの \
              書き込みと思われるパターン `{forbidden}` が見つかりました。\n\
              ADR-080 不変条件6 により、GaveUp（および Read の deadline 超過/未収束）は \
@@ -2940,17 +3433,54 @@ fn conv_write_call_sites_are_fixed_to_the_inventory() {
 ///
 /// `ir_apply_drift_correction` は、ImmCross の書き込み経路（`set_ime_open_ordered`、ADR-090 A-2 で
 /// `Unwarranted` を拒否する）で書けない補正を、journal・`DriftDetected`（`applied` を `Optimistic` に
-/// 偽装する）・バルーン通知へ流していた。`would_have_blocked()` の早期 return が、これらより前にあることを固定する。
+/// 偽装する）・バルーン通知へ流していた。
+///
+/// FCIS F4 で判断が `state/drift_plan.rs::decide_drift_plan` へ移った。固定する性質は 3 つ:
+/// 1. observe が `.would_have_blocked()` を読む（授権の事実が `DriftFacts` に載る）。
+/// 2. `decide_drift_plan` は、授権が下りない ImmCross を `SkipWarrantWouldBlock`（診断なし）で返す
+///    分岐を、診断の決定（`should_notify_diagnostic`）・方針ごとの打ち切り/収束/送信（`SendPath`）より**前**に持つ。
+/// 3. execute は `SkipWarrantWouldBlock` の腕で return し、journal・`DriftDetected`・`set_ime_open_ordered` は
+///    その腕より後ろにしか無い。
 #[test]
 fn drift_correction_does_not_detect_when_the_warrant_would_block() {
     let content = read_crate_file("src/runtime/ime_refresh.rs");
     let production = production_code_only(&content);
-    let body = extract_fn_body(production, "fn ir_apply_drift_correction");
-    let guard = body.find(".would_have_blocked()").expect(
-        "`ir_apply_drift_correction` に `would_have_blocked()` の早期 return が必要（BUG-163）",
+    let observe = extract_fn_body(production, "fn ir_observe_drift_facts");
+    assert!(
+        observe.contains(".would_have_blocked()"),
+        "`ir_observe_drift_facts` に `would_have_blocked()` の読み取りが必要（BUG-163）"
     );
+
+    let plan_src = read_crate_file("src/state/drift_plan.rs");
+    let plan_prod = production_code_only(&plan_src);
+    let decide = extract_fn_body(plan_prod, "pub fn decide_drift_plan");
+    let guard = decide
+        .find("f.imm_cross && f.warrant_would_block")
+        .expect("`decide_drift_plan` に授権が下りない ImmCross の早期分岐が必要（BUG-163）");
     for later in [
-        "ir_notify_drift_giveup_diagnostic(",
+        "should_notify_diagnostic(",
+        "SendPath::ImmCross",
+        "FeedbackPolicy::Blind",
+    ] {
+        let at = decide
+            .find(later)
+            .unwrap_or_else(|| panic!("`{later}` が `decide_drift_plan` に無い"));
+        assert!(
+            guard < at,
+            "授権の早期分岐は `{later}` より前になければならない（BUG-163）"
+        );
+    }
+    assert!(
+        decide[guard..].contains("notify_diagnostic: false")
+            && decide[guard..].contains("DriftStep::SkipWarrantWouldBlock"),
+        "授権が下りない補正は診断なしの `SkipWarrantWouldBlock` にする（BUG-163）"
+    );
+
+    let body = extract_fn_body(production, "fn ir_apply_drift_correction");
+    let skip_arm = body
+        .find("DriftStep::SkipWarrantWouldBlock =>")
+        .expect("execute に `SkipWarrantWouldBlock` の腕が必要（BUG-163）");
+    for later in [
         "ImeEvent::DriftDetected",
         "JournalEntry::ImeActuation",
         "set_ime_open_ordered(",
@@ -2959,10 +3489,94 @@ fn drift_correction_does_not_detect_when_the_warrant_would_block() {
             .find(later)
             .unwrap_or_else(|| panic!("`{later}` が `ir_apply_drift_correction` に無い"));
         assert!(
-            guard < at,
-            "`would_have_blocked()` の早期 return は `{later}` より前になければならない（BUG-163）"
+            skip_arm < at,
+            "`SkipWarrantWouldBlock` の腕（return）は `{later}` より前になければならない（BUG-163）"
         );
     }
+    assert!(
+        drift_diagnostic_call_is_guarded(body),
+        "診断バルーンの呼び出しは `if act.notify_diagnostic {{` の内側になければならない\
+         （外すと毎 tick バルーンが出る。ADR-132 / BUG-163）"
+    );
+}
+
+/// `ir_notify_drift_giveup_diagnostic(` の呼び出しが、直前の `if act.notify_diagnostic {` の
+/// 直下（空白のみを挟む）にあるか。継続時間・通知済みの判定は関数側から `decide_drift_plan` へ移ったので、
+/// この `if` が唯一の防波堤である。
+fn drift_diagnostic_call_is_guarded(body: &str) -> bool {
+    let Some(at) = body.find("ir_notify_drift_giveup_diagnostic(") else {
+        return false;
+    };
+    let head = body[..at].trim_end();
+    // `self.` の前置きを除いてから、直前が `if` の開き括弧であることを見る。
+    let head = head.strip_suffix("self.").unwrap_or(head).trim_end();
+    head.ends_with("if act.notify_diagnostic {")
+}
+
+/// 診断バルーンの呼び出し（`.ir_notify_drift_giveup_diagnostic(`、定義の `fn ` を除く）の件数。
+fn count_drift_diagnostic_calls(text: &str) -> usize {
+    text.matches(".ir_notify_drift_giveup_diagnostic(").count()
+}
+
+/// 診断の呼び出しは全域で 1 件（`ir_apply_drift_correction` の `if act.notify_diagnostic` の内側だけ）。
+/// 2 件目や別関数からの呼び出しは、上の「最初の 1 件が守られているか」の照合では見えない。
+#[test]
+fn drift_diagnostic_is_called_from_exactly_one_site() {
+    let mut files = Vec::new();
+    walk_rs_files(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    let mut sites = Vec::new();
+    for f in files {
+        let content = production_code_only(&fs::read_to_string(&f).unwrap_or_default()).to_string();
+        let n = count_drift_diagnostic_calls(&content);
+        if n > 0 {
+            sites.push((f.display().to_string(), n));
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "診断の呼び出し元は ir_apply_drift_correction の 1 箇所だけ: {sites:?}"
+    );
+    assert!(
+        sites[0].0.ends_with("ime_refresh.rs") && sites[0].1 == 1,
+        "{sites:?}"
+    );
+}
+
+#[test]
+fn drift_diagnostic_call_count_detects_a_second_call() {
+    assert_eq!(
+        count_drift_diagnostic_calls("self.ir_notify_drift_giveup_diagnostic(a);"),
+        1
+    );
+    assert_eq!(
+        count_drift_diagnostic_calls(
+            "self.ir_notify_drift_giveup_diagnostic(a);\nself.ir_notify_drift_giveup_diagnostic(b);"
+        ),
+        2
+    );
+    assert_eq!(
+        count_drift_diagnostic_calls("fn ir_notify_drift_giveup_diagnostic("),
+        0
+    );
+}
+
+#[test]
+fn drift_diagnostic_guard_detects_an_unguarded_call() {
+    let guarded =
+        "if act.notify_diagnostic {\n    self.ir_notify_drift_giveup_diagnostic(a, b);\n}";
+    assert!(drift_diagnostic_call_is_guarded(guarded));
+    let unguarded = "self.ir_notify_drift_giveup_diagnostic(a, b);";
+    assert!(!drift_diagnostic_call_is_guarded(unguarded));
+    let wrong_cond = "if other {\n    self.ir_notify_drift_giveup_diagnostic(a, b);\n}";
+    assert!(!drift_diagnostic_call_is_guarded(wrong_cond));
+    let after_if =
+        "if act.notify_diagnostic {\n    x();\n}\nself.ir_notify_drift_giveup_diagnostic(a, b);";
+    assert!(!drift_diagnostic_call_is_guarded(after_if));
+    assert!(!drift_diagnostic_call_is_guarded("nothing"));
 }
 
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。
@@ -3453,12 +4067,10 @@ fn establish_initial_focus_scope_advances_focus_epoch_once() {
 fn establish_initial_focus_scope_does_not_write_ime_belief() {
     // (関数名, 禁止語) の組で例外を明示する。件数と中身は下の専用 assert が縛る。
     const EXEMPT: &[(&str, &str)] = &[
-        ("sync_initial_focus_fence", "dispatch_event("),
-        // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
-        // `sync_initial_focus_fence` と同じ理由で dispatch_event(` 1件だけ例外化する。
-        ("sync_initial_app_policy", "dispatch_event("),
-        // BUG-148/ADR-186: current_focus 初期化ヘルパー（同上、dispatch_event( 1件だけ例外）。
-        ("sync_initial_focus_hwnd", "dispatch_event("),
+        // ADR-232 D1: 起動時のフォーカス確立ヘルパー（旧 `sync_initial_focus_fence`・
+        // `sync_initial_app_policy`・`sync_initial_focus_hwnd` の 3 つを統合）。
+        // `dispatch_event(` 1件だけ例外化する。
+        ("sync_initial_focus_scope", "dispatch_event("),
     ];
 
     let content = read_crate_file("src/runtime/focus_tracking.rs");
@@ -3487,25 +4099,13 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
             "enter_focus_scope",
             extract_fn_body(&content, "fn enter_focus_scope"),
         ),
-        // BUG-102 で追加した fence 同期ヘルパー。`dispatch_event(` を1件だけ
-        // 持つため下の EXEMPT で除外するが、**残りの禁止語は他と同じく効かせる**
-        // ——対象リストへ載せないと、この関数に belief 書き込みを足しても
-        // どのテストも落ちない（2026-08-31 敵対的レビュー指摘3-a）。
+        // 起動時のフォーカス確立ヘルパー（ADR-232 D1、BUG-102・114・148）。`dispatch_event(` を
+        // 1件だけ持つため上の EXEMPT で除外するが、**残りの禁止語は他と同じく効かせる**
+        // ——対象リストへ載せないと、この関数に belief 書き込みを足してもどのテストも
+        // 落ちない（2026-08-31 敵対的レビュー指摘3-a）。
         (
-            "sync_initial_focus_fence",
-            extract_fn_body(&content, "fn sync_initial_focus_fence"),
-        ),
-        // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
-        // 同じ理由（対象リストへ載せないと belief 書き込みを足しても検知
-        // できない）で明示的に加える。
-        (
-            "sync_initial_app_policy",
-            extract_fn_body(&content, "fn sync_initial_app_policy"),
-        ),
-        // BUG-148/ADR-186 で追加した current_focus 初期化ヘルパー。同じ理由で対象に加える。
-        (
-            "sync_initial_focus_hwnd",
-            extract_fn_body(&content, "fn sync_initial_focus_hwnd"),
+            "sync_initial_focus_scope",
+            extract_fn_body(&content, "fn sync_initial_focus_scope"),
         ),
     ];
     for forbidden in [
@@ -3526,70 +4126,20 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         }
     }
 
-    // 例外を認めた `sync_initial_focus_fence` の `dispatch_event` は、fence 同期
-    // イベントちょうど1件でなければならない（BUG-102）。件数を縛らないと、
-    // 2つ目の dispatch（`FocusChanged` 等）をここに足しても既存テストが全て
-    // 緑のまま通ってしまう。
-    let sync_body = extract_fn_body(&content, "fn sync_initial_focus_fence");
+    // 例外を認めた `sync_initial_focus_scope` の `dispatch_event` は、起動時のフォーカス確立
+    // イベントちょうど1件でなければならない（BUG-102・114・148、ADR-232 D1）。件数を
+    // 縛らないと、2つ目の dispatch（`FocusChanged` 等）をここに足しても既存テストが
+    // 全て緑のまま通ってしまう。
+    let sync_body = extract_fn_body(&content, "fn sync_initial_focus_scope");
     assert_eq!(
         count_real_calls(sync_body, "dispatch_event("),
         1,
-        "sync_initial_focus_fence の dispatch_event はちょうど1件（fence 同期のみ）"
+        "sync_initial_focus_scope の dispatch_event はちょうど1件（起動時のフォーカス確立のみ）"
     );
     assert!(
-        non_comment_lines(sync_body).contains("ImeEvent::InitialFocusFenceEstablished"),
-        "sync_initial_focus_fence の唯一の dispatch は \
-         ImeEvent::InitialFocusFenceEstablished であること"
-    );
-
-    // BUG-114 根本原因1（ADR-134 D1c）: `sync_initial_app_policy` も同様に
-    // dispatch_event ちょうど1件、`InitialAppPolicyEstablished` のみであること。
-    let app_policy_sync_body = extract_fn_body(&content, "fn sync_initial_app_policy");
-    assert_eq!(
-        count_real_calls(app_policy_sync_body, "dispatch_event("),
-        1,
-        "sync_initial_app_policy の dispatch_event はちょうど1件（app_policy 初期化のみ）"
-    );
-    assert!(
-        non_comment_lines(app_policy_sync_body).contains("ImeEvent::InitialAppPolicyEstablished"),
-        "sync_initial_app_policy の唯一の dispatch は \
-         ImeEvent::InitialAppPolicyEstablished であること"
-    );
-
-    // BUG-148/ADR-186: `sync_initial_focus_hwnd` も dispatch_event ちょうど1件、
-    // `InitialFocusHwndEstablished` のみであること。
-    let focus_hwnd_sync_body = extract_fn_body(&content, "fn sync_initial_focus_hwnd");
-    assert_eq!(
-        count_real_calls(focus_hwnd_sync_body, "dispatch_event("),
-        1,
-        "sync_initial_focus_hwnd の dispatch_event はちょうど1件（current_focus 初期化のみ）"
-    );
-    assert!(
-        non_comment_lines(focus_hwnd_sync_body).contains("ImeEvent::InitialFocusHwndEstablished"),
-        "sync_initial_focus_hwnd の唯一の dispatch は \
-         ImeEvent::InitialFocusHwndEstablished であること"
-    );
-
-    // `establish_initial_focus_scope` は `sync_initial_app_policy` をちょうど1回、
-    // かつ `advance_focus_tracking`（`current_app_profile()` が正しい値を返す
-    // ようになる箇所）より後に呼ぶこと（ADR-134 D1c の実装位置要件）。
-    let bootstrap_body = extract_fn_body(&content, "fn establish_initial_focus_scope");
-    assert_eq!(
-        count_real_calls(bootstrap_body, "self.sync_initial_app_policy("),
-        1,
-        "establish_initial_focus_scope は sync_initial_app_policy をちょうど1回呼ぶこと"
-    );
-    let bootstrap_code = non_comment_lines(bootstrap_body);
-    let advance_idx = bootstrap_code
-        .find("self.advance_focus_tracking(")
-        .expect("establish_initial_focus_scope must call advance_focus_tracking");
-    let app_policy_idx = bootstrap_code
-        .find("self.sync_initial_app_policy(")
-        .expect("establish_initial_focus_scope must call sync_initial_app_policy");
-    assert!(
-        advance_idx < app_policy_idx,
-        "sync_initial_app_policy は advance_focus_tracking の後に呼ぶこと \
-         (先に呼ぶと current_app_profile() がまだ正しい値を返さない、ADR-134 D1c)"
+        non_comment_lines(sync_body).contains("ImeEvent::InitialFocusScopeEstablished"),
+        "sync_initial_focus_scope の唯一の dispatch は \
+         ImeEvent::InitialFocusScopeEstablished であること"
     );
 }
 
@@ -3657,34 +4207,42 @@ fn focus_hwnd_updated_dispatch_is_skipped_during_bootstrap() {
     );
 }
 
-/// BUG-102: bootstrap の `establish_initial_focus_scope` は、live 側フェンス
-/// （`Runtime::focus_fence()` = `enter_focus_scope` 後の epoch + `update_focus_info`
-/// 後の hwnd）を `ObservationStore::current_fence` へ同期しなければならない。
+/// BUG-102・114・148（ADR-232 D1）: bootstrap の `establish_initial_focus_scope` は、
+/// 起動時のフォーカススコープ（`app_policy`・`current_focus`・観測の fence）を
+/// `sync_initial_focus_scope` でちょうど1回 `ImeModel` へ入れなければならない。
 ///
 /// 同期が無いと、起動時にフォーカスされていたアプリで発生する `ImmCrossProbe`
 /// 観測（High / `ActuatingPool`）が `derive_filtered` の `is_identity_ok` で
 /// stale 扱いされ、ユーザーが別プロセスへ切り替えて戻る（= `FocusChanged`）まで
-/// 恒久的に導出から外れ続ける。
+/// 恒久的に導出から外れ続ける（BUG-102）。`app_policy` は既定値 `Read` のまま
+/// 固定され（BUG-114）、`current_focus` は `None` のまま明示意図が記録されない（BUG-148）。
 ///
-/// 呼び出し順序も固定する。`sync_initial_focus_fence` が読む `focus_fence()` の
-/// 2 軸は別々の場所で確定するため、**両方の後**でなければならない:
-/// epoch は `enter_focus_scope`、hwnd は `advance_focus_tracking`
-/// （→ `update_focus_info`）。どちらか一方でも前に置くと、確定前の古い値を
-/// fence として焼き付ける。
+/// 呼び出し順序も固定する。値の 3 つは別々の場所で確定するため、**両方の後**で
+/// なければならない: epoch は `enter_focus_scope`、hwnd・profile は
+/// `advance_focus_tracking`（→ `update_focus_info`・`current_app_profile()`）。
+/// どちらか一方でも前に置くと、確定前の古い値を焼き付ける。
 #[test]
-fn establish_initial_focus_scope_syncs_the_observation_fence() {
+fn establish_initial_focus_scope_syncs_the_focus_scope() {
     let content = read_crate_file("src/runtime/focus_tracking.rs");
     let body = extract_fn_body(&content, "fn establish_initial_focus_scope");
     assert_eq!(
-        count_real_calls(body, "self.sync_initial_focus_fence("),
+        count_real_calls(body, "self.sync_initial_focus_scope("),
         1,
-        "establish_initial_focus_scope は sync_initial_focus_fence をちょうど1回呼ぶこと \
+        "establish_initial_focus_scope は sync_initial_focus_scope をちょうど1回呼ぶこと \
          (BUG-102: ObservationStore 側の fence が既定値のまま残ると、起動直後の \
-         アプリの高信頼観測が次のプロセス変更まで導出から外れ続ける)"
+         アプリの高信頼観測が次のプロセス変更まで導出から外れ続ける。BUG-114: app_policy、\
+         BUG-148: current_focus も同様に最初のプロセス切替まで未確立になる)"
     );
     // 順序判定もコメントを落としたテキストに対して行う（doc コメント中の関数名
     // 言及が `find` に先に当たると偽陽性/偽陰性になるため、件数カウント側の
     // `count_real_calls` と揃える）。
+    // ファイル全体でも呼び出しは1か所だけ（別の関数から2か所目を呼ぶ経路を捕まえる）。
+    assert_eq!(
+        count_real_calls(production_code_only(&content), "self.sync_initial_focus_scope("),
+        1,
+        "sync_initial_focus_scope の呼び出しは focus_tracking.rs 全体で establish_initial_focus_scope \
+         の1か所だけ（起動時経路を足すなら ADR-232 D1 を見直すこと）"
+    );
     let body_code = non_comment_lines(body);
     let idx = |needle: &str| {
         body_code
@@ -3693,32 +4251,34 @@ fn establish_initial_focus_scope_syncs_the_observation_fence() {
     };
     let advance_idx = idx("self.advance_focus_tracking(");
     let enter_idx = idx("self.enter_focus_scope(");
-    let sync_idx = idx("self.sync_initial_focus_fence(");
+    let sync_idx = idx("self.sync_initial_focus_scope(");
     assert!(
         enter_idx < sync_idx,
-        "sync_initial_focus_fence は enter_focus_scope の後に呼ぶこと \
+        "sync_initial_focus_scope は enter_focus_scope の後に呼ぶこと \
          (先に呼ぶと epoch インクリメント前の古い fence を焼き付ける)"
     );
     assert!(
         advance_idx < sync_idx,
-        "sync_initial_focus_fence は advance_focus_tracking の後に呼ぶこと \
-         (先に呼ぶと update_focus_info 前の hwnd=NULL を fence に焼き付ける)"
+        "sync_initial_focus_scope は advance_focus_tracking の後に呼ぶこと \
+         (先に呼ぶと update_focus_info 前の hwnd=NULL や current_app_profile() 確定前の \
+         profile を焼き付ける、ADR-134 D1c)"
     );
 }
 
-/// BUG-102: `ImeEvent::InitialFocusFenceEstablished` は bootstrap 専用であり、
-/// dispatch 元は `sync_initial_focus_fence` の1箇所だけ。reducer 側のアームは
-/// `ObservationStore::establish_initial_fence()`（fence 1フィールドの差し替え）
-/// しか行わない。
+/// BUG-102・114・148（ADR-232 D1）: `ImeEvent::InitialFocusScopeEstablished` は bootstrap
+/// 専用であり、dispatch 元は `sync_initial_focus_scope` の1箇所だけ。reducer 側のアームは
+/// `app_policy`・`current_focus`・`ObservationStore::establish_initial_fence()` しか書かない。
 ///
 /// このイベントは「まだ一度も IME を観測していない時点で dispatch される」という、
 /// 他のどのイベントも持たない性質を持つ（ADR-102 決定3-b）。belief を書く処理が
 /// このアームや新しい呼び出し元に紛れ込むと、その不変条件が静かに壊れる。
 /// アーム本体が belief に触れないことは
-/// `state::ime_model::tests::initial_focus_fence_established_touches_only_the_fence`
-/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
+/// `state::ime_model::tests::initial_focus_scope_established_touches_only_the_scope_identity`
+/// が、`FocusChanged` との食い違いは
+/// `initial_focus_scope_matches_focus_changed_except_input_barrier` が実行時に固定し、
+/// ここでは「増えていないこと」だけを見る（新しい起動時経路の追加を捕まえるのはこのガード）。
 #[test]
-fn initial_focus_fence_event_only_touches_the_fence() {
+fn initial_focus_scope_event_is_dispatched_from_one_place() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
@@ -3730,9 +4290,9 @@ fn initial_focus_fence_event_only_touches_the_fence() {
     // パターンを検知できない（本ファイル冒頭 `list_src_files` の doc 参照）。
     let checks: &[(&str, &[(&str, usize)])] = &[
         (
-            "InitialFocusFenceEstablished",
+            "InitialFocusScopeEstablished",
             &[
-                // sync_initial_focus_fence（bootstrap 専用の唯一の dispatch 元）。
+                // sync_initial_focus_scope（bootstrap 専用の唯一の dispatch 元）。
                 ("runtime/focus_tracking.rs", 1),
                 // reducer のアーム。
                 ("state/ime_model.rs", 1),
@@ -3741,8 +4301,9 @@ fn initial_focus_fence_event_only_touches_the_fence() {
             ],
         ),
         (
-            // reducer のアームが fence の差し替え以外をしていないこと（呼び先の限定）。
-            // 先頭のドットにより `pub fn establish_initial_fence(`（定義）は数えない。
+            // reducer のアームが fence の入れ方を `establish_initial_fence`（観測プールと
+            // drift を消さない口）に限っていること。先頭のドットにより
+            // `pub fn establish_initial_fence(`（定義）は数えない。
             ".establish_initial_fence(",
             &[("state/ime_model.rs", 1)],
         ),
@@ -3754,8 +4315,8 @@ fn initial_focus_fence_event_only_touches_the_fence() {
             .to_string_lossy()
             .replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
-        // doc コメントでこのイベント名に言及しているファイル（`probe_admission.rs` の
-        // `FocusFence` 説明等）を数えないよう、コメント行を落としてから数える。
+        // doc コメントでこのイベント名に言及しているファイルを数えないよう、
+        // コメント行を落としてから数える。
         let production = non_comment_lines(production_code_only(&content));
         for (needle, expected) in checks {
             let count = production.matches(needle).count();
@@ -3770,53 +4331,6 @@ fn initial_focus_fence_event_only_touches_the_fence() {
                  このイベントは bootstrap（最初の IME 観測より前）でのみ dispatch される\
                  専用イベントです。新しい呼び出し元を足す前に、それが本当に「起動時の\
                  初回フォーカススコープ確立」なのかを確認してください（ADR-102 決定3-b）。"
-            );
-        }
-    }
-}
-
-/// BUG-114 根本原因1（ADR-134 D1c）: `ImeEvent::InitialAppPolicyEstablished` は
-/// bootstrap 専用であり、dispatch 元は `sync_initial_app_policy` の1箇所だけ。
-/// reducer 側のアームは `self.app_policy = AppImePolicy::from_profile(profile)`
-/// （app_policy 1フィールドの差し替え）しか行わない。
-///
-/// `initial_focus_fence_event_only_touches_the_fence` と同じ構造の監視テスト。
-/// アーム本体が app_policy 以外に触れないことは
-/// `state::ime_model::tests::initial_app_policy_established_touches_only_app_policy`
-/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
-#[test]
-fn initial_app_policy_event_only_touches_app_policy() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
-    let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
-
-    let checks: &[(&str, &[(&str, usize)])] = &[(
-        "InitialAppPolicyEstablished",
-        &[
-            ("runtime/focus_tracking.rs", 1),
-            ("state/ime_model.rs", 1),
-            ("state/ime_event.rs", 1),
-        ],
-    )];
-    for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
-        let production = non_comment_lines(production_code_only(&content));
-        for (needle, expected) in checks {
-            let count = production.matches(needle).count();
-            let expected_count = expected
-                .iter()
-                .find(|(f, _)| *f == rel)
-                .map_or(0, |(_, n)| *n);
-            assert_eq!(
-                count, expected_count,
-                "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
-                 {expected_count}, 実際: {count})。ADR-134 D1c 参照。"
             );
         }
     }
@@ -3946,52 +4460,6 @@ fn can_use_imm32_cross_process_wrapper_keeps_track_caller() {
     assert_eq!(prev2, "#[must_use]", "その前の行: {prev2}");
 }
 
-/// BUG-148/ADR-186: `ImeEvent::InitialFocusHwndEstablished` は bootstrap 専用であり、
-/// dispatch 元は `sync_initial_focus_hwnd` の1箇所だけ。reducer 側のアームは
-/// `self.current_focus = Some(hwnd)`（current_focus 1フィールドの差し替え）しか行わない。
-///
-/// `initial_app_policy_event_only_touches_app_policy` と同じ構造の監視テスト。
-/// アーム本体が current_focus 以外に触れないことは
-/// `state::ime_model::tests::initial_focus_hwnd_established_touches_only_current_focus`
-/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
-#[test]
-fn initial_focus_hwnd_event_only_touches_current_focus() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
-    let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
-
-    let checks: &[(&str, &[(&str, usize)])] = &[(
-        "InitialFocusHwndEstablished",
-        &[
-            ("runtime/focus_tracking.rs", 1),
-            ("state/ime_model.rs", 1),
-            ("state/ime_event.rs", 1),
-        ],
-    )];
-    for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
-        let production = non_comment_lines(production_code_only(&content));
-        for (needle, expected) in checks {
-            let count = production.matches(needle).count();
-            let expected_count = expected
-                .iter()
-                .find(|(f, _)| *f == rel)
-                .map_or(0, |(_, n)| *n);
-            assert_eq!(
-                count, expected_count,
-                "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
-                 {expected_count}, 実際: {count})。BUG-148/ADR-186 参照。"
-            );
-        }
-    }
-}
-
 // ── ADR-103 決定4: probe 段の唯一の出口 ────────────────────────────────────
 
 /// `dispatch_probe_actions` の本体から `return DispatchResult` を1件残らず消す
@@ -4096,8 +4564,8 @@ fn discard_pending_construction_is_limited_to_discard_pending_action() {
 
 /// `raw_recovery_owns_deferred` の呼び出し箇所は `finish_probe_stage`
 /// （ADR-103 決定4-e、INV-F: 段末の deferred 解放判断）と
-/// `defer_if_probe_in_flight`（ADR-123 変更A: 新規モーラを defer すべきか
-/// の判断、report_id `01M1KEGZ081YHJ1T2NC765SYYH`）の2箇所に限定する。
+/// `probe_or_recovery_block_reason`（旧 `defer_if_probe_in_flight` 系。ADR-123 変更A: 新規モーラを defer すべきか・
+/// drain-before-send してよいかの判断、FCIS F6 で `plan_blocking` 経由に集約、report_id `01M1KEGZ081YHJ1T2NC765SYYH`）の2箇所に限定する。
 /// 前者は「pending_deferred を今 flush してよいか」、後者は「新しい入力を
 /// pending_deferred に積むべきか」という別の問いに答えており、いずれも
 /// raw recovery が deferred キューの所有権を握っている間は手を出さない、
@@ -4115,7 +4583,7 @@ fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     assert_eq!(
         count, 2,
         "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(2 = \
-         finish_probe_stage + defer_if_probe_in_flight)と異なります(実際: {count})。"
+         finish_probe_stage + probe_or_recovery_block_reason)と異なります(実際: {count})。"
     );
 }
 
@@ -6112,4 +6580,622 @@ fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
         !refresh_prod.contains("with_press(") && !refresh_prod.contains("claim_press_write("),
         "ime_refresh.rs（drift correction）は押下 ID を持たない: `with_press`/`claim_press_write` を呼んではならない"
     );
+}
+
+// ── FCIS P5a-1: `ImeStateHub` / `PlatformState` の公開面を固定する ─────────────────────
+//
+// `ImeStateHub` を `pub` にしたのは、閉ループのハーネス（`tests/support/harness.rs`）が本物を呼ぶため。
+// 公開する面は「ハーネスが実際に呼ぶものだけ」に絞り、名前の集合をここで固定する。記録系
+// （`record_confirmed`・`record_optimistic`・`record_ime_apply_result` とその `_in_scope` 版。INV-A97-1）は
+// `pub` にしない。ただしこれは**入口を名前で絞る規律**であって、安全性の根拠ではない: `pub fn dispatch_event` が
+// あれば、`ImeApplyRequested → ImeApplySucceeded` や `ModeKeyPassedThrough{demote_applied}` を流して crate の外から
+// `applied` を書ける。本番に実害が無いのは、**本番のハブに crate の外から届く口が無い**から
+// （`Runtime.platform_state` は private、`PlatformState.ime` は `pub(crate)`）。この到達不能性が本当の不変条件で、
+// 下の `production_hub_is_unreachable_from_outside_the_crate` が固定する。ハーネスの呼び出しが増えて `pub` を
+// 足すときは、`PLATFORM_STATE_PUB_FNS` と `harness.rs` の使い方を同じ PR で更新すること。
+
+const PLATFORM_STATE_PUB_FNS: &[&str] = &[
+    "advance_clock_ms",
+    "apply_key_effect_prediction",
+    "arm_external_change_watch_in_scope",
+    "clock",
+    "dispatch_event",
+    "effective_open_at",
+    "follow_external_change_in_scope",
+    "model",
+    "new", // `PlatformState::new`（`shell.rs`、実時計の構築口）
+    "record_explicit_intent",
+    "set_is_japanese_ime",
+    "warrant_context",
+    "with_clock",
+];
+
+/// `pub` の直後の修飾子（`const`・`async`・`unsafe`・`extern "..."`）を読み飛ばして、`fn ` の後ろを返す。
+/// `pub(crate)` などの制限付きは対象外（`None`）。
+fn pub_fn_rest(line: &str) -> Option<&str> {
+    let mut rest = line.trim_start().strip_prefix("pub ")?;
+    loop {
+        if let Some(r) = rest.strip_prefix("fn ") {
+            return Some(r);
+        }
+        if let Some(r) = rest
+            .strip_prefix("const ")
+            .or_else(|| rest.strip_prefix("async "))
+            .or_else(|| rest.strip_prefix("unsafe "))
+        {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("extern ") {
+            // `extern "C" fn`
+            rest = r.trim_start();
+            if let Some(q) = rest.strip_prefix('"') {
+                rest = q.split_once('"').map_or("", |(_, t)| t).trim_start();
+            }
+        } else {
+            return None;
+        }
+    }
+}
+
+/// `pub fn`（修飾子付きを含む。`pub(crate)` などは含まない）の名前を集める。
+fn pub_fn_names(code: &str) -> Vec<String> {
+    let mut names: Vec<String> = code
+        .lines()
+        .filter_map(pub_fn_rest)
+        .map(|rest| {
+            rest.split(['(', '<'])
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// `pub` なシグネチャが `needles` のどれかを名乗る `pub fn` の名前。見るのは (1) 戻り値（どの `->` の後ろでも。
+/// クロージャ型の `->` も含めて広く拾う）と (2) `Fn(`/`FnOnce(`/`FnMut(`/関数ポインタ `fn(` の引数（`with_app` と同じ形:
+/// `f: impl FnOnce(&mut ImeStateHub) -> R`）。普通の引数として `&mut ImeStateHub` を受け取るだけのものは
+/// 呼び出し側が既にハブを持っているので対象外。
+fn pub_fns_exposing(code: &str, needles: &[&str]) -> Vec<String> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut hits = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(rest) = pub_fn_rest(line) else {
+            continue;
+        };
+        let name = rest.split(['(', '<']).next().unwrap_or("").trim();
+        let mut sig = String::new();
+        for l in &lines[i..] {
+            sig.push_str(l);
+            sig.push(' ');
+            if l.contains('{') || l.trim_end().ends_with(';') {
+                break;
+            }
+        }
+        let mentions = |t: &str| needles.iter().any(|n| t.contains(n));
+        // どの `->` の後ろでも、ハブを名乗る型があれば検出（`-> &mut ImeStateHub where F: Fn() -> u32` の形も拾う）。
+        let returns_hub = sig.split("->").skip(1).any(mentions);
+        let closure_takes_hub = ["Fn(", "FnOnce(", "FnMut(", "fn("].iter().any(|f| {
+            sig.match_indices(f).any(|(at, _)| {
+                let args = &sig[at + f.len()..];
+                let mut depth = 1usize;
+                let end = args
+                    .char_indices()
+                    .find(|(_, c)| {
+                        depth += usize::from(*c == '(');
+                        depth -= usize::from(*c == ')');
+                        depth == 0
+                    })
+                    .map_or(args.len(), |(k, _)| k);
+                mentions(&args[..end])
+            })
+        });
+        if returns_hub || closure_takes_hub {
+            hits.push(name.to_string());
+        }
+    }
+    hits
+}
+
+/// ハブの名前を、別名・トレイト実装・他の型の `pub` フィールドで外へ出している行。
+/// - `type X = ..ハブ..;`（`pub` でなくても。別名で返されると名前の照合をすり抜ける）と、`use ..ハブ.. as X`
+/// - `impl Deref/AsRef/AsMut/Borrow ... for Runtime`、またはハブを名乗る型・型引数の同トレイトの `impl`
+///   （一覧に無いトレイト〈`From`・`Index`/`IndexMut` など〉は検出しない）
+/// - `pub name: ..ハブ..`（どの型のフィールドでも。`pub static` も同じ形）と、`struct W(pub ..ハブ..)`
+///   （**型が次の行に回るフィールド**・複数行のタプル構造体は、1 行目にハブの名前が来ないので検出しない）
+fn hub_exposure_lines(code: &str, needles: &[&str]) -> Vec<String> {
+    let mentions = |t: &str| needles.iter().any(|n| t.contains(n));
+    let mut hits = Vec::new();
+    for line in code.lines() {
+        let t = line.trim();
+        // 別名（`pub(crate) type` も。`impl Deref` の `type Target = ..` も当たる）と、`as` による別名
+        // （rustfmt が展開した複数行の `use` グループの中の行にも当たるよう、`use` の有無は見ない。`=` を含む
+        // キャスト行は除く）。
+        let is_alias = t.contains("type ") && t.contains("= ") && mentions(t);
+        let is_use_alias = t.contains(" as ") && !t.contains('=') && mentions(t);
+        let is_trait_impl = t.starts_with("impl") && {
+            let (tr, ty) = t.split_once(" for ").unwrap_or((t, ""));
+            ["Deref", "AsRef", "AsMut", "Borrow"]
+                .iter()
+                .any(|n| tr.contains(n))
+                && (mentions(tr)
+                    || mentions(ty)
+                    || ty.trim_end_matches(['{', ' ']).ends_with("Runtime"))
+        };
+        let is_pub_field = t.starts_with("pub ")
+            && !t.contains("fn ")
+            && !t.starts_with("pub use ")
+            && ((t.contains(':') && mentions(t))
+                || (t.contains("struct ") && t.contains("(pub ") && mentions(t)));
+        if is_alias || is_use_alias || is_trait_impl || is_pub_field {
+            hits.push(t.to_string());
+        }
+    }
+    hits
+}
+
+/// 構造体のブロック内の `pub` フィールド（`pub(crate)` などは含まない）。
+fn pub_field_lines(block: &str) -> Vec<String> {
+    block
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("pub ") && l.contains(':') && !l.contains("fn "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// 記録系の名前（`pub` にしてはならないもの）。
+fn recorder_pub_violation(names: &[String]) -> Option<String> {
+    names
+        .iter()
+        .find(|n| {
+            n.starts_with("record_confirmed")
+                || n.starts_with("record_optimistic")
+                || n.starts_with("record_ime_apply_result")
+        })
+        .map(|n| format!("記録系 `{n}` が pub fn になっています（INV-A97-1）"))
+}
+
+#[test]
+fn platform_state_pub_fns_are_fixed_and_exclude_recorders() {
+    let mut names = Vec::new();
+    for rel in list_src_files() {
+        let content = read_crate_file(&rel);
+        let code = non_comment_lines(production_code_only(&content));
+        // `impl ImeStateHub {` / `impl PlatformState {` はどのファイルにあっても拾う（`runtime/executor.rs` など）。
+        for needle in ["impl ImeStateHub {", "impl PlatformState {"] {
+            for block in extract_all_balanced_blocks(&code, needle) {
+                names.extend(pub_fn_names(block));
+            }
+        }
+        // フィールド: `ImeStateHub`・`PlatformState` は `pub` フィールドを持たない（`shadow_model` 等を直接書かせない）。
+        for needle in ["pub struct ImeStateHub {", "pub struct PlatformState {"] {
+            for block in extract_all_balanced_blocks(&code, needle) {
+                let fields = pub_field_lines(block);
+                assert!(
+                    fields.is_empty(),
+                    "`{rel}`: `{needle}` に pub フィールドがあります（{fields:?}）。外から状態を直接書き換えられます"
+                );
+            }
+        }
+    }
+    names.sort();
+    if let Some(v) = recorder_pub_violation(&names) {
+        panic!("{v}");
+    }
+    let expected: Vec<String> = PLATFORM_STATE_PUB_FNS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    assert_eq!(
+        names, expected,
+        "`ImeStateHub`/`PlatformState` の `pub fn` の集合が想定と異なります。ハーネスが呼ぶものだけを pub にし、\
+         増減したら `PLATFORM_STATE_PUB_FNS` を更新してください。"
+    );
+}
+
+/// 本番のハブに crate の外から届く口が無いこと（`pub dispatch_event` が安全である前提）。
+#[test]
+fn production_hub_is_unreachable_from_outside_the_crate() {
+    // (1) `PlatformState.ime` は `pub(crate)` のまま（上のテストが `pub` フィールドを禁じる）。
+    let ps = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/platform_state.rs",
+    )));
+    assert!(
+        ps.contains("pub(crate) ime: ImeStateHub"),
+        "`PlatformState.ime` が `pub(crate)` ではありません"
+    );
+    // (2) `Runtime.platform_state` は private。
+    let rt = non_comment_lines(production_code_only(&read_crate_file("src/runtime/mod.rs")));
+    assert!(
+        !rt.lines().any(|l| {
+            let t = l.trim_start();
+            t.starts_with("pub") && t.contains("platform_state:")
+        }),
+        "`Runtime.platform_state` が pub になっています"
+    );
+    // (3) `ImeStateHub`・`PlatformState` を名乗って返す・クロージャへ渡す `pub fn`、別名、Deref 系の impl、pub フィールドが無い。
+    //     **検出できない形**（テキスト走査の限界）: ハブを名乗らない型を介する経路（ハブを private フィールドに持つ
+    //     型が `pub fn` で内部を返す、`impl<T> Trait for T` の総称実装、マクロ生成、`enum` の variant が運ぶもの、
+    //     `Box<dyn Any>` での型消去、`From`/`Index` など一覧に無いトレイトの実装、型が次の行に回るフィールド）。これらは `Runtime`・`PlatformState` に pub のメソッドを足すレビューで見ること。
+    for rel in list_src_files() {
+        let content = read_crate_file(&rel);
+        let code = non_comment_lines(production_code_only(&content));
+        let hits = pub_fns_exposing(&code, &["PlatformState", "ImeStateHub"]);
+        assert!(
+            hits.is_empty(),
+            "`{rel}`: 本番のハブへの口になりうる pub fn があります（戻り値、または `with_app` と同じクロージャ引数）: {hits:?}"
+        );
+        let lines = hub_exposure_lines(&code, &["PlatformState", "ImeStateHub"]);
+        assert!(
+            lines.is_empty(),
+            "`{rel}`: 別名・Deref/AsMut 系の impl・pub フィールドでハブを外へ出しています: {lines:?}"
+        );
+    }
+}
+
+/// 上のガード自体が、`pub fn` の追加・修飾子付き・記録系の公開・pub フィールド・ハブを返す口を検出できることの確認。
+#[test]
+fn platform_state_pub_fn_guard_detects_additions_and_recorders() {
+    let code = "    pub fn a(&self) {}\n    pub const fn b(&self) {}\n    pub(crate) fn c(&self) {}\n    fn d(&self) {}\n    pub unsafe fn e(&self) {}\n    pub async fn f(&self) {}\n    pub extern \"C\" fn g(&self) {}\n    pub const unsafe fn h(&self) {}\n    pub fn record_confirmed_in_scope(&mut self) {}\n";
+    let names = pub_fn_names(code);
+    assert_eq!(
+        names,
+        ["a", "b", "e", "f", "g", "h", "record_confirmed_in_scope"]
+    );
+    assert!(recorder_pub_violation(&names).is_some());
+    assert!(
+        recorder_pub_violation(&["a".to_string(), "record_explicit_intent".to_string()]).is_none()
+    );
+    let unsafe_rec = pub_fn_names("    pub unsafe fn record_confirmed(&mut self) {}\n");
+    assert!(recorder_pub_violation(&unsafe_rec).is_some());
+
+    let block = "{\n    pub(crate) belief: B,\n    pub shadow_model: M,\n    clock: C,\n    pub fn x(&self) {}\n}";
+    assert_eq!(pub_field_lines(block), ["pub shadow_model: M,"]);
+
+    let code = "    pub fn hub(&mut self) -> &mut ImeStateHub {\n        &mut self.ime\n    }\n    pub fn ok(&self) -> Self {\n        todo!()\n    }\n    pub fn multi(\n        &mut self,\n    ) -> &PlatformState {\n        todo!()\n    }\n";
+    assert_eq!(
+        pub_fns_exposing(code, &["PlatformState", "ImeStateHub"]),
+        ["hub", "multi"]
+    );
+
+    // `with_app` と同じ形（クロージャ引数で `&mut` を渡す）。最初の `->` はクロージャ型のもの。
+    let needles = ["PlatformState", "ImeStateHub"];
+    let closure = "    pub fn with_hub<R>(&mut self, f: impl FnOnce(&mut ImeStateHub) -> R) -> R {\n        f(&mut self.ime)\n    }\n";
+    assert_eq!(pub_fns_exposing(closure, &needles), ["with_hub"]);
+    let bound = "    pub fn with_ps<F, R>(&mut self, f: F) -> R\n    where\n        F: FnMut(&mut PlatformState) -> R,\n    {\n        todo!()\n    }\n";
+    assert_eq!(pub_fns_exposing(bound, &needles), ["with_ps"]);
+    // where 節にクロージャの `->` があっても、ハブを返す戻り値を見逃さない。関数ポインタの引数も検出。
+    let where_ret = "    pub fn hub(&mut self) -> &mut ImeStateHub\n    where\n        F: Fn() -> u32,\n    {\n        todo!()\n    }\n";
+    assert_eq!(pub_fns_exposing(where_ret, &needles), ["hub"]);
+    let fnptr = "    pub fn with_ptr(f: fn(&mut ImeStateHub)) {\n        todo!()\n    }\n";
+    assert_eq!(pub_fns_exposing(fnptr, &needles), ["with_ptr"]);
+    // ハブを受け取るだけの通常の引数、無関係なクロージャは対象外。
+    assert!(pub_fns_exposing(
+        "    pub fn feed(hub: &mut ImeStateHub, f: impl FnOnce(u32) -> u32) -> u32 {\n",
+        &needles
+    )
+    .is_empty());
+
+    // 別名・Deref 系の impl・他の型の pub フィールド・`use .. as`。
+    for bad in [
+        "type Hub = ImeStateHub;",
+        "pub type Hub = crate::state::platform_state::ImeStateHub;",
+        "use crate::PlatformState as Ps;",
+        "impl std::ops::DerefMut for Runtime {",
+        "impl AsMut<ImeStateHub> for PlatformState {",
+        "impl Deref for ImeStateHub {",
+        "pub hub: &'a mut ImeStateHub,",
+        "pub ps: PlatformState,",
+        "pub struct W(pub ImeStateHub);",
+        "pub(crate) type Hub = ImeStateHub;",
+        "platform_state::ImeStateHub as Hub,",
+    ] {
+        assert_eq!(hub_exposure_lines(bad, &needles).len(), 1, "{bad}");
+    }
+    for ok in [
+        "pub struct ImeStateHub {",
+        "pub use platform_state::PlatformState;",
+        "impl Default for PlatformState {",
+        "impl AsRef<str> for Thing {",
+        "pub(crate) ime: ImeStateHub,",
+        "pub fn new() -> Self {",
+        "let n = PlatformState::count() as u32;",
+        "impl Deref for RuntimeTableCache {",
+    ] {
+        assert!(hub_exposure_lines(ok, &needles).is_empty(), "{ok}");
+    }
+}
+
+/// `runtime/ime_refresh.rs` の本番コードが、打鍵中判定を `is_typing`(`state/ime_read_strategy.rs`)経由で行い、
+/// `TYPING_IDLE_MS` を直接比較していないこと。`runtime/` は Windows 限定で単体テストが observe を通らないため、
+/// `idle_ms < TYPING_IDLE_MS` に戻されても全数表(decide 側)は落ちない。それを文字列照合で固定する。
+fn ime_refresh_uses_is_typing_only(src: &str) -> bool {
+    let code = non_comment_lines(production_code_only(src));
+    !code.contains("TYPING_IDLE_MS") && code.contains("is_typing(")
+}
+
+#[test]
+fn read_strategy_observe_goes_through_is_typing() {
+    let src = read_crate_file("src/runtime/ime_refresh.rs");
+    assert!(
+        ime_refresh_uses_is_typing_only(&src),
+        "runtime/ime_refresh.rs が打鍵中判定を is_typing 経由で行っていません(TYPING_IDLE_MS を直接比較していないか、\
+         is_typing( を呼んでいるかを確認)。decide 側(state/ime_read_strategy.rs)と式がずれると、\
+         通過マークを読まないまま SkipTyping に落ちます。"
+    );
+}
+
+#[test]
+fn ime_refresh_is_typing_guard_detects_violations() {
+    assert!(ime_refresh_uses_is_typing_only(
+        "let m = is_typing(idle_ms) && live(now);\n// TYPING_IDLE_MS はコメント\n"
+    ));
+    assert!(!ime_refresh_uses_is_typing_only(
+        "let m = idle_ms < TYPING_IDLE_MS && live(now);\n"
+    ));
+    assert!(!ime_refresh_uses_is_typing_only("let m = live(now);\n"));
+    assert!(!ime_refresh_uses_is_typing_only(
+        "let m = is_typing(idle_ms);\nlet t = idle_ms <= crate::tuning::TYPING_IDLE_MS;\n"
+    ));
+}
+
+// ── FCIS F3: relay の「即時/キュー/ガード」の判断は `state/relay_plan.rs` に出した。固定する辺と対 ──
+// - e12: `execute_relay` の Consume は Timer だけを即時に実行する（Immediate の腕が `execute_one`、Queue の腕が `push_back`）。
+// - e13: `OutputActiveGuard::begin()` を `let guard =` で束縛し、`spawn_local` の前に取って、future の中で drop する
+//   （`handle_reinject` と `dispatch_ime_set_open` の async 経路の両方）。`let _ =` はその場で drop されるので違反。
+// - executor キューの defer 側（`run_passthrough_pipeline`）と drain 側（`reinject_wait_remaining`）の閾値の対（ADR-156）:
+//   どちらも `relay_plan` の同じ閾値判断を使う。**c21・c22（INPUT_DEFER 側の制約）はここでは固定していない。**
+
+/// e12 の違反（腕の入れ替え・Timer 判定の反転）を返す。
+fn e12_violations(execute_relay_body: &str) -> Vec<&'static str> {
+    let code = non_comment_lines(execute_relay_body);
+    let mut v = Vec::new();
+    if !code.contains("plan_consume_effect(matches!(effect, Effect::Timer(_)))") {
+        v.push("Timer 判定が `plan_consume_effect(matches!(effect, Effect::Timer(_)))` でない");
+    }
+    match (
+        code.find("EffectRoute::Immediate"),
+        code.find("EffectRoute::Queue"),
+    ) {
+        (Some(imm), Some(queue)) if imm < queue => {
+            let imm_arm = &code[imm..queue];
+            let queue_arm = &code[queue..];
+            if !imm_arm.contains("execute_one(") || imm_arm.contains("queue.push_back") {
+                v.push("Immediate の腕が execute_one でない");
+            }
+            if !queue_arm.contains("queue.push_back(effect)") || queue_arm.contains("execute_one(")
+            {
+                v.push("Queue の腕が push_back でない");
+            }
+        }
+        _ => v.push("Immediate/Queue の腕が見つからない、または順序が違う"),
+    }
+    v
+}
+
+/// e13 の違反を返す（begin は `let guard =` で束縛され、`spawn_local` の前にあり、future の中で drop される）。
+fn e13_violations(body: &str) -> Vec<&'static str> {
+    let code = non_comment_lines(body);
+    let mut v = Vec::new();
+    let Some(begin) = code.find("OutputActiveGuard::begin()") else {
+        return vec!["OutputActiveGuard::begin() が無い"];
+    };
+    let before =
+        code[..begin].trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == ':');
+    if !before.trim_end().ends_with("let guard =") {
+        v.push("begin() が `let guard =` で束縛されていない（`let _ =` は即 drop）");
+    }
+    let Some(spawn) = code.find("spawn_local(") else {
+        return vec!["spawn_local( が無い"];
+    };
+    if begin >= spawn {
+        v.push("begin() が spawn_local の前にない");
+    }
+    // future のブロック（`spawn_local(` 以降の最初の `{` から対応する `}` まで）。
+    let tail = &code[spawn..];
+    let block_end = tail.find('{').map_or(tail.len(), |open| {
+        let mut depth = 0_usize;
+        for (i, c) in tail[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return open + i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        tail.len()
+    });
+    if !tail[..block_end].contains("drop(guard)") {
+        v.push("future の中で drop(guard) されていない");
+    }
+    if tail[block_end..].contains("drop(guard)") {
+        v.push("future の外（spawn_local の後）で drop(guard) している");
+    }
+    if begin < spawn && code[begin..spawn].contains("drop(guard)") {
+        v.push("spawn_local の前で guard を drop している");
+    }
+    v
+}
+
+#[test]
+fn relay_plan_edges_e12_e13_and_defer_drain_pair_are_pinned() {
+    let executor = read_crate_file("src/runtime/executor.rs");
+    let prod = production_code_only(&executor);
+
+    let v = e12_violations(extract_fn_body(prod, "fn execute_relay("));
+    assert!(v.is_empty(), "e12 違反: {v:?}");
+
+    let v = e13_violations(extract_fn_body(prod, "fn handle_reinject("));
+    assert!(v.is_empty(), "e13（reinject）違反: {v:?}");
+    let async_arm = extract_fn_body(prod, "fn dispatch_ime_set_open(");
+    let v = e13_violations(async_arm);
+    assert!(v.is_empty(), "e13（async actuation）違反: {v:?}");
+
+    let defer = non_comment_lines(extract_fn_body(prod, "fn run_passthrough_pipeline("));
+    let drain = non_comment_lines(extract_fn_body(prod, "fn reinject_wait_remaining("));
+    assert!(
+        defer.contains("relay_plan::output_in_flight("),
+        "defer 側（run_passthrough_pipeline）は relay_plan::output_in_flight を使うこと"
+    );
+    assert!(
+        drain.contains("relay_plan::reinject_wait_remaining("),
+        "drain 側（reinject_wait_remaining）は relay_plan::reinject_wait_remaining を使うこと"
+    );
+    // `OUTPUT_GUARD_MS` の出現は、この 2 形だけ（インラインの比較を書き戻さない）。
+    assert_eq!(
+        defer.matches("OUTPUT_GUARD_MS").count(),
+        1,
+        "defer 側の OUTPUT_GUARD_MS は 1 回だけ"
+    );
+    assert!(
+        defer.contains("output_in_flight(in_flight_ms, crate::tuning::OUTPUT_GUARD_MS)")
+            || defer.contains("output_in_flight(\n")
+    );
+    assert_eq!(
+        drain.matches("OUTPUT_GUARD_MS").count(),
+        1,
+        "drain 側の OUTPUT_GUARD_MS は 1 回だけ"
+    );
+    assert!(drain.contains("guard_ms: crate::tuning::OUTPUT_GUARD_MS"));
+}
+
+#[test]
+fn e12_e13_detectors_catch_violations() {
+    let ok12 = "match plan_consume_effect(matches!(effect, Effect::Timer(_))) {\n EffectRoute::Immediate => { self.execute_one(a); }\n EffectRoute::Queue => self.queue.push_back(effect),\n }";
+    assert!(e12_violations(ok12).is_empty());
+    // 腕の中身の入れ替え
+    let swapped = ok12
+        .replace("self.execute_one(a);", "TMP")
+        .replace("self.queue.push_back(effect)", "self.execute_one(a)")
+        .replace("TMP", "self.queue.push_back(effect);");
+    assert!(!e12_violations(&swapped).is_empty());
+    // Timer 判定の反転
+    let inverted = ok12.replace("(matches!", "(!matches!");
+    assert!(!e12_violations(&inverted).is_empty());
+
+    let ok13 = "let guard = X::OutputActiveGuard::begin();\n spawn_local(async move { f(); drop(guard); });";
+    assert!(e13_violations(ok13).is_empty());
+    let dropped = "let _ = X::OutputActiveGuard::begin();\n spawn_local(async move { f(); });";
+    assert!(!e13_violations(dropped).is_empty());
+    let early = "let guard = X::OutputActiveGuard::begin();\n drop(guard);\n spawn_local(async move { f(); });";
+    assert!(!e13_violations(early).is_empty());
+    let after = "spawn_local(async move { f(); });\n let guard = X::OutputActiveGuard::begin();";
+    assert!(!e13_violations(after).is_empty());
+    let outside = "let guard = X::OutputActiveGuard::begin();\n spawn_local(async move { f(); });\n drop(guard);";
+    assert!(!e13_violations(outside).is_empty());
+    let inside =
+        "spawn_local(async move { let guard = X::OutputActiveGuard::begin(); f(); drop(guard); });";
+    assert!(!e13_violations(inside).is_empty());
+}
+
+/// FCIS F6: `output/` の「probe/recovery 進行中は退避する」判断の核は `state/deferred_gate_plan.rs`。
+/// 配線の違反（ADR-156 の defer 側・drain 側の窓口のずれ）を返す。固定するのは次の 5 点:
+/// - defer 側の共通コアは `probe_or_recovery_block_reason(check_raw_recovery)`（引数は変数のまま）と `plan_defer` を使う。
+/// - `defer_if_probe_in_flight`（Enforced）は共通コアを `true`、`..._recovery_exempt`（Exempt）は `false` で呼ぶ
+///   （ADR-123 変更 A の自己 defer 回避。ここが崩れても純粋側のテストは落ちないので走査で固定する）。
+/// - drain 側は `probe_or_recovery_block_reason(true)` と `plan_drain_before_send` を使う。
+/// - `raw_recovery_owns_deferred()` は `probe_or_recovery_block_reason` の 1 箇所だけで読む（defer/drain の本体では読まない）。
+fn deferred_gate_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static str> {
+    let mut v = Vec::new();
+    let out = production_code_only(output_mod);
+    let core = non_comment_lines(extract_fn_body(
+        out,
+        "fn defer_vks_if_probe_or_recovery_in_flight(",
+    ));
+    if !core.contains("probe_or_recovery_block_reason(check_raw_recovery)")
+        || !core.contains("plan_defer(")
+    {
+        v.push("defer の共通コアが probe_or_recovery_block_reason(check_raw_recovery)/plan_defer を使っていない");
+    }
+    let enforced = non_comment_lines(extract_fn_body(out, "fn defer_if_probe_in_flight("));
+    if !enforced.contains("defer_if_probe_or_recovery_in_flight(romaji, origin, true)") {
+        v.push("Enforced の defer が check_raw_recovery=true で共通コアを呼んでいない");
+    }
+    let exempt = non_comment_lines(extract_fn_body(
+        out,
+        "fn defer_if_probe_in_flight_recovery_exempt(",
+    ));
+    if !exempt.contains("defer_if_probe_or_recovery_in_flight(romaji, origin, false)") {
+        v.push("Exempt の defer が check_raw_recovery=false で共通コアを呼んでいない");
+    }
+    let reason = non_comment_lines(extract_fn_body(out, "fn probe_or_recovery_block_reason("));
+    if !reason.contains("plan_blocking(")
+        || !reason.contains("needs_raw_recovery_read(")
+        || !reason.contains("self.raw_recovery_owns_deferred()")
+    {
+        v.push("probe_or_recovery_block_reason が plan_blocking/needs_raw_recovery_read/raw_recovery_owns_deferred を使っていない");
+    }
+    let drain = non_comment_lines(extract_fn_body(
+        production_code_only(vk_send),
+        "fn drain_pending_deferred_before_send_if_queue_only(",
+    ));
+    if !drain.contains("probe_or_recovery_block_reason(true)")
+        || !drain.contains("plan_drain_before_send(")
+    {
+        v.push(
+            "drain 側が probe_or_recovery_block_reason(true)/plan_drain_before_send を使っていない",
+        );
+    }
+    if drain.contains("raw_recovery_owns_deferred()")
+        || core.contains("raw_recovery_owns_deferred()")
+    {
+        v.push("raw_recovery_owns_deferred() を defer/drain の本体で直接読んでいる");
+    }
+    v
+}
+
+#[test]
+fn deferred_gate_plan_defer_and_drain_windows_share_plan_blocking() {
+    let v = deferred_gate_wiring_violations(
+        &read_crate_file("src/output/mod.rs"),
+        &read_crate_file("src/output/vk_send.rs"),
+    );
+    assert!(v.is_empty(), "deferred_gate_plan の配線違反: {v:?}");
+}
+
+/// 違反例（Exempt の `false` を `true` に、Enforced の `true` を `false` に、drain のリテラルを `false` に、
+/// 本体での直接読み取り）を検出できること（V2-3）。
+#[test]
+fn deferred_gate_wiring_detector_catches_violations() {
+    let m = read_crate_file("src/output/mod.rs");
+    let v = read_crate_file("src/output/vk_send.rs");
+    assert!(deferred_gate_wiring_violations(&m, &v).is_empty());
+
+    let exempt_true = m.replacen(
+        "self.defer_if_probe_or_recovery_in_flight(romaji, origin, false)",
+        "self.defer_if_probe_or_recovery_in_flight(romaji, origin, true)",
+        1,
+    );
+    assert_ne!(exempt_true, m);
+    assert!(!deferred_gate_wiring_violations(&exempt_true, &v).is_empty());
+
+    let enforced_false = m.replacen(
+        "self.defer_if_probe_or_recovery_in_flight(romaji, origin, true)",
+        "self.defer_if_probe_or_recovery_in_flight(romaji, origin, false)",
+        1,
+    );
+    assert_ne!(enforced_false, m);
+    assert!(!deferred_gate_wiring_violations(&enforced_false, &v).is_empty());
+
+    let drain_false = v.replacen(
+        "self.probe_or_recovery_block_reason(true)",
+        "self.probe_or_recovery_block_reason(false)",
+        1,
+    );
+    assert_ne!(drain_false, v);
+    assert!(!deferred_gate_wiring_violations(&m, &drain_false).is_empty());
+
+    let direct = v.replacen(
+        "let gate_enforced = gate == DeferGate::Enforced;",
+        "let gate_enforced = gate == DeferGate::Enforced && !self.raw_recovery_owns_deferred();",
+        1,
+    );
+    assert_ne!(direct, v);
+    assert!(!deferred_gate_wiring_violations(&m, &direct).is_empty());
 }

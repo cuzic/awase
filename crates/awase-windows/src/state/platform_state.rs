@@ -33,13 +33,13 @@ mod shell;
 /// - `belief`        : input_mode / is_japanese_ime / prev_conversion_mode（IME ON/OFF 自体は shadow_model が SSOT）
 /// - `shadow_model`  : IME ON/OFF と force_guards / observe_miss_monitor を持つ SSOT
 #[derive(Debug)]
-pub(crate) struct ImeStateHub {
+pub struct ImeStateHub {
     /// input_mode・is_japanese_ime・prev_conversion_mode を保持する。
     pub(crate) belief: ImeBelief,
-    /// IME 状態変更 event のリングバッファ (Step 0)。
+    /// IME 状態変更 event の `seq` 採番器（ADR-232 D2: 旧リングバッファは撤去）。
     pub(crate) event_log: ImeEventLog,
     /// 時刻の供給元（実機は実時計、閉ループ・テストは仮想時計。`state/hub_clock.rs`）。
-    pub(crate) clock: super::hub_clock::HubClock,
+    clock: super::hub_clock::HubClock,
     /// 統合ジャーナル: エンジン + IME 両イベントを記録する。
     pub(crate) journal: UnifiedJournal,
 
@@ -87,13 +87,14 @@ pub(crate) struct ImeStateHub {
     /// 寿命判断そのものは `state/mode_key_pass.rs::ModeKeyPassLatch`（Win32非依存）に委譲する
     /// （design-patterns-review.md 提案3）。ここは副作用（`intent_store`/`dispatch_event`）を
     /// 適用する側に回る。
-    mode_key_pass_mark: ModeKeyPassLatch<crate::win32::ForegroundScope>,
+    mode_key_pass_mark: ModeKeyPassLatch<crate::state::foreground_scope::ForegroundScope>,
 
     /// 外部注入の IME キー直後だけ開く短い監視窓（ADR-205、BUG-172）。読めない窓（`Imm32Unavailable`）で、
     /// 窓の中の prefetch 済みの開閉の読みが基準値から変わったときだけ実状態へ追随する。寿命・基準値の判断は
     /// `state/external_change_watch.rs`（Win32非依存）に委譲し、ここは副作用の適用側。
-    external_change_watch:
-        super::external_change_watch::ExternalChangeWatch<crate::win32::ForegroundScope>,
+    external_change_watch: super::external_change_watch::ExternalChangeWatch<
+        crate::state::foreground_scope::ForegroundScope,
+    >,
 
     /// 最後に外部変化へ追随した時刻（ms）。追随の直後に、閉じる前の GJI I/O 推測が `ObserverPoll(true)` で
     /// 追随結果を上書きしないための柵（`observe_gji_after_focus` の第1引数）に使う（ADR-205 round3 m1）。
@@ -128,21 +129,17 @@ pub(crate) struct ImePollState {
     pub(crate) prev_conv: Option<u32>,
 }
 
-/// [`ImeStateHub::check_drift_correction`] の戻り値。定義は ungated な
+/// [`ImeStateHub::evaluate_drift`] の戻り値。定義は ungated な
 /// `state/drift_correction.rs` へ移した（Linux ホストのテストから判定本体を呼ぶため）。
 pub(crate) use super::drift_correction::DriftCorrection;
 
 impl ImeStateHub {
-    /// デフォルト値で初期化する（実時計）。実機の構築口で、`hook` を読む実時計はここだけ。
-    #[cfg(windows)]
-    pub(crate) fn new() -> Self {
-        use super::hub_clock::HubClock;
-        Self::with_clock(HubClock::wall(crate::hook::current_tick_ms))
-    }
-
     /// 時計を注入して初期化する。`hook` に依存しないので、テスト・閉ループは仮想時計
     /// （`HubClock::manual`）を渡せる。
-    pub(crate) fn with_clock(clock: super::hub_clock::HubClock) -> Self {
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub fn with_clock(clock: super::hub_clock::HubClock) -> Self {
         Self {
             belief: ImeBelief::default(),
             event_log: ImeEventLog::default(),
@@ -163,14 +160,16 @@ impl ImeStateHub {
 }
 
 impl ImeStateHub {
-    /// Event を log に記録し、shadow_model にも reduce する (Step 1)。
+    /// Event に seq を採番し、shadow_model に reduce して journal に記録する (Step 1)。
     ///
-    /// `event_log.record()` だけを呼ぶより、こちらを使うと record + reduce が
+    /// `event_log.record_at()` だけを呼ぶより、こちらを使うと採番 + reduce が
     /// 同一 envelope で進む。write_* メソッドはこちらを使う。
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     /// state/ 層が `hook::current_tick_ms()` を直接呼ばないよう注入する。
-    pub(crate) fn dispatch_event(&mut self, event: ImeEvent, tick_ms: TickMs) {
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn dispatch_event(&mut self, event: ImeEvent, tick_ms: TickMs) {
         // ユーザー明示の IME OFF/ON を永続タイムスタンプに反映する。
         // FocusChanged で last_intent がクリアされても guard が機能し続けるよう、
         // ImeStateHub 側で独自に保持する。
@@ -194,18 +193,15 @@ impl ImeStateHub {
                 // （record_explicit_intent の doc 参照）が行う。
             }
         }
-        let event_for_journal = event.clone();
-        let event_for_reduce = event.clone();
         let time = self
             .event_log
-            .record_at(event, tick_ms, self.clock.now_instant());
-        let envelope = ImeEventEnvelope {
-            time,
-            event: event_for_reduce,
-        };
+            .record_at(&event, tick_ms, self.clock.now_instant());
+        let envelope = ImeEventEnvelope { time, event };
         self.shadow_model.reduce(&envelope);
         self.journal.record(JournalEntry::ImeEvent {
-            event: event_for_journal,
+            event: envelope.event,
+            event_seq: time.seq,
+            tick_ms: time.tick_ms,
         });
     }
 
@@ -217,7 +213,7 @@ impl ImeStateHub {
     /// 戻り値の `writes()` が `false`（同じ押下で既に書いた）なら、呼び出し側は order を発行せず書かない。
     /// 押下 ID の無い order（`press=None`）は記録に触れず `Unpressed`（従来どおり `applied` の省略に任せる）。
     ///
-    /// 衝突（同じ押下で向きが違う経路）はログ（info）と journal に残す。優先順位は Engine の明示コンボ > shadow
+    /// 衝突（同じ押下で向きが違う経路）は journal（`PressWriteClaim`、派生の debug 行 `press write claim`）に残す。優先順位は Engine の明示コンボ > shadow
     /// （`state/press_ledger.rs` のモジュール doc）。
     pub(crate) fn claim_press_write(
         &mut self,
@@ -227,19 +223,6 @@ impl ImeStateHub {
     ) -> super::press_ledger::PressClaim {
         let claim = self.press_ledger.claim(press, open, source);
         if let Some(press) = press {
-            if claim.is_conflict() {
-                tracing::info!(
-                    "[press-ledger] 同一押下で向きが違う書き込み: press={press} source={} open={open} → {}",
-                    source.label(),
-                    claim.label()
-                );
-            } else {
-                tracing::debug!(
-                    "[press-ledger] press={press} source={} open={open} → {}",
-                    source.label(),
-                    claim.label()
-                );
-            }
             self.journal.record(JournalEntry::PressWriteClaim {
                 press: press.get(),
                 open,
@@ -255,9 +238,6 @@ impl ImeStateHub {
     pub(crate) fn release_press_write(&mut self, press: Option<awase::types::PressId>, open: bool) {
         if self.press_ledger.release(press, open) {
             if let Some(press) = press {
-                tracing::debug!(
-                    "[press-ledger] press={press} open={open} の書き込みは何も送らなかった → 予約を解く"
-                );
                 self.journal.record(JournalEntry::PressWriteClaim {
                     press: press.get(),
                     open,
@@ -279,7 +259,9 @@ impl ImeStateHub {
     ///
     /// `ImeEvent::KeyEffectPredicted`の**唯一のdispatch元**。awaseはIMEへ書かない（生キーはそのまま通る）。
     /// 後から来る観測（settle後）が照合し、食い違えば観測が勝つ（`ImeModel::reduce`のfence）。
-    pub(crate) fn apply_key_effect_prediction(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn apply_key_effect_prediction(
         &mut self,
         prediction: crate::state::key_effect_predictor::Prediction,
         tick_ms: TickMs,
@@ -319,7 +301,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         readable: bool,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) {
         self.mode_key_pass_mark.arm(scope, now_ms, readable);
     }
@@ -330,7 +312,7 @@ impl ImeStateHub {
     fn mode_key_pass_expiry_wait_ms_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<u64> {
         self.mode_key_pass_mark.expiry_wait_ms(
             now_ms,
@@ -342,7 +324,7 @@ impl ImeStateHub {
     /// awaseが実際にIMEへ書いた（`applied`を更新した）ことを、有効な通過マークへ記録する（BUG-158追補2）。
     fn note_awase_write_for_mode_key_pass_in_scope(
         &mut self,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) {
         self.mode_key_pass_mark.note_awase_write(scope);
     }
@@ -350,7 +332,7 @@ impl ImeStateHub {
     fn mode_key_pass_mark_live_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> bool {
         self.mode_key_pass_mark
             .live(now_ms, scope, crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS)
@@ -361,7 +343,7 @@ impl ImeStateHub {
     fn mode_key_pass_window_remaining_ms_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<u64> {
         self.mode_key_pass_mark.window_remaining_ms(
             now_ms,
@@ -374,7 +356,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         tick_ms: TickMs,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> bool {
         self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, false)
     }
@@ -383,7 +365,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         tick_ms: TickMs,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> bool {
         self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, true)
     }
@@ -393,7 +375,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         tick_ms: TickMs,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
         on_expiry: bool,
     ) -> bool {
         let Some(effect) = self.mode_key_pass_mark.drop_decision(
@@ -420,10 +402,12 @@ impl ImeStateHub {
     // ── 外部変化の監視窓（ADR-205、BUG-172）──
 
     /// 外部注入の IME キーを見たら呼ぶ（読めない窓のみ）。現在のフォアグラウンドに対する監視窓を開く／延ばす。
-    fn arm_external_change_watch_in_scope(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn arm_external_change_watch_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) {
         self.external_change_watch
             .arm(scope, now_ms, crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS);
@@ -438,7 +422,7 @@ impl ImeStateHub {
     fn external_change_watch_remaining_ms_in_scope(
         &mut self,
         now_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<u64> {
         self.external_change_watch.remaining_ms(
             scope,
@@ -458,13 +442,15 @@ impl ImeStateHub {
     /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。awase は IME を書かない。
     /// 開く・閉じるの両方向を同じ規則で追随する（呼び出し側が GJI × Imm32Unavailable に限る）。戻り値は追随した値。
     /// どのフォーカスでも直近の読みは記録する（基準値の初期値になる）。
-    fn follow_external_change_in_scope(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn follow_external_change_in_scope(
         &mut self,
         read: Option<bool>,
         now_ms: u64,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<bool> {
         let verdict = self.external_change_watch.observe(
             scope,
@@ -537,7 +523,7 @@ impl ImeStateHub {
         &mut self,
         now_ms: u64,
         tick_ms: TickMs,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> bool {
         if !self.mode_key_pass_mark.align_after_expired(
             now_ms,
@@ -573,7 +559,11 @@ impl ImeStateHub {
     /// `record_confirmed`/`record_optimistic` 呼び出しを追加する際は、
     /// この5箇所のどれとも異なる新規パターンなら actuation 由来かどうかを
     /// 必ず確認すること。
-    fn record_optimistic_in_scope(&mut self, open: bool, scope: crate::win32::ForegroundScope) {
+    fn record_optimistic_in_scope(
+        &mut self,
+        open: bool,
+        scope: crate::state::foreground_scope::ForegroundScope,
+    ) {
         self.note_awase_write_for_mode_key_pass_in_scope(scope);
         self.shadow_model.applied = AppliedImeState::Optimistic(open);
         self.clear_pending_if_matches(open);
@@ -588,7 +578,7 @@ impl ImeStateHub {
         &mut self,
         open: bool,
         at_ms: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) {
         self.note_awase_write_for_mode_key_pass_in_scope(scope);
         self.shadow_model.confirm_applied(open, at_ms);
@@ -807,9 +797,8 @@ impl ImeStateHub {
     ///
     /// 判定本体は `IntentStore::resolve_effective_open()`（`state/intent_store.rs`、
     /// `#[cfg(windows)]` の**外**）にあり、本メソッドはそこに INFO ログの重複排除を
-    /// 被せるだけ。**このモジュールは `#[cfg(windows)]` なので、ここに書いた
-    /// `mod tests`（`cfg(test)`）は Linux の `cargo test -p awase-windows` では
-    /// 1 件も走らない**——Linux CI で毎回走る回帰は
+    /// 被せるだけ。このモジュールは ungated（FCIS P4）なので、ここに書いた
+    /// `mod tests` は Linux でも走る。判定本体だけの回帰は
     /// `tests/intent_store_effective_open.rs` にある。
     ///
     /// # 時刻の出どころ（追補4、2026-08-13 windows-build 失敗の原因）
@@ -841,7 +830,9 @@ impl ImeStateHub {
     /// `shadow_model` の根拠判定（観測の鮮度）に使う `Instant` は `self.clock` から取る
     /// （旧実装は `shadow_model.effective_open()` が壁時計の `Instant::now()` を読んでいたため、
     /// 仮想時計では `now_ms` と時間軸が食い違った。`state/hub_clock.rs`）。
-    pub(crate) fn effective_open_at(&self, now_ms: TickMs) -> bool {
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub fn effective_open_at(&self, now_ms: TickMs) -> bool {
         let shadow = self
             .shadow_model
             .effective_open_at(self.clock.now_instant());
@@ -970,8 +961,24 @@ impl ImeStateHub {
     /// `ImeModel` への読み取り専用アクセス。
     ///
     /// 書き込みはすべて `dispatch_event()` 経由とすること。
-    pub(crate) fn model(&self) -> &ImeModel {
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub fn model(&self) -> &ImeModel {
         &self.shadow_model
+    }
+
+    /// 時計（`Copy`）。`HubClock::now_instant`・`now_tick` で現在時刻を読む。
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub const fn clock(&self) -> super::hub_clock::HubClock {
+        self.clock
+    }
+
+    /// 仮想時計（`HubClock::Manual`）を進める。実時計では何もしない。
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn advance_clock_ms(&mut self, ms: u64) {
+        self.clock.advance_ms(ms);
     }
 
     // ── warrant（ADR-087 / ADR-090 §2.A）──────────────────────────────────
@@ -995,7 +1002,10 @@ impl ImeStateHub {
     /// `now` / `now_ms` は呼び出し元が注入する（ADR-087 INV-23:
     /// `issue_open_warrant` は時刻を内部で取らない純粋関数。加えて `state/` 層は
     /// `hook::current_tick_ms()` を直接呼ばない規約）。
-    pub(crate) fn warrant_context(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub fn warrant_context(
         &self,
         now: std::time::Instant,
         now_ms: TickMs,
@@ -1035,22 +1045,29 @@ impl ImeStateHub {
 
     // ── Desired state / drift correction ──
 
-    /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を返す。
+    /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を、
+    /// 超えていなければ理由（`NoDrift`、E1）を返す。
     ///
-    /// 戻り値: 補正が必要な場合 `Some(DriftCorrection { .. })`。
-    /// `explicit_intent`: [`Self::explicit_intent`] の値をそのまま渡す。
+    /// 明示意図は `evaluate_drift` が `model.last_intent` から作る（呼び出し側で渡さない）。
     ///
     /// `ConvOpenInference` は根拠にしない（BUG-173 追補3。`state/drift_correction.rs` 参照）。
-    /// `resolve_warmup_ime_on` が同じ述語を `matches!(.., Some(DriftCorrection { desired: false, observed: true, .. }))`
-    /// として使う（ADR-132/INV-B1'）。
+    pub(crate) fn evaluate_drift(
+        &self,
+        now: std::time::Instant,
+    ) -> Result<DriftCorrection, super::drift_correction::NoDrift> {
+        // 判定本体は ungated な `state/drift_correction.rs`（Linux の
+        // `tests/closed_loop_scenarios.rs` から呼べるように移した。ロジックは不変）。
+        super::drift_correction::evaluate_drift(&self.shadow_model, now)
+    }
+
+    /// [`Self::evaluate_drift`] から理由を捨てたもの。本番の呼び出し元は `evaluate_drift` に移ったので、
+    /// これは既存の単体テスト（`check_drift_correction_*`）の窓口として残している。
+    #[cfg(test)]
     pub(crate) fn check_drift_correction(
         &self,
         now: std::time::Instant,
-        explicit_intent: Option<bool>,
     ) -> Option<DriftCorrection> {
-        // 判定本体は ungated な `state/drift_correction.rs`（Linux の
-        // `tests/closed_loop_scenarios.rs` から呼べるように移した。ロジックは不変）。
-        super::drift_correction::check_drift_correction(&self.shadow_model, now, explicit_intent)
+        self.evaluate_drift(now).ok()
     }
 
     /// IME apply 完了を記録する（D: generation 照合 dispatch）。
@@ -1067,7 +1084,7 @@ impl ImeStateHub {
         outcome: awase::platform::ImeOpenOutcome,
         generation: Option<ApplyGeneration>,
         ts: u64,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
     ) -> ImeApplyAcceptance {
         let Some(generation) = generation else {
             let Some(effective) = super::ime_model::apply_result_effective_open(open, outcome)
@@ -1143,7 +1160,6 @@ impl ImeStateHub {
                 mode: InputModeState::ObservedRomaji,
                 strategy: InputModeApplyStrategy::PanicReset,
                 result: InputModeApplyResult::Applied,
-                at: tick_ms,
             },
             tick_ms,
         );
@@ -1182,7 +1198,7 @@ impl ImeStateHub {
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     pub(crate) fn apply_ime_update(
         &mut self,
-        update: &crate::observer::ime_observer::ImeUpdate,
+        update: &crate::state::ime_update::ImeUpdate,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
@@ -1223,7 +1239,6 @@ impl ImeStateHub {
                     mode,
                     source: ObservationSource::ObserverPoll,
                     confidence: ObservationConfidence::Medium,
-                    at: tick_ms,
                 },
                 tick_ms,
             );
@@ -1285,7 +1300,6 @@ impl ImeStateHub {
                     mode,
                     strategy: InputModeApplyStrategy::CacheRestore,
                     result: InputModeApplyResult::Applied,
-                    at: tick_ms,
                 },
                 tick_ms,
             );
@@ -1386,7 +1400,10 @@ impl ImeStateHub {
         );
     }
 
-    pub(crate) fn set_is_japanese_ime(&mut self, value: bool) {
+    /// `belief.is_japanese_ime` を書く（`warrant_context` の材料）。
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn set_is_japanese_ime(&mut self, value: bool) {
         self.belief.is_japanese_ime = value;
     }
 
@@ -1452,6 +1469,10 @@ impl ImeStateHub {
     /// - `kp_stage_post_decision` の `SetOpenOrigin::ExplicitUserAction` 分岐
     ///   （IME ON/OFF コンボ、`applied=true` のときのみ）
     ///
+    /// 例外: 閉ループのハーネス（`tests/support/harness.rs`）は `pub` なこのメソッドを直接呼ぶ
+    /// （自前で作ったハブにだけ。本番のハブには crate の外から届かない。
+    /// `tests/architecture_guard.rs::production_hub_is_unreachable_from_outside_the_crate`）。
+    ///
     /// # どのガードが何を固定しているか（2026-08-13 訂正）
     ///
     /// v3 のこの doc は当初「3箇所のみ（`tests/architecture_guard.rs` で出現数を
@@ -1466,7 +1487,9 @@ impl ImeStateHub {
     /// 現在は 2 本のガードが二段で効く:
     /// - 「`IntentStore` へ record できるのは本メソッドだけ」＝ 前者
     /// - 「本メソッドを呼べるのは上記3箇所だけ」＝ 後者
-    pub(crate) fn record_explicit_intent(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn record_explicit_intent(
         &mut self,
         target: bool,
         source: UserIntentSource,
@@ -1682,7 +1705,7 @@ pub(crate) struct GateStore {
     /// 同じ前景スコープ内でだけ NICOLA エンジンをスキップして直接 passthrough させる。
     /// tmux prefix (Ctrl+J) → コマンドキー (n/p) のように、
     /// prefix 直後のコマンドキーが NICOLA に横取りされる問題を防ぐ。
-    pub post_bypass: ScopedOneShot<crate::win32::ForegroundScope, PostBypassArm>,
+    pub post_bypass: ScopedOneShot<crate::state::foreground_scope::ForegroundScope, PostBypassArm>,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
     /// 左右Shift単独タップによる「IME-ON 半角英数」持続トグルの全状態
@@ -1786,19 +1809,6 @@ pub struct PlatformState {
     pub(crate) keymap: KeymapStore,
 }
 
-impl PlatformState {
-    /// デフォルト値で初期化する
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            ime: ImeStateHub::new(),
-            focus: FocusStore::new(),
-            gate: GateStore::new(),
-            keymap: KeymapStore::default(),
-        }
-    }
-}
-
 #[cfg(test)]
 impl PlatformState {
     /// 時計を注入して初期化するテスト用の構築口（`new()` は実時計 `hook::current_tick_ms` を読む）。
@@ -1809,12 +1819,6 @@ impl PlatformState {
             gate: GateStore::new(),
             keymap: KeymapStore::default(),
         }
-    }
-}
-
-impl Default for PlatformState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -1866,32 +1870,25 @@ mod tests {
 
     /// `HubClock` が `Instant` の供給元になっている: 手動時計を進めた量だけ、`dispatch_event` が
     /// 付ける `EventTime::monotonic` が進む（壁時計を読んでいれば実測の数 µs しか進まない）。
+    ///
+    /// `monotonic` は journal に載らないので、reduce の結果に現れる Event で見る:
+    /// `FocusChanged` の reducer は `input_barrier` の `started_at` に `envelope.time.monotonic` を入れる。
     #[test]
     fn manual_hub_clock_drives_event_monotonic() {
-        let mut ps = ps_with_shadow(true, None, true);
+        let mut ps = ps_for_test();
         ps.ime.clock = crate::state::hub_clock::HubClock::manual(10_000);
-        ps.ime.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: true,
-                source: UserIntentSource::Command,
-            },
-            TickMs(ps.ime.clock.now_tick()),
-        );
+        let started_at = |ps: &PlatformState| match ps.ime.model().input_barrier {
+            Some(InputBarrier::FocusTransition { started_at, .. }) => started_at,
+            ref other => panic!("FocusTransition の barrier が立っていない: {other:?}"),
+        };
+        let tick = ps.ime.clock.now_tick();
+        dispatch_focus_changed(&mut ps, HwndId(1), 1, tick);
+        let older = started_at(&ps);
         ps.ime.clock.advance_ms(500);
-        ps.ime.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: false,
-                source: UserIntentSource::Command,
-            },
-            TickMs(ps.ime.clock.now_tick()),
-        );
-        let recent = ps.ime.event_log.recent_vec(2);
-        let (newer, older) = (recent[0].time, recent[1].time);
-        assert_eq!(
-            newer.monotonic - older.monotonic,
-            std::time::Duration::from_millis(500)
-        );
-        assert_eq!(newer.tick_ms - older.tick_ms, 500);
+        let tick = ps.ime.clock.now_tick();
+        dispatch_focus_changed(&mut ps, HwndId(2), 2, tick);
+        let newer = started_at(&ps);
+        assert_eq!(newer - older, std::time::Duration::from_millis(500));
     }
 
     // reset_stale_ime_on_for_imm_broken も同様に desired_open を書き換えない。
@@ -2041,11 +2038,12 @@ mod tests {
             Some(ApplyGeneration::new(5).unwrap())
         );
 
-        let accepted = ps.ime.record_ime_apply_result(
+        let accepted = ps.ime.record_ime_apply_result_in_scope(
             true,
             awase::platform::ImeOpenOutcome::UnsafeToToggle,
             Some(ApplyGeneration::new(5).unwrap()),
             100,
+            test_foreground_scope(),
         );
 
         assert_eq!(
@@ -2076,11 +2074,12 @@ mod tests {
             TickMs(0),
         );
 
-        let accepted = ps.ime.record_ime_apply_result(
+        let accepted = ps.ime.record_ime_apply_result_in_scope(
             true,
             awase::platform::ImeOpenOutcome::NotOwned,
             Some(ApplyGeneration::new(5).unwrap()),
             100,
+            test_foreground_scope(),
         );
 
         assert_eq!(accepted, ImeApplyAcceptance::NotSent);
@@ -2105,11 +2104,12 @@ mod tests {
             TickMs(0),
         );
 
-        let accepted = ps.ime.record_ime_apply_result(
+        let accepted = ps.ime.record_ime_apply_result_in_scope(
             true,
             awase::platform::ImeOpenOutcome::UnsafeToToggle,
             Some(ApplyGeneration::new(4).unwrap()),
             100,
+            test_foreground_scope(),
         );
 
         assert_eq!(accepted, ImeApplyAcceptance::NotSent);
@@ -2309,9 +2309,8 @@ mod tests {
         ps.ime
             .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         let now = std::time::Instant::now();
-        let explicit_intent = ps.ime.explicit_intent();
         assert_eq!(
-            ps.ime.check_drift_correction(now, explicit_intent),
+            ps.ime.check_drift_correction(now),
             None,
             "conv 推論だけを根拠にした drift は、明示意図があっても補正を発火させない"
         );
@@ -2325,8 +2324,8 @@ mod tests {
         let mut ps = ps_with_shadow(false, None, true);
         ps.ime
             .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
-        // 明示意図が無いので threshold=DRIFT_CORRECTION_THRESHOLD_MS。実時間 sleep を
-        // 避けるため drift.started_at を直接バックデートして閾値超過を模す。
+        // 明示意図が無いので `evaluate_drift` は最初の判定（`NotExplicitIntent`）で返る。乖離の追跡が
+        // 十分続いた状態を作るため drift.started_at を直接バックデートする。
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
             started_at: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_millis(
@@ -2335,10 +2334,9 @@ mod tests {
                 .expect("test instant can be backdated"),
         });
         let now = std::time::Instant::now();
-        let explicit_intent = ps.ime.explicit_intent();
-        assert_eq!(explicit_intent, None);
+        assert_eq!(ps.ime.explicit_intent(), None);
         assert_eq!(
-            ps.ime.check_drift_correction(now, explicit_intent),
+            ps.ime.check_drift_correction(now),
             None,
             "明示意図なしでは ConvOpenInference 単独で補正を発火させない"
         );
@@ -2350,9 +2348,8 @@ mod tests {
         ps.ime
             .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         let now = std::time::Instant::now();
-        let explicit_intent = ps.ime.explicit_intent();
         assert_eq!(
-            ps.ime.check_drift_correction(now, explicit_intent),
+            ps.ime.check_drift_correction(now),
             None,
             "desired と observed が一致していれば補正不要"
         );
@@ -2417,8 +2414,8 @@ mod tests {
             "desired_open は Word での明示 OFF のまま false（observed との食い違いが本題）"
         );
 
-        // 明示意図なしでは閾値が DRIFT_CORRECTION_THRESHOLD_MS になる
-        // （ConvOpenInference のテストと同様、実 sleep を避けるためバックデートする）。
+        // 明示意図なしでは `evaluate_drift` は最初の判定（`NotExplicitIntent`）で返る。
+        // （ConvOpenInference のテストと同様、乖離の追跡をバックデートして続いた状態を作る。）
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
             started_at: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_millis(
@@ -2427,10 +2424,9 @@ mod tests {
                 .expect("test instant can be backdated"),
         });
         let now = std::time::Instant::now();
-        let explicit_intent = ps.ime.explicit_intent();
-        assert_eq!(explicit_intent, None);
+        assert_eq!(ps.ime.explicit_intent(), None);
         assert_eq!(
-            ps.ime.check_drift_correction(now, explicit_intent),
+            ps.ime.check_drift_correction(now),
             None,
             "明示意図なしでは HeuristicDefault 単独で補正を発火させない（issue #189）"
         );
@@ -2566,7 +2562,7 @@ mod tests {
         fn align_after_expired_pass_for_test(
             &mut self,
             now_ms: u64,
-            scope: crate::win32::ForegroundScope,
+            scope: crate::state::foreground_scope::ForegroundScope,
         ) -> bool {
             self.ime
                 .align_after_expired_mode_key_pass_in_scope(now_ms, TickMs(now_ms), scope)
@@ -2575,14 +2571,14 @@ mod tests {
 
     fn arm_mode_key_pass_mark_for_test(
         ps: &mut PlatformState,
-        scope: crate::win32::ForegroundScope,
+        scope: crate::state::foreground_scope::ForegroundScope,
         now_ms: u64,
     ) {
         ps.ime.mode_key_pass_mark.arm(scope, now_ms, true);
     }
 
-    fn test_foreground_scope() -> crate::win32::ForegroundScope {
-        crate::win32::ForegroundScope {
+    fn test_foreground_scope() -> crate::state::foreground_scope::ForegroundScope {
+        crate::state::foreground_scope::ForegroundScope {
             pid: 42,
             hwnd: 0x1234,
         }
@@ -2606,18 +2602,30 @@ mod tests {
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         assert!(ps.ime.effective_open_at(TickMs(110)), "明示 ON 直後は true");
         // awase 自身の直近の書き込みの記録は ON（追随後の実状態 OFF と食い違う → 未確認へ落ちる、D6）。
-        ps.ime.record_confirmed(true, 90);
+        ps.ime
+            .record_confirmed_in_scope(true, 90, test_foreground_scope());
         assert!(ps.ime.model().applied_state().applied_open().is_some());
         // arm 前の直近の読み（基準値になる）。窓が無いので追随しない。
         assert_eq!(
-            ps.ime
-                .follow_external_change(Some(true), 900, TickMs(900), follow_fence()),
+            ps.ime.follow_external_change_in_scope(
+                Some(true),
+                900,
+                TickMs(900),
+                follow_fence(),
+                test_foreground_scope()
+            ),
             None
         );
-        ps.ime.arm_external_change_watch(1000);
+        ps.ime
+            .arm_external_change_watch_in_scope(1000, test_foreground_scope());
         assert_eq!(
-            ps.ime
-                .follow_external_change(Some(false), 1032, TickMs(1032), follow_fence()),
+            ps.ime.follow_external_change_in_scope(
+                Some(false),
+                1032,
+                TickMs(1032),
+                follow_fence(),
+                test_foreground_scope()
+            ),
             Some(false)
         );
         assert!(
@@ -2639,29 +2647,48 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
-        let _ = ps
-            .ime
-            .follow_external_change(Some(true), 900, TickMs(900), follow_fence());
+        let _ = ps.ime.follow_external_change_in_scope(
+            Some(true),
+            900,
+            TickMs(900),
+            follow_fence(),
+            test_foreground_scope(),
+        );
         // arm していない
         assert_eq!(
-            ps.ime
-                .follow_external_change(Some(false), 1032, TickMs(1032), follow_fence()),
+            ps.ime.follow_external_change_in_scope(
+                Some(false),
+                1032,
+                TickMs(1032),
+                follow_fence(),
+                test_foreground_scope()
+            ),
             None
         );
         // 窓が切れた後（arm 前の直近の読みを 1 にしてから arm し、窓内の最初の読みも 1 = 変化なし）
-        let _ = ps
-            .ime
-            .follow_external_change(Some(true), 1990, TickMs(1990), follow_fence());
-        ps.ime.arm_external_change_watch(2000);
-        let _ = ps
-            .ime
-            .follow_external_change(Some(true), 2010, TickMs(2010), follow_fence());
+        let _ = ps.ime.follow_external_change_in_scope(
+            Some(true),
+            1990,
+            TickMs(1990),
+            follow_fence(),
+            test_foreground_scope(),
+        );
+        ps.ime
+            .arm_external_change_watch_in_scope(2000, test_foreground_scope());
+        let _ = ps.ime.follow_external_change_in_scope(
+            Some(true),
+            2010,
+            TickMs(2010),
+            follow_fence(),
+            test_foreground_scope(),
+        );
         assert_eq!(
-            ps.ime.follow_external_change(
+            ps.ime.follow_external_change_in_scope(
                 Some(false),
                 2000 + crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS + 1,
                 TickMs(2400),
-                follow_fence()
+                follow_fence(),
+                test_foreground_scope()
             ),
             None
         );
@@ -2675,13 +2702,23 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
-        let _ = ps
-            .ime
-            .follow_external_change(Some(false), 900, TickMs(900), follow_fence());
-        ps.ime.arm_external_change_watch(1000);
+        let _ = ps.ime.follow_external_change_in_scope(
+            Some(false),
+            900,
+            TickMs(900),
+            follow_fence(),
+            test_foreground_scope(),
+        );
+        ps.ime
+            .arm_external_change_watch_in_scope(1000, test_foreground_scope());
         assert_eq!(
-            ps.ime
-                .follow_external_change(Some(true), 1040, TickMs(1040), follow_fence()),
+            ps.ime.follow_external_change_in_scope(
+                Some(true),
+                1040,
+                TickMs(1040),
+                follow_fence(),
+                test_foreground_scope()
+            ),
             Some(true)
         );
         assert!(ps.ime.effective_open_at(TickMs(1050)));
@@ -2879,9 +2916,7 @@ mod tests {
         });
         let now = std::time::Instant::now();
         assert!(
-            ps.ime
-                .check_drift_correction(now, ps.ime.explicit_intent())
-                .is_none(),
+            ps.ime.check_drift_correction(now).is_none(),
             "揃った後は、観測 == desired なので drift correction は発火しない"
         );
     }
@@ -2912,11 +2947,63 @@ mod tests {
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         write_open_observation_high(&mut ps, false, 130);
         let now = std::time::Instant::now();
-        let drift = ps.ime.check_drift_correction(now, ps.ime.explicit_intent());
+        let drift = ps.ime.check_drift_correction(now);
         assert!(
             matches!(drift, Some(DriftCorrection { desired: true, observed: false, .. })),
             "通過マークが無ければ desired（awaseの意図）と観測の乖離は従来どおり補正される: {drift:?}"
         );
+    }
+
+    /// `evaluate_drift` が返す理由と根拠を、観測を置いた実際の入力から確かめる（E1。対応表を写さない）。
+    #[test]
+    fn evaluate_drift_reports_why_it_did_not_fire_from_real_observations() {
+        use crate::state::drift_correction::{NoDrift, OmissionBasis};
+        let setup = || {
+            let mut ps = ps_for_test();
+            dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+            dispatch_and_record_explicit_intent(&mut ps, true, 100);
+            ps
+        };
+
+        // 観測が desired(開)と食い違う: 補正する（Ok）。
+        let mut ps = setup();
+        write_open_observation_high(&mut ps, false, 130);
+        let t0 = std::time::Instant::now();
+        let ok = ps.ime.evaluate_drift(t0);
+        assert!(
+            matches!(
+                ok,
+                Ok(DriftCorrection {
+                    desired: true,
+                    observed: false,
+                    ..
+                })
+            ),
+            "{ok:?}"
+        );
+
+        // 同じ観測が古すぎる: Stale（観測が読み取り元）。`Instant` の減算を避け、先の時刻で評価する。
+        let late = t0
+            + std::time::Duration::from_millis(
+                crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS + 100,
+            );
+        let stale = ps.ime.evaluate_drift(late);
+        assert_eq!(stale, Err(NoDrift::StaleObservation), "{stale:?}");
+        assert_eq!(stale.unwrap_err().basis(), OmissionBasis::Observation);
+
+        // 観測が desired と一致している（乖離の追跡だけが残っている）: ObservationMatchesDesired。
+        let mut ps = setup();
+        write_open_observation_high(&mut ps, true, 130);
+        ps.ime.shadow_model.observations.drift = Some(ImeDrift {
+            started_at: std::time::Instant::now(),
+        });
+        let matched = ps.ime.evaluate_drift(std::time::Instant::now());
+        assert_eq!(
+            matched,
+            Err(NoDrift::ObservationMatchesDesired),
+            "{matched:?}"
+        );
+        assert_eq!(matched.unwrap_err().basis(), OmissionBasis::Observation);
     }
 
     /// BUG-158: 通過マークの窓が切れても観測が一度も成功しなかったとき（読み取りが失敗し続ける環境）、
@@ -3090,7 +3177,11 @@ mod tests {
         // 起動時の初期フォーカスを確立した状態: 同じ操作で意図が IntentStore に保持される。
         let mut ps = ps_for_test();
         ps.ime.dispatch_event(
-            ImeEvent::InitialFocusHwndEstablished { hwnd: TARGET_HWND },
+            ImeEvent::InitialFocusScopeEstablished {
+                to: TARGET_HWND,
+                profile: ImePolicyProfile::TsfNative,
+                focus_epoch: 1,
+            },
             TickMs(0),
         );
         assert_eq!(ps.ime.model().current_focus(), Some(TARGET_HWND));
@@ -3314,7 +3405,6 @@ mod tests {
                     mode: InputModeState::ObservedKana,
                     source,
                     confidence: ObservationConfidence::Medium,
-                    at: TickMs(0),
                 },
                 TickMs(0),
             );
@@ -3332,5 +3422,47 @@ mod tests {
                 "source={source:?}: journalにObservationSourceの値が記録されていない: {json}"
             );
         }
+    }
+
+    /// W-c: `dispatch_event` が `record_at` の `EventTime`（`seq` と、呼び出し側が渡した `tick_ms`）を
+    /// journal の `ImeEvent` にそのまま載せる配線の検査（組み立てた値を記録するだけの
+    /// `journal::tests` では配線が見えない）。
+    #[test]
+    fn dispatch_event_journals_event_time_seq_and_tick_ms() {
+        let mut ps = ps_for_test();
+        // event_log だけを先に 3 つ進める（journal には載らない）。`ImeEventLog` と
+        // `UnifiedJournal` の seq はどちらも 0 始まりなので、揃ったままだと
+        // 「journal 自身の seq を event_seq に載せる」取り違えを検出できない。
+        let now = ps.ime.clock.now_instant();
+        for _ in 0..3 {
+            ps.ime
+                .event_log
+                .record_at(&ImeEvent::PanicReset { target: true }, TickMs(1), now);
+        }
+        let seq0 = ps.ime.event_log.next_seq();
+        assert_eq!(seq0, 3);
+        ps.ime
+            .dispatch_event(ImeEvent::PanicReset { target: true }, TickMs(111));
+        ps.ime
+            .dispatch_event(ImeEvent::PanicReset { target: false }, TickMs(222));
+
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&ps.ime.journal.to_json().unwrap()).unwrap();
+        let ime_events: Vec<&serde_json::Value> = rows
+            .iter()
+            .map(|r| &r["entry"])
+            .filter(|e| e["type"].as_str() == Some("ImeEvent"))
+            .collect();
+        assert_eq!(
+            ime_events.len(),
+            2,
+            "ImeEvent の記録が 2 件でない: {rows:?}"
+        );
+        assert_eq!(ime_events[0]["event_seq"].as_u64(), Some(seq0));
+        assert_eq!(ime_events[0]["tick_ms"].as_u64(), Some(111));
+        assert_eq!(ime_events[1]["event_seq"].as_u64(), Some(seq0 + 1));
+        assert_eq!(ime_events[1]["tick_ms"].as_u64(), Some(222));
+        // dispatch 1 回につき record_at がちょうど 1 回（配線ではなく採番回数の確認）。
+        assert_eq!(ps.ime.event_log.next_seq(), seq0 + 2);
     }
 }

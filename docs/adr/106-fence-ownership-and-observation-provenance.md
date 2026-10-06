@@ -102,6 +102,7 @@ ADR-104 決定6-c が「正当な generation 値 `0` と衝突する」と書い
 > 1件 dispatch するようになり、`ImeEventLog.next_seq()` は
 > `try_force_on_bootstrap()` の時点で既に `1` 以上になっている。したがって
 > `generation = 0` の払い出しはこの経路では起きなくなった。
+> （ADR-232 D1 で、この Event は `InitialFocusScopeEstablished` 1 件に統合した。dispatch が 1 件以上であることは変わらない。）
 > **ただし決定の根拠は変わらない** ——`next_seq` を `generation` に流用する構造上の
 > 病（自分の都合で進む／初期値 `0` が二義的／割り当てと消費が型で結ばれていない）は
 > そのまま残っており、`generation = 0` が偶然到達不能になったことは修正ではない。

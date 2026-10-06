@@ -3,6 +3,7 @@ use super::key_injector::{KeyInjector, VkMarker};
 use super::resolve::{ascii_to_vk, CharResolution};
 use super::{fmt_ms, WarmthContext, WarmupOutcome};
 use super::{Output, VkSequence};
+use crate::state::deferred_gate_plan;
 use crate::state::event_origin::Generation;
 use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
@@ -81,10 +82,22 @@ impl Output {
     /// 確実に無関係な別recoveryが所有中であり、`finish_probe_stage`が
     /// 守るINV-Fと同じ理由でここも手を出してはならない。
     fn drain_pending_deferred_before_send_if_queue_only(&self, gate: DeferGate) {
-        if gate != DeferGate::Enforced {
-            return;
-        }
-        if self.is_probe_or_recovery_blocking(true) || self.pending_deferred_len() == 0 {
+        // 判断は `deferred_gate_plan::plan_drain_before_send`（FCIS F6）。値は元の短絡評価と同じ順・同じ条件でだけ読む。
+        let gate_enforced = gate == DeferGate::Enforced;
+        let blocking = if gate_enforced {
+            self.probe_or_recovery_block_reason(true)
+        } else {
+            None
+        };
+        let queue_len = if gate_enforced && blocking.is_none() {
+            self.pending_deferred_len()
+        } else {
+            0
+        };
+        if !matches!(
+            deferred_gate_plan::plan_drain_before_send(gate_enforced, blocking, queue_len),
+            deferred_gate_plan::DrainBeforeSendPlan::Flush
+        ) {
             return;
         }
         let n = self.flush_pending_deferred_vks();

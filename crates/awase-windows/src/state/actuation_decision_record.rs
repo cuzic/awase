@@ -1270,59 +1270,19 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/journals/actuation_decision")
     }
 
-    fn load_fixtures(path: &std::path::Path) -> Vec<ActuationDecisionRecord> {
-        let content = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("フィクスチャ読み込み失敗 {}: {e}", path.display()));
-        serde_json::from_str(&content)
-            .unwrap_or_else(|e| panic!("フィクスチャのJSONパース失敗 {}: {e}", path.display()))
-    }
-
     /// `tests/journals/actuation_decision/*.json`（TH1dで実機ダンプから投入済み）を再生する。
-    /// TH1dでfixtureが投入された以降は、ディレクトリ自体が存在しないことは想定しない
+    /// ディレクトリの消失・fixture 0 件は `ReplayReport::assert_ok` が拒む
     /// （投入済みfixtureをディレクトリ削除で無効化する事故を防ぐ）。
     #[test]
     fn replay_all_actuation_decision_fixtures() {
-        let dir = fixture_dir();
-        assert!(
-            dir.exists(),
-            "{} が存在しない。TH1dで投入したfixtureディレクトリが削除された可能性",
-            dir.display()
-        );
-        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("{} が読めない: {e}", dir.display()))
-            .map(|entry| entry.expect("dir entry read failed").path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-            .collect();
-        paths.sort();
-        assert!(
-            !paths.is_empty(),
-            "{} にfixture(*.json)が1件もない（TH1d後は最低1件を要求）",
-            dir.display()
-        );
-
-        let mut total = 0usize;
-        let mut failures = Vec::new();
-        for path in &paths {
-            for record in load_fixtures(path) {
-                total += 1;
-                for failure in replay_record(&record) {
-                    failures.push(format!(
-                        "[{}] {failure}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    ));
-                }
+        awase_replay::replay_dir::<ActuationDecisionRecord>(&fixture_dir(), |record| {
+            let failures = replay_record(record);
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(failures.join("\n"))
             }
-        }
-        assert!(
-            total > 0,
-            "{} のfixtureファイルに1件もレコードが無い",
-            dir.display()
-        );
-        assert!(
-            failures.is_empty(),
-            "{} 件のactuation決定リプレイ不一致:\n\n{}",
-            failures.len(),
-            failures.join("\n\n")
-        );
+        })
+        .assert_ok();
     }
 }

@@ -197,7 +197,7 @@ pub(crate) fn take_probe_timed_out() -> bool {
 /// タイムアウトまたはエラー時は `None` を返す。
 ///
 /// probe/actuate 双方の bump・計測・診断ログ（`conv_mutation`/`probe_actuation_fence`/
-/// `shadow_send_trace`/`send_health`）はすべてここに集約する——`probe_ime_control`/
+/// `send_health`）はすべてここに集約する——`probe_ime_control`/
 /// `actuate_ime_control` の2関数に分散させると、どちらか片方だけ計測が漏れる事故になる
 /// （このクレートの全 `SendMessageTimeoutW` 呼び出しが経由する唯一のチョークポイント
 /// という性質は分割後も本関数1つが維持する）。
@@ -274,9 +274,6 @@ unsafe fn send_ime_control_raw(
     // ADR-140 コードレビュー指摘（MAJOR）: end_ms は send_health のサーキット
     // ブレーカ計測に使われるため、下の tracing::debug! のフォーマット/I/O コストを
     // その計測窓に含めてはならない——先に end_ms を確定させてから記録する。
-    // ADR-159 段階2(TF2)の`shadow_send_trace`記録も同じ理由でここに置く
-    // （`is_actuation`は上のbump()と同一条件、`158-implementation-tasks.md`
-    // TF2「最小限(1条件分岐)」の要件どおり新しい条件は増やしていない）。
     let end_ms = crate::hook::current_tick_ms();
     tracing::debug!(
         "[ime-io] cross_process cmd=0x{cmd:04X} kind={} ime_wnd={ime_wnd:?} \
@@ -284,9 +281,6 @@ unsafe fn send_ime_control_raw(
         if is_actuation { "actuation" } else { "probe" },
         std::thread::current().id(),
     );
-    if is_actuation {
-        crate::shadow_send_trace::record_ime_control(cmd, lparam, issue_us);
-    }
     crate::send_health::record(end_ms.saturating_sub(start_ms), end_ms);
     (ok.0 != 0).then_some(result)
 }

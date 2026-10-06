@@ -283,13 +283,25 @@ pub enum JournalEntry {
     /// の自由文字列）を廃止し、実 `state::ime_event::ImeEvent` をそのまま記録する。
     /// これにより journal が「読める」だけでなく「型として取り出せる」形式になる
     /// （`source`/`target`/`confidence` 等を文字列パースなしで参照できる）。
+    ///
+    /// `event_seq`/`tick_ms`（W-c）: `ImeEventLog` が採番した `EventTime` の
+    /// `seq`（reducer の順序判断に使う番号）と `tick_ms`（`GetTickCount64` 由来）。
+    /// `JournalEnvelope.seq`/`elapsed_ms` は journal 側の連番・経過時間で、reducer の入力
+    /// （`ImeEventEnvelope.time`）とは別系統なので、イベントが既に持っている時刻を
+    /// そのまま記録する。これは journal から `ImeModel` を再現するための**第一歩**であり、
+    /// これだけでは再現に足りない。残るもの: `Instant`（`monotonic`）はシリアライズできず
+    /// 記録しない／`ImeEvent` は `Serialize` のみで `Deserialize` が無い／リングから
+    /// 捨てられた古い分の初期状態のスナップショットが無い／`reduce` を通らない
+    /// 書き込み（belief への直接書き込み等）は記録されない。
     ImeEvent {
         event: crate::state::ime_event::ImeEvent,
+        event_seq: u64,
+        tick_ms: u64,
     },
     /// `classify_conv_transition` への呼び出し（引数+戻り値を構造化して記録）。
     ///
     /// リプレイ回帰テスト（`tests/journal_replay.rs`）の主要な入力源。実機で
-    /// ダンプしたジャーナルからこのエントリを取り出し、`tests/journals/` の
+    /// ダンプしたジャーナルからこのエントリを取り出し、`tests/journals/conv_classify/` の
     /// フィクスチャ形式（`ConvClassifyFixture`、`state/conv_classify.rs` 参照）に
     /// 転記することで、実際に観測された入力の組合せを恒久的な回帰テストに
     /// 変換できる。
@@ -460,33 +472,12 @@ pub enum JournalEntry {
     /// `app_log_excerpt` を直接読まないと確認できず、journal の
     /// `DumpTruncated` で欠落しうる弱点だった）。
     ///
-    /// GJI reinit retry 完了後の flush/discard は同じ意味論のデータだが、
-    /// `token`/`focus_matches` 等の周辺情報とまとめて記録した方が読みやすい
-    /// ため、本 variant ではなく `JournalEntry::GjiReinitRetryCompleted` の
-    /// `deferred_flushed`/`deferred_discarded` フィールドに記録する
-    /// （`platform.rs::complete_gji_reinit_retry`）。
+    /// GJI reinit retry 完了後の flush/discard を記録する
+    /// `JournalEntry::GjiReinitRetryCompleted` は、生成元（ADR-212 P3・P5 の reinit 撤去、`0a7f9067` で
+    /// `complete_gji_reinit_retry` が消えた）が無くなったため削除した。
     DeferredRecoveryFlush {
         trigger: &'static str,
         outcome: DeferredRecoveryOutcomeSummary,
-    },
-    /// GJI reinit（`VK_IME_OFF`→`VK_IME_ON`、`RawTsfLiteralRecovery` の
-    /// give-up 分岐が予約する）retry poll の完了（ADR-123）。
-    ///
-    /// `origin_focus_gen`（give-up 検出時点のフォーカス世代）と
-    /// `current_focus_gen`（poll 完了時点の世代）の一致・不一致が、
-    /// `pending_deferred` を安全に flush してよいか（focus_matches）を
-    /// 決める。この判定は従来 `tracing::debug!`/`tracing::warn!` のみで、journal
-    /// には一切現れなかった。
-    GjiReinitRetryCompleted {
-        token: u32,
-        status: String,
-        cold_seq: u64,
-        origin_focus_gen: u32,
-        current_focus_gen: u32,
-        focus_matches: bool,
-        retry_romaji_present: bool,
-        deferred_flushed: usize,
-        deferred_discarded: usize,
     },
     /// `elapsed_ms` / OS tick / hook timestamp の対応を取るためのアンカー。
     ClockAnchor { tick_ms: u64, hook_us: u64 },
@@ -693,8 +684,7 @@ impl JournalEntry {
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
             | Self::LiteralDetect { .. }
-            | Self::DeferredRecoveryFlush { .. }
-            | Self::GjiReinitRetryCompleted { .. } => LaneKind::Timing,
+            | Self::DeferredRecoveryFlush { .. } => LaneKind::Timing,
             Self::ImeActuation { .. }
             | Self::SentInput { .. }
             | Self::ActuationDecision { .. }
@@ -858,11 +848,17 @@ impl JournalEntry {
                     "timer fired"
                 );
             }
-            Self::ImeEvent { event } => {
+            Self::ImeEvent {
+                event,
+                event_seq,
+                tick_ms,
+            } => {
                 tracing::debug!(
                     target: "awase::journal",
                     seq,
                     elapsed_ms,
+                    event_seq,
+                    tick_ms,
                     event_kind = variant_name(event),
                     "ime event"
                 );
@@ -1144,33 +1140,6 @@ impl JournalEntry {
                     trigger = *trigger,
                     outcome = variant_name(outcome),
                     "deferred recovery flush"
-                );
-            }
-            Self::GjiReinitRetryCompleted {
-                token,
-                status,
-                cold_seq,
-                origin_focus_gen,
-                current_focus_gen,
-                focus_matches,
-                retry_romaji_present,
-                deferred_flushed,
-                deferred_discarded,
-            } => {
-                tracing::debug!(
-                    target: "awase::journal",
-                    seq,
-                    elapsed_ms,
-                    token,
-                    status = status.as_str(),
-                    cold_seq,
-                    origin_focus_gen,
-                    current_focus_gen,
-                    focus_matches,
-                    retry_romaji_present,
-                    deferred_flushed,
-                    deferred_discarded,
-                    "gji reinit retry completed"
                 );
             }
             Self::ClockAnchor { tick_ms, hook_us } => {
@@ -1777,6 +1746,8 @@ mod tests {
     fn make_state_entry() -> JournalEntry {
         JournalEntry::ImeEvent {
             event: crate::state::ime_event::ImeEvent::PanicReset { target: true },
+            event_seq: 7,
+            tick_ms: 1234,
         }
     }
 
@@ -1960,6 +1931,19 @@ mod tests {
         assert!(json.starts_with('['));
         assert!(json.contains("ImeEvent"));
         assert!(json.contains("elapsed_ms"));
+    }
+
+    #[test]
+    fn ime_event_entry_records_event_time_and_seq() {
+        let (mut j, _mock) = mock_journal();
+        j.record(make_state_entry());
+        let values: Vec<serde_json::Value> = serde_json::from_str(&j.to_json().unwrap()).unwrap();
+        let entry = &values[0]["entry"];
+        assert_eq!(entry["type"].as_str(), Some("ImeEvent"));
+        assert_eq!(entry["event_seq"].as_u64(), Some(7));
+        assert_eq!(entry["tick_ms"].as_u64(), Some(1234));
+        // journal 自身の seq/elapsed_ms とは別に載る
+        assert_eq!(values[0]["seq"].as_u64(), Some(0));
     }
 
     #[test]

@@ -1,0 +1,189 @@
+[
+  {
+    "name": "idle-ospoll",
+    "note": "打鍵アイドル(500ms 以上)・通常アプリは OS をポーリングする",
+    "facts": {
+      "idle_ms": 800,
+      "skip_imm_query": false,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": false,
+      "applied_known": false,
+      "shift_conv_guard_active": false
+    },
+    "expected": {
+      "strategy": "OsPoll",
+      "reason": "OsPoll",
+      "typing_guard_bypassed": false
+    }
+  },
+  {
+    "name": "idle-boundary-500",
+    "note": "idle ちょうど TYPING_IDLE_MS(500)は打鍵中ではない",
+    "facts": {
+      "idle_ms": 500,
+      "skip_imm_query": false,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": false,
+      "applied_known": false,
+      "shift_conv_guard_active": false
+    },
+    "expected": {
+      "strategy": "OsPoll",
+      "reason": "OsPoll",
+      "typing_guard_bypassed": false
+    }
+  },
+  {
+    "name": "idle-tsfnative-blacklist",
+    "note": "アイドルで IMM を問い合わせないアプリは shadow のみ",
+    "facts": {
+      "idle_ms": 800,
+      "skip_imm_query": true,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": false,
+      "applied_known": false,
+      "shift_conv_guard_active": false
+    },
+    "expected": {
+      "strategy": "Blacklist",
+      "reason": "ImmQuerySkipped",
+      "typing_guard_bypassed": false
+    }
+  },
+  {
+    "name": "typing-skip",
+    "note": "打鍵中(idle 499ms)で明示操作の検証も要らなければ読まない",
+    "facts": {
+      "idle_ms": 499,
+      "skip_imm_query": false,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": false,
+      "applied_known": false,
+      "shift_conv_guard_active": false
+    },
+    "expected": {
+      "strategy": "SkipTyping",
+      "reason": "TypingActive",
+      "typing_guard_bypassed": false
+    }
+  },
+  {
+    "name": "typing-intent-but-applied-unknown",
+    "note": "打鍵中・明示意図ありでも applied が Unknown なら迂回しない",
+    "facts": {
+      "idle_ms": 100,
+      "skip_imm_query": false,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": true,
+      "applied_known": false,
+      "shift_conv_guard_active": false
+    },
+    "expected": {
+      "strategy": "SkipTyping",
+      "reason": "TypingActive",
+      "typing_guard_bypassed": false
+    }
+  },
+  {
+    "name": "typing-applied-known-but-no-intent",
+    "note": "打鍵中・applied 既知でも明示意図が無ければ迂回しない",
+    "facts": {
+      "idle_ms": 100,
+      "skip_imm_query": false,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": false,
+      "applied_known": true,
+      "shift_conv_guard_active": false
+    },
+    "expected": {
+      "strategy": "SkipTyping",
+      "reason": "TypingActive",
+      "typing_guard_bypassed": false
+    }
+  },
+  {
+    "name": "typing-explicit-verify-bypass",
+    "note": "打鍵中でも、明示意図あり+applied 既知なら打鍵ガードを迂回して OS を読む",
+    "facts": {
+      "idle_ms": 100,
+      "skip_imm_query": false,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": true,
+      "applied_known": true,
+      "shift_conv_guard_active": false
+    },
+    "expected": {
+      "strategy": "OsPoll",
+      "reason": "OsPoll",
+      "typing_guard_bypassed": true
+    }
+  },
+  {
+    "name": "typing-mode-key-pass-bypass",
+    "note": "打鍵中でも、通過マークが有効なら打鍵ガードを迂回して OS を読む(ADR-187)",
+    "facts": {
+      "idle_ms": 30,
+      "skip_imm_query": false,
+      "mode_key_pass_live": true,
+      "explicit_intent_present": false,
+      "applied_known": false,
+      "shift_conv_guard_active": false
+    },
+    "expected": {
+      "strategy": "OsPoll",
+      "reason": "OsPoll",
+      "typing_guard_bypassed": true
+    }
+  },
+  {
+    "name": "typing-explicit-but-skip-imm",
+    "note": "打鍵中・通過マーク有効でも IMM を問い合わせないアプリは迂回しない(TsfNative/Blacklist 対象外)",
+    "facts": {
+      "idle_ms": 30,
+      "skip_imm_query": true,
+      "mode_key_pass_live": true,
+      "explicit_intent_present": true,
+      "applied_known": true,
+      "shift_conv_guard_active": false
+    },
+    "expected": {
+      "strategy": "SkipTyping",
+      "reason": "TypingActive",
+      "typing_guard_bypassed": false
+    }
+  },
+  {
+    "name": "shift-conv-guard-idle",
+    "note": "アイドルでも Shift 変換の安全網中は読まない",
+    "facts": {
+      "idle_ms": 800,
+      "skip_imm_query": false,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": false,
+      "applied_known": false,
+      "shift_conv_guard_active": true
+    },
+    "expected": {
+      "strategy": "SkipTyping",
+      "reason": "ShiftConvGuard",
+      "typing_guard_bypassed": false
+    }
+  },
+  {
+    "name": "shift-conv-guard-after-bypass",
+    "note": "打鍵ガードを迂回した後でも Shift 変換の安全網は読み取りを止める(迂回の事実は残る)",
+    "facts": {
+      "idle_ms": 30,
+      "skip_imm_query": false,
+      "mode_key_pass_live": true,
+      "explicit_intent_present": false,
+      "applied_known": false,
+      "shift_conv_guard_active": true
+    },
+    "expected": {
+      "strategy": "SkipTyping",
+      "reason": "ShiftConvGuard",
+      "typing_guard_bypassed": true
+    }
+  }
+]

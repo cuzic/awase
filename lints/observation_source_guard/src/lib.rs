@@ -48,7 +48,6 @@ dylint_linting::declare_late_lint! {
     ///         mode: InputModeState::AssumedRomaji { .. },
     ///         source: ObservationSource::ImmGetOpenStatus,
     ///         confidence: ObservationConfidence::High,
-    ///         at: tick_ms,
     ///     },
     ///     tick_ms,
     /// );
@@ -63,7 +62,6 @@ dylint_linting::declare_late_lint! {
     ///         mode: InputModeState::AssumedRomaji { .. },
     ///         strategy: InputModeApplyStrategy::PostSetOpenEisuReset,
     ///         result: InputModeApplyResult::Applied,
-    ///         at: tick_ms,
     ///     },
     ///     tick_ms,
     /// );

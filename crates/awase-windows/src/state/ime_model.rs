@@ -193,7 +193,7 @@ pub struct ImeModel {
     /// 入力モード（ローマ字/かな/英数/不明）の belief。
     ///
     /// H-3-b で追加。H-3-c で `ImeBelief::input_mode` への直接代入が
-    /// `InputModeObserved` / `InputModeApplied` / `UserChangedInputMode` イベント経由に
+    /// `InputModeObserved` / `InputModeApplied` イベント経由に
     /// 置換されるまでは shadow として記録するのみで本番判定には使わない。
     /// H-3-d で `ImeBelief::input_mode` が private 化されたのち、このフィールドが SSOT になる。
     ///
@@ -253,7 +253,8 @@ pub struct ImeModel {
 
     /// 現在フォーカス中のウィンドウ (ADR-087 §5 Phase 3 item15 前提配線)。
     ///
-    /// `FocusChanged` の reducer でのみ更新する。`current_focus()` アクセサ経由で
+    /// `FocusChanged` と起動時の `InitialFocusScopeEstablished`（ADR-232 D1）の reducer でのみ
+    /// 更新する。`current_focus()` アクセサ経由で
     /// `ImeStateHub::effective_open()`/`record_explicit_intent()`/
     /// `apply_hwnd_cache_restore()`/`reset_stale_ime_on_for_imm_broken()`
     /// （BUG-51 追補 v3、IntentStore の対象キーとして）が本番判定に使用する
@@ -355,7 +356,7 @@ impl ImeModel {
     /// awase が IME をこうしたい状態（読み取り専用アクセサ）。
     ///
     /// `desired_open` フィールドは private。外部から書き込まず
-    /// `ImeEvent::UserImeSetIntent` / `UserImeToggleIntent` 経由で reducer を通すこと。
+    /// `ImeEvent::UserImeSetIntent` 経由で reducer を通すこと。
     /// 実効値が欲しい場合は `effective_open()` を使うこと（こちらは生の意図のみ）。
     #[must_use]
     pub const fn desired_open(&self) -> bool {
@@ -365,7 +366,7 @@ impl ImeModel {
     /// 入力モードの belief を返す（読み取り専用アクセサ）。
     ///
     /// `input_mode` フィールドは private。外部から書き込まず
-    /// `InputModeObserved` / `InputModeApplied` / `UserChangedInputMode` 経由で
+    /// `InputModeObserved` / `InputModeApplied` 経由で
     /// reducer を通すこと。
     #[must_use]
     pub const fn input_mode(&self) -> InputModeState {
@@ -401,7 +402,7 @@ impl ImeModel {
     /// false の場合は observation pool の `derive_any()` 結果を採用し、
     /// 観測が空なら `desired_open` にフォールバックする。
     ///
-    /// `last_intent` は `UserImeSetIntent` / `UserImeToggleIntent` のみが設定する。
+    /// `last_intent` は `UserImeSetIntent` のみが設定する。
     /// `PanicReset` / `HwndCacheRestored` は設定しないため、ここで除外不要。
     fn has_user_explicit_intent(&self) -> bool {
         self.last_intent.is_some()
@@ -490,7 +491,7 @@ impl ImeModel {
 
     /// generation 付きの apply 要求と完了（Engine 経路）を `reduce` に通す（ADR-208 L0 の全列挙テストのオラクル用）。
     ///
-    /// event_log を経由しない純粋モデル上の遷移で、本番は `ImeStateHub` が event_log 経由で `reduce` する。
+    /// `event_log` の採番を経由しない純粋モデル上の遷移で、本番は `ImeStateHub` が採番して `reduce` する。
     /// `reduce` の呼び出しを `ime_model.rs` 内（`self.reduce`）に留めるための薄い口。
     pub fn apply_engine_request_and_completion(
         &mut self,
@@ -716,7 +717,7 @@ impl ImeModel {
         true
     }
 
-    /// `UserImeToggleIntent`/`UserImeSetIntent` 共通の `last_intent` 記録。
+    /// `UserImeSetIntent` の `last_intent` 記録。
     fn record_intent(&mut self, target: bool, source: UserIntentSource, at_ms: u64) {
         self.last_intent = Some(RecordedIntent {
             target,
@@ -734,9 +735,9 @@ impl ImeModel {
     /// ImeApplyFailed)はADR-170決定1でprivateヘルパーへ抽出済み。
     // `event` は `fields(?envelope.event)` のようなDebug展開をしない
     // （PRコードレビュー指摘: journal→tracing fan-out〈決定4〉が同じ
-    // ImeEventを`event_kind = "UserImeToggleIntent"`のような判別子文字列で
-    // 出しているのに対し、ここでDebugフォーマットすると`event=UserImeToggleIntent
-    // { source: SyncKey }`という別の語彙が並び立ち、triageを混乱させる）。
+    // ImeEventを`event_kind = "UserImeSetIntent"`のような判別子文字列で
+    // 出しているのに対し、ここでDebugフォーマットすると`event=UserImeSetIntent
+    // { target: true, source: SyncKey }`という別の語彙が並び立ち、triageを混乱させる）。
     //
     // `ImeEvent` の全 variant を1つの `match` で振り分ける reducer で、分岐の数がそのまま複雑度になる。
     // 本体が長い分岐はヘルパーへ抽出済み（ADR-170）。`KeyEffectPredicted`/`ModeKeyPassedThrough` の
@@ -746,14 +747,6 @@ impl ImeModel {
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
         match envelope.event {
-            ImeEvent::UserImeToggleIntent { source } => {
-                self.key_effect = None;
-                self.key_track.stage = crate::state::key_effect_predictor::Stage::None;
-                let target = !self.desired_open;
-                self.desired_open = target;
-                self.desired_is_placeholder = false;
-                self.record_intent(target, source, envelope.time.tick_ms);
-            }
             ImeEvent::UserImeSetIntent { target, source } => {
                 self.key_effect = None;
                 self.key_track.stage = crate::state::key_effect_predictor::Stage::None;
@@ -829,17 +822,14 @@ impl ImeModel {
                 self.applied = AppliedImeState::Optimistic(desired);
             }
             ImeEvent::InputModeObserved {
-                mode,
-                confidence,
-                at,
-                ..
+                mode, confidence, ..
             } => {
                 // ON/OFF の derive_any() と同じ考え方: Low confidence 単独では
                 // belief を動かさない（記録のみ）。Medium+ のみ input_mode を上書きする。
                 if confidence >= ObservationConfidence::Medium {
                     // fence（ADR-191 決定3）: 最新の打鍵から settle 以内の観測は、IME がキーを処理する
                     // 前の古い状態を読んでいる恐れがあるため、予測した入力モードを上書きしない。
-                    if self.reconcile_key_effect_mode(mode, at.0) {
+                    if self.reconcile_key_effect_mode(mode, envelope.time.tick_ms) {
                         self.input_mode = mode;
                         // 観測が来たので、変換モードの追跡は観測（`prev_conversion_mode`）へ戻す。
                         self.key_track.conv = None;
@@ -856,35 +846,31 @@ impl ImeModel {
                     self.input_mode = mode;
                 }
             }
-            ImeEvent::UserChangedInputMode { mode, .. } => {
-                // ユーザーの明示操作 → 観測と同等の信頼度で即時反映する。
-                self.input_mode = mode;
-            }
             ImeEvent::FocusHwndUpdated { hwnd } => {
                 // 同一プロセス内の hwnd 変化のみ。epoch・観測プール・intent 等は
                 // FocusChanged 側の責務のためここでは触らない（ADR-106 決定3）。
                 self.observations.update_focus_window(hwnd);
             }
-            ImeEvent::InitialFocusFenceEstablished { fence } => {
-                // BUG-102: 観測の新鮮さを判定するための識別子（epoch + hwnd）だけを
-                // bootstrap で確立した live 側の値へ合わせる。IME が ON か OFF かの
-                // 推測は一切含まないため、ADR-102 決定3-b の「最初の IME 観測より前に
-                // belief を書き換えない」に抵触しない——このアームは `desired_open` /
-                // `input_mode` / `applied` / `app_policy` / `last_intent` /
-                // `force_guards` / `input_barrier` / `current_focus` のいずれにも
-                // 触れないこと（`initial_focus_fence_event_only_touches_the_fence`
-                // が固定する）。
-                self.observations.establish_initial_fence(fence);
-            }
-            ImeEvent::InitialAppPolicyEstablished { profile } => {
-                // BUG-114 根本原因1（ADR-134 D1c）: 起動から最初のプロセス
-                // 切替まで `app_policy` が既定値 `Read` のまま固定される
-                // 問題を、起動時の live profile で初期化することで塞ぐ。
-                // `app_policy` のみを書き換える（`FocusChanged` と同じ導出
-                // 式だが、`current_focus`/observations 等の他フィールドは
-                // 触らない——`initial_app_policy_event_only_touches_app_policy`
-                // が固定する）。
+            ImeEvent::InitialFocusScopeEstablished {
+                to,
+                profile,
+                focus_epoch,
+            } => {
+                // ADR-232 D1（BUG-102・114・148）: 起動時のフォーカス確立。`FocusChanged` が
+                // 入れる「スコープの同一性」の 3 つ（app_policy・current_focus・fence）だけを
+                // 同じ式で入れる。共有関数にしないのは、`reduce_` で始まる関数は
+                // `reduce_helpers_are_called_only_from_reduce_body` に必ず落ちるため。
+                // 食い違い（`FocusChanged` に同一性のフィールドが足されたのに起動時が漏れる）は
+                // `initial_focus_scope_matches_focus_changed_except_input_barrier` が捕まえる。
+                // belief（`last_intent`・`applied`・観測プール等）は書かない（ADR-102 決定3-b。
+                // `clear_on_focus_change` を通すと観測プールと drift を消すので、fence は
+                // `establish_initial_fence` で入れる）。
                 self.app_policy = AppImePolicy::from_profile(profile);
+                self.current_focus = Some(to);
+                self.observations.establish_initial_fence(FocusFence {
+                    epoch: focus_epoch,
+                    hwnd: to,
+                });
             }
             ImeEvent::KeyEffectPredicted { open, mode, track } => {
                 self.key_track = track;
@@ -949,15 +935,6 @@ impl ImeModel {
                         }
                     }
                 }
-            }
-            ImeEvent::InitialFocusHwndEstablished { hwnd } => {
-                // BUG-148/ADR-186: 起動時に既に前面にあるアプリの hwnd を
-                // `current_focus` に入れる。これが無いと最初のプロセス切替まで
-                // `record_explicit_intent` が空振りし、委譲 SetOpen が全て
-                // Unwarranted になる。`current_focus` のみを書き換え、belief
-                // （`desired_open`/`applied`/観測）には触れない
-                // （`initial_focus_hwnd_established_touches_only_current_focus` が固定する）。
-                self.current_focus = Some(hwnd);
             }
         }
         // ADR-108 決定4: パージは match の後。期限切れ transition にも、自分自身の
@@ -1210,7 +1187,7 @@ mod tests {
     // ここ(`state/ime_model.rs` 自身の `#[cfg(test)]`)はプラットフォーム非依存で
     // Linux でも実行されるため、バリアント別の直接テストをここに置く。
 
-    /// `initial_focus_fence_established_touches_only_the_fence` 用のフィクスチャ。
+    /// `initial_focus_scope_established_touches_only_the_scope_identity` 用のフィクスチャ。
     ///
     /// **`ImeModel` の全フィールドを既定値から動かす**ことがこのヘルパーの唯一の
     /// 仕事である。当該テストは「モデル全体の `Debug` 表現が変わらないこと」で
@@ -1274,103 +1251,115 @@ mod tests {
         model
     }
 
-    /// BUG-102 / ADR-102 決定3-b: `InitialFocusFenceEstablished` は
-    /// `ObservationStore::current_fence` **以外の一切のフィールドに触れない**。
+    /// BUG-102・114・148 / ADR-102 決定3-b / ADR-232 D1: `InitialFocusScopeEstablished` は
+    /// `app_policy`・`current_focus`・観測の fence の 3 つ**以外の一切のフィールドに触れない**。
     ///
-    /// bootstrap（まだ一度も IME を観測していない時点）で dispatch されるため、
-    /// belief を1ビットでも動かすとこの不変条件が壊れる。`FocusChanged` が触る
-    /// `app_policy`/`last_intent`/`applied`/`force_guards`/
-    /// `input_barrier`/`current_focus`/観測プールが巻き添えで初期化されていないか、
-    /// モデル全体の `Debug` 表現で機械的に確認する（個別 assert の書き漏れで
-    /// 将来フィールドが増えたときに見逃すのを防ぐ）。
+    /// bootstrap（まだ一度も IME を観測していない時点）で dispatch されるため、belief を
+    /// 1 ビットでも動かすとこの不変条件が壊れる。3 つが既に目的の値になっているモデルへ
+    /// 同じ Event を流し、モデル全体の `Debug` 表現が変わらないことで巻き添え書き込みを
+    /// 検出する（個別 assert の書き漏れで将来フィールドが増えたときに見逃すのを防ぐ）。
     #[test]
-    fn initial_focus_fence_established_touches_only_the_fence() {
+    fn initial_focus_scope_established_touches_only_the_scope_identity() {
         let now = Instant::now();
+        let to = HwndId(0x7777);
+        let profile = ImePolicyProfile::TsfNative;
+        let focus_epoch = 1;
         let fence = FocusFence {
-            epoch: 1,
-            hwnd: HwndId(0xABCD),
+            epoch: focus_epoch,
+            hwnd: to,
+        };
+        let ev = || ImeEvent::InitialFocusScopeEstablished {
+            to,
+            profile,
+            focus_epoch,
         };
 
-        // (1) 既定値フェンスから dispatch すると、fence だけが live 側の値になる。
-        let mut model = fully_populated_model(now);
-        model.reduce(&envelope(
-            1,
-            ImeEvent::InitialFocusFenceEstablished { fence },
-        ));
+        // (1) 未確立（起動直後）のモデルへ流すと、3 つが入る。
+        let mut model = ImeModel::new();
         assert_eq!(
-            model.observations.current_fence(),
-            fence,
-            "fence は live 側（bootstrap で確立した epoch + hwnd）に同期される"
+            model.current_focus(),
+            None,
+            "起動直後は None（BUG-148 の前提）"
         );
+        assert_eq!(model.observations.current_fence(), FocusFence::default());
+        model.reduce(&envelope(1, ev()));
+        assert_eq!(model.app_policy, AppImePolicy::from_profile(profile));
+        assert_eq!(model.current_focus(), Some(to));
+        assert_eq!(model.observations.current_fence(), fence);
 
-        // (2) 「fence が既にその値になっているモデル」へ同じイベントを流すと、
-        // モデル全体の `Debug` 表現が1文字も変わらない = fence 以外を書いていない。
-        //
-        // dispatch 後に fence を既定値へ戻して比較する形にはしない——
-        // `establish_initial_fence` の debug_assert（fence 未確立のうちに1度だけ）
-        // に引っかかるうえ、「戻す」操作自体がテストの検査対象を汚すため。
+        // (2) 3 つが既に目的の値のモデルへ同じ Event を流しても、モデル全体の `Debug` が
+        // 1 文字も変わらない。目的の値がフィクスチャの値と違うことを確かめてから使う
+        // （一致していると (2) の検出力が無くなる）。
         let mut model = fully_populated_model(now);
+        assert_ne!(model.app_policy, AppImePolicy::from_profile(profile));
+        assert_ne!(model.current_focus(), Some(to));
+        model.app_policy = AppImePolicy::from_profile(profile);
+        model.current_focus = Some(to);
         model.observations.establish_initial_fence(fence);
         let before = format!("{model:?}");
-        model.reduce(&envelope(
-            1,
-            ImeEvent::InitialFocusFenceEstablished { fence },
-        ));
+        model.reduce(&envelope(1, ev()));
         assert_eq!(
             format!("{model:?}"),
             before,
-            "InitialFocusFenceEstablished は current_fence 以外を書き換えてはならない \
-             (ADR-102 決定3-b: 最初の IME 観測より前に belief を書き換えない)"
+            "InitialFocusScopeEstablished は app_policy・current_focus・fence 以外を書き換えては\
+             ならない (ADR-102 決定3-b: 最初の IME 観測より前に belief を書き換えない)"
         );
     }
 
-    /// BUG-114 根本原因1（ADR-134 D1c）の回帰テスト。
+    /// ADR-232 D1 の等価性テスト（BUG-102・114・148 の再発防止の本体）。
     ///
-    /// `InitialAppPolicyEstablished` は `app_policy` **以外の一切のフィールドに
-    /// 触れない**（`InitialFocusFenceEstablished` と同じ「1フィールドだけ差し替え」
-    /// 不変条件）。`initial_focus_fence_established_touches_only_the_fence` と
-    /// 同じ手法（既に目的の値になっているモデルへ同じイベントを流し、モデル全体の
-    /// `Debug` 表現が1文字も変わらないことで巻き添え書き込みを検出する）で固定する。
+    /// 起動時の `InitialFocusScopeEstablished` は `FocusChanged` の reducer と別の腕に
+    /// 同じ式を書いているため（共有関数にすると `reduce_helpers_are_called_only_from_reduce_body`
+    /// に落ちる）、`reduce_focus_changed` に既定値以外を入れる新しいフィールドが足されたとき
+    /// 起動時の側が漏れる恐れがある。未確立のモデル 2 つに同じスコープを `FocusChanged` と
+    /// `InitialFocusScopeEstablished` で別々に流し、**起動時は違ってよいフィールドを下で手で
+    /// 挙げて写したうえで**、モデル全体の `Debug` が一致することを要求する。
+    /// 新しいフィールドで落ちたら、「同一性なので起動時も入れる」か「belief のリセットなので
+    /// 下の一覧に足す」かを判断すること（一覧は共有の関数や定数から
+    /// 取らない。取ると、このテストが比べる対象が実装と同じ式になりトートロジーになる）。
     #[test]
-    fn initial_app_policy_established_touches_only_app_policy() {
+    fn initial_focus_scope_matches_focus_changed_except_input_barrier() {
         let now = Instant::now();
+        let to = HwndId(0x7777);
         let profile = ImePolicyProfile::TsfNative;
+        let focus_epoch = 1;
 
-        // (1) app_policy が (フィクスチャの) 非既定値のモデルへ dispatch すると、
-        // app_policy だけが指定した profile 由来の値になる。
-        let mut model = fully_populated_model(now);
-        assert_ne!(
-            model.app_policy,
-            AppImePolicy::from_profile(profile),
-            "フィクスチャの app_policy と検証対象の profile 由来の値が\
-             たまたま一致すると (2) の検出力が無くなる"
-        );
-        model.reduce(&envelope(
+        let mut a = ImeModel::new();
+        a.reduce(&envelope_at(
             1,
-            ImeEvent::InitialAppPolicyEstablished { profile },
+            now,
+            0,
+            ImeEvent::FocusChanged {
+                from: None,
+                to,
+                profile,
+                focus_epoch,
+            },
         ));
-        assert_eq!(
-            model.app_policy,
-            AppImePolicy::from_profile(profile),
-            "app_policy は live 側（bootstrap で確立した profile）に同期される"
-        );
+        let mut b = ImeModel::new();
+        b.reduce(&envelope_at(
+            1,
+            now,
+            0,
+            ImeEvent::InitialFocusScopeEstablished {
+                to,
+                profile,
+                focus_epoch,
+            },
+        ));
 
-        // (2) 既に app_policy がその値になっているモデルへ同じイベントを流すと、
-        // モデル全体の Debug 表現が1文字も変わらない = app_policy 以外を
-        // 書いていない。
-        let mut model = fully_populated_model(now);
-        model.app_policy = AppImePolicy::from_profile(profile);
-        let before = format!("{model:?}");
-        model.reduce(&envelope(
-            1,
-            ImeEvent::InitialAppPolicyEstablished { profile },
-        ));
+        // 起動時は違ってよいフィールド（手で挙げる）:
+        // - `input_barrier`: `FocusChanged` は `FocusTransition` の settle を立てる。起動時は
+        //   立てない（今の挙動。3 つの旧 Event も立てていなかった）。`key_track` は `new()` の値と
+        //   `KeyTrack::default()` が一致するので一覧に載らない。
+        b.input_barrier = a.input_barrier;
+
         assert_eq!(
-            format!("{model:?}"),
-            before,
-            "InitialAppPolicyEstablished は app_policy 以外を書き換えてはならない \
-             (BUG-114/ADR-134 D1c: FocusChanged 以前に belief を書き換えない、\
-             ADR-102 決定3-b と同じ規律)"
+            format!("{a:?}"),
+            format!("{b:?}"),
+            "起動時の InitialFocusScopeEstablished が FocusChanged と食い違っている。\
+             FocusChanged に足したフィールドが同一性なら起動時の腕にも書き、belief の\
+             リセットなら、このテストの「起動時は違ってよい」一覧に理由つきで足すこと"
         );
     }
 
@@ -1433,15 +1422,6 @@ mod tests {
             1,
             ImeEvent::UserImeSetIntent {
                 target: false,
-                source: UserIntentSource::SyncKey,
-            },
-        ));
-        assert!(!m.desired_is_placeholder());
-
-        let mut m = ImeModel::new();
-        m.reduce(&envelope(
-            1,
-            ImeEvent::UserImeToggleIntent {
                 source: UserIntentSource::SyncKey,
             },
         ));
@@ -1586,39 +1566,6 @@ mod tests {
         );
     }
 
-    /// BUG-148/ADR-186 の回帰テスト。
-    ///
-    /// `InitialFocusHwndEstablished` は `current_focus` **以外の一切のフィールドに
-    /// 触れない**（`initial_app_policy_established_touches_only_app_policy` と同じ手法）。
-    #[test]
-    fn initial_focus_hwnd_established_touches_only_current_focus() {
-        let now = Instant::now();
-        let hwnd = HwndId(0x7777);
-
-        // (1) 起動直後（current_focus=None）のモデルへ dispatch すると current_focus が設定される。
-        let mut model = ImeModel::new();
-        assert_eq!(
-            model.current_focus(),
-            None,
-            "起動直後は None（BUG-148の前提）"
-        );
-        model.reduce(&envelope(1, ImeEvent::InitialFocusHwndEstablished { hwnd }));
-        assert_eq!(model.current_focus(), Some(hwnd));
-
-        // (2) 既に current_focus がその値のモデルへ同じイベントを流しても、モデル全体の
-        // Debug 表現が1文字も変わらない = current_focus 以外を書いていない。
-        let mut model = fully_populated_model(now);
-        model.current_focus = Some(hwnd);
-        let before = format!("{model:?}");
-        model.reduce(&envelope(1, ImeEvent::InitialFocusHwndEstablished { hwnd }));
-        assert_eq!(
-            format!("{model:?}"),
-            before,
-            "InitialFocusHwndEstablished は current_focus 以外を書き換えてはならない \
-             (ADR-102 決定3-b: 最初の IME 観測より前に belief を書き換えない)"
-        );
-    }
-
     /// BUG-102 の**実害そのもの**を `resolve_open_at` の粒度で固定する。
     ///
     /// `observation_store` 側の退行テストは `derive_any()` が `None` になることまで
@@ -1683,8 +1630,10 @@ mod tests {
         // 同期後: High 単独即採用に戻る。
         model.reduce(&envelope(
             1,
-            ImeEvent::InitialFocusFenceEstablished {
-                fence: bootstrap_fence,
+            ImeEvent::InitialFocusScopeEstablished {
+                to: bootstrap_fence.hwnd,
+                profile: ImePolicyProfile::TsfNative,
+                focus_epoch: bootstrap_fence.epoch,
             },
         ));
         let after = model.resolve_open_at(now);
@@ -1773,25 +1722,6 @@ mod tests {
         ));
         assert!(!model.desired_open);
         assert!(!model.last_intent.as_ref().unwrap().target);
-    }
-
-    #[test]
-    fn toggle_intent_flips_desired() {
-        let mut model = ImeModel::new(); // desired_open = true (default)
-        model.reduce(&envelope(
-            1,
-            ImeEvent::UserImeToggleIntent {
-                source: UserIntentSource::PhysicalImeKey,
-            },
-        ));
-        assert!(!model.desired_open);
-        model.reduce(&envelope(
-            2,
-            ImeEvent::UserImeToggleIntent {
-                source: UserIntentSource::PhysicalImeKey,
-            },
-        ));
-        assert!(model.desired_open);
     }
 
     #[test]
@@ -2123,7 +2053,6 @@ mod tests {
                 mode: InputModeState::ObservedRomaji,
                 source: ObservationSource::ObserverPoll,
                 confidence: ObservationConfidence::Medium,
-                at: crate::state::TickMs(5000),
             },
         ));
         assert_eq!(model.key_track().conv, None, "観測が来たら追跡は観測へ戻る");
@@ -2176,7 +2105,6 @@ mod tests {
                 mode: InputModeState::ObservedRomaji,
                 source: ObservationSource::ObserverPoll,
                 confidence: ObservationConfidence::Medium,
-                at: crate::state::TickMs(stale),
             },
         ));
         assert!(!model.effective_open(), "古い観測は予測を上書きしない");
@@ -2208,7 +2136,6 @@ mod tests {
                 mode: InputModeState::ObservedRomaji,
                 source: ObservationSource::ObserverPoll,
                 confidence: ObservationConfidence::Medium,
-                at: crate::state::TickMs(at),
             },
         ));
         assert!(model.effective_open(), "settle 後の観測が勝つ");
@@ -2467,7 +2394,6 @@ mod tests {
                 mode: InputModeState::ObservedEisu,
                 source: ObservationSource::FocusProbe,
                 confidence: ObservationConfidence::Low,
-                at: crate::state::TickMs(0),
             },
         ));
         assert_eq!(
@@ -2486,7 +2412,6 @@ mod tests {
                 mode: InputModeState::ObservedEisu,
                 source: ObservationSource::ObserverPoll,
                 confidence: ObservationConfidence::Medium,
-                at: crate::state::TickMs(0),
             },
         ));
         assert_eq!(
@@ -3609,7 +3534,6 @@ mod tests {
                 mode: InputModeState::ObservedEisu,
                 strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                 result: InputModeApplyResult::Applied,
-                at: crate::state::TickMs(0),
             },
         ));
         assert_eq!(
@@ -3631,7 +3555,6 @@ mod tests {
                 mode: InputModeState::ObservedEisu,
                 strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                 result: InputModeApplyResult::Skipped,
-                at: crate::state::TickMs(0),
             },
         ));
         assert_eq!(

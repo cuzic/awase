@@ -125,25 +125,16 @@ impl Runtime {
         self.record_focus_transition_if_changed(&prev, &next, prev_started_ms);
 
         let tick_ms = self.enter_focus_scope(&classified);
-        // BUG-102: `enter_focus_scope` の直後（epoch インクリメント済み・
-        // `update_focus_info` 済み）に、live 側フェンスを `ObservationStore` 側へ
-        // 同期する。この 1 行が無いと、起動時にフォーカスされていたアプリの
-        // `ImmCrossProbe`（High）観測が次のプロセス変更まで `derive_*` から
-        // 外れ続ける。
+        // ADR-232 D1: 起動時のフォーカス確立（旧 `sync_initial_focus_fence`・
+        // `sync_initial_app_policy`・`sync_initial_focus_hwnd` の 3 つ）。
+        // `enter_focus_scope`（epoch インクリメント済み）と `advance_focus_tracking`
+        // （`current_app_profile()` 確定済み）の**後**に呼ぶこと。
         //
-        // 上の early return（`classify_focus_probe` が `None`、= probe タイム
-        // アウトや pid 取得失敗）を通った場合はここまで来ないため同期も走らないが、
-        // その場合は `enter_focus_scope` も走っておらず live 側 epoch も 0 のまま
-        // なので、両側は既定値で一致したままになる（BUG-102 の desync は起きない）。
-        self.sync_initial_focus_fence(tick_ms);
-        // BUG-114 根本原因1（ADR-134 D1c）: `advance_focus_tracking` 済み
-        // （`self.platform.focus.current.app_profile` 確定済み）の**後**に
-        // 呼ぶこと。これより前だと `current_app_profile()` がまだ正しい
-        // 値を返さない。
-        self.sync_initial_app_policy(tick_ms);
-        // BUG-148/ADR-186: `current_focus` も起動時の前面 hwnd で初期化する
-        // （最初のプロセス切替まで `None` のままだと明示意図が記録されない）。
-        self.sync_initial_focus_hwnd(&classified, tick_ms);
+        // 上の early return（`classify_focus_probe` が `None`、= probe タイムアウトや
+        // pid 取得失敗）を通った場合はここまで来ないため同期も走らないが、その場合は
+        // `enter_focus_scope` も走っておらず live 側 epoch も 0 のままなので、両側は
+        // 既定値で一致したままになる（BUG-102 の desync は起きない）。
+        self.sync_initial_focus_scope(&classified, tick_ms);
 
         // injection_mode の再計算は呼び出し元に残す（指摘9: `on_focus_process_changed`
         // とは呼び出し順序が異なるため `enter_focus_scope` には含めない）。
@@ -219,76 +210,50 @@ impl Runtime {
         }
     }
 
-    /// bootstrap で確立した最初のフォーカススコープの同一性（epoch + hwnd）を
-    /// `ObservationStore::current_fence` へ同期する（BUG-102）。
+    /// bootstrap で確立した最初のフォーカススコープの同一性（`app_policy`・`current_focus`・
+    /// 観測の fence）を `ImeModel` へ入れる（ADR-232 D1。BUG-102・114・148 の 3 つの
+    /// `sync_initial_*` を 1 つにした）。
     ///
     /// **必ず `enter_focus_scope`（epoch インクリメント）と `advance_focus_tracking`
-    /// （`update_focus_info` による hwnd 更新）の後に呼ぶこと** ——
-    /// `focus_fence()` が live 側の確定値を返している必要がある。
+    /// （`current_app_profile()` の確定）の後に呼ぶこと**。値は定常の
+    /// `on_focus_process_changed` が `FocusChanged` に載せるものと同じ式（`classified.hwnd`・
+    /// `current_app_profile()`・`focus_epoch`）で取る。
     ///
-    /// `notify_focus_hwnd_updated_if_needed` と同じ理由で独立した関数として切り出して
-    /// いる: `dispatch_event(` を直接テキストとして含む関数は
-    /// `establish_initial_focus_scope_does_not_write_ime_belief`
-    /// （`architecture_guard.rs`）の対象リストに直接載っているため、
-    /// `establish_initial_focus_scope` の本体に置くと静的テキスト検査で機械的に落ちる。
+    /// `dispatch_event(` を直接テキストとして含む関数は
+    /// `establish_initial_focus_scope_does_not_write_ime_belief`（`architecture_guard.rs`）の
+    /// 対象リストに直接載っているため、`establish_initial_focus_scope` の本体に置くと
+    /// 静的テキスト検査で機械的に落ちる。独立した関数として切り出している。
     ///
-    /// **このイベントが belief を書かないこと**（ADR-102 決定3-b の不変条件）は、
-    /// 運ぶ値が「観測の新鮮さを判定するための識別子」だけであることと、reducer 側の
-    /// アームが `ObservationStore::establish_initial_fence()` しか呼ばないことの
-    /// 2点で担保する。後者は `initial_focus_fence_event_only_touches_the_fence`
-    /// （`architecture_guard.rs`）と
-    /// `state::ime_model::tests::initial_focus_fence_established_touches_only_the_fence`
-    /// が固定する。
+    /// **このイベントが belief を書かないこと**（ADR-102 決定3-b の不変条件）は、運ぶ値が
+    /// スコープの同一性だけであることと、reducer の腕が `app_policy`・`current_focus`・
+    /// `ObservationStore::establish_initial_fence()` しか書かないことで担保する。後者は
+    /// `state::ime_model::tests::initial_focus_scope_established_touches_only_the_scope_identity`
+    /// が固定し、`FocusChanged` との食い違いは
+    /// `initial_focus_scope_matches_focus_changed_except_input_barrier` が捕まえる。
     ///
-    /// **bootstrap で1度しか呼ばれない**（唯一の呼び出し元
-    /// `establish_initial_focus_scope` 自体が `app/bootstrap.rs::run_all` から
-    /// 1度だけ呼ばれる）ことは、静的には
-    /// `initial_focus_fence_event_only_touches_the_fence` が、実行時には
-    /// `ObservationStore::establish_initial_fence()` 側の `debug_assert!` が
-    /// 固定する。2度目以降の呼び出しは「initial」ではなく、観測プールを持った
-    /// まま fence だけ差し替える危険な操作になる（その用途は
-    /// `clear_on_focus_change()` が担当する）。
-    fn sync_initial_focus_fence(&mut self, tick_ms: crate::state::TickMs) {
-        let fence = self.focus_fence();
-        tracing::debug!("[focus-fence] bootstrap initial fence: {fence:?}");
-        self.platform_state.ime.dispatch_event(
-            crate::state::ime_event::ImeEvent::InitialFocusFenceEstablished { fence },
-            tick_ms,
-        );
-    }
-
-    /// BUG-114 根本原因1（ADR-134 D1c）: 起動直後の初回フォーカス確立時に
-    /// `app_policy` を live 側の profile 分類で初期化する。
-    ///
-    /// これが無いと `app_policy`（`ImeModel::app_policy`）は既定値
-    /// `AppImePolicy::standard()`（`ImmCross` 固定、`default_feedback=Read`）
-    /// のまま、最初のプロセス切替（`FocusChanged`）まで固定される。ユーザーが
-    /// 起動後 1 つのアプリ（Windows Terminal 等）に留まり続けるだけの
-    /// 自然な使い方でこの窓に入り、TsfNative/Imm32Unavailable では読み戻し
-    /// 不能なため `Read` が無条件に再送し続ける（実機確認済み、
-    /// `docs/known-bugs.md` BUG-114）。
-    fn sync_initial_app_policy(&mut self, tick_ms: crate::state::TickMs) {
-        let profile: crate::state::ime_event::ImePolicyProfile =
-            self.platform.current_app_profile().into();
-        tracing::debug!("[app-policy] bootstrap initial app_policy: profile={profile:?}");
-        self.platform_state.ime.dispatch_event(
-            crate::state::ime_event::ImeEvent::InitialAppPolicyEstablished { profile },
-            tick_ms,
-        );
-    }
-
-    /// BUG-148/ADR-186: 起動直後の初回フォーカス確立時に `current_focus` を前面 hwnd で
-    /// 初期化する。`on_focus_process_changed` の `FocusChanged` と同じ `HwndId` の導出
-    /// （`classified.hwnd`）を使う。belief は書かない（`current_focus` のみ）。
-    fn sync_initial_focus_hwnd(
+    /// **bootstrap で1度しか呼ばれない**（唯一の呼び出し元 `establish_initial_focus_scope` 自体が
+    /// `app/bootstrap.rs::run_all` から1度だけ呼ばれる）ことは、静的には
+    /// `initial_focus_scope_event_is_dispatched_from_one_place` が、実行時には
+    /// `ObservationStore::establish_initial_fence()` 側の `debug_assert!` が固定する。
+    fn sync_initial_focus_scope(
         &mut self,
         classified: &ClassifiedFocus,
         tick_ms: crate::state::TickMs,
     ) {
-        let hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
-        tracing::debug!("[focus] bootstrap initial current_focus: {hwnd:?}");
+        let to = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
+        let profile: crate::state::ime_event::ImePolicyProfile =
+            self.platform.current_app_profile().into();
+        let focus_epoch = self.platform_state.focus.focus_epoch;
+        tracing::debug!(
+            "[focus-scope] bootstrap initial scope: to={to:?} profile={profile:?} \
+             focus_epoch={focus_epoch:?}"
+        );
         self.platform_state.ime.dispatch_event(
-            crate::state::ime_event::ImeEvent::InitialFocusHwndEstablished { hwnd },
+            crate::state::ime_event::ImeEvent::InitialFocusScopeEstablished {
+                to,
+                profile,
+                focus_epoch,
+            },
             tick_ms,
         );
     }
@@ -497,7 +462,7 @@ impl Runtime {
     /// なく「最初のスコープ確立」であり、扱うべきは hwnd 片側ではなく epoch を
     /// 含む両軸である（bootstrap では `enter_focus_scope` が epoch も 0→1 に
     /// 進める）。この同期は `establish_initial_focus_scope` が
-    /// `sync_initial_focus_fence`（`ImeEvent::InitialFocusFenceEstablished`）で
+    /// `sync_initial_focus_scope`（`ImeEvent::InitialFocusScopeEstablished`）で
     /// 行う——ここから hwnd だけ先に dispatch すると、epoch が食い違ったままの
     /// 中途半端な fence を1度作ることになる（BUG-102）。この関数を
     /// `advance_focus_tracking` の

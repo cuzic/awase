@@ -1,13 +1,46 @@
 //! `ImeStateHub` の殻（FCIS P2）。`crate::win32::foreground_scope()`（OS を読む）をここで1回読み、
 //! 親の `platform_state.rs` にある核（`_in_scope` 版）へ渡す1行だけを置く。
 //!
+//! 実時計の構築口（`ImeStateHub::new`・`PlatformState::new`・`Default`）もここに置く（FCIS P4a）。
+//!
 //! メソッド名とシグネチャは分割前と同じ（`runtime/`・`app/` の呼び出し元は変えない）。
 //! 記録系（`record_*`）の呼び出し元の固定ガード（`tests/architecture_guard.rs` の `RECORDERS`）は、
 //! このファイルも走査し、`_in_scope` 版の呼び出しがファイルごとに固定件数であることを確認する
 //! （`shell_methods_only_read_scope_once_and_delegate` が殻の中身も固定する）。
 
-use super::{ApplyGeneration, ImeApplyAcceptance, ImeStateHub};
+use super::{
+    ApplyGeneration, FocusStore, GateStore, ImeApplyAcceptance, ImeStateHub, KeymapStore,
+    PlatformState,
+};
+use crate::state::hub_clock::HubClock;
 use crate::state::TickMs;
+
+// 構築口（実時計 `hook::current_tick_ms` を読む。FCIS P4a で核から移した）。核の `with_clock` へ渡すだけ。
+// `pub(crate) fn` ではない書き方で置く（殻の形の検査は `pub(crate) fn` ごとに委譲 1 行を要求するため）。
+impl ImeStateHub {
+    fn new() -> Self {
+        Self::with_clock(HubClock::wall(crate::hook::current_tick_ms))
+    }
+}
+
+impl PlatformState {
+    /// デフォルト値で初期化する
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            ime: ImeStateHub::new(),
+            focus: FocusStore::new(),
+            gate: GateStore::new(),
+            keymap: KeymapStore::default(),
+        }
+    }
+}
+
+impl Default for PlatformState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ImeStateHub {
     /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。

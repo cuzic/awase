@@ -1,9 +1,15 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 use awase::engine::{EngineCommand, InputModeState, KanaLockHysteresis};
 
+use super::ime_actuation::Actuation;
 use super::Runtime;
-use crate::state::ime_actuation::{ActuationAction, FeedbackPolicy};
-use crate::tuning::TYPING_IDLE_MS;
+use crate::state::drift_plan::{
+    decide_drift_plan, resolve_actuation, DriftFacts, DriftPlan, DriftStep, GiveUpPark, SendPath,
+};
+use crate::state::ime_actuation::FeedbackPolicy;
+use crate::state::ime_read_strategy::{
+    decide_read_strategy, is_typing, ImeReadStrategy, ReadReason, ReadStrategyFacts,
+};
 
 // ── IoMode ──
 
@@ -17,19 +23,6 @@ enum IoMode<'m> {
         focus: Option<crate::focus::probe::FocusSnapshot>,
         ime: &'m crate::ime::ImeSnapshot,
     },
-}
-
-// ── ImeReadStrategy ──
-
-/// IME 読み取り方針の決定結果
-#[derive(Debug)]
-enum ImeReadStrategy {
-    /// タイピング中 — IMM/TSF を一切呼ばない
-    SkipTyping,
-    /// 既知ブラックリストクラス — shadow SSOT のみ使う
-    Blacklist,
-    /// OS をポーリングする通常パス
-    OsPoll,
 }
 
 // ── FocusInfo ──
@@ -78,7 +71,7 @@ impl Runtime {
         }
 
         let strategy = self.ir_stage_strategy(&focus);
-        self.ir_stage_observe(&focus, &strategy, ime_snap);
+        self.ir_stage_observe(&focus, strategy, ime_snap);
         self.ir_stage_notify();
     }
 
@@ -146,7 +139,7 @@ impl Runtime {
     fn ir_stage_observe(
         &mut self,
         focus: &FocusInfo,
-        strategy: &ImeReadStrategy,
+        strategy: ImeReadStrategy,
         ime_snap: Option<&crate::ime::ImeSnapshot>,
     ) {
         tracing::debug!(
@@ -203,7 +196,6 @@ impl Runtime {
                                 mode,
                                 source: crate::state::ime_event::ObservationSource::GjiIoInference,
                                 confidence: crate::state::ime_event::ObservationConfidence::Medium,
-                                at: tick_ms,
                             },
                             tick_ms,
                         );
@@ -305,12 +297,6 @@ impl Runtime {
         } else {
             None
         };
-        tracing::info!(
-            "[giveup-follow] cold={} outcome={} gen_at_probe={} gen_now={gen_now} explicit_intent={intent:?} baseline={baseline:?}",
-            evidence.cold_seq,
-            decision.outcome(),
-            evidence.focus_gen
-        );
         // 実機の不具合報告から追えるよう journal にも残す(attach_log が無くても、追随を試みたか・捨てた理由・基準値が分かる)。
         self.platform_state
             .ime
@@ -418,7 +404,37 @@ impl Runtime {
 
     /// `&mut self` なのは、通過マーク(`ModeKeyPassMark`、`ScopedOneShot::peek`)がフォアグラウンド変更を見て自動失効させるため
     /// （ADR-187）。読み取り方針の決定そのものは副作用を持たない（失効は「マークが無効になった」という事実の反映だけ）。
+    ///
+    /// FCIS F1: `observe`（`ir_observe_read_strategy_facts`）→ 純粋な `decide_read_strategy`
+    /// （`state/ime_read_strategy.rs`）→ ここでの理由のログ、の順。
     fn ir_decide_read_strategy(&mut self, skip_imm_query: bool) -> ImeReadStrategy {
+        let facts = self.ir_observe_read_strategy_facts(skip_imm_query);
+        let decision = decide_read_strategy(&facts);
+        if decision.typing_guard_bypassed {
+            tracing::debug!(
+                "Explicit intent: bypassing typing-idle guard for IME verify (idle={}ms)",
+                facts.idle_ms
+            );
+        }
+        match decision.reason {
+            ReadReason::TypingActive => tracing::debug!(
+                "Skipping observer/SSOT write: typing active (idle={}ms)",
+                facts.idle_ms
+            ),
+            ReadReason::ShiftConvGuard => {
+                tracing::debug!("Skipping observer/SSOT write: shift-conv-guard 中");
+            }
+            ReadReason::ImmQuerySkipped | ReadReason::OsPoll => {}
+        }
+        decision.strategy
+    }
+
+    /// 読み取り方針の決定に要る事実を、グローバル・時計・状態から 1 度だけ読んで所有型にまとめる(shell-in)。
+    ///
+    /// 通過マークの有効判定(`mode_key_pass_mark_live`)はフォアグラウンド変更で失効する副作用を持つので、
+    /// 元の関数と同じ条件（打鍵中のときだけ）、同じ回数（1 回）で読む。
+    fn ir_observe_read_strategy_facts(&mut self, skip_imm_query: bool) -> ReadStrategyFacts {
+        // 最後のキー活動（物理キー押下 または VK/TSF 出力）からの経過時間。
         let last_activity = self.platform_state.gate.last_hook_activity_ms.max(
             crate::tsf::probe_bridge::OUTPUT_GATE
                 .last_vk_output_ms
@@ -426,44 +442,20 @@ impl Runtime {
         );
         let now = crate::hook::current_tick_ms();
         let idle_ms = now.saturating_sub(last_activity);
-        let is_typing = idle_ms < TYPING_IDLE_MS;
-
-        if is_typing {
-            // Ctrl+無変換 等の明示的 IME 操作後、実際に OS 状態が変化したか即時検証する。
-            // ImmCross async が "成功" 扱いでも組み合わせ中は IME が閉じないことがあるため、
-            // タイピングアイドルガードを回避して OsPoll を先行させる。
-            // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
-            let mode_key_pass_live = self.platform_state.ime.mode_key_pass_mark_live(now);
-            let explicit_verify = !skip_imm_query
-                && (mode_key_pass_live
-                    || (self.platform_state.ime.explicit_intent().is_some()
-                        && self.platform_state.ime.model().applied
-                            != crate::state::ime_model::AppliedImeState::Unknown));
-            if !explicit_verify {
-                tracing::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
-                return ImeReadStrategy::SkipTyping;
-            }
-            tracing::debug!(
-                "Explicit intent: bypassing typing-idle guard for IME verify (idle={idle_ms}ms)"
-            );
-        }
-
-        // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数
-        // 持続トグル中（`kp_stage_shift_conv_guard`）は OS poll を凍結する。
-        // conv=0x00000000 は awase 自身が意図的に設定した状態であり、観測して
-        // belief（input_mode=ObservedEisu 等）に反映してはならない。解放時の復元 +
-        // 既存の観測経路が事後に整合させる。
-        if self.platform_state.gate.half_width_alnum.is_guard_pending()
-            || self.platform_state.gate.half_width_alnum.is_toggle_active()
-        {
-            tracing::debug!("Skipping observer/SSOT write: shift-conv-guard 中");
-            return ImeReadStrategy::SkipTyping;
-        }
-
-        if skip_imm_query {
-            ImeReadStrategy::Blacklist
-        } else {
-            ImeReadStrategy::OsPoll
+        let mode_key_pass_live =
+            is_typing(idle_ms) && self.platform_state.ime.mode_key_pass_mark_live(now);
+        // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数持続トグル中
+        // （`kp_stage_shift_conv_guard`）は OS poll を凍結する。
+        let shift_conv_guard_active = self.platform_state.gate.half_width_alnum.is_guard_pending()
+            || self.platform_state.gate.half_width_alnum.is_toggle_active();
+        ReadStrategyFacts {
+            idle_ms,
+            skip_imm_query,
+            mode_key_pass_live,
+            explicit_intent_present: self.platform_state.ime.explicit_intent().is_some(),
+            applied_known: self.platform_state.ime.model().applied
+                != crate::state::ime_model::AppliedImeState::Unknown,
+            shift_conv_guard_active,
         }
     }
 
@@ -667,7 +659,7 @@ impl Runtime {
 
     // ── ドリフト補正 ──
     //
-    // desired ≠ observed が DRIFT_CORRECTION_THRESHOLD_MS 以上続いた場合、再送する。
+    // desired ≠ observed（`evaluate_drift` が補正を要すると判定したずれ）が続く間、有界に再送する。
     //
     // - IMM32 クロスプロセス対応アプリ（LINE 等 ImmCross）: set_ime_open(desired) を使う。
     // - non-ImmCross（GJI/TsfNative/Blacklist、Chrome/Windows Terminal 等）:
@@ -707,14 +699,86 @@ impl Runtime {
         }
     }
 
-    fn ir_check_drift_correction(
+    fn ir_evaluate_drift(
         &self,
         now: std::time::Instant,
-    ) -> Option<crate::state::platform_state::DriftCorrection> {
-        let explicit_intent = self.platform_state.ime.explicit_intent();
-        self.platform_state
-            .ime
-            .check_drift_correction(now, explicit_intent)
+    ) -> Result<
+        crate::state::platform_state::DriftCorrection,
+        crate::state::drift_correction::NoDrift,
+    > {
+        self.platform_state.ime.evaluate_drift(now)
+    }
+
+    /// drift correction の observe（FCIS F4、殻）。判断に使う事実だけを集める。書かない。
+    ///
+    /// `imm_cross` 以降の事実は、`drift` があり settle 中でないときだけ読む（それ以外は
+    /// `decide_drift_plan` が見ずに返すので、読まない＝元のコードと読む条件が同じ）。
+    fn ir_observe_drift_facts(&self, now: std::time::Instant) -> DriftFacts {
+        // 稼働条件(`engine_enabled`/`japanese_ime`)が偽でも `evaluate_drift`・`default_feedback` は読む
+        // （純粋な読み取りで、影響は debug ログのみ。`decide_drift_plan` が `Idle(EngineDisabled | NotJapaneseIme)` を返す）。
+        let drift = self.ir_evaluate_drift(now);
+        let settling = drift.is_ok() && self.ime_apply_should_defer();
+        let mut facts = DriftFacts {
+            now,
+            engine_enabled: self.engine.is_user_enabled(),
+            japanese_ime: self.platform_state.ime.belief.is_japanese_ime(),
+            drift,
+            settling,
+            active: self.active_actuation.as_ref().map(Actuation::snapshot),
+            default_policy: self.platform_state.ime.default_feedback(),
+            imm_cross: false,
+            warrant_would_block: false,
+            diag_already_notified: self.drift_giveup_notified_this_focus,
+            converged: false,
+            fresh_evidence_after_giveup: false,
+        };
+        let Some(drift) = drift.ok().filter(|_| !settling) else {
+            return facts;
+        };
+        // 読み戻しの `since` は、決定側と同じ `resolve_actuation` で解決した試行から取る。
+        let (act, _) = resolve_actuation(
+            facts.active.as_ref(),
+            drift.desired,
+            facts.default_policy,
+            now,
+        );
+        facts.imm_cross = self.can_use_imm32_cross_process();
+        // BUG-163: 書き込み経路（`set_ime_open_ordered`）を通る ImmCross だけが授権を見る。
+        facts.warrant_would_block = facts.imm_cross
+            && self
+                .issue_actuation_order_with_origin(drift.desired, act.origin)
+                .would_have_blocked();
+        // ADR-090 §2.B（INV-52）: 読み戻しは `ObservationStore::read_back` の 1 本だけを通る。
+        // 戻り値は `ConvergedReceipt` で、観測として書き戻せない。
+        let observations = &self.platform_state.ime.model().observations;
+        match act.policy {
+            FeedbackPolicy::Read { .. } => {
+                facts.converged = observations
+                    .read_back(
+                        now,
+                        act.sent_at,
+                        crate::state::observation_store::ReadBackQuery::Converged {
+                            desired: drift.desired,
+                        },
+                        act.attempts,
+                    )
+                    .converged();
+            }
+            FeedbackPolicy::Blind { .. } => {
+                if let Some(gave_up_at) = act.gave_up_at {
+                    facts.fresh_evidence_after_giveup = observations
+                        .read_back(
+                            now,
+                            gave_up_at,
+                            crate::state::observation_store::ReadBackQuery::AnyFreshEvidence,
+                            act.attempts,
+                        )
+                        .resolution()
+                        == crate::state::ime_actuation::Resolution::ExternalChange;
+                }
+            }
+        }
+        facts
     }
 
     // `#[tracing::instrument]`（ADR-139決定3）のマクロ展開が実測でcognitive_complexityを
@@ -722,7 +786,13 @@ impl Runtime {
     // ADR-139決定1で影響なしと確認済みだったが、#[instrument]の展開はそれとは
     // 別に複雑度を増やす）。この関数はADR-080不変条件6の対象で
     // architecture_guard.rsのマーカーベーステストが依存する繊細な構造のため、
-    // ロジックの分割はしない。
+    // 実行側のロジックの分割はしない。
+    //
+    // FCIS F4: observe（`ir_observe_drift_facts`）→ 純粋な `decide_drift_plan`
+    // （`state/drift_plan.rs`）→ この関数の execute、に分けた。判断の条件・順序・有界の再送は
+    // 元のまま（ADR-080 の `FeedbackPolicy`、BUG-43 の無限再送の防止、BUG-163、BUG-68）。
+    // IME へ書く呼び出し（`apply_ime_open_with_view`）は `actuation_call_guard` の許可呼び出し元が
+    // この関数名なので、execute は別関数に出さずここに置く。
     #[allow(clippy::cognitive_complexity)]
     #[tracing::instrument(level = "debug", skip_all)]
     fn ir_apply_drift_correction(&mut self) {
@@ -733,22 +803,34 @@ impl Runtime {
         // はずのコードであり、ガードが残っていたことで一度も到達できない dead code に
         // なっていた（BUG-20 の「実機検証は未実施」という注記通り、実機で一度も
         // 検証されないまま今日まで放置されていた）。詳細は known-bugs.md BUG-20 追補参照。
-        if !self.engine.is_user_enabled() || !self.platform_state.ime.belief.is_japanese_ime() {
-            return;
-        }
-
         let now = std::time::Instant::now();
-        let Some(drift) = self.ir_check_drift_correction(now) else {
-            return;
+        let facts = self.ir_observe_drift_facts(now);
+        let plan = decide_drift_plan(&facts);
+        // E1: 送らない・打ち切る・収束とみなす・保留する決定の根拠（`plan.basis()`）は、殻がログに出すだけ。
+        let basis = plan.basis();
+        let act = match plan {
+            DriftPlan::Idle(reason) => {
+                // 毎 tick 通る（ずれが無いのが普通）ので trace。
+                tracing::trace!("[drift] 補正しない: {reason:?} basis={basis:?}");
+                return;
+            }
+            DriftPlan::DeferToSettle { drift } => {
+                // 他の settle 対応経路（撤去済みの apply_force_on_for_imm_broken 等）と同じく settle 明けに必ず再試行する。
+                self.schedule_settle_retry(&format!(
+                    "drift correction skipped (settling): desired={} observed={} basis={basis:?}",
+                    drift.desired, drift.observed
+                ));
+                return;
+            }
+            DriftPlan::Act(act) => act,
         };
+        let drift = act.drift;
         let (desired, observed, duration_ms) = (drift.desired, drift.observed, drift.duration_ms);
-        if self.ime_apply_should_defer() {
-            // 他の settle 対応経路（撤去済みの apply_force_on_for_imm_broken 等）と同じく settle 明けに必ず再試行する。
-            self.schedule_settle_retry(&format!(
-                "drift correction skipped (settling): desired={desired} observed={observed}"
-            ));
-            return;
-        }
+        let (act_policy, act_attempts, act_origin) = (
+            act.actuation.policy,
+            act.actuation.attempts,
+            act.actuation.origin,
+        );
 
         // ADR-080: actuation を型付きトランザクション（`Actuation`）として扱い、
         // feedback（収束確認）方針を `AppImePolicy::default_feedback` からデータとして
@@ -761,191 +843,118 @@ impl Runtime {
         // - `Read`（ImmCross 等、実読み戻し可能）: `sent_at` 以降の trusted 観測が desired と
         //   一致すれば `Confirmed` として破棄、そうでなければ従来同様に再送する。
         //
-        // なお `ir_check_drift_correction`（=`check_drift_correction`）の乖離「検知」側は
+        // なお `ir_evaluate_drift`（=`evaluate_drift`）の乖離「検知」側は
         // ADR-080 Phase 1 では従来どおり `most_recent_trusted`（since フェンシングなし）を
-        // 使い続ける。since フェンシング（`most_recent_trusted_after`）を使うのは下の
+        // 使い続ける。since フェンシング（`most_recent_trusted_after`）を使うのは
         // `Read` 収束「確認」側のみで、この非対称は ADR-080 が意図的に許容している。
-        let policy = self.platform_state.ime.default_feedback();
-        let (act_policy, act_attempts, act_sent_at, act_gave_up_at, act_origin) = {
-            let actuation = self.actuation_for(desired, policy);
-            (
-                actuation.policy,
-                actuation.attempts,
-                actuation.sent_at,
-                actuation.gave_up_at,
-                actuation.origin,
-            )
-        };
+        if act.install_actuation {
+            self.install_actuation(&act.actuation);
+        }
 
         // BUG-163: 授権（warrant）が下りない補正は、そもそも書けない（`set_ime_open_ordered` は ADR-090 A-2 で
         // `Unwarranted` を拒否する）。書けないのに「検知」（journal・`DriftDetected`＝`applied` を `Optimistic` に
         // 偽装・試行回数の加算・「IME状態を確認できません」のバルーン）まで進めると、起動直後（明示意図なし・
         // 観測だけが「閉」）に 500ms ごとの空振りと誤通知が続く。書き込み経路（`set_ime_open_ordered`）を通る
         // ImmCross だけを対象にする（Blind の再送・give-up の有界化〈BUG-43〉は従来どおり）。
-        if self.can_use_imm32_cross_process()
-            && self
-                .issue_actuation_order_with_origin(desired, act_origin)
-                .would_have_blocked()
-        {
-            tracing::debug!(
-                "[drift] 授権が下りないため補正を見送る（検知しない）: desired={desired} \
-                 observed={observed} for {duration_ms}ms (source={:?} confidence={:?})",
-                drift.source,
-                drift.confidence,
-            );
-            return;
+        // 判定は `decide_drift_plan`（`DriftStep::SkipWarrantWouldBlock`、診断は出さない）。
+
+        if act.notify_diagnostic {
+            self.ir_notify_drift_giveup_diagnostic(desired, observed, duration_ms, now);
         }
 
-        self.ir_notify_drift_giveup_diagnostic(desired, observed, duration_ms, now);
-
-        match act_policy {
-            FeedbackPolicy::Blind { .. } => {
-                let action = act_policy.decide_action(act_attempts);
-                if action == ActuationAction::GiveUp {
-                    // ADR-082 Phase 0.5: 打ち切り判定も出所・世代付きで構造化記録する
-                    // （BUG-43 の「16 回中 5 回だけ送り、残りは GiveUp」を journal から
-                    // 型で追えるようにする）。observations には書き込まない規約は不変。
-                    self.platform_state.ime.journal.record(
-                        crate::journal::JournalEntry::ImeActuation {
-                            record: crate::state::ime_actuation::ActuationRecord::new(
-                                act_origin,
-                                desired,
-                                act_policy,
-                                act_attempts,
-                            ),
-                        },
-                    );
-                    // max_attempts 到達。observations には一切書き込まない（BUG-33 型の
-                    // 収束偽装を避ける）。ただし「一度諦めたら desired が変わるまで永久に
-                    // 補正しない」硬直（ADR-080「有限 Blind からの復旧条件」）を避けるため、
-                    // 外部で状況が動いた証拠が来たら試行をやり直す（task #15）。
-                    //
-                    // 復旧判定は観測の「値」ではなく「鮮度」で行う。drift 補正は
-                    // observed != desired（乖離）が続く間しか走らず、open/close は bool の
-                    // ため「間違った値」は !desired の1通りしか存在しない。よって ADR 当初の
-                    // 文言「target と異なる値の観測が来たら復旧」はほぼ毎 tick 真になり
-                    // GiveUp を即座に無効化してしまう（乖離の定義そのものだから）。意味の
-                    // ある信号は「諦めた時刻以降に新しい観測が record されたか」＝世界で
-                    // 何かが動いたか（値は問わない）であり、`most_recent_trusted_after` が
-                    // まさにそれを判定する。
-                    match act_gave_up_at {
-                        None => {
-                            // この tick で初めて GiveUp に到達。境界時刻を刻んで parked に
-                            // する。この tick では再送も復旧判定もしない（次 tick 以降で
-                            // `now` より後の観測だけを「新しい」とみなせるようにするため）。
-                            if let Some(actuation) = self.active_actuation.as_mut() {
-                                actuation.gave_up_at = Some(now);
-                            }
-                            // ADR-089 §2.5（INV-46）: 打ち切りの帰結は
-                            // `ConvergedReceipt` で表す。**この型は
-                            // `Observed<E>` / `AnyObservation` へ変換できない**
-                            // ため、give-up したのに観測を書いて収束したように
-                            // 見せる（BUG-33 型の収束偽装）ことが構造的に
-                            // 不可能である。
-                            let receipt = crate::state::ime_actuation::ConvergedReceipt::new(
-                                crate::state::ime_actuation::Resolution::GaveUp,
-                                act_attempts,
-                            );
-                            tracing::debug!(
-                                "[drift] actuation gave up (Blind): desired={desired} \
-                                 observed={observed} converged={} attempts={}",
-                                receipt.converged(),
-                                receipt.attempts()
-                            );
-                        }
-                        Some(gave_up_at) => {
-                            // BUG-68: 再武装判定（`AnyFreshEvidence`）は「gave_up_at 以降に
-                            // 新しい信頼できる観測が record されたか」（値は不問）だけを見る。
-                            // MS-IME × TsfNative では `kp_stage_idle_conv_check` は毎打鍵では
-                            // なく `should_run_idle_conv_check`（`src/engine/idle_check.rs`）の
-                            // ガード3（awase 自身の最終出力から500ms超）を通過した打鍵でのみ
-                            // 実行されるが、drift correction 自身の `VK_IME_OFF` 再送も
-                            // その「最終出力」に数えられるため、give-up バーストのたびに
-                            // 短時間で次の idle-conv-check が走る。そのたびに同じ
-                            // `ConvOpenInference` 観測（IMM32 の NATIVE ビットは開閉状態と
-                            // 無関係な持続的な変換モード設定で、`VK_IME_OFF` で閉じても
-                            // 消えない）を新しいタイムスタンプで record するため、「鮮度」が
-                            // 「新情報」の代理指標として機能せず、gave_up_at を刻んだ直後には
-                            // もう「新しい」観測が存在し即座に再武装してしまう（実機ログ、
-                            // docs/known-bugs.md BUG-68、tuning.rs の定数コメント参照）。
-                            // クールダウン未経過の間は `read_back` 自体を評価しない
-                            // （＝再武装しない）ことで、この短周期ループを防ぐ。
-                            // クールダウンを空けているだけなので、BUG-51（明示 OFF 後も
-                            // 実 IME が閉じないケース）の「いずれ回復する」性質は保たれる。
-                            if !crate::state::ime_actuation::blind_rearm_cooldown_elapsed(
-                                gave_up_at,
-                                now,
-                                crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS,
-                            ) {
-                                return;
-                            }
-                            // 既に parked。gave_up_at 以降に新しい trusted 観測が record
-                            // されていれば（値は不問＝外部で状況が動いた証拠）、試行を破棄
-                            // して次 tick の `actuation_for` に attempts=0・新しい sent_at・
-                            // gave_up_at=None で作り直させる。実際の再送は次 tick に任せ、
-                            // discard した同じ tick では送らない（ロジックを単純に保つ）。
-                            //
-                            // ADR-090 §2.B（INV-52）: 読み戻しは
-                            // `ObservationStore::read_back` の 1 本だけを通る。
-                            // 戻り値は `ConvergedReceipt` であって
-                            // `ImeObservation` ではないので、復旧判定に使った
-                            // 読み取りの産物を観測として書き戻すことが型として
-                            // 書けない。述語（`.is_some()`）はそのまま
-                            // `ReadBackQuery::AnyFreshEvidence` の中へ移した
-                            // だけで、判定は bit-identical である。
-                            let receipt = self.platform_state.ime.model().observations.read_back(
-                                now,
-                                gave_up_at,
-                                crate::state::observation_store::ReadBackQuery::AnyFreshEvidence,
-                                act_attempts,
-                            );
-                            if receipt.resolution()
-                                == crate::state::ime_actuation::Resolution::ExternalChange
-                            {
-                                tracing::debug!(
-                                    "[drift] fresh observation after give-up → 試行を破棄して\
-                                     再試行: desired={desired} observed={observed} attempts={}",
-                                    receipt.attempts()
-                                );
-                                self.discard_actuation();
-                            }
-                        }
-                    }
-                    return;
-                }
+        let send_path = match act.step {
+            DriftStep::SkipWarrantWouldBlock => {
+                tracing::debug!(
+                    "[drift] 授権が下りないため補正を見送る（検知しない）: desired={desired} \
+                     observed={observed} for {duration_ms}ms (source={:?} confidence={:?}) \
+                     basis={basis:?}",
+                    drift.source,
+                    drift.confidence,
+                );
+                return;
             }
-            FeedbackPolicy::Read { .. } => {
+            DriftStep::GiveUp(park) => {
+                // ADR-082 Phase 0.5: 打ち切り判定も出所・世代付きで構造化記録する
+                // （BUG-43 の「16 回中 5 回だけ送り、残りは GiveUp」を journal から
+                // 型で追えるようにする）。observations には書き込まない規約は不変。
+                self.platform_state.ime.journal.record(
+                    crate::journal::JournalEntry::ImeActuation {
+                        record: crate::state::ime_actuation::ActuationRecord::new(
+                            act_origin,
+                            desired,
+                            act_policy,
+                            act_attempts,
+                        ),
+                    },
+                );
+                // max_attempts 到達。observations には一切書き込まない（BUG-33 型の
+                // 収束偽装を避ける）。ただし「一度諦めたら desired が変わるまで永久に
+                // 補正しない」硬直（ADR-080「有限 Blind からの復旧条件」）を避けるため、
+                // 外部で状況が動いた証拠が来たら試行をやり直す（task #15）。
+                //
+                // 復旧判定は観測の「値」ではなく「鮮度」で行う（`decide_drift_plan` の
+                // `GiveUpPark::Rearm`）。drift 補正は observed != desired（乖離）が続く間
+                // しか走らず、open/close は bool のため「間違った値」は !desired の1通り
+                // しか存在しない。よって「target と異なる値の観測が来たら復旧」はほぼ毎
+                // tick 真になり GiveUp を即座に無効化してしまう。意味のある信号は
+                // 「諦めた時刻以降に新しい観測が record されたか」＝世界で何かが動いたか
+                // （値は問わない）。BUG-68: クールダウン未経過の間は再武装しない
+                // （`GiveUpPark::CooldownPending`。詳細は `blind_rearm_cooldown_elapsed`、
+                // tuning.rs の定数コメント）。
+                match park {
+                    GiveUpPark::FirstTime => {
+                        // この tick で初めて GiveUp に到達。境界時刻を刻んで parked に
+                        // する。この tick では再送も復旧判定もしない（次 tick 以降で
+                        // `now` より後の観測だけを「新しい」とみなせるようにするため）。
+                        if let Some(actuation) = self.active_actuation.as_mut() {
+                            actuation.gave_up_at = Some(now);
+                        }
+                        // ADR-089 §2.5（INV-46）: 打ち切りの帰結は
+                        // `ConvergedReceipt` で表す。**この型は
+                        // `Observed<E>` / `AnyObservation` へ変換できない**
+                        // ため、give-up したのに観測を書いて収束したように
+                        // 見せる（BUG-33 型の収束偽装）ことが構造的に
+                        // 不可能である。
+                        let receipt = crate::state::ime_actuation::ConvergedReceipt::new(
+                            crate::state::ime_actuation::Resolution::GaveUp,
+                            act_attempts,
+                        );
+                        tracing::debug!(
+                            "[drift] actuation gave up (Blind): desired={desired} \
+                             observed={observed} converged={} attempts={} basis={basis:?}",
+                            receipt.converged(),
+                            receipt.attempts()
+                        );
+                    }
+                    GiveUpPark::CooldownPending | GiveUpPark::StillParked => {}
+                    GiveUpPark::Rearm => {
+                        // 試行を破棄して次 tick の `install_actuation` に attempts=0・新しい
+                        // sent_at・gave_up_at=None で作り直させる。実際の再送は次 tick に任せ、
+                        // discard した同じ tick では送らない（ロジックを単純に保つ）。
+                        tracing::debug!(
+                            "[drift] fresh observation after give-up → 試行を破棄して\
+                             再試行: desired={desired} observed={observed} attempts={act_attempts} \
+                             basis={basis:?}"
+                        );
+                        self.discard_actuation();
+                    }
+                }
+                return;
+            }
+            DriftStep::Confirmed => {
                 // `sent_at` 以降の trusted 観測が desired と一致していれば収束済み
                 // （`Resolution::Confirmed`）。再送不要なので試行を破棄する。
-                //
-                // ADR-089 §2.5（INV-46）: 収束の帰結は `ConvergedReceipt`。
-                // 観測ストアへは何も書かない（`Confirmed` は「既に観測が
-                // desired と一致していた」という読み取りの帰結であって、
-                // 新しい観測ではない）。
-                // ADR-090 §2.B（INV-52）: その receipt を**読み戻し API から
-                // 直接受け取る**形にした。以前は `most_recent_trusted_after` が
-                // 返す `ImeObservation` で判定してから receipt を別途組み立てて
-                // いたため、receipt は log にしか効いていなかった（§9-16）。
-                // 述語（`.is_some_and(|o| o.open == desired)`）はそのまま
-                // `ReadBackQuery::Converged` の中へ移しただけで bit-identical。
-                let receipt = self.platform_state.ime.model().observations.read_back(
-                    now,
-                    act_sent_at,
-                    crate::state::observation_store::ReadBackQuery::Converged { desired },
-                    act_attempts,
+                // 収束の帰結は `ConvergedReceipt`（ADR-089 §2.5、INV-46）で、観測ストアへは
+                // 何も書かない。
+                tracing::debug!(
+                    "[drift] actuation confirmed (Read): desired={desired} \
+                     converged=true attempts={act_attempts} → 破棄 basis={basis:?}"
                 );
-                if receipt.converged() {
-                    tracing::debug!(
-                        "[drift] actuation confirmed (Read): desired={desired} \
-                         converged={} attempts={} → 破棄",
-                        receipt.converged(),
-                        receipt.attempts()
-                    );
-                    self.discard_actuation();
-                    return;
-                }
+                self.discard_actuation();
+                return;
             }
-        }
+            DriftStep::Send(path) => path,
+        };
 
         tracing::warn!(
             "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \
@@ -981,38 +990,44 @@ impl Runtime {
         // `EventOrigin`（`act_origin`）を持っているので、それをそのまま
         // order の出所として使う（journal の `ImeActuation` と揃う）。
         let order = self.issue_actuation_order_with_origin(desired, act_origin);
-        if self.can_use_imm32_cross_process() {
-            // ADR-090 §2.A A-2（2026-09-19）: `set_ime_open_ordered`が実際に
-            // 書いたときだけ`applied`を`Optimistic`にする。以前は戻り値を
-            // 無視して無条件に呼んでおり、A-2導入前（常に書き込む shadow
-            // モード）は実害が無かったが、warrant無し（`Unwarranted`）で
-            // 書き込みを拒否した場合に「送っていないのに送った体で記録する」
-            // 欠陥になっていた（ADR-098が警告する「belief をactuationの
-            // 記録として書く」誤用と同型）。
-            if self.platform.set_ime_open_ordered(order) {
-                self.platform_state.ime.record_optimistic(desired);
+        match send_path {
+            SendPath::ImmCross => {
+                // ADR-090 §2.A A-2（2026-09-19）: `set_ime_open_ordered`が実際に
+                // 書いたときだけ`applied`を`Optimistic`にする。以前は戻り値を
+                // 無視して無条件に呼んでおり、A-2導入前（常に書き込む shadow
+                // モード）は実害が無かったが、warrant無し（`Unwarranted`）で
+                // 書き込みを拒否した場合に「送っていないのに送った体で記録する」
+                // 欠陥になっていた（ADR-098が警告する「belief をactuationの
+                // 記録として書く」誤用と同型）。
+                if self.platform.set_ime_open_ordered(order) {
+                    self.platform_state.ime.record_optimistic(desired);
+                }
             }
-        } else {
-            // set_ime_open は IMM32専用で Blacklist/TsfNative では no-op のため、
-            // （撤去済みの）apply_force_on_for_imm_broken と同じ strategy chain 経由の実送信を使う。
-            let view = self.platform.build_ime_control_view(None);
-            let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view);
-            // /code-review指摘（PR #201 wave3）: この同期記録点は`caller`が
-            // 常に`None`のままで、`site=Sync`の他の呼び出し元と記録上区別
-            // できなかった（B-2、PR #201パターンに揃える）。
-            record.caller =
-                Some(crate::state::ime_actuation_decision::DecisionSite::BlacklistDriftCorrection);
-            self.platform_state
-                .ime
-                .journal
-                .record(crate::journal::JournalEntry::ActuationDecision { record });
-            tracing::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
-            self.on_ime_apply_complete(
-                desired,
-                outcome,
-                None,
-                crate::state::ime_event::OpenApplyReason::DriftCorrection,
-            );
+            SendPath::StrategyChain => {
+                // set_ime_open は IMM32専用で Blacklist/TsfNative では no-op のため、
+                // （撤去済みの）apply_force_on_for_imm_broken と同じ strategy chain 経由の実送信を使う。
+                let view = self.platform.build_ime_control_view(None);
+                let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view);
+                // /code-review指摘（PR #201 wave3）: この同期記録点は`caller`が
+                // 常に`None`のままで、`site=Sync`の他の呼び出し元と記録上区別
+                // できなかった（B-2、PR #201パターンに揃える）。
+                record.caller = Some(
+                    crate::state::ime_actuation_decision::DecisionSite::BlacklistDriftCorrection,
+                );
+                self.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::ActuationDecision { record });
+                tracing::info!(
+                    "Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}"
+                );
+                self.on_ime_apply_complete(
+                    desired,
+                    outcome,
+                    None,
+                    crate::state::ime_event::OpenApplyReason::DriftCorrection,
+                );
+            }
         }
 
         // 実送信したので試行回数と世代を1つ進める（`advance_epoch`）。`Blind` はこれが
@@ -1045,11 +1060,7 @@ impl Runtime {
         duration_ms: u64,
         now: std::time::Instant,
     ) {
-        if duration_ms < crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS
-            || self.drift_giveup_notified_this_focus
-        {
-            return;
-        }
+        // 出すかどうか（継続時間・通知済み）は `decide_drift_plan` の `notify_diagnostic`。
         self.show_tray_balloon(
             "awase",
             "このアプリではIME状態を確認できません。\n入力に違和感があれば、該当のIME切替キーをもう一度押してください。",
