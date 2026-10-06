@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(plan_consume_effect(false), EffectRoute::Queue);
     }
 
-    /// c21・c22 の対: defer 側の in-flight と drain 側の待ちが、確定キー待ち以外では同じ閾値を使う。
+    /// c23（executor キューの閾値の対）: defer 側の in-flight と drain 側の待ちが、確定キー待ち以外では同じ閾値を使う。
     #[test]
     fn defer_and_drain_share_output_guard_threshold() {
         for guard_ms in [0_u64, 1, 50, 350] {

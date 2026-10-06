@@ -6976,7 +6976,6 @@ fn ime_refresh_is_typing_guard_detects_violations() {
     ));
 }
 
-
 // ── FCIS F3: relay の「即時/キュー/ガード」の判断は `state/relay_plan.rs` に出した。固定する辺と対 ──
 // - e12: `execute_relay` の Consume は Timer だけを即時に実行する（Immediate の腕が `execute_one`、Queue の腕が `push_back`）。
 // - e13: `OutputActiveGuard::begin()` を `let guard =` で束縛し、`spawn_local` の前に取って、future の中で drop する
@@ -7029,8 +7028,29 @@ fn e13_violations(body: &str) -> Vec<&'static str> {
     if begin >= spawn {
         v.push("begin() が spawn_local の前にない");
     }
-    if !code[spawn..].contains("drop(guard)") {
+    // future のブロック（`spawn_local(` 以降の最初の `{` から対応する `}` まで）。
+    let tail = &code[spawn..];
+    let block_end = tail.find('{').map_or(tail.len(), |open| {
+        let mut depth = 0_usize;
+        for (i, c) in tail[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return open + i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        tail.len()
+    });
+    if !tail[..block_end].contains("drop(guard)") {
         v.push("future の中で drop(guard) されていない");
+    }
+    if tail[block_end..].contains("drop(guard)") {
+        v.push("future の外（spawn_local の後）で drop(guard) している");
     }
     if begin < spawn && code[begin..spawn].contains("drop(guard)") {
         v.push("spawn_local の前で guard を drop している");
@@ -7102,6 +7122,8 @@ fn e12_e13_detectors_catch_violations() {
     assert!(!e13_violations(early).is_empty());
     let after = "spawn_local(async move { f(); });\n let guard = X::OutputActiveGuard::begin();";
     assert!(!e13_violations(after).is_empty());
+    let outside = "let guard = X::OutputActiveGuard::begin();\n spawn_local(async move { f(); });\n drop(guard);";
+    assert!(!e13_violations(outside).is_empty());
     let inside =
         "spawn_local(async move { let guard = X::OutputActiveGuard::begin(); f(); drop(guard); });";
     assert!(!e13_violations(inside).is_empty());
