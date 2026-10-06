@@ -33,7 +33,7 @@ warn_if_missing_evidence() {
     # fix-requires-evidence.mdの「IME actuation合流点」表が挙げる5つ目の入口
     # （reassert_explicit_physical_key）で、どちらのファイルにも含まれていな
     # かったため新規追加した。
-    # ADR-237(c): state/直下の*_planは[a-z_]+_planでまとめて拾う（新しい*_plan.rsを
+    # ADR-237(c): state/直下の*_planは[a-z_]+_plan|focus_genでまとめて拾う（新しい*_plan.rsを
     # 足しても本行は書き換え不要。drift_correction等*_plan以外は従来どおり列挙）。
     local target='(crates/awase-windows/src/(hook\.rs|output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport|ime_refresh|message_handlers|outbox|mod)\.rs|state/(ime|conv_mode|observation_store|platform_state|mode_key_pass|key_effect_|press_ledger|explicit_press|physical_disposition|drift_correction|[a-z_]+_plan)|ime_controller\.rs|ime\.rs|input_defer\.rs|platform\.rs|tuning\.rs)|src/engine/(nicola_fsm|engine)\.rs|lints/actuation_call_guard/src/lib\.rs)'
     # 2026-09-23: fix-requires-evidence.mdの「IME actuation合流点」行が
@@ -54,6 +54,8 @@ warn_if_missing_evidence() {
     # ADR-208 L0でruntime/transport.rsから移動）を対象に追加。移動後も表・本正規表現の
     # どちらにも載っておらず、BUG-116と同型の穴だった。fix-requires-evidence.mdの
     # 「物理IMEキーのSuppress/Allow配送判断」行と同じコミットで揃えている。
+    # 2026-10-06: state/focus_gen.rs（ADR-229 W-a、focus 世代と shift-conv-guard 世代の newtype）を
+    # 対象に追加。fix-requires-evidence.md の「focus 遷移」行と同じコミットで揃えている。
     local evidence='(crates/awase-windows/tests/|src/engine/tests\.rs|docs/known-bugs/)'
 
     if printf '%s' "$changed" | grep -qE "$target"; then
