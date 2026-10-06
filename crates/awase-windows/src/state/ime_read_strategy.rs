@@ -61,6 +61,7 @@ pub struct ReadStrategyFacts {
     pub shift_conv_guard_active: bool,
     /// 英数モードの候補(1 回目の英数の読み)が寿命内で、確認の読みを待っている(ADR-238)。打鍵中でも確認の読みを
     /// 通す(打鍵中の除外で確認が上限なく遅れると、誤採用ではなく本物の切替の確定が遅れる)。
+    #[serde(default)]
     pub eisu_candidate_pending: bool,
 }
 

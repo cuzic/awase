@@ -185,5 +185,41 @@
       "reason": "ShiftConvGuard",
       "typing_guard_bypassed": true
     }
+  },
+  {
+    "name": "typing-eisu-candidate-pending-bypasses-typing-guard",
+    "note": "英数モードの候補(1 回目の英数の読み)が寿命内なら、打鍵中でも確認の読みを通す(ADR-238、BUG-190)",
+    "facts": {
+      "idle_ms": 10,
+      "skip_imm_query": false,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": false,
+      "applied_known": false,
+      "shift_conv_guard_active": false,
+      "eisu_candidate_pending": true
+    },
+    "expected": {
+      "strategy": "OsPoll",
+      "reason": "OsPoll",
+      "typing_guard_bypassed": true
+    }
+  },
+  {
+    "name": "typing-eisu-candidate-pending-but-imm-query-skipped",
+    "note": "TsfNative/Blacklist(IMM を問い合わせない)では、候補があっても打鍵中の除外を外さない(確認の読みができない)",
+    "facts": {
+      "idle_ms": 10,
+      "skip_imm_query": true,
+      "mode_key_pass_live": false,
+      "explicit_intent_present": false,
+      "applied_known": false,
+      "shift_conv_guard_active": false,
+      "eisu_candidate_pending": true
+    },
+    "expected": {
+      "strategy": "SkipTyping",
+      "reason": "TypingActive",
+      "typing_guard_bypassed": false
+    }
   }
 ]
