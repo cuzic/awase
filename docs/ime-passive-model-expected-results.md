@@ -159,6 +159,8 @@ ADR-191 実測5の「Bで仕様から外れた31件」は、撤去後は**仕様
 
 ## 5. 期待結果の例（IMEの状態 × キー）
 
+> 注（2026-10-06）: 本書の `[shadow-send]` は `shadow_send_trace` が出していたログ。同モジュールは撤去した（判定器は未実装・使用実績0件・lparam を残さない判断）。INV-3/4/5 の判定器は未定で、ImeControl の lparam が必要なら再導入する。
+
 「実IME」は IME 単体の仕様（Mozc の公開キーマップ、`atok.tsv`/`ms-ime.tsv` と実測）、「書き込み」は awase.log の
 `[shadow-send]` の件数（INV-3）。Engine は INV-2 から決まる（かな=ON、それ以外=OFF）。
 
@@ -226,4 +228,4 @@ ADR-191 実測5の「Bで仕様から外れた31件」は、撤去後は**仕様
 
 - [ADR-191](adr/191-ime-is-source-of-truth-observe-not-write.md)（決定1〜6・実測・TsfNative 節）、ADR-186/187/189/192/193
 - `tools/e2e/ime_key_matrix/check_consistency.py`・`check_toggle.py`・`check.py`（判定器）、`effect_learning.py`（`ci/e2e-adr191`、未マージ）
-- `crates/awase-windows/src/shadow_send_trace.rs`（`[shadow-send]`、書き込みの数え方の基礎）
+- ~~`crates/awase-windows/src/shadow_send_trace.rs`（`[shadow-send]`）~~（2026-10-06 撤去。判定器は未実装で、ImeControl の lparam が必要なら再導入する）
