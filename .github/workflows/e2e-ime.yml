@@ -454,6 +454,17 @@ jobs:
                   stress=f'--form=chromepage --mode=startup --startup-ime=on --layout=@REPO@/layout/nicola_keytop.yab --msime{ex}')
               for v, aw, ca, ex in (('noawase', 'false', '--evidence', ' --no-awase'), ('precheck', 'true', '--evidence', ''),
                                     ('gated', 'true', '--gate --evidence', ''), ('norefocus2', 'true', '--evidence', ' --startup-skip-refocus2'))],
+            # BUG-114(起動時の app_policy、ADR-134 D1c・ADR-232 D1): 実 Chrome を前面にして awase を起動し、フォーカスを動かさずに
+            # VK_IME_OFF → (force-open なら実 IME を外から開く)→ idle 間隔の打鍵で drift 補正を起こす(typing_stress --startup-drift)。
+            # 判定(check_startup.py --bug114、走らせる前に確定): 起動時 profile が ImmCross でない・drift_correction_read 0 件・
+            # drift 補正 1 回以上(0 回は INVALID=観測経路に乗っていない)・連続補正 5 回以内・give-up 後の再武装 3 回未満。
+            # -nofix は修正を外したビルド(ablations/a9、起動時 profile を ImmCross に固定)で FAIL することの負の対照。
+            # only='sc-bug114-*' で回す(sc-* の広い指定・既定には含めない)。
+            *[cfg(f'sc-bug114-startup-{ime_name}-{kname}{suf}', exp, mutator=mut, check='startup', ime=ime, keymap=1, runs=2, wait=240, checkargs='--bug114',
+                  stress=f'--form=chromepage --mode=startup --startup-ime=on --startup-drift={kind} --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
+              for kname, kind in (('keys', 'keys'), ('forceopen', 'force-open'))
+              for suf, exp, mut in (('', 'pass', ''), ('-nofix', 'fail', 'a9-bug114-immcross-bootstrap.sh'))],
             *[cfg(f'sc-driftrecovery-{ime_name}-tsf', 'observe', check='driftrecovery', ime=ime, keymap=km, runs=1, wait=240,
                   stress=f'--form=tsf --mode=drift-on --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for ime_name, ime, km, msime in (('gji', 'gji', 1, ''), ('msime', 'msime', 1, ' --msime'))],
@@ -716,12 +727,12 @@ jobs:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-'))
-                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-bug114-', 'sc-table-', 'sc-preedit-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-bug114-', 'sc-table-', 'sc-preedit-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-bug114-', 'sc-table-', 'sc-preedit-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])

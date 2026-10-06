@@ -76,4 +76,39 @@ class Variants(unittest.TestCase):
         line=cs.summary_line(cs.analyze(self.chrome(ok=False, text="ka", open_before=False), self.rows()))
         self.assertIn("open_before=closed text_class=ka", line)
 
+class Bug114(unittest.TestCase):
+    def recs(self, drift_rec=True):
+        r=recs(form="chromepage", text="か", open_before=True)
+        if drift_rec: r.insert(-1, {"type":"startup_drift","kind":"keys"})
+        return r
+    def rows(self, profile="Imm32Unavailable", extra=()):
+        base=logs()[:1]+logs()[2:]+[(1.1,f"[focus-scope] bootstrap initial scope: to=HwndId(1) profile={profile} focus_epoch=1\n")]
+        return base+list(extra)
+    def drift(self, t0, n, step=0.4): return [(t0+i*step,"[drift] correction: observed=true\n") for i in range(n)]
+    def run114(self, recs_, rows): return cs.analyze(recs_, rows, bug114_mode=True)
+
+    def test_bounded_burst_passes(self):
+        r=self.run114(self.recs(), self.rows(extra=self.drift(5,5)+[(7.5,"[drift] actuation gave up (Blind): x\n")]))
+        self.assertEqual((r["verdict"],r["bug114"]["bursts"],r["bug114"]["gave_up"]),("PASS",[5],1))
+    def test_no_drift_is_invalid(self):
+        r=self.run114(self.recs(), self.rows())
+        self.assertEqual(r["verdict"],"INVALID"); self.assertIn("0 件", r["invalid"][0])
+    def test_unbounded_burst_fails(self):
+        self.assertEqual(self.run114(self.recs(), self.rows(extra=self.drift(5,12)))["verdict"],"FAIL")
+    def test_read_policy_fails(self):
+        extra=self.drift(5,2)+[(5.1,'origin=EventOrigin { source: SelfActuated { strategy: "drift_correction_read" } }\n')]
+        self.assertEqual(self.run114(self.recs(), self.rows(extra=extra))["verdict"],"FAIL")
+    def test_immcross_profile_fails(self):
+        self.assertEqual(self.run114(self.recs(), self.rows("ImmCross", self.drift(5,1)))["verdict"],"FAIL")
+    def test_repeated_rearm_fails(self):
+        extra=self.drift(5,1)+[(6+i*4,"[drift] fresh observation after give-up x\n") for i in range(3)]
+        self.assertEqual(self.run114(self.recs(), self.rows(extra=extra))["verdict"],"FAIL")
+    def test_missing_scope_line_is_invalid(self):
+        rows=logs()[:1]+logs()[2:]+self.drift(5,1)
+        self.assertEqual(self.run114(self.recs(), rows)["verdict"],"INVALID")
+    def test_missing_startup_drift_record_is_invalid(self):
+        self.assertEqual(self.run114(self.recs(False), self.rows(extra=self.drift(5,1)))["verdict"],"INVALID")
+    def test_without_flag_drift_still_fails(self):
+        self.assertEqual(cs.analyze(self.recs(), self.rows(extra=self.drift(5,1)))["verdict"],"FAIL")
+
 if __name__ == "__main__": unittest.main()

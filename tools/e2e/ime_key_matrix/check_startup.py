@@ -5,6 +5,10 @@
   --gate      startup_typed.real_ime_open_before_type が false(打鍵直前に IME が閉)または None(読めない)の回を INVALID(前提不成立)にする。
               これで FAIL が出れば『IME が開いているのに期待と違う』=awase 側の欠陥。
   --evidence  awase.log の [msime-ready]・send_keys: mode=Vk・literal detect の件数と先頭数行を出す。
+  --bug114    BUG-114(起動時の app_policy)の判定。typing_stress `--startup-drift=...` の回に使う。起動後の drift は FAIL にせず、
+              (1) `[focus-scope] bootstrap initial scope:` が1行で profile が ImmCross でない、(2) `drift_correction_read` が0件、
+              (3) drift 補正が1回以上(0回は観測経路に乗っていないので INVALID)、(4) 連続した補正(間隔2秒以内)が5回以内で止まる、
+              (5) `fresh observation after give-up`(give-up 後の再武装)が3回未満、を見る。
 `--no-awase` で走った回(config.no_awase)は awase 判定をせず、打鍵結果の分類(kana/ka/raw/other)だけを OBSERVE として出す。
 """
 import json
@@ -20,6 +24,14 @@ REINIT = re.compile(r"\[ime-io\] actuation SendInput kind=kanji_marker vk=\[1A, 
 OBSERVE = re.compile(r"Imm32Unavailable entry without trusted cache: 安全デフォルト ON")
 ENGINE = re.compile(r"\[engine-input\]")
 START = re.compile(r"Keyboard Layout Emulator starting")
+SCOPE = re.compile(r"\[focus-scope\] bootstrap initial scope:.*profile=(\w+)")
+READ_POLICY = re.compile(r"drift_correction_read")
+GAVE_UP = re.compile(r"\[drift\] actuation gave up")
+REARM = re.compile(r"\[drift\] fresh observation after give-up")
+CONV_OBS = re.compile(r"\[idle-conv-check\] TsfNative: conv observation open=")
+BLIND_MAX_ATTEMPTS = 5  # state/app_ime_policy.rs::IME_ACTUATION_BLIND_MAX_ATTEMPTS
+BURST_GAP_S = 2.0       # 補正の間隔(DRIFT_CORRECTION_THRESHOLD_MS=400ms)より長く、再武装の待ち(3秒)より短い
+REARM_LIMIT = 3
 EVIDENCE = (("msime_ready", re.compile(r"\[msime-ready\]")), ("send_keys_vk", re.compile(r"send_keys: mode=Vk")),
             ("literal_detect", re.compile(r"literal detect")))
 
@@ -55,7 +67,37 @@ def evidence(lines):
     return out
 
 
-def analyze(recs, lines, gate=False, with_evidence=False):
+def bursts(times):
+    out = []
+    for t in times:
+        if out and t - out[-1][-1] <= BURST_GAP_S: out[-1].append(t)
+        else: out.append([t])
+    return [len(b) for b in out]
+
+
+def bug114(recs, lines, start):
+    """BUG-114 の判定材料と (failures, invalid) を返す。"""
+    after = [(t, l) for t, l in lines if t >= start]
+    profiles = [m.group(1) for _, l in after if (m := SCOPE.search(l))]
+    drift_t = [t for t, l in after if DRIFT.search(l)]
+    b = {"profile": profiles[0] if len(profiles) == 1 else profiles,
+         "read": sum(bool(READ_POLICY.search(l)) for _, l in after),
+         "drift": len(drift_t), "bursts": bursts(drift_t),
+         "gave_up": sum(bool(GAVE_UP.search(l)) for _, l in after),
+         "rearm": sum(bool(REARM.search(l)) for _, l in after),
+         "conv_obs": sum(bool(CONV_OBS.search(l)) for _, l in after)}
+    invalid, failures = [], []
+    if not any(x.get("type") == "startup_drift" for x in recs): invalid.append("startup_drift の記録が無い(--startup-drift で走っていない)")
+    if len(profiles) != 1: invalid.append(f"[focus-scope] bootstrap の行が1件でない({len(profiles)})")
+    elif profiles[0] == "ImmCross": failures.append("起動時の profile=ImmCross(BUG-114 根本原因1)")
+    if b["read"]: failures.append(f"drift_correction_read={b['read']}(Blind であるべき)")
+    if not b["drift"]: invalid.append("drift 補正 0 件(観測経路に乗っていない)")
+    if any(n > BLIND_MAX_ATTEMPTS for n in b["bursts"]): failures.append(f"連続した補正が {BLIND_MAX_ATTEMPTS} 回を超えた bursts={b['bursts']}")
+    if b["rearm"] >= REARM_LIMIT: failures.append(f"give-up 後の再武装が {b['rearm']} 回(連発)")
+    return b, failures, invalid
+
+
+def analyze(recs, lines, gate=False, with_evidence=False, bug114_mode=False):
     cfg = next((x for x in recs if x.get("type") == "config"), {})
     pre = next((x for x in recs if x.get("type") == "startup_pre"), None)
     typed = next((x for x in recs if x.get("type") == "startup_typed"), None)
@@ -92,7 +134,15 @@ def analyze(recs, lines, gate=False, with_evidence=False):
     initial = pre.get("initial")
     failures = []
     if not typed.get("ok"): failures.append("打鍵結果が期待文字列と不一致")
-    if drifts: failures.append(f"起動後30秒の drift={drifts}")
+    if drifts and not bug114_mode: failures.append(f"起動後30秒の drift={drifts}")
+    b114 = {}
+    if bug114_mode:
+        b114, f114, i114 = bug114(recs, lines, start)
+        failures += f114
+        extra["bug114"] = b114
+        if i114:
+            return {"verdict":"INVALID","cfg":cfg,"initial":initial,"invalid":i114,"failures":failures,
+                    "drift":drifts,"align":aligns,"reinit":reinit,"observe":observed,**extra}
     desired = "true" if initial == "on" else "false"
     # 実 Chrome(form=chromepage)は Imm32Unavailable で観測が来ず `[startup-align]`(最初の成功観測へ揃えた)が出ないのが正常。
     # そこでは startup-align の有無を合否に入れず、観察項目として align 列に記録するだけにする。
@@ -123,7 +173,8 @@ def summary_line(r):
             f"initial={r.get('initial','?')} drift={r.get('drift','?')} align={','.join(r.get('align',[])) or '-'} "
             f"reinit={r.get('reinit','?')} imm32_default_on={r.get('observe','?')} "
             f"first_engine_ms={r.get('first_engine_ms','?')} open_before={open_label(r.get('open_before'))} "
-            f"text_class={r.get('text_class','?')}")
+            f"text_class={r.get('text_class','?')}"
+            + (f" bug114={json.dumps(r['bug114'], ensure_ascii=False)}" if r.get("bug114") else ""))
 
 
 def main(argv):
@@ -132,6 +183,7 @@ def main(argv):
         i = args.index("--json"); out = args[i+1]; del args[i:i+2]
     gate = "--gate" in args; args = [a for a in args if a != "--gate"]
     ev = "--evidence" in args; args = [a for a in args if a != "--evidence"]
+    b114 = "--bug114" in args; args = [a for a in args if a != "--bug114"]
     if len(args) != 2: return 2
     try: recs = parse(args[0])
     except OSError as e:
@@ -143,7 +195,7 @@ def main(argv):
         if not cfg.get("no_awase"):
             print(f"ログを読めない: {e}"); return 3
         lines = []
-    r = analyze(recs, lines, gate=gate, with_evidence=ev)
+    r = analyze(recs, lines, gate=gate, with_evidence=ev, bug114_mode=b114)
     for x in r.get("invalid", []) + r.get("failures", []): print(f"  {r['verdict']}: {x}")
     line = summary_line(r); print(line)
     for key, v in r.get("evidence", {}).items():

@@ -50,6 +50,11 @@
 //! 追加フラグ(MS-IME×Chrome の ON 起動で最初の文字が `ka` になる件の切り分け用): `--no-awase` なら awase がいない対照として
 //! NICOLA 単打の代わりに生の `k`,`a` を打つ(閉なら `ka`、開なら `か`)。`--startup-skip-refocus2` は 2 回目の `refocus()` を省く。
 //! `startup_typed.real_ime_open_before_type` は打鍵直前に既定 IME 窓へ `IMC_GETOPENSTATUS` を送った値(Chrome 等の別プロセスでも読める)。
+//! `--startup-drift=keys|force-open`(BUG-114 の起動時経路): 起動シナリオの打鍵の後、フォーカスを動かさずに(起動時の
+//! フォーカススコープのまま)`VK_IME_OFF` を押して awase の desired を閉にし、`force-open` なら既定 IME 窓へ
+//! `WM_IME_CONTROL(IMC_SETOPENSTATUS, 1)` を送って実 IME を外から開く。その後 `TYPING_IDLE_MS`(500ms)を超える間隔で
+//! 文字キーを `--startup-drift-keys=N`(既定 4)回打ち(awase の idle conv check を通す)、10 秒待つ。drift 補正が起きたか・
+//! 何回で止まったかは awase.log を `check_startup.py --bug114` が数える。記録は `startup_drift`(`set_ret`・前後の開閉)。
 //!
 //! `--mode=drift-on`(ADR-178 領域A撤去後の回帰観測): reassert/force-on 撤去後、drift correction「だけ」で
 //! TsfNative 相当の入力先(`--form=tsf`)の ON 回復が働くかを見る。手順は「IME を ON にそろえる(awase が明示意図 ON を
@@ -1091,8 +1096,14 @@ fn real_ime_open(child: HWND) -> Option<bool> {
 /// (`real_ime_open` は自プロセスの HIMC しか取れず Chrome では `None`)。`child` の既定 IME 窓が無ければ前面窓で試す。
 /// 取れない/応答が無いときは `None`。
 fn imc_open_status(child: HWND) -> Option<bool> {
-    const WM_IME_CONTROL: u32 = 0x0283;
     const IMC_GETOPENSTATUS: usize = 0x0005;
+    imc_control(child, IMC_GETOPENSTATUS, 0).map(|r| r != 0)
+}
+
+/// 既定 IME 窓へ `WM_IME_CONTROL(cmd, value)` を短いタイムアウト付きで送り、戻り値を返す(別プロセスの入力先でも使える)。
+/// 既定 IME 窓は `child`、取れなければ前面窓から引く。送れなければ `None`。
+fn imc_control(child: HWND, cmd: usize, value: isize) -> Option<usize> {
+    const WM_IME_CONTROL: u32 = 0x0283;
     const SMTO_ABORTIFHUNG: u32 = 0x0002;
     // SAFETY: 既定 IME ウィンドウへ短いタイムアウト付きで同期送信するだけ。
     unsafe {
@@ -1107,8 +1118,8 @@ fn imc_open_status(child: HWND) -> Option<bool> {
         let r = SendMessageTimeoutW(
             ime_wnd,
             WM_IME_CONTROL,
-            WPARAM(IMC_GETOPENSTATUS),
-            LPARAM(0),
+            WPARAM(cmd),
+            LPARAM(value),
             windows::Win32::UI::WindowsAndMessaging::SEND_MESSAGE_TIMEOUT_FLAGS(SMTO_ABORTIFHUNG),
             500,
             Some(&raw mut result),
@@ -1116,7 +1127,7 @@ fn imc_open_status(child: HWND) -> Option<bool> {
         if r.0 == 0 {
             return None;
         }
-        Some(result != 0)
+        Some(result)
     }
 }
 
@@ -1389,6 +1400,42 @@ fn startup_scenario(child: HWND, cells: &[Vec<Cell>; 3], initial_on: bool, no_aw
             "raw_char":raw_char_of(&probe),"no_awase":no_awase}),
         );
     }
+    if let Some(kind) = arg_value("--startup-drift=") {
+        startup_drift_scenario(child, &kind);
+    }
+}
+
+/// `--startup-drift=keys|force-open`(BUG-114): 起動時のフォーカススコープのまま desired=閉 と実 IME をずらし、drift 補正を起こす。
+/// フォーカスを動かさないこと(別窓へ移ると `FocusChanged` で `app_policy` が作り直され、起動時経路を見られなくなる)。
+fn startup_drift_scenario(child: HWND, kind: &str) {
+    const IMC_SETOPENSTATUS: usize = 0x0006;
+    let keys: usize = arg_value("--startup-drift-keys=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
+    let off_utc = utc_hms();
+    press(VK_IME_OFF, 0x70, 50);
+    // 明示 IME 操作直後は idle conv check が止まる(EXPLICIT_IME_SUPPRESS_MS=1500ms)ので、それより長く待つ。
+    sleep_ms(1800);
+    let open_after_off = imc_open_status(child);
+    let set_ret = if kind == "force-open" {
+        imc_control(child, IMC_SETOPENSTATUS, 1)
+    } else {
+        None
+    };
+    sleep_ms(300);
+    let open_before_keys = imc_open_status(child);
+    let keys_utc = utc_hms();
+    for _ in 0..keys {
+        // A(0x41)。TYPING_IDLE_MS(500ms)を超える間隔で打ち、毎回 idle conv check を通す。
+        press(0x41, 0x1E, 60);
+        sleep_ms(1200);
+    }
+    sleep_ms(10_000);
+    rec(
+        &json!({"type":"startup_drift","kind":kind,"off_utc":off_utc,"keys_utc":keys_utc,"keys":keys,
+        "set_ret":set_ret,"open_after_off":open_after_off,"open_before_keys":open_before_keys,
+        "open_end":imc_open_status(child),"on_target":focus_ok()}),
+    );
 }
 
 /// `--mode=reopen` の物理キー注入で使う scan。無変換/変換は物理位置(scancode)で分類されるので対応する scan を使う(BUG-131/132、
