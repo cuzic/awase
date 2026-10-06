@@ -46,3 +46,8 @@ related_adr:
 1. 見逃しが「写しのずれ」なのか「写していない部分(通過マーク・往復・ForceGuard・warmup)」なのかを分ける。後者は案A でも案C でも直らない(別のハーネス拡張の話)。
 2. 案A を選ぶ場合、`foreground_scope` stub で隠れる挙動の一覧(`mode_key_pass` のスコープ失効)と、ガードテストの書き換え行数を先に実測する。
 3. 案C の切り出し対象は、ハーネスの写し元 doc の各行を1つずつ、本番側メソッドの本体が純粋関数の1回呼び出しになるか確認して決める。
+
+## 追記(2026-10-06、ADR-229)
+
+- 案A が懸念した「`architecture_guard`・`layer_boundary_guard` のテキスト走査が広く壊れる」は、**その場で gate を外すだけなら当てはまらない**(ADR-229 の Opus round1 で確認。ガード内の `cfg(windows)` はコメント 4 か所だけで、ガードはファイルをテキストとして読むので gate の有無に影響されない)。壊れるのはファイルや関数を移したとき、ガードが固定する文字列を変えたときだけ(例: `architecture_guard.rs:1382` の `HubClock::wall(crate::hook::current_tick_ms)`)。ガードの費用見積もりには根拠が無かった。`foreground_scope` を stub にすると挙動が隠れる、という懸念は別で、そちらは有効。
+- `ime_event_log`・`journal` の ungate は、形式上は案A の一部だが、ADR-229 の段階 0(着手しやすい単位 T3・T4)で扱う。着手条件(見逃しの実例)の判断は本 ADR の決定のまま変えない。`ImeStateHub`(`platform_state.rs`)の ungate は、ADR-229 でも後ろの段階で、案C が先という順番は変えない。
