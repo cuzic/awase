@@ -93,7 +93,7 @@ related_adr:
 
 詳細な根拠(ファイル:行・コミット)は読み取り専用の重複分析によるもので、本ADRの実装前に CI で効果確認が要る。
 
-**症状の再確認(d0d42be6、`sc-bug149-*`)**: 既定設定(Suppress)の 10/24 FAIL のうち約 9 件は、無変換・変換・Shift+無変換が GJI に届かないための期待値のずれ(Engine と IME は整合)で BUG ではない。本物は、素通し設定(`-passthru`、df5c96d1 で 3/3 再現)の「無変換/変換で IME 閉・Engine ON」「Shift+無変換で IME 英数・Engine ON」と、ひらがなの追跡ずれ(1/3)。`-passthru` の現行での再現は再実行中。
+**症状の再確認(d0d42be6、`sc-bug149-*`)**: 既定設定(Suppress)の 10/24 FAIL のうち約 9 件は、無変換・変換・Shift+無変換が GJI に届かないための期待値のずれ(Engine と IME は整合)で BUG ではない。本物は、素通し設定(`-passthru`、df5c96d1 で 3/3 再現)の「無変換/変換で IME 閉・Engine ON」「Shift+無変換で IME 英数・Engine ON」と、ひらがなの追跡ずれ(1/3)。`-passthru` は 2026-10-06 の再実行(run 37427296256)で、かな→無変換/変換/Shift+無変換が各 3/3 FAIL(ひらがなは 3/3 PASS)と再現を確認した。
 
 **機序(現行コード)**: 実 Chrome(`Imm32Unavailable`)×GJI では 20ms 後の prefetch が開閉と conv を実際に読んでいるのに、読み取り方針が `SkipTyping`/`Blacklist` でその値を捨て、その後の読み直しも予約しない。例外は ADR-205 の窓だけで、外部注入キーでしか arm せず開閉しか見ない。予測(ADR-191 決定3)は Shift 付きと、FSM が保留後に再送出した素通しの親指キーを対象にしない。
 
