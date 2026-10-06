@@ -48,6 +48,9 @@ pub mod alt_impersonation;
 pub mod generation;
 pub use generation::{ApplyGeneration, GenerationAllocator};
 pub mod app_ime_policy;
+// FCIS P1: 純粋なデータ型を ungated へ移したもの(元の場所から pub use で再公開)。
+pub mod foreground_scope;
+pub mod ime_update;
 // hook.rs (#[cfg(windows)]) の唯一の呼び出し元。alt_impersonation と同じ
 // 「純粋判定を Linux でテストできるようにする」移設パターン。
 #[cfg_attr(not(windows), allow(dead_code))]
