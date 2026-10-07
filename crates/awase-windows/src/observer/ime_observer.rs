@@ -226,33 +226,16 @@ pub fn classify_ime_snapshot(
         )
     };
 
-    // 診断(ADR-238、BUG-190): ObservedEisu を採ったとき、どの分岐か・前回の conv・読みが時間切れだったかを 1 行残す。
-    // 挙動は変えない。直近のモードキー通過からの経過や open/conv プローブの所要時間は、
-    // `[mode-key-follow]` と `[ime-io] ... elapsed_us` の行で突き合わせる。
-    if proposed_input_mode == Some(InputModeState::ObservedEisu)
-        && current_input_mode != InputModeState::ObservedEisu
-    {
-        let branch = if awase::engine::ConvMode::is_eisu_evidence(snap.ime_on, snap.conversion_mode)
-            == Some(true)
-        {
-            "a:is_eisu_evidence"
-        } else {
-            "b:classify_transition"
-        };
-        tracing::info!(
-            "[eisu-adopt] decision={} branch={branch} ime_on={:?} conv={:?} prev_conv={:?} current_mode={:?} probe_timed_out={}",
-            match (new_input_mode, eisu_candidate) {
-                (Some(_), _) => "confirmed",
-                (None, crate::state::eisu_candidate::CandidateUpdate::Set(_)) => "candidate",
-                (None, _) => "rejected(ime_on=None)",
-            },
-            snap.ime_on,
-            snap.conversion_mode.map(|v| format!("0x{v:08X}")),
-            current_prev_conversion_mode.map(|v| format!("0x{v:08X}")),
-            current_input_mode,
-            snap.probe_timed_out,
-        );
-    }
+    log_eisu_diagnostics(
+        snap,
+        now_ms,
+        current_input_mode,
+        current_prev_conversion_mode,
+        current_eisu_candidate,
+        proposed_input_mode,
+        new_input_mode,
+        eisu_candidate,
+    );
 
     tracing::debug!(
         "IME snapshot: japanese={:?} ime_on={:?} romaji={:?} conv={:?} guard={}",
@@ -275,6 +258,65 @@ pub fn classify_ime_snapshot(
             None
         },
         eisu_candidate,
+    }
+}
+
+/// 診断(ADR-238、BUG-190): 英数モードの候補の結末(`[eisu-candidate]`)と、ObservedEisu を採った/候補にしたときの 1 行
+/// (`[eisu-adopt]`)。挙動は変えない。直近のモードキー通過からの経過や open/conv プローブの所要時間は、
+/// `[mode-key-follow]` と `[ime-io] ... elapsed_us` の行で突き合わせる。
+#[allow(clippy::too_many_arguments)]
+fn log_eisu_diagnostics(
+    snap: &crate::ime::ImeSnapshot,
+    now_ms: u64,
+    current_input_mode: InputModeState,
+    current_prev_conversion_mode: Option<u32>,
+    current_eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
+    proposed_input_mode: Option<InputModeState>,
+    new_input_mode: Option<InputModeState>,
+    eisu_candidate: crate::state::eisu_candidate::CandidateUpdate,
+) {
+    use crate::state::eisu_candidate::CandidateUpdate;
+    // 候補の結末と、候補にしてからの経過 ms(一過性の値の長さ。`EISU_CANDIDATE_LIFETIME_MS` の根拠)。
+    if let Some(c) = current_eisu_candidate {
+        let outcome = match (new_input_mode, eisu_candidate) {
+            (Some(InputModeState::ObservedEisu), _) => Some("confirmed"),
+            (_, CandidateUpdate::Clear) => Some("cleared"),
+            (None, CandidateUpdate::Set(_)) => Some("expired"),
+            _ => None,
+        };
+        if let Some(outcome) = outcome {
+            tracing::info!(
+                "[eisu-candidate] outcome={outcome} age_ms={} candidate_conv=0x{:08X} read_conv={:?} ime_on={:?}",
+                now_ms.saturating_sub(c.at_ms),
+                c.conv,
+                snap.conversion_mode.map(|v| format!("0x{v:08X}")),
+                snap.ime_on,
+            );
+        }
+    }
+    if proposed_input_mode == Some(InputModeState::ObservedEisu)
+        && current_input_mode != InputModeState::ObservedEisu
+    {
+        let branch = if awase::engine::ConvMode::is_eisu_evidence(snap.ime_on, snap.conversion_mode)
+            == Some(true)
+        {
+            "a:is_eisu_evidence"
+        } else {
+            "b:classify_transition"
+        };
+        tracing::info!(
+            "[eisu-adopt] decision={} branch={branch} ime_on={:?} conv={:?} prev_conv={:?} current_mode={:?} probe_timed_out={}",
+            match (new_input_mode, eisu_candidate) {
+                (Some(_), _) => "confirmed",
+                (None, CandidateUpdate::Set(_)) => "candidate",
+                (None, _) => "rejected(ime_on=None)",
+            },
+            snap.ime_on,
+            snap.conversion_mode.map(|v| format!("0x{v:08X}")),
+            current_prev_conversion_mode.map(|v| format!("0x{v:08X}")),
+            current_input_mode,
+            snap.probe_timed_out,
+        );
     }
 }
 
