@@ -390,7 +390,10 @@ ADR-159・ADR-162 E1/E4 の能力ベースの前提条件への参照は、こ�
 - `docs/tasks/journal-replay-rebuild-study-2026-10-06/b5-prototype-result.md` の「新基盤の範囲の選択肢」の案 C の行: 「所有者が選んだ(2026-10-06)。設計は ADR-241」。
 - `docs/tasks/corpus-discard-impact-2026-10-06/README.md` の Q1: 「撤去は ADR-241 の段階 1 と同時、範囲は (B)」。
 - ADR-163 の status の先頭: 「TH1e は取り下げ(ADR-241 の段階 1 で再生一式を撤去)」(corpus-discard-impact の Q5 の回答どおり)。
-- `.claude/rules/fix-requires-evidence.md:22-26`: 決定 7 の文案に書き換える(本 ADR だけが行う。ADR-240 の第 1 段階からは、この文の書き換えを外す)。`:64-70` の「ジャーナルリプレイ基盤」の行は、段階 1 の後に閉ループのハーネスの場所を指すよう直す。
+- `.claude/rules/fix-requires-evidence.md:22-27`(「将来的に ADR-159 の記録・再生基盤が育てば、(b) は再生トレースの追加へ置き換える予定」の文): 本 ADR だけが書き換える。ADR-240 は fix-requires を編集せず、D1a 由来の 1 項目の文言を本 ADR への追記案として出す側である。書き換え文案:
+  > (b) の置き換えの予定(ADR-159 の記録・再生基盤、ADR-162 E1/E4 の前提)は撤回する(TH1e は ADR-163 で取り下げ、再生基盤は ADR-241 に置き換えた)。代わりに、(a) の回帰テストとして次を数える。
+  > 1. 同期の判断(打鍵から actuation の決定まで)に触れる fix: ADR-241 の再生のシナリオ(閉ループのハーネス、期待値は人が書く)。
+  > 2. IME とのやり取りが絡む不具合で、再生が通らない部分(非同期・実機固有): 実機 CI の再現シナリオ。ADR-240 の D1a の条件(判定基準を前提と症状に分けて最初の run の前に書く・症状の基準が見る事象の observed 件数を出す・observed 0 の回は INVALID)を満たしたものだけを数える。`:64-70` の「ジャーナルリプレイ基盤」の行は、段階 1 の後に閉ループのハーネスの場所を指すよう直す。
 - `fix-requires-evidence.md` の「IME actuation 合流点」行と ADR-119: 質問 1 の承認後、合流点の内訳を `apply_sync`・`CoreSyncWriter` に直す。
 - ADR-224 の status: 「ハーネスは ADR-241 の再生基盤の本体になる。写しの一覧は `harness.rs` の doc」。
 - ADR-229: 次のとおり追記する(`:212`・`:282` は corpus-discard-impact §1.4 のとおり)。
