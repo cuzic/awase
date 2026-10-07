@@ -245,7 +245,7 @@
 | [236](236-conflict-marker-residue-check.md) | 衝突マーカーの残骸を CI(fmt ジョブ)で検出する | 起草(2026-10-06)。Opus round1・round2 反映済み |
 | [237](237-serialized-develop-merge.md) | develop へのマージ担当の手順を決める(古い base のままマージし、競合しない rebase を求めない) | 起草(2026-10-06)。Opus round1・round2 反映済み |
 | [238](238-single-poll-conv-zero-eisu-adoption.md) | 一過性の conv=0 を 1 回の poll で ObservedEisu と採用して Engine が止まる件(BUG-190) | 設計収束(Opus round3)・実装済み・CI 確認済み、実機未検証(2026-10-06) |
-| [239](239-prev-conversion-mode-reset-and-dead-classify-transition.md) | 分類で `prev_conversion_mode` を読む `classify_transition` の撤去(約 6 か月、refresh の経路で結果を返していない) | 起草中(2026-10-07)。Opus round1 反映、round2 待ち |
+| [239](239-prev-conversion-mode-reset-and-dead-classify-transition.md) | 分類で `prev_conversion_mode` を読む `classify_transition` の撤去(約 6 か月、refresh の経路で結果を返していない) | 設計収束(Opus round2)・実装済み・CI 確認待ち(2026-10-07) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

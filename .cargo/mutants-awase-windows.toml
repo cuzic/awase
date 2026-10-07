@@ -30,6 +30,7 @@ examine_globs = [
     "crates/awase-windows/src/state/conv_classify.rs",
     "crates/awase-windows/src/state/conv_mode.rs",
     "crates/awase-windows/src/state/eisu_candidate.rs",
+    "crates/awase-windows/src/state/snapshot_input_mode.rs",
     "crates/awase-windows/src/state/eisu_recovery.rs",
     "crates/awase-windows/src/state/force_guard.rs",
     "crates/awase-windows/src/state/belief.rs",

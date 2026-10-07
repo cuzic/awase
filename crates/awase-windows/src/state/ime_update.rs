@@ -25,7 +25,8 @@ pub struct ImeUpdate {
     pub clear_force_on_panic_reset: bool,
     /// `input_mode` に適用すべき新しい値（`Some` のときのみ更新すべき）
     pub new_input_mode: Option<InputModeState>,
-    /// `prev_conversion_mode` に書くべき値（`Some` のときのみ更新すべき）
+    /// `prev_conversion_mode`(直近に観測した conv。読み手は予測の入力 `conv_raw` だけ、ADR-239)に書くべき値
+    /// （`Some` のときのみ更新すべき）
     pub new_prev_conversion_mode: Option<u32>,
     /// 英数モードの候補の更新(ADR-238、BUG-190)。
     pub eisu_candidate: crate::state::eisu_candidate::CandidateUpdate,

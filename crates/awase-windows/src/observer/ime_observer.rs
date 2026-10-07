@@ -90,46 +90,6 @@ impl crate::ime::ImeSnapshot {
             }
         }
     }
-
-    fn input_mode_from_romaji_flag(
-        &self,
-        current_input_mode: InputModeState,
-    ) -> Option<InputModeState> {
-        let romaji = self.is_romaji?;
-        let prev = current_input_mode.is_romaji_capable();
-        if prev != romaji {
-            tracing::info!(
-                "IME input method changed: {} → {} (focused_class={:?})",
-                if prev { "romaji" } else { "kana" },
-                if romaji { "romaji" } else { "kana" },
-                self.focused_class,
-            );
-        }
-        Some(if romaji {
-            InputModeState::ObservedRomaji
-        } else {
-            InputModeState::ObservedKana
-        })
-    }
-
-    fn input_mode_from_conversion(
-        &self,
-        current_prev_conversion_mode: Option<u32>,
-        current_input_mode: InputModeState,
-    ) -> Option<InputModeState> {
-        let curr_conv = self.conversion_mode?;
-        let prev_conv = current_prev_conversion_mode?;
-        let result = awase::engine::ConvMode::from_u32(curr_conv).classify_transition(
-            awase::engine::ConvMode::from_u32(prev_conv),
-            current_input_mode,
-        );
-        if let Some(new_mode) = result {
-            tracing::info!(
-                "IME input method changed: conv=0x{prev_conv:08X}→0x{curr_conv:08X}, belief {current_input_mode:?}→{new_mode:?}"
-            );
-        }
-        result
-    }
 }
 
 /// `ImeSnapshot` と現在の `Preconditions` の読み取り専用ビューから更新命令を計算する。
@@ -144,7 +104,6 @@ pub fn classify_ime_snapshot(
     current_ime_on: bool,
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
-    current_prev_conversion_mode: Option<u32>,
     // 英数モードの候補(ADR-238、BUG-190)。1 回目の英数の読みは採らずに候補にし、確認の読みで確定する。
     current_eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
     // 呼び出し元が `!focus::class_names::is_own_ui_window(snap.focused_class, process_name)`
@@ -156,53 +115,27 @@ pub fn classify_ime_snapshot(
     let guard_active = current_force_on_guard_active;
     let poll = snap.classify_poll_outcome(now_ms, current_ime_on, guard_active);
 
-    let new_input_mode = if !trust_input_mode {
-        // 採用しない: 前回値を維持する（ImeSnapshot の doc が言う「None は偽ではなく
-        // 不明」のまま扱う）。new_prev_conversion_mode も下で揃えて None にすること
-        // （でないと次の信頼できる poll で偽の conv 遷移を作ってしまう）。
-        None
-    } else if guard_active && snap.is_romaji.is_none() {
-        None
-    } else if awase::engine::ConvMode::is_eisu_evidence(snap.ime_on, snap.conversion_mode)
-        == Some(true)
-    {
-        // 英数モードは romaji フラグより優先して ObservedEisu を返す。
-        // input_mode_from_romaji_flag は romaji=false を ObservedKana と判定するため
-        // 英数モードを誤って ObservedKana にしてしまう問題をここで遮断する。
-        (!matches!(current_input_mode, InputModeState::ObservedEisu))
-            .then_some(InputModeState::ObservedEisu)
+    // `trust_input_mode` が false(awase 自身の UI の読み)なら、input_mode 軸の観測を一切採らない。
+    // 判定本体は cfg の無い `state/snapshot_input_mode.rs` の純粋関数(ADR-239。以前ここにあった「前回の conv との差分」の
+    // 枝は、`prev_conversion_mode` が読み取りのたびにリセットされて一度も結果を返しておらず、返せる結果は他所で採らないと
+    // 決めた形だけだったので撤去した)。
+    let (new_input_mode, mode_source) = if trust_input_mode {
+        crate::state::snapshot_input_mode::decide_input_mode(
+            &crate::state::snapshot_input_mode::SnapshotModeInput {
+                ime_on: snap.ime_on,
+                is_romaji: snap.is_romaji,
+                conv: snap.conversion_mode,
+                current: current_input_mode,
+                guard_active,
+            },
+        )
     } else {
-        snap.input_mode_from_romaji_flag(current_input_mode)
-            .or_else(|| {
-                snap.input_mode_from_conversion(current_prev_conversion_mode, current_input_mode)
-            })
-            .or_else(|| {
-                // ObservedEisu が stale の場合の回復。
-                // GJI 等 ROMAN bit 不使用 IME では英数→ひらがな切替で conv が変化しても
-                // ROMAN bit は両方 false のまま → classify_transition が None を返し
-                // belief が ObservedEisu に固まる。
-                // TsfNative は conversion_mode=None のため is_some_and が false → 不適用。
-                if matches!(current_input_mode, InputModeState::ObservedEisu)
-                    && snap
-                        .conversion_mode
-                        .is_some_and(|c| !awase::engine::ConvMode::from_u32(c).is_eisu())
-                {
-                    let conv = snap.conversion_mode.unwrap_or(0);
-                    tracing::info!(
-                        "IME input method changed: ObservedEisu → AssumedRomaji \
-                         (conv=0x{conv:08X}, GJI/ImmCross stale recovery)"
-                    );
-                    Some(InputModeState::AssumedRomaji {
-                        reason: awase::engine::AssumedReason::AppKindExcluded,
-                    })
-                } else {
-                    None
-                }
-            })
+        (None, crate::state::snapshot_input_mode::ModeSource::None)
     };
+    log_input_mode_decision(snap, current_input_mode, mode_source);
 
     // ADR-238(BUG-190): 新たに ObservedEisu へ変わる結果は、1 回目を採らず候補にし、確認の読みで確定する。
-    // 確認は (a) is_eisu_evidence と (b) classify_transition の両方が作る結果に対して、結果側で掛ける。
+    // 確認は `new_input_mode`(結果)に対して、結果側で掛ける。
     let proposed_input_mode = new_input_mode;
     let (new_input_mode, eisu_candidate) = if trust_input_mode {
         crate::state::eisu_candidate::filter_eisu_adoption(
@@ -230,7 +163,6 @@ pub fn classify_ime_snapshot(
         snap,
         now_ms,
         current_input_mode,
-        current_prev_conversion_mode,
         current_eisu_candidate,
         proposed_input_mode,
         new_input_mode,
@@ -261,6 +193,39 @@ pub fn classify_ime_snapshot(
     }
 }
 
+/// `input_mode` の決定のログ。元の `input_mode_from_romaji_flag`(romaji フラグが変わったとき)と ObservedEisu の
+/// stale 回復の info ログ(文言は変えない。CI で grep している可能性がある)。
+fn log_input_mode_decision(
+    snap: &crate::ime::ImeSnapshot,
+    current_input_mode: InputModeState,
+    source: crate::state::snapshot_input_mode::ModeSource,
+) {
+    use crate::state::snapshot_input_mode::ModeSource;
+    match source {
+        ModeSource::RomajiFlag => {
+            if let Some(romaji) = snap.is_romaji {
+                let prev = current_input_mode.is_romaji_capable();
+                if prev != romaji {
+                    tracing::info!(
+                        "IME input method changed: {} → {} (focused_class={:?})",
+                        if prev { "romaji" } else { "kana" },
+                        if romaji { "romaji" } else { "kana" },
+                        snap.focused_class,
+                    );
+                }
+            }
+        }
+        ModeSource::StaleRecovery => {
+            let conv = snap.conversion_mode.unwrap_or(0);
+            tracing::info!(
+                "IME input method changed: ObservedEisu → AssumedRomaji \
+                 (conv=0x{conv:08X}, GJI/ImmCross stale recovery)"
+            );
+        }
+        ModeSource::Eisu | ModeSource::None => {}
+    }
+}
+
 /// 診断(ADR-238、BUG-190): 英数モードの候補の結末(`[eisu-candidate]`)と、ObservedEisu を採った/候補にしたときの 1 行
 /// (`[eisu-adopt]`)。挙動は変えない。直近のモードキー通過からの経過や open/conv プローブの所要時間は、
 /// `[mode-key-follow]` と `[ime-io] ... elapsed_us` の行で突き合わせる。
@@ -269,7 +234,6 @@ fn log_eisu_diagnostics(
     snap: &crate::ime::ImeSnapshot,
     now_ms: u64,
     current_input_mode: InputModeState,
-    current_prev_conversion_mode: Option<u32>,
     current_eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
     proposed_input_mode: Option<InputModeState>,
     new_input_mode: Option<InputModeState>,
@@ -297,15 +261,8 @@ fn log_eisu_diagnostics(
     if proposed_input_mode == Some(InputModeState::ObservedEisu)
         && current_input_mode != InputModeState::ObservedEisu
     {
-        let branch = if awase::engine::ConvMode::is_eisu_evidence(snap.ime_on, snap.conversion_mode)
-            == Some(true)
-        {
-            "a:is_eisu_evidence"
-        } else {
-            "b:classify_transition"
-        };
         tracing::info!(
-            "[eisu-adopt] decision={} branch={branch} ime_on={:?} conv={:?} prev_conv={:?} current_mode={:?} probe_timed_out={}",
+            "[eisu-adopt] decision={} ime_on={:?} conv={:?} current_mode={:?} probe_timed_out={}",
             match (new_input_mode, eisu_candidate) {
                 (Some(_), _) => "confirmed",
                 (None, CandidateUpdate::Set(_)) => "candidate",
@@ -313,7 +270,6 @@ fn log_eisu_diagnostics(
             },
             snap.ime_on,
             snap.conversion_mode.map(|v| format!("0x{v:08X}")),
-            current_prev_conversion_mode.map(|v| format!("0x{v:08X}")),
             current_input_mode,
             snap.probe_timed_out,
         );
@@ -336,7 +292,6 @@ pub unsafe fn poll_and_classify_ime(
     current_ime_on: bool,
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
-    current_prev_conversion_mode: Option<u32>,
     current_eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
     focus_process_name: &str,
 ) -> ImeUpdate {
@@ -354,7 +309,6 @@ pub unsafe fn poll_and_classify_ime(
         current_ime_on,
         current_force_on_guard_active,
         current_input_mode,
-        current_prev_conversion_mode,
         current_eisu_candidate,
         trust_input_mode,
     )
@@ -410,7 +364,6 @@ mod tests {
             false, // current_ime_on
             false, // current_force_on_guard_active
             InputModeState::Unknown,
-            None,
             None, // current_eisu_candidate
             true, // trust_input_mode
         );
@@ -432,7 +385,6 @@ mod tests {
             true,  // current_ime_on
             false, // current_force_on_guard_active
             InputModeState::Unknown,
-            None,
             None, // current_eisu_candidate
             true, // trust_input_mode
         );
@@ -454,7 +406,6 @@ mod tests {
             true,  // current_ime_on
             false, // current_force_on_guard_active
             InputModeState::Unknown,
-            None,
             None, // current_eisu_candidate
             true, // trust_input_mode
         );
@@ -483,7 +434,6 @@ mod tests {
             false, // current_ime_on
             false, // current_force_on_guard_active（ガードなし）
             InputModeState::Unknown,
-            None,
             None, // current_eisu_candidate
             true, // trust_input_mode
         );
@@ -505,7 +455,6 @@ mod tests {
             true, // current_ime_on
             true, // current_force_on_guard_active = true
             InputModeState::Unknown,
-            None,
             None, // current_eisu_candidate
             true, // trust_input_mode
         );
@@ -529,7 +478,6 @@ mod tests {
             true,  // current_ime_on
             false, // current_force_on_guard_active
             InputModeState::Unknown,
-            None,
             None, // current_eisu_candidate
             true, // trust_input_mode
         );
@@ -558,9 +506,8 @@ mod tests {
             true, // current_ime_on
             false,
             InputModeState::ObservedRomaji,
-            Some(0x0000_0009), // 直前に信頼できたconv値
-            None,              // current_eisu_candidate
-            false,             // trust_input_mode = false（信頼しない）
+            None,  // current_eisu_candidate
+            false, // trust_input_mode = false（信頼しない）
         );
         assert_eq!(update.new_input_mode, None);
         assert_eq!(update.new_prev_conversion_mode, None);
@@ -586,14 +533,13 @@ mod tests {
             true,
             false,
             InputModeState::ObservedRomaji,
-            None,
             None, // current_eisu_candidate
             true, // trust_input_mode
         );
         assert_eq!(update.new_input_mode, Some(InputModeState::ObservedKana));
     }
 
-    /// ADR-238(BUG-190): 前回 0x19 → 今回 conv=0 の孤立した 1 回(`classify_transition` の英数遷移が拾う形)は、
+    /// ADR-238(BUG-190): 孤立した 1 回の conv=0(`ime_on=Some(true)`、`is_eisu_evidence` が拾う形)は、
     /// 採らずに候補にする。確認の読みでも英数なら確定する。`#[cfg(windows)]` なので Linux では走らない
     /// (判定本体は `state/eisu_candidate.rs` の純粋関数のテストで固定している)。
     #[test]
@@ -610,7 +556,6 @@ mod tests {
             true,
             false,
             InputModeState::ObservedRomaji,
-            Some(0x19),
             None,
             true,
         );
@@ -624,7 +569,6 @@ mod tests {
             true,
             false,
             InputModeState::ObservedRomaji,
-            Some(0),
             Some(cand),
             true,
         );
@@ -650,7 +594,6 @@ mod tests {
             true,
             false,
             InputModeState::ObservedRomaji,
-            Some(0x19),
             None,
             true,
         );
@@ -675,7 +618,6 @@ pub fn classify_fetched_snapshot(
     current_ime_on: bool,
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
-    current_prev_conversion_mode: Option<u32>,
     current_eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
     focus_process_name: &str,
 ) -> ImeUpdate {
@@ -689,7 +631,6 @@ pub fn classify_fetched_snapshot(
         current_ime_on,
         current_force_on_guard_active,
         current_input_mode,
-        current_prev_conversion_mode,
         current_eisu_candidate,
         trust_input_mode,
     )

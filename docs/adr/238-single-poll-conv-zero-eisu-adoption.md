@@ -25,7 +25,7 @@ related_adr:
 ### 機序(ログで裏取り)
 
 1. OS ポーリング(`ime.rs::read_ime_state_full`)が一過性に `romaji=None conv=Some("0x00000000")` を返す(直前・直後の poll は `romaji=Some(true) conv=0x00000019`)。`romaji=None` は独立した観測ではなく、`ime.rs:590-596` が NATIVE ビットの無い conv から機械的に作っている。
-2. `observer/ime_observer.rs::classify_ime_snapshot` が **1 回の観測だけで** ObservedEisu を返す。**ObservedEisu を作る箇所は同じ関数に 2 つある**:
+2. `observer/ime_observer.rs::classify_ime_snapshot` が **1 回の観測だけで** ObservedEisu を返す。**【訂正 2026-10-07、ADR-239】以下の (b) は、`prev_conversion_mode` が読み取りのたびにリセットされて poll の分類では常に `None` のため一度も結果を返しておらず、5 件はすべて (a) が作った(`[eisu-adopt]` 49 件すべて `branch=a`)。(b) は ADR-239 で撤去した。当時の記述:** ObservedEisu を作る箇所は同じ関数に 2 つあった:
    - (a) 164〜172 行: `ConvMode::is_eisu_evidence(snap.ime_on, snap.conversion_mode) == Some(true)`。`ime_on == Some(false)` のときだけ conv=0 を無視する(BUG-57)。
    - (b) 173 行以降の else 側: `input_mode_from_romaji_flag` が `romaji=None` で `None` を返したあと、`input_mode_from_conversion` → `ConvMode::classify_transition`(`src/engine/conv.rs:141`)の 149 行 `if self.is_eisu() && !prev.is_eisu() { return Some(ObservedEisu); }` が、**前回 0x19・今回 0 という孤立した 1 回の形そのもの**で ObservedEisu を返す。(a) だけを弾いても 5 件とも同じ結果になる。
 3. `input_mode=ObservedEisu` → `Inactive(NotRomajiInput)` で Engine が止まる。回復は次の読み(`conv=0x19` → `input_mode_from_romaji_flag` が ObservedRomaji に戻す。5 件とも `IME input method changed: kana → romaji` で戻っており、stale recovery〈`ime_observer.rs:177-199`、`romaji=None` かつ conv が英数でないときだけ届く〉ではない)。
@@ -123,6 +123,8 @@ BUG-57 の守り(`ime_on == Some(false)` の conv=0 は証拠にしない)は (a
 - 寿命は `EISU_CANDIDATE_LIFETIME_MS`=1500ms(通常の poll 500ms の 3 倍。`pending`)。
 
 ## 実装中に分かったこと(2026-10-06、run 37483627619 の sc-dbe-msime-native)
+
+(2026-10-07 追記: (b) `classify_transition` は ADR-239 で撤去した。以下の「(b) が本番ではほぼ動かない」という所見は ADR-239 で裏取りし、「**ほぼ**」ではなく「refresh の分類では一度も」〈ImmCrossProbe とフォーカス読み失敗の tick では prev が生きていたが、手元のログでは一度も結果を返していない〉に訂正した。)
 
 - **`advance_focus_tracking`(`runtime/focus_tracking.rs`)は、フォーカスが変わらなくても読み取りのたびに走り、末尾で `prev_conversion_mode` を毎回 `None` に戻している。** 実際に `[eisu-adopt]` の `prev_conv` は全件 `None`。すなわち**案 A(`prev_conversion_mode` で確認)は、この既存の挙動のために元から成り立たなかった**(ADR の「`prev_conversion_mode` は直前の読みではない」という指摘〈round1 M1〉の、もう 1 つの理由)。また (b) の `classify_transition`(prev が要る)は本番では事実上動かず、ObservedEisu を作るのは (a) だけに近い。
 - 実装の初版は `clear_eisu_candidate()` を同じ場所に無条件で置いたため、候補が確認の読みの前に毎回消え、**一度も確定しなかった**。MS-IME の英数キー(0xF0)で、実 IME は閉じる(open=0 conv=0x10)のに Engine が OFF に追随せず `sc-dbe-msime-native`(期待 PASS)が 3 回とも FAIL した(旧は (a) の 1 回採用で Engine が止まって PASS だった)。**修正:** 候補は `process_changed || prev_hwnd != new_hwnd` のときだけ捨てる。`tests/architecture_guard.rs::eisu_candidate_is_cleared_only_when_focus_actually_changes` で固定。

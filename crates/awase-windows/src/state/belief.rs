@@ -1,4 +1,4 @@
-//! IME 補助状態（input_mode / is_japanese_ime / prev_conversion_mode）。
+//! IME 補助状態（input_mode / is_japanese_ime / prev_conversion_mode〈直近に観測した conv、予測の `conv_raw` 用〉）。
 //!
 //! # IME 状態の 3 層モデル（Phase 3e 以降）
 //!
@@ -31,7 +31,8 @@
 pub struct ImeBelief {
     /// 日本語 IME がアクティブか
     pub(in crate::state) is_japanese_ime: bool,
-    /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
+    /// 直前の conversion_mode（直近に観測した conv。読み手は予測の入力 `conv_raw` だけ。かな切替の検出は ROMAN ビットを直接読む
+    /// `is_romaji` が担い、以前の「前回との差分」の分類は撤去した、ADR-239）
     /// None = まだ一度も取得できていない
     pub(in crate::state) prev_conversion_mode: Option<u32>,
     /// 英数モードの「候補」(1 回目の英数の読み。確認の読みで確定する、ADR-238 / BUG-190)。

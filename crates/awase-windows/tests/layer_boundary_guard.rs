@@ -548,6 +548,7 @@ const CORE_MODULES: &[&str] = &[
     "press_ledger",
     "relay_plan",
     "scoped_latch",
+    "snapshot_input_mode",
     "state_dependent_key_warning",
     "transition",
     "warm_send_plan",

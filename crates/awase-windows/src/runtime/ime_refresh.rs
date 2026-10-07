@@ -502,7 +502,6 @@ impl Runtime {
                     poll.ime_on,
                     poll.force_guard,
                     poll.input_mode,
-                    poll.prev_conv,
                     poll.eisu_candidate,
                     &focus_process_name,
                 )
@@ -514,7 +513,6 @@ impl Runtime {
                     poll.ime_on,
                     poll.force_guard,
                     poll.input_mode,
-                    poll.prev_conv,
                     poll.eisu_candidate,
                     &focus_process_name,
                 )
