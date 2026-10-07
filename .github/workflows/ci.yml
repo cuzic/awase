@@ -526,7 +526,7 @@ jobs:
   # 対象は `awase` パッケージ（プラットフォーム非依存の中核ロジック）のみ。
   # フル実行は数十分かかるため、通常の push/PR ゲートには含めない。
   mutants:
-    if: github.event_name == 'workflow_dispatch'
+    if: false  # ci/adr234-s0-verify: ルート crate の mutants は今回の確認の対象外
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
