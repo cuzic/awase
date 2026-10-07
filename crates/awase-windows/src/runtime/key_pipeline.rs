@@ -1553,7 +1553,7 @@ impl Runtime {
     /// (`TrayCommand::ResetState`、`tray.rs`) と同じ変換モードのマスクを使う。
     /// `focus_gen`（`Output::ime_mode_focus_gen`）は呼び出し元が起案時点で読んで渡す
     /// （ADR-086 §7-3: `ime.rs` は Runtime/Output の内部状態に依存しないため）。
-    fn kp_reset_to_hiragana_romaji_capsoff(focus_gen: u32) {
+    fn kp_reset_to_hiragana_romaji_capsoff(focus_gen: crate::state::focus_gen::FocusGen) {
         // Caps Lock はトグル表示灯の読み取り (GetKeyState) + 条件付き SendInput のみで、
         // クロスプロセス IMM 呼び出しを含まないためフックスレッドから直接呼んで安全
         // （`is_physical_key_down`/`GetAsyncKeyState` 等、他の同期呼び出しと同水準）。
@@ -1597,7 +1597,7 @@ impl Runtime {
             let mask_target = current.map_or(set_mask, |c| (c | set_mask) & !clear_mask);
             let outcome = crate::ime::set_ime_conv_for_target(target, Some(mask_target), || {
                 crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
-                    .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                    .unwrap_or_else(|| focus_gen.next())
             })
             .await;
             if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
@@ -2360,7 +2360,7 @@ impl Runtime {
                             crate::with_app(|runtime| {
                                 runtime.platform.output.ime_mode_focus_gen.get()
                             })
-                            .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                            .unwrap_or_else(|| focus_gen.next())
                         })
                         .await;
                     match outcome {
