@@ -178,7 +178,7 @@ ADR-229 の代案 A と E1 を、F の分割の書き方として明文化する
 ### 完了前チェック(V2。Opus のレビューに出す前に実装エージェントが確かめる)
 
 1. 新しく足した純粋モジュールを `CORE_MODULES` と mutants の `examine_globs` に載せたか。再発ファミリーに属するなら、pre-push の正規表現と `fix-requires-evidence.md` の表にも載せたか(§0 の 4 の共通の後処理)。
-2. PR の本文と数値は §0 の 2・§0 の 6 に従っているか(本文が自分の PR のものか、数値を CI のログから写したか、`#[ignore]` の数を含む)。
+2. `.claude/rules/agent-handoff.md` の 1・3 に従う(ADR-242・ADR-243)。
 3. ソース走査のテストを足したなら、違反例を 1 つ作って検出できることを確かめたか。
 4. V4 に当たる分割なら、事実の型の時刻を `TickMs` で持っているか。
 
@@ -235,6 +235,8 @@ ADR-229 は crate の物理分割を「最後」としていた(D4、F-D6、段�
 ### V1 の実態(#530)
 
 V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windows.toml` に載っているかだけを見る(`xtask-adr-evidence core-registry`、CI の `core-registry-consistency` ジョブ、base が develop の `pull_request` のときだけ)。pre-push の正規表現と `fix-requires-evidence.md` の表は V1 では見ない(V2 で人が判断する)。上の V1 の行と同じ。#530 は squash マージで、PR のタイトルは初版の「3 か所」のまま残っている(本文の 2 つ目のコミットで mutants だけに絞った)。V1 を必須チェックにするかは所有者の判断(未決)。
+
+#524 のブランチのコミット `cb581901` の件名「消費者0」は不正確。正しくは `99569f7a` と #524 本文(ADR-242)。
 
 ### V4 の根拠の訂正
 
