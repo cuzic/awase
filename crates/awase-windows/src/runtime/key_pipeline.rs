@@ -748,7 +748,8 @@ impl Runtime {
             self.focus_fence(),
         );
 
-        // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
+        // prev_conversion_mode(直近に観測した conv)を更新する。読み手は予測の入力 `conv_raw`(下の `conv_raw:`)だけ
+        // (ADR-239。以前は分類の `input_mode_from_conversion` も読んでいたが、毎回リセットされて一度も結果を返さず撤去した)
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
 
         let current = self.platform_state.ime.input_mode();
@@ -2871,7 +2872,6 @@ impl Runtime {
                                         ime.effective_open(),
                                         ime.is_force_on_guard_active(),
                                         ime.input_mode(),
-                                        ime.belief.prev_conversion_mode(),
                                         ime.belief.eisu_candidate(),
                                         app.platform.focus.process_name(),
                                     );

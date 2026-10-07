@@ -1399,7 +1399,6 @@ impl Runtime {
                 self.platform_state.ime.effective_open(),
                 self.platform_state.ime.is_force_on_guard_active(),
                 self.platform_state.ime.input_mode(),
-                self.platform_state.ime.belief.prev_conversion_mode(),
                 self.platform_state.ime.belief.eisu_candidate(),
                 self.platform.focus.process_name(),
             )

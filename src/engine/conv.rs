@@ -129,42 +129,6 @@ impl ConvMode {
             }
         }
     }
-
-    /// conv モードの前後差分から belief の `InputModeState` を分類する。
-    ///
-    /// `classify_conv_transition(u32, u32, ...)` の `ConvMode` 版。Win32 API を呼ばない純粋関数。
-    ///
-    /// # 注意: 英数遷移の特殊ケース
-    /// `self` が英数モードかつ `prev` が非英数だった場合、
-    /// `current` に関わらず `Some(ObservedEisu)` を返す（belief を強制補正）。
-    #[must_use]
-    pub const fn classify_transition(
-        self,
-        prev: Self,
-        current: InputModeState,
-    ) -> Option<InputModeState> {
-        use InputModeState::{ObservedEisu, ObservedKana, ObservedRomaji};
-
-        // 英数モードへの遷移 → 常に ObservedEisu
-        if self.is_eisu() && !prev.is_eisu() {
-            return Some(ObservedEisu);
-        }
-        // ROMAN ビット変化 かつ NATIVE あり → ひらがな↔ローマ字切り替え
-        let roman_changed = prev.romaji != self.romaji;
-        let curr_has_native = !self.eisu;
-        if !(roman_changed && curr_has_native) {
-            return None;
-        }
-        // belief が既に新方向と一致していれば更新不要
-        if current.is_romaji_capable() == self.romaji {
-            return None;
-        }
-        Some(if self.romaji {
-            ObservedRomaji
-        } else {
-            ObservedKana
-        })
-    }
 }
 
 #[cfg(test)]
@@ -488,90 +452,6 @@ mod tests {
         assert_eq!(
             cm(CONV_JISAKANA).classify_idle(false, ObservedEisu, false),
             Some(assumed())
-        );
-    }
-
-    // ── classify_transition ──────────────────────────────────────────────────
-
-    // 英数遷移
-    #[test]
-    fn tr_hiragana_to_eisu_always_eisu() {
-        assert_eq!(
-            cm(CONV_EISUU).classify_transition(cm(CONV_HIRAGANA), ObservedRomaji),
-            Some(ObservedEisu)
-        );
-        // belief が ObservedKana でも ObservedEisu を返す（強制補正）
-        assert_eq!(
-            cm(CONV_EISUU).classify_transition(cm(CONV_JISAKANA), ObservedKana),
-            Some(ObservedEisu)
-        );
-    }
-
-    #[test]
-    fn tr_eisu_to_eisu_yields_none() {
-        assert_eq!(
-            cm(CONV_EISUU).classify_transition(cm(CONV_EISUU), ObservedRomaji),
-            None
-        );
-    }
-
-    // ROMAN bit 変化
-    #[test]
-    fn tr_jisakana_to_hiragana_yields_romaji() {
-        assert_eq!(
-            cm(CONV_HIRAGANA).classify_transition(cm(CONV_JISAKANA), ObservedKana),
-            Some(ObservedRomaji)
-        );
-    }
-
-    #[test]
-    fn tr_hiragana_to_jisakana_yields_kana() {
-        assert_eq!(
-            cm(CONV_JISAKANA).classify_transition(cm(CONV_HIRAGANA), ObservedRomaji),
-            Some(ObservedKana)
-        );
-    }
-
-    #[test]
-    fn tr_already_matches_yields_none() {
-        // JISかな → ひらがな だが belief が既に Romaji
-        assert_eq!(
-            cm(CONV_HIRAGANA).classify_transition(cm(CONV_JISAKANA), ObservedRomaji),
-            None
-        );
-    }
-
-    /// `&&`→`||` の反転を殺すテスト。`roman_changed=false, curr_has_native=true`
-    /// を使うが、`current` に `ObservedKana`（`self.romaji=false` と一致）を
-    /// 渡していたため、mutants で `||` に反転しても後続の第2ガード（belief
-    /// 一致判定）が偶然 `None` を返し、結果が変わらず検知できなかった。
-    /// ここでは `self.romaji=false` と *不一致* な `ObservedRomaji` を渡す
-    /// ことで、第2ガードでは None にならないケースを作り、第1ガード
-    /// (`roman_changed && curr_has_native`) 自体の反転を露出させる。
-    #[test]
-    fn tr_no_roman_change_yields_none_even_with_mismatched_belief() {
-        // JISAKANA(romaji=false) ← JISAKANA(romaji=false): roman_changed=false,
-        // curr_has_native=true。
-        assert_eq!(
-            cm(CONV_JISAKANA).classify_transition(cm(CONV_JISAKANA), ObservedRomaji),
-            None
-        );
-    }
-
-    /// 上記の対称ケース: `roman_changed=true, curr_has_native=false`。
-    /// `curr_has_native=false` にするには self が eisu である必要があるが、
-    /// 単純に eisu へ遷移すると最初の分岐（`self.is_eisu() && !prev.is_eisu()`）が
-    /// 先に発火してしまうため、`prev` も eisu にして最初の分岐を回避する
-    /// （HankakuAlpha は romaji ビットの有無を問わず eisu = true。
-    /// `from_u32_hanalpha_roma` 参照）。
-    #[test]
-    fn tr_roman_change_without_native_yields_none() {
-        // HankakuAlpha+romaji(0x0010) ← HankakuAlpha(CONV_EISUU, romaji なし):
-        // どちらも eisu なので最初の分岐は通らない。roman_changed=true,
-        // curr_has_native=false。
-        assert_eq!(
-            cm(0x0010).classify_transition(cm(CONV_EISUU), ObservedKana),
-            None
         );
     }
 

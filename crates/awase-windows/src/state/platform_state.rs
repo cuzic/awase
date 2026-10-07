@@ -30,7 +30,7 @@ mod shell;
 /// `PlatformState` から IME 関連フィールドを切り出すことで、
 /// 「観測」「フォーカス状態」「フック設定」の混在を解消する。
 ///
-/// - `belief`        : input_mode / is_japanese_ime / prev_conversion_mode（IME ON/OFF 自体は shadow_model が SSOT）
+/// - `belief`        : input_mode / is_japanese_ime / prev_conversion_mode〈予測の `conv_raw` 用〉（IME ON/OFF 自体は shadow_model が SSOT）
 /// - `shadow_model`  : IME ON/OFF と force_guards / observe_miss_monitor を持つ SSOT
 #[derive(Debug)]
 pub struct ImeStateHub {
@@ -130,7 +130,6 @@ pub(crate) struct ImePollState {
     pub(crate) ime_on: bool,
     pub(crate) force_guard: bool,
     pub(crate) input_mode: InputModeState,
-    pub(crate) prev_conv: Option<u32>,
     pub(crate) eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
 }
 
@@ -960,7 +959,6 @@ impl ImeStateHub {
             ime_on: self.effective_open(),
             force_guard: self.is_force_on_guard_active(),
             input_mode: self.input_mode(),
-            prev_conv: self.belief.prev_conversion_mode(),
             eisu_candidate: self.belief.eisu_candidate(),
         }
     }

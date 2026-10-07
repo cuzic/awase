@@ -103,6 +103,7 @@ pub mod conv_classify;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod eisu_candidate;
 pub mod eisu_recovery;
+pub mod snapshot_input_mode;
 // ADR-163 TH1a: `crate::ime::ConvAfterOpen` の ungated ミラー。将来の
 // actuation 決定出力が Windows-gated 型を state 層へ持ち込まないための境界型。
 pub mod conv_after_open;

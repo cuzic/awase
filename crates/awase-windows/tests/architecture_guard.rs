@@ -7376,3 +7376,62 @@ fn eisu_candidate_is_cleared_only_when_focus_actually_changes() {
         "英数の候補を捨てる箇所は 1 つだけ"
     );
 }
+
+/// ADR-239: 分類で `prev_conversion_mode`(直近に観測した conv)を読む `classify_transition`/`input_mode_from_conversion` は撤去した。
+/// それは読み取りのたびにリセットされて refresh の経路で一度も結果を返さず(約 6 か月)、返せる結果は他の場所で採らないと決めた形
+/// (閉じた IME の conv=0 を英数とみなす=BUG-57、ROMAN ビットなしを ObservedKana とみなす)だけだった。分類に prev を戻す変更を、
+/// その経緯を知らずに足すと BUG-57 を再発させるので、(a) `classify_transition` が本番コードに無いこと、(b) `prev_conversion_mode()` を読む
+/// 本番コードは予測の `conv_raw:` の 1 か所だけであること、(c) `observer/ime_observer.rs` が prev を扱わないことを固定する。
+#[test]
+fn classification_does_not_read_prev_conversion_mode() {
+    let mut classify_transition_hits = Vec::new();
+    let mut reads = Vec::new();
+    for rel in [
+        "src/observer/ime_observer.rs",
+        "src/runtime/key_pipeline.rs",
+        "src/runtime/mod.rs",
+        "src/runtime/ime_refresh.rs",
+        "src/runtime/focus_tracking.rs",
+        "src/state/platform_state.rs",
+        "src/state/belief.rs",
+        "src/state/snapshot_input_mode.rs",
+    ] {
+        let src = read_crate_file(rel);
+        let code = non_comment_lines(production_code_only(&src));
+        if code.contains("classify_transition(") || code.contains("input_mode_from_conversion") {
+            classify_transition_hits.push(rel);
+        }
+        if code.contains(".prev_conversion_mode()") {
+            reads.push(rel);
+        }
+    }
+    assert!(
+        classify_transition_hits.is_empty(),
+        "classify_transition/input_mode_from_conversion を本番コードに戻さないこと(ADR-239): {classify_transition_hits:?}"
+    );
+    assert_eq!(
+        reads,
+        vec!["src/runtime/key_pipeline.rs"],
+        "`.prev_conversion_mode()` を読む本番コードは予測の `conv_raw:` の key_pipeline.rs だけ(ADR-239): {reads:?}"
+    );
+    let key_pipeline = read_crate_file("src/runtime/key_pipeline.rs");
+    let kp = non_comment_lines(production_code_only(&key_pipeline));
+    assert_eq!(
+        kp.matches(".prev_conversion_mode()").count(),
+        1,
+        "key_pipeline.rs で prev を読むのは `conv_raw:` の 1 か所だけ"
+    );
+    assert!(
+        kp.contains("conv_raw: self.platform_state.ime.belief.prev_conversion_mode()"),
+        "読み手は予測の入力 `conv_raw`(ADR-239)"
+    );
+    let observer = read_crate_file("src/observer/ime_observer.rs");
+    let ob = non_comment_lines(production_code_only(&observer));
+    // `new_prev_conversion_mode`(prev を**書く**側の ImeUpdate のフィールド。読み手は `conv_raw` だけ)は残す。
+    let ob_without_writer = ob.replace("new_prev_conversion_mode", "");
+    assert!(
+        !ob_without_writer.contains("current_prev_conversion_mode")
+            && !ob_without_writer.contains("prev_conv"),
+        "observer/ime_observer.rs は prev_conversion_mode を引数に取らない(分類に戻さない、ADR-239)"
+    );
+}
