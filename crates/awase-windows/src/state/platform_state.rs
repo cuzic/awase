@@ -475,8 +475,8 @@ impl ImeStateHub {
 
     /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（読めない窓＝GJI × `Imm32Unavailable` のみ）。直接観測の窓を開く／延ばす。
     ///
-    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
-    pub fn arm_direct_external_change_watch_in_scope(
+    /// crate 内（殻 `shell.rs` と単体テスト）だけが呼ぶ。閉ループのハーネスには公開しない（`PLATFORM_STATE_PUB_FNS` を増やさない）。
+    pub(crate) fn arm_direct_external_change_watch_in_scope(
         &mut self,
         now_ms: u64,
         scope: crate::state::foreground_scope::ForegroundScope,
@@ -498,8 +498,8 @@ impl ImeStateHub {
     /// awase 自身が窓の最後の arm 以後に IME へ書いていたら（`last_explicit_ime_action_ms`）、GJI の処理前の読みで belief を
     /// 逆戻ししないよう採らない（R3）。窓が無い・Direct でない・スコープ違いなら何もしない。戻り値は追随した軸。
     ///
-    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
-    pub fn follow_direct_read_in_scope(
+    /// crate 内（殻 `shell.rs` と単体テスト）だけが呼ぶ。閉ループのハーネスには公開しない（`PLATFORM_STATE_PUB_FNS` を増やさない）。
+    pub(crate) fn follow_direct_read_in_scope(
         &mut self,
         read_open: Option<bool>,
         read_conv: Option<u32>,
