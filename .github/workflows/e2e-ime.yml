@@ -1440,6 +1440,36 @@ jobs:
               out += ["| 構成 | 回 | 判定 | foreign KeyDown | CPU p95 | CPU 最大 | 理由 |", "|---|---|---|---|---|---|---|"] + dirty_rows
             else:
               out += ["汚れた run はなし。"]
+          # 入力先の profile と経路の件数(ADR-235 D1、情報のみ。合否は変えない)。4 件数がすべて 0 の回だけ行を出す(全件は長い)。
+          path_total, path_zero_rows, prof_tally = 0, [], {}
+          for c in configs:
+            if c.get('awase') == 'false' or c.get('probe'):
+              continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/validity.json"
+              if not os.path.exists(f):
+                continue
+              j = json.load(open(f, encoding='utf-8'))
+              p = j.get('paths')
+              if p is None:
+                continue
+              path_total += 1
+              fp, bp = j.get('focus_profile_before_typing'), j.get('bootstrap_profile')
+              prof_tally[fp or '不明'] = prof_tally.get(fp or '不明', 0) + 1
+              if not any(p.values()):
+                path_zero_rows.append(f"| {c['name']} | {run} | {fp} | {bp} | 0 | 0 | 0 | 0 |")
+          if path_total:
+            out += ["", f"## 入力先の profile と経路の件数(ADR-235 D1。{path_total} 件中 {len(path_zero_rows)} 件が 4 件数すべて 0、情報のみ)", "",
+                    "経路の件数 = awase.log の observed(開閉の観測)・drift(drift 補正)・unicode(`send_keys: mode=Unicode`)・external_change(ADR-205)の行数。"
+                    "0 件の回は「経路に乗っていない」ので、「起きなかった」と読まないこと。"
+                    "profile 列は `ImePolicyProfile` の値(`AppImeProfile` ではない)。「打鍵前の focus transition」が入力先の profile、"
+                    "「bootstrap」は awase 起動時に前面にあった窓の profile で入力先とは限らない。", "",
+                    "入力先の profile(打鍵前の focus transition)別の回数: " + ", ".join(f"{k}={v}" for k, v in sorted(prof_tally.items())), ""]
+            if path_zero_rows:
+              out += ["| 構成 | 回 | 入力先の profile(打鍵前の focus transition) | bootstrap の profile(入力先とは限らない) | observed | drift | unicode | external_change |",
+                      "|---|---|---|---|---|---|---|---|"] + path_zero_rows
+            else:
+              out += ["4 件数がすべて 0 の回はなし。"]
           # 高速打鍵ストレス(ts-*): result.txt 末尾の TYPING_STRESS 行を表にする(崩れ方の内訳つき)。
           ts_rows = []
           for c in configs:

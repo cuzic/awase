@@ -12,6 +12,16 @@ FOCUS_RESTORE_MARK = "[AUTO] フォーカス復帰"
 # スパイクの「手順1の記録」行。これ以降にフォーカスが外れた回だけ無効(起動直後のフォーカス取得は正常)。
 SCRIPT_START_MARK = "KEY [SCRIPT 1/10"
 
+# 経路の断片(ADR-235 D2)。判定器ごとに同じ文字列を書き直していたものを 1 か所に寄せた。
+# 件数が変わらないもの(同じ文字列)だけを置く。`check_startup.py` の `\[drift\] correction`(Blacklist 行を数えない)と
+# `check_invariants.py` の捕獲グループ付きは件数・用途が違うので寄せない。
+OBSERVED_RE = re.compile(r"\[stage-observe\] observer_poll=Some|ObserverReported")
+DRIFT_RE = re.compile(r"\[drift\] correction:|Blacklist drift correction: apply_ime_open")
+UNICODE_RE = re.compile(r"send_keys: mode=Unicode")
+PHYS_CTRL_RE = re.compile(r"mods\(c=true .*phys_ctrl=true")
+# ADR-205: Imm32Unavailable の窓で外部変更に追随した回数(ADR-235 D1 の件数。判定器は使わない)。
+EXTERNAL_CHANGE_RE = re.compile(r"\[external-change\]")
+
 # awase.log / typing_stress.log の行頭付近の時刻(`...T12:34:56.789Z`)。
 TIME_RE = re.compile(r"T(\d\d:\d\d:\d\d\.\d{3})")
 

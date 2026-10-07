@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """実 Chrome の drift recovery を DRIFT_RECOVERY 規約で集計する。"""
-import re, sys
-OBS=re.compile(r"\[stage-observe\] observer_poll=Some|ObserverReported")
-DRIFT=re.compile(r"\[drift\] correction:|Blacklist drift correction: apply_ime_open")
+import os, re, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from e2e_common import DRIFT_RE as DRIFT, OBSERVED_RE as OBS, PHYS_CTRL_RE as PHYS  # noqa: E402
 MUH=re.compile(r"\[engine-input\] vk=0x1D KeyDown")
-PHYS=re.compile(r"mods\(c=true .*phys_ctrl=true")
 def analyze_ctrl(chrome,awase):
     """`chrome_probe --close-ime=N --ctrl-muhenkan-off`: 物理 Ctrl+無変換で OFF にする変種。gap=OFF 操作の直後も実 IME が開いたまま。
     RESULT PASS=英字(ka)=OFF が効いた(または補正された)。gap あり+PASS=corrected、gap あり+FAIL=not_corrected、gap なし=gap_not_made。"""

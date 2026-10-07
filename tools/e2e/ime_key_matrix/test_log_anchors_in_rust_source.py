@@ -47,6 +47,11 @@ ANCHORS = [
     ("ime open applied", "check_invariants.py"),
     ("actuation decision", "check_kanji_role.py"),
     ("gji fsm transition", "check_invariants.py"),
+    # ADR-235 D1: check_run_validity.py が数える経路・profile の断片(e2e_common.py の正規表現と同じ固定部分)
+    ("[stage-observe] observer_poll=", "e2e_common.py"),
+    ("[external-change]", "e2e_common.py"),
+    ("[focus-scope] bootstrap initial scope:", "check_run_validity.py"),
+    ("focus transition", "check_run_validity.py"),
 ]
 
 SOURCE_DIRS = ("src", "crates")
