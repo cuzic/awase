@@ -24,7 +24,7 @@ summary: |-
   `cargo mutants` で単体テストと既存テストを生き延びた変異のうち、打鍵からの再生でだけ落ちるものが 1 つ以上あることで判定する。
   無ければ、ハーネスへの配線をやめ、移動と単体テストだけを残す。
 status: |-
-  提案(起草中、Opus レビュー round1 反映済み)
+  提案(起草中、Opus レビュー round1・round2 反映済み)
 related_adr:
   - "ADR-163"
   - "ADR-171"
@@ -56,6 +56,8 @@ Opus レビュー round1(Blocker 1・Must 5・Should 6・Nit 5)の要点と反�
 - M3(writer が写しになる): 決定 2
 - M4(収支): 決定 5
 - 追加(team-lead の決定): ADR-240 との役割分担は決定 7
+
+round2(Blocker 0・Must 1・Should 4・Nit 3)の反映先: R2-M1(押下 ID の付与)は決定 3 の 2 と写しの表・決定 4 の 2、R2-S1(対照を先に固定)は決定 4、R2-S2 は決定 7 と追記案、R2-S3 は所有者への質問 3、R2-S4 は決定 2。N2(ADR-240 `:114` の古い記述)は ADR-240 の起草者に伝える(本 ADR では直さない)。
 - M5(合流点の作り直しの承認): リスク・所有者への質問 1
 - S1〜S6・N1〜N5: 該当箇所
 
@@ -208,7 +210,7 @@ grep -n "fn record_ime_apply_result" crates/awase-windows/src/state/platform_sta
 | `imm_cross_is_first_applicable`(`ime_controller.rs:666-670`)と適用可否 | 核(`decide_chain` と `key_sequence_policy::*_applicable` だけで書ける) | `mechanism_is_applicable` は核を呼ぶ |
 
 - **`run_chain` は書き換えない**(ADR-229 F-D1 の例外 1)。核へ移すのは `MechanismWriter` の実装の 1 つ(`CoreSyncWriter`)で、走査規則と型状態(ADR-090)はそのまま。汎用の Effect/Handler 基盤でもない(差し替え口は `S` の 1 つ)。
-- `open_chain.rs::fallback_write`(非同期の ImmCross 以降)も `apply_mechanism` を呼ぶ。段階 1 では、`fallback_write` の側で `decide_attempt` を呼んで command を渡す 1 行を足し、非同期の構造には触れない(ADR-180 の INV-45 を守る)。
+- `open_chain.rs::fallback_write`(非同期の ImmCross 以降)も `apply_mechanism` を呼ぶ。段階 1 では、`fallback_write` の側で `decide_attempt` を呼んで command を渡す 1 行を足し、非同期の構造には触れない(ADR-180 の INV-45 を守る)。この 1 行は site を `DecisionSite::Sync` に固定する(`apply_mechanism` の今の前提、`ime_controller.rs:206-217` の doc を変えないため)。
 - **同期の合流点の宣言が変わる**(所有者への質問 1)。executor が `apply_ime_open_with_view` を呼ばなくなるので、次が変わる。
   - `architecture_guard.rs:2027` の `(".apply_ime_open_with_view(", 2)`
   - `lints/actuation_call_guard/src/lib.rs` の `RESTRICTED_CALLS` の該当行
@@ -220,7 +222,7 @@ grep -n "fn record_ime_apply_result" crates/awase-windows/src/state/platform_sta
 
 1. B5 の補助(`src/key_input_replay_tests.rs` の補助の部分、389 行)を、ハーネスと同じ場所へ移す(場所は所有者への質問 3)。
    BUG-105 のテスト 2 本と fixture は一緒に移し、扱いは段階 5 で決める。
-2. ハーネスに `press(RawKeyEvent)` を足す。本番の `kp_run_inner` の順に、次を呼ぶ。
+2. ハーネスに `press(RawKeyEvent)` を足す。まず押下 ID を振る: 非注入・非リピートの KeyDown にだけ、`awase::types::is_press_start(is_keydown, injected, was_down)` を呼んで `PressId` を振る(本番は `hook.rs:1311-1318`。`was_down` はハーネスが VK ごとに持つ)。B5 の補助は今 `press_id: None` で作る(`key_input_replay_tests.rs:287`)ので、ここで上書きする。押下 ID が無いと D1 が効かず、シナリオ A は HEAD でも落ちる。そのあと本番の `kp_run_inner` の順に、次を呼ぶ。
    1. `PhysicalKeyDisposition::plan_core`。キーが擬似 IME に届くか(Allow/Suppress)を決める
    2. `Engine::on_input`
    3. `SetOpen` なら、ハブの `on_engine_set_open_request`(決定 2)
@@ -238,6 +240,7 @@ grep -n "fn record_ime_apply_result" crates/awase-windows/src/state/platform_sta
 
 | 写し | 本番の場所 | 扱い |
 |---|---|---|
+| 押下 ID の付与(`is_press_start` を呼ぶ。`was_down` の管理はハーネス) | `hook.rs:1311-1318`(gated) | ハーネスの doc に列挙する。hook の VK 単位の誤り(BUG-181 型)は再現しない |
 | 1〜6 の呼び出しの順序 | `kp_run_inner`・`kp_stage_post_decision` | ハーネスの doc に列挙する |
 | バッチの始めに applied を写す | `executor.rs:162`・`:185` | 同上 |
 | 完了をバッチの後に返す | `runtime/mod.rs:971` | 同上 |
@@ -257,15 +260,27 @@ grep -n "fn record_ime_apply_result" crates/awase-windows/src/state/platform_sta
 
 **合否の判定**: 判定基準は最初の CI の run の前に PR 本文に書く。
 
+**PR の中の順序(対照を先に固定する)**: 次の順にコミットを積む。(ii) の一覧を見てから対照を弱めない。
+- (i) 決定 2 の移動と、対照の単体テスト
+- (ii) mutants の run。生き残った変異の一覧を PR 本文に固定する
+- (iii) ハーネス(決定 3)とシナリオ
+
+mutants の対象ファイルと、走らせるパッケージのテストは、(ii) の run の前に PR 本文に書く。
+
 1. **対照を同じ PR で書く**。決定 2 で移した核の関数(`CoreSyncWriter`・`apply_sync`・`dispatch_set_open`・`on_engine_set_open_request`・`DecisionInputs::from_facts`)のそれぞれに、FakeWriter・sink を渡して直接呼ぶ単体テストを書く(1 本 30 行以内)。
    例: `dispatch_set_open` を 2 回呼び、2 回目の `attempts[0].command` を見る。
 2. **変異を数える**。経路上のファイルに `cargo mutants` を当てる(Linux、ADR-234 の core の mutants と同じ仕組み)。
-   - 対象: 移した核の関数、`state/ime_actuation_decision.rs`、`state/platform_state.rs` の `handle_engine_set_open`/`on_ctrl_key_up`/`on_engine_set_open_request`、エンジンが `SetOpen` に press を載せる箇所(`src/engine/engine.rs:1113` の `stamp_set_open_press`)、`src/types.rs::is_press_start`
+   - 対象は `awase-windows` のファイルだけ: 移した核の関数、`state/ime_actuation_decision.rs`、`state/platform_state.rs` の `handle_engine_set_open`/`on_ctrl_key_up`/`on_engine_set_open_request`。
+   - 走らせるテストは `cargo mutants -p awase-windows`(再生も対照も `awase-windows` にある)。
+   - `awase` パッケージの `src/engine/engine.rs:1113`(`stamp_set_open_press`)と `src/types.rs::is_press_start` は、段階 1 の対象から外す。理由は 2 つ。
+     - 再生のテストは `awase-windows` にあり、`-p awase` の既定の run では走らない。
+     - `stamp_set_open_press` は `src/engine/tests.rs:8877-` が既に検査している。
+     含めるなら `--test-workspace` で `awase-windows` のテストも走らせる設定を書く(run 時間が延びる。未実測)。
    - 「対照の単体テスト+既存テスト(`--lib`・`explicit_press_exhaustive`・`closed_loop_scenarios`)」で生き残った変異を一覧にする。
 3. **価値の証明**: 生き残った変異のうち、**打鍵からの再生(シナリオ A・B)でだけ落ちるものが 1 つ以上**あること。
    - 再生の判定は観測できる出力(`attempts[].command` の列と擬似 IME の真の状態)で行う。mutator が書き換えた値そのもの(例: `unknowns_applied` の値や `candidate_was_seen` のフラグ)を判別に使わない(ADR-240 の a9 の教訓)。
    - 候補の仮説は次のとおりで、どれも未確認。
-     - (M-D) 2 回目の押下に press を載せない。D1 は `press.is_some()` のときだけ効くので、A が落ちるはず。ただし `src/engine/tests.rs:8877-8936` がエンジンの press の付与を検査しているので、既存テストで落ちる見込みが高い
+     - (M-D) 2 回目の押下に press を載せない(`awase` 側。上の理由で段階 1 の mutants の対象外。`--test-workspace` で含める場合だけの候補)。`src/engine/tests.rs:8877-8936` が既に落とす見込みが高い
      - (M-E) chord の barrier を Ctrl↑ で解かない(`on_ctrl_key_up` の解除条件)
      - (M-F) `on_engine_set_open_request` が `record_explicit_intent` を呼ぶ条件を反転する。授権が下りず `Unwarranted` になる
    - 初版の M-A〜M-C(移した関数の中の書き換え)は、対照の単体テストで落ちるので価値の証明には使わない。
@@ -318,13 +333,13 @@ ADR-240 が develop に入る前でも判定できる(依存しない)。
 | | ADR-241(本 ADR) | ADR-240 |
 |---|---|---|
 | 受け持つ不具合 | 同期の判断(打鍵から actuation の決定まで)。Linux の再生で受ける | 再生が通らない部分(非同期・実機固有の IME とのやり取り)。実機 CI の再現シナリオで受ける |
-| 修正を外す書き換え | 再生の合否用の mutator(決定 4)。置き場所は再生のテストの側(段階 1 の PR で決める。実機 CI の `tools/e2e/ime_key_matrix/ablations/` とは混ぜない) | 実機 CI 側の ablation(`ablations/bug<NNN>-*.sh`)。D1a の条件(前提と症状の分離・observed 件数・observed 0 は INVALID)で判定する |
+| 修正を外す書き換え | 再生の合否用の `cargo mutants` の設定と、生き残った変異の一覧(決定 4)。置き場所は再生のテストの側(段階 1 の PR で決める。実機 CI の `tools/e2e/ime_key_matrix/ablations/` とは混ぜない) | 実機 CI 側の ablation(`ablations/bug<NNN>-*.sh`)。D1a の条件(前提と症状の分離・observed 件数・observed 0 は INVALID)で判定する |
 | 資産の扱い | 両方を残す。片方を他方に寄せない | 同左 |
 
-**`.claude/rules/fix-requires-evidence.md:22-26` の (b) の「将来、再生トレースの追加に置き換える予定」の節は、本 ADR だけが書き換える**(新しい再生基盤を導入するのは本 ADR だから)。ADR-240 の側では書き換えない。
-書き換えは段階 1 の PR 群で行い、次の 2 項目にする(文案)。
+**`.claude/rules/fix-requires-evidence.md:22-27` の (b) の「将来、再生トレースの追加に置き換える予定」の節は、本 ADR だけが書き換える**(新しい再生基盤を導入するのは本 ADR だから)。ADR-240 の側では書き換えない。
+書き換えは段階 1 の合否が出た後(決定 4 の 3 の結果を PR 本文に固定した後)に行い、次の 2 項目にする(文案)。
 
-- 同期の判断(打鍵から actuation の決定まで)に触れる fix は、(a) の一つとして、ADR-241 の再生のシナリオ(閉ループのハーネス)を足してよい。期待値は人が書く。
+- 同期の判断(打鍵から actuation の決定まで)に触れる fix は、(a) の一つとして、ADR-241 の再生のシナリオ(閉ループのハーネス)を足してよい。期待値は人が書く。段階 1 が取りやめ (a)(決定 4 の 4)に当たったときは、この項目を「核へ移した判断の対照の単体テスト」と書き換える(下の追記案の文案 1')。
 - IME とのやり取りが絡む不具合で、再生が通らない部分(非同期・実機固有)は、実機 CI の再現シナリオで受ける。ADR-240 の D1a の条件(前提と症状の分離・observed 件数・observed 0 は INVALID)を満たしたものだけを (a) と数える。
 
 ADR-159・ADR-162 E1/E4 の能力ベースの前提条件への参照は、この書き換えで外す(TH1e は ADR-163 で取り下げる。追記案参照)。
@@ -377,7 +392,11 @@ ADR-159・ADR-162 E1/E4 の能力ベースの前提条件への参照は、こ�
      - (a) 閉ループのハーネスとシナリオを crate の中の `#[cfg(test)]` モジュールへ移す(B5 と同じ置き方)。`pub(crate)` のまま呼べるので、`production_hub_is_unreachable_from_outside_the_crate` の前提は変わらない。P5 でハーネスのために `pub` にした 13 個(`PLATFORM_STATE_PUB_FNS`)は `pub(crate)` に戻せる。完了の記録には `_in_scope` 版を `pub(crate)` にして呼ぶ。
      - (b) `tests/` に残し、scope を引数に取る `pub` の完了の入口を足す。INV-A97-1 と P5a-1 の「外から届く口が無いから安全」という前提に触れる。
    - 推奨は (a)。公開面が増えず、むしろ減る。
-   - 費用: ファイルの移動(約 2000 行、純増なし)、`ci.yml:51` の `--test closed_loop_scenarios` と `ci_test_coverage_guard` の更新。`architecture_guard` の `harness.rs` を指す走査の付け替えは未確認。
+   - 費用:
+     - ファイルの移動(約 2000 行、純増なし)
+     - `ci.yml:51` の `--test closed_loop_scenarios` と `ci_test_coverage_guard` の更新
+     - `architecture_guard` の `harness.rs` を指す走査の付け替え(未確認)
+     - **P5a-1(#518)と ADR-224 の改訂の向きを戻す**。P5a-1 で `ImeStateHub` を `pub` にしたのは tests/ のハーネスが本物を呼ぶため(`architecture_guard.rs:6587`)で、その理由が消える。`PLATFORM_STATE_PUB_FNS` のガード(`:6597`・`:6787`)は作り直しになる。ADR-224 の status(段階 2 を FCIS の核/殻の分割として実施済み)にも、置き場所を戻した旨を追記する
 4. **決定 4 の 3 を満たす変異が無かったとき、ハーネスへの配線をやめてよいか**(移動と単体テストは残す)
    - 選択肢: やめる/配線も残す
    - 推奨はやめる。打鍵から通すことの価値が示せない行数は、撤去を主目的とする方針に合わない。
@@ -393,7 +412,11 @@ ADR-159・ADR-162 E1/E4 の能力ベースの前提条件への参照は、こ�
 - `.claude/rules/fix-requires-evidence.md:22-27`(「将来的に ADR-159 の記録・再生基盤が育てば、(b) は再生トレースの追加へ置き換える予定」の文): 本 ADR だけが書き換える。ADR-240 は fix-requires を編集せず、D1a 由来の 1 項目の文言を本 ADR への追記案として出す側である。書き換え文案:
   > (b) の置き換えの予定(ADR-159 の記録・再生基盤、ADR-162 E1/E4 の前提)は撤回する(TH1e は ADR-163 で取り下げ、再生基盤は ADR-241 に置き換えた)。代わりに、(a) の回帰テストとして次を数える。
   > 1. 同期の判断(打鍵から actuation の決定まで)に触れる fix: ADR-241 の再生のシナリオ(閉ループのハーネス、期待値は人が書く)。
-  > 2. IME とのやり取りが絡む不具合で、再生が通らない部分(非同期・実機固有): 実機 CI の再現シナリオ。ADR-240 の D1a の条件(判定基準を前提と症状に分けて最初の run の前に書く・症状の基準が見る事象の observed 件数を出す・observed 0 の回は INVALID)を満たしたものだけを数える。`:64-70` の「ジャーナルリプレイ基盤」の行は、段階 1 の後に閉ループのハーネスの場所を指すよう直す。
+  >
+  > (段階 1 が取りやめ (a) に当たった場合は、1 の代わりに次を入れる) 1'. 同期の判断に触れる fix: 核へ移した判断(`state/` の `apply_sync`・`dispatch_set_open` など)の単体テスト。
+  > 2. IME とのやり取りが絡む不具合で、再生が通らない部分(非同期・実機固有): 実機 CI の再現シナリオ。ADR-240 の D1a の条件(判定基準を前提と症状に分けて最初の run の前に書く・症状の基準が見る事象の observed 件数を出す・observed 0 の回は INVALID)を満たしたものだけを数える。
+
+  入れる時期は段階 1 の合否が出た後。`:64-70` の「ジャーナルリプレイ基盤」の行は、段階 1 の後に閉ループのハーネスの場所を指すよう直す。
 - `fix-requires-evidence.md` の「IME actuation 合流点」行と ADR-119: 質問 1 の承認後、合流点の内訳を `apply_sync`・`CoreSyncWriter` に直す。
 - ADR-224 の status: 「ハーネスは ADR-241 の再生基盤の本体になる。写しの一覧は `harness.rs` の doc」。
 - ADR-229: 次のとおり追記する(`:212`・`:282` は corpus-discard-impact §1.4 のとおり)。
@@ -410,7 +433,7 @@ ADR-159・ADR-162 E1/E4 の能力ベースの前提条件への参照は、こ�
 - **1 回の判断の単体テスト・golden で足りる(約 10)**: 010・050・052・097・116・146・152・153・158・182
 - **hook・OS より下(約 5)**: 062・067・090・154・181
 - **未再現・実害記録なし(約 4)**: 098・128・184・187
-- **複数押下の状態を持ち越し、hook より上(約 14、この基盤の対象)**: 014・037・046・110・113・117・121・140・141・142・156・157・159・173
+- **複数押下の状態を持ち越し、hook より上(約 14、この基盤の対象)**(046 は欠番で、本文は `BUG-045.md:64-67` の中): 014・037・046・110・113・117・121・140・141・142・156・157・159・173
 
 ## 再確認のコマンド(版 `4f59292a`)
 
