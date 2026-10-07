@@ -105,7 +105,7 @@ belief のフォールバック(`resolve_open_at` が明示意図・`KeyEffectPr
 ## 未解決
 
 - LibreOffice の `Engine deactivated` が `MostRecentTrusted` かは確定した(MS-IME 25 件・GJI 7 件の `[mrt-shadow]` と `[effective-open-flip]` が対応)。
-- drift 側(古い ICP が drift を止めている件)は別 BUG。
+- drift 側(古い ICP が drift を止めている件)は別 BUG: **[BUG-191](../known-bugs/BUG-191.md) に起票した**(CI で再現、`cal-driftrec-refocus-edit-*` の全 6 run で 9 回/run の `StaleObservation`、方針〈ADR-212 の流れ〉は所有者判断待ち)。
 - D(fence 照合)は別 ADR。
 
 ## 状態
