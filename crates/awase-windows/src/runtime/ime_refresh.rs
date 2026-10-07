@@ -129,6 +129,40 @@ impl Runtime {
         self.ir_decide_read_strategy(focus.skip_imm_query)
     }
 
+    /// 診断(ADR-238、BUG-190): MS-IME の一過性の `conv=0`(`ime_on=Some(true)`)を読んだら、その直後に +20/+60/+120/+250ms で
+    /// IME を読み直して値を `[conv0-probe]` に残す(belief には反映しない)。一過性の値がどれだけ続くか(確認の読み直し間隔
+    /// 60ms と `EISU_CANDIDATE_LIFETIME_MS` の根拠)を測るため。孤立した単発は 0.06〜0.27% の読みで起きるので追加の IME I/O は
+    /// 稀。同時に 1 本しか走らせない。測定が済んだら撤去する。
+    fn ir_probe_conv_zero_transient(ime_snap: Option<&crate::ime::ImeSnapshot>) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // 診断専用。同時に走らせる読み直しを 1 本に絞るだけの印で、状態の判断には使わない(撤去する測定用)。
+        static PROBING: AtomicBool = AtomicBool::new(false);
+        let Some(snap) = ime_snap else { return };
+        if snap.conversion_mode != Some(0) || snap.ime_on != Some(true) {
+            return;
+        }
+        if PROBING.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        win32_async::spawn_local(async move {
+            let t0 = std::time::Instant::now();
+            let mut elapsed_before = 0u32;
+            for offset in [20u32, 60, 120, 250] {
+                win32_async::sleep_ms(offset - elapsed_before).await;
+                elapsed_before = offset;
+                let s = crate::ime::read_ime_state_full_async().await;
+                tracing::info!(
+                    "[conv0-probe] +{offset}ms (実測 {}ms) conv={:?} ime_on={:?} probe_timed_out={}",
+                    t0.elapsed().as_millis(),
+                    s.conversion_mode.map(|v| format!("0x{v:08X}")),
+                    s.ime_on,
+                    s.probe_timed_out,
+                );
+            }
+            PROBING.store(false, Ordering::SeqCst);
+        });
+    }
+
     /// 診断(ADR-238、BUG-190): 打鍵中の除外(`SkipTyping`)で捨てる prefetch 済みの読みの値を残す(今はどこにも出ない)。
     /// 「一過性の conv=0 が 1 回で終わるか、応答の遅い間は続くか」を測るため。belief には反映しない。
     fn ir_log_skip_typing_read(ime_snap: Option<&crate::ime::ImeSnapshot>) {
@@ -164,6 +198,7 @@ impl Runtime {
         );
         // ADR-205: 打鍵中（SkipTyping）でも、prefetch 済みの開閉の読みを外部変化の監視窓に照合する（追加 I/O なし）。
         self.ir_follow_external_change(ime_snap);
+        Self::ir_probe_conv_zero_transient(ime_snap);
         match strategy {
             ImeReadStrategy::SkipTyping => Self::ir_log_skip_typing_read(ime_snap),
             ImeReadStrategy::Blacklist => {
