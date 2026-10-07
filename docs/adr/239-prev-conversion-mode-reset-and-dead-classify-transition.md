@@ -7,7 +7,7 @@ summary: |-
   (b) が結果を出せるのは 2 通りだけで、どちらもコードが他の場所で採らないと決めた形(場合 E: 閉じた IME の conv=0 を英数とみなす=BUG-57、場合 K: ROMAN ビットなしの conv を ObservedKana とみなす)。案 A(リセットをフォーカス変更時だけにする)は手元のログの再生で実際に誤分類する(GJI ATOK × Edit で ObservedKana 約 30 件、`sc-hz-msime-native` で閉じた IME の ObservedEisu 2 件)。
   決定(案): B = 分類で prev を読む側(`input_mode_from_conversion`・`classify_transition`・分類の引数・`ImePollState.prev_conv`)だけを撤去する。**`prev_conversion_mode` の書き込みとリセットは残す**(読み手は予測の入力 `conv_raw`〈`key_pipeline.rs:1774`〉で、挙動に効く)。撤去は「ログで一度も起きていない残りの場合(ImmCrossProbe・フォーカス読み失敗の tick)の挙動を、安全な向きに変える」撤去であって、挙動不変ではない。
 status: |-
-  設計は収束(2026-10-06、Opus round2 で「収束」。round1: Blocker 2・Must 6・Should 5・Nit 5、round2: Should 4・Nit 5 を反映)。実装済み・CI 確認待ち。
+  設計は収束(2026-10-06、Opus round2 で「収束」。round1: Blocker 2・Must 6・Should 5・Nit 5、round2: Should 4・Nit 5 を反映)。実装済み・CI 確認済み(run 37568952498)。
 related_adr:
   - "ADR-028"
   - "ADR-238"
@@ -97,6 +97,12 @@ B の後、`advance_focus_tracking` のリセットが効くのは `conv_raw` �
 ## 実装 PR で回す CI(撤去で挙動が変わりうるのは ImmCrossProbe〈Standard、フォーカス変更後の最初のキー〉と場合 E・K)
 
 MS-IME: `msime-native`・`msime-native-henkan`・`sc-dbe-msime-native`・`sc-hz-msime-native`(A の再生で場合 E が出た構成)・`sc-shift-msime-native`・`msime-stale-table`。GJI: `sc-dbe-gji-atok`・`sc-dbe-gji-msime`・`cal-driftrec-refocus-edit-gji-atok`(A の再生で場合 K が出た構成、再フォーカスで ImmCrossProbe も通る)。ImmCross/外部アプリ: `tsx-ext-qt-qlineedit-{msime,gji}-20ms`・`tsx-ext-wf-textbox-msime-20ms`・`tsx-ext-wx-field-msime-20ms`。合格基準: (1) 各構成の PASS/FAIL が、撤去前の develop の同じ構成(同じ回数、例えば各 3 回)と同じ。(2) `[eisu-adopt]` の件数と `decision` の分布が同程度(`branch`/`prev_conv` の項目は消えるので、比べるのは `decision` と `ime_on`・`conv`)。(3) **変わりうる経路を実際に通ったこと**: 各構成で `[ImmCrossProbe] child-hwnd` が 1 件以上あること(通っていなければ、その構成は B の確認になっていない。特に `cal-driftrec-refocus-edit-gji-atok` と `tsx-ext-qt-qlineedit-*`)。撤去したログ `IME input method changed: conv=` が 0 のままであることは、撤去で行そのものが消えるので基準にならない。
+
+## 実装後の CI(2026-10-07、run 37568952498、13 構成 33 run、撤去前は run 37486784708・37561079357)
+
+- (1) **各構成の PASS/FAIL は撤去前と同じ:** `msime-native`・`msime-native-henkan`・`sc-hz-msime-native` は全 PASS、`sc-dbe-msime-native`・`msime-stale-table`・`sc-dbe-gji-msime`・`sc-dbe-gji-atok`・`sc-shift-msime-native` は各 3/3 OK、`tsx-ext-qt-qlineedit-{msime,gji}-20ms`・`tsx-ext-wf-textbox-msime-20ms`・`tsx-ext-wx-field-msime-20ms` は PASS。`cal-driftrec-refocus-edit-gji-atok` は `rc=1`・`verdict=UNDETERMINED`・`[drift-skip]` 9 回/run・試行 #0 のみ回復、で**撤去前と完全に同じ**(`typed_blind` のため元から判定不能)。
+- (2) `[eisu-adopt]` の分布は同じ: `sc-dbe-msime-native` は「候補 6・確定 6」(撤去前も 6/6)、他の構成は 0 件。
+- (3) **変わりうる経路(ImmCrossProbe)を通った構成:** `cal-driftrec-refocus-edit-gji-atok`・`msime-stale-table`・`sc-dbe-gji-atok`・`sc-dbe-gji-msime` の各 3/3 run で `[ImmCrossProbe] child-hwnd` が出た。`msime-native*`・`sc-dbe-msime-native`・`sc-hz-msime-native`・`sc-shift-msime-native`・`tsx-ext-*` は ImmCrossProbe を通らない(自前 Edit の MS-IME 構成、または ICP の対象外の窓)ので、B の ImmCrossProbe 経路の確認にはならず、OsPoll の分類の等価性(純粋関数の表テスト)の確認になる。**ImmCrossProbe 経路で場合 E・K が起きる入力は CI の構成には無く、手元のログでも一度も起きていない**(撤去は「起きていない残りの場合を安全な向きに変える」撤去、という位置づけのまま)。
 
 ## ADR-238・BUG-190・コード内コメントの訂正(実装 PR で行う)
 
