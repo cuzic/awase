@@ -5,16 +5,17 @@
 //! `ShiftConvGuardGen` を(あるいは任意の `u32` を)渡すことはコンパイルできない。
 //! 順序比較は持たない(折り返しがあるので `<` は意味を持たない)。
 
-/// `Output::ime_mode_focus_gen` の世代。フォーカス変更(`gji_on_focus_change`)で進む。
+/// `Output::ime_mode_focus_gen` の世代。フォーカス変更(`Output::on_ime_mode_focus_changed`、`gji_on_focus_change` から呼ぶ)で進む。
 /// `ActuationTarget` が起案時点の値を捕獲し、write 直前に読み直した値と等しいかを見る。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FocusGen(u32);
 
 impl FocusGen {
     /// 起動直後の値(`Output::new`)。
     pub const INITIAL: Self = Self(0);
 
-    /// テスト・fixture 用に値を指定して作る。本番の世代は `INITIAL` から `next` だけで進める。
+    /// テスト用に値を指定して作る(本番では作れない)。本番の世代は `INITIAL` から `next` だけで進める。
+    #[cfg(test)]
     #[must_use]
     pub const fn new(value: u32) -> Self {
         Self(value)
