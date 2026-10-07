@@ -8,7 +8,7 @@ summary: |-
   判定の書き方(D1a): 判定基準を「前提」と「症状」に分け、判定対象の区間と症状として数えるフィールドを最初の run の前に書く。observed 件数を出す。observed 0 の回は FAIL より INVALID を優先する。
   nofix との比較(D1b)は任意。回すときは、症状の基準で落ちた回だけを「修正の有無を区別した」と数える。
   背景の実測(develop `8810b812`、2026-10-06): 状態欄に「CI 検証済み」とある BUG は 19 件で、nofix で差を確かめた記録は 0 件。nofix を回した 3 例(BUG-170 の a8、BUG-114 の WT 版 PR #534、BUG-114 の実 Chrome 版 PR #529)はどれも回帰を捕まえていない。nofix が分かったのは BUG-170 の 1 件だけで、入力先の文字の判定が修正の有無を区別しないことだった。BUG-114 では誤った差を 2 回出した(1 回目は `WM_CLOSE` 後の補正、3 回目は a9 が書き換えた profile)。「シナリオが症状に届いていない」を示したのは、修正ありのビルドの INVALID 判定(observed 0)。nofix が無いせいで退行を見逃した記録も 0 件なので、nofix は義務にしない。
-  他の ADR との分担: `fix-requires-evidence.md:22-26`(「将来、再生トレースへ置き換える」)の書き換えは ADR-241 が行う。本 ADR は rules を書き換えず、D1a を `docs/teardown-verification-guide.md` の mutator の節に置く。新しい再生基盤(ADR-241)の合否も、同じ nofix の考え方で ADR-241 が決める。
+  他の ADR との分担(team-lead の決定、ADR-241 決定 7): 同期の判断(打鍵から actuation の決定まで)は ADR-241 の再生が受け、再生が通らない非同期・実機固有の部分を実機 CI の再現シナリオ+D1a が受ける。`fix-requires-evidence.md:22-26` の書き換えは ADR-241 だけが行い、本 ADR はそこに入れる 1 項目の文案を追記案として出す。ADR-241 の mutator(再生の合否用)は再生側、本 ADR の ablation は実機 CI 側の資産として、両方残す。
 status: |-
   提案(起草中。Opus round1〈旧 233 として、Blocker 1・Must 5・Should 6・Nit 4〉と 2 人目のレビュー〈Blocker 1・Must 6・Should 7・Nit 6〉を反映、round2 前)
 related_adr:
@@ -113,7 +113,7 @@ gh run view 37429061750 --log | grep '"type": "bug114_result"' | grep -oE '"verd
   入力の再生(B5)はエンジン側の不具合なら「HEAD で症状が出るか」に答えられる(同メモ `README.md:36-38`、実例 BUG-105・145)。
   ADR-241 は、その合否を「修正を外した mutator で再生だけが落ちる」ことで示すとしている。
   再生の層の合否の決め方は ADR-241 が持ち、本 ADR は実機の層の判定の書き方だけを決める。
-- IME とのやり取りが絡み、再生(閉ループの擬似 IME を含む)でクセを写せない不具合は、実機 CI シナリオでしか確かめられない(同 `README.md:65`)。ここが本 ADR の対象。
+- 役割分担(team-lead の決定、ADR-241 決定 7): **同期の判断**(打鍵から actuation の決定まで)は ADR-241 の再生が受ける。**再生が通らない部分**(非同期の経路と、実機固有の IME とのやり取り)を、実機 CI の再現シナリオと本 ADR の D1a が受ける。
 - 単体テストの層では、修正を外して落ちるかを**手で確かめる道具がある**(`cargo mutants --in-diff`)。
   PR ごとに自動では回っておらず、回した結果を読む人もいない([ADR-234](234-core-modules-mutants-nightly.md):151・209 の書き分けに合わせる)。
 
@@ -165,7 +165,7 @@ git grep -n 'a3-no-eisu\|a7-no-follow\|a8-no-gji\|atok-resync-nofollow' origin/d
 ### D1a. 実機 CI シナリオの判定の書き方(規約。置き場所は `teardown-verification-guide.md`)
 
 実機 CI のシナリオ(Windows ランナーで実 IME を使う `e2e-ime.yml` の構成・`wt-probe.yml` のジョブなど)を新しく足すとき、または判定を変えるときは、次のように書く。
-単体テスト・golden・閉ループ・再生の層は対象外(再生の層は ADR-241 が決める)。
+単体テスト・golden・閉ループ・再生の層は対象外(同期の判断の再生は ADR-241 が受け、その合否も ADR-241 が決める)。
 
 1. **最初の run の前に、PR 本文かコミット本文に書く**:
    - 判定対象の区間(例: 「窓を閉じる時刻より前の行だけ」。BUG-114 の 1 回目は、これが無かったので終了処理の補正を数えた)。
@@ -190,17 +190,18 @@ nofix を回すかは作者が決める。回したときは次のとおり書�
 
 任意にする理由: 3 例で回帰を捕まえた例は 0 件、誤った差が 2 回(背景 2)。nofix が無いせいで退行を見逃した記録も 0 件。
 
-### D2. 規約の文言は書き換えない(ADR-241 と分担する)
+### D2. 再生(ADR-241)との分担と、規約の文言
 
-- `.claude/rules/fix-requires-evidence.md:22-26`(「将来、(b) を再生トレースの追加に置き換える予定」)の書き換えは、**ADR-241 だけが行う**。
-  本 ADR は rules を書き換えない(D1a は規約の層を太らせず、mutator の説明が既にある `teardown-verification-guide.md` に置く)。
-- ADR-241 に頼むこと: その書き換えに「実機 CI のシナリオの判定の書き方は ADR-240 D1a」の 1 行を含めるかどうかは、ADR-241 側で決める(関連する既存文書への追記案を参照)。
+- 同期の判断(打鍵から actuation の決定まで)は ADR-241 の再生が受ける。再生が通らない非同期・実機固有の部分を、実機 CI の再現シナリオ+D1a が受ける。
+- `.claude/rules/fix-requires-evidence.md:22-26` の (b) の節(「将来、再生トレースの追加に置き換える予定」)の書き換えは、**ADR-241 だけが行う**(新しい再生基盤を導入するのは ADR-241)。本 ADR は fix-requires を編集しない。
+- 本 ADR は、その書き換えに入れる 1 項目の文案を ADR-241 への追記案として出す(関連する既存文書への追記案を参照): 「IME とのやり取りが絡む不具合で、再生が通らない部分(非同期・実機固有)は、実機 CI の再現シナリオで受ける。ADR-240 D1a の条件を満たしたものだけを (a) と数える」。
+- D1a の詳しい書き方は、mutator の説明が既にある `docs/teardown-verification-guide.md` に置く。
 
 ### D3. mutator の命名と置き場所
 
 - 新しい nofix の mutator は、BUG 番号で名付ける: `ablations/bug<NNN>-<何を外すか>.sh`。
   ファイル先頭のコメントに「**直接変える量**」を 1 行書く(D1a-2 で症状の一覧から外すもの)。
-- ADR-241 の再生の層の mutator も、リポジトリに置くなら同じ場所・同じ命名にする(1 回限りの一時コミットで当てるなら置かない)。
+- ADR-241 の mutator(再生の合否用)は再生側の資産で、置き場所は再生のテストの側(ADR-241 決定 7)。`ablations/` には混ぜない。本 ADR の ablation(実機 CI 側の資産)とは分けて、両方残す。
 - ADR-186・191 型の「機構は要るか」の撤去実験は、従来どおり aN でよい。`origin/ci/e2e-ime` の a8〜a10 はこちらに入るので改名しない。衝突は develop の a8 を `bug170-no-gji-reopen-sync.sh` に改名すれば解ける。
 - 撤去済みの機構に依存する mutator は、機構の撤去と同じコミットで消す(`2f67c380` の前例)。
 
@@ -208,7 +209,7 @@ nofix を回すかは作者が決める。回したときは次のとおり書�
 
 `e2e-ime-smoke.yml` の Linux ジョブ(`invariants-unit` と同じ ubuntu ランナー)に、`ablations/*.sh` を 1 本ずつチェックアウト直後のツリーに当て、
 「`assert` が通り、差分が出る」ことだけを確かめる手順を足す(ビルドはしない。数秒)。
-参照元は `.github/workflows/*.yml` のすべてと `run_experiments.sh` とし、どこからも参照されない mutator があれば落とす。ADR-241 の再生の workflow も、参照元に含まれる。
+対象は `ablations/` の mutator(実機 CI 側の資産)だけ。参照元は `.github/workflows/*.yml` のすべてと `run_experiments.sh` とし、どこからも参照されない mutator があれば落とす。ADR-241 の mutator は再生側の資産で `ablations/` の外に置くので、この検査の対象にならない(落とさない)。
 
 - 「当たる」ことは「nofix で症状が出る」ことを保証しない。後者は実機の run でしか分からない。
 - 第 1 段階の後、develop の mutator は 4 本(a4・a5・a6・bug170)になる。人が目で見れば足りるので、5 本を超えるまでは着手しない。
@@ -252,7 +253,7 @@ PR の必須チェックにはしない。nofix 構成を足す・変える PR �
 - **nofix のためだけに本番コードへ設定・cfg・feature を足す**: 本番に分岐が増え、修正 1 件ごとに残り続ける。**既にある設定**を使うこと(`sc-adr209-chrome-msime-off` の形)は可。ビルドが要らず腐敗もしない。
 - **nofix を PR の必須チェックにする**: 1 BUG あたり約 27 ランナー分(背景 5)。V1(#530)を当面必須にしない所有者の決定と同じ扱い。
 - **宣言テーブルで「BUG → 構成 → mutator」を生成する**: ADR-218〜220 の却下と同じく、対象が 2 件の段階で表を作る価値は無い。
-- **`fix-requires-evidence.md` に D1a を書く**: ADR-241 と同じ行を別々に書き換えることになる。rules の層も太る(D2)。
+- **本 ADR が `fix-requires-evidence.md` を書き換える**: ADR-241 と同じ節を別々に書き換えることになる。書き換えは ADR-241 に一本化し、本 ADR は 1 項目の文案を出すだけにする(D2)。
 
 ## リスクと限界
 
@@ -279,14 +280,14 @@ PR の必須チェックにはしない。nofix 構成を足す・変える PR �
 
 ## 関連する既存文書への追記案(この ADR では書き換えない)
 
-- **ADR-241 と調整が要る点**:
-  - `.claude/rules/fix-requires-evidence.md:22-26` の書き換えは ADR-241 が行う(ADR-241:260)。ADR-240 は同じ行を書き換えない。
-    ADR-241 側で、実機の層について「判定の書き方は ADR-240 D1a」の 1 行を足すかを決めてほしい。足さない場合も、ADR-240 は `teardown-verification-guide.md` で完結する。
-  - mutator の置き場所(ADR-241:193): リポジトリに置くなら `ablations/bug<NNN>-*.sh`(D3)。D4 の参照元は `.github/workflows/*.yml` のすべてなので、ADR-241 の workflow から参照されていれば落ちない。
-  - ADR-241:17・185 の「ADR-240 の条件」は、本 ADR の改訂で「D1a(必須)と D1b(任意)」に分かれた。ADR-241 の合否(「再生だけが落ちる mutator が 1 つ以上」)は D1b に近いが、再生の層の条件は ADR-241 が決める。
+- **ADR-241 への追記案(役割分担は ADR-241 決定 7 と同じ)**:
+  - `.claude/rules/fix-requires-evidence.md:22-26` の書き換え(ADR-241 だけが行う)に、次の 1 項目を含める(ADR-241 の文案の 2 項目めと同じ趣旨):
+    > IME とのやり取りが絡む不具合で、再生が通らない部分(非同期・実機固有)は、実機 CI の再現シナリオで受ける。ADR-240 の D1a の条件(判定対象の区間・前提と症状の基準・症状として数えるフィールドを最初の run の前に書く、observed 件数を出す、observed 0 の回は FAIL より INVALID を優先する)を満たしたものだけを (a) と数える。
+  - mutator: ADR-241 の mutator(再生の合否用)は再生のテストの側に置き、`ablations/` に混ぜない。ADR-240 の D4 はそれを検査しない。両方残す。
+  - ADR-241 が引く「ADR-240 の条件」は、本 ADR の改訂で「D1a(必須)と D1b(任意)」に分かれた。再生の層の条件は ADR-241 が決める。
 - `docs/teardown-verification-guide.md:81-89`: 次の 3 行と命名を足し、`:88` の例を `bug170-*` に差し替える。`:104` の「`a1`〜`a7`」を現状に直す。
   > 実機シナリオの判定は、最初の run の前に、判定対象の区間・前提の基準・症状として数えるフィールドを書く。mutator が直接変える量は症状に入れない。observed 0 の回は FAIL より INVALID を優先する([ADR-240](adr/240-ablation-ab-as-regression-evidence.md) D1a)。nofix との比較は任意で、症状の基準で落ちた回だけを「修正の有無を区別した」と数える(D1b)。
 - `docs/adr/235-app-ime-realmachine-matrix.md` D3: 「BUG-114 の判断は ADR-240 第 1 段階に従う」とだけ書く。今の文言は既にこの形に近い。
 - `docs/known-bugs/BUG-114.md`: PR #534 の結論(届いたか、届かなかったか)を run 番号つきで 1〜3 行。
 - `docs/known-bugs/BUG-170.md`: 「nofix(a8)で差が出たのは、後から足した `--require-sync`(journal 上の同期)だけで、入力先のテキストでは差が出なかった(run 36654801007、`2f3446fc`)」の 1 行。
-- `docs/adr/index.md`: ADR-240 の 1 行は統合時に team-lead が足す(本ブランチでは触らない)。
+- `docs/adr/index.md`: ADR-240 の 1 行は、team-lead が統合時に足す(本ブランチでは触らない)。
