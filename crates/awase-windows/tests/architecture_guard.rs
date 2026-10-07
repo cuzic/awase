@@ -5055,6 +5055,65 @@ fn hook_state_struct_has_exactly_one_mutex_field() {
 /// `.await`境界のうち1つがgate呼び出しを失っても検知できなくなる
 /// （round1 C6が指摘した退行）。そのため`open_chain.rs`側は関数別に
 /// `is_input_relay(`の出現数を固定する形へ作り替えた。
+/// `ImeStateHub::issue_self_actuation_order(` の本番の呼び出し元（ファイルごとの件数）。
+fn issue_self_order_sites(sources: &[(String, String)]) -> Vec<(String, usize)> {
+    let mut sites: Vec<(String, usize)> = sources
+        .iter()
+        .map(|(path, content)| {
+            let count =
+                count_real_calls(production_code_only(content), "issue_self_actuation_order(");
+            (path.clone(), count)
+        })
+        .filter(|(_, count)| *count > 0)
+        .collect();
+    sites.sort();
+    sites
+}
+
+/// ADR-241 決定2: `issue_self_actuation_order` は executor の private な `impl ImeStateHub` から
+/// `platform_state.rs` の `pub(crate)` へ移したので、crate のどこからでも呼べる。押下 ID の 3 点
+/// （予約・`with_press`・applied の未知化、`fix-requires-evidence.md` の「IME actuation 合流点」）を持たない
+/// order 起案入口が増えないよう、本番の呼び出し元を核の `dispatch_set_open` の 3 か所（gate の拒否の記録・
+/// async・sync）に固定する。
+#[test]
+fn issue_self_actuation_order_is_called_only_from_dispatch_set_open() {
+    let sources: Vec<(String, String)> = list_src_files()
+        .into_iter()
+        .map(|path| {
+            let content = read_crate_file(&path);
+            (path, content)
+        })
+        .collect();
+    assert_eq!(
+        issue_self_order_sites(&sources),
+        vec![("src/state/sync_actuation.rs".to_string(), 3)],
+        "`issue_self_actuation_order(` の本番の呼び出し元は state/sync_actuation.rs の 3 か所だけ（ADR-241）"
+    );
+    let core = read_crate_file("src/state/sync_actuation.rs");
+    let dispatch = extract_fn_body(production_code_only(&core), "fn dispatch_set_open");
+    assert_eq!(count_real_calls(dispatch, "issue_self_actuation_order("), 3);
+}
+
+/// 上のガードが違反例（別ファイルからの呼び出し）を検出し、定義・コメント・テストモジュールは数えないこと。
+#[test]
+fn issue_self_order_sites_detects_a_new_caller() {
+    let src = |s: &str| s.to_string();
+    let sources = vec![
+        (
+            src("src/state/platform_state.rs"),
+            src("    pub(crate) fn issue_self_actuation_order(\n    // issue_self_actuation_order(\n"),
+        ),
+        (
+            src("src/runtime/rogue.rs"),
+            src("fn f(h: &ImeStateHub) { let o = h.issue_self_actuation_order(true, \"x\"); }\n#[cfg(test)]\nmod tests {\n    fn t() { h.issue_self_actuation_order(true, \"t\"); }\n}\n"),
+        ),
+    ];
+    assert_eq!(
+        issue_self_order_sites(&sources),
+        vec![(src("src/runtime/rogue.rs"), 1)]
+    );
+}
+
 /// ADR-241 決定2: 同期経路の唯一の合流点（核の `state::sync_actuation::apply_sync`）と、executor の判断の核
 /// （`dispatch_set_open`）の呼び出し元を固定する。
 ///

@@ -557,9 +557,15 @@ mod tests {
         let h = hub();
         let mut sink = FakeSink::default();
         let i = inputs(AppImeProfile::InputRelay, ImeKindId::Gji, None);
-        let (outcome, record) = apply_sync(press_order(&h, false), i, "", &mut sink);
+        let order = press_order(&h, false);
+        let order_record = ActuationOrderRecord::from(&order);
+        let (outcome, record) = apply_sync(order, i, "", &mut sink);
         assert_eq!(outcome, ImeOpenOutcome::NotOwned);
         assert_eq!((record.attempts_len, record.chain_len), (0, 0));
+        assert_eq!(
+            (record.site, record.gate_inputs, record.order),
+            (DecisionSite::Sync, i, order_record)
+        );
         assert!(sink.sent.is_empty());
     }
 
@@ -570,10 +576,15 @@ mod tests {
         let h = hub();
         let mut sink = FakeSink::default();
         let order = h.issue_self_actuation_order(false, "test");
+        let order_record = ActuationOrderRecord::from(&order);
         let i = inputs(AppImeProfile::TsfNative, ImeKindId::Gji, None);
         let (outcome, record) = apply_sync(order, i, "", &mut sink);
         assert_eq!(outcome, ImeOpenOutcome::Unwarranted);
         assert_eq!(record.attempts_len, 0);
+        assert_eq!(
+            (record.site, record.gate_inputs, record.order),
+            (DecisionSite::Sync, i, order_record)
+        );
         assert!(sink.sent.is_empty());
     }
 
@@ -612,6 +623,16 @@ mod tests {
             inputs: inputs(profile, ImeKindId::Gji, applied),
             effectively_tsf_native: matches!(profile, AppImeProfile::TsfNative),
         }
+    }
+
+    /// journal に積まれた `ActuationDecision` の記録（JSON の `record`）を古い順に返す。
+    fn journaled_decisions(h: &ImeStateHub) -> Vec<serde_json::Value> {
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&h.journal.to_json().expect("journal")).expect("json");
+        rows.iter()
+            .filter(|r| r["entry"]["type"].as_str() == Some("ActuationDecision"))
+            .map(|r| r["entry"]["record"].clone())
+            .collect()
     }
 
     fn sync_outcome(d: SetOpenDispatch) -> ImeOpenOutcome {
@@ -668,6 +689,48 @@ mod tests {
         assert_eq!(outcome, ImeOpenOutcome::UnsafeToToggle);
         let again = dispatch_set_open(&mut h, req, "", &mut FakeSink::default());
         assert_eq!(sync_outcome(again), ImeOpenOutcome::Applied);
+    }
+
+    /// 押下の無い書き込み（`press=None`）には D1 を当てない: `applied` が OFF なら AlreadyMatched のまま。
+    /// 記録は `site=Sync`・`caller=DispatchImeSetOpen` で journal に積む。授権は IntentStore の明示意図で下ろす。
+    #[test]
+    fn dispatch_without_press_keeps_applied_and_journals_the_caller() {
+        use crate::state::ime_event::{HwndId, ImeEvent, ImePolicyProfile, UserIntentSource};
+        let mut h = hub();
+        let tick = crate::state::TickMs(h.clock().now_tick());
+        let to = HwndId(1);
+        let profile = ImePolicyProfile::Imm32Unavailable;
+        let focus = ImeEvent::FocusChanged {
+            from: None,
+            to,
+            profile,
+            focus_epoch: 1,
+        };
+        h.dispatch_event(focus, tick);
+        h.record_explicit_intent(false, UserIntentSource::Command, tick);
+        let mut sink = FakeSink::default();
+        let req = request(AppImeProfile::Imm32Unavailable, Some(false), None);
+        let outcome = sync_outcome(dispatch_set_open(&mut h, req, "", &mut sink));
+        assert_eq!(outcome, ImeOpenOutcome::AlreadyMatched);
+        assert_eq!(sink.sent, vec![(WriteMechanism::GjiDirect, None, false)]);
+        let record = journaled_decisions(&h).pop().expect("記録");
+        assert_eq!(record["site"], "Sync");
+        assert_eq!(record["caller"], "DispatchImeSetOpen");
+        assert_eq!(record["gate_inputs"]["shadow_on"], false);
+    }
+
+    /// gate の拒否は `site=DispatchImeSetOpen`・試行なしの記録を journal に積む（B-3、PR #201）。
+    #[test]
+    fn dispatch_gate_rejection_journals_a_dispatch_site_record() {
+        let mut h = hub();
+        let relay = request(AppImeProfile::InputRelay, Some(false), Some(1));
+        let d = dispatch_set_open(&mut h, relay, "", &mut FakeSink::default());
+        assert!(matches!(d, SetOpenDispatch::NotOwned), "{d:?}");
+        let records = journaled_decisions(&h);
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0]["site"], "DispatchImeSetOpen");
+        assert!(records[0]["caller"].is_null());
+        assert_eq!(records[0]["attempts"].as_array().map(Vec::len), Some(0));
     }
 
     /// gate の拒否は予約に触れず、ImmCross が先頭の窓は押下つきの order を返して同期チェーンを走らせない。
