@@ -76,6 +76,16 @@ exclude_re = [
     # 他の分岐（142 行目の old == Some(new) 等）は cfg 無しで実際にテスト対象。
     "conv_mode\\.rs:(147|148|152):",
 
+    # conv_mode.rs: ConvModeTarget::imm_conv_value の variant は HalfWidthAlnum（→ 0）だけなので、
+    # 「0 を返す」変異は元のコードと同じ値を返す等価変異（ADR-234 D0）。variant を足したら
+    # この除外は外すこと（足した variant の値を 0 にする変異もこの正規表現に当たり、黙って除外される）。
+    "ConvModeTarget::imm_conv_value -> u32 with 0$",
+
+    # observation_store.rs: trace_hwnd_only_mismatch は derive_filtered の識別照合で
+    # 「hwnd だけ不一致」を tracing::debug! に出すだけの関数で、判定に関わらない（ADR-234 D0。
+    # run 35920696097 の derive_filtered 822〜824 行の 4 件をこの関数へ切り出した）。
+    "trace_hwnd_only_mismatch",
+
     # ime_event.rs: HwndId::to_hwnd と `From<HWND> for HwndId` は windows クレートの
     # 型を直接扱う #[cfg(windows)] 専用の変換関数。
     "HwndId::to_hwnd",

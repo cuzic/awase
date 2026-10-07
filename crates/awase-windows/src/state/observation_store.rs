@@ -849,20 +849,7 @@ impl ObservationStore {
                     epoch: o.focus_epoch,
                     hwnd: o.hwnd,
                 };
-                let epoch_ok = obs_fence.epoch == current_fence.epoch;
-                let hwnd_ok = obs_fence.hwnd == current_fence.hwnd;
-                if epoch_ok && !hwnd_ok {
-                    // ADR-106 決定3: epoch は一致しているのに hwnd だけ不一致で
-                    // 除外されるケース（同一プロセス内でのウィンドウ切替）を、
-                    // epoch 不一致による除外と区別して実機ログで確認できるようにする。
-                    tracing::debug!(
-                        "[identity-gate] hwnd不一致で除外: source={:?} obs_hwnd={:?} current_hwnd={:?} confidence={:?}",
-                        o.source,
-                        obs_fence.hwnd,
-                        current_fence.hwnd,
-                        o.confidence
-                    );
-                }
+                trace_hwnd_only_mismatch(o, obs_fence, current_fence);
                 obs_fence == current_fence
             }
             _ => true,
@@ -954,6 +941,22 @@ impl ObservationStore {
         } else {
             None
         }
+    }
+}
+
+/// ADR-106 決定3: epoch は一致しているのに hwnd だけ不一致で除外されるケース
+/// （同一プロセス内でのウィンドウ切替）を、epoch 不一致による除外と区別して
+/// 実機ログで確認できるようにする。ログを出すだけで判定には関わらない
+/// （`.cargo/mutants-awase-windows.toml` の `exclude_re` が関数名で除外する、ADR-234 D0）。
+fn trace_hwnd_only_mismatch(o: &ImeObservation, obs_fence: FocusFence, current_fence: FocusFence) {
+    if obs_fence.epoch == current_fence.epoch && obs_fence.hwnd != current_fence.hwnd {
+        tracing::debug!(
+            "[identity-gate] hwnd不一致で除外: source={:?} obs_hwnd={:?} current_hwnd={:?} confidence={:?}",
+            o.source,
+            obs_fence.hwnd,
+            current_fence.hwnd,
+            o.confidence
+        );
     }
 }
 
@@ -1964,6 +1967,56 @@ mod tests {
 
         rec(&mut s, obs(false, ObservationSource::Gji, now));
         assert_eq!(s.consensus(window, now), Some(false), "2 ソース false 合意");
+    }
+
+    #[test]
+    fn consensus_counts_observation_exactly_at_window_edge() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let window = Duration::from_millis(500);
+        let edge = now
+            .checked_sub(window)
+            .expect("test instant can be backdated");
+        rec(&mut s, obs(true, ObservationSource::ObserverPoll, edge));
+        rec(&mut s, obs(true, ObservationSource::Gji, edge));
+        assert_eq!(
+            s.consensus(window, now),
+            Some(true),
+            "age がちょうど window の観測は合意にカウントする（除外は age > window のときだけ）"
+        );
+    }
+
+    #[test]
+    fn record_and_record_belief_store_the_observation_per_source() {
+        use super::super::conv_classify::ConvSyncReason;
+        use super::super::evidence::{ConvOpenInference, ObserverPoll};
+        use super::super::probe_admission::AcceptedObservation;
+
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let accepted = AcceptedObservation::for_sync(FocusFence {
+            epoch: 0,
+            hwnd: HwndId::NULL,
+        });
+        s.record(Observed::<ObserverPoll>::from_poll(&accepted, true), now);
+        assert!(s
+            .per_source
+            .get(ObservationSource::ObserverPoll)
+            .is_some_and(|o| o.open));
+
+        s.record_belief(
+            Observed::<ConvOpenInference>::from_conv(
+                ConvSyncReason::NativeToggleShadowOff,
+                false,
+                HwndId::NULL,
+                0,
+            ),
+            now,
+        );
+        assert!(s
+            .per_source
+            .get(ObservationSource::ConvOpenInference)
+            .is_some_and(|o| !o.open));
     }
 
     #[test]

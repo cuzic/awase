@@ -72,3 +72,23 @@ impl ImeBelief {
         self.eisu_candidate
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accessors_return_the_stored_fields() {
+        let belief = ImeBelief {
+            is_japanese_ime: false,
+            prev_conversion_mode: Some(0x19),
+            eisu_candidate: None,
+        };
+        assert!(!belief.is_japanese_ime());
+        assert_eq!(belief.prev_conversion_mode(), Some(0x19));
+
+        let default = ImeBelief::default();
+        assert!(default.is_japanese_ime());
+        assert_eq!(default.prev_conversion_mode(), None);
+    }
+}
