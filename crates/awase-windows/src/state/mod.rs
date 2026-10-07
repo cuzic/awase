@@ -118,6 +118,10 @@ pub mod ime_actuation_decision;
 // FCIS（ADR-229）: `executor.rs::dispatch_ime_set_open` の判断（gate・claim 結果・ImmCross 先頭か）の純粋部分。
 #[cfg(any(windows, test))]
 pub mod ime_set_open_plan;
+// ADR-241 決定2: 同期経路の actuation の判断（`ImeController::apply` の本体・`dispatch_ime_set_open` の判断）の核。
+// 本番の呼び出し元（`ime_controller.rs`・`runtime/executor.rs`）は `#[cfg(windows)]`、Linux ではテストだけが使う。
+#[cfg(any(windows, test))]
+pub(crate) mod sync_actuation;
 // ADR-163 Part B（TH1c）: attempt単位の決定点ジャーナルスキーマとcrate内
 // 再生ハーネス。ime_actuation_decisionと同じ「追加のみ、本番経路への配線は
 // 別タスク（TH1d/TH1e）」のモジュール。

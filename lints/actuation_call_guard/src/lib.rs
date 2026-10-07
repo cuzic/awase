@@ -117,10 +117,16 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
     // 2026-09-19: reassert_explicit_physical_key（ADR-121、TsfNative向けON方向
     // 救済の一部）を撤去したため4→3。同日、force_on_and_correct_romaji
     // （force-ON実送信、TsfNative向けON方向救済の一部）も撤去したため3→2。
-    (
-        "apply_ime_open_with_view",
-        &["dispatch_ime_set_open", "ir_apply_drift_correction"],
-    ),
+    // 2026-10-07（ADR-241 決定2）: executor の Engine の SetOpen は判断ごと核の
+    // `state::sync_actuation::dispatch_set_open` へ移り、核の `apply_sync` を直接呼ぶため2→1。
+    ("apply_ime_open_with_view", &["ir_apply_drift_correction"]),
+    // apply_sync（`state/sync_actuation.rs`）: 同期経路の唯一の合流点（旧`ImeController::apply`の本体、
+    // ADR-119・ADR-241）。呼び出し元は殻の`ImeController::apply`（関数名`apply`）と核の`dispatch_set_open`
+    // だけ。名前一致のみの照合なので、`apply`という名前の無関係な関数からの呼び出しは許してしまう
+    // （`architecture_guard.rs::sync_confluence_entries_are_pinned_for_adr241`がファイル・関数単位で補う）。
+    ("apply_sync", &["apply", "dispatch_set_open"]),
+    // dispatch_set_open（同）: executorのEngineのSetOpenの判断の核。殻の`dispatch_ime_set_open`だけが呼ぶ。
+    ("dispatch_set_open", &["dispatch_ime_set_open"]),
 ];
 
 fn allowed_fns_for(target: &str) -> Option<&'static [&'static str]> {

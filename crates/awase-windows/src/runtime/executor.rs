@@ -55,54 +55,6 @@ pub(crate) struct BatchResult {
     pub sync_outcomes: Vec<ImeApplyPair>,
 }
 
-impl ImeStateHub {
-    /// 実 actuation の 1 件を起案する（ADR-090 §2.A A-1、INV-47）。
-    ///
-    /// `DecisionExecutor` は `Runtime` を持たないため
-    /// [`Runtime::issue_actuation_order`](super::Runtime::issue_actuation_order) を
-    /// 使えないが、4 つの公開入口（`execute_from_hook` / `execute_from_loop` /
-    /// `drain_deferred` / `on_output_guard_timer`）が**既に `ime: &mut ImeStateHub` を
-    /// 受け取っている**ので、それを `dispatch_ime_set_open` まで通すだけで
-    /// warrant を発行できる。
-    ///
-    /// **`crate::with_app` で `ImeStateHub` を取りに行ってはならない**——ここは
-    /// 既に `with_app` の内側であり、再入すると panic せず `None` が返る。
-    /// つまり「取れなかった」ことと「授権が下りなかった」が区別できない形で
-    /// 静かに落ち、A-1 の shadow ログが測ろうとしている当のものが汚染される
-    /// （ADR-090 §2.A.2(1)・§4.2）。
-    ///
-    /// # 似た名前のメソッドとの違い（意図的に区別すること）
-    ///
-    /// - [`Self::issue_actuation_order`]（`state/platform_state.rs`）: 最下層。
-    ///   `origin`/`now`/`now_ms` を呼び出し元が組み立てて渡す。本メソッドの
-    ///   実装はこれをそのまま呼ぶ。
-    /// - [`Runtime::issue_actuation_order`](super::Runtime::issue_actuation_order) /
-    ///   [`Runtime::issue_actuation_order_with_origin`](super::Runtime::issue_actuation_order_with_origin)
-    ///   （`runtime/mod.rs`）: `Runtime` を持つ呼び出し元向けの同型の便利メソッド。
-    ///   本メソッドはそれの `ImeStateHub` 版（`Runtime` を持たない
-    ///   `DecisionExecutor` 用）であり、**ロジックは意図的に重複している**
-    ///   （統合すると `DecisionExecutor` に `Runtime` 依存を持ち込むことになり、
-    ///   上記のとおりそれ自体が本メソッドの存在理由を壊す）。
-    ///
-    /// 2026-09-10、自由関数`issue_order`からメソッドへ変更した際、`Runtime::
-    /// issue_actuation_order`と紛らわしいと指摘を受け`issue_self_actuation_order`
-    /// にリネームした（常に`EventSource::SelfActuated`を組み立てることを名前に
-    /// 反映）。挙動は変更していない。
-    fn issue_self_actuation_order(
-        &self,
-        open: bool,
-        strategy: &'static str,
-    ) -> crate::state::actuation_chain::ActuationOrder {
-        let origin = crate::state::event_origin::EventOrigin::new(
-            crate::state::event_origin::EventSource::SelfActuated { strategy },
-            crate::state::event_origin::Generation::INITIAL,
-        );
-        let now = std::time::Instant::now();
-        let now_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        self.issue_actuation_order(open, origin, now, now_ms)
-    }
-}
-
 pub(crate) struct DecisionExecutor {
     /// Effects キュー（FIFO 順序保証）
     queue: VecDeque<Effect>,
@@ -723,16 +675,17 @@ impl DecisionExecutor {
         }
     }
 
-    /// `ImeEffect::SetOpen` の専用 dispatch。
+    /// `ImeEffect::SetOpen` の専用 dispatch（殻）。
     ///
-    /// `ImmCrossProcessStrategy` が現在のコンテキストで最初に適用可能な場合は
-    /// `win32_async::spawn_local` で非同期実行し `None` を返す（spawn 済み）。
-    /// それ以外（GjiDirect / MsImeDirect 経路）はキー注入のみで非ブロッキングなため
-    /// 既存の同期 chain を維持し、`Some(..)` を返す。
+    /// 判断（D1 の未知化 → gate〈issue #136 / BUG-90 決定4〉→ 押下の予約 → `plan_set_open` → 同期チェーン → 予約の解除・記録）は
+    /// 核の `state::sync_actuation::dispatch_set_open`（ADR-241 決定2）。ここは Facts を集め（shell-in）、
+    /// 核を呼び、ImmCross が先頭の窓では返ってきた order で `spawn_local` の非同期チェーンを走らせる（shell-out）。
+    /// 非同期は `None`（spawn 済み）、それ以外（GjiDirect / MsImeDirect 経路、キー注入のみで非ブロッキング）は
+    /// `Some(..)` を返す。
     ///
     /// `press`（ADR-208 決定2 D1）: この `SetOpen` を起こしたユーザー打鍵（非リピート KeyDown）の押下 ID。
     /// `Some` の書き込みは、(1) 同じ押下で既に同じ向きを予約済みなら書かず（BUG-113 の二重送信防止。向きが逆なら
-    /// Engine の明示コンボが優先して書く）、(2) view の `shadow_on` を `applied` が向きと一致していても未知にして
+    /// Engine の明示コンボが優先して書く）、(2) 決定入力の `shadow_on` を `applied` が向きと一致していても未知にして
     /// GjiDirect の already-matched 省略を外す（S-1: Blind 窓で stale な `applied` により絶対キーが握りつぶされ続ける
     /// 固着の解消）。`None`（自動リピート等）は従来どおり `applied_snapshot` のまま。
     #[tracing::instrument(level = "debug", skip_all, fields(open = open, ?press, ?generation))]
@@ -744,192 +697,111 @@ impl DecisionExecutor {
         press: Option<awase::types::PressId>,
         generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
-        // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
-        // D1: 押下の書き込みは `applied` を省略の根拠にしない（`applied` 自体は書き換えない）。ただし TsfNative の窓は
-        // BUG-124 型の「@」の実機 A/B（ADR-208 L3'）が済むまで従来のまま（`engine_press_unknowns_applied`）。
-        let unknowns_applied = press.is_some()
-            && crate::state::ime_actuation_decision::engine_press_unknowns_applied(
-                platform
-                    .current_app_profile()
-                    .is_effectively_tsf_native(platform.focus.class_name()),
-            );
-        let mut view = platform.build_ime_control_view(
-            crate::state::ime_actuation_decision::explicit_press_applied_pair(
-                self.applied_snapshot.applied_open(),
-                open,
-                unknowns_applied,
-            ),
-        );
+        use crate::state::sync_actuation::{dispatch_set_open, SetOpenDispatch, SetOpenRequest};
+        // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。`shadow_on` は `applied_snapshot` の
+        // 素の値で、D1 の未知化は核が決定入力に対して行う（view の `shadow_on` は送信口〈`apply_mechanism`〉が読まない）。
+        let effectively_tsf_native = platform
+            .current_app_profile()
+            .is_effectively_tsf_native(platform.focus.class_name());
+        let mut view = platform.build_ime_control_view(self.applied_snapshot.applied_open());
         view.belief_input_mode = self.belief_input_mode;
-        let gate_inputs = (&view).into();
-        // claim 以降の判断は `state/ime_set_open_plan.rs`（核）。ここは Facts を作る（shell-in）→ 決める → 実行する（shell-out）。
-        if matches!(
-            crate::state::ime_actuation_decision::decide_gate(gate_inputs),
-            crate::state::ime_actuation_decision::GateResult::NotOwned
-        ) {
-            // /code-review指摘（B-3、PR #201）: ADR-163がDecisionSite::
-            // DispatchImeSetOpenを新設した理由は、この早期gate（下のimm_first
-            // 判定・sync path双方より前の、executor側だけが持つ独立した
-            // 判定点）を「Syncに畳むと回帰が記録上区別できなくなる」ため
-            // 区別する必要があったからだが、以前はこのgateがNotOwnedを
-            // 返すケースを一切記録していなかった。ここで初めて実際に
-            // site=DispatchImeSetOpenのレコードを積む。まだ`ActuationOrder`は
-            // 発行されていない（両分岐が自分の理由文字列で個別に発行する）ため、
-            // この記録専用に使い捨てのorderを発行する——`ActuationOrder::issue`
-            // はA-1（shadow）段階の純粋な読み取りで、発行して`chain`に通さず
-            // 破棄しても既存の警告(warrant)会計に副作用は無い
-            // （`state/platform_state.rs::issue_actuation_order`のdoc参照）。
-            let gate_reject_order =
-                ime.issue_self_actuation_order(open, "dispatch_ime_set_open_gate_not_owned");
-            let record = crate::state::actuation_decision_record::ActuationDecisionRecord {
-                site: crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen,
-                gate_inputs,
-                order: crate::state::actuation_decision_record::ActuationOrderRecord::from(
-                    &gate_reject_order,
-                ),
-                chain: [None; crate::state::actuation_decision_record::MAX_WRITE_MECHANISMS],
-                chain_len: 0,
-                attempts: [None; crate::state::actuation_decision_record::MAX_WRITE_MECHANISMS],
-                attempts_len: 0,
-                caller: None,
-            };
-            ime.journal
-                .record(crate::journal::JournalEntry::ActuationDecision { record });
-            return Some((open, awase::platform::ImeOpenOutcome::NotOwned));
-        }
-        // ADR-208 D1: この押下で既に書いた（同じ向き）なら書かない。order の発行直前に予約する
-        // （ImmCross の async は完了が WM 経由で後から届くため、完了時の記録では同じ打鍵の二重送信を防げない）。
-        // 非同期（ImmCross 先頭の窓）は完了が後から届くので、書けなくても予約は解かない（次の押下で直る）。
-        // 同期は何も送らなかったときだけ下で解く（`release_press_write`）。上の gate（NotOwned）で返済みなので、
-        // 書かない窓では予約しない。
-        let claim =
-            ime.claim_press_write(press, open, crate::state::press_ledger::PressSource::Engine);
-        let plan = crate::state::ime_set_open_plan::plan_set_open(
-            crate::state::ime_set_open_plan::SetOpenFacts {
-                claim,
-                imm_first: crate::ime_controller::ImeController::imm_cross_is_first_applicable(
-                    &view,
-                ),
-            },
-        );
-        if plan == crate::state::ime_set_open_plan::SetOpenPlan::SkipAlreadyClaimed {
-            tracing::debug!(
-                "[dispatch-ime] 同じ押下で既に書いた（{}）→ 書かない press={press:?} open={open}",
-                claim.label()
-            );
+        let request = SetOpenRequest {
+            open,
+            press,
+            inputs: (&view).into(),
+            effectively_tsf_native,
+        };
+        let mut sink = crate::ime_controller::ShellCommandSink::new(&view);
+        match dispatch_set_open(ime, request, view.focus.class_name, &mut sink) {
+            SetOpenDispatch::NotOwned => Some((open, awase::platform::ImeOpenOutcome::NotOwned)),
             // 完了へ流す outcome は「送っていない」もの（`AlreadyMatched` だと書いていない押下が applied=Confirmed になる）。
-            return Some((open, crate::state::press_ledger::DUPLICATE_OUTCOME));
-        }
-        if plan == crate::state::ime_set_open_plan::SetOpenPlan::AsyncImmCross {
-            // ── async path (ImmCross が選ばれるアプリ) ──
-            // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックは
-            // INPUT_DEFER へ退避され、SetOpen 進行中に新キーが engine に届かない。
-            //
-            // async 完了前は applied_snapshot が旧値のままなので、同一バッチ内の後続 effect や
-            // 次の判定（`build_ime_control_view` の `shadow_on` 供給、`resolve_warmup_ime_on`）が
-            // 「まだ揃っていない」と誤判断しないよう、楽観的に更新する。
-            // （かつては `send_engine_state_ime_key` のモードキー送信を止める役目もあった。
-            // ADR-207 で撤去したが、上記の消費者があるためこの更新は残す。）
-            self.applied_snapshot = crate::state::AppliedImeState::Optimistic(open);
-            // IMM が set_ime_open_cross_process(open) 完了後に注入する VK_DBE_DBCSCHAR/
-            // VK_DBE_SBCSCHAR KeyUp は key_pipeline の suppress_physical (ImmCross プロファイル
-            // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは applied_snapshot 更新のみ。
-            tracing::debug!("[dispatch-ime] ImmCross async: optimistic applied_snapshot={open}");
-            // ImmCross の set_ime_open_cross_process は IMC_SETOPENSTATUS のみ設定し
-            // conv mode は変更しない。IME がかなモード (conv=0x09) のまま ON になると
-            // NICOLA エンジンが is_romaji_capable=false で起動できない。
-            // MsImeDirectStrategy と同じく ObservedKana 以外なら ROMAN ビットを補完する。
-            // ImmCross アプリは ir_poll_and_learn で ObservedKana の観測を抑制するため
-            // belief は ObservedKana にならず、ここに到達したときは常に補完対象になる。
-            // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
-            // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
-            // （ADR-090 §4.2）。
-            let order = ime
-                .issue_self_actuation_order(open, "engine_decision_async")
-                .with_press(press);
-            let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
-            // ADR-086 §1.2 欠陥1 是正（opus レビュー指摘 2026-08-08）: 「open と
-            // 同じウィンドウへ ROMAN ビットを補完する」という意図を、open/conv を
-            // 別々に検証していたのでは保証できない（open 完了を待つ間にフォーカスが
-            // 動いても ime_mode_focus_gen の更新が遅れるため、conv 側の再検証だけでは
-            // 検知できず無関係な別ウィンドウへ ROMAN が着弾しうる）。起案時点の
-            // focus_gen を捕獲し、実際の verify → open → conv はすべて
-            // set_ime_open_then_conv_for_target 1回に閉じ込めて同一 hwnd を使い回す。
-            let focus_gen = platform.output.ime_mode_focus_gen.get();
-            let conv_after_open: crate::ime::ConvAfterOpen =
-                crate::state::ime_actuation_decision::decide_dispatch_conv_after_open(
-                    (&view).into(),
-                    open,
-                )
-                .into();
-            win32_async::spawn_local(async move {
-                let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
-                    tracing::debug!(
-                        "[dispatch-ime] capture 失敗（フォーカス無し） → UnsafeToToggle"
-                    );
+            SetOpenDispatch::SkipAlreadyClaimed => {
+                Some((open, crate::state::press_ledger::DUPLICATE_OUTCOME))
+            }
+            SetOpenDispatch::SyncChain { outcome } => Some((open, outcome)),
+            SetOpenDispatch::AsyncImmCross { order } => {
+                // ── async path (ImmCross が選ばれるアプリ) ──
+                // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックは
+                // INPUT_DEFER へ退避され、SetOpen 進行中に新キーが engine に届かない。
+                //
+                // async 完了前は applied_snapshot が旧値のままなので、同一バッチ内の後続 effect や
+                // 次の判定（`build_ime_control_view` の `shadow_on` 供給、`resolve_warmup_ime_on`）が
+                // 「まだ揃っていない」と誤判断しないよう、楽観的に更新する。
+                // （かつては `send_engine_state_ime_key` のモードキー送信を止める役目もあった。
+                // ADR-207 で撤去したが、上記の消費者があるためこの更新は残す。）
+                self.applied_snapshot = crate::state::AppliedImeState::Optimistic(open);
+                // IMM が set_ime_open_cross_process(open) 完了後に注入する VK_DBE_DBCSCHAR/
+                // VK_DBE_SBCSCHAR KeyUp は key_pipeline の suppress_physical (ImmCross プロファイル
+                // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは applied_snapshot 更新のみ。
+                tracing::debug!(
+                    "[dispatch-ime] ImmCross async: optimistic applied_snapshot={open}"
+                );
+                // ImmCross の set_ime_open_cross_process は IMC_SETOPENSTATUS のみ設定し
+                // conv mode は変更しない。IME がかなモード (conv=0x09) のまま ON になると
+                // NICOLA エンジンが is_romaji_capable=false で起動できない。
+                // MsImeDirectStrategy と同じく ObservedKana 以外なら ROMAN ビットを補完する。
+                // ImmCross アプリは ir_poll_and_learn で ObservedKana の観測を抑制するため
+                // belief は ObservedKana にならず、ここに到達したときは常に補完対象になる。
+                let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+                // ADR-086 §1.2 欠陥1 是正（opus レビュー指摘 2026-08-08）: 「open と
+                // 同じウィンドウへ ROMAN ビットを補完する」という意図を、open/conv を
+                // 別々に検証していたのでは保証できない（open 完了を待つ間にフォーカスが
+                // 動いても ime_mode_focus_gen の更新が遅れるため、conv 側の再検証だけでは
+                // 検知できず無関係な別ウィンドウへ ROMAN が着弾しうる）。起案時点の
+                // focus_gen を捕獲し、実際の verify → open → conv はすべて
+                // set_ime_open_then_conv_for_target 1回に閉じ込めて同一 hwnd を使い回す。
+                let focus_gen = platform.output.ime_mode_focus_gen.get();
+                let conv_after_open: crate::ime::ConvAfterOpen =
+                    crate::state::ime_actuation_decision::decide_dispatch_conv_after_open(
+                        (&view).into(),
+                        open,
+                    )
+                    .into();
+                win32_async::spawn_local(async move {
+                    let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                        tracing::debug!(
+                            "[dispatch-ime] capture 失敗（フォーカス無し） → UnsafeToToggle"
+                        );
+                        crate::runtime::message_handlers::post_async_ime_apply_complete(
+                            open,
+                            awase::platform::ImeOpenOutcome::UnsafeToToggle,
+                            generation,
+                            crate::state::ime_event::OpenApplyReason::EngineDecision,
+                        );
+                        drop(guard);
+                        return;
+                    };
+                    // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの**要素**として
+                    // 実行する。`Failed` のときのフォールスルー（旧
+                    // `apply_skipping_imm`）は `run_chain_async` が行うため、ここに
+                    // 分岐は書かない（走査規則の SSOT は `state/actuation_chain.rs`）。
+                    let outcome = crate::runtime::open_chain::run_open_chain_async(
+                        order,
+                        crate::runtime::open_chain::ImmCrossOp::Targeted {
+                            target,
+                            conv_after_open,
+                            focus_gen,
+                        },
+                        crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen,
+                        // ADR-163 Part D S-8対応: `site`自体が`DispatchImeSetOpen`
+                        // として一意に識別できるため、追加のラベルは不要。
+                        None,
+                    )
+                    .await;
+                    // sync path（sync_outcomes → dispatch_outcomes → on_ime_apply_complete）と
+                    // 対称に、完了 outcome を WM 経由で Runtime の単一入口へ委譲する。
+                    // spawn_local の future 内で with_app を直接握らないことで再入面を減らし、
+                    // generation 照合を含む B+C+D+E を on_ime_apply_complete に一元化する。
                     crate::runtime::message_handlers::post_async_ime_apply_complete(
                         open,
-                        awase::platform::ImeOpenOutcome::UnsafeToToggle,
+                        outcome,
                         generation,
                         crate::state::ime_event::OpenApplyReason::EngineDecision,
                     );
                     drop(guard);
-                    return;
-                };
-                // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの**要素**として
-                // 実行する。`Failed` のときのフォールスルー（旧
-                // `apply_skipping_imm`）は `run_chain_async` が行うため、ここに
-                // 分岐は書かない（走査規則の SSOT は `state/actuation_chain.rs`）。
-                let outcome = crate::runtime::open_chain::run_open_chain_async(
-                    order,
-                    crate::runtime::open_chain::ImmCrossOp::Targeted {
-                        target,
-                        conv_after_open,
-                        focus_gen,
-                    },
-                    crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen,
-                    // ADR-163 Part D S-8対応: `site`自体が`DispatchImeSetOpen`
-                    // として一意に識別できるため、追加のラベルは不要。
-                    None,
-                )
-                .await;
-                // sync path（sync_outcomes → dispatch_outcomes → on_ime_apply_complete）と
-                // 対称に、完了 outcome を WM 経由で Runtime の単一入口へ委譲する。
-                // spawn_local の future 内で with_app を直接握らないことで再入面を減らし、
-                // generation 照合を含む B+C+D+E を on_ime_apply_complete に一元化する。
-                crate::runtime::message_handlers::post_async_ime_apply_complete(
-                    open,
-                    outcome,
-                    generation,
-                    crate::state::ime_event::OpenApplyReason::EngineDecision,
-                );
-                drop(guard);
-            });
-            None
-        } else {
-            // ── sync path (Chrome / GJI 経路 / TsfNative 経路) ──
-            // ADR-090 §2.A A-1（shadow）。
-            let order = ime
-                .issue_self_actuation_order(open, "engine_decision_sync")
-                .with_press(press);
-            let (outcome, mut record) = platform.apply_ime_open_with_view(order, &view);
-            // 同期の書き込みが何も送らなかったなら予約を解く（同じ押下の次の経路が書ける。async は解けない）。
-            if crate::state::press_ledger::outcome_sent_nothing(outcome) {
-                ime.release_press_write(press, open);
+                });
+                None
             }
-            // /code-review指摘（B-2、PR #201）: `site`は上書きしない——
-            // `decide_attempt`は常に`Sync`で呼ばれておりrecord.siteもSyncの
-            // ままなので、`replay_record`のchain再導出/ImmCross command
-            // 再計算検証を維持できる。呼び出し元の識別は独立の`caller`
-            // フィールドに記録する。
-            record.caller =
-                Some(crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen);
-            ime.journal
-                .record(crate::journal::JournalEntry::ActuationDecision { record });
-            if outcome == awase::platform::ImeOpenOutcome::Failed {
-                tracing::warn!("apply_ime_open({open}) failed");
-            }
-            Some((open, outcome))
         }
     }
 

@@ -1415,26 +1415,15 @@ impl Runtime {
             // 本当に明示意図があったか」を確認するには呼び出し前に読む必要がある。
             let last_intent_before = self.platform_state.ime.explicit_intent();
             self.platform.timer.kill(TIMER_IME_REFRESH);
-            let generation = self.platform_state.ime.allocate_event_generation();
             let tick_ms = crate::state::TickMs(hook::current_tick_ms());
-            // Engine が発行する SetOpen は明示操作（IME/エンジン ON/OFF コンボ等）だけ
-            // （観測・RefreshState 由来の遷移は SetOpen を出さない。ADR-213 P2b/P2c）。
-            // よって `last_intent` を設定し、IntentStore に記録してよい。
-            let applied = self.platform_state.ime.handle_engine_set_open(
+            // generation の払い出し・belief の更新（chord フィルタ）・IntentStore への明示意図の記録
+            // （`applied` のときだけ）はハブの 1 関数（ADR-241 決定2）。Engine が発行する SetOpen は
+            // 明示操作だけ（ADR-213 P2b/P2c）なので記録してよい（理由は `on_engine_set_open_request` の doc）。
+            let applied = self.platform_state.ime.on_engine_set_open_request(
                 new_ime_on,
                 event.modifier_snapshot.ctrl,
-                generation,
                 tick_ms,
             );
-            if applied {
-                // IntentStore（BUG-51 追補 v3）。`applied` ゲートは v1 の意味論（chord/focus-settle
-                // フィルタ（chord のみ）で belief 書き込み自体がスキップされた場合は記録しない）をそのまま保存する。
-                self.platform_state.ime.record_explicit_intent(
-                    new_ime_on,
-                    crate::state::ime_event::UserIntentSource::Command,
-                    tick_ms,
-                );
-            }
             // 2026-08-05: 実機再発報告（IME OFF 後 FocusChange 無しで Engine が勝手に
             // ON へ戻る）の切り分けのため debug → info に格上げし、遷移直前の
             // last_intent 内訳を追加した。この分岐は Engine の active/inactive が実際に

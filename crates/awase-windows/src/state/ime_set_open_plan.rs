@@ -4,9 +4,10 @@
 //! 判断（何を・どの経路で・省くか、その理由）だけを純粋関数に出し、殻（executor）は
 //! Facts を作る（shell-in）→ ここで決める → 実行する（shell-out）だけにする。
 //!
-//! gate（InputRelay、`decide_gate` の結果 `GateResult`。ADR-119/180、BUG-90 決定4）は殻が先に見て、
+//! gate（InputRelay、`decide_gate` の結果 `GateResult`。ADR-119/180、BUG-90 決定4）は呼び出し元が先に見て、
 //! `NotOwned` ならここへ来ない。**claim は `ImeStateHub` の台帳を書き換える**ため、gate が `NotOwned` のときは呼んではならず
-//! （元の挙動: 書かない窓では予約しない）、gate の後にしか Facts が揃わない。この順序は殻が守り、
+//! （元の挙動: 書かない窓では予約しない）、gate の後にしか Facts が揃わない。この順序は呼び出し元
+//! （ADR-241 決定2 で殻から核の `state/sync_actuation.rs::dispatch_set_open` へ移した）が守り、
 //! [`plan_set_open`] は claim の結果と `imm_first` から、省く／async／sync を決める。
 //!
 //! 3 関数（`open_chain.rs` の `imm_cross_write`/`fallback_write`/`run_open_chain_async`）が各自 gate を再検出する設計

@@ -1247,11 +1247,10 @@ fn record_explicit_intent_call_sites_are_limited_to_real_user_actions() {
     const NEEDLE: &str = "record_explicit_intent(";
     let known_sites: &[(&str, usize)] = &[
         // write_sync_key / write_physical_key（どちらも `IntentWitness` が
-        // 「注入されていない実キーイベント」を型で要求する）。
-        ("src/state/platform_state.rs", 2),
-        // kp_stage_post_decision の `SetOpenOrigin::ExplicitUserAction` 分岐
-        // （`applied == true` のときのみ）。
-        ("src/runtime/key_pipeline.rs", 1),
+        // 「注入されていない実キーイベント」を型で要求する）と、
+        // on_engine_set_open_request（Engine の明示 SetOpen、`applied == true` のときのみ。
+        // ADR-241 決定2 で `kp_stage_post_decision` から移した。呼び出し元は下で固定する）。
+        ("src/state/platform_state.rs", 3),
     ];
 
     let all_files = list_src_files();
@@ -1279,6 +1278,32 @@ fn record_explicit_intent_call_sites_are_limited_to_real_user_actions() {
          IntentStore への記録は「本物のユーザー操作」に限定される（BUG-51 追補 v3、\
          pre-mortem #1 角度2）。conv 由来の内部同期（`EngineSync::DirectInput`（ADR-185で撤去済み） 等が \
          `UserImeSetIntent{{Command}}` を dispatch する経路）からは呼ばないこと。"
+    );
+
+    // `on_engine_set_open_request`（3 件目の記録元）を呼べるのは、Engine の決定を受ける
+    // `kp_stage_post_decision` の 1 か所だけ（旧来の「key_pipeline.rs に 1 件」と同じ意味、ADR-241）。
+    let mut entry_sites: Vec<(String, usize)> = Vec::new();
+    for path in &all_files {
+        let content = read_crate_file(path);
+        let count = count_real_calls(
+            production_code_only(&content),
+            "on_engine_set_open_request(",
+        );
+        if count > 0 {
+            entry_sites.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        entry_sites,
+        vec![("src/runtime/key_pipeline.rs".to_string(), 1)],
+        "`on_engine_set_open_request(` の呼び出し元は key_pipeline.rs の 1 か所だけ。実際: {entry_sites:?}"
+    );
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let post = extract_fn_body(production_code_only(&kp), "fn kp_stage_post_decision(");
+    assert_eq!(
+        count_real_calls(post, "on_engine_set_open_request("),
+        1,
+        "`on_engine_set_open_request(` は kp_stage_post_decision の中で呼ぶこと"
     );
 }
 
@@ -2024,7 +2049,11 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // （表 #6、force-ON 実送信の内部委譲元）も撤去し、3→2に戻った。
         // **2026-10-02（ADR-216 R3）**: drift correction の薄いラッパーを
         // インライン化したため、直接呼び出し元の内訳だけが変わった。
-        (".apply_ime_open_with_view(", 2),
+        // **2026-10-07（ADR-241 決定2）**: executor の Engine の SetOpen は、判断ごと核の
+        // `state::sync_actuation::dispatch_set_open` へ移り、核の `apply_sync`（同期経路の唯一の合流点）を
+        // 直接呼ぶようになったため 2→1（残りは drift correction）。合流点への呼び出し元は
+        // `sync_confluence_entries_are_pinned_for_adr241` が固定する。
+        (".apply_ime_open_with_view(", 1),
         // ADR-098 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
         // TsfNative 強制 ON ブロック）を撤去し、メソッド自体も削除した。
         (".apply_ime_open_with_applied(", 0),
@@ -3201,14 +3230,40 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
          チェーン外から 1 機構分の実 write を起こす経路を増やさないでください。"
     );
 
-    // 2. 同期側の 1 件は `impl MechanismWriter for SyncChainWriter` の中にある。
+    // 2. 同期側の 1 件は送信口 `impl CommandSink for ShellCommandSink` の中にあり、その送信口
+    //    （`send_command(`）を呼ぶのは核の同期チェーンの writer（`impl MechanismWriter for CoreSyncWriter`、
+    //    `run_chain` が駆動する write ステップ）だけ（ADR-241 決定2。旧 `SyncChainWriter::write` を
+    //    核の writer と殻の送信口に分けた）。
     let controller = read_crate_file("src/ime_controller.rs");
-    let sync_writer = extract_fn_body(&controller, "impl MechanismWriter for SyncChainWriter");
+    let sync_sink = extract_fn_body(&controller, "impl CommandSink for ShellCommandSink");
     assert_eq!(
-        count_real_calls(sync_writer, "apply_mechanism("),
+        count_real_calls(sync_sink, "apply_mechanism("),
         1,
         "`ime_controller.rs` の `apply_mechanism(` は \
-         `impl MechanismWriter for SyncChainWriter` の中にあること（ADR-089 §2.3）"
+         `impl CommandSink for ShellCommandSink` の中にあること（ADR-089 §2.3、ADR-241）"
+    );
+    let mut send_sites: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let count = count_real_calls(production_code_only(&content), ".send_command(");
+        if count > 0 {
+            send_sites.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        send_sites,
+        vec![("src/state/sync_actuation.rs".to_string(), 1)],
+        "送信口の `.send_command(` を呼ぶのは核の `CoreSyncWriter::write` だけ（ADR-241）。実際: {send_sites:?}"
+    );
+    let core = read_crate_file("src/state/sync_actuation.rs");
+    let core_writer = extract_fn_body(
+        production_code_only(&core),
+        "MechanismWriter for CoreSyncWriter",
+    );
+    assert_eq!(
+        count_real_calls(core_writer, ".send_command("),
+        1,
+        "`state/sync_actuation.rs` の `.send_command(` は `impl MechanismWriter for CoreSyncWriter` の中にあること"
     );
 
     // 3. 非同期側の 1 件は `fallback_write` の中にあり、その `fallback_write` は
@@ -3233,26 +3288,30 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
          外から呼ばないこと（ADR-089 §2.3）"
     );
 
-    // 4. 並行する裏口（`ImeOpenStrategy::apply` の直接呼び出し）が塞がれていること。
-    //    `pub(crate) struct GjiDirectStrategy` のままだと、crate 内のどこからでも
-    //    `GjiDirectStrategy.apply(open, &view)` と書けば `apply_mechanism` を
-    //    経由せずに同じ実 write を起こせる。可視性はコンパイラが強制するので、
-    //    ここで固定するのは「宣言を再び `pub` へ広げないこと」だけでよい。
-    for decl in [
-        "trait ImeOpenStrategy",
-        "struct ImmCrossProcessStrategy",
-        "struct GjiDirectStrategy",
-        "struct MsImeDirectStrategy",
-    ] {
-        let line = controller
-            .lines()
-            .find(|line| line.contains(decl) && !line.trim_start().starts_with("//"))
-            .unwrap_or_else(|| panic!("`{decl}` の宣言が `ime_controller.rs` に見つかりません"));
-        assert!(
-            !line.trim_start().starts_with("pub"),
-            "`{decl}` は `ime_controller.rs` の外へ出さないこと（ADR-089 §2.3）。\
-             実際の宣言: {line}"
-        );
+    // 4. 並行する裏口（戦略の型の `apply` の直接呼び出し）が無いこと。
+    //    旧 `ImeOpenStrategy` と 3 つの戦略の型は、`is_applicable` だけを持つ型になった後、
+    //    ADR-241 決定2 で核の `state::sync_actuation::mechanism_applicable` へ移して撤去した。
+    //    戦略の型（特に `pub(crate)` のもの）が復活すると、`apply_mechanism` を経由せずに
+    //    1 機構分の実 write を起こす口になりうるので、宣言の再導入を禁じる（旧ガードは「宣言を
+    //    `pub` へ広げないこと」だった。型そのものが無いので、より強い）。
+    for path in &files {
+        let content = read_crate_file(path);
+        for decl in [
+            "trait ImeOpenStrategy",
+            "struct ImmCrossProcessStrategy",
+            "struct GjiDirectStrategy",
+            "struct MsImeDirectStrategy",
+        ] {
+            let live = content
+                .lines()
+                .filter(|line| line.contains(decl) && !line.trim_start().starts_with("//"))
+                .count();
+            assert_eq!(
+                live, 0,
+                "{path}: `{decl}` を再導入しないこと（ADR-089 §2.3・ADR-241。適用可否は \
+                 `state::sync_actuation::mechanism_applicable`、実 write は `apply_mechanism`）"
+            );
+        }
     }
 }
 
@@ -4831,6 +4890,10 @@ fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
         // 3箇所のリテラル比較を`decide_gate`呼び出しへ置き換えたため、
         // 本番コードの`InputRelay`出現は7から4（周辺コメント分）に減る。
         ("src/runtime/open_chain.rs", 4),
+        // ADR-241 決定2: `ImeController::apply` の本体と executor の早期 gate を核へ移した。
+        // 本番コードの出現はモジュール doc・`apply_sync` の gate の説明・`SetOpenDispatch::NotOwned` の doc の 3 件
+        // （gate の呼び出し自体は `decide_gate_wiring_occurrence_counts_are_pinned` が関数ごとに固定する）。
+        ("src/state/sync_actuation.rs", 3),
     ];
     for (path, expected) in expectations {
         let content = read_crate_file(path);
@@ -4992,10 +5055,69 @@ fn hook_state_struct_has_exactly_one_mutex_field() {
 /// `.await`境界のうち1つがgate呼び出しを失っても検知できなくなる
 /// （round1 C6が指摘した退行）。そのため`open_chain.rs`側は関数別に
 /// `is_input_relay(`の出現数を固定する形へ作り替えた。
+/// ADR-241 決定2: 同期経路の唯一の合流点（核の `state::sync_actuation::apply_sync`）と、executor の判断の核
+/// （`dispatch_set_open`）の呼び出し元を固定する。
+///
+/// 旧来は `ImeController::apply` が唯一の合流点で、`.apply_ime_open_with_view(` の件数（executor・drift の 2）と
+/// `RESTRICTED_CALLS` がその呼び出し元を固定していた。判断を核へ移したので、合流点そのもの（`apply_sync`）の
+/// 呼び出し元を関数単位で固定する: 殻の `ImeController::apply`（drift correction・shadow toggle が通る）と
+/// 核の `dispatch_set_open`（executor の Engine の SetOpen）の 2 つだけ。3 本目の呼び出し元を足すときは、
+/// gate と押下の予約の配線（`fix-requires-evidence.md` の「IME actuation 合流点」）を確かめてから更新すること。
+/// 送信口（`ShellCommandSink`）を作るのも同じ 2 つの殻だけ（送信口を他で作ると、核を通らない送信の口になりうる）。
+#[test]
+fn sync_confluence_entries_are_pinned_for_adr241() {
+    let files = list_src_files();
+    let breakdown = |needle: &str| {
+        let mut sites: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let count = count_real_calls(production_code_only(&content), needle);
+            if count > 0 {
+                sites.push((path.clone(), count));
+            }
+        }
+        sites.sort();
+        sites
+    };
+    let expected = |sites: &[(&str, usize)]| -> Vec<(String, usize)> {
+        sites.iter().map(|(p, c)| ((*p).to_string(), *c)).collect()
+    };
+    assert_eq!(
+        breakdown("apply_sync("),
+        expected(&[("src/ime_controller.rs", 1), ("src/state/sync_actuation.rs", 1)]),
+        "`apply_sync(` の呼び出し元は `ImeController::apply` と `dispatch_set_open` の 2 つだけ（ADR-241）"
+    );
+    assert_eq!(
+        breakdown("dispatch_set_open("),
+        expected(&[("src/runtime/executor.rs", 1)]),
+        "`dispatch_set_open(` の呼び出し元は executor の `dispatch_ime_set_open` だけ（ADR-241）"
+    );
+    assert_eq!(
+        breakdown("ShellCommandSink::new("),
+        expected(&[("src/ime_controller.rs", 1), ("src/runtime/executor.rs", 1)]),
+        "送信口 `ShellCommandSink` を作るのは `ImeController::apply` と `dispatch_ime_set_open` だけ（ADR-241）"
+    );
+    let controller = read_crate_file("src/ime_controller.rs");
+    let apply = extract_fn_body(production_code_only(&controller), "pub(crate) fn apply(");
+    assert_eq!(count_real_calls(apply, "apply_sync("), 1);
+    let core = read_crate_file("src/state/sync_actuation.rs");
+    let dispatch = extract_fn_body(production_code_only(&core), "fn dispatch_set_open");
+    assert_eq!(count_real_calls(dispatch, "apply_sync("), 1);
+    let executor = read_crate_file("src/runtime/executor.rs");
+    let shell = extract_fn_body(production_code_only(&executor), "fn dispatch_ime_set_open(");
+    assert_eq!(count_real_calls(shell, "dispatch_set_open("), 1);
+}
+
 #[test]
 fn decide_gate_wiring_occurrence_counts_are_pinned() {
-    let direct_decide_gate: &[(&str, usize)] =
-        &[("src/ime_controller.rs", 1), ("src/runtime/executor.rs", 1)];
+    // ADR-241 決定2: `ImeController::apply` の gate は核の `apply_sync` へ、executor の早期 gate は核の
+    // `dispatch_set_open` へ移した（どちらも挙動を変えない移動）。殻の 2 ファイルは 0 になり、核に 2 件。
+    // 2 件がそれぞれの関数の中にあることは下で関数ごとに固定する。
+    let direct_decide_gate: &[(&str, usize)] = &[
+        ("src/ime_controller.rs", 0),
+        ("src/runtime/executor.rs", 0),
+        ("src/state/sync_actuation.rs", 2),
+    ];
     for (path, expected) in direct_decide_gate {
         let content = read_crate_file(path);
         let production = strip_any_test_module(&content);
@@ -5007,6 +5129,18 @@ fn decide_gate_wiring_occurrence_counts_are_pinned() {
              InputRelayゲート（issue #136/BUG-90決定4）の呼び出し元が \
              増減していないか確認すること。意図した変更ならこのテストの \
              期待値を更新すること。"
+        );
+    }
+
+    let core = read_crate_file("src/state/sync_actuation.rs");
+    let core_production = strip_any_test_module(&core);
+    for fn_signature_needle in ["fn apply_sync", "fn dispatch_set_open"] {
+        let body = extract_fn_body(core_production, fn_signature_needle);
+        assert_eq!(
+            body.matches("decide_gate(").count(),
+            1,
+            "src/state/sync_actuation.rs の `{fn_signature_needle}` は InputRelay の gate（`decide_gate(`）を \
+             ちょうど 1 回呼ぶこと（issue #136/BUG-90 決定4、ADR-241）"
         );
     }
 
@@ -6518,23 +6652,45 @@ fn conv_engine_sync_has_no_apply_requested_generation_or_timer_kill() {
 /// drift correction（`runtime/ime_refresh.rs`）は押下に由来しないので `press=None` のまま（`with_press` を呼ばない）。
 #[test]
 fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
-    // Engine 経由（executor）。async/sync の 2 order すべてが press を載せる。
+    // Engine 経由（executor の `dispatch_ime_set_open`）。判断は ADR-241 決定2 で核の
+    // `state::sync_actuation::dispatch_set_open` へ移した。殻は核を呼ぶだけで、自分では予約も order の発行もしない。
     let executor = read_crate_file("src/runtime/executor.rs");
-    let body = extract_fn_body(production_code_only(&executor), "fn dispatch_ime_set_open(");
+    let shell = non_comment_lines(extract_fn_body(
+        production_code_only(&executor),
+        "fn dispatch_ime_set_open(",
+    ));
+    assert_eq!(
+        shell.matches("dispatch_set_open(").count(),
+        1,
+        "dispatch_ime_set_open は核の `dispatch_set_open` を 1 回だけ呼ぶこと（ADR-241）"
+    );
+    for forbidden in [
+        "claim_press_write(",
+        "with_press(",
+        "issue_self_actuation_order(",
+    ] {
+        assert!(
+            !shell.contains(forbidden),
+            "dispatch_ime_set_open（殻）に `{forbidden}` があります。予約と order の発行は核の dispatch_set_open で行う（ADR-241）"
+        );
+    }
+    // 核。async/sync の 2 order すべてが press を載せる。
+    let core = read_crate_file("src/state/sync_actuation.rs");
+    let body = extract_fn_body(production_code_only(&core), "fn dispatch_set_open");
     let code = non_comment_lines(body);
     assert_eq!(
         code.matches("claim_press_write(").count(),
         1,
-        "dispatch_ime_set_open は order の発行前に `claim_press_write` を 1 回だけ呼ぶこと（ADR-208 D1）"
+        "dispatch_set_open は order の発行前に `claim_press_write` を 1 回だけ呼ぶこと（ADR-208 D1）"
     );
     assert_eq!(
         code.matches(".with_press(press)").count(),
         2,
-        "dispatch_ime_set_open の async/sync 両方の order に `.with_press(press)` を載せること（ADR-208 D1）"
+        "dispatch_set_open の async/sync 両方の order に `.with_press(press)` を載せること（ADR-208 D1）"
     );
     assert!(
         code.contains("explicit_press_applied_pair("),
-        "dispatch_ime_set_open は view の shadow_on を `explicit_press_applied_pair` で未知にすること（ADR-208 D1）"
+        "dispatch_set_open は決定入力の shadow_on を `explicit_press_applied_pair` で未知にすること（ADR-208 D1）"
     );
     // shadow toggle（key_pipeline）。
     let kp = read_crate_file("src/runtime/key_pipeline.rs");

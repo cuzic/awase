@@ -523,7 +523,7 @@ fn fallback_write(
             );
             (
                 command,
-                crate::ime_controller::apply_mechanism(mechanism, open, &view),
+                crate::ime_controller::apply_mechanism(mechanism, command, open, &view),
             )
         } else {
             // ADR-117: ImmCross Failed → フォールスルーしたが結局どの機構にも
@@ -651,7 +651,7 @@ pub(crate) async fn run_open_chain_async(
     // なお `order` は起案時点の状態に基づくのに write は完了時点で起きる。
     // await をまたいだ失効の扱いは warrant ではなく**チェーンの再抽選**
     // （ADR-090 項 D、実機ソーク必須のため未実装）で行う。
-    crate::ime_controller::log_shadow_warrant("async", &order);
+    crate::state::sync_actuation::log_shadow_warrant("async", &order);
     // S-5: `order`を`into_actuation()`で消費する前に、記録に必要な
     // 3値だけを`ActuationOrderRecord`として退避する（`order.clone()`で
     // warrantを複製しない）。

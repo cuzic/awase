@@ -142,12 +142,12 @@ pub(crate) struct ImeControlView<'a> {
 
 impl From<&ImeControlView<'_>> for crate::state::ime_actuation_decision::DecisionInputs {
     fn from(view: &ImeControlView<'_>) -> Self {
-        Self {
-            profile: view.focus.profile,
-            kind: view.observed.active_ime_kind.into(),
-            shadow_on: view.control.shadow_on,
-            belief_input_mode: view.belief_input_mode,
-            candidate_was_seen: view.observed.candidate_was_seen,
-        }
+        Self::from_facts(
+            view.focus.profile,
+            view.observed.active_ime_kind.into(),
+            view.control.shadow_on,
+            view.belief_input_mode,
+            view.observed.candidate_was_seen,
+        )
     }
 }
