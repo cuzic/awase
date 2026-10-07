@@ -7,7 +7,7 @@ summary: |-
   原因は 3 つ: (1) 共通の約束が、セッション限りの scratchpad の指示書(impl-brief.md)と FCIS のタスク表(docs/tasks/fcis-layering-tasks-2026-10-06.md の §0・V2)に散らばり、自動では読み込まれず、指示書の中でも食い違っていた(21 行目は `--no-verify`、手順 3 の 31 行目は `git push -u` のまま)。(2) 一時停止・取り消しは、作業中のエージェントに届く前に PR 作成まで進むことがある。(3) 報告や主張の直前に、今の状態を確かめていない。
   決定: 新しい機構は足さない。`.claude/rules/agent-handoff.md`(25 行以内)に、FCIS に依存しない汎用の約束だけを置く: PR 本文の取り違え防止・DIRTY の確認・報告と主張の独立な再確認(ADR-242 の規約をこの 1 項目に畳む)・レビュー指摘への返信の形・取り消しの書き方と後始末・push の仕方(team-lead が起動したエージェントのみ)・指示書の仕様は最新版を引用。FCIS 固有の項目(CORE_MODULES・mutants)はタスク表の V2 に残す。pre-push フックは変えない。
 status: |-
-  提案(起草中、Opus round1〈Blocker 0・Must 4・Should 6・Nit 3〉・round2〈Must 2・Should 3・Nit 2、ADR-242 9a85aa9a との食い違い〉を反映、round3 は付録の該当行の確認のみ)
+  採用(2026-10-06、所有者承認、第 1 段階実施)。`.claude/rules/agent-handoff.md` を導入(ADR-243 の規約 3 に ADR-242 の D1 を含む、pre-push は変えず規約で `--no-verify`、適用は AI エージェントのセッションのみ)。経緯: 提案(起草中、Opus round1〈Blocker 0・Must 4・Should 6・Nit 3〉・round2〈Must 2・Should 3・Nit 2、ADR-242 9a85aa9a との食い違い〉を反映、round3 は付録の該当行の確認のみ)
 related_adr:
   - "ADR-229"
   - "ADR-236"
