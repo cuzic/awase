@@ -551,6 +551,7 @@ const CORE_MODULES: &[&str] = &[
     "scoped_latch",
     "snapshot_input_mode",
     "state_dependent_key_warning",
+    "sync_actuation",
     "transition",
     "warm_send_plan",
     "win_key_guard",

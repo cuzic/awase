@@ -1265,7 +1265,7 @@ impl WindowsPlatform {
         &mut self,
         order: crate::state::actuation_chain::ActuationOrder,
     ) -> bool {
-        crate::ime_controller::log_shadow_warrant("set_ime_open", &order);
+        crate::state::sync_actuation::log_shadow_warrant("set_ime_open", &order);
         let open = order.open();
         // `order` は**値で**受け取り、ここで消費する。1 つの `ActuationOrder`
         // = 高々 1 回の write という `Actuation` のアフィン性（ADR-089 INV-41）を、

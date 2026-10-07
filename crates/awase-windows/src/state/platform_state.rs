@@ -757,6 +757,30 @@ impl ImeStateHub {
         true
     }
 
+    /// Engine の明示 `SetOpen` を受けたときの belief 側の処理（旧 `runtime/key_pipeline.rs::kp_stage_post_decision`
+    /// の SetOpen の部分、ADR-241 決定2）。
+    ///
+    /// generation を払い出して [`Self::handle_engine_set_open`] を呼び、適用されたときだけ IntentStore に
+    /// `Command` の明示意図を記録する（BUG-51 追補 v3。chord フィルタで belief の書き込み自体がスキップされた場合は
+    /// 記録しない）。Engine が発行する `SetOpen` は明示操作（IME/エンジン ON/OFF コンボ等）だけ
+    /// （観測・RefreshState 由来の遷移は `SetOpen` を出さない。ADR-213 P2b/P2c）なので、記録してよい。
+    /// 記録は**授権に効く**（`issue_self_actuation_order` の warrant は IntentStore を読む）。
+    ///
+    /// 戻り値: 適用されたか（`handle_engine_set_open` の戻り値）。
+    pub(crate) fn on_engine_set_open_request(
+        &mut self,
+        target: bool,
+        ctrl_held: bool,
+        tick_ms: TickMs,
+    ) -> bool {
+        let generation = self.allocate_event_generation();
+        let applied = self.handle_engine_set_open(target, ctrl_held, generation, tick_ms);
+        if applied {
+            self.record_explicit_intent(target, UserIntentSource::Command, tick_ms);
+        }
+        applied
+    }
+
     /// Ctrl 系 KeyUp で chord barrier を解除する。
     ///
     /// パイプラインが chord 状態を直接参照しなくて済むよう、
@@ -1183,6 +1207,49 @@ impl ImeStateHub {
         let target = self.shadow_model.current_focus().unwrap_or(HwndId::NULL);
         let ctx = self.warrant_context(now, now_ms);
         super::actuation_chain::ActuationOrder::issue(open, target, &ctx, origin)
+    }
+
+    /// awase 自身の actuation（`EventSource::SelfActuated`）の order を、ハブの時計で起案する
+    /// （ADR-090 §2.A A-1、INV-47）。
+    ///
+    /// executor の `DecisionExecutor` は `Runtime` を持たないため `Runtime::issue_actuation_order` を使えないが、
+    /// 4 つの公開入口（`execute_from_hook` / `execute_from_loop` / `drain_deferred` / `on_output_guard_timer`）が
+    /// **既に `ime: &mut ImeStateHub` を受け取っている**ので、それを `dispatch_ime_set_open`（核の
+    /// `state::sync_actuation::dispatch_set_open`）まで通すだけで warrant を発行できる。
+    ///
+    /// **`crate::with_app` で `ImeStateHub` を取りに行ってはならない**——呼び出し元は
+    /// 既に `with_app` の内側であり、再入すると panic せず `None` が返る。
+    /// つまり「取れなかった」ことと「授権が下りなかった」が区別できない形で
+    /// 静かに落ち、A-1 の shadow ログが測ろうとしている当のものが汚染される
+    /// （ADR-090 §2.A.2(1)・§4.2）。
+    ///
+    /// 時刻はハブの時計（実機は `Instant::now()` と `hook::current_tick_ms()` を読む実時計、
+    /// `state/platform_state/shell.rs`）。ADR-241 決定2 で `runtime/executor.rs` から移した（挙動は変えていない）。
+    ///
+    /// # 似た名前のメソッドとの違い（意図的に区別すること）
+    ///
+    /// - [`Self::issue_actuation_order`]: 最下層。`origin`/`now`/`now_ms` を呼び出し元が組み立てて渡す。
+    ///   本メソッドの実装はこれをそのまま呼ぶ。
+    /// - `Runtime::issue_actuation_order` / `Runtime::issue_actuation_order_with_origin`
+    ///   （`runtime/mod.rs`）: `Runtime` を持つ呼び出し元向けの同型の便利メソッド。
+    ///   本メソッドはそれの `ImeStateHub` 版（`Runtime` を持たない `DecisionExecutor` 用）であり、
+    ///   **ロジックは意図的に重複している**（統合すると `DecisionExecutor` に `Runtime` 依存を持ち込む）。
+    ///
+    /// 2026-09-10、自由関数`issue_order`からメソッドへ変更した際、`Runtime::
+    /// issue_actuation_order`と紛らわしいと指摘を受け`issue_self_actuation_order`
+    /// にリネームした（常に`EventSource::SelfActuated`を組み立てることを名前に反映）。
+    pub(crate) fn issue_self_actuation_order(
+        &self,
+        open: bool,
+        strategy: &'static str,
+    ) -> super::actuation_chain::ActuationOrder {
+        let origin = super::event_origin::EventOrigin::new(
+            super::event_origin::EventSource::SelfActuated { strategy },
+            super::event_origin::Generation::INITIAL,
+        );
+        let now = self.clock.now_instant();
+        let now_ms = TickMs(self.clock.now_tick());
+        self.issue_actuation_order(open, origin, now, now_ms)
     }
 
     // ── Desired state / drift correction ──
@@ -2381,6 +2448,42 @@ mod tests {
             "デフォルトキーバインド経由の明示 IME OFF が \
              Imm32Unavailable cache-miss ガードから漏れないこと"
         );
+    }
+
+    // ── on_engine_set_open_request（ADR-241 決定2、旧 kp_stage_post_decision の SetOpen の部分）──
+
+    /// 適用された要求は IntentStore に `Command` の明示意図を記録する（授権の根拠になる）。
+    #[test]
+    fn engine_set_open_request_records_intent_when_applied() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, HwndId(7), 1, BASE_TICK);
+        assert!(ps
+            .ime
+            .on_engine_set_open_request(false, false, TickMs(BASE_TICK)));
+        let intent = ps.ime.intent_store.lookup(HwndId(7), TickMs(BASE_TICK));
+        let intent = intent.expect("適用された明示 OFF は IntentStore に記録される");
+        assert!(!intent.open);
+        assert_eq!(intent.source, UserIntentSource::Command);
+    }
+
+    /// chord フィルタで落ちた要求（Ctrl を押したままの 2 回目の OFF）は記録しない。
+    #[test]
+    fn engine_set_open_request_filtered_by_chord_records_nothing() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, HwndId(7), 1, BASE_TICK);
+        let generation = ps.ime.allocate_event_generation();
+        assert!(ps
+            .ime
+            .handle_engine_set_open(false, true, generation, TickMs(BASE_TICK)));
+        assert!(ps.ime.is_ctrl_ime_chord_active());
+        assert!(!ps
+            .ime
+            .on_engine_set_open_request(false, true, TickMs(BASE_TICK)));
+        assert!(ps
+            .ime
+            .intent_store
+            .lookup(HwndId(7), TickMs(BASE_TICK))
+            .is_none());
     }
 
     // ── release_panic_reset_guard_on_positive_evidence（ADR-213 P2d-1）: ──

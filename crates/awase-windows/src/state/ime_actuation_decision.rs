@@ -54,6 +54,29 @@ pub struct DecisionInputs {
     pub candidate_was_seen: bool,
 }
 
+impl DecisionInputs {
+    /// 殻が集めた事実から決定入力を作る（ADR-241 決定2。殻の `From<&ImeControlView>` はこれを呼ぶ）。
+    ///
+    /// 全フィールドを引数で要求する。BUG-141 は view からの変換が `candidate_was_seen` を写していなかったことが
+    /// 根本原因で、変換を核のこの 1 か所に置いて Linux の単体テストで固定する。
+    #[must_use]
+    pub(crate) const fn from_facts(
+        profile: AppImeProfile,
+        kind: ImeKindId,
+        shadow_on: Option<bool>,
+        belief_input_mode: InputModeState,
+        candidate_was_seen: bool,
+    ) -> Self {
+        Self {
+            profile,
+            kind,
+            shadow_on,
+            belief_input_mode,
+            candidate_was_seen,
+        }
+    }
+}
+
 /// `ImeController::apply`/`run_open_chain_async`/`dispatch_ime_set_open`冒頭の
 /// InputRelayゲートの判定結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,6 +416,35 @@ mod tests {
             belief_input_mode,
             candidate_was_seen: false,
         }
+    }
+
+    /// `from_facts` は各引数をそのフィールドへ写す（BUG-141: `candidate_was_seen` の写し漏れ）。
+    #[test]
+    fn from_facts_copies_every_fact_into_its_field() {
+        let i = DecisionInputs::from_facts(
+            AppImeProfile::TsfNative,
+            ImeKindId::Gji,
+            Some(false),
+            InputModeState::ObservedKana,
+            true,
+        );
+        assert_eq!(i.profile, AppImeProfile::TsfNative);
+        assert_eq!(i.kind, ImeKindId::Gji);
+        assert_eq!(i.shadow_on, Some(false));
+        assert_eq!(i.belief_input_mode, InputModeState::ObservedKana);
+        assert!(i.candidate_was_seen);
+        let j = DecisionInputs::from_facts(
+            AppImeProfile::Standard,
+            ImeKindId::MsIme,
+            None,
+            InputModeState::Unknown,
+            false,
+        );
+        assert!(!j.candidate_was_seen);
+        assert_eq!(
+            (j.profile, j.kind, j.shadow_on),
+            (AppImeProfile::Standard, ImeKindId::MsIme, None)
+        );
     }
 
     // ── decide_gate ──────────────────────────────────────────────────────

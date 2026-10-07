@@ -15,6 +15,14 @@ related_adr: []
 
 ## ステータス
 
+**追記（2026-10-07、ADR-241 決定2）**: 本 ADR が「同期経路の唯一の合流点」とした `ImeController::apply` の本体
+（gate → 授権 → 機構チェーン → 記録の組み立て）は、挙動を変えずに核の `state/sync_actuation.rs::apply_sync` へ移した。
+同期経路の唯一の合流点は `apply_sync` で、呼び出し元は殻の `ImeController::apply`（drift correction・shadow toggle）と、
+executor の判断を移した核の `dispatch_set_open` の 2 つ。InputRelay の gate は `apply_sync` の先頭で必ず効き、
+executor 入口の早期 gate も `dispatch_set_open` に残る（非同期の 3 関数〈ADR-180 の INV-45〉は変えていない）。
+呼び出し元の固定は `RESTRICTED_CALLS`（`apply_sync`・`dispatch_set_open`）と
+`tests/architecture_guard.rs::sync_confluence_entries_are_pinned_for_adr241`。
+
 **実装済み（2026-09、Opus 2体の敵対的議論 + Cloudflare R2実データ検証 + コードレビュー2周を経て決定）。**
 [GitHub Issue #136](https://github.com/cuzic/awase/issues/136)（PowerToys「境界線のないマウス」
 (Mouse Without Borders, MWB) 経由でIME ON/OFFが効かない）に対応。`docs/known-bugs.md` BUG-90
