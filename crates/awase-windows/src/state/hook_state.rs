@@ -103,3 +103,75 @@ impl Default for SyncKeyGate {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awase::engine::input_tracker::PhysicalKeyState;
+    use awase::types::{ImeRelevance, KeyClassification, KeyEventType, ModifierState, ScanCode};
+
+    fn key(vk: u16) -> RawKeyEvent {
+        RawKeyEvent {
+            was_down: false,
+            press_id: None,
+            vk_code: VkCode(vk),
+            scan_code: ScanCode(0),
+            event_type: KeyEventType::KeyDown,
+            extra_info: 0,
+            timestamp: 0,
+            key_classification: KeyClassification::Passthrough,
+            physical_pos: None,
+            ime_relevance: ImeRelevance::default(),
+            modifier_key: None,
+            modifier_snapshot: ModifierState::default(),
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
+            injected: false,
+        }
+    }
+
+    #[test]
+    fn inactive_gate_rejects_push_and_holds_nothing() {
+        let mut gate = SyncKeyGate::new();
+        assert!(!gate.is_active());
+        assert!(!gate.try_push(key(1), PhysicalKeyState::empty()));
+        assert!(!gate.has_deferred_keys());
+    }
+
+    #[test]
+    fn deactivate_returns_held_keys_in_order() {
+        let mut gate = SyncKeyGate::new();
+        gate.activate();
+        assert!(gate.is_active());
+        assert!(!gate.has_deferred_keys());
+        assert!(gate.try_push(key(1), PhysicalKeyState::empty()));
+        assert!(gate.try_push(key(2), PhysicalKeyState::empty()));
+        assert!(gate.has_deferred_keys());
+
+        let drained: Vec<VkCode> = gate.deactivate().iter().map(|(e, _)| e.vk_code).collect();
+        assert_eq!(drained, vec![VkCode(1), VkCode(2)]);
+        assert!(!gate.is_active());
+        assert!(!gate.has_deferred_keys());
+    }
+
+    #[test]
+    fn push_beyond_capacity_returns_false() {
+        let mut gate = SyncKeyGate::new();
+        gate.activate();
+        for vk in 0..SYNC_KEY_CAPACITY {
+            assert!(gate.try_push(key(vk as u16), PhysicalKeyState::empty()));
+        }
+        assert!(!gate.try_push(key(99), PhysicalKeyState::empty()));
+    }
+
+    #[test]
+    fn clear_drops_held_keys_and_deactivates() {
+        let mut gate = SyncKeyGate::new();
+        gate.activate();
+        assert!(gate.try_push(key(1), PhysicalKeyState::empty()));
+        gate.clear();
+        assert!(!gate.is_active());
+        assert!(!gate.has_deferred_keys());
+        assert!(gate.deactivate().is_empty());
+    }
+}
