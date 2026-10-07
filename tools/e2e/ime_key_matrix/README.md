@@ -155,6 +155,7 @@ B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず
 
 - **run の汚れ**(`check_run_validity.py`、`cpu_sampler.ps1`): 物理キー(`[engine-input]` の extra=0x0)の混入と CPU 負荷(p95)を run ごとに記録し、summary に「run の汚れ」表を出す。
   既定は情報のみ。リポジトリ変数 `E2E_VALIDITY_ENFORCE=1` で、汚れた run を INVALID(rc=3)にして期待表の判定から外す(強制する前に、extra=0 のままの注入が無いか件数を見ること)。
+- **入力先の profile と経路の件数**(ADR-235 D1、`check_run_validity.py`): 同じ `validity.json` に、observed・drift・unicode・external_change の 4 つの経路の件数と、打鍵前の最後の `focus transition` の profile(入力先)・bootstrap の profile(awase 起動時の前面窓。入力先とは限らない)を記録し、summary に 4 件数がすべて 0 の回だけ表で出す。合否は変えない。0 件の回は「経路に乗っていない」ので、「起きなかった」と読まないこと。正規表現は判定器と共通(`e2e_common.py`)。
 - **Wilson 区間**(`stats_util.py`): 試行数が小さいので、typing 表に FAIL率の 95% 区間を併記する(0/10 でも上限は約 28%)。
 - **observe の期限**(`observe_audit.py`、`test_e2e_plan.py`): 新しい `expect=observe` には `until='YYYY-MM-DD'` が必須で、期限までに pass / fail(再現固定)/ 削除を決める。
   既存分は `observe_grandfathered.txt` に載せ、縮める方向にだけ動かす。summary は有効回 2 回以上で全PASS/全FAIL の observe に昇格候補の目印を付ける。
