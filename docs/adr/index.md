@@ -244,6 +244,8 @@
 | [235](235-app-ime-realmachine-matrix.md) | 実機 CI の各構成で、入力先の profile と awase がその経路を通った件数を summary に出す(D1・D3。D2 は条件付きの将来案) | 起草(2026-10-06)。Opus round1・round2 反映済み |
 | [236](236-conflict-marker-residue-check.md) | 衝突マーカーの残骸を CI(fmt ジョブ)で検出する | 起草(2026-10-06)。Opus round1・round2 反映済み |
 | [237](237-serialized-develop-merge.md) | develop へのマージ担当の手順を決める(古い base のままマージし、競合しない rebase を求めない) | 起草(2026-10-06)。Opus round1・round2 反映済み |
+| [238](238-claims-carry-verification-commands.md) | docs・PR 本文の主張に、確かめたコマンドを添える(独立した規約ページは作らず、ADR-239 の規約 3 に畳む) | 提案(2026-10-06)。Opus round1〜round3 で Blocker・Must なし。規約の導入は所有者の判断待ち |
+| [239](239-parallel-agent-instruction-hygiene.md) | 並列エージェント開発での指示の取り違えを減らす(`.claude/rules/agent-handoff.md` 25 行以内の案) | 提案(2026-10-06)。Opus round1〜round3 で Blocker・Must なし。規約の導入・置き場所・pre-push の扱いは所有者の判断待ち |
 | [238](238-single-poll-conv-zero-eisu-adoption.md) | 一過性の conv=0 を 1 回の poll で ObservedEisu と採用して Engine が止まる件(BUG-190) | 設計収束(Opus round3)・実装済み・CI 確認済み、実機未検証(2026-10-06) |
 | [239](239-prev-conversion-mode-reset-and-dead-classify-transition.md) | 分類で `prev_conversion_mode` を読む `classify_transition` の撤去(約 6 か月、refresh の経路で結果を返していない) | 設計収束(Opus round2)・実装済み・CI 確認済み(2026-10-07) |
 
