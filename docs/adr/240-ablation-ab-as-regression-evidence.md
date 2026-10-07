@@ -10,7 +10,7 @@ summary: |-
   背景の実測(develop `8810b812`、2026-10-06): 状態欄に「CI 検証済み」とある BUG は 19 件で、nofix で差を確かめた記録は 0 件。nofix を回した 3 例(BUG-170 の a8、BUG-114 の WT 版 PR #534、BUG-114 の実 Chrome 版 PR #529)はどれも回帰を捕まえていない。nofix が分かったのは BUG-170 の 1 件だけで、入力先の文字の判定が修正の有無を区別しないことだった。BUG-114 では誤った差を 2 回出した(1 回目は `WM_CLOSE` 後の補正、3 回目は a9 が書き換えた profile)。「シナリオが症状に届いていない」を示したのは、修正ありのビルドの INVALID 判定(observed 0)。nofix が無いせいで退行を見逃した記録も 0 件なので、nofix は義務にしない。
   他の ADR との分担(team-lead の決定、ADR-241 決定 7): 同期の判断(打鍵から actuation の決定まで)は ADR-241 の再生が受け、再生が通らない非同期・実機固有の部分を実機 CI の再現シナリオ+D1a が受ける。`fix-requires-evidence.md:22-26` の書き換えは ADR-241 だけが行い、本 ADR はそこに入れる 1 項目の文案を追記案として出す。ADR-241 の mutator(再生の合否用)は再生側、本 ADR の ablation は実機 CI 側の資産として、両方残す。
 status: |-
-  提案(起草中。Opus round1〈旧 233 として、Blocker 1・Must 5・Should 6・Nit 4〉と 2 人目のレビュー〈Blocker 1・Must 6・Should 7・Nit 6〉を反映、round2 前)
+  提案(Opus レビュー済み: round1〈旧 233 として、Blocker 1・Must 5・Should 6・Nit 4〉、2 人目〈Blocker 1・Must 6・Should 7・Nit 6〉、再確認 2 回を反映。最終確認で Blocker・Must なし、2026-10-07)
 related_adr:
   - "ADR-134"
   - "ADR-163"
@@ -111,7 +111,7 @@ gh run view 37429061750 --log | grep '"type": "bug114_result"' | grep -oE '"verd
   「痕跡が残らない可能性があるので需要の根拠にはしない」と注記している。本 ADR もこれを根拠にしない。
 - **新しい再生基盤**: 所有者は 2026-10-06 に案 C(打鍵から actuation まで、[ADR-241](241-keystroke-to-actuation-replay.md)、起草中)を選んだ。
   入力の再生(B5)はエンジン側の不具合なら「HEAD で症状が出るか」に答えられる(同メモ `README.md:36-38`、実例 BUG-105・145)。
-  ADR-241 は、その合否を「修正を外した mutator で再生だけが落ちる」ことで示すとしている。
+  ADR-241 は、その合否を次のように決めている(`c7487317` 時点): 比較相手は、移した核の関数を直接呼ぶ単体テスト。`cargo mutants` で単体テストと既存テストを生き延びた変異のうち、打鍵からの再生でだけ落ちるものが 1 つ以上あること。
   再生の層の合否の決め方は ADR-241 が持ち、本 ADR は実機の層の判定の書き方だけを決める。
 - 役割分担(team-lead の決定、ADR-241 決定 7): **同期の判断**(打鍵から actuation の決定まで)は ADR-241 の再生が受ける。**再生が通らない部分**(非同期の経路と、実機固有の IME とのやり取り)を、実機 CI の再現シナリオと本 ADR の D1a が受ける。
 - 単体テストの層では、修正を外して落ちるかを**手で確かめる道具がある**(`cargo mutants --in-diff`)。
