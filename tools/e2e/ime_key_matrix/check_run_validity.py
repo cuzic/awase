@@ -10,6 +10,18 @@ CI でも、フォーカス復帰(各 check_*.py が見ている)以外に次の
   cpu_load          cpu.csv(`ISO時刻,CPU%`、cpu_sampler.ps1 が 1 秒周期で記録)の p95 が閾値を超えた。
                     負荷が高いと打鍵間隔・IME 応答の時間窓が崩れ、「起きた/起きない」が環境依存になる。
 
+加えて、判定には使わない情報として(ADR-235 D1。CONTAMINATED/rc には影響しない)、次を数えて出す:
+
+  paths             awase がどの経路を通ったかの件数: observed(開閉の観測)・drift(drift 補正)・
+                    unicode(`send_keys: mode=Unicode`。この回の打鍵は IME 状態の証拠にならない)・
+                    external_change(ADR-205 の外部変更への追随)。0 件の回は「経路に乗っていない」ので、
+                    「起きなかった」と読まないための目印。
+  focus_profile_before_typing
+                    最初の `[engine-input]` KeyDown より前で最後の `focus transition` の `profile=`(`ImePolicyProfile` の値。
+                    `AppImeProfile` ではない)。打鍵が無ければ最後の transition。該当が無ければ None。
+  bootstrap_profile awase 起動時に前面にあった窓の profile(`[focus-scope] bootstrap initial scope:`)。
+                    入力先の profile とは限らない(chrome_probe は awase を先に起動するのでランナー側の窓の値になる)。
+
 使い方: check_run_validity.py [--cpu cpu.csv] [--cpu-p95-limit 90] [--json out.json] awase.log
 出力: `VALIDITY: verdict=CLEAN|CONTAMINATED foreign_down=N cpu_p95=… cpu_max=… cpu_n=…`
 終了コード: 0=CLEAN / 3=CONTAMINATED(INVALID にすべき) / 2=使い方の誤り
@@ -17,9 +29,15 @@ CPU ログが無い・空のときは負荷では汚れ扱いにしない(cpu_n=
 """
 import json
 import re
+import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from e2e_common import DRIFT_RE, EXTERNAL_CHANGE_RE, OBSERVED_RE, UNICODE_RE  # noqa: E402
+
 ENGINE_INPUT_RE = re.compile(r"\[engine-input\] vk=0x(\w+) (KeyDown|KeyUp) .*?\bextra=0x(\w+)")
+FOCUS_TRANSITION_RE = re.compile(r'focus transition .*?\bprofile="(\w+)"')
+BOOTSTRAP_PROFILE_RE = re.compile(r"\[focus-scope\] bootstrap initial scope:.*?\bprofile=(\w+)")
 DEFAULT_CPU_P95_LIMIT = 90.0
 
 
@@ -38,6 +56,37 @@ def foreign_physical(awase_lines):
         if len(samples) < 5:
             samples.append(ln.strip()[:160])
     return down, up, samples
+
+
+def path_counts(awase_lines):
+    """4 つの経路の件数(ADR-235 D1)。判定器と同じ正規表現(e2e_common)で数える。"""
+    c = {"observed": 0, "drift": 0, "unicode": 0, "external_change": 0}
+    for ln in awase_lines:
+        for k, rx in (("observed", OBSERVED_RE), ("drift", DRIFT_RE), ("unicode", UNICODE_RE),
+                      ("external_change", EXTERNAL_CHANGE_RE)):
+            if rx.search(ln):
+                c[k] += 1
+    return c
+
+
+def profiles(awase_lines):
+    """(打鍵前の最後の focus transition の profile, bootstrap の profile)。無ければ None。"""
+    before_typing = last = bootstrap = None
+    typing_started = False
+    for ln in awase_lines:
+        m = ENGINE_INPUT_RE.search(ln)
+        if m and m.group(2) == "KeyDown":
+            typing_started = True
+        m = FOCUS_TRANSITION_RE.search(ln)
+        if m:
+            last = m.group(1)
+            if not typing_started:
+                before_typing = last
+        if bootstrap is None:
+            m = BOOTSTRAP_PROFILE_RE.search(ln)
+            if m:
+                bootstrap = m.group(1)
+    return (before_typing if typing_started else last), bootstrap
 
 
 def cpu_stats(cpu_lines):
@@ -61,6 +110,7 @@ def cpu_stats(cpu_lines):
 def analyze(awase_lines, cpu_lines, cpu_p95_limit=DEFAULT_CPU_P95_LIMIT):
     down, up, samples = foreign_physical(awase_lines)
     n, mean, p95, mx = cpu_stats(cpu_lines)
+    focus_profile, bootstrap_profile = profiles(awase_lines)
     reasons = []
     if down > 0:
         reasons.append(f"物理キー(extra=0)の混入 KeyDown={down}")
@@ -76,6 +126,9 @@ def analyze(awase_lines, cpu_lines, cpu_p95_limit=DEFAULT_CPU_P95_LIMIT):
         "cpu_mean": mean,
         "cpu_p95": p95,
         "cpu_max": mx,
+        "paths": path_counts(awase_lines),
+        "focus_profile_before_typing": focus_profile,
+        "bootstrap_profile": bootstrap_profile,
     }
 
 
@@ -116,6 +169,10 @@ def main(argv):
 
     print(f"VALIDITY: verdict={r['verdict']} foreign_down={r['foreign_down']} foreign_up={r['foreign_up']} "
           f"cpu_p95={f(r['cpu_p95'])} cpu_max={f(r['cpu_max'])} cpu_n={r['cpu_n']}")
+    p = r["paths"]
+    print(f"PATHS: observed={p['observed']} drift={p['drift']} unicode={p['unicode']} "
+          f"external_change={p['external_change']} focus_profile_before_typing={r['focus_profile_before_typing']} "
+          f"bootstrap_profile={r['bootstrap_profile']}")
     for s in r["foreign_samples"]:
         print(f"  foreign: {s}")
     for why in r["reasons"]:

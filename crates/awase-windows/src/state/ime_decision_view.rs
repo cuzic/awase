@@ -29,7 +29,7 @@ pub(crate) struct FocusFacts<'a> {
     /// ROMAN 補完）が `ActuationTarget` を捕獲・照合するために使う
     /// （ADR-089 §6 Phase C item 12）。`ime_controller.rs` は Runtime/Output の
     /// 内部状態を直接読めないため、view のフィールドとして運ぶ。
-    pub focus_gen: u32,
+    pub focus_gen: crate::state::focus_gen::FocusGen,
 }
 
 /// OS から直接観測した揮発性状態（tick 境界でアトミックをロードしてスナップショット化）。

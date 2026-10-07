@@ -5,6 +5,7 @@ use super::{fmt_ms, WarmthContext, WarmupOutcome};
 use super::{Output, VkSequence};
 use crate::state::deferred_gate_plan;
 use crate::state::event_origin::Generation;
+use crate::state::warm_send_plan;
 use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
@@ -576,7 +577,10 @@ impl Output {
         // GJI が応答するまで次のキーも unicode で送ることで race を回避する。
         let in_post_unicode_pending = {
             let last_unicode_ms = self.composition.last_unicode_transmit_ms();
-            last_unicode_ms != 0 && crate::tsf::observer::gji_last_io_ms() <= last_unicode_ms
+            warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts {
+                last_unicode_ms,
+                gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
+            })
         };
         let used_eager_path = if in_post_unicode_pending {
             tracing::debug!(
@@ -623,14 +627,20 @@ impl Output {
         // cold-start probe 機構を持つ IME（GJI 等）が LONG_IDLE_MS 以上静止している場合は
         // LiteralDetector が常にタイムアウト → SuspectedLiteral の false positive になる。
         // 長期静止時は composition が TSF で正常に処理されたと見なして LiteralDetect をスキップ。
-        let probe_long_idle = crate::hook::current_tick_ms()
-            .saturating_sub(crate::tsf::observer::gji_last_io_ms())
-            >= crate::tuning::LONG_IDLE_MS;
-        if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing
-            && crate::tsf::observer::gji_is_active_ime()
-            && !probe_long_idle
-            && !self.is_tsf_mode()
-        {
+        // 判断は `warm_send_plan::plan_literal_detect`（FCIS F6b）。
+        let probe_long_idle = warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts {
+            now_ms: crate::hook::current_tick_ms(),
+            gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
+            threshold: crate::tuning::LONG_IDLE_MS,
+        });
+        let literal_detect =
+            warm_send_plan::plan_literal_detect(warm_send_plan::LiteralDetectFacts {
+                gate_probing: self.tsf_gate.state() == crate::tsf::TsfGateState::Probing,
+                gji_active: crate::tsf::observer::gji_is_active_ime(),
+                long_idle: probe_long_idle,
+                is_tsf_mode: self.is_tsf_mode(),
+            });
+        if matches!(literal_detect, warm_send_plan::LiteralDetectPlan::Install) {
             // detector と guard は LiteralDetectFsm::new が内部生成するため渡さない。
             // ze_bs_count は実際の値を渡す。
             self.install_pending_tsf(Box::new(
@@ -650,6 +660,9 @@ impl Output {
             // ze_bs_count は Probing+GJI 健全パスでのみ使う。
             // 他パスでは warm マーク済みで LiteralDetect 不要。
             let _ = ze_bs_count;
+            if let warm_send_plan::LiteralDetectPlan::Skip(reason) = literal_detect {
+                tracing::trace!("[literal-detect] skip reason={reason:?}");
+            }
         }
     }
 

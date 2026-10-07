@@ -129,6 +129,20 @@ impl Runtime {
         self.ir_decide_read_strategy(focus.skip_imm_query)
     }
 
+    /// 診断(ADR-238、BUG-190): 打鍵中の除外(`SkipTyping`)で捨てる prefetch 済みの読みの値を残す(今はどこにも出ない)。
+    /// 「一過性の conv=0 が 1 回で終わるか、応答の遅い間は続くか」を測るため。belief には反映しない。
+    fn ir_log_skip_typing_read(ime_snap: Option<&crate::ime::ImeSnapshot>) {
+        if let Some(snap) = ime_snap {
+            tracing::debug!(
+                "[skip-typing-read] ime_on={:?} romaji={:?} conv={:?} probe_timed_out={}",
+                snap.ime_on,
+                snap.is_romaji,
+                snap.conversion_mode.map(|v| format!("0x{v:08X}")),
+                snap.probe_timed_out,
+            );
+        }
+    }
+
     // ── Stage 3: IME 状態の観測 ──
     //
     // Phase 3: IME 状態の再取得
@@ -153,7 +167,7 @@ impl Runtime {
         // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。
         self.ir_follow_direct_mode_key_read(ime_snap);
         match strategy {
-            ImeReadStrategy::SkipTyping => {}
+            ImeReadStrategy::SkipTyping => Self::ir_log_skip_typing_read(ime_snap),
             ImeReadStrategy::Blacklist => {
                 tracing::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
                 // GJI I/O 観測は active IME が GJI のときに限定する。MS-IME 使用中も
@@ -488,6 +502,11 @@ impl Runtime {
             applied_known: self.platform_state.ime.model().applied
                 != crate::state::ime_model::AppliedImeState::Unknown,
             shift_conv_guard_active,
+            eisu_candidate_pending: self
+                .platform_state
+                .ime
+                .eisu_candidate_remaining_ms(now)
+                .is_some(),
         }
     }
 
@@ -515,7 +534,7 @@ impl Runtime {
                     poll.ime_on,
                     poll.force_guard,
                     poll.input_mode,
-                    poll.prev_conv,
+                    poll.eisu_candidate,
                     &focus_process_name,
                 )
             },
@@ -526,7 +545,7 @@ impl Runtime {
                     poll.ime_on,
                     poll.force_guard,
                     poll.input_mode,
-                    poll.prev_conv,
+                    poll.eisu_candidate,
                     &focus_process_name,
                 )
             },
@@ -1105,7 +1124,8 @@ impl Runtime {
             .ime
             .model()
             .observations
-            .most_recent_trusted(now);
+            // 診断の記録元(drift correction の根拠と同じ信頼度優先の順位のまま。ADR-233 の適用範囲)。
+            .most_recent_trusted_excluding(now, &[]);
         let sent_vk = vec![crate::journal::ImeVkDiagnostic {
             vk_code: if desired {
                 crate::vk::VK_IME_ON.0

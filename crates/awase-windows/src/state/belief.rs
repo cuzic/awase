@@ -1,4 +1,4 @@
-//! IME 補助状態（input_mode / is_japanese_ime / prev_conversion_mode）。
+//! IME 補助状態（input_mode / is_japanese_ime / prev_conversion_mode〈直近に観測した conv、予測の `conv_raw` 用〉）。
 //!
 //! # IME 状態の 3 層モデル（Phase 3e 以降）
 //!
@@ -31,9 +31,13 @@
 pub struct ImeBelief {
     /// 日本語 IME がアクティブか
     pub(in crate::state) is_japanese_ime: bool,
-    /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
+    /// 直前の conversion_mode（直近に観測した conv。読み手は予測の入力 `conv_raw` だけ。かな切替の検出は ROMAN ビットを直接読む
+    /// `is_romaji` が担い、以前の「前回との差分」の分類は撤去した、ADR-239）
     /// None = まだ一度も取得できていない
     pub(in crate::state) prev_conversion_mode: Option<u32>,
+    /// 英数モードの「候補」(1 回目の英数の読み。確認の読みで確定する、ADR-238 / BUG-190)。
+    /// `prev_conversion_mode` と同じ扱い: 読みの結果として `apply_ime_update` 経由でだけ書き、フォーカス変更で捨てる。
+    pub(in crate::state) eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
 }
 
 impl Default for ImeBelief {
@@ -41,6 +45,7 @@ impl Default for ImeBelief {
         Self {
             is_japanese_ime: true,
             prev_conversion_mode: None,
+            eisu_candidate: None,
         }
     }
 }
@@ -57,5 +62,13 @@ impl ImeBelief {
     #[inline]
     pub(crate) const fn prev_conversion_mode(&self) -> Option<u32> {
         self.prev_conversion_mode
+    }
+
+    /// 英数モードの候補を返す(ADR-238)。
+    #[inline]
+    pub(crate) const fn eisu_candidate(
+        &self,
+    ) -> Option<crate::state::eisu_candidate::EisuCandidate> {
+        self.eisu_candidate
     }
 }

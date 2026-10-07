@@ -192,3 +192,4 @@ a map of what to expect, not a substitute for reading them when the relevant are
 - `fix-requires-evidence.md` — fixes in the warmup/focus/belief/conv/key-selection "reincidence
   families" need either a regression test or a new `docs/known-bugs/BUG-NNN.md` entry.
 - `ime-belief-architecture.md` — see Architecture section above.
+- `agent-handoff.md` — 並列のエージェント開発での PR 本文・DIRTY の確認、報告と主張の再確認、取り消しの書き方、push の仕方(ADR-242・ADR-243)。

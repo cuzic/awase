@@ -126,7 +126,7 @@
 | [109](109-yab-cv4d-punctuation-auto-confirm.md) | `.yab` 句読点確定サフィックス（やまぶき `CV4D` 相当）の実現機構 | 一部解決(2026-09-13 から変更なし、2026-10-04 確認)。確定付き `layout/nicola_kakutei.ya… |
 | [114](114-keymap-app-scoped-shortcut-wiring.md) | `[[keymap]]`（アプリ別ショートカット再割当）の未配線を解消する | 実装済み(コード確認のみ、2026-10-04)。`[[keymap]]` の設定(src/config.rs)と keymap.rs(… |
 | [110](110-simple-physical-key-remap.md) | 物理キー単純リマップ機能（`key_remap`） | 撤回済み(2026-08-30、ADR-111 r4 決定による)。2026-10-04 時点で `key_remap` 機構は現行コー… |
-| [111](111-caps-eisu-ctrl-swap-preset.md) | Caps(英数)⇔Ctrl 入れ替え専用プリセット（Scancode Map 一本化） | 実装済み(コード確認のみ、2026-10-04)。Scancode Map 方式(`crates/awase-windows/src/s… |
+| [111](111-caps-eisu-ctrl-swap-preset.md) | Caps(英数)⇔Ctrl 入れ替え専用プリセット（Scancode Map 一本化） | ADR-230 段階4(2026-10-06)でプリセット機構(`--scancode-map`・3択UI)は撤去し、入れ替えペアへ一般化。バイト列の読み書きと昇格フローは ADR-230 が引き継ぐ。実機ソーク未実施 |
 | [112](112-keyup-lifecycle-fsm-delivery.md) | `Engine::on_input` Phase 0 が KeyUp を FSM に一切届けていない欠陥の修正 | クローズ(2026-08-31、変更なし)。`UpDuty`(src/engine/key_lifecycle.rs)と `min_ov… |
 | [115](115-yab-keystroke-sequence.md) | `.yab` 打鍵列機能（1キーに複数の `KeyAction` を定義する） | 実装済み(コード確認のみ、2026-10-04)。`keystroke_sequence` 設定が現存。決定8追補(既定 On・GUI … |
 | [116](116-startup-settings-diagnostics.md) | 起動時設定診断（awase / awase-settings 共通） | 実装済み(コード確認のみ、2026-10-04)。起動時の設定診断(awase-windows の config_diagnostics… |
@@ -138,7 +138,7 @@
 | [122](122-cold-start-per-vk-confirm-race-recovery.md) | GJI コールドスタート直後の per-VK confirm が「確認遅延」を「未着弾」と誤認し、回収送信が GJI 自身の非同期処理と競合してモーラが重複する（BUG-75 追加… | 保留(未実装、2026-10-04 確認)。案F(`grace_hold_verdict` の早期確定の修正)の実装コミットは無く、`g… |
 | [123](123-focus-resync-and-probe-defer-queue-composition-race.md) | `pending_deferred` の flush ガードが GJI reinit-retry 完了しか見ていないため、reinit 完了を待つ間に到着した別モーラが独立 pro… | 一部実装(診断ログのみ、2026-10-04 確認)。診断(`TsfProbeStarted.pending_deferred_len`… |
 | [124](124-tray-update-check.md) | タスクトレイからの更新確認 | 実装済み(コード確認のみ、2026-10-04)。rev.12 の設計どおり通信主体は `awase-settings`(crates/… |
-| [126](126-caps-as-extra-ctrl-preset.md) | Caps(英数) を「追加の Ctrl」にするプリセット（Ctrl を2つにする） | 実装済み(コード確認のみ、2026-10-04)。Caps を追加 Ctrl にするプリセットの Scancode Map 実装(awa… |
+| [126](126-caps-as-extra-ctrl-preset.md) | Caps(英数) を「追加の Ctrl」にするプリセット（Ctrl を2つにする） | ADR-230 段階4(2026-10-06)でプリセット機構は撤去。「Caps を追加の Ctrl にする」は設定画面のチェックボックスとして残り、ペアとはキー単位で排他。実機ソーク未実施 |
 | [125](125-egui-winit-dynamic-ime-association-focus-model-gap.md) | egui/winit アプリのウィジェット単位 IME 許可切替と、awase のフォーカスモデルの構造的ギャップ | 実装済み(コード確認のみ、2026-10-04)。BUG-107/BUG-108 は docs/known-bugs 側でコード確認済み… |
 | [127](127-settings-single-apply-principle.md) | 設定画面（awase-settings）の「単一の適用」原則統一——配列編集タブの反映漏れ解消 | 実装済み(PR #157 で develop マージ、2026-10-04 時点で変更の記録なし)。設定 GUI の保存・適用の個別コー… |
 | [128](128-escape-composition-collateral-deferred-loss.md) | recovery resend が自分自身の実送信より前に `pending_deferred` を drain し、出力順を反転させたうえ直後の per-VK confirm の… | 実装済み(`1b5ca721`、PR #160)。BUG-109 は docs/known-bugs 側でコード確認済みの解決として記録… |
@@ -236,9 +236,20 @@
 | [227](227-bug074-giveup-as-closed-ime-evidence.md) | BUG-074: give-up で文字が痕跡なく消える件。先に測り(D0)、方向(再オープン/案K/通知/追随)は所有者が決める | (i) 実装済み(PR #480・`900a5f3e`、2026-10-05、CI 検証済み・実機未検証): `Imm32Unavailable`×GJI の give-up を読み直しのきっかけにする(`take_gi |
 | [228](228-bug-report-legacy-msime-custom-key-table.md) | 不具合報告に旧互換 MS-IME のキー表の中身を、許可リスト+固定長の読める形で添付するか(ADR-148 の「読めず削れない」反対理由への答えが要る) | 見送り(2026-10-04、Opus r1: 案 B は動機の 2 件の調査を前に進めない・実装なし) |
 | [229](229-os-independent-core-and-dumb-windows-executor.md) | awase-windows を「Windows の dumb な実行役」に絞り、判断を Linux でテストできる側へ寄せる層の引き直し | FCIS で改訂(2026-10-06)。T1〜T7 は PR #492〜#495 でマージ済み。ADR-224 改訂・S2 を承認。P0・P1・RW・S2 を実装中 |
-| [230](230-scancode-map-bijective-swap-editor.md) | Scancode Map を「全単射の入れ替えペア」で編集できる UI(ADR-111/126 の2プリセットの一般化) | 起草(2026-10-06、未レビュー、実装なし) |
+| [230](230-scancode-map-bijective-swap-editor.md) | Scancode Map を「全単射の入れ替えペア」で編集できる UI(ADR-111/126 の2プリセットの一般化) | 設計は Opus 3 ラウンドで収束(2026-10-06)。段階1〜3は PR #501 でマージ、段階4(UI、Swap プリセット撤去)は実装済み(型検査・テストまで、実機操作は未)、段階5(実機確認)は未着手 |
 | [231](231-gji-custom-keymap-tsv-generator.md) | GJI カスタムキーマップの TSV 生成(プリセットの振る舞いをキーに割り当て、import は手動) | 起草(2026-10-06、未レビュー、実装なし) |
 | [232](232-observation-event-subscription-and-consumption.md) | Observation/Event の購読と消費 | 起草(2026-10-05)。Opus round1・round2 反映済み |
+| [233](233-stale-high-observation-beats-newer-in-most-recent-trusted.md) | 古い High 観測が新しい Medium 観測に勝つ件(BUG-189) | 設計収束(Opus round3)・実装前の測定済み(A' が 41/41 で正しい)。実装済み・CI 確認済み(Flutter × MS-IME 7/8 PASS、2026-10-06)。実機未検証 |
+| [234](234-core-modules-mutants-nightly.md) | 純粋な核(CORE_MODULES)の mutants の生き残りをテストに変える(読む人を先に決め、定期実行は網として後から) | 起草(2026-10-06)。Opus round1・round2 反映済み |
+| [235](235-app-ime-realmachine-matrix.md) | 実機 CI の各構成で、入力先の profile と awase がその経路を通った件数を summary に出す(D1・D3。D2 は条件付きの将来案) | 起草(2026-10-06)。Opus round1・round2 反映済み |
+| [236](236-conflict-marker-residue-check.md) | 衝突マーカーの残骸を CI(fmt ジョブ)で検出する | 起草(2026-10-06)。Opus round1・round2 反映済み |
+| [237](237-serialized-develop-merge.md) | develop へのマージ担当の手順を決める(古い base のままマージし、競合しない rebase を求めない) | 起草(2026-10-06)。Opus round1・round2 反映済み |
+| [238](238-single-poll-conv-zero-eisu-adoption.md) | 一過性の conv=0 を 1 回の poll で ObservedEisu と採用して Engine が止まる件(BUG-190) | 設計収束(Opus round3)・実装済み・CI 確認済み、実機未検証(2026-10-06) |
+| [239](239-prev-conversion-mode-reset-and-dead-classify-transition.md) | 分類で `prev_conversion_mode` を読む `classify_transition` の撤去(約 6 か月、refresh の経路で結果を返していない) | 設計収束(Opus round2)・実装済み・CI 確認済み(2026-10-07) |
+| [240](240-ablation-ab-as-regression-evidence.md) | 実機 CI の判定の書き方(前提と症状の分離・observed 件数・observed 0 は INVALID)を必須にし、修正を外したビルドとの比較は任意にする(旧称 ADR-233 を改番) | 提案(2026-10-07)。Opus 最終確認で Blocker・Must なし。規約の導入・範囲は所有者の判断待ち |
+| [241](241-keystroke-to-actuation-replay.md) | 打鍵から actuation の決定まで通す再生基盤(同期の判断を ungated な核へ移し、閉ループのハーネスを拡張。既存の再生一式の置き換えと同時) | 提案(2026-10-07)。Opus round1・round2 反映済み。合流点の作り直しの承認など所有者の判断待ち |
+| [242](242-claims-carry-verification-commands.md) | docs・PR 本文の主張に、確かめたコマンドを添える(独立した規約ページは作らず、ADR-243 の規約 3 に畳む) | 採用(2026-10-06、所有者承認、第 1 段階実施)。`.claude/rules/agent-handoff.md` を導入 |
+| [243](243-parallel-agent-instruction-hygiene.md) | 並列エージェント開発での指示の取り違えを減らす(`.claude/rules/agent-handoff.md` 25 行以内の案) | 採用(2026-10-06、所有者承認、第 1 段階実施)。`.claude/rules/agent-handoff.md` を導入 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

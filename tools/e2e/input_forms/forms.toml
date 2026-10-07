@@ -1,0 +1,272 @@
+# 入力先(入力フォーム)の宣言表。ここへ 1 項目足すだけで、CI(e2e-ime.yml の tsx-ext-*)が
+# 「その入力先 × IME(GJI / MS-IME) × 打鍵間隔」の高速打鍵ストレスを組み立てて回す。
+# 実装は crates/awase-windows/examples/typing_stress/target/ext.rs(`--form=ext --ext=<名前>`)。
+#
+# 項目のキー:
+#   toolkit      表示用の名前(Java Swing など)。
+#   setup        CI が入れておく物。java / libreoffice / openoffice は e2e-ime.yml の専用ステップ、qt / flutter / uv は公式 action、
+#                それ以外は tools/e2e/input_forms/setup/<名前>.ps1 があれば実行する(無ければ何もしない。none も同じ)。
+#   prepare      CI で入力先を用意するコマンド(リポジトリ直下で pwsh 実行。例: javac)。
+#   exe / args   起動する実行ファイルの候補(最初に存在するもの)と引数。{repo} {dump} {profile} {profile_url} を置換する。
+#   window       窓の探し方(title=タイトルに含む / class=クラス名の完全一致)。any_pid=true は起動 pid に限らず探す。
+#   read         dump=本文をファイルへ書き出させて読む(既定) / uia=窓内の最初の Edit を UI Automation で読む /
+#                clipboard=Ctrl+A,Ctrl+C してクリップボードを読む(UIA でも dump でも読めない入力先向け)。
+#   helper_*     dump を書く補助プロセス(Office の UNO 読み出しなど)。
+#   dismiss_class 起動直後に前面を奪うダイアログの窓クラス(同じ pid の窓を閉じる。LibreOffice の Welcome は SALSUBFRAME)。
+#   click        true=窓の中央をクリックして入力欄へフォーカスを入れる(WinUI 3 など)。
+#   profile_seed office=一時プロファイルに初回ダイアログ抑止の設定を書く。
+#   intervals    打鍵間隔(ms)。省略時は [30, 10]。
+#   raw_control  true=awase なしの対照(tsx-raw-ext-*)も回す。
+#   imes         回す IME。省略時は ["gji", "msime"]。
+#
+# 足す手順(例 wxWidgets): tools/e2e/ に最小アプリ(Edit 1つ、タイトル固定)を置く → prepare でビルド → read="uia" か dump で読む。
+# 何が動かないか(入力できる/文字が欠ける/リテラル化する)は、typing_stress が期待文字列と比べて分類する。
+
+[forms.java-swing-field]
+toolkit = "Java Swing (JTextField)"
+setup = "java"
+prepare = ["javac -encoding UTF-8 -d tools/e2e/java_forms tools/e2e/java_forms/JavaForm.java"]
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "-cp", "{repo}/tools/e2e/java_forms", "JavaForm", "swing", "{dump}"]
+window = { title = "java-form-input" }
+read = "dump"
+
+[forms.java-swing-area]
+toolkit = "Java Swing (JTextArea)"
+setup = "java"
+prepare = ["javac -encoding UTF-8 -d tools/e2e/java_forms tools/e2e/java_forms/JavaForm.java"]
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "-cp", "{repo}/tools/e2e/java_forms", "JavaForm", "swingarea", "{dump}"]
+window = { title = "java-form-input" }
+read = "dump"
+
+[forms.java-awt-field]
+toolkit = "Java AWT (TextField)"
+setup = "java"
+prepare = ["javac -encoding UTF-8 -d tools/e2e/java_forms tools/e2e/java_forms/JavaForm.java"]
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "-cp", "{repo}/tools/e2e/java_forms", "JavaForm", "awt", "{dump}"]
+window = { title = "java-form-input" }
+read = "dump"
+
+[forms.java-awt-area]
+toolkit = "Java AWT (TextArea)"
+setup = "java"
+prepare = ["javac -encoding UTF-8 -d tools/e2e/java_forms tools/e2e/java_forms/JavaForm.java"]
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "-cp", "{repo}/tools/e2e/java_forms", "JavaForm", "awtarea", "{dump}"]
+window = { title = "java-form-input" }
+read = "dump"
+
+# LibreOffice Writer: 本文は同梱 python の UNO で読む(UI Automation では読めない)。
+[forms.libreoffice-writer]
+toolkit = "LibreOffice Writer"
+setup = "libreoffice"
+exe = ["C:/Program Files/LibreOffice/program/soffice.exe"]
+args = ["-env:UserInstallation={profile_url}", "-accept=socket,host=127.0.0.1,port=2002;urp;", "-norestore", "-nologo", "-nofirststartwizard", "-writer"]
+window = { class = "SALFRAME", title = "Writer" }
+any_pid = true
+dismiss_class = "SALSUBFRAME"
+profile_seed = "office"
+read = "dump"
+helper_exe = ["C:/Program Files/LibreOffice/program/python.exe"]
+helper_args = ["{repo}/tools/e2e/office_forms/dump_text.py", "2002", "{dump}"]
+
+# Apache OpenOffice Writer(4.1.x、LibreOffice とは別系統の VCL)。
+# MS-IME の LibreOffice で 1/4 回だけ最初の試行が全角英字混じりで崩れた(run 21f13cef)。頻度を見るため回数を増やす。
+intervals = [30]
+runs = 6
+
+[forms.openoffice-writer]
+toolkit = "Apache OpenOffice Writer"
+setup = "openoffice"
+exe = ["C:/Program Files (x86)/OpenOffice 4/program/soffice.exe"]
+args = ["-env:UserInstallation={profile_url}", "-accept=socket,host=127.0.0.1,port=2002;urp;", "-norestore", "-nologo", "-nofirststartwizard", "-writer"]
+window = { class = "SALFRAME", title = "Writer" }
+any_pid = true
+dismiss_class = "SALSUBFRAME"
+profile_seed = "office"
+read = "dump"
+helper_exe = ["C:/Program Files (x86)/OpenOffice 4/program/python.exe"]
+helper_args = ["{repo}/tools/e2e/office_forms/dump_text.py", "2002", "{dump}"]
+
+# ---------------------------------------------------------------------------------------------
+# .NET(WinForms / WPF / WebView2)。tools/e2e/input_apps/dotnet、CI が dotnet publish で作る(setup/dotnet.ps1)。
+# MS-IME の LibreOffice で 1/4 回だけ最初の試行が全角英字混じりで崩れた(run 21f13cef)。頻度を見るため回数を増やす。
+intervals = [30]
+runs = 6
+
+[forms.wf-textbox]
+toolkit = "WinForms TextBox"
+setup = "dotnet"
+exe = ["{repo}/tools/e2e/input_apps/dotnet/out/DotnetForm.exe"]
+args = ["wf-textbox"]
+window = { title = "dotnet-form-input" }
+read = "uia"
+intervals = [20]
+
+[forms.wf-multiline]
+toolkit = "WinForms TextBox (Multiline)"
+setup = "dotnet"
+exe = ["{repo}/tools/e2e/input_apps/dotnet/out/DotnetForm.exe"]
+args = ["wf-multiline"]
+window = { title = "dotnet-form-input" }
+read = "uia"
+intervals = [20]
+
+[forms.wf-richtextbox]
+toolkit = "WinForms RichTextBox"
+setup = "dotnet"
+exe = ["{repo}/tools/e2e/input_apps/dotnet/out/DotnetForm.exe"]
+args = ["wf-richtextbox", "{dump}"]
+window = { title = "dotnet-form-input" }
+read = "dump"
+intervals = [20]
+
+[forms.wpf-textbox]
+toolkit = "WPF TextBox"
+setup = "dotnet"
+exe = ["{repo}/tools/e2e/input_apps/dotnet/out/DotnetForm.exe"]
+args = ["wpf-textbox"]
+window = { title = "dotnet-form-input" }
+read = "uia"
+intervals = [20]
+
+[forms.wpf-multiline]
+toolkit = "WPF TextBox (AcceptsReturn)"
+setup = "dotnet"
+exe = ["{repo}/tools/e2e/input_apps/dotnet/out/DotnetForm.exe"]
+args = ["wpf-multiline", "{dump}"]
+window = { title = "dotnet-form-input" }
+read = "dump"
+intervals = [20]
+
+[forms.webview2]
+toolkit = "WebView2 (Edge/Chromium) の textarea"
+setup = "dotnet"
+exe = ["{repo}/tools/e2e/input_apps/dotnet/out/DotnetForm.exe"]
+args = ["webview2", "{dump}"]
+window = { title = "dotnet-form-input" }
+read = "dump"
+intervals = [20]
+
+# WinUI 3(Windows App SDK、非パッケージ・自己完結)。UWP 系の XAML TextBox。
+[forms.winui3-textbox]
+toolkit = "WinUI 3 TextBox"
+setup = "winui"
+exe = ["{repo}/tools/e2e/input_apps/winui/out/WinUiForm.exe"]
+args = ["{dump}"]
+window = { title = "winui-form-input" }
+click = true
+read = "dump"
+intervals = [20]
+runs = 1
+
+# Qt(LINE の再現用に line.exe の名前でビルド)。tools/e2e/input_apps/qt。
+[forms.qt-qlineedit]
+toolkit = "Qt 6 QLineEdit (line.exe)"
+setup = "qt"
+exe = ["{repo}/tools/e2e/input_apps/qt/out/line.exe"]
+window = { title = "qt-line-input" }
+read = "uia"
+intervals = [20]
+runs = 1
+
+# JavaFX(Glass)。OpenJFX を Maven Central から取得。
+[forms.javafx-field]
+toolkit = "JavaFX TextField"
+setup = "javafx"
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "--module-path", "{repo}/tools/e2e/input_apps/javafx/lib", "--add-modules", "javafx.controls", "-cp", "{repo}/tools/e2e/input_apps/javafx", "JavaFxForm", "field", "{dump}"]
+window = { title = "javafx-form-input" }
+read = "dump"
+intervals = [20]
+# run 37416556532 で gji の 2 回中 1 回だけ、全試行が生キー列(awase が変換していない)になった。頻度を見るため増やす。
+runs = 6
+
+[forms.javafx-area]
+toolkit = "JavaFX TextArea"
+setup = "javafx"
+exe = ["java"]
+args = ["-Dfile.encoding=UTF-8", "--module-path", "{repo}/tools/e2e/input_apps/javafx/lib", "--add-modules", "javafx.controls", "-cp", "{repo}/tools/e2e/input_apps/javafx", "JavaFxForm", "area", "{dump}"]
+window = { title = "javafx-form-input" }
+read = "dump"
+intervals = [20]
+
+# JetBrains Runtime(IntelliJ 系 IDE の JDK、IME 周りに独自修正)で Swing の JTextField を動かす。
+[forms.jbr-swing-field]
+toolkit = "JetBrains Runtime 21 + Swing JTextField"
+setup = "jbr"
+exe = ["{repo}/tools/e2e/input_apps/jbr/jbr/bin/java.exe"]
+args = ["-Dfile.encoding=UTF-8", "-cp", "{repo}/tools/e2e/java_forms", "JavaForm", "swing", "{dump}"]
+window = { title = "java-form-input" }
+read = "dump"
+intervals = [20]
+
+# wxWidgets(wxPython、Windows ではネイティブの EDIT/RichEdit)。uv で実行。
+[forms.wx-field]
+toolkit = "wxWidgets wxTextCtrl"
+setup = "wx"
+exe = ["uv"]
+args = ["run", "--python", "3.12", "--with", "wxPython", "python", "{repo}/tools/e2e/input_apps/wx/wx_form.py", "field"]
+window = { title = "wx-form-input" }
+any_pid = true
+read = "uia"
+intervals = [20]
+
+[forms.wx-rich]
+toolkit = "wxWidgets wxTextCtrl (TE_RICH2)"
+setup = "wx"
+exe = ["uv"]
+args = ["run", "--python", "3.12", "--with", "wxPython", "python", "{repo}/tools/e2e/input_apps/wx/wx_form.py", "rich"]
+window = { title = "wx-form-input" }
+any_pid = true
+read = "clipboard"
+intervals = [20]
+
+# Electron(Chromium)。pnpm で取得。
+[forms.electron-textarea]
+toolkit = "Electron textarea"
+setup = "electron"
+exe = ["{repo}/tools/e2e/input_apps/electron/node_modules/electron/dist/electron.exe"]
+args = ["{repo}/tools/e2e/input_apps/electron", "textarea", "{dump}"]
+window = { title = "electron-form-input" }
+any_pid = true
+read = "dump"
+intervals = [20]
+runs = 1
+
+[forms.electron-input]
+toolkit = "Electron input"
+setup = "electron"
+exe = ["{repo}/tools/e2e/input_apps/electron/node_modules/electron/dist/electron.exe"]
+args = ["{repo}/tools/e2e/input_apps/electron", "input", "{dump}"]
+window = { title = "electron-form-input" }
+any_pid = true
+read = "dump"
+intervals = [20]
+runs = 1
+
+# Notepad++(Scintilla、IME 処理が独自)。本文は Ctrl+A,Ctrl+C のクリップボードで読む。
+[forms.notepadpp]
+toolkit = "Notepad++ (Scintilla)"
+setup = "notepadpp"
+exe = ["C:/Program Files/Notepad++/notepad++.exe"]
+args = ["-multiInst", "-nosession", "-noPlugin"]
+window = { class = "Notepad++" }
+read = "clipboard"
+intervals = [20]
+
+# Flutter for Windows(独自の TSF 実装)。
+[forms.flutter-textfield]
+toolkit = "Flutter TextField"
+setup = "flutter"
+exe = ["{repo}/tools/e2e/input_apps/flutter/app/build/windows/x64/runner/Release/flutter_form_input.exe"]
+window = { title = "flutter_form_input" }
+# autofocus で入力欄にフォーカスが入る(窓中央のクリックは TextField の外に当たって外す)。クリップボード読みは Flutter では空だった。
+read = "uia"
+intervals = [20]
+runs = 8
+# run 37424423737: MS-IME は awase ありで FAIL(4/12 試行)、awase なしの対照は PASS。回数を増やして頻度を見る。
+# MS-IME で ready の「か」1 文字が「かかか」と重複した(run 37423541905)。awase なしの対照(tsx-raw-ext-*)で切り分ける。
+raw_control = true

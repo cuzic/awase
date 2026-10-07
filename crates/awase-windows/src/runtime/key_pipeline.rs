@@ -748,7 +748,8 @@ impl Runtime {
             self.focus_fence(),
         );
 
-        // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
+        // prev_conversion_mode(直近に観測した conv)を更新する。読み手は予測の入力 `conv_raw`(下の `conv_raw:`)だけ
+        // (ADR-239。以前は分類の `input_mode_from_conversion` も読んでいたが、毎回リセットされて一度も結果を返さず撤去した)
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
 
         let current = self.platform_state.ime.input_mode();
@@ -1552,7 +1553,7 @@ impl Runtime {
     /// (`TrayCommand::ResetState`、`tray.rs`) と同じ変換モードのマスクを使う。
     /// `focus_gen`（`Output::ime_mode_focus_gen`）は呼び出し元が起案時点で読んで渡す
     /// （ADR-086 §7-3: `ime.rs` は Runtime/Output の内部状態に依存しないため）。
-    fn kp_reset_to_hiragana_romaji_capsoff(focus_gen: u32) {
+    fn kp_reset_to_hiragana_romaji_capsoff(focus_gen: crate::state::focus_gen::FocusGen) {
         // Caps Lock はトグル表示灯の読み取り (GetKeyState) + 条件付き SendInput のみで、
         // クロスプロセス IMM 呼び出しを含まないためフックスレッドから直接呼んで安全
         // （`is_physical_key_down`/`GetAsyncKeyState` 等、他の同期呼び出しと同水準）。
@@ -1596,7 +1597,7 @@ impl Runtime {
             let mask_target = current.map_or(set_mask, |c| (c | set_mask) & !clear_mask);
             let outcome = crate::ime::set_ime_conv_for_target(target, Some(mask_target), || {
                 crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
-                    .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                    .unwrap_or_else(|| focus_gen.next())
             })
             .await;
             if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
@@ -2369,7 +2370,7 @@ impl Runtime {
                             crate::with_app(|runtime| {
                                 runtime.platform.output.ime_mode_focus_gen.get()
                             })
-                            .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                            .unwrap_or_else(|| focus_gen.next())
                         })
                         .await;
                     match outcome {
@@ -2881,9 +2882,12 @@ impl Runtime {
                                         ime.effective_open(),
                                         ime.is_force_on_guard_active(),
                                         ime.input_mode(),
-                                        ime.belief.prev_conversion_mode(),
+                                        ime.belief.eisu_candidate(),
                                         app.platform.focus.process_name(),
                                     );
+                                // ADR-238: 英数の候補も更新する(この経路は `input_mode` だけを dispatch するので、
+                                // 候補の更新を `apply_ime_update` 経由で受けられない)。
+                                ime.apply_eisu_candidate_update(update.eisu_candidate);
                                 if let Some(mode) = update.new_input_mode {
                                     use crate::state::ime_event::{
                                         ImeEvent, ObservationConfidence, ObservationSource,

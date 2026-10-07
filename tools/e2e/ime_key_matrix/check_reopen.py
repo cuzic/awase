@@ -41,7 +41,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_typing_stress import normalize  # noqa: E402
-from e2e_common import hms_to_ms as ms_of, load_awase_timed as load_awase, ts_json_records as parse  # noqa: E402
+from e2e_common import UNICODE_RE, hms_to_ms as ms_of, load_awase_timed as load_awase, ts_json_records as parse  # noqa: E402
 
 PATTERNS = {
     "stuck": re.compile(r"\[gji-fsm\] StartComposition while engine off"),
@@ -50,7 +50,7 @@ PATTERNS = {
     "reopen_belief": re.compile(r'trigger="Reopen\(BeliefSync:'),
     "imeon_belief": re.compile(r'trigger="ImeOn\(BeliefSync:'),
     "imeon_other": re.compile(r'trigger="ImeOn\((?!BeliefSync:)'),
-    "unicode": re.compile(r"send_keys: mode=Unicode"),
+    "unicode": UNICODE_RE,
 }
 BAD = ("stuck", "stale_escape", "flush_escape")
 VK_SEND = re.compile(r"\[vk-send\] .*prepend_f2_warmup=(true|false)")

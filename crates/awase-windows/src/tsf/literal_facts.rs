@@ -1,6 +1,7 @@
 //! literal-detect の判定結果を journal へ持ち上げるための純粋データ型。
 
 use crate::state::event_origin::Generation;
+use crate::state::focus_gen::FocusGen;
 
 #[derive(strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum LiteralVerdict {
@@ -139,7 +140,7 @@ pub struct LiteralDetectRecord {
 pub struct GiveUpEvidence {
     pub cold_seq: u64,
     /// 一連の literal 疑いの**最初の VK 送信時**の `Output::ime_mode_focus_gen`。取り出し時の世代と一致しなければ捨てる。
-    pub focus_gen: u32,
+    pub focus_gen: FocusGen,
 }
 
 /// `LiteralDetectRecord` の列から give-up の証拠を判定する純粋な状態機械(ADR-227)。
@@ -151,7 +152,7 @@ pub struct GiveUpEvidence {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GiveUpTracker {
     suspected: u32,
-    focus_gen: Option<u32>,
+    focus_gen: Option<FocusGen>,
 }
 
 impl GiveUpTracker {
@@ -159,7 +160,7 @@ impl GiveUpTracker {
     ///
     /// 保持している世代と違う世代で送られたら(フォーカスが変わった)連鎖を切って数え直す。古い窓の世代と数えかけの
     /// 回数を新しい窓へ持ち越すと、新しい窓での最初の追随が世代の不一致で捨てられ 2 打鍵遅れる(PR #480 Opus r1 M1)。
-    pub fn note_vk_sent(&mut self, focus_gen: u32) {
+    pub fn note_vk_sent(&mut self, focus_gen: FocusGen) {
         if self.focus_gen.is_some_and(|g| g != focus_gen) {
             *self = Self::default();
         }
@@ -224,8 +225,8 @@ impl GiveUpFollowDecision {
 #[must_use]
 pub fn giveup_follow_decision(
     applies: bool,
-    gen_at_probe: u32,
-    gen_now: u32,
+    gen_at_probe: FocusGen,
+    gen_now: FocusGen,
     explicit_intent: Option<bool>,
 ) -> GiveUpFollowDecision {
     if !applies {
@@ -283,17 +284,17 @@ mod giveup_tracker_tests {
     #[test]
     fn two_suspected_literals_ending_in_give_up_yield_evidence_with_the_send_focus_gen() {
         let mut t = GiveUpTracker::default();
-        t.note_vk_sent(5);
+        t.note_vk_sent(FocusGen::new(5));
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
             None
         );
-        t.note_vk_sent(5); // 再送(同じ窓)
+        t.note_vk_sent(FocusGen::new(5)); // 再送(同じ窓)
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
             Some(GiveUpEvidence {
                 cold_seq: 7,
-                focus_gen: 5
+                focus_gen: FocusGen::new(5)
             })
         );
         // 証拠を返したら空に戻る
@@ -306,7 +307,7 @@ mod giveup_tracker_tests {
     #[test]
     fn a_single_suspected_literal_is_not_enough() {
         let mut t = GiveUpTracker::default();
-        t.note_vk_sent(1);
+        t.note_vk_sent(FocusGen::new(1));
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
             None
@@ -317,7 +318,7 @@ mod giveup_tracker_tests {
     #[test]
     fn stale_confirm_in_the_middle_of_the_chain_blocks_evidence() {
         let mut t = GiveUpTracker::default();
-        t.note_vk_sent(1);
+        t.note_vk_sent(FocusGen::new(1));
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
             None
@@ -326,7 +327,7 @@ mod giveup_tracker_tests {
             t.note_record(&rec(LiteralVerdict::StaleConfirm, false)),
             None
         );
-        t.note_vk_sent(1);
+        t.note_vk_sent(FocusGen::new(1));
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
             None
@@ -337,12 +338,12 @@ mod giveup_tracker_tests {
     #[test]
     fn stale_confirm_before_the_chain_does_not_latch() {
         let mut t = GiveUpTracker::default();
-        t.note_vk_sent(1);
+        t.note_vk_sent(FocusGen::new(1));
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::StaleConfirm, false)),
             None
         );
-        t.note_vk_sent(2);
+        t.note_vk_sent(FocusGen::new(2));
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
             None
@@ -351,7 +352,7 @@ mod giveup_tracker_tests {
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
             Some(GiveUpEvidence {
                 cold_seq: 7,
-                focus_gen: 2
+                focus_gen: FocusGen::new(2)
             })
         );
     }
@@ -359,7 +360,7 @@ mod giveup_tracker_tests {
     #[test]
     fn composition_confirmed_resets_the_chain() {
         let mut t = GiveUpTracker::default();
-        t.note_vk_sent(1);
+        t.note_vk_sent(FocusGen::new(1));
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
             None
@@ -368,7 +369,7 @@ mod giveup_tracker_tests {
             t.note_record(&rec(LiteralVerdict::CompositionConfirmed, false)),
             None
         );
-        t.note_vk_sent(1);
+        t.note_vk_sent(FocusGen::new(1));
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
             None
@@ -392,12 +393,12 @@ mod giveup_tracker_tests {
     #[test]
     fn a_new_focus_generation_restarts_the_chain() {
         let mut t = GiveUpTracker::default();
-        t.note_vk_sent(1);
+        t.note_vk_sent(FocusGen::new(1));
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
             None
         );
-        t.note_vk_sent(2); // 窓が変わった
+        t.note_vk_sent(FocusGen::new(2)); // 窓が変わった
         assert_eq!(
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
             None
@@ -406,7 +407,7 @@ mod giveup_tracker_tests {
             t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
             Some(GiveUpEvidence {
                 cold_seq: 7,
-                focus_gen: 2
+                focus_gen: FocusGen::new(2)
             })
         );
     }
@@ -418,13 +419,13 @@ mod giveup_tracker_tests {
             LiteralVerdict::PlanSkippedLiteral,
         ] {
             let mut t = GiveUpTracker::default();
-            t.note_vk_sent(1);
+            t.note_vk_sent(FocusGen::new(1));
             assert_eq!(
                 t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
                 None
             );
             assert_eq!(t.note_record(&rec(v, false)), None);
-            t.note_vk_sent(1);
+            t.note_vk_sent(FocusGen::new(1));
             assert_eq!(
                 t.note_record(&rec(LiteralVerdict::SuspectedLiteral, true)),
                 None,
@@ -440,7 +441,7 @@ mod giveup_tracker_tests {
             LiteralVerdict::AbortedNoVerdict,
         ] {
             let mut t = GiveUpTracker::default();
-            t.note_vk_sent(1);
+            t.note_vk_sent(FocusGen::new(1));
             assert_eq!(
                 t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
                 None
@@ -458,16 +459,25 @@ mod giveup_tracker_tests {
     fn follow_decision_checks_applicability_then_focus_then_intent() {
         use GiveUpFollowDecision::*;
         assert_eq!(
-            giveup_follow_decision(false, 1, 1, Some(true)),
+            giveup_follow_decision(false, FocusGen::new(1), FocusGen::new(1), Some(true)),
             NotApplicable
         );
-        assert_eq!(giveup_follow_decision(true, 1, 2, Some(true)), StaleFocus);
-        assert_eq!(giveup_follow_decision(true, 1, 1, None), NoExplicitIntent);
         assert_eq!(
-            giveup_follow_decision(true, 1, 1, Some(false)),
+            giveup_follow_decision(true, FocusGen::new(1), FocusGen::new(2), Some(true)),
+            StaleFocus
+        );
+        assert_eq!(
+            giveup_follow_decision(true, FocusGen::new(1), FocusGen::new(1), None),
             NoExplicitIntent
         );
-        assert_eq!(giveup_follow_decision(true, 1, 1, Some(true)), Arm);
+        assert_eq!(
+            giveup_follow_decision(true, FocusGen::new(1), FocusGen::new(1), Some(false)),
+            NoExplicitIntent
+        );
+        assert_eq!(
+            giveup_follow_decision(true, FocusGen::new(1), FocusGen::new(1), Some(true)),
+            Arm
+        );
         assert_eq!(Arm.outcome(), "armed");
     }
 }

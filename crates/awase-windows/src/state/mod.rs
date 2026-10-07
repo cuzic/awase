@@ -48,6 +48,9 @@ pub mod alt_impersonation;
 pub mod generation;
 pub use generation::{ApplyGeneration, GenerationAllocator};
 pub mod app_ime_policy;
+// ADR-229 W-a: await をまたぐ失効判定に使う生の `u32` 世代 2 種(`Output::ime_mode_focus_gen`・
+// `shift_conv_guard_gen`)の型。ungated(Linux で `next`/比較をテストする)。
+pub mod focus_gen;
 // FCIS P1: 純粋なデータ型を ungated へ移したもの(元の場所から pub use で再公開)。
 pub mod foreground_scope;
 pub mod ime_update;
@@ -101,7 +104,9 @@ pub mod conv_classify;
 // 純粋関数モジュール（conv_classify と同じ ungated パターン）。呼び出し元は
 // #[cfg(windows)] の runtime/ のみ。
 #[cfg_attr(not(windows), allow(dead_code))]
+pub mod eisu_candidate;
 pub mod eisu_recovery;
+pub mod snapshot_input_mode;
 // ADR-163 TH1a: `crate::ime::ConvAfterOpen` の ungated ミラー。将来の
 // actuation 決定出力が Windows-gated 型を state 層へ持ち込まないための境界型。
 pub mod conv_after_open;
@@ -208,6 +213,10 @@ pub(crate) mod relay_plan;
 // 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod deferred_gate_plan;
+// FCIS F6b: `output/` の TSF 送信パイプライン（warm/cold・PendingGjiConfirm・LiteralDetect 設置）の判断の核（純粋）。
+// 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod warm_send_plan;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
 // 実機（Windows）以外では呼び出し元（`runtime/`・`app/`）が無く、P5 でコアの境界に出す分だけを公開するまでは

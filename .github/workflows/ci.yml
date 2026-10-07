@@ -183,6 +183,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # ADR-236: マージ解消で残った衝突マーカー(とくに diff3 の基底行)を検出する
+      - name: 衝突マーカーの残りを確認
+        run: |
+          if git grep -nE '^(<<<<<<< |>>>>>>> |\|\|\|\|\|\|\| )'; then
+            echo "::error::衝突マーカーの行が残っています(上の ファイル:行 を直してください)"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt

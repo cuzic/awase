@@ -683,19 +683,37 @@ impl ObservationStore {
         ConvergedReceipt::new(resolution, attempts)
     }
 
-    /// 最も信頼できる観測値を返す (confidence 優先、同 confidence なら新しい方)。
+    /// belief のフォールバック用: 最も信頼できる観測値を返す。順位キーは `(confidence >= Medium, at, confidence)`
+    /// (ADR-233 案 A'、BUG-189)。Medium 以上の中では**新しい方**が勝ち、同時刻なら信頼度の高い方(ADR-087 INV-23 の決定性)。
+    /// Low(`FocusProbe` / `HeuristicDefault`)が勝つのは Medium 以上が 1 件も無いときだけ。
+    ///
+    /// 旧い順位キー `(confidence, at)` は、フォーカス時に 1 件だけ記録されて `expires_at: None` で残る
+    /// `ImmCrossProbe`(High)が、後から同じ読み取りで得た新しい `ObserverPoll`(Medium)に勝ち、
+    /// 実効 IME 状態が反転してエンジンが止まる原因だった(BUG-189)。Standard の窓の中では High と Medium は
+    /// どちらも同じ `read_ime_state_full` の読み取りなので、新しい方が正しい。
     ///
     /// expire 済みの観測は除外する。
     ///
+    /// **belief のフォールバック(`ime_model.rs::resolve_open_at`)専用。** drift correction(`_excluding`)と
+    /// actuation の読み戻し(`_after`)は信頼度優先の旧い順位のままで、この関数を共有しない(ADR-233「適用範囲」)。
+    ///
     /// **`_after` 付きと違い `pub` のまま**（ADR-090 §2.B 設計案 2）。
-    /// こちらは belief のフォールバック（`ime_model.rs::resolve_open_at` /
-    /// `platform_state.rs`）専用であり、actuation の読み戻しではない。
     #[must_use]
     pub fn most_recent_trusted(&self, now: Instant) -> Option<&ImeObservation> {
-        self.most_recent_trusted_excluding(now, &[])
+        self.per_source
+            .iter()
+            .filter(|o| !o.is_expired(now))
+            .max_by_key(|o| {
+                (
+                    o.confidence >= ObservationConfidence::Medium,
+                    o.at,
+                    o.confidence,
+                )
+            })
     }
 
-    /// [`most_recent_trusted`] と同じだが、指定した `ObservationSource` 群を選ぶ前に除外する。
+    /// 指定した `ObservationSource` 群を選ぶ前に除外して、最も信頼できる観測値を返す(**信頼度優先、同信頼度なら新しい方**。
+    /// belief のフォールバック用の [`most_recent_trusted`](順位キーが違う、ADR-233)とは別。drift correction が使う)。
     /// drift correction が `ConvOpenInference` を根拠にしない（BUG-173 追補3）ために、選んだ後に捨てる形にすると
     /// 同じ Medium の他ソース（`ObserverPoll` 等）の正当な観測まで覆い隠すので、選ぶ前に除外する（Opus round2 R2-2）。
     #[must_use]
@@ -1133,6 +1151,82 @@ mod tests {
             s.most_recent_trusted(now).map(|o| o.open),
             Some(false),
             "High confidence が勝つ"
+        );
+    }
+
+    /// ADR-233(BUG-189): 古い ICP(High,false)より新しい ObserverPoll(Medium,true)を採る(belief のフォールバック)。
+    /// drift correction が使う `_excluding` は信頼度優先のまま(適用範囲の固定)。
+    #[test]
+    fn most_recent_trusted_prefers_newer_medium_over_older_high() {
+        let mut s = ObservationStore::default();
+        let t0 = Instant::now();
+        let mut icp = obs(false, ObservationSource::ImmCrossProbe, t0);
+        icp.confidence = ObservationConfidence::High;
+        let poll = obs(
+            true,
+            ObservationSource::ObserverPoll,
+            t0 + Duration::from_secs(4),
+        );
+        rec(&mut s, icp);
+        rec(&mut s, poll);
+        let now = t0 + Duration::from_secs(8);
+        assert_eq!(s.most_recent_trusted(now).map(|o| o.open), Some(true));
+        assert_eq!(
+            s.most_recent_trusted_excluding(now, &[]).map(|o| o.open),
+            Some(false),
+            "drift correction 用(_excluding)は信頼度優先のまま変えない"
+        );
+    }
+
+    /// ADR-233: 同時刻なら信頼度の高い方(決定性のタイブレーク)。Low は Medium 以上に負ける。
+    #[test]
+    fn most_recent_trusted_ties_go_to_higher_confidence_and_low_loses_to_medium() {
+        let mut s = ObservationStore::default();
+        let t0 = Instant::now();
+        let mut icp = obs(false, ObservationSource::ImmCrossProbe, t0);
+        icp.confidence = ObservationConfidence::High;
+        let poll = obs(true, ObservationSource::ObserverPoll, t0);
+        rec(&mut s, icp);
+        rec(&mut s, poll);
+        assert_eq!(
+            s.most_recent_trusted(t0).map(|o| o.open),
+            Some(false),
+            "同時刻は High(ICP)"
+        );
+        let mut low = obs(
+            true,
+            ObservationSource::FocusProbe,
+            t0 + Duration::from_secs(5),
+        );
+        low.confidence = ObservationConfidence::Low;
+        rec(&mut s, low);
+        assert_eq!(
+            s.most_recent_trusted(t0 + Duration::from_secs(6))
+                .map(|o| o.source),
+            Some(ObservationSource::ImmCrossProbe),
+            "新しい Low は Medium 以上に勝たない(同時刻の ICP と ObserverPoll は High の ICP が残る)"
+        );
+    }
+
+    /// ADR-233: Medium 以上が無ければ Low 同士は新しい方(今と同じ)。
+    #[test]
+    fn most_recent_trusted_low_only_prefers_newer() {
+        let mut s = ObservationStore::default();
+        let t0 = Instant::now();
+        let mut a = obs(false, ObservationSource::FocusProbe, t0);
+        a.confidence = ObservationConfidence::Low;
+        let mut b = obs(
+            true,
+            ObservationSource::HeuristicDefault,
+            t0 + Duration::from_secs(1),
+        );
+        b.confidence = ObservationConfidence::Low;
+        rec(&mut s, a);
+        rec(&mut s, b);
+        assert_eq!(
+            s.most_recent_trusted(t0 + Duration::from_secs(2))
+                .map(|o| o.open),
+            Some(true)
         );
     }
 

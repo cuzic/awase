@@ -77,7 +77,7 @@ P4 に書かれていなかった前提 2 つ(Opus の Must): **M12** `platform_
 | F3 | `execute_relay`/`drain_deferred` の計画/ガード状態機械 | **defer/replay キュー(ADR-156)。defer 側と drain 側の 2 窓口を、同じ PR で必ず対にする**。**E0 の暗黙の順序: `execute_relay`(`executor.rs:430-445`)は Consume のとき Timer だけが即時に実行されてキューを追い越す。この順序を保つ**(`docs/tasks/effect-signature-inventory-2026-10-06/inventory-e0.md` §11) |
 | F4 | `ir_apply_drift_correction` の `DriftPlan`。ハーネスの写しの残り 2 系統(`kp_stage_key_effect_track`/`kp_predict_key_effect`、`ir_apply_drift_correction` の前半)を本物に **【実施状況 PR #514】`ir_apply_drift_correction` を observe → `decide_drift_plan`(`state/drift_plan.rs`、`CORE_MODULES`)→ execute に分割済み。ただし harness の写し 7 → 1 は未達: harness は変えておらず、`ir_apply_drift_correction` の前半を `decide_drift_plan`(と `check_drift_correction`)の本物の呼び出しに置き換えるのは P5 の作業。`kp_stage_key_effect_track`/`kp_predict_key_effect` の分割は F4 では未着手(別の F タスク)** | 写し 7 → 1 への道 |
 | F5 | focus 系(`classify_focus`、`msaa_classify`、`resolve_focus_kind`、`learn_imm_capability_on_focus`)。「O が facts、core が判断」 | 条件付きの段階的な読み取りは F-D1 の handler 例外(MSAA までの同期の段階)。UIA は A 種の Cmd/Event。UIA 経路の削除(約 400 行)は別判断 追記: `msaa_classify`(#512)・`classify_focus`(#527)は handler 例外なしで分割済み(`Option` を返す純粋関数+殻)。残りは `resolve_focus_kind`・`learn_imm_capability_on_focus` |
-| F6 | Output(`vk_send` F 623 行、`output/mod` 576 行)の `Vec<Cmd>` 化 | `Output` の状態を `OutputState` へ(`RAW_TSF_LITERAL`、`OutputActiveGuard`)。`OutputActiveGuard` は `GateAcquire`/`GateRelease` を対に(ADR-156)。**【実施状況 PR #523】退避 gate の判断だけを `state/deferred_gate_plan.rs`(`plan_blocking`/`plan_defer`/`plan_drain_before_send`、`CORE_MODULES`)に切り出した。見送り: 送信パイプライン(`assess_warmth` と経過時間が混ざり `TickMs` 化が先に要る)、`ms_ime_gate_defer`(判断の途中でタイマーと coro を作る)。`INPUT_DEFER`(c21)は別のキューで F6 の対象外。未着手(残り): `Vec<Cmd>` 化・`OutputState`・`OutputActiveGuard` の対・解放側(`finish_probe_stage` 等、`plan_blocking` を通らない)。** |
+| F6 | Output(`vk_send` F 623 行、`output/mod` 576 行)の `Vec<Cmd>` 化 | `Output` の状態を `OutputState` へ(`RAW_TSF_LITERAL`、`OutputActiveGuard`)。`OutputActiveGuard` は `GateAcquire`/`GateRelease` を対に(ADR-156)。**【実施状況 PR #523】退避 gate の判断だけを `state/deferred_gate_plan.rs`(`plan_blocking`/`plan_defer`/`plan_drain_before_send`、`CORE_MODULES`)に切り出した。見送り: 送信パイプライン(`assess_warmth` と経過時間が混ざり `TickMs` 化が先に要る)〈**訂正(F6b、PR #528)**: `output/`・`tsf/` の本番コードに `Instant` は無く、時刻は `current_tick_ms` の `u64` で既に持たれていたので、`TickMs` 化は先に要らなかった。全数表で固定できるので V4 は適用しなかった〉、`ms_ime_gate_defer`(判断の途中でタイマーと coro を作る)。`INPUT_DEFER`(c21)は別のキューで F6 の対象外。**【F6b、PR #528】** 送信パイプラインのうち `assess_warmth` と `send_romaji_as_tsf_warm` の 4 述語(warm/cold・期限切れ・GJI 応答待ち・長期静止・LiteralDetect 設置)だけを `state/warm_send_plan.rs` に切り出した(読む位置と OS 送信の順序は殻のまま)。未着手(残り): `Vec<Cmd>` 化・`OutputState`・`OutputActiveGuard` の対・解放側(`finish_probe_stage` 等、`plan_blocking` を通らない)。** |
 
 ### F の分割の各 PR に含める「汎用でない」改善(ADR-229「FCIS の汎用部品の判断」)
 
@@ -178,7 +178,7 @@ ADR-229 の代案 A と E1 を、F の分割の書き方として明文化する
 ### 完了前チェック(V2。Opus のレビューに出す前に実装エージェントが確かめる)
 
 1. 新しく足した純粋モジュールを `CORE_MODULES` と mutants の `examine_globs` に載せたか。再発ファミリーに属するなら、pre-push の正規表現と `fix-requires-evidence.md` の表にも載せたか(§0 の 4 の共通の後処理)。
-2. PR の本文と数値は §0 の 2・§0 の 6 に従っているか(本文が自分の PR のものか、数値を CI のログから写したか、`#[ignore]` の数を含む)。
+2. `.claude/rules/agent-handoff.md` の 1・3 に従う(ADR-242・ADR-243)。
 3. ソース走査のテストを足したなら、違反例を 1 つ作って検出できることを確かめたか。
 4. V4 に当たる分割なら、事実の型の時刻を `TickMs` で持っているか。
 
@@ -235,6 +235,8 @@ ADR-229 は crate の物理分割を「最後」としていた(D4、F-D6、段�
 ### V1 の実態(#530)
 
 V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windows.toml` に載っているかだけを見る(`xtask-adr-evidence core-registry`、CI の `core-registry-consistency` ジョブ、base が develop の `pull_request` のときだけ)。pre-push の正規表現と `fix-requires-evidence.md` の表は V1 では見ない(V2 で人が判断する)。上の V1 の行と同じ。#530 は squash マージで、PR のタイトルは初版の「3 か所」のまま残っている(本文の 2 つ目のコミットで mutants だけに絞った)。V1 を必須チェックにするかは所有者の判断(未決)。
+
+#524 のブランチのコミット `cb581901` の件名「消費者0」は不正確。正しくは `99569f7a` と #524 本文(ADR-242)。
 
 ### V4 の根拠の訂正
 

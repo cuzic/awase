@@ -27,7 +27,7 @@ ONLY_ALL = ",".join([c + "*" for c in "abcdefghijklmnopqrstuvwxyz0123456789"] +
 def plan_source(workflow_path=WORKFLOW):
     """plan ジョブの python スクリプト本体(インデント除去済み)。matrix 上限チェックより前で切る。"""
     text = open(workflow_path, encoding="utf-8").read()
-    m = re.search(r"        run: \|\n(          import json, os, sys\n.*?)\n  build:\n", text, re.S)
+    m = re.search(r"        run: \|\n(          import fnmatch, json, os, sys\n.*?)\n  build:\n", text, re.S)
     if not m:
         raise RuntimeError("plan スクリプトが見つからない(e2e-ime.yml の構造が変わった?)")
     src = textwrap.dedent(m.group(1))
@@ -41,6 +41,9 @@ def load_configs(workflow_path=WORKFLOW):
     """全構成(cal-/ts-/tsx-/sc-keymatrix- 等を含む)の dict 一覧。"""
     src = plan_source(workflow_path)
     env_backup = dict(os.environ)
+    cwd_backup = os.getcwd()
+    # plan スクリプトは forms.toml をリポジトリ直下からの相対パスで読む(CI は checkout 直下で実行する)。
+    os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
     os.environ["ONLY"] = ONLY_ALL
     os.environ.pop("RUNS", None)
     os.environ.pop("EXCLUDE_CAL_WHEN_EMPTY", None)
@@ -49,6 +52,7 @@ def load_configs(workflow_path=WORKFLOW):
         exec(compile(src, "plan", "exec"), ns)  # noqa: S102 - リポジトリ自身のスクリプト
         return ns["configs"]
     finally:
+        os.chdir(cwd_backup)
         os.environ.clear()
         os.environ.update(env_backup)
 

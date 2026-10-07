@@ -633,15 +633,16 @@ footer p{margin-bottom:0.3rem}
     </div>
 
     <div class="card">
-      <h3>Caps(英数) / Ctrl プリセット（ショートカットタブ）</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">CapsLock（JISキーボードでは英数キー）と左Ctrlの役割を、Windowsのレジストリ（Scancode Map）を書き換えて変更する機能です。3択（無効／入れ替え／追加）から選べます。</p>
+      <h3>キーの入れ替え（ショートカットタブ）</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">2つのキーを入れ替えます。Windowsのレジストリ（Scancode Map）を書き換えるため、キーボードの種類やアプリに関係なく効きます。入れ替えは「ペア」（AとBを入れ替える）の組み合わせで作ります。</p>
       <table class="tab-table">
-        <tr><th>選択肢</th><th>動作</th></tr>
-        <tr><td>無効</td><td>変更しない（既定）</td></tr>
-        <tr><td>Caps(英数) ⇔ Ctrl を入れ替える</td><td>CapsLock（英数）キーとCtrlキーの役割を入れ替える</td></tr>
-        <tr><td>Caps(英数) を Ctrl として追加する</td><td>CapsLock（英数）キーを追加のCtrlキーにする。元のCtrlキーはそのまま使えるが、英数キー自体は使えなくなる</td></tr>
+        <tr><th>操作</th><th>内容</th></tr>
+        <tr><td>＋ ペアを追加</td><td>行を追加し、2つのドロップダウンで入れ替えるキーを選びます（左Ctrl・左Alt・右Alt・スペース・無変換・変換・かな・半角/全角・英数/Caps。JIS専用のキーは、キーボード配列がJISのときだけ選べます）</td></tr>
+        <tr><td>よくある入れ替え</td><td>「英数/Caps ⇄ 左Ctrl」「変換 ⇄ スペース」をワンクリックで追加します</td></tr>
+        <tr><td>英数 / Caps を追加の Ctrl にする</td><td>英数（CapsLock）キーを追加のCtrlキーにします。元の左Ctrlキーはそのまま使えますが、英数キー自体は使えなくなります</td></tr>
+        <tr><td>入れ替えを適用（要再起動）</td><td>レジストリに書き込みます。画面全体の「適用」とは別の操作で、設定ファイルは保存しません</td></tr>
       </table>
-      <p class="note">変更には管理者権限の確認（UAC）が1回表示され、反映には再起動が必要です（サインアウトのみでは反映されないことがあります）。この設定はPC全体（全ユーザー）に影響し、リモートデスクトップのセッション内では動作しません。</p>
+      <p class="note">注意が必要な組（英数と親指キー、親指キーに設定しているキー、スペース）や、他のツールの設定が消える場合は、適用の前に確認が表示されます。適用には管理者権限の確認（UAC）が1回表示され、反映には再起動が必要です（サインアウトのみでは反映されません）。この設定はPC全体（全ユーザー）に影響し、リモートデスクトップのセッション内では動作しません。他のツールが設定した入れ替えは、読み取り専用で一覧に表示され、awase は変更しません。</p>
     </div>
   </div>
 </section>

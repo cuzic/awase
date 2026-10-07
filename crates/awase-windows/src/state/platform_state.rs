@@ -30,7 +30,7 @@ mod shell;
 /// `PlatformState` から IME 関連フィールドを切り出すことで、
 /// 「観測」「フォーカス状態」「フック設定」の混在を解消する。
 ///
-/// - `belief`        : input_mode / is_japanese_ime / prev_conversion_mode（IME ON/OFF 自体は shadow_model が SSOT）
+/// - `belief`        : input_mode / is_japanese_ime / prev_conversion_mode〈予測の `conv_raw` 用〉（IME ON/OFF 自体は shadow_model が SSOT）
 /// - `shadow_model`  : IME ON/OFF と force_guards / observe_miss_monitor を持つ SSOT
 #[derive(Debug)]
 pub struct ImeStateHub {
@@ -106,6 +106,10 @@ pub struct ImeStateHub {
     /// から更新するため `Cell`——`ImeStateHub` は単一 UI スレッドが所有する
     /// （`with_app` パターン）ため `!Sync` でも問題ない。
     intent_override_logged: std::cell::Cell<bool>,
+    /// 直近に返した `effective_open_at` の値(反転の診断ログ用、BUG-189)。値の判断には使わない。
+    last_effective_open: std::cell::Cell<Option<bool>>,
+    /// 直近に `[mrt-shadow]` を出した (旧, 新) の観測時刻(重複ログの抑止、ADR-233)。値の判断には使わない。
+    last_mrt_shadow: std::cell::Cell<Option<(std::time::Instant, std::time::Instant)>>,
 
     /// [`ImeStateHub::resolve_warmup_ime_on`] の `off_drift_active` ゲートが
     /// `ApplyGeneration` 専用アロケータ（ADR-106 決定1）。`event_log.next_seq()`
@@ -126,7 +130,7 @@ pub(crate) struct ImePollState {
     pub(crate) ime_on: bool,
     pub(crate) force_guard: bool,
     pub(crate) input_mode: InputModeState,
-    pub(crate) prev_conv: Option<u32>,
+    pub(crate) eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
 }
 
 /// [`ImeStateHub::evaluate_drift`] の戻り値。定義は ungated な
@@ -153,6 +157,8 @@ impl ImeStateHub {
             external_change_watch: super::external_change_watch::ExternalChangeWatch::new(),
             last_external_change_ms: 0,
             intent_override_logged: std::cell::Cell::new(false),
+            last_effective_open: std::cell::Cell::new(None),
+            last_mrt_shadow: std::cell::Cell::new(None),
             generation_alloc: super::GenerationAllocator::new(),
             press_ledger: super::press_ledger::PressLedger::default(),
         }
@@ -931,9 +937,8 @@ impl ImeStateHub {
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
     pub fn effective_open_at(&self, now_ms: TickMs) -> bool {
-        let shadow = self
-            .shadow_model
-            .effective_open_at(self.clock.now_instant());
+        let resolution = self.shadow_model.resolve_open_at(self.clock.now_instant());
+        let shadow = resolution.value;
         let decision = self.intent_store.resolve_effective_open(
             self.shadow_model.current_focus(),
             shadow,
@@ -967,6 +972,45 @@ impl ImeStateHub {
                     );
                     self.intent_override_logged.set(false);
                 }
+            }
+        }
+        // 診断(BUG-189): 実効値が反転した瞬間に、どの根拠(明示意図/予測/観測/フォールバック)で決まったかを 1 行残す。
+        // 値の判断には使わない。キー入力ごとに呼ばれるので、反転したときだけ出す。
+        if self
+            .last_effective_open
+            .replace(Some(decision.value))
+            .is_some_and(|prev| prev != decision.value)
+        {
+            tracing::info!(
+                "[effective-open-flip] → {} decided_by={:?} shadow_model={shadow} intent_store_override={}",
+                decision.value,
+                resolution.decided_by,
+                decision.value != shadow,
+            );
+        }
+        // 診断(ADR-233): フォールバックに落ちたとき、旧と案 A' で選ぶ観測が食い違えば 1 行出す(値の判断には使わない)。
+        let now_instant = self.clock.now_instant();
+        if let Some(sh) = self.shadow_model.fallback_shadow(now_instant) {
+            if sh.old.open != sh.new.open
+                && self.last_mrt_shadow.replace(Some((sh.old.at, sh.new.at)))
+                    != Some((sh.old.at, sh.new.at))
+            {
+                tracing::info!(
+                    "[mrt-shadow] old={}({:?},{:?},age={}ms,hwnd={:?},epoch={:?}) new={}({:?},{:?},age={}ms,hwnd={:?},epoch={:?}) final={}",
+                    sh.old.open,
+                    sh.old.source,
+                    sh.old.confidence,
+                    sh.old.age(now_instant).as_millis(),
+                    sh.old.hwnd,
+                    sh.old.focus_epoch,
+                    sh.new.open,
+                    sh.new.source,
+                    sh.new.confidence,
+                    sh.new.age(now_instant).as_millis(),
+                    sh.new.hwnd,
+                    sh.new.focus_epoch,
+                    decision.value,
+                );
             }
         }
         decision.value
@@ -1013,7 +1057,7 @@ impl ImeStateHub {
             ime_on: self.effective_open(),
             force_guard: self.is_force_on_guard_active(),
             input_mode: self.input_mode(),
-            prev_conv: self.belief.prev_conversion_mode(),
+            eisu_candidate: self.belief.eisu_candidate(),
         }
     }
 
@@ -1263,6 +1307,7 @@ impl ImeStateHub {
         );
         self.belief.is_japanese_ime = true;
         self.belief.prev_conversion_mode = None;
+        self.belief.eisu_candidate = None;
         self.shadow_model.observe_miss_monitor.record_success();
         self.shadow_model.force_guards.clear();
         self.shadow_model.force_guards.add(ForceGuard {
@@ -1344,6 +1389,35 @@ impl ImeStateHub {
         if let Some(conv) = update.new_prev_conversion_mode {
             self.belief.prev_conversion_mode = Some(conv);
         }
+        self.apply_eisu_candidate_update(update.eisu_candidate);
+    }
+
+    /// 英数モードの候補を更新する(ADR-238)。`apply_ime_update` と、`ImmCrossProbe` 経路(分類の結果の `input_mode` だけを
+    /// dispatch する)から呼ぶ。
+    pub(crate) fn apply_eisu_candidate_update(
+        &mut self,
+        update: crate::state::eisu_candidate::CandidateUpdate,
+    ) {
+        use crate::state::eisu_candidate::CandidateUpdate;
+        match update {
+            CandidateUpdate::Keep => {}
+            CandidateUpdate::Set(c) => self.belief.eisu_candidate = Some(c),
+            CandidateUpdate::Clear => self.belief.eisu_candidate = None,
+        }
+    }
+
+    /// 英数モードの候補の寿命の残り(ms)。候補が無い/寿命切れなら `None`(確認の読み直しの予約が使う)。
+    pub(crate) fn eisu_candidate_remaining_ms(&self, now_ms: u64) -> Option<u64> {
+        crate::state::eisu_candidate::candidate_remaining_ms(
+            self.belief.eisu_candidate(),
+            now_ms,
+            crate::tuning::EISU_CANDIDATE_LIFETIME_MS,
+        )
+    }
+
+    /// 英数モードの候補を捨てる(フォーカス変更時。`set_prev_conversion_mode(None)` と同じ場所で呼ぶ)。
+    pub(crate) fn clear_eisu_candidate(&mut self) {
+        self.belief.eisu_candidate = None;
     }
 
     /// `hwnd_cache` の復元結果を belief / shadow_model に反映する。

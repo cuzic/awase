@@ -126,6 +126,15 @@ pub fn evaluate_drift(
         .most_recent_trusted_excluding(now, &[ObservationSource::ConvOpenInference])
         .ok_or(NoDrift::NoTrustedObservation)?;
     if trusted.age(now) > max_age {
+        // 診断(ADR-233 の「drift が古い ICP で止まる疑い」の測定): 補正を見送った根拠の観測。明示意図があり乖離が続いている
+        // ときだけ来る(上の 2 つの早期 return を通った後)ので頻度は低い。挙動は変えない。
+        tracing::debug!(
+            "[drift-skip] StaleObservation source={:?} confidence={:?} age_ms={} observed={} desired={desired}",
+            trusted.source,
+            trusted.confidence,
+            trusted.age(now).as_millis(),
+            trusted.open,
+        );
         return Err(NoDrift::StaleObservation);
     }
     // ConvOpenInference（conv ビットからの間接推測、KatakanaShadowOff/NativeToggleShadowOff 由来）は drift correction の

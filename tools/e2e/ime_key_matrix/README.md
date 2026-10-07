@@ -59,7 +59,7 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 | `check_resync.py` | リセット操作の後に実IMEとEngineが揃うか |
 | `--charthumb=CHAR,THUMB` / `check_charthumb.py` | 文字→親指の順に押して文字を先に離し、親指を押し続ける(重なり不足、`min_overlap_margin_percent`>0)。親指の KEY 行の実IMEで、保持中(+400ms)は開いたまま・離した後(+1500ms)に閉じるか(ADR-199 T10 決定A、構成 `sc-charthumb-gji-atok`)。文字キーにはスキャンコードの対応(`scan_for`)が要る |
 | `check_toggle.py` | 開閉トグルキーが押すたびに反転し、Engineが追随するか |
-| `ablations/a*.sh` | 撤去実験(ミューテーター)。`a7-no-follow.sh`はfollow(ADR-187)を無効化してずれを起こす |
+| `ablations/a*.sh` | 撤去実験(ミューテーター)。現存は a4〜a6・a8(a3・a7 は対象コードが変わり差分を作れなくなったため撤去、ADR-240) |
 
 ## ADR-191/193: 学習ラウンド(格子)・検証ラウンド(walk)・通知の計測ツール(ワークフローの `cal-*` 構成 = `check: collect`)
 `cal-*` 構成は判定せずログを回収し、`[GRID-ABORT]` による打ち切り(rc=3=INVALID)だけを検出する(解析は下のツールでローカルに行う)。
@@ -155,6 +155,7 @@ B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず
 
 - **run の汚れ**(`check_run_validity.py`、`cpu_sampler.ps1`): 物理キー(`[engine-input]` の extra=0x0)の混入と CPU 負荷(p95)を run ごとに記録し、summary に「run の汚れ」表を出す。
   既定は情報のみ。リポジトリ変数 `E2E_VALIDITY_ENFORCE=1` で、汚れた run を INVALID(rc=3)にして期待表の判定から外す(強制する前に、extra=0 のままの注入が無いか件数を見ること)。
+- **入力先の profile と経路の件数**(ADR-235 D1、`check_run_validity.py`): 同じ `validity.json` に、observed・drift・unicode・external_change の 4 つの経路の件数と、打鍵前の最後の `focus transition` の profile(入力先)・bootstrap の profile(awase 起動時の前面窓。入力先とは限らない)を記録し、summary に 4 件数がすべて 0 の回だけ表で出す。合否は変えない。0 件の回は「経路に乗っていない」ので、「起きなかった」と読まないこと。正規表現は判定器と共通(`e2e_common.py`)。
 - **Wilson 区間**(`stats_util.py`): 試行数が小さいので、typing 表に FAIL率の 95% 区間を併記する(0/10 でも上限は約 28%)。
 - **observe の期限**(`observe_audit.py`、`test_e2e_plan.py`): 新しい `expect=observe` には `until='YYYY-MM-DD'` が必須で、期限までに pass / fail(再現固定)/ 削除を決める。
   既存分は `observe_grandfathered.txt` に載せ、縮める方向にだけ動かす。summary は有効回 2 回以上で全PASS/全FAIL の observe に昇格候補の目印を付ける。

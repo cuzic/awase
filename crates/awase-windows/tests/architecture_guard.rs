@@ -7233,3 +7233,239 @@ fn deferred_gate_wiring_detector_catches_violations() {
     assert_ne!(direct, v);
     assert!(!deferred_gate_wiring_violations(&m, &direct).is_empty());
 }
+
+/// FCIS F6b: TSF 送信パイプラインの warm/cold・PendingGjiConfirm・LiteralDetect 設置の判断は
+/// `state/warm_send_plan.rs`。殻が純粋関数の**結果を使い**、判断をインラインに書き戻さず、
+/// 引数の取り違え・定数の差し替えをしていないことの違反を返す（空白を潰した文字列で照合する）。
+fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static str> {
+    fn squash(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+    let mut v = Vec::new();
+    let assess = squash(&non_comment_lines(extract_fn_body(
+        production_code_only(output_mod),
+        "fn assess_warmth(",
+    )));
+    for needle in [
+        "warm_send_plan::plan_warmth(",
+        "session_expired:plan.session_expired",
+        "prepend_f2_warmup:plan.prepend_f2_warmup",
+        "composition_timeout_ms:crate::tuning::COMPOSITION_TIMEOUT_MS",
+    ] {
+        if !assess.contains(needle) {
+            v.push("assess_warmth が plan_warmth の結果/定数を使っていない");
+        }
+    }
+    if assess.contains("elapsed>crate::tuning::COMPOSITION_TIMEOUT_MS")
+        || assess.contains("elapsed>")
+    {
+        v.push("assess_warmth が期限判定をインラインに書き戻している");
+    }
+    let warm = squash(&non_comment_lines(extract_fn_body(
+        production_code_only(vk_send),
+        "fn send_romaji_as_tsf_warm(",
+    )));
+    for needle in [
+        "warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts{last_unicode_ms,gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),})",
+        "warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts{now_ms:crate::hook::current_tick_ms(),gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),threshold:crate::tuning::LONG_IDLE_MS,})",
+        "warm_send_plan::plan_literal_detect(",
+        "long_idle:probe_long_idle",
+        "matches!(literal_detect,warm_send_plan::LiteralDetectPlan::Install)",
+    ] {
+        if !warm.contains(needle) {
+            v.push("send_romaji_as_tsf_warm が warm_send_plan の結果/引数の形を使っていない");
+        }
+    }
+    if warm.contains(">=crate::tuning::LONG_IDLE_MS")
+        || warm.contains("last_unicode_ms!=0")
+        || warm.contains("TsfGateState::Probing&&")
+    {
+        v.push("send_romaji_as_tsf_warm が判断をインラインに書き戻している");
+    }
+    v
+}
+
+#[test]
+fn warm_send_plan_is_wired_into_assess_warmth_and_tsf_warm_send() {
+    let v = warm_send_wiring_violations(
+        &read_crate_file("src/output/mod.rs"),
+        &read_crate_file("src/output/vk_send.rs"),
+    );
+    assert!(v.is_empty(), "warm_send_plan の配線違反: {v:?}");
+}
+
+/// 違反例を検出できること（V2-3）。呼び出しを消す形だけでなく、**呼び出しを残したまま**判断をインラインに戻す・
+/// 引数を入れ替える・定数を差し替える形も試す。
+#[test]
+fn warm_send_wiring_detector_catches_violations() {
+    let m = read_crate_file("src/output/mod.rs");
+    let v = read_crate_file("src/output/vk_send.rs");
+    assert!(warm_send_wiring_violations(&m, &v).is_empty());
+    let check_m = |mutated: String| {
+        assert_ne!(mutated, m);
+        assert!(!warm_send_wiring_violations(&mutated, &v).is_empty());
+    };
+    let check_v = |mutated: String| {
+        assert_ne!(mutated, v);
+        assert!(!warm_send_wiring_violations(&m, &mutated).is_empty());
+    };
+    // plan_warmth を残したまま結果を使わずインラインに戻す
+    check_m(m.replacen(
+        "session_expired: plan.session_expired,",
+        "session_expired: warm && elapsed > crate::tuning::COMPOSITION_TIMEOUT_MS,",
+        1,
+    ));
+    check_m(m.replacen(
+        "prepend_f2_warmup: plan.prepend_f2_warmup,",
+        "prepend_f2_warmup: !warm,",
+        1,
+    ));
+    // 定数の差し替え
+    check_m(m.replacen(
+        "composition_timeout_ms: crate::tuning::COMPOSITION_TIMEOUT_MS,",
+        "composition_timeout_ms: crate::tuning::LONG_IDLE_MS,",
+        1,
+    ));
+    // 引数の入れ替え・定数の差し替え
+    check_v(v.replacen(
+        "now_ms: crate::hook::current_tick_ms(),",
+        "now_ms: crate::tsf::observer::gji_last_io_ms(),",
+        1,
+    ));
+    check_v(v.replacen(
+        "threshold: crate::tuning::LONG_IDLE_MS,",
+        "threshold: crate::tuning::COMPOSITION_TIMEOUT_MS,",
+        1,
+    ));
+    check_v(v.replacen(
+        "gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),\n            })",
+        "gji_last_io_ms: crate::hook::current_tick_ms(),\n            })",
+        1,
+    ));
+    // plan_literal_detect を残したまま結果を捨てる
+    check_v(v.replacen(
+        "matches!(literal_detect, warm_send_plan::LiteralDetectPlan::Install)",
+        "self.tsf_gate.state() == crate::tsf::TsfGateState::Probing",
+        1,
+    ));
+}
+
+/// ADR-238(BUG-190): 英数モードの候補(1 回目の英数の読み)の確認の読み直しは、`reschedule_ime_refresh` の
+/// `explicit_intent` による停止(早期 return)より**前**に予約する。後ろに置くと、明示意図があるときにポーリング自体が止まり、
+/// 確認の読みが届かず候補が確定も破棄もされない(F が黙って 500ms〈または停止〉に戻る)。
+/// `runtime/` は `#[cfg(windows)]` で Linux のユニットテストが存在しないので、ソース走査で固定する。
+/// また、打鍵中の除外(`SkipTyping`)を外す事実(`eisu_candidate_pending`)が observe 側で組み立てられ、
+/// `decide_read_strategy` の検証経路に入っていることも固定する。
+#[test]
+fn eisu_candidate_reread_is_scheduled_before_the_explicit_intent_early_return() {
+    let src = read_crate_file("src/runtime/mod.rs");
+    let body = extract_fn_body(production_code_only(&src), "pub fn reschedule_ime_refresh(");
+    let code = non_comment_lines(body);
+    let pending = code
+        .find("eisu_candidate_remaining_ms(")
+        .expect("reschedule_ime_refresh に英数モードの候補の確認の読み直しの枝がある(ADR-238)");
+    let explicit = code
+        .find("explicit_intent().is_some()")
+        .expect("reschedule_ime_refresh に explicit_intent による停止がある");
+    assert!(
+        pending < explicit,
+        "英数の候補の読み直しは、explicit_intent による早期 return より前に予約すること(ADR-238、F が黙って戻らないように)"
+    );
+    assert!(
+        code.contains("mode_key_pass_next_read_ms("),
+        "確認の読み直しは通過マークと同じ間引き(`mode_key_pass_next_read_ms`、BUG-158)を使うこと(ADR-238)"
+    );
+    let refresh = read_crate_file("src/runtime/ime_refresh.rs");
+    let facts = extract_fn_body(
+        production_code_only(&refresh),
+        "fn ir_observe_read_strategy_facts(",
+    );
+    assert!(
+        non_comment_lines(facts).contains("eisu_candidate_pending"),
+        "observe が `eisu_candidate_pending` を組み立てて、打鍵中でも確認の読みを通すこと(ADR-238)"
+    );
+}
+
+/// ADR-238(BUG-190): 英数モードの候補は、実際にフォーカスが変わったときだけ捨てる。`advance_focus_tracking` は
+/// フォーカスが変わらなくても読み取りのたびに走る(`set_prev_conversion_mode(None)` も毎回走る)ので、`clear_eisu_candidate()` を
+/// 無条件に呼ぶと候補が確認の読みの前に毎回消えて一度も確定しない(MS-IME の英数キーが Engine に追随しなくなる)。
+#[test]
+fn eisu_candidate_is_cleared_only_when_focus_actually_changes() {
+    let src = read_crate_file("src/runtime/focus_tracking.rs");
+    let body = extract_fn_body(production_code_only(&src), "fn advance_focus_tracking(");
+    let code = non_comment_lines(body);
+    let clear = code
+        .find("clear_eisu_candidate()")
+        .expect("advance_focus_tracking が英数の候補を捨てる(ADR-238)");
+    let guard = code
+        .find("process_changed || prev_hwnd != new_hwnd")
+        .expect("フォーカスが実際に変わったときだけ捨てる条件がある(ADR-238)");
+    assert!(
+        guard < clear,
+        "clear_eisu_candidate() は `process_changed || prev_hwnd != new_hwnd` の条件の中で呼ぶこと(無条件だと候補が一度も確定しない)"
+    );
+    assert_eq!(
+        code.matches("clear_eisu_candidate()").count(),
+        1,
+        "英数の候補を捨てる箇所は 1 つだけ"
+    );
+}
+
+/// ADR-239: 分類で `prev_conversion_mode`(直近に観測した conv)を読む `classify_transition`/`input_mode_from_conversion` は撤去した。
+/// それは読み取りのたびにリセットされて refresh の経路で一度も結果を返さず(約 6 か月)、返せる結果は他の場所で採らないと決めた形
+/// (閉じた IME の conv=0 を英数とみなす=BUG-57、ROMAN ビットなしを ObservedKana とみなす)だけだった。分類に prev を戻す変更を、
+/// その経緯を知らずに足すと BUG-57 を再発させるので、(a) `classify_transition` が本番コードに無いこと、(b) `prev_conversion_mode()` を読む
+/// 本番コードは予測の `conv_raw:` の 1 か所だけであること、(c) `observer/ime_observer.rs` が prev を扱わないことを固定する。
+#[test]
+fn classification_does_not_read_prev_conversion_mode() {
+    let mut classify_transition_hits = Vec::new();
+    let mut reads = Vec::new();
+    for rel in [
+        "src/observer/ime_observer.rs",
+        "src/runtime/key_pipeline.rs",
+        "src/runtime/mod.rs",
+        "src/runtime/ime_refresh.rs",
+        "src/runtime/focus_tracking.rs",
+        "src/state/platform_state.rs",
+        "src/state/belief.rs",
+        "src/state/snapshot_input_mode.rs",
+    ] {
+        let src = read_crate_file(rel);
+        let code = non_comment_lines(production_code_only(&src));
+        if code.contains("classify_transition(") || code.contains("input_mode_from_conversion") {
+            classify_transition_hits.push(rel);
+        }
+        if code.contains(".prev_conversion_mode()") {
+            reads.push(rel);
+        }
+    }
+    assert!(
+        classify_transition_hits.is_empty(),
+        "classify_transition/input_mode_from_conversion を本番コードに戻さないこと(ADR-239): {classify_transition_hits:?}"
+    );
+    assert_eq!(
+        reads,
+        vec!["src/runtime/key_pipeline.rs"],
+        "`.prev_conversion_mode()` を読む本番コードは予測の `conv_raw:` の key_pipeline.rs だけ(ADR-239): {reads:?}"
+    );
+    let key_pipeline = read_crate_file("src/runtime/key_pipeline.rs");
+    let kp = non_comment_lines(production_code_only(&key_pipeline));
+    assert_eq!(
+        kp.matches(".prev_conversion_mode()").count(),
+        1,
+        "key_pipeline.rs で prev を読むのは `conv_raw:` の 1 か所だけ"
+    );
+    assert!(
+        kp.contains("conv_raw: self.platform_state.ime.belief.prev_conversion_mode()"),
+        "読み手は予測の入力 `conv_raw`(ADR-239)"
+    );
+    let observer = read_crate_file("src/observer/ime_observer.rs");
+    let ob = non_comment_lines(production_code_only(&observer));
+    // `new_prev_conversion_mode`(prev を**書く**側の ImeUpdate のフィールド。読み手は `conv_raw` だけ)は残す。
+    let ob_without_writer = ob.replace("new_prev_conversion_mode", "");
+    assert!(
+        !ob_without_writer.contains("current_prev_conversion_mode")
+            && !ob_without_writer.contains("prev_conv"),
+        "observer/ime_observer.rs は prev_conversion_mode を引数に取らない(分類に戻さない、ADR-239)"
+    );
+}

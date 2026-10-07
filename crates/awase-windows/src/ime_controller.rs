@@ -197,7 +197,7 @@ pub(crate) fn mechanism_is_applicable(
 // 複雑さの総量は変わらず、むしろ呼び出し関係が追いにくくなる）、
 // それに倣う。
 #[allow(clippy::cognitive_complexity)]
-#[tracing::instrument(level = "debug", skip_all, fields(mechanism = ?mechanism, open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
+#[tracing::instrument(level = "debug", skip_all, fields(mechanism = ?mechanism, open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen.get()))]
 pub(crate) fn apply_mechanism(
     mechanism: WriteMechanism,
     open: bool,
@@ -756,7 +756,7 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
             profile,
             // `is_applicable` の評価だけを行うシームであり、ROMAN 補完
             // （`focus_gen` を使う唯一の経路）は走らない。
-            focus_gen: 0,
+            focus_gen: crate::state::focus_gen::FocusGen::INITIAL,
         },
         observed: ObservedState {
             active_ime_kind,
@@ -803,7 +803,7 @@ mod tests {
             focus: FocusFacts {
                 class_name: "",
                 profile,
-                focus_gen: 0,
+                focus_gen: crate::state::focus_gen::FocusGen::INITIAL,
             },
             observed: ObservedState {
                 active_ime_kind: kind,
