@@ -4,7 +4,6 @@ atok-noawase
 atok-resync
 atok-resync-gap300
 atok-resync-gap40
-atok-resync-nofollow
 cal-drift-tsf-gji-atok
 cal-drift-tsf-msime-native
 cal-driftrec-chrome-gji

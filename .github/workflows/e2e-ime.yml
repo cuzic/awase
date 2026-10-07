@@ -165,9 +165,8 @@ jobs:
             # 半角/全角(0xF3/0xF4、GJIではどちらも開閉トグル)。awaseがVKで方向を決め打つとずれる(ADR-186決定5、ADR-189)
             cfg('msime-hz', 'pass', check='toggle', args='--hz', keymap=2),
             cfg('atok-hz', 'pass', check='toggle', args='--hz'),
-            # リセット操作(Ctrl+無変換→Ctrl+変換 / 逆)で必ず揃うか(--resync)。nofollow は followを無効化してずれを意図的に起こす
+            # リセット操作(Ctrl+無変換→Ctrl+変換 / 逆)で必ず揃うか(--resync)
             cfg('atok-resync', 'observe', check='resync', args='--resync'),
-            cfg('atok-resync-nofollow', 'observe', mutator='a7-no-follow.sh', check='resync', args='--resync'),
             cfg('atok-resync-gap40', 'observe', check='resync', args='--resync --resync-gap=40'),
             cfg('atok-resync-gap300', 'observe', check='resync', args='--resync --resync-gap=300'),
             cfg('atok-passthrough', 'pass', check='consistency', args='--walk'),

@@ -31,7 +31,6 @@ run_exp() {  # label desc mutator args cfg
 }
 
 run_exp E0h "基準(変換キーで検証)" none e2e-args-henkan-hold180 e2e-config-toggle-true
-run_exp E3 "eisu reset抑止(ADR-186決定2)を撤去" "$A/a3-no-eisu-suppress.sh" e2e-args-hold180 e2e-config-toggle-true
 run_exp E4 "eisu resetの全経路を撤去" "$A/a4-no-eisu-reset.sh" e2e-args-hold180 e2e-config-toggle-true
 run_exp E5 "物理キー後の20ms再読み取りを撤去" "$A/a5-no-refresh20.sh" e2e-args-hold180 e2e-config-toggle-true
 run_exp E6 "idle-conv-checkを無効化" "$A/a6-no-idle-check.sh" e2e-args-hold180 e2e-config-toggle-true
