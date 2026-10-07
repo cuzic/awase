@@ -19,7 +19,7 @@ related_adr:
   - "ADR-240"
   - "ADR-236"
   - "ADR-237"
-  - "ADR-239"
+  - "ADR-243"
 ---
 
 # ADR-234: 純粋な核(CORE_MODULES)の mutants の生き残りをテストに変える
@@ -119,7 +119,7 @@ mutants が埋めるのは、核の純粋関数の境界・分岐に対するテ
 ### D1(S1): 新しい核を載せた PR の作者が、ブランチで 1 回回して読む
 
 - 背景 4 で唯一うまくいった型(変更した人がその場で回して読む)を、そのまま手順にする。`examine_globs` にファイルを足した PR の作者は、その PR のブランチで mutants を 1 回回し、足したファイルの missed をテスト化するか、理由つきで除外してからマージする。
-- 置き場所は完了前チェック。ADR-239 の完了前チェック(239 の 68 行目・129 行目の「CORE_MODULES と examine_globs に載せた」)と、タスク表 V2 の 1 項目目に 1 文を足す。別の場所に新しい規則は作らない。
+- 置き場所は完了前チェック。ADR-243 の完了前チェック(243 の 68 行目・129 行目の「CORE_MODULES と examine_globs に載せた」)と、タスク表 V2 の 1 項目目に 1 文を足す。別の場所に新しい規則は作らない。
 - 回す手段: S1 のあとは `gh workflow run mutants-scheduled.yml --ref <branch>`。ファイルをデフォルトブランチの develop に置くので、どのブランチでも `--ref` で起動できる。S1 の前は `gh workflow run ci.yml --ref <branch>`(CI 全体と一緒に回る)。
 - PR ごとに**自動では**回さない(D5)。作者が手で 1 回起動する。
 
@@ -160,7 +160,7 @@ mutants が埋めるのは、核の純粋関数の境界・分岐に対するテ
 | 段階 | やること | 撤去対象 | 検証方法(CI で確認できる形) | 取りやめ条件 |
 | --- | --- | --- | --- | --- |
 | **S0'**(D0。CI の費用なし) | run 35920696097 の CORE の missed 22 件をテスト化・理由つき除外 | なし(テストが増える) | ブランチで `gh workflow run ci.yml --ref <branch>` を 1 回回し、hook_state・observation_store・belief・conv_mode の missed が 0 | **2026-10-20 までに誰も着手しなければ**、S1 以降を取りやめて Q1 (d) へ |
-| **S1**(D1・D2) | ジョブを `mutants-scheduled.yml` へ移す(workflow_dispatch のみ)。`examine_globs` に `state/mode_key_pass.rs`・`state/explicit_press.rs` を足す。`mode_key_pass.rs:158:28` の等価変異の除外を `.cargo/mutants-bug158-scope.toml` から移す(行:列で書く。同じ関数の 164:53 にも `&& → ||` の変異があるので関数名では絞れない、とコメントに書く)。`--list` の step を足す。完了前チェック(ADR-239・V2)に D1 の 1 文を足す。撤去する 2 ファイルを名指ししているコメント(`ci.yml:574,577`、`mutants-actuation-confluence-windows.yml:28`)と文書(`docs/tasks/mode-key-pass-latch-mutation-coverage{,-followup}.md`)を直す | **撤去**: `.github/workflows/mutants-scope-investigation.yml`(61 行)、`.cargo/mutants-bug158-scope.toml`(52 行)。toml の `drift.rs`・`refresh_plan.rs` は develop に存在せず、`force_guard.rs` は本体の許可リストにある。残る `mode_key_pass.rs` を本体へ移せば役目が無くなる。**移動**: `ci.yml` の `mutants-awase-windows`(約 45 行、増減 0)。**追加**: `--list` の step 約 10 行。差し引き約 100 行減(Q6 を足せばさらに約 105 行減) | `gh workflow run mutants-scheduled.yml --ref <S1 のブランチ>` を 1 回回し、(1) 8 shard が 90 分以内に終わる、(2) `mode_key_pass.rs` の missed が 0(#248 以降このファイルは変わっていない。`git log --since=2026-09-23T05:00 -- crates/awase-windows/src/state/mode_key_pass.rs` で 0 件)、(3) `explicit_press.rs` の missed を同じ PR でテスト化・除外する(D1 を S1 自身に当てる)。`--list` の step は、許可リストの 1 行を存在しないファイル名に変えた一時コミットで赤になることを確かめる | `explicit_press` の missed を S1 の PR で片づけられない(30 件を超える、など)→ `explicit_press` を外し、`mode_key_pass` だけにする |
+| **S1**(D1・D2) | ジョブを `mutants-scheduled.yml` へ移す(workflow_dispatch のみ)。`examine_globs` に `state/mode_key_pass.rs`・`state/explicit_press.rs` を足す。`mode_key_pass.rs:158:28` の等価変異の除外を `.cargo/mutants-bug158-scope.toml` から移す(行:列で書く。同じ関数の 164:53 にも `&& → ||` の変異があるので関数名では絞れない、とコメントに書く)。`--list` の step を足す。完了前チェック(ADR-243・V2)に D1 の 1 文を足す。撤去する 2 ファイルを名指ししているコメント(`ci.yml:574,577`、`mutants-actuation-confluence-windows.yml:28`)と文書(`docs/tasks/mode-key-pass-latch-mutation-coverage{,-followup}.md`)を直す | **撤去**: `.github/workflows/mutants-scope-investigation.yml`(61 行)、`.cargo/mutants-bug158-scope.toml`(52 行)。toml の `drift.rs`・`refresh_plan.rs` は develop に存在せず、`force_guard.rs` は本体の許可リストにある。残る `mode_key_pass.rs` を本体へ移せば役目が無くなる。**移動**: `ci.yml` の `mutants-awase-windows`(約 45 行、増減 0)。**追加**: `--list` の step 約 10 行。差し引き約 100 行減(Q6 を足せばさらに約 105 行減) | `gh workflow run mutants-scheduled.yml --ref <S1 のブランチ>` を 1 回回し、(1) 8 shard が 90 分以内に終わる、(2) `mode_key_pass.rs` の missed が 0(#248 以降このファイルは変わっていない。`git log --since=2026-09-23T05:00 -- crates/awase-windows/src/state/mode_key_pass.rs` で 0 件)、(3) `explicit_press.rs` の missed を同じ PR でテスト化・除外する(D1 を S1 自身に当てる)。`--list` の step は、許可リストの 1 行を存在しないファイル名に変えた一時コミットで赤になることを確かめる | `explicit_press` の missed を S1 の PR で片づけられない(30 件を超える、など)→ `explicit_press` を外し、`mode_key_pass` だけにする |
 | **S2**(D3) | S0' が済み、D1 のとおり回した PR が 2 本以上になったら、`mutants-scheduled.yml` に週 1 回の `schedule` と集計の step(30〜40 行)を足す | なし | `workflow_dispatch` で 1 回回し、CORE の missed 0 で緑、CORE のファイルに missed を 1 件わざと作った一時ブランチで赤になる。次の schedule の run が自動で起動したことを Actions の一覧で確かめる | (1) schedule の run が**赤のまま 2 回続き、その間に missed をテスト化・除外したコミットが 0 件**なら、schedule を外して workflow_dispatch のみに戻す(赤が無視されている)。(2) `examine_globs` にファイルを足した PR が、D1 の run をせずに **3 本**マージされたら、D1 が守られていないので Q1 (d) を所有者に改めて聞く |
 | **S3** | V1b: 残りの CORE 36 件を、数回に分けて `examine_globs` に足す(大きい順)。toml の冒頭のコメント(`:6-21`、「Linux でコンパイルされるファイルだけを許可する。`platform_state.rs` は `#[cfg(windows)]` なので対象外」)を、windows-latest で回している現状に合わせて書き直す。`platform_state`(137 件)を足すときに必要になる。足す時期と順序は、ADR-237 の段階 2(`examine_globs` を昇順にそろえる)と衝突しないように合わせる | V1 の差分検査(`core_registry.rs`・`core-registry-consistency` ジョブ)を全数テストに置き換える(Q4 で承認された場合のみ。全数テストは `#[cfg(windows)]` のファイルを許す前提で書く) | `CORE_MODULES` ⊆ `examine_globs` の全数テストが green。1 shard が 90 分以内(CORE 全体では 1 shard 63〜98 分の見込みなので、16 shard にするか、CORE だけの config に分ける) | shard を増やしても 1 shard が 90 分を超える → 大きいファイル(`platform_state` 等)を外したところで止める |
 
@@ -189,7 +189,7 @@ mutants が埋めるのは、核の純粋関数の境界・分岐に対するテ
 
 ## 所有者に聞くこと
 
-- **Q1 進めるか、撤去するか**: (a) 毎晩回す、(b) 週 1 回回す、(c) 手動のまま、(d) **mutants の登録の義務ごと撤去する**(V1 の xtask `core_registry.rs` 174 行と `core-registry-consistency` ジョブ、タスク表 V2 の該当の文、ADR-239 の完了前チェックの該当の項目)。**推奨: まず S0' をやってみる。読む人がいると分かったら (b) を S2 で。S0' が 10/20 までに進まなければ (d)**。「載せても誰も回さない・読まない」状態を解消する手段は、回して読むことと、載せるのをやめることの 2 つで、撤去を主目的とする方針からすると (d) を落とす理由は無い。
+- **Q1 進めるか、撤去するか**: (a) 毎晩回す、(b) 週 1 回回す、(c) 手動のまま、(d) **mutants の登録の義務ごと撤去する**(V1 の xtask `core_registry.rs` 174 行と `core-registry-consistency` ジョブ、タスク表 V2 の該当の文、ADR-243 の完了前チェックの該当の項目)。**推奨: まず S0' をやってみる。読む人がいると分かったら (b) を S2 で。S0' が 10/20 までに進まなければ (d)**。「載せても誰も回さない・読まない」状態を解消する手段は、回して読むことと、載せるのをやめることの 2 つで、撤去を主目的とする方針からすると (d) を落とす理由は無い。
 - **Q2 対象の範囲**: (a) S1 で 2 モジュール(`mode_key_pass`・`explicit_press`)だけ足す、(b) 最初から CORE 全体を足す(V1b を同時に。1,676 件、8 shard では 90 分を超えうる)、(c) 今の 29 ファイルのまま。**推奨 (a)**。970 件で、1 shard 36〜57 分。
 - **Q3 誰が読むか**(一番大事な質問): (a) 載せた PR の作者が、ブランチで回して読む(D1)、(b) 所有者が週 1 回、Summary を読む、(c) 定期セッションのエージェントが読む。**推奨 (a)**。背景 4 で実績がある唯一の型だから。S0' の 22 件は、(b) か (c) のどちらがやるかを決めてほしい。
 - **Q4 V1 の置き換え**: V1b が揃ったら、V1 の差分検査を `layer_boundary_guard.rs` の全数テストに置き換え、xtask 側(`core_registry.rs` 174 行・CI ジョブ)を撤去するか。全数テストは `test` ジョブに入るので、載せ忘れると `test` ジョブが赤になる。**推奨: S3 の時点で改めて判断**。
@@ -202,7 +202,7 @@ mutants が埋めるのは、核の純粋関数の境界・分岐に対するテ
 (本 ADR の起草では、他の文書を書き換えない。採用されたら、各段階の PR で次を追記する)
 
 - `docs/tasks/fcis-layering-tasks-2026-10-06.md` の V1b 行: 「件数は develop `1630e55e` で CORE 57 件・登録 19 件。穴埋めは ADR-234 の S3」。
-- 同じタスク表の V2 の完了前チェック 1 と、ADR-239 の完了前チェック(68 行目・129 行目)を 1 か所にまとめて: 「`examine_globs` に足したファイルは、ブランチで `gh workflow run mutants-scheduled.yml --ref <branch>` を 1 回回し、missed をテスト化か理由つき除外にしてからマージする」。
+- 同じタスク表の V2 の完了前チェック 1 と、ADR-243 の完了前チェック(68 行目・129 行目)を 1 か所にまとめて: 「`examine_globs` に足したファイルは、ブランチで `gh workflow run mutants-scheduled.yml --ref <branch>` を 1 回回し、missed をテスト化か理由つき除外にしてからマージする」。
 - `ci.yml` の workflow_dispatch のコメント(`ci.yml:8-9`): `mutants-awase-windows` が `mutants-scheduled.yml` へ移ったことと、ブランチで回す手順(`gh workflow run mutants-scheduled.yml --ref <branch>`)。
 - `.cargo/mutants-awase-windows.toml` の冒頭: 「回し方は `mutants-scheduled.yml`。生き残りは ADR-234 D0・D1 の手順で扱う」(S3 では冒頭の理由そのものを書き直す)。
 - `docs/tasks/mode-key-pass-latch-mutation-coverage{,-followup}.md`: `mutants-scope-investigation.yml` と `mutants-bug158-scope.toml` を S1 で撤去したことを 1 行。

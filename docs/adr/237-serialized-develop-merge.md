@@ -18,7 +18,7 @@ related_adr:
   - "ADR-162"
   - "ADR-229"
   - "ADR-236"
-  - "ADR-239"
+  - "ADR-243"
 ---
 
 # ADR-237: develop へのマージ担当の手順を決める
@@ -99,7 +99,7 @@ pre-push が競合した 5 回の rebase は、全て同じ rebase で別の登�
 
 ### 5. 誰がマージしているか
 
-今日のマージは team-lead が 1 人で行った(team-lead の説明。ADR-239 の summary「実装エージェントが worktree ごとに PR を作り、Opus がレビューし、
+今日のマージは team-lead が 1 人で行った(team-lead の説明。ADR-243 の summary「実装エージェントが worktree ごとに PR を作り、Opus がレビューし、
 team-lead がマージ」と同じ)。`gh` の記録では 38 本全てが `cuzic` アカウントで、誰がマージしたかは区別できない。
 
 つまり**マージはすでに直列で、その状態で競合が 10 回起きた**。競合の原因はマージの並列ではなく、開発の並列(同時に最大 9 本)と、
@@ -107,7 +107,7 @@ team-lead がマージ」と同じ)。`gh` の記録では 38 本全てが `cuzi
 
 自動マージ許可(メモリ `project_adr229_fcis_layering_2026_10_06.md`)の条件「mergeStateStatus=CLEAN」は、develop にブランチ保護が無い
 (`gh api repos/cuzic/awase/branches/develop/protection` → 404)ため、base が最新であることを意味しない。古くても競合が無ければ CLEAN になり、
-GitHub はそのままマージできる。それでも競合しない rebase が 11 回あったのは、習慣か指示によるもの(ADR-239 の決定 1「完了前チェック」の
+GitHub はそのままマージできる。それでも競合しない rebase が 11 回あったのは、習慣か指示によるもの(ADR-243 の決定 1「完了前チェック」の
 1 項目目は「最新の `origin/develop` に rebase してあるか」)。
 
 ## 決定
@@ -119,7 +119,7 @@ GitHub はそのままマージできる。それでも競合しない rebase �
 3. **検出は develop の push CI に任せる。** develop の push で `CI` の Rust のジョブが落ちたら、マージ担当は原因のマージを `git revert` して
    作者に戻す(develop で直さない)。
 4. **競合しない rebase を頼まない。** 実装エージェントは `CONFLICTING`/`DIRTY` になったときだけ自分のブランチで `git rebase origin/develop` する。
-   ADR-239 の完了前チェックの 1 項目目は「`CONFLICTING`/`DIRTY` でないこと」に絞る(ADR-239 側で決め、この ADR は参照にする)。
+   ADR-243 の完了前チェックの 1 項目目は「`CONFLICTING`/`DIRTY` でないこと」に絞る(ADR-243 側で決め、この ADR は参照にする)。
 5. 競合を解いた後は、push の前に ADR-236 の衝突マーカーの検査を通す(検査の定義は ADR-236 の 1 か所に置き、ここには書かない)。
 
 - 撤去対象: 「競合しないのに最新化する rebase」(今日 11 回、約 130 ランナー分)。
@@ -207,7 +207,7 @@ fix-requires の表(3 回)はこの段階では変えない。
 
 - メモリ `project_adr229_fcis_layering_2026_10_06.md` の「自動マージ許可」: 「CLEAN は base が最新であることを意味しない(develop にブランチ保護が無い)。
   古い base でも CONFLICTING でなければそのままマージし、develop の push CI で Rust のジョブが落ちたら revert する」を追記。
-- ADR-239 の決定 1「完了前チェック」の 1 項目目: 「最新の `origin/develop` に rebase してあるか」を「`CONFLICTING`/`DIRTY` でないこと」に置き換える。
+- ADR-243 の決定 1「完了前チェック」の 1 項目目: 「最新の `origin/develop` に rebase してあるか」を「`CONFLICTING`/`DIRTY` でないこと」に置き換える。
 - `.claude/rules/fix-requires-evidence.md` の「自動チェック(pre-push)」節: 「`state/` 直下の `*_plan.rs` は正規表現の `[a-z_]+_plan` でまとめて拾う。
   新しい `*_plan.rs` を作っても pre-push の正規表現は変えなくてよい」を 1 文。
 
