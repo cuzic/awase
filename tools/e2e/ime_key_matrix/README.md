@@ -59,7 +59,7 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 | `check_resync.py` | リセット操作の後に実IMEとEngineが揃うか |
 | `--charthumb=CHAR,THUMB` / `check_charthumb.py` | 文字→親指の順に押して文字を先に離し、親指を押し続ける(重なり不足、`min_overlap_margin_percent`>0)。親指の KEY 行の実IMEで、保持中(+400ms)は開いたまま・離した後(+1500ms)に閉じるか(ADR-199 T10 決定A、構成 `sc-charthumb-gji-atok`)。文字キーにはスキャンコードの対応(`scan_for`)が要る |
 | `check_toggle.py` | 開閉トグルキーが押すたびに反転し、Engineが追随するか |
-| `ablations/a*.sh` | 撤去実験(ミューテーター)。`a7-no-follow.sh`はfollow(ADR-187)を無効化してずれを起こす |
+| `ablations/a*.sh` | 撤去実験(ミューテーター)。現存は a4〜a6・a8(a3・a7 は対象コードが変わり差分を作れなくなったため撤去、ADR-240) |
 
 ## ADR-191/193: 学習ラウンド(格子)・検証ラウンド(walk)・通知の計測ツール(ワークフローの `cal-*` 構成 = `check: collect`)
 `cal-*` 構成は判定せずログを回収し、`[GRID-ABORT]` による打ち切り(rc=3=INVALID)だけを検出する(解析は下のツールでローカルに行う)。

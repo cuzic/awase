@@ -85,7 +85,7 @@ Windows専用のテスト（`ime_key_sequence_golden` など `#![cfg(windows)]`�
 
 **撤去ブランチ自体を測るなら `mutator` は要らない**（ビルドされるのがそのブランチのコード）。
 `mutator` は「まだ撤去していないコードを、確認のためだけに消す」実験用で、`develop` に対して
-「この機構は必要か」を先に測るときに使う（`a7-no-follow.sh` が例）。
+「この機構は必要か」を先に測るときに使う（`ablations/a*.sh` が例）。
 ミューテーターが差分を作らなかったら、ワークフローが失敗する（コードが動いて撤去箇所が消えた合図）。
 
 ### 読み方
@@ -101,7 +101,7 @@ Windows専用のテスト（`ime_key_sequence_golden` など `#![cfg(windows)]`�
 | 構成 | 守っているもの |
 |---|---|
 | `baseline` / `baseline-henkan` | ATOKプリセットでの無変換/変換・ひらがな等の追随（ADR-186/187） |
-| `a1`〜`a7` | 個々の機構の撤去（E1/E2/E5/E7b が**必須**と確定、E4/E6 は不変） |
+| `a1`〜`a8`（a3・a7 は撤去済み） | 個々の機構の撤去（E1/E2/E5/E7b が**必須**と確定、E4/E6 は不変） |
 | `atok-passthrough(-cold)` / `msime` | 素通し・フォーカス直後の追随（BUG-151 の再現条件を含む） |
 | `atok-hz` / `msime-hz` / `sc-hz-*` | 半角/全角（ADR-189、トグル） |
 | `atok-resync*` | Ctrl+無変換/変換での再同期（`observe`） |
