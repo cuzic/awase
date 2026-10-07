@@ -106,6 +106,31 @@ impl ImeStateHub {
         )
     }
 
+    /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（GJI × `Imm32Unavailable` のみ、ADR-188）。現在のフォアグラウンドに
+    /// 対する直接観測の窓を開く／延ばす。
+    pub(crate) fn arm_direct_external_change_watch(&mut self, now_ms: u64) {
+        self.arm_direct_external_change_watch_in_scope(now_ms, crate::win32::foreground_scope());
+    }
+
+    /// 直接観測の窓の中の prefetch 済みの読みを belief と照合し、食い違う軸へ追随する（ADR-188）。
+    pub(crate) fn follow_direct_read(
+        &mut self,
+        read_open: Option<bool>,
+        read_conv: Option<u32>,
+        now_ms: u64,
+        tick_ms: TickMs,
+        accepted: crate::state::probe_admission::AcceptedObservation,
+    ) -> Option<crate::state::external_change_watch::DirectFollow> {
+        self.follow_direct_read_in_scope(
+            read_open,
+            read_conv,
+            now_ms,
+            tick_ms,
+            accepted,
+            crate::win32::foreground_scope(),
+        )
+    }
+
     /// 通過マークの窓が**切れた後**の最初の成功観測で、`desired_open`を観測へ揃える（BUG-158追補2）。
     /// 本体は核の `align_after_expired_mode_key_pass_in_scope` を参照。
     pub(crate) fn align_after_expired_mode_key_pass(

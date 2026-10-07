@@ -679,6 +679,12 @@ impl DecisionExecutor {
             });
             if passes_mode_key {
                 let now = crate::hook::current_tick_ms();
+                // ADR-188: FSM 再送出でも直接観測の窓を開く（GJI × Imm32Unavailable、変換中は除く）。
+                if super::external_change_watch_applies_for(platform.current_app_profile())
+                    && !crate::tsf::observer::ime_composition_active_now()
+                {
+                    ime.arm_direct_external_change_watch(now);
+                }
                 ime.arm_mode_key_pass_mark(
                     now,
                     platform.current_app_profile().can_use_imm32_cross_process(),

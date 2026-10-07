@@ -1638,6 +1638,16 @@ impl Runtime {
         {
             return;
         }
+        // ADR-188: Shift 付きを含め、GJI × Imm32Unavailable では直接観測の窓を開く（基準値なしで窓内の読みを
+        // belief と照合する）。変換中（候補窓が出ている間）は開かない（読み取りを増やさない、M2）。
+        if self.external_change_watch_applies()
+            && !crate::tsf::observer::ime_composition_active_now()
+        {
+            self.platform_state
+                .ime
+                .arm_direct_external_change_watch(hook::current_tick_ms());
+            self.schedule_ime_refresh(20);
+        }
         // Shift 押下中（Shift+無変換/変換 = ATOK ではかな⇔半角英数で開閉を変えない、ADR-186 残る問題2）は
         // 通過マークを立てない（`mode_key_follow_admits_modifiers`、レビュー round3 N8）。立てると観測の直後に
         // 明示意図を捨て、desired を観測へ書き換える。Ctrl/Alt/Win は見ない——Ctrl+無変換→Ctrl+変換

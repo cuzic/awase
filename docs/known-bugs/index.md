@@ -150,8 +150,8 @@
 | [BUG-146](BUG-146.md) | 解決済み(コード確認のみ) | 半角英数（ObservedEisu）検出時にawaseがopen軸へfalseを書く（IMEはONのままなのにbelief/intentだけOFF扱い、起票のみ・未修正） |
 | [BUG-147](BUG-147.md) | 再現待ち | awase起動中、まれに物理キー1押下がGJI(ATOKプリセット)に届かない（awase側ログは正常な通過→再注入。クリーンな条件では再現せず、原因未確定、ADR-186） |
 | [BUG-148](BUG-148.md) | 解決済み(CI検証済み・実機未確認) | awase起動時に既にフォーカスがあるアプリでは、プロセス切替まで明示IME意図が記録されず、FSM委譲のSetOpenが全てUnwarrantedでキーが飲み込まれる |
-| [BUG-149](BUG-149.md) | 未修正(CI で再現、2026-10-04) | Chrome(TsfNative)で、ひらがなキー/Shift+無変換によるかな→半角英数のあと、EngineがOFFにならず英数なのにNICOLAが動き続ける（3/3再現、awase停止の対照は正常、原因は一部のみ特定、未修正、ADR-186） |
-| [BUG-150](BUG-150.md) | 一部解決(IMM で読める窓は CI 検証済み・実 Chrome の素通し設定では再現、2026-10-04) | ATOKプリセットで無変換/変換をパススルーする設定(既定)では、実IMEはGJIが開閉するのにEngineが追随しない（IME OFFでもEngine ONのまま） |
+| [BUG-149](BUG-149.md) | 修正済み・CI 検証済み(素通し設定、実機未検証、2026-10-06) | Chrome(TsfNative)で、ひらがなキー/Shift+無変換によるかな→半角英数のあと、EngineがOFFにならず英数なのにNICOLAが動き続ける（3/3再現、awase停止の対照は正常、原因は一部のみ特定、未修正、ADR-186） |
+| [BUG-150](BUG-150.md) | 修正済み・CI 検証済み(実 Chrome の素通し設定、実機未検証、2026-10-06) | ATOKプリセットで無変換/変換をパススルーする設定(既定)では、実IMEはGJIが開閉するのにEngineが追随しない（IME OFFでもEngine ONのまま） |
 | [BUG-151](BUG-151.md) | 解決済み(CI検証済み・実機未確認) | cold(awaseがまだIMEを書き込んでいない)状態で、ひらがなキーによるかな→半角英数の後にEngineがOFFにならないことがある(20ms再読み取りがSkipTyping) |
 | [BUG-152](BUG-152.md) | 解決済み(実機確認済み) | Microsoft IME本体で、最初のImmCross set-openがタイムアウトすると非冪等なVK_KANJIトグルが開いたIMEを閉じ、Engine ON + IME OFFになる |
 | [BUG-153](BUG-153.md) | 解決済み(実機確認済み) | ADR-191の撤去後、awaseが書かない英数(0xF0)・カタカナ(0xF1)をSuppress列挙が握りつぶす疑い(実機では起きず、Suppress対象を狭めた) |

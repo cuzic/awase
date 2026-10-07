@@ -25,6 +25,9 @@ struct Armed<S> {
     last_arm_ms: u64,
     /// 基準値。arm 前の直近の読み（同じスコープ）か、窓の中の最初の読み。
     baseline: Option<bool>,
+    /// ADR-188: 物理のモードキー通過／FSM 再送出で開いた「直接観測」の窓。基準値を使わず、窓内の読みを belief と
+    /// 照合する（`observe` の基準値照合は行わず、窓も閉じない）。外部注入（ADR-205）と重なったら Direct が勝つ。
+    direct: bool,
 }
 
 /// 外部変化の監視窓と、直近の読みの記録。
@@ -54,6 +57,16 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
     /// 外部注入の IME キーを見たら呼ぶ。同じスコープの窓が生きていれば基準値を保ったまま延ばす
     /// （延長は最初の arm から `window_ms * 2` までで、窓の寿命は最大でその時点から `window_ms` 後＝`window_ms * 3`）。そうでなければ新しく開き、基準値は直近の読み（同じスコープ）。
     pub fn arm(&mut self, scope: S, now_ms: u64, window_ms: u64) {
+        self.arm_with(scope, now_ms, window_ms, false);
+    }
+
+    /// ADR-188: 物理のモードキー通過／FSM 再送出で直接観測の窓を開く。生きている同じスコープの窓があれば Direct に
+    /// 格上げして延ばす（基準値は保つ。Direct の窓は基準値を使わない）。
+    pub fn arm_direct(&mut self, scope: S, now_ms: u64, window_ms: u64) {
+        self.arm_with(scope, now_ms, window_ms, true);
+    }
+
+    fn arm_with(&mut self, scope: S, now_ms: u64, window_ms: u64, direct: bool) {
         if let Some(a) = self.armed.as_mut() {
             let alive = a.scope == scope && now_ms.saturating_sub(a.last_arm_ms) <= window_ms;
             if alive {
@@ -61,6 +74,7 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
                     .first_arm_ms
                     .saturating_add(window_ms.saturating_mul(MAX_EXTENSION_FACTOR));
                 a.last_arm_ms = now_ms.min(cap);
+                a.direct |= direct;
                 return;
             }
         }
@@ -70,7 +84,20 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
             first_arm_ms: now_ms,
             last_arm_ms: now_ms,
             baseline,
+            direct,
         });
+    }
+
+    /// 直接観測の窓（ADR-188）が生きているか（消費しない）。スコープ違い・切れた窓は破棄して `false`。
+    pub fn direct_live(&mut self, scope: S, now_ms: u64, window_ms: u64) -> bool {
+        self.live(scope, now_ms, window_ms) && self.armed.is_some_and(|a| a.direct)
+    }
+
+    /// 開いている窓の最後の arm 時刻（ms）。窓が無ければ `None`。awase 自身の書き込みがこの時刻以後にあったかの
+    /// 比較に使う（ADR-188 R3）。
+    #[must_use]
+    pub fn last_arm_ms(&self) -> Option<u64> {
+        self.armed.map(|a| a.last_arm_ms)
     }
 
     /// 開いている窓の基準値(ログ用)。窓が無い・基準値が無いなら `None`。
@@ -113,6 +140,10 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
         let Some(a) = self.armed.as_mut() else {
             return ChangeVerdict::NoEvidence;
         };
+        if a.direct {
+            // ADR-188: 直接観測の窓は基準値で照合せず、窓も閉じない（`classify_direct_read` が belief と照合する）。
+            return ChangeVerdict::NoEvidence;
+        }
         match a.baseline {
             None => {
                 a.baseline = Some(v);
@@ -125,6 +156,51 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
             }
         }
     }
+}
+
+/// `IME_CMODE_NATIVE`（conversion mode の bit0）。日本語入力（かな・カタカナ）なら立ち、半角英数なら立たない。
+pub const IME_CMODE_NATIVE: u32 = 0x0001;
+
+/// 直接観測（ADR-188）の追随判定。`None` の軸は追随しない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectFollow {
+    /// 実状態の開閉が belief と違うとき、その値。
+    pub open: Option<bool>,
+    /// 実状態の英数かどうかが belief と違うとき、その値（`true` = 英数、`false` = 日本語入力＝ローマ字想定）。
+    pub eisu: Option<bool>,
+}
+
+impl DirectFollow {
+    /// 追随する軸が無いか。
+    #[must_use]
+    pub const fn is_none(&self) -> bool {
+        self.open.is_none() && self.eisu.is_none()
+    }
+}
+
+/// 窓内の読み（`read_open`・`read_conv`）を belief（`belief_open`・`belief_eisu`）と照合し、追随する軸を返す純関数。
+///
+/// - 開閉は `read_open` が belief と違うときだけ。
+/// - 英数かどうかは **NATIVE ビットだけ**で決める。実 Chrome×GJI の ROMAN ビットは当てにならない（計測: 実際は
+///   ローマ字入力なのに `conv=9`〈ROMAN なし〉が 300ms 続いた、ADR-188 R2）ので見ない。ここから `ObservedKana`/
+///   `ObservedRomaji` は作らない（呼び出し側は `ObservedEisu` か `AssumedRomaji` のみ）。
+/// - 閉じている（`read_open == Some(false)`）とき、または開閉が読めないときは conv を見ない（閉じた IME の conv は意味が無い）。
+#[must_use]
+pub fn classify_direct_read(
+    read_open: Option<bool>,
+    read_conv: Option<u32>,
+    belief_open: bool,
+    belief_eisu: bool,
+) -> DirectFollow {
+    let open = read_open.filter(|o| *o != belief_open);
+    let eisu = match (read_open, read_conv) {
+        (Some(true), Some(conv)) => {
+            let want_eisu = conv & IME_CMODE_NATIVE == 0;
+            (want_eisu != belief_eisu).then_some(want_eisu)
+        }
+        _ => None,
+    };
+    DirectFollow { open, eisu }
 }
 
 impl<S: Copy + PartialEq> Default for ExternalChangeWatch<S> {
@@ -269,5 +345,114 @@ mod tests {
         );
         // Changed で窓は閉じる
         assert_eq!(w.observe(1, 1120, W, Some(true)), ChangeVerdict::NoEvidence);
+    }
+
+    // ── ADR-188: 直接観測の窓 ──
+
+    #[test]
+    fn direct_window_never_closes_and_baseline_observe_is_skipped() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.record_read(1, Some(true));
+        w.arm_direct(1, 1000, W);
+        assert!(w.direct_live(1, 1030, W));
+        // 基準値(true)と違う読みでも、Direct の窓では ADR-205 の差分照合は行わず窓も閉じない。
+        assert_eq!(
+            w.observe(1, 1032, W, Some(false)),
+            ChangeVerdict::NoEvidence
+        );
+        assert!(w.direct_live(1, 1100, W));
+        assert!(w.direct_live(1, 1290, W));
+    }
+
+    #[test]
+    fn baseline_window_is_not_direct_and_direct_wins_when_both_armed() {
+        let mut w = armed_after_open_read();
+        assert!(!w.direct_live(1, 1010, W));
+        w.arm_direct(1, 1100, W);
+        assert!(
+            w.direct_live(1, 1110, W),
+            "生きている窓へ Direct を足すと格上げ"
+        );
+        // 後から Baseline の arm が来ても Direct のまま
+        w.arm(1, 1150, W);
+        assert!(w.direct_live(1, 1160, W));
+    }
+
+    #[test]
+    fn direct_window_expires_and_respects_scope() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.arm_direct(1, 1000, W);
+        assert!(!w.direct_live(2, 1010, W), "スコープ違いは破棄");
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.arm_direct(1, 1000, W);
+        assert!(!w.direct_live(1, 1000 + W + 1, W));
+        assert_eq!(w.last_arm_ms(), None, "切れた窓は破棄済み");
+    }
+
+    #[test]
+    fn last_arm_ms_tracks_re_arm() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        assert_eq!(w.last_arm_ms(), None);
+        w.arm_direct(1, 1000, W);
+        assert_eq!(w.last_arm_ms(), Some(1000));
+        w.arm_direct(1, 1100, W);
+        assert_eq!(w.last_arm_ms(), Some(1100));
+    }
+
+    /// R2: NATIVE ビットだけで英数を決める。計測の実値: 直接入力→無変換=かな ON で `open=true conv=9`(ROMAN なし)が
+    /// 300ms 続いたが、実際はローマ字入力。ROMAN が無くても英数とは見なさない。
+    #[test]
+    fn classify_uses_native_bit_only() {
+        assert!(classify_direct_read(Some(true), Some(9), true, false).is_none());
+        assert!(classify_direct_read(Some(true), Some(25), true, false).is_none());
+        assert_eq!(
+            classify_direct_read(Some(true), Some(16), true, false),
+            DirectFollow {
+                open: None,
+                eisu: Some(true)
+            }
+        );
+        assert_eq!(
+            classify_direct_read(Some(true), Some(25), true, true),
+            DirectFollow {
+                open: None,
+                eisu: Some(false)
+            }
+        );
+        // 全角カタカナ(0x13、NATIVE あり)も英数ではない
+        assert!(classify_direct_read(Some(true), Some(0x13), true, false).is_none());
+    }
+
+    #[test]
+    fn classify_ignores_conv_when_closed_or_unreadable() {
+        assert_eq!(
+            classify_direct_read(Some(false), Some(16), true, false),
+            DirectFollow {
+                open: Some(false),
+                eisu: None
+            }
+        );
+        assert!(classify_direct_read(Some(false), Some(16), false, false).is_none());
+        assert!(classify_direct_read(None, Some(16), true, false).is_none());
+        assert_eq!(
+            classify_direct_read(Some(false), None, true, false),
+            DirectFollow {
+                open: Some(false),
+                eisu: None
+            }
+        );
+        assert!(classify_direct_read(Some(true), None, true, false).is_none());
+    }
+
+    /// M6: 1 回の読みで開閉と英数の両軸を追随する(閉→開・英数)。
+    #[test]
+    fn classify_follows_both_axes_at_once() {
+        assert_eq!(
+            classify_direct_read(Some(true), Some(16), false, false),
+            DirectFollow {
+                open: Some(true),
+                eisu: Some(true)
+            }
+        );
     }
 }
