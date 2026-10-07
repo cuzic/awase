@@ -735,7 +735,7 @@ jobs:
                   configs.append(_r)
           # 一過性の conv=0 の長さの測定(ADR-238、BUG-190。観測のみ、only='tsx-soak-conv0-*' で回す): MS-IME の自前 Edit へ長い打鍵を
           # 12 本の独立な起動で流し、単発の conv=0(0.06〜0.27% の読み)を読んだら +20/+60/+120/+250ms の読み直し(`[conv0-probe]`)を取る。
-          _soak = tsx('soak-conv0-edit-msime', 'edit', 'msime', 20, kinds='single,thumb,mixed', trials=30, len=40, runs=12, wait=900)
+          _soak = tsx('soak-conv0-edit-msime', 'edit', 'msime', 20, kinds='single,thumb,mixed', trials=30, len=40, runs=36, wait=900)
           _soak.update(until='2026-11-10')
           configs.append(_soak)
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
