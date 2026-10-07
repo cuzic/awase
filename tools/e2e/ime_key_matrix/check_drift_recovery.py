@@ -58,21 +58,23 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from e2e_common import load_awase_timed as load_awase, ts_json_records as parse  # noqa: E402
+from e2e_common import (  # noqa: E402
+    DRIFT_RE, OBSERVED_RE, PHYS_CTRL_RE, UNICODE_RE, load_awase_timed as load_awase, ts_json_records as parse,
+)
 
 PATTERNS = {
-    "observed": re.compile(r"\[stage-observe\] observer_poll=Some|ObserverReported"),
-    "drift": re.compile(r"\[drift\] correction:|Blacklist drift correction: apply_ime_open"),
+    "observed": OBSERVED_RE,
+    "drift": DRIFT_RE,
     "conv_read": re.compile(r"idle-conv-check-diag|kind=probe"),
     "reinit": re.compile(r"giving up|GJI reinit|VK_IME_ON 送信"),
-    "unicode": re.compile(r"send_keys: mode=Unicode"),
+    "unicode": UNICODE_RE,
 }
 # 閉→打鍵直前の窓で数えるもの / 打鍵中〜確定後の窓で数えるもの
 PRE_KEYS = ("observed", "drift")
 TYPING_KEYS = ("conv_read", "reinit", "unicode")
 INTENT = re.compile(r"explicit_intent=(\S+)")
 MUHENKAN_DOWN = re.compile(r"\[engine-input\] vk=0x1D KeyDown")
-PHYS_CTRL = re.compile(r"mods\(c=true .*phys_ctrl=true")
+PHYS_CTRL = PHYS_CTRL_RE
 
 
 def window_counts(lines: list, t0, t1, keys) -> dict:

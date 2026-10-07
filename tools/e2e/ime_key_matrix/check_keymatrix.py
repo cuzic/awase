@@ -48,12 +48,12 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from e2e_common import ts_json_in_line  # noqa: E402
+from e2e_common import PHYS_CTRL_RE, ts_json_in_line  # noqa: E402
 
 KM_LINE = re.compile(r"\] KM (\{.*\})\s*$")
 KM_CONFIG_LINE = re.compile(r"\] KM_CONFIG (\{.*\})\s*$")
 ENGINE_DOWN = re.compile(r"\[engine-input\] vk=0x([0-9A-Fa-f]+) KeyDown")
-PHYS_CTRL = re.compile(r"mods\(c=true .*phys_ctrl=true")
+PHYS_CTRL = PHYS_CTRL_RE
 CTRL_MODS = re.compile(r"mods\(c=true ")
 
 # 例外(ADR-208 決定4(a)): MS-IME × 実 Chrome の OFF 方向。閉じた列挙で、増やすには ADR の改訂が要る。
