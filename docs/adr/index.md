@@ -244,12 +244,12 @@
 | [235](235-app-ime-realmachine-matrix.md) | 実機 CI の各構成で、入力先の profile と awase がその経路を通った件数を summary に出す(D1・D3。D2 は条件付きの将来案) | 起草(2026-10-06)。Opus round1・round2 反映済み |
 | [236](236-conflict-marker-residue-check.md) | 衝突マーカーの残骸を CI(fmt ジョブ)で検出する | 起草(2026-10-06)。Opus round1・round2 反映済み |
 | [237](237-serialized-develop-merge.md) | develop へのマージ担当の手順を決める(古い base のままマージし、競合しない rebase を求めない) | 起草(2026-10-06)。Opus round1・round2 反映済み |
-| [238](238-claims-carry-verification-commands.md) | docs・PR 本文の主張に、確かめたコマンドを添える(独立した規約ページは作らず、ADR-239 の規約 3 に畳む) | 提案(2026-10-06)。Opus round1〜round3 で Blocker・Must なし。規約の導入は所有者の判断待ち |
-| [239](239-parallel-agent-instruction-hygiene.md) | 並列エージェント開発での指示の取り違えを減らす(`.claude/rules/agent-handoff.md` 25 行以内の案) | 提案(2026-10-06)。Opus round1〜round3 で Blocker・Must なし。規約の導入・置き場所・pre-push の扱いは所有者の判断待ち |
-| [240](240-ablation-ab-as-regression-evidence.md) | 実機 CI の判定の書き方(前提と症状の分離・observed 件数・observed 0 は INVALID)を必須にし、修正を外したビルドとの比較は任意にする(旧称 ADR-233 を改番) | 提案(2026-10-07)。Opus 最終確認で Blocker・Must なし。規約の導入・範囲は所有者の判断待ち |
-| [241](241-keystroke-to-actuation-replay.md) | 打鍵から actuation の決定まで通す再生基盤(同期の判断を ungated な核へ移し、閉ループのハーネスを拡張。既存の再生一式の置き換えと同時) | 提案(2026-10-07)。Opus round1・round2 反映済み。合流点の作り直しの承認など所有者の判断待ち |
 | [238](238-single-poll-conv-zero-eisu-adoption.md) | 一過性の conv=0 を 1 回の poll で ObservedEisu と採用して Engine が止まる件(BUG-190) | 設計収束(Opus round3)・実装済み・CI 確認済み、実機未検証(2026-10-06) |
 | [239](239-prev-conversion-mode-reset-and-dead-classify-transition.md) | 分類で `prev_conversion_mode` を読む `classify_transition` の撤去(約 6 か月、refresh の経路で結果を返していない) | 設計収束(Opus round2)・実装済み・CI 確認済み(2026-10-07) |
+| [240](240-ablation-ab-as-regression-evidence.md) | 実機 CI の判定の書き方(前提と症状の分離・observed 件数・observed 0 は INVALID)を必須にし、修正を外したビルドとの比較は任意にする(旧称 ADR-233 を改番) | 提案(2026-10-07)。Opus 最終確認で Blocker・Must なし。規約の導入・範囲は所有者の判断待ち |
+| [241](241-keystroke-to-actuation-replay.md) | 打鍵から actuation の決定まで通す再生基盤(同期の判断を ungated な核へ移し、閉ループのハーネスを拡張。既存の再生一式の置き換えと同時) | 提案(2026-10-07)。Opus round1・round2 反映済み。合流点の作り直しの承認など所有者の判断待ち |
+| [242](242-claims-carry-verification-commands.md) | docs・PR 本文の主張に、確かめたコマンドを添える(独立した規約ページは作らず、ADR-243 の規約 3 に畳む) | 提案(2026-10-06)。Opus round1〜round3 で Blocker・Must なし。規約の導入は所有者の判断待ち |
+| [243](243-parallel-agent-instruction-hygiene.md) | 並列エージェント開発での指示の取り違えを減らす(`.claude/rules/agent-handoff.md` 25 行以内の案) | 提案(2026-10-06)。Opus round1〜round3 で Blocker・Must なし。規約の導入・置き場所・pre-push の扱いは所有者の判断待ち |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
