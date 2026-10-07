@@ -496,7 +496,8 @@ impl ImeStateHub {
     /// - 英数かどうかの食い違い: `InputModeObserved{ConvBitsInference, Medium}`（NATIVE ビットだけで決める、R2）。
     ///
     /// awase 自身が窓の最後の arm 以後に IME へ書いていたら（`last_explicit_ime_action_ms`）、GJI の処理前の読みで belief を
-    /// 逆戻ししないよう採らない（R3）。窓が無い・Direct でない・スコープ違いなら何もしない。戻り値は追随した軸。
+    /// 逆戻ししないよう採らない（R3）。打鍵時点の予測がこの打鍵に付いているときも採らない（予測に任せる）。
+    /// 窓が無い・Direct でない・スコープ違いなら何もしない。戻り値は追随した軸。
     ///
     /// crate 内（殻 `shell.rs` と単体テスト）だけが呼ぶ。閉ループのハーネスには公開しない（`PLATFORM_STATE_PUB_FNS` を増やさない）。
     pub(crate) fn follow_direct_read_in_scope(
@@ -517,6 +518,17 @@ impl ImeStateHub {
         }
         let armed_at = self.external_change_watch.last_arm_ms()?;
         if self.last_explicit_ime_action_ms >= armed_at {
+            return None;
+        }
+        // 打鍵時点の予測（ADR-191 決定3）がこの打鍵に付いているキーは、予測に任せる。予測はキーの効果を先に反映済みで、
+        // IME が処理を終えるのが窓（300ms）より遅いと、窓内の読みは処理前の古い状態を返す。それで予測を覆すと、
+        // 後から IME が処理を終えても誰も追随しない（実測: MS-IME プリセットの 変換 で `[key-effect-miss]` を起こし
+        // Engine が OFF のままになった、ADR-188 追記6）。観測が要るのは予測が効かない打鍵（Shift 付き・FSM の再送出）。
+        if self
+            .shadow_model
+            .key_effect()
+            .is_some_and(|pred| pred.at_ms >= armed_at)
+        {
             return None;
         }
         let follow = super::external_change_watch::classify_direct_read(
@@ -3743,6 +3755,56 @@ mod tests {
             follow(&mut ps, 1000 + 301, test_foreground_scope()),
             None,
             "窓切れ"
+        );
+    }
+
+    /// 打鍵時点の予測がこの打鍵に付いているときは、窓内の（処理前かもしれない）読みで予測を覆さない。
+    /// 実測: MS-IME プリセットの 変換(OFF→ON)は IME の処理が窓より遅く、読みが 250ms まで閉のまま。それで追随すると
+    /// `[key-effect-miss]` を起こして Engine が OFF のままになり、PASS だったケースが RECOVER になった。
+    #[test]
+    fn follow_direct_read_defers_to_a_key_effect_prediction_made_after_arm() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        // 打鍵(arm)の直後に、開く予測が付く。
+        ps.ime.dispatch_event(
+            ImeEvent::KeyEffectPredicted {
+                open: Some(true),
+                mode: None,
+                track: crate::state::key_effect_predictor::KeyTrack::default(),
+            },
+            TickMs(1001),
+        );
+        assert!(ps.ime.effective_open_at(TickMs(1002)), "予測で belief は開");
+        for t in [1032u64, 1094, 1156, 1250] {
+            assert_eq!(
+                ps.ime.follow_direct_read_in_scope(
+                    Some(false),
+                    Some(25),
+                    t,
+                    TickMs(t),
+                    follow_fence(),
+                    test_foreground_scope()
+                ),
+                None,
+                "t={t}: 処理前の閉の読みで予測を覆さない"
+            );
+        }
+        assert!(ps.ime.effective_open_at(TickMs(1260)));
+        // 予測が無い打鍵(新しい物理キーで再 arm し、予測より後の arm)なら採る。
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1400, test_foreground_scope());
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(false),
+                Some(25),
+                1432,
+                TickMs(1432),
+                follow_fence(),
+                test_foreground_scope()
+            ),
+            Some(direct_follow(Some(false), None))
         );
     }
 }
