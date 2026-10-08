@@ -238,6 +238,15 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         turn_ime_on(0);
         clear_text(child);
         sleep_ms(300);
+        // 前の試行の半角英数が実 IME に残っていることがある(強制復元が効かないのがこの調査の主題)ので、
+        // A の conv に NATIVE が無ければひらがなキーで戻す。戻せなかった試行は下の entered 判定で捨てる。
+        for _ in 0..2 {
+            if imm_state(a).1.is_some_and(|c| c & 1 != 0) {
+                break;
+            }
+            press(VK_DBE_HIRAGANA, 0x70, 50);
+            sleep_ms(800);
+        }
         stage(n, "pre", 0, a, b);
         // tap1: 左 Shift 単独タップで半角英数トグルへ。
         // 前の試行のトグルが awase に残っていると最初のタップは「解除」になる(run 37779401312 で観測)ので、
@@ -246,11 +255,13 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         let mut entered = false;
         let mut taps = 0u64;
         for k in 0..4u64 {
+            let before_native = imm_state(a).1.is_some_and(|c| c & 1 != 0);
             press(VK_LSHIFT, SCAN_LSHIFT, 60);
             taps += 1;
             sleep_ms(700);
             stage(n, &format!("tap1#{k}"), 700, a, b);
-            if imm_state(a).1.is_some_and(|c| c & 1 == 0) {
+            // 押す前に NATIVE があり、押した後に無い = このタップで半角英数に入った。
+            if before_native && imm_state(a).1.is_some_and(|c| c & 1 == 0) {
                 entered = true;
                 break;
             }
