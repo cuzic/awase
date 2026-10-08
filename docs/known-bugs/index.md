@@ -187,7 +187,7 @@
 | [BUG-183](BUG-183.md) | 解決済み(CI検証済み・実機未確認) | 入力言語のホットキー経由でロシア語へ切り替えると、awase が日本語入力のまま残る(Alt+Shift・Win+Space では即座に非活性になる) |
 | [BUG-184](BUG-184.md) | 再現待ち(再現せず・要追加情報) | MS-IME で物理 英数 キー(IME OFF)を Suppress して ImmCross で閉じる際、未確定文字を確定せず、消える疑い |
 | [BUG-185](BUG-185.md) | 対応しない(既知の制限) | MS-IME × Chrome で、入力中の文字が残っている間の OFF が IME を閉じず半角英数になる(対応しない既知の制限) |
-| [BUG-186](BUG-186.md) | 未修正(CI で再現、2026-10-07 の最新 develop でも現存。読みは来ているが打鍵中扱いで捨てる・ADR-188 は GJI 限定、ADR-244) | 半角英数持続トグル中に IME 側のモードキー(変換・英数・ひらがな)でかなへ戻すと Engine が OFF のまま(`か`、実 Chrome) |
+| [BUG-186](BUG-186.md) | 未修正(CI で再現。読みは来ているが捨てる・ADR-188 は GJI 限定。スパイクで CI 修正案を確認、本番は未実装、ADR-244) | 半角英数持続トグル中に IME 側のモードキー(変換・英数・ひらがな)でかなへ戻すと Engine が OFF のまま(`か`、実 Chrome) |
 | [BUG-187](BUG-187.md) | 対応しない(却下相当、現行機序なし) | GJI(ATOKプリセット)が injected=false の VK_DBE_HIRAGANA を周期送信し IME OFF を巻き戻す疑い |
 | [BUG-188](BUG-188.md) | 未修正(CI で再現、ADR-227 D0-5) | TsfNative(Windows Terminal)で外部から IME が閉じたあと、Engine ON × IME 閉の drift で生ローマ字が出る |
 | [BUG-189](BUG-189.md) | 修正実装済み・CI 確認待ち(ADR-233) | Flutter × MS-IME で古い ImmCrossProbe(High,false)が優先され打鍵の途中で Engine が一瞬 OFF になる |

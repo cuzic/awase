@@ -8,7 +8,7 @@ summary: |-
   打鍵中扱い(TypingActive)で捨てられ、ADR-188 の直接観測は GJI 限定の述語で MS-IME 本体には一度も動いていない。
   本 ADR は現状の事実と、追加で測ること・決めることの順序を定める。修正方式は決めない。
 status: |-
-  ドラフト(2026-10-07、未実装、S1 の計測結果を追記済み)。Opus レビュー 2 回(1 回目 Blocker 2・Must 4・Should 6、2 回目 Blocker なし・Must 2・Should 3)を反映済み。
+  ドラフト(2026-10-08、未実装、S1 の計測結果と S2 スパイクの CI 検証〈48/48 PASS〉を追記済み)。Opus レビュー 2 回(1 回目 Blocker 2・Must 4・Should 6、2 回目 Blocker なし・Must 2・Should 3)を反映済み。
 related_adr:
   - "ADR-188"
   - "ADR-107"
@@ -80,6 +80,37 @@ gh run download <run> -n result-<構成名>-1                                   
 - **読みの経路**: トレースの読みは `spawn_ime_refresh` の prefetch(`read_ime_state_full_async` → `ime.rs::detect_ime_open_for_hwnd`)で、`GetGUIThreadInfo().hwndFocus` → `ImmGetDefaultIMEWnd` → `WM_IME_CONTROL`(`IMC_GETOPENSTATUS`、50ms)。ADR-205 が「MS-IME では開いていても 0」と書いた `CrossProcess(hwndFocus)` と同じ経路。高速版 `read_ime_state_fast` は別経路(`Imm32Unavailable` では `ime_on=None`)で、トレースには使っていない。
 - **ADR-205 の観測との食い違い**: ADR-205 の run 36548761653 は、同じ表の中で「9〜10 回は IME が閉じず」とも書いており、IME が実際に開いていたかが疑わしい(その構成は現在の `e2e-ime.yml` に無く再確認できない)。S1 では 18 セル(直接入力・かな・半角英数 × 6 キー)で `open` の読みと結果(`ka`/NICOLA 文字)の食い違いが 0 件だった。原因はセットアップの違いと考えるのが自然だが、推測。
 - **条件を広げる場合に残る課題**: `toggle_held` が true のまま残る(観測で belief を戻しても凍結と次の Shift タップの意味は食い違う)。`ro` の退行の機序(GJI の MS-IME プリセット側)は未調査。
+
+## S2 スパイクの検証結果(2026-10-08、CI、使い捨て)
+
+使い捨てのブランチ `ci/adr244-s2-spike`(`845cd75f`・`55252fbe`、`develop` にはマージしない)で、次の 2 点を足して `sc-table-msime-*` を回した。
+
+1. ADR-188 の直接観測(窓を開く 2 か所と照合 1 か所)を、GJI に加えて MS-IME(`active_ime_kind() == MicrosoftIme`)にも適用する(新しい述語 `direct_mode_key_watch_applies_for`。ADR-205 の外部変化の監視は GJI 限定のまま)。
+2. 直接観測で「かな(NATIVE の読み)」または「閉」へ追随したら、持続トグルを OS 書き込みなしで手放す(`HalfWidthAlnumState::abandon_for_mode_key`)。
+
+```sh
+gh workflow run e2e-ime.yml --ref ci/adr244-s2-spike -f only='sc-table-msime-*'   # 1 のみ: run 37713583320 / 1+2: run 37714287200
+```
+
+| 構成 | 「Shift単独タップ後」の変換・英数・ひらがな・無変換 | `SUMMARY`(2 構成とも同じ) |
+|---|---|---|
+| `develop`(`2a178d5b`、run 37704093235) | 変換・英数・ひらがなが FAIL(`か`)、無変換は PASS | `PASS=42 FAIL=6` |
+| スパイク 1 のみ(run 37713583320) | 変換・英数が PASS(NICOLA 文字)。ひらがな・無変換は **INVALID**(`持続半角英数にならなかった`) | `PASS=44 FAIL=0 INVALID=4` |
+| スパイク 1+2(run 37714287200) | 4 キーとも PASS(変換・英数・ひらがな = NICOLA 文字、無変換 = `ka`) | **`PASS=48 FAIL=0 INVALID=0`** |
+
+- **1 のみで INVALID が出た理由**: 追随の後も `toggle_held` が true のまま残り、次のケースの setup の Shift タップが「開始」でなく「解除」(`ひらがなモード復元`)として扱われた。S2 の課題として予想していたとおり。2 を足すと解消した。
+- **直接観測が働いたのは対象の窓だけ**: 1 のみの run の awase.log で `[direct-follow]` は 4 件(変換・英数 × 2 周、`eisu=Some(false)` `conv=25`)。他の窓での誤った追随は無かった。
+- **回帰の確認(同じ構成で `develop` と比較)**:
+  - MS-IME 本体 × Chrome の `sc-adr209-chrome-msime*`・`sc-adr211-chrome-msime-f13*`・`sc-reopen-tsf-msime-gap600`・`sc-startup-msime-chrome-on-*`・`sc-driftrecovery-*`(計 49 ジョブ、run 37714886987 と 37714889571): 終了コードが FAIL(1)で食い違ったジョブは 0。食い違い 4 件はすべて INVALID(3)と PASS(0)の出入りで、スパイク側・`develop` 側の両方に出た(既存の setup の不安定)。
+  - GJI の遷移表 `sc-table-gji-*`(run 37716008111 と 37716011228): 4 構成とも PASS/FAIL/INVALID の件数が `develop` と同じ(例: `gji-msimepreset-passthru` は PASS 28・FAIL 4・INVALID 16)。INVALID になるセルが 1 つずれた箇所(IME_ON とひらがな)が `gji-msimepreset` にあるが、件数は変わらない。`ro` の退行(GJI の MS-IME プリセットの Shift タップ後の無変換)に当たる FAIL の増加は無い。
+
+**確定したこと**: BUG-186 は、直接観測を MS-IME 本体へ広げ、追随時にトグルを手放す 2 点で、CI の再現(`sc-table-msime-*`)では直る。S2 を採る(S3 は採らない)。
+
+**未確定・次の課題**:
+- 本番実装ではない。スパイクは `external_change_watch_applies_for` の GJI 限定の理由(ADR-205)を、直接観測の分だけ外したにすぎず、単体テスト・`architecture_guard`・`PLATFORM_STATE_PUB_FNS` 等のガードは見ていない。
+- 手放す条件(NATIVE の読みまたは閉)は最小の案。ADR-188 の R3(awase 自身の書き込みの後は採らない)や M2(変換中は arm しない)との関係、トグルを手放す責務の置き場所(`ir_follow_direct_mode_key_read` の中か、`ImeStateHub` か)は設計が要る。
+- `[mode-key-follow]` が実機の Chrome × MS-IME 本体で同じに働くかは未確認(CI のみ)。
+- `GJI` の MS-IME プリセットの `ro` の機序は未調査のまま(今回のスパイクでは再現しなかった)。
 
 ## 決めること(順序、方式は未決)
 
