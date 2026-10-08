@@ -1629,7 +1629,7 @@ impl Runtime {
         }
         // ADR-188: Shift 付きを含め、GJI × Imm32Unavailable では直接観測の窓を開く（基準値なしで窓内の読みを
         // belief と照合する）。変換中（候補窓が出ている間）は開かない（読み取りを増やさない、M2）。
-        if self.external_change_watch_applies()
+        if super::direct_mode_key_watch_applies_for(self.platform.current_app_profile())
             && !crate::tsf::observer::ime_composition_active_now()
         {
             self.platform_state

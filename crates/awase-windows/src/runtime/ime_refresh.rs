@@ -290,7 +290,7 @@ impl Runtime {
     /// 再送出を含む）の直後の直接観測の窓の中に、prefetch 済みの開閉・conv の読みを belief と照合し、食い違う軸へ追随する。
     /// 基準値は使わず、awase は IME を書かない。awase 自身が窓の後に書いていたら採らない（R3）。
     fn ir_follow_direct_mode_key_read(&mut self, ime_snap: Option<&crate::ime::ImeSnapshot>) {
-        if !self.external_change_watch_applies() {
+        if !super::direct_mode_key_watch_applies_for(self.platform.current_app_profile()) {
             return;
         }
         let Some(snap) = ime_snap else {

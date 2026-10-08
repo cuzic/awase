@@ -2603,3 +2603,16 @@ pub(crate) fn external_change_watch_applies_for(
         && crate::tsf::observer::tsf_obs().active_ime_kind()
             == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
 }
+
+// ADR-244 S2(使い捨てのスパイク、develop にはマージしない): ADR-188 の直接観測(窓を開く 2 か所と照合 1 か所)だけ、
+// GJI に加えて MS-IME(`active_ime_kind() == MicrosoftIme`)でも適用する。ADR-205 の外部変化の監視は GJI 限定のまま。
+pub(crate) fn direct_mode_key_watch_applies_for(
+    profile: crate::focus::class_names::AppImeProfile,
+) -> bool {
+    profile == crate::focus::class_names::AppImeProfile::Imm32Unavailable
+        && matches!(
+            crate::tsf::observer::tsf_obs().active_ime_kind(),
+            crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+                | crate::tsf::observer::ActiveImeKind::MicrosoftIme
+        )
+}
