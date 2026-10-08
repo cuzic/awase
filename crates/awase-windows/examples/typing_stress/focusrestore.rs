@@ -160,8 +160,10 @@ fn fg_name(b: HWND) -> &'static str {
 }
 
 fn stage(n: u64, name: &str, at_ms: u64, a: HWND, b: HWND) {
-    rec(&json!({"type":"fr_stage","n":n,"stage":name,"at_ms":at_ms,"utc":utc_hms(),
-        "fg":fg_name(b),"A":win_json(a),"B":win_json(b)}));
+    rec(
+        &json!({"type":"fr_stage","n":n,"stage":name,"at_ms":at_ms,"utc":utc_hms(),
+        "fg":fg_name(b),"A":win_json(a),"B":win_json(b)}),
+    );
 }
 
 /// 時点列 `offsets`(ms、昇順)で `stage` を記録する。基準はこの関数の呼び出し時刻。
@@ -226,7 +228,9 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
             refocus();
         }
         if !focus_ok() {
-            rec(&json!({"type":"abort","reason":format!("focus-restore 試行前にフォーカスが外れた n={n}")}));
+            rec(
+                &json!({"type":"abort","reason":format!("focus-restore 試行前にフォーカスが外れた n={n}")}),
+            );
             return;
         }
         let utc0 = utc_hms();
@@ -253,18 +257,16 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
             sleep_ms(300);
         }
         if !entered {
-            rec(&json!({"type":"fr_trial","n":n,"control":control,"utc":utc0,"utc_tap1":utc_tap1,
-                "entered":false,"taps":taps,"utc_end":utc_hms()}));
+            rec(
+                &json!({"type":"fr_trial","n":n,"control":control,"utc":utc0,"utc_tap1":utc_tap1,
+                "entered":false,"taps":taps,"utc_end":utc_hms()}),
+            );
             continue;
         }
         stages(n, "settled", &[300, 1000], a, b);
         // away: B へ移す(対照は移さない)。
         let utc_away = utc_hms();
-        let away_ok = if control {
-            true
-        } else {
-            to_b(b)
-        };
+        let away_ok = if control { true } else { to_b(b) };
         stages(n, "away", &[150, 600, 1500], a, b);
         // back: A へ戻す。
         let utc_back = utc_hms();
@@ -286,10 +288,12 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         press(VK_LSHIFT, SCAN_LSHIFT, 60);
         stages(n, "tap2", &[300, 1000], a, b);
         let utc_end = utc_hms();
-        rec(&json!({"type":"fr_trial","n":n,"control":control,"utc":utc0,"utc_tap1":utc_tap1,
+        rec(
+            &json!({"type":"fr_trial","n":n,"control":control,"utc":utc0,"utc_tap1":utc_tap1,
             "entered":true,"taps":taps,"utc_away":utc_away,"utc_back":utc_back,"utc_type":utc_type,"utc_tap2":utc_tap2,"utc_end":utc_end,
             "away_ok":away_ok,"back_ok":back_ok,
-            "typed":{"text":text,"expect":probe.kana.to_string(),"ok":text.trim() == probe.kana.to_string()}}));
+            "typed":{"text":text,"expect":probe.kana.to_string(),"ok":text.trim() == probe.kana.to_string()}}),
+        );
         // 次の試行へ持ち越さない: A を前面に戻し、半角英数のままなら Shift 単独タップで戻す余地は残さず、次の turn_ime_on に任せる。
         if !focus_ok() {
             refocus();
