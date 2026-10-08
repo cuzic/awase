@@ -99,8 +99,9 @@ pub enum HalfWidthAlnumEffect {
     },
 }
 
-/// [`HalfWidthAlnumEffect::ExitRestoreKana`] の exit が OS 書き込みの権利をどこから得たか
-/// （ADR-245 決定4）。`begin_restore_kana()` の旧値（= 直前の `toggle_held`）が偽だと
+/// [`HalfWidthAlnumEffect::ExitRestoreKana`] の exit が OS 書き込みの権利をどこから得たか。
+///
+/// ADR-245 決定4。`begin_restore_kana()` の旧値（= 直前の `toggle_held`）が偽だと
 /// 復元本体は「already inactive」で送信を全部飛ばす（`key_pipeline.rs`）。戻り待ちから
 /// 取り出した exit では `toggle_held` が既に偽なので、取り出しそのものが INV-B の
 /// 「true→false の遷移 1 回」の役を担う。
@@ -636,8 +637,9 @@ pub const fn plan_key_stage(f: &KeyStageFacts) -> KeyStagePlan {
     KeyStagePlan::Resume
 }
 
-/// 判断点 (c) の KeyDown 側（ADR-245 決定6 の R4-1）: Shift の KeyDown で単独タップの候補（ガード）を
-/// 落とすか。トグル中、または現在の前面スコープに戻り待ちがあるときは落とさない（KeyUp の
+/// 判断点 (c) の KeyDown 側: Shift の KeyDown で単独タップの候補（ガード）を落とすか。
+///
+/// ADR-245 決定6 の R4-1。トグル中、または現在の前面スコープに戻り待ちがあるときは落とさない（KeyUp の
 /// ExitOnTap に届かせる。エンジン OFF など `entry_context_ok` が偽の構成でも）。
 /// `entry_context_ok` は `effective_open && is_japanese_ime && is_user_enabled && conv_mutation_allowed`。
 #[must_use]
