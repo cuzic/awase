@@ -373,7 +373,7 @@ jobs:
               for kn, kv in (('henkan', '1c'), ('muhenkan', '1d'), ('shift-muhenkan', '1d:s'))],
             # ADR-244 S1(計測スパイク、観測のみ): MS-IME 本体(ime=msime)で同じ計測。変換中/30 秒 idle の後の素通しモードキーの窓内の読み。
             *[cfg(f'sc-bug149-trace-{kind}-msimebody-{kn}', 'observe', check='chromeprobe', ime='msime', keymap=2, runs=1, wait=900, awase='true',
-                  general='muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false',
+                  general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"; muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false',
                   chrome=f'--repeat=3 --settle=800 --msime --{kind}-key={kv}' + (' --idle-ms=30000' if kind == 'idle' else ''))
               for kind in ('compose', 'idle')
               for kn, kv in (('henkan', '1c'), ('muhenkan', '1d'), ('shift-muhenkan', '1d:s'))],
