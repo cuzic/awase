@@ -8,7 +8,7 @@ summary: |-
   打鍵中扱い(TypingActive)で捨てられ、ADR-188 の直接観測は GJI 限定の述語で MS-IME 本体には一度も動いていない。
   本 ADR は事実・CI での検証(S1 の計測、S2 のスパイク 48/48 PASS)と、S2 を本番に落とす方針(決定 D1〜D7)を定める。
 status: |-
-  決定(2026-10-08、未実装): S2 採用・S3 不採用。方針 D1〜D7 を Opus の計画レビュー(Blocker 0・Must 6・Should 6)を反映して確定。本番実装は未着手。Opus レビュー 2 回(1 回目 Blocker 2・Must 4・Should 6、2 回目 Blocker なし・Must 2・Should 3)を反映済み。
+  実装済み・CI 検証済み・実機未確認(2026-10-08、PR #556): S2 採用・S3 不採用。方針 D1〜D7 は Opus の計画レビュー(Blocker 0・Must 6・Should 6)を反映して確定し、実装は Opus のコードレビュー(Blocker 0・Must 5・Should 5)を反映した。Opus レビュー 2 回(1 回目 Blocker 2・Must 4・Should 6、2 回目 Blocker なし・Must 2・Should 3)を反映済み。
 related_adr:
   - "ADR-188"
   - "ADR-107"
@@ -134,10 +134,28 @@ gh workflow run e2e-ime.yml --ref ci/adr244-s2-spike -f only='sc-table-msime-*' 
 
 **D7. 進め方。** 専用 worktree(`develop` から)で実装し、Opus コードレビュー(同じレビュアーで収束確認)→ CI green → PR → `develop`。実機確認(Chrome × MS-IME 本体)はマージの条件にしない。BUG-186 は「修正済み(CI 検証済み・実機未確認)」と書く(BUG-149/150 と同じ扱い)。v1 へは backport しない(ADR-188 が v1 に無い。PR 本文に 1 行書く)。コミット本文に、戻した案(`024ca336`/`6b1e91b8`)との違い(キー押下ではなく観測された読みを根拠にする。`ro` はセル比較で再現しなかった、run を添える)を書き、`docs/experiments.md` に 1 行足す。ADR-205 に 1 行足す(「直接観測(ADR-188)は ADR-244 で `table_ime_kind` の範囲へ広げた。外部変化の監視は GJI 限定のまま」)。
 
+## 実装と検証(2026-10-08、PR #556)
+
+実装は D1〜D7 のとおり。Opus のコードレビューで次を直した: 専用構成を `--strict`(INVALID・RECOVER も赤)にし、手放す処理の呼び出しと確認ゲートの期限延長の解除を `architecture_guard` で固定した(M-1)/ 手放す条件に「追随後に belief が英数でない」を足した(予測の fence に追随を捨てられたとき手放さない、S-2)/ 確認ゲートの期限延長(`SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` = 5000ms)の解除と世代更新をフォーカス変更(`on_ime_mode_focus_changed`)と同じ形で行う(M-3、D3 の宿題)/ `runtime/mod.rs` で新しい関数が既存の doc と `#[must_use]` を奪っていたのを直した(M-5)/ 全角英数 `conv=0x18` と MS-IME 本体の R3 の単体テストを足した(S-1)/ `chrome_probe` の `--table-state`・`--table-keys` の書き間違いを終了コード 2 で止める(S-3)。
+
+CI(すべて PR の head `a0a0bdb5` 以降):
+- 専用構成 `sc-bug186-msime-shift-toggle-{suppress,passthru}`(`--strict`): 2 構成とも `PASS=8 FAIL=0 INVALID=0`(run 37736666172)。
+- `sc-table-msime-*`: 2 構成とも `PASS=48 FAIL=0 INVALID=0`(run 37736669264、修正前は `PASS=42 FAIL=6`)。この run の `[direct-follow]` は 1 構成あたり 6 件(変換・英数・ひらがな × 2 周、すべて `open=None eisu=Some(false) conv=25`)で、トグル外の 18 セルでは 0 件(S-4)。手放しのログも 6 件で対応する。
+- `sc-table-gji-*`(4 構成): `develop`(run 37716011228)とセル単位(キー × 周 × 出力文字)で差分 0(run 37736672041)。
+- MS-IME 本体 × Chrome の回帰セット 49 ジョブ(run 37734121794、`develop` は 37714889571): FAIL(rc=1)の食い違いは `sc-startup-msime-chrome-on-norefocus2` の試行 5 と 8 の入れ替わりだけで、同じ構成は `develop` の run どうしでも結果が入れ替わる(既存の不安定)。他は INVALID と PASS の出入り。
+- PR の CI(`fmt`・`clippy`・`test`・`windows-build`・`dylint`・`smoke` ほか): 全 pass。
+
+**M-2 の機序(予測付きのモードキーを先に押すと `track.conv` がトグル開始後も残り、トグル中にも予測が付いて直接観測が見送られる)の確認**: 観測のみの `sc-bug186-pre-{1C,F2}-*`(`chrome_probe --table-pre=`)で確かめた。
+- 変換キー(0x1C)を先に押す場合: 修正後 8/8 PASS(run 37737146770)。修正前(修正の本体だけ `develop` に戻した版、run 37737446039)は `PASS=2 FAIL=3 INVALID=3`。機序は再現しなかった。
+- ひらがなキー(0xF2)を先に押す場合: 修正後 `PASS=3 FAIL=2 INVALID=3`、修正前 `PASS=2 FAIL=3 INVALID=3`。無変換の FAIL(入力が空)2 件と INVALID 3 件は修正の前後で同じで、**別の不具合として [BUG-192](../known-bugs/BUG-192.md) に記録**した。この症状が `track.conv` の機序かどうかは未調査。
+
+**本体のトグル外でも英数の軸の追随が新しく効く(Opus コードレビュー S-5)**: `classify_direct_read_for(MsIme)` はトグルの有無に関係なく英数の軸を採る。例: かなで Engine ON 中の Shift+無変換(予測なし、S1 で `conv=24` = 全角英数ではなく NATIVE なしの値)が NATIVE なし → `ObservedEisu` → Engine OFF になる。実状態への追随なので方向は正しい。develop には無かった挙動で、ADR-188 追記 6 型の「処理前の読み」の懸念は、S1 の最初の読みが 31〜47ms で窓内一定という範囲では問題にならない(上の `sc-table-msime-*` でトグル外の 18 セルに誤った追随は無い)。
+
 ## 残る課題・範囲外
 
 - **変換中にトグルした後の変換キー**: ADR-188 M2(変換中は窓を開かない)のため、この修正では直らない(ADR-107 はトグル開始を変換中でも許す)。
 - 学習表の上書きで `C10` のセルが入った場合にトグルが残ること(D5)。
+- ひらがなキー(0xF2)の直後に持続トグルにして無変換を押すと入力が空になる別件([BUG-192](../known-bugs/BUG-192.md))。
 - GJI の追随で `toggle_held` が残る潜在課題(D4)。
 - GJI MS-IME プリセットの `ro` の退行そのものの修正。
 - S1 の残り: `None` の読み失敗の頻度、`ro` の機序。
