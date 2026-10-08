@@ -5540,12 +5540,14 @@ fn warmup_gate_third_arg_is_never_a_bare_literal_in_production_code() {
 /// `.half_width_alnum.left_tap_armed` のような生アクセスを検出する。
 #[test]
 fn half_width_alnum_state_fields_are_not_accessed_directly() {
-    const FIELDS: [&str; 5] = [
+    const FIELDS: [&str; 6] = [
         "left_tap_armed",
         "right_tap_armed",
         "conv_guard_pending",
         "toggle_held",
         "entry_policy",
+        // ADR-245: 離脱で積む戻り待ち。書き込み経路は `suspend_toggle_for_return` ほかのメソッドに限る。
+        "return_pending",
     ];
 
     // 1. 使用箇所走査: 本番コード全体（`state/half_width_alnum.rs` 自身の
