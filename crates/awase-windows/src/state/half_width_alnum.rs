@@ -289,6 +289,11 @@ impl HalfWidthAlnumState {
         self.toggle_held = true;
     }
 
+    /// ADR-244 S2(スパイク): 実状態を観測して追随したとき、持続トグルを OS 書き込みなしで手放す。戻り値は直前の `toggle_held`。
+    pub fn abandon_for_mode_key(&mut self) -> bool {
+        std::mem::replace(&mut self.toggle_held, false)
+    }
+
     // ── 状態照会 ──────────────────────────────────────────────────────
 
     #[must_use]

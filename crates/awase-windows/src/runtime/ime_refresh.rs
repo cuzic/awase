@@ -313,6 +313,17 @@ impl Runtime {
                 follow.eisu,
                 snap.conversion_mode,
             );
+            // ADR-244 S2(スパイク): 観測で実状態(かな＝NATIVE の読み、または閉)へ追随したら、awase が立てた持続トグルは
+            // 実状態に置き換わったので OS 書き込みなしで手放す。残すと凍結が続き、次の Shift タップも「開始」でなく「解除」になる。
+            if (follow.eisu == Some(false) || follow.open == Some(false))
+                && self
+                    .platform_state
+                    .gate
+                    .half_width_alnum
+                    .abandon_for_mode_key()
+            {
+                tracing::info!("[shift-conv-guard] 直接観測で実状態へ追随 → 半角英数トグルを手放す");
+            }
         }
     }
 
