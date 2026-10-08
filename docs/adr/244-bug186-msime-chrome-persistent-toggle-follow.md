@@ -143,19 +143,23 @@ CI(すべて PR の head `a0a0bdb5` 以降):
 - `sc-table-msime-*`: 2 構成とも `PASS=48 FAIL=0 INVALID=0`(run 37736669264、修正前は `PASS=42 FAIL=6`)。この run の `[direct-follow]` は 1 構成あたり 6 件(変換・英数・ひらがな × 2 周、すべて `open=None eisu=Some(false) conv=25`)で、トグル外の 18 セルでは 0 件(S-4)。手放しのログも 6 件で対応する。
 - `sc-table-gji-*`(4 構成): `develop`(run 37716011228)とセル単位(キー × 周 × 出力文字)で差分 0(run 37736672041)。
 - MS-IME 本体 × Chrome の回帰セット 49 ジョブ(run 37734121794、`develop` は 37714889571): FAIL(rc=1)の食い違いは `sc-startup-msime-chrome-on-norefocus2` の試行 5 と 8 の入れ替わりだけで、同じ構成は `develop` の run どうしでも結果が入れ替わる(既存の不安定)。他は INVALID と PASS の出入り。
-- PR の CI(`fmt`・`clippy`・`test`・`windows-build`・`dylint`・`smoke` ほか): 全 pass。
+- PR の CI(`fmt`・`clippy`・`test`・`windows-build`・`dylint`・`smoke` ほか): 最終 head の run で PR #556 に記録する(途中の head `a0a0bdb5` 以降、`architecture_guard` の手放し配線の固定が rustfmt の折り返しで落ち、`b4a10afa` で直した)。
 
-**M-2 の機序(予測付きのモードキーを先に押すと `track.conv` がトグル開始後も残り、トグル中にも予測が付いて直接観測が見送られる)の確認**: 観測のみの `sc-bug186-pre-{1C,F2}-*`(`chrome_probe --table-pre=`)で確かめた。
-- 変換キー(0x1C)を先に押す場合: 修正後 8/8 PASS(run 37737146770)。修正前(修正の本体だけ `develop` に戻した版、run 37737446039)は `PASS=2 FAIL=3 INVALID=3`。機序は再現しなかった。
-- ひらがなキー(0xF2)を先に押す場合: 修正後 `PASS=3 FAIL=2 INVALID=3`、修正前 `PASS=2 FAIL=3 INVALID=3`。無変換の FAIL(入力が空)2 件と INVALID 3 件は修正の前後で同じで、**別の不具合として [BUG-192](../known-bugs/BUG-192.md) に記録**した。この症状が `track.conv` の機序かどうかは未調査。
+**M-2 の機序(予測付きのモードキーを先に押すと `track.conv` がトグル開始後も残り、トグル中にも予測が付いて直接観測が見送られる)は実在した。** 観測のみの `sc-bug186-pre-{1C,F2}-*`(`chrome_probe --table-pre=`)と、Opus 再レビュー(round 2、`sc-bug186-pre-F2-*` の awase.log)で確かめた。
+- トグル開始(`InputModeApplied`)の reducer は `input_mode` だけを書き、追跡 `key_track` に触れない。ひらがな(0xF2)を先に押すと `track.conv=Some(C19)` がトグル中も残り、`predict_in_table` は追跡値を `ObservedEisu`→`C10` より優先して `(open, C19)` の行を引く。
+- 無変換(トグル中): 予測が belief を「開・ローマ字」へ動かす(`mode=Some(AssumedRomaji)`)。実 IME は閉じる(S1: `open=false conv=0`)のに Engine だけが ON になり、閉じた IME へ打って入力が空になる(`食い違い=空`)。予測が付いた打鍵では直接観測が見送られ、持続トグルも残る。
+- ひらがな(トグル中): 予測で Engine が ON になり出力は PASS だが、直接観測が見送られてトグルが残り、次のケースの setup が INVALID になる。英数は 2 周とも INVALID で検証できていなかった。
+- 変換キーを先に押す場合は、変換が追跡を汚さないので影響しない(修正後 8/8 PASS、修正前は `PASS=2 FAIL=3 INVALID=3`〈run 37737446039、修正の本体だけ `develop` に戻した版〉)。
+- この症状が [BUG-192](../known-bugs/BUG-192.md)(ひらがな直後のトグル → 無変換で入力が空)。`develop` でも再現していた。
 
-**本体のトグル外でも英数の軸の追随が新しく効く(Opus コードレビュー S-5)**: `classify_direct_read_for(MsIme)` はトグルの有無に関係なく英数の軸を採る。例: かなで Engine ON 中の Shift+無変換(予測なし、S1 で `conv=24` = 全角英数ではなく NATIVE なしの値)が NATIVE なし → `ObservedEisu` → Engine OFF になる。実状態への追随なので方向は正しい。develop には無かった挙動で、ADR-188 追記 6 型の「処理前の読み」の懸念は、S1 の最初の読みが 31〜47ms で窓内一定という範囲では問題にならない(上の `sc-table-msime-*` でトグル外の 18 セルに誤った追随は無い)。
+**D8(追加の決定): トグル中は古い追跡を捨てる。** `KeyTrack::without_conv_while_half_width_alnum`(`state/key_effect_predictor.rs`)を `kp_predict_key_effect` の `PredictInput` に当てる。トグル中は追跡の `conv` を捨て(`stage` は残す)、追跡が空の場合と同じ「予測なし」にする。reducer(`ime_model.rs`)は触らず、トグル開始時の追跡の消去(案 b)は採らない(belief の書き込み点を増やさない)。回帰は `sc-bug186-pre-F2-{suppress,passthru}`(`--strict`、`expect=pass`、既定の実行に入れる)と単体テスト(`key_track_forgets_conv_only_while_half_width_alnum_toggle_is_active`・`msime_native_toggle_keys_have_no_prediction_once_stale_conv_is_dropped`)。
+
+**本体のトグル外でも英数の軸の追随が新しく効く(Opus コードレビュー S-5)**: `classify_direct_read_for(MsIme)` はトグルの有無に関係なく英数の軸を採る。例: かなで Engine ON 中の Shift+無変換(予測なし、S1 で `conv=24` = 0x18 = 全角英数、NATIVE なし)が NATIVE なし → `ObservedEisu` → Engine OFF になる。実状態への追随なので方向は正しい。develop には無かった挙動で、ADR-188 追記 6 型の「処理前の読み」の懸念は、S1 の最初の読みが 31〜47ms で窓内一定という範囲では問題にならない(上の `sc-table-msime-*` でトグル外の 18 セルに誤った追随は無い)。
 
 ## 残る課題・範囲外
 
 - **変換中にトグルした後の変換キー**: ADR-188 M2(変換中は窓を開かない)のため、この修正では直らない(ADR-107 はトグル開始を変換中でも許す)。
 - 学習表の上書きで `C10` のセルが入った場合にトグルが残ること(D5)。
-- ひらがなキー(0xF2)の直後に持続トグルにして無変換を押すと入力が空になる別件([BUG-192](../known-bugs/BUG-192.md))。
 - GJI の追随で `toggle_held` が残る潜在課題(D4)。
 - GJI MS-IME プリセットの `ro` の退行そのものの修正。
 - S1 の残り: `None` の読み失敗の頻度、`ro` の機序。
