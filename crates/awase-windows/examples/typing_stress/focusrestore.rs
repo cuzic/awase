@@ -2,9 +2,12 @@
 //! 別窓へ移ったとき、フォーカス変更時の強制復元(`runtime/ime_refresh.rs::ir_notify_focus_changed` →
 //! `runtime/key_pipeline.rs::kp_restore_kana_from_half_width(false)`)が実 IME のどこに効くかを測る。
 //!
-//! 窓 A = ハーネス自身の入力欄(`--form=edit`)、窓 B = このモジュールが別スレッドに作る EDIT 窓。手順(試行ごと):
+//! 窓 A = ハーネス自身の入力欄(`--form=edit`)、窓 B = 自分自身を `--fr-helper` で再起動した**別プロセス**の EDIT 窓
+//! (awase のフォーカス変更通知はプロセスが変わったときだけ呼ばれるため)。B の IME は別プロセスなので `imc` 経路でしか読めない
+//! (`imm` は None)。手順(試行ごと):
 //!   pre    : IME を OFF→ON にそろえた直後の A/B の open・conv
-//!   tap1   : 左 Shift 単独タップ(半角英数トグル ON。要 `general = half_width_alnum_toggle = "all"`)の +300/+1000ms
+//!   tap1   : 左 Shift 単独タップ(半角英数トグル ON。要 `general = half_width_alnum_toggle = "all"`)。A の conv から NATIVE が
+//!            消える(半角英数に入った)まで最大 4 回タップし(前の試行のトグルが残っていると最初のタップは解除になる)、入れなければ entered=false で試行を捨てる
 //!   away   : B を前面にして +150/+600/+1500ms(`--fr-control` のときは移さず同じ時間だけ待つ。対照)
 //!   back   : A を前面に戻して +150/+600/+1500ms
 //!   typed  : かな単打(ka)を打って Enter で確定した A の本文(Engine と実 IME が揃っているか)
@@ -24,14 +27,16 @@ static B: AtomicIsize = AtomicIsize::new(0);
 const VK_LSHIFT: u32 = 0xA0;
 const SCAN_LSHIFT: u16 = 0x2A;
 
-fn window_b() -> Option<HWND> {
-    let cur = B.load(Ordering::SeqCst);
-    if cur != 0 {
-        return Some(HWND(cur as *mut _));
-    }
-    let (tx, rx) = std::sync::mpsc::channel::<isize>();
-    std::thread::spawn(move || unsafe {
-        let hwnd = CreateWindowExW(
+/// 窓 B のプロセス(`--fr-helper` で自分自身を再起動したもの)。awase のフォーカス変更通知
+/// (`ir_notify_focus_changed`)は**プロセスが変わったとき**だけ呼ばれる(`focus_tracking.rs::advance_focus_tracking` が
+/// pid の違いで判定。run 37779401312 で同一プロセス内の窓移動は通知されないことを確認)ので、B は別プロセスにする。
+static HELPER: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+
+/// `--fr-helper`: 窓 B だけを作って閉じられるまで待つ。`main` の先頭から呼ぶ。
+pub(crate) fn helper_main() {
+    // SAFETY: 自スレッドの窓とメッセージループのみ。
+    unsafe {
+        let _ = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("EDIT"),
             w!("FOCUSRESTORE_B"),
@@ -45,16 +50,49 @@ fn window_b() -> Option<HWND> {
             None,
             None,
         );
-        let _ = tx.send(hwnd.map_or(0, |h| h.0 as isize));
         let mut msg = MSG::default();
         while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&raw const msg);
             DispatchMessageW(&raw const msg);
         }
-    });
-    let raw = rx.recv_timeout(Duration::from_secs(5)).unwrap_or(0);
-    B.store(raw, Ordering::SeqCst);
-    (raw != 0).then(|| HWND(raw as *mut _))
+    }
+}
+
+fn find_b() -> Option<HWND> {
+    // SAFETY: タイトルとクラスで探すだけ。
+    unsafe { FindWindowW(w!("EDIT"), w!("FOCUSRESTORE_B")).ok() }.filter(|h| !h.0.is_null())
+}
+
+fn window_b() -> Option<HWND> {
+    let cur = B.load(Ordering::SeqCst);
+    if cur != 0 {
+        return Some(HWND(cur as *mut _));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let child = std::process::Command::new(exe)
+        .arg("--fr-helper")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    *HELPER.lock().ok()? = Some(child);
+    for _ in 0..40 {
+        if let Some(h) = find_b() {
+            B.store(h.0 as isize, Ordering::SeqCst);
+            return Some(h);
+        }
+        sleep_ms(250);
+    }
+    None
+}
+
+fn kill_b() {
+    if let Ok(mut g) = HELPER.lock() {
+        if let Some(mut c) = g.take() {
+            let _ = c.kill();
+        }
+    }
 }
 
 /// `ImmGetContext` 経由(同一プロセスの窓)の (open, conv)。
@@ -140,6 +178,14 @@ fn to_b(b: HWND) -> bool {
     for _ in 0..3 {
         raise_foreign(b);
         sleep_ms(200);
+        // SAFETY: 前面窓の取得と、SetForegroundWindow が拒否される CI 向けのフォールバック(focus_away と同じ)。
+        unsafe {
+            if GetForegroundWindow() == b {
+                return true;
+            }
+            SwitchToThisWindow(b, true);
+        }
+        sleep_ms(200);
         // SAFETY: 前面窓の取得のみ。
         if unsafe { GetForegroundWindow() } == b {
             return true;
@@ -150,6 +196,11 @@ fn to_b(b: HWND) -> bool {
 
 /// `--mode=focus-restore`。`ime_ready` の後に呼ぶ。
 pub(crate) fn focus_restore_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
+    run(child, cells);
+    kill_b();
+}
+
+fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
     let n_trials: u64 = arg_value("--fr-n=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
@@ -185,9 +236,28 @@ pub(crate) fn focus_restore_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         sleep_ms(300);
         stage(n, "pre", 0, a, b);
         // tap1: 左 Shift 単独タップで半角英数トグルへ。
+        // 前の試行のトグルが awase に残っていると最初のタップは「解除」になる(run 37779401312 で観測)ので、
+        // A の conv から NATIVE(bit0)が消える(=半角英数に入った)まで最大 4 回タップする。回数を記録する。
         let utc_tap1 = utc_hms();
-        press(VK_LSHIFT, SCAN_LSHIFT, 60);
-        stages(n, "tap1", &[300, 1000], a, b);
+        let mut entered = false;
+        let mut taps = 0u64;
+        for k in 0..4u64 {
+            press(VK_LSHIFT, SCAN_LSHIFT, 60);
+            taps += 1;
+            sleep_ms(700);
+            stage(n, &format!("tap1#{k}"), 700, a, b);
+            if imm_state(a).1.is_some_and(|c| c & 1 == 0) {
+                entered = true;
+                break;
+            }
+            sleep_ms(300);
+        }
+        if !entered {
+            rec(&json!({"type":"fr_trial","n":n,"control":control,"utc":utc0,"utc_tap1":utc_tap1,
+                "entered":false,"taps":taps,"utc_end":utc_hms()}));
+            continue;
+        }
+        stages(n, "settled", &[300, 1000], a, b);
         // away: B へ移す(対照は移さない)。
         let utc_away = utc_hms();
         let away_ok = if control {
@@ -217,7 +287,7 @@ pub(crate) fn focus_restore_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         stages(n, "tap2", &[300, 1000], a, b);
         let utc_end = utc_hms();
         rec(&json!({"type":"fr_trial","n":n,"control":control,"utc":utc0,"utc_tap1":utc_tap1,
-            "utc_away":utc_away,"utc_back":utc_back,"utc_type":utc_type,"utc_tap2":utc_tap2,"utc_end":utc_end,
+            "entered":true,"taps":taps,"utc_away":utc_away,"utc_back":utc_back,"utc_type":utc_type,"utc_tap2":utc_tap2,"utc_end":utc_end,
             "away_ok":away_ok,"back_ok":back_ok,
             "typed":{"text":text,"expect":probe.kana.to_string(),"ok":text.trim() == probe.kana.to_string()}}));
         // 次の試行へ持ち越さない: A を前面に戻し、半角英数のままなら Shift 単独タップで戻す余地は残さず、次の turn_ime_on に任せる。

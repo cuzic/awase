@@ -1802,6 +1802,11 @@ fn finish() {
 }
 
 fn main() {
+    // focus-restore の窓 B 用の別プロセス(ログも入力先も作らない)。
+    if has_flag("--fr-helper") {
+        focusrestore::helper_main();
+        return;
+    }
     let log_path = arg_value("--log=").unwrap_or_else(|| "typing_stress.log".into());
     let _ = LOG_PATH.set(log_path.clone());
     let _ = std::fs::remove_file(&log_path);

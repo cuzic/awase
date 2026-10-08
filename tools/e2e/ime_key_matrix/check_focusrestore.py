@@ -4,7 +4,7 @@
 半角英数の持続トグル(左 Shift 単独タップ)中に別窓 B へフォーカスを移したとき、
 `runtime/ime_refresh.rs::ir_notify_focus_changed` → `kp_restore_kana_from_half_width(false)` が
 窓 A / 窓 B の実 IME(open・conv)と awase のログのどこに効くかを時点ごとに出す。
-- 時点: pre / tap1(+300,+1000) / away(+150,+600,+1500) / back(+150,+600,+1500) / tap2(+300,+1000)。
+- 時点: pre / tap1#k(k 回目のタップの +700) / settled(+300,+1000) / away(+150,+600,+1500) / back(+150,+600,+1500) / tap2(+300,+1000)。
 - 各窓を imm(ImmGetContext 系) と imc(既定 IME 窓への WM_IME_CONTROL)の 2 経路で読む。conv は 16 進。bit0=NATIVE(かな)。
 - awase.log は試行の [utc0, utc_end] の窓から、復元まわりの行(下の PATTERNS)を時刻つきで出し、種類ごとに数える。
 終了コード: 0=観測できた / 3=INVALID(試行 0 件・abort あり・完走マーカー無し)。
@@ -65,12 +65,19 @@ def main():
     awase = load_awase_timed(a.awase_log) if a.awase_log else []
     print(f"FOCUSRESTORE: awase.log の時刻付き行={len(awase)}")
     out = []
+    entered_n = 0
     for t in trials:
         n = t["n"]
-        print(f"\n=== trial n={n} control={t.get('control')} away_ok={t.get('away_ok')} back_ok={t.get('back_ok')} typed={t['typed']['text']!r} (expect {t['typed']['expect']!r}) ===")
+        if not t.get("entered", True):
+            print(f"\n=== trial n={n} 半角英数に入れなかった(taps={t.get('taps')}、この試行は捨てる) ===")
+            for s in (s for s in stages if s["n"] == n):
+                print(f"  {s['stage']:7} +{s['at_ms']:<5} {s['utc']} fg={s['fg']:5} A[{win(s['A'])}]")
+            continue
+        entered_n += 1
+        print(f"\n=== trial n={n} taps={t.get('taps')} control={t.get('control')} away_ok={t.get('away_ok')} back_ok={t.get('back_ok')} typed={t['typed']['text']!r} (expect {t['typed']['expect']!r}) ===")
         print(f"  utc: start={t['utc']} tap1={t['utc_tap1']} away={t['utc_away']} back={t['utc_back']} type={t['utc_type']} tap2={t['utc_tap2']} end={t['utc_end']}")
         for s in (s for s in stages if s["n"] == n):
-            print(f"  {s['stage']:5} +{s['at_ms']:<5} {s['utc']} fg={s['fg']:5} A[{win(s['A'])}]  B[{win(s['B'])}]")
+            print(f"  {s['stage']:7} +{s['at_ms']:<5} {s['utc']} fg={s['fg']:5} A[{win(s['A'])}]  B[{win(s['B'])}]")
         win_lines = [(ts, ln.rstrip()) for ts, ln in awase if t["utc"] <= ts <= t["utc_end"]]
         counts = {}
         picked = []
@@ -88,8 +95,8 @@ def main():
         with open(a.json, "w", encoding="utf-8") as f:
             json.dump(out, f, ensure_ascii=False, indent=1)
     done = any("=== 完了 ===" in ln for ln in open(a.ts_log, encoding="utf-8", errors="replace"))
-    if not trials or aborts or not done:
-        print(f"FOCUSRESTORE: INVALID (trials={len(trials)} aborts={len(aborts)} done={done})")
+    if not entered_n or aborts or not done:
+        print(f"FOCUSRESTORE: INVALID (trials={len(trials)} entered={entered_n} aborts={len(aborts)} done={done})")
         return 3
     print("FOCUSRESTORE: 観測のみ(合否なし)")
     return 0
