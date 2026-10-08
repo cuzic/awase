@@ -63,6 +63,8 @@
 //! `--drift-off-ctrl-muhenkan` では直接 close の代わりに、マーカー付き SendInput で
 //! Ctrl↓→無変換↓→無変換↑→Ctrl↑を送る。debug awase はこの注入を物理キーとして扱う。
 //!
+//! `--mode=focus-restore`(観測専用): 半角英数の持続トグル(左 Shift 単独タップ)中にフォーカスが別窓へ移ったとき、強制復元が実 IME のどこに効くか。詳細は `focusrestore.rs` 冒頭。判定はせず check_focusrestore.py が表にする。
+//!
 //! `--mode=keymatrix`(ADR-208 L3b): 「ずれの作り方 × 明示キー」行列。詳細は `keymatrix.rs` 冒頭。判定は check_keymatrix.py。
 //!
 //! `--mode=reopen`(ADR-203 e2e (c)、BUG-170 の実機確認): 「OFF 前に1語確定 → 物理 OFF(`VK_IME_OFF`)→ `--reopen-gap`(既定600ms、1秒以内)後に
@@ -84,6 +86,7 @@
 #![windows_subsystem = "windows"]
 #![allow(unsafe_code)]
 
+mod focusrestore;
 mod jitter;
 mod keymatrix;
 mod perturb;
@@ -1542,6 +1545,7 @@ fn worker(form: Form) {
     let reopen = mode_arg.as_deref() == Some("reopen");
     let preedit = mode_arg.as_deref() == Some("preedit");
     let keymatrix = mode_arg.as_deref() == Some("keymatrix");
+    let focus_restore = mode_arg.as_deref() == Some("focus-restore");
     let startup = mode_arg.as_deref() == Some("startup");
     let startup_on = arg_value("--startup-ime=").as_deref() == Some("on");
     let iv_ms: f64 = arg_value("--interval=")
@@ -1586,7 +1590,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if reopen {"reopen"} else if preedit {"preedit"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if focus_restore {"focus-restore"} else if reopen {"reopen"} else if preedit {"preedit"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "no_awase":has_flag("--no-awase"),"startup_skip_refocus2":has_flag("--startup-skip-refocus2"),
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
@@ -1666,6 +1670,11 @@ fn worker(form: Form) {
     }
     if keymatrix {
         keymatrix::keymatrix_scenario(child, &cells);
+        finish();
+        return;
+    }
+    if focus_restore {
+        focusrestore::focus_restore_scenario(child, &cells);
         finish();
         return;
     }
@@ -1809,10 +1818,10 @@ fn main() {
     // 入力先(Chrome など)を起動する前に弾く。
     if matches!(
         arg_value("--mode=").as_deref(),
-        Some("drift" | "drift-on" | "keymatrix")
+        Some("drift" | "drift-on" | "keymatrix" | "focus-restore")
     ) && !matches!(form, Form::Edit | Form::Multi | Form::Rich | Form::Tsf)
     {
-        log("[FATAL] 引数エラー: --mode=drift|drift-on|keymatrix は --form=edit|multi|rich|tsf でのみ使える");
+        log("[FATAL] 引数エラー: --mode=drift|drift-on|keymatrix|focus-restore は --form=edit|multi|rich|tsf でのみ使える");
         std::process::exit(2);
     }
     unsafe {

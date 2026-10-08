@@ -1,0 +1,229 @@
+//! `--mode=focus-restore`(観測専用): 半角英数の持続トグル(左 Shift 単独タップ、BUG-25/ADR-107)の最中にフォーカスが
+//! 別窓へ移ったとき、フォーカス変更時の強制復元(`runtime/ime_refresh.rs::ir_notify_focus_changed` →
+//! `runtime/key_pipeline.rs::kp_restore_kana_from_half_width(false)`)が実 IME のどこに効くかを測る。
+//!
+//! 窓 A = ハーネス自身の入力欄(`--form=edit`)、窓 B = このモジュールが別スレッドに作る EDIT 窓。手順(試行ごと):
+//!   pre    : IME を OFF→ON にそろえた直後の A/B の open・conv
+//!   tap1   : 左 Shift 単独タップ(半角英数トグル ON。要 `general = half_width_alnum_toggle = "all"`)の +300/+1000ms
+//!   away   : B を前面にして +150/+600/+1500ms(`--fr-control` のときは移さず同じ時間だけ待つ。対照)
+//!   back   : A を前面に戻して +150/+600/+1500ms
+//!   typed  : かな単打(ka)を打って Enter で確定した A の本文(Engine と実 IME が揃っているか)
+//!   tap2   : もう一度左 Shift 単独タップ(トグルのラッチが awase に残っているかの手がかり)の +300/+1000ms
+//! 各時点で A/B の open・conv を 2 経路(`imm`=ImmGetContext 系、`imc`=既定 IME 窓への WM_IME_CONTROL)で記録する。
+//! 判定はしない(観測のみ)。`tools/e2e/ime_key_matrix/check_focusrestore.py` が表にし、awase.log の該当行を添える。
+//! 記録: `fr_config`(1回)・`fr_stage`(時点ごと)・`fr_trial`(試行のまとめ)。時刻 `utc` は awase.log と突合せる用。
+//!
+//! 引数: `--fr-n=N`(試行数。既定3) / `--fr-control`(B へ移さない対照)。
+
+#[allow(clippy::wildcard_imports)]
+use super::*;
+use windows::core::w;
+
+static B: AtomicIsize = AtomicIsize::new(0);
+
+const VK_LSHIFT: u32 = 0xA0;
+const SCAN_LSHIFT: u16 = 0x2A;
+
+fn window_b() -> Option<HWND> {
+    let cur = B.load(Ordering::SeqCst);
+    if cur != 0 {
+        return Some(HWND(cur as *mut _));
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<isize>();
+    std::thread::spawn(move || unsafe {
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("EDIT"),
+            w!("FOCUSRESTORE_B"),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            520,
+            80,
+            420,
+            220,
+            None,
+            None,
+            None,
+            None,
+        );
+        let _ = tx.send(hwnd.map_or(0, |h| h.0 as isize));
+        let mut msg = MSG::default();
+        while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&raw const msg);
+            DispatchMessageW(&raw const msg);
+        }
+    });
+    let raw = rx.recv_timeout(Duration::from_secs(5)).unwrap_or(0);
+    B.store(raw, Ordering::SeqCst);
+    (raw != 0).then(|| HWND(raw as *mut _))
+}
+
+/// `ImmGetContext` 経由(同一プロセスの窓)の (open, conv)。
+fn imm_state(h: HWND) -> (Option<bool>, Option<u32>) {
+    use windows::Win32::UI::Input::Ime::{
+        ImmGetConversionStatus, ImmGetOpenStatus, ImmReleaseContext, IME_CONVERSION_MODE,
+        IME_SENTENCE_MODE,
+    };
+    // SAFETY: 自プロセスの窓への IMM 呼び出し。取得した HIMC は必ず解放する。
+    unsafe {
+        let himc = windows::Win32::UI::Input::Ime::ImmGetContext(h);
+        if himc.is_invalid() {
+            return (None, None);
+        }
+        let open = ImmGetOpenStatus(himc).as_bool();
+        let mut conv = IME_CONVERSION_MODE::default();
+        let mut sent = IME_SENTENCE_MODE::default();
+        let ok = ImmGetConversionStatus(himc, Some(&raw mut conv), Some(&raw mut sent)).as_bool();
+        let _ = ImmReleaseContext(h, himc);
+        (Some(open), ok.then_some(conv.0))
+    }
+}
+
+/// 既定 IME 窓への `WM_IME_CONTROL`(awase 本体と同型の読み方)。`code` は IMC_GETCONVERSIONMODE=1 / IMC_GETOPENSTATUS=5。
+fn imc_read(h: HWND, code: usize) -> Option<usize> {
+    const WM_IME_CONTROL: u32 = 0x0283;
+    const SMTO_ABORTIFHUNG: u32 = 0x0002;
+    // SAFETY: 既定 IME ウィンドウへ短いタイムアウト付きで同期送信するだけ。
+    unsafe {
+        let ime_wnd = windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd(h);
+        if ime_wnd.0.is_null() {
+            return None;
+        }
+        let mut result = 0usize;
+        let r = SendMessageTimeoutW(
+            ime_wnd,
+            WM_IME_CONTROL,
+            WPARAM(code),
+            LPARAM(0),
+            windows::Win32::UI::WindowsAndMessaging::SEND_MESSAGE_TIMEOUT_FLAGS(SMTO_ABORTIFHUNG),
+            500,
+            Some(&raw mut result),
+        );
+        (r.0 != 0).then_some(result)
+    }
+}
+
+fn win_json(h: HWND) -> serde_json::Value {
+    let (imm_open, imm_conv) = imm_state(h);
+    let imc_open = imc_read(h, 5).map(|v| v != 0);
+    let imc_conv = imc_read(h, 1);
+    json!({"imm_open":imm_open,"imm_conv":imm_conv,"imc_open":imc_open,"imc_conv":imc_conv})
+}
+
+fn fg_name(b: HWND) -> &'static str {
+    // SAFETY: 前面窓の取得のみ。
+    let fg = unsafe { GetForegroundWindow() };
+    if fg == hwnd_of(&TOP) {
+        "A"
+    } else if fg == b {
+        "B"
+    } else {
+        "other"
+    }
+}
+
+fn stage(n: u64, name: &str, at_ms: u64, a: HWND, b: HWND) {
+    rec(&json!({"type":"fr_stage","n":n,"stage":name,"at_ms":at_ms,"utc":utc_hms(),
+        "fg":fg_name(b),"A":win_json(a),"B":win_json(b)}));
+}
+
+/// 時点列 `offsets`(ms、昇順)で `stage` を記録する。基準はこの関数の呼び出し時刻。
+fn stages(n: u64, name: &str, offsets: &[u64], a: HWND, b: HWND) {
+    let mut prev = 0;
+    for &o in offsets {
+        sleep_ms(o - prev);
+        prev = o;
+        stage(n, name, o, a, b);
+    }
+}
+
+fn to_b(b: HWND) -> bool {
+    for _ in 0..3 {
+        raise_foreign(b);
+        sleep_ms(200);
+        // SAFETY: 前面窓の取得のみ。
+        if unsafe { GetForegroundWindow() } == b {
+            return true;
+        }
+    }
+    false
+}
+
+/// `--mode=focus-restore`。`ime_ready` の後に呼ぶ。
+pub(crate) fn focus_restore_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
+    let n_trials: u64 = arg_value("--fr-n=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    let control = has_flag("--fr-control");
+    let Some(b) = window_b() else {
+        rec(&json!({"type":"abort","reason":"focus-restore: 窓 B を作れなかった"}));
+        return;
+    };
+    let a = child;
+    let Some(probe) = cells[0]
+        .iter()
+        .find(|c| c.romaji == "ka")
+        .cloned()
+        .or_else(|| cells[0].first().cloned())
+    else {
+        rec(&json!({"type":"abort","reason":"focus-restore の打鍵確認に使う単打セルが無い"}));
+        return;
+    };
+    rec(&json!({"type":"fr_config","n":n_trials,"control":control,
+        "class_a":class_of(a),"class_b":class_of(b)}));
+    for n in 0..n_trials {
+        if !focus_ok() {
+            refocus();
+        }
+        if !focus_ok() {
+            rec(&json!({"type":"abort","reason":format!("focus-restore 試行前にフォーカスが外れた n={n}")}));
+            return;
+        }
+        let utc0 = utc_hms();
+        // 前提: IME を OFF→ON にそろえる(awase の明示意図も ON になる)。
+        turn_ime_on(0);
+        clear_text(child);
+        sleep_ms(300);
+        stage(n, "pre", 0, a, b);
+        // tap1: 左 Shift 単独タップで半角英数トグルへ。
+        let utc_tap1 = utc_hms();
+        press(VK_LSHIFT, SCAN_LSHIFT, 60);
+        stages(n, "tap1", &[300, 1000], a, b);
+        // away: B へ移す(対照は移さない)。
+        let utc_away = utc_hms();
+        let away_ok = if control {
+            true
+        } else {
+            to_b(b)
+        };
+        stages(n, "away", &[150, 600, 1500], a, b);
+        // back: A へ戻す。
+        let utc_back = utc_hms();
+        if !control {
+            refocus();
+        }
+        let back_ok = focus_ok();
+        stages(n, "back", &[150, 600, 1500], a, b);
+        // typed: かな単打を打って確定し、本文を読む。
+        let utc_type = utc_hms();
+        press(probe.vk, probe.scan, 60);
+        sleep_ms(700);
+        press(VK_RETURN, 0x1C, 50);
+        sleep_ms(700);
+        let text = read_text(child);
+        clear_text(child);
+        // tap2: もう一度左 Shift 単独タップ。
+        let utc_tap2 = utc_hms();
+        press(VK_LSHIFT, SCAN_LSHIFT, 60);
+        stages(n, "tap2", &[300, 1000], a, b);
+        let utc_end = utc_hms();
+        rec(&json!({"type":"fr_trial","n":n,"control":control,"utc":utc0,"utc_tap1":utc_tap1,
+            "utc_away":utc_away,"utc_back":utc_back,"utc_type":utc_type,"utc_tap2":utc_tap2,"utc_end":utc_end,
+            "away_ok":away_ok,"back_ok":back_ok,
+            "typed":{"text":text,"expect":probe.kana.to_string(),"ok":text.trim() == probe.kana.to_string()}}));
+        // 次の試行へ持ち越さない: A を前面に戻し、半角英数のままなら Shift 単独タップで戻す余地は残さず、次の turn_ime_on に任せる。
+        if !focus_ok() {
+            refocus();
+        }
+        sleep_ms(500);
+    }
+}
