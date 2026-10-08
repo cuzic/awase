@@ -72,6 +72,15 @@ gh run download <run> -n result-<構成名>-1                                   
 
 **判断**: 根「読みの信頼性が未測定」は、少なくともこの範囲では解消した(窓内一定・最初の読み 31〜47ms・NATIVE ビットで awase 自身の `conv=0` と区別できる)。S1 の残りは、読み失敗(`None`)の頻度と、`ro` 退行の機序(未調査のまま)。次は S2 と S3 のどちらで行くかの決定(`follow_direct_read_in_scope` の予測優先との関係)。
 
+## 現行の仕組みの調査(2026-10-07、コードと S1 のログで確認)
+
+- **トグル中に「予測なし」になる理由**: `state/key_effect_predictor.rs::predict_in_table` は、入力モードが `ObservedEisu` だと変換モードを `Conv::C10` と見なして表を引く。`MSIME_NATIVE`(`state/key_effect_table.rs`)の「開いている」セルは `C19`・`C1B` の 2 種類だけで `C10` が無いので、該当セルが見つからない。S1 のログでは、トグル中の変換・無変換・英数・ひらがなが 8/8 すべて `[key-effect-predict] … no prediction`(トグルなしの状態は予測が付く)。
+- **S2 と S3 の関係**: `follow_direct_read_in_scope`(`state/platform_state.rs`)は、その打鍵に予測が付いていると採用を見送る。トグル中は予測が付かないので S2 の経路は使える。S3(表に `C10` のセルを足す)をすると予測が付いて S2 の経路がふさがる。二者択一に近い。
+- **読みを捨てる関門は 2 段**: `decide_read_strategy`(`state/ime_read_strategy.rs`)の `TypingActive`、次に `ShiftConvGuard`。ただし直接観測の照合 `ir_follow_direct_mode_key_read` は `ir_stage_observe` の中で読み方針の決定より前に呼ばれるため、どちらの関門もすり抜けて照合に届く。GJI 限定の述語 `external_change_watch_applies_for`(`runtime/mod.rs`)が止めているのは、窓を開く 2 か所(`runtime/key_pipeline.rs::kp_stage_mode_key_follow`、`runtime/executor.rs` の FSM 再送出)と照合 1 か所の計 3 か所。同じ述語は ADR-205 の外部変化の監視(`ir_follow_external_change`)も止めている。
+- **読みの経路**: トレースの読みは `spawn_ime_refresh` の prefetch(`read_ime_state_full_async` → `ime.rs::detect_ime_open_for_hwnd`)で、`GetGUIThreadInfo().hwndFocus` → `ImmGetDefaultIMEWnd` → `WM_IME_CONTROL`(`IMC_GETOPENSTATUS`、50ms)。ADR-205 が「MS-IME では開いていても 0」と書いた `CrossProcess(hwndFocus)` と同じ経路。高速版 `read_ime_state_fast` は別経路(`Imm32Unavailable` では `ime_on=None`)で、トレースには使っていない。
+- **ADR-205 の観測との食い違い**: ADR-205 の run 36548761653 は、同じ表の中で「9〜10 回は IME が閉じず」とも書いており、IME が実際に開いていたかが疑わしい(その構成は現在の `e2e-ime.yml` に無く再確認できない)。S1 では 18 セル(直接入力・かな・半角英数 × 6 キー)で `open` の読みと結果(`ka`/NICOLA 文字)の食い違いが 0 件だった。原因はセットアップの違いと考えるのが自然だが、推測。
+- **条件を広げる場合に残る課題**: `toggle_held` が true のまま残る(観測で belief を戻しても凍結と次の Shift タップの意味は食い違う)。`ro` の退行の機序(GJI の MS-IME プリセット側)は未調査。
+
 ## 決めること(順序、方式は未決)
 
 - **S1(追加で測る)**: 上の読み(約 26〜45ms)は 1 標本群で済んでいる。追加で測るのは、窓内で値が一定か、30 秒 idle 後・変換中・無変換(閉)の後はどうか(ADR-188 追記 3 と同じ観点を MS-IME 本体で)。併せて `ro` 退行の機序(どの run のどのセルを基準にしたか)を調べる。
