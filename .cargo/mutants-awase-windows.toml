@@ -49,6 +49,7 @@ examine_globs = [
     "crates/awase-windows/src/state/focus_classify_plan.rs",
     "crates/awase-windows/src/state/focus_resolve_plan.rs",
     "crates/awase-windows/src/state/relay_plan.rs",
+    "crates/awase-windows/src/state/raw_recovery_plan.rs",
     "crates/awase-windows/src/state/deferred_gate_plan.rs",
     "crates/awase-windows/src/state/warm_send_plan.rs",
     "crates/awase-windows/src/state/focus_gen.rs",

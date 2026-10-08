@@ -853,6 +853,15 @@ impl WindowsPlatform {
             crate::output::RawRecoveryOutcome::Flushed { vk_count } => {
                 crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count }
             }
+            crate::output::RawRecoveryOutcome::DiscardedStale {
+                backs,
+                romaji_present,
+                deferred_vk_count,
+            } => crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale {
+                backs,
+                romaji_present,
+                deferred_vk_count,
+            },
         };
         let facts = match outcome {
             crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale { .. } => {

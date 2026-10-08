@@ -54,6 +54,7 @@ pub mod focus_gen;
 // FCIS P1: 純粋なデータ型を ungated へ移したもの(元の場所から pub use で再公開)。
 pub mod foreground_scope;
 pub mod ime_update;
+pub mod raw_recovery_plan;
 // hook.rs (#[cfg(windows)]) の唯一の呼び出し元。alt_impersonation と同じ
 // 「純粋判定を Linux でテストできるようにする」移設パターン。
 #[cfg_attr(not(windows), allow(dead_code))]

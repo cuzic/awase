@@ -27,6 +27,8 @@ pub(crate) struct StageRecord {
     pub injected: bool,
     /// この段が raw literal 回収を出したか。
     pub recovered: bool,
+    /// 段の開始(probe のインストール時、最初の VK 送信より前)に採った宛先の識別(BUG-194、ADR-246)。
+    pub origin: Option<crate::state::raw_recovery_plan::StageOrigin>,
 }
 
 /// GJI ウォームアップ / TSF プローブ状態の集約。
@@ -168,6 +170,17 @@ impl TsfWarmupCoordinator {
 
     pub(crate) fn begin_stage(&self) {
         self.stage.set(StageRecord::default());
+    }
+
+    /// 段の開始時に採った宛先の識別を記録する(`install_pending_tsf` の直後に呼ぶ)。
+    pub(crate) fn stamp_stage_origin(&self, origin: crate::state::raw_recovery_plan::StageOrigin) {
+        let mut stage = self.stage.get();
+        stage.origin = Some(origin);
+        self.stage.set(stage);
+    }
+
+    pub(crate) fn stage_origin(&self) -> Option<crate::state::raw_recovery_plan::StageOrigin> {
+        self.stage.get().origin
     }
 
     pub(crate) fn note_stage_injection(&self) {

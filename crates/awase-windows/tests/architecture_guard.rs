@@ -4740,6 +4740,57 @@ fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     );
 }
 
+/// BUG-194(ADR-246): raw TSF literal の回収は、段の開始時に宛先(focus 世代 + 前景窓)を採り、flush 先頭で照合する。
+/// 空白を除いて比べる(rustfmt の改行位置に依存しない)。
+#[test]
+fn raw_tsf_literal_recovery_is_guarded_by_stage_origin() {
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
+    let content = read_crate_file("src/output/mod.rs");
+    let production = production_code_only(&content);
+    let flat = squash(production);
+    assert!(
+        flat.contains(&squash(
+            "self.warmup_coord.stamp_stage_origin(self.current_stage_origin());"
+        )),
+        "Output::install_pending_tsf が段の開始時に宛先を採っていません(BUG-194)"
+    );
+    assert!(
+        flat.contains(&squash(
+            "self.raw_literal_origin.set(self.warmup_coord.stage_origin());"
+        )),
+        "record_raw_tsf_literal が段の宛先を引き継いでいません(BUG-194)"
+    );
+    assert!(
+        flat.contains("plan_raw_recovery(recorded,now)"),
+        "回収の破棄判断は state::raw_recovery_plan::plan_raw_recovery を通すこと(BUG-194)"
+    );
+    // flush の先頭で、破棄したら早期 return し、その後に ESC/BS を送る。
+    let start = flat
+        .find("fnflush_raw_tsf_literal_recovery(")
+        .expect("flush_raw_tsf_literal_recovery");
+    let body = &flat[start..];
+    let guard =
+        body.find("ifletSome(discarded)=self.discard_raw_recovery_if_moved(){returndiscarded;}");
+    let send = body.find("flush_raw_tsf_literal_backspaces();");
+    assert!(
+        matches!((guard, send), (Some(g), Some(s)) if g < s),
+        "flush_raw_tsf_literal_recovery は ESC/BS 送信より前に、破棄なら早期 return する照合を置くこと(BUG-194)"
+    );
+    // 読み出し口は回収の1箇所だけ(全ソースを走査)。
+    let mut callers = 0;
+    for f in list_src_files() {
+        let c = read_crate_file(&f);
+        // 定義行 `pub fn flush_raw_tsf_literal_backspaces() {` を数えないよう、呼び出しの `;` まで含めて数える。
+        callers += squash(production_code_only(&c))
+            .matches("flush_raw_tsf_literal_backspaces();")
+            .count();
+    }
+    assert_eq!(
+        callers, 1,
+        "flush_raw_tsf_literal_backspaces() の呼び出しは回収の1箇所だけ(実際: {callers})"
+    );
+}
+
 /// `deliver_key_event` 内の早期return順序を固定する（ADR-114 決定2 r4収束版）。
 ///
 /// 「latch チェック（KeyUp 解放 + KeyDown repeat 抑制）→ `PumpContext::Nested`

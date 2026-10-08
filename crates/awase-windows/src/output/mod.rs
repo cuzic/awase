@@ -104,6 +104,9 @@ pub struct Output {
     /// キャプチャする。コールバック到達時に現在値と一致しない（= その後に別のフォーカス変更
     /// が来た）場合は stale として破棄し、古いポーリング結果で ImeModeFsm を汚染しない。
     pub(crate) ime_mode_focus_gen: std::cell::Cell<crate::state::focus_gen::FocusGen>,
+    /// `RAW_TSF_LITERAL` に予約した回収の宛先(段の開始時に採った focus 世代と前景窓、BUG-194、ADR-246)。
+    /// `flush_raw_tsf_literal_recovery` が flush 時点の値と照合し、違えば回収を捨てる。
+    raw_literal_origin: std::cell::Cell<Option<crate::state::raw_recovery_plan::StageOrigin>>,
     /// MS-IME confirm-then-transmit ゲート（BUG-13）の give-up latch。
     ///
     /// `start_ms_ime_ready_poll` が「期限まで IMC が一度も確認できなかった」ときに立てる。
@@ -211,6 +214,13 @@ impl std::fmt::Debug for Output {
 pub(crate) enum RawRecoveryOutcome {
     /// `pending_deferred` を実際に flush した（0 件なら「取り残しなし」）。
     Flushed { vk_count: usize },
+    /// 予約してから flush までに宛先の窓が変わっていたため、ESC/BS/romaji と `pending_deferred` を送らずに捨てた
+    /// （BUG-194、ADR-246）。
+    DiscardedStale {
+        backs: usize,
+        romaji_present: bool,
+        deferred_vk_count: usize,
+    },
 }
 
 /// `assess_warmth` の戻り値。composition の温度状態をまとめる。
@@ -269,6 +279,7 @@ impl Output {
             conv_mode: crate::state::ConvModeMgr::default(),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(crate::state::focus_gen::FocusGen::INITIAL),
+            raw_literal_origin: std::cell::Cell::new(None),
             ms_ime_gate_give_up: std::cell::Cell::new(false),
             confirm_gate_deadline_override_ms: std::cell::Cell::new(0),
             shift_conv_guard_gen: std::cell::Cell::new(
@@ -1146,6 +1157,17 @@ impl Output {
         machine: Box<dyn crate::tsf::warmup::tickable_fsm::TickableFsm>,
     ) {
         self.warmup_coord.install_pending_tsf(machine);
+        // 段の開始時(最初の VK 送信より前)の宛先を採る。raw literal 回収の破棄判断に使う(BUG-194)。
+        self.warmup_coord
+            .stamp_stage_origin(self.current_stage_origin());
+    }
+
+    /// 現時点の宛先の識別(focus 世代 + 前景窓)。`GetForegroundWindow` は非ブロッキング。
+    fn current_stage_origin(&self) -> crate::state::raw_recovery_plan::StageOrigin {
+        crate::state::raw_recovery_plan::StageOrigin {
+            focus_gen: self.ime_mode_focus_gen.get(),
+            foreground: crate::win32::foreground_scope(),
+        }
     }
 
     /// Chrome/LiteralDetect/GjiWarmup probe が実行中なら継続タイマー命令を返す。
@@ -1247,7 +1269,6 @@ impl Output {
     ///
     /// `escape_composition`: partial literal（candidate 表示中に一部だけ literal 化）回収時に
     /// `true`。バックスペース前に `VK_ESCAPE` を送って composition を確実に破棄する。
-    #[expect(clippy::unused_self)]
     pub(crate) fn record_raw_tsf_literal(
         &self,
         backs: usize,
@@ -1255,6 +1276,9 @@ impl Output {
         escape_composition: bool,
     ) {
         use std::sync::atomic::Ordering::Relaxed;
+        // 検出時(literal の 300〜500ms 後)でなく、段の開始時に採った宛先を引き継ぐ。
+        self.raw_literal_origin
+            .set(self.warmup_coord.stage_origin());
         crate::RAW_TSF_LITERAL.backs.store(backs, Relaxed);
         crate::RAW_TSF_LITERAL
             .escape_composition
@@ -1263,6 +1287,63 @@ impl Output {
             .romaji
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = romaji;
+    }
+
+    /// 予約（`record_raw_tsf_literal`）から flush までに宛先の窓が変わっていたら、送らずに丸ごと捨てる（BUG-194、ADR-246）。
+    ///
+    /// 残った ESC/BS/romaji と、旧窓で打って `pending_deferred` に残っている後続キーが新しい前面窓へ届くのを防ぐ。
+    /// この窓の間は `finish_probe_stage` が probe_id を抜いており GjiFsm も probe を持たないので、FocusChange は
+    /// `cancel_probe` を発火させない。deferred は自分で捨てる必要がある。
+    /// 判断は `state::raw_recovery_plan::plan_raw_recovery`（focus 世代 + 前景窓）。
+    /// 予約も deferred も無ければ何もしない（`None`）。
+    fn discard_raw_recovery_if_moved(&self) -> Option<RawRecoveryOutcome> {
+        self.discard_raw_recovery_if_moved_at(self.current_stage_origin())
+    }
+
+    /// `discard_raw_recovery_if_moved` の本体。flush 時点の宛先 `now` を引数で受ける（テストで前景窓を固定するため）。
+    fn discard_raw_recovery_if_moved_at(
+        &self,
+        now: crate::state::raw_recovery_plan::StageOrigin,
+    ) -> Option<RawRecoveryOutcome> {
+        use crate::state::raw_recovery_plan::{plan_raw_recovery, RawRecoveryDisposition};
+        use std::sync::atomic::Ordering::Relaxed;
+        // 予約が無いときは何もしない（flush は drain のたびに走る。予約の無い回に無関係な deferred を捨てない）。
+        let reserved = crate::RAW_TSF_LITERAL.backs.load(Relaxed) != 0
+            || crate::RAW_TSF_LITERAL.escape_composition.load(Relaxed)
+            || !crate::RAW_TSF_LITERAL
+                .romaji
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty();
+        if !reserved {
+            return None;
+        }
+        let recorded = self.raw_literal_origin.get();
+        if plan_raw_recovery(recorded, now) == RawRecoveryDisposition::Send {
+            return None;
+        }
+        self.raw_literal_origin.set(None);
+        let backs = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
+        let esc = crate::RAW_TSF_LITERAL
+            .escape_composition
+            .swap(false, Relaxed);
+        let romaji = std::mem::take(
+            &mut *crate::RAW_TSF_LITERAL
+                .romaji
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let deferred_vk_count = self.warmup_coord.take_pending_deferred().len();
+        tracing::warn!(
+            "[raw-tsf-literal] 宛先の窓が変わったため回収を破棄 backs={backs} esc={esc} \
+             romaji_present={} deferred_vk_count={deferred_vk_count} recorded={recorded:?} now={now:?}",
+            !romaji.is_empty()
+        );
+        Some(RawRecoveryOutcome::DiscardedStale {
+            backs,
+            romaji_present: !romaji.is_empty(),
+            deferred_vk_count,
+        })
     }
 
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
@@ -1323,6 +1404,9 @@ impl Output {
     /// 取り残された deferred VK を送出してはいけないため（先に送ると backspace が
     /// deferred 側の文字を巻き込んで消してしまう、`docs/known-bugs.md` BUG-38 参照）。
     pub(crate) fn flush_raw_tsf_literal_recovery(&self) -> RawRecoveryOutcome {
+        if let Some(discarded) = self.discard_raw_recovery_if_moved() {
+            return discarded;
+        }
         flush_raw_tsf_literal_backspaces();
         self.flush_raw_tsf_literal_romaji();
         let vk_count = self.flush_stale_deferred_vks_after_recovery();
@@ -1546,6 +1630,9 @@ mod tests {
     #[test]
     fn raw_tsf_literal_backs_roundtrip() {
         use std::sync::atomic::Ordering::Relaxed;
+        let _g = RAW_LITERAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::RAW_TSF_LITERAL.backs.store(3, Relaxed);
         let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
         assert_eq!(n, 3);
@@ -1554,6 +1641,9 @@ mod tests {
 
     #[test]
     fn raw_tsf_literal_romaji_roundtrip() {
+        let _g = RAW_LITERAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         {
             let mut guard = crate::RAW_TSF_LITERAL.romaji.lock().unwrap();
             *guard = "konnichiwa".to_string();
@@ -1567,8 +1657,111 @@ mod tests {
         assert!(now_empty.is_empty());
     }
 
-    // ── discard_raw_recovery_if_focus_stale テスト（ADR-101/BUG-74 コードレビュー
-    // 指摘: backspace 送信より前に focus 世代を照合する）──────────────────────────
+    /// BUG-194: record から flush までに FocusChange が割り込んだら、予約（backs/romaji/ESC）と
+    /// 旧窓で打った deferred は捨てられる。実際の順序を模す: 段中に deferred が溜まり、`record`、
+    /// 段末で probe が外れる（`finish_probe_stage` 相当）、`cancel_probe` を介さずに FocusChange、flush。
+    /// 前景窓の変化は純関数 `plan_raw_recovery` のテストで固定する（ここでは世代だけ動かせる）。
+    /// グローバルを触るので `RAW_LITERAL_TEST_LOCK` で直列化する。
+    #[test]
+    fn raw_tsf_literal_and_deferred_are_discarded_when_foreground_changed_before_flush() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _g = RAW_LITERAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let clear = || {
+            crate::RAW_TSF_LITERAL.backs.store(0, Relaxed);
+            crate::RAW_TSF_LITERAL
+                .escape_composition
+                .store(false, Relaxed);
+            crate::RAW_TSF_LITERAL
+                .romaji
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        };
+        let stage = |o: &Output| {
+            o.install_pending_tsf(Box::new(
+                crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+                    "x",
+                    Generation::INITIAL,
+                    crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
+                    0,
+                    OutputActiveGuard::begin(),
+                ),
+            ));
+            for _ in 0..2 {
+                assert!(o.defer_vk_if_probe_in_flight(
+                    VkCode(0x41),
+                    false,
+                    DeferredOrigin::UserInput
+                ));
+            }
+            o.record_raw_tsf_literal(2, "ka".to_string(), true);
+            o.warmup_coord.clear_pending_tsf(); // 段末: probe が外れる
+        };
+        clear();
+
+        use crate::state::foreground_scope::ForegroundScope;
+        use crate::state::raw_recovery_plan::StageOrigin;
+        // 前景窓は実機の値に依存させず、記録時の宛先と flush 時の宛先を明示する。
+        let origin = |o: &Output, hwnd: isize| StageOrigin {
+            focus_gen: o.ime_mode_focus_gen.get(),
+            foreground: ForegroundScope { pid: 1, hwnd },
+        };
+
+        // 宛先が変わっていない: 捨てない（予約も deferred も残る）。
+        let o = make_output();
+        stage(&o);
+        // install の刻印が record に引き継がれている（以降は前景を固定するため上書きする）。
+        assert!(o.raw_literal_origin.get().is_some());
+        o.raw_literal_origin.set(Some(origin(&o, 10)));
+        assert!(o.discard_raw_recovery_if_moved_at(origin(&o, 10)).is_none());
+        assert_eq!(crate::RAW_TSF_LITERAL.backs.load(Relaxed), 2);
+        assert_eq!(o.pending_deferred_len(), 2);
+
+        // N-M1: 世代だけ進み（debounce 済みの FocusChange）、前景窓は同じ: 捨てない。
+        o.on_ime_mode_focus_changed();
+        assert!(o.discard_raw_recovery_if_moved_at(origin(&o, 10)).is_none());
+        assert_eq!(o.pending_deferred_len(), 2);
+        clear();
+
+        // 前景窓が変わった（cancel_probe は呼ばれない）: 予約と deferred を捨てる。
+        let o = make_output();
+        stage(&o);
+        o.raw_literal_origin.set(Some(origin(&o, 10)));
+        let out = o.discard_raw_recovery_if_moved_at(origin(&o, 20));
+        assert!(matches!(
+            out,
+            Some(RawRecoveryOutcome::DiscardedStale {
+                backs: 2,
+                romaji_present: true,
+                deferred_vk_count: 2
+            })
+        ));
+        assert_eq!(crate::RAW_TSF_LITERAL.backs.load(Relaxed), 0);
+        assert!(!crate::RAW_TSF_LITERAL.escape_composition.load(Relaxed));
+        assert_eq!(o.pending_deferred_len(), 0);
+        assert!(!o.raw_recovery_owns_deferred());
+
+        // 予約が無い回は、世代が古くても無関係な deferred を捨てない。
+        o.install_pending_tsf(Box::new(
+            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+                "x",
+                Generation::INITIAL,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
+                0,
+                OutputActiveGuard::begin(),
+            ),
+        ));
+        assert!(o.defer_vk_if_probe_in_flight(VkCode(0x41), false, DeferredOrigin::UserInput));
+        o.on_ime_mode_focus_changed();
+        assert!(o.discard_raw_recovery_if_moved_at(origin(&o, 99)).is_none());
+        assert_eq!(o.pending_deferred_len(), 1);
+        clear();
+    }
+
+    /// `RAW_TSF_LITERAL`(プロセス内グローバル)を触るテストの直列化用。
+    static RAW_LITERAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // ── defer_if_probe_in_flight_recovery_exempt テスト（ADR-123 変更A+C
     // 決定4-2、Opus敵対的レビュー round4指摘: raw recovery 自身の再送が
