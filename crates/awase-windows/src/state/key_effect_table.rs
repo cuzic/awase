@@ -773,6 +773,33 @@ mod classification_tests {
         }
     }
 
+    /// ADR-244 D5: MS-IME 本体の同梱表には、開いていて半角英数（`ObservedEisu` → `Conv::C10`）のセルが無い。
+    /// 左 Shift 単独タップの持続半角英数トグル中の 変換・無変換・英数・ひらがなは「予測なし」になり、
+    /// ADR-188 の直接観測（`follow_direct_read_in_scope` は予測が付いた打鍵では採らない）が働く。
+    /// この表へ開・`C10` のセルを足すと予測が付き、BUG-186 の追随経路がその打鍵で黙って無効になる——足す前に
+    /// ADR-244 を見直すこと。
+    #[test]
+    fn msime_native_has_no_prediction_while_open_and_half_width_alnum() {
+        use super::super::key_effect_predictor::{predict_in_table, KeyTrack, PredictInput};
+        use awase::engine::InputModeState;
+        let input = PredictInput {
+            open: true,
+            mode: InputModeState::ObservedEisu,
+            conv_raw: None,
+            composing: false,
+            track: KeyTrack::default(),
+            unreadable: true,
+            passive_rule_eligible: false,
+        };
+        for vk in [0x1C_u16, 0x1D, 0xF0, 0xF2] {
+            assert_eq!(
+                predict_in_table(MSIME_NATIVE, vk, &input),
+                None,
+                "vk=0x{vk:02X}: MSIME_NATIVE に開・C10 のセルが入った（ADR-244 D5）"
+            );
+        }
+    }
+
     /// 同梱表の半角/全角は、GJI の2プリセットも MS-IME 本体も純トグル（誤検出の回帰）。
     /// 同梱表と実機の食い違いをここで拾えるよう、3表すべてで固定する。
     #[test]

@@ -106,7 +106,7 @@ impl ImeStateHub {
         )
     }
 
-    /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（GJI × `Imm32Unavailable` のみ、ADR-188）。現在のフォアグラウンドに
+    /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（GJI／同定済み MS-IME 本体 × `Imm32Unavailable`、ADR-188・ADR-244）。現在のフォアグラウンドに
     /// 対する直接観測の窓を開く／延ばす。
     pub(crate) fn arm_direct_external_change_watch(&mut self, now_ms: u64) {
         self.arm_direct_external_change_watch_in_scope(now_ms, crate::win32::foreground_scope());
@@ -120,6 +120,7 @@ impl ImeStateHub {
         now_ms: u64,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
+        kind: crate::state::ime_kind::ImeKindId,
     ) -> Option<crate::state::external_change_watch::DirectFollow> {
         self.follow_direct_read_in_scope(
             read_open,
@@ -127,6 +128,7 @@ impl ImeStateHub {
             now_ms,
             tick_ms,
             accepted,
+            kind,
             crate::win32::foreground_scope(),
         )
     }

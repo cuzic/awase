@@ -203,6 +203,48 @@ pub fn classify_direct_read(
     DirectFollow { open, eisu }
 }
 
+/// 直接観測（ADR-188）を適用する窓の IME 種別（ADR-244 D2）。
+///
+/// `Imm32Unavailable` の窓で、GJI または同定済みの Microsoft IME 本体（`table_ime_kind()`）のときだけ `Some`。
+/// ATOK・第三者 IME・IMM32 HKL のみ・起動直後の未検出（`table_ime_kind() == None`）と、`Imm32Unavailable` 以外の窓は `None`。
+///
+/// ADR-205 の外部変化の監視（開閉の基準値を持つ）は GJI 限定のまま——こちらは基準値を持たず窓内の現在値だけを見る。
+#[must_use]
+pub const fn direct_watch_kind(
+    imm32_unavailable: bool,
+    table_kind: Option<crate::state::ime_kind::ImeKindId>,
+) -> Option<crate::state::ime_kind::ImeKindId> {
+    if imm32_unavailable {
+        table_kind
+    } else {
+        None
+    }
+}
+
+/// [`classify_direct_read`] に IME 種別の軸の絞り込みを足したもの（ADR-244 D4）。
+///
+/// - GJI: 開閉・英数の両軸（ADR-188 のとおり）。
+/// - Microsoft IME 本体: **英数の軸だけ**。MS-IME × 実 Chrome の開閉の読みは「開いているのに 0」が観測された
+///   ことがある（ADR-205）ので、トグル中に閉と誤読して追随し Engine が OFF のまま残る失敗を踏まない。
+#[must_use]
+pub fn classify_direct_read_for(
+    kind: crate::state::ime_kind::ImeKindId,
+    read_open: Option<bool>,
+    read_conv: Option<u32>,
+    belief_open: bool,
+    belief_eisu: bool,
+) -> DirectFollow {
+    use crate::state::ime_kind::ImeKindId;
+    let follow = classify_direct_read(read_open, read_conv, belief_open, belief_eisu);
+    match kind {
+        ImeKindId::Gji => follow,
+        ImeKindId::MsIme => DirectFollow {
+            open: None,
+            eisu: follow.eisu,
+        },
+    }
+}
+
 impl<S: Copy + PartialEq> Default for ExternalChangeWatch<S> {
     fn default() -> Self {
         Self::new()
@@ -449,6 +491,90 @@ mod tests {
     fn classify_follows_both_axes_at_once() {
         assert_eq!(
             classify_direct_read(Some(true), Some(16), false, false),
+            DirectFollow {
+                open: Some(true),
+                eisu: Some(true)
+            }
+        );
+    }
+
+    /// ADR-244 D2: 直接観測の窓は Imm32Unavailable かつ GJI／同定済み MS-IME 本体だけ。
+    #[test]
+    fn direct_watch_kind_requires_imm32_unavailable_and_a_table_ime() {
+        use crate::state::ime_kind::ImeKindId;
+        assert_eq!(
+            direct_watch_kind(true, Some(ImeKindId::Gji)),
+            Some(ImeKindId::Gji)
+        );
+        assert_eq!(
+            direct_watch_kind(true, Some(ImeKindId::MsIme)),
+            Some(ImeKindId::MsIme)
+        );
+        // ATOK・第三者 IME・IMM32 HKL のみ・起動直後の未検出は `table_ime_kind() == None`。
+        assert_eq!(direct_watch_kind(true, None), None);
+        // Imm32Unavailable 以外の窓（Win32 EDIT、TsfNative 等）は対象外。
+        assert_eq!(direct_watch_kind(false, Some(ImeKindId::Gji)), None);
+        assert_eq!(direct_watch_kind(false, Some(ImeKindId::MsIme)), None);
+    }
+
+    /// ADR-244 D4: MS-IME 本体は英数の軸だけ。閉の読みでは何も追随しない（「開いているのに 0」の型を踏まない）。
+    #[test]
+    fn ms_ime_native_follows_only_the_eisu_axis() {
+        use crate::state::ime_kind::ImeKindId;
+        // トグル中(belief: 開・英数)に変換/英数/ひらがなでかなへ戻った: NATIVE の読み → 英数を外す。
+        assert_eq!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(25), true, true),
+            DirectFollow {
+                open: None,
+                eisu: Some(false)
+            }
+        );
+        // 閉の読み(無変換): 開閉の軸は採らない。英数の軸も conv を見ないので None。
+        assert!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(false), Some(0), true, true).is_none()
+        );
+        // belief が閉で読みが開・NATIVE のとき、開閉の軸は採らず英数の軸だけ（belief は英数でない → なし）。
+        assert!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(25), false, false)
+                .is_none()
+        );
+        // 開で半角英数を読んだら英数を採る(軸の絞り込みは英数を妨げない)。
+        assert_eq!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(16), true, false),
+            DirectFollow {
+                open: None,
+                eisu: Some(true)
+            }
+        );
+    }
+
+    /// ADR-244: 全角英数（`conv=0x18`、NATIVE ビットなし）は英数のまま。トグル中（belief 英数）は追随なし＝トグルを手放さない。
+    #[test]
+    fn full_width_alnum_conv_0x18_stays_eisu_for_ms_ime_native() {
+        use crate::state::ime_kind::ImeKindId;
+        assert!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(0x18), true, true)
+                .is_none()
+        );
+        assert_eq!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(0x18), true, false),
+            DirectFollow {
+                open: None,
+                eisu: Some(true)
+            }
+        );
+    }
+
+    /// ADR-244 D4: GJI は従来どおり両軸（ADR-188 の挙動を変えない）。
+    #[test]
+    fn gji_keeps_both_axes() {
+        use crate::state::ime_kind::ImeKindId;
+        assert_eq!(
+            classify_direct_read_for(ImeKindId::Gji, Some(false), Some(25), true, false),
+            classify_direct_read(Some(false), Some(25), true, false)
+        );
+        assert_eq!(
+            classify_direct_read_for(ImeKindId::Gji, Some(true), Some(16), false, false),
             DirectFollow {
                 open: Some(true),
                 eisu: Some(true)

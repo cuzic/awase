@@ -1629,7 +1629,7 @@ impl Runtime {
         }
         // ADR-188: Shift 付きを含め、GJI × Imm32Unavailable では直接観測の窓を開く（基準値なしで窓内の読みを
         // belief と照合する）。変換中（候補窓が出ている間）は開かない（読み取りを増やさない、M2）。
-        if self.external_change_watch_applies()
+        if self.direct_mode_key_watch_kind().is_some()
             && !crate::tsf::observer::ime_composition_active_now()
         {
             self.platform_state
@@ -1773,7 +1773,10 @@ impl Runtime {
             mode: ime.input_mode(),
             conv_raw: self.platform_state.ime.belief.prev_conversion_mode(),
             composing: crate::tsf::observer::ime_composition_active_now(),
-            track: ime.model().key_track(),
+            // 持続半角英数トグル中は、awase が書いた conv=0 を知らない古い追跡を使わない（ADR-244 M-2、BUG-192）。
+            track: ime.model().key_track().without_conv_while_half_width_alnum(
+                self.platform_state.gate.half_width_alnum.is_toggle_active(),
+            ),
             unreadable,
             passive_rule_eligible,
         };

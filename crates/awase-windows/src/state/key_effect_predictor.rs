@@ -265,6 +265,34 @@ pub struct KeyTrack {
     pub stage: Stage,
 }
 
+impl KeyTrack {
+    /// 左 Shift 単独タップの持続半角英数トグル中は、追跡した変換モード（`conv`）を捨てる（ADR-244 M-2）。
+    ///
+    /// トグル開始は awase 自身が `conv=0x0000` を書く（`InputModeApplied`）が、reducer は `input_mode` だけを書いて
+    /// 追跡（`key_track`）には触れない。予測付きのモードキー（ひらがな 0xF2 等）の後にトグルを開始すると、追跡は
+    /// `Some(C19)` のまま残り、トグル中の 無変換・ひらがな に予測が付いて belief を「開・ローマ字」へ動かす——実 IME は
+    /// 閉じる／半角英数のままなので Engine だけが ON になり、入力が空になる（BUG-192）。さらに予測が付いた打鍵では
+    /// 直接観測（`follow_direct_read_in_scope`）が見送られ、持続トグルも手放されない。
+    ///
+    /// 追跡を捨てれば、入力モードの `ObservedEisu` から変換モードを `C10` と見なし、予測なしになる（追跡が空の場合と
+    /// 同じ。S1 で 8/8、CI の `sc-bug186-msime-shift-toggle-*`）。入力中の段階（`stage`）は残す。
+    ///
+    /// 注意: これは予測の**入力**だけを替えるが、トグル中の文字キーなどの予測は `track.conv = None` を返すので、
+    /// `KeyEffectPredicted` として保存される追跡の `conv` もそこで消える。トグルを抜けた後の予測は、`conv_raw`、
+    /// 次いで入力モードから変換モードを決める（解除後の実状態はかななので方向は正しい）。
+    #[must_use]
+    pub const fn without_conv_while_half_width_alnum(self, toggle_active: bool) -> Self {
+        if toggle_active {
+            Self {
+                conv: None,
+                stage: self.stage,
+            }
+        } else {
+            self
+        }
+    }
+}
+
 /// 表から予測した、beliefへの反映内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct PredictedEffect {
@@ -2103,5 +2131,60 @@ mod tests {
         let gji = KeyEffectKeymap::from_config(None, None, &[]).unwrap();
         assert_eq!(gji.msime_native_key_role(0xF3), None);
         assert_eq!(gji.msime_native_key_role(0xF4), None);
+    }
+
+    /// ADR-244 M-2: 持続半角英数トグル中だけ、追跡した変換モードを捨てる。入力中の段階は残す。トグル外は何も変えない。
+    #[test]
+    fn key_track_forgets_conv_only_while_half_width_alnum_toggle_is_active() {
+        let track = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::Typing,
+        };
+        assert_eq!(track.without_conv_while_half_width_alnum(false), track);
+        assert_eq!(
+            track.without_conv_while_half_width_alnum(true),
+            KeyTrack {
+                conv: None,
+                stage: Stage::Typing
+            }
+        );
+    }
+
+    /// ADR-244 M-2: 追跡を捨てたトグル中は、MS-IME 本体の 変換・無変換・英数・ひらがな が「予測なし」になる
+    /// （ひらがな等を先に押して追跡が `Some(C19)` でも、直接観測が働く）。追跡を捨てないと予測が付く。
+    #[test]
+    fn msime_native_toggle_keys_have_no_prediction_once_stale_conv_is_dropped() {
+        let stale = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::None,
+        };
+        let input = |track: KeyTrack| PredictInput {
+            open: true,
+            mode: InputModeState::ObservedEisu,
+            conv_raw: None,
+            composing: false,
+            track,
+            unreadable: true,
+            passive_rule_eligible: false,
+        };
+        // 前提: 古い追跡 C19 のままだと、無変換・ひらがなには予測が付く（変換・英数は表のセルの有無で付かない）。
+        for vk in [0x1D_u16, 0xF2] {
+            assert!(
+                predict_in_table(table_of(KeymapPreset::MsImeNative), vk, &input(stale)).is_some(),
+                "前提: 古い追跡 C19 のままだと vk=0x{vk:02X} に予測が付く"
+            );
+        }
+        // 追跡を捨てれば、変換・無変換・英数・ひらがな のどれも予測なし（D5 のテストと同じ 4 キー）。
+        for vk in [0x1C_u16, 0x1D, 0xF0, 0xF2] {
+            assert!(
+                predict_in_table(
+                    table_of(KeymapPreset::MsImeNative),
+                    vk,
+                    &input(stale.without_conv_while_half_width_alnum(true))
+                )
+                .is_none(),
+                "追跡を捨てれば vk=0x{vk:02X} は予測なし"
+            );
+        }
     }
 }

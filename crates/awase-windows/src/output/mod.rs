@@ -386,11 +386,12 @@ impl Output {
     // ── shift-conv-guard confirm-gate override（ADR-084 BUG-49 追補2）───────────
 
     /// `shift_conv_guard_gen` を新しい値に進め、直前までの世代を「所有権を
-    /// 失った」ものとする。以下の 4 箇所で呼ぶ:
+    /// 失った」ものとする。以下の 5 箇所で呼ぶ:
     /// 1. 新しい hold の開始（`kp_shift_conv_guard_key_down` の MS-IME entry 分岐）。
     /// 2. 同関数の早期 return 分岐（かな入力コンテキスト前提が崩れた場合）。
     /// 3. フォーカス変更（`on_ime_mode_focus_changed`）。
     /// 4. `SetOpen(true)` 適用（`platform.rs`）。
+    /// 5. 直接観測でかなへの追随を確認して持続トグルを手放すとき（`ir_follow_direct_mode_key_read`、ADR-244）。
     pub(crate) fn bump_shift_conv_guard_gen(&self) -> crate::state::focus_gen::ShiftConvGuardGen {
         let next = self.shift_conv_guard_gen.get().next();
         self.shift_conv_guard_gen.set(next);

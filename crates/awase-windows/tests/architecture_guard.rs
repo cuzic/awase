@@ -4497,6 +4497,10 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
 /// ADR-205（PR #377 Opus レビュー 1・2）: 外部変化の監視窓は Imm32Unavailable かつ GJI の窓だけに適用する。
 /// arm 側（`kp_arm_external_change_watch`）と追随側（`ir_follow_external_change`）の両方が
 /// `external_change_watch_applies` を通ること、その述語が両条件を持つことを固定する。
+///
+/// ADR-244 D2/D6: 直接観測（ADR-188）の 3 か所（`kp_stage_mode_key_follow`・executor の FSM 再送出・
+/// `ir_follow_direct_mode_key_read`）は GJI 限定の述語ではなく `direct_mode_key_watch_kind`（Imm32Unavailable かつ
+/// `table_ime_kind()` = GJI／同定済み MS-IME 本体）を通す。2 つの述語の使い分けを混ぜない。
 #[test]
 fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -4506,7 +4510,7 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
         ))
     };
     let mod_rs = read("runtime/mod.rs");
-    // 述語本体は `external_change_watch_applies_for`（ADR-188: executor は `Runtime` を持たないので同じ述語を共有する）。
+    // (i) ADR-205: 述語本体は `external_change_watch_applies_for`（GJI 限定のまま）。
     let pred = mod_rs
         .split("fn external_change_watch_applies_for")
         .nth(1)
@@ -4521,19 +4525,75 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
         mod_rs.contains("external_change_watch_applies_for(self.platform.current_app_profile())"),
         "Runtime::external_change_watch_applies は述語本体を呼ぶこと"
     );
-    assert!(read("runtime/key_pipeline.rs").contains("self.external_change_watch_applies()"));
-    assert!(read("runtime/ime_refresh.rs").contains("self.external_change_watch_applies()"));
-    // ADR-188: executor の arm も同じ述語を通し、変換中は開かない。
+    let key_pipeline = read("runtime/key_pipeline.rs");
+    let ime_refresh = read("runtime/ime_refresh.rs");
+    assert!(key_pipeline.contains("self.external_change_watch_applies()"));
+    assert!(ime_refresh.contains("self.external_change_watch_applies()"));
+
+    // (ii) ADR-188・ADR-244: 直接観測の述語本体は `direct_mode_key_watch_kind_for`（GJI／同定済み MS-IME 本体）。
+    let direct = mod_rs
+        .split("fn direct_mode_key_watch_kind_for")
+        .nth(1)
+        .expect("直接観測の述語が無い");
+    let direct = &direct[..direct.find("\n}\n").unwrap_or(direct.len())];
+    assert!(
+        direct.contains("AppImeProfile::Imm32Unavailable"),
+        "{direct}"
+    );
+    assert!(direct.contains("table_ime_kind()"), "{direct}");
+    assert!(direct.contains("direct_watch_kind("), "{direct}");
+    assert!(
+        mod_rs.contains("direct_mode_key_watch_kind_for(self.platform.current_app_profile())"),
+        "Runtime::direct_mode_key_watch_kind は述語本体を呼ぶこと"
+    );
+    // arm の 2 か所と追随の 1 か所は直接観測の述語を通す。GJI 限定の述語を直接観測に使わない。
     let executor = read("runtime/executor.rs");
     assert!(
-        executor.contains("external_change_watch_applies_for("),
+        executor.contains("direct_mode_key_watch_kind_for("),
         "{executor}"
     );
+    assert!(
+        !executor.contains("external_change_watch_applies_for("),
+        "executor の直接観測は GJI 限定の述語ではなく direct_mode_key_watch_kind_for を使うこと（ADR-244 D2）"
+    );
+    assert!(key_pipeline.contains("self.direct_mode_key_watch_kind().is_some()"));
+    let follow = ime_refresh
+        .split("fn ir_follow_direct_mode_key_read")
+        .nth(1)
+        .expect("ir_follow_direct_mode_key_read が無い");
+    let follow = &follow[..follow.find("\n    }\n").unwrap_or(follow.len())];
+    assert!(
+        follow.contains("self.direct_mode_key_watch_kind()"),
+        "{follow}"
+    );
+    assert!(
+        !follow.contains("external_change_watch_applies()"),
+        "ir_follow_direct_mode_key_read は GJI 限定の述語を使わないこと（ADR-244 D2）"
+    );
+    // ADR-244 D3: 本体で NATIVE の読みへ追随したら持続トグルを手放す。この 2 呼び出し（判定の純関数と手放し）と、
+    // 確認ゲートの期限延長の解除・世代の更新を消すと、BUG-186 の退行（トグルが残り、次の Shift タップが解除になる）が
+    // Linux のテストでは検出できない。
+    // rustfmt が `self.platform.output.confirm_gate_deadline_override_ms.set(0)` のようなメソッドチェーンを複数行へ
+    // 折り返すので、空白を全て除去してから部分文字列を見る（`half_width_alnum_state_fields_are_not_accessed_directly` と同じ手法）。
+    let follow_squashed: String = follow.split_whitespace().collect();
+    for needle in [
+        "should_abandon_on_observed_follow(",
+        ".abandon_on_observed_follow()",
+        "belief_left_eisu",
+        "confirm_gate_deadline_override_ms.set(0)",
+        "bump_shift_conv_guard_gen()",
+    ] {
+        assert!(
+            follow_squashed.contains(needle),
+            "ir_follow_direct_mode_key_read に {needle} が無い（ADR-244 D3）: {follow}"
+        );
+    }
+    // ADR-188 M2: 変換中は窓を開かない。
     assert!(
         executor.contains("ime_composition_active_now()"),
         "executor の直接観測の arm は変換中を除外すること（ADR-188 M2）"
     );
-    assert!(read("runtime/key_pipeline.rs").contains("ime_composition_active_now()"));
+    assert!(key_pipeline.contains("ime_composition_active_now()"));
 }
 
 /// ADR-158 TE3 / PR #377 レビュー M6-1: `Runtime::can_use_imm32_cross_process` は `#[track_caller]` を持つ。
