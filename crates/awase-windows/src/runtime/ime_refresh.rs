@@ -319,7 +319,7 @@ impl Runtime {
                 snap.conversion_mode,
             );
             let belief_left_eisu =
-                self.platform_state.ime.input_mode() != awase::engine::InputModeState::ObservedEisu;
+                self.platform_state.ime.input_mode() != InputModeState::ObservedEisu;
             if crate::state::half_width_alnum::should_abandon_on_observed_follow(
                 kind,
                 follow.eisu,
