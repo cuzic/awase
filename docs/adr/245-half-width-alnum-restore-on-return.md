@@ -80,6 +80,14 @@ related_adr:
 - **Q5(解決)**: エンジン OFF 中も復元する(決定 9、所有者判断)。
 - **RebuildToggle の残余リスク(S3-2、許容)**: 離れている間に A の実状態が変わっていた場合(Q3、言語バーの操作)、RebuildToggle は「かなの A」を英数とみなしてエンジンを止める。注入はしないので状態は壊れず、症状は「NICOLA が効かない」にとどまる。その状態で左 Shift をタップすると Exit の F2(ATOK ではトグル)が出て英数へ反転する。所有者判断(ATOK は送らない)の範囲内の制限。CI の ATOK 構成で「戻った A で打つと英字(トグル維持)、次の左 Shift タップでかな」を固定し、「B で IME OFF してから A に戻る」(`effective_open` 偽の Drop)を observe で 1 本足す(S4-1)。
 
+## PR 2 への申し送り(PR #558 の Opus コードレビュー、Blocker・Must 0)
+
+- **M-PR2-1(PR 2 のマージ条件)**: `plan_leave` が「トグル中 + 控え無し(Enter 時にスコープが取れなかった)」を `Nothing` にしていると、殻が文字どおり実行したときトグルと ObservedEisu が B へ持ち越され B で NICOLA が止まる(round1 B-3 の再発。所有者判断「トグルを下ろして belief だけ戻す」と食い違う)。`LeavePlan` を 3 variant に分ける: `SuspendAndQueue`(トグルを下ろし、belief を戻し、戻り待ちへ積む)、`SuspendWithoutReturn`(トグルを下ろし、belief を戻す。積まない)、`Nothing`(トグルは立っていない)。殻の実行は「`Nothing` 以外ならトグルを下ろして belief を補正する」「`SuspendAndQueue` なら積む」の 2 行。状態側の操作は 1 メソッドに寄せ(例: `suspend_toggle_for_return() -> SuspendOutcome { queued, dropped_oldest }`)、`plan_leave` は控えたスコープの有無を状態から読む。単体表に「トグル中 + 控え無し → `SuspendWithoutReturn`(`toggle_held` は下り、戻り待ちは空)」を足す。
+- **S-PR2-1**: Enter 時のスコープと **IME 種別も**同じ所で控える。`commit_enter_imc(scope)`/`commit_enter_gji(scope)` が `HalfWidthAlnumState` の private フィールド(例: `entered_in: Option<(ForegroundScope, bool)>`)に控え、`suspend_toggle_for_return` の引数から `scope` と `uses_imc_conv_write` を外す(殻が B のスコープや今の種別を渡す誤りを型で防ぐ。無効スコープを積める Nit も消える)。クリアは `begin_restore_kana`・`abandon_on_observed_follow`・`suspend_toggle_for_return`、保持は `rearm_after_failed_gji_exit`。FIELDS に 7 番目として足す。
+- **S-PR2-2**: 打鍵の段は **KeyDown だけ**で評価する(KeyUp と auto-repeat〈`was_down`〉は `Nothing`)。`KeyStageFacts` にイベントの種類が無く `kp_run_inner` は KeyUp も通るので、B で押した文字キーを A に戻ってから離すと、その KeyUp で Resume/Drop が走る。殻で除くか、核の事実に `is_fresh_key_down` を足して行 0 として固定する。
+- **S-PR2-3**: `RebuildToggle` の状態操作(`toggle_held=true`、Enter 時の控えを戻り待ちのエントリから復元)のメソッドを足し、「`commit_enter_gji` を呼ばない」「控えをエントリから戻す(次の離脱で再び積める)」の 2 点を単体テストで固定する。
+- 行 2 の「親指キーを除く」は、PR 2 で `matches_ime_set_open` が `is_bare_thumb` で修飾なしの親指キーを先に除く(`engine.rs:906-916`)ので、エンジン活性のときは二重の除外になる。害は無い。
+
 ## 実装の段階(Opus round3 の推奨)
 
 1. **PR 1(純粋な核のみ。挙動は変えない)**: `state/half_width_alnum.rs` に戻り待ちの型(容量 4、寿命の判定は `now` と `HWND_CACHE_MAX_AGE_MS` を引数で受ける)・3 つの計画関数・`exit_owns_write`、`key_effect_predictor.rs` に `hiragana_key_is_set`。Linux 単体の表、reducer の golden 2 本、`architecture_guard` の FIELDS、`tuning.rs` の doc 1 行。殻からはまだ呼ばない(dead_code は `#[expect(dead_code)]` か PR 2 と同時)。
