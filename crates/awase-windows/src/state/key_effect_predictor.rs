@@ -936,6 +936,58 @@ pub fn custom_table_overrides(custom_table: &str, vk: u16) -> bool {
     })
 }
 
+/// ひらがなキー（F2 / `VK_DBE_HIRAGANA`）が、開いた IME を**かなへ SET する**キーか（ADR-245 決定8・10）。
+///
+/// 半角英数トグルの戻り待ちを戻った窓で復元するとき、GJI のプリセットによっては F2 が純粋な**トグル**
+/// （ATOK: 0x19→0x10、0x10→0x19）で、離れている間に窓の状態が変わっていると復元の F2 が逆に働く。
+/// 送ってよいかを予測器に問う。2 問: (i) 開・半角英数(conv 0x10)で押したらかなになるか、
+/// (ii) 開・ひらがな(conv 0x19)で押してもかなのままか。
+///
+/// - 両方かな → `Some(true)`（MS-IME プリセット。どの状態でも F2 はかなへ SET）。
+/// - (ii) が英数になる（トグル） → `Some(false)`。
+/// - 予測なし（Custom・MsImeNative 等の CannotPredict、表に無いセル）、または (i) が英数のまま
+///   （想定外） → `None`。
+///
+/// `PredictInput` の `composing = false`（復元の時点で入力中の文字列は無い）と `passive_rule_eligible = false`
+/// （F2 は表のキー）はここで決める。`unreadable` と `learned`（検証済みの学習済み表）は呼び出し側の事実。
+#[must_use]
+pub fn hiragana_key_is_set(
+    keymap: &KeyEffectKeymap,
+    learned: Option<&[Cell]>,
+    unreadable: bool,
+) -> Option<bool> {
+    const VK_HIRAGANA: u16 = 0xF2;
+    // 押した後に変換モードがかな(NATIVE)か。追跡(`track.conv`)が捨てられたセルは、効果の入力モードで見る。
+    let ask = |mode: InputModeState, conv: Conv| -> Option<bool> {
+        let input = PredictInput {
+            open: true,
+            mode,
+            conv_raw: None,
+            composing: false,
+            track: KeyTrack {
+                conv: Some(conv),
+                stage: Stage::None,
+            },
+            unreadable,
+            passive_rule_eligible: false,
+        };
+        let p = keymap.predict_with_override(VK_HIRAGANA, &input, learned)?;
+        Some(match (p.track.conv, p.effect.mode) {
+            (Some(after), _) => after.is_native(),
+            (None, Some(InputModeState::ObservedEisu)) => false,
+            (None, Some(_)) => true,
+            (None, None) => conv.is_native(),
+        })
+    };
+    let after_from_eisu = ask(InputModeState::ObservedEisu, Conv::C10)?;
+    let after_from_hiragana = ask(kana_mode(), Conv::C19)?;
+    match (after_from_eisu, after_from_hiragana) {
+        (true, true) => Some(true),
+        (_, false) => Some(false),
+        (false, true) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// 通過マーク（`kp_stage_mode_key_follow`、BUG-157の`desired_open`の揃え）を立てるのは`is_followed_mode_key`のキーだけ。
@@ -2186,5 +2238,72 @@ mod tests {
                 "追跡を捨てれば vk=0x{vk:02X} は予測なし"
             );
         }
+    }
+
+    /// ADR-245 決定10: ATOK は F2 がひらがな↔半角英数の純粋なトグルなので `Some(false)`、
+    /// GJI の MS-IME プリセットはどの状態でもかなへ SET なので `Some(true)`、Custom は予測なしで `None`。
+    #[test]
+    fn hiragana_key_is_set_distinguishes_toggle_from_set_by_preset() {
+        let atok = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
+        assert_eq!(atok.preset(), KeymapPreset::Atok);
+        assert_eq!(hiragana_key_is_set(&atok, None, false), Some(false));
+        let msime = KeyEffectKeymap::from_config(None, None, &[]).unwrap();
+        assert_eq!(msime.preset(), KeymapPreset::MsIme);
+        assert_eq!(hiragana_key_is_set(&msime, None, false), Some(true));
+        let custom = KeyEffectKeymap::from_config(Some(0), None, &[]).unwrap();
+        assert_eq!(custom.preset(), KeymapPreset::Custom);
+        assert_eq!(hiragana_key_is_set(&custom, None, false), None);
+    }
+
+    /// 窓の読めなさ(`unreadable`)は F2 の答えを変えない(窓別の規則は変換 0x1C だけ)。
+    #[test]
+    fn hiragana_key_is_set_is_independent_of_unreadable() {
+        let atok = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
+        let msime = KeyEffectKeymap::from_config(None, None, &[]).unwrap();
+        assert_eq!(hiragana_key_is_set(&atok, None, true), Some(false));
+        assert_eq!(hiragana_key_is_set(&msime, None, true), Some(true));
+    }
+
+    /// 検証済みの学習済み表(ADR-195 段階4)があれば、Custom 構成でも答えが出る。トグルを学習したら `Some(false)`、
+    /// SET を学習したら `Some(true)`。片方のセルしか無ければ `None`。
+    #[test]
+    fn hiragana_key_is_set_uses_the_learned_table_for_custom() {
+        let custom = KeyEffectKeymap::from_config(Some(0), None, &[]).unwrap();
+        let to_kana = cell(
+            true,
+            Some(Conv::C10),
+            Stage::None,
+            TableKey::Hiragana,
+            true,
+            Some(Conv::C19),
+            Disp::None,
+        );
+        let toggle_back = cell(
+            true,
+            Some(Conv::C19),
+            Stage::None,
+            TableKey::Hiragana,
+            true,
+            Some(Conv::C10),
+            Disp::None,
+        );
+        let stay_kana = cell(
+            true,
+            Some(Conv::C19),
+            Stage::None,
+            TableKey::Hiragana,
+            true,
+            Some(Conv::C19),
+            Disp::None,
+        );
+        assert_eq!(
+            hiragana_key_is_set(&custom, Some(&[to_kana, toggle_back]), false),
+            Some(false)
+        );
+        assert_eq!(
+            hiragana_key_is_set(&custom, Some(&[to_kana, stay_kana]), false),
+            Some(true)
+        );
+        assert_eq!(hiragana_key_is_set(&custom, Some(&[to_kana]), false), None);
     }
 }
