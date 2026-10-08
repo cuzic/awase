@@ -104,6 +104,9 @@ pub struct Output {
     /// キャプチャする。コールバック到達時に現在値と一致しない（= その後に別のフォーカス変更
     /// が来た）場合は stale として破棄し、古いポーリング結果で ImeModeFsm を汚染しない。
     pub(crate) ime_mode_focus_gen: std::cell::Cell<crate::state::focus_gen::FocusGen>,
+    /// `record_raw_tsf_literal` が `RAW_TSF_LITERAL` を書いた時点の `ime_mode_focus_gen`（BUG-194）。
+    /// `flush_raw_tsf_literal_recovery` が現在値と照合し、違えば回収を捨てる。
+    raw_literal_focus_gen: std::cell::Cell<crate::state::focus_gen::FocusGen>,
     /// MS-IME confirm-then-transmit ゲート（BUG-13）の give-up latch。
     ///
     /// `start_ms_ime_ready_poll` が「期限まで IMC が一度も確認できなかった」ときに立てる。
@@ -269,6 +272,7 @@ impl Output {
             conv_mode: crate::state::ConvModeMgr::default(),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(crate::state::focus_gen::FocusGen::INITIAL),
+            raw_literal_focus_gen: std::cell::Cell::new(crate::state::focus_gen::FocusGen::INITIAL),
             ms_ime_gate_give_up: std::cell::Cell::new(false),
             confirm_gate_deadline_override_ms: std::cell::Cell::new(0),
             shift_conv_guard_gen: std::cell::Cell::new(
@@ -1255,6 +1259,8 @@ impl Output {
         escape_composition: bool,
     ) {
         use std::sync::atomic::Ordering::Relaxed;
+        self.raw_literal_focus_gen
+            .set(self.ime_mode_focus_gen.get());
         crate::RAW_TSF_LITERAL.backs.store(backs, Relaxed);
         crate::RAW_TSF_LITERAL
             .escape_composition
@@ -1263,6 +1269,38 @@ impl Output {
             .romaji
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = romaji;
+    }
+
+    /// 記録（`record_raw_tsf_literal`）から flush までにフォーカスが変わっていたら、予約を送らずに捨てる（BUG-194）。
+    ///
+    /// 残った ESC/BS/romaji が新しい前面窓へ届くのを防ぐ。読み出し口は `flush_raw_tsf_literal_recovery` だけなので、
+    /// 照合はその先頭の1箇所。deferred は FocusChange の `cancel_probe` が既に破棄している。
+    /// 疑似 FocusChange でも世代は進むため、その場合は回収を捨てる側（リテラルが残る側）に倒れる。
+    /// 戻り値: 捨てたか。
+    pub(crate) fn discard_raw_recovery_if_focus_stale(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        let recorded = self.raw_literal_focus_gen.get();
+        let now = self.ime_mode_focus_gen.get();
+        if recorded == now {
+            return false;
+        }
+        let backs = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
+        let esc = crate::RAW_TSF_LITERAL
+            .escape_composition
+            .swap(false, Relaxed);
+        let romaji = std::mem::take(
+            &mut *crate::RAW_TSF_LITERAL
+                .romaji
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if backs == 0 && !esc && romaji.is_empty() {
+            return false;
+        }
+        tracing::warn!(
+            "[raw-tsf-literal] focus 世代が変わったため回収を破棄 backs={backs} esc={esc} romaji={romaji:?} recorded_gen={recorded} now_gen={now}"
+        );
+        true
     }
 
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
@@ -1323,6 +1361,7 @@ impl Output {
     /// 取り残された deferred VK を送出してはいけないため（先に送ると backspace が
     /// deferred 側の文字を巻き込んで消してしまう、`docs/known-bugs.md` BUG-38 参照）。
     pub(crate) fn flush_raw_tsf_literal_recovery(&self) -> RawRecoveryOutcome {
+        self.discard_raw_recovery_if_focus_stale();
         flush_raw_tsf_literal_backspaces();
         self.flush_raw_tsf_literal_romaji();
         let vk_count = self.flush_stale_deferred_vks_after_recovery();
@@ -1573,45 +1612,43 @@ mod tests {
         assert!(now_empty.is_empty());
     }
 
-    /// 特性テスト(現状の挙動を固定する。望ましい挙動の主張ではない): `record_raw_tsf_literal` で予約した回収
-    /// (backspace 数・再送 romaji・ESC)は、FocusChange/ImeOff/composition reset で発火する `cancel_probe` と、
-    /// FocusChange の cold マークの後も `RAW_TSF_LITERAL` に残る。クリアも世代照合もするのは
-    /// `flush_raw_tsf_literal_recovery`(`WM_DRAIN_OUTPUT_QUEUE`)の `swap`/`take` だけで、focus 世代の照合は無い
-    /// (ADR-101 の `discard_raw_recovery_if_focus_stale` は reinit 予約の Scheduled 時だけを対象にしており、
-    /// ADR-212 P3 の reinit 撤去〈0a7f9067〉で削除済み)。record から flush までに FocusChange が割り込むと、
-    /// 残った backs/romaji は新しい前面窓へ送られうる、という構造上の事実をこのテストが固定する(CI の windows-build で走る)。
-    /// グローバルを触るので、`cargo test`(同一プロセス並列)でも互いに壊し合わないよう `RAW_LITERAL_TEST_LOCK` で直列化する。
+    /// BUG-194: record から flush までに FocusChange が割り込んだら、予約（backs/romaji/ESC）は捨てられる。
+    /// `cancel_probe` は予約に触れない（構造は従来どおり）が、flush 先頭の世代照合が捨てる。
+    /// 世代が同じなら捨てない。グローバルを触るので `RAW_LITERAL_TEST_LOCK` で直列化する。
     #[test]
-    fn raw_tsf_literal_record_survives_cancel_probe_and_focus_cold_mark() {
+    fn raw_tsf_literal_is_discarded_when_focus_changed_before_flush() {
         use std::sync::atomic::Ordering::Relaxed;
         let _g = RAW_LITERAL_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let o = make_output();
-        o.record_raw_tsf_literal(2, "ka".to_string(), true);
-        o.cancel_probe();
-        o.mark_composition_cold(ColdReason::FocusChange);
-        assert_eq!(crate::RAW_TSF_LITERAL.backs.load(Relaxed), 2);
-        assert!(crate::RAW_TSF_LITERAL.escape_composition.load(Relaxed));
-        assert_eq!(
-            *crate::RAW_TSF_LITERAL
+        let clear = || {
+            crate::RAW_TSF_LITERAL.backs.store(0, Relaxed);
+            crate::RAW_TSF_LITERAL
+                .escape_composition
+                .store(false, Relaxed);
+            crate::RAW_TSF_LITERAL
                 .romaji
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            "ka"
-        );
-        assert!(
-            o.raw_recovery_owns_deferred(),
-            "回収が予約されている間は deferred の解放が raw recovery 側に委ねられる"
-        );
-        // 後始末(他のテストへ持ち越さない)。
-        crate::RAW_TSF_LITERAL.backs.store(0, Relaxed);
-        crate::RAW_TSF_LITERAL.escape_composition.store(false, Relaxed);
-        crate::RAW_TSF_LITERAL
-            .romaji
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        };
+        clear();
+        // 世代が同じ: 捨てない。
+        o.record_raw_tsf_literal(2, "ka".to_string(), true);
+        assert!(!o.discard_raw_recovery_if_focus_stale());
+        assert_eq!(crate::RAW_TSF_LITERAL.backs.load(Relaxed), 2);
+        // FocusChange が割り込む: 捨てる。
+        o.cancel_probe();
+        o.on_ime_mode_focus_changed();
+        assert!(o.discard_raw_recovery_if_focus_stale());
+        assert_eq!(crate::RAW_TSF_LITERAL.backs.load(Relaxed), 0);
+        assert!(!crate::RAW_TSF_LITERAL.escape_composition.load(Relaxed));
+        assert!(!o.raw_recovery_owns_deferred());
+        // 新しい世代で記録し直せば有効。
+        o.record_raw_tsf_literal(1, "a".to_string(), false);
+        assert!(!o.discard_raw_recovery_if_focus_stale());
+        clear();
     }
 
     /// `RAW_TSF_LITERAL`(プロセス内グローバル)を触るテストの直列化用。

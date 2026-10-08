@@ -4740,6 +4740,35 @@ fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     );
 }
 
+/// BUG-194: raw TSF literal の回収は、記録時に focus 世代を刻み、flush 先頭で照合する。
+/// 読み出し口は `flush_raw_tsf_literal_recovery` だけ（`flush_raw_tsf_literal_backspaces` はそこからのみ呼ぶ）。
+#[test]
+fn raw_tsf_literal_recovery_is_guarded_by_focus_gen() {
+    let content = read_crate_file("src/output/mod.rs");
+    let production = production_code_only(&content);
+    assert!(
+        production.contains("self.raw_literal_focus_gen.set(self.ime_mode_focus_gen.get())"),
+        "record_raw_tsf_literal が focus 世代を刻んでいません(BUG-194)"
+    );
+    let start = production
+        .find("fn flush_raw_tsf_literal_recovery")
+        .expect("flush_raw_tsf_literal_recovery");
+    let body = &production[start..];
+    let guard = body.find("self.discard_raw_recovery_if_focus_stale()");
+    let send = body.find("flush_raw_tsf_literal_backspaces()");
+    assert!(
+        matches!((guard, send), (Some(g), Some(s)) if g < s),
+        "flush_raw_tsf_literal_recovery は ESC/BS 送信より前に世代照合を呼ぶこと(BUG-194)"
+    );
+    let callers = production
+        .matches("flush_raw_tsf_literal_backspaces()")
+        .count();
+    assert_eq!(
+        callers, 1,
+        "flush_raw_tsf_literal_backspaces の呼び出しは回収の1箇所だけ(実際: {callers})"
+    );
+}
+
 /// `deliver_key_event` 内の早期return順序を固定する（ADR-114 決定2 r4収束版）。
 ///
 /// 「latch チェック（KeyUp 解放 + KeyDown repeat 抑制）→ `PumpContext::Nested`
