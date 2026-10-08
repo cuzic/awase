@@ -572,6 +572,7 @@ impl KeyStagePlan {
 
 /// [`plan_key_stage`] に渡す事実。殻が集める。
 #[derive(Debug, Clone, Copy)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct KeyStageFacts {
     /// スコープが一致した戻り待ちのエントリ。
     pub entry: ReturnPendingEntry,
@@ -1053,11 +1054,11 @@ mod tests {
 
     const MAX_AGE: u64 = 3_600_000;
 
-    fn scope(pid: u32, hwnd: isize) -> ForegroundScope {
+    const fn scope(pid: u32, hwnd: isize) -> ForegroundScope {
         ForegroundScope { pid, hwnd }
     }
 
-    fn entry(pid: u32, hwnd: isize, uses_imc: bool, at: u64) -> ReturnPendingEntry {
+    const fn entry(pid: u32, hwnd: isize, uses_imc: bool, at: u64) -> ReturnPendingEntry {
         ReturnPendingEntry {
             scope: scope(pid, hwnd),
             uses_imc_conv_write: uses_imc,
@@ -1066,7 +1067,7 @@ mod tests {
     }
 
     /// 既定は「MS-IME 本体、開、通常の文字キー、修飾キーなし、寿命内」= `Resume` になる事実。
-    fn facts() -> KeyStageFacts {
+    const fn facts() -> KeyStageFacts {
         KeyStageFacts {
             entry: entry(10, 0x100, true, 1_000),
             now: TickMs(2_000),
@@ -1083,7 +1084,7 @@ mod tests {
     }
 
     /// GJI（`uses_imc_conv_write == false`）版の既定事実。F2 は SET と確かめられている。
-    fn gji_facts() -> KeyStageFacts {
+    const fn gji_facts() -> KeyStageFacts {
         KeyStageFacts {
             entry: entry(10, 0x100, false, 1_000),
             uses_imc_conv_write_now: false,
