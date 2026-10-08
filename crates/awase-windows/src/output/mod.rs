@@ -1606,7 +1606,9 @@ mod tests {
         );
         // 後始末(他のテストへ持ち越さない)。
         crate::RAW_TSF_LITERAL.backs.store(0, Relaxed);
-        crate::RAW_TSF_LITERAL.escape_composition.store(false, Relaxed);
+        crate::RAW_TSF_LITERAL
+            .escape_composition
+            .store(false, Relaxed);
         crate::RAW_TSF_LITERAL
             .romaji
             .lock()
