@@ -1146,6 +1146,11 @@ impl Runtime {
         if is_tsf_native {
             return;
         }
+        // ADR-244 S1(計測スパイク): trace 窓が生きている間は 60ms ごとに読み直す。
+        if let Some(remaining) = mode_key_trace_remaining_ms(crate::hook::current_tick_ms()) {
+            self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS.min(remaining + 1));
+            return;
+        }
         // ADR-205: 外部注入の IME キー直後の監視窓が生きている間は、明示意図の有無に関わらず読み直しを予約する
         // （明示意図があると下の分岐でポーリングが止まり、窓の中の読みが届かない）。
         let now_for_watch = crate::hook::current_tick_ms();
@@ -2602,4 +2607,24 @@ pub(crate) fn external_change_watch_applies_for(
     profile == crate::focus::class_names::AppImeProfile::Imm32Unavailable
         && crate::tsf::observer::tsf_obs().active_ime_kind()
             == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+}
+
+// ADR-244 S1(使い捨ての計測スパイク、develop にはマージしない): 物理モードキーの通過の後、300ms の間 60ms ごとに
+// refresh を回し、窓内の prefetch の (t_ms, open, conv) を `[mode-key-trace]` に出す。GJI 限定の述語は使わない
+// (MS-IME 本体でも測る)。挙動は変えない(読みの採用はしない)。
+pub(crate) static MODE_KEY_TRACE_UNTIL_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static MODE_KEY_TRACE_ARM_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn arm_mode_key_trace(now_ms: u64, vk: u16, shift: bool, source: &str) {
+    use std::sync::atomic::Ordering;
+    MODE_KEY_TRACE_ARM_MS.store(now_ms, Ordering::Relaxed);
+    MODE_KEY_TRACE_UNTIL_MS.store(now_ms + 300, Ordering::Relaxed);
+    tracing::info!("[mode-key-trace] arm t={now_ms} vk=0x{vk:02X} shift={shift} source={source}");
+}
+
+pub(crate) fn mode_key_trace_remaining_ms(now_ms: u64) -> Option<u64> {
+    let until = MODE_KEY_TRACE_UNTIL_MS.load(std::sync::atomic::Ordering::Relaxed);
+    (until > now_ms).then(|| until - now_ms)
 }

@@ -1629,6 +1629,14 @@ impl Runtime {
         }
         // ADR-188: Shift 付きを含め、GJI × Imm32Unavailable では直接観測の窓を開く（基準値なしで窓内の読みを
         // belief と照合する）。変換中（候補窓が出ている間）は開かない（読み取りを増やさない、M2）。
+        // ADR-244 S1(計測スパイク): GJI 限定の述語に関係なく trace 窓を開き、20ms 後の refresh を予約する。
+        super::arm_mode_key_trace(
+            hook::current_tick_ms(),
+            event.vk_code.0,
+            event.modifier_snapshot.shift,
+            "pass-through",
+        );
+        self.schedule_ime_refresh(20);
         if self.external_change_watch_applies()
             && !crate::tsf::observer::ime_composition_active_now()
         {

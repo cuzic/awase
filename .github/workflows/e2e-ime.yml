@@ -363,6 +363,20 @@ jobs:
               for pn, km in (('atok', 1), ('msime', 2))
               for suf, aw, na, gen in (('', 'true', '', ''), ('-noawase', 'false', ' --no-awase', ''),
                                        ('-passthru', 'true', '', 'muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false'))],
+            # ADR-188 第0段(計測スパイク、観測のみ): 変換中(未確定文字あり)/長い idle(30 秒)の後に素通しのモードキーを押したときの窓内の読み。
+            # awase.log の `[mode-key-trace]` を見る。only='sc-bug149-trace-*'。
+            *[cfg(f'sc-bug149-trace-{kind}-{pn}-{kn}', 'observe', check='chromeprobe', keymap=km, runs=1, wait=600, awase='true',
+                  general='muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false',
+                  chrome=f'--repeat=3 --settle=800 --{kind}-key={kv}' + (' --idle-ms=30000' if kind == 'idle' else ''))
+              for kind in ('compose', 'idle')
+              for pn, km in (('atok', 1), ('msime', 2))
+              for kn, kv in (('henkan', '1c'), ('muhenkan', '1d'), ('shift-muhenkan', '1d:s'))],
+            # ADR-244 S1(計測スパイク、観測のみ): MS-IME 本体(ime=msime)で同じ計測。変換中/30 秒 idle の後の素通しモードキーの窓内の読み。
+            *[cfg(f'sc-bug149-trace-{kind}-msimebody-{kn}', 'observe', check='chromeprobe', ime='msime', keymap=2, runs=1, wait=900, awase='true',
+                  general='muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false',
+                  chrome=f'--repeat=3 --settle=800 --msime --{kind}-key={kv}' + (' --idle-ms=30000' if kind == 'idle' else ''))
+              for kind in ('compose', 'idle')
+              for kn, kv in (('henkan', '1c'), ('muhenkan', '1d'), ('shift-muhenkan', '1d:s'))],
             # 遷移表(2026-10-04): 状態(直接入力/かな/半角英数/Shift単独タップ後) × キー(変換/無変換/英数/ひらがな/IME_ON/IME_OFF) の 24 セルを 2 周(chrome_probe --table)。観測のみ。only='sc-table-*'。
             *[cfg(f'sc-table-{pn}-{pt}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=1500, awase='true',
                   general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,

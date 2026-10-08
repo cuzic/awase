@@ -1630,6 +1630,61 @@ fn main() {
         let _ = child.kill();
         return;
     }
+    // `--compose-key=<vk16>[:s]`(ADR-188 第0段、観測のみ): かな ON で k,a を打って未確定文字を作ってから、素通しのモードキーを押す。
+    // 窓内の読みは awase.log の `[mode-key-trace]` で見る。押した後の画面の文字を `COMPOSE_AFTER` に出し、最後に clear する。
+    // `--idle-key=<vk16>[:s]` + `--idle-ms=<ms>`: かな ON にした後 idle-ms 待ってからモードキーを押す(長い idle の後の窓内の読み)。
+    let parse_key = |spec: &str| -> (u32, bool) {
+        let (v, s) = match spec.split_once(':') {
+            Some((v, s)) => (v, s == "s"),
+            None => (spec, false),
+        };
+        (u32::from_str_radix(v, 16).unwrap_or(0x1D), s)
+    };
+    let compose_spec = args.iter().find_map(|a| a.strip_prefix("--compose-key="));
+    let idle_spec = args.iter().find_map(|a| a.strip_prefix("--idle-key="));
+    if compose_spec.is_some() || idle_spec.is_some() {
+        let idle_ms: u64 = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--idle-ms=").and_then(|v| v.parse().ok()))
+            .unwrap_or(30_000);
+        bring_to_front();
+        for r in 1..=repeat {
+            let ok = ensure(&mut p, Setup::Kana, awase);
+            p.log
+                .line(&format!("TRACE_RUN {r}/{repeat} setup_kana={ok}"));
+            if let Some(spec) = compose_spec {
+                let (vk, shift) = parse_key(spec);
+                p.press(0x4B, false, 30);
+                sleep(30);
+                p.press(0x41, false, 30);
+                sleep(400);
+                p.log.line(&format!(
+                    "COMPOSE run {r} key=0x{vk:02X} shift={shift}: 未確定文字を作った後に押す"
+                ));
+                p.press(vk, shift, 60);
+                sleep(settle_ms);
+                let snap = p.command("snap", "snap");
+                let text = snap.map(|e| e.value).unwrap_or_default();
+                p.log.line(&format!("COMPOSE_AFTER run {r} text={text:?}"));
+                let _ = p.command("clear", "cleared");
+                sleep(500);
+            } else if let Some(spec) = idle_spec {
+                let (vk, shift) = parse_key(spec);
+                p.log.line(&format!(
+                    "IDLE run {r} wait={idle_ms}ms then key=0x{vk:02X} shift={shift}"
+                ));
+                sleep(idle_ms);
+                p.press(vk, shift, 60);
+                sleep(settle_ms);
+                let got = p.probe_logged("idle後のモードキー");
+                p.log.line(&format!("IDLE_AFTER run {r} class={}", got.label()));
+            }
+            p.log.line("RESULT PASS");
+        }
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
     // `--initial`(ADR-212 P2 調査): IME を一切操作せず、Chrome 起動直後に k,a を打って実 IME の初期状態を見る。
     // `ka`(Plain)=閉で始まった / `か`(RomajiKana)=開で始まった / NICOLA 文字=awase が開いた(書き込み)。
     // awase を先に起動してから Chrome を起動する構成(新しいスレッド)で使う。`--no-awase` の対照は IME の素の初期状態。

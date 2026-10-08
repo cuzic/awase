@@ -162,6 +162,23 @@ impl Runtime {
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.explicit_intent(),
         );
+        // ADR-244 S1(計測スパイク): trace 窓の中の prefetch の読みを時系列で出す(挙動は変えない)。
+        {
+            let now = crate::hook::current_tick_ms();
+            if super::mode_key_trace_remaining_ms(now).is_some() {
+                let arm = super::MODE_KEY_TRACE_ARM_MS.load(std::sync::atomic::Ordering::Relaxed);
+                tracing::info!(
+                    "[mode-key-trace] read t={now} since_arm={} open={:?} conv={:?} belief_open={} intent={:?} strategy={:?} toggle_active={}",
+                    now.saturating_sub(arm),
+                    ime_snap.and_then(|s| s.ime_on),
+                    ime_snap.and_then(|s| s.conversion_mode),
+                    self.platform_state.ime.effective_open(),
+                    self.platform_state.ime.explicit_intent(),
+                    strategy,
+                    self.platform_state.gate.half_width_alnum.is_toggle_active(),
+                );
+            }
+        }
         // ADR-205: 打鍵中（SkipTyping）でも、prefetch 済みの開閉の読みを外部変化の監視窓に照合する（追加 I/O なし）。
         self.ir_follow_external_change(ime_snap);
         // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。
