@@ -250,7 +250,7 @@
 | [241](241-keystroke-to-actuation-replay.md) | 打鍵から actuation の決定まで通す再生基盤(同期の判断を ungated な核へ移し、閉ループのハーネスを拡張。既存の再生一式の置き換えと同時) | 提案(2026-10-07)。Opus round1・round2 反映済み。合流点の作り直しの承認など所有者の判断待ち |
 | [242](242-claims-carry-verification-commands.md) | docs・PR 本文の主張に、確かめたコマンドを添える(独立した規約ページは作らず、ADR-243 の規約 3 に畳む) | 採用(2026-10-06、所有者承認、第 1 段階実施)。`.claude/rules/agent-handoff.md` を導入 |
 | [243](243-parallel-agent-instruction-hygiene.md) | 並列エージェント開発での指示の取り違えを減らす(`.claude/rules/agent-handoff.md` 25 行以内の案) | 採用(2026-10-06、所有者承認、第 1 段階実施)。`.claude/rules/agent-handoff.md` を導入 |
-| [244](244-bug186-msime-chrome-persistent-toggle-follow.md) | 実 Chrome × MS-IME 本体で、半角英数の持続トグル中の IME 側モードキーに Engine を追随させる(BUG-186) | ドラフト(2026-10-08、未実装、S2 スパイクを CI で検証) |
+| [244](244-bug186-msime-chrome-persistent-toggle-follow.md) | 実 Chrome × MS-IME 本体で、半角英数の持続トグル中の IME 側モードキーに Engine を追随させる(BUG-186) | 決定(2026-10-08、未実装): S2 採用(直接観測を同定済み MS-IME 本体へ広げ、英数軸のみ採り、追随時にトグルを手放す)。CI スパイク 48/48 PASS |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

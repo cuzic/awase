@@ -6,9 +6,9 @@ summary: |-
   BUG-186: 左 Shift 単独タップで持続半角英数にしたあと、変換・英数・ひらがなを押すと IME はかなへ戻るが Engine は OFF のまま(`か`)。
   ADR-188 第1段(PR #539)の後も最新 develop で再現する。run 37704093235 のログでは、かなに戻った実状態は約 26〜45ms 後に正しく読めているのに、
   打鍵中扱い(TypingActive)で捨てられ、ADR-188 の直接観測は GJI 限定の述語で MS-IME 本体には一度も動いていない。
-  本 ADR は現状の事実と、追加で測ること・決めることの順序を定める。修正方式は決めない。
+  本 ADR は事実・CI での検証(S1 の計測、S2 のスパイク 48/48 PASS)と、S2 を本番に落とす方針(決定 D1〜D7)を定める。
 status: |-
-  ドラフト(2026-10-08、未実装、S1 の計測結果と S2 スパイクの CI 検証〈48/48 PASS〉を追記済み)。Opus レビュー 2 回(1 回目 Blocker 2・Must 4・Should 6、2 回目 Blocker なし・Must 2・Should 3)を反映済み。
+  決定(2026-10-08、未実装): S2 採用・S3 不採用。方針 D1〜D7 を Opus の計画レビュー(Blocker 0・Must 6・Should 6)を反映して確定。本番実装は未着手。Opus レビュー 2 回(1 回目 Blocker 2・Must 4・Should 6、2 回目 Blocker なし・Must 2・Should 3)を反映済み。
 related_adr:
   - "ADR-188"
   - "ADR-107"
@@ -112,13 +112,32 @@ gh workflow run e2e-ime.yml --ref ci/adr244-s2-spike -f only='sc-table-msime-*' 
 - `[mode-key-follow]` が実機の Chrome × MS-IME 本体で同じに働くかは未確認(CI のみ)。
 - `GJI` の MS-IME プリセットの `ro` の機序は未調査のまま(今回のスパイクでは再現しなかった)。
 
-## 決めること(順序、方式は未決)
+## 決定(2026-10-08、Opus の計画レビューを反映)
 
-- **S1(追加で測る)**: 上の読み(約 26〜45ms)は 1 標本群で済んでいる。追加で測るのは、窓内で値が一定か、30 秒 idle 後・変換中・無変換(閉)の後はどうか(ADR-188 追記 3 と同じ観点を MS-IME 本体で)。併せて `ro` 退行の機序(どの run のどのセルを基準にしたか)を調べる。
-- **S2 と S3 は二者択一に近い**: `state/platform_state.rs::follow_direct_read_in_scope` は、打鍵時点の予測(`key_effect().at_ms >= armed_at`)が付いた打鍵では直接観測を採らない。S3(学習表に「開・C10」を足す)をすると S2 の観測経路はその打鍵で無効になり、逆に S2 を採れば S3 は不要になりうる。S1 の後に、どちらで行くかを決める。
-- **S2 の問い**: (i) GJI 限定の述語を MS-IME 本体へ広げてよいか(ADR-188 追記 6 の `[key-effect-miss]` 対策との関係)。(ii) 観測で belief を `ObservedEisu` から外しても `gate.half_width_alnum.toggle_held` は true のまま残り、次の読みは `shift_conv_guard_active` で凍結され、次の Shift タップの意味も食い違う。S2 はトグルの解除に必ず触れる。解除を読み(NATIVE)でどう守るか。
+**D1. S2 を採り、S3 は採らない。** 根拠: S2 スパイクが `sc-table-msime-*` で 48/48 PASS(run 37714287200)。S3(表に `C10` のセルを足す)は予測が付いて S2 の経路をふさぐ。
 
-## 範囲外
+**D2. 述語は「`Imm32Unavailable` かつ GJI または同定済みの MS-IME 本体」。** スパイクの `active_ime_kind() == MicrosoftIme` は「GJI 以外」の意味で ATOK・Japanist・未知 TIP・IMM32 HKL のみ・起動直後の未検出(`tsf_active_kind == 0`)も含む(`tsf/observer.rs` の `active_ime_kind`・`ms_ime_native_identified` の doc)ので使わない。既存の `table_ime_kind().is_some()` を使う(GJI → `Some(Gji)`、同定済み本体 → `Some(MsIme)`、それ以外と起動直後 → `None`)。CI で本体が同定されていることは `[tip-detect] initial IME kind: MicrosoftIme (MsImeNative)`(run 37713583320 の awase.log)と BUG-179 の修正(`3e3a4ca9`・`518b62ee`)で確認した。述語の論理は `state/` の純関数(`ImeKindId` を受ける)に置き、殻は呼ぶだけにして Linux で単体テストする(ATOK・未検出・HKL のみが `false`)。ADR-205 の外部変化の監視は GJI 限定のまま(その理由は撤回しない。直接観測は基準値を持たず窓内の現在値だけを見る点で違う)。
 
-- 修正方式の選択(この ADR は決めない)。
+**D3. トグル解除の置き場所と範囲。** `DirectFollow` には載せず、`state/half_width_alnum.rs` の純関数(例: `should_abandon_on_observed_follow`)で判定し、殻 `ir_follow_direct_mode_key_read` から呼ぶ(`PLATFORM_STATE_PUB_FNS` を増やさない)。条件は「観測された読みが NATIVE(`eisu=Some(false)`)」。スパイクが飛ばしていた通常の解除経路 `kp_restore_kana_from_half_width` の副作用は次のとおり決める。
+- `note_explicit_ime_action` は**呼ばない**(呼ぶと同じ窓の後続の読みが R3 で捨てられ、誤追随を窓内で直せなくなる)。
+- `ime_mode_fsm.unconfirm`・確認ゲートの期限延長(`SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` = 5000ms)の解除は、スパイクの run 37714287200 の awase.log で、手放した直後の最初のかな送信は `[msime-ready] IME mode 未確認` → `IMC ポーリング: NATIVE 確認 → 終了` で毎回(8/8)解決し、出力は NICOLA 文字だった。よって unconfirm は不要と見るが、期限延長の解除(`bump_shift_conv_guard_gen` と override のクリア)を揃えるかは実装時にフォーカス変更の経路(`output/mod.rs`)と見比べて決め、決めた理由を PR に書く。
+- 誤って解除した場合(読みが NATIVE だが実状態は半角英数)は、復元の書き込みが二度と走らず、リテラルのローマ字が出る。読みが嘘になるのは ADR-205 が言う MS-IME の「開いているのに 0」の型で、NATIVE の読み(`conv=25`)側では観測されていない(S1 の 18 セルで食い違い 0)。
+
+**D4. MS-IME 本体では英数の軸だけを採り、解除も本体に限る(GJI の挙動は変えない)。** 失敗していた 3 キー(変換・英数・ひらがな)は英数の軸(`open=Some(true)` かつ NATIVE)だけで直り、無変換は `develop` でも PASS。開閉の軸を採らないことで、ADR-205 の「開いているのに 0」の懸念(トグル中に閉と誤読して追随し、Engine が OFF のまま、IME_ON でもリテラルのローマ字になる)を本体側で踏まない。解除を本体に限ることで、既に直接観測が動いている GJI の MS-IME プリセット(`ro` の退行があった領域)の挙動を変えない。代償は「IME は閉・トグルは保持」の組み合わせが残ること(範囲外)と、GJI の追随で `toggle_held` が残る潜在課題を BUG-186 の範囲外として残すこと。スパイクは両軸・GJI 含みで検証したので、**この狭い形でも CI で 4 キー PASS を再検証する**(D6)。
+
+**D5. 予測が付くと S2 は黙って無効になる。** `MSIME_NATIVE` に開・`C10` のセルが無いことを固定する Linux テストを `state/key_effect_table.rs` に足す(変換・英数・ひらがな・無変換、「足すと ADR-244 の追随経路がその打鍵で無効になる」とコメント)。利用者の機械で学習した表(`use_learned_keymap_table`)に `C10` のセルが入ると、予測が belief を動かす一方でトグルが残る。今回は注記にとどめ、将来案として解除の契機を「`toggle_held` の間に belief が awase 自身の書き込み以外で `ObservedEisu` から外れた」に一般化する。
+
+**D6. テストと CI。**
+- (a) 回帰テスト: 述語の純関数、解除の純関数(「窓 arm → トグル開始 → NATIVE の読み」では解除しない〈R3〉、Shift 付き・全角英数〈`conv=24`〉・閉の読みでは解除しない、変換中は窓を開かない)、`MSIME_NATIVE` の C10 欠落の固定。
+- `tests/architecture_guard.rs::external_change_watch_is_limited_to_imm32_unavailable_and_gji` は、executor の唯一の呼び出しを新しい述語に替えると落ちる。ADR-205 の 3 か所は GJI 限定の述語のまま、ADR-188 の 3 か所(`kp_stage_mode_key_follow`・executor の再送出・`ir_follow_direct_mode_key_read`)は新しい述語、新しい述語の本体に `Imm32Unavailable` と `table_ime_kind` が含まれる、を固定する形に書き直す。コメント(executor・`key_pipeline.rs`・`platform_state.rs`・`ime_refresh.rs` の「GJI × Imm32Unavailable」)も追随する。
+- CI: `sc-table-*` は `observe` で既定の実行からも外れているため、そのまま `pass` に格上げしない(48 セルは setup の INVALID の出入りで赤くなりうる)。同定済み MS-IME 本体 × 実 Chrome の「Shift単独タップ → 変換・英数・ひらがな・無変換」の 4 セルだけの専用構成を `expect=pass` で既定の実行に入れる。併せて、トグル外のセルの `[direct-follow]` が 0 件であること(FSM 再送出の窓がかな入力中の単独変換/無変換のたびに開くため)と、`sc-table-gji-*` のセル単位(キー × 周 × 出力文字)の比較を PR に載せる。
+
+**D7. 進め方。** 専用 worktree(`develop` から)で実装し、Opus コードレビュー(同じレビュアーで収束確認)→ CI green → PR → `develop`。実機確認(Chrome × MS-IME 本体)はマージの条件にしない。BUG-186 は「修正済み(CI 検証済み・実機未確認)」と書く(BUG-149/150 と同じ扱い)。v1 へは backport しない(ADR-188 が v1 に無い。PR 本文に 1 行書く)。コミット本文に、戻した案(`024ca336`/`6b1e91b8`)との違い(キー押下ではなく観測された読みを根拠にする。`ro` はセル比較で再現しなかった、run を添える)を書き、`docs/experiments.md` に 1 行足す。ADR-205 に 1 行足す(「直接観測(ADR-188)は ADR-244 で `table_ime_kind` の範囲へ広げた。外部変化の監視は GJI 限定のまま」)。
+
+## 残る課題・範囲外
+
+- **変換中にトグルした後の変換キー**: ADR-188 M2(変換中は窓を開かない)のため、この修正では直らない(ADR-107 はトグル開始を変換中でも許す)。
+- 学習表の上書きで `C10` のセルが入った場合にトグルが残ること(D5)。
+- GJI の追随で `toggle_held` が残る潜在課題(D4)。
 - GJI MS-IME プリセットの `ro` の退行そのものの修正。
+- S1 の残り: `None` の読み失敗の頻度、`ro` の機序。
