@@ -487,7 +487,7 @@ jobs:
             # IMM と WM_IME_CONTROL の 2 経路で記録する。ctl は B へ移さない対照。判定はせず check_focusrestore.py が表と awase.log の該当行を出す。
             *[cfg(f'sc-focusrestore-{ime_name}{suf}', 'observe', check='focusrestore', ime=ime, keymap=km, runs=1, wait=420,
                   general='half_width_alnum_toggle = "all"', until='2026-11-08',
-                  stress=f"--form=edit --mode=focus-restore --fr-n=3{ctl} --layout=@REPO@/layout/nicola_keytop.yab{msime}")
+                  stress=f"--form=edit --mode=focus-restore --fr-n=5{ctl} --layout=@REPO@/layout/nicola_keytop.yab{msime}")
               for ime_name, ime, km, msime in (('msime', 'msime', 1, ' --msime'), ('gji', 'gji', 1, ''))
               for suf, ctl in (('', ''), ('-ctl', ' --fr-control'))],
             # --- ADR-208 L3b: ずれの作り方 × 明示キー行列(only='sc-keymatrix-*' で回す)。窓=edit(ImmCross)/tsf(TsfNative 相当)/chrome(実 Chrome=Imm32Unavailable)、IME=GJI(ATOK プリセット)/MS-IME 本体。 ---
