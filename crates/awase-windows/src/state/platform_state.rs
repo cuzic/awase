@@ -4013,7 +4013,7 @@ mod tests {
                     TickMs(t),
                     follow_fence(),
                     crate::state::ime_kind::ImeKindId::Gji,
-                test_foreground_scope()
+                    test_foreground_scope()
                 ),
                 None,
                 "t={t}: 処理前の閉の読みで予測を覆さない"

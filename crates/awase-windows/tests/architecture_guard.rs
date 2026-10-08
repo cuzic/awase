@@ -4536,7 +4536,10 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
         .nth(1)
         .expect("直接観測の述語が無い");
     let direct = &direct[..direct.find("\n}\n").unwrap_or(direct.len())];
-    assert!(direct.contains("AppImeProfile::Imm32Unavailable"), "{direct}");
+    assert!(
+        direct.contains("AppImeProfile::Imm32Unavailable"),
+        "{direct}"
+    );
     assert!(direct.contains("table_ime_kind()"), "{direct}");
     assert!(direct.contains("direct_watch_kind("), "{direct}");
     assert!(
@@ -4559,7 +4562,10 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
         .nth(1)
         .expect("ir_follow_direct_mode_key_read が無い");
     let follow = &follow[..follow.find("\n    }\n").unwrap_or(follow.len())];
-    assert!(follow.contains("self.direct_mode_key_watch_kind()"), "{follow}");
+    assert!(
+        follow.contains("self.direct_mode_key_watch_kind()"),
+        "{follow}"
+    );
     assert!(
         !follow.contains("external_change_watch_applies()"),
         "ir_follow_direct_mode_key_read は GJI 限定の述語を使わないこと（ADR-244 D2）"
