@@ -548,6 +548,23 @@ mod tests {
         );
     }
 
+    /// ADR-244: 全角英数（`conv=0x18`、NATIVE ビットなし）は英数のまま。トグル中（belief 英数）は追随なし＝トグルを手放さない。
+    #[test]
+    fn full_width_alnum_conv_0x18_stays_eisu_for_ms_ime_native() {
+        use crate::state::ime_kind::ImeKindId;
+        assert!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(0x18), true, true)
+                .is_none()
+        );
+        assert_eq!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(0x18), true, false),
+            DirectFollow {
+                open: None,
+                eisu: Some(true)
+            }
+        );
+    }
+
     /// ADR-244 D4: GJI は従来どおり両軸（ADR-188 の挙動を変えない）。
     #[test]
     fn gji_keeps_both_axes() {

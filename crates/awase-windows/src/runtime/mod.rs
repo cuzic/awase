@@ -2602,10 +2602,9 @@ mod layout_entry_tests {
     }
 }
 
-/// `Runtime::external_change_watch_applies` の述語本体。executor（`Runtime` を持たない）からも同じ条件で呼ぶ（ADR-188）。
-#[must_use]
 /// [`Runtime::direct_mode_key_watch_kind`] の本体（executor は `Runtime` を持たないので共有する）。判定は
 /// 純関数 `state::external_change_watch::direct_watch_kind`。
+#[must_use]
 pub(crate) fn direct_mode_key_watch_kind_for(
     profile: crate::focus::class_names::AppImeProfile,
 ) -> Option<crate::state::ime_kind::ImeKindId> {
@@ -2615,6 +2614,8 @@ pub(crate) fn direct_mode_key_watch_kind_for(
     )
 }
 
+/// `Runtime::external_change_watch_applies` の述語本体。executor（`Runtime` を持たない）からも同じ条件で呼ぶ（ADR-188）。
+#[must_use]
 pub(crate) fn external_change_watch_applies_for(
     profile: crate::focus::class_names::AppImeProfile,
 ) -> bool {

@@ -3929,6 +3929,61 @@ mod tests {
         );
     }
 
+    /// ADR-244 D6(R3): MS-IME 本体でも、トグル開始など awase 自身が窓の arm 以後に IME へ書いたら、その後の NATIVE の読み
+    /// (処理前の古い状態でありうる)では英数を外さない。新しい物理キー(再 arm)の後の読みは採る。
+    #[test]
+    fn follow_direct_read_for_ms_ime_native_ignores_reads_after_awase_wrote() {
+        use crate::state::ime_kind::ImeKindId;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        // トグル開始の前: belief を英数にする(窓の読みが英数)。
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(16),
+                1010,
+                TickMs(1010),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope()
+            ),
+            Some(direct_follow(None, Some(true)))
+        );
+        // awase がトグル開始で IME へ書いた(`note_explicit_ime_action`)。以後の NATIVE の読みは採らない。
+        ps.ime.note_explicit_ime_action(TickMs(1020));
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(25),
+                1032,
+                TickMs(1032),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope()
+            ),
+            None
+        );
+        assert_eq!(ps.ime.input_mode(), InputModeState::ObservedEisu);
+        // 新しい物理キー(再 arm)の後の NATIVE の読みは採る。
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1200, test_foreground_scope());
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(25),
+                1232,
+                TickMs(1232),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope()
+            ),
+            Some(direct_follow(None, Some(false)))
+        );
+    }
+
     /// 窓が無い・基準値方式(ADR-205)の窓・スコープ違い・窓切れでは、直接観測の追随をしない。
     #[test]
     fn follow_direct_read_requires_a_live_direct_window_in_scope() {

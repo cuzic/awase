@@ -309,8 +309,11 @@ impl HalfWidthAlnumState {
 
 /// 直接観測の追随の結果から、持続トグルを手放すべきか（ADR-244 D3・D4）。
 ///
-/// - 手放すのは **Microsoft IME 本体で、観測された読みが NATIVE（`eisu == Some(false)`）のとき**だけ。
-///   キー押下を根拠にはしない（`024ca336`〜`6b1e91b8` の「素通しのキーが来たら無条件に手放す」案は、読みが届かず
+/// - 手放すのは **Microsoft IME 本体で、観測された読みが NATIVE（`eisu == Some(false)`）で、追随の後に belief が
+///   英数でなくなっているとき**だけ。`belief_left_eisu` は追随（`InputModeObserved`）が reducer の予測の fence
+///   （`KEY_EFFECT_SETTLE_MS` 以内の予測が優先）に捨てられなかったか。捨てられて belief が英数のまま残ったのに
+///   トグルだけ手放すと、「belief は英数・トグルは無し」になり、次の Shift タップが「開始」になる。
+/// - キー押下を根拠にはしない（`024ca336`〜`6b1e91b8` の「素通しのキーが来たら無条件に手放す」案は、読みが届かず
 ///   `か` のままで、GJI の MS-IME プリセットに `ro` を出して戻した）。
 /// - GJI は手放さない（挙動を変えない。GJI の追随で `toggle_held` が残る潜在課題は BUG-186 の範囲外）。
 /// - 英数の読み（`Some(true)`）や追随なしでは手放さない（全角英数 `conv=0x18` は NATIVE が無く英数のまま）。
@@ -318,8 +321,11 @@ impl HalfWidthAlnumState {
 pub fn should_abandon_on_observed_follow(
     kind: crate::state::ime_kind::ImeKindId,
     eisu: Option<bool>,
+    belief_left_eisu: bool,
 ) -> bool {
-    matches!(kind, crate::state::ime_kind::ImeKindId::MsIme) && eisu == Some(false)
+    matches!(kind, crate::state::ime_kind::ImeKindId::MsIme)
+        && eisu == Some(false)
+        && belief_left_eisu
 }
 
 #[cfg(test)]
@@ -664,19 +670,21 @@ mod tests {
         }
     }
 
-    /// ADR-244 D3: 手放すのは MS-IME 本体 × NATIVE の読み(eisu=Some(false))だけ。
+    /// ADR-244 D3: 手放すのは MS-IME 本体 × NATIVE の読み(eisu=Some(false)) × 追随後に belief が英数でないときだけ。
     #[test]
-    fn abandon_only_for_ms_ime_native_read() {
+    fn abandon_only_for_ms_ime_native_read_that_took_effect() {
         use super::should_abandon_on_observed_follow as f;
         use crate::state::ime_kind::ImeKindId::{Gji, MsIme};
-        assert!(f(MsIme, Some(false)));
+        assert!(f(MsIme, Some(false), true));
+        // 予測の fence に追随を捨てられ、belief が英数のまま残ったときは手放さない（belief は英数・トグルは無し、を作らない）。
+        assert!(!f(MsIme, Some(false), false));
         // 英数の読み・追随なしでは手放さない(全角英数 conv=0x18 は eisu=Some(true) のまま)。
-        assert!(!f(MsIme, Some(true)));
-        assert!(!f(MsIme, None));
+        assert!(!f(MsIme, Some(true), true));
+        assert!(!f(MsIme, None, true));
         // GJI は従来どおり手放さない。
-        assert!(!f(Gji, Some(false)));
-        assert!(!f(Gji, Some(true)));
-        assert!(!f(Gji, None));
+        assert!(!f(Gji, Some(false), true));
+        assert!(!f(Gji, Some(true), true));
+        assert!(!f(Gji, None, true));
     }
 
     /// ADR-244 D3: 手放しは OS 書き込みを伴わず、直前の toggle_held を返す。手放した後の復元(begin_restore_kana)は不要。

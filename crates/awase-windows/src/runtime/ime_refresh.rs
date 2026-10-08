@@ -318,13 +318,26 @@ impl Runtime {
                 follow.eisu,
                 snap.conversion_mode,
             );
-            if crate::state::half_width_alnum::should_abandon_on_observed_follow(kind, follow.eisu)
-                && self
-                    .platform_state
-                    .gate
-                    .half_width_alnum
-                    .abandon_on_observed_follow()
+            let belief_left_eisu =
+                self.platform_state.ime.input_mode() != awase::engine::InputModeState::ObservedEisu;
+            if crate::state::half_width_alnum::should_abandon_on_observed_follow(
+                kind,
+                follow.eisu,
+                belief_left_eisu,
+            ) && self
+                .platform_state
+                .gate
+                .half_width_alnum
+                .abandon_on_observed_follow()
             {
+                // トグル開始が与えた確認ゲートの期限延長（`SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` = 5000ms）も、フォーカス変更
+                // （`on_ime_mode_focus_changed`）と同じ形で解除する。残すと手放した後も最大 5 秒、MS-IME の確認ゲートが
+                // 延長された期限を使い続ける。世代も進めて、走行中の古い hold の再設定を無効にする。
+                self.platform
+                    .output
+                    .confirm_gate_deadline_override_ms
+                    .set(0);
+                self.platform.output.bump_shift_conv_guard_gen();
                 tracing::info!(
                     "[shift-conv-guard] 直接観測でかなへの追随を確認 → 半角英数トグルを手放す (OS 書き込みなし、ADR-244)"
                 );

@@ -365,10 +365,19 @@ jobs:
                                        ('-passthru', 'true', '', 'muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false'))],
             # ADR-244(BUG-186): 同定済み MS-IME 本体 × 実 Chrome で、左Shift単独タップの持続半角英数のあと 変換・無変換・英数・ひらがな を押す。
             # IME はかなへ戻る(無変換は閉じる)ので Engine が追随する(NICOLA 文字、無変換は ka)こと(合否)。遷移表(sc-table-*、観測のみ)の
-            # 「Shift単独タップ後」行の 4 キーだけを回す専用構成。INVALID(setup の不安定)は数えない。FAIL が 1 件でもあれば赤。
+            # 「Shift単独タップ後」行の 4 キーだけを回す専用構成。--strict で FAIL・INVALID・RECOVER のどれが 1 件でもあれば赤
+            # (持続トグルを手放さない退行は、次のケースの setup が INVALID になる形で出るため、INVALID を数えない構成では見えない)。
             *[cfg(f'sc-bug186-msime-shift-toggle-{pt}', 'pass', check='chromeprobe', ime='msime', keymap=2, runs=1, wait=900, awase='true',
                   general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,
-                  chrome='--table --table-state=shift --table-keys=1C,1D,F0,F2 --repeat=2 --settle=800 --msime')
+                  chrome='--table --table-state=shift --table-keys=1C,1D,F0,F2 --repeat=2 --settle=800 --msime', checkargs='--strict')
+              for pt, gen in (('suppress', ''), ('passthru', '; muhenkan_solo_tap_always_suppress = false'))],
+            # ADR-244 M-2 の確認(観測のみ): 予測付きのモードキー(ひらがな 0xF2)をトグル開始の前に押すと、打鍵時点の予測の追跡(track.conv)が
+            # トグル中も残り、トグル中の 変換・英数・ひらがな に予測が付いて直接観測が見送られる(BUG-186 が残る)か。期限までに pass か削除を決める。
+            *[cfg(f'sc-bug186-pre-{pk}-{pt}', 'observe', check='chromeprobe', ime='msime', keymap=2, runs=1, wait=900, awase='true',
+                  until='2026-11-15',
+                  general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,
+                  chrome=f'--table --table-state=shift --table-keys=1C,1D,F0,F2 --table-pre={pk} --repeat=2 --settle=800 --msime')
+              for pk in ('F2', '1C')
               for pt, gen in (('suppress', ''), ('passthru', '; muhenkan_solo_tap_always_suppress = false'))],
             # 遷移表(2026-10-04): 状態(直接入力/かな/半角英数/Shift単独タップ後) × キー(変換/無変換/英数/ひらがな/IME_ON/IME_OFF) の 24 セルを 2 周(chrome_probe --table)。観測のみ。only='sc-table-*'。
             *[cfg(f'sc-table-{pn}-{pt}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=1500, awase='true',
@@ -744,12 +753,12 @@ jobs:
             configs = [c for c in configs if any(fnmatch.fnmatchcase(c['name'], o) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-'))
-                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-bug186-pre-', 'sc-table-', 'sc-preedit-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-bug186-pre-', 'sc-table-', 'sc-preedit-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-bug186-pre-', 'sc-table-', 'sc-preedit-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -1232,7 +1241,7 @@ jobs:
             $kexp = '${{ matrix.cfg.check }}'.Substring('kanjirole-'.Length)
             python tools\e2e\ime_key_matrix\check_kanji_role.py --expect=$kexp dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'chromeprobe') {
-            python tools\e2e\ime_key_matrix\check_chrome_probe.py dist\chrome_probe.log | Tee-Object -FilePath result.txt
+            python tools\e2e\ime_key_matrix\check_chrome_probe.py ${{ matrix.cfg.checkargs }} dist\chrome_probe.log | Tee-Object -FilePath result.txt
             $cprc = $LASTEXITCODE
             # focus 遷移まわりのログ(settle 中に SetOpen を落としていないか=`[focus-settle] SetOpen … stripped` が 0 件か)も結果に添える。
             if (Test-Path dist\awase.log) {

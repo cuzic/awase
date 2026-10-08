@@ -1966,7 +1966,15 @@ fn main() {
         let msime = args.iter().any(|a| a == "--msime");
         const ALL_STATES: [&str; 4] = ["直接入力", "かな", "半角英数", "Shift単独タップ後"];
         // `--table-state=shift`: 「Shift単独タップ後」の状態だけ回す(ADR-244、BUG-186 の専用構成)。省略で全状態。
-        let only_shift = args.iter().any(|a| a == "--table-state=shift");
+        // 未知の値は黙って全状態にせず、設定の書き間違いとして終了コード 2 で止める。
+        let state_arg = args.iter().find_map(|a| a.strip_prefix("--table-state="));
+        if let Some(v) = state_arg {
+            if v != "shift" {
+                eprintln!("--table-state の値は shift のみ: {v:?}");
+                std::process::exit(2);
+            }
+        }
+        let only_shift = state_arg == Some("shift");
         let states: Vec<&str> = ALL_STATES
             .iter()
             .copied()
@@ -1984,8 +1992,25 @@ fn main() {
         let key_filter: Option<Vec<u32>> = args.iter().find_map(|a| {
             a.strip_prefix("--table-keys=").map(|v| {
                 v.split(',')
-                    .filter_map(|h| u32::from_str_radix(h.trim(), 16).ok())
+                    .map(|h| {
+                        let vk = u32::from_str_radix(h.trim(), 16).ok();
+                        if !vk.is_some_and(|vk| ALL_KEYS.iter().any(|(_, k)| *k == vk)) {
+                            eprintln!("--table-keys に未知の要素 {h:?}(16進の仮想キーコード 1C,1D,F0,F2,16,1A のいずれか)");
+                            std::process::exit(2);
+                        }
+                        vk.unwrap_or_default()
+                    })
                     .collect()
+            })
+        });
+        // `--table-pre=F2`: 「Shift単独タップ後」で、Shift タップの前にこのキーを 1 回押す(ADR-244 M-2 の機序の確認用)。
+        // 予測付きのモードキー(ひらがな 0xF2 等)を先に押すと、打鍵時点の予測の追跡(`track.conv`)がトグル開始後も残るかを見る。
+        let table_pre: Option<u32> = args.iter().find_map(|a| {
+            a.strip_prefix("--table-pre=").map(|v| {
+                u32::from_str_radix(v.trim(), 16).unwrap_or_else(|_| {
+                    eprintln!("--table-pre は 16 進の仮想キーコード: {v:?}");
+                    std::process::exit(2);
+                })
             })
         });
         let keys: Vec<(&str, u32)> = ALL_KEYS
@@ -2036,6 +2061,10 @@ fn main() {
                             }
                         }
                         "Shift単独タップ後" => {
+                            if let Some(pre) = table_pre {
+                                p.press(pre, false, 60);
+                                sleep(500);
+                            }
                             p.press(VK_LSHIFT, false, 60);
                             sleep(500);
                             let c = p.probe_logged("setup:Shift単独タップのあと");
