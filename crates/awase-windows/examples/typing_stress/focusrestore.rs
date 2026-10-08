@@ -207,6 +207,7 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
     let control = has_flag("--fr-control");
+    let b_open = has_flag("--fr-b-open");
     let Some(b) = window_b() else {
         rec(&json!({"type":"abort","reason":"focus-restore: 窓 B を作れなかった"}));
         return;
@@ -221,8 +222,10 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         rec(&json!({"type":"abort","reason":"focus-restore の打鍵確認に使う単打セルが無い"}));
         return;
     };
-    rec(&json!({"type":"fr_config","n":n_trials,"control":control,
-        "class_a":class_of(a),"class_b":class_of(b)}));
+    rec(
+        &json!({"type":"fr_config","n":n_trials,"control":control,"b_open":b_open,
+        "class_a":class_of(a),"class_b":class_of(b)}),
+    );
     for n in 0..n_trials {
         if !focus_ok() {
             refocus();
@@ -246,6 +249,17 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
             }
             press(VK_DBE_HIRAGANA, 0x70, 50);
             sleep_ms(800);
+        }
+        // `--fr-b-open`: B の IME も開いておく(B で ON キーを打つ)。新しい窓が IME ON のとき、強制復元の
+        // ひらがな注入が B へ届くか(effective_open=true の分岐)を見る。トグルはまだ入れていない。
+        if b_open && !control {
+            let ok = to_b(b);
+            sleep_ms(300);
+            press(ime_on_key(0), 0x70, 50);
+            sleep_ms(1200);
+            stage(n, if ok { "b_prep" } else { "b_prep_fail" }, 0, a, b);
+            refocus();
+            sleep_ms(1000);
         }
         stage(n, "pre", 0, a, b);
         // tap1: 左 Shift 単独タップで半角英数トグルへ。
