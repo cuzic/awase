@@ -221,6 +221,8 @@ pub const SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS: u64 = 5_000;
 ///
 /// awase がすべての IME 状態変化をフックしているため、キャッシュは原則的に正確に保たれる。
 /// ただし 1 時間を超えると "昨日の設定" の復元になりユーザーが混乱するため上限を設ける。
+///
+/// ADR-245 の半角英数トグルの戻り待ち(`state/half_width_alnum.rs`)の寿命にも使う。
 #[measured_macro::measured(pending = true)]
 pub const HWND_CACHE_MAX_AGE_MS: u64 = 3_600_000;
 
