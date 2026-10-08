@@ -252,6 +252,7 @@
 | [243](243-parallel-agent-instruction-hygiene.md) | 並列エージェント開発での指示の取り違えを減らす(`.claude/rules/agent-handoff.md` 25 行以内の案) | 採用(2026-10-06、所有者承認、第 1 段階実施)。`.claude/rules/agent-handoff.md` を導入 |
 | [244](244-bug186-msime-chrome-persistent-toggle-follow.md) | 実 Chrome × MS-IME 本体で、半角英数の持続トグル中の IME 側モードキーに Engine を追随させる(BUG-186) | 実装済み・CI 検証済み・実機未確認(2026-10-08、PR #556): 直接観測を同定済み MS-IME 本体へ広げ、英数軸のみ採り、追随時にトグルを手放す。D8: トグル中は古い予測の追跡を捨てる(BUG-192 同梱) |
 | [245](245-half-width-alnum-restore-on-return.md) | プロセスをまたぐフォーカス移動で半角英数トグルを、戻ってきたときに復元する(BUG-193) | 起草・改訂(2026-10-08)。所有者判断=かなに戻す(案 B)。Opus round1〜4 反映済み、実装に進んでよい(PR 3 段)。未決 Q3・Q4(実測)
+| [246](246-raw-tsf-literal-recovery-focus-gen-guard.md) | RAW_TSF_LITERAL の回収に focus 世代の照合を足す(BUG-194) | 起草(2026-10-08)。実装先行、Opus レビュー前。 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
