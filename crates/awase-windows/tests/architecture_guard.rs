@@ -4740,32 +4740,53 @@ fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     );
 }
 
-/// BUG-194: raw TSF literal の回収は、記録時に focus 世代を刻み、flush 先頭で照合する。
-/// 読み出し口は `flush_raw_tsf_literal_recovery` だけ（`flush_raw_tsf_literal_backspaces` はそこからのみ呼ぶ）。
+/// BUG-194(ADR-246): raw TSF literal の回収は、段の開始時に宛先(focus 世代 + 前景窓)を採り、flush 先頭で照合する。
+/// 空白を除いて比べる(rustfmt の改行位置に依存しない)。
 #[test]
-fn raw_tsf_literal_recovery_is_guarded_by_focus_gen() {
+fn raw_tsf_literal_recovery_is_guarded_by_stage_origin() {
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
     let content = read_crate_file("src/output/mod.rs");
     let production = production_code_only(&content);
+    let flat = squash(production);
     assert!(
-        production.contains("self.raw_literal_focus_gen.set(self.ime_mode_focus_gen.get())"),
-        "record_raw_tsf_literal が focus 世代を刻んでいません(BUG-194)"
+        flat.contains(&squash(
+            "self.warmup_coord.stamp_stage_origin(self.current_stage_origin());"
+        )),
+        "Output::install_pending_tsf が段の開始時に宛先を採っていません(BUG-194)"
     );
-    let start = production
-        .find("fn flush_raw_tsf_literal_recovery")
+    assert!(
+        flat.contains(&squash(
+            "self.raw_literal_origin.set(self.warmup_coord.stage_origin());"
+        )),
+        "record_raw_tsf_literal が段の宛先を引き継いでいません(BUG-194)"
+    );
+    assert!(
+        flat.contains("plan_raw_recovery(recorded,now)"),
+        "回収の破棄判断は state::raw_recovery_plan::plan_raw_recovery を通すこと(BUG-194)"
+    );
+    // flush の先頭で、破棄したら早期 return し、その後に ESC/BS を送る。
+    let start = flat
+        .find("fnflush_raw_tsf_literal_recovery(")
         .expect("flush_raw_tsf_literal_recovery");
-    let body = &production[start..];
-    let guard = body.find("self.discard_raw_recovery_if_focus_stale()");
-    let send = body.find("flush_raw_tsf_literal_backspaces()");
+    let body = &flat[start..];
+    let guard =
+        body.find("ifletSome(discarded)=self.discard_raw_recovery_if_moved(){returndiscarded;}");
+    let send = body.find("flush_raw_tsf_literal_backspaces();");
     assert!(
         matches!((guard, send), (Some(g), Some(s)) if g < s),
-        "flush_raw_tsf_literal_recovery は ESC/BS 送信より前に世代照合を呼ぶこと(BUG-194)"
+        "flush_raw_tsf_literal_recovery は ESC/BS 送信より前に、破棄なら早期 return する照合を置くこと(BUG-194)"
     );
-    let callers = production
-        .matches("flush_raw_tsf_literal_backspaces()")
-        .count();
+    // 読み出し口は回収の1箇所だけ(全ソースを走査)。
+    let mut callers = 0;
+    for f in list_src_files() {
+        let c = read_crate_file(&f);
+        callers += production_code_only(&c)
+            .matches("flush_raw_tsf_literal_backspaces()")
+            .count();
+    }
     assert_eq!(
         callers, 1,
-        "flush_raw_tsf_literal_backspaces の呼び出しは回収の1箇所だけ(実際: {callers})"
+        "flush_raw_tsf_literal_backspaces() の呼び出しは回収の1箇所だけ(実際: {callers})"
     );
 }
 

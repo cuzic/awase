@@ -200,27 +200,6 @@ impl RawTsfLiteralPending {
             escape_composition: AtomicBool::new(false),
         }
     }
-
-    /// バックスペース数とローマ字を一括セットする。
-    ///
-    /// # Panics
-    /// Mutex が poison された場合（通常発生しない）。
-    pub fn set_pending(&self, backs: usize, romaji: String) {
-        use std::sync::atomic::Ordering::Relaxed;
-        self.backs.store(backs, Relaxed);
-        *self.romaji.lock().unwrap() = romaji;
-    }
-
-    /// バックスペース数とローマ字を一括取り出しする（backs は 0 にリセット、romaji は空にリセット）。
-    ///
-    /// # Panics
-    /// Mutex が poison された場合（通常発生しない）。
-    pub fn take_pending(&self) -> (usize, String) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let backs = self.backs.swap(0, Relaxed);
-        let romaji = std::mem::take(&mut *self.romaji.lock().unwrap());
-        (backs, romaji)
-    }
 }
 
 #[cfg(windows)]
