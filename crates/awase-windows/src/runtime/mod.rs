@@ -599,6 +599,14 @@ impl Runtime {
         external_change_watch_applies_for(self.platform.current_app_profile())
     }
 
+    /// ADR-188・ADR-244: 直接観測の窓（物理のモードキー通過／FSM 再送出の直後の読みを belief と照合する）を適用する
+    /// IME 種別。`Imm32Unavailable` の窓で GJI／同定済み MS-IME 本体のときだけ `Some`（ADR-205 の外部変化の監視は
+    /// 別の述語 `external_change_watch_applies` で GJI 限定のまま）。
+    #[must_use]
+    pub fn direct_mode_key_watch_kind(&self) -> Option<crate::state::ime_kind::ImeKindId> {
+        direct_mode_key_watch_kind_for(self.platform.current_app_profile())
+    }
+
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
     ///
     /// 判定は [`FocusTracker::decide_imm_capability`]（純粋関数）に委譲し、
@@ -2596,6 +2604,17 @@ mod layout_entry_tests {
 
 /// `Runtime::external_change_watch_applies` の述語本体。executor（`Runtime` を持たない）からも同じ条件で呼ぶ（ADR-188）。
 #[must_use]
+/// [`Runtime::direct_mode_key_watch_kind`] の本体（executor は `Runtime` を持たないので共有する）。判定は
+/// 純関数 `state::external_change_watch::direct_watch_kind`。
+pub(crate) fn direct_mode_key_watch_kind_for(
+    profile: crate::focus::class_names::AppImeProfile,
+) -> Option<crate::state::ime_kind::ImeKindId> {
+    crate::state::external_change_watch::direct_watch_kind(
+        profile == crate::focus::class_names::AppImeProfile::Imm32Unavailable,
+        crate::tsf::observer::tsf_obs().table_ime_kind(),
+    )
+}
+
 pub(crate) fn external_change_watch_applies_for(
     profile: crate::focus::class_names::AppImeProfile,
 ) -> bool {

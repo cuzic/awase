@@ -479,7 +479,7 @@ impl ImeStateHub {
 
     // ── 直接観測の窓（ADR-188、BUG-149/150 の Chrome 版）──
 
-    /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（読めない窓＝GJI × `Imm32Unavailable` のみ）。直接観測の窓を開く／延ばす。
+    /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（読めない窓＝GJI／同定済み MS-IME 本体 × `Imm32Unavailable`、ADR-244）。直接観測の窓を開く／延ばす。
     ///
     /// crate 内（殻 `shell.rs` と単体テスト）だけが呼ぶ。閉ループのハーネスには公開しない（`PLATFORM_STATE_PUB_FNS` を増やさない）。
     pub(crate) fn arm_direct_external_change_watch_in_scope(
@@ -513,6 +513,7 @@ impl ImeStateHub {
         now_ms: u64,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
+        kind: crate::state::ime_kind::ImeKindId,
         scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<super::external_change_watch::DirectFollow> {
         if !self.external_change_watch.direct_live(
@@ -537,7 +538,8 @@ impl ImeStateHub {
         {
             return None;
         }
-        let follow = super::external_change_watch::classify_direct_read(
+        let follow = super::external_change_watch::classify_direct_read_for(
+            kind,
             read_open,
             read_conv,
             self.effective_open_at(tick_ms),
@@ -3769,6 +3771,7 @@ mod tests {
                 1032,
                 TickMs(1032),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             Some(direct_follow(Some(false), None))
@@ -3784,6 +3787,7 @@ mod tests {
                 1090,
                 TickMs(1090),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             None
@@ -3796,6 +3800,7 @@ mod tests {
                 1150,
                 TickMs(1150),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             Some(direct_follow(Some(true), None))
@@ -3819,6 +3824,7 @@ mod tests {
                 t,
                 TickMs(t),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope(),
             )
         };
@@ -3843,6 +3849,47 @@ mod tests {
         ));
     }
 
+    /// ADR-244 D4: MS-IME 本体は英数の軸だけを採る。閉の読み（「開いているのに 0」の型を含む）では belief の開閉を
+    /// 動かさず、トグル中（`ObservedEisu`）の NATIVE の読みでは英数を外す（BUG-186）。
+    #[test]
+    fn follow_direct_read_for_ms_ime_native_follows_only_the_eisu_axis() {
+        use crate::state::ime_kind::ImeKindId;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        let read = |ps: &mut PlatformState, open: bool, conv: u32, t: u64| {
+            ps.ime.follow_direct_read_in_scope(
+                Some(open),
+                Some(conv),
+                t,
+                TickMs(t),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope(),
+            )
+        };
+        // 半角英数を読んだら英数を採る(軸の絞り込みは英数を妨げない)。
+        assert_eq!(
+            read(&mut ps, true, 16, 1032),
+            Some(direct_follow(None, Some(true)))
+        );
+        assert_eq!(ps.ime.input_mode(), InputModeState::ObservedEisu);
+        // 閉の読みでは開閉の軸を採らない（belief は開のまま）。
+        assert_eq!(read(&mut ps, false, 0, 1100), None);
+        assert!(ps.ime.effective_open_at(TickMs(1110)));
+        // かなへ戻った(NATIVE)読みで英数を外す。
+        assert_eq!(
+            read(&mut ps, true, 25, 1160),
+            Some(direct_follow(None, Some(false)))
+        );
+        assert!(matches!(
+            ps.ime.input_mode(),
+            InputModeState::AssumedRomaji { .. }
+        ));
+    }
+
     /// R3: awase 自身が窓の最後の arm 以後に IME へ書いたら、GJI の処理前の読みで belief を逆戻ししない。
     #[test]
     fn follow_direct_read_ignores_reads_after_awase_wrote() {
@@ -3859,6 +3906,7 @@ mod tests {
                 1032,
                 TickMs(1032),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             None
@@ -3874,6 +3922,7 @@ mod tests {
                 1232,
                 TickMs(1232),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             Some(direct_follow(Some(false), None))
@@ -3893,6 +3942,7 @@ mod tests {
                 t,
                 TickMs(t),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 scope,
             )
         };
@@ -3962,7 +4012,8 @@ mod tests {
                     t,
                     TickMs(t),
                     follow_fence(),
-                    test_foreground_scope()
+                    crate::state::ime_kind::ImeKindId::Gji,
+                test_foreground_scope()
                 ),
                 None,
                 "t={t}: 処理前の閉の読みで予測を覆さない"
@@ -3979,6 +4030,7 @@ mod tests {
                 1432,
                 TickMs(1432),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             Some(direct_follow(Some(false), None))

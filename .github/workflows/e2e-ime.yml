@@ -363,6 +363,13 @@ jobs:
               for pn, km in (('atok', 1), ('msime', 2))
               for suf, aw, na, gen in (('', 'true', '', ''), ('-noawase', 'false', ' --no-awase', ''),
                                        ('-passthru', 'true', '', 'muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false'))],
+            # ADR-244(BUG-186): 同定済み MS-IME 本体 × 実 Chrome で、左Shift単独タップの持続半角英数のあと 変換・無変換・英数・ひらがな を押す。
+            # IME はかなへ戻る(無変換は閉じる)ので Engine が追随する(NICOLA 文字、無変換は ka)こと(合否)。遷移表(sc-table-*、観測のみ)の
+            # 「Shift単独タップ後」行の 4 キーだけを回す専用構成。INVALID(setup の不安定)は数えない。FAIL が 1 件でもあれば赤。
+            *[cfg(f'sc-bug186-msime-shift-toggle-{pt}', 'pass', check='chromeprobe', ime='msime', keymap=2, runs=1, wait=900, awase='true',
+                  general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,
+                  chrome='--table --table-state=shift --table-keys=1C,1D,F0,F2 --repeat=2 --settle=800 --msime')
+              for pt, gen in (('suppress', ''), ('passthru', '; muhenkan_solo_tap_always_suppress = false'))],
             # 遷移表(2026-10-04): 状態(直接入力/かな/半角英数/Shift単独タップ後) × キー(変換/無変換/英数/ひらがな/IME_ON/IME_OFF) の 24 セルを 2 周(chrome_probe --table)。観測のみ。only='sc-table-*'。
             *[cfg(f'sc-table-{pn}-{pt}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=1500, awase='true',
                   general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,

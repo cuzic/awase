@@ -1964,8 +1964,15 @@ fn main() {
     // 状態=直接入力/かな/半角英数(IME のキーで)/Shift 単独タップ後の持続半角英数。キー=変換/無変換/英数/ひらがな/IME_ON/IME_OFF。
     if args.iter().any(|a| a == "--table") {
         let msime = args.iter().any(|a| a == "--msime");
-        const STATES: [&str; 4] = ["直接入力", "かな", "半角英数", "Shift単独タップ後"];
-        const KEYS: [(&str, u32); 6] = [
+        const ALL_STATES: [&str; 4] = ["直接入力", "かな", "半角英数", "Shift単独タップ後"];
+        // `--table-state=shift`: 「Shift単独タップ後」の状態だけ回す(ADR-244、BUG-186 の専用構成)。省略で全状態。
+        let only_shift = args.iter().any(|a| a == "--table-state=shift");
+        let states: Vec<&str> = ALL_STATES
+            .iter()
+            .copied()
+            .filter(|st| !only_shift || *st == "Shift単独タップ後")
+            .collect();
+        const ALL_KEYS: [(&str, u32); 6] = [
             ("変換", 0x1C),
             ("無変換", 0x1D),
             ("英数", 0xF0),
@@ -1973,6 +1980,19 @@ fn main() {
             ("IME_ON", 0x16),
             ("IME_OFF", 0x1A),
         ];
+        // `--table-keys=1C,1D,F0,F2`: 仮想キーコード(16進)をカンマ区切りで指定したキーだけ回す。省略で全キー。
+        let key_filter: Option<Vec<u32>> = args.iter().find_map(|a| {
+            a.strip_prefix("--table-keys=").map(|v| {
+                v.split(',')
+                    .filter_map(|h| u32::from_str_radix(h.trim(), 16).ok())
+                    .collect()
+            })
+        });
+        let keys: Vec<(&str, u32)> = ALL_KEYS
+            .iter()
+            .copied()
+            .filter(|(_, vk)| key_filter.as_ref().is_none_or(|f| f.contains(vk)))
+            .collect();
         let valid = |c: Class| {
             if awase {
                 matches!(c, Class::Nicola | Class::Plain)
@@ -1983,12 +2003,12 @@ fn main() {
         let (mut pass, mut fail, mut recover, mut invalid) = (0usize, 0usize, 0usize, 0usize);
         let mut idx = 0usize;
         for r in 1..=repeat {
-            for st in STATES {
-                for (kn, kvk) in KEYS {
+            for &st in &states {
+                for &(kn, kvk) in &keys {
                     idx += 1;
                     p.log.line(&format!(
                         "[CASE {idx}/{} run {r}/{repeat}] {st} → {kn}",
-                        STATES.len() * KEYS.len() * repeat
+                        states.len() * keys.len() * repeat
                     ));
                     p.focus_lost = false;
                     if !bring_to_front() {

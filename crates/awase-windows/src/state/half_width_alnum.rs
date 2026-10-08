@@ -289,12 +289,37 @@ impl HalfWidthAlnumState {
         self.toggle_held = true;
     }
 
+    /// 直接観測（ADR-188）が実状態の「かな」（NATIVE の読み）へ追随したとき、持続トグルを OS 書き込みなしで手放す
+    /// （ADR-244 D3）。戻り値は直前の `toggle_held`。
+    ///
+    /// `begin_restore_kana` と違い復元の SendInput/IMC 書き込みを伴わない——IME 側のモードキーが次のモードを既に
+    /// 決めている。`note_explicit_ime_action` も呼ばない（呼ぶと同じ窓の後続の読みが ADR-188 R3 で捨てられる）。
+    /// 手放さないと凍結（`ShiftConvGuard`）が続き、次の左 Shift タップが「開始」でなく「解除」になる。
+    pub fn abandon_on_observed_follow(&mut self) -> bool {
+        std::mem::replace(&mut self.toggle_held, false)
+    }
+
     // ── 状態照会 ──────────────────────────────────────────────────────
 
     #[must_use]
     pub const fn is_toggle_active(&self) -> bool {
         self.toggle_held
     }
+}
+
+/// 直接観測の追随の結果から、持続トグルを手放すべきか（ADR-244 D3・D4）。
+///
+/// - 手放すのは **Microsoft IME 本体で、観測された読みが NATIVE（`eisu == Some(false)`）のとき**だけ。
+///   キー押下を根拠にはしない（`024ca336`〜`6b1e91b8` の「素通しのキーが来たら無条件に手放す」案は、読みが届かず
+///   `か` のままで、GJI の MS-IME プリセットに `ro` を出して戻した）。
+/// - GJI は手放さない（挙動を変えない。GJI の追随で `toggle_held` が残る潜在課題は BUG-186 の範囲外）。
+/// - 英数の読み（`Some(true)`）や追随なしでは手放さない（全角英数 `conv=0x18` は NATIVE が無く英数のまま）。
+#[must_use]
+pub fn should_abandon_on_observed_follow(
+    kind: crate::state::ime_kind::ImeKindId,
+    eisu: Option<bool>,
+) -> bool {
+    matches!(kind, crate::state::ime_kind::ImeKindId::MsIme) && eisu == Some(false)
 }
 
 #[cfg(test)]
@@ -637,5 +662,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ADR-244 D3: 手放すのは MS-IME 本体 × NATIVE の読み(eisu=Some(false))だけ。
+    #[test]
+    fn abandon_only_for_ms_ime_native_read() {
+        use super::should_abandon_on_observed_follow as f;
+        use crate::state::ime_kind::ImeKindId::{Gji, MsIme};
+        assert!(f(MsIme, Some(false)));
+        // 英数の読み・追随なしでは手放さない(全角英数 conv=0x18 は eisu=Some(true) のまま)。
+        assert!(!f(MsIme, Some(true)));
+        assert!(!f(MsIme, None));
+        // GJI は従来どおり手放さない。
+        assert!(!f(Gji, Some(false)));
+        assert!(!f(Gji, Some(true)));
+        assert!(!f(Gji, None));
+    }
+
+    /// ADR-244 D3: 手放しは OS 書き込みを伴わず、直前の toggle_held を返す。手放した後の復元(begin_restore_kana)は不要。
+    #[test]
+    fn abandon_on_observed_follow_clears_toggle_without_a_restore_request() {
+        use super::HalfWidthAlnumState;
+        let mut st = HalfWidthAlnumState::default();
+        st.commit_enter_imc();
+        assert!(st.is_toggle_active());
+        assert!(st.abandon_on_observed_follow());
+        assert!(!st.is_toggle_active());
+        // 二重呼び出しは何も起こさず、復元の取りこぼしも誤って立てることもない。
+        assert!(!st.abandon_on_observed_follow());
+        assert!(!st.begin_restore_kana());
     }
 }
