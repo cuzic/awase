@@ -141,7 +141,7 @@ gh workflow run e2e-ime.yml --ref ci/adr244-s2-spike -f only='sc-table-msime-*' 
 CI(すべて PR の head `a0a0bdb5` 以降):
 - 専用構成 `sc-bug186-msime-shift-toggle-{suppress,passthru}`(`--strict`): 2 構成とも `PASS=8 FAIL=0 INVALID=0`(run 37736666172)。
 - `sc-table-msime-*`: 2 構成とも `PASS=48 FAIL=0 INVALID=0`(run 37736669264、修正前は `PASS=42 FAIL=6`)。この run の `[direct-follow]` は 1 構成あたり 6 件(変換・英数・ひらがな × 2 周、すべて `open=None eisu=Some(false) conv=25`)で、トグル外の 18 セルでは 0 件(S-4)。手放しのログも 6 件で対応する。
-- `sc-table-gji-*`(4 構成): `develop`(run 37716011228)とセル単位(キー × 周 × 出力文字)で差分 0(run 37736672041)。
+- `sc-table-gji-*`(4 構成): 本体の追随だけの段階(run 37736672041)では `develop`(run 37716011228)とセル単位(キー × 周 × 出力文字)で差分 0。D8 を足した最終版(run 37739968036)は下記。
 - MS-IME 本体 × Chrome の回帰セット 49 ジョブ(run 37734121794、`develop` は 37714889571): FAIL(rc=1)の食い違いは `sc-startup-msime-chrome-on-norefocus2` の試行 5 と 8 の入れ替わりだけで、同じ構成は `develop` の run どうしでも結果が入れ替わる(既存の不安定)。他は INVALID と PASS の出入り。
 - PR の CI(`fmt`・`clippy`・`test`・`windows-build`・`dylint`・`smoke` ほか): 最終 head の run で PR #556 に記録する(途中の head `a0a0bdb5` 以降、`architecture_guard` の手放し配線の固定が rustfmt の折り返しで落ち、`b4a10afa` で直した)。
 
@@ -153,6 +153,8 @@ CI(すべて PR の head `a0a0bdb5` 以降):
 - この症状が [BUG-192](../known-bugs/BUG-192.md)(ひらがな直後のトグル → 無変換で入力が空)。`develop` でも再現していた。
 
 **D8(追加の決定): トグル中は古い追跡を捨てる。** `KeyTrack::without_conv_while_half_width_alnum`(`state/key_effect_predictor.rs`)を `kp_predict_key_effect` の `PredictInput` に当てる。トグル中は追跡の `conv` を捨て(`stage` は残す)、追跡が空の場合と同じ「予測なし」にする。reducer(`ime_model.rs`)は触らず、トグル開始時の追跡の消去(案 b)は採らない(belief の書き込み点を増やさない)。回帰は `sc-bug186-pre-F2-{suppress,passthru}`(`--strict`、`expect=pass`、既定の実行に入れる)と単体テスト(`key_track_forgets_conv_only_while_half_width_alnum_toggle_is_active`・`msime_native_toggle_keys_have_no_prediction_once_stale_conv_is_dropped`)。
+
+**D8 の副作用(GJI の MS-IME プリセットが良くなる)**: 追跡を捨てる範囲はトグル中の全 IME に及ぶ。`sc-table-gji-*`(run 37739968036、修正前 `develop` は run 37716011228)で、`gji-atok-*` はセル単位で差分 0、`gji-msimepreset-*` は「Shift単独タップ後 → 変換」が FAIL(`ローマ字のまま〈英数なのに Engine ON=未追随〉`)から PASS(`ka`)になり、無変換は INVALID(`持続半角英数にならなかった`)から PASS になった(passthru: `PASS=28 FAIL=4 INVALID=16` → `PASS=32 FAIL=2 INVALID=14`、suppress: `PASS=30 FAIL=2 INVALID=16` → `PASS=34 FAIL=0 INVALID=14`)。PASS から FAIL へ悪化したセルは無い。BUG-186 の症状欄が書いていた「GJI の MS-IME プリセットでは変換でローマ字のまま」も、同じ原因(トグル中の古い追跡による予測)だったと読める。
 
 **本体のトグル外でも英数の軸の追随が新しく効く(Opus コードレビュー S-5)**: `classify_direct_read_for(MsIme)` はトグルの有無に関係なく英数の軸を採る。例: かなで Engine ON 中の Shift+無変換(予測なし、S1 で `conv=24` = 0x18 = 全角英数、NATIVE なし)が NATIVE なし → `ObservedEisu` → Engine OFF になる。実状態への追随なので方向は正しい。develop には無かった挙動で、ADR-188 追記 6 型の「処理前の読み」の懸念は、S1 の最初の読みが 31〜47ms で窓内一定という範囲では問題にならない(上の `sc-table-msime-*` でトグル外の 18 セルに誤った追随は無い)。
 
