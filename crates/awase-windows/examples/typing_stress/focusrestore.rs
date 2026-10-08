@@ -16,7 +16,7 @@
 //! 判定はしない(観測のみ)。`tools/e2e/ime_key_matrix/check_focusrestore.py` が表にし、awase.log の該当行を添える。
 //! 記録: `fr_config`(1回)・`fr_stage`(時点ごと)・`fr_trial`(試行のまとめ)。時刻 `utc` は awase.log と突合せる用。
 //!
-//! 引数: `--fr-n=N`(試行数。既定3) / `--fr-control`(B へ移さない対照)。
+//! 引数: `--fr-n=N`(試行数。既定3) / `--fr-control`(B へ移さない対照) / `--fr-b-open` / `--fr-sameproc`(B を同一プロセスの別スレッド窓にする。ADR-245 Q4)。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -68,6 +68,9 @@ fn window_b() -> Option<HWND> {
     if cur != 0 {
         return Some(HWND(cur as *mut _));
     }
+    if has_flag("--fr-sameproc") {
+        return window_b_same_process();
+    }
     let exe = std::env::current_exe().ok()?;
     let child = std::process::Command::new(exe)
         .arg("--fr-helper")
@@ -85,6 +88,41 @@ fn window_b() -> Option<HWND> {
         sleep_ms(250);
     }
     None
+}
+
+/// `--fr-sameproc`(ADR-245 Q4): 窓 B をこのハーネスと**同じプロセス**の別スレッドに作る。awase のフォーカス変更通知は
+/// プロセスが変わったときだけ呼ばれる(`advance_focus_tracking` の pid 判定)ので、同一プロセス内の窓移動で
+/// 半角英数トグルが実 IME・awase に持ち越されるか(戻った後に打った文字)を測る。
+fn window_b_same_process() -> Option<HWND> {
+    let (tx, rx) = std::sync::mpsc::channel::<isize>();
+    std::thread::spawn(move || {
+        // SAFETY: このスレッド専用の窓とメッセージループのみ。
+        unsafe {
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("EDIT"),
+                w!("FOCUSRESTORE_B"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                520,
+                80,
+                420,
+                220,
+                None,
+                None,
+                None,
+                None,
+            );
+            let _ = tx.send(hwnd.map_or(0, |h| h.0 as isize));
+            let mut msg = MSG::default();
+            while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&raw const msg);
+                DispatchMessageW(&raw const msg);
+            }
+        }
+    });
+    let raw = rx.recv_timeout(Duration::from_secs(5)).unwrap_or(0);
+    B.store(raw, Ordering::SeqCst);
+    (raw != 0).then(|| HWND(raw as *mut _))
 }
 
 fn kill_b() {
@@ -223,7 +261,7 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         return;
     };
     rec(
-        &json!({"type":"fr_config","n":n_trials,"control":control,"b_open":b_open,
+        &json!({"type":"fr_config","n":n_trials,"control":control,"b_open":b_open,"sameproc":has_flag("--fr-sameproc"),
         "class_a":class_of(a),"class_b":class_of(b)}),
     );
     for n in 0..n_trials {

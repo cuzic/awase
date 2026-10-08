@@ -489,7 +489,7 @@ jobs:
                   general='half_width_alnum_toggle = "all"', until='2026-11-08',
                   stress=f"--form=edit --mode=focus-restore --fr-n=5{ctl} --layout=@REPO@/layout/nicola_keytop.yab{msime}")
               for ime_name, ime, km, msime in (('msime', 'msime', 1, ' --msime'), ('gji', 'gji', 1, ''))
-              for suf, ctl in (('', ''), ('-ctl', ' --fr-control'), ('-bopen', ' --fr-b-open'))],
+              for suf, ctl in (('', ''), ('-ctl', ' --fr-control'), ('-bopen', ' --fr-b-open'), ('-sameproc', ' --fr-sameproc'))],
             # --- ADR-208 L3b: ずれの作り方 × 明示キー行列(only='sc-keymatrix-*' で回す)。窓=edit(ImmCross)/tsf(TsfNative 相当)/chrome(実 Chrome=Imm32Unavailable)、IME=GJI(ATOK プリセット)/MS-IME 本体。 ---
             # abs=絶対キー(Ctrl+変換/Ctrl+無変換/単独タップ変換・無変換/0x16/0x1A、MS-IME は F2 も)を、実 IME を外から閉/開した後と ずれなしで押す(1押下で一致するか)。
             # tog=トグル(無変換の単独タップ=keys.ime_toggle、0xF3、0x19)を外から閉/開した後に押す(2押下以内で一致するか)。
