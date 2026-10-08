@@ -4573,17 +4573,21 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
     // ADR-244 D3: 本体で NATIVE の読みへ追随したら持続トグルを手放す。この 2 呼び出し（判定の純関数と手放し）と、
     // 確認ゲートの期限延長の解除・世代の更新を消すと、BUG-186 の退行（トグルが残り、次の Shift タップが解除になる）が
     // Linux のテストでは検出できない。
-    assert!(
-        follow.contains("should_abandon_on_observed_follow("),
-        "{follow}"
-    );
-    assert!(follow.contains(".abandon_on_observed_follow()"), "{follow}");
-    assert!(follow.contains("belief_left_eisu"), "{follow}");
-    assert!(
-        follow.contains("confirm_gate_deadline_override_ms.set(0)"),
-        "{follow}"
-    );
-    assert!(follow.contains("bump_shift_conv_guard_gen()"), "{follow}");
+    // rustfmt が `self.platform.output.confirm_gate_deadline_override_ms.set(0)` のようなメソッドチェーンを複数行へ
+    // 折り返すので、空白を全て除去してから部分文字列を見る（`half_width_alnum_state_fields_are_not_accessed_directly` と同じ手法）。
+    let follow_squashed: String = follow.split_whitespace().collect();
+    for needle in [
+        "should_abandon_on_observed_follow(",
+        ".abandon_on_observed_follow()",
+        "belief_left_eisu",
+        "confirm_gate_deadline_override_ms.set(0)",
+        "bump_shift_conv_guard_gen()",
+    ] {
+        assert!(
+            follow_squashed.contains(needle),
+            "ir_follow_direct_mode_key_read に {needle} が無い（ADR-244 D3）: {follow}"
+        );
+    }
     // ADR-188 M2: 変換中は窓を開かない。
     assert!(
         executor.contains("ime_composition_active_now()"),
