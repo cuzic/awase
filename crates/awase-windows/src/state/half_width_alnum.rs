@@ -1391,6 +1391,20 @@ mod tests {
         assert_eq!(labels.len(), 5, "理由はログで区別できること");
     }
 
+    /// 行 3 は行 5 より先: effective_open 偽で物理の修飾キー押下中でも Deferred でなく Drop（入れ替えの検出）。
+    #[test]
+    fn key_stage_drop_precedes_deferred() {
+        let f = KeyStageFacts {
+            effective_open: false,
+            physical_modifier_down: true,
+            ..facts()
+        };
+        assert_eq!(
+            plan_key_stage(&f),
+            KeyStagePlan::Drop(DropReason::EffectiveOpenFalse)
+        );
+    }
+
     /// 寿命はちょうど上限なら有効（Resume）。
     #[test]
     fn key_stage_entry_at_exact_max_age_is_still_valid() {

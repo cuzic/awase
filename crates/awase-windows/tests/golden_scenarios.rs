@@ -784,7 +784,7 @@ fn scenario_15_rebuild_toggle_after_cache_restore_ends_as_observed_eisu() {
     use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
 
     let model = run_reducer(vec![
-        focus_changed(ImePolicyProfile::TsfNative),
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
         user_intent(true, UserIntentSource::PhysicalImeKey),
         ImeEvent::InputModeApplied {
             mode: InputModeState::AssumedRomaji {
@@ -824,6 +824,13 @@ fn scenario_15_leave_assumed_romaji_keeps_destination_window_romaji_capable() {
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
         },
+        // 窓 B へ移動(実際の順序: FocusChanged が先、補正が後)。
+        ImeEvent::FocusChanged {
+            from: Some(HwndId(0x1234)),
+            to: HwndId(0x5678),
+            profile: ImePolicyProfile::TsfNative,
+            focus_epoch: 2,
+        },
         // 離脱: 送信は無いが belief は戻す。
         ImeEvent::InputModeApplied {
             mode: InputModeState::AssumedRomaji {
@@ -831,13 +838,6 @@ fn scenario_15_leave_assumed_romaji_keeps_destination_window_romaji_capable() {
             },
             strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             result: InputModeApplyResult::Applied,
-        },
-        // 窓 B へ移動。
-        ImeEvent::FocusChanged {
-            from: Some(HwndId(0x1234)),
-            to: HwndId(0x5678),
-            profile: ImePolicyProfile::TsfNative,
-            focus_epoch: 2,
         },
     ]);
 
