@@ -108,6 +108,19 @@ mod tests {
     }
 
     #[test]
+    fn foreground_unknown_at_record_but_valid_now_discards() {
+        // 記録時に前景が取れず（活性化途中など）、flush 時に取れた: 窓が特定できない回収は捨てる側に倒す。
+        let invalid = StageOrigin {
+            focus_gen: G0,
+            foreground: ForegroundScope::INVALID,
+        };
+        assert_eq!(
+            plan_raw_recovery(Some(invalid), origin(G0, 1, 10)),
+            RawRecoveryDisposition::DiscardStale
+        );
+    }
+
+    #[test]
     fn foreground_lost_after_valid_record_discards() {
         assert_eq!(
             plan_raw_recovery(

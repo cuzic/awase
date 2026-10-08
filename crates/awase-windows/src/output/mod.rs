@@ -1712,6 +1712,8 @@ mod tests {
         // 宛先が変わっていない: 捨てない（予約も deferred も残る）。
         let o = make_output();
         stage(&o);
+        // install の刻印が record に引き継がれている（以降は前景を固定するため上書きする）。
+        assert!(o.raw_literal_origin.get().is_some());
         o.raw_literal_origin.set(Some(origin(&o, 10)));
         assert!(o.discard_raw_recovery_if_moved_at(origin(&o, 10)).is_none());
         assert_eq!(crate::RAW_TSF_LITERAL.backs.load(Relaxed), 2);

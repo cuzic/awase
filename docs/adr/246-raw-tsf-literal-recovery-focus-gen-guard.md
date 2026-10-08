@@ -51,7 +51,7 @@ related_adr:
 
 ## 残るトレードオフ
 
-- 疑似 FocusChange、または前景が一瞬別窓になる(IME の候補窓などは前景にならないが、ダイアログ等)と、正当な回収も捨てる。リテラルが画面に残る側に倒れる。Chrome ではタブ・アドレスバー・コンテンツ間で focus が連続して動くため、cold-start 直後に捨てる頻度が想定より高い可能性がある。journal の `DiscardedStale` の件数でこの頻度を後から測る。
+- 前景が一瞬別窓になる(ダイアログ、Alt+Tab 画面、UAC、ロック、awase 自身のトレイメニュー等)と、正当な回収も捨てる。リテラルが画面に残る側に倒れる。判断は前景窓が主なので、Chrome のタブ・アドレスバー・コンテンツ間の移動(同じ最上位窓の中)では捨てない。その代わり同じ窓内の移動は捉えられない(Q3)。journal の `DiscardedStale` の件数でこの頻度を後から測る。
 - 捨てるときは `pending_deferred` を全部捨てる(ADR-101 の前例と同じ)。前景窓が変わった後に新窓で打って deferred に積まれたキーも一緒に失う。窓は段末から flush までの短い間(LL フックが投函済みメッセージより先に処理されうる分)。`DeferredVk` に退避時の宛先を持たせれば旧窓のものだけ捨てられる(round 2 n1)が、今回は入れない。journal の `DiscardedStale.deferred_vk_count` で規模を測る。
 - 予約は段ごとに1つだけ持てる(`record` は `store` で上書き)。上書きは flush の前に二重に record されない現状の経路では起きない(`RawTsfLiteralRecovery` の record は1箇所)。
 
@@ -64,5 +64,5 @@ related_adr:
 ## 未決
 
 - Q1: 前景窓が一瞬変わる場面(ダイアログ、最小化)での誤破棄の頻度。journal で測る。
-- Q3: 同じ前景窓の中の移動を捉える必要があるか。必要なら、デバウンスしない focus 連番を WinEvent の即時処理で進めて `StageOrigin` に使う案(round 2 N-M1 案1)に進む。今回は入れない。
-- Q2: 破棄時に deferred を全部捨てる粒度(新窓で打ったキーを残す案は、`DeferredVk` に世代が無いので採れない)。
+- Q3: 同じ前景窓の中の移動を捉える必要があるか。必要なら、デバウンスしない focus 連番を WinEvent の即時処理で進めて `StageOrigin` に使う案(round 2 N-M1 案1)に進む。安い代案として、`GetGUIThreadInfo` の `hwndFocus` も比べる案がある(Chrome のアドレスバーとページは別 hwnd)。今回は入れない。
+- Q2: 破棄時に deferred を全部捨てる粒度。`DeferredVk` に退避時の宛先を持たせれば旧窓のものだけ捨てられるが、今回は入れない(トレードオフ節)。
