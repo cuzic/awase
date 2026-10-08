@@ -5,9 +5,9 @@ title: |-
 summary: |-
   BUG-194: raw TSF リテラルの回収予約(RAW_TSF_LITERAL: backs/ESC/romaji)は record から flush までの間に focus 世代の照合が無く、
   間に FocusChange が割り込むと残った ESC/BS/romaji が新しい前面窓へ送られうる(実環境では未観測)。
-  段の開始時に (focus 世代, 前景窓) を採り、読み出し口 flush_raw_tsf_literal_recovery の先頭で照合して、違えば ESC/BS/romaji と旧窓の deferred を送らず捨てる。
+  段の開始時に前景窓(と世代)を採り、読み出し口 flush_raw_tsf_literal_recovery の先頭で照合して、違えば ESC/BS/romaji と旧窓の deferred を送らず捨てる。
 status: |-
-  起草(2026-10-08)。実装は先行。Opus レビュー round 1 で初版(record 時に世代だけ刻む案)の欠陥 5 件を指摘され、本版で改訂。round 2 待ち。
+  起草(2026-10-08)。実装は先行。Opus レビュー round 1 で初版(record 時に世代だけ刻む案)の欠陥を指摘され改訂、round 2 の N-M1(世代の遅れによる誤破棄)を受けて判断を前景窓主体に再改訂。round 3 待ち。
 related_adr:
   - "ADR-101"
   - "ADR-103"
@@ -31,8 +31,10 @@ related_adr:
 
 ## 決定
 
-1. **判断は純関数**: `state/raw_recovery_plan.rs::plan_raw_recovery(recorded: Option<StageOrigin>, now: StageOrigin) -> Send | DiscardStale`。`StageOrigin = { focus_gen, foreground: ForegroundScope }`。世代が違う、または前景窓が違えば `DiscardStale`。記録が無ければ `Send`(従来の挙動)。前景が取れない(`INVALID`)ことが記録時も flush 時も同じなら前景は判断に使わず世代だけで決める。Linux で単体テストが走る。
-2. **宛先は段の開始時に採る**: `Output::install_pending_tsf`(probe/LiteralDetect のインストール口、唯一の `warmup_coord.install_pending_tsf` 呼び出し元)が、最初の VK 送信より前に `StageOrigin`(`ime_mode_focus_gen` と `win32::foreground_scope()`)を `StageRecord` に刻む。`record_raw_tsf_literal` は段の宛先を `raw_literal_origin` に引き継ぐ。検出時の世代は使わない。
+1. **判断は純関数**: `state/raw_recovery_plan.rs::plan_raw_recovery(recorded: Option<StageOrigin>, now: StageOrigin) -> Send | DiscardStale`。`StageOrigin = { focus_gen, foreground: ForegroundScope }`。記録が無ければ `Send`(従来の挙動)。**主な物差しは前景窓**: 記録時か flush 時のどちらかで前景が取れていれば、前景窓が違うときだけ捨てる(取れていた窓が `INVALID` になったときも捨てる)。**前景が両方取れていないときだけ世代の不一致で決める**。Linux で単体テストが走る。
+   - 世代を主にしない理由(round 2 N-M1): 窓切替直後の最初の打鍵は、debounce(50ms)と prefetch で `ime_mode_focus_gen` が進む前に、focus-sync の `injection_mode` 更新だけで送信経路に入る。その打鍵が張る段(`ChromeProbe`・`MsImeReadyCoro` 等、`CancelProbe` で止まらないもの)は「旧窓の世代 N・新しい窓 B」で刻まれ、段の途中で世代が N+1 に進む。世代の不一致だけで捨てると、B 宛ての正しい回収と、段の途中に B で打った deferred(ユーザーの打鍵)を失う。修正前より悪くなる経路である。
+   - 代償: 同じ前景窓の中のフォーカス移動(Chrome のアドレスバーとコンテンツ等)は捉えられない。窓をまたぐ誤配送(別プロセスへの BS/ESC)は防ぐ。
+2. **宛先は段の開始時に採る**: `Output::install_pending_tsf`(probe/LiteralDetect のインストール口、唯一の `warmup_coord.install_pending_tsf` 呼び出し元)が `StageOrigin`(`ime_mode_focus_gen` と `win32::foreground_scope()`)を `StageRecord` に刻む(warm 経路と Unicode 観察は送信の直後に install するが、同じメッセージ処理の中で同期に続くので宛先は同じ)。`record_raw_tsf_literal` は段の宛先を `raw_literal_origin` に引き継ぐ。検出時の世代は使わない。
 3. **照合は flush の先頭の1箇所**: `discard_raw_recovery_if_moved` が `DiscardStale` と判断したら、`backs`/`escape_composition`/`romaji` と `pending_deferred` を捨て、`RawRecoveryOutcome::DiscardedStale { backs, romaji_present, deferred_vk_count }` を返して早期 return する(ESC/BS も romaji 再送も `flush_stale_deferred_vks_after_recovery` も走らない)。journal の `DiscardedStale` を再び使う。
 4. **予約が無い回は何もしない**: flush は drain のたびに走るので、`RAW_TSF_LITERAL` に予約が無ければ判断せず、無関係な deferred も捨てない。
 5. 前景窓の読み取りは `win32::foreground_scope()`(非ブロッキングの `GetForegroundWindow`)。`output/` は既に `crate::win32::` を使っている。
@@ -50,16 +52,17 @@ related_adr:
 ## 残るトレードオフ
 
 - 疑似 FocusChange、または前景が一瞬別窓になる(IME の候補窓などは前景にならないが、ダイアログ等)と、正当な回収も捨てる。リテラルが画面に残る側に倒れる。Chrome ではタブ・アドレスバー・コンテンツ間で focus が連続して動くため、cold-start 直後に捨てる頻度が想定より高い可能性がある。journal の `DiscardedStale` の件数でこの頻度を後から測る。
-- 捨てるときは `pending_deferred` を全部捨てる(ADR-101 の前例と同じ)。FocusChange の後に新窓で打って deferred に積まれたキーも一緒に失う。窓は flush までの短い間だけ。
+- 捨てるときは `pending_deferred` を全部捨てる(ADR-101 の前例と同じ)。前景窓が変わった後に新窓で打って deferred に積まれたキーも一緒に失う。窓は段末から flush までの短い間(LL フックが投函済みメッセージより先に処理されうる分)。`DeferredVk` に退避時の宛先を持たせれば旧窓のものだけ捨てられる(round 2 n1)が、今回は入れない。journal の `DiscardedStale.deferred_vk_count` で規模を測る。
 - 予約は段ごとに1つだけ持てる(`record` は `store` で上書き)。上書きは flush の前に二重に record されない現状の経路では起きない(`RawTsfLiteralRecovery` の record は1箇所)。
 
 ## テスト
 
-- `state/raw_recovery_plan.rs` の単体テスト(Linux で走る): 世代一致、記録なし、世代が進んだ、**世代は同じで前景だけ変わった**、前景が消えた、前景が最初から不明。
-- `output/mod.rs::raw_tsf_literal_and_deferred_are_discarded_when_focus_changed_before_flush`(Windows CI のみ): 段中に deferred 2 件 → record → 段末で probe を外す → `cancel_probe` を介さず FocusChange → 破棄(backs 2・deferred 2 が `DiscardedStale` に出る)。宛先が同じなら残る。予約が無い回は deferred を捨てない。
+- `state/raw_recovery_plan.rs` の単体テスト(Linux で走る): 一致、記録なし、**世代だけ進んで前景が同じなら送る(N-M1 の時系列)**、世代は同じで前景だけ変わった、前景が消えた、前景が最初から不明(世代で決める)。
+- `output/mod.rs::raw_tsf_literal_and_deferred_are_discarded_when_foreground_changed_before_flush`(Windows CI のみ): 段中に deferred 2 件 → record → 段末で probe を外す → `cancel_probe` を介さず、前景窓が変わった宛先で flush 判断(`discard_raw_recovery_if_moved_at` に宛先を渡し、実機の前景に依存させない)→ 破棄(backs 2・deferred 2 が `DiscardedStale` に出る)。宛先が同じなら残る。世代だけ進んでも残る。予約が無い回は deferred を捨てない。
 - `tests/architecture_guard.rs::raw_tsf_literal_recovery_is_guarded_by_stage_origin`: 空白を除いて、`install_pending_tsf` の刻印、`record_raw_tsf_literal` の引き継ぎ、`plan_raw_recovery` の使用、flush の先頭の早期 return(ESC/BS 送信より前)、全ソースで `flush_raw_tsf_literal_backspaces()` の呼び出しが1箇所、を固定する。
 
 ## 未決
 
 - Q1: 前景窓が一瞬変わる場面(ダイアログ、最小化)での誤破棄の頻度。journal で測る。
+- Q3: 同じ前景窓の中の移動を捉える必要があるか。必要なら、デバウンスしない focus 連番を WinEvent の即時処理で進めて `StageOrigin` に使う案(round 2 N-M1 案1)に進む。今回は入れない。
 - Q2: 破棄時に deferred を全部捨てる粒度(新窓で打ったキーを残す案は、`DeferredVk` に世代が無いので採れない)。

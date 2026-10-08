@@ -1,9 +1,13 @@
 //! raw TSF literal の回収(ESC/BS/romaji の再送)を、送るか捨てるかの判断(BUG-194、ADR-246)。
 //!
-//! 回収は literal を打った旧窓宛て。段の開始(最初の VK 送信より前)に採った `(focus 世代, 前景窓)` と、
-//! flush 時点のそれが違えば、宛先の窓が変わっているので送らずに捨てる。
-//! 世代は debounce と非同期 prefetch の後でしか進まない(OS の前景はもう変わっているのに世代がまだ、という区間がある)ので、
-//! 世代だけでは足りず、`GetForegroundWindow` の事実を併用する。
+//! 回収は literal を打った旧窓宛て。段の開始に採った `(focus 世代, 前景窓)` と、flush 時点のそれを比べ、
+//! 宛先の窓が変わっていれば送らずに捨てる。
+//!
+//! 主な物差しは**前景窓**(`GetForegroundWindow`、OS の事実)。`ime_mode_focus_gen` は debounce(50ms)と非同期 prefetch の後でしか
+//! 進まず、窓切替直後の最初の打鍵が張る段は「旧窓の世代 N・新しい窓 B」で刻まれ、段の途中で N+1 に進む。
+//! 世代の不一致だけで捨てると、その B 宛ての正しい回収と後続の打鍵を失う(round 2 N-M1)。
+//! そのため、前景窓が記録時・flush 時とも取れていて同じなら世代の不一致では捨てない。世代は前景が取れないときの代用に使う。
+//! 代償: 同じ前景窓の中のフォーカス移動(Chrome のアドレスバーとコンテンツ等)は捉えられない。
 
 use super::focus_gen::FocusGen;
 use super::foreground_scope::ForegroundScope;
@@ -27,9 +31,9 @@ pub enum RawRecoveryDisposition {
 /// `recorded` は段の開始時に採った値(採れていなければ `None`)、`now` は flush 時点の値。
 ///
 /// - `None` は判断材料が無いので送る(従来の挙動)。
-/// - 世代が違えば捨てる。
-/// - 前景窓が違えば捨てる。前景が取れない(`INVALID`)ときも、記録時に取れていた窓とは等しくないので捨てる側に倒れる。
-///   記録時にも取れていなかった(`INVALID` 同士)ときは前景を判断に使わず、世代だけで決める。
+/// - どちらかで前景窓が取れていれば、前景窓だけで決める(違えば捨てる)。取れていた窓が `INVALID` になった場合も、
+///   Alt+Tab 画面・UAC・ロック等で BS を送るべきでないので捨てる。
+/// - どちらも前景が取れていなければ、世代の不一致で決める。
 #[must_use]
 pub fn plan_raw_recovery(
     recorded: Option<StageOrigin>,
@@ -38,15 +42,16 @@ pub fn plan_raw_recovery(
     let Some(recorded) = recorded else {
         return RawRecoveryDisposition::Send;
     };
-    if recorded.focus_gen != now.focus_gen {
-        return RawRecoveryDisposition::DiscardStale;
+    let differs = if recorded.foreground.is_valid() || now.foreground.is_valid() {
+        recorded.foreground != now.foreground
+    } else {
+        recorded.focus_gen != now.focus_gen
+    };
+    if differs {
+        RawRecoveryDisposition::DiscardStale
+    } else {
+        RawRecoveryDisposition::Send
     }
-    if (recorded.foreground.is_valid() || now.foreground.is_valid())
-        && recorded.foreground != now.foreground
-    {
-        return RawRecoveryDisposition::DiscardStale;
-    }
-    RawRecoveryDisposition::Send
 }
 
 #[cfg(test)]
@@ -79,10 +84,12 @@ mod tests {
     }
 
     #[test]
-    fn gen_advanced_discards() {
+    fn gen_advanced_in_same_foreground_sends() {
+        // N-M1: 窓切替直後の最初の打鍵が張った段は「旧窓の世代 N・新しい窓 B」で刻まれ、段の途中で世代が N+1 に進む。
+        // 前景窓 B は変わっていないので、B 宛ての正しい回収と後続の打鍵を捨ててはならない。
         assert_eq!(
             plan_raw_recovery(Some(origin(G0, 1, 10)), origin(G0.next(), 1, 10)),
-            RawRecoveryDisposition::DiscardStale
+            RawRecoveryDisposition::Send
         );
     }
 
@@ -126,7 +133,8 @@ mod tests {
         );
         assert_eq!(
             plan_raw_recovery(Some(invalid(G0)), invalid(G0.next())),
-            RawRecoveryDisposition::DiscardStale
+            RawRecoveryDisposition::DiscardStale,
+            "前景が取れないときは世代で決める"
         );
     }
 }

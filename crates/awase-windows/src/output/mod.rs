@@ -1297,6 +1297,14 @@ impl Output {
     /// 判断は `state::raw_recovery_plan::plan_raw_recovery`（focus 世代 + 前景窓）。
     /// 予約も deferred も無ければ何もしない（`None`）。
     fn discard_raw_recovery_if_moved(&self) -> Option<RawRecoveryOutcome> {
+        self.discard_raw_recovery_if_moved_at(self.current_stage_origin())
+    }
+
+    /// `discard_raw_recovery_if_moved` の本体。flush 時点の宛先 `now` を引数で受ける（テストで前景窓を固定するため）。
+    fn discard_raw_recovery_if_moved_at(
+        &self,
+        now: crate::state::raw_recovery_plan::StageOrigin,
+    ) -> Option<RawRecoveryOutcome> {
         use crate::state::raw_recovery_plan::{plan_raw_recovery, RawRecoveryDisposition};
         use std::sync::atomic::Ordering::Relaxed;
         // 予約が無いときは何もしない（flush は drain のたびに走る。予約の無い回に無関係な deferred を捨てない）。
@@ -1311,7 +1319,6 @@ impl Output {
             return None;
         }
         let recorded = self.raw_literal_origin.get();
-        let now = self.current_stage_origin();
         if plan_raw_recovery(recorded, now) == RawRecoveryDisposition::Send {
             return None;
         }
@@ -1656,7 +1663,7 @@ mod tests {
     /// 前景窓の変化は純関数 `plan_raw_recovery` のテストで固定する（ここでは世代だけ動かせる）。
     /// グローバルを触るので `RAW_LITERAL_TEST_LOCK` で直列化する。
     #[test]
-    fn raw_tsf_literal_and_deferred_are_discarded_when_focus_changed_before_flush() {
+    fn raw_tsf_literal_and_deferred_are_discarded_when_foreground_changed_before_flush() {
         use std::sync::atomic::Ordering::Relaxed;
         let _g = RAW_LITERAL_TEST_LOCK
             .lock()
@@ -1694,19 +1701,33 @@ mod tests {
         };
         clear();
 
+        use crate::state::foreground_scope::ForegroundScope;
+        use crate::state::raw_recovery_plan::StageOrigin;
+        // 前景窓は実機の値に依存させず、記録時の宛先と flush 時の宛先を明示する。
+        let origin = |o: &Output, hwnd: isize| StageOrigin {
+            focus_gen: o.ime_mode_focus_gen.get(),
+            foreground: ForegroundScope { pid: 1, hwnd },
+        };
+
         // 宛先が変わっていない: 捨てない（予約も deferred も残る）。
         let o = make_output();
         stage(&o);
-        assert!(o.discard_raw_recovery_if_moved().is_none());
+        o.raw_literal_origin.set(Some(origin(&o, 10)));
+        assert!(o.discard_raw_recovery_if_moved_at(origin(&o, 10)).is_none());
         assert_eq!(crate::RAW_TSF_LITERAL.backs.load(Relaxed), 2);
+        assert_eq!(o.pending_deferred_len(), 2);
+
+        // N-M1: 世代だけ進み（debounce 済みの FocusChange）、前景窓は同じ: 捨てない。
+        o.on_ime_mode_focus_changed();
+        assert!(o.discard_raw_recovery_if_moved_at(origin(&o, 10)).is_none());
         assert_eq!(o.pending_deferred_len(), 2);
         clear();
 
-        // FocusChange が割り込む（cancel_probe は呼ばれない）: 予約と deferred を捨てる。
+        // 前景窓が変わった（cancel_probe は呼ばれない）: 予約と deferred を捨てる。
         let o = make_output();
         stage(&o);
-        o.on_ime_mode_focus_changed();
-        let out = o.discard_raw_recovery_if_moved();
+        o.raw_literal_origin.set(Some(origin(&o, 10)));
+        let out = o.discard_raw_recovery_if_moved_at(origin(&o, 20));
         assert!(matches!(
             out,
             Some(RawRecoveryOutcome::DiscardedStale {
@@ -1732,7 +1753,7 @@ mod tests {
         ));
         assert!(o.defer_vk_if_probe_in_flight(VkCode(0x41), false, DeferredOrigin::UserInput));
         o.on_ime_mode_focus_changed();
-        assert!(o.discard_raw_recovery_if_moved().is_none());
+        assert!(o.discard_raw_recovery_if_moved_at(origin(&o, 99)).is_none());
         assert_eq!(o.pending_deferred_len(), 1);
         clear();
     }

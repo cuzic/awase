@@ -4780,8 +4780,9 @@ fn raw_tsf_literal_recovery_is_guarded_by_stage_origin() {
     let mut callers = 0;
     for f in list_src_files() {
         let c = read_crate_file(&f);
-        callers += production_code_only(&c)
-            .matches("flush_raw_tsf_literal_backspaces()")
+        // 定義行 `pub fn flush_raw_tsf_literal_backspaces() {` を数えないよう、呼び出しの `;` まで含めて数える。
+        callers += squash(production_code_only(&c))
+            .matches("flush_raw_tsf_literal_backspaces();")
             .count();
     }
     assert_eq!(
