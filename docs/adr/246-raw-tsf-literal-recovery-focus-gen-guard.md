@@ -7,7 +7,7 @@ summary: |-
   間に FocusChange が割り込むと残った ESC/BS/romaji が新しい前面窓へ送られうる(実環境では未観測)。
   段の開始時に前景窓(と世代)を採り、読み出し口 flush_raw_tsf_literal_recovery の先頭で照合して、違えば ESC/BS/romaji と旧窓の deferred を送らず捨てる。
 status: |-
-  起草(2026-10-08)。実装は先行。Opus レビュー round 1 で初版(record 時に世代だけ刻む案)の欠陥を指摘され改訂、round 2 の N-M1(世代の遅れによる誤破棄)を受けて判断を前景窓主体に再改訂。round 3 で収束(Critical/Major なし)。実機未確認。
+  起草(2026-10-08)。実装は先行。Opus レビュー round 1 で初版(record 時に世代だけ刻む案)の欠陥を指摘され改訂、round 2 の N-M1(世代の遅れによる誤破棄)を受けて判断を前景窓主体に再改訂。round 3 で収束(Critical/Major なし)。PR #557 で実装済み。実機未確認。
 related_adr:
   - "ADR-101"
   - "ADR-103"
