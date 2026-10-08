@@ -770,3 +770,79 @@ fn scenario_15_duplicate_restore_does_not_toggle_belief_back_to_eisu() {
         "復元イベントが二度来ても belief は英数へ戻らない"
     );
 }
+
+// ── シナリオ 15 追補: ADR-245(BUG-193)の belief 側 ───────────────────────────
+//
+// reducer だけを回す。戻り待ちの判断(`state/half_width_alnum.rs`)は Linux 単体、殻の配線は CI 実機で検証する。
+
+/// 戻り待ちの `RebuildToggle`(ADR-245 決定8): 戻った窓でキャッシュ復元が AssumedRomaji に洗った後に、
+/// 半角英数トグルの belief(ObservedEisu)を書き直すと、最終の belief は ObservedEisu になる。
+/// 順序は ADR-245 決定8: 洗い(CacheRestore)が先、書き直しが後。
+#[test]
+fn scenario_15_rebuild_toggle_after_cache_restore_ends_as_observed_eisu() {
+    use awase::engine::{AssumedReason, InputModeState};
+    use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
+
+    let model = run_reducer(vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::AssumedRomaji {
+                reason: AssumedReason::AppKindExcluded,
+            },
+            strategy: InputModeApplyStrategy::CacheRestore,
+            result: InputModeApplyResult::Applied,
+        },
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+        },
+    ]);
+
+    assert!(model.effective_open(), "IME ON は維持される");
+    assert_eq!(
+        model.input_mode(),
+        InputModeState::ObservedEisu,
+        "キャッシュ復元の後に書き直した半角英数トグルの belief が最終値になる"
+    );
+}
+
+/// 離脱時の belief 補正(ADR-245 決定1、B-3): A で半角英数トグル中に別プロセスの窓 B へ移るとき、
+/// IME へ何も送らなくても belief だけは AssumedRomaji へ戻す。B の ctx が romaji-capable になり、
+/// B で NICOLA が止まらない(ObservedEisu の持ち越しが無い)。
+#[test]
+fn scenario_15_leave_assumed_romaji_keeps_destination_window_romaji_capable() {
+    use awase::engine::{AssumedReason, InputModeState};
+    use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
+
+    let model = run_reducer(vec![
+        focus_changed(ImePolicyProfile::TsfNative),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+        },
+        // 窓 B へ移動(実際の順序: FocusChanged が先、補正が後)。
+        ImeEvent::FocusChanged {
+            from: Some(HwndId(0x1234)),
+            to: HwndId(0x5678),
+            profile: ImePolicyProfile::TsfNative,
+            focus_epoch: 2,
+        },
+        // 離脱: 送信は無いが belief は戻す。
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::AssumedRomaji {
+                reason: AssumedReason::UserHalfWidthAlnumToggleOff,
+            },
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+        },
+    ]);
+
+    assert!(
+        model.input_mode().is_romaji_capable(),
+        "B の ctx が romaji-capable(ObservedEisu を B へ持ち越さない)"
+    );
+}

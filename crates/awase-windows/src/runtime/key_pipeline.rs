@@ -1985,6 +1985,8 @@ impl Runtime {
             side,
             entry_ime_ok,
             uses_imc_conv_write,
+            // ADR-245 PR 1: 戻り待ちはまだ殻に配線していない（PR 2）ので常に偽。
+            false,
         ) {
             HalfWidthAlnumEffect::EnterViaImcWrite => {
                 // 本物の単独タップ、1回目 → 半角英数トグルへ移行。conv=0x0000 の
@@ -2069,7 +2071,7 @@ impl Runtime {
                     );
                 }
             }
-            HalfWidthAlnumEffect::ExitRestoreKana => {
+            HalfWidthAlnumEffect::ExitRestoreKana { .. } => {
                 // 2回目の左Shiftタップ（トグルOFF）・右Shift（トグルの緊急解除）:
                 // 復元を実行する。
                 //
