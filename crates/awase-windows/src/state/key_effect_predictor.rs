@@ -276,6 +276,10 @@ impl KeyTrack {
     ///
     /// 追跡を捨てれば、入力モードの `ObservedEisu` から変換モードを `C10` と見なし、予測なしになる（追跡が空の場合と
     /// 同じ。S1 で 8/8、CI の `sc-bug186-msime-shift-toggle-*`）。入力中の段階（`stage`）は残す。
+    ///
+    /// 注意: これは予測の**入力**だけを替えるが、トグル中の文字キーなどの予測は `track.conv = None` を返すので、
+    /// `KeyEffectPredicted` として保存される追跡の `conv` もそこで消える。トグルを抜けた後の予測は、`conv_raw`、
+    /// 次いで入力モードから変換モードを決める（解除後の実状態はかななので方向は正しい）。
     #[must_use]
     pub const fn without_conv_while_half_width_alnum(self, toggle_active: bool) -> Self {
         if toggle_active {
@@ -2163,11 +2167,15 @@ mod tests {
             unreadable: true,
             passive_rule_eligible: false,
         };
+        // 前提: 古い追跡 C19 のままだと、無変換・ひらがなには予測が付く（変換・英数は表のセルの有無で付かない）。
         for vk in [0x1D_u16, 0xF2] {
             assert!(
                 predict_in_table(table_of(KeymapPreset::MsImeNative), vk, &input(stale)).is_some(),
                 "前提: 古い追跡 C19 のままだと vk=0x{vk:02X} に予測が付く"
             );
+        }
+        // 追跡を捨てれば、変換・無変換・英数・ひらがな のどれも予測なし（D5 のテストと同じ 4 キー）。
+        for vk in [0x1C_u16, 0x1D, 0xF0, 0xF2] {
             assert!(
                 predict_in_table(
                     table_of(KeymapPreset::MsImeNative),
