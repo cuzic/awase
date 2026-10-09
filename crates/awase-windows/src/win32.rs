@@ -500,6 +500,9 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
 /// （フォーカス null・`GetGUIThreadInfo` 失敗・タイムアウト・ワーカー上限）。代用値が「違う窓」に見えると
 /// 変化の頻度を誤って過大に測るため。呼び出しは literal 検出時と予約あり flush の稀な 2 箇所に限ること。
 ///
+/// # Panics
+/// `GUITHREADINFO` のサイズが `u32` に収まらない場合（実際には起こらない）。
+///
 /// # Safety
 /// Win32 API を呼び出す。
 #[must_use]

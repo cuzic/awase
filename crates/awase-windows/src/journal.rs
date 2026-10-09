@@ -177,8 +177,8 @@ impl PhysicalDispositionSummary {
 #[derive(strum::IntoStaticStr, Debug, Clone, Copy, Serialize)]
 #[serde(tag = "kind")]
 pub enum DeferredRecoveryOutcomeSummary {
-    /// give-up 検出時と drain 処理時でフォーカス世代が変わっていたため、
-    /// backspace/romaji/`pending_deferred` を丸ごと破棄した。
+    /// 段の開始時と flush 時で宛先（前景窓。取れなければ focus 世代）が変わっていたため、
+    /// backspace/romaji/`pending_deferred` を丸ごと破棄した（ADR-246）。
     ///
     /// `backs`/`romaji_present` は破棄した `RAW_TSF_LITERAL` の中身、
     /// `deferred_vk_count` は破棄した `pending_deferred` の VK 数。

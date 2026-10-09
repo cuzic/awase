@@ -102,4 +102,6 @@ related_adr:
 ### 観測版の実装(2026-10-09、判断には使わない)
 Opus の推奨どおり、挙動を変えない観測だけを入れた。`win32::focus_hwnd_observed`(`hwndFocus` だけを返し、null・失敗・タイムアウト・ワーカー上限は `None`。前景窓での代用はしない=B1 対策)を、**literal 検出時(`record_raw_tsf_literal`)と、予約ありと分かった後の flush の 2 回だけ**30ms 上限で読む(予約が無い drain では読まない=B2 対策)。journal の `DeferredRecoveryFlush` の `Flushed` と `DiscardedStale` に `focus_hwnd_changed: Option<bool>`(両方取れたときだけ `Some`)を足した。`Flushed` は VK が 0 件でも `Some(true)` なら残す。`DiscardStale` の判断(`plan_raw_recovery`)は変えていない。
 
-判断への昇格は、実機の journal で `Flushed.focus_hwnd_changed == Some(true)` が出た(=同じ前景窓内の移動で回収を送った)か、リテラルが別フィールドへ BS された報告が出てから。昇格のときは B1 の専用関数・B2 の lazy 読み・M1(Ctrl+L→即打鍵)の倒し方を先に ADR に書く。検出時に採るため、段の開始から検出までの間の移動は取りこぼす(頻度の下限を測る)。
+**この観測は検出から flush までの数 ms しか見ていない**(Opus PR #560 レビュー M1)。同じ窓内の移動が起きやすいのは段の開始から検出までの 300〜500ms なので、`Some(true)` は構造上ほぼ出ない。**journal に `Some(true)` が 0 件でも、起きていない証拠にはならない。** `DiscardedStale` に `focus_hwnd_changed: Some(false)` が付いても「フォーカスが動いていない=誤破棄」とは読めない(前景の変化が検出より前なら、検出時の値が既に新しい窓のもの)。したがって昇格条件は `Some(true)` の出現ではなく、リテラルが別フィールドへ BS された報告が出ることだけとする。段の開始から見たいなら、debounce 前の `EVENT_OBJECT_FOCUS`(`app/bootstrap.rs` の `LAST_FOCUS_HWND`、Win32 を呼ばない atomic)を段の開始で読む案がある。ただし app 層の static を output 層から読むので層境界の設計が先に要る(別 ADR)。
+
+判断への昇格は、リテラルが別フィールドへ BS された報告が出てからとする。昇格のときは B1 の専用関数・B2 の lazy 読み・M1(Ctrl+L→即打鍵)の倒し方を先に ADR に書く。検出時に採るため、段の開始から検出までの間の移動は取りこぼす(ただし上記のとおり下限としても弱い)。
