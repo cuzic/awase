@@ -196,6 +196,7 @@
 | [BUG-192](BUG-192.md) | 修正済み(CI 検証済み・実機未確認、PR #556 に同梱、2026-10-08) | ひらがなキー直後の持続半角英数 → 無変換で入力が空になる(実 Chrome × MS-IME 本体) |
 | [BUG-193](BUG-193.md) | 未修正(CI で再現、2026-10-08) | プロセスをまたぐフォーカス移動で、持続半角英数トグルの強制復元が旧窓に届かず、旧窓が半角英数のまま残る(MS-IME 本体・GJI)
 | [BUG-194](BUG-194.md) | 構造は残存・実環境では未観測(2026-10-08) | RAW_TSF_LITERAL(raw TSF リテラルの回収待ち)に focus 世代ガードが無く、record と flush の間に FocusChange が割り込むと別窓へ BS/ESC/再送が届きうる
+| [BUG-195](BUG-195.md) | 起票(原因は仮説のみ、2026-10-09) | GJI を使っているのに awase が Microsoft IME と同定し、MS-IME 用の msime-ready ゲートで Windows Terminal の「の」が生ローマ字 `no` になる |
 
 ## その他の資料
 
