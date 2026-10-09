@@ -5591,7 +5591,7 @@ fn warmup_gate_third_arg_is_never_a_bare_literal_in_production_code() {
 /// `.half_width_alnum.left_tap_armed` のような生アクセスを検出する。
 #[test]
 fn half_width_alnum_state_fields_are_not_accessed_directly() {
-    const FIELDS: [&str; 6] = [
+    const FIELDS: [&str; 7] = [
         "left_tap_armed",
         "right_tap_armed",
         "conv_guard_pending",
@@ -5599,6 +5599,8 @@ fn half_width_alnum_state_fields_are_not_accessed_directly() {
         "entry_policy",
         // ADR-245: 離脱で積む戻り待ち。書き込み経路は `suspend_toggle_for_return` ほかのメソッドに限る。
         "return_pending",
+        // ADR-245 S-PR2-1: Enter 時に控えた (スコープ, IME 種別)。離脱の tick の前面窓は移動先なので殻は渡さない。
+        "entered_in",
     ];
 
     // 1. 使用箇所走査: 本番コード全体（`state/half_width_alnum.rs` 自身の
@@ -7795,5 +7797,121 @@ fn classification_does_not_read_prev_conversion_mode() {
         !ob_without_writer.contains("current_prev_conversion_mode")
             && !ob_without_writer.contains("prev_conv"),
         "observer/ime_observer.rs は prev_conversion_mode を引数に取らない(分類に戻さない、ADR-239)"
+    );
+}
+
+/// ADR-245 PR 2: 半角英数トグルの「戻ってきたときに復元」の配線の形を固定する。
+///
+/// - 離脱(`ir_notify_focus_changed`)は復元(`kp_restore_kana_from_half_width`)を呼ばない。IME へ何も送らず、
+///   `plan_leave` → `suspend_toggle_for_return` で戻り待ちへ積む(BUG-193。世代の bump で IMC リトライが必ず中断し
+///   F2 が移動先 B へ届いていた)。
+/// - 復元本体は `kp_restore_kana_from_half_width` に残り、`ExitOwnership` で切り替える(別関数へ切り出すと
+///   `actuation_call_guard` の呼び出し元の関数名の許可リストが落ちる)。
+/// - `engine_owns_open_key` は式 1 か所(`matches_ime_set_open` を呼ぶのはその関数だけ)・`kp_run_inner` での評価 2 回
+///   (戻り待ちの段の前と shadow toggle の前。R4-2)。
+/// - 戻り待ちの段は `try_hold_key`/ime-off-rescue の後、`kp_stage_idle_conv_check` と shadow toggle の前。
+/// - `kp_shift_conv_guard_key_down` の早期 return は戻り待ち(`pending_for_scope`)を見る(R4-1)。
+/// - `commit_enter_*` は Enter 時のスコープを受け取る(S-PR2-1)。
+#[test]
+fn half_width_return_wiring_adr245_pr2() {
+    let refresh = non_comment_lines(production_code_only(&read_crate_file(
+        "src/runtime/ime_refresh.rs",
+    )));
+    assert!(
+        !refresh.contains("kp_restore_kana_from_half_width"),
+        "ir_notify_focus_changed は離脱で復元を呼ばない(ADR-245 決定1。戻り待ちへ積むだけ)"
+    );
+    assert_eq!(
+        refresh.matches(".suspend_toggle_for_return(").count(),
+        1,
+        "離脱の戻り待ちへの積み込みは 1 か所"
+    );
+    assert!(
+        refresh.contains(".half_width_alnum.plan_leave()"),
+        "離脱の判断は純関数 plan_leave 経由(3 variant、M-PR2-1)"
+    );
+
+    let src = read_crate_file("src/runtime/key_pipeline.rs");
+    let kp = non_comment_lines(production_code_only(&src));
+    assert_eq!(
+        kp.matches("fn kp_restore_kana_from_half_width(").count(),
+        1,
+        "復元本体は kp_restore_kana_from_half_width の 1 つだけ(ADR-245 決定4)"
+    );
+    assert!(
+        kp.contains("ownership: ExitOwnership,"),
+        "kp_restore_kana_from_half_width は ExitOwnership を取る"
+    );
+    assert!(
+        kp.contains("exit_owns_write(ownership, was_toggle_active)"),
+        "OS 書き込みの権利は純関数 exit_owns_write で決める(B-1)"
+    );
+
+    // engine_owns_open_key: 式は 1 か所、評価は kp_run_inner で 2 回。
+    assert_eq!(
+        kp.matches(".matches_ime_set_open(").count(),
+        1,
+        "matches_ime_set_open を呼ぶのは engine_owns_open_key の 1 か所だけ(R4-2)"
+    );
+    let run_inner_start = kp.find("fn kp_run_inner(").expect("kp_run_inner");
+    let run_inner_end = kp[run_inner_start..]
+        .find("\n    fn ")
+        .map_or(kp.len(), |i| run_inner_start + i);
+    let run_inner = &kp[run_inner_start..run_inner_end];
+    assert_eq!(
+        run_inner.matches("self.engine_owns_open_key(").count(),
+        1,
+        "kp_run_inner での直接評価は shadow toggle の前の 1 回(もう 1 回は戻り待ちの段の中)"
+    );
+    let stage_start = kp
+        .find("fn kp_stage_half_width_return(")
+        .expect("kp_stage_half_width_return");
+    let stage_end = kp[stage_start..]
+        .find("\n    fn ")
+        .map_or(kp.len(), |i| stage_start + i);
+    assert_eq!(
+        kp[stage_start..stage_end]
+            .matches("self.engine_owns_open_key(")
+            .count(),
+        1,
+        "戻り待ちの段で engine_owns_open_key を評価するのは 1 回(行 2 の事実用)"
+    );
+
+    // 段の位置: try_hold_key → ime-off-rescue → 戻り待ちの段 → idle-conv-check → engine_owns_open_key → shadow toggle。
+    let pos = |needle: &str| {
+        run_inner
+            .find(needle)
+            .unwrap_or_else(|| panic!("kp_run_inner に {needle} が無い"))
+    };
+    let hold = pos("self.platform.try_hold_key(");
+    let rescue = pos("self.take_ime_off_rescue_pending()");
+    let ret = pos("self.kp_stage_half_width_return(");
+    let idle = pos("self.kp_stage_idle_conv_check(");
+    let owns = pos("self.engine_owns_open_key(");
+    let shadow = pos("self.kp_stage_shadow_ime_toggle(");
+    assert!(
+        hold < rescue && rescue < ret && ret < idle && idle < owns && owns < shadow,
+        "戻り待ちの段は try_hold_key/ime-off-rescue の後・idle-conv-check と shadow toggle の前(ADR-245 決定3)"
+    );
+
+    // KeyDown 側のガード: 戻り待ちを見る(R4-1)。
+    let kd_start = kp
+        .find("fn kp_shift_conv_guard_key_down(")
+        .expect("kp_shift_conv_guard_key_down");
+    let kd_end = kp[kd_start..]
+        .find("\n    fn ")
+        .map_or(kp.len(), |i| kd_start + i);
+    let kd = &kp[kd_start..kd_end];
+    assert!(
+        kd.contains("half_width_return_entry_for_foreground()")
+            && kd.contains("shift_key_down_disarms_guard("),
+        "kp_shift_conv_guard_key_down は戻り待ちを見て純関数でガードを落とすか決める(R4-1)"
+    );
+
+    // Enter 時のスコープ(S-PR2-1)。
+    assert!(
+        kp.contains(".commit_enter_imc(crate::win32::foreground_scope())")
+            && kp.contains(".commit_enter_gji(crate::win32::foreground_scope())"),
+        "commit_enter_* は Enter 時の win32::foreground_scope() を渡す(ADR-245 決定2)"
     );
 }
