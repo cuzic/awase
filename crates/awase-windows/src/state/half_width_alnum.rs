@@ -155,6 +155,11 @@ pub struct HalfWidthAlnumState {
     entry_policy: HalfWidthAlnumTogglePolicy,
     /// 離脱時に IME へ何も送らず積んだ、戻り待ちのトグル（ADR-245 決定1・2）。
     return_pending: ReturnPending,
+    /// トグルに入った時点（`commit_enter_*`）の前面スコープと IME 種別（真 = MS-IME 本体）。離脱の tick では
+    /// 前面窓が既に移動先 B なので、殻は B のスコープを渡さずここから読む（ADR-245 決定2・S-PR2-1）。
+    /// クリアは `begin_restore_kana`・`abandon_on_observed_follow`・`suspend_toggle_for_return`、
+    /// `rearm_after_failed_gji_exit` は触らない。
+    entered_in: Option<(ForegroundScope, bool)>,
 }
 
 impl HalfWidthAlnumState {
@@ -307,14 +312,18 @@ impl HalfWidthAlnumState {
     /// IMC(MS-IME)経路のcommit。呼び出し元は現行`key_pipeline.rs`と同じく
     /// `actuate_conv_mode`呼び出しの**前**に無条件で呼ぶこと（順序を変えると
     /// 挙動変更になる、§3原則2）。
-    pub fn commit_enter_imc(&mut self) {
+    ///
+    /// `scope` は Enter 時の `win32::foreground_scope()`（無効なら控えない。離脱時に戻り待ちへ積まない）。
+    pub fn commit_enter_imc(&mut self, scope: ForegroundScope) {
         self.toggle_held = true;
+        self.entered_in = scope.is_valid().then_some((scope, true));
     }
 
     /// GJI経路のcommit。呼び出し元は`send_gji_half_width_alnum_toggle`が
     /// `true`を返した場合のみ呼ぶこと（真のcommit-on-success、§3原則2）。
-    pub fn commit_enter_gji(&mut self) {
+    pub fn commit_enter_gji(&mut self, scope: ForegroundScope) {
         self.toggle_held = true;
+        self.entered_in = scope.is_valid().then_some((scope, false));
     }
 
     // ── Exit/Restore ──────────────────────────────────────────────────
@@ -325,6 +334,7 @@ impl HalfWidthAlnumState {
     /// 相当。戻り値は直前の `toggle_held`（= 実際にOS書き込みが必要かの
     /// 判定に使う）。
     pub fn begin_restore_kana(&mut self) -> bool {
+        self.entered_in = None;
         std::mem::replace(&mut self.toggle_held, false)
     }
 
@@ -345,31 +355,51 @@ impl HalfWidthAlnumState {
     /// 決めている。`note_explicit_ime_action` も呼ばない（呼ぶと同じ窓の後続の読みが ADR-188 R3 で捨てられる）。
     /// 手放さないと凍結（`ShiftConvGuard`）が続き、次の左 Shift タップが「開始」でなく「解除」になる。
     pub fn abandon_on_observed_follow(&mut self) -> bool {
+        self.entered_in = None;
         std::mem::replace(&mut self.toggle_held, false)
     }
 
     // ── 戻り待ち（ADR-245） ───────────────────────────────────────────
 
-    /// 離脱で、持続トグルを IME へ何も送らずに戻り待ちへ積む（ADR-245 決定1・2）。
+    /// 離脱（`ir_notify_focus_changed`）の計画（ADR-245 決定1・2、M-PR2-1）。控えたスコープの有無を状態から読む。
+    #[must_use]
+    pub fn plan_leave(&self) -> LeavePlan {
+        plan_leave(self.toggle_held, self.entered_in.is_some())
+    }
+
+    /// 離脱で、持続トグルを IME へ何も送らずに下ろし、控えがあれば戻り待ちへ積む（ADR-245 決定1・2）。
     ///
-    /// `toggle_held` を下ろし（belief の補正は殻の仕事）、`scope`（トグルに入った窓。離脱の時点の
-    /// 前面窓は既に移動先なので殻が Enter 時に控えた値を渡す）・IME 種別・時刻のエントリを積む。
-    /// トグルが立っていなければ何もせず `None`。積んだときは容量超過で捨てた古いエントリの件数
-    /// （ログは殻が出す）を `Some` で返す。
-    pub fn suspend_toggle_for_return(
-        &mut self,
-        scope: ForegroundScope,
-        uses_imc_conv_write: bool,
-        now: TickMs,
-    ) -> Option<usize> {
+    /// `toggle_held` を下ろし（belief の補正は殻の仕事）、Enter 時に控えたスコープ・IME 種別と時刻のエントリを積む。
+    /// 控えが無ければ（Enter 時にスコープが取れなかった）積まずにトグルだけ下ろす。トグルが立っていなければ
+    /// 何もしない（[`SuspendOutcome::default`]）。
+    pub fn suspend_toggle_for_return(&mut self, now: TickMs) -> SuspendOutcome {
+        let entered_in = self.entered_in;
         if !self.begin_restore_kana() {
-            return None;
+            return SuspendOutcome::default();
         }
-        Some(self.return_pending.push(ReturnPendingEntry {
-            scope,
-            uses_imc_conv_write,
-            at: now,
-        }))
+        let Some((scope, uses_imc_conv_write)) = entered_in else {
+            return SuspendOutcome {
+                lowered: true,
+                ..SuspendOutcome::default()
+            };
+        };
+        SuspendOutcome {
+            lowered: true,
+            queued: true,
+            dropped_oldest: self.return_pending.push(ReturnPendingEntry {
+                scope,
+                uses_imc_conv_write,
+                at: now,
+            }),
+        }
+    }
+
+    /// `RebuildToggle`（ADR-245 決定8）: 取り出したエントリから、注入せずにトグルを立て直す。
+    /// `commit_enter_gji` は呼ばない（SendInput の成功がcommitの条件のため）。控えをエントリから戻すので、
+    /// 次の離脱で再び戻り待ちへ積める。
+    pub fn rebuild_toggle_from_entry(&mut self, entry: ReturnPendingEntry) {
+        self.toggle_held = true;
+        self.entered_in = Some((entry.scope, entry.uses_imc_conv_write));
     }
 
     /// 戻り待ちが 1 件でもあるか。空のときは殻が打鍵ごとの `foreground_scope()` を呼ばない（ADR-245 決定2）。
@@ -499,23 +529,40 @@ pub const fn return_pending_expired(at: TickMs, now: TickMs, max_age_ms: u64) ->
     now.saturating_sub(at.0) > max_age_ms
 }
 
-/// 判断点 (a): 離脱（`ir_notify_focus_changed`）で何をするか（ADR-245 決定1・10）。
+/// 判断点 (a): 離脱（`ir_notify_focus_changed`）で何をするか（ADR-245 決定1・10、M-PR2-1）。
+///
+/// 殻の実行は「`Nothing` 以外ならトグルを下ろして belief を補正する」「`SuspendAndQueue` なら積む」の 2 行。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeavePlan {
-    /// IME へは何も送らず、トグルを戻り待ちへ積む（belief を戻すのは従来どおり殻）。
-    Suspend,
-    /// 何もしない。
+    /// IME へは何も送らず、トグルを下ろして戻り待ちへ積む（belief を戻すのは従来どおり殻）。
+    SuspendAndQueue,
+    /// トグルを下ろして belief だけ戻す。積まない（Enter 時にスコープが取れなかった。所有者判断 2026-10-08）。
+    /// `Nothing` にすると B へトグルと ObservedEisu が持ち越され B で NICOLA が止まる（round1 B-3）。
+    SuspendWithoutReturn,
+    /// トグルは立っていない。何もしない。
     Nothing,
 }
 
-/// 離脱の計画。トグルが立っていて、戻りの照合に使える（有効な）スコープがあるときだけ `Suspend`。
-/// 無効なスコープ（取得失敗）は実在のスコープと決して一致しないので、積んでも戻れない。
+/// [`HalfWidthAlnumState::suspend_toggle_for_return`] の結果。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SuspendOutcome {
+    /// `toggle_held` を下ろした。
+    pub lowered: bool,
+    /// 戻り待ちへ積んだ。
+    pub queued: bool,
+    /// 容量超過で捨てた古いエントリの件数（ログは殻が出す）。
+    pub dropped_oldest: usize,
+}
+
+/// 離脱の計画。トグルが立っていれば必ず下ろす。Enter 時に有効なスコープを控えていれば戻り待ちへ積む。
 #[must_use]
-pub const fn plan_leave(toggle_active: bool, entry_scope: ForegroundScope) -> LeavePlan {
-    if toggle_active && entry_scope.is_valid() {
-        LeavePlan::Suspend
-    } else {
+pub const fn plan_leave(toggle_active: bool, has_entry_scope: bool) -> LeavePlan {
+    if !toggle_active {
         LeavePlan::Nothing
+    } else if has_entry_scope {
+        LeavePlan::SuspendAndQueue
+    } else {
+        LeavePlan::SuspendWithoutReturn
     }
 }
 
@@ -575,6 +622,9 @@ impl KeyStagePlan {
 #[derive(Debug, Clone, Copy)]
 #[expect(clippy::struct_excessive_bools)]
 pub struct KeyStageFacts {
+    /// 非注入・非リピートの KeyDown か。KeyUp と auto-repeat（`was_down`）は `Nothing`（S-PR2-2。B で押した
+    /// 文字キーを A に戻ってから離したときの KeyUp で Resume/Drop が走らないように）。
+    pub is_fresh_key_down: bool,
     /// スコープが一致した戻り待ちのエントリ。
     pub entry: ReturnPendingEntry,
     /// 打鍵の時刻。
@@ -601,6 +651,7 @@ pub struct KeyStageFacts {
 /// 打鍵の段の判定（ADR-245 決定5）。次の優先順位で上から決める。Drop・RebuildToggle を Deferred より先に
 /// 判定するのは、Ctrl+変換でひらがなに戻した A に、後から RebuildToggle や F2 を重ねないため。
 ///
+/// 0. KeyDown でない・auto-repeat・注入 → `Nothing`（S-PR2-2）
 /// 1. 修飾キー自身 → `Nothing`
 /// 2. IME モードの役割のキー（親指キーを除く） → `Drop(ImeModeRole)`
 /// 3. effective_open 偽・IME 種別不一致・app_disabled・寿命切れ → `Drop(..)`
@@ -609,7 +660,7 @@ pub struct KeyStageFacts {
 /// 6. それ以外（親指キー+文字を含む） → `Resume`
 #[must_use]
 pub const fn plan_key_stage(f: &KeyStageFacts) -> KeyStagePlan {
-    if f.is_modifier_key {
+    if !f.is_fresh_key_down || f.is_modifier_key {
         return KeyStagePlan::Nothing;
     }
     if f.is_ime_mode_role_key && !f.is_thumb_key {
@@ -782,7 +833,7 @@ mod tests {
         ] {
             let mut state = HalfWidthAlnumState::default();
             state.set_policy(HalfWidthAlnumTogglePolicy::All);
-            state.commit_enter_imc();
+            state.commit_enter_imc(scope(1, 1));
             if arm {
                 state.arm_tap(side);
             }
@@ -869,7 +920,7 @@ mod tests {
     #[test]
     fn failed_gji_exit_rearms_toggle_for_retry() {
         let mut state = HalfWidthAlnumState::default();
-        state.commit_enter_gji();
+        state.commit_enter_gji(scope(1, 1));
         assert!(state.is_toggle_active());
 
         assert!(
@@ -928,7 +979,7 @@ mod tests {
                             let mut state = HalfWidthAlnumState::default();
                             state.set_policy(policy);
                             if toggle_active {
-                                state.commit_enter_imc();
+                                state.commit_enter_imc(scope(1, 1));
                             }
                             if matches!(kind, ShiftKeyUpKind::LeftTap | ShiftKeyUpKind::RightTap) {
                                 state.arm_tap(side);
@@ -998,7 +1049,7 @@ mod tests {
             for uses_imc in [true, false] {
                 let mut state = HalfWidthAlnumState::default();
                 state.set_policy(policy);
-                state.commit_enter_imc();
+                state.commit_enter_imc(scope(1, 1));
                 state.arm_tap(ShiftSide::Left);
                 let effect = state.on_shift_up(ShiftSide::Left, true, uses_imc, false);
                 assert_eq!(
@@ -1035,7 +1086,7 @@ mod tests {
     fn abandon_on_observed_follow_clears_toggle_without_a_restore_request() {
         use super::HalfWidthAlnumState;
         let mut st = HalfWidthAlnumState::default();
-        st.commit_enter_imc();
+        st.commit_enter_imc(scope(1, 1));
         assert!(st.is_toggle_active());
         assert!(st.abandon_on_observed_follow());
         assert!(!st.is_toggle_active());
@@ -1049,7 +1100,7 @@ mod tests {
     use super::{
         exit_owns_write, plan_key_stage, plan_leave, return_pending_expired,
         shift_key_down_disarms_guard, DropReason, KeyStageFacts, KeyStagePlan, LeavePlan,
-        ReturnPending, ReturnPendingEntry, RETURN_PENDING_CAPACITY,
+        ReturnPending, ReturnPendingEntry, SuspendOutcome, RETURN_PENDING_CAPACITY,
     };
     use crate::state::foreground_scope::ForegroundScope;
     use crate::state::TickMs;
@@ -1075,6 +1126,7 @@ mod tests {
             now: TickMs(2_000),
             max_age_ms: MAX_AGE,
             uses_imc_conv_write_now: true,
+            is_fresh_key_down: true,
             is_modifier_key: false,
             is_ime_mode_role_key: false,
             is_thumb_key: false,
@@ -1159,7 +1211,7 @@ mod tests {
     fn on_shift_up_without_pending_keeps_existing_ownership_and_enter() {
         let mut state = HalfWidthAlnumState::default();
         state.set_policy(HalfWidthAlnumTogglePolicy::All);
-        state.commit_enter_imc();
+        state.commit_enter_imc(scope(1, 1));
         state.arm_tap(ShiftSide::Left);
         assert_eq!(
             state.on_shift_up(ShiftSide::Left, true, true, false),
@@ -1197,28 +1249,44 @@ mod tests {
         assert!(!return_pending_expired(TickMs(100), TickMs(50), 0));
     }
 
-    /// 離脱: トグル中で有効なスコープがあるときだけ Suspend。
+    /// 離脱: トグル中なら必ず下ろす。控えがあれば積む、無ければ積まずに下ろす（M-PR2-1）。
     #[test]
-    fn plan_leave_suspends_only_for_active_toggle_with_valid_scope() {
-        assert_eq!(plan_leave(true, scope(1, 2)), LeavePlan::Suspend);
-        assert_eq!(plan_leave(false, scope(1, 2)), LeavePlan::Nothing);
-        assert_eq!(
-            plan_leave(true, ForegroundScope::INVALID),
-            LeavePlan::Nothing
-        );
-        assert_eq!(plan_leave(true, scope(0, 2)), LeavePlan::Nothing);
-        assert_eq!(plan_leave(true, scope(1, 0)), LeavePlan::Nothing);
+    fn plan_leave_has_three_variants() {
+        assert_eq!(plan_leave(true, true), LeavePlan::SuspendAndQueue);
+        assert_eq!(plan_leave(true, false), LeavePlan::SuspendWithoutReturn);
+        assert_eq!(plan_leave(false, true), LeavePlan::Nothing);
+        assert_eq!(plan_leave(false, false), LeavePlan::Nothing);
     }
 
-    /// 離脱=Suspend: toggle_held が下りて戻り待ちへ積まれ、IME へは何も送らない（状態遷移のみ）。
+    /// 状態経由の計画: Enter 時に有効なスコープを控えたら SuspendAndQueue、無効スコープなら SuspendWithoutReturn。
     #[test]
-    fn suspend_lowers_toggle_and_queues_the_entry() {
+    fn state_plan_leave_reads_the_entered_scope() {
         let mut state = HalfWidthAlnumState::default();
-        state.commit_enter_imc();
+        assert_eq!(state.plan_leave(), LeavePlan::Nothing);
+        state.commit_enter_imc(scope(10, 0x100));
+        assert_eq!(state.plan_leave(), LeavePlan::SuspendAndQueue);
+        let mut no_scope = HalfWidthAlnumState::default();
+        no_scope.commit_enter_gji(ForegroundScope::INVALID);
+        assert_eq!(no_scope.plan_leave(), LeavePlan::SuspendWithoutReturn);
+        // pid 0・hwnd 0 の無効スコープも控えない。
+        let mut half = HalfWidthAlnumState::default();
+        half.commit_enter_imc(scope(0, 2));
+        assert_eq!(half.plan_leave(), LeavePlan::SuspendWithoutReturn);
+    }
+
+    /// 離脱=SuspendAndQueue: toggle_held が下りて Enter 時の控えが戻り待ちへ積まれる（状態遷移のみ。IME へは何も送らない）。
+    #[test]
+    fn suspend_lowers_toggle_and_queues_the_entered_scope() {
+        let mut state = HalfWidthAlnumState::default();
+        state.commit_enter_imc(scope(10, 0x100));
         assert!(!state.has_return_pending());
         assert_eq!(
-            state.suspend_toggle_for_return(scope(10, 0x100), true, TickMs(5)),
-            Some(0)
+            state.suspend_toggle_for_return(TickMs(5)),
+            SuspendOutcome {
+                lowered: true,
+                queued: true,
+                dropped_oldest: 0
+            }
         );
         assert!(!state.is_toggle_active());
         assert!(state.has_return_pending());
@@ -1226,13 +1294,91 @@ mod tests {
             state.find_return_pending(scope(10, 0x100)),
             Some(entry(10, 0x100, true, 5))
         );
+        // 控えは消費される（二度目の離脱では何も起こらない）。
+        assert_eq!(state.plan_leave(), LeavePlan::Nothing);
         // トグルが立っていなければ何も積まない。
         let mut idle = HalfWidthAlnumState::default();
         assert_eq!(
-            idle.suspend_toggle_for_return(scope(10, 0x100), true, TickMs(5)),
-            None
+            idle.suspend_toggle_for_return(TickMs(5)),
+            SuspendOutcome::default()
         );
         assert!(!idle.has_return_pending());
+    }
+
+    /// M-PR2-1: トグル中 + 控え無し → SuspendWithoutReturn（`toggle_held` は下り、戻り待ちは空）。
+    #[test]
+    fn suspend_without_entered_scope_lowers_toggle_but_queues_nothing() {
+        let mut state = HalfWidthAlnumState::default();
+        state.commit_enter_gji(ForegroundScope::INVALID);
+        assert_eq!(state.plan_leave(), LeavePlan::SuspendWithoutReturn);
+        assert_eq!(
+            state.suspend_toggle_for_return(TickMs(5)),
+            SuspendOutcome {
+                lowered: true,
+                queued: false,
+                dropped_oldest: 0
+            }
+        );
+        assert!(!state.is_toggle_active());
+        assert!(!state.has_return_pending());
+    }
+
+    /// S-PR2-1: 控えのクリア条件。begin_restore_kana・abandon_on_observed_follow はクリアし、
+    /// rearm_after_failed_gji_exit はクリアしない（そもそも触らない）。
+    #[test]
+    fn entered_scope_is_cleared_by_exit_paths() {
+        let mut a = HalfWidthAlnumState::default();
+        a.commit_enter_imc(scope(1, 1));
+        a.begin_restore_kana();
+        assert_eq!(a.plan_leave(), LeavePlan::Nothing);
+        let mut b = HalfWidthAlnumState::default();
+        b.commit_enter_imc(scope(1, 1));
+        b.abandon_on_observed_follow();
+        b.rearm_after_failed_gji_exit();
+        assert_eq!(
+            b.plan_leave(),
+            LeavePlan::SuspendWithoutReturn,
+            "rearm は控えを復元しない（控えはクリア済み）"
+        );
+        // rearm は控えがあれば触らない。
+        let mut c = HalfWidthAlnumState::default();
+        c.commit_enter_gji(scope(1, 1));
+        c.rearm_after_failed_gji_exit();
+        assert_eq!(c.plan_leave(), LeavePlan::SuspendAndQueue);
+    }
+
+    /// S-PR2-3: RebuildToggle の状態操作。toggle_held を立て、控えをエントリから戻す（次の離脱で再び積める）。
+    /// `commit_enter_gji` を呼ばないことは、控えの値がエントリ由来であることで固定する。
+    #[test]
+    fn rebuild_toggle_restores_toggle_and_entered_scope_from_the_entry() {
+        let mut state = HalfWidthAlnumState::default();
+        state.commit_enter_gji(scope(10, 0x100));
+        state.suspend_toggle_for_return(TickMs(1));
+        let taken = state
+            .take_return_pending(scope(10, 0x100))
+            .expect("積んだエントリ");
+        assert!(!state.is_toggle_active());
+        state.rebuild_toggle_from_entry(taken);
+        assert!(state.is_toggle_active());
+        assert_eq!(state.plan_leave(), LeavePlan::SuspendAndQueue);
+        // 再び離脱すると同じスコープ・同じ IME 種別で積み直される。
+        state.suspend_toggle_for_return(TickMs(9));
+        assert_eq!(
+            state.find_return_pending(scope(10, 0x100)),
+            Some(entry(10, 0x100, false, 9))
+        );
+    }
+
+    /// 打鍵の段は KeyDown（非注入・非リピート）だけで評価する。ほかは何があっても Nothing（S-PR2-2）。
+    #[test]
+    fn key_stage_non_fresh_key_down_is_nothing() {
+        let f = KeyStageFacts {
+            is_fresh_key_down: false,
+            effective_open: false,
+            is_ime_mode_role_key: true,
+            ..facts()
+        };
+        assert_eq!(plan_key_stage(&f), KeyStagePlan::Nothing);
     }
 
     /// 戻り+文字キー: 一致したエントリを取り出すと消える（INV-B の「1 回」）。別窓のエントリは保持する。
@@ -1240,8 +1386,8 @@ mod tests {
     fn take_returns_the_matching_entry_once_and_keeps_other_windows() {
         let mut state = HalfWidthAlnumState::default();
         for (pid, hwnd) in [(10, 0x100), (20, 0x200)] {
-            state.commit_enter_gji();
-            state.suspend_toggle_for_return(scope(pid, hwnd), false, TickMs(1));
+            state.commit_enter_gji(scope(pid, hwnd));
+            state.suspend_toggle_for_return(TickMs(1));
         }
         // 別窓（C）では取り出せず、どちらも保持。
         assert_eq!(state.take_return_pending(scope(30, 0x300)), None);
@@ -1320,8 +1466,8 @@ mod tests {
         assert_eq!(rp.prune_expired(TickMs(1_000), 500), 0);
         // 状態経由でも同じ。
         let mut state = HalfWidthAlnumState::default();
-        state.commit_enter_imc();
-        state.suspend_toggle_for_return(scope(1, 1), true, TickMs(0));
+        state.commit_enter_imc(scope(1, 1));
+        state.suspend_toggle_for_return(TickMs(0));
         assert_eq!(state.prune_return_pending(TickMs(MAX_AGE + 1), MAX_AGE), 1);
         assert!(!state.has_return_pending());
     }

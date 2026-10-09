@@ -10,7 +10,9 @@ use crate::hook;
 use crate::hook::CallbackResult;
 use crate::state::evidence::IntentWitness;
 use crate::state::focus_probe_plan::{plan_focus_probe, FocusProbeEffect};
-use crate::state::half_width_alnum::{HalfWidthAlnumAction, HalfWidthAlnumEffect, ShiftSide};
+use crate::state::half_width_alnum::{
+    ExitOwnership, HalfWidthAlnumAction, HalfWidthAlnumEffect, ShiftSide,
+};
 use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_KANA_LOCK_WARNING_CHANGED};
@@ -86,22 +88,14 @@ impl Runtime {
         }
 
         self.kp_stage_focus_probe();
+        // ADR-245: 戻り待ちの窓に戻って最初の打鍵の手前で、半角英数トグルを復元する（idle-conv-check の読みより先）。
+        self.kp_stage_half_width_return(&event);
         self.kp_stage_idle_conv_check(&event);
         // ADR-208 D1（PR #419 Opus M-4）: 同じ打鍵で Engine が `SetOpen` を出すキー（`keys.ime_on/off/toggle`・自動検出トグル等）
         // では、shadow の書き込みを抑止して Engine に任せる（衝突を書く前に静的に解く）。ctx は shadow の判断**前**の
-        // belief で組む（トグル型の向きが `!ctx.ime_on` で決まる）。
-        let engine_owns_open_key = matches!(event.event_type, KeyEventType::KeyDown) && {
-            let pre_ctx = super::build_input_context(
-                self.platform_state.ime.effective_open(),
-                self.platform_state.ime.input_mode(),
-                self.platform_state.ime.belief.is_japanese_ime(),
-                crate::tsf::observer::ime_composition_active_now(),
-                &event.modifier_snapshot,
-                event.left_thumb_down_snapshot,
-                event.right_thumb_down_snapshot,
-            );
-            self.engine.matches_ime_set_open(&pre_ctx, &event).is_some()
-        };
+        // belief で組む（トグル型の向きが `!ctx.ime_on` で決まる）。上の段が belief を変えうるので、ここで評価し直す
+        // （段の前の評価と式は同じ `engine_owns_open_key`、ADR-245 R4-2）。
+        let engine_owns_open_key = self.engine_owns_open_key(&event);
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event, engine_owns_open_key);
         self.settle_fkey_role_latch(&event, shadow_toggled);
 
@@ -1073,7 +1067,7 @@ impl Runtime {
                     tracing::info!(
                         "[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲"
                     );
-                    self.kp_restore_kana_from_half_width(false);
+                    self.kp_restore_kana_from_half_width(false, ExitOwnership::FromToggle);
                 } else {
                     self.apply_input_mode_correction(
                         new_mode,
@@ -1123,7 +1117,7 @@ impl Runtime {
             // スキップしてトグルOFF処理そのものを呼ぶ（E節の理由は上の分岐と同じ）。
             if self.platform_state.gate.half_width_alnum.is_toggle_active() {
                 tracing::info!("[shadow-toggle] IME ON（半角英数トグルON中）→ トグルOFF処理へ委譲");
-                self.kp_restore_kana_from_half_width(false);
+                self.kp_restore_kana_from_half_width(false, ExitOwnership::FromToggle);
             } else {
                 self.apply_input_mode_correction(
                     new_mode,
@@ -1497,7 +1491,7 @@ impl Runtime {
                     tracing::info!(
                         "[post-decision] SetOpen(true)（半角英数トグルON中）→ トグルOFF処理へ委譲"
                     );
-                    self.kp_restore_kana_from_half_width(false);
+                    self.kp_restore_kana_from_half_width(false, ExitOwnership::FromToggle);
                 } else {
                     // これは外部観測ではなく、awase 自身が直前に発行した SetOpen(true) の
                     // 帰結を先読みする能動的な訂正のため InputModeApplied で表現する
@@ -1910,21 +1904,29 @@ impl Runtime {
         // （2026-07-11 codex レビューで発覚）。
         self.platform_state.gate.half_width_alnum.arm_guard();
 
-        if self.platform_state.gate.half_width_alnum.is_toggle_active() {
+        let toggle_active = self.platform_state.gate.half_width_alnum.is_toggle_active();
+        if toggle_active {
             // 既に conv=0x0000 のはず。何もしない。
             return;
         }
+        // ADR-245 R4-1: 戻り待ちがあるときは、エンジン OFF など文脈が偽でもガードを落とさない
+        // (KeyUp の Exit〈FromResume〉に届かせる)。戻り待ちがあるときだけ前面スコープを読む。
+        let pending_for_scope = self.half_width_return_entry_for_foreground().is_some();
 
         // かな入力コンテキストのみ: IME ON・engine 有効・conv 書込権限。左Shift
         // 単独タップによる持続トグルは、この条件を満たさない限り
         // `kp_shift_conv_guard_key_up` 側でも確定させない（かつては conv の
         // 先書き込みをここで行っていたための早期 override クリアだったが、
         // 先書き込み自体を撤去したので pending を落とすだけで足りる）。
-        if !self.platform_state.ime.effective_open()
-            || !self.platform_state.ime.belief.is_japanese_ime()
-            || !self.engine.is_user_enabled()
-            || !self.platform.output.conv_mutation_allowed.get()
-        {
+        let entry_context_ok = self.platform_state.ime.effective_open()
+            && self.platform_state.ime.belief.is_japanese_ime()
+            && self.engine.is_user_enabled()
+            && self.platform.output.conv_mutation_allowed.get();
+        if crate::state::half_width_alnum::shift_key_down_disarms_guard(
+            toggle_active,
+            pending_for_scope,
+            entry_context_ok,
+        ) {
             self.platform_state.gate.half_width_alnum.disarm_guard();
         }
 
@@ -1981,12 +1983,17 @@ impl Runtime {
         // if/else を書いていたが、`HalfWidthAlnumState::on_shift_up` へ計画
         // ロジックを移すのに合わせ、呼び出し元がガード条件を再判定せず
         // 網羅的に扱えるよう2 variant に分けた）。
+        // ADR-245 決定6: 戻り待ちがあるときだけ前面スコープを読む(`toggle_held` が真のときは不要)。
+        let return_entry = if self.platform_state.gate.half_width_alnum.is_toggle_active() {
+            None
+        } else {
+            self.half_width_return_entry_for_foreground()
+        };
         match self.platform_state.gate.half_width_alnum.on_shift_up(
             side,
             entry_ime_ok,
             uses_imc_conv_write,
-            // ADR-245 PR 1: 戻り待ちはまだ殻に配線していない（PR 2）ので常に偽。
-            false,
+            return_entry.is_some(),
         ) {
             HalfWidthAlnumEffect::EnterViaImcWrite => {
                 // 本物の単独タップ、1回目 → 半角英数トグルへ移行。conv=0x0000 の
@@ -1995,7 +2002,10 @@ impl Runtime {
                 // write もここへ一本化した。旧実装は Shift down 時点で判別未確定の
                 // まま先書きしていた）。IMC経路は `actuate_conv_mode` の**前**に
                 // 無条件でlatchを立てる（§3原則2、挙動を変えないこと）。
-                self.platform_state.gate.half_width_alnum.commit_enter_imc();
+                self.platform_state
+                    .gate
+                    .half_width_alnum
+                    .commit_enter_imc(crate::win32::foreground_scope());
                 tracing::info!(
                     "[shift-conv-guard] 左Shift単独タップ → 半角英数トグルON (conv=0x0000 書き込み)"
                 );
@@ -2058,7 +2068,10 @@ impl Runtime {
                     self.platform_state.ime.effective_open(),
                     true,
                 ) {
-                    self.platform_state.gate.half_width_alnum.commit_enter_gji();
+                    self.platform_state
+                        .gate
+                        .half_width_alnum
+                        .commit_enter_gji(crate::win32::foreground_scope());
                     tracing::info!(
                         "[shift-conv-guard] 左Shift単独タップ → GJI 半角英数トグルON \
                          (VK_DBE_ALPHANUMERIC)"
@@ -2071,7 +2084,15 @@ impl Runtime {
                     );
                 }
             }
-            HalfWidthAlnumEffect::ExitRestoreKana { .. } => {
+            HalfWidthAlnumEffect::ExitRestoreKana { ownership } => {
+                // 戻り待ちから解く Exit は、エントリを取り出す(INV-B の「1 回」。ADR-245 決定4・6)。
+                if let (ExitOwnership::FromResume, Some((scope, _))) = (ownership, return_entry) {
+                    let _ = self
+                        .platform_state
+                        .gate
+                        .half_width_alnum
+                        .take_return_pending(scope);
+                }
                 // 2回目の左Shiftタップ（トグルOFF）・右Shift（トグルの緊急解除）:
                 // 復元を実行する。
                 //
@@ -2087,7 +2108,7 @@ impl Runtime {
                             + crate::tuning::SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS,
                     );
                 }
-                self.kp_restore_kana_from_half_width(true);
+                self.kp_restore_kana_from_half_width(true, ownership);
             }
             HalfWidthAlnumEffect::Nothing => {}
         }
@@ -2152,6 +2173,176 @@ impl Runtime {
         }
     }
 
+    /// ADR-208 D1: この打鍵で Engine が `SetOpen` を出す（`keys.ime_on/off/toggle` 等）か。ctx は呼んだ時点の belief で組む。
+    ///
+    /// 式はここ 1 か所、評価は `kp_run_inner` で 2 回（ADR-245 R4-2）: 半角英数の戻り待ちの段の前（行 2 の事実用）と、
+    /// その段の後（`kp_stage_shadow_ime_toggle` に渡す値。段が belief を変えたとき `matches_ime_set_open` の結果が
+    /// 変わりうる〈`is_bare_thumb` が `ctx.input_mode` に依る〉ので、計算を前へ寄せて 1 回で共有してはいけない）。
+    fn engine_owns_open_key(&self, event: &RawKeyEvent) -> bool {
+        matches!(event.event_type, KeyEventType::KeyDown) && {
+            let pre_ctx = super::build_input_context(
+                self.platform_state.ime.effective_open(),
+                self.platform_state.ime.input_mode(),
+                self.platform_state.ime.belief.is_japanese_ime(),
+                crate::tsf::observer::ime_composition_active_now(),
+                &event.modifier_snapshot,
+                event.left_thumb_down_snapshot,
+                event.right_thumb_down_snapshot,
+            );
+            self.engine.matches_ime_set_open(&pre_ctx, event).is_some()
+        }
+    }
+
+    /// 現在の前面スコープに一致する半角英数の戻り待ち(ADR-245 決定6)。戻り待ちが空のときは
+    /// `foreground_scope()` を呼ばない(決定2、S2-3)。寿命切れはここで捨てる。
+    fn half_width_return_entry_for_foreground(
+        &mut self,
+    ) -> Option<(
+        crate::state::foreground_scope::ForegroundScope,
+        crate::state::half_width_alnum::ReturnPendingEntry,
+    )> {
+        let hwa = &mut self.platform_state.gate.half_width_alnum;
+        if !hwa.has_return_pending() {
+            return None;
+        }
+        let pruned = hwa.prune_return_pending(
+            crate::state::TickMs(hook::current_tick_ms()),
+            crate::tuning::HWND_CACHE_MAX_AGE_MS,
+        );
+        if pruned > 0 {
+            tracing::info!("[half-width-return] 寿命切れの戻り待ちを {pruned} 件捨てた");
+        }
+        let scope = crate::win32::foreground_scope();
+        hwa.find_return_pending(scope).map(|entry| (scope, entry))
+    }
+
+    /// GJI のひらがなキー(F2)が SET と確かめられるか(ADR-245 決定8)。予測器への 2 問は純ヘルパー
+    /// `hiragana_key_is_set` の中。表は `kp_predict_key_effect` と同じ選び方(同梱表 + 検証済みの学習済み表)。
+    fn kp_hiragana_key_is_set_gji(&mut self) -> Option<bool> {
+        let now_ms = hook::current_tick_ms();
+        let keymap = self.key_effect_keymap.get_gji(now_ms)?;
+        let learned = if self.use_learned_keymap_table {
+            self.key_effect_runtime_table.get_for_keymap(now_ms, keymap)
+        } else {
+            None
+        };
+        // `unreadable` は結果に影響しない(`hiragana_key_is_set_is_independent_of_unreadable`)。
+        crate::state::key_effect_predictor::hiragana_key_is_set(keymap, learned, false)
+    }
+
+    /// ADR-245 決定3・5: 半角英数トグルを戻り待ちにして離れた窓へ戻り、最初の打鍵の手前で復元する段。
+    ///
+    /// 判断は `state/half_width_alnum.rs::plan_key_stage`(純関数)。ここは事実の収集と実行だけ。送信は
+    /// `kp_restore_kana_from_half_width`(`ExitOwnership::FromResume`)に残す。戻り待ちが空なら何もしない。
+    fn kp_stage_half_width_return(&mut self, event: &RawKeyEvent) {
+        use crate::state::half_width_alnum::{KeyStageFacts, KeyStagePlan};
+        let is_fresh_key_down =
+            matches!(event.event_type, KeyEventType::KeyDown) && !event.injected && !event.was_down;
+        // 修飾キー自身と KeyUp・リピートは評価しない(`plan_key_stage` の行 0・1 と同じ結論。呼ぶ前に抜けて負荷を避ける)。
+        if !is_fresh_key_down || event.modifier_key.is_some() {
+            return;
+        }
+        let Some((scope, entry)) = self.half_width_return_entry_for_foreground() else {
+            return;
+        };
+        let now = crate::state::TickMs(hook::current_tick_ms());
+        let uses_imc_conv_write_now = crate::tsf::observer::tsf_obs().active_ime_kind()
+            == crate::tsf::observer::ActiveImeKind::MicrosoftIme;
+        let is_thumb_key = matches!(
+            event.key_classification,
+            awase::types::KeyClassification::LeftThumb
+                | awase::types::KeyClassification::RightThumb
+        );
+        let is_ime_mode_role_key = event.ime_relevance.shadow_action.is_some()
+            || event.ime_relevance.sync_direction.is_some()
+            || self.engine_owns_open_key(event);
+        let m = event.modifier_snapshot;
+        let physical_modifier_down = m.ctrl
+            || m.alt
+            || m.shift
+            || m.win
+            || [
+                crate::vk::VK_LSHIFT,
+                crate::vk::VK_RSHIFT,
+                crate::vk::VK_LCONTROL,
+                crate::vk::VK_RCONTROL,
+                crate::vk::VK_LMENU,
+                crate::vk::VK_RMENU,
+                crate::vk::VK_LWIN,
+                crate::vk::VK_RWIN,
+            ]
+            .into_iter()
+            .any(hook::is_physical_key_down);
+        // 予測器への問いは GJI で、判断が行 4 に届きうるときだけ(戻り待ちがスコープと一致したときだけ計算する)。
+        let hiragana_key_is_set = if entry.uses_imc_conv_write {
+            None
+        } else {
+            self.kp_hiragana_key_is_set_gji()
+        };
+        let facts = KeyStageFacts {
+            is_fresh_key_down,
+            entry,
+            now,
+            max_age_ms: crate::tuning::HWND_CACHE_MAX_AGE_MS,
+            uses_imc_conv_write_now,
+            is_modifier_key: false,
+            is_ime_mode_role_key,
+            is_thumb_key,
+            effective_open: self.platform_state.ime.effective_open(),
+            app_disabled: hook::is_focus_app_disabled(),
+            hiragana_key_is_set,
+            physical_modifier_down,
+        };
+        let plan = crate::state::half_width_alnum::plan_key_stage(&facts);
+        tracing::debug!(
+            "[half-width-return] vk=0x{:02X} plan={plan:?} entry={entry:?}",
+            event.vk_code.0
+        );
+        if plan.consumes_entry() {
+            let _ = self
+                .platform_state
+                .gate
+                .half_width_alnum
+                .take_return_pending(scope);
+        }
+        match plan {
+            KeyStagePlan::Nothing | KeyStagePlan::Deferred => {}
+            KeyStagePlan::Drop(reason) => {
+                tracing::info!(
+                    "[half-width-return] 戻り待ちを捨てた (送信なし): {}",
+                    reason.label()
+                );
+            }
+            KeyStagePlan::RebuildToggle => {
+                // 注入せずにトグルを立て直し、belief を ObservedEisu にする(次の左 Shift タップで Exit)。
+                // idle-conv-check より前の段なので、復元と同じく明示的 IME 操作として抑止する(S3-1)。
+                tracing::info!(
+                    "[half-width-return] GJI のひらがなキーが SET と確かめられない → 注入せずトグルを立て直す"
+                );
+                self.platform_state
+                    .gate
+                    .half_width_alnum
+                    .rebuild_toggle_from_entry(entry);
+                self.platform_state.ime.note_explicit_ime_action(now);
+                self.apply_input_mode_correction(
+                    InputModeState::ObservedEisu,
+                    crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                    now,
+                );
+            }
+            KeyStagePlan::Resume => {
+                tracing::info!("[half-width-return] 戻った窓の最初の打鍵 → 半角英数トグルを復元");
+                if entry.uses_imc_conv_write {
+                    self.platform.output.confirm_gate_deadline_override_ms.set(
+                        hook::current_tick_ms()
+                            + crate::tuning::SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS,
+                    );
+                }
+                self.kp_restore_kana_from_half_width(false, ExitOwnership::FromResume);
+            }
+        }
+    }
+
     /// 「IME-ON 半角英数」からかな入力への復元（トグルOFF・安全網の復元の共通処理）。
     ///
     /// 責務は belief 更新 + 復元注入 + `half_width_alnum_toggle_active=false` に
@@ -2164,12 +2355,26 @@ impl Runtime {
     /// `kp_shift_conv_guard_key_up` から呼ぶ場合は常に true、フォーカス変更や他の
     /// IME-ON キー起点（E/F 節）から呼ぶ場合は物理 Shift が押されているとは
     /// 限らないため false。
-    pub(crate) fn kp_restore_kana_from_half_width(&mut self, prepend_synthetic_shift_up: bool) {
-        let was_toggle_active = self
-            .platform_state
-            .gate
-            .half_width_alnum
-            .begin_restore_kana();
+    ///
+    /// `ownership`(ADR-245 決定4): 通常の exit は `FromToggle`(`begin_restore_kana` の旧値が OS 書き込みの権利)、
+    /// 戻り待ちから取り出した exit は `FromResume`(取り出しが権利。`toggle_held` は既に偽なので
+    /// `begin_restore_kana` を呼ばない)。OS 書き込みを別関数へ切り出さないこと
+    /// (`actuation_call_guard` の許可リストは呼び出し元の関数名で照合する)。
+    pub(crate) fn kp_restore_kana_from_half_width(
+        &mut self,
+        prepend_synthetic_shift_up: bool,
+        ownership: ExitOwnership,
+    ) {
+        let was_toggle_active = match ownership {
+            ExitOwnership::FromToggle => self
+                .platform_state
+                .gate
+                .half_width_alnum
+                .begin_restore_kana(),
+            ExitOwnership::FromResume => false,
+        };
+        let owns_write =
+            crate::state::half_width_alnum::exit_owns_write(ownership, was_toggle_active);
         let now_tick = crate::state::TickMs(hook::current_tick_ms());
         // idle-conv-check が復元途中の conv=0x0000 を読んで ObservedEisu →
         // DirectInput に落とさないよう、明示的 IME 操作として抑止する。
@@ -2187,7 +2392,7 @@ impl Runtime {
         // 送る。`was_toggle_active` が false の再入では OS 書き込みを行わず、
         // GJI の非冪等トグル二重送信を防ぐ（INV-B）。
         let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
-        if !was_toggle_active {
+        if !owns_write {
             tracing::debug!(
                 "[shift-conv-guard] 半角英数トグル復元 write をスキップ (already inactive)"
             );
