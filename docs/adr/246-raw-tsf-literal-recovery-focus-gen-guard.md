@@ -67,7 +67,17 @@ related_adr:
 - Q3: 同じ前景窓の中の移動を捉える必要があるか。必要なら、デバウンスしない focus 連番を WinEvent の即時処理で進めて `StageOrigin` に使う案(round 2 N-M1 案1)に進む。安い代案として、`GetGUIThreadInfo` の `hwndFocus` も比べる案がある(Chrome のアドレスバーとページは別 hwnd)。今回は入れない。
 - Q2: 破棄時に deferred を全部捨てる粒度。`DeferredVk` に退避時の宛先を持たせれば旧窓のものだけ捨てられるが、今回は入れない(トレードオフ節)。
 
-## Q3 追補: 同じ前景窓の中の移動を `hwndFocus` で捉える(起草 2026-10-08、未実装)
+## Q3 追補: 同じ前景窓の中の移動を `hwndFocus` で捉える(起草 2026-10-08、**却下**・実害の記録待ち)
+
+**Opus レビュー round 1 の結論(Blocker 2・Major 3)で、下の決定案は採用しない。** 理由:
+- B1: `get_gui_thread_info_with_timeout` は取れないとき 0 を返さず、前景の最上位 hwnd(`hwndFocus` が null なら `hwndActive`)を返す。タイムアウトや失敗の回が「両方非 0 で違う」となり、正しい回収と後続の打鍵を誤って捨てる。
+- B2: 採取は段の開始だけではない。`discard_raw_recovery_if_moved` が予約の確認より先に `current_stage_origin()` を評価するので drain ごとに走り、warm 経路の LiteralDetect(`vk_send.rs:646`)は打鍵ごとに段を張る。毎回スレッドを spawn してメインスレッドで最大 30ms 待つ。`ime.rs` の `get_focused_hwnd_async` の doc が、同期経路からの直接呼びは BUG-34 を再現するので禁じている。
+- M1・M2: Ctrl+L や Tab の直後の打鍵で、段の開始時は旧 hwndFocus・文字は新フィールド、という N-M1 と同形の誤破棄が起きる。UWP・WebView2・Office で hwndFocus は正当に揺れる。一方、Web ページ内のフィールド移動は hwndFocus が変わらず捉えられない。
+- M3: 実害の記録がゼロ。CI で固定できるのは純関数の分岐だけで、誤破棄の頻度とコストは CI で出ない。
+
+次にやるなら、判断に使わない観測版だけ(literal 検出時と、予約ありと分かった後の flush の 2 回だけ読み、journal に `focus_hwnd_changed: Option<bool>` を残す)。実害の報告が出てから判断に昇格させ、そのときは B1 の専用関数・B2 の lazy 読み・M1 の時系列の倒し方を先に ADR に書く。案1(WinEvent 連番)は `hwndFocus` と違い Web ページ内の移動も捉えられるので、案2 は案1 の代替になっていない。
+
+以下は却下した起草時の案(経緯として残す)。
 
 実環境でこの経路が起きた記録はまだ無い(BUG-194 は実機未確認)。ここでは「ガードが働くことを CI で固定する」範囲に限って決める。発生頻度の測定は引き続き journal の `DiscardedStale` で行う。
 
