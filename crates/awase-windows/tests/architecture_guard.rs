@@ -4742,9 +4742,14 @@ fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     let end = body
         .find("self.on_tsf_probe_ready()")
         .expect("段末のゲート解放");
+    // `if let Some(reason) = <判定> { 見送り } else { flush }` の形（判定の結果を捨てた無条件 flush・分岐の反転を許さない）。
+    let region = &body[..end];
+    let guard = region.find("ifletSome(reason)=self.probe_or_recovery_block_reason(true){");
+    let else_at = region.find("}else{");
+    let flush = region.find("self.flush_pending_deferred_vks()");
     assert!(
-        body[..end].contains("self.probe_or_recovery_block_reason(true)"),
-        "finish_probe_stage の deferred 解放判断は probe_or_recovery_block_reason(true) を通すこと(FCIS F6c)"
+        matches!((guard, else_at, flush), (Some(g), Some(e), Some(f)) if g < e && e < f),
+        "finish_probe_stage の deferred 解放は `if let Some(reason) = self.probe_or_recovery_block_reason(true) {{ 見送り }} else {{ flush }}` の形にすること(FCIS F6c)"
     );
 }
 

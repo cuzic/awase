@@ -907,7 +907,8 @@ impl Output {
     }
 
     /// 判断は `deferred_gate_plan::plan_blocking`（FCIS F6）。`raw_recovery_owns_deferred()` は元の短絡評価と同じく
-    /// 必要なときだけ読む。`vk_send.rs::drain_pending_deferred_before_send_if_queue_only`（ADR-123 決定4-3）は、
+    /// 必要なときだけ読む。使い手は `finish_probe_stage`（段末の解放。F6c）と、
+    /// `vk_send.rs::drain_pending_deferred_before_send_if_queue_only`（ADR-123 決定4-3）。後者は、
     /// `pending_deferred` が「queue-only」（誰も blocking していないのに非空）かを判定するためにこれを使う。
     /// `raw_recovery_owns_deferred()` の呼び出し箇所を `output/mod.rs` 内に閉じておくため（INV-F 系の集約方針、
     /// `tests/architecture_guard.rs::raw_recovery_owns_deferred_call_sites_are_accounted_for` 参照）、
@@ -1136,10 +1137,13 @@ impl Output {
         // 判断は defer 側・drain-before-send 側と同じ `plan_blocking`（FCIS F6c）。段末では probe は終わっているので
         // `TsfProbeInFlight` は通常出ないが、出ても flush が何もしない（`take_pending_deferred_if_probe_idle`）のと同じ結果。
         if let Some(reason) = self.probe_or_recovery_block_reason(true) {
-            tracing::debug!(
-                "[stage-end] {:?}: deferred の解放は見送る（{reason:?}。raw recovery 側に委ねる場合を含む）",
-                end.reason
-            );
+            let why = match reason {
+                deferred_gate_plan::BlockReason::RawRecoveryOwnsDeferred => {
+                    "raw recovery 側に委ねる"
+                }
+                deferred_gate_plan::BlockReason::TsfProbeInFlight => "見送る（probe が進行中）",
+            };
+            tracing::debug!("[stage-end] {:?}: deferred の解放は{why}", end.reason);
         } else {
             let n = self.flush_pending_deferred_vks();
             if n > 0 {

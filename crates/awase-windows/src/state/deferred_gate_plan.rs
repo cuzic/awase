@@ -16,9 +16,11 @@
 //! - 解放側: `Output::finish_probe_stage`（段末の解放。F6c で `probe_or_recovery_block_reason(true)` 経由にした）。
 //!
 //! **`plan_blocking` を通らない窓口（同じ述語だが共有していない）**: 解放側の
-//! `take_pending_deferred_if_probe_idle`（`!has_pending_tsf()`。`warmup_coord` の中で raw を読めない。`finish_probe_stage` が
-//! 先に `plan_blocking` で raw を見てから呼ぶ）・`flush_stale_deferred_vks_after_recovery`（回収の最後の同期点で、
-//! 意図して raw を見ない）、破棄側の `cancel_probe`、参照側の `step_probe` の `deferred_pending`。
+//! `take_pending_deferred_if_probe_idle`（`!has_pending_tsf()`。`warmup_coord` の中で raw を読めない。`finish_probe_stage` と
+//! drain-before-send は先に `plan_blocking` で raw を見てから `flush_pending_deferred_vks` 経由で呼ぶ）・
+//! `flush_stale_deferred_vks_after_recovery`（回収の最後の同期点。直前に backs/romaji を消費済みで raw は偽になるため読まない）、
+//! 破棄側の `cancel_probe`・`discard_raw_recovery_if_moved`（BUG-194。どちらも `take_pending_deferred()` で退避キューを捨てる）、
+//! 参照側の `step_probe` の `deferred_pending`。
 //! **`BlockReason` を足すときは、これらも見直すこと**（片方だけ配線する ADR-123→128 型の再発を防ぐ）。
 
 /// 退避（または drain の見送り）の理由。
