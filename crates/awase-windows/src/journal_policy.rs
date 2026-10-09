@@ -103,6 +103,8 @@ pub enum DeferredRecoveryFlushFacts {
     /// 実際に VK が flush された場合のみ notable とする。
     Flushed {
         vk_count: usize,
+        /// 観測専用(ADR-246 Q3)。`Some(true)` は送った上で `hwndFocus` が変わっていた回で、VK が 0 件でも残す。
+        focus_hwnd_changed: Option<bool>,
     },
     DiscardedStale,
     SkippedWhilePolling,
@@ -111,7 +113,10 @@ pub enum DeferredRecoveryFlushFacts {
 #[must_use]
 pub const fn deferred_recovery_flush_is_notable(f: DeferredRecoveryFlushFacts) -> bool {
     match f {
-        DeferredRecoveryFlushFacts::Flushed { vk_count } => vk_count > 0,
+        DeferredRecoveryFlushFacts::Flushed {
+            vk_count,
+            focus_hwnd_changed,
+        } => vk_count > 0 || matches!(focus_hwnd_changed, Some(true)),
         DeferredRecoveryFlushFacts::DiscardedStale
         | DeferredRecoveryFlushFacts::SkippedWhilePolling => true,
     }
@@ -339,9 +344,41 @@ mod tests {
         use DeferredRecoveryFlushFacts::{DiscardedStale, Flushed, SkippedWhilePolling};
 
         let cases = [
-            (Flushed { vk_count: 0 }, false),
-            (Flushed { vk_count: 1 }, true),
-            (Flushed { vk_count: 3 }, true),
+            (
+                Flushed {
+                    vk_count: 0,
+                    focus_hwnd_changed: None,
+                },
+                false,
+            ),
+            (
+                Flushed {
+                    vk_count: 0,
+                    focus_hwnd_changed: Some(false),
+                },
+                false,
+            ),
+            (
+                Flushed {
+                    vk_count: 0,
+                    focus_hwnd_changed: Some(true),
+                },
+                true,
+            ),
+            (
+                Flushed {
+                    vk_count: 1,
+                    focus_hwnd_changed: None,
+                },
+                true,
+            ),
+            (
+                Flushed {
+                    vk_count: 3,
+                    focus_hwnd_changed: None,
+                },
+                true,
+            ),
             (DiscardedStale, true),
             (SkippedWhilePolling, true),
         ];

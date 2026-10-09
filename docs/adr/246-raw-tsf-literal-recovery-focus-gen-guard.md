@@ -66,3 +66,42 @@ related_adr:
 - Q1: 前景窓が一瞬変わる場面(ダイアログ、最小化)での誤破棄の頻度。journal で測る。
 - Q3: 同じ前景窓の中の移動を捉える必要があるか。必要なら、デバウンスしない focus 連番を WinEvent の即時処理で進めて `StageOrigin` に使う案(round 2 N-M1 案1)に進む。安い代案として、`GetGUIThreadInfo` の `hwndFocus` も比べる案がある(Chrome のアドレスバーとページは別 hwnd)。今回は入れない。
 - Q2: 破棄時に deferred を全部捨てる粒度。`DeferredVk` に退避時の宛先を持たせれば旧窓のものだけ捨てられるが、今回は入れない(トレードオフ節)。
+
+## Q3 追補: 同じ前景窓の中の移動を `hwndFocus` で捉える(起草 2026-10-08、**却下**・実害の記録待ち)
+
+**Opus レビュー round 1 の結論(Blocker 2・Major 3)で、下の決定案は採用しない。** 理由:
+- B1: `get_gui_thread_info_with_timeout` は取れないとき 0 を返さず、前景の最上位 hwnd(`hwndFocus` が null なら `hwndActive`)を返す。タイムアウトや失敗の回が「両方非 0 で違う」となり、正しい回収と後続の打鍵を誤って捨てる。
+- B2: 採取は段の開始だけではない。`discard_raw_recovery_if_moved` が予約の確認より先に `current_stage_origin()` を評価するので drain ごとに走り、warm 経路の LiteralDetect(`vk_send.rs:646`)は打鍵ごとに段を張る。毎回スレッドを spawn してメインスレッドで最大 30ms 待つ。`ime.rs` の `get_focused_hwnd_async` の doc が、同期経路からの直接呼びは BUG-34 を再現するので禁じている。
+- M1・M2: Ctrl+L や Tab の直後の打鍵で、段の開始時は旧 hwndFocus・文字は新フィールド、という N-M1 と同形の誤破棄が起きる。UWP・WebView2・Office で hwndFocus は正当に揺れる。一方、Web ページ内のフィールド移動は hwndFocus が変わらず捉えられない。
+- M3: 実害の記録がゼロ。CI で固定できるのは純関数の分岐だけで、誤破棄の頻度とコストは CI で出ない。
+
+次にやるなら、判断に使わない観測版だけ(literal 検出時と、予約ありと分かった後の flush の 2 回だけ読み、journal に `focus_hwnd_changed: Option<bool>` を残す)。実害の報告が出てから判断に昇格させ、そのときは B1 の専用関数・B2 の lazy 読み・M1 の時系列の倒し方を先に ADR に書く。案1(WinEvent 連番)は `hwndFocus` と違い Web ページ内の移動も捉えられるので、案2 は案1 の代替になっていない。
+
+以下は却下した起草時の案(経緯として残す)。
+
+実環境でこの経路が起きた記録はまだ無い(BUG-194 は実機未確認)。ここでは「ガードが働くことを CI で固定する」範囲に限って決める。発生頻度の測定は引き続き journal の `DiscardedStale` で行う。
+
+### 決定案(案2: `hwndFocus` を足す)
+
+1. `StageOrigin` に `focus_hwnd: isize`(`GetGUIThreadInfo` の `hwndFocus`。取れない・null は 0)を足す。
+2. `plan_raw_recovery`: 前景窓が記録時・flush 時とも有効で**同じ**、かつ `focus_hwnd` が**両方 0 でなく**違うときは `DiscardStale`。どちらかが 0 なら今までどおり送る(判断材料が無いときは従来の挙動)。
+3. 採取は `win32::foreground_scope()` と同じ場所に `focus_hwnd()` を足す。`GetGUIThreadInfo` は対象スレッドのハングで止まりうる(`get_gui_thread_info_with_timeout` の doc)ので、タイムアウト付きの既存ラッパーを短い上限(`ime.rs:940` の前例 30ms)で使い、タイムアウト時は 0 とする。
+
+### 却下・保留
+- 案1(デバウンスしない focus 連番を WinEvent で進める): focus 遷移の再発ファミリーに触れ、世代の遅れの問題を別の形で持ち込む。実害の記録が無いので入れない。
+
+### テスト
+- `state/raw_recovery_plan.rs` の単体(Linux): 前景同じ・`focus_hwnd` 違い → 捨てる、片方 0 → 送る、前景違いは従来どおり、世代だけ進んで `focus_hwnd` 同じ → 送る(N-M1 を壊さない)。
+- `output/mod.rs` の Windows テスト: 既存の `discard_raw_recovery_if_moved_at` に `focus_hwnd` を渡し、deferred 込みで破棄されることを固定する。
+- `architecture_guard`: `focus_hwnd` の採取が段の開始と flush の両方で `current_stage_origin` 1 本を通ることを固定する。
+
+### 未決(Opus レビューで確認)
+- 段の開始(`install_pending_tsf`)で `GetGUIThreadInfo` を呼ぶコスト。頻度は warmup 段の開始のみで打鍵ごとではない前提だが、実測していない。
+- TSF native アプリ(Chrome 等)で、入力中に `hwndFocus` が正当に揺れる経路が無いか(誤破棄=リテラルが画面に残る側)。揺れるなら案2は入れない。
+
+### 観測版の実装(2026-10-09、判断には使わない)
+Opus の推奨どおり、挙動を変えない観測だけを入れた。`win32::focus_hwnd_observed`(`hwndFocus` だけを返し、null・失敗・タイムアウト・ワーカー上限は `None`。前景窓での代用はしない=B1 対策)を、**literal 検出時(`record_raw_tsf_literal`)と、予約ありと分かった後の flush の 2 回だけ**30ms 上限で読む(予約が無い drain では読まない=B2 対策)。journal の `DeferredRecoveryFlush` の `Flushed` と `DiscardedStale` に `focus_hwnd_changed: Option<bool>`(両方取れたときだけ `Some`)を足した。`Flushed` は VK が 0 件でも `Some(true)` なら残す。`DiscardStale` の判断(`plan_raw_recovery`)は変えていない。
+
+**この観測は検出から flush までの数 ms しか見ていない**(Opus PR #560 レビュー M1)。同じ窓内の移動が起きやすいのは段の開始から検出までの 300〜500ms なので、`Some(true)` は構造上ほぼ出ない。**journal に `Some(true)` が 0 件でも、起きていない証拠にはならない。** `DiscardedStale` に `focus_hwnd_changed: Some(false)` が付いても「フォーカスが動いていない=誤破棄」とは読めない(前景の変化が検出より前なら、検出時の値が既に新しい窓のもの)。したがって昇格条件は `Some(true)` の出現ではなく、リテラルが別フィールドへ BS された報告が出ることだけとする。段の開始から見たいなら、debounce 前の `EVENT_OBJECT_FOCUS`(`app/bootstrap.rs` の `LAST_FOCUS_HWND`、Win32 を呼ばない atomic)を段の開始で読む案がある。ただし app 層の static を output 層から読むので層境界の設計が先に要る(別 ADR)。
+
+判断への昇格は、リテラルが別フィールドへ BS された報告が出てからとする。昇格のときは B1 の専用関数・B2 の lazy 読み・M1(Ctrl+L→即打鍵)の倒し方を先に ADR に書く。検出時に採るため、段の開始から検出までの間の移動は取りこぼす(ただし上記のとおり下限としても弱い)。

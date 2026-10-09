@@ -54,6 +54,16 @@ pub fn plan_raw_recovery(
     }
 }
 
+/// 観測専用(判断には使わない、ADR-246 Q3): 検出時と flush 時の `hwndFocus` が変わったか。
+/// どちらかが取れていなければ `None`（変わっていないとは言えない）。
+#[must_use]
+pub const fn focus_hwnd_changed(recorded: Option<isize>, now: Option<isize>) -> Option<bool> {
+    match (recorded, now) {
+        (Some(a), Some(b)) => Some(a != b),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,6 +75,15 @@ mod tests {
             focus_gen,
             foreground: ForegroundScope { pid, hwnd },
         }
+    }
+
+    #[test]
+    fn focus_hwnd_changed_needs_both_sides() {
+        assert_eq!(focus_hwnd_changed(Some(1), Some(1)), Some(false));
+        assert_eq!(focus_hwnd_changed(Some(1), Some(2)), Some(true));
+        assert_eq!(focus_hwnd_changed(None, Some(2)), None);
+        assert_eq!(focus_hwnd_changed(Some(1), None), None);
+        assert_eq!(focus_hwnd_changed(None, None), None);
     }
 
     #[test]
