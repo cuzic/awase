@@ -46,7 +46,8 @@ jobs:
       - name: Google 日本語入力をインストールしキーマッププリセットを書く(ATOK=1 / MS-IME=2)
         shell: pwsh
         run: |
-          choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+          ./tools/ci/install-gji.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
           $l = New-WinUserLanguageList ja-JP
           $l[0].InputMethodTips.Clear()

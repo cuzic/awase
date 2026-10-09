@@ -42,7 +42,7 @@ jobs:
       # e2e-ime.yml の e2e ジョブと同じ手順(GJI 導入 → 入力言語を ja-JP+GJI → ATOK プリセットの config1.db)。
       - name: Google 日本語入力をインストール
         shell: pwsh
-        run: choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+        run: ./tools/ci/install-gji.ps1
       - name: 入力言語を ja-JP + GJI に設定(ATOK プリセット)
         shell: pwsh
         run: |
