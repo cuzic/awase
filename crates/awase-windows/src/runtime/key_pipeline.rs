@@ -1670,36 +1670,26 @@ impl Runtime {
         decision: &awase::engine::Decision,
         event: &RawKeyEvent,
     ) {
-        if !matches!(event.event_type, KeyEventType::KeyDown)
-            || event.injected
-            || crate::vk::classify_modifier(event.vk_code).is_some()
-        {
-            return;
-        }
-        let in_table =
-            crate::state::key_effect_predictor::TableKey::from_vk(event.vk_code.0).is_some();
         let m = event.modifier_snapshot;
-        if crate::state::key_effect_predictor::modifiers_suppress_prediction(
-            in_table, m.ctrl, m.alt, m.shift, m.win,
-        ) {
-            // Shift+変換（ATOKで開閉トグルではない）やCtrl+文字（ショートカット）は「素のキー」の結果と違う。
+        let facts = crate::state::key_effect_predictor::KeyTrackFacts {
+            vk: event.vk_code.0,
+            is_physical_key_down: matches!(event.event_type, KeyEventType::KeyDown)
+                && !event.injected,
+            is_modifier_key: crate::vk::classify_modifier(event.vk_code).is_some(),
+            ctrl: m.ctrl,
+            alt: m.alt,
+            shift: m.shift,
+            win: m.win,
+            was_down: event.was_down,
+            consumed: decision.is_consumed(),
+            has_shadow_action: event.ime_relevance.shadow_action.is_some(),
+            has_sync_direction: event.ime_relevance.sync_direction.is_some(),
+        };
+        let Some(passive_rule_eligible) =
+            crate::state::key_effect_predictor::plan_key_effect_track(&facts)
+        else {
             return;
-        }
-        if in_table
-            && (decision.is_consumed()
-                || event.ime_relevance.shadow_action.is_some()
-                || event.ime_relevance.sync_direction.is_some())
-        {
-            return;
-        }
-        // ADR-211 決定2: 表に無い受動のキー（プリセットの F13）の規則を当ててよい打鍵。表のキーの除外（上）は`in_table`のときだけなので、
-        // 表に無いキーではここで明示する。自動リピート・エンジンが消費した打鍵・`shadow_action`/`sync_direction` 付き・修飾付き（Shift も）は当てない。
-        let passive_rule_eligible = !in_table
-            && !event.was_down
-            && !decision.is_consumed()
-            && event.ime_relevance.shadow_action.is_none()
-            && event.ime_relevance.sync_direction.is_none()
-            && !(m.ctrl || m.alt || m.shift || m.win);
+        };
         self.kp_predict_key_effect(event.vk_code, passive_rule_eligible);
     }
 

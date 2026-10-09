@@ -549,6 +549,57 @@ pub const fn modifiers_suppress_prediction(
     }
 }
 
+/// [`plan_key_effect_track`] が読む打鍵の事実（殻 `kp_stage_key_effect_track` が `RawKeyEvent`/`Decision` から写す）。
+#[derive(Debug, Clone, Copy)]
+pub struct KeyTrackFacts {
+    pub vk: u16,
+    /// 注入でない物理キーの KeyDown か（KeyUp・自己注入は追跡しない）。
+    pub is_physical_key_down: bool,
+    /// 修飾キー単体（Shift/Ctrl/Alt/Win）か。
+    pub is_modifier_key: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub win: bool,
+    /// 自動リピート（直前もキーが押されていた）か。
+    pub was_down: bool,
+    /// エンジンが消費したか。
+    pub consumed: bool,
+    /// ADR-189 の固定セット（`shadow_action`）を持つか。従来の経路に任せる。
+    pub has_shadow_action: bool,
+    /// 同期キー（`sync_direction`）か。従来の経路に任せる。
+    pub has_sync_direction: bool,
+}
+
+/// 打鍵ごとの予測・追跡を行うか。`None`=行わない、`Some(passive_rule_eligible)`=行う。
+///
+/// - 表が持つキー（モードキー、Space/Esc/Enter/BS等）: エンジンが消費せず IME へ通したときだけ。
+///   `shadow_action`・`sync_direction` 付きは従来の経路に任せる。
+/// - 表に無いキー（文字キー）: エンジンが消費しても（ローマ字を IME へ再注入して入力中にするため）
+///   変換中の段階を戻す追跡だけを更新する。
+/// - 修飾付きは [`modifiers_suppress_prediction`] で抑止する。
+///
+/// `passive_rule_eligible`（ADR-211 決定2）は、表に無い受動のキー（プリセットの F13）の規則を当ててよい打鍵。
+/// 表のキーの除外は `in_table` のときだけなので、表に無いキーではここで明示する。自動リピート・エンジンが
+/// 消費した打鍵・`shadow_action`/`sync_direction` 付き・修飾付き（Shift も）は当てない。
+#[must_use]
+pub fn plan_key_effect_track(f: &KeyTrackFacts) -> Option<bool> {
+    if !f.is_physical_key_down || f.is_modifier_key {
+        return None;
+    }
+    let in_table = TableKey::from_vk(f.vk).is_some();
+    if modifiers_suppress_prediction(in_table, f.ctrl, f.alt, f.shift, f.win) {
+        // Shift+変換（ATOKで開閉トグルではない）やCtrl+文字（ショートカット）は「素のキー」の結果と違う。
+        return None;
+    }
+    let delegated = f.consumed || f.has_shadow_action || f.has_sync_direction;
+    if in_table && delegated {
+        return None;
+    }
+    let any_modifier = f.ctrl || f.alt || f.shift || f.win;
+    Some(!in_table && !f.was_down && !delegated && !any_modifier)
+}
+
 /// `config1.db`から作ったキーマップのキャッシュ（打鍵ごとの同期fs読み取り+パースを避ける。
 /// レビュー指摘A-B1）。`RECHECK_MS`ごとに、ファイルの版（更新時刻+長さ）だけを問い合わせ、
 /// 変わったときだけ読み直す。判定は純関数で、fs/時計は呼び出し側が渡す。
@@ -1045,6 +1096,106 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    fn track_facts(vk: u16) -> KeyTrackFacts {
+        KeyTrackFacts {
+            vk,
+            is_physical_key_down: true,
+            is_modifier_key: false,
+            ctrl: false,
+            alt: false,
+            shift: false,
+            win: false,
+            was_down: false,
+            consumed: false,
+            has_shadow_action: false,
+            has_sync_direction: false,
+        }
+    }
+
+    /// 表に無い文字キー（'A'）と、表が持つキー（Space）。
+    const VK_CHAR: u16 = 0x41;
+    const VK_TABLE: u16 = 0x20;
+
+    #[test]
+    fn plan_key_effect_track_skips_non_physical_down_and_modifier_keys() {
+        for vk in [VK_CHAR, VK_TABLE] {
+            let mut f = track_facts(vk);
+            f.is_physical_key_down = false;
+            assert_eq!(plan_key_effect_track(&f), None, "KeyUp/注入は追跡しない");
+            let mut f = track_facts(vk);
+            f.is_modifier_key = true;
+            assert_eq!(plan_key_effect_track(&f), None, "修飾キー単体は追跡しない");
+        }
+    }
+
+    #[test]
+    fn plan_key_effect_track_table_key_only_when_passed_through_unmodified() {
+        assert_eq!(plan_key_effect_track(&track_facts(VK_TABLE)), Some(false));
+        let mut f = track_facts(VK_TABLE);
+        f.consumed = true;
+        assert_eq!(plan_key_effect_track(&f), None);
+        let mut f = track_facts(VK_TABLE);
+        f.has_shadow_action = true;
+        assert_eq!(plan_key_effect_track(&f), None);
+        let mut f = track_facts(VK_TABLE);
+        f.has_sync_direction = true;
+        assert_eq!(plan_key_effect_track(&f), None);
+        let mut f = track_facts(VK_TABLE);
+        f.shift = true;
+        assert_eq!(
+            plan_key_effect_track(&f),
+            None,
+            "表のキーは Shift 付きで追跡しない"
+        );
+    }
+
+    #[test]
+    fn plan_key_effect_track_char_key_tracks_even_if_consumed_but_rule_gate_is_strict() {
+        assert_eq!(plan_key_effect_track(&track_facts(VK_CHAR)), Some(true));
+        let mut f = track_facts(VK_CHAR);
+        f.consumed = true;
+        assert_eq!(
+            plan_key_effect_track(&f),
+            Some(false),
+            "消費しても追跡は更新、規則は当てない"
+        );
+        let mut f = track_facts(VK_CHAR);
+        f.was_down = true;
+        assert_eq!(
+            plan_key_effect_track(&f),
+            Some(false),
+            "自動リピートには規則を当てない"
+        );
+        let mut f = track_facts(VK_CHAR);
+        f.has_shadow_action = true;
+        assert_eq!(plan_key_effect_track(&f), Some(false));
+        let mut f = track_facts(VK_CHAR);
+        f.has_sync_direction = true;
+        assert_eq!(plan_key_effect_track(&f), Some(false));
+        let mut f = track_facts(VK_CHAR);
+        f.shift = true;
+        assert_eq!(
+            plan_key_effect_track(&f),
+            Some(false),
+            "Shift（大文字）は追跡するが規則は当てない"
+        );
+        for (c, a, w) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let mut f = track_facts(VK_CHAR);
+            f.ctrl = c;
+            f.alt = a;
+            f.win = w;
+            assert_eq!(
+                plan_key_effect_track(&f),
+                None,
+                "ショートカットは追跡しない"
+            );
         }
     }
 
