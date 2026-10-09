@@ -71,21 +71,28 @@ jobs:
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
-      - name: 観測(thread-local off / on)
+      - name: 観測(アプリウィンドウごと=OFF 固定、既定の入力方式の上書き ms / gji)
         shell: pwsh
         run: |
-          foreach ($mode in 'on','off') {
-            "=== thread-local=$mode ==="
-            & dist\tip_scope_probe.exe --thread-local=$mode --secs=1 --reset-ms --no-activate | Tee-Object -FilePath "prep-$mode.txt"
+          $msTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $gjiTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          & dist\tip_scope_probe.exe --thread-local=off --secs=1 --no-activate
+          foreach ($ov in 'ms','gji') {
+            "=== override=$ov ==="
+            $tip = if ($ov -eq 'ms') { $msTip } else { $gjiTip }
+            Set-WinDefaultInputMethodOverride -InputTip $tip
+            Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+            Start-Process ctfmon.exe
+            Start-Sleep -Seconds 6
+            Remove-Item dist\awase.log -ErrorAction SilentlyContinue
             $aw = Start-Process -FilePath dist\awase.exe -WorkingDirectory dist -PassThru
             Start-Sleep -Seconds 8
-            & dist\tip_scope_probe.exe --thread-local=$mode --secs=14 | Tee-Object -FilePath "probe-$mode.txt"
-            Start-Sleep -Seconds 12
+            & dist\tip_scope_probe.exe --thread-local=off --secs=12 | Tee-Object -FilePath "probe-$ov.txt"
+            Start-Sleep -Seconds 4
             Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue
-            Get-ChildItem -Recurse -Path dist,$env:APPDATA -Filter 'awase*.log*' -ErrorAction SilentlyContinue | ForEach-Object {
-              "--- $($_.FullName)"
-              Select-String -Path $_.FullName -Pattern 'tip-detect|IME kind' | ForEach-Object { $_.Line } | Select-Object -Last 15
-            }
+            "--- awase.log ($ov)"
+            Select-String -Path dist\awase.log -Pattern 'tip-detect\] (initial|IME kind|TIP identity)|IME kind sync' | ForEach-Object { $_.Line }
           }
       - uses: actions/upload-artifact@v4
         if: always()
