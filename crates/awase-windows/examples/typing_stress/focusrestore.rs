@@ -17,12 +17,19 @@
 //! 記録: `fr_config`(1回)・`fr_stage`(時点ごと)・`fr_trial`(試行のまとめ)。時刻 `utc` は awase.log と突合せる用。
 //!
 //! 引数: `--fr-n=N`(試行数。既定3) / `--fr-control`(B へ移さない対照) / `--fr-b-open` / `--fr-sameproc`(B を同一プロセスの別スレッド窓にする。ADR-245 Q4)。
+//! ADR-245 PR 3(strict 判定用): `--fr-scenario=<名前>`(下の `Scenario`) / `--fr-expect=resume|rebuild`
+//! (resume=戻って最初の打鍵でかなへ復元される IME〈MS-IME 本体・GJI の MS-IME プリセット〉、rebuild=GJI の ATOK プリセット
+//! 〈F2 が純粋なトグルなので注入せずトグルを立て直し、戻った A は英数のまま〉)。判定は check_focusrestore.py が `--strict` で行う。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 
 static B: AtomicIsize = AtomicIsize::new(0);
+/// A→B→C→A 用の 3 つ目の窓(別プロセス)。
+static C: AtomicIsize = AtomicIsize::new(0);
+const TITLE_B: &str = "FOCUSRESTORE_B";
+const TITLE_C: &str = "FOCUSRESTORE_C";
 
 const VK_LSHIFT: u32 = 0xA0;
 const SCAN_LSHIFT: u16 = 0x2A;
@@ -30,16 +37,17 @@ const SCAN_LSHIFT: u16 = 0x2A;
 /// 窓 B のプロセス(`--fr-helper` で自分自身を再起動したもの)。awase のフォーカス変更通知
 /// (`ir_notify_focus_changed`)は**プロセスが変わったとき**だけ呼ばれる(`focus_tracking.rs::advance_focus_tracking` が
 /// pid の違いで判定。run 37779401312 で同一プロセス内の窓移動は通知されないことを確認)ので、B は別プロセスにする。
-static HELPER: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+static HELPER: std::sync::Mutex<Vec<std::process::Child>> = std::sync::Mutex::new(Vec::new());
 
-/// `--fr-helper`: 窓 B だけを作って閉じられるまで待つ。`main` の先頭から呼ぶ。
+/// `--fr-helper`: 窓 B(`--fr-title=` で C)だけを作って閉じられるまで待つ。`main` の先頭から呼ぶ。
 pub(crate) fn helper_main() {
-    // SAFETY: 自スレッドの窓とメッセージループのみ。
+    let title = wide(&arg_value("--fr-title=").unwrap_or_else(|| TITLE_B.into()));
+    // SAFETY: 自スレッドの窓とメッセージループのみ。`title` は呼び出しの間生きている。
     unsafe {
         let _ = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("EDIT"),
-            w!("FOCUSRESTORE_B"),
+            PCWSTR(title.as_ptr()),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             520,
             80,
@@ -58,9 +66,10 @@ pub(crate) fn helper_main() {
     }
 }
 
-fn find_b() -> Option<HWND> {
-    // SAFETY: タイトルとクラスで探すだけ。
-    unsafe { FindWindowW(w!("EDIT"), w!("FOCUSRESTORE_B")).ok() }.filter(|h| !h.0.is_null())
+fn find_titled(title: &str) -> Option<HWND> {
+    let t = wide(title);
+    // SAFETY: タイトルとクラスで探すだけ。`t` は呼び出しの間生きている。
+    unsafe { FindWindowW(w!("EDIT"), PCWSTR(t.as_ptr())).ok() }.filter(|h| !h.0.is_null())
 }
 
 fn window_b() -> Option<HWND> {
@@ -71,18 +80,32 @@ fn window_b() -> Option<HWND> {
     if has_flag("--fr-sameproc") {
         return window_b_same_process();
     }
+    spawn_helper(TITLE_B, &B)
+}
+
+/// A→B→C→A 用の窓 C(常に別プロセス)。
+fn window_c() -> Option<HWND> {
+    let cur = C.load(Ordering::SeqCst);
+    if cur != 0 {
+        return Some(HWND(cur as *mut _));
+    }
+    spawn_helper(TITLE_C, &C)
+}
+
+fn spawn_helper(title: &str, slot: &AtomicIsize) -> Option<HWND> {
     let exe = std::env::current_exe().ok()?;
     let child = std::process::Command::new(exe)
         .arg("--fr-helper")
+        .arg(format!("--fr-title={title}"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
-    *HELPER.lock().ok()? = Some(child);
+    HELPER.lock().ok()?.push(child);
     for _ in 0..40 {
-        if let Some(h) = find_b() {
-            B.store(h.0 as isize, Ordering::SeqCst);
+        if let Some(h) = find_titled(title) {
+            slot.store(h.0 as isize, Ordering::SeqCst);
             return Some(h);
         }
         sleep_ms(250);
@@ -127,9 +150,49 @@ fn window_b_same_process() -> Option<HWND> {
 
 fn kill_b() {
     if let Ok(mut g) = HELPER.lock() {
-        if let Some(mut c) = g.take() {
+        for mut c in g.drain(..) {
             let _ = c.kill();
         }
+    }
+}
+
+/// 別プロセス(または別スレッド)の EDIT 窓の本文。`WM_GETTEXT` は標準コントロールではプロセスをまたいで渡る。
+fn read_window_text(h: HWND) -> String {
+    const WM_GETTEXT: u32 = 0x000D;
+    let mut buf = vec![0u16; 256];
+    let mut res = 0usize;
+    // SAFETY: 短いタイムアウト付きの同期送信。`buf` は呼び出しの間生きている。
+    unsafe {
+        let r = SendMessageTimeoutW(
+            h,
+            WM_GETTEXT,
+            WPARAM(buf.len()),
+            LPARAM(buf.as_mut_ptr() as isize),
+            windows::Win32::UI::WindowsAndMessaging::SEND_MESSAGE_TIMEOUT_FLAGS(0x0002),
+            500,
+            Some(&raw mut res),
+        );
+        if r.0 == 0 {
+            return String::new();
+        }
+    }
+    String::from_utf16_lossy(&buf[..res.min(buf.len() - 1)])
+}
+
+fn clear_window_text(h: HWND) {
+    const WM_SETTEXT: u32 = 0x000C;
+    let empty = [0u16];
+    // SAFETY: 空文字列を短いタイムアウト付きで送るだけ。
+    unsafe {
+        let _ = SendMessageTimeoutW(
+            h,
+            WM_SETTEXT,
+            WPARAM(0),
+            LPARAM(empty.as_ptr() as isize),
+            windows::Win32::UI::WindowsAndMessaging::SEND_MESSAGE_TIMEOUT_FLAGS(0x0002),
+            500,
+            None,
+        );
     }
 }
 
@@ -240,15 +303,91 @@ pub(crate) fn focus_restore_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     kill_b();
 }
 
+/// `--fr-scenario=`: 戻り方・戻った直後の操作・窓の動かし方の違い(ADR-245 の PR 3)。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scenario {
+    /// A→B→A(`refocus`)で戻り、最初の操作は文字キー。
+    Basic,
+    /// 戻り方を Alt+Tab にする(マーカー付き注入で物理扱い)。
+    AltTab,
+    /// 戻って最初の操作を左 Shift 単独タップにする。
+    LShiftFirst,
+    /// 戻って最初の打鍵を Shift+文字にする(カタカナにならないこと)。
+    ShiftChar,
+    /// A→B→A→B→A の 2 往復。
+    Twice,
+    /// A→B→C→A(C は別プロセスの 3 つ目の窓)。
+    Abc,
+    /// B で IME を OFF にしてから A へ戻る(effective_open 偽の Drop。観測)。
+    BImeOff,
+}
+
+fn scenario() -> Scenario {
+    match arg_value("--fr-scenario=").as_deref() {
+        Some("alttab") => Scenario::AltTab,
+        Some("lshift") => Scenario::LShiftFirst,
+        Some("shiftchar") => Scenario::ShiftChar,
+        Some("twice") => Scenario::Twice,
+        Some("abc") => Scenario::Abc,
+        Some("bimeoff") => Scenario::BImeOff,
+        _ => Scenario::Basic,
+    }
+}
+
+fn scenario_name(s: Scenario) -> &'static str {
+    match s {
+        Scenario::Basic => "basic",
+        Scenario::AltTab => "alttab",
+        Scenario::LShiftFirst => "lshift",
+        Scenario::ShiftChar => "shiftchar",
+        Scenario::Twice => "twice",
+        Scenario::Abc => "abc",
+        Scenario::BImeOff => "bimeoff",
+    }
+}
+
+/// マーカー付き注入の Alt↓→Tab↓↑→Alt↑(前面窓を 1 つ前に戻す)。
+fn press_alt_tab() {
+    send_key(0xA4, 0x38, true);
+    sleep_ms(80);
+    send_key(0x09, 0x0F, true);
+    sleep_ms(60);
+    send_key(0x09, 0x0F, false);
+    sleep_ms(80);
+    send_key(0xA4, 0x38, false);
+}
+
+/// `probe` を打って Enter で確定し、A の本文を読んで消す。
+fn type_probe_in_a(child: HWND, probe: &Cell) -> String {
+    press(probe.vk, probe.scan, 60);
+    sleep_ms(700);
+    press(VK_RETURN, 0x1C, 50);
+    sleep_ms(700);
+    let text = read_text(child);
+    clear_text(child);
+    text
+}
+
 fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
     let n_trials: u64 = arg_value("--fr-n=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);
     let control = has_flag("--fr-control");
     let b_open = has_flag("--fr-b-open");
+    let scn = scenario();
+    let expect = arg_value("--fr-expect=").unwrap_or_else(|| "resume".into());
     let Some(b) = window_b() else {
         rec(&json!({"type":"abort","reason":"focus-restore: 窓 B を作れなかった"}));
         return;
+    };
+    let c = if scn == Scenario::Abc {
+        let Some(c) = window_c() else {
+            rec(&json!({"type":"abort","reason":"focus-restore: 窓 C を作れなかった"}));
+            return;
+        };
+        Some(c)
+    } else {
+        None
     };
     let a = child;
     let Some(probe) = cells[0]
@@ -262,6 +401,7 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
     };
     rec(
         &json!({"type":"fr_config","n":n_trials,"control":control,"b_open":b_open,"sameproc":has_flag("--fr-sameproc"),
+        "scenario":scenario_name(scn),"expect":expect,
         "class_a":class_of(a),"class_b":class_of(b)}),
     );
     for n in 0..n_trials {
@@ -278,6 +418,7 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         // 前提: IME を OFF→ON にそろえる(awase の明示意図も ON になる)。
         turn_ime_on(0);
         clear_text(child);
+        clear_window_text(b);
         sleep_ms(300);
         // 前の試行の半角英数が実 IME に残っていることがある(強制復元が効かないのがこの調査の主題)ので、
         // A の conv に NATIVE が無ければひらがなキーで戻す。戻せなかった試行は下の entered 判定で捨てる。
@@ -329,33 +470,101 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         stages(n, "settled", &[300, 1000], a, b);
         // away: B へ移す(対照は移さない)。
         let utc_away = utc_hms();
-        let away_ok = if control { true } else { to_b(b) };
+        let mut away_ok = if control { true } else { to_b(b) };
+        match scn {
+            Scenario::Twice if !control => {
+                // 1 往復目(B へ→A へ)を挟み、もう一度 B へ移す。
+                sleep_ms(1200);
+                stage(n, "away0", 0, a, b);
+                refocus();
+                sleep_ms(1200);
+                stage(n, "back0", 0, a, b);
+                away_ok &= to_b(b);
+            }
+            Scenario::Abc => {
+                // B から C へ移す。最後の away 列は C が前面のとき(fg=other)に記録する。
+                sleep_ms(1200);
+                stage(n, "away_b", 0, a, b);
+                if let Some(c) = c {
+                    away_ok &= to_b(c);
+                }
+            }
+            Scenario::BImeOff if !control => {
+                // B の IME を OFF にする(A の belief は B の閉を引き継ぐ)。
+                sleep_ms(500);
+                press(VK_IME_OFF, 0x70, 50);
+                sleep_ms(800);
+            }
+            _ => {}
+        }
         stages(n, "away", &[150, 600, 1500], a, b);
+        // B-3: B で自分の最初の打鍵を打つ(B に ObservedEisu が持ち越されていれば NICOLA が止まって素通しになる)。
+        // B の IME が閉(--fr-b-open なし)のときは素通しが正なので、判定は b_open のときだけ。
+        let b_typed = if control || scn == Scenario::Abc || scn == Scenario::BImeOff {
+            None
+        } else {
+            press(probe.vk, probe.scan, 60);
+            sleep_ms(700);
+            press(VK_RETURN, 0x1C, 50);
+            sleep_ms(700);
+            let t = read_window_text(b);
+            clear_window_text(b);
+            Some(t)
+        };
         // back: A へ戻す。
         let utc_back = utc_hms();
+        let mut alttab_ok = true;
         if !control {
-            refocus();
+            if scn == Scenario::AltTab {
+                press_alt_tab();
+                sleep_ms(500);
+                alttab_ok = focus_ok();
+                if !alttab_ok {
+                    refocus();
+                }
+            } else {
+                refocus();
+            }
         }
         let back_ok = focus_ok();
         stages(n, "back", &[150, 600, 1500], a, b);
+        // 戻って最初の操作。
+        let mut first_text: Option<String> = None;
+        match scn {
+            Scenario::LShiftFirst => {
+                press(VK_LSHIFT, SCAN_LSHIFT, 60);
+                sleep_ms(700);
+                stage(n, "firsttap", 700, a, b);
+            }
+            Scenario::ShiftChar => {
+                send_key(VK_LSHIFT, SCAN_LSHIFT, true);
+                sleep_ms(60);
+                press(probe.vk, probe.scan, 60);
+                sleep_ms(40);
+                send_key(VK_LSHIFT, SCAN_LSHIFT, false);
+                sleep_ms(700);
+                press(VK_RETURN, 0x1C, 50);
+                sleep_ms(700);
+                first_text = Some(read_text(child));
+                clear_text(child);
+                stage(n, "shiftchar", 0, a, b);
+            }
+            _ => {}
+        }
         // typed: かな単打を打って確定し、本文を読む。
         let utc_type = utc_hms();
-        press(probe.vk, probe.scan, 60);
-        sleep_ms(700);
-        press(VK_RETURN, 0x1C, 50);
-        sleep_ms(700);
-        let text = read_text(child);
-        clear_text(child);
+        let text = type_probe_in_a(child, &probe);
+        stage(n, "typed", 0, a, b);
         // tap2: もう一度左 Shift 単独タップ。
         let utc_tap2 = utc_hms();
         press(VK_LSHIFT, SCAN_LSHIFT, 60);
         stages(n, "tap2", &[300, 1000], a, b);
         let utc_end = utc_hms();
         rec(
-            &json!({"type":"fr_trial","n":n,"control":control,"utc":utc0,"utc_tap1":utc_tap1,
+            &json!({"type":"fr_trial","n":n,"control":control,"scenario":scenario_name(scn),"utc":utc0,"utc_tap1":utc_tap1,
             "entered":true,"taps":taps,"utc_away":utc_away,"utc_back":utc_back,"utc_type":utc_type,"utc_tap2":utc_tap2,"utc_end":utc_end,
-            "away_ok":away_ok,"back_ok":back_ok,
-            "typed":{"text":text,"expect":probe.kana.to_string(),"ok":text.trim() == probe.kana.to_string()}}),
+            "away_ok":away_ok,"back_ok":back_ok,"alttab_ok":alttab_ok,"b_typed":b_typed,"first_text":first_text,
+            "typed":{"text":text,"expect":probe.kana.to_string(),"expect_romaji":probe.romaji.to_string(),"vk":probe.vk,"ok":text.trim() == probe.kana.to_string()}}),
         );
         // 次の試行へ持ち越さない: A を前面に戻し、半角英数のままなら Shift 単独タップで戻す余地は残さず、次の turn_ime_on に任せる。
         if !focus_ok() {
