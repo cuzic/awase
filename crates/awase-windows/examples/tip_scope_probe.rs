@@ -154,6 +154,22 @@ mod imp {
         };
 
         let winspace = args.iter().any(|a| a == "--winspace");
+        if args.iter().any(|a| a == "--reset-ms") {
+            // 前の実行の Win+Space の影響を消すため、セッション全体で Microsoft IME に戻す。
+            let r = unsafe {
+                mgr.ActivateProfile(
+                    TF_PROFILETYPE_INPUTPROCESSOR,
+                    0x0411,
+                    &GUID::from_u128(0x03B5835F_F03C_411B_9CE2_AA23E1171E36),
+                    &GUID::from_u128(0xA76C93D9_5523_4E90_AAFA_4DB112F9AC76),
+                    windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
+                    0x1 | 0x2000_0000,
+                )
+            };
+            say(&format!("reset to MS-IME (session) -> {r:?}"));
+            std::thread::sleep(Duration::from_millis(1500));
+            say(&format!("monitor(after reset) {}", active(&mgr, &profiles)));
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let stop_w = stop.clone();
         let w_thread = std::thread::spawn(move || unsafe {
