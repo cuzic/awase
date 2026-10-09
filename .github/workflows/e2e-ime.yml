@@ -905,7 +905,8 @@ jobs:
         if: matrix.cfg.ime != 'msime'
         shell: pwsh
         run: |
-          choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+          ./tools/ci/install-gji.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 入力言語をja-JP + GJI に設定、キーマッププリセット(ATOK/MS-IME)の config1.db を書く
         if: matrix.cfg.ime != 'msime'

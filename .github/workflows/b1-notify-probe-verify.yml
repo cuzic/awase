@@ -25,7 +25,7 @@ jobs:
         run: cargo build -p awase-keymap-learn-win --examples
       - name: GJI install
         shell: pwsh
-        run: choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+        run: ./tools/ci/install-gji.ps1
       - name: input language + ATOK preset
         shell: pwsh
         run: |
