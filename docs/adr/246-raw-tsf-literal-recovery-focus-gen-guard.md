@@ -98,3 +98,8 @@ related_adr:
 ### 未決(Opus レビューで確認)
 - 段の開始(`install_pending_tsf`)で `GetGUIThreadInfo` を呼ぶコスト。頻度は warmup 段の開始のみで打鍵ごとではない前提だが、実測していない。
 - TSF native アプリ(Chrome 等)で、入力中に `hwndFocus` が正当に揺れる経路が無いか(誤破棄=リテラルが画面に残る側)。揺れるなら案2は入れない。
+
+### 観測版の実装(2026-10-09、判断には使わない)
+Opus の推奨どおり、挙動を変えない観測だけを入れた。`win32::focus_hwnd_observed`(`hwndFocus` だけを返し、null・失敗・タイムアウト・ワーカー上限は `None`。前景窓での代用はしない=B1 対策)を、**literal 検出時(`record_raw_tsf_literal`)と、予約ありと分かった後の flush の 2 回だけ**30ms 上限で読む(予約が無い drain では読まない=B2 対策)。journal の `DeferredRecoveryFlush` の `Flushed` と `DiscardedStale` に `focus_hwnd_changed: Option<bool>`(両方取れたときだけ `Some`)を足した。`Flushed` は VK が 0 件でも `Some(true)` なら残す。`DiscardStale` の判断(`plan_raw_recovery`)は変えていない。
+
+判断への昇格は、実機の journal で `Flushed.focus_hwnd_changed == Some(true)` が出た(=同じ前景窓内の移動で回収を送った)か、リテラルが別フィールドへ BS された報告が出てから。昇格のときは B1 の専用関数・B2 の lazy 読み・M1(Ctrl+L→即打鍵)の倒し方を先に ADR に書く。検出時に採るため、段の開始から検出までの間の移動は取りこぼす(頻度の下限を測る)。

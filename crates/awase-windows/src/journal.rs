@@ -189,12 +189,20 @@ pub enum DeferredRecoveryOutcomeSummary {
         backs: usize,
         romaji_present: bool,
         deferred_vk_count: usize,
+        /// 観測専用(ADR-246 Q3): literal 検出時と flush 時で前景スレッドの `hwndFocus` が変わったか。
+        /// どちらかが取れなければ `None`。判断には使わない。
+        focus_hwnd_changed: Option<bool>,
     },
     /// 無関係な別の give-up 由来の GJI reinit retry が polling 中だったため、
     /// `pending_deferred` の flush を見送った（次の flush 機会に委ねる）。
     SkippedWhilePolling,
     /// `pending_deferred` を実際に flush した（0 件なら「取り残しなし」）。
-    Flushed { vk_count: usize },
+    Flushed {
+        vk_count: usize,
+        /// 観測専用(ADR-246 Q3): 予約ありの flush で、literal 検出時から前景スレッドの `hwndFocus` が変わったか。
+        /// 予約が無い回・どちらかが取れない回は `None`。`Some(true)` は回収を送った上での変化（同じ前景窓内の移動の候補）。
+        focus_hwnd_changed: Option<bool>,
+    },
 }
 
 /// `send_input_safe` が送った 1 キーボードイベントの記録（不具合報告用、journal の

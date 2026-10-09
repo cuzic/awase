@@ -107,6 +107,10 @@ pub struct Output {
     /// `RAW_TSF_LITERAL` に予約した回収の宛先(段の開始時に採った focus 世代と前景窓、BUG-194、ADR-246)。
     /// `flush_raw_tsf_literal_recovery` が flush 時点の値と照合し、違えば回収を捨てる。
     raw_literal_origin: std::cell::Cell<Option<crate::state::raw_recovery_plan::StageOrigin>>,
+    /// 観測専用（ADR-246 Q3、判断には使わない）: `record_raw_tsf_literal` 時点の前景スレッドの `hwndFocus`。
+    raw_literal_focus_hwnd: std::cell::Cell<Option<isize>>,
+    /// 観測専用: 予約あり flush で `focus_hwnd_changed` を求めた結果。outcome に載せて取り出す。
+    raw_focus_hwnd_changed: std::cell::Cell<Option<bool>>,
     /// MS-IME confirm-then-transmit ゲート（BUG-13）の give-up latch。
     ///
     /// `start_ms_ime_ready_poll` が「期限まで IMC が一度も確認できなかった」ときに立てる。
@@ -213,13 +217,19 @@ impl std::fmt::Debug for Output {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RawRecoveryOutcome {
     /// `pending_deferred` を実際に flush した（0 件なら「取り残しなし」）。
-    Flushed { vk_count: usize },
+    Flushed {
+        vk_count: usize,
+        /// 観測専用（ADR-246 Q3）。journal の `Flushed.focus_hwnd_changed` へ運ぶ。
+        focus_hwnd_changed: Option<bool>,
+    },
     /// 予約してから flush までに宛先の窓が変わっていたため、ESC/BS/romaji と `pending_deferred` を送らずに捨てた
     /// （BUG-194、ADR-246）。
     DiscardedStale {
         backs: usize,
         romaji_present: bool,
         deferred_vk_count: usize,
+        /// 観測専用（ADR-246 Q3）。
+        focus_hwnd_changed: Option<bool>,
     },
 }
 
@@ -280,6 +290,8 @@ impl Output {
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(crate::state::focus_gen::FocusGen::INITIAL),
             raw_literal_origin: std::cell::Cell::new(None),
+            raw_literal_focus_hwnd: std::cell::Cell::new(None),
+            raw_focus_hwnd_changed: std::cell::Cell::new(None),
             ms_ime_gate_give_up: std::cell::Cell::new(false),
             confirm_gate_deadline_override_ms: std::cell::Cell::new(0),
             shift_conv_guard_gen: std::cell::Cell::new(
@@ -1279,6 +1291,8 @@ impl Output {
         // 検出時(literal の 300〜500ms 後)でなく、段の開始時に採った宛先を引き継ぐ。
         self.raw_literal_origin
             .set(self.warmup_coord.stage_origin());
+        // 観測専用(ADR-246 Q3): 検出時の hwndFocus。literal 検出は稀なので同期で読む（短いタイムアウト）。
+        self.raw_literal_focus_hwnd.set(Self::observe_focus_hwnd());
         crate::RAW_TSF_LITERAL.backs.store(backs, Relaxed);
         crate::RAW_TSF_LITERAL
             .escape_composition
@@ -1287,6 +1301,13 @@ impl Output {
             .romaji
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = romaji;
+    }
+
+    /// 観測専用（ADR-246 Q3）。稀な 2 箇所（literal 検出・予約あり flush）からだけ呼ぶこと。
+    #[allow(unsafe_code)]
+    fn observe_focus_hwnd() -> Option<isize> {
+        // SAFETY: Win32 API 呼び出し。タイムアウト付きでワーカースレッド上で実行される。
+        unsafe { crate::win32::focus_hwnd_observed(Duration::from_millis(30)) }
     }
 
     /// 予約（`record_raw_tsf_literal`）から flush までに宛先の窓が変わっていたら、送らずに丸ごと捨てる（BUG-194、ADR-246）。
@@ -1315,9 +1336,16 @@ impl Output {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_empty();
+        self.raw_focus_hwnd_changed.set(None);
         if !reserved {
             return None;
         }
+        // 観測専用（判断には使わない）。予約ありの flush だけで読む。
+        self.raw_focus_hwnd_changed
+            .set(crate::state::raw_recovery_plan::focus_hwnd_changed(
+                self.raw_literal_focus_hwnd.get(),
+                Self::observe_focus_hwnd(),
+            ));
         let recorded = self.raw_literal_origin.get();
         if plan_raw_recovery(recorded, now) == RawRecoveryDisposition::Send {
             return None;
@@ -1343,6 +1371,7 @@ impl Output {
             backs,
             romaji_present: !romaji.is_empty(),
             deferred_vk_count,
+            focus_hwnd_changed: self.raw_focus_hwnd_changed.take(),
         })
     }
 
@@ -1410,7 +1439,10 @@ impl Output {
         flush_raw_tsf_literal_backspaces();
         self.flush_raw_tsf_literal_romaji();
         let vk_count = self.flush_stale_deferred_vks_after_recovery();
-        RawRecoveryOutcome::Flushed { vk_count }
+        RawRecoveryOutcome::Flushed {
+            vk_count,
+            focus_hwnd_changed: self.raw_focus_hwnd_changed.take(),
+        }
     }
 
     /// give-up（romaji 再送なし）で `RawTsfLiteralRecovery` が終わった場合に、
@@ -1735,7 +1767,8 @@ mod tests {
             Some(RawRecoveryOutcome::DiscardedStale {
                 backs: 2,
                 romaji_present: true,
-                deferred_vk_count: 2
+                deferred_vk_count: 2,
+                ..
             })
         ));
         assert_eq!(crate::RAW_TSF_LITERAL.backs.load(Relaxed), 0);

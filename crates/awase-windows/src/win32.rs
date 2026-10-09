@@ -494,6 +494,34 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
     }
 }
 
+/// 前景スレッドの `hwndFocus` だけを観測する（BUG-194 / ADR-246 Q3 の観測版。判断には使わない）。
+///
+/// `get_gui_thread_info_with_timeout` と違い、取れなかったとき前景窓などで代用せず `None` を返す
+/// （フォーカス null・`GetGUIThreadInfo` 失敗・タイムアウト・ワーカー上限）。代用値が「違う窓」に見えると
+/// 変化の頻度を誤って過大に測るため。呼び出しは literal 検出時と予約あり flush の稀な 2 箇所に限ること。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+#[must_use]
+pub unsafe fn focus_hwnd_observed(timeout: Duration) -> Option<isize> {
+    run_with_timeout(timeout, || {
+        let mut info = GUITHREADINFO {
+            cbSize: u32::try_from(size_of::<GUITHREADINFO>())
+                .expect("GUITHREADINFO size is a small constant that always fits in u32"),
+            ..Default::default()
+        };
+        // SAFETY: info は cbSize を正しく設定したスタック上の有効な構造体。
+        unsafe {
+            if GetGUIThreadInfo(0, &raw mut info).is_ok() {
+                info.hwndFocus.non_null().map(|h| h.0 as isize)
+            } else {
+                None
+            }
+        }
+    })
+    .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{input_may_mutate_conv, INPUT, INPUT_KEYBOARD, KEYEVENTF_UNICODE};
