@@ -4715,16 +4715,11 @@ fn discard_pending_construction_is_limited_to_discard_pending_action() {
     );
 }
 
-/// `raw_recovery_owns_deferred` の呼び出し箇所は `finish_probe_stage`
-/// （ADR-103 決定4-e、INV-F: 段末の deferred 解放判断）と
-/// `probe_or_recovery_block_reason`（旧 `defer_if_probe_in_flight` 系。ADR-123 変更A: 新規モーラを defer すべきか・
-/// drain-before-send してよいかの判断、FCIS F6 で `plan_blocking` 経由に集約、report_id `01M1KEGZ081YHJ1T2NC765SYYH`）の2箇所に限定する。
-/// 前者は「pending_deferred を今 flush してよいか」、後者は「新しい入力を
-/// pending_deferred に積むべきか」という別の問いに答えており、いずれも
-/// raw recovery が deferred キューの所有権を握っている間は手を出さない、
-/// という同じ原則の異なる適用箇所である。3箇所目が増えた場合は、本当に
-/// 同じ原則の適用か（さもなくば別の状態表現を検討すべきでないか）を確認
-/// すること。
+/// `raw_recovery_owns_deferred` の呼び出し箇所は `probe_or_recovery_block_reason` の1箇所に限定する。
+/// 新規モーラを defer すべきか・drain-before-send してよいかの判断（ADR-123 変更A、FCIS F6 で `plan_blocking` 経由に集約、
+/// report_id `01M1KEGZ081YHJ1T2NC765SYYH`）に加え、段末の deferred 解放判断（`finish_probe_stage`、ADR-103 決定4-e・INV-F）も
+/// FCIS F6c でこの accessor 経由にした。いずれも raw recovery が deferred キューの所有権を握っている間は手を出さない、
+/// という同じ原則の適用である。2箇所目が増えた場合は、`plan_blocking` を通さない理由があるかを確認すること。
 #[test]
 fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     let path = "src/output/mod.rs";
@@ -4734,9 +4729,27 @@ fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
         .matches("self.raw_recovery_owns_deferred()")
         .count();
     assert_eq!(
-        count, 2,
-        "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(2 = \
-         finish_probe_stage + probe_or_recovery_block_reason)と異なります(実際: {count})。"
+        count, 1,
+        "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(1 = \
+         probe_or_recovery_block_reason)と異なります(実際: {count})。"
+    );
+    // 段末の解放判断は共通の accessor（`check_raw_recovery=true`）を通すこと（FCIS F6c）。
+    let squash: String = production.split_whitespace().collect();
+    let start = squash
+        .find("fnfinish_probe_stage(")
+        .expect("finish_probe_stage");
+    let body = &squash[start..];
+    let end = body
+        .find("self.on_tsf_probe_ready()")
+        .expect("段末のゲート解放");
+    // `if let Some(reason) = <判定> { 見送り } else { flush }` の形（判定の結果を捨てた無条件 flush・分岐の反転を許さない）。
+    let region = &body[..end];
+    let guard = region.find("ifletSome(reason)=self.probe_or_recovery_block_reason(true){");
+    let else_at = region.find("}else{");
+    let flush = region.find("self.flush_pending_deferred_vks()");
+    assert!(
+        matches!((guard, else_at, flush), (Some(g), Some(e), Some(f)) if g < e && e < f),
+        "finish_probe_stage の deferred 解放は `if let Some(reason) = self.probe_or_recovery_block_reason(true) {{ 見送り }} else {{ flush }}` の形にすること(FCIS F6c)"
     );
 }
 
