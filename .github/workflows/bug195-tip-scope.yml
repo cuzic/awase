@@ -1,0 +1,95 @@
+name: bug195-tip-scope
+
+# BUG-195(GJI を使っているのに awase が Microsoft IME と同定する)の再現を試す。観測のみで判定は付けない。
+# 「入力設定をアプリ ウィンドウごとに異なる値にする」の ON/OFF で、窓のスレッドで GJI を有効化したときに、
+# 窓を持たない別スレッド(awase の gji-io-monitor 相当)の GetActiveProfile が何を返すかを見る。
+on:
+  push:
+    branches: [ci/bug195-tip-scope]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+      - name: プローブと awase をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase --example tip_scope_probe
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item target\debug\examples\tip_scope_probe.exe dist\
+      # e2e-ime.yml の e2e ジョブと同じ手順(GJI 導入 → 入力言語を ja-JP+GJI → ATOK プリセットの config1.db)。
+      - name: Google 日本語入力をインストール
+        shell: pwsh
+        run: ./tools/ci/install-gji.ps1
+      - name: 入力言語を ja-JP + GJI に設定(ATOK プリセット)
+        shell: pwsh
+        run: |
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $bytes = [byte[]](0xB0,0x01,0x00,0xC8,0x02,1)
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), $bytes)
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+      - name: 入力言語に MS-IME も加える(既定は MS-IME のまま、GJI も有効)
+        shell: pwsh
+        run: |
+          $msTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $gjiTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($msTip)
+          $l[0].InputMethodTips.Add($gjiTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $msTip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: 観測(thread-local off / on)
+        shell: pwsh
+        run: |
+          foreach ($mode in 'off','on') {
+            "=== thread-local=$mode ==="
+            $aw = Start-Process -FilePath dist\awase.exe -WorkingDirectory dist -PassThru
+            Start-Sleep -Seconds 8
+            & dist\tip_scope_probe.exe --thread-local=$mode --secs=8 | Tee-Object -FilePath "probe-$mode.txt"
+            Start-Sleep -Seconds 3
+            Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -Recurse -Path dist,$env:APPDATA -Filter 'awase*.log*' -ErrorAction SilentlyContinue | ForEach-Object {
+              "--- $($_.FullName)"
+              Select-String -Path $_.FullName -Pattern 'tip-detect|IME kind' | ForEach-Object { $_.Line } | Select-Object -Last 15
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bug195-probe
+          path: |
+            probe-*.txt
+            dist/*.log*
