@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, ci/e2e-focus-restore-13-17, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, ci/e2e-focus-restore-13-17, ci/adr245-pr3-strict-focusrestore, fix/bug189-most-recent-trusted]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-focus-restore-13-17' && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -485,11 +485,19 @@ jobs:
             # --- 半角英数トグル中のフォーカス変更(typing_stress --mode=focus-restore、観測のみ。only='sc-focusrestore-*' か ci/e2e-focus-restore-13-17 への push で回す) ---
             # 窓 A(自前 EDIT)で左 Shift 単独タップ(half_width_alnum_toggle=all)→ 窓 B(別スレッドの EDIT)へ移す → A へ戻す、の各時点で A/B の open・conv を
             # IMM と WM_IME_CONTROL の 2 経路で記録する。ctl は B へ移さない対照。判定はせず check_focusrestore.py が表と awase.log の該当行を出す。
-            *[cfg(f'sc-focusrestore-{ime_name}{suf}', 'observe', check='focusrestore', ime=ime, keymap=km, runs=1, wait=420,
-                  general='half_width_alnum_toggle = "all"', until='2026-11-08',
-                  stress=f"--form=edit --mode=focus-restore --fr-n=5{ctl} --layout=@REPO@/layout/nicola_keytop.yab{msime}")
-              for ime_name, ime, km, msime in (('msime', 'msime', 1, ' --msime'), ('gji', 'gji', 1, ''))
-              for suf, ctl in (('', ''), ('-ctl', ' --fr-control'), ('-bopen', ' --fr-b-open'), ('-sameproc', ' --fr-sameproc'))],
+            # ADR-245 PR 3: 別プロセス窓への移動は --strict(checkargs)。expect(fr_expect)は IME の種別で決まる:
+            #   resume=MS-IME 本体・GJI の MS-IME プリセット(keymap=2)=戻って最初の打鍵でかなへ復元、
+            #   rebuild=GJI の ATOK プリセット(keymap=1。F2 が純粋なトグルなので注入せずトグルを立て直す=戻った A は英数のまま、次の左 Shift タップでかな)。
+            # ATOK プリセットは gji-atok として CI に既にある(SC_IMES の keymap=1)ので、RebuildToggle も実機で固定できる。
+            # 観測のみ: ctl(B へ移さない対照)・sameproc(同一プロセス内の窓移動、Q4)・bimeoff(B で IME OFF してから戻る、effective_open 偽の Drop)。
+            *[cfg(f'sc-focusrestore-{ime_name}{suf}', 'observe' if suf in ('-ctl', '-sameproc', '-bimeoff') else 'pass', check='focusrestore', ime=ime, keymap=km, runs=1, wait=480,
+                  general='half_width_alnum_toggle = "all"', until='2026-11-08' if suf in ('-ctl', '-sameproc', '-bimeoff') else '',
+                  checkargs='' if suf in ('-ctl', '-sameproc', '-bimeoff') else '--strict',
+                  stress=f"--form=edit --mode=focus-restore --fr-n=5 --fr-expect={fexp}{flags} --layout=@REPO@/layout/nicola_keytop.yab{msime}")
+              for ime_name, ime, km, msime, fexp in (('msime', 'msime', 1, ' --msime', 'resume'), ('gji', 'gji', 1, '', 'rebuild'), ('gjimsime', 'gji', 2, '', 'resume'))
+              for suf, flags in (('', ''), ('-ctl', ' --fr-control'), ('-bopen', ' --fr-b-open'), ('-sameproc', ' --fr-sameproc'),
+                                 ('-alttab', ' --fr-scenario=alttab'), ('-lshift', ' --fr-scenario=lshift'), ('-shiftchar', ' --fr-scenario=shiftchar'),
+                                 ('-twice', ' --fr-scenario=twice'), ('-abc', ' --fr-scenario=abc'), ('-bimeoff', ' --fr-scenario=bimeoff'))],
             # --- ADR-208 L3b: ずれの作り方 × 明示キー行列(only='sc-keymatrix-*' で回す)。窓=edit(ImmCross)/tsf(TsfNative 相当)/chrome(実 Chrome=Imm32Unavailable)、IME=GJI(ATOK プリセット)/MS-IME 本体。 ---
             # abs=絶対キー(Ctrl+変換/Ctrl+無変換/単独タップ変換・無変換/0x16/0x1A、MS-IME は F2 も)を、実 IME を外から閉/開した後と ずれなしで押す(1押下で一致するか)。
             # tog=トグル(無変換の単独タップ=keys.ime_toggle、0xF3、0x19)を外から閉/開した後に押す(2押下以内で一致するか)。
@@ -1234,7 +1242,7 @@ jobs:
             $kmlog = if ('${{ matrix.cfg.chrome }}' -ne '') { 'dist\chrome_probe.log' } else { 'dist\typing_stress.log' }
             python tools\e2e\ime_key_matrix\check_keymatrix.py ${{ matrix.cfg.expect == 'pass' && '--strict' || '' }} --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'focusrestore') {
-            python tools\e2e\ime_key_matrix\check_focusrestore.py --json focusrestore.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
+            python tools\e2e\ime_key_matrix\check_focusrestore.py ${{ matrix.cfg.checkargs }} --json focusrestore.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'commitkm') {
             python tools\e2e\ime_key_matrix\check_commitkm.py dist\typing_stress.log | Tee-Object -FilePath result.txt
             $global:LASTEXITCODE = 0
