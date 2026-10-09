@@ -66,3 +66,25 @@ related_adr:
 - Q1: 前景窓が一瞬変わる場面(ダイアログ、最小化)での誤破棄の頻度。journal で測る。
 - Q3: 同じ前景窓の中の移動を捉える必要があるか。必要なら、デバウンスしない focus 連番を WinEvent の即時処理で進めて `StageOrigin` に使う案(round 2 N-M1 案1)に進む。安い代案として、`GetGUIThreadInfo` の `hwndFocus` も比べる案がある(Chrome のアドレスバーとページは別 hwnd)。今回は入れない。
 - Q2: 破棄時に deferred を全部捨てる粒度。`DeferredVk` に退避時の宛先を持たせれば旧窓のものだけ捨てられるが、今回は入れない(トレードオフ節)。
+
+## Q3 追補: 同じ前景窓の中の移動を `hwndFocus` で捉える(起草 2026-10-08、未実装)
+
+実環境でこの経路が起きた記録はまだ無い(BUG-194 は実機未確認)。ここでは「ガードが働くことを CI で固定する」範囲に限って決める。発生頻度の測定は引き続き journal の `DiscardedStale` で行う。
+
+### 決定案(案2: `hwndFocus` を足す)
+
+1. `StageOrigin` に `focus_hwnd: isize`(`GetGUIThreadInfo` の `hwndFocus`。取れない・null は 0)を足す。
+2. `plan_raw_recovery`: 前景窓が記録時・flush 時とも有効で**同じ**、かつ `focus_hwnd` が**両方 0 でなく**違うときは `DiscardStale`。どちらかが 0 なら今までどおり送る(判断材料が無いときは従来の挙動)。
+3. 採取は `win32::foreground_scope()` と同じ場所に `focus_hwnd()` を足す。`GetGUIThreadInfo` は対象スレッドのハングで止まりうる(`get_gui_thread_info_with_timeout` の doc)ので、タイムアウト付きの既存ラッパーを短い上限(`ime.rs:940` の前例 30ms)で使い、タイムアウト時は 0 とする。
+
+### 却下・保留
+- 案1(デバウンスしない focus 連番を WinEvent で進める): focus 遷移の再発ファミリーに触れ、世代の遅れの問題を別の形で持ち込む。実害の記録が無いので入れない。
+
+### テスト
+- `state/raw_recovery_plan.rs` の単体(Linux): 前景同じ・`focus_hwnd` 違い → 捨てる、片方 0 → 送る、前景違いは従来どおり、世代だけ進んで `focus_hwnd` 同じ → 送る(N-M1 を壊さない)。
+- `output/mod.rs` の Windows テスト: 既存の `discard_raw_recovery_if_moved_at` に `focus_hwnd` を渡し、deferred 込みで破棄されることを固定する。
+- `architecture_guard`: `focus_hwnd` の採取が段の開始と flush の両方で `current_stage_origin` 1 本を通ることを固定する。
+
+### 未決(Opus レビューで確認)
+- 段の開始(`install_pending_tsf`)で `GetGUIThreadInfo` を呼ぶコスト。頻度は warmup 段の開始のみで打鍵ごとではない前提だが、実測していない。
+- TSF native アプリ(Chrome 等)で、入力中に `hwndFocus` が正当に揺れる経路が無いか(誤破棄=リテラルが画面に残る側)。揺れるなら案2は入れない。
