@@ -147,4 +147,4 @@ Cloudflare R2 (`awase-report-bucket`) に保存した個々の報告について
 - 原因未確定(LINE系4件目、v1.21.0 のため `SentInput` が無く送信列を突き合わせられない) → report `01M42BME26GDQ3CJ4F5DMGT0MP`
 
 - 原因未確定(GJI・LibreOffice、症状記述なし。LibreOffice 区間に KeyInput 無し、別時間帯に issue #165 系の hook watchdog 警告) → report `01M4ANM4EWK2VWMJJPY3CWZWM2`
-- 原因未確定(GJI 実使用だが awase は MS-IME と誤同定・Windows Terminal、`の` だけ生ローマ字。ひらがなキー PassThrough の約0.9秒後に msime-ready が conv の NATIVE を +16ms で確認して送信。BUG-172 型の疑いで、IME 開閉は journal に観測なし) → report `01M4FJV2M52W30VG98YNBETMK8`
+- 原因未確定→BUG-195(GJI 実使用だが awase は MS-IME と誤同定・Windows Terminal、`の` だけ生ローマ字。ひらがなキー PassThrough の約0.9秒後に msime-ready が conv の NATIVE を +16ms で確認して送信。BUG-172 型の疑いで、IME 開閉は journal に観測なし) → report `01M4FJV2M52W30VG98YNBETMK8`
