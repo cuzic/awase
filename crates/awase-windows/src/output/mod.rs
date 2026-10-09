@@ -1133,15 +1133,18 @@ impl Output {
     ) -> Option<timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>>
     {
         // (a) deferred VK の解放。所有権が raw literal 回収側にある間は触らない（INV-F）。
-        if self.raw_recovery_owns_deferred() {
-            tracing::debug!(
-                "[stage-end] {:?}: deferred の解放は raw recovery 側に委ねる",
+        // 判断は defer 側・drain-before-send 側と同じ `plan_blocking`（FCIS F6c）。段末では probe は終わっているので
+        // `TsfProbeInFlight` は通常出ないが、出ても flush が何もしない（`take_pending_deferred_if_probe_idle`）のと同じ結果。
+        match self.probe_or_recovery_block_reason(true) {
+            Some(reason) => tracing::debug!(
+                "[stage-end] {:?}: deferred の解放は見送る（{reason:?}。raw recovery 側に委ねる場合を含む）",
                 end.reason
-            );
-        } else {
-            let n = self.flush_pending_deferred_vks();
-            if n > 0 {
-                tracing::debug!("[stage-end] {:?}: deferred {n} VK(s) を flush", end.reason);
+            ),
+            None => {
+                let n = self.flush_pending_deferred_vks();
+                if n > 0 {
+                    tracing::debug!("[stage-end] {:?}: deferred {n} VK(s) を flush", end.reason);
+                }
             }
         }
         // (c) TsfGate / OUTPUT_GATE ガード。deferred を送り切ってからゲートを開ける。
