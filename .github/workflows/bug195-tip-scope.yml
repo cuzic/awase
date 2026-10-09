@@ -76,11 +76,11 @@ jobs:
         run: |
           foreach ($mode in 'on','off') {
             "=== thread-local=$mode ==="
-            & dist\tip_scope_probe.exe --thread-local=$mode --secs=1 --reset-ms | Tee-Object -FilePath "prep-$mode.txt"
+            & dist\tip_scope_probe.exe --thread-local=$mode --secs=1 --reset-ms --no-activate | Tee-Object -FilePath "prep-$mode.txt"
             $aw = Start-Process -FilePath dist\awase.exe -WorkingDirectory dist -PassThru
             Start-Sleep -Seconds 8
-            & dist\tip_scope_probe.exe --thread-local=$mode --secs=16 --winspace | Tee-Object -FilePath "probe-$mode.txt"
-            Start-Sleep -Seconds 6
+            & dist\tip_scope_probe.exe --thread-local=$mode --secs=14 | Tee-Object -FilePath "probe-$mode.txt"
+            Start-Sleep -Seconds 12
             Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue
             Get-ChildItem -Recurse -Path dist,$env:APPDATA -Filter 'awase*.log*' -ErrorAction SilentlyContinue | ForEach-Object {
               "--- $($_.FullName)"

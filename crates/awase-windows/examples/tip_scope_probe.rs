@@ -170,6 +170,9 @@ mod imp {
             std::thread::sleep(Duration::from_millis(1500));
             say(&format!("monitor(after reset) {}", active(&mgr, &profiles)));
         }
+        if args.iter().any(|a| a == "--no-activate") {
+            return;
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let stop_w = stop.clone();
         let w_thread = std::thread::spawn(move || unsafe {
