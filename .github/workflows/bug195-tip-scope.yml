@@ -78,7 +78,7 @@ jobs:
             "=== thread-local=$mode ==="
             $aw = Start-Process -FilePath dist\awase.exe -WorkingDirectory dist -PassThru
             Start-Sleep -Seconds 8
-            & dist\tip_scope_probe.exe --thread-local=$mode --secs=8 | Tee-Object -FilePath "probe-$mode.txt"
+            & dist\tip_scope_probe.exe --thread-local=$mode --secs=14 --winspace | Tee-Object -FilePath "probe-$mode.txt"
             Start-Sleep -Seconds 3
             Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue
             Get-ChildItem -Recurse -Path dist,$env:APPDATA -Filter 'awase*.log*' -ErrorAction SilentlyContinue | ForEach-Object {

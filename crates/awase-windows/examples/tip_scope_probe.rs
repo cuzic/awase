@@ -3,7 +3,7 @@
 //! 別スレッド(awase の `gji-io-monitor` と同じく窓を持たない STA スレッド)の
 //! `ITfInputProcessorProfileMgr::GetActiveProfile` が何を返すかを観測する。判定は付けない。
 //!
-//! 使い方: `tip_scope_probe --thread-local=on|off [--secs=6]`
+//! 使い方: `tip_scope_probe --thread-local=on|off [--secs=6] [--winspace]`
 #![allow(unsafe_code)]
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 
@@ -153,9 +153,11 @@ mod imp {
             return;
         };
 
+        let winspace = args.iter().any(|a| a == "--winspace");
         let stop = Arc::new(AtomicBool::new(false));
         let stop_w = stop.clone();
         let w_thread = std::thread::spawn(move || unsafe {
+            let winspace = winspace;
             let Some((wmgr, wprofiles)) = ctx() else {
                 return;
             };
@@ -176,16 +178,49 @@ mod imp {
             if let Ok(h) = hwnd {
                 let _ = SetForegroundWindow(h);
             }
-            // TF_IPPMF_ENABLEPROFILE=0x1。FORSESSION を付けず、この窓のスレッドだけで GJI にする。
-            let r = wmgr.ActivateProfile(
-                TF_PROFILETYPE_INPUTPROCESSOR,
-                0x0411,
-                &clsid,
-                &pguid,
-                windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
-                0x1,
-            );
-            say(&format!("window-thread ActivateProfile(GJI) -> {r:?}"));
+            if winspace {
+                // 実利用と同じ Win+Space を前面窓(このスレッド)へ送り、GJI になるまで最大4回切り替える。
+                use windows::Win32::UI::Input::KeyboardAndMouse::{
+                    GetKeyboardLayout, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+                    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+                };
+                let key = |vk: u16, up: bool| INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(vk),
+                            wScan: 0,
+                            dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                };
+                for i in 0..4 {
+                    std::thread::sleep(Duration::from_millis(1500));
+                    let seq = [key(0x5B, false), key(0x20, false), key(0x20, true), key(0x5B, true)];
+                    let n = SendInput(&seq, std::mem::size_of::<INPUT>() as i32);
+                    std::thread::sleep(Duration::from_millis(1200));
+                    let a = active(&wmgr, &wprofiles);
+                    say(&format!(
+                        "winspace#{i} sent={n} hkl={:?} window-thread {a}",
+                        GetKeyboardLayout(0).0
+                    ));
+                    if a.contains("Google") {
+                        break;
+                    }
+                }
+            } else {
+                let r = wmgr.ActivateProfile(
+                    TF_PROFILETYPE_INPUTPROCESSOR,
+                    0x0411,
+                    &clsid,
+                    &pguid,
+                    windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
+                    0x1,
+                );
+                say(&format!("window-thread ActivateProfile(GJI) -> {r:?}"));
+            }
             let mut last = Instant::now() - Duration::from_secs(10);
             while !stop_w.load(Ordering::Relaxed) {
                 let mut msg = MSG::default();
