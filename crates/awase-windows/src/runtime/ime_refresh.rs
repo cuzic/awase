@@ -431,15 +431,41 @@ impl Runtime {
         // （ADR-080 破棄条件2）。新しいフォーカス先では desired/観測前提が変わる
         // ため、attempts を持ち越さず次の tick で作り直す。
         self.discard_actuation();
-        // 左Shift単独タップによる「IME-ON 半角英数」持続トグル中にフォーカスが
-        // 変わった場合、半角英数状態を他アプリへ持ち越さないよう即座にかな入力へ
-        // 復元する（呼び出し自体を遅延させないという意味で「即座」。復元処理自体は
-        // 既存同様 spawn_local 経由の非同期 retry ループを含むため、この呼び出しが
-        // フォーカス変更処理をブロックすることはない）。物理 Shift が押されている
-        // とは限らないため synthetic Shift up の前置は不要（false）。
-        if self.platform_state.gate.half_width_alnum.is_toggle_active() {
-            tracing::info!("[shift-conv-guard] FocusChanged 中 → 半角英数トグルを強制解除");
-            self.kp_restore_kana_from_half_width(false);
+        // 左Shift単独タップによる「IME-ON 半角英数」持続トグル中にフォーカスが変わった場合（ADR-245）。
+        // 離脱時は IME へ何も送らない（SendInput も IMC も。世代の bump で IMC リトライは必ず中断し、F2 は移動先に
+        // 届くだけ、BUG-193）。トグルを下ろし、belief だけ従来どおり AssumedRomaji へ戻し（B へ ObservedEisu を
+        // 持ち越さない）、Enter 時に控えた窓を戻り待ちへ積む。復元は A に戻って最初の打鍵の手前で行う
+        // （`kp_stage_half_width_return`）。
+        match self.platform_state.gate.half_width_alnum.plan_leave() {
+            crate::state::half_width_alnum::LeavePlan::Nothing => {}
+            plan @ (crate::state::half_width_alnum::LeavePlan::SuspendAndQueue
+            | crate::state::half_width_alnum::LeavePlan::SuspendWithoutReturn) => {
+                let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
+                let outcome = self
+                    .platform_state
+                    .gate
+                    .half_width_alnum
+                    .suspend_toggle_for_return(now_tick);
+                tracing::info!(
+                    "[shift-conv-guard] FocusChanged 中 → 半角英数トグルを下ろす (IME へは送らない) \
+                     plan={plan:?} queued={} dropped_oldest={}",
+                    outcome.queued,
+                    outcome.dropped_oldest
+                );
+                if outcome.dropped_oldest > 0 {
+                    tracing::warn!(
+                        "[shift-conv-guard] 戻り待ちが容量を超えたため古い {} 件を捨てた",
+                        outcome.dropped_oldest
+                    );
+                }
+                self.apply_input_mode_correction(
+                    InputModeState::AssumedRomaji {
+                        reason: awase::engine::AssumedReason::UserHalfWidthAlnumToggleOff,
+                    },
+                    crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                    now_tick,
+                );
+            }
         }
         // IMM broken アプリ（Chrome 等）に切り替わった際に input_mode が
         // 前ウィンドウの stale な ObservedKana を引き継いでいると、FocusChanged の ctx で
