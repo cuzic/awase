@@ -24,6 +24,8 @@ jobs:
         run: |
           Add-Type -AssemblyName System.Drawing
           Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
           Add-Type @"
           using System;
           using System.Runtime.InteropServices;
@@ -32,6 +34,8 @@ jobs:
             [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
             [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
             [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+            [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+            [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
           }
           "@
           [void][Win]::SetProcessDPIAware()
@@ -94,6 +98,55 @@ jobs:
               if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
             }
           }
+          # タブをクリックして開き直したとき、レジストリを読み直して表示するか(ADR-248)。
+          # UI Automation で名前のタブを探し、中心を実際にクリックする。
+          function Click-Name($hwnd, $name) {
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+            $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)
+            $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+            Write-Host "UIA '$name': $($found.Count) element(s)"
+            if ($found.Count -eq 0) {
+              $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "UIA total descendants: $($all.Count)"
+              foreach ($e in ($all | Select-Object -First 40)) { Write-Host "  - [$($e.Current.ControlType.ProgrammaticName)] '$($e.Current.Name)'" }
+              return $false
+            }
+            $best = $null
+            foreach ($e in $found) {
+              if ($null -eq $best -or $e.Current.BoundingRectangle.X -lt $best.Current.BoundingRectangle.X) { $best = $e }
+            }
+            $b = $best.Current.BoundingRectangle
+            $cx = [int]($b.X + $b.Width / 2); $cy = [int]($b.Y + $b.Height / 2)
+            Write-Host "click '$name' at $cx,$cy"
+            [void][Win]::SetCursorPos($cx, $cy)
+            Start-Sleep -Milliseconds 300
+            [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 100
+            [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+            return $true
+          }
+          Set-Map $null
+          $env:AWASE_SETTINGS_INITIAL_TAB = "key-swap"
+          $env:AWASE_SETTINGS_WINDOW_SIZE = "760x560"
+          $p = Start-Process -FilePath $exe -PassThru
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 500 }
+          Start-Sleep -Seconds 8
+          [void][Win]::SetForegroundWindow($p.MainWindowHandle)
+          Start-Sleep -Seconds 1
+          Snap "reload-1-before-screen" $bounds
+          # 起動したまま、レジストリを Caps→Ctrl に書き換える（アプリはまだ読み直していないはず）。
+          Set-Map @(0x1D,0, 0x3A,0)
+          Start-Sleep -Seconds 2
+          Snap "reload-2-registry-changed-not-reopened-screen" $bounds
+          $ok1 = Click-Name $p.MainWindowHandle "全般設定"
+          Start-Sleep -Seconds 2
+          Snap "reload-3-other-tab-screen" $bounds
+          $ok2 = Click-Name $p.MainWindowHandle "キーの入れ替え"
+          Start-Sleep -Seconds 3
+          Snap "reload-4-reopened-screen" $bounds
+          Write-Host "clicks: other=$ok1 reopen=$ok2"
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
           Set-Map $null
           Get-ChildItem shots | Format-Table Name, Length
 
