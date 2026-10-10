@@ -1,0 +1,41 @@
+{
+ "source": "実記録: 報告 01M4J72G985T0FFT6XPN0SWCQQ の journal seq 117-120(KeyInput)。V の ctrl/foreign_ctrl=true は ADR-249 修正後にフックが載せる値(記録時は両方 false)",
+ "keys": [
+  {
+   "t_us": 54579540,
+   "vk": 162,
+   "scan": 29,
+   "event_type": "down",
+   "injected": true,
+   "foreign_ctrl": false,
+   "ctrl": false
+  },
+  {
+   "t_us": 54580078,
+   "vk": 86,
+   "scan": 47,
+   "event_type": "down",
+   "injected": true,
+   "foreign_ctrl": true,
+   "ctrl": true
+  },
+  {
+   "t_us": 54580647,
+   "vk": 86,
+   "scan": 47,
+   "event_type": "up",
+   "injected": true,
+   "foreign_ctrl": true,
+   "ctrl": true
+  },
+  {
+   "t_us": 54681177,
+   "vk": 162,
+   "scan": 29,
+   "event_type": "up",
+   "injected": true,
+   "foreign_ctrl": false,
+   "ctrl": false
+  }
+ ]
+}
