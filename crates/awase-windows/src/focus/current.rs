@@ -127,13 +127,6 @@ impl FocusIdentity {
     }
 }
 
-impl FocusChangedAxes {
-    #[must_use]
-    pub const fn any(self) -> bool {
-        self.process || self.window || self.app_kind || self.focus_kind
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

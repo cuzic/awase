@@ -63,9 +63,9 @@ TH1dで実際に使った手順（1本目: 不具合報告`01M29KDNZ22KNY1FPXSKB
    3値表現で出力されるため変換不要。
 5. 各attempt内の`inputs`はそのまま（`DecisionInputs`はワイヤ形式の変更を受けていない）。
 6. 変換後のレコード配列（`Vec<ActuationDecisionRecord>`と互換のJSON配列）を
-   `crates/awase-windows/tests/journals/actuation_decision/<説明的な名前>.json`
+   `crates/awase-windows-core/tests/journals/actuation_decision/<説明的な名前>.json`
    として保存する。ファイル名に対応するBUG番号/report_idを含めること。
-7. `cargo test -p awase-windows --lib actuation_decision_record` でreplayがgreenに
+7. `cargo test -p awase-windows-core --lib actuation_decision_record` でreplayがgreenに
    なることを確認する。`replay_all_actuation_decision_fixtures`は
    `assert!(!paths.is_empty())`でフィクスチャ0件を拒否するため、ディレクトリを
    誤って空にした場合はこのテストが落ちて気づける。
@@ -102,7 +102,7 @@ TH1dで実際に使った手順（1本目: 不具合報告`01M29KDNZ22KNY1FPXSKB
 ]
 ```
 
-`InputModeState`/`EngineSync`/`ConvSyncReason` の JSON 表現は serde のデフォルト（externally tagged）。unit variant はそのまま文字列（例: `"ObservedKana"`、`"None"`）、フィールド付き variant はオブジェクト（例: `{"AssumedRomaji": {"reason": "ImmBridgeBroken"}}`、`{"SetOpen": "RomajiRecovered"}`）。`input_mode_update` が `None`（belief 変化なし）の場合は JSON の `null` を書く。迷ったら `crates/awase-windows/src/state/conv_classify.rs` の `#[cfg(test)] mod tests` にある定数（`CONV_JISKANA` 等）や、`tests/journals/conv_classify/example-jiskana-recovery.json` を参照する。
+`InputModeState`/`EngineSync`/`ConvSyncReason` の JSON 表現は serde のデフォルト（externally tagged）。unit variant はそのまま文字列（例: `"ObservedKana"`、`"None"`）、フィールド付き variant はオブジェクト（例: `{"AssumedRomaji": {"reason": "ImmBridgeBroken"}}`、`{"SetOpen": "RomajiRecovered"}`）。`input_mode_update` が `None`（belief 変化なし）の場合は JSON の `null` を書く。迷ったら `crates/awase-windows-core/src/state/conv_classify.rs` の `#[cfg(test)] mod tests` にある定数（`CONV_JISKANA` 等）や、`tests/journals/conv_classify/example-jiskana-recovery.json` を参照する。
 
 4. **重要**: 転記した直後の `expected` は「実際に起きたバグの出力」であることが多い。バグ修正のロジックを実装したら、`expected` を**手で「あるべき出力」に書き換える**こと。書き換えずに放置すると、このテストはバグを固定化してしまい、修正の意味がなくなる。
 5. `cargo test -p awase-windows --test journal_replay` を実行し、通ることを確認してからコミットする（P5規約「fix にはテストか記録を添える」も参照）。

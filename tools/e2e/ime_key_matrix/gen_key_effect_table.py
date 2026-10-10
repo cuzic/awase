@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """格子第3版(--grid-setup=keys、全状態をキーだけで作る=リセットもIMM無し)の学習結果から、打鍵時予測の表(Rustのデータ)を生成する(ADR-191 決定3・4)。
 
-  gen_key_effect_table.py            grid-tables/{atok,msime,msime-native}.json → crates/awase-windows/src/state/key_effect_table.rs
+  gen_key_effect_table.py            grid-tables/{atok,msime,msime-native}.json → crates/awase-windows-core/src/state/key_effect_table.rs
   gen_key_effect_table.py --check    何も書かず、コミット済みの key_effect_table.rs が生成結果と一致するか検査する(不一致なら終了コード1)。
                                      `crates/awase-windows/tests/architecture_guard.rs` の `key_effect_table_matches_generator` が呼ぶ。
   gen_key_effect_table.py --diff-report <old_dir> <new_dir>
@@ -29,7 +29,7 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "..", "..", "..", "crates", "awase-windows", "src", "state", "key_effect_table.rs")
+OUT = os.path.join(HERE, "..", "..", "..", "crates", "awase-windows-core", "src", "state", "key_effect_table.rs")
 PRESERVED_SUFFIX_MARKER = "// --- ADR-192 classification logic (the generator preserves this suffix) ---"
 MEASUREMENT_ENV_PATH = os.path.join(HERE, "grid-tables", "measurement-env.json")
 

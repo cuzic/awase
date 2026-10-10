@@ -297,3 +297,16 @@ crate を切るとき、`state/platform_state.rs`(`ImeStateHub`/`PlatformState`�
 - 帰結: `platform_state` は `CORE_MODULES`(Tier-2 のファイル単位の検査)に入ったまま、crate 境界とは別に純粋さを検査する。`platform_state` が殻の crate にあるので、`crate::win32::foreground_scope()` を直接読める(PR #571 のフォアグラウンド取得関数の注入と `platform_ctor.rs` は不要になり、#571 は閉じた)。
 - 残る準備: `PhysicalKeyDisposition::plan` の拡張トレイト(核の型へ殻の inherent impl を置けないため。別 PR)。
 - E2 で核から殻の `platform_state`/`sync_actuation` を参照する向きは無い(`platform_state` が核の下流)。核の `state/mod.rs` は `platform_state`/`sync_actuation` を宣言しない。殻の `state/mod.rs` が核を `pub use` で再公開し、`platform_state`/`sync_actuation`/`ime_decision_view` を足す。
+
+### crate の物理分割: E2(実施、2026-10-10、PR は本ブランチ)
+
+`crates/awase-windows-core`(`awase-windows-core`)を作り、79 ファイルを `git mv` した(`src/` 以下の相対パスは同じ)。`awase-windows` は `pub use awase_windows_core::...` で再公開するので `crate::state::...` のパスは変わらない。`state/platform_state.rs`・`sync_actuation.rs`・`ime_decision_view.rs` は殻に残した(所有者の決定、Opus 案 (d)。記録系の `pub(crate)` をコンパイラが強制し続けるため)。
+
+- 可視性: 殻から使われる `pub(crate)`/`pub(in crate::state)` を `pub` にした(自動修正スクリプトで約 130 か所。`ImeBelief` のフィールドは直接書かず、核の更新口〔`reset_for_panic`・`set_japanese_ime`・`set_prev_conversion_mode`・`apply_eisu_candidate_update`〕に変えた)。
+- 孤児規則: `From<(InjectionHint, AppKind)> for InjectionMode` → 関数 `injection_mode_for`。`FocusChangedAxes::any` は核へ。
+- テスト専用の口: 核の feature `testing`(`set_desired_open_for_test`・`FocusGen::new/get`)。殻の dev-dependency で有効にする。核の `ime_set_open_plan` など `cfg(any(windows, test))` のモジュールは常時コンパイルにした。
+- ガード: `EXTRA_SRC_CRATES` に核を追加。`ungated_state_modules`(P4)は両 crate の `state/mod.rs` を読む。`core_crate_does_not_depend_on_windows`(核の `Cargo.toml`)。xtask `core-registry` は両 crate の mutants 設定を見る。
+- CI: mutants は `pkg × shard` のマトリクス(`.cargo/mutants-awase-windows{,-core}.toml`)。clippy・dylint・Windows の lib テストは `-p awase-windows-core` も対象。`gen_key_effect_table.py` の出力先は核。pre-push の正規表現は両 crate。
+- doctest: 核の `awase_windows::...` の例は `awase_windows_core::...` に書き換え、doctest のまま残した。
+- 核の unit テスト(1004)は核 crate で、殻のテスト(353)は殻で走る(合計は分割前の 1357 と同じ)。`tests/journals/actuation_decision` は核の `tests/` へ移した。
+
