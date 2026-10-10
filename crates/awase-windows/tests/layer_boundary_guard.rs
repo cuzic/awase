@@ -264,7 +264,11 @@ fn b1_with_app_confined_to_orchestrator_modules() {
     });
     // ime.rs (単一ファイル) も 5 領域の一部。
     let ime = manifest().join("src/ime.rs");
-    if ime.exists() {
+    assert!(
+        ime.exists(),
+        "src/ime.rs が無い（移動・改名したらこのガードも付け替える）"
+    );
+    {
         let content = fs::read_to_string(&ime).unwrap_or_default();
         for (line, code) in code_lines(&content) {
             if code.contains("with_app(") || code.contains("crate::APP") {
@@ -290,6 +294,10 @@ fn b1_with_app_confined_to_orchestrator_modules() {
 /// Why: ADR-030。観測の意図を型 (gji_last_io_ms() 等の named API) に表現する。
 #[test]
 fn b2_output_uses_named_tsf_observation_api() {
+    assert!(
+        manifest().join("src/output").is_dir(),
+        "src/output が無い（移動・改名したらこのガードも付け替える）"
+    );
     let hits = scan(&[manifest().join("src/output")], |code| {
         code.contains("tsf_obs()")
     });
@@ -311,6 +319,10 @@ fn b2_output_uses_named_tsf_observation_api() {
 /// `state/ime_model.rs` に絞って app 分岐がゼロであることを検査する (classifier 側は正当)。
 #[test]
 fn c4_reducer_has_no_app_specific_branches() {
+    assert!(
+        state_file("ime_model").is_file(),
+        "state/ime_model.rs が見つからない（移動・改名したらこのガードも付け替える）"
+    );
     let hits = scan(&[state_file("ime_model")], |code| {
         code.contains("AppKind::")
             || code.contains("class_name ==")

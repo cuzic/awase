@@ -1024,9 +1024,8 @@ fn post_decision_eisu_reset_passes_gji_retained_mode() {
 
 #[test]
 fn ime_relevance_shadow_action_writes_are_accounted_for() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
+    walk_all_src(&mut files);
 
     let expected: &[(&str, usize, &str)] = &[
         (
@@ -1043,7 +1042,10 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
 
     for path in files {
         let rel = src_relative(&path).to_string_lossy().replace('\\', "/");
-        let content = read_crate_file(&format!("src/{rel}"));
+        // 絶対パスで直接読む（同じ相対パスが複数 crate にあっても、歩いた側のファイルを読む）。
+        let content = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+            .replace("\r\n", "\n");
         let production = production_code_only(&content);
         let count = if rel == "hook.rs" {
             production.matches("shadow_action,").count()
@@ -7822,13 +7824,42 @@ fn relocated_table_entries_are_consistent() {
     }
 }
 
-/// `EXTRA_SRC_CRATES` の各 crate は実在し、`src/` を持つ（綴りの間違いで走査が空振りしない）。
+/// `EXTRA_SRC_CRATES` の各 crate は実在し、`src/` の下に `.rs` が 1 件以上ある
+/// （綴りの間違いや空の `src/` で走査が空振りして通らない）。
 #[test]
 fn extra_src_crates_exist() {
     for c in EXTRA_SRC_CRATES {
+        let src = workspace_dir().join(c).join("src");
+        assert!(src.is_dir(), "EXTRA_SRC_CRATES の {c} に src/ が無い");
+        let mut files = Vec::new();
+        walk_rs_files(&src, &mut files);
         assert!(
-            workspace_dir().join(c).join("src").is_dir(),
-            "EXTRA_SRC_CRATES の {c} に src/ が無い"
+            !files.is_empty(),
+            "EXTRA_SRC_CRATES の {c}/src に .rs が無い"
         );
+    }
+}
+
+/// 対象 crate 間で `src/` 相対パスが重複しない（`lib.rs` と `state/mod.rs` を除く）。
+/// 重複すると `list_src_files` → `read_crate_file` が自 crate 側だけを読み、核側を見逃すか
+/// 殻側を二重に数える（Opus レビュー P2）。分割前は対象が 1 crate なので空振りするが、
+/// `EXTRA_SRC_CRATES` に足した瞬間に効く。
+#[test]
+fn src_relative_paths_are_unique_across_crates() {
+    let mut seen = std::collections::BTreeMap::new();
+    let mut files = Vec::new();
+    walk_all_src(&mut files);
+    for f in &files {
+        let rel = src_relative(f).to_string_lossy().replace('\\', "/");
+        if rel == "lib.rs" || rel == "state/mod.rs" {
+            continue;
+        }
+        if let Some(prev) = seen.insert(rel.clone(), f.clone()) {
+            panic!(
+                "src/{rel} が複数の crate にある: {} と {}。ガードの read_crate_file が片方しか読まない",
+                prev.display(),
+                f.display()
+            );
+        }
     }
 }
