@@ -635,7 +635,8 @@ impl DecisionExecutor {
                 if super::direct_mode_key_watch_kind_for(platform.current_app_profile()).is_some()
                     && !crate::tsf::observer::ime_composition_active_now()
                 {
-                    ime.arm_direct_external_change_watch(now);
+                    // ADR-188 追記7: 送り直しの印を付ける（打鍵時点の予測はこのキーの効果を含まない）。
+                    ime.arm_direct_resend_external_change_watch(now);
                 }
                 ime.arm_mode_key_pass_mark(
                     now,

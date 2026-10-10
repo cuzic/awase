@@ -497,6 +497,24 @@ impl ImeStateHub {
         );
     }
 
+    /// FSM がモードキーを送ったら呼ぶ（executor の `SendKeys`、保留中の親指の送り直し等、ADR-188 追記7）。
+    /// `arm_direct_external_change_watch_in_scope` と同じに直接観測の窓を開く／延ばし、送り直しの印を付ける。
+    /// 打鍵時点の予測は物理キーの効果だけから作るので、この印が予測の時刻以後にあれば窓内の読みを予測に任せない
+    /// （`external_change_watch::prediction_guard`）。
+    ///
+    /// crate 内（殻 `shell.rs` と単体テスト）だけが呼ぶ。閉ループのハーネスには公開しない（`PLATFORM_STATE_PUB_FNS` を増やさない）。
+    pub(crate) fn arm_direct_resend_external_change_watch_in_scope(
+        &mut self,
+        now_ms: u64,
+        scope: crate::state::foreground_scope::ForegroundScope,
+    ) {
+        self.external_change_watch.arm_direct_resend(
+            scope,
+            now_ms,
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        );
+    }
+
     /// 直接観測の窓の中の prefetch 済みの読み（`read_open`・`read_conv`）を belief と照合し、食い違う軸へ追随する。
     ///
     /// 基準値を使わず（古い基準値による取りこぼし・逆追随が起きない）、窓も閉じない。追随は awase が IME を書かない:
@@ -506,6 +524,7 @@ impl ImeStateHub {
     ///
     /// awase 自身が窓の最後の arm 以後に IME へ書いていたら（`last_explicit_ime_action_ms`）、GJI の処理前の読みで belief を
     /// 逆戻ししないよう採らない（R3）。打鍵時点の予測がこの打鍵に付いているときも採らない（予測に任せる）。
+    /// ただし同じ打鍵で FSM がモードキーを送り直していたら（送り直しの印、ADR-188 追記7）予測は外れるので採る。
     /// 窓が無い・Direct でない・スコープ違いなら何もしない。戻り値は追随した軸。
     ///
     /// crate 内（殻 `shell.rs` と単体テスト）だけが呼ぶ。閉ループのハーネスには公開しない（`PLATFORM_STATE_PUB_FNS` を増やさない）。
@@ -534,12 +553,19 @@ impl ImeStateHub {
         // IME が処理を終えるのが窓（300ms）より遅いと、窓内の読みは処理前の古い状態を返す。それで予測を覆すと、
         // 後から IME が処理を終えても誰も追随しない（実測: MS-IME プリセットの 変換 で `[key-effect-miss]` を起こし
         // Engine が OFF のままになった、ADR-188 追記6）。観測が要るのは予測が効かない打鍵（Shift 付き・FSM の再送出）。
-        if self
-            .shadow_model
-            .key_effect()
-            .is_some_and(|pred| pred.at_ms >= armed_at)
-        {
+        // 同じ打鍵で FSM が保留中の親指を送り直したとき（素通し設定で親指を押したまま別キー）は、予測が送り直した
+        // キーの効果を含まず外れるので、ガードを外して読みを採る（ADR-188 追記7、送り直しの印）。
+        let pred_at = self.shadow_model.key_effect().map(|pred| pred.at_ms);
+        let resend_at = self.external_change_watch.resend_arm_ms();
+        let guard = super::external_change_watch::prediction_guard(pred_at, armed_at, resend_at);
+        if guard.defers() {
             return None;
+        }
+        if guard == super::external_change_watch::PredictionGuard::LiftedByResend {
+            tracing::info!(
+                "[direct-follow] prediction guard lifted by FSM resend: pred_at={pred_at:?} resend_at={resend_at:?} \
+                 armed_at={armed_at} now={now_ms} read_open={read_open:?} read_conv={read_conv:?}"
+            );
         }
         let follow = super::external_change_watch::classify_direct_read_for(
             kind,
@@ -4169,5 +4195,77 @@ mod tests {
             ),
             Some(direct_follow(Some(false), None))
         );
+    }
+
+    /// ADR-188 追記7(案1): 同じ打鍵で FSM が保留中の親指を送り直した(送り直しの印)ら、予測が付いていても窓内の読みを採る。
+    /// 実測(run 38065774507・38091839446、sc-armc-gji-atok-passthru): 無変換を押したまま 変換 を押すと、物理 0x1C の arm・予測(閉)・
+    /// FSM の 無変換 の送り直しの arm が全て同じ tick。予測は送り直した 無変換 の効果を含まず外れ、109ms 以後の読みは開。
+    #[test]
+    fn follow_direct_read_takes_the_read_when_fsm_resent_in_the_same_keystroke() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.dispatch_event(
+            ImeEvent::KeyEffectPredicted {
+                open: Some(false),
+                mode: None,
+                track: crate::state::key_effect_predictor::KeyTrack::default(),
+            },
+            TickMs(1000),
+        );
+        ps.ime
+            .arm_direct_resend_external_change_watch_in_scope(1000, test_foreground_scope());
+        assert!(
+            !ps.ime.effective_open_at(TickMs(1001)),
+            "予測で belief は閉"
+        );
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(9),
+                1109,
+                TickMs(1109),
+                follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
+                test_foreground_scope()
+            ),
+            Some(direct_follow(Some(true), None)),
+            "送り直しの印があれば、予測が付いていても読み(開)を採る"
+        );
+        assert!(ps.ime.effective_open_at(TickMs(1110)));
+    }
+
+    /// 送り直しの印が予測より前の tick(前の打鍵で保留を解いた)なら、後の打鍵の予測へのガードは維持する。
+    #[test]
+    fn earlier_fsm_resend_does_not_lift_the_guard_for_a_later_keystroke() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime
+            .arm_direct_resend_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1100, test_foreground_scope());
+        ps.ime.dispatch_event(
+            ImeEvent::KeyEffectPredicted {
+                open: Some(true),
+                mode: None,
+                track: crate::state::key_effect_predictor::KeyTrack::default(),
+            },
+            TickMs(1100),
+        );
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(false),
+                Some(25),
+                1150,
+                TickMs(1150),
+                follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
+                test_foreground_scope()
+            ),
+            None,
+            "前の打鍵の送り直しの印では、この打鍵の予測を覆さない"
+        );
+        assert!(ps.ime.effective_open_at(TickMs(1160)));
     }
 }
