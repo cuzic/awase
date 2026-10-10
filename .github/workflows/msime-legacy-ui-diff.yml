@@ -1,0 +1,40 @@
+name: msime-legacy-ui-diff
+
+# 旧UI(IMJPUEX.EXE)を UI Automation で操作し、前後のレジストリ・ファイル差分を取るスパイク(観測のみ)。
+on:
+  push:
+    branches: [ci/msime-legacy-keytable-spike]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $list = Get-WinUserLanguageList
+          $list.Add("ja-JP")
+          Set-WinUserLanguageList -LanguageList $list -Force
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          "TIP_REGISTERED=$(Test-Path $tipKey)"
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: 旧UIの構造を採取
+        shell: pwsh
+        run: ./tools/ci/msime-legacy-ui-diff.ps1 -Out ui-out -Phase discover
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: msime-legacy-ui
+          path: ui-out/
