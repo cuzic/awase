@@ -5,7 +5,7 @@ name: settings-screenshot
 on:
   workflow_dispatch:
   push:
-    branches: [ci/settings-screenshot]
+    branches: [ci/settings-screenshot, feat/adr248-caps-display]
 
 jobs:
   shot:
@@ -24,6 +24,8 @@ jobs:
         run: |
           Add-Type -AssemblyName System.Drawing
           Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
           Add-Type @"
           using System;
           using System.Runtime.InteropServices;
@@ -32,6 +34,8 @@ jobs:
             [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
             [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
             [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+            [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+            [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
           }
           "@
           [void][Win]::SetProcessDPIAware()
@@ -46,9 +50,26 @@ jobs:
             $bmp.Save((Join-Path $PWD "shots/$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
             $g.Dispose(); $bmp.Dispose()
           }
-          foreach ($tab in @("key-swap")) {
-            foreach ($w in @(760, 600, 480, 420)) {
-              $env:AWASE_SETTINGS_INITIAL_TAB = $tab
+          # レジストリの Scancode Map を書き換えて、現在の値を読んで表示することも確かめる（runner は管理者）。
+          $mapKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Keyboard Layout'
+          function Set-Map($entries) {
+            if ($null -eq $entries) {
+              Remove-ItemProperty -Path $mapKey -Name 'Scancode Map' -ErrorAction SilentlyContinue
+              return
+            }
+            $bytes = [byte[]](@(0,0,0,0, 0,0,0,0, ($entries.Count / 4 + 1),0,0,0) + $entries + @(0,0,0,0))
+            Set-ItemProperty -Path $mapKey -Name 'Scancode Map' -Value $bytes -Type Binary
+          }
+          # エントリは (to 下位, to 上位, from 下位, from 上位)。英数/Caps=0x3A、左 Ctrl=0x1D。
+          $scenarios = [ordered]@{
+            none = $null
+            caps = @(0x1D,0, 0x3A,0)
+            swap = @(0x1D,0, 0x3A,0,  0x3A,0, 0x1D,0)
+          }
+          foreach ($name in $scenarios.Keys) {
+            Set-Map $scenarios[$name]
+            foreach ($w in @(760, 480)) {
+              $env:AWASE_SETTINGS_INITIAL_TAB = "key-swap"
               $env:AWASE_SETTINGS_WINDOW_SIZE = "${w}x560"
               $p = Start-Process -FilePath $exe -PassThru
               $deadline = (Get-Date).AddSeconds(60)
@@ -57,7 +78,7 @@ jobs:
                 if ($p.MainWindowHandle -ne 0) { break }
                 Start-Sleep -Milliseconds 500
               }
-              Write-Host "[$tab $w] hwnd=$($p.MainWindowHandle) exited=$($p.HasExited)"
+              Write-Host "[$name $w] hwnd=$($p.MainWindowHandle) exited=$($p.HasExited)"
               Start-Sleep -Seconds 8
               if ($p.MainWindowHandle -ne 0) {
                 [void][Win]::SetForegroundWindow($p.MainWindowHandle)
@@ -70,14 +91,63 @@ jobs:
                 }
                 Start-Sleep -Seconds 2
                 [void][Win]::GetWindowRect($p.MainWindowHandle, [ref]$r)
-                Write-Host "[$tab $w] rect=$($r.L),$($r.T),$($r.R),$($r.B)"
                 $rect = New-Object System.Drawing.Rectangle ([Math]::Max($r.L,0)), ([Math]::Max($r.T,0)), ($r.R - $r.L), ($r.B - $r.T)
-                try { Snap "$tab-$w-window" $rect } catch { Write-Host "window snap failed: $_" }
+                try { Snap "$name-$w-window" $rect } catch { Write-Host "window snap failed: $_" }
               }
-              try { Snap "$tab-$w-screen" $bounds } catch { Write-Host "screen snap failed: $_" }
+              try { Snap "$name-$w-screen" $bounds } catch { Write-Host "screen snap failed: $_" }
               if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
             }
           }
+          # タブをクリックして開き直したとき、レジストリを読み直して表示するか(ADR-248)。
+          # UI Automation で名前のタブを探し、中心を実際にクリックする。
+          function Click-Name($hwnd, $name) {
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+            $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)
+            $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+            Write-Host "UIA '$name': $($found.Count) element(s)"
+            if ($found.Count -eq 0) {
+              $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "UIA total descendants: $($all.Count)"
+              foreach ($e in ($all | Select-Object -First 40)) { Write-Host "  - [$($e.Current.ControlType.ProgrammaticName)] '$($e.Current.Name)'" }
+              return $false
+            }
+            $best = $null
+            foreach ($e in $found) {
+              if ($null -eq $best -or $e.Current.BoundingRectangle.X -lt $best.Current.BoundingRectangle.X) { $best = $e }
+            }
+            $b = $best.Current.BoundingRectangle
+            $cx = [int]($b.X + $b.Width / 2); $cy = [int]($b.Y + $b.Height / 2)
+            Write-Host "click '$name' at $cx,$cy"
+            [void][Win]::SetCursorPos($cx, $cy)
+            Start-Sleep -Milliseconds 300
+            [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 100
+            [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+            return $true
+          }
+          Set-Map $null
+          $env:AWASE_SETTINGS_INITIAL_TAB = "key-swap"
+          $env:AWASE_SETTINGS_WINDOW_SIZE = "760x560"
+          $p = Start-Process -FilePath $exe -PassThru
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 500 }
+          Start-Sleep -Seconds 8
+          [void][Win]::SetForegroundWindow($p.MainWindowHandle)
+          Start-Sleep -Seconds 1
+          Snap "reload-1-before-screen" $bounds
+          # 起動したまま、レジストリを Caps→Ctrl に書き換える（アプリはまだ読み直していないはず）。
+          Set-Map @(0x1D,0, 0x3A,0)
+          Start-Sleep -Seconds 2
+          Snap "reload-2-registry-changed-not-reopened-screen" $bounds
+          $ok1 = Click-Name $p.MainWindowHandle "全般設定"
+          Start-Sleep -Seconds 2
+          Snap "reload-3-other-tab-screen" $bounds
+          $ok2 = Click-Name $p.MainWindowHandle "キーの入れ替え"
+          Start-Sleep -Seconds 3
+          Snap "reload-4-reopened-screen" $bounds
+          Write-Host "clicks: other=$ok1 reopen=$ok2"
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          Set-Map $null
           Get-ChildItem shots | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
