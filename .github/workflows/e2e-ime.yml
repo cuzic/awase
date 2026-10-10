@@ -710,7 +710,7 @@ jobs:
             # (dwExtraInfo=0、LLKHF_INJECTED 付き)で「音声入力テスト」を入れてから NICOLA を打つ。期待は挿入文+打鍵。
             # 報告: Spokenly 併用で awase の入力が不安定(やまぶきR では問題なし)。本物の挿入方式は未確認のため paste/unicode の 2 方式を試す。
             # 対照: 同じ打鍵で挿入なし(tsx-<入力先>-...)・awase なしで挿入あり(tsx-raw-dict-*)。only='tsx-dict-*,tsx-raw-dict-*' で回す。
-            *[tsx(f'dict-{form}-{ime_name}-{mode}-{iv}ms', form, ime, iv, raw=raw, extra=f'--dictate={mode} --dictate-n={n}', kinds='single,mixed', trials=6, len=30, runs=3, wait=900)
+            *[dict(tsx(f'dict-{form}-{ime_name}-{mode}-n{n}-{iv}ms', form, ime, iv, raw=raw, extra=f'--dictate={mode} --dictate-n={n}', kinds='single,mixed', trials=6, len=30, runs=3, wait=900), until='2026-12-01')
               for form in ('edit', 'rich', 'tsf', 'chromepage')
               for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))
               if not (form == 'chromepage' and ime == 'msime')
@@ -718,12 +718,16 @@ jobs:
               for iv in (30,)
               for n in (1, 3)
               for raw in (False, True)],
-            # ADR-252: 注入 Ctrl↓ だけで Up なし(--foreign-ctrl、perturb.rs)のあと、物理相当の打鍵が通常どおり変換されるか(S1)、
-            # 期限内の注入キーは ctrl 付き扱い(S2)・期限後は変換(S3)、0x11 が LL フックに何で届くか(S4)を観測する。
-            # S1 は本試行の expect/actual(判定は typing)、S2〜S4 は typing_stress.log の type:"foreign_ctrl"(text_after_injected_a・hook_reached)で見る
-            # (本試行の打鍵は Ctrl↑ 解放後なので、解放後に通常へ戻るか=stuck 非再発も S2〜S4 の trial で見える)。
-            # 対照: awase なしで S2(Ctrl+A の素通しの基準)。only='tsx-dict-fctrl-*,tsx-raw-dict-fctrl-*'。
-            *[tsx(f'dict-fctrl-{form}-{ime_name}-{case}', form, ime, 30, raw=raw, extra=f'--foreign-ctrl={case}', kinds='single,mixed', trials=3, len=8, runs=2, wait=900)
+            # ADR-252: 注入 Ctrl↓ だけで Up なし(--foreign-ctrl、perturb.rs)のあとの挙動を観測する(判定は ADR-252 の表):
+            #   S1: 物理相当(マーカー付き)の打鍵が通常どおり変換されるか。一次根拠は awase.log の `[engine-input] ... mods(c=false ...`(マーカー付き経路で
+            #       別枠が物理打鍵に混ざらない)。本試行のテキスト一致(typing の PASS)は補助。
+            #   S2/S3/S4: 注入の A を 1 つ送る。判定は text_after_injected_a ではなく、typing_stress.log の type:"foreign_ctrl".hook_reached
+            #       (awase の再注入 0x41 scan=0 か 0xE7 か。S3 は注入 Ctrl↓ の約 1551ms 後)と awase.log の `[engine-input] vk=0x41 ... mods(c=...`。
+            #       text_after は edit で IME の未確定文字として見えず当てにならない(観測後に Esc で取り消して本試行に混ざらせない)。
+            #   S4: VK 0x11 の注入 Ctrl↓ が LL フックに何で届くか(hook_reached の vk/scan/flags/extra)。
+            # 注入 Ctrl↑ で必ず解放する。対照は awase なしの S2 だけ(Ctrl+A の素通しの基準)。observe(until 付き)。
+            # only='tsx-dict-fctrl-*,tsx-raw-dict-fctrl-*'。
+            *[dict(tsx(f'dict-fctrl-{form}-{ime_name}-{case}', form, ime, 30, raw=raw, extra=f'--foreign-ctrl={case}', kinds='single,mixed', trials=3, len=8, runs=2, wait=900), until='2026-12-01')
               for form in ('edit', 'rich')
               for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))
               for case in ('s1', 's2', 's3', 's4')

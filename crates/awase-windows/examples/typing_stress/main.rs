@@ -178,8 +178,8 @@ static EPOCH: OnceLock<Instant> = OnceLock::new();
 static LOG_PATH: OnceLock<String> = OnceLock::new();
 static HOOK_EVENTS: Mutex<Vec<HookEv>> = Mutex::new(Vec::new());
 static FOREIGN_EVENTS: AtomicU64 = AtomicU64::new(0);
-/// 他アプリ注入(`MARKER` 以外の `LLKHF_INJECTED`)が LL フックに届いたときの (vk, scan, down)。`--foreign-ctrl` の観測用(上限 64)。
-static FOREIGN_LOG: Mutex<Vec<(u32, u32, bool)>> = Mutex::new(Vec::new());
+/// 他アプリ注入(`MARKER` 以外の `LLKHF_INJECTED`)が LL フックに届いたときの (vk, scan, down, flags, dwExtraInfo)。`--foreign-ctrl` の観測用(上限 64)。
+static FOREIGN_LOG: Mutex<Vec<(u32, u32, bool, u32, usize)>> = Mutex::new(Vec::new());
 
 fn hwnd_of(v: &AtomicIsize) -> HWND {
     HWND(v.load(Ordering::SeqCst) as *mut core::ffi::c_void)
@@ -846,7 +846,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             if kb.flags.0 & 0x10 != 0 {
                 if let Ok(mut g) = FOREIGN_LOG.lock() {
                     if g.len() < 64 {
-                        g.push((kb.vkCode, kb.scanCode, msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN));
+                        g.push((kb.vkCode, kb.scanCode, msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN, kb.flags.0, kb.dwExtraInfo));
                     }
                 }
             }
@@ -1799,6 +1799,7 @@ fn worker(form: Form) {
 }
 
 fn finish() {
+    let _ = perturb::release_held_foreign_ctrl();
     rec(&json!({"type":"done"}));
     log("=== 完了 ===");
     target().shutdown();

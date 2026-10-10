@@ -70,8 +70,6 @@ pub(crate) struct Perturbation {
     pub(crate) settle_read: bool,
     dictate: Option<Dictate>,
     foreign_ctrl: Option<ForeignCtrl>,
-    /// 注入 Ctrl↓ を送って Up をまだ送っていない VK(解放が要る)。
-    foreign_ctrl_held: std::cell::Cell<Option<u32>>,
 }
 
 /// ADR-252 のケース。
@@ -83,8 +81,37 @@ enum ForeignCtrl {
     S4,
 }
 
+/// 注入 Ctrl↓ を送って Up をまだ送っていない VK(0=なし)。finish()・panic hook からも解放できるよう static に持つ。
+static FOREIGN_CTRL_HELD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// 残っている注入 Ctrl↓ の Up を送る(S4 レビュー: S1 の途中で異常終了しても runner の OS 側 Ctrl を残さない)。送った VK を返す。
+pub(crate) fn release_held_foreign_ctrl() -> Option<u32> {
+    let vk = FOREIGN_CTRL_HELD.swap(0, std::sync::atomic::Ordering::SeqCst);
+    if vk == 0 {
+        return None;
+    }
+    foreign_key(vk, 0x1D, 0, false);
+    sleep_ms(100);
+    Some(vk)
+}
+
 const VK_LCONTROL_U32: u32 = 0xA2;
 const VK_A_U32: u32 = 0x41;
+const VK_ESCAPE_U32: u32 = 0x1B;
+
+/// LL フックに届いた他アプリ注入(`crate::FOREIGN_LOG`)。vk・scan・flags・dwExtraInfo を残す(awase の再注入 0x41 scan=0 / 0xE7 の見分け用)。
+fn foreign_log_json() -> Vec<serde_json::Value> {
+    crate::FOREIGN_LOG
+        .lock()
+        .map(|g| {
+            g.iter()
+                .map(|(vk, sc, d, fl, ex)| {
+                    json!({"vk":format!("0x{vk:02X}"),"scan":sc,"down":d,"flags":format!("0x{fl:X}"),"extra":format!("0x{ex:X}")})
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 /// `tuning.rs::FOREIGN_CTRL_TTL_MS`(1000ms)を確実に過ぎる待ち。TTL の値を決める根拠ではない。
 const FOREIGN_CTRL_PAST_TTL_MS: u64 = 1500;
 
@@ -174,6 +201,13 @@ fn num<T: std::str::FromStr>(key: &str) -> Option<T> {
 
 impl Perturbation {
     pub(crate) fn from_args() -> Self {
+        if arg_value("--foreign-ctrl=").is_some() {
+            let prev = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let _ = release_held_foreign_ctrl();
+                prev(info);
+            }));
+        }
         Self {
             cold: has_flag("--cold"),
             pause_after: num("--pause-after=").unwrap_or(0),
@@ -212,7 +246,6 @@ impl Perturbation {
                     std::process::exit(2);
                 }
             }),
-            foreign_ctrl_held: std::cell::Cell::new(None),
         }
     }
 
@@ -252,7 +285,7 @@ impl Perturbation {
     }
 
     /// ADR-252: 注入 Ctrl↓(`dwExtraInfo=0`、Up なし)を送る。s2〜s4 はそのあと注入の `A` を送って入力欄を読み、
-    /// 注入 Ctrl↑ で解放して観測レコードを返す(呼び出し側が入力欄を空にし直す)。s1 は Down だけ送り、
+    /// 注入 Ctrl↑ で解放し(未確定文字を Esc で取り消して)観測レコードを返す(呼び出し側が入力欄を空にし直す)。s1 は Down だけ送り、
     /// 解放は [`Self::foreign_ctrl_release`](本試行の打鍵の後)。
     pub(crate) fn foreign_ctrl_before_typing(
         &self,
@@ -264,7 +297,7 @@ impl Perturbation {
             g.clear();
         }
         foreign_key(ctrl_vk, 0x1D, 0, true);
-        self.foreign_ctrl_held.set(Some(ctrl_vk));
+        FOREIGN_CTRL_HELD.store(ctrl_vk, std::sync::atomic::Ordering::SeqCst);
         sleep_ms(50);
         if case == ForeignCtrl::S1 {
             return None;
@@ -277,26 +310,20 @@ impl Perturbation {
         foreign_key(VK_A_U32, 0x1E, 0, false);
         sleep_ms(400);
         let text_after = read();
-        self.foreign_ctrl_release();
-        let reached: Vec<serde_json::Value> = crate::FOREIGN_LOG
-            .lock()
-            .map(|g| g.iter().map(|(vk, sc, d)| json!({"vk":format!("0x{vk:02X}"),"scan":sc,"down":d})).collect())
-            .unwrap_or_default();
+        let _ = release_held_foreign_ctrl();
+        // 観測用の A が IME の未確定文字として残ると本試行に混ざる(S3 の edit)。Esc で取り消してから返す。
+        press(VK_ESCAPE_U32, 0x01, 50);
+        sleep_ms(200);
+        let reached: Vec<serde_json::Value> = foreign_log_json();
         Some(json!({"type":"foreign_ctrl","case":format!("{case:?}"),"sent_ctrl_vk":format!("0x{ctrl_vk:02X}"),
                     "text_after_injected_a":text_after,"hook_reached":reached}))
     }
 
     /// 注入 Ctrl↓ の Up を送る(残っていれば)。KeyUp 欠落そのものの再現なので、解放しないと次のケースを汚染する。
     pub(crate) fn foreign_ctrl_release(&self) {
-        if let Some(vk) = self.foreign_ctrl_held.take() {
-            foreign_key(vk, 0x1D, 0, false);
-            sleep_ms(100);
+        if let Some(vk) = release_held_foreign_ctrl() {
             if self.foreign_ctrl == Some(ForeignCtrl::S1) {
-                let reached: Vec<serde_json::Value> = crate::FOREIGN_LOG
-                    .lock()
-                    .map(|g| g.iter().map(|(vk, sc, d)| json!({"vk":format!("0x{vk:02X}"),"scan":sc,"down":d})).collect())
-                    .unwrap_or_default();
-                rec(&json!({"type":"foreign_ctrl","case":"S1","sent_ctrl_vk":format!("0x{vk:02X}"),"hook_reached":reached}));
+                rec(&json!({"type":"foreign_ctrl","case":"S1","sent_ctrl_vk":format!("0x{vk:02X}"),"hook_reached":foreign_log_json()}));
             }
         }
     }
