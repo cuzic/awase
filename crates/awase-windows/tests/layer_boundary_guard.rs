@@ -529,6 +529,7 @@ const CORE_MODULES: &[&str] = &[
     "ime_event_log",
     "ime_kind",
     "ime_model",
+    "ime_profile_driver",
     "ime_read_strategy",
     "ime_set_open_plan",
     "ime_update",
@@ -548,6 +549,7 @@ const CORE_MODULES: &[&str] = &[
     "physical_disposition",
     "platform_state",
     "post_bypass",
+    "probe_admission",
     "press_ledger",
     "raw_recovery_plan",
     "relay_plan",
@@ -568,8 +570,8 @@ const NOT_CORE_MODULES: &[(&str, &str)] = &[
         "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
     ),
     (
-        "ime_profile_driver",
-        "不変の static 3 つ（const の &'static dyn へ置き換えられる見込み）",
+        "probe_rejection_stats",
+        "可変の static カウンタと #[cfg(windows)] の admit_epoch_in_app（probe_admission から切り出した殻、恒久的に Tier-2 の外）",
     ),
     (
         "key_effect_predictor",
@@ -578,10 +580,6 @@ const NOT_CORE_MODULES: &[(&str, &str)] = &[
     (
         "key_effect_runtime",
         "#[cfg(windows)] と fs::metadata（学習済み表の読み込み。殻へ）",
-    ),
-    (
-        "probe_admission",
-        "可変の static カウンタと #[cfg(windows)] の関数（カウンタは殻へ）",
     ),
 ];
 

@@ -192,6 +192,7 @@ pub(crate) mod keymap_latch;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod post_bypass;
 pub mod probe_admission;
+pub mod probe_rejection_stats;
 pub(crate) mod scoped_latch;
 // 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
 // runtime/key_pipeline.rs の apply_focus_probe は #[cfg(windows)] のため非 Windows

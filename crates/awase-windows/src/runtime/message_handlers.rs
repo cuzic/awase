@@ -1952,7 +1952,7 @@ pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
 /// WM_DUMP_JOURNAL ハンドラ（Alt+変換→Alt+無変換 ×2 でトリガー）
 pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
     // プローブ棄却統計をダンプ直前にログ出力してリセット
-    let stats = crate::state::probe_admission::drain_stats();
+    let stats = crate::state::probe_rejection_stats::drain_stats();
     if stats.epoch_mismatch > 0
         || stats.hwnd_mismatch_same_root > 0
         || stats.hwnd_mismatch_cross_root > 0

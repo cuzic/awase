@@ -806,7 +806,7 @@ impl Runtime {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        crate::state::probe_admission::admit_epoch_in_app(
+                        crate::state::probe_rejection_stats::admit_epoch_in_app(
                             app,
                             ticket,
                             "[ImmCrossProbe/focus] epoch rejected \

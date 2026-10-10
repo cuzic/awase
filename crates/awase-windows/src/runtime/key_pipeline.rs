@@ -329,7 +329,7 @@ impl Runtime {
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
             let _ = crate::with_app(|app| {
-                crate::state::probe_admission::admit_epoch_in_app(
+                crate::state::probe_rejection_stats::admit_epoch_in_app(
                     app,
                     ticket,
                     "[FocusProbe] epoch rejected (focus changed since probe spawn)",
@@ -571,7 +571,7 @@ impl Runtime {
                     return;
                 }
                 let Some(conv) = conv else { return };
-                crate::state::probe_admission::admit_epoch_in_app(
+                crate::state::probe_rejection_stats::admit_epoch_in_app(
                     app,
                     ticket,
                     "[idle-conv-check] epoch rejected (focus changed since read spawn)",
@@ -2844,7 +2844,7 @@ impl Runtime {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        crate::state::probe_admission::admit_epoch_in_app(
+                        crate::state::probe_rejection_stats::admit_epoch_in_app(
                             app,
                             ticket,
                             "[ImmCrossProbe] epoch rejected (focus changed since probe spawn)",
