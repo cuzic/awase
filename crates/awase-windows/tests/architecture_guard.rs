@@ -4687,7 +4687,7 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
 #[test]
 fn ms_ime_native_direct_follow_takes_only_closed_to_open() {
     let watch = non_comment_lines(production_code_only(&read_crate_file(
-        "state/external_change_watch.rs",
+        "src/state/external_change_watch.rs",
     )));
     let classify = watch
         .split("fn classify_direct_read_for")
@@ -4711,7 +4711,7 @@ fn ms_ime_native_direct_follow_takes_only_closed_to_open() {
     );
 
     let ps = non_comment_lines(production_code_only(&read_crate_file(
-        "state/platform_state.rs",
+        "src/state/platform_state.rs",
     )));
     let follow = ps
         .split("fn follow_direct_read_in_scope")
