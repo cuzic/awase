@@ -466,6 +466,17 @@ jobs:
                 ('fullspace', '1A,1D,1C,1D,1C', 'DirectInput,ON,IMEOn|DirectInput,Muhenkan,InsertFullSpace|DirectInput,Henkan,InsertFullSpace'),
                 ('precomp', '16,1D,1C,1D,1C', 'DirectInput,ON,IMEOn|Precomposition,Muhenkan,InsertSpace|Precomposition,Henkan,InsertSpace'))
               for aw in ('noawase', 'awase')],
+            # 追加検証: (1) 対照 ctl-loaded: DirectInput の無変換を IMEOn にして、CUSTOM 表が GJI に読まれているか(open が 0→1 になるか)。
+            # (2) precomp-pass: awase の無変換/変換単独タップの既定 Suppress(engine 活性中は GJI へ届かない)を外して、Precomposition の InsertSpace が届くか。
+            *[cfg(f'sc-direct-space-ctl-loaded-{aw}', 'observe', check='collect', keymap=0, runs=1, wait=240, awase=('true' if aw == 'awase' else 'false'), until='2026-11-10',
+                  args='--seq=1A,1D,1C,1D', tsv='DirectInput,ON,IMEOn|DirectInput,Muhenkan,IMEOn|DirectInput,Henkan,IMEOn')
+              for aw in ('noawase', 'awase')],
+            cfg('sc-direct-space-precomp-pass-awase', 'observe', check='collect', keymap=0, runs=1, wait=240, until='2026-11-10',
+                args='--seq=16,1D,1C,1D,1C', general='muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false',
+                tsv='DirectInput,ON,IMEOn|Precomposition,Muhenkan,InsertSpace|Precomposition,Henkan,InsertSpace'),
+            cfg('sc-direct-space-insertspace-pass-awase', 'observe', check='collect', keymap=0, runs=1, wait=240, until='2026-11-10',
+                args='--seq=1A,1D,1C,1D,1C', general='muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false',
+                tsv='DirectInput,ON,IMEOn|DirectInput,Muhenkan,InsertSpace|DirectInput,Henkan,InsertSpace'),
             # v2 チェックリスト B2 副次: 既定の [keys](keys.ime_toggle が空)× GJI プリセットで、Alt+半角/全角(0x19)が実 IME と Engine(belief)をずらさないこと。
             # sc-kanji-role-* は CUSTOM 表(keymap=0)+ tsv だったが、こちらは tsv も keys 上書きも無い「既定のまま」。プリセット(ATOK=1 / MS-IME=2)の
             # Hankaku/Zenkaku 行はトグルのはずなので kanjirole-closed(IME が閉じ、Engine も OFF に追随)を期待する。実測前なので observe。
