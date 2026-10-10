@@ -335,6 +335,8 @@ pub struct Runtime {
     /// 進行中の IME actuation 試行（ADR-080）。`desired` 変化・`FocusChanged`・
     /// `Resolution` 確定でのみ破棄・再構築する（`runtime/ime_actuation.rs`）。
     active_actuation: Option<ime_actuation::Actuation>,
+    /// drift correction の計画を edge 記録するための追跡(ADR-250 段階 1)。理由が変わった tick だけ journal へ載せる。
+    drift_plan_edges: crate::state::drift_plan::DriftEdgeTracker,
     /// `config1.db` のキーマップ（打鍵時予測用）のキャッシュ。打鍵ごとに読み直さない。
     key_effect_keymap: crate::state::key_effect_predictor::KeymapCache,
     /// 直前のOS読み取り（`OsPoll`）で観測（`ime_on`）を得られたか。時間切れ・空振りは`false`。
@@ -1489,6 +1491,7 @@ impl Runtime {
             post_bypass_rules,
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
+            drift_plan_edges: crate::state::drift_plan::DriftEdgeTracker::new(),
             key_effect_keymap: crate::state::key_effect_predictor::KeymapCache::default(),
             last_ime_read_ok: true,
             key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache::default(),

@@ -886,6 +886,20 @@ impl Runtime {
         let now = std::time::Instant::now();
         let facts = self.ir_observe_drift_facts(now);
         let plan = decide_drift_plan(&facts);
+        // ADR-250 段階 1: 計画(送る・見送る・打ち切る・収束・保留)の理由と根拠を、**変わったときだけ**
+        // journal へ載せる(診断用。ログは手書きのまま、記録の有無は挙動を変えない)。edge の判定は
+        // `record` を呼ぶ前に殻が行う(畳んだ tick は呼ばないので、`emit_tracing` の行も出ない)。
+        if let Some(edge) = self.drift_plan_edges.observe(
+            &plan,
+            self.platform.output.ime_mode_focus_gen.get().get(),
+            now,
+        ) {
+            self.platform_state.ime.journal.record(
+                crate::journal::JournalEntry::DriftPlanDecided {
+                    record: edge.into(),
+                },
+            );
+        }
         // E1: 送らない・打ち切る・収束とみなす・保留する決定の根拠（`plan.basis()`）は、殻がログに出すだけ。
         let basis = plan.basis();
         let act = match plan {
