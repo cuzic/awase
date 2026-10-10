@@ -4677,6 +4677,68 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
     assert!(key_pipeline.contains("ime_composition_active_now()"));
 }
 
+/// ADR-244 D4 の方向限定の緩和（MS-IME 本体の直接観測は「閉→開」だけ開閉の軸を採る）の配線を固定する。
+///
+/// - `classify_direct_read_for` の MS-IME 本体の腕は、開閉の軸を `ms_ime_native_open_axis` に通す（`open: None` に戻すと
+///   Custom 表の予測の無いコードで 直接入力 → 変換/無変換 の追随が消え、`follow.open` を素通しにすると「開いているのに 0」
+///   の誤読〈ADR-205〉で Engine が OFF に落ちる。どちらも Linux の他のテストでは配線の外れとして見えない）。
+/// - `follow_direct_read_in_scope` は `classify_direct_read_for`（種別つき）で判定し、開閉の追随は ADR-205/188 と同じ
+///   3 副作用（`write_observer_poll` → `intent_store.remove` → `pass_through_observed`）だけで belief に書く。
+#[test]
+fn ms_ime_native_direct_follow_takes_only_closed_to_open() {
+    let watch = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/external_change_watch.rs",
+    )));
+    let classify = watch
+        .split("fn classify_direct_read_for")
+        .nth(1)
+        .expect("classify_direct_read_for が無い");
+    let classify = &classify[..classify.find("\n}\n").unwrap_or(classify.len())];
+    let classify_squashed: String = classify.split_whitespace().collect();
+    assert!(
+        classify_squashed.contains("ImeKindId::MsIme=>DirectFollow{open:ms_ime_native_open_axis(follow.open),"),
+        "MS-IME 本体の腕は開閉の軸を ms_ime_native_open_axis に通すこと（ADR-244 D4 の方向限定）: {classify}"
+    );
+    let axis = watch
+        .split("fn ms_ime_native_open_axis")
+        .nth(1)
+        .expect("ms_ime_native_open_axis が無い");
+    let axis = &axis[..axis.find("\n}\n").unwrap_or(axis.len())];
+    let axis_squashed: String = axis.split_whitespace().collect();
+    assert!(
+        axis_squashed.contains("open.filter(|o|*o)"),
+        "ms_ime_native_open_axis は Some(true) だけを通すこと: {axis}"
+    );
+
+    let ps = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/platform_state.rs",
+    )));
+    let follow = ps
+        .split("fn follow_direct_read_in_scope")
+        .nth(1)
+        .expect("follow_direct_read_in_scope が無い");
+    let follow = &follow[..follow.find("\n    }\n").unwrap_or(follow.len())];
+    let follow_squashed: String = follow.split_whitespace().collect();
+    assert!(
+        follow_squashed.contains("external_change_watch::classify_direct_read_for("),
+        "follow_direct_read_in_scope は種別つきの classify_direct_read_for で判定すること: {follow}"
+    );
+    let open_branch = follow_squashed
+        .split("ifletSome(open)=follow.open{")
+        .nth(1)
+        .expect("開閉の追随の分岐が無い");
+    let open_branch = &open_branch[..open_branch
+        .find("ifletSome(eisu)=follow.eisu")
+        .expect("英数の追随の分岐が開閉の分岐の後に無い")];
+    let p1 = open_branch.find("self.write_observer_poll(open,");
+    let p2 = open_branch.find("self.intent_store.remove(hwnd)");
+    let p3 = open_branch.find("self.pass_through_observed(tick_ms,true,true)");
+    assert!(
+        matches!((p1, p2, p3), (Some(a), Some(b), Some(c)) if a < b && b < c),
+        "開閉の追随は write_observer_poll → intent_store.remove → pass_through_observed の順の 3 副作用だけで書くこと: {open_branch}"
+    );
+}
+
 /// ADR-158 TE3 / PR #377 レビュー M6-1: `Runtime::can_use_imm32_cross_process` は `#[track_caller]` を持つ。
 /// 直前に別の関数を挿入すると属性と doc だけが新しい関数へ移り、呼び出し元の棚卸しが黙って壊れる。
 #[test]

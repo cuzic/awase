@@ -3857,7 +3857,7 @@ mod tests {
         ));
     }
 
-    /// ADR-244 D4: MS-IME 本体は英数の軸だけを採る。閉の読み（「開いているのに 0」の型を含む）では belief の開閉を
+    /// ADR-244 D4: MS-IME 本体は英数の軸（と「閉→開」の開閉）だけを採る。閉の読み（「開いているのに 0」の型を含む）では belief の開閉を
     /// 動かさず、トグル中（`ObservedEisu`）の NATIVE の読みでは英数を外す（BUG-186）。
     #[test]
     fn follow_direct_read_for_ms_ime_native_follows_only_the_eisu_axis() {
@@ -3896,6 +3896,77 @@ mod tests {
             ps.ime.input_mode(),
             InputModeState::AssumedRomaji { .. }
         ));
+    }
+
+    /// ADR-244 D4 の方向限定の緩和: MS-IME 本体でも「閉→開」は開閉の軸を採る。Custom 表に予測の無いコードを持つと、
+    /// 直接入力 → 変換/無変換で IME は開くのに Engine が OFF のまま残った（run 38059015712、`sc-b254-custom-unpred-*`）。
+    /// 明示 OFF の意図が残っていても、ADR-205/188 と同じ 3 副作用（ObserverPoll → 意図の削除 → desired の揃え）で開へ追随する。
+    /// 「開→閉」は従来どおり採らない（「開いているのに 0」の誤読の向き、ADR-205）。
+    #[test]
+    fn follow_direct_read_for_ms_ime_native_follows_closed_to_open_only() {
+        use crate::state::ime_kind::ImeKindId;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        assert!(!ps.ime.effective_open_at(TickMs(200)));
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        let read = |ps: &mut PlatformState, open: bool, t: u64| {
+            ps.ime.follow_direct_read_in_scope(
+                Some(open),
+                Some(25),
+                t,
+                TickMs(t),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope(),
+            )
+        };
+        // 閉→開: 開閉の軸を採る。
+        assert_eq!(
+            read(&mut ps, true, 1032),
+            Some(direct_follow(Some(true), None))
+        );
+        assert!(ps.ime.effective_open_at(TickMs(1040)));
+        assert!(
+            ps.ime.explicit_intent().is_none(),
+            "明示 OFF の意図は捨てる"
+        );
+        assert_eq!(ps.ime.last_external_change_ms(), 1032);
+        // 開→閉: 採らない（belief は開のまま）。
+        assert_eq!(read(&mut ps, false, 1100), None);
+        assert!(ps.ime.effective_open_at(TickMs(1110)));
+    }
+
+    /// R3 × 閉→開（MS-IME 本体）: awase 自身が窓の arm 以後に IME へ書いた（例: 閉じる書き込み）後は、MS-IME が処理する前の
+    /// 「開」の読みで belief を開へ逆戻ししない。新しい物理キー（再 arm）の後の読みは採る。
+    #[test]
+    fn follow_direct_read_for_ms_ime_native_closed_to_open_ignores_reads_after_awase_wrote() {
+        use crate::state::ime_kind::ImeKindId;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.note_explicit_ime_action(TickMs(1010));
+        let read = |ps: &mut PlatformState, t: u64| {
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(25),
+                t,
+                TickMs(t),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope(),
+            )
+        };
+        assert_eq!(read(&mut ps, 1032), None);
+        assert!(!ps.ime.effective_open_at(TickMs(1040)));
+        assert!(ps.ime.explicit_intent().is_some(), "意図は残る");
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1200, test_foreground_scope());
+        assert_eq!(read(&mut ps, 1232), Some(direct_follow(Some(true), None)));
+        assert!(ps.ime.effective_open_at(TickMs(1240)));
     }
 
     /// R3: awase 自身が窓の最後の arm 以後に IME へ書いたら、GJI の処理前の読みで belief を逆戻ししない。
