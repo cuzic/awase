@@ -1,3 +1,12 @@
+---
+id: ADR-255-companion-255-opus-review-round3
+title: |-
+  ADR-255（IME OFF のときだけ無変換/変換を Space にする）Opus敵対的レビュー round3
+type: companion-doc
+related_adr:
+  - "ADR-255"
+---
+
 # ADR-255 敵対的レビュー round3(Opus)
 
 対象: `docs/adr/255-ime-off-thumb-key-space.md`(ワークツリー keymap-ime、HEAD `cf1c5166`)。行番号はこの HEAD のもの。

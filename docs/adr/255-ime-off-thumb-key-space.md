@@ -5,7 +5,7 @@ title: |-
 summary: |-
   顧客報告「IME OFF のとき GJI の設定が反映されず、変換/無変換を空白入力に割り当てても動かない」を GitHub Windows CI で実機検証した(ブランチ ci/e2e-direct-space、run 38058313464・38059338837、各セル n=1)。GJI の CUSTOM 表は読まれ、直接入力の無変換に IMEOn を割り当てると効く(open 0→1。変換は既に開いた状態で試したので未分離)。直接入力の DirectInput 行に InsertSpace/InsertHalfSpace/InsertFullSpace を割り当てても入力欄に空白は入らなかったが、Precomposition の対照でも空白が入らず、「直接入力では不可」と「観測・キー名・コマンドの対象外」を分けられていない(GJI の仕様で不可とは断定しない)。そこで GJI に頼らず awase 側で、エンジンが非活性(理由 ImeOff)のときの無変換/変換の単独押下を Space にする設定を足す。Win32/IMM 系のウィンドウが対象で、IME の状態を awase が読めないアプリ(Chrome・Edge・VS Code・Windows Terminal・UWP・コンソール・RDP 等。`cannot_verify_real_ime_state`)では IME OFF を継続して確かめる根拠が無いため、明示的に非対応とする(r2 R2-B1、r3 R3-M1)。発動するのは IMM で状態を読める古典的な Win32 の窓だけで、報告者のアプリがそこに入るかの確認を実装着手の条件にする。当初案の `[[keymap]]` への `ime` 条件は、Opus レビュー r1 で、エンジンの活性判定と別の値を見て親指シフトが Space に化ける(B1)・未確定文字列の破棄(B2)・親指ラッチと latch の stale(M3/M4)が指摘されたため採らない。
 status: |-
-  起草 → Opus レビュー r1〜r4 反映済み(2026-10-10)。r5(同じレビュアーへの再確認)待ち。実装は未着手。
+  起草 → Opus レビュー 提案(Opus r1〜r5 で収束、2026-10-10)。**実装は決定3b のゲートで保留(報告者の回答待ち)**。
 related_adr:
   - "ADR-114"
   - "ADR-206"
@@ -18,7 +18,7 @@ related_adr:
 
 ## ステータス
 
-起草 → Opus レビュー r1(Blocker 2・Must 7・Should 9・代案 3、[review/255-opus-review-round1.md](review/255-opus-review-round1.md))・r2(Blocker 1・Must 5・Should 7、[review/255-opus-review-round2.md](review/255-opus-review-round2.md))・r3(Blocker 1・Must 2・Should 4、[review/255-opus-review-round3.md](review/255-opus-review-round3.md))・r4(新規 Blocker なし・Must 3・Should 6、[review/255-opus-review-round4.md](review/255-opus-review-round4.md))を反映(2026-10-10)。r5 待ち。実装は未着手。
+起草 → Opus レビュー r1(Blocker 2・Must 7・Should 9・代案 3、[review/255-opus-review-round1.md](review/255-opus-review-round1.md))・r2(Blocker 1・Must 5・Should 7、[review/255-opus-review-round2.md](review/255-opus-review-round2.md))・r3(Blocker 1・Must 2・Should 4、[review/255-opus-review-round3.md](review/255-opus-review-round3.md))・r4(新規 Blocker なし・Must 3・Should 6、[review/255-opus-review-round4.md](review/255-opus-review-round4.md))・r5(新規 Blocker/Must なし。収束、[review/255-opus-review-round5.md](review/255-opus-review-round5.md))を反映(2026-10-10)。**実装は決定3b のゲートで保留(報告者の回答待ち)**。
 
 ## コンテキスト
 
@@ -69,22 +69,22 @@ related_adr:
 3. `is_bare_thumb(event, ctx.modifiers)`(`key_classification` が親指で、Shift・OS 修飾なし、**非注入**。alt-ime-ahk など他ツールが注入する無変換を除く。r1 M5)。**加えて、Alt なりすまし(`left/right_alt_impersonates_thumb_key`)由来の打鍵を除く**: フックは `cached_engine_enabled` が真のとき Alt を無変換に書き換えるが、このキャッシュは `EngineStateChanged` でしか更新されず、GJI 側で IME が閉じた直後の最初の打鍵が Alt だとまだ真のままで、Alt が Space になる(R2-M2)。書き換え後の vk では区別できないので、**フックが書き換えたときに `RawKeyEvent` へ `impersonated: bool` の印を付ける**(`apply_alt_impersonation`、`hook.rs`)。scan code(Alt 0x38 / 無変換 0x7B)での判定は、右 Alt→変換(0x79)の取りこぼしや Scancode Map・リマッパで scan が変わる問題があるので採らない(R3-S1)。印は境界 journal(ADR-250)にも乗る。`is_bare_thumb` の「物理」はなりすましを含むので、本条件で別に除く(R2-S7)。
 4. **このキーが IME の機能を持たない**こと(R2-M1、R3-B1)。次の2つを**両方**満たす。
    - (i) 従来の4源がすべて None: `bare_ime_action(vk)`(`keys.ime_*`)、`thumb_role_open_actions()` の該当側(単独タップ設定が Passthrough かどうかを問わない)、`muhenkan_solo_tap_dedicated_fn_key`(専用 Fn キー)、`event.ime_relevance.sync_direction`。`thumb_open_role_action` は流用しない(専用 Fn キー設定済み、または役割があっても単独タップ設定が Passthrough でないとき `None` を返す。この場合エンジン非活性では生キーを通して IME 自身に開かせているので、`None` を「役割なし」と読むと IME を開く手段を奪う)。
-   - (ii) **このキーの直接入力状態での効果の三値が `NoEffect`**: `KeyOpenEffect = Opens | NoEffect | Unknown`。**発動は `NoEffect` のときだけ**。awase の `KeyRole`(`awase-gji-config/src/role.rs`)は `ImeToggle` の1つだけで、**開くだけの割り当て**(CI の `ctl-loaded` 表の `DirectInput,Henkan,IMEOn` 単独行、GJI の「変換/無変換で IME ON/OFF」オーバーレイ、MS-IME の「変換 = IME-オン」)では None を返すため、(i) だけでは IME を開く手段を奪う。三値の写像は `state/` の純粋関数にして Linux で表を固定する:
-     - GJI(表が読める): 照合は**無修飾のキー名の完全一致**で行う(`Shift Henkan` のような修飾付きの行は、無修飾の変換の行と数えない。R4-S3。`KeyStates::of` が既にこの区別をしているかを実装時に確かめ、テストで固定する)。プリセットまたは CUSTOM 表の `DirectInput` 行にそのキーの行があれば `Opens`(`IMEOn` 以外のコマンド〈`Reconvert`・`InputModeHiragana`・**`InsertSpace` 系**等〉でも**機能ありに数える**。Space で奪わない)。既知のオーバーレイ(`SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF`)があれば `Opens`。**未知のオーバーレイ・未知の `session_keymap`(`source()` が `Source::Unknown` を返す場合)は `Unknown`**(R4-S2。`key_role` が未知のオーバーレイで全キーを受動にするのと同じ理由)。行が無ければ `NoEffect`。表が読めない・`table_ime_kind` が None も `Unknown`。
+   - (ii) **このキーの直接入力状態での効果の三値が `NoFunction`**: `KeyDirectInputEffect = HasFunction | NoFunction | Unknown`。**発動は `NoFunction` のときだけ**(名前は「直接入力でこのキーに IME の機能があるか」。`HasFunction` は IMEOn だけでなく `Reconvert`・`InsertSpace` 等の「開かないが機能がある」行も含む。R5-S3)。awase の `KeyRole`(`awase-gji-config/src/role.rs`)は `ImeToggle` の1つだけで、**開くだけの割り当て**(CI の `ctl-loaded` 表の `DirectInput,Henkan,IMEOn` 単独行、GJI の「変換/無変換で IME ON/OFF」オーバーレイ、MS-IME の「変換 = IME-オン」)では None を返すため、(i) だけでは IME を開く手段を奪う。三値の写像は `state/` の純粋関数にして Linux で表を固定する:
+     - GJI(表が読める): 照合は**無修飾のキー名の完全一致**で行う(`Shift Henkan` のような修飾付きの行は、無修飾の変換の行と数えない。R4-S3。`awase-gji-config/src/role.rs` の `KeyStates::of` は「無修飾の行だけを表の順に読む(後勝ち)」で既にこの区別をしており、`Effect::of` が `DirectInput` の行を `Open`(IMEOn・絶対モード指定)か `Other`(Reconvert・InsertSpace 等)に分ける。「行があれば機能あり」は `states[DirectInput].is_some()` で書ける。テストで固定する。R5-S2)。プリセットまたは CUSTOM 表の `DirectInput` 行にそのキーの行があれば `HasFunction`(`IMEOn` 以外のコマンド〈`Reconvert`・`InputModeHiragana`・**`InsertSpace` 系**等〉でも**機能ありに数える**。Space で奪わない)。既知のオーバーレイ(`SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF`)があれば `HasFunction`。**未知のオーバーレイ・未知の `session_keymap`(`source()` が `Source::Unknown` を返す場合)は `Unknown`**(R4-S2。`key_role` が未知のオーバーレイで全キーを受動にするのと同じ理由)。行が無ければ `NoFunction`。表が読めない・`table_ime_kind` が None も `Unknown`。
      - **プリセットの `DirectInput` 行を本番の表として持つ**(R4-M1): いまの `awase-gji-config/src/role.rs` はプリセットについて「トグルを持つキーの名前の一覧」(`Preset::toggle_vk_names`)しか持たず、Mozc の TSV 本体は同梱しない(ADR-199 決定4)。各プリセットの `DirectInput` 行はテストの定数(`MS_IME_TSV`/`ATOK_TSV`/`KOTOERI_TSV` と `*_DIRECT_INPUT`)にしか無い。本 ADR の実装は、4 プリセット(MS-IME・ATOK・KOTOERI・MOBILE)の変換/無変換の `DirectInput` 行を本番の定数として足す。出典は Mozc `b4bbc42f`(テストの定数と同じ)。Mozc の更新で古くなる性質があるので、`passive_open_vk_names_outside_table` と同じく手で取り直し、既存のテスト(`passive_open_vk_names_outside_table_match_mozc_direct_input_rows` 相当)で突き合わせる。前例は ADR-211 の `passive_open_vk_names_outside_table`(プリセットごとの定数を `source()` で選ぶ形)。この表で判定した結果(実装前にテストの定数から読んだもの):
 
        | GJI のキー設定 | 無変換 | 変換 |
        | --- | --- | --- |
-       | MS-IME(**既定**。未設定・NONE・空の CUSTOM もこれ) | `NoEffect` → 発動 | `DirectInput\tHenkan\tReconvert` → 機能あり、**発動しない** |
+       | MS-IME(**既定**。未設定・NONE・空の CUSTOM もこれ) | `NoFunction` → 発動 | `DirectInput\tHenkan\tReconvert` → 機能あり、**発動しない** |
        | ATOK | `IMEOn` → 発動しない | `IMEOn` → 発動しない |
-       | KOTOERI | `NoEffect` → 発動 | `NoEffect` → 発動 |
+       | KOTOERI | `NoFunction` → 発動 | `NoFunction` → 発動 |
        | MOBILE | MS-IME と同じ | MS-IME と同じ |
        | CUSTOM | 表しだい | 表しだい |
 
      - MS-IME 本体: 無変換/変換の値(0/1/2/3)の意味と「値なし」の既定の効果を確かめていないので、**今回は `Unknown`(発動しない)**。値の意味を実機で確かめた後に別途広げる。
      - TIP 未同定(`!ime_identified`。BUG-179 のように MS-IME を Other と同定する事例がある): `Unknown`。
    - つまり**当面発動するのは、GJI で、表が読めて、そのキーの `DirectInput` 行もオーバーレイも無いとき**だけ。上の表のとおり、**既定の MS-IME プリセットでは無変換しか Space にならず(変換は `Reconvert`)、ATOK プリセットでは両方ならない**。報告(変換/無変換の両方)に対して、既定のままの構成では半分しか効かない。さらに、**報告者自身が GJI の CUSTOM 表に足した `DirectInput` の無変換/変換の行(InsertSpace 等)があると、機能ありと数えるので両キーとも発動しない**(R4-M2)。案内は決定3b で扱う。
-   - **キー効果の運び方**(R4-S4): 判定に要る GJI の表は、シェル側の `key_effect_keymap.get_gji(now_ms)`(I/O と間引きあり、`runtime/mod.rs::derive_key_shadow_action`)にあり、エンジン(OS 非依存)は自分で読めない。既存の `enrich_thumb_key_role` が押下ごとに `set_thumb_role_open_actions` で押した側だけ書く形に揃え、同じ場所で `KeyOpenEffect` も押した側だけ書く(古い値を残さない)。
+   - **キー効果の運び方**(R4-S4): 判定に要る GJI の表は、シェル側の `key_effect_keymap.get_gji(now_ms)`(I/O と間引きあり、`runtime/mod.rs::derive_key_shadow_action`)にあり、エンジン(OS 非依存)は自分で読めない。既存の `enrich_thumb_key_role` が押下ごとに `set_thumb_role_open_actions` で押した側だけ書く形に揃え、同じ場所で `KeyDirectInputEffect` も押した側だけ書く(古い値を残さない)。
 
 ### 決定3: IME の状態を読めないアプリでは対応しない(R2-B1、R3-M1)
 
@@ -100,7 +100,9 @@ related_adr:
 1. **どのアプリで、IME OFF のとき無変換/変換を空白にしたいか**、および**直接入力か半角英数か**: 「タスクバーの A」は直接入力でも半角英数でも「A」と出るので答えられない(R4-M3)。代わりに、**問題の起きるアプリで、IME OFF の状態のまま無変換を押した直後に、トレイの「不具合を報告」(ADR-095)を送ってもらう**。報告にはフォーカス窓のクラス・プロファイル・belief(open・input mode)が入るので、(a) アプリが `cannot_verify_real_ime_state` の範囲か、(b) 直接入力か半角英数かを客観的に読める。手で確かめてもらうなら、GJI の言語バーの入力モード表示で「直接入力」か「半角英数」かを見てもらう。
 2. **押し続けて Space が連続して出る必要があるか**(決定4はリピートしない)。
 3. **GJI のキー設定**(プリセット名、または CUSTOM)。決定2-4 の表のとおり、既定の MS-IME プリセットでは変換が発動せず(`Reconvert`)、ATOK では両方発動しない。
-4. **CUSTOM の場合、直接入力の無変換/変換の行**(InsertSpace 等)があるか。**報告者の構成では、GJI の CUSTOM 表に足した InsertSpace 等の行が残っている可能性が高く、その行があると両キーとも発動しない**(機能ありと数える。R4-M2)。案内: 「GJI のキー設定の CUSTOM から、直接入力の無変換/変換の行を消す」(推奨。InsertSpace 系を `NoEffect` に数える案は、仮説 a〜c が未分離で、効く環境で Space が二重になる危険が残るので、設定ダイアログで直接入力行に InsertSpace を選べるかの確認〈検証計画0-iv〉が済むまで採らない)。この案内は設定画面の注記にも書く。
+4. **CUSTOM の場合、直接入力の無変換/変換の行**(InsertSpace 等)があるか。**報告者の構成では、GJI の CUSTOM 表に足した InsertSpace 等の行が残っている可能性が高く、その行があると両キーとも発動しない**(機能ありと数える。R4-M2)。案内: 「GJI のキー設定の CUSTOM から、直接入力の無変換/変換の行を消す」(推奨。InsertSpace 系を `NoFunction` に数える案は、仮説 a〜c が未分離で、効く環境で Space が二重になる危険が残るので、設定ダイアログで直接入力行に InsertSpace を選べるかの確認〈検証計画0-iv〉が済むまで採らない)。この案内は設定画面の注記にも書く。
+
+**ゲートが止めるのは実装(コード変更)だけ**。検証計画0 の (ii) 入力先の分類の確認と (iv) 仮説 a〜c の切り分けの CI スパイクは、報告者の回答を待たずに進めてよい(R5-S6。(iv) の結果は報告者への返答の材料になる)。**報告者が回答しない間は実装しない**。保留のまま、別の報告で需要が出たら決定3b から再開する(後のセッションが「起草済み・未実装」を実装待ちと誤読しないため。R5-S5)。
 
 結果に応じて:
 - (a) 報告者のアプリが Standard で IMM から状態を読める窓で、キー設定も発動範囲に入る(または入れる)なら実装する。
@@ -111,7 +113,7 @@ related_adr:
 - Down で `VK_SPACE` を 1 回タップ(Down+Up)する。`VK_SPACE` はエンジンに生の VK 定数を持たせないため(ADR-019)、`set_space_thumb_config`(`engine.rs`)と同じくプラットフォームから渡す(R2-M4)。
 - KeyUp は `KeyLifecycle` の `UpDuty::Consume` で回収する(`[[keymap]]` の latch は使わない)。
 - **リピートしない**: 新しい種別にも `!event.was_down` の条件を付ける。既存の `check_special_keys` 先頭のガードは `thumb_open_role_action` 専用で新しい種別には効かず、`phase1_held` は flush 等で消えうるため、付けないとリピートで Space が連射される経路が残る(R2-M4)。無変換を押し続けても Space は 1 個(r1 S5)。本物の Space キーや GJI の InsertSpace(リピートする)とは違う。
-- **Phase 1 の早期 return の遅れへの手当**(R2-S1): Phase 1 で Consume すると Phase 2 の `check_active_transition` を通らずに return するので、GJI 側で IME が閉じた直後の最初の打鍵が無変換だと、`EngineStateChanged{false}`(トレイ表示・Alt なりすましのキャッシュ)、保留出力の解放、FSM の flush が次の打鍵まで遅れる。Space 経路は IME を変えないので遅れたままになる。Space の前に `check_active_transition` の effects を前置する(`prepend_effects`)。**前置するのは `EngineStateChanged` と保留出力の解放だけで、`SetOpen` は外す**(R3-S2、R4-S5): `transition_activation` は活性→非活性で `SetOpen{open:false}`(`emit_set_open` が真のとき)と `EngineStateChanged{false}` を出すが、この経路は IME を変えない(Space を出すだけ)ので、IME が既に閉じた窓への actuation を1件増やさない。これにより IME actuation 合流点ファミリー(`fix-requires-evidence.md`)に触れず、`press` の配線も要らない。実装時に `emit_set_open` の値を確かめ、テストで `SetOpen` が前置されないことを固定する。
+- **Phase 1 の早期 return の遅れへの手当**(R2-S1): Phase 1 で Consume すると Phase 2 の `check_active_transition` を通らずに return するので、GJI 側で IME が閉じた直後の最初の打鍵が無変換だと、`EngineStateChanged{false}`(トレイ表示・Alt なりすましのキャッシュ)、保留出力の解放、FSM の flush が次の打鍵まで遅れる。Space 経路は IME を変えないので遅れたままになる。Space の前に `check_active_transition` の effects を前置する(`prepend_effects`)。**前置するのは `check_active_transition` の戻り値そのまま**(flush・保留出力の解放・`EngineStateChanged`。R3-S2、R4-S5、R5-S1): `check_active_transition` は `transition_activation(new_state, false)` で呼ばれ(`src/engine/engine.rs` の `check_active_transition`、ADR-213 決定3 P2b「観測・RefreshState 由来の遷移は SetOpen を出さない」)、`SetOpen` は元から含まれない。この経路は IME を変えない(Space を出すだけ)ので、IME actuation 合流点ファミリー(`fix-requires-evidence.md`)に触れず、`press` の配線も要らない。テストで、前置した effects に `SetOpen` が無いことを固定する。
 - Platform 側の述語との整合(R2-M4): `match_special_keys` は Platform からも呼ばれる。`matches_ime_set_open`(shadow の書き込みの抑止、`engine_owns_open_key`)と `matches_ime_off`(Ctrl+無変換の救済窓)では、新しい種別は**開閉ではない**ので `None`/`false` を返す。網羅 `match` のテストで固定する。
 - 押している間に IME が ON になったとき: 活性化後、文字キーはフックのスナップショット(`ctx.left_thumb_down`)で親指シフト扱いになりうる。既存の役割経路(変換 = IME ON の単独押下)にも同じ窓がある。**期待値は既存の役割経路と同じにする**(実装前に現挙動を調べ、検証計画1で固定する。違えるなら理由を書く。R2-S4)。KeyUp は活性化後に FSM へ Down なしの親指 Up として届く(`engine.rs` は非活性時だけ `release_only`)ので、この挙動も単体テストで固定する。
 - 再生(`OUTPUT_GATE`/`INPUT_DEFER` で退避された Down)は、再生時点の状態で評価する(r1 S1)。
@@ -136,12 +138,12 @@ related_adr:
 
 ### 影響範囲と再発ファミリー(R2-M5)
 
-`src/engine/engine.rs`(`match_special_keys`・新 variant・`on_input_body` の前置)、`src/engine/nicola_fsm.rs`(役割の判定の純粋関数)、`src/config.rs`(設定)、`state/` に `ime_off_confirmed` と `KeyOpenEffect` の純粋関数、`crates/awase-gji-config/src/role.rs` にプリセットの `DirectInput` 行の本番定数(決定2-4)、`runtime/mod.rs` の `enrich_thumb_key_role` に `KeyOpenEffect` を押した側だけ書く経路、`runtime/key_pipeline.rs`(`InputContext` の構築)、`hook.rs`(なりすまし由来の印)、`crates/awase-settings`(チェックと注記)。`fix-requires-evidence.md` の再発ファミリーの**キー選択(IME ON/OFF に送る VK)**(`engine.rs::thumb_open_role_action` はエンジン非活性側の入口として明記されている)と**物理キー押下ラッチ(Down/Up 非対称)**に触れる。同じ PR に (a) 回帰テストを含める。置き場所は `src/engine/tests.rs`(`cargo test --lib`、ホストで実行可)と `state/` の純粋関数のテスト。`runtime/` 配下の `#[cfg(test)]` は Linux に存在しないので使わない。
+`src/engine/engine.rs`(`match_special_keys`・新 variant・`on_input_body` の前置)、`src/engine/nicola_fsm.rs`(役割の判定の純粋関数)、`src/config.rs`(設定)、`state/` に `ime_off_confirmed` と `KeyDirectInputEffect` の純粋関数、`crates/awase-gji-config/src/role.rs` にプリセットの `DirectInput` 行の本番定数(決定2-4)、`runtime/mod.rs` の `enrich_thumb_key_role` に `KeyDirectInputEffect` を押した側だけ書く経路、`runtime/key_pipeline.rs`(`InputContext` の構築)、`hook.rs`(なりすまし由来の印)、`crates/awase-settings`(チェックと注記)。`fix-requires-evidence.md` の再発ファミリーの**キー選択(IME ON/OFF に送る VK)**(`engine.rs::thumb_open_role_action` はエンジン非活性側の入口として明記されている)と**物理キー押下ラッチ(Down/Up 非対称)**に触れる。同じ PR に (a) 回帰テストを含める。置き場所は `src/engine/tests.rs`(`cargo test --lib`、ホストで実行可)と `state/` の純粋関数のテスト。`runtime/` 配下の `#[cfg(test)]` は Linux に存在しないので使わない。
 
 ## 検証計画
 
 0. **実装前の確認と計測**(R2-B1、R3-M1、R3-S3): (i) **報告者への確認3点(決定3b)**。(ii) 入力先の分類の確認: CI の入力先(ADR-193 の RichEdit スーパークラス化は「TsfNative 相当」)と、素の Edit コントロール(Standard の IMM の窓)で、`AppImeProfile` と `cannot_verify_real_ime_state` の値をログで確かめる。Windows 11 のメモ帳の分類もあわせて確かめる。(iii) 計測の目的は「決定3 の範囲(Standard の窓)で、発動すべき場面で発動するか」: Standard では観測が約 500ms 周期で入るのでほぼ常に `Some(false)` のはずで、数える意味があるのは `Unknown` が出る条件(フォーカス直後・プローブ失敗)の頻度。(iv) 正の対照(スペースキー 0x20 の注入で入力欄の `tail` に空白が出るか)、直接入力行の変換(0x1C)の IMEOn、設定ダイアログで直接入力行に InsertSpace を選べるか(仮説 a〜c の切り分け)。(v) 基準構成の「無変換・変換とも open は 0 のまま」は確認済み: run 38059338837 のジョブ `e2e (sc-direct-space-baseline-noawase-1)` と `e2e (sc-direct-space-baseline-awase-1)` の成果物 `dist/ime_key_matrix_spike.log` の KEY 行(2026-10-10 に確認)。各 n=1。
-1. **Linux 単体**(`cargo test --lib`、判断は `src/engine` と `state/` の純粋関数): 発動条件の表(非活性理由 × `ime_off_confirmed` × composing × 注入 × なりすまし由来 × 修飾 × 従来の4源 × **`KeyOpenEffect` の各行(GJI の `DirectInput` 行あり/なし・オーバーレイ・CUSTOM の `ctl-loaded` 表・表なし(`Unknown`)・MS-IME の値 0〜3(`Unknown`)・TIP 未同定(`Unknown`)・**CUSTOM の `DirectInput` 行が InsertSpace 系(機能ありで発動しない。R4-M2)・修飾付きの行〈`Shift Henkan`〉のみ(無修飾は `NoEffect`。R4-S3)・未知のオーバーレイ/未知の `session_keymap`(`Unknown`。R4-S2)・4プリセットの変換/無変換(決定2-4 の表)**)** × `was_down` × 設定値)。InputRelay・`cannot_verify_real_ime_state`・戻り待ちのとき `ime_off_confirmed=false`。`KeyLifecycle` の Down/Up/リピート。活性化中の押下の期待値(決定4)。網羅 `match` による `matches_ime_set_open`/`matches_ime_off` の固定。
+1. **Linux 単体**(`cargo test --lib`、判断は `src/engine` と `state/` の純粋関数): 発動条件の表(非活性理由 × `ime_off_confirmed` × composing × 注入 × なりすまし由来 × 修飾 × 従来の4源 × **`KeyDirectInputEffect` の各行(GJI の `DirectInput` 行あり/なし・オーバーレイ・CUSTOM の `ctl-loaded` 表・表なし(`Unknown`)・MS-IME の値 0〜3(`Unknown`)・TIP 未同定(`Unknown`)・**CUSTOM の `DirectInput` 行が InsertSpace 系(機能ありで発動しない。R4-M2)・修飾付きの行〈`Shift Henkan`〉のみ(無修飾は `NoFunction`。R4-S3)・未知のオーバーレイ/未知の `session_keymap`(`Unknown`。R4-S2)・4プリセットの変換/無変換(決定2-4 の表)**)** × `was_down` × 設定値)。InputRelay・`cannot_verify_real_ime_state`・戻り待ちのとき `ime_off_confirmed=false`。`KeyLifecycle` の Down/Up/リピート。活性化中の押下の期待値(決定4)。網羅 `match` による `matches_ime_set_open`/`matches_ime_off` の固定。
 2. **Windows CI**(`e2e-ime.yml`): 構成に GJI の CUSTOM 行(InsertSpace 等)を**入れない**。入力先は**計画0(ii)で `cannot_verify_real_ime_state` が偽と確認した Standard の IMM の窓**にする(TsfNative 相当の窓では決定3 により発動しないので、そこで「入らない」を見ても機能の検証にならない)。(a) IME OFF の無変換で入力欄に空白が1つ入る、(b) IME ON では入らず、無変換+文字キーが親指シフト文字になる、(c) **負の対照**: 注入された 0x1D では入らない/composition 中は入らない(Standard の窓で)/ `DirectInput,Henkan,IMEOn` の行がある構成と、GJI の「変換/無変換で IME ON/OFF」オーバーレイの構成で、変換が IME を開き Space にならない/ Alt なりすまし + GJI 側からの IME OFF → 最初の Alt が Alt のまま/ Ctrl+無変換(救済窓)と Shift+無変換が従来どおり/ 長押しで Space が1個だけ。(d) **対照**: TsfNative 相当の窓で「入らない」(決定3 の確認)。
 3. **実機**: 報告者の構成(GJI の設定、親指キー、`keys.ime_*`、アプリ)。
 
@@ -191,7 +193,7 @@ related_adr:
 
 | ID | 対応 |
 | --- | --- |
-| R3-B1 | 反映(決定2-4)。`KeyOpenEffect = Opens\|NoEffect\|Unknown` を新設し、発動は `NoEffect` のときだけ。MS-IME 本体・TIP 未同定・表が読めないときは `Unknown`。`DirectInput` 行の IMEOn 以外のコマンドも機能ありに数える。当面発動するのは GJI で表が読め、そのキーの行もオーバーレイも無いときだけ |
+| R3-B1 | 反映(決定2-4)。`KeyDirectInputEffect = HasFunction\|NoFunction\|Unknown` を新設し、発動は `NoFunction` のときだけ。MS-IME 本体・TIP 未同定・表が読めないときは `Unknown`。`DirectInput` 行の IMEOn 以外のコマンドも機能ありに数える。当面発動するのは GJI で表が読め、そのキーの行もオーバーレイも無いときだけ |
 | R3-M1 | 反映(決定3、決定3b)。述語を `cannot_verify_real_ime_state` に確定し、実効範囲を明記。報告者の確認3点を実装着手のゲートにした |
 | R3-M2 | 反映(検証計画0-ii、2)。CI の入力先は Standard の IMM の窓。TsfNative 相当の窓は「入らない」の対照 |
 | R3-S1 | 反映(決定2-3)。フックが `impersonated` の印を付ける |
@@ -204,14 +206,25 @@ related_adr:
 | ID | 対応 |
 | --- | --- |
 | R4-M1 | 反映(決定2-4)。プリセットの `DirectInput` 行を本番の定数として足す(出典 Mozc `b4bbc42f`)。判定表を載せ、「報告の構成に合う」を取り下げた(既定の MS-IME では無変換だけ、ATOK では両方ならない) |
-| R4-M2 | 反映(決定2-4、決定3b-4)。報告者の InsertSpace 行は機能ありに数えるので発動しない。案内は「CUSTOM から該当行を消す」(推奨 a)。InsertSpace 系を `NoEffect` に数える案(b)は仮説 a の確認後 |
+| R4-M2 | 反映(決定2-4、決定3b-4)。報告者の InsertSpace 行は機能ありに数えるので発動しない。案内は「CUSTOM から該当行を消す」(推奨 a)。InsertSpace 系を `NoFunction` に数える案(b)は仮説 a の確認後 |
 | R4-M3 | 反映(決定3b-1)。トレイの「不具合を報告」で集める。確認事項は4点に |
 | R4-S1 | 反映(未解決の疑問)。再変換を上書きする選択肢は需要が出てから |
 | R4-S2 | 反映(決定2-4)。未知のオーバーレイ・未知の `session_keymap` は `Unknown` |
 | R4-S3 | 反映(決定2-4)。無修飾のキー名の完全一致 |
 | R4-S4 | 反映(決定2-4、影響範囲)。`enrich_thumb_key_role` と同じ形で押した側だけ書く |
-| R4-S5 | 反映(決定4)。前置するのは `EngineStateChanged` と保留出力の解放だけで `SetOpen` は外す |
+| R4-S5 | 反映(決定4)。`check_active_transition` は元から `SetOpen` を出さない(r5 で事実の書き方を訂正) |
 | R4-S6 | 反映(決定3、決定5)。メモ帳の注記、MS-IME 本体の注記の書き換え |
+
+## Opus レビュー r5 への対応(新規 Blocker/Must なし。Should 6 件)
+
+| ID | 対応 |
+| --- | --- |
+| R5-S1 | 反映(決定4)。`check_active_transition` は元から `SetOpen` を出さない。テストで固定 |
+| R5-S2 | 反映(決定2-4)。`KeyStates::of`・`Effect::of` を引用して閉じた |
+| R5-S3 | 反映。`KeyOpenEffect` → `KeyDirectInputEffect = HasFunction \| NoFunction \| Unknown` に改名 |
+| R5-S4 | 反映。review ファイルに frontmatter を付け、round1 に改名の注記。index の補助資料の行も更新 |
+| R5-S5 | 反映。ステータスを更新し、回答が無い間は実装しない旨を決定3b に書いた |
+| R5-S6 | 反映(決定3b)。ゲートが止めるのは実装だけ。CI スパイクは回答を待たず進めてよい |
 
 ## 未解決の疑問
 

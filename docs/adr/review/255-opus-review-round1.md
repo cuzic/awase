@@ -1,4 +1,15 @@
+---
+id: ADR-255-companion-255-opus-review-round1
+title: |-
+  ADR-255（IME OFF のときだけ無変換/変換を Space にする）Opus敵対的レビュー round1
+type: companion-doc
+related_adr:
+  - "ADR-255"
+---
+
 # ADR-255 敵対的レビュー round1(Opus)
+
+(のちに対象ファイルは `255-keymap-ime-state-condition.md` から `255-ime-off-thumb-key-space.md` へ改名した。以下は当時の記録のまま。)
 
 対象: `docs/adr/255-keymap-ime-state-condition.md`(ワークツリー keymap-ime、HEAD `9005e8a7`)。
 コードの裏取りは同じワークツリー(origin/develop 由来)で行った。行番号はこの HEAD のもの。
