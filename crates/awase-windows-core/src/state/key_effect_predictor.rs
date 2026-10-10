@@ -3458,9 +3458,19 @@ mod tests {
         let after = typing.after(step);
         assert!(!after.composing);
         assert_eq!(after.track, step.track);
+        let last = atok.predict(0x0D, &after).expect("送り直し後の Enter");
+        let got = atok
+            .predict_after_resent(&[0x1D], 0x0D, &typing, None)
+            .expect("重ねた予測");
         assert_eq!(
-            atok.predict_after_resent(&[0x1D], 0x0D, &typing, None),
-            atok.predict(0x0D, &after),
+            got.track, last.track,
+            "追跡は最後の打鍵（送り直し後の状態で引いた Enter）のもの"
+        );
+        assert_eq!(got.effect.open, last.effect.open.or(step.effect.open));
+        assert_eq!(
+            got.effect.mode,
+            last.effect.mode.or(step.effect.mode),
+            "送り直した無変換の入力モードの効果は、後の打鍵が上書きしない限り残る"
         );
     }
 }
