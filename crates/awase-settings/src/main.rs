@@ -10,8 +10,8 @@ use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 use awase_windows::scancode_apply::ApplyRequest;
 use awase_windows::scancode_editor::{
-    EditorState, QUICK_PAIRS, Side, confirmation_lines, key_label, swap_error_text,
-    worker_exit_text,
+    EditorState, QUICK_PAIRS, Side, confirmation_lines, key_label, registry_state, status_line,
+    swap_error_text, worker_exit_text,
 };
 use awase_windows::scancode_pairs::{Detected, Entry, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
@@ -3142,13 +3142,14 @@ impl SettingsApp {
     fn scancode_map_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.heading("キーの入れ替え");
-        ui.label(
-            "選んだ2つのキーを入れ替えます（Windows の Scancode Map）。管理者権限の確認が1回表示されます。\n\
-             変更の反映には再起動が必要です（サインアウトでは反映されません。高速スタートアップが\n\
-             有効だと、シャットダウンしても反映されないことがあります）。\n\
-             この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続のセッション内では動作しません。\n\
-             この画面の「適用」は、上の画面全体の「適用」とは別です（設定ファイルは保存しません）。",
-        );
+        ui.label("選んだキーの位置を入れ替えます。変更は再起動後に有効になります。管理者権限の確認が1回表示されます。");
+        ui.collapsing("くわしい注意", |ui| {
+            ui.label(
+                "・Windows の Scancode Map（レジストリ）に書き込みます。サインアウトでは反映されません。\n\
+                 ・高速スタートアップが有効だと、シャットダウンしても反映されないことがあります（「再起動」を使ってください）。\n\
+                 ・この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続のセッション内では動作しません。",
+            );
+        });
         ui.add_space(4.0);
 
         if self.scancode_map_view.is_none() {
@@ -3161,6 +3162,7 @@ impl SettingsApp {
         let modal_open = self.scancode_apply_confirm.is_some()
             || self.scancode_restart_confirm
             || self.scancode_close_confirm;
+        let restart_pending = self.scancode_restart_pending;
         let mut action = ScancodeAction::None;
         match self.scancode_map_view.as_mut() {
             Some(ScancodeMapView::Corrupt) => {
@@ -3182,7 +3184,13 @@ impl SettingsApp {
             Some(ScancodeMapView::Loaded(loaded)) => {
                 // 確認ダイアログは非モーダルなので、開いている間は編集を止める（開いた後の編集が黙って捨てられるのを防ぐ）。
                 ui.add_enabled_ui(!modal_open, |ui| {
-                    action = scancode_editor_ui(ui, loaded, jis);
+                    // 枠で区切り、画面共通の「適用」とは別の操作だと分かるようにする（ADR-248 決定2）。
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.weak(
+                            "この枠の中は、設定ファイルとは別に、すぐ書き込みます（画面下の「適用」とは別の操作です）。",
+                        );
+                        action = scancode_editor_ui(ui, loaded, jis, restart_pending);
+                    });
                 });
             }
             None => {}
@@ -3200,7 +3208,7 @@ impl SettingsApp {
             ui.label(msg);
         }
         if self.scancode_restart_pending {
-            ui.label("適用した変更は、再起動後に有効になります。");
+            // 「再起動待ち」の文面は状態行（scancode_editor_ui の先頭）に出す。ここは再起動ボタンだけ。
             if ui.button("今すぐ再起動…").clicked() {
                 self.scancode_restart_confirm = true;
             }
@@ -3276,8 +3284,8 @@ impl SettingsApp {
         );
         self.scancode_map_last_message = Some(match outcome {
             ElevationOutcome::Success => {
-                "適用しました。反映するには再起動が必要です（サインアウトでは反映されません）。"
-                    .to_string()
+                // 再起動が必要な旨は状態行と「今すぐ再起動…」で示す（ここで繰り返さない）。
+                "適用しました。".to_string()
             }
             ElevationOutcome::Failed => "処理に失敗しました。".to_string(),
             ElevationOutcome::Rejected(exit) => worker_exit_text(exit).to_string(),
@@ -4998,8 +5006,22 @@ fn scancode_editor_ui(
     ui: &mut egui::Ui,
     loaded: &mut ScancodeMapLoaded,
     jis: bool,
+    restart_pending: bool,
 ) -> ScancodeAction {
     let mut action = ScancodeAction::None;
+
+    // 状態行（ADR-248 決定1）: レジストリと起動時の値の関係（軸 A）と、未適用の編集（軸 B）。
+    let status = status_line(
+        registry_state(&loaded.detected),
+        restart_pending,
+        loaded.editor.is_dirty(),
+        loaded.editor.has_incomplete(),
+    );
+    ui.strong(&status.registry);
+    if let Some(edit) = &status.edit {
+        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), edit);
+    }
+    ui.add_space(4.0);
 
     if !loaded.detected.unclaimed.is_empty() {
         ui.label("他のツールが設定している項目（awase は変更しません）:");
@@ -5021,6 +5043,8 @@ fn scancode_editor_ui(
     }
 
     let editor = &mut loaded.editor;
+    ui.strong("キーの位置を入れ替える");
+    ui.label("入れ替えたい2つのキーを選びます（選んだキーの位置どうしで、機能が入れ替わります）。");
     let mut remove: Option<usize> = None;
     for i in 0..editor.rows().len() {
         ui.horizontal(|ui| {
@@ -5070,33 +5094,40 @@ fn scancode_editor_ui(
             }
         }
     });
+    // 無効のボタンには、理由をすぐ下に出す（ADR-248 決定4）。
+    for quick in &QUICK_PAIRS {
+        if let Some(reason) = editor.quick_unavailable(quick, jis) {
+            ui.weak(format!(
+                "「{}」は使えません: {}",
+                quick.label,
+                reason.text()
+            ));
+        }
+    }
+
+    ui.add_space(8.0);
+    ui.strong("Caps を Ctrl としても使う");
+    ui.label(
+        "「英数 / Caps」キーを Ctrl としても使えるようにします（元の左 Ctrl も残ります。英数キー自体は使えなくなります）。\n\
+         上の「キーの位置を入れ替える」とは別の設定です。",
+    );
 
     let mut caps = editor.caps_extra();
     let caps_enabled = caps || editor.caps_extra_available();
     ui.add_enabled(
         caps_enabled,
-        egui::Checkbox::new(
-            &mut caps,
-            "英数 / Caps を追加の Ctrl にする（元の左 Ctrl は残ります。英数キー自体は使えなくなります）",
-        ),
+        egui::Checkbox::new(&mut caps, "英数 / Caps を Ctrl としても使う"),
     );
     if caps != editor.caps_extra() {
         editor.set_caps_extra(caps);
     }
+    if !caps_enabled && let Some(reason) = editor.caps_extra_unavailable() {
+        ui.weak(reason.text());
+    }
 
+    ui.add_space(8.0);
     let dirty = editor.is_dirty();
     let incomplete = editor.has_incomplete();
-    if incomplete {
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 120, 0),
-            "片方しか選んでいない行があります（両方選ぶか、削除してください）。",
-        );
-    } else if dirty {
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 120, 0),
-            "未適用の変更があります。",
-        );
-    }
     ui.horizontal(|ui| {
         if ui
             .add_enabled(
@@ -5108,12 +5139,17 @@ fn scancode_editor_ui(
             action = ScancodeAction::Apply;
         }
         if ui
-            .add_enabled(dirty || incomplete, egui::Button::new("元に戻す"))
+            .add_enabled(dirty || incomplete, egui::Button::new("編集を元に戻す"))
+            .on_hover_text("まだ適用していない編集を捨てて、いまのレジストリの状態に戻します。")
             .clicked()
         {
             editor.reset();
         }
-        if ui.button("読み直す").clicked() {
+        if ui
+            .button("レジストリを読み直す")
+            .on_hover_text("レジストリを読み直します（編集中の内容は捨てられます）。")
+            .clicked()
+        {
             action = ScancodeAction::Reload;
         }
     });

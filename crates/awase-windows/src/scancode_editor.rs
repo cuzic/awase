@@ -12,7 +12,7 @@ use crate::scancode_pairs::{
     SCANCODE_RIGHT_ALT, SCANCODE_SPACE,
 };
 
-/// スキャンコードの表示名。許可リスト外（他ツールのエントリなど）は `0x003A` の形。
+/// スキャンコードの表示名。許可リスト外（他ツールのエントリなど）は「不明なキー(0x003B)」の形（ADR-248 決定8）。
 #[must_use]
 pub fn key_label(scancode: u16) -> String {
     match scancode {
@@ -26,7 +26,7 @@ pub fn key_label(scancode: u16) -> String {
         SCANCODE_KANA => "かな".to_string(),
         SCANCODE_HANKAKU_ZENKAKU => "半角/全角".to_string(),
         0 => "(無効)".to_string(),
-        other => format!("0x{other:04X}"),
+        other => format!("不明なキー(0x{other:04X})"),
     }
 }
 
@@ -49,6 +49,102 @@ pub fn candidate_keys(jis: bool) -> Vec<u16> {
         .collect()
 }
 
+/// ボタン・チェックボックスが無効な理由（ADR-248 決定4）。判定関数が返し、画面は [`Unavailable::text`] を隣に出す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unavailable {
+    /// 組のキーが、他の行ですでに使われている。
+    KeyInUse,
+    /// 「Caps を Ctrl としても使う」がオンで、英数 / Caps か左 Ctrl を含む。
+    CapsExtraOn,
+    /// JIS 配列でないのに、JIS 専用キーを含む。
+    JisOnlyKey,
+    /// 「Caps を Ctrl としても使う」をオンにしたいが、英数 / Caps か左 Ctrl を他の行で使っている。
+    CapsKeysInUse,
+}
+
+impl Unavailable {
+    /// 利用者向けの理由の文。
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::KeyInUse => "ほかの入れ替えで、すでに使っているキーがあります。",
+            Self::CapsExtraOn => {
+                "「Caps を Ctrl としても使う」がオンです。オフにすると使えます。"
+            }
+            Self::JisOnlyKey => "JIS 配列にだけあるキーを含むため、この配列では使えません。",
+            Self::CapsKeysInUse => {
+                "「英数 / Caps」か「左 Ctrl」を、ほかの入れ替えで使っています。入れ替えを外すとオンにできます。"
+            }
+        }
+    }
+}
+
+/// レジストリの現在の中身の種類（状態行の軸 A、ADR-248 決定1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryState {
+    /// awase が編集できる入れ替え（ペア・Caps 追加 Ctrl）がある。
+    HasOwn,
+    /// 他のツールのエントリだけがある。
+    ForeignOnly,
+    /// 何も無い。
+    Empty,
+}
+
+/// [`Detected`] からレジストリの中身の種類を決める。
+#[must_use]
+pub fn registry_state(detected: &Detected) -> RegistryState {
+    if !detected.pairs.is_empty() || detected.caps_extra_ctrl {
+        RegistryState::HasOwn
+    } else if !detected.unclaimed.is_empty() {
+        RegistryState::ForeignOnly
+    } else {
+        RegistryState::Empty
+    }
+}
+
+/// 状態行の文面（ADR-248 決定1）。1行目はレジストリと起動時の値の関係（軸 A）、2行目は未適用の編集（軸 B）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusLine {
+    pub registry: String,
+    pub edit: Option<String>,
+}
+
+/// 状態行の文面を決める。軸 A は、起動時に効いている値を取れる(Q2)までは保守的な文言にする:
+/// この画面で適用した直後(`restart_pending`)は「再起動待ち」、それ以外は「再起動していなければ、まだ効いていません」と
+/// 言い、「有効」とは断定しない(再起動前に設定画面を閉じて開き直すと、プロセス内の `restart_pending` は消えるため)。
+#[must_use]
+pub fn status_line(
+    state: RegistryState,
+    restart_pending: bool,
+    dirty: bool,
+    incomplete: bool,
+) -> StatusLine {
+    let registry = if restart_pending {
+        "再起動待ち: 適用した変更は、再起動後に有効になります。"
+    } else {
+        match state {
+            RegistryState::HasOwn => {
+                "レジストリに設定があります。再起動していなければ、まだ効いていません。"
+            }
+            RegistryState::ForeignOnly => "他のツールの設定があります（awase は変更しません）。",
+            RegistryState::Empty => {
+                "入れ替えは設定されていません（再起動後に反映される変更が残っている可能性があります）。"
+            }
+        }
+    };
+    let edit = if incomplete {
+        Some("片方しか選んでいない行があります（両方選ぶか、削除してください）。")
+    } else if dirty {
+        Some("未適用の変更があります。")
+    } else {
+        None
+    };
+    StatusLine {
+        registry: registry.to_string(),
+        edit: edit.map(str::to_string),
+    }
+}
+
 /// 「よくある入れ替え」のワンクリックボタン（所有者の決定 2026-10-06）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuickPair {
@@ -60,7 +156,7 @@ pub struct QuickPair {
 /// ワンクリックボタンの一覧。
 pub const QUICK_PAIRS: [QuickPair; 2] = [
     QuickPair {
-        label: "英数/Caps ⇄ 左 Ctrl",
+        label: "英数 / Caps ⇄ 左 Ctrl",
         a: SCANCODE_CAPS_EISU,
         b: SCANCODE_LEFT_CTRL,
     },
@@ -157,16 +253,29 @@ impl EditorState {
         }
     }
 
-    /// ワンクリックボタンで行を足せるか。2つのキーのどちらも他の行で使われておらず、Caps 追加 Ctrl と衝突せず、
-    /// JIS 配列でないときは JIS 専用キー（変換など）を含まない（US 配列にその物理キーは無く、スペースなどが入力できなくなる）。
+    /// ワンクリックボタンで行を足せない理由（足せるなら `None`）。2つのキーのどちらかが他の行で使われている、Caps 追加 Ctrl と衝突する、
+    /// JIS 配列でないときに JIS 専用キー（変換など）を含む（US 配列にその物理キーは無く、スペースなどが入力できなくなる）、のいずれか。
+    /// 判定と画面に出す理由（ADR-248 決定4）を同じ関数で決め、ずれないようにする。
+    #[must_use]
+    pub fn quick_unavailable(&self, quick: &QuickPair, jis: bool) -> Option<Unavailable> {
+        let reason = |k: u16| {
+            if self.rows.iter().any(|r| r.uses(k)) {
+                Some(Unavailable::KeyInUse)
+            } else if self.caps_extra && (k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL) {
+                Some(Unavailable::CapsExtraOn)
+            } else if !jis && is_jis_only(k) {
+                Some(Unavailable::JisOnlyKey)
+            } else {
+                None
+            }
+        };
+        reason(quick.a).or_else(|| reason(quick.b))
+    }
+
+    /// ワンクリックボタンで行を足せるか。[`Self::quick_unavailable`] が `None`。
     #[must_use]
     pub fn quick_available(&self, quick: &QuickPair, jis: bool) -> bool {
-        let blocked = |k: u16| {
-            self.rows.iter().any(|r| r.uses(k))
-                || (self.caps_extra && (k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL))
-                || (!jis && is_jis_only(k))
-        };
-        !blocked(quick.a) && !blocked(quick.b)
+        self.quick_unavailable(quick, jis).is_none()
     }
 
     /// ワンクリックボタン。[`Self::quick_available`] のときだけ行を足して `true`。
@@ -188,6 +297,12 @@ impl EditorState {
             .rows
             .iter()
             .any(|r| r.uses(SCANCODE_CAPS_EISU) || r.uses(SCANCODE_LEFT_CTRL))
+    }
+
+    /// 「Caps を Ctrl としても使う」をオンにできない理由（できるなら `None`）。
+    #[must_use]
+    pub fn caps_extra_unavailable(&self) -> Option<Unavailable> {
+        (!self.caps_extra_available()).then_some(Unavailable::CapsKeysInUse)
     }
 
     /// チェックを変える。オンにできないとき（[`Self::caps_extra_available`] が偽）は変えずに `false`。
@@ -482,8 +597,120 @@ mod tests {
         for &k in ALLOWED_SCANCODES {
             assert!(!key_label(k).starts_with("0x"), "{k:04X}");
         }
-        assert_eq!(key_label(0x0010), "0x0010");
-        assert_eq!(key_label(0xE05B), "0xE05B");
+        assert_eq!(key_label(0x0010), "不明なキー(0x0010)");
+        assert_eq!(key_label(0xE05B), "不明なキー(0xE05B)");
+    }
+
+    #[test]
+    fn quick_unavailable_names_the_reason_and_agrees_with_available() {
+        let q_caps = QUICK_PAIRS[0];
+        let q_hen = QUICK_PAIRS[1];
+        let mut e = editor(&[]);
+        assert_eq!(e.quick_unavailable(&q_caps, true), None);
+        assert_eq!(
+            e.quick_unavailable(&q_hen, false),
+            Some(Unavailable::JisOnlyKey)
+        );
+        assert!(e.set_caps_extra(true));
+        assert_eq!(
+            e.quick_unavailable(&q_caps, true),
+            Some(Unavailable::CapsExtraOn)
+        );
+        assert_eq!(e.quick_unavailable(&q_hen, true), None);
+        e.set_caps_extra(false);
+        e.add_quick(&q_hen, true);
+        // 他の行で使用中の理由は、JIS 専用や Caps より先に返す。
+        assert_eq!(
+            e.quick_unavailable(&q_hen, false),
+            Some(Unavailable::KeyInUse)
+        );
+        for jis in [true, false] {
+            for q in &QUICK_PAIRS {
+                assert_eq!(
+                    e.quick_available(q, jis),
+                    e.quick_unavailable(q, jis).is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn caps_extra_unavailable_matches_available() {
+        let mut e = editor(&[]);
+        assert_eq!(e.caps_extra_unavailable(), None);
+        e.add_quick(&QUICK_PAIRS[0], true);
+        assert_eq!(e.caps_extra_unavailable(), Some(Unavailable::CapsKeysInUse));
+        assert_eq!(
+            e.caps_extra_available(),
+            e.caps_extra_unavailable().is_none()
+        );
+    }
+
+    #[test]
+    fn every_unavailable_reason_has_text() {
+        for u in [
+            Unavailable::KeyInUse,
+            Unavailable::CapsExtraOn,
+            Unavailable::JisOnlyKey,
+            Unavailable::CapsKeysInUse,
+        ] {
+            assert!(!u.text().is_empty());
+        }
+    }
+
+    #[test]
+    fn registry_state_classifies_own_foreign_and_empty() {
+        assert_eq!(
+            registry_state(&detect_swap_pairs(&[])),
+            RegistryState::Empty
+        );
+        assert_eq!(
+            registry_state(&detect_swap_pairs(&[(MUH, LALT), (LALT, MUH)])),
+            RegistryState::HasOwn
+        );
+        assert_eq!(
+            registry_state(&detect_swap_pairs(&[(CAPS, LCTRL)])),
+            RegistryState::HasOwn
+        );
+        assert_eq!(
+            registry_state(&detect_swap_pairs(&[(0x003B, MUH)])),
+            RegistryState::ForeignOnly
+        );
+        // 自分のペアと他ツールのエントリが混在するときは、編集できる側を優先する。
+        assert_eq!(
+            registry_state(&detect_swap_pairs(&[
+                (MUH, LALT),
+                (LALT, MUH),
+                (0x003B, SPC)
+            ])),
+            RegistryState::HasOwn
+        );
+    }
+
+    #[test]
+    fn status_line_never_says_active_and_prefers_restart_pending() {
+        for state in [
+            RegistryState::HasOwn,
+            RegistryState::ForeignOnly,
+            RegistryState::Empty,
+        ] {
+            for pending in [false, true] {
+                for dirty in [false, true] {
+                    for incomplete in [false, true] {
+                        let s = status_line(state, pending, dirty, incomplete);
+                        assert!(!s.registry.contains("有効です"), "{s:?}");
+                        assert_eq!(s.registry.starts_with("再起動待ち"), pending);
+                        assert_eq!(s.edit.is_some(), dirty || incomplete);
+                    }
+                }
+            }
+        }
+        // 未完成の行は、未適用の変更より優先して知らせる。
+        let both = status_line(RegistryState::Empty, false, true, true);
+        assert!(both.edit.unwrap().contains("片方しか"));
+        assert!(status_line(RegistryState::HasOwn, false, false, false)
+            .registry
+            .contains("まだ効いていません"));
     }
 
     #[test]
