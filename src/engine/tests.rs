@@ -7347,8 +7347,12 @@ mod engine_integration_tests {
         );
         assert!(rep.is_consumed());
         let _ = engine.on_input(Ev::up(VK_NONCONVERT).at(700).build(), &ime_off_ctx());
-        // 印が消えた後の新しい押下は、また素通しから始まる。
-        let again = engine.on_input(Ev::down(VK_NONCONVERT).at(800).build(), &ime_off_ctx());
+        // 印が消えた後は、リピートの Down も phase1_held のガードに入らず素通しになる
+        // (Up で印を消す処理を落とすと、ここが Consume のままになって落ちる)。
+        let again = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(800).repeat().build(),
+            &ime_off_ctx(),
+        );
         assert!(!again.is_consumed());
     }
 
@@ -7363,6 +7367,64 @@ mod engine_integration_tests {
             &ime_off_ctx(),
         );
         assert!(!next.is_consumed(), "印が無いのでリピートは素通しのまま");
+    }
+
+    /// ADR-255 決定4(ii)・決定8(1): 押している間にフォーカスが移ると、登録済みの Down に対して
+    /// KeyUp の `ReinjectKey` が 1 回出る。その後の物理 Up は素通しになり、リピートの Down も素通し
+    /// (`phase1_held` は flush で消える)。ADR-206 の役割経路と同じ挙動。
+    #[test]
+    fn focus_change_reinjects_key_up_once_for_shell_consumed_down() {
+        let mut engine = make_test_engine();
+        let down = Ev::down(VK_NONCONVERT).at(100).build();
+        let _ = engine.on_input(down, &ime_off_ctx());
+        engine.record_shell_consumed(&down);
+
+        let d = engine.on_command(EngineCommand::FocusChanged, &ime_off_ctx());
+        let key_ups: Vec<_> = effects_of(&d)
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Input(InputEffect::ReinjectKey(evt))
+                        if evt.vk_code == VK_NONCONVERT
+                            && matches!(evt.event_type, KeyEventType::KeyUp)
+                )
+            })
+            .collect();
+        assert_eq!(
+            key_ups.len(),
+            1,
+            "KeyUp の再注入は 1 回: {:?}",
+            effects_of(&d)
+        );
+
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_off_ctx());
+        assert!(!up.is_consumed(), "flush 後の物理 Up は素通し");
+        let rep = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(300).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert!(!rep.is_consumed(), "phase1_held は flush で消えている");
+    }
+
+    /// ADR-255 決定4(Opus R-M1): 無変換/変換が親指キーに分類されない構成(右親指を Space にした等)でも、
+    /// 登録した Down のリピートは Consume され、Up は飲まれる(Down/Up の非対称にならない)。
+    #[test]
+    fn shell_consumed_key_not_classified_as_thumb_still_keeps_down_up_symmetric() {
+        let mut engine = make_test_engine();
+        let mut down = Ev::down(VK_CONVERT).at(100).build();
+        down.key_classification = crate::types::KeyClassification::Passthrough;
+        let _ = engine.on_input(down, &ime_off_ctx());
+        engine.record_shell_consumed(&down);
+        let mut rep = Ev::down(VK_CONVERT).at(600).repeat().build();
+        rep.key_classification = crate::types::KeyClassification::Passthrough;
+        assert!(
+            engine.on_input(rep, &ime_off_ctx()).is_consumed(),
+            "リピートが素通しになると OS に Down だけが届く"
+        );
+        let mut up = Ev::up(VK_CONVERT).at(700).build();
+        up.key_classification = crate::types::KeyClassification::Passthrough;
+        assert!(engine.on_input(up, &ime_off_ctx()).is_consumed());
     }
 
     /// ADR-255 決定4: 登録済みの Down の Up は、Up の時点でエンジンが活性でも消費される。

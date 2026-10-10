@@ -568,6 +568,7 @@ const CORE_MODULES: &[&str] = &[
     "key_sequence_policy",
     "keymap_initial_hypothesis",
     "keymap_latch",
+    "late_keymap_plan",
     "layout_language",
     "mode_key_pass",
     "msaa_role_plan",

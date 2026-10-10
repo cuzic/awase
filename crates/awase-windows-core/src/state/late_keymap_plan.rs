@@ -3,7 +3,7 @@
 //! 照合の位置は `kp_run_inner` の `engine.on_input` の直後で、エンジンが打鍵を素通しにしたときだけ。
 //! ここは「ルールが一致した後、発動してよいか」を決める純粋関数で、事実はすべて殻が集めて渡す。
 //! 発動しない理由は journal・debug ログに出すため enum で返す（ADR-255 決定2「素通しの理由は debug ログに出す」）。
-//! 条件の並びは ADR-255 決定2 の「発動条件（すべて AND）」に対応する。**不確かなときは今までどおり素通し**。
+//! 条件は ADR-255 決定2 の「発動条件（すべて AND）」に対応する（判定の順は理由の優先順で、決定2 の番号順とは違う。結果は AND なので変わらない）。**不確かなときは今までどおり素通し**。
 
 use awase_gji_config::role::KeyDirectInputEffect;
 
@@ -211,11 +211,11 @@ mod tests {
         );
     }
 
-    /// 決定3: IME の状態を読めないアプリでも（belief だけが根拠でも）発動できる。
-    /// この関数は観測の鮮度・品質を事実に持たないので、鮮度で絞らないことが型で固定される。
+    /// 決定3: 観測の鮮度・品質を事実に持たない（IME の状態を読めないアプリでも発動できる）。
     #[test]
-    fn has_no_observation_quality_input() {
-        // LateKeymapFacts に観測の鮮度/品質のフィールドが無いことを、全フィールドの網羅で固定する。
+    fn facts_have_exactly_the_documented_fields() {
+        // LateKeymapFacts のフィールドを網羅する分解。観測の鮮度・品質のフィールドを足すと、
+        // このテストがコンパイルエラーになり、決定3（belief だけで判定）の見直しを促す。
         let LateKeymapFacts {
             engine_inactive_by_ime_off: _,
             decision_passed_through: _,

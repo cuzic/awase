@@ -295,12 +295,21 @@ impl Engine {
 
     /// シェルが（エンジンの判断の後で）消費した KeyDown を、エンジンの `KeyLifecycle` に登録する
     /// （ADR-255 決定4）。エンジンは素通しの KeyDown を記録しないので、シェルが消費したときは
-    /// この口で「対応する KeyUp を消費する義務」と、bare の親指なら `phase1_held` を立てる。
-    /// **エンジンの判断（活性/非活性・FSM の状態）は変えない**。リピートの Down
-    /// （`was_down`）は `phase1_held` を立てない（`on_input_body` と同じ）。
+    /// この口で「対応する KeyUp を消費する義務」と、最初の押下なら `phase1_held` を立てる。
+    /// **エンジンの判断（活性/非活性・FSM の状態）は変えない**。
+    ///
+    /// `phase1_held` は `is_bare_thumb` を見ずに立てる（Opus レビュー R-M1）: `LeftThumb`/`RightThumb` への
+    /// 分類は設定した親指キーにしか付かず（`hook.rs::classify_key`）、右親指を Space にした構成では
+    /// 変換は `Passthrough` になる。そこで立てないと、リピートの Down が素通しになり、Up だけが
+    /// 飲まれる Down/Up の非対称になる。ガードは vk だけで判定するので、親指でなくても働く。
+    /// リピートの Down（`was_down`）と KeyUp は何もしない（KeyUp を登録すると次の Up が飲まれる）。
     pub fn record_shell_consumed(&mut self, event: &RawKeyEvent) {
+        if !matches!(event.event_type, KeyEventType::KeyDown) {
+            debug_assert!(false, "record_shell_consumed は KeyDown だけに呼ぶ");
+            return;
+        }
         self.lifecycle.on_key_down_consumed(event);
-        if !event.was_down && Self::is_bare_thumb(event, event.modifier_snapshot) {
+        if !event.was_down {
             self.phase1_held = Some(event.vk_code);
         }
     }
