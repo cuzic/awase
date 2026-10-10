@@ -1,8 +1,8 @@
 # 旧UI(互換モード)のキー表の「コード」が実際の IME 挙動に効くかを測るスパイク。観測のみ。
 # A) テンプレート(ATOK/VJE/WX/MS-IME2000)ごとに SETKEYTEMPLATE → 無変換/変換の実効果を測る(表が効いているか)
 # B) StyleList\Custom の「無変換」行を1つのコードで埋めて keystyle=Custom にし、無変換の実効果を測る(コード掃引)
-param([string]$Out = 'effect-out', [string]$Key = '1D', [switch]$SkipTemplates,
-  [string]$Codes = '80,81,82,83,84,85,86,87,88,89,8A,94,95,96,97,98,A1,A2,A4,B3,C3,C4,C7,C9,CA,CD,CE,CF,D0,D5,F5,F7,28,29,FF,00')
+param([string]$Out = 'effect-out', [string]$Key = '1D', [string]$Table = 'key', [switch]$SkipTemplates,
+  [string]$Codes = '00,80,81,83,84,87,88,97,98,A2,A4,B3,C9,CA,CD,CE,CF,D5,F5,28,FF')
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 try { [Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance) } catch {}
@@ -68,7 +68,8 @@ Say '=== B) 名前付きスタイル(NATURAL)の表を直接書き換えた掃�
 $natPath = "HKCU:\$imejp\StyleList\NATURAL"
 $base = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$imejp\StyleList\NATURAL")
 if (-not $base) { Say 'NATURAL style missing'; exit 0 }
-$baseKey = $base.GetValue('key')
+$baseKey = $base.GetValue($Table)
+Say "table=$Table bytes=$($baseKey.Length)"
 $rowName = if ($Key -eq '1D') { '無変換' } else { '変換' }
 Say "row=$rowName seq=$Key keystyle=$((Get-ItemProperty "HKCU:\$imejp\MSIME").keystyle)"
 foreach ($code in ($Codes -split ',')) {
@@ -76,13 +77,15 @@ foreach ($code in ($Codes -split ',')) {
   $cur = New-Object System.Collections.Generic.List[byte]
   foreach ($b in $baseKey) { if ($b -eq 0) { if ($cur.Count -gt 0) { $recs.Add($cur.ToArray()); $cur.Clear() } } else { $cur.Add($b) } }
   $out = New-Object System.Collections.Generic.List[byte]
+  $replaced = $false
   foreach ($r in $recs) {
     $str = $sjis.GetString($r)
-    if ($str.StartsWith([string]"$rowName=")) { $r = $sjis.GetBytes("$rowName=$code $code $code $code $code $code") }
+    if ($str.StartsWith([string]"$rowName=")) { $r = $sjis.GetBytes("$rowName=$code $code $code $code $code $code"); $replaced = $true }
     $out.AddRange($r); $out.Add(0)
   }
+  if (-not $replaced) { $out.AddRange($sjis.GetBytes("$rowName=$code $code $code $code $code $code")); $out.Add(0) }
   $out.Add(0)
-  Set-ItemProperty -Path $natPath -Name key -Value ([byte[]]$out.ToArray()) -Type Binary -Force
-  Run-Harness "$rowName-$code" $Key
+  Set-ItemProperty -Path $natPath -Name $Table -Value ([byte[]]$out.ToArray()) -Type Binary -Force
+  Run-Harness "$Table-$rowName-$code" $Key
 }
 Say '=== done ==='

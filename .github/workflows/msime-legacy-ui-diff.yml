@@ -2,8 +2,6 @@ name: msime-legacy-ui-diff
 
 # 旧UI(IMJPUEX.EXE)を UI Automation で操作し、前後のレジストリ・ファイル差分を取るスパイク(観測のみ)。
 on:
-  push:
-    branches: [ci/msime-legacy-keytable-spike]
   workflow_dispatch:
 
 permissions:
