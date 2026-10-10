@@ -25,41 +25,82 @@ use std::path::Path;
 
 #[path = "support/src_roots.rs"]
 mod src_roots;
-use src_roots::{src_crate_dirs, src_relative, workspace_dir, EXTRA_SRC_CRATES};
+use src_roots::{src_crate_dirs, workspace_dir, EXTRA_SRC_CRATES};
 
 /// ファイル単位の付け替え表。`(旧: このクレート相対のパス, 新: ワークスペース相対のパス)`。
 /// 配置を保たずに移したファイルだけをここに足す（`EXTRA_SRC_CRATES` で足りるなら不要）。分割前は空。
 const RELOCATED: &[(&str, &str)] = &[];
 
-/// 対象 crate すべての `src/` 以下の `.rs` を `out` へ集める。
-fn walk_all_src(out: &mut Vec<std::path::PathBuf>) {
-    for dir in src_crate_dirs() {
-        walk_rs_files(&dir.join("src"), out);
-    }
+/// 対象 crate すべての `src/` 以下の `.rs` を、**相対パスごとに 1 件へ合成して**返す
+/// （`(src/ からの相対パス, 内容)`。同じ相対パスが複数 crate にあれば `merge_src_texts` で合成済み。
+/// 相対パスごとの期待件数を `assert_eq` するガードは、これを使うこと。絶対パスを 1 つずつ見ると、両コピーに 1 件ずつあるとき合計 2 件でも各 `1 == 1` で通る。Opus PR #570 X1）。
+fn all_src_merged() -> Vec<(String, String)> {
+    list_src_files()
+        .into_iter()
+        .map(|key| {
+            let rel = key.strip_prefix("src/").unwrap_or(&key).to_string();
+            let content = read_crate_file(&key);
+            (rel, content)
+        })
+        .collect()
 }
 
-/// このクレート相対のパス（`"src/..."`）から、実際に読むファイルの絶対パスを返す。
-/// このクレートに無ければ `EXTRA_SRC_CRATES` の同じ相対パス、次に `RELOCATED` を引く。
-fn resolve_crate_path(rel_path: &str) -> std::path::PathBuf {
+/// このクレート相対のパス（`"src/..."`）から、実際に読むファイルの絶対パスを**すべて**返す。
+/// このクレートに実在すればそれ、`EXTRA_SRC_CRATES` の同じ相対パスに実在すればそれも足す
+/// （`lib.rs`・`state/mod.rs` のように同じ相対パスが複数の crate にできる。ADR-229 段階 B、P2）。
+/// どれも無ければ `RELOCATED` を引く。
+fn resolve_crate_paths(rel_path: &str) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
     let own = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
     if own.exists() {
-        return own;
+        found.push(own.clone());
     }
     for c in EXTRA_SRC_CRATES {
         let p = workspace_dir().join(c).join(rel_path);
         if p.exists() {
-            return p;
+            found.push(p);
         }
     }
-    if let Some((_, new)) = RELOCATED.iter().find(|(old, _)| *old == rel_path) {
-        return workspace_dir().join(new);
+    if found.is_empty() {
+        if let Some((_, new)) = RELOCATED.iter().find(|(old, _)| *old == rel_path) {
+            found.push(workspace_dir().join(new));
+        } else {
+            found.push(own);
+        }
     }
-    own
+    found
+}
+
+/// 同じ相対パスのファイルが複数 crate にあるとき、1 つのテキストに合成する。**本番コードを
+/// 先に、テストモジュールを後ろに**並べる（`production_code_only` が最初の `#[cfg(test)] mod tests` で
+/// 切るので、単純に連結すると 2 つ目以降の本番コードが「テスト」側に落ちて見逃される）。
+/// 1 つだけなら元のテキストそのもの。
+fn merge_src_texts(texts: &[String]) -> String {
+    if let [only] = texts {
+        return only.clone();
+    }
+    let mut prod = String::new();
+    let mut tests = String::new();
+    for t in texts {
+        let p = production_code_only(t);
+        prod.push_str(p);
+        prod.push('\n');
+        tests.push_str(&t[p.len()..]);
+        tests.push('\n');
+    }
+    prod + &tests
 }
 
 fn read_crate_file(rel_path: &str) -> String {
-    let raw = fs::read_to_string(resolve_crate_path(rel_path))
-        .unwrap_or_else(|e| panic!("failed to read {rel_path}: {e}"));
+    let raws: Vec<String> = resolve_crate_paths(rel_path)
+        .iter()
+        .map(|p| {
+            fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("failed to read {rel_path} ({}): {e}", p.display()))
+                .replace("\r\n", "\n")
+        })
+        .collect();
+    let raw = merge_src_texts(&raws);
     // Windows ランナーは git 既定の core.autocrlf=true でチェックアウト時に .rs
     // ファイルを CRLF 化する（`.gitattributes` の eol=lf 指定は `tests/golden/**`
     // のみが対象で、通常のソースファイルには効かない）。このファイル内の各種
@@ -759,9 +800,6 @@ fn input_mode_applied_construction_sites_are_accounted_for() {
 /// `eisu_recovery.rs` の対応表とこのテストの期待値を更新すること。**
 #[test]
 fn user_ime_on_paths_are_paired_with_eisu_reset() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
     let patterns = [
         "write_sync_key(",
         "write_physical_key(",
@@ -789,9 +827,7 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
         ),
     ];
 
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let count: usize = patterns.iter().map(|p| content.matches(p).count()).sum();
         let expected_count = expected
             .iter()
@@ -1024,9 +1060,6 @@ fn post_decision_eisu_reset_passes_gji_retained_mode() {
 
 #[test]
 fn ime_relevance_shadow_action_writes_are_accounted_for() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
     let expected: &[(&str, usize, &str)] = &[
         (
             "hook.rs",
@@ -1040,12 +1073,7 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
         ),
     ];
 
-    for path in files {
-        let rel = src_relative(&path).to_string_lossy().replace('\\', "/");
-        // 絶対パスで直接読む（同じ相対パスが複数 crate にあっても、歩いた側のファイルを読む）。
-        let content = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
-            .replace("\r\n", "\n");
+    for (rel, content) in all_src_merged() {
         let production = production_code_only(&content);
         let count = if rel == "hook.rs" {
             production.matches("shadow_action,").count()
@@ -1082,9 +1110,6 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
 /// は「実際に read_ime_state_fast を実行した」ことを意味する）。
 #[test]
 fn focus_probe_observation_is_limited_to_real_probe_path() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
     // (相対パス, 期待マッチ数)。ここに列挙されないファイルは 0 でなければならない。
     let expected: &[(&str, usize)] = &[
         // apply_effective_ime — first-key FocusProbe（read_ime_state_fast 実行済み）の
@@ -1094,9 +1119,7 @@ fn focus_probe_observation_is_limited_to_real_probe_path() {
         ("runtime/key_pipeline.rs", 1),
     ];
 
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let production = production_code_only(&content);
         let count = production.matches(".write_focus_probe(").count();
         let expected_count = expected
@@ -1951,12 +1974,7 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
 /// §2.2 のデータ witness が丸ごと迂回される。
 #[test]
 fn any_observation_replay_door_is_not_used_in_production() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let production = production_code_only(&content);
         let count = production.matches("restored_from_journal(").count();
         // 定義そのもの（`pub const fn restored_from_journal(`）は evidence.rs に 1 件。
@@ -3601,14 +3619,11 @@ fn count_drift_diagnostic_calls(text: &str) -> usize {
 /// 2 件目や別関数からの呼び出しは、上の「最初の 1 件が守られているか」の照合では見えない。
 #[test]
 fn drift_diagnostic_is_called_from_exactly_one_site() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
     let mut sites = Vec::new();
-    for f in files {
-        let content = production_code_only(&fs::read_to_string(&f).unwrap_or_default()).to_string();
-        let n = count_drift_diagnostic_calls(&content);
+    for (rel, content) in all_src_merged() {
+        let n = count_drift_diagnostic_calls(production_code_only(&content));
         if n > 0 {
-            sites.push((f.display().to_string(), n));
+            sites.push((rel, n));
         }
     }
     assert_eq!(
@@ -4355,9 +4370,6 @@ fn establish_initial_focus_scope_syncs_the_focus_scope() {
 /// ここでは「増えていないこと」だけを見る（新しい起動時経路の追加を捕まえるのはこのガード）。
 #[test]
 fn initial_focus_scope_event_is_dispatched_from_one_place() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
     // (needle, [(相対パス, 期待マッチ数)])。列挙されないファイルは 0 でなければ
     // ならない。**どちらの needle も固定ファイルへの grep ではなく全ファイル走査に
     // 乗せる** ——固定リストへの grep は「新しいファイルに呼び出しが追加された」
@@ -4382,9 +4394,7 @@ fn initial_focus_scope_event_is_dispatched_from_one_place() {
             &[("state/ime_model.rs", 1)],
         ),
     ];
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         // doc コメントでこのイベント名に言及しているファイルを数えないよう、
         // コメント行を落としてから数える。
         let production = non_comment_lines(production_code_only(&content));
@@ -4414,12 +4424,7 @@ fn initial_focus_scope_event_is_dispatched_from_one_place() {
 /// つまり `desired_open` を書ける口の1つなので、dylint `ime_event_guard` の designated 関数にも登録してある。
 #[test]
 fn mode_key_passed_through_event_is_dispatched_from_one_place() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let production = non_comment_lines(production_code_only(&content));
         let count = production.matches("ModeKeyPassedThrough").count();
         let expected = match rel.as_str() {
@@ -4439,12 +4444,7 @@ fn mode_key_passed_through_event_is_dispatched_from_one_place() {
 /// awase は IME を書かない（`apply_ime_open_*`/`set_ime_open`/`send_ime` 系をこのファイル群から呼ばない）。
 #[test]
 fn external_change_watch_has_single_arm_and_follow_sites() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let production = non_comment_lines(production_code_only(&content));
         // arm は 2 箇所: 外部注入の IME キー直後(`kp_arm_external_change_watch`、ADR-205)と、
         // give-up を契機にした読み直し(`ir_follow_after_literal_giveup`、ADR-227 (i))。追随は 1 箇所のまま
@@ -4500,9 +4500,9 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
 #[test]
 fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
     let read = |rel: &str| {
-        non_comment_lines(production_code_only(
-            &fs::read_to_string(resolve_crate_path(&format!("src/{rel}"))).unwrap(),
-        ))
+        non_comment_lines(production_code_only(&read_crate_file(&format!(
+            "src/{rel}"
+        ))))
     };
     let mod_rs = read("runtime/mod.rs");
     // (i) ADR-205: 述語本体は `external_change_watch_applies_for`（GJI 限定のまま）。
@@ -5434,16 +5434,22 @@ fn list_rs_files_under(rel_root: &str) -> Vec<String> {
     } else {
         vec![Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()]
     };
-    let mut out = Vec::new();
+    // 同じ相対パス（`src/lib.rs` など）が複数 crate にあっても 1 件に畳む。`read_crate_file` が
+    // 全 crate 分を合成して返すので、畳まないと二重に数える。
+    let mut out: Vec<String> = Vec::new();
     for dir in crate_dirs {
         let mut files = Vec::new();
         walk_rs_files(&dir.join(rel_root), &mut files);
-        out.extend(files.iter().map(|path| {
-            path.strip_prefix(&dir)
+        for path in &files {
+            let rel = path
+                .strip_prefix(&dir)
                 .unwrap_or_else(|e| panic!("strip_prefix: {e}"))
                 .to_string_lossy()
-                .replace('\\', "/")
-        }));
+                .replace('\\', "/");
+            if !out.contains(&rel) {
+                out.push(rel);
+            }
+        }
     }
     out
 }
@@ -7822,7 +7828,7 @@ fn relocated_table_entries_are_consistent() {
             "RELOCATED の旧パス {old} がまだ実在する。移したなら元を消し、残すなら表から外す"
         );
         assert!(
-            resolve_crate_path(old).exists(),
+            resolve_crate_paths(old).iter().all(|p| p.exists()),
             "RELOCATED の {old} の移動先が実在しない"
         );
     }
@@ -7844,26 +7850,29 @@ fn extra_src_crates_exist() {
     }
 }
 
-/// 対象 crate 間で `src/` 相対パスが重複しない（`lib.rs` と `state/mod.rs` を除く）。
-/// 重複すると `list_src_files` → `read_crate_file` が自 crate 側だけを読み、核側を見逃すか
-/// 殻側を二重に数える（Opus レビュー P2）。分割前は対象が 1 crate なので空振りするが、
-/// `EXTRA_SRC_CRATES` に足した瞬間に効く。
+/// 同じ相対パスのファイルが複数 crate にあるときの合成（`merge_src_texts`）が、全 crate の本番コードを
+/// `production_code_only` の対象に残し、テストモジュールは後ろへ回す。
 #[test]
-fn src_relative_paths_are_unique_across_crates() {
-    let mut seen = std::collections::BTreeMap::new();
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
+fn merge_src_texts_keeps_every_crates_production_code_first() {
+    let a = "fn prod_a() { needle(); }\n#[cfg(test)]\nmod tests {\n    fn t() { needle(); }\n}\n"
+        .to_string();
+    let b = "fn prod_b() { needle(); }\n#[cfg(test)]\nmod tests {\n    fn t() { needle(); needle(); }\n}\n".to_string();
+    let merged = merge_src_texts(&[a.clone(), b]);
+    assert_eq!(
+        production_code_only(&merged).matches("needle(").count(),
+        2,
+        "両 crate の本番コード 1 件ずつ"
+    );
+    assert_eq!(merged.matches("needle(").count(), 5, "テスト側も落とさない");
+    assert_eq!(merge_src_texts(&[a.clone()]), a, "1 つなら元のまま");
+}
+
+/// `list_src_files` の各キーは重複しない（重複すると合成済みの内容を二重に数える）。
+#[test]
+fn list_src_files_has_unique_keys() {
+    let files = list_src_files();
+    let mut seen = std::collections::BTreeSet::new();
     for f in &files {
-        let rel = src_relative(f).to_string_lossy().replace('\\', "/");
-        if rel == "lib.rs" || rel == "state/mod.rs" {
-            continue;
-        }
-        if let Some(prev) = seen.insert(rel.clone(), f.clone()) {
-            panic!(
-                "src/{rel} が複数の crate にある: {} と {}。ガードの read_crate_file が片方しか読まない",
-                prev.display(),
-                f.display()
-            );
-        }
+        assert!(seen.insert(f.clone()), "{f} が重複している");
     }
 }

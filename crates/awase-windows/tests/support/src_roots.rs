@@ -24,14 +24,3 @@ pub(crate) fn src_crate_dirs() -> Vec<std::path::PathBuf> {
     dirs.extend(EXTRA_SRC_CRATES.iter().map(|c| workspace_dir().join(c)));
     dirs
 }
-
-/// `walk_all_src` が返したパスの `src/` からの相対パス（どの crate の `src/` でも同じ配置）。
-#[allow(dead_code)] // layer_boundary_guard は使わない（両ガードで共有するファイル）
-pub(crate) fn src_relative(path: &Path) -> std::path::PathBuf {
-    for dir in src_crate_dirs() {
-        if let Ok(rel) = path.strip_prefix(dir.join("src")) {
-            return rel.to_path_buf();
-        }
-    }
-    panic!("{} は対象 crate の src/ の下にありません", path.display())
-}

@@ -319,11 +319,7 @@ fn b2_output_uses_named_tsf_observation_api() {
 /// `state/ime_model.rs` に絞って app 分岐がゼロであることを検査する (classifier 側は正当)。
 #[test]
 fn c4_reducer_has_no_app_specific_branches() {
-    assert!(
-        state_file("ime_model").is_file(),
-        "state/ime_model.rs が見つからない（移動・改名したらこのガードも付け替える）"
-    );
-    let hits = scan(&[state_file("ime_model")], |code| {
+    let hits = scan(&state_files("ime_model"), |code| {
         code.contains("AppKind::")
             || code.contains("class_name ==")
             || code.contains("class_name.contains")
@@ -743,13 +739,11 @@ fn state_dir() -> PathBuf {
     manifest().join("src/state")
 }
 
-fn state_file(name: &str) -> PathBuf {
-    // 核 crate へ移ったファイルも、元と同じ `src/state/` の配置で見つける。
-    src_dirs()
-        .iter()
-        .map(|src| src.join("state").join(format!("{name}.rs")))
-        .find(|p| p.exists())
-        .unwrap_or_else(|| state_dir().join(format!("{name}.rs")))
+/// `state/<name>.rs` の**全コピー**（核 crate へ移ったファイルも、元と同じ `src/state/` の配置で探す）。
+/// 1 つも無ければ panic する（移動・改名したらガードも付け替える）。同じ名前が両 crate にあれば
+/// すべて検査に掛ける（最初の 1 件だけを見ない。Opus PR #570 X2）。
+fn state_files(name: &str) -> Vec<PathBuf> {
+    src_files(&format!("state/{name}.rs"))
 }
 
 /// `state/mod.rs` の `mod X;` のうち、直前の属性に `#[cfg(windows)]` が無い（ungated な）ものの名前。
@@ -787,12 +781,13 @@ fn ungated_state_modules() -> Vec<String> {
 fn core_modules_have_no_tier2_violations() {
     let mut hits = Vec::new();
     for name in CORE_MODULES {
-        let path = state_file(name);
-        let content = fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!("CORE_MODULES の {name} が実在しません: {}", path.display())
-        });
-        for (line, rule, code) in core_violations(&content) {
-            hits.push(format!("{}:{line}: [{rule}] {code}", rel(&path)));
+        for path in state_files(name) {
+            let content = fs::read_to_string(&path).unwrap_or_else(|_| {
+                panic!("CORE_MODULES の {name} が読めません: {}", path.display())
+            });
+            for (line, rule, code) in core_violations(&content) {
+                hits.push(format!("{}:{line}: [{rule}] {code}", rel(&path)));
+            }
         }
     }
     assert_empty(
@@ -818,12 +813,17 @@ const CORE_CANDIDATE_FILES: &[&str] = &[
     "vk.rs",
 ];
 
-fn src_file(rel_path: &str) -> PathBuf {
-    src_dirs()
+fn src_files(rel_path: &str) -> Vec<PathBuf> {
+    let found: Vec<PathBuf> = src_dirs()
         .iter()
         .map(|src| src.join(rel_path))
-        .find(|p| p.exists())
-        .unwrap_or_else(|| manifest().join("src").join(rel_path))
+        .filter(|p| p.exists())
+        .collect();
+    assert!(
+        !found.is_empty(),
+        "src/{rel_path} が対象 crate のどこにも無い（移動・改名したらガードも付け替える）"
+    );
+    found
 }
 
 /// 核へ移す候補（`state/` の外）も Tier-2 の 4 規則に違反しない。
@@ -831,15 +831,16 @@ fn src_file(rel_path: &str) -> PathBuf {
 fn core_candidate_files_have_no_tier2_violations() {
     let mut hits = Vec::new();
     for name in CORE_CANDIDATE_FILES {
-        let path = src_file(name);
-        let content = fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!(
-                "CORE_CANDIDATE_FILES の {name} が実在しません: {}",
-                path.display()
-            )
-        });
-        for (line, rule, code) in core_violations(&content) {
-            hits.push(format!("{}:{line}: [{rule}] {code}", rel(&path)));
+        for path in src_files(name) {
+            let content = fs::read_to_string(&path).unwrap_or_else(|_| {
+                panic!(
+                    "CORE_CANDIDATE_FILES の {name} が読めません: {}",
+                    path.display()
+                )
+            });
+            for (line, rule, code) in core_violations(&content) {
+                hits.push(format!("{}:{line}: [{rule}] {code}", rel(&path)));
+            }
         }
     }
     assert_empty(
@@ -883,9 +884,13 @@ fn core_modules_classify_every_ungated_state_module() {
 fn core_modules_violation_list_is_not_stale() {
     let mut stale = Vec::new();
     for (name, _) in NOT_CORE_MODULES {
-        let content = fs::read_to_string(state_file(name))
-            .unwrap_or_else(|_| panic!("NOT_CORE_MODULES の {name} が実在しません"));
-        if core_violations(&content).is_empty() {
+        // どのコピーにも違反が無くなったときだけ stale（1 つでも違反が残っていれば NOT_CORE のまま）。
+        let any_violation = state_files(name).iter().any(|path| {
+            let content = fs::read_to_string(path)
+                .unwrap_or_else(|_| panic!("NOT_CORE_MODULES の {name} が読めません"));
+            !core_violations(&content).is_empty()
+        });
+        if !any_violation {
             stale.push(*name);
         }
     }
