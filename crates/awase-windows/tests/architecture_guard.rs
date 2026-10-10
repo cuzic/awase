@@ -23,9 +23,27 @@
 use std::fs;
 use std::path::Path;
 
+/// crate の物理分割（ADR-229 D4）でファイルが別 crate へ移ったときの付け替え表。
+/// `(旧: このクレート相対のパス, 新: ワークスペース相対のパス)`。ガードが持つ
+/// `"src/..."` のパス文字列リテラルは 1 つずつ書き換えず、移したファイルをここに
+/// 1 行足すだけで追随させる（`read_crate_file` が先に引く）。分割前は空。
+const RELOCATED: &[(&str, &str)] = &[];
+
+/// `RELOCATED` の旧パスから、実際に読むファイルの絶対パスを返す。
+fn resolve_crate_path(rel_path: &str) -> std::path::PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if let Some((_, new)) = RELOCATED.iter().find(|(old, _)| *old == rel_path) {
+        let workspace = manifest_dir
+            .parent()
+            .and_then(Path::parent)
+            .expect("awase-windows must be under <workspace>/crates");
+        return workspace.join(new);
+    }
+    manifest_dir.join(rel_path)
+}
+
 fn read_crate_file(rel_path: &str) -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let raw = fs::read_to_string(Path::new(manifest_dir).join(rel_path))
+    let raw = fs::read_to_string(resolve_crate_path(rel_path))
         .unwrap_or_else(|e| panic!("failed to read {rel_path}: {e}"));
     // Windows ランナーは git 既定の core.autocrlf=true でチェックアウト時に .rs
     // ファイルを CRLF 化する（`.gitattributes` の eol=lf 指定は `tests/golden/**`
@@ -7810,4 +7828,20 @@ fn classification_does_not_read_prev_conversion_mode() {
             && !ob_without_writer.contains("prev_conv"),
         "observer/ime_observer.rs は prev_conversion_mode を引数に取らない(分類に戻さない、ADR-239)"
     );
+}
+
+/// `RELOCATED` の各行は、旧パスが実在せず新パスが実在する（付け替え表の取り残しを防ぐ）。
+#[test]
+fn relocated_table_entries_are_consistent() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (old, _) in RELOCATED {
+        assert!(
+            !manifest_dir.join(old).exists(),
+            "RELOCATED の旧パス {old} がまだ実在する。移したなら元を消し、残すなら表から外す"
+        );
+        assert!(
+            resolve_crate_path(old).exists(),
+            "RELOCATED の {old} の移動先が実在しない"
+        );
+    }
 }
