@@ -356,6 +356,15 @@ impl PredictedEffect {
     pub const fn is_noop(&self) -> bool {
         self.open.is_none() && self.mode.is_none()
     }
+
+    /// 続けて押した打鍵の効果を重ねる（後の打鍵が値を持つ軸はそれで上書きし、持たない軸は前の値を残す）。
+    #[must_use]
+    fn overlaid_by(self, later: Self) -> Self {
+        Self {
+            open: later.open.or(self.open),
+            mode: later.mode.or(self.mode),
+        }
+    }
 }
 
 /// 予測結果: beliefへの反映と、更新後の追跡状態。
@@ -385,6 +394,21 @@ pub struct PredictInput {
     /// （KeyDown・自動リピートでない・非 injected・`shadow_action`/`sync_direction` が無い・エンジンが消費していない・修飾なし）を
     /// `kp_stage_key_effect_track` が計算して渡す。規則は窓の種類にも ADR-209 の設定にも依らない。
     pub passive_rule_eligible: bool,
+}
+
+impl PredictInput {
+    /// この状態で `step` の打鍵が IME に届いた後の状態（ADR-188 案2、[`KeyEffectKeymap::predict_after_resent`]）。
+    /// 開閉・入力モードは予測の値（`None` は変えない）、追跡は予測のもの。`composing`（打鍵前の TSF 観測）は
+    /// 打鍵後には当てにならないので偽にし、入力中の段階は追跡（`track.stage`）だけで決める。
+    fn after(self, step: Prediction) -> Self {
+        Self {
+            open: step.effect.open.unwrap_or(self.open),
+            mode: step.effect.mode.unwrap_or(self.mode),
+            composing: false,
+            track: step.track,
+            ..self
+        }
+    }
 }
 
 const fn kana_mode() -> InputModeState {
@@ -737,6 +761,35 @@ pub fn plan_key_effect_track(f: &KeyTrackFacts) -> Option<bool> {
     Some(!in_table && !f.was_down && !delegated && !any_modifier)
 }
 
+/// ADR-188 案2: この打鍵の決定（`Decision`）で、FSM が打鍵の前に IME へ送り直すモードキー（保留中の親指の単独タップ）を
+/// 送る順に返す。対象は打鍵を通す決定（`PassThroughWith`）の `SendKeys` にある `KeyAction::Key` のうち、
+/// 通過マーク・直接観測の窓を開く対象（[`crate::vk::is_followed_mode_key`]）——executor が送出時に窓を開き直すキー
+/// （`runtime/executor.rs::dispatch_effect`）と同じ判定。executor は `effects` を送ってから打鍵を再注入するので、
+/// IME には ここで返すキー → 打鍵 の順に届く。
+///
+/// 打鍵を消費する決定（`Consume`）は対象にしない: 表のキーはそもそも予測しない（`plan_key_effect_track`）、
+/// 文字キーは段階の追跡だけで、送り直したキーは従来どおり観測に任せる（予測を付けると c353bcbb のガードで観測を捨てる）。
+#[must_use]
+pub fn fsm_resent_mode_keys(decision: &awase::engine::Decision) -> Vec<u16> {
+    use awase::engine::{Decision, Effect, InputEffect};
+    use awase::types::KeyAction;
+    let Decision::PassThroughWith { effects } = decision else {
+        return Vec::new();
+    };
+    effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::Input(InputEffect::SendKeys(actions)) => Some(actions),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|action| match action {
+            KeyAction::Key(vk) if crate::vk::is_followed_mode_key(*vk) => Some(vk.0),
+            _ => None,
+        })
+        .collect()
+}
+
 /// `config1.db`から作ったキーマップのキャッシュ（打鍵ごとの同期fs読み取り+パースを避ける。
 /// レビュー指摘A-B1）。`RECHECK_MS`ごとに、ファイルの版（更新時刻+長さ）だけを問い合わせ、
 /// 変わったときだけ読み直す。判定は純関数で、fs/時計は呼び出し側が渡す。
@@ -1072,6 +1125,47 @@ impl KeyEffectKeymap {
             return None;
         }
         predict(self.preset, vk, input)
+    }
+
+    /// ADR-188 案2: この打鍵の前に FSM が IME へ送り直すモードキー（`resent`、[`fsm_resent_mode_keys`]）があるとき、
+    /// その効果を先に重ねてから `vk` を予測する。`resent` が空なら [`Self::predict_with_override`] と同じ。
+    ///
+    /// 素通し設定で無変換（親指）を押したまま別のキーを押すと、FSM は保留中の親指を単独タップとして送り直してから
+    /// そのキーを通す（IME には 無変換→キー の順に届く）。打鍵前の belief だけで予測すると、送り直した無変換の効果が
+    /// 抜けて予測が外れる（CI run 38065774507: ATOK の変換は「かな→閉」と予測されたが、実際は無変換で閉じてから
+    /// 変換で開く。MS-IME プリセットの英数は「かな→半角英数」と予測されたが、実際は無変換で全角カタカナになってから
+    /// 英数でひらがなに戻る）。予測が付いた打鍵は窓内の読みで覆さない（c353bcbb）ので、外れた予測がそのまま残っていた。
+    ///
+    /// 効果の合成: 開閉・入力モードは後の打鍵の値が前の値を上書きする（`Some` が勝つ）。追跡は最後の打鍵のもの。
+    /// 送り直したキー、または `vk` のどれかが予測できないときは `None`（途中の状態が分からないので観測に任せる）。
+    /// 送り直したキーには表に無い受動キーの規則（`passive_rule_eligible`、ADR-211）を当てない（安全側）。
+    #[must_use]
+    pub fn predict_after_resent(
+        &self,
+        resent: &[u16],
+        vk: u16,
+        input: &PredictInput,
+        override_table: Option<&[Cell]>,
+    ) -> Option<Prediction> {
+        let mut state = *input;
+        let mut effect = PredictedEffect {
+            open: None,
+            mode: None,
+        };
+        for &resent_vk in resent {
+            let step_input = PredictInput {
+                passive_rule_eligible: false,
+                ..state
+            };
+            let step = self.predict_with_override(resent_vk, &step_input, override_table)?;
+            effect = effect.overlaid_by(step.effect);
+            state = step_input.after(step);
+        }
+        let last = self.predict_with_override(vk, &state, override_table)?;
+        Some(Prediction {
+            effect: effect.overlaid_by(last.effect),
+            track: last.track,
+        })
     }
 
     /// ADR-209 決定1〜3: 読めない窓で、GJI の MS-IME プリセット（`session_keymap`が不在/NONE/MSIME）の
@@ -3240,5 +3334,133 @@ mod tests {
             .clone()
             .with_legacy_custom_cells(legacy_custom_cells(Some(&s4), None));
         assert_eq!(plain.fingerprint(), with.fingerprint());
+    }
+
+    // ── ADR-188 案2: FSM が送り直す親指の効果を予測に重ねる ──
+
+    fn resend_decision(vks: &[u16]) -> awase::engine::Decision {
+        use awase::engine::{Decision, Effect, InputEffect, TimerEffect};
+        use awase::types::{KeyAction, VkCode};
+        let mut d = Decision::pass_through();
+        d.push_effect(Effect::Timer(TimerEffect::Kill(1)));
+        d.push_effect(Effect::Input(InputEffect::SendKeys(
+            vks.iter().map(|&v| KeyAction::Key(VkCode(v))).collect(),
+        )));
+        d
+    }
+
+    /// 送り直す親指（無変換）は、打鍵を通す決定（`PassThroughWith`）の `SendKeys` からだけ拾う。文字キー・Timer・
+    /// 打鍵を消費する決定・素の `PassThrough` は空（executor が窓を開き直す判定〈`is_followed_mode_key`〉と同じ）。
+    #[test]
+    fn fsm_resent_mode_keys_picks_followed_mode_keys_of_pass_through_with_only() {
+        use awase::engine::{Decision, Effect, InputEffect};
+        use awase::types::{KeyAction, VkCode};
+        assert_eq!(fsm_resent_mode_keys(&resend_decision(&[0x1D])), vec![0x1D]);
+        assert_eq!(fsm_resent_mode_keys(&resend_decision(&[0x1C])), vec![0x1C]);
+        assert!(
+            fsm_resent_mode_keys(&resend_decision(&[0x41])).is_empty(),
+            "文字キーは対象外"
+        );
+        assert!(
+            fsm_resent_mode_keys(&resend_decision(&[0x20])).is_empty(),
+            "Space は対象外"
+        );
+        assert!(fsm_resent_mode_keys(&Decision::pass_through()).is_empty());
+        let mut consumed = Decision::consumed();
+        consumed.push_effect(Effect::Input(InputEffect::SendKeys(vec![KeyAction::Key(
+            VkCode(0x1D),
+        )])));
+        assert!(
+            fsm_resent_mode_keys(&consumed).is_empty(),
+            "打鍵を消費する決定は対象外（従来どおり観測に任せる）"
+        );
+    }
+
+    /// CI run 38065774507（sc-armc-gji-atok-passthru）の外れ: ATOK でかなのとき、無変換を押したまま変換を押すと、
+    /// FSM が無変換を送り直す（かな→閉）ので、変換は閉から開く。送り直しを重ねない予測は「かな→閉」で外れていた。
+    #[test]
+    fn atok_henkan_after_resent_muhenkan_predicts_open() {
+        let atok = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
+        let kana = input(true, ROMAJI, false, NOTRACK);
+        // 送り直しが無い（従来）: かなの変換は閉じる。
+        assert_eq!(atok.predict(0x1C, &kana).unwrap().effect.open, Some(false));
+        let p = atok
+            .predict_after_resent(&[0x1D], 0x1C, &kana, None)
+            .expect("無変換(かな→閉)→変換(閉→開)は表にある");
+        assert_eq!(
+            p.effect.open,
+            Some(true),
+            "送り直した無変換で閉じてから変換で開く"
+        );
+        assert_eq!(p.effect.mode, None);
+    }
+
+    /// CI run 38065774507（sc-armc-gji-msimepreset-passthru）の外れ: MS-IME プリセットでかなのとき、無変換を押したまま
+    /// 英数を押すと、送り直した無変換で全角カタカナになってから英数でひらがなに戻る。重ねない予測は半角英数（外れ）。
+    #[test]
+    fn msime_preset_eisu_after_resent_muhenkan_stays_kana() {
+        let msime = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        let kana = input(true, ROMAJI, false, NOTRACK);
+        assert_eq!(
+            msime.predict(0xF0, &kana).unwrap().effect.mode,
+            Some(InputModeState::ObservedEisu),
+            "送り直しが無い（従来）: かなの英数は半角英数"
+        );
+        let p = msime
+            .predict_after_resent(&[0x1D], 0xF0, &kana, None)
+            .expect("無変換(C19→C1B)→英数(C1B→C19)は表にある");
+        assert_eq!(p.effect.open, None);
+        assert_eq!(
+            p.effect.mode, None,
+            "かな系のまま（belief を英数へ動かさない）"
+        );
+        assert_eq!(p.track.conv, Some(Conv::C19));
+    }
+
+    /// 送り直しが無ければ従来の予測と同じ。送り直したキーが予測できない（例: overlay で無変換が上書きされうる）ときは、
+    /// 途中の状態が分からないので予測しない（観測に任せる）。
+    #[test]
+    fn predict_after_resent_is_identity_without_resend_and_none_when_a_resent_key_is_unknown() {
+        let atok = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
+        for open in [true, false] {
+            let i = input(open, ROMAJI, false, NOTRACK);
+            for vk in [0x1C, 0x1D, 0xF0, 0xF2, 0x20, 0x41] {
+                assert_eq!(
+                    atok.predict_after_resent(&[], vk, &i, None),
+                    atok.predict_with_override(vk, &i, None),
+                    "open={open} vk=0x{vk:02X}"
+                );
+            }
+        }
+        let overlay = KeyEffectKeymap::from_config(Some(1), None, &[1]).unwrap();
+        let kana = input(true, ROMAJI, false, NOTRACK);
+        assert!(
+            overlay.predict(0xF0, &kana).is_some(),
+            "英数そのものは予測できる"
+        );
+        assert_eq!(
+            overlay.predict_after_resent(&[0x1D], 0xF0, &kana, None),
+            None,
+            "overlay ありの無変換は予測しない → 重ねられないので全体を予測しない"
+        );
+    }
+
+    /// 入力中（TSF の composing）に送り直した無変換が入力中の段階を進めたら、次の打鍵は追跡の段階で引く
+    /// （打鍵前の composing で「入力中」に戻さない）。
+    #[test]
+    fn predict_after_resent_uses_tracked_stage_not_stale_composing() {
+        let atok = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
+        let typing = input(true, ROMAJI, true, NOTRACK);
+        let step = atok.predict(0x1D, &typing);
+        let Some(step) = step else {
+            return; // ATOK の表に入力中の無変換が無い構成では、この性質は検査しない。
+        };
+        let after = typing.after(step);
+        assert!(!after.composing);
+        assert_eq!(after.track, step.track);
+        assert_eq!(
+            atok.predict_after_resent(&[0x1D], 0x0D, &typing, None),
+            atok.predict(0x0D, &after),
+        );
     }
 }
