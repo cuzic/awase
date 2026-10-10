@@ -537,6 +537,85 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
     Some(Prediction { effect, track })
 }
 
+/// 旧UIの`StyleList\\Custom`の表(`S4key`・`key`)の、無変換/変換(無修飾)の行から、打鍵時予測のセルを作る
+/// (ADR-254 第二段)。**効果が実測で確かめられたコードだけ**セルにし、それ以外(未知のコード・行が無い・
+/// 表が読めない・変化なしのコード)はセルを作らない=予測しない(観測に任せる。変化なしのキーは、予測しなければ
+/// beliefも変わらないので正しい)。
+///
+/// 実測(CI windows-latest と実機 dragonflyg4〈互換 ON〉、各セル n=3〜5、全試行一致。ADR-254 実測5・13・16):
+/// - 閉じた状態(`S4key`の1列目): `87`・`CE`→IME が開く(変換モードは`C19`のまま)。
+/// - 開・入力なし(`key`の1列目、ひらがな`C19`のとき): `97`・`C9`→`C1B`(全角カタカナ)、`CD`・`B3`→IME が閉じる、
+///   `A4`→閉じて半角英数(`C10`)。`D5`は ND(直接入力モードを使用しない)で向きが逆になるので除く。
+/// - 入力中・変換中の列(`key`の2〜6列目)と、開・入力なしのひらがな以外のモードは、実測が無いので読まない。
+///
+/// 対象は無変換(`0x1D`)と変換(`0x1C`)だけ。呼び出し側は、互換 ON かつ `keystyle=Custom` のときだけ使う。
+#[must_use]
+pub fn legacy_custom_cells(s4key: Option<&[u8]>, key: Option<&[u8]>) -> Vec<Cell> {
+    // 行のラベル(Shift-JIS)。修飾付き(`Ctrl+`など)は別のラベルになるので、完全一致だけを見る。
+    const MUHENKAN: &[u8] = &[0x96, 0xB3, 0x95, 0xCF, 0x8A, 0xB7];
+    const HENKAN: &[u8] = &[0x95, 0xCF, 0x8A, 0xB7];
+    let mut cells = Vec::new();
+    for (label, table_key) in [(MUHENKAN, TableKey::Muhenkan), (HENKAN, TableKey::Henkan)] {
+        if let Some(code) = s4key.and_then(|t| first_column_code(t, label)) {
+            if matches!(code, 0x87 | 0xCE) {
+                cells.push(cell(
+                    false,
+                    None,
+                    Stage::None,
+                    table_key,
+                    true,
+                    None,
+                    Disp::None,
+                ));
+            }
+        }
+        if let Some(code) = key.and_then(|t| first_column_code(t, label)) {
+            let after = match code {
+                0x97 | 0xC9 => Some((true, Some(Conv::C1B))),
+                0xCD | 0xB3 => Some((false, None)),
+                0xA4 => Some((false, Some(Conv::C10))),
+                _ => None,
+            };
+            if let Some((after_open, after_conv)) = after {
+                cells.push(cell(
+                    true,
+                    Some(Conv::C19),
+                    Stage::None,
+                    table_key,
+                    after_open,
+                    after_conv,
+                    Disp::None,
+                ));
+            }
+        }
+    }
+    cells
+}
+
+/// 表(`<ラベル>=XX XX XX XX XX XX`をNULで区切ったShift-JISテキスト)から、`label`と完全に一致する行の
+/// 1列目のコード(16進)を返す。行が無い・形式が違う・複数あって食い違うときは`None`(安全側)。
+fn first_column_code(table: &[u8], label: &[u8]) -> Option<u8> {
+    let mut found: Option<u8> = None;
+    for record in table.split(|&b| b == 0).filter(|r| !r.is_empty()) {
+        let Some(eq) = record.iter().position(|&b| b == b'=') else {
+            continue;
+        };
+        if &record[..eq] != label {
+            continue;
+        }
+        let value = std::str::from_utf8(&record[eq + 1..]).ok()?;
+        let first = value.split_whitespace().next()?;
+        let code = u8::from_str_radix(first, 16).ok()?;
+        match found {
+            None => found = Some(code),
+            Some(prev) if prev == code => {}
+            // 同じ行が食い違って複数ある: 優先順位が未確認なので使わない。
+            Some(_) => return None,
+        }
+    }
+    found
+}
+
 /// `config1.db`から得た、予測に使うキーマップ（プリセット+カスタム上書きの検出材料）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyEffectKeymap {
@@ -569,6 +648,12 @@ pub struct KeyEffectKeymap {
     /// 構成(ADR-254 決定1)。`true`なら[`Self::predict_with_override`]は学習表の参照の後で`None`を返す。
     /// GJIのキーマップでは常に`false`。
     legacy_table_unknown: bool,
+    /// 予測を止める構成のうち、互換 ON の`Custom`の表(`S4key`・`key`)から作った、無変換/変換のセル
+    /// (ADR-254 第二段、[`legacy_custom_cells`])。空なら、止める構成は何も予測しない(第一段のまま)。
+    legacy_cells: Vec<Cell>,
+    /// 止める構成が「互換 ON の`Custom`」(旧UIの表が効く構成)か。セルを受け付けるのはこのときだけ
+    /// (名前付きスタイル・未知は表の中身を読まない)。
+    legacy_custom_on: bool,
     /// このキーマップの生の入力（GJI: session/custom/overlay、Microsoft IME本体: 3 DWORD）から
     /// 作った指紋（`awase_keymap_learn::fingerprint`）。上の真偽値は overlay の中身や
     /// 再割り当て値を潰すので、学習表の陳腐化検出（`key_effect_runtime`）にはこちらを使う。
@@ -735,6 +820,8 @@ impl KeyEffectKeymap {
             muhenkan_toggle: false,
             msime_compat_mode: None,
             legacy_table_unknown: false,
+            legacy_cells: Vec::new(),
+            legacy_custom_on: false,
             fingerprint,
         })
     }
@@ -865,6 +952,8 @@ impl KeyEffectKeymap {
             muhenkan_toggle: assignment_enabled && muhenkan == Some(2),
             msime_compat_mode: compat_mode,
             legacy_table_unknown,
+            legacy_cells: Vec::new(),
+            legacy_custom_on: matches!(keystyle, MsImeKeystyle::Custom) && legacy_table_unknown,
             // 指紋に混ぜるのは、予測を止める構成のときだけ(NATURAL・不在・互換 OFF の Custom は
             // 従来と同じ指紋のまま。互換 OFF の Custom の表は新エンジンが読まないので、編集しても
             // 学習表を失効させない)。
@@ -876,6 +965,17 @@ impl KeyEffectKeymap {
                     legacy_table_unknown.then(|| (keystyle.tag(), legacy_hash)),
                 ),
         }
+    }
+
+    /// 止める構成のうち「互換 ON の`Custom`」に、`Custom`の表から作った無変換/変換のセルを渡す(ADR-254 第二段)。
+    /// それ以外の構成(名前付き・未知・止めない構成)では何もしない(セルは捨てる)。セルは指紋に影響しない
+    /// (指紋は表のハッシュを既に含む)。
+    #[must_use]
+    pub fn with_legacy_custom_cells(mut self, cells: Vec<Cell>) -> Self {
+        if self.legacy_custom_on {
+            self.legacy_cells = cells;
+        }
+        self
     }
 
     /// 旧UIのキーテンプレートと互換モードの組み合わせで`MSIME_NATIVE`の予測を止めているか
@@ -945,7 +1045,14 @@ impl KeyEffectKeymap {
         // 当たらない構成(互換 ON の Custom・名前付きスタイル・未知)では予測しない。**学習表の参照の後**に
         // 置く(学習表があればそれを使う、ADR-196)。窓別の規則(上の2つ)は MS-IME 本体では元から`None`。
         if self.legacy_table_unknown {
-            return None;
+            // ADR-254 第二段: 互換 ON の Custom は、無変換/変換だけ、表から作ったセルで予測する。
+            // それ以外のキー(文字キーなど)は予測しない(`predict_in_table`は文字キーの追跡や、読めない窓での
+            // 種の反映をするので、止める構成では呼ばない)。
+            return if matches!(vk, 0x1C | 0x1D) && !self.legacy_cells.is_empty() {
+                predict_in_table(&self.legacy_cells, vk, input)
+            } else {
+                None
+            };
         }
         // ADR-209 決定4: GJI はプリセット（ATOK/MS-IME/不在/NONE）のとき`custom_keymap_table`を読まない
         // （ADR-186 決定2(c)、実機X1）ので、古い表の行を理由に打ち切らない。CUSTOM等のときだけ従来どおり。
@@ -2888,5 +2995,249 @@ mod tests {
                 assert_eq!(km.predict(vk, &inp), None, "vk={vk:#x} open={open}");
             }
         }
+    }
+
+    // ── ADR-254 第二段: 互換 ON の Custom の表(S4key・key)から、無変換/変換の予測セルを作る ──
+
+    const MUHENKAN_SJIS: &[u8] = &[0x96, 0xB3, 0x95, 0xCF, 0x8A, 0xB7];
+    const HENKAN_SJIS: &[u8] = &[0x95, 0xCF, 0x8A, 0xB7];
+
+    /// `<ラベル>=<コード>`をNUL区切りで並べた表のバイト列(終端は NUL が 1 つ多い)。
+    fn table_bytes(rows: &[(&[u8], &str)]) -> Vec<u8> {
+        let mut v = Vec::new();
+        for (label, codes) in rows {
+            v.extend_from_slice(label);
+            v.push(b'=');
+            v.extend_from_slice(codes.as_bytes());
+            v.push(0);
+        }
+        v.push(0);
+        v
+    }
+
+    /// 互換 ON の Custom のキーマップ(止める構成)に、表から作ったセルを渡したもの。
+    fn custom_on_with(s4key: Option<&[u8]>, key: Option<&[u8]>) -> KeyEffectKeymap {
+        msime_native(MsImeKeystyle::Custom, Some(true), Some(1))
+            .with_legacy_custom_cells(legacy_custom_cells(s4key, key))
+    }
+
+    fn effect_of(km: &KeyEffectKeymap, vk: u16, inp: &PredictInput) -> Option<PredictedEffect> {
+        km.predict(vk, inp).map(|p| p.effect)
+    }
+
+    /// dragonflyg4 の実機の表(2026-10-10 の読み取り。UI の「IME オン/オフ」の割り当てが書く形):
+    /// S4key の無変換・変換=`CE 00…`、key の無変換・変換=`CE CD CD CD CD CD`。実機の測定(互換 ON・Custom)で
+    /// 閉・無変換が開く・開・入力なしでは何もしない、と確認した挙動を再現する。
+    #[test]
+    fn adr254_stage2_dragonflyg4_table_opens_when_closed_and_does_nothing_when_idle() {
+        let s4 = table_bytes(&[
+            (MUHENKAN_SJIS, "CE 00 00 00 00 00"),
+            (HENKAN_SJIS, "CE 00 00 00 00 00"),
+        ]);
+        let key = table_bytes(&[
+            (MUHENKAN_SJIS, "CE CD CD CD CD CD"),
+            (HENKAN_SJIS, "CE CD CD CD CD CD"),
+        ]);
+        let km = custom_on_with(Some(&s4), Some(&key));
+        let closed = input(false, ROMAJI, false, NOTRACK);
+        for vk in [0x1Du16, 0x1C] {
+            // 閉: 開く(実機: o0→o1)。
+            assert_eq!(
+                effect_of(&km, vk, &closed).and_then(|e| e.open),
+                Some(true),
+                "vk={vk:#x}"
+            );
+            // 開・入力なし: CE は何もしない(実機: 変化なし)=予測しない。
+            let idle = input(true, ROMAJI, false, NOTRACK);
+            assert_eq!(km.predict(vk, &idle), None, "vk={vk:#x}");
+            // 入力中: 読まない(実測が無い列)。
+            let typing = input(
+                true,
+                ROMAJI,
+                true,
+                KeyTrack {
+                    conv: None,
+                    stage: Stage::Typing,
+                },
+            );
+            assert_eq!(km.predict(vk, &typing), None, "vk={vk:#x}");
+        }
+    }
+
+    /// key の1列目のコード別の効果(CI と実機の測定): 97・C9→全角カタカナ、CD・B3→閉じる、A4→閉じて半角英数。
+    #[test]
+    fn adr254_stage2_key_first_column_codes() {
+        let idle = input(true, ROMAJI, false, NOTRACK);
+        let cases: [(&str, Option<bool>, Option<Conv>); 5] = [
+            ("97 28 28 28 28 28", None, Some(Conv::C1B)),
+            ("C9 C9 C9 C9 C9 C9", None, Some(Conv::C1B)),
+            ("CD B3 B3 B3 B3 B3", Some(false), None),
+            ("B3 B3 B3 B3 B3 B3", Some(false), None),
+            ("A4 A4 A4 A4 A4 A4", Some(false), Some(Conv::C10)),
+        ];
+        for (codes, open, conv) in cases {
+            let key = table_bytes(&[(MUHENKAN_SJIS, codes)]);
+            let km = custom_on_with(None, Some(&key));
+            let p = km
+                .predict(0x1D, &idle)
+                .unwrap_or_else(|| panic!("{codes}: 予測が付く"));
+            assert_eq!(p.effect.open, open, "{codes}");
+            assert_eq!(p.track.conv, conv, "{codes}");
+        }
+        // 変化なし・効果が未確認のコード(D5 は ND で向きが逆、CA/CE/00/80/FF は変化なし、未知)は予測しない。
+        for codes in [
+            "D5 00 00 00 00 00",
+            "CA CA CA CA CA CA",
+            "CE 00 00 00 00 00",
+            "00 00 00 00 00 00",
+            "80 00 00 00 00 00",
+            "FF 00 00 00 00 00",
+            "F5 00 00 00 00 00",
+        ] {
+            let key = table_bytes(&[(MUHENKAN_SJIS, codes)]);
+            let km = custom_on_with(None, Some(&key));
+            assert_eq!(km.predict(0x1D, &idle), None, "{codes}");
+        }
+    }
+
+    /// S4key(閉じた状態)の1列目: 87・CE→開く。それ以外(00・80・FF・未知・行が無い・表が読めない)は予測しない。
+    #[test]
+    fn adr254_stage2_s4key_first_column_codes() {
+        let closed = input(false, ROMAJI, false, NOTRACK);
+        for codes in ["87 00 00 00 00 00", "CE 00 00 00 00 00"] {
+            let s4 = table_bytes(&[(HENKAN_SJIS, codes)]);
+            let km = custom_on_with(Some(&s4), None);
+            assert_eq!(
+                effect_of(&km, 0x1C, &closed).and_then(|e| e.open),
+                Some(true),
+                "{codes}"
+            );
+            // 行の無い無変換は予測しない。
+            assert_eq!(km.predict(0x1D, &closed), None, "{codes}");
+        }
+        for codes in [
+            "00 00 00 00 00 00",
+            "80 00 00 00 00 00",
+            "FF 00 00 00 00 00",
+            "C9 00 00 00 00 00",
+        ] {
+            let s4 = table_bytes(&[(HENKAN_SJIS, codes)]);
+            assert_eq!(
+                custom_on_with(Some(&s4), None).predict(0x1C, &closed),
+                None,
+                "{codes}"
+            );
+        }
+        // 表が読めない(None)なら、閉の予測も無い。
+        assert_eq!(custom_on_with(None, None).predict(0x1C, &closed), None);
+    }
+
+    /// 行のラベルは完全一致だけ: `Ctrl+変換`(修飾付き)や`無変換`は、`変換`の行として読まない。食い違う重複行も使わない。
+    #[test]
+    fn adr254_stage2_label_matching_is_exact_and_conflicts_are_ignored() {
+        let closed = input(false, ROMAJI, false, NOTRACK);
+        let mut ctrl_henkan: Vec<u8> = b"Ctrl+".to_vec();
+        ctrl_henkan.extend_from_slice(HENKAN_SJIS);
+        let s4 = table_bytes(&[
+            (&ctrl_henkan, "CE 00 00 00 00 00"),
+            (MUHENKAN_SJIS, "CE 00 00 00 00 00"),
+        ]);
+        let km = custom_on_with(Some(&s4), None);
+        assert_eq!(
+            km.predict(0x1C, &closed),
+            None,
+            "修飾付きの行を変換の行と読まない"
+        );
+        assert!(km.predict(0x1D, &closed).is_some());
+        // 同じ行が食い違って2つ: 優先順位が未確認なので使わない。同じなら使う。
+        let conflict = table_bytes(&[
+            (HENKAN_SJIS, "CE 00 00 00 00 00"),
+            (HENKAN_SJIS, "00 00 00 00 00 00"),
+        ]);
+        assert_eq!(
+            custom_on_with(Some(&conflict), None).predict(0x1C, &closed),
+            None
+        );
+        let same = table_bytes(&[
+            (HENKAN_SJIS, "CE 00 00 00 00 00"),
+            (HENKAN_SJIS, "CE 00 00 00 00 00"),
+        ]);
+        assert!(custom_on_with(Some(&same), None)
+            .predict(0x1C, &closed)
+            .is_some());
+        // 形式が壊れた行(= が無い・16進でない)は無視する。
+        let broken = [b"junk\0".as_slice(), HENKAN_SJIS, b"=ZZ\0\0"].concat();
+        assert_eq!(
+            custom_on_with(Some(&broken), None).predict(0x1C, &closed),
+            None
+        );
+    }
+
+    /// 無変換/変換以外のキー(文字キー・半角/全角など)は、セルがあっても予測しない
+    /// (`predict_in_table`が文字キーの追跡や種の反映をするので、止める構成では呼ばない)。
+    #[test]
+    fn adr254_stage2_other_keys_are_not_predicted() {
+        let s4 = table_bytes(&[
+            (MUHENKAN_SJIS, "CE 00 00 00 00 00"),
+            (HENKAN_SJIS, "CE 00 00 00 00 00"),
+        ]);
+        let key = table_bytes(&[(MUHENKAN_SJIS, "97 28 28 28 28 28")]);
+        let km = custom_on_with(Some(&s4), Some(&key));
+        for inp in all_inputs() {
+            for vk in [
+                0x41u16, 0x4B, 0x20, 0x0D, 0x1B, 0xF3, 0xF4, 0x19, 0xF0, 0xF2, 0x7C,
+            ] {
+                assert_eq!(km.predict(vk, &inp), None, "vk={vk:#x} {inp:?}");
+            }
+        }
+    }
+
+    /// セルを受け付けるのは「互換 ON の Custom」だけ。名前付き・未知・互換 OFF/不明の Custom・既定の構成では、
+    /// 渡されても捨てる(名前付き・未知は表の中身を読まない、止めない構成は同梱表で予測する)。
+    #[test]
+    fn adr254_stage2_cells_are_accepted_only_for_custom_with_compat_on() {
+        let s4 = table_bytes(&[(HENKAN_SJIS, "CE 00 00 00 00 00")]);
+        let cells = legacy_custom_cells(Some(&s4), None);
+        assert!(!cells.is_empty());
+        let closed = input(false, ROMAJI, false, NOTRACK);
+        // 互換 ON の Custom: 受け付ける。
+        let on = msime_native(MsImeKeystyle::Custom, Some(true), Some(1))
+            .with_legacy_custom_cells(cells.clone());
+        assert!(on.predict(0x1C, &closed).is_some());
+        // 互換が読めない(None)の Custom: 止める構成だが表は読まない(新エンジンか旧エンジンか分からない)。
+        let unknown = msime_native(MsImeKeystyle::Custom, None, Some(1))
+            .with_legacy_custom_cells(cells.clone());
+        assert!(unknown.legacy_table_unknown());
+        assert_eq!(unknown.predict(0x1C, &closed), None);
+        // 名前付き・未知: 渡されても捨てる。
+        for style in [MsImeKeystyle::Named, MsImeKeystyle::Unknown] {
+            let km =
+                msime_native(style, Some(true), Some(1)).with_legacy_custom_cells(cells.clone());
+            assert_eq!(km.predict(0x1C, &closed), None, "{style:?}");
+        }
+        // 止めない構成(互換 OFF の Custom・不在): 同梱表で予測する(セルは捨てる=結果が変わらない)。
+        let reference = KeyEffectKeymap::for_msime_native(false, None, None, None);
+        for (style, compat) in [
+            (MsImeKeystyle::Custom, Some(false)),
+            (MsImeKeystyle::Absent, None),
+        ] {
+            let km = msime_native(style, compat, None).with_legacy_custom_cells(cells.clone());
+            assert_eq!(
+                km.predict(0x1C, &closed),
+                reference.predict(0x1C, &closed),
+                "{style:?}"
+            );
+        }
+    }
+
+    /// 指紋はセルに影響しない(止める構成の指紋は表のハッシュで決まる。セルは表から作るので二重に混ぜない)。
+    #[test]
+    fn adr254_stage2_cells_do_not_change_the_fingerprint() {
+        let s4 = table_bytes(&[(HENKAN_SJIS, "CE 00 00 00 00 00")]);
+        let plain = msime_native(MsImeKeystyle::Custom, Some(true), Some(5));
+        let with = plain
+            .clone()
+            .with_legacy_custom_cells(legacy_custom_cells(Some(&s4), None));
+        assert_eq!(plain.fingerprint(), with.fingerprint());
     }
 }

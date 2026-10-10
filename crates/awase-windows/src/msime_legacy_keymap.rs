@@ -497,6 +497,20 @@ mod windows_impl {
         Some(hash)
     }
 
+    /// `StyleList\\Custom`の`S4key`(閉じた状態)と`key`(開いた状態)の中身(ADR-254 第二段)。
+    /// 値が無い・読めないものは`None`(その状態の予測はしない)。
+    #[must_use]
+    pub(crate) fn read_custom_s4key_and_key() -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        use windows::Win32::System::Registry::RRF_RT_REG_BINARY;
+        let subkey = format!("{IMEJP_BASE}\\StyleList\\Custom");
+        let read = |name: &str| {
+            read_raw_value(&subkey, name, RRF_RT_REG_BINARY.0)
+                .ok()
+                .flatten()
+        };
+        (read("S4key"), read("key"))
+    }
+
     /// 旧UIのキーテンプレートの読み取り結果と、指紋に混ぜるハッシュ(`Custom`なら表のハッシュ、
     /// 名前付きならテンプレート名のハッシュ、それ以外は`None`)を返す(ADR-254)。
     #[must_use]
@@ -559,7 +573,7 @@ mod windows_impl {
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
-    keystyle_stamp_mix, read_keystyle, read_legacy_compat_mode_enabled,
+    keystyle_stamp_mix, read_custom_s4key_and_key, read_keystyle, read_legacy_compat_mode_enabled,
     read_legacy_toggle_assignment,
 };
 
