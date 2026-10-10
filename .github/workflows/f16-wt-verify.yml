@@ -1,0 +1,113 @@
+name: f16-wt-verify
+
+# ADR-247(BUG-196)の A/B を、観測が読めない窓(Windows Terminal = TsfNative)で行う。GJI の CUSTOM 表で F16=半角英数にし、
+# かな(Engine ON)から F16 を押したあと k,a,t,a が ASCII のまま届くか(Engine が追随して OFF)を見る(wt_probe.py の相 F)。
+# 変種: full=両案あり / obsonly=予測を外す(a10) / predonly=観測を外す(a9) / none=両方外す(a11、修正前相当) / noawase=対照。
+# 動く条件: ci/f16-wt-verify・ci/e2e-f16-alnum-chrome への push、手動起動(既定ブランチにこのファイルがあるときだけ)。e2e-ime.yml とは別のハーネス。
+on:
+  push:
+    branches: [ci/f16-wt-verify, ci/e2e-f16-alnum-chrome]
+    paths:
+      - '.github/workflows/f16-wt-verify.yml'
+      - 'tools/e2e/wt/**'
+      - 'tools/e2e/ime_key_matrix/ablations/a9-*'
+      - 'tools/e2e/ime_key_matrix/ablations/a10-*'
+      - 'tools/e2e/ime_key_matrix/ablations/a11-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f16-wt-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - { name: full, mutator: '', phase: F }
+          - { name: obsonly, mutator: a10-no-fkey-predict.sh, phase: F }
+          - { name: predonly, mutator: a9-no-fkey-observe.sh, phase: F }
+          - { name: none, mutator: a11-no-fkey-follow.sh, phase: F }
+          - { name: noawase, mutator: '', phase: Fn }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+      - name: 追随の一部を外す(mutator)
+        if: matrix.variant.mutator != ''
+        shell: bash
+        run: bash "tools/e2e/ime_key_matrix/ablations/${{ matrix.variant.mutator }}"
+      - name: awase(デバッグ)をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+      - name: Google 日本語入力をインストール
+        shell: pwsh
+        run: ./tools/ci/install-gji.ps1
+      - name: 入力言語を ja-JP + GJI に設定、CUSTOM 表(F16=半角英数)の config1.db を書く
+        shell: pwsh
+        run: |
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $bytes = [System.Collections.Generic.List[byte]]::new()
+          $bytes.AddRange([byte[]](0xB0,0x01,0x00,0xC8,0x02,[byte]0))  # session_keymap = CUSTOM(0)
+          $tsv = 'DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana'
+          $rows = $tsv -split '\|' | ForEach-Object { $_ -replace ',', "`t" }
+          $tbl = [Text.Encoding]::UTF8.GetBytes("status`tkey`tcommand`n" + ($rows -join "`n") + "`n")
+          $bytes.AddRange([byte[]](0xD2,0x02))
+          $len = $tbl.Length
+          while ($len -ge 0x80) { $bytes.Add([byte](($len -band 0x7F) -bor 0x80)); $len = $len -shr 7 }
+          $bytes.Add([byte]$len)
+          $bytes.AddRange($tbl)
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), $bytes.ToArray())
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+      - name: Windows Terminal で F16 を押す(相 ${{ matrix.variant.phase }})
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: python tools\e2e\wt\wt_probe.py --dist dist --out out --phases ${{ matrix.variant.phase }} --presses 6
+      - name: 結果を表示
+        if: always()
+        shell: pwsh
+        run: |
+          "## f16-wt-verify (${{ matrix.variant.name }})" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if (Test-Path out\results.json) {
+            python -c "import json;[print(r['tag'],r['i'],r['verdict'],repr(r['before']),repr(r['after'])) if r.get('type')=='f16_case' else print(r) for r in json.load(open('out/results.json',encoding='utf-8')) if r.get('type') in ('f16_case','f16_result','phase_error','launch')]" | Tee-Object -FilePath out\f16.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            Get-Content out\f16.txt
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: f16-wt-${{ matrix.variant.name }}
+          path: |
+            out/results.json
+            out/f16.txt
+            out/logs/
+            out/shots/
+          retention-days: 7

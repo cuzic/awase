@@ -248,6 +248,50 @@ def make_body_bug121(presses):
     return body
 
 
+def make_body_f16(reps):
+    """ADR-247(BUG-196): かな(Engine ON)から F16(GJI の CUSTOM 表で半角英数へ SET)を押し、そのあとの k,a,t,a が
+    ASCII のまま届くか(=Engine が追随して OFF)を見る。Windows Terminal(TsfNative=読めない窓)での検査。
+    PASS: F16 の後の受信が ASCII の `kata` だけ(かなが 0)。FAIL: かな・余計な文字が混じる(Engine が ON のまま)。
+    前提のかなは、直前に k,a,t,a がかなで届くことで確かめる(届かなければ INVALID)。"""
+    def body(results, out, tag, hwnd, echo, work):
+        n_pass = n_fail = n_invalid = 0
+        for i in range(reps):
+            W.press(W.VK["IME_ON"], 40, marker=True)
+            time.sleep(0.8)
+            W.press(W.VK["HIRAGANA"], 40, marker=True)  # 半角英数からかなへ戻す(CUSTOM 表の Hiragana 行)
+            time.sleep(1.2)
+            base = len(W.read_rows(echo))
+            W.type_vks(KEYS_NICOLA, 90, marker=True)
+            time.sleep(1.5)
+            rows1 = W.read_rows(echo)[base:]
+            before = P.classify(rows1)
+            W.press(W.VK["RETURN"], 40, marker=True)
+            time.sleep(0.8)
+            W.press(W.VK["F16"], 40, marker=True)
+            time.sleep(1.2)
+            base2 = len(W.read_rows(echo))
+            W.type_vks(KEYS_NICOLA, 90, marker=True)
+            time.sleep(1.5)
+            rows2 = W.read_rows(echo)[base2:]
+            after_text = P.text_of(rows2)
+            after = P.classify(rows2)
+            if before["kana"] == 0:
+                verdict = "INVALID"
+                n_invalid += 1
+            elif after["kana"] == 0 and after_text == "kata":
+                verdict = "PASS"
+                n_pass += 1
+            else:
+                verdict = "FAIL"
+                n_fail += 1
+            rec(results, type="f16_case", tag=tag, i=i + 1, verdict=verdict, before=P.text_of(rows1), after=after_text, counts_after=after)
+            W.press(W.VK["RETURN"], 40, marker=True)
+            time.sleep(0.8)
+        rec(results, type="f16_result", tag=tag, reps=reps, passed=n_pass, failed=n_fail, invalid=n_invalid)
+        print(f"F16 {tag}: PASS={n_pass} FAIL={n_fail} INVALID={n_invalid}", flush=True)
+    return body
+
+
 # ---------------------------------------------------------------- summary
 
 def md(results):
@@ -311,6 +355,10 @@ def main():
                 with_awase(results, out, dist, repo, "S-bug113-scan29", True, make_body_bug113(a.presses2, scan=0x29, gap=0.6))
             elif ph == "H":
                 with_awase(results, out, dist, repo, "H-bug121", True, make_body_bug121(20))
+            elif ph == "F":
+                with_awase(results, out, dist, repo, "F-f16", True, make_body_f16(a.presses))
+            elif ph == "Fn":
+                with_awase(results, out, dist, repo, "F-f16-noawase", False, make_body_f16(a.presses))
             elif ph == "N":
                 with_awase(results, out, dist, repo, "N-bug113-noawase", False, make_body_bug113(a.presses))
         except Exception as e:  # 1 相の失敗で全体を止めない
