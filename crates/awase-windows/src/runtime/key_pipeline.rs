@@ -20,7 +20,25 @@ use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAct
 use awase::platform::TsfComposition as _;
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
 
+use crate::journal::{ShadowToggleRecord, ShadowToggleStep};
 use crate::state::explicit_press::ShadowIntentKind as IntentKind;
+
+/// `ShadowImeAction` の journal・ログ用の名前(`?` を使わず固定文字列で出す。網羅的な `match`)。
+const fn shadow_action_label(action: ShadowImeAction) -> &'static str {
+    match action {
+        ShadowImeAction::TurnOn => "TurnOn",
+        ShadowImeAction::TurnOff => "TurnOff",
+        ShadowImeAction::Toggle => "Toggle",
+    }
+}
+
+/// `ShadowIntentKind` の journal・ログ用の名前。
+const fn shadow_intent_kind_label(kind: IntentKind) -> &'static str {
+    match kind {
+        IntentKind::SyncKey => "SyncKey",
+        IntentKind::PhysicalImeKey => "PhysicalImeKey",
+    }
+}
 
 impl Runtime {
     /// キーイベント処理エントリポイント
@@ -892,6 +910,15 @@ impl Runtime {
         }
     }
 
+    /// shadow IME トグルの判断の段を journal に記録する(ADR-250 段階 4-1)。構築点はここ 1 か所。
+    /// 手書きの `[shadow-toggle]` ログの置き換えで、`emit_tracing` が元の行と同じレベル・target で出す。
+    fn kp_note_shadow_toggle(&mut self, record: ShadowToggleRecord) {
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ShadowToggle { record });
+    }
+
     /// Shadow IME トグル処理
     ///
     /// IME ON/OFF が変化したら `true` を返す。`kp_stage_execute` がこの値を見て
@@ -949,11 +976,11 @@ impl Runtime {
             if event.ime_relevance.sync_direction.is_some()
                 || event.ime_relevance.shadow_action.is_some()
             {
-                tracing::info!(
-                    "[shadow-toggle] injected IME キー vk=0x{:02X} はユーザー意図に昇格させない \
-                     (BUG-14) — belief 追従は may_change_ime refresh 観測に委譲",
-                    event.vk_code,
-                );
+                // BUG-14: belief 追従は may_change_ime refresh 観測に委譲する(ADR-250 段階 4-1: 手書きログの置き換え)。
+                self.kp_note_shadow_toggle(ShadowToggleRecord {
+                    vk_code: Some(event.vk_code.0),
+                    ..ShadowToggleRecord::new(ShadowToggleStep::InjectedNotPromoted)
+                });
             }
             return false;
         }
@@ -980,10 +1007,10 @@ impl Runtime {
         // Engine が同じ打鍵の開閉を担う（`engine_owns_open_key`）なら、shadow は belief も書き込みも触らない。
         // belief・意図・eisu 救済は Engine の `SetOpen`（`kp_stage_post_decision`）が担う。物理は Engine の Consume が握る。
         if engine_owns_open_key {
-            tracing::info!(
-                "[shadow-toggle] vk=0x{:02X} は Engine が同じ打鍵の SetOpen を出す（keys.ime_* 等）→ shadow は昇格・書き込みしない（ADR-208 D1）",
-                event.vk_code
-            );
+            self.kp_note_shadow_toggle(ShadowToggleRecord {
+                vk_code: Some(event.vk_code.0),
+                ..ShadowToggleRecord::new(ShadowToggleStep::EngineOwnsOpenKey)
+            });
             return false;
         }
         let new_val = action.resolve(current);
@@ -1000,20 +1027,19 @@ impl Runtime {
         // よう、判断時点の累積値をベースラインとして残す（診断専用、
         // 判定ロジックには使わない。project_adr151_force_on_rescue_
         // observation_experiment_2026_09_07 参照）。
-        tracing::info!(
-            "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
-             kind={:?} injected={} {}→{} w_ops0={} x_ops0={} x_KB0={:.1}",
-            event.vk_code,
-            event.scan_code,
-            action,
-            kind,
-            event.injected,
-            current,
-            new_val,
-            crate::tsf::observer::gji_write_ops(),
-            crate::tsf::observer::gji_other_ops(),
-            crate::tsf::observer::gji_other_bytes() as f64 / 1024.0,
-        );
+        self.kp_note_shadow_toggle(ShadowToggleRecord {
+            vk_code: Some(event.vk_code.0),
+            scan_code: Some(event.scan_code.0),
+            action: Some(shadow_action_label(action)),
+            kind: Some(shadow_intent_kind_label(kind)),
+            injected: Some(event.injected),
+            current_open: Some(current),
+            new_open: Some(new_val),
+            gji_write_ops: Some(crate::tsf::observer::gji_write_ops()),
+            gji_other_ops: Some(crate::tsf::observer::gji_other_ops()),
+            gji_other_bytes: Some(crate::tsf::observer::gji_other_bytes()),
+            ..ShadowToggleRecord::new(ShadowToggleStep::IntentPromoted)
+        });
         // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の
         // 型化、ADR-089 §2.2）。上の `event.injected` 早期 return と同じ条件を
         // 型側でも要求するため、ここで None になることは無い。
@@ -1041,14 +1067,13 @@ impl Runtime {
             // 実 OS IME が別経路 (物理キー直結等) で乖離していても訂正されない。
             // hook.rs の [hook] IME-mode ログと突き合わせ、直前に対応する KeyDown
             // (vk=0xF0 等) が self_injected=false で到達していたか確認すること。
-            tracing::debug!(
-                "[shadow-toggle] no-op: vk=0x{:02X} action={:?} source={:?} \
-                 effective_open は既に {} → apply-ime 見送り",
-                event.vk_code,
-                action,
-                kind,
-                current,
-            );
+            self.kp_note_shadow_toggle(ShadowToggleRecord {
+                vk_code: Some(event.vk_code.0),
+                action: Some(shadow_action_label(action)),
+                kind: Some(shadow_intent_kind_label(kind)),
+                current_open: Some(current),
+                ..ShadowToggleRecord::new(ShadowToggleStep::NoOp)
+            });
 
             // TurnOn 系キー（ひらがな/かな 等）は IME が既に open でも「英数から
             // ひらがなへ戻す」ユーザー操作として意味を持つ。OFF→ON 遷移が起きない
@@ -1072,9 +1097,9 @@ impl Runtime {
                 // ため（2026-07-11 codexレビュー: 単に書き戻すとbeliefだけromaji-capable
                 // に戻り実convは半角英数のままの壊れた中間状態になる）。
                 if self.platform_state.gate.half_width_alnum.is_toggle_active() {
-                    tracing::info!(
-                        "[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲"
-                    );
+                    self.kp_note_shadow_toggle(ShadowToggleRecord::new(
+                        ShadowToggleStep::TurnOnDelegatedToToggleOff,
+                    ));
                     self.kp_restore_kana_from_half_width(false);
                 } else {
                     self.apply_input_mode_correction(
@@ -1082,10 +1107,9 @@ impl Runtime {
                         crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
                         tick_ms,
                     );
-                    tracing::info!(
-                        "[shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に \
-                         リセット (UserTurnOnEisuReset)"
-                    );
+                    self.kp_note_shadow_toggle(ShadowToggleRecord::new(
+                        ShadowToggleStep::TurnOnEisuReset,
+                    ));
                 }
             }
             // ADR-208 D4（L3a）: belief が既に向きと一致していても、この押下の物理キーが Suppress される窓では
@@ -1124,7 +1148,9 @@ impl Runtime {
             // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
             // スキップしてトグルOFF処理そのものを呼ぶ（E節の理由は上の分岐と同じ）。
             if self.platform_state.gate.half_width_alnum.is_toggle_active() {
-                tracing::info!("[shadow-toggle] IME ON（半角英数トグルON中）→ トグルOFF処理へ委譲");
+                self.kp_note_shadow_toggle(ShadowToggleRecord::new(
+                    ShadowToggleStep::ImeOnDelegatedToToggleOff,
+                ));
                 self.kp_restore_kana_from_half_width(false);
             } else {
                 self.apply_input_mode_correction(
@@ -1132,10 +1158,9 @@ impl Runtime {
                     crate::state::ime_event::InputModeApplyStrategy::UserImeOnEisuReset,
                     tick_ms,
                 );
-                tracing::info!(
-                    "[shadow-toggle] IME ON + ObservedEisu → AssumedRomaji にリセット \
-                     (UserImeOnEisuReset, engine 即活性化)"
-                );
+                self.kp_note_shadow_toggle(ShadowToggleRecord::new(
+                    ShadowToggleStep::ImeOnEisuReset,
+                ));
             }
         }
 
@@ -1211,10 +1236,11 @@ impl Runtime {
         ) else {
             return false;
         };
-        tracing::info!(
-            "[shadow-toggle] no-op だが物理キーは Suppress される窓 → 書く（ADR-208 D4）vk=0x{:02X} open={open}",
-            event.vk_code
-        );
+        self.kp_note_shadow_toggle(ShadowToggleRecord {
+            vk_code: Some(event.vk_code.0),
+            new_open: Some(open),
+            ..ShadowToggleRecord::new(ShadowToggleStep::NoOpWriteInSuppressWindow)
+        });
         self.kp_shadow_actuate(open, event.press_id, tick_ms);
         true
     }
@@ -1253,10 +1279,11 @@ impl Runtime {
             crate::state::press_ledger::PressSource::Shadow,
         );
         if !claim.writes() {
-            tracing::debug!(
-                "[shadow-toggle] 同じ押下で既に書いた/Engine が優先（{}）→ 書かない press={press:?} open={open}",
-                claim.label()
-            );
+            self.kp_note_shadow_toggle(ShadowToggleRecord {
+                new_open: Some(open),
+                claim: Some(claim.label()),
+                ..ShadowToggleRecord::new(ShadowToggleStep::ClaimDeclined)
+            });
             return;
         }
         self.platform_state.ime.note_explicit_ime_action(tick_ms);
@@ -1395,10 +1422,11 @@ impl Runtime {
                 crate::state::ime_event::OpenApplyReason::ShadowToggle,
             );
         }
-        tracing::debug!(
-            "[shadow-toggle] {}: explicit apply dispatched (imm_first={imm_first})",
-            if open { "OFF→ON" } else { "ON→OFF" },
-        );
+        self.kp_note_shadow_toggle(ShadowToggleRecord {
+            new_open: Some(open),
+            imm_first: Some(imm_first),
+            ..ShadowToggleRecord::new(ShadowToggleStep::ExplicitApplyDispatched)
+        });
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）

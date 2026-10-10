@@ -87,6 +87,117 @@ pub struct DriftGiveUpDiagnosticRecord {
     pub half_width_alnum_toggle_active: bool,
 }
 
+/// shadow IME トグル(`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` ほか)の判断の段(ADR-250 段階 4-1)。
+///
+/// 手書きの `[shadow-toggle]` ログ 11 行を置き換える(1:1)。`emit_tracing` は段ごとに**元の手書き行と同じレベル**
+/// (下の [`Self::is_info`])と target(`awase_windows::runtime::key_pipeline`)で出す。
+/// `capture 失敗`(async ブロックの中、`with_app` の外で journal に触れない)の 1 行は手書きのまま残す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ShadowToggleStep {
+    /// 注入された IME キーはユーザー意図に昇格させない(BUG-14)。info。
+    InjectedNotPromoted,
+    /// Engine が同じ打鍵の `SetOpen` を出すので shadow は昇格も書き込みもしない(ADR-208 D1)。info。
+    EngineOwnsOpenKey,
+    /// intent を昇格した。info。
+    IntentPromoted,
+    /// belief が既に向きと一致していて apply-ime を見送る。debug。
+    NoOp,
+    /// TurnOn(IME 既に open)+ 半角英数トグル ON 中 → トグル OFF 処理へ委譲。info。
+    TurnOnDelegatedToToggleOff,
+    /// TurnOn(IME 既に open)+ ObservedEisu → AssumedRomaji にリセット。info。
+    TurnOnEisuReset,
+    /// IME ON + 半角英数トグル ON 中 → トグル OFF 処理へ委譲。info。
+    ImeOnDelegatedToToggleOff,
+    /// IME ON + ObservedEisu → AssumedRomaji にリセット(engine 即活性化)。info。
+    ImeOnEisuReset,
+    /// no-op だが物理キーは Suppress される窓 → 書く(ADR-208 D4)。info。
+    NoOpWriteInSuppressWindow,
+    /// 同じ押下で既に書いた/Engine が優先 → 書かない。debug。
+    ClaimDeclined,
+    /// 明示 apply を dispatch した。debug。
+    ExplicitApplyDispatched,
+}
+
+impl ShadowToggleStep {
+    /// 置き換えた手書き行のレベルが info か(`false` なら debug)。
+    #[must_use]
+    pub const fn is_info(self) -> bool {
+        match self {
+            Self::InjectedNotPromoted
+            | Self::EngineOwnsOpenKey
+            | Self::IntentPromoted
+            | Self::TurnOnDelegatedToToggleOff
+            | Self::TurnOnEisuReset
+            | Self::ImeOnDelegatedToToggleOff
+            | Self::ImeOnEisuReset
+            | Self::NoOpWriteInSuppressWindow => true,
+            Self::NoOp | Self::ClaimDeclined | Self::ExplicitApplyDispatched => false,
+        }
+    }
+
+    /// journal・ログ用の名前。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::InjectedNotPromoted => "InjectedNotPromoted",
+            Self::EngineOwnsOpenKey => "EngineOwnsOpenKey",
+            Self::IntentPromoted => "IntentPromoted",
+            Self::NoOp => "NoOp",
+            Self::TurnOnDelegatedToToggleOff => "TurnOnDelegatedToToggleOff",
+            Self::TurnOnEisuReset => "TurnOnEisuReset",
+            Self::ImeOnDelegatedToToggleOff => "ImeOnDelegatedToToggleOff",
+            Self::ImeOnEisuReset => "ImeOnEisuReset",
+            Self::NoOpWriteInSuppressWindow => "NoOpWriteInSuppressWindow",
+            Self::ClaimDeclined => "ClaimDeclined",
+            Self::ExplicitApplyDispatched => "ExplicitApplyDispatched",
+        }
+    }
+}
+
+/// [`ShadowToggleStep`] の判断時点の事実(診断用。入力文字は含まない)。段ごとに使うフィールドだけ `Some` にする。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ShadowToggleRecord {
+    pub step: ShadowToggleStep,
+    pub vk_code: Option<u16>,
+    pub scan_code: Option<u32>,
+    /// `ShadowImeAction`(`TurnOn`/`TurnOff`/`Toggle`)。
+    pub action: Option<&'static str>,
+    /// `ShadowIntentKind`(`SyncKey`/`PhysicalImeKey`)。
+    pub kind: Option<&'static str>,
+    pub injected: Option<bool>,
+    pub current_open: Option<bool>,
+    pub new_open: Option<bool>,
+    /// 押下台帳の判定(`PressClaim::label`)。
+    pub claim: Option<&'static str>,
+    pub imm_first: Option<bool>,
+    /// `[gji-io]` との突き合わせ用のベースライン(診断専用、判定には使わない)。
+    pub gji_write_ops: Option<u64>,
+    pub gji_other_ops: Option<u64>,
+    pub gji_other_bytes: Option<u64>,
+}
+
+impl ShadowToggleRecord {
+    /// 段だけ決めた空の記録。使うフィールドを構造体更新構文で足す。
+    #[must_use]
+    pub const fn new(step: ShadowToggleStep) -> Self {
+        Self {
+            step,
+            vk_code: None,
+            scan_code: None,
+            action: None,
+            kind: None,
+            injected: None,
+            current_open: None,
+            new_open: None,
+            claim: None,
+            imm_first: None,
+            gji_write_ops: None,
+            gji_other_ops: None,
+            gji_other_bytes: None,
+        }
+    }
+}
+
 /// drift correction の計画(`DriftPlan`)が**変わった**ときの記録(ADR-250 段階 1、診断用)。
 ///
 /// 前の tick と (計画の種類, 理由, 根拠, フォーカスの世代) が同じ連続は記録せず、次の edge の
@@ -408,6 +519,8 @@ pub enum JournalEntry {
     /// ADR-250 段階 1: drift correction の計画(送る・見送る・打ち切る・収束・保留)が変わったとき、
     /// 理由と根拠(`OmissionBasis`)つきで残す診断用の記録。入力文字は含まない。
     DriftPlanDecided { record: DriftPlanRecord },
+    /// ADR-250 段階 4-1: shadow IME トグルの判断の段(手書きの `[shadow-toggle]` ログ 11 行の置き換え)。
+    ShadowToggle { record: ShadowToggleRecord },
     /// ADR-132 Phase 1: hook の IME-mode 診断ログを journal にも残す。
     HookImeModeDiagnostic { record: HookImeModeDiagnosticRecord },
     /// ADR-132 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
@@ -759,6 +872,7 @@ impl JournalEntry {
             | Self::PressWriteClaim { .. }
             | Self::DriftGiveUpDiagnostic { .. }
             | Self::DriftPlanDecided { .. }
+            | Self::ShadowToggle { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::ConvClassifyCall { .. } => false,
@@ -784,6 +898,7 @@ impl JournalEntry {
             | Self::PressWriteClaim { .. }
             | Self::DriftGiveUpDiagnostic { .. }
             | Self::DriftPlanDecided { .. }
+            | Self::ShadowToggle { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::ConvClassifyCall { .. }
@@ -1054,6 +1169,51 @@ impl JournalEntry {
                     half_width_alnum_toggle_active = record.half_width_alnum_toggle_active,
                     "drift give-up diagnostic"
                 );
+            }
+            Self::ShadowToggle { record } => {
+                // 置き換えた手書き行と同じレベル・同じ target(ADR-250 決定 5)。level と target は
+                // 呼び出し点で定数でなければならないので、段のレベルごとにマクロを分ける。
+                if record.step.is_info() {
+                    tracing::info!(
+                        target: "awase_windows::runtime::key_pipeline",
+                        seq,
+                        elapsed_ms,
+                        step = record.step.label(),
+                        vk_code = record.vk_code,
+                        scan_code = record.scan_code,
+                        action = record.action,
+                        kind = record.kind,
+                        injected = record.injected,
+                        current_open = record.current_open,
+                        new_open = record.new_open,
+                        claim = record.claim,
+                        imm_first = record.imm_first,
+                        gji_write_ops = record.gji_write_ops,
+                        gji_other_ops = record.gji_other_ops,
+                        gji_other_bytes = record.gji_other_bytes,
+                        "[shadow-toggle]"
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "awase_windows::runtime::key_pipeline",
+                        seq,
+                        elapsed_ms,
+                        step = record.step.label(),
+                        vk_code = record.vk_code,
+                        scan_code = record.scan_code,
+                        action = record.action,
+                        kind = record.kind,
+                        injected = record.injected,
+                        current_open = record.current_open,
+                        new_open = record.new_open,
+                        claim = record.claim,
+                        imm_first = record.imm_first,
+                        gji_write_ops = record.gji_write_ops,
+                        gji_other_ops = record.gji_other_ops,
+                        gji_other_bytes = record.gji_other_bytes,
+                        "[shadow-toggle]"
+                    );
+                }
             }
             Self::DriftPlanDecided { record } => {
                 tracing::debug!(
@@ -2264,5 +2424,33 @@ mod tests {
         let timing = make_timing_entry();
         assert!(!timing.contains_typed_text());
         assert!(!TYPED_TEXT_TYPE_NAMES.contains(&tag(&timing).as_str()));
+    }
+    #[test]
+    fn shadow_toggle_steps_keep_the_levels_of_the_handwritten_lines() {
+        // 置き換えた手書き `[shadow-toggle]` 行のレベル(ADR-250 段階 4-1): info 8 件・debug 3 件。
+        use ShadowToggleStep::*;
+        let info = [
+            InjectedNotPromoted,
+            EngineOwnsOpenKey,
+            IntentPromoted,
+            TurnOnDelegatedToToggleOff,
+            TurnOnEisuReset,
+            ImeOnDelegatedToToggleOff,
+            ImeOnEisuReset,
+            NoOpWriteInSuppressWindow,
+        ];
+        let debug = [NoOp, ClaimDeclined, ExplicitApplyDispatched];
+        assert!(info.iter().all(|s| s.is_info()));
+        assert!(debug.iter().all(|s| !s.is_info()));
+        let (mut j, _mock) = mock_journal();
+        j.record(JournalEntry::ShadowToggle {
+            record: ShadowToggleRecord {
+                vk_code: Some(0x19),
+                ..ShadowToggleRecord::new(IntentPromoted)
+            },
+        });
+        let json = j.to_json().unwrap();
+        assert!(json.contains("ShadowToggle"));
+        assert!(json.contains("IntentPromoted"));
     }
 }

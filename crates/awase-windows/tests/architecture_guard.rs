@@ -6240,6 +6240,72 @@ fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
     );
 }
 
+/// ADR-250 決定 5 / ADR-139 決定 4 の改訂(段階 4-0): `emit_tracing` のうち、**debug 以外のレベル**または
+/// **`awase::journal` 以外の target** で出す arm の一覧を固定する。
+///
+/// 既定は全 arm が `tracing::debug!(target: "awase::journal", ..)`。手書き行を置き換えた arm だけが
+/// info/warn と元の target を持てる(その arm を足す PR が、この表と構築点の件数を同じ PR で足す)。
+/// 新しい info 以上の arm を黙って足すと、利用者の既定 `info` のログが増える(ADR-139 決定 2、747MB の懸念)ので、
+/// レビューに掛かるようにする。現時点では 1 つも置き換えていないので、表は空。
+#[test]
+fn journal_emit_tracing_non_debug_arms_are_pinned() {
+    /// (arm の目印 = `Self::X {` の variant 名, 期待する info 以上のマクロ数, 期待する非 journal target 数,
+    ///  その型の `crate::journal::JournalEntry::X {` の本番構築点の数)。段階 4-1 以降で足す。
+    const PINNED_NON_DEBUG_ARMS: &[(&str, usize, usize, usize)] = &[
+        // ADR-250 段階 4-1: `[shadow-toggle]` の手書き 11 行の置き換え。info と debug の 2 マクロ、どちらも
+        // `awase_windows::runtime::key_pipeline` の target。構築点は `kp_note_shadow_toggle` の 1 か所。
+        ("ShadowToggle", 1, 2, 1),
+    ];
+
+    const START_MARKER: &str = "fn decision_kind_shape(";
+    const END_MARKER: &str = "/// 統合イベントジャーナル。";
+    let content = read_crate_file("src/journal.rs");
+    let start = content
+        .find(START_MARKER)
+        .unwrap_or_else(|| panic!("marker {START_MARKER:?} not found in journal.rs"));
+    let end = content[start..].find(END_MARKER).map_or_else(
+        || panic!("marker {END_MARKER:?} not found after {START_MARKER:?}"),
+        |i| start + i,
+    );
+    let block = non_comment_lines(&content[start..end]);
+
+    let info_or_higher: usize = ["tracing::info!", "tracing::warn!", "tracing::error!"]
+        .iter()
+        .map(|n| block.matches(n).count())
+        .sum();
+    let other_target =
+        block.matches("target:").count() - block.matches(r#"target: "awase::journal""#).count();
+    let expected_info: usize = PINNED_NON_DEBUG_ARMS.iter().map(|a| a.1).sum();
+    let expected_target: usize = PINNED_NON_DEBUG_ARMS.iter().map(|a| a.2).sum();
+    assert_eq!(
+        info_or_higher, expected_info,
+        "journal.rs の emit_tracing に info/warn/error のマクロが {info_or_higher} 件あります(固定は {expected_info})。\
+         手書き行を置き換える arm を足すなら、同じ PR で PINNED_NON_DEBUG_ARMS に variant・件数・構築点の数を足すこと\
+         (既定 info の出力が増えないことを PR で示す。ADR-250 決定 5)。"
+    );
+    assert_eq!(
+        other_target, expected_target,
+        "journal.rs の emit_tracing に `awase::journal` 以外の target が {other_target} 件あります(固定は {expected_target})。\
+         置き換えた arm の target を足すなら、同じ PR で PINNED_NON_DEBUG_ARMS を更新すること(ADR-250 決定 5)。"
+    );
+    for (variant, _, _, constructions) in PINNED_NON_DEBUG_ARMS {
+        let needle = format!("crate::journal::JournalEntry::{variant} {{");
+        let total: usize = list_src_files()
+            .into_iter()
+            .map(|path| {
+                non_comment_lines(production_code_only(&read_crate_file(&path)))
+                    .matches(&needle)
+                    .count()
+            })
+            .sum();
+        assert_eq!(
+            total, *constructions,
+            "info 以上の arm を持つ `{variant}` の構築点が {total} 件です(固定は {constructions})。\
+             新しい呼び出し元は利用者のログを増やすので、表を更新してレビューに掛けること。"
+        );
+    }
+}
+
 /// ADR-169: `UnifiedJournal::record_key_input` の OS auto-repeat 畳み込みは
 /// 「`key_input` レーンの `buffer.back()` は直前に記録した `KeyInput` である」
 /// という不変条件に依存する。この不変条件は `JournalEntry::KeyInput {` の
