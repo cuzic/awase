@@ -119,7 +119,7 @@ function Snapshot([string]$tag) {
 function Diff-Reg([string]$file) {
   $a = Get-Content (Join-Path $Out "snap-before\$file") -Encoding Unicode -ErrorAction SilentlyContinue
   $b = Get-Content (Join-Path $Out "snap-after\$file") -Encoding Unicode -ErrorAction SilentlyContinue
-  if (-not $a -or -not $b) { Say "(diff $file: missing)"; return }
+  if (-not $a -or -not $b) { Say "(diff ${file}: missing)"; return }
   $diff = Compare-Object $a $b | Where-Object { $_.InputObject -notmatch '^\s*$' }
   Say "=== reg diff $file : $($diff.Count) lines ==="
   $diff | Select-Object -First 400 | ForEach-Object { Say ("{0} {1}" -f $_.SideIndicator, ($_.InputObject.Substring(0, [Math]::Min(300, $_.InputObject.Length)))) }
