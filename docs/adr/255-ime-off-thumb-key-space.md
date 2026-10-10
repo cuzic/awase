@@ -83,7 +83,7 @@ ime = "off"
 
 **照合の位置**: `runtime/key_pipeline.rs::kp_run_inner` の `self.engine.on_input(event, &ctx)` の**直後**、`Decision` が `PassThrough` または `PassThroughWith`(素通し)のときだけ。journal の記録・`kp_stage_post_decision`・`kp_stage_execute` より前。
 
-- 当たったら `decision.force_consume()`(`Decision` の既存 API。effects を保ったまま `Consume` に格上げする)で消費に変え、**`decision.push_effect(Effect::Input(InputEffect::SendKeys(...)))` で `to` を effects の末尾に積み**、`keymap_latch` に積む(KeyUp は `deliver_key_event` ステップ1 が先頭で回収する)。**`send_keymap_target` でその場で SendInput しない**(R7-M1): 遅いルールが当たる打鍵は、エンジンが素通しにした打鍵で、直前の文字も素通し(`ReinjectKey`)として executor のキューに並んでいることがある。その場で送ると Space が先行の文字や遷移の flush を追い越し、「foo bar」と速く打つと「fo obar」になりうる(空白を打つ用途では文字順の入れ替わりがそのまま実害)。effects に積めば FIFO で遷移の effects・先行のキューの後に実行され、`DecisionKind` にも残る。`to` の VK はシェルの `crate::vk::VK_SPACE`(エンジンは生の VK 定数を持たない。ADR-019)。出力層(`output/vk_send.rs`)が `SendKeys` の Space を IME OFF でどう扱うか(warm/cold 判断。`state/warm_send_plan.rs`)は実装時に確かめ、エンジンの Space 親指フォールバック(`ThumbRawVkEmission`)が生の VK を effects で送る前例と同じ effect の型を使う。
+- 当たったら `decision.force_consume()`(`Decision` の既存 API。effects を保ったまま `Consume` に格上げする)で消費に変え、**`decision.push_effect(Effect::Input(InputEffect::SendKeys(...)))` で `to` を effects の末尾に積み**、**エンジンに `engine.record_shell_consumed(&event)`(新設。後述の決定4)を呼んで消費した Down を登録する**(KeyUp と自動リピートはエンジン自身の既存機構が回収する。`keymap_latch` には積まない)。**`send_keymap_target` でその場で SendInput しない**(R7-M1): 遅いルールが当たる打鍵は、エンジンが素通しにした打鍵で、直前の文字も素通し(`ReinjectKey`)として executor のキューに並んでいることがある。その場で送ると Space が先行の文字や遷移の flush を追い越し、「foo bar」と速く打つと「fo obar」になりうる(空白を打つ用途では文字順の入れ替わりがそのまま実害)。effects に積めば FIFO で遷移の effects・先行のキューの後に実行され、`DecisionKind` にも残る。`to` の VK はシェルの `crate::vk::VK_SPACE`(エンジンは生の VK 定数を持たない。ADR-019)。出力層(`output/vk_send.rs`)が `SendKeys` の Space を IME OFF でどう扱うか(warm/cold 判断。`state/warm_send_plan.rs`)は実装時に確かめ、エンジンの Space 親指フォールバック(`ThumbRawVkEmission`)が生の VK を effects で送る前例と同じ effect の型を使う。
 - **この位置にする理由**:
   - (a) 判定に使う `ctx`・エンジンの状態がエンジン自身の判断と同じ(B1)。エンジンが活性(親指として使う)のときは、そもそも素通しにならないので、遅いルールは当たらない。
   - (b) エンジンが Phase 2 で出す遷移の effects(`check_active_transition` の `EngineStateChanged` など)が `PassThroughWith` に載っているので、`force_consume` で保たれる(r2 S1 の前置が不要になる)。`SetOpen` は元から含まれない(ADR-213 P2b)。
@@ -164,8 +164,12 @@ ime = "off"
 
 - Down で `to` を `send_keymap_target` で送る(Space は `to = ["VK_SPACE"]`)。
 - KeyUp とリピートは `keymap_latch` が先頭で回収する(ADR-114 決定4)。**リピートしない**: 無変換を押し続けても Space は 1 個(R5・S5)。本物の Space キーや GJI の InsertSpace(リピートする)とは違う。報告者の期待と合うか確認する(決定3b-2)。
-- **古い latch の手当**(r1 M4、R7-S1): `keymap_latch` は、overflow・フックの素通しで Up を取り逃すと stale に残り、次の Down を「リピート」として無条件に消費する(`deliver_key_event` ステップ1 のコメントに明記)。従来は `from` に親指キーを置けなかったので親指シフトには届かなかったが、遅いルールで親指キーを解禁すると、IME ON でエンジン活性のときの親指の1打鍵が消える。**遅いルールの latch については、ステップ1 で `event.was_down`(フックが物理状態から付ける。overflow で素通しする前に `physical_key_state` を `swap` しているので、取り逃した Up の次の Down は偽になる)が偽の Down は、latch を捨て、通常の流れ(エンジンの判断 → 遅いルール)に渡す**(ステップ1 で再照合しない。遅いルールの照合は `kp_run_inner` 内なので、ステップ1 で再照合するとエンジンを通さずに当ててしまい B1 が再発する)。`KeymapLatch`(`state/keymap_latch.rs`)は vk だけの `Vec<VkCode>` で早い/遅いの区別を持たないので、**latch に種類(早い/遅い)を持たせ、遅いルールの latch にだけ適用する**(既存の早いルールの挙動は変えない。早いルールにも広げるのは別の判断)。回帰テスト必須(物理キー押下ラッチ・ファミリー)。
-- **代替案(評価中、所有者の提案)**: 遅いルールが Down を消費したとき、latch に積む代わりにエンジンへ「シェルが消費した」と記録する API(`lifecycle.on_key_down_consumed` と、bare の親指なら `phase1_held`)を呼ぶ。KeyUp と自動リピートをエンジン自身の既存機構が回収するので、latch の stale と上の手当が要らなくなる見込み。レビューの評価待ち(疑問10)。
+- **消費した Down をエンジンの `KeyLifecycle` に登録する**(所有者の提案、r7 追加評価で採用。r1 M4 の stale latch への手当): `Engine::record_shell_consumed(&event)` を新設する。中身は `lifecycle.on_key_down_consumed(&event)` と、bare の親指なら `phase1_held = Some(vk)`(遅いルールは無変換/変換に限るので常に満たす)だけで、**エンジンの判断(活性/非活性・FSM の状態)は変えない**(「消費した Down の登録」だけの口。ADR-112 の「`Engine::on_input` の唯一の出口」の不変条件とは衝突しない)。呼ぶのは、遅いルールが当たって `force_consume` した後、`kp_stage_execute` より前、同じ打鍵の中。
+  - **KeyUp**: `on_input` が `take_key_up_duty` で `UpDuty::Consume` を取り、非活性のままなら Phase 2 の `release_only` を通って何も送らずに Consume になる(`output_history` に無変換のエントリは無い)。Space は effects で Down+Up を完結しているので、Up の義務は無い。
+  - **自動リピート**: `on_input_body` 冒頭の `phase1_held` のガード(`engine.rs`、`is_key_down && event.was_down && phase1_held == Some(vk)` → `Decision::consumed()`)が、活性・非活性を問わず Phase 1 より前で止めるので、リピート Down は遅いルールに到達しない。
+  - **`keymap_latch` には積まない**。これにより、`KeymapLatch` に早い/遅いの種類を持たせる変更、ステップ1 の `was_down` の手当、`runtime/message_handlers.rs` の変更が**要らなくなる**(古い latch の寿命の問題が、遅いルールについては消える。`keymap_latch` はアプリ無効化・watchdog・アンロック・panic でしか解放されないが、エンジンの `active_keys` はフォーカス変更と活性→非活性のたびに flush される)。
+  - **既存の役割経路(ADR-206、Phase 1 で Consume した変換 = IME ON の単独押下)と同じ挙動**(R2-S4): (i) 押している間に活性化すると、FSM に Down 無しの親指 Up が届く。(ii) 押している間にフォーカスが移ると、`release_pending_and_reinject`(`flush_pending_key_ups`)が、消費済みの Down に対して KeyUp を再注入し、無変換の KeyUp が Down 無しで 1 つ OS/IME に届く(その後の物理 Up は `UpDuty::None` で素通しされ、もう 1 つ届く)。Down の無い KeyUp は、修飾キーと違って固着を作らない(GJI は無変換の Down で動く)ので、実害は無い見込み。(iii) `phase1_held` が flush で消えた後のリピート Down は冒頭のガードを抜けるが、非活性なら `!was_down`(条件9)で遅いルールに当たらず素通しになり、OS には「リピート Down → Up」が届いて対になる。これらを `src/engine/tests.rs` の単体テストで固定する(flush 時の `ReinjectKey(KeyUp)` を含む)。
+  - **早いルールとの分担**(二重の機構にならない): 早いルールはエンジンの**前**で消費するので `keymap_latch` が持ち主、遅いルールはエンジンが打鍵を**見た後**なので `KeyLifecycle` が持ち主。早いルールは `from` に親指キーを禁じたままで、遅いルールは無修飾の無変換/変換に限るので、vk の集合は交わらない(`KeymapTable::new` のテストで固定する)。
 - **親指ラッチとの整合**(r1 M3): フック側の親指ラッチ(`HOOK_STATE.left_thumb_down_scan`、ADR-129)は、`[[keymap]]` が Down を消費しても Up まで立つ。押している間に IME が ON になると、そのあとの文字キーは「親指が押されている」スナップショットを持ってエンジンへ届く。**期待値は既存の役割経路(変換 = IME ON の単独押下)と同じにする**(実装前に現挙動を調べ、検証計画1で固定する。違えるなら理由を書く。R2-S4)。
 - 注入された Space は `INJECTED_MARKER` 付き(ADR-114 決定6)で、フックを素通りして IME(GJI)に届く。
 
@@ -189,11 +193,11 @@ ime = "off"
 
 ### 決定8: 案 K が重すぎると分かったときの引き返し先(r7)
 
-案 K で、次のいずれかが実装・検証で重いと分かったら、案 A1(エンジン内の専用設定)へ切り替える ADR を起こす: (1) 遅いルールの latch と親指ラッチの整合(決定4)が回帰テストで固定しきれない、(2) `kp_run_inner` の前段(`kp_stage_shadow_ime_toggle` 等)が無変換に対して書く副作用の除去が複雑、(3) `PassThroughWith` の effects の扱いで想定外の食い違いが出る、(4) 送信を effects に載せたとき、出力層の warm/cold 判断(`state/warm_send_plan.rs`)との整合が重い(R7-M1 の修正の重さが、案 K と案 A1 の比較で最も効く点)。
+案 K で、次のいずれかが実装・検証で重いと分かったら、案 A1(エンジン内の専用設定)へ切り替える ADR を起こす: (1) `KeyLifecycle` への登録が役割経路(ADR-206)と同じ挙動になることを単体テストで固定しきれない(決定4)、(2) `kp_run_inner` の前段(`kp_stage_shadow_ime_toggle` 等)が無変換に対して書く副作用の除去が複雑、(3) `PassThroughWith` の effects の扱いで想定外の食い違いが出る、(4) 送信を effects に載せたとき、出力層の warm/cold 判断(`state/warm_send_plan.rs`)との整合が重い(R7-M1 の修正の重さが、案 K と案 A1 の比較で最も効く点)。
 
 ### 影響範囲と再発ファミリー(R2-M5、r7)
 
-`src/config.rs`(`KeymapRule` に `ime`、`"off"` 以外は警告)、`crates/awase-windows-core/src/keymap.rs`(コンパイル:遅いルールを分ける、`find_match` は遅いルールを除外、新しい `find_late_match`、禁止の緩和)、`runtime/key_pipeline.rs`(`kp_run_inner` の `engine.on_input` 直後の遅いルールの照合。送信は effects に積む)、`filter_active` と `warn_if_vk_conflicts` は早い・遅いの両方の集合に対して呼ぶ(R7-S3)、`runtime/message_handlers.rs`(ステップ1 の latch に `was_down` の確認)、`src/engine/engine.rs`(読み取り関数 `ime_off_inactive`)、`state/` に `KeyDirectInputEffect` の純粋関数と、遅いルールの発動可否を決める純粋関数(Linux でテストできるよう `runtime/` に置かない)、`hook.rs`(`impersonated` の印)、`crates/awase-gji-config/src/role.rs`(プリセットの `DirectInput` 行の本番定数)、`crates/awase-settings`(再割り当てタブの列)。`fix-requires-evidence.md` の再発ファミリーの**物理キー押下ラッチ(Down/Up 非対称)**に触れ、**キー選択**にも隣接する(無変換/変換の扱い)。同じ PR に (a) 回帰テストを含める。置き場所は `src/engine/tests.rs`(`cargo test --lib`)と `state/` の純粋関数のテスト。`runtime/` 配下の `#[cfg(test)]` は Linux に存在しないので使わない。
+`src/config.rs`(`KeymapRule` に `ime`、`"off"` 以外は警告)、`crates/awase-windows-core/src/keymap.rs`(コンパイル:遅いルールを分ける、`find_match` は遅いルールを除外、新しい `find_late_match`、禁止の緩和)、`runtime/key_pipeline.rs`(`kp_run_inner` の `engine.on_input` 直後の遅いルールの照合。送信は effects に積む)、`filter_active` と `warn_if_vk_conflicts` は早い・遅いの両方の集合に対して呼ぶ(R7-S3)、`src/engine/engine.rs` に `record_shell_consumed`(決定4)、`src/engine/engine.rs`(読み取り関数 `ime_off_inactive`)、`state/` に `KeyDirectInputEffect` の純粋関数と、遅いルールの発動可否を決める純粋関数(Linux でテストできるよう `runtime/` に置かない)、`hook.rs`(`impersonated` の印)、`crates/awase-gji-config/src/role.rs`(プリセットの `DirectInput` 行の本番定数)、`crates/awase-settings`(再割り当てタブの列)。`fix-requires-evidence.md` の再発ファミリーの**物理キー押下ラッチ(Down/Up 非対称)**に触れ、**キー選択**にも隣接する(無変換/変換の扱い)。同じ PR に (a) 回帰テストを含める。置き場所は `src/engine/tests.rs`(`cargo test --lib`)と `state/` の純粋関数のテスト。`runtime/` 配下の `#[cfg(test)]` は Linux に存在しないので使わない。
 
 ## 検証計画
 
@@ -323,11 +327,12 @@ ime = "off"
 | R7-M1 | 反映(決定2)。Space は `send_keymap_target` でその場で送らず、`decision.push_effect(SendKeys)` で effects の末尾に積む。決定8 に引き返し条件(4) を追加 |
 | R7-M2 | 反映(決定2 の条件9)。`!event.was_down` を追加 |
 | R7-M3 | 反映(決定1、決定5)。遅いルールの `from` は無修飾の無変換/変換に限る |
-| R7-S1 | 反映(決定4)。latch に種類を持たせて遅いルールだけに適用し、捨てた後は通常の流れに落とす |
+| R7-S1 | 不要になった(決定4)。`keymap_latch` に積まず、エンジンの `KeyLifecycle` に登録する(所有者の提案を採用) |
 | R7-S2 | 反映(決定2)。発動の印を journal/ログに残す |
 | R7-S3 | 反映(影響範囲)。`filter_active`・`warn_if_vk_conflicts` は両方の集合に |
 | R7-S4 | 反映(決定2 の条件3)。条件1 に含まれる旨を注記 |
 | 追加 | CI 計測(run 38063068778)の結果をコンテキストに反映。仮説 b・c を否定 |
+| 追加評価 | 所有者の提案(消費した Down を `Engine::record_shell_consumed` でエンジンの `KeyLifecycle` に登録し、`keymap_latch` には積まない)を採用(決定4)。S1(latch の種類・`was_down` の破棄)と `message_handlers.rs` の変更は不要になった |
 
 ## 未解決の疑問
 
@@ -340,4 +345,4 @@ ime = "off"
 7. 報告者への確認4点(決定3b)は未回答。回答次第で実装するか保留するかが決まる。
 8. MS-IME 本体の無変換/変換の値 0〜3 と「値なし」の既定の効果。確かめるまで `Unknown`(発動しない)のままだが、MS-IME 利用者にも効かせる要望が出たときの測定方法。
 9. 再変換(既定の MS-IME プリセットの変換は `Reconvert`)を Space で上書きしてよいと選べる余地を残すか。今回は GJI のキー設定を CUSTOM にして該当行を消す案内で足りるはずなので入れず、需要が出てから扱う(R4-S1)。
-10. 所有者の提案(エンジンへ「シェルが消費した」と記録する API で、latch の代わりに Up とリピートを回収する)を採るか(決定4 の代替案)。レビューの評価待ち。
+10. (閉じた)所有者の提案(エンジンへ消費した Down を登録する)は、レビューの追加評価で採ることになった(決定4)。
