@@ -114,7 +114,7 @@ function Snapshot([string]$tag) {
   & reg.exe export HKCU (Join-Path $d 'hkcu.reg') /y | Out-Null
   & reg.exe export 'HKLM\SOFTWARE\Microsoft\IME' (Join-Path $d 'hklm-ime.reg') /y 2>&1 | Out-Null
   & reg.exe export 'HKLM\SOFTWARE\Microsoft\CTF' (Join-Path $d 'hklm-ctf.reg') /y 2>&1 | Out-Null
-  Say "snapshot $tag: hkcu.reg=$((Get-Item (Join-Path $d 'hkcu.reg')).Length) bytes"
+  Say "snapshot ${tag}: hkcu.reg=$((Get-Item (Join-Path $d 'hkcu.reg')).Length) bytes"
 }
 function Diff-Reg([string]$file) {
   $a = Get-Content (Join-Path $Out "snap-before\$file") -Encoding Unicode -ErrorAction SilentlyContinue
