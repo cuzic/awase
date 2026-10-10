@@ -286,6 +286,7 @@ impl EvdevInput {
                         // evdev はハードウェアイベントのみ（uinput 注入は別デバイス経由で
                         // ここには来ない）
                         injected: false,
+                        foreign_ctrl: false,
                     };
 
                     tracing::trace!(

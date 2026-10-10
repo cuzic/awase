@@ -216,6 +216,7 @@ impl EvBuilder {
             left_thumb_down_snapshot: None,
             right_thumb_down_snapshot: None,
             injected: self.injected,
+            foreign_ctrl: false,
         }
     }
 }
@@ -921,6 +922,7 @@ fn test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass() 
             left_thumb_down_snapshot: None,
             right_thumb_down_snapshot: None,
             injected: false,
+            foreign_ctrl: false,
         };
 
         let result = engine.on_event(down);
@@ -970,6 +972,7 @@ fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
     };
 
     let result = engine.on_event(down);
@@ -1209,6 +1212,7 @@ fn enter_thumb_down_event(ts: Timestamp) -> RawKeyEvent {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
     }
 }
 
@@ -3093,6 +3097,7 @@ fn test_nicola_state_stores_scan_code() {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
     };
 
     let result = engine.on_event(event);
@@ -3130,6 +3135,7 @@ fn test_pending_char_thumb_stores_char_scan() {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
     };
     engine.on_event(char_event);
 
@@ -3149,6 +3155,7 @@ fn test_pending_char_thumb_stores_char_scan() {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
     };
     let result = engine.on_event(thumb_event);
     assert_pending(&result);
@@ -6303,6 +6310,37 @@ mod engine_integration_tests {
         let mut engine = make_test_engine();
         let d = engine.on_input(Ev::down(VK_CTRL).at(100).build(), &ime_on_ctx());
         assert!(!d.is_consumed(), "Ctrl KeyDown should pass through");
+    }
+
+    /// ADR-249(BUG-197): 音声入力ソフトの注入 Ctrl+V。フックが注入された打鍵の snapshot に ctrl を足せば
+    /// (`ctx.modifiers.ctrl=true`)、V↓ は `OsModifierHeld` で素通しされ NICOLA 変換されない。
+    /// Ctrl↑ が V↑ より先に来ても V↑ は食われない(`handle_bypass` が出力履歴から外す)。
+    #[test]
+    fn injected_ctrl_v_with_foreign_ctrl_snapshot_passes_through_without_nicola_conversion() {
+        let mut engine = make_test_engine();
+        let mut ctx = ime_on_ctx();
+        ctx.modifiers.ctrl = true;
+
+        let v_down = engine.on_input(Ev::down(VK_A).at(100).injected(true).build(), &ctx);
+        assert!(
+            !v_down.is_consumed(),
+            "注入 Ctrl 中の 文字↓ は NICOLA 変換せず素通し"
+        );
+
+        // Ctrl↑ が先に来た後の 文字↑(ctx の ctrl は既に落ちている)
+        let v_up = engine.on_input(Ev::up(VK_A).at(200).injected(true).build(), &ime_on_ctx());
+        assert!(
+            !v_up.is_consumed(),
+            "文字↑ も素通し(食われると V が押されたままになる)"
+        );
+    }
+
+    /// 対照: ctrl が無い注入文字キー は従来どおり Char として変換される(修正前の「ふ」。テストの配列では V が無いので A で代用)。
+    #[test]
+    fn injected_v_without_ctrl_is_converted_as_before() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_A).at(100).injected(true).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
     }
 
     #[test]

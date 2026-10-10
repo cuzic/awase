@@ -3929,6 +3929,86 @@ fn app_disable_leave_edge_clears_only_ctrl_and_shift_not_alt_or_win() {
     }
 }
 
+/// ADR-249(BUG-197): 他アプリが注入した Ctrl の記録(`HOOK_STATE.foreign_ctrl`)の読み書きは `hook.rs` だけで、
+/// 読むのは `hook_callback` の snapshot 作成部(`is_injected` のときだけ)の1か所。`HeldModifiers`・
+/// `read_os_modifiers`・`ctrl_consumed_since_down`・`build_ctx` に別枠を入れると、ADR-054 の stuck
+/// (解放→復元で他アプリの Ctrl を押し直す)や、物理打鍵の誤った素通しが再発する。
+/// 解除は5経路(注入 Up・物理 Up・reset・app-disable の Leave・watchdog reinstall)すべてに配線されていること。
+#[test]
+fn foreign_ctrl_latch_is_read_only_at_hook_snapshot_and_cleared_on_five_paths() {
+    let strip = |s: &str| -> String {
+        non_comment_lines(production_code_only(s))
+            .split_whitespace()
+            .collect()
+    };
+    let mut readers = Vec::new();
+    for path in list_src_files() {
+        let compact = strip(&read_crate_file(&path));
+        let reads = compact.matches("ctrl_for_injected_key(").count();
+        let uses =
+            compact.matches("foreign_ctrl.").count() + compact.matches("ForeignCtrlLatch").count();
+        if reads > 0 && path != "src/state/foreign_modifier.rs" {
+            readers.push((path.clone(), reads));
+        }
+        if uses > 0 && path != "src/state/foreign_modifier.rs" {
+            assert_eq!(
+                path, "src/hook.rs",
+                "`HOOK_STATE.foreign_ctrl` の利用は hook.rs だけ(ADR-249 決定5): {path}"
+            );
+        }
+    }
+    assert_eq!(
+        readers,
+        vec![("src/hook.rs".to_string(), 1)],
+        "別枠を読んでよいのは hook_callback の snapshot 作成部だけ"
+    );
+
+    let hook = read_crate_file("src/hook.rs");
+    let cb: String = non_comment_lines(extract_fn_body(
+        &hook,
+        "unsafe extern \"system\" fn hook_callback",
+    ))
+    .split_whitespace()
+    .collect();
+    assert!(
+        cb.contains("letforeign_ctrl=is_injected&&!modifier_snapshot.ctrl&&HOOK_STATE.foreign_ctrl.ctrl_for_injected_key("),
+        "snapshot へ足すのは注入された打鍵(is_injected)で、物理 Ctrl が無いときだけ"
+    );
+    assert!(
+        cb.contains("foreign_ctrl.on_injected_down(vk,callback_ts)"),
+        "注入 Ctrl↓ の記録"
+    );
+    assert_eq!(
+        cb.matches("foreign_ctrl.on_up(vk)").count(),
+        2,
+        "注入 Up と物理 Up の2か所で解除"
+    );
+
+    for sig in [
+        "pub fn reset_physical_key_state",
+        "fn clear_hook_latches_for_app_disable",
+        "fn clear_hook_latches_for_watchdog_reinstall",
+    ] {
+        let body: String = non_comment_lines(extract_fn_body(&hook, sig))
+            .split_whitespace()
+            .collect();
+        assert!(
+            body.contains("HOOK_STATE.foreign_ctrl.clear()"),
+            "{sig} が foreign_ctrl を解除していない"
+        );
+    }
+    // 読んではいけない場所: 物理状態を直接読む側。
+    for (path, needle) in [
+        ("src/observer/focus_observer.rs", "foreign_ctrl"),
+        ("src/hook.rs", "ctrl_consumed_since_down.store(foreign"),
+    ] {
+        assert!(
+            !read_crate_file(path).contains(needle),
+            "{path} は {needle} に触れてはいけない(ADR-249 決定5)"
+        );
+    }
+}
+
 #[test]
 fn engine_thread_posts_go_through_win32_chokepoint() {
     let mut post_thread_sites = Vec::new();

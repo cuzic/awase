@@ -228,6 +228,7 @@ fn build_event(vk: VkCode, event_type: KeyEventType, timestamp: u64) -> RawKeyEv
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
     }
 }
 

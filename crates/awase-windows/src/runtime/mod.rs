@@ -486,9 +486,11 @@ impl Runtime {
         // Alt なりすまし中は本物の Alt 押下を無視する（hook.rs の
         // `is_alt_impersonation_active` doc 参照。ここを直さないと、hook.rs 側の
         // RawKeyEvent.modifier_snapshot は正しく補正されていても、
-        // bypass_reason() が実際に見る PhysicalKeyState.modifiers はこの
-        // build_ctx() の戻り値から来る（別経路）ため、なりすましたキーが
-        // 常に OsModifierHeld でバイパスされてしまう）。
+        // この build_ctx() の戻り値（タイマー・フォーカス・refresh 用の別経路）は
+        // 補正されないままになる）。なお打鍵の bypass_reason() が見る ctx は
+        // `key_pipeline.rs` が hook 時点の `event.modifier_snapshot` から組む
+        // （ADR-129）ので、ここではない。他アプリの注入 Ctrl（ADR-249）も
+        // 打鍵の snapshot にだけ足しており、この関数には入れない。
         if crate::hook::is_alt_impersonation_active() {
             modifiers.alt = false;
         }
