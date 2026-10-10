@@ -66,10 +66,29 @@ run 38016104665(commit d98c291d)。`ablations/a9`(観測を外す)・`a10`(予�
 - `keys.ime_on = VK_F17`(awase が IME ON を送る、`-awimeon`)では、F16 は 3/3 PASS(修正後は Engine が OFF に追随)。F17 のあと GJI が半角英数のままで `ka`(Engine は OFF、IME の実状態と一致)となり 3/3 FAIL。
   **GJI は開いたままの IME ON で半角英数をひらがなへ戻さない**ため。別件(下記)。
 
+### 読めない窓の確認(Windows Terminal、TsfNative)
+
+案1が必要になる窓(直接観測が届かない窓)を探すため、実 Windows Terminal(`wt_probe.py` 相 F、`.github/workflows/f16-wt-verify.yml`、run 38018835598)で同じ A/B をした。
+GJI の CUSTOM 表(F16=半角英数、Hiragana=ひらがな、Enter=Commit)。かな(Engine ON)で `kata`→かな、F16 のあと `kata` が ASCII のまま届くか(各変種 6 回)。
+
+| 変種 | PASS / FAIL / INVALID |
+|---|---|
+| awase なし(対照) | 6 / 0 / 0 |
+| 修正前相当(両案を外す、a11) | **6 / 0 / 0** |
+| 案2のみ(a10) | 6 / 0 / 0 |
+| 案1のみ(a9) | 6 / 0 / 0 |
+| 両案 | 6 / 0 / 0 |
+
+- **Windows Terminal では修正前でも再現しない**。TsfNative の窓は別の観測(TSF の conv 観測、`conv_obs`)が F16 の効果を拾い、1 秒余りで Engine が追随するため。
+  Chrome では修正前に 3/3 FAIL だったのと対照的。
+- したがって、**案1が必要になる窓は、この CI の範囲(Chrome・Windows Terminal)では見つからなかった**。案1が救うのは「どの観測も届かない窓」だけだが、そのような窓を CI で作れていない
+  (InputRelay は設計上 awase が観測を採らない窓で、本件の対象としては不適)。
+- 検証の注意: 初回の run は全回 INVALID だった。CUSTOM 表に Enter/Escape の行が無く、未確定文字列を確定できなかったため(表に行を足して解消)。
+
 ### 判断
 
-両案とも残す。案2は読める窓全般(GJI 以外の IME を含む)へ効く最小の変更(1 行)、案1は GJI の CUSTOM 表で観測が読めない窓に効く見込みだが、現時点の CI では案2と区別できない。
-案1は約 70 行と単体テスト 6 本の追加なので、案1の単独の価値は「観測が読めない窓」の CI(TSF 経路)で確認するまで保留とし、確認できなければ撤去を検討する。
+暫定: 案2は読める窓全般(GJI 以外の IME を含む)へ効く最小の変更(1 行)、案1は GJI の CUSTOM 表で観測が読めない窓に効く見込みだが、現時点の CI では案2と区別できない。
+案1は約 70 行と単体テスト 6 本の追加で、CI では案2との差を示せなかった(Chrome は案2が読める窓、Windows Terminal は修正前でも追随する)。**案1の撤去を推奨**する(読めない窓で F キーの追随が欠ける報告が出たら、本 ADR の設計で入れ直す)。
 
 ## 既知の限界
 
