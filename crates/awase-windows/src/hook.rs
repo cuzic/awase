@@ -1544,7 +1544,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // ADR-249: 他アプリの注入 Ctrl を別枠に記録する(`physical_key_state` は従来どおり更新しない)。
         // `focus_app_disabled` の早期 return より前。フックコールバック上ではログを出さない。
         if is_keydown {
-            HOOK_STATE.foreign_ctrl.on_injected_down(vk, callback_ts);
+            HOOK_STATE.foreign_ctrl.on_injected_down(
+                vk,
+                callback_ts,
+                crate::tuning::FOREIGN_CTRL_TTL_MS * 1_000,
+            );
         } else {
             HOOK_STATE.foreign_ctrl.on_up(vk);
         }

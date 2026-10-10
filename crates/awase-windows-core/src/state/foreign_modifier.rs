@@ -13,14 +13,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awase::types::VkCode;
 
+use crate::vk::{VK_CONTROL, VK_LCONTROL, VK_RCONTROL};
+
 /// Ctrl のスロット(左 = 0、右 = 1)。generic `VK_CONTROL`(0x11)は左スロットに数える
 /// (OS は VK ごと1ビットで、0x11 は左右どちらの Up でも落ちうる)。Ctrl 以外は `None`。
 #[must_use]
 pub const fn ctrl_slot(vk: VkCode) -> Option<usize> {
-    match vk.0 {
-        0x11 | 0xA2 => Some(0),
-        0xA3 => Some(1),
-        _ => None,
+    if vk.0 == VK_CONTROL.0 || vk.0 == VK_LCONTROL.0 {
+        Some(0)
+    } else if vk.0 == VK_RCONTROL.0 {
+        Some(1)
+    } else {
+        None
     }
 }
 
@@ -47,11 +51,12 @@ impl ForeignCtrlLatch {
         }
     }
 
-    /// 他アプリの注入 Ctrl KeyDown。**まだ記録がなければ** `ts_us` を書く
-    /// (オートリピート・押し直しで期限を延ばさない)。`ts_us == 0` は「記録なし」と区別できないので書かない。
-    pub fn on_injected_down(&self, vk: VkCode, ts_us: u64) {
+    /// 他アプリの注入 Ctrl KeyDown。**記録が無い、または期限切れなら** `ts_us` を書く。期限内なら書かない
+    /// (オートリピート・押し直しで期限を延ばさない)。期限切れを上書きするのは、KeyUp が欠けた古い記録が
+    /// 次の貼り付けの記録を塞がないため(Opus レビュー S1)。`ts_us == 0` は「記録なし」と区別できないので書かない。
+    pub fn on_injected_down(&self, vk: VkCode, ts_us: u64, ttl_us: u64) {
         if let Some(slot) = ctrl_slot(vk).and_then(|i| self.down_at_us.get(i)) {
-            if ts_us != 0 && slot.load(Ordering::Relaxed) == 0 {
+            if ts_us != 0 && !foreign_ctrl_active(ts_us, slot.load(Ordering::Relaxed), ttl_us) {
                 slot.store(ts_us, Ordering::Relaxed);
             }
         }
@@ -127,7 +132,7 @@ mod tests {
     fn injected_key_gets_ctrl_within_ttl_only() {
         let l = ForeignCtrlLatch::new();
         assert!(!l.ctrl_for_injected_key(100, TTL));
-        l.on_injected_down(L, 100);
+        l.on_injected_down(L, 100, TTL);
         assert!(l.ctrl_for_injected_key(101, TTL));
         assert!(!l.ctrl_for_injected_key(100 + TTL, TTL));
     }
@@ -135,23 +140,34 @@ mod tests {
     #[test]
     fn first_down_is_kept_so_autorepeat_does_not_extend() {
         let l = ForeignCtrlLatch::new();
-        l.on_injected_down(L, 100);
-        l.on_injected_down(L, 900_000);
+        l.on_injected_down(L, 100, TTL);
+        l.on_injected_down(L, 900_000, TTL);
         assert!(!l.ctrl_for_injected_key(100 + TTL, TTL));
+    }
+
+    #[test]
+    fn expired_record_is_replaced_by_the_next_down() {
+        // KeyUp が欠けた古い記録が、次の貼り付けの記録を塞がない。
+        let l = ForeignCtrlLatch::new();
+        l.on_injected_down(L, 100, TTL);
+        let later = 100 + 5 * TTL;
+        assert!(!l.ctrl_for_injected_key(later, TTL));
+        l.on_injected_down(L, later, TTL);
+        assert!(l.ctrl_for_injected_key(later + 1, TTL));
     }
 
     #[test]
     fn zero_timestamp_is_never_recorded() {
         let l = ForeignCtrlLatch::new();
-        l.on_injected_down(L, 0);
+        l.on_injected_down(L, 0, TTL);
         assert!(!l.ctrl_for_injected_key(1, TTL));
     }
 
     #[test]
     fn up_releases_only_the_same_slot() {
         let l = ForeignCtrlLatch::new();
-        l.on_injected_down(L, 100);
-        l.on_injected_down(R, 100);
+        l.on_injected_down(L, 100, TTL);
+        l.on_injected_down(R, 100, TTL);
         l.on_up(R);
         assert!(l.ctrl_for_injected_key(200, TTL), "左はまだ有効");
         l.on_up(L);
@@ -161,7 +177,7 @@ mod tests {
     #[test]
     fn generic_ctrl_shares_left_slot() {
         let l = ForeignCtrlLatch::new();
-        l.on_injected_down(GENERIC, 100);
+        l.on_injected_down(GENERIC, 100, TTL);
         assert!(l.ctrl_for_injected_key(200, TTL));
         l.on_up(L);
         assert!(!l.ctrl_for_injected_key(200, TTL));
@@ -170,8 +186,8 @@ mod tests {
     #[test]
     fn non_ctrl_keys_do_not_touch_latch() {
         let l = ForeignCtrlLatch::new();
-        l.on_injected_down(VkCode(0x56), 100);
-        l.on_injected_down(L, 100);
+        l.on_injected_down(VkCode(0x56), 100, TTL);
+        l.on_injected_down(L, 100, TTL);
         l.on_up(VkCode(0x56));
         assert!(l.ctrl_for_injected_key(200, TTL));
     }
@@ -179,8 +195,8 @@ mod tests {
     #[test]
     fn clear_drops_both_slots() {
         let l = ForeignCtrlLatch::new();
-        l.on_injected_down(L, 100);
-        l.on_injected_down(R, 100);
+        l.on_injected_down(L, 100, TTL);
+        l.on_injected_down(R, 100, TTL);
         l.clear();
         assert!(!l.ctrl_for_injected_key(200, TTL));
     }
@@ -188,7 +204,7 @@ mod tests {
     #[test]
     fn either_slot_suffices() {
         let l = ForeignCtrlLatch::new();
-        l.on_injected_down(R, 100);
+        l.on_injected_down(R, 100, TTL);
         assert!(l.ctrl_for_injected_key(200, TTL));
     }
 }
