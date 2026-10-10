@@ -263,12 +263,47 @@ impl LegacyMsImeToggleAssignment {
     }
 }
 
+/// FNV-1a(64bit)の初期値(`awase_keymap_learn::fingerprint`と同じ系統。値自体に意味は無い)。
+pub(crate) const STYLE_HASH_SEED: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// `hash`に「名前・値の有無・長さ・バイト列」を混ぜる(ADR-254)。旧UIのキーテンプレートの表
+/// (`StyleList\Custom\key`・`S*key`)や`keystyle`の名前を、指紋・版スタンプ用の1つの値にする。
+/// 値が無い(`None`)と空のバイト列(`Some(&[])`)は区別する。永続化される指紋に入るので、この実装を
+/// 変えると該当利用者の学習表が失効する点に注意(`msime_style_hash_is_stable`が固定)。
+#[must_use]
+pub(crate) fn mix_style_value(mut hash: u64, name: &str, value: Option<&[u8]>) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut byte = |b: u8| {
+        hash = (hash ^ u64::from(b)).wrapping_mul(PRIME);
+    };
+    for b in name.bytes() {
+        byte(b);
+    }
+    match value {
+        None => byte(0),
+        Some(v) => {
+            byte(1);
+            for b in u64::try_from(v.len()).unwrap_or(u64::MAX).to_le_bytes() {
+                byte(b);
+            }
+            for &b in v {
+                byte(b);
+            }
+        }
+    }
+    hash
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 
-    use super::{LegacyKeyStyle, LegacyKeymapRecord, LegacyMsImeToggleAssignment};
+    use super::{
+        mix_style_value, LegacyKeyStyle, LegacyKeymapRecord, LegacyMsImeToggleAssignment,
+        STYLE_HASH_SEED,
+    };
+    use crate::state::key_effect_predictor::MsImeKeystyle;
 
     const IMEJP_BASE: &str = "Software\\Microsoft\\IME\\15.0\\IMEJP";
 
@@ -431,6 +466,72 @@ mod windows_impl {
         result.is_ok().then_some(data)
     }
 
+    /// `keystyle`を読んで、`MsImeKeystyle`(と、名前付きスタイルならその名前)に分類する(ADR-254)。
+    /// 値が無い(旧UIの設定画面を一度も開いていない既定)は`Absent`、未知の名前・読み取り失敗は`Unknown`。
+    fn classify_keystyle() -> (MsImeKeystyle, Option<&'static str>) {
+        match read_active_style() {
+            Ok(None) => (MsImeKeystyle::Absent, None),
+            Ok(Some(LegacyKeyStyle::Natural)) => (MsImeKeystyle::Natural, None),
+            Ok(Some(LegacyKeyStyle::Custom)) => (MsImeKeystyle::Custom, None),
+            Ok(Some(
+                s @ (LegacyKeyStyle::Atok
+                | LegacyKeyStyle::MsIme2000
+                | LegacyKeyStyle::Vje
+                | LegacyKeyStyle::Wx),
+            )) => (MsImeKeystyle::Named, Some(s.as_str())),
+            Ok(Some(LegacyKeyStyle::Other)) | Err(_) => (MsImeKeystyle::Unknown, None),
+        }
+    }
+
+    /// `StyleList\Custom`の表(`key`と`S0key`〜`SFkey`)のハッシュ。どれかが読めなければ`None`
+    /// (テンプレートで`S*key`の集合が違うので、`S0`〜`SF`を全部見る。観測では`S1`〜`SE`の一部)。
+    fn read_custom_table_hash() -> Option<u64> {
+        use windows::Win32::System::Registry::RRF_RT_REG_BINARY;
+        let subkey = format!("{IMEJP_BASE}\\StyleList\\Custom");
+        let mut hash = STYLE_HASH_SEED;
+        let names = std::iter::once("key".to_string()).chain((0..16).map(|n| format!("S{n:X}key")));
+        for name in names {
+            let value = read_raw_value(&subkey, &name, RRF_RT_REG_BINARY.0).ok()?;
+            hash = mix_style_value(hash, &name, value.as_deref());
+        }
+        Some(hash)
+    }
+
+    /// 旧UIのキーテンプレートの読み取り結果と、指紋に混ぜるハッシュ(`Custom`なら表のハッシュ、
+    /// 名前付きならテンプレート名のハッシュ、それ以外は`None`)を返す(ADR-254)。
+    #[must_use]
+    pub(crate) fn read_keystyle() -> (MsImeKeystyle, Option<u64>) {
+        let (style, name) = classify_keystyle();
+        let hash = match style {
+            MsImeKeystyle::Custom => read_custom_table_hash(),
+            MsImeKeystyle::Named => name.map(|n| mix_style_value(STYLE_HASH_SEED, n, None)),
+            _ => None,
+        };
+        (style, hash)
+    }
+
+    /// 版スタンプ用の値(ADR-254)。`keystyle`の種別と、`Custom`のときは`key`・`S4key`の中身を混ぜる
+    /// (2 つだけ。打鍵の経路で 2 秒ごとに呼ばれるので全表は読まない)。`Absent`/`Natural`は 0。
+    #[must_use]
+    pub(crate) fn keystyle_stamp_mix() -> u64 {
+        use windows::Win32::System::Registry::RRF_RT_REG_BINARY;
+        let (style, name) = classify_keystyle();
+        let mut hash = mix_style_value(STYLE_HASH_SEED, "tag", Some(&[style.tag()]));
+        if let Some(n) = name {
+            hash = mix_style_value(hash, n, None);
+        }
+        if style == MsImeKeystyle::Custom {
+            let subkey = format!("{IMEJP_BASE}\\StyleList\\Custom");
+            for n in ["key", "S4key"] {
+                let value = read_raw_value(&subkey, n, RRF_RT_REG_BINARY.0)
+                    .ok()
+                    .flatten();
+                hash = mix_style_value(hash, n, value.as_deref());
+            }
+        }
+        hash
+    }
+
     /// 「以前のバージョンのMicrosoft IMEを使う」互換モードチェックボックスの状態を読む
     /// （ADR-197決定4）。
     ///
@@ -457,11 +558,42 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub(crate) use windows_impl::{read_legacy_compat_mode_enabled, read_legacy_toggle_assignment};
+pub(crate) use windows_impl::{
+    keystyle_stamp_mix, read_keystyle, read_legacy_compat_mode_enabled,
+    read_legacy_toggle_assignment,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-254: 指紋・版スタンプに入るハッシュの安定性と区別(値の有無・長さ・中身・名前)。
+    /// この実装を変えると、`keystyle`が既定でない利用者の学習表が失効する。
+    #[test]
+    fn msime_style_hash_is_stable() {
+        let a = mix_style_value(STYLE_HASH_SEED, "key", Some(b"abc"));
+        assert_eq!(a, mix_style_value(STYLE_HASH_SEED, "key", Some(b"abc")));
+        assert_ne!(a, mix_style_value(STYLE_HASH_SEED, "key", Some(b"abd")));
+        assert_ne!(a, mix_style_value(STYLE_HASH_SEED, "S4key", Some(b"abc")));
+        // 値が無い(None)と空のバイト列は区別する。
+        assert_ne!(
+            mix_style_value(STYLE_HASH_SEED, "key", None),
+            mix_style_value(STYLE_HASH_SEED, "key", Some(&[]))
+        );
+        // 名前のハッシュ(名前付きスタイルの識別)は、ATOK と VJE で違う。
+        assert_ne!(
+            mix_style_value(STYLE_HASH_SEED, "ATOK", None),
+            mix_style_value(STYLE_HASH_SEED, "VJE", None)
+        );
+        // 実装の固定(FNV-1a、名前"key"・値無し)。
+        assert_eq!(mix_style_value(STYLE_HASH_SEED, "key", None), {
+            let mut h = STYLE_HASH_SEED;
+            for b in b"key".iter().copied().chain(std::iter::once(0u8)) {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            h
+        });
+    }
 
     /// 「無変換=CE CD CD CD CD CD」（2026-09-07 dragonflyg4実機、
     /// `StyleList\Custom\key`に実際に書き込まれたバイト列そのもの）。
