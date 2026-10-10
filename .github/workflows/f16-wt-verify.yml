@@ -95,6 +95,8 @@ jobs:
       - name: 結果を表示
         if: always()
         shell: pwsh
+        env:
+          PYTHONUTF8: '1'
         run: |
           "## f16-wt-verify (${{ matrix.variant.name }})" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if (Test-Path out\results.json) {
