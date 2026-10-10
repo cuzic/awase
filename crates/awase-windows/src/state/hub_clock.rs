@@ -17,8 +17,12 @@ use std::time::{Duration, Instant};
 /// 時刻の供給元。
 #[derive(Debug, Clone, Copy)]
 pub enum HubClock {
-    /// 実時計。`tick` は `GetTickCount64` 相当を返す関数。
-    Wall { tick: fn() -> u64 },
+    /// 実時計。`tick` は `GetTickCount64` 相当、`instant` は `Instant::now` を返す関数
+    /// （どちらも構築側＝殻が渡す。核は壁時計を直接読まない。ADR-229 段階 B）。
+    Wall {
+        tick: fn() -> u64,
+        instant: fn() -> Instant,
+    },
     /// 手動の仮想時計。`advance_ms` でだけ進む。
     Manual {
         base: Instant,
@@ -30,15 +34,16 @@ pub enum HubClock {
 impl HubClock {
     /// 実時計。
     #[must_use]
-    pub const fn wall(tick: fn() -> u64) -> Self {
-        Self::Wall { tick }
+    pub const fn wall(tick: fn() -> u64, instant: fn() -> Instant) -> Self {
+        Self::Wall { tick, instant }
     }
 
-    /// 仮想時計。`base_tick` が経過 0ms の tick。`Instant` の起点は構築時の実時刻。
+    /// 仮想時計。`base_tick` が経過 0ms の tick、`base` が経過 0ms の `Instant`
+    /// （呼び出し側が渡す。テストは `Instant::now()` でよい）。
     #[must_use]
-    pub fn manual(base_tick: u64) -> Self {
+    pub const fn manual(base_tick: u64, base: Instant) -> Self {
         Self::Manual {
-            base: Instant::now(),
+            base,
             base_tick,
             elapsed_ms: 0,
         }
@@ -48,7 +53,7 @@ impl HubClock {
     #[must_use]
     pub fn now_instant(&self) -> Instant {
         match *self {
-            Self::Wall { .. } => Instant::now(),
+            Self::Wall { instant, .. } => instant(),
             Self::Manual {
                 base, elapsed_ms, ..
             } => base + Duration::from_millis(elapsed_ms),
@@ -59,7 +64,7 @@ impl HubClock {
     #[must_use]
     pub fn now_tick(&self) -> u64 {
         match *self {
-            Self::Wall { tick } => tick(),
+            Self::Wall { tick, .. } => tick(),
             Self::Manual {
                 base_tick,
                 elapsed_ms,
@@ -82,7 +87,7 @@ mod tests {
 
     #[test]
     fn manual_clock_moves_instant_and_tick_together_only_when_advanced() {
-        let mut c = HubClock::manual(10_000);
+        let mut c = HubClock::manual(10_000, Instant::now());
         let (i0, t0) = (c.now_instant(), c.now_tick());
         assert_eq!(c.now_instant(), i0, "進めない限り止まっている");
         assert_eq!(c.now_tick(), t0);
@@ -93,7 +98,7 @@ mod tests {
 
     #[test]
     fn wall_clock_reads_the_given_tick_function_and_ignores_advance() {
-        let mut c = HubClock::wall(|| 42);
+        let mut c = HubClock::wall(|| 42, Instant::now);
         c.advance_ms(1_000);
         assert_eq!(c.now_tick(), 42);
     }

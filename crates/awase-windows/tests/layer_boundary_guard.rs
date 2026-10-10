@@ -549,6 +549,7 @@ const CORE_MODULES: &[&str] = &[
     "gji_direct_mechanism",
     "half_width_alnum",
     "hook_state",
+    "hub_clock",
     "hook_watchdog",
     "ime_actuation",
     "ime_actuation_decision",
@@ -593,10 +594,7 @@ const CORE_MODULES: &[&str] = &[
 
 /// ungated だが現状 Tier-2 の規則に違反するファイルと、その理由。直したら `CORE_MODULES` へ移す
 /// （`core_modules_violation_list_is_not_stale` が、違反が消えたのに残っているものを失敗させる）。
-const NOT_CORE_MODULES: &[(&str, &str)] = &[(
-    "hub_clock",
-    "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
-)];
+const NOT_CORE_MODULES: &[(&str, &str)] = &[];
 
 /// 文字列リテラルの中身を落とす（`"..."` → `""`）。ログ文言に `std::fs` 等が出ても誤検出しない。
 /// 生文字列・複数行文字列は扱わない。

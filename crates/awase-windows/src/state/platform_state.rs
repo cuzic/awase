@@ -2087,7 +2087,10 @@ mod tests {
 
     /// テスト共通の `PlatformState`: 仮想時計（進めない限り `BASE_TICK` で止まる）。
     fn ps_for_test() -> PlatformState {
-        PlatformState::for_test(crate::state::hub_clock::HubClock::manual(BASE_TICK))
+        PlatformState::for_test(crate::state::hub_clock::HubClock::manual(
+            BASE_TICK,
+            std::time::Instant::now(),
+        ))
     }
 
     /// shadow_model を直接設定するヘルパ:
@@ -2124,7 +2127,7 @@ mod tests {
     #[test]
     fn manual_hub_clock_drives_event_monotonic() {
         let mut ps = ps_for_test();
-        ps.ime.clock = crate::state::hub_clock::HubClock::manual(10_000);
+        ps.ime.clock = crate::state::hub_clock::HubClock::manual(10_000, std::time::Instant::now());
         let started_at = |ps: &PlatformState| match ps.ime.model().input_barrier {
             Some(InputBarrier::FocusTransition { started_at, .. }) => started_at,
             ref other => panic!("FocusTransition の barrier が立っていない: {other:?}"),

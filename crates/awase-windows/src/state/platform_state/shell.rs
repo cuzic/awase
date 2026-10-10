@@ -8,6 +8,8 @@
 //! このファイルも走査し、`_in_scope` 版の呼び出しがファイルごとに固定件数であることを確認する
 //! （`shell_methods_only_read_scope_once_and_delegate` が殻の中身も固定する）。
 
+use std::time::Instant;
+
 use super::{
     ApplyGeneration, FocusStore, GateStore, ImeApplyAcceptance, ImeStateHub, KeymapStore,
     PlatformState,
@@ -19,7 +21,7 @@ use crate::state::TickMs;
 // `pub(crate) fn` ではない書き方で置く（殻の形の検査は `pub(crate) fn` ごとに委譲 1 行を要求するため）。
 impl ImeStateHub {
     fn new() -> Self {
-        Self::with_clock(HubClock::wall(crate::hook::current_tick_ms))
+        Self::with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now))
     }
 }
 
