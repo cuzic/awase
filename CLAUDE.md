@@ -20,7 +20,7 @@ logic.
 
 ```sh
 # Compile check (what you'll use most while iterating)
-cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows
+cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows -p awase-windows-core
 # or: mise run check
 
 # Clippy (same target requirement)
@@ -85,7 +85,12 @@ Dead-dependency check: `cargo machete`. Security advisories: `cargo audit` (tria
 
 ```
 awase (root crate, src/)      Platform-independent core: engine/, config.rs, ngram.rs, kana_table.rs, yab/
-crates/awase-windows/         Windows platform implementation (the bulk of the complexity)
+crates/awase-windows/         Windows platform implementation (the shell; the bulk of the complexity)
+crates/awase-windows-core/    OS-independent core of awase-windows (ADR-229 D4): IME-state decisions/types/tables,
+                              state/ (except platform_state.rs + sync_actuation.rs + ime_decision_view.rs), vk, tuning,
+                              keymap, journal(_policy), focus/{kinds,class_names,hwnd_cache}, tsf/literal_facts.
+                              Same `src/` layout as before the split; awase-windows re-exports it (`pub use`) so
+                              `crate::state::...` paths are unchanged. No `windows` dependency (guard-tested).
 crates/awase-linux/           Linux platform stub
 crates/awase-macos/           macOS platform stub
 crates/win32-async/           Async executor + blocking-API timeout isolation (run_with_timeout)

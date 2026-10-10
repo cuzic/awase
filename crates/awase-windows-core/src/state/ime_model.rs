@@ -1,0 +1,3735 @@
+//! IME 状態モデル (Step 1: Shadow Reducer 段階)
+//!
+//! 既存の `ImeBelief` / `ImeObservations` と並走する shadow model。
+//! 現状 (Step 1) は本番判定には使わず、diff log で検証するのみ。
+//!
+//! ## 設計原則
+//!
+//! 1. **UserIntent だけが `desired_open` を即時に変えられる**
+//! 2. **Observer は `desired_open` を直接壊せない** (last_observed に記録するのみ)
+//! 3. **AppImePolicy / InputBarrier / ForceGuardSet は後続 Step で追加** (Step 1 では placeholder)
+
+use super::app_ime_policy::AppImePolicy;
+use super::force_guard::{ForceGuardSet, ForceOnReason, ObserveMissMonitor};
+use super::ApplyGeneration;
+use awase::engine::InputModeState;
+
+use super::ime_event::{
+    ApplyError, ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
+    InputModeApplyResult, ObservationConfidence, ObservationSource, UserIntentSource,
+};
+use super::input_barrier::InputBarrier;
+use super::observation_store::{DeriveOutcome, ObservationStore};
+use super::probe_admission::{FocusEpoch, FocusFence};
+use super::transition::ImeTransition;
+use std::time::Instant;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImeApplyAcceptance {
+    /// 追跡中の apply の完了。composition/warmup 副作用を駆動してよい。
+    Accepted,
+    /// 上書きされた古い apply の完了。`applied` は reducer 側で更新されうるが、
+    /// composition/warmup 副作用は駆動しない。
+    ///
+    /// 現在の唯一の消費点では [`Stale`](Self::Stale) と同じく副作用を駆動しない。
+    /// 区別を残している理由は、debug 診断で「古いが同一 target として belief に
+    /// 反映できた完了」と「完全に捨てた完了」を分けるため。
+    Superseded,
+    /// 宛先ウィンドウが変わった、または現在の transition に属さない完了。
+    ///
+    /// 現在の唯一の消費点では [`Superseded`](Self::Superseded) と同じく副作用を
+    /// 駆動しない。診断ログで捨てた理由を残すために別 variant としている。
+    Stale,
+    /// `UnsafeToToggle`。送っていないので完了として扱わない。
+    NotSent,
+}
+
+impl ImeApplyAcceptance {
+    // 呼び出し元 `runtime/mod.rs`（`#[cfg(windows)]`）が非 Windows には存在しない。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub const fn drives_composition_side_effects(self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+}
+
+// ── resolve_open_at 診断API（ADR-087 §5 Phase 0a item2/3） ──────────────────────
+
+/// [`ImeModel::fallback_shadow`] の戻り値(診断専用、ADR-233)。
+#[derive(Debug, Clone, Copy)]
+pub struct FallbackShadow {
+    /// 旧い順位(`most_recent_trusted_excluding(now, &[])`、`(confidence, at)` の順)が選ぶ観測。
+    pub old: crate::state::observation_store::ImeObservation,
+    /// 現行の `most_recent_trusted`(案 A'、`(confidence >= Medium, at, confidence)` の順)が選ぶ観測。
+    pub new: crate::state::observation_store::ImeObservation,
+}
+
+/// `resolve_open_at()` の戻り値。`effective_open_at()` が返す `bool` に加えて、
+/// 「なぜその値になったか」を保持する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenResolution {
+    pub value: bool,
+    pub decided_by: DecidedBy,
+}
+
+/// `effective_open_at()` の判定内訳。
+///
+/// `base`（明示意図/観測/フォールバックのどれで決まったか）と
+/// `guard_override`（`force_guards` が override したか）を分けて持つ——
+/// `ImeModel::effective_open()` の実装が
+/// `force_guards.effective_open(base)` という2段構造に
+/// なっているため（`ime_model.rs` 本体参照）、診断もそれに合わせる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecidedBy {
+    pub base: BaseDecision,
+    pub guard_override: Option<ForceOnReason>,
+}
+
+/// `base`（`force_guards` 適用前の値）がどの経路で決まったか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseDecision {
+    /// `has_user_explicit_intent()==true`、`desired_open` を採用。
+    ExplicitIntent,
+    /// 物理モードキーの打鍵時点の予測（ADR-191 決定3）。settle 後の観測が来るまで採用。
+    KeyEffectPrediction,
+    /// `derive_any()` / `derive_actuating()` が High confidence 単独ソースで確定。
+    DeriveHigh(ObservationSource),
+    /// `derive_any()` / `derive_actuating()` が Medium+ の無競合多数決で確定。
+    /// `second` が `None` なら単独観測、`Some` なら2ソース以上の合意
+    /// （`DeriveOutcome::MediumConsensus` と同じ理由で `Vec` を避ける、
+    /// ADR-087 §7 round4 S-A: `effective_open()` は全 `KeyDown` で呼ばれる
+    /// ホットパスのため）。
+    DeriveMedium {
+        first: ObservationSource,
+        second: Option<ObservationSource>,
+    },
+    /// `derive_any()` が `None`（観測なし/矛盾）で `most_recent_trusted()` に
+    /// フォールバック。
+    MostRecentTrusted(ObservationSource),
+    /// 観測が一切なく `desired_open` にフォールバック。
+    DesiredFallback,
+}
+
+// ── AppliedImeState ──────────────────────────────────────────────────────────
+
+/// generation を持たない apply 完了で、`applied` に書く open 値。
+///
+/// `ImeStateHub::record_ime_apply_result` の generation=None 分岐の純粋部（ADR-208 L0 で切り出した）。送らなかった結果（`UnsafeToToggle`/`NotOwned`/
+/// `Unwarranted`）は `None`（`applied` を動かさない）、`Failed` は逆向き（`!open`）。
+#[must_use]
+pub const fn apply_result_effective_open(
+    open: bool,
+    outcome: awase::platform::ImeOpenOutcome,
+) -> Option<bool> {
+    use awase::platform::ImeOpenOutcome;
+    match outcome {
+        ImeOpenOutcome::Applied
+        | ImeOpenOutcome::AppliedWithoutSendInput
+        | ImeOpenOutcome::AlreadyMatched => Some(open),
+        ImeOpenOutcome::Failed => Some(!open),
+        ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted => {
+            None
+        }
+    }
+}
+
+/// IME apply 結果の確信度。
+///
+/// `Option<(bool, u64)>` + センチネル値 `ts=0` で表現していた3状態を型で明示する。
+/// - `Unknown`   : フォーカス直後・起動時。実 IME 状態が不明。
+/// - `Optimistic`: ImmCross async の楽観的事前更新。OS 未確認。
+/// - `Confirmed` : 実 apply 完了・確認済み。旧 `applied_at_ms > 0` に相当。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AppliedImeState {
+    #[default]
+    Unknown,
+    Optimistic(bool),
+    Confirmed {
+        open: bool,
+        at_ms: u64,
+    },
+}
+
+impl AppliedImeState {
+    /// apply 済みの open 値を返す（Optimistic も含む）。Unknown は None。
+    ///
+    /// **証拠用アクセサ（ADR-098 決定6-c）**: belief フォールバックを持たない。
+    /// 「送信を省略してよいか」のような抑制器/トリガーの判断（誤った yes が無音
+    /// で不可逆な被害を生む用途）にのみ使うこと。`unwrap_or(false)` してはならない
+    /// （`Unknown` を「確認済みの false」として扱うことになる）。
+    ///
+    /// 省略の根拠に使うなら、`Optimistic`（OS 未確認）ではなく `Confirmed` かを
+    /// 確認すること（ADR-214）。
+    ///
+    /// 本番の呼び出し元（`ImeModel` 内部を除く）: `sync_ime_kind_from_observation`
+    /// （`runtime/message_handlers.rs`、GjiFsm 遷移トリガー）、`shadow_ime_control_view`
+    /// （`runtime/mod.rs`）、`executor.rs` の order 起案、`key_pipeline.rs` の
+    /// shadow 起案。後ろ3つは `build_ime_control_view` の `applied` に渡す。
+    #[must_use]
+    pub const fn applied_open(self) -> Option<bool> {
+        match self {
+            Self::Unknown => None,
+            Self::Optimistic(open) | Self::Confirmed { open, .. } => Some(open),
+        }
+    }
+
+    /// 確認済み (`Confirmed`) かどうか。
+    #[must_use]
+    pub const fn is_confirmed(self) -> bool {
+        matches!(self, Self::Confirmed { .. })
+    }
+}
+
+/// Shadow IME モデル。最終形 (Phase 3 完了時) ではこれが SSOT になる予定。
+///
+/// Step 3 時点: desired_open + last_intent + observations (per-source + drift) + policy。
+/// pending transition / barrier / force guard は後続 Step で追加。
+#[derive(Debug)]
+pub struct ImeModel {
+    /// awase が IME をこうしたい状態。UserIntent のみが書き換える。
+    ///
+    /// private フィールド。`reduce()` 以外からの書き込みを禁止するため、
+    /// 外部からは読み取り専用アクセサ `desired_open()` を使うこと
+    /// （`input_mode` と同じパターン）。
+    desired_open: bool,
+
+    /// `desired_open` が起動時の**初期値のまま**（どの意図・復元・揃えでも書かれていない）か（BUG-163）。
+    ///
+    /// 初期値 `true` は「観測が無いときの既定」にすぎず、awase が IME にそうしたい意図ではない。この間は
+    /// `desired_open` を「awase の意図」として扱わず、最初の成功観測へ 1 回だけ揃える
+    /// （`ImeStateHub::align_placeholder_desired`）。`desired_open` を書く reduce のアームは、全てここを `false` にする。
+    desired_is_placeholder: bool,
+
+    /// 入力モード（ローマ字/かな/英数/不明）の belief。
+    ///
+    /// H-3-b で追加。H-3-c で `ImeBelief::input_mode` への直接代入が
+    /// `InputModeObserved` / `InputModeApplied` イベント経由に
+    /// 置換されるまでは shadow として記録するのみで本番判定には使わない。
+    /// H-3-d で `ImeBelief::input_mode` が private 化されたのち、このフィールドが SSOT になる。
+    ///
+    /// private フィールド。外部からは読み取り専用アクセサ `input_mode()` を使うこと。
+    input_mode: InputModeState,
+
+    /// 直近のユーザー意図 (intent guard 等の判断材料)
+    pub last_intent: Option<RecordedIntent>,
+
+    /// 観測値ストア (Step 3) — per-source + suspicious + drift。
+    /// reducer の judge 材料: 鮮度・合意・乖離継続時間。
+    pub observations: ObservationStore,
+
+    /// 現フォーカスアプリの IME 制御ポリシー (Step 1.5)。
+    /// FocusChanged event で更新される。
+    pub app_policy: AppImePolicy,
+
+    /// 入力 chord 等の一時 transaction (Step 4)。
+    /// 旧 `ctrl_bypass_hold: bool` の置換。
+    pub input_barrier: Option<InputBarrier>,
+
+    /// 発火後の force-on ガード集合 (Step 6)。
+    /// 旧 `ImeRecoveryState::force_on_*` 2 つの bool を `ForceGuardSet` に統合。
+    pub force_guards: ForceGuardSet,
+
+    /// 発火前の観測失敗カウンタ (Step 6)。
+    /// 旧 `ImeRecoveryState::ime_detect_miss_count` の責務分離。
+    pub observe_miss_monitor: ObserveMissMonitor,
+
+    /// OS への apply 進行中の transition (Step 7)。
+    /// 旧 `ImeEffect::SetOpen` (Layer 3) + 楽観的 latch を統合。
+    pub pending: Option<ImeTransition>,
+
+    /// 現フォーカス epoch で、ADR-108 決定2の緩和経路に入れてよい最小 generation。
+    ///
+    /// `FocusChanged` 時点で既に払い出し済みだった generation は旧フォーカス由来の
+    /// 完了であり、新しい epoch の `pending` と target が偶然一致しても `applied`
+    /// を汚染してはいけない。そこで FocusChanged 時点の `last_seen_generation` の
+    /// 直後を watermark として保持し、generation 不一致成功を `Optimistic` に緩和
+    /// する経路だけこの下限を照合する。
+    ///
+    /// `pending` ではなく `last_seen_generation` から導出する理由: `pending` は
+    /// タイムアウトや厳密一致完了で `FocusChanged` より前に `None` へ戻ることがある
+    /// （例: gen10 が timeout で purge された直後に `FocusChanged` が来るケース）。
+    /// このとき `pending` だけを見ると watermark が更新されず、後から届く gen10 の
+    /// 遅延完了が新 epoch の緩和経路をすり抜けてしまう。
+    focus_generation_watermark: ApplyGeneration,
+
+    /// これまでに `reduce()` が観測した最大の `ApplyGeneration`（`ImeApplyRequested`
+    /// 経由）。`focus_generation_watermark` の算出専用で、`pending` の生死に
+    /// 依存しない。generation はディスパッチ順に単調増加するため上書きで十分。
+    last_seen_generation: Option<ApplyGeneration>,
+
+    /// 最後に actuator が成功させた IME 開閉状態の確信度 (Step 7)。
+    /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
+    pub applied: AppliedImeState,
+
+    /// 現在フォーカス中のウィンドウ (ADR-087 §5 Phase 3 item15 前提配線)。
+    ///
+    /// `FocusChanged` と起動時の `InitialFocusScopeEstablished`（ADR-232 D1）の reducer でのみ
+    /// 更新する。`current_focus()` アクセサ経由で
+    /// `ImeStateHub::effective_open()`/`record_explicit_intent()`/
+    /// `apply_hwnd_cache_restore()`/`reset_stale_ime_on_for_imm_broken()`
+    /// （BUG-51 追補 v3、IntentStore の対象キーとして）が本番判定に使用する
+    /// （`WarrantContext.target` 用の `issue_open_warrant()` への実配線は
+    /// 依然 Phase 3 本体のスコープ）。
+    current_focus: Option<HwndId>,
+
+    /// 打鍵時点の予測（ADR-191 決定3）。`reduce()`（`KeyEffectPredicted`/観測の照合/フォーカス変更/明示意図）
+    /// だけが書く private フィールド。読み取りは`key_effect()`。
+    key_effect: Option<KeyEffectPrediction>,
+    /// 打鍵履歴から追跡する隠れ状態（ADR-191 決定3・4: 変換モード5種・変換中の段階）。`reduce()`だけが書く
+    /// private フィールド（`KeyEffectPredicted`/フォーカス変更/明示意図/観測）。読み取りは`key_track()`。
+    key_track: crate::state::key_effect_predictor::KeyTrack,
+}
+
+/// 物理モードキーの打鍵時点で表から予測した効果（ADR-191 決定3）と、その fence。
+///
+/// `at_ms`は**最新の打鍵の時刻**。これより`KEY_EFFECT_SETTLE_MS`以内の観測は、IMEがキーを処理する前の
+/// 古い状態を読んでいる恐れがあるため、予測を上書きも消しもしない（fence）。settle後の観測だけが
+/// 予測と照合され（食い違いは`[key-effect-miss]`）、予測を消す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyEffectPrediction {
+    pub at_ms: u64,
+    pub open: Option<bool>,
+    pub mode: Option<InputModeState>,
+}
+
+impl KeyEffectPrediction {
+    /// 唯一の構築口（design-patterns-review.md B2）。両軸とも`None`（照合済み）なら`None`を返し、
+    /// 呼び出し側に「両軸Noneの予測を作れない」という不変条件を型で強制する
+    /// （以前は`into_live()`という構築後のチェックで、`reduce()`のアーム〈:841〉は
+    /// これを経由せず直接`Some(KeyEffectPrediction { .. })`を組んでいたため、将来の書き方次第では
+    /// 両軸Noneの予測が残りえた）。
+    #[must_use]
+    const fn new(at_ms: u64, open: Option<bool>, mode: Option<InputModeState>) -> Option<Self> {
+        if open.is_none() && mode.is_none() {
+            None
+        } else {
+            Some(Self { at_ms, open, mode })
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordedIntent {
+    pub target: bool,
+    pub source: UserIntentSource,
+    pub at_ms: u64,
+}
+
+impl ImeModel {
+    /// 既存 `ImeBelief` の初期値 (`ime_on=true`) に合わせる。
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            desired_open: true,
+            desired_is_placeholder: true,
+            input_mode: InputModeState::ObservedRomaji, // ImeBelief 初期値に合わせる
+            last_intent: None,
+            observations: ObservationStore::default(),
+            app_policy: AppImePolicy::standard(),
+            input_barrier: None,
+            force_guards: ForceGuardSet::default(),
+            observe_miss_monitor: ObserveMissMonitor::default(),
+            pending: None,
+            focus_generation_watermark: ApplyGeneration::MIN,
+            last_seen_generation: None,
+            applied: AppliedImeState::Unknown,
+            current_focus: None,
+            key_effect: None,
+            key_track: crate::state::key_effect_predictor::KeyTrack {
+                conv: None,
+                stage: crate::state::key_effect_predictor::Stage::None,
+            },
+        }
+    }
+
+    /// 現在フォーカス中のウィンドウ（読み取り専用アクセサ）。
+    ///
+    /// `FocusChanged` の reducer でのみ更新される。まだ本番判定には使われない
+    /// write-only なフィールドの読み取り口（ADR-087 §5 Phase 3 item15 前提配線）。
+    #[must_use]
+    pub const fn current_focus(&self) -> Option<HwndId> {
+        self.current_focus
+    }
+
+    /// 打鍵時点の予測（読み取り専用アクセサ、ADR-191 決定3）。
+    #[must_use]
+    pub const fn key_effect(&self) -> Option<KeyEffectPrediction> {
+        self.key_effect
+    }
+
+    /// 打鍵履歴から追跡している隠れ状態（変換モード5種・変換中の段階）。
+    #[must_use]
+    pub const fn key_track(&self) -> crate::state::key_effect_predictor::KeyTrack {
+        self.key_track
+    }
+
+    /// awase が IME をこうしたい状態（読み取り専用アクセサ）。
+    ///
+    /// `desired_open` フィールドは private。外部から書き込まず
+    /// `ImeEvent::UserImeSetIntent` 経由で reducer を通すこと。
+    /// 実効値が欲しい場合は `effective_open()` を使うこと（こちらは生の意図のみ）。
+    #[must_use]
+    pub const fn desired_open(&self) -> bool {
+        self.desired_open
+    }
+
+    /// 入力モードの belief を返す（読み取り専用アクセサ）。
+    ///
+    /// `input_mode` フィールドは private。外部から書き込まず
+    /// `InputModeObserved` / `InputModeApplied` 経由で
+    /// reducer を通すこと。
+    #[must_use]
+    pub const fn input_mode(&self) -> InputModeState {
+        self.input_mode
+    }
+
+    /// `desired_open` が起動時の初期値のままか（BUG-163）。`true` の間、`desired_open` は awase の意図ではない。
+    #[must_use]
+    pub const fn desired_is_placeholder(&self) -> bool {
+        self.desired_is_placeholder
+    }
+
+    /// テスト専用: `desired_open` を直接設定する。
+    ///
+    /// carry-over シナリオ（focus 変更前の stale な desired_open）をテストで
+    /// 模擬するための脱出口。本番コードから呼んではならない。
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_desired_open_for_test(&mut self, value: bool) {
+        self.desired_open = value;
+        self.desired_is_placeholder = false;
+    }
+
+    /// 現在 CtrlImeChord transaction が active か。
+    /// `stage_post_decision` が二次 SetOpen を filter するかどうかの判断材料。
+    #[must_use]
+    pub const fn is_ctrl_ime_chord_active(&self) -> bool {
+        matches!(self.input_barrier, Some(InputBarrier::CtrlImeChord { .. }))
+    }
+
+    /// ユーザー/awase の明示的な意図が present かどうか。
+    ///
+    /// true の場合は `desired_open` を観測より優先する。
+    /// false の場合は observation pool の `derive_any()` 結果を採用し、
+    /// 観測が空なら `desired_open` にフォールバックする。
+    ///
+    /// `last_intent` は `UserImeSetIntent` のみが設定する。
+    /// `PanicReset` / `HwndCacheRestored` は設定しないため、ここで除外不要。
+    fn has_user_explicit_intent(&self) -> bool {
+        self.last_intent.is_some()
+    }
+
+    /// 観測プールと `desired_open` を統合した最終 belief (Step 6)。
+    ///
+    /// **これは belief（間違っていても低リスクな推定）であり、engine の内部挙動
+    /// 決定用。実際に OS の IME を操作してよいかという actuation の根拠には
+    /// 使わないこと**（ADR-087 §5 Phase 3 item17）。`derive_any()` の
+    /// Medium 単一ソース合意がそのまま actuation の根拠として使われたことが
+    /// BUG-63（「mise」→「くした」誤入力）の直接原因だった。actuation
+    /// warrant が必要な場面（IME を実際に force-ON する等）では
+    /// `crate::state::open_warrant::issue_open_warrant()` を使うこと
+    /// （Phase 3 で `is_eligible_for_ime_force_on()` 等の既存呼び出し元を
+    /// 順次差し替える予定、まだ未配線）。
+    ///
+    /// - ユーザーの明示意図がある場合: `desired_open` を優先（観測で上書きしない）
+    /// - 明示意図なし（フォーカス変化直後等）:
+    ///   1. `derive_any()`（Medium+ の合意 / High 即採用）の結果を採用
+    ///   2. それが `None` なら `most_recent_trusted()`（Medium 以上の中では最新優先、
+    ///      同時刻なら信頼度の高い方。ADR-233 案 A'）にフォールバック。cache-miss 等の
+    ///      安全デフォルト推測（Low confidence の `HeuristicDefault`）はここでのみ効き、
+    ///      Medium 以上の観測が 1 件でもあればそちらが優先される（Low は Medium 以上に
+    ///      勝たない。古い High が新しい Medium に勝つ BUG-189 を避けるため、High か Medium かでなく新しさで選ぶ）。
+    ///   3. 観測が一切なければ `desired_open` にフォールバック
+    /// - 最後に `force_guards` を適用（guard が active なら強制 ON。ただし
+    ///   ヒューリスティック由来 guard はユーザーの明示的意図を
+    ///   上書きしない。`PanicReset` 等の安全弁は明示的意図があっても override する）
+    ///
+    /// 時刻 `now` は呼び出し側が渡す（ADR-087 §5 Phase 0a item2、INV-23: 根拠判定の
+    /// 決定論性。ADR-229 段階 A-2 で、壁時計を読む引数なし版を殻から撤去した）。
+    /// 純粋関数なので journal replay やテストで決定論的に呼び出せる。実機では
+    /// `ImeStateHub::effective_open`（`HubClock` 経由）が呼ぶ。
+    #[must_use]
+    pub fn effective_open_at(&self, now: Instant) -> bool {
+        self.resolve_open_at(now).value
+    }
+
+    /// `effective_open_at()` の判定内訳まで返す診断 API（ADR-087 §5 Phase 0a item3）。
+    ///
+    /// 「なぜこの値になったか」（`DecidedBy`）を journal / テストに残せるようにする。
+    /// 本バグ（`mise`→「くした」）は `effective_open()` が単一の bool しか返さず
+    /// 判定根拠が失われていたために原因追跡に時間がかかった——この API はその
+    /// 反省から追加する。
+    #[must_use]
+    pub fn resolve_open_at(&self, now: Instant) -> OpenResolution {
+        let has_explicit_intent = self.has_user_explicit_intent();
+        let (base, decided_by) = if has_explicit_intent {
+            (self.desired_open, BaseDecision::ExplicitIntent)
+        } else if let Some(predicted) = self.key_effect.and_then(|p| p.open) {
+            (predicted, BaseDecision::KeyEffectPrediction)
+        } else if let Some(outcome) = self.observations.derive_any(now) {
+            let decided_by = match outcome {
+                DeriveOutcome::HighSingle { source, .. } => BaseDecision::DeriveHigh(source),
+                DeriveOutcome::MediumConsensus { first, second, .. } => {
+                    BaseDecision::DeriveMedium { first, second }
+                }
+            };
+            (outcome.value(), decided_by)
+        } else if let Some(trusted) = self.observations.most_recent_trusted(now) {
+            (
+                trusted.open,
+                BaseDecision::MostRecentTrusted(trusted.source),
+            )
+        } else {
+            (self.desired_open, BaseDecision::DesiredFallback)
+        };
+        // `ForceGuardSet::resolve()` を唯一の判定点として使う（ADR-087 §7 round4
+        // M-C: 述語を手書きで複製すると「guard が active なだけで override して
+        // いない」場合にも reason を報告してしまう誤情報バグを生む。resolve() は
+        // 実際に値を変えた場合のみ Some を返す）。
+        let (value, guard_override) = self.force_guards.resolve(base);
+        OpenResolution {
+            value,
+            decided_by: DecidedBy {
+                base: decided_by,
+                guard_override,
+            },
+        }
+    }
+
+    /// **診断専用**(ADR-233、BUG-189): `resolve_open_at` がフォールバック(明示意図なし・予測なし・`derive_any` が None)に
+    /// 落ちる状況で、旧い順位(`most_recent_trusted_excluding`、信頼度優先)と現行(`most_recent_trusted`、案 A')の選択を並べて返す。
+    /// どちらかが無ければ `None`。本番の判断には使わない。`[mrt-shadow]` ログで新旧の食い違い(特に fence 違い)を継続して数える。
+    #[must_use]
+    pub fn fallback_shadow(&self, now: Instant) -> Option<FallbackShadow> {
+        if self.has_user_explicit_intent()
+            || self.key_effect.and_then(|p| p.open).is_some()
+            || self.observations.derive_any(now).is_some()
+        {
+            return None;
+        }
+        let old = *self.observations.most_recent_trusted_excluding(now, &[])?;
+        let new = *self.observations.most_recent_trusted(now)?;
+        Some(FallbackShadow { old, new })
+    }
+
+    /// generation 付きの apply 要求と完了（Engine 経路）を `reduce` に通す（ADR-208 L0 の全列挙テストのオラクル用）。
+    ///
+    /// `event_log` の採番を経由しない純粋モデル上の遷移で、本番は `ImeStateHub` が採番して `reduce` する。
+    /// `reduce` の呼び出しを `ime_model.rs` 内（`self.reduce`）に留めるための薄い口。
+    pub fn apply_engine_request_and_completion(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: ApplyGeneration,
+        at: Instant,
+    ) {
+        let envelope = |seq: u64, event: ImeEvent| ImeEventEnvelope {
+            time: EventTime {
+                seq,
+                monotonic: at,
+                tick_ms: seq * 10,
+            },
+            event,
+        };
+        self.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: open,
+                generation,
+                ctrl_held: false,
+            },
+        ));
+        self.reduce(&envelope(
+            2,
+            ImeEvent::from_apply_outcome(open, outcome, generation),
+        ));
+    }
+
+    /// `applied` だけを指定した初期モデル（ADR-208 L0 の全列挙テストが、押下前の `applied` から実物の遷移を通すため）。
+    #[must_use]
+    pub fn with_applied(applied: AppliedImeState) -> Self {
+        Self {
+            applied,
+            ..Self::new()
+        }
+    }
+
+    /// generation を持たない apply 完了（同期経路・shadow toggle）の確認済み記録（ADR-098 決定6-a）。
+    ///
+    /// `ImeStateHub::record_confirmed` の純粋部（`applied` を `Confirmed` にし、向きが一致する pending を解放する）。
+    /// ADR-208 L0 で、全列挙テストが手書きの模倣でなく本物の遷移を通せるよう `ImeStateHub` から切り出した。
+    pub fn confirm_applied(&mut self, open: bool, at_ms: u64) {
+        self.applied = AppliedImeState::Confirmed { open, at_ms };
+        if let Some(p) = &self.pending {
+            if p.target == open {
+                self.pending = None;
+            }
+        }
+    }
+
+    /// `AppliedImeState` を返す。executor の applied_snapshot 同期用。
+    #[must_use]
+    pub const fn applied_state(&self) -> AppliedImeState {
+        self.applied
+    }
+
+    /// `pending` transition の generation を返す。apply 完了 event の照合用。
+    #[must_use]
+    pub fn pending_generation(&self) -> Option<ApplyGeneration> {
+        self.pending.as_ref().map(|p| p.generation)
+    }
+
+    fn completion_can_update_applied(
+        &self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: ApplyGeneration,
+    ) -> ImeApplyAcceptance {
+        use awase::platform::ImeOpenOutcome;
+
+        if matches!(
+            outcome,
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted
+        ) {
+            return ImeApplyAcceptance::NotSent;
+        }
+
+        let Some(pending) = self.pending.as_ref() else {
+            return ImeApplyAcceptance::Stale;
+        };
+        let current_epoch = self.observations.current_fence().epoch;
+        if pending.generation == generation {
+            if pending.focus_epoch == current_epoch {
+                ImeApplyAcceptance::Accepted
+            } else {
+                ImeApplyAcceptance::Stale
+            }
+        } else if (outcome.wrote_open_state() || outcome == ImeOpenOutcome::AlreadyMatched)
+            && generation >= self.focus_generation_watermark
+            && pending.focus_epoch == current_epoch
+            && pending.target == open
+            && self.applied.applied_open() != Some(open)
+        {
+            ImeApplyAcceptance::Superseded
+        } else {
+            ImeApplyAcceptance::Stale
+        }
+    }
+
+    /// generation 付き IME apply 完了の受理判定。
+    ///
+    /// `reduce()` と `ImeStateHub::record_ime_apply_result()` が同じ判定を読むための
+    /// SSOT。ここでの「受理」は `applied` 更新と composition/warmup 副作用の可否を
+    /// 指し、pending 解除の generation 厳密一致とは別の問いとして扱う。
+    pub fn classify_apply_completion(
+        &self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: ApplyGeneration,
+    ) -> ImeApplyAcceptance {
+        self.completion_can_update_applied(open, outcome, generation)
+    }
+
+    /// 現在の `input_barrier` が持つ chord kind を返す。
+    #[must_use]
+    pub fn active_chord_kind(&self) -> Option<ChordKind> {
+        self.input_barrier.and_then(|b| b.chord_kind())
+    }
+
+    /// フォーカス切替直後の one-shot barrier が pending かどうか。
+    #[must_use]
+    pub fn is_focus_transition_pending(&self) -> bool {
+        self.input_barrier
+            .as_ref()
+            .is_some_and(InputBarrier::is_focus_transition)
+    }
+
+    /// フォーカス切替直後の settle 期間内（`settle_until` 未経過）かどうか。
+    ///
+    /// `is_focus_transition_pending` と異なり、barrier がまだ consume されていなくても
+    /// `settle_until` を過ぎていれば false を返す。Engine 由来の `SetOpen` 効果適用を
+    /// 一時的にフィルタするための判断に使う（`handle_engine_set_open` 参照）。
+    #[must_use]
+    pub fn is_focus_transition_settling(&self, now: Instant) -> bool {
+        self.input_barrier
+            .as_ref()
+            .is_some_and(|b| b.is_focus_transition_active(now))
+    }
+}
+
+impl Default for ImeModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 入力モードの予測が観測と合ったか。予測は「eisuか否か」までしか確度が無いので、`ObservedEisu`かどうかだけを
+/// 比べる（`ObservedRomaji`/`ObservedKana`/`AssumedRomaji`は同じ扱い）。以前は`is_romaji_capable`で比べていたため、
+/// 予測=英数・観測=かな入力を「合った」とし、予測=ひらがな(AssumedRomaji)・観測=かな入力を「外れた」としていた
+/// （`[key-effect-miss]`は較正材料・CIの停止条件なので、表の誤りを覆い隠す/偽の外れを作る、レビュー指摘A-M4）。
+#[must_use]
+const fn key_effect_mode_confirmed(predicted: InputModeState, observed: InputModeState) -> bool {
+    matches!(predicted, InputModeState::ObservedEisu)
+        == matches!(observed, InputModeState::ObservedEisu)
+}
+
+impl ImeModel {
+    /// 観測（開閉）を、打鍵時点の予測と照合する（ADR-191 決定3）。
+    ///
+    /// fence: 最新の打鍵から`KEY_EFFECT_SETTLE_MS`以内の観測は、IMEがキーを処理する前の古い状態を
+    /// 読んでいる恐れがあるため、予測に触れない（観測プールには記録済みだが、`resolve_open_at`は
+    /// 予測を優先する）。settle後の観測（Medium以上）が予測と照合され、食い違いは
+    /// `[key-effect-miss]`（較正材料）。どちらでも予測の開閉は消え、観測が勝つ。
+    fn reconcile_key_effect_open(
+        &mut self,
+        observed_open: bool,
+        confidence: ObservationConfidence,
+        now_ms: u64,
+    ) {
+        let Some(pred) = self.key_effect else {
+            return;
+        };
+        let Some(predicted) = pred.open else {
+            return;
+        };
+        if confidence < ObservationConfidence::Medium {
+            return;
+        }
+        if now_ms.saturating_sub(pred.at_ms) < crate::tuning::KEY_EFFECT_SETTLE_MS {
+            tracing::debug!(
+                "[key-effect-fence] axis=open stale observation ignored: observed={observed_open} \
+                 predicted={predicted} age_ms={}",
+                now_ms.saturating_sub(pred.at_ms)
+            );
+            return;
+        }
+        if predicted == observed_open {
+            tracing::debug!("[key-effect-confirmed] axis=open value={observed_open}");
+        } else {
+            tracing::info!(
+                "[key-effect-miss] axis=open predicted={predicted} observed={observed_open}"
+            );
+        }
+        self.key_effect = KeyEffectPrediction::new(pred.at_ms, None, pred.mode);
+    }
+
+    /// 観測（入力モード、Medium以上）を打鍵時点の予測と照合する。戻り値は「この観測を採用してよいか」
+    /// （fence内の古い観測は`false`）。settle後の観測は予測を消し、食い違いは`[key-effect-miss]`。
+    fn reconcile_key_effect_mode(&mut self, observed: InputModeState, now_ms: u64) -> bool {
+        let Some(pred) = self.key_effect else {
+            return true;
+        };
+        let Some(predicted) = pred.mode else {
+            return true;
+        };
+        if now_ms.saturating_sub(pred.at_ms) < crate::tuning::KEY_EFFECT_SETTLE_MS {
+            tracing::debug!(
+                "[key-effect-fence] axis=mode stale observation ignored: observed={observed:?} \
+                 predicted={predicted:?} age_ms={}",
+                now_ms.saturating_sub(pred.at_ms)
+            );
+            return false;
+        }
+        if key_effect_mode_confirmed(predicted, observed) {
+            tracing::debug!("[key-effect-confirmed] axis=mode value={observed:?}");
+        } else {
+            tracing::info!(
+                "[key-effect-miss] axis=mode predicted={predicted:?} observed={observed:?}"
+            );
+        }
+        self.key_effect = KeyEffectPrediction::new(pred.at_ms, pred.open, None);
+        true
+    }
+
+    /// `UserImeSetIntent` の `last_intent` 記録。
+    fn record_intent(&mut self, target: bool, source: UserIntentSource, at_ms: u64) {
+        self.last_intent = Some(RecordedIntent {
+            target,
+            source,
+            at_ms,
+        });
+    }
+
+    /// Event を反映する。
+    ///
+    /// **UserIntent だけが `desired_open` を即時に変えられる**。
+    /// Observer は `observations` に記録するだけで desired を壊さない。
+    ///
+    /// 本体20行超の分岐(FocusChanged/ImeApplyRequested/ImeApplySucceeded/
+    /// ImeApplyFailed)はADR-170決定1でprivateヘルパーへ抽出済み。
+    // `event` は `fields(?envelope.event)` のようなDebug展開をしない
+    // （PRコードレビュー指摘: journal→tracing fan-out〈決定4〉が同じ
+    // ImeEventを`event_kind = "UserImeSetIntent"`のような判別子文字列で
+    // 出しているのに対し、ここでDebugフォーマットすると`event=UserImeSetIntent
+    // { target: true, source: SyncKey }`という別の語彙が並び立ち、triageを混乱させる）。
+    //
+    // `ImeEvent` の全 variant を1つの `match` で振り分ける reducer で、分岐の数がそのまま複雑度になる。
+    // 本体が長い分岐はヘルパーへ抽出済み（ADR-170）。`KeyEffectPredicted`/`ModeKeyPassedThrough` の
+    // アームは `tests/architecture_guard.rs` がアーム本文を直接検査する（belief 書き込み口の固定）ので
+    // ここへ残し、複雑度の警告だけを抑制する。
+    #[expect(clippy::cognitive_complexity)]
+    #[tracing::instrument(level = "debug", skip_all)]
+    pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
+        match envelope.event {
+            ImeEvent::UserImeSetIntent { target, source } => {
+                self.key_effect = None;
+                self.key_track.stage = crate::state::key_effect_predictor::Stage::None;
+                self.desired_open = target;
+                self.desired_is_placeholder = false;
+                self.record_intent(target, source, envelope.time.tick_ms);
+            }
+            ImeEvent::PanicReset { target } => {
+                // 復旧操作: desired_open を安全デフォルト値に戻す。
+                // UserImeSetIntent と異なり last_intent を設定しない。
+                // ForceGuard::PanicReset が IME ON を保証するため、
+                // has_user_explicit_intent() を汚染しない。
+                self.desired_open = target;
+                self.desired_is_placeholder = false;
+                // 全面リセットは awase 自身の直近の書き込みの記録（`applied`）も実状態の証拠として
+                // 信用しない。残すと、belief=ON・実IME=閉で固着した状況（`applied=Some(true)`）で
+                // 続く SetOpen(true) が already-matched として省略され、実IMEが開かない
+                // （BUG-182。`applied_open`のdoc・ADR-098決定1-b・BUG-156と同じ原則）。
+                self.applied = AppliedImeState::Unknown;
+            }
+            ImeEvent::HwndCacheRestored { target } => {
+                // HWND キャッシュ復元: 前回フォーカス時の desired_open を回復する。
+                // ユーザーの能動的操作ではないため last_intent を設定しない。
+                // has_user_explicit_intent() が false のまま維持され、
+                // 後続の実観測が effective_open() を上書きできる。
+                self.desired_open = target;
+                self.desired_is_placeholder = false;
+            }
+            ImeEvent::ObserverReported(observed) => {
+                // 絶対ルール: Observer は desired_open を直接書き換えない。
+                // 値としての観測を記録する唯一の口（ADR-089 §2.1）。
+                self.observations
+                    .record_replayed(observed, envelope.time.monotonic);
+                // drift 追跡 (desired と observed の乖離)
+                self.observations.update_drift(
+                    self.desired_open,
+                    observed.open(),
+                    envelope.time.monotonic,
+                );
+                self.reconcile_key_effect_open(
+                    observed.open(),
+                    observed.confidence(),
+                    envelope.time.tick_ms,
+                );
+            }
+            ImeEvent::FocusChanged {
+                profile,
+                to,
+                focus_epoch,
+                ..
+            } => self.reduce_focus_changed(profile, to, focus_epoch, envelope),
+            ImeEvent::ChordEnded { .. } => {
+                // Step 4: chord transaction を終了。barrier を解除。
+                self.input_barrier = None;
+            }
+            ImeEvent::ImeApplyRequested {
+                target,
+                generation,
+                ctrl_held,
+            } => self.reduce_ime_apply_requested(target, generation, ctrl_held, envelope),
+            ImeEvent::ImeApplySucceeded { target, generation } => {
+                self.reduce_ime_apply_succeeded(target, generation, envelope);
+            }
+            ImeEvent::ImeApplyFailed {
+                target,
+                generation,
+                error,
+            } => self.reduce_ime_apply_failed(target, generation, error, envelope),
+            ImeEvent::DriftDetected { desired, .. } => {
+                // skip_override を無効化する: Optimistic にリセットすることで
+                // 次の SetOpen(desired) が「確認済み apply がない」扱いになり skip されなくなる。
+                // applied は desired に合わせて楽観的にセット（ImmCross async 送信と同じ扱い）。
+                self.applied = AppliedImeState::Optimistic(desired);
+            }
+            ImeEvent::InputModeObserved {
+                mode, confidence, ..
+            } => {
+                // ON/OFF の derive_any() と同じ考え方: Low confidence 単独では
+                // belief を動かさない（記録のみ）。Medium+ のみ input_mode を上書きする。
+                if confidence >= ObservationConfidence::Medium {
+                    // fence（ADR-191 決定3）: 最新の打鍵から settle 以内の観測は、IME がキーを処理する
+                    // 前の古い状態を読んでいる恐れがあるため、予測した入力モードを上書きしない。
+                    if self.reconcile_key_effect_mode(mode, envelope.time.tick_ms) {
+                        self.input_mode = mode;
+                        // 観測が来たので、変換モードの追跡は観測（`prev_conversion_mode`）へ戻す。
+                        self.key_track.conv = None;
+                    }
+                } else {
+                    tracing::debug!(
+                        "[input-mode] Low confidence observation 無視: {mode:?} (confidence={confidence:?})"
+                    );
+                }
+            }
+            ImeEvent::InputModeApplied { mode, result, .. } => {
+                // Skipped の場合はモード変更が起きていないため更新しない。
+                if result == InputModeApplyResult::Applied {
+                    self.input_mode = mode;
+                }
+            }
+            ImeEvent::FocusHwndUpdated { hwnd } => {
+                // 同一プロセス内の hwnd 変化のみ。epoch・観測プール・intent 等は
+                // FocusChanged 側の責務のためここでは触らない（ADR-106 決定3）。
+                self.observations.update_focus_window(hwnd);
+            }
+            ImeEvent::InitialFocusScopeEstablished {
+                to,
+                profile,
+                focus_epoch,
+            } => {
+                // ADR-232 D1（BUG-102・114・148）: 起動時のフォーカス確立。`FocusChanged` が
+                // 入れる「スコープの同一性」の 3 つ（app_policy・current_focus・fence）だけを
+                // 同じ式で入れる。共有関数にしないのは、`reduce_` で始まる関数は
+                // `reduce_helpers_are_called_only_from_reduce_body` に必ず落ちるため。
+                // 食い違い（`FocusChanged` に同一性のフィールドが足されたのに起動時が漏れる）は
+                // `initial_focus_scope_matches_focus_changed_except_input_barrier` が捕まえる。
+                // belief（`last_intent`・`applied`・観測プール等）は書かない（ADR-102 決定3-b。
+                // `clear_on_focus_change` を通すと観測プールと drift を消すので、fence は
+                // `establish_initial_fence` で入れる）。
+                self.app_policy = AppImePolicy::from_profile(profile);
+                self.current_focus = Some(to);
+                self.observations.establish_initial_fence(FocusFence {
+                    epoch: focus_epoch,
+                    hwnd: to,
+                });
+            }
+            ImeEvent::KeyEffectPredicted { open, mode, track } => {
+                self.key_track = track;
+                // 追跡状態だけが変わる打鍵（開閉・入力モードは不変）は fence を進めない。
+                if open.is_some() || mode.is_some() {
+                    // 新しい打鍵が fence を進める。未照合の古い予測は、新しい予測が触れない軸だけ残す。
+                    let prev = self.key_effect;
+                    self.key_effect = KeyEffectPrediction::new(
+                        envelope.time.tick_ms,
+                        open.or_else(|| prev.and_then(|p| p.open)),
+                        mode.or_else(|| prev.and_then(|p| p.mode)),
+                    );
+                }
+                if let Some(mode) = mode {
+                    self.input_mode = mode;
+                }
+                // 物理のモードキーが開閉を動かす予測は、それより古い明示意図（awase自身の書き込みや
+                // 注入キー由来）を上書きする。残すと`resolve_open_at`の明示意図が予測より優先され、
+                // 読めないアプリ（観測で意図を外せない）では予測が永久に効かない（CIのblind構成で確認）。
+                if open.is_some() {
+                    self.last_intent = None;
+                }
+                // 予測が開閉を動かしたとき、awase自身の直近の書き込みの記録（`applied`）が予測と食い違うなら、
+                // それはもう実状態の証拠ではない（書き込み以外の源でbeliefが動いた）。`Unknown`（未確認）へ
+                // 落とす。残すと、GjiDirectのalready-matched判定（`applied`が目標と一致→書き込みを省く）が
+                // 古い記録を根拠に`VK_IME_OFF`/`ON`を省き、物理キーはSuppress済みなので誰も実IMEを動かさない
+                // （半角/全角のbeliefトグルが読めない窓で約4割失われた、BUG-156）。「送信を省略してよいか」は
+                // 陽性の確認済み証拠にだけ基づく（`applied_open`のdoc、ADR-098決定1-b、BUG-113と同じ原則）。
+                if let Some(predicted) = open {
+                    if self.applied.applied_open().is_some_and(|a| a != predicted) {
+                        self.applied = AppliedImeState::Unknown;
+                    }
+                }
+            }
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired,
+                demote_applied,
+            } => {
+                // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
+                // 直前の観測を固定してしまうため、観測成功後に意図だけ外す。
+                self.last_intent = None;
+                // ADR-191 決定1（IMEが状態の正）: 通過させたモードキーの結果は実IMEが決めた。
+                // `desired_open`（awaseが最後に書こうとした意図）を古い値のまま残すと、
+                // `check_drift_correction` が「観測 ≠ desired」と見てユーザーの操作を約0.5〜1.3秒後に
+                // 実IMEへ書き戻す（BUG-157: 起動直後にVK_IME_OFFで閉じた後のひらがな=開を閉じ直した）。
+                // 観測から導ける開閉（derive_any、`effective_open`と同じ導出）があれば、それを
+                // ユーザーの結果として`desired_open`へ採る。観測が無ければ（読めない窓）書かない。
+                if align_desired {
+                    if let Some(outcome) = self.observations.derive_any(envelope.time.monotonic) {
+                        self.desired_open = outcome.value();
+                        self.desired_is_placeholder = false;
+                        // ADR-205 D6: 観測が awase 自身の書き込みの記録（`applied`）と食い違うなら、その記録はもう実状態の
+                        // 証拠ではない。未確認へ落とす（GjiDirect の already-matched が古い記録を根拠に絶対指定キー
+                        // 〈Ctrl+変換等〉の送信を省き続け、状態が変わらなくなるのを防ぐ。BUG-156 と同じ原則）。
+                        if demote_applied
+                            && self
+                                .applied
+                                .applied_open()
+                                .is_some_and(|a| a != outcome.value())
+                        {
+                            self.applied = AppliedImeState::Unknown;
+                        }
+                    }
+                }
+            }
+        }
+        // ADR-108 決定4: パージは match の後。期限切れ transition にも、自分自身の
+        // 完了で解決される最後の一回を与える。タイムアウトはスロット寿命の上限で
+        // あって、待っていた当の完了を弾くためのフィルタではない。
+        if let Some(pending) = &self.pending {
+            if pending.is_timed_out(envelope.time.monotonic) {
+                tracing::debug!(
+                    "[ime-model] pending transition timed out (generation={}, target={}) — purge",
+                    pending.generation,
+                    pending.target
+                );
+                self.pending = None;
+            }
+        }
+    }
+
+    // ── reduce() の大きい分岐を抽出したヘルパー群(ADR-170 決定1) ──────────
+    //
+    // `reduce()` のみが belief を書ける、という
+    // `.claude/rules/ime-belief-architecture.md` の前提は、これらのヘルパーが
+    // `reduce()` の本体からのみ呼ばれることに依存する。これは
+    // `tests/architecture_guard.rs::reduce_helpers_are_called_only_from_reduce_body`
+    // が固定する(ヘルパー名は `fn reduce_` 定義から自動抽出するため、
+    // ヘルパーを追加・改名してもこのテスト自体の更新は不要——ただし命名を
+    // `reduce_` prefix 以外に変える場合は同テストの抽出条件を見直すこと)。
+
+    /// `FocusChanged`(ADR-170 決定1)。
+    fn reduce_focus_changed(
+        &mut self,
+        profile: ImePolicyProfile,
+        to: HwndId,
+        focus_epoch: FocusEpoch,
+        envelope: &ImeEventEnvelope,
+    ) {
+        // Step 1.5/5: policy 確定 → observation 評価の順序ルール。
+        // FocusChanged を受けた時点で policy を更新し、以降の observation は
+        // 新しい policy で評価される。
+        self.app_policy = AppImePolicy::from_profile(profile);
+        // current_focus: write-only（ADR-087 §5 Phase 3 item15 前提配線、
+        // read 側は Phase 3 本体のスコープでまだ無い）。
+        self.current_focus = Some(to);
+        // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
+        // (旧アプリの観測値が新アプリで有効と勘違いされないため)
+        self.last_intent = None;
+        // 打鍵時点の予測・追跡状態も旧アプリの文脈のものなので捨てる。
+        self.key_effect = None;
+        self.key_track = crate::state::key_effect_predictor::KeyTrack::default();
+        // 新しい epoch/hwnd を store に伝える。derive_any() はこれ以降、
+        // 古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する
+        // （ADR-106 決定3）。
+        self.observations.clear_on_focus_change(FocusFence {
+            epoch: focus_epoch,
+            hwnd: to,
+        });
+        tracing::debug!("[explicit-intent] cleared (focus change)");
+        self.applied = AppliedImeState::Unknown;
+        // `pending` ではなく `last_seen_generation` から算出する
+        // （struct doc 参照）。`pending` が既に None でも、これまで
+        // 見た最大 generation の直後を watermark として前進させる。
+        if let Some(next_focus_generation) = self
+            .last_seen_generation
+            .and_then(ApplyGeneration::checked_next)
+        {
+            self.focus_generation_watermark = next_focus_generation;
+        }
+        // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
+        self.force_guards.clear_for_focus_change();
+        // observe_miss_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
+        self.observe_miss_monitor.record_success();
+        // Step 5: FocusTransition barrier を立てる (旧 focus_transition_pending 相当)。
+        // settle_until は AppImePolicy.focus_settle_ms 由来。
+        let settle_until = envelope.time.monotonic
+            + std::time::Duration::from_millis(self.app_policy.focus_settle_ms);
+        self.input_barrier = Some(InputBarrier::FocusTransition {
+            to_hwnd: to,
+            started_seq: envelope.time.seq,
+            started_at: envelope.time.monotonic,
+            settle_until,
+        });
+    }
+
+    /// `ImeApplyRequested`(ADR-170 決定1)。
+    fn reduce_ime_apply_requested(
+        &mut self,
+        target: bool,
+        generation: ApplyGeneration,
+        ctrl_held: bool,
+        envelope: &ImeEventEnvelope,
+    ) {
+        // ADR-108 決定2/5: pending の上書き自体は許容する。上書きされた
+        // apply の成功完了は、同一 focus epoch かつ現在の pending.target と
+        // 同じ値なら `Optimistic` として `applied` へ反映できる。composition
+        // / warmup 副作用は `ImeApplyAcceptance::Accepted`（generation 厳密一致
+        // + 同一 epoch）のみが駆動する。
+        if let Some(existing) = &self.pending {
+            if !existing.is_timed_out(envelope.time.monotonic) {
+                tracing::warn!(
+                    "[ime-model] ImeApplyRequested(generation={generation}, target={target}) \
+                     が進行中の pending(generation={}, target={}) を上書きする — \
+                     上書きされた apply の完了は target と focus epoch が一致すれば \
+                     applied に反映され、一致しなければ破棄される",
+                    existing.generation,
+                    existing.target
+                );
+            }
+        }
+        // watermark 算出専用トラッカー。generation はディスパッチ順に
+        // 単調増加するため、pending の生死に関わらずここで更新しておく
+        // （FocusChanged 時点で pending が既に None でも watermark を
+        // 正しく前進させるため）。
+        self.last_seen_generation = Some(generation);
+        // Step 7 / ADR-108 決定1: pending transition を立てる。
+        // `ObservationStore::current_fence().epoch` でスタンプし、完了時にも同じ
+        // カウンタで照合する。`FocusStore` 側の epoch とは混ぜないこと。
+        self.pending = Some(ImeTransition {
+            target,
+            generation,
+            focus_epoch: self.observations.current_fence().epoch,
+            timeout_at: envelope.time.monotonic
+                + std::time::Duration::from_millis(crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS),
+        });
+        // Chord 開始判断: IME OFF 要求 + Ctrl 押下中 → CtrlImeChord barrier を立てる。
+        // KANJI（Ctrl なし）では立てない: ChordEnded のトリガが Ctrl KeyUp なので
+        // ペアにならず永続する事故を防ぐ。
+        if !target && ctrl_held {
+            self.input_barrier = Some(InputBarrier::CtrlImeChord {
+                target: false,
+                kind: ChordKind::CtrlMuhenkanImeOff,
+                started_seq: envelope.time.seq,
+                started_at: envelope.time.monotonic,
+            });
+        }
+        // Chord 中に IME ON 要求が来た場合 → chord を即時終了する。
+        if target && self.is_ctrl_ime_chord_active() {
+            self.input_barrier = None;
+        }
+    }
+
+    /// `ImeApplySucceeded`(ADR-170 決定1)。
+    fn reduce_ime_apply_succeeded(
+        &mut self,
+        target: bool,
+        generation: ApplyGeneration,
+        envelope: &ImeEventEnvelope,
+    ) {
+        let acceptance = self.classify_apply_completion(
+            target,
+            awase::platform::ImeOpenOutcome::Applied,
+            generation,
+        );
+        if self
+            .pending
+            .take_if(|pending| pending.generation == generation)
+            .is_some()
+        {
+            if matches!(acceptance, ImeApplyAcceptance::Accepted) {
+                self.applied = AppliedImeState::Confirmed {
+                    open: target,
+                    at_ms: envelope.time.tick_ms,
+                };
+            }
+        } else if matches!(acceptance, ImeApplyAcceptance::Superseded) {
+            // ADR-108 決定2: 上書きされた apply の成功完了。値は今
+            // in-flight な apply の行き先と同じなので安全だが、現在の
+            // pending 自身の確認ではないため `Confirmed` にはしない。
+            self.applied = AppliedImeState::Optimistic(target);
+        }
+    }
+
+    /// `ImeApplyFailed`(ADR-170 決定1)。
+    fn reduce_ime_apply_failed(
+        &mut self,
+        target: bool,
+        generation: ApplyGeneration,
+        error: ApplyError,
+        envelope: &ImeEventEnvelope,
+    ) {
+        let outcome = match error {
+            ApplyError::Timeout | ApplyError::CrossProcessFailed | ApplyError::Other => {
+                awase::platform::ImeOpenOutcome::Failed
+            }
+            ApplyError::UnsafeToToggle => awase::platform::ImeOpenOutcome::UnsafeToToggle,
+            ApplyError::NotOwned => awase::platform::ImeOpenOutcome::NotOwned,
+            ApplyError::Unwarranted => awase::platform::ImeOpenOutcome::Unwarranted,
+        };
+        let acceptance = self.classify_apply_completion(target, outcome, generation);
+        if self
+            .pending
+            .take_if(|pending| pending.generation == generation)
+            .is_some()
+        {
+            // ADR-108 決定3: `record_ime_apply_result` からの移設。`Failed` は
+            // 既存挙動維持として `!target` を書くが、`UnsafeToToggle` は
+            // 送っていないため実状態不明であり `applied` を書かない。この
+            // 非対称の除去は独立した挙動変更なので別ADRで扱う。
+            if matches!(acceptance, ImeApplyAcceptance::Accepted) {
+                self.applied = AppliedImeState::Confirmed {
+                    open: !target,
+                    at_ms: envelope.time.tick_ms,
+                };
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ime_event::{
+        ApplyError, ChordKind, EventTime, HwndId, ImePolicyProfile, ObservationConfidence,
+        ObservationSource,
+    };
+    use super::*;
+    use crate::state::evidence::AnyObservation;
+    use crate::state::force_guard::{ForceGuard, ForceOnReason};
+    use std::time::Instant;
+
+    fn envelope(seq: u64, event: ImeEvent) -> ImeEventEnvelope {
+        ImeEventEnvelope {
+            time: EventTime {
+                seq,
+                monotonic: Instant::now(),
+                tick_ms: 0,
+            },
+            event,
+        }
+    }
+
+    fn envelope_at(
+        seq: u64,
+        monotonic: Instant,
+        tick_ms: u64,
+        event: ImeEvent,
+    ) -> ImeEventEnvelope {
+        ImeEventEnvelope {
+            time: EventTime {
+                seq,
+                monotonic,
+                tick_ms,
+            },
+            event,
+        }
+    }
+
+    // ── AppliedImeState / ImeModel::applied_state 系 getter ─────────────────
+    //
+    // これらは `runtime/executor.rs` で間接的に使われテストもあるが、そちらは
+    // crate 全体が `#![cfg(windows)]` のため Linux 上の `cargo mutants -p
+    // awase-windows` では一切ビルドされず、mutants の実行対象にならない。
+    // ここ(`state/ime_model.rs` 自身の `#[cfg(test)]`)はプラットフォーム非依存で
+    // Linux でも実行されるため、バリアント別の直接テストをここに置く。
+
+    /// `initial_focus_scope_established_touches_only_the_scope_identity` 用のフィクスチャ。
+    ///
+    /// **`ImeModel` の全フィールドを既定値から動かす**ことがこのヘルパーの唯一の
+    /// 仕事である。当該テストは「モデル全体の `Debug` 表現が変わらないこと」で
+    /// 巻き添え書き込みを検出するため、既定値のままのフィールドへ既定値を書き戻す
+    /// 巻き添え（例: `input_barrier = None` / `pending = None` / `app_policy =
+    /// AppImePolicy::standard()`）は、そのフィールドが既定値だと**原理的に検出
+    /// できない**。フィールドを追加したらここにも非既定値を足すこと。
+    fn fully_populated_model(now: Instant) -> ImeModel {
+        let mut model = ImeModel::new();
+        model.desired_open = false; // 既定 true
+        model.input_mode = InputModeState::ObservedEisu; // 既定 ObservedRomaji
+        model.last_intent = Some(RecordedIntent {
+            target: false,
+            source: UserIntentSource::SyncKey,
+            at_ms: 11,
+        });
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 22,
+        };
+        model.current_focus = Some(HwndId(0x1111));
+        model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 3,
+        });
+        // 以下は 2026-08-31 の敵対的レビュー指摘 2-b で追加した分。`ime_event.rs` の
+        // doc が名指ししている `force_on_retry`/`input_barrier`/`app_policy` が
+        // フィクスチャに無く、それらへの巻き添え書き戻しを検出できていなかった。
+        model.app_policy.focus_settle_ms = 4242;
+        model.app_policy.owns_physical_kanji = !model.app_policy.owns_physical_kanji;
+        model.input_barrier = Some(InputBarrier::CtrlImeChord {
+            target: false,
+            kind: ChordKind::CtrlMuhenkanImeOff,
+            started_seq: 9,
+            started_at: now,
+        });
+        model.observe_miss_monitor.record_miss(now);
+        model.pending = Some(ImeTransition {
+            target: true,
+            generation: ApplyGeneration::new(7).expect("nonzero"),
+            focus_epoch: 1,
+            // ADR-108 決定4 のパージは `reduce()` の match **後**に無条件で走る。
+            // bootstrap では `pending` は必ず `None` なので実害は無いが、この
+            // フィクスチャでは意図せずパージされないよう十分先の期限を置く。
+            timeout_at: now + std::time::Duration::from_hours(1),
+        });
+        model.focus_generation_watermark = ApplyGeneration::new(5).expect("nonzero");
+        model.last_seen_generation = ApplyGeneration::new(4);
+        model.observations.record_replayed(
+            AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId(0x2222),
+                ObservationConfidence::Medium,
+                0,
+            ),
+            now,
+        );
+        model.observations.update_drift(false, true, now);
+        model
+    }
+
+    /// BUG-102・114・148 / ADR-102 決定3-b / ADR-232 D1: `InitialFocusScopeEstablished` は
+    /// `app_policy`・`current_focus`・観測の fence の 3 つ**以外の一切のフィールドに触れない**。
+    ///
+    /// bootstrap（まだ一度も IME を観測していない時点）で dispatch されるため、belief を
+    /// 1 ビットでも動かすとこの不変条件が壊れる。3 つが既に目的の値になっているモデルへ
+    /// 同じ Event を流し、モデル全体の `Debug` 表現が変わらないことで巻き添え書き込みを
+    /// 検出する（個別 assert の書き漏れで将来フィールドが増えたときに見逃すのを防ぐ）。
+    #[test]
+    fn initial_focus_scope_established_touches_only_the_scope_identity() {
+        let now = Instant::now();
+        let to = HwndId(0x7777);
+        let profile = ImePolicyProfile::TsfNative;
+        let focus_epoch = 1;
+        let fence = FocusFence {
+            epoch: focus_epoch,
+            hwnd: to,
+        };
+        let ev = || ImeEvent::InitialFocusScopeEstablished {
+            to,
+            profile,
+            focus_epoch,
+        };
+
+        // (1) 未確立（起動直後）のモデルへ流すと、3 つが入る。
+        let mut model = ImeModel::new();
+        assert_eq!(
+            model.current_focus(),
+            None,
+            "起動直後は None（BUG-148 の前提）"
+        );
+        assert_eq!(model.observations.current_fence(), FocusFence::default());
+        model.reduce(&envelope(1, ev()));
+        assert_eq!(model.app_policy, AppImePolicy::from_profile(profile));
+        assert_eq!(model.current_focus(), Some(to));
+        assert_eq!(model.observations.current_fence(), fence);
+
+        // (2) 3 つが既に目的の値のモデルへ同じ Event を流しても、モデル全体の `Debug` が
+        // 1 文字も変わらない。目的の値がフィクスチャの値と違うことを確かめてから使う
+        // （一致していると (2) の検出力が無くなる）。
+        let mut model = fully_populated_model(now);
+        assert_ne!(model.app_policy, AppImePolicy::from_profile(profile));
+        assert_ne!(model.current_focus(), Some(to));
+        model.app_policy = AppImePolicy::from_profile(profile);
+        model.current_focus = Some(to);
+        model.observations.establish_initial_fence(fence);
+        let before = format!("{model:?}");
+        model.reduce(&envelope(1, ev()));
+        assert_eq!(
+            format!("{model:?}"),
+            before,
+            "InitialFocusScopeEstablished は app_policy・current_focus・fence 以外を書き換えては\
+             ならない (ADR-102 決定3-b: 最初の IME 観測より前に belief を書き換えない)"
+        );
+    }
+
+    /// ADR-232 D1 の等価性テスト（BUG-102・114・148 の再発防止の本体）。
+    ///
+    /// 起動時の `InitialFocusScopeEstablished` は `FocusChanged` の reducer と別の腕に
+    /// 同じ式を書いているため（共有関数にすると `reduce_helpers_are_called_only_from_reduce_body`
+    /// に落ちる）、`reduce_focus_changed` に既定値以外を入れる新しいフィールドが足されたとき
+    /// 起動時の側が漏れる恐れがある。未確立のモデル 2 つに同じスコープを `FocusChanged` と
+    /// `InitialFocusScopeEstablished` で別々に流し、**起動時は違ってよいフィールドを下で手で
+    /// 挙げて写したうえで**、モデル全体の `Debug` が一致することを要求する。
+    /// 新しいフィールドで落ちたら、「同一性なので起動時も入れる」か「belief のリセットなので
+    /// 下の一覧に足す」かを判断すること（一覧は共有の関数や定数から
+    /// 取らない。取ると、このテストが比べる対象が実装と同じ式になりトートロジーになる）。
+    #[test]
+    fn initial_focus_scope_matches_focus_changed_except_input_barrier() {
+        let now = Instant::now();
+        let to = HwndId(0x7777);
+        let profile = ImePolicyProfile::TsfNative;
+        let focus_epoch = 1;
+
+        let mut a = ImeModel::new();
+        a.reduce(&envelope_at(
+            1,
+            now,
+            0,
+            ImeEvent::FocusChanged {
+                from: None,
+                to,
+                profile,
+                focus_epoch,
+            },
+        ));
+        let mut b = ImeModel::new();
+        b.reduce(&envelope_at(
+            1,
+            now,
+            0,
+            ImeEvent::InitialFocusScopeEstablished {
+                to,
+                profile,
+                focus_epoch,
+            },
+        ));
+
+        // 起動時は違ってよいフィールド（手で挙げる）:
+        // - `input_barrier`: `FocusChanged` は `FocusTransition` の settle を立てる。起動時は
+        //   立てない（今の挙動。3 つの旧 Event も立てていなかった）。`key_track` は `new()` の値と
+        //   `KeyTrack::default()` が一致するので一覧に載らない。
+        b.input_barrier = a.input_barrier;
+
+        assert_eq!(
+            format!("{a:?}"),
+            format!("{b:?}"),
+            "起動時の InitialFocusScopeEstablished が FocusChanged と食い違っている。\
+             FocusChanged に足したフィールドが同一性なら起動時の腕にも書き、belief の\
+             リセットなら、このテストの「起動時は違ってよい」一覧に理由つきで足すこと"
+        );
+    }
+
+    /// `ModeKeyPassedThrough` が書くのは `last_intent` と、観測から導ける開閉があるときの
+    /// `desired_open`（BUG-157: 通過させたモードキーの結果を、ユーザーの結果として採る）だけ。
+    #[test]
+    fn mode_key_passed_through_touches_only_last_intent_and_desired_open() {
+        let now = Instant::now();
+
+        let mut model = fully_populated_model(now);
+        assert!(
+            model.last_intent.is_some(),
+            "フィクスチャは last_intent を持つ"
+        );
+        assert!(
+            !model.desired_open,
+            "フィクスチャは desired_open=false で、観測(ObserverPoll)は open=true"
+        );
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: false,
+            },
+        ));
+        assert!(
+            model.last_intent.is_none(),
+            "ModeKeyPassedThrough は last_intent を捨てる"
+        );
+        assert!(
+            model.desired_open,
+            "観測から導ける開閉(true)を desired_open へ採る"
+        );
+
+        let mut expected = fully_populated_model(now);
+        expected.last_intent = None;
+        expected.desired_open = true;
+        // `desired_open` を書いたので、「初期値のまま」でなくなる（BUG-163）。
+        expected.desired_is_placeholder = false;
+        assert_eq!(
+            format!("{model:?}"),
+            format!("{expected:?}"),
+            "ModeKeyPassedThrough は last_intent と desired_open（と、それに伴う desired_is_placeholder・\
+             食い違う applied の未確認化）以外を書き換えてはならない"
+        );
+    }
+
+    /// BUG-163: 起動時の `desired_open`（初期値 true）は「初期値のまま」で、意図・復元・揃えのどれかが書くと外れる。
+    #[test]
+    fn desired_open_is_a_placeholder_until_something_writes_it() {
+        let now = Instant::now();
+        assert!(
+            ImeModel::new().desired_is_placeholder(),
+            "起動直後は初期値のまま"
+        );
+
+        // 明示意図（ユーザー操作）。
+        let mut m = ImeModel::new();
+        m.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::SyncKey,
+            },
+        ));
+        assert!(!m.desired_is_placeholder());
+
+        // 復旧操作・HWND キャッシュ復元。
+        let mut m = ImeModel::new();
+        m.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert!(!m.desired_is_placeholder());
+        let mut m = ImeModel::new();
+        m.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        assert!(!m.desired_is_placeholder());
+
+        // 観測が無い揃え（読めない窓）は書かないので、初期値のまま。
+        let mut m = ImeModel::new();
+        m.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: false,
+            },
+        ));
+        assert!(m.desired_is_placeholder(), "観測が無ければ揃えない");
+
+        // 観測がある揃えは書く。
+        let mut m = fully_populated_model(now);
+        m.desired_is_placeholder = true;
+        m.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: false,
+            },
+        ));
+        assert!(
+            !m.desired_is_placeholder(),
+            "観測から揃えたら初期値ではない"
+        );
+    }
+
+    /// ADR-205 D6: 追随で観測（ObserverPoll=open）が `applied` と食い違うなら、`applied` は未確認へ落ちる
+    /// （GjiDirect の already-matched が古い記録を根拠に絶対指定キーの送信を省き続けない）。一致なら残す。
+    #[test]
+    fn mode_key_passed_through_demotes_contradicted_applied_only() {
+        let now = Instant::now();
+        // 観測は open=true。applied=false は食い違う → Unknown。
+        let mut model = fully_populated_model(now);
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: true,
+            },
+        ));
+        assert_eq!(model.applied, AppliedImeState::Unknown);
+
+        // applied=true は観測と一致 → 残す。
+        let mut model = fully_populated_model(now);
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: true,
+            },
+        ));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: 5
+            }
+        );
+
+        // 窓切れの破棄（align_desired=false）は applied に触れない。
+        let mut model = fully_populated_model(now);
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: false,
+                demote_applied: false,
+            },
+        ));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 5
+            }
+        );
+    }
+
+    /// 観測が無いとき（読めない窓）は `last_intent` だけを捨て、`desired_open` は書かない。
+    #[test]
+    fn mode_key_passed_through_without_observation_only_drops_last_intent() {
+        let now = Instant::now();
+        let mut model = fully_populated_model(now);
+        model.observations = ObservationStore::default();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: false,
+            },
+        ));
+        assert!(model.last_intent.is_none());
+        assert!(
+            !model.desired_open,
+            "観測が無ければ desired_open は書かない"
+        );
+    }
+
+    /// レビュー round2 A-N1: 観測が成功しないまま窓が切れた破棄（`align_desired == false`）は、観測プールに
+    /// 打鍵より前の観測が残っていても `desired_open` を書かず、`last_intent` だけを捨てる。
+    #[test]
+    fn mode_key_passed_through_expiry_drops_intent_but_never_aligns_desired() {
+        let now = Instant::now();
+        let mut model = fully_populated_model(now);
+        assert!(!model.desired_open, "観測(ObserverPoll)は open=true");
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: false,
+                demote_applied: false,
+            },
+        ));
+        assert!(model.last_intent.is_none(), "意図は捨てる");
+        assert!(
+            !model.desired_open,
+            "観測があっても、窓の終了時の破棄では desired_open を書かない（打鍵より前の値を採らない）"
+        );
+    }
+
+    /// BUG-102 の**実害そのもの**を `resolve_open_at` の粒度で固定する。
+    ///
+    /// `observation_store` 側の退行テストは `derive_any()` が `None` になることまで
+    /// しか見ないが、`resolve_open_at` は `derive_any` → `most_recent_trusted`
+    /// （**フェンス照合なし**）→ `desired_open` の順で解決するため、
+    /// ImmCrossProbe しか観測が無ければ `most_recent_trusted` が同じ観測を拾い直し、
+    /// belief の**値としては症状が出ない**。
+    ///
+    /// 本当に守るべき退行は、`ObserverPoll`（Medium、フェンス照合の対象外）が
+    /// 併存するケース: `derive_any` が Medium 単独合意を返し、**本来 High 単独で
+    /// 即採用されるはずの `ImmCrossProbe` を上書きする**。fence 同期後は
+    /// `DeriveHigh(ImmCrossProbe)` に戻る。
+    #[test]
+    fn bootstrap_fence_desync_lets_medium_poll_override_high_probe() {
+        let now = Instant::now();
+        let bootstrap_fence = FocusFence {
+            epoch: 1, // enter_focus_scope が 0 -> 1 に進めた
+            hwnd: HwndId(0xABCD),
+        };
+        let mut model = ImeModel::new();
+        // 明示意図が無い状態（= 観測で決まる状態）にする。
+        model.last_intent = None;
+
+        // live 側フェンスでスタンプされた High 観測（真の IME 状態 = ON）。
+        model.observations.record_replayed(
+            AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ImmCrossProbe,
+                bootstrap_fence.hwnd,
+                ObservationConfidence::High,
+                bootstrap_fence.epoch,
+            ),
+            now,
+        );
+        // 食い違う Medium 観測（`is_identity_ok` の対象外なのでフェンスに関係なく通る）。
+        model.observations.record_replayed(
+            AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ObserverPoll,
+                bootstrap_fence.hwnd,
+                ObservationConfidence::Medium,
+                bootstrap_fence.epoch,
+            ),
+            now,
+        );
+
+        // 同期前（退行の再現）: High が identity gate で外れ、Medium が勝つ。
+        let before = model.resolve_open_at(now);
+        assert!(
+            !before.value,
+            "fence desync 時は Medium の ObserverPoll(false) が採用されてしまう"
+        );
+        assert_eq!(
+            before.decided_by.base,
+            BaseDecision::DeriveMedium {
+                first: ObservationSource::ObserverPoll,
+                second: None,
+            },
+            "根拠も Medium 単独合意に落ちる"
+        );
+
+        // 同期後: High 単独即採用に戻る。
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InitialFocusScopeEstablished {
+                to: bootstrap_fence.hwnd,
+                profile: ImePolicyProfile::TsfNative,
+                focus_epoch: bootstrap_fence.epoch,
+            },
+        ));
+        let after = model.resolve_open_at(now);
+        assert!(
+            after.value,
+            "fence 同期後は High の ImmCrossProbe(true) が勝つ"
+        );
+        assert_eq!(
+            after.decided_by.base,
+            BaseDecision::DeriveHigh(ObservationSource::ImmCrossProbe),
+        );
+    }
+
+    #[test]
+    fn applied_ime_state_applied_open_and_related_getters() {
+        assert_eq!(AppliedImeState::Unknown.applied_open(), None);
+        assert!(!AppliedImeState::Unknown.is_confirmed());
+
+        assert_eq!(AppliedImeState::Optimistic(true).applied_open(), Some(true));
+        assert!(!AppliedImeState::Optimistic(true).is_confirmed());
+
+        let confirmed = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 42,
+        };
+        assert_eq!(confirmed.applied_open(), Some(false));
+        assert!(confirmed.is_confirmed());
+    }
+
+    #[test]
+    fn applied_open_reflects_applied_state() {
+        let mut model = ImeModel::new();
+        assert_eq!(
+            model.applied_state().applied_open(),
+            None,
+            "初期状態は Unknown"
+        );
+
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 7,
+        };
+        assert_eq!(model.applied_state().applied_open(), Some(true));
+    }
+
+    #[test]
+    fn is_focus_transition_pending_reflects_input_barrier() {
+        let mut model = ImeModel::new();
+        assert!(
+            !model.is_focus_transition_pending(),
+            "barrier なしなら false"
+        );
+
+        model.input_barrier = Some(InputBarrier::FocusTransition {
+            to_hwnd: HwndId::NULL,
+            started_seq: 1,
+            started_at: Instant::now(),
+            settle_until: Instant::now() + std::time::Duration::from_millis(100),
+        });
+        assert!(
+            model.is_focus_transition_pending(),
+            "FocusTransition barrier があれば true"
+        );
+
+        model.input_barrier = Some(InputBarrier::CtrlImeChord {
+            target: false,
+            kind: ChordKind::CtrlMuhenkanImeOff,
+            started_seq: 1,
+            started_at: Instant::now(),
+        });
+        assert!(
+            !model.is_focus_transition_pending(),
+            "CtrlImeChord は FocusTransition ではない"
+        );
+    }
+
+    #[test]
+    fn user_intent_sets_desired() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(!model.desired_open);
+        assert!(!model.last_intent.as_ref().unwrap().target);
+    }
+
+    #[test]
+    fn observer_does_not_change_desired() {
+        let mut model = ImeModel::new(); // desired_open = true
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+        assert!(model.desired_open, "observer は desired を壊さない");
+        assert!(
+            !model
+                .observations
+                .per_source
+                .observer_poll
+                .as_ref()
+                .unwrap()
+                .open
+        );
+    }
+
+    /// BUG-19 再発対策: `KatakanaShadowOff`/`NativeToggleShadowOff` が
+    /// `PlatformState::report_conv_open_inference()` 経由で `ObserverReported
+    /// { source: ConvOpenInference }` を dispatch しても、`desired_open` と
+    /// `last_intent`（ユーザーの明示 OFF 意図）は一切変更されないことを固定する。
+    /// `ConvOpenInference` は `PerSourceObservations` に正式に記録される点が
+    /// `ConvBitsInference`（input_mode 専用、常に記録されない）と異なる。
+    #[test]
+    fn conv_open_inference_observer_does_not_change_desired_or_last_intent() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(!model.desired_open);
+        assert!(model.last_intent.is_some());
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ConvOpenInference,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+
+        assert!(
+            !model.desired_open,
+            "conv 由来の open 推論は desired_open を書き換えない (BUG-19 再発対策)"
+        );
+        assert!(
+            model.last_intent.is_some(),
+            "conv 由来の open 推論は last_intent (ユーザー明示意図) を消さない"
+        );
+        assert!(
+            model
+                .observations
+                .per_source
+                .conv_open_inference
+                .as_ref()
+                .unwrap()
+                .open,
+            "ConvOpenInference は ConvBitsInference と異なり正式な open 観測として記録される"
+        );
+        assert!(
+            model.observations.drift.is_some(),
+            "desired=false と observed=true の乖離が drift として追跡される"
+        );
+    }
+
+    #[test]
+    fn effective_open_falls_back_to_most_recent_trusted_when_derive_open_is_none() {
+        let mut model = ImeModel::new(); // desired_open = true, 明示 intent なし
+                                         // Low confidence 単独 → derive_any() は None（Medium+ 専用のため）。
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::HeuristicDefault,
+                HwndId::NULL,
+                ObservationConfidence::Low,
+                0,
+            )),
+        ));
+        assert!(
+            !model.effective_open_at(Instant::now()),
+            "derive_open()=None でも most_recent_trusted() の Low observation が \
+             desired_open より優先される"
+        );
+    }
+
+    #[test]
+    fn effective_open_medium_observation_overrides_low_fallback() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::HeuristicDefault,
+                HwndId::NULL,
+                ObservationConfidence::Low,
+                0,
+            )),
+        ));
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+        assert!(
+            model.effective_open_at(Instant::now()),
+            "Medium confidence の derive_any() 結果が Low fallback より常に優先される"
+        );
+    }
+
+    // ── ADR-191 決定3: 打鍵時点の予測（KeyEffectPredicted）と fence ────────────────
+
+    fn observe_open(
+        model: &mut ImeModel,
+        seq: u64,
+        tick_ms: u64,
+        open: bool,
+        c: ObservationConfidence,
+    ) {
+        model.reduce(&envelope_at(
+            seq,
+            Instant::now(),
+            tick_ms,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                open,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                c,
+                0,
+            )),
+        ));
+    }
+
+    fn predict(
+        model: &mut ImeModel,
+        tick_ms: u64,
+        open: Option<bool>,
+        mode: Option<InputModeState>,
+    ) {
+        model.reduce(&envelope_at(
+            100,
+            Instant::now(),
+            tick_ms,
+            ImeEvent::KeyEffectPredicted {
+                open,
+                mode,
+                track: crate::state::key_effect_predictor::KeyTrack::default(),
+            },
+        ));
+    }
+
+    #[test]
+    fn key_effect_prediction_moves_open_and_mode_without_touching_desired_open() {
+        let mut model = ImeModel::new();
+        observe_open(&mut model, 1, 0, true, ObservationConfidence::Medium);
+        predict(
+            &mut model,
+            1000,
+            Some(false),
+            Some(InputModeState::ObservedEisu),
+        );
+        assert!(
+            !model.effective_open_at(Instant::now()),
+            "予測が観測より優先される"
+        );
+        assert_eq!(model.input_mode(), InputModeState::ObservedEisu);
+        assert!(
+            model.desired_open(),
+            "desired_open は書かない（ドリフト補正がIMEへ書き戻さないため）"
+        );
+        assert!(model.last_intent.is_none(), "明示意図を偽装しない");
+    }
+
+    fn predict_with_track(
+        model: &mut ImeModel,
+        tick_ms: u64,
+        track: crate::state::key_effect_predictor::KeyTrack,
+    ) {
+        model.reduce(&envelope_at(
+            100,
+            Instant::now(),
+            tick_ms,
+            ImeEvent::KeyEffectPredicted {
+                open: None,
+                mode: None,
+                track,
+            },
+        ));
+    }
+
+    /// BUG-156: 予測が開閉をappliedと食い違う向きへ動かしたら、appliedは実状態の証拠ではなくなり`Unknown`へ落ちる
+    /// （残すとGjiDirectのalready-matched判定が古い記録で書き込みを省く）。同じ向きの予測ではappliedを保つ。
+    #[test]
+    fn prediction_that_contradicts_applied_drops_it_to_unknown() {
+        use crate::state::key_effect_predictor::KeyTrack;
+        let predict = |open: Option<bool>| ImeEvent::KeyEffectPredicted {
+            open,
+            mode: None,
+            track: KeyTrack::default(),
+        };
+        let mut model = ImeModel::new();
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(1, predict(Some(true))));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "食い違う予測: 古い記録は証拠にしない"
+        );
+        assert_eq!(model.applied_state().applied_open(), None);
+
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(2, predict(Some(true))));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: 5
+            },
+            "同じ向きの予測: 記録は保つ"
+        );
+
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(3, predict(None)));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 5
+            },
+            "開閉を動かさない予測（追跡だけ）: 記録は保つ"
+        );
+    }
+
+    #[test]
+    fn key_effect_mode_confirmation_compares_eisu_only() {
+        use awase::engine::AssumedReason;
+        let eisu = InputModeState::ObservedEisu;
+        let kana = InputModeState::ObservedKana;
+        let romaji = InputModeState::ObservedRomaji;
+        let assumed = InputModeState::AssumedRomaji {
+            reason: AssumedReason::KeyEffectPrediction,
+        };
+        // 予測=英数・観測=かな入力: 外れ（以前は「合った」と誤判定していた）
+        assert!(!key_effect_mode_confirmed(eisu, kana));
+        // 予測=ひらがな(AssumedRomaji)・観測=かな入力: 英数ではないので合った（以前は「外れ」と誤判定）
+        assert!(key_effect_mode_confirmed(assumed, kana));
+        assert!(key_effect_mode_confirmed(assumed, romaji));
+        assert!(key_effect_mode_confirmed(eisu, eisu));
+        assert!(!key_effect_mode_confirmed(assumed, eisu));
+    }
+
+    #[test]
+    fn key_track_is_written_by_prediction_and_reset_by_focus_change_and_intent() {
+        use crate::state::key_effect_predictor::{Conv, KeyTrack, Stage};
+        let track = KeyTrack {
+            conv: Some(Conv::C1B),
+            stage: Stage::ConvHenkan,
+        };
+        let mut model = ImeModel::new();
+        predict_with_track(&mut model, 1000, track);
+        assert_eq!(model.key_track(), track);
+        // 追跡状態だけの更新は、開閉・入力モードの予測（fence）を作らない。
+        assert!(model.key_effect().is_none());
+        // 明示意図（半角/全角のトグル等）は変換中の段階だけ捨てる。
+        model.reduce(&envelope(
+            2,
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert_eq!(
+            model.key_track(),
+            KeyTrack {
+                conv: Some(Conv::C1B),
+                stage: Stage::None
+            }
+        );
+        // フォーカス変更は旧アプリの文脈なので全部捨てる。
+        predict_with_track(&mut model, 1100, track);
+        model.reduce(&focus_changed_event(3));
+        assert_eq!(model.key_track(), KeyTrack::default());
+    }
+
+    #[test]
+    fn medium_mode_observation_returns_conv_tracking_to_observed_value() {
+        use crate::state::key_effect_predictor::{Conv, KeyTrack, Stage};
+        let mut model = ImeModel::new();
+        predict_with_track(
+            &mut model,
+            1000,
+            KeyTrack {
+                conv: Some(Conv::C10),
+                stage: Stage::Typing,
+            },
+        );
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            5000,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedRomaji,
+                source: ObservationSource::ObserverPoll,
+                confidence: ObservationConfidence::Medium,
+            },
+        ));
+        assert_eq!(model.key_track().conv, None, "観測が来たら追跡は観測へ戻る");
+        assert_eq!(
+            model.key_track().stage,
+            Stage::Typing,
+            "段階は観測できないので残す"
+        );
+    }
+
+    #[test]
+    fn open_prediction_supersedes_an_older_explicit_intent() {
+        // 読めないアプリでは観測で明示意図を外せない。物理モードキーの予測が古い意図を上書きしないと、
+        // resolve_open_at が意図を優先して予測が効かない。
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(!model.effective_open_at(Instant::now()));
+        predict(&mut model, 1000, Some(true), None);
+        assert!(
+            model.effective_open_at(Instant::now()),
+            "予測が古い明示意図に勝つ"
+        );
+        assert!(model.last_intent.is_none());
+        assert!(
+            !model.desired_open(),
+            "desired_open は書かない（意図が捨てられるだけ）"
+        );
+    }
+
+    #[test]
+    fn stale_observation_within_settle_does_not_override_prediction() {
+        // fence: 打鍵より前に読み取りを始めた古い観測（settle 以内に届いたもの）は、予測を上書きも消しもしない。
+        let mut model = ImeModel::new();
+        predict(
+            &mut model,
+            1000,
+            Some(false),
+            Some(InputModeState::ObservedEisu),
+        );
+        let stale = 1000 + crate::tuning::KEY_EFFECT_SETTLE_MS - 1;
+        observe_open(&mut model, 2, stale, true, ObservationConfidence::Medium);
+        model.reduce(&envelope_at(
+            3,
+            Instant::now(),
+            stale,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedRomaji,
+                source: ObservationSource::ObserverPoll,
+                confidence: ObservationConfidence::Medium,
+            },
+        ));
+        assert!(
+            !model.effective_open_at(Instant::now()),
+            "古い観測は予測を上書きしない"
+        );
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedEisu,
+            "古い観測は予測した入力モードを上書きしない"
+        );
+        assert!(model.key_effect().is_some(), "予測は照合されず残る");
+    }
+
+    #[test]
+    fn observation_after_settle_wins_and_clears_prediction() {
+        let mut model = ImeModel::new();
+        predict(
+            &mut model,
+            1000,
+            Some(false),
+            Some(InputModeState::ObservedEisu),
+        );
+        let at = 1000 + crate::tuning::KEY_EFFECT_SETTLE_MS;
+        // 予測（閉）と食い違う観測（開）。観測が勝つ。
+        observe_open(&mut model, 2, at, true, ObservationConfidence::Medium);
+        model.reduce(&envelope_at(
+            3,
+            Instant::now(),
+            at,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedRomaji,
+                source: ObservationSource::ObserverPoll,
+                confidence: ObservationConfidence::Medium,
+            },
+        ));
+        assert!(
+            model.effective_open_at(Instant::now()),
+            "settle 後の観測が勝つ"
+        );
+        assert_eq!(model.input_mode(), InputModeState::ObservedRomaji);
+        assert!(
+            model.key_effect().is_none(),
+            "両軸とも照合済みなら予測は消える"
+        );
+    }
+
+    #[test]
+    fn low_confidence_observation_never_reconciles_prediction() {
+        let mut model = ImeModel::new();
+        predict(&mut model, 1000, Some(false), None);
+        observe_open(&mut model, 2, 5000, true, ObservationConfidence::Low);
+        assert!(!model.effective_open_at(Instant::now()));
+        assert!(model.key_effect().is_some());
+    }
+
+    #[test]
+    fn prediction_survives_without_observations_for_unreadable_apps() {
+        // TsfNative 等: 観測が来ないので、予測が唯一の信号として残る。
+        let mut model = ImeModel::new();
+        predict(&mut model, 1000, Some(false), None);
+        assert!(!model.effective_open_at(Instant::now()));
+        // 次の打鍵の予測は、触れない軸の未照合の予測を残す。
+        predict(&mut model, 2000, None, Some(InputModeState::ObservedEisu));
+        let p = model.key_effect().unwrap();
+        assert_eq!(p.open, Some(false));
+        assert_eq!(p.mode, Some(InputModeState::ObservedEisu));
+        assert_eq!(p.at_ms, 2000, "fence は最新の打鍵に進む");
+    }
+
+    #[test]
+    fn explicit_intent_and_focus_change_supersede_prediction() {
+        let mut model = ImeModel::new();
+        predict(&mut model, 1000, Some(false), None);
+        model.reduce(&envelope(
+            5,
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(model.key_effect().is_none());
+        assert!(model.effective_open_at(Instant::now()));
+
+        predict(&mut model, 2000, Some(false), None);
+        model.reduce(&envelope(
+            6,
+            ImeEvent::FocusChanged {
+                from: None,
+                to: HwndId::NULL,
+                profile: ImePolicyProfile::ImmCross,
+                focus_epoch: FocusEpoch::MIN,
+            },
+        ));
+        assert!(model.key_effect().is_none(), "フォーカス変更で予測は捨てる");
+    }
+
+    // ── resolve_open_at / DecidedBy（ADR-087 §5 Phase 0a item2/3） ──────────────
+
+    #[test]
+    fn resolve_open_at_decided_by_explicit_intent() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(!res.value);
+        assert_eq!(res.decided_by.base, BaseDecision::ExplicitIntent);
+        assert_eq!(res.decided_by.guard_override, None);
+    }
+
+    #[test]
+    fn resolve_open_at_decided_by_derive_medium_mise_bug_scenario() {
+        // ADR-087 発端バグ（mise→くした）の belief 側の再現: 明示意図なし、
+        // ConvOpenInference 1件（Medium, open:true）だけがある状態。
+        // belief は ON に復帰する（P13: derive_any() の Medium 単独多数決は
+        // 弱めない、BUG-26 が依拠する挙動）。
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ConvOpenInference,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(
+            res.value,
+            "conv 推論1件で belief は ON に復帰する（BUG-26 の依拠先）"
+        );
+        assert_eq!(
+            res.decided_by.base,
+            BaseDecision::DeriveMedium {
+                first: ObservationSource::ConvOpenInference,
+                second: None,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_open_at_decided_by_desired_fallback() {
+        let model = ImeModel::new(); // desired_open=true, 観測なし, 意図なし
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(res.value);
+        assert_eq!(res.decided_by.base, BaseDecision::DesiredFallback);
+    }
+
+    #[test]
+    fn resolve_open_at_desired_fallback_carries_relay_desired_value_without_observations() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        model.reduce(&focus_changed_event(2));
+
+        let res = model.resolve_open_at(Instant::now());
+        assert!(!res.value);
+        assert_eq!(res.decided_by.base, BaseDecision::DesiredFallback);
+        assert_eq!(res.decided_by.guard_override, None);
+    }
+
+    #[test]
+    fn resolve_open_at_reports_guard_override() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 1,
+        });
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(res.value, "PanicReset は明示 OFF 意図を override する");
+        assert_eq!(
+            res.decided_by.base,
+            BaseDecision::ExplicitIntent,
+            "base 自体は明示意図のまま false 側で決まる"
+        );
+        assert_eq!(
+            res.decided_by.guard_override,
+            Some(ForceOnReason::PanicReset),
+            "guard_override に override した reason が残る"
+        );
+    }
+
+    #[test]
+    fn resolve_open_at_guard_override_none_when_guard_active_but_did_not_flip_value() {
+        // ADR-087 §7 round4 M-C の直接の回帰テスト: guard が active でも
+        // base が既に true なら override は起きていないので guard_override は
+        // None であるべき（旧実装は誤って Some を返していた）。
+        let mut model = ImeModel::new(); // desired_open=true, 明示意図なし
+        model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 1,
+        });
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(res.value);
+        assert_eq!(
+            res.decided_by.guard_override, None,
+            "base が既に true（DesiredFallback）なので guard は何も override していない"
+        );
+    }
+
+    #[test]
+    fn resolve_open_at_now_argument_actually_affects_result() {
+        // ADR-087 §7 round4 M-B: 注入した `now` が本当に使われていることの
+        // 直接検証。derive_any() の FRESH ウィンドウ（3秒、observation_store.rs）
+        // を跨ぐ前後で decided_by が変わることを確認する——これが変わらなければ
+        // resolve_open_at が引数を無視している可能性がある。
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+        let fresh = model.resolve_open_at(t0);
+        assert_eq!(
+            fresh.decided_by.base,
+            BaseDecision::DeriveMedium {
+                first: ObservationSource::ObserverPoll,
+                second: None,
+            },
+            "FRESH ウィンドウ内では derive_open が観測を採用する"
+        );
+
+        let stale = model.resolve_open_at(t0 + std::time::Duration::from_secs(4));
+        assert_eq!(
+            stale.decided_by.base,
+            BaseDecision::MostRecentTrusted(ObservationSource::ObserverPoll),
+            "FRESH(3s) を超えると derive_open は None になるが、\
+             most_recent_trusted() は expires_at のみを見る（FRESH 窓を見ない）\
+             ため同じ観測を拾い、フォールバック先が DeriveMedium から \
+             MostRecentTrusted に切り替わる——now が本当に効いている証拠"
+        );
+    }
+
+    /// BUG-189 / ADR-233: ICP(High,false)がフォーカス時に 1 件だけ記録され、後から ObserverPoll(Medium,true)が入る列。
+    /// 観測の書き込みが止まって鮮度窓(3s)が尽きても、実効値は新しい観測(true)のままで、古い High(false)に戻らない
+    /// (時間経過だけで belief が変わる逆戻りが無いこと)。旧い順位 `(confidence, at)` では false に反転していた。
+    #[test]
+    fn bug189_stale_high_false_does_not_revert_newer_medium_true() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        let secs = std::time::Duration::from_secs_f64;
+        model.reduce(&envelope_at(
+            1,
+            t0,
+            0,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ImmCrossProbe,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            )),
+        ));
+        model.reduce(&envelope_at(
+            2,
+            t0 + secs(4.5),
+            4500,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+        // 新しい観測の直後(鮮度窓内): derive が Medium(true)を採る。
+        assert!(model.resolve_open_at(t0 + secs(5.0)).value);
+        // 最後の観測から 3.01s 何も書かれなかった後(古い High と新しい Medium が両方フォールバックに落ちる)。
+        let after_gap = model.resolve_open_at(t0 + secs(4.5 + 3.01));
+        assert!(after_gap.value, "古い ICP(High,false)に戻ってはいけない");
+        assert_eq!(
+            after_gap.decided_by.base,
+            BaseDecision::MostRecentTrusted(ObservationSource::ObserverPoll)
+        );
+        // 時間がさらに進んでも同じ(新しいイベントが無いまま belief が変わらない)。
+        assert!(model.resolve_open_at(t0 + secs(60.0)).value);
+    }
+
+    #[test]
+    fn input_mode_observed_low_confidence_is_ignored() {
+        let mut model = ImeModel::new(); // input_mode = ObservedRomaji (初期値)
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedEisu,
+                source: ObservationSource::FocusProbe,
+                confidence: ObservationConfidence::Low,
+            },
+        ));
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedRomaji,
+            "Low confidence の観測は input_mode を上書きしない"
+        );
+    }
+
+    #[test]
+    fn input_mode_observed_medium_confidence_updates() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedEisu,
+                source: ObservationSource::ObserverPoll,
+                confidence: ObservationConfidence::Medium,
+            },
+        ));
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedEisu,
+            "Medium+ confidence の観測は input_mode を更新する"
+        );
+    }
+
+    fn focus_changed_event(seq: u64) -> ImeEventEnvelope {
+        envelope(
+            seq,
+            ImeEvent::FocusChanged {
+                from: None,
+                to: HwndId::NULL,
+                profile: ImePolicyProfile::ImmCross,
+                focus_epoch: seq,
+            },
+        )
+    }
+
+    #[test]
+    fn focus_change_clears_force_guards() {
+        let mut model = ImeModel::new();
+        model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 1,
+        });
+        assert!(model.force_guards.requires_on());
+
+        model.reduce(&focus_changed_event(2));
+
+        assert!(
+            !model.force_guards.requires_on(),
+            "focus change で force guard が解除される"
+        );
+    }
+
+    // 対比: PanicReset は安全弁のため、明示的意図があっても引き続き override する。
+    #[test]
+    fn panic_reset_guard_overrides_explicit_off_intent() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::SyncKey,
+            },
+        ));
+        model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 1,
+        });
+        assert!(
+            model.effective_open_at(Instant::now()),
+            "PanicReset は明示的意図があっても IME ON を保証する安全弁として override する"
+        );
+    }
+
+    #[test]
+    fn focus_change_resets_observe_miss_monitor() {
+        let mut model = ImeModel::new();
+        let t = Instant::now();
+        model.observe_miss_monitor.record_miss(t);
+        model.observe_miss_monitor.record_miss(t);
+        model.observe_miss_monitor.record_miss(t);
+        assert!(model.observe_miss_monitor.exceeds(3));
+
+        model.reduce(&focus_changed_event(2));
+
+        assert!(
+            !model.observe_miss_monitor.exceeds(1),
+            "focus change で observe_miss_monitor がリセットされる"
+        );
+    }
+
+    #[test]
+    fn focus_change_does_not_clear_desired_open() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(model.desired_open);
+
+        model.reduce(&focus_changed_event(2));
+
+        assert!(
+            model.desired_open,
+            "focus change は desired_open を変えない"
+        );
+    }
+
+    // ── ImeApplyRequested による chord barrier 制御 (Phase 2) ──
+
+    #[test]
+    fn ime_off_with_ctrl_held_starts_chord() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: ApplyGeneration::new(1).unwrap(),
+                ctrl_held: true,
+            },
+        ));
+        assert!(
+            model.is_ctrl_ime_chord_active(),
+            "IME OFF 要求 + Ctrl 押下中 → chord 開始"
+        );
+        assert_eq!(
+            model.active_chord_kind(),
+            Some(ChordKind::CtrlMuhenkanImeOff)
+        );
+    }
+
+    #[test]
+    fn ime_off_without_ctrl_does_not_start_chord() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: ApplyGeneration::new(1).unwrap(),
+                ctrl_held: false,
+            },
+        ));
+        assert!(
+            !model.is_ctrl_ime_chord_active(),
+            "KANJI（Ctrl なし）IME OFF では chord を開始しない"
+        );
+    }
+
+    #[test]
+    fn ime_on_during_chord_ends_it() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: ApplyGeneration::new(1).unwrap(),
+                ctrl_held: true,
+            },
+        ));
+        assert!(model.is_ctrl_ime_chord_active());
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: ApplyGeneration::new(2).unwrap(),
+                ctrl_held: true,
+            },
+        ));
+        assert!(
+            !model.is_ctrl_ime_chord_active(),
+            "chord 中の IME ON 要求は chord を即時終了する"
+        );
+    }
+
+    #[test]
+    fn stale_ime_apply_success_does_not_consume_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: ApplyGeneration::new(10).unwrap(),
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplySucceeded {
+                target: false,
+                generation: ApplyGeneration::new(9).unwrap(),
+            },
+        ));
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(ApplyGeneration::new(10).unwrap()),
+            "古い generation の完了で current pending を消費しない"
+        );
+    }
+
+    #[test]
+    fn superseded_same_target_success_updates_applied_optimistic_without_consuming_pending() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            3,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(model.applied, AppliedImeState::Optimistic(true));
+        assert_eq!(
+            model.pending_generation(),
+            Some(gen11),
+            "上書きされた apply の完了は current pending を解除しない"
+        );
+    }
+
+    #[test]
+    fn superseded_reverse_target_success_does_not_update_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            3,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(model.applied, AppliedImeState::Unknown);
+        assert_eq!(model.pending_generation(), Some(gen11));
+    }
+
+    #[test]
+    fn focus_crossing_success_clears_pending_without_writing_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 7,
+        };
+
+        model.reduce(&focus_changed_event(2));
+        model.reduce(&envelope(
+            3,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "旧 focus epoch の完了は FocusChanged 後の Unknown を破れない"
+        );
+        assert!(model.pending_generation().is_none());
+    }
+
+    #[test]
+    fn old_epoch_superseded_success_cannot_pollute_new_focus_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&focus_changed_event(2));
+        model.reduce(&envelope(
+            3,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+        model.reduce(&envelope(
+            4,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "旧 focus epoch で払い出された generation は緩和経路でも applied を書けない"
+        );
+        assert_eq!(model.pending_generation(), Some(gen11));
+
+        model.reduce(&envelope(
+            5,
+            ImeEvent::ImeApplyFailed {
+                target: true,
+                generation: gen11,
+                error: ApplyError::UnsafeToToggle,
+            },
+        ));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "UnsafeToToggle 後も旧完了由来の Optimistic が残らない"
+        );
+        assert!(model.pending_generation().is_none());
+    }
+
+    /// `focus_generation_watermark` は `pending` の生死ではなく
+    /// `last_seen_generation` から算出されることを固定する。`pending` がタイムアウト
+    /// 経由で既に `None` の状態で `FocusChanged` が来ても、後から届く旧 generation の
+    /// 完了は新 epoch の緩和経路をすり抜けない。
+    #[test]
+    fn watermark_advances_on_focus_change_even_when_pending_already_purged() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        // pending をタイムアウト経由で先に None にする（FocusChanged より前）。
+        let timeout_ms = crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS;
+        let t1 = t0 + std::time::Duration::from_millis(timeout_ms + 1);
+        model.reduce(&envelope_at(
+            2,
+            t1,
+            timeout_ms + 1,
+            ImeEvent::ChordEnded {
+                kind: ChordKind::CtrlMuhenkanImeOff,
+            },
+        ));
+        assert!(
+            model.pending_generation().is_none(),
+            "前提: FocusChanged より前に pending がタイムアウトで purge 済みであること"
+        );
+
+        // この時点で pending は None なので、旧実装ではここで watermark が
+        // 更新されなかった。
+        model.reduce(&focus_changed_event(3));
+
+        model.reduce(&envelope(
+            4,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+
+        // gen10 の超遅延完了が、新 epoch の pending(gen11, target:true) と
+        // target が一致するために緩和経路を通り抜けようとする。
+        model.reduce(&envelope(
+            5,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "pending 消滅後の FocusChanged でも watermark は前進しており、\
+             旧 epoch の超遅延完了は新 epoch の緩和経路を通り抜けない"
+        );
+        assert_eq!(model.pending_generation(), Some(gen11));
+    }
+
+    #[test]
+    fn mismatched_failed_outcomes_do_not_write_applied_or_consume_pending() {
+        for error in [ApplyError::CrossProcessFailed, ApplyError::UnsafeToToggle] {
+            let mut model = ImeModel::new();
+            let gen10 = ApplyGeneration::new(10).unwrap();
+            let gen11 = ApplyGeneration::new(11).unwrap();
+            model.reduce(&envelope(
+                1,
+                ImeEvent::ImeApplyRequested {
+                    target: true,
+                    generation: gen11,
+                    ctrl_held: false,
+                },
+            ));
+
+            model.reduce(&envelope(
+                2,
+                ImeEvent::ImeApplyFailed {
+                    target: true,
+                    generation: gen10,
+                    error,
+                },
+            ));
+
+            assert_eq!(model.applied, AppliedImeState::Unknown, "{error:?}");
+            assert_eq!(model.pending_generation(), Some(gen11), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn mismatched_success_does_not_downgrade_existing_confirmed_same_value() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 77,
+        };
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: 77
+            },
+            "Confirmed の時刻を失う Optimistic 降格をしない"
+        );
+    }
+
+    #[test]
+    fn mismatched_success_can_enter_optimistic_from_unknown_and_opposite_confirmed() {
+        for initial in [
+            AppliedImeState::Unknown,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 77,
+            },
+        ] {
+            let mut model = ImeModel::new();
+            let gen10 = ApplyGeneration::new(10).unwrap();
+            let gen11 = ApplyGeneration::new(11).unwrap();
+            model.applied = initial;
+            model.reduce(&envelope(
+                1,
+                ImeEvent::ImeApplyRequested {
+                    target: true,
+                    generation: gen11,
+                    ctrl_held: false,
+                },
+            ));
+
+            model.reduce(&envelope(
+                2,
+                ImeEvent::ImeApplySucceeded {
+                    target: true,
+                    generation: gen10,
+                },
+            ));
+
+            assert_eq!(
+                model.applied,
+                AppliedImeState::Optimistic(true),
+                "{initial:?}"
+            );
+            assert_eq!(model.pending_generation(), Some(gen11), "{initial:?}");
+        }
+    }
+
+    #[test]
+    fn matching_ime_apply_success_consumes_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: ApplyGeneration::new(10).unwrap(),
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplySucceeded {
+                target: false,
+                generation: ApplyGeneration::new(10).unwrap(),
+            },
+        ));
+
+        assert!(
+            model.pending_generation().is_none(),
+            "一致する generation の完了で pending を消費する"
+        );
+        assert!(
+            model.applied.applied_open() == Some(false),
+            "一致する generation の完了で applied state を更新する"
+        );
+    }
+
+    /// `stale_ime_apply_success_does_not_consume_pending` の `ImeApplyFailed` 版。
+    /// `reduce()` の `ImeApplyFailed` ハンドラは generation 照合 (`==`) で stale な
+    /// 失敗完了を無視するはずだが、`ImeApplySucceeded` 側と異なりこの経路には
+    /// 対称なテストが無く、`==`→`!=` の反転が mutants で検知されなかった。
+    #[test]
+    fn stale_ime_apply_failure_does_not_consume_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: ApplyGeneration::new(10).unwrap(),
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyFailed {
+                target: false,
+                generation: ApplyGeneration::new(9).unwrap(),
+                error: ApplyError::Timeout,
+            },
+        ));
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(ApplyGeneration::new(10).unwrap()),
+            "古い generation の失敗完了で current pending を消費しない"
+        );
+    }
+
+    #[test]
+    fn matching_ime_apply_failure_consumes_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: ApplyGeneration::new(10).unwrap(),
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyFailed {
+                target: false,
+                generation: ApplyGeneration::new(10).unwrap(),
+                error: ApplyError::Timeout,
+            },
+        ));
+
+        assert!(
+            model.pending_generation().is_none(),
+            "一致する generation の失敗完了で pending を消費する"
+        );
+    }
+
+    #[test]
+    fn matching_ime_apply_failure_records_inverse_confirmed() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            1234,
+            ImeEvent::ImeApplyFailed {
+                target: true,
+                generation: gen10,
+                error: ApplyError::CrossProcessFailed,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 1234
+            }
+        );
+        assert!(model.pending_generation().is_none());
+    }
+
+    #[test]
+    fn matching_not_owned_failure_consumes_pending_without_writing_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            1234,
+            ImeEvent::ImeApplyFailed {
+                target: true,
+                generation: gen10,
+                error: ApplyError::NotOwned,
+            },
+        ));
+
+        assert_eq!(model.applied, AppliedImeState::Unknown);
+        assert!(model.pending_generation().is_none());
+    }
+
+    /// レビュー2026-09-23 A-1: 授権なしで送られなかった `Unwarranted` 完了が
+    /// `applied` を書き換えてはならない（GjiDirect の already-matched 誤判定→IME ON のまま
+    /// Engine OFF になる）。
+    #[test]
+    fn matching_unwarranted_failure_consumes_pending_without_writing_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            1234,
+            ImeEvent::ImeApplyFailed {
+                target: true,
+                generation: gen10,
+                error: ApplyError::Unwarranted,
+            },
+        ));
+
+        assert_eq!(model.applied, AppliedImeState::Unknown);
+        assert!(model.pending_generation().is_none());
+    }
+
+    #[test]
+    fn repeated_input_relay_focus_roundtrips_do_not_leave_pending() {
+        let mut model = ImeModel::new();
+        for i in 1..=50 {
+            let generation = ApplyGeneration::new(i).unwrap();
+            model.reduce(&focus_changed_event(i * 3));
+            model.reduce(&envelope(
+                i * 3 + 1,
+                ImeEvent::ImeApplyRequested {
+                    target: i % 2 == 0,
+                    generation,
+                    ctrl_held: false,
+                },
+            ));
+            model.reduce(&envelope(
+                i * 3 + 2,
+                ImeEvent::ImeApplyFailed {
+                    target: i % 2 == 0,
+                    generation,
+                    error: ApplyError::NotOwned,
+                },
+            ));
+            assert_eq!(model.pending_generation(), None, "roundtrip {i}");
+        }
+        assert_eq!(model.pending_generation(), None);
+    }
+
+    // ── BUG-34 横展開 D-prep: pending purge / UnsafeToToggle 解放 ──────────────
+
+    /// `ImeTransition.timeout_at` は元々存在したが呼び出し元がゼロで、期限切れの
+    /// pending が生存し続けていた。`reduce()` の先頭で毎 dispatch パージすることで、
+    /// 期限切れ後に届く無関係なイベントが pending を自然に解放することを確認する。
+    #[test]
+    fn pending_purges_lazily_after_timeout_on_next_event() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: ApplyGeneration::new(10).unwrap(),
+                ctrl_held: false,
+            },
+        });
+        assert_eq!(
+            model.pending_generation(),
+            Some(ApplyGeneration::new(10).unwrap())
+        );
+
+        // timeout_at は ImeApplyRequested から IME_APPLY_PENDING_TIMEOUT_MS 後
+        // （tuning.rs 参照、BUG-34 実測の HungAppTimeout ~5741ms に安全マージンを
+        // 載せた 8000ms）。期限をわずかに超えた時刻で、pending と無関係な
+        // イベントを送る。
+        let timeout_ms = crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS;
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(timeout_ms + 1),
+                tick_ms: timeout_ms + 1,
+            },
+            event: ImeEvent::ChordEnded {
+                kind: ChordKind::CtrlMuhenkanImeOff,
+            },
+        });
+
+        assert!(
+            model.pending_generation().is_none(),
+            "期限を過ぎたら、無関係な後続イベントの処理時に pending が自然にパージされる"
+        );
+    }
+
+    #[test]
+    fn timed_out_matching_completion_still_updates_applied_before_purge() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        });
+
+        let timeout_ms = crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS;
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(timeout_ms + 1),
+                tick_ms: timeout_ms + 1,
+            },
+            event: ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        });
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: timeout_ms + 1
+            },
+            "期限切れ pending でも待っていた当の完了なら applied を更新する"
+        );
+        assert!(model.pending_generation().is_none());
+    }
+
+    /// 期限内であれば無関係なイベントが来ても pending はパージされないことを確認する
+    /// （`pending_purges_lazily_after_timeout_on_next_event` の対称テスト）。
+    #[test]
+    fn pending_survives_unrelated_event_within_timeout() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: ApplyGeneration::new(10).unwrap(),
+                ctrl_held: false,
+            },
+        });
+
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(500),
+                tick_ms: 500,
+            },
+            event: ImeEvent::ChordEnded {
+                kind: ChordKind::CtrlMuhenkanImeOff,
+            },
+        });
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(ApplyGeneration::new(10).unwrap()),
+            "期限(1秒)内なら無関係なイベントで pending を失わない"
+        );
+    }
+
+    /// 進行中の未期限切れ pending を別の `ImeApplyRequested` が上書きしても、
+    /// クラッシュせず新しい generation の pending に置き換わることを確認する
+    /// （拒否はしない設計、警告ログのみ。ログ出力自体はここでは検証しない）。
+    #[test]
+    fn overwriting_live_pending_replaces_generation() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: ApplyGeneration::new(10).unwrap(),
+                ctrl_held: false,
+            },
+        });
+        assert_eq!(
+            model.pending_generation(),
+            Some(ApplyGeneration::new(10).unwrap())
+        );
+
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(50),
+                tick_ms: 50,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: ApplyGeneration::new(11).unwrap(),
+                ctrl_held: false,
+            },
+        });
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(ApplyGeneration::new(11).unwrap()),
+            "上書きは拒否しない(警告ログのみ) — 新しい generation が pending になる"
+        );
+    }
+
+    // ── PanicReset ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn panic_reset_sets_desired_open() {
+        let mut model = ImeModel::new(); // desired_open = true
+        model.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert!(
+            model.desired_open,
+            "PanicReset は desired_open を target に設定する"
+        );
+    }
+
+    // BUG-182: 固着（applied=Some(true)・実IME=閉）からの SetOpen(true) が already-matched で
+    // 省略されないよう、PanicReset は applied を未知に落とす。
+    #[test]
+    fn panic_reset_demotes_applied_to_unknown() {
+        let mut model = ImeModel::new();
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 0,
+        };
+        model.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert_eq!(
+            model.applied.applied_open(),
+            None,
+            "PanicReset は applied を未知にする（already-matched 省略の根拠を残さない）"
+        );
+    }
+
+    // 最重要: PanicReset は last_intent を設定しない。
+    // これが UserImeSetIntent との本質的な差異。
+    // last_intent が None のままなので has_user_explicit_intent() = false となり、
+    // 後続の実観測が effective_open() を上書きできる。
+    #[test]
+    fn panic_reset_does_not_set_last_intent() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert!(
+            model.last_intent.is_none(),
+            "PanicReset は last_intent を設定しない（ForceGuard に委ねる）"
+        );
+    }
+
+    // PanicReset 後は has_user_explicit_intent() が false のため、
+    // Medium+ の実観測が effective_open() を上書きできることを確認。
+    #[test]
+    fn panic_reset_allows_observation_to_override_effective_open() {
+        let mut model = ImeModel::new();
+        // PanicReset で desired_open=true に戻す
+        model.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert!(model.desired_open);
+        // Medium 観測が false を報告
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+        assert!(
+            !model.effective_open_at(Instant::now()),
+            "PanicReset 後は explicit intent がないため、Medium 観測が effective_open を上書きする"
+        );
+        assert!(
+            model.desired_open,
+            "desired_open は PanicReset の値 (true) のまま変わらない"
+        );
+    }
+
+    // PanicReset ≠ UserImeSetIntent の対比：UserImeSetIntent は観測で上書きされない。
+    #[test]
+    fn user_intent_blocks_observation_unlike_panic_reset() {
+        let mut model = ImeModel::new();
+        // ユーザーが明示的に IME ON に設定した
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        // Medium 観測が false を報告（PanicReset とは違い上書きされない）
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+        assert!(
+            model.effective_open_at(Instant::now()),
+            "UserImeSetIntent 後は explicit intent があるため、観測は effective_open を上書きしない"
+        );
+    }
+
+    // ── HwndCacheRestored ─────────────────────────────────────────────────────
+
+    #[test]
+    fn hwnd_cache_restored_sets_desired_open() {
+        let mut model = ImeModel::new(); // desired_open = true
+        model.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        assert!(
+            !model.desired_open,
+            "HwndCacheRestored は desired_open を target に設定する"
+        );
+    }
+
+    // 最重要: HwndCacheRestored は last_intent を設定しない。
+    // キャッシュ復元はユーザーの能動的操作ではないため、
+    // has_user_explicit_intent() を true にしてはならない。
+    #[test]
+    fn hwnd_cache_restored_does_not_set_last_intent() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        assert!(
+            model.last_intent.is_none(),
+            "HwndCacheRestored は last_intent を設定しない（後続の実観測で上書き可能）"
+        );
+    }
+
+    // HwndCacheRestored 後は has_user_explicit_intent() が false のため、
+    // Medium+ の実観測が effective_open() を上書きできることを確認。
+    // これが PanicReset と同じ「非意図 desired 書き換え」の設計。
+    #[test]
+    fn hwnd_cache_restored_allows_observation_to_override_effective_open() {
+        let mut model = ImeModel::new();
+        // キャッシュから desired_open=false を復元
+        model.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        assert!(!model.desired_open);
+        // 実際の API 観測が true を返す（実 IME 状態は ON）
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            )),
+        ));
+        assert!(
+            model.effective_open_at(Instant::now()),
+            "HwndCacheRestored 後は explicit intent がないため、High 観測が effective_open を上書きする"
+        );
+        assert!(
+            !model.desired_open,
+            "desired_open はキャッシュの復元値 (false) のまま変わらない"
+        );
+    }
+
+    // HwndCacheRestored ≠ UserImeSetIntent の対比：
+    // UserImeSetIntent は観測で effective_open が変わらないが、
+    // HwndCacheRestored はキャッシュ起源なので観測で上書きされる。
+    #[test]
+    fn user_intent_blocks_observation_but_hwnd_cache_does_not() {
+        // UserImeSetIntent の場合
+        let mut model_intent = ImeModel::new();
+        model_intent.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::SyncKey,
+            },
+        ));
+        model_intent.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            )),
+        ));
+        assert!(
+            !model_intent.effective_open_at(Instant::now()),
+            "UserImeSetIntent 後は explicit intent が High 観測を遮断する"
+        );
+
+        // HwndCacheRestored の場合（同じ操作）
+        let mut model_cache = ImeModel::new();
+        model_cache.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        model_cache.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            )),
+        ));
+        assert!(
+            model_cache.effective_open_at(Instant::now()),
+            "HwndCacheRestored 後は explicit intent がなく、High 観測が通過する"
+        );
+    }
+
+    // InputModeApplied のテスト
+
+    #[test]
+    fn input_mode_applied_updates_input_mode() {
+        let mut model = ImeModel::new();
+        // 初期状態は ObservedRomaji
+        assert_eq!(model.input_mode(), InputModeState::ObservedRomaji);
+
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InputModeApplied {
+                mode: InputModeState::ObservedEisu,
+                strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
+                result: InputModeApplyResult::Applied,
+            },
+        ));
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedEisu,
+            "InputModeApplied(Applied) は input_mode を更新する"
+        );
+    }
+
+    #[test]
+    fn input_mode_applied_skipped_does_not_update_input_mode() {
+        let mut model = ImeModel::new();
+        // 初期状態は ObservedRomaji
+        assert_eq!(model.input_mode(), InputModeState::ObservedRomaji);
+
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InputModeApplied {
+                mode: InputModeState::ObservedEisu,
+                strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
+                result: InputModeApplyResult::Skipped,
+            },
+        ));
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedRomaji,
+            "InputModeApplied(Skipped) は input_mode を変更しない"
+        );
+    }
+
+    // is_focus_transition_settling: settle_until 前後での判定。
+
+    #[test]
+    fn is_focus_transition_settling_true_before_settle_until() {
+        let mut model = ImeModel::new();
+        let now = Instant::now();
+        model.input_barrier = Some(InputBarrier::FocusTransition {
+            to_hwnd: HwndId(1),
+            started_seq: 1,
+            started_at: now,
+            settle_until: now + std::time::Duration::from_millis(100),
+        });
+        assert!(model.is_focus_transition_settling(now));
+        assert!(
+            model.is_focus_transition_pending(),
+            "barrier はまだ consume されていない"
+        );
+    }
+
+    #[test]
+    fn is_focus_transition_settling_false_after_settle_until() {
+        let mut model = ImeModel::new();
+        let now = Instant::now();
+        model.input_barrier = Some(InputBarrier::FocusTransition {
+            to_hwnd: HwndId(1),
+            started_seq: 1,
+            started_at: now,
+            settle_until: now + std::time::Duration::from_millis(100),
+        });
+        let later = now + std::time::Duration::from_millis(200);
+        assert!(
+            !model.is_focus_transition_settling(later),
+            "settle_until 経過後は settling ではない"
+        );
+        assert!(
+            model.is_focus_transition_pending(),
+            "settle_until 経過だけでは barrier は consume されない（別途 consume_focus_barrier が必要）"
+        );
+    }
+
+    #[test]
+    fn is_focus_transition_settling_false_when_no_barrier() {
+        let model = ImeModel::new();
+        assert!(!model.is_focus_transition_settling(Instant::now()));
+    }
+
+    // ── ADR-214 決定0 P1: 打鍵ではない Engine コマンドの `SetOpen`(press=None)と stale な `applied` ──
+
+    /// 特性テスト(現状の挙動を固定する。直すべき挙動の宣言ではない)。
+    ///
+    /// トレイの「状態をリセット」(`force_engine_on`)は、belief が OFF で active になれないとき `SetOpen{true, press: None}`
+    /// を出す(`src/engine/engine.rs::apply_engine_on_with_ime_recovery`)。この `SetOpen` は押下 ID を持たないので、
+    /// executor は `applied` をそのまま view の `shadow_on` に渡す(`explicit_press_applied_pair(.., has_press=false)`)。
+    /// belief は `applied` と無関係に決まる(`resolve_open_at`)ので、「belief は OFF、`applied` は `Confirmed(true)`」は到達できる
+    /// (例: 物理の IME キーが通過して明示意図が OFF になったが、awase は書かなかった)。このとき GjiDirect は already-matched で
+    /// 送信を省く。同じ状態でも押下付き(`press.is_some()`)なら `applied` が未知になり送信される。
+    #[test]
+    fn adr214_p1_press_none_set_open_is_elided_by_stale_applied_in_gji_blind_window() {
+        use crate::focus::class_names::AppImeProfile;
+        use crate::state::actuation_chain::WriteMechanism;
+        use crate::state::ime_actuation_decision::{
+            decide_attempt, explicit_press_applied_pair, DecisionInputs, DecisionSite,
+        };
+        use crate::state::ime_kind::ImeKindId;
+
+        let mut model = ImeModel::new();
+        // awase が以前に ON を書いた(API 成功を `Confirmed` と記録する経路。ADR-214 背景)。
+        model.confirm_applied(true, 100);
+        // その後、物理の IME キーが通過して明示意図が OFF になった(awase は書いていないので `applied` は動かない)。
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(
+            !model.effective_open_at(Instant::now()),
+            "belief(= Engine の ctx.ime_on)は OFF"
+        );
+        assert_eq!(
+            model.applied_state().applied_open(),
+            Some(true),
+            "applied は Confirmed(true) のまま(belief と無関係)"
+        );
+
+        // `force_engine_on` → ctx.ime_on=false → `SetOpen{open: true, press: None}`。
+        let open = true;
+        let decide = |has_press: bool| {
+            let applied =
+                explicit_press_applied_pair(model.applied_state().applied_open(), open, has_press);
+            let inputs = DecisionInputs {
+                profile: AppImeProfile::Imm32Unavailable,
+                kind: ImeKindId::Gji,
+                shadow_on: applied,
+                belief_input_mode: InputModeState::Unknown,
+                candidate_was_seen: false,
+            };
+            decide_attempt(inputs, DecisionSite::Sync, WriteMechanism::GjiDirect, open).1
+        };
+
+        assert_eq!(
+            decide(false),
+            None,
+            "press=None: stale な applied=Confirmed(true) で GjiDirect の送信が省かれる(ADR-214 P1)"
+        );
+        assert!(
+            decide(true).is_some(),
+            "押下付きなら applied を未知にして送る(ADR-208 L1。対照)"
+        );
+    }
+}

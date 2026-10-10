@@ -21,7 +21,7 @@ macro_rules! assert_matches_windows_crate {
     };
 }
 
-crate::vk_table!(assert_matches_windows_crate);
+awase_windows_core::vk_table!(assert_matches_windows_crate);
 
 // 表外の4定数も、表と同じく windows crate の定数と突き合わせる。
 const _: () = {

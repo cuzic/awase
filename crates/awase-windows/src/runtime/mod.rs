@@ -1755,7 +1755,7 @@ impl Runtime {
                 let pid = crate::focus::classify::get_window_process_id(hwnd);
                 let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
                 let hint = self.platform.injection_hint_for(pid, &class_name);
-                let new_mode = crate::output::types::InjectionMode::from((hint, new_app_kind));
+                let new_mode = crate::output::types::injection_mode_for(hint, new_app_kind);
                 self.platform.update_injection_mode(new_mode);
                 tracing::debug!(
                     "[focus-sync] hwnd=0x{:X} class={class_name:?} \

@@ -735,10 +735,6 @@ fn core_violations(content: &str) -> Vec<(usize, &'static str, String)> {
     out
 }
 
-fn state_dir() -> PathBuf {
-    manifest().join("src/state")
-}
-
 /// `state/<name>.rs` の**全コピー**（核 crate へ移ったファイルも、元と同じ `src/state/` の配置で探す）。
 /// 1 つも無ければ panic する（移動・改名したらガードも付け替える）。同じ名前が両 crate にあれば
 /// すべて検査に掛ける（最初の 1 件だけを見ない。Opus PR #570 X2）。
@@ -748,29 +744,34 @@ fn state_files(name: &str) -> Vec<PathBuf> {
 
 /// `state/mod.rs` の `mod X;` のうち、直前の属性に `#[cfg(windows)]` が無い（ungated な）ものの名前。
 fn ungated_state_modules() -> Vec<String> {
-    let content = fs::read_to_string(state_dir().join("mod.rs")).expect("state/mod.rs");
-    let lines: Vec<&str> = content.lines().collect();
+    // 対象 crate すべての `state/mod.rs`（核 crate と殻の両方。P4）を読む。
     let mut names = Vec::new();
-    for (i, l) in lines.iter().enumerate() {
-        let Some(rest) = strip_visibility(l).strip_prefix("mod ") else {
-            continue;
-        };
-        let Some(name) = rest.strip_suffix(';') else {
-            continue;
-        };
-        let mut gated = false;
-        let mut j = i;
-        while j > 0 {
-            j -= 1;
-            let p = lines[j].trim();
-            if p.starts_with("#[") {
-                gated |= p.starts_with("#[cfg(windows)]");
-            } else if !p.starts_with("//") {
-                break;
+    for src in src_dirs() {
+        let path = src.join("state/mod.rs");
+        let content =
+            fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} が読めません", path.display()));
+        let lines: Vec<&str> = content.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            let Some(rest) = strip_visibility(l).strip_prefix("mod ") else {
+                continue;
+            };
+            let Some(name) = rest.strip_suffix(';') else {
+                continue;
+            };
+            let mut gated = false;
+            let mut j = i;
+            while j > 0 {
+                j -= 1;
+                let p = lines[j].trim();
+                if p.starts_with("#[") {
+                    gated |= p.starts_with("#[cfg(windows)]");
+                } else if !p.starts_with("//") {
+                    break;
+                }
             }
-        }
-        if !gated {
-            names.push(name.trim().to_string());
+            if !gated {
+                names.push(name.trim().to_string());
+            }
         }
     }
     names
@@ -796,6 +797,45 @@ fn core_modules_have_no_tier2_violations() {
         "pure core（CORE_MODULES）は壁時計・static・thread_local・#[cfg(windows)] 項目・FS/環境変数を持たない。\
          時刻は引数で受け、Win32/FS に触る部分は殻（runtime/ など）へ出すこと。\
          直せないなら、そのファイルを CORE_MODULES から外して NOT_CORE_MODULES に理由つきで移す。",
+    );
+}
+
+/// 核 crate（`awase-windows-core`、ADR-229 D4）は windows crate にも殻の crate にも依存しない。
+/// 以前は `CORE_MODULES` の `#[cfg(windows)]` 検出（テキスト走査）で守っていた「OS 非依存」を、crate の
+/// 依存関係（コンパイラ）で守る。`Cargo.toml` に Windows 系の依存を足すと落ちる。
+#[test]
+fn core_crate_does_not_depend_on_windows() {
+    let path = manifest().join("../awase-windows-core/Cargo.toml");
+    let toml =
+        fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} が読めません", path.display()));
+    let mut offenders = Vec::new();
+    for (n, l) in toml.lines().enumerate() {
+        let t = l.trim();
+        if t.starts_with('#') {
+            continue;
+        }
+        let key = t.split(['=', ' ']).next().unwrap_or("");
+        if [
+            "windows",
+            "windows-core",
+            "windows-sys",
+            "windows-targets",
+            "win32-async",
+            "win32-worker",
+            "awase-windows",
+        ]
+        .contains(&key)
+            || t.contains("cfg(windows)")
+            || t.contains("target_os")
+        {
+            offenders.push(format!("Cargo.toml:{}: {t}", n + 1));
+        }
+    }
+    assert_empty(
+        "核 crate の依存 (ADR-229 D4)",
+        &offenders,
+        "awase-windows-core は windows crate・win32-*・awase-windows に依存しない（OS 非依存の核）。\
+         Win32 に触るものは殻の awase-windows に置くこと。",
     );
 }
 

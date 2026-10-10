@@ -26,11 +26,12 @@ awase-build-support = { path = "../awase-build-support" }
 awase = { path = "../.." }
 awase-gji-config = { path = "../awase-gji-config" }
 awase-vkmap = { path = "../awase-vkmap" }
+# 純粋な核(ADR-229 D4)。windows crate に依存しない。
+awase-windows-core = { path = "../awase-windows-core" }
 # ADR-195段階4: T3の永続化スキーマ(`persist`モジュール)を読むためだけの依存。OS非依存クレート
 # なのでWindows限定にしない(coreがOS非依存クレートに依存されるだけ、という既存の向きに合わせる)。
 awase-keymap-learn = { path = "../awase-keymap-learn" }
 measured-macro = { path = "../measured-macro" }
-actuation-choke-point-macro = { path = "../actuation-choke-point-macro" }
 timed-fsm = { path = "../timed-fsm", version = "0.5.0" }
 tracing = "0.1"
 # tracing-log は default feature（他の default: smallvec/fmt/ansi/std も維持する
@@ -57,6 +58,8 @@ path = "../win32-worker"
 version = "0.1.0"
 
 [dev-dependencies]
+# 核のテスト専用の口（`set_desired_open_for_test` など）を殻のテストから使う。
+awase-windows-core = { path = "../awase-windows-core", features = ["test-support"] }
 # journal 再生 fixture のハーネス(ADR-229)。非公開の dev 専用 crate。
 awase-replay = { path = "../awase-replay" }
 # ADR-158 TI1: classify_*系の純粋関数へproptestを適用するスパイク。

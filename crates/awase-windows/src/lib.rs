@@ -21,6 +21,7 @@
 //! `vk`（`parse_hotkey` のみ windows-gated）などの純粋モジュールのみコンパイルされる。
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
+pub use awase_windows_core::{journal, journal_policy, keymap, tuning, vk};
 pub mod bug_report;
 pub mod config_diagnostics;
 #[cfg(test)]
@@ -29,7 +30,6 @@ pub mod focus;
 pub mod focus_resync;
 pub mod gji_charset_autodetect;
 pub mod hook_channel;
-pub mod journal_policy;
 pub mod key_effect_io;
 #[cfg(test)]
 mod key_input_replay_tests;
@@ -47,8 +47,6 @@ pub mod scancode_pairs;
 pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;
-pub mod tuning;
-pub mod vk;
 #[cfg(windows)]
 pub mod vk_windows;
 
@@ -69,7 +67,6 @@ pub mod ime_diagnostic;
 pub(crate) mod imm;
 #[cfg(windows)]
 pub mod input_defer;
-pub mod journal;
 #[cfg(windows)]
 pub mod journal_dump;
 // `KeymapTable`/`find_match`/`filter_active` は純粋な値比較のみで Windows API に
@@ -78,7 +75,6 @@ pub mod journal_dump;
 // は `#[cfg(windows)]` のため非 Windows では未使用になる、他の純粋関数モジュール
 // と同じ局所抑制パターン）。
 #[cfg_attr(not(windows), allow(dead_code))]
-pub mod keymap;
 #[cfg(windows)]
 pub mod observer;
 #[cfg(windows)]

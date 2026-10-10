@@ -1380,9 +1380,7 @@ impl ImeStateHub {
             },
             tick_ms,
         );
-        self.belief.is_japanese_ime = true;
-        self.belief.prev_conversion_mode = None;
-        self.belief.eisu_candidate = None;
+        self.belief.reset_for_panic();
         self.shadow_model.observe_miss_monitor.record_success();
         self.shadow_model.force_guards.clear();
         self.shadow_model.force_guards.add(ForceGuard {
@@ -1421,7 +1419,7 @@ impl ImeStateHub {
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
         if let Some(is_jp) = update.is_japanese_ime {
-            self.belief.is_japanese_ime = is_jp;
+            self.belief.set_japanese_ime(is_jp);
         }
         if let Some(obs) = update.observer_poll {
             self.dispatch_event(
@@ -1462,7 +1460,7 @@ impl ImeStateHub {
             );
         }
         if let Some(conv) = update.new_prev_conversion_mode {
-            self.belief.prev_conversion_mode = Some(conv);
+            self.belief.set_prev_conversion_mode(Some(conv));
         }
         self.apply_eisu_candidate_update(update.eisu_candidate);
     }
@@ -1473,12 +1471,7 @@ impl ImeStateHub {
         &mut self,
         update: crate::state::eisu_candidate::CandidateUpdate,
     ) {
-        use crate::state::eisu_candidate::CandidateUpdate;
-        match update {
-            CandidateUpdate::Keep => {}
-            CandidateUpdate::Set(c) => self.belief.eisu_candidate = Some(c),
-            CandidateUpdate::Clear => self.belief.eisu_candidate = None,
-        }
+        self.belief.apply_eisu_candidate_update(update);
     }
 
     /// 英数モードの候補の寿命の残り(ms)。候補が無い/寿命切れなら `None`(確認の読み直しの予約が使う)。
@@ -1492,7 +1485,8 @@ impl ImeStateHub {
 
     /// 英数モードの候補を捨てる(フォーカス変更時。`set_prev_conversion_mode(None)` と同じ場所で呼ぶ)。
     pub(crate) fn clear_eisu_candidate(&mut self) {
-        self.belief.eisu_candidate = None;
+        self.belief
+            .apply_eisu_candidate_update(crate::state::eisu_candidate::CandidateUpdate::Clear);
     }
 
     /// `hwnd_cache` の復元結果を belief / shadow_model に反映する。
@@ -1655,15 +1649,15 @@ impl ImeStateHub {
     ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     pub fn set_is_japanese_ime(&mut self, value: bool) {
-        self.belief.is_japanese_ime = value;
+        self.belief.set_japanese_ime(value);
     }
 
     /// ADR-223 段階 1: 打鍵の取り込み時に読んだ入力言語で `is_japanese_ime` を更新する。
     /// 不明(`None`)・同じ値なら何もしない。値が変わったら `true` を返す(呼び出し側が読み直しを 1 回だけ予約する)。
     pub(crate) fn observe_layout_language(&mut self, read: Option<bool>) -> bool {
         match read {
-            Some(japanese) if japanese != self.belief.is_japanese_ime => {
-                self.belief.is_japanese_ime = japanese;
+            Some(japanese) if japanese != self.belief.is_japanese_ime() => {
+                self.belief.set_japanese_ime(japanese);
                 true
             }
             _ => false,
@@ -1671,7 +1665,7 @@ impl ImeStateHub {
     }
 
     pub(crate) fn set_prev_conversion_mode(&mut self, value: Option<u32>) {
-        self.belief.prev_conversion_mode = value;
+        self.belief.set_prev_conversion_mode(value);
     }
 
     // ── イベント dispatch ヘルパ ──

@@ -5,19 +5,18 @@
 
 // ── 純粋サブモジュール（全プラットフォーム）──────────────────────────────────────
 pub mod cache;
-pub mod class_names;
 pub mod current;
-pub mod kinds;
 pub mod thread_scope;
 
-pub use kinds::{AppKind, FocusChangedAxes, FocusKind};
+pub use awase_windows_core::focus::{
+    class_names, hwnd_cache, kinds, AppKind, FocusChangedAxes, FocusKind,
+};
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
 #[cfg(windows)]
 pub mod classifier;
 #[cfg(windows)]
 pub mod classify;
-pub mod hwnd_cache;
 #[cfg(windows)]
 pub mod imm_learning;
 #[cfg(windows)]

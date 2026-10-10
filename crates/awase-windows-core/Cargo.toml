@@ -1,0 +1,56 @@
+[package]
+name = "awase-windows-core"
+version = "2.0.0"
+edition = "2021"
+description = "awase-windows の OS 非依存な核(IME 状態の判断・型・表)。windows crate に依存しない(ADR-229 D4)"
+publish = false
+
+[lib]
+name = "awase_windows_core"
+path = "src/lib.rs"
+
+# この crate は windows crate に依存しない(`crate_does_not_depend_on_windows` が固定する)。
+[dependencies]
+awase = { path = "../.." }
+awase-gji-config = { path = "../awase-gji-config" }
+awase-vkmap = { path = "../awase-vkmap" }
+awase-keymap-learn = { path = "../awase-keymap-learn" }
+measured-macro = { path = "../measured-macro" }
+actuation-choke-point-macro = { path = "../actuation-choke-point-macro" }
+thiserror = "2"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+strum = { version = "0.27", features = ["derive"] }
+quanta = "0.12"
+
+[features]
+# 殻の crate（`awase-windows`）のテストが使う、テスト専用の口（`set_desired_open_for_test` など）。本番では有効にしない。
+test-support = []
+
+[dev-dependencies]
+proptest = "1.11.0"
+# journal 再生 fixture のハーネス(ADR-229)。非公開の dev 専用 crate。
+awase-replay = { path = "../awase-replay" }
+toml = "0.8"
+
+[lints.rust]
+unsafe_code = "warn"
+unused_qualifications = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+doc_markdown = "allow"
+redundant_pub_crate = "allow"
+missing_errors_doc = "allow"
+struct_excessive_bools = "allow"
+too_many_lines = "allow"
+fn_params_excessive_bools = "allow"
+cast_precision_loss = "allow"
+missing_const_for_fn = "allow"

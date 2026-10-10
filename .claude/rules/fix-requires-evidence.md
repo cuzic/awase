@@ -27,6 +27,8 @@
 
 ### 再発ファミリー（このルールが効く領域）
 
+> ADR-229 D4（crate の物理分割）以後、`state/`（`platform_state.rs`・`sync_actuation.rs`・`ime_decision_view.rs` を除く）・`vk.rs`・`tuning.rs`・`keymap.rs`・`journal*.rs`・`focus/{kinds,class_names,hwnd_cache}.rs`・`tsf/literal_facts.rs` は `crates/awase-windows-core/src/` にある（`src/` 以下の相対パスは分割前と同じ）。下の表のパスはこの相対パスで読むこと。`.githooks/pre-push` の正規表現は両 crate を見る。
+
 これまで同種のバグが何度も再燃してきた領域。ファイルの目安:
 
 | ファミリー | 主なファイル |

@@ -1,0 +1,73 @@
+# awase-windows-core 用スコープ限定設定（ADR-229 D4: crate の物理分割で、純粋な核を別 crate にした）
+#
+# 使い方:
+#   cargo mutants -p awase-windows-core --config .cargo/mutants-awase-windows-core.toml
+#
+# 殻の crate（awase-windows）の設定は .cargo/mutants-awase-windows.toml。核 crate は
+# windows crate に依存せず、全ファイルが Linux でもコンパイルされるので、`#[cfg(windows)]` による
+# false MISSED の心配は小さい。それでも examine_globs で名指しするのは、CORE_MODULES に足したファイルを
+# 登録し忘れないようにするため（xtask の `core-registry` が、base 比で足された名前の登録を検査する）。
+# exclude_re は殻の設定と同じ（核へ移ったファイルの除外が殻側に書いてあったため）。
+examine_globs = [
+    "crates/awase-windows-core/src/state/ime_model.rs",
+    "crates/awase-windows-core/src/state/ime_profile_driver.rs",
+    "crates/awase-windows-core/src/state/key_effect_predictor.rs",
+    "crates/awase-windows-core/src/state/key_effect_runtime.rs",
+    "crates/awase-windows-core/src/state/observation_store.rs",
+    "crates/awase-windows-core/src/state/conv_classify.rs",
+    "crates/awase-windows-core/src/state/conv_mode.rs",
+    "crates/awase-windows-core/src/state/eisu_candidate.rs",
+    "crates/awase-windows-core/src/state/snapshot_input_mode.rs",
+    "crates/awase-windows-core/src/state/eisu_recovery.rs",
+    "crates/awase-windows-core/src/state/force_guard.rs",
+    "crates/awase-windows-core/src/state/belief.rs",
+    "crates/awase-windows-core/src/state/hook_state.rs",
+    "crates/awase-windows-core/src/state/hub_clock.rs",
+    "crates/awase-windows-core/src/state/app_ime_policy.rs",
+    "crates/awase-windows-core/src/state/ime_event.rs",
+    "crates/awase-windows-core/src/state/input_barrier.rs",
+    "crates/awase-windows-core/src/state/probe_admission.rs",
+    "crates/awase-windows-core/src/state/physical_disposition.rs",
+    "crates/awase-windows-core/src/state/transition.rs",
+    "crates/awase-windows-core/src/state/drift_plan.rs",
+    "crates/awase-windows-core/src/state/drift_correction.rs",
+    "crates/awase-windows-core/src/state/ime_set_open_plan.rs",
+    "crates/awase-windows-core/src/state/msaa_role_plan.rs",
+    "crates/awase-windows-core/src/state/focus_classify_plan.rs",
+    "crates/awase-windows-core/src/state/focus_resolve_plan.rs",
+    "crates/awase-windows-core/src/state/relay_plan.rs",
+    "crates/awase-windows-core/src/state/raw_recovery_plan.rs",
+    "crates/awase-windows-core/src/state/deferred_gate_plan.rs",
+    "crates/awase-windows-core/src/state/warm_send_plan.rs",
+    "crates/awase-windows-core/src/state/focus_gen.rs",
+    "crates/awase-windows-core/src/state/half_width_alnum.rs",
+    "crates/awase-windows-core/src/focus/class_names.rs",
+    "crates/awase-windows-core/src/focus/kinds.rs",
+]
+
+exclude_re = [
+    # msime_key_assignment.rs: `windows_impl` モジュール全体が #[cfg(windows)]。
+    # Linux ではこのモジュール自体が存在しないため、中の関数（レジストリ読み取り・
+    # ポップアップ表示など実 Win32 呼び出し）への変異は常に false MISSED になる。
+    # ロジックの実体は同ファイルの `conflict_warning`（cfg 無し）に集約済みで、
+    # そちらは examine_globs の対象としてテスト済み。
+    "windows_impl::",
+
+    # conv_mode.rs: on_focus_changed は関数全体が #[cfg(windows)]。
+    "ConvModeMgr::on_focus_changed",
+
+    # conv_mode.rs: update_from_conv 内の HanKata→ZenKata ダウングレード抑制判定
+    # （147/148/152 行）だけが #[cfg(windows)] のインラインブロック。同じ関数の
+    # 他の分岐（142 行目の old == Some(new) 等）は cfg 無しで実際にテスト対象。
+    "conv_mode\\.rs:(147|148|152):",
+
+    # conv_mode.rs: ConvModeTarget::imm_conv_value の variant は HalfWidthAlnum（→ 0）だけなので、
+    # 「0 を返す」変異は元のコードと同じ値を返す等価変異（ADR-234 D0）。variant を足したら
+    # この除外は外すこと（足した variant の値を 0 にする変異もこの正規表現に当たり、黙って除外される）。
+    "ConvModeTarget::imm_conv_value -> u32 with 0$",
+
+    # observation_store.rs: trace_hwnd_only_mismatch は derive_filtered の識別照合で
+    # 「hwnd だけ不一致」を tracing::debug! に出すだけの関数で、判定に関わらない（ADR-234 D0。
+    # run 35920696097 の derive_filtered 822〜824 行の 4 件をこの関数へ切り出した）。
+    "trace_hwnd_only_mismatch",
+]
