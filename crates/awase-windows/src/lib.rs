@@ -41,6 +41,7 @@ pub mod msime_key_assignment;
 pub mod msime_legacy_keymap;
 pub mod probe_rejection_stats;
 pub mod scancode_apply;
+pub mod scancode_diagram;
 pub mod scancode_editor;
 pub mod scancode_map;
 pub mod scancode_pairs;
