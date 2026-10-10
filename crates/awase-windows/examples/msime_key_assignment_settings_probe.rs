@@ -240,8 +240,13 @@ mod windows_probe {
             .map(|s| s.to_string())
             .unwrap_or_default();
         let indent = "  ".repeat(depth as usize);
+        // トグル/チェックボックスなら状態も出す(ADR-248: 互換性チェックボックスの実状態を読む)。
+        // SAFETY: element は呼び出し元が渡した有効な COM オブジェクト。
+        let toggle = unsafe { toggle_state_is_on(element) }
+            .map(|on| format!(" toggle={}", if on { "On" } else { "Off" }))
+            .unwrap_or_default();
         log(&format!(
-            "{indent}[uia] name={name:?} automation_id={automation_id:?} control_type={control_type} class={class_name:?}"
+            "{indent}[uia] name={name:?} automation_id={automation_id:?} control_type={control_type} class={class_name:?}{toggle}"
         ));
         *budget -= 1;
 
@@ -557,6 +562,15 @@ mod windows_probe {
             }
         };
 
+        // `--dump-root`: ボタンを押す前の最初のページ(Microsoft IME のトップ)を先にダンプする
+        // (互換性チェックボックスの状態を読む。ADR-248)。
+        if args.iter().any(|a| a == "--dump-root") {
+            log("=== dumping root page (Microsoft IME) ===");
+            let mut b: u32 = 1500;
+            // SAFETY: walker/root_element は直前に取得した有効な COM オブジェクト。
+            unsafe { dump_uia_tree(&walker, &root_element, 0, 14, &mut b) };
+            log(&format!("RESULT: root dump done, remaining_budget={b}"));
+        }
         // 「Key and touch customization」(キーとタッチのカスタマイズ)ボタンをAutomationIdで探す。
         // 表示言語が英語でもAutomationIdは言語非依存で安定している。
         let mut budget: u32 = 800;
