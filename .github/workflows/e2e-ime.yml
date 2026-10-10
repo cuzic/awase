@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, ci/adr254-msime-open-follow]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/adr254-msime-open-follow' && 'sc-b254-*') || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -101,9 +101,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', msstyle=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, msstyle=msstyle)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -415,6 +415,17 @@ jobs:
                   general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,
                   chrome='--table --table-state=shift --table-keys=1C,1D,F0,F2 --table-pre=F2 --repeat=2 --settle=800 --msime', checkargs='--strict')
               for pt, gen in (('suppress', ''), ('passthru', '; muhenkan_solo_tap_always_suppress = false'))],
+            # 使い捨て検証(ci/adr254-msime-open-follow、develop にマージしない): ADR-254 で MSIME_NATIVE の予測を止めた構成
+            # (keystyle=名前付き/互換 ON の Custom で表に無いコード)で、Engine が消費しない 無変換/変換 が MS-IME 本体の開閉を変えたとき、
+            # 読めない窓(実 Chrome)で belief が戻らない(食い違いが残る)かを見る。msstyle は下の「keystyle を切り替える」ステップ。
+            # natural=既定(keystyle 不在、互換 OFF)の対照、natural-compat=互換 ON の NATURAL、atok/atok-compat=名前付き、
+            # custom-pred=互換 ON の Custom で第二段が予測するコード(閉 S4key 無変換=CE/変換=87、開 key 1列目=CE)、
+            # custom-unpred=互換 ON の Custom で予測しないコード(閉 S4key=8A〈開く〉、開 key 1列目=D5〈閉じる・第二段の対象外〉)。
+            *[cfg(f'sc-b254-{st}-s{t}', 'observe', check='chromeprobe', ime='msime', keymap=2, runs=1, wait=1500, awase='true', msstyle=st,
+                  general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"; muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false',
+                  chrome=f'--table --table-keys=1C,1D --repeat=3 --settle={t} --msime', until='2026-10-24')
+              for st in ('natural', 'natural-compat', 'atok', 'atok-compat', 'custom-pred', 'custom-unpred')
+              for t in (800, 3000)],
             # 遷移表(2026-10-04): 状態(直接入力/かな/半角英数/Shift単独タップ後) × キー(変換/無変換/英数/ひらがな/IME_ON/IME_OFF) の 24 セルを 2 周(chrome_probe --table)。観測のみ。only='sc-table-*'。
             *[cfg(f'sc-table-{pn}-{pt}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=1500, awase='true',
                   general='left_thumb_key = "無変換"; right_thumb_key = "Space"; half_width_alnum_toggle = "all"' + gen,
@@ -1055,11 +1066,95 @@ jobs:
           Start-Sleep -Seconds 5
           "keystyle=$((Get-ItemProperty "$base\MSIME" -Name keystyle).keystyle) key_len=$($table.Count) NoTsf3Override2=$((Get-ItemProperty $tsfBase -Name NoTsf3Override2).NoTsf3Override2)"
 
+      # 使い捨て検証(ci/adr254-msime-open-follow): MS-IME の旧UI keystyle と互換モードを切り替える(スパイク ci/msime-legacy-keytable-spike の手順を流用)。
+      - name: MS-IME の keystyle を切り替える(sc-b254)
+        if: matrix.cfg.ime == 'msime' && matrix.cfg.msstyle != ''
+        shell: pwsh
+        run: |
+          try { [Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance) } catch {}
+          $sjis = [Text.Encoding]::GetEncoding(932)
+          $imejp = 'Software\Microsoft\IME\15.0\IMEJP'
+          $msimePath = "HKCU:\$imejp\MSIME"
+          $tsf = 'HKCU:\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-f03c-411b-9ce2-aa23e1171e36}'
+          $st = '${{ matrix.cfg.msstyle }}'
+          New-Item -Path $msimePath -Force | Out-Null
+          function Restart-Ctfmon { Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 2; Start-Process ctfmon.exe -ErrorAction SilentlyContinue; Start-Sleep -Seconds 4 }
+          function Reg-State {
+            $m = Get-ItemProperty $msimePath -ErrorAction SilentlyContinue
+            $t = (Get-ItemProperty $tsf -ErrorAction SilentlyContinue).NoTsf3Override2
+            return ('keystyle={0} ND={1} NoTsf3Override2={2} DisableNewIME={3}' -f $m.keystyle, $m.NoDirectInputMode, $t, $m.DisableNewIME)
+          }
+          function Encode-Table([byte[]]$src, [string]$row, [string]$codes) {
+            $recs = New-Object System.Collections.Generic.List[byte[]]
+            $cur = New-Object System.Collections.Generic.List[byte]
+            foreach ($b in $src) { if ($b -eq 0) { if ($cur.Count -gt 0) { $recs.Add($cur.ToArray()); $cur.Clear() } } else { $cur.Add($b) } }
+            $out = New-Object System.Collections.Generic.List[byte]
+            $done = $false
+            foreach ($r in $recs) {
+              if ($sjis.GetString($r).StartsWith([string]"$row=")) { $r = $sjis.GetBytes("$row=$codes"); $done = $true }
+              $out.AddRange($r); $out.Add(0)
+            }
+            if (-not $done) { $out.AddRange($sjis.GetBytes("$row=$codes")); $out.Add(0) }
+            $out.Add(0)
+            return [byte[]]$out.ToArray()
+          }
+          function Build-Custom($edits) {
+            $nat = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$imejp\StyleList\NATURAL")
+            if ($null -eq $nat) { 'StyleList\NATURAL が無い'; return }
+            $cust = "HKCU:\$imejp\StyleList\Custom"
+            if (Test-Path $cust) { Remove-Item $cust -Recurse -Force }
+            New-Item -Path $cust -Force | Out-Null
+            foreach ($n in $nat.GetValueNames()) {
+              $v = [byte[]]$nat.GetValue($n)
+              foreach ($e in $edits) { if ($e.Table -eq $n) { $v = Encode-Table $v $e.Row $e.Codes } }
+              Set-ItemProperty -Path $cust -Name $n -Value $v -Type Binary -Force
+            }
+            Set-ItemProperty -Path $msimePath -Name keystyle -Value 'Custom' -Type String -Force
+          }
+          function Dump-Rows([string]$style) {
+            $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$imejp\StyleList\$style")
+            if ($null -eq $k) { "StyleList\$style なし"; return }
+            foreach ($t in 'key', 'S4key') {
+              $v = $k.GetValue($t)
+              if ($null -eq $v) { "  $style\$t なし"; continue }
+              $sjis.GetString([byte[]]$v) -split "`0" | Where-Object { $_ -match '^(無変換|変換)=' } | ForEach-Object { "  $style\$t $_" }
+            }
+          }
+          $compat = $st -match 'compat|custom'
+          if ($compat) {
+            New-Item -Path $tsf -Force | Out-Null
+            Set-ItemProperty -Path $tsf -Name NoTsf3Override2 -Value 1 -Type DWord
+            Set-ItemProperty -Path $msimePath -Name DisableNewIME -Value 1 -Type DWord
+          }
+          Restart-Ctfmon
+          $exe = (Get-ChildItem "$env:windir\System32\IME" -Recurse -Filter 'IMJPUEXC.EXE' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          "IMJPUEXC=$exe"
+          switch -Regex ($st) {
+            '^natural$' { }
+            '^natural-compat$' { & $exe setkeytemplate 'Microsoft_IME' 2>&1 | Out-Null }
+            '^atok' { & $exe setkeytemplate 'Microsoft_IME' 2>&1 | Out-Null; & $exe setkeytemplate 'ATOK' 2>&1 | Out-Null }
+            '^custom-pred$' {
+              & $exe setkeytemplate 'Microsoft_IME' 2>&1 | Out-Null
+              Build-Custom @(@{ Table = 'S4key'; Row = '無変換'; Codes = 'CE CE CE CE CE CE' }, @{ Table = 'S4key'; Row = '変換'; Codes = '87 87 87 87 87 87' },
+                             @{ Table = 'key'; Row = '無変換'; Codes = 'CE CD CD CD CD CD' }, @{ Table = 'key'; Row = '変換'; Codes = 'CE CD CD CD CD CD' })
+            }
+            '^custom-unpred$' {
+              & $exe setkeytemplate 'Microsoft_IME' 2>&1 | Out-Null
+              Build-Custom @(@{ Table = 'S4key'; Row = '無変換'; Codes = '8A 8A 8A 8A 8A 8A' }, @{ Table = 'S4key'; Row = '変換'; Codes = '8A 8A 8A 8A 8A 8A' },
+                             @{ Table = 'key'; Row = '無変換'; Codes = 'D5 00 00 00 00 00' }, @{ Table = 'key'; Row = '変換'; Codes = 'D5 00 00 00 00 00' })
+            }
+          }
+          Restart-Ctfmon
+          $line = "msstyle=$st $(Reg-State)"
+          $line | Tee-Object -FilePath msstyle.txt
+          Dump-Rows 'Custom' | Tee-Object -FilePath msstyle.txt -Append
+          "$line (config=${{ matrix.cfg.name }})" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       # v2 チェックリスト B3(d): MS-IME「以前のバージョンのMicrosoft IMEを使う」互換モード(NoTsf3Override2)を触っていない環境では、
       # レジストリに値が無い(または 0)こと。awase はこの値が 1 のときだけ互換モードとして扱う(msime_legacy_keymap.rs::read_legacy_compat_mode_enabled)。
       # 判定はしない(まっさらな CI ランナーの状態の記録)。legacy_custom 構成は意図して 1 にするので、その構成は除く。結果は env.txt と summary の値で確認する。
       - name: 互換モード(NoTsf3Override2)の状態を記録する
-        if: matrix.cfg.legacy_custom != 'true'
+        if: matrix.cfg.legacy_custom != 'true' && matrix.cfg.msstyle == ''
         shell: pwsh
         run: |
           $tsfBase = 'HKCU:\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-f03c-411b-9ce2-aa23e1171e36}'
@@ -1373,6 +1468,7 @@ jobs:
             keymatrix.json
             offrca.json
             env.txt
+            msstyle.txt
             dist/compartment_notify_probe.log
             dist/compartment_notify_probe_diag.log
             dist/awase.log
