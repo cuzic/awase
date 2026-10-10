@@ -1138,6 +1138,7 @@ impl KeyEffectKeymap {
     ///
     /// 効果の合成: 開閉・入力モードは後の打鍵の値が前の値を上書きする（`Some` が勝つ）。追跡は最後の打鍵のもの。
     /// 送り直したキー、または `vk` のどれかが予測できないときは `None`（途中の状態が分からないので観測に任せる）。
+    /// 送り直したキーの後に開いていて変換モードが分からない（セルの押下後の変換モードが不明）ときも `None`。
     /// 送り直したキーには表に無い受動キーの規則（`passive_rule_eligible`、ADR-211）を当てない（安全側）。
     #[must_use]
     pub fn predict_after_resent(
@@ -1160,6 +1161,13 @@ impl KeyEffectKeymap {
             let step = self.predict_with_override(resent_vk, &step_input, override_table)?;
             effect = effect.overlaid_by(step.effect);
             state = step_input.after(step);
+            // 送り直したキーの後に開いていて変換モードが分からない（表のセルの押下後の変換モードが不明）ときは、
+            // 次の打鍵を打鍵前の観測（`conv_raw`）や入力モードから引くと推測になるので予測しない。
+            // 実測(CI run 38094299141 sc-armc-gji-msimepreset-passthru): 全角カタカナで無変換(押下後不明)→英数を、
+            // 打鍵前のかなで引いて「半角英数」と予測し外れた(実際はかな系のまま)。
+            if state.open && state.track.conv.is_none() {
+                return None;
+            }
         }
         let last = self.predict_with_override(vk, &state, override_table)?;
         Some(Prediction {
@@ -3415,6 +3423,35 @@ mod tests {
             "かな系のまま（belief を英数へ動かさない）"
         );
         assert_eq!(p.track.conv, Some(Conv::C19));
+    }
+
+    /// CI run 38094299141（sc-armc-gji-msimepreset-passthru、修正後も英数 15/16 FAIL）: 前のケースで全角カタカナに
+    /// なったまま、無変換を押したまま英数を押した。全角カタカナの無変換は押下後の変換モードが表で不明なので、
+    /// 英数を打鍵前のかなから引くと「半角英数」と外れる（実際はかな系）。途中の変換モードが分からないなら予測しない。
+    #[test]
+    fn predict_after_resent_gives_up_when_the_resent_key_leaves_an_unknown_conv() {
+        let msime = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        let katakana = input(
+            true,
+            ROMAJI,
+            false,
+            KeyTrack {
+                conv: Some(Conv::C1B),
+                stage: Stage::None,
+            },
+        );
+        let step = msime
+            .predict(0x1D, &katakana)
+            .expect("全角カタカナの無変換は表にある");
+        assert!(step.track.conv.is_none(), "押下後の変換モードは表で不明");
+        assert!(
+            msime.predict(0xF0, &katakana.after(step)).is_some(),
+            "推測なら引けてしまう"
+        );
+        assert_eq!(
+            msime.predict_after_resent(&[0x1D], 0xF0, &katakana, None),
+            None
+        );
     }
 
     /// 送り直しが無ければ従来の予測と同じ。送り直したキーが予測できない（例: overlay で無変換が上書きされうる）ときは、
