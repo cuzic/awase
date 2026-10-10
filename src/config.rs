@@ -670,7 +670,8 @@ pub struct AppOverrideEntry {
 /// `from`/`to` に指定できない vk がある（ADR-114 決定5、`KeymapTable::new` が
 /// `tracing::warn!` して該当ルールを skip する）: 親指キー・IME 制御系 VK・Alt 系
 /// VK（`from` の修飾子としての Alt を含む）・Win 系 VK・`VK_CAPITAL`・
-/// Shift を `from` の主キーにすること。
+/// Shift を `from` の主キーにすること。例外: `ime = "off"` のルールは `from` に
+/// 無修飾の無変換/変換（親指キー）だけを指定できる（ADR-255 決定5）。
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct KeymapRule {
     /// プロセス名（省略=全アプリ）。大文字小文字を無視し、末尾の `.exe` の

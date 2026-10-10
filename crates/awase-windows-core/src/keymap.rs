@@ -5,6 +5,9 @@ use awase::config::{KeymapRule, ParsedKeyCombo};
 use awase::engine::fsm_types::ModifierState;
 use awase::types::{ModifierKey, VkCode};
 
+/// `forbidden_target_vk_reason` が親指キーに返す理由（遅いルールの `from` だけが例外にする。ADR-255 決定5）。
+const FORBIDDEN_REASON_THUMB: &str = "親指キー";
+
 /// `from`/`to` に指定できない vk か、指定できないなら理由を返す（ADR-114 決定5）。
 ///
 /// 一般原則: awase の他のロジックが静的な VK 一覧ではなく `PHYSICAL_KEY_STATE`
@@ -24,7 +27,7 @@ pub fn forbidden_target_vk_reason(
     is_to_side: bool,
 ) -> Option<&'static str> {
     if vk == left_thumb_vk || vk == right_thumb_vk {
-        return Some("親指キー");
+        return Some(FORBIDDEN_REASON_THUMB);
     }
     if ImeKeyKind::from_vk(vk).is_some() || (is_to_side && crate::vk::vk_may_mutate_conv(vk)) {
         return Some("IME 制御系 VK");
@@ -148,12 +151,11 @@ impl KeymapTable {
             // 遅いルールは親指キー（無変換/変換）を `from` にできる（ADR-255 決定5）。
             // IME OFF のエンジン非活性では親指キーに役割が無く、エンジンの素通しの
             // 後にしか当たらないので、親指の held 判定と二重管理にならない。
-            if let Some(reason) = forbidden_target_vk_reason(
-                combo.vk,
-                if late { VkCode(0) } else { left_thumb_vk },
-                if late { VkCode(0) } else { right_thumb_vk },
-                false,
-            ) {
+            // 他の禁止（IME 制御系・Alt/Win・VK_CAPITAL）は遅いルールにも効く。
+            if let Some(reason) =
+                forbidden_target_vk_reason(combo.vk, left_thumb_vk, right_thumb_vk, false)
+                    .filter(|reason| !(late && *reason == FORBIDDEN_REASON_THUMB))
+            {
                 warnings.push(format!(
                     "[keymap] 'from' に {reason} は指定できません（ADR-114 決定5）: {:?}",
                     rule.from
@@ -188,6 +190,21 @@ impl KeymapTable {
                 send_vks,
                 late,
             });
+        }
+        // 同じ vk の早いルールと遅いルールが両方ある（親指キーを既定以外にした構成でだけ起きる）と、
+        // 早いルールがエンジンの前で消費するので、遅いルールは当たらない（ADR-255 決定4 の
+        // 「vk の集合は交わらない」は既定の親指キーのときだけ成り立つ）。
+        for rule in result.iter().filter(|r| r.late) {
+            if result
+                .iter()
+                .any(|e| !e.late && e.combo.vk == rule.combo.vk)
+            {
+                warnings.push(format!(
+                    "[keymap] ime = \"off\" のルール（vk=0x{:02X}）と同じキーの ime 省略のルールがあります。\
+                     後者がエンジンの前で消費するので、ime = \"off\" のルールは当たりません（ADR-255）",
+                    rule.combo.vk.0
+                ));
+            }
         }
         (Self(result), warnings)
     }
@@ -466,7 +483,13 @@ mod tests {
 
     #[test]
     fn late_rule_requires_exact_modifiers() {
-        let (table, _) = compile(&[late_rule("VK_CONVERT", "VK_SPACE")]);
+        let (table, warnings) = compile(&[late_rule("VK_CONVERT", "VK_SPACE")]);
+        // 変換のルールが実際にコンパイルされ(skip されていない)、無修飾でだけ当たる(Opus S1)。
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            table.find_late_match(crate::vk::VK_CONVERT, mods(false, false, false, false)),
+            Some(vec![crate::vk::VK_SPACE])
+        );
         assert!(table
             .find_late_match(crate::vk::VK_CONVERT, mods(false, true, false, false))
             .is_none());
@@ -518,6 +541,29 @@ mod tests {
     }
 
     #[test]
+    fn late_rule_still_forbids_thumb_key_as_to() {
+        // from 側だけ親指キーを許す。to 側の禁止は変えない(Opus S2)。
+        for to in ["VK_NONCONVERT", "VK_CONVERT"] {
+            let (table, warnings) = compile(&[late_rule("VK_NONCONVERT", to)]);
+            assert!(table.is_empty(), "{to}");
+            assert_eq!(warnings.len(), 1, "{to}: {warnings:?}");
+        }
+    }
+
+    #[test]
+    fn late_rule_beside_early_rule_on_same_vk_warns_when_thumb_keys_are_not_default() {
+        // 親指キーを (Space, 変換) にした構成: 無変換は親指でないので早いルールも書ける。
+        let rules = [
+            rule(None, "VK_NONCONVERT", Some("VK_F7")),
+            late_rule("VK_NONCONVERT", "VK_F8"),
+        ];
+        let (table, warnings) =
+            KeymapTable::new(&rules, crate::vk::VK_SPACE, crate::vk::VK_CONVERT);
+        assert_eq!(table.len(), 2);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
     fn late_rule_vk_sets_do_not_overlap_early_rules() {
         // 早いルールは親指キーを from にできないので、同じ vk で共存しない。
         let (table, warnings) = compile(&[
@@ -526,6 +572,12 @@ mod tests {
         ]);
         assert_eq!(warnings.len(), 1);
         assert_eq!(table.len(), 1);
+        // 残ったのは遅いルール(早いルールは親指キーを from にできず skip)。
+        let none = mods(false, false, false, false);
+        assert!(table.find_match(crate::vk::VK_NONCONVERT, none).is_none());
+        assert!(table
+            .find_late_match(crate::vk::VK_NONCONVERT, none)
+            .is_some());
     }
 
     #[test]
