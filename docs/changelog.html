@@ -110,6 +110,9 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<ul>
+<li><strong>Microsoft IME の「キーの設定」（キーテンプレート）を変えている場合に、IME の状態が読めないアプリ（Chrome、Windows Terminal など）で NICOLA の ON/OFF がずれる誤予測を止めました。</strong> 互換モード（「以前のバージョンの Microsoft IME を使う」）でキーをカスタムしている場合や、ATOK などのテンプレートを選んでいる場合は、変換・無変換キーなどによる IME の開閉を awase が先回りして予測するのをやめ、実際の IME の状態を読み取れるときはそれに合わせます。症状の修正ではなく、誤った予測を止める安全側の変更です。<strong>この構成で IME のキー効果の学習をすでに済ませていた場合は、学習結果が無効になるので、もう一度学習してください。</strong> 既定のキー設定の方は何も変わりません（ADR-254）。</li>
+</ul>
 <h2>[2.0.0] - 2026-10-04</h2>
 <blockquote>
 <p><strong>v2 の最初の正式版です。これにあわせて v1（最後は 1.21.2）の保守を終了します。</strong> v1 との違いの全体と、設定を引き継ぐときの注意は <a href="docs/migration-v1-to-v2.md">docs/migration-v1-to-v2.md</a> にまとめています。
