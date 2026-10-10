@@ -25,17 +25,24 @@ use std::path::Path;
 
 #[path = "support/src_roots.rs"]
 mod src_roots;
-use src_roots::{src_crate_dirs, src_relative, workspace_dir, EXTRA_SRC_CRATES};
+use src_roots::{src_crate_dirs, workspace_dir, EXTRA_SRC_CRATES};
 
 /// ファイル単位の付け替え表。`(旧: このクレート相対のパス, 新: ワークスペース相対のパス)`。
 /// 配置を保たずに移したファイルだけをここに足す（`EXTRA_SRC_CRATES` で足りるなら不要）。分割前は空。
 const RELOCATED: &[(&str, &str)] = &[];
 
-/// 対象 crate すべての `src/` 以下の `.rs` を `out` へ集める。
-fn walk_all_src(out: &mut Vec<std::path::PathBuf>) {
-    for dir in src_crate_dirs() {
-        walk_rs_files(&dir.join("src"), out);
-    }
+/// 対象 crate すべての `src/` 以下の `.rs` を、**相対パスごとに 1 件へ合成して**返す
+/// （`(src/ からの相対パス, 内容)`。同じ相対パスが複数 crate にあれば `merge_src_texts` で合成済み。
+/// 相対パスごとの期待件数を `assert_eq` するガードは、これを使うこと。絶対パスを 1 つずつ見ると、両コピーに 1 件ずつあるとき合計 2 件でも各 `1 == 1` で通る。Opus PR #570 X1）。
+fn all_src_merged() -> Vec<(String, String)> {
+    list_src_files()
+        .into_iter()
+        .map(|key| {
+            let rel = key.strip_prefix("src/").unwrap_or(&key).to_string();
+            let content = read_crate_file(&key);
+            (rel, content)
+        })
+        .collect()
 }
 
 /// このクレート相対のパス（`"src/..."`）から、実際に読むファイルの絶対パスを**すべて**返す。
@@ -793,9 +800,6 @@ fn input_mode_applied_construction_sites_are_accounted_for() {
 /// `eisu_recovery.rs` の対応表とこのテストの期待値を更新すること。**
 #[test]
 fn user_ime_on_paths_are_paired_with_eisu_reset() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
     let patterns = [
         "write_sync_key(",
         "write_physical_key(",
@@ -823,9 +827,7 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
         ),
     ];
 
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let count: usize = patterns.iter().map(|p| content.matches(p).count()).sum();
         let expected_count = expected
             .iter()
@@ -1058,9 +1060,6 @@ fn post_decision_eisu_reset_passes_gji_retained_mode() {
 
 #[test]
 fn ime_relevance_shadow_action_writes_are_accounted_for() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
     let expected: &[(&str, usize, &str)] = &[
         (
             "hook.rs",
@@ -1074,12 +1073,7 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
         ),
     ];
 
-    for path in files {
-        let rel = src_relative(&path).to_string_lossy().replace('\\', "/");
-        // 絶対パスで直接読む（同じ相対パスが複数 crate にあっても、歩いた側のファイルを読む）。
-        let content = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
-            .replace("\r\n", "\n");
+    for (rel, content) in all_src_merged() {
         let production = production_code_only(&content);
         let count = if rel == "hook.rs" {
             production.matches("shadow_action,").count()
@@ -1116,9 +1110,6 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
 /// は「実際に read_ime_state_fast を実行した」ことを意味する）。
 #[test]
 fn focus_probe_observation_is_limited_to_real_probe_path() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
     // (相対パス, 期待マッチ数)。ここに列挙されないファイルは 0 でなければならない。
     let expected: &[(&str, usize)] = &[
         // apply_effective_ime — first-key FocusProbe（read_ime_state_fast 実行済み）の
@@ -1128,9 +1119,7 @@ fn focus_probe_observation_is_limited_to_real_probe_path() {
         ("runtime/key_pipeline.rs", 1),
     ];
 
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let production = production_code_only(&content);
         let count = production.matches(".write_focus_probe(").count();
         let expected_count = expected
@@ -1985,12 +1974,7 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
 /// §2.2 のデータ witness が丸ごと迂回される。
 #[test]
 fn any_observation_replay_door_is_not_used_in_production() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let production = production_code_only(&content);
         let count = production.matches("restored_from_journal(").count();
         // 定義そのもの（`pub const fn restored_from_journal(`）は evidence.rs に 1 件。
@@ -3635,14 +3619,11 @@ fn count_drift_diagnostic_calls(text: &str) -> usize {
 /// 2 件目や別関数からの呼び出しは、上の「最初の 1 件が守られているか」の照合では見えない。
 #[test]
 fn drift_diagnostic_is_called_from_exactly_one_site() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
     let mut sites = Vec::new();
-    for f in files {
-        let content = production_code_only(&fs::read_to_string(&f).unwrap_or_default()).to_string();
-        let n = count_drift_diagnostic_calls(&content);
+    for (rel, content) in all_src_merged() {
+        let n = count_drift_diagnostic_calls(production_code_only(&content));
         if n > 0 {
-            sites.push((f.display().to_string(), n));
+            sites.push((rel, n));
         }
     }
     assert_eq!(
@@ -4389,9 +4370,6 @@ fn establish_initial_focus_scope_syncs_the_focus_scope() {
 /// ここでは「増えていないこと」だけを見る（新しい起動時経路の追加を捕まえるのはこのガード）。
 #[test]
 fn initial_focus_scope_event_is_dispatched_from_one_place() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
     // (needle, [(相対パス, 期待マッチ数)])。列挙されないファイルは 0 でなければ
     // ならない。**どちらの needle も固定ファイルへの grep ではなく全ファイル走査に
     // 乗せる** ——固定リストへの grep は「新しいファイルに呼び出しが追加された」
@@ -4416,9 +4394,7 @@ fn initial_focus_scope_event_is_dispatched_from_one_place() {
             &[("state/ime_model.rs", 1)],
         ),
     ];
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         // doc コメントでこのイベント名に言及しているファイルを数えないよう、
         // コメント行を落としてから数える。
         let production = non_comment_lines(production_code_only(&content));
@@ -4448,12 +4424,7 @@ fn initial_focus_scope_event_is_dispatched_from_one_place() {
 /// つまり `desired_open` を書ける口の1つなので、dylint `ime_event_guard` の designated 関数にも登録してある。
 #[test]
 fn mode_key_passed_through_event_is_dispatched_from_one_place() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let production = non_comment_lines(production_code_only(&content));
         let count = production.matches("ModeKeyPassedThrough").count();
         let expected = match rel.as_str() {
@@ -4473,12 +4444,7 @@ fn mode_key_passed_through_event_is_dispatched_from_one_place() {
 /// awase は IME を書かない（`apply_ime_open_*`/`set_ime_open`/`send_ime` 系をこのファイル群から呼ばない）。
 #[test]
 fn external_change_watch_has_single_arm_and_follow_sites() {
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
-
-    for path in &files {
-        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
+    for (rel, content) in all_src_merged() {
         let production = non_comment_lines(production_code_only(&content));
         // arm は 2 箇所: 外部注入の IME キー直後(`kp_arm_external_change_watch`、ADR-205)と、
         // give-up を契機にした読み直し(`ir_follow_after_literal_giveup`、ADR-227 (i))。追随は 1 箇所のまま
