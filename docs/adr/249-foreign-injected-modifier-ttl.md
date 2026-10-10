@@ -8,13 +8,13 @@ summary: |-
   V を ctrl=false の Char として NICOLA 変換して「ふ」を出す。注入された Ctrl↓ を別枠に記録し、**注入された打鍵の modifier_snapshot にだけ**
   期限(TTL)内の ctrl を足す(案 A')。物理打鍵は別枠を読まないので、KeyUp 欠落でも ADR-054 の stuck は TTL の値と無関係に再発しない。
 status: |-
-  起草・改訂(2026-10-10)。Opus round1(13指摘)を反映済み、同レビュアーの再確認待ち。実装なし。TTL の値は未決(Spokenly の保持は報告 journal の2例で 101ms)。
+  起草・改訂(2026-10-10)。Opus round1(13指摘)・round2(Should-fix 3件・Nit 4件)を反映済み、収束確認待ち。実装なし。TTL の値は未決(Spokenly の保持は報告 journal の2例で 101ms)。
 related_adr:
   - "ADR-054"
   - "ADR-052"
 ---
 
-# ADR-249: 他アプリが注入した Ctrl/Shift を、期限付きで修飾キーとして数える
+# ADR-249: 他アプリが注入した Ctrl を、注入キー自身の修飾として期限付きで数える
 
 ## 背景
 
@@ -39,7 +39,7 @@ related_adr:
    エンジンの `bypass_reason` は `Passthrough` → `ImeControl` → `is_os_modifier_held()`(= ctrl ∨ alt ∨ win、**Shift を含まない**)の順に見るので、
    `ctx.modifiers.ctrl=true` で V が届けば `OsModifierHeld` で素通しになる。打鍵の ctx は hook 時点の `event.modifier_snapshot` から組む
    (`key_pipeline.rs`、ADR-129。INPUT_DEFER の再生でも値は変わらない)。(確認済み。`runtime/mod.rs` の「bypass_reason が見るのは build_ctx」というコメントは古く、根拠にしない)
-6. 報告では、両方の貼り付けの 0.8〜0.9 秒前に**物理の右 Ctrl の長押し**がある(Spokenly の押して話すホットキーと思われる、未確認)。貼り付けの時点では離れていた。
+6. 報告では、両方の貼り付けの約 0.77〜0.91 秒前(28944→29858ms、53808→54579ms)に**物理の右 Ctrl の長押し**がある(Spokenly の押して話すホットキーと思われる、未確認)。貼り付けの時点では離れていた。
    ホットキーを押したまま貼り付けが走る設定では物理 Ctrl が重なるので、現状でも成立しうる。報告者の設定によって症状が出る/出ないが分かれる可能性がある。
 
 ### 制約
@@ -62,22 +62,22 @@ related_adr:
 
 ## 決定(案 A')
 
-1. **対象は Ctrl のみ(左 0xA2・右 0xA3)。Shift は扱わない。** 貼り付けの素通しに Shift は要らず(`is_os_modifier_held` は Shift を含まない、Ctrl+Shift+V も Ctrl だけで素通し)、
+1. **対象は Ctrl のみ(`is_ctrl_variant`: 0x11・0xA2 は左スロット、0xA3 は右スロット)。Shift は扱わない。** リポジトリの Ctrl 判定は generic `VK_CONTROL`(0x11)も含む(`vk.rs` の `classify_modifier`・`is_ctrl_variant`)。`SendInput` に 0x11 を渡すツール(pyautogui 等)の入力が LL フックに 0x11 のまま届くか 0xA2 に変換されて届くかは未確認なので、CI の A/B で1ケース観測する。 貼り付けの素通しに Shift は要らず(`is_os_modifier_held` は Shift を含まない、Ctrl+Shift+V も Ctrl だけで素通し)、
    Shift は NICOLA の出力面(`shift_held`)・`mode_key_follow_admits_modifiers`・`is_default_ime_on_combo`・半角英数トグル(ADR-245)に効く再発ファミリーなので広げない。
    Alt/Win も対象外。
 2. **記録**(`hook.rs` の注入分岐、`if !is_injected { … }` の else 側。`focus_app_disabled` の早期 return より前、zombie 再判定の直後、ログなし。
    順序は `architecture_guard` の `disable_apps_early_return_is_positioned_after_physical_key_state_update_and_before_vk_kana` が固定):
-   他アプリの注入(`is_injected && !self_injected`)の Ctrl KeyDown で、**まだ記録がなければ**左右別の `foreign_ctrl_down_at_us[2]` に `now_timestamp()`(µs、`event.timestamp` と同じ基準)を書く
+   他アプリの注入(`is_injected && !self_injected`)の Ctrl KeyDown で、**まだ記録がなければ**左右別の `foreign_ctrl_down_at_us[2]`(`HOOK_STATE` の `AtomicU64`、`Relaxed`)に、コールバックで1回だけ取った `ts = now_timestamp()`(µs)を書く。`HOOK_STATE` の atomic が必須なのは、書き込みがフックスレッド(記録・注入 Up)とメインスレッド(reset・Leave・watchdog の解除)、ゾンビの旧フックの3か所から起きるため。CAS・Mutex は不要(解除と競合しても記録が消える安全側に倒れるだけ)。読むのはフックスレッドだけ
    (オートリピート・押し直しで期限を延ばさない。`physical_key_down_at_ms` と同じ「最初の Down を保持」)。注入 KeyUp で 0 にする。`physical_key_state` は従来どおり更新しない。
 3. **適用**(`hook.rs` の `read_os_modifiers()` 直後、`is_injected` のときだけ): `modifier_snapshot.ctrl |= foreign_ctrl_active(event_ts_us)`。
-   純粋関数 `foreign_ctrl_active(event_ts_us, down_at_us, ttl_us) -> bool`(`down_at_us != 0 && event_ts_us - down_at_us < ttl_us`)。比較は**対象キーのフックキャプチャ時刻**で行い、
+   純粋関数 `foreign_ctrl_active(ts_us, down_at_us, ttl_us) -> bool`(`down_at_us != 0 && ts_us.saturating_sub(down_at_us) < ttl_us`。`down_at > ts` でもアンダーフローしない)。時刻 `ts` はコールバックの中で**1回だけ**取り、記録・比較・`build_raw_key_event`(引数を足して `event.timestamp` にも同じ値を使う)で共有する。`event.timestamp` は現状 `build_raw_key_event` の中で snapshot の作成より後に作られるため、そのままでは参照できない。比較は**対象キーのフックキャプチャ時刻**で行い、
    エンジン側の遅れ(CI で delay=88ms)を TTL に含めない。`GetTickCount64`(分解能 約15.6ms)は使わない。
 4. **解除**: 注入 Ctrl の KeyUp、同じ VK の物理 KeyUp(OS の VK ごと1ビットと一致)、`reset_physical_key_state`(画面ロック復帰・パニックリセット、BUG-023)、
    `clear_hook_latches_for_app_disable` の Leave、`clear_hook_latches_for_watchdog_reinstall`(issue #165)。後2つは `physical_key_state` の Ctrl/Shift を消す既存経路と同じ位置に足す
    (`app_disable_leave_edge_clears_only_ctrl_and_shift_not_alt_or_win` ガードの更新要否を確認)。
 5. **読んではいけない場所**(`architecture_guard` で走査固定): `HeldModifiers`(物理状態を直接読む。別枠を入れると、解放→復元で他アプリの Ctrl を awase が押し直し OS 上の stuck を永続化する、ADR-054 問題2の再発)、
    `ctrl_consumed_since_down`(入れると、注入 Ctrl+V の後の物理 Ctrl+無変換を ime-off-rescue が誤って保留する)、`read_os_modifiers`。別枠を読んでよいのは hook の snapshot 作成部だけ。
-6. **journal**: `KeyInput` に「注入由来の ctrl」を表す `foreign_ctrl: bool` を足す(物理の Ctrl が無いのに `ctrl=true` となる報告を後で誤読しない)。
+6. **journal**: `KeyInput` に「注入由来の ctrl」を表す `foreign_ctrl: bool` を足す(物理の Ctrl が無いのに `ctrl=true` となる報告を後で誤読しない)。**運び方**: フックで snapshot を作るときに求めた「別枠が ctrl を足したか」の bool を `RawKeyEvent` の新しいフィールドに載せ、journal はそれを写すだけにする。エンジンスレッドが `HOOK_STATE` を読むと、決定5の前提に反し、INPUT_DEFER の再生では再生時点の値になる(ADR-129 と同種の誤り)。`injected && ctrl` からの推定は、物理 Ctrl が重なると区別できないので不可。`RawKeyEvent` はコアクレートの型で、構造体リテラルを書いているファイルが22ある(`grep -rln "RawKeyEvent {" crates src | wc -l`)。中身は bool だけで層の規則には触れないが、変更範囲として記録する。
 7. **TTL**(`tuning.rs`、`#[measured(...)]`、`FOREIGN_CTRL_TTL_MS`): 物理打鍵に効かないので、長めでも失うものは「注入キーの誤った素通し」だけ。
    導出は「Spokenly の実測最大 102ms と、他ツール(AutoHotkey `Send ^v`、PowerToys 等、未測定)への余裕」。値は実装 PR で測定とともに決める(例: 1000ms を上限の目安)。
    他ツールの実測は値を決める条件ではなく追加確認とする。コミット本文に ms の実測と導出を書く(tuning-constants 規約)。
@@ -106,10 +106,11 @@ related_adr:
 - `state/foreign_modifier.rs`(`#[cfg(windows)]` なし)に状態遷移と実効 ctrl の判定を切り出し、Linux の単体テストで固定: 境界(TTL ちょうど・`down_at=0`・物理キーには効かない・最初の Down を保持・左右別)、解除5経路。`hook.rs` は `#[cfg(windows)]` で Linux のテストには現れないため、この分離が必要。
 - `src/engine/tests.rs`(ホスト実行): 注入 V↓ を `ctx.modifiers.ctrl=true` で入れると `OsModifierHeld` で PassThrough。Ctrl↑ が V↑ より先に来ても V↑ が Suppress されない(`handle_bypass` が `output_history.remove_by_scan` を呼ぶ)。
 - 報告 journal の seq 61-64・117-120 を `tests/journals/` の replay fixture にする(fix-requires-evidence の (a))。
-- `architecture_guard`: 上の決定5の走査固定、`foreign_ctrl` の書き込み位置の固定。ADR-054 の既存テスト(synthetic Ctrl↑ の汚染)が通ること。
+- `architecture_guard`: 上の決定5の走査固定、`foreign_ctrl` の書き込み位置の固定、**解除5か所(`reset_physical_key_state`・app-disable の Leave・watchdog reinstall・注入 Up 分岐・物理 Up 分岐)それぞれに解除の呼び出しがあること**の走査固定(純粋モジュールのテストでは配線を固定できないため)。ADR-054 の既存テスト(synthetic Ctrl↑ の汚染)が通ること。
 - CI の A/B(`ci/e2e-dictation`): `tsx-dict-*-paste`。先に paste 模擬を直す(クリップボードを Win32 API で設定し、フォーカスを奪わない。現状は PowerShell が前面を奪い全試行 `focus_ok=False`)。
   注入は `dwExtraInfo=0`(`TEST_INJECTION_MARKER` では物理扱いになり意味がない)。修正前は「ふ」(FAIL)、修正後は挿入文が入る(PASS)、awase なしを対照にする。
   追加で「注入 Ctrl↓ だけで KeyUp なし」のあと物理打鍵が通常どおり変換されること(stuck 非再発)も観測する。
+- 実装 PR で、事実5の古いコメント(`runtime/mod.rs` の「bypass_reason が見るのは build_ctx の戻り値」)を直す。
 - 実機は報告者に確認を依頼する。物理の右 Ctrl のホットキー設定(事実6)も併せて聞く。
 
 関連: [BUG-198](../known-bugs/BUG-198.md)(注入 `VK_PACKET` の文字が保留→再注入で消える)は同じ CI・同じリリースで直したいが、原因が別なので別の変更にする。
