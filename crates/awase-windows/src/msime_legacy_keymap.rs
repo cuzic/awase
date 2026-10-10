@@ -523,7 +523,9 @@ mod windows_impl {
         if style == MsImeKeystyle::Custom {
             let subkey = format!("{IMEJP_BASE}\\StyleList\\Custom");
             for n in ["key", "S4key"] {
-                let value = read_raw_value(&subkey, n, RRF_RT_REG_BINARY.0).ok().flatten();
+                let value = read_raw_value(&subkey, n, RRF_RT_REG_BINARY.0)
+                    .ok()
+                    .flatten();
                 hash = mix_style_value(hash, n, value.as_deref());
             }
         }

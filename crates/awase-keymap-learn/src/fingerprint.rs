@@ -188,13 +188,21 @@ mod tests {
     #[test]
     fn msime_native_legacy_style_changes_fingerprint() {
         let base = msime_native_keymap_fingerprint(false, None, None);
-        let atok = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((2, Some(111))));
-        let vje = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((2, Some(222))));
-        let custom_a = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((1, Some(7))));
-        let custom_b = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((1, Some(8))));
-        let custom_none = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((1, None)));
+        let atok =
+            msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((2, Some(111))));
+        let vje =
+            msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((2, Some(222))));
+        let custom_a =
+            msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((1, Some(7))));
+        let custom_b =
+            msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((1, Some(8))));
+        let custom_none =
+            msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((1, None)));
         assert_ne!(base, atok);
-        assert_ne!(atok, vje, "名前付きスタイルはハッシュ(テンプレート名)で区別する");
+        assert_ne!(
+            atok, vje,
+            "名前付きスタイルはハッシュ(テンプレート名)で区別する"
+        );
         assert_ne!(custom_a, custom_b, "Custom の表の中身が違えば指紋が違う");
         assert_ne!(custom_a, custom_none);
         assert_ne!(atok, custom_a, "種別タグが違えば指紋が違う");

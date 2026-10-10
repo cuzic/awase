@@ -337,11 +337,8 @@ mod windows_impl {
             ("muhenkan", v(raw.key_assignment_muhenkan)),
             ("keystyle", crate::msime_legacy_keymap::keystyle_stamp_mix()),
         ] {
-            second = crate::msime_legacy_keymap::mix_style_value(
-                second,
-                name,
-                Some(&x.to_le_bytes()),
-            );
+            second =
+                crate::msime_legacy_keymap::mix_style_value(second, name, Some(&x.to_le_bytes()));
         }
         (
             v(raw.is_key_assignment_enabled) | (v(compat_mode.map(u32::from)) << 32),

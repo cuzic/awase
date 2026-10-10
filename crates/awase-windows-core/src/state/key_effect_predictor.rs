@@ -868,12 +868,13 @@ impl KeyEffectKeymap {
             // 指紋に混ぜるのは、予測を止める構成のときだけ(NATURAL・不在・互換 OFF の Custom は
             // 従来と同じ指紋のまま。互換 OFF の Custom の表は新エンジンが読まないので、編集しても
             // 学習表を失効させない)。
-            fingerprint: awase_keymap_learn::fingerprint::msime_native_keymap_fingerprint_with_legacy(
-                assignment_enabled,
-                henkan,
-                muhenkan,
-                legacy_table_unknown.then(|| (keystyle.tag(), legacy_hash)),
-            ),
+            fingerprint:
+                awase_keymap_learn::fingerprint::msime_native_keymap_fingerprint_with_legacy(
+                    assignment_enabled,
+                    henkan,
+                    muhenkan,
+                    legacy_table_unknown.then(|| (keystyle.tag(), legacy_hash)),
+                ),
         }
     }
 
@@ -2682,12 +2683,7 @@ mod tests {
                         v.push(PredictInput {
                             unreadable,
                             passive_rule_eligible: true,
-                            ..input(
-                                open,
-                                ROMAJI,
-                                composing,
-                                KeyTrack { conv: None, stage },
-                            )
+                            ..input(open, ROMAJI, composing, KeyTrack { conv: None, stage })
                         });
                     }
                 }
@@ -2793,7 +2789,10 @@ mod tests {
     fn adr254_named_and_unknown_stop_regardless_of_compat_flag() {
         for compat in [Some(true), Some(false), None] {
             for style in [MsImeKeystyle::Named, MsImeKeystyle::Unknown] {
-                assert!(style.disables_native_prediction(compat), "{style:?} {compat:?}");
+                assert!(
+                    style.disables_native_prediction(compat),
+                    "{style:?} {compat:?}"
+                );
             }
         }
         assert!(MsImeKeystyle::Custom.disables_native_prediction(Some(true)));
