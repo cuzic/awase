@@ -71,7 +71,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $bytes = [System.Collections.Generic.List[byte]]::new()
           $bytes.AddRange([byte[]](0xB0,0x01,0x00,0xC8,0x02,[byte]0))  # session_keymap = CUSTOM(0)
-          $tsv = 'DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana'
+          $tsv = 'DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana|Composition,Enter,Commit|Conversion,Enter,Commit|Composition,Escape,Cancel|Conversion,Escape,Cancel'
           $rows = $tsv -split '\|' | ForEach-Object { $_ -replace ',', "`t" }
           $tbl = [Text.Encoding]::UTF8.GetBytes("status`tkey`tcommand`n" + ($rows -join "`n") + "`n")
           $bytes.AddRange([byte[]](0xD2,0x02))
