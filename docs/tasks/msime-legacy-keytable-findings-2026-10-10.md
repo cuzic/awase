@@ -3,16 +3,20 @@
 ブランチ `ci/msime-legacy-keytable-spike`。windows-latest(26100)・MS-IME 本体・互換モード ON(`NoTsf3Override2=1`、`DisableNewIME=1`)。
 ハーネスは `ime_key_matrix_spike --auto --msime --seq=...`。各セルは n=1(再現回数の裏取りは未実施)。
 
-## 確定したこと
+## 観測(CI 1 環境・各セル n=1。閉じた状態の実験だけ信頼できる)
 
-1. **`keystyle=Custom` のときだけ、レジストリの表が効く。** 名前付きスタイル(NATURAL/MS-IME2000/ATOK/VJE/WX)の `key` を書き換えても無視される(内蔵の表が使われる)。
+1. **`keystyle=Custom` のとき、閉じた状態ではレジストリの表(S4key)が効く。名前付きスタイルの `key` が開いた状態で効くかは未確認(M3)。** 名前付きスタイル(NATURAL/MS-IME2000/ATOK/VJE/WX)の `key` を書き換えても無視される(内蔵の表が使われる)。
    名前付きスタイルの切り替えは `IMJPUEXC.EXE setkeytemplate <Microsoft_IME|IME_Standard|ATOK|VJE|WX>`。
 2. **IME が閉じている間のキーは `Custom\S4key` が決める**(「直接入力モードを使用しない」の ON/OFF に依らない)。`key` だけを書いても閉じた状態では無反応。
    ADR-197 が失敗したのは `key` だけを書いて `S4key` を欠いていたため。`StyleList\Custom` の他の値(`S1key`〜`SEkey`)は NATURAL のコピーを置いた。
-3. **UI の Apply が書く値**(`setkeytemplate` と同じ): `MSIME\keystyle`・`IMEUserName`・`option2`・`SerialNo` など。`SerialNo` の更新や ctfmon 再起動は効果に無関係(V2/V3)。
-4. 表の形式: 行は `<キー名>=<コード1> … <コード6>`(Shift-JIS、NUL 区切り、終端は NUL が 1 つ多い)。
+3. **`key` の列は旧UIの列見出し(No Input・Only Input・Converted・Showing・Changing・Char Input)と1対1。1列目は「開いている・入力なし」**(ADR-197 の「1列目=直接入力」は列の誤読)。
+4. **UI の Apply が書く値**(`setkeytemplate` と同じ): `MSIME\keystyle`・`IMEUserName`・`option2`・`SerialNo` など。`SerialNo` の更新や ctfmon 再起動は効果に無関係(V2/V3)。
+5. 表の形式: 行は `<キー名>=<コード1> … <コード6>`(Shift-JIS、NUL 区切り、終端は NUL が 1 つ多い)。
 
-## 機能コードの効果(`Custom\S4key` の「無変換」行=閉じた状態、`Custom\key` の「無変換」行=開いた状態〈入力なし〉)
+## 機能コードの効果
+
+**開いた状態の列は無効**(ハーネスの ESC が未確定の `ｋ` を消せず、「入力中」で測っていた。ADR-248 の Opus r1 B1)。閉じた状態(`Custom\S4key` の「無変換」行)の列だけを参照する。
+また、閉じた状態で「IME が開く」コードが大半なのは、コード固有の意味ではなく「S4key に行がある=IME が閉じている間にキーを横取りし、まず開いてから機能を実行する」ためと読める(r1 M1)。実際の S4key に現れるのは `87`・`CE` だけ。
 
 | コード | 閉じた状態で押す | 開いた状態で押す |
 | --- | --- | --- |
