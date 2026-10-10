@@ -62,7 +62,13 @@ v2 は IME 設定から役割を逆算して打鍵時に IME の開閉を予測�
     - `keystyle=ATOK`(レジストリ書換のみ): **新エンジンも `keystyle` を読む**が、内蔵の表は旧エンジンと違う。閉・変換→開く(CI の旧エンジンでは開かない)、閉・無変換→開く(NATURAL では変化なし)、開・入力なしの無変換→**閉じる**、かな未確定の無変換→conv 0x00。
     - `keystyle=Custom`: **NATURAL と完全に同一**。新エンジンは `Custom` の表を読まない(残っている `CE CD…` は無影響)。
     - したがって、**名前付きスタイル(ATOK 等)の結果は旧エンジンと新エンジンで違い、CI(旧エンジンの疑い)の結果は新エンジンに転用できない**。`keystyle` が既定でない新エンジンの利用者も `MSIME_NATIVE` の予測が外れるので、決定1が「互換フラグを条件にしない」のは正しい。
-16. **互換 ON の実機測定は未完了**: レジストリ値 `NoTsf3Override2=1` を直接書いた状態では、IME が一度も開かず(全セル `o0` のまま)、テスト不能だった(切り替え後の再起動が必要な可能性)。設定アプリのトグル(「以前のバージョンの Microsoft IME を使う」、日本語 UI で実在、`DialogToggle`)を UI Automation で On にしても `NoTsf3Override2` は 0 のままで、挙動も OFF と同一だった(確認ダイアログを確定せずに Settings を閉じた可能性)。互換 ON の測定は、トグルの確認ダイアログを正しく確定する操作が要る。
+16. **互換 ON の実機測定(dragonflyg4、設定アプリの互換トグルを UI Automation で On にし、確認ダイアログの「OK」を押して確定。各セル n=3、全試行一致)**:
+    - 互換トグルは `DialogToggle` で、押すと確認ダイアログ(OK=`PrimaryButton`・キャンセル=`SecondaryButton`)が出る。**OK を押すと `NoTsf3Override2=1` が書かれる**(OK を押さずに閉じると書かれず、挙動も変わらない)。レジストリ値を直接書くだけでは IME が応答しなかった(テスト不能)。つまり awase が読む `NoTsf3Override2` は、UI の互換トグルの実状態を正しく表す。
+    - 互換 ON の `NATURAL`: 閉・変換→開く(conv 0x19)、閉・無変換→変化なし、開・入力なしの無変換→conv 0x1B、かな未確定の無変換→カタカナ変換。**CI の旧エンジンと同じ**(新エンジンの conv は 0x09/0x0B)。
+    - 互換 ON の `Custom`(ADR-148 の実験で残っていた表、無変換・変換=`CE CD CD CD CD CD`): 閉・変換→開く、**閉・無変換→開く**(NATURAL では何もしない)、開・入力なしの無変換→変化なし、かな未確定の無変換→conv 0x10(半角英数、未確定は残る)。**CI の dragonflyg4 型の測定(実測12・13)と完全に一致**。互換 OFF では `Custom` は無視される(実測15)ので、`Custom` の表は互換 ON のときだけ効く。
+    - 互換 ON の `ATOK`: IME が一度も開かない(閉・変換でも)。CI の旧エンジンの ATOK と同じ。互換 OFF の `ATOK`(新エンジンの内蔵表)とは別の挙動。
+    - 結論: **windows-latest の CI は、実機の互換 ON(旧エンジン)と同じ挙動を再現している**(実測7〜14のうち `Custom`/名前付きスタイルに関するものは、互換 ON の実機で裏付けられた)。互換フラグは条件ではなく、**互換 ON のときだけ旧UIの表が効く**。
+17. **互換 OFF + `keystyle=Custom` は `NATURAL` と同じ(実測15)**: 決定1の止める条件は、`NoTsf3Override2=1`(互換 ON)かつ `keystyle∉{NATURAL, 不在}`、または `keystyle` が名前付き(ATOK・VJE・WX・IME_Standard)のときに絞れる。互換 OFF の `Custom` は `NATURAL` 扱い(予測する)でよい。
 
 信頼してはいけないもの(Opus r1 B1・B3・M1・M3):
 - 「開いた状態の効果表」「D5 だけが閉じる」「CE は開いた状態で変化なし」は無効。開いた状態の掃引は、未確定の `ｋ` が残った「入力中」で取られていた(ハーネスの ESC が未確定を消せていない)。また 6 列すべてに同じコードを書いたため、1 列目用のコードを入力中の列に置く、実際の設定に無い組み合わせだった。
@@ -82,11 +88,12 @@ ADR-197 に次を追記する(r1 観点3):
 
 ### 決定1(第一段): 互換モードでカスタム表の可能性があるときは、`MSIME_NATIVE` の予測を全キーで止める
 
-条件: MS-IME 本体かつ `keystyle` が **NATURAL でも不在でもない**。**互換モードのフラグは条件にしない**。理由は「`keystyle` の効果がフラグに関係しない」と言い切れるからではなく、**エンジンを同定できないので、`keystyle` が既定でないときは安全側に倒す**から(実測7はエンジン未同定、r3 M3-1)。陽性対照(`v3c`、できれば実機 1 回)で旧エンジンしか動いていないと分かった場合は、条件を「互換 ON、または互換フラグ不在で旧エンジンと判定できるとき」に戻すかを決め直す。具体的には次の3つに分ける(r2 M2-2。不在=NATURAL は実測8で確認):
-- `keystyle` の値が無い(旧UIの設定画面を一度も開いていない既定)→ NATURAL と同じ扱い(予測する)。
-- `keystyle=NATURAL` → 従来どおり。
-- Custom・ATOK・VJE・WX・IME_Standard(MS-IME2000)・未知の名前・読み取り失敗 → 止める。IME_Standard は、`S4key` と `key` の IME 系の行は NATURAL と一致するが入力中の列(`06/46`・`2D/30`)が違い、内蔵表どうしの一致が保証されないため、第一段では止める側(r2 S2-3)。V4 で入力中・変換の 2 セルが NATURAL と一致すれば NATURAL 側へ入れる。
-
+条件(実機の測定15〜17で絞った。実機〈互換 ON・OFF とも〉の裏付けあり): MS-IME 本体で、次のいずれかのとき。
+- `keystyle` が名前付き(ATOK・VJE・WX・IME_Standard)のとき(互換 ON/OFF とも。互換 OFF の新エンジンも ATOK を読むが、内蔵表は旧エンジンと違う〈実測15・16〉ので `MSIME_NATIVE` の予測が外れる)。
+- 互換 ON(`NoTsf3Override2=1`)かつ `keystyle=Custom`(旧UIの表が効く)。
+- `keystyle` が未知の名前、または読み取り失敗。
+予測する(従来どおり)のは次のとき: `keystyle` の値が無い(NATURAL と同じ)、`keystyle=NATURAL`、互換 OFF かつ `keystyle=Custom`(新エンジンは `Custom` の表を読まず `NATURAL` と同一、実測15)。
+互換フラグの検出は、UI の互換トグルが `NoTsf3Override2` を書くこと(実測16)から、既存の `read_legacy_compat_mode_enabled()` を使う。
 対象キーは列挙せず、**全キー**(r2 M2-3)。`MSIME_NATIVE` の `TableKey` には無変換・変換・半角/全角・英数・ひらがな・カタカナのほか、Kanji・ImeOn・ImeOff・Space・Enter・Esc・Bs があり、Custom はこれらも書き換えられる。列挙すると ADR-197 の「CE だけを見た」誤りと同じ漏れを作る。
 置き場所は `predict_with_override`(`key_effect_predictor.rs:844`)の中で、**学習表の参照(`override_table`)の後、`predict(self.preset, …)` の前**。前に置くと ADR-196 の学習が戻せなくなる。決定1の「学習で戻せる」はこの置き場所が前提。
 下流: `kp_predict_key_effect` は予測が `None` なら何もしない(確認済み)。役割(`thumb_role_open_actions`)は互換モードで元から受動なので、予測が消えても下流が「予測あり」を前提に動く箇所は見つからなかった(grep 済み)。
@@ -94,10 +101,11 @@ ADR-197 に次を追記する(r1 観点3):
 止めたときは、止めた理由(`keystyle` の値と、止めたこと)を journal と不具合報告に 1 行残す(この副作用を受けた人の報告を、ほかの原因と区別するため。`bug_report.rs` の既存の互換モード・`keystyle` の欄に足す)。
 位置づけ: これは「誤予測を止める安全側の変更」であり、報告の症状の修正とは称さない(r2 M2-4)。止めると、読めない窓で既定のまま使っている変換(閉→開)の予測も消える。報告が直るかは V1 で確かめる。
 `key_effect_predictor.rs` は fix-requires-evidence の IME belief ファミリー(`KeyEffectPredicted` が belief を直接動かす)なので、(a) 回帰テスト(Linux で走る単体テスト)を付ける。最低限:
-  - `keystyle=Custom`(互換フラグ ON・OFF・不在のそれぞれ)→ `None`
-  - `keystyle` 不在 → `MSIME_NATIVE` と同じ
-  - `keystyle=Custom`・学習表あり → 学習表
-  - `keystyle=NATURAL` → `MSIME_NATIVE` と同じ
+  - 互換 ON・`keystyle=Custom` → `None`
+  - 互換 OFF・`keystyle=Custom` → `MSIME_NATIVE` と同じ(新エンジンは Custom を読まない)
+  - `keystyle=ATOK`(互換 ON・OFF とも)→ `None`
+  - `keystyle` 不在・`NATURAL` → `MSIME_NATIVE` と同じ
+  - 互換 ON・`keystyle=Custom`・学習表あり → 学習表
 
 ### 決定2(第一段): スタンプと指紋
 
