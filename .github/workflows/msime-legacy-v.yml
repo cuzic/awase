@@ -1,8 +1,10 @@
-name: msime-legacy-codes
+name: msime-legacy-v
 
 # MS-IME 互換モード(旧UI)のキー割り当てバイナリ表のコード体系を調べるスパイク(観測のみ)。
 # IMJPUEXC.EXE の使い方と SETKEYTEMPLATE の候補、テンプレートごとの StyleList\<style>\key を採取する。
 on:
+  push:
+    branches: [ci/msime-legacy-keytable-spike]
   workflow_dispatch:
 
 permissions:
@@ -13,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [closed, open]
+        suite: [v0, v0p, v3, v4]
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -45,11 +47,11 @@ jobs:
           Start-Sleep -Seconds 5
       - name: 実効果の測定(テンプレート・コード掃引)
         shell: pwsh
-        run: ./tools/ci/msime-legacy-codes.ps1 -Out codes-out -Mode ${{ matrix.mode }}
+        run: ./tools/ci/msime-legacy-v.ps1 -Out v-out -Suite ${{ matrix.suite }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: msime-legacy-codes-${{ matrix.mode }}
+          name: msime-legacy-v-${{ matrix.suite }}
           path: |
-            codes-out/
+            v-out/
             dist/*.log

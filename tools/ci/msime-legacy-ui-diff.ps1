@@ -67,7 +67,7 @@ foreach ($w in $ws) { Say "=== window '$($w.Current.Name)' class='$($w.Current.C
 Get-Process | Where-Object { $_.ProcessName -match 'IMJP|ime' } | ForEach-Object { Say ("proc " + $_.ProcessName + " pid=" + $_.Id + " title='" + $_.MainWindowTitle + "'") }
 
 # ---------------------------------------------------------------- Win32 操作(UIA では中身が取れないため)
-if ($Phase -notin @('diff1','advanced')) { return }
+if ($Phase -notin @('diff1','advanced','nd')) { return }
 Add-Type -TypeDefinition @"
 using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
 public static class W {
@@ -141,7 +141,7 @@ for ($i = 0; $i -lt $n; $i++) {
   $items += $sb.ToString()
 }
 Say ("key template items=[" + ($items -join ' | ') + "] cursel=$cur")
-if ($Phase -eq 'diff1') {
+if ($Phase -in @('diff1','nd')) {
 $kt0 = (Get-ItemProperty "HKCU:\$imejp\MSIME" -ErrorAction SilentlyContinue).keystyle
 Say "keystyle before = $kt0"
 
@@ -150,7 +150,17 @@ $t0 = Get-Date
 $target = -1
 for ($i = 0; $i -lt $items.Count; $i++) { if ($items[$i] -match 'ATOK') { $target = $i } }
 Say "target index (ATOK) = $target"
-if ($target -ge 0) {
+if ($Phase -eq 'nd') {
+  $cb = Find-Ctl $top 5004 'Button'
+  $c0 = [int][W]::SendMessage($cb, 0xF0, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_GETCHECK
+  Say "ND checkbox hwnd=$cb checked(before)=$c0"
+  [void][W]::SendMessage($cb, 0xF5, [IntPtr]::Zero, [IntPtr]::Zero)         # BM_CLICK
+  Start-Sleep -Seconds 1
+  Say ("ND checkbox checked(after click)=" + [int][W]::SendMessage($cb, 0xF0, [IntPtr]::Zero, [IntPtr]::Zero))
+  $apply = Find-Ctl $top 12321 'Button'
+  [void][W]::SendMessage($apply, 0xF5, [IntPtr]::Zero, [IntPtr]::Zero)
+  Start-Sleep -Seconds 4
+} elseif ($target -ge 0) {
   [void][W]::SendMessage($combo, 0x14E, [IntPtr]$target, [IntPtr]::Zero)     # CB_SETCURSEL
   $cid = 1007
   [void][W]::SendMessage($parent, 0x111, [IntPtr]((1 -shl 16) -bor $cid), $combo) # WM_COMMAND, CBN_SELCHANGE

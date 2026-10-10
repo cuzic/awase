@@ -2,6 +2,8 @@ name: msime-legacy-ui-diff
 
 # 旧UI(IMJPUEX.EXE)を UI Automation で操作し、前後のレジストリ・ファイル差分を取るスパイク(観測のみ)。
 on:
+  push:
+    branches: [ci/msime-legacy-keytable-spike]
   workflow_dispatch:
 
 permissions:
@@ -30,7 +32,7 @@ jobs:
           Start-Sleep -Seconds 5
       - name: 旧UIの Advanced(キー編集)を開いて構造を採取
         shell: pwsh
-        run: ./tools/ci/msime-legacy-ui-diff.ps1 -Out ui-out -Phase advanced
+        run: ./tools/ci/msime-legacy-ui-diff.ps1 -Out ui-out -Phase nd
       - uses: actions/upload-artifact@v4
         if: always()
         with:
