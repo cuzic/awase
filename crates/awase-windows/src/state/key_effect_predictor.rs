@@ -991,15 +991,15 @@ impl KeyEffectKeymap {
             return None;
         }
         // 閉じる効果は段階・変換モードの追跡を捨てる。モードを SET する効果は追跡する変換モードを更新する。
-        let track = if !open_after {
-            KeyTrack {
-                conv: None,
-                stage: Stage::None,
-            }
-        } else {
+        let track = if open_after {
             KeyTrack {
                 conv: conv.or(input.track.conv),
                 stage: input.track.stage,
+            }
+        } else {
+            KeyTrack {
+                conv: None,
+                stage: Stage::None,
             }
         };
         let mode = conv
@@ -2099,8 +2099,12 @@ mod tests {
         let custom =
             KeyEffectKeymap::from_config(Some(0), Some("DirectInput\tF13\tIMEOn\n".into()), &[])
                 .unwrap();
+        // ADR-211 の規則(プリセットの F13)は CUSTOM(表あり)に当てない。CUSTOM の表の行は ADR-247 の規則が別に扱う
+        // (`custom_f_key_prediction`、`adr247_*` のテスト)ので、`predict` の結果ではなく ADR-211 の規則そのものを見る。
         assert!(
-            !opens(custom.predict(F13, &eligible_input(false, ROMAJI))),
+            custom
+                .passive_open_key_prediction(F13, &eligible_input(false, ROMAJI))
+                .is_none(),
             "CUSTOM(表あり)"
         );
         let overlay = KeyEffectKeymap::from_config(Some(2), None, &[100]).unwrap();
