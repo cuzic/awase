@@ -383,7 +383,7 @@ pub const fn reinject_scan_code(vk_code: VkCode, scan_code: u32) -> u16 {
 /// キーだけがここに来る。呼び出し側は`shadow_action.is_none()`も併せて確認する。）
 #[must_use]
 pub const fn is_followed_mode_key(vk_code: VkCode) -> bool {
-    is_ime_mode_key_for_ime(vk_code) && !matches!(vk_code.0, 0x16 | 0x1A)
+    (is_ime_mode_key_for_ime(vk_code) && !matches!(vk_code.0, 0x16 | 0x1A)) || is_role_fkey(vk_code)
 }
 
 /// この VK が IME conv-mode ワード（NATIVE/KATAKANA/FULLSHAPE/ROMAN、
@@ -1282,6 +1282,16 @@ mod tests {
 
     /// ADR-199 決定18: F13〜F24 は物理キーが実在しうる（プログラマブルキーボード等）ので、受信そのものは
     /// IME の証拠にならず `is_japanese_ime` を上げてはならない（ADR-093 の基準、BUG-14 と同じ理由）。
+    #[test]
+    fn adr247_f13_to_f24_are_followed_mode_keys() {
+        for vk in 0x7C..=0x87 {
+            assert!(crate::vk::is_followed_mode_key(VkCode(vk)), "0x{vk:02X}");
+        }
+        assert!(!crate::vk::is_followed_mode_key(VkCode(0x7B))); // F12
+        assert!(!crate::vk::is_followed_mode_key(VkCode(0x88)));
+        assert!(!crate::vk::is_followed_mode_key(VkCode(0x16))); // awase 自身の IME ON は従来どおり除く
+    }
+
     #[test]
     fn should_upgrade_is_japanese_ime_false_for_f13_to_f24() {
         for vk in 0x7C..=0x87 {
