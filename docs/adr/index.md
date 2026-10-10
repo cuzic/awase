@@ -261,7 +261,7 @@
 | [252](252-foreign-ctrl-stuck-nonrecurrence-ci.md) | 注入 Ctrl↓ の KeyUp 欠落後に物理打鍵が通常どおり変換されることを CI で観測する(ADR-249 の stuck 非再発) | 実装・観測済み(2026-10-10、run 38046806775)。S1 は崩れていない |
 | [253](253-bug198-vk-packet-reinject.md) | 他アプリが注入した VK_PACKET の文字を、保留→再注入で失わない(BUG-198) | 起草(2026-10-10)。未実装、原因は仮説(段階0で切り分け) |
 | [254](254-msime-legacy-custom-keytable-read.md) | MS-IME 互換モード(旧UI)の Custom 表の扱い——第一段は「keystyle が既定でないとき MSIME_NATIVE の予測を止める」、表を読む第二段は検証後(ADR-197 の訂正) | 第一段を実装中(2026-10-10)。CI スパイク+実機(dragonflyg4)で、Custom の表は互換 ON のときだけ効く・名前付きスタイルは新旧エンジンで内蔵表が違うことを確認。第二段は未着手 |
-| [255](255-ime-off-thumb-key-space.md) | IME OFF のときだけ無変換/変換を Space にする——エンジンの非活性時の親指キー処理に足す(`[[keymap]]` の条件化は採らない) | 改訂(2026-10-10、IME OFF の判定を belief だけに)。Opus r6 待ち。実装は報告者の回答待ちで保留 |
+| [255](255-ime-off-thumb-key-space.md) | IME OFF のときだけ無変換/変換を Space にする——エンジンの非活性時の親指キー処理に足す(`[[keymap]]` の条件化は採らない) | 提案(Opus r1〜r6、r6 は所有者の提案による決定3 の置き換え。新規 Blocker/Must なし)。実装は報告者の回答待ちで保留 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
@@ -430,13 +430,13 @@ ADR-032 で IME 状態モデルが reducer 化されたあと、運用で見つ�
 | [review/178-opus-review-v14.md](review/178-opus-review-v14.md) | ADR-178 v14（Permanent+自己修復方式、現行）敵対的レビュー記録 | [178](178-msi-uninstall-preserve-userdata.md) |
 | [review/183-opus-review-round1.md](review/183-opus-review-round1.md) | ADR-183 Opus敵対的レビュー記録（round1） | [183](183-vk-kana-physical-delivery-passthrough.md) |
 | [review/184-opus-review-round1.md](review/184-opus-review-round1.md)〜[round6.md](review/184-opus-review-round6.md) | ADR-184 Opus敵対的レビュー記録（round1〜6） | [184](184-gji-atok-muhenkan-toggle-awase-owned-eisu-hiragana.md) |
-| [review/186-opus-review-round1.md](review/186-opus-review-round1.md)〜[round2.md](review/186-opus-review-round2.md) | ADR-186 Opus敵対的レビュー記録（round1〜5） | [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) |
-| [review/187-opus-review-round1.md](review/187-opus-review-round1.md)〜[round2.md](review/187-opus-review-round2.md) | ADR-187 Opus敵対的レビュー記録（round1〜5） | [187](187-atok-passthrough-mode-key-observed-belief-follow.md) |
-| [review/190-opus-review-round1.md](review/190-opus-review-round1.md)〜[round3.md](review/190-opus-review-round3.md) | ADR-190 Opus敵対的レビュー記録（round1〜5） | [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) |
+| [review/186-opus-review-round1.md](review/186-opus-review-round1.md)〜[round2.md](review/186-opus-review-round2.md) | ADR-186 Opus敵対的レビュー記録（round1〜6） | [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) |
+| [review/187-opus-review-round1.md](review/187-opus-review-round1.md)〜[round2.md](review/187-opus-review-round2.md) | ADR-187 Opus敵対的レビュー記録（round1〜6） | [187](187-atok-passthrough-mode-key-observed-belief-follow.md) |
+| [review/190-opus-review-round1.md](review/190-opus-review-round1.md)〜[round3.md](review/190-opus-review-round3.md) | ADR-190 Opus敵対的レビュー記録（round1〜6） | [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) |
 | [review/193-opus-review-round1.md](review/193-opus-review-round1.md)〜[round3.md](review/193-opus-review-round3.md)、[plan-round1.md](review/193-opus-review-plan-round1.md)〜[plan-round5.md](review/193-opus-review-plan-round5.md) | ADR-193 Opus敵対的レビュー記録（本体3ラウンド＋計画5ラウンド） | [193](193-richedit-superclass-tsf-native-e2e-target.md) |
-| [review/196-opus-review-round1.md](review/196-opus-review-round1.md)〜[round5.md](review/196-opus-review-round5.md) | ADR-196 Opus敵対的レビュー記録（round1〜5） | [196](196-keymap-learn-truth-priority.md) |
+| [review/196-opus-review-round1.md](review/196-opus-review-round1.md)〜[round5.md](review/196-opus-review-round5.md) | ADR-196 Opus敵対的レビュー記録（round1〜6） | [196](196-keymap-learn-truth-priority.md) |
 | [review/197-opus-review-round1.md](review/197-opus-review-round1.md) | ADR-197 Opus敵対的レビュー記録（round1） | [197](197-msime-legacy-custom-keymap-runtime-warning.md) |
-| [review/255-opus-review-round1.md](review/255-opus-review-round1.md)〜[round5.md](review/255-opus-review-round5.md) | ADR-255 Opus敵対的レビュー記録（round1〜5） | [255](255-ime-off-thumb-key-space.md) |
+| [review/255-opus-review-round1.md](review/255-opus-review-round1.md)〜[round6.md](review/255-opus-review-round6.md) | ADR-255 Opus敵対的レビュー記録（round1〜6） | [255](255-ime-off-thumb-key-space.md) |
 
 ---
 
