@@ -31,8 +31,10 @@ function Reg-State {
   return ('keystyle={0} ND={1} option1={2} option2={3} NoTsf3Override2={4} DisableNewIME={5}' -f $m.keystyle, $m.NoDirectInputMode, $m.option1, $m.option2, $t, $m.DisableNewIME)
 }
 # --no-probe: 各キーの後に k/ESC を打たない。seq の 4B=k, 1B=ESC を明示して状態を作る。
+$script:cellNo = 0
 function Probe([string]$tag, [string]$seq, [int]$reps) {
-  Say "### $tag seq=$seq  [$(Reg-State)]"
+  $script:cellNo++
+  Say "### [c$($script:cellNo)] $tag seq=$seq  [$(Reg-State)]"
   $dist = Split-Path $spike
   for ($r = 1; $r -le $reps; $r++) {
     Remove-Item (Join-Path $dist 'ime_key_matrix_spike.log') -ErrorAction SilentlyContinue
@@ -47,7 +49,7 @@ function Probe([string]$tag, [string]$seq, [int]$reps) {
     Pop-Location
     $lf = Join-Path $dist 'ime_key_matrix_spike.log'
     if (-not (Test-Path $lf)) { Say "  #$r (no log)"; continue }
-    Copy-Item $lf (Join-Path $Out ("log-{0}-{1}.log" -f ($tag -replace '[^A-Za-z0-9_-]', '_'), $r)) -ErrorAction SilentlyContinue
+    Copy-Item $lf (Join-Path $Out ("log-c{0}-r{1}.log" -f $script:cellNo, $r)) -ErrorAction SilentlyContinue
     $lines = Get-Content $lf -Encoding utf8
     $parts = @()
     for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -55,8 +57,9 @@ function Probe([string]$tag, [string]$seq, [int]$reps) {
       if (-not $m.Success) { continue }
       $before = ''; $a400 = ''
       for ($j = $i + 1; $j -lt [Math]::Min($i + 9, $lines.Count); $j++) {
-        if ($lines[$j] -match '^\s+前\s+:') { $before = Fmt $lines[$j] }
-        elseif ($lines[$j] -match '^\s+\+400ms:') { $a400 = Fmt $lines[$j] }
+        if ($lines[$j] -match '\] KEY \[') { break }
+        if (($lines[$j] -match '^\s+前\s+:') -and (-not $before)) { $before = Fmt $lines[$j] }
+        elseif (($lines[$j] -match '^\s+\+400ms:') -and (-not $a400)) { $a400 = Fmt $lines[$j] }
       }
       $parts += ('{0}[{1}] {2} => {3}' -f $m.Groups[1].Value, $m.Groups[2].Value.Trim(), $before, $a400)
     }
@@ -105,53 +108,53 @@ $exe = (Get-ChildItem "$env:windir\System32\IME" -Recurse -Filter 'IMJPUEXC.EXE'
 & $exe setkeytemplate 'Microsoft_IME' 2>&1 | Out-Null
 Say "OS $([Environment]::OSVersion.VersionString)  [$(Reg-State)]"
 
+function Set-KeyAssign($enabled, $muhenkan) {
+  if ($null -eq $enabled) { Remove-ItemProperty -Path $msimePath -Name IsKeyAssignmentEnabled -ErrorAction SilentlyContinue } else { Set-ItemProperty -Path $msimePath -Name IsKeyAssignmentEnabled -Value $enabled -Type DWord -Force }
+  if ($null -eq $muhenkan) { Remove-ItemProperty -Path $msimePath -Name KeyAssignmentMuhenkan -ErrorAction SilentlyContinue } else { Set-ItemProperty -Path $msimePath -Name KeyAssignmentMuhenkan -Value $muhenkan -Type DWord -Force }
+}
 switch ($Suite) {
-  'v0b' {
-    # V0(再): 列と状態の対応。入力中は 4B,41(か)で作る。1 列目だけ/2〜6 列目の 1 列だけに既知のコードを置く。
-    #   97: 1 列目で効果が分かっている(開・入力なしで conv→0x1B)。CD: 入力中の列で効果が分かっている(ND=1 で conv→0x10、ND=0 で閉じる)。
-    foreach ($nd in 1, 0) {
-      Set-Direct $nd
-      $nreps = if ($nd -eq 1) { $Reps } else { 3 }
-      Build-Custom @(@{ Table = 'key'; Row = '無変換'; Codes = '97 00 00 00 00 00' })
-      Probe "ND$nd col1=97(他00) 開・入力なし" '1C,1D' $nreps
-      Probe "ND$nd col1=97(他00) 開・入力中か" '1C,4B,41,1D' $nreps
-      Build-Custom @(@{ Table = 'key'; Row = '無変換'; Codes = '00 CD CD CD CD CD' })
-      Probe "ND$nd col1=00(他CD) 開・入力なし" '1C,1D' $nreps
-      Probe "ND$nd col1=00(他CD) 開・入力中か" '1C,4B,41,1D' $nreps
-      Build-Custom @()
-      Probe "ND$nd 無加工Custom 開・入力中か" '1C,4B,41,1D' $nreps
+  'v3c' {
+    # M3-1: エンジンの陽性対照。新UIの割り当て(IsKeyAssignmentEnabled=1・KeyAssignmentMuhenkan=0=IME-オン)を入れ、
+    # keystyle=NATURAL のまま、互換フラグ別に閉・無変換を押す。新エンジンが動いていれば開く。旧エンジンなら変化なし。
+    foreach ($ka in @(@($null, $null), @(1, 0))) {
+      Set-KeyAssign $ka[0] $ka[1]
+      foreach ($c in @(@(1, 1), @(1, $null), @($null, 1), @($null, $null), @(0, 0))) {
+        Set-Compat $c[0] $c[1]; Restart-Ctfmon
+        Probe ("KeyAssign enabled={0} muhenkan={1} / NoTsf3Override2={2} DisableNewIME={3} 閉・無変換" -f $ka[0], $ka[1], $c[0], $c[1]) '1D' $Reps
+      }
+    }
+    # 参考: 読み込まれた IME の DLL(旧エンジンか新エンジンかの手がかり)
+    Say 'modules (ctfmon / IME 関連のロード済み DLL):'
+    Get-Process | Where-Object { $_.ProcessName -match 'ctfmon|TextInputHost|ime_key_matrix' } | ForEach-Object {
+      try { $mods = ($_.Modules | Where-Object { $_.ModuleName -match 'msime|imjp|imetip|tsf3|InputSwitch|Windows.UI.Input' } | ForEach-Object { $_.ModuleName }) -join ','; Say ("  {0}: {1}" -f $_.ProcessName, $mods) } catch { Say ("  {0}: (modules unreadable)" -f $_.ProcessName) }
     }
   }
-  'v0c' {
-    # 2〜6 列目の 1 列だけに CD を置いて、入力中(か)・変換済み(か+Space)のどれで効くかを調べる(ND=1、n=3)。
+  'v0d' {
+    # M3-2: ローマ字の途中(ｋ)・かな未確定(か)と列の対応。
+    foreach ($nd in 1, 0) {
+      Set-Direct $nd
+      $n = if ($nd -eq 1) { $Reps } else { 3 }
+      foreach ($cfg in @(@('col1=00,他=CD', '00 CD CD CD CD CD'), @('col1=CE,他=00', 'CE 00 00 00 00 00'), @('col1=CE,他=CD(dragonflyg4型)', 'CE CD CD CD CD CD'))) {
+        Build-Custom @(@{ Table = 'key'; Row = '無変換'; Codes = $cfg[1] })
+        Probe ("ND{0} {1} 開・ｋ(ローマ字の途中)" -f $nd, $cfg[0]) '1C,4B,1D' $n
+        Probe ("ND{0} {1} 開・か(未確定)" -f $nd, $cfg[0]) '1C,4B,41,1D' $n
+      }
+    }
     Set-Direct 1
     foreach ($col in 2..6) {
       $codes = (1..6 | ForEach-Object { if ($_ -eq $col) { 'CD' } else { '00' } }) -join ' '
       Build-Custom @(@{ Table = 'key'; Row = '無変換'; Codes = $codes })
-      Probe "col$col=CD 開・入力中か" '1C,4B,41,1D' 3
-      Probe "col$col=CD 変換済み(か+Space)" '1C,4B,41,20,1D' 3
+      Probe "col1=00,col$col だけ=CD 開・ｋ" '1C,4B,1D' 3
     }
   }
-  'v3b' {
-    # V3(補遺): keystyle の不在=NATURAL か、名前付き(ATOK)は互換フラグに関係なく効くか、Custom は互換フラグ OFF でも効くか(閉で 変換 を押す)。
-    # (a) keystyle 値を消した状態(StyleList は残す)
-    Set-Compat 1 1; Restart-Ctfmon
-    Remove-ItemProperty -Path $msimePath -Name keystyle -ErrorAction SilentlyContinue
-    Probe 'keystyle値なし(互換ON) 閉・変換' '1C' $Reps
-    Set-Compat $null $null; Restart-Ctfmon
-    Remove-ItemProperty -Path $msimePath -Name keystyle -ErrorAction SilentlyContinue
-    Probe 'keystyle値なし(互換フラグなし) 閉・変換' '1C' $Reps
-    # (b) 名前付き ATOK(変換は閉で開かない)を互換フラグ別に
-    foreach ($c in @(@(1, 1), @($null, $null), @(0, 0))) {
-      & $exe setkeytemplate 'ATOK' 2>&1 | Out-Null
-      Set-Compat $c[0] $c[1]; Restart-Ctfmon
-      Probe ("ATOK NoTsf3Override2={0} DisableNewIME={1} 閉・変換" -f $c[0], $c[1]) '1C' $Reps
-    }
-    # (c) Custom の S4key 変換行を 00 にして(閉で開かなくなる)、互換フラグなし/0 で効くか
-    foreach ($c in @(@($null, $null), @(0, 0))) {
-      Set-Compat $c[0] $c[1]; Restart-Ctfmon
-      Build-Custom @(@{ Table = 'S4key'; Row = '変換'; Codes = '00 00 00 00 00 00' })
-      Probe ("Custom(S4key 変換=00) NoTsf3Override2={0} DisableNewIME={1} 閉・変換" -f $c[0], $c[1]) '1C' $Reps
+  'v0e' {
+    # 1 列目に置かれうる(半角/全角など)コードを、Custom の 1 列目に置いた試行(開・入力なし)。ND=1/0。
+    foreach ($nd in 1, 0) {
+      Set-Direct $nd
+      foreach ($code in 'CD', 'B3', 'CE', 'A4', 'CA', 'C9') {
+        Build-Custom @(@{ Table = 'key'; Row = '無変換'; Codes = "$code 00 00 00 00 00" })
+        Probe ("ND{0} col1={1}(他00) 開・入力なし" -f $nd, $code) '1C,1D' 3
+      }
     }
   }
 }
