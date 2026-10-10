@@ -100,6 +100,9 @@ struct HookState {
     /// 50ms 救済窓を設けるため。「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは
     /// false のままなので、即時 IME OFF できる。Ctrl↓/Ctrl↑ で false にリセットされる。
     ctrl_consumed_since_down: AtomicBool,
+    /// 他アプリが注入した Ctrl↓ の時刻(ADR-249、BUG-197)。**注入された打鍵の `modifier_snapshot` にだけ**
+    /// 期限内の ctrl として足す。`read_os_modifiers`・`HeldModifiers`・`ctrl_consumed_since_down` は読まない。
+    foreign_ctrl: crate::state::foreign_modifier::ForeignCtrlLatch,
     /// キーボードモデル（JIS/US）のキャッシュ。RUNTIME 借用なしで `classify_key`
     /// から参照するため `cached_thumb_vks` と同じ理由でキャッシュする。
     /// false = Jis（既定）、true = Us。
@@ -159,6 +162,7 @@ impl HookState {
             left_thumb_down_scan: AtomicU32::new(0),
             right_thumb_down_scan: AtomicU32::new(0),
             ctrl_consumed_since_down: AtomicBool::new(false),
+            foreign_ctrl: crate::state::foreign_modifier::ForeignCtrlLatch::new(),
             cached_keyboard_model_is_us: AtomicBool::new(false),
             cached_left_alt_impersonation_enabled: AtomicBool::new(false),
             cached_right_alt_impersonation_enabled: AtomicBool::new(false),
@@ -491,6 +495,7 @@ pub fn reset_physical_key_state() {
         .store(false, Ordering::Relaxed);
     HOOK_STATE.alt_l_was_down.store(false, Ordering::Relaxed);
     HOOK_STATE.alt_r_was_down.store(false, Ordering::Relaxed);
+    HOOK_STATE.foreign_ctrl.clear();
     tracing::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
 }
 
@@ -548,6 +553,7 @@ pub(crate) fn clear_hook_latches_for_app_disable(
     HOOK_STATE.right_thumb_down_scan.store(0, Ordering::Relaxed);
 
     if matches!(edge, SuppressionEdge::Leave) {
+        HOOK_STATE.foreign_ctrl.clear();
         for vk in [
             VK_CONTROL,
             VK_LCONTROL,
@@ -613,6 +619,7 @@ pub(crate) fn clear_hook_latches_for_watchdog_reinstall() {
         .store(0, Ordering::Relaxed);
     HOOK_STATE.left_thumb_down_scan.store(0, Ordering::Relaxed);
     HOOK_STATE.right_thumb_down_scan.store(0, Ordering::Relaxed);
+    HOOK_STATE.foreign_ctrl.clear();
 
     for vk in [
         VK_CONTROL,
@@ -1274,6 +1281,8 @@ fn build_raw_key_event(
     injected: bool,
     was_down: bool,
     press_id: Option<awase::types::PressId>,
+    timestamp: Timestamp,
+    foreign_ctrl: bool,
 ) -> RawKeyEvent {
     use crate::vk::VkCodeExt;
     RawKeyEvent {
@@ -1285,7 +1294,7 @@ fn build_raw_key_event(
             KeyEventType::KeyUp
         },
         extra_info,
-        timestamp: now_timestamp(),
+        timestamp,
         key_classification,
         physical_pos,
         ime_relevance: classify_ime_relevance(vk),
@@ -1296,6 +1305,7 @@ fn build_raw_key_event(
         injected,
         was_down,
         press_id,
+        foreign_ctrl,
     }
 }
 
@@ -1520,6 +1530,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // issue #136 系の foreign-injected 連打を誤って auto-repeat とみなさないよう、
     // 呼び出し側は was_down の値に関わらず injected を常に非畳み込みとして扱う）。
     let mut was_down = false;
+    // ADR-249: 記録・期限の比較・`event.timestamp` で同じ時刻を使う(コールバックで1回だけ取る)。
+    let callback_ts = now_timestamp();
     // PR #349コードレビュー指摘: 手前のIME診断分岐のログ出力でブロックしうる
     // （未実行の場合でも「このコールバックの直前で詰まった経路があった
     // かもしれない」という前提を各書き込み直前で確認する方が、どの分岐が
@@ -1528,7 +1540,24 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     if !is_injected && is_zombie_hook_thread() {
         return CallNextHookEx(None, ncode, wparam, lparam);
     }
+    if is_injected {
+        // ADR-249: 他アプリの注入 Ctrl を別枠に記録する(`physical_key_state` は従来どおり更新しない)。
+        // `focus_app_disabled` の早期 return より前。フックコールバック上ではログを出さない。
+        if is_keydown {
+            HOOK_STATE.foreign_ctrl.on_injected_down(
+                vk,
+                callback_ts,
+                crate::tuning::FOREIGN_CTRL_TTL_MS * 1_000,
+            );
+        } else {
+            HOOK_STATE.foreign_ctrl.on_up(vk);
+        }
+    }
     if !is_injected {
+        if !is_keydown {
+            // ADR-249: 同じスロットの物理 Ctrl の Up は、OS の VK ごと1ビットと同じく記録も落とす。
+            HOOK_STATE.foreign_ctrl.on_up(vk);
+        }
         if let Some(slot) = HOOK_STATE.physical_key_state.get(vk.0 as usize) {
             was_down = slot.swap(is_keydown, Ordering::Relaxed);
         }
@@ -1826,6 +1855,16 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let (left_thumb_down_snapshot, right_thumb_down_snapshot) = thumb_down_timestamps();
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
     let mut modifier_snapshot = crate::observer::focus_observer::read_os_modifiers();
+    // ADR-249(BUG-197): 他アプリが注入した Ctrl の期限内記録は、**注入された打鍵の snapshot にだけ**足す。
+    // 物理打鍵・`read_os_modifiers`・`HeldModifiers` には影響させない(ADR-054 の stuck を再発させない)。
+    let foreign_ctrl = is_injected
+        && !modifier_snapshot.ctrl
+        && HOOK_STATE
+            .foreign_ctrl
+            .ctrl_for_injected_key(callback_ts, crate::tuning::FOREIGN_CTRL_TTL_MS * 1_000);
+    if foreign_ctrl {
+        modifier_snapshot.ctrl = true;
+    }
     // Alt 物理押下中またはメニューモード（WM_SYSKEYDOWN コンテキスト）のキーは変換しない
     if kb.flags.0 & LLKHF_ALTDOWN != 0 {
         modifier_snapshot.alt = true;
@@ -1849,6 +1888,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         is_injected,
         was_down,
         assign_press_id(is_keydown, is_injected, was_down),
+        callback_ts,
+        foreign_ctrl,
     );
 
     // opus round2 M2': 入口（`hook_callback`冒頭）のガードは、これから

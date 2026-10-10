@@ -285,6 +285,7 @@ impl Replay {
             injected: key.injected,
             was_down,
             press_id: None,
+            foreign_ctrl: false,
         }
     }
 

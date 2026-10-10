@@ -490,3 +490,13 @@ pub const FOCUS_RESYNC_DEADLINE_MS: u64 = 100;
 /// 実機（GitHub-hosted 以外）での再測定は未了のため `pending`。
 #[measured_macro::measured(pending = true)]
 pub const KEY_EFFECT_SETTLE_MS: u64 = 170;
+
+/// 他アプリが注入した Ctrl↓ を、**注入された打鍵の修飾としてだけ**数える期限 (ms)(ADR-249、BUG-197)。
+///
+/// 音声入力ソフト Spokenly は `Ctrl↓ → V↓↑ → Ctrl↑` を注入して貼り付ける。**実測**(報告 `01M4J72G985T0FFT6XPN0SWCQQ` の
+/// journal 2例、seq 61→64・117→120): 注入 Ctrl↓→Ctrl↑ の保持 101.1ms・101.6ms、Ctrl↓→V↓ は 0.44ms・0.54ms。
+/// **導出**: 実測最大 ~102ms の約 10 倍の 1000ms。物理打鍵は別枠を読まない(注入キーにだけ効く)ので、長くしても
+/// 失うのは「注入キーの誤った素通し」だけで、ADR-054 の stuck は期限に依らず再発しない。
+/// 他ツール(AutoHotkey `Send ^v`・PowerToys 等)の保持は未測定。実機での再測定は未了のため `pending`。
+#[measured_macro::measured(pending = true)]
+pub const FOREIGN_CTRL_TTL_MS: u64 = 1_000;

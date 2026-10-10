@@ -50,6 +50,8 @@ pub struct KeyEventSummary {
     pub alt: bool,
     pub ctrl: bool,
     pub shift: bool,
+    /// `ctrl` が他アプリの注入 Ctrl の期限内記録(ADR-249)で立った値か。物理 Ctrl が無いのに `ctrl=true` の行を誤読しないための印。
+    pub foreign_ctrl: bool,
 }
 
 impl KeyEventSummary {
@@ -66,6 +68,7 @@ impl KeyEventSummary {
             alt: event.modifier_snapshot.alt,
             ctrl: event.modifier_snapshot.ctrl,
             shift: event.modifier_snapshot.shift,
+            foreign_ctrl: event.foreign_ctrl,
         }
     }
 }
@@ -1722,6 +1725,7 @@ mod tests {
                 alt: false,
                 ctrl: false,
                 shift: false,
+                foreign_ctrl: false,
             },
             state_before: "engine-before".to_owned(),
             state_after: "engine-after".to_owned(),

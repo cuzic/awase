@@ -8,7 +8,7 @@ summary: |-
   V を ctrl=false の Char として NICOLA 変換して「ふ」を出す。注入された Ctrl↓ を別枠に記録し、**注入された打鍵の modifier_snapshot にだけ**
   期限(TTL)内の ctrl を足す(案 A')。物理打鍵は別枠を読まないので、KeyUp 欠落でも ADR-054 の stuck は TTL の値と無関係に再発しない。
 status: |-
-  起草・改訂(2026-10-10)。Opus round1(13指摘)・round2(Should-fix 3件・Nit 4件)を反映済み、Opus round3 で収束(Blocker なし、実装に着手してよい)。実装なし。TTL の値は未決(Spokenly の保持は報告 journal の2例で 101ms)。
+  起草・改訂(2026-10-10)。Opus round1(13指摘)・round2(Should-fix 3件・Nit 4件)を反映済み、Opus round3 で収束(Blocker なし、実装に着手してよい)。実装済み(PR #580、2026-10-10)。TTL は `FOREIGN_CTRL_TTL_MS`=1000ms(pending、Spokenly の保持は報告 journal の2例で 101ms の約10倍、他ツールは未測定)。CI の実機 A/B は paste が全構成 36/36(run 38041351075)。未了: 報告 journal の replay fixture、「注入 Ctrl↓ だけで Up なし」後の stuck 非再発の CI 観測、0x11 の到達確認、報告者の実機確認。
 related_adr:
   - "ADR-054"
   - "ADR-052"
@@ -92,6 +92,14 @@ related_adr:
 - `lang_check_on_keydown`・`kp_stage_key_effect_track` は修飾付きのキーを対象外にする(素通しなので無害と思われる)。
 - OS 側: awase が Ctrl↓ を再注入済みなので、注入 Ctrl↑ が欠けたときの OS 上の Ctrl 固着は今も同じで、本 ADR の範囲外。
 
+- IME 制御キーの組み合わせ(Opus PR レビュー S2): 手動設定の `keys.ime_on/ime_off/ime_toggle`・engine_on/off は注入イベントも受け付ける。
+  修正前は注入された Ctrl+変換(AutoHotkey の `Send ^{vk1C}` 等)の ctrl が false で一致しなかったが、期限内は一致して SetOpen を出し、
+  `on_engine_set_open_request`・`is_default_ime_on_combo` のひらがなリセット、`panic_detect`、`kanji_shadow_action`/`passive_without_lookup` の `modified`、
+  `mode_key_follow` も、注入キーについては物理キーと同じ扱いに変わる(物理 Ctrl+変換と揃う。意図的)。実害の有無は未確認。望まなければ
+  `ime_relevance` が IME 制御のキーには別枠を足さない条件を足す。
+- awase 自身の synthetic Ctrl↑(`send_keymap_target` の Ctrl 解放)は `self_injected` で早期 return するので記録を消さない。OS 上の Ctrl が離れた後も
+  期限内は注入キーが ctrl=true のまま(物理打鍵には効かないので許容)。
+
 失敗シナリオ(Opus round1 指摘10)と A' での扱い:
 
 | シナリオ | A' |
@@ -99,7 +107,7 @@ related_adr:
 | 注入 Ctrl↑ の欠落 | 物理打鍵は別枠を読まないので影響なし。TTL の間に注入されたキーだけが素通しになる |
 | 注入 Ctrl↓ に物理 Ctrl が重なる | 物理 Up が先: 同 VK の物理 Up で記録を消す(OS と一致)。注入 Up が先: 記録は消えるが `physical_key_state` が真のまま残る。左右は別 VK |
 | 他のフックが awase の自己注入を marker なしで再注入 | 注入キーにだけ影響し、TTL で上限が付く |
-| オートリピート・押し直し | 最初の Down を保持して期限を延ばさない |
+| オートリピート・押し直し | 期限内は最初の Down を保持して延ばさない。期限切れの記録(KeyUp 欠落の残り)は次の Down が上書きする(Opus PR レビュー S1。残すと次の貼り付けが1回失敗する) |
 
 ## 検証
 
