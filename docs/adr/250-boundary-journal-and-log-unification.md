@@ -9,9 +9,10 @@ summary: |-
   ログとの統合は、所有者が「大きく統合する」を選んだ(2026-10-10)。journal を正にして journal → tracing へ生成する方向(ADR-139 Option C)を広げ、
   生成ログの tracing レベルと target を型ごとに宣言する(ADR-139 決定 4 の改訂)。tracing → journal の方向(Option B)は ADR-139 のとおり不採用。
   収支表は判定ではなく見積もりに使い、純増は許容する。読み手のあるログは、チェッカーを同じ PR で直してから置き換える。
+  **実際に置き換えられるのは journal に記録がある出来事の行に限り、`tsf/`・`output/` の行は当面対象外**(`architecture_guard.rs:403` による。緩めるかは所有者の別判断)。
   過去の journal・コーパスとの互換性は持たない(所有者判断 2026-10-10)。ADR-226 の候補 E にあたる。
 status: |-
-  提案(2026-10-10 に所有者が「大きく統合する」を選んだため決定 5 を改訂。Opus round6 の Must 2・Should 2 を反映済み、round7 待ち。ガード :403 を緩めるかは所有者の別判断)
+  提案(2026-10-10 に所有者が「大きく統合する」を選んだため決定 5 を改訂。Opus round7 で収束〈Blocker 0・Must 0〉。ガード :403 を緩めるかは所有者の別判断)
 related_adr:
   - "ADR-082"
   - "ADR-096"
@@ -113,6 +114,7 @@ related_adr:
 - **記録規則は edge 記録**: 前の tick と理由(`DriftPlan` の variant + `basis`)が**変わったときだけ**記録し、同じ理由の連続は 1 件に畳む(ADR-169 の打鍵の畳み込みと同じ考え方)。**edge の判定は殻が `record` を呼ぶ前に行う**(畳んだ分は `record` を呼ばず、ログも出ない。件数と最後の時刻は次の edge のレコードに載せる)。ADR-169 のように journal の中で畳んで `emit_tracing` を毎回呼ぶ作りにすると、`StillParked`・`NotDrifting` の tick ごと(既定 500ms)に debug 行が出て、CI(`RUST_LOG=debug`)で 1 時間 7,200 行の純増になる。
   - 畳んだレコードは**件数と最後の時刻**を持つ(parked が何分続いたかを報告から読めるようにする)。edge の判定キーには**フォーカスの世代**を含める(フォーカスが変わったら同じ理由でも新しい 1 件にする)。
   - 「`Idle` 以外」では両方向に外れる。`Idle` の中に `NoDrift::StaleObservation`(ADR-233 の測定対象)や `NotExplicitIntent`(issue #189・BUG-110)があり、逆に `GiveUp(StillParked)`・`GiveUp(CooldownPending)` は parked の間ポーリングの tick ごと(既定 500ms)に返る(`drift_plan.rs:93-115`、殻は `Idle` を `trace!` にして return する〈`runtime/ime_refresh.rs:892-895`〉)。
+  - 既存の `ImeActuation{GiveUp}` は `GiveUp` のどの variant でも記録されるため、parked の間ポーリングの tick ごとに積まれている。**段階 1 の edge 判定に含めるか(`GiveUp` の連続を畳むか)を一緒に決める**。
   - `Send` と `GiveUp(FirstTime)` は既存の `ImeActuation`(`action = Send/GiveUp`)と `ActuationDecision` に記録されている。journal の中に二重を作らないよう、既存の `ImeActuation` に `basis` を足すか、新しいレコードから外すかを段階 1 で決める。段階 1 で新しく増える情報は、`SkipWarrantWouldBlock`・`Confirmed`・`DeferToSettle`・`Rearm`・`Idle` の各理由と `basis`。
 - **診断用の記録が保証すること**: (i) 不具合報告の JSON に載る(ring の保持、決定 6)。(ii) 人が読める(`emit_tracing` の行に `basis` などの理由が出る。`?`/`%` 禁止なので enum は `variant_name` で出す)。(iii) 記録の有無が挙動を変えない。型の互換や決定性は保証しない。
 - 内部診断(C)は journal に入れず、手書きの tracing のまま残す。診断的な 6 variant(背景 1)は、読み手(人)があるので一括では消さない。消せるのは `TsfProbeCompleted`・`DriftGiveUpIntervalEnded` 程度という見込み(実測ではない)で、各 variant の扱いは該当する段階の PR で表にして決める。
@@ -154,7 +156,7 @@ ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と�
 - **出力を増やさない**: 置き換えは 1:1(手書き 1 行 → 生成 1 行)。生成で 1 出来事が複数行になる、または debug の複製が info に昇格して行が増える形は認めない。**行数は、既定 `info` の下での出力件数(手書きの info/warn 行の件数と同じ)で測る。さらにバイト数でも測る**(ADR-139 決定 2 の懸念は行数ではなくバイト数。フィールドを全部出すと、行数が同じでも大きさは増える)。1 出来事が複数の手書き行だった組(`[drift] correction` と `Blacklist drift correction`、`[engine-input]` と `CTRL MISMATCH`)を 1 行に寄せるのは、減る側なので制約に反しない。CI は `RUST_LOG=debug`(`e2e-ime.yml:1140`)で、`awase.log` が 20MB(`app/logging.rs:24`)を超えて `.old` に回ると前半の行が消えても green のままになる(`awase.log.old` を読む workflow は無い)。現状の `awase.log` の大きさ(バイト数)を段階 0 で 1 run 測り、**閾値をそこから決める**(例: CI の最長の run で `awase.log` が 20MB の 1/2 を超えない)。段階ごとに増分を測る(ADR-139 決定 2 の 747MB の懸念)。
 - **純増を許容する**: 所有者が選んだ。組ごとの収支表(撤去行・追加行・移す消費者)は**見積もりと PR 説明のため**で、純減でなくても置き換える。10-06 の検討の (c) の「純減の組だけ」は採らない。
 - **置き換えの順序**: 読み手のない組 → 読み手のある組(チェッカー・`ANCHORS`・`architecture_guard.rs:2498` の `DRIFT_SEND_LOG_MARKER`・testdata〈`tools/e2e/ime_key_matrix/testdata/*.awase.log`、22 本〉を**同じ PR で**更新してから置き換える)→ 10-06 の検討が「推奨しない」とした組(`[drift] correction`〈診断で最も使われた行、warn として利用者のログに出る唯一の drift 補正の痕跡〉、`Blacklist drift correction`〈消すと CI は green のまま `drift_log_fired` が 0 に化ける〉、`[engine-input]`〈本文の `mods(c=true … phys_ctrl=true` まで読まれる〉)を**最後**。最後の組は、置き換え後の行が、読み手のフィールドと文言を保つか、読み手を先に直せることを確かめてから行う。
-- **記録点の位置**: 置き換え後の生成行が、元の手書き行と**同じ位置(同じ関数・同じ前後関係)**で出ることを置き換えの条件にする。順序を読むチェッカー(`check_reopen.py` など)がある組、`architecture_guard.rs:2498-2521`(match ブロック内は `tracing::debug!` のみ、実送信は `tracing::warn!` で始まる唯一の箇所、という BUG-43/163 の順序ガード)がある組が対象。ガードの目印は、文言ではなく記録の呼び出し(`JournalEntry::ImeActuation` の構築位置)に付け替える。`#[tracing::instrument]` の span 名が行の前置きに入る点(testdata の `on_ime_apply_complete{…}:` など)は、記録点が別関数になると変わるので、testdata も同じ PR で直す。
+- **記録点の位置**: 置き換え後の生成行が、元の手書き行と**同じ位置(同じ関数・同じ前後関係)**で出ることを置き換えの条件にする。順序を読むチェッカー(`check_reopen.py` など)がある組、`architecture_guard.rs:2498-2521`(match ブロック内は `tracing::debug!` のみ、実送信は `tracing::warn!` で始まる唯一の箇所、という BUG-43/163 の順序ガード)がある組が対象。ガードの目印は、文言ではなく記録の呼び出し(`JournalEntry::ImeActuation` の構築位置)に付け替える。`ImeActuation` の構築は `runtime/ime_refresh.rs` の同じ関数に 2 か所(`:961`、`:1052`)あるので、**送信側(`action = Send` の arm)の構築だと特定できる形**(関数名と arm、または送信の直前という位置)で目印を書く。`#[tracing::instrument]` の span 名が行の前置きに入る点(testdata の `on_ime_apply_complete{…}:` など)は、記録点が別関数になると変わるので、testdata も同じ PR で直す。
 - **フィールド落ちに注意**: 派生行(`emit_tracing`)はトップレベルのフィールドしか出さず(例: `FocusTransition` の `from`/`to`、`ImeEvent` の中身の大半は出ない)、チェッカーを派生行へ移すには journal 側にフィールドを足す必要がある。足す量は段階ごとの見積もりに入れる。
 - **置き換えない経路(技術的な制約)**:
   - `journal.record()` は `&mut` を要求するので、`with_app` が `None` になる再入の経路の出来事は記録が捨てられる(ADR-139 決定 4 の理由 3、`open_chain.rs:206-213` が同型)。そのような経路の手書きは残す。段階ごとに、置き換え対象の出来事が `with_app` の中から出ているかを確かめる。
@@ -264,3 +266,4 @@ ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と�
 - summary・title・status・背景 5・決定の冒頭・合否 2・取りやめ条件・複雑性の収支・段階 4。
 - round5: M1(型ごとの宣言では 1:1 を保てない)は決定 5 の改訂点 1〜3(arm ごとの定数・置き換えた arm だけ・一覧をガードで固定)。S1(4-0 の二重)は段階 4。S2(記録点の位置)は決定 5 の「記録点の位置」。S3(target)は改訂点 2。S4(バイト数)は「出力を増やさない」・「対象」。S5(閾値)は「出力を増やさない」・取りやめ条件。N1 は決定 5 の冒頭。
 - round6: M1(edge 記録と 1:1)は決定 1(edge の判定は `record` の前)と決定 5 の「対象」(`ImeActuation` で置き換える)。M2(統合の範囲)は決定 5 の「統合の範囲」と「所有者の判断」の未決。S1(構築点の件数)は改訂点 3。S2(合否 2)は合否 2。N1 は改訂点の見出し。
+- round7: Should 3 件は summary(統合範囲の限定)、決定 5 の記録点の位置(送信側の特定)、決定 1(`ImeActuation{GiveUp}` の edge 判定)。
