@@ -8028,7 +8028,7 @@ fn belief_update_ports_are_called_only_from_platform_state() {
 /// 長押しの PTT・マクロキーで通過マークと 20ms 後の読み直しが約 33ms ごとに再予約されるのを防ぐ。
 #[test]
 fn mode_key_follow_skips_auto_repeat_at_entry() {
-    let src = read_crate_file("runtime/key_pipeline.rs");
+    let src = read_crate_file("src/runtime/key_pipeline.rs");
     let body = extract_fn_body(&src, "fn kp_stage_mode_key_follow");
     let squashed: String = body.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
