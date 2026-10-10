@@ -65,7 +65,7 @@ fn is_forbidden_ctrl_or_shift_primary_key(vk: VkCode) -> bool {
 /// 遅いルール（`ime = "off"`）の `from` として許すコンボか（ADR-255 決定1）:
 /// 無修飾の無変換/変換だけ。発動条件の「IME の機能を持たない」の判定が
 /// 無変換/変換にしか定義されていないため、他のキー・修飾付きは許さない。
-fn is_late_rule_from(combo: &ParsedKeyCombo) -> bool {
+fn is_late_rule_from(combo: ParsedKeyCombo) -> bool {
     (combo.vk == crate::vk::VK_NONCONVERT || combo.vk == crate::vk::VK_CONVERT)
         && !combo.ctrl
         && !combo.shift
@@ -124,7 +124,7 @@ impl KeymapTable {
                     continue;
                 }
             };
-            if late && !is_late_rule_from(&combo) {
+            if late && !is_late_rule_from(combo) {
                 warnings.push(format!(
                     "[keymap] ime = \"off\" の 'from' は無修飾の無変換/変換に限ります（ADR-255 決定1）: {:?}",
                     rule.from
