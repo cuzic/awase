@@ -256,7 +256,7 @@
 | [247](247-fkey-mode-key-follow.md) | F13〜F24 のモードキー(英数=F16 等)に Engine を追随させる(BUG-196) | 起草(2026-10-10)。両案実装済み、CI の A/B で両案とも単独で効く(実機未確認)。案1の効果は未証明のまま残す。 |
 | [248](248-key-swap-ui-clarity.md) | 「キーの入れ替え」画面の分かりやすさの改善(2軸の状態行・適用ブロックの区切り・見出しの分離・無効理由・すべて解除と復旧手順・キーボード図へのドラッグ&ドロップ・置換への一般化) | 起草・改訂(2026-10-10)。Opus round1〜3 を反映し Blocker なしで収束。段階の順序は所有者承認済み(2026-10-10)。実装未着手。 |
 | [249](249-foreign-injected-modifier-ttl.md) | 他アプリが注入した Ctrl を、注入キー自身の修飾として期限付きで数える(BUG-197、Spokenly) | 起草・改訂(2026-10-10)。Opus round1〜3 で収束(Blocker なし)、実装なし |
-| [250](250-boundary-journal-and-log-unification.md) | journal を shell と core の境界で取り(診断用の Facts/Plan)、境界を通る手書きログを journal からの生成に寄せる(ADR-139 決定 4 の改訂) | 起草(2026-10-10)。所有者が「大きく統合する」を選択、決定 5 を改訂(Opus round5 反映済み・round6 待ち) |
+| [250](250-boundary-journal-and-log-unification.md) | journal を shell と core の境界で取り(診断用の Facts/Plan)、境界を通る手書きログを journal からの生成に寄せる(ADR-139 決定 4 の改訂) | 起草(2026-10-10)。所有者が「大きく統合する」を選択、決定 5 を改訂(Opus round6 反映済み・round7 待ち) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

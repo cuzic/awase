@@ -11,7 +11,7 @@ summary: |-
   収支表は判定ではなく見積もりに使い、純増は許容する。読み手のあるログは、チェッカーを同じ PR で直してから置き換える。
   過去の journal・コーパスとの互換性は持たない(所有者判断 2026-10-10)。ADR-226 の候補 E にあたる。
 status: |-
-  提案(2026-10-10 に所有者が「大きく統合する」を選んだため決定 5 を改訂。Opus round5 の Must 1・Should 5 を反映済み、round6 待ち)
+  提案(2026-10-10 に所有者が「大きく統合する」を選んだため決定 5 を改訂。Opus round6 の Must 2・Should 2 を反映済み、round7 待ち。ガード :403 を緩めるかは所有者の別判断)
 related_adr:
   - "ADR-082"
   - "ADR-096"
@@ -110,7 +110,7 @@ related_adr:
 - 入力の単位は、**所有型の Facts を取る関数**(`plan_set_open(SetOpenFacts)`、`plan_core`、`*_plan.rs`)では Facts 1 件。
   借用状態を取る関数(`evaluate_drift(&ImeModel, now)`、`dispatch_set_open(&mut ImeStateHub, …, sink)`。後者は `CommandSink` の戻り値が途中で判断に入る ADR-229 F-D1 の handler 例外)では、**診断に要る射影**(判断に効いた値の抜粋)を記録する。ADR-229 F-D3 の「借用ビュー → 所有型の Facts」への縮小が済むまで、全量の Facts は目標にしない。対象の関数は段階ごとに列挙する。
 - この記録は**人と Claude が不具合報告で読むための診断**であり、再生の入力にしない(決定 4)。そのため `Deserialize` の追加(`&'static str` の 6 か所、`EventTime.monotonic: Instant` の数値化)は要らない。
-- **記録規則は edge 記録**: 前の tick と理由(`DriftPlan` の variant + `basis`)が**変わったときだけ**記録し、同じ理由の連続は 1 件に畳む(ADR-169 の打鍵の畳み込みと同じ考え方)。
+- **記録規則は edge 記録**: 前の tick と理由(`DriftPlan` の variant + `basis`)が**変わったときだけ**記録し、同じ理由の連続は 1 件に畳む(ADR-169 の打鍵の畳み込みと同じ考え方)。**edge の判定は殻が `record` を呼ぶ前に行う**(畳んだ分は `record` を呼ばず、ログも出ない。件数と最後の時刻は次の edge のレコードに載せる)。ADR-169 のように journal の中で畳んで `emit_tracing` を毎回呼ぶ作りにすると、`StillParked`・`NotDrifting` の tick ごと(既定 500ms)に debug 行が出て、CI(`RUST_LOG=debug`)で 1 時間 7,200 行の純増になる。
   - 畳んだレコードは**件数と最後の時刻**を持つ(parked が何分続いたかを報告から読めるようにする)。edge の判定キーには**フォーカスの世代**を含める(フォーカスが変わったら同じ理由でも新しい 1 件にする)。
   - 「`Idle` 以外」では両方向に外れる。`Idle` の中に `NoDrift::StaleObservation`(ADR-233 の測定対象)や `NotExplicitIntent`(issue #189・BUG-110)があり、逆に `GiveUp(StillParked)`・`GiveUp(CooldownPending)` は parked の間ポーリングの tick ごと(既定 500ms)に返る(`drift_plan.rs:93-115`、殻は `Idle` を `trace!` にして return する〈`runtime/ime_refresh.rs:892-895`〉)。
   - `Send` と `GiveUp(FirstTime)` は既存の `ImeActuation`(`action = Send/GiveUp`)と `ActuationDecision` に記録されている。journal の中に二重を作らないよう、既存の `ImeActuation` に `basis` を足すか、新しいレコードから外すかを段階 1 で決める。段階 1 で新しく増える情報は、`SkipWarrantWouldBlock`・`Confirmed`・`DeferToSettle`・`Rearm`・`Idle` の各理由と `basis`。
@@ -144,13 +144,13 @@ related_adr:
 **方向は journal → tracing のまま(ADR-139 Option C)。** tracing → journal の方向(Option B、`tracing_subscriber::Layer` で journal へ流す案)は、ADR-139 決定 4 が退けた理由(`Layer::enabled` はフィールド値を見られない、抑制カウンタが持てない、**`with_app` の再入で `try_borrow_mut` が失敗し、入れ子のイベントが黙って捨てられる**)がそのまま残るので採らない。
 ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と規模もカーディナリティも違うので統合対象ではない」とも書いた。本 ADR はこの結論(「両者は本来統合対象ではない、本当の重複はもっと狭い」)を、**境界を通る出来事(A・B)については journal の記録に寄せる**方向へ改める。C(内部診断)は対象外のまま。
 
-- **ADR-139 決定 4 の改訂点(2 つ)**: 「型ごと」ではなく、**置き換えた手書き行の出力条件と同じ条件の arm** にだけ適用する。
+- **ADR-139 決定 4 の改訂点(3 つ)**: 「型ごと」ではなく、**置き換えた手書き行の出力条件と同じ条件の arm** にだけ適用する。
   1. **レベル**: `emit_tracing` の arm のうち、手書き行を置き換えたものだけを、その手書き行の現在のレベル(info/warn)で出す。それ以外の記録は今のまま debug。
      - 型で決められない理由: レベルは型ではなく出来事の条件で決まる組がある。例: `FocusChange [pid→pid]`(info、`runtime/focus_tracking.rs:576-577`)はプロセスが変わる経路だけで出るが、`FocusTransition` は `changed.any()`(hwnd・class など、どの軸でも)で記録される(`focus_tracking.rs:39-64`、ADR-096 B-3)。`FocusTransition` 型を info にすると、info 行は手書きより増える。`DriftPlan` も `[drift] correction` は warn だが、同じ型の他の variant は debug・trace(`ime_refresh.rs:894`)。
      - 実装の形: tracing の level と target は呼び出し点の static metadata で定数でなければならず、型のメソッドが返す実行時の値は `tracing::event!` に渡せない。実装は `emit_tracing` の arm(必要なら variant や条件の分岐)ごとに、`tracing::warn!(target: "awase_windows::runtime::ime_refresh", …)` のような定数のマクロを書く形になる。`?`/`%`/ワイルドカード禁止のガード(`architecture_guard.rs:6123`)の下で arm が増える分は、収支に入れる。
   2. **target**: 置き換えた arm だけ、置き換えた手書き行の現在の target(モジュールのパス)にする。他の記録は今のまま `awase::journal`。これで `RUST_LOG=awase::journal=debug`(ADR-139 `:495` の文書化された使い方)は、置き換えていない記録については引き続き効き、`RUST_LOG=awase_windows::tsf=debug` のようなモジュール単位の絞り込みは、置き換えた arm について効く。ADR-139 への追記にこの変更(置き換えた arm は `awase::journal` から外れる)を含める。
-  3. **ADR-139 の「variant ごとに個別判断すると、新しい呼び出し元が増えるたびに前提が崩れる」(`:486-495`)への答え**: info 以上で出す arm の一覧(型・variant・条件・レベル)を `architecture_guard.rs` で固定する(名前と件数の表)。新しい info/warn の arm や、その型の新しい記録の呼び出し元を足すときにレビューに掛かる。
-- **対象**: A・B のうち、journal の記録(決定 1 の Plan と Facts の射影)で置き換えられる手書き行。生成行は、**置き換えた arm だけ**全フィールドを `key=value` で出す(既存の 21 型すべてには広げない。`RUST_LOG=debug` の CI で打鍵ごとに出る `KeyInput` のバイト数を増やさないため。`emit_tracing` の `?`/`%` 禁止〈`architecture_guard.rs:6123`〉に従い、enum は `variant_name` で出す)。
+  3. **ADR-139 の「variant ごとに個別判断すると、新しい呼び出し元が増えるたびに前提が崩れる」(`:486-495`)への答え**: info 以上で出す arm の一覧(型・variant・条件・レベル)を `architecture_guard.rs` で固定する(名前と件数の表)。新しい info/warn の arm を足すときにレビューに掛かる。さらに、**info 以上の arm を持つ型の構築点(`JournalEntry::X {` の呼び出し元)の件数も固定する**(`journal_key_input_construction_is_limited_to_key_pipeline`〈`architecture_guard.rs:6167`〉と同じ形)。arm だけでは、新しい呼び出し元を足してもガードが通り、利用者のログが増えるため。
+- **対象**: A・B のうち、journal の記録(決定 1 の Plan と Facts の射影)で置き換えられる手書き行。**出来事ごとに出る手書き行は、畳む記録(決定 1 の edge 記録の Plan)では置き換えず、出来事ごとの記録(`ImeActuation` など)で置き換える。** 例: `[drift] correction`(warn)は送信の試行ごとに 1 行出て、`check_invariants.py:8`(I1)と `check_startup.py:18` が件数を数える。`DriftPlan` で置き換えると試行 1・2・3 回目が 1 行に畳まれ、件数が黙って減り、BUG-43 型(無限再送)の行の数が見えなくなる。置き換え先は試行ごとに記録される `ImeActuation` で、`DriftPlan` ではない。生成行は、**置き換えた arm だけ**全フィールドを `key=value` で出す(既存の 21 型すべてには広げない。`RUST_LOG=debug` の CI で打鍵ごとに出る `KeyInput` のバイト数を増やさないため。`emit_tracing` の `?`/`%` 禁止〈`architecture_guard.rs:6123`〉に従い、enum は `variant_name` で出す)。
 - **出力を増やさない**: 置き換えは 1:1(手書き 1 行 → 生成 1 行)。生成で 1 出来事が複数行になる、または debug の複製が info に昇格して行が増える形は認めない。**行数は、既定 `info` の下での出力件数(手書きの info/warn 行の件数と同じ)で測る。さらにバイト数でも測る**(ADR-139 決定 2 の懸念は行数ではなくバイト数。フィールドを全部出すと、行数が同じでも大きさは増える)。1 出来事が複数の手書き行だった組(`[drift] correction` と `Blacklist drift correction`、`[engine-input]` と `CTRL MISMATCH`)を 1 行に寄せるのは、減る側なので制約に反しない。CI は `RUST_LOG=debug`(`e2e-ime.yml:1140`)で、`awase.log` が 20MB(`app/logging.rs:24`)を超えて `.old` に回ると前半の行が消えても green のままになる(`awase.log.old` を読む workflow は無い)。現状の `awase.log` の大きさ(バイト数)を段階 0 で 1 run 測り、**閾値をそこから決める**(例: CI の最長の run で `awase.log` が 20MB の 1/2 を超えない)。段階ごとに増分を測る(ADR-139 決定 2 の 747MB の懸念)。
 - **純増を許容する**: 所有者が選んだ。組ごとの収支表(撤去行・追加行・移す消費者)は**見積もりと PR 説明のため**で、純減でなくても置き換える。10-06 の検討の (c) の「純減の組だけ」は採らない。
 - **置き換えの順序**: 読み手のない組 → 読み手のある組(チェッカー・`ANCHORS`・`architecture_guard.rs:2498` の `DRIFT_SEND_LOG_MARKER`・testdata〈`tools/e2e/ime_key_matrix/testdata/*.awase.log`、22 本〉を**同じ PR で**更新してから置き換える)→ 10-06 の検討が「推奨しない」とした組(`[drift] correction`〈診断で最も使われた行、warn として利用者のログに出る唯一の drift 補正の痕跡〉、`Blacklist drift correction`〈消すと CI は green のまま `drift_log_fired` が 0 に化ける〉、`[engine-input]`〈本文の `mods(c=true … phys_ctrl=true` まで読まれる〉)を**最後**。最後の組は、置き換え後の行が、読み手のフィールドと文言を保つか、読み手を先に直せることを確かめてから行う。
@@ -160,6 +160,9 @@ ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と�
   - `journal.record()` は `&mut` を要求するので、`with_app` が `None` になる再入の経路の出来事は記録が捨てられる(ADR-139 決定 4 の理由 3、`open_chain.rs:206-213` が同型)。そのような経路の手書きは残す。段階ごとに、置き換え対象の出来事が `with_app` の中から出ているかを確かめる。
   - 中継を経る型(`pending_journal_entries`〈`platform.rs:126-131`、上限 4096〉、`SENT_INPUT_TRACE`〈seq だけ先に取り、中身は drain 時に組み立てる、`journal.rs:1225-1231`、`platform.rs:94-118`〉、フックの診断キュー)は、stamp 時点で出せる中身が無い型があり、フックスレッドでログを出すと `hook_callback` のログマクロ数の固定(7 件)とフックの薄型化に反するので、手書きの行を残す。
 - C(内部診断)は手書きのまま。読み手のある文言(`startup:`・`[hook-watchdog]`・`IMM capability cache cleared`・`Keyboard Layout Emulator starting`)は変えない。
+- **統合の範囲(実際に置き換えられるもの)**: 置き換えられるのは、**journal に記録がある出来事の行**だけ。新しい記録を足す範囲は決定 3(調査で理由が足りなかった決定から 1 つずつ、殻の見送りは対象外)で限られ、`tsf/`・`output/` は `crate::journal` の参照を禁じられている(`architecture_guard.rs:403`、ADR-096)。
+  このため、`tsf/`(見送り型の B 約 42 件、D の最大の `[gji-fsm]` 約 35 件を含む)と `output/`(約 18 件)の行は、**当面は統合の対象外**になる(記録を足すとしても `platform.rs` 経由の中継型になり、上の「置き換えない経路」に当たる)。「大きく統合する」の実際の範囲は、**既存の 21 型に対応する行と、決定 3 で足す Plan(当面は drift)に対応する行**である。見込みの件数は段階 0 で出す。
+  範囲を広げる(置き換えを目的に記録を足す例外を認め、`architecture_guard.rs:403` を緩める)案は、ADR-096 round3 の理由への答えが要るため、本 ADR では決めず、所有者の別判断とする(「所有者の判断」節)。
 - この決定の採用時に、ADR-139 の決定 4 に「ADR-250 決定 5 で、レベルと target を型ごとの宣言に改訂した」と追記する(ADR-139 の status の追記も同様)。
 
 ### 決定 6: ring は種類のレーンを残す。保持は時間で保証する
@@ -191,12 +194,13 @@ ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と�
 
 - 利点(選んだ理由の側): 1 つの源から構造化されたログが出る。チェッカーが文言の正規表現ではなくフィールドを読めるようになり、文言が変わって 0 件で通る事故(d47645eb、`test_log_anchors_in_rust_source.py` の背景)が型で防げる。
 - トレードオフ(受け入れたもの): 純増になりうること、ADR-139 決定 2(747MB の実測による肥大の懸念)、10-06 の検討が「推奨しない」とした組に触れること。順序(読み手のない組から、推奨しない組は最後)と、行数を増やさない 1:1 の制約で緩和する。
+- **未決(別判断)**: 置き換えを目的に記録を足す例外を認め、`architecture_guard.rs:403`(`tsf/`・`output/` は journal を参照しない)を緩めるか。緩めると `tsf/` と `output/` の行も統合の対象になるが、ADR-096 round3 の理由への答えが要る。本 ADR は緩めない前提で、範囲を決定 5 に明記した。
 - 第 3 の案(チェッカーが読む行だけを `key=value` に構造化)は、置き換えの途中で読み手のある組を直すときの最初の一歩として、決定 5 の順序に取り込まれる。
 
 ## 合否の基準(提案)
 
 1. 再生: **ADR-241 段階 5 の合否に従う**(他の ADR の作業の結果で本 ADR の採否が決まる形になることを明記する)。本 ADR 側の確認は、`KeyInput` に InputContext を足した記録から、`Engine::on_input` の再生に要る材料がそろうこと(本物の報告 1 件で確かめる。評価できる時期は段階 3 以降)。
-2. 各段階の PR に、組ごとの表(撤去行・追加行・移す消費者)を付ける(**見積もりと説明のため。純減は条件にしない**)。置き換えは 1:1 で行数を増やさず、段階ごとに `awase.log` の増分を測って示す。
+2. 各段階の PR に、組ごとの表(撤去行・追加行・移す消費者)を付ける(**見積もりと説明のため。純減は条件にしない**)。置き換えは 1:1 で、**既定 `info` の下での出力件数が増えないこと、CI の `awase.log` のバイト数が段階 0 で決めた閾値以下であること**を段階ごとに測って示す(取りやめ条件と同じ基準)。
 3. 変更後の e2e チェッカー(フィールドまで読む `check_consistency.py`・`check.py`・`check_run_validity.py` を含む)と `test_log_anchors_in_rust_source.py` が全て通る。
 4. 設定画面の「打鍵の行をすべて削除」が、変更後の型でも打鍵を含む行を削除する(件数 0 でないことを確認する)。
 5. 診断用の記録: 段階 1 の後、drift の見送り(`NoDrift::StaleObservation` など)が、不具合報告の journal に理由(variant + `basis`)つきで載り、同じ理由の連続が 1 件に畳まれる。
@@ -259,3 +263,4 @@ ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と�
 - 決定 5 を全面改訂(ADR-139 決定 4 の改訂、行数を増やさない 1:1、置き換えの順序、置き換えない経路)。「所有者への確認」を「所有者の判断」に置き換え。
 - summary・title・status・背景 5・決定の冒頭・合否 2・取りやめ条件・複雑性の収支・段階 4。
 - round5: M1(型ごとの宣言では 1:1 を保てない)は決定 5 の改訂点 1〜3(arm ごとの定数・置き換えた arm だけ・一覧をガードで固定)。S1(4-0 の二重)は段階 4。S2(記録点の位置)は決定 5 の「記録点の位置」。S3(target)は改訂点 2。S4(バイト数)は「出力を増やさない」・「対象」。S5(閾値)は「出力を増やさない」・取りやめ条件。N1 は決定 5 の冒頭。
+- round6: M1(edge 記録と 1:1)は決定 1(edge の判定は `record` の前)と決定 5 の「対象」(`ImeActuation` で置き換える)。M2(統合の範囲)は決定 5 の「統合の範囲」と「所有者の判断」の未決。S1(構築点の件数)は改訂点 3。S2(合否 2)は合否 2。N1 は改訂点の見出し。
