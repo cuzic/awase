@@ -71,4 +71,5 @@ awase なしは全 PASS、awase ありは全 FAIL(注入文だけが消え、そ
 
 ## 未決
 
+- **範囲外**: GJI がひらがなモードのとき、`KEYEVENTF_UNICODE` 注入の ASCII を全角化する(`2025s}!` → `２０２５ｈ｝！`、edit/rich×GJI)。awase なし(`tsx-raw-dict-edit-gji-unicode-*`、run 38054749676)でも同じ結果で、awase の不具合ではない。`s`→`ｈ` になる原因は未調査。
 - 実在する注入元(どのアプリが VK_PACKET で注入するか)。BUG-198 は「未確認」のまま。ユーザー報告が出るまで優先度は ADR-249 より低い。
