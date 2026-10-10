@@ -5219,7 +5219,7 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                 key_label(pos)
                             };
                             let mut button = egui::Button::new(text)
-                                .min_size(egui::vec2(96.0, 28.0))
+                                .min_size(egui::vec2(72.0, 28.0))
                                 .sense(egui::Sense::click_and_drag())
                                 .selected(selected == Some(pos));
                             if changed {
