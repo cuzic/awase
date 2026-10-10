@@ -1,0 +1,82 @@
+# awase-settings の画面を実 Windows(windows-latest)で開いてスクリーンショットを撮る診断用ワークフロー(ADR-248)。
+# 狭いウィンドウでの表示崩れを目で確認するためのもの。成果物は artifact `settings-screenshots`(PNG)。
+name: settings-screenshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/settings-screenshot]
+
+jobs:
+  shot:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build awase-settings.exe
+        run: cargo build --profile settings-release --locked -p awase-settings
+
+      - name: Take screenshots
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class Win {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+          }
+          "@
+          [void][Win]::SetProcessDPIAware()
+          $exe = Join-Path $PWD "target/settings-release/awase-settings.exe"
+          New-Item -ItemType Directory -Force -Path shots | Out-Null
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          Write-Host "primary screen: $($bounds.Width)x$($bounds.Height)"
+          function Snap($name, $rect) {
+            $bmp = New-Object System.Drawing.Bitmap $rect.Width, $rect.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($rect.X, $rect.Y, 0, 0, $bmp.Size)
+            $bmp.Save((Join-Path $PWD "shots/$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+          }
+          foreach ($tab in @("key-swap")) {
+            foreach ($w in @(760, 600, 480, 420)) {
+              $env:AWASE_SETTINGS_INITIAL_TAB = $tab
+              $env:AWASE_SETTINGS_WINDOW_SIZE = "${w}x700"
+              $p = Start-Process -FilePath $exe -PassThru
+              $deadline = (Get-Date).AddSeconds(60)
+              while ((Get-Date) -lt $deadline) {
+                $p.Refresh()
+                if ($p.MainWindowHandle -ne 0) { break }
+                Start-Sleep -Milliseconds 500
+              }
+              Write-Host "[$tab $w] hwnd=$($p.MainWindowHandle) exited=$($p.HasExited)"
+              Start-Sleep -Seconds 8
+              if ($p.MainWindowHandle -ne 0) {
+                [void][Win]::SetForegroundWindow($p.MainWindowHandle)
+                Start-Sleep -Seconds 1
+                $r = New-Object Win+RECT
+                [void][Win]::GetWindowRect($p.MainWindowHandle, [ref]$r)
+                Write-Host "[$tab $w] rect=$($r.L),$($r.T),$($r.R),$($r.B)"
+                $rect = New-Object System.Drawing.Rectangle ([Math]::Max($r.L,0)), ([Math]::Max($r.T,0)), ($r.R - $r.L), ($r.B - $r.T)
+                try { Snap "$tab-$w-window" $rect } catch { Write-Host "window snap failed: $_" }
+              }
+              try { Snap "$tab-$w-screen" $bounds } catch { Write-Host "screen snap failed: $_" }
+              if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            }
+          }
+          Get-ChildItem shots | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: settings-screenshots
+          path: shots/*.png
+          if-no-files-found: warn

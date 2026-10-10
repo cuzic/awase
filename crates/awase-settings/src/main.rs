@@ -380,7 +380,7 @@ fn main() -> eframe::Result<()> {
         // デフォルトサイズで開くと配列編集タブのキーボード図が右へはみ出す
         // ユーザー報告があった（2026-09-03。ウィンドウを広げれば表示は正常に
         // 戻る＝致命的ではないが既定値の追随漏れ）。
-        .with_inner_size([760.0, 650.0])
+        .with_inner_size(window_size_from_env().unwrap_or([760.0, 650.0]))
         // ウィンドウを小さくしても全項目にスクロール + 下部固定ボタンで届くため、
         // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
         .with_min_inner_size([420.0, 320.0])
@@ -388,6 +388,24 @@ fn main() -> eframe::Result<()> {
     startup_failure::run_with_fallback("awase-settings", viewport, move |cc| {
         Box::new(SettingsApp::new(cc, adr192_warning_context)) as Box<dyn eframe::App>
     })
+}
+
+/// 診断用: 環境変数 `AWASE_SETTINGS_INITIAL_TAB`（`key-swap`・`keymap` 等）で最初に開くタブを指定する。CI がタブを開いた状態の
+/// スクリーンショットを撮るためのもので、利用者向けの機能ではない（未設定・未知の値は「全般設定」）。
+fn initial_tab_from_env() -> Tab {
+    match std::env::var("AWASE_SETTINGS_INITIAL_TAB").as_deref() {
+        Ok("keys") => Tab::Keys,
+        Ok("key-swap") => Tab::KeySwap,
+        Ok("keymap") => Tab::Keymap,
+        _ => Tab::Basic,
+    }
+}
+
+/// 診断用: 環境変数 `AWASE_SETTINGS_WINDOW_SIZE`（`560x700` の形）で初期のウィンドウサイズを指定する（CI のスクリーンショット用）。
+fn window_size_from_env() -> Option<[f32; 2]> {
+    let value = std::env::var("AWASE_SETTINGS_WINDOW_SIZE").ok()?;
+    let (w, h) = value.split_once('x')?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
 }
 
 fn parse_bug_report_args(args: &[String]) -> bug_report::BugReportArgs {
@@ -728,7 +746,7 @@ impl SettingsApp {
             config_load_state,
             show_dangerous_save_confirm: false,
             status: String::new(),
-            active_tab: Tab::Basic,
+            active_tab: initial_tab_from_env(),
             available_layouts,
             new_engine_on: NewComboBuf::default(),
             new_engine_off: NewComboBuf::default(),
