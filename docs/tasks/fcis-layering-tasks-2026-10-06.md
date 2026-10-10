@@ -289,3 +289,11 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 - 残り: `ungated_state_modules`、P2(`list_src_files` の根本修正)、実際に crate を切る PR。
 - **B1(Opus、PR #569)**: `focus/` と `tsf/` の一部だけを核へ移すと `focus/mod.rs` と `tsf/mod.rs` が両 crate にできる(`vk.rs` も `vk_table!` の `#[macro_export]` で crate 直下に出る)。#567 の P2 が必ず発火する。**P2(`list_src_files` の根本修正)を先に行う**。`#[macro_export]` の `vk_table!` は移動時に呼び出しパス(`crate::vk_table!`)の書き換えか再公開が要る。
 - wall-clock 規則は `use quanta` と `::recent(` も禁止する(`use quanta::Clock; Clock::new()` や別名の素通りを防ぐ。核に `use quanta` は無い)。
+
+### crate の物理分割: E2 の方針(所有者の決定、2026-10-10、Opus 案 (d))
+
+crate を切るとき、`state/platform_state.rs`(`ImeStateHub`/`PlatformState`、4,124 行)と `state/sync_actuation.rs`(核のモジュールのうち `ImeStateHub` に依存する唯一のもの、758 行)は**殻の crate(`awase-windows`)に残し**、それ以外の純粋な部品(`state/` の残り・`vk`・`tuning`・`keymap`・`journal`・`journal_policy`・`focus/{kinds,class_names,hwnd_cache}`・`tsf/literal_facts`)だけを `awase-windows-core` へ移す。理由: 記録系(`record_optimistic` など)の `pub(crate)`(INV-A97-1)は、`ImeStateHub` が殻の crate にある限りコンパイラが強制し続ける。(a)(`ImeStateHub` も核へ移して記録系を `pub`+`#[doc(hidden)]`+走査で固定)は、保証がコンパイラから走査に弱まるので採らない。(b)(c) は殻と統合テストがどちらも核の下流の別 crate になるのでコンパイラの保証が増えない。
+
+- 帰結: `platform_state` は `CORE_MODULES`(Tier-2 のファイル単位の検査)に入ったまま、crate 境界とは別に純粋さを検査する。`platform_state` が殻の crate にあるので、`crate::win32::foreground_scope()` を直接読める(PR #571 のフォアグラウンド取得関数の注入と `platform_ctor.rs` は不要になり、#571 は閉じた)。
+- 残る準備: `PhysicalKeyDisposition::plan` の拡張トレイト(核の型へ殻の inherent impl を置けないため。別 PR)。
+- E2 で核から殻の `platform_state`/`sync_actuation` を参照する向きは無い(`platform_state` が核の下流)。核の `state/mod.rs` は `platform_state`/`sync_actuation` を宣言しない。殻の `state/mod.rs` が核を `pub use` で再公開し、`platform_state`/`sync_actuation`/`ime_decision_view` を足す。

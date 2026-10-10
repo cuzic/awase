@@ -87,7 +87,19 @@ impl PassthroughQueue {
     }
 }
 
-impl PhysicalKeyDisposition {
+/// `PhysicalKeyDisposition::plan` の殻（`ActiveImeKind` → `ImeKindId` の変換だけを行う）。
+/// 核の型 `PhysicalKeyDisposition` に殻の inherent impl は置けない（crate を分けたとき、ADR-229 段階 B）ので
+/// 拡張トレイトにした。呼び出しは `PhysicalKeyDisposition::plan(..)` のまま（トレイトを import する）。
+pub(crate) trait PlanPhysicalKey: Sized {
+    fn plan(
+        event: &RawKeyEvent,
+        profile: AppImeProfile,
+        shadow_toggled: bool,
+        active_ime_kind: ActiveImeKind,
+    ) -> Self;
+}
+
+impl PlanPhysicalKey for PhysicalKeyDisposition {
     /// 物理キーを OS に届けるかどうかの判断。本体は `state/physical_disposition.rs::plan_core`
     /// （ungated。ADR-208 L0 で挙動を変えずに移した）。ここは `ActiveImeKind` → `ImeKindId` の
     /// 変換だけを行う殻で、判断の詳細（F2 の常時 Allow、KANJI 関連キーの ImmCross/Imm32Unavailable の
@@ -97,7 +109,7 @@ impl PhysicalKeyDisposition {
         skip_all,
         fields(?profile, shadow_toggled = shadow_toggled, ?active_ime_kind)
     )]
-    pub(crate) fn plan(
+    fn plan(
         event: &RawKeyEvent,
         profile: AppImeProfile,
         shadow_toggled: bool,

@@ -9,6 +9,7 @@
 use crate::hook;
 use crate::hook::CallbackResult;
 use crate::key_effect_io::{KeymapCacheShellExt as _, RuntimeTableCacheShellExt as _};
+use crate::runtime::transport::PlanPhysicalKey as _;
 use crate::state::evidence::IntentWitness;
 use crate::state::focus_probe_plan::{plan_focus_probe, FocusProbeEffect};
 use crate::state::half_width_alnum::{HalfWidthAlnumAction, HalfWidthAlnumEffect, ShiftSide};
