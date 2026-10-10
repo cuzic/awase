@@ -286,7 +286,10 @@ def make_body_f16(reps):
             else:
                 verdict = "FAIL"
                 n_fail += 1
-            rec(results, type="f16_case", tag=tag, i=i + 1, verdict=verdict, before=P.text_of(rows1), after=after_text, counts_after=after)
+            rec(results, type="f16_case", tag=tag, i=i + 1, verdict=verdict, before=P.text_of(rows1), after=after_text, counts_after=after,
+                foreground_is_terminal=(W.foreground_hwnd() == hwnd), total_rows=len(W.read_rows(echo)))
+            if i == 0:
+                W.screenshot(str(out / "shots" / f"{tag}-after-case1.png"))
         rec(results, type="f16_result", tag=tag, reps=reps, passed=n_pass, failed=n_fail, invalid=n_invalid)
         print(f"F16 {tag}: PASS={n_pass} FAIL={n_fail} INVALID={n_invalid}", flush=True)
     return body

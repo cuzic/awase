@@ -108,6 +108,8 @@ jobs:
           path: |
             out/results.json
             out/f16.txt
+            out/work/*.echo.txt
+            out/logs/
             out/logs/
             out/shots/
           retention-days: 7
