@@ -1,10 +1,10 @@
 ---
 id: ADR-254
 title: |-
-  MS-IME 互換モード(旧UI)の Custom 表の扱い——第一段は「互換モードでカスタム表なら予測しない」、表を読む第二段は検証が通ってから
+  MS-IME 互換モード(旧UI)の Custom 表の扱い——第一段は「keystyle が既定でないとき MSIME_NATIVE の予測を止める」、表を読む第二段は検証が通ってから
 summary: |-
   互換モードで旧UIのキー表をカスタムしている利用者は、v2 では `MSIME_NATIVE`(新UI前提の既定表)で予測されて belief がずれる。
-  2026-10-10 の CI スパイク(ブランチ ci/msime-legacy-keytable-spike、windows-latest 26100、各セル n=1)で、旧UIの表について次が観測できた。
+  2026-10-10 の CI スパイク(ブランチ ci/msime-legacy-keytable-spike、windows-latest 26100、各セル n=1。再検証は n=3〜5、実機〈dragonflyg4〉は n=3)で、旧UIの表について次が観測できた。
   (a) 表が効くのは keystyle=Custom のときだけで、名前付きスタイル(NATURAL 等)の表をレジストリで書き換えても、閉じた状態の実験では無視された。
   (b) IME が閉じている間のキーは Custom\S4key が決め、key だけを書いても閉じた状態では無反応。ADR-197 の実験は閉じた状態で key だけを書いたため無反応に見えた。
   (c) key の列は旧UIの列見出し(No Input・Only Input・Converted・Showing・Changing・Char Input)と1対1で、1列目は「開いている・入力なし」。
@@ -12,7 +12,9 @@ summary: |-
   本 ADR は2段に分ける。第一段: 互換 ON かつ keystyle=Custom、または keystyle が名前付き(ATOK 等)のときは MSIME_NATIVE の予測を全キーで止め(互換 OFF の Custom は新エンジンが読まないので予測する)、スタンプと指紋に keystyle を足す(新しい意味づけを持ち込まない)。
   第二段: 表を読んで閉・開の効果を予測に使う。ただし第二段は、UI が実際に書くコード(V2)・そのコードを Custom の 1 列目に置いた試行・エンジンの同定(V3c)・実機での V1 が通ってから。
 status: |-
-  第一段を実装中(2026-10-10、PR `feat/adr254-stage1-legacy-keystyle-stop`)。Opus レビュー r1〜r3(Blocker 3・Must 12・Should 9)を反映済み。CI スパイク(ブランチ `ci/msime-legacy-keytable-spike`、未マージ)と実機(dragonflyg4)で測定。第二段(Custom の表を読む)は未着手。実装前(第一段は V1 を待たずに実装してよいとレビュアーが判断、条件は決定1)。
+  第一段を実装(2026-10-10、PR #585 `feat/adr254-stage1-legacy-keystyle-stop`)。Opus レビュー r1〜r3(Blocker 3・Must 12・Should 9)と実装 PR のレビューを反映済み。
+  CI スパイク(ブランチ `ci/msime-legacy-keytable-spike`、未マージ)と実機(dragonflyg4、互換 ON/OFF とも)で測定。
+  第二段(Custom の表を読んで予測に使う)は未着手(着手条件: UI が書くコードの確認〈V2〉、報告者の実環境での確認〈V1〉)。
 related_adr:
   - "ADR-197"
   - "ADR-191"
@@ -109,8 +111,10 @@ ADR-197 に次を追記する(r1 観点3):
 
 ### 決定2(第一段): スタンプと指紋
 
-- 版スタンプ(`native_assignment_stamp`、`msime_key_assignment.rs`)は、既存の値に **`keystyle` の種別・名前、`Custom` のときは `key` と `S4key` の中身のハッシュ**を混ぜる(実装: 2 つ目の要素を不透明なハッシュにした。最終書き込み時刻の API は使わない)。第二段で使うなら`NoDirectInputMode`の値も足す。`MSIME` キーの最終書き込み時刻は使わない(`keystyle` 以外に IME 自身が書く値が多く、UI の Apply 1 回で 10 個近く変わるため、読み直しが頻発する、r3 S3-5)。表のハッシュを作るときは値の名前を決め打ちせず `RegEnumValueW` で全値を列挙する(`S*key` の集合はテンプレートで違う)。`KeymapCache::get` は 2 秒ごとに `stamp()` を呼び、呼び出し元は打鍵の経路(`kp_predict_key_effect`)なので、表のバイト列を 2 秒ごとに最大 15 個読むハッシュは避ける(r2 S2-2)。バイト列のハッシュは `load` と指紋の側で作る。
+- 版スタンプ(`native_assignment_stamp`、`msime_key_assignment.rs`)は、既存の値に **`keystyle` の種別・名前、`Custom` のときは `key` と `S4key` の中身のハッシュ**を混ぜる(実装: 2 つ目の要素を不透明なハッシュにした。最終書き込み時刻の API は使わない)。第二段で使うなら`NoDirectInputMode`の値も足す。`MSIME` キーの最終書き込み時刻は使わない(`keystyle` 以外に IME 自身が書く値が多く、UI の Apply 1 回で 10 個近く変わるため、読み直しが頻発する、r3 S3-5)。表のハッシュ(指紋用)は、`key` と `S0key`〜`SFkey` の固定の 17 名を読んで作る(実装。観測した `S*key` の集合はこの範囲に収まる。`RegEnumValueW` による全列挙にはしなかった)。版スタンプは `key` と `S4key` の 2 つだけを見る(打鍵の経路で 2 秒ごとに呼ばれるため)ので、**ほかの `S*key` だけを編集した場合、awase を再起動するまで指紋は古いまま**になる(第一段は予測の可否に影響しないので許容。第二段で見直す)。`KeymapCache::get` は 2 秒ごとに `stamp()` を呼び、呼び出し元は打鍵の経路(`kp_predict_key_effect`)なので、表のバイト列を 2 秒ごとに最大 15 個読むハッシュは避ける(r2 S2-2)。バイト列のハッシュは `load` と指紋の側で作る。
 - 指紋(`msime_native_keymap_fingerprint`、`fingerprint.rs:110-120`)は、`keystyle` が NATURAL でも不在でもないときに限り `(keystyle, Custom なら key と全 S*key のハッシュ)` を足す。それ以外(NATURAL・不在=大多数の利用者)の指紋は不変(全員の学習表を一斉に失効させない)。ND の値(`NoDirectInputMode`)は、効果を変える(実測6)ので、第二段で指紋に足すかを決める。
+
+**既存の学習表への影響(実装 PR のレビュー B-doc2)**: 指紋が変わるのは、予測を止める構成(互換 ON の `Custom`・名前付き・未知)のときだけ。**この構成で、すでに学習を済ませていた利用者の学習表は、指紋の不一致(`Staleness::FingerprintMismatch`)で失効し、再学習が要る**(止める判断自体は妥当なのでコードは変えない。該当者は少ないと見ているが、MS-IME 本体で学習が完走するかが未確認なので数は不明)。救う方法は後続: 止める構成では旧指紋の学習表も受け入れる。`keystyle` が不在・NATURAL・互換 OFF の `Custom` の大多数の利用者の指紋は変わらない(golden テストで固定)。
 
 ### 決定3(第二段、V0・V0′・V2・V3 が通ってから): 表を読んで予測に使う
 
@@ -162,10 +166,10 @@ ADR-197 に次を追記する(r1 観点3):
 | V6 | アプリの種類(Chrome または Edge、Windows Terminal) | 結果が違えば窓の種類ごとに扱いを分け、分けられなければ読めない窓では予測しない | 未実施 |
 | V7 | ND=0 の利用者で V0・V1 | 3 つ組の表にするか ND=0 を `不明` にする | 実測6 に含む(ND=0 は n=3) |
 
-## 実装の分け方(第一段、Opus r3 の案)
+## 実装の分け方(第一段、Opus r3 の案。**実際は 1 つの PR にまとめた**)
 
 - **PR 1(純粋な部分、Linux でテストが走る)**: `KeyEffectKeymap::for_msime_native` に `keystyle` の読み取り結果(`Absent`/`Natural`/`Other(LegacyKeyStyle)`/`Unreadable`)と、Custom の表のハッシュ(`Option<u64>`)を渡す。新フィールド `legacy_table_unknown: bool`。`predict_with_override` で、学習表の参照の後・`custom_table` の打ち切りの前に `if self.legacy_table_unknown { return None; }`。
-- **PR 2(Windows の殻、`cargo check --target x86_64-pc-windows-msvc`)**: 既存の `keystyle` 読み取りの結果を `Absent`/`Unreadable` を区別したまま渡す。Custom の全値を `RegEnumValueW` でハッシュ。スタンプ(決定2)。予測を止めた理由を不具合報告と journal へ(`bug_report.rs`)。
+- **PR 2(Windows の殻、`cargo check --target x86_64-pc-windows-msvc`)**: 既存の `keystyle` 読み取りの結果を `Absent`/`Unreadable` を区別したまま渡す。Custom の全値を `RegEnumValueW` でハッシュ。スタンプ(決定2)。予測を止めた理由を journal(tracing)へ1行(実装済み)。不具合報告(`bug_report.rs`)へ出すのは後続(既存の報告には互換モードと `keystyle` の欄がある)。
 - **PR 3(文書)**: ADR-197 への訂正の追記、ADR-254 の整備、findings の訂正。
 - 単体テスト(PR 1、`#[cfg(windows)]` の外):(1) `Other(Custom)` で、`MSIME_NATIVE` にセルがある全 `TableKey` の VK × 開/閉 × 段階の全組み合わせが `None`(表から VK 集合を作ってループ)。(2) `Absent`/`Natural` は今の既定と全組み合わせで一致。(3) `Other(Custom)` に学習表を渡すと学習表の予測。(4) `Unreadable`・未知の名前で `None`。(5) 互換フラグ `Some(true)`/`Some(false)`/`None` × `Other(Custom)` がすべて `None`。(6) 指紋: `Absent`/`Natural` の指紋が変更前の値と一致(定数の golden)、Custom のハッシュが違えば指紋が違う、ATOK と VJE で違う。(7) `msime_native_key_role` が `keystyle` で変わらない。(8) `Other(Custom)` かつ `input.unreadable=true` で `None`。
 - fix-requires-evidence の (a) は PR 1 のテストで満たす。(b) の `docs/known-bugs/` は V1 で症状が確定してから起票する。

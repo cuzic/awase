@@ -2705,6 +2705,18 @@ mod tests {
     fn adr254_stopped_configs_predict_nothing_for_every_table_key() {
         let vks = msime_native_table_vks();
         assert!(vks.len() >= 6, "表のキーが取れていない: {vks:?}");
+        // テストが空振りしない保証: 既定の構成(止めない)では、同じ全組み合わせの多くで予測が付く。
+        // (止める構成が全部 None になるのは、そもそも予測が付かない入力だから、ではない。)
+        let default_km = KeyEffectKeymap::for_msime_native(false, None, None, None);
+        let predicted = vks
+            .iter()
+            .flat_map(|&vk| all_inputs().into_iter().map(move |inp| (vk, inp)))
+            .filter(|(vk, inp)| default_km.predict(*vk, inp).is_some())
+            .count();
+        assert!(
+            predicted >= 10,
+            "既定の構成で予測が付く組み合わせが少なすぎる: {predicted}"
+        );
         for (style, compat) in [
             (MsImeKeystyle::Custom, Some(true)),
             (MsImeKeystyle::Named, Some(true)),
@@ -2731,7 +2743,8 @@ mod tests {
     /// 全キー × 全入力で予測が一致する(大多数の利用者の挙動が変わらない)。
     #[test]
     fn adr254_default_configs_predict_like_the_bundled_table() {
-        let reference = KeyEffectKeymap::for_msime_native(false, None, None, None);
+        // 基準は、同梱表をそのまま引く自由関数(`for_msime_native_with_legacy`を経由しない)。
+        let reference = |vk: u16, inp: &PredictInput| predict(KeymapPreset::MsImeNative, vk, inp);
         let vks = msime_native_table_vks();
         for (style, compat) in [
             (MsImeKeystyle::Absent, None),
@@ -2750,7 +2763,7 @@ mod tests {
                     // 互換モードは予測に影響しない(役割判定だけが参照する)ので、同じ予測になる。
                     assert_eq!(
                         km.predict(vk, &inp),
-                        reference.predict(vk, &inp),
+                        reference(vk, &inp),
                         "{style:?} compat={compat:?} vk={vk:#x}"
                     );
                 }

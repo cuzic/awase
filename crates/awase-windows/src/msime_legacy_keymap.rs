@@ -283,7 +283,7 @@ pub(crate) fn mix_style_value(mut hash: u64, name: &str, value: Option<&[u8]>) -
         None => byte(0),
         Some(v) => {
             byte(1);
-            for b in (v.len() as u64).to_le_bytes() {
+            for b in u64::try_from(v.len()).unwrap_or(u64::MAX).to_le_bytes() {
                 byte(b);
             }
             for &b in v {

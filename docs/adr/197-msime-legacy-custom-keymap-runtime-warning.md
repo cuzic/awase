@@ -477,7 +477,7 @@ keymap.rs`のようなレジストリ静的解析による検出全般に構造�
    「1列目 `CE`=直接入力→ON方向」は列の読み違い。IME が**閉じている間**のキーは `StyleList\Custom\S4key` が決める。
 2. 本 ADR の CI 7 パターンと実機確認は、いずれも閉じた状態で `key` だけを書いて(`S4key` を欠いて)無変換を押したので、
    無反応は当然だった。`keystyle=Custom` かつ互換 ON のときは、`S4key`・`key` を揃えるとレジストリの表は実際に効く。
-3. dragonflyg4 の `無変換=CE CD CD CD CD CD` は、互換 ON・`Custom` では、閉・無変換が IME を開き、開・入力なしでは何もせず、
+3. dragonflyg4 の `無変換=CE CD CD CD CD CD`(dragonflyg4 の実際の `Custom` の表。`S4key` にも無変換の行がある)は、互換 ON・`Custom` では、閉・無変換が IME を開き、開・入力なしでは何もせず、
    かな未確定では半角英数(conv 0x10)にする。本 ADR の「NATURAL `無変換=97` → IME OFF」は誤りで、97 は開・入力なしのかな切替。
 4. 互換 OFF(新エンジン)は `Custom` の表を読まない。`keystyle=ATOK` 等は新旧エンジンとも読むが、内蔵表が違う。
 5. 互換トグル(設定アプリ)は確認ダイアログの「OK」で `NoTsf3Override2` を書く。決定4の読み取りは UI の実状態を正しく表す。
