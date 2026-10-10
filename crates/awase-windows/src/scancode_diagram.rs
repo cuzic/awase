@@ -86,17 +86,14 @@ fn pair_containing(pairs: &[Pair], pos: u16) -> Option<Pair> {
 /// 位置 `pos` で、いま出る機能（入れ替えのペアの相手。無ければ自分自身）。
 #[must_use]
 pub fn function_at(pairs: &[Pair], pos: u16) -> u16 {
-    match pair_containing(pairs, pos) {
-        Some(p) => {
-            let (a, b) = p.keys();
-            if a == pos {
-                b
-            } else {
-                a
-            }
+    pair_containing(pairs, pos).map_or(pos, |p| {
+        let (a, b) = p.keys();
+        if a == pos {
+            b
+        } else {
+            a
         }
-        None => pos,
-    }
+    })
 }
 
 /// 図に描く位置を、物理配置に近い行の並びで返す。許可リスト ∩ 配列に、いまの入れ替えに含まれる許可リスト内の位置を足す
