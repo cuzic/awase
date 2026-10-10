@@ -52,6 +52,29 @@ ANCHORS = [
     ("[external-change]", "e2e_common.py"),
     ("[focus-scope] bootstrap initial scope:", "check_run_validity.py"),
     ("focus transition", "check_run_validity.py"),
+    # ADR-250 段階 0: ANCHORS に無かった読み手(全域 grep の台帳〈docs/tasks/adr250-stage0-ledger-2026-10-10.md〉で洗い出した分)。
+    # [drift]・Blacklist の drift 補正(e2e_common.py の DRIFT_RE は両方を数える。件数が 0 に化けると drift_log_fired が黙って 0 になる)
+    ("Blacklist drift correction: apply_ime_open(", "check_drift_correction.py"),
+    ("Blacklist drift correction: apply_ime_open(", "e2e_common.py"),
+    ("phys_ctrl=", "e2e_common.py"),
+    ("send_keys: mode=", "e2e_common.py"),
+    ("[engine-input] vk=", "check_run_validity.py"),
+    ("[engine-input] vk=", "check_keymatrix.py"),
+    ("[engine-input] vk=", "check_drift_recovery.py"),
+    ("[engine-input] vk=", "suspend_report.py"),
+    ("key input", "check_consistency.py"),
+    ("idle-conv-check-diag", "check_drift_recovery.py"),
+    ("giving up", "check_drift_recovery.py"),
+    ("GJI reinit", "check_drift_recovery.py"),
+    ("VK_IME_ON 送信", "check_drift_recovery.py"),
+    ("[mode-key-follow]", "mode_key_pass_timeline.py"),
+    ("mode key PassThrough", "mode_key_pass_timeline.py"),
+    ("IME snapshot: ", "mode_key_pass_timeline.py"),
+    ("IME detection timed out", "mode_key_pass_timeline.py"),
+    ("[ctrl-bypass] post_bypass armed", "../config_verify/reload_post_bypass.py"),
+    ("Config reload requested via WM_RELOAD_CONFIG", "../config_verify/reload_post_bypass.py"),
+    ("startup: ", "../config_verify/run.py"),
+    ("startup note: ", "../config_verify/run.py"),
 ]
 
 SOURCE_DIRS = ("src", "crates")
