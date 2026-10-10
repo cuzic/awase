@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-direct-space' && 'sc-direct-space-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-direct-space' && 'sc-direct-space-m-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -477,6 +477,33 @@ jobs:
             cfg('sc-direct-space-insertspace-pass-awase', 'observe', check='collect', keymap=0, runs=1, wait=240, until='2026-11-10',
                 args='--seq=1A,1D,1C,1D,1C', general='muhenkan_solo_tap_always_suppress = false; henkan_solo_tap_always_suppress = false',
                 tsv='DirectInput,ON,IMEOn|DirectInput,Muhenkan,InsertSpace|DirectInput,Henkan,InsertSpace'),
+            # ADR-255 の実装前の計測(ブランチ ci/e2e-direct-space は名前 sc-direct-space-m-* だけを回す)。
+            # (iii) belief の追随: 標準 EDIT(ImmCross)と RichEdit 5.0(TSF ネイティブ相当、--round2)で、無変換/変換/IME ON/OFF の固定列を awase ありで押し、
+            # 各押下の後に Engine が実 IME に追随するか(check_consistency.py)。「期待 ON・実 Engine OFF」の行が「belief は OFF、実際は ON」。判定はしない(observe)。
+            *[cfg(f'sc-direct-space-m-belief-{form}-{pre}', 'observe', check='consistency', keymap=km, runs=2, wait=300, until='2026-11-10',
+                  args=f'--walk{extra}')
+              for form, extra in (('edit', ''), ('rich', ' --round2'))
+              for pre, km in (('atok', 1), ('msime', 2))],
+            *[cfg(f'sc-direct-space-m-belief-{form}-{pre}-henkan', 'observe', check='consistency', keymap=km, runs=2, wait=300, until='2026-11-10',
+                  args=f'--walk --key=henkan{extra}')
+              for form, extra in (('edit', ''), ('rich', ' --round2'))
+              for pre, km in (('atok', 1), ('msime', 2))],
+            # (iv) 仮説 a〜c の切り分け(awase なし、判定なし。スパイクログの KEY 行の tail と open を見る)。
+            # h1 正の対照: IME OFF のまま 0x20 を注入して、tail に空白が出るか(観測が空白を捉えるか=仮説 c)。
+            cfg('sc-direct-space-m-h1-space-key', 'observe', check='collect', keymap=0, runs=1, wait=240, awase='false', until='2026-11-10',
+                args='--seq=1A,20,20', tsv='DirectInput,ON,IMEOn'),
+            # h2 変換のキー名: 変換だけに IMEOn を割り当てて、IME OFF から変換で open が 0→1 になるか(`Henkan` が GJI に通じるか=仮説 b の一部)。
+            cfg('sc-direct-space-m-h2-henkan-imeon', 'observe', check='collect', keymap=0, runs=1, wait=240, awase='false', until='2026-11-10',
+                args='--seq=1A,1C,1A,1D', tsv='DirectInput,ON,IMEOn|DirectInput,Henkan,IMEOn'),
+            # h3 コマンドとキーの切り分け: 無変換以外の安全なキー(F13=0x7C)に InsertSpace を割り当てる。直接入力(1A→7C)と Precomposition(16→7C)。
+            # 空白が出れば InsertSpace は効き、無変換/変換というキーが原因(仮説 b)。出なければコマンド自体が効かない/観測できない(仮説 a・c)。
+            cfg('sc-direct-space-m-h3-f13-insertspace-direct', 'observe', check='collect', keymap=0, runs=1, wait=240, awase='false', until='2026-11-10',
+                args='--seq=1A,7C,7C', tsv='DirectInput,ON,IMEOn|DirectInput,F13,InsertSpace'),
+            cfg('sc-direct-space-m-h3-f13-insertspace-precomp', 'observe', check='collect', keymap=0, runs=1, wait=240, awase='false', until='2026-11-10',
+                args='--seq=16,7C,7C', tsv='DirectInput,ON,IMEOn|Precomposition,F13,InsertSpace'),
+            # h4 入力中でない開状態の標準のスペース: 16(IME ON)→20。tail/comp に何が出るか(IME ON のとき Space が何になるか=決定3 の実害の見積もり)。
+            cfg('sc-direct-space-m-h4-space-when-on', 'observe', check='collect', keymap=0, runs=1, wait=240, awase='false', until='2026-11-10',
+                args='--seq=16,20,20', tsv='DirectInput,ON,IMEOn'),
             # v2 チェックリスト B2 副次: 既定の [keys](keys.ime_toggle が空)× GJI プリセットで、Alt+半角/全角(0x19)が実 IME と Engine(belief)をずらさないこと。
             # sc-kanji-role-* は CUSTOM 表(keymap=0)+ tsv だったが、こちらは tsv も keys 上書きも無い「既定のまま」。プリセット(ATOK=1 / MS-IME=2)の
             # Hankaku/Zenkaku 行はトグルのはずなので kanjirole-closed(IME が閉じ、Engine も OFF に追随)を期待する。実測前なので observe。
