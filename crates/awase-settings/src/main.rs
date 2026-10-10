@@ -42,6 +42,8 @@ const HOMEPAGE_URL: &str = "https://awase.cc";
 enum Tab {
     Basic,
     Keys,
+    /// 「キーの入れ替え」(Scancode Map、ADR-230/248)。旧来は「ショートカット」タブに間借りしていた。
+    KeySwap,
     Keymap,
     DisableApps,
     Calibration,
@@ -378,7 +380,7 @@ fn main() -> eframe::Result<()> {
         // デフォルトサイズで開くと配列編集タブのキーボード図が右へはみ出す
         // ユーザー報告があった（2026-09-03。ウィンドウを広げれば表示は正常に
         // 戻る＝致命的ではないが既定値の追随漏れ）。
-        .with_inner_size([760.0, 650.0])
+        .with_inner_size(window_size_from_env().unwrap_or([760.0, 650.0]))
         // ウィンドウを小さくしても全項目にスクロール + 下部固定ボタンで届くため、
         // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
         .with_min_inner_size([420.0, 320.0])
@@ -386,6 +388,24 @@ fn main() -> eframe::Result<()> {
     startup_failure::run_with_fallback("awase-settings", viewport, move |cc| {
         Box::new(SettingsApp::new(cc, adr192_warning_context)) as Box<dyn eframe::App>
     })
+}
+
+/// 診断用: 環境変数 `AWASE_SETTINGS_INITIAL_TAB`（`key-swap`・`keymap` 等）で最初に開くタブを指定する。CI がタブを開いた状態の
+/// スクリーンショットを撮るためのもので、利用者向けの機能ではない（未設定・未知の値は「全般設定」）。
+fn initial_tab_from_env() -> Tab {
+    match std::env::var("AWASE_SETTINGS_INITIAL_TAB").as_deref() {
+        Ok("keys") => Tab::Keys,
+        Ok("key-swap") => Tab::KeySwap,
+        Ok("keymap") => Tab::Keymap,
+        _ => Tab::Basic,
+    }
+}
+
+/// 診断用: 環境変数 `AWASE_SETTINGS_WINDOW_SIZE`（`560x700` の形）で初期のウィンドウサイズを指定する（CI のスクリーンショット用）。
+fn window_size_from_env() -> Option<[f32; 2]> {
+    let value = std::env::var("AWASE_SETTINGS_WINDOW_SIZE").ok()?;
+    let (w, h) = value.split_once('x')?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
 }
 
 fn parse_bug_report_args(args: &[String]) -> bug_report::BugReportArgs {
@@ -726,7 +746,7 @@ impl SettingsApp {
             config_load_state,
             show_dangerous_save_confirm: false,
             status: String::new(),
-            active_tab: Tab::Basic,
+            active_tab: initial_tab_from_env(),
             available_layouts,
             new_engine_on: NewComboBuf::default(),
             new_engine_off: NewComboBuf::default(),
@@ -3135,8 +3155,10 @@ impl SettingsApp {
                 self.new_keymap_to_main.clear();
             }
         }
+    }
 
-        ui.add_space(16.0);
+    /// 「キーの入れ替え」タブ（ADR-248。「ショートカット」タブから独立させた）。
+    fn tab_key_swap(&mut self, ui: &mut egui::Ui) {
         self.scancode_map_section(ui);
     }
 
@@ -3144,7 +3166,6 @@ impl SettingsApp {
     ///
     /// ADR-127 の例外: このセクションの適用は画面共通の「適用」とは別の操作で、レジストリにだけ書く。
     fn scancode_map_section(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
         ui.heading("キーの入れ替え");
         ui.label("選んだキーの位置を入れ替えます。変更は再起動後に有効になります。管理者権限の確認が1回表示されます。");
         ui.collapsing("困ったとき", |ui| {
@@ -4295,6 +4316,7 @@ impl eframe::App for SettingsApp {
                 for (tab, label) in [
                     (Tab::Basic, "全般設定"),
                     (Tab::Keys, "キー設定"),
+                    (Tab::KeySwap, "キーの入れ替え"),
                     (Tab::Layout, "配列編集"),
                     (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
@@ -4370,6 +4392,7 @@ impl eframe::App for SettingsApp {
                 .show(ui, |ui| match self.active_tab {
                     Tab::Basic => self.tab_basic(ui),
                     Tab::Keys => self.tab_keys(ui),
+                    Tab::KeySwap => self.tab_key_swap(ui),
                     Tab::Keymap => self.tab_keymap(ui),
                     Tab::DisableApps => self.tab_disable_apps(ui),
                     Tab::Calibration => self.tab_calibration(ui),
@@ -5178,6 +5201,9 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
         .id_salt("scancode_diagram_scroll")
         .auto_shrink([false, true])
         .show(ui, |ui| {
+            // 横スクロール領域の内側は幅が見かけの幅に押し込まれるので、キー名やボタンの文字を折り返させない
+            // （折り返すと、右端のキーの文字が縦に割れて行が縦に伸びる。CI のスクリーンショットで確認）。
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             for row in diagram_rows(&pairs, jis) {
                 ui.horizontal(|ui| {
                     for pos in row {
@@ -5193,7 +5219,7 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                 key_label(pos)
                             };
                             let mut button = egui::Button::new(text)
-                                .min_size(egui::vec2(96.0, 28.0))
+                                .min_size(egui::vec2(72.0, 28.0))
                                 .sense(egui::Sense::click_and_drag())
                                 .selected(selected == Some(pos));
                             if changed {
