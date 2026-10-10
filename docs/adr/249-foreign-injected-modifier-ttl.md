@@ -8,7 +8,7 @@ summary: |-
   V を ctrl=false の Char として NICOLA 変換して「ふ」を出す。注入された Ctrl↓ を別枠に記録し、**注入された打鍵の modifier_snapshot にだけ**
   期限(TTL)内の ctrl を足す(案 A')。物理打鍵は別枠を読まないので、KeyUp 欠落でも ADR-054 の stuck は TTL の値と無関係に再発しない。
 status: |-
-  起草・改訂(2026-10-10)。Opus round1(13指摘)・round2(Should-fix 3件・Nit 4件)を反映済み、収束確認待ち。実装なし。TTL の値は未決(Spokenly の保持は報告 journal の2例で 101ms)。
+  起草・改訂(2026-10-10)。Opus round1(13指摘)・round2(Should-fix 3件・Nit 4件)を反映済み、Opus round3 で収束(Blocker なし、実装に着手してよい)。実装なし。TTL の値は未決(Spokenly の保持は報告 journal の2例で 101ms)。
 related_adr:
   - "ADR-054"
   - "ADR-052"
@@ -69,10 +69,10 @@ related_adr:
    順序は `architecture_guard` の `disable_apps_early_return_is_positioned_after_physical_key_state_update_and_before_vk_kana` が固定):
    他アプリの注入(`is_injected && !self_injected`)の Ctrl KeyDown で、**まだ記録がなければ**左右別の `foreign_ctrl_down_at_us[2]`(`HOOK_STATE` の `AtomicU64`、`Relaxed`)に、コールバックで1回だけ取った `ts = now_timestamp()`(µs)を書く。`HOOK_STATE` の atomic が必須なのは、書き込みがフックスレッド(記録・注入 Up)とメインスレッド(reset・Leave・watchdog の解除)、ゾンビの旧フックの3か所から起きるため。CAS・Mutex は不要(解除と競合しても記録が消える安全側に倒れるだけ)。読むのはフックスレッドだけ
    (オートリピート・押し直しで期限を延ばさない。`physical_key_down_at_ms` と同じ「最初の Down を保持」)。注入 KeyUp で 0 にする。`physical_key_state` は従来どおり更新しない。
-3. **適用**(`hook.rs` の `read_os_modifiers()` 直後、`is_injected` のときだけ): `modifier_snapshot.ctrl |= foreign_ctrl_active(event_ts_us)`。
+3. **適用**(`hook.rs` の `read_os_modifiers()` 直後、`is_injected` のときだけ): `modifier_snapshot.ctrl |= (foreign_ctrl_active(ts, down_at[左], ttl) || foreign_ctrl_active(ts, down_at[右], ttl))`(左右の OR。引数は下の純粋関数の3つ)。
    純粋関数 `foreign_ctrl_active(ts_us, down_at_us, ttl_us) -> bool`(`down_at_us != 0 && ts_us.saturating_sub(down_at_us) < ttl_us`。`down_at > ts` でもアンダーフローしない)。時刻 `ts` はコールバックの中で**1回だけ**取り、記録・比較・`build_raw_key_event`(引数を足して `event.timestamp` にも同じ値を使う)で共有する。`event.timestamp` は現状 `build_raw_key_event` の中で snapshot の作成より後に作られるため、そのままでは参照できない。比較は**対象キーのフックキャプチャ時刻**で行い、
    エンジン側の遅れ(CI で delay=88ms)を TTL に含めない。`GetTickCount64`(分解能 約15.6ms)は使わない。
-4. **解除**: 注入 Ctrl の KeyUp、同じ VK の物理 KeyUp(OS の VK ごと1ビットと一致)、`reset_physical_key_state`(画面ロック復帰・パニックリセット、BUG-023)、
+4. **解除**: 注入 Ctrl の KeyUp、同じスロットの物理 KeyUp(0x11 の記録は物理 0xA2 の Up で消す。OS の VK ごと1ビットと一致する、**未確認**)、`reset_physical_key_state`(画面ロック復帰・パニックリセット、BUG-023)、
    `clear_hook_latches_for_app_disable` の Leave、`clear_hook_latches_for_watchdog_reinstall`(issue #165)。後2つは `physical_key_state` の Ctrl/Shift を消す既存経路と同じ位置に足す
    (`app_disable_leave_edge_clears_only_ctrl_and_shift_not_alt_or_win` ガードの更新要否を確認)。
 5. **読んではいけない場所**(`architecture_guard` で走査固定): `HeldModifiers`(物理状態を直接読む。別枠を入れると、解放→復元で他アプリの Ctrl を awase が押し直し OS 上の stuck を永続化する、ADR-054 問題2の再発)、
@@ -103,7 +103,7 @@ related_adr:
 
 ## 検証
 
-- `state/foreign_modifier.rs`(`#[cfg(windows)]` なし)に状態遷移と実効 ctrl の判定を切り出し、Linux の単体テストで固定: 境界(TTL ちょうど・`down_at=0`・物理キーには効かない・最初の Down を保持・左右別)、解除5経路。`hook.rs` は `#[cfg(windows)]` で Linux のテストには現れないため、この分離が必要。
+- `state/foreign_modifier.rs`(`#[cfg(windows)]` なし)に状態遷移と実効 ctrl の判定を切り出し、Linux の単体テストで固定: 境界(TTL ちょうど・`down_at=0`・`down_at > ts`・物理キーには効かない・最初の Down を保持・左右別)、解除5経路。`hook.rs` は `#[cfg(windows)]` で Linux のテストには現れないため、この分離が必要。
 - `src/engine/tests.rs`(ホスト実行): 注入 V↓ を `ctx.modifiers.ctrl=true` で入れると `OsModifierHeld` で PassThrough。Ctrl↑ が V↑ より先に来ても V↑ が Suppress されない(`handle_bypass` が `output_history.remove_by_scan` を呼ぶ)。
 - 報告 journal の seq 61-64・117-120 を `tests/journals/` の replay fixture にする(fix-requires-evidence の (a))。
 - `architecture_guard`: 上の決定5の走査固定、`foreign_ctrl` の書き込み位置の固定、**解除5か所(`reset_physical_key_state`・app-disable の Leave・watchdog reinstall・注入 Up 分岐・物理 Up 分岐)それぞれに解除の呼び出しがあること**の走査固定(純粋モジュールのテストでは配線を固定できないため)。ADR-054 の既存テスト(synthetic Ctrl↑ の汚染)が通ること。
