@@ -1699,7 +1699,7 @@ fn worker(form: Form) {
                 .wrapping_add(n_total * 7919)
                 .wrapping_add(kind.len() as u64);
             let seq = gen_sequence(kind, len, trial_seed, &cells);
-            let expect = expect_string(&seq);
+            let expect = format!("{}{}", perturb.dictate_prefix(), expect_string(&seq));
             let mut evs = if raw {
                 raw_events(&seq, iv_us)
             } else if jit.is_active() {
@@ -1711,6 +1711,7 @@ fn worker(form: Form) {
             perturb.before_trial(target());
             clear_text(child);
             sleep_ms(perturb.start_delay_ms);
+            perturb.dictate_before_typing();
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }

@@ -387,6 +387,13 @@ impl RawKeyEventExt for RawKeyEvent {
                 },
             },
         };
+        if self.vk_code.0 == 0xE7 {
+            tracing::debug!(
+                "[adr253-diag] reinject vk=0xE7 keyup={is_keyup} wScan=0x{:X} src_scan=0x{:X} flags=0",
+                vk::reinject_scan_code(self.vk_code, self.scan_code.0),
+                self.scan_code.0,
+            );
+        }
         let _ = win32::send_input_safe(&[input]);
     }
 }

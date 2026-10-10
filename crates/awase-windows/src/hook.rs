@@ -1508,6 +1508,12 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         crate::win32::post_to_main_thread_quiet(crate::WM_HOOK_IME_MODE_DIAGNOSTIC);
     }
 
+    if vk.0 == 0xE7 {
+        tracing::debug!(
+            "[adr253-diag] hook vk=0xE7 down={is_keydown} scan=0x{:X} flags=0x{:X} extra=0x{:X} self_injected={self_injected}",
+            kb.scanCode, kb.flags.0, kb.dwExtraInfo,
+        );
+    }
     // 自己注入キー（SendInput with INJECTED_MARKER 等）は OS にそのまま通す
     if self_injected {
         return CallNextHookEx(None, ncode, wparam, lparam);
