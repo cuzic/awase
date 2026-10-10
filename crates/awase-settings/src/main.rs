@@ -567,7 +567,7 @@ struct SettingsApp {
 /// `keymap-learn-table.json`(config.tomlの隣。config.tomlの解決は`awase.exe`と同じ
 /// [`find_config_path`]、コマンドライン引数を優先)を読み、状態表示用の
 /// [`keymap_learn_status::TableState`]を作る。ファイルが無い・壊れている・4MB超過の場合は
-/// 表なし(内蔵表)として扱う(読み手`key_effect_runtime::read_persisted_table`と同じ棄却)。
+/// 表なし(内蔵表)として扱う(読み手`key_effect_io::read_persisted_table`と同じ棄却)。
 fn load_keymap_table_state(
     current_env: awase_keymap_learn::revalidation::EnvVersionProbe,
     custom_keymap_without_prediction: bool,
@@ -580,8 +580,7 @@ fn load_keymap_table_state(
         .map(|dir| dir.join("keymap-learn-table.json"));
     let (table, file_date) = path
         .and_then(|path| {
-            let table =
-                awase_windows::state::key_effect_runtime::read_persisted_table(&path).ok()?;
+            let table = awase_windows::key_effect_io::read_persisted_table(&path).ok()?;
             let date = std::fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .ok()

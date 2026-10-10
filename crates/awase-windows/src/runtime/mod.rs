@@ -18,6 +18,7 @@ mod transport;
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 
 use crate::focus::FocusKind;
+use crate::key_effect_io::{KeymapCacheShellExt as _, RuntimeTableCacheShellExt as _};
 use awase::config::ValidatedConfig;
 use awase::engine::{
     Engine, EngineCommand, InputContext, InputModeState, KanaLockHysteresis, ModeKeyConfig,
@@ -1747,6 +1748,7 @@ impl Runtime {
         // 正しくなるよう、フォーカス変更直後に新ウィンドウの class/pid から同期更新する。
         // WezTerm(ForceTsf) → Chrome 等の遷移でも hint を新ウィンドウから引くため stale にならない。
         {
+            use crate::win32::HwndIdExt as _;
             let hwnd = hwnd_id.to_hwnd();
             let class_name = crate::focus::classify::get_class_name_string(hwnd);
             if !class_name.is_empty() {

@@ -259,3 +259,13 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 - 可読性メモ(`docs/tasks/readability-ideas-study-2026-10-06/`)とコーパスの影響のメモ(`docs/tasks/corpus-discard-impact-2026-10-06/`)は develop に入っている。
 - B5 の試作: #533 でレビュー・修正対応中。
 - BUG-114 の Windows Terminal 構成(#534): CI で修正あり 3/3 PASS・修正なし 3/3 FAIL が出たが、Opus のレビューで「drift 補正を起こしていたのは打鍵ではなく終了処理の `WM_CLOSE` の後の観測」「基準 5(再武装が 0 件)は give-up から停止までがクールダウンより短く、構造上 FAIL になり得ない」と指摘され、修正対応中。**BUG-114 が CI で確かめられたとは、まだ言えない**。
+
+### crate の物理分割: 段階 A の実施(2026-10-10、ブランチ `refactor/fcis-crate-split-prep`)
+
+付録 B のうち 6 件を `CORE_MODULES` へ移した(`ime_event`・`ime_model`・`probe_admission`・`ime_profile_driver`・`key_effect_predictor`・`key_effect_runtime`、`hub_clock` は恒久的に殻)。切り出した殻は `win32.rs`(`HwndIdExt`)・`probe_rejection_stats.rs`・`key_effect_io.rs`(crate 直下)。`architecture_guard.rs` に付け替え表 `RELOCATED` を足した(分割前は空)。
+
+段階 B(crate を切る)の前に残る課題:
+- `platform_state`(`CORE_MODULES`)が殻の `hub_clock::HubClock`(`Instant::now()`)に依存する。`HubClock` を核へ移すか、時計を trait で受けるかを決める。
+- `vk`・`tuning` の 5 定数・`focus::class_names`・`FocusKind`・`ime`・`tsf::TsfGate`・`with_app` への依存の扱い。
+- ディレクトリを丸ごと走査するガード(`join("src")` が `architecture_guard.rs` に 9 か所・`layer_boundary_guard.rs` に 5 か所)を、走査する場所を複数指定できる形に。
+- doc コメントの `awase_windows::state::...` の例(doctest)の付け替え。

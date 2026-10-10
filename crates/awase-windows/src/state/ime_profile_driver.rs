@@ -183,9 +183,9 @@ impl ImeProfileDriver for TsfNativeDriver {
 
 // ── ドライバレジストリ ────────────────────────────────────────────
 
-static IMM_CROSS_DRIVER: ImmCrossDriver = ImmCrossDriver;
-static IMM32_UNAVAILABLE_DRIVER: Imm32UnavailableDriver = Imm32UnavailableDriver;
-static TSF_NATIVE_DRIVER: TsfNativeDriver = TsfNativeDriver;
+const IMM_CROSS_DRIVER: ImmCrossDriver = ImmCrossDriver;
+const IMM32_UNAVAILABLE_DRIVER: Imm32UnavailableDriver = Imm32UnavailableDriver;
+const TSF_NATIVE_DRIVER: TsfNativeDriver = TsfNativeDriver;
 
 /// `ImePolicyProfile` に対応する静的ドライバを返す。
 ///

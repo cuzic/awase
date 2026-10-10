@@ -51,6 +51,7 @@ use awase::types::{
     ImeRelevance, KeyClassification, KeyEventType, ModifierState, RawKeyEvent, ScanCode,
     ShadowImeAction,
 };
+use std::time::Instant;
 
 use crate::focus::class_names::AppImeProfile;
 use crate::state::actuation_chain::WriteMechanism;
@@ -1042,8 +1043,16 @@ pub fn dual_route_writes(
     shadow_key: ExplicitKey,
     engine_key: ExplicitKey,
     judge: &impl WarrantJudge,
+    at: Instant,
 ) -> [Option<bool>; 2] {
-    dual_route_writes_ledger_only(state, shadow_key, engine_key, judge, DeliveryMode::Legacy)
+    dual_route_writes_ledger_only(
+        state,
+        shadow_key,
+        engine_key,
+        judge,
+        DeliveryMode::Legacy,
+        at,
+    )
 }
 
 /// [`dual_route_writes`] の `mode` 指定版で、**予約（`PressLedger`）だけ**で二重送信を防ぐ防御線の評価
@@ -1059,9 +1068,10 @@ pub fn dual_route_writes_ledger_only(
     engine_key: ExplicitKey,
     judge: &impl WarrantJudge,
     mode: DeliveryMode,
+    at: Instant,
 ) -> [Option<bool>; 2] {
     let d_shadow = explicit_press_delivery_with(state, shadow_key, judge, mode);
-    let after = state_after_press(state, shadow_key, &d_shadow);
+    let after = state_after_press(state, shadow_key, &d_shadow, at);
     let engine_state = PressState {
         applied: state.applied,
         ..after
@@ -1095,9 +1105,10 @@ pub fn dual_route_writes_with(
     engine_key: ExplicitKey,
     judge: &impl WarrantJudge,
     mode: DeliveryMode,
+    at: Instant,
 ) -> [Option<bool>; 2] {
     if !mode.has_press_id() {
-        return dual_route_writes_ledger_only(state, shadow_key, engine_key, judge, mode);
+        return dual_route_writes_ledger_only(state, shadow_key, engine_key, judge, mode, at);
     }
     let _ = shadow_key; // shadow は Engine が担うキーでは何もしない（belief も触らない）。
     let d_engine = explicit_press_delivery_after(state, engine_key, judge, mode, None);
@@ -1149,7 +1160,12 @@ const fn knowledge_of(a: AppliedImeState) -> AppliedKnowledge {
 /// `apply_result_effective_open`（`record_ime_apply_result` の generation=None 分岐の純粋部）と
 /// `ImeModel::confirm_applied`、Engine 経路（generation あり）は `ImeModel::apply_engine_request_and_completion`（`reduce` の
 /// `ImeApplyRequested` → `ImeEvent::from_apply_outcome`（`completion_can_update_applied` を含む）。
-fn applied_after(state: &PressState, key: ExplicitKey, d: Delivery) -> AppliedKnowledge {
+fn applied_after(
+    state: &PressState,
+    key: ExplicitKey,
+    d: Delivery,
+    at: Instant,
+) -> AppliedKnowledge {
     let (Some(outcome), Some(open)) = (d.outcome(), d.requested) else {
         return state.applied;
     };
@@ -1168,7 +1184,7 @@ fn applied_after(state: &PressState, key: ExplicitKey, d: Delivery) -> AppliedKn
         }
         PressPath::Engine(_) => {
             let generation = ApplyGeneration::new(1).expect("1 は非ゼロ");
-            oracle.apply_engine_request_and_completion(open, outcome, generation);
+            oracle.apply_engine_request_and_completion(open, outcome, generation, at);
         }
     }
     knowledge_of(oracle.applied)
@@ -1176,12 +1192,17 @@ fn applied_after(state: &PressState, key: ExplicitKey, d: Delivery) -> AppliedKn
 
 /// 押下後の内部状態（belief・applied・is_japanese_ime・IntentStore・candidate_was_seen）。
 #[must_use]
-pub fn state_after_press(state: &PressState, key: ExplicitKey, d: &Delivery) -> PressState {
+pub fn state_after_press(
+    state: &PressState,
+    key: ExplicitKey,
+    d: &Delivery,
+    at: Instant,
+) -> PressState {
     PressState {
         belief_open: d.belief_after,
         is_japanese_ime: state.is_japanese_ime || key.upgrades_is_japanese(),
         intent: d.intent_after,
-        applied: applied_after(state, key, *d),
+        applied: applied_after(state, key, *d, at),
         // GjiDirect の OFF 送信は candidate_was_seen を消費する（ADR-171）。
         candidate_was_seen: state.candidate_was_seen
             && !(d.write == Some(false) && state.ime_kind == ImeKindId::Gji),
@@ -1309,7 +1330,7 @@ mod tests {
             DeliveryMode::Legacy,
         );
         assert!(d.shadow_toggled);
-        assert!(state_after_press(&s, ExplicitKey::HzToggle, &d).is_japanese_ime);
+        assert!(state_after_press(&s, ExplicitKey::HzToggle, &d, Instant::now()).is_japanese_ime);
     }
 
     #[test]
@@ -1673,7 +1694,7 @@ mod tests {
             DeliveryMode::Legacy,
         );
         assert_eq!(
-            state_after_press(&s, ExplicitKey::EngineOn, &d).applied,
+            state_after_press(&s, ExplicitKey::EngineOn, &d, Instant::now()).applied,
             AppliedKnowledge::Confirmed(true)
         );
         // 授権が下りない押下は完了で applied を動かさない（NotSent）。
@@ -1684,7 +1705,7 @@ mod tests {
             DeliveryMode::Legacy,
         );
         assert_eq!(
-            state_after_press(&s, ExplicitKey::EngineOn, &d).applied,
+            state_after_press(&s, ExplicitKey::EngineOn, &d, Instant::now()).applied,
             s.applied
         );
         // shadow 経路: generation なし。
@@ -1695,7 +1716,7 @@ mod tests {
             DeliveryMode::Legacy,
         );
         assert_eq!(
-            state_after_press(&s, ExplicitKey::StaticOn, &d).applied,
+            state_after_press(&s, ExplicitKey::StaticOn, &d, Instant::now()).applied,
             AppliedKnowledge::Confirmed(true)
         );
     }

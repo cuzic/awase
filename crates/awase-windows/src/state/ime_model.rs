@@ -441,16 +441,11 @@ impl ImeModel {
     /// - 最後に `force_guards` を適用（guard が active なら強制 ON。ただし
     ///   ヒューリスティック由来 guard はユーザーの明示的意図を
     ///   上書きしない。`PanicReset` 等の安全弁は明示的意図があっても override する）
-    #[must_use]
-    pub fn effective_open(&self) -> bool {
-        self.effective_open_at(Instant::now())
-    }
-
-    /// `effective_open()` の `Instant` 引数化版。ADR-087 §5 Phase 0a item2
-    /// （INV-23: 根拠判定の決定論性）。`effective_open()` はこれの薄い
-    /// ラッパーであり、`Instant::now()` を呼ぶのはこの1箇所（`effective_open()`
-    /// 自身）に限定される——`effective_open_at` 自体は時刻を内部で確定させない
-    /// 純粋関数なので、journal replay やテストで決定論的に呼び出せる。
+    ///
+    /// 時刻 `now` は呼び出し側が渡す（ADR-087 §5 Phase 0a item2、INV-23: 根拠判定の
+    /// 決定論性。ADR-229 段階 A-2 で、壁時計を読む引数なし版を殻から撤去した）。
+    /// 純粋関数なので journal replay やテストで決定論的に呼び出せる。実機では
+    /// `ImeStateHub::effective_open`（`HubClock` 経由）が呼ぶ。
     #[must_use]
     pub fn effective_open_at(&self, now: Instant) -> bool {
         self.resolve_open_at(now).value
@@ -524,11 +519,12 @@ impl ImeModel {
         open: bool,
         outcome: awase::platform::ImeOpenOutcome,
         generation: ApplyGeneration,
+        at: Instant,
     ) {
         let envelope = |seq: u64, event: ImeEvent| ImeEventEnvelope {
             time: EventTime {
                 seq,
-                monotonic: Instant::now(),
+                monotonic: at,
                 tick_ms: seq * 10,
             },
             event,
@@ -1844,7 +1840,7 @@ mod tests {
             )),
         ));
         assert!(
-            !model.effective_open(),
+            !model.effective_open_at(Instant::now()),
             "derive_open()=None でも most_recent_trusted() の Low observation が \
              desired_open より優先される"
         );
@@ -1874,7 +1870,7 @@ mod tests {
             )),
         ));
         assert!(
-            model.effective_open(),
+            model.effective_open_at(Instant::now()),
             "Medium confidence の derive_any() 結果が Low fallback より常に優先される"
         );
     }
@@ -1930,7 +1926,10 @@ mod tests {
             Some(false),
             Some(InputModeState::ObservedEisu),
         );
-        assert!(!model.effective_open(), "予測が観測より優先される");
+        assert!(
+            !model.effective_open_at(Instant::now()),
+            "予測が観測より優先される"
+        );
         assert_eq!(model.input_mode(), InputModeState::ObservedEisu);
         assert!(
             model.desired_open(),
@@ -2101,9 +2100,12 @@ mod tests {
                 source: UserIntentSource::PhysicalImeKey,
             },
         ));
-        assert!(!model.effective_open());
+        assert!(!model.effective_open_at(Instant::now()));
         predict(&mut model, 1000, Some(true), None);
-        assert!(model.effective_open(), "予測が古い明示意図に勝つ");
+        assert!(
+            model.effective_open_at(Instant::now()),
+            "予測が古い明示意図に勝つ"
+        );
         assert!(model.last_intent.is_none());
         assert!(
             !model.desired_open(),
@@ -2133,7 +2135,10 @@ mod tests {
                 confidence: ObservationConfidence::Medium,
             },
         ));
-        assert!(!model.effective_open(), "古い観測は予測を上書きしない");
+        assert!(
+            !model.effective_open_at(Instant::now()),
+            "古い観測は予測を上書きしない"
+        );
         assert_eq!(
             model.input_mode(),
             InputModeState::ObservedEisu,
@@ -2164,7 +2169,10 @@ mod tests {
                 confidence: ObservationConfidence::Medium,
             },
         ));
-        assert!(model.effective_open(), "settle 後の観測が勝つ");
+        assert!(
+            model.effective_open_at(Instant::now()),
+            "settle 後の観測が勝つ"
+        );
         assert_eq!(model.input_mode(), InputModeState::ObservedRomaji);
         assert!(
             model.key_effect().is_none(),
@@ -2177,7 +2185,7 @@ mod tests {
         let mut model = ImeModel::new();
         predict(&mut model, 1000, Some(false), None);
         observe_open(&mut model, 2, 5000, true, ObservationConfidence::Low);
-        assert!(!model.effective_open());
+        assert!(!model.effective_open_at(Instant::now()));
         assert!(model.key_effect().is_some());
     }
 
@@ -2186,7 +2194,7 @@ mod tests {
         // TsfNative 等: 観測が来ないので、予測が唯一の信号として残る。
         let mut model = ImeModel::new();
         predict(&mut model, 1000, Some(false), None);
-        assert!(!model.effective_open());
+        assert!(!model.effective_open_at(Instant::now()));
         // 次の打鍵の予測は、触れない軸の未照合の予測を残す。
         predict(&mut model, 2000, None, Some(InputModeState::ObservedEisu));
         let p = model.key_effect().unwrap();
@@ -2207,7 +2215,7 @@ mod tests {
             },
         ));
         assert!(model.key_effect().is_none());
-        assert!(model.effective_open());
+        assert!(model.effective_open_at(Instant::now()));
 
         predict(&mut model, 2000, Some(false), None);
         model.reduce(&envelope(
@@ -2435,28 +2443,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_open_at_matches_effective_open() {
-        let mut model = ImeModel::new();
-        model.reduce(&envelope(
-            1,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
-                true,
-                ObservationSource::ObserverPoll,
-                HwndId::NULL,
-                ObservationConfidence::Medium,
-                0,
-            )),
-        ));
-        // effective_open() は effective_open_at(Instant::now()) の薄いラッパーで
-        // あるべき。テスト実行中に Instant が動くのは無視できる程度なので、
-        // 両者が同じ bool を返すことだけ確認する。
-        assert_eq!(
-            model.effective_open(),
-            model.effective_open_at(Instant::now())
-        );
-    }
-
-    #[test]
     fn input_mode_observed_low_confidence_is_ignored() {
         let mut model = ImeModel::new(); // input_mode = ObservedRomaji (初期値)
         model.reduce(&envelope(
@@ -2539,7 +2525,7 @@ mod tests {
             generation: 1,
         });
         assert!(
-            model.effective_open(),
+            model.effective_open_at(Instant::now()),
             "PanicReset は明示的意図があっても IME ON を保証する安全弁として override する"
         );
     }
@@ -3450,7 +3436,7 @@ mod tests {
             )),
         ));
         assert!(
-            !model.effective_open(),
+            !model.effective_open_at(Instant::now()),
             "PanicReset 後は explicit intent がないため、Medium 観測が effective_open を上書きする"
         );
         assert!(
@@ -3483,7 +3469,7 @@ mod tests {
             )),
         ));
         assert!(
-            model.effective_open(),
+            model.effective_open_at(Instant::now()),
             "UserImeSetIntent 後は explicit intent があるため、観測は effective_open を上書きしない"
         );
     }
@@ -3534,7 +3520,7 @@ mod tests {
             )),
         ));
         assert!(
-            model.effective_open(),
+            model.effective_open_at(Instant::now()),
             "HwndCacheRestored 後は explicit intent がないため、High 観測が effective_open を上書きする"
         );
         assert!(
@@ -3568,7 +3554,7 @@ mod tests {
             )),
         ));
         assert!(
-            !model_intent.effective_open(),
+            !model_intent.effective_open_at(Instant::now()),
             "UserImeSetIntent 後は explicit intent が High 観測を遮断する"
         );
 
@@ -3586,7 +3572,7 @@ mod tests {
             )),
         ));
         assert!(
-            model_cache.effective_open(),
+            model_cache.effective_open_at(Instant::now()),
             "HwndCacheRestored 後は explicit intent がなく、High 観測が通過する"
         );
     }

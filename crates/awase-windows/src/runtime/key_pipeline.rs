@@ -8,6 +8,7 @@
 
 use crate::hook;
 use crate::hook::CallbackResult;
+use crate::key_effect_io::{KeymapCacheShellExt as _, RuntimeTableCacheShellExt as _};
 use crate::state::evidence::IntentWitness;
 use crate::state::focus_probe_plan::{plan_focus_probe, FocusProbeEffect};
 use crate::state::half_width_alnum::{HalfWidthAlnumAction, HalfWidthAlnumEffect, ShiftSide};
@@ -329,7 +330,7 @@ impl Runtime {
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
             let _ = crate::with_app(|app| {
-                crate::state::probe_admission::admit_epoch_in_app(
+                crate::probe_rejection_stats::admit_epoch_in_app(
                     app,
                     ticket,
                     "[FocusProbe] epoch rejected (focus changed since probe spawn)",
@@ -571,7 +572,7 @@ impl Runtime {
                     return;
                 }
                 let Some(conv) = conv else { return };
-                crate::state::probe_admission::admit_epoch_in_app(
+                crate::probe_rejection_stats::admit_epoch_in_app(
                     app,
                     ticket,
                     "[idle-conv-check] epoch rejected (focus changed since read spawn)",
@@ -2844,7 +2845,7 @@ impl Runtime {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        crate::state::probe_admission::admit_epoch_in_app(
+                        crate::probe_rejection_stats::admit_epoch_in_app(
                             app,
                             ticket,
                             "[ImmCrossProbe] epoch rejected (focus changed since probe spawn)",

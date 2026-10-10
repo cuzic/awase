@@ -525,8 +525,11 @@ const CORE_MODULES: &[&str] = &[
     "hook_watchdog",
     "ime_actuation",
     "ime_actuation_decision",
+    "ime_event",
     "ime_event_log",
     "ime_kind",
+    "ime_model",
+    "ime_profile_driver",
     "ime_read_strategy",
     "ime_set_open_plan",
     "ime_update",
@@ -534,6 +537,8 @@ const CORE_MODULES: &[&str] = &[
     "injection_mode",
     "input_barrier",
     "intent_store",
+    "key_effect_predictor",
+    "key_effect_runtime",
     "key_effect_table",
     "key_sequence_policy",
     "keymap_initial_hypothesis",
@@ -546,6 +551,7 @@ const CORE_MODULES: &[&str] = &[
     "physical_disposition",
     "platform_state",
     "post_bypass",
+    "probe_admission",
     "press_ledger",
     "raw_recovery_plan",
     "relay_plan",
@@ -560,36 +566,10 @@ const CORE_MODULES: &[&str] = &[
 
 /// ungated だが現状 Tier-2 の規則に違反するファイルと、その理由。直したら `CORE_MODULES` へ移す
 /// （`core_modules_violation_list_is_not_stale` が、違反が消えたのに残っているものを失敗させる）。
-const NOT_CORE_MODULES: &[(&str, &str)] = &[
-    (
-        "hub_clock",
-        "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
-    ),
-    (
-        "ime_event",
-        "#[cfg(windows)] impl HwndId / From<HWND>（殻へ出す候補）",
-    ),
-    (
-        "ime_model",
-        "effective_open() などの Instant::now()（effective_open_at を呼ぶ側へ）",
-    ),
-    (
-        "ime_profile_driver",
-        "不変の static 3 つ（const の &'static dyn へ置き換えられる見込み）",
-    ),
-    (
-        "key_effect_predictor",
-        "#[cfg(windows)] の get_gji/get_native（FS/レジストリ。殻へ）",
-    ),
-    (
-        "key_effect_runtime",
-        "#[cfg(windows)] と fs::metadata（学習済み表の読み込み。殻へ）",
-    ),
-    (
-        "probe_admission",
-        "可変の static カウンタと #[cfg(windows)] の関数（カウンタは殻へ）",
-    ),
-];
+const NOT_CORE_MODULES: &[(&str, &str)] = &[(
+    "hub_clock",
+    "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
+)];
 
 /// 文字列リテラルの中身を落とす（`"..."` → `""`）。ログ文言に `std::fs` 等が出ても誤検出しない。
 /// 生文字列・複数行文字列は扱わない。
