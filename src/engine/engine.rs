@@ -282,6 +282,38 @@ impl Engine {
         ActivationState::Active
     }
 
+    /// エンジンが非活性で、その理由が IME OFF か（ADR-255 決定2 条件1）。
+    /// `UserDisabled`/`NotJapaneseIme`/`NotRomajiInput` は含めない。判断は
+    /// `compute_state` のままで、呼び出し側が再実装しない。
+    #[must_use]
+    pub const fn ime_off_inactive(&self, ctx: &InputContext) -> bool {
+        matches!(
+            self.compute_state(ctx),
+            ActivationState::Inactive(InactiveReason::ImeOff)
+        )
+    }
+
+    /// シェルが（エンジンの判断の後で）消費した KeyDown を、エンジンの `KeyLifecycle` に登録する
+    /// （ADR-255 決定4）。エンジンは素通しの KeyDown を記録しないので、シェルが消費したときは
+    /// この口で「対応する KeyUp を消費する義務」と、最初の押下なら `phase1_held` を立てる。
+    /// **エンジンの判断（活性/非活性・FSM の状態）は変えない**。
+    ///
+    /// `phase1_held` は `is_bare_thumb` を見ずに立てる（Opus レビュー R-M1）: `LeftThumb`/`RightThumb` への
+    /// 分類は設定した親指キーにしか付かず（`hook.rs::classify_key`）、右親指を Space にした構成では
+    /// 変換は `Passthrough` になる。そこで立てないと、リピートの Down が素通しになり、Up だけが
+    /// 飲まれる Down/Up の非対称になる。ガードは vk だけで判定するので、親指でなくても働く。
+    /// リピートの Down（`was_down`）と KeyUp は何もしない（KeyUp を登録すると次の Up が飲まれる）。
+    pub fn record_shell_consumed(&mut self, event: &RawKeyEvent) {
+        if !matches!(event.event_type, KeyEventType::KeyDown) {
+            debug_assert!(false, "record_shell_consumed は KeyDown だけに呼ぶ");
+            return;
+        }
+        self.lifecycle.on_key_down_consumed(event);
+        if !event.was_down {
+            self.phase1_held = Some(event.vk_code);
+        }
+    }
+
     /// InputContext から実効状態を bool で返す（後方互換 API）。
     #[must_use]
     pub const fn compute_active(&self, ctx: &InputContext) -> bool {

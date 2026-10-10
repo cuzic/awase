@@ -43,6 +43,7 @@ examine_globs = [
     "crates/awase-windows-core/src/state/relay_plan.rs",
     "crates/awase-windows-core/src/state/raw_recovery_plan.rs",
     "crates/awase-windows-core/src/state/deferred_gate_plan.rs",
+    "crates/awase-windows-core/src/state/late_keymap_plan.rs",
     "crates/awase-windows-core/src/state/warm_send_plan.rs",
     "crates/awase-windows-core/src/state/focus_gen.rs",
     "crates/awase-windows-core/src/state/half_width_alnum.rs",
