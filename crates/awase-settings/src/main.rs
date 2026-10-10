@@ -5064,7 +5064,7 @@ fn scancode_editor_ui(
     );
     scancode_diagram_ui(ui, loaded, jis);
     let editor = &mut loaded.editor;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("よくある入れ替え:");
         for quick in &QUICK_PAIRS {
             let available = editor.quick_available(quick, jis);
@@ -5110,7 +5110,7 @@ fn scancode_editor_ui(
     ui.add_space(8.0);
     let dirty = editor.is_dirty();
     let incomplete = editor.has_incomplete();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui
             .add_enabled(
                 dirty && !incomplete,
@@ -5171,76 +5171,88 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         selected = None;
     }
-    for row in diagram_rows(&pairs, jis) {
-        ui.horizontal(|ui| {
-            for pos in row {
-                let function = function_at(&pairs, pos);
-                let changed = function != pos;
-                let state = position_state(&ctx, pos);
-                let editable = matches!(state, PositionState::Editable);
-                ui.vertical(|ui| {
-                    ui.weak(key_label(pos));
-                    let text = if changed {
-                        format!("→ {}", key_label(function))
-                    } else {
-                        key_label(pos)
-                    };
-                    let mut button = egui::Button::new(text)
-                        .min_size(egui::vec2(96.0, 28.0))
-                        .sense(egui::Sense::click_and_drag())
-                        .selected(selected == Some(pos));
-                    if changed {
-                        button = button
-                            .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 120, 0)));
-                    }
-                    let resp = ui.add_enabled(editable, button);
-                    if editable {
-                        resp.dnd_set_drag_payload(function);
-                        if let Some(payload) = resp.dnd_hover_payload::<u16>() {
-                            let result = drop_function(&ctx, entries, *payload, pos);
-                            hint = Some(drop_hint(&result, key_label));
-                        }
-                        if let Some(payload) = resp.dnd_release_payload::<u16>() {
-                            match drop_function(&ctx, entries, *payload, pos) {
-                                Ok(effect) => new_pairs = Some(effect.pairs),
-                                Err(refusal) => message = Some(refusal_text(refusal)),
+    // キーボード図は物理配置を保つために折り返さず、幅が足りないときは図だけ横にスクロールする。外側の ScrollArea::both() は
+    // 内容の実際の幅を検知できず右端が切れる（キーボード図 `draw_layout_keyboard_grid` と同じ理由。egui 0.31.1 の ScrollArea は
+    // content_max_size を可視サイズに収める）ので、この図専用のスクロール領域を持たせる。
+    egui::ScrollArea::horizontal()
+        .id_salt("scancode_diagram_scroll")
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for row in diagram_rows(&pairs, jis) {
+                ui.horizontal(|ui| {
+                    for pos in row {
+                        let function = function_at(&pairs, pos);
+                        let changed = function != pos;
+                        let state = position_state(&ctx, pos);
+                        let editable = matches!(state, PositionState::Editable);
+                        ui.vertical(|ui| {
+                            ui.weak(key_label(pos));
+                            let text = if changed {
+                                format!("→ {}", key_label(function))
+                            } else {
+                                key_label(pos)
+                            };
+                            let mut button = egui::Button::new(text)
+                                .min_size(egui::vec2(96.0, 28.0))
+                                .sense(egui::Sense::click_and_drag())
+                                .selected(selected == Some(pos));
+                            if changed {
+                                button = button.stroke(egui::Stroke::new(
+                                    2.0,
+                                    egui::Color32::from_rgb(200, 120, 0),
+                                ));
                             }
-                            selected = None;
-                        } else if resp.clicked() {
-                            match selected {
-                                None => selected = Some(pos),
-                                Some(s) if s == pos => selected = None,
-                                Some(s) => {
-                                    let from = function_at(&pairs, s);
-                                    match drop_function(&ctx, entries, from, pos) {
+                            let resp = ui.add_enabled(editable, button);
+                            if editable {
+                                resp.dnd_set_drag_payload(function);
+                                if let Some(payload) = resp.dnd_hover_payload::<u16>() {
+                                    let result = drop_function(&ctx, entries, *payload, pos);
+                                    hint = Some(drop_hint(&result, key_label));
+                                }
+                                if let Some(payload) = resp.dnd_release_payload::<u16>() {
+                                    match drop_function(&ctx, entries, *payload, pos) {
                                         Ok(effect) => new_pairs = Some(effect.pairs),
                                         Err(refusal) => message = Some(refusal_text(refusal)),
                                     }
                                     selected = None;
+                                } else if resp.clicked() {
+                                    match selected {
+                                        None => selected = Some(pos),
+                                        Some(s) if s == pos => selected = None,
+                                        Some(s) => {
+                                            let from = function_at(&pairs, s);
+                                            match drop_function(&ctx, entries, from, pos) {
+                                                Ok(effect) => new_pairs = Some(effect.pairs),
+                                                Err(refusal) => {
+                                                    message = Some(refusal_text(refusal))
+                                                }
+                                            }
+                                            selected = None;
+                                        }
+                                    }
                                 }
+                            } else if let PositionState::Locked { reason, .. } = state {
+                                resp.on_disabled_hover_text(reason.text());
+                                ui.weak("動かせません");
                             }
-                        }
-                    } else if let PositionState::Locked { reason, .. } = state {
-                        resp.on_disabled_hover_text(reason.text());
-                        ui.weak("動かせません");
-                    }
-                    let releasable = changed
-                        && matches!(
-                            state,
-                            PositionState::Editable
-                                | PositionState::Locked {
-                                    releasable: true,
-                                    ..
-                                }
-                        );
-                    if releasable && ui.small_button("戻す").clicked() {
-                        new_pairs = Some(release_position(&pairs, pos));
-                        selected = None;
+                            let releasable = changed
+                                && matches!(
+                                    state,
+                                    PositionState::Editable
+                                        | PositionState::Locked {
+                                            releasable: true,
+                                            ..
+                                        }
+                                );
+                            if releasable && ui.small_button("戻す").clicked() {
+                                new_pairs = Some(release_position(&pairs, pos));
+                                selected = None;
+                            }
+                        });
                     }
                 });
             }
         });
-    }
     // 図に描けない（許可リスト外のキーを含む）入れ替えは、一覧で解除する。
     for pair in unlisted_pairs(&pairs) {
         let (a, b) = pair.keys();
