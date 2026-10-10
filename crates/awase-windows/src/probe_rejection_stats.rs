@@ -94,7 +94,7 @@ pub(crate) fn record_epoch_mismatch() {
 /// 棄却の場合のみ、`same_root`（PR 109 コードレビュー指摘1 Step1、計測専用、
 /// BUG-91）を追記する。
 ///
-/// `crate::runtime::Runtime` は `#[cfg(windows)]`（`state/` は全プラットフォーム共通）
+/// `crate::runtime::Runtime` は `#[cfg(windows)]`（このモジュールは crate 直下の殻）
 /// のため、この関数自体も Windows 専用にする（`conv_classify`/`eisu_recovery` と同じ
 /// 「呼び出し元が `#[cfg(windows)]` の runtime/ のみ」パターン、`state/mod.rs` 参照）。
 #[cfg(windows)]

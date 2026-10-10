@@ -25,7 +25,7 @@ use crate::state::key_effect_runtime::{validate_and_convert, RejectReason, MAX_T
 /// （`crate::app::find_config_path()`と同じ解決順、見つからなければ`None`＝未学習として扱う）。
 ///
 /// `crate::app`（実行ファイルの位置に基づく解決）は`#[cfg(windows)]`のため、この関数もそれに合わせる
-/// （`state/`は原則OS非依存だが、このファイルパス解決だけはWindows固有の起動時パス規則に依存する）。
+/// （`state/`は原則OS非依存。この殻は crate 直下で、このファイルパス解決だけはWindows固有の起動時パス規則に依存する）。
 #[cfg(windows)]
 pub(crate) fn table_file_path() -> Option<std::path::PathBuf> {
     let config_path = crate::app::find_config_path().ok()?;

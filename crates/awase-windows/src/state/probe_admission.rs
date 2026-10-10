@@ -33,7 +33,7 @@
 //!
 //! ## 棄却カウンタ（Step 8）
 //!
-//! 棄却された probe の統計は殻の `state/probe_rejection_stats.rs`（アトミックカウンタ）に記録する。
+//! 棄却された probe の統計は殻の `probe_rejection_stats.rs`（crate 直下）（アトミックカウンタ）に記録する。
 //! このモジュールは判定だけを持ち、グローバルな `static` を持たない（ADR-229 段階 A-3）。
 
 use super::ime_event::HwndId;
