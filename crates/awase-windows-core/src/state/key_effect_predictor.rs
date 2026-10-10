@@ -953,7 +953,8 @@ impl KeyEffectKeymap {
             msime_compat_mode: compat_mode,
             legacy_table_unknown,
             legacy_cells: Vec::new(),
-            legacy_custom_on: matches!(keystyle, MsImeKeystyle::Custom) && legacy_table_unknown,
+            legacy_custom_on: matches!(keystyle, MsImeKeystyle::Custom)
+                && compat_mode == Some(true),
             // 指紋に混ぜるのは、予測を止める構成のときだけ(NATURAL・不在・互換 OFF の Custom は
             // 従来と同じ指紋のまま。互換 OFF の Custom の表は新エンジンが読まないので、編集しても
             // 学習表を失効させない)。
