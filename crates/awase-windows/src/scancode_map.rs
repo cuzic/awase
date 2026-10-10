@@ -69,10 +69,9 @@ pub fn build_bytes(entries: &[(u16, u16)]) -> Option<Vec<u8>> {
 /// `REG_MULTI_SZ`（UTF-16LE、NUL 区切り、末尾は二重 NUL）を文字列の一覧に直す。空の要素は捨てる。
 #[must_use]
 pub fn parse_multi_sz(bytes: &[u8]) -> Vec<String> {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
+    // 奇数バイトの端数（`as_chunks` の余り）は無視する。
+    let (pairs, _rest) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&c| u16::from_le_bytes(c)).collect();
     units
         .split(|&u| u == 0)
         .filter(|part| !part.is_empty())
