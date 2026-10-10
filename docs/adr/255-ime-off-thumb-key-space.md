@@ -162,7 +162,7 @@ ime = "off"
 
 ### 決定4: 出力と Down/Up(r7)
 
-- Down で `to` を `send_keymap_target` で送る(Space は `to = ["VK_SPACE"]`)。
+- Down で `to` を、`Decision` の effects の末尾に `SendKeys` として積んで送る(決定2。`send_keymap_target` でその場では送らない。Space は `to = ["VK_SPACE"]`)。
 - KeyUp とリピートは、エンジンの `KeyLifecycle`・`phase1_held` が回収する(次項)。**リピートしない**: 無変換を押し続けても Space は 1 個(R5・S5)。本物の Space キーや GJI の InsertSpace(リピートする)とは違う。報告者の期待と合うか確認する(決定3b-2)。
 - **消費した Down をエンジンの `KeyLifecycle` に登録する**(所有者の提案、r7 追加評価で採用。r1 M4 の stale latch への手当): `Engine::record_shell_consumed(&event)` を新設する。中身は `lifecycle.on_key_down_consumed(&event)` と、bare の親指なら `phase1_held = Some(vk)`(遅いルールは無変換/変換に限るので常に満たす)だけで、**エンジンの判断(活性/非活性・FSM の状態)は変えない**(「消費した Down の登録」だけの口。ADR-112 の「`Engine::on_input` の唯一の出口」の不変条件とは衝突しない)。呼ぶのは、遅いルールが当たって `force_consume` した後、`kp_stage_execute` より前、同じ打鍵の中。
   - **KeyUp**: `on_input` が `take_key_up_duty` で `UpDuty::Consume` を取り、非活性のままなら Phase 2 の `release_only` を通って何も送らずに Consume になる(`output_history` に無変換のエントリは無い)。Space は effects で Down+Up を完結しているので、Up の義務は無い。
