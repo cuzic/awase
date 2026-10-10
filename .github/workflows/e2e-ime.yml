@@ -362,6 +362,18 @@ jobs:
                       '|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana'
                       '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn')
               for suf, mu in (('obsonly', 'a10-no-fkey-predict.sh'), ('predonly', 'a9-no-fkey-observe.sh'), ('none', 'a11-no-fkey-follow.sh'))],
+            # ADR-247 の追随の速さ: F16 を押してから打つまでの待ち(--settle)を 0/60/150ms に縮め、案2(観測)と案1(予測)のどちらが最初の文字から正しいかを比べる。
+            # ビルドは上の -gjif17-{obsonly,predonly,none} を使い回す(bin=)。full=両案あり(baseline)。各 6 周。only='sc-f16-settle-*'。
+            *[cfg(f'sc-f16-settle-{suf}-t{t}', 'observe', bin=b, check='chromeprobe', keymap=0, runs=1, wait=500,
+                  general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
+                  chrome=f'--f16-alnum --repeat=6 --settle={t}', until='2026-11-09',
+                  tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff'
+                      '|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric'
+                      '|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana'
+                      '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn')
+              for suf, b in (('full', None), ('obsonly', 'sc-f16-alnum-chrome-gjif17-obsonly'),
+                             ('predonly', 'sc-f16-alnum-chrome-gjif17-predonly'), ('none', 'sc-f16-alnum-chrome-gjif17-none'))
+              for t in (0, 60, 150)],
             # ADR-209(2026-09-30): 読めない窓(実 Chrome=Imm32Unavailable)で、GJI の MS-IME プリセット(keymap=2)の IME OFF から変換を
             # 単独で押す(素通し)と IME が開き、awase の Engine が追随して NICOLA になる。stale=実機と同じ古い custom_keymap_table 付き。
             # off=設定 predict_henkan_open_in_unreadable_windows=false の対照(追随しない=IME ON・Engine OFF で `か` になり FAIL するはず)。
