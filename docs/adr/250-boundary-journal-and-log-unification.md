@@ -12,7 +12,7 @@ summary: |-
   `tsf/`・`output/` の行も対象にするが、`architecture_guard.rs:403`(ADR-096 決定 2、層の境界)は緩めない。literal-detect と同じ「事実をデータとして上に渡し、`platform.rs` が記録する」方式で、出来事ごとに配線する(所有者判断 2026-10-10)。
   過去の journal・コーパスとの互換性は持たない(所有者判断 2026-10-10)。ADR-226 の候補 E にあたる。
 status: |-
-  提案(2026-10-10 に所有者が「大きく統合する」を選んだため決定 5 を改訂。Opus round7 で収束〈Blocker 0・Must 0〉。続けて所有者が tsf/・output/ をデータを上に渡す方式で統合すると判断し反映、round8 待ち。ガード :403 は緩めない)
+  提案(2026-10-10 に所有者が「大きく統合する」を選んだため決定 5 を改訂。Opus round7 で収束〈Blocker 0・Must 0〉。続けて所有者が tsf/・output/ をデータを上に渡す方式で統合すると判断し反映、Opus round8 の Must 1・Should 3 を反映済みで round9 待ち。ガード :403 は緩めない)
 related_adr:
   - "ADR-082"
   - "ADR-096"
@@ -131,7 +131,7 @@ related_adr:
 
 - 全 288 件の再分類はしない。既存の理由 enum(`NoDrift`・`BlockReason`・`SetOpenPlan`・`PressClaim`・`GateResult`・`DriftPlan`・`physical_disposition` の `suppress_reason`)を記録に載せる。新しい `Withheld` 列挙を第 2 の分類表として作らない(ADR-229 M3「Plan は `run_chain` と二重の表現になる」と同型を避ける)。
 - **段階 1 は drift correction の Plan と `OmissionBasis` を journal に載せることだけ**(#532 は殻の `basis=` をログに出すだけで journal には載せていない)。記録規則は決定 1 の edge 記録。
-- 殻にある見送り(`runtime/`・`tsf/`・`output/`)のうち、`tsf/`・`output/` は、決定 5 の「データを上に渡す方式」で記録する(`architecture_guard.rs:403` は緩めない)。下の FCIS の記述は `runtime/` の分割に関するもの。FCIS のタスク表(`docs/tasks/fcis-layering-tasks-2026-10-06.md:212-218`)では F1〜F6 がマージ済みで F5d は「分けない」と決まっており、`tsf/tsf_gate.rs`・`output/probe_io.rs`・`runtime/key_pipeline.rs` の shift-conv-guard・key-effect-predict が今後の分割に入るかは未確認(段階 0 で確かめる)。入っていなければ「分割の予定に無く、本 ADR では対象外」と扱う。
+- 殻にある見送り(`runtime/`・`tsf/`・`output/`)のうち、`tsf/`・`output/` は、決定 5 の「データを上に渡す方式」で記録する(`architecture_guard.rs:403` は緩めない)。**決定 5 の置き換えのために足す記録は、この「1 つずつ」の基準の外**(段階 4 の PR ごとに、置き換える組に必要な記録を足す)。「1 つずつ」は、置き換えを目的としない診断用の Plan の追加(段階 1 の drift など)に掛かる。下の FCIS の記述は `runtime/` の分割に関するもの。FCIS のタスク表(`docs/tasks/fcis-layering-tasks-2026-10-06.md:212-218`)では F1〜F6 がマージ済みで F5d は「分けない」と決まっており、`tsf/tsf_gate.rs`・`output/probe_io.rs`・`runtime/key_pipeline.rs` の shift-conv-guard・key-effect-predict が今後の分割に入るかは未確認(段階 0 で確かめる)。入っていなければ「分割の予定に無く、本 ADR では対象外」と扱う。
 
 ### 決定 4: 再生は `Engine::on_input` までに絞る。記録した Facts/Plan は再生に使わない
 
@@ -160,13 +160,16 @@ ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と�
 - **フィールド落ちに注意**: 派生行(`emit_tracing`)はトップレベルのフィールドしか出さず(例: `FocusTransition` の `from`/`to`、`ImeEvent` の中身の大半は出ない)、チェッカーを派生行へ移すには journal 側にフィールドを足す必要がある。足す量は段階ごとの見積もりに入れる。
 - **置き換えない経路(技術的な制約)**:
   - `journal.record()` は `&mut` を要求するので、`with_app` が `None` になる再入の経路の出来事は記録が捨てられる(ADR-139 決定 4 の理由 3、`open_chain.rs:206-213` が同型)。そのような経路の手書きは残す。段階ごとに、置き換え対象の出来事が `with_app` の中から出ているかを確かめる。
-  - 中身が drain の時にしか確定しない型(`SENT_INPUT_TRACE` のバッチ、フックの診断キュー)は、stamp 時点で出せる中身が無く、フックスレッドでログを出すと `hook_callback` のログマクロ数の固定(7 件)とフックの薄型化に反するので、手書きの行を残す。`pending_journal_entries` を経る型は上の「`tsf/`・`output/` の行の扱い」で、push 時の生成を段階 0 で確かめる。
+  - `SentInput` とフックの診断キューは、出す場所がフックスレッド、または journal を持たない自由関数なので、手書きの行を残す(上の「`tsf/`・`output/` の行の扱い」の理由を参照)。`pending_journal_entries` を経る型は、push 時の生成を段階 0 で確かめる。
 - C(内部診断)は手書きのまま。読み手のある文言(`startup:`・`[hook-watchdog]`・`IMM capability cache cleared`・`Keyboard Layout Emulator starting`)は変えない。
 - **`tsf/`・`output/` の行の扱い(所有者判断 2026-10-10: 「データを上に渡す方式で統合」)**: `architecture_guard.rs:403`(`output/`・`tsf/` の本番コードは `crate::journal` を参照しない、ADR-096 決定 2・round3。層の境界を守る規約で、`output/`・`tsf/` が journal を知らないようにする意図)は**緩めない**。
   - 方式は literal-detect(ADR-096 round3 C-1〜C-3)と同じ: 事実を ungated の純粋なデータ型(例: `tsf/literal_facts.rs`)にして `dispatch_probe_actions` → `StepProbeResult` → `WindowsPlatform::advance_tsf_probe` と持ち上げ、`JournalEntry` への変換は `platform.rs` だけが行う。
   - 出来事ごとに配線が要る。手書きログの出る位置が `tsf/`・`output/` の中から `platform.rs` の記録点へ移るので、「記録点の位置」の条件(同じ関数・同じ前後関係)を**満たせない組がある**。順序を読むチェッカーがない組、または順序の変化が許容できる組だけを置き換え、満たせない組は手書きのまま残す。段階 0 の台帳で組ごとに判定する。
-  - `[gji-fsm]` の約 35 件は、「… ignored」「… のため無視」の**理由**が多い(背景 2)。置き換えるなら、`GjiFsmTransition` に理由(型)を足すのが先で、これは `GjiFsm` の戻り値に理由を載せる変更になる(`tsf/gji_fsm.rs` は journal を参照しない。`state_label()` のように、データを返すだけ)。
-  - 保留キュー(`pending_journal_entries`、`platform.rs:126-131`)を経る型の生成ログ: `push_journal_entry` は push の時点で `self.stamper.stamp(entry)` に**完全な中身**を渡しており、`GjiFsmTransition`・`TsfProbeStarted`・`TsfProbeCompleted`・`LiteralDetect`・`DeferredRecoveryFlush` はこの経路。したがって**push の時点で生成ログを出せる可能性がある**(drain まで待たない。drain 前の panic・ハング、手書き行との順序のずれの懸念を避けられる)。ただし `emit_tracing` は `journal.rs` の private メソッドで、`absorb` でも呼ばれるため、**二重に出さない仕組み**(push 時に出したものは `absorb` で出さない)が要る。実装の形は段階 0 で確かめる。**中身が drain の時にしか確定しない型は生成に置き換えない**(`SENT_INPUT_TRACE`〈`win32::drain_sent_input_trace` のバッチから `drain_journal_entries` が組み立てる〉、フックの診断キュー)。
+  - `[gji-fsm]` の約 35 件は、「… ignored」「… のため無視」の**理由**が多い(背景 2)。手書き行は `tsf/gji_fsm.rs` の `on_event`/`on_timeout` の**内側**にあり、`GjiEvent` がどの経路から来ても出る。一方 `GjiFsmTransition` を記録するのは `platform.rs` の `note_gji_transition`(`:133-137`)と probe tick(`:425`)だけである。`GjiEvent` を FSM へ渡す経路は、`platform.rs`(10 か所)のほかに `output/mod.rs`(2)・`output/vk_send.rs`(2)・`tsf/warmup/warmup_strategy.rs`(1)・`runtime/key_pipeline.rs`(1)がある(`git grep -nE "GjiEvent::[A-Za-z]+" -- crates/awase-windows/src` から `gji_fsm.rs` 自身を除く)。
+    - **置き換えるのは、`GjiEvent` の全ディスパッチ点(上の 6 経路)で理由つきの記録がそろってから**。そろう前に手書き行を消すと、`output/`・`tsf/warmup/`・`runtime/` から入ったイベントの行が黙って消え、ANCHORS とチェッカー(`check_invariants.py`・`check_reopen.py`)が読む `[gji-fsm] StartComposition while engine off` で起きれば、CI は green のまま件数が 0 になる(ADR-119 の「全合流点を洗い出さずに 1 か所に置く」と同型)。
+    - `output/`・`tsf/` のディスパッチ点は、理由を戻り値で `platform.rs` まで持ち上げる(literal-detect と同じ)。ディスパッチ点の件数は `architecture_guard.rs` で固定する(改訂点 3 の構築点の件数の固定と同じ形)。
+    - 理由の返し方: `GjiFsm` は `timed-fsm`(crates.io に独立して公開している crate)の `TimedStateMachine` を実装しており(`gji_fsm.rs:591`)、`on_event`/`on_timeout` の戻り値 `Response<GjiAction, GjiTimer>` の形は変えられない。理由は `GjiAction` の variant(例: `GjiAction::Ignored { reason }`)として返し、各ディスパッチ点が action の実行と同じ流れで持ち上げる。`tsf/gji_fsm.rs` は journal を参照せず、データを返すだけ(`state_label()` と同じ)。
+  - 保留キュー(`pending_journal_entries`、`platform.rs:126-131`)を経る型の生成ログ: `push_journal_entry` は push の時点で `self.stamper.stamp(entry)` に**完全な中身**を渡しており、`GjiFsmTransition`・`TsfProbeStarted`・`TsfProbeCompleted`・`LiteralDetect`・`DeferredRecoveryFlush` はこの経路。したがって**push の時点で生成ログを出せる可能性がある**(drain まで待たない。drain 前の panic・ハング、手書き行との順序のずれの懸念を避けられる)。ただし `emit_tracing` は `journal.rs` の private メソッドで、`absorb` でも呼ばれるため、**二重に出さない仕組み**(push 時に出したものは `absorb` で出さない)が要る。実装の形は段階 0 で確かめる。**`SentInput` とフックの診断キューは生成に置き換えない**。中身は発生時に確定しているが、出す場所の問題である: `SentInput` は `win32.rs` の自由関数 `send_input_safe` が journal を持たず、seq だけ `reserve` して drain 時に組み立てる(`win32.rs:366-380`)。フックの診断(`HookImeModeDiagnosticRecord`)は push がフックスレッドで(`hook.rs:1490`、`:1387`)、そこでログを出すと `hook_callback` のログマクロ数の固定(7 件)とフックの予算に反する。「中身が確定するなら置き換えてよい」とは読まないこと。
 - この決定の採用時に、ADR-139 の決定 4 に「ADR-250 決定 5 で、レベルと target を型ごとの宣言に改訂した」と追記する(ADR-139 の status の追記も同様)。
 
 ### 決定 6: ring は種類のレーンを残す。保持は時間で保証する
@@ -228,7 +231,7 @@ ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と�
 1. drift correction の Plan と `OmissionBasis` を journal に載せる(決定 1 の edge 記録。「`Idle` 以外」ではない)。ログは手書きのまま残す。記録の型を足す場合は、決定 7 の `contains_typed_text()` を同じ PR で入れる。
 2. ring のレーンの見直し(測定の後)。10 分窓の扱いは、決定 7 の削除対象がそろった後。
 3. `KeyInput` に InputContext を足す(記録の形式)。再生のハーネスは ADR-241 段階 5。ADR-241 段階 2 の結果を待つ。
-4. ログの統合(決定 5)。4-0: arm ごとの定数のマクロと、info 以上の arm の一覧を固定するガードを足す。**機構だけで、既定は今のまま debug・`awase::journal`**(各 arm のレベルと target の変更は、その手書き行を消す PR と同じ PR で入れる。単独で先に入れると、置き換えまでの間 info 行が二重に出る)。ADR-139 決定 4 の改訂の追記もここ。4-1: 読み手のない組。4-2: 読み手のある組(チェッカー・`ANCHORS`・ガード・testdata を同じ PR で更新。位置の条件も満たす)。4-2b: `tsf/`・`output/` の行(データを上に渡す方式。`[gji-fsm]` は理由の型を足してから)。4-3: 10-06 の検討が「推奨しない」とした組(`[drift] correction`・`Blacklist drift correction`・`[engine-input]`)。非同期経路の記録は、この段階以降に相関の形を決めてから。
+4. ログの統合(決定 5)。4-0: arm ごとの定数のマクロと、info 以上の arm の一覧を固定するガードを足す。**機構だけで、既定は今のまま debug・`awase::journal`**(各 arm のレベルと target の変更は、その手書き行を消す PR と同じ PR で入れる。単独で先に入れると、置き換えまでの間 info 行が二重に出る)。ADR-139 決定 4 の改訂の追記もここ。4-1: 読み手のない組。4-2: 読み手のある組(チェッカー・`ANCHORS`・ガード・testdata を同じ PR で更新。位置の条件も満たす)。4-2b: `tsf/`・`output/` の行(データを上に渡す方式。`[gji-fsm]` は全ディスパッチ点で記録がそろってから)。4-2b のうち ANCHORS・チェッカーの読み手がある行(`[gji-fsm] StartComposition while engine off`・`stale confirm 検出`・`[raw-tsf-literal] flush escape=` など)は 4-2 の条件(チェッカー・`ANCHORS`・ガード・testdata を同じ PR で更新)も満たすこと。4-3: 10-06 の検討が「推奨しない」とした組(`[drift] correction`・`Blacklist drift correction`・`[engine-input]`)。非同期経路の記録は、この段階以降に相関の形を決めてから。
 
 ## リスク・未決
 
@@ -270,3 +273,4 @@ ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と�
 - round6: M1(edge 記録と 1:1)は決定 1(edge の判定は `record` の前)と決定 5 の「対象」(`ImeActuation` で置き換える)。M2(統合の範囲)は決定 5 の「統合の範囲」と「所有者の判断」の未決。S1(構築点の件数)は改訂点 3。S2(合否 2)は合否 2。N1 は改訂点の見出し。
 - round7: Should 3 件は summary(統合範囲の限定)、決定 5 の記録点の位置(送信側の特定)、決定 1(`ImeActuation{GiveUp}` の edge 判定)。
 - 所有者判断(tsf/・output/ をデータを上に渡す方式で統合): summary・決定 3・決定 5(「`tsf/`・`output/` の行の扱い」・置き換えない経路)・所有者の判断・段階 4-2b。
+- round8: M1(`[gji-fsm]` の全ディスパッチ点)・S2(`GjiAction` の variant で理由を返す)は決定 5 の `[gji-fsm]` の項。S1(中継の 2 型を残す理由)は決定 5 の「`tsf/`・`output/` の行の扱い」と「置き換えない経路」。S3 は決定 3。N1 は段階 4-2b。N2 は index.md。
