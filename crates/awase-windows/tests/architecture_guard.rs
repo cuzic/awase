@@ -8102,3 +8102,31 @@ fn mode_key_follow_skips_auto_repeat_at_entry() {
         "kp_stage_mode_key_follow は入口で mode_key_follow_admits_repeat(event.was_down) を見ること"
     );
 }
+
+/// ADR-253（BUG-198）: 再注入の `KEYBDINPUT`（`wVk`/`wScan`/`dwFlags`）は純粋関数 `vk::reinject_key_spec`
+/// から取る。`RawKeyEvent::reinject` が `wScan=0`・UNICODE 無しを直書きに戻すと、他アプリが
+/// `KEYEVENTF_UNICODE` で注入した文字（`VK_PACKET`）が保留→再注入で失われる。
+#[test]
+fn raw_key_event_reinject_builds_input_from_reinject_key_spec() {
+    let lib = read_crate_file("src/lib.rs");
+    let body = extract_fn_body(&lib, "unsafe fn reinject(&self) {");
+    let code = non_comment_lines(body);
+    assert!(
+        code.contains("vk::reinject_key_spec("),
+        "RawKeyEvent::reinject は vk::reinject_key_spec で入力を組み立てること（ADR-253）"
+    );
+    for (field, from) in [
+        ("wVk:", "w_vk"),
+        ("wScan:", "w_scan"),
+        ("dwFlags:", "flags"),
+    ] {
+        assert!(
+            code.contains(&format!("{field} ")) && code.contains(from),
+            "KEYBDINPUT.{field} は reinject_key_spec の結果（{from}）から取ること"
+        );
+    }
+    assert!(
+        !code.contains("reinject_scan_code(") && !code.contains("KEYEVENTF_KEYUP"),
+        "reinject 本体に wScan/KEYUP の直書きを戻さないこと（reinject_key_spec に集約）"
+    );
+}
