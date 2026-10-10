@@ -62,6 +62,16 @@ fn is_forbidden_ctrl_or_shift_primary_key(vk: VkCode) -> bool {
     )
 }
 
+/// 遅いルール（`ime = "off"`）の `from` として許すコンボか（ADR-255 決定1）:
+/// 無修飾の無変換/変換だけ。発動条件の「IME の機能を持たない」の判定が
+/// 無変換/変換にしか定義されていないため、他のキー・修飾付きは許さない。
+fn is_late_rule_from(combo: &ParsedKeyCombo) -> bool {
+    (combo.vk == crate::vk::VK_NONCONVERT || combo.vk == crate::vk::VK_CONVERT)
+        && !combo.ctrl
+        && !combo.shift
+        && !combo.alt
+}
+
 /// `[[keymap]]` ルールの実行時表現
 #[derive(Debug, Clone)]
 pub struct CompiledKeymap {
@@ -71,6 +81,9 @@ pub struct CompiledKeymap {
     pub combo: ParsedKeyCombo,
     /// 再注入するキー列（空=消費のみ）。各ステップは Down+Up ペアで即時完結する。
     pub send_vks: Vec<VkCode>,
+    /// `ime = "off"` の遅いルール（ADR-255）。エンジンの判断の後にだけ照合する。
+    /// `find_match`（エンジンの前）には現れず、`find_late_match` だけが返す。
+    pub late: bool,
 }
 
 /// コンパイル済みキーマップのテーブル。
@@ -101,6 +114,23 @@ impl KeymapTable {
                 warnings.push(format!("[keymap] 'from' のパース失敗: {:?}", rule.from));
                 continue;
             };
+            let late = match rule.ime.as_deref() {
+                None => false,
+                Some("off") => true,
+                Some(other) => {
+                    warnings.push(format!(
+                        "[keymap] 'ime' には \"off\" だけ指定できます（ADR-255 決定1）: {other:?}"
+                    ));
+                    continue;
+                }
+            };
+            if late && !is_late_rule_from(&combo) {
+                warnings.push(format!(
+                    "[keymap] ime = \"off\" の 'from' は無修飾の無変換/変換に限ります（ADR-255 決定1）: {:?}",
+                    rule.from
+                ));
+                continue;
+            }
             if combo.alt {
                 warnings.push(format!(
                     "[keymap] 'from' の Alt 修飾は使用できません（ADR-114 決定5）: {:?}",
@@ -115,9 +145,15 @@ impl KeymapTable {
                 ));
                 continue;
             }
-            if let Some(reason) =
-                forbidden_target_vk_reason(combo.vk, left_thumb_vk, right_thumb_vk, false)
-            {
+            // 遅いルールは親指キー（無変換/変換）を `from` にできる（ADR-255 決定5）。
+            // IME OFF のエンジン非活性では親指キーに役割が無く、エンジンの素通しの
+            // 後にしか当たらないので、親指の held 判定と二重管理にならない。
+            if let Some(reason) = forbidden_target_vk_reason(
+                combo.vk,
+                if late { VkCode(0) } else { left_thumb_vk },
+                if late { VkCode(0) } else { right_thumb_vk },
+                false,
+            ) {
                 warnings.push(format!(
                     "[keymap] 'from' に {reason} は指定できません（ADR-114 決定5）: {:?}",
                     rule.from
@@ -150,6 +186,7 @@ impl KeymapTable {
                 app: rule.app.as_deref().map(str::to_lowercase),
                 combo,
                 send_vks,
+                late,
             });
         }
         (Self(result), warnings)
@@ -191,7 +228,25 @@ impl KeymapTable {
         self.0
             .iter()
             .find(|r| {
-                r.combo.vk == vk
+                !r.late
+                    && r.combo.vk == vk
+                    && r.combo.ctrl == mods.ctrl
+                    && r.combo.shift == mods.shift
+                    && r.combo.alt == mods.alt
+                    && !mods.win
+            })
+            .map(|r| r.send_vks.clone())
+    }
+
+    /// 遅いルール（`ime = "off"`、ADR-255）から一致するものを探す。エンジンが
+    /// 打鍵を素通しにした後にだけ呼ぶ。修飾は `find_match` と同じ完全一致。
+    #[must_use]
+    pub fn find_late_match(&self, vk: VkCode, mods: ModifierState) -> Option<Vec<VkCode>> {
+        self.0
+            .iter()
+            .find(|r| {
+                r.late
+                    && r.combo.vk == vk
                     && r.combo.ctrl == mods.ctrl
                     && r.combo.shift == mods.shift
                     && r.combo.alt == mods.alt
@@ -352,6 +407,7 @@ mod tests {
             app: app.map(str::to_string),
             from: from.to_string(),
             to: to.into_iter().map(str::to_string).collect(),
+            ime: None,
         }
     }
 
@@ -360,6 +416,7 @@ mod tests {
             app: app.map(str::to_string),
             from: from.to_string(),
             to: to.iter().map(|s| (*s).to_string()).collect(),
+            ime: None,
         }
     }
 
@@ -380,6 +437,95 @@ mod tests {
     fn new_table(rules: &[KeymapRule]) -> KeymapTable {
         let (left, right) = thumb_vks();
         KeymapTable::new(rules, left, right).0
+    }
+
+    fn late_rule(from: &str, to: &str) -> KeymapRule {
+        KeymapRule {
+            ime: Some("off".to_string()),
+            ..rule(None, from, Some(to))
+        }
+    }
+
+    fn compile(rules: &[KeymapRule]) -> (KeymapTable, Vec<String>) {
+        let (left, right) = thumb_vks();
+        KeymapTable::new(rules, left, right)
+    }
+
+    #[test]
+    fn late_rule_allows_thumb_key_from_and_is_hidden_from_find_match() {
+        let (table, warnings) = compile(&[late_rule("VK_NONCONVERT", "VK_SPACE")]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let none = mods(false, false, false, false);
+        assert!(table.find_match(crate::vk::VK_NONCONVERT, none).is_none());
+        assert_eq!(
+            table.find_late_match(crate::vk::VK_NONCONVERT, none),
+            Some(vec![crate::vk::VK_SPACE])
+        );
+        assert!(table.find_late_match(crate::vk::VK_CONVERT, none).is_none());
+    }
+
+    #[test]
+    fn late_rule_requires_exact_modifiers() {
+        let (table, _) = compile(&[late_rule("VK_CONVERT", "VK_SPACE")]);
+        assert!(table
+            .find_late_match(crate::vk::VK_CONVERT, mods(false, true, false, false))
+            .is_none());
+        assert!(table
+            .find_late_match(crate::vk::VK_CONVERT, mods(false, false, false, true))
+            .is_none());
+    }
+
+    #[test]
+    fn early_rule_is_hidden_from_find_late_match() {
+        let table = new_table(&[rule(None, "Ctrl+VK_I", Some("F7"))]);
+        let vk_i = VkCode::from_name("VK_I").expect("VK_I resolves");
+        assert!(table
+            .find_late_match(vk_i, mods(true, false, false, false))
+            .is_none());
+    }
+
+    #[test]
+    fn late_rule_from_is_limited_to_bare_nonconvert_or_convert() {
+        for from in ["VK_A", "Ctrl+VK_NONCONVERT", "Shift+VK_CONVERT"] {
+            let (table, warnings) = compile(&[late_rule(from, "VK_SPACE")]);
+            assert!(table.is_empty(), "{from} must be skipped");
+            assert_eq!(warnings.len(), 1, "{from}: {warnings:?}");
+        }
+    }
+
+    #[test]
+    fn early_rule_still_forbids_thumb_key_from() {
+        let (table, warnings) = compile(&[rule(None, "VK_NONCONVERT", Some("VK_SPACE"))]);
+        assert!(table.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn unknown_ime_value_is_skipped_with_warning() {
+        let (table, warnings) = compile(&[KeymapRule {
+            ime: Some("on".to_string()),
+            ..rule(None, "VK_NONCONVERT", Some("VK_SPACE"))
+        }]);
+        assert!(table.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn late_rule_still_forbids_ime_control_and_modifier_targets() {
+        let (table, warnings) = compile(&[late_rule("VK_NONCONVERT", "VK_LMENU")]);
+        assert!(table.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn late_rule_vk_sets_do_not_overlap_early_rules() {
+        // 早いルールは親指キーを from にできないので、同じ vk で共存しない。
+        let (table, warnings) = compile(&[
+            rule(None, "VK_NONCONVERT", Some("VK_SPACE")),
+            late_rule("VK_NONCONVERT", "VK_SPACE"),
+        ]);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(table.len(), 1);
     }
 
     #[test]

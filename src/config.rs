@@ -687,6 +687,12 @@ pub struct KeymapRule {
     /// 常に配列形式へ正規化される。
     #[serde(default, deserialize_with = "deserialize_keymap_to")]
     pub to: Vec<String>,
+    /// IME の状態による条件（ADR-255 決定1）。`"off"` のみ。省略=従来どおり
+    /// （IME の状態を問わず、エンジンの前に照合）。`"off"` のルール（遅いルール）は
+    /// エンジンが素通しにした打鍵に対してだけ照合し、`from` は無修飾の
+    /// 無変換/変換に限る。`"off"` 以外の値は `KeymapTable::new` が警告して skip する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ime: Option<String>,
 }
 
 #[derive(Deserialize)]
