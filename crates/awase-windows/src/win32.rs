@@ -25,7 +25,7 @@ pub use win32_async::run_with_timeout;
 /// 専用プールを持てるようにするためのもの。
 pub use win32_async::{run_with_timeout_in, LeakedThreadPool};
 
-/// `HwndId` と `HWND` の相互変換（ADR-229 D4）。
+/// `HwndId` から `HWND` への変換（ADR-229 D4）。
 ///
 /// `HwndId` は純粋な核（`state/ime_event.rs`）にあり、`windows` クレートに依存させない。
 /// 変換は殻のここに集約する（`windows` の `HWND` 型変化〈`isize` → `*mut c_void`〉に
@@ -40,12 +40,6 @@ impl HwndIdExt for crate::state::ime_event::HwndId {
     fn to_hwnd(self) -> HWND {
         HWND(self.0 as *mut _)
     }
-}
-
-/// `HWND` から `HwndId` を作る。
-#[must_use]
-pub fn hwnd_id(hwnd: HWND) -> crate::state::ime_event::HwndId {
-    crate::state::ime_event::HwndId(hwnd.0 as usize)
 }
 
 /// `HWND` の null チェック拡張トレイト。

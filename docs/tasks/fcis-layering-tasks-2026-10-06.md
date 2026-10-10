@@ -262,7 +262,7 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 
 ### crate の物理分割: 段階 A の実施(2026-10-10、ブランチ `refactor/fcis-crate-split-prep`)
 
-付録 B の 8 件のうち 7 件を `CORE_MODULES` へ移した(`ime_event`・`ime_model`・`probe_admission`・`ime_profile_driver`・`key_effect_predictor`・`key_effect_runtime`、`hub_clock` は恒久的に殻)。切り出した殻は `win32.rs`(`HwndIdExt`/`hwnd_id`)・`state/probe_rejection_stats.rs`・`state/key_effect_io.rs`。`architecture_guard.rs` に付け替え表 `RELOCATED` を足した(分割前は空)。
+付録 B の 8 件のうち 7 件を `CORE_MODULES` へ移した(`ime_event`・`ime_model`・`probe_admission`・`ime_profile_driver`・`key_effect_predictor`・`key_effect_runtime`、`hub_clock` は恒久的に殻)。切り出した殻は `win32.rs`(`HwndIdExt`/`hwnd_id`)・`state/probe_rejection_stats.rs`・`key_effect_io.rs`(crate 直下)。`architecture_guard.rs` に付け替え表 `RELOCATED` を足した(分割前は空)。
 
 段階 B(crate を切る)の前に残る課題:
 - `platform_state`(`CORE_MODULES`)が殻の `hub_clock::HubClock`(`Instant::now()`)に依存する。`HubClock` を核へ移すか、時計を trait で受けるかを決める。

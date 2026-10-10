@@ -2443,28 +2443,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_open_at_matches_effective_open() {
-        let mut model = ImeModel::new();
-        model.reduce(&envelope(
-            1,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
-                true,
-                ObservationSource::ObserverPoll,
-                HwndId::NULL,
-                ObservationConfidence::Medium,
-                0,
-            )),
-        ));
-        // effective_open() は effective_open_at(Instant::now()) の薄いラッパーで
-        // あるべき。テスト実行中に Instant が動くのは無視できる程度なので、
-        // 両者が同じ bool を返すことだけ確認する。
-        assert_eq!(
-            model.effective_open_at(Instant::now()),
-            model.effective_open_at(Instant::now())
-        );
-    }
-
-    #[test]
     fn input_mode_observed_low_confidence_is_ignored() {
         let mut model = ImeModel::new(); // input_mode = ObservedRomaji (初期値)
         model.reduce(&envelope(

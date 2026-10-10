@@ -14,12 +14,12 @@ use awase_keymap_learn::persist::Fingerprint;
 use awase_keymap_learn::persist::{self, LoadError, PersistedTable};
 use awase_keymap_learn::staleness::FingerprintProbe;
 
-use super::key_effect_predictor::Cell;
+use crate::state::key_effect_predictor::Cell;
 #[cfg(windows)]
-use super::key_effect_predictor::{KeyEffectKeymap, KeymapCache};
+use crate::state::key_effect_predictor::{KeyEffectKeymap, KeymapCache};
 #[cfg(windows)]
-use super::key_effect_runtime::RuntimeTableCache;
-use super::key_effect_runtime::{validate_and_convert, RejectReason, MAX_TABLE_FILE_BYTES};
+use crate::state::key_effect_runtime::RuntimeTableCache;
+use crate::state::key_effect_runtime::{validate_and_convert, RejectReason, MAX_TABLE_FILE_BYTES};
 
 /// `<config dir>/keymap-learn-table.json`のパス。`config dir`は`config.toml`の親ディレクトリ
 /// （`crate::app::find_config_path()`と同じ解決順、見つからなければ`None`＝未学習として扱う）。
@@ -91,8 +91,8 @@ pub(crate) fn load_and_log(fingerprint: Fingerprint) -> Option<Vec<Cell>> {
 /// 実行時もその構成では予測しない）。GJIで`config1.db`が読めない/解析できないときは`Unavailable`。
 #[cfg(windows)]
 #[must_use]
-pub fn current_fingerprint_probe(tip: super::ime_kind::TipIdentity) -> FingerprintProbe {
-    use super::ime_kind::TipIdentity;
+pub fn current_fingerprint_probe(tip: crate::state::ime_kind::TipIdentity) -> FingerprintProbe {
+    use crate::state::ime_kind::TipIdentity;
     match tip {
         TipIdentity::Gji => crate::gji_charset_autodetect::read_key_effect_keymap()
             .map_or(FingerprintProbe::Unavailable, |k| {
@@ -207,10 +207,10 @@ impl KeymapCacheShellExt for KeymapCache {
 
 #[cfg(test)]
 mod tests {
-    use super::super::key_effect_runtime::{
+    use super::*;
+    use crate::state::key_effect_runtime::{
         convert_cells, coverage_ratio, coverage_slot_count, MIN_COVERAGE_RATIO,
     };
-    use super::*;
 
     const NS: FingerprintProbe = FingerprintProbe::NotSupported;
 

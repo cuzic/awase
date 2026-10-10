@@ -18,7 +18,7 @@ mod transport;
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 
 use crate::focus::FocusKind;
-use crate::state::key_effect_io::{KeymapCacheShellExt as _, RuntimeTableCacheShellExt as _};
+use crate::key_effect_io::{KeymapCacheShellExt as _, RuntimeTableCacheShellExt as _};
 use awase::config::ValidatedConfig;
 use awase::engine::{
     Engine, EngineCommand, InputContext, InputModeState, KanaLockHysteresis, ModeKeyConfig,

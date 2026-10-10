@@ -49,7 +49,7 @@ pub const MAX_TABLE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// [`coverage_slot_count`]（畳んだ後に変換対象になりえた検索キー数）。
 pub const MIN_COVERAGE_RATIO: f64 = 0.80;
 
-/// [`load_runtime_table`]が採用しなかった理由（ログ・診断用）。
+/// `key_effect_io::load_runtime_table`が採用しなかった理由（ログ・診断用）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RejectReason {
     /// ファイルが存在しない（未学習、正常系）。
@@ -366,7 +366,7 @@ fn diff_against_bundled_cells(persisted: &[PersistedCell], bundled: &[Cell]) -> 
     diff
 }
 
-/// [`load_runtime_table`]のfsを伴わない部分（テスト・CI検証双方から呼べるように分離）。
+/// `key_effect_io::load_runtime_table`のfsを伴わない部分（テスト・CI検証双方から呼べるように分離）。
 ///
 /// # Errors
 /// 採用できない理由を[`RejectReason`]で返す。

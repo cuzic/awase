@@ -566,20 +566,10 @@ const CORE_MODULES: &[&str] = &[
 
 /// ungated だが現状 Tier-2 の規則に違反するファイルと、その理由。直したら `CORE_MODULES` へ移す
 /// （`core_modules_violation_list_is_not_stale` が、違反が消えたのに残っているものを失敗させる）。
-const NOT_CORE_MODULES: &[(&str, &str)] = &[
-    (
-        "hub_clock",
-        "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
-    ),
-    (
-        "key_effect_io",
-        "fs::metadata / read_to_string と #[cfg(windows)] の取得口（key_effect_runtime / key_effect_predictor から切り出した殻、恒久的に Tier-2 の外）",
-    ),
-    (
-        "probe_rejection_stats",
-        "可変の static カウンタと #[cfg(windows)] の admit_epoch_in_app（probe_admission から切り出した殻、恒久的に Tier-2 の外）",
-    ),
-];
+const NOT_CORE_MODULES: &[(&str, &str)] = &[(
+    "hub_clock",
+    "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
+)];
 
 /// 文字列リテラルの中身を落とす（`"..."` → `""`）。ログ文言に `std::fs` 等が出ても誤検出しない。
 /// 生文字列・複数行文字列は扱わない。

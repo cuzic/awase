@@ -100,22 +100,25 @@ pub(crate) fn record_epoch_mismatch() {
 #[cfg(windows)]
 pub(crate) fn admit_epoch_in_app<R>(
     app: &mut crate::runtime::Runtime,
-    ticket: super::probe_admission::ImmLikeTicket,
+    ticket: crate::state::probe_admission::ImmLikeTicket,
     reject_log: &str,
-    f: impl FnOnce(&mut crate::runtime::Runtime, super::probe_admission::AcceptedObservation) -> R,
+    f: impl FnOnce(
+        &mut crate::runtime::Runtime,
+        crate::state::probe_admission::AcceptedObservation,
+    ) -> R,
 ) -> Option<R> {
     let current = app.focus_fence();
     match ticket.admit(current) {
-        super::probe_admission::Admission::Accept(accepted) => Some(f(app, accepted)),
-        super::probe_admission::Admission::Reject(
-            super::probe_admission::RejectReason::FocusEpochChanged { .. },
+        crate::state::probe_admission::Admission::Accept(accepted) => Some(f(app, accepted)),
+        crate::state::probe_admission::Admission::Reject(
+            crate::state::probe_admission::RejectReason::FocusEpochChanged { .. },
         ) => {
             record_epoch_mismatch();
             tracing::debug!("{reject_log}");
             None
         }
-        super::probe_admission::Admission::Reject(
-            super::probe_admission::RejectReason::FocusHwndChanged { at_spawn, .. },
+        crate::state::probe_admission::Admission::Reject(
+            crate::state::probe_admission::RejectReason::FocusHwndChanged { at_spawn, .. },
         ) => {
             // root_hwnd は計測専用（BUG-91）。判定ロジック（上の admit()）は
             // 一切変更しておらず、ここは棄却が確定した後の分類のみ。

@@ -160,7 +160,6 @@ pub mod ime_read_strategy;
 // する。runtime への配線（既存 `ImeModel.last_intent` との統合）はまだ無い
 // （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
 pub mod intent_store;
-pub mod key_effect_io;
 pub mod key_effect_predictor;
 pub mod key_effect_runtime;
 pub mod key_effect_table;
@@ -193,7 +192,6 @@ pub(crate) mod keymap_latch;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod post_bypass;
 pub mod probe_admission;
-pub mod probe_rejection_stats;
 pub(crate) mod scoped_latch;
 // 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
 // runtime/key_pipeline.rs の apply_focus_probe は #[cfg(windows)] のため非 Windows
