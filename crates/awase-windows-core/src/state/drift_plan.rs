@@ -206,6 +206,155 @@ impl DriftPlan {
     }
 }
 
+impl DriftIdle {
+    /// journal・ログ用の理由名(ADR-250 段階 1)。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::EngineDisabled => "EngineDisabled",
+            Self::NotJapaneseIme => "NotJapaneseIme",
+            Self::NoDrift(reason) => reason.label(),
+        }
+    }
+}
+
+impl DriftStep {
+    /// journal・ログ用の理由名(ADR-250 段階 1)。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SkipWarrantWouldBlock => "SkipWarrantWouldBlock",
+            Self::GiveUp(GiveUpPark::FirstTime) => "GiveUpFirstTime",
+            Self::GiveUp(GiveUpPark::CooldownPending) => "GiveUpCooldownPending",
+            Self::GiveUp(GiveUpPark::Rearm) => "GiveUpRearm",
+            Self::GiveUp(GiveUpPark::StillParked) => "GiveUpStillParked",
+            Self::Confirmed => "Confirmed",
+            Self::Send(SendPath::ImmCross) => "SendImmCross",
+            Self::Send(SendPath::StrategyChain) => "SendStrategyChain",
+        }
+    }
+}
+
+impl DriftPlan {
+    /// journal・ログ用の (計画の種類, 理由) の名前(ADR-250 段階 1)。edge 記録の同一判定に使う。
+    #[must_use]
+    pub const fn label(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::Idle(idle) => ("Idle", idle.label()),
+            Self::DeferToSettle { .. } => ("DeferToSettle", "FocusSettle"),
+            Self::Act(act) => ("Act", act.step.label()),
+        }
+    }
+
+    /// 検知されたずれの (desired, observed)。`Idle` は検知前なので `None`。
+    #[must_use]
+    pub const fn desired_observed(&self) -> Option<(bool, bool)> {
+        match self {
+            Self::Idle(_) => None,
+            Self::DeferToSettle { drift } => Some((drift.desired, drift.observed)),
+            Self::Act(act) => Some((act.drift.desired, act.drift.observed)),
+        }
+    }
+}
+
+/// 直前まで続いていた同じ理由の連続(畳んだ分)。次の edge のレコードに載せる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DriftPrevRun {
+    pub plan: &'static str,
+    pub reason: &'static str,
+    /// 畳んだ tick の数(その理由が続いた tick 数。1 なら畳みなし)。
+    pub ticks: u32,
+    /// 最初の tick から最後の tick までの時間。
+    pub duration_ms: u64,
+}
+
+/// 理由が変わった(edge の)ときに記録する内容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DriftEdge {
+    pub plan: &'static str,
+    pub reason: &'static str,
+    pub basis: Option<OmissionBasis>,
+    /// フォーカスの世代(`Output::ime_mode_focus_gen`)。
+    pub focus_gen: u32,
+    pub desired_observed: Option<(bool, bool)>,
+    /// 直前の連続。最初の edge は `None`。
+    pub prev: Option<DriftPrevRun>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DriftRun {
+    plan: &'static str,
+    reason: &'static str,
+    basis: Option<OmissionBasis>,
+    focus_gen: u32,
+    first: std::time::Instant,
+    last: std::time::Instant,
+    ticks: u32,
+}
+
+/// drift correction の計画を edge 記録するための追跡(ADR-250 決定 1)。
+///
+/// **前の tick と (計画の種類, 理由, 根拠, フォーカスの世代) が変わったときだけ** [`DriftEdge`] を返し、
+/// 同じ理由の連続は数えるだけで返さない(`GiveUp(StillParked)`・`Idle(NotDrifting)` は既定 500ms ごとに
+/// 返るので、毎回 `record` すると 1 時間 7,200 件の純増になる)。判定は殻が `record` を呼ぶ前に行う。
+/// 核は OS・壁時計に触れない(時刻は引数)。
+#[derive(Debug, Default)]
+pub struct DriftEdgeTracker {
+    current: Option<DriftRun>,
+}
+
+impl DriftEdgeTracker {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { current: None }
+    }
+
+    /// 1 tick ぶんの計画を見る。edge なら記録する内容を返す。
+    pub fn observe(
+        &mut self,
+        plan: &DriftPlan,
+        focus_gen: u32,
+        now: std::time::Instant,
+    ) -> Option<DriftEdge> {
+        let (kind, reason) = plan.label();
+        let basis = plan.basis();
+        if let Some(run) = self.current.as_mut().filter(|run| {
+            run.plan == kind
+                && run.reason == reason
+                && run.basis == basis
+                && run.focus_gen == focus_gen
+        }) {
+            run.last = now;
+            run.ticks = run.ticks.saturating_add(1);
+            return None;
+        }
+        let prev = self.current.map(|run| DriftPrevRun {
+            plan: run.plan,
+            reason: run.reason,
+            ticks: run.ticks,
+            duration_ms: u64::try_from(run.last.saturating_duration_since(run.first).as_millis())
+                .unwrap_or(u64::MAX),
+        });
+        self.current = Some(DriftRun {
+            plan: kind,
+            reason,
+            basis,
+            focus_gen,
+            first: now,
+            last: now,
+            ticks: 1,
+        });
+        Some(DriftEdge {
+            plan: kind,
+            reason,
+            basis,
+            focus_gen,
+            desired_observed: plan.desired_observed(),
+            prev,
+        })
+    }
+}
+
 /// 診断を出すか。ずれの継続時間が再武装クールダウン以上で、このフォーカスで未通知のとき（ADR-132 Phase 1）。
 const fn should_notify_diagnostic(duration_ms: u64, already_notified: bool) -> bool {
     duration_ms >= crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS && !already_notified
@@ -784,6 +933,86 @@ mod tests {
         // 再武装は parked 済みのときだけ。
         if a.step == DriftStep::GiveUp(GiveUpPark::Rearm) {
             assert!(a.actuation.gave_up_at.is_some());
+        }
+    }
+    mod edge {
+        use super::*;
+
+        fn idle(reason: NoDrift) -> DriftPlan {
+            DriftPlan::Idle(DriftIdle::NoDrift(reason))
+        }
+
+        #[test]
+        fn first_tick_is_an_edge_without_prev() {
+            let t0 = Instant::now();
+            let mut tr = DriftEdgeTracker::new();
+            let e = tr.observe(&idle(NoDrift::NotDrifting), 1, t0).unwrap();
+            assert_eq!((e.plan, e.reason), ("Idle", "NotDrifting"));
+            assert_eq!(e.basis, Some(OmissionBasis::Observation));
+            assert_eq!(e.prev, None);
+        }
+
+        #[test]
+        fn same_reason_is_folded_and_counted_into_next_edge() {
+            let t0 = Instant::now();
+            let mut tr = DriftEdgeTracker::new();
+            assert!(tr.observe(&idle(NoDrift::NotDrifting), 1, t0).is_some());
+            for i in 1..=4u64 {
+                assert!(tr
+                    .observe(
+                        &idle(NoDrift::NotDrifting),
+                        1,
+                        t0 + Duration::from_millis(500 * i)
+                    )
+                    .is_none());
+            }
+            let e = tr
+                .observe(
+                    &idle(NoDrift::StaleObservation),
+                    1,
+                    t0 + Duration::from_millis(2500),
+                )
+                .unwrap();
+            assert_eq!(e.reason, "StaleObservation");
+            let prev = e.prev.unwrap();
+            assert_eq!(
+                (prev.reason, prev.ticks, prev.duration_ms),
+                ("NotDrifting", 5, 2000)
+            );
+        }
+
+        #[test]
+        fn reason_change_with_same_basis_is_an_edge() {
+            // NotDrifting と StaleObservation は根拠が同じ(Observation)でも理由が違うので edge。
+            let t0 = Instant::now();
+            let mut tr = DriftEdgeTracker::new();
+            tr.observe(&idle(NoDrift::NotDrifting), 1, t0);
+            assert!(tr
+                .observe(&idle(NoDrift::StaleObservation), 1, t0)
+                .is_some());
+        }
+
+        #[test]
+        fn focus_generation_change_starts_a_new_run_even_with_same_reason() {
+            let t0 = Instant::now();
+            let mut tr = DriftEdgeTracker::new();
+            tr.observe(&idle(NoDrift::NotDrifting), 1, t0);
+            let e = tr.observe(&idle(NoDrift::NotDrifting), 2, t0).unwrap();
+            assert_eq!(e.focus_gen, 2);
+            assert_eq!(e.prev.unwrap().ticks, 1);
+        }
+
+        #[test]
+        fn defer_to_settle_carries_desired_and_observed() {
+            let t0 = Instant::now();
+            let mut tr = DriftEdgeTracker::new();
+            let plan = DriftPlan::DeferToSettle {
+                drift: drift(true, 700),
+            };
+            let e = tr.observe(&plan, 3, t0).unwrap();
+            assert_eq!((e.plan, e.reason), ("DeferToSettle", "FocusSettle"));
+            assert_eq!(e.basis, Some(OmissionBasis::FocusSettle));
+            assert_eq!(e.desired_observed, Some((true, false)));
         }
     }
 }

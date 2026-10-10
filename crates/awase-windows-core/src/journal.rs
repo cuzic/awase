@@ -87,6 +87,44 @@ pub struct DriftGiveUpDiagnosticRecord {
     pub half_width_alnum_toggle_active: bool,
 }
 
+/// drift correction の計画(`DriftPlan`)が**変わった**ときの記録(ADR-250 段階 1、診断用)。
+///
+/// 前の tick と (計画の種類, 理由, 根拠, フォーカスの世代) が同じ連続は記録せず、次の edge の
+/// `prev_*` に件数と継続時間だけを載せる(`DriftEdgeTracker`)。再生の入力にはしない(ADR-250 決定 4)。
+#[derive(Debug, Clone, Serialize)]
+pub struct DriftPlanRecord {
+    /// `Idle` / `DeferToSettle` / `Act`。
+    pub plan: &'static str,
+    /// 理由名(`NoDrift` の各 variant・`SendImmCross`・`GiveUpStillParked` など)。
+    pub reason: &'static str,
+    /// 省略の根拠(`OmissionBasis`)。実際に送る `Send` は `None`。
+    pub basis: Option<&'static str>,
+    pub focus_gen: u32,
+    pub desired_open: Option<bool>,
+    pub observed_open: Option<bool>,
+    pub prev_reason: Option<&'static str>,
+    pub prev_ticks: Option<u32>,
+    pub prev_duration_ms: Option<u64>,
+}
+
+impl From<crate::state::drift_plan::DriftEdge> for DriftPlanRecord {
+    fn from(e: crate::state::drift_plan::DriftEdge) -> Self {
+        Self {
+            plan: e.plan,
+            reason: e.reason,
+            basis: e
+                .basis
+                .map(crate::state::drift_correction::OmissionBasis::label),
+            focus_gen: e.focus_gen,
+            desired_open: e.desired_observed.map(|(d, _)| d),
+            observed_open: e.desired_observed.map(|(_, o)| o),
+            prev_reason: e.prev.map(|p| p.reason),
+            prev_ticks: e.prev.map(|p| p.ticks),
+            prev_duration_ms: e.prev.map(|p| p.duration_ms),
+        }
+    }
+}
+
 /// awase が IME 制御目的で送った VK の診断用サマリ。
 #[derive(Debug, Clone, Serialize)]
 pub struct ImeVkDiagnostic {
@@ -367,6 +405,9 @@ pub enum JournalEntry {
     /// ADR-132 Phase 1: Blind GiveUp 到達時に、次段の設計判断に必要な観測・
     /// 送信・意図・環境情報だけを構造化して残す。
     DriftGiveUpDiagnostic { record: DriftGiveUpDiagnosticRecord },
+    /// ADR-250 段階 1: drift correction の計画(送る・見送る・打ち切る・収束・保留)が変わったとき、
+    /// 理由と根拠(`OmissionBasis`)つきで残す診断用の記録。入力文字は含まない。
+    DriftPlanDecided { record: DriftPlanRecord },
     /// ADR-132 Phase 1: hook の IME-mode 診断ログを journal にも残す。
     HookImeModeDiagnostic { record: HookImeModeDiagnosticRecord },
     /// ADR-132 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
@@ -683,6 +724,39 @@ impl JournalLanes {
 }
 
 impl JournalEntry {
+    /// 利用者が入力した文字(の手がかり)を含む型か(ADR-250 決定 7)。不具合報告のプレビューの
+    /// 「打鍵の行をすべて削除」の対象を型の属性で決めるための入口。網羅的な `match` なので、
+    /// variant を足すとここで必ず入力内容を含むかを決めることになる。
+    ///
+    /// 現状の削除ボタンは `"type":"KeyInput"` の文字列一致のままで(`awase-settings`)、`SentInput`
+    /// (`ch` を持つ)と `LiteralDetect` は削除対象外にするという ADR-222 の約束を保つ。この関数は
+    /// 「入力内容を含む型の一覧」を型として固定する(settings 側の付け替えは決定 7 の次の段階)。
+    #[must_use]
+    pub const fn contains_typed_text(&self) -> bool {
+        match self {
+            Self::KeyInput { .. } | Self::SentInput { .. } | Self::LiteralDetect { .. } => true,
+            Self::TimerFired { .. }
+            | Self::ImeEvent { .. }
+            | Self::FocusTransition { .. }
+            | Self::ClockAnchor { .. }
+            | Self::DumpTriggered { .. }
+            | Self::ImeOpenApplied { .. }
+            | Self::GjiFsmTransition { .. }
+            | Self::HookImeModeDiagnostic { .. }
+            | Self::TsfProbeStarted { .. }
+            | Self::TsfProbeCompleted { .. }
+            | Self::DeferredRecoveryFlush { .. }
+            | Self::ImeActuation { .. }
+            | Self::ActuationDecision { .. }
+            | Self::PressWriteClaim { .. }
+            | Self::DriftGiveUpDiagnostic { .. }
+            | Self::DriftPlanDecided { .. }
+            | Self::DriftGiveUpIntervalEnded { .. }
+            | Self::GiveUpFollow { .. }
+            | Self::ConvClassifyCall { .. } => false,
+        }
+    }
+
     const fn lane_kind(&self) -> LaneKind {
         match self {
             Self::ImeEvent { .. }
@@ -701,6 +775,7 @@ impl JournalEntry {
             | Self::ActuationDecision { .. }
             | Self::PressWriteClaim { .. }
             | Self::DriftGiveUpDiagnostic { .. }
+            | Self::DriftPlanDecided { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::ConvClassifyCall { .. }
@@ -970,6 +1045,23 @@ impl JournalEntry {
                     layout_name = record.layout_name.as_str(),
                     half_width_alnum_toggle_active = record.half_width_alnum_toggle_active,
                     "drift give-up diagnostic"
+                );
+            }
+            Self::DriftPlanDecided { record } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    plan = record.plan,
+                    reason = record.reason,
+                    basis = record.basis,
+                    focus_gen = record.focus_gen,
+                    desired_open = record.desired_open,
+                    observed_open = record.observed_open,
+                    prev_reason = record.prev_reason,
+                    prev_ticks = record.prev_ticks,
+                    prev_duration_ms = record.prev_duration_ms,
+                    "drift plan decided"
                 );
             }
             Self::HookImeModeDiagnostic { record } => {
@@ -2084,5 +2176,45 @@ mod tests {
             j.entries_by_seq()[0].entry,
             JournalEntry::SentInput { .. }
         ));
+    }
+    #[test]
+    fn drift_plan_decided_serializes_reason_and_basis_and_holds_no_typed_text() {
+        let record = DriftPlanRecord {
+            plan: "Idle",
+            reason: "StaleObservation",
+            basis: Some("Observation"),
+            focus_gen: 3,
+            desired_open: None,
+            observed_open: None,
+            prev_reason: Some("NotDrifting"),
+            prev_ticks: Some(5),
+            prev_duration_ms: Some(2000),
+        };
+        let entry = JournalEntry::DriftPlanDecided { record };
+        assert!(!entry.contains_typed_text());
+        let (mut j, _mock) = mock_journal();
+        j.record(entry);
+        let json = j.to_json().unwrap();
+        assert!(json.contains("DriftPlanDecided"));
+        assert!(json.contains("StaleObservation"));
+        assert!(json.contains("\"basis\": \"Observation\""));
+        assert!(json.contains("\"prev_ticks\": 5"));
+    }
+
+    #[test]
+    fn typed_text_types_are_key_input_sent_input_and_literal_detect_only() {
+        // ADR-222 の約束: 入力内容を含む型の一覧を型で固定する(決定 7)。
+        let key = JournalEntry::GiveUpFollow {
+            cold_seq: 0,
+            outcome: "armed",
+            baseline: None,
+        };
+        assert!(!key.contains_typed_text());
+        let sent = JournalEntry::SentInput {
+            issue_us: 0,
+            accepted: 0,
+            events: vec![],
+        };
+        assert!(sent.contains_typed_text());
     }
 }

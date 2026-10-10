@@ -61,6 +61,25 @@ pub enum OmissionBasis {
     FreshRead,
 }
 
+impl OmissionBasis {
+    /// journal・ログ用の名前(ADR-250 段階 1)。`?`/`%` を使わずに出すための固定文字列で、網羅的な `match`
+    /// なので variant を足すと型で更新漏れが分かる。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Belief => "Belief",
+            Self::EngineSetting => "EngineSetting",
+            Self::ExplicitIntent => "ExplicitIntent",
+            Self::Observation => "Observation",
+            Self::FocusSettle => "FocusSettle",
+            Self::Warrant => "Warrant",
+            Self::AttemptBudget => "AttemptBudget",
+            Self::Cooldown => "Cooldown",
+            Self::FreshRead => "FreshRead",
+        }
+    }
+}
+
 /// 補正が要るずれが無かった理由。[`evaluate_drift`] の各早期 return に 1 対 1 で対応する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoDrift {
@@ -77,6 +96,18 @@ pub enum NoDrift {
 }
 
 impl NoDrift {
+    /// journal・ログ用の名前(ADR-250 段階 1)。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NotExplicitIntent => "NotExplicitIntent",
+            Self::NotDrifting => "NotDrifting",
+            Self::NoTrustedObservation => "NoTrustedObservation",
+            Self::StaleObservation => "StaleObservation",
+            Self::ObservationMatchesDesired => "ObservationMatchesDesired",
+        }
+    }
+
     #[must_use]
     pub const fn basis(self) -> OmissionBasis {
         match self {
