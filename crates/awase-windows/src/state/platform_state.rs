@@ -143,12 +143,15 @@ impl ImeStateHub {
     ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
-    pub fn with_clock(clock: super::hub_clock::HubClock) -> Self {
+    pub fn with_clock(clock: super::hub_clock::HubClock, journal_clock: quanta::Clock) -> Self {
         Self {
             belief: ImeBelief::default(),
             event_log: ImeEventLog::default(),
             clock,
-            journal: UnifiedJournal::default(),
+            journal: UnifiedJournal::new_with_clock(
+                crate::journal::DEFAULT_CAPACITY,
+                journal_clock,
+            ),
             shadow_model: ImeModel::default(),
             last_user_explicit_off_ms: 0,
             last_explicit_ime_action_ms: 0,
@@ -2062,7 +2065,7 @@ impl PlatformState {
     /// 時計を注入して初期化するテスト用の構築口（`new()` は実時計 `hook::current_tick_ms` を読む）。
     pub(crate) fn for_test(clock: super::hub_clock::HubClock) -> Self {
         Self {
-            ime: ImeStateHub::with_clock(clock),
+            ime: ImeStateHub::with_clock(clock, quanta::Clock::new()),
             focus: FocusStore::new(),
             gate: GateStore::new(),
             keymap: KeymapStore::default(),

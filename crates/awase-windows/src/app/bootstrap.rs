@@ -625,7 +625,7 @@ impl HotKeyGuard {
     /// ためだけの関数が型定義（`app/mod.rs`）から離れたファイルにあった）。
     /// 挙動は変更していない。
     fn register_toggle(hotkey_str: &str) -> Result<Self> {
-        let (modifiers, vk) = crate::vk::parse_hotkey(hotkey_str)
+        let (modifiers, vk) = crate::vk_windows::parse_hotkey(hotkey_str)
             .context(format!("Invalid toggle hotkey format: {hotkey_str}"))?;
         // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
         unsafe {
@@ -788,7 +788,9 @@ pub(super) fn initialize_app(
         ));
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
-    DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());
+    DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::with_clock(
+        quanta::Clock::new(),
+    ));
 }
 
 /// 起動時に IME 状態キャッシュを初期化する（Unknown → 実際の値）。

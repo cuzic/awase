@@ -303,7 +303,7 @@ pub(crate) fn warn_on_engine_hotkey_collision(
 ) {
     // `ParsedKeyCombo` は `PartialEq` を derive 済みなので `==` で比較できる。
     //
-    // `crate::vk::parse_hotkey` は Windows 専用（`windows` クレートの MOD_CONTROL 等を
+    // `crate::vk_windows::parse_hotkey` は Windows 専用（`windows` クレートの MOD_CONTROL 等を
     // 使う）のためここでは使えない（この関数は Linux でも ビルド・テストできるよう ungated
     // にしている）。`parse_hotkey` は `parse_key_combo` の薄い変換なので、同じ
     // `parse_key_combo` で読む（`VK_` の有無・大文字小文字は `from_name` が吸収する。

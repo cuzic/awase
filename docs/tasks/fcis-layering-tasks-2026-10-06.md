@@ -277,3 +277,15 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 - **P4**: `ungated_state_modules` は殻の `state/mod.rs` しか読まない。核の `mod.rs` も読み、「核にある ungated モジュールが全部 `CORE_MODULES` にあるか」を検査する。
 - **ガードの外のパス直書き**: `crates/xtask-adr-evidence/src/core_registry.rs:50`（CI `core-registry-consistency`）、`.cargo/mutants-awase-windows.toml`（`examine_globs`・`-p awase-windows`）、`.githooks/pre-push` の正規表現、`.claude/rules/fix-requires-evidence.md` の表。
 - **段階 B で核へ移す範囲（所有者の決定、2026-10-10）**: `tuning.rs` は丸ごと、`vk.rs` は windows 定数との突き合わせ assert と `parse_hotkey` を殻に残して核へ、`journal.rs`+`journal_policy.rs` は核へ（`cfg(windows)` 5 か所を先に調べる）、`focus/{kinds,class_names,hwnd_cache}`・`keymap.rs` も核へ、`hub_clock` は核へ移し実時計は注入。
+
+### crate の物理分割: 段階 B-3(核へ移す候補の準備、2026-10-10)
+
+`state/` の外の移す候補 9 ファイル(`vk.rs`・`tuning.rs`・`keymap.rs`・`journal.rs`・`journal_policy.rs`・`focus/{kinds,class_names,hwnd_cache}.rs`・`tsf/literal_facts.rs`)を、Tier-2 の 4 規則に違反しない状態にした。`layer_boundary_guard.rs` の `CORE_CANDIDATE_FILES`(`core_candidate_files_have_no_tier2_violations`)が移す前から検査する。
+
+- `vk.rs`: 表を `#[macro_export] vk_table!` にし、windows crate の定数との突き合わせと `parse_hotkey`(と `#[cfg(windows)]` のテスト)を殻の `vk_windows.rs` へ。`is_role_candidate` の `OnceLock` は殻の `vk_windows::is_role_candidate_cached` へ(核は素朴版 `is_role_candidate`/`role_candidates`)。
+- `journal.rs`: ファイル書き出し(`dump_to_file`・`dump_to_file_for_report`)を殻の `journal_dump.rs`(`JournalDumpExt`)へ、核に `report_json`。`UnifiedJournal::new`/`Default`・`DumpTriggerTracker::new`/`Default`(`quanta::Clock::new()` を読む)を撤去し、時計は構築側(`ImeStateHub::with_clock(clock, journal_clock)`・`bootstrap.rs`)が渡す。`FocusChangedAxes` は `focus/kinds.rs` へ(`focus::FocusChangedAxes`)。
+- wall-clock 規則: `quanta::` 全体の禁止を、実時計を作る `quanta::Clock::new`/`Clock::default` の禁止に絞った(注入された `quanta::Clock` 型は許す)。
+- `with_clock(` の呼び出し元を固定するガードは `DumpTriggerTracker::with_clock(` を数えない(別の時計)。
+- 残り: `ungated_state_modules`、P2(`list_src_files` の根本修正)、実際に crate を切る PR。
+- **B1(Opus、PR #569)**: `focus/` と `tsf/` の一部だけを核へ移すと `focus/mod.rs` と `tsf/mod.rs` が両 crate にできる(`vk.rs` も `vk_table!` の `#[macro_export]` で crate 直下に出る)。#567 の P2 が必ず発火する。**P2(`list_src_files` の根本修正)を先に行う**。`#[macro_export]` の `vk_table!` は移動時に呼び出しパス(`crate::vk_table!`)の書き換えか再公開が要る。
+- wall-clock 規則は `use quanta` と `::recent(` も禁止する(`use quanta::Clock; Clock::new()` や別名の素通りを防ぐ。核に `use quanta` は無い)。

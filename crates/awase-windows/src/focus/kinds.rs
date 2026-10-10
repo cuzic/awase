@@ -154,3 +154,12 @@ mod tests {
         assert_eq!(s, "Undetermined");
     }
 }
+
+/// フォーカス移動で変わった軸（`FocusIdentity::changed_axes` の戻り値。journal の `FocusChanged` が持つ）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct FocusChangedAxes {
+    pub process: bool,
+    pub window: bool,
+    pub app_kind: bool,
+    pub focus_kind: bool,
+}
