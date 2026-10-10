@@ -106,60 +106,53 @@ $exe = (Get-ChildItem "$env:windir\System32\IME" -Recurse -Filter 'IMJPUEXC.EXE'
 Say "OS $([Environment]::OSVersion.VersionString)  [$(Reg-State)]"
 
 switch ($Suite) {
-  'v0' {
-    # V0: key の列と状態(開・入力なし=1C,1D / 開・入力中=1C,4B,1D)。ND=1 で n=Reps、ND=0(V7)で n=3。
-    $variants = @(
-      @{ Name = 'col1=D5,他=00'; Codes = 'D5 00 00 00 00 00' },
-      @{ Name = 'col1=00,他=D5'; Codes = '00 D5 D5 D5 D5 D5' },
-      @{ Name = 'dragonflyg4(CE CD...)'; Codes = 'CE CD CD CD CD CD' }
-    )
+  'v0b' {
+    # V0(再): 列と状態の対応。入力中は 4B,41(か)で作る。1 列目だけ/2〜6 列目の 1 列だけに既知のコードを置く。
+    #   97: 1 列目で効果が分かっている(開・入力なしで conv→0x1B)。CD: 入力中の列で効果が分かっている(ND=1 で conv→0x10、ND=0 で閉じる)。
     foreach ($nd in 1, 0) {
       Set-Direct $nd
       $nreps = if ($nd -eq 1) { $Reps } else { 3 }
-      foreach ($v in $variants) {
-        Build-Custom @(@{ Table = 'key'; Row = '無変換'; Codes = $v.Codes })
-        Probe "ND$nd $($v.Name) 開・入力なし" '1C,1D' $nreps
-        Probe "ND$nd $($v.Name) 開・入力中" '1C,4B,1D' $nreps
-      }
-      # 対照: 無加工の Custom(=NATURAL のコピー)
+      Build-Custom @(@{ Table = 'key'; Row = '無変換'; Codes = '97 00 00 00 00 00' })
+      Probe "ND$nd col1=97(他00) 開・入力なし" '1C,1D' $nreps
+      Probe "ND$nd col1=97(他00) 開・入力中か" '1C,4B,41,1D' $nreps
+      Build-Custom @(@{ Table = 'key'; Row = '無変換'; Codes = '00 CD CD CD CD CD' })
+      Probe "ND$nd col1=00(他CD) 開・入力なし" '1C,1D' $nreps
+      Probe "ND$nd col1=00(他CD) 開・入力中か" '1C,4B,41,1D' $nreps
       Build-Custom @()
-      Probe "ND$nd 無加工Custom 開・入力なし" '1C,1D' $nreps
-      Probe "ND$nd 無加工Custom 開・入力中" '1C,4B,1D' $nreps
+      Probe "ND$nd 無加工Custom 開・入力中か" '1C,4B,41,1D' $nreps
     }
   }
-  'v0p' {
-    # V0′: ND の陽性対照。NATURAL(内蔵)の 半角/全角(F3 と 19)を開・入力なしで押す。ND=1 と 0。
-    foreach ($nd in 1, 0, 1, 0) {
-      Set-Direct $nd
-      Probe "ND$nd NATURAL 半角全角F3 開・入力なし" '1C,F3' $Reps
-      Probe "ND$nd NATURAL 半角全角19 開・入力なし" '1C,19' $Reps
+  'v0c' {
+    # 2〜6 列目の 1 列だけに CD を置いて、入力中(か)・変換済み(か+Space)のどれで効くかを調べる(ND=1、n=3)。
+    Set-Direct 1
+    foreach ($col in 2..6) {
+      $codes = (1..6 | ForEach-Object { if ($_ -eq $col) { 'CD' } else { '00' } }) -join ' '
+      Build-Custom @(@{ Table = 'key'; Row = '無変換'; Codes = $codes })
+      Probe "col$col=CD 開・入力中か" '1C,4B,41,1D' 3
+      Probe "col$col=CD 変換済み(か+Space)" '1C,4B,41,20,1D' 3
     }
   }
-  'v3' {
-    # V3: 互換モード検出。Custom の S4key 無変換行=87 を入れ、閉じた状態で無変換を押す(Custom が効けば開く)。
-    $combos = @(@(1, 1), @(1, $null), @($null, 1), @($null, $null), @(0, 0))
-    foreach ($c in $combos) {
-      Set-Compat $c[0] $c[1]
-      Restart-Ctfmon
-      Build-Custom @(@{ Table = 'S4key'; Row = '無変換'; Codes = '87 00 00 00 00 00' })
-      Probe ("compat NoTsf3Override2={0} DisableNewIME={1} Custom(S4key 無変換=87) 閉" -f $c[0], $c[1]) '1D' $Reps
+  'v3b' {
+    # V3(補遺): keystyle の不在=NATURAL か、名前付き(ATOK)は互換フラグに関係なく効くか、Custom は互換フラグ OFF でも効くか(閉で 変換 を押す)。
+    # (a) keystyle 値を消した状態(StyleList は残す)
+    Set-Compat 1 1; Restart-Ctfmon
+    Remove-ItemProperty -Path $msimePath -Name keystyle -ErrorAction SilentlyContinue
+    Probe 'keystyle値なし(互換ON) 閉・変換' '1C' $Reps
+    Set-Compat $null $null; Restart-Ctfmon
+    Remove-ItemProperty -Path $msimePath -Name keystyle -ErrorAction SilentlyContinue
+    Probe 'keystyle値なし(互換フラグなし) 閉・変換' '1C' $Reps
+    # (b) 名前付き ATOK(変換は閉で開かない)を互換フラグ別に
+    foreach ($c in @(@(1, 1), @($null, $null), @(0, 0))) {
+      & $exe setkeytemplate 'ATOK' 2>&1 | Out-Null
+      Set-Compat $c[0] $c[1]; Restart-Ctfmon
+      Probe ("ATOK NoTsf3Override2={0} DisableNewIME={1} 閉・変換" -f $c[0], $c[1]) '1C' $Reps
     }
-  }
-  'v4' {
-    # V4: 名前付きスタイルの開状態(入力なし/入力中)。n=3。
-    foreach ($t in 'Microsoft_IME', 'IME_Standard', 'ATOK', 'VJE', 'WX') {
-      & $exe setkeytemplate $t 2>&1 | Out-Null
-      Probe "named $t 開・入力なし 無変換" '1C,1D' 3
-      Probe "named $t 開・入力中 無変換" '1C,4B,1D' 3
-      Probe "named $t 開・入力なし 変換" '1C,1C' 3
+    # (c) Custom の S4key 変換行を 00 にして(閉で開かなくなる)、互換フラグなし/0 で効くか
+    foreach ($c in @(@($null, $null), @(0, 0))) {
+      Set-Compat $c[0] $c[1]; Restart-Ctfmon
+      Build-Custom @(@{ Table = 'S4key'; Row = '変換'; Codes = '00 00 00 00 00 00' })
+      Probe ("Custom(S4key 変換=00) NoTsf3Override2={0} DisableNewIME={1} 閉・変換" -f $c[0], $c[1]) '1C' $Reps
     }
-    # M3: 名前付き NATURAL の key を書き換えて、開・入力なしで押す(名前付きが registry の key を読むか)
-    & $exe setkeytemplate 'Microsoft_IME' 2>&1 | Out-Null
-    $nat = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$imejp\StyleList\NATURAL")
-    $k = Encode-Table ([byte[]]$nat.GetValue('key')) '無変換' 'D5 00 00 00 00 00'
-    Set-ItemProperty -Path "HKCU:\$imejp\StyleList\NATURAL" -Name key -Value $k -Type Binary -Force
-    Probe 'named NATURAL key書換(無変換=D5...) 開・入力なし' '1C,1D' $Reps
-    Probe 'named NATURAL key書換(無変換=D5...) 対照: 開・入力なし 変換' '1C,1C' 3
   }
 }
 Say '=== done ==='

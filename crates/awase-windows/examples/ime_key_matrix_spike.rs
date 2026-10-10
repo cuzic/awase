@@ -922,6 +922,13 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     } else {
         queue_step(now, vk);
     }
+    // `--no-probe`: 文字キー(A〜Z)は IME 系キーではなくフックが手順に一致させない(KEY を記録しない)ので、
+    // 3 回再注入されて `ｋｋｋ` のようになる。1 回だけ注入して次の手順へ進む(ADR-248 の検証)。
+    if NO_PROBE.with(|f| *f.borrow()) && (0x41..=0x5A).contains(&script_vk(vk)) {
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
+        AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1500));
+        return;
+    }
     // リセット操作(2打)は約 0.7 秒かかるので、k(Engine状態の確認)/ESC は後ろへずらす。
     let (k_at, esc_at, next_at) = if vk == RESYNC_ON || vk == RESYNC_OFF {
         (1200, 1700, 2400)
