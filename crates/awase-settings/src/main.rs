@@ -42,6 +42,8 @@ const HOMEPAGE_URL: &str = "https://awase.cc";
 enum Tab {
     Basic,
     Keys,
+    /// 「キーの入れ替え」(Scancode Map、ADR-230/248)。旧来は「ショートカット」タブに間借りしていた。
+    KeySwap,
     Keymap,
     DisableApps,
     Calibration,
@@ -3135,8 +3137,10 @@ impl SettingsApp {
                 self.new_keymap_to_main.clear();
             }
         }
+    }
 
-        ui.add_space(16.0);
+    /// 「キーの入れ替え」タブ（ADR-248。「ショートカット」タブから独立させた）。
+    fn tab_key_swap(&mut self, ui: &mut egui::Ui) {
         self.scancode_map_section(ui);
     }
 
@@ -3144,7 +3148,6 @@ impl SettingsApp {
     ///
     /// ADR-127 の例外: このセクションの適用は画面共通の「適用」とは別の操作で、レジストリにだけ書く。
     fn scancode_map_section(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
         ui.heading("キーの入れ替え");
         ui.label("選んだキーの位置を入れ替えます。変更は再起動後に有効になります。管理者権限の確認が1回表示されます。");
         ui.collapsing("困ったとき", |ui| {
@@ -4295,6 +4298,7 @@ impl eframe::App for SettingsApp {
                 for (tab, label) in [
                     (Tab::Basic, "全般設定"),
                     (Tab::Keys, "キー設定"),
+                    (Tab::KeySwap, "キーの入れ替え"),
                     (Tab::Layout, "配列編集"),
                     (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
@@ -4370,6 +4374,7 @@ impl eframe::App for SettingsApp {
                 .show(ui, |ui| match self.active_tab {
                     Tab::Basic => self.tab_basic(ui),
                     Tab::Keys => self.tab_keys(ui),
+                    Tab::KeySwap => self.tab_key_swap(ui),
                     Tab::Keymap => self.tab_keymap(ui),
                     Tab::DisableApps => self.tab_disable_apps(ui),
                     Tab::Calibration => self.tab_calibration(ui),
