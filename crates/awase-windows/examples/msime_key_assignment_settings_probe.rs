@@ -310,7 +310,7 @@ mod windows_probe {
                 return None;
             }
             // SAFETY: walker/child は有効な COM オブジェクト。
-            let Ok(next) = unsafe { walker.GetNextSiblingElement(&child) } else {
+            let Ok(next) = (unsafe { walker.GetNextSiblingElement(&child) }) else {
                 return None;
             };
             child = next;
