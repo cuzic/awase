@@ -723,14 +723,22 @@ impl JournalLanes {
     }
 }
 
+/// [`JournalEntry::contains_typed_text`] が true の型の、JSON の `"type"` の値(serde の tag)。
+///
+/// 不具合報告のプレビュー(`awase-settings`)の「入力した文字が分かる行をすべて削除」は、行の JSON から
+/// この名前を読んで消す(文字列の部分一致ではなく、`entry.type` の値の一致)。`contains_typed_text` の
+/// `true` の arm と同じ集合であることは、このファイルの単体テスト(`typed_text_type_names_match_...`)が
+/// ソースを読んで固定する(片方だけ足すと落ちる)。
+pub const TYPED_TEXT_TYPE_NAMES: [&str; 3] = ["KeyInput", "SentInput", "LiteralDetect"];
+
 impl JournalEntry {
     /// 利用者が入力した文字(の手がかり)を含む型か(ADR-250 決定 7)。不具合報告のプレビューの
-    /// 「打鍵の行をすべて削除」の対象を型の属性で決めるための入口。網羅的な `match` なので、
+    /// 「入力した文字が分かる行をすべて削除」の対象を型の属性で決めるための入口。網羅的な `match` なので、
     /// variant を足すとここで必ず入力内容を含むかを決めることになる。
     ///
-    /// 現状の削除ボタンは `"type":"KeyInput"` の文字列一致のままで(`awase-settings`)、`SentInput`
-    /// (`ch` を持つ)と `LiteralDetect` は削除対象外にするという ADR-222 の約束を保つ。この関数は
-    /// 「入力内容を含む型の一覧」を型として固定する(settings 側の付け替えは決定 7 の次の段階)。
+    /// 設定画面の一括削除は [`TYPED_TEXT_TYPE_NAMES`] でこの集合を消す(ADR-250 決定 7。ADR-222 では
+    /// `SentInput`・`LiteralDetect` は削除対象外だったが、10 分窓を外すと一括削除が唯一の手段になるので、
+    /// 所有者が 3 種すべてを対象にすると決めた〈2026-10-10〉)。
     #[must_use]
     pub const fn contains_typed_text(&self) -> bool {
         match self {
@@ -2216,5 +2224,45 @@ mod tests {
             events: vec![],
         };
         assert!(sent.contains_typed_text());
+    }
+    #[test]
+    fn typed_text_type_names_match_the_true_arm_of_contains_typed_text() {
+        // `contains_typed_text` の `=> true` の arm に並ぶ variant 名を、ソースから読んで定数と比べる。
+        let src = include_str!("journal.rs");
+        let start = src.find("pub const fn contains_typed_text").unwrap();
+        let body = &src[start..];
+        let true_arm = &body[..body.find("=> true").unwrap()];
+        let mut names: Vec<&str> = true_arm
+            .split("Self::")
+            .skip(1)
+            .map(|rest| rest.split(|c: char| !c.is_alphanumeric()).next().unwrap())
+            .collect();
+        names.sort_unstable();
+        let mut expected = TYPED_TEXT_TYPE_NAMES.to_vec();
+        expected.sort_unstable();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn typed_text_type_name_is_the_serde_tag_of_the_entries() {
+        let tag = |e: &JournalEntry| {
+            serde_json::to_value(e).unwrap()["type"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let key = make_key_input_entry();
+        let sent = JournalEntry::SentInput {
+            issue_us: 0,
+            accepted: 0,
+            events: vec![],
+        };
+        for e in [&key, &sent] {
+            assert!(e.contains_typed_text());
+            assert!(TYPED_TEXT_TYPE_NAMES.contains(&tag(e).as_str()));
+        }
+        let timing = make_timing_entry();
+        assert!(!timing.contains_typed_text());
+        assert!(!TYPED_TEXT_TYPE_NAMES.contains(&tag(&timing).as_str()));
     }
 }

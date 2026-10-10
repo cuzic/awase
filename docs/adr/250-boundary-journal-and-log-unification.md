@@ -87,7 +87,7 @@ related_adr:
   - 手書きの行: `Blacklist drift correction`(`check_drift_correction.py:28`、`check_drift_recovery.py:65`、`check_drift_recovery_chrome.py:5`)、`[mode-key-follow]`(`mode_key_pass_timeline.py`)、`Engine activated/deactivated`(`effect_learning.py`)、
     `e2e-ime.yml:1285-1286` の Select-String、`e2e-uwp-inputsite-hook-watchdog-probe.yml:75,102`、`tools/e2e/config_verify/run.py`、`tools/e2e/ime_key_matrix/testdata/*.awase.log`(22 本)。
   - `architecture_guard.rs`: `:2498` の `DRIFT_SEND_LOG_MARKER = "[drift] correction: observed="`(ログ文言を順序ガードの目印にしている)、`:403`(output/tsf は journal を参照しない)、`:6123`(`emit_tracing` に `?`/`%`/ワイルドカード禁止)、`:6167`(`KeyInput` の構築は 1 か所)、`hook_callback` のログマクロ数 7 件。
-- 設定画面の不具合報告プレビューは、`"type":"KeyInput"` の文字列一致で「打鍵の行をすべて削除」する(`crates/awase-settings/src/bug_report.rs:947-954`)。ADR-222 で所有者が決めた約束。`SentInput`(`ch` を持つ)と `LiteralDetect` は削除対象外のまま。
+- 設定画面の不具合報告プレビューは、`"type":"KeyInput"` の文字列一致で「打鍵の行をすべて削除」していた(ADR-222 で所有者が決めた約束。`SentInput`〈`ch` を持つ〉と `LiteralDetect` は削除対象外)。**2026-10-10 に決定 7 の実装で付け替えた**: 所有者が 3 種すべてを対象にすると決め、`JournalEntry::contains_typed_text()` と同じ集合の `TYPED_TEXT_TYPE_NAMES` を `entry.type` の値の一致で使う「入力した文字が分かる行をすべて削除」になった(`crates/awase-settings/src/bug_report.rs` の `is_typed_text_row`)。
 
 ### 5. 過去の検討との関係
 
@@ -209,7 +209,7 @@ ADR-139 は「journal 記録約 49 箇所に対して `log::` は 736 箇所と�
 1. 再生: **ADR-241 段階 5 の合否に従う**(他の ADR の作業の結果で本 ADR の採否が決まる形になることを明記する)。本 ADR 側の確認は、`KeyInput` に InputContext を足した記録から、`Engine::on_input` の再生に要る材料がそろうこと(本物の報告 1 件で確かめる。評価できる時期は段階 3 以降)。
 2. 各段階の PR に、組ごとの表(撤去行・追加行・移す消費者)を付ける(**見積もりと説明のため。純減は条件にしない**)。置き換えは 1:1 で、**既定 `info` の下での出力件数が増えないこと、CI の `awase.log` のバイト数が段階 0 で決めた閾値以下であること**を段階ごとに測って示す(取りやめ条件と同じ基準)。
 3. 変更後の e2e チェッカー(フィールドまで読む `check_consistency.py`・`check.py`・`check_run_validity.py` を含む)と `test_log_anchors_in_rust_source.py` が全て通る。
-4. 設定画面の「打鍵の行をすべて削除」が、変更後の型でも打鍵を含む行を削除する(件数 0 でないことを確認する)。
+4. 設定画面の「入力した文字が分かる行をすべて削除」が、変更後の型でも打鍵・`SentInput`・`LiteralDetect` の行を削除する(件数 0 でないことを確認する。単体テスト `delete_typed_text_rows_removes_…` が固定)。
 5. 診断用の記録: 段階 1 の後、drift の見送り(`NoDrift::StaleObservation` など)が、不具合報告の journal に理由(variant + `basis`)つきで載り、同じ理由の連続が 1 件に畳まれる。
 
 ## 取りやめ条件(提案)
