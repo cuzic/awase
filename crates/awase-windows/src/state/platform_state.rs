@@ -608,7 +608,9 @@ impl ImeStateHub {
     /// 揃える条件: 初期値のまま（`desired_is_placeholder`）、明示意図が無い（`last_intent`）、観測から導ける開閉
     /// （`derive_any`）がある。揃えたら（`ModeKeyPassedThrough { align_desired: true }` の reducer 経路、BUG-157 と同じ）
     /// 揃えた後の `desired_open` を返す。揃えなかったら `None`（読めない窓では観測が来るまで触れない）。
-    pub(crate) fn align_placeholder_desired(
+    ///
+    /// 閉ループのハーネス `tests/support/harness.rs` からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn align_placeholder_desired(
         &mut self,
         now: std::time::Instant,
         tick_ms: TickMs,

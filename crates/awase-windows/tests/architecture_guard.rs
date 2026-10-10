@@ -6971,6 +6971,7 @@ fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
 
 const PLATFORM_STATE_PUB_FNS: &[&str] = &[
     "advance_clock_ms",
+    "align_placeholder_desired",
     "apply_key_effect_prediction",
     "arm_external_change_watch_in_scope",
     "clock",
