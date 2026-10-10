@@ -6246,7 +6246,11 @@ fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
 fn journal_emit_tracing_non_debug_arms_are_pinned() {
     /// (arm の目印 = `Self::X {` の variant 名, 期待する info 以上のマクロ数, 期待する非 journal target 数,
     ///  その型の `crate::journal::JournalEntry::X {` の本番構築点の数)。段階 4-1 以降で足す。
-    const PINNED_NON_DEBUG_ARMS: &[(&str, usize, usize, usize)] = &[];
+    const PINNED_NON_DEBUG_ARMS: &[(&str, usize, usize, usize)] = &[
+        // ADR-250 段階 4-1: `[shadow-toggle]` の手書き 11 行の置き換え。info と debug の 2 マクロ、どちらも
+        // `awase_windows::runtime::key_pipeline` の target。構築点は `kp_note_shadow_toggle` の 1 か所。
+        ("ShadowToggle", 1, 2, 1),
+    ];
 
     const START_MARKER: &str = "fn decision_kind_shape(";
     const END_MARKER: &str = "/// 統合イベントジャーナル。";
