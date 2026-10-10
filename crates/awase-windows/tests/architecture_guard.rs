@@ -3943,6 +3943,11 @@ fn foreign_ctrl_latch_is_read_only_at_hook_snapshot_and_cleared_on_five_paths() 
     };
     let mut readers = Vec::new();
     for path in list_src_files() {
+        // `#[cfg(test)] mod` だけのファイル。報告 journal の再生(ADR-251)が、hook_callback と同じ順で
+        // ラッチを回して注入 V の ctrl を求める。本番コードではない。
+        if path == "src/key_input_replay_tests.rs" {
+            continue;
+        }
         let compact = strip(&read_crate_file(&path));
         let reads = compact.matches("ctrl_for_injected_key(").count();
         let uses =
