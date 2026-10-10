@@ -8,7 +8,7 @@ summary: |-
   V を ctrl=false の Char として NICOLA 変換して「ふ」を出す。注入された Ctrl↓ を別枠に記録し、**注入された打鍵の modifier_snapshot にだけ**
   期限(TTL)内の ctrl を足す(案 A')。物理打鍵は別枠を読まないので、KeyUp 欠落でも ADR-054 の stuck は TTL の値と無関係に再発しない。
 status: |-
-  起草・改訂(2026-10-10)。Opus round1(13指摘)・round2(Should-fix 3件・Nit 4件)を反映済み、Opus round3 で収束(Blocker なし、実装に着手してよい)。実装済み(PR #580、2026-10-10)。TTL は `FOREIGN_CTRL_TTL_MS`=1000ms(pending、Spokenly の保持は報告 journal の2例で 101ms の約10倍、他ツールは未測定)。CI の実機 A/B は paste が全構成 36/36(run 38041351075)。報告 journal の replay fixture は ADR-251(PR #582)で実装(ラッチ経由の再生、hook.rs の配線は範囲外)。未了: 「注入 Ctrl↓ だけで Up なし」後の stuck 非再発の CI 観測、0x11 の到達確認、報告者の実機確認。
+  起草・改訂(2026-10-10)。Opus round1(13指摘)・round2(Should-fix 3件・Nit 4件)を反映済み、Opus round3 で収束(Blocker なし、実装に着手してよい)。実装済み(PR #580、2026-10-10)。TTL は `FOREIGN_CTRL_TTL_MS`=1000ms(pending、Spokenly の保持は報告 journal の2例で 101ms の約10倍、他ツールは未測定)。CI の実機 A/B は paste が全構成 36/36(run 38041351075)。報告 journal の replay fixture は ADR-251(PR #582)で実装(ラッチ経由の再生、hook.rs の配線は範囲外)。「注入 Ctrl↓ だけで Up なし」後の stuck 非再発は CI で観測済み(run 38046806775、ADR-252: 物理相当の打鍵は c=false で通常変換され、S1 は崩れていない)。0x11 は LL フックに 0xA2 scan=29 として届く。未了: 報告者の実機確認のみ。
 related_adr:
   - "ADR-054"
   - "ADR-052"
