@@ -262,31 +262,31 @@ def make_body_f16(reps):
             time.sleep(1.2)
             base = len(W.read_rows(echo))
             W.type_vks(KEYS_NICOLA, 90, marker=True)
-            time.sleep(1.5)
+            time.sleep(1.0)
+            W.press(W.VK["RETURN"], 40, marker=True)  # 未確定文字列は Enter で確定されてから端末へ届く
+            time.sleep(1.2)
             rows1 = W.read_rows(echo)[base:]
             before = P.classify(rows1)
-            W.press(W.VK["RETURN"], 40, marker=True)
-            time.sleep(0.8)
             W.press(W.VK["F16"], 40, marker=True)
             time.sleep(1.2)
             base2 = len(W.read_rows(echo))
             W.type_vks(KEYS_NICOLA, 90, marker=True)
-            time.sleep(1.5)
+            time.sleep(1.0)
+            W.press(W.VK["RETURN"], 40, marker=True)
+            time.sleep(1.2)
             rows2 = W.read_rows(echo)[base2:]
             after_text = P.text_of(rows2)
             after = P.classify(rows2)
             if before["kana"] == 0:
                 verdict = "INVALID"
                 n_invalid += 1
-            elif after["kana"] == 0 and after_text == "kata":
+            elif after["kana"] == 0 and after_text.replace("<0D>", "") == "kata":
                 verdict = "PASS"
                 n_pass += 1
             else:
                 verdict = "FAIL"
                 n_fail += 1
             rec(results, type="f16_case", tag=tag, i=i + 1, verdict=verdict, before=P.text_of(rows1), after=after_text, counts_after=after)
-            W.press(W.VK["RETURN"], 40, marker=True)
-            time.sleep(0.8)
         rec(results, type="f16_result", tag=tag, reps=reps, passed=n_pass, failed=n_fail, invalid=n_invalid)
         print(f"F16 {tag}: PASS={n_pass} FAIL={n_fail} INVALID={n_invalid}", flush=True)
     return body
