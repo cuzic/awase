@@ -15,6 +15,7 @@ pub enum PostBypassKey {
 ///
 /// 判定順序は意味を持つ。modifier は passthrough の真部分集合なので、
 /// modifier 判定を後ろへ動かすと `prefix + Shift + 5` が壊れる。
+#[must_use]
 pub const fn classify_post_bypass_key(
     is_key_down: bool,
     ctrl_held: bool,

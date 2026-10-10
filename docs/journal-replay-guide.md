@@ -63,9 +63,9 @@ TH1dで実際に使った手順（1本目: 不具合報告`01M29KDNZ22KNY1FPXSKB
    3値表現で出力されるため変換不要。
 5. 各attempt内の`inputs`はそのまま（`DecisionInputs`はワイヤ形式の変更を受けていない）。
 6. 変換後のレコード配列（`Vec<ActuationDecisionRecord>`と互換のJSON配列）を
-   `crates/awase-windows/tests/journals/actuation_decision/<説明的な名前>.json`
+   `crates/awase-windows-core/tests/journals/actuation_decision/<説明的な名前>.json`
    として保存する。ファイル名に対応するBUG番号/report_idを含めること。
-7. `cargo test -p awase-windows --lib actuation_decision_record` でreplayがgreenに
+7. `cargo test -p awase-windows-core --lib actuation_decision_record` でreplayがgreenに
    なることを確認する。`replay_all_actuation_decision_fixtures`は
    `assert!(!paths.is_empty())`でフィクスチャ0件を拒否するため、ディレクトリを
    誤って空にした場合はこのテストが落ちて気づける。

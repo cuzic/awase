@@ -59,6 +59,7 @@ impl std::fmt::Display for ClassifyReason {
 }
 
 /// 段階 1: 拡張スタイルが `WS_EX_NOIME` なら NonText で確定。`None` なら次の段階へ。
+#[must_use]
 pub fn decide_by_ex_style(ex_style: i32) -> Option<ClassifyResult> {
     (ex_style & WS_EX_NOIME != 0).then_some(ClassifyResult {
         kind: FocusKind::NonText,
@@ -67,6 +68,7 @@ pub fn decide_by_ex_style(ex_style: i32) -> Option<ClassifyResult> {
 }
 
 /// クラス名が `GWL_STYLE` の読み取りを要するか（元のコードで `Edit` のときだけ読んでいた）。
+#[must_use]
 pub fn needs_edit_style(class_name: &str) -> bool {
     class_name == "Edit"
 }
@@ -75,6 +77,7 @@ pub fn needs_edit_style(class_name: &str) -> bool {
 ///
 /// `edit_style` は [`needs_edit_style`] が真のときだけ `Some`（それ以外は無視する）。
 /// クラス名が空なら（`GetClassNameW` 失敗）常に `None`。
+#[must_use]
 pub fn decide_by_class(class_name: String, edit_style: Option<i32>) -> Option<ClassifyResult> {
     if class_name.is_empty() {
         return None;

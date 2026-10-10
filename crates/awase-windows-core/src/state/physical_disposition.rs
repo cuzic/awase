@@ -105,6 +105,7 @@ impl PhysicalKeyDisposition {
     /// `profile.should_pass_physical_key()`（TsfNative で常に true）のみで判定しており、
     /// 「TSF が KANJI を正しく処理する」という前提が `GjiDirectStrategy` の全プロファイル
     /// 適用化（`ime_controller.rs`）より前のまま残っていたことが原因だった。
+    #[must_use]
     pub fn plan_core(
         event: &RawKeyEvent,
         profile: AppImeProfile,

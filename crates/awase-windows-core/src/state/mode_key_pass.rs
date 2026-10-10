@@ -59,6 +59,7 @@ pub struct ModeKeyPassLatch<S: Copy + PartialEq> {
 }
 
 impl<S: Copy + PartialEq> ModeKeyPassLatch<S> {
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             latch: ScopedOneShot::new(),

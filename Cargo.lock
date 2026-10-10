@@ -573,8 +573,6 @@ dependencies = [
  "base64",
  "flate2",
  "itertools",
- "measured-macro",
- "proptest",
  "quanta",
  "serde",
  "serde_json",

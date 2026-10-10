@@ -894,6 +894,7 @@ pub const fn vk_pair_to_ascii(vk: VkCode, needs_shift: bool) -> Option<char> {
 ///
 /// 呼び出し元は `output/`（windows-gated）のみのため、非 Windows では未使用になる。
 #[cfg_attr(not(windows), allow(dead_code))]
+#[must_use]
 pub fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
     let entries: &[(char, u16, bool)] = &[
         // 句読点・括弧

@@ -31,6 +31,7 @@ pub enum ResolveReason {
 }
 
 impl ResolveReason {
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ConfigOverride => "config override",
@@ -54,6 +55,7 @@ pub enum Resolution {
 }
 
 /// override → キャッシュ → engine 活性 の優先順位で決める。OS には触れない。
+#[must_use]
 pub const fn decide_resolution(facts: ResolveFacts) -> Resolution {
     if let Some(kind) = facts.config_override {
         return Resolution::Resolved {

@@ -237,6 +237,7 @@ pub fn coverage_slot_count(raw: &[PersistedCell]) -> usize {
 }
 
 /// 変換できたセルの割合（B-1 Blockerの縮退率チェック）。分母は[`coverage_slot_count`]。
+#[must_use]
 pub fn coverage_ratio(raw: &[PersistedCell], converted_len: usize) -> f64 {
     let slots = coverage_slot_count(raw);
     if slots == 0 {

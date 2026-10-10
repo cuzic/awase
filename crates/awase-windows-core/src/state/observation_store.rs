@@ -410,7 +410,7 @@ pub struct ObservationStore {
     /// 発見）。両軸を1つの `FocusFence` に統合し書き込み口を絞ることで、この
     /// クラスの片側だけ更新し忘れる退行を構造的に防ぐ（PR 109 コードレビュー
     /// 指摘4）。
-    pub current_fence: FocusFence,
+    current_fence: FocusFence,
 }
 
 impl ObservationStore {

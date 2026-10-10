@@ -31,7 +31,6 @@ awase-windows-core = { path = "../awase-windows-core" }
 # ADR-195段階4: T3の永続化スキーマ(`persist`モジュール)を読むためだけの依存。OS非依存クレート
 # なのでWindows限定にしない(coreがOS非依存クレートに依存されるだけ、という既存の向きに合わせる)。
 awase-keymap-learn = { path = "../awase-keymap-learn" }
-measured-macro = { path = "../measured-macro" }
 timed-fsm = { path = "../timed-fsm", version = "0.5.0" }
 tracing = "0.1"
 # tracing-log は default feature（他の default: smallvec/fmt/ansi/std も維持する
@@ -62,10 +61,6 @@ version = "0.1.0"
 awase-windows-core = { path = "../awase-windows-core", features = ["test-support"] }
 # journal 再生 fixture のハーネス(ADR-229)。非公開の dev 専用 crate。
 awase-replay = { path = "../awase-replay" }
-# ADR-158 TI1: classify_*系の純粋関数へproptestを適用するスパイク。
-# 非gatedモジュール(state/conv_classify.rs)向けのためホストターゲットで動く
-# 通常のdev-dependenciesに置く(windows限定にしない)。
-proptest = "1.11.0"
 
 [target.'cfg(windows)'.dev-dependencies]
 # `#[implement(...)]` マクロ展開が `::windows_core::...` を直接参照するため、

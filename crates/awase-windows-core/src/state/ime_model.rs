@@ -47,6 +47,7 @@ pub enum ImeApplyAcceptance {
 impl ImeApplyAcceptance {
     // 呼び出し元 `runtime/mod.rs`（`#[cfg(windows)]`）が非 Windows には存在しない。
     #[cfg_attr(not(windows), allow(dead_code))]
+    #[must_use]
     pub const fn drives_composition_side_effects(self) -> bool {
         matches!(self, Self::Accepted)
     }
@@ -619,6 +620,7 @@ impl ImeModel {
     /// `reduce()` と `ImeStateHub::record_ime_apply_result()` が同じ判定を読むための
     /// SSOT。ここでの「受理」は `applied` 更新と composition/warmup 副作用の可否を
     /// 指し、pending 解除の generation 厳密一致とは別の問いとして扱う。
+    #[must_use]
     pub fn classify_apply_completion(
         &self,
         open: bool,

@@ -157,6 +157,7 @@ pub const fn decide_gate(inputs: DecisionInputs) -> GateResult {
 }
 
 /// `decide_gate(inputs) == GateResult::NotOwned`の便宜関数（ADR-180決定1、
+///
 /// round1 E2）。`ImeController::apply`/`run_open_chain_async`/
 /// `imm_cross_write`/`fallback_write`が個別に書いていた同一の`matches!`を
 /// 1箇所に集約する。`with_app`・view構築・fail-open処理・レコード組み立ては
@@ -168,6 +169,7 @@ pub const fn is_input_relay(inputs: DecisionInputs) -> bool {
 }
 
 /// sync経路（`ImeController::apply`）が使う機構チェーン。
+///
 /// `ime_controller.rs::caps_chain_for`と同一（`caps(profile.into(), kind).chain`）。
 /// async経路（`open_chain.rs`）は`WriteMechanism::ALL`固定のまま変更しない
 /// （ADR-163 round2 T2、ADR-159の理由により意図的に非対称）。
@@ -252,6 +254,7 @@ const fn gji_direct_already_matches(
 }
 
 /// `runtime/open_chain.rs::imm_cross_write`の`ActuationOutcome::Failed`分岐の
+///
 /// already-matched判定。ImmCross の書き込みは `Failed` と報告されたが、直後に
 /// `read_ime_state_fast()` で再読み取りした実 IME 状態（`actual`、`None`=未知）が
 /// 既に desired（`open`）と一致しているかどうかを判定する。

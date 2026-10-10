@@ -19,6 +19,7 @@ pub enum ScopeCheck<T> {
 }
 
 impl<S: Copy + PartialEq, T: Copy> ScopedOneShot<S, T> {
+    #[must_use]
     pub const fn new() -> Self {
         Self { armed: None }
     }

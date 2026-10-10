@@ -44,6 +44,9 @@ jobs:
       # `#![cfg(windows)]`で消えたクレートを参照してFAILするため、追加するなら
       # `cargo test --doc -p timed-fsm` に限定すること)。
       - run: cargo nextest run --workspace --lib
+      # 核 crate（awase-windows-core、windows に依存しない）の doctest。`actuation_chain.rs` の `compile_fail` は型状態の
+      # 証明そのもの（nextest は doctest を実行しない。Opus PR #574 C7）。
+      - run: cargo test --doc -p awase-windows-core
       # 2026-10-04: 下の6本(+ガード)は tests/ にありながらどの CI ジョブからも
       # 実行されていなかった(`--test` に列挙しない統合テストは `--lib` にも含まれず
       # 黙って走らない)。closed_loop_scenarios はこの穴で ADR-212 の回帰ガードとして

@@ -192,7 +192,7 @@ a map of what to expect, not a substitute for reading them when the relevant are
   checkouts, not the same working tree.
 - `experiment-logging.md` — revert commits touching IME control/warmup/focus/key-selection must
   document the observed failure (app, IME, repro) in the commit body.
-- `tuning-constants.md` — changes to timing constants in `crates/awase-windows/src/tuning.rs` must
+- `tuning-constants.md` — changes to timing constants in `crates/awase-windows-core/src/tuning.rs` must
   cite a real measurement (ms) in the commit body, not "increase until it works."
 - `fix-requires-evidence.md` — fixes in the warmup/focus/belief/conv/key-selection "reincidence
   families" need either a regression test or a new `docs/known-bugs/BUG-NNN.md` entry.

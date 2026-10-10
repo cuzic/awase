@@ -8,6 +8,11 @@
 # false MISSED の心配は小さい。それでも examine_globs で名指しするのは、CORE_MODULES に足したファイルを
 # 登録し忘れないようにするため（xtask の `core-registry` が、base 比で足された名前の登録を検査する）。
 # exclude_re は殻の設定と同じ（核へ移ったファイルの除外が殻側に書いてあったため）。
+# 核の変異を、核の単体テストだけでなく殻の統合テスト（closed_loop_scenarios・explicit_press_exhaustive・
+# golden_scenarios など、分割前は同じ crate のテストだった）でも判定する。指定しないと、統合テストでしか
+# 捕まらない変異が false MISSED になる（Opus PR #574 C4）。
+test_package = ["awase-windows-core", "awase-windows"]
+
 examine_globs = [
     "crates/awase-windows-core/src/state/ime_model.rs",
     "crates/awase-windows-core/src/state/ime_profile_driver.rs",

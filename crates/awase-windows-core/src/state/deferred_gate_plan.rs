@@ -33,6 +33,7 @@ pub enum BlockReason {
 }
 
 /// `plan_blocking` の入力。`raw_recovery_owns` を読んでいないとき（`needs_raw_recovery_read` が偽）は偽を渡す。
+///
 /// 「`check_raw_recovery=false` かつ `raw_recovery_owns=true`」の組は殻からは来ない（読まないため）が、
 /// `plan_blocking` はその組でも raw を無視する（全数表で固定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

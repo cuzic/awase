@@ -30,14 +30,14 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 pub struct ImeBelief {
     /// 日本語 IME がアクティブか
-    pub is_japanese_ime: bool,
+    pub(in crate::state) is_japanese_ime: bool,
     /// 直前の conversion_mode（直近に観測した conv。読み手は予測の入力 `conv_raw` だけ。かな切替の検出は ROMAN ビットを直接読む
     /// `is_romaji` が担い、以前の「前回との差分」の分類は撤去した、ADR-239）
     /// None = まだ一度も取得できていない
-    pub prev_conversion_mode: Option<u32>,
+    pub(in crate::state) prev_conversion_mode: Option<u32>,
     /// 英数モードの「候補」(1 回目の英数の読み。確認の読みで確定する、ADR-238 / BUG-190)。
     /// `prev_conversion_mode` と同じ扱い: 読みの結果として `apply_ime_update` 経由でだけ書き、フォーカス変更で捨てる。
-    pub eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
+    pub(in crate::state) eisu_candidate: Option<crate::state::eisu_candidate::EisuCandidate>,
 }
 
 impl Default for ImeBelief {
@@ -85,18 +85,21 @@ impl ImeBelief {
 
     /// 日本語 IME がアクティブかを返す。
     #[inline]
+    #[must_use]
     pub const fn is_japanese_ime(&self) -> bool {
         self.is_japanese_ime
     }
 
     /// 直前の conversion_mode を返す。
     #[inline]
+    #[must_use]
     pub const fn prev_conversion_mode(&self) -> Option<u32> {
         self.prev_conversion_mode
     }
 
     /// 英数モードの候補を返す(ADR-238)。
     #[inline]
+    #[must_use]
     pub const fn eisu_candidate(&self) -> Option<crate::state::eisu_candidate::EisuCandidate> {
         self.eisu_candidate
     }

@@ -106,6 +106,7 @@ pub enum MsaaRoleDecision {
 
 impl MsaaRoleDecision {
     /// この決定が表す `FocusKind`。
+    #[must_use]
     pub const fn kind(self) -> FocusKind {
         match self {
             Self::TextInput(_) => FocusKind::TextInput,
@@ -116,6 +117,7 @@ impl MsaaRoleDecision {
 }
 
 /// MSAA ロール値（読めなかったら `None`）から決定を返す。OS には触れない。
+#[must_use]
 pub const fn decide_msaa_role(role_id: Option<u32>) -> MsaaRoleDecision {
     let Some(id) = role_id else {
         return MsaaRoleDecision::UndeterminedUnread;

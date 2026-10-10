@@ -744,6 +744,7 @@ impl DeliveryMode {
 pub(crate) const SHADOW_NOOP_WRITES_IN_TSF_NATIVE: bool = false;
 
 /// shadow の no-op 分岐で書く向き（D4 の固定点の手順2。`plan(shadow_toggled=false)` が Suppress の昇格した押下だけ）。
+///
 /// 本番の `kp_shadow_noop_write` と全列挙モデル（`DeliveryMode::PressIdFixedPoint`）が共有する。
 /// `has_press` は非リピートの押下（押下 ID あり）。リピートは従来どおり no-op では書かない。
 ///

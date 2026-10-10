@@ -2100,7 +2100,7 @@ mod tests {
         is_japanese: bool,
     ) -> PlatformState {
         let mut ps = ps_for_test();
-        ps.ime.belief.is_japanese_ime = is_japanese;
+        ps.ime.belief.set_japanese_ime(is_japanese);
         if let Some(source) = set_intent {
             ps.ime.dispatch_event(
                 ImeEvent::UserImeSetIntent {
@@ -2188,7 +2188,7 @@ mod tests {
     #[test]
     fn new_thread_assumption_yields_to_intent_store() {
         let mut ps = ps_for_test();
-        ps.ime.belief.is_japanese_ime = true;
+        ps.ime.belief.set_japanese_ime(true);
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         // last_intent と観測を消し、IntentStore だけを優先根拠として残す。
@@ -2650,7 +2650,7 @@ mod tests {
     #[test]
     fn check_drift_correction_ignores_heuristic_default_alone_without_explicit_intent() {
         let mut ps = ps_for_test();
-        ps.ime.belief.is_japanese_ime = true;
+        ps.ime.belief.set_japanese_ime(true);
         // Word 相当のウィンドウで明示 OFF。
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime
@@ -3643,7 +3643,7 @@ mod tests {
     #[test]
     fn reset_stale_ime_on_for_imm_broken_preserves_valid_intent_store_entry() {
         let mut ps = ps_for_test();
-        ps.ime.belief.is_japanese_ime = true;
+        ps.ime.belief.set_japanese_ime(true);
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime
             .write_sync_key(sync_key_witness(), false, TickMs(100));
