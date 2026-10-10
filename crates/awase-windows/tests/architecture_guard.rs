@@ -38,28 +38,62 @@ fn walk_all_src(out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-/// このクレート相対のパス（`"src/..."`）から、実際に読むファイルの絶対パスを返す。
-/// このクレートに無ければ `EXTRA_SRC_CRATES` の同じ相対パス、次に `RELOCATED` を引く。
-fn resolve_crate_path(rel_path: &str) -> std::path::PathBuf {
+/// このクレート相対のパス（`"src/..."`）から、実際に読むファイルの絶対パスを**すべて**返す。
+/// このクレートに実在すればそれ、`EXTRA_SRC_CRATES` の同じ相対パスに実在すればそれも足す
+/// （`lib.rs`・`state/mod.rs` のように同じ相対パスが複数の crate にできる。ADR-229 段階 B、P2）。
+/// どれも無ければ `RELOCATED` を引く。
+fn resolve_crate_paths(rel_path: &str) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
     let own = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
     if own.exists() {
-        return own;
+        found.push(own.clone());
     }
     for c in EXTRA_SRC_CRATES {
         let p = workspace_dir().join(c).join(rel_path);
         if p.exists() {
-            return p;
+            found.push(p);
         }
     }
-    if let Some((_, new)) = RELOCATED.iter().find(|(old, _)| *old == rel_path) {
-        return workspace_dir().join(new);
+    if found.is_empty() {
+        if let Some((_, new)) = RELOCATED.iter().find(|(old, _)| *old == rel_path) {
+            found.push(workspace_dir().join(new));
+        } else {
+            found.push(own);
+        }
     }
-    own
+    found
+}
+
+/// 同じ相対パスのファイルが複数 crate にあるとき、1 つのテキストに合成する。**本番コードを
+/// 先に、テストモジュールを後ろに**並べる（`production_code_only` が最初の `#[cfg(test)] mod tests` で
+/// 切るので、単純に連結すると 2 つ目以降の本番コードが「テスト」側に落ちて見逃される）。
+/// 1 つだけなら元のテキストそのもの。
+fn merge_src_texts(texts: &[String]) -> String {
+    if let [only] = texts {
+        return only.clone();
+    }
+    let mut prod = String::new();
+    let mut tests = String::new();
+    for t in texts {
+        let p = production_code_only(t);
+        prod.push_str(p);
+        prod.push('\n');
+        tests.push_str(&t[p.len()..]);
+        tests.push('\n');
+    }
+    prod + &tests
 }
 
 fn read_crate_file(rel_path: &str) -> String {
-    let raw = fs::read_to_string(resolve_crate_path(rel_path))
-        .unwrap_or_else(|e| panic!("failed to read {rel_path}: {e}"));
+    let raws: Vec<String> = resolve_crate_paths(rel_path)
+        .iter()
+        .map(|p| {
+            fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("failed to read {rel_path} ({}): {e}", p.display()))
+                .replace("\r\n", "\n")
+        })
+        .collect();
+    let raw = merge_src_texts(&raws);
     // Windows ランナーは git 既定の core.autocrlf=true でチェックアウト時に .rs
     // ファイルを CRLF 化する（`.gitattributes` の eol=lf 指定は `tests/golden/**`
     // のみが対象で、通常のソースファイルには効かない）。このファイル内の各種
@@ -4500,9 +4534,9 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
 #[test]
 fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
     let read = |rel: &str| {
-        non_comment_lines(production_code_only(
-            &fs::read_to_string(resolve_crate_path(&format!("src/{rel}"))).unwrap(),
-        ))
+        non_comment_lines(production_code_only(&read_crate_file(&format!(
+            "src/{rel}"
+        ))))
     };
     let mod_rs = read("runtime/mod.rs");
     // (i) ADR-205: 述語本体は `external_change_watch_applies_for`（GJI 限定のまま）。
@@ -5434,16 +5468,22 @@ fn list_rs_files_under(rel_root: &str) -> Vec<String> {
     } else {
         vec![Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()]
     };
-    let mut out = Vec::new();
+    // 同じ相対パス（`src/lib.rs` など）が複数 crate にあっても 1 件に畳む。`read_crate_file` が
+    // 全 crate 分を合成して返すので、畳まないと二重に数える。
+    let mut out: Vec<String> = Vec::new();
     for dir in crate_dirs {
         let mut files = Vec::new();
         walk_rs_files(&dir.join(rel_root), &mut files);
-        out.extend(files.iter().map(|path| {
-            path.strip_prefix(&dir)
+        for path in &files {
+            let rel = path
+                .strip_prefix(&dir)
                 .unwrap_or_else(|e| panic!("strip_prefix: {e}"))
                 .to_string_lossy()
-                .replace('\\', "/")
-        }));
+                .replace('\\', "/");
+            if !out.contains(&rel) {
+                out.push(rel);
+            }
+        }
     }
     out
 }
@@ -7822,7 +7862,7 @@ fn relocated_table_entries_are_consistent() {
             "RELOCATED の旧パス {old} がまだ実在する。移したなら元を消し、残すなら表から外す"
         );
         assert!(
-            resolve_crate_path(old).exists(),
+            resolve_crate_paths(old).iter().all(|p| p.exists()),
             "RELOCATED の {old} の移動先が実在しない"
         );
     }
@@ -7844,26 +7884,29 @@ fn extra_src_crates_exist() {
     }
 }
 
-/// 対象 crate 間で `src/` 相対パスが重複しない（`lib.rs` と `state/mod.rs` を除く）。
-/// 重複すると `list_src_files` → `read_crate_file` が自 crate 側だけを読み、核側を見逃すか
-/// 殻側を二重に数える（Opus レビュー P2）。分割前は対象が 1 crate なので空振りするが、
-/// `EXTRA_SRC_CRATES` に足した瞬間に効く。
+/// 同じ相対パスのファイルが複数 crate にあるときの合成（`merge_src_texts`）が、全 crate の本番コードを
+/// `production_code_only` の対象に残し、テストモジュールは後ろへ回す。
 #[test]
-fn src_relative_paths_are_unique_across_crates() {
-    let mut seen = std::collections::BTreeMap::new();
-    let mut files = Vec::new();
-    walk_all_src(&mut files);
+fn merge_src_texts_keeps_every_crates_production_code_first() {
+    let a = "fn prod_a() { needle(); }\n#[cfg(test)]\nmod tests {\n    fn t() { needle(); }\n}\n"
+        .to_string();
+    let b = "fn prod_b() { needle(); }\n#[cfg(test)]\nmod tests {\n    fn t() { needle(); needle(); }\n}\n".to_string();
+    let merged = merge_src_texts(&[a.clone(), b]);
+    assert_eq!(
+        production_code_only(&merged).matches("needle(").count(),
+        2,
+        "両 crate の本番コード 1 件ずつ"
+    );
+    assert_eq!(merged.matches("needle(").count(), 5, "テスト側も落とさない");
+    assert_eq!(merge_src_texts(&[a.clone()]), a, "1 つなら元のまま");
+}
+
+/// `list_src_files` の各キーは重複しない（重複すると合成済みの内容を二重に数える）。
+#[test]
+fn list_src_files_has_unique_keys() {
+    let files = list_src_files();
+    let mut seen = std::collections::BTreeSet::new();
     for f in &files {
-        let rel = src_relative(f).to_string_lossy().replace('\\', "/");
-        if rel == "lib.rs" || rel == "state/mod.rs" {
-            continue;
-        }
-        if let Some(prev) = seen.insert(rel.clone(), f.clone()) {
-            panic!(
-                "src/{rel} が複数の crate にある: {} と {}。ガードの read_crate_file が片方しか読まない",
-                prev.display(),
-                f.display()
-            );
-        }
+        assert!(seen.insert(f.clone()), "{f} が重複している");
     }
 }
