@@ -3,6 +3,7 @@
 param([string]$Out = 'settings-out')
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
+$Out = (Resolve-Path $Out).Path
 Add-Type -AssemblyName System.Drawing, System.Windows.Forms
 $log = Join-Path $Out 'settings.txt'
 function Say([string]$s) { $s | Tee-Object -FilePath $log -Append }
@@ -39,13 +40,13 @@ foreach ($st in @(@($null, $null), @(1, $null), @(1, 1), @(0, 0), @($null, 1))) 
   Say "##### [$tag] NoTsf3Override2=$($st[0]) DisableNewIME=$($st[1])"
   Push-Location (Split-Path $probe)
   Remove-Item msime_key_assignment_settings_probe.log -ErrorAction SilentlyContinue
-  $p = Start-Process -FilePath $probe -PassThru -RedirectStandardOutput (Join-Path (Resolve-Path $Out) "$tag-stdout.txt") -RedirectStandardError (Join-Path (Resolve-Path $Out) "$tag-stderr.txt")
+  $p = Start-Process -FilePath $probe -PassThru -RedirectStandardOutput (Join-Path $Out "$tag-stdout.txt") -RedirectStandardError (Join-Path $Out "$tag-stderr.txt")
   Start-Sleep -Seconds 12
   Shot "$tag-a"
   if (-not $p.WaitForExit(90000)) { Say '(timeout, kill)'; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
   Shot "$tag-b"
   if (Test-Path msime_key_assignment_settings_probe.log) {
-    Copy-Item msime_key_assignment_settings_probe.log (Join-Path (Resolve-Path $Out) "$tag-probe.log")
+    Copy-Item msime_key_assignment_settings_probe.log (Join-Path $Out "$tag-probe.log")
     Get-Content msime_key_assignment_settings_probe.log -Encoding utf8 | Where-Object { $_ -match 'RESULT|compat|Compat|以前|previous|Previous|KeyAssignment|ToggleSwitch|CheckBox|not found|found' } | Select-Object -First 25 | ForEach-Object { Say ("   " + $_) }
   } else { Say '   (no probe log)' }
   Pop-Location
