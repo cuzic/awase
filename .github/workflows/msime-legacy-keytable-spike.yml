@@ -1,0 +1,26 @@
+name: msime-legacy-keytable-spike
+
+# MS-IME 互換モード(旧UI)のキー割り当てバイナリ表のコード体系を調べるスパイク(観測のみ)。
+# IMJPUEXC.EXE の使い方と SETKEYTEMPLATE の候補、テンプレートごとの StyleList\<style>\key を採取する。
+on:
+  push:
+    branches: [ci/msime-legacy-keytable-spike]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: 採取
+        shell: pwsh
+        run: ./tools/ci/msime-legacy-keytable-spike.ps1 -Out spike-out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: msime-legacy-keytable
+          path: spike-out/
