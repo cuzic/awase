@@ -19,8 +19,39 @@ jobs:
       - name: 採取
         shell: pwsh
         run: ./tools/ci/msime-legacy-keytable-spike.ps1 -Out spike-out
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+      - name: ハーネスをビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --example ime_key_matrix_spike
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
+      - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $list = Get-WinUserLanguageList
+          $list.Add("ja-JP")
+          Set-WinUserLanguageList -LanguageList $list -Force
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          "TIP_REGISTERED=$(Test-Path $tipKey)"
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: 実効果の測定(テンプレート・コード掃引)
+        shell: pwsh
+        run: ./tools/ci/msime-legacy-keytable-effect.ps1 -Out effect-out
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: msime-legacy-keytable
-          path: spike-out/
+          path: |
+            spike-out/
+            effect-out/
+            dist/*.log
