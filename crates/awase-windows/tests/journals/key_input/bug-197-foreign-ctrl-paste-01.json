@@ -1,0 +1,45 @@
+{
+ "source": "実記録: 報告 01M4J72G985T0FFT6XPN0SWCQQ の journal seq 61-64(KeyInput)。値は記録のまま(ctrl は全て false、記録時は foreign_ctrl 自体が無い)",
+ "keys": [
+  {
+   "t_us": 29858611,
+   "vk": 162,
+   "scan": 29,
+   "event_type": "down",
+   "injected": true,
+   "alt": false,
+   "shift": false,
+   "ctrl": false
+  },
+  {
+   "t_us": 29859051,
+   "vk": 86,
+   "scan": 47,
+   "event_type": "down",
+   "injected": true,
+   "alt": false,
+   "shift": false,
+   "ctrl": false
+  },
+  {
+   "t_us": 29859417,
+   "vk": 86,
+   "scan": 47,
+   "event_type": "up",
+   "injected": true,
+   "alt": false,
+   "shift": false,
+   "ctrl": false
+  },
+  {
+   "t_us": 29959726,
+   "vk": 162,
+   "scan": 29,
+   "event_type": "up",
+   "injected": true,
+   "alt": false,
+   "shift": false,
+   "ctrl": false
+  }
+ ]
+}
