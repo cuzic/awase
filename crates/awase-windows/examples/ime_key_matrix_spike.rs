@@ -27,7 +27,7 @@
 //! - 通知: `--notify`(TSF スレッド compartment の変更通知を待ちの終了条件に使う。開閉/変換モードの待ちだけ) /
 //!   `--notify-quiet=MS`(最後の通知からこの間静かなら確定。既定40) / `--notify-nochg=MS`(通知が来なければ「変化なし」と見なす待ち。
 //!   既定150) / `--notify-comp`(入力中/変換中/確定のイベント=WM_IME_*/EN_CHANGE を記録する。ログだけ) [学習]
-//! - 共通: `--activate-gji`(CI 用: GJI プロファイルを有効化し、フックを遅延して張る) / `--msime`(有効化する IME を Microsoft IME に) /
+//! - `--no-probe`(各キーの後に自動で打つ k と ESC を省く。`--seq` で 4B=k・1B=ESC を明示して状態遷移を完全に指定する検証用。ADR-248) / 共通: `--activate-gji`(CI 用: GJI プロファイルを有効化し、フックを遅延して張る) / `--msime`(有効化する IME を Microsoft IME に) /
 //!   `--hold=MS`(注入キーの保持時間。既定80) / `--repeat=N`(全手順をこのプロセス内で N 回繰り返す)
 //!
 //! ## ログのタグ
@@ -401,6 +401,8 @@ thread_local! {
     static SHIFT_MUH: RefCell<bool> = const { RefCell::new(false) };
     /// `--fast`: +1500ms の観測を省く。
     static FAST_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--no-probe`: 各キーの後に自動で打つ `k`(Engine 状態の確認)と ESC を省く。`--seq` で状態遷移を完全に指定する検証用。
+    static NO_PROBE: RefCell<bool> = const { RefCell::new(false) };
     /// `--snap100`: 観測を +100ms だけにする(CI の格子ログで +100ms と +400ms の値が一致 99.8%)。押下後の待ちは通知の静止で終える。
     static SNAP100: RefCell<bool> = const { RefCell::new(false) };
     /// `--speed=K`: 手順間の待ち時間をK倍速にする(既定1=従来どおり)。
@@ -926,8 +928,10 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     } else {
         (700, 1200, 1800)
     };
-    queue_press(now + scaled(k_at), 0x4B); // k
-    queue_press(now + scaled(esc_at), 0x1B); // ESC
+    if !NO_PROBE.with(|f| *f.borrow()) {
+        queue_press(now + scaled(k_at), 0x4B); // k
+        queue_press(now + scaled(esc_at), 0x1B); // ESC
+    }
     AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(next_at));
 }
 
@@ -2928,6 +2932,7 @@ fn validate_args() {
         "--grid-adaptive",
         "--hz",
         "--msime",
+        "--no-probe",
         "--notify",
         "--notify-comp",
         "--resync",
@@ -3011,6 +3016,9 @@ fn run() -> WinResult<()> {
         }
         if a == "--shiftmuh" {
             SHIFT_MUH.with(|m| *m.borrow_mut() = true);
+        }
+        if a == "--no-probe" {
+            NO_PROBE.with(|f| *f.borrow_mut() = true);
         }
         if a == "--fast" {
             FAST_MODE.with(|f| *f.borrow_mut() = true);
