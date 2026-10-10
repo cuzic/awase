@@ -178,6 +178,8 @@ static EPOCH: OnceLock<Instant> = OnceLock::new();
 static LOG_PATH: OnceLock<String> = OnceLock::new();
 static HOOK_EVENTS: Mutex<Vec<HookEv>> = Mutex::new(Vec::new());
 static FOREIGN_EVENTS: AtomicU64 = AtomicU64::new(0);
+/// 他アプリ注入(`MARKER` 以外の `LLKHF_INJECTED`)が LL フックに届いたときの (vk, scan, down)。`--foreign-ctrl` の観測用(上限 64)。
+static FOREIGN_LOG: Mutex<Vec<(u32, u32, bool)>> = Mutex::new(Vec::new());
 
 fn hwnd_of(v: &AtomicIsize) -> HWND {
     HWND(v.load(Ordering::SeqCst) as *mut core::ffi::c_void)
@@ -841,6 +843,13 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             }
         } else {
             FOREIGN_EVENTS.fetch_add(1, Ordering::Relaxed);
+            if kb.flags.0 & 0x10 != 0 {
+                if let Ok(mut g) = FOREIGN_LOG.lock() {
+                    if g.len() < 64 {
+                        g.push((kb.vkCode, kb.scanCode, msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN));
+                    }
+                }
+            }
         }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
@@ -1712,6 +1721,11 @@ fn worker(form: Form) {
             clear_text(child);
             sleep_ms(perturb.start_delay_ms);
             perturb.dictate_before_typing();
+            if let Some(obs) = perturb.foreign_ctrl_before_typing(&|| read_text(child)) {
+                rec(&obs);
+                clear_text(child);
+                sleep_ms(300);
+            }
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }
@@ -1720,6 +1734,7 @@ fn worker(form: Form) {
             if let Some(h) = suspender {
                 let _ = h.join();
             }
+            perturb.foreign_ctrl_release();
             perturb.after_inject(kind, t);
             // 最後の同時打鍵判定・出力の落ち着きを待ってから確定(Enter)。
             sleep_ms(300);

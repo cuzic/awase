@@ -718,6 +718,17 @@ jobs:
               for iv in (30,)
               for n in (1, 3)
               for raw in (False, True)],
+            # ADR-252: 注入 Ctrl↓ だけで Up なし(--foreign-ctrl、perturb.rs)のあと、物理相当の打鍵が通常どおり変換されるか(S1)、
+            # 期限内の注入キーは ctrl 付き扱い(S2)・期限後は変換(S3)、0x11 が LL フックに何で届くか(S4)を観測する。
+            # S1 は本試行の expect/actual(判定は typing)、S2〜S4 は typing_stress.log の type:"foreign_ctrl"(text_after_injected_a・hook_reached)で見る
+            # (本試行の打鍵は Ctrl↑ 解放後なので、解放後に通常へ戻るか=stuck 非再発も S2〜S4 の trial で見える)。
+            # 対照: awase なしで S2(Ctrl+A の素通しの基準)。only='tsx-dict-fctrl-*,tsx-raw-dict-fctrl-*'。
+            *[tsx(f'dict-fctrl-{form}-{ime_name}-{case}', form, ime, 30, raw=raw, extra=f'--foreign-ctrl={case}', kinds='single,mixed', trials=3, len=8, runs=2, wait=900)
+              for form in ('edit', 'rich')
+              for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))
+              for case in ('s1', 's2', 's3', 's4')
+              for raw in (False, True)
+              if not raw or case == 's2'],
             # --- drift correction の実機観測(cal-drift-、ci/e2e-calibration。ADR-191 09-T4、BUG-020) ---
             # `runtime/ime_refresh.rs::ir_apply_drift_correction` が、明示意図の OFF 直後に実 IME を不適切に
             # ON へ戻す/固定するか(2026-07-08 の実機症状)を、TsfNative相当の入力先(--form=tsf、ADR-193)で観測する。
