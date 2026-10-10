@@ -1404,12 +1404,11 @@ fn current_bug_report_diagnostics(
 fn build_bug_report_keymap_learn_summary(
     app: &Runtime,
 ) -> crate::bug_report::BugReportKeymapLearnSummary {
-    use crate::state::key_effect_runtime as ker;
     // 不具合報告の同梱表との突き合わせ診断は、予測時に実際に使った`(preset, check_against_bundled)`
     // （`RuntimeTableCache`が保持）で行う。GJI/本体どちらのキャッシュかを推測しない。
     crate::bug_report::BugReportKeymapLearnSummary::from_paths(
-        ker::table_file_path().as_deref(),
-        ker::last_attempt_file_path().as_deref(),
+        crate::state::key_effect_io::table_file_path().as_deref(),
+        crate::state::key_effect_io::last_attempt_file_path().as_deref(),
         app.use_learned_keymap_table,
         // `use_learned_keymap_table`がfalseの間は`get`が呼ばれずcellsが古いまま残るため併せて見る。
         app.use_learned_keymap_table && app.key_effect_runtime_table.is_active(),

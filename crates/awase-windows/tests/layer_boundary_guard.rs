@@ -537,6 +537,8 @@ const CORE_MODULES: &[&str] = &[
     "injection_mode",
     "input_barrier",
     "intent_store",
+    "key_effect_predictor",
+    "key_effect_runtime",
     "key_effect_table",
     "key_sequence_policy",
     "keymap_initial_hypothesis",
@@ -570,16 +572,12 @@ const NOT_CORE_MODULES: &[(&str, &str)] = &[
         "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
     ),
     (
+        "key_effect_io",
+        "fs::metadata / read_to_string と #[cfg(windows)] の取得口（key_effect_runtime / key_effect_predictor から切り出した殻、恒久的に Tier-2 の外）",
+    ),
+    (
         "probe_rejection_stats",
         "可変の static カウンタと #[cfg(windows)] の admit_epoch_in_app（probe_admission から切り出した殻、恒久的に Tier-2 の外）",
-    ),
-    (
-        "key_effect_predictor",
-        "#[cfg(windows)] の get_gji/get_native（FS/レジストリ。殻へ）",
-    ),
-    (
-        "key_effect_runtime",
-        "#[cfg(windows)] と fs::metadata（学習済み表の読み込み。殻へ）",
     ),
 ];
 

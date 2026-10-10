@@ -27,6 +27,8 @@ examine_globs = [
     "crates/awase-windows/src/lifetime_counter.rs",
     "crates/awase-windows/src/state/ime_model.rs",
     "crates/awase-windows/src/state/ime_profile_driver.rs",
+    "crates/awase-windows/src/state/key_effect_predictor.rs",
+    "crates/awase-windows/src/state/key_effect_runtime.rs",
     "crates/awase-windows/src/state/observation_store.rs",
     "crates/awase-windows/src/state/conv_classify.rs",
     "crates/awase-windows/src/state/conv_mode.rs",

@@ -160,6 +160,7 @@ pub mod ime_read_strategy;
 // する。runtime への配線（既存 `ImeModel.last_intent` との統合）はまだ無い
 // （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
 pub mod intent_store;
+pub mod key_effect_io;
 pub mod key_effect_predictor;
 pub mod key_effect_runtime;
 pub mod key_effect_table;
