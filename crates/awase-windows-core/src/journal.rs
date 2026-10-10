@@ -898,6 +898,7 @@ impl JournalEntry {
             | Self::PressWriteClaim { .. }
             | Self::DriftGiveUpDiagnostic { .. }
             | Self::DriftPlanDecided { .. }
+            | Self::ShadowToggle { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::ConvClassifyCall { .. }
