@@ -265,7 +265,7 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 付録 B のうち 6 件を `CORE_MODULES` へ移した(`ime_event`・`ime_model`・`probe_admission`・`ime_profile_driver`・`key_effect_predictor`・`key_effect_runtime`、`hub_clock` は段階 B-2(PR #568)で実時計を注入にして核へ)。切り出した殻は `win32.rs`(`HwndIdExt`)・`probe_rejection_stats.rs`・`key_effect_io.rs`(crate 直下)。`architecture_guard.rs` に付け替え表 `RELOCATED` を足した(分割前は空)。
 
 段階 B(crate を切る)の前に残る課題:
-- ~~済み(段階 B-2、PR #568)~~ `platform_state`(`CORE_MODULES`)が殻の `hub_clock::HubClock`(`Instant::now()`)に依存する。`HubClock` を核へ移すか、時計を trait で受けるかを決める。
+- ~~`platform_state`(`CORE_MODULES`)が殻の `hub_clock::HubClock`(`Instant::now()`)に依存する。`HubClock` を核へ移すか、時計を trait で受けるかを決める。~~ **済み**(段階 B-2、PR #568。実時計を構築側から注入)。
 - `vk`・`tuning` の 5 定数・`focus::class_names`・`FocusKind`・`ime`・`tsf::TsfGate`・`with_app` への依存の扱い。
 - ~~ディレクトリを丸ごと走査するガード(`join("src")` 11 + 5 か所)を、走査する場所を複数指定できる形に~~ **済み**(段階 B-1、PR #567。`EXTRA_SRC_CRATES`)。
 - doc コメントの `awase_windows::state::...` の例(doctest)の付け替え。
