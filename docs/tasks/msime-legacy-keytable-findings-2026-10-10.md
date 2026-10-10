@@ -7,8 +7,8 @@
 
 1. **`keystyle=Custom` のとき、閉じた状態ではレジストリの表(S4key)が効く。名前付きスタイルの `key` が開いた状態で効くかは未確認(M3)。** 名前付きスタイル(NATURAL/MS-IME2000/ATOK/VJE/WX)の `key` を書き換えても無視される(内蔵の表が使われる)。
    名前付きスタイルの切り替えは `IMJPUEXC.EXE setkeytemplate <Microsoft_IME|IME_Standard|ATOK|VJE|WX>`。
-2. **IME が閉じている間のキーは `Custom\S4key` が決める**(「直接入力モードを使用しない」の ON/OFF に依らない)。`key` だけを書いても閉じた状態では無反応。
-   ADR-197 が失敗したのは `key` だけを書いて `S4key` を欠いていたため。`StyleList\Custom` の他の値(`S1key`〜`SEkey`)は NATURAL のコピーを置いた。
+2. **IME が閉じている間のキーは `Custom\S4key` が決める**。`key` だけを書いても閉じた状態では無反応。
+   ADR-197 は閉じた状態で `key` だけを書いて検証した(本質の誤りは `key` の 1 列目を「直接入力」と読んだ列の誤読)。ND の ON/OFF は閉じた状態の `S4key` の結果を変えなかったが、`key` の 1 列目の `D5` など、コードによっては ND で効果が変わる(ADR-248 実測6)。`StyleList\Custom` の他の値(`S1key`〜`SEkey`)は NATURAL のコピーを置いた。
 3. **`key` の列は旧UIの列見出し(No Input・Only Input・Converted・Showing・Changing・Char Input)と1対1。1列目は「開いている・入力なし」**(ADR-197 の「1列目=直接入力」は列の誤読)。
 4. **UI の Apply が書く値**(`setkeytemplate` と同じ): `MSIME\keystyle`・`IMEUserName`・`option2`・`SerialNo` など。`SerialNo` の更新や ctfmon 再起動は効果に無関係(V2/V3)。
 5. 表の形式: 行は `<キー名>=<コード1> … <コード6>`(Shift-JIS、NUL 区切り、終端は NUL が 1 つ多い)。
@@ -30,8 +30,7 @@
 | 95・97・98・9A〜9C・A1・C9 | open 0→1 かつ conv 変化(0x13/0x01/0x18 など) | conv 変化 |
 | 94 | 不定(open が `?`) | 不定 |
 
-読み方: 「直接入力モードを使用しない」(既定)では、IME の「オフ」は conv=0x10(半角英数)であり、IME 自体は閉じない(BUG-185 と同じ)。
-本当に IME を閉じるのは D5 だけだった(開いた状態)。閉じた状態からは、機能コードの大半が IME を開く。
+(旧「読み方」の段落は、無効な開いた状態の掃引を根拠にしていたので削除した。ND の効果と、IME が閉じるコードの話は ADR-248 の実測5〜10 を参照。)
 
 ## 未検証
 
@@ -42,5 +41,4 @@
 
 ## 実装への含意
 
-awase は `keystyle=Custom` のとき `S4key`(閉じた状態)と `key`(開いた状態)の無変換/変換/半角全角の行を読めば、単独タップの IME 開閉・conv 変化を予測できる見込み。
-`keystyle` が名前付きなら、`setkeytemplate` で出力した表(本ディレクトリ外、artifact `msime-legacy-keytable`)と同じ内蔵表として扱える。
+本ファイルの観測の最新の読み方と実装方針は ADR-248(`docs/adr/248-msime-legacy-custom-keytable-read.md`)を参照。ここには、閉じた状態の観測と、スパイクの手順だけを残している。
