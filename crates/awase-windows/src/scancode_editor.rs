@@ -102,6 +102,31 @@ pub fn registry_state(detected: &Detected) -> RegistryState {
     }
 }
 
+/// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）の名前（小文字）。
+const CAPS_TO_CTRL_FILTERS: [&str; 2] = ["ctrl2cap", "caps2ctrl"];
+
+/// キーボードクラスのフィルタドライバに、Caps を Ctrl にするもの（Ctrl2cap など）があれば、画面に出す注意の文面。
+/// それは `Scancode Map` とは別の仕組みで、この画面では設定も解除もできず、同じキーをこの画面でも入れ替えると二重になる。
+#[must_use]
+pub fn caps_filter_notice(filters: &[String]) -> Option<String> {
+    let found: Vec<&String> = filters
+        .iter()
+        .filter(|f| CAPS_TO_CTRL_FILTERS.contains(&f.to_lowercase().as_str()))
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    let names = found
+        .iter()
+        .map(|f| f.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
+    Some(format!(
+        "キーボードのフィルタドライバ「{names}」が入っています。Caps を Ctrl にする別の仕組みで、この画面では設定も解除もできません。\
+         「英数 / Caps」や「左 Ctrl」をこの画面でも入れ替えると、二重になります。解除するには、{names} をアンインストールして再起動してください。"
+    ))
+}
+
 /// 状態行の文面（ADR-248 決定1）。1行目はレジストリと起動時の値の関係（軸 A）、2行目は未適用の編集（軸 B）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusLine {
@@ -620,6 +645,18 @@ mod tests {
         }
         assert_eq!(key_label(0x0010), "不明なキー(0x0010)");
         assert_eq!(key_label(0xE05B), "不明なキー(0xE05B)");
+    }
+
+    #[test]
+    fn caps_filter_notice_detects_ctrl2cap_case_insensitively() {
+        let names = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert!(caps_filter_notice(&names(&[])).is_none());
+        assert!(caps_filter_notice(&names(&["HPKbfDriver", "kbdclass"])).is_none());
+        let n = caps_filter_notice(&names(&["HPKbfDriver", "kbdclass", "ctrl2cap"])).unwrap();
+        assert!(n.contains("ctrl2cap") && n.contains("二重"));
+        let n = caps_filter_notice(&names(&["Ctrl2Cap"])).unwrap();
+        assert!(n.contains("Ctrl2Cap"));
+        assert!(caps_filter_notice(&names(&["caps2ctrl"])).is_some());
     }
 
     #[test]
