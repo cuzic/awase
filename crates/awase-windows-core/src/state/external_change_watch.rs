@@ -221,11 +221,25 @@ pub const fn direct_watch_kind(
     }
 }
 
+/// Microsoft IME 本体の直接観測で採る開閉の軸（ADR-244 D4 の方向限定の緩和）。**「閉→開」だけ**を採る。
+///
+/// - 「開→閉」（`Some(false)`）は採らない。ADR-205 が MS-IME × 実 Chrome で観測した誤読は「開いているのに 0」の
+///   向き（run 36548761653 の `imeoff-ext-msime-native`）で、採るとトグル中などに閉と誤読して Engine が OFF のまま残る。
+/// - 「閉→開」（`Some(true)`）は採る。逆向きの誤読（閉じているのに 1）は観測されていない: run 38059015712
+///   （MS-IME 本体 × 実 Chrome、12 構成）でモードキー直後〜次の確認までの読みは、実状態が閉の 647 件がすべて
+///   `Some(false)`、開の 1341 件がすべて `Some(true)`（他は `None`）。Custom 表に予測の無いコードを持つ利用者で、
+///   直接入力 → 変換/無変換で IME は開くのに Engine が OFF のまま残る失敗を直す。
+#[must_use]
+pub fn ms_ime_native_open_axis(open: Option<bool>) -> Option<bool> {
+    open.filter(|o| *o)
+}
+
 /// [`classify_direct_read`] に IME 種別の軸の絞り込みを足したもの（ADR-244 D4）。
 ///
 /// - GJI: 開閉・英数の両軸（ADR-188 のとおり）。
-/// - Microsoft IME 本体: **英数の軸だけ**。MS-IME × 実 Chrome の開閉の読みは「開いているのに 0」が観測された
-///   ことがある（ADR-205）ので、トグル中に閉と誤読して追随し Engine が OFF のまま残る失敗を踏まない。
+/// - Microsoft IME 本体: 英数の軸と、開閉の軸のうち**「閉→開」の向きだけ**（[`ms_ime_native_open_axis`]）。
+///   MS-IME × 実 Chrome の開閉の読みは「開いているのに 0」が観測されたことがある（ADR-205）ので、「開→閉」は採らず、
+///   トグル中に閉と誤読して追随し Engine が OFF のまま残る失敗を踏まない。
 #[must_use]
 pub fn classify_direct_read_for(
     kind: crate::state::ime_kind::ImeKindId,
@@ -239,7 +253,7 @@ pub fn classify_direct_read_for(
     match kind {
         ImeKindId::Gji => follow,
         ImeKindId::MsIme => DirectFollow {
-            open: None,
+            open: ms_ime_native_open_axis(follow.open),
             eisu: follow.eisu,
         },
     }
@@ -517,9 +531,9 @@ mod tests {
         assert_eq!(direct_watch_kind(false, Some(ImeKindId::MsIme)), None);
     }
 
-    /// ADR-244 D4: MS-IME 本体は英数の軸だけ。閉の読みでは何も追随しない（「開いているのに 0」の型を踏まない）。
+    /// ADR-244 D4: MS-IME 本体は英数の軸と「閉→開」の開閉だけ。閉の読みでは何も追随しない（「開いているのに 0」の型を踏まない）。
     #[test]
-    fn ms_ime_native_follows_only_the_eisu_axis() {
+    fn ms_ime_native_follows_eisu_and_only_closed_to_open() {
         use crate::state::ime_kind::ImeKindId;
         // トグル中(belief: 開・英数)に変換/英数/ひらがなでかなへ戻った: NATIVE の読み → 英数を外す。
         assert_eq!(
@@ -533,11 +547,30 @@ mod tests {
         assert!(
             classify_direct_read_for(ImeKindId::MsIme, Some(false), Some(0), true, true).is_none()
         );
-        // belief が閉で読みが開・NATIVE のとき、開閉の軸は採らず英数の軸だけ（belief は英数でない → なし）。
+        // belief が閉で読みが開・NATIVE（Custom 表の予測の無いコードで 直接入力 → 変換/無変換、run 38059015712）:
+        // 「閉→開」の向きなので開閉の軸を採る。英数の軸は belief も読みも英数でない → なし。
+        assert_eq!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(25), false, false),
+            DirectFollow {
+                open: Some(true),
+                eisu: None
+            }
+        );
+        // 閉→開 で半角英数（NATIVE なし）を読んだら両軸。
+        assert_eq!(
+            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(16), false, false),
+            DirectFollow {
+                open: Some(true),
+                eisu: Some(true)
+            }
+        );
+        // belief が開で読みが閉（かな → 変換/無変換で閉じた場合も、「開いているのに 0」の誤読の場合も）: 開閉の軸は採らない。
         assert!(
-            classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(25), false, false)
+            classify_direct_read_for(ImeKindId::MsIme, Some(false), Some(25), true, false)
                 .is_none()
         );
+        // 読めない(None)なら何もしない。
+        assert!(classify_direct_read_for(ImeKindId::MsIme, None, Some(25), false, false).is_none());
         // 開で半角英数を読んだら英数を採る(軸の絞り込みは英数を妨げない)。
         assert_eq!(
             classify_direct_read_for(ImeKindId::MsIme, Some(true), Some(16), true, false),
@@ -546,6 +579,14 @@ mod tests {
                 eisu: Some(true)
             }
         );
+    }
+
+    /// MS-IME 本体の開閉の軸は「閉→開」(`Some(true)`)だけを通し、「開→閉」(`Some(false)`)は捨てる。
+    #[test]
+    fn ms_ime_native_open_axis_keeps_only_closed_to_open() {
+        assert_eq!(ms_ime_native_open_axis(Some(true)), Some(true));
+        assert_eq!(ms_ime_native_open_axis(Some(false)), None);
+        assert_eq!(ms_ime_native_open_axis(None), None);
     }
 
     /// ADR-244: 全角英数（`conv=0x18`、NATIVE ビットなし）は英数のまま。トグル中（belief 英数）は追随なし＝トグルを手放さない。

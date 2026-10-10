@@ -289,7 +289,7 @@ impl Runtime {
     /// ADR-188（BUG-149/150 の Chrome 版）・ADR-244（BUG-186）: 読めない窓（`Imm32Unavailable`）の GJI／同定済み MS-IME 本体で、
     /// 物理のモードキー（Shift 付き・FSM の再送出を含む）の直後の直接観測の窓の中に、prefetch 済みの開閉・conv の読みを
     /// belief と照合し、食い違う軸へ追随する。基準値は使わず、awase は IME を書かない。awase 自身が窓の後に書いていたら
-    /// 採らない（R3）。MS-IME 本体は英数の軸だけを採る（`classify_direct_read_for`）。
+    /// 採らない（R3）。MS-IME 本体は英数の軸と、開閉の軸のうち「閉→開」の向きだけを採る（`classify_direct_read_for`）。
     ///
     /// 本体で NATIVE の読み（かな）へ追随したら、awase が立てた持続トグル（半角英数）を OS 書き込みなしで手放す
     /// （`should_abandon_on_observed_follow`）。残すと凍結が続き、次の Shift タップが「開始」でなく「解除」になる。
