@@ -156,6 +156,7 @@ fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         right_thumb_down_snapshot: None,
         injected: false,
         foreign_ctrl: false,
+        impersonated: false,
     }
 }
 
@@ -177,6 +178,7 @@ fn key_up(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         right_thumb_down_snapshot: None,
         injected: false,
         foreign_ctrl: false,
+        impersonated: false,
     }
 }
 

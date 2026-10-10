@@ -20,14 +20,9 @@ pub struct LateKeymapFacts {
     pub injected: bool,
     /// 条件5: Alt なりすまし由来（フックが Alt を親指キーへ書き換えた）。
     pub impersonated: bool,
-    /// 条件6-i: `keys.ime_*` の bare 割り当て（`bare_ime_action`）がある。
-    pub has_bare_ime_action: bool,
-    /// 条件6-i: 役割由来の開閉（`thumb_role_open_actions()` の該当側。単独タップ設定が Passthrough でも数える）がある。
-    pub has_thumb_role_open_action: bool,
-    /// 条件6-i: 専用 Fn キー（`muhenkan_solo_tap_dedicated_fn_key`）がある。
-    pub has_dedicated_fn_key: bool,
-    /// 条件6-i: IME 側が定める開閉の方向（`ime_relevance.sync_direction`）がある。
-    pub has_sync_direction: bool,
+    /// 条件6-i: エンジンが知る IME の機能（`keys.ime_*`・専用 Fn キー・強制 open 軸操作・役割由来の開閉・
+    /// `sync_direction`）をこのキーが持つ（`Engine::key_has_ime_function`。4源の集約はエンジンに閉じる）。
+    pub has_ime_function: bool,
     /// 条件6-ii: 直接入力状態でこのキーに IME の機能があるか。TIP 未同定・MS-IME 本体・表が読めない・
     /// GJI 以外は殻が `Unknown` にして渡す。
     pub direct_input_effect: KeyDirectInputEffect,
@@ -73,6 +68,20 @@ pub enum LateKeymapPlan {
     Skip(LateKeymapSkip),
 }
 
+/// 殻が集めた「IME の種別」と「GJI の表からの判定」から、`LateKeymapFacts::direct_input_effect` に渡す値を決める
+/// （Opus #597 S3: TIP 未同定・MS-IME 本体・GJI 以外・表が読めない場合を `Unknown` に倒す規則を型の外の
+/// 呼び出し側に任せない）。`gji_effect` は GJI の表が読めたときだけ `Some`。
+#[must_use]
+pub const fn resolve_direct_input_effect(
+    tip: Option<crate::state::ime_kind::ImeKindId>,
+    gji_effect: Option<KeyDirectInputEffect>,
+) -> KeyDirectInputEffect {
+    match (tip, gji_effect) {
+        (Some(crate::state::ime_kind::ImeKindId::Gji), Some(effect)) => effect,
+        _ => KeyDirectInputEffect::Unknown,
+    }
+}
+
 /// 遅いルールが一致したキーについて、発動してよいかを決める。
 #[must_use]
 pub const fn plan_late_keymap(facts: LateKeymapFacts) -> LateKeymapPlan {
@@ -93,11 +102,7 @@ pub const fn plan_late_keymap(facts: LateKeymapFacts) -> LateKeymapPlan {
     if facts.impersonated {
         return Skip(S::Impersonated);
     }
-    if facts.has_bare_ime_action
-        || facts.has_thumb_role_open_action
-        || facts.has_dedicated_fn_key
-        || facts.has_sync_direction
-    {
+    if facts.has_ime_function {
         return Skip(S::KeyHasImeRole);
     }
     if !matches!(facts.direct_input_effect, KeyDirectInputEffect::NoFunction) {
@@ -127,10 +132,7 @@ mod tests {
             was_down: false,
             injected: false,
             impersonated: false,
-            has_bare_ime_action: false,
-            has_thumb_role_open_action: false,
-            has_dedicated_fn_key: false,
-            has_sync_direction: false,
+            has_ime_function: false,
             direct_input_effect: KeyDirectInputEffect::NoFunction,
             input_relay: false,
             half_width_return_pending: false,
@@ -148,7 +150,7 @@ mod tests {
     fn each_single_violation_skips_with_its_reason() {
         use LateKeymapSkip as S;
         type Break = fn(&mut LateKeymapFacts);
-        let cases: [(Break, LateKeymapSkip); 14] = [
+        let cases: [(Break, LateKeymapSkip); 11] = [
             (
                 |f| f.engine_inactive_by_ime_off = false,
                 S::EngineNotImeOffInactive,
@@ -157,10 +159,7 @@ mod tests {
             (|f| f.was_down = true, S::Repeat),
             (|f| f.injected = true, S::Injected),
             (|f| f.impersonated = true, S::Impersonated),
-            (|f| f.has_bare_ime_action = true, S::KeyHasImeRole),
-            (|f| f.has_thumb_role_open_action = true, S::KeyHasImeRole),
-            (|f| f.has_dedicated_fn_key = true, S::KeyHasImeRole),
-            (|f| f.has_sync_direction = true, S::KeyHasImeRole),
+            (|f| f.has_ime_function = true, S::KeyHasImeRole),
             (
                 |f| f.direct_input_effect = KeyDirectInputEffect::HasFunction,
                 S::DirectInputHasFunctionOrUnknown,
@@ -188,6 +187,29 @@ mod tests {
     }
 
     /// 複数が崩れたら、判定の順で先のものが理由になる。
+    #[test]
+    fn direct_input_effect_is_unknown_unless_tip_is_gji_and_table_was_read() {
+        use crate::state::ime_kind::ImeKindId;
+        use KeyDirectInputEffect::{HasFunction, NoFunction, Unknown};
+        for effect in [NoFunction, HasFunction, Unknown] {
+            assert_eq!(
+                resolve_direct_input_effect(Some(ImeKindId::Gji), Some(effect)),
+                effect
+            );
+            // TIP 未同定・MS-IME 本体は GJI の設定ファイルが残っていても Unknown。
+            assert_eq!(resolve_direct_input_effect(None, Some(effect)), Unknown);
+            assert_eq!(
+                resolve_direct_input_effect(Some(ImeKindId::MsIme), Some(effect)),
+                Unknown
+            );
+        }
+        // 表が読めない。
+        assert_eq!(
+            resolve_direct_input_effect(Some(ImeKindId::Gji), None),
+            Unknown
+        );
+    }
+
     #[test]
     fn earlier_condition_wins_the_reason() {
         let facts = LateKeymapFacts {
@@ -222,10 +244,7 @@ mod tests {
             was_down: _,
             injected: _,
             impersonated: _,
-            has_bare_ime_action: _,
-            has_thumb_role_open_action: _,
-            has_dedicated_fn_key: _,
-            has_sync_direction: _,
+            has_ime_function: _,
             direct_input_effect: _,
             input_relay: _,
             half_width_return_pending: _,

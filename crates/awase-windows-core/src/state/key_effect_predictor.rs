@@ -871,6 +871,30 @@ impl KeyEffectKeymap {
         )
     }
 
+    /// このGJIのキーマップで、`vk`（無変換/変換）が直接入力状態（IME OFF）で IME の機能を持つか
+    /// （ADR-255 決定2 条件6-ii）。Microsoft IME本体のキーマップ（`MsImeNative`）では表を読まないので
+    /// `Unknown`（今回は発動しない）。
+    #[must_use]
+    pub fn gji_direct_input_effect(&self, vk: u16) -> awase_gji_config::role::KeyDirectInputEffect {
+        use crate::vk::VkCodeExt;
+        use awase_gji_config::role::KeyDirectInputEffect;
+        if matches!(self.preset, KeymapPreset::MsImeNative) {
+            return KeyDirectInputEffect::Unknown;
+        }
+        let Some(vk_name) = ["VK_NONCONVERT", "VK_CONVERT"]
+            .into_iter()
+            .find(|name| awase::types::VkCode::from_name(name).is_some_and(|v| v.0 == vk))
+        else {
+            return KeyDirectInputEffect::Unknown;
+        };
+        awase_gji_config::role::direct_input_effect(
+            self.session_keymap,
+            self.custom_table.as_deref(),
+            &self.overlay_keymaps,
+            vk_name,
+        )
+    }
+
     /// Microsoft IME本体のキーマップで、`vk`（無修飾の打鍵）が持つ役割（[`Self::gji_key_role`]のMS-IME本体版、
     /// ADR-199 T17）。GJIのキーマップ（`MsImeNative`以外）では`None`。
     ///

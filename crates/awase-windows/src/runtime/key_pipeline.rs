@@ -221,7 +221,10 @@ impl Runtime {
         }
 
         let state_before = self.engine.debug_state_label();
-        let decision = self.engine.on_input(event, &ctx);
+        let mut decision = self.engine.on_input(event, &ctx);
+        // ADR-255: エンジンが素通しにした打鍵だけ、`[[keymap]]` の遅いルール（`ime = "off"`）を照合する。
+        // journal の記録・`kp_stage_post_decision`・`kp_stage_execute` より前に消費へ格上げする（決定2）。
+        self.kp_stage_late_keymap(&event, &ctx, &mut decision);
         // ADR-213 P2d-2: settle 中の SetOpen 除去（旧 `strip_ime_set_open_if_settling`）は撤去した。
         // SetOpen は明示操作だけが出し、settle 直後の書き込みも受け付けられると実測した。
         let state_after = self.engine.debug_state_label();
@@ -282,6 +285,82 @@ impl Runtime {
             self.platform_state.ime.journal.absorb(entry);
         }
         callback
+    }
+
+    /// `[[keymap]]` の遅いルール（`ime = "off"`、ADR-255）の照合と発動。エンジンの判断（`on_input`）の直後、
+    /// 素通し（`PassThrough`/`PassThroughWith`）のときだけ呼ぶ位置に置く。判断は純粋関数
+    /// [`plan_late_keymap`](crate::state::late_keymap_plan::plan_late_keymap)、ここは事実の収集と実行だけ。
+    ///
+    /// 発動したら (1) `force_consume`（effects は保つ）、(2) `to` を effects の**末尾**に `SendKeys` で積む
+    /// （その場で SendInput しない。先行の素通しの文字・遷移の flush を追い越さないため、R7-M1）、
+    /// (3) `record_shell_consumed` で消費した Down をエンジンの `KeyLifecycle` に登録する
+    /// （KeyUp・自動リピートはエンジンが回収する。`keymap_latch` には積まない）。
+    fn kp_stage_late_keymap(
+        &mut self,
+        event: &RawKeyEvent,
+        ctx: &awase::engine::InputContext,
+        decision: &mut awase::engine::Decision,
+    ) {
+        use crate::state::ime_kind::ImeKindId;
+        use crate::state::late_keymap_plan::{
+            plan_late_keymap, resolve_direct_input_effect, LateKeymapFacts, LateKeymapPlan,
+        };
+        if !matches!(event.event_type, KeyEventType::KeyDown) {
+            return;
+        }
+        let Some(send_vks) = self
+            .platform_state
+            .keymap
+            .active_keymaps
+            .find_late_match(event.vk_code, event.modifier_snapshot)
+        else {
+            return;
+        };
+        let tip = crate::tsf::observer::tsf_obs().table_ime_kind();
+        let gji_effect = if tip == Some(ImeKindId::Gji) {
+            self.key_effect_keymap
+                .get_gji(hook::current_tick_ms())
+                .map(|keymap| keymap.gji_direct_input_effect(event.vk_code.0))
+        } else {
+            None
+        };
+        let facts = LateKeymapFacts {
+            engine_inactive_by_ime_off: self.engine.ime_off_inactive(ctx),
+            decision_passed_through: !decision.is_consumed(),
+            was_down: event.was_down,
+            injected: event.injected,
+            impersonated: event.impersonated,
+            has_ime_function: self.engine.key_has_ime_function(event),
+            direct_input_effect: resolve_direct_input_effect(tip, gji_effect),
+            input_relay: matches!(
+                self.platform.current_app_profile(),
+                crate::focus::class_names::AppImeProfile::InputRelay
+            ),
+            // ADR-245 の「戻り待ち」は、殻への配線(PR 2)がまだ develop に無い(`HalfWidthAlnum` を
+            // 保持する状態が無い)ので偽。配線されたら、ここを `has_return_pending()` に置き換える。
+            half_width_return_pending: false,
+            composing: ctx.composing,
+        };
+        match plan_late_keymap(facts) {
+            LateKeymapPlan::Fire => {
+                tracing::debug!(
+                    "[late-keymap] fire vk=0x{:02X} -> {} key(s) (engine inactive: ImeOff)",
+                    event.vk_code.0,
+                    send_vks.len()
+                );
+                decision.force_consume();
+                decision.push_effect(Effect::Input(InputEffect::SendKeys(
+                    send_vks.into_iter().map(KeyAction::Key).collect(),
+                )));
+                self.engine.record_shell_consumed(event);
+            }
+            LateKeymapPlan::Skip(reason) => {
+                tracing::debug!(
+                    "[late-keymap] skip vk=0x{:02X} reason={reason:?}",
+                    event.vk_code.0
+                );
+            }
+        }
     }
 
     /// BUG-173追補: KeyUp の配送を、対応する最初の KeyDown の配送に揃える（純粋部は

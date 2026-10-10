@@ -21,6 +21,8 @@ related_adr:
 
 改訂 r7(2026-10-10): 所有者の判断で、専用設定(案 A1、エンジン内)から `[[keymap]]` の `ime = "off"`(案 K、エンジンの判断の後に照合)へ変更した。Opus レビュー r1〜r6 は案 A1 で収束済み(r6 は所有者の提案による belief だけの判定への変更)。案 K の差分は r7 のレビューで確認する。**実装は 2026-10-10 に着手した(所有者の判断。決定3b のゲートは外した。下記)**。
 
+**実装状況(段階3a、2026-10-10)**: `kp_run_inner` の `engine.on_input` 直後に `kp_stage_late_keymap` を配線した(`force_consume` + effects 末尾の `SendKeys` + `Engine::record_shell_consumed`)。`RawKeyEvent.impersonated`(hook.rs が Alt なりすましで vk を書き換えたときに立てる)を足した。条件6-i の4源は `Engine::key_has_ime_function` に集約し、TIP 種別による `Unknown` 化は純粋関数 `resolve_direct_input_effect` に置いた(#597 Opus S3)。**未配線**: 条件7b の ADR-245 の戻り待ち(殻へ配線する PR 2 が develop に無く、`half_width_return_pending` は常に偽)、境界 journal への「遅いルールで消費した」印(debug ログ `[late-keymap]` のみ)、設定画面の列・衝突警告・CI 構成(段階3b)。
+
 ## コンテキスト
 
 ### 報告

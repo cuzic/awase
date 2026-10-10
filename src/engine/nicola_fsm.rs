@@ -942,6 +942,16 @@ impl NicolaFsm {
                 }))
     }
 
+    /// 無変換/変換の `vk_code` 側に、専用 Fn キー・bare `keys.ime_*` 由来の強制 open 軸操作・IME 設定由来の役割の
+    /// どれかがあるか（ADR-255 決定2 条件6-i。`ModeKeyConfig` が Passthrough かどうかは問わない）。
+    /// 親指キーとして設定されていない vk は常に偽。
+    pub(super) fn thumb_has_ime_function(&self, vk_code: VkCode) -> bool {
+        let special = self.thumb_solo_special_handling(vk_code);
+        special.dedicated_fn_key.is_some()
+            || special.forced_open_action.is_some()
+            || special.role_open_action.is_some()
+    }
+
     fn thumb_solo_special_handling(&self, vk_code: VkCode) -> ThumbSoloSpecialHandling {
         if self.muhenkan_vk == Some(vk_code) {
             ThumbSoloSpecialHandling {
@@ -3560,6 +3570,7 @@ mod tests {
                 right_thumb_down_snapshot: None,
                 injected: false,
                 foreign_ctrl: false,
+                impersonated: false,
             };
             let r = fsm.release_only(&ev);
             assert!(r.actions.is_empty(), "pass_through must not emit actions");

@@ -287,6 +287,7 @@ impl EvdevInput {
                         // ここには来ない）
                         injected: false,
                         foreign_ctrl: false,
+                        impersonated: false,
                     };
 
                     tracing::trace!(

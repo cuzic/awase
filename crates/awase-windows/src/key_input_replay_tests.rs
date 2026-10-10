@@ -301,6 +301,7 @@ impl Replay {
             was_down,
             press_id: None,
             foreign_ctrl: key.foreign_ctrl,
+            impersonated: false,
         }
     }
 

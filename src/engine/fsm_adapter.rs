@@ -175,6 +175,11 @@ impl FsmAdapter {
         self.fsm.set_muhenkan_solo_tap_dedicated_fn_key(vk);
     }
 
+    /// [`NicolaFsm::thumb_has_ime_function`] の委譲。
+    pub(super) fn thumb_has_ime_function(&self, vk: crate::types::VkCode) -> bool {
+        self.fsm.thumb_has_ime_function(vk)
+    }
+
     /// Enter 親指キーのフォールバック挙動を設定する。
     pub(super) const fn set_enter_thumb_config(
         &mut self,
@@ -357,6 +362,7 @@ mod tests {
             right_thumb_down_snapshot: None,
             injected: false,
             foreign_ctrl: false,
+            impersonated: false,
         }
     }
 

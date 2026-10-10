@@ -261,6 +261,7 @@ pub const fn is_press_start(is_keydown: bool, injected: bool, was_down: bool) ->
 /// プラットフォーム層が事前分類した情報を含む。Engine は `vk_code`/`scan_code` を
 /// 直接検査せず、分類済みフィールドを使用する。
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)] // フックが capture 時に決める独立の印（injected/was_down/foreign_ctrl/impersonated）を1:1で表現
 pub struct RawKeyEvent {
     /// プラットフォーム固有キーコード（再注入用に保持）
     pub vk_code: VkCode,
@@ -347,6 +348,10 @@ pub struct RawKeyEvent {
     /// `HOOK_STATE` を読まない(INPUT_DEFER の再生で再生時点の値になるのを避ける、ADR-129 と同型)。
     /// journal の `KeyInput` が「物理 Ctrl が無いのに ctrl=true」を誤読しないための印。
     pub foreign_ctrl: bool,
+    /// フックが Alt（`VK_MENU`/`VK_LMENU`/`VK_RMENU`）を親指キーの vk に**書き換えた**（Alt なりすまし）イベントか
+    /// （ADR-255）。`vk_code` は書き換え後。`[[keymap]]` の遅いルール（`ime = "off"`）が、なりすまし由来の
+    /// 打鍵を Space に変えないために読む。フックが capture 時に決めた値で、再生時にライブ再取得しない。
+    pub impersonated: bool,
 }
 
 impl RawKeyEvent {
@@ -515,6 +520,7 @@ mod tests {
             was_down: false,
             press_id: None,
             foreign_ctrl: false,
+            impersonated: false,
         }
     }
 
