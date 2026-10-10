@@ -7,7 +7,7 @@ summary: |-
   実機の hook で注入 Ctrl↓ の KeyUp 欠落のあとに物理相当の打鍵が NICOLA 変換されることは確かめていない。
   ci/e2e-dictation に4ケース(期限内の物理相当・期限内の注入・期限後の注入・0x11)を足し、観測する。
 status: |-
-  起草(2026-10-10)。未実装。
+  実装・観測済み(2026-10-10、run 38046806775(コミット 7a2b0e2b、3bfd87ca を含む))。S1(物理相当): 全4構成×2回で `[engine-input]` の c=false・本試行 6/6 変換。S2(期限内の注入): 全構成で c=true、awase が 0x41 scan=0 を再注入(素通し)。S3(期限後の注入): c=false で変換、再注入なし(期限が効く)。S4: VK 0x11 で送った Ctrl↓ は LL フックに 0xA2 scan=29 として届く(0x11 では届かない)。**S1 は崩れていない**。未確認: edit×GJI の S4(2回とも ready 失敗で INVALID)、実物理キー経路、S3 の edit×MS-IME では観測用 A の未確定が Esc で消えず本試行が「う」始まりで FAIL(判定は hook_reached と `[engine-input]` なので結論には影響しない)。
 related_adr:
   - "ADR-249"
   - "ADR-054"
@@ -46,6 +46,21 @@ related_adr:
 - 結果は BUG-197 の状態欄と ADR-249 status に run ID つきで書く(「未了」から消す)。
 - CI のみ。実機の確認は報告者に任せる(ADR-249 の未了項目、本 ADR の範囲外)。
 
-## 未決
+## 未決・結論
 
-- S1 の「期待」の判定を、画面のテキスト一致で取るか、`[engine-input]` ログの `ctrl` 値で取るか(前者のほうが ADR-249 の A/B と揃う)。
+- 判定の取り方(Opus レビュー B2/S1 の結論): S1 の一次根拠は awase.log の `[engine-input] vk=0x41 ... mods(c=false ...`(extra=0x5350494B のマーカー付き経路)で、本試行のテキスト一致は補助。S2/S3 は画面のテキスト(`text_after_injected_a`)ではなく、`type:"foreign_ctrl".hook_reached`(awase の再注入 0x41 scan=0 か、変換後の 0xE7 パケットか)と `[engine-input] vk=0x41 ... mods(c=...)` で判定する。edit では観測用 A が IME の未確定文字になりテキストに現れない。
+- S1 の「期限内」は試行の長さ(len=8、間隔30ms)に依存する。注入 Ctrl↓ から打鍵列の最後まで約 0.3 秒で、TTL(1000ms)内に収まる。長い打鍵では末尾が期限後になりうる。
+- awase なしの対照は S2 だけで足りる(Ctrl+A が素通しになる基準。raw-S4 は 0x11→0xA2 の正規化が awase と無関係なので足さない)。
+- S4 の scan=0 で送る場合(`wScan` 無し)は未確認。
+
+## 結果(run 38046806775(コミット 7a2b0e2b、3bfd87ca を含む))
+
+| ケース | フックに届いた列 | `[engine-input] vk=0x41` の c= | 本試行 |
+|---|---|---|---|
+| S1(Ctrl↓ のみ→マーカー付き打鍵) | 注入 0xA2 scan=29 のあと awase の 0xA2 scan=0 再注入、その後 0xE7 パケット | false(extra=0x5350494B、4構成×2回) | 6/6 変換 |
+| S2(期限内に注入 A) | 0x41 scan=30 のあと awase の 0x41 scan=0 再注入 | true(extra=0x0、各6) | 6/6 |
+| S3(1.5秒後に注入 A) | 0x41 scan=30 のみ、続けて 0xE7 パケット(変換、rich では「う」) | false(extra=0x0、各6) | rich 6/6、edit×GJI 6/6、edit×MS-IME 0/6(「う」が残る) |
+| S4(VK 0x11) | 0xA2 scan=29 として届く(0x11 は届かない) | true、S2 と同じ | 5構成 6/6、edit×GJI は INVALID |
+| 対照(awase なし S2) | 0xA2・0x41 がそのまま、再注入なし | — | 6/6 |
+
+取得: `gh api repos/cuzic/awase/actions/runs/38046806775/artifacts` の `result-tsx-*fctrl*`(40件)。

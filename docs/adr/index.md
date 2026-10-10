@@ -258,7 +258,7 @@
 | [249](249-foreign-injected-modifier-ttl.md) | 他アプリが注入した Ctrl を、注入キー自身の修飾として期限付きで数える(BUG-197、Spokenly) | 起草・改訂(2026-10-10)。Opus round1〜3 で収束(Blocker なし)、実装なし |
 | [250](250-boundary-journal-and-log-unification.md) | journal を shell と core の境界で取り(診断用の Facts/Plan)、境界を通る手書きログを journal からの生成に寄せる(ADR-139 決定 4 の改訂) | 起草(2026-10-10)。所有者が「大きく統合する」を選択、tsf/・output/ もデータを上に渡す方式で統合(ガード :403 は緩めない)。Opus round9 で収束(Blocker 0・Must 0) |
 | [251](251-bug197-report-journal-replay-fixture.md) | BUG-197 の報告 journal を replay fixture として固定する(ADR-249 の回帰テスト (a)) | 起草(2026-10-10)。未実装 |
-| [252](252-foreign-ctrl-stuck-nonrecurrence-ci.md) | 注入 Ctrl↓ の KeyUp 欠落後に物理打鍵が通常どおり変換されることを CI で観測する(ADR-249 の stuck 非再発) | 起草(2026-10-10)。未実装 |
+| [252](252-foreign-ctrl-stuck-nonrecurrence-ci.md) | 注入 Ctrl↓ の KeyUp 欠落後に物理打鍵が通常どおり変換されることを CI で観測する(ADR-249 の stuck 非再発) | 実装・観測済み(2026-10-10、run 38046806775)。S1 は崩れていない |
 | [253](253-bug198-vk-packet-reinject.md) | 他アプリが注入した VK_PACKET の文字を、保留→再注入で失わない(BUG-198) | 起草(2026-10-10)。未実装、原因は仮説(段階0で切り分け) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
