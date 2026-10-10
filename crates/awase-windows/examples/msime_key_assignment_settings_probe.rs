@@ -690,6 +690,17 @@ mod windows_probe {
                     // SAFETY: toggle は直前に取得した有効な COM オブジェクト。
                     let now = unsafe { toggle_state_is_on(&toggle) };
                     log(&format!("--set-compat={want}: toggle state after = {now:?}"));
+                    // トグルの直後に確認ダイアログ等が出ていないか、ウィンドウ全体を再ダンプする(ADR-248)。
+                    // SAFETY: automation は有効な COM オブジェクト、hwnd は有効なウィンドウハンドル。
+                    if let Ok(after_root) = unsafe { automation.ElementFromHandle(root_candidate.hwnd) } {
+                        log("=== dumping window after compat toggle ===");
+                        let mut b4: u32 = 1500;
+                        // SAFETY: walker/after_root は有効な COM オブジェクト。
+                        unsafe { dump_uia_tree(&walker, &after_root, 0, 16, &mut b4) };
+                    }
+                    for w in enumerate_top_level_windows() {
+                        log(&format!("top-level: process={:?} title={:?}", w.process, w.title));
+                    }
                 }
                 log_msime_registry_snapshot("after-set-compat");
             }
