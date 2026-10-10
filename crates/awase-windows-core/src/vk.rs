@@ -577,7 +577,10 @@ pub const fn is_passthrough(vk_code: VkCode) -> bool {
         0xAD..=0xB7 |
         0xA6..=0xAC |
         0x5D |
-        0x5E | 0x5F
+        0x5E | 0x5F |
+        // VK_PACKET: 他アプリの KEYEVENTF_UNICODE 注入。scanCode は物理位置でなく文字なので、
+        // 位置表で引くと ASCII 文字(U+0020〜0035 等)が NICOLA の Char になる(ADR-253)。
+        0xE7
     )
 }
 
@@ -1047,6 +1050,12 @@ mod tests {
         // 通常キー・拡張キー（矢印: VK_LEFT=0x25）は従来どおり0。
         assert_eq!(reinject_scan_code(VkCode(0x41), 0x1E), 0);
         assert_eq!(reinject_scan_code(VkCode(0x25), 0x4B), 0);
+    }
+
+    #[test]
+    fn vk_packet_is_passthrough_so_its_char_scan_is_not_looked_up_as_a_position() {
+        assert!(super::is_passthrough(VkCode(0xE7)));
+        assert!(!super::is_passthrough(VkCode(0x41)));
     }
 
     #[test]

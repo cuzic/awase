@@ -7,7 +7,7 @@ summary: |-
   PassThrough を必ず再注入に回す。再注入(`RawKeyEvent::reinject`)は `wScan=0`・UNICODE 無しで組むため文字が失われる。保留(relay-defer)の有無とは無関係。
   段階0の CI 実測(run 38045062764)で確認済み。再注入の入力組み立てを純粋関数 `reinject_key_spec` に切り出し、VK_PACKET は UNICODE で送り直す。
 status: |-
-  段階1実装中(2026-10-10)。段階0は実測済み(原因確定)。サロゲート・ASCII 文字の扱いは CI で追加確認中。
+  段階1実装済み・CI 確認待ち(2026-10-10)。段階0は実測済み(原因確定、サロゲートは無事・ASCII は classify の別原因)。
 related_adr:
   - "ADR-156"
   - "ADR-249"
@@ -51,6 +51,10 @@ awase なしは全 PASS、awase ありは全 FAIL(注入文だけが消え、そ
 保留に入ったか・再注入の `wVk/wScan/flags` をログに出して実測する。確認すること: (i) フックで `scanCode` に文字が入っているか(未確認)、
 (ii) 最初の KeyDown が実際に OS に届いているか、(iii) サロゲートペアは2つの VK_PACKET になるか(各 `wScan` が半分)。
 
+**段階0追加実測(run 38046810869、修正入り、注入文「音声2025s}!😀」)**: かな・絵文字(U+1F600、サロゲートペア)は注入どおり届いた(実際の欄に `😀` あり)。
+一方 ASCII の `2`・`0`・`5`・`!` 等(scanCode 0x32・0x30 等)は `classify_key` が位置表を引いて NICOLA の Char にし、欄には `そへそ／￥け` が出た(S1の疑いが実測で成立)。
+そのため `is_passthrough` に `0xE7` を足し、`VK_PACKET` は常に Passthrough にする。
+
 **段階1(実装、段階0の結果が仮説どおりなら)**:
 1. 再注入の入力組み立てを純粋関数 `reinject_key_spec(vk, scan, is_keyup) -> (wVk, wScan, flags_bits)` に切り出す(`awase-windows-core`、`windows` 依存なし)。
    `vk==0xE7` は `(0, scan as u16, UNICODE | KEYUP?)`、他は現行どおり。`windows` の型への変換は `lib.rs` の殻だけが行う。
@@ -67,5 +71,4 @@ awase なしは全 PASS、awase ありは全 FAIL(注入文だけが消え、そ
 
 ## 未決
 
-- サロゲートペア(絵文字)が2つの `VK_PACKET` で届き、各 `scanCode` が UTF-16 の半分になること、および ASCII 文字(U+0020〜0035 等)が `classify_key` で NICOLA の Char に分類されないことは**未確認**(CI で確認中、確認できるまで単体テストの表現は仮定の域を出ない)。
 - 実在する注入元(どのアプリが VK_PACKET で注入するか)。BUG-198 は「未確認」のまま。ユーザー報告が出るまで優先度は ADR-249 より低い。
