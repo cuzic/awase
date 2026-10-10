@@ -88,7 +88,7 @@ ime = "off"
   - (a) 判定に使う `ctx`・エンジンの状態がエンジン自身の判断と同じ(B1)。エンジンが活性(親指として使う)のときは、そもそも素通しにならないので、遅いルールは当たらない。
   - (b) エンジンが Phase 2 で出す遷移の effects(`check_active_transition` の `EngineStateChanged` など)が `PassThroughWith` に載っているので、`force_consume` で保たれる(r2 S1 の前置が不要になる)。`SetOpen` は元から含まれない(ADR-213 P2b)。
   - (c) 後続の段(`kp_stage_post_decision`・`kp_stage_execute`・物理配送の決定)は消費に変わった `Decision` を見るので、素通しした無変換として「モードキーの通過」の追跡(ADR-191)を始めない。エンジンの**前**に走る段(`kp_stage_shadow_ime_toggle`・`settle_fkey_role_latch`・`enrich_thumb_key_role` など)が、IME の機能が無い無変換に書き込まないことは、r7 のレビューで確認済み。`kp_stage_post_decision` と `kp_stage_mode_key_follow` は `is_consumed` で止まり、モードキー追跡の誤装填も refresh も起きない。**前提は、格上げを journal の記録と `kp_stage_post_decision` より前に行うこと**。
-- エンジンの `KeyLifecycle`(`src/engine/key_lifecycle.rs`)は、素通しの KeyDown を記録しない(Phase 2 の非活性は `Decision::pass_through()` を返すだけで `on_key_down_consumed` を呼ばない)。したがって、遅いルールの KeyUp を `keymap_latch` が先に消費しても、エンジン側に宙に浮く記録は残らない。**実装時に単体テストで固定する**(`src/engine/tests.rs`)。
+- エンジンの `KeyLifecycle`(`src/engine/key_lifecycle.rs`)は、素通しの KeyDown を記録しない(Phase 2 の非活性は `Decision::pass_through()` を返すだけで `on_key_down_consumed` を呼ばない)。遅いルールが Down を消費したときは、この記録が無いので、シェルが `record_shell_consumed` で登録する(決定4)。**実装時に単体テストで固定する**(`src/engine/tests.rs`)。
 - `NonText` のフォーカスでは `process_key_event` に到達しないので、従来どおり効かない(ADR-114 の既知の限界を継承)。
 - `kp_run_inner` はドレイン・再生(`INPUT_DEFER`・TsfGate の保留)からも呼ばれる。遅いルールの評価は、再生時点の状態で行う(r1 S1)。
 
@@ -163,7 +163,7 @@ ime = "off"
 ### 決定4: 出力と Down/Up(r7)
 
 - Down で `to` を `send_keymap_target` で送る(Space は `to = ["VK_SPACE"]`)。
-- KeyUp とリピートは `keymap_latch` が先頭で回収する(ADR-114 決定4)。**リピートしない**: 無変換を押し続けても Space は 1 個(R5・S5)。本物の Space キーや GJI の InsertSpace(リピートする)とは違う。報告者の期待と合うか確認する(決定3b-2)。
+- KeyUp とリピートは、エンジンの `KeyLifecycle`・`phase1_held` が回収する(次項)。**リピートしない**: 無変換を押し続けても Space は 1 個(R5・S5)。本物の Space キーや GJI の InsertSpace(リピートする)とは違う。報告者の期待と合うか確認する(決定3b-2)。
 - **消費した Down をエンジンの `KeyLifecycle` に登録する**(所有者の提案、r7 追加評価で採用。r1 M4 の stale latch への手当): `Engine::record_shell_consumed(&event)` を新設する。中身は `lifecycle.on_key_down_consumed(&event)` と、bare の親指なら `phase1_held = Some(vk)`(遅いルールは無変換/変換に限るので常に満たす)だけで、**エンジンの判断(活性/非活性・FSM の状態)は変えない**(「消費した Down の登録」だけの口。ADR-112 の「`Engine::on_input` の唯一の出口」の不変条件とは衝突しない)。呼ぶのは、遅いルールが当たって `force_consume` した後、`kp_stage_execute` より前、同じ打鍵の中。
   - **KeyUp**: `on_input` が `take_key_up_duty` で `UpDuty::Consume` を取り、非活性のままなら Phase 2 の `release_only` を通って何も送らずに Consume になる(`output_history` に無変換のエントリは無い)。Space は effects で Down+Up を完結しているので、Up の義務は無い。
   - **自動リピート**: `on_input_body` 冒頭の `phase1_held` のガード(`engine.rs`、`is_key_down && event.was_down && phase1_held == Some(vk)` → `Decision::consumed()`)が、活性・非活性を問わず Phase 1 より前で止めるので、リピート Down は遅いルールに到達しない。
