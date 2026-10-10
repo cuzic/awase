@@ -436,6 +436,7 @@ mod tests {
         ImeStateHub::with_clock(
             HubClock::manual(1_000_000, std::time::Instant::now()),
             quanta::Clock::new(),
+            || crate::state::foreground_scope::ForegroundScope::INVALID,
         )
     }
 

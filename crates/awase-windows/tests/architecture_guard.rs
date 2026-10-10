@@ -1450,7 +1450,7 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
     // HubClock 経由にした。実時計の tick の出所はここで固定する）。
     assert_eq!(
         count_real_calls(
-            production_code_only(&read_crate_file("src/state/platform_state/shell.rs")),
+            production_code_only(&read_crate_file("src/platform_ctor.rs")),
             "HubClock::wall(crate::hook::current_tick_ms, Instant::now)"
         ),
         1,
@@ -1652,16 +1652,16 @@ fn count_clock_field_lines(code: &str) -> usize {
 /// 殻の本番コードが渡す実時計の式（**空白を除いた形**で照合する。`effective_open_at` を検査する
 /// `effective_open_is_wired_to_the_intent_store_decision`の `HubClock::wall(..)` 件数の固定と同じ式）。
 const REAL_CLOCK_CALL: &str =
-    "with_clock(HubClock::wall(crate::hook::current_tick_ms,Instant::now),quanta::Clock::new()";
+    "with_clock(HubClock::wall(crate::hook::current_tick_ms,Instant::now),quanta::Clock::new(),crate::win32::foreground_scope";
 
 /// `with_clock(` の呼び出し元を、本番（`mod tests` を除く）では次の2か所だけに固定する:
-/// - `state/platform_state/shell.rs`（`new()` の殻。実時計）
+/// - `platform_ctor.rs`（`new_platform_state()` の殻。実時計）
 /// - `state/platform_state.rs` の `#[cfg(test)] impl PlatformState`（`for_test`）
 ///
 /// 加えて、この2ファイルの本番コードで `clock` への書き込みが 0 件であること。
 /// すべての照合はコメントを除いてから行う。違反を説明で返す。
 fn with_clock_call_violations(sources: &[(String, String)]) -> Vec<String> {
-    const SHELL: &str = "src/state/platform_state/shell.rs";
+    const SHELL: &str = "src/platform_ctor.rs";
     const CORE: &str = "src/state/platform_state.rs";
     let mut out = Vec::new();
     for (path, content) in sources {
@@ -1734,16 +1734,16 @@ fn with_clock_is_called_only_by_real_clock_shell_and_for_test() {
         v.is_empty(),
         "`with_clock(` の本番呼び出し元が想定と異なります: {v:?}。本番で `ImeStateHub` に任意の時計を\
          渡す入口を増やすと、TTL 判定の時間軸（`hook::current_tick_ms`）が食い違う恐れがあります。\
-         実時計は `state/platform_state/shell.rs` の `new()` だけです。"
+         実時計は `platform_ctor.rs` の `new_platform_state()` だけです。"
     );
 }
 
 #[test]
 fn with_clock_guard_detects_new_production_entry() {
-    const SHELL: &str = "src/state/platform_state/shell.rs";
+    const SHELL: &str = "src/platform_ctor.rs";
     const CORE: &str = "src/state/platform_state.rs";
     let shell_ok =
-        "fn new() { Self::with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now), quanta::Clock::new()) }";
+        "fn new() { Self::with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now), quanta::Clock::new(), crate::win32::foreground_scope) }";
     // フィールド宣言 1 + `with_clock` 本体の短縮形 1（行頭の `clock:`・`clock,`）を持つ最小の核。
     let core_ok = "struct ImeStateHub {\n    clock: C,\n}\nimpl ImeStateHub {\n fn with_clock(clock: C) -> Self {\n Self {\n clock,\n }\n }\n}\n#[cfg(test)]\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n";
     let build = |shell: &str, core: &str| {
@@ -1776,8 +1776,8 @@ fn with_clock_guard_detects_new_production_entry() {
     ));
     // 実時計の式がコメントにしか無い（行コメント・ブロックコメント）
     for c in [
-        "// with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now), quanta::Clock::new())\nSelf::with_clock(HubClock::manual(0))",
-        "/* with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now), quanta::Clock::new()) */ Self::with_clock(HubClock::manual(0))",
+        "// with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now), quanta::Clock::new(), crate::win32::foreground_scope)\nSelf::with_clock(HubClock::manual(0))",
+        "/* with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now), quanta::Clock::new(), crate::win32::foreground_scope) */ Self::with_clock(HubClock::manual(0))",
     ] {
         assert!(has(&build(c, core_ok), "実時計"), "{c}");
     }
@@ -1813,9 +1813,10 @@ fn with_clock_guard_detects_new_production_entry() {
         ),
         "for_test"
     ));
-    // clock への書き込み（代入・setter・&mut・分配束縛・括弧つき &mut）
+    // clock への書き込み（代入・setter・&mut・分配束縛・括弧つき &mut）。
+    // 実時計の構築口 `platform_ctor.rs` は `platform_state` の子モジュールではなく、`clock` は private なので
+    // 殻から書けない（コンパイラが保証する。以前は子モジュールの `shell.rs` だったので走査で固定していた）。
     for (shell, core) in [
-        ("fn new() { let mut s = Self::with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now), quanta::Clock::new()); s.clock = HubClock::manual(0); s }", core_ok.to_string()),
         (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn set(&mut self, c: C) {{ self.clock = c; }} }}")),
         (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ std::mem::swap(&mut self.clock, &mut o); }} }}")),
         (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ let r = &mut (self.clock); }} }}")),
@@ -2157,12 +2158,12 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
 ///   `process_deferred_keys`〈本番到達不能なデッドコード、決定5参照〉）。
 #[test]
 fn applied_state_recorders_call_sites_are_accounted_for() {
-    // FCIS P2: 殻（`state/platform_state/shell.rs`）も走査し、ファイルごとの件数で固定する。
+    // FCIS P2: 薄い層（`state/platform_state/foreground_wrappers.rs`）も走査し、ファイルごとの件数で固定する。
     // 殻を除外すると、殻へ `.record_*_in_scope(` の呼び出しを足しても気づけない。
     // 核の `record_ime_apply_result_in_scope` → `record_confirmed_in_scope` が従来の
     // `record_ime_apply_result` → `record_confirmed` の1件、殻は各 `_in_scope` をちょうど1件。
     // 殻を除く本番の呼び出し元の合計は分割前と同じ 1 / 5。
-    const SHELL: &str = "src/state/platform_state/shell.rs";
+    const SHELL: &str = "src/state/platform_state/foreground_wrappers.rs";
     type Expected = &'static [(&'static str, usize)];
     const RECORDERS: [(&[&str], Expected); 3] = [
         // `record_ime_apply_result` の呼び出し元（核の `_in_scope` を呼ぶのは殻の1件だけ）。
@@ -2265,7 +2266,7 @@ fn shell_shape_violation(code: &str) -> Option<String> {
 
 #[test]
 fn shell_methods_only_read_scope_once_and_delegate() {
-    let content = read_crate_file("src/state/platform_state/shell.rs");
+    let content = read_crate_file("src/state/platform_state/foreground_wrappers.rs");
     let code = non_comment_lines(production_code_only(&content));
     if let Some(v) = shell_shape_violation(&code) {
         panic!("殻の形の違反: {v}");
@@ -2280,8 +2281,8 @@ fn shell_methods_only_read_scope_once_and_delegate() {
         .collect();
     assert_eq!(
         fns,
-        ["new", "new", "default"],
-        "殻の先頭（形の検査の対象外）に構築口以外の関数があります"
+        Vec::<&str>::new(),
+        "薄い層の先頭（形の検査の対象外）に関数があります"
     );
     assert_eq!(
         preamble.matches("foreground_scope()").count(),
@@ -4458,11 +4459,11 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
             // FCIS P2: 殻は `_in_scope` 版をちょうど1回ずつ呼ぶ（殻を除外しない）。
             (
                 ".arm_external_change_watch_in_scope(",
-                &["state/platform_state/shell.rs"][..],
+                &["state/platform_state/foreground_wrappers.rs"][..],
             ),
             (
                 ".follow_external_change_in_scope(",
-                &["state/platform_state/shell.rs"][..],
+                &["state/platform_state/foreground_wrappers.rs"][..],
             ),
             // ADR-188: 直接観測の窓（物理のモードキー通過・FSM 再送出）。arm は `kp_stage_mode_key_follow` と executor の再送出の各1箇所、
             // 追随は `ir_follow_direct_mode_key_read` の1箇所だけ。殻は `_in_scope` 版をちょうど1回ずつ呼ぶ。
@@ -4473,11 +4474,11 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
             (".follow_direct_read(", &["runtime/ime_refresh.rs"][..]),
             (
                 ".arm_direct_external_change_watch_in_scope(",
-                &["state/platform_state/shell.rs"][..],
+                &["state/platform_state/foreground_wrappers.rs"][..],
             ),
             (
                 ".follow_direct_read_in_scope(",
-                &["state/platform_state/shell.rs"][..],
+                &["state/platform_state/foreground_wrappers.rs"][..],
             ),
         ] {
             let count = production.matches(needle).count();
@@ -6985,7 +6986,6 @@ const PLATFORM_STATE_PUB_FNS: &[&str] = &[
     "effective_open_at",
     "follow_external_change_in_scope",
     "model",
-    "new", // `PlatformState::new`（`shell.rs`、実時計の構築口）
     "record_explicit_intent",
     "set_is_japanese_ime",
     "warrant_context",

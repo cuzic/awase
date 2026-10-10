@@ -72,6 +72,8 @@ pub mod input_defer;
 pub mod journal;
 #[cfg(windows)]
 pub mod journal_dump;
+#[cfg(windows)]
+pub mod platform_ctor;
 // `KeymapTable`/`find_match`/`filter_active` は純粋な値比較のみで Windows API に
 // 依存しないため ungated（ADR-114、Linux で `cargo test -p awase-windows --lib`
 // から全数テストできるようにする。唯一の呼び出し元 `runtime/message_handlers.rs`

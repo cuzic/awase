@@ -289,3 +289,13 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 - 残り: `ungated_state_modules`、P2(`list_src_files` の根本修正)、実際に crate を切る PR。
 - **B1(Opus、PR #569)**: `focus/` と `tsf/` の一部だけを核へ移すと `focus/mod.rs` と `tsf/mod.rs` が両 crate にできる(`vk.rs` も `vk_table!` の `#[macro_export]` で crate 直下に出る)。#567 の P2 が必ず発火する。**P2(`list_src_files` の根本修正)を先に行う**。`#[macro_export]` の `vk_table!` は移動時に呼び出しパス(`crate::vk_table!`)の書き換えか再公開が要る。
 - wall-clock 規則は `use quanta` と `::recent(` も禁止する(`use quanta::Clock; Clock::new()` や別名の素通りを防ぐ。核に `use quanta` は無い)。
+
+### crate の物理分割: 段階 E1(殻側の準備、2026-10-10)
+
+crate を実際に切る(E2)前に、核の型への inherent impl／`Default` を殻に置いている 3 系統を解消した(挙動不変)。調査の誤検出: `runtime/ime_actuation.rs` の `Actuation` と `tsf/gji_fsm.rs` の `FocusEpoch` は核の同名の型とは別物（殻の中の型）で、対処不要。
+
+- `ImeStateHub` の「フォアグラウンドを読んで `_in_scope` へ渡す」薄い層（旧 `state/platform_state/shell.rs`）: フォアグラウンド取得関数（`fn() -> ForegroundScope`）を `ImeStateHub::with_clock` の第 3 引数で注入し（`HubClock`・journal の時計と同形）、薄い層を核の `state/platform_state/foreground_wrappers.rs` へ移した（`self.foreground_scope()` を 1 回読んで 1 つの `_in_scope` に委譲する形は同じ。ガード `shell_methods_only_read_scope_once_and_delegate` が固定）。
+- `PlatformState::new()`／`Default`: 殻の `platform_ctor.rs::new_platform_state()` に置き換えた（実時計・`Instant::now`・`quanta::Clock::new()`・`win32::foreground_scope` を注入する唯一の入口。`with_clock` の呼び出し元の固定ガードはこのファイル）。
+- `PhysicalKeyDisposition::plan`: 拡張トレイト `runtime/transport.rs::PlanPhysicalKey`（呼び出しは `PhysicalKeyDisposition::plan(..)` のまま）。
+
+**E2 の前に所有者が決めること（可視性）**: ADR-229 の可視性の方針（`docs/adr/review/229-opus-visibility-policy.md`）は、`record_optimistic`／`record_confirmed`／`record_ime_apply_result` など記録系を `pub(crate)` に留め、統合テスト（別 crate）から `applied` を書けないようにしている（INV-A97-1、`platform_state_pub_fns_are_fixed_and_exclude_recorders`）。crate を分けると、殻（`runtime/`）が呼ぶこれらは `pub` にせざるを得ず、可視性ではテスト crate と殻を区別できない。代案: (a) 記録系を `pub` にして `#[doc(hidden)]`＋「tests/ と他 crate が記録系を呼ばない」ことを走査で固定する、(b) 記録系の呼び出しを核のラッパー（殻が呼ぶ非記録系の入口）に包む、(c) 殻の呼び出しを感知する型（能力トークン）を引数に取る。

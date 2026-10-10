@@ -703,7 +703,7 @@ pub(super) fn initialize_app(
     all_keymaps: crate::keymap::KeymapTable,
     diag: &mut StartupDiagnostics,
 ) {
-    let mut ps = crate::PlatformState::new();
+    let mut ps = crate::platform_ctor::new_platform_state();
     ps.focus.focus_debounce_ms = config.general.focus_debounce_ms;
     ps.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
     hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);

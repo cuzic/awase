@@ -17,9 +17,8 @@ use super::scoped_latch::ScopedOneShot;
 use super::{ApplyGeneration, TickMs};
 use crate::journal::{JournalEntry, UnifiedJournal};
 
-// OS（フォアグラウンド）を読む殻。核の `_in_scope` 版を呼ぶ1行だけを置く（FCIS P2）。
-#[cfg(windows)]
-mod shell;
+// フォアグラウンドを（注入された関数で）読んで核の `_in_scope` 版へ渡す薄い層（FCIS P2）。
+mod foreground_wrappers;
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -40,6 +39,9 @@ pub struct ImeStateHub {
     pub(crate) event_log: ImeEventLog,
     /// 時刻の供給元（実機は実時計、閉ループ・テストは仮想時計。`state/hub_clock.rs`）。
     clock: super::hub_clock::HubClock,
+    /// フォアグラウンドのスコープを読む関数（実機は `win32::foreground_scope`。`HubClock` と同じ注入。
+    /// 核は OS を読まない。ADR-229 段階 B）。`_in_scope` を持たない薄い層（`foreground_wrappers.rs`）が使う。
+    foreground: fn() -> crate::state::foreground_scope::ForegroundScope,
     /// 統合ジャーナル: エンジン + IME 両イベントを記録する。
     pub(crate) journal: UnifiedJournal,
 
@@ -143,11 +145,16 @@ impl ImeStateHub {
     ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
-    pub fn with_clock(clock: super::hub_clock::HubClock, journal_clock: quanta::Clock) -> Self {
+    pub fn with_clock(
+        hub_clock: super::hub_clock::HubClock,
+        journal_clock: quanta::Clock,
+        foreground: fn() -> crate::state::foreground_scope::ForegroundScope,
+    ) -> Self {
         Self {
             belief: ImeBelief::default(),
             event_log: ImeEventLog::default(),
-            clock,
+            clock: hub_clock,
+            foreground,
             journal: UnifiedJournal::new_with_clock(
                 crate::journal::DEFAULT_CAPACITY,
                 journal_clock,
@@ -165,6 +172,13 @@ impl ImeStateHub {
             generation_alloc: super::GenerationAllocator::new(),
             press_ledger: super::press_ledger::PressLedger::default(),
         }
+    }
+}
+
+impl ImeStateHub {
+    /// 現在のフォアグラウンドのスコープ（注入された関数で読む）。
+    pub(crate) fn foreground_scope(&self) -> crate::state::foreground_scope::ForegroundScope {
+        (self.foreground)()
     }
 }
 
@@ -2065,7 +2079,9 @@ impl PlatformState {
     /// 時計を注入して初期化するテスト用の構築口（`new()` は実時計 `hook::current_tick_ms` を読む）。
     pub(crate) fn for_test(clock: super::hub_clock::HubClock) -> Self {
         Self {
-            ime: ImeStateHub::with_clock(clock, quanta::Clock::new()),
+            ime: ImeStateHub::with_clock(clock, quanta::Clock::new(), || {
+                crate::state::foreground_scope::ForegroundScope::INVALID
+            }),
             focus: FocusStore::new(),
             gate: GateStore::new(),
             keymap: KeymapStore::default(),

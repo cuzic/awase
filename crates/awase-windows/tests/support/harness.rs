@@ -231,6 +231,7 @@ impl Harness {
             hub: ImeStateHub::with_clock(
                 HubClock::manual(TICK_BASE, Instant::now()),
                 quanta::Clock::new(),
+                || ForegroundScope::INVALID,
             ),
             engine: make_engine(),
             keymap: match setup.grid {
