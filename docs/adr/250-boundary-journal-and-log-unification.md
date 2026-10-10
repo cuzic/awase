@@ -10,7 +10,7 @@ summary: |-
   利用者の既定ログ(info/warn)の行は消さない。大きく統合するには ADR-139 決定 4(生成ログは debug のみ)の改訂が要り、所有者の判断を待つ。
   過去の journal・コーパスとの互換性は持たない(所有者判断 2026-10-10)。ADR-226 の候補 E にあたる。
 status: |-
-  提案(起草中、Opus レビュー round2 反映済み・round3 待ち。ログ統合の規模は所有者判断待ち)
+  提案(起草中、Opus レビュー round3 反映済み〈Blocker なし〉・収束確認待ち。ログ統合の規模は所有者判断待ち)
 related_adr:
   - "ADR-082"
   - "ADR-096"
@@ -35,7 +35,7 @@ related_adr:
 ## 用語
 
 - **境界**: 殻(`crates/awase-windows`、Win32 を呼ぶ側)と核(`crates/awase-windows-core` と root の `awase`、純粋な判断)の間。ADR-229 の FCIS の語に従う。
-- **Facts**: 核の決定関数が受け取る引数(`SetOpenFacts`・`DecisionInputs`・`ImeSnapshot`・`classify_*` の引数など)。殻が OS から読んだ値、問い合わせ時刻(`now`)を含む。殻が嘘をつく読みは、その値に既に含まれる。
+- **Facts**: 核の決定関数が受け取る引数(`SetOpenFacts`・`DecisionInputs`・`ImeSnapshot`・`classify_*` の引数など)。殻が OS から読んだ値、問い合わせ時刻(`now`)を含む。所有型の Facts を取る関数では 1 件、借用状態を取る関数では「診断に要る射影」を指す(決定 1)。殻が嘘をつく読みは、その値に既に含まれる。
 - **Plan**: 核の決定関数が返す理由つきの結果(`SetOpenPlan`・`DriftPlan`・`NoDrift`・`BlockReason`・`PressClaim`・`GateResult`、ADR-229 E1 で drift に付いた `OmissionBasis` など。`*_plan.rs` は 10 ファイル)。送る・送らない(**見送り**)のどちらも、理由の enum を持つ。
 - **内部診断(C)**: 境界を通らない殻の出来事(Win32 の失敗、起動・終了、設定読み込み、プローブ内部)。
 
@@ -74,7 +74,7 @@ related_adr:
   `ImeActuation.action = GiveUp`、`GiveUpFollow.outcome`、`DeferredRecoveryFlush` の discard、`ImeOpenApplied.outcome = Unwarranted`。
 - 抜けているもの: warmup・TSF gate・focus・shift-conv-guard・key-effect 系。例: `[tsf-gate] held queue full`(`tsf/tsf_gate.rs:299`)、`[do-transmit] gate=Bypass, skipping`(`output/probe_io.rs:423`)、`[shift-conv-guard] … スキップ`(`runtime/key_pipeline.rs:2268`)、`[key-effect-predict] no prediction`。
 - 抜けている見送りのほとんどは**殻のファイル**にある(`skip|スキップ|無視|ignored|見送|held|fence|gate` を含む tracing の粗い数え: `runtime/` 59、`tsf/` 42、`output/` 18、core 11、`state/`〈殻の crate〉3)。
-  `tsf/`・`output/` は `crate::journal` の参照を禁じられている(`architecture_guard.rs:403`)。ADR-229 の段階 5(`F` の分割)が済むまで、これらを核の Plan にはできない。
+  `tsf/`・`output/` は `crate::journal` の参照を禁じられている(`architecture_guard.rs:403`)。これらを核の Plan にする予定は現時点で確認できない(決定 3)。
 
 ### 4. 読み手(消してはいけないもの)
 
@@ -108,8 +108,11 @@ related_adr:
 - 入力の単位は、**所有型の Facts を取る関数**(`plan_set_open(SetOpenFacts)`、`plan_core`、`*_plan.rs`)では Facts 1 件。
   借用状態を取る関数(`evaluate_drift(&ImeModel, now)`、`dispatch_set_open(&mut ImeStateHub, …, sink)`。後者は `CommandSink` の戻り値が途中で判断に入る ADR-229 F-D1 の handler 例外)では、**診断に要る射影**(判断に効いた値の抜粋)を記録する。ADR-229 F-D3 の「借用ビュー → 所有型の Facts」への縮小が済むまで、全量の Facts は目標にしない。対象の関数は段階ごとに列挙する。
 - この記録は**人と Claude が不具合報告で読むための診断**であり、再生の入力にしない(決定 4)。そのため `Deserialize` の追加(`&'static str` の 6 か所、`EventTime.monotonic: Instant` の数値化)は要らない。
-- 毎 tick 通る `Idle` は記録しない(ポーリングごとに積むと ring を占める。#532 も `Idle` は `trace!`)。記録するのは `Idle` 以外。
-- 内部診断(C)は journal に入れず、手書きの tracing のまま残す。診断的な 6 variant(背景 1)は、読み手(人)があるので一括では消さない。実際に消せるのは `TsfProbeCompleted`・`DriftGiveUpIntervalEnded` 程度で、各 variant の扱いは該当する段階の PR で表にして決める。
+- **記録規則は edge 記録**: 前の tick と理由(`DriftPlan` の variant + `basis`)が**変わったときだけ**記録し、同じ理由の連続は 1 件に畳む(ADR-169 の打鍵の畳み込みと同じ考え方)。
+  - 「`Idle` 以外」では両方向に外れる。`Idle` の中に `NoDrift::StaleObservation`(ADR-233 の測定対象)や `NotExplicitIntent`(issue #189・BUG-110)があり、逆に `GiveUp(StillParked)`・`GiveUp(CooldownPending)` は parked の間ポーリングの tick ごと(既定 500ms)に返る(`drift_plan.rs:93-115`、殻は `Idle` を `trace!` にして return する〈`runtime/ime_refresh.rs:892-895`〉)。
+  - `Send` と `GiveUp(FirstTime)` は既存の `ImeActuation`(`action = Send/GiveUp`)と `ActuationDecision` に記録されている。journal の中に二重を作らないよう、既存の `ImeActuation` に `basis` を足すか、新しいレコードから外すかを段階 1 で決める。段階 1 で新しく増える情報は、`SkipWarrantWouldBlock`・`Confirmed`・`DeferToSettle`・`Rearm`・`Idle` の各理由と `basis`。
+- **診断用の記録が保証すること**: (i) 不具合報告の JSON に載る(ring の保持、決定 6)。(ii) 人が読める(`emit_tracing` の行に `basis` などの理由が出る。`?`/`%` 禁止なので enum は `variant_name` で出す)。(iii) 記録の有無が挙動を変えない。型の互換や決定性は保証しない。
+- 内部診断(C)は journal に入れず、手書きの tracing のまま残す。診断的な 6 variant(背景 1)は、読み手(人)があるので一括では消さない。消せるのは `TsfProbeCompleted`・`DriftGiveUpIntervalEnded` 程度という見込み(実測ではない)で、各 variant の扱いは該当する段階の PR で表にして決める。
 
 ### 決定 2: 核は journal に触らない。殻が境界で記録する(ADR-229 代案 A)
 
@@ -122,12 +125,12 @@ related_adr:
 ### 決定 3: 見送りの理由は、調査で足りなかった決定から 1 つずつ載せる(ADR-229 E1 の続き)
 
 - 全 288 件の再分類はしない。既存の理由 enum(`NoDrift`・`BlockReason`・`SetOpenPlan`・`PressClaim`・`GateResult`・`DriftPlan`・`physical_disposition` の `suppress_reason`)を記録に載せる。新しい `Withheld` 列挙を第 2 の分類表として作らない(ADR-229 M3「Plan は `run_chain` と二重の表現になる」と同型を避ける)。
-- **段階 1 は drift correction の Plan と `OmissionBasis` を journal に載せることだけ**(#532 は殻の `basis=` をログに出すだけで journal には載せていない)。`Idle` 以外を記録する。
-- 殻にある見送り(`runtime/`・`tsf/`・`output/`)は、ADR-229 段階 5 が済むまで対象外と明記する。
+- **段階 1 は drift correction の Plan と `OmissionBasis` を journal に載せることだけ**(#532 は殻の `basis=` をログに出すだけで journal には載せていない)。記録規則は決定 1 の edge 記録。
+- 殻にある見送り(`runtime/`・`tsf/`・`output/`)は対象外。FCIS のタスク表(`docs/tasks/fcis-layering-tasks-2026-10-06.md:212-218`)では F1〜F6 がマージ済みで F5d は「分けない」と決まっており、`tsf/tsf_gate.rs`・`output/probe_io.rs`・`runtime/key_pipeline.rs` の shift-conv-guard・key-effect-predict が今後の分割に入るかは未確認(段階 0 で確かめる)。入っていなければ「分割の予定に無く、本 ADR では対象外」と扱う。
 
 ### 決定 4: 再生は `Engine::on_input` までに絞る。記録した Facts/Plan は再生に使わない
 
-- 再生の目標は **`Engine::on_input` まで**(B5 で実証済み)。入力は打鍵とタイマーで、`KeyInput` に足りないエンジンの InputContext(B5 は固定値で与えた。`key_input_replay_tests.rs:7-8`)は、`[engine-input]` の `[diag-ctx]` が持っている値を `KeyInput` に足す。
+- 再生の目標は **`Engine::on_input` まで**(B5 で実証済み)。**再生のハーネスは ADR-241 決定 3(B5 の補助をハーネスへ移す)と段階 5 の範囲**で、本 ADR は作らない。本 ADR が決めるのは**記録の形式**だけ。入力は打鍵とタイマーで、`KeyInput` に足りないエンジンの InputContext(B5 は固定値で与えた。`key_input_replay_tests.rs:7-8`)は、`[engine-input]` の `[diag-ctx]` が持っている値を `KeyInput` に足す。
   これは 10-06 の検討 #5「`KeyInput` に移せば重複が減るのと同時に再生の材料がそろう」にあたり、統合の数少ない純減候補でもある(段階 3 で実測してから決める)。
 - 核の決定関数 1 つずつを「記録した Facts → 記録した Plan」で再生することは**しない**。ADR-241(`:115`)は同種の再生(凍結コーパス 37 件の `replay_record`)を「単体テストを超える検査をしていない」として捨てると決めており、所有者も 2026-10-06 に了承している。作り直すと決定 8 と矛盾する。
 - 端から端までの状態の再構築(ring の先頭時点の belief・台帳・GjiFsm・engine の FSM を含む)も目標にしない。根拠: B5 の結果と ADR-229 W0。snapshot を足すかは ADR-241 段階 2 の結果を見て別 ADR で決める。
@@ -147,7 +150,8 @@ related_adr:
 ### 決定 6: ring は種類のレーンを残す。保持は時間で保証する
 
 - 単一 ring にしない。単一にすると、ADR-169 の畳み込み(`record_key_input` が「`key_input` レーンの `back()` が直前の `KeyInput`」に依存)が成り立たない。
-- レーンは、**1 レコード `{ caused_by, facts の射影, plan }` を決定関数の種類で分ける**(Key / Timer・その他の入力 / Plan〈種類別〉)。facts と plan を別レーンにはしない(追い出しの時期が違って片方だけが残るため)。
+- レーンは、**1 レコード `{ caused_by, facts の射影, plan }` を決定関数の種類で分ける**。facts と plan を別レーンにはしない(追い出しの時期が違って片方だけが残るため)。
+  現行の 4 レーン(State: `ImeEvent`・`FocusTransition`・`ImeOpenApplied`・`ClockAnchor`・`DumpTriggered`、Timing: `GjiFsmTransition`・`LiteralDetect`・`TsfProbe*`・`HookImeModeDiagnostic`・`DeferredRecoveryFlush`、Actuation: `ImeActuation`・`SentInput`・`ActuationDecision`・`PressWriteClaim`・`Drift*`・`GiveUpFollow`・`ConvClassifyCall`・`TimerFired`、KeyInput: `KeyInput`)との対応は**段階 2 で決める。例は仮**(Key / Timer・その他の入力 / Plan〈種類別〉)。
 - ポーリングの頻度: IME refresh は既定 500ms(`src/config.rs:417` の `ime_poll_interval_ms`、設定で変えられる。`awase-settings/src/main.rs:4194`)で、**1 時間に 7,200 回は無操作時の下限**。打鍵中は `schedule_ime_refresh(20)`(`key_pipeline.rs:876,1525,1640,1656`)が加わる。
   今もポーリングの観測は `ImeEvent` として State レーンに入っている(ADR-222 の「State は 13〜16 分」はその結果)。Facts の記録で**増える分**は、今の量との差分で見積もる。
 - 打鍵の畳み込みは Key レーンの中だけで行う。保持は件数ではなく「各レーンが最低 N 分」で決める。N は、本物の報告 1 件の `DumpTriggered.evicted_*`・`oldest_elapsed_ms_*` で測ってから決める。
@@ -169,20 +173,23 @@ related_adr:
 
 2026-10-10 の意向は「ログと journal の統合も目的の 1 部」。本 ADR の現在の答えは**「統合は小さい。純減の組だけ、info/warn は消さない」**で、それ以上に進めるには次の判断が要る。
 
-- 生成ログ(`emit_tracing`)の tracing レベルと target を型ごとに変える(ADR-139 決定 4 の改訂)か。変えると、`[drift] correction` などの info/warn の行も journal からの生成に置き換えられるが、10-06 の検討が「推奨しない」とした組(診断で最も使われた行、CI が読む行)に触れる。
-- 純増になる組でも統合を進めるか(その場合、取りやめ条件 1 を外す)。
+- **統合を大きくする利点**: 1 つの源から構造化されたログが出る。チェッカーが文言の正規表現ではなくフィールドを読めるようになり、文言が変わって 0 件で通る事故(d47645eb、`test_log_anchors_in_rust_source.py` の背景)が型で防げる。
+  トレードオフ: ADR-139 決定 2(747MB の実測による肥大の懸念)、10-06 の検討が「推奨しない」とした組(診断で最も使われた行、CI が読む行)に触れること。
+- **安い第 3 の案**: 統合はせず、手書きの tracing のうちチェッカーが読む行だけを構造化フィールド(`key = value`)に書き換える。今のフィールド付きは 1 件(背景 2)。ADR-226 の候補 E の前半(ログの構造化)は journal と切り離して安く進められる。「機械が読みやすいログ」が目的ならこれがいちばん安い。
+- 判断してほしいこと: (1) 生成ログの tracing レベルと target を型ごとに変える(ADR-139 決定 4 の改訂)か。(2) 純増になる組でも統合を進めるか(その場合、取りやめ条件 1 を外す)。(3) 第 3 の案(チェッカーが読む行だけの構造化)を先にやるか。
 
 ## 合否の基準(提案)
 
-1. 再生: `Engine::on_input` までの再生で、本物の報告(合成でない)1 件の打鍵とタイマーの列を HEAD に流し、修正コミットの前後で結果が変わること。**評価できる時期は段階 3 以降**で、それまでは判定しない。または ADR-241 決定 4 と同じ mutants の判定(打鍵からの再生でだけ落ちる変異が 1 つ以上)。
+1. 再生: **ADR-241 段階 5 の合否に従う**(他の ADR の作業の結果で本 ADR の採否が決まる形になることを明記する)。本 ADR 側の確認は、`KeyInput` に InputContext を足した記録から、`Engine::on_input` の再生に要る材料がそろうこと(本物の報告 1 件で確かめる。評価できる時期は段階 3 以降)。
 2. 各段階の PR に、組ごとの収支表(撤去行・追加行・移す消費者)を付け、**純減の組だけ**手書きを消す。
 3. 変更後の e2e チェッカー(フィールドまで読む `check_consistency.py`・`check.py`・`check_run_validity.py` を含む)と `test_log_anchors_in_rust_source.py` が全て通る。
 4. 設定画面の「打鍵の行をすべて削除」が、変更後の型でも打鍵を含む行を削除する(件数 0 でないことを確認する)。
+5. 診断用の記録: 段階 1 の後、drift の見送り(`NoDrift::StaleObservation` など)が、不具合報告の journal に理由(variant + `basis`)つきで載り、同じ理由の連続が 1 件に畳まれる。
 
 ## 取りやめ条件(提案)
 
 - 段階 0 の台帳と収支表で、統合の対象になる組が純減にならない(ほとんどが純増)と分かったとき。その場合は決定 1〜3(Plan の記録)だけを残し、ログとの統合をやめる。
-- **段階 3 の再生(`Engine::on_input` まで)が合否 1 を満たさないとき。**ADR-241 段階 2 の結果と合わせて再判断する。
+- ADR-241 段階 5 の合否が満たされないとき(`Engine::on_input` の再生が成り立たないとき)。その場合は `KeyInput` への InputContext の追加を取りやめ、診断用の記録(決定 1〜3)だけを残す。
 
 ## 複雑性の収支(見積もり、段階 0 で行数に直す)
 
@@ -196,7 +203,7 @@ related_adr:
 0. **コード変更なし(または `ANCHORS` の拡充だけ)**: 事実の訂正の反映、全域 grep による読み手の台帳(`tools/**`・`.github/**`・`crates/*/tests/**`・`docs/tasks/*verification*`)と `ANCHORS` の拡充、組ごとの収支表、CI の `awase.log` の大きさの測定、報告 journal のサイズ測定。
 1. drift correction の Plan と `OmissionBasis` を journal に載せる(`Idle` 以外)。ログは手書きのまま残す。記録の型を足す場合は、決定 7 の `contains_typed_text()` を同じ PR で入れる。
 2. ring のレーンの見直し(測定の後)。10 分窓の扱いは、決定 7 の削除対象がそろった後。
-3. `KeyInput` に InputContext を足し、`Engine::on_input` までの再生(B5 の延長)を作る。ADR-241 段階 2 の結果を待つ。
+3. `KeyInput` に InputContext を足す(記録の形式)。再生のハーネスは ADR-241 段階 5。ADR-241 段階 2 の結果を待つ。
 4. 二重の撤去は収支が純減の組だけ。info/warn の行は消さない。非同期経路の記録は、この段階以降に相関の形を決めてから。
 
 ## リスク・未決
@@ -223,3 +230,9 @@ related_adr:
 - M4(#532 と `Idle`): 用語・決定 1・決定 3・段階 1。M5(目的が薄れた): summary・決定の冒頭・所有者への確認。
 - S1(ポーリング頻度): 決定 6。S2(レコードとレーン): 決定 6。S3(診断 6 variant): 決定 1。S4(`KeyInput` の InputContext): 決定 4・段階 3。S5(10 分窓と削除の順序): 決定 6・決定 7。S6(非同期の相関の段階): 決定 2・段階 4。
 - N1(34 か所): summary・背景 1。N2(検討文書の名前): summary。N3(Observation): リスクから削除。N4(status): frontmatter。
+
+### round3
+
+- M1(段階 1 の記録規則): 決定 1(edge 記録、`Send`/`GiveUp(FirstTime)` の二重の扱い)・決定 3・合否 5。
+- S1(ADR-241 とのハーネスの所有): 決定 4・合否 1・取りやめ条件・段階 3。S2(診断用の保証): 決定 1・合否 5。S3(所有者への確認の公平さ): 所有者への確認。
+- S4(ADR-229 段階 5 の予定): 背景 3・決定 3。S5(レーンの対応): 決定 6。N1(見込み): 決定 1。N2(Facts の用語): 用語。
