@@ -7,7 +7,7 @@ summary: |-
   hook の `modifier_snapshot` 作成は `#[cfg(windows)]` で Linux から再生できないため、fixture はエンジン側の入口
   (注入 Ctrl↓ の期限内に注入 V が `ctx.modifiers.ctrl=true` で届く列)の列として切り出し、報告の実列を最小の列だけ残して固定する。
 status: |-
-  実装済み(PR #582、2026-10-10、CI run 38045174651 の `test` が pass)。報告 `01M4J72G985T0FFT6XPN0SWCQQ` は R2 から取得でき、実記録の2例(seq 61-64・117-120)を記録のまま fixture にした(合成ではない)。注入 V の ctrl は `ForeignCtrlLatch` を記録の時刻順に通して求め、ラッチを通さない対照で修正前の挙動(`PendingChar`・「ふ」)を固定。hook.rs の配線は範囲外。
+  実装済み(PR #582、2026-10-10、CI run 38046931901 の `test` が pass)。報告 `01M4J72G985T0FFT6XPN0SWCQQ` は R2 から取得でき、実記録の2例(seq 61-64・117-120)を記録のまま fixture にした(合成ではない)。注入 V の ctrl は `ForeignCtrlLatch` を記録の時刻順に通して求め、ラッチを通さない対照で修正前の挙動(`PendingChar`・「ふ」)を固定。hook.rs の配線は範囲外。
 related_adr:
   - "ADR-249"
   - "ADR-250"
@@ -48,7 +48,7 @@ related_adr:
 ## 検証
 
 - `cargo nextest run -p awase-windows --lib key_input_replay_tests`(Linux で走る。`src/key_input_replay_tests.rs`、`journal_replay.rs` ではない)。
-- CI: PR #582 の `test` ジョブ(run 38045174651)が pass。
+- CI: PR #582 の `test` ジョブ(run 38046931901)が pass。
 
 ## 実装結果(2026-10-10)
 
