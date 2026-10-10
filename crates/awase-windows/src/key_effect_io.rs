@@ -206,7 +206,7 @@ impl KeymapCacheShellExt for KeymapCache {
                     // ADR-254: 止めた理由を journal(tracing)に残す(この副作用を受けた人の報告を、
                     // ほかの原因と区別するため)。キーマップの読み直し(版が変わったとき)にだけ出る。
                     tracing::info!(
-                        "[msime-legacy] 旧UIのキーテンプレート(keystyle)が既定でないため、同梱表 MSIME_NATIVE の打鍵時予測を止めます (ADR-254)"
+                        "[msime-legacy] 旧UIのキーテンプレート(keystyle)が既定でないため、同梱表 MSIME_NATIVE の打鍵時予測を止めます(互換 ON の Custom は無変換/変換だけ Custom の表から予測) (ADR-254)"
                     );
                 }
                 Some(keymap)

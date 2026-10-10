@@ -306,6 +306,23 @@ mod windows_impl {
                 keystyle,
                 legacy_hash,
             );
+        // ADR-254 第二段: 互換 ON の Custom は、無変換/変換だけ、Custom の表(S4key・key)から予測する。
+        // それ以外の止める構成(名前付き・未知・互換が読めない)は表を読まない。
+        let keymap = if matches!(
+            keystyle,
+            crate::state::key_effect_predictor::MsImeKeystyle::Custom
+        ) && compat_mode == Some(true)
+        {
+            let (s4key, key) = crate::msime_legacy_keymap::read_custom_s4key_and_key();
+            keymap.with_legacy_custom_cells(
+                crate::state::key_effect_predictor::legacy_custom_cells(
+                    s4key.as_deref(),
+                    key.as_deref(),
+                ),
+            )
+        } else {
+            keymap
+        };
         // 値0もADR-199 T12で明示的な割り当て(IME-オン)と確定した(既定ではない)ので、
         // 「値があるか」だけを見る(`!= 0`ではない、M5)。マスタースイッチ
         // (IsKeyAssignmentEnabled)もbitsに含める——`for_msime_native`のreassigned判定
