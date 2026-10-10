@@ -373,6 +373,29 @@ pub const fn reinject_scan_code(vk_code: VkCode, scan_code: u32) -> u16 {
     }
 }
 
+/// `KEYEVENTF_KEYUP`（`KEYBDINPUT::dwFlags`）。
+pub const REINJECT_FLAG_KEYUP: u32 = 0x0002;
+/// `KEYEVENTF_UNICODE`（`KEYBDINPUT::dwFlags`）。
+pub const REINJECT_FLAG_UNICODE: u32 = 0x0004;
+/// `VK_PACKET`。他アプリの `KEYEVENTF_UNICODE` 注入は、フックでは`vkCode=0xE7`・`scanCode`=文字（UTF-16 の1単位）で届く。
+const VK_PACKET_CODE: u16 = 0xE7;
+
+/// 通した生キーを再注入するときの`KEYBDINPUT`の `(wVk, wScan, dwFlags)`（ADR-253、BUG-198）。
+///
+/// `VK_PACKET`は文字が`wScan`に載るので、`wVk=0`・`wScan`=文字・`KEYEVENTF_UNICODE`で送り直す。
+/// 通常キーのように`wScan=0`・UNICODE無しで送ると文字が失われる（保留→再注入された注入文が丸ごと消えた）。
+/// サロゲートペアは2つの`VK_PACKET`で届くので、1イベントずつ同じ規則で送れば並びが保たれる。
+/// それ以外は従来どおり（`wVk`=元のVK、`wScan`=`reinject_scan_code`）。
+#[must_use]
+pub const fn reinject_key_spec(vk_code: VkCode, scan_code: u32, is_keyup: bool) -> (u16, u16, u32) {
+    let up = if is_keyup { REINJECT_FLAG_KEYUP } else { 0 };
+    if vk_code.0 == VK_PACKET_CODE {
+        (0, scan_code as u16, REINJECT_FLAG_UNICODE | up)
+    } else {
+        (vk_code.0, reinject_scan_code(vk_code, scan_code), up)
+    }
+}
+
 /// 生キーを通した直後に実IMEを読み直して追随する（ADR-187のfollow）対象のIMEモードキーか。
 ///
 /// ADR-191: IMEモードキー（`is_ime_mode_key_for_ime`）のうち、awase自身が意図を持って書く
@@ -554,7 +577,10 @@ pub const fn is_passthrough(vk_code: VkCode) -> bool {
         0xAD..=0xB7 |
         0xA6..=0xAC |
         0x5D |
-        0x5E | 0x5F
+        0x5E | 0x5F |
+        // VK_PACKET: 他アプリの KEYEVENTF_UNICODE 注入。scanCode は物理位置でなく文字なので、
+        // 位置表で引くと ASCII 文字(U+0020〜0035 等)が NICOLA の Char になる(ADR-253)。
+        0xE7
     )
 }
 
@@ -1026,13 +1052,48 @@ mod tests {
         assert_eq!(reinject_scan_code(VkCode(0x25), 0x4B), 0);
     }
 
+    #[test]
+    fn vk_packet_is_passthrough_so_its_char_scan_is_not_looked_up_as_a_position() {
+        assert!(super::is_passthrough(VkCode(0xE7)));
+        assert!(!super::is_passthrough(VkCode(0x41)));
+    }
+
+    #[test]
+    fn reinject_key_spec_sends_vk_packet_as_unicode_and_others_unchanged() {
+        // VK_PACKET(0xE7): 文字は wScan、wVk=0、UNICODE(+KEYUP)。「音」=U+97F3。
+        assert_eq!(
+            reinject_key_spec(VkCode(0xE7), 0x97F3, false),
+            (0, 0x97F3, 0x0004)
+        );
+        assert_eq!(
+            reinject_key_spec(VkCode(0xE7), 0x97F3, true),
+            (0, 0x97F3, 0x0006)
+        );
+        // サロゲートの片方も wScan にそのまま載せる。
+        assert_eq!(
+            reinject_key_spec(VkCode(0xE7), 0xD83D, false),
+            (0, 0xD83D, 0x0004)
+        );
+        // 通常キーは従来どおり（wScan=0・UNICODE無し）。
+        assert_eq!(reinject_key_spec(VkCode(0x41), 0x1E, false), (0x41, 0, 0));
+        assert_eq!(
+            reinject_key_spec(VkCode(0x41), 0x1E, true),
+            (0x41, 0, 0x0002)
+        );
+        // IMEモードキーは scan を保つ。
+        assert_eq!(
+            reinject_key_spec(VkCode(0xF2), 0x70, true),
+            (0xF2, 0x70, 0x0002)
+        );
+    }
+
     use super::{
         ascii_to_vk, build_symbol_to_vk, interpret_combo, is_ime_mode_key_for_ime,
         is_static_idempotent_open_key, is_synthetic_dbe_ime_hotkey, may_change_ime,
-        parse_key_combo, physical_identity_slot, reinject_scan_code, should_release_thumb_latch,
-        should_upgrade_is_japanese_ime, stale_down_vk_on_up, thumb_latch_identity,
-        vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_IME_OFF,
-        VK_IME_ON, VK_LEFT, VK_RETURN, VK_SPACE, VK_UP,
+        parse_key_combo, physical_identity_slot, reinject_key_spec, reinject_scan_code,
+        should_release_thumb_latch, should_upgrade_is_japanese_ime, stale_down_vk_on_up,
+        thumb_latch_identity, vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode, VkCodeExt,
+        VK_A, VK_IME_OFF, VK_IME_ON, VK_LEFT, VK_RETURN, VK_SPACE, VK_UP,
     };
     use awase::types::ScanCode;
 

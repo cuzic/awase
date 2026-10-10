@@ -352,6 +352,15 @@ pub trait RawKeyEventExt {
     unsafe fn reinject(&self);
 }
 
+// `vk::reinject_key_spec` が返す dwFlags のビット値（core は `windows` 非依存なので定数を複製している）が
+// Win32 の定義とずれていないことをコンパイル時に固定する（ADR-253）。
+#[cfg(windows)]
+const _: () = {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, KEYEVENTF_UNICODE};
+    assert!(vk::REINJECT_FLAG_KEYUP == KEYEVENTF_KEYUP.0);
+    assert!(vk::REINJECT_FLAG_UNICODE == KEYEVENTF_UNICODE.0);
+};
+
 #[cfg(windows)]
 impl RawKeyEventExt for RawKeyEvent {
     #[allow(unsafe_code)]
@@ -359,23 +368,20 @@ impl RawKeyEventExt for RawKeyEvent {
         use crate::output::INJECTED_MARKER;
         use awase::types::KeyEventType;
         use windows::Win32::UI::Input::KeyboardAndMouse::{
-            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-            VIRTUAL_KEY,
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, VIRTUAL_KEY,
         };
 
         let is_keyup = matches!(self.event_type, KeyEventType::KeyUp);
+        // VK_PACKET は文字が wScan に載るので UNICODE で送り直す（ADR-253、BUG-198）。
+        let (w_vk, w_scan, flags) = vk::reinject_key_spec(self.vk_code, self.scan_code.0, is_keyup);
 
         let input = INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(self.vk_code.0),
-                    wScan: vk::reinject_scan_code(self.vk_code, self.scan_code.0),
-                    dwFlags: if is_keyup {
-                        KEYEVENTF_KEYUP
-                    } else {
-                        KEYBD_EVENT_FLAGS(0)
-                    },
+                    wVk: VIRTUAL_KEY(w_vk),
+                    wScan: w_scan,
+                    dwFlags: KEYBD_EVENT_FLAGS(flags),
                     time: 0,
                     dwExtraInfo: INJECTED_MARKER,
                 },
