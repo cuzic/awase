@@ -313,6 +313,7 @@ mod tests {
             left_thumb_down_snapshot: None,
             right_thumb_down_snapshot: None,
             injected: false,
+            foreign_ctrl: false,
         }
     }
 

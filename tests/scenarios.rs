@@ -137,6 +137,7 @@ fn key_down(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
     }
 }
 

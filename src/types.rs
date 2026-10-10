@@ -342,6 +342,11 @@ pub struct RawKeyEvent {
     /// 押下の書き込みだけ緩めるための印。`modifier_snapshot`/`was_down` と同じ理由（capture 時点で埋め込み、
     /// drain replay 時にライブ再取得しない）でこのフィールドを持つ。
     pub press_id: Option<PressId>,
+    /// `modifier_snapshot.ctrl` が **他アプリの注入 Ctrl の期限内記録**によって立った(物理の Ctrl ではない)か
+    /// (ADR-249、BUG-197)。フックが snapshot を作る時点で決めた値を載せるだけで、エンジンスレッドは
+    /// `HOOK_STATE` を読まない(INPUT_DEFER の再生で再生時点の値になるのを避ける、ADR-129 と同型)。
+    /// journal の `KeyInput` が「物理 Ctrl が無いのに ctrl=true」を誤読しないための印。
+    pub foreign_ctrl: bool,
 }
 
 impl RawKeyEvent {
@@ -509,6 +514,7 @@ mod tests {
             injected,
             was_down: false,
             press_id: None,
+            foreign_ctrl: false,
         }
     }
 

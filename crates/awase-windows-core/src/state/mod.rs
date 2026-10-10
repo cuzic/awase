@@ -67,6 +67,9 @@ pub mod layout_language;
 // ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
 // 配線はまだ無い（モジュール冒頭のスコープ節参照）。
 pub mod event_origin;
+// ADR-249(BUG-197): 他アプリが注入した Ctrl の期限付き記録(hook.rs の唯一の呼び出し元。純粋なので Linux でテストできる)。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod foreign_modifier;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod half_width_alnum;
 pub mod ime_actuation;
