@@ -18,10 +18,26 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "support/src_roots.rs"]
+mod src_roots;
+use src_roots::src_crate_dirs;
+
 // ───────────────────────── 共通ヘルパ ─────────────────────────
 
 fn manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// ガードが走査する本番コードの `src/`（このクレート + 核 crate。`support/src_roots.rs`）。
+fn src_dirs() -> Vec<PathBuf> {
+    src_crate_dirs().iter().map(|d| d.join("src")).collect()
+}
+
+/// 対象 crate すべての `src/` 以下の `.rs` を集める。
+fn collect_all_src(out: &mut Vec<PathBuf>) {
+    for d in src_dirs() {
+        collect_rs(&d, out);
+    }
 }
 
 /// `dir` 以下の `.rs` を再帰収集する。ファイル名に `test` を含むもの
@@ -114,7 +130,11 @@ fn code_lines(content: &str) -> Vec<(usize, String)> {
 fn rel(path: &Path) -> String {
     // ALLOW リストはフォワードスラッシュ固定で書かれているため、Windows の
     // `\` 区切り表示に引きずられないよう常に `/` へ正規化する。
-    path.strip_prefix(manifest())
+    let base = src_crate_dirs()
+        .into_iter()
+        .find(|d| path.starts_with(d))
+        .unwrap_or_else(manifest);
+    path.strip_prefix(base)
         .unwrap_or(path)
         .display()
         .to_string()
@@ -231,13 +251,10 @@ fn b1_with_app_confined_to_orchestrator_modules() {
             // 読めないため with_app 経由が必須（ADR-086 INV-14）。
         ),
     ];
-    let src = manifest().join("src");
-    let dirs = [
-        src.join("observer"),
-        src.join("focus"),
-        src.join("output"),
-        src.join("state"),
-    ];
+    let dirs: Vec<PathBuf> = src_dirs()
+        .iter()
+        .flat_map(|src| ["observer", "focus", "output", "state"].map(|d| src.join(d)))
+        .collect();
     let mut hits = scan(&dirs, |code| {
         code.contains("with_app(")
             || code.contains("with_app_ref(")
@@ -247,7 +264,11 @@ fn b1_with_app_confined_to_orchestrator_modules() {
     });
     // ime.rs (単一ファイル) も 5 領域の一部。
     let ime = manifest().join("src/ime.rs");
-    if ime.exists() {
+    assert!(
+        ime.exists(),
+        "src/ime.rs が無い（移動・改名したらこのガードも付け替える）"
+    );
+    {
         let content = fs::read_to_string(&ime).unwrap_or_default();
         for (line, code) in code_lines(&content) {
             if code.contains("with_app(") || code.contains("crate::APP") {
@@ -273,6 +294,10 @@ fn b1_with_app_confined_to_orchestrator_modules() {
 /// Why: ADR-030。観測の意図を型 (gji_last_io_ms() 等の named API) に表現する。
 #[test]
 fn b2_output_uses_named_tsf_observation_api() {
+    assert!(
+        manifest().join("src/output").is_dir(),
+        "src/output が無い（移動・改名したらこのガードも付け替える）"
+    );
     let hits = scan(&[manifest().join("src/output")], |code| {
         code.contains("tsf_obs()")
     });
@@ -294,7 +319,11 @@ fn b2_output_uses_named_tsf_observation_api() {
 /// `state/ime_model.rs` に絞って app 分岐がゼロであることを検査する (classifier 側は正当)。
 #[test]
 fn c4_reducer_has_no_app_specific_branches() {
-    let hits = scan(&[manifest().join("src/state/ime_model.rs")], |code| {
+    assert!(
+        state_file("ime_model").is_file(),
+        "state/ime_model.rs が見つからない（移動・改名したらこのガードも付け替える）"
+    );
+    let hits = scan(&[state_file("ime_model")], |code| {
         code.contains("AppKind::")
             || code.contains("class_name ==")
             || code.contains("class_name.contains")
@@ -318,7 +347,7 @@ fn c4_reducer_has_no_app_specific_branches() {
 #[test]
 fn c5_no_legacy_boolean_guard_remnants() {
     let mut files = Vec::new();
-    collect_rs(&manifest().join("src"), &mut files);
+    collect_all_src(&mut files);
     files.sort();
     let mut hits = Vec::new();
     for f in &files {
@@ -353,9 +382,7 @@ fn c5_no_legacy_boolean_guard_remnants() {
 /// ユニットテスト (`#[cfg(test)]`) で、test ブロック除外により対象外になる。
 #[test]
 fn c6_single_reduce_call_site() {
-    let hits = scan(&[manifest().join("src")], |code| {
-        code.contains("model.reduce(")
-    });
+    let hits = scan(&src_dirs(), |code| code.contains("model.reduce("));
     assert_eq!(
         hits.len(),
         1,
@@ -393,7 +420,7 @@ fn c6_single_reduce_call_site() {
 fn d1_no_vk_magic_hex_outside_vk_rs() {
     const ALLOW: &[(&str, &str)] = &[];
     let mut files = Vec::new();
-    collect_rs(&manifest().join("src"), &mut files);
+    collect_all_src(&mut files);
     files.retain(|f| f.file_name().and_then(|n| n.to_str()) != Some("vk.rs"));
     files.sort();
     let mut hits = Vec::new();
@@ -445,7 +472,7 @@ fn d1_no_vk_magic_hex_outside_vk_rs() {
 #[test]
 fn e1_send_message_confined_to_low_level_wrappers() {
     let mut files = Vec::new();
-    collect_rs(&manifest().join("src"), &mut files);
+    collect_all_src(&mut files);
     files.retain(|f| {
         let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
         name != "imm.rs" && name != "ime.rs"
@@ -712,7 +739,12 @@ fn state_dir() -> PathBuf {
 }
 
 fn state_file(name: &str) -> PathBuf {
-    state_dir().join(format!("{name}.rs"))
+    // 核 crate へ移ったファイルも、元と同じ `src/state/` の配置で見つける。
+    src_dirs()
+        .iter()
+        .map(|src| src.join("state").join(format!("{name}.rs")))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| state_dir().join(format!("{name}.rs")))
 }
 
 /// `state/mod.rs` の `mod X;` のうち、直前の属性に `#[cfg(windows)]` が無い（ungated な）ものの名前。

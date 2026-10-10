@@ -23,23 +23,38 @@
 use std::fs;
 use std::path::Path;
 
-/// crate の物理分割（ADR-229 D4）でファイルが別 crate へ移ったときの付け替え表。
-/// `(旧: このクレート相対のパス, 新: ワークスペース相対のパス)`。ガードが持つ
-/// `"src/..."` のパス文字列リテラルは 1 つずつ書き換えず、移したファイルをここに
-/// 1 行足すだけで追随させる（`read_crate_file` が先に引く）。分割前は空。
+#[path = "support/src_roots.rs"]
+mod src_roots;
+use src_roots::{src_crate_dirs, src_relative, workspace_dir, EXTRA_SRC_CRATES};
+
+/// ファイル単位の付け替え表。`(旧: このクレート相対のパス, 新: ワークスペース相対のパス)`。
+/// 配置を保たずに移したファイルだけをここに足す（`EXTRA_SRC_CRATES` で足りるなら不要）。分割前は空。
 const RELOCATED: &[(&str, &str)] = &[];
 
-/// `RELOCATED` の旧パスから、実際に読むファイルの絶対パスを返す。
-fn resolve_crate_path(rel_path: &str) -> std::path::PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if let Some((_, new)) = RELOCATED.iter().find(|(old, _)| *old == rel_path) {
-        let workspace = manifest_dir
-            .parent()
-            .and_then(Path::parent)
-            .expect("awase-windows must be under <workspace>/crates");
-        return workspace.join(new);
+/// 対象 crate すべての `src/` 以下の `.rs` を `out` へ集める。
+fn walk_all_src(out: &mut Vec<std::path::PathBuf>) {
+    for dir in src_crate_dirs() {
+        walk_rs_files(&dir.join("src"), out);
     }
-    manifest_dir.join(rel_path)
+}
+
+/// このクレート相対のパス（`"src/..."`）から、実際に読むファイルの絶対パスを返す。
+/// このクレートに無ければ `EXTRA_SRC_CRATES` の同じ相対パス、次に `RELOCATED` を引く。
+fn resolve_crate_path(rel_path: &str) -> std::path::PathBuf {
+    let own = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
+    if own.exists() {
+        return own;
+    }
+    for c in EXTRA_SRC_CRATES {
+        let p = workspace_dir().join(c).join(rel_path);
+        if p.exists() {
+            return p;
+        }
+    }
+    if let Some((_, new)) = RELOCATED.iter().find(|(old, _)| *old == rel_path) {
+        return workspace_dir().join(new);
+    }
+    own
 }
 
 fn read_crate_file(rel_path: &str) -> String {
@@ -744,10 +759,8 @@ fn input_mode_applied_construction_sites_are_accounted_for() {
 /// `eisu_recovery.rs` の対応表とこのテストの期待値を更新すること。**
 #[test]
 fn user_ime_on_paths_are_paired_with_eisu_reset() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
+    walk_all_src(&mut files);
 
     let patterns = [
         "write_sync_key(",
@@ -777,11 +790,7 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     ];
 
     for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
         let count: usize = patterns.iter().map(|p| content.matches(p).count()).sum();
         let expected_count = expected
@@ -938,8 +947,8 @@ fn forced_thumb_path_lives_in_the_engine_special_key_match() {
 #[test]
 fn ctrl_key_up_never_actuates_ime() {
     // 1. 旧 CtrlUp warmup の識別子が復活していない（crate 全体）。
-    let workspace_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut stack = vec![workspace_src];
+    let mut stack: Vec<std::path::PathBuf> =
+        src_crate_dirs().iter().map(|d| d.join("src")).collect();
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir).expect("read_dir") {
             let path = entry.expect("entry").path();
@@ -1015,9 +1024,8 @@ fn post_decision_eisu_reset_passes_gji_retained_mode() {
 
 #[test]
 fn ime_relevance_shadow_action_writes_are_accounted_for() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
+    walk_all_src(&mut files);
 
     let expected: &[(&str, usize, &str)] = &[
         (
@@ -1033,12 +1041,11 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
     ];
 
     for path in files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let content = read_crate_file(&format!("src/{rel}"));
+        let rel = src_relative(&path).to_string_lossy().replace('\\', "/");
+        // 絶対パスで直接読む（同じ相対パスが複数 crate にあっても、歩いた側のファイルを読む）。
+        let content = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+            .replace("\r\n", "\n");
         let production = production_code_only(&content);
         let count = if rel == "hook.rs" {
             production.matches("shadow_action,").count()
@@ -1075,10 +1082,8 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
 /// は「実際に read_ime_state_fast を実行した」ことを意味する）。
 #[test]
 fn focus_probe_observation_is_limited_to_real_probe_path() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
+    walk_all_src(&mut files);
 
     // (相対パス, 期待マッチ数)。ここに列挙されないファイルは 0 でなければならない。
     let expected: &[(&str, usize)] = &[
@@ -1090,11 +1095,7 @@ fn focus_probe_observation_is_limited_to_real_probe_path() {
     ];
 
     for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
         let production = production_code_only(&content);
         let count = production.matches(".write_focus_probe(").count();
@@ -1946,17 +1947,11 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
 /// §2.2 のデータ witness が丸ごと迂回される。
 #[test]
 fn any_observation_replay_door_is_not_used_in_production() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
+    walk_all_src(&mut files);
 
     for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
         let production = production_code_only(&content);
         let count = production.matches("restored_from_journal(").count();
@@ -3603,10 +3598,7 @@ fn count_drift_diagnostic_calls(text: &str) -> usize {
 #[test]
 fn drift_diagnostic_is_called_from_exactly_one_site() {
     let mut files = Vec::new();
-    walk_rs_files(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &mut files,
-    );
+    walk_all_src(&mut files);
     let mut sites = Vec::new();
     for f in files {
         let content = production_code_only(&fs::read_to_string(&f).unwrap_or_default()).to_string();
@@ -4359,10 +4351,8 @@ fn establish_initial_focus_scope_syncs_the_focus_scope() {
 /// ここでは「増えていないこと」だけを見る（新しい起動時経路の追加を捕まえるのはこのガード）。
 #[test]
 fn initial_focus_scope_event_is_dispatched_from_one_place() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
+    walk_all_src(&mut files);
 
     // (needle, [(相対パス, 期待マッチ数)])。列挙されないファイルは 0 でなければ
     // ならない。**どちらの needle も固定ファイルへの grep ではなく全ファイル走査に
@@ -4389,11 +4379,7 @@ fn initial_focus_scope_event_is_dispatched_from_one_place() {
         ),
     ];
     for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
         // doc コメントでこのイベント名に言及しているファイルを数えないよう、
         // コメント行を落としてから数える。
@@ -4424,17 +4410,11 @@ fn initial_focus_scope_event_is_dispatched_from_one_place() {
 /// つまり `desired_open` を書ける口の1つなので、dylint `ime_event_guard` の designated 関数にも登録してある。
 #[test]
 fn mode_key_passed_through_event_is_dispatched_from_one_place() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
+    walk_all_src(&mut files);
 
     for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
         let production = non_comment_lines(production_code_only(&content));
         let count = production.matches("ModeKeyPassedThrough").count();
@@ -4455,17 +4435,11 @@ fn mode_key_passed_through_event_is_dispatched_from_one_place() {
 /// awase は IME を書かない（`apply_ime_open_*`/`set_ime_open`/`send_ime` 系をこのファイル群から呼ばない）。
 #[test]
 fn external_change_watch_has_single_arm_and_follow_sites() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
+    walk_all_src(&mut files);
 
     for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = src_relative(path).to_string_lossy().replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
         let production = non_comment_lines(production_code_only(&content));
         // arm は 2 箇所: 外部注入の IME キー直後(`kp_arm_external_change_watch`、ADR-205)と、
@@ -4521,10 +4495,9 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
 /// `table_ime_kind()` = GJI／同定済み MS-IME 本体）を通す。2 つの述語の使い分けを混ぜない。
 #[test]
 fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let read = |rel: &str| {
         non_comment_lines(production_code_only(
-            &fs::read_to_string(Path::new(manifest_dir).join("src").join(rel)).unwrap(),
+            &fs::read_to_string(resolve_crate_path(&format!("src/{rel}"))).unwrap(),
         ))
     };
     let mod_rs = read("runtime/mod.rs");
@@ -5451,19 +5424,24 @@ fn deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass() {
 /// `every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new`
 /// と同じ理由）。
 fn list_rs_files_under(rel_root: &str) -> Vec<String> {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let root = Path::new(manifest_dir).join(rel_root);
-    let mut files = Vec::new();
-    walk_rs_files(&root, &mut files);
-    files
-        .iter()
-        .map(|path| {
-            path.strip_prefix(manifest_dir)
+    // `"src"` は対象 crate すべて（`EXTRA_SRC_CRATES` の核 crate を含む）。ほかの根は元のまま。
+    let crate_dirs = if rel_root == "src" {
+        src_crate_dirs()
+    } else {
+        vec![Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()]
+    };
+    let mut out = Vec::new();
+    for dir in crate_dirs {
+        let mut files = Vec::new();
+        walk_rs_files(&dir.join(rel_root), &mut files);
+        out.extend(files.iter().map(|path| {
+            path.strip_prefix(&dir)
                 .unwrap_or_else(|e| panic!("strip_prefix: {e}"))
                 .to_string_lossy()
                 .replace('\\', "/")
-        })
-        .collect()
+        }));
+    }
+    out
 }
 
 /// `needle` の実呼び出し（`fn {name}(` という定義行、および行コメント
@@ -7843,5 +7821,45 @@ fn relocated_table_entries_are_consistent() {
             resolve_crate_path(old).exists(),
             "RELOCATED の {old} の移動先が実在しない"
         );
+    }
+}
+
+/// `EXTRA_SRC_CRATES` の各 crate は実在し、`src/` の下に `.rs` が 1 件以上ある
+/// （綴りの間違いや空の `src/` で走査が空振りして通らない）。
+#[test]
+fn extra_src_crates_exist() {
+    for c in EXTRA_SRC_CRATES {
+        let src = workspace_dir().join(c).join("src");
+        assert!(src.is_dir(), "EXTRA_SRC_CRATES の {c} に src/ が無い");
+        let mut files = Vec::new();
+        walk_rs_files(&src, &mut files);
+        assert!(
+            !files.is_empty(),
+            "EXTRA_SRC_CRATES の {c}/src に .rs が無い"
+        );
+    }
+}
+
+/// 対象 crate 間で `src/` 相対パスが重複しない（`lib.rs` と `state/mod.rs` を除く）。
+/// 重複すると `list_src_files` → `read_crate_file` が自 crate 側だけを読み、核側を見逃すか
+/// 殻側を二重に数える（Opus レビュー P2）。分割前は対象が 1 crate なので空振りするが、
+/// `EXTRA_SRC_CRATES` に足した瞬間に効く。
+#[test]
+fn src_relative_paths_are_unique_across_crates() {
+    let mut seen = std::collections::BTreeMap::new();
+    let mut files = Vec::new();
+    walk_all_src(&mut files);
+    for f in &files {
+        let rel = src_relative(f).to_string_lossy().replace('\\', "/");
+        if rel == "lib.rs" || rel == "state/mod.rs" {
+            continue;
+        }
+        if let Some(prev) = seen.insert(rel.clone(), f.clone()) {
+            panic!(
+                "src/{rel} が複数の crate にある: {} と {}。ガードの read_crate_file が片方しか読まない",
+                prev.display(),
+                f.display()
+            );
+        }
     }
 }

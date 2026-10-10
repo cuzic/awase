@@ -267,5 +267,13 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 段階 B(crate を切る)の前に残る課題:
 - `platform_state`(`CORE_MODULES`)が殻の `hub_clock::HubClock`(`Instant::now()`)に依存する。`HubClock` を核へ移すか、時計を trait で受けるかを決める。
 - `vk`・`tuning` の 5 定数・`focus::class_names`・`FocusKind`・`ime`・`tsf::TsfGate`・`with_app` への依存の扱い。
-- ディレクトリを丸ごと走査するガード(`join("src")` が `architecture_guard.rs` に 9 か所・`layer_boundary_guard.rs` に 5 か所)を、走査する場所を複数指定できる形に。
+- ~~ディレクトリを丸ごと走査するガード(`join("src")` 11 + 5 か所)を、走査する場所を複数指定できる形に~~ **済み**(段階 B-1、PR #567。`EXTRA_SRC_CRATES`)。
 - doc コメントの `awase_windows::state::...` の例(doctest)の付け替え。
+
+### crate の物理分割: 段階 B-1(ガードの複数ルート化、PR #567)で出た「実際に切る PR の前提条件」(Opus レビュー)
+
+- **P2(必須)**: `lib.rs`・`state/mod.rs` など同じ相対パスのファイルが両 crate にできる。`list_src_files()`（呼び出し 17 か所）→ `read_crate_file` は自 crate 側だけを読むので、核側を見逃すか殻側を二重に数える。`list_rs_files_under` を絶対パス（または `(crate, 相対パス)`）で返し、読む側もそのパスを直接読む形にする。`src_relative_paths_are_unique_across_crates`（B-1 で追加、`lib.rs`/`state/mod.rs` を除く）が重複を検出する。`focus/mod.rs`（`focus/{kinds,class_names,hwnd_cache}` を移すと両 crate にできる）や `vk.rs` も重複しうる。**除外リストに足して黙らせず、先に `list_rs_files_under` の根本修正をする。**
+- **P3**: `crate::state::...` を含む needle（例 `architecture_guard.rs` の `"applied: crate::state::AppliedImeState::"`）は、殻のコードが `awase_windows_core::state::...` や再公開名で書くと当たらない。`grep -n '"crate::' crates/awase-windows/tests/*.rs` で洗い出し、新 crate 名の版も数える。
+- **P4**: `ungated_state_modules` は殻の `state/mod.rs` しか読まない。核の `mod.rs` も読み、「核にある ungated モジュールが全部 `CORE_MODULES` にあるか」を検査する。
+- **ガードの外のパス直書き**: `crates/xtask-adr-evidence/src/core_registry.rs:50`（CI `core-registry-consistency`）、`.cargo/mutants-awase-windows.toml`（`examine_globs`・`-p awase-windows`）、`.githooks/pre-push` の正規表現、`.claude/rules/fix-requires-evidence.md` の表。
+- **段階 B で核へ移す範囲（所有者の決定、2026-10-10）**: `tuning.rs` は丸ごと、`vk.rs` は windows 定数との突き合わせ assert と `parse_hotkey` を殻に残して核へ、`journal.rs`+`journal_policy.rs` は核へ（`cfg(windows)` 5 か所を先に調べる）、`focus/{kinds,class_names,hwnd_cache}`・`keymap.rs` も核へ、`hub_clock` は核へ移し実時計は注入。
