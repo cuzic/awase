@@ -7290,6 +7290,96 @@ mod engine_integration_tests {
         );
     }
 
+    /// ADR-255 決定2 条件1: 非活性の理由が IME OFF のときだけ真。
+    #[test]
+    fn ime_off_inactive_is_true_only_for_ime_off_reason() {
+        let engine = make_test_engine();
+        assert!(engine.ime_off_inactive(&ime_off_ctx()));
+        assert!(!engine.ime_off_inactive(&ime_on_ctx()));
+        let not_japanese = InputContext {
+            is_japanese_ime: false,
+            ..ime_off_ctx()
+        };
+        assert!(
+            !engine.ime_off_inactive(&not_japanese),
+            "NotJapaneseIme は含めない"
+        );
+    }
+
+    /// ADR-255 決定2: 非活性の素通しの KeyDown は KeyLifecycle に何も残さない。
+    /// KeyUp も素通し(Consume 義務なし)のまま。
+    #[test]
+    fn passed_through_down_leaves_no_lifecycle_record() {
+        let mut engine = make_test_engine();
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(!down.is_consumed());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(150).build(), &ime_off_ctx());
+        assert!(!up.is_consumed(), "素通しの Down に対する Up は素通し");
+    }
+
+    /// ADR-255 決定4: シェルが消費した Down を登録すると、Up はエンジンが消費して OS に届かない
+    /// (Space は effects で Down+Up を完結しているので、無変換の Up は不要)。
+    #[test]
+    fn shell_consumed_down_makes_the_up_consumed() {
+        let mut engine = make_test_engine();
+        let down = Ev::down(VK_NONCONVERT).at(100).build();
+        let d = engine.on_input(down, &ime_off_ctx());
+        assert!(!d.is_consumed());
+        engine.record_shell_consumed(&down);
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(150).build(), &ime_off_ctx());
+        assert!(up.is_consumed());
+        // 義務は 1 回で消える。
+        let up2 = engine.on_input(Ev::up(VK_NONCONVERT).at(160).build(), &ime_off_ctx());
+        assert!(!up2.is_consumed());
+    }
+
+    /// ADR-255 決定4: 登録した親指の自動リピート Down は、非活性のままでも `phase1_held` の
+    /// ガードで Consume され、遅いルールに到達しない。Up で印が消える。
+    #[test]
+    fn shell_consumed_thumb_repeat_is_consumed_until_up() {
+        let mut engine = make_test_engine();
+        let down = Ev::down(VK_NONCONVERT).at(100).build();
+        let _ = engine.on_input(down, &ime_off_ctx());
+        engine.record_shell_consumed(&down);
+        let rep = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(600).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert!(rep.is_consumed());
+        let _ = engine.on_input(Ev::up(VK_NONCONVERT).at(700).build(), &ime_off_ctx());
+        // 印が消えた後の新しい押下は、また素通しから始まる。
+        let again = engine.on_input(Ev::down(VK_NONCONVERT).at(800).build(), &ime_off_ctx());
+        assert!(!again.is_consumed());
+    }
+
+    /// ADR-255 決定4: リピートの Down(`was_down`)を登録しても `phase1_held` は立たない。
+    #[test]
+    fn shell_consumed_repeat_down_does_not_arm_phase1_held() {
+        let mut engine = make_test_engine();
+        let rep = Ev::down(VK_NONCONVERT).at(600).repeat().build();
+        engine.record_shell_consumed(&rep);
+        let next = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(700).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert!(!next.is_consumed(), "印が無いのでリピートは素通しのまま");
+    }
+
+    /// ADR-255 決定4: 登録済みの Down の Up は、Up の時点でエンジンが活性でも消費される。
+    /// (flush による KeyUp の再注入は `release_pending_and_reinject` の経路で、本 PR では固定しない。)
+    #[test]
+    fn shell_consumed_down_up_is_consumed_even_if_engine_became_active() {
+        let mut engine = make_test_engine();
+        let down = Ev::down(VK_NONCONVERT).at(100).build();
+        let _ = engine.on_input(down, &ime_off_ctx());
+        engine.record_shell_consumed(&down);
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(150).build(), &ime_on_ctx());
+        assert!(
+            up.is_consumed(),
+            "活性側の文脈でも登録済みの Up は消費される"
+        );
+    }
+
     /// 役割が無い親指は従来どおり（エンジン非活性なら素通し）。
     #[test]
     fn thumb_without_role_still_passes_through_while_ime_off() {

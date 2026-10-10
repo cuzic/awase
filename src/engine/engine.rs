@@ -282,6 +282,29 @@ impl Engine {
         ActivationState::Active
     }
 
+    /// エンジンが非活性で、その理由が IME OFF か（ADR-255 決定2 条件1）。
+    /// `UserDisabled`/`NotJapaneseIme`/`NotRomajiInput` は含めない。判断は
+    /// `compute_state` のままで、呼び出し側が再実装しない。
+    #[must_use]
+    pub const fn ime_off_inactive(&self, ctx: &InputContext) -> bool {
+        matches!(
+            self.compute_state(ctx),
+            ActivationState::Inactive(InactiveReason::ImeOff)
+        )
+    }
+
+    /// シェルが（エンジンの判断の後で）消費した KeyDown を、エンジンの `KeyLifecycle` に登録する
+    /// （ADR-255 決定4）。エンジンは素通しの KeyDown を記録しないので、シェルが消費したときは
+    /// この口で「対応する KeyUp を消費する義務」と、bare の親指なら `phase1_held` を立てる。
+    /// **エンジンの判断（活性/非活性・FSM の状態）は変えない**。リピートの Down
+    /// （`was_down`）は `phase1_held` を立てない（`on_input_body` と同じ）。
+    pub fn record_shell_consumed(&mut self, event: &RawKeyEvent) {
+        self.lifecycle.on_key_down_consumed(event);
+        if !event.was_down && Self::is_bare_thumb(event, event.modifier_snapshot) {
+            self.phase1_held = Some(event.vk_code);
+        }
+    }
+
     /// InputContext から実効状態を bool で返す（後方互換 API）。
     #[must_use]
     pub const fn compute_active(&self, ctx: &InputContext) -> bool {

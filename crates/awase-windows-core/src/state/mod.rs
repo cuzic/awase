@@ -183,6 +183,7 @@ pub mod observation_store;
 // 非 Windows では未使用になる。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod keymap_latch;
+pub mod late_keymap_plan;
 // 呼び出し元（`runtime/message_handlers.rs`）は `#[cfg(windows)]` のため、非 Windows では未使用。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod post_bypass;

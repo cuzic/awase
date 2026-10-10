@@ -74,6 +74,74 @@ impl Preset {
     }
 }
 
+impl Preset {
+    /// 無変換/変換のうち、このプリセットの `DirectInput` に**無修飾の行**を持つもの（ADR-255 決定2 条件6-ii）。
+    /// コマンドの種類（`IMEOn`・`Reconvert` 等）は問わない（行があれば機能あり）。出典は Mozc `b4bbc42f` の
+    /// `{ms-ime,atok,kotoeri,mobile}.tsv`。Mozc の更新では自動で追随しないので、手で取り直し、
+    /// テスト `preset_direct_input_vk_names_match_mozc_rows` で突き合わせる。
+    /// MS-IME/MOBILE は変換が `Reconvert`、ATOK は両方 `IMEOn`、KOTOERI は両方行なし。
+    const fn direct_input_vk_names(self) -> &'static [&'static str] {
+        match self {
+            Self::MsIme | Self::Mobile => &["VK_CONVERT"],
+            Self::Atok => &["VK_NONCONVERT", "VK_CONVERT"],
+            Self::Kotoeri => &[],
+        }
+    }
+}
+
+/// 直接入力（IME OFF）状態で、このキーに IME の機能があるか（ADR-255 決定2 条件6-ii）。
+/// 発動（Space 化）してよいのは `NoFunction` のときだけ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyDirectInputEffect {
+    /// 行がある（`IMEOn` に限らず `Reconvert`・`InsertSpace` 等も含む）、または既知のオーバーレイが書き換える。
+    HasFunction,
+    /// 表が読めて、このキーの `DirectInput` の無修飾の行もオーバーレイも無い。
+    NoFunction,
+    /// 判断できない（未知の `session_keymap`・未知のオーバーレイ・候補外のキー）。発動しない。
+    Unknown,
+}
+
+/// `vk_name`（無変換/変換のみ。他は `Unknown`）が、この GJI 設定の直接入力状態で IME の機能を持つか（ADR-255）。
+///
+/// - 未知の `session_keymap`（`source()` が `Unknown`）・未知のオーバーレイは `Unknown`（決定6-3、R4-S2）。
+/// - 既知のオーバーレイ（`OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF`）は無変換/変換の行を書き換えるので `HasFunction`。
+/// - CUSTOM は無修飾のキー名の完全一致の行だけを読む（`Shift Henkan` は数えない。後勝ち）。
+///   `Direct` は `DirectInput` の別名。`DirectInput` は継承を持たない。
+/// - TIP 未同定・MS-IME 本体・表が読めないときの `Unknown` は、この関数を呼ばない呼び出し側の責務。
+#[must_use]
+pub fn direct_input_effect(
+    session_keymap: Option<i64>,
+    custom_keymap_table: Option<&str>,
+    overlay_keymaps: &[i64],
+    vk_name: &str,
+) -> KeyDirectInputEffect {
+    if !matches!(vk_name, "VK_CONVERT" | "VK_NONCONVERT") {
+        return KeyDirectInputEffect::Unknown;
+    }
+    if overlay_keymaps
+        .iter()
+        .any(|&o| o != SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF)
+    {
+        return KeyDirectInputEffect::Unknown;
+    }
+    if !overlay_keymaps.is_empty() {
+        return KeyDirectInputEffect::HasFunction;
+    }
+    let has_row = match source(session_keymap, custom_keymap_table) {
+        Source::Preset(preset) => preset.direct_input_vk_names().contains(&vk_name),
+        Source::Custom(table) => {
+            let rows = parse_custom_keymap_table(table);
+            KeyStates::of(&rows, vk_name).0[Status::DirectInput.index()].is_some()
+        }
+        Source::Unknown => return KeyDirectInputEffect::Unknown,
+    };
+    if has_row {
+        KeyDirectInputEffect::HasFunction
+    } else {
+        KeyDirectInputEffect::NoFunction
+    }
+}
+
 /// 役割を何から決めるか（決定4 の判別）。
 enum Source<'a> {
     Preset(Preset),
@@ -571,6 +639,133 @@ DirectInput\tON\tIMEOn
                 );
             }
         }
+    }
+
+    #[test]
+    fn preset_direct_input_vk_names_match_mozc_rows() {
+        for (preset, rows) in [
+            (Preset::MsIme, MS_IME_DIRECT_INPUT),
+            (Preset::Mobile, MS_IME_DIRECT_INPUT),
+            (Preset::Atok, ATOK_DIRECT_INPUT),
+            (Preset::Kotoeri, KOTOERI_DIRECT_INPUT),
+        ] {
+            let table = parse_custom_keymap_table(rows);
+            for vk_name in ["VK_NONCONVERT", "VK_CONVERT"] {
+                assert_eq!(
+                    KeyStates::of(&table, vk_name).0[Status::DirectInput.index()].is_some(),
+                    preset.direct_input_vk_names().contains(&vk_name),
+                    "{preset:?} {vk_name}"
+                );
+            }
+        }
+    }
+
+    fn effect(
+        session: Option<i64>,
+        table: Option<&str>,
+        overlays: &[i64],
+        vk: &str,
+    ) -> KeyDirectInputEffect {
+        direct_input_effect(session, table, overlays, vk)
+    }
+
+    #[test]
+    fn direct_input_effect_follows_the_preset_table_in_adr255() {
+        use KeyDirectInputEffect::{HasFunction, NoFunction};
+        // (session, 無変換, 変換): 決定2-6 の表。未設定・NONE・空の CUSTOM は MS-IME。
+        for (session, muhenkan, henkan) in [
+            (Some(SESSION_KEYMAP_MSIME), NoFunction, HasFunction),
+            (Some(SESSION_KEYMAP_MOBILE), NoFunction, HasFunction),
+            (None, NoFunction, HasFunction),
+            (Some(SESSION_KEYMAP_NONE), NoFunction, HasFunction),
+            (Some(SESSION_KEYMAP_CUSTOM), NoFunction, HasFunction),
+            (Some(SESSION_KEYMAP_ATOK), HasFunction, HasFunction),
+            (Some(SESSION_KEYMAP_KOTOERI), NoFunction, NoFunction),
+        ] {
+            assert_eq!(
+                effect(session, None, &[], "VK_NONCONVERT"),
+                muhenkan,
+                "{session:?}"
+            );
+            assert_eq!(
+                effect(session, None, &[], "VK_CONVERT"),
+                henkan,
+                "{session:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_input_effect_custom_table_rows() {
+        use KeyDirectInputEffect::{HasFunction, NoFunction};
+        let c = Some(SESSION_KEYMAP_CUSTOM);
+        // 行なし=NoFunction。他キーの行は関係ない。
+        assert_eq!(
+            effect(c, Some("DirectInput\tON\tIMEOn\n"), &[], "VK_NONCONVERT"),
+            NoFunction
+        );
+        // IMEOn・InsertSpace・Reconvert のどれでも行があれば機能あり(R4-M2)。
+        for cmd in ["IMEOn", "InsertSpace", "Reconvert"] {
+            let t = format!("DirectInput\tMuhenkan\t{cmd}\n");
+            assert_eq!(
+                effect(c, Some(&t), &[], "VK_NONCONVERT"),
+                HasFunction,
+                "{cmd}"
+            );
+        }
+        // 別名 Direct。
+        assert_eq!(
+            effect(c, Some("Direct\tHenkan\tIMEOn\n"), &[], "VK_CONVERT"),
+            HasFunction
+        );
+        // 修飾付きの行だけ=無修飾は NoFunction(R4-S3)。
+        assert_eq!(
+            effect(
+                c,
+                Some("DirectInput\tShift Henkan\tIMEOn\n"),
+                &[],
+                "VK_CONVERT"
+            ),
+            NoFunction
+        );
+        // DirectInput 以外の状態の行は数えない。
+        assert_eq!(
+            effect(
+                c,
+                Some("Precomposition\tMuhenkan\tIMEOff\n"),
+                &[],
+                "VK_NONCONVERT"
+            ),
+            NoFunction
+        );
+    }
+
+    #[test]
+    fn direct_input_effect_overlay_and_unknown_inputs() {
+        use KeyDirectInputEffect::{HasFunction, Unknown};
+        let known = SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF;
+        for vk in ["VK_NONCONVERT", "VK_CONVERT"] {
+            assert_eq!(
+                effect(Some(SESSION_KEYMAP_KOTOERI), None, &[known], vk),
+                HasFunction
+            );
+            // 未知のオーバーレイは Unknown(既知と並んでいても)。
+            assert_eq!(
+                effect(Some(SESSION_KEYMAP_KOTOERI), None, &[999], vk),
+                Unknown
+            );
+            assert_eq!(
+                effect(Some(SESSION_KEYMAP_KOTOERI), None, &[known, 999], vk),
+                Unknown
+            );
+            // 未知の session_keymap。
+            assert_eq!(effect(Some(99), None, &[], vk), Unknown);
+        }
+        // 候補外のキーは Unknown。
+        assert_eq!(
+            effect(Some(SESSION_KEYMAP_KOTOERI), None, &[], "VK_F13"),
+            Unknown
+        );
     }
 
     #[test]
