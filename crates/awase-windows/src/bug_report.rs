@@ -7,8 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const ENDPOINT_URL: &str = "https://report.awase.cc/v1/reports";
-pub const REPORT_HOST: &str = "report.awase.cc";
 // ADR-095 leaves the exact R2 lifecycle rule undecided. The client displays
 // 90 days as a practical review window with a clear deletion expectation.
 pub const RETENTION_HINT: &str = "約90日間保管後に自動削除";

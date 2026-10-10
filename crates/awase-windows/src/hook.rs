@@ -44,7 +44,7 @@ const HOOK_IME_MODE_DIAGNOSTIC_CAP: usize = 64;
 ///
 /// **フィールドごとの`Ordering`は移行前と完全に同一**（1対1対応、変更禁止）。
 /// 実測: `Relaxed` 49・`Release` 9・`Acquire` 7・`SeqCst` 1（`hook_tid_init_slot`の
-/// リセット時のみ）。`focus_app_disabled`は書き`Release`・アクセサ読み`Acquire`・
+/// リセット時のみ）。`focus_app_disabled`は書き`Release`・
 /// ホットパス読み`Relaxed`という意図的な非対称を持つ（ADR-164フェーズ4参照）。
 struct HookState {
     /// IME モードキー（`VK_KANA`/`VK_IME_ON`/`VK_JUNJA`/`VK_KANJI`/`VK_IME_OFF`/
@@ -739,12 +739,6 @@ pub fn set_focus_app_disabled(disabled: bool) {
     HOOK_STATE
         .focus_app_disabled
         .store(disabled, Ordering::Release);
-}
-
-/// 現在フォーカス中のアプリで awase が無効化されているか。
-#[must_use]
-pub fn is_focus_app_disabled() -> bool {
-    HOOK_STATE.focus_app_disabled.load(Ordering::Acquire)
 }
 
 /// `GeneralConfig::swallow_alt_kana_input_method_switch` を設定する（config 読み込み後に呼ぶ）。
