@@ -609,7 +609,8 @@ impl ImeStateHub {
     /// （`derive_any`）がある。揃えたら（`ModeKeyPassedThrough { align_desired: true }` の reducer 経路、BUG-157 と同じ）
     /// 揃えた後の `desired_open` を返す。揃えなかったら `None`（読めない窓では観測が来るまで触れない）。
     ///
-    /// 閉ループのハーネス `tests/support/harness.rs` からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    /// 閉ループのハーネス `tests/support/harness.rs` からも呼ぶ。本番の呼び出し元は crate 内だけ。`desired_open` を書き換える口だが、
+    /// 安全の根拠は `dispatch_event` と同じ（本番のハブが crate 外から届かないこと。`production_hub_is_unreachable_from_outside_the_crate`）。
     pub fn align_placeholder_desired(
         &mut self,
         now: std::time::Instant,

@@ -5,7 +5,8 @@
 //! - `ImeStateHub`（本物。`with_clock(HubClock::manual(..))` で仮想時計）: `dispatch_event`（= `ImeModel::reduce` と
 //!   `event_log`・`journal`）、`effective_open_at`、`record_explicit_intent`、`apply_key_effect_prediction`、
 //!   `warrant_context`、`align_placeholder_desired`、`arm/follow_external_change_in_scope`、`IntentStore`・`ExternalChangeWatch` はハブが持つ
-//! - `KeyEffectKeymap::predict`（GJI ATOK プリセット、同梱表）と `plan_key_effect_track`（`kp_stage_key_effect_track` の判断）
+//! - `KeyEffectKeymap::predict`（GJI ATOK プリセット、同梱表）と `plan_key_effect_track`（`kp_stage_key_effect_track` の判断）。ただし判断の入力 `KeyTrackFacts`（物理 KeyDown・非修飾キー・修飾なし・非消費）は
+//!   ハーネスが決め打ちで組む（`key()` は修飾キー単体の vk を打たない前提。打つシナリオを足すなら `is_modifier_key` を vk から求めること）
 //! - `open_warrant::issue_open_warrant`
 //! - `drift_correction::check_drift_correction`（旧 `ImeStateHub::check_drift_correction` の本体）
 //! - `awase::engine::Engine`（`EngineCommand::RefreshState`/`FocusChanged` の活性遷移と `SetOpen`）
