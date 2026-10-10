@@ -7314,7 +7314,7 @@ mod engine_integration_tests {
         // IME 側が定める開閉の方向(sync_direction)。
         let synced = Ev::down(VK_NONCONVERT)
             .at(100)
-            .sync_direction(crate::types::ShadowImeAction::TurnOn)
+            .sync_direction(ShadowImeAction::TurnOn)
             .build();
         assert!(plain.key_has_ime_function(&synced));
         // 専用 Fn キー(無変換側だけ)。

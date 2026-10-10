@@ -303,9 +303,15 @@ impl Runtime {
     ) {
         use crate::state::ime_kind::ImeKindId;
         use crate::state::late_keymap_plan::{
-            plan_late_keymap, resolve_direct_input_effect, LateKeymapFacts, LateKeymapPlan,
+            late_keymap_reinject_events, plan_late_keymap, resolve_direct_input_effect,
+            LateKeymapFacts, LateKeymapPlan,
         };
         if !matches!(event.event_type, KeyEventType::KeyDown) {
+            return;
+        }
+        // エンジンが消費した打鍵(NICOLA 入力中の親指など)は、事実を集める前に抜ける(Opus #598 S4)。
+        // `plan_late_keymap` も `decision_passed_through` で同じ判断をするが、毎打鍵の I/O とログを避ける。
+        if decision.is_consumed() {
             return;
         }
         let Some(send_vks) = self
@@ -336,9 +342,13 @@ impl Runtime {
                 self.platform.current_app_profile(),
                 crate::focus::class_names::AppImeProfile::InputRelay
             ),
-            // ADR-245 の「戻り待ち」は、殻への配線(PR 2)がまだ develop に無い(`HalfWidthAlnum` を
-            // 保持する状態が無い)ので偽。配線されたら、ここを `has_return_pending()` に置き換える。
-            half_width_return_pending: false,
+            // ADR-245 の「戻り待ち」(条件7b)。本番で積む `suspend_toggle_for_return` の配線(ADR-245 PR 2)は
+            // まだ develop に無く、現状は常に偽だが、読み出しは今配線しておく(付け替え忘れを防ぐ。Opus #598 S1)。
+            half_width_return_pending: self
+                .platform_state
+                .gate
+                .half_width_alnum
+                .has_return_pending(),
             composing: ctx.composing,
         };
         match plan_late_keymap(facts) {
@@ -349,9 +359,11 @@ impl Runtime {
                     send_vks.len()
                 );
                 decision.force_consume();
-                decision.push_effect(Effect::Input(InputEffect::SendKeys(
-                    send_vks.into_iter().map(KeyAction::Key).collect(),
-                )));
+                // `SendKeys` ではなく `ReinjectKey`（Down→Up の対）で積む。物理 Space の素通しと同じ経路に乗せ、
+                // 先行の素通し文字と FIFO で並ぶ（Opus #598 B1・M1。理由は `late_keymap_reinject_events`）。
+                for reinject in late_keymap_reinject_events(event, &send_vks) {
+                    decision.push_effect(Effect::Input(InputEffect::ReinjectKey(reinject)));
+                }
                 self.engine.record_shell_consumed(event);
             }
             LateKeymapPlan::Skip(reason) => {

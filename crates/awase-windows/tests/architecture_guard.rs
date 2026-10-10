@@ -5027,7 +5027,7 @@ fn deliver_key_event_keymap_latch_check_precedes_nested_and_nontext_early_return
 /// ADR-255 決定2: `[[keymap]]` の遅いルールは、エンジンの判断（`on_input`）の直後・journal の記録
 /// （`record_key_input`）より前で照合し、消費への格上げは `force_consume`、送信は effects への
 /// `push_effect`（その場で SendInput しない）、消費した Down のエンジンへの登録は `record_shell_consumed`
-/// でする。`keymap_latch` には積まない（古い latch の寿命の問題を作らない）。`find_late_match` の呼び出しは
+/// でする(送信は `ReinjectKey` の Down→Up の対。`SendKeys` は使わない)。`keymap_latch` には積まない（古い latch の寿命の問題を作らない）。`find_late_match` の呼び出しは
 /// この段の 1 箇所だけ（早い経路へ漏らさない）。ソース走査で順序と禁止呼び出しを固定する。
 #[test]
 fn late_keymap_stage_is_wired_after_engine_decision_and_before_journal() {
@@ -5056,6 +5056,8 @@ fn late_keymap_stage_is_wired_after_engine_decision_and_before_journal() {
         "plan_late_keymap(",
         "force_consume()",
         "push_effect(",
+        "InputEffect::ReinjectKey(",
+        "late_keymap_reinject_events(",
         "record_shell_consumed(",
     ] {
         assert!(

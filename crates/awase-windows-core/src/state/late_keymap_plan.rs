@@ -5,6 +5,7 @@
 //! 発動しない理由は journal・debug ログに出すため enum で返す（ADR-255 決定2「素通しの理由は debug ログに出す」）。
 //! 条件は ADR-255 決定2 の「発動条件（すべて AND）」に対応する（判定の順は理由の優先順で、決定2 の番号順とは違う。結果は AND なので変わらない）。**不確かなときは今までどおり素通し**。
 
+use awase::types::{ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode, VkCode};
 use awase_gji_config::role::KeyDirectInputEffect;
 
 /// 発動可否の判断に使う事実。殻（`kp_run_inner`）が集める。
@@ -66,6 +67,40 @@ pub enum LateKeymapPlan {
     Fire,
     /// 発動しない（今までどおり素通し）。
     Skip(LateKeymapSkip),
+}
+
+/// 発動したとき effects に積む、`to` の各キーの Down→Up の再注入イベント（`InputEffect::ReinjectKey` 用）。
+///
+/// **`SendKeys` ではなく `ReinjectKey` にする理由**（Opus #598 B1・M1）: (1) `KeyAction::Key(vk)` は Down 1 個だけで、
+/// Up が足されない（エンジン自身は `output_history` で物理 Up のときに足す。遅いルールにはそれが無い）。
+/// (2) 先行の素通し文字は `ReinjectKey`（`spawn_local` で後から SendInput）で運ばれるので、同期で実行される
+/// `SendKeys` の Space はそれを追い越しうる。物理 Space の素通し（`ReinjectKey`）と同じ経路に乗せれば、
+/// 先行の文字と FIFO で並び、`OUTPUT_GATE`・composition 確定の後処理（`on_reinject_key`）も物理 Space と同じになる。
+/// 元の打鍵（`template`）から作るが、`vk`・`scan`・種別以外は素通しの通常キーとして初期化する
+/// （`scan=0` は物理 Space の素通しと同じ。`reinject_scan_code` が IME モードキー以外は 0 にする）。
+#[must_use]
+pub fn late_keymap_reinject_events(
+    template: &RawKeyEvent,
+    send_vks: &[VkCode],
+) -> Vec<RawKeyEvent> {
+    send_vks
+        .iter()
+        .flat_map(|&vk| [(vk, KeyEventType::KeyDown), (vk, KeyEventType::KeyUp)])
+        .map(|(vk, event_type)| RawKeyEvent {
+            vk_code: vk,
+            scan_code: ScanCode(0),
+            event_type,
+            key_classification: KeyClassification::Passthrough,
+            physical_pos: None,
+            ime_relevance: ImeRelevance::default(),
+            modifier_key: None,
+            injected: false,
+            was_down: false,
+            press_id: None,
+            impersonated: false,
+            ..*template
+        })
+        .collect()
 }
 
 /// 殻が集めた「IME の種別」と「GJI の表からの判定」から、`LateKeymapFacts::direct_input_effect` に渡す値を決める
@@ -138,6 +173,48 @@ mod tests {
             half_width_return_pending: false,
             composing: false,
         }
+    }
+
+    #[test]
+    fn reinject_events_are_down_up_pairs_in_order_and_plain_keys() {
+        use awase::types::KeyEventType::{KeyDown, KeyUp};
+        let template = RawKeyEvent {
+            vk_code: VkCode(0x1D),
+            scan_code: ScanCode(0x7B),
+            event_type: KeyDown,
+            extra_info: 0,
+            timestamp: 7,
+            key_classification: KeyClassification::LeftThumb,
+            physical_pos: None,
+            ime_relevance: ImeRelevance::default(),
+            modifier_key: None,
+            modifier_snapshot: awase::engine::ModifierState::default(),
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
+            injected: false,
+            was_down: false,
+            press_id: None,
+            foreign_ctrl: false,
+            impersonated: false,
+        };
+        let space = VkCode(0x20);
+        let f7 = VkCode(0x76);
+        let events = late_keymap_reinject_events(&template, &[space, f7]);
+        let shape: Vec<_> = events.iter().map(|e| (e.vk_code, e.event_type)).collect();
+        assert_eq!(
+            shape,
+            [(space, KeyDown), (space, KeyUp), (f7, KeyDown), (f7, KeyUp)],
+            "各キーを Down→Up の対にして並べる(Up が欠けると OS で押されたままになる)"
+        );
+        for e in &events {
+            assert_eq!(e.scan_code, ScanCode(0));
+            assert!(matches!(
+                e.key_classification,
+                KeyClassification::Passthrough
+            ));
+            assert!(!e.injected && !e.was_down && !e.impersonated);
+        }
+        assert!(late_keymap_reinject_events(&template, &[]).is_empty());
     }
 
     #[test]
