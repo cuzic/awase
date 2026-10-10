@@ -10,8 +10,15 @@
 //! | `--start-delay=MS`                  | 入力欄を空にしてから打鍵を始めるまでの待ち(既定 300)              |
 //! | `--interrupt=off_on\|off\|f2\|none`  | 打鍵直後(未確定)に IME 制御キーを送る(未確定文字が消えるかの対照) |
 //! | `--settle-read`                     | 内容が 800ms 変わらなくなるまで読み直す(取りこぼしと遅延の切り分け) |
+//! | `--dictate=paste\|unicode`          | 各試行の打鍵の前に、音声入力ソフトの挿入を模擬する(paste=クリップボード+Ctrl+V、unicode=`KEYEVENTF_UNICODE`)。期待文字列は挿入文+打鍵 |
+//! | `--dictate-text=TEXT`               | 挿入する文(既定「音声入力テスト」)                                 |
+//! | `--dictate-n=N`                     | 挿入を N 回続ける(既定 1)                                          |
 
 use serde_json::json;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE, VIRTUAL_KEY,
+};
 
 use crate::target::InputTarget;
 use crate::{
@@ -60,6 +67,52 @@ pub(crate) struct Perturbation {
     pub(crate) start_delay_ms: u64,
     interrupt: Option<Interrupt>,
     pub(crate) settle_read: bool,
+    dictate: Option<Dictate>,
+}
+
+/// 音声入力ソフトの「挿入」の模擬。キーは `dwExtraInfo=0`(他アプリの注入、`LLKHF_INJECTED` 付き)で送る。
+/// 本物の Spokenly の挿入方式は未確認のため、考えられる 2 方式を別々に試せるようにしてある。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DictateMode {
+    /// クリップボードへ文を置き、Ctrl+V を送る。
+    Paste,
+    /// 文字ごとに `KEYEVENTF_UNICODE` の SendInput。
+    Unicode,
+}
+
+struct Dictate {
+    mode: DictateMode,
+    text: String,
+    n: usize,
+}
+
+const VK_CONTROL_U32: u32 = 0x11;
+const VK_V_U32: u32 = 0x56;
+
+/// 他アプリの注入キー(`dwExtraInfo=0`)。`typing_stress` 自身の注入(`MARKER`、物理扱い)とは別系統。
+fn foreign_key(vk: u32, scan: u16, flags: u32, down: bool) {
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
+                wScan: scan,
+                dwFlags: KEYBD_EVENT_FLAGS(flags) | if down { KEYBD_EVENT_FLAGS(0) } else { KEYEVENTF_KEYUP },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    unsafe {
+        SendInput(&[input], size_of::<INPUT>() as i32);
+    }
+}
+
+/// クリップボードへ文字列を置く(`Win32_System_DataExchange` を足さず PowerShell に任せる)。
+fn set_clipboard(text: &str) {
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -Value $args[0]", text])
+        .status();
 }
 
 fn num<T: std::str::FromStr>(key: &str) -> Option<T> {
@@ -84,6 +137,53 @@ impl Perturbation {
                 })
             }),
             settle_read: has_flag("--settle-read"),
+            dictate: arg_value("--dictate=").map(|v| Dictate {
+                mode: match v.as_str() {
+                    "paste" => DictateMode::Paste,
+                    "unicode" => DictateMode::Unicode,
+                    _ => {
+                        crate::log(&format!("[FATAL] 引数エラー: --dictate={v}(paste|unicode)"));
+                        std::process::exit(2);
+                    }
+                },
+                text: arg_value("--dictate-text=").unwrap_or_else(|| "音声入力テスト".to_string()),
+                n: num("--dictate-n=").unwrap_or(1),
+            }),
+        }
+    }
+
+    /// 挿入で入力欄に入るはずの文(期待文字列の先頭に足す)。
+    pub(crate) fn dictate_prefix(&self) -> String {
+        self.dictate
+            .as_ref()
+            .map_or_else(String::new, |d| d.text.repeat(d.n))
+    }
+
+    /// 打鍵の前に、音声入力の挿入を模擬する。
+    pub(crate) fn dictate_before_typing(&self) {
+        let Some(d) = &self.dictate else { return };
+        for _ in 0..d.n {
+            match d.mode {
+                DictateMode::Paste => {
+                    set_clipboard(&d.text);
+                    foreign_key(VK_CONTROL_U32, 0x1D, 0, true);
+                    sleep_ms(15);
+                    foreign_key(VK_V_U32, 0x2F, 0, true);
+                    sleep_ms(15);
+                    foreign_key(VK_V_U32, 0x2F, 0, false);
+                    sleep_ms(15);
+                    foreign_key(VK_CONTROL_U32, 0x1D, 0, false);
+                }
+                DictateMode::Unicode => {
+                    for u in d.text.encode_utf16() {
+                        foreign_key(0, u, KEYEVENTF_UNICODE.0, true);
+                        foreign_key(0, u, KEYEVENTF_UNICODE.0, false);
+                        sleep_ms(2);
+                    }
+                }
+            }
+            // 挿入が入力先へ届いてから次へ(本物のソフトも挿入の後に少し間がある想定)。
+            sleep_ms(500);
         }
     }
 
@@ -97,7 +197,10 @@ impl Perturbation {
         json!({"cold":self.cold,"pause_after":self.pause_after,"pause_ms":self.pause_ms,
                "idle_ms":self.idle_ms,"switch_focus":self.switch_focus,
                "start_delay_ms":self.start_delay_ms,
-               "interrupt":self.interrupt.map(Interrupt::name),"settle_read":self.settle_read})
+               "interrupt":self.interrupt.map(Interrupt::name),"settle_read":self.settle_read,
+               "dictate":self.dictate.as_ref().map(|d| format!("{:?}", d.mode)),
+               "dictate_text":self.dictate.as_ref().map(|d| d.text.clone()),
+               "dictate_n":self.dictate.as_ref().map(|d| d.n)})
     }
 
     /// 打鍵列の `pause_after` 文字目の直後に `pause_ms` の間を空ける(その後は詰めて続ける)。
