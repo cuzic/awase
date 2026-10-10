@@ -433,7 +433,7 @@ mod tests {
     }
 
     fn hub() -> ImeStateHub {
-        ImeStateHub::with_clock(HubClock::manual(1_000_000))
+        ImeStateHub::with_clock(HubClock::manual(1_000_000, std::time::Instant::now()))
     }
 
     /// 押下つきの order（押下の授権は IntentStore・`is_japanese_ime` を問わない、ADR-208 D2/D3）。

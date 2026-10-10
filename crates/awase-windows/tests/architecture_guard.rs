@@ -1428,7 +1428,7 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
     assert_eq!(
         count_real_calls(
             production_code_only(&read_crate_file("src/state/platform_state/shell.rs")),
-            "HubClock::wall(crate::hook::current_tick_ms)"
+            "HubClock::wall(crate::hook::current_tick_ms, Instant::now)"
         ),
         1,
         "`ImeStateHub` の時計が `hook::current_tick_ms` の実時計ではありません。\
@@ -1624,9 +1624,10 @@ fn count_clock_field_lines(code: &str) -> usize {
         .count()
 }
 
-/// 殻の本番コードが渡す実時計の式（`effective_open_at` を検査する
+/// 殻の本番コードが渡す実時計の式（**空白を除いた形**で照合する。`effective_open_at` を検査する
 /// `effective_open_is_wired_to_the_intent_store_decision`の `HubClock::wall(..)` 件数の固定と同じ式）。
-const REAL_CLOCK_CALL: &str = "with_clock(HubClock::wall(crate::hook::current_tick_ms))";
+const REAL_CLOCK_CALL: &str =
+    "with_clock(HubClock::wall(crate::hook::current_tick_ms,Instant::now))";
 
 /// `with_clock(` の呼び出し元を、本番（`mod tests` を除く）では次の2か所だけに固定する:
 /// - `state/platform_state/shell.rs`（`new()` の殻。実時計）
@@ -1716,7 +1717,8 @@ fn with_clock_is_called_only_by_real_clock_shell_and_for_test() {
 fn with_clock_guard_detects_new_production_entry() {
     const SHELL: &str = "src/state/platform_state/shell.rs";
     const CORE: &str = "src/state/platform_state.rs";
-    let shell_ok = "fn new() { Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)) }";
+    let shell_ok =
+        "fn new() { Self::with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now)) }";
     // フィールド宣言 1 + `with_clock` 本体の短縮形 1（行頭の `clock:`・`clock,`）を持つ最小の核。
     let core_ok = "struct ImeStateHub {\n    clock: C,\n}\nimpl ImeStateHub {\n fn with_clock(clock: C) -> Self {\n Self {\n clock,\n }\n }\n}\n#[cfg(test)]\nimpl PlatformState {\n fn for_test() { ImeStateHub::with_clock(c) }\n}\n";
     let build = |shell: &str, core: &str| {
@@ -1749,8 +1751,8 @@ fn with_clock_guard_detects_new_production_entry() {
     ));
     // 実時計の式がコメントにしか無い（行コメント・ブロックコメント）
     for c in [
-        "// with_clock(HubClock::wall(crate::hook::current_tick_ms))\nSelf::with_clock(HubClock::manual(0))",
-        "/* with_clock(HubClock::wall(crate::hook::current_tick_ms)) */ Self::with_clock(HubClock::manual(0))",
+        "// with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now))\nSelf::with_clock(HubClock::manual(0))",
+        "/* with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now)) */ Self::with_clock(HubClock::manual(0))",
     ] {
         assert!(has(&build(c, core_ok), "実時計"), "{c}");
     }
@@ -1788,7 +1790,7 @@ fn with_clock_guard_detects_new_production_entry() {
     ));
     // clock への書き込み（代入・setter・&mut・分配束縛・括弧つき &mut）
     for (shell, core) in [
-        ("fn new() { let mut s = Self::with_clock(HubClock::wall(crate::hook::current_tick_ms)); s.clock = HubClock::manual(0); s }", core_ok.to_string()),
+        ("fn new() { let mut s = Self::with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now)); s.clock = HubClock::manual(0); s }", core_ok.to_string()),
         (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn set(&mut self, c: C) {{ self.clock = c; }} }}")),
         (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ std::mem::swap(&mut self.clock, &mut o); }} }}")),
         (shell_ok, format!("{core_ok}impl ImeStateHub {{ fn m(&mut self) {{ let r = &mut (self.clock); }} }}")),

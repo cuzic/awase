@@ -549,6 +549,7 @@ const CORE_MODULES: &[&str] = &[
     "gji_direct_mechanism",
     "half_width_alnum",
     "hook_state",
+    "hub_clock",
     "hook_watchdog",
     "ime_actuation",
     "ime_actuation_decision",
@@ -593,10 +594,7 @@ const CORE_MODULES: &[&str] = &[
 
 /// ungated だが現状 Tier-2 の規則に違反するファイルと、その理由。直したら `CORE_MODULES` へ移す
 /// （`core_modules_violation_list_is_not_stale` が、違反が消えたのに残っているものを失敗させる）。
-const NOT_CORE_MODULES: &[(&str, &str)] = &[(
-    "hub_clock",
-    "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
-)];
+const NOT_CORE_MODULES: &[(&str, &str)] = &[];
 
 /// 文字列リテラルの中身を落とす（`"..."` → `""`）。ログ文言に `std::fs` 等が出ても誤検出しない。
 /// 生文字列・複数行文字列は扱わない。
@@ -697,8 +695,9 @@ fn core_violations(content: &str) -> Vec<(usize, &'static str, String)> {
         let s = strip_string_literals(code);
         let t = code.trim().to_string();
         if [
-            "Instant::now(",
-            "SystemTime::now(",
+            // 括弧なしで関数ポインタとして渡す形（`HubClock::wall(.., Instant::now)`）も壁時計の読み取り。
+            "Instant::now",
+            "SystemTime::now",
             "quanta::",
             "MonotonicClock",
         ]
@@ -858,6 +857,11 @@ mod core_guard_helper_tests {
     #[test]
     fn detects_wall_clock_and_ignores_comments_and_strings() {
         assert_eq!(rules("let t = Instant::now();\n"), ["wall-clock"]);
+        assert_eq!(
+            rules("let c = HubClock::wall(tick, Instant::now);\n"),
+            ["wall-clock"],
+            "関数ポインタ経由の壁時計"
+        );
         assert_eq!(
             rules("let t = std::time::SystemTime::now();\n"),
             ["wall-clock"]

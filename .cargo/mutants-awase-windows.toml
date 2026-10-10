@@ -38,6 +38,7 @@ examine_globs = [
     "crates/awase-windows/src/state/force_guard.rs",
     "crates/awase-windows/src/state/belief.rs",
     "crates/awase-windows/src/state/hook_state.rs",
+    "crates/awase-windows/src/state/hub_clock.rs",
     "crates/awase-windows/src/state/app_ime_policy.rs",
     "crates/awase-windows/src/state/ime_event.rs",
     "crates/awase-windows/src/state/input_barrier.rs",
