@@ -28,6 +28,66 @@ struct Armed<S> {
     /// ADR-188: 物理のモードキー通過／FSM 再送出で開いた「直接観測」の窓。基準値を使わず、窓内の読みを belief と
     /// 照合する（`observe` の基準値照合は行わず、窓も閉じない）。外部注入（ADR-205）と重なったら Direct が勝つ。
     direct: bool,
+    /// ADR-188 追記7（案1）: FSM の送出（保留中の親指の送り直し）で arm した最後の時刻（cap 前の生の時刻）。
+    /// 打鍵時点の予測は物理キーの効果だけから作るので、同じ打鍵で FSM が送ったモードキーの効果を含まない。
+    /// `prediction_guard` がこの印を見て、予測に任せるガードを外す。
+    resend_arm_ms: Option<u64>,
+}
+
+/// 直接観測の窓を開いた契機（ADR-188 追記7）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectArmSource {
+    /// 物理のモードキーの通過（`kp_stage_mode_key_follow`）。打鍵時点の予測はこのキーの効果を含む。
+    Physical,
+    /// FSM が送ったモードキー（executor の `SendKeys`、保留中の親指の送り直し等）。打鍵時点の予測はこのキーの効果を含まない。
+    FsmResend,
+}
+
+/// 直接観測の窓内の読みを、打鍵時点の予測（ADR-191 決定3）に任せるかの判定（ADR-188 追記6・追記7）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PredictionGuard {
+    /// 窓の最後の arm 以後の予測が無い。読みを採る。
+    NoPrediction,
+    /// 予測が窓の最後の arm 以後に付いている。読みを採らず予測に任せる（c353bcbb、IME が窓より遅い通常の打鍵）。
+    DeferToPrediction,
+    /// 予測は付いているが、同じ打鍵（予測の時刻以後）に FSM がモードキーを送り直して窓を開き直した。予測は送り直した
+    /// キーの効果を含まず外れるので、読みを採る。
+    LiftedByResend,
+}
+
+impl PredictionGuard {
+    /// 読みを採らない（予測に任せる）か。
+    #[must_use]
+    pub const fn defers(self) -> bool {
+        matches!(self, Self::DeferToPrediction)
+    }
+}
+
+/// 窓内の読みを予測に任せるかを決める純関数（ADR-188 追記7）。
+///
+/// - `pred_at_ms`: 現在の打鍵時点の予測の時刻（無ければ `None`）。
+/// - `armed_at_ms`: 窓の最後の arm 時刻（`last_arm_ms`）。
+/// - `resend_arm_ms`: 窓を FSM の送出で arm した最後の時刻（`resend_arm_ms`）。
+///
+/// 予測と FSM の送り直しは同じ tick に収まるので（実測: `predict at_ms` と `arm src=fsm-resend now` が同値、
+/// run 38065774507）、`resend_arm_ms >= pred_at_ms` を「この打鍵で送り直した」とみなす。送り直しが予測より前の
+/// tick（タイマーで保留を解いた後に別キーを打った等）ならガードは維持する。
+#[must_use]
+pub fn prediction_guard(
+    pred_at_ms: Option<u64>,
+    armed_at_ms: u64,
+    resend_arm_ms: Option<u64>,
+) -> PredictionGuard {
+    match pred_at_ms {
+        Some(p) if p >= armed_at_ms => {
+            if resend_arm_ms.is_some_and(|r| r >= p) {
+                PredictionGuard::LiftedByResend
+            } else {
+                PredictionGuard::DeferToPrediction
+            }
+        }
+        _ => PredictionGuard::NoPrediction,
+    }
 }
 
 /// 外部変化の監視窓と、直近の読みの記録。
@@ -57,16 +117,23 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
     /// 外部注入の IME キーを見たら呼ぶ。同じスコープの窓が生きていれば基準値を保ったまま延ばす
     /// （延長は最初の arm から `window_ms * 2` までで、窓の寿命は最大でその時点から `window_ms` 後＝`window_ms * 3`）。そうでなければ新しく開き、基準値は直近の読み（同じスコープ）。
     pub fn arm(&mut self, scope: S, now_ms: u64, window_ms: u64) {
-        self.arm_with(scope, now_ms, window_ms, false);
+        self.arm_with(scope, now_ms, window_ms, None);
     }
 
-    /// ADR-188: 物理のモードキー通過／FSM 再送出で直接観測の窓を開く。生きている同じスコープの窓があれば Direct に
+    /// ADR-188: 物理のモードキー通過で直接観測の窓を開く。生きている同じスコープの窓があれば Direct に
     /// 格上げして延ばす（基準値は保つ。Direct の窓は基準値を使わない）。
     pub fn arm_direct(&mut self, scope: S, now_ms: u64, window_ms: u64) {
-        self.arm_with(scope, now_ms, window_ms, true);
+        self.arm_with(scope, now_ms, window_ms, Some(DirectArmSource::Physical));
     }
 
-    fn arm_with(&mut self, scope: S, now_ms: u64, window_ms: u64, direct: bool) {
+    /// ADR-188 追記7: FSM の送出（保留中の親指の送り直し等）で直接観測の窓を開く。`arm_direct` と同じに開く／延ばし、
+    /// 加えて送り直しの印（`resend_arm_ms`）を付ける。
+    pub fn arm_direct_resend(&mut self, scope: S, now_ms: u64, window_ms: u64) {
+        self.arm_with(scope, now_ms, window_ms, Some(DirectArmSource::FsmResend));
+    }
+
+    fn arm_with(&mut self, scope: S, now_ms: u64, window_ms: u64, direct: Option<DirectArmSource>) {
+        let resend = (direct == Some(DirectArmSource::FsmResend)).then_some(now_ms);
         if let Some(a) = self.armed.as_mut() {
             let alive = a.scope == scope && now_ms.saturating_sub(a.last_arm_ms) <= window_ms;
             if alive {
@@ -74,7 +141,10 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
                     .first_arm_ms
                     .saturating_add(window_ms.saturating_mul(MAX_EXTENSION_FACTOR));
                 a.last_arm_ms = now_ms.min(cap);
-                a.direct |= direct;
+                a.direct |= direct.is_some();
+                if resend.is_some() {
+                    a.resend_arm_ms = resend;
+                }
                 return;
             }
         }
@@ -84,8 +154,15 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
             first_arm_ms: now_ms,
             last_arm_ms: now_ms,
             baseline,
-            direct,
+            direct: direct.is_some(),
+            resend_arm_ms: resend,
         });
+    }
+
+    /// 開いている窓を FSM の送出で arm した最後の時刻（ms、ADR-188 追記7）。窓が無い・送出で arm していないなら `None`。
+    #[must_use]
+    pub fn resend_arm_ms(&self) -> Option<u64> {
+        self.armed.and_then(|a| a.resend_arm_ms)
     }
 
     /// 直接観測の窓（ADR-188）が生きているか（消費しない）。スコープ違い・切れた窓は破棄して `false`。
@@ -453,6 +530,76 @@ mod tests {
         assert_eq!(w.last_arm_ms(), Some(1000));
         w.arm_direct(1, 1100, W);
         assert_eq!(w.last_arm_ms(), Some(1100));
+    }
+
+    // ── ADR-188 追記7: FSM の送り直しの印 ──
+
+    #[test]
+    fn resend_arm_marks_the_window_and_physical_arm_does_not() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.arm_direct(1, 1000, W);
+        assert_eq!(w.resend_arm_ms(), None, "物理の arm は印を付けない");
+        // 同じ tick の FSM の送り直し(実測の順序: 物理の arm → 予測 → 送り直しの arm)
+        w.arm_direct_resend(1, 1000, W);
+        assert_eq!(w.resend_arm_ms(), Some(1000));
+        assert!(w.direct_live(1, 1010, W));
+        // 後の物理の arm は印を消さない(時刻で比べるので、後の打鍵の予測には効かない)
+        w.arm_direct(1, 1100, W);
+        assert_eq!(w.resend_arm_ms(), Some(1000));
+        assert_eq!(w.last_arm_ms(), Some(1100));
+    }
+
+    #[test]
+    fn resend_arm_alone_opens_a_direct_window_and_fresh_window_drops_the_mark() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.arm_direct_resend(1, 1000, W);
+        assert!(
+            w.direct_live(1, 1010, W),
+            "送り直しだけでも Direct の窓が開く"
+        );
+        assert_eq!(w.resend_arm_ms(), Some(1000));
+        // 窓が切れた後の新しい物理の窓は印を持たない
+        w.arm_direct(1, 1000 + W + 1, W);
+        assert_eq!(w.resend_arm_ms(), None);
+        // 外部注入(ADR-205)の arm も印を付けない
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.arm(1, 1000, W);
+        assert_eq!(w.resend_arm_ms(), None);
+    }
+
+    /// 実測(run 38065774507・38091839446、sc-armc-gji-atok-passthru): 物理 0x1C の arm・予測・FSM の送り直しの arm が全て
+    /// now=384359。予測(open=false)は送り直した 無変換 の効果を含まず外れ、窓内の読み(open=true)が正しかった。
+    #[test]
+    fn prediction_guard_is_lifted_only_by_a_resend_in_the_same_keystroke() {
+        // 予測なし: 読みを採る
+        assert_eq!(
+            prediction_guard(None, 1000, None),
+            PredictionGuard::NoPrediction
+        );
+        // 窓の arm より前の予測(前の打鍵のもの): 読みを採る
+        assert_eq!(
+            prediction_guard(Some(990), 1000, None),
+            PredictionGuard::NoPrediction
+        );
+        // 通常の打鍵(c353bcbb、MS-IME プリセットの 変換 単独押し): 予測に任せる
+        let g = prediction_guard(Some(1000), 1000, None);
+        assert_eq!(g, PredictionGuard::DeferToPrediction);
+        assert!(g.defers());
+        // 同じ tick に FSM が送り直した: ガードを外す
+        let g = prediction_guard(Some(384_359), 384_359, Some(384_359));
+        assert_eq!(g, PredictionGuard::LiftedByResend);
+        assert!(!g.defers());
+        // 送り直しが予測より前の tick(タイマーで保留を解いた後、別の打鍵で予測が付いた): ガードは維持
+        assert_eq!(
+            prediction_guard(Some(1100), 1100, Some(1000)),
+            PredictionGuard::DeferToPrediction
+        );
+        // 予測の後の tick に送り直した(同じ打鍵の後段): ガードを外す
+        assert_eq!(
+            prediction_guard(Some(1000), 1000, Some(1015)),
+            PredictionGuard::LiftedByResend
+        );
+        assert!(!PredictionGuard::NoPrediction.defers());
     }
 
     /// R2: NATIVE ビットだけで英数を決める。計測の実値: 直接入力→無変換=かな ON で `open=true conv=9`(ROMAN なし)が
