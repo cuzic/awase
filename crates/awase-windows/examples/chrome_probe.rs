@@ -20,7 +20,7 @@
 //! その後 k,a を打って実際の IME 状態(打鍵結果)を確認する。`--or-ladder` は閉じなかった試行で別手段(再送・IMC・0xF3・0x19・TSF 大域 compartment)を順に試す。
 //! `--or-relaunch` は試行ごとに Chrome を起動し直す(ページ状態の蓄積の影響を切り分ける)。判定は check_offrca.py(`OFFRCA {json}` 行)。
 //!
-//! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--chrome=<chrome.exe>] [--log=<path>]`
+//! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--f16-alnum] [--chrome=<chrome.exe>] [--log=<path>]`
 //!   `--no-awase`: awase を止めた対照実験（かなのとき `か` を期待）。既定は awase 起動中（NICOLA を期待）。
 //! `--tray-cmd=<ID>` は awase のトレイウィンドウへメニュー選択と同じ WM_COMMAND を送る(ID は tray.rs の IDM_*。例: 52=IMM キャッシュのクリア)。
 //! `--file-state=<path>[,<path>...]` を併せて指定すると、送る前後でそのファイルの状態を `FILE_STATE` 行に出す(存在・長さ・FNV-1a。
@@ -432,6 +432,8 @@ enum Setup {
     Kana,
     Off,
     Alnum,
+    /// かな → F16(GJI の CUSTOM 表で半角英数へ)。`--f16-alnum` 用(筆者報告の構成: 英数キーが F16)。
+    AlnumF16,
 }
 
 /// 状態を「かな」「直接入力」「半角英数」に持っていく。状態はプローブ(打った文字)で確認する。
@@ -462,6 +464,14 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
             sleep(500);
             p.probe_logged("setup:IME_OFF後") == Class::Plain
         }
+        Setup::AlnumF16 => {
+            p.press(VK_F16, false, 60);
+            sleep(500);
+            matches!(
+                p.probe_logged("setup:F16(かな→半角英数)後"),
+                Class::Plain | Class::NicolaLiteral
+            )
+        }
         Setup::Alnum => {
             p.press(0xF2, false, 60);
             sleep(500);
@@ -474,6 +484,8 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
 }
 
 const VK_LSHIFT: u32 = 0xA0;
+const VK_F16: u32 = 0x7F;
+const VK_F17: u32 = 0x80;
 
 struct Case {
     name: &'static str,
@@ -498,6 +510,27 @@ const F13_CASES: [Case; 2] = [
         name: "直接入力→F13=かなON",
         setup: Setup::Off,
         vk: 0x7C,
+        shift: false,
+        expect_kana: true,
+    },
+];
+
+/// `--f16-alnum`(外部報告の構成、F13〜F24 は学習表にセルが無い): 英数=F16・IME ON=F17 の ANSI 配列利用者向け。
+/// GJI の CUSTOM 表で F16 を半角英数、F17 をひらがな(DirectInput では IME ON)にした構成で、
+/// 「かな→F16=半角英数(`ka`)」「F16 の半角英数→F17=かなに戻る(Engine が追随して NICOLA)」を実 Chrome で見る。
+/// 表と awase 設定(keys.ime_on の有無)は呼び出し側(ワークフロー)。
+const F16_ALNUM_CASES: [Case; 2] = [
+    Case {
+        name: "かな→F16=半角英数",
+        setup: Setup::Kana,
+        vk: VK_F16,
+        shift: false,
+        expect_kana: false,
+    },
+    Case {
+        name: "F16の半角英数→F17=かな",
+        setup: Setup::AlnumF16,
+        vk: VK_F17,
         shift: false,
         expect_kana: true,
     },
@@ -2139,6 +2172,8 @@ fn main() {
         k
     } else if args.iter().any(|a| a == "--f13") {
         &F13_CASES
+    } else if args.iter().any(|a| a == "--f16-alnum") {
+        &F16_ALNUM_CASES
     } else if args.iter().any(|a| a == "--henkan-open") {
         &HENKAN_OPEN_CASES
     } else {

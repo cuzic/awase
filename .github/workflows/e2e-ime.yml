@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -337,6 +337,43 @@ jobs:
             cfg('sc-t1e-chrome-f13', 'pass', check='chromeprobe', keymap=0, runs=1, wait=400,
                 chrome='--f13 --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
+            # 外部報告(ANSI 配列、物理キーを F14〜F17 に割り当てる構成。英数=F16・IME ON=F17、親指=F14/F15)の再現(観測のみ、only='sc-f16-*' で回す)。
+            # F13〜F24 は学習表にセルが無く(key_effect_table.rs の NARROWABLE_KEYS 注記)、打鍵時予測が付かない。実 Chrome(TsfNative)で
+            # 「かな→F16=半角英数(`ka`)」「F16 の半角英数→F17=かなに戻り Engine が追随(NICOLA)」を見る。FAIL=`ka`のまま/Engine OFF の `か` は belief のずれ。
+            # -awimeon: F17 は awase の keys.ime_on(GJI 表に F17 行なし)。-gjif17: F17 は GJI 表(Precomposition=ひらがな/DirectInput=IMEOn)で awase は素通し。
+            # -noawase は -gjif17 の表で awase なしの対照(GJI 単体なら `か`)。表のひらがな行(0xF2)は chrome_probe の前提状態づくり(半角英数→かな)用。
+            *[cfg(f'sc-f16-alnum-chrome-{suf}', 'observe', check='chromeprobe', keymap=0, runs=1, wait=500, awase=aw, keys=ks,
+                  general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
+                  chrome=f'--f16-alnum --repeat=3 --settle=800{na}', until='2026-11-09',
+                  tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff'
+                      '|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric'
+                      '|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana' + f17)
+              for suf, aw, ks, na, f17 in (
+                  ('awimeon', 'true', 'ime_on = ["VK_F17"]', '', ''),
+                  ('gjif17', 'true', '', '', '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn'),
+                  ('gjif17-noawase', 'false', '', ' --no-awase', '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn'))],
+            # ADR-247 の A/B: F13〜F24 の追随を 案2(直接観測=vk.rs の is_followed_mode_key)と案1(CUSTOM 表の行からの予測)に分けて外す。
+            # 無印(上の -gjif17)=両方あり / -obsonly=予測を外す(a10) / -predonly=観測を外す(a9) / -none=両方外す(a11、修正前相当)。
+            *[cfg(f'sc-f16-alnum-chrome-gjif17-{suf}', 'observe', mutator=mu, check='chromeprobe', keymap=0, runs=1, wait=500,
+                  general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
+                  chrome='--f16-alnum --repeat=3 --settle=800', until='2026-11-09',
+                  tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff'
+                      '|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric'
+                      '|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana'
+                      '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn')
+              for suf, mu in (('obsonly', 'a10-no-fkey-predict.sh'), ('predonly', 'a9-no-fkey-observe.sh'), ('none', 'a11-no-fkey-follow.sh'))],
+            # ADR-247 の追随の速さ: F16 を押してから打つまでの待ち(--settle)を 0/60/150ms に縮め、案2(観測)と案1(予測)のどちらが最初の文字から正しいかを比べる。
+            # ビルドは上の -gjif17-{obsonly,predonly,none} を使い回す(bin=)。full=両案あり(baseline)。各 6 周。only='sc-f16-settle-*'。
+            *[cfg(f'sc-f16-settle-{suf}-t{t}', 'observe', bin=b, check='chromeprobe', keymap=0, runs=1, wait=500,
+                  general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
+                  chrome=f'--f16-alnum --repeat=6 --settle={t}', until='2026-11-09',
+                  tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff'
+                      '|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric'
+                      '|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana'
+                      '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn')
+              for suf, b in (('full', None), ('obsonly', 'sc-f16-alnum-chrome-gjif17-obsonly'),
+                             ('predonly', 'sc-f16-alnum-chrome-gjif17-predonly'), ('none', 'sc-f16-alnum-chrome-gjif17-none'))
+              for t in (0, 60, 150)],
             # ADR-209(2026-09-30): 読めない窓(実 Chrome=Imm32Unavailable)で、GJI の MS-IME プリセット(keymap=2)の IME OFF から変換を
             # 単独で押す(素通し)と IME が開き、awase の Engine が追随して NICOLA になる。stale=実機と同じ古い custom_keymap_table 付き。
             # off=設定 predict_henkan_open_in_unreadable_windows=false の対照(追随しない=IME ON・Engine OFF で `か` になり FAIL するはず)。
@@ -752,12 +789,12 @@ jobs:
             configs = [c for c in configs if any(fnmatch.fnmatchcase(c['name'], o) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-'))
-                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])

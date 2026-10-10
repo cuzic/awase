@@ -856,6 +856,10 @@ impl KeyEffectKeymap {
         if let Some(prediction) = self.passive_open_key_prediction(vk, input) {
             return Some(prediction);
         }
+        // ADR-247: CUSTOM の表にある F13〜F24 の行（半角英数への SET など）は、学習表にセルが無いので表の行から予測する。
+        if let Some(prediction) = self.custom_f_key_prediction(vk, input) {
+            return Some(prediction);
+        }
         // ADR-195段階4 B3対応: 学習済み表にこのキー・状態の答えがあれば、custom_table/overlay/
         // レジストリ再割り当てのガードより先にそれを使う。これらのガードは「同梱表はユーザーの
         // 独自割り当てを知らないので予測しない」という安全策であり、学習済み表はまさにその
@@ -946,6 +950,67 @@ impl KeyEffectKeymap {
                 mode,
             },
             track: input.track,
+        })
+    }
+
+    /// ADR-247: GJI の CUSTOM 表にある F13〜F24（無修飾）の行から、打鍵の効果（開閉と入力モード）を予測する。
+    /// 学習表・同梱表は F13〜F24 のセルを持たないので、表が無いと予測が付かず、読めない窓では belief がずれたまま残る
+    /// （英数=F16 で GJI が半角英数になっても Engine が ON のまま）。変換中（`Conversion`）は段階の追跡に依存するので
+    /// 予測しない。行が無い・相対トグル系・未知のコマンドは `None`（観測に委ねる）。
+    fn custom_f_key_prediction(&self, vk: u16, input: &PredictInput) -> Option<Prediction> {
+        use awase_gji_config::command::GjiCompositionMode as Mode;
+        if !input.passive_rule_eligible
+            || !(0x7C..=0x87).contains(&vk)
+            || !matches!(self.preset, KeymapPreset::Custom)
+            || self.has_overlay()
+            || matches!(
+                input.track.stage,
+                Stage::ConvSpace | Stage::ConvHenkan | Stage::ConvMuhenkan
+            )
+        {
+            return None;
+        }
+        let name = format!("VK_F{}", vk - 0x6F);
+        let effect = awase_gji_config::role::custom_key_mode_effect(
+            self.session_keymap,
+            self.custom_table.as_deref(),
+            &[],
+            &name,
+            input.open,
+            input.composing,
+        )?;
+        let conv = effect.mode.and_then(|m| match m {
+            Mode::HalfAlphanumeric => Some(Conv::C10),
+            Mode::Hiragana => Some(Conv::C19),
+            Mode::FullKatakana => Some(Conv::C1B),
+            // 全角英数・半角カナは `Conv` が表せない（追わない）。
+            Mode::FullAlphanumeric | Mode::HalfKatakana => None,
+        });
+        let open_after = effect.open.unwrap_or(input.open);
+        if effect.open.is_none() && conv.is_none() {
+            return None;
+        }
+        // 閉じる効果は段階・変換モードの追跡を捨てる。モードを SET する効果は追跡する変換モードを更新する。
+        let track = if open_after {
+            KeyTrack {
+                conv: conv.or(input.track.conv),
+                stage: input.track.stage,
+            }
+        } else {
+            KeyTrack {
+                conv: None,
+                stage: Stage::None,
+            }
+        };
+        let mode = conv
+            .and_then(|cv| mode_effect(input.mode, cv))
+            .or_else(|| matches!(input.mode, InputModeState::Unknown).then(kana_mode));
+        Some(Prediction {
+            effect: PredictedEffect {
+                open: (open_after != input.open).then_some(open_after),
+                mode,
+            },
+            track,
         })
     }
 
@@ -1918,6 +1983,60 @@ mod tests {
         );
     }
 
+    /// ADR-247: CUSTOM の表の F16（半角英数へ SET）は、開状態で押すと入力モードが英数になる（開閉は変えない）。
+    #[test]
+    fn adr247_custom_f16_sets_half_alphanumeric() {
+        let table =
+            "DirectInput\tON\tIMEOn\nPrecomposition\tF16\tInputModeHalfAlphanumeric\n".to_string();
+        let km = KeyEffectKeymap::from_config(Some(0), Some(table), &[]).unwrap();
+        let p = km
+            .predict(0x7F, &eligible_input(true, ROMAJI))
+            .expect("F16 の行から予測される");
+        assert_eq!(p.effect.open, None);
+        assert_eq!(p.effect.mode, Some(InputModeState::ObservedEisu));
+        assert_eq!(p.track.conv, Some(Conv::C10));
+        // すでに英数なら効果なし（モードの予測は付かない）。
+        let p = km
+            .predict(0x7F, &eligible_input(true, InputModeState::ObservedEisu))
+            .expect("追跡する変換モードは更新される");
+        assert_eq!(p.effect.mode, None);
+        assert_eq!(p.track.conv, Some(Conv::C10));
+    }
+
+    /// ADR-247: 閉状態の F17 が `InputModeHiragana`（DirectInput）なら開いてかなになる。表に行が無い状態・F キーは予測しない。
+    #[test]
+    fn adr247_custom_f_key_opens_and_respects_conditions() {
+        let table =
+            "DirectInput\tF17\tInputModeHiragana\nPrecomposition\tF18\tToggleAlphanumericMode\n"
+                .to_string();
+        let km = KeyEffectKeymap::from_config(Some(0), Some(table), &[]).unwrap();
+        let p = km.predict(0x80, &eligible_input(false, ROMAJI)).unwrap();
+        assert_eq!(p.effect.open, Some(true));
+        // 条件を満たさない: ゲート偽（修飾付き・リピート等）・相対トグル系・行の無い F キー・変換中。
+        assert_eq!(
+            km.predict(0x80, &input(false, ROMAJI, false, NOTRACK)),
+            None
+        );
+        assert_eq!(km.predict(0x81, &eligible_input(true, ROMAJI)), None);
+        assert_eq!(km.predict(0x82, &eligible_input(true, ROMAJI)), None);
+        let converting = PredictInput {
+            track: KeyTrack {
+                conv: None,
+                stage: Stage::ConvSpace,
+            },
+            ..eligible_input(false, ROMAJI)
+        };
+        assert_eq!(km.predict(0x80, &converting), None);
+        // プリセット（ATOK）は CUSTOM の表を評価しない。
+        let atok = KeyEffectKeymap::from_config(
+            Some(1),
+            Some("DirectInput\tF17\tIMEOn\n".to_string()),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(atok.predict(0x80, &eligible_input(false, ROMAJI)), None);
+    }
+
     fn eligible_input(open: bool, mode: InputModeState) -> PredictInput {
         PredictInput {
             passive_rule_eligible: true,
@@ -1980,8 +2099,12 @@ mod tests {
         let custom =
             KeyEffectKeymap::from_config(Some(0), Some("DirectInput\tF13\tIMEOn\n".into()), &[])
                 .unwrap();
+        // ADR-211 の規則(プリセットの F13)は CUSTOM(表あり)に当てない。CUSTOM の表の行は ADR-247 の規則が別に扱う
+        // (`custom_f_key_prediction`、`adr247_*` のテスト)ので、`predict` の結果ではなく ADR-211 の規則そのものを見る。
         assert!(
-            !opens(custom.predict(F13, &eligible_input(false, ROMAJI))),
+            custom
+                .passive_open_key_prediction(F13, &eligible_input(false, ROMAJI))
+                .is_none(),
             "CUSTOM(表あり)"
         );
         let overlay = KeyEffectKeymap::from_config(Some(2), None, &[100]).unwrap();
