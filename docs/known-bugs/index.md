@@ -198,6 +198,7 @@
 | [BUG-194](BUG-194.md) | 構造は残存・実環境では未観測(2026-10-08) | RAW_TSF_LITERAL(raw TSF リテラルの回収待ち)に focus 世代ガードが無く、record と flush の間に FocusChange が割り込むと別窓へ BS/ESC/再送が届きうる
 | [BUG-195](BUG-195.md) | 起票(原因は仮説のみ、2026-10-09) | GJI を使っているのに awase が Microsoft IME と同定し、MS-IME 用の msime-ready ゲートで Windows Terminal の「の」が生ローマ字 `no` になる |
 | [BUG-196](BUG-196.md) | CI 再現・修正で解消(実機未確認、2026-10-10) | 英数を F13〜F24 に割り当てた構成で、GJI が半角英数になっても Engine が ON のまま追随しない |
+| [BUG-197](BUG-197.md) | 起票(原因確定・修正未着手、2026-10-10) | 音声入力ソフト(Spokenly)が注入する Ctrl+V の V が、注入 Ctrl を修飾として数えないため「ふ」に化ける |
 
 ## その他の資料
 
