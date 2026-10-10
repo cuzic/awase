@@ -528,6 +528,7 @@ const CORE_MODULES: &[&str] = &[
     "ime_event",
     "ime_event_log",
     "ime_kind",
+    "ime_model",
     "ime_read_strategy",
     "ime_set_open_plan",
     "ime_update",
@@ -565,10 +566,6 @@ const NOT_CORE_MODULES: &[(&str, &str)] = &[
     (
         "hub_clock",
         "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
-    ),
-    (
-        "ime_model",
-        "effective_open() などの Instant::now()（effective_open_at を呼ぶ側へ）",
     ),
     (
         "ime_profile_driver",

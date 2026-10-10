@@ -1567,7 +1567,11 @@ impl ImeStateHub {
         profile: ImePolicyProfile,
         tick_ms: TickMs,
     ) {
-        if !self.belief.is_japanese_ime() || self.shadow_model.effective_open() {
+        if !self.belief.is_japanese_ime()
+            || self
+                .shadow_model
+                .effective_open_at(self.clock.now_instant())
+        {
             return;
         }
         if let Some(intent) = self.shadow_model.last_intent.as_ref() {
@@ -2546,7 +2550,7 @@ mod tests {
         dispatch_conv_open_inference(&mut ps, true, 100);
         assert_eq!(
             ps.ime.effective_open_at(TickMs(100)),
-            ps.ime.model().effective_open(),
+            ps.ime.model().effective_open_at(std::time::Instant::now()),
             "IntentStore に記録しないため、hub 版と生の ImeModel 版の effective_open() は一致し続ける"
         );
     }
@@ -3031,7 +3035,7 @@ mod tests {
         dispatch_conv_open_inference(&mut ps, true, 300);
 
         assert!(
-            ps.ime.model().effective_open(),
+            ps.ime.model().effective_open_at(std::time::Instant::now()),
             "退行の証拠: IntentStore 抜きの生の ImeModel::effective_open() は \
              ConvOpenInference 1 件だけで true に反転する（BUG-63 と同型の機構）"
         );
