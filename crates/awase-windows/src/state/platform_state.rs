@@ -546,6 +546,29 @@ impl ImeStateHub {
             return None;
         }
         let armed_at = self.external_change_watch.last_arm_ms()?;
+        // レビュー指摘 C の検証(使い捨て・挙動不変): 窓内の読みごとに、arm 時刻・予測時刻・ガードの判定を残す。
+        {
+            let pred = self.shadow_model.key_effect();
+            tracing::info!(
+                "[arm-diag] follow-check now={now_ms} armed_at={armed_at} pred_at={:?} pred_open={:?} pred_mode={:?} \
+                 pred_age={:?} explicit_ms={} read_open={read_open:?} read_conv={read_conv:?} belief_open={} \
+                 skip_explicit={} skip_pred={} resend_at={:?} guard={:?}",
+                pred.map(|p| p.at_ms),
+                pred.and_then(|p| p.open),
+                pred.and_then(|p| p.mode),
+                pred.map(|p| now_ms.saturating_sub(p.at_ms)),
+                self.last_explicit_ime_action_ms,
+                self.effective_open_at(tick_ms),
+                self.last_explicit_ime_action_ms >= armed_at,
+                pred.is_some_and(|p| p.at_ms >= armed_at),
+                self.external_change_watch.resend_arm_ms(),
+                super::external_change_watch::prediction_guard(
+                    pred.map(|p| p.at_ms),
+                    armed_at,
+                    self.external_change_watch.resend_arm_ms()
+                ),
+            );
+        }
         if self.last_explicit_ime_action_ms >= armed_at {
             return None;
         }
