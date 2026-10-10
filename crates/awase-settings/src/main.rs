@@ -580,8 +580,7 @@ fn load_keymap_table_state(
         .map(|dir| dir.join("keymap-learn-table.json"));
     let (table, file_date) = path
         .and_then(|path| {
-            let table =
-                awase_windows::state::key_effect_io::read_persisted_table(&path).ok()?;
+            let table = awase_windows::state::key_effect_io::read_persisted_table(&path).ok()?;
             let date = std::fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .ok()

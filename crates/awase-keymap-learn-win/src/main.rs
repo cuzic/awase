@@ -38,8 +38,8 @@ mod app {
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
     use awase_keymap_learn_win::RealImeDriver;
     use awase_windows::state::ime_kind::TipIdentity;
-    use awase_windows::state::key_effect_predictor::TableKey;
     use awase_windows::state::key_effect_io::current_fingerprint_probe;
+    use awase_windows::state::key_effect_predictor::TableKey;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
