@@ -4,8 +4,9 @@
 //! 実際に呼ぶ awase の層（すべて Linux ホストで動く ungated なもの）:
 //! - `ImeStateHub`（本物。`with_clock(HubClock::manual(..))` で仮想時計）: `dispatch_event`（= `ImeModel::reduce` と
 //!   `event_log`・`journal`）、`effective_open_at`、`record_explicit_intent`、`apply_key_effect_prediction`、
-//!   `warrant_context`、`arm/follow_external_change_in_scope`、`IntentStore`・`ExternalChangeWatch` はハブが持つ
-//! - `KeyEffectKeymap::predict`（GJI ATOK プリセット、同梱表）
+//!   `warrant_context`、`align_placeholder_desired`、`arm/follow_external_change_in_scope`、`IntentStore`・`ExternalChangeWatch` はハブが持つ
+//! - `KeyEffectKeymap::predict`（GJI ATOK プリセット、同梱表）と `plan_key_effect_track`（`kp_stage_key_effect_track` の判断）。ただし判断の入力 `KeyTrackFacts`（物理 KeyDown・非修飾キー・修飾なし・非消費）は
+//!   ハーネスが決め打ちで組む（`key()` は修飾キー単体の vk を打たない前提。打つシナリオを足すなら `is_modifier_key` を vk から求めること）
 //! - `open_warrant::issue_open_warrant`
 //! - `drift_correction::check_drift_correction`（旧 `ImeStateHub::check_drift_correction` の本体）
 //! - `awase::engine::Engine`（`EngineCommand::RefreshState`/`FocusChanged` の活性遷移と `SetOpen`）
@@ -13,8 +14,8 @@
 //! Windows 専用（`#[cfg(windows)]`）で呼べないため、**数行の配線をここで写している**もの
 //! （写し元の行は各メソッドの doc に書く。写し元が変わったらここも直すこと）:
 //! - `ImeStateHub::issue_actuation_order`/`write_*`（`state/platform_state.rs`。`warrant_context` までは本物）
-//! - `ImeStateHub::align_placeholder_desired`（`settle` 内。本物は `pub(crate)`。次の段階で本物にする候補）
-//! - `kp_stage_key_effect_track`/`kp_predict_key_effect`（`runtime/key_pipeline.rs`）
+//! - `kp_predict_key_effect`（`runtime/key_pipeline.rs`。観測〈keymap・TSF〉と実行が大半で、純粋な判断は `predict_with_override` と
+//!   `plan_key_effect_track` に分離済み。残りは分けない、F5d と同じ理由）
 //! - `ir_apply_drift_correction` の「検知へ進むか」まで（`runtime/ime_refresh.rs`）: `check_drift_correction` と、
 //!   ImmCross で warrant が下りない補正を検知の手前で見送る早期 return（BUG-163 の1段目、`b6ab8980`）。
 //!   Blind/Read の再送打ち切り・settle 待ち・conv ラッチは写していない。
@@ -45,7 +46,9 @@ use awase_windows::state::ime_event::{
     HwndId, ImeEvent, ImePolicyProfile, ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use awase_windows::state::ime_model::ImeModel;
-use awase_windows::state::key_effect_predictor::{KeyEffectKeymap, PredictInput, Prediction};
+use awase_windows::state::key_effect_predictor::{
+    plan_key_effect_track, KeyEffectKeymap, KeyTrackFacts, PredictInput, Prediction,
+};
 use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant};
 use awase_windows::state::platform_state::ImeStateHub;
 use awase_windows::state::probe_admission::{Admission, FocusFence, ImmLikeTicket};
@@ -278,6 +281,22 @@ impl Harness {
     /// 生キーが IME に届き、予測を belief へ反映し、Engine を再評価する。
     pub fn key(&mut self, vk: u16) -> &mut Self {
         let truth_before = self.ime.state();
+        // 本物の `kp_stage_key_effect_track` の判断（`plan_key_effect_track`）。物理の無修飾の KeyDown で、エンジンが消費せず
+        // IME へ通した打鍵なので、`None`（追跡しない）にはならない。
+        let passive_rule_eligible = plan_key_effect_track(&KeyTrackFacts {
+            vk,
+            is_physical_key_down: true,
+            is_modifier_key: false,
+            ctrl: false,
+            alt: false,
+            shift: false,
+            win: false,
+            was_down: false,
+            consumed: false,
+            has_shadow_action: false,
+            has_sync_direction: false,
+        })
+        .expect("修飾キーでない無修飾の物理 KeyDown は追跡する");
         let input = PredictInput {
             open: self.effective_open(),
             mode: self.hub.model().input_mode(),
@@ -287,8 +306,7 @@ impl Harness {
             },
             track: self.hub.model().key_track(),
             unreadable: false,
-            // 物理の無修飾の KeyDown で、エンジンが消費せず IME へ通した打鍵（上のコメント）なので、ゲートは真。
-            passive_rule_eligible: true,
+            passive_rule_eligible,
         };
         let prediction = self.keymap.predict(vk, &input);
         let press = self.ime.press(vk);
@@ -630,23 +648,11 @@ impl Harness {
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
         self.handle_engine_decision(&decision);
 
-        // `ir_align_placeholder_desired`（`runtime/ime_refresh.rs`）の写し（BUG-163、代案A）: 起動時の初期値のままの
-        // `desired_open` を、明示意図が無く、観測から導ける開閉があるとき、最初の成功観測へ 1 回だけ揃える
-        // （`ImeStateHub::align_placeholder_desired`、reducer は `ModeKeyPassedThrough { align_desired: true, demote_applied: false, }`）。
-        if self.hub.model().desired_is_placeholder()
-            && self.hub.model().last_intent.is_none()
-            && self
-                .hub
-                .model()
-                .observations
-                .derive_any(self.now())
-                .is_some()
-        {
-            self.reduce(ImeEvent::ModeKeyPassedThrough {
-                align_desired: true,
-                demote_applied: false,
-            });
-        }
+        // `ir_align_placeholder_desired`（`runtime/ime_refresh.rs`）が呼ぶ本物（BUG-163、代案A）: 起動時の初期値のままの
+        // `desired_open` を、明示意図が無く、観測から導ける開閉があるとき、最初の成功観測へ 1 回だけ揃える。
+        let _ = self
+            .hub
+            .align_placeholder_desired(self.now(), TickMs(self.tick()));
 
         if let Some(drift) = check_drift_correction(self.hub.model(), self.now()) {
             // `ir_apply_drift_correction`（`runtime/ime_refresh.rs`）: ImmCross（書き込み経路が
