@@ -9,11 +9,15 @@ use awase::scanmap::PhysicalPos;
 use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 use awase_windows::scancode_apply::ApplyRequest;
+use awase_windows::scancode_diagram::{
+    DiagramContext, PositionState, diagram_rows, drop_function, drop_hint, function_at,
+    position_state, refusal_text, release_position, unlisted_pairs,
+};
 use awase_windows::scancode_editor::{
-    EditorState, QUICK_PAIRS, Side, confirmation_lines, key_label, registry_state, status_line,
+    EditorState, QUICK_PAIRS, confirmation_lines, key_label, registry_state, status_line,
     swap_error_text, worker_exit_text,
 };
-use awase_windows::scancode_pairs::{Detected, Entry, detect_swap_pairs};
+use awase_windows::scancode_pairs::{Detected, Entry, Pair, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
@@ -3143,6 +3147,11 @@ impl SettingsApp {
         ui.separator();
         ui.heading("キーの入れ替え");
         ui.label("選んだキーの位置を入れ替えます。変更は再起動後に有効になります。管理者権限の確認が1回表示されます。");
+        ui.collapsing("困ったとき", |ui| {
+            ui.label(
+                "入れ替えを元に戻すには、下の「すべて解除」→「入れ替えを適用」→ 再起動の順に行います。マウスだけで操作できます。",
+            );
+        });
         ui.collapsing("くわしい注意", |ui| {
             ui.label(
                 "・Windows の Scancode Map（レジストリ）に書き込みます。サインアウトでは反映されません。\n\
@@ -4970,6 +4979,10 @@ struct ScancodeMapLoaded {
     /// `entries` の分類（他ツールのエントリの一覧表示用）。
     detected: Detected,
     editor: EditorState,
+    /// クリックで選んでいる位置（クリック2回の入れ替えの1回目、ADR-248 決定5）。
+    selected: Option<u16>,
+    /// 図の操作を断った理由（次の操作まで残す）。
+    diagram_message: Option<String>,
 }
 
 /// 適用前の確認ダイアログの内容。
@@ -4994,6 +5007,8 @@ fn load_scancode_view() -> ScancodeMapView {
                 entries,
                 detected,
                 editor,
+                selected: None,
+                diagram_message: None,
             }))
         }
         scancode_map_admin::ScancodeMapRead::Corrupt => ScancodeMapView::Corrupt,
@@ -5035,54 +5050,21 @@ fn scancode_editor_ui(
         ui.colored_label(
             egui::Color32::from_rgb(200, 120, 0),
             format!(
-                "「{} ⇄ {}」は他のツールの設定と重なっています。削除すると、重なっていた設定が効き出す可能性があります。",
+                "「{} ⇄ {}」は他のツールの設定と重なっています。「戻す」で解除すると、重なっていた設定が効き出す可能性があります。",
                 key_label(a),
                 key_label(b)
             ),
         );
     }
 
-    let editor = &mut loaded.editor;
     ui.strong("キーの位置を入れ替える");
-    ui.label("入れ替えたい2つのキーを選びます（選んだキーの位置どうしで、機能が入れ替わります）。");
-    let mut remove: Option<usize> = None;
-    for i in 0..editor.rows().len() {
-        ui.horizontal(|ui| {
-            for side in [Side::A, Side::B] {
-                if matches!(side, Side::B) {
-                    ui.label("⇄");
-                }
-                let row = editor.rows()[i];
-                let current = match side {
-                    Side::A => row.a,
-                    Side::B => row.b,
-                };
-                let candidates = editor.candidates(i, side, jis);
-                let mut chosen = current;
-                egui::ComboBox::from_id_salt(("scancode_pair", i, matches!(side, Side::B)))
-                    .selected_text(current.map_or_else(|| "選択".to_string(), key_label))
-                    .show_ui(ui, |ui| {
-                        for key in candidates {
-                            ui.selectable_value(&mut chosen, Some(key), key_label(key));
-                        }
-                    });
-                if chosen != current {
-                    editor.set_key(i, side, chosen);
-                }
-            }
-            if ui.button("削除").clicked() {
-                remove = Some(i);
-            }
-        });
-    }
-    if let Some(i) = remove {
-        editor.remove_row(i);
-    }
-
+    ui.label(
+        "入れ替えたいキーの機能をドラッグして、入れ替え先のキーに落とします（または、2つのキーを順にクリックします）。\n\
+         上の段が「キーの位置（物理キー）」、ボタンが「その位置で出る機能」です。",
+    );
+    scancode_diagram_ui(ui, loaded, jis);
+    let editor = &mut loaded.editor;
     ui.horizontal(|ui| {
-        if ui.button("＋ ペアを追加").clicked() {
-            editor.add_row();
-        }
         ui.label("よくある入れ替え:");
         for quick in &QUICK_PAIRS {
             let available = editor.quick_available(quick, jis);
@@ -5144,6 +5126,20 @@ fn scancode_editor_ui(
             .clicked()
         {
             editor.reset();
+            loaded.selected = None;
+            loaded.diagram_message = None;
+        }
+        if ui
+            .button("すべて解除")
+            .on_hover_text(
+                "すべての入れ替えと「Caps を Ctrl としても使う」を外します（他のツールが書いた入れ替えの形の設定も外れます）。\n\
+                 「入れ替えを適用」を押すまで書き込まれません。",
+            )
+            .clicked()
+        {
+            editor.release_all();
+            loaded.selected = None;
+            loaded.diagram_message = None;
         }
         if ui
             .button("レジストリを読み直す")
@@ -5154,6 +5150,126 @@ fn scancode_editor_ui(
         }
     });
     action
+}
+
+/// キーボード図の描画と操作の反映（ADR-248 決定5）。状態の判断は `awase_windows::scancode_diagram` の純粋関数が持ち、
+/// ここは描画と入力（ドラッグ&ドロップ・クリック2回・「戻す」）の反映だけ。
+fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: bool) {
+    let pairs = loaded.editor.pairs();
+    let caps_extra = loaded.editor.caps_extra();
+    let ctx = DiagramContext {
+        pairs: &pairs,
+        detected: &loaded.detected,
+        caps_extra,
+        jis,
+    };
+    let entries = &loaded.entries;
+    let mut new_pairs: Option<Vec<Pair>> = None;
+    let mut message: Option<String> = None;
+    let mut hint: Option<String> = None;
+    let mut selected = loaded.selected;
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        selected = None;
+    }
+    for row in diagram_rows(&pairs, jis) {
+        ui.horizontal(|ui| {
+            for pos in row {
+                let function = function_at(&pairs, pos);
+                let changed = function != pos;
+                let state = position_state(&ctx, pos);
+                let editable = matches!(state, PositionState::Editable);
+                ui.vertical(|ui| {
+                    ui.weak(key_label(pos));
+                    let text = if changed {
+                        format!("→ {}", key_label(function))
+                    } else {
+                        key_label(pos)
+                    };
+                    let mut button = egui::Button::new(text)
+                        .min_size(egui::vec2(96.0, 28.0))
+                        .sense(egui::Sense::click_and_drag())
+                        .selected(selected == Some(pos));
+                    if changed {
+                        button = button
+                            .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 120, 0)));
+                    }
+                    let resp = ui.add_enabled(editable, button);
+                    if editable {
+                        resp.dnd_set_drag_payload(function);
+                        if let Some(payload) = resp.dnd_hover_payload::<u16>() {
+                            let result = drop_function(&ctx, entries, *payload, pos);
+                            hint = Some(drop_hint(&result, key_label));
+                        }
+                        if let Some(payload) = resp.dnd_release_payload::<u16>() {
+                            match drop_function(&ctx, entries, *payload, pos) {
+                                Ok(effect) => new_pairs = Some(effect.pairs),
+                                Err(refusal) => message = Some(refusal_text(refusal)),
+                            }
+                            selected = None;
+                        } else if resp.clicked() {
+                            match selected {
+                                None => selected = Some(pos),
+                                Some(s) if s == pos => selected = None,
+                                Some(s) => {
+                                    let from = function_at(&pairs, s);
+                                    match drop_function(&ctx, entries, from, pos) {
+                                        Ok(effect) => new_pairs = Some(effect.pairs),
+                                        Err(refusal) => message = Some(refusal_text(refusal)),
+                                    }
+                                    selected = None;
+                                }
+                            }
+                        }
+                    } else if let PositionState::Locked { reason, .. } = state {
+                        resp.on_disabled_hover_text(reason.text());
+                        ui.weak("動かせません");
+                    }
+                    let releasable = changed
+                        && matches!(
+                            state,
+                            PositionState::Editable
+                                | PositionState::Locked {
+                                    releasable: true,
+                                    ..
+                                }
+                        );
+                    if releasable && ui.small_button("戻す").clicked() {
+                        new_pairs = Some(release_position(&pairs, pos));
+                        selected = None;
+                    }
+                });
+            }
+        });
+    }
+    // 図に描けない（許可リスト外のキーを含む）入れ替えは、一覧で解除する。
+    for pair in unlisted_pairs(&pairs) {
+        let (a, b) = pair.keys();
+        ui.horizontal(|ui| {
+            ui.label(format!("{} ⇄ {}", key_label(a), key_label(b)));
+            if ui.small_button("解除").clicked() {
+                new_pairs = Some(pairs.iter().copied().filter(|p| *p != pair).collect());
+            }
+        });
+    }
+    if let Some(s) = selected {
+        ui.label(format!(
+            "「{}」を選んでいます。入れ替え先のキーをクリックしてください（Esc で取り消し）。",
+            key_label(function_at(&pairs, s))
+        ));
+    }
+    if let Some(h) = &hint {
+        ui.weak(h);
+    }
+    if let Some(m) = &loaded.diagram_message {
+        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), m);
+    }
+    loaded.selected = selected;
+    if let Some(p) = new_pairs {
+        loaded.editor.set_pairs(&p);
+        loaded.diagram_message = None;
+    } else if message.is_some() {
+        loaded.diagram_message = message;
+    }
 }
 
 /// 左親指/右親指キーの候補にのみ追加する、Alt なりすまし用エントリ。

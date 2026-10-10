@@ -231,6 +231,27 @@ impl EditorState {
         self.caps_extra
     }
 
+    /// 編集内容のペアを置き換える（キーボード図の操作の結果を反映する。行は両側が埋まったものだけになる）。
+    pub fn set_pairs(&mut self, pairs: &[Pair]) {
+        self.rows = pairs
+            .iter()
+            .map(|p| {
+                let (a, b) = p.keys();
+                Row {
+                    a: Some(a),
+                    b: Some(b),
+                }
+            })
+            .collect();
+    }
+
+    /// すべての入れ替えと「Caps を Ctrl としても使う」を外す（ADR-248 決定7の「すべて解除」。適用するまで書き込まれない）。
+    /// 他のツールの設定（`Unclaimed`）は編集対象ではないので残る。
+    pub fn release_all(&mut self) {
+        self.rows.clear();
+        self.caps_extra = false;
+    }
+
     /// 空の行を足す。
     pub fn add_row(&mut self) {
         self.rows.push(Row::default());
@@ -599,6 +620,23 @@ mod tests {
         }
         assert_eq!(key_label(0x0010), "不明なキー(0x0010)");
         assert_eq!(key_label(0xE05B), "不明なキー(0xE05B)");
+    }
+
+    #[test]
+    fn set_pairs_and_release_all_edit_the_state() {
+        let mut e = editor(&[(MUH, LALT), (LALT, MUH)]);
+        assert!(!e.is_dirty());
+        e.set_pairs(&[Pair::new(SPC, HEN)]);
+        assert_eq!(e.pairs(), vec![Pair::new(SPC, HEN)]);
+        assert!(e.is_dirty() && !e.has_incomplete());
+        e.reset();
+        assert!(!e.is_dirty());
+        e.release_all();
+        assert!(e.pairs().is_empty() && e.is_dirty());
+        let mut caps = editor(&[(CAPS, LCTRL)]);
+        assert!(caps.caps_extra());
+        caps.release_all();
+        assert!(!caps.caps_extra() && caps.is_dirty());
     }
 
     #[test]
