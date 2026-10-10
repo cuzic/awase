@@ -670,7 +670,8 @@ pub struct AppOverrideEntry {
 /// `from`/`to` に指定できない vk がある（ADR-114 決定5、`KeymapTable::new` が
 /// `tracing::warn!` して該当ルールを skip する）: 親指キー・IME 制御系 VK・Alt 系
 /// VK（`from` の修飾子としての Alt を含む）・Win 系 VK・`VK_CAPITAL`・
-/// Shift を `from` の主キーにすること。
+/// Shift を `from` の主キーにすること。例外: `ime = "off"` のルールは `from` に
+/// 無修飾の無変換/変換（親指キー）だけを指定できる（ADR-255 決定5）。
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct KeymapRule {
     /// プロセス名（省略=全アプリ）。大文字小文字を無視し、末尾の `.exe` の
@@ -687,6 +688,12 @@ pub struct KeymapRule {
     /// 常に配列形式へ正規化される。
     #[serde(default, deserialize_with = "deserialize_keymap_to")]
     pub to: Vec<String>,
+    /// IME の状態による条件（ADR-255 決定1）。`"off"` のみ。省略=従来どおり
+    /// （IME の状態を問わず、エンジンの前に照合）。`"off"` のルール（遅いルール）は
+    /// エンジンが素通しにした打鍵に対してだけ照合し、`from` は無修飾の
+    /// 無変換/変換に限る。`"off"` 以外の値は `KeymapTable::new` が警告して skip する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ime: Option<String>,
 }
 
 #[derive(Deserialize)]

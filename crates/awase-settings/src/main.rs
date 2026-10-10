@@ -3158,6 +3158,7 @@ impl SettingsApp {
                     } else {
                         vec![self.new_keymap_to_main.clone()]
                     },
+                    ime: None,
                 });
                 self.new_keymap_app.clear();
                 self.new_keymap_from_ctrl = false;
@@ -6915,6 +6916,7 @@ mod layout_tab_repro {
             // ことをこのスモークテストで確認する（ベストプラクティス
             // レビュー指摘: 単一ステップだけでは "+" ボタンの経路が未検証）。
             to: vec!["VK_F7".to_string(), "VK_F8".to_string()],
+            ime: None,
         });
         config.post_bypass.push(awase::config::PostBypassRule {
             key: "Ctrl+B".to_string(),
