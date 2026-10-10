@@ -88,16 +88,24 @@ function Set-CompatUI([string]$want) {
   Remove-Item msime_key_assignment_settings_probe.log -ErrorAction SilentlyContinue
   $p = Start-Process -FilePath $Probe -ArgumentList "--general-only --set-compat=$want" -PassThru -WindowStyle Hidden
   if (-not $p.WaitForExit(90000)) { Stop-Process -Id $p.Id -Force }
-  Get-Content msime_key_assignment_settings_probe.log -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match 'set-compat|toggle_element|RESULT: --set' } | ForEach-Object { Say ("   probe: " + $_) }
+  Get-Content msime_key_assignment_settings_probe.log -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match 'set-compat|toggle_element|RESULT: --set|invoke OK' } | ForEach-Object { Say ("   probe: " + $_) }
   Pop-Location
   Get-Process SystemSettings -ErrorAction SilentlyContinue | Stop-Process -Force
   Start-Sleep -Seconds 4
   Say ("after set-compat=$want : [$(Reg-State)]")
 }
+function Ensure-Compat([string]$want, [int]$expect) {
+  for ($try = 1; $try -le 3; $try++) {
+    Set-CompatUI $want
+    $v = (Get-ItemProperty $tsf -ErrorAction SilentlyContinue).NoTsf3Override2
+    if ($v -eq $expect) { return }
+    Say "   (NoTsf3Override2=$v, expected $expect; retry $try)"
+  }
+}
 try {
   Get-Process awase, awase-settings -ErrorAction SilentlyContinue | Stop-Process -Force
   Start-Sleep -Seconds 2
-  Set-CompatUI 'on'
+  Ensure-Compat 'on' 1
   foreach ($style in 'NATURAL', 'Custom', 'ATOK') {
     Set-ItemProperty -Path $msimePath -Name keystyle -Value $style -Type String -Force
     Start-Sleep -Seconds 2
@@ -110,7 +118,7 @@ try {
 }
 finally {
   Set-ItemProperty -Path $msimePath -Name keystyle -Value $orig.keystyle -Type String -Force
-  Set-CompatUI 'off'
+  Ensure-Compat 'off' 0
   # 検証: トグルで戻らなかった場合のフォールバック(レジストリを元の値へ)
   $now = (Get-ItemProperty $tsf -ErrorAction SilentlyContinue).NoTsf3Override2
   if ($orig.tsfExists -and ($now -ne $orig.tsfVal)) { Say "fallback: NoTsf3Override2 $now -> $($orig.tsfVal)"; Set-ItemProperty -Path $tsf -Name NoTsf3Override2 -Value $orig.tsfVal -Type DWord; Restart-Ctfmon }

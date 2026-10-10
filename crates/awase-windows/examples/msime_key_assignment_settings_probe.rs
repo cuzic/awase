@@ -698,6 +698,26 @@ mod windows_probe {
                     // SAFETY: toggle は直前に取得した有効な COM オブジェクト。
                     let now = unsafe { toggle_state_is_on(&toggle) };
                     log(&format!("--set-compat={want}: toggle state after = {now:?}"));
+                    // トグルを押すと確認ダイアログ(OK=PrimaryButton / キャンセル=SecondaryButton)が出る(実機で確認、ADR-248)。
+                    // OK を押さないと適用されない(`NoTsf3Override2` が変わらない)ので、OK を押して確定する。
+                    {
+                        let mut b5: u32 = 1500;
+                        // SAFETY: walker/page は有効な COM オブジェクト。
+                        let ok = unsafe { find_by_automation_id(&walker, &page, "PrimaryButton", 0, 16, &mut b5) };
+                        if let Some(ok) = ok {
+                            log("--set-compat: confirm dialog found, clicking OK (PrimaryButton)");
+                            // SAFETY: ok は直前に取得した有効な COM オブジェクト。
+                            if let Err(e) = unsafe { invoke_element(&ok) } {
+                                log(&format!("RESULT: invoke OK failed: {e:?}"));
+                            }
+                            std::thread::sleep(Duration::from_secs(8));
+                            // SAFETY: toggle は有効な COM オブジェクト。
+                            let st = unsafe { toggle_state_is_on(&toggle) };
+                            log(&format!("--set-compat={want}: toggle state after OK = {st:?}"));
+                        } else {
+                            log("--set-compat: no confirm dialog (PrimaryButton not found)");
+                        }
+                    }
                     // トグルの直後に確認ダイアログ等が出ていないか、ウィンドウ全体を再ダンプする(ADR-248)。
                     // SAFETY: automation は有効な COM オブジェクト、hwnd は有効なウィンドウハンドル。
                     if let Ok(after_root) = unsafe { automation.ElementFromHandle(root_candidate.hwnd) } {
