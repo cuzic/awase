@@ -108,16 +108,21 @@ impl ImeBelief {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::eisu_candidate::EisuCandidate;
 
     #[test]
     fn accessors_return_the_stored_fields() {
         let belief = ImeBelief {
             is_japanese_ime: false,
             prev_conversion_mode: Some(0x19),
-            eisu_candidate: None,
+            eisu_candidate: Some(EisuCandidate { at_ms: 7, conv: 0 }),
         };
         assert!(!belief.is_japanese_ime());
         assert_eq!(belief.prev_conversion_mode(), Some(0x19));
+        assert_eq!(
+            belief.eisu_candidate(),
+            Some(EisuCandidate { at_ms: 7, conv: 0 })
+        );
 
         let default = ImeBelief::default();
         assert!(default.is_japanese_ime());
