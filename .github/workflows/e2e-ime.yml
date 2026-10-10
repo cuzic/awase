@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, ci/e2e-direct-space]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-direct-space' && 'sc-direct-space-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -454,6 +454,18 @@ jobs:
             # T1(e) の一部(ADR-199 決定18): F13 をトグルにした CUSTOM 表で、F13(0x7C)が GJI に効くか。IME OFF から F13→開、もう一度→閉。
             cfg('sc-t1e-f13-toggle', 'observe', check='consistency', awase='false', keymap=0, runs=1,
                 args='--seq=1A,7C,7C', tsv='DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff'),
+            # GJI の「直接入力」(IME OFF)状態で 無変換/変換 を空白入力(InsertSpace 等)に割り当てて効くか(顧客報告の実機検証)。
+            # --seq: 1A=IME OFF、1D=無変換、1C=変換。判定なし(collect)。スパイクログの KEY 行の `tail:"…"→"… "`(入力欄末尾)で空白が入ったかを見る。
+            # 対照 precomp: 入力中でない開状態(Precomposition)に同じ割り当て。baseline: DirectInput に行なし。
+            *[cfg(f'sc-direct-space-{nm}-{aw}', 'observe', check='collect', keymap=0, runs=1, wait=240, awase=('true' if aw == 'awase' else 'false'), until='2026-11-10',
+                  args=f'--seq={seq}', tsv=tsv)
+              for nm, seq, tsv in (
+                ('baseline', '1A,1D,1C,1D,1C', 'DirectInput,ON,IMEOn'),
+                ('insertspace', '1A,1D,1C,1D,1C', 'DirectInput,ON,IMEOn|DirectInput,Muhenkan,InsertSpace|DirectInput,Henkan,InsertSpace'),
+                ('halfspace', '1A,1D,1C,1D,1C', 'DirectInput,ON,IMEOn|DirectInput,Muhenkan,InsertHalfSpace|DirectInput,Henkan,InsertHalfSpace'),
+                ('fullspace', '1A,1D,1C,1D,1C', 'DirectInput,ON,IMEOn|DirectInput,Muhenkan,InsertFullSpace|DirectInput,Henkan,InsertFullSpace'),
+                ('precomp', '16,1D,1C,1D,1C', 'DirectInput,ON,IMEOn|Precomposition,Muhenkan,InsertSpace|Precomposition,Henkan,InsertSpace'))
+              for aw in ('noawase', 'awase')],
             # v2 チェックリスト B2 副次: 既定の [keys](keys.ime_toggle が空)× GJI プリセットで、Alt+半角/全角(0x19)が実 IME と Engine(belief)をずらさないこと。
             # sc-kanji-role-* は CUSTOM 表(keymap=0)+ tsv だったが、こちらは tsv も keys 上書きも無い「既定のまま」。プリセット(ATOK=1 / MS-IME=2)の
             # Hankaku/Zenkaku 行はトグルのはずなので kanjirole-closed(IME が閉じ、Engine も OFF に追随)を期待する。実測前なので observe。
