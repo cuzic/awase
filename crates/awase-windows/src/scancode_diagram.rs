@@ -96,6 +96,26 @@ pub fn function_at(pairs: &[Pair], pos: u16) -> u16 {
     })
 }
 
+/// 図に表示する、位置 `pos` で働く機能。[`function_at`] に加えて、「Caps を Ctrl としても使う」がオンのとき、
+/// 英数 / Caps の位置が左 Ctrl として働くこと（多対一で、ペアでは表せない）を表す。
+#[must_use]
+pub fn displayed_function(pairs: &[Pair], caps_extra: bool, pos: u16) -> u16 {
+    if caps_extra && pos == SCANCODE_CAPS_EISU {
+        SCANCODE_LEFT_CTRL
+    } else {
+        function_at(pairs, pos)
+    }
+}
+
+/// 動かせない位置の下に出す短い注記。
+#[must_use]
+pub fn locked_note(reason: LockReason, pos: u16) -> &'static str {
+    match reason {
+        LockReason::CapsExtraOn if pos == SCANCODE_CAPS_EISU => "Ctrl として動作中",
+        _ => "動かせません",
+    }
+}
+
 /// 図に描く位置を、物理配置に近い行の並びで返す。許可リスト ∩ 配列に、いまの入れ替えに含まれる許可リスト内の位置を足す
 /// （何も入れ替えていない JIS 専用キーだけを US 配列で隠す）。
 #[must_use]
@@ -446,6 +466,24 @@ mod tests {
         ] {
             assert!(!refusal_text(DropRefusal::TargetLocked(reason)).is_empty());
         }
+    }
+
+    #[test]
+    fn caps_extra_shows_the_caps_position_acting_as_ctrl() {
+        assert_eq!(displayed_function(&[], true, CAPS), LCTRL);
+        assert_eq!(displayed_function(&[], true, LCTRL), LCTRL);
+        assert_eq!(displayed_function(&[], false, CAPS), CAPS);
+        let pairs = [Pair::new(MUH, LALT)];
+        assert_eq!(displayed_function(&pairs, true, MUH), LALT);
+        assert_eq!(
+            locked_note(LockReason::CapsExtraOn, CAPS),
+            "Ctrl として動作中"
+        );
+        assert_eq!(locked_note(LockReason::CapsExtraOn, LCTRL), "動かせません");
+        assert_eq!(
+            locked_note(LockReason::OtherToolSetting, CAPS),
+            "動かせません"
+        );
     }
 
     #[test]

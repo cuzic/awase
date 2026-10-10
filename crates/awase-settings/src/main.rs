@@ -10,8 +10,8 @@ use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 use awase_windows::scancode_apply::ApplyRequest;
 use awase_windows::scancode_diagram::{
-    DiagramContext, PositionState, diagram_rows, drop_function, drop_hint, function_at,
-    position_state, refusal_text, release_position, unlisted_pairs,
+    DiagramContext, PositionState, diagram_rows, displayed_function, drop_function, drop_hint,
+    function_at, locked_note, position_state, refusal_text, release_position, unlisted_pairs,
 };
 use awase_windows::scancode_editor::{
     EditorState, QUICK_PAIRS, confirmation_lines, key_label, registry_state, status_line,
@@ -1989,6 +1989,17 @@ impl SettingsApp {
             Err(msg) => {
                 self.layout_status = msg;
             }
+        }
+    }
+
+    /// 「キーの入れ替え」タブを開くとき、現在のレジストリの値で表示し直す。未適用の編集があるときは、その編集を残す。
+    fn refresh_scancode_view_on_open(&mut self) {
+        let dirty = matches!(
+            &self.scancode_map_view,
+            Some(ScancodeMapView::Loaded(loaded)) if loaded.editor.is_dirty() || loaded.editor.has_incomplete()
+        );
+        if !dirty {
+            self.scancode_map_view = None;
         }
     }
 
@@ -4316,14 +4327,18 @@ impl eframe::App for SettingsApp {
                 for (tab, label) in [
                     (Tab::Basic, "全般設定"),
                     (Tab::Keys, "キー設定"),
-                    (Tab::KeySwap, "キーの入れ替え"),
                     (Tab::Layout, "配列編集"),
                     (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
                     (Tab::Keymap, "ショートカット"),
+                    (Tab::KeySwap, "キーの入れ替え"),
                     (Tab::Calibration, "IMEキー学習"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
+                        if tab == Tab::KeySwap && self.active_tab != Tab::KeySwap {
+                            // 開くたびに現在のレジストリの値を読み直す（未適用の編集があるときは捨てない）。
+                            self.refresh_scancode_view_on_open();
+                        }
                         self.clear_ime_on_tab_change(tab);
                         self.active_tab = tab;
                     }
@@ -5207,7 +5222,7 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
             for row in diagram_rows(&pairs, jis) {
                 ui.horizontal(|ui| {
                     for pos in row {
-                        let function = function_at(&pairs, pos);
+                        let function = displayed_function(&pairs, caps_extra, pos);
                         let changed = function != pos;
                         let state = position_state(&ctx, pos);
                         let editable = matches!(state, PositionState::Editable);
@@ -5259,7 +5274,7 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                 }
                             } else if let PositionState::Locked { reason, .. } = state {
                                 resp.on_disabled_hover_text(reason.text());
-                                ui.weak("動かせません");
+                                ui.weak(locked_note(reason, pos));
                             }
                             let releasable = changed
                                 && matches!(

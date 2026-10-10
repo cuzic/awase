@@ -5,7 +5,7 @@ name: settings-screenshot
 on:
   workflow_dispatch:
   push:
-    branches: [ci/settings-screenshot]
+    branches: [ci/settings-screenshot, feat/adr248-caps-display]
 
 jobs:
   shot:
@@ -46,9 +46,26 @@ jobs:
             $bmp.Save((Join-Path $PWD "shots/$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
             $g.Dispose(); $bmp.Dispose()
           }
-          foreach ($tab in @("key-swap")) {
-            foreach ($w in @(760, 600, 480, 420)) {
-              $env:AWASE_SETTINGS_INITIAL_TAB = $tab
+          # レジストリの Scancode Map を書き換えて、現在の値を読んで表示することも確かめる（runner は管理者）。
+          $mapKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Keyboard Layout'
+          function Set-Map($entries) {
+            if ($null -eq $entries) {
+              Remove-ItemProperty -Path $mapKey -Name 'Scancode Map' -ErrorAction SilentlyContinue
+              return
+            }
+            $bytes = [byte[]](@(0,0,0,0, 0,0,0,0, ($entries.Count / 4 + 1),0,0,0) + $entries + @(0,0,0,0))
+            Set-ItemProperty -Path $mapKey -Name 'Scancode Map' -Value $bytes -Type Binary
+          }
+          # エントリは (to 下位, to 上位, from 下位, from 上位)。英数/Caps=0x3A、左 Ctrl=0x1D。
+          $scenarios = [ordered]@{
+            none = $null
+            caps = @(0x1D,0, 0x3A,0)
+            swap = @(0x1D,0, 0x3A,0,  0x3A,0, 0x1D,0)
+          }
+          foreach ($name in $scenarios.Keys) {
+            Set-Map $scenarios[$name]
+            foreach ($w in @(760, 480)) {
+              $env:AWASE_SETTINGS_INITIAL_TAB = "key-swap"
               $env:AWASE_SETTINGS_WINDOW_SIZE = "${w}x560"
               $p = Start-Process -FilePath $exe -PassThru
               $deadline = (Get-Date).AddSeconds(60)
@@ -57,7 +74,7 @@ jobs:
                 if ($p.MainWindowHandle -ne 0) { break }
                 Start-Sleep -Milliseconds 500
               }
-              Write-Host "[$tab $w] hwnd=$($p.MainWindowHandle) exited=$($p.HasExited)"
+              Write-Host "[$name $w] hwnd=$($p.MainWindowHandle) exited=$($p.HasExited)"
               Start-Sleep -Seconds 8
               if ($p.MainWindowHandle -ne 0) {
                 [void][Win]::SetForegroundWindow($p.MainWindowHandle)
@@ -70,14 +87,14 @@ jobs:
                 }
                 Start-Sleep -Seconds 2
                 [void][Win]::GetWindowRect($p.MainWindowHandle, [ref]$r)
-                Write-Host "[$tab $w] rect=$($r.L),$($r.T),$($r.R),$($r.B)"
                 $rect = New-Object System.Drawing.Rectangle ([Math]::Max($r.L,0)), ([Math]::Max($r.T,0)), ($r.R - $r.L), ($r.B - $r.T)
-                try { Snap "$tab-$w-window" $rect } catch { Write-Host "window snap failed: $_" }
+                try { Snap "$name-$w-window" $rect } catch { Write-Host "window snap failed: $_" }
               }
-              try { Snap "$tab-$w-screen" $bounds } catch { Write-Host "screen snap failed: $_" }
+              try { Snap "$name-$w-screen" $bounds } catch { Write-Host "screen snap failed: $_" }
               if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
             }
           }
+          Set-Map $null
           Get-ChildItem shots | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
