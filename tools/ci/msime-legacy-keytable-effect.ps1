@@ -35,7 +35,7 @@ function Run-Harness([string]$tag, [string]$seq) {
   $lf = Join-Path $dist 'ime_key_matrix_spike.log'
   if (Test-Path $lf) {
     Copy-Item $lf (Join-Path (Join-Path $PSScriptRoot '..\..') "$Out\harness-$tag.log") -ErrorAction SilentlyContinue
-    $keys = Get-Content $lf -Encoding utf8 | Where-Object { $_ -match '^\s*KEY ' -or $_ -match '\[init\]|\[FATAL\]' }
+    $keys = Get-Content $lf -Encoding utf8 | Where-Object { $_ -match '\] KEY \[(SCRIPT|SEQ|seq)|\] KEY .*(無変換|変換)|差分|\[FATAL\]' }
     Say "--- [$tag] seq=$seq"
     $keys | ForEach-Object { Say $_ }
   } else { Say "--- [$tag] no harness log" }
@@ -54,14 +54,14 @@ Say ((& $exe help setkeytemplate 2>&1) -join "`n")
 
 Say '=== A) テンプレートごとの実効果 ==='
 Run-Harness 'none' '1D,1C'
-foreach ($t in 'MS-IME2000', 'ATOK', 'VJE', 'WX', 'NATURAL') {
+foreach ($t in 'Microsoft_IME', 'IME_Standard', 'ATOK', 'VJE', 'WX') {
   & $exe setkeytemplate $t 2>&1 | Out-Null
   Say ("template=$t keystyle=" + (Get-ItemProperty "HKCU:\$imejp\MSIME").keystyle)
   Run-Harness "tmpl-$t" '1D,1C'
 }
 
 Say '=== B) Custom の無変換行を1コードで埋めた掃引 ==='
-& $exe setkeytemplate 'MS-IME2000' 2>&1 | Out-Null
+& $exe setkeytemplate 'Microsoft_IME' 2>&1 | Out-Null
 $base = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$imejp\StyleList\NATURAL")
 if (-not $base) { Say 'NATURAL style missing'; exit 0 }
 $baseKey = $base.GetValue('key')
@@ -83,6 +83,6 @@ foreach ($code in ($Codes -split ',')) {
   }
   Set-ItemProperty -Path $cust -Name key -Value ([byte[]]$out.ToArray()) -Type Binary -Force
   Set-ItemProperty -Path "HKCU:\$imejp\MSIME" -Name keystyle -Value 'Custom' -Type String -Force
-  Run-Harness "muhenkan-$code" '1D,1D'
+  Run-Harness "muhenkan-$code" '1D'
 }
 Say '=== done ==='

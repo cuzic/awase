@@ -13,7 +13,7 @@ permissions:
 jobs:
   spike:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: 採取
