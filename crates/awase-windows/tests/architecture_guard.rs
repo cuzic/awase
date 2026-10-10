@@ -7883,18 +7883,47 @@ fn list_src_files_has_unique_keys() {
 /// `apply_ime_update`／`dispatch_event` を通して書く、`.claude/rules/ime-belief-architecture.md`。Opus PR #574 C3）。
 #[test]
 fn belief_update_ports_are_called_only_from_platform_state() {
-    let needles = [
-        ".belief.reset_for_panic(",
-        ".belief.set_japanese_ime(",
-        ".belief.set_prev_conversion_mode(",
-        ".belief.apply_eisu_candidate_update(",
+    // 空白を除いてから数える（rustfmt が折った複数行の呼び出し `belief\n.set_…(` も拾う）。
+    let ports = [
+        "belief.reset_for_panic(",
+        "belief.set_japanese_ime(",
+        "belief.set_prev_conversion_mode(",
+        "belief.apply_eisu_candidate_update(",
     ];
     let mut by_file: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut aliasing = Vec::new();
     for (rel, content) in all_src_merged() {
         let code = non_comment_lines(production_code_only(&content));
-        let n: usize = needles.iter().map(|n| code.matches(n).count()).sum();
+        let squeezed: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+        let n: usize = ports.iter().map(|p| squeezed.matches(p).count()).sum();
         if n > 0 {
             by_file.insert(format!("src/{rel}"), n);
+        }
+        // 受け手を別名にした形（`let b = &mut ….belief; b.set_…()`）も禁じる: `&mut` の直後（同じ文の中）に `belief` が来る。
+        if rel != "state/platform_state.rs" {
+            for (i, _) in squeezed.match_indices("belief") {
+                // バイト位置で切ると日本語の途中になりうるので、文字単位で直前 48 文字を取る。
+                let head: String = squeezed[..i]
+                    .chars()
+                    .rev()
+                    .take(48)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                if let Some(m) = head.rfind("&mut") {
+                    // `&mut app.platform_state.ime.belief` の形（`&mut` から `belief` までが経路だけ）。
+                    // `fn f(&mut self, belief: ..)` のような引数名は対象外。
+                    let between = &head[m + 4..];
+                    if between.ends_with('.')
+                        && between
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                    {
+                        aliasing.push(format!("src/{rel}: {head}belief"));
+                    }
+                }
+            }
         }
     }
     let files: Vec<&str> = by_file.keys().map(String::as_str).collect();
@@ -7902,5 +7931,9 @@ fn belief_update_ports_are_called_only_from_platform_state() {
         files,
         ["src/state/platform_state.rs"],
         "`ImeBelief` の更新口の呼び出し元が platform_state.rs 以外にあります: {by_file:?}"
+    );
+    assert!(
+        aliasing.is_empty(),
+        "`&mut ….belief` を取り出して更新口を呼ぶ形は platform_state.rs の外では禁止です: {aliasing:?}"
     );
 }
