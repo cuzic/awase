@@ -156,7 +156,7 @@ ADR-197 に次を追記する(r1 観点3):
 
 ## V1 の依頼文(所有者向け、案)
 
-dragonflyg4 で、次の 3 点をお願いします。どれも読み取りだけで、設定は変えません(3 だけ一時的に変えて、最後に戻します)。
+dragonflyg4(互換モード ON のまま)で、次の 2 点をお願いします。どちらも読み取りだけで、設定は変えません。3 は任意です(一時的に設定を変えて、最後に戻します)。
 
 1. レジストリの書き出し(PowerShell。`msime.reg` には `IMEUserName`〈Windows のユーザー名〉と辞書ファイルのパスが入るので、気になれば該当行を消してから):
    ```
@@ -165,6 +165,6 @@ dragonflyg4 で、次の 3 点をお願いします。どれも読み取りだ�
    reg export "HKCU\SOFTWARE\Microsoft\Input\TSF\Tsf3Override" tsf3.reg /y
    ```
 2. 今の設定のまま、メモ帳で、それぞれ IME の表示(あ/A/カ など)がどう変わったかを教えてください。(a) IME オンで何も入力していない状態で無変換を 1 回 (b) 「k」を 1 回だけ打った状態(ｋ が下線付きで残っている)で無変換を 1 回 (c) 「か」を打った状態で無変換を 1 回 (d) IME オフで無変換を 1 回。
-3. (エンジンの確認)「以前のバージョンの Microsoft IME を使う」をオフにして、`& "$env:windir\System32\IME\IMEJP\IMJPUEXC.EXE" setkeytemplate ATOK` を実行し、メモ帳を開き直してください。IME をオフにして変換を 1 回押し、IME がオンになるかを教えてください。終わったら `setkeytemplate Microsoft_IME` を実行し、互換モードの設定を元に戻してください。
+3. (任意・エンジンの確認。互換モード ON の利用者の調査には必須ではない)「以前のバージョンの Microsoft IME を使う」のチェックを外して新しい Microsoft IME に戻し、`& "$env:windir\System32\IME\IMEJP\IMJPUEXC.EXE" setkeytemplate ATOK` を実行して、メモ帳を開き直してください。IME をオフにして変換を 1 回押し、IME がオンになるかを教えてください。終わったら `setkeytemplate Microsoft_IME` を実行し、チェックを元に戻してください。これで分かるのは「`keystyle` が新しい IME にも効くか」だけで、決まるのは第一段の止める条件に互換モードの ON/OFF を含めるかどうかです(CI は互換モードの ON/OFF に関係なく旧エンジンが動いているように見え、判定できない)。
 
 また、`StyleList\Custom` を旧UIで作ったのか、スクリプトで書いたのかを覚えていれば教えてください。報告者本人にも同じ 1 と 2 を頼めると、V1 の材料として一番よい。
