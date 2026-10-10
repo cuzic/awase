@@ -1,103 +1,5 @@
-//! Platform abstraction traits for future cross-platform support.
-//!
-//! This module defines platform-independent traits and types that
-//! abstract over OS-specific keyboard hook, key injection, and
-//! IME detection mechanisms.
-
-// ─── IME Types (platform-independent) ────────────────────────
-
-// 旧 EffectOrigin（EngineIntent / ObservationSync）は 2026-07-06 の到達不能パス
-// 監査 B6 で撤去 — ObservationSync の生成元（DecisionOrigin::Unknown）が存在せず
-// 恒に EngineIntent だったため、区別ごと畳んだ。
-
-/// IME の変換モード（プラットフォーム非依存）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImeMode {
-    /// IME OFF（直接入力）
-    Off,
-    /// ひらがなモード
-    Hiragana,
-    /// カタカナモード
-    Katakana,
-    /// 半角カタカナモード
-    HalfKatakana,
-    /// 英数モード
-    Alphanumeric,
-}
-
-impl ImeMode {
-    /// かな入力モード（ひらがな / カタカナ / 半角カタカナ）かどうかを返す
-    #[must_use]
-    pub const fn is_kana_input(self) -> bool {
-        matches!(self, Self::Hiragana | Self::Katakana | Self::HalfKatakana)
-    }
-}
-
-// ─── Platform Abstraction Traits ─────────────────────────────
-
-/// Abstraction for keyboard hook installation.
-///
-/// Platform implementations:
-/// - Windows: `WH_KEYBOARD_LL` via `SetWindowsHookExW`
-/// - macOS: `CGEventTap` (future)
-/// - Linux: libinput / evdev (future)
-pub trait KeyboardHook {
-    /// Raw key event from the platform hook
-    type RawEvent;
-
-    /// Install the hook. The callback returns `true` if the event was consumed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the platform hook installation fails.
-    fn install(&mut self, callback: Box<dyn FnMut(Self::RawEvent) -> bool>) -> anyhow::Result<()>;
-
-    /// Uninstall the hook.
-    fn uninstall(&mut self);
-}
-
-/// Abstraction for key injection.
-///
-/// Platform implementations:
-/// - Windows: `SendInput`
-/// - macOS: `CGEventPost` (future)
-/// - Linux: uinput (future)
-pub trait KeySender {
-    /// Send a sequence of VK code key events (for IME romaji input)
-    fn send_romaji(&self, romaji: &str);
-
-    /// Send a Unicode character directly (for kana input mode)
-    fn send_unicode(&self, ch: char);
-
-    /// Send a literal string (each char as Unicode)
-    fn send_literal(&self, s: &str);
-
-    /// Send a virtual key code (`KeyDown` + `KeyUp`)
-    fn send_vk(&self, vk: crate::types::VkCode);
-
-    /// Send a virtual key event (`KeyDown` or `KeyUp`)
-    fn send_vk_event(&self, vk: crate::types::VkCode, is_keyup: bool);
-}
-
-/// Abstraction for IME state detection.
-///
-/// Platform implementations:
-/// - Windows: TSF + IMM32 hybrid
-/// - macOS: `TISGetInputSourceProperty` (future)
-/// - Linux: IBus / Fcitx D-Bus (future)
-pub trait ImeDetector {
-    /// Get the current IME mode
-    fn get_mode(&self) -> ImeMode;
-
-    /// Check if IME is active (Japanese input mode)
-    fn is_active(&self) -> bool {
-        let mode = self.get_mode();
-        !matches!(mode, ImeMode::Off | ImeMode::Alphanumeric)
-    }
-
-    /// IME が未確定文字列を持っているか（変換中か）
-    fn is_composing(&self) -> bool;
-}
+//! Platform abstraction traits and types shared by the platform crates
+//! (composition output, platform runtime, IME actuation outcomes).
 
 // ─── CompositionOutput Trait ─────────────────────────────────
 
@@ -314,24 +216,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ime_mode_is_kana_input() {
-        assert!(!ImeMode::Off.is_kana_input());
-        assert!(ImeMode::Hiragana.is_kana_input());
-        assert!(ImeMode::Katakana.is_kana_input());
-        assert!(ImeMode::HalfKatakana.is_kana_input());
-        assert!(!ImeMode::Alphanumeric.is_kana_input());
-    }
-
-    #[test]
-    fn ime_mode_debug_and_clone() {
-        let mode = ImeMode::Hiragana;
-        let cloned = mode;
-        assert_eq!(mode, cloned);
-        // Verify Debug is implemented
-        let _debug = format!("{:?}", mode);
-    }
-
-    #[test]
     fn wrote_open_state_distinguishes_real_send_from_immcross_only() {
         // ADR-167: 「何か書き込んだか」（wrote_open_state）は3つとも true、
         // 「実SendInputを伴ったか」（should_send_accompanying_warmupの否定）は
@@ -352,37 +236,5 @@ mod tests {
         };
         assert_eq!(info.process_id, 42);
         assert_eq!(info.class_name, "Notepad");
-    }
-
-    // ── ImeDetector::is_active (デフォルト実装) ──
-    //
-    // 具体的な実装（awase-windows 等）を持たないため、最小のテスト用実装で
-    // デフォルトメソッドのロジックそのものを検証する。
-
-    struct FakeImeDetector(ImeMode);
-
-    impl ImeDetector for FakeImeDetector {
-        fn get_mode(&self) -> ImeMode {
-            self.0
-        }
-        fn is_composing(&self) -> bool {
-            false
-        }
-    }
-
-    #[test]
-    fn is_active_true_for_kana_modes() {
-        assert!(FakeImeDetector(ImeMode::Hiragana).is_active());
-        assert!(FakeImeDetector(ImeMode::Katakana).is_active());
-        assert!(FakeImeDetector(ImeMode::HalfKatakana).is_active());
-    }
-
-    #[test]
-    fn is_active_false_for_off_and_alphanumeric() {
-        // is_active の本体が無条件 true に置換される、または
-        // `!matches!(...)` の `!` が消えると、Off/Alphanumeric でも
-        // true になってしまう。
-        assert!(!FakeImeDetector(ImeMode::Off).is_active());
-        assert!(!FakeImeDetector(ImeMode::Alphanumeric).is_active());
     }
 }

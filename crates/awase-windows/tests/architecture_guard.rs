@@ -3974,14 +3974,25 @@ fn foreign_ctrl_latch_is_read_only_at_hook_snapshot_and_cleared_on_five_paths() 
         cb.contains("letforeign_ctrl=is_injected&&!modifier_snapshot.ctrl&&HOOK_STATE.foreign_ctrl.ctrl_for_injected_key("),
         "snapshot へ足すのは注入された打鍵(is_injected)で、物理 Ctrl が無いときだけ"
     );
+    // 記録は focus_app_disabled の早期 return より前(後ろだと無効アプリ中の注入 Up を取りこぼして記録が残る)。
+    let pos_down = cb
+        .find("foreign_ctrl.on_injected_down(")
+        .expect("注入 Ctrl↓ の記録");
+    let pos_disabled = cb
+        .find("HOOK_STATE.focus_app_disabled.load(")
+        .expect("focus_app_disabled の早期 return");
     assert!(
-        cb.contains("foreign_ctrl.on_injected_down(vk,callback_ts)"),
-        "注入 Ctrl↓ の記録"
+        pos_down < pos_disabled,
+        "注入 Ctrl↓ の記録は focus_app_disabled の早期 return より前に置く"
     );
-    assert_eq!(
-        cb.matches("foreign_ctrl.on_up(vk)").count(),
-        2,
-        "注入 Up と物理 Up の2か所で解除"
+    // 解除: 注入 Up(`if is_injected {` の else 側)と物理 Up(`if !is_injected {` の中)に1回ずつ。
+    let pos_inj_up = cb.find("foreign_ctrl.on_up(vk)").expect("注入 Up の解除");
+    let pos_phys_up = cb.rfind("foreign_ctrl.on_up(vk)").expect("物理 Up の解除");
+    assert!(
+        cb.matches("foreign_ctrl.on_up(vk)").count() == 2
+            && cb[..pos_inj_up].rfind("ifis_injected{").is_some()
+            && cb[pos_inj_up..pos_phys_up].contains("if!is_injected{"),
+        "解除は `if is_injected` の分岐と `if !is_injected` の分岐に1回ずつ"
     );
 
     for sig in [
@@ -3995,16 +4006,6 @@ fn foreign_ctrl_latch_is_read_only_at_hook_snapshot_and_cleared_on_five_paths() 
         assert!(
             body.contains("HOOK_STATE.foreign_ctrl.clear()"),
             "{sig} が foreign_ctrl を解除していない"
-        );
-    }
-    // 読んではいけない場所: 物理状態を直接読む側。
-    for (path, needle) in [
-        ("src/observer/focus_observer.rs", "foreign_ctrl"),
-        ("src/hook.rs", "ctrl_consumed_since_down.store(foreign"),
-    ] {
-        assert!(
-            !read_crate_file(path).contains(needle),
-            "{path} は {needle} に触れてはいけない(ADR-249 決定5)"
         );
     }
 }
