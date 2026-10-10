@@ -12,6 +12,9 @@ $imejp = 'Software\Microsoft\IME\15.0\IMEJP'
 $msimePath = "HKCU:\$imejp\MSIME"
 $tsf = 'HKCU:\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-f03c-411b-9ce2-aa23e1171e36}'
 if (-not (Test-Path $Spike)) { Say "harness not found: $Spike"; exit 2 }
+# 検証中に画面がスリープ/ロックされないようにする(終了時に自動で解除される)。
+Add-Type -Namespace Native -Name Power -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f);'
+[void][Native.Power]::SetThreadExecutionState(0x80000003)   # ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
 
 function Reg-State {
   $m = Get-ItemProperty $msimePath -ErrorAction SilentlyContinue
