@@ -287,3 +287,5 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 - wall-clock 規則: `quanta::` 全体の禁止を、実時計を作る `quanta::Clock::new`/`Clock::default` の禁止に絞った(注入された `quanta::Clock` 型は許す)。
 - `with_clock(` の呼び出し元を固定するガードは `DumpTriggerTracker::with_clock(` を数えない(別の時計)。
 - 残り: `ungated_state_modules`、P2(`list_src_files` の根本修正)、実際に crate を切る PR。
+- **B1(Opus、PR #569)**: `focus/` と `tsf/` の一部だけを核へ移すと `focus/mod.rs` と `tsf/mod.rs` が両 crate にできる(`vk.rs` も `vk_table!` の `#[macro_export]` で crate 直下に出る)。#567 の P2 が必ず発火する。**P2(`list_src_files` の根本修正)を先に行う**。`#[macro_export]` の `vk_table!` は移動時に呼び出しパス(`crate::vk_table!`)の書き換えか再公開が要る。
+- wall-clock 規則は `use quanta` と `::recent(` も禁止する(`use quanta::Clock; Clock::new()` や別名の素通りを防ぐ。核に `use quanta` は無い)。

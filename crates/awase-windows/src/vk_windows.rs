@@ -36,7 +36,7 @@ const _: () = {
 /// `windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_SHIFT}` に
 /// 依存するため殻（このファイル）に置く。`vk` モジュールは windows crate に依存しない
 /// （ADR-082「決定1実施記録」の次の一歩、ADR-229 段階 B で `vk` を核へ移すための分離）。
-/// 解釈は [`parse_key_combo`] と同じ(BUG-167: 手書きの `F12` と GUI の `VK_F12` の両表記、
+/// 解釈は [`crate::vk::parse_key_combo`] と同じ(BUG-167: 手書きの `F12` と GUI の `VK_F12` の両表記、
 /// `変換` などの日本語名も `from_name` が受理する)。
 #[must_use]
 pub fn parse_hotkey(s: &str) -> Option<(u32, awase::types::VkCode)> {

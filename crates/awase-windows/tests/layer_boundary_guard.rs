@@ -701,6 +701,10 @@ fn core_violations(content: &str) -> Vec<(usize, &'static str, String)> {
             // `quanta::Clock` 型そのもの（注入された時計）は許す。実時計を作る `Clock::new()`/`default()` は構築側（殻）が渡す。
             "quanta::Clock::new",
             "quanta::Clock::default",
+            // `use quanta::Clock; Clock::new()` や別名、`quanta::Instant::recent()` の素通りを防ぐ
+            // （核に `use quanta` は無い。型は `quanta::Clock` と書く）。
+            "use quanta",
+            "::recent(",
             "MonotonicClock",
         ]
         .iter()
