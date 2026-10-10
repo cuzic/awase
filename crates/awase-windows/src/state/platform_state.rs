@@ -551,13 +551,12 @@ impl ImeStateHub {
         // IME が処理を終えるのが窓（300ms）より遅いと、窓内の読みは処理前の古い状態を返す。それで予測を覆すと、
         // 後から IME が処理を終えても誰も追随しない（実測: MS-IME プリセットの 変換 で `[key-effect-miss]` を起こし
         // Engine が OFF のままになった、ADR-188 追記6）。観測が要るのは予測が効かない打鍵（Shift 付き・FSM の再送出）。
-        if self
+        // ci/adr188-arm-order-noguard(使い捨て A/B): c353bcbb のガード(予測が付いた打鍵では読みで予測を覆さない)を無効化する。
+        // 判定値は [arm-diag] の skip_pred に残る(true でも採る)。
+        let _guard_disabled = self
             .shadow_model
             .key_effect()
-            .is_some_and(|pred| pred.at_ms >= armed_at)
-        {
-            return None;
-        }
+            .is_some_and(|pred| pred.at_ms >= armed_at);
         let follow = super::external_change_watch::classify_direct_read_for(
             kind,
             read_open,
