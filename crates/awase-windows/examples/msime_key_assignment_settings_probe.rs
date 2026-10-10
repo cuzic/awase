@@ -706,9 +706,6 @@ mod windows_probe {
                         // SAFETY: walker/after_root は有効な COM オブジェクト。
                         unsafe { dump_uia_tree(&walker, &after_root, 0, 16, &mut b4) };
                     }
-                    for w in enumerate_top_level_windows() {
-                        log(&format!("top-level: process={:?} title={:?}", w.process, w.title));
-                    }
                 }
                 log_msime_registry_snapshot("after-set-compat");
             }
