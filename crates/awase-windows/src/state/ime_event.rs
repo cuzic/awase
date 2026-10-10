@@ -31,23 +31,6 @@ impl HwndId {
     }
 }
 
-#[cfg(windows)]
-impl HwndId {
-    /// `HWND` に変換する。`windows` クレートの型変化 (`isize` → `*mut c_void`) に
-    /// 対してここだけ修正すれば済むよう、raw cast を一箇所に集約する。
-    #[must_use]
-    pub fn to_hwnd(self) -> windows::Win32::Foundation::HWND {
-        windows::Win32::Foundation::HWND(self.0 as *mut _)
-    }
-}
-
-#[cfg(windows)]
-impl From<windows::Win32::Foundation::HWND> for HwndId {
-    fn from(hwnd: windows::Win32::Foundation::HWND) -> Self {
-        Self(hwnd.0 as usize)
-    }
-}
-
 /// Event の時刻情報。reducer の順序判断は `seq` を使い、経過時間計算は
 /// `monotonic` を使い、既存ログとの互換には `tick_ms` を使う。
 #[derive(Debug, Clone, Copy)]

@@ -88,9 +88,4 @@ exclude_re = [
     # 「hwnd だけ不一致」を tracing::debug! に出すだけの関数で、判定に関わらない（ADR-234 D0。
     # run 35920696097 の derive_filtered 822〜824 行の 4 件をこの関数へ切り出した）。
     "trace_hwnd_only_mismatch",
-
-    # ime_event.rs: HwndId::to_hwnd と `From<HWND> for HwndId` は windows クレートの
-    # 型を直接扱う #[cfg(windows)] 専用の変換関数。
-    "HwndId::to_hwnd",
-    "for HwndId>::from",
 ]

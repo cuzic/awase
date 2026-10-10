@@ -525,6 +525,7 @@ const CORE_MODULES: &[&str] = &[
     "hook_watchdog",
     "ime_actuation",
     "ime_actuation_decision",
+    "ime_event",
     "ime_event_log",
     "ime_kind",
     "ime_read_strategy",
@@ -564,10 +565,6 @@ const NOT_CORE_MODULES: &[(&str, &str)] = &[
     (
         "hub_clock",
         "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
-    ),
-    (
-        "ime_event",
-        "#[cfg(windows)] impl HwndId / From<HWND>（殻へ出す候補）",
     ),
     (
         "ime_model",
