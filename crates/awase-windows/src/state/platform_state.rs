@@ -4199,7 +4199,7 @@ mod tests {
 
     /// ADR-188 追記7(案1): 同じ打鍵で FSM が保留中の親指を送り直した(送り直しの印)ら、予測が付いていても窓内の読みを採る。
     /// 実測(run 38065774507・38091839446、sc-armc-gji-atok-passthru): 無変換を押したまま 変換 を押すと、物理 0x1C の arm・予測(閉)・
-    /// FSM の 無変換 の送り直しの arm が全て同じ tick。予測は送り直した 無変換 の効果を含まず外れ、109ms 以後の読みは開。
+    /// FSM の 無変換 の送り直しの arm が全て同じ tick。予測は送り直した 無変換 の効果を含まず外れ、109ms 以後の読みは開(187ms の読みで追随)。
     #[test]
     fn follow_direct_read_takes_the_read_when_fsm_resent_in_the_same_keystroke() {
         let mut ps = ps_for_test();
@@ -4224,8 +4224,8 @@ mod tests {
             ps.ime.follow_direct_read_in_scope(
                 Some(true),
                 Some(9),
-                1109,
-                TickMs(1109),
+                1187,
+                TickMs(1187),
                 follow_fence(),
                 crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
@@ -4233,7 +4233,8 @@ mod tests {
             Some(direct_follow(Some(true), None)),
             "送り直しの印があれば、予測が付いていても読み(開)を採る"
         );
-        assert!(ps.ime.effective_open_at(TickMs(1110)));
+        // settle(170ms)後の読みなので予測は観測に置き換わる(実測の 187ms の読みと同じ)。
+        assert!(ps.ime.effective_open_at(TickMs(1190)));
     }
 
     /// 送り直しの印が予測より前の tick(前の打鍵で保留を解いた)なら、後の打鍵の予測へのガードは維持する。
