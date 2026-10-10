@@ -14,8 +14,8 @@ use awase_windows::scancode_diagram::{
     function_at, locked_note, position_state, refusal_text, release_position, unlisted_pairs,
 };
 use awase_windows::scancode_editor::{
-    EditorState, QUICK_PAIRS, confirmation_lines, key_label, registry_state, status_line,
-    swap_error_text, worker_exit_text,
+    EditorState, QUICK_PAIRS, caps_filter_notice, confirmation_lines, key_label, registry_state,
+    status_line, swap_error_text, worker_exit_text,
 };
 use awase_windows::scancode_pairs::{Detected, Entry, Pair, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
@@ -5021,6 +5021,8 @@ struct ScancodeMapLoaded {
     selected: Option<u16>,
     /// 図の操作を断った理由（次の操作まで残す）。
     diagram_message: Option<String>,
+    /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap 等）の注意。読み込み時に決める。
+    filter_notice: Option<String>,
 }
 
 /// 適用前の確認ダイアログの内容。
@@ -5047,6 +5049,7 @@ fn load_scancode_view() -> ScancodeMapView {
                 editor,
                 selected: None,
                 diagram_message: None,
+                filter_notice: caps_filter_notice(&scancode_map_admin::read_keyboard_filters()),
             }))
         }
         scancode_map_admin::ScancodeMapRead::Corrupt => ScancodeMapView::Corrupt,
@@ -5073,6 +5076,9 @@ fn scancode_editor_ui(
     ui.strong(&status.registry);
     if let Some(edit) = &status.edit {
         ui.colored_label(egui::Color32::from_rgb(200, 120, 0), edit);
+    }
+    if let Some(notice) = &loaded.filter_notice {
+        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), notice);
     }
     ui.add_space(4.0);
 

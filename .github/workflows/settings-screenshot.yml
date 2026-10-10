@@ -5,7 +5,7 @@ name: settings-screenshot
 on:
   workflow_dispatch:
   push:
-    branches: [ci/settings-screenshot, feat/adr248-caps-display]
+    branches: [ci/settings-screenshot, feat/adr248-ctrl2cap-detect]
 
 jobs:
   shot:
@@ -98,6 +98,21 @@ jobs:
               if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
             }
           }
+          # Ctrl2cap（キーボードクラスのフィルタドライバ）が入っているときの注意の表示（環境変数で入っているふりをする）。
+          Set-Map $null
+          $env:AWASE_SETTINGS_FAKE_FILTERS = "HPKbfDriver,kbdclass,ctrl2cap"
+          $env:AWASE_SETTINGS_INITIAL_TAB = "key-swap"
+          $env:AWASE_SETTINGS_WINDOW_SIZE = "760x600"
+          $p = Start-Process -FilePath $exe -PassThru
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 500 }
+          Start-Sleep -Seconds 8
+          [void][Win]::SetForegroundWindow($p.MainWindowHandle)
+          Start-Sleep -Seconds 1
+          Snap "ctrl2cap-760-screen" $bounds
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          Remove-Item Env:AWASE_SETTINGS_FAKE_FILTERS
+
           # タブをクリックして開き直したとき、レジストリを読み直して表示するか(ADR-248)。
           # UI Automation で名前のタブを探し、中心を実際にクリックする。
           function Click-Name($hwnd, $name) {

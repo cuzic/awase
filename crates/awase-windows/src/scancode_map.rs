@@ -66,6 +66,20 @@ pub fn build_bytes(entries: &[(u16, u16)]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// `REG_MULTI_SZ`（UTF-16LE、NUL 区切り、末尾は二重 NUL）を文字列の一覧に直す。空の要素は捨てる。
+#[must_use]
+pub fn parse_multi_sz(bytes: &[u8]) -> Vec<String> {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    units
+        .split(|&u| u == 0)
+        .filter(|part| !part.is_empty())
+        .map(String::from_utf16_lossy)
+        .collect()
+}
+
 #[cfg(windows)]
 mod registry {
     use windows::core::{w, PCWSTR};
@@ -126,6 +140,57 @@ mod registry {
         }
     }
 
+    /// キーボードクラスのフィルタドライバ名（`UpperFilters` か `LowerFilters`）を読む（ADR-248。Ctrl2cap 等の検出用）。
+    /// 値が無ければ空。昇格不要。
+    pub fn read_keyboard_class_filters(value_name: &str) -> Result<Vec<String>, String> {
+        use windows::Win32::System::Registry::RRF_RT_REG_MULTI_SZ;
+        const CLASS_KEY: PCWSTR =
+            w!("SYSTEM\\CurrentControlSet\\Control\\Class\\{4D36E96B-E325-11CE-BFC1-08002BE10318}");
+        let value: Vec<u16> = value_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut size: u32 = 0;
+        // SAFETY: 出力バッファは None（サイズ取得のみ）。value は NUL 終端済みで呼び出し中有効。
+        let result = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                CLASS_KEY,
+                PCWSTR(value.as_ptr()),
+                RRF_RT_REG_MULTI_SZ,
+                None,
+                None,
+                Some(&raw mut size),
+            )
+        };
+        if result == ERROR_FILE_NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if result != windows::Win32::Foundation::ERROR_SUCCESS {
+            return Err(format!("{value_name} 読み取り失敗(サイズ取得): {result:?}"));
+        }
+        let mut buf = vec![0u8; size as usize];
+        let mut actual_size = size;
+        // SAFETY: buf は size バイト確保済みで、呼び出し中有効。
+        let result = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                CLASS_KEY,
+                PCWSTR(value.as_ptr()),
+                RRF_RT_REG_MULTI_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&raw mut actual_size),
+            )
+        };
+        if result == windows::Win32::Foundation::ERROR_SUCCESS {
+            buf.truncate(actual_size as usize);
+            Ok(super::parse_multi_sz(&buf))
+        } else {
+            Err(format!("{value_name} 読み取り失敗: {result:?}"))
+        }
+    }
+
     /// Scancode Map に値を書き込む。管理者権限が必要（呼び出し元は
     /// 昇格済みであること、`awase-settings` の自己昇格フロー参照）。
     pub fn write(bytes: &[u8]) -> Result<(), String> {
@@ -161,11 +226,28 @@ mod registry {
 }
 
 #[cfg(windows)]
-pub use registry::{delete, read, write};
+pub use registry::{delete, read, read_keyboard_class_filters, write};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_multi_sz_splits_on_nul_and_ignores_the_double_nul_terminator() {
+        let to_bytes =
+            |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+        let bytes = to_bytes("HPKbfDriver\0kbdclass\0ctrl2cap\0\0");
+        assert_eq!(
+            parse_multi_sz(&bytes),
+            vec!["HPKbfDriver", "kbdclass", "ctrl2cap"]
+        );
+        assert!(parse_multi_sz(&[]).is_empty());
+        assert!(parse_multi_sz(&to_bytes("\0\0")).is_empty());
+        // 奇数バイトの端数は無視する。
+        let mut odd = to_bytes("a\0\0");
+        odd.push(0x41);
+        assert_eq!(parse_multi_sz(&odd), vec!["a"]);
+    }
 
     /// Caps(英数)⇔左 Ctrl 入れ替え（2エントリ）。
     const SWAP: [(u16, u16); 2] = [
