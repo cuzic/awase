@@ -1,4 +1,6 @@
-//! `state/` の殻側(ADR-229 D4)。純粋な部品は `awase-windows-core` にあり、ここで再公開する
+//! `state/` の殻側(ADR-229 D4)。
+//!
+//! 純粋な部品は `awase-windows-core` にあり、ここで再公開する
 //! （`crate::state::foo::Bar` のパスは分割前と同じ）。`ImeStateHub`/`PlatformState`（`platform_state`）と
 //! `sync_actuation`、`ime_decision_view` は殻の crate に残す: 記録系の `pub(crate)`（INV-A97-1）を
 //! コンパイラが強制し続けるため（所有者の決定、Opus 案 (d)）。

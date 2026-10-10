@@ -15,7 +15,7 @@ impl FocusGen {
     pub const INITIAL: Self = Self(0);
 
     /// テスト用に値を指定して作る(本番では作れない)。本番の世代は `INITIAL` から `next` だけで進める。
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub const fn new(value: u32) -> Self {
         Self(value)
@@ -56,7 +56,7 @@ impl ShiftConvGuardGen {
     }
 
     /// テスト用の生の値。
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub const fn get(self) -> u32 {
         self.0

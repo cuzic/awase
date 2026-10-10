@@ -26,7 +26,7 @@ quanta = "0.12"
 
 [features]
 # 殻の crate（`awase-windows`）のテストが使う、テスト専用の口（`set_desired_open_for_test` など）。本番では有効にしない。
-test-support = []
+testing = []
 
 [dev-dependencies]
 proptest = "1.11.0"

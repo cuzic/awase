@@ -58,7 +58,7 @@ version = "0.1.0"
 
 [dev-dependencies]
 # 核のテスト専用の口（`set_desired_open_for_test` など）を殻のテストから使う。
-awase-windows-core = { path = "../awase-windows-core", features = ["test-support"] }
+awase-windows-core = { path = "../awase-windows-core", features = ["testing"] }
 # journal 再生 fixture のハーネス(ADR-229)。非公開の dev 専用 crate。
 awase-replay = { path = "../awase-replay" }
 

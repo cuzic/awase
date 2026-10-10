@@ -263,6 +263,7 @@ impl PhysicalKeyDisposition {
     /// 本番の呼び出し元（`runtime/key_pipeline.rs`）は `#[cfg(windows)]` のため、非 Windows の本番ビルドでは
     /// 使い手が無い。`#[cfg(any(windows, test))]` で dead_code 警告を避ける（前例: `focus/thread_scope.rs`）。
     #[cfg(any(windows, test))]
+    #[must_use]
     pub fn suppress_reason(
         self,
         event: &RawKeyEvent,

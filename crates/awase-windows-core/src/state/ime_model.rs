@@ -393,7 +393,7 @@ impl ImeModel {
     ///
     /// carry-over シナリオ（focus 変更前の stale な desired_open）をテストで
     /// 模擬するための脱出口。本番コードから呼んではならない。
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_desired_open_for_test(&mut self, value: bool) {
         self.desired_open = value;
         self.desired_is_placeholder = false;

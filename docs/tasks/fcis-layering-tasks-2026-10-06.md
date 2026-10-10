@@ -304,7 +304,7 @@ crate を切るとき、`state/platform_state.rs`(`ImeStateHub`/`PlatformState`�
 
 - 可視性: 殻から使われる `pub(crate)`/`pub(in crate::state)` を `pub` にした(自動修正スクリプトで約 130 か所。`ImeBelief` のフィールドは直接書かず、核の更新口〔`reset_for_panic`・`set_japanese_ime`・`set_prev_conversion_mode`・`apply_eisu_candidate_update`〕に変えた)。
 - 孤児規則: `From<(InjectionHint, AppKind)> for InjectionMode` → 関数 `injection_mode_for`。`FocusChangedAxes::any` は核へ。
-- テスト専用の口: 核の feature `test-support`(`set_desired_open_for_test`・`FocusGen::new/get`)。殻の dev-dependency で有効にする。核の `ime_set_open_plan` など `cfg(any(windows, test))` のモジュールは常時コンパイルにした。
+- テスト専用の口: 核の feature `testing`(`set_desired_open_for_test`・`FocusGen::new/get`)。殻の dev-dependency で有効にする。核の `ime_set_open_plan` など `cfg(any(windows, test))` のモジュールは常時コンパイルにした。
 - ガード: `EXTRA_SRC_CRATES` に核を追加。`ungated_state_modules`(P4)は両 crate の `state/mod.rs` を読む。`core_crate_does_not_depend_on_windows`(核の `Cargo.toml`)。xtask `core-registry` は両 crate の mutants 設定を見る。
 - CI: mutants は `pkg × shard` のマトリクス(`.cargo/mutants-awase-windows{,-core}.toml`)。clippy・dylint・Windows の lib テストは `-p awase-windows-core` も対象。`gen_key_effect_table.py` の出力先は核。pre-push の正規表現は両 crate。
 - doctest: 核の `awase_windows::...` の例は `awase_windows_core::...` に書き換え、doctest のまま残した。
