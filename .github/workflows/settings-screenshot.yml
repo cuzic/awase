@@ -49,7 +49,7 @@ jobs:
           foreach ($tab in @("key-swap")) {
             foreach ($w in @(760, 600, 480, 420)) {
               $env:AWASE_SETTINGS_INITIAL_TAB = $tab
-              $env:AWASE_SETTINGS_WINDOW_SIZE = "${w}x700"
+              $env:AWASE_SETTINGS_WINDOW_SIZE = "${w}x560"
               $p = Start-Process -FilePath $exe -PassThru
               $deadline = (Get-Date).AddSeconds(60)
               while ((Get-Date) -lt $deadline) {
@@ -63,6 +63,12 @@ jobs:
                 [void][Win]::SetForegroundWindow($p.MainWindowHandle)
                 Start-Sleep -Seconds 1
                 $r = New-Object Win+RECT
+                for ($k = 0; $k -lt 20; $k++) {
+                  [void][Win]::GetWindowRect($p.MainWindowHandle, [ref]$r)
+                  if (($r.R - $r.L) -gt 100) { break }
+                  Start-Sleep -Milliseconds 500
+                }
+                Start-Sleep -Seconds 2
                 [void][Win]::GetWindowRect($p.MainWindowHandle, [ref]$r)
                 Write-Host "[$tab $w] rect=$($r.L),$($r.T),$($r.R),$($r.B)"
                 $rect = New-Object System.Drawing.Rectangle ([Math]::Max($r.L,0)), ([Math]::Max($r.T,0)), ($r.R - $r.L), ($r.B - $r.T)

@@ -5201,6 +5201,9 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
         .id_salt("scancode_diagram_scroll")
         .auto_shrink([false, true])
         .show(ui, |ui| {
+            // 横スクロール領域の内側は幅が見かけの幅に押し込まれるので、キー名やボタンの文字を折り返させない
+            // （折り返すと、右端のキーの文字が縦に割れて行が縦に伸びる。CI のスクリーンショットで確認）。
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             for row in diagram_rows(&pairs, jis) {
                 ui.horizontal(|ui| {
                     for pos in row {
