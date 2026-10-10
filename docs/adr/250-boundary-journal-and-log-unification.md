@@ -10,7 +10,7 @@ summary: |-
   利用者の既定ログ(info/warn)の行は消さない。大きく統合するには ADR-139 決定 4(生成ログは debug のみ)の改訂が要り、所有者の判断を待つ。
   過去の journal・コーパスとの互換性は持たない(所有者判断 2026-10-10)。ADR-226 の候補 E にあたる。
 status: |-
-  提案(起草中、Opus レビュー round3 反映済み〈Blocker なし〉・収束確認待ち。ログ統合の規模は所有者判断待ち)
+  提案(Opus レビュー round4 で収束、Blocker 0・Must 0。ログ統合の規模は所有者判断待ち)
 related_adr:
   - "ADR-082"
   - "ADR-096"
@@ -109,6 +109,7 @@ related_adr:
   借用状態を取る関数(`evaluate_drift(&ImeModel, now)`、`dispatch_set_open(&mut ImeStateHub, …, sink)`。後者は `CommandSink` の戻り値が途中で判断に入る ADR-229 F-D1 の handler 例外)では、**診断に要る射影**(判断に効いた値の抜粋)を記録する。ADR-229 F-D3 の「借用ビュー → 所有型の Facts」への縮小が済むまで、全量の Facts は目標にしない。対象の関数は段階ごとに列挙する。
 - この記録は**人と Claude が不具合報告で読むための診断**であり、再生の入力にしない(決定 4)。そのため `Deserialize` の追加(`&'static str` の 6 か所、`EventTime.monotonic: Instant` の数値化)は要らない。
 - **記録規則は edge 記録**: 前の tick と理由(`DriftPlan` の variant + `basis`)が**変わったときだけ**記録し、同じ理由の連続は 1 件に畳む(ADR-169 の打鍵の畳み込みと同じ考え方)。
+  - 畳んだレコードは**件数と最後の時刻**を持つ(parked が何分続いたかを報告から読めるようにする)。edge の判定キーには**フォーカスの世代**を含める(フォーカスが変わったら同じ理由でも新しい 1 件にする)。
   - 「`Idle` 以外」では両方向に外れる。`Idle` の中に `NoDrift::StaleObservation`(ADR-233 の測定対象)や `NotExplicitIntent`(issue #189・BUG-110)があり、逆に `GiveUp(StillParked)`・`GiveUp(CooldownPending)` は parked の間ポーリングの tick ごと(既定 500ms)に返る(`drift_plan.rs:93-115`、殻は `Idle` を `trace!` にして return する〈`runtime/ime_refresh.rs:892-895`〉)。
   - `Send` と `GiveUp(FirstTime)` は既存の `ImeActuation`(`action = Send/GiveUp`)と `ActuationDecision` に記録されている。journal の中に二重を作らないよう、既存の `ImeActuation` に `basis` を足すか、新しいレコードから外すかを段階 1 で決める。段階 1 で新しく増える情報は、`SkipWarrantWouldBlock`・`Confirmed`・`DeferToSettle`・`Rearm`・`Idle` の各理由と `basis`。
 - **診断用の記録が保証すること**: (i) 不具合報告の JSON に載る(ring の保持、決定 6)。(ii) 人が読める(`emit_tracing` の行に `basis` などの理由が出る。`?`/`%` 禁止なので enum は `variant_name` で出す)。(iii) 記録の有無が挙動を変えない。型の互換や決定性は保証しない。
@@ -201,7 +202,7 @@ related_adr:
 ## 段階案
 
 0. **コード変更なし(または `ANCHORS` の拡充だけ)**: 事実の訂正の反映、全域 grep による読み手の台帳(`tools/**`・`.github/**`・`crates/*/tests/**`・`docs/tasks/*verification*`)と `ANCHORS` の拡充、組ごとの収支表、CI の `awase.log` の大きさの測定、報告 journal のサイズ測定。
-1. drift correction の Plan と `OmissionBasis` を journal に載せる(`Idle` 以外)。ログは手書きのまま残す。記録の型を足す場合は、決定 7 の `contains_typed_text()` を同じ PR で入れる。
+1. drift correction の Plan と `OmissionBasis` を journal に載せる(決定 1 の edge 記録。「`Idle` 以外」ではない)。ログは手書きのまま残す。記録の型を足す場合は、決定 7 の `contains_typed_text()` を同じ PR で入れる。
 2. ring のレーンの見直し(測定の後)。10 分窓の扱いは、決定 7 の削除対象がそろった後。
 3. `KeyInput` に InputContext を足す(記録の形式)。再生のハーネスは ADR-241 段階 5。ADR-241 段階 2 の結果を待つ。
 4. 二重の撤去は収支が純減の組だけ。info/warn の行は消さない。非同期経路の記録は、この段階以降に相関の形を決めてから。
@@ -236,3 +237,4 @@ related_adr:
 - M1(段階 1 の記録規則): 決定 1(edge 記録、`Send`/`GiveUp(FirstTime)` の二重の扱い)・決定 3・合否 5。
 - S1(ADR-241 とのハーネスの所有): 決定 4・合否 1・取りやめ条件・段階 3。S2(診断用の保証): 決定 1・合否 5。S3(所有者への確認の公平さ): 所有者への確認。
 - S4(ADR-229 段階 5 の予定): 背景 3・決定 3。S5(レーンの対応): 決定 6。N1(見込み): 決定 1。N2(Facts の用語): 用語。
+- round4(収束後の Should 2 件): 段階 1 の記録規則を決定 1 の edge 記録に揃えた。畳んだレコードの件数・最後の時刻と、edge のキーへのフォーカス世代を決定 1 に追記した。
