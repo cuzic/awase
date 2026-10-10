@@ -200,7 +200,17 @@ impl KeymapCacheShellExt for KeymapCache {
         self.get(
             now_ms,
             || Some(crate::msime_key_assignment::native_assignment_stamp()),
-            || Some(crate::msime_key_assignment::read_key_effect_keymap_native()),
+            || {
+                let keymap = crate::msime_key_assignment::read_key_effect_keymap_native();
+                if keymap.legacy_table_unknown() {
+                    // ADR-254: 止めた理由を journal(tracing)に残す(この副作用を受けた人の報告を、
+                    // ほかの原因と区別するため)。キーマップの読み直し(版が変わったとき)にだけ出る。
+                    tracing::info!(
+                        "[msime-legacy] 旧UIのキーテンプレート(keystyle)が既定でないため、同梱表 MSIME_NATIVE の打鍵時予測を止めます (ADR-254)"
+                    );
+                }
+                Some(keymap)
+            },
         )
     }
 }

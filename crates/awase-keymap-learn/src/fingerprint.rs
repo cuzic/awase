@@ -112,10 +112,35 @@ pub fn msime_native_keymap_fingerprint(
     henkan: Option<u32>,
     muhenkan: Option<u32>,
 ) -> Fingerprint {
+    msime_native_keymap_fingerprint_with_legacy(assignment_enabled, henkan, muhenkan, None)
+}
+
+/// [`msime_native_keymap_fingerprint`]に、旧UIのキーテンプレート(`keystyle`)の識別を足したもの
+/// (ADR-254)。`legacy`は`(種別タグ, 表やテンプレート名のハッシュ)`で、**`None`なら従来の指紋と
+/// 完全に同じ値**になる(`keystyle`が不在・NATURALの大多数の利用者の学習表を失効させない。
+/// golden テストで固定)。`Some`のときだけ、末尾に種別タグとハッシュを混ぜる。
+#[must_use]
+pub fn msime_native_keymap_fingerprint_with_legacy(
+    assignment_enabled: bool,
+    henkan: Option<u32>,
+    muhenkan: Option<u32>,
+    legacy: Option<(u8, Option<u64>)>,
+) -> Fingerprint {
     let mut h = Hasher2::new(KIND_MSIME_NATIVE);
     h.byte(u8::from(assignment_enabled));
     h.opt_u32(henkan);
     h.opt_u32(muhenkan);
+    if let Some((tag, hash)) = legacy {
+        h.byte(1);
+        h.byte(tag);
+        match hash {
+            None => h.byte(0),
+            Some(x) => {
+                h.byte(1);
+                h.u64(x);
+            }
+        }
+    }
     h.finish()
 }
 
@@ -133,6 +158,46 @@ mod tests {
             msime_native_keymap_fingerprint(true, Some(1), None),
             msime_native_keymap_fingerprint(true, Some(1), None)
         );
+    }
+
+    /// ADR-254: `keystyle`が不在・NATURALの利用者(大多数)の指紋は、この変更の前後で変わらない
+    /// (値は変更前の実装と同じ式で求めた定数。変わると全員の学習表が失効する)。
+    #[test]
+    fn msime_native_fingerprint_without_legacy_is_unchanged_golden() {
+        assert_eq!(
+            msime_native_keymap_fingerprint(false, None, None),
+            Fingerprint(0x8d1a_ce90_4a39_8d17, 0x89b0_1aa1_938c_45a2)
+        );
+        assert_eq!(
+            msime_native_keymap_fingerprint(true, Some(1), Some(2)),
+            Fingerprint(0x32ac_2d5c_22f1_22b7, 0xa70e_96e1_7957_bcb6)
+        );
+        assert_eq!(
+            msime_native_keymap_fingerprint(true, Some(1), Some(1)),
+            Fingerprint(0xd5bb_d841_0223_4454, 0x7165_0271_62f6_9695)
+        );
+        // legacy=None は従来の関数と同じ。
+        assert_eq!(
+            msime_native_keymap_fingerprint(true, Some(1), Some(2)),
+            msime_native_keymap_fingerprint_with_legacy(true, Some(1), Some(2), None)
+        );
+    }
+
+    /// ADR-254: 旧UIのキーテンプレートが違えば指紋が違う(ATOK と VJE、Custom の表のハッシュ違い、
+    /// 既定との違い)。
+    #[test]
+    fn msime_native_legacy_style_changes_fingerprint() {
+        let base = msime_native_keymap_fingerprint(false, None, None);
+        let atok = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((2, Some(111))));
+        let vje = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((2, Some(222))));
+        let custom_a = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((1, Some(7))));
+        let custom_b = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((1, Some(8))));
+        let custom_none = msime_native_keymap_fingerprint_with_legacy(false, None, None, Some((1, None)));
+        assert_ne!(base, atok);
+        assert_ne!(atok, vje, "名前付きスタイルはハッシュ(テンプレート名)で区別する");
+        assert_ne!(custom_a, custom_b, "Custom の表の中身が違えば指紋が違う");
+        assert_ne!(custom_a, custom_none);
+        assert_ne!(atok, custom_a, "種別タグが違えば指紋が違う");
     }
 
     #[test]

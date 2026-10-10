@@ -295,12 +295,17 @@ mod windows_impl {
         let raw = read_raw_key_assignment_dwords();
         let assignment_enabled = raw.is_key_assignment_enabled == Some(1);
         let compat_mode = crate::msime_legacy_keymap::read_legacy_compat_mode_enabled();
-        let keymap = crate::state::key_effect_predictor::KeyEffectKeymap::for_msime_native(
-            assignment_enabled,
-            raw.key_assignment_henkan,
-            raw.key_assignment_muhenkan,
-            compat_mode,
-        );
+        // ADR-254: 旧UIのキーテンプレート(`keystyle`)が既定でない構成は、`MSIME_NATIVE`の予測を止める。
+        let (keystyle, legacy_hash) = crate::msime_legacy_keymap::read_keystyle();
+        let keymap =
+            crate::state::key_effect_predictor::KeyEffectKeymap::for_msime_native_with_legacy(
+                assignment_enabled,
+                raw.key_assignment_henkan,
+                raw.key_assignment_muhenkan,
+                compat_mode,
+                keystyle,
+                legacy_hash,
+            );
         // 値0もADR-199 T12で明示的な割り当て(IME-オン)と確定した(既定ではない)ので、
         // 「値があるか」だけを見る(`!= 0`ではない、M5)。マスタースイッチ
         // (IsKeyAssignmentEnabled)もbitsに含める——`for_msime_native`のreassigned判定
@@ -316,16 +321,31 @@ mod windows_impl {
     }
 
     /// `read_key_effect_keymap_native`の版。3つのDWORDの値（不在は`u32::MAX`で表す）と
-    /// 互換モード（`Some(true)`=1・`Some(false)`=0・`None`=`u32::MAX`）を詰めた値
-    /// （レジストリの再読み取りだけで、ファイルは読まない）。互換モードは1つ目のタプル要素の
-    /// 上位32bit（`IsKeyAssignmentEnabled`は下位32bitしか使わない）に詰める。
+    /// 互換モード（`Some(true)`=1・`Some(false)`=0・`None`=`u32::MAX`）、旧UIのキーテンプレート
+    /// （ADR-254）を詰めた値（レジストリの再読み取りだけで、ファイルは読まない）。互換モードは
+    /// 1つ目のタプル要素の上位32bit（`IsKeyAssignmentEnabled`は下位32bitしか使わない）に詰め、
+    /// 2つ目はハッシュ。
     pub(crate) fn native_assignment_stamp() -> (u64, u64) {
         let raw = read_raw_key_assignment_dwords();
         let compat_mode = crate::msime_legacy_keymap::read_legacy_compat_mode_enabled();
         let v = |x: Option<u32>| u64::from(x.unwrap_or(u32::MAX));
+        // 2つ目は「版」として等値比較されるだけの不透明な値なので、旧UIのキーテンプレート
+        // (`keystyle`の種別と、`Custom`なら`key`・`S4key`の中身、ADR-254)を混ぜたハッシュにする。
+        let mut second = crate::msime_legacy_keymap::STYLE_HASH_SEED;
+        for (name, x) in [
+            ("henkan", v(raw.key_assignment_henkan)),
+            ("muhenkan", v(raw.key_assignment_muhenkan)),
+            ("keystyle", crate::msime_legacy_keymap::keystyle_stamp_mix()),
+        ] {
+            second = crate::msime_legacy_keymap::mix_style_value(
+                second,
+                name,
+                Some(&x.to_le_bytes()),
+            );
+        }
         (
             v(raw.is_key_assignment_enabled) | (v(compat_mode.map(u32::from)) << 32),
-            (v(raw.key_assignment_henkan) << 32) | v(raw.key_assignment_muhenkan),
+            second,
         )
     }
 

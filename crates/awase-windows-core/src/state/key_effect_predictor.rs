@@ -31,6 +31,54 @@
 
 use awase::engine::{AssumedReason, InputModeState};
 
+/// MS-IME本体の旧UIのキーテンプレート(`HKCU\\Software\\Microsoft\\IME\\15.0\\IMEJP\\MSIME\\keystyle`)の
+/// 読み取り結果(ADR-254)。OS 依存の読み取りは殻(`msime_legacy_keymap`)が行い、ここには結果だけを渡す。
+///
+/// 実機(新エンジン=互換 OFF、旧エンジン=互換 ON)とCIの測定で、`keystyle`が既定でないときは
+/// 同梱表`MSIME_NATIVE`(NATURAL相当)の予測が外れることが分かった(ATOK等の名前付きスタイルは
+/// 新旧エンジンとも別の内蔵表で動く。`Custom`は互換 ON のときだけレジストリの表が効き、互換 OFF では
+/// 無視されて NATURAL と同じ)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MsImeKeystyle {
+    /// 値が無い(旧UIの設定画面を一度も開いていない既定)。NATURAL と同じ扱い。
+    Absent,
+    /// `NATURAL`(Microsoft IME の既定)。
+    Natural,
+    /// `Custom`(旧UIの「ユーザー定義」)。表が効くのは互換 ON のときだけ。
+    Custom,
+    /// 名前付きの他のスタイル(`ATOK`・`VJE`・`WX`・`MS-IME2000`〈IME_Standard〉)。
+    Named,
+    /// 未知の名前、または読み取りに失敗した。安全側(予測しない)。
+    Unknown,
+}
+
+impl MsImeKeystyle {
+    /// このテンプレートと互換モードの組み合わせで、同梱表`MSIME_NATIVE`の予測を止めるか(ADR-254 決定1)。
+    /// - `Absent`/`Natural`: 止めない。
+    /// - `Named`/`Unknown`: 止める(互換 ON/OFF とも。新旧エンジンの内蔵表は`MSIME_NATIVE`と違う)。
+    /// - `Custom`: 互換 OFF(`Some(false)`)だけ止めない(新エンジンは`Custom`を読まない)。互換 ON と
+    ///   読めない(`None`)は止める。
+    #[must_use]
+    pub const fn disables_native_prediction(self, compat_mode: Option<bool>) -> bool {
+        match self {
+            Self::Absent | Self::Natural => false,
+            Self::Named | Self::Unknown => true,
+            Self::Custom => !matches!(compat_mode, Some(false)),
+        }
+    }
+
+    /// 指紋・版スタンプに混ぜる種別タグ(`Absent`/`Natural`は同じ挙動なので同じ値。指紋には混ぜない)。
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Absent | Self::Natural => 0,
+            Self::Custom => 1,
+            Self::Named => 2,
+            Self::Unknown => 3,
+        }
+    }
+}
+
 /// 予測に使うキーマップの系統。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeymapPreset {
@@ -517,6 +565,10 @@ pub struct KeyEffectKeymap {
     /// では使わない（`None`）。役割判定（[`Self::msime_native_key_role`]）だけが参照し、指紋には
     /// 混ぜない（ADR196-T5の`env_version`が別途担当、M3）。
     msime_compat_mode: Option<bool>,
+    /// 旧UIのキーテンプレート(`keystyle`)と互換モードの組み合わせで、`MSIME_NATIVE`の予測が当たらない
+    /// 構成(ADR-254 決定1)。`true`なら[`Self::predict_with_override`]は学習表の参照の後で`None`を返す。
+    /// GJIのキーマップでは常に`false`。
+    legacy_table_unknown: bool,
     /// このキーマップの生の入力（GJI: session/custom/overlay、Microsoft IME本体: 3 DWORD）から
     /// 作った指紋（`awase_keymap_learn::fingerprint`）。上の真偽値は overlay の中身や
     /// 再割り当て値を潰すので、学習表の陳腐化検出（`key_effect_runtime`）にはこちらを使う。
@@ -682,6 +734,7 @@ impl KeyEffectKeymap {
             henkan_toggle: false,
             muhenkan_toggle: false,
             msime_compat_mode: None,
+            legacy_table_unknown: false,
             fingerprint,
         })
     }
@@ -775,7 +828,32 @@ impl KeyEffectKeymap {
         muhenkan: Option<u32>,
         compat_mode: Option<bool>,
     ) -> Self {
+        Self::for_msime_native_with_legacy(
+            assignment_enabled,
+            henkan,
+            muhenkan,
+            compat_mode,
+            MsImeKeystyle::Absent,
+            None,
+        )
+    }
+
+    /// [`Self::for_msime_native`]に、旧UIのキーテンプレート(`keystyle`)の読み取り結果を足したもの
+    /// (ADR-254)。`keystyle`が`Absent`/`Natural`(大多数の利用者)なら[`Self::for_msime_native`]と
+    /// 完全に同じ(予測も指紋も)。`legacy_hash`は、`Custom`ならレジストリの表(`key`・`S*key`)の
+    /// ハッシュ、`Named`ならテンプレート名のハッシュ(ATOK と VJE を指紋で区別するため)。
+    /// 読めなければ`None`。
+    #[must_use]
+    pub fn for_msime_native_with_legacy(
+        assignment_enabled: bool,
+        henkan: Option<u32>,
+        muhenkan: Option<u32>,
+        compat_mode: Option<bool>,
+        keystyle: MsImeKeystyle,
+        legacy_hash: Option<u64>,
+    ) -> Self {
         let reassigned = |v: Option<u32>| assignment_enabled && v.is_some();
+        let legacy_table_unknown = keystyle.disables_native_prediction(compat_mode);
         Self {
             preset: KeymapPreset::MsImeNative,
             session_keymap: None,
@@ -786,12 +864,24 @@ impl KeyEffectKeymap {
             henkan_toggle: assignment_enabled && henkan == Some(2),
             muhenkan_toggle: assignment_enabled && muhenkan == Some(2),
             msime_compat_mode: compat_mode,
-            fingerprint: awase_keymap_learn::fingerprint::msime_native_keymap_fingerprint(
+            legacy_table_unknown,
+            // 指紋に混ぜるのは、予測を止める構成のときだけ(NATURAL・不在・互換 OFF の Custom は
+            // 従来と同じ指紋のまま。互換 OFF の Custom の表は新エンジンが読まないので、編集しても
+            // 学習表を失効させない)。
+            fingerprint: awase_keymap_learn::fingerprint::msime_native_keymap_fingerprint_with_legacy(
                 assignment_enabled,
                 henkan,
                 muhenkan,
+                legacy_table_unknown.then(|| (keystyle.tag(), legacy_hash)),
             ),
         }
+    }
+
+    /// 旧UIのキーテンプレートと互換モードの組み合わせで`MSIME_NATIVE`の予測を止めているか
+    /// (ADR-254。不具合報告・診断用)。
+    #[must_use]
+    pub const fn legacy_table_unknown(&self) -> bool {
+        self.legacy_table_unknown
     }
 
     /// overlay（`overlay_keymaps`）が1つでもあるか。無変換/変換は overlay
@@ -849,6 +939,12 @@ impl KeyEffectKeymap {
             if let Some(prediction) = predict_in_table(table, vk, input) {
                 return Some(prediction);
             }
+        }
+        // ADR-254 決定1: 旧UIのキーテンプレート(`keystyle`)が既定でなく、同梱表`MSIME_NATIVE`の予測が
+        // 当たらない構成(互換 ON の Custom・名前付きスタイル・未知)では予測しない。**学習表の参照の後**に
+        // 置く(学習表があればそれを使う、ADR-196)。窓別の規則(上の2つ)は MS-IME 本体では元から`None`。
+        if self.legacy_table_unknown {
+            return None;
         }
         // ADR-209 決定4: GJI はプリセット（ATOK/MS-IME/不在/NONE）のとき`custom_keymap_table`を読まない
         // （ADR-186 決定2(c)、実機X1）ので、古い表の行を理由に打ち切らない。CUSTOM等のときだけ従来どおり。
@@ -2558,5 +2654,227 @@ mod tests {
             Some(true)
         );
         assert_eq!(hiragana_key_is_set(&custom, Some(&[to_kana]), false), None);
+    }
+
+    // ── ADR-254 第一段: 旧UIのキーテンプレート(keystyle)が既定でないとき、MSIME_NATIVE の予測を止める ──
+
+    /// `MSIME_NATIVE`にセルがある全`TableKey`のVK（無修飾）。表から作るので、将来キーが増えても
+    /// 取りこぼさない（「止めるキーを列挙すると漏れる」、Opus r2 M2-3）。
+    fn msime_native_table_vks() -> Vec<u16> {
+        let mut vks: Vec<u16> = Vec::new();
+        for c in bundled_table(KeymapPreset::MsImeNative) {
+            for vk in 0u16..=0xFF {
+                if TableKey::from_vk(vk) == Some(c.key) && !vks.contains(&vk) {
+                    vks.push(vk);
+                }
+            }
+        }
+        vks
+    }
+
+    /// 開/閉 × 段階 の全入力（読める窓・読めない窓の両方）。
+    fn all_inputs() -> Vec<PredictInput> {
+        let mut v = Vec::new();
+        for open in [false, true] {
+            for unreadable in [false, true] {
+                for composing in [false, true] {
+                    for stage in [Stage::None, Stage::Typing, Stage::ConvSpace] {
+                        v.push(PredictInput {
+                            unreadable,
+                            passive_rule_eligible: true,
+                            ..input(
+                                open,
+                                ROMAJI,
+                                composing,
+                                KeyTrack { conv: None, stage },
+                            )
+                        });
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    fn msime_native(
+        keystyle: MsImeKeystyle,
+        compat: Option<bool>,
+        hash: Option<u64>,
+    ) -> KeyEffectKeymap {
+        KeyEffectKeymap::for_msime_native_with_legacy(false, None, None, compat, keystyle, hash)
+    }
+
+    /// (1) 互換 ON の Custom・名前付き・未知は、`MSIME_NATIVE`にセルがある全キー × 全入力で予測しない。
+    #[test]
+    fn adr254_stopped_configs_predict_nothing_for_every_table_key() {
+        let vks = msime_native_table_vks();
+        assert!(vks.len() >= 6, "表のキーが取れていない: {vks:?}");
+        for (style, compat) in [
+            (MsImeKeystyle::Custom, Some(true)),
+            (MsImeKeystyle::Named, Some(true)),
+            (MsImeKeystyle::Named, Some(false)),
+            (MsImeKeystyle::Named, None),
+            (MsImeKeystyle::Unknown, Some(true)),
+            (MsImeKeystyle::Unknown, Some(false)),
+        ] {
+            let km = msime_native(style, compat, Some(1));
+            assert!(km.legacy_table_unknown(), "{style:?} {compat:?}");
+            for &vk in &vks {
+                for inp in all_inputs() {
+                    assert_eq!(
+                        km.predict(vk, &inp),
+                        None,
+                        "{style:?} compat={compat:?} vk={vk:#x} {inp:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// (2) keystyle が不在・NATURAL・互換 OFF の Custom は、今の既定(`for_msime_native(false, None, None, None)`)と
+    /// 全キー × 全入力で予測が一致する(大多数の利用者の挙動が変わらない)。
+    #[test]
+    fn adr254_default_configs_predict_like_the_bundled_table() {
+        let reference = KeyEffectKeymap::for_msime_native(false, None, None, None);
+        let vks = msime_native_table_vks();
+        for (style, compat) in [
+            (MsImeKeystyle::Absent, None),
+            (MsImeKeystyle::Absent, Some(true)),
+            (MsImeKeystyle::Absent, Some(false)),
+            (MsImeKeystyle::Natural, None),
+            (MsImeKeystyle::Natural, Some(true)),
+            (MsImeKeystyle::Natural, Some(false)),
+            // 互換 OFF の Custom は新エンジンが読まないので NATURAL と同じ(実機: dragonflyg4、実測15)。
+            (MsImeKeystyle::Custom, Some(false)),
+        ] {
+            let km = msime_native(style, compat, Some(9));
+            assert!(!km.legacy_table_unknown(), "{style:?} {compat:?}");
+            for &vk in &vks {
+                for inp in all_inputs() {
+                    // 互換モードは予測に影響しない(役割判定だけが参照する)ので、同じ予測になる。
+                    assert_eq!(
+                        km.predict(vk, &inp),
+                        reference.predict(vk, &inp),
+                        "{style:?} compat={compat:?} vk={vk:#x}"
+                    );
+                }
+            }
+        }
+        // 互換モードが読めない(None)Custom は安全側で止める(新エンジンか旧エンジンか分からない)。
+        assert!(msime_native(MsImeKeystyle::Custom, None, None).legacy_table_unknown());
+    }
+
+    /// (3) 止める構成でも、学習表(`override_table`)に答えがあればそれを使う(ADR-196。学習で戻せる)。
+    #[test]
+    fn adr254_stopped_config_still_uses_the_learned_table() {
+        let km = msime_native(MsImeKeystyle::Custom, Some(true), Some(1));
+        let base = input(false, ROMAJI, false, NOTRACK);
+        assert_eq!(km.predict(0x1C, &base), None);
+        let learned = [cell(
+            false,
+            None,
+            Stage::None,
+            TableKey::Henkan,
+            true,
+            Some(Conv::C19),
+            Disp::None,
+        )];
+        let p = km
+            .predict_with_override(0x1C, &base, Some(&learned))
+            .expect("学習表に答えがあれば使う");
+        assert_eq!(p.effect.open, Some(true));
+        // 学習表に答えが無ければ、止める(同梱表へ落ちない)。
+        assert_eq!(km.predict_with_override(0x1D, &base, Some(&learned)), None);
+    }
+
+    /// (5) 互換フラグ(Some(true)/Some(false)/None)× 名前付き・未知は、フラグに関係なく止まる
+    /// (Custom だけがフラグで変わる)。
+    #[test]
+    fn adr254_named_and_unknown_stop_regardless_of_compat_flag() {
+        for compat in [Some(true), Some(false), None] {
+            for style in [MsImeKeystyle::Named, MsImeKeystyle::Unknown] {
+                assert!(style.disables_native_prediction(compat), "{style:?} {compat:?}");
+            }
+        }
+        assert!(MsImeKeystyle::Custom.disables_native_prediction(Some(true)));
+        assert!(MsImeKeystyle::Custom.disables_native_prediction(None));
+        assert!(!MsImeKeystyle::Custom.disables_native_prediction(Some(false)));
+        for compat in [Some(true), Some(false), None] {
+            assert!(!MsImeKeystyle::Absent.disables_native_prediction(compat));
+            assert!(!MsImeKeystyle::Natural.disables_native_prediction(compat));
+        }
+    }
+
+    /// (6) 指紋: 既定の構成(不在・NATURAL・互換 OFF の Custom)は従来と同じ、止める構成は別、
+    /// Custom の表のハッシュ違いと ATOK/VJE(名前のハッシュ違い)は区別される。
+    #[test]
+    fn adr254_fingerprint_is_unchanged_for_defaults_and_differs_for_stopped_configs() {
+        let base = KeyEffectKeymap::for_msime_native(false, None, None, None).fingerprint();
+        for (style, compat) in [
+            (MsImeKeystyle::Absent, None),
+            (MsImeKeystyle::Natural, Some(true)),
+            (MsImeKeystyle::Custom, Some(false)),
+        ] {
+            assert_eq!(msime_native(style, compat, Some(77)).fingerprint(), base);
+        }
+        let custom_a = msime_native(MsImeKeystyle::Custom, Some(true), Some(1)).fingerprint();
+        let custom_b = msime_native(MsImeKeystyle::Custom, Some(true), Some(2)).fingerprint();
+        let atok = msime_native(MsImeKeystyle::Named, Some(true), Some(10)).fingerprint();
+        let vje = msime_native(MsImeKeystyle::Named, Some(true), Some(20)).fingerprint();
+        assert_ne!(custom_a, base);
+        assert_ne!(custom_a, custom_b);
+        assert_ne!(atok, vje);
+        // 互換 ON/OFF/不明は、止める構成の中では指紋に混ぜない(`msime_compat_mode`と同じ方針、役割判定だけが参照)。
+        assert_eq!(
+            msime_native(MsImeKeystyle::Named, Some(true), Some(10)).fingerprint(),
+            msime_native(MsImeKeystyle::Named, Some(false), Some(10)).fingerprint()
+        );
+    }
+
+    /// (7) 役割(ADR-199)は`keystyle`では変わらない(第一段は役割に触れない)。
+    #[test]
+    fn adr254_key_role_is_unchanged_by_keystyle() {
+        for vk in [0x1Cu16, 0x1D, 0xF3, 0xF4, 0x19] {
+            for compat in [Some(true), Some(false), None] {
+                let reference = KeyEffectKeymap::for_msime_native(true, Some(2), Some(2), compat);
+                for style in [
+                    MsImeKeystyle::Absent,
+                    MsImeKeystyle::Natural,
+                    MsImeKeystyle::Custom,
+                    MsImeKeystyle::Named,
+                    MsImeKeystyle::Unknown,
+                ] {
+                    let km = KeyEffectKeymap::for_msime_native_with_legacy(
+                        true,
+                        Some(2),
+                        Some(2),
+                        compat,
+                        style,
+                        Some(5),
+                    );
+                    assert_eq!(
+                        km.msime_native_key_role(vk),
+                        reference.msime_native_key_role(vk),
+                        "vk={vk:#x} compat={compat:?} {style:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// (8) 読めない窓(`unreadable`)でも、止める構成は`None`。窓別の規則・受動キーの規則は MS-IME 本体では
+    /// 元から`None`だが、順序を変えても崩れないよう固定する。
+    #[test]
+    fn adr254_unreadable_window_is_also_stopped() {
+        let km = msime_native(MsImeKeystyle::Custom, Some(true), Some(1));
+        for open in [false, true] {
+            let inp = PredictInput {
+                passive_rule_eligible: true,
+                ..unreadable_input(open, ROMAJI)
+            };
+            for vk in [0x1Cu16, 0x1D, 0xF2, 0xF3, 0xF4, 0x19, 0x7C] {
+                assert_eq!(km.predict(vk, &inp), None, "vk={vk:#x} open={open}");
+            }
+        }
     }
 }
