@@ -571,6 +571,46 @@ mod windows_probe {
             unsafe { dump_uia_tree(&walker, &root_element, 0, 14, &mut b) };
             log(&format!("RESULT: root dump done, remaining_budget={b}"));
         }
+        // `--general-only`: 「General」サブページ(入力設定・互換性など)を開いてダンプして終わる
+        // (互換性チェックボックス「以前のバージョンの Microsoft IME を使う」の状態を読む。ADR-248)。
+        if args.iter().any(|a| a == "--general-only") {
+            let mut b: u32 = 800;
+            // SAFETY: walker/root_element は直前に取得した有効な COM オブジェクト。
+            let general = unsafe {
+                find_by_automation_id(
+                    &walker,
+                    &root_element,
+                    "SystemSettings_Language_JapaneseIME_General_Link_JapaneseIMEGeneralLinkButton",
+                    0,
+                    14,
+                    &mut b,
+                )
+            };
+            let Some(general) = general else {
+                log("RESULT: General button not found on root page.");
+                return;
+            };
+            // SAFETY: general は直前に取得した有効な COM オブジェクト。
+            if let Err(e) = unsafe { invoke_element(&general) } {
+                log(&format!("RESULT: invoke_element(General) failed: {e:?}"));
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(3));
+            // SAFETY: 同一ウィンドウ内の SPA 遷移。
+            let page = match unsafe { automation.ElementFromHandle(root_candidate.hwnd) } {
+                Ok(e) => e,
+                Err(e) => {
+                    log(&format!("ElementFromHandle(general) failed: {e:?}"));
+                    return;
+                }
+            };
+            log("=== dumping 'General' page ===");
+            let mut b2: u32 = 1500;
+            // SAFETY: walker/page は直前に取得した有効な COM オブジェクト。
+            unsafe { dump_uia_tree(&walker, &page, 0, 14, &mut b2) };
+            log(&format!("RESULT: general dump done, remaining_budget={b2}"));
+            return;
+        }
         // 「Key and touch customization」(キーとタッチのカスタマイズ)ボタンをAutomationIdで探す。
         // 表示言語が英語でもAutomationIdは言語非依存で安定している。
         let mut budget: u32 = 800;

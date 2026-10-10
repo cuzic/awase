@@ -33,14 +33,15 @@ function Restart-Ctfmon {
 }
 $n = 0
 foreach ($st in @(@($null, $null), @(1, $null), @(1, 1), @(0, 0), @($null, 1))) {
+  foreach ($mode in '--general-only', '--dump-root') {
   $n++
   Set-Flags $st[0] $st[1]
   Restart-Ctfmon
   $tag = "s$n"
-  Say "##### [$tag] NoTsf3Override2=$($st[0]) DisableNewIME=$($st[1])"
+  Say "##### [$tag] NoTsf3Override2=$($st[0]) DisableNewIME=$($st[1]) mode=$mode"
   Push-Location (Split-Path $probe)
   Remove-Item msime_key_assignment_settings_probe.log -ErrorAction SilentlyContinue
-  $p = Start-Process -FilePath $probe -ArgumentList '--dump-root' -PassThru -RedirectStandardOutput (Join-Path $Out "$tag-stdout.txt") -RedirectStandardError (Join-Path $Out "$tag-stderr.txt")
+  $p = Start-Process -FilePath $probe -ArgumentList $mode -PassThru -RedirectStandardOutput (Join-Path $Out "$tag-stdout.txt") -RedirectStandardError (Join-Path $Out "$tag-stderr.txt")
   Start-Sleep -Seconds 12
   Shot "$tag-a"
   if (-not $p.WaitForExit(90000)) { Say '(timeout, kill)'; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
@@ -51,5 +52,6 @@ foreach ($st in @(@($null, $null), @(1, $null), @(1, 1), @(0, 0), @($null, 1))) 
   } else { Say '   (no probe log)' }
   Pop-Location
   Get-Process SystemSettings -ErrorAction SilentlyContinue | Stop-Process -Force
+  }
 }
 Say '=== done ==='
