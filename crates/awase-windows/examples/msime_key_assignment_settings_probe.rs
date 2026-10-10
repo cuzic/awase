@@ -268,6 +268,55 @@ mod windows_probe {
         }
     }
 
+
+    /// `automation_id`が`id`で、かつ名前が`name_needles`のどれかを(大文字小文字を無視して)含む最初の要素を探す
+    /// (ADR-248: 「以前のバージョンの Microsoft IME を使う」トグルは `DialogToggle` が他と重なるので名前でも絞る)。
+    unsafe fn find_by_id_and_name(
+        walker: &IUIAutomationTreeWalker,
+        element: &IUIAutomationElement,
+        id: &str,
+        name_needles: &[&str],
+        depth: u32,
+        max_depth: u32,
+        budget: &mut u32,
+    ) -> Option<IUIAutomationElement> {
+        if depth > max_depth || *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        let automation_id = element
+            .CurrentAutomationId()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let name = element
+            .CurrentName()
+            .map(|s| s.to_string().to_lowercase())
+            .unwrap_or_default();
+        if automation_id == id && name_needles.iter().any(|n| name.contains(&n.to_lowercase())) {
+            return Some(element.clone());
+        }
+        // SAFETY: element/walker は呼び出し元が渡した有効な COM オブジェクト。
+        let Ok(mut child) = (unsafe { walker.GetFirstChildElement(element) }) else {
+            return None;
+        };
+        loop {
+            // SAFETY: child は直前に取得した有効な COM オブジェクト。
+            if let Some(found) = unsafe {
+                find_by_id_and_name(walker, &child, id, name_needles, depth + 1, max_depth, budget)
+            } {
+                return Some(found);
+            }
+            if *budget == 0 {
+                return None;
+            }
+            // SAFETY: walker/child は有効な COM オブジェクト。
+            let Ok(next) = unsafe { walker.GetNextSiblingElement(&child) } else {
+                return None;
+            };
+            child = next;
+        }
+    }
+
     /// `automation_id`に`needle`を含む最初の要素を深さ優先で探す（見つからなければ`None`）。
     unsafe fn find_by_automation_id(
         walker: &IUIAutomationTreeWalker,
@@ -609,6 +658,41 @@ mod windows_probe {
             // SAFETY: walker/page は直前に取得した有効な COM オブジェクト。
             unsafe { dump_uia_tree(&walker, &page, 0, 14, &mut b2) };
             log(&format!("RESULT: general dump done, remaining_budget={b2}"));
+            // `--set-compat=on|off`: 「以前のバージョンの Microsoft IME を使う」トグルを設定アプリ経由で切り替える(ADR-248)。
+            if let Some(want) = args.iter().find_map(|a| a.strip_prefix("--set-compat=")) {
+                let want_on = want == "on";
+                let mut b3: u32 = 1500;
+                // SAFETY: walker/page は直前に取得した有効な COM オブジェクト。
+                let toggle = unsafe {
+                    find_by_id_and_name(
+                        &walker,
+                        &page,
+                        "DialogToggle",
+                        &["以前のバージョン", "previous version"],
+                        0,
+                        14,
+                        &mut b3,
+                    )
+                };
+                let Some(toggle) = toggle else {
+                    log("RESULT: --set-compat: compat toggle not found");
+                    return;
+                };
+                // SAFETY: toggle は直前に取得した有効な COM オブジェクト。
+                let was_on = unsafe { toggle_state_is_on(&toggle) };
+                log(&format!("--set-compat={want}: current toggle state = {was_on:?}"));
+                if was_on != Some(want_on) {
+                    // SAFETY: toggle は直前に取得した有効な COM オブジェクト。
+                    if let Err(e) = unsafe { toggle_element(&toggle) } {
+                        log(&format!("RESULT: toggle_element(compat) failed: {e:?}"));
+                    }
+                    std::thread::sleep(Duration::from_secs(5));
+                    // SAFETY: toggle は直前に取得した有効な COM オブジェクト。
+                    let now = unsafe { toggle_state_is_on(&toggle) };
+                    log(&format!("--set-compat={want}: toggle state after = {now:?}"));
+                }
+                log_msime_registry_snapshot("after-set-compat");
+            }
             return;
         }
         // 「Key and touch customization」(キーとタッチのカスタマイズ)ボタンをAutomationIdで探す。
