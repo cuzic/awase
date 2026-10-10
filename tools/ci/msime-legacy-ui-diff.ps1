@@ -67,7 +67,7 @@ foreach ($w in $ws) { Say "=== window '$($w.Current.Name)' class='$($w.Current.C
 Get-Process | Where-Object { $_.ProcessName -match 'IMJP|ime' } | ForEach-Object { Say ("proc " + $_.ProcessName + " pid=" + $_.Id + " title='" + $_.MainWindowTitle + "'") }
 
 # ---------------------------------------------------------------- Win32 操作(UIA では中身が取れないため)
-if ($Phase -ne 'diff1') { return }
+if ($Phase -notin @('diff1','advanced')) { return }
 Add-Type -TypeDefinition @"
 using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
 public static class W {
@@ -81,6 +81,7 @@ public static class W {
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, StringBuilder l);
   public static List<IntPtr> Tops(uint pid) {
     var r = new List<IntPtr>();
@@ -140,6 +141,7 @@ for ($i = 0; $i -lt $n; $i++) {
   $items += $sb.ToString()
 }
 Say ("key template items=[" + ($items -join ' | ') + "] cursel=$cur")
+if ($Phase -eq 'diff1') {
 $kt0 = (Get-ItemProperty "HKCU:\$imejp\MSIME" -ErrorAction SilentlyContinue).keystyle
 Say "keystyle before = $kt0"
 
@@ -173,12 +175,20 @@ foreach ($root in @($env:APPDATA, $env:LOCALAPPDATA, "$env:USERPROFILE\AppData\L
     Select-Object -First 60 | ForEach-Object { Say ("{0}  {1}  {2}" -f $_.LastWriteTime.ToString('HH:mm:ss'), $_.Length, $_.FullName) }
 }
 
+}
 # --- Advanced(キー編集)を開いて構造を採取
 $adv = Find-Ctl $top 1151 'Button'
 Say "advanced button=$adv"
-[void][W]::SendMessage($adv, 0xF5, [IntPtr]::Zero, [IntPtr]::Zero)
-Start-Sleep -Seconds 3
+[void][W]::PostMessage($adv, 0xF5, [IntPtr]::Zero, [IntPtr]::Zero)
+Start-Sleep -Seconds 5
 Shot 'advanced'
 $tops = [W]::Tops($p.Id)
 Say "windows after Advanced click: $($tops.Count)"
 foreach ($h in $tops) { Dump-Win32 $h 'advanced' }
+
+foreach ($h in $tops) {
+  if ($h -ne $top) {
+    Say "=== UIA tree of advanced dialog hwnd=$h"
+    try { Dump-Tree ($AE::FromHandle($h)) 0 7 } catch { Say "UIA failed: $_" }
+  }
+}

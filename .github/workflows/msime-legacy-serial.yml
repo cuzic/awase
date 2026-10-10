@@ -1,6 +1,7 @@
-name: msime-legacy-ui-diff
+name: msime-legacy-serial
 
-# 旧UI(IMJPUEX.EXE)を UI Automation で操作し、前後のレジストリ・ファイル差分を取るスパイク(観測のみ)。
+# MS-IME 互換モード(旧UI)のキー割り当てバイナリ表のコード体系を調べるスパイク(観測のみ)。
+# IMJPUEXC.EXE の使い方と SETKEYTEMPLATE の候補、テンプレートごとの StyleList\<style>\key を採取する。
 on:
   push:
     branches: [ci/msime-legacy-keytable-spike]
@@ -15,6 +16,16 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+      - name: ハーネスをビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --example ime_key_matrix_spike
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
       - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
         shell: pwsh
         run: |
@@ -30,11 +41,13 @@ jobs:
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
-      - name: 旧UIの Advanced(キー編集)を開いて構造を採取
+      - name: 実効果の測定(テンプレート・コード掃引)
         shell: pwsh
-        run: ./tools/ci/msime-legacy-ui-diff.ps1 -Out ui-out -Phase advanced
+        run: ./tools/ci/msime-legacy-serial.ps1 -Out serial-out
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: msime-legacy-ui
-          path: ui-out/
+          name: msime-legacy-serial
+          path: |
+            serial-out/
+            dist/*.log
