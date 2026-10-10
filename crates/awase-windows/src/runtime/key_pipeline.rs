@@ -1721,7 +1721,9 @@ impl Runtime {
         else {
             return;
         };
-        self.kp_predict_key_effect(event.vk_code, passive_rule_eligible);
+        // ADR-188 案2: FSM がこの打鍵の前に送り直す親指（保留中の単独タップ）の効果を予測に重ねる。
+        let resent = crate::state::key_effect_predictor::fsm_resent_mode_keys(decision);
+        self.kp_predict_key_effect(event.vk_code, passive_rule_eligible, &resent);
     }
 
     /// ADR-203 (ii): 確かな ON 系イベント（物理キー予測 ON・shadow toggle ON。`sync_direction` の on キーは
@@ -1755,7 +1757,16 @@ impl Runtime {
     /// 変換モード5種・変換中の段階は`ImeModel::key_track`（隠れ状態）で追跡する。モードキーだけでなく、
     /// Space/Esc/Enter/BS・文字キーも通して追跡状態を更新する（変換中の出入りが打鍵履歴で決まるため）。
     /// ADR-189の固定セット（半角/全角）は`shadow_action`を持つ間この関数に来ない（呼び出し側が除外）。
-    fn kp_predict_key_effect(&mut self, vk: awase::types::VkCode, passive_rule_eligible: bool) {
+    ///
+    /// `resent`（ADR-188 案2）: FSM がこの打鍵の前に IME へ送り直すモードキー（`fsm_resent_mode_keys`）。予測はその効果を
+    /// 重ねた状態から引く（`predict_after_resent`）。重ねないと、送り直した無変換の効果が抜けた予測が付き、窓内の
+    /// 正しい読みを予測優先のガード（`follow_direct_read_in_scope`、c353bcbb）が捨てる。
+    fn kp_predict_key_effect(
+        &mut self,
+        vk: awase::types::VkCode,
+        passive_rule_eligible: bool,
+        resent: &[u16],
+    ) {
         use crate::state::key_effect_predictor::PredictInput;
         use crate::tsf::observer::{tsf_obs, ActiveImeKind};
         let obs = tsf_obs();
@@ -1801,21 +1812,24 @@ impl Runtime {
             unreadable,
             passive_rule_eligible,
         };
-        let Some(prediction) = keymap.predict_with_override(vk.0, &input, override_table) else {
+        let Some(prediction) = keymap.predict_after_resent(resent, vk.0, &input, override_table)
+        else {
             tracing::debug!(
-                "[key-effect-predict] vk=0x{:02X} open={} composing={}: no prediction",
+                "[key-effect-predict] vk=0x{:02X} open={} composing={} resent={:02X?}: no prediction",
                 vk.0,
                 input.open,
-                input.composing
+                input.composing,
+                resent
             );
             return;
         };
         tracing::info!(
-            "[key-effect-predict] vk=0x{:02X} open={:?} mode={:?} track={:?}",
+            "[key-effect-predict] vk=0x{:02X} open={:?} mode={:?} track={:?} resent={:02X?}",
             vk.0,
             prediction.effect.open,
             prediction.effect.mode,
-            prediction.track
+            prediction.track,
+            resent
         );
         let tick = crate::state::TickMs(hook::current_tick_ms());
         self.platform_state
