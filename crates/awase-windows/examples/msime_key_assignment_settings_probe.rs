@@ -661,19 +661,27 @@ mod windows_probe {
             // `--set-compat=on|off`: 「以前のバージョンの Microsoft IME を使う」トグルを設定アプリ経由で切り替える(ADR-248)。
             if let Some(want) = args.iter().find_map(|a| a.strip_prefix("--set-compat=")) {
                 let want_on = want == "on";
-                let mut b3: u32 = 1500;
-                // SAFETY: walker/page は直前に取得した有効な COM オブジェクト。
-                let toggle = unsafe {
-                    find_by_id_and_name(
-                        &walker,
-                        &page,
-                        "DialogToggle",
-                        &["以前のバージョン", "previous version"],
-                        0,
-                        14,
-                        &mut b3,
-                    )
-                };
+                // ページの描画が遅いことがあるので、数回リトライする。
+                let mut toggle = None;
+                for _ in 0..8 {
+                    let mut b3: u32 = 1500;
+                    // SAFETY: walker/page は有効な COM オブジェクト。
+                    toggle = unsafe {
+                        find_by_id_and_name(
+                            &walker,
+                            &page,
+                            "DialogToggle",
+                            &["以前のバージョン", "previous version"],
+                            0,
+                            14,
+                            &mut b3,
+                        )
+                    };
+                    if toggle.is_some() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
                 let Some(toggle) = toggle else {
                     log("RESULT: --set-compat: compat toggle not found");
                     return;
