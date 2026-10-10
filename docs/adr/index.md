@@ -255,9 +255,9 @@
 | [246](246-raw-tsf-literal-recovery-focus-gen-guard.md) | RAW_TSF_LITERAL の回収に宛先(focus 世代+前景窓)の照合を足す(BUG-194) | 起草(2026-10-08)。実装済み(PR #557、2026-10-08)。実機未確認。 |
 | [247](247-fkey-mode-key-follow.md) | F13〜F24 のモードキー(英数=F16 等)に Engine を追随させる(BUG-196) | 起草(2026-10-10)。両案実装済み、CI の A/B で両案とも単独で効く(実機未確認)。案1の効果は未証明のまま残す。 |
 | [248](248-key-swap-ui-clarity.md) | 「キーの入れ替え」画面の分かりやすさの改善(2軸の状態行・適用ブロックの区切り・見出しの分離・無効理由・すべて解除と復旧手順・キーボード図へのドラッグ&ドロップ・置換への一般化) | 起草・改訂(2026-10-10)。Opus round1〜3 を反映し Blocker なしで収束。段階の順序は所有者承認済み(2026-10-10)。実装未着手。 |
-| [249](249-foreign-injected-modifier-ttl.md) | 他アプリが注入した Ctrl を、注入キー自身の修飾として期限付きで数える(BUG-197、Spokenly) | 起草・改訂(2026-10-10)。Opus round1〜3 で収束(Blocker なし)、実装なし |
+| [249](249-foreign-injected-modifier-ttl.md) | 他アプリが注入した Ctrl を、注入キー自身の修飾として期限付きで数える(BUG-197、Spokenly) | 起草・改訂(2026-10-10)。Opus round1〜3 で収束(Blocker なし)、実装済み(PR #580) |
 | [250](250-boundary-journal-and-log-unification.md) | journal を shell と core の境界で取り(診断用の Facts/Plan)、境界を通る手書きログを journal からの生成に寄せる(ADR-139 決定 4 の改訂) | 起草(2026-10-10)。所有者が「大きく統合する」を選択、tsf/・output/ もデータを上に渡す方式で統合(ガード :403 は緩めない)。Opus round9 で収束(Blocker 0・Must 0) |
-| [251](251-bug197-report-journal-replay-fixture.md) | BUG-197 の報告 journal を replay fixture として固定する(ADR-249 の回帰テスト (a)) | 実装済み(2026-10-10)。実記録2例を fixture 化、CI 未確認 |
+| [251](251-bug197-report-journal-replay-fixture.md) | BUG-197 の報告 journal を replay fixture として固定する(ADR-249 の回帰テスト (a)) | 実装済み(PR #582、2026-10-10)。実記録2例をラッチ経由で再生、CI の test は pass |
 | [252](252-foreign-ctrl-stuck-nonrecurrence-ci.md) | 注入 Ctrl↓ の KeyUp 欠落後に物理打鍵が通常どおり変換されることを CI で観測する(ADR-249 の stuck 非再発) | 起草(2026-10-10)。未実装 |
 | [253](253-bug198-vk-packet-reinject.md) | 他アプリが注入した VK_PACKET の文字を、保留→再注入で失わない(BUG-198) | 起草(2026-10-10)。未実装、原因は仮説(段階0で切り分け) |
 | [254](254-msime-legacy-custom-keytable-read.md) | MS-IME 互換モード(旧UI)の Custom 表の扱い——第一段は「keystyle が既定でないとき MSIME_NATIVE の予測を止める」、表を読む第二段は検証後(ADR-197 の訂正) | 第一段を実装中(2026-10-10)。CI スパイク+実機(dragonflyg4)で、Custom の表は互換 ON のときだけ効く・名前付きスタイルは新旧エンジンで内蔵表が違うことを確認。第二段は未着手 |

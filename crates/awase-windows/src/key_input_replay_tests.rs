@@ -31,6 +31,8 @@ use serde::Deserialize;
 
 use crate::scanmap::scan_to_pos;
 use crate::state::alt_impersonation::resolve_thumb_key;
+use crate::state::foreign_modifier::ForeignCtrlLatch;
+use crate::tuning::FOREIGN_CTRL_TTL_MS;
 use crate::vk::VkCodeExt;
 
 // ── 再生の補助 ──────────────────────────────────────────────────────────────
@@ -480,7 +482,8 @@ fn bug_105_replay_on_virtual_clock_times_out_before_char2() {
 // ── BUG-197(ADR-251): 他アプリが注入した Ctrl+V ────────────────────────────────
 
 /// ADR-251 決定1 の最小形。報告 `01M4J72G985T0FFT6XPN0SWCQQ` の `KeyInput` 列から、各打鍵の
-/// `{t_us, vk, scan, event_type, injected, foreign_ctrl, ctrl}` だけを残したもの。
+/// `{t_us, vk, scan, event_type, injected, alt, shift, ctrl}` だけを**記録のまま**残したもの
+/// (記録時は `foreign_ctrl` 自体が無く、注入 V の `ctrl` は false)。
 #[derive(Debug, Deserialize)]
 struct ForeignCtrlFixture {
     source: String,
@@ -494,35 +497,43 @@ struct ForeignCtrlKey {
     scan: u32,
     event_type: String,
     injected: bool,
-    foreign_ctrl: bool,
+    alt: bool,
+    shift: bool,
     ctrl: bool,
 }
 
 /// 最小形を `Replay::run` が読む journal の形へ直す(wire が変わったとき直すのはここだけ)。
-/// `ctrl_override` が `Some` のときは、V の `ctrl`/`foreign_ctrl` をその値に置き換える(対照用)。
-fn foreign_ctrl_journal(name: &str, ctrl_override: Option<bool>) -> String {
+///
+/// `through_latch` が true のときは、`hook.rs::hook_callback` が `modifier_snapshot` を作る順序
+/// (注入の Down は `on_injected_down`、Up は `on_up`、その後に注入キーなら `ctrl_for_injected_key`)を
+/// 記録の時刻順に `ForeignCtrlLatch` へ流し、注入打鍵の `ctrl`/`foreign_ctrl` を求める。
+/// false のときは記録の `ctrl` のまま(ラッチを通さない = ADR-249 の修正前)。
+/// hook.rs の配線(この順序で呼ぶこと自体)は再生しない。`architecture_guard` が固定している。
+fn foreign_ctrl_journal(name: &str, through_latch: bool) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/journals/key_input")
         .join(name);
     let fixture: ForeignCtrlFixture =
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
     assert!(!fixture.source.is_empty());
+    let latch = ForeignCtrlLatch::new();
+    let ttl_us = FOREIGN_CTRL_TTL_MS * 1_000;
     let rows: Vec<serde_json::Value> = fixture
         .keys
         .iter()
         .enumerate()
         .map(|(i, k)| {
-            let is_v = k.vk == 0x56;
-            let ctrl = if is_v {
-                ctrl_override.unwrap_or(k.ctrl)
-            } else {
-                k.ctrl
-            };
-            let foreign = if is_v {
-                ctrl_override.unwrap_or(k.foreign_ctrl)
-            } else {
-                k.foreign_ctrl
-            };
+            let is_down = k.event_type == "down";
+            let vk = VkCode(k.vk);
+            let mut foreign_ctrl = false;
+            if through_latch && k.injected {
+                if is_down {
+                    latch.on_injected_down(vk, k.t_us, ttl_us);
+                } else {
+                    latch.on_up(vk);
+                }
+                foreign_ctrl = !k.ctrl && latch.ctrl_for_injected_key(k.t_us, ttl_us);
+            }
             serde_json::json!({
                 "seq": i + 1,
                 "entry": {
@@ -530,14 +541,14 @@ fn foreign_ctrl_journal(name: &str, ctrl_override: Option<bool>) -> String {
                     "event": {
                         "vk_code": k.vk,
                         "scan_code": k.scan,
-                        "is_down": k.event_type == "down",
+                        "is_down": is_down,
                         "injected": k.injected,
                         "timestamp_us": k.t_us,
-                        "key_class": if is_v { "Char" } else { "Passthrough" },
-                        "alt": false,
-                        "ctrl": ctrl,
-                        "shift": false,
-                        "foreign_ctrl": foreign,
+                        "key_class": if k.vk == 0x56 { "Char" } else { "Passthrough" },
+                        "alt": k.alt,
+                        "ctrl": k.ctrl || foreign_ctrl,
+                        "shift": k.shift,
+                        "foreign_ctrl": foreign_ctrl,
                     },
                     "state_before": "",
                     "state_after": "",
@@ -550,12 +561,12 @@ fn foreign_ctrl_journal(name: &str, ctrl_override: Option<bool>) -> String {
     serde_json::to_string(&rows).expect("journal")
 }
 
-fn replay_foreign_ctrl(name: &str, ctrl_override: Option<bool>) -> Replay {
+fn replay_foreign_ctrl(name: &str, through_latch: bool) -> Replay {
     let root = repo_root();
     let config = AppConfig::load(&root.join("config.toml")).expect("config.toml");
     let layout = std::fs::read_to_string(root.join("layout/nicola.yab")).expect("nicola.yab");
     let engine = build_engine(&config, &layout, None);
-    let journal = foreign_ctrl_journal(name, ctrl_override);
+    let journal = foreign_ctrl_journal(name, through_latch);
     Replay::run(
         &journal,
         engine,
@@ -571,10 +582,12 @@ const BUG_197_FIXTURES: [&str; 2] = [
 const V_DOWN: &str = "key 0x56 down";
 const V_UP: &str = "key 0x56 up";
 
+/// 記録の列を `ForeignCtrlLatch`(TTL は本番の `FOREIGN_CTRL_TTL_MS`)に通すと、注入 V が `ctrl=true` で
+/// エンジンに届き、V↓/V↑ とも PassThrough になる。ラッチの記録・期限・解除や TTL を壊すと落ちる。
 #[test]
 fn bug_197_foreign_ctrl_v_passes_through_on_reported_sequence() {
     for name in BUG_197_FIXTURES {
-        let replay = replay_foreign_ctrl(name, None);
+        let replay = replay_foreign_ctrl(name, true);
         let down = replay.step(V_DOWN);
         assert_eq!(down.decision, "PassThrough", "{name}: {:#?}", replay.steps);
         assert_eq!(down.state_after, "Idle", "{name}");
@@ -584,15 +597,16 @@ fn bug_197_foreign_ctrl_v_passes_through_on_reported_sequence() {
     }
 }
 
-/// 対照: 報告の記録どおり V が `ctrl=false` で届くと、V↓ は `PendingChar` に入り V↑ は Consume される
-/// (修正前の挙動、「ふ」の原因)。これが落ちない fixture は上のテストの意味を担保しない。
+/// 対照: ラッチを通さず記録のまま(V は `ctrl=false`)流すと、V↓ は `PendingChar` に入り V↑ は Consume され、
+/// 「ふ」(`fu`)が出る(修正前の挙動、BUG-197)。これが落ちない fixture は上のテストの意味を担保しない。
 #[test]
-fn bug_197_control_without_ctrl_enters_pending_char() {
+fn bug_197_control_without_latch_enters_pending_char() {
     for name in BUG_197_FIXTURES {
-        let replay = replay_foreign_ctrl(name, Some(false));
+        let replay = replay_foreign_ctrl(name, false);
         let down = replay.step(V_DOWN);
         assert_eq!(down.decision, "Consume", "{name}: {:#?}", replay.steps);
         assert_eq!(down.state_after, "PendingChar(vk=0x56)", "{name}");
         assert_eq!(replay.step(V_UP).decision, "Consume", "{name}");
+        assert_eq!(replay.output(), "fu", "{name}: {:#?}", replay.steps);
     }
 }

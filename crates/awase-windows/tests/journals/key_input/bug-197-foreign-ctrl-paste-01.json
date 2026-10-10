@@ -1,5 +1,5 @@
 {
- "source": "実記録: 報告 01M4J72G985T0FFT6XPN0SWCQQ の journal seq 61-64(KeyInput)。V の ctrl/foreign_ctrl=true は ADR-249 修正後にフックが載せる値(記録時は両方 false)",
+ "source": "実記録: 報告 01M4J72G985T0FFT6XPN0SWCQQ の journal seq 61-64(KeyInput)。値は記録のまま(ctrl は全て false、記録時は foreign_ctrl 自体が無い)",
  "keys": [
   {
    "t_us": 29858611,
@@ -7,7 +7,8 @@
    "scan": 29,
    "event_type": "down",
    "injected": true,
-   "foreign_ctrl": false,
+   "alt": false,
+   "shift": false,
    "ctrl": false
   },
   {
@@ -16,8 +17,9 @@
    "scan": 47,
    "event_type": "down",
    "injected": true,
-   "foreign_ctrl": true,
-   "ctrl": true
+   "alt": false,
+   "shift": false,
+   "ctrl": false
   },
   {
    "t_us": 29859417,
@@ -25,8 +27,9 @@
    "scan": 47,
    "event_type": "up",
    "injected": true,
-   "foreign_ctrl": true,
-   "ctrl": true
+   "alt": false,
+   "shift": false,
+   "ctrl": false
   },
   {
    "t_us": 29959726,
@@ -34,7 +37,8 @@
    "scan": 29,
    "event_type": "up",
    "injected": true,
-   "foreign_ctrl": false,
+   "alt": false,
+   "shift": false,
    "ctrl": false
   }
  ]
