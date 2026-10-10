@@ -2872,9 +2872,14 @@ impl Runtime {
                 // 予測の fence（`KEY_EFFECT_SETTLE_MS`）を通過して予測を誤って照合・上書きする。OsPoll 経路と同じ規律。
                 let read_started = crate::state::TickMs(hook::current_tick_ms());
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
-                let snap = crate::ime::read_ime_state_full_async().await;
+                let (snap, rd_id) = crate::ime::read_ime_state_full_async_with_id().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
+                        tracing::info!(
+                            "[rd-diag] apply-begin src=imm-cross id={rd_id} apply_us={} tick={}",
+                            crate::ime::rd_diag::now_us(),
+                            crate::hook::current_tick_ms(),
+                        );
                         crate::probe_rejection_stats::admit_epoch_in_app(
                             app,
                             ticket,
@@ -2917,6 +2922,11 @@ impl Runtime {
                                     );
                                 }
                             },
+                        );
+                        tracing::info!(
+                            "[rd-diag] apply-end src=imm-cross id={rd_id} input_mode={:?} candidate={:?}",
+                            app.platform_state.ime.input_mode(),
+                            app.platform_state.ime.belief.eisu_candidate(),
                         );
                     });
                 }

@@ -537,6 +537,76 @@ pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> 
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
 pub unsafe fn read_ime_state_full() -> ImeSnapshot {
+    unsafe { rd_diag::instrumented(|| unsafe { read_ime_state_full_inner() }) }
+}
+
+/// 診断専用(ci/adr238-eisu-candidate-verify、使い捨て。develop にはマージしない)。
+/// IME の読み 1 本ごとに id・開始/終了時刻(µs)・同時に走っていた読みの本数を `[rd-diag]` に残し、
+/// 2 本の読みの重なり(仮説 E)を数える。
+pub mod rd_diag {
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    static IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    thread_local! {
+        static LAST_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// 診断の時計(µs、プロセス内の最初の呼び出しからの経過)。
+    pub fn now_us() -> u64 {
+        u64::try_from(EPOCH.get_or_init(Instant::now).elapsed().as_micros()).unwrap_or(u64::MAX)
+    }
+
+    /// このスレッドで最後に終わった読みの id。
+    pub fn last_id() -> u64 {
+        LAST_ID.with(std::cell::Cell::get)
+    }
+
+    /// 環境変数 `AWASE_DIAG_TWIN_READ=1` なら、IME リフレッシュを 2 本同時に走らせる(重なりの増幅)。
+    pub fn twin_read() -> bool {
+        static TWIN: OnceLock<bool> = OnceLock::new();
+        *TWIN.get_or_init(|| std::env::var("AWASE_DIAG_TWIN_READ").is_ok_and(|v| v == "1"))
+    }
+
+    pub(super) unsafe fn instrumented(f: impl FnOnce() -> super::ImeSnapshot) -> super::ImeSnapshot {
+        let id = SEQ.fetch_add(1, Ordering::SeqCst);
+        let inflight_at_start = IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+        let t0 = now_us();
+        let tick0 = crate::hook::current_tick_ms();
+        let snap = f();
+        let t1 = now_us();
+        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        let started_during = SEQ.load(Ordering::SeqCst).saturating_sub(id + 1);
+        LAST_ID.with(|c| c.set(id));
+        tracing::info!(
+            "[rd-diag] read id={id} t0_us={t0} t1_us={t1} dur_us={} tick0={tick0} inflight_at_start={inflight_at_start} \
+             started_during={started_during} overlap={} ime_on={:?} conv={:?} timed_out={} tsf={}",
+            t1.saturating_sub(t0),
+            inflight_at_start > 0 || started_during > 0,
+            snap.ime_on,
+            snap.conversion_mode.map(|v| format!("0x{v:08X}")),
+            snap.probe_timed_out,
+            snap.is_tsf_native,
+        );
+        snap
+    }
+}
+
+/// 診断専用: 読みの id つきの async 版(`[rd-diag] apply-begin` と突き合わせる)。
+pub async fn read_ime_state_full_async_with_id() -> (ImeSnapshot, u64) {
+    // SAFETY: read_ime_state_full_async と同じ。
+    offload_unsafe(|| {
+        let s = unsafe { read_ime_state_full() };
+        (s, rd_diag::last_id())
+    })
+    .await
+}
+
+/// 元の `read_ime_state_full` の本体(診断の計測は呼び出し元の `read_ime_state_full` が包む)。
+unsafe fn read_ime_state_full_inner() -> ImeSnapshot {
     // この読み取りの間にIME窓への問い合わせが時間切れになったかを、スナップショットへ載せる。
     crate::imm::reset_probe_timed_out();
     // 0. フォーカスウィンドウを一度解決して全クエリに使う。

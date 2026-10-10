@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, ci/adr238-eisu-candidate-verify]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'ci/adr238-eisu-candidate-verify' && 'tsx-soak-conv0-*,sc-dbe-msime-native,sc-dbe-msime-native-twin,sc-dbe-gji-msime,msime-stale-table') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -784,6 +784,16 @@ jobs:
                            kinds='single', trials=4, len=25, runs=_spec.get('runs', 2), wait=900)
                   _r.update(setup=_spec.get('setup', 'none'), prepare=' ; '.join(_spec.get('prepare', [])), until='2026-12-01')
                   configs.append(_r)
+          # 仮説 E(ci/adr238-eisu-candidate-verify、使い捨て): 重なった 2 本の IME 読みが同じ一過性の conv=0 を拾って英数を誤確定するか。
+          # natural=そのまま(重なりの自然発生を [rd-diag] で数える)、twin=AWASE_DIAG_TWIN_READ=1 で毎回のリフレッシュを 2 本同時に走らせる(増幅)。
+          for _ime in ('msime', 'gji'):
+            for _mode in ('natural', 'twin'):
+              _s = tsx(f'soak-conv0-{_mode}-edit-{_ime}', 'edit', _ime, 20, kinds='single,thumb,mixed', trials=30, len=40,
+                       runs=40 if _ime == 'msime' else 12, wait=900)
+              _s.update(until='2026-11-10')
+              configs.append(_s)
+          _tw = [c for c in configs if c['name'] == 'sc-dbe-msime-native'][0]
+          configs.append(dict(_tw, name='sc-dbe-msime-native-twin', expect='observe', until='2026-11-10'))
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(fnmatch.fnmatchcase(c['name'], o) for o in only)]
@@ -1139,6 +1149,7 @@ jobs:
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n[imm_capability.`"typing_stress.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
+          if ('${{ matrix.cfg.name }}' -like '*twin*') { $env:AWASE_DIAG_TWIN_READ = '1' }
           # 順序: スパイクを先に起動し、初期化(TSF/ActivateProfile)が終わってから awase を起動する。
           # スパイクの初期化中に awase がIMMをプローブすると応答が無く、3回連続の miss で Edit を「IMM不可」と
           # 誤学習して conv を読まなくなる。--activate-gji はキーフックをawase起動後に遅延インストールし、

@@ -143,6 +143,40 @@ impl Runtime {
         }
     }
 
+    /// 診断(ci/adr238-eisu-candidate-verify、使い捨て。3fd282ee の `[conv0-probe]` の再利用): `conv=0`・`ime_on=Some(true)` を
+    /// 読んだら、その直後に +0/+20/+60/+120/+250ms で読み直して残す(belief には反映しない)。同時に 1 本だけ。
+    fn ir_probe_conv_zero_transient(ime_snap: Option<&crate::ime::ImeSnapshot>) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static PROBING: AtomicBool = AtomicBool::new(false);
+        let Some(snap) = ime_snap else { return };
+        if snap.conversion_mode != Some(0) || snap.ime_on != Some(true) {
+            return;
+        }
+        if PROBING.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        win32_async::spawn_local(async move {
+            let t0 = std::time::Instant::now();
+            let mut elapsed_before = 0u32;
+            for offset in [0u32, 20, 60, 120, 250] {
+                if offset > elapsed_before {
+                    win32_async::sleep_ms(offset - elapsed_before).await;
+                }
+                elapsed_before = offset;
+                let start_ms = t0.elapsed().as_millis();
+                let (s, id) = crate::ime::read_ime_state_full_async_with_id().await;
+                tracing::info!(
+                    "[conv0-probe] +{offset}ms (開始 {start_ms}ms 終了 {}ms) id={id} conv={:?} ime_on={:?} probe_timed_out={}",
+                    t0.elapsed().as_millis(),
+                    s.conversion_mode.map(|v| format!("0x{v:08X}")),
+                    s.ime_on,
+                    s.probe_timed_out,
+                );
+            }
+            PROBING.store(false, Ordering::SeqCst);
+        });
+    }
+
     // ── Stage 3: IME 状態の観測 ──
     //
     // Phase 3: IME 状態の再取得
@@ -166,6 +200,7 @@ impl Runtime {
         self.ir_follow_external_change(ime_snap);
         // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。
         self.ir_follow_direct_mode_key_read(ime_snap);
+        Self::ir_probe_conv_zero_transient(ime_snap);
         match strategy {
             ImeReadStrategy::SkipTyping => Self::ir_log_skip_typing_read(ime_snap),
             ImeReadStrategy::Blacklist => {

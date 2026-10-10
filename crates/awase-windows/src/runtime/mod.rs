@@ -1072,14 +1072,34 @@ impl Runtime {
         // eager warmup は post_focus_change_snapshot (run_with_prefetched 内) で injection_mode
         // 確定後に正しく送信される。
 
-        win32_async::spawn_local(async {
-            let focus = crate::focus::probe::run_focus_probe_async().await;
-            let snap = crate::ime::read_ime_state_full_async().await;
-            let _ = crate::with_app(|app| {
-                app.run_ime_refresh_with_prefetched(focus, &snap);
-                app.settle_tsf_gate_after_refresh();
+        // 診断(ci/adr238-eisu-candidate-verify、使い捨て): AWASE_DIAG_TWIN_READ=1 なら同じリフレッシュを 2 本同時に走らせる
+        // (重なった 2 本の読みが同じ一過性の conv=0 を拾うかの増幅)。
+        let copies: &[&'static str] = if crate::ime::rd_diag::twin_read() {
+            &["refresh", "refresh-twin"]
+        } else {
+            &["refresh"]
+        };
+        for &src in copies {
+            let spawn_us = crate::ime::rd_diag::now_us();
+            win32_async::spawn_local(async move {
+                let focus = crate::focus::probe::run_focus_probe_async().await;
+                let (snap, id) = crate::ime::read_ime_state_full_async_with_id().await;
+                let _ = crate::with_app(|app| {
+                    tracing::info!(
+                        "[rd-diag] apply-begin src={src} id={id} spawn_us={spawn_us} apply_us={} tick={}",
+                        crate::ime::rd_diag::now_us(),
+                        crate::hook::current_tick_ms(),
+                    );
+                    app.run_ime_refresh_with_prefetched(focus, &snap);
+                    app.settle_tsf_gate_after_refresh();
+                    tracing::info!(
+                        "[rd-diag] apply-end src={src} id={id} input_mode={:?} candidate={:?}",
+                        app.platform_state.ime.input_mode(),
+                        app.platform_state.ime.belief.eisu_candidate(),
+                    );
+                });
             });
-        });
+        }
     }
 
     /// 統合 IME リフレッシュタイマーをスケジュール（リセット）する。
