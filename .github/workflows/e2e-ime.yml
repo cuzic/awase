@@ -1105,6 +1105,12 @@ jobs:
             if (Test-Path $cust) { Remove-Item $cust -Recurse -Force }
             New-Item -Path $cust -Force | Out-Null
             foreach ($n in $nat.GetValueNames()) {
+              $kind = $nat.GetValueKind($n)
+              if ($kind -ne [Microsoft.Win32.RegistryValueKind]::Binary) {
+                "copy non-binary value $n ($kind)"
+                Set-ItemProperty -Path $cust -Name $n -Value $nat.GetValue($n) -Type $kind -Force
+                continue
+              }
               $v = [byte[]]$nat.GetValue($n)
               foreach ($e in $edits) { if ($e.Table -eq $n) { $v = Encode-Table $v $e.Row $e.Codes } }
               Set-ItemProperty -Path $cust -Name $n -Value $v -Type Binary -Force
@@ -1117,6 +1123,7 @@ jobs:
             foreach ($t in 'key', 'S4key') {
               $v = $k.GetValue($t)
               if ($null -eq $v) { "  $style\$t なし"; continue }
+              if ($k.GetValueKind($t) -ne [Microsoft.Win32.RegistryValueKind]::Binary) { "  $style\$t 非バイナリ"; continue }
               $sjis.GetString([byte[]]$v) -split "`0" | Where-Object { $_ -match '^(無変換|変換)=' } | ForEach-Object { "  $style\$t $_" }
             }
           }
