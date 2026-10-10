@@ -1,7 +1,7 @@
 ﻿# 実機(Windows 11 クライアント)での検証(ADR-248 V1)。Windows PowerShell 5.1 互換。
 # 触るレジストリ値は keystyle と NoTsf3Override2 だけ。StyleList\Custom の中身は書き換えない。
 # 開始時にバックアップし、try/finally で必ず元に戻して検証する。awase は止めて、終わったら同じパスで再起動する。
-param([string]$Out = 'C:\msime-real-out', [int]$Reps = 3,
+param([string]$Out = "$env:USERPROFILE\msime-real-out", [int]$Reps = 3,
       [string]$Spike = 'C:\awase-spike-target\debug\examples\ime_key_matrix_spike.exe')
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
@@ -63,7 +63,7 @@ function Restart-Ctfmon {
 }
 
 # ---- バックアップ(既にあれば上書きしない) ----
-$bk = 'C:\msime-real-backup'
+$bk = "$env:USERPROFILE\msime-real-backup"
 New-Item -ItemType Directory -Force -Path $bk | Out-Null
 if (-not (Test-Path "$bk\msime.reg")) {
   reg export "HKCU\$imejp\MSIME" "$bk\msime.reg" /y | Out-Null
