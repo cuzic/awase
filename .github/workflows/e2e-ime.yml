@@ -341,12 +341,13 @@ jobs:
             # F13〜F24 は学習表にセルが無く(key_effect_table.rs の NARROWABLE_KEYS 注記)、打鍵時予測が付かない。実 Chrome(TsfNative)で
             # 「かな→F16=半角英数(`ka`)」「F16 の半角英数→F17=かなに戻り Engine が追随(NICOLA)」を見る。FAIL=`ka`のまま/Engine OFF の `か` は belief のずれ。
             # -awimeon: F17 は awase の keys.ime_on(GJI 表に F17 行なし)。-gjif17: F17 は GJI 表(Precomposition=ひらがな/DirectInput=IMEOn)で awase は素通し。
-            # -noawase は -gjif17 の表で awase なしの対照(GJI 単体なら `か`)。
+            # -noawase は -gjif17 の表で awase なしの対照(GJI 単体なら `か`)。表のひらがな行(0xF2)は chrome_probe の前提状態づくり(半角英数→かな)用。
             *[cfg(f'sc-f16-alnum-chrome-{suf}', 'observe', check='chromeprobe', keymap=0, runs=1, wait=500, awase=aw, keys=ks,
                   general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
                   chrome=f'--f16-alnum --repeat=3 --settle=800{na}', until='2026-11-09',
                   tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff'
-                      '|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric' + f17)
+                      '|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric'
+                      '|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana' + f17)
               for suf, aw, ks, na, f17 in (
                   ('awimeon', 'true', 'ime_on = ["VK_F17"]', '', ''),
                   ('gjif17', 'true', '', '', '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn'),
