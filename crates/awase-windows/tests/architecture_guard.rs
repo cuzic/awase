@@ -8089,3 +8089,16 @@ fn belief_update_ports_are_called_only_from_platform_state() {
         "`&mut ….belief` を取り出して更新口を呼ぶ形は platform_state.rs の外では禁止です: {aliasing:?}"
     );
 }
+
+/// ADR-247 追補: F13〜F24 のモードキー追随は OS の自動リピート（`was_down`）を除外する。
+/// 長押しの PTT・マクロキーで通過マークと 20ms 後の読み直しが約 33ms ごとに再予約されるのを防ぐ。
+#[test]
+fn mode_key_follow_skips_auto_repeat_at_entry() {
+    let src = read_crate_file("src/runtime/key_pipeline.rs");
+    let body = extract_fn_body(&src, "fn kp_stage_mode_key_follow");
+    let squashed: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        squashed.contains("mode_key_follow_admits_repeat(event.was_down)"),
+        "kp_stage_mode_key_follow は入口で mode_key_follow_admits_repeat(event.was_down) を見ること"
+    );
+}

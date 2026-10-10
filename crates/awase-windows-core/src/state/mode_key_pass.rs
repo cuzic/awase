@@ -266,6 +266,14 @@ pub const fn mode_key_follow_admits_modifiers(shift: bool) -> bool {
     !shift
 }
 
+/// OS の自動リピート（`was_down`）の KeyDown は追随の対象にしない。最初の押下で既に通過マークと読み直しを
+/// 立てており、リピートごとに再 arm すると（約 33ms 間隔、F13〜F24 の PTT・マクロキーの長押し等）
+/// 20ms 後の読み直しが予約され続け、`desired_open` の揃えと打鍵中の除外もすり抜ける（ADR-247 の追補）。
+#[must_use]
+pub const fn mode_key_follow_admits_repeat(was_down: bool) -> bool {
+    !was_down
+}
+
 /// 通過マークの窓が切れるまでの残り時間(ms)。窓が切れていれば`None`。
 #[must_use]
 pub(crate) const fn mode_key_pass_window_remaining_ms(age_ms: u64, window_ms: u64) -> Option<u64> {
@@ -474,6 +482,13 @@ mod tests {
     /// ADR-186 残る問題2）だけを止める。両者を混同すると `atok-resync*` の追随が構造的に効かなくなる
     /// （`kp_stage_key_effect_track` の予測抑止〈`modifiers_suppress_prediction`、Ctrl/Alt/Win 含む〉と
     /// 同じ述語を追随側でも使ってしまったのが原因。理由が別物なので述語も分ける）。
+    #[test]
+    fn mode_key_follow_skips_auto_repeat() {
+        // 最初の押下（was_down=false）は追随する。長押しのリピート（was_down=true）は再 arm しない。
+        assert!(mode_key_follow_admits_repeat(false));
+        assert!(!mode_key_follow_admits_repeat(true));
+    }
+
     #[test]
     fn mode_key_follow_admits_ctrl_but_not_shift() {
         // 判定は shift だけを見る。ctrl/alt/win は Ctrl+無変換→Ctrl+変換（--resync）のためあえて見ない

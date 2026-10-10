@@ -1651,6 +1651,7 @@ impl Runtime {
         if decision.is_consumed()
             || !matches!(event.event_type, KeyEventType::KeyDown)
             || event.injected
+            || !crate::state::mode_key_pass::mode_key_follow_admits_repeat(event.was_down)
             || !crate::vk::is_followed_mode_key(event.vk_code)
             || event.ime_relevance.shadow_action.is_some()
             || event.ime_relevance.sync_direction.is_some()
