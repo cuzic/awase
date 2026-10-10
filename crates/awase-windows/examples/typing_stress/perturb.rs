@@ -108,11 +108,46 @@ fn foreign_key(vk: u32, scan: u16, flags: u32, down: bool) {
     }
 }
 
-/// クリップボードへ文字列を置く(`Win32_System_DataExchange` を足さず PowerShell に任せる)。
+/// クリップボードへ文字列を置く(Win32 を直接呼ぶ。PowerShell を起動すると前面を奪い、
+/// 入力先が `focus_ok=False` になって試行が無効になる)。
 fn set_clipboard(text: &str) {
-    let _ = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -Value $args[0]", text])
-        .status();
+    use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes = wide.len() * size_of::<u16>();
+    unsafe {
+        // 他プロセスが一時的に開いていることがあるので数回やり直す。
+        let mut opened = false;
+        for _ in 0..20 {
+            if OpenClipboard(None).is_ok() {
+                opened = true;
+                break;
+            }
+            sleep_ms(10);
+        }
+        if !opened {
+            crate::log("[WARN] OpenClipboard に失敗");
+            return;
+        }
+        let _ = EmptyClipboard();
+        let h: Result<HGLOBAL, _> = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if let Ok(h) = h {
+            let p = GlobalLock(h).cast::<u16>();
+            if !p.is_null() {
+                std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+                let _ = GlobalUnlock(h);
+                if SetClipboardData(CF_UNICODETEXT, Some(HANDLE(h.0))).is_err() {
+                    crate::log("[WARN] SetClipboardData に失敗");
+                }
+            }
+        }
+        let _ = CloseClipboard();
+    }
 }
 
 fn num<T: std::str::FromStr>(key: &str) -> Option<T> {

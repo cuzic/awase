@@ -92,6 +92,8 @@ features = [
     "Win32_UI_Shell",
     "Win32_Security",
     "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_Variant",
 ]
