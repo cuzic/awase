@@ -262,6 +262,82 @@ fn send_key(vk: u32, down: bool) {
     }
 }
 
+/// レビュー指摘 C の検証(使い捨て): 名前に `name` を含むプロセスを即座に `ms` だけ一時停止する(`typing_stress/suspend.rs` の縮小版)。
+/// 戻り値のスレッドは再開後に結果(停止したプロセスと NTSTATUS)を返す。
+fn suspend_proc_for(name: String, ms: u64) -> std::thread::JoinHandle<String> {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SUSPEND_RESUME};
+    type NtProcFn = unsafe extern "system" fn(HANDLE) -> i32;
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let h = std::thread::spawn(move || {
+        // SAFETY: ntdll は全プロセスに読み込み済み。Nt(Suspend|Resume)Process は (HANDLE)->NTSTATUS。
+        let fns: Option<(NtProcFn, NtProcFn)> = unsafe {
+            GetModuleHandleW(w!("ntdll.dll")).ok().and_then(|m| {
+                let s = GetProcAddress(m, windows::core::s!("NtSuspendProcess"))?;
+                let r = GetProcAddress(m, windows::core::s!("NtResumeProcess"))?;
+                Some((std::mem::transmute::<_, NtProcFn>(s), std::mem::transmute::<_, NtProcFn>(r)))
+            })
+        };
+        let Some((suspend, resume)) = fns else {
+            let _ = tx.send(());
+            return "error=no-ntdll-fns".to_string();
+        };
+        let mut pids = Vec::new();
+        // SAFETY: 全プロセスのスナップショット。ハンドルは下で閉じる。
+        if let Ok(snap) = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
+            let mut e = PROCESSENTRY32W {
+                dwSize: size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            // SAFETY: snap は有効、e は dwSize 設定済み。
+            if unsafe { Process32FirstW(snap, &raw mut e) }.is_ok() {
+                loop {
+                    let end = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+                    let n = String::from_utf16_lossy(&e.szExeFile[..end]);
+                    if n.to_ascii_lowercase().contains(&name) {
+                        pids.push((n, e.th32ProcessID));
+                    }
+                    // SAFETY: 同上。
+                    if unsafe { Process32NextW(snap, &raw mut e) }.is_err() {
+                        break;
+                    }
+                }
+            }
+            // SAFETY: 一度だけ閉じる。
+            let _ = unsafe { CloseHandle(snap) };
+        }
+        let mut held = Vec::new();
+        for (n, pid) in pids {
+            // SAFETY: pid は直前のスナップショット由来。
+            if let Ok(h) = unsafe { OpenProcess(PROCESS_SUSPEND_RESUME, false, pid) } {
+                // SAFETY: h は PROCESS_SUSPEND_RESUME 付きの有効なハンドル。
+                let st = unsafe { suspend(h) };
+                held.push((n, pid, h, st));
+            }
+        }
+        let t = Instant::now();
+        let _ = tx.send(());
+        sleep(ms);
+        let mut out = Vec::new();
+        for (n, pid, h, st) in held {
+            // SAFETY: h は有効。停止に失敗していても Resume は無害。
+            let rst = unsafe { resume(h) };
+            // SAFETY: 一度だけ閉じる。
+            let _ = unsafe { CloseHandle(h) };
+            out.push(format!("{n}({pid}) s={st} r={rst}"));
+        }
+        format!("matched=[{}] held_ms={}", out.join(", "), t.elapsed().as_millis())
+    });
+    // 停止が終わってから打鍵を始める(停止の前に IME がキーを処理してしまわないように)。
+    let _ = rx.recv_timeout(Duration::from_millis(500));
+    h
+}
+
 fn send_ctrl_muhenkan() {
     send_key(0xA2, true);
     sleep(40);
@@ -2002,17 +2078,36 @@ fn main() {
         // 未知の値は黙って全状態にせず、設定の書き間違いとして終了コード 2 で止める。
         let state_arg = args.iter().find_map(|a| a.strip_prefix("--table-state="));
         if let Some(v) = state_arg {
-            if v != "shift" {
-                eprintln!("--table-state の値は shift のみ: {v:?}");
+            if v != "shift" && v != "kana" {
+                eprintln!("--table-state の値は shift / kana のみ: {v:?}");
                 std::process::exit(2);
             }
         }
         let only_shift = state_arg == Some("shift");
+        let only_kana = state_arg == Some("kana");
         let states: Vec<&str> = ALL_STATES
             .iter()
             .copied()
             .filter(|st| !only_shift || *st == "Shift単独タップ後")
+            .filter(|st| !only_kana || *st == "かな")
             .collect();
+        // `--table-thumb=1D --table-gap=30`(レビュー指摘 C の検証、使い捨て): キーを単独で押す代わりに、親指キーを押したまま
+        // gap ms 後にキーを押す(親指↓ → キー↓ → キー↑ → 親指↑)。NICOLA FSM が保留中の親指を、予測の付く非消費キーで
+        // 単独タップとして再送出する経路を作る。`--table-suspend=<proc>:<ms>` は親指↓の直前に <proc> を <ms> だけ一時停止する(IME を遅くする)。
+        let table_thumb: Option<u32> = args.iter().find_map(|a| {
+            a.strip_prefix("--table-thumb=")
+                .and_then(|v| u32::from_str_radix(v.trim(), 16).ok())
+        });
+        let table_gap: u64 = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--table-gap=").and_then(|v| v.parse().ok()))
+            .unwrap_or(30);
+        let table_suspend: Option<(String, u64)> = args.iter().find_map(|a| {
+            a.strip_prefix("--table-suspend=").and_then(|v| {
+                let (n, ms) = v.split_once(':')?;
+                Some((n.to_ascii_lowercase(), ms.parse().ok()?))
+            })
+        });
         const ALL_KEYS: [(&str, u32); 6] = [
             ("変換", 0x1C),
             ("無変換", 0x1D),
@@ -2109,7 +2204,31 @@ fn main() {
                         }
                         _ => {}
                     }
-                    p.press(kvk, false, 60);
+                    if let Some(thumb) = table_thumb {
+                        let susp = table_suspend
+                            .as_ref()
+                            .map(|(n, ms)| suspend_proc_for(n.clone(), *ms));
+                        let t0 = Instant::now();
+                        send_key(thumb, true);
+                        sleep(table_gap);
+                        send_key(kvk, true);
+                        sleep(60);
+                        send_key(kvk, false);
+                        sleep(30);
+                        send_key(thumb, false);
+                        p.log.line(&format!(
+                            "KEY chord thumb=0x{thumb:02X} vk=0x{kvk:02X} gap={table_gap}ms took={}ms suspend={:?} (auto)",
+                            t0.elapsed().as_millis(),
+                            table_suspend
+                        ));
+                        if let Some(h) = susp {
+                            if let Ok(st) = h.join() {
+                                p.log.line(&format!("SUSPEND {st}"));
+                            }
+                        }
+                    } else {
+                        p.press(kvk, false, 60);
+                    }
                     sleep(settle_ms);
                     let got = p.probe_logged("キー後");
                     if p.focus_lost {

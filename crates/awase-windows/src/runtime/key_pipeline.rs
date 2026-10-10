@@ -1663,9 +1663,16 @@ impl Runtime {
         if self.direct_mode_key_watch_kind().is_some()
             && !crate::tsf::observer::ime_composition_active_now()
         {
+            let now = hook::current_tick_ms();
             self.platform_state
                 .ime
-                .arm_direct_external_change_watch(hook::current_tick_ms());
+                .arm_direct_external_change_watch(now);
+            // レビュー指摘 C の検証(使い捨て・挙動不変)。
+            tracing::info!(
+                "[arm-diag] arm src=physical vk=0x{:02X} now={now} decision_consumed={}",
+                event.vk_code.0,
+                decision.is_consumed()
+            );
             self.schedule_ime_refresh(20);
         }
         // Shift 押下中（Shift+無変換/変換 = ATOK ではかな⇔半角英数で開閉を変えない、ADR-186 残る問題2）は
@@ -1818,6 +1825,15 @@ impl Runtime {
             prediction.track
         );
         let tick = crate::state::TickMs(hook::current_tick_ms());
+        // レビュー指摘 C の検証(使い捨て・挙動不変): 予測の時刻(KeyEffectPrediction.at_ms になる値)。
+        tracing::info!(
+            "[arm-diag] predict vk=0x{:02X} at_ms={} open={:?} mode={:?} noop={}",
+            vk.0,
+            tick.0,
+            prediction.effect.open,
+            prediction.effect.mode,
+            prediction.effect.is_noop()
+        );
         self.platform_state
             .ime
             .apply_key_effect_prediction(prediction, tick);

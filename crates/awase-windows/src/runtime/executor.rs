@@ -636,6 +636,21 @@ impl DecisionExecutor {
                     && !crate::tsf::observer::ime_composition_active_now()
                 {
                     ime.arm_direct_external_change_watch(now);
+                    // レビュー指摘 C の検証(使い捨て・挙動不変)。
+                    let pred = ime.model().key_effect();
+                    tracing::info!(
+                        "[arm-diag] arm src=fsm-resend now={now} pred_at={:?} pred_open={:?} pred_mode={:?} cross={:?}",
+                        pred.map(|p| p.at_ms),
+                        pred.and_then(|p| p.open),
+                        pred.and_then(|p| p.mode),
+                        pred.map(|p| now > p.at_ms),
+                    );
+                } else {
+                    tracing::info!(
+                        "[arm-diag] arm-skipped src=fsm-resend now={now} kind={:?} composing={}",
+                        super::direct_mode_key_watch_kind_for(platform.current_app_profile()),
+                        crate::tsf::observer::ime_composition_active_now()
+                    );
                 }
                 ime.arm_mode_key_pass_mark(
                     now,
