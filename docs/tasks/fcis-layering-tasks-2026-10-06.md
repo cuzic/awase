@@ -113,7 +113,7 @@ P4 に書かれていなかった前提 2 つ(Opus の Must): **M12** `platform_
 4. P2 の殻は 13 個で、`RECORDERS` の数え方を同じ PR で直す。「11 個・差分 0」と書き写さない。
 5. P3 はテストの構築の付け替え(36 か所。うち時計を読むのは引数なしの `effective_open()` を呼ぶ 2 本だけ。「19 か所」は `effective_open()` という文字列の出現数で、`effective_open_at(..)` の呼び出し数ではない=実数は 33。Opus の #503 レビュー Should 3)を含む。P4 は殻の名前 16 か所・`foreground_scope()` 直接 9 か所のテストの書き換えを含む。
 6. 順序: P1 は #495 のマージ後。P2 → P3 は直列。RW は並行可。
-7. `HubClock` は Tier-2 の外(時計の実装そのもの)。`hub_clock.rs` 自身は `CORE_MODULES` に入らない。
+7. ~~`HubClock` は Tier-2 の外~~ **訂正(段階 B-2、PR #568)**: 実時計を構築側から注入する形にしたので `hub_clock.rs` は `CORE_MODULES` に入った。
 8. `CORE_MODULES` は「違反 0 のファイルだけ」で、許可リストは持たない。違反のある 8 ファイルの内訳(付録 B)は「殻へ出す候補」。
 9. ADR-224 の改訂は所有者の判断で、ADR-229 の改訂とは別に記録する。
 10. 共通の後処理と、着手前の「テストが呼ぶ識別子は gated 側にないか」を、各 PR の成否の判定に入れる。
@@ -139,7 +139,7 @@ P0 の初期対象は `state/` に限る(`state/` 以外を対象にするなら
 
 | ファイル | 違反 | 殻へ出す候補 |
 |---|---|---|
-| `state/hub_clock.rs` | `Instant::now()` 2 件(`:41`、`:51`) | 時計の実装そのもの。**恒久的に Tier-2 の外** |
+| `state/hub_clock.rs` | `Instant::now()` 2 件(`:41`、`:51`) | ~~時計の実装そのもの。恒久的に Tier-2 の外~~ → 段階 B-2(PR #568)で実時計を注入にして `CORE_MODULES` へ |
 | `state/ime_event.rs` | `#[cfg(windows)] impl HwndId`・`impl From<HWND> for HwndId`(`:36`、`:46`) | HWND との変換は殻(拡張 trait 化) |
 | `state/ime_model.rs` | `Instant::now()`(`:435` の `effective_open()`、`:504`) | `effective_open_at(now)` を呼ぶ側へ |
 | `state/ime_profile_driver.rs` | `static` 3 つ(`IMM_CROSS_DRIVER`・`IMM32_UNAVAILABLE_DRIVER`・`TSF_NATIVE_DRIVER`、`:186-188`。不変だが `static` は一律に違反とする。可変か不変かをテキスト走査で判定するのは難しい) | ゼロサイズの構造体なので `const` による `&'static dyn` の昇格で置き換えられる見込み(**未確認**)。直すまで `CORE_MODULES` に載せない |
@@ -262,10 +262,10 @@ V1 は、PR で `CORE_MODULES` に足した名前が `.cargo/mutants-awase-windo
 
 ### crate の物理分割: 段階 A の実施(2026-10-10、ブランチ `refactor/fcis-crate-split-prep`)
 
-付録 B のうち 6 件を `CORE_MODULES` へ移した(`ime_event`・`ime_model`・`probe_admission`・`ime_profile_driver`・`key_effect_predictor`・`key_effect_runtime`、`hub_clock` は恒久的に殻)。切り出した殻は `win32.rs`(`HwndIdExt`)・`probe_rejection_stats.rs`・`key_effect_io.rs`(crate 直下)。`architecture_guard.rs` に付け替え表 `RELOCATED` を足した(分割前は空)。
+付録 B のうち 6 件を `CORE_MODULES` へ移した(`ime_event`・`ime_model`・`probe_admission`・`ime_profile_driver`・`key_effect_predictor`・`key_effect_runtime`、`hub_clock` は段階 B-2(PR #568)で実時計を注入にして核へ)。切り出した殻は `win32.rs`(`HwndIdExt`)・`probe_rejection_stats.rs`・`key_effect_io.rs`(crate 直下)。`architecture_guard.rs` に付け替え表 `RELOCATED` を足した(分割前は空)。
 
 段階 B(crate を切る)の前に残る課題:
-- `platform_state`(`CORE_MODULES`)が殻の `hub_clock::HubClock`(`Instant::now()`)に依存する。`HubClock` を核へ移すか、時計を trait で受けるかを決める。
+- ~~済み(段階 B-2、PR #568)~~ `platform_state`(`CORE_MODULES`)が殻の `hub_clock::HubClock`(`Instant::now()`)に依存する。`HubClock` を核へ移すか、時計を trait で受けるかを決める。
 - `vk`・`tuning` の 5 定数・`focus::class_names`・`FocusKind`・`ime`・`tsf::TsfGate`・`with_app` への依存の扱い。
 - ~~ディレクトリを丸ごと走査するガード(`join("src")` 11 + 5 か所)を、走査する場所を複数指定できる形に~~ **済み**(段階 B-1、PR #567。`EXTRA_SRC_CRATES`)。
 - doc コメントの `awase_windows::state::...` の例(doctest)の付け替え。

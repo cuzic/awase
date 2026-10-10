@@ -695,8 +695,9 @@ fn core_violations(content: &str) -> Vec<(usize, &'static str, String)> {
         let s = strip_string_literals(code);
         let t = code.trim().to_string();
         if [
-            "Instant::now(",
-            "SystemTime::now(",
+            // 括弧なしで関数ポインタとして渡す形（`HubClock::wall(.., Instant::now)`）も壁時計の読み取り。
+            "Instant::now",
+            "SystemTime::now",
             "quanta::",
             "MonotonicClock",
         ]
@@ -856,6 +857,11 @@ mod core_guard_helper_tests {
     #[test]
     fn detects_wall_clock_and_ignores_comments_and_strings() {
         assert_eq!(rules("let t = Instant::now();\n"), ["wall-clock"]);
+        assert_eq!(
+            rules("let c = HubClock::wall(tick, Instant::now);\n"),
+            ["wall-clock"],
+            "関数ポインタ経由の壁時計"
+        );
         assert_eq!(
             rules("let t = std::time::SystemTime::now();\n"),
             ["wall-clock"]
