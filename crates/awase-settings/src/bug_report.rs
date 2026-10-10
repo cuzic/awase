@@ -926,7 +926,7 @@ impl BugReportApp {
                 "bug_report_journal_rows",
                 "journal（キー入力・IME状態の記録）",
                 self.journal_rows.as_mut(),
-                BulkDelete::KeyInputRows,
+                BulkDelete::TypedTextRows,
             );
             ui.label(&self.app_log_status);
             draw_log_rows(
@@ -940,18 +940,26 @@ impl BugReportApp {
     }
 }
 
-/// 一覧の見出し横に出す、種類別の一括削除ボタン（journal の打鍵行だけ）。
+/// 一覧の見出し横に出す、種類別の一括削除ボタン（journal の、入力した文字が分かる行）。
 #[derive(Clone, Copy)]
 enum BulkDelete {
     None,
-    /// journal 用: `"type":"KeyInput"` の行（打鍵の記録）をすべて削除する。
-    KeyInputRows,
+    /// journal 用: 入力した文字が分かる行（`JournalEntry::contains_typed_text()` が真の型。
+    /// 打鍵 `KeyInput`・送ったキー `SentInput`・`LiteralDetect`）をすべて削除する（ADR-250 決定 7）。
+    TypedTextRows,
 }
 
-/// journal の行のうち、打鍵（KeyInput）の記録かどうか。`journal_json_to_rows` が出す
-/// compact JSON では `"type":"KeyInput"` と空白なしで並ぶ。
-fn is_key_input_row(row: &str) -> bool {
-    row.contains(r#""type":"KeyInput""#)
+/// journal の行のうち、入力した文字が分かる型（`awase_windows::journal::TYPED_TEXT_TYPE_NAMES`）の
+/// 記録かどうか。`journal_json_to_rows` が出す 1 行（`{"seq":..,"elapsed_ms":..,"entry":{"type":"X",..}}`）
+/// の `entry.type` の値で決める（文字列の部分一致ではない。他のフィールドの中身に型名があっても誤爆しない）。
+/// JSON として読めない行は、消し漏れより送信を避ける側に倒して「入力文字を含む」とみなす。
+fn is_typed_text_row(row: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(row) else {
+        return true;
+    };
+    value["entry"]["type"]
+        .as_str()
+        .is_some_and(|ty| awase_windows::journal::TYPED_TEXT_TYPE_NAMES.contains(&ty))
 }
 
 /// 行 `index` より前（古い側）をすべて削除する。削除した件数を返す。
@@ -961,10 +969,10 @@ fn delete_rows_before(rows: &mut Vec<String>, index: usize) -> usize {
     n
 }
 
-/// 打鍵（KeyInput）の行をすべて削除する。削除した件数を返す。
-fn delete_key_input_rows(rows: &mut Vec<String>) -> usize {
+/// 入力した文字が分かる行（打鍵・送ったキー・`LiteralDetect`）をすべて削除する。削除した件数を返す。
+fn delete_typed_text_rows(rows: &mut Vec<String>) -> usize {
     let before = rows.len();
-    rows.retain(|row| !is_key_input_row(row));
+    rows.retain(|row| !is_typed_text_row(row));
     before - rows.len()
 }
 
@@ -975,7 +983,7 @@ fn delete_key_input_rows(rows: &mut Vec<String>) -> usize {
 /// 複数行の行（panic のバックトレース等）は 1 行目と行数だけを表示するが、**行にマウスを
 /// 乗せると全文が出る**（ユーザー名を含むパスが 2 行目以降に入りうるため、全文を見られない
 /// まま送らない。Opus round2 B-E2）。削除は 1 行ずつのほか、「これより前をすべて削除」と
-/// （journal のみ）「打鍵の行をすべて削除」ができる。削除した行は `rows` から取り除かれ、
+/// （journal のみ）「入力した文字が分かる行をすべて削除」ができる。削除した行は `rows` から取り除かれ、
 /// 送信内容（圧縮データ）に含まれない。
 fn draw_log_rows(
     ui: &mut egui::Ui,
@@ -991,13 +999,13 @@ fn draw_log_rows(
         .id_salt(id)
         .default_open(true)
         .show(ui, |ui| {
-            if matches!(bulk, BulkDelete::KeyInputRows)
+            if matches!(bulk, BulkDelete::TypedTextRows)
                 && ui
-                    .button("打鍵（KeyInput）の行をすべて削除")
-                    .on_hover_text("入力した文字が分かる行（キー入力の記録）を一括で消します。\n原因調査には役立つ情報なので、消すと調べにくくなります。")
+                    .button("入力した文字が分かる行をすべて削除")
+                    .on_hover_text("入力した文字が分かる行（打鍵の記録・awase が送ったキー・文字化け判定の記録）を一括で消します。\n原因調査には役立つ情報なので、消すと調べにくくなります。")
                     .clicked()
             {
-                delete_key_input_rows(rows);
+                delete_typed_text_rows(rows);
             }
             // 実際の 1 行は `ui.horizontal`（高さは最低 `interact_size.y`）の中に小さなボタン 2 つと
             // ラベルが並ぶ。宣言した高さより実際の行が高いと、スクロールの末尾で最新の行に届かない
@@ -1423,7 +1431,7 @@ mod font_guard_tests {
 #[cfg(test)]
 mod log_rows_tests {
     use super::{
-        BugReportApp, BugReportArgs, delete_key_input_rows, delete_rows_before, load_app_log_rows,
+        BugReportApp, BugReportArgs, delete_rows_before, delete_typed_text_rows, load_app_log_rows,
         unix_seconds_to_rfc3339,
     };
     use std::path::PathBuf;
@@ -1447,16 +1455,33 @@ mod log_rows_tests {
     }
 
     #[test]
-    fn delete_key_input_rows_removes_only_key_input_entries() {
+    fn delete_typed_text_rows_removes_key_input_sent_input_and_literal_detect_only() {
         let mut rows = vec![
-            r#"{"seq":1,"entry":{"type":"KeyInput","event":{"vk_code":65}}}"#.to_owned(),
-            r#"{"seq":2,"entry":{"type":"ImeEvent"}}"#.to_owned(),
-            r#"{"seq":3,"entry":{"type":"KeyInput","event":{"vk_code":66}}}"#.to_owned(),
-            r#"{"seq":4,"entry":{"type":"FocusTransition"}}"#.to_owned(),
+            r#"{"seq":1,"elapsed_ms":1,"entry":{"type":"KeyInput","event":{"vk_code":65}}}"#.to_owned(),
+            r#"{"seq":2,"elapsed_ms":2,"entry":{"type":"ImeEvent"}}"#.to_owned(),
+            r#"{"seq":3,"elapsed_ms":3,"entry":{"type":"SentInput","issue_us":1,"accepted":1,"events":[]}}"#.to_owned(),
+            r#"{"seq":4,"elapsed_ms":4,"entry":{"type":"FocusTransition"}}"#.to_owned(),
+            r#"{"seq":5,"elapsed_ms":5,"entry":{"type":"LiteralDetect"}}"#.to_owned(),
+            // 他のフィールドの中身に型名があっても消さない(部分一致ではない)。
+            r#"{"seq":6,"elapsed_ms":6,"entry":{"type":"GjiFsmTransition","trigger":"\"type\":\"KeyInput\""}}"#.to_owned(),
         ];
-        assert_eq!(delete_key_input_rows(&mut rows), 2);
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|r| !r.contains("KeyInput")));
+        assert_eq!(delete_typed_text_rows(&mut rows), 3);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().any(|r| r.contains("GjiFsmTransition")));
+        assert!(
+            rows.iter()
+                .all(|r| !r.contains(r#""type":"KeyInput""#) || r.contains("GjiFsmTransition"))
+        );
+    }
+
+    #[test]
+    fn unreadable_journal_row_is_treated_as_typed_text() {
+        let mut rows = vec![
+            "not json".to_owned(),
+            r#"{"entry":{"type":"ImeEvent"}}"#.to_owned(),
+        ];
+        assert_eq!(delete_typed_text_rows(&mut rows), 1);
+        assert_eq!(rows, vec![r#"{"entry":{"type":"ImeEvent"}}"#.to_owned()]);
     }
 
     #[test]

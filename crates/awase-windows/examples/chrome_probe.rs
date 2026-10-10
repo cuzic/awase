@@ -20,7 +20,7 @@
 //! その後 k,a を打って実際の IME 状態(打鍵結果)を確認する。`--or-ladder` は閉じなかった試行で別手段(再送・IMC・0xF3・0x19・TSF 大域 compartment)を順に試す。
 //! `--or-relaunch` は試行ごとに Chrome を起動し直す(ページ状態の蓄積の影響を切り分ける)。判定は check_offrca.py(`OFFRCA {json}` 行)。
 //!
-//! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--chrome=<chrome.exe>] [--log=<path>]`
+//! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--f16-alnum] [--chrome=<chrome.exe>] [--log=<path>]`
 //!   `--no-awase`: awase を止めた対照実験（かなのとき `か` を期待）。既定は awase 起動中（NICOLA を期待）。
 //! `--tray-cmd=<ID>` は awase のトレイウィンドウへメニュー選択と同じ WM_COMMAND を送る(ID は tray.rs の IDM_*。例: 52=IMM キャッシュのクリア)。
 //! `--file-state=<path>[,<path>...]` を併せて指定すると、送る前後でそのファイルの状態を `FILE_STATE` 行に出す(存在・長さ・FNV-1a。
@@ -432,6 +432,8 @@ enum Setup {
     Kana,
     Off,
     Alnum,
+    /// かな → F16(GJI の CUSTOM 表で半角英数へ)。`--f16-alnum` 用(筆者報告の構成: 英数キーが F16)。
+    AlnumF16,
 }
 
 /// 状態を「かな」「直接入力」「半角英数」に持っていく。状態はプローブ(打った文字)で確認する。
@@ -462,6 +464,14 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
             sleep(500);
             p.probe_logged("setup:IME_OFF後") == Class::Plain
         }
+        Setup::AlnumF16 => {
+            p.press(VK_F16, false, 60);
+            sleep(500);
+            matches!(
+                p.probe_logged("setup:F16(かな→半角英数)後"),
+                Class::Plain | Class::NicolaLiteral
+            )
+        }
         Setup::Alnum => {
             p.press(0xF2, false, 60);
             sleep(500);
@@ -474,6 +484,8 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
 }
 
 const VK_LSHIFT: u32 = 0xA0;
+const VK_F16: u32 = 0x7F;
+const VK_F17: u32 = 0x80;
 
 struct Case {
     name: &'static str,
@@ -498,6 +510,27 @@ const F13_CASES: [Case; 2] = [
         name: "直接入力→F13=かなON",
         setup: Setup::Off,
         vk: 0x7C,
+        shift: false,
+        expect_kana: true,
+    },
+];
+
+/// `--f16-alnum`(外部報告の構成、F13〜F24 は学習表にセルが無い): 英数=F16・IME ON=F17 の ANSI 配列利用者向け。
+/// GJI の CUSTOM 表で F16 を半角英数、F17 をひらがな(DirectInput では IME ON)にした構成で、
+/// 「かな→F16=半角英数(`ka`)」「F16 の半角英数→F17=かなに戻る(Engine が追随して NICOLA)」を実 Chrome で見る。
+/// 表と awase 設定(keys.ime_on の有無)は呼び出し側(ワークフロー)。
+const F16_ALNUM_CASES: [Case; 2] = [
+    Case {
+        name: "かな→F16=半角英数",
+        setup: Setup::Kana,
+        vk: VK_F16,
+        shift: false,
+        expect_kana: false,
+    },
+    Case {
+        name: "F16の半角英数→F17=かな",
+        setup: Setup::AlnumF16,
+        vk: VK_F17,
         shift: false,
         expect_kana: true,
     },
@@ -1964,8 +1997,23 @@ fn main() {
     // 状態=直接入力/かな/半角英数(IME のキーで)/Shift 単独タップ後の持続半角英数。キー=変換/無変換/英数/ひらがな/IME_ON/IME_OFF。
     if args.iter().any(|a| a == "--table") {
         let msime = args.iter().any(|a| a == "--msime");
-        const STATES: [&str; 4] = ["直接入力", "かな", "半角英数", "Shift単独タップ後"];
-        const KEYS: [(&str, u32); 6] = [
+        const ALL_STATES: [&str; 4] = ["直接入力", "かな", "半角英数", "Shift単独タップ後"];
+        // `--table-state=shift`: 「Shift単独タップ後」の状態だけ回す(ADR-244、BUG-186 の専用構成)。省略で全状態。
+        // 未知の値は黙って全状態にせず、設定の書き間違いとして終了コード 2 で止める。
+        let state_arg = args.iter().find_map(|a| a.strip_prefix("--table-state="));
+        if let Some(v) = state_arg {
+            if v != "shift" {
+                eprintln!("--table-state の値は shift のみ: {v:?}");
+                std::process::exit(2);
+            }
+        }
+        let only_shift = state_arg == Some("shift");
+        let states: Vec<&str> = ALL_STATES
+            .iter()
+            .copied()
+            .filter(|st| !only_shift || *st == "Shift単独タップ後")
+            .collect();
+        const ALL_KEYS: [(&str, u32); 6] = [
             ("変換", 0x1C),
             ("無変換", 0x1D),
             ("英数", 0xF0),
@@ -1973,6 +2021,36 @@ fn main() {
             ("IME_ON", 0x16),
             ("IME_OFF", 0x1A),
         ];
+        // `--table-keys=1C,1D,F0,F2`: 仮想キーコード(16進)をカンマ区切りで指定したキーだけ回す。省略で全キー。
+        let key_filter: Option<Vec<u32>> = args.iter().find_map(|a| {
+            a.strip_prefix("--table-keys=").map(|v| {
+                v.split(',')
+                    .map(|h| {
+                        let vk = u32::from_str_radix(h.trim(), 16).ok();
+                        if !vk.is_some_and(|vk| ALL_KEYS.iter().any(|(_, k)| *k == vk)) {
+                            eprintln!("--table-keys に未知の要素 {h:?}(16進の仮想キーコード 1C,1D,F0,F2,16,1A のいずれか)");
+                            std::process::exit(2);
+                        }
+                        vk.unwrap_or_default()
+                    })
+                    .collect()
+            })
+        });
+        // `--table-pre=F2`: 「Shift単独タップ後」で、Shift タップの前にこのキーを 1 回押す(ADR-244 M-2 の機序の確認用)。
+        // 予測付きのモードキー(ひらがな 0xF2 等)を先に押すと、打鍵時点の予測の追跡(`track.conv`)がトグル開始後も残るかを見る。
+        let table_pre: Option<u32> = args.iter().find_map(|a| {
+            a.strip_prefix("--table-pre=").map(|v| {
+                u32::from_str_radix(v.trim(), 16).unwrap_or_else(|_| {
+                    eprintln!("--table-pre は 16 進の仮想キーコード: {v:?}");
+                    std::process::exit(2);
+                })
+            })
+        });
+        let keys: Vec<(&str, u32)> = ALL_KEYS
+            .iter()
+            .copied()
+            .filter(|(_, vk)| key_filter.as_ref().is_none_or(|f| f.contains(vk)))
+            .collect();
         let valid = |c: Class| {
             if awase {
                 matches!(c, Class::Nicola | Class::Plain)
@@ -1983,12 +2061,12 @@ fn main() {
         let (mut pass, mut fail, mut recover, mut invalid) = (0usize, 0usize, 0usize, 0usize);
         let mut idx = 0usize;
         for r in 1..=repeat {
-            for st in STATES {
-                for (kn, kvk) in KEYS {
+            for &st in &states {
+                for &(kn, kvk) in &keys {
                     idx += 1;
                     p.log.line(&format!(
                         "[CASE {idx}/{} run {r}/{repeat}] {st} → {kn}",
-                        STATES.len() * KEYS.len() * repeat
+                        states.len() * keys.len() * repeat
                     ));
                     p.focus_lost = false;
                     if !bring_to_front() {
@@ -2016,6 +2094,10 @@ fn main() {
                             }
                         }
                         "Shift単独タップ後" => {
+                            if let Some(pre) = table_pre {
+                                p.press(pre, false, 60);
+                                sleep(500);
+                            }
                             p.press(VK_LSHIFT, false, 60);
                             sleep(500);
                             let c = p.probe_logged("setup:Shift単独タップのあと");
@@ -2090,6 +2172,8 @@ fn main() {
         k
     } else if args.iter().any(|a| a == "--f13") {
         &F13_CASES
+    } else if args.iter().any(|a| a == "--f16-alnum") {
+        &F16_ALNUM_CASES
     } else if args.iter().any(|a| a == "--henkan-open") {
         &HENKAN_OPEN_CASES
     } else {

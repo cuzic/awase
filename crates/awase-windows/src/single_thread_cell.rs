@@ -73,9 +73,4 @@ impl<T> SingleThreadCell<T> {
     pub fn try_borrow_mut(&self) -> Option<RefMut<'_, Option<T>>> {
         self.0.try_borrow_mut().ok()
     }
-
-    /// 現在排他借用中かどうかを返す。
-    pub fn is_borrowed_mut(&self) -> bool {
-        self.0.try_borrow_mut().is_err()
-    }
 }

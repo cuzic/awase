@@ -25,6 +25,23 @@ pub use win32_async::run_with_timeout;
 /// 専用プールを持てるようにするためのもの。
 pub use win32_async::{run_with_timeout_in, LeakedThreadPool};
 
+/// `HwndId` から `HWND` への変換（ADR-229 D4）。
+///
+/// `HwndId` は純粋な核（`state/ime_event.rs`）にあり、`windows` クレートに依存させない。
+/// 変換は殻のここに集約する（`windows` の `HWND` 型変化〈`isize` → `*mut c_void`〉に
+/// 対して raw cast を直す場所も、ここだけ）。
+pub trait HwndIdExt {
+    /// `HWND` に変換する。
+    #[must_use]
+    fn to_hwnd(self) -> HWND;
+}
+
+impl HwndIdExt for crate::state::ime_event::HwndId {
+    fn to_hwnd(self) -> HWND {
+        HWND(self.0 as *mut _)
+    }
+}
+
 /// `HWND` の null チェック拡張トレイト。
 pub trait HwndExt {
     /// null なら `None`、非 null なら `Some(self)` を返す。
@@ -492,6 +509,37 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
             }
         }
     }
+}
+
+/// 前景スレッドの `hwndFocus` だけを観測する（BUG-194 / ADR-246 Q3 の観測版。判断には使わない）。
+///
+/// `get_gui_thread_info_with_timeout` と違い、取れなかったとき前景窓などで代用せず `None` を返す
+/// （フォーカス null・`GetGUIThreadInfo` 失敗・タイムアウト・ワーカー上限）。代用値が「違う窓」に見えると
+/// 変化の頻度を誤って過大に測るため。呼び出しは literal 検出時と予約あり flush の稀な 2 箇所に限ること。
+///
+/// # Panics
+/// `GUITHREADINFO` のサイズが `u32` に収まらない場合（実際には起こらない）。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+#[must_use]
+pub unsafe fn focus_hwnd_observed(timeout: Duration) -> Option<isize> {
+    run_with_timeout(timeout, || {
+        let mut info = GUITHREADINFO {
+            cbSize: u32::try_from(size_of::<GUITHREADINFO>())
+                .expect("GUITHREADINFO size is a small constant that always fits in u32"),
+            ..Default::default()
+        };
+        // SAFETY: info は cbSize を正しく設定したスタック上の有効な構造体。
+        unsafe {
+            if GetGUIThreadInfo(0, &raw mut info).is_ok() {
+                info.hwndFocus.non_null().map(|h| h.0 as isize)
+            } else {
+                None
+            }
+        }
+    })
+    .flatten()
 }
 
 #[cfg(test)]

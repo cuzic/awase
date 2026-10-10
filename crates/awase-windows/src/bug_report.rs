@@ -7,8 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const ENDPOINT_URL: &str = "https://report.awase.cc/v1/reports";
-pub const REPORT_HOST: &str = "report.awase.cc";
 // ADR-095 leaves the exact R2 lifecycle rule undecided. The client displays
 // 90 days as a practical review window with a clear deletion expectation.
 pub const RETENTION_HINT: &str = "約90日間保管後に自動削除";
@@ -441,8 +439,11 @@ impl BugReportKeymapLearnSummary {
         validation_key: Option<(crate::state::key_effect_predictor::KeymapPreset, bool)>,
     ) -> Self {
         use crate::state::key_effect_runtime as ker;
-        let table = table_path.map_or(Err(ker::RejectReason::NotFound), ker::read_persisted_table);
-        let last_attempt = last_attempt_path.map(ker::read_persisted_table);
+        let table = table_path.map_or(
+            Err(ker::RejectReason::NotFound),
+            crate::key_effect_io::read_persisted_table,
+        );
+        let last_attempt = last_attempt_path.map(crate::key_effect_io::read_persisted_table);
         let bundled_diff = table.as_ref().ok().and_then(|t| {
             let (preset, true) = validation_key? else {
                 return None;

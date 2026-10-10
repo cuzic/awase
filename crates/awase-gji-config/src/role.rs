@@ -276,6 +276,97 @@ impl KeyStates {
     }
 }
 
+/// CUSTOM の表の 1 キーの 1 打鍵が、IME の開閉と入力モードに与える効果（ADR-247）。
+///
+/// 開閉トグルではない（[`KeyRole`] を持たない）が、入力モードを変えるキー（例: F16 を半角英数へ SET）を
+/// awase の打鍵時予測へ渡すために使う。`None` のフィールドは「変えない／分からない」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyModeEffect {
+    /// `Some(true)`=開く、`Some(false)`=閉じる。
+    pub open: Option<bool>,
+    /// 絶対設定系のコマンドが SET する入力モード。相対トグル系（`ToggleAlphanumericMode` 等）は `None`。
+    pub mode: Option<crate::command::GjiCompositionMode>,
+}
+
+/// CUSTOM の表で、`vk_name`（無修飾の打鍵）が `open`／`composing` の状態で与える効果（ADR-247）。
+///
+/// - 評価するのは CUSTOM かつ表が空でないときだけ（プリセットは学習表・同梱表が担当）。それ以外・候補外のキー・
+///   行が無いキーは `None`。`overlay_keymaps` があるときは書き換える行が分からないので `None`（決定6-3と同じ）。
+/// - 状態は閉=`DirectInput`、開かつ未確定文字列なし=`Precomposition`、開かつ入力中=`Composition`。変換中（`Conversion`）は
+///   段階の追跡に依存するので扱わない（呼び出し側が `Conversion` を渡さない）。状態の継承と後勝ちは Mozc に揃える。
+/// - `DirectInput` の絶対設定系コマンドは IME を開く（決定13・T1(c) 実機確認済み）。
+/// - `IMEOn`/`IMEOff`/絶対設定系以外のコマンド（相対トグル・未知）は `None`（予測しない）。
+#[must_use]
+pub fn custom_key_mode_effect(
+    session_keymap: Option<i64>,
+    custom_keymap_table: Option<&str>,
+    overlay_keymaps: &[i64],
+    vk_name: &str,
+    open: bool,
+    composing: bool,
+) -> Option<KeyModeEffect> {
+    if !ROLE_CANDIDATE_VK_NAMES.contains(&vk_name) || !overlay_keymaps.is_empty() {
+        return None;
+    }
+    let Source::Custom(table) = source(session_keymap, custom_keymap_table) else {
+        return None;
+    };
+    let status = match (open, composing) {
+        (false, _) => Status::DirectInput,
+        (true, false) => Status::Precomposition,
+        (true, true) => Status::Composition,
+    };
+    let mut commands: [Option<&str>; 7] = [None; 7];
+    let rows = parse_custom_keymap_table(table);
+    for row in &rows {
+        if !mozc_key_vk_names(&row.key).contains(&vk_name) {
+            continue;
+        }
+        if let Some(st) = Status::parse(&row.status) {
+            commands[st.index()] = Some(row.command.as_str());
+        }
+    }
+    let command = commands[status.index()].or_else(|| {
+        status
+            .inherits_from()
+            .and_then(|parent| commands[parent.index()])
+    })?;
+    command_mode_effect(status, command)
+}
+
+fn command_mode_effect(status: Status, command: &str) -> Option<KeyModeEffect> {
+    use crate::command::GjiCompositionMode as Mode;
+    let absolute = command
+        .strip_prefix("CompositionMode")
+        .or_else(|| command.strip_prefix("InputMode"))
+        .and_then(|name| match name {
+            "Hiragana" => Some(Mode::Hiragana),
+            "FullKatakana" => Some(Mode::FullKatakana),
+            "HalfKatakana" => Some(Mode::HalfKatakana),
+            "FullAlphanumeric" => Some(Mode::FullAlphanumeric),
+            "HalfAlphanumeric" => Some(Mode::HalfAlphanumeric),
+            _ => None,
+        });
+    if let Some(mode) = absolute {
+        // 閉状態の絶対設定は IME を開く。開状態では開閉は変えない。
+        return Some(KeyModeEffect {
+            open: (status == Status::DirectInput).then_some(true),
+            mode: Some(mode),
+        });
+    }
+    match classify_command(command) {
+        GjiModeCommand::ImeOn => Some(KeyModeEffect {
+            open: Some(true),
+            mode: None,
+        }),
+        GjiModeCommand::ImeOff => Some(KeyModeEffect {
+            open: Some(false),
+            mode: None,
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -763,5 +854,104 @@ DirectInput\tON\tIMEOn
             key_role(Some(SESSION_KEYMAP_MSIME), None, &[999], HZ[0]),
             None
         );
+    }
+
+    // ---- ADR-247: CUSTOM の F キーの効果 ----
+
+    fn effect_in_custom(
+        table: &str,
+        vk_name: &str,
+        open: bool,
+        composing: bool,
+    ) -> Option<KeyModeEffect> {
+        custom_key_mode_effect(
+            Some(SESSION_KEYMAP_CUSTOM),
+            Some(table),
+            &[],
+            vk_name,
+            open,
+            composing,
+        )
+    }
+
+    #[test]
+    fn custom_f_key_sets_half_alphanumeric_when_open() {
+        use crate::command::GjiCompositionMode::HalfAlphanumeric;
+        let table = custom(
+            "Precomposition\tF16\tInputModeHalfAlphanumeric\nComposition\tF16\tCompositionModeHalfAlphanumeric\n",
+        );
+        let want = Some(KeyModeEffect {
+            open: None,
+            mode: Some(HalfAlphanumeric),
+        });
+        assert_eq!(effect_in_custom(&table, "VK_F16", true, false), want);
+        assert_eq!(effect_in_custom(&table, "VK_F16", true, true), want);
+        // 閉状態の行が無ければ予測しない。
+        assert_eq!(effect_in_custom(&table, "VK_F16", false, false), None);
+    }
+
+    #[test]
+    fn custom_f_key_absolute_mode_in_direct_input_opens() {
+        use crate::command::GjiCompositionMode::Hiragana;
+        let table = custom("DirectInput\tF17\tInputModeHiragana\n");
+        assert_eq!(
+            effect_in_custom(&table, "VK_F17", false, false),
+            Some(KeyModeEffect {
+                open: Some(true),
+                mode: Some(Hiragana)
+            })
+        );
+    }
+
+    #[test]
+    fn custom_f_key_ime_on_off_and_inheritance() {
+        let table = custom("DirectInput\tF18\tIMEOn\nComposition\tF18\tIMEOff\n");
+        assert_eq!(
+            effect_in_custom(&table, "VK_F18", false, false),
+            Some(KeyModeEffect {
+                open: Some(true),
+                mode: None
+            })
+        );
+        // Precomposition の行が無く、Composition の行は継承されない（継承は Suggestion→Composition 方向だけ）。
+        assert_eq!(effect_in_custom(&table, "VK_F18", true, false), None);
+        assert_eq!(
+            effect_in_custom(&table, "VK_F18", true, true),
+            Some(KeyModeEffect {
+                open: Some(false),
+                mode: None
+            })
+        );
+    }
+
+    #[test]
+    fn custom_f_key_effect_ignores_relative_toggles_presets_and_overlays() {
+        let table = custom("Precomposition\tF19\tToggleAlphanumericMode\n");
+        assert_eq!(effect_in_custom(&table, "VK_F19", true, false), None);
+        let table = custom("Precomposition\tF16\tInputModeHalfAlphanumeric\n");
+        // プリセット・表なし・オーバーレイあり・候補外のキーは評価しない。
+        assert_eq!(
+            custom_key_mode_effect(
+                Some(SESSION_KEYMAP_ATOK),
+                Some(&table),
+                &[],
+                "VK_F16",
+                true,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            custom_key_mode_effect(
+                Some(SESSION_KEYMAP_CUSTOM),
+                Some(&table),
+                &[999],
+                "VK_F16",
+                true,
+                false
+            ),
+            None
+        );
+        assert_eq!(effect_in_custom(&table, "VK_A", true, false), None);
     }
 }

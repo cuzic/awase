@@ -37,9 +37,9 @@ mod app {
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
     use awase_keymap_learn_win::RealImeDriver;
+    use awase_windows::key_effect_io::current_fingerprint_probe;
     use awase_windows::state::ime_kind::TipIdentity;
     use awase_windows::state::key_effect_predictor::TableKey;
-    use awase_windows::state::key_effect_runtime::current_fingerprint_probe;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
@@ -300,7 +300,7 @@ mod app {
 
     /// ADR-195段階3〜4への結合(B1対応): 表を永続化フォーマットへ変換し、一時ファイル+
     /// renameで原子的に書き込む。キーマップ設定の指紋(ADR-195段階8、`awase_windows::state::
-    /// key_effect_runtime::current_fingerprint_probe`)と、IME本体の版(`env_version`、
+    /// key_effect_io::current_fingerprint_probe`)と、IME本体の版(`env_version`、
     /// ADR-196決定3b)を書く。指紋を計算できなかった(`Unavailable`)場合の判定の格下げ
     /// (`gate_on_fingerprint`)は呼び出し側が`judgement`へ反映済みであること。
     ///

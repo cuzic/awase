@@ -200,7 +200,7 @@ fn p1_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> Option<&'static s
     if s.win_held || s.was_down || !key.is_target_press_key() || kanji_is_not_an_ime_key(s, key) {
         return None;
     }
-    let eff_jp = state_after_press(s, key, d).is_japanese_ime;
+    let eff_jp = state_after_press(s, key, d, Instant::now()).is_japanese_ime;
     match d.resolve() {
         Ok(Resolution::Write { .. }) => None,
         // InputRelay は素通しが設計（中継先の IME が処理する。所有者決定3）なので A1 を問わない。
@@ -425,7 +425,7 @@ fn analyze() -> Report {
             if !s.was_down && !s.win_held && key.is_target_press_key() && d1.write.is_some() {
                 let s1 = PressState {
                     was_down: true,
-                    ..state_after_press(&s, key, &d1)
+                    ..state_after_press(&s, key, &d1, Instant::now())
                 };
                 let d2 = delivery(&judge, &s1, key);
                 rep.p6.checked += 1;
@@ -478,7 +478,7 @@ fn analyze() -> Report {
                     KeyMeaning::Toggle => {
                         rep.p3.checked += 1;
                         let r1 = ime_after_press(r0, key, s.profile, &d1);
-                        let s1 = state_after_press(&s, key, &d1);
+                        let s1 = state_after_press(&s, key, &d1, Instant::now());
                         let d2 = delivery(&judge, &s1, key);
                         let r2 = ime_after_press(r1, key, s.profile, &d2);
                         if r1 == r0 && r2 == r0 {
@@ -519,7 +519,7 @@ fn analyze() -> Report {
                     }
                 }
                 prev = class;
-                cur = state_after_press(&cur, key, &cur_d);
+                cur = state_after_press(&cur, key, &cur_d, Instant::now());
                 cur_d = delivery(&judge, &cur, key);
             }
 
@@ -532,7 +532,8 @@ fn analyze() -> Report {
                 ] {
                     // 本番: Engine が同じ打鍵の SetOpen を出すキーは、静的な事前問い合わせで shadow が書かない（M-4）。
                     rep.p5.checked += 1;
-                    let resolved = dual_route_writes_with(&s, key, engine_key, &judge, PROD);
+                    let resolved =
+                        dual_route_writes_with(&s, key, engine_key, &judge, PROD, Instant::now());
                     if let [Some(a), b] = resolved {
                         rep.p5
                             .add("shadow_writes_although_engine_owns_the_key", &s, || {
@@ -544,7 +545,14 @@ fn analyze() -> Report {
                     }
                     // 防御線: 事前問い合わせが効かなかった場合に、予約だけで同じ向きの二重送信を防げるか。
                     rep.p5_ledger.checked += 1;
-                    let w = dual_route_writes_ledger_only(&s, key, engine_key, &judge, PROD);
+                    let w = dual_route_writes_ledger_only(
+                        &s,
+                        key,
+                        engine_key,
+                        &judge,
+                        PROD,
+                        Instant::now(),
+                    );
                     match w {
                         [Some(a), Some(b)] if a == b => {
                             rep.p5_ledger
@@ -928,7 +936,7 @@ fn duplicate_completion_never_confirms_applied() {
                 if d.reason == ElisionReason::AlreadyWrittenThisPress {
                     checked += 1;
                     assert_eq!(
-                        state_after_press(&s, key, &d).applied,
+                        state_after_press(&s, key, &d, Instant::now()).applied,
                         s.applied,
                         "書かなかった重複の完了が applied を動かした: {}",
                         fmt_state(&s, key, None)
@@ -1037,9 +1045,14 @@ fn p5_pre_l1_double_sends_exist() {
             ExplicitKey::SyncOff,
         ] {
             for engine_key in [ExplicitKey::EngineOn, ExplicitKey::EngineOff] {
-                if let [Some(_), Some(_)] =
-                    dual_route_writes_with(&s, key, engine_key, &judge, DeliveryMode::Legacy)
-                {
+                if let [Some(_), Some(_)] = dual_route_writes_with(
+                    &s,
+                    key,
+                    engine_key,
+                    &judge,
+                    DeliveryMode::Legacy,
+                    Instant::now(),
+                ) {
                     doubles += 1;
                 }
             }

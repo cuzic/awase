@@ -119,7 +119,10 @@ fn broken_conv_inference_alone_does_not_flip_effective_open() {
 
     reduce(&mut model, 1, 0, focus_changed(TARGET, 1));
     explicit_off(&mut model, &mut store, 2, 100);
-    assert!(!model.effective_open(), "明示 OFF 直後は false");
+    assert!(
+        !model.effective_open_at(Instant::now()),
+        "明示 OFF 直後は false"
+    );
 
     // 同一対象へのフォーカス再構築（スリープ復帰・BUG-57 型の一瞬のフォーカス
     // 奪取など）が last_intent と観測プールをクリアする。
@@ -129,13 +132,16 @@ fn broken_conv_inference_alone_does_not_flip_effective_open() {
     reduce(&mut model, 4, 300, broken_conv_open_inference(2));
 
     assert!(
-        model.effective_open(),
+        model.effective_open_at(Instant::now()),
         "退行の証拠: IntentStore 抜きの生の ImeModel::effective_open() は \
          ConvOpenInference 1 件（Medium 単独合意）だけで true に反転する"
     );
 
-    let decision =
-        store.resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(300));
+    let decision = store.resolve_effective_open(
+        model.current_focus(),
+        model.effective_open_at(Instant::now()),
+        TickMs(300),
+    );
     assert!(
         !decision.value,
         "IntentStore を重ねた effective_open() は同一対象なら明示 OFF 意図を \
@@ -174,8 +180,11 @@ fn belief_write_without_record_leaves_intent_store_empty() {
     reduce(&mut model, 3, 200, focus_changed(TARGET, 2));
     reduce(&mut model, 4, 300, broken_conv_open_inference(2));
 
-    let decision =
-        store.resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(300));
+    let decision = store.resolve_effective_open(
+        model.current_focus(),
+        model.effective_open_at(Instant::now()),
+        TickMs(300),
+    );
     assert!(
         decision.value,
         "record_explicit_intent を経由しない belief 書き込みだけでは \
@@ -197,8 +206,11 @@ fn intent_does_not_leak_to_a_different_target() {
     reduce(&mut model, 3, 200, focus_changed(OTHER, 2));
     reduce(&mut model, 4, 300, broken_conv_open_inference(2));
 
-    let decision =
-        store.resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(300));
+    let decision = store.resolve_effective_open(
+        model.current_focus(),
+        model.effective_open_at(Instant::now()),
+        TickMs(300),
+    );
     assert!(
         decision.value,
         "別対象では IntentStore のエントリを使わず、その対象の観測に従う"
@@ -218,7 +230,7 @@ fn off_intent_stops_overriding_after_its_ttl() {
     reduce(&mut model, 3, 0, focus_changed(TARGET, 2));
     reduce(&mut model, 4, 0, broken_conv_open_inference(2));
 
-    let shadow = model.effective_open();
+    let shadow = model.effective_open_at(Instant::now());
     assert!(shadow, "前提: 生の belief は conv 観測で true");
 
     let off_ttl = awase_windows::tuning::EXPLICIT_OFF_INTENT_TTL_MS;
@@ -247,8 +259,11 @@ fn unknown_focus_never_overrides() {
     reduce(&mut model, 1, 0, broken_conv_open_inference(0));
     assert_eq!(model.current_focus(), None, "FocusChanged 未発生");
 
-    let decision =
-        store.resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(100));
+    let decision = store.resolve_effective_open(
+        model.current_focus(),
+        model.effective_open_at(Instant::now()),
+        TickMs(100),
+    );
     assert!(decision.value, "対象が分からなければ上書きしない");
     assert!(decision.intent.is_none());
 }
@@ -291,11 +306,14 @@ fn cache_restore_keeps_intent_newer_than_cache() {
     );
 
     assert!(
-        model.effective_open(),
+        model.effective_open_at(Instant::now()),
         "前提: HwndCacheRestored は desired_open を true に復元する"
     );
-    let decision =
-        store.resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(600));
+    let decision = store.resolve_effective_open(
+        model.current_focus(),
+        model.effective_open_at(Instant::now()),
+        TickMs(600),
+    );
     assert!(
         !decision.value,
         "キャッシュ(recorded_ms=100)より新しい明示意図(recorded_at_ms=500)は \
@@ -327,8 +345,11 @@ fn cache_restore_discards_intent_older_than_cache() {
         }
     );
 
-    let decision =
-        store.resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(600));
+    let decision = store.resolve_effective_open(
+        model.current_focus(),
+        model.effective_open_at(Instant::now()),
+        TickMs(600),
+    );
     assert!(
         decision.value,
         "キャッシュ(recorded_ms=500)より古い意図(recorded_at_ms=100)は無効化され、\
@@ -354,14 +375,18 @@ fn intent_recorded_on_a_different_clock_never_overrides() {
     reduce(&mut model, 3, 600, focus_changed(TARGET, 2));
     reduce(&mut model, 4, 700, broken_conv_open_inference(2));
     assert!(
-        model.effective_open(),
+        model.effective_open_at(Instant::now()),
         "前提: 生の belief は true に反転する"
     );
 
     // 同じ時間軸（合成 tick）で読めば上書きは効く。
     assert!(
         !store
-            .resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(700))
+            .resolve_effective_open(
+                model.current_focus(),
+                model.effective_open_at(Instant::now()),
+                TickMs(700)
+            )
             .value
     );
 
@@ -372,7 +397,7 @@ fn intent_recorded_on_a_different_clock_never_overrides() {
         store
             .resolve_effective_open(
                 model.current_focus(),
-                model.effective_open(),
+                model.effective_open_at(Instant::now()),
                 wall_clock_like
             )
             .value,

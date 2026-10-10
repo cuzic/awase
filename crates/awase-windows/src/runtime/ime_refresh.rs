@@ -286,13 +286,17 @@ impl Runtime {
         }
     }
 
-    /// ADR-188（BUG-149/150 の Chrome 版）: 読めない窓（GJI × `Imm32Unavailable`）で、物理のモードキー（Shift 付き・FSM の
-    /// 再送出を含む）の直後の直接観測の窓の中に、prefetch 済みの開閉・conv の読みを belief と照合し、食い違う軸へ追随する。
-    /// 基準値は使わず、awase は IME を書かない。awase 自身が窓の後に書いていたら採らない（R3）。
+    /// ADR-188（BUG-149/150 の Chrome 版）・ADR-244（BUG-186）: 読めない窓（`Imm32Unavailable`）の GJI／同定済み MS-IME 本体で、
+    /// 物理のモードキー（Shift 付き・FSM の再送出を含む）の直後の直接観測の窓の中に、prefetch 済みの開閉・conv の読みを
+    /// belief と照合し、食い違う軸へ追随する。基準値は使わず、awase は IME を書かない。awase 自身が窓の後に書いていたら
+    /// 採らない（R3）。MS-IME 本体は英数の軸だけを採る（`classify_direct_read_for`）。
+    ///
+    /// 本体で NATIVE の読み（かな）へ追随したら、awase が立てた持続トグル（半角英数）を OS 書き込みなしで手放す
+    /// （`should_abandon_on_observed_follow`）。残すと凍結が続き、次の Shift タップが「開始」でなく「解除」になる。
     fn ir_follow_direct_mode_key_read(&mut self, ime_snap: Option<&crate::ime::ImeSnapshot>) {
-        if !self.external_change_watch_applies() {
+        let Some(kind) = self.direct_mode_key_watch_kind() else {
             return;
-        }
+        };
         let Some(snap) = ime_snap else {
             return;
         };
@@ -305,6 +309,7 @@ impl Runtime {
             now,
             crate::state::TickMs(now),
             accepted,
+            kind,
         ) {
             tracing::info!(
                 "[direct-follow] モードキー直後の窓の中で実状態が belief と違った → open={:?} eisu={:?} へ追随 \
@@ -313,6 +318,30 @@ impl Runtime {
                 follow.eisu,
                 snap.conversion_mode,
             );
+            let belief_left_eisu =
+                self.platform_state.ime.input_mode() != InputModeState::ObservedEisu;
+            if crate::state::half_width_alnum::should_abandon_on_observed_follow(
+                kind,
+                follow.eisu,
+                belief_left_eisu,
+            ) && self
+                .platform_state
+                .gate
+                .half_width_alnum
+                .abandon_on_observed_follow()
+            {
+                // トグル開始が与えた確認ゲートの期限延長（`SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` = 5000ms）も、フォーカス変更
+                // （`on_ime_mode_focus_changed`）と同じ形で解除する。残すと手放した後も最大 5 秒、MS-IME の確認ゲートが
+                // 延長された期限を使い続ける。世代も進めて、走行中の古い hold の再設定を無効にする。
+                self.platform
+                    .output
+                    .confirm_gate_deadline_override_ms
+                    .set(0);
+                self.platform.output.bump_shift_conv_guard_gen();
+                tracing::info!(
+                    "[shift-conv-guard] 直接観測でかなへの追随を確認 → 半角英数トグルを手放す (OS 書き込みなし、ADR-244)"
+                );
+            }
         }
     }
 
@@ -857,6 +886,20 @@ impl Runtime {
         let now = std::time::Instant::now();
         let facts = self.ir_observe_drift_facts(now);
         let plan = decide_drift_plan(&facts);
+        // ADR-250 段階 1: 計画(送る・見送る・打ち切る・収束・保留)の理由と根拠を、**変わったときだけ**
+        // journal へ載せる(診断用。ログは手書きのまま、記録の有無は挙動を変えない)。edge の判定は
+        // `record` を呼ぶ前に殻が行う(畳んだ tick は呼ばないので、`emit_tracing` の行も出ない)。
+        if let Some(edge) = self.drift_plan_edges.observe(
+            &plan,
+            self.platform.output.ime_mode_focus_gen.get().get(),
+            now,
+        ) {
+            self.platform_state.ime.journal.record(
+                crate::journal::JournalEntry::DriftPlanDecided {
+                    record: edge.into(),
+                },
+            );
+        }
         // E1: 送らない・打ち切る・収束とみなす・保留する決定の根拠（`plan.basis()`）は、殻がログに出すだけ。
         let basis = plan.basis();
         let act = match plan {

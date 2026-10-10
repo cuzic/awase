@@ -90,10 +90,8 @@ impl Runtime {
         // 呼ぶことで injection_hint() が新ウィンドウ (WezTerm 等) を正しく参照できる。
         {
             let hint = self.platform.injection_hint();
-            let new_mode = crate::output::types::InjectionMode::from((
-                hint,
-                self.platform_state.focus.app_kind,
-            ));
+            let new_mode =
+                crate::output::types::injection_mode_for(hint, self.platform_state.focus.app_kind);
             self.platform.update_injection_mode(new_mode);
         }
         if process_changed {
@@ -140,7 +138,7 @@ impl Runtime {
         // とは呼び出し順序が異なるため `enter_focus_scope` には含めない）。
         let hint = self.platform.injection_hint();
         let new_mode =
-            crate::output::types::InjectionMode::from((hint, self.platform_state.focus.app_kind));
+            crate::output::types::injection_mode_for(hint, self.platform_state.focus.app_kind);
         self.platform.update_injection_mode(new_mode);
     }
 
@@ -806,7 +804,7 @@ impl Runtime {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        crate::state::probe_admission::admit_epoch_in_app(
+                        crate::probe_rejection_stats::admit_epoch_in_app(
                             app,
                             ticket,
                             "[ImmCrossProbe/focus] epoch rejected \

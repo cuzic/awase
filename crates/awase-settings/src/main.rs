@@ -9,11 +9,15 @@ use awase::scanmap::PhysicalPos;
 use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 use awase_windows::scancode_apply::ApplyRequest;
-use awase_windows::scancode_editor::{
-    EditorState, QUICK_PAIRS, Side, confirmation_lines, key_label, swap_error_text,
-    worker_exit_text,
+use awase_windows::scancode_diagram::{
+    DiagramContext, PositionState, diagram_rows, displayed_function, drop_function, drop_hint,
+    function_at, locked_note, position_state, refusal_text, release_position, unlisted_pairs,
 };
-use awase_windows::scancode_pairs::{Detected, Entry, detect_swap_pairs};
+use awase_windows::scancode_editor::{
+    EditorState, QUICK_PAIRS, confirmation_lines, key_label, registry_state, status_line,
+    swap_error_text, worker_exit_text,
+};
+use awase_windows::scancode_pairs::{Detected, Entry, Pair, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
@@ -38,6 +42,8 @@ const HOMEPAGE_URL: &str = "https://awase.cc";
 enum Tab {
     Basic,
     Keys,
+    /// 「キーの入れ替え」(Scancode Map、ADR-230/248)。旧来は「ショートカット」タブに間借りしていた。
+    KeySwap,
     Keymap,
     DisableApps,
     Calibration,
@@ -374,7 +380,7 @@ fn main() -> eframe::Result<()> {
         // デフォルトサイズで開くと配列編集タブのキーボード図が右へはみ出す
         // ユーザー報告があった（2026-09-03。ウィンドウを広げれば表示は正常に
         // 戻る＝致命的ではないが既定値の追随漏れ）。
-        .with_inner_size([760.0, 650.0])
+        .with_inner_size(window_size_from_env().unwrap_or([760.0, 650.0]))
         // ウィンドウを小さくしても全項目にスクロール + 下部固定ボタンで届くため、
         // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
         .with_min_inner_size([420.0, 320.0])
@@ -382,6 +388,24 @@ fn main() -> eframe::Result<()> {
     startup_failure::run_with_fallback("awase-settings", viewport, move |cc| {
         Box::new(SettingsApp::new(cc, adr192_warning_context)) as Box<dyn eframe::App>
     })
+}
+
+/// 診断用: 環境変数 `AWASE_SETTINGS_INITIAL_TAB`（`key-swap`・`keymap` 等）で最初に開くタブを指定する。CI がタブを開いた状態の
+/// スクリーンショットを撮るためのもので、利用者向けの機能ではない（未設定・未知の値は「全般設定」）。
+fn initial_tab_from_env() -> Tab {
+    match std::env::var("AWASE_SETTINGS_INITIAL_TAB").as_deref() {
+        Ok("keys") => Tab::Keys,
+        Ok("key-swap") => Tab::KeySwap,
+        Ok("keymap") => Tab::Keymap,
+        _ => Tab::Basic,
+    }
+}
+
+/// 診断用: 環境変数 `AWASE_SETTINGS_WINDOW_SIZE`（`560x700` の形）で初期のウィンドウサイズを指定する（CI のスクリーンショット用）。
+fn window_size_from_env() -> Option<[f32; 2]> {
+    let value = std::env::var("AWASE_SETTINGS_WINDOW_SIZE").ok()?;
+    let (w, h) = value.split_once('x')?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
 }
 
 fn parse_bug_report_args(args: &[String]) -> bug_report::BugReportArgs {
@@ -567,7 +591,7 @@ struct SettingsApp {
 /// `keymap-learn-table.json`(config.tomlの隣。config.tomlの解決は`awase.exe`と同じ
 /// [`find_config_path`]、コマンドライン引数を優先)を読み、状態表示用の
 /// [`keymap_learn_status::TableState`]を作る。ファイルが無い・壊れている・4MB超過の場合は
-/// 表なし(内蔵表)として扱う(読み手`key_effect_runtime::read_persisted_table`と同じ棄却)。
+/// 表なし(内蔵表)として扱う(読み手`key_effect_io::read_persisted_table`と同じ棄却)。
 fn load_keymap_table_state(
     current_env: awase_keymap_learn::revalidation::EnvVersionProbe,
     custom_keymap_without_prediction: bool,
@@ -580,8 +604,7 @@ fn load_keymap_table_state(
         .map(|dir| dir.join("keymap-learn-table.json"));
     let (table, file_date) = path
         .and_then(|path| {
-            let table =
-                awase_windows::state::key_effect_runtime::read_persisted_table(&path).ok()?;
+            let table = awase_windows::key_effect_io::read_persisted_table(&path).ok()?;
             let date = std::fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .ok()
@@ -723,7 +746,7 @@ impl SettingsApp {
             config_load_state,
             show_dangerous_save_confirm: false,
             status: String::new(),
-            active_tab: Tab::Basic,
+            active_tab: initial_tab_from_env(),
             available_layouts,
             new_engine_on: NewComboBuf::default(),
             new_engine_off: NewComboBuf::default(),
@@ -1969,6 +1992,17 @@ impl SettingsApp {
         }
     }
 
+    /// 「キーの入れ替え」タブを開くとき、現在のレジストリの値で表示し直す。未適用の編集があるときは、その編集を残す。
+    fn refresh_scancode_view_on_open(&mut self) {
+        let dirty = matches!(
+            &self.scancode_map_view,
+            Some(ScancodeMapView::Loaded(loaded)) if loaded.editor.is_dirty() || loaded.editor.has_incomplete()
+        );
+        if !dirty {
+            self.scancode_map_view = None;
+        }
+    }
+
     fn clear_ime_on_tab_change(&mut self, new_tab: Tab) {
         if self.active_tab != new_tab {
             self.ime_composing = false;
@@ -3132,8 +3166,10 @@ impl SettingsApp {
                 self.new_keymap_to_main.clear();
             }
         }
+    }
 
-        ui.add_space(16.0);
+    /// 「キーの入れ替え」タブ（ADR-248。「ショートカット」タブから独立させた）。
+    fn tab_key_swap(&mut self, ui: &mut egui::Ui) {
         self.scancode_map_section(ui);
     }
 
@@ -3141,15 +3177,20 @@ impl SettingsApp {
     ///
     /// ADR-127 の例外: このセクションの適用は画面共通の「適用」とは別の操作で、レジストリにだけ書く。
     fn scancode_map_section(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
         ui.heading("キーの入れ替え");
-        ui.label(
-            "選んだ2つのキーを入れ替えます（Windows の Scancode Map）。管理者権限の確認が1回表示されます。\n\
-             変更の反映には再起動が必要です（サインアウトでは反映されません。高速スタートアップが\n\
-             有効だと、シャットダウンしても反映されないことがあります）。\n\
-             この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続のセッション内では動作しません。\n\
-             この画面の「適用」は、上の画面全体の「適用」とは別です（設定ファイルは保存しません）。",
-        );
+        ui.label("選んだキーの位置を入れ替えます。変更は再起動後に有効になります。管理者権限の確認が1回表示されます。");
+        ui.collapsing("困ったとき", |ui| {
+            ui.label(
+                "入れ替えを元に戻すには、下の「すべて解除」→「入れ替えを適用」→ 再起動の順に行います。マウスだけで操作できます。",
+            );
+        });
+        ui.collapsing("くわしい注意", |ui| {
+            ui.label(
+                "・Windows の Scancode Map（レジストリ）に書き込みます。サインアウトでは反映されません。\n\
+                 ・高速スタートアップが有効だと、シャットダウンしても反映されないことがあります（「再起動」を使ってください）。\n\
+                 ・この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続のセッション内では動作しません。",
+            );
+        });
         ui.add_space(4.0);
 
         if self.scancode_map_view.is_none() {
@@ -3162,6 +3203,7 @@ impl SettingsApp {
         let modal_open = self.scancode_apply_confirm.is_some()
             || self.scancode_restart_confirm
             || self.scancode_close_confirm;
+        let restart_pending = self.scancode_restart_pending;
         let mut action = ScancodeAction::None;
         match self.scancode_map_view.as_mut() {
             Some(ScancodeMapView::Corrupt) => {
@@ -3183,7 +3225,13 @@ impl SettingsApp {
             Some(ScancodeMapView::Loaded(loaded)) => {
                 // 確認ダイアログは非モーダルなので、開いている間は編集を止める（開いた後の編集が黙って捨てられるのを防ぐ）。
                 ui.add_enabled_ui(!modal_open, |ui| {
-                    action = scancode_editor_ui(ui, loaded, jis);
+                    // 枠で区切り、画面共通の「適用」とは別の操作だと分かるようにする（ADR-248 決定2）。
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.weak(
+                            "この枠の中は、設定ファイルとは別に、すぐ書き込みます（画面下の「適用」とは別の操作です）。",
+                        );
+                        action = scancode_editor_ui(ui, loaded, jis, restart_pending);
+                    });
                 });
             }
             None => {}
@@ -3201,7 +3249,7 @@ impl SettingsApp {
             ui.label(msg);
         }
         if self.scancode_restart_pending {
-            ui.label("適用した変更は、再起動後に有効になります。");
+            // 「再起動待ち」の文面は状態行（scancode_editor_ui の先頭）に出す。ここは再起動ボタンだけ。
             if ui.button("今すぐ再起動…").clicked() {
                 self.scancode_restart_confirm = true;
             }
@@ -3277,8 +3325,8 @@ impl SettingsApp {
         );
         self.scancode_map_last_message = Some(match outcome {
             ElevationOutcome::Success => {
-                "適用しました。反映するには再起動が必要です（サインアウトでは反映されません）。"
-                    .to_string()
+                // 再起動が必要な旨は状態行と「今すぐ再起動…」で示す（ここで繰り返さない）。
+                "適用しました。".to_string()
             }
             ElevationOutcome::Failed => "処理に失敗しました。".to_string(),
             ElevationOutcome::Rejected(exit) => worker_exit_text(exit).to_string(),
@@ -4283,9 +4331,14 @@ impl eframe::App for SettingsApp {
                     (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
                     (Tab::Keymap, "ショートカット"),
+                    (Tab::KeySwap, "キーの入れ替え"),
                     (Tab::Calibration, "IMEキー学習"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
+                        if tab == Tab::KeySwap && self.active_tab != Tab::KeySwap {
+                            // 開くたびに現在のレジストリの値を読み直す（未適用の編集があるときは捨てない）。
+                            self.refresh_scancode_view_on_open();
+                        }
                         self.clear_ime_on_tab_change(tab);
                         self.active_tab = tab;
                     }
@@ -4354,6 +4407,7 @@ impl eframe::App for SettingsApp {
                 .show(ui, |ui| match self.active_tab {
                     Tab::Basic => self.tab_basic(ui),
                     Tab::Keys => self.tab_keys(ui),
+                    Tab::KeySwap => self.tab_key_swap(ui),
                     Tab::Keymap => self.tab_keymap(ui),
                     Tab::DisableApps => self.tab_disable_apps(ui),
                     Tab::Calibration => self.tab_calibration(ui),
@@ -4963,6 +5017,10 @@ struct ScancodeMapLoaded {
     /// `entries` の分類（他ツールのエントリの一覧表示用）。
     detected: Detected,
     editor: EditorState,
+    /// クリックで選んでいる位置（クリック2回の入れ替えの1回目、ADR-248 決定5）。
+    selected: Option<u16>,
+    /// 図の操作を断った理由（次の操作まで残す）。
+    diagram_message: Option<String>,
 }
 
 /// 適用前の確認ダイアログの内容。
@@ -4987,6 +5045,8 @@ fn load_scancode_view() -> ScancodeMapView {
                 entries,
                 detected,
                 editor,
+                selected: None,
+                diagram_message: None,
             }))
         }
         scancode_map_admin::ScancodeMapRead::Corrupt => ScancodeMapView::Corrupt,
@@ -4999,8 +5059,22 @@ fn scancode_editor_ui(
     ui: &mut egui::Ui,
     loaded: &mut ScancodeMapLoaded,
     jis: bool,
+    restart_pending: bool,
 ) -> ScancodeAction {
     let mut action = ScancodeAction::None;
+
+    // 状態行（ADR-248 決定1）: レジストリと起動時の値の関係（軸 A）と、未適用の編集（軸 B）。
+    let status = status_line(
+        registry_state(&loaded.detected),
+        restart_pending,
+        loaded.editor.is_dirty(),
+        loaded.editor.has_incomplete(),
+    );
+    ui.strong(&status.registry);
+    if let Some(edit) = &status.edit {
+        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), edit);
+    }
+    ui.add_space(4.0);
 
     if !loaded.detected.unclaimed.is_empty() {
         ui.label("他のツールが設定している項目（awase は変更しません）:");
@@ -5014,52 +5088,21 @@ fn scancode_editor_ui(
         ui.colored_label(
             egui::Color32::from_rgb(200, 120, 0),
             format!(
-                "「{} ⇄ {}」は他のツールの設定と重なっています。削除すると、重なっていた設定が効き出す可能性があります。",
+                "「{} ⇄ {}」は他のツールの設定と重なっています。「戻す」で解除すると、重なっていた設定が効き出す可能性があります。",
                 key_label(a),
                 key_label(b)
             ),
         );
     }
 
+    ui.strong("キーの位置を入れ替える");
+    ui.label(
+        "入れ替えたいキーの機能をドラッグして、入れ替え先のキーに落とします（または、2つのキーを順にクリックします）。\n\
+         上の段が「キーの位置（物理キー）」、ボタンが「その位置で出る機能」です。",
+    );
+    scancode_diagram_ui(ui, loaded, jis);
     let editor = &mut loaded.editor;
-    let mut remove: Option<usize> = None;
-    for i in 0..editor.rows().len() {
-        ui.horizontal(|ui| {
-            for side in [Side::A, Side::B] {
-                if matches!(side, Side::B) {
-                    ui.label("⇄");
-                }
-                let row = editor.rows()[i];
-                let current = match side {
-                    Side::A => row.a,
-                    Side::B => row.b,
-                };
-                let candidates = editor.candidates(i, side, jis);
-                let mut chosen = current;
-                egui::ComboBox::from_id_salt(("scancode_pair", i, matches!(side, Side::B)))
-                    .selected_text(current.map_or_else(|| "選択".to_string(), key_label))
-                    .show_ui(ui, |ui| {
-                        for key in candidates {
-                            ui.selectable_value(&mut chosen, Some(key), key_label(key));
-                        }
-                    });
-                if chosen != current {
-                    editor.set_key(i, side, chosen);
-                }
-            }
-            if ui.button("削除").clicked() {
-                remove = Some(i);
-            }
-        });
-    }
-    if let Some(i) = remove {
-        editor.remove_row(i);
-    }
-
-    ui.horizontal(|ui| {
-        if ui.button("＋ ペアを追加").clicked() {
-            editor.add_row();
-        }
+    ui.horizontal_wrapped(|ui| {
         ui.label("よくある入れ替え:");
         for quick in &QUICK_PAIRS {
             let available = editor.quick_available(quick, jis);
@@ -5071,34 +5114,41 @@ fn scancode_editor_ui(
             }
         }
     });
+    // 無効のボタンには、理由をすぐ下に出す（ADR-248 決定4）。
+    for quick in &QUICK_PAIRS {
+        if let Some(reason) = editor.quick_unavailable(quick, jis) {
+            ui.weak(format!(
+                "「{}」は使えません: {}",
+                quick.label,
+                reason.text()
+            ));
+        }
+    }
+
+    ui.add_space(8.0);
+    ui.strong("Caps を Ctrl としても使う");
+    ui.label(
+        "「英数 / Caps」キーを Ctrl としても使えるようにします（元の左 Ctrl も残ります。英数キー自体は使えなくなります）。\n\
+         上の「キーの位置を入れ替える」とは別の設定です。",
+    );
 
     let mut caps = editor.caps_extra();
     let caps_enabled = caps || editor.caps_extra_available();
     ui.add_enabled(
         caps_enabled,
-        egui::Checkbox::new(
-            &mut caps,
-            "英数 / Caps を追加の Ctrl にする（元の左 Ctrl は残ります。英数キー自体は使えなくなります）",
-        ),
+        egui::Checkbox::new(&mut caps, "英数 / Caps を Ctrl としても使う"),
     );
     if caps != editor.caps_extra() {
         editor.set_caps_extra(caps);
     }
+    if !caps_enabled && let Some(reason) = editor.caps_extra_unavailable() {
+        ui.weak(reason.text());
+    }
 
+    ui.add_space(8.0);
     let dirty = editor.is_dirty();
     let incomplete = editor.has_incomplete();
-    if incomplete {
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 120, 0),
-            "片方しか選んでいない行があります（両方選ぶか、削除してください）。",
-        );
-    } else if dirty {
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 120, 0),
-            "未適用の変更があります。",
-        );
-    }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui
             .add_enabled(
                 dirty && !incomplete,
@@ -5109,16 +5159,170 @@ fn scancode_editor_ui(
             action = ScancodeAction::Apply;
         }
         if ui
-            .add_enabled(dirty || incomplete, egui::Button::new("元に戻す"))
+            .add_enabled(dirty || incomplete, egui::Button::new("編集を元に戻す"))
+            .on_hover_text("まだ適用していない編集を捨てて、いまのレジストリの状態に戻します。")
             .clicked()
         {
             editor.reset();
+            loaded.selected = None;
+            loaded.diagram_message = None;
         }
-        if ui.button("読み直す").clicked() {
+        if ui
+            .button("すべて解除")
+            .on_hover_text(
+                "すべての入れ替えと「Caps を Ctrl としても使う」を外します（他のツールが書いた入れ替えの形の設定も外れます）。\n\
+                 「入れ替えを適用」を押すまで書き込まれません。",
+            )
+            .clicked()
+        {
+            editor.release_all();
+            loaded.selected = None;
+            loaded.diagram_message = None;
+        }
+        if ui
+            .button("レジストリを読み直す")
+            .on_hover_text("レジストリを読み直します（編集中の内容は捨てられます）。")
+            .clicked()
+        {
             action = ScancodeAction::Reload;
         }
     });
     action
+}
+
+/// キーボード図の描画と操作の反映（ADR-248 決定5）。状態の判断は `awase_windows::scancode_diagram` の純粋関数が持ち、
+/// ここは描画と入力（ドラッグ&ドロップ・クリック2回・「戻す」）の反映だけ。
+fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: bool) {
+    let pairs = loaded.editor.pairs();
+    let caps_extra = loaded.editor.caps_extra();
+    let ctx = DiagramContext {
+        pairs: &pairs,
+        detected: &loaded.detected,
+        caps_extra,
+        jis,
+    };
+    let entries = &loaded.entries;
+    let mut new_pairs: Option<Vec<Pair>> = None;
+    let mut message: Option<String> = None;
+    let mut hint: Option<String> = None;
+    let mut selected = loaded.selected;
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        selected = None;
+    }
+    // キーボード図は物理配置を保つために折り返さず、幅が足りないときは図だけ横にスクロールする。外側の ScrollArea::both() は
+    // 内容の実際の幅を検知できず右端が切れる（キーボード図 `draw_layout_keyboard_grid` と同じ理由。egui 0.31.1 の ScrollArea は
+    // content_max_size を可視サイズに収める）ので、この図専用のスクロール領域を持たせる。
+    egui::ScrollArea::horizontal()
+        .id_salt("scancode_diagram_scroll")
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            // 横スクロール領域の内側は幅が見かけの幅に押し込まれるので、キー名やボタンの文字を折り返させない
+            // （折り返すと、右端のキーの文字が縦に割れて行が縦に伸びる。CI のスクリーンショットで確認）。
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            for row in diagram_rows(&pairs, jis) {
+                ui.horizontal(|ui| {
+                    for pos in row {
+                        let function = displayed_function(&pairs, caps_extra, pos);
+                        let changed = function != pos;
+                        let state = position_state(&ctx, pos);
+                        let editable = matches!(state, PositionState::Editable);
+                        ui.vertical(|ui| {
+                            ui.weak(key_label(pos));
+                            let text = if changed {
+                                format!("→ {}", key_label(function))
+                            } else {
+                                key_label(pos)
+                            };
+                            let mut button = egui::Button::new(text)
+                                .min_size(egui::vec2(72.0, 28.0))
+                                .sense(egui::Sense::click_and_drag())
+                                .selected(selected == Some(pos));
+                            if changed {
+                                button = button.stroke(egui::Stroke::new(
+                                    2.0,
+                                    egui::Color32::from_rgb(200, 120, 0),
+                                ));
+                            }
+                            let resp = ui.add_enabled(editable, button);
+                            if editable {
+                                resp.dnd_set_drag_payload(function);
+                                if let Some(payload) = resp.dnd_hover_payload::<u16>() {
+                                    let result = drop_function(&ctx, entries, *payload, pos);
+                                    hint = Some(drop_hint(&result, key_label));
+                                }
+                                if let Some(payload) = resp.dnd_release_payload::<u16>() {
+                                    match drop_function(&ctx, entries, *payload, pos) {
+                                        Ok(effect) => new_pairs = Some(effect.pairs),
+                                        Err(refusal) => message = Some(refusal_text(refusal)),
+                                    }
+                                    selected = None;
+                                } else if resp.clicked() {
+                                    match selected {
+                                        None => selected = Some(pos),
+                                        Some(s) if s == pos => selected = None,
+                                        Some(s) => {
+                                            let from = function_at(&pairs, s);
+                                            match drop_function(&ctx, entries, from, pos) {
+                                                Ok(effect) => new_pairs = Some(effect.pairs),
+                                                Err(refusal) => {
+                                                    message = Some(refusal_text(refusal))
+                                                }
+                                            }
+                                            selected = None;
+                                        }
+                                    }
+                                }
+                            } else if let PositionState::Locked { reason, .. } = state {
+                                resp.on_disabled_hover_text(reason.text());
+                                ui.weak(locked_note(reason, pos));
+                            }
+                            let releasable = changed
+                                && matches!(
+                                    state,
+                                    PositionState::Editable
+                                        | PositionState::Locked {
+                                            releasable: true,
+                                            ..
+                                        }
+                                );
+                            if releasable && ui.small_button("戻す").clicked() {
+                                new_pairs = Some(release_position(&pairs, pos));
+                                selected = None;
+                            }
+                        });
+                    }
+                });
+            }
+        });
+    // 図に描けない（許可リスト外のキーを含む）入れ替えは、一覧で解除する。
+    for pair in unlisted_pairs(&pairs) {
+        let (a, b) = pair.keys();
+        ui.horizontal(|ui| {
+            ui.label(format!("{} ⇄ {}", key_label(a), key_label(b)));
+            if ui.small_button("解除").clicked() {
+                new_pairs = Some(pairs.iter().copied().filter(|p| *p != pair).collect());
+            }
+        });
+    }
+    if let Some(s) = selected {
+        ui.label(format!(
+            "「{}」を選んでいます。入れ替え先のキーをクリックしてください（Esc で取り消し）。",
+            key_label(function_at(&pairs, s))
+        ));
+    }
+    if let Some(h) = &hint {
+        ui.weak(h);
+    }
+    if let Some(m) = &loaded.diagram_message {
+        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), m);
+    }
+    loaded.selected = selected;
+    if let Some(p) = new_pairs {
+        loaded.editor.set_pairs(&p);
+        loaded.diagram_message = None;
+    } else if message.is_some() {
+        loaded.diagram_message = message;
+    }
 }
 
 /// 左親指/右親指キーの候補にのみ追加する、Alt なりすまし用エントリ。

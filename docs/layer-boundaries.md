@@ -247,7 +247,7 @@ grep -rn "self\.shadow_model\.reduce\|model\.reduce" crates/awase-windows/src/
 
 ### D-1: magic hex を `vk.rs` 外で書かない
 
-**ルール**: `VkCode` の hex literal (`0xVV`) は `crates/awase-windows/src/vk.rs`
+**ルール**: `VkCode` の hex literal (`0xVV`) は `crates/awase-windows-core/src/vk.rs`
 にのみ存在する。分類は `vk.rs` の helper、log は `UpperHex impl` を使う。
 
 **Why**: [[feedback_vk_encapsulation]]。VK 定数の意図を helper / 定数名で表現。
@@ -352,7 +352,7 @@ SendInput成功後のみ）という非対称な不変条件が、呼び出し�
 # （M4: 素朴な `pub {field}` リテラル一致だと `pub(crate) {field}` を
 # 検出できなかった、という指摘の反映）。
 grep -rnE "pub(\([a-zA-Z_:]+\))? *(left_tap_armed|right_tap_armed|conv_guard_pending|toggle_held|entry_policy)" \
-  crates/awase-windows/src/state/half_width_alnum.rs
+  crates/awase-windows-core/src/state/half_width_alnum.rs
 ```
 期待: 0件（`crates/awase-windows/tests/architecture_guard.rs::
 half_width_alnum_state_fields_are_not_accessed_directly` が
@@ -390,7 +390,7 @@ grep -rn "SendMessageTimeoutW" crates/awase-windows/src/ | grep -v "imm\.rs\|ime
 
 # カテゴリ F
 grep -rnE "pub(\([a-zA-Z_:]+\))? *(left_tap_armed|right_tap_armed|conv_guard_pending|toggle_held|entry_policy)" \
-  crates/awase-windows/src/state/half_width_alnum.rs
+  crates/awase-windows-core/src/state/half_width_alnum.rs
 ```
 
 ### 違反候補の分類

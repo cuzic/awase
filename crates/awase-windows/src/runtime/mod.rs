@@ -18,6 +18,7 @@ mod transport;
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 
 use crate::focus::FocusKind;
+use crate::key_effect_io::{KeymapCacheShellExt as _, RuntimeTableCacheShellExt as _};
 use awase::config::ValidatedConfig;
 use awase::engine::{
     Engine, EngineCommand, InputContext, InputModeState, KanaLockHysteresis, ModeKeyConfig,
@@ -334,6 +335,8 @@ pub struct Runtime {
     /// 進行中の IME actuation 試行（ADR-080）。`desired` 変化・`FocusChanged`・
     /// `Resolution` 確定でのみ破棄・再構築する（`runtime/ime_actuation.rs`）。
     active_actuation: Option<ime_actuation::Actuation>,
+    /// drift correction の計画を edge 記録するための追跡(ADR-250 段階 1)。理由が変わった tick だけ journal へ載せる。
+    drift_plan_edges: crate::state::drift_plan::DriftEdgeTracker,
     /// `config1.db` のキーマップ（打鍵時予測用）のキャッシュ。打鍵ごとに読み直さない。
     key_effect_keymap: crate::state::key_effect_predictor::KeymapCache,
     /// 直前のOS読み取り（`OsPoll`）で観測（`ime_on`）を得られたか。時間切れ・空振りは`false`。
@@ -485,9 +488,11 @@ impl Runtime {
         // Alt なりすまし中は本物の Alt 押下を無視する（hook.rs の
         // `is_alt_impersonation_active` doc 参照。ここを直さないと、hook.rs 側の
         // RawKeyEvent.modifier_snapshot は正しく補正されていても、
-        // bypass_reason() が実際に見る PhysicalKeyState.modifiers はこの
-        // build_ctx() の戻り値から来る（別経路）ため、なりすましたキーが
-        // 常に OsModifierHeld でバイパスされてしまう）。
+        // この build_ctx() の戻り値（タイマー・フォーカス・refresh 用の別経路）は
+        // 補正されないままになる）。なお打鍵の bypass_reason() が見る ctx は
+        // `key_pipeline.rs` が hook 時点の `event.modifier_snapshot` から組む
+        // （ADR-129）ので、ここではない。他アプリの注入 Ctrl（ADR-249）も
+        // 打鍵の snapshot にだけ足しており、この関数には入れない。
         if crate::hook::is_alt_impersonation_active() {
             modifiers.alt = false;
         }
@@ -599,6 +604,14 @@ impl Runtime {
         external_change_watch_applies_for(self.platform.current_app_profile())
     }
 
+    /// ADR-188・ADR-244: 直接観測の窓（物理のモードキー通過／FSM 再送出の直後の読みを belief と照合する）を適用する
+    /// IME 種別。`Imm32Unavailable` の窓で GJI／同定済み MS-IME 本体のときだけ `Some`（ADR-205 の外部変化の監視は
+    /// 別の述語 `external_change_watch_applies` で GJI 限定のまま）。
+    #[must_use]
+    pub fn direct_mode_key_watch_kind(&self) -> Option<crate::state::ime_kind::ImeKindId> {
+        direct_mode_key_watch_kind_for(self.platform.current_app_profile())
+    }
+
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
     ///
     /// 判定は [`FocusTracker::decide_imm_capability`]（純粋関数）に委譲し、
@@ -668,7 +681,7 @@ impl Runtime {
         if is_kanji && event.injected {
             return; // injected は付けない。静的 Toggle のまま（現行と同じ）。
         }
-        if !is_kanji && !crate::vk::is_role_candidate(event.vk_code) {
+        if !is_kanji && !crate::vk_windows::is_role_candidate_cached(event.vk_code) {
             return;
         }
         let is_fkey = crate::vk::is_role_fkey(event.vk_code);
@@ -1478,6 +1491,7 @@ impl Runtime {
             post_bypass_rules,
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
+            drift_plan_edges: crate::state::drift_plan::DriftEdgeTracker::new(),
             key_effect_keymap: crate::state::key_effect_predictor::KeymapCache::default(),
             last_ime_read_ok: true,
             key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache::default(),
@@ -1739,13 +1753,14 @@ impl Runtime {
         // 正しくなるよう、フォーカス変更直後に新ウィンドウの class/pid から同期更新する。
         // WezTerm(ForceTsf) → Chrome 等の遷移でも hint を新ウィンドウから引くため stale にならない。
         {
+            use crate::win32::HwndIdExt as _;
             let hwnd = hwnd_id.to_hwnd();
             let class_name = crate::focus::classify::get_class_name_string(hwnd);
             if !class_name.is_empty() {
                 let pid = crate::focus::classify::get_window_process_id(hwnd);
                 let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
                 let hint = self.platform.injection_hint_for(pid, &class_name);
-                let new_mode = crate::output::types::InjectionMode::from((hint, new_app_kind));
+                let new_mode = crate::output::types::injection_mode_for(hint, new_app_kind);
                 self.platform.update_injection_mode(new_mode);
                 tracing::debug!(
                     "[focus-sync] hwnd=0x{:X} class={class_name:?} \
@@ -2592,6 +2607,18 @@ mod layout_entry_tests {
             0
         );
     }
+}
+
+/// [`Runtime::direct_mode_key_watch_kind`] の本体（executor は `Runtime` を持たないので共有する）。判定は
+/// 純関数 `state::external_change_watch::direct_watch_kind`。
+#[must_use]
+pub(crate) fn direct_mode_key_watch_kind_for(
+    profile: crate::focus::class_names::AppImeProfile,
+) -> Option<crate::state::ime_kind::ImeKindId> {
+    crate::state::external_change_watch::direct_watch_kind(
+        profile == crate::focus::class_names::AppImeProfile::Imm32Unavailable,
+        crate::tsf::observer::tsf_obs().table_ime_kind(),
+    )
 }
 
 /// `Runtime::external_change_watch_applies` の述語本体。executor（`Runtime` を持たない）からも同じ条件で呼ぶ（ADR-188）。

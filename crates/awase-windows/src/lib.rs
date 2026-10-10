@@ -21,6 +21,7 @@
 //! `vk`（`parse_hotkey` のみ windows-gated）などの純粋モジュールのみコンパイルされる。
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
+pub use awase_windows_core::{journal, journal_policy, keymap, tuning, vk};
 pub mod bug_report;
 pub mod config_diagnostics;
 #[cfg(test)]
@@ -29,7 +30,7 @@ pub mod focus;
 pub mod focus_resync;
 pub mod gji_charset_autodetect;
 pub mod hook_channel;
-pub mod journal_policy;
+pub mod key_effect_io;
 #[cfg(test)]
 mod key_input_replay_tests;
 pub(crate) mod lifetime_counter;
@@ -38,15 +39,17 @@ pub mod msime_key_assignment;
 // `#[cfg(windows)]` のため、純粋なパース部分は非 Windows では未使用になる（テストは Linux で回す）。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod msime_legacy_keymap;
+pub mod probe_rejection_stats;
 pub mod scancode_apply;
+pub mod scancode_diagram;
 pub mod scancode_editor;
 pub mod scancode_map;
 pub mod scancode_pairs;
 pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;
-pub mod tuning;
-pub mod vk;
+#[cfg(windows)]
+pub mod vk_windows;
 
 // ── Windows 専用モジュール ───────────────────────────────────────────────────────
 #[cfg(windows)]
@@ -65,14 +68,14 @@ pub mod ime_diagnostic;
 pub(crate) mod imm;
 #[cfg(windows)]
 pub mod input_defer;
-pub mod journal;
+#[cfg(windows)]
+pub mod journal_dump;
 // `KeymapTable`/`find_match`/`filter_active` は純粋な値比較のみで Windows API に
 // 依存しないため ungated（ADR-114、Linux で `cargo test -p awase-windows --lib`
 // から全数テストできるようにする。唯一の呼び出し元 `runtime/message_handlers.rs`
 // は `#[cfg(windows)]` のため非 Windows では未使用になる、他の純粋関数モジュール
 // と同じ局所抑制パターン）。
 #[cfg_attr(not(windows), allow(dead_code))]
-pub mod keymap;
 #[cfg(windows)]
 pub mod observer;
 #[cfg(windows)]
@@ -199,27 +202,6 @@ impl RawTsfLiteralPending {
             romaji: std::sync::Mutex::new(String::new()),
             escape_composition: AtomicBool::new(false),
         }
-    }
-
-    /// バックスペース数とローマ字を一括セットする。
-    ///
-    /// # Panics
-    /// Mutex が poison された場合（通常発生しない）。
-    pub fn set_pending(&self, backs: usize, romaji: String) {
-        use std::sync::atomic::Ordering::Relaxed;
-        self.backs.store(backs, Relaxed);
-        *self.romaji.lock().unwrap() = romaji;
-    }
-
-    /// バックスペース数とローマ字を一括取り出しする（backs は 0 にリセット、romaji は空にリセット）。
-    ///
-    /// # Panics
-    /// Mutex が poison された場合（通常発生しない）。
-    pub fn take_pending(&self) -> (usize, String) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let backs = self.backs.swap(0, Relaxed);
-        let romaji = std::mem::take(&mut *self.romaji.lock().unwrap());
-        (backs, romaji)
     }
 }
 

@@ -3559,6 +3559,7 @@ mod tests {
                 left_thumb_down_snapshot: None,
                 right_thumb_down_snapshot: None,
                 injected: false,
+                foreign_ctrl: false,
             };
             let r = fsm.release_only(&ev);
             assert!(r.actions.is_empty(), "pass_through must not emit actions");

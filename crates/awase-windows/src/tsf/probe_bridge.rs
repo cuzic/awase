@@ -54,12 +54,6 @@ impl OutputGate {
     pub(crate) fn mark_vk_output(&self, ms: u64) {
         self.last_vk_output_ms.store(ms, Ordering::Relaxed);
     }
-
-    /// `last_vk_output_ms` の現在値を取得する。
-    #[inline]
-    pub fn last_vk_output_ms_val(&self) -> u64 {
-        self.last_vk_output_ms.load(Ordering::Relaxed)
-    }
 }
 
 pub static OUTPUT_GATE: OutputGate = OutputGate::new();

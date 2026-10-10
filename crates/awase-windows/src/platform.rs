@@ -850,9 +850,24 @@ impl WindowsPlatform {
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
         let outcome = self.output.flush_raw_tsf_literal_recovery();
         let outcome = match outcome {
-            crate::output::RawRecoveryOutcome::Flushed { vk_count } => {
-                crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count }
-            }
+            crate::output::RawRecoveryOutcome::Flushed {
+                vk_count,
+                focus_hwnd_changed,
+            } => crate::journal::DeferredRecoveryOutcomeSummary::Flushed {
+                vk_count,
+                focus_hwnd_changed,
+            },
+            crate::output::RawRecoveryOutcome::DiscardedStale {
+                backs,
+                romaji_present,
+                deferred_vk_count,
+                focus_hwnd_changed,
+            } => crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale {
+                backs,
+                romaji_present,
+                deferred_vk_count,
+                focus_hwnd_changed,
+            },
         };
         let facts = match outcome {
             crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale { .. } => {
@@ -861,9 +876,13 @@ impl WindowsPlatform {
             crate::journal::DeferredRecoveryOutcomeSummary::SkippedWhilePolling => {
                 crate::journal_policy::DeferredRecoveryFlushFacts::SkippedWhilePolling
             }
-            crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count } => {
-                crate::journal_policy::DeferredRecoveryFlushFacts::Flushed { vk_count }
-            }
+            crate::journal::DeferredRecoveryOutcomeSummary::Flushed {
+                vk_count,
+                focus_hwnd_changed,
+            } => crate::journal_policy::DeferredRecoveryFlushFacts::Flushed {
+                vk_count,
+                focus_hwnd_changed,
+            },
         };
         if crate::journal_policy::deferred_recovery_flush_is_notable(facts) {
             self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
@@ -898,11 +917,17 @@ impl WindowsPlatform {
         // 追随し忘れる退行を招く（/code-review 指摘・検討のうえ据え置き）。
         let vk_count = self.output.take_pending_drain_before_send_flush();
         if vk_count > 0 {
-            let facts = crate::journal_policy::DeferredRecoveryFlushFacts::Flushed { vk_count };
+            let facts = crate::journal_policy::DeferredRecoveryFlushFacts::Flushed {
+                vk_count,
+                focus_hwnd_changed: None,
+            };
             if crate::journal_policy::deferred_recovery_flush_is_notable(facts) {
                 self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
                     trigger: "drain_before_send",
-                    outcome: crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count },
+                    outcome: crate::journal::DeferredRecoveryOutcomeSummary::Flushed {
+                        vk_count,
+                        focus_hwnd_changed: None,
+                    },
                 });
             }
         }

@@ -318,3 +318,7 @@ F の分割と P4・P5a-1 の実装で分かったことから、進め方を 5 
 - V1 は `CORE_MODULES` に足した名前の mutants への登録だけを、develop 向けの PR で検査する(pre-push と表は V2 で人が判断)。必須チェックにするかは未決。
 - V4 の訂正: `output/`・`tsf/` の本番コードは時刻を `u64` の tick で持っており、分割の前の `TickMs` 化は要らなかった(#528 の実測。マージ後に確定)。
 - 所有者の判断: 決定関数の DSL は試作して読み比べた結果、不採用。E1・F5・F6 の次の分割を優先する。
+
+## 追記(2026-10-10、段階 B-2): `HubClock` を核へ
+
+決定の本文(上の「時刻」の行と Tier-2 の節)は書き換えない。実装は次のとおり変わった: `HubClock::Wall` は `Wall { tick: fn() -> u64, instant: fn() -> Instant }` で、`Instant::now` も構築側(殻の `state/platform_state/shell.rs`)から注入する。`HubClock::manual` は起点の `Instant` を引数に取る。これで `state/hub_clock.rs` は壁時計を直接読まなくなり、`CORE_MODULES` に入った(本文の「`hub_clock` は Tier-2 の外/恒久的に殻」は、この追記で置き換わる)。CORE の wall-clock 規則は、括弧なしの `Instant::now` も検出する。詳細は `docs/tasks/fcis-layering-tasks-2026-10-06.md` の段階 B の節。

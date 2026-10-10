@@ -8,6 +8,7 @@
 //! sent message（`GetMessageW` の戻り値に現れない）に対応するため、
 //! `tray::tray_wnd_proc` からも呼ばれる（詳細は `tray_wnd_proc` の doc 参照）。
 
+use crate::journal_dump::JournalDumpExt as _;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1404,12 +1405,11 @@ fn current_bug_report_diagnostics(
 fn build_bug_report_keymap_learn_summary(
     app: &Runtime,
 ) -> crate::bug_report::BugReportKeymapLearnSummary {
-    use crate::state::key_effect_runtime as ker;
     // 不具合報告の同梱表との突き合わせ診断は、予測時に実際に使った`(preset, check_against_bundled)`
     // （`RuntimeTableCache`が保持）で行う。GJI/本体どちらのキャッシュかを推測しない。
     crate::bug_report::BugReportKeymapLearnSummary::from_paths(
-        ker::table_file_path().as_deref(),
-        ker::last_attempt_file_path().as_deref(),
+        crate::key_effect_io::table_file_path().as_deref(),
+        crate::key_effect_io::last_attempt_file_path().as_deref(),
         app.use_learned_keymap_table,
         // `use_learned_keymap_table`がfalseの間は`get`が呼ばれずcellsが古いまま残るため併せて見る。
         app.use_learned_keymap_table && app.key_effect_runtime_table.is_active(),
@@ -1952,7 +1952,7 @@ pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
 /// WM_DUMP_JOURNAL ハンドラ（Alt+変換→Alt+無変換 ×2 でトリガー）
 pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
     // プローブ棄却統計をダンプ直前にログ出力してリセット
-    let stats = crate::state::probe_admission::drain_stats();
+    let stats = crate::probe_rejection_stats::drain_stats();
     if stats.epoch_mismatch > 0
         || stats.hwnd_mismatch_same_root > 0
         || stats.hwnd_mismatch_cross_root > 0

@@ -18,10 +18,26 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "support/src_roots.rs"]
+mod src_roots;
+use src_roots::src_crate_dirs;
+
 // ───────────────────────── 共通ヘルパ ─────────────────────────
 
 fn manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// ガードが走査する本番コードの `src/`（このクレート + 核 crate。`support/src_roots.rs`）。
+fn src_dirs() -> Vec<PathBuf> {
+    src_crate_dirs().iter().map(|d| d.join("src")).collect()
+}
+
+/// 対象 crate すべての `src/` 以下の `.rs` を集める。
+fn collect_all_src(out: &mut Vec<PathBuf>) {
+    for d in src_dirs() {
+        collect_rs(&d, out);
+    }
 }
 
 /// `dir` 以下の `.rs` を再帰収集する。ファイル名に `test` を含むもの
@@ -114,7 +130,11 @@ fn code_lines(content: &str) -> Vec<(usize, String)> {
 fn rel(path: &Path) -> String {
     // ALLOW リストはフォワードスラッシュ固定で書かれているため、Windows の
     // `\` 区切り表示に引きずられないよう常に `/` へ正規化する。
-    path.strip_prefix(manifest())
+    let base = src_crate_dirs()
+        .into_iter()
+        .find(|d| path.starts_with(d))
+        .unwrap_or_else(manifest);
+    path.strip_prefix(base)
         .unwrap_or(path)
         .display()
         .to_string()
@@ -231,13 +251,10 @@ fn b1_with_app_confined_to_orchestrator_modules() {
             // 読めないため with_app 経由が必須（ADR-086 INV-14）。
         ),
     ];
-    let src = manifest().join("src");
-    let dirs = [
-        src.join("observer"),
-        src.join("focus"),
-        src.join("output"),
-        src.join("state"),
-    ];
+    let dirs: Vec<PathBuf> = src_dirs()
+        .iter()
+        .flat_map(|src| ["observer", "focus", "output", "state"].map(|d| src.join(d)))
+        .collect();
     let mut hits = scan(&dirs, |code| {
         code.contains("with_app(")
             || code.contains("with_app_ref(")
@@ -247,7 +264,11 @@ fn b1_with_app_confined_to_orchestrator_modules() {
     });
     // ime.rs (単一ファイル) も 5 領域の一部。
     let ime = manifest().join("src/ime.rs");
-    if ime.exists() {
+    assert!(
+        ime.exists(),
+        "src/ime.rs が無い（移動・改名したらこのガードも付け替える）"
+    );
+    {
         let content = fs::read_to_string(&ime).unwrap_or_default();
         for (line, code) in code_lines(&content) {
             if code.contains("with_app(") || code.contains("crate::APP") {
@@ -273,6 +294,10 @@ fn b1_with_app_confined_to_orchestrator_modules() {
 /// Why: ADR-030。観測の意図を型 (gji_last_io_ms() 等の named API) に表現する。
 #[test]
 fn b2_output_uses_named_tsf_observation_api() {
+    assert!(
+        manifest().join("src/output").is_dir(),
+        "src/output が無い（移動・改名したらこのガードも付け替える）"
+    );
     let hits = scan(&[manifest().join("src/output")], |code| {
         code.contains("tsf_obs()")
     });
@@ -294,7 +319,7 @@ fn b2_output_uses_named_tsf_observation_api() {
 /// `state/ime_model.rs` に絞って app 分岐がゼロであることを検査する (classifier 側は正当)。
 #[test]
 fn c4_reducer_has_no_app_specific_branches() {
-    let hits = scan(&[manifest().join("src/state/ime_model.rs")], |code| {
+    let hits = scan(&state_files("ime_model"), |code| {
         code.contains("AppKind::")
             || code.contains("class_name ==")
             || code.contains("class_name.contains")
@@ -318,7 +343,7 @@ fn c4_reducer_has_no_app_specific_branches() {
 #[test]
 fn c5_no_legacy_boolean_guard_remnants() {
     let mut files = Vec::new();
-    collect_rs(&manifest().join("src"), &mut files);
+    collect_all_src(&mut files);
     files.sort();
     let mut hits = Vec::new();
     for f in &files {
@@ -353,9 +378,7 @@ fn c5_no_legacy_boolean_guard_remnants() {
 /// ユニットテスト (`#[cfg(test)]`) で、test ブロック除外により対象外になる。
 #[test]
 fn c6_single_reduce_call_site() {
-    let hits = scan(&[manifest().join("src")], |code| {
-        code.contains("model.reduce(")
-    });
+    let hits = scan(&src_dirs(), |code| code.contains("model.reduce("));
     assert_eq!(
         hits.len(),
         1,
@@ -393,7 +416,7 @@ fn c6_single_reduce_call_site() {
 fn d1_no_vk_magic_hex_outside_vk_rs() {
     const ALLOW: &[(&str, &str)] = &[];
     let mut files = Vec::new();
-    collect_rs(&manifest().join("src"), &mut files);
+    collect_all_src(&mut files);
     files.retain(|f| f.file_name().and_then(|n| n.to_str()) != Some("vk.rs"));
     files.sort();
     let mut hits = Vec::new();
@@ -445,7 +468,7 @@ fn d1_no_vk_magic_hex_outside_vk_rs() {
 #[test]
 fn e1_send_message_confined_to_low_level_wrappers() {
     let mut files = Vec::new();
-    collect_rs(&manifest().join("src"), &mut files);
+    collect_all_src(&mut files);
     files.retain(|f| {
         let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
         name != "imm.rs" && name != "ime.rs"
@@ -521,12 +544,17 @@ const CORE_MODULES: &[&str] = &[
     "generation",
     "gji_direct_mechanism",
     "half_width_alnum",
+    "foreign_modifier",
     "hook_state",
+    "hub_clock",
     "hook_watchdog",
     "ime_actuation",
     "ime_actuation_decision",
+    "ime_event",
     "ime_event_log",
     "ime_kind",
+    "ime_model",
+    "ime_profile_driver",
     "ime_read_strategy",
     "ime_set_open_plan",
     "ime_update",
@@ -534,6 +562,8 @@ const CORE_MODULES: &[&str] = &[
     "injection_mode",
     "input_barrier",
     "intent_store",
+    "key_effect_predictor",
+    "key_effect_runtime",
     "key_effect_table",
     "key_sequence_policy",
     "keymap_initial_hypothesis",
@@ -546,7 +576,9 @@ const CORE_MODULES: &[&str] = &[
     "physical_disposition",
     "platform_state",
     "post_bypass",
+    "probe_admission",
     "press_ledger",
+    "raw_recovery_plan",
     "relay_plan",
     "scoped_latch",
     "snapshot_input_mode",
@@ -559,36 +591,7 @@ const CORE_MODULES: &[&str] = &[
 
 /// ungated だが現状 Tier-2 の規則に違反するファイルと、その理由。直したら `CORE_MODULES` へ移す
 /// （`core_modules_violation_list_is_not_stale` が、違反が消えたのに残っているものを失敗させる）。
-const NOT_CORE_MODULES: &[(&str, &str)] = &[
-    (
-        "hub_clock",
-        "時計の実装そのもの。Instant::now() を持つ（恒久的に Tier-2 の外）",
-    ),
-    (
-        "ime_event",
-        "#[cfg(windows)] impl HwndId / From<HWND>（殻へ出す候補）",
-    ),
-    (
-        "ime_model",
-        "effective_open() などの Instant::now()（effective_open_at を呼ぶ側へ）",
-    ),
-    (
-        "ime_profile_driver",
-        "不変の static 3 つ（const の &'static dyn へ置き換えられる見込み）",
-    ),
-    (
-        "key_effect_predictor",
-        "#[cfg(windows)] の get_gji/get_native（FS/レジストリ。殻へ）",
-    ),
-    (
-        "key_effect_runtime",
-        "#[cfg(windows)] と fs::metadata（学習済み表の読み込み。殻へ）",
-    ),
-    (
-        "probe_admission",
-        "可変の static カウンタと #[cfg(windows)] の関数（カウンタは殻へ）",
-    ),
-];
+const NOT_CORE_MODULES: &[(&str, &str)] = &[];
 
 /// 文字列リテラルの中身を落とす（`"..."` → `""`）。ログ文言に `std::fs` 等が出ても誤検出しない。
 /// 生文字列・複数行文字列は扱わない。
@@ -689,9 +692,16 @@ fn core_violations(content: &str) -> Vec<(usize, &'static str, String)> {
         let s = strip_string_literals(code);
         let t = code.trim().to_string();
         if [
-            "Instant::now(",
-            "SystemTime::now(",
-            "quanta::",
+            // 括弧なしで関数ポインタとして渡す形（`HubClock::wall(.., Instant::now)`）も壁時計の読み取り。
+            "Instant::now",
+            "SystemTime::now",
+            // `quanta::Clock` 型そのもの（注入された時計）は許す。実時計を作る `Clock::new()`/`default()` は構築側（殻）が渡す。
+            "quanta::Clock::new",
+            "quanta::Clock::default",
+            // `use quanta::Clock; Clock::new()` や別名、`quanta::Instant::recent()` の素通りを防ぐ
+            // （核に `use quanta` は無い。型は `quanta::Clock` と書く）。
+            "use quanta",
+            "::recent(",
             "MonotonicClock",
         ]
         .iter()
@@ -726,39 +736,43 @@ fn core_violations(content: &str) -> Vec<(usize, &'static str, String)> {
     out
 }
 
-fn state_dir() -> PathBuf {
-    manifest().join("src/state")
-}
-
-fn state_file(name: &str) -> PathBuf {
-    state_dir().join(format!("{name}.rs"))
+/// `state/<name>.rs` の**全コピー**（核 crate へ移ったファイルも、元と同じ `src/state/` の配置で探す）。
+/// 1 つも無ければ panic する（移動・改名したらガードも付け替える）。同じ名前が両 crate にあれば
+/// すべて検査に掛ける（最初の 1 件だけを見ない。Opus PR #570 X2）。
+fn state_files(name: &str) -> Vec<PathBuf> {
+    src_files(&format!("state/{name}.rs"))
 }
 
 /// `state/mod.rs` の `mod X;` のうち、直前の属性に `#[cfg(windows)]` が無い（ungated な）ものの名前。
 fn ungated_state_modules() -> Vec<String> {
-    let content = fs::read_to_string(state_dir().join("mod.rs")).expect("state/mod.rs");
-    let lines: Vec<&str> = content.lines().collect();
+    // 対象 crate すべての `state/mod.rs`（核 crate と殻の両方。P4）を読む。
     let mut names = Vec::new();
-    for (i, l) in lines.iter().enumerate() {
-        let Some(rest) = strip_visibility(l).strip_prefix("mod ") else {
-            continue;
-        };
-        let Some(name) = rest.strip_suffix(';') else {
-            continue;
-        };
-        let mut gated = false;
-        let mut j = i;
-        while j > 0 {
-            j -= 1;
-            let p = lines[j].trim();
-            if p.starts_with("#[") {
-                gated |= p.starts_with("#[cfg(windows)]");
-            } else if !p.starts_with("//") {
-                break;
+    for src in src_dirs() {
+        let path = src.join("state/mod.rs");
+        let content =
+            fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} が読めません", path.display()));
+        let lines: Vec<&str> = content.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            let Some(rest) = strip_visibility(l).strip_prefix("mod ") else {
+                continue;
+            };
+            let Some(name) = rest.strip_suffix(';') else {
+                continue;
+            };
+            let mut gated = false;
+            let mut j = i;
+            while j > 0 {
+                j -= 1;
+                let p = lines[j].trim();
+                if p.starts_with("#[") {
+                    gated |= p.starts_with("#[cfg(windows)]");
+                } else if !p.starts_with("//") {
+                    break;
+                }
             }
-        }
-        if !gated {
-            names.push(name.trim().to_string());
+            if !gated {
+                names.push(name.trim().to_string());
+            }
         }
     }
     names
@@ -769,12 +783,13 @@ fn ungated_state_modules() -> Vec<String> {
 fn core_modules_have_no_tier2_violations() {
     let mut hits = Vec::new();
     for name in CORE_MODULES {
-        let path = state_file(name);
-        let content = fs::read_to_string(&path).unwrap_or_else(|_| {
-            panic!("CORE_MODULES の {name} が実在しません: {}", path.display())
-        });
-        for (line, rule, code) in core_violations(&content) {
-            hits.push(format!("{}:{line}: [{rule}] {code}", rel(&path)));
+        for path in state_files(name) {
+            let content = fs::read_to_string(&path).unwrap_or_else(|_| {
+                panic!("CORE_MODULES の {name} が読めません: {}", path.display())
+            });
+            for (line, rule, code) in core_violations(&content) {
+                hits.push(format!("{}:{line}: [{rule}] {code}", rel(&path)));
+            }
         }
     }
     assert_empty(
@@ -783,6 +798,97 @@ fn core_modules_have_no_tier2_violations() {
         "pure core（CORE_MODULES）は壁時計・static・thread_local・#[cfg(windows)] 項目・FS/環境変数を持たない。\
          時刻は引数で受け、Win32/FS に触る部分は殻（runtime/ など）へ出すこと。\
          直せないなら、そのファイルを CORE_MODULES から外して NOT_CORE_MODULES に理由つきで移す。",
+    );
+}
+
+/// 核 crate（`awase-windows-core`、ADR-229 D4）は windows crate にも殻の crate にも依存しない。
+/// 以前は `CORE_MODULES` の `#[cfg(windows)]` 検出（テキスト走査）で守っていた「OS 非依存」を、crate の
+/// 依存関係（コンパイラ）で守る。`Cargo.toml` に Windows 系の依存を足すと落ちる。
+#[test]
+fn core_crate_does_not_depend_on_windows() {
+    let path = manifest().join("../awase-windows-core/Cargo.toml");
+    let toml =
+        fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} が読めません", path.display()));
+    let mut offenders = Vec::new();
+    for (n, l) in toml.lines().enumerate() {
+        let t = l.trim();
+        if t.starts_with('#') {
+            continue;
+        }
+        let key = t.split(['=', ' ']).next().unwrap_or("");
+        if [
+            "windows",
+            "windows-core",
+            "windows-sys",
+            "windows-targets",
+            "win32-async",
+            "win32-worker",
+            "awase-windows",
+        ]
+        .contains(&key)
+            || t.contains("cfg(windows)")
+            || t.contains("target_os")
+        {
+            offenders.push(format!("Cargo.toml:{}: {t}", n + 1));
+        }
+    }
+    assert_empty(
+        "核 crate の依存 (ADR-229 D4)",
+        &offenders,
+        "awase-windows-core は windows crate・win32-*・awase-windows に依存しない（OS 非依存の核）。\
+         Win32 に触るものは殻の awase-windows に置くこと。",
+    );
+}
+
+/// `state/` の外にある、crate の物理分割（ADR-229 D4）で核へ移す候補のファイル（`src/` 相対）。
+/// `CORE_MODULES` と同じ Tier-2 の 4 規則を、移す前から検査する。違反が出たら殻へ出してから足す。
+const CORE_CANDIDATE_FILES: &[&str] = &[
+    "focus/class_names.rs",
+    "focus/hwnd_cache.rs",
+    "focus/kinds.rs",
+    "journal.rs",
+    "journal_policy.rs",
+    "keymap.rs",
+    "tsf/literal_facts.rs",
+    "tuning.rs",
+    "vk.rs",
+];
+
+fn src_files(rel_path: &str) -> Vec<PathBuf> {
+    let found: Vec<PathBuf> = src_dirs()
+        .iter()
+        .map(|src| src.join(rel_path))
+        .filter(|p| p.exists())
+        .collect();
+    assert!(
+        !found.is_empty(),
+        "src/{rel_path} が対象 crate のどこにも無い（移動・改名したらガードも付け替える）"
+    );
+    found
+}
+
+/// 核へ移す候補（`state/` の外）も Tier-2 の 4 規則に違反しない。
+#[test]
+fn core_candidate_files_have_no_tier2_violations() {
+    let mut hits = Vec::new();
+    for name in CORE_CANDIDATE_FILES {
+        for path in src_files(name) {
+            let content = fs::read_to_string(&path).unwrap_or_else(|_| {
+                panic!(
+                    "CORE_CANDIDATE_FILES の {name} が読めません: {}",
+                    path.display()
+                )
+            });
+            for (line, rule, code) in core_violations(&content) {
+                hits.push(format!("{}:{line}: [{rule}] {code}", rel(&path)));
+            }
+        }
+    }
+    assert_empty(
+        "Tier-2 (crate 分割の候補)",
+        &hits,
+        "核へ移す候補は壁時計・static・thread_local・#[cfg(windows)] 項目・FS/環境変数を持たない。\
+         Win32/FS に触る部分は殻（journal_dump.rs・vk_windows.rs のような crate 直下のファイル）へ出すこと。",
     );
 }
 
@@ -819,9 +925,13 @@ fn core_modules_classify_every_ungated_state_module() {
 fn core_modules_violation_list_is_not_stale() {
     let mut stale = Vec::new();
     for (name, _) in NOT_CORE_MODULES {
-        let content = fs::read_to_string(state_file(name))
-            .unwrap_or_else(|_| panic!("NOT_CORE_MODULES の {name} が実在しません"));
-        if core_violations(&content).is_empty() {
+        // どのコピーにも違反が無くなったときだけ stale（1 つでも違反が残っていれば NOT_CORE のまま）。
+        let any_violation = state_files(name).iter().any(|path| {
+            let content = fs::read_to_string(path)
+                .unwrap_or_else(|_| panic!("NOT_CORE_MODULES の {name} が読めません"));
+            !core_violations(&content).is_empty()
+        });
+        if !any_violation {
             stale.push(*name);
         }
     }
@@ -845,6 +955,11 @@ mod core_guard_helper_tests {
     #[test]
     fn detects_wall_clock_and_ignores_comments_and_strings() {
         assert_eq!(rules("let t = Instant::now();\n"), ["wall-clock"]);
+        assert_eq!(
+            rules("let c = HubClock::wall(tick, Instant::now);\n"),
+            ["wall-clock"],
+            "関数ポインタ経由の壁時計"
+        );
         assert_eq!(
             rules("let t = std::time::SystemTime::now();\n"),
             ["wall-clock"]

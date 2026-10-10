@@ -143,12 +143,15 @@ impl ImeStateHub {
     ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
-    pub fn with_clock(clock: super::hub_clock::HubClock) -> Self {
+    pub fn with_clock(clock: super::hub_clock::HubClock, journal_clock: quanta::Clock) -> Self {
         Self {
             belief: ImeBelief::default(),
             event_log: ImeEventLog::default(),
             clock,
-            journal: UnifiedJournal::default(),
+            journal: UnifiedJournal::new_with_clock(
+                crate::journal::DEFAULT_CAPACITY,
+                journal_clock,
+            ),
             shadow_model: ImeModel::default(),
             last_user_explicit_off_ms: 0,
             last_explicit_ime_action_ms: 0,
@@ -479,7 +482,7 @@ impl ImeStateHub {
 
     // ── 直接観測の窓（ADR-188、BUG-149/150 の Chrome 版）──
 
-    /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（読めない窓＝GJI × `Imm32Unavailable` のみ）。直接観測の窓を開く／延ばす。
+    /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（読めない窓＝GJI／同定済み MS-IME 本体 × `Imm32Unavailable`、ADR-244）。直接観測の窓を開く／延ばす。
     ///
     /// crate 内（殻 `shell.rs` と単体テスト）だけが呼ぶ。閉ループのハーネスには公開しない（`PLATFORM_STATE_PUB_FNS` を増やさない）。
     pub(crate) fn arm_direct_external_change_watch_in_scope(
@@ -513,6 +516,7 @@ impl ImeStateHub {
         now_ms: u64,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
+        kind: crate::state::ime_kind::ImeKindId,
         scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<super::external_change_watch::DirectFollow> {
         if !self.external_change_watch.direct_live(
@@ -537,7 +541,8 @@ impl ImeStateHub {
         {
             return None;
         }
-        let follow = super::external_change_watch::classify_direct_read(
+        let follow = super::external_change_watch::classify_direct_read_for(
+            kind,
             read_open,
             read_conv,
             self.effective_open_at(tick_ms),
@@ -606,7 +611,10 @@ impl ImeStateHub {
     /// 揃える条件: 初期値のまま（`desired_is_placeholder`）、明示意図が無い（`last_intent`）、観測から導ける開閉
     /// （`derive_any`）がある。揃えたら（`ModeKeyPassedThrough { align_desired: true }` の reducer 経路、BUG-157 と同じ）
     /// 揃えた後の `desired_open` を返す。揃えなかったら `None`（読めない窓では観測が来るまで触れない）。
-    pub(crate) fn align_placeholder_desired(
+    ///
+    /// 閉ループのハーネス `tests/support/harness.rs` からも呼ぶ。本番の呼び出し元は crate 内だけ。`desired_open` を書き換える口だが、
+    /// 安全の根拠は `dispatch_event` と同じ（本番のハブが crate 外から届かないこと。`production_hub_is_unreachable_from_outside_the_crate`）。
+    pub fn align_placeholder_desired(
         &mut self,
         now: std::time::Instant,
         tick_ms: TickMs,
@@ -1372,9 +1380,7 @@ impl ImeStateHub {
             },
             tick_ms,
         );
-        self.belief.is_japanese_ime = true;
-        self.belief.prev_conversion_mode = None;
-        self.belief.eisu_candidate = None;
+        self.belief.reset_for_panic();
         self.shadow_model.observe_miss_monitor.record_success();
         self.shadow_model.force_guards.clear();
         self.shadow_model.force_guards.add(ForceGuard {
@@ -1413,7 +1419,7 @@ impl ImeStateHub {
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
         if let Some(is_jp) = update.is_japanese_ime {
-            self.belief.is_japanese_ime = is_jp;
+            self.belief.set_japanese_ime(is_jp);
         }
         if let Some(obs) = update.observer_poll {
             self.dispatch_event(
@@ -1454,7 +1460,7 @@ impl ImeStateHub {
             );
         }
         if let Some(conv) = update.new_prev_conversion_mode {
-            self.belief.prev_conversion_mode = Some(conv);
+            self.belief.set_prev_conversion_mode(Some(conv));
         }
         self.apply_eisu_candidate_update(update.eisu_candidate);
     }
@@ -1465,12 +1471,7 @@ impl ImeStateHub {
         &mut self,
         update: crate::state::eisu_candidate::CandidateUpdate,
     ) {
-        use crate::state::eisu_candidate::CandidateUpdate;
-        match update {
-            CandidateUpdate::Keep => {}
-            CandidateUpdate::Set(c) => self.belief.eisu_candidate = Some(c),
-            CandidateUpdate::Clear => self.belief.eisu_candidate = None,
-        }
+        self.belief.apply_eisu_candidate_update(update);
     }
 
     /// 英数モードの候補の寿命の残り(ms)。候補が無い/寿命切れなら `None`(確認の読み直しの予約が使う)。
@@ -1484,7 +1485,8 @@ impl ImeStateHub {
 
     /// 英数モードの候補を捨てる(フォーカス変更時。`set_prev_conversion_mode(None)` と同じ場所で呼ぶ)。
     pub(crate) fn clear_eisu_candidate(&mut self) {
-        self.belief.eisu_candidate = None;
+        self.belief
+            .apply_eisu_candidate_update(crate::state::eisu_candidate::CandidateUpdate::Clear);
     }
 
     /// `hwnd_cache` の復元結果を belief / shadow_model に反映する。
@@ -1562,7 +1564,11 @@ impl ImeStateHub {
         profile: ImePolicyProfile,
         tick_ms: TickMs,
     ) {
-        if !self.belief.is_japanese_ime() || self.shadow_model.effective_open() {
+        if !self.belief.is_japanese_ime()
+            || self
+                .shadow_model
+                .effective_open_at(self.clock.now_instant())
+        {
             return;
         }
         if let Some(intent) = self.shadow_model.last_intent.as_ref() {
@@ -1643,15 +1649,15 @@ impl ImeStateHub {
     ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     pub fn set_is_japanese_ime(&mut self, value: bool) {
-        self.belief.is_japanese_ime = value;
+        self.belief.set_japanese_ime(value);
     }
 
     /// ADR-223 段階 1: 打鍵の取り込み時に読んだ入力言語で `is_japanese_ime` を更新する。
     /// 不明(`None`)・同じ値なら何もしない。値が変わったら `true` を返す(呼び出し側が読み直しを 1 回だけ予約する)。
     pub(crate) fn observe_layout_language(&mut self, read: Option<bool>) -> bool {
         match read {
-            Some(japanese) if japanese != self.belief.is_japanese_ime => {
-                self.belief.is_japanese_ime = japanese;
+            Some(japanese) if japanese != self.belief.is_japanese_ime() => {
+                self.belief.set_japanese_ime(japanese);
                 true
             }
             _ => false,
@@ -1659,7 +1665,7 @@ impl ImeStateHub {
     }
 
     pub(crate) fn set_prev_conversion_mode(&mut self, value: Option<u32>) {
-        self.belief.prev_conversion_mode = value;
+        self.belief.set_prev_conversion_mode(value);
     }
 
     // ── イベント dispatch ヘルパ ──
@@ -2053,7 +2059,7 @@ impl PlatformState {
     /// 時計を注入して初期化するテスト用の構築口（`new()` は実時計 `hook::current_tick_ms` を読む）。
     pub(crate) fn for_test(clock: super::hub_clock::HubClock) -> Self {
         Self {
-            ime: ImeStateHub::with_clock(clock),
+            ime: ImeStateHub::with_clock(clock, quanta::Clock::new()),
             focus: FocusStore::new(),
             gate: GateStore::new(),
             keymap: KeymapStore::default(),
@@ -2078,7 +2084,10 @@ mod tests {
 
     /// テスト共通の `PlatformState`: 仮想時計（進めない限り `BASE_TICK` で止まる）。
     fn ps_for_test() -> PlatformState {
-        PlatformState::for_test(crate::state::hub_clock::HubClock::manual(BASE_TICK))
+        PlatformState::for_test(crate::state::hub_clock::HubClock::manual(
+            BASE_TICK,
+            std::time::Instant::now(),
+        ))
     }
 
     /// shadow_model を直接設定するヘルパ:
@@ -2091,7 +2100,7 @@ mod tests {
         is_japanese: bool,
     ) -> PlatformState {
         let mut ps = ps_for_test();
-        ps.ime.belief.is_japanese_ime = is_japanese;
+        ps.ime.belief.set_japanese_ime(is_japanese);
         if let Some(source) = set_intent {
             ps.ime.dispatch_event(
                 ImeEvent::UserImeSetIntent {
@@ -2115,7 +2124,7 @@ mod tests {
     #[test]
     fn manual_hub_clock_drives_event_monotonic() {
         let mut ps = ps_for_test();
-        ps.ime.clock = crate::state::hub_clock::HubClock::manual(10_000);
+        ps.ime.clock = crate::state::hub_clock::HubClock::manual(10_000, std::time::Instant::now());
         let started_at = |ps: &PlatformState| match ps.ime.model().input_barrier {
             Some(InputBarrier::FocusTransition { started_at, .. }) => started_at,
             ref other => panic!("FocusTransition の barrier が立っていない: {other:?}"),
@@ -2179,7 +2188,7 @@ mod tests {
     #[test]
     fn new_thread_assumption_yields_to_intent_store() {
         let mut ps = ps_for_test();
-        ps.ime.belief.is_japanese_ime = true;
+        ps.ime.belief.set_japanese_ime(true);
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         // last_intent と観測を消し、IntentStore だけを優先根拠として残す。
@@ -2541,7 +2550,7 @@ mod tests {
         dispatch_conv_open_inference(&mut ps, true, 100);
         assert_eq!(
             ps.ime.effective_open_at(TickMs(100)),
-            ps.ime.model().effective_open(),
+            ps.ime.model().effective_open_at(std::time::Instant::now()),
             "IntentStore に記録しないため、hub 版と生の ImeModel 版の effective_open() は一致し続ける"
         );
     }
@@ -2641,7 +2650,7 @@ mod tests {
     #[test]
     fn check_drift_correction_ignores_heuristic_default_alone_without_explicit_intent() {
         let mut ps = ps_for_test();
-        ps.ime.belief.is_japanese_ime = true;
+        ps.ime.belief.set_japanese_ime(true);
         // Word 相当のウィンドウで明示 OFF。
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime
@@ -2797,6 +2806,7 @@ mod tests {
             left_thumb_down_snapshot: None,
             right_thumb_down_snapshot: None,
             injected: false,
+            foreign_ctrl: false,
         }
     }
 
@@ -3026,7 +3036,7 @@ mod tests {
         dispatch_conv_open_inference(&mut ps, true, 300);
 
         assert!(
-            ps.ime.model().effective_open(),
+            ps.ime.model().effective_open_at(std::time::Instant::now()),
             "退行の証拠: IntentStore 抜きの生の ImeModel::effective_open() は \
              ConvOpenInference 1 件だけで true に反転する（BUG-63 と同型の機構）"
         );
@@ -3634,7 +3644,7 @@ mod tests {
     #[test]
     fn reset_stale_ime_on_for_imm_broken_preserves_valid_intent_store_entry() {
         let mut ps = ps_for_test();
-        ps.ime.belief.is_japanese_ime = true;
+        ps.ime.belief.set_japanese_ime(true);
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime
             .write_sync_key(sync_key_witness(), false, TickMs(100));
@@ -3769,6 +3779,7 @@ mod tests {
                 1032,
                 TickMs(1032),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             Some(direct_follow(Some(false), None))
@@ -3784,6 +3795,7 @@ mod tests {
                 1090,
                 TickMs(1090),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             None
@@ -3796,6 +3808,7 @@ mod tests {
                 1150,
                 TickMs(1150),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             Some(direct_follow(Some(true), None))
@@ -3819,6 +3832,7 @@ mod tests {
                 t,
                 TickMs(t),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope(),
             )
         };
@@ -3843,6 +3857,47 @@ mod tests {
         ));
     }
 
+    /// ADR-244 D4: MS-IME 本体は英数の軸だけを採る。閉の読み（「開いているのに 0」の型を含む）では belief の開閉を
+    /// 動かさず、トグル中（`ObservedEisu`）の NATIVE の読みでは英数を外す（BUG-186）。
+    #[test]
+    fn follow_direct_read_for_ms_ime_native_follows_only_the_eisu_axis() {
+        use crate::state::ime_kind::ImeKindId;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        let read = |ps: &mut PlatformState, open: bool, conv: u32, t: u64| {
+            ps.ime.follow_direct_read_in_scope(
+                Some(open),
+                Some(conv),
+                t,
+                TickMs(t),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope(),
+            )
+        };
+        // 半角英数を読んだら英数を採る(軸の絞り込みは英数を妨げない)。
+        assert_eq!(
+            read(&mut ps, true, 16, 1032),
+            Some(direct_follow(None, Some(true)))
+        );
+        assert_eq!(ps.ime.input_mode(), InputModeState::ObservedEisu);
+        // 閉の読みでは開閉の軸を採らない（belief は開のまま）。
+        assert_eq!(read(&mut ps, false, 0, 1100), None);
+        assert!(ps.ime.effective_open_at(TickMs(1110)));
+        // かなへ戻った(NATIVE)読みで英数を外す。
+        assert_eq!(
+            read(&mut ps, true, 25, 1160),
+            Some(direct_follow(None, Some(false)))
+        );
+        assert!(matches!(
+            ps.ime.input_mode(),
+            InputModeState::AssumedRomaji { .. }
+        ));
+    }
+
     /// R3: awase 自身が窓の最後の arm 以後に IME へ書いたら、GJI の処理前の読みで belief を逆戻ししない。
     #[test]
     fn follow_direct_read_ignores_reads_after_awase_wrote() {
@@ -3859,6 +3914,7 @@ mod tests {
                 1032,
                 TickMs(1032),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             None
@@ -3874,9 +3930,65 @@ mod tests {
                 1232,
                 TickMs(1232),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             Some(direct_follow(Some(false), None))
+        );
+    }
+
+    /// ADR-244 D6(R3): MS-IME 本体でも、トグル開始など awase 自身が窓の arm 以後に IME へ書いたら、その後の NATIVE の読み
+    /// (処理前の古い状態でありうる)では英数を外さない。新しい物理キー(再 arm)の後の読みは採る。
+    #[test]
+    fn follow_direct_read_for_ms_ime_native_ignores_reads_after_awase_wrote() {
+        use crate::state::ime_kind::ImeKindId;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        // トグル開始の前: belief を英数にする(窓の読みが英数)。
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(16),
+                1010,
+                TickMs(1010),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope()
+            ),
+            Some(direct_follow(None, Some(true)))
+        );
+        // awase がトグル開始で IME へ書いた(`note_explicit_ime_action`)。以後の NATIVE の読みは採らない。
+        ps.ime.note_explicit_ime_action(TickMs(1020));
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(25),
+                1032,
+                TickMs(1032),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope()
+            ),
+            None
+        );
+        assert_eq!(ps.ime.input_mode(), InputModeState::ObservedEisu);
+        // 新しい物理キー(再 arm)の後の NATIVE の読みは採る。
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1200, test_foreground_scope());
+        assert_eq!(
+            ps.ime.follow_direct_read_in_scope(
+                Some(true),
+                Some(25),
+                1232,
+                TickMs(1232),
+                follow_fence(),
+                ImeKindId::MsIme,
+                test_foreground_scope()
+            ),
+            Some(direct_follow(None, Some(false)))
         );
     }
 
@@ -3893,6 +4005,7 @@ mod tests {
                 t,
                 TickMs(t),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 scope,
             )
         };
@@ -3962,6 +4075,7 @@ mod tests {
                     t,
                     TickMs(t),
                     follow_fence(),
+                    crate::state::ime_kind::ImeKindId::Gji,
                     test_foreground_scope()
                 ),
                 None,
@@ -3979,6 +4093,7 @@ mod tests {
                 1432,
                 TickMs(1432),
                 follow_fence(),
+                crate::state::ime_kind::ImeKindId::Gji,
                 test_foreground_scope()
             ),
             Some(direct_follow(Some(false), None))

@@ -34,7 +34,7 @@ use crate::tsf::literal_facts::{
 };
 
 /// `DeferredVk` の由来。ADR-123 変更B: focus 変更時等に `pending_deferred`
-/// を丸ごと破棄する経路（`discard_raw_recovery_if_focus_stale` 等）が、
+/// を丸ごと破棄する経路（`discard_raw_recovery_if_moved` 等）が、
 /// 「awase 自身が再送しようとしていたromaji」（`RecoveryResend`）と
 /// 「ユーザーが実際に打鍵したがまだ送信されていない入力」（`UserInput`）を
 /// 区別できるようにする。現時点ではログの内訳表示にのみ使う（挙動は変えない、

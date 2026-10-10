@@ -273,3 +273,7 @@ Blind 窓で学習表が「開閉トグルではない」とする半角/全角�
 - belief 更新範囲（`demote_applied=true` は追随経路だけ、構築点は `pass_through_observed` の1か所）、GJI × Imm32Unavailable への限定は意図どおりと確認された。
 - 追加テスト: ハブ経路で追随後に `applied` が未確認へ落ちること。GJI→MS-IME→GJI の往復で古い基準値が残る件は、採用されるのが常に窓内で読んだ現在値であり実状態への追随になるため害は小さい（IME 種別変更で基準値を捨てる案は採らない）。
 - MS-IME の読みの根拠: run 36548761653 `imeoff-ext-msime-native` の trace で、IME が開いているセットアップ中も `CrossProcess(hwndFocus) open=0` が続いた。BUG-172 の「chrome_probe は MS-IME も 1→0 を読めた」とは測定方法（トップレベル窓と awase の hwndFocus 経路）が異なる可能性があり、MS-IME を外す判断は M5-3（awase 自身の VK_IME_OFF が効かない測定）だけでも正当化できる。
+
+## 2026-10-08 追記(ADR-244)
+
+直接観測(ADR-188)は ADR-244 で `table_ime_kind()`（GJI／同定済み MS-IME 本体）の範囲へ広げた（MS-IME 本体は英数の軸だけを採る）。本 ADR の外部変化の監視（開閉の基準値を持つ）は GJI 限定のまま——上記の「MS-IME × 実 Chrome の開閉の読みが 0」の懸念は、基準値を持たない直接観測が英数の軸だけを見ることで踏まない。この GJI 限定の理由は撤回していない。
