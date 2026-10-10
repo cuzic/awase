@@ -12,6 +12,10 @@ permissions:
 
 jobs:
   spike:
+    strategy:
+      fail-fast: false
+      matrix:
+        key: ['1D', '1C']
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -46,11 +50,11 @@ jobs:
           Start-Sleep -Seconds 5
       - name: 実効果の測定(テンプレート・コード掃引)
         shell: pwsh
-        run: ./tools/ci/msime-legacy-keytable-effect.ps1 -Out effect-out
+        run: ./tools/ci/msime-legacy-keytable-effect.ps1 -Out effect-out -Key ${{ matrix.key }} -SkipTemplates
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: msime-legacy-keytable
+          name: msime-legacy-keytable-${{ matrix.key }}
           path: |
             spike-out/
             effect-out/

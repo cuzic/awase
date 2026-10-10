@@ -1,7 +1,8 @@
 # 旧UI(互換モード)のキー表の「コード」が実際の IME 挙動に効くかを測るスパイク。観測のみ。
 # A) テンプレート(ATOK/VJE/WX/MS-IME2000)ごとに SETKEYTEMPLATE → 無変換/変換の実効果を測る(表が効いているか)
 # B) StyleList\Custom の「無変換」行を1つのコードで埋めて keystyle=Custom にし、無変換の実効果を測る(コード掃引)
-param([string]$Out = 'effect-out', [string]$Codes = 'CD,CE,CF,CA,B3,97,28,A2,87,C9,A4,00,FF,80')
+param([string]$Out = 'effect-out', [string]$Key = '1D', [switch]$SkipTemplates,
+  [string]$Codes = '80,81,82,83,84,85,86,87,88,89,8A,94,95,96,97,98,A1,A2,A4,B3,C3,C4,C7,C9,CA,CD,CE,CF,D0,D5,F5,F7,28,29,FF,00')
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 try { [Text.Encoding]::RegisterProvider([Text.CodePagesEncodingProvider]::Instance) } catch {}
@@ -53,36 +54,35 @@ Say '=== help setkeytemplate ==='
 Say ((& $exe help setkeytemplate 2>&1) -join "`n")
 
 Say '=== A) テンプレートごとの実効果 ==='
+if (-not $SkipTemplates) {
 Run-Harness 'none' '1D,1C'
 foreach ($t in 'Microsoft_IME', 'IME_Standard', 'ATOK', 'VJE', 'WX') {
   & $exe setkeytemplate $t 2>&1 | Out-Null
   Say ("template=$t keystyle=" + (Get-ItemProperty "HKCU:\$imejp\MSIME").keystyle)
   Run-Harness "tmpl-$t" '1D,1C'
 }
+}
 
-Say '=== B) Custom の無変換行を1コードで埋めた掃引 ==='
+Say '=== B) 名前付きスタイル(NATURAL)の表を直接書き換えた掃引(keystyle=NATURAL のまま) ==='
 & $exe setkeytemplate 'Microsoft_IME' 2>&1 | Out-Null
+$natPath = "HKCU:\$imejp\StyleList\NATURAL"
 $base = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("$imejp\StyleList\NATURAL")
 if (-not $base) { Say 'NATURAL style missing'; exit 0 }
 $baseKey = $base.GetValue('key')
+$rowName = if ($Key -eq '1D') { '無変換' } else { '変換' }
+Say "row=$rowName seq=$Key keystyle=$((Get-ItemProperty "HKCU:\$imejp\MSIME").keystyle)"
 foreach ($code in ($Codes -split ',')) {
   $recs = New-Object System.Collections.Generic.List[byte[]]
   $cur = New-Object System.Collections.Generic.List[byte]
   foreach ($b in $baseKey) { if ($b -eq 0) { if ($cur.Count -gt 0) { $recs.Add($cur.ToArray()); $cur.Clear() } } else { $cur.Add($b) } }
   $out = New-Object System.Collections.Generic.List[byte]
   foreach ($r in $recs) {
-    $s = $sjis.GetString($r)
-    if ($s.StartsWith([string]'無変換=')) { $r = $sjis.GetBytes("無変換=$code $code $code $code $code $code") }
+    $str = $sjis.GetString($r)
+    if ($str.StartsWith([string]"$rowName=")) { $r = $sjis.GetBytes("$rowName=$code $code $code $code $code $code") }
     $out.AddRange($r); $out.Add(0)
   }
   $out.Add(0)
-  $cust = "HKCU:\$imejp\StyleList\Custom"
-  New-Item -Path $cust -Force | Out-Null
-  foreach ($n in $base.GetValueNames()) {
-    if ($n -ne 'key') { Set-ItemProperty -Path $cust -Name $n -Value $base.GetValue($n) -Type Binary -Force }
-  }
-  Set-ItemProperty -Path $cust -Name key -Value ([byte[]]$out.ToArray()) -Type Binary -Force
-  Set-ItemProperty -Path "HKCU:\$imejp\MSIME" -Name keystyle -Value 'Custom' -Type String -Force
-  Run-Harness "muhenkan-$code" '1D'
+  Set-ItemProperty -Path $natPath -Name key -Value ([byte[]]$out.ToArray()) -Type Binary -Force
+  Run-Harness "$rowName-$code" $Key
 }
 Say '=== done ==='
