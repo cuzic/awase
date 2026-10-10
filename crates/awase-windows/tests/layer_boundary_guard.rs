@@ -698,7 +698,9 @@ fn core_violations(content: &str) -> Vec<(usize, &'static str, String)> {
             // 括弧なしで関数ポインタとして渡す形（`HubClock::wall(.., Instant::now)`）も壁時計の読み取り。
             "Instant::now",
             "SystemTime::now",
-            "quanta::",
+            // `quanta::Clock` 型そのもの（注入された時計）は許す。実時計を作る `Clock::new()`/`default()` は構築側（殻）が渡す。
+            "quanta::Clock::new",
+            "quanta::Clock::default",
             "MonotonicClock",
         ]
         .iter()
@@ -795,6 +797,52 @@ fn core_modules_have_no_tier2_violations() {
         "pure core（CORE_MODULES）は壁時計・static・thread_local・#[cfg(windows)] 項目・FS/環境変数を持たない。\
          時刻は引数で受け、Win32/FS に触る部分は殻（runtime/ など）へ出すこと。\
          直せないなら、そのファイルを CORE_MODULES から外して NOT_CORE_MODULES に理由つきで移す。",
+    );
+}
+
+/// `state/` の外にある、crate の物理分割（ADR-229 D4）で核へ移す候補のファイル（`src/` 相対）。
+/// `CORE_MODULES` と同じ Tier-2 の 4 規則を、移す前から検査する。違反が出たら殻へ出してから足す。
+const CORE_CANDIDATE_FILES: &[&str] = &[
+    "focus/class_names.rs",
+    "focus/hwnd_cache.rs",
+    "focus/kinds.rs",
+    "journal.rs",
+    "journal_policy.rs",
+    "keymap.rs",
+    "tsf/literal_facts.rs",
+    "tuning.rs",
+    "vk.rs",
+];
+
+fn src_file(rel_path: &str) -> PathBuf {
+    src_dirs()
+        .iter()
+        .map(|src| src.join(rel_path))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| manifest().join("src").join(rel_path))
+}
+
+/// 核へ移す候補（`state/` の外）も Tier-2 の 4 規則に違反しない。
+#[test]
+fn core_candidate_files_have_no_tier2_violations() {
+    let mut hits = Vec::new();
+    for name in CORE_CANDIDATE_FILES {
+        let path = src_file(name);
+        let content = fs::read_to_string(&path).unwrap_or_else(|_| {
+            panic!(
+                "CORE_CANDIDATE_FILES の {name} が実在しません: {}",
+                path.display()
+            )
+        });
+        for (line, rule, code) in core_violations(&content) {
+            hits.push(format!("{}:{line}: [{rule}] {code}", rel(&path)));
+        }
+    }
+    assert_empty(
+        "Tier-2 (crate 分割の候補)",
+        &hits,
+        "核へ移す候補は壁時計・static・thread_local・#[cfg(windows)] 項目・FS/環境変数を持たない。\
+         Win32/FS に触る部分は殻（journal_dump.rs・vk_windows.rs のような crate 直下のファイル）へ出すこと。",
     );
 }
 

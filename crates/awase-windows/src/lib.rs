@@ -49,6 +49,8 @@ pub mod single_thread_cell;
 pub mod state;
 pub mod tuning;
 pub mod vk;
+#[cfg(windows)]
+pub mod vk_windows;
 
 // ── Windows 専用モジュール ───────────────────────────────────────────────────────
 #[cfg(windows)]
@@ -68,6 +70,8 @@ pub(crate) mod imm;
 #[cfg(windows)]
 pub mod input_defer;
 pub mod journal;
+#[cfg(windows)]
+pub mod journal_dump;
 // `KeymapTable`/`find_match`/`filter_active` は純粋な値比較のみで Windows API に
 // 依存しないため ungated（ADR-114、Linux で `cargo test -p awase-windows --lib`
 // から全数テストできるようにする。唯一の呼び出し元 `runtime/message_handlers.rs`

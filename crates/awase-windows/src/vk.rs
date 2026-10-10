@@ -27,7 +27,9 @@ pub const LANGID_ENGLISH_US: u32 = 0x0409;
 /// **値の独立した検査**: Windows ターゲットでは、各定数を `windows` crate の同名の
 /// `VIRTUAL_KEY` 定数とコンパイル時に突き合わせる。Microsoft 自身のメタデータが
 /// オラクルになるので、表の値の打ち間違い(`VK_LSHIFT`/`VK_RSHIFT` の入れ替えなど)は
-/// `cargo check --target x86_64-pc-windows-msvc` で検出される。
+/// `cargo check --target x86_64-pc-windows-msvc` で検出される。突き合わせは殻の
+/// `vk_windows.rs` にある(このファイルは windows crate に依存しない。ADR-229 段階 B)。
+/// 表そのものは [`vk_table!`] で別のマクロへ渡せる。
 ///
 /// 表に載せないキー(`VK_JUNJA` 等、`from_name` が受理していなかったもの)は、下で普通の
 /// 定数として定義する。
@@ -40,13 +42,6 @@ macro_rules! vk_keys {
             $( KeyEntry { ident: stringify!($id), aliases: &[$($($alias),*)?], vk: $vk } ),*
         ];
 
-        $(
-            #[cfg(windows)]
-            const _: () = assert!(
-                ::windows::Win32::UI::Input::KeyboardAndMouse::$id.0 == $vk,
-                concat!("VK 値が windows crate の定数と違う: ", stringify!($id))
-            );
-        )*
     };
 }
 
@@ -64,131 +59,140 @@ impl KeyEntry {
     }
 }
 
-vk_keys! {
-/// VK_A (0x41) — 'A' キー。GJI cold-start warmup の犠牲キー (`send_unicode_cold_warmup_keys`) 用途。
-VK_A = 0x41;
-VK_B = 0x42;
-VK_C = 0x43;
-VK_D = 0x44;
-VK_E = 0x45;
-VK_F = 0x46;
-VK_G = 0x47;
-VK_H = 0x48;
-VK_I = 0x49;
-VK_J = 0x4A;
-VK_K = 0x4B;
-VK_L = 0x4C;
-VK_M = 0x4D;
-VK_N = 0x4E;
-VK_O = 0x4F;
-VK_P = 0x50;
-VK_Q = 0x51;
-VK_R = 0x52;
-VK_S = 0x53;
-VK_T = 0x54;
-VK_U = 0x55;
-VK_V = 0x56;
-VK_W = 0x57;
-VK_X = 0x58;
-VK_Y = 0x59;
-VK_Z = 0x5A;
-VK_0 = 0x30;
-VK_1 = 0x31;
-VK_2 = 0x32;
-VK_3 = 0x33;
-VK_4 = 0x34;
-VK_5 = 0x35;
-VK_6 = 0x36;
-VK_7 = 0x37;
-VK_8 = 0x38;
-VK_9 = 0x39;
-VK_OEM_PLUS = 0xBB;
-VK_OEM_COMMA = 0xBC;
-VK_OEM_MINUS = 0xBD;
-VK_OEM_PERIOD = 0xBE;
-VK_OEM_1 = 0xBA;
-VK_OEM_2 = 0xBF;
-VK_OEM_3 = 0xC0;
-VK_OEM_4 = 0xDB;
-VK_OEM_5 = 0xDC;
-VK_OEM_6 = 0xDD;
-VK_OEM_7 = 0xDE;
-VK_OEM_102 = 0xE2;
-VK_SPACE = 0x20;
-VK_RETURN = 0x0D, ["ENTER"];
-VK_TAB = 0x09;
-VK_BACK = 0x08, ["BACKSPACE"];
-VK_ESCAPE = 0x1B, ["ESC"];
-VK_DELETE = 0x2E;
-VK_CONVERT = 0x1C, ["変換"];
-VK_NONCONVERT = 0x1D, ["MUHENKAN", "無変換"];
-VK_KANA = 0x15, ["かな", "カナ"];
-VK_KANJI = 0x19, ["漢字"];
-VK_IME_ON = 0x16, ["IMEON", "IMEオン"];
-VK_IME_OFF = 0x1A, ["IMEOFF", "IMEオフ"];
-VK_DBE_ALPHANUMERIC = 0xF0;
-VK_DBE_KATAKANA = 0xF1;
-VK_DBE_HIRAGANA = 0xF2;
-VK_DBE_SBCSCHAR = 0xF3, ["OEM_AUTO"];
-VK_DBE_DBCSCHAR = 0xF4, ["OEM_ENLW"];
-/// VK_DBE_ROMAN (0xF5) — ローマ字入力モードへの切替（IME open 状態は変えない）。
-///
-/// `ImeKeyKind`（IME ON/OFF の shadow 追従用）には**含めない**: このキーは
-/// ROMAN ビット（かな入力方式）のみを制御し、`ShadowImeEffect::TurnOn/TurnOff/Toggle`
-/// のいずれにも該当しない。IME 自体の開閉状態を持つ shadow 追従の対象外。
-VK_DBE_ROMAN = 0xF5;
-/// VK_DBE_NOROMAN (0xF6) — JIS かな直接入力モードへの切替（IME open 状態は変えない）。
-/// `VK_DBE_ROMAN` と同じ理由で `ImeKeyKind` には含めない。
-VK_DBE_NOROMAN = 0xF6;
-VK_SHIFT = 0x10;
-VK_CONTROL = 0x11;
-VK_MENU = 0x12;
-/// VK_CAPITAL (0x14) — CapsLock。JIS キーボードでは Shift+英数 と物理的に
-/// 同一スキャンコード（ADR-111 参照）。`[[keymap]]` の `from`/`to` 禁止対象
-/// （ADR-114 決定5）で名前付き定数として参照するため追加。
-VK_CAPITAL = 0x14;
-VK_LSHIFT = 0xA0;
-VK_RSHIFT = 0xA1;
-VK_LCONTROL = 0xA2;
-VK_RCONTROL = 0xA3;
-VK_LMENU = 0xA4;
-VK_RMENU = 0xA5;
-VK_F1 = 0x70;
-VK_F2 = 0x71;
-VK_F3 = 0x72;
-VK_F4 = 0x73;
-VK_F5 = 0x74;
-VK_F6 = 0x75;
-VK_F7 = 0x76;
-VK_F8 = 0x77;
-VK_F9 = 0x78;
-VK_F10 = 0x79;
-VK_F11 = 0x7A;
-VK_F12 = 0x7B;
-/// F13。役割由来の開閉操作の候補（`is_role_fkey` の先頭、ADR-199 決定18）。
-VK_F13 = 0x7C;
-VK_F14 = 0x7D;
-VK_F15 = 0x7E;
-VK_F16 = 0x7F;
-VK_F17 = 0x80;
-VK_F18 = 0x81;
-VK_F19 = 0x82;
-VK_F20 = 0x83;
-VK_F21 = 0x84;
-VK_F22 = 0x85;
-VK_F23 = 0x86;
-VK_F24 = 0x87;
-VK_LEFT = 0x25;
-VK_UP = 0x26;
-VK_RIGHT = 0x27;
-VK_DOWN = 0x28;
-VK_HOME = 0x24;
-VK_END = 0x23;
-VK_PRIOR = 0x21;
-VK_NEXT = 0x22;
-VK_INSERT = 0x2D;
-VK_SNAPSHOT = 0x2C;
+/// `vk_keys!` の表を、`$cb!{ .. }` へそのまま渡す。窓の外(殻の `vk_windows.rs`)が同じ表を
+/// 別の用途(windows crate の定数との突き合わせ)に使えるようにするため、表の本体は 1 か所にだけ置く。
+#[macro_export]
+macro_rules! vk_table {
+    ($cb:ident) => {
+        $cb! {
+        /// VK_A (0x41) — 'A' キー。GJI cold-start warmup の犠牲キー (`send_unicode_cold_warmup_keys`) 用途。
+        VK_A = 0x41;
+        VK_B = 0x42;
+        VK_C = 0x43;
+        VK_D = 0x44;
+        VK_E = 0x45;
+        VK_F = 0x46;
+        VK_G = 0x47;
+        VK_H = 0x48;
+        VK_I = 0x49;
+        VK_J = 0x4A;
+        VK_K = 0x4B;
+        VK_L = 0x4C;
+        VK_M = 0x4D;
+        VK_N = 0x4E;
+        VK_O = 0x4F;
+        VK_P = 0x50;
+        VK_Q = 0x51;
+        VK_R = 0x52;
+        VK_S = 0x53;
+        VK_T = 0x54;
+        VK_U = 0x55;
+        VK_V = 0x56;
+        VK_W = 0x57;
+        VK_X = 0x58;
+        VK_Y = 0x59;
+        VK_Z = 0x5A;
+        VK_0 = 0x30;
+        VK_1 = 0x31;
+        VK_2 = 0x32;
+        VK_3 = 0x33;
+        VK_4 = 0x34;
+        VK_5 = 0x35;
+        VK_6 = 0x36;
+        VK_7 = 0x37;
+        VK_8 = 0x38;
+        VK_9 = 0x39;
+        VK_OEM_PLUS = 0xBB;
+        VK_OEM_COMMA = 0xBC;
+        VK_OEM_MINUS = 0xBD;
+        VK_OEM_PERIOD = 0xBE;
+        VK_OEM_1 = 0xBA;
+        VK_OEM_2 = 0xBF;
+        VK_OEM_3 = 0xC0;
+        VK_OEM_4 = 0xDB;
+        VK_OEM_5 = 0xDC;
+        VK_OEM_6 = 0xDD;
+        VK_OEM_7 = 0xDE;
+        VK_OEM_102 = 0xE2;
+        VK_SPACE = 0x20;
+        VK_RETURN = 0x0D, ["ENTER"];
+        VK_TAB = 0x09;
+        VK_BACK = 0x08, ["BACKSPACE"];
+        VK_ESCAPE = 0x1B, ["ESC"];
+        VK_DELETE = 0x2E;
+        VK_CONVERT = 0x1C, ["変換"];
+        VK_NONCONVERT = 0x1D, ["MUHENKAN", "無変換"];
+        VK_KANA = 0x15, ["かな", "カナ"];
+        VK_KANJI = 0x19, ["漢字"];
+        VK_IME_ON = 0x16, ["IMEON", "IMEオン"];
+        VK_IME_OFF = 0x1A, ["IMEOFF", "IMEオフ"];
+        VK_DBE_ALPHANUMERIC = 0xF0;
+        VK_DBE_KATAKANA = 0xF1;
+        VK_DBE_HIRAGANA = 0xF2;
+        VK_DBE_SBCSCHAR = 0xF3, ["OEM_AUTO"];
+        VK_DBE_DBCSCHAR = 0xF4, ["OEM_ENLW"];
+        /// VK_DBE_ROMAN (0xF5) — ローマ字入力モードへの切替（IME open 状態は変えない）。
+        ///
+        /// `ImeKeyKind`（IME ON/OFF の shadow 追従用）には**含めない**: このキーは
+        /// ROMAN ビット（かな入力方式）のみを制御し、`ShadowImeEffect::TurnOn/TurnOff/Toggle`
+        /// のいずれにも該当しない。IME 自体の開閉状態を持つ shadow 追従の対象外。
+        VK_DBE_ROMAN = 0xF5;
+        /// VK_DBE_NOROMAN (0xF6) — JIS かな直接入力モードへの切替（IME open 状態は変えない）。
+        /// `VK_DBE_ROMAN` と同じ理由で `ImeKeyKind` には含めない。
+        VK_DBE_NOROMAN = 0xF6;
+        VK_SHIFT = 0x10;
+        VK_CONTROL = 0x11;
+        VK_MENU = 0x12;
+        /// VK_CAPITAL (0x14) — CapsLock。JIS キーボードでは Shift+英数 と物理的に
+        /// 同一スキャンコード（ADR-111 参照）。`[[keymap]]` の `from`/`to` 禁止対象
+        /// （ADR-114 決定5）で名前付き定数として参照するため追加。
+        VK_CAPITAL = 0x14;
+        VK_LSHIFT = 0xA0;
+        VK_RSHIFT = 0xA1;
+        VK_LCONTROL = 0xA2;
+        VK_RCONTROL = 0xA3;
+        VK_LMENU = 0xA4;
+        VK_RMENU = 0xA5;
+        VK_F1 = 0x70;
+        VK_F2 = 0x71;
+        VK_F3 = 0x72;
+        VK_F4 = 0x73;
+        VK_F5 = 0x74;
+        VK_F6 = 0x75;
+        VK_F7 = 0x76;
+        VK_F8 = 0x77;
+        VK_F9 = 0x78;
+        VK_F10 = 0x79;
+        VK_F11 = 0x7A;
+        VK_F12 = 0x7B;
+        /// F13。役割由来の開閉操作の候補（`is_role_fkey` の先頭、ADR-199 決定18）。
+        VK_F13 = 0x7C;
+        VK_F14 = 0x7D;
+        VK_F15 = 0x7E;
+        VK_F16 = 0x7F;
+        VK_F17 = 0x80;
+        VK_F18 = 0x81;
+        VK_F19 = 0x82;
+        VK_F20 = 0x83;
+        VK_F21 = 0x84;
+        VK_F22 = 0x85;
+        VK_F23 = 0x86;
+        VK_F24 = 0x87;
+        VK_LEFT = 0x25;
+        VK_UP = 0x26;
+        VK_RIGHT = 0x27;
+        VK_DOWN = 0x28;
+        VK_HOME = 0x24;
+        VK_END = 0x23;
+        VK_PRIOR = 0x21;
+        VK_NEXT = 0x22;
+        VK_INSERT = 0x2D;
+        VK_SNAPSHOT = 0x2C;
+                }
+    };
 }
+
+vk_table!(vk_keys);
 
 // `from_name` が受理しないキー(表に載せない)。
 pub const VK_JUNJA: VkCode = VkCode(0x17);
@@ -196,15 +200,7 @@ pub const VK_LWIN: VkCode = VkCode(0x5B);
 pub const VK_RWIN: VkCode = VkCode(0x5C);
 pub const VK_NONAME: VkCode = VkCode(0xFC);
 
-// 表外の4定数も、`vk_keys!` と同じく windows crate の定数と突き合わせる。
-#[cfg(windows)]
-const _: () = {
-    use windows::Win32::UI::Input::KeyboardAndMouse as km;
-    assert!(km::VK_JUNJA.0 == VK_JUNJA.0);
-    assert!(km::VK_LWIN.0 == VK_LWIN.0);
-    assert!(km::VK_RWIN.0 == VK_RWIN.0);
-    assert!(km::VK_NONAME.0 == VK_NONAME.0);
-};
+// 表外の4定数の windows crate との突き合わせは殻の `vk_windows.rs`。
 
 // ── IME キー種別 ──────────────────────────────────────────
 
@@ -299,19 +295,23 @@ impl ImeKeyKind {
     }
 }
 
-/// 役割判定の候補キー（ADR-199 決定4）か。集合の定義は `awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES`
-/// の1箇所だけで、ここでは VK に解決するだけ（定義を2箇所にしない）。全打鍵で通るので解決結果は1度だけ作る。
+/// 役割判定の候補キー（ADR-199 決定4）の VK の一覧。集合の定義は
+/// `awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES` の1箇所だけで、ここでは VK に解決するだけ
+/// （定義を2箇所にしない）。
+#[must_use]
+pub fn role_candidates() -> Vec<VkCode> {
+    awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES
+        .iter()
+        .filter_map(|name| VkCode::from_name(name))
+        .collect()
+}
+
+/// 役割判定の候補キー（ADR-199 決定4）か。毎回 [`role_candidates`] を引く素朴版（テスト・純粋な呼び出し用）。
+/// 全打鍵で通る本番の入口は、解決結果を 1 度だけ作る殻の `vk_windows::is_role_candidate_cached`
+/// （`static` を核に置かないため。ADR-229 段階 B）。
 #[must_use]
 pub fn is_role_candidate(vk: VkCode) -> bool {
-    static CANDIDATES: std::sync::OnceLock<Vec<VkCode>> = std::sync::OnceLock::new();
-    CANDIDATES
-        .get_or_init(|| {
-            awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES
-                .iter()
-                .filter_map(|name| VkCode::from_name(name))
-                .collect()
-        })
-        .contains(&vk)
+    role_candidates().contains(&vk)
 }
 
 /// 役割判定の候補のうち F13〜F24（0x7C〜0x87、ADR-199 決定18）か。半角/全角（0xF3/0xF4）と違い、
@@ -747,33 +747,6 @@ pub fn interpret_combo(s: &str) -> ComboText<'_> {
         }
     }
     out
-}
-
-/// ホットキー文字列をパースして修飾キーフラグと仮想キーコードに変換する。
-///
-/// `windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_SHIFT}` に
-/// 依存する唯一の関数のため `#[cfg(windows)]`。`vk` モジュール自体は
-/// この関数以外 windows crate に依存しないため ungated（ADR-082「決定1実施記録」の
-/// 次の一歩、`decide_alt_impersonation` の Linux 化のための下準備）。
-/// 解釈は [`parse_key_combo`] と同じ(BUG-167: 手書きの `F12` と GUI の `VK_F12` の両表記、
-/// `変換` などの日本語名も `from_name` が受理する)。
-#[cfg(windows)]
-#[must_use]
-pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_SHIFT};
-
-    let k = parse_key_combo(s)?;
-    let mut modifiers = 0u32;
-    if k.ctrl {
-        modifiers |= MOD_CONTROL.0;
-    }
-    if k.shift {
-        modifiers |= MOD_SHIFT.0;
-    }
-    if k.alt {
-        modifiers |= MOD_ALT.0;
-    }
-    Some((modifiers, k.vk))
 }
 
 /// キーコンボ文字列をパースする
@@ -1590,22 +1563,6 @@ mod tests {
         assert!(a.is_some());
         assert_eq!(a, b);
         assert!(VkCode::from_name("VK_VK_F12").is_none());
-    }
-
-    /// `parse_hotkey`（Windows 専用。Linux では走らず windows-build CI で走る）が
-    /// 両表記・日本語名・大文字小文字で同じ修飾キー・VK を返すこと。
-    #[cfg(windows)]
-    #[test]
-    fn parse_hotkey_accepts_gui_and_handwritten_spellings() {
-        let handwritten = super::parse_hotkey("Ctrl+Shift+F12");
-        let gui = super::parse_hotkey("Ctrl+Shift+VK_F12");
-        assert!(handwritten.is_some());
-        assert_eq!(handwritten, gui);
-        assert_eq!(super::parse_hotkey("ctrl+shift+vk_f12"), gui);
-        let (_, vk) = super::parse_hotkey("Ctrl+Shift+変換").unwrap();
-        assert_eq!(vk, super::VK_CONVERT);
-        assert!(super::parse_hotkey("Ctrl+").is_none());
-        assert!(super::parse_hotkey("Bogus+F12").is_none());
     }
 
     /// `interpret_combo` の端の場合(ADR-201「実装時に決める細部」)。

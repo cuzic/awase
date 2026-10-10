@@ -677,7 +677,7 @@ impl Runtime {
         if is_kanji && event.injected {
             return; // injected は付けない。静的 Toggle のまま（現行と同じ）。
         }
-        if !is_kanji && !crate::vk::is_role_candidate(event.vk_code) {
+        if !is_kanji && !crate::vk_windows::is_role_candidate_cached(event.vk_code) {
             return;
         }
         let is_fkey = crate::vk::is_role_fkey(event.vk_code);

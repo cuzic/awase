@@ -21,7 +21,10 @@ use crate::state::TickMs;
 // `pub(crate) fn` ではない書き方で置く（殻の形の検査は `pub(crate) fn` ごとに委譲 1 行を要求するため）。
 impl ImeStateHub {
     fn new() -> Self {
-        Self::with_clock(HubClock::wall(crate::hook::current_tick_ms, Instant::now))
+        Self::with_clock(
+            HubClock::wall(crate::hook::current_tick_ms, Instant::now),
+            quanta::Clock::new(),
+        )
     }
 }
 

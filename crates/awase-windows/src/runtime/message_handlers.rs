@@ -8,6 +8,7 @@
 //! sent message（`GetMessageW` の戻り値に現れない）に対応するため、
 //! `tray::tray_wnd_proc` からも呼ばれる（詳細は `tray_wnd_proc` の doc 参照）。
 
+use crate::journal_dump::JournalDumpExt as _;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 

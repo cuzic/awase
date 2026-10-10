@@ -155,8 +155,8 @@ impl PhysicalDispositionSummary {
     /// `Some(reason)` なら `Suppress`、`None` なら `Allow`（disposition と reason は
     /// 定義上 1:1 に決まるため、disposition 自体を別引数で渡す必要はない）。
     ///
-    /// 呼び出し元（`runtime/`）は `#[cfg(windows)]` のため、同じ条件で定義する。
-    #[cfg(windows)]
+    /// 呼び出し元（`runtime/`）は `#[cfg(windows)]` のため、非 Windows では未使用になる。
+    #[cfg_attr(not(windows), allow(dead_code))]
     #[must_use]
     pub(crate) fn new(reason: Option<&'static str>) -> Self {
         reason.map_or(Self::Allow, |reason| Self::Suppress { reason })
@@ -405,7 +405,7 @@ pub enum JournalEntry {
     /// `ImeEvent::FocusChanged` と同じタイミングで、reducer に渡さない診断専用の
     /// アプリ名付きフォーカス遷移を記録する。
     FocusTransition {
-        changed: crate::focus::current::FocusChangedAxes,
+        changed: crate::focus::FocusChangedAxes,
         from: Option<FocusEndpoint>,
         to: FocusEndpoint,
         dwell_ms: u64,
@@ -1254,18 +1254,9 @@ impl std::fmt::Debug for UnifiedJournal {
 }
 
 impl UnifiedJournal {
-    #[must_use]
-    pub fn new(capacity: usize) -> Self {
-        let clock = quanta::Clock::new();
-        let capacities = if capacity == DEFAULT_CAPACITY {
-            LaneCapacities::DEFAULT
-        } else {
-            LaneCapacities::uniform(capacity)
-        };
-        Self::new_with_clock_and_capacities(clock, capacities)
-    }
-
-    /// テスト用: 外部から `quanta::Clock` を注入してジャーナルを作成する。
+    /// 時計（`quanta::Clock`）を注入してジャーナルを作成する。実時計 `quanta::Clock::new()` は
+    /// 構築側（殻）が渡す（核の journal は実時計を作らない。ADR-229 段階 B）。テストは
+    /// `quanta::Clock::mock()` を渡す。
     #[must_use]
     pub fn new_with_clock(capacity: usize, clock: quanta::Clock) -> Self {
         let capacities = if capacity == DEFAULT_CAPACITY {
@@ -1500,34 +1491,19 @@ impl UnifiedJournal {
         }
     }
 
-    /// `%TEMP%/awase_journal_<tick_ms>.json` に書き出す。
-    ///
-    /// 時刻の出所（`hook::current_tick_ms`）が Windows 専用のため `#[cfg(windows)]`。
-    #[cfg(windows)]
-    pub fn dump_to_file(&self) -> Result<std::path::PathBuf, DumpError> {
-        let tick = crate::hook::current_tick_ms();
-        let path = std::env::temp_dir().join(format!("awase_journal_{tick}.json"));
-        let json = self.to_json()?;
-        std::fs::write(&path, &json).map_err(|source| DumpError::Write {
-            path: path.clone(),
-            source,
-        })?;
-        Ok(path)
-    }
-
-    /// 不具合報告用: ring の中身を**全部**、compact JSON で書き出す（ADR-222。
-    /// 旧 `dump_to_file_capped` のバイト配分による間引きは廃止した）。
+    /// 不具合報告用の JSON: ring の中身を**全部**、compact JSON にする（ADR-222。
+    /// 旧 `dump_to_file_capped` のバイト配分による間引きは廃止した）。件数も返す。
     ///
     /// 入力文字が分かる entry（打鍵 KeyInput と `LiteralDetect`）だけは、直近
     /// `REPORT_KEY_INPUT_WINDOW_MS`（10 分）に絞る
     /// （所有者が許容した範囲。ring は最大頻度で 10 分が溢れない容量なので、通常の
     /// 頻度では何時間ぶんも溜まっている。Opus round2 B-E1）。他のレーンは打鍵の
-    /// 内容を含まないので全件出す。
-    #[cfg(windows)]
-    pub fn dump_to_file_for_report(&self) -> Result<std::path::PathBuf, DumpError> {
-        let started = std::time::Instant::now();
-        let tick = crate::hook::current_tick_ms();
-        let path = std::env::temp_dir().join(format!("awase_journal_{tick}.json"));
+    /// 内容を含まないので全件出す。ファイルへの書き出しは殻の `journal_dump.rs`
+    /// （ADR-229 段階 B で、核の journal からファイル・OS 時計を分けた）。
+    ///
+    /// # Errors
+    /// JSON 化に失敗したとき。
+    pub fn report_json(&self) -> Result<(String, usize), DumpError> {
         let now_ms = (self.clock.now() - self.start).as_millis() as u64;
         let entries: Vec<&JournalEnvelope> = self
             .entries_by_seq()
@@ -1557,19 +1533,7 @@ impl UnifiedJournal {
             })
             .collect();
         let json = serde_json::to_string(&entries)?;
-        std::fs::write(&path, &json).map_err(|source| DumpError::Write {
-            path: path.clone(),
-            source,
-        })?;
-        // ADR-222 D2: メインスレッド（キーボードフックと同じスレッド）で数 MB を
-        // シリアライズするため、実機ログで所要時間を確認できるようにする。
-        tracing::info!(
-            "[journal] report dump: {} entries, {} bytes, {} ms",
-            entries.len(),
-            json.len(),
-            started.elapsed().as_millis()
-        );
-        Ok(path)
+        Ok((json, entries.len()))
     }
 
     fn entries_by_seq(&self) -> Vec<&JournalEnvelope> {
@@ -1584,12 +1548,6 @@ impl UnifiedJournal {
             .collect();
         entries.sort_by_key(|entry| entry.seq);
         entries
-    }
-}
-
-impl Default for UnifiedJournal {
-    fn default() -> Self {
-        Self::new(DEFAULT_CAPACITY)
     }
 }
 
@@ -1616,16 +1574,7 @@ impl std::fmt::Debug for DumpTriggerTracker {
 }
 
 impl DumpTriggerTracker {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            clock: quanta::Clock::new(),
-            step: 0,
-            last_instant: None,
-        }
-    }
-
-    /// テスト用: 外部から `quanta::Clock` を注入してトラッカーを作成する。
+    /// 時計（`quanta::Clock`）を注入してトラッカーを作成する（実時計は構築側が渡す）。
     #[must_use]
     pub const fn with_clock(clock: quanta::Clock) -> Self {
         Self {
@@ -1668,12 +1617,6 @@ impl DumpTriggerTracker {
         };
         self.last_instant = Some(now);
         false
-    }
-}
-
-impl Default for DumpTriggerTracker {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

@@ -10,7 +10,7 @@ pub mod current;
 pub mod kinds;
 pub mod thread_scope;
 
-pub use kinds::{AppKind, FocusKind};
+pub use kinds::{AppKind, FocusChangedAxes, FocusKind};
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
 #[cfg(windows)]

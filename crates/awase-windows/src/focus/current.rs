@@ -1,7 +1,7 @@
 //! 現在フォーカス中のウィンドウ情報を集約する構造体。
 
 use crate::focus::class_names::AppImeProfile;
-use crate::focus::{AppKind, FocusKind};
+use crate::focus::{AppKind, FocusChangedAxes, FocusKind};
 
 /// 現在フォーカス中のウィンドウに関する情報。
 ///
@@ -113,14 +113,6 @@ impl Default for FocusIdentity {
             focus_kind: FocusKind::Undetermined,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
-pub struct FocusChangedAxes {
-    pub process: bool,
-    pub window: bool,
-    pub app_kind: bool,
-    pub focus_kind: bool,
 }
 
 impl FocusIdentity {

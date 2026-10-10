@@ -228,7 +228,10 @@ impl Harness {
     pub fn start(setup: Setup) -> Self {
         let mut h = Self {
             ime: PseudoIme::from_grid(setup.grid, setup.initial),
-            hub: ImeStateHub::with_clock(HubClock::manual(TICK_BASE, Instant::now())),
+            hub: ImeStateHub::with_clock(
+                HubClock::manual(TICK_BASE, Instant::now()),
+                quanta::Clock::new(),
+            ),
             engine: make_engine(),
             keymap: match setup.grid {
                 Grid::Atok => KeyEffectKeymap::from_config(Some(1), None, &[]),
