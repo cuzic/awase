@@ -1167,6 +1167,7 @@ jobs:
           # (rules で差し込まず、GUI が書いた [[keymaps]] を awase が読む。窓の位置は起動ごとに変わるので EnumWindows で最大の可視窓を探す。)
           if ('${{ matrix.cfg.via_settings }}' -eq 'preset') {
             Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -AssemblyName System.Drawing
             Add-Type -TypeDefinition '
             using System;
             using System.Runtime.InteropServices;
@@ -1196,6 +1197,12 @@ jobs:
             }
             '
             [void][WinFind2]::SetProcessDPIAware()
+            function Snap2($name) {
+              $r = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bmp = New-Object System.Drawing.Bitmap $r.Width, $r.Height
+              $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
+              $bmp.Save("$PWD\\settings-save-$name.png", [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()
+            }
             $env:AWASE_SETTINGS_INITIAL_TAB = 'keymap'
             $env:AWASE_SETTINGS_WINDOW_SIZE = '760x700'
             $sp = Start-Process -FilePath "$PWD\dist\awase-settings.exe" -ArgumentList "`"$PWD\dist\config.toml`"" -PassThru
@@ -1208,13 +1215,16 @@ jobs:
             Start-Sleep -Seconds 6
             $b = [WinFind2]::Largest([uint32]$sp.Id)
             Write-Host "settings window: $($b -join ',')"
+            Snap2 '1-before'
             if ($null -eq $b) { throw 'awase-settings の窓が見つからない' }
             [void][WinFind2]::SetCursorPos($b[0] + 248, $b[1] + 259)
             Start-Sleep -Milliseconds 400
             [WinFind2]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 100; [WinFind2]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
             Start-Sleep -Seconds 2
+            Snap2 '2-after-click'
             [System.Windows.Forms.SendKeys]::SendWait('^s')
             Start-Sleep -Seconds 6
+            Snap2 '3-after-save'
             if (-not $sp.HasExited) { Stop-Process -Id $sp.Id -Force }
             Write-Host '===== config.toml after settings save ====='
             Get-Content "$PWD\dist\config.toml" -Raw -Encoding utf8 | Select-String -Pattern 'keymaps|ime =|from =|to =' | ForEach-Object { Write-Host $_.Line }
@@ -1462,6 +1472,7 @@ jobs:
             preedit.json
             lateorder.json
             keymatrix.json
+            settings-save-*.png
             offrca.json
             env.txt
             dist/compartment_notify_probe.log
