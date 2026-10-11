@@ -836,6 +836,7 @@ pub(crate) fn reload_config() {
         &ime_off,
         &ime_toggle,
         config.general.engine_toggle_hotkey.as_deref(),
+        config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref(),
     );
     let mut special_keys = SpecialKeyCombos {
         engine_on,

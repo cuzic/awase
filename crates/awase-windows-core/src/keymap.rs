@@ -372,7 +372,40 @@ pub fn warn_on_engine_hotkey_collision(
     ime_off: &[ParsedKeyCombo],
     ime_toggle: &[ParsedKeyCombo],
     engine_toggle_hotkey: Option<&str>,
+    muhenkan_dedicated_fn_key: Option<&str>,
 ) {
+    for message in engine_hotkey_collision_warnings(
+        keymaps,
+        engine_on,
+        engine_off,
+        ime_on,
+        ime_off,
+        ime_toggle,
+        engine_toggle_hotkey,
+        muhenkan_dedicated_fn_key,
+    ) {
+        tracing::warn!("{message}");
+    }
+}
+
+/// `warn_on_engine_hotkey_collision` の警告文を返す純粋関数（ログに出さずテストできる形）。
+///
+/// 通常のルール（`ime` 省略）は決定2 の順序でエンジンの前に消費するので、同じコンボの
+/// `keys.*` が発火しなくなる。**遅いルール（`ime = "off"`、ADR-255）は逆**で、エンジンの判断の後に
+/// 照合し、`from` のキーに IME の機能（`keys.ime_*`・専用 Fn キーなど）があると発動しない
+/// （決定2 条件6、決定5 の「衝突の警告」）。キーの機能は IME 設定・学習表由来のものが実行時にしか
+/// 決まらないので、ここで分かる設定由来の分だけ警告し、残りは `[late-keymap]` のデバッグログに任せる。
+#[must_use]
+pub fn engine_hotkey_collision_warnings(
+    keymaps: &[KeymapRule],
+    engine_on: &[ParsedKeyCombo],
+    engine_off: &[ParsedKeyCombo],
+    ime_on: &[ParsedKeyCombo],
+    ime_off: &[ParsedKeyCombo],
+    ime_toggle: &[ParsedKeyCombo],
+    engine_toggle_hotkey: Option<&str>,
+    muhenkan_dedicated_fn_key: Option<&str>,
+) -> Vec<String> {
     // `ParsedKeyCombo` は `PartialEq` を derive 済みなので `==` で比較できる。
     //
     // `crate::vk_windows::parse_hotkey` は Windows 専用（`windows` クレートの MOD_CONTROL 等を
@@ -381,11 +414,13 @@ pub fn warn_on_engine_hotkey_collision(
     // `parse_key_combo` で読む（`VK_` の有無・大文字小文字は `from_name` が吸収する。
     // ADR-201 決定1）。
     let hotkey_combo = engine_toggle_hotkey.and_then(crate::vk::parse_key_combo);
+    let mut out = Vec::new();
 
     for rule in keymaps {
         let Some(combo) = crate::vk::parse_key_combo(&rule.from) else {
             continue;
         };
+        let late = rule.ime.as_deref() == Some("off");
         for (label, combos) in [
             ("engine_on", engine_on),
             ("engine_off", engine_off),
@@ -394,25 +429,42 @@ pub fn warn_on_engine_hotkey_collision(
             ("ime_toggle", ime_toggle),
         ] {
             if combos.contains(&combo) {
-                tracing::warn!(
-                    "[keymap] 'from' = {:?} は keys.{label} と同じキーコンボです。\
-                     [[keymap]] が先に消費するため {label} が発火しなくなります \
-                     （ADR-114）",
-                    rule.from
-                );
+                out.push(if late {
+                    format!(
+                        "[keymap] ime = \"off\" の 'from' = {:?} は keys.{label} と同じキーです。\
+                         そのキーは IME の機能を持つため、このルールは発動しません（ADR-255 決定5）",
+                        rule.from
+                    )
+                } else {
+                    format!(
+                        "[keymap] 'from' = {:?} は keys.{label} と同じキーコンボです。\
+                         [[keymap]] が先に消費するため {label} が発火しなくなります \
+                         （ADR-114）",
+                        rule.from
+                    )
+                });
             }
         }
         if let Some(hotkey) = &hotkey_combo {
             if *hotkey == combo {
-                tracing::warn!(
+                out.push(format!(
                     "[keymap] 'from' = {:?} は general.engine_toggle_hotkey と \
                      同じキーコンボです。[[keymap]] が先に消費するため \
                      engine_toggle_hotkey が発火しなくなります（ADR-114）",
                     rule.from
-                );
+                ));
             }
         }
+        if late && combo.vk == crate::vk::VK_NONCONVERT && muhenkan_dedicated_fn_key.is_some() {
+            out.push(format!(
+                "[keymap] ime = \"off\" の 'from' = {:?} は、general.muhenkan_solo_tap_dedicated_fn_key \
+                 （専用 Fn キー）が設定されているため発動しません。無変換の単独押しは IME の機能に使われています\
+                 （ADR-255 決定5）",
+                rule.from
+            ));
+        }
     }
+    out
 }
 
 #[cfg(test)]
@@ -885,6 +937,7 @@ from = "Ctrl+VK_K"
             &[],
             &[],
             Some("Ctrl+Shift+VK_F12"),
+            None,
         );
     }
 
@@ -898,6 +951,71 @@ from = "Ctrl+VK_K"
             &[],
             &[],
             None,
+            None,
         );
+    }
+
+    fn bare(name: &str) -> ParsedKeyCombo {
+        ParsedKeyCombo {
+            vk: VkCode::from_name(name).expect("resolves"),
+            ctrl: false,
+            shift: false,
+            alt: false,
+        }
+    }
+
+    fn collisions(
+        keymaps: &[KeymapRule],
+        ime_off: &[ParsedKeyCombo],
+        dedicated: Option<&str>,
+    ) -> Vec<String> {
+        engine_hotkey_collision_warnings(keymaps, &[], &[], &[], ime_off, &[], None, dedicated)
+    }
+
+    #[test]
+    fn late_rule_collision_says_it_will_not_fire_instead_of_blaming_a_consumed_key() {
+        let mut r = rule(None, "VK_NONCONVERT", Some("VK_SPACE"));
+        r.ime = Some("off".to_string());
+        let w = collisions(&[r], &[bare("VK_NONCONVERT")], None);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains("発動しません") && w[0].contains("keys.ime_off"),
+            "{}",
+            w[0]
+        );
+        assert!(!w[0].contains("先に消費"), "{}", w[0]);
+    }
+
+    #[test]
+    fn early_rule_collision_keeps_the_consumed_first_wording() {
+        let r = rule(None, "VK_NONCONVERT", Some("VK_SPACE"));
+        let w = collisions(&[r], &[bare("VK_NONCONVERT")], None);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("先に消費"), "{}", w[0]);
+    }
+
+    #[test]
+    fn late_rule_warns_when_muhenkan_dedicated_fn_key_is_set() {
+        let mut r = rule(None, "VK_NONCONVERT", Some("VK_SPACE"));
+        r.ime = Some("off".to_string());
+        let w = collisions(&[r.clone()], &[], Some("VK_F22"));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(
+            w[0].contains("muhenkan_solo_tap_dedicated_fn_key"),
+            "{}",
+            w[0]
+        );
+        assert!(
+            collisions(&[r], &[], None).is_empty(),
+            "設定が無ければ警告なし"
+        );
+    }
+
+    #[test]
+    fn dedicated_fn_key_does_not_warn_for_henkan_or_early_rules() {
+        let mut henkan = rule(None, "VK_CONVERT", Some("VK_SPACE"));
+        henkan.ime = Some("off".to_string());
+        let early = rule(None, "VK_NONCONVERT", Some("VK_SPACE"));
+        assert!(collisions(&[henkan, early], &[], Some("VK_F22")).is_empty());
     }
 }
