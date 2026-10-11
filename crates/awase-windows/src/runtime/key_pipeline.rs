@@ -353,11 +353,17 @@ impl Runtime {
         };
         match plan_late_keymap(facts) {
             LateKeymapPlan::Fire => {
-                tracing::debug!(
-                    "[late-keymap] fire vk=0x{:02X} -> {} key(s) (engine inactive: ImeOff)",
-                    event.vk_code.0,
-                    send_vks.len()
-                );
+                self.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::LateKeymap {
+                        record: crate::journal::LateKeymapRecord {
+                            vk_code: event.vk_code.0,
+                            fired: true,
+                            send_keys: Some(send_vks.len()),
+                            skip_reason: None,
+                        },
+                    });
                 decision.force_consume();
                 // `SendKeys` ではなく `ReinjectKey`（Down→Up の対）で積む。物理 Space の素通しと同じ経路に乗せ、
                 // 先行の素通し文字と FIFO で並ぶ（Opus #598 B1・M1。理由は `late_keymap_reinject_events`）。
@@ -367,10 +373,17 @@ impl Runtime {
                 self.engine.record_shell_consumed(event);
             }
             LateKeymapPlan::Skip(reason) => {
-                tracing::debug!(
-                    "[late-keymap] skip vk=0x{:02X} reason={reason:?}",
-                    event.vk_code.0
-                );
+                self.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::LateKeymap {
+                        record: crate::journal::LateKeymapRecord {
+                            vk_code: event.vk_code.0,
+                            fired: false,
+                            send_keys: None,
+                            skip_reason: Some(reason.label()),
+                        },
+                    });
             }
         }
     }

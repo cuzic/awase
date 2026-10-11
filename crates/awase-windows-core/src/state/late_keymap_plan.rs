@@ -60,6 +60,25 @@ pub enum LateKeymapSkip {
     Composing,
 }
 
+impl LateKeymapSkip {
+    /// journal・ログ用の名前(`?` で Debug 文字列化しない。ADR-139 決定4)。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::EngineNotImeOffInactive => "EngineNotImeOffInactive",
+            Self::EngineConsumed => "EngineConsumed",
+            Self::Repeat => "Repeat",
+            Self::Injected => "Injected",
+            Self::Impersonated => "Impersonated",
+            Self::KeyHasImeRole => "KeyHasImeRole",
+            Self::DirectInputHasFunctionOrUnknown => "DirectInputHasFunctionOrUnknown",
+            Self::InputRelay => "InputRelay",
+            Self::HalfWidthReturnPending => "HalfWidthReturnPending",
+            Self::Composing => "Composing",
+        }
+    }
+}
+
 /// 判断の結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LateKeymapPlan {
