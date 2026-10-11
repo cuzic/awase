@@ -5956,6 +5956,47 @@ fn general_keymap_prediction_flags_are_wired_at_bootstrap_and_reload() {
     }
 }
 
+/// BUG-103（`cf15df44`）: `[[post_bypass]]` ルールの構築は、起動時（`app/bootstrap.rs`）と設定リロード時
+/// （`Runtime::apply_config_update`）の**両方**が同じ `PostBypassEntry::compile_all(config)` を呼び、リロード側は
+/// 結果を `self.post_bypass_rules` へ書き戻すこと。以前はリロード側の配線が無く、設定を保存しても
+/// `[[post_bypass]]` の変更は再起動まで効かなかった。片方だけ別の構築に戻す・書き戻しを落とすとここで落ちる。
+#[test]
+fn post_bypass_rules_are_compiled_at_bootstrap_and_reload() {
+    let squash = |s: &str| -> String { non_comment_lines(s).split_whitespace().collect() };
+    let bootstrap = read_crate_file("src/app/bootstrap.rs");
+    let bootstrap_code = squash(production_code_only(&bootstrap));
+    assert_eq!(
+        bootstrap_code
+            .matches("PostBypassEntry::compile_all(config)")
+            .count(),
+        1,
+        "src/app/bootstrap.rs は起動時に `PostBypassEntry::compile_all(config)` をちょうど1回呼ぶこと"
+    );
+
+    let runtime_mod = read_crate_file("src/runtime/mod.rs");
+    let reload = squash(extract_fn_body(
+        &runtime_mod,
+        "pub(crate) fn apply_config_update(",
+    ));
+    let compile_pos = reload
+        .find("PostBypassEntry::compile_all(config)")
+        .expect("Runtime::apply_config_update は `PostBypassEntry::compile_all(config)` を呼ぶこと（BUG-103）");
+    assert_eq!(
+        reload.matches("compile_all(").count(),
+        1,
+        "apply_config_update の中の compile_all はちょうど1回"
+    );
+    let store_pos = reload
+        .find("self.post_bypass_rules=post_bypass_rules;")
+        .expect(
+            "apply_config_update は compile_all の結果を self.post_bypass_rules へ書き戻すこと",
+        );
+    assert!(
+        compile_pos < store_pos,
+        "self.post_bypass_rules への書き戻しは compile_all の後"
+    );
+}
+
 /// `config.general.half_width_alnum_toggle` の反映（`Runtime::
 /// set_half_width_alnum_toggle_policy`）が、起動時（`app/bootstrap.rs`）と
 /// 設定リロード時（`Runtime::apply_config_update`）の**両方**から呼ばれて
