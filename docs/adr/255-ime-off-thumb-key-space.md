@@ -31,6 +31,8 @@ related_adr:
 
 **保存→読み込みの確認(段階3b、2026-10-11、GitHub Windows CI、1回)**: 空の設定を設定画面で開き、プリセットボタンを押して Ctrl+S で保存すると、設定ファイルに `[[keymaps]]` の2件(`from = "VK_NONCONVERT"`/`"VK_CONVERT"`、`to = ["VK_SPACE"]`、`ime = "off"`)が書かれ(run 38116671651)、開き直すと2件とも画面に出て、keymap の診断警告は出なかった。実機(awase.exe が保存した設定を読んで Space を出す)は未確認。
 
+**物理キー相当の通し(段階3b、2026-10-11、GitHub Windows CI、各 n=1)**: windows-latest(Windows Server 2025、bcdedit の testsigning が既に Yes・Secure Boot なし・HVCI なし)に、自作のキーボードフィルタドライバ `awasekbf`(WDM、`tools/kbd-inject-driver/`、テスト署名)を NuGet の WDK でビルドして入れ、Hyper-V Virtual Keyboard(hyperkbd)デバイスの UpperFilters に載せると、ドライバへの IOCTL で流したスキャンコードが kbdclass のコールバックを通り、`WH_KEYBOARD_LL` には `LLKHF_INJECTED` なし・`dwExtraInfo` 0(SendInput は injected=1)で届く(run 38132643604)。この経路で、設定画面が保存した `[[keymaps]]` を awase が読み、IME OFF の無変換を Space にする通し(`sc-late-space-physical-iv{40,20,8}`、`typing_stress --inject-driver`)が、連打 4/4・押しっぱなし 4/4 で PASS(run 38133637289、`driver_sends=272`)。**限界**: ドライバのインストールはテスト署名のホスト型ランナー専用(スクリプトが GITHUB_ACTIONS 以外では実行を拒否する)。`VK_IME_ON/OFF` などスキャンコードを持たないキーは従来どおり目印付き SendInput。利用者の IME 設定・本物の USB キーボード・自動リピートの OS 実装(ここでは make の連続で代用)は未確認。Larger runner のカスタムイメージは、個人所有のリポジトリでは使えず(組織の Team/Enterprise が要る)、この方法で不要になった。WinPE の入れ子 VM(ci/scancode-vm-spike)は msiexec・ctfmon・IME が無く GJI を入れられないので、この用途には使わない。
+
 ## コンテキスト
 
 ### 報告

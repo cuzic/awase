@@ -101,9 +101,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings='', driver=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings, driver=driver)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -475,6 +475,10 @@ jobs:
             # rules ではなく via_settings='preset'。typing_stress --mode=lateorder は keymap=2(MS-IME プリセット)。
             cfg('sc-late-space-saved-iv20', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', via_settings='preset',
                 stress='--form=edit --mode=lateorder --trials=4 --reps=5 --interval=20 --lateorder-key=1D --layout=@REPO@/layout/nicola_keytop.yab'),
+            # ADR-255: 設定画面で保存した設定 + ドライバ経由(物理キーと同じ経路)の通し。LLKHF_INJECTED も dwExtraInfo の目印も無いキーで、遅いルールが働くか。
+            *[cfg(f'sc-late-space-physical-iv{iv}', 'observe', check='lateorder', keymap=2, runs=1, wait=480, until='2026-11-10', via_settings='preset', driver='1',
+                  stress=f'--form=edit --mode=lateorder --trials=4 --reps=5 --interval={iv} --lateorder-key=1D --inject-driver --layout=@REPO@/layout/nicola_keytop.yab')
+              for iv in (40, 20, 8)],
             # v2 チェックリスト B2 副次: 既定の [keys](keys.ime_toggle が空)× GJI プリセットで、Alt+半角/全角(0x19)が実 IME と Engine(belief)をずらさないこと。
             # sc-kanji-role-* は CUSTOM 表(keymap=0)+ tsv だったが、こちらは tsv も keys 上書きも無い「既定のまま」。プリセット(ATOK=1 / MS-IME=2)の
             # Hankaku/Zenkaku 行はトグルのはずなので kanjirole-closed(IME が閉じ、Engine も OFF に追随)を期待する。実測前なので observe。
@@ -1162,6 +1166,11 @@ jobs:
           }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
+          # ADR-255: キーボードフィルタドライバ(tools/kbd-inject-driver)を入れる。typing_stress の --inject-driver で、物理キーと同じ経路(LLKHF_INJECTED なし)でキーを送る。
+          if ('${{ matrix.cfg.driver }}' -eq '1') {
+            & "$PWD\tools\kbd-inject-driver\install-driver.ps1"
+            if (-not $?) { Write-Host '::error::キーボードフィルタドライバを入れられなかった'; exit 3 }
+          }
           # 設定画面で保存した設定を使う(ADR-255 の保存→読み込み→動作の通し)。via_settings='preset' のときだけ。
           if ('${{ matrix.cfg.via_settings }}' -eq 'preset') {
             & "$PWD\tools\e2e\ime_key_matrix\save_via_settings.ps1"
