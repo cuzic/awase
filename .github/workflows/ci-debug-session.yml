@@ -1,0 +1,73 @@
+# デバッグ用: GitHub ホスト型の Windows ランナーを Tailscale につなぎ、SSH で入って、CI を最初からやり直さずに試行錯誤する。
+#
+# 使い方(docs/ci/debug-session.md):
+#   1. リポジトリのシークレット TS_OAUTH_CLIENT_ID・TS_OAUTH_SECRET を登録(Tailscale の OAuth クライアント、タグ tag:ci)
+#   2. このブランチ(ci/debug-session)へ push すると起動する(空コミットでよい)
+#   3. ログに出る tailnet のホスト名・IP へ、専用鍵で SSH:  ssh -i ~/.ssh/awase_ci_debug runneradmin@<host>
+#   4. 終わったらランナー上で `New-Item C:\ci-debug-stop` を作る(ジョブが終わる)。放置しても最大 timeout-minutes で終わる
+#
+# 安全: 起動できるのはリポジトリの所有者のみ(github.actor)。ランナーは一時的なノードで、tailnet の ACL で SSH を開発マシンに絞る。
+# パスワード認証は切り、登録した公開鍵だけで入れる。ジョブが終わるとランナーごと消える。
+name: ci-debug-session
+
+on:
+  push:
+    branches: [ci/debug-session]
+
+jobs:
+  windows:
+    if: github.actor == github.repository_owner
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Connect to Tailscale (ephemeral node, tag:ci)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          hostname: gh-win-${{ github.run_id }}
+
+      - name: Install and configure OpenSSH server (public-key only)
+        shell: pwsh
+        run: |
+          $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server*'
+          Write-Host "OpenSSH.Server capability: $($cap.State)"
+          if ($cap.State -ne 'Installed') { Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' | Out-Null }
+          # 公開鍵(このデバッグ専用。秘密鍵は開発マシンの ~/.ssh/awase_ci_debug だけにある)。
+          $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO0v9d6H8BbdsppPqkWp6U6mDxb2c65+l9h/KfgPeGA5 awase-ci-debug'
+          $auth = 'C:\ProgramData\ssh\administrators_authorized_keys'
+          New-Item -ItemType Directory -Force -Path 'C:\ProgramData\ssh' | Out-Null
+          Set-Content -Path $auth -Value $pub -Encoding ASCII
+          icacls $auth /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
+          # パスワード認証を切り、公開鍵のみにする。入ったあとの既定シェルは pwsh。
+          $cfg = 'C:\ProgramData\ssh\sshd_config'
+          if (-not (Test-Path $cfg)) { Start-Service sshd; Stop-Service sshd }
+          (Get-Content $cfg) -replace '^#?PasswordAuthentication .*', 'PasswordAuthentication no' | Set-Content $cfg -Encoding ASCII
+          New-Item -Path HKLM:\SOFTWARE\OpenSSH -Force | Out-Null
+          New-ItemProperty -Path HKLM:\SOFTWARE\OpenSSH -Name DefaultShell -Value 'C:\Program Files\PowerShell\7\pwsh.exe' -PropertyType String -Force | Out-Null
+          Set-Service -Name sshd -StartupType Automatic
+          Restart-Service sshd
+          if (-not (Get-NetFirewallRule -Name 'sshd-ci' -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -Name 'sshd-ci' -DisplayName 'sshd (ci debug)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+          }
+          Get-Service sshd | Format-List Name, Status, StartType | Out-String
+
+      - name: Print how to connect, then wait
+        shell: pwsh
+        run: |
+          $ts = (Get-Command tailscale -ErrorAction SilentlyContinue).Source
+          if (-not $ts) { $ts = 'C:\Program Files\Tailscale\tailscale.exe' }
+          Write-Host "=== connect ==="
+          & $ts ip -4
+          & $ts status --json | ConvertFrom-Json | ForEach-Object { Write-Host "DNSName: $($_.Self.DNSName)" }
+          Write-Host "ssh -i ~/.ssh/awase_ci_debug runneradmin@gh-win-${{ github.run_id }}"
+          Write-Host "stop: New-Item C:\ci-debug-stop"
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          while (-not (Test-Path 'C:\ci-debug-stop') -and $sw.Elapsed.TotalMinutes -lt 225) {
+            Start-Sleep -Seconds 60
+            if ([int]$sw.Elapsed.TotalMinutes % 10 -eq 0) { Write-Host "still alive: $([int]$sw.Elapsed.TotalMinutes) min" }
+          }
+          Write-Host "debug session finished after $([int]$sw.Elapsed.TotalMinutes) min"
