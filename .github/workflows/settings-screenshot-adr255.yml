@@ -103,7 +103,8 @@ jobs:
           function Click-Rel($hwnd, $dx, $dy) {
             $r = New-Object Win+RECT
             [void][Win]::GetWindowRect($hwnd, [ref]$r)
-            $cx = $r.L + $dx; $cy = $r.T + $dy
+            # GetWindowRect が 0,0 を返したため(run 38107435129)、画面の絶対座標で指定する(窓は 760x700 のとき左上 86,80)。
+            $cx = $dx; $cy = $dy
             Write-Host "click rel ($dx,$dy) -> $cx,$cy (window $($r.L),$($r.T))"
             [void][Win]::SetCursorPos($cx, $cy)
             Start-Sleep -Milliseconds 300
@@ -115,10 +116,10 @@ jobs:
           $c0 = Write-Cfg "empty" "[general]`r`n"
           $p = Launch $c0 760 700
           Snap "1-empty-760-screen" $bounds
-          Click-Rel $p.MainWindowHandle 248 259; $ok = $true
+          Click-Rel $p.MainWindowHandle 334 339; $ok = $true
           Start-Sleep -Seconds 2
           Snap "2-after-preset-760-screen" $bounds
-          Click-Rel $p.MainWindowHandle 234 281; $ok2 = $true
+          Click-Rel $p.MainWindowHandle 320 360; $ok2 = $true
           Start-Sleep -Seconds 2
           Snap "3-notes-open-760-screen" $bounds
           Write-Host "clicks: preset=$ok notes=$ok2"
