@@ -64,6 +64,8 @@ pub enum Unavailable {
     CapsFilterDriver,
     /// 他のツールが from か to にしているキーを含む（awase の入れ替えには使えない。図でもロックされる位置）。
     OtherToolSetting,
+    /// 「Caps を Ctrl としても使う」をオンにすると、他ツールの設定と組み合わさって別の入れ替えに読み替わる。
+    CapsWouldReclassify,
     /// 親指キー（無変換/変換）が、IME の ON/OFF キー（`keys.ime_on`/`ime_off`/`ime_toggle` に修飾キーなしで書いたキー）も兼ねている。
     ThumbImeRole,
 }
@@ -84,6 +86,7 @@ impl Unavailable {
             Self::CapsFilterDriver => {
                 "Caps を Ctrl にするドライバ（Ctrl2cap など）が入っているため、「英数 / Caps」と「左 Ctrl」の設定は二重になります。ドライバをアンインストールして再起動すると設定できます。"
             }
+            Self::CapsWouldReclassify => CAPS_WOULD_RECLASSIFY_TEXT,
             Self::OtherToolSetting => {
                 "他のツールがこのキーを設定しています。変えるときはそのツールで変更してください（図でも動かせません）。"
             }
@@ -253,6 +256,9 @@ pub struct EditorState {
     /// 読み込み時に、他のツールのエントリが from か to にしているキー（awase の入れ替えに使えない）。
     foreign_keys: Vec<u16>,
 }
+
+/// 「Caps を Ctrl としても使う」をオンにすると、他ツールの設定と組み合わさって別の入れ替えに読み替わってしまうときの理由。
+const CAPS_WOULD_RECLASSIFY_TEXT: &str = "他のツールの設定（「左 Ctrl → …」など）と組み合わさって、英数 / Caps と左 Ctrl が入れ替えに変わってしまうため、「Caps を Ctrl としても使う」はオンにできません。他のツールの設定を先に外してください。";
 
 /// 他のツールのエントリが from か to にしているキー（0 は「無効化」の to なので除く）。
 fn foreign_keys(detected: &Detected) -> Vec<u16> {
@@ -496,6 +502,17 @@ impl EditorState {
                 .any(|c| c.contains(SCANCODE_CAPS_EISU) || c.contains(SCANCODE_LEFT_CTRL))
     }
 
+    /// 「Caps を Ctrl としても使う」をオンにすると、他ツールの設定と組み合わさって別の入れ替えに読み替わるか。
+    /// `existing` は UI が読んだ生のエントリ列。オンにしたまま適用して初めて止まることが無いよう、チェックボックスの段で使う。
+    #[must_use]
+    pub fn caps_extra_would_reclassify(&self, existing: &[Entry]) -> bool {
+        !self.caps_extra
+            && matches!(
+                compute_swap_write_with_cycles(existing, &self.pairs(), &self.cycles, true),
+                Err(SwapError::Reclassified)
+            )
+    }
+
     /// 「Caps を Ctrl としても使う」をオンにできない理由（できるなら `None`）。
     #[must_use]
     pub fn caps_extra_unavailable(&self) -> Option<Unavailable> {
@@ -599,47 +616,19 @@ impl EditorState {
     #[must_use]
     pub fn preview(&self, existing: &[Entry], thumb_scancodes: &[u16]) -> Preview {
         let pairs = self.pairs();
-        // 注意は、読み込み時から足した単位・外した単位だけが対象（適用済みの入れ替えに毎回出すと、警告を読まずに押すようになる）。
-        let added: Vec<Pair> = pairs
+        // 注意は、読み込み時から出る機能が変わった位置だけが対象（適用済みの入れ替えに毎回出すと、警告を読まずに押すようになる。
+        // 単位の中身が変わっても、位置も機能も変わらない親指キーには出さない。Opus コードレビュー round2 N1）。
+        let changes = self.changes();
+        let changed_sig: Vec<Entry> = changes
             .iter()
-            .copied()
-            .filter(|p| !self.initial_pairs.contains(p))
+            .filter(|&&(p, _, a)| a != p)
+            .map(|&(p, _, a)| (p, a))
             .collect();
-        let removed: Vec<Pair> = self
-            .initial_pairs
-            .iter()
-            .copied()
-            .filter(|p| !pairs.contains(p))
-            .collect();
-        let added_cycles: Vec<&Cycle> = self
-            .cycles
-            .iter()
-            .filter(|c| !self.initial_cycles.contains(c))
-            .collect();
-        let removed_cycles: Vec<&Cycle> = self
-            .initial_cycles
-            .iter()
-            .filter(|c| !self.cycles.contains(c))
-            .collect();
-        let mut cautions = cautions_with_cycles(&added, &added_cycles, thumb_scancodes);
-        // 足した単位にも同じキーがあれば（相手だけ変えた）、「元に戻る」ではなく「位置が変わる」が正しいので出さない。
-        let mut added_keys: Vec<u16> = added
-            .iter()
-            .flat_map(|p| [p.keys().0, p.keys().1])
-            .collect();
-        added_keys.extend(added_cycles.iter().flat_map(|c| c.keys().iter().copied()));
-        let mut removed_keys: Vec<u16> = removed
-            .iter()
-            .flat_map(|p| [p.keys().0, p.keys().1])
-            .collect();
-        removed_keys.extend(removed_cycles.iter().flat_map(|c| c.keys().iter().copied()));
-        for key in removed_keys {
-            let restored = Caution::ThumbKeyRestored { thumb: key };
-            if thumb_scancodes.contains(&key)
-                && !added_keys.contains(&key)
-                && !cautions.contains(&restored)
-            {
-                cautions.push(restored);
+        let mut cautions = cautions_from_permutation(&changed_sig, thumb_scancodes);
+        // 親指キーの位置が、入れ替えを外して元に戻る。
+        for &(p, b, a) in &changes {
+            if a == p && b != p && thumb_scancodes.contains(&p) {
+                cautions.push(Caution::ThumbKeyRestored { thumb: p });
             }
         }
         Preview {
@@ -804,7 +793,7 @@ pub fn swap_error_text(error: SwapError) -> String {
             key_label(from),
             key_label(to)
         ),
-        SwapError::Reclassified => "他のツールの設定と組み合わさって、別の入れ替えに読み替わってしまうため、この設定は書けません。他のツールの設定を先に外してください。".to_string(),
+        SwapError::Reclassified => CAPS_WOULD_RECLASSIFY_TEXT.to_string(),
     }
 }
 
@@ -1039,6 +1028,7 @@ mod tests {
             Unavailable::CapsFilterDriver,
             Unavailable::ThumbImeRole,
             Unavailable::OtherToolSetting,
+            Unavailable::CapsWouldReclassify,
         ] {
             assert!(!u.text().is_empty());
         }
@@ -1441,6 +1431,43 @@ mod tests {
         assert!(cautions_with_cycles(&[], &[&cyc(&[LALT, SPC, HEN])], &[])
             .contains(&Caution::SpaceMoved));
         assert!(cautions_with_cycles(&[], &[&cyc(&[LALT, CAPS, HEN])], &[]).is_empty());
+    }
+
+    #[test]
+    fn cautions_target_only_positions_that_changed_since_load() {
+        // round2 N1: 4巡回 無変換→変換→スペース→左Alt→無変換 のうち、変換の位置も機能も変わらない編集では、親指キー=変換の注意を出さない。
+        let existing = [(MUH, HEN), (HEN, SPC), (SPC, LALT), (LALT, MUH)];
+        let mut e = editor(&existing);
+        e.set_units(&[], &[cyc(&[MUH, HEN, SPC])]);
+        let p = e.preview(&existing, &[HEN]);
+        assert!(
+            !p.cautions.contains(&Caution::ThumbKeyMoved { thumb: HEN }),
+            "{:?}",
+            p.cautions
+        );
+        // 変換の位置の機能が変わる編集なら出す。
+        e.set_units(&[], &[cyc(&[MUH, HEN, LALT, SPC])]);
+        let p = e.preview(&existing, &[HEN]);
+        assert!(p.cautions.contains(&Caution::ThumbKeyMoved { thumb: HEN }));
+        // 外して元に戻る親指キーの位置。
+        let mut r = editor(&existing);
+        r.release_all();
+        assert!(r
+            .preview(&existing, &[HEN])
+            .cautions
+            .contains(&Caution::ThumbKeyRestored { thumb: HEN }));
+    }
+
+    #[test]
+    fn caps_extra_that_would_reclassify_is_known_before_applying() {
+        let existing = [(LCTRL, MUH), (MUH, CAPS)];
+        let mut e = editor(&existing);
+        assert!(e.caps_extra_would_reclassify(&existing));
+        // 鎖が閉じないなら問題ない。すでにオンのときは聞かない。
+        assert!(!editor(&[(LCTRL, MUH)]).caps_extra_would_reclassify(&[(LCTRL, MUH)]));
+        assert!(!editor(&[]).caps_extra_would_reclassify(&[]));
+        assert!(e.set_caps_extra(true));
+        assert!(!e.caps_extra_would_reclassify(&existing));
     }
 
     #[test]

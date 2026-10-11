@@ -5,7 +5,7 @@ name: settings-screenshot
 on:
   workflow_dispatch:
   push:
-    branches: [ci/settings-screenshot, feat/adr248-stage3-permutation]
+    branches: [ci/settings-screenshot]
 
 jobs:
   shot:

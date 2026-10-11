@@ -5310,7 +5310,9 @@ fn scancode_editor_ui(
     );
 
     let mut caps = editor.caps_extra();
-    let caps_enabled = caps || editor.caps_extra_available();
+    // オンにすると他ツールの設定と組み合わさって別の入れ替えに読み替わるときは、適用の段ではなくここで理由を出す。
+    let would_reclassify = editor.caps_extra_would_reclassify(&loaded.entries);
+    let caps_enabled = caps || (editor.caps_extra_available() && !would_reclassify);
     ui.add_enabled(
         caps_enabled,
         egui::Checkbox::new(&mut caps, "英数 / Caps を Ctrl としても使う"),
@@ -5318,8 +5320,12 @@ fn scancode_editor_ui(
     if caps != editor.caps_extra() {
         editor.set_caps_extra(caps);
     }
-    if !caps_enabled && let Some(reason) = editor.caps_extra_unavailable() {
-        ui.weak(reason.text());
+    if !caps_enabled {
+        if let Some(reason) = editor.caps_extra_unavailable() {
+            ui.weak(reason.text());
+        } else if would_reclassify {
+            ui.weak(Unavailable::CapsWouldReclassify.text());
+        }
     }
 
     ui.add_space(8.0);

@@ -576,9 +576,11 @@ pub fn compute_swap_write_with_cycles(
         .collect();
     let mut out = out_existing;
     out.extend(added);
-    // 事後条件: 書いた結果を読み戻すと、要求した単位がそのまま読め、Caps 追加 Ctrl を要求したならそのまま読める。
-    // 他ツールの開いた鎖が、足したエントリで閉じて循環に読み替わると、他ツールの設定が確認なしで awase の入れ替えになり、
-    // 以後の「戻す」「すべて解除」で消えてしまう（Opus コードレビュー S1）。
+    // 事後条件（新しく足すものだけに当てる）: 書いた結果を読み戻すと、新しく作る単位がそのまま読め、Caps 追加 Ctrl を新たに
+    // オンにするならそのまま読める。他ツールの開いた鎖が、足したエントリで閉じて循環に読み替わると、他ツールの設定が確認なしで
+    // awase の入れ替えになり、以後の「戻す」「すべて解除」で消えてしまう（Opus コードレビュー S1）。
+    // 残す単位・すでにオンの Caps 追加 Ctrl には当てない: 削除で他のエントリが露出して読み替わるのは ADR-230 で認めた現象
+    // （`revealed`）で、書き込みを止めると「削除だけの操作は常に通る」が崩れる（Opus コードレビュー round2 B1）。
     let read = detect_swap_pairs(&out);
     let read_units: Vec<Unit> = read
         .pairs
@@ -586,8 +588,10 @@ pub fn compute_swap_write_with_cycles(
         .map(|d| Unit::from_pair(d.pair))
         .chain(read.cycles.iter().map(Unit::from_cycle))
         .collect();
-    let all_read = units.iter().all(|u| read_units.iter().any(|r| r.same(u)));
-    if !all_read || (caps_extra_ctrl && !read.caps_extra_ctrl) {
+    let new_units_read = new_units
+        .iter()
+        .all(|u| read_units.iter().any(|r| r.same(u)));
+    if !new_units_read || (adds_caps && !read.caps_extra_ctrl) {
         return Err(SwapError::Reclassified);
     }
     Ok(WritePlan {
@@ -1498,6 +1502,7 @@ mod tests {
             )
             .expect("恒等は常に通る");
             assert_eq!(same.entries, existing);
+            assert_every_kept_subset_is_ok(&existing, &before);
             assert!(compute_swap_write_with_cycles(&existing, &[], &[], false).is_ok());
             // 4キーのランダムな置換 + Caps 追加 Ctrl を要求する。通ったら、要求した単位と Caps 追加 Ctrl は読み戻せる。
             let mut image = keys.to_vec();
@@ -1524,5 +1529,84 @@ mod tests {
             );
         }
         assert!(ok > 5_000, "{ok}");
+    }
+
+    /// 既存の単位（ペア・循環）の任意の部分集合を残す要求（Caps 追加 Ctrl は、あるならそのまま残すかオフ）は、必ず通る。
+    /// 削除で他のエントリが露出して読み替わっても、書き込みは止めない（ADR-230 の `revealed` の扱い）。
+    fn assert_every_kept_subset_is_ok(existing: &[Entry], before: &Detected) {
+        let pairs: Vec<Pair> = before.pairs.iter().map(|d| d.pair).collect();
+        let n = pairs.len() + before.cycles.len();
+        for mask in 0..(1u32 << n) {
+            let keep = |i: usize| mask & (1 << i) != 0;
+            let kept_pairs: Vec<Pair> = pairs
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| keep(i))
+                .map(|(_, &p)| p)
+                .collect();
+            let kept_cycles: Vec<Cycle> = before
+                .cycles
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| keep(pairs.len() + i))
+                .map(|(_, c)| c.clone())
+                .collect();
+            let caps_options: &[bool] = if before.caps_extra_ctrl {
+                &[true, false]
+            } else {
+                &[false]
+            };
+            for &caps in caps_options {
+                assert!(
+                    compute_swap_write_with_cycles(existing, &kept_pairs, &kept_cycles, caps)
+                        .is_ok(),
+                    "削除だけの要求が通らない: {existing:?} mask={mask:b} caps={caps}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn removing_a_unit_is_always_allowed_even_when_it_exposes_other_entries() {
+        // round2 B1 の q1: 「スペース」の戻す（スペースを含むペアを外す）と、他ツールのエントリ `無変換→スペース`・`スペース→無変換` が
+        // 露出して先に別のペアに読まれ、残す `無変換⇄変換` が読めなくなる。それでも書き込みは通る（露出は revealed で扱う）。
+        let existing = [
+            (SPC, LALT),
+            (LALT, SPC),
+            (MUH, SPC),
+            (SPC, MUH),
+            (MUH, HEN),
+            (HEN, MUH),
+        ];
+        let d = detect_swap_pairs(&existing);
+        let kept: Vec<Pair> = d
+            .pairs
+            .iter()
+            .map(|x| x.pair)
+            .filter(|p| !p.contains(SPC))
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert!(compute_swap_write_with_cycles(&existing, &kept, &d.cycles, false).is_ok());
+        assert_every_kept_subset_is_ok(&existing, &d);
+        // q4: 「Caps を Ctrl としても使う」を残したまま `無変換⇄変換` を外すと、他ツールの2件と `Caps→左Ctrl` が閉じた循環として
+        // 読める。残す側なので止めない（確認ダイアログの revealed に出る）。
+        let existing = [
+            (CAPS, LCTRL),
+            (LCTRL, MUH),
+            (MUH, CAPS),
+            (MUH, HEN),
+            (HEN, MUH),
+        ];
+        let d = detect_swap_pairs(&existing);
+        assert!(d.caps_extra_ctrl);
+        let plan = compute_swap_write_with_cycles(&existing, &[], &[], true).unwrap();
+        assert!(!plan.revealed.is_empty());
+        assert_every_kept_subset_is_ok(&existing, &d);
+        // 新しくオンにするときだけ止める（S1）。
+        let existing = [(LCTRL, MUH), (MUH, CAPS)];
+        assert_eq!(
+            compute_swap_write_with_cycles(&existing, &[], &[], true),
+            Err(SwapError::Reclassified)
+        );
     }
 }
