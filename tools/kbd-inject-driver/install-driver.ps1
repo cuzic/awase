@@ -4,6 +4,8 @@
 # デバイスの UpperFilters に載せて pnputil /restart-device。成功すると \\.\AwaseKbInject が開け、ドライバ経由のキーは物理キーと同じ経路で入る
 # (LLKHF_INJECTED なし、dwExtraInfo 0)。作業ディレクトリはリポジトリのルート。
 $ErrorActionPreference = 'Stop'
+# 安全装置: このドライバはテスト署名のカーネルドライバ(キー入力を OS に流せる)。利用者の PC に入れてはならないので、GitHub Actions のホスト型ランナー以外では実行しない。
+if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'install-driver.ps1 は GitHub のホスト型ランナー専用です(使い捨ての VM でだけ実行する)' }
 $work = Join-Path $PWD 'kbd-driver-build'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
