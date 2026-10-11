@@ -7,7 +7,7 @@ summary: |-
   スパイク(ブランチ ci/scancode-vm-spike)で、windows-latest のホスト型ランナーが入れ子 Hyper-V VM を起動でき、WinPE の SYSTEM ハイブへオフラインで Scancode Map を書いて起動し、VM のキーボードへ PressKey でキーを送り、VM 内の Raw Input の `vk` を読めることを確認した(対照・ペア・3巡回の両向きの4シナリオが PASS)。
   本 ADR は、これを本番のワークフローにする方針を決める。判定点(Raw Input の vk は左右を区別しないので LL フックを足す)、「検証不能」と FAIL の区別、シナリオと期待値の出どころ(トートロジーを避ける)、範囲と限界を扱う。
 status: |-
-  起草 r2(2026-10-11)。Opus round1(Blocker 2・Must 6・Should 7・Nit 4)を反映。スパイクは GitHub ホスト型で検証済み。本番ワークフロー(段階1)は未実装。
+  起草 r3(2026-10-11)。Opus round1(Blocker 2・Must 6・Should 7・Nit 4)・round2(Must 4・Should 5・Nit 3)を反映。スパイクは GitHub ホスト型で検証済み。本番ワークフロー(段階1)は未実装。
 related_adr:
   - "ADR-230"
   - "ADR-248"
@@ -42,22 +42,24 @@ ADR-230/248 の画面は、`HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layou
 3. **シナリオの書き込みは本番経路で作る**: 本番のバイト列は `decide(original, &request)` → `Decision::Write { entries }` → `build_bytes` で作られる(`scancode_map_admin.rs`)。シナリオは `ApplyRequest` と既存値から `decide` に通した結果を `build_bytes` で書く(`build_bytes` 単体は単体テストで足りている)。
 4. **期待値はトートロジーにしない**:
    - 期待は、シナリオ表に**人が読める形で手書きする**(例:「循環 [A,S,D] を作った → A の位置を押すと S が出る」)。`entries()`・`decide` の出力から導かない(導くと、entries の向きが UI の約束と逆に実装されていても書き込みと期待が一緒に逆になり PASS する)。
+   - **期待の `vk` は LL フックの `vkCode`**(左右の区別があるもの)とする。Raw Input の `VKey` は参考として記録だけする(Caps→左 Ctrl の期待が `VK_CONTROL` になり、左右の区別が期待側で失われるのを避ける)。
    - 期待の `vk` は表で持たず、**同じ run の対照シナリオで実測する**: 対照で各キー(from と to の両方)を押して「送ったキー → (写像前の値, vk)」を記録し、写像シナリオの期待 `vk` は、対照で「写像前の値 = to」だったキーの `vk`。`awase-vkmap` の定数の誤りが書き込み側と期待側で相殺されず、WinPE のキーボードレイアウトへの依存も減る。
-5. **シナリオ表に必ず入れるもの**: ペア、3つ以上の循環(両向き)、Caps への追加 Ctrl、右 Ctrl・Alt などの拡張キー、**既存の他ツールのエントリを保持したままの書き込み**、**from 重複の先勝ち/後勝ち**(`decide` は重複を作らないので手書きのバイト列。ADR-230 の未確認リストで VM が答えられる価値の最も高い項目。結果は `scancode_pairs.rs` の `revealed` の警告文の根拠に反映する)、JIS 専用キー(Q3)。
+5. **シナリオの種類**: `kind: verify`(期待値あり、PASS/FAIL を出す)と `kind: observe`(期待値が未知。初回は結果を記録するだけで FAIL にせず、再試行の対象にもしない。結果を ADR と `scancode_pairs.rs` のコメントに書いた時点で `verify` に昇格させる)。from 重複は `observe` から始める。
+5-2. **シナリオ表に必ず入れるもの**: ペア、3つ以上の循環(両向き)、Caps への追加 Ctrl、右 Ctrl・Alt などの拡張キー、**既存の他ツールのエントリを保持したままの書き込み**、**from 重複の先勝ち/後勝ち**(`decide` は重複を作らないので手書きのバイト列。ADR-230 の未確認リストで VM が答えられる価値の最も高い項目。結果は `scancode_pairs.rs` の `revealed` の警告文の根拠に反映する)、JIS 専用キー(Q3)。
 6. **判定の前提条件(「検証不能」の定義)**: 次をすべて満たしたときだけ PASS/FAIL を出す。1つでも欠ければ**検証不能**(理由に条件の番号を付ける)。
    1. VM が起動し、`probe.log` に `START` と `READY` がある。
    2. 送ったすべてのキーで `PressKey`/`ReleaseKey` の `ReturnValue` が 0(終了キー以外)。
    3. 送ったキーの数と、記録の押下(break=0)の数が一致する(オートリピートで増えても、取りこぼしで減っても検証不能。同じ `make` が連続する break=0 は1つに畳むかは段階1で押下時間を実測して決める)。
-   4. 各打鍵の**写像前の値**が、送ったつもりの from スキャンコードと一致する(Hyper-V の VK→スキャンコード変換が想定と違うシナリオを検出する)。
-   5. 同じ run の対照シナリオが PASS(対照が FAIL なら run 全体を検証不能にする)。
-7. **Actions の結果への写し方**: 検証不能は VM を作り直して**1回だけ再試行**する(FAIL は再試行しない。再試行で FAIL を PASS にしない)。再試行後も検証不能ならジョブは **failure** にし、ジョブサマリの1行目に `INCONCLUSIVE`(条件の番号)と書く。緑のまま何も検証しなくなる事態を避けるためである。
-8. **準備完了のハンドシェイク**: probe は Raw Input と LL フックの登録が終わってから窓を表示する。ホストは写像の対象外の番兵キー(例: F11)を数秒おきに送り、probe が受け取ったら窓の色を変える(緑→青)。ホストは色の変化を確かめてからテストキーを送る。番兵の打鍵は判定から除く。緑検出が全回失敗した原因(サムネイルのビット配置の仮定、160×120 への縮小、`$count -ge 50` の閾値)は `$ShotDir\*-ready.png` で1回確かめる。
+   4. 各打鍵の**写像前の値**(Raw Input の `MakeCode`+E0)が、送ったつもりの from スキャンコードと一致する(Hyper-V の VK→スキャンコード変換が想定と違うシナリオを検出する)。
+   5. 同じ run の対照シナリオが PASS(対照が FAIL なら検証不能にする)。**対照の PASS は、対照の実測値と比べず(循環するので)、写像を使わない独立の条件で決める**: (a) 各打鍵の Raw Input の `MakeCode`+E0 が、シナリオ表に書いた scancode と一致する。(b) LL フックの `scanCode`+`LLKHF_EXTENDED` が Raw Input の `MakeCode`+E0 と一致する(写像が無いので同じはず)。(c) 英字キーだけは、手書きの小さな表(A=0x41 など。配列に依存しない)の `vkCode` と一致する。
+7. **Actions の結果への写し方**: 検証不能になった**シナリオ(の起動)だけ**を、VM を作り直して**1回だけ再試行**する(FAIL は再試行しない。再試行で FAIL を PASS にしない)。対照は run の先頭で単独に回し、対照が検証不能のときは対照だけを先に再試行して、ほかのシナリオは対照の確定後に始める。このジョブは **required check にしない**(入れ子仮想化の不調だけで `scancode_*` を触った PR がマージできなくなるのを避ける。failure は PR の担当者が理由の番号を見て判断する)。再試行後も検証不能ならジョブは **failure** にし、ジョブサマリの1行目に `INCONCLUSIVE`(条件の番号)と書く。緑のまま何も検証しなくなる事態を避けるためである。
+8. **準備完了のハンドシェイク**: 画面の検出(事実7で 0/4)に依存しない方式を主にする。probe は Raw Input と LL フックの登録が終わってから窓を表示し、`READY` を書く。ホストは起動直後から、「番兵キー(写像の対象外、例: F11)→ テストの打鍵列 → 番兵キー」の**塊**を数秒おきに繰り返し送る。probe は `READY` のあとの記録だけを残し、判定には `READY` のあとで最初に完全な形(番兵で挟まれ、打鍵数が一致する形)でそろった塊を使う。条件3(打鍵数の一致)は塊の中で見る。画面の色の検出は補助(スクリーンショットの確認用)に下げ、緑検出が全回失敗した原因(サムネイルのビット配置の仮定、160×120 への縮小、`$count -ge 50` の閾値)は `$ShotDir\*-ready.png` で確かめて記録する。段階1の完了条件は、**塊方式で `verify` の全シナリオが N 回(N=10)連続で、検証不能にならず期待どおりになる**こと。
 9. **起動条件**: 次のファイルの push/PR と、**週1回の定期実行**と手動。毎 push では回さない。
-   - `crates/awase-windows/src/scancode_map.rs`・`scancode_pairs.rs`・`scancode_apply.rs`・`scancode_editor.rs`(`scancode_diagram.rs` も含めたいなら明示)、`crates/awase-settings/src/scancode_map_admin.rs`
+   - `crates/awase-windows/src/scancode_map.rs`・`scancode_pairs.rs`・`scancode_apply.rs`・`scancode_editor.rs`(`scancode_diagram.rs` は描画だけで `ApplyRequest` を組まないので含めない)、`crates/awase-settings/src/scancode_map_admin.rs`
    - `tools/scancode-vm/**`(シナリオ表の JSON と生成物の golden を含む)と本ワークフロー
-   定期実行は、windows-latest のイメージ更新や ADK パッケージの版変更で、awase のコードが変わらなくても壊れることの検出用。「検証不能が連続した」ことも、定期実行で検出する。
-10. **生成と実行の分離**: VM ワークフローで `awase-windows` をビルドしない。`crates/awase-windows` に、シナリオ表(`ApplyRequest`)→ `decide` → `build_bytes` の16進を `tools/scancode-vm/scenarios.json` と比較する golden テストを置き(Linux の `cargo test` で走る)、VM ワークフローはその JSON を読むだけにする。
-11. **費用**: 1シナリオ1起動のままだと10〜15シナリオで35〜50分になりうる(未測定)。互いに素なキー集合の写像は1つのマップにまとめて1回の起動にする(from 重複のように他と干渉するシナリオは単独)。上限は1ジョブ45分とし、超える場合は VM を2〜3台並列(各 1GB)にする。
+   定期実行は、windows-latest のイメージ更新や ADK パッケージの版変更で、awase のコードが変わらなくても壊れることの検出用。「検証不能が連続した」ことも、定期実行で検出する。定期実行の失敗の通知は cron 行を最後に変えた人に飛ぶ(GitHub の仕様)ので、見る人は所有者(cuzic)とし、cron 行は所有者が変える。
+10. **生成と実行の分離**: VM ワークフローで `awase-windows` をビルドしない。`crates/awase-windows` に、シナリオ表(`ApplyRequest`)→ `decide` → `build_bytes` の16進を `tools/scancode-vm/scenarios.json` と比較する golden テストを置き(Linux の `cargo test` で走る)、VM ワークフローはその JSON を読むだけにする。JSON には出どころの違う3種類の値が入るので分ける: (1) `decide` の生成物(16進。golden の再生成の対象)、(2) 手書きのバイト列(from 重複。`decide` を通らない)、(3) 手書きの期待(決定4)。**(3) は別のファイルに置き、golden の再生成(`UPDATE_GOLDEN=1` 等)の対象から外す**(トートロジー防止が崩れるのを避ける)。生成器は `expected` に既存値をそのまま入れ、`Decision::Stop`(`Changed`/`Ok`)になったシナリオは golden の時点でエラーにする(`scancode_apply.rs` の `decide`)。「既存の他ツールのエントリを保持」のシナリオは `allow_displace` も関わるので、表の列に入れる。
+11. **費用**: 1シナリオ1起動のままだと10〜15シナリオで35〜50分になりうる(未測定)。互いに素なキー集合の写像は1つのマップにまとめて1回の起動にする(from 重複のように他と干渉するシナリオは単独)。上限は再試行を含めて1ジョブ45分(`timeout-minutes` は50)とし、超える場合は VM を2〜3台並列(各 1GB)にする。
 12. **ライセンス・公開**: WinPE は ADK 由来で、評価版 Windows イメージは使わない。ISO や VHDX は成果物にしない。artifact は、スクリーンショット・`probe.log`(打鍵の記録のみ)・シナリオ JSON。ADK を `actions/cache` に入れる場合、公開リポジトリのキャッシュは fork の PR のワークフローからも読めることを前提に、イメージ由来のファイルは入れない。
 13. **probe の修正**: doc コメント(Raw Input の `MakeCode` は変換後、という記述)を観測に合わせて直す。終了キー F12 は写像前の `make` に依存して終了でき、シナリオで F12 の位置を写像しても終了できる、という性質を意図として書く。
 
@@ -79,7 +81,7 @@ ADR-230/248 の未確認項目との対応:
 | `0x003A` を別キーと入れ替えたときの Shift 分岐(`VK_CAPITAL`) | JIS レイアウトを WinPE に入れられれば VM で可。LL フックの `vkCode` で見る。入れられなければ実機 |
 | SAS(Ctrl+Alt+Del) | WinPE に経路が無く不可。実機 |
 | ADR-248 Q2(再起動と電源オンで効きが違うか・高速スタートアップ) | 不可。実機 |
-| ADR-248 Q3(WinRE でのオフライン削除の手順) | `ControlSet00N` の N の確認は `reg load` と同じ操作なので VM で可。セーフモード・画面キーボードは実機 |
+| ADR-248 Q3(WinRE でのオフライン削除の手順) | 不可。WinRE で削除する対象は、インストール済みの Windows の SYSTEM ハイブ(`Select\Current` の値)で、VM にはインストール済みの Windows が無い。セーフモード・画面キーボードも含め実機 |
 | Ctrl2cap との重なり | 費用に見合わないので実機 |
 
 ## 未確認(Q)
@@ -88,17 +90,19 @@ ADR-230/248 の未確認項目との対応:
 - Q2: WinPE の実際の起動時間(ハンドシェイクでの準備完了までの時間)。短縮できるか。
 - Q3: `Msvm_Keyboard` の `TypeScancodes` の有無(`Get-CimClass … CimClassMethods` の出力で確定)。JIS 専用キー(無変換・変換・かな・半角/全角)と E0 付きキーを、`PressKey` の VK と生のスキャンコードのどちらで、どのスキャンコードとして送れるか。送れなければ、シナリオの半分(ADR-230 のワンクリックの中心)が作れない。
 - Q4: LL フックが WinPE で動くか(決定2)。
-- Q5: 写像点。Raw Input と LL フックの `scanCode` を比べて確定し、ADR-230 :84-88 と ADR-248 :171-173 の推測を訂正する要否を決める(両 ADR への追記)。
+- Q5: 写像点。Raw Input と LL フックの `scanCode` を比べて確定する。結果は2通り:
+  - (a) LL フックの `scanCode` が写像後: ADR-230 :87-88 の前提(入れ替えた位置のキーは入れ替え先の scancode のキーとして OS に見える)は正しく、Raw Input の `MakeCode` だけが例外。ADR-230/248 の推測は両 ADR に根拠付きで追記する。
+  - (b) LL フックの `scanCode` も写像前で `vkCode` だけが変わる: awase は物理キーを LL フックの `scanCode`+拡張ビットで同定している(`vk::thumb_latch_identity`・`should_release_thumb_latch`)ので、入れ替えた位置のキーを元の scancode のキーとして同定する。たとえば無変換と変換を入れ替えると、親指キーの左右の同定(`vkCode` 由来)とラッチの解除(`scanCode` 由来)が食い違い、BUG-131/132 と同型の固着が新しく起きうる。**(b) なら、hook 側の同定を見直す BUG/ADR を起票する**。ADR-230 :84-88、ADR-248 :171-173 と、親指キーの注意(段階4)の前提も訂正する。
 
 ## 段階
 
 - 段階0(済): スパイク。4シナリオ PASS。
 - 段階1: ハンドシェイクと LL フック(Q3・Q4・Q5 の測定を含む)、検証不能の定義と再試行(決定6・7)、パスフィルタと定期実行。
 - 段階2: シナリオ表(JSON)と golden、シナリオの追加(決定3〜5)。
-- 段階3: 結果を ADR-230 段階5 と `revealed` の警告文に反映する。
+- 段階3: 結果を ADR-230 段階5、`revealed` の警告文、Q5 の帰結(hook の同定規則、ADR-230/248 の追記)に反映する。
 
 ## 関連
 
 - ADR-230(Scancode Map の双射編集)、ADR-248(画面の分かりやすさ・循環への一般化)。
 - `docs/ci/debug-session.md`(ランナーへ SSH で入る手順。スパイクの再現・Q の測定に使う)。
-- レビュー: `docs/adr/review/257-opus-review-round1.md`。
+- レビュー: `docs/adr/review/257-opus-review-round1.md`、`257-opus-review-round2.md`。
