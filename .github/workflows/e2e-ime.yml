@@ -1222,6 +1222,11 @@ jobs:
             [WinFind2]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 100; [WinFind2]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
             Start-Sleep -Seconds 2
             Snap2 '2-after-click'
+            # Ctrl+S を確実に窓へ届けるため、タイトルバーを押して前面・フォーカスを取る(run 38121166980: クリックでルールは足せたが ^s は届かなかった)。
+            [void][WinFind2]::SetCursorPos($b[0] + 400, $b[1] + 15)
+            Start-Sleep -Milliseconds 300
+            [WinFind2]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 100; [WinFind2]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Seconds 1
             [System.Windows.Forms.SendKeys]::SendWait('^s')
             Start-Sleep -Seconds 6
             Snap2 '3-after-save'
