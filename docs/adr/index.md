@@ -263,6 +263,7 @@
 | [254](254-msime-legacy-custom-keytable-read.md) | MS-IME 互換モード(旧UI)の Custom 表の扱い——第一段は「keystyle が既定でないとき MSIME_NATIVE の予測を止める」、表を読む第二段は検証後(ADR-197 の訂正) | 第一段を実装中(2026-10-10)。CI スパイク+実機(dragonflyg4)で、Custom の表は互換 ON のときだけ効く・名前付きスタイルは新旧エンジンで内蔵表が違うことを確認。第二段は未着手 |
 | [255](255-ime-off-thumb-key-space.md) | IME OFF のときだけ無変換/変換を Space にする——`[[keymap]]` に `ime = "off"` を足し、エンジンの判断の後に照合する | 改訂 r7(専用設定から `[[keymap]]` 方式へ)。Opus r7 の Must 3 件を反映済み。実装は報告者の回答待ちで保留 |
 | [256](256-direct-follow-awase-write-in-flight-guard.md) | 直接観測の窓で、届く前の awase 自身の開閉の書き込みを窓内の古い読みで覆さない(BUG-199) | 実装(2026-10-11)。役割のないキーに限定(A1′)、本件 25/30→0、回帰不変、逆向きは同じ run の比較で差なし |
+| [257](257-scancode-map-vm-verification.md) | Scancode Map の効きを、GitHub ホスト型 Windows ランナー上の入れ子 VM(WinPE)で実機相当に検証する | 起草(2026-10-11)。スパイクで4シナリオ PASS、本番ワークフローは未実装 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
