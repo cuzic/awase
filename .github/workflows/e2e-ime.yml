@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, ci/adr255-late-keymap-space, fix/bug189-most-recent-trusted]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/adr255-late-keymap-space' && 'sc-late-space-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -101,9 +101,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -454,6 +454,18 @@ jobs:
             # T1(e) の一部(ADR-199 決定18): F13 をトグルにした CUSTOM 表で、F13(0x7C)が GJI に効くか。IME OFF から F13→開、もう一度→閉。
             cfg('sc-t1e-f13-toggle', 'observe', check='consistency', awase='false', keymap=0, runs=1,
                 args='--seq=1A,7C,7C', tsv='DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff'),
+            # ADR-255 段階3b: 遅いルール(`[[keymap]] ime = "off"`、無変換/変換→Space)の実機検証。GJI の CUSTOM 表(DirectInput に無変換/変換の行なし=NoFunction)、awase あり。
+            # --seq: 1A=IME OFF、16=IME ON、1D=無変換、1C=変換、他は VK の16進(46=F 4F=O 42=B 41=A 52=R)。判定なし(collect)。スパイクログの KEY 行の tail で空白の有無・順序を見る。
+            *[cfg(f'sc-late-space-{nm}', 'observe', check='collect', keymap=0, runs=1, wait=240, until='2026-11-10',
+                  args=f'--seq={seq}', tsv=tsv, rules=rl)
+              for nm, seq, tsv, rl in (
+                ('a-off', '1A,1D,1C', 'DirectInput,ON,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'),
+                ('a-off-norule', '1A,1D,1C', 'DirectInput,ON,IMEOn', ''),
+                ('b-on', '16,1D,1C', 'DirectInput,ON,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'),
+                ('c-order', '1A,46,4F,4F,1D,42,41,52', 'DirectInput,ON,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'),
+                ('c-order-norule', '1A,46,4F,4F,20,42,41,52', 'DirectInput,ON,IMEOn', ''),
+                ('d-henkan-imeon', '1A,1C,1A,1D', 'DirectInput,ON,IMEOn|DirectInput,Henkan,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'),
+                ('d-muhenkan-imeon', '1A,1D,1A,1C', 'DirectInput,ON,IMEOn|DirectInput,Muhenkan,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'))],
             # v2 チェックリスト B2 副次: 既定の [keys](keys.ime_toggle が空)× GJI プリセットで、Alt+半角/全角(0x19)が実 IME と Engine(belief)をずらさないこと。
             # sc-kanji-role-* は CUSTOM 表(keymap=0)+ tsv だったが、こちらは tsv も keys 上書きも無い「既定のまま」。プリセット(ATOK=1 / MS-IME=2)の
             # Hankaku/Zenkaku 行はトグルのはずなので kanjirole-closed(IME が閉じ、Engine も OFF に追随)を期待する。実測前なので observe。
@@ -1131,6 +1143,13 @@ jobs:
             if ($cfg -notmatch '(?m)^\[keys\]\s*$') { $cfg = $cfg.TrimEnd() + "`r`n`r`n[keys]`r`n" }
             if ($cfg -match "(?m)^$key *=") { $cfg = $cfg -replace "(?m)^$key *=.*$", $line }
             else { $cfg = $cfg -replace '(?m)^\[keys\]\s*$', "[keys]`r`n$line" }
+          }
+          # [[keymap]] の追加(`|` 区切りのルール、各ルールは `from,to,ime`。ime は空なら省略)。ADR-255 の遅いルール(ime = "off")の検証用。
+          $rules = '${{ matrix.cfg.rules }}'
+          foreach ($r in ($rules -split '\|' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $f = $r -split ','
+            $cfg = $cfg.TrimEnd() + "`r`n`r`n[[keymap]]`r`nfrom = `"$($f[0])`"`r`nto = [`"$($f[1])`"]`r`n"
+            if ($f.Count -gt 2 -and $f[2]) { $cfg += "ime = `"$($f[2])`"`r`n" }
           }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
