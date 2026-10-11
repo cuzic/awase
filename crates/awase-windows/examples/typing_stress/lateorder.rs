@@ -51,7 +51,9 @@ pub(crate) fn lateorder_scenario(child: HWND) {
         .unwrap_or(0x1D);
     let kscan = scan_of(key);
     let settle = crate::has_flag("--settle-read");
-    rec(&json!({"type":"lateorder_config","key":format!("{key:#x}"),"reps":reps,"interval_ms":iv,"trials":trials}));
+    rec(
+        &json!({"type":"lateorder_config","key":format!("{key:#x}"),"reps":reps,"interval_ms":iv,"trials":trials}),
+    );
     for n in 0..trials {
         if !focus_ok() {
             refocus();
@@ -77,8 +79,10 @@ pub(crate) fn lateorder_scenario(child: HWND) {
         }
         sleep_ms(1500);
         let text = read_text_maybe_settled(child, settle);
-        rec(&json!({"type":"lateorder","n":n,"kind":"burst","utc":t0,"interval_ms":iv,
-            "expect":"foo bar".repeat(reps),"text":text}));
+        rec(
+            &json!({"type":"lateorder","n":n,"kind":"burst","utc":t0,"interval_ms":iv,
+            "expect":"foo bar".repeat(reps),"text":text}),
+        );
         // --- hold(自動リピート) ---
         press(VK_IME_OFF, 0x70, 50);
         sleep_ms(800);
