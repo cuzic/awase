@@ -52,6 +52,8 @@ pub struct KeyEventSummary {
     pub shift: bool,
     /// `ctrl` が他アプリの注入 Ctrl の期限内記録(ADR-249)で立った値か。物理 Ctrl が無いのに `ctrl=true` の行を誤読しないための印。
     pub foreign_ctrl: bool,
+    /// Alt なりすまし由来で vk を書き換えたイベントか(`RawKeyEvent::impersonated`、ADR-255)。遅いルールの判断の読み取り用。
+    pub impersonated: bool,
 }
 
 impl KeyEventSummary {
@@ -69,6 +71,7 @@ impl KeyEventSummary {
             ctrl: event.modifier_snapshot.ctrl,
             shift: event.modifier_snapshot.shift,
             foreign_ctrl: event.foreign_ctrl,
+            impersonated: event.impersonated,
         }
     }
 }
@@ -85,6 +88,19 @@ pub struct DriftGiveUpDiagnosticRecord {
     pub intent_source: Option<crate::state::ime_event::UserIntentSource>,
     pub layout_name: String,
     pub half_width_alnum_toggle_active: bool,
+}
+
+/// 遅いルール(`[[keymaps]] ime = "off"`、ADR-255)の判断の記録。ルールに当たった打鍵(`find_late_match` が `Some`)だけ残す
+/// (当たらない打鍵は毎回記録しない)。手書きの `[late-keymap]` debug ログ 2 行の置き換え(1:1、debug のまま)。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct LateKeymapRecord {
+    pub vk_code: u16,
+    /// 発動した(`true`)か、見送った(`false`)か。
+    pub fired: bool,
+    /// 発動したとき、`to` のキーの数。
+    pub send_keys: Option<usize>,
+    /// 見送ったとき、その理由(`LateKeymapSkip::label`)。
+    pub skip_reason: Option<&'static str>,
 }
 
 /// shadow IME トグル(`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` ほか)の判断の段(ADR-250 段階 4-1)。
@@ -521,6 +537,8 @@ pub enum JournalEntry {
     DriftPlanDecided { record: DriftPlanRecord },
     /// ADR-250 段階 4-1: shadow IME トグルの判断の段(手書きの `[shadow-toggle]` ログ 11 行の置き換え)。
     ShadowToggle { record: ShadowToggleRecord },
+    /// ADR-255 段階 3b: 遅いルール(`ime = "off"`)の判断(発動・見送りと理由)。手書きの `[late-keymap]` ログの置き換え。
+    LateKeymap { record: LateKeymapRecord },
     /// ADR-132 Phase 1: hook の IME-mode 診断ログを journal にも残す。
     HookImeModeDiagnostic { record: HookImeModeDiagnosticRecord },
     /// ADR-132 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
@@ -873,6 +891,7 @@ impl JournalEntry {
             | Self::DriftGiveUpDiagnostic { .. }
             | Self::DriftPlanDecided { .. }
             | Self::ShadowToggle { .. }
+            | Self::LateKeymap { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::ConvClassifyCall { .. } => false,
@@ -899,6 +918,7 @@ impl JournalEntry {
             | Self::DriftGiveUpDiagnostic { .. }
             | Self::DriftPlanDecided { .. }
             | Self::ShadowToggle { .. }
+            | Self::LateKeymap { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::ConvClassifyCall { .. }
@@ -1230,6 +1250,18 @@ impl JournalEntry {
                     prev_ticks = record.prev_ticks,
                     prev_duration_ms = record.prev_duration_ms,
                     "drift plan decided"
+                );
+            }
+            Self::LateKeymap { record } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    vk_code = record.vk_code,
+                    fired = record.fired,
+                    send_keys = record.send_keys,
+                    skip_reason = record.skip_reason,
+                    "[late-keymap]"
                 );
             }
             Self::HookImeModeDiagnostic { record } => {
@@ -1986,6 +2018,7 @@ mod tests {
                 ctrl: false,
                 shift: false,
                 foreign_ctrl: false,
+                impersonated: false,
             },
             state_before: "engine-before".to_owned(),
             state_after: "engine-after".to_owned(),
@@ -2452,5 +2485,23 @@ mod tests {
         let json = j.to_json().unwrap();
         assert!(json.contains("ShadowToggle"));
         assert!(json.contains("IntentPromoted"));
+    }
+
+    #[test]
+    fn late_keymap_record_is_serialized_with_its_reason() {
+        let (mut j, _mock) = mock_journal();
+        j.record(JournalEntry::LateKeymap {
+            record: LateKeymapRecord {
+                vk_code: 0x1D,
+                fired: false,
+                send_keys: None,
+                skip_reason: Some(
+                    crate::state::late_keymap_plan::LateKeymapSkip::Composing.label(),
+                ),
+            },
+        });
+        let json = j.to_json().unwrap();
+        assert!(json.contains("LateKeymap"));
+        assert!(json.contains("Composing"));
     }
 }

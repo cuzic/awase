@@ -23,6 +23,14 @@ related_adr:
 
 **実装状況(段階3a、2026-10-10)**: `kp_run_inner` の `engine.on_input` 直後に `kp_stage_late_keymap` を配線した(`force_consume` + effects 末尾の `ReinjectKey`(Space の Down→Up の対) + `Engine::record_shell_consumed`)。**送信は決定2・4 の「`SendKeys`」ではなく `ReinjectKey` にした**(PR #598 の Opus レビュー B1・M1: `KeyAction::Key` は Down しか送らず Up が欠け、同期で実行される `SendKeys` は `spawn_local` で後から送られる先行の素通し文字を追い越しうる。物理 Space の素通しと同じ経路に乗せれば、先行の文字と FIFO で並ぶ。決定8(4)の「出力層との整合」の実例。検証計画2(c)の「foo bar」対照は CI で確かめる)。`RawKeyEvent.impersonated`(hook.rs が Alt なりすましで vk を書き換えたときに立てる)を足した。条件6-i の4源は `Engine::key_has_ime_function` に集約し、TIP 種別による `Unknown` 化は純粋関数 `resolve_direct_input_effect` に置いた(#597 Opus S3)。**未配線**: 条件7b の ADR-245 の戻り待ち(殻へ配線する PR 2 が develop に無く、`half_width_return_pending` は常に偽)、境界 journal への「遅いルールで消費した」印(debug ログ `[late-keymap]` のみ)、設定画面の列・衝突警告・CI 構成(段階3b)。
 
+**実装状況(段階3b、衝突警告、2026-10-11)**: `warn_on_engine_hotkey_collision` を、警告文を返す純粋関数 `engine_hotkey_collision_warnings` に分け、遅いルール(`ime = "off"`)の `from` が `keys.engine_on/off`・`keys.ime_on/off/toggle` と同じキーのときは「そのキーは IME の機能を持つため発動しません」(決定5)と出す(従来の「[[keymap]] が先に消費するため〜発火しなくなります」は遅いルールには誤りだった。#596 S4)。無変換の遅いルールで `general.muhenkan_solo_tap_dedicated_fn_key` が設定されているときも警告する。IME 設定・学習表由来の役割は実行時にしか決まらないので、読み込み時の警告には載せず、発動時の `[late-keymap]` デバッグログに任せる。変換側の専用 Fn キー設定は `GeneralConfig` に無いので対象外。
+
+**実装状況(段階3b、設定画面、2026-10-11)**: 再割り当てタブに「IME の状態」(いつでも/OFF のとき)の列、「無変換・変換を IME OFF のとき Space にする」のプリセットボタン、決定5 の注意5点(折りたたみ)を足した。「OFF のとき」を選ぶと from は無修飾の無変換/変換に限り(キャプチャも同様)、Ctrl/Shift のチェックは出さない。GitHub Windows CI のスクリーンショット(幅 760/480)で表示を確認した。保存の正規の表記は `[[keymaps]]`(`[[keymap]]` は旧表記)。**CI 実機検証(段階3b、sc-late-space-*)**: IME OFF で無変換/変換が空白1つ、ON では入らない、IMEOn の行がある側は Space にならない、40/20/8ms の連打で「foo bar」の順序が対照と同じ、押したままの KeyDown 6回で Space は1個(run 38101407602・38104575361、各 n=1)。composition 中・belief が外れた窓・実 Chrome は未確認。
+
+**実装状況(段階3b、境界 journal の印、2026-10-11)**: 手書きの `[late-keymap]` debug ログ 2 行(発動・見送り)を、`JournalEntry::LateKeymap { record: LateKeymapRecord }`(発動か・`to` のキー数・見送りの理由 `LateKeymapSkip::label`)の記録に置き換えた(ADR-250 段階 4-1 と同じ型。debug のまま、target は `awase::journal`、メッセージの先頭は `[late-keymap]` を維持するので、`architecture_guard` の info 以上の arm の固定表は変えない)。記録するのは `find_late_match` が当たった打鍵だけ(毎打鍵は記録しない)。`KeyEventSummary` に `impersonated`(Alt なりすまし由来)を足した。
+
+**保存→読み込みの確認(段階3b、2026-10-11、GitHub Windows CI、1回)**: 空の設定を設定画面で開き、プリセットボタンを押して Ctrl+S で保存すると、設定ファイルに `[[keymaps]]` の2件(`from = "VK_NONCONVERT"`/`"VK_CONVERT"`、`to = ["VK_SPACE"]`、`ime = "off"`)が書かれ(run 38116671651)、開き直すと2件とも画面に出て、keymap の診断警告は出なかった。実機(awase.exe が保存した設定を読んで Space を出す)は未確認。
+
 ## コンテキスト
 
 ### 報告
@@ -70,7 +78,7 @@ related_adr:
 ### 決定1: `[[keymap]]` に `ime` を足す(r7)
 
 ```toml
-[[keymap]]
+[[keymaps]]
 from = "VK_NONCONVERT"
 to = ["VK_SPACE"]
 ime = "off"

@@ -5,7 +5,7 @@ name: settings-screenshot
 on:
   workflow_dispatch:
   push:
-    branches: [ci/settings-screenshot, feat/adr248-ctrl2cap-detect]
+    branches: [ci/settings-screenshot]
 
 jobs:
   shot:
@@ -65,6 +65,7 @@ jobs:
             none = $null
             caps = @(0x1D,0, 0x3A,0)
             swap = @(0x1D,0, 0x3A,0,  0x3A,0, 0x1D,0)
+            cycle = @(0x79,0, 0x7B,0,  0x39,0, 0x79,0,  0x7B,0, 0x39,0)
           }
           foreach ($name in $scenarios.Keys) {
             Set-Map $scenarios[$name]
@@ -112,6 +113,55 @@ jobs:
           Snap "ctrl2cap-760-screen" $bounds
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
           Remove-Item Env:AWASE_SETTINGS_FAKE_FILTERS
+
+          # 実際のマウス操作でドラッグ&ドロップする(egui の DnD が実機で動くかの確認、ADR-248 決定5)。
+          function Find-Button($root, $name) {
+            $nameCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)
+            $typeCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+            $cond = New-Object System.Windows.Automation.AndCondition($nameCond, $typeCond)
+            return $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+          }
+          function Drag-Button($hwnd, $fromName, $toName) {
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+            $a = Find-Button $root $fromName
+            $b = Find-Button $root $toName
+            if ($null -eq $a -or $null -eq $b) {
+              Write-Host "drag: button not found from='$fromName' ($($null -ne $a)) to='$toName' ($($null -ne $b))"
+              return $false
+            }
+            $ra = $a.Current.BoundingRectangle; $rb = $b.Current.BoundingRectangle
+            $ax = [int]($ra.X + $ra.Width / 2); $ay = [int]($ra.Y + $ra.Height / 2)
+            $bx = [int]($rb.X + $rb.Width / 2); $by = [int]($rb.Y + $rb.Height / 2)
+            Write-Host "drag '$fromName' ($ax,$ay) -> '$toName' ($bx,$by)"
+            [void][Win]::SetCursorPos($ax, $ay)
+            Start-Sleep -Milliseconds 300
+            [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 300
+            for ($i = 1; $i -le 12; $i++) {
+              [void][Win]::SetCursorPos([int]($ax + ($bx - $ax) * $i / 12), [int]($ay + ($by - $ay) * $i / 12))
+              Start-Sleep -Milliseconds 40
+            }
+            Start-Sleep -Milliseconds 300
+            [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 800
+            return $true
+          }
+          Set-Map $null
+          $env:AWASE_SETTINGS_INITIAL_TAB = "key-swap"
+          $env:AWASE_SETTINGS_WINDOW_SIZE = "760x600"
+          $p = Start-Process -FilePath $exe -PassThru
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 500 }
+          Start-Sleep -Seconds 8
+          [void][Win]::SetForegroundWindow($p.MainWindowHandle)
+          Start-Sleep -Seconds 1
+          Snap "dnd-0-start-screen" $bounds
+          $d1 = Drag-Button $p.MainWindowHandle "変換" "無変換"
+          Snap "dnd-1-pair-screen" $bounds
+          $d2 = Drag-Button $p.MainWindowHandle "スペース" "→ 変換"
+          Snap "dnd-2-cycle-screen" $bounds
+          Write-Host "drags: first=$d1 second=$d2"
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
 
           # タブをクリックして開き直したとき、レジストリを読み直して表示するか(ADR-248)。
           # UI Automation で名前のタブを探し、中心を実際にクリックする。

@@ -10,14 +10,15 @@ use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 use awase_windows::scancode_apply::ApplyRequest;
 use awase_windows::scancode_diagram::{
-    DiagramContext, PositionState, diagram_rows, displayed_function, drop_function, drop_hint,
-    function_at, locked_note, position_state, refusal_text, release_position, unlisted_pairs,
+    DiagramContext, EditUnit, PositionState, diagram_rows, displayed_function, drop_function,
+    drop_hint, function_at_units, locked_note, position_state, refusal_text, release_position,
+    release_unit, unit_len_at, unlisted_units,
 };
 use awase_windows::scancode_editor::{
-    EditorState, QUICK_PAIRS, caps_filter_notice, confirmation_lines, key_label, registry_state,
-    status_line, swap_error_text, worker_exit_text,
+    EditorState, QUICK_PAIRS, Unavailable, caps_filter_notice, caps_filter_present,
+    confirmation_lines, key_label, registry_state, status_line, swap_error_text, worker_exit_text,
 };
-use awase_windows::scancode_pairs::{Detected, Entry, Pair, detect_swap_pairs};
+use awase_windows::scancode_pairs::{Cycle, Detected, Entry, Pair, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
@@ -480,6 +481,8 @@ struct SettingsApp {
     // 修飾を禁止・skip するため）。
     new_keymap_from_main: String,
     new_keymap_to_main: String,
+    /// 新規ルールの「IME の状態」が「OFF のとき」か（ADR-255。`ime = "off"` の遅いルール）。
+    new_keymap_ime_off: bool,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
     // disable_apps add-buffer（プロセス名のみ、class 不要）
@@ -758,6 +761,7 @@ impl SettingsApp {
             new_keymap_from_shift: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
+            new_keymap_ime_off: false,
             capturing: None,
             new_disable_app: String::new(),
             // 配列編集タブの状態は「配列編集」タブを開くまで読み込まない
@@ -2412,7 +2416,20 @@ impl SettingsApp {
                 };
                 match target {
                     CaptureTarget::ExistingFrom(i) => {
-                        if !reject(&internal, false, &mut self.status)
+                        let late = self
+                            .config
+                            .keymaps
+                            .get(i)
+                            .is_some_and(|r| r.ime.as_deref() == Some(KEYMAP_IME_OFF));
+                        if late {
+                            if is_late_from_combo(&format_combo(ctrl, shift, false, &internal)) {
+                                if let Some(rule) = self.config.keymaps.get_mut(i) {
+                                    rule.from = late_from_canonical(&internal);
+                                }
+                            } else {
+                                self.status = LATE_FROM_REJECT.to_owned();
+                            }
+                        } else if !reject(&internal, false, &mut self.status)
                             && let Some(rule) = self.config.keymaps.get_mut(i)
                         {
                             rule.from = format_combo(ctrl, shift, false, &internal);
@@ -2427,6 +2444,13 @@ impl SettingsApp {
                             && let Some(step) = rule.to.get_mut(step_i)
                         {
                             *step = internal;
+                        }
+                    }
+                    CaptureTarget::NewFrom if self.new_keymap_ime_off => {
+                        if is_late_from_combo(&format_combo(ctrl, shift, false, &internal)) {
+                            self.new_keymap_from_main = late_from_canonical(&internal);
+                        } else {
+                            self.status = LATE_FROM_REJECT.to_owned();
                         }
                     }
                     CaptureTarget::NewFrom => {
@@ -2943,6 +2967,47 @@ impl SettingsApp {
         );
         ui.add_space(8.0);
 
+        // ADR-255: IME が OFF のときだけ、無変換/変換を Space にする入口。
+        ui.horizontal_wrapped(|ui| {
+            let present = [("VK_NONCONVERT"), ("VK_CONVERT")].iter().all(|from| {
+                self.config
+                    .keymaps
+                    .iter()
+                    .any(|r| r.ime.as_deref() == Some(KEYMAP_IME_OFF) && r.from == *from && r.to == ["VK_SPACE"])
+            });
+            if ui
+                .add_enabled(!present, egui::Button::new("無変換・変換を IME OFF のとき Space にする"))
+                .on_hover_text(
+                    "押すと: IME が OFF のとき、無変換と変換の単独押しを Space（空白）にするルールを2つ追加します。\n\
+                     IME が ON のときは、これまでどおり親指シフトとして働きます。",
+                )
+                .clicked()
+            {
+                for from in ["VK_NONCONVERT", "VK_CONVERT"] {
+                    if !self.config.keymaps.iter().any(|r| {
+                        r.ime.as_deref() == Some(KEYMAP_IME_OFF) && r.from == from && r.to == ["VK_SPACE"]
+                    }) {
+                        self.config.keymaps.push(awase::config::KeymapRule {
+                            app: None,
+                            from: from.to_owned(),
+                            to: vec!["VK_SPACE".to_owned()],
+                            ime: Some(KEYMAP_IME_OFF.to_owned()),
+                        });
+                    }
+                }
+            }
+        });
+        ui.collapsing("「IME の状態: OFF のとき」のルールの注意", |ui| {
+            ui.label(
+                "・押し続けても繰り返しません（1回押すと1回だけ送ります）。\n\
+                 ・「半角英数」（IME は開いたまま英数モード）の状態では動きません。\n\
+                 ・IME は ON なのに awase が OFF と思っているときは、無変換が Space（IME によっては変換や全角スペース）になることがあります。\n\
+                 ・IME 側の割り当てが読めないとき（Microsoft IME 本体のキー設定など）は、何もしません。\n\
+                 ・Google 日本語入力の「キー設定」に、直接入力の無変換/変換の行（空白入力など）があると、そのキーでは動きません。",
+            );
+        });
+        ui.add_space(4.0);
+
         // local copy of capturing to avoid borrow-conflict with self.config.keymaps below
         let mut capturing = self.capturing;
         let (left_thumb_vk, right_thumb_vk) = keymap_thumb_vks(&self.config.general);
@@ -2975,6 +3040,35 @@ impl SettingsApp {
                         };
                     }
 
+                    // IME の状態（ADR-255）: 「いつでも」か「OFF のとき」（`ime = "off"` の遅いルール）。
+                    let late = rule.ime.as_deref() == Some(KEYMAP_IME_OFF);
+                    let mut ime_off = late;
+                    if ime_condition_combo(ui, &format!("ime_cond_{i}"), &mut ime_off) {
+                        rule.ime = ime_off.then(|| KEYMAP_IME_OFF.to_owned());
+                        if ime_off && !is_late_from_combo(&rule.from) {
+                            // 遅いルールの from は無修飾の無変換/変換に限る（ADR-255 決定1）。
+                            rule.from = "VK_NONCONVERT".to_owned();
+                        }
+                    }
+                    let late = rule.ime.as_deref() == Some(KEYMAP_IME_OFF);
+                    if !late
+                        && let Some(reason) = keymap_forbidden_reason(
+                            &parse_combo_str(&rule.from).3,
+                            left_thumb_vk,
+                            right_thumb_vk,
+                            false,
+                        )
+                    {
+                        // 「OFF のとき」から「いつでも」に戻したときなど、from が使えないキーのままのルール。
+                        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), "⚠from が使えません")
+                            .on_hover_text(format!(
+                                "{reason}\nこのまま保存すると、このルールは無効になります。"
+                            ));
+                    }
+                    // 狭い幅で from のドロップダウンが右端に切れるのを避けるため、アプリ・IME の状態と
+                    // from → to の間で行を分ける（ComboBox は内部で横並びの入れ子を作り、折り返せない）。
+                    ui.end_row();
+
                     // from: modifiers + main key + capture button
                     // Alt 修飾は GUI から選べない（ADR-114 決定5 — バックエンドが
                     // 'from' の Alt 修飾を禁止・skip するため、対称性を保つ）。
@@ -2983,16 +3077,31 @@ impl SettingsApp {
                     // 別途警告して skip する）。
                     let (mut ctrl, mut shift, alt, mut main) = parse_combo_str(&rule.from);
                     let mut changed = false;
-                    changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
-                    changed |= ui.checkbox(&mut shift, "Shift").changed();
-                    if main_key_combo(
-                        ui,
-                        &format!("from_main_{i}"),
-                        &mut main,
-                        "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。",
-                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
-                    ) {
-                        changed = true;
+                    if late {
+                        // 遅いルールは無修飾の無変換/変換だけ（修飾キーのチェックは出さない）。
+                        if main_key_combo(
+                            ui,
+                            &format!("from_main_{i}"),
+                            &mut main,
+                            "IME が OFF のとき、この親指キーを単独で押すと to のキーを送ります。",
+                            late_from_key_options(),
+                        ) {
+                            changed = true;
+                            ctrl = false;
+                            shift = false;
+                        }
+                    } else {
+                        changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
+                        changed |= ui.checkbox(&mut shift, "Shift").changed();
+                        if main_key_combo(
+                            ui,
+                            &format!("from_main_{i}"),
+                            &mut main,
+                            "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。",
+                            keymap_from_key_options(left_thumb_vk, right_thumb_vk),
+                        ) {
+                            changed = true;
+                        }
                     }
                     let from_target = CaptureTarget::ExistingFrom(i);
                     capture_button(ui, &mut capturing, from_target);
@@ -3091,19 +3200,42 @@ impl SettingsApp {
                 .on_hover_text("対象プロセス名（例: vim.exe）。空欄で全アプリ対象。");
                 ui.end_row();
 
+                ui.label("  IME の状態:").on_hover_text(IME_CONDITION_HOVER);
+                if ime_condition_combo(ui, "new_ime_cond", &mut self.new_keymap_ime_off)
+                    && self.new_keymap_ime_off
+                {
+                    // 遅いルールの from は無修飾の無変換/変換に限る。
+                    self.new_keymap_from_ctrl = false;
+                    self.new_keymap_from_shift = false;
+                    if !is_late_from_combo(&self.new_keymap_from_main) {
+                        self.new_keymap_from_main.clear();
+                    }
+                }
+                ui.end_row();
+
                 let from_hover =
                     "変換元のキーです。左の Ctrl/Shift と組み合わせて判定します（Alt 修飾は使用できません）。";
                 ui.label("  from:").on_hover_text(from_hover);
                 ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
-                    ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
-                    main_key_combo(
-                        ui,
-                        "new_from_main",
-                        &mut self.new_keymap_from_main,
-                        from_hover,
-                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
-                    );
+                    if self.new_keymap_ime_off {
+                        main_key_combo(
+                            ui,
+                            "new_from_main",
+                            &mut self.new_keymap_from_main,
+                            "IME が OFF のとき単独で押すキー（無変換/変換）です。",
+                            late_from_key_options(),
+                        );
+                    } else {
+                        ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
+                        ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
+                        main_key_combo(
+                            ui,
+                            "new_from_main",
+                            &mut self.new_keymap_from_main,
+                            from_hover,
+                            keymap_from_key_options(left_thumb_vk, right_thumb_vk),
+                        );
+                    }
                     capture_button(ui, &mut capturing, CaptureTarget::NewFrom);
                 })
                 .response
@@ -3158,8 +3290,9 @@ impl SettingsApp {
                     } else {
                         vec![self.new_keymap_to_main.clone()]
                     },
-                    ime: None,
+                    ime: self.new_keymap_ime_off.then(|| KEYMAP_IME_OFF.to_owned()),
                 });
+                self.new_keymap_ime_off = false;
                 self.new_keymap_app.clear();
                 self.new_keymap_from_ctrl = false;
                 self.new_keymap_from_shift = false;
@@ -3195,7 +3328,7 @@ impl SettingsApp {
         ui.add_space(4.0);
 
         if self.scancode_map_view.is_none() {
-            self.scancode_map_view = Some(load_scancode_view());
+            self.scancode_map_view = Some(load_scancode_view(self.ime_role_thumb_scancodes()));
         }
         let jis = matches!(
             self.config.general.keyboard_model,
@@ -3240,7 +3373,7 @@ impl SettingsApp {
         match action {
             ScancodeAction::None => {}
             ScancodeAction::Reload => {
-                self.scancode_map_view = Some(load_scancode_view());
+                self.scancode_map_view = Some(load_scancode_view(self.ime_role_thumb_scancodes()));
                 self.scancode_map_last_message = None;
             }
             ScancodeAction::Apply => self.request_scancode_apply(),
@@ -3255,6 +3388,32 @@ impl SettingsApp {
                 self.scancode_restart_confirm = true;
             }
         }
+    }
+
+    /// IME の ON/OFF キー（`keys.ime_on`/`ime_off`/`ime_toggle` に修飾キーなしで書いたキー）も兼ねている親指キーのスキャンコード。
+    /// これらを含む入れ替えは、IME の切り替えが働かなくなるので設定させない（ADR-248）。
+    fn ime_role_thumb_scancodes(&self) -> Vec<u16> {
+        use awase_windows::state::alt_impersonation::resolve_thumb_key;
+        use awase_windows::vk::{VK_CONVERT, VK_NONCONVERT};
+        [
+            &self.config.general.left_thumb_key,
+            &self.config.general.right_thumb_key,
+        ]
+        .into_iter()
+        .filter(|name| {
+            resolve_thumb_key(name).is_some_and(|(vk, _)| {
+                let canonical = if vk == VK_NONCONVERT {
+                    "NONCONVERT"
+                } else if vk == VK_CONVERT {
+                    "CONVERT"
+                } else {
+                    return false;
+                };
+                self.config.keys.has_bare_role_key(canonical)
+            })
+        })
+        .flat_map(|name| thumb_key_scancodes(name))
+        .collect()
     }
 
     /// 設定の親指キーに当たるスキャンコード（確認ダイアログの注意書き用）。
@@ -3275,10 +3434,18 @@ impl SettingsApp {
             Some(ScancodeMapView::Loaded(loaded)) => {
                 let preview = loaded.editor.preview(&loaded.entries, &thumbs);
                 match &preview.plan {
+                    // 二重になる設定は適用させない（図・ボタンでも作れないが、念のため適用の段で止める）。
+                    _ if loaded.editor.caps_filter_conflict() => {
+                        Err(Unavailable::CapsFilterDriver.text().to_string())
+                    }
+                    _ if loaded.editor.ime_role_conflict() => {
+                        Err(Unavailable::ThumbImeRole.text().to_string())
+                    }
                     Err(e) => Err(swap_error_text(*e)),
                     Ok(plan) => Ok((
                         ApplyRequest {
                             pairs: loaded.editor.pairs(),
+                            cycles: loaded.editor.cycles().to_vec(),
                             caps_extra_ctrl: loaded.editor.caps_extra(),
                             expected: loaded.entries.clone(),
                             allow_displace: !plan.displaced.is_empty(),
@@ -3341,7 +3508,7 @@ impl SettingsApp {
         }
         // 操作直後にのみ再読み込みする（毎フレーム読まない）。
         if !registry_untouched {
-            self.scancode_map_view = Some(load_scancode_view());
+            self.scancode_map_view = Some(load_scancode_view(self.ime_role_thumb_scancodes()));
         }
     }
 
@@ -5039,18 +5206,21 @@ enum ScancodeAction {
     Apply,
 }
 
-fn load_scancode_view() -> ScancodeMapView {
+fn load_scancode_view(ime_role_thumbs: Vec<u16>) -> ScancodeMapView {
     match scancode_map_admin::read_raw_entries() {
         scancode_map_admin::ScancodeMapRead::Loaded(entries) => {
             let detected = detect_swap_pairs(&entries);
-            let editor = EditorState::from_detected(&detected);
+            let mut editor = EditorState::from_detected(&detected);
+            let filters = scancode_map_admin::read_keyboard_filters();
+            editor.set_caps_filter(caps_filter_present(&filters));
+            editor.set_ime_role_thumbs(ime_role_thumbs);
             ScancodeMapView::Loaded(Box::new(ScancodeMapLoaded {
                 entries,
                 detected,
                 editor,
                 selected: None,
                 diagram_message: None,
-                filter_notice: caps_filter_notice(&scancode_map_admin::read_keyboard_filters()),
+                filter_notice: caps_filter_notice(&filters),
             }))
         }
         scancode_map_admin::ScancodeMapRead::Corrupt => ScancodeMapView::Corrupt,
@@ -5140,7 +5310,10 @@ fn scancode_editor_ui(
     );
 
     let mut caps = editor.caps_extra();
-    let caps_enabled = caps || editor.caps_extra_available();
+    // オンにすると書き込みの検査で断られる（他ツールの設定と組み合わさって読み替わる、他ツールの to と衝突する、など）ときは、
+    // 適用の段ではなくここで理由を出す。
+    let caps_refusal = editor.caps_extra_refusal(&loaded.entries);
+    let caps_enabled = caps || (editor.caps_extra_available() && caps_refusal.is_none());
     ui.add_enabled(
         caps_enabled,
         egui::Checkbox::new(&mut caps, "英数 / Caps を Ctrl としても使う"),
@@ -5148,11 +5321,35 @@ fn scancode_editor_ui(
     if caps != editor.caps_extra() {
         editor.set_caps_extra(caps);
     }
-    if !caps_enabled && let Some(reason) = editor.caps_extra_unavailable() {
-        ui.weak(reason.text());
+    if !caps_enabled {
+        if let Some(reason) = editor.caps_extra_unavailable() {
+            ui.weak(reason.text());
+        } else if let Some(refusal) = caps_refusal {
+            ui.weak(swap_error_text(refusal));
+        }
     }
 
     ui.add_space(8.0);
+    // 適用すると変わる位置を、常に文字でも出す（図の色だけに頼らない。確認ダイアログが出ない入れ替えでも内容が分かる）。
+    let changes = editor.changes();
+    if !changes.is_empty() || editor.caps_extra_changed() {
+        ui.label("適用すると変わる位置:");
+        for (pos, before, after) in changes {
+            ui.weak(format!(
+                "　「{}」の位置: 「{}」 → 「{}」",
+                key_label(pos),
+                key_label(before),
+                key_label(after)
+            ));
+        }
+        if editor.caps_extra_changed() {
+            ui.weak(if editor.caps_extra() {
+                "　「英数 / Caps」: Ctrl としても使う（オンにする）"
+            } else {
+                "　「英数 / Caps」: Ctrl としても使う（オフにする）"
+            });
+        }
+    }
     let dirty = editor.is_dirty();
     let incomplete = editor.has_incomplete();
     ui.horizontal_wrapped(|ui| {
@@ -5201,15 +5398,19 @@ fn scancode_editor_ui(
 /// ここは描画と入力（ドラッグ&ドロップ・クリック2回・「戻す」）の反映だけ。
 fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: bool) {
     let pairs = loaded.editor.pairs();
+    let cycles = loaded.editor.cycles().to_vec();
     let caps_extra = loaded.editor.caps_extra();
     let ctx = DiagramContext {
         pairs: &pairs,
+        cycles: &cycles,
         detected: &loaded.detected,
         caps_extra,
         jis,
+        caps_filter: loaded.editor.caps_filter(),
+        ime_role_thumbs: loaded.editor.ime_role_thumbs(),
     };
     let entries = &loaded.entries;
-    let mut new_pairs: Option<Vec<Pair>> = None;
+    let mut new_units: Option<(Vec<Pair>, Vec<Cycle>)> = None;
     let mut message: Option<String> = None;
     let mut hint: Option<String> = None;
     let mut selected = loaded.selected;
@@ -5226,10 +5427,10 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
             // 横スクロール領域の内側は幅が見かけの幅に押し込まれるので、キー名やボタンの文字を折り返させない
             // （折り返すと、右端のキーの文字が縦に割れて行が縦に伸びる。CI のスクリーンショットで確認）。
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            for row in diagram_rows(&pairs, jis) {
+            for row in diagram_rows(&pairs, &cycles, jis) {
                 ui.horizontal(|ui| {
                     for pos in row {
-                        let function = displayed_function(&pairs, caps_extra, pos);
+                        let function = displayed_function(&pairs, &cycles, caps_extra, pos);
                         let changed = function != pos;
                         let state = position_state(&ctx, pos);
                         let editable = matches!(state, PositionState::Editable);
@@ -5255,11 +5456,13 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                 resp.dnd_set_drag_payload(function);
                                 if let Some(payload) = resp.dnd_hover_payload::<u16>() {
                                     let result = drop_function(&ctx, entries, *payload, pos);
-                                    hint = Some(drop_hint(&result, key_label));
+                                    hint = Some(drop_hint(&result, pos, key_label));
                                 }
                                 if let Some(payload) = resp.dnd_release_payload::<u16>() {
                                     match drop_function(&ctx, entries, *payload, pos) {
-                                        Ok(effect) => new_pairs = Some(effect.pairs),
+                                        Ok(effect) => {
+                                            new_units = Some((effect.pairs, effect.cycles))
+                                        }
                                         Err(refusal) => message = Some(refusal_text(refusal)),
                                     }
                                     selected = None;
@@ -5268,9 +5471,11 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                         None => selected = Some(pos),
                                         Some(s) if s == pos => selected = None,
                                         Some(s) => {
-                                            let from = function_at(&pairs, s);
+                                            let from = function_at_units(&pairs, &cycles, s);
                                             match drop_function(&ctx, entries, from, pos) {
-                                                Ok(effect) => new_pairs = Some(effect.pairs),
+                                                Ok(effect) => {
+                                                    new_units = Some((effect.pairs, effect.cycles));
+                                                }
                                                 Err(refusal) => {
                                                     message = Some(refusal_text(refusal))
                                                 }
@@ -5292,9 +5497,20 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                             ..
                                         }
                                 );
-                            if releasable && ui.small_button("戻す").clicked() {
-                                new_pairs = Some(release_position(&pairs, pos));
-                                selected = None;
+                            if releasable {
+                                // 位置の属する入れ替えを丸ごと解く。3つ以上の循環では、触っていない位置も戻るので、ボタンに書く。
+                                let len = unit_len_at(&pairs, &cycles, pos);
+                                let button = if len >= 3 {
+                                    ui.small_button(format!("解除({len}個)")).on_hover_text(format!(
+                                        "この入れ替え（{len}個のキー）を丸ごと元に戻します。1つの位置だけ戻すには、その位置の機能を自分の位置へドラッグしてください。"
+                                    ))
+                                } else {
+                                    ui.small_button("戻す")
+                                };
+                                if button.clicked() {
+                                    new_units = Some(release_position(&pairs, &cycles, pos));
+                                    selected = None;
+                                }
                             }
                         });
                     }
@@ -5302,19 +5518,28 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
             }
         });
     // 図に描けない（許可リスト外のキーを含む）入れ替えは、一覧で解除する。
-    for pair in unlisted_pairs(&pairs) {
-        let (a, b) = pair.keys();
+    for unit in unlisted_units(&pairs, &cycles) {
+        let label = match &unit {
+            EditUnit::Pair(pair) => {
+                let (a, b) = pair.keys();
+                format!("{} ⇄ {}", key_label(a), key_label(b))
+            }
+            EditUnit::Cycle(cycle) => {
+                let names: Vec<String> = cycle.keys().iter().map(|&k| key_label(k)).collect();
+                format!("{} → {}", names.join(" → "), names[0])
+            }
+        };
         ui.horizontal(|ui| {
-            ui.label(format!("{} ⇄ {}", key_label(a), key_label(b)));
+            ui.label(label);
             if ui.small_button("解除").clicked() {
-                new_pairs = Some(pairs.iter().copied().filter(|p| *p != pair).collect());
+                new_units = Some(release_unit(&pairs, &cycles, &unit));
             }
         });
     }
     if let Some(s) = selected {
         ui.label(format!(
             "「{}」を選んでいます。入れ替え先のキーをクリックしてください（Esc で取り消し）。",
-            key_label(function_at(&pairs, s))
+            key_label(function_at_units(&pairs, &cycles, s))
         ));
     }
     if let Some(h) = &hint {
@@ -5324,8 +5549,8 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
         ui.colored_label(egui::Color32::from_rgb(200, 120, 0), m);
     }
     loaded.selected = selected;
-    if let Some(p) = new_pairs {
-        loaded.editor.set_pairs(&p);
+    if let Some((p, c)) = new_units {
+        loaded.editor.set_units(&p, &c);
         loaded.diagram_message = None;
     } else if message.is_some() {
         loaded.diagram_message = message;
@@ -5795,6 +6020,68 @@ fn physical_key_options() -> impl Iterator<Item = &'static (&'static str, &'stat
     })
 }
 
+/// `[[keymap]]` の `ime` の値（ADR-255）。IME OFF のときだけ当たる「遅いルール」。
+const KEYMAP_IME_OFF: &str = "off";
+
+const IME_CONDITION_HOVER: &str = "いつでも: IME の状態を問わず、親指シフトより先に照合します（従来の動き）。\n\
+     OFF のとき: IME が OFF（親指シフトが働かない状態）のときだけ、無変換/変換の単独押しに当たります。";
+
+const LATE_FROM_REJECT: &str =
+    "「IME が OFF のとき」のルールの from は、修飾キーなしの無変換/変換だけです。";
+
+/// 遅いルールの from に選べるキー（無修飾の無変換/変換だけ。ADR-255 決定1）。
+const LATE_FROM_KEYS: &[(&str, &str)] = &[("無変換", "VK_NONCONVERT"), ("変換", "VK_CONVERT")];
+
+fn late_from_key_options() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    LATE_FROM_KEYS.iter()
+}
+
+/// `from` が遅いルールとして使える（修飾なしの無変換/変換）か。
+fn is_late_from_combo(from: &str) -> bool {
+    let (ctrl, shift, alt, main) = parse_combo_str(from);
+    !ctrl
+        && !shift
+        && !alt
+        && matches!(
+            VkCode::from_name(&main),
+            Some(vk) if vk == awase_windows::vk::VK_NONCONVERT || vk == awase_windows::vk::VK_CONVERT
+        )
+}
+
+/// キャプチャで得た無変換/変換の内部表記（`"無変換"` 等）を、遅いルールの候補の表記（`VK_NONCONVERT`/`VK_CONVERT`）にそろえる。
+fn late_from_canonical(internal: &str) -> String {
+    match VkCode::from_name(internal) {
+        Some(vk) if vk == awase_windows::vk::VK_NONCONVERT => "VK_NONCONVERT".to_owned(),
+        Some(vk) if vk == awase_windows::vk::VK_CONVERT => "VK_CONVERT".to_owned(),
+        _ => internal.to_owned(),
+    }
+}
+
+/// 「IME の状態」のドロップダウン。`ime_off` が変わったら true。
+fn ime_condition_combo(ui: &mut egui::Ui, id: &str, ime_off: &mut bool) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if *ime_off {
+            "OFF のとき"
+        } else {
+            "いつでも"
+        })
+        .width(90.0)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(!*ime_off, "いつでも").clicked() && *ime_off {
+                *ime_off = false;
+                changed = true;
+            }
+            if ui.selectable_label(*ime_off, "OFF のとき").clicked() && !*ime_off {
+                *ime_off = true;
+                changed = true;
+            }
+        })
+        .response
+        .on_hover_text(IME_CONDITION_HOVER);
+    changed
+}
+
 /// `KEYMAP_MAIN_KEYS` から、keymap の from 側で禁止される VK を除いた候補一覧。
 fn keymap_from_key_options(
     left_thumb_vk: VkCode,
@@ -5920,6 +6207,7 @@ fn key_display_name(internal: &str) -> &str {
     KEYMAP_MAIN_KEYS
         .iter()
         .find(|(_, v)| *v == internal)
+        .or_else(|| LATE_FROM_KEYS.iter().find(|(_, v)| *v == internal))
         .map_or(internal, |(d, _)| *d)
 }
 
@@ -6735,6 +7023,7 @@ mod layout_tab_repro {
             new_keymap_from_shift: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
+            new_keymap_ime_off: false,
             capturing: None,
             new_disable_app: String::new(),
             layout_file_path_buf: layout_path.display().to_string(),
@@ -8324,5 +8613,42 @@ mod layout_tab_repro {
         let snapshot = apply_adr192_recommended_replacement(&mut config);
         undo_adr192_recommended_replacement(&mut config, snapshot);
         assert_eq!(toml::to_string(&config).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod late_keymap_ui_tests {
+    use super::{LATE_FROM_KEYS, is_late_from_combo, late_from_canonical};
+
+    #[test]
+    fn late_from_accepts_only_bare_muhenkan_and_henkan() {
+        for ok in ["VK_NONCONVERT", "VK_CONVERT", "無変換", "変換"] {
+            assert!(is_late_from_combo(ok), "{ok}");
+        }
+        for ng in [
+            "Ctrl+VK_NONCONVERT",
+            "Shift+変換",
+            "Alt+無変換",
+            "VK_SPACE",
+            "VK_A",
+            "",
+        ] {
+            assert!(!is_late_from_combo(ng), "{ng:?}");
+        }
+    }
+
+    #[test]
+    fn late_from_canonical_uses_the_option_spelling() {
+        assert_eq!(late_from_canonical("無変換"), "VK_NONCONVERT");
+        assert_eq!(late_from_canonical("変換"), "VK_CONVERT");
+        assert_eq!(late_from_canonical("VK_NONCONVERT"), "VK_NONCONVERT");
+        assert_eq!(late_from_canonical("VK_A"), "VK_A");
+    }
+
+    #[test]
+    fn late_from_options_are_all_valid_late_froms() {
+        for (_, internal) in LATE_FROM_KEYS {
+            assert!(is_late_from_combo(internal), "{internal}");
+        }
     }
 }

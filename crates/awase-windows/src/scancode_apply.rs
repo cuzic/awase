@@ -11,7 +11,7 @@
 //! - **承認フラグ**: 他ツールのエントリを消す（`displaced`）ときは、UI が確認した旨（`allow_displace`）が無ければ書かない。
 //! - **読み戻し検証と巻き戻し**: 書いたあと読み戻して一致しなければ、書く前の生のバイト列（無ければ値の削除）へ戻す。
 
-use crate::scancode_pairs::{compute_swap_write, Entry, Pair};
+use crate::scancode_pairs::{compute_swap_write_with_cycles, Cycle, Entry, Pair};
 
 /// 昇格ワーカーのプロセス終了コード。`0` が成功、それ以外は書き込みを行わなかった、または元へ戻した。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +76,8 @@ impl WorkerExit {
 pub struct ApplyRequest {
     /// 編集後のペア集合の全体（差分ではない）。
     pub pairs: Vec<Pair>,
+    /// 編集後の、3つ以上の循環の集合の全体（ADR-248 決定6）。ペアと合わせて置換になる。
+    pub cycles: Vec<Cycle>,
     /// Caps 追加 Ctrl（ADR-126）を有効にするか。
     pub caps_extra_ctrl: bool,
     /// UI が読んだエントリ列（比較交換の期待値）。
@@ -123,8 +125,10 @@ fn set<T>(slot: &mut Option<T>, name: &'static str, parsed: Option<T>) -> Result
 }
 
 impl ApplyRequest {
-    /// 1つのコマンドライン引数へ直列化する。形式: `pairs=007B-0038,0079-0039;caps=0;expect=003A>001D,001D>003A;displace=0`
-    /// （スキャンコードは常に4桁の16進。空の一覧は空文字列）。
+    /// 1つのコマンドライン引数へ直列化する。形式:
+    /// `pairs=007B-0038,0079-0039;cycles=0039>007B>0079;caps=0;expect=003A>001D,001D>003A;displace=0`
+    /// （スキャンコードは常に4桁の16進。空の一覧は空文字列。`cycles` は `>` でキーを順に並べる。位置→機能の向きのまま）。
+    /// `cycles` は必須（空でも出す）: 省略を許すと、古い形式の要求が既存の循環を確認なしで消す（Opus コードレビュー S2）。
     #[must_use]
     pub fn to_spec(&self) -> String {
         let pairs = self
@@ -142,8 +146,20 @@ impl ApplyRequest {
             .map(|&(from, to)| format!("{}>{}", hex4(from), hex4(to)))
             .collect::<Vec<_>>()
             .join(",");
+        let cycles = self
+            .cycles
+            .iter()
+            .map(|c| {
+                c.keys()
+                    .iter()
+                    .map(|&k| hex4(k))
+                    .collect::<Vec<_>>()
+                    .join(">")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         format!(
-            "pairs={pairs};caps={};expect={expect};displace={}",
+            "pairs={pairs};cycles={cycles};caps={};expect={expect};displace={}",
             u8::from(self.caps_extra_ctrl),
             u8::from(self.allow_displace)
         )
@@ -155,6 +171,7 @@ impl ApplyRequest {
     /// [`SpecError`] を参照。
     pub fn from_spec(spec: &str) -> Result<Self, SpecError> {
         let mut pairs = None;
+        let mut cycles = None;
         let mut caps = None;
         let mut expect = None;
         let mut displace = None;
@@ -162,6 +179,7 @@ impl ApplyRequest {
             let (key, value) = field.split_once('=').ok_or(SpecError::BadValue("field"))?;
             match key {
                 "pairs" => set(&mut pairs, "pairs", parse_pairs(value))?,
+                "cycles" => set(&mut cycles, "cycles", parse_cycles(value))?,
                 "caps" => set(&mut caps, "caps", parse_flag(value))?,
                 "expect" => set(&mut expect, "expect", parse_entries(value))?,
                 "displace" => set(&mut displace, "displace", parse_flag(value))?,
@@ -170,6 +188,8 @@ impl ApplyRequest {
         }
         Ok(Self {
             pairs: pairs.ok_or(SpecError::MissingOrDuplicateKey("pairs"))?,
+            // 必須。省略した古い形式の要求は読まない（書かずに終わる）。
+            cycles: cycles.ok_or(SpecError::MissingOrDuplicateKey("cycles"))?,
             caps_extra_ctrl: caps.ok_or(SpecError::MissingOrDuplicateKey("caps"))?,
             expected: expect.ok_or(SpecError::MissingOrDuplicateKey("expect"))?,
             allow_displace: displace.ok_or(SpecError::MissingOrDuplicateKey("displace"))?,
@@ -189,6 +209,13 @@ fn parse_pairs(value: &str) -> Option<Vec<Pair>> {
     parse_list(value, |item| {
         let (a, b) = item.split_once('-')?;
         Some(Pair::new(parse_hex4(a)?, parse_hex4(b)?))
+    })
+}
+
+fn parse_cycles(value: &str) -> Option<Vec<Cycle>> {
+    parse_list(value, |item| {
+        let keys: Option<Vec<u16>> = item.split('>').map(parse_hex4).collect();
+        Cycle::new(&keys?)
     })
 }
 
@@ -254,7 +281,12 @@ pub fn decide(existing_raw: Option<&[u8]>, request: &ApplyRequest) -> Decision {
     if existing != request.expected {
         return Decision::Stop(WorkerExit::Changed);
     }
-    let Ok(plan) = compute_swap_write(&existing, &request.pairs, request.caps_extra_ctrl) else {
+    let Ok(plan) = compute_swap_write_with_cycles(
+        &existing,
+        &request.pairs,
+        &request.cycles,
+        request.caps_extra_ctrl,
+    ) else {
         return Decision::Stop(WorkerExit::Invalid);
     };
     if !plan.displaced.is_empty() && !request.allow_displace {
@@ -316,6 +348,7 @@ mod tests {
     fn request(pairs: &[Pair], caps: bool, expected: &[Entry], displace: bool) -> ApplyRequest {
         ApplyRequest {
             pairs: pairs.to_vec(),
+            cycles: Vec::new(),
             caps_extra_ctrl: caps,
             expected: expected.to_vec(),
             allow_displace: displace,
@@ -360,15 +393,61 @@ mod tests {
         let spec = req.to_spec();
         assert_eq!(
             spec,
-            "pairs=0038-007B,0039-E038;caps=1;expect=003A>001D,001D>0099;displace=1"
+            "pairs=0038-007B,0039-E038;cycles=;caps=1;expect=003A>001D,001D>0099;displace=1"
         );
         assert_eq!(ApplyRequest::from_spec(&spec), Ok(req));
     }
 
     #[test]
+    fn spec_with_cycles_round_trips_and_a_spec_without_cycles_is_refused() {
+        let mut req = request(&[Pair::new(MUH, LALT)], false, &[], false);
+        req.cycles = vec![Cycle::new(&[0x007B, 0x0079, 0x0039]).unwrap()];
+        let spec = req.to_spec();
+        assert_eq!(
+            spec,
+            "pairs=0038-007B;cycles=0039>007B>0079;caps=0;expect=;displace=0"
+        );
+        assert_eq!(ApplyRequest::from_spec(&spec), Ok(req));
+        // `cycles` が無い古い形式は読まない（読めてしまうと、レジストリの既存の循環を確認なしで消す）。
+        assert_eq!(
+            ApplyRequest::from_spec("pairs=;caps=0;expect=;displace=0"),
+            Err(SpecError::MissingOrDuplicateKey("cycles"))
+        );
+        // 壊れた循環（2つ・重複・0 を含む）と重複した cycles は拒否する。
+        for bad in [
+            "pairs=;cycles=007B>0079;caps=0;expect=;displace=0",
+            "pairs=;cycles=007B>0079>007B;caps=0;expect=;displace=0",
+            "pairs=;cycles=007B>0079>0000;caps=0;expect=;displace=0",
+            "pairs=;cycles=007B>0079>00ZZ;caps=0;expect=;displace=0",
+            "pairs=;cycles=;cycles=;caps=0;expect=;displace=0",
+        ] {
+            assert!(ApplyRequest::from_spec(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn decide_writes_a_cycle_and_rejects_a_bad_one() {
+        let c = Cycle::new(&[MUH, 0x0079, 0x0039]).unwrap();
+        let mut req = request(&[], false, &[], false);
+        req.cycles = vec![c.clone()];
+        let Decision::Write { entries } = decide(None, &req) else {
+            panic!("書くはず");
+        };
+        let mut want = c.entries();
+        want.sort_unstable();
+        let mut got = entries;
+        got.sort_unstable();
+        assert_eq!(got, want);
+        // 許可リスト外のキーを含む新しい循環は、昇格側の再検証で止まる。
+        let mut bad = request(&[], false, &[], false);
+        bad.cycles = vec![Cycle::new(&[MUH, 0x0079, 0x0010]).unwrap()];
+        assert_eq!(decide(None, &bad), Decision::Stop(WorkerExit::Invalid));
+    }
+
+    #[test]
     fn spec_with_empty_lists_round_trips() {
         let req = request(&[], false, &[], false);
-        assert_eq!(req.to_spec(), "pairs=;caps=0;expect=;displace=0");
+        assert_eq!(req.to_spec(), "pairs=;cycles=;caps=0;expect=;displace=0");
         assert_eq!(ApplyRequest::from_spec(&req.to_spec()), Ok(req));
     }
 
@@ -376,15 +455,15 @@ mod tests {
     fn spec_rejects_malformed_input() {
         for bad in [
             "",
-            "pairs=;caps=0;expect=",
-            "pairs=;caps=2;expect=;displace=0",
-            "pairs=007B;caps=0;expect=;displace=0",
-            "pairs=007B-00;caps=0;expect=;displace=0",
-            "pairs=007B-00ZZ;caps=0;expect=;displace=0",
-            "pairs=;caps=0;expect=003A-001D;displace=0",
-            "pairs=;caps=0;expect=;displace=0;extra=1",
-            "pairs=;pairs=;caps=0;expect=;displace=0",
-            "pairs=;caps=0;expect=;displace=0;",
+            "pairs=;cycles=;caps=0;expect=",
+            "pairs=;cycles=;caps=2;expect=;displace=0",
+            "pairs=007B;cycles=;caps=0;expect=;displace=0",
+            "pairs=007B-00;cycles=;caps=0;expect=;displace=0",
+            "pairs=007B-00ZZ;cycles=;caps=0;expect=;displace=0",
+            "pairs=;cycles=;caps=0;expect=003A-001D;displace=0",
+            "pairs=;cycles=;caps=0;expect=;displace=0;extra=1",
+            "pairs=;pairs=;cycles=;caps=0;expect=;displace=0",
+            "pairs=;cycles=;caps=0;expect=;displace=0;",
         ] {
             assert!(
                 ApplyRequest::from_spec(bad).is_err(),
@@ -564,5 +643,60 @@ mod tests {
         assert!(read_back_matches(&[], None));
         assert!(!read_back_matches(&[], Some(&bytes)));
         assert!(!read_back_matches(&written, Some(&[1, 2, 3])));
+    }
+
+    #[test]
+    fn a_cycle_is_written_with_the_documented_byte_order_and_read_back_in_the_same_direction() {
+        // 無変換(0x7B)の位置は変換(0x79)を、変換の位置はスペース(0x39)を、スペースの位置は無変換を出す。
+        // Scancode Map のエントリは `to(2バイト) from(2バイト)` の順（リトルエンディアン）。
+        let c = Cycle::new(&[0x007B, 0x0079, 0x0039]).unwrap();
+        assert_eq!(c.keys(), &[0x0039, 0x007B, 0x0079]);
+        let entries = c.entries();
+        assert_eq!(
+            entries,
+            vec![(0x0039, 0x007B), (0x007B, 0x0079), (0x0079, 0x0039)]
+        );
+        let bytes = build_bytes(&entries).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0, 0, 0, 0, 0, 0, 0, 0, // ヘッダ
+                4, 0, 0, 0, // エントリ数+1
+                0x7B, 0x00, 0x39,
+                0x00, // スペース(0x39)の位置が 無変換(0x7B) を出す
+                0x79, 0x00, 0x7B, 0x00, // 無変換の位置が 変換(0x79) を出す
+                0x39, 0x00, 0x79, 0x00, // 変換の位置が スペースを出す
+                0, 0, 0, 0, // 終端
+            ]
+        );
+        // 読み戻すと、同じ向きの循環になる（逆向きではない）。
+        let back = parse_entries_strict(&bytes).unwrap();
+        let read = crate::scancode_pairs::detect_swap_pairs(&back);
+        assert_eq!(read.cycles, vec![c]);
+        assert!(read.pairs.is_empty() && read.unclaimed.is_empty());
+    }
+
+    #[test]
+    fn decide_does_not_write_when_the_request_returns_the_existing_cycle_unchanged() {
+        let c = Cycle::new(&[MUH, 0x0079, 0x0039]).unwrap();
+        let existing = c.entries();
+        let mut req = request(&[], false, &existing, false);
+        req.cycles = vec![c];
+        let raw_existing = raw(&existing);
+        assert_eq!(
+            decide(raw_existing.as_deref(), &req),
+            Decision::Stop(WorkerExit::Ok)
+        );
+    }
+
+    #[test]
+    fn decide_refuses_caps_extra_that_would_close_a_foreign_chain() {
+        let existing = [(LCTRL, MUH), (MUH, CAPS)];
+        let req = request(&[], true, &existing, true);
+        let raw_existing = raw(&existing);
+        assert_eq!(
+            decide(raw_existing.as_deref(), &req),
+            Decision::Stop(WorkerExit::Invalid)
+        );
     }
 }
