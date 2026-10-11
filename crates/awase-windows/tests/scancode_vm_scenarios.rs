@@ -55,7 +55,8 @@ fn entries_of(scenario: &Value) -> Vec<(u16, u16)> {
                     .expect("cycles")
                     .iter()
                     .map(|c| {
-                        let keys: Vec<u16> = c.as_array().expect("循環").iter().map(u16_of).collect();
+                        let keys: Vec<u16> =
+                            c.as_array().expect("循環").iter().map(u16_of).collect();
                         Cycle::new(&keys).unwrap_or_else(|| panic!("{name}: 循環が作れない"))
                     })
                     .collect(),
@@ -76,14 +77,18 @@ fn entries_of(scenario: &Value) -> Vec<(u16, u16)> {
 #[test]
 fn scenario_maps_match_the_production_path() {
     let dir = tools_dir();
-    let scenarios: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("scenarios.json")).expect("scenarios.json"))
-            .expect("JSON");
+    let scenarios: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("scenarios.json")).expect("scenarios.json"),
+    )
+    .expect("JSON");
     let mut generated: BTreeMap<String, String> = BTreeMap::new();
     for s in scenarios["scenarios"].as_array().expect("scenarios") {
         let name = s["name"].as_str().expect("name").to_string();
         let bytes = build_bytes(&entries_of(s)).unwrap_or_else(|| panic!("{name}: 空のエントリ列"));
-        assert!(generated.insert(name.clone(), hex(&bytes)).is_none(), "{name}: シナリオ名が重複");
+        assert!(
+            generated.insert(name.clone(), hex(&bytes)).is_none(),
+            "{name}: シナリオ名が重複"
+        );
     }
     let golden_path = dir.join("scenario-maps.json");
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
@@ -120,10 +125,17 @@ fn scenario_keys_refer_to_control_keys() {
         let expect = s["expect"].as_array().expect("expect");
         for key in press.iter().chain(expect.iter()) {
             let key = key.as_str().expect("キー名");
-            assert!(names.contains(&key), "{scenario}: control_keys に無いキー {key}");
+            assert!(
+                names.contains(&key),
+                "{scenario}: control_keys に無いキー {key}"
+            );
         }
         if s["kind"] == "verify" {
-            assert_eq!(press.len(), expect.len(), "{scenario}: 押すキーと期待の数が違う");
+            assert_eq!(
+                press.len(),
+                expect.len(),
+                "{scenario}: 押すキーと期待の数が違う"
+            );
         }
     }
 }
