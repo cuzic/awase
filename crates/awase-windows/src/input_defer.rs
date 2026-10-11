@@ -142,6 +142,7 @@ mod tests {
             right_thumb_down_snapshot: None,
             injected: false,
             foreign_ctrl: false,
+            impersonated: false,
         }
     }
 

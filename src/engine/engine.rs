@@ -293,6 +293,21 @@ impl Engine {
         )
     }
 
+    /// このキーに、エンジンが知る IME の機能（遅いルールが奪ってはならないもの）があるか
+    /// （ADR-255 決定2 条件6-i の4源）: bare の `keys.ime_*`・明示の IME 制御コンボ・専用 Fn キー・
+    /// 強制 open 軸操作・IME 設定由来の役割（`thumb_role_open_actions`、単独タップ設定が Passthrough かどうかは
+    /// 問わない）・IME 側が定める開閉の方向（`ime_relevance.sync_direction`）。
+    /// `thumb_open_role_action` は流用しない（役割があっても単独タップ設定が Passthrough でないとき `None` を返す
+    /// ので、「役割なし」と読むと IME を開く手段を奪う）。判断はここに閉じ、殻は再実装しない。
+    #[must_use]
+    pub fn key_has_ime_function(&self, event: &RawKeyEvent) -> bool {
+        let vk = event.vk_code;
+        self.special_keys.bare_ime_action(vk).is_some()
+            || self.has_bare_ime_combo(vk)
+            || self.adapter.thumb_has_ime_function(vk)
+            || event.ime_relevance.sync_direction.is_some()
+    }
+
     /// シェルが（エンジンの判断の後で）消費した KeyDown を、エンジンの `KeyLifecycle` に登録する
     /// （ADR-255 決定4）。エンジンは素通しの KeyDown を記録しないので、シェルが消費したときは
     /// この口で「対応する KeyUp を消費する義務」と、最初の押下なら `phase1_held` を立てる。

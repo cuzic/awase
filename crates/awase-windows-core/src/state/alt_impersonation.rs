@@ -115,6 +115,41 @@ mod tests {
 
     const LEFT_THUMB: awase::types::VkCode = VK_NONCONVERT;
 
+    /// ADR-255: `hook.rs` は `RawKeyEvent.impersonated = (書き換え後の vk != 元の vk)` と置く。
+    /// これが `decide_alt_impersonation` の「なりすまし中か」と、Down・Up・リピートのすべての組で一致すること
+    /// (Up では次の保持状態は false だが、vk の書き換え自体は行われるので `impersonated` は true)を固定する。
+    #[test]
+    fn rewritten_vk_differs_exactly_when_impersonating() {
+        for is_keydown in [true, false] {
+            for was_down in [true, false] {
+                for was_impersonating in [true, false] {
+                    for engine_enabled in [true, false] {
+                        let (vk, _) = decide_alt_impersonation(
+                            VK_LMENU,
+                            LEFT_THUMB,
+                            is_keydown,
+                            was_down,
+                            was_impersonating,
+                            engine_enabled,
+                        );
+                        let fresh = is_keydown && !was_down;
+                        let impersonating = if fresh {
+                            engine_enabled
+                        } else {
+                            was_impersonating
+                        };
+                        assert_eq!(
+                            vk != VK_LMENU,
+                            impersonating,
+                            "down={is_keydown} was_down={was_down} was_imp={was_impersonating} \
+                             enabled={engine_enabled}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ── classify_alt_side / resolve_thumb_key（旧 hook.rs から無変更で移設） ──
 
     /// vk が既に区別済みの VK_LMENU/VK_RMENU で届く環境では、extended フラグに

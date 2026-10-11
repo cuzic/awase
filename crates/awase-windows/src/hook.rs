@@ -1283,6 +1283,7 @@ fn build_raw_key_event(
     press_id: Option<awase::types::PressId>,
     timestamp: Timestamp,
     foreign_ctrl: bool,
+    impersonated: bool,
 ) -> RawKeyEvent {
     use crate::vk::VkCodeExt;
     RawKeyEvent {
@@ -1306,6 +1307,7 @@ fn build_raw_key_event(
         was_down,
         press_id,
         foreign_ctrl,
+        impersonated,
     }
 }
 
@@ -1760,6 +1762,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         );
     }
     let rewritten_vk = apply_alt_impersonation(vk, is_keydown, alt_extended, config);
+    // ADR-255: Alt をなりすましで親指キーの vk に書き換えたイベントの印。遅いルール（`ime = "off"`）が、
+    // GJI 側で IME が閉じた直後の Alt（`cached_engine_enabled` が古く、なりすましの判断が外れる）を
+    // Space にしないために使う。scan code での判定は右 Alt→変換の取りこぼしやリマッパで外れる。
+    let impersonated = rewritten_vk != vk;
     if rewritten_vk != vk {
         tracing::debug!(
             "[alt-impersonation] impersonating: vk 0x{:02X} -> 0x{:02X}",
@@ -1890,6 +1896,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         assign_press_id(is_keydown, is_injected, was_down),
         callback_ts,
         foreign_ctrl,
+        impersonated,
     );
 
     // opus round2 M2': 入口（`hook_callback`冒頭）のガードは、これから

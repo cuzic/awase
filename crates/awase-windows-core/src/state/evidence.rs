@@ -535,6 +535,7 @@ mod tests {
             right_thumb_down_snapshot: None,
             injected,
             foreign_ctrl: false,
+            impersonated: false,
         }
     }
 

@@ -5024,6 +5024,72 @@ fn deliver_key_event_keymap_latch_check_precedes_nested_and_nontext_early_return
     );
 }
 
+/// ADR-255 決定2: `[[keymap]]` の遅いルールは、エンジンの判断（`on_input`）の直後・journal の記録
+/// （`record_key_input`）より前で照合し、消費への格上げは `force_consume`、送信は effects への
+/// `push_effect`（その場で SendInput しない）、消費した Down のエンジンへの登録は `record_shell_consumed`
+/// でする(送信は `ReinjectKey` の Down→Up の対。`SendKeys` は使わない)。`keymap_latch` には積まない（古い latch の寿命の問題を作らない）。`find_late_match` の呼び出しは
+/// この段の 1 箇所だけ（早い経路へ漏らさない）。ソース走査で順序と禁止呼び出しを固定する。
+#[test]
+fn late_keymap_stage_is_wired_after_engine_decision_and_before_journal() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    let production = production_code_only(&content);
+    let run_inner = extract_fn_body(production, "fn kp_run_inner(");
+    let on_input_idx = run_inner
+        .find("self.engine.on_input(event, &ctx)")
+        .expect("kp_run_inner must call engine.on_input");
+    let stage_idx = run_inner
+        .find("self.kp_stage_late_keymap(&event, &ctx, &mut decision)")
+        .expect("kp_run_inner must call kp_stage_late_keymap");
+    let journal_idx = run_inner
+        .find("record_key_input(")
+        .expect("kp_run_inner must record the key input journal");
+    let post_idx = run_inner
+        .find("self.kp_stage_post_decision(")
+        .expect("kp_run_inner must call kp_stage_post_decision");
+    assert!(
+        on_input_idx < stage_idx && stage_idx < journal_idx && stage_idx < post_idx,
+        "遅いルールの段は engine.on_input の直後、journal の記録と kp_stage_post_decision より前 \
+         （ADR-255 決定2。格上げが遅れると『モードキーの通過』の追跡や refresh が走る）"
+    );
+    let stage = extract_fn_body(production, "fn kp_stage_late_keymap(");
+    for needed in [
+        "plan_late_keymap(",
+        "force_consume()",
+        "push_effect(",
+        "InputEffect::ReinjectKey(",
+        "late_keymap_reinject_events(",
+        "record_shell_consumed(",
+    ] {
+        assert!(
+            stage.contains(needed),
+            "kp_stage_late_keymap は {needed} を呼ぶ（ADR-255 決定2・4）"
+        );
+    }
+    for forbidden in [
+        "keymap_latch",
+        "send_keymap_target",
+        "SendInput",
+        "cancel_composition",
+    ] {
+        assert!(
+            !stage.contains(forbidden),
+            "kp_stage_late_keymap は {forbidden} を使わない（ADR-255 決定2・4: effects に積み、latch に積まず、\
+             composition を破棄しない）"
+        );
+    }
+    let mut callers = 0;
+    for f in list_src_files() {
+        let c = read_crate_file(&f);
+        callers += production_code_only(&c)
+            .matches(".find_late_match(")
+            .count();
+    }
+    assert_eq!(
+        callers, 1,
+        "find_late_match の呼び出しは遅いルールの段の 1 箇所だけ（実際: {callers}）"
+    );
+}
+
 // ── PR #127: プラットフォームエントリポイントの配線漏れ ──────────────
 
 /// `NicolaFsm::new` はコンストラクタ引数を持つが、`timing_margin_percent`/

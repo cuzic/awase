@@ -217,6 +217,7 @@ impl EvBuilder {
             right_thumb_down_snapshot: None,
             injected: self.injected,
             foreign_ctrl: false,
+            impersonated: false,
         }
     }
 }
@@ -923,6 +924,7 @@ fn test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass() 
             right_thumb_down_snapshot: None,
             injected: false,
             foreign_ctrl: false,
+            impersonated: false,
         };
 
         let result = engine.on_event(down);
@@ -973,6 +975,7 @@ fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
         right_thumb_down_snapshot: None,
         injected: false,
         foreign_ctrl: false,
+        impersonated: false,
     };
 
     let result = engine.on_event(down);
@@ -1213,6 +1216,7 @@ fn enter_thumb_down_event(ts: Timestamp) -> RawKeyEvent {
         right_thumb_down_snapshot: None,
         injected: false,
         foreign_ctrl: false,
+        impersonated: false,
     }
 }
 
@@ -3098,6 +3102,7 @@ fn test_nicola_state_stores_scan_code() {
         right_thumb_down_snapshot: None,
         injected: false,
         foreign_ctrl: false,
+        impersonated: false,
     };
 
     let result = engine.on_event(event);
@@ -3136,6 +3141,7 @@ fn test_pending_char_thumb_stores_char_scan() {
         right_thumb_down_snapshot: None,
         injected: false,
         foreign_ctrl: false,
+        impersonated: false,
     };
     engine.on_event(char_event);
 
@@ -3156,6 +3162,7 @@ fn test_pending_char_thumb_stores_char_scan() {
         right_thumb_down_snapshot: None,
         injected: false,
         foreign_ctrl: false,
+        impersonated: false,
     };
     let result = engine.on_event(thumb_event);
     assert_pending(&result);
@@ -7288,6 +7295,40 @@ mod engine_integration_tests {
             before,
             "flush で印が消え、リピートが FSM に渡る"
         );
+    }
+
+    /// ADR-255 決定2 条件6-i: エンジンが知る IME の機能が無いキーだけが偽。4源のどれでも真。
+    #[test]
+    fn key_has_ime_function_covers_every_source() {
+        let down = |vk| Ev::down(vk).at(100).build();
+        // 何も設定が無い無変換/変換・文字キーは偽。
+        let plain = make_test_engine();
+        assert!(!plain.key_has_ime_function(&down(VK_NONCONVERT)));
+        assert!(!plain.key_has_ime_function(&down(VK_CONVERT)));
+        assert!(!plain.key_has_ime_function(&down(VK_A)));
+        // IME 設定由来の役割(単独タップ設定が Passthrough でなくても数える)。押した側だけ。
+        let role = engine_with_role_toggle_on_muhenkan();
+        assert!(role.key_has_ime_function(&down(VK_NONCONVERT)));
+        assert!(!role.key_has_ime_function(&down(VK_CONVERT)));
+        assert!(!role.key_has_ime_function(&down(VK_A)));
+        // IME 側が定める開閉の方向(sync_direction)。
+        let synced = Ev::down(VK_NONCONVERT)
+            .at(100)
+            .sync_direction(ShadowImeAction::TurnOn)
+            .build();
+        assert!(plain.key_has_ime_function(&synced));
+        // 専用 Fn キー(無変換側だけ)。
+        // (無変換/変換が親指キーとして設定されている構成。設定されていない vk は常に偽。)
+        let mut fn_key = make_test_engine();
+        fn_key.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(true, false),
+            Some(VK_CONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fn_key.set_muhenkan_solo_tap_dedicated_fn_key(Some(VkCode(0x7C)));
+        assert!(fn_key.key_has_ime_function(&down(VK_NONCONVERT)));
+        assert!(!fn_key.key_has_ime_function(&down(VK_CONVERT)));
     }
 
     /// ADR-255 決定2 条件1: 非活性の理由が IME OFF のときだけ真。
