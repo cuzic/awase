@@ -4,6 +4,7 @@
 // LLKHF_INJECTED は立たず、dwExtraInfo も 0)。テスト署名の CI ランナー以外では読み込まれない・読み込んではならない。
 #include <ntddk.h>
 #include <kbdmou.h>
+#include <ntddkbd.h>
 
 #define AWASE_IOCTL_INJECT CTL_CODE(FILE_DEVICE_KEYBOARD, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
@@ -17,6 +18,7 @@ typedef struct _KEY_CMD {
 } KEY_CMD;
 
 static CONNECT_DATA g_conn;
+static ULONG g_jis;   // Parameters\JisType=1 のとき、キーボードの種類を 106/109 JIS(type 7, subtype 2)と申告し直す。既定は 0(何もしない)。
 static PDEVICE_OBJECT g_ctl;
 
 static NTSTATUS Pass(PDEVICE_OBJECT dev, PIRP irp)
@@ -33,6 +35,26 @@ static NTSTATUS CtlCreateClose(PDEVICE_OBJECT dev, PIRP irp)
     irp->IoStatus.Information = 0;
     IoCompleteRequest(irp, IO_NO_INCREMENT);
     return STATUS_SUCCESS;
+}
+
+
+static NTSTATUS QueryAttrDone(PDEVICE_OBJECT dev, PIRP irp, PVOID ctx)
+{
+    UNREFERENCED_PARAMETER(dev);
+    UNREFERENCED_PARAMETER(ctx);
+    if (irp->PendingReturned) IoMarkIrpPending(irp);
+    if (NT_SUCCESS(irp->IoStatus.Status) && irp->IoStatus.Information >= sizeof(KEYBOARD_ATTRIBUTES)) {
+        PKEYBOARD_ATTRIBUTES a = (PKEYBOARD_ATTRIBUTES)irp->AssociatedIrp.SystemBuffer;
+        if (a != NULL) {
+            a->KeyboardIdentifier.Type = 7;
+            a->KeyboardIdentifier.Subtype = 2;
+            a->KeyboardMode = 1;
+            a->NumberOfFunctionKeys = 12;
+            a->NumberOfIndicators = 3;
+            a->NumberOfKeysTotal = 106;
+        }
+    }
+    return STATUS_CONTINUE_COMPLETION;
 }
 
 static NTSTATUS Dispatch(PDEVICE_OBJECT dev, PIRP irp)
@@ -75,6 +97,16 @@ static NTSTATUS Dispatch(PDEVICE_OBJECT dev, PIRP irp)
         irp->IoStatus.Information = 0;
         IoCompleteRequest(irp, IO_NO_INCREMENT);
         return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    if (g_jis) {
+        PIO_STACK_LOCATION sp2 = IoGetCurrentIrpStackLocation(irp);
+        if (sp2->MajorFunction == IRP_MJ_DEVICE_CONTROL &&
+            sp2->Parameters.DeviceIoControl.IoControlCode == IOCTL_KEYBOARD_QUERY_ATTRIBUTES) {
+            PEXT ext = (PEXT)dev->DeviceExtension;
+            IoCopyCurrentIrpStackLocationToNext(irp);
+            IoSetCompletionRoutine(irp, QueryAttrDone, NULL, TRUE, TRUE, TRUE);
+            return IoCallDriver(ext->Lower, irp);
+        }
     }
     return Pass(dev, irp);
 }
@@ -142,7 +174,30 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
     UNICODE_STRING link = RTL_CONSTANT_STRING(L"\\DosDevices\\AwaseKbInject");
     NTSTATUS st;
     ULONG i;
-    UNREFERENCED_PARAMETER(reg);
+    {
+        // HKLM\\SYSTEM\\CurrentControlSet\\Services\\awasekbf\\Parameters の JisType(DWORD)。
+        RTL_QUERY_REGISTRY_TABLE q[2];
+        ULONG jis = 0, def = 0;
+        RtlZeroMemory(q, sizeof(q));
+        q[0].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_SUBKEY;
+        q[0].Name = L"Parameters";
+        q[0].EntryContext = NULL;
+        q[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
+        q[1].Flags = RTL_QUERY_REGISTRY_DIRECT;
+        q[1].Name = L"JisType";
+        q[1].EntryContext = &jis;
+        q[1].DefaultType = REG_DWORD;
+        q[1].DefaultData = &def;
+        q[1].DefaultLength = sizeof(ULONG);
+        {
+            RTL_QUERY_REGISTRY_TABLE t[3];
+            RtlZeroMemory(t, sizeof(t));
+            t[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
+            t[0].Name = L"Parameters";
+            t[1] = q[1];
+            if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, reg->Buffer, t, NULL, NULL))) g_jis = jis;
+        }
+    }
     for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++) drv->MajorFunction[i] = Dispatch;
     drv->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = InternalIoctl;
     drv->MajorFunction[IRP_MJ_PNP] = PnpDispatch;

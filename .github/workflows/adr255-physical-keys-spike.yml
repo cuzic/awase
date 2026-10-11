@@ -12,8 +12,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lang: [en-US, ja-JP]
-        klid: ['00000411', '00000409']
+        lang: [en-US]
+        klid: ['00000411']
+        jis: ['', '-JisType']
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -37,7 +38,7 @@ jobs:
 
       - name: キーボードフィルタドライバを入れる
         shell: pwsh
-        run: ./tools/kbd-inject-driver/install-driver.ps1
+        run: ./tools/kbd-inject-driver/install-driver.ps1 ${{ matrix.jis }}
 
       - name: 日本語キーの Down/Up の vk を測る
         shell: pwsh
