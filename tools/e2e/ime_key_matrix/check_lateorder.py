@@ -40,6 +40,7 @@ def analyze(recs: list, done: bool) -> dict:
         "verdict": "INVALID" if reasons else ("PASS" if ok else "FAIL"),
         "invalid_reasons": reasons, "key": cfg.get("key"), "interval": cfg.get("interval_ms"),
         "burst": stat["burst"], "hold": stat["hold"], "mismatches": bad[:10],
+        "driver_sends": next((r.get("driver_sends") for r in recs if r.get("type") == "done"), None),
     }
 
 
@@ -62,7 +63,7 @@ def main(argv=None) -> int:
     for why in res["invalid_reasons"]:
         print("INVALID:", why)
     print(f"LATEORDER: verdict={res['verdict']} key={res['key']} interval={res['interval']} "
-          f"burst={res['burst'][0]}/{res['burst'][1]} hold={res['hold'][0]}/{res['hold'][1]}")
+          f"burst={res['burst'][0]}/{res['burst'][1]} hold={res['hold'][0]}/{res['hold'][1]} driver_sends={res['driver_sends']}")
     if a.json_path:
         with open(a.json_path, "w", encoding="utf-8") as f:
             json.dump(res, f, ensure_ascii=False, indent=1)

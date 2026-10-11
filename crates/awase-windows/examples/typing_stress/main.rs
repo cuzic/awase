@@ -756,6 +756,8 @@ mod driver_inject {
     }
 
     const IOCTL_INJECT: u32 = 0x000B_2000;
+    /// ドライバへ送った回数(`done` の記録で、ドライバ経路が実際に使われたことを示す)。
+    pub static SENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn handle() -> Option<isize> {
         static H: OnceLock<Option<isize>> = OnceLock::new();
@@ -773,6 +775,7 @@ mod driver_inject {
                 );
                 None
             } else {
+                crate::log("[TS] --inject-driver: ドライバ(awasekbf)経由でキーを送る(スキャンコードの無いキーだけ SendInput)");
                 Some(h)
             }
         })
@@ -795,6 +798,7 @@ mod driver_inject {
         let cmd: [u16; 2] = [make, flags];
         let mut ret = 0u32;
         // SAFETY: 4 バイトの入力バッファ。出力なし。
+        SENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let ok = unsafe {
             DeviceIoControl(
                 h,
@@ -1882,7 +1886,7 @@ fn worker(form: Form) {
 }
 
 fn finish() {
-    rec(&json!({"type":"done"}));
+    rec(&json!({"type":"done","driver_sends":driver_inject::SENT.load(Ordering::Relaxed)}));
     log("=== 完了 ===");
     target().shutdown();
     if !target().owns_himc() {
