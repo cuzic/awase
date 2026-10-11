@@ -183,6 +183,44 @@ mod tests {
         assert!(!l.ctrl_for_injected_key(200, TTL));
     }
 
+    /// 左スロットの記録は generic `VK_CONTROL` の Up でも落ちる（OS の 0x11 は左右どちらの Up でも落ちうる）。
+    /// generic の Up は右スロットを落とさない。
+    #[test]
+    fn generic_ctrl_up_releases_left_record_but_not_right() {
+        let l = ForeignCtrlLatch::new();
+        l.on_injected_down(L, 100, TTL);
+        l.on_up(GENERIC);
+        assert!(
+            !l.ctrl_for_injected_key(200, TTL),
+            "左の記録は generic Up で落ちる"
+        );
+        l.on_injected_down(R, 300, TTL);
+        l.on_up(GENERIC);
+        assert!(
+            l.ctrl_for_injected_key(400, TTL),
+            "右の記録は generic Up では落ちない"
+        );
+    }
+
+    /// 左右のスロットの期限は独立: 期限切れの左の記録の上書きは右の記録を変えず、期限内の右の記録は
+    /// 左の新しい記録で延びない。
+    #[test]
+    fn slots_expire_and_are_replaced_independently() {
+        let l = ForeignCtrlLatch::new();
+        l.on_injected_down(R, 100, TTL);
+        l.on_injected_down(L, 100 + TTL / 2, TTL);
+        // 右の期限ちょうど: 右は失効、左はまだ有効。
+        assert!(l.ctrl_for_injected_key(100 + TTL, TTL));
+        l.on_up(L);
+        assert!(
+            !l.ctrl_for_injected_key(100 + TTL, TTL),
+            "左を解除すると、期限ちょうどの右だけでは足さない"
+        );
+        // 期限切れの右は次の注入 Down で上書きされる（左の解除とは無関係）。
+        l.on_injected_down(R, 100 + 2 * TTL, TTL);
+        assert!(l.ctrl_for_injected_key(100 + 2 * TTL + 1, TTL));
+    }
+
     #[test]
     fn non_ctrl_keys_do_not_touch_latch() {
         let l = ForeignCtrlLatch::new();

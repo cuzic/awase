@@ -661,6 +661,34 @@ fn test_muhenkan_always_suppress_false_preserves_legacy_passthrough() {
     );
 }
 
+/// ADR-188 案2（#601）の前提: 親指（無変換）を保留したまま素通しのキーを押すと、FSM は保留中の親指を単独タップとして
+/// 確定してから素通しする。送り直す（打鍵を通す決定に親指の生 VK を載せる）のは単独タップ設定が Passthrough の
+/// ときだけで、Suppress（`muhenkan_solo_tap_always_suppress=true`）では生 VK を載せない＝送り直しが無い
+/// （`fsm_resent_mode_keys` が空になり、打鍵時点の予測に親指の効果を重ねない）。
+#[test]
+fn test_pending_thumb_resend_before_passthrough_key_only_when_solo_tap_is_passthrough() {
+    for (always_suppress, expect_resend) in [(false, true), (true, false)] {
+        let mut engine =
+            make_engine_with_thumb_key_solo_tap_config_ex(false, always_suppress, false, false);
+        let r = engine.on_event(Ev::down(VK_NONCONVERT).at(0).build());
+        assert_pending(&r);
+        let r = engine.on_event(Ev::down(VK_RETURN).at(30_000).build());
+        assert!(
+            !r.consumed,
+            "素通しのキーは通す（always_suppress={always_suppress}）"
+        );
+        let resent = r
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT));
+        assert_eq!(
+            resent, expect_resend,
+            "always_suppress={always_suppress}: 保留中の無変換の送り直し {:?}",
+            r.actions
+        );
+    }
+}
+
 /// ADR-091 §D3.2: `set_muhenkan_solo_tap_dedicated_fn_key(Some(vk))` が設定されている場合、
 /// `muhenkan_solo_tap_always_suppress=true`（既定値）による抑制より優先され、
 /// composing=false でも素の VK_NONCONVERT ではなく専用 Fn キーが送出される。
