@@ -7,9 +7,10 @@
 use crate::scancode_apply::WorkerExit;
 use crate::scancode_map::{SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL};
 use crate::scancode_pairs::{
-    compute_swap_write, Detected, Entry, Pair, SwapError, WritePlan, ALLOWED_SCANCODES,
-    SCANCODE_HANKAKU_ZENKAKU, SCANCODE_HENKAN, SCANCODE_KANA, SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN,
-    SCANCODE_RIGHT_ALT, SCANCODE_SPACE,
+    compute_swap_write_with_cycles, moved_keys, permutation_entries, touched_keys, Cycle, Detected,
+    Entry, Pair, SwapError, WritePlan, ALLOWED_SCANCODES, SCANCODE_HANKAKU_ZENKAKU,
+    SCANCODE_HENKAN, SCANCODE_KANA, SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN, SCANCODE_RIGHT_ALT,
+    SCANCODE_SPACE,
 };
 
 /// スキャンコードの表示名。許可リスト外（他ツールのエントリなど）は「不明なキー(0x003B)」の形（ADR-248 決定8）。
@@ -62,6 +63,8 @@ pub enum Unavailable {
     CapsKeysInUse,
     /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）が入っていて、英数 / Caps か左 Ctrl を含む設定は二重になる。
     CapsFilterDriver,
+    /// 他のツールが from か to にしているキーを含む（awase の入れ替えには使えない。図でもロックされる位置）。
+    OtherToolSetting,
     /// 親指キー（無変換/変換）が、IME の ON/OFF キー（`keys.ime_on`/`ime_off`/`ime_toggle` に修飾キーなしで書いたキー）も兼ねている。
     ThumbImeRole,
 }
@@ -81,6 +84,9 @@ impl Unavailable {
             }
             Self::CapsFilterDriver => {
                 "Caps を Ctrl にするドライバ（Ctrl2cap など）が入っているため、「英数 / Caps」と「左 Ctrl」の設定は二重になります。ドライバをアンインストールして再起動すると設定できます。"
+            }
+            Self::OtherToolSetting => {
+                "他のツールがこのキーを設定しています。変えるときはそのツールで変更してください（図でも動かせません）。"
             }
             Self::ThumbImeRole => {
                 "親指キーが IME の ON/OFF キーも兼ねているため、入れ替えると IME の切り替えが働かなくなります。「キー設定」の IME ON/OFF（keys.ime_on/ime_off/ime_toggle）から外すと設定できます。"
@@ -103,7 +109,7 @@ pub enum RegistryState {
 /// [`Detected`] からレジストリの中身の種類を決める。
 #[must_use]
 pub fn registry_state(detected: &Detected) -> RegistryState {
-    if !detected.pairs.is_empty() || detected.caps_extra_ctrl {
+    if !detected.pairs.is_empty() || !detected.cycles.is_empty() || detected.caps_extra_ctrl {
         RegistryState::HasOwn
     } else if !detected.unclaimed.is_empty() {
         RegistryState::ForeignOnly
@@ -234,13 +240,33 @@ impl Row {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorState {
     initial_pairs: Vec<Pair>,
+    /// 読み込み時の、3つ以上の循環（ADR-248 決定6）。
+    initial_cycles: Vec<Cycle>,
     initial_caps: bool,
     rows: Vec<Row>,
+    /// いまの編集内容の、3つ以上の循環。
+    cycles: Vec<Cycle>,
     caps_extra: bool,
     /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）が入っている（`Scancode Map` とは別の仕組み）。
     caps_filter: bool,
     /// IME の ON/OFF キーも兼ねている親指キーのスキャンコード（入れ替えさせない）。
     ime_role_thumbs: Vec<u16>,
+    /// 読み込み時に、他のツールのエントリが from か to にしているキー（awase の入れ替えに使えない）。
+    foreign_keys: Vec<u16>,
+}
+
+/// 「Caps を Ctrl としても使う」をオンにすると、他ツールの設定と組み合わさって別の入れ替えに読み替わってしまうときの理由。
+const CAPS_WOULD_RECLASSIFY_TEXT: &str = "他のツールの設定（「左 Ctrl → …」など）と組み合わさって、英数 / Caps と左 Ctrl が入れ替えに変わってしまうため、「Caps を Ctrl としても使う」はオンにできません。そのツールで外してください（awase からは外せません）。";
+
+/// 他のツールのエントリが from か to にしているキー（0 は「無効化」の to なので除く）。
+fn foreign_keys(detected: &Detected) -> Vec<u16> {
+    let mut keys = Vec::new();
+    for &((from, to), _) in &detected.unclaimed {
+        keys.push(from);
+        keys.push(to);
+    }
+    keys.retain(|&k| k != 0);
+    keys
 }
 
 impl EditorState {
@@ -260,11 +286,14 @@ impl EditorState {
             .collect();
         Self {
             initial_pairs: pairs,
+            initial_cycles: detected.cycles.clone(),
             initial_caps: detected.caps_extra_ctrl,
             rows,
+            cycles: detected.cycles.clone(),
             caps_extra: detected.caps_extra_ctrl,
             caps_filter: false,
             ime_role_thumbs: Vec::new(),
+            foreign_keys: foreign_keys(detected),
         }
     }
 
@@ -279,14 +308,11 @@ impl EditorState {
         &self.ime_role_thumbs
     }
 
-    /// IME の ON/OFF キーも兼ねている親指キーを含む、新しい入れ替えを足している（適用させない）。読み込み時からあるものは止めない。
+    /// IME の ON/OFF キーも兼ねている親指キーの位置か機能を、読み込み時から変えている（適用させない）。読み込み時からあるものは止めない。
     #[must_use]
     pub fn ime_role_conflict(&self) -> bool {
-        self.pairs().iter().any(|p| {
-            let (a, b) = p.keys();
-            !self.initial_pairs.contains(p)
-                && (self.ime_role_thumbs.contains(&a) || self.ime_role_thumbs.contains(&b))
-        })
+        let touched = self.touched_since_load();
+        self.ime_role_thumbs.iter().any(|k| touched.contains(k))
     }
 
     /// Caps を Ctrl にするキーボードフィルタドライバが入っているかを設定する（読み込み時に1回）。
@@ -300,19 +326,47 @@ impl EditorState {
         self.caps_filter
     }
 
-    /// 読み込み時になかった「英数 / Caps」「左 Ctrl」を含む設定（入れ替えのペア・Caps を Ctrl としても使う）を、いま足しているか。
+    /// 読み込み時から、いまの編集で出る機能が変わる位置の一覧 `(位置, 読み込み時の機能, いまの機能)`（位置の昇順）。
+    /// 適用ボタンの直上に常時出す差分表示の材料（ADR-248 決定6「変わる位置の一覧」）。
+    #[must_use]
+    pub fn changes(&self) -> Vec<(u16, u16, u16)> {
+        let before = permutation_entries(&self.initial_pairs, &self.initial_cycles);
+        let after = permutation_entries(&self.pairs(), &self.cycles);
+        let image = |sig: &[Entry], k: u16| sig.iter().find(|e| e.0 == k).map_or(k, |e| e.1);
+        let mut positions: Vec<u16> = before.iter().chain(&after).map(|e| e.0).collect();
+        positions.sort_unstable();
+        positions.dedup();
+        positions
+            .into_iter()
+            .filter_map(|p| {
+                let (b, a) = (image(&before, p), image(&after, p));
+                (b != a).then_some((p, b, a))
+            })
+            .collect()
+    }
+
+    /// 「Caps を Ctrl としても使う」のチェックが、読み込み時から変わっているか。
+    #[must_use]
+    pub const fn caps_extra_changed(&self) -> bool {
+        self.caps_extra != self.initial_caps
+    }
+
+    /// 読み込み時から、位置か機能が変わり、いまも入れ替えに入っているキー（[`moved_keys`]）。単位の中身が変わっても位置も機能も
+    /// 変わらないキー、解除して恒等へ戻ったキーは含まない。
+    fn touched_since_load(&self) -> Vec<u16> {
+        moved_keys(
+            &permutation_entries(&self.initial_pairs, &self.initial_cycles),
+            &permutation_entries(&self.pairs(), &self.cycles),
+        )
+    }
+
+    /// 読み込み時になかった「英数 / Caps」「左 Ctrl」を含む設定（位置か機能が変わる、または Caps を Ctrl としても使う）を、いま足しているか。
     #[must_use]
     pub fn adds_caps_ctrl_mapping(&self) -> bool {
-        let is_caps_or_ctrl = |k: u16| k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL;
-        let involves = |p: &Pair| {
-            let (a, b) = p.keys();
-            is_caps_or_ctrl(a) || is_caps_or_ctrl(b)
-        };
-        let new_pair = self
-            .pairs()
-            .iter()
-            .any(|p| involves(p) && !self.initial_pairs.contains(p));
-        new_pair || (self.caps_extra && !self.initial_caps)
+        let touched = self.touched_since_load();
+        touched.contains(&SCANCODE_CAPS_EISU)
+            || touched.contains(&SCANCODE_LEFT_CTRL)
+            || (self.caps_extra && !self.initial_caps)
     }
 
     /// フィルタドライバが入っているのに、二重になる設定を足そうとしている（適用させない）。
@@ -333,8 +387,20 @@ impl EditorState {
         self.caps_extra
     }
 
-    /// 編集内容のペアを置き換える（キーボード図の操作の結果を反映する。行は両側が埋まったものだけになる）。
-    pub fn set_pairs(&mut self, pairs: &[Pair]) {
+    /// 編集内容のペアと3つ以上の循環を置き換える（キーボード図の操作の結果を反映する）。
+    pub fn set_units(&mut self, pairs: &[Pair], cycles: &[Cycle]) {
+        self.set_pairs(pairs);
+        self.cycles = cycles.to_vec();
+    }
+
+    /// いまの編集内容の、3つ以上の循環。
+    #[must_use]
+    pub fn cycles(&self) -> &[Cycle] {
+        &self.cycles
+    }
+
+    /// 編集内容のペアを置き換える（行は両側が埋まったものだけになる。循環は変えない）。
+    fn set_pairs(&mut self, pairs: &[Pair]) {
         self.rows = pairs
             .iter()
             .map(|p| {
@@ -351,6 +417,7 @@ impl EditorState {
     /// 他のツールの設定（`Unclaimed`）は編集対象ではないので残る。
     pub fn release_all(&mut self) {
         self.rows.clear();
+        self.cycles.clear();
         self.caps_extra = false;
     }
 
@@ -382,7 +449,7 @@ impl EditorState {
     #[must_use]
     pub fn quick_unavailable(&self, quick: &QuickPair, jis: bool) -> Option<Unavailable> {
         let reason = |k: u16| {
-            if self.rows.iter().any(|r| r.uses(k)) {
+            if self.rows.iter().any(|r| r.uses(k)) || self.cycles.iter().any(|c| c.contains(k)) {
                 Some(Unavailable::KeyInUse)
             } else if self.caps_extra && (k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL) {
                 Some(Unavailable::CapsExtraOn)
@@ -390,6 +457,8 @@ impl EditorState {
                 Some(Unavailable::CapsFilterDriver)
             } else if self.ime_role_thumbs.contains(&k) {
                 Some(Unavailable::ThumbImeRole)
+            } else if self.foreign_keys.contains(&k) {
+                Some(Unavailable::OtherToolSetting)
             } else if !jis && is_jis_only(k) {
                 Some(Unavailable::JisOnlyKey)
             } else {
@@ -425,6 +494,23 @@ impl EditorState {
                 .rows
                 .iter()
                 .any(|r| r.uses(SCANCODE_CAPS_EISU) || r.uses(SCANCODE_LEFT_CTRL))
+            && !self
+                .cycles
+                .iter()
+                .any(|c| c.contains(SCANCODE_CAPS_EISU) || c.contains(SCANCODE_LEFT_CTRL))
+    }
+
+    /// 「Caps を Ctrl としても使う」をオンにすると、書き込みの検査で断られる理由（オフなら通り、オンにすると落ちるときだけ。他ツールの設定と
+    /// 組み合わさって別の入れ替えに読み替わる `Reclassified`、他ツールの to との衝突、など）。`existing` は UI が読んだ生のエントリ列。
+    /// オンにしたまま適用して初めて止まることが無いよう、チェックボックスの段で使う。編集中の別の誤りで落ちるときは `None`。
+    #[must_use]
+    pub fn caps_extra_refusal(&self, existing: &[Entry]) -> Option<SwapError> {
+        if self.caps_extra
+            || compute_swap_write_with_cycles(existing, &self.pairs(), &self.cycles, false).is_err()
+        {
+            return None;
+        }
+        compute_swap_write_with_cycles(existing, &self.pairs(), &self.cycles, true).err()
     }
 
     /// 「Caps を Ctrl としても使う」をオンにできない理由（できるなら `None`）。
@@ -501,7 +587,11 @@ impl EditorState {
         let mut then = self.initial_pairs.clone();
         now.sort_unstable();
         then.sort_unstable();
-        now != then || self.caps_extra != self.initial_caps
+        let mut cycles_now = self.cycles.clone();
+        let mut cycles_then = self.initial_cycles.clone();
+        cycles_now.sort();
+        cycles_then.sort();
+        now != then || cycles_now != cycles_then || self.caps_extra != self.initial_caps
     }
 
     /// 読み込み時の状態へ戻す（行は初期のペアから作り直す）。
@@ -517,6 +607,7 @@ impl EditorState {
                 }
             })
             .collect();
+        self.cycles = self.initial_cycles.clone();
         self.caps_extra = self.initial_caps;
     }
 
@@ -525,38 +616,16 @@ impl EditorState {
     #[must_use]
     pub fn preview(&self, existing: &[Entry], thumb_scancodes: &[u16]) -> Preview {
         let pairs = self.pairs();
-        // 注意は、読み込み時から足したペア・外したペアだけが対象（適用済みのペアに毎回出すと、警告を読まずに押すようになる）。
-        let added: Vec<Pair> = pairs
-            .iter()
-            .copied()
-            .filter(|p| !self.initial_pairs.contains(p))
-            .collect();
-        let removed: Vec<Pair> = self
-            .initial_pairs
-            .iter()
-            .copied()
-            .filter(|p| !pairs.contains(p))
-            .collect();
-        let mut cautions = cautions(&added, thumb_scancodes);
-        // 足したペアにも同じキーがあれば（相手だけ変えた）、「元に戻る」ではなく「位置が変わる」が正しいので出さない。
-        let added_keys: Vec<u16> = added
-            .iter()
-            .flat_map(|p| [p.keys().0, p.keys().1])
-            .collect();
-        for pair in &removed {
-            for key in [pair.keys().0, pair.keys().1] {
-                let restored = Caution::ThumbKeyRestored { thumb: key };
-                if thumb_scancodes.contains(&key)
-                    && !added_keys.contains(&key)
-                    && !cautions.contains(&restored)
-                {
-                    cautions.push(restored);
-                }
-            }
-        }
+        // 注意は、読み込み時から位置か機能が変わったキーだけが対象（適用済みの入れ替えに毎回出すと、警告を読まずに押すようになる。
+        // 単位の中身が変わっても、位置も機能も変わらない親指キーには出さない。Opus コードレビュー round2 N1・round3 S1）。
+        let cautions = cautions_for_change(
+            &permutation_entries(&self.initial_pairs, &self.initial_cycles),
+            &permutation_entries(&pairs, &self.cycles),
+            thumb_scancodes,
+        );
         Preview {
             cautions,
-            plan: compute_swap_write(existing, &pairs, self.caps_extra),
+            plan: compute_swap_write_with_cycles(existing, &pairs, &self.cycles, self.caps_extra),
         }
     }
 }
@@ -579,29 +648,68 @@ pub enum Caution {
 /// ペアの集合から、注意が要る組を挙げる（重複なし、出現順）。
 #[must_use]
 pub fn cautions(pairs: &[Pair], thumb_scancodes: &[u16]) -> Vec<Caution> {
+    cautions_from_permutation(&permutation_entries(pairs, &[]), thumb_scancodes)
+}
+
+/// ペアと3つ以上の循環から、注意が要る組を挙げる（重複なし、出現順）。
+#[must_use]
+pub fn cautions_with_cycles(
+    pairs: &[Pair],
+    cycles: &[&Cycle],
+    thumb_scancodes: &[u16],
+) -> Vec<Caution> {
+    let owned: Vec<Cycle> = cycles.iter().map(|c| (*c).clone()).collect();
+    cautions_from_permutation(&permutation_entries(pairs, &owned), thumb_scancodes)
+}
+
+/// 置換（「位置 → 機能」のエントリ。恒等の位置は含まない）から注意を挙げる（適用前の置換が空のときの [`cautions_for_change`]）。
+fn cautions_from_permutation(sig: &[Entry], thumb_scancodes: &[u16]) -> Vec<Caution> {
+    cautions_for_change(&[], sig, thumb_scancodes)
+}
+
+/// 適用前の置換 `before` から適用後の置換 `after`（どちらも「位置 → 機能」のエントリ。恒等の位置は含まない）へ変わるときの注意を
+/// 挙げる。向きと、位置・機能の両方を見る（Opus コードレビュー round3 S1）:
+/// - 親指キー t の位置か機能が変わり、いまも入れ替えに入っている（[`moved_keys`]）: 親指シフトを押す物理位置が動く（`ThumbKeyMoved`）。
+///   うち、いま t の位置が Caps/英数 の機能を出す（σ'(t) = Caps）なら、英数の Shift+CapsLock の動きが t の位置へ移る（`CapsWithThumbKey`）。
+/// - 親指キー t1 のいまの位置が、他方の親指キー t2 の機能を出し、どちらかが動いた: 左右の親指キーが逆になる（`ThumbKeysSwapped`）。
+/// - 親指キー t の位置か機能が変わり、恒等へ戻った（[`touched_keys`] に入り [`moved_keys`] に入らない）: 元に戻る（`ThumbKeyRestored`）。
+/// - スペースの位置か機能が動いた: スペースでの変換操作が移る（`SpaceMoved`）。
+///
+/// 位置の出力は変わらず、そのキーの機能を出す位置だけが変わる編集（機能が別の位置へ移る）も、動いたものとして数える。
+fn cautions_for_change(before: &[Entry], after: &[Entry], thumb_scancodes: &[u16]) -> Vec<Caution> {
+    let image = |k: u16| after.iter().find(|e| e.0 == k).map_or(k, |e| e.1);
+    let touched = touched_keys(before, after);
+    let moved = moved_keys(before, after);
     let mut out: Vec<Caution> = Vec::new();
     let mut push = |c: Caution| {
         if !out.contains(&c) {
             out.push(c);
         }
     };
-    for pair in pairs {
-        let (a, b) = pair.keys();
-        if thumb_scancodes.contains(&a) && thumb_scancodes.contains(&b) {
-            push(Caution::ThumbKeysSwapped { a, b });
+    for &t in thumb_scancodes {
+        if !moved.contains(&t) {
+            continue;
         }
-        for (key, other) in [(a, b), (b, a)] {
-            if thumb_scancodes.contains(&key) {
-                if other == SCANCODE_CAPS_EISU {
-                    push(Caution::CapsWithThumbKey { thumb: key });
-                } else {
-                    push(Caution::ThumbKeyMoved { thumb: key });
-                }
-            }
+        let f = image(t);
+        if f != t && thumb_scancodes.contains(&f) {
+            push(Caution::ThumbKeysSwapped {
+                a: t.min(f),
+                b: t.max(f),
+            });
         }
-        if a == SCANCODE_SPACE || b == SCANCODE_SPACE {
-            push(Caution::SpaceMoved);
+        if f == SCANCODE_CAPS_EISU {
+            push(Caution::CapsWithThumbKey { thumb: t });
+        } else {
+            push(Caution::ThumbKeyMoved { thumb: t });
         }
+    }
+    for &t in thumb_scancodes {
+        if touched.contains(&t) && !moved.contains(&t) {
+            push(Caution::ThumbKeyRestored { thumb: t });
+        }
+    }
+    if moved.contains(&SCANCODE_SPACE) {
+        push(Caution::SpaceMoved);
     }
     out
 }
@@ -693,6 +801,7 @@ pub fn swap_error_text(error: SwapError) -> String {
             key_label(from),
             key_label(to)
         ),
+        SwapError::Reclassified => CAPS_WOULD_RECLASSIFY_TEXT.to_string(),
     }
 }
 
@@ -926,6 +1035,7 @@ mod tests {
             Unavailable::CapsKeysInUse,
             Unavailable::CapsFilterDriver,
             Unavailable::ThumbImeRole,
+            Unavailable::OtherToolSetting,
         ] {
             assert!(!u.text().is_empty());
         }
@@ -1193,6 +1303,7 @@ mod tests {
             SwapError::NotAllowed { key: MUH },
             SwapError::CapsExtraConflict { key: CAPS },
             SwapError::CollidesWithForeignTarget { entry: (MUH, HEN) },
+            SwapError::Reclassified,
         ] {
             assert!(!swap_error_text(e).is_empty());
         }
@@ -1200,5 +1311,271 @@ mod tests {
             let exit = WorkerExit::from_code(code).expect("定義済みの終了コード");
             assert!(!worker_exit_text(exit).is_empty());
         }
+    }
+
+    // ---- 循環（ADR-248 決定6） ----
+
+    fn cyc(keys: &[u16]) -> Cycle {
+        Cycle::new(keys).unwrap()
+    }
+
+    #[test]
+    fn cycles_are_part_of_the_editor_state_dirty_reset_and_release_all() {
+        let existing = [(MUH, HEN), (HEN, SPC), (SPC, MUH)];
+        let mut e = editor(&existing);
+        assert_eq!(e.cycles(), &[cyc(&[MUH, HEN, SPC])]);
+        assert!(!e.is_dirty());
+        assert_eq!(
+            registry_state(&detect_swap_pairs(&existing)),
+            RegistryState::HasOwn
+        );
+        // 向きを変えると、編集済み。
+        e.set_units(&[], &[cyc(&[MUH, SPC, HEN])]);
+        assert!(e.is_dirty());
+        e.reset();
+        assert!(!e.is_dirty());
+        assert_eq!(e.cycles(), &[cyc(&[MUH, HEN, SPC])]);
+        // すべて解除は、循環も外す。
+        e.release_all();
+        assert!(e.cycles().is_empty() && e.is_dirty());
+    }
+
+    #[test]
+    fn preview_writes_a_cycle_and_warns_about_thumb_keys_and_space() {
+        let mut e = editor(&[]);
+        e.set_units(&[], &[cyc(&[MUH, HEN, SPC])]);
+        let p = e.preview(&[], &[MUH]);
+        let plan = p.plan.clone().unwrap();
+        assert_eq!(plan.entries.len(), 3);
+        assert!(p.cautions.contains(&Caution::ThumbKeyMoved { thumb: MUH }));
+        assert!(p.cautions.contains(&Caution::SpaceMoved));
+        assert!(p.needs_confirmation());
+        // 適用済みの循環には、毎回は注意を出さない。
+        let existing = [(MUH, HEN), (HEN, SPC), (SPC, MUH)];
+        let e2 = editor(&existing);
+        assert!(e2.preview(&existing, &[MUH]).cautions.is_empty());
+        // 外すときは、親指キーの位置が元に戻る注意。
+        let mut e3 = editor(&existing);
+        e3.release_all();
+        let p3 = e3.preview(&existing, &[MUH]);
+        assert!(p3
+            .cautions
+            .contains(&Caution::ThumbKeyRestored { thumb: MUH }));
+    }
+
+    #[test]
+    fn cycles_count_for_the_caps_filter_and_ime_role_guards_and_key_in_use() {
+        // Caps/Ctrl を含む新しい循環は、フィルタドライバがあれば止める。読み込み時からあるものは止めない。
+        let mut e = editor(&[]);
+        e.set_caps_filter(true);
+        e.set_units(&[], &[cyc(&[CAPS, MUH, SPC])]);
+        assert!(e.caps_filter_conflict());
+        let existing = [(CAPS, MUH), (MUH, SPC), (SPC, CAPS)];
+        let mut had = editor(&existing);
+        had.set_caps_filter(true);
+        assert!(!had.caps_filter_conflict());
+        // IME ON/OFF を兼ねる親指キーを含む新しい循環も止める。
+        let mut t = editor(&[]);
+        t.set_ime_role_thumbs(vec![HEN]);
+        t.set_units(&[], &[cyc(&[MUH, HEN, SPC])]);
+        assert!(t.ime_role_conflict());
+        // 循環が使っているキーは、ワンクリックでも「Caps を Ctrl としても使う」でも「使用中」。
+        let used = editor(&[(MUH, HEN), (HEN, SPC), (SPC, MUH)]);
+        assert_eq!(
+            used.quick_unavailable(&QUICK_PAIRS[1], true),
+            Some(Unavailable::KeyInUse)
+        );
+        let caps_cycle = editor(&existing);
+        assert!(!caps_cycle.caps_extra_available());
+        assert_eq!(
+            caps_cycle.caps_extra_unavailable(),
+            Some(Unavailable::CapsKeysInUse)
+        );
+    }
+
+    #[test]
+    fn cycle_cautions_follow_the_direction_position_to_function() {
+        // 親指キー = 無変換。
+        let thumbs = [MUH];
+        // Caps の位置は無変換、無変換の位置はスペース、スペースの位置は Caps を出す: Caps の動きはスペースの位置へ移る。
+        let forward = cyc(&[CAPS, MUH, SPC]);
+        let got = cautions_with_cycles(&[], &[&forward], &thumbs);
+        assert_eq!(
+            got,
+            vec![Caution::ThumbKeyMoved { thumb: MUH }, Caution::SpaceMoved]
+        );
+        // 逆向き: 無変換の位置が Caps を出す → Caps の動きが親指キーの位置へ移る。
+        let backward = cyc(&[CAPS, SPC, MUH]);
+        let got = cautions_with_cycles(&[], &[&backward], &thumbs);
+        assert_eq!(
+            got,
+            vec![
+                Caution::CapsWithThumbKey { thumb: MUH },
+                Caution::SpaceMoved
+            ]
+        );
+        // 左右の親指キー(無変換・変換)が3巡回に入り、左親指の位置が右親指の機能を出す → 左右逆の注意。
+        let both = cyc(&[MUH, HEN, SPC]);
+        let got = cautions_with_cycles(&[], &[&both], &[MUH, HEN]);
+        assert!(got.contains(&Caution::ThumbKeysSwapped { a: HEN, b: MUH }));
+        // 向きが逆で、変換の位置が無変換の機能を出す場合も、同じ左右逆の注意。
+        let rev = cyc(&[MUH, SPC, HEN]);
+        let got = cautions_with_cycles(&[], &[&rev], &[MUH, HEN]);
+        assert!(got.contains(&Caution::ThumbKeysSwapped { a: HEN, b: MUH }));
+        // 親指キーが出す機能が他方の親指キーでなければ、左右逆の注意は出ない(無変換の位置はスペース、スペースの位置は変換...)。
+        let apart = cyc(&[MUH, SPC, LALT]);
+        let got = cautions_with_cycles(&[], &[&apart], &[MUH, HEN]);
+        assert!(got
+            .iter()
+            .all(|c| !matches!(c, Caution::ThumbKeysSwapped { .. })));
+    }
+
+    #[test]
+    fn cautions_with_cycles_cover_space_and_ignore_unrelated_cycles() {
+        // 向きの意味は cycle_cautions_follow_the_direction_position_to_function で固定している。ここはスペースと無関係な循環。
+        let c = cyc(&[CAPS, MUH, SPC]);
+        assert!(cautions_with_cycles(&[], &[&c], &[MUH]).contains(&Caution::SpaceMoved));
+        assert!(cautions_with_cycles(&[], &[&cyc(&[LALT, SPC, HEN])], &[])
+            .contains(&Caution::SpaceMoved));
+        assert!(cautions_with_cycles(&[], &[&cyc(&[LALT, CAPS, HEN])], &[]).is_empty());
+    }
+
+    #[test]
+    fn cautions_follow_a_function_that_moves_even_when_the_position_output_stays() {
+        // round3 p1: 読み込み時 左Alt→変換→スペース→左Alt（左Alt の位置が変換=親指キーを出す）。編集で 変換⇄スペース のペアにする。
+        // 変換の位置の出力は変わらない（スペース）が、変換の機能を出す位置が 左Alt → スペース へ動く。
+        let existing = [(LALT, HEN), (HEN, SPC), (SPC, LALT)];
+        let mut e = editor(&existing);
+        e.set_units(&[Pair::new(HEN, SPC)], &[]);
+        let p = e.preview(&existing, &[HEN]);
+        assert!(
+            p.cautions.contains(&Caution::ThumbKeyMoved { thumb: HEN })
+                && p.cautions.contains(&Caution::SpaceMoved),
+            "{:?}",
+            p.cautions
+        );
+        // round3 p2: 左Alt→スペース→変換→左Alt を スペース⇄変換 にする。スペースの機能が 左Alt の位置 → 変換の位置へ動く。
+        let existing = [(LALT, SPC), (SPC, HEN), (HEN, LALT)];
+        let mut e = editor(&existing);
+        e.set_units(&[Pair::new(SPC, HEN)], &[]);
+        let p = e.preview(&existing, &[]);
+        assert_eq!(p.cautions, vec![Caution::SpaceMoved]);
+        assert!(p.needs_confirmation());
+    }
+
+    #[test]
+    fn cautions_target_only_positions_that_changed_since_load() {
+        // round2 N1: 4巡回 無変換→変換→スペース→左Alt→無変換 のうち、変換の位置も機能も変わらない編集では、親指キー=変換の注意を出さない。
+        let existing = [(MUH, HEN), (HEN, SPC), (SPC, LALT), (LALT, MUH)];
+        let mut e = editor(&existing);
+        e.set_units(&[], &[cyc(&[MUH, HEN, SPC])]);
+        let p = e.preview(&existing, &[HEN]);
+        assert!(
+            !p.cautions.contains(&Caution::ThumbKeyMoved { thumb: HEN }),
+            "{:?}",
+            p.cautions
+        );
+        // 変換の位置の機能が変わる編集なら出す。
+        e.set_units(&[], &[cyc(&[MUH, HEN, LALT, SPC])]);
+        let p = e.preview(&existing, &[HEN]);
+        assert!(p.cautions.contains(&Caution::ThumbKeyMoved { thumb: HEN }));
+        // 外して元に戻る親指キーの位置。
+        let mut r = editor(&existing);
+        r.release_all();
+        assert!(r
+            .preview(&existing, &[HEN])
+            .cautions
+            .contains(&Caution::ThumbKeyRestored { thumb: HEN }));
+    }
+
+    #[test]
+    fn caps_extra_refusal_is_known_before_applying() {
+        // 他ツールの開いた鎖が閉じる（Reclassified）。
+        let existing = [(LCTRL, MUH), (MUH, CAPS)];
+        let mut e = editor(&existing);
+        assert_eq!(
+            e.caps_extra_refusal(&existing),
+            Some(SwapError::Reclassified)
+        );
+        // 他ツールの `X→左Ctrl` があると、to が衝突する。
+        let existing2 = [(MUH, LCTRL)];
+        assert!(matches!(
+            editor(&existing2).caps_extra_refusal(&existing2),
+            Some(SwapError::CollidesWithForeignTarget { .. })
+        ));
+        // 鎖が閉じないなら問題ない。何も無ければ聞かない。
+        assert_eq!(
+            editor(&[(LCTRL, MUH)]).caps_extra_refusal(&[(LCTRL, MUH)]),
+            None
+        );
+        assert_eq!(editor(&[]).caps_extra_refusal(&[]), None);
+        // すでにオンのときは聞かない。
+        assert!(e.set_caps_extra(true));
+        assert_eq!(e.caps_extra_refusal(&existing), None);
+    }
+
+    #[test]
+    fn changes_lists_exactly_the_positions_whose_function_differs_from_load() {
+        let mut e = editor(&[]);
+        assert!(e.changes().is_empty() && !e.caps_extra_changed());
+        e.set_units(&[], &[cyc(&[MUH, HEN, SPC])]);
+        // 位置の昇順（スペース 0x39 → 変換 0x79 → 無変換 0x7B）。
+        assert_eq!(
+            e.changes(),
+            vec![(SPC, SPC, MUH), (HEN, HEN, SPC), (MUH, MUH, HEN)]
+        );
+        // 外すと、元の機能へ戻る位置が出る。
+        let mut loaded = editor(&[(MUH, HEN), (HEN, SPC), (SPC, MUH)]);
+        loaded.release_all();
+        assert_eq!(loaded.changes().len(), 3);
+        assert!(loaded.changes().iter().all(|&(p, b, a)| a == p && b != p));
+        assert!(editor(&[(MUH, HEN), (HEN, SPC), (SPC, MUH)])
+            .changes()
+            .is_empty());
+        let mut caps = editor(&[]);
+        assert!(caps.set_caps_extra(true) && caps.caps_extra_changed());
+    }
+
+    #[test]
+    fn guards_look_at_what_moved_not_at_whether_the_unit_is_new() {
+        // 読み込み時: 無変換→変換→スペース→左Alt→無変換。変換は IME の ON/OFF も兼ねる親指キー。
+        let existing = [(MUH, HEN), (HEN, SPC), (SPC, LALT), (LALT, MUH)];
+        let mut e = editor(&existing);
+        e.set_ime_role_thumbs(vec![HEN]);
+        assert!(!e.ime_role_conflict());
+        // スペースの位置の機能(左Alt)を左Alt の位置へ戻す: 変換の位置も機能も変わらないので、止めない。
+        e.set_units(&[], &[cyc(&[MUH, HEN, SPC])]);
+        assert!(!e.ime_role_conflict());
+        // 変換の位置の機能が変わる(変換→左Alt)なら止める。
+        e.set_units(&[], &[cyc(&[MUH, HEN, LALT, SPC])]);
+        assert!(e.ime_role_conflict());
+        // すべて解除(恒等へ戻る)は止めない。
+        e.release_all();
+        assert!(!e.ime_role_conflict());
+        // Caps フィルタドライバも同じ基準。
+        let caps_cycle = [(CAPS, MUH), (MUH, SPC), (SPC, CAPS)];
+        let mut c = editor(&caps_cycle);
+        c.set_caps_filter(true);
+        assert!(!c.caps_filter_conflict());
+        c.set_units(&[], &[cyc(&[CAPS, SPC, MUH])]);
+        assert!(c.caps_filter_conflict());
+    }
+
+    #[test]
+    fn a_quick_pair_cannot_use_a_key_another_tool_has_set() {
+        let existing = [(SPC, 0x003B)];
+        let e = editor(&existing);
+        assert_eq!(
+            e.quick_unavailable(&QUICK_PAIRS[1], true),
+            Some(Unavailable::OtherToolSetting)
+        );
+        // 他ツールの to になっているキー(0x003B 以外に、from が無変換で to が左 Alt のとき左 Alt)も同じ。
+        let e2 = editor(&[(MUH, LALT)]);
+        assert_eq!(e2.quick_unavailable(&QUICK_PAIRS[0], true), None);
+        let e3 = editor(&[(0x003B, HEN)]);
+        assert_eq!(
+            e3.quick_unavailable(&QUICK_PAIRS[1], true),
+            Some(Unavailable::OtherToolSetting)
+        );
     }
 }
