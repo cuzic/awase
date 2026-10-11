@@ -543,28 +543,7 @@ impl ImeStateHub {
         scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<super::external_change_watch::DirectFollow> {
         // ADR-256: 窓の有無によらず、未確認の awase の書き込みを読みで確かめる（同じ値なら解く）。
-        let confirmed = self
-            .external_change_watch
-            .confirm_awase_write(scope, read_open);
-        if let Some(w) = confirmed.carried {
-            tracing::info!(
-                "[direct-follow] awase-write confirmed open={w}: 窓内で awase の書き込みと同じ値を読んだ → 保持を解く (ADR-256)"
-            );
-        }
-        if let Some(w) = confirmed.pending {
-            tracing::debug!("[direct-follow] awase-write confirmed before arm open={w} (ADR-256)");
-        }
-        // ADR-256（レビュー M1）: 引き継いだ書き込みが未確認のまま窓が切れたら、効果のあった保持の回数とともに残す
-        // （保持が利用者の逆向きの操作を窓の全体で止めた頻度を数える。この後の `direct_live` が窓を捨てる）。
-        if let Some((w, holds)) = self.external_change_watch.expired_unconfirmed_awase_write(
-            scope,
-            now_ms,
-            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
-        ) {
-            tracing::info!(
-                "[direct-follow] awase-write expired unconfirmed open={w} effective_holds={holds}: 窓の間に awase の書き込みと同じ値を一度も読まなかった (ADR-256)"
-            );
-        }
+        self.note_direct_read_for_awase_write(read_open, now_ms, scope);
         if !self.external_change_watch.direct_live(
             scope,
             now_ms,
@@ -577,35 +556,7 @@ impl ImeStateHub {
             return None;
         }
         // ADR-256（BUG-199）: 窓の arm より前に awase が SendInput で書いた開閉が、窓内でまだ読みに現れていない間は採らない。
-        // GJI の処理が窓より遅いと、窓内の読みは awase の書き込み前の古い値を返し、それで意図を捨てると awase の書き込みを
-        // 覆して閉じた IME へローマ字を送る（R3 は arm 以後の書き込みしか守らない）。
-        let carried = self.external_change_watch.carried_awase_write();
-        if super::external_change_watch::direct_read_held_by_awase_write(carried, read_open) {
-            // 保持しなければ belief を動かしていた読み（予測のガードが捨てず、判定が追随する読み）だけを「効果あり」と数える
-            // （レビュー S1。時間切れ・belief と同じ値・予測に任せる打鍵の読みは、保持しなくても結果が変わらない）。
-            let predicted = self
-                .shadow_model
-                .key_effect()
-                .is_some_and(|pred| pred.at_ms >= armed_at);
-            let would_follow = !predicted
-                && !super::external_change_watch::classify_direct_read_for(
-                    kind,
-                    read_open,
-                    read_conv,
-                    self.effective_open_at(tick_ms),
-                    self.input_mode() == InputModeState::ObservedEisu,
-                )
-                .is_none();
-            if would_follow {
-                self.external_change_watch.note_effective_hold();
-                tracing::info!(
-                    "[direct-follow] awase-write held read_open={read_open:?} carried={carried:?}: 未確認の awase の書き込みと食い違う窓内の読みを採らない (ADR-256、BUG-199)"
-                );
-            } else {
-                tracing::debug!(
-                    "[direct-follow] awase-write held (no effect) read_open={read_open:?} carried={carried:?} predicted={predicted} (ADR-256)"
-                );
-            }
+        if self.awase_write_holds_direct_read(read_open, read_conv, tick_ms, armed_at, kind) {
             return None;
         }
         // 打鍵時点の予測（ADR-191 決定3）がこの打鍵に付いているキーは、予測に任せる。予測はキーの効果を先に反映済みで、
@@ -656,6 +607,81 @@ impl ImeStateHub {
         // 追随の直後に、閉じる前の GJI I/O 推測が結果を上書きしない柵（ADR-205 と同じ、ADR-188 M7）。
         self.last_external_change_ms = now_ms;
         Some(follow)
+    }
+
+    /// ADR-256: prefetch 済みの開閉の読みで、未確認の awase の書き込みを確かめる（同じ値なら解く。窓の有無によらず毎回）。
+    /// 引き継いだ書き込みが未確認のまま窓が切れていたら、そのことをログに残す（計測用、挙動は変えない）。
+    fn note_direct_read_for_awase_write(
+        &mut self,
+        read_open: Option<bool>,
+        now_ms: u64,
+        scope: crate::state::foreground_scope::ForegroundScope,
+    ) {
+        let confirmed = self
+            .external_change_watch
+            .confirm_awase_write(scope, read_open);
+        if let Some(w) = confirmed.carried {
+            tracing::info!(
+                "[direct-follow] awase-write confirmed open={w}: 窓内で awase の書き込みと同じ値を読んだ → 保持を解く (ADR-256)"
+            );
+        }
+        if let Some(w) = confirmed.pending {
+            tracing::debug!("[direct-follow] awase-write confirmed before arm open={w} (ADR-256)");
+        }
+        // ADR-256（レビュー M1）: 引き継いだ書き込みが未確認のまま窓が切れたら、効果のあった保持の回数とともに残す
+        // （保持が利用者の逆向きの操作を窓の全体で止めた頻度を数える。この後の `direct_live` が窓を捨てる）。
+        if let Some((w, holds)) = self.external_change_watch.expired_unconfirmed_awase_write(
+            scope,
+            now_ms,
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        ) {
+            tracing::info!(
+                "[direct-follow] awase-write expired unconfirmed open={w} effective_holds={holds}: 窓の間に awase の書き込みと同じ値を一度も読まなかった (ADR-256)"
+            );
+        }
+    }
+
+    /// ADR-256（BUG-199）: 窓へ引き継いだ awase の書き込みがまだ読みに現れていないので、この窓内の読みを採らないか。
+    /// GJI の処理が窓より遅いと、窓内の読みは awase の書き込み前の古い値を返し、それで意図を捨てると awase の書き込みを
+    /// 覆して閉じた IME へローマ字を送る（R3 は arm 以後の書き込みしか守らない）。
+    fn awase_write_holds_direct_read(
+        &mut self,
+        read_open: Option<bool>,
+        read_conv: Option<u32>,
+        tick_ms: TickMs,
+        armed_at: u64,
+        kind: crate::state::ime_kind::ImeKindId,
+    ) -> bool {
+        let carried = self.external_change_watch.carried_awase_write();
+        if !super::external_change_watch::direct_read_held_by_awase_write(carried, read_open) {
+            return false;
+        }
+        // 保持しなければ belief を動かしていた読み（予測のガードが捨てず、判定が追随する読み）だけを「効果あり」と数える
+        // （レビュー S1。時間切れ・belief と同じ値・予測に任せる打鍵の読みは、保持しなくても結果が変わらない）。
+        let predicted = self
+            .shadow_model
+            .key_effect()
+            .is_some_and(|pred| pred.at_ms >= armed_at);
+        let would_follow = !predicted
+            && !super::external_change_watch::classify_direct_read_for(
+                kind,
+                read_open,
+                read_conv,
+                self.effective_open_at(tick_ms),
+                self.input_mode() == InputModeState::ObservedEisu,
+            )
+            .is_none();
+        if would_follow {
+            self.external_change_watch.note_effective_hold();
+            tracing::info!(
+                "[direct-follow] awase-write held read_open={read_open:?} carried={carried:?}: 未確認の awase の書き込みと食い違う窓内の読みを採らない (ADR-256、BUG-199)"
+            );
+        } else {
+            tracing::debug!(
+                "[direct-follow] awase-write held (no effect) read_open={read_open:?} carried={carried:?} predicted={predicted} (ADR-256)"
+            );
+        }
+        true
     }
 
     /// `ModeKeyPassedThrough` のdispatch元（ADR-187の「1箇所に限定」）。reducerは`last_intent`を捨て、

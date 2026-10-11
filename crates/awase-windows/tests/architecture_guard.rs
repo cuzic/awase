@@ -4794,15 +4794,34 @@ fn direct_follow_holds_reads_for_unconfirmed_awase_write() {
         f.find(needle)
             .unwrap_or_else(|| panic!("follow_direct_read_in_scope に {needle} が無い: {follow}"))
     };
-    let confirm = pos(".confirm_awase_write(scope,read_open)");
+    let confirm = pos("self.note_direct_read_for_awase_write(read_open,now_ms,scope);");
     let live = pos(".direct_live(");
     let r3 = pos("self.last_explicit_ime_action_ms>=armed_at");
-    let hold = pos("external_change_watch::direct_read_held_by_awase_write(carried,read_open)");
+    let hold = pos("self.awase_write_holds_direct_read(read_open,read_conv,tick_ms,armed_at,kind)");
     let prediction = pos(".key_effect()");
     let classify = pos("external_change_watch::classify_direct_read_for(");
     assert!(
         confirm < live && live < r3 && r3 < hold && hold < prediction && prediction < classify,
         "順序は 確かめる → 窓の生死 → R3 → 未確認の書き込みの保持 → 予測のガード → 判定: {follow}"
+    );
+    // 確かめる側・保持する側の中身(ハブの補助関数)。
+    let body = |name: &str| -> String {
+        let b = ps
+            .split(&format!("fn {name}"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("{name} が無い"));
+        b[..b.find("\n    }\n").unwrap_or(b.len())]
+            .split_whitespace()
+            .collect()
+    };
+    assert!(
+        body("note_direct_read_for_awase_write").contains(".confirm_awase_write(scope,read_open)"),
+        "読みで未確認の書き込みを確かめること"
+    );
+    assert!(
+        body("awase_write_holds_direct_read")
+            .contains("external_change_watch::direct_read_held_by_awase_write(carried,read_open)"),
+        "保持の判定は純関数 direct_read_held_by_awase_write"
     );
 
     let watch = non_comment_lines(production_code_only(&read_crate_file(
@@ -4813,7 +4832,7 @@ fn direct_follow_holds_reads_for_unconfirmed_awase_write() {
     let arm_squashed: String = arm.split_whitespace().collect();
     assert!(
         arm_squashed.contains(
-            "letcarried=ifdirect{self.take_pending_write(scope,now_ms,window_ms)}else{None};"
+            "letcarried=matchdirect{Some(true)=>self.take_pending_write(scope,now_ms,window_ms),Some(false)=>{self.pending_write=None;None}None=>None,};"
         ),
         "控えを窓へ引き継ぐのは直接観測の窓の arm だけ: {arm}"
     );
