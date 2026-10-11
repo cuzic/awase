@@ -4,8 +4,10 @@
 // LLKHF_INJECTED は立たず、dwExtraInfo も 0)。テスト署名の CI ランナー以外では読み込まれない・読み込んではならない。
 #include <ntddk.h>
 #include <kbdmou.h>
+#include <ntddkbd.h>
 
 #define AWASE_IOCTL_INJECT CTL_CODE(FILE_DEVICE_KEYBOARD, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define AWASE_IOCTL_STATUS CTL_CODE(FILE_DEVICE_KEYBOARD, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 typedef struct _EXT {
     PDEVICE_OBJECT Lower;
@@ -17,6 +19,9 @@ typedef struct _KEY_CMD {
 } KEY_CMD;
 
 static CONNECT_DATA g_conn;
+static volatile LONG g_seenQuery, g_seenAny, g_modified;
+static ULONG g_origType, g_origSubtype;
+static ULONG g_jis;   // Parameters\JisType=1 のとき、キーボードの種類を 106/109 JIS(type 7, subtype 2)と申告し直す。既定は 0(何もしない)。
 static PDEVICE_OBJECT g_ctl;
 
 static NTSTATUS Pass(PDEVICE_OBJECT dev, PIRP irp)
@@ -35,12 +40,48 @@ static NTSTATUS CtlCreateClose(PDEVICE_OBJECT dev, PIRP irp)
     return STATUS_SUCCESS;
 }
 
+
+static NTSTATUS QueryAttrDone(PDEVICE_OBJECT dev, PIRP irp, PVOID ctx)
+{
+    UNREFERENCED_PARAMETER(dev);
+    UNREFERENCED_PARAMETER(ctx);
+    if (irp->PendingReturned) IoMarkIrpPending(irp);
+    if (NT_SUCCESS(irp->IoStatus.Status) && irp->IoStatus.Information >= sizeof(KEYBOARD_ATTRIBUTES)) {
+        PKEYBOARD_ATTRIBUTES a = (PKEYBOARD_ATTRIBUTES)irp->AssociatedIrp.SystemBuffer;
+        if (a == NULL) {
+            PIO_STACK_LOCATION cur = IoGetCurrentIrpStackLocation(irp);
+            a = (PKEYBOARD_ATTRIBUTES)cur->Parameters.DeviceIoControl.Type3InputBuffer;
+        }
+        if (a != NULL) {
+            g_origType = a->KeyboardIdentifier.Type; g_origSubtype = a->KeyboardIdentifier.Subtype;
+            InterlockedIncrement(&g_modified);
+            a->KeyboardIdentifier.Type = 7;
+            a->KeyboardIdentifier.Subtype = 2;
+            a->KeyboardMode = 1;
+            a->NumberOfFunctionKeys = 12;
+            a->NumberOfIndicators = 3;
+            a->NumberOfKeysTotal = 106;
+        }
+    }
+    return STATUS_CONTINUE_COMPLETION;
+}
+
 static NTSTATUS Dispatch(PDEVICE_OBJECT dev, PIRP irp)
 {
     if (dev == g_ctl) {
         PIO_STACK_LOCATION sp = IoGetCurrentIrpStackLocation(irp);
         if (sp->MajorFunction == IRP_MJ_CREATE || sp->MajorFunction == IRP_MJ_CLOSE || sp->MajorFunction == IRP_MJ_CLEANUP)
             return CtlCreateClose(dev, irp);
+        if (sp->MajorFunction == IRP_MJ_DEVICE_CONTROL &&
+            sp->Parameters.DeviceIoControl.IoControlCode == AWASE_IOCTL_STATUS) {
+            ULONG *o = (ULONG *)irp->AssociatedIrp.SystemBuffer;
+            if (sp->Parameters.DeviceIoControl.OutputBufferLength >= 7 * sizeof(ULONG)) {
+                o[0] = g_jis; o[1] = (ULONG)g_seenAny; o[2] = (ULONG)g_seenQuery; o[3] = (ULONG)g_modified; o[4] = g_origType; o[5] = g_origSubtype; o[6] = (g_conn.ClassService != NULL);
+                irp->IoStatus.Status = STATUS_SUCCESS; irp->IoStatus.Information = 7 * sizeof(ULONG);
+            } else { irp->IoStatus.Status = STATUS_BUFFER_TOO_SMALL; irp->IoStatus.Information = 0; }
+            IoCompleteRequest(irp, IO_NO_INCREMENT);
+            return irp->IoStatus.Status;
+        }
         if (sp->MajorFunction == IRP_MJ_DEVICE_CONTROL &&
             sp->Parameters.DeviceIoControl.IoControlCode == AWASE_IOCTL_INJECT) {
             NTSTATUS st = STATUS_DEVICE_NOT_CONNECTED;
@@ -76,6 +117,23 @@ static NTSTATUS Dispatch(PDEVICE_OBJECT dev, PIRP irp)
         IoCompleteRequest(irp, IO_NO_INCREMENT);
         return STATUS_INVALID_DEVICE_REQUEST;
     }
+    {
+        PIO_STACK_LOCATION spq = IoGetCurrentIrpStackLocation(irp);
+        if (spq->MajorFunction == IRP_MJ_DEVICE_CONTROL) {
+            InterlockedIncrement(&g_seenAny);
+            if (spq->Parameters.DeviceIoControl.IoControlCode == IOCTL_KEYBOARD_QUERY_ATTRIBUTES) InterlockedIncrement(&g_seenQuery);
+        }
+    }
+    if (g_jis) {
+        PIO_STACK_LOCATION sp2 = IoGetCurrentIrpStackLocation(irp);
+        if (sp2->MajorFunction == IRP_MJ_DEVICE_CONTROL &&
+            sp2->Parameters.DeviceIoControl.IoControlCode == IOCTL_KEYBOARD_QUERY_ATTRIBUTES) {
+            PEXT ext = (PEXT)dev->DeviceExtension;
+            IoCopyCurrentIrpStackLocationToNext(irp);
+            IoSetCompletionRoutine(irp, QueryAttrDone, NULL, TRUE, TRUE, TRUE);
+            return IoCallDriver(ext->Lower, irp);
+        }
+    }
     return Pass(dev, irp);
 }
 
@@ -87,6 +145,18 @@ static NTSTATUS InternalIoctl(PDEVICE_OBJECT dev, PIRP irp)
         PCONNECT_DATA cd = (PCONNECT_DATA)sp->Parameters.DeviceIoControl.Type3InputBuffer;
         if (cd != NULL && sp->Parameters.DeviceIoControl.InputBufferLength >= sizeof(CONNECT_DATA)) {
             g_conn = *cd;   // 元のコールバックを控えるだけ。経路は変えず、そのまま下へ流す。
+        }
+    }
+    if (dev != g_ctl) {
+        InterlockedIncrement(&g_seenAny);
+        if (sp->Parameters.DeviceIoControl.IoControlCode == IOCTL_KEYBOARD_QUERY_ATTRIBUTES) {
+            InterlockedIncrement(&g_seenQuery);
+            if (g_jis) {
+                PEXT ext = (PEXT)dev->DeviceExtension;
+                IoCopyCurrentIrpStackLocationToNext(irp);
+                IoSetCompletionRoutine(irp, QueryAttrDone, NULL, TRUE, TRUE, TRUE);
+                return IoCallDriver(ext->Lower, irp);
+            }
         }
     }
     return Pass(dev, irp);
@@ -142,7 +212,30 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT drv, PUNICODE_STRING reg)
     UNICODE_STRING link = RTL_CONSTANT_STRING(L"\\DosDevices\\AwaseKbInject");
     NTSTATUS st;
     ULONG i;
-    UNREFERENCED_PARAMETER(reg);
+    {
+        // HKLM\\SYSTEM\\CurrentControlSet\\Services\\awasekbf\\Parameters の JisType(DWORD)。
+        RTL_QUERY_REGISTRY_TABLE q[2];
+        ULONG jis = 0, def = 0;
+        RtlZeroMemory(q, sizeof(q));
+        q[0].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_SUBKEY;
+        q[0].Name = L"Parameters";
+        q[0].EntryContext = NULL;
+        q[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
+        q[1].Flags = RTL_QUERY_REGISTRY_DIRECT;
+        q[1].Name = L"JisType";
+        q[1].EntryContext = &jis;
+        q[1].DefaultType = REG_DWORD;
+        q[1].DefaultData = &def;
+        q[1].DefaultLength = sizeof(ULONG);
+        {
+            RTL_QUERY_REGISTRY_TABLE t[3];
+            RtlZeroMemory(t, sizeof(t));
+            t[0].Flags = RTL_QUERY_REGISTRY_SUBKEY;
+            t[0].Name = L"Parameters";
+            t[1] = q[1];
+            if (NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE, reg->Buffer, t, NULL, NULL))) g_jis = jis;
+        }
+    }
     for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++) drv->MajorFunction[i] = Dispatch;
     drv->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = InternalIoctl;
     drv->MajorFunction[IRP_MJ_PNP] = PnpDispatch;
