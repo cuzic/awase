@@ -303,11 +303,10 @@ impl EditorState {
     /// 読み込み時になかった「英数 / Caps」「左 Ctrl」を含む設定（入れ替えのペア・Caps を Ctrl としても使う）を、いま足しているか。
     #[must_use]
     pub fn adds_caps_ctrl_mapping(&self) -> bool {
+        let is_caps_or_ctrl = |k: u16| k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL;
         let involves = |p: &Pair| {
             let (a, b) = p.keys();
-            [a, b]
-                .iter()
-                .any(|&k| k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL)
+            is_caps_or_ctrl(a) || is_caps_or_ctrl(b)
         };
         let new_pair = self
             .pairs()
