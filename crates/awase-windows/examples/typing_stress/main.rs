@@ -722,7 +722,99 @@ struct Ev {
     down: bool,
 }
 
+/// ADR-255: `--inject-driver`(キーボードフィルタドライバ awasekbf 経由、`tools/kbd-inject-driver/`)。ドライバが kbdclass のコールバックへ
+/// スキャンコードを流すので、フックには物理キーと同じ形(LLKHF_INJECTED なし・dwExtraInfo 0)で届く。スキャンコードの無い仮想キー
+/// (`VK_IME_ON` など)は従来どおり SendInput(目印付き)にする。
+mod driver_inject {
+    use std::sync::OnceLock;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            sa: *const core::ffi::c_void,
+            disp: u32,
+            flags: u32,
+            tmpl: isize,
+        ) -> isize;
+        fn DeviceIoControl(
+            h: isize,
+            code: u32,
+            inb: *const core::ffi::c_void,
+            inl: u32,
+            outb: *mut core::ffi::c_void,
+            outl: u32,
+            ret: *mut u32,
+            ov: *mut core::ffi::c_void,
+        ) -> i32;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
+    }
+
+    const IOCTL_INJECT: u32 = 0x000B_2000;
+
+    fn handle() -> Option<isize> {
+        static H: OnceLock<Option<isize>> = OnceLock::new();
+        *H.get_or_init(|| {
+            if !crate::has_flag("--inject-driver") {
+                return None;
+            }
+            let name: Vec<u16> = "\\\\.\\AwaseKbInject\0".encode_utf16().collect();
+            // SAFETY: NUL 終端の UTF-16 の名前。失敗は -1 で返る。
+            let h =
+                unsafe { CreateFileW(name.as_ptr(), 0xC000_0000, 3, core::ptr::null(), 3, 0, 0) };
+            if h == -1 || h == 0 {
+                crate::log(
+                    "[TS] --inject-driver: \\\\.\\AwaseKbInject を開けない(SendInput に戻す)",
+                );
+                None
+            } else {
+                Some(h)
+            }
+        })
+    }
+
+    /// ドライバで送れたら true。送れない(`--inject-driver` なし・ドライバなし・スキャンコードの無いキー)なら false。
+    pub fn send(vk: u32, down: bool) -> bool {
+        let Some(h) = handle() else { return false };
+        // MAPVK_VK_TO_VSC_EX(4): 拡張キーは上位バイトが 0xE0。
+        // SAFETY: 引数は値のみ。
+        let sc = unsafe { MapVirtualKeyW(vk, 4) };
+        if sc == 0 {
+            return false;
+        }
+        let make = (sc & 0xFF) as u16;
+        let mut flags: u16 = if down { 0 } else { 1 };
+        if (sc >> 8) == 0xE0 {
+            flags |= 2;
+        }
+        let cmd: [u16; 2] = [make, flags];
+        let mut ret = 0u32;
+        // SAFETY: 4 バイトの入力バッファ。出力なし。
+        let ok = unsafe {
+            DeviceIoControl(
+                h,
+                IOCTL_INJECT,
+                cmd.as_ptr().cast(),
+                4,
+                core::ptr::null_mut(),
+                0,
+                &raw mut ret,
+                core::ptr::null_mut(),
+            )
+        };
+        ok != 0
+    }
+}
+
 fn send_key(vk: u32, scan: u16, down: bool) -> bool {
+    if driver_inject::send(vk, down) {
+        return true;
+    }
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
