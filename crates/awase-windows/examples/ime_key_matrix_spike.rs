@@ -729,6 +729,10 @@ mod driver_inject {
         })
     }
 
+    pub fn available() -> bool {
+        handle().is_some()
+    }
+
     /// ドライバで送れたら true。
     pub fn send(scan: u16, down: bool) -> bool {
         let Some(h) = handle() else { return false };
@@ -756,8 +760,22 @@ mod driver_inject {
 }
 
 fn send_key(vk: u32, down: bool) {
-    if vk & (SCAN_ONLY | NOSCAN) == 0 && driver_inject::send(scan_for(vk), down) {
-        return;
+    if vk & (SCAN_ONLY | NOSCAN) == 0 {
+        // 物理の JIS キーボードでは、カタカナ(0xF1)は「カタカナひらがなローマ字」キー(0x70)の Shift 付き(単独はひらがな 0xF2)。
+        // 物理と同じ手順にするため、左 Shift(0x2A)の make を先に、break を後に挟む。
+        if vk == 0xF1 && driver_inject::available() {
+            if down {
+                driver_inject::send(0x2A, true);
+                driver_inject::send(0x70, true);
+            } else {
+                driver_inject::send(0x70, false);
+                driver_inject::send(0x2A, false);
+            }
+            return;
+        }
+        if driver_inject::send(scan_for(vk), down) {
+            return;
+        }
     }
     let up = if down {
         KEYBD_EVENT_FLAGS(0)
