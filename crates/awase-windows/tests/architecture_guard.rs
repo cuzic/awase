@@ -5956,6 +5956,47 @@ fn general_keymap_prediction_flags_are_wired_at_bootstrap_and_reload() {
     }
 }
 
+/// BUG-103（`cf15df44`）: `[[post_bypass]]` ルールの構築は、起動時（`app/bootstrap.rs`）と設定リロード時
+/// （`Runtime::apply_config_update`）の**両方**が同じ `PostBypassEntry::compile_all(config)` を呼び、リロード側は
+/// 結果を `self.post_bypass_rules` へ書き戻すこと。以前はリロード側の配線が無く、設定を保存しても
+/// `[[post_bypass]]` の変更は再起動まで効かなかった。片方だけ別の構築に戻す・書き戻しを落とすとここで落ちる。
+#[test]
+fn post_bypass_rules_are_compiled_at_bootstrap_and_reload() {
+    let squash = |s: &str| -> String { non_comment_lines(s).split_whitespace().collect() };
+    let bootstrap = read_crate_file("src/app/bootstrap.rs");
+    let bootstrap_code = squash(production_code_only(&bootstrap));
+    assert_eq!(
+        bootstrap_code
+            .matches("PostBypassEntry::compile_all(config)")
+            .count(),
+        1,
+        "src/app/bootstrap.rs は起動時に `PostBypassEntry::compile_all(config)` をちょうど1回呼ぶこと"
+    );
+
+    let runtime_mod = read_crate_file("src/runtime/mod.rs");
+    let reload = squash(extract_fn_body(
+        &runtime_mod,
+        "pub(crate) fn apply_config_update(",
+    ));
+    let compile_pos = reload
+        .find("PostBypassEntry::compile_all(config)")
+        .expect("Runtime::apply_config_update は `PostBypassEntry::compile_all(config)` を呼ぶこと（BUG-103）");
+    assert_eq!(
+        reload.matches("compile_all(").count(),
+        1,
+        "apply_config_update の中の compile_all はちょうど1回"
+    );
+    let store_pos = reload
+        .find("self.post_bypass_rules=post_bypass_rules;")
+        .expect(
+            "apply_config_update は compile_all の結果を self.post_bypass_rules へ書き戻すこと",
+        );
+    assert!(
+        compile_pos < store_pos,
+        "self.post_bypass_rules への書き戻しは compile_all の後"
+    );
+}
+
 /// `config.general.half_width_alnum_toggle` の反映（`Runtime::
 /// set_half_width_alnum_toggle_policy`）が、起動時（`app/bootstrap.rs`）と
 /// 設定リロード時（`Runtime::apply_config_update`）の**両方**から呼ばれて
@@ -8267,6 +8308,62 @@ fn mode_key_follow_skips_auto_repeat_at_entry() {
         squashed.contains("mode_key_follow_admits_repeat(event.was_down)"),
         "kp_stage_mode_key_follow は入口で mode_key_follow_admits_repeat(event.was_down) を見ること"
     );
+}
+
+/// ADR-247 追補（#592）: 自動リピートの除外は、IME の役割を持たない F13〜F24 を含めて、追随の副作用
+/// （直接観測の窓 `arm_direct_external_change_watch`・通過マーク `arm_mode_key_pass_mark`・読み直しの予約
+/// `schedule_ime_refresh`）の**どれよりも前**の早期 return で効くこと。
+///
+/// 上の `mode_key_follow_skips_auto_repeat_at_entry` は述語の呼び出しが本体にあることしか見ない。ここでは
+/// (1) 述語が `||!…` で or 連結された入口の条件の中にあり、その条件の直後の `{return;}` で抜けること、
+/// (2) 対象キーの判定（`is_followed_mode_key`、F13〜F24 を含む）より前に置かれていること（キーの種類に依らず除外）、
+/// (3) 述語〜その `{return;}` の間にも、それより前にも副作用の呼び出しが無いこと、を文字位置の順序で固定する。
+#[test]
+fn mode_key_follow_repeat_return_precedes_every_side_effect() {
+    let src = read_crate_file("src/runtime/key_pipeline.rs");
+    let body: String = non_comment_lines(extract_fn_body(&src, "fn kp_stage_mode_key_follow"))
+        .split_whitespace()
+        .collect();
+    let pred = "||!crate::state::mode_key_pass::mode_key_follow_admits_repeat(event.was_down)";
+    let pred_pos = body
+        .find(pred)
+        .expect("入口の条件に `|| !…mode_key_follow_admits_repeat(event.was_down)` があること");
+    let followed_pos = body
+        .find("crate::vk::is_followed_mode_key(event.vk_code)")
+        .expect("入口の条件に is_followed_mode_key があること");
+    assert!(
+        pred_pos < followed_pos,
+        "リピートの除外は対象キーの判定より前（IME の役割を持たない F13〜F24 も同じく除外する）"
+    );
+    let return_pos = body.find("{return;}").expect("入口の早期 return");
+    assert!(
+        pred_pos < return_pos && followed_pos < return_pos,
+        "リピートの除外と対象キーの判定は、最初の `{{return;}}` の条件の中にあること"
+    );
+    // 述語から最初の return までは同じ `if` の条件（別の `{` を挟まない）。
+    let cond = &body[pred_pos..return_pos];
+    assert!(
+        !cond.contains('{') && !cond.contains(';'),
+        "リピートの除外は最初の早期 return と同じ条件の中にあること: {cond}"
+    );
+    // 本体の先頭は `{if` で、その `if` の条件が最初の `{return;}` まで続く（別の文を挟まない）。
+    assert!(
+        body.starts_with("{if") && !body[..return_pos].contains(';'),
+        "入口の `if` の前に別の文を置かない"
+    );
+    for side_effect in [
+        "arm_direct_external_change_watch(",
+        "arm_mode_key_pass_mark(",
+        "schedule_ime_refresh(",
+    ] {
+        let pos = body
+            .find(side_effect)
+            .unwrap_or_else(|| panic!("kp_stage_mode_key_follow に {side_effect} が無い"));
+        assert!(
+            return_pos < pos,
+            "{side_effect} はリピートを除外する早期 return より後でなければならない"
+        );
+    }
 }
 
 /// ADR-253（BUG-198）: 再注入の `KEYBDINPUT`（`wVk`/`wScan`/`dwFlags`）は純粋関数 `vk::reinject_key_spec`
