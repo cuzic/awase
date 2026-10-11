@@ -25,6 +25,9 @@ related_adr:
 
 **実装状況(段階3b、衝突警告、2026-10-11)**: `warn_on_engine_hotkey_collision` を、警告文を返す純粋関数 `engine_hotkey_collision_warnings` に分け、遅いルール(`ime = "off"`)の `from` が `keys.engine_on/off`・`keys.ime_on/off/toggle` と同じキーのときは「そのキーは IME の機能を持つため発動しません」(決定5)と出す(従来の「[[keymap]] が先に消費するため〜発火しなくなります」は遅いルールには誤りだった。#596 S4)。無変換の遅いルールで `general.muhenkan_solo_tap_dedicated_fn_key` が設定されているときも警告する。IME 設定・学習表由来の役割は実行時にしか決まらないので、読み込み時の警告には載せず、発動時の `[late-keymap]` デバッグログに任せる。変換側の専用 Fn キー設定は `GeneralConfig` に無いので対象外。
 
+||||||| 58fe5f9b
+
+**実装状況(段階3b、設定画面、2026-10-11)**: 再割り当てタブに「IME の状態」(いつでも/OFF のとき)の列、「無変換・変換を IME OFF のとき Space にする」のプリセットボタン、決定5 の注意5点(折りたたみ)を足した。「OFF のとき」を選ぶと from は無修飾の無変換/変換に限り(キャプチャも同様)、Ctrl/Shift のチェックは出さない。GitHub Windows CI のスクリーンショット(幅 760/480)で表示を確認した。保存の正規の表記は `[[keymaps]]`(`[[keymap]]` は旧表記)。**CI 実機検証(段階3b、sc-late-space-*)**: IME OFF で無変換/変換が空白1つ、ON では入らない、IMEOn の行がある側は Space にならない、40/20/8ms の連打で「foo bar」の順序が対照と同じ、押したままの KeyDown 6回で Space は1個(run 38101407602・38104575361、各 n=1)。composition 中・belief が外れた窓・実 Chrome は未確認。
 ## コンテキスト
 
 ### 報告
@@ -72,7 +75,7 @@ related_adr:
 ### 決定1: `[[keymap]]` に `ime` を足す(r7)
 
 ```toml
-[[keymap]]
+[[keymaps]]
 from = "VK_NONCONVERT"
 to = ["VK_SPACE"]
 ime = "off"
