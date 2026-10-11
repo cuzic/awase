@@ -71,7 +71,12 @@ jobs:
           function Click-Name($hwnd, $name) {
             $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
             $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)
-            $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+            # アクセシビリティの木は最初の問い合わせで有効になるので、数回読み直す。
+            for ($try = 0; $try -lt 6; $try++) {
+              $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+              if ($found.Count -gt 0) { break }
+              Start-Sleep -Seconds 2
+            }
             Write-Host "UIA '$name': $($found.Count) element(s)"
             if ($found.Count -eq 0) {
               $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
@@ -96,7 +101,7 @@ jobs:
 
           # 1) ルールなし(既定)の画面と、プリセットボタンを押した後
           $c0 = Write-Cfg "empty" "[general]`r`n"
-          $p = Launch $c0 760 900
+          $p = Launch $c0 760 700
           Snap "1-empty-760-screen" $bounds
           $ok = Click-Name $p.MainWindowHandle "無変換・変換を IME OFF のとき Space にする"
           Start-Sleep -Seconds 2
@@ -116,7 +121,7 @@ jobs:
           ) -join "`r`n"
           $c1 = Write-Cfg "mixed" $mixed
           foreach ($w in @(760, 480)) {
-            $p = Launch $c1 $w 900
+            $p = Launch $c1 $w 700
             Snap "4-mixed-$w-screen" $bounds
             if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
           }
