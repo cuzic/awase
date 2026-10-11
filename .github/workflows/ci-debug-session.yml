@@ -25,9 +25,8 @@ jobs:
       - name: Connect to Tailscale (ephemeral node, tag:ci-ephemeral)
         uses: tailscale/github-action@v3
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci-ephemeral
+          # Tailnet Lock が有効でも、auth key で入るノードは署名済みとして扱われる(OAuth 経由は locked out になった)
+          authkey: ${{ secrets.TS_AUTHKEY }}
           hostname: gh-win-${{ github.run_id }}
 
       - name: Install and configure OpenSSH server (public-key only)
