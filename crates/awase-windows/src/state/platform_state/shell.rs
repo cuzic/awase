@@ -117,6 +117,14 @@ impl ImeStateHub {
         self.arm_direct_external_change_watch_in_scope(now_ms, crate::win32::foreground_scope());
     }
 
+    /// FSM がモードキーを送ったら呼ぶ（executor の `SendKeys`、ADR-188 追記7）。直接観測の窓を開く／延ばし、送り直しの印を付ける。
+    pub(crate) fn arm_direct_resend_external_change_watch(&mut self, now_ms: u64) {
+        self.arm_direct_resend_external_change_watch_in_scope(
+            now_ms,
+            crate::win32::foreground_scope(),
+        );
+    }
+
     /// 直接観測の窓の中の prefetch 済みの読みを belief と照合し、食い違う軸へ追随する（ADR-188）。
     pub(crate) fn follow_direct_read(
         &mut self,

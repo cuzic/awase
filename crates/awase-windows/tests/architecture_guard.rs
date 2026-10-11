@@ -4552,13 +4552,23 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
             ),
             // ADR-188: 直接観測の窓（物理のモードキー通過・FSM 再送出）。arm は `kp_stage_mode_key_follow` と executor の再送出の各1箇所、
             // 追随は `ir_follow_direct_mode_key_read` の1箇所だけ。殻は `_in_scope` 版をちょうど1回ずつ呼ぶ。
+            // ADR-188 追記7: executor の FSM 送出は送り直しの印つきの arm（`arm_direct_resend_*`）を使い、物理の通過は印なし。
+            // 取り違えると、物理の打鍵でガードが外れる（c353bcbb の退行が戻る）か、送り直しでガードが残る（sc-armc の FAIL）。
             (
                 ".arm_direct_external_change_watch(",
-                &["runtime/key_pipeline.rs", "runtime/executor.rs"][..],
+                &["runtime/key_pipeline.rs"][..],
+            ),
+            (
+                ".arm_direct_resend_external_change_watch(",
+                &["runtime/executor.rs"][..],
             ),
             (".follow_direct_read(", &["runtime/ime_refresh.rs"][..]),
             (
                 ".arm_direct_external_change_watch_in_scope(",
+                &["state/platform_state/shell.rs"][..],
+            ),
+            (
+                ".arm_direct_resend_external_change_watch_in_scope(",
                 &["state/platform_state/shell.rs"][..],
             ),
             (
@@ -8190,5 +8200,68 @@ fn raw_key_event_reinject_builds_input_from_reinject_key_spec() {
     assert!(
         !code.contains("reinject_scan_code(") && !code.contains("KEYEVENTF_KEYUP"),
         "reinject 本体に wScan/KEYUP の直書きを戻さないこと（reinject_key_spec に集約）"
+    );
+}
+
+/// ADR-188 追記7（案1）: 直接観測の窓内の読みを予測に任せるガード（c353bcbb）は、純関数 `prediction_guard` で決め、
+/// 送り直しの印（`resend_arm_ms`）を渡す。`pred.at_ms >= armed_at` の直書きに戻すと、素通し設定で親指を押したまま別キーを
+/// 打ったときに FSM の送り直しで外れた予測が正しい読みを捨てる（sc-armc-*-passthru の FAIL）が、Linux の他のテストでは
+/// 配線の外れとして見えない。印を付けるのは `arm_direct_resend` だけで、その呼び出し元は executor（上の件数ガード）。
+#[test]
+fn direct_follow_prediction_guard_uses_the_resend_marker() {
+    let ps = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/platform_state.rs",
+    )));
+    let follow = ps
+        .split("fn follow_direct_read_in_scope")
+        .nth(1)
+        .expect("follow_direct_read_in_scope が無い");
+    let follow = &follow[..follow.find("\n    }\n").unwrap_or(follow.len())];
+    let squashed: String = follow.split_whitespace().collect();
+    assert!(
+        squashed.contains("external_change_watch::prediction_guard(pred_at,armed_at,resend_at)"),
+        "follow_direct_read_in_scope は prediction_guard で予測のガードを決めること: {follow}"
+    );
+    assert!(
+        squashed.contains("letresend_at=self.external_change_watch.resend_arm_ms();"),
+        "送り直しの印を prediction_guard に渡すこと: {follow}"
+    );
+    assert!(
+        squashed.contains("ifguard.defers(){returnNone;}"),
+        "ガードが予測に任せると決めたら読みを採らないこと: {follow}"
+    );
+    assert!(
+        !squashed.contains("pred.at_ms>=armed_at"),
+        "予測のガードを直書きしないこと（送り直しの印が効かなくなる）: {follow}"
+    );
+    let arm = ps
+        .split("fn arm_direct_resend_external_change_watch_in_scope")
+        .nth(1)
+        .expect("arm_direct_resend_external_change_watch_in_scope が無い");
+    let arm = &arm[..arm.find("\n    }\n").unwrap_or(arm.len())];
+    assert!(
+        arm.contains(".arm_direct_resend("),
+        "送り直しの arm は印つきの arm_direct_resend を呼ぶこと: {arm}"
+    );
+    let watch = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/external_change_watch.rs",
+    )));
+    let physical = watch
+        .split("pub fn arm_direct(")
+        .nth(1)
+        .expect("arm_direct が無い");
+    let physical = &physical[..physical.find("\n    }\n").unwrap_or(physical.len())];
+    assert!(
+        physical.contains("DirectArmSource::Physical"),
+        "物理の arm は印を付けないこと: {physical}"
+    );
+    let resend = watch
+        .split("pub fn arm_direct_resend(")
+        .nth(1)
+        .expect("arm_direct_resend が無い");
+    let resend = &resend[..resend.find("\n    }\n").unwrap_or(resend.len())];
+    assert!(
+        resend.contains("DirectArmSource::FsmResend"),
+        "送り直しの arm は印を付けること: {resend}"
     );
 }
