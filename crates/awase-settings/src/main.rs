@@ -10,14 +10,15 @@ use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 use awase_windows::scancode_apply::ApplyRequest;
 use awase_windows::scancode_diagram::{
-    DiagramContext, PositionState, diagram_rows, displayed_function, drop_function, drop_hint,
-    function_at, locked_note, position_state, refusal_text, release_position, unlisted_pairs,
+    DiagramContext, EditUnit, PositionState, diagram_rows, displayed_function, drop_function,
+    drop_hint, function_at_units, locked_note, position_state, refusal_text, release_position,
+    release_unit, unlisted_units,
 };
 use awase_windows::scancode_editor::{
     EditorState, QUICK_PAIRS, Unavailable, caps_filter_notice, caps_filter_present,
     confirmation_lines, key_label, registry_state, status_line, swap_error_text, worker_exit_text,
 };
-use awase_windows::scancode_pairs::{Detected, Entry, Pair, detect_swap_pairs};
+use awase_windows::scancode_pairs::{Cycle, Detected, Entry, Pair, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
@@ -3444,6 +3445,7 @@ impl SettingsApp {
                     Ok(plan) => Ok((
                         ApplyRequest {
                             pairs: loaded.editor.pairs(),
+                            cycles: loaded.editor.cycles().to_vec(),
                             caps_extra_ctrl: loaded.editor.caps_extra(),
                             expected: loaded.entries.clone(),
                             allow_displace: !plan.displaced.is_empty(),
@@ -5369,9 +5371,11 @@ fn scancode_editor_ui(
 /// ここは描画と入力（ドラッグ&ドロップ・クリック2回・「戻す」）の反映だけ。
 fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: bool) {
     let pairs = loaded.editor.pairs();
+    let cycles = loaded.editor.cycles().to_vec();
     let caps_extra = loaded.editor.caps_extra();
     let ctx = DiagramContext {
         pairs: &pairs,
+        cycles: &cycles,
         detected: &loaded.detected,
         caps_extra,
         jis,
@@ -5379,7 +5383,7 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
         ime_role_thumbs: loaded.editor.ime_role_thumbs(),
     };
     let entries = &loaded.entries;
-    let mut new_pairs: Option<Vec<Pair>> = None;
+    let mut new_units: Option<(Vec<Pair>, Vec<Cycle>)> = None;
     let mut message: Option<String> = None;
     let mut hint: Option<String> = None;
     let mut selected = loaded.selected;
@@ -5396,10 +5400,10 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
             // 横スクロール領域の内側は幅が見かけの幅に押し込まれるので、キー名やボタンの文字を折り返させない
             // （折り返すと、右端のキーの文字が縦に割れて行が縦に伸びる。CI のスクリーンショットで確認）。
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            for row in diagram_rows(&pairs, jis) {
+            for row in diagram_rows(&pairs, &cycles, jis) {
                 ui.horizontal(|ui| {
                     for pos in row {
-                        let function = displayed_function(&pairs, caps_extra, pos);
+                        let function = displayed_function(&pairs, &cycles, caps_extra, pos);
                         let changed = function != pos;
                         let state = position_state(&ctx, pos);
                         let editable = matches!(state, PositionState::Editable);
@@ -5425,11 +5429,13 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                 resp.dnd_set_drag_payload(function);
                                 if let Some(payload) = resp.dnd_hover_payload::<u16>() {
                                     let result = drop_function(&ctx, entries, *payload, pos);
-                                    hint = Some(drop_hint(&result, key_label));
+                                    hint = Some(drop_hint(&result, pos, key_label));
                                 }
                                 if let Some(payload) = resp.dnd_release_payload::<u16>() {
                                     match drop_function(&ctx, entries, *payload, pos) {
-                                        Ok(effect) => new_pairs = Some(effect.pairs),
+                                        Ok(effect) => {
+                                            new_units = Some((effect.pairs, effect.cycles))
+                                        }
                                         Err(refusal) => message = Some(refusal_text(refusal)),
                                     }
                                     selected = None;
@@ -5438,9 +5444,11 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                         None => selected = Some(pos),
                                         Some(s) if s == pos => selected = None,
                                         Some(s) => {
-                                            let from = function_at(&pairs, s);
+                                            let from = function_at_units(&pairs, &cycles, s);
                                             match drop_function(&ctx, entries, from, pos) {
-                                                Ok(effect) => new_pairs = Some(effect.pairs),
+                                                Ok(effect) => {
+                                                    new_units = Some((effect.pairs, effect.cycles));
+                                                }
                                                 Err(refusal) => {
                                                     message = Some(refusal_text(refusal))
                                                 }
@@ -5463,7 +5471,7 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                         }
                                 );
                             if releasable && ui.small_button("戻す").clicked() {
-                                new_pairs = Some(release_position(&pairs, pos));
+                                new_units = Some(release_position(&pairs, &cycles, pos));
                                 selected = None;
                             }
                         });
@@ -5472,19 +5480,28 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
             }
         });
     // 図に描けない（許可リスト外のキーを含む）入れ替えは、一覧で解除する。
-    for pair in unlisted_pairs(&pairs) {
-        let (a, b) = pair.keys();
+    for unit in unlisted_units(&pairs, &cycles) {
+        let label = match &unit {
+            EditUnit::Pair(pair) => {
+                let (a, b) = pair.keys();
+                format!("{} ⇄ {}", key_label(a), key_label(b))
+            }
+            EditUnit::Cycle(cycle) => {
+                let names: Vec<String> = cycle.keys().iter().map(|&k| key_label(k)).collect();
+                format!("{} → {}", names.join(" → "), names[0])
+            }
+        };
         ui.horizontal(|ui| {
-            ui.label(format!("{} ⇄ {}", key_label(a), key_label(b)));
+            ui.label(label);
             if ui.small_button("解除").clicked() {
-                new_pairs = Some(pairs.iter().copied().filter(|p| *p != pair).collect());
+                new_units = Some(release_unit(&pairs, &cycles, &unit));
             }
         });
     }
     if let Some(s) = selected {
         ui.label(format!(
             "「{}」を選んでいます。入れ替え先のキーをクリックしてください（Esc で取り消し）。",
-            key_label(function_at(&pairs, s))
+            key_label(function_at_units(&pairs, &cycles, s))
         ));
     }
     if let Some(h) = &hint {
@@ -5494,8 +5511,8 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
         ui.colored_label(egui::Color32::from_rgb(200, 120, 0), m);
     }
     loaded.selected = selected;
-    if let Some(p) = new_pairs {
-        loaded.editor.set_pairs(&p);
+    if let Some((p, c)) = new_units {
+        loaded.editor.set_units(&p, &c);
         loaded.diagram_message = None;
     } else if message.is_some() {
         loaded.diagram_message = message;

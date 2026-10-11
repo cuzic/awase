@@ -89,6 +89,55 @@ pub struct DetectedPair {
     pub warning: bool,
 }
 
+/// 3つ以上のキーの循環（ADR-248 決定6）。`keys[i]` の位置が `keys[i+1]`（最後は `keys[0]`）の機能を出す。
+/// エントリは `(keys[i], keys[i+1])`。長さ2の循環は [`Pair`]。最小のキーが先頭になるよう回転して正規化する
+/// （向きは区別する: 逆向きの循環は別の置換）。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Cycle {
+    keys: Vec<u16>,
+}
+
+impl Cycle {
+    /// 3つ以上・重複なし・0 を含まないときだけ作れる。
+    #[must_use]
+    pub fn new(keys: &[u16]) -> Option<Self> {
+        if keys.len() < 3 || keys.contains(&0) {
+            return None;
+        }
+        let mut sorted = keys.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.len() != keys.len() {
+            return None;
+        }
+        let start = keys.iter().enumerate().min_by_key(|&(_, &k)| k)?.0;
+        let mut rotated = keys[start..].to_vec();
+        rotated.extend_from_slice(&keys[..start]);
+        Some(Self { keys: rotated })
+    }
+
+    /// 循環のキー（最小のキーが先頭）。
+    #[must_use]
+    pub fn keys(&self) -> &[u16] {
+        &self.keys
+    }
+
+    /// この循環が書き込むエントリ `(位置, その位置が出す機能)`。
+    #[must_use]
+    pub fn entries(&self) -> Vec<Entry> {
+        let n = self.keys.len();
+        (0..n)
+            .map(|i| (self.keys[i], self.keys[(i + 1) % n]))
+            .collect()
+    }
+
+    /// `key` を含むか。
+    #[must_use]
+    pub fn contains(&self, key: u16) -> bool {
+        self.keys.contains(&key)
+    }
+}
+
 /// ペアとして読めなかった理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnclaimedReason {
@@ -106,6 +155,8 @@ pub enum UnclaimedReason {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Detected {
     pub pairs: Vec<DetectedPair>,
+    /// 3つ以上の閉じた循環（from も to も他のエントリと重ならないもの）。編集できる入れ替えとして読む（ADR-248 決定6）。
+    pub cycles: Vec<Cycle>,
     /// `Caps/英数 → 左 Ctrl` の片方向だけがある（ADR-126 のプリセット）。
     pub caps_extra_ctrl: bool,
     /// ペアでもプリセットでもないエントリ（他ツールのもの。保持され、読み取り専用で表示する）。
@@ -143,6 +194,57 @@ pub fn detect_swap_pairs(entries: &[Entry]) -> Detected {
         taken_keys.push(a);
         taken_keys.push(b);
         accepted.push(Pair::new(a, b));
+    }
+
+    // 3つ以上の閉じた循環（ADR-248 決定6）。採用済みペアのキーと被らず、from も to も全エントリの中で1回ずつだけのエントリを
+    // たどって元へ戻るもの。許可リストには関係なく読む（ペアと同じ。作る・変えるときだけ許可リストを当てる）。
+    // Caps 追加 Ctrl より先に見る: `Caps→左Ctrl, 左Ctrl→X, X→Caps` は、プリセット+他ツール2件ではなく1つの循環。
+    let candidate: Vec<usize> = (0..entries.len())
+        .filter(|&i| {
+            let (a, b) = entries[i];
+            !used[i]
+                && a != b
+                && a != 0
+                && b != 0
+                && !taken_keys.contains(&a)
+                && !taken_keys.contains(&b)
+                && entries.iter().filter(|e| e.0 == a).count() == 1
+                && entries.iter().filter(|e| e.1 == b).count() == 1
+        })
+        .collect();
+    let mut cycles: Vec<Cycle> = Vec::new();
+    let mut in_cycle = vec![false; entries.len()];
+    for &start in &candidate {
+        if in_cycle[start] {
+            continue;
+        }
+        let mut chain = vec![start];
+        let mut current = start;
+        let closed = loop {
+            let want = entries[current].1;
+            let Some(&next) = candidate.iter().find(|&&j| entries[j].0 == want) else {
+                break false;
+            };
+            if next == start {
+                break true;
+            }
+            if chain.contains(&next) {
+                break false;
+            }
+            chain.push(next);
+            current = next;
+        };
+        if !closed {
+            continue;
+        }
+        let keys: Vec<u16> = chain.iter().map(|&i| entries[i].0).collect();
+        if let Some(cycle) = Cycle::new(&keys) {
+            for &i in &chain {
+                in_cycle[i] = true;
+                used[i] = true;
+            }
+            cycles.push(cycle);
+        }
     }
 
     // Caps 追加 Ctrl: `Caps→左 Ctrl` が単独（逆向きがペアに取られていない）で残っている。
@@ -198,6 +300,7 @@ pub fn detect_swap_pairs(entries: &[Entry]) -> Detected {
 
     Detected {
         pairs,
+        cycles,
         caps_extra_ctrl,
         unclaimed,
     }
@@ -246,14 +349,72 @@ pub fn compute_swap_write(
     pairs: &[Pair],
     caps_extra_ctrl: bool,
 ) -> Result<WritePlan, SwapError> {
-    // 1. `pairs` 自体の検査（キー単位）。
-    let mut seen: Vec<u16> = Vec::new();
-    for pair in pairs {
+    compute_swap_write_with_cycles(existing, pairs, &[], caps_extra_ctrl)
+}
+
+/// 編集の単位（ペア＝長さ2の循環、または3つ以上の循環）。キーとエントリを持つ。
+#[derive(Debug, Clone)]
+struct Unit {
+    keys: Vec<u16>,
+    entries: Vec<Entry>,
+}
+
+impl Unit {
+    fn from_pair(pair: Pair) -> Self {
         let (a, b) = pair.keys();
-        if a == b {
-            return Err(SwapError::SelfPair { key: a });
+        Self {
+            keys: vec![a, b],
+            entries: pair.entries().to_vec(),
         }
-        for key in [a, b] {
+    }
+
+    fn from_cycle(cycle: &Cycle) -> Self {
+        Self {
+            keys: cycle.keys().to_vec(),
+            entries: cycle.entries(),
+        }
+    }
+
+    /// 書き込むエントリの集合が同じか（順序は問わない）。
+    fn same(&self, other: &Self) -> bool {
+        let sorted = |u: &Self| {
+            let mut e = u.entries.clone();
+            e.sort_unstable();
+            e
+        };
+        sorted(self) == sorted(other)
+    }
+
+    /// `A⇄A`（自分自身とのペア）。
+    fn is_self_pair(&self) -> bool {
+        self.keys.len() == 2 && self.keys[0] == self.keys[1]
+    }
+}
+
+/// [`compute_swap_write`] のペアに、3つ以上の循環 `cycles`（ADR-248 決定6）を加えたもの。ペアと循環は同じ「単位」として検査する:
+/// 同じキーが複数の単位に現れてはならず、新規に作る単位のキーは許可リスト内で、Caps 追加 Ctrl・他ツールの to と衝突しない。
+/// 「残す・消す」の単位は、ペアも循環も、エントリがすべて値として一致するかどうか（1つでも変われば、元の単位を消して新規に作る）。
+///
+/// # Errors
+/// [`SwapError`] を参照。
+pub fn compute_swap_write_with_cycles(
+    existing: &[Entry],
+    pairs: &[Pair],
+    cycles: &[Cycle],
+    caps_extra_ctrl: bool,
+) -> Result<WritePlan, SwapError> {
+    // 1. `pairs`・`cycles` 自体の検査（キー単位）。
+    let units: Vec<Unit> = pairs
+        .iter()
+        .map(|&p| Unit::from_pair(p))
+        .chain(cycles.iter().map(Unit::from_cycle))
+        .collect();
+    let mut seen: Vec<u16> = Vec::new();
+    for unit in &units {
+        if unit.is_self_pair() {
+            return Err(SwapError::SelfPair { key: unit.keys[0] });
+        }
+        for &key in &unit.keys {
             if seen.contains(&key) {
                 return Err(SwapError::DuplicateKey { key });
             }
@@ -262,28 +423,36 @@ pub fn compute_swap_write(
     }
 
     let detected = detect_swap_pairs(existing);
-    let existing_pairs: Vec<Pair> = detected.pairs.iter().map(|d| d.pair).collect();
-    let new_pairs: Vec<Pair> = pairs
+    let existing_units: Vec<Unit> = detected
+        .pairs
         .iter()
-        .copied()
-        .filter(|p| !existing_pairs.contains(p))
+        .map(|d| Unit::from_pair(d.pair))
+        .chain(detected.cycles.iter().map(Unit::from_cycle))
+        .collect();
+    let new_units: Vec<&Unit> = units
+        .iter()
+        .filter(|u| !existing_units.iter().any(|e| e.same(u)))
         .collect();
     let adds_caps = caps_extra_ctrl && !detected.caps_extra_ctrl;
 
     // 2. 新規に作るものだけに、許可リストと Caps 追加 Ctrl との衝突を適用する。
-    for pair in &new_pairs {
-        for key in [pair.keys().0, pair.keys().1] {
+    for unit in &new_units {
+        for &key in &unit.keys {
             if !ALLOWED_SCANCODES.contains(&key) {
                 return Err(SwapError::NotAllowed { key });
             }
         }
     }
-    // Caps 追加 Ctrl を新たに足すときは全ペアを、既に有効なときは新規ペアだけを検査する
+    // Caps 追加 Ctrl を新たに足すときは全単位を、既に有効なときは新規の単位だけを検査する
     // （既存の状態が既に同居していても、何も変えない操作や削除は通す）。
     if caps_extra_ctrl {
-        let checked: &[Pair] = if adds_caps { pairs } else { &new_pairs };
-        for pair in checked {
-            for key in [pair.keys().0, pair.keys().1] {
+        let checked: Vec<&Unit> = if adds_caps {
+            units.iter().collect()
+        } else {
+            new_units.clone()
+        };
+        for unit in checked {
+            for &key in &unit.keys {
                 if key == SCANCODE_CAPS_EISU || key == SCANCODE_LEFT_CTRL {
                     return Err(SwapError::CapsExtraConflict { key });
                 }
@@ -292,23 +461,21 @@ pub fn compute_swap_write(
     }
 
     // 3. 新規に作るエントリ。
-    let mut added: Vec<Entry> = new_pairs.iter().flat_map(|p| p.entries()).collect();
+    let mut added: Vec<Entry> = new_units
+        .iter()
+        .flat_map(|u| u.entries.iter().copied())
+        .collect();
     if adds_caps {
         added.push((SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL));
     }
 
-    // 4. 消すものを決める。外されたペア・外された Caps 追加 Ctrl のエントリ（removed_own）と、新規エントリの from と同じ
+    // 4. 消すものを決める。外された単位・外された Caps 追加 Ctrl のエントリ（removed_own）と、新規エントリの from と同じ
     //    from を持つ他ツールのエントリ（replaced。Caps 追加 Ctrl を足すとき、他ツールの `左 Ctrl→Caps` が残ると組が
     //    入れ替えに読み替わるので、これも消す）。いずれも**値**で消す（同じ写像の複製は1つを消すなら全部消す）。
-    let kept_pairs: Vec<Pair> = existing_pairs
-        .iter()
-        .copied()
-        .filter(|p| pairs.contains(p))
-        .collect();
     let mut removed_own: Vec<Entry> = Vec::new();
-    for d in &detected.pairs {
-        if !kept_pairs.contains(&d.pair) {
-            removed_own.extend(d.pair.entries());
+    for existing_unit in &existing_units {
+        if !units.iter().any(|u| u.same(existing_unit)) {
+            removed_own.extend(existing_unit.entries.iter().copied());
         }
     }
     if detected.caps_extra_ctrl && !caps_extra_ctrl {
@@ -438,10 +605,11 @@ mod tests {
     }
 
     #[test]
-    fn three_cycle_is_all_unclaimed() {
+    fn three_cycle_is_read_as_a_cycle_not_unclaimed() {
         let d = detect_swap_pairs(&[(MUH, HEN), (HEN, SPC), (SPC, MUH)]);
         assert!(d.pairs.is_empty());
-        assert_eq!(d.unclaimed.len(), 3);
+        assert!(d.unclaimed.is_empty());
+        assert_eq!(d.cycles, vec![Cycle::new(&[MUH, HEN, SPC]).unwrap()]);
     }
 
     #[test]
@@ -796,8 +964,13 @@ mod tests {
             let before = detect_swap_pairs(existing);
             let before_pairs: Vec<Pair> = before.pairs.iter().map(|d| d.pair).collect();
             // 何も変えない呼び出しは恒等、削除だけは常に成功する。
-            let same = compute_swap_write(existing, &before_pairs, before.caps_extra_ctrl)
-                .expect("恒等は常に通る");
+            let same = compute_swap_write_with_cycles(
+                existing,
+                &before_pairs,
+                &before.cycles,
+                before.caps_extra_ctrl,
+            )
+            .expect("恒等は常に通る");
             assert_eq!(&same.entries, existing, "identity: {existing:?}");
             let removal = compute_swap_write(existing, &[], false).expect("全削除は常に通る");
             assert!(removal.entries.len() <= existing.len());
@@ -820,6 +993,12 @@ mod tests {
                     assert!(
                         after.caps_extra_ctrl == caps
                             || (caps && got.contains(&Pair::new(CAPS, LCTRL)))
+                            // 他ツールのエントリと合わせて、閉じた循環に読み替わった（`Caps→左 Ctrl` はその1エントリ）。
+                            || (caps
+                                && after
+                                    .cycles
+                                    .iter()
+                                    .any(|c| c.entries().contains(&(CAPS, LCTRL))))
                             || (after.caps_extra_ctrl
                                 && before.unclaimed.iter().any(|&(e, _)| e == (CAPS, LCTRL))),
                         "existing={existing:?} pairs={pairs:?} caps={caps}"
@@ -913,8 +1092,13 @@ mod tests {
             assert!(removal.displaced.is_empty());
 
             // 何も変えない呼び出しは恒等。
-            let same = compute_swap_write(&existing, &before_pairs, before.caps_extra_ctrl)
-                .expect("恒等は常に通る");
+            let same = compute_swap_write_with_cycles(
+                &existing,
+                &before_pairs,
+                &before.cycles,
+                before.caps_extra_ctrl,
+            )
+            .expect("恒等は常に通る");
             assert_eq!(same.entries, existing);
 
             let Ok(plan) = compute_swap_write(&existing, &pairs, caps) else {
@@ -942,6 +1126,12 @@ mod tests {
             assert!(
                 after.caps_extra_ctrl == caps
                     || (caps && got.contains(&Pair::new(CAPS, LCTRL)))
+                    // 他ツールのエントリと合わせて、閉じた循環に読み替わった（`Caps→左 Ctrl` はその1エントリ）。
+                    || (caps
+                        && after
+                            .cycles
+                            .iter()
+                            .any(|c| c.entries().contains(&(CAPS, LCTRL))))
                     // 消したペアと重なっていた他ツールの `Caps→左 Ctrl` が、単独になって Caps 追加 Ctrl に読めるようになった。
                     || (after.caps_extra_ctrl
                         && before.unclaimed.iter().any(|&(e, _)| e == (CAPS, LCTRL))),
@@ -964,5 +1154,219 @@ mod tests {
             ok_count > 500,
             "成功する入力が少なすぎて性質を検査できていない: {ok_count}"
         );
+    }
+
+    // ---- 循環（ADR-248 決定6） ----
+
+    fn all_permutations(keys: &[u16]) -> Vec<Vec<u16>> {
+        // keys の並べ替え全部（σ(keys[i]) = result[i]）。
+        fn rec(rest: &mut Vec<u16>, cur: &mut Vec<u16>, out: &mut Vec<Vec<u16>>) {
+            if rest.is_empty() {
+                out.push(cur.clone());
+                return;
+            }
+            for i in 0..rest.len() {
+                let k = rest.remove(i);
+                cur.push(k);
+                rec(rest, cur, out);
+                cur.pop();
+                rest.insert(i, k);
+            }
+        }
+        let mut out = Vec::new();
+        rec(&mut keys.to_vec(), &mut Vec::new(), &mut out);
+        out
+    }
+
+    /// 置換 σ（`keys[i]` の位置が `image[i]` を出す）を、長さ2の循環（ペア）と3つ以上の循環に分ける。
+    fn decompose(keys: &[u16], image: &[u16]) -> (Vec<Pair>, Vec<Cycle>) {
+        let sigma = |k: u16| image[keys.iter().position(|&x| x == k).unwrap()];
+        let mut seen: Vec<u16> = Vec::new();
+        let (mut pairs, mut cycles) = (Vec::new(), Vec::new());
+        for &start in keys {
+            if seen.contains(&start) || sigma(start) == start {
+                continue;
+            }
+            let mut chain = vec![start];
+            let mut cur = sigma(start);
+            while cur != start {
+                chain.push(cur);
+                cur = sigma(cur);
+            }
+            seen.extend(chain.iter().copied());
+            if chain.len() == 2 {
+                pairs.push(Pair::new(chain[0], chain[1]));
+            } else {
+                cycles.push(Cycle::new(&chain).unwrap());
+            }
+        }
+        (pairs, cycles)
+    }
+
+    #[test]
+    fn cycle_new_normalizes_rotation_and_rejects_bad_input() {
+        let c = Cycle::new(&[HEN, SPC, MUH]).unwrap();
+        assert_eq!(c.keys()[0], c.keys().iter().copied().min().unwrap());
+        assert_eq!(c, Cycle::new(&[SPC, MUH, HEN]).unwrap());
+        assert_eq!(c, Cycle::new(&[MUH, HEN, SPC]).unwrap());
+        // 向きは区別する。
+        assert_ne!(
+            Cycle::new(&[MUH, HEN, SPC]).unwrap(),
+            Cycle::new(&[MUH, SPC, HEN]).unwrap()
+        );
+        assert!(Cycle::new(&[MUH, HEN]).is_none());
+        assert!(Cycle::new(&[MUH, HEN, MUH]).is_none());
+        assert!(Cycle::new(&[MUH, HEN, 0]).is_none());
+        // エントリは「位置 → その位置が出す機能」。
+        let c = Cycle::new(&[MUH, HEN, SPC]).unwrap();
+        let mut e = c.entries();
+        e.sort_unstable();
+        let mut want = vec![(MUH, HEN), (HEN, SPC), (SPC, MUH)];
+        want.sort_unstable();
+        assert_eq!(e, want);
+    }
+
+    #[test]
+    fn a_cycle_with_an_overlapping_foreign_entry_is_not_read_as_a_cycle() {
+        // from の重複
+        let d = detect_swap_pairs(&[(MUH, HEN), (HEN, SPC), (SPC, MUH), (MUH, LALT)]);
+        assert!(d.cycles.is_empty());
+        assert_eq!(d.unclaimed.len(), 4);
+        // to の重複（別のキーが同じ機能を出す）
+        let d = detect_swap_pairs(&[(MUH, HEN), (HEN, SPC), (SPC, MUH), (LALT, MUH)]);
+        assert!(d.cycles.is_empty());
+        // 閉じていない鎖
+        let d = detect_swap_pairs(&[(MUH, HEN), (HEN, SPC)]);
+        assert!(d.cycles.is_empty());
+        assert_eq!(d.unclaimed.len(), 2);
+    }
+
+    #[test]
+    fn a_cycle_outside_the_allowlist_is_still_read_as_a_cycle() {
+        let d = detect_swap_pairs(&[(0x0010, 0x0011), (0x0011, 0x0012), (0x0012, 0x0010)]);
+        assert_eq!(d.cycles.len(), 1);
+        assert!(d.unclaimed.is_empty());
+    }
+
+    #[test]
+    fn a_cycle_through_caps_and_ctrl_wins_over_the_caps_extra_ctrl_preset() {
+        let d = detect_swap_pairs(&[(CAPS, LCTRL), (LCTRL, MUH), (MUH, CAPS)]);
+        assert!(!d.caps_extra_ctrl);
+        assert_eq!(d.cycles.len(), 1);
+        assert!(d.unclaimed.is_empty());
+        // 単独の Caps→左 Ctrl は、これまでどおりプリセット。
+        let d = detect_swap_pairs(&[(CAPS, LCTRL)]);
+        assert!(d.caps_extra_ctrl && d.cycles.is_empty());
+    }
+
+    #[test]
+    fn creating_keeping_editing_and_removing_a_cycle() {
+        let c1 = Cycle::new(&[MUH, HEN, SPC]).unwrap();
+        // 作る。
+        let plan = compute_swap_write_with_cycles(&[], &[], &[c1.clone()], false).unwrap();
+        let mut e = plan.entries.clone();
+        e.sort_unstable();
+        let mut want = c1.entries();
+        want.sort_unstable();
+        assert_eq!(e, want);
+        // 何も変えない呼び出しは恒等。
+        let same =
+            compute_swap_write_with_cycles(&plan.entries, &[], &[c1.clone()], false).unwrap();
+        assert_eq!(same.entries, plan.entries);
+        // 向きを変えた循環に置き換える: 元のエントリは消え、新しいエントリが入る。
+        let c2 = Cycle::new(&[MUH, SPC, HEN]).unwrap();
+        let edited =
+            compute_swap_write_with_cycles(&plan.entries, &[], &[c2.clone()], false).unwrap();
+        let mut got = edited.entries.clone();
+        got.sort_unstable();
+        let mut want = c2.entries();
+        want.sort_unstable();
+        assert_eq!(got, want);
+        // 削除は常に通る。
+        let removed = compute_swap_write_with_cycles(&plan.entries, &[], &[], false).unwrap();
+        assert!(removed.entries.is_empty());
+        // ペアに縮める（3巡回 → ペア）。
+        let to_pair =
+            compute_swap_write_with_cycles(&plan.entries, &[Pair::new(MUH, HEN)], &[], false)
+                .unwrap();
+        assert_eq!(to_pair.entries.len(), 2);
+    }
+
+    #[test]
+    fn a_new_cycle_gets_the_new_unit_checks() {
+        // 許可リスト外のキーを含む新しい循環は作れない。
+        let bad = Cycle::new(&[MUH, HEN, 0x0010]).unwrap();
+        assert_eq!(
+            compute_swap_write_with_cycles(&[], &[], &[bad], false),
+            Err(SwapError::NotAllowed { key: 0x0010 })
+        );
+        // Caps 追加 Ctrl と Caps/左 Ctrl を含む循環は同居できない。
+        let with_caps = Cycle::new(&[CAPS, MUH, HEN]).unwrap();
+        assert_eq!(
+            compute_swap_write_with_cycles(&[], &[], &[with_caps], true),
+            Err(SwapError::CapsExtraConflict { key: CAPS })
+        );
+        // 同じキーがペアと循環の両方に現れてはならない。
+        let c = Cycle::new(&[MUH, HEN, SPC]).unwrap();
+        assert_eq!(
+            compute_swap_write_with_cycles(&[], &[Pair::new(MUH, LALT)], &[c], false),
+            Err(SwapError::DuplicateKey { key: MUH })
+        );
+        // 他ツールのエントリの to と同じ機能を出すエントリは新たに作れない。
+        let c = Cycle::new(&[MUH, HEN, SPC]).unwrap();
+        assert!(matches!(
+            compute_swap_write_with_cycles(&[(LALT, HEN)], &[], &[c], false),
+            Err(SwapError::CollidesWithForeignTarget { .. })
+        ));
+    }
+
+    #[test]
+    fn an_existing_cycle_outside_the_allowlist_can_be_kept_and_removed() {
+        let existing = [(0x0010, 0x0011), (0x0011, 0x0012), (0x0012, 0x0010)];
+        let d = detect_swap_pairs(&existing);
+        let same = compute_swap_write_with_cycles(&existing, &[], &d.cycles, false).unwrap();
+        assert_eq!(same.entries, existing);
+        let removed = compute_swap_write_with_cycles(&existing, &[], &[], false).unwrap();
+        assert!(removed.entries.is_empty());
+    }
+
+    #[test]
+    fn every_permutation_of_four_keys_round_trips_through_write_and_read() {
+        let keys = [LALT, SPC, MUH, HEN];
+        let mut checked = 0;
+        for image in all_permutations(&keys) {
+            let (pairs, cycles) = decompose(&keys, &image);
+            let plan = compute_swap_write_with_cycles(&[], &pairs, &cycles, false)
+                .expect("許可リスト内の置換は書ける");
+            // 書いたエントリは、恒等でない位置ごとに1つだけで、「位置 → 機能」が σ と一致する。
+            let non_fixed = keys.iter().zip(&image).filter(|(k, v)| k != v).count();
+            assert_eq!(plan.entries.len(), non_fixed, "{image:?}");
+            for (k, v) in keys.iter().zip(&image) {
+                if k != v {
+                    assert!(plan.entries.contains(&(*k, *v)), "{image:?}");
+                }
+            }
+            // 読み戻すと、同じ単位（ペアと循環）に分類される。
+            let read = detect_swap_pairs(&plan.entries);
+            let mut read_pairs: Vec<Pair> = read.pairs.iter().map(|d| d.pair).collect();
+            let mut want_pairs = pairs.clone();
+            read_pairs.sort_unstable();
+            want_pairs.sort_unstable();
+            assert_eq!(read_pairs, want_pairs, "{image:?}");
+            let mut read_cycles = read.cycles.clone();
+            let mut want_cycles = cycles.clone();
+            read_cycles.sort();
+            want_cycles.sort();
+            assert_eq!(read_cycles, want_cycles, "{image:?}");
+            assert!(read.unclaimed.is_empty(), "{image:?}");
+            // 何も変えない呼び出しは恒等、全削除は常に通る。
+            let same =
+                compute_swap_write_with_cycles(&plan.entries, &pairs, &cycles, false).unwrap();
+            assert_eq!(same.entries, plan.entries, "{image:?}");
+            let none = compute_swap_write_with_cycles(&plan.entries, &[], &[], false).unwrap();
+            assert!(none.entries.is_empty(), "{image:?}");
+            checked += 1;
+        }
+        assert_eq!(checked, 24);
     }
 }
