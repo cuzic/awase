@@ -1,7 +1,7 @@
 # デバッグ用: GitHub ホスト型の Windows ランナーを Tailscale につなぎ、SSH で入って、CI を最初からやり直さずに試行錯誤する。
 #
 # 使い方(docs/ci/debug-session.md):
-#   1. リポジトリのシークレット TS_OAUTH_CLIENT_ID・TS_OAUTH_SECRET を登録(Tailscale の OAuth クライアント、タグ tag:ci)
+#   1. リポジトリのシークレット TS_OAUTH_CLIENT_ID・TS_OAUTH_SECRET を登録(Tailscale の OAuth クライアント、タグ tag:ci-ephemeral)
 #   2. このブランチ(ci/debug-session)へ push すると起動する(空コミットでよい)
 #   3. ログに出る tailnet のホスト名・IP へ、専用鍵で SSH:  ssh -i ~/.ssh/awase_ci_debug runneradmin@<host>
 #   4. 終わったらランナー上で `New-Item C:\ci-debug-stop` を作る(ジョブが終わる)。放置しても最大 timeout-minutes で終わる
@@ -22,12 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Connect to Tailscale (ephemeral node, tag:ci)
+      - name: Connect to Tailscale (ephemeral node, tag:ci-ephemeral)
         uses: tailscale/github-action@v3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          tags: tag:ci-ephemeral
           hostname: gh-win-${{ github.run_id }}
 
       - name: Install and configure OpenSSH server (public-key only)
@@ -63,6 +63,7 @@ jobs:
           Write-Host "=== connect ==="
           & $ts ip -4
           & $ts status --json | ConvertFrom-Json | ForEach-Object { Write-Host "DNSName: $($_.Self.DNSName)" }
+          & $ts status 2>&1 | Select-Object -First 15
           Write-Host "ssh -i ~/.ssh/awase_ci_debug runneradmin@gh-win-${{ github.run_id }}"
           Write-Host "stop: New-Item C:\ci-debug-stop"
           $sw = [Diagnostics.Stopwatch]::StartNew()

@@ -5,14 +5,14 @@ GitHub ホスト型の Windows ランナーを Tailscale につなぎ、SSH で�
 
 ## 用意するもの(所有者)
 
-1. Tailscale の管理画面で OAuth クライアントを作る。権限は `auth_keys` の書き込み(Devices Core / Auth Keys: write)、タグは `tag:ci`。
+1. Tailscale の管理画面で OAuth クライアントを作る。権限は `auth_keys` の書き込み(Devices Core / Auth Keys: write)、タグは `tag:ci-ephemeral`。
 2. GitHub のリポジトリのシークレットに、`TS_OAUTH_CLIENT_ID` と `TS_OAUTH_SECRET` を登録する。
 3. tailnet の ACL に、タグの所有者と、開発マシンからランナーへの SSH を許す規則を足す:
 
 ```json
-"tagOwners": { "tag:ci": ["autogroup:admin"] },
+"tagOwners": { "tag:ci-ephemeral": ["autogroup:admin"] },
 "acls": [
-  { "action": "accept", "src": ["autogroup:member"], "dst": ["tag:ci:22"] }
+  { "action": "accept", "src": ["autogroup:member"], "dst": ["tag:ci-ephemeral:22"] }
 ]
 ```
 
