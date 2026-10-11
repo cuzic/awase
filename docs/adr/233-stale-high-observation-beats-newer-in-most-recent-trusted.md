@@ -31,7 +31,7 @@ related_adr:
 
 反転 26 回中 26 回が `→ false decided_by=MostRecentTrusted(ImmCrossProbe)`。
 
-**実質は「同じ読み取りの新旧」であり、信頼度の差ではない。** 本番で open 観測プールに書く経路は 4 つだけ(`ObserverPoll` Medium、`ImmCrossProbe` High〈呼び出しは `key_pipeline.rs` と `focus_tracking.rs`、どちらも Standard に限る〉、`FocusProbe` Low、`HeuristicDefault` Low。`ConvOpenInference` の口はテスト以外から呼ばれない)。**Standard の窓の中では** High と Medium は**どちらも `read_ime_state_full` で同じ focused hwnd を読む**ため、High/Medium は測り方の質の差でなくラベルの差である。同じ測定が 2 つあれば新しい方が正しい。
+**実質は「同じ読み取りの新旧」であり、信頼度の差ではない。** 本番で open 観測プールに書く経路は 4 つだけ(`ObserverPoll` Medium、`ImmCrossProbe` High〈呼び出しは `key_pipeline.rs` と `focus_tracking.rs`、どちらも Standard に限る〉、`FocusProbe` Low、`HeuristicDefault` Low。**【訂正 2026-10-11】** 当初「`ConvOpenInference` の口はテスト以外から呼ばれない」と書いたのは誤り。本番でも TsfNative の idle-conv-check〈`runtime/key_pipeline.rs::kp_apply_conv_engine_sync` の `EngineSync::ReportOpenInference` 分岐、`report_conv_open_inference`、2ba75c68 時点で 975 行〉から Medium で書かれるので、本番の経路は 5 つ。ただし TsfNative の窓には High〈ICP〉が無いので、下の「Standard の窓の中では」の結論は変わらない。扱いは末尾の「`ConvOpenInference` の扱い」)。**Standard の窓の中では** High と Medium は**どちらも `read_ime_state_full` で同じ focused hwnd を読む**ため、High/Medium は測り方の質の差でなくラベルの差である。同じ測定が 2 つあれば新しい方が正しい。
 
 (`ObserverPoll` を書く本番経路は 3 つある: ① `platform_state.rs::apply_ime_update`(OS ポーリング、上の読み取り) ② `ime_refresh.rs` の `ImeReadStrategy::Blacklist` 分岐(GJI の I/O 活動からの推測、BUG-114 で「自己言及的な弱い代理指標」とされた) ③ `follow_external_change_in_scope`(ADR-205、Imm32Unavailable × GJI)。Standard の窓の中では ②③ は起きないので結論は変わらない。ただし `update_focus_window` は同一プロセス内の窓切替でプールを消さないため、前の窓の古い ICP が残ったまま新しい窓が `can_use_imm32_cross_process()=false` だと ② の弱い ObserverPoll が後から入る。そのとき A' は弱い ObserverPoll を、旧は fence の合わない古い ICP を採る。どちらが正しいとも言えず A' の悪化ではない。D〈fence 照合〉の別 ADR の測定対象とする。)
 
@@ -107,6 +107,12 @@ belief のフォールバック(`resolve_open_at` が明示意図・`KeyEffectPr
 - LibreOffice の `Engine deactivated` が `MostRecentTrusted` かは確定した(MS-IME 25 件・GJI 7 件の `[mrt-shadow]` と `[effective-open-flip]` が対応)。
 - drift 側(古い ICP が drift を止めている件)は別 BUG: **[BUG-191](../known-bugs/BUG-191.md) に起票した**(CI で再現、`cal-driftrec-refocus-edit-*` の全 6 run で 9 回/run の `StaleObservation`、方針〈ADR-212 の流れ〉は所有者判断待ち)。
 - D(fence 照合)は別 ADR。
+
+## `ConvOpenInference` の扱い(2026-10-11 追記、Opus 判定 2026-10-10・コードで裏取り)
+
+背景の訂正(`ConvOpenInference` は本番でも idle-conv-check から書かれる)を受けて、`most_recent_trusted`(A')と `most_recent_trusted_excluding`(drift)で `ConvOpenInference` の扱いが違う非対称が意図どおりかを確かめた。意図どおりと判断する。
+- 新鮮な(`OBSERVATION_FRESH_WINDOW_MS`=3s 以内の)Medium は、`resolve_open_at` が `most_recent_trusted` に降りる前に、`derive_any` の段 2(Medium 以上の無競合多数決、`observation_store.rs::derive_filtered`)で既に決まる。順位キー `(confidence >= Medium, at, confidence)` が結果を変えるのは、鮮度窓の 3 秒を過ぎた後だけ。
+- `drift_correction.rs::evaluate_drift` が `ConvOpenInference` を除外するのは、順位とは別の理由(BUG-173 追補3: conv の NATIVE ビットは IME を閉じても残り、`VK_IME_OFF` を送っても観測が変わらないので drift の根拠にしない)。A' の適用範囲(belief のフォールバックだけを変える)とは独立。
 
 ## 状態
 
