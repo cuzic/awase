@@ -278,6 +278,9 @@ jobs:
             *[cfg(f'sc-dbe-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}')
               for ime_name, ime, km, msime in SC_IMES],
+            # ADR-255: sc-dbe-gji-msime を、ドライバ経由のスキャンコード(JIS 申告、物理キーと同じ Down/Up の vk)で打つ比較。従来の vk 直接指定の sc-dbe-gji-msime と結果を比べる。
+            cfg('sc-dbe-gji-msime-drv', 'observe', check='consistency', ime='gji', keymap=2, driver='jis', until='2026-11-10',
+                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --inject-driver'),
             *[cfg(f'sc-kanji-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,19,19,16,1A,16,1A,19,F2,1A{msime}')
               for ime_name, ime, km, msime in SC_IMES],
@@ -1167,8 +1170,9 @@ jobs:
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
           # ADR-255: キーボードフィルタドライバ(tools/kbd-inject-driver)を入れる。typing_stress の --inject-driver で、物理キーと同じ経路(LLKHF_INJECTED なし)でキーを送る。
-          if ('${{ matrix.cfg.driver }}' -eq '1') {
-            & "$PWD\tools\kbd-inject-driver\install-driver.ps1"
+          if ('${{ matrix.cfg.driver }}' -in '1', 'jis') {
+            # 'jis': キーボードの種類を JIS(type 7)と申告し直して、スキャンコード→JIS の vk 変換(物理キーの Down/Up の非対称)を通す。
+            if ('${{ matrix.cfg.driver }}' -eq 'jis') { & "$PWD\tools\kbd-inject-driver\install-driver.ps1" -JisType } else { & "$PWD\tools\kbd-inject-driver\install-driver.ps1" }
             if (-not $?) { Write-Host '::error::キーボードフィルタドライバを入れられなかった'; exit 3 }
           }
           # 設定画面で保存した設定を使う(ADR-255 の保存→読み込み→動作の通し)。via_settings='preset' のときだけ。

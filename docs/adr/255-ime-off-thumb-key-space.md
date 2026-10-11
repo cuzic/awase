@@ -35,6 +35,8 @@ related_adr:
 
 **ドライバ方式の日本語キー(JIS)の再現(段階3b、2026-10-11、GitHub Windows CI、run 38139382930)**: Hyper-V の仮想キーボードは `GetKeyboardType` が type=4(101/102 配列)で、そのままだと日本語キーのスキャンコードが JIS の vk に変換されない(無変換 0x7B→0xEB、ひらがな 0x70・変換 0x79→0xFF、半角/全角 0x29→0xC0)。`awasekbf` に `Parameters\JisType=1`(`install-driver.ps1 -JisType`)を足し、`IOCTL_KEYBOARD_QUERY_ATTRIBUTES`(**通常ではなく内部デバイス制御**で来る)の完了ルーチンで type 7・subtype 2 に書き換えると、ひらがな 0x70 は **Down=0xF2/Up=0xF0**、半角/全角 0x29 は Down=0xF4/Up=0xF3(BUG-131/132 の物理キーの Down/Up 非対称)、無変換→0x1D、変換→0x1C になる。vk 直接指定の SendInput(従来の e2e)は Down/Up とも同じ vk で、この非対称は再現できなかった。呼んだプロセス側の `GetKeyboardType` は 4 のまま。計測は `tools/kbd-inject-driver/layout-probe.ps1`。注意: フォーカスのある窓へ Alt を流すとシステムメニューのモーダルループで止まる。
 
+**DBE 系 e2e を物理キーと同じ手順(ドライバ経由のスキャンコード、JIS 申告)で打つ比較(2026-10-11、run 38141556091、各 3 run)**: `sc-dbe-gji-msime`(vk 直接指定、従来)と `sc-dbe-gji-msime-drv`(`ime_key_matrix_spike --inject-driver` + `install-driver.ps1 -JisType`)は、どちらも 9 手順(ひらがな・英数・カタカナ)× 3 run が ALL PASS で、実 IME と Engine の追随に差は出なかった(この系統で新しいバグは見つからなかった)。物理と同じ手順にするには、カタカナ(0xF1)は「カタカナひらがなローマ字」キー 0x70 に **Shift(0x2A)を付けて**送る必要がある(単独の 0x70 はひらがな 0xF2。最初の実行〈run 38141042383〉はこれを知らず手順が 7/9 件になって FAIL した)。`sc-dbe-gji-msime-drv` は観測用(until 2026-11-10)。
+
 ## コンテキスト
 
 ### 報告
