@@ -404,6 +404,9 @@ pub const fn reinject_key_spec(vk_code: VkCode, scan_code: u32, is_keyup: bool) 
 /// （旧`is_convert_or_nonconvert`は、awaseが方向を決めて書くキーの明示意図まで捨てないよう
 /// 無変換/変換に限っていた。そのキー群は静的な`shadow_action`の撤去で、`shadow_action`を持たない
 /// キーだけがここに来る。呼び出し側は`shadow_action.is_none()`も併せて確認する。）
+///
+/// ADR-247: F13〜F24（0x7C〜0x87）も対象。IME の役割を持たない F キーも含むので、呼び出し側
+/// （`kp_stage_mode_key_follow`）は OS の自動リピート（`was_down`）を除外する。
 #[must_use]
 pub const fn is_followed_mode_key(vk_code: VkCode) -> bool {
     (is_ime_mode_key_for_ime(vk_code) && !matches!(vk_code.0, 0x16 | 0x1A)) || is_role_fkey(vk_code)
@@ -1315,8 +1318,7 @@ mod tests {
         assert!(!should_upgrade_is_japanese_ime(true, VkCode(0xF2))); // HIRAGANA, injected
     }
 
-    /// ADR-199 決定18: F13〜F24 は物理キーが実在しうる（プログラマブルキーボード等）ので、受信そのものは
-    /// IME の証拠にならず `is_japanese_ime` を上げてはならない（ADR-093 の基準、BUG-14 と同じ理由）。
+    /// ADR-247: F13〜F24（0x7C〜0x87）は追随の対象。F12 と、awase 自身が意図を持って書く IME ON（0x16）は除く。
     #[test]
     fn adr247_f13_to_f24_are_followed_mode_keys() {
         for vk in 0x7C..=0x87 {
@@ -1327,6 +1329,8 @@ mod tests {
         assert!(!crate::vk::is_followed_mode_key(VkCode(0x16))); // awase 自身の IME ON は従来どおり除く
     }
 
+    /// ADR-199 決定18: F13〜F24 は物理キーが実在しうる（プログラマブルキーボード等）ので、受信そのものは
+    /// IME の証拠にならず `is_japanese_ime` を上げてはならない（ADR-093 の基準、BUG-14 と同じ理由）。
     #[test]
     fn should_upgrade_is_japanese_ime_false_for_f13_to_f24() {
         for vk in 0x7C..=0x87 {

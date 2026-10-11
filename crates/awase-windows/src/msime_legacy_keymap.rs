@@ -525,7 +525,8 @@ mod windows_impl {
     }
 
     /// 版スタンプ用の値(ADR-254)。`keystyle`の種別と、`Custom`のときは`key`・`S4key`の中身を混ぜる
-    /// (2 つだけ。打鍵の経路で 2 秒ごとに呼ばれるので全表は読まない)。`Absent`/`Natural`は 0。
+    /// (2 つだけ。打鍵の経路で 2 秒ごとに呼ばれるので全表は読まない)。種別タグは常に混ぜるので、
+    /// `Absent`/`Natural`でも 0 にはならない(値は等値比較にしか使わない)。
     #[must_use]
     pub(crate) fn keystyle_stamp_mix() -> u64 {
         use windows::Win32::System::Registry::RRF_RT_REG_BINARY;
