@@ -86,6 +86,7 @@
 
 mod jitter;
 mod keymatrix;
+mod lateorder;
 mod perturb;
 mod preedit;
 mod suspend;
@@ -1541,6 +1542,7 @@ fn worker(form: Form) {
     let drift_on = mode_arg.as_deref() == Some("drift-on");
     let reopen = mode_arg.as_deref() == Some("reopen");
     let preedit = mode_arg.as_deref() == Some("preedit");
+    let lateorder = mode_arg.as_deref() == Some("lateorder");
     let keymatrix = mode_arg.as_deref() == Some("keymatrix");
     let startup = mode_arg.as_deref() == Some("startup");
     let startup_on = arg_value("--startup-ime=").as_deref() == Some("on");
@@ -1586,7 +1588,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if reopen {"reopen"} else if preedit {"preedit"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if reopen {"reopen"} else if preedit {"preedit"} else if lateorder {"lateorder"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "no_awase":has_flag("--no-awase"),"startup_skip_refocus2":has_flag("--startup-skip-refocus2"),
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
@@ -1676,6 +1678,11 @@ fn worker(form: Form) {
     }
     if preedit {
         preedit::preedit_scenario(child, &cells);
+        finish();
+        return;
+    }
+    if lateorder {
+        lateorder::lateorder_scenario(child);
         finish();
         return;
     }
