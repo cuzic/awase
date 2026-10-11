@@ -62,6 +62,8 @@ pub enum Unavailable {
     CapsKeysInUse,
     /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）が入っていて、英数 / Caps か左 Ctrl を含む設定は二重になる。
     CapsFilterDriver,
+    /// 親指キー（無変換/変換）が、IME の ON/OFF キー（`keys.ime_on`/`ime_off`/`ime_toggle` に修飾キーなしで書いたキー）も兼ねている。
+    ThumbImeRole,
 }
 
 impl Unavailable {
@@ -79,6 +81,9 @@ impl Unavailable {
             }
             Self::CapsFilterDriver => {
                 "Caps を Ctrl にするドライバ（Ctrl2cap など）が入っているため、「英数 / Caps」と「左 Ctrl」の設定は二重になります。ドライバをアンインストールして再起動すると設定できます。"
+            }
+            Self::ThumbImeRole => {
+                "親指キーが IME の ON/OFF キーも兼ねているため、入れ替えると IME の切り替えが働かなくなります。「キー設定」の IME ON/OFF（keys.ime_on/ime_off/ime_toggle）から外すと設定できます。"
             }
         }
     }
@@ -234,6 +239,8 @@ pub struct EditorState {
     caps_extra: bool,
     /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）が入っている（`Scancode Map` とは別の仕組み）。
     caps_filter: bool,
+    /// IME の ON/OFF キーも兼ねている親指キーのスキャンコード（入れ替えさせない）。
+    ime_role_thumbs: Vec<u16>,
 }
 
 impl EditorState {
@@ -257,7 +264,29 @@ impl EditorState {
             rows,
             caps_extra: detected.caps_extra_ctrl,
             caps_filter: false,
+            ime_role_thumbs: Vec::new(),
         }
+    }
+
+    /// IME の ON/OFF キーも兼ねている親指キーのスキャンコードを設定する（読み込み時に1回）。
+    pub fn set_ime_role_thumbs(&mut self, keys: Vec<u16>) {
+        self.ime_role_thumbs = keys;
+    }
+
+    /// IME の ON/OFF キーも兼ねている親指キーのスキャンコード。
+    #[must_use]
+    pub fn ime_role_thumbs(&self) -> &[u16] {
+        &self.ime_role_thumbs
+    }
+
+    /// IME の ON/OFF キーも兼ねている親指キーを含む、新しい入れ替えを足している（適用させない）。読み込み時からあるものは止めない。
+    #[must_use]
+    pub fn ime_role_conflict(&self) -> bool {
+        self.pairs().iter().any(|p| {
+            let (a, b) = p.keys();
+            !self.initial_pairs.contains(p)
+                && (self.ime_role_thumbs.contains(&a) || self.ime_role_thumbs.contains(&b))
+        })
     }
 
     /// Caps を Ctrl にするキーボードフィルタドライバが入っているかを設定する（読み込み時に1回）。
@@ -360,6 +389,8 @@ impl EditorState {
                 Some(Unavailable::CapsExtraOn)
             } else if self.caps_filter && (k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL) {
                 Some(Unavailable::CapsFilterDriver)
+            } else if self.ime_role_thumbs.contains(&k) {
+                Some(Unavailable::ThumbImeRole)
             } else if !jis && is_jis_only(k) {
                 Some(Unavailable::JisOnlyKey)
             } else {
@@ -750,6 +781,31 @@ mod tests {
     }
 
     #[test]
+    fn a_thumb_key_that_is_also_an_ime_key_cannot_be_swapped() {
+        // 変換が IME ON/OFF キーも兼ねている。
+        let mut e = editor(&[]);
+        e.set_ime_role_thumbs(vec![HEN]);
+        assert_eq!(e.ime_role_thumbs(), &[HEN]);
+        // 変換を含むワンクリック(変換 ⇄ スペース)は使えず、理由が出る。含まないものは使える。
+        assert_eq!(
+            e.quick_unavailable(&QUICK_PAIRS[1], true),
+            Some(Unavailable::ThumbImeRole)
+        );
+        assert_eq!(e.quick_unavailable(&QUICK_PAIRS[0], true), None);
+        // 無理に作っても、適用の段で止める。
+        e.set_pairs(&[Pair::new(HEN, SPC)]);
+        assert!(e.ime_role_conflict());
+        e.set_pairs(&[Pair::new(CAPS, LCTRL)]);
+        assert!(!e.ime_role_conflict());
+        // 読み込み時からある入れ替えは止めない（外す・そのままは通る）。
+        let mut had = editor(&[(HEN, SPC), (SPC, HEN)]);
+        had.set_ime_role_thumbs(vec![HEN]);
+        assert!(!had.ime_role_conflict());
+        had.release_all();
+        assert!(!had.ime_role_conflict());
+    }
+
+    #[test]
     fn caps_filter_present_matches_the_notice() {
         let names = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         assert!(caps_filter_present(&names(&["kbdclass", "Ctrl2Cap"])));
@@ -870,6 +926,7 @@ mod tests {
             Unavailable::JisOnlyKey,
             Unavailable::CapsKeysInUse,
             Unavailable::CapsFilterDriver,
+            Unavailable::ThumbImeRole,
         ] {
             assert!(!u.text().is_empty());
         }
