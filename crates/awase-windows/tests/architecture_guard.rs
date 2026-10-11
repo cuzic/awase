@@ -4757,6 +4757,18 @@ fn direct_follow_holds_reads_for_unconfirmed_awase_write() {
         1,
         "未確認の書き込みを控えるのは record_ime_apply_result_in_scope の1箇所だけ"
     );
+    let dispatch = ps
+        .split("pub fn dispatch_event")
+        .nth(1)
+        .expect("dispatch_event が無い");
+    let dispatch = &dispatch[..dispatch.find("\n    }\n").unwrap_or(dispatch.len())];
+    let dispatch_squashed: String = dispatch.split_whitespace().collect();
+    assert!(
+        dispatch_squashed.contains(
+            "ifmatches!(event,ImeEvent::FocusChanged{..}|ImeEvent::FocusHwndUpdated{..}){self.external_change_watch.clear_awase_writes();}"
+        ),
+        "フォーカスが移ったら awase の未確認の書き込みを捨てること(レビュー S3): {dispatch}"
+    );
     let record = ps
         .split("fn record_ime_apply_result_in_scope")
         .nth(1)

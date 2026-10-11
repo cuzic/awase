@@ -202,6 +202,13 @@ impl ImeStateHub {
                 // （record_explicit_intent の doc 参照）が行う。
             }
         }
+        // ADR-256（レビュー S3）: フォーカスが移ったら、awase の未確認の書き込み（控え・窓へ引き継いだもの）を捨てる。
+        if matches!(
+            event,
+            ImeEvent::FocusChanged { .. } | ImeEvent::FocusHwndUpdated { .. }
+        ) {
+            self.external_change_watch.clear_awase_writes();
+        }
         let time = self
             .event_log
             .record_at(&event, tick_ms, self.clock.now_instant());
@@ -536,6 +543,17 @@ impl ImeStateHub {
         if let Some(w) = confirmed.pending {
             tracing::debug!("[direct-follow] awase-write confirmed before arm open={w} (ADR-256)");
         }
+        // ADR-256（レビュー M1）: 引き継いだ書き込みが未確認のまま窓が切れたら、効果のあった保持の回数とともに残す
+        // （保持が利用者の逆向きの操作を窓の全体で止めた頻度を数える。この後の `direct_live` が窓を捨てる）。
+        if let Some((w, holds)) = self.external_change_watch.expired_unconfirmed_awase_write(
+            scope,
+            now_ms,
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        ) {
+            tracing::info!(
+                "[direct-follow] awase-write expired unconfirmed open={w} effective_holds={holds}: 窓の間に awase の書き込みと同じ値を一度も読まなかった (ADR-256)"
+            );
+        }
         if !self.external_change_watch.direct_live(
             scope,
             now_ms,
@@ -552,9 +570,31 @@ impl ImeStateHub {
         // 覆して閉じた IME へローマ字を送る（R3 は arm 以後の書き込みしか守らない）。
         let carried = self.external_change_watch.carried_awase_write();
         if super::external_change_watch::direct_read_held_by_awase_write(carried, read_open) {
-            tracing::info!(
-                "[direct-follow] awase-write held read_open={read_open:?} carried={carried:?}: 未確認の awase の書き込みと食い違う窓内の読みを採らない (ADR-256、BUG-199)"
-            );
+            // 保持しなければ belief を動かしていた読み（予測のガードが捨てず、判定が追随する読み）だけを「効果あり」と数える
+            // （レビュー S1。時間切れ・belief と同じ値・予測に任せる打鍵の読みは、保持しなくても結果が変わらない）。
+            let predicted = self
+                .shadow_model
+                .key_effect()
+                .is_some_and(|pred| pred.at_ms >= armed_at);
+            let would_follow = !predicted
+                && !super::external_change_watch::classify_direct_read_for(
+                    kind,
+                    read_open,
+                    read_conv,
+                    self.effective_open_at(tick_ms),
+                    self.input_mode() == InputModeState::ObservedEisu,
+                )
+                .is_none();
+            if would_follow {
+                self.external_change_watch.note_effective_hold();
+                tracing::info!(
+                    "[direct-follow] awase-write held read_open={read_open:?} carried={carried:?}: 未確認の awase の書き込みと食い違う窓内の読みを採らない (ADR-256、BUG-199)"
+                );
+            } else {
+                tracing::debug!(
+                    "[direct-follow] awase-write held (no effect) read_open={read_open:?} carried={carried:?} predicted={predicted} (ADR-256)"
+                );
+            }
             return None;
         }
         // 打鍵時点の予測（ADR-191 決定3）がこの打鍵に付いているキーは、予測に任せる。予測はキーの効果を先に反映済みで、
@@ -4204,6 +4244,33 @@ mod tests {
                 "outcome={outcome:?} write_at={write_at} confirm_before_arm={confirm_before_arm}"
             );
         }
+    }
+
+    /// レビュー S3: 書き込みの後に同じ前景窓の中でフォーカス hwnd が移ったら、控えを捨てて保持しない（移った先の読みを採る）。
+    #[test]
+    fn follow_direct_read_drops_the_awase_write_on_focus_hwnd_update() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 900);
+        ps.ime.record_ime_apply_result_in_scope(
+            false,
+            awase::platform::ImeOpenOutcome::Applied,
+            None,
+            910,
+            test_foreground_scope(),
+        );
+        ps.ime.dispatch_event(
+            ImeEvent::FocusHwndUpdated {
+                hwnd: HwndId(0x5678),
+            },
+            TickMs(950),
+        );
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        assert_eq!(
+            read_gji_direct(&mut ps, Some(true), 1032),
+            Some(direct_follow(Some(true), None))
+        );
     }
 
     /// 窓が無い・基準値方式(ADR-205)の窓・スコープ違い・窓切れでは、直接観測の追随をしない。

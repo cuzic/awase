@@ -32,6 +32,10 @@ struct Armed<S> {
     /// 窓内で同じ値を読むまで、窓内の読みを採らない（[`direct_read_held_by_awase_write`]）。同じ値を読んだら `None` に戻す。
     /// 窓が切れたら窓ごと消える。
     awase_write: Option<bool>,
+    /// ADR-256: `awase_write` のために、保持しなければ belief を動かしていた読みを採らなかった回数（ログ・計測用）。
+    /// 窓が `awase_write` 未確認のまま切れたときにこの回数を出し、保持が利用者の操作（awase の書き込みと逆向き）を
+    /// 窓の全体で止めた頻度を数える（ADR-256 の既知の限界）。
+    effective_holds: u16,
 }
 
 /// awase 自身が SendInput で IME へ送った開閉の書き込みのうち、まだ同じ値の読みで確かめられていないもの（ADR-256）。
@@ -64,6 +68,10 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
 
     /// ADR-256（BUG-199）: awase 自身が SendInput で IME へ開閉を書いた（`ImeOpenOutcome::Applied`）ら呼ぶ。
     /// 届くのが窓より遅れうる書き込みを「未確認」として控える。新しい書き込みは古いものを置き換える。
+    ///
+    /// 完了が書き込みの順に届くことを前提にする（直接観測の窓〈`Imm32Unavailable`〉で効く書き込みは同期の GjiDirect /
+    /// MsImeDirect だけで、async の open chain〈ImmCross が先頭の窓〉は走らない）。async の書き込みを足すときは見直すこと。
+    /// スコープ `ForegroundScope::INVALID` どうしは等しいので、前景窓が取れない間の書き込みと arm は互いに引き継ぐ（実害はほぼ無い）。
     pub fn note_awase_open_write(&mut self, scope: S, open: bool, now_ms: u64) {
         self.pending_write = Some(PendingWrite {
             scope,
@@ -99,6 +107,37 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
             }
         }
         confirmed
+    }
+
+    /// ADR-256: フォーカスが移った（プロセス変更・同一プロセス内の hwnd 変更）。控えと、窓へ引き継いだ書き込みを捨てる
+    /// （控えは「awase の書き込みがこの入力コンテキストに届くか」の主張なので、別のコンテキストへ持ち越さない）。
+    pub fn clear_awase_writes(&mut self) {
+        self.pending_write = None;
+        if let Some(a) = self.armed.as_mut() {
+            a.awase_write = None;
+        }
+    }
+
+    /// ADR-256: 保持しなければ belief を動かしていた読みを、引き継いだ書き込みのために採らなかったことを数える。
+    pub fn note_effective_hold(&mut self) {
+        if let Some(a) = self.armed.as_mut() {
+            a.effective_holds = a.effective_holds.saturating_add(1);
+        }
+    }
+
+    /// ADR-256: 窓へ引き継いだ書き込みが未確認のまま、窓が切れた（またはスコープが変わった）か（消費しない。この後の
+    /// `direct_live` 等が窓を捨てる）。そうなら（書き込みの値, 効果のあった保持の回数）。ログ・計測用。
+    #[must_use]
+    pub fn expired_unconfirmed_awase_write(
+        &self,
+        scope: S,
+        now_ms: u64,
+        window_ms: u64,
+    ) -> Option<(bool, u16)> {
+        let a = self.armed?;
+        let w = a.awase_write?;
+        let gone = a.scope != scope || now_ms.saturating_sub(a.last_arm_ms) > window_ms;
+        gone.then_some((w, a.effective_holds))
     }
 
     /// 直接観測の窓へ引き継いだ、まだ確かめられていない awase の書き込み（ログ・テスト用）。窓が無ければ `None`。
@@ -163,6 +202,7 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
             baseline,
             direct,
             awase_write: carried,
+            effective_holds: 0,
         });
     }
 
@@ -247,10 +287,11 @@ pub struct AwaseWriteConfirm {
 
 /// ADR-256（BUG-199）: 控えた awase の書き込みを、直接観測の窓の arm で引き継ぐか。
 ///
-/// 同じスコープで、書き込みから `window_ms`（直接観測の窓の長さ）以内のときだけ。窓の長さは「通過したキーの効果が読みに
-/// 現れるまで」の想定（ADR-187 の実測最大 62ms の約 5 倍）で、awase 自身が送ったキーが IME に届くまでの想定も同じものとして
-/// 共用する（新しい時間定数を足さない）。これより古い控えは、読みが止まっている間（明示意図があると読めない窓のポーリングは止まる）に
-/// 残っただけのもので、引き継ぐと利用者のモードキーへの追随を窓の全体で止めてしまう。
+/// 同じスコープで、書き込みから arm まで `window_ms`（直接観測の窓の長さ）未満のときだけ。これは arm までの間隔の上限で、
+/// 保持そのものは arm から窓の終わり（延長すれば最初の arm から最大 `window_ms * 3`）まで続く。上限に窓の長さを使うのは、
+/// 「通過したキーの効果が読みに現れるまで」という窓が既に置いている想定（ADR-187 の実測最大 62ms の約 5 倍）を、awase 自身が
+/// 送ったキーにも当てるため（新しい時間定数を足さない）。これより古い控えは、読みが止まっている間（明示意図があると読めない窓の
+/// ポーリングは止まる）に残っただけのもので、引き継ぐと利用者のモードキーへの追随を窓の全体で止めてしまう。
 #[must_use]
 pub const fn pending_write_in_flight(same_scope: bool, age_ms: u64, window_ms: u64) -> bool {
     same_scope && age_ms < window_ms
@@ -921,5 +962,52 @@ mod tests {
         );
         w.arm_direct(1, 1000, W);
         assert_eq!(w.carried_awase_write(), Some(true));
+    }
+
+    /// レビュー S3: フォーカスが移ったら控えも引き継いだ書き込みも捨てる。
+    #[test]
+    fn clear_awase_writes_drops_pending_and_carried() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        w.clear_awase_writes();
+        w.arm_direct(1, 1000, W);
+        assert_eq!(w.carried_awase_write(), None);
+
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        w.arm_direct(1, 1000, W);
+        w.clear_awase_writes();
+        assert_eq!(w.carried_awase_write(), None);
+        assert!(w.direct_live(1, 1010, W), "窓そのものは残す");
+    }
+
+    /// レビュー M1: 未確認のまま窓が切れたことと、効果のあった保持の回数を出す。確認済み・窓の間は出さない。
+    #[test]
+    fn expired_unconfirmed_awase_write_reports_effective_holds() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        w.arm_direct(1, 1000, W);
+        w.note_effective_hold();
+        w.note_effective_hold();
+        assert_eq!(
+            w.expired_unconfirmed_awase_write(1, 1300, W),
+            None,
+            "窓の間"
+        );
+        assert_eq!(
+            w.expired_unconfirmed_awase_write(1, 1301, W),
+            Some((false, 2))
+        );
+        assert_eq!(
+            w.expired_unconfirmed_awase_write(2, 1100, W),
+            Some((false, 2)),
+            "スコープが変わった"
+        );
+        // 確認済みなら出さない。
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        w.arm_direct(1, 1000, W);
+        w.confirm_awase_write(1, Some(false));
+        assert_eq!(w.expired_unconfirmed_awase_write(1, 1301, W), None);
     }
 }
