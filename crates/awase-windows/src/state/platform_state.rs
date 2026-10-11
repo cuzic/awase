@@ -495,6 +495,11 @@ impl ImeStateHub {
             now_ms,
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         );
+        if let Some(w) = self.external_change_watch.carried_awase_write() {
+            tracing::info!(
+                "[direct-follow] awase-write carried open={w}: 窓の arm 時点で awase の書き込みが未確認 → 同じ値を読むまで窓内の読みを採らない (ADR-256、BUG-199)"
+            );
+        }
     }
 
     /// 直接観測の窓の中の prefetch 済みの読み（`read_open`・`read_conv`）を belief と照合し、食い違う軸へ追随する。
@@ -519,6 +524,18 @@ impl ImeStateHub {
         kind: crate::state::ime_kind::ImeKindId,
         scope: crate::state::foreground_scope::ForegroundScope,
     ) -> Option<super::external_change_watch::DirectFollow> {
+        // ADR-256: 窓の有無によらず、未確認の awase の書き込みを読みで確かめる（同じ値なら解く）。
+        let confirmed = self
+            .external_change_watch
+            .confirm_awase_write(scope, read_open);
+        if let Some(w) = confirmed.carried {
+            tracing::info!(
+                "[direct-follow] awase-write confirmed open={w}: 窓内で awase の書き込みと同じ値を読んだ → 保持を解く (ADR-256)"
+            );
+        }
+        if let Some(w) = confirmed.pending {
+            tracing::debug!("[direct-follow] awase-write confirmed before arm open={w} (ADR-256)");
+        }
         if !self.external_change_watch.direct_live(
             scope,
             now_ms,
@@ -528,6 +545,16 @@ impl ImeStateHub {
         }
         let armed_at = self.external_change_watch.last_arm_ms()?;
         if self.last_explicit_ime_action_ms >= armed_at {
+            return None;
+        }
+        // ADR-256（BUG-199）: 窓の arm より前に awase が SendInput で書いた開閉が、窓内でまだ読みに現れていない間は採らない。
+        // GJI の処理が窓より遅いと、窓内の読みは awase の書き込み前の古い値を返し、それで意図を捨てると awase の書き込みを
+        // 覆して閉じた IME へローマ字を送る（R3 は arm 以後の書き込みしか守らない）。
+        let carried = self.external_change_watch.carried_awase_write();
+        if super::external_change_watch::direct_read_held_by_awase_write(carried, read_open) {
+            tracing::info!(
+                "[direct-follow] awase-write held read_open={read_open:?} carried={carried:?}: 未確認の awase の書き込みと食い違う窓内の読みを採らない (ADR-256、BUG-199)"
+            );
             return None;
         }
         // 打鍵時点の予測（ADR-191 決定3）がこの打鍵に付いているキーは、予測に任せる。予測はキーの効果を先に反映済みで、
@@ -1303,6 +1330,12 @@ impl ImeStateHub {
         ts: u64,
         scope: crate::state::foreground_scope::ForegroundScope,
     ) -> ImeApplyAcceptance {
+        // ADR-256（BUG-199）: SendInput で送った開閉の書き込み（`Applied`）は IME に届くのが遅れうるので、未確認として控える。
+        // ImmCross（`AppliedWithoutSendInput`）は同期的に IMM の状態を変えるので控えない。
+        if matches!(outcome, awase::platform::ImeOpenOutcome::Applied) {
+            self.external_change_watch
+                .note_awase_open_write(scope, open, ts);
+        }
         let Some(generation) = generation else {
             let Some(effective) = super::ime_model::apply_result_effective_open(open, outcome)
             else {
@@ -4062,6 +4095,115 @@ mod tests {
             ),
             Some(direct_follow(None, Some(false)))
         );
+    }
+
+    // ── ADR-256（BUG-199）: 窓の arm より前の、まだ届いていない awase 自身の書き込み ──
+
+    /// ADR-256 のテスト用: GJI の窓で、開閉 `open`・conv 25 の読みを時刻 `t` に照合する。
+    fn read_gji_direct(
+        ps: &mut PlatformState,
+        open: Option<bool>,
+        t: u64,
+    ) -> Option<crate::state::external_change_watch::DirectFollow> {
+        ps.ime.follow_direct_read_in_scope(
+            open,
+            Some(25),
+            t,
+            TickMs(t),
+            follow_fence(),
+            crate::state::ime_kind::ImeKindId::Gji,
+            test_foreground_scope(),
+        )
+    }
+
+    /// BUG-199 の再現: 物理 Ctrl+無変換で awase が OFF を SendInput で書き（`Applied`、arm の 90ms 前）、役割の無いキーで窓が開く。
+    /// GJI の処理が窓より遅いと窓内は処理前の「開」を読み続けるが、意図（OFF）を捨てず belief は閉のまま。閉を読んだら保持が解け、
+    /// その後の外部の変化（開）には追随する。
+    #[test]
+    fn follow_direct_read_holds_stale_reads_until_the_awase_write_is_confirmed() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 900);
+        ps.ime.record_ime_apply_result_in_scope(
+            false,
+            awase::platform::ImeOpenOutcome::Applied,
+            None,
+            910,
+            test_foreground_scope(),
+        );
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        for t in [1032, 1090, 1150, 1274] {
+            assert_eq!(read_gji_direct(&mut ps, Some(true), t), None, "t={t}");
+            assert!(!ps.ime.effective_open_at(TickMs(t + 1)), "t={t}");
+            assert_eq!(ps.ime.explicit_intent(), Some(false), "意図は残る t={t}");
+        }
+        assert_eq!(read_gji_direct(&mut ps, None, 1280), None);
+        // awase の書き込みが届いた（閉を読んだ）。belief と同じなので追随するものは無いが、保持は解ける。
+        assert_eq!(read_gji_direct(&mut ps, Some(false), 1285), None);
+        // 以後は従来どおり、窓内の外部の変化へ追随する。
+        assert_eq!(
+            read_gji_direct(&mut ps, Some(true), 1295),
+            Some(direct_follow(Some(true), None))
+        );
+        assert!(ps.ime.effective_open_at(TickMs(1296)));
+    }
+
+    /// 対照: awase の書き込みが無ければ（従来どおり）最初の食い違う読みで追随する。
+    #[test]
+    fn follow_direct_read_without_awase_write_follows_the_first_read() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 900);
+        ps.ime
+            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        assert_eq!(
+            read_gji_direct(&mut ps, Some(true), 1032),
+            Some(direct_follow(Some(true), None))
+        );
+        assert!(ps.ime.explicit_intent().is_none());
+    }
+
+    /// 引き継がないもの: ImmCross の書き込み（`AppliedWithoutSendInput`、同期的に IMM の状態を変える）、書き込みから窓の長さ以上
+    /// たった書き込み、arm の前に同じ値を読んで確かめた書き込み。いずれも最初の食い違う読みで追随する。
+    #[test]
+    fn follow_direct_read_does_not_hold_for_sync_stale_or_confirmed_writes() {
+        let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        for (outcome, write_at, confirm_before_arm) in [
+            (
+                awase::platform::ImeOpenOutcome::AppliedWithoutSendInput,
+                910,
+                false,
+            ),
+            (
+                awase::platform::ImeOpenOutcome::Applied,
+                1000 - window,
+                false,
+            ),
+            (awase::platform::ImeOpenOutcome::Applied, 910, true),
+        ] {
+            let mut ps = ps_for_test();
+            dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+            dispatch_and_record_explicit_intent(&mut ps, false, 600);
+            ps.ime.record_ime_apply_result_in_scope(
+                false,
+                outcome,
+                None,
+                write_at,
+                test_foreground_scope(),
+            );
+            if confirm_before_arm {
+                // 窓の外の読み（窓が無いので追随はしない）で書き込みを確かめる。
+                assert_eq!(read_gji_direct(&mut ps, Some(false), 940), None);
+            }
+            ps.ime
+                .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+            assert_eq!(
+                read_gji_direct(&mut ps, Some(true), 1032),
+                Some(direct_follow(Some(true), None)),
+                "outcome={outcome:?} write_at={write_at} confirm_before_arm={confirm_before_arm}"
+            );
+        }
     }
 
     /// 窓が無い・基準値方式(ADR-205)の窓・スコープ違い・窓切れでは、直接観測の追随をしない。

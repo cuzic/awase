@@ -28,6 +28,18 @@ struct Armed<S> {
     /// ADR-188: 物理のモードキー通過／FSM 再送出で開いた「直接観測」の窓。基準値を使わず、窓内の読みを belief と
     /// 照合する（`observe` の基準値照合は行わず、窓も閉じない）。外部注入（ADR-205）と重なったら Direct が勝つ。
     direct: bool,
+    /// ADR-256（BUG-199）: 直接観測の窓の arm 時点でまだ IME に届いていない awase 自身の開閉の書き込み（書いた値）。
+    /// 窓内で同じ値を読むまで、窓内の読みを採らない（[`direct_read_held_by_awase_write`]）。同じ値を読んだら `None` に戻す。
+    /// 窓が切れたら窓ごと消える。
+    awase_write: Option<bool>,
+}
+
+/// awase 自身が SendInput で IME へ送った開閉の書き込みのうち、まだ同じ値の読みで確かめられていないもの（ADR-256）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingWrite<S> {
+    scope: S,
+    open: bool,
+    at_ms: u64,
 }
 
 /// 外部変化の監視窓と、直近の読みの記録。
@@ -36,6 +48,8 @@ pub struct ExternalChangeWatch<S: Copy + PartialEq> {
     armed: Option<Armed<S>>,
     /// 全 refresh の入口で記録する直近の読み（スコープ付き）。基準値の初期値になる。
     last_read: Option<(S, bool)>,
+    /// ADR-256: まだ読みで確かめられていない awase 自身の開閉の書き込み。次の直接観測の窓の arm で 1 回だけ窓へ引き継ぐ。
+    pending_write: Option<PendingWrite<S>>,
 }
 
 impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
@@ -44,7 +58,60 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
         Self {
             armed: None,
             last_read: None,
+            pending_write: None,
         }
+    }
+
+    /// ADR-256（BUG-199）: awase 自身が SendInput で IME へ開閉を書いた（`ImeOpenOutcome::Applied`）ら呼ぶ。
+    /// 届くのが窓より遅れうる書き込みを「未確認」として控える。新しい書き込みは古いものを置き換える。
+    pub fn note_awase_open_write(&mut self, scope: S, open: bool, now_ms: u64) {
+        self.pending_write = Some(PendingWrite {
+            scope,
+            open,
+            at_ms: now_ms,
+        });
+    }
+
+    /// ADR-256: prefetch 済みの開閉の読みで、未確認の awase の書き込みを確かめる（窓の有無によらず毎回呼ぶ）。
+    ///
+    /// - 同じスコープで書き込みと同じ値を読んだら、控え（`pending_write`）と、窓へ引き継いだもの（`awase_write`）を解く。
+    /// - 別のスコープの読みなら控えを捨てる（フォーカスが移った。戻ってきた窓へ古い控えを引き継がない）。
+    /// - 読めなかった（`None`）ときは何もしない。
+    ///
+    /// 戻り値は解いたもの（ログ用）。
+    pub fn confirm_awase_write(&mut self, scope: S, read: Option<bool>) -> AwaseWriteConfirm {
+        let Some(v) = read else {
+            return AwaseWriteConfirm::default();
+        };
+        let mut confirmed = AwaseWriteConfirm::default();
+        if let Some(p) = self.pending_write {
+            if p.scope != scope {
+                self.pending_write = None;
+            } else if p.open == v {
+                self.pending_write = None;
+                confirmed.pending = Some(v);
+            }
+        }
+        if let Some(a) = self.armed.as_mut() {
+            if a.scope == scope && a.awase_write == Some(v) {
+                a.awase_write = None;
+                confirmed.carried = Some(v);
+            }
+        }
+        confirmed
+    }
+
+    /// 直接観測の窓へ引き継いだ、まだ確かめられていない awase の書き込み（ログ・テスト用）。窓が無ければ `None`。
+    #[must_use]
+    pub fn carried_awase_write(&self) -> Option<bool> {
+        self.armed.and_then(|a| a.awase_write)
+    }
+
+    /// 控えを取り出す（1 回限り）。同じスコープで、書き込みから `window_ms` 以内なら値を返す。古い・別スコープなら捨てて `None`。
+    fn take_pending_write(&mut self, scope: S, now_ms: u64, window_ms: u64) -> Option<bool> {
+        let p = self.pending_write.take()?;
+        pending_write_in_flight(p.scope == scope, now_ms.saturating_sub(p.at_ms), window_ms)
+            .then_some(p.open)
     }
 
     /// 直近の読みを記録する（`None`〈読めなかった〉は記録しない）。`observe` の後に呼ぶ。
@@ -67,6 +134,13 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
     }
 
     fn arm_with(&mut self, scope: S, now_ms: u64, window_ms: u64, direct: bool) {
+        // ADR-256: 直接観測の窓の arm（延長を含む）だけが、未確認の awase の書き込みを引き継ぐ（1 回限り）。
+        // 外部注入の監視窓（ADR-205、基準値あり）の arm では控えを取り出さない。
+        let carried = if direct {
+            self.take_pending_write(scope, now_ms, window_ms)
+        } else {
+            None
+        };
         if let Some(a) = self.armed.as_mut() {
             let alive = a.scope == scope && now_ms.saturating_sub(a.last_arm_ms) <= window_ms;
             if alive {
@@ -75,6 +149,9 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
                     .saturating_add(window_ms.saturating_mul(MAX_EXTENSION_FACTOR));
                 a.last_arm_ms = now_ms.min(cap);
                 a.direct |= direct;
+                if carried.is_some() {
+                    a.awase_write = carried;
+                }
                 return;
             }
         }
@@ -85,6 +162,7 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
             last_arm_ms: now_ms,
             baseline,
             direct,
+            awase_write: carried,
         });
     }
 
@@ -156,6 +234,36 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
             }
         }
     }
+}
+
+/// [`ExternalChangeWatch::confirm_awase_write`] が解いたもの（ログ用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AwaseWriteConfirm {
+    /// 窓へ引き継ぐ前の控えを、この値の読みで解いた。
+    pub pending: Option<bool>,
+    /// 窓へ引き継いだ書き込みを、窓内のこの値の読みで解いた。
+    pub carried: Option<bool>,
+}
+
+/// ADR-256（BUG-199）: 控えた awase の書き込みを、直接観測の窓の arm で引き継ぐか。
+///
+/// 同じスコープで、書き込みから `window_ms`（直接観測の窓の長さ）以内のときだけ。窓の長さは「通過したキーの効果が読みに
+/// 現れるまで」の想定（ADR-187 の実測最大 62ms の約 5 倍）で、awase 自身が送ったキーが IME に届くまでの想定も同じものとして
+/// 共用する（新しい時間定数を足さない）。これより古い控えは、読みが止まっている間（明示意図があると読めない窓のポーリングは止まる）に
+/// 残っただけのもので、引き継ぐと利用者のモードキーへの追随を窓の全体で止めてしまう。
+#[must_use]
+pub const fn pending_write_in_flight(same_scope: bool, age_ms: u64, window_ms: u64) -> bool {
+    same_scope && age_ms < window_ms
+}
+
+/// ADR-256（BUG-199）: 直接観測の窓内の読み（`read`）を、窓へ引き継いだ awase の書き込み（`carried`）のために採らないか。
+///
+/// 引き継いだ書き込みがあり、読みがその値でない（逆の値・読めなかった）間は採らない。窓より遅く IME に届く awase の書き込み
+/// （例: 物理 Ctrl+無変換の OFF、GJI の処理遅延）を、処理前の古い読みで覆さないため。同じ値を読めば
+/// [`ExternalChangeWatch::confirm_awase_write`] が先に `carried` を解くので、以後は従来どおり照合する。
+#[must_use]
+pub fn direct_read_held_by_awase_write(carried: Option<bool>, read: Option<bool>) -> bool {
+    carried.is_some_and(|w| read != Some(w))
 }
 
 /// `IME_CMODE_NATIVE`（conversion mode の bit0）。日本語入力（かな・カタカナ）なら立ち、半角英数なら立たない。
@@ -621,5 +729,197 @@ mod tests {
                 eisu: Some(true)
             }
         );
+    }
+
+    // ── ADR-256（BUG-199）: 届く前の awase 自身の書き込みを、直接観測の窓内の古い読みで覆さない ──
+
+    /// 純関数の表: 引き継ぎが無ければ採る（従来どおり）。引き継いだ書き込みと同じ値なら採る（確認済み）。
+    /// 逆の値・読めなかった（`None`）なら採らない。
+    #[test]
+    fn direct_read_held_by_awase_write_table() {
+        for (carried, read, held) in [
+            (None, Some(true), false),
+            (None, Some(false), false),
+            (None, None, false),
+            (Some(false), Some(false), false),
+            (Some(true), Some(true), false),
+            (Some(false), Some(true), true),
+            (Some(true), Some(false), true),
+            (Some(false), None, true),
+        ] {
+            assert_eq!(
+                direct_read_held_by_awase_write(carried, read),
+                held,
+                "carried={carried:?} read={read:?}"
+            );
+        }
+    }
+
+    /// 引き継ぐのは同じスコープで、書き込みから窓の長さ未満のときだけ（窓の長さと同じ想定を共用する）。
+    #[test]
+    fn pending_write_in_flight_requires_same_scope_and_age_below_window() {
+        assert!(pending_write_in_flight(true, 0, W));
+        assert!(
+            pending_write_in_flight(true, 94, W),
+            "BUG-199 の実測 78〜94ms"
+        );
+        assert!(pending_write_in_flight(true, W - 1, W));
+        assert!(!pending_write_in_flight(true, W, W));
+        assert!(!pending_write_in_flight(true, 30_000, W));
+        assert!(!pending_write_in_flight(false, 0, W));
+    }
+
+    /// BUG-199 の再現: arm の 90ms 前に awase が OFF を書き、窓内は処理前の「開」を読み続ける。窓の間は保持され、
+    /// 窓が切れたら窓ごと消える。控えは 1 回限りで、次の窓へは引き継がない。
+    #[test]
+    fn awase_write_before_arm_is_carried_and_held_until_window_expires() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 910);
+        w.arm_direct(1, 1000, W);
+        assert_eq!(w.carried_awase_write(), Some(false));
+        for t in [1020, 1080, 1140, 1274] {
+            assert_eq!(
+                w.confirm_awase_write(1, Some(true)),
+                AwaseWriteConfirm::default()
+            );
+            assert!(w.direct_live(1, t, W));
+            assert!(direct_read_held_by_awase_write(
+                w.carried_awase_write(),
+                Some(true)
+            ));
+        }
+        // 読めなかった読みは何も解かない。
+        assert_eq!(w.confirm_awase_write(1, None), AwaseWriteConfirm::default());
+        assert_eq!(w.carried_awase_write(), Some(false));
+        // 窓が切れたら窓ごと消える。
+        assert!(!w.direct_live(1, 1301, W));
+        assert_eq!(w.carried_awase_write(), None);
+        // 控えは 1 回限り（次の窓には引き継がない）。
+        w.arm_direct(1, 1400, W);
+        assert_eq!(w.carried_awase_write(), None);
+    }
+
+    /// 窓内で書き込みと同じ値を読んだら保持を解き、以後は従来どおり照合する（外部の変化には追随できる）。
+    #[test]
+    fn matching_read_in_window_releases_the_carried_write() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        w.arm_direct(1, 1000, W);
+        assert_eq!(
+            w.confirm_awase_write(1, Some(false)),
+            AwaseWriteConfirm {
+                pending: None,
+                carried: Some(false)
+            }
+        );
+        assert_eq!(w.carried_awase_write(), None);
+        assert!(!direct_read_held_by_awase_write(
+            w.carried_awase_write(),
+            Some(true)
+        ));
+    }
+
+    /// arm の前に同じ値を読めば、控えはその時点で解け、窓へ引き継がない。
+    #[test]
+    fn matching_read_before_arm_confirms_the_pending_write() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        assert_eq!(
+            w.confirm_awase_write(1, Some(false)),
+            AwaseWriteConfirm {
+                pending: Some(false),
+                carried: None
+            }
+        );
+        w.arm_direct(1, 1000, W);
+        assert_eq!(w.carried_awase_write(), None);
+    }
+
+    /// 逆の値の読みは控えを解かない（処理前の古い読みでありうる）。
+    #[test]
+    fn opposite_read_before_arm_keeps_the_pending_write() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        assert_eq!(
+            w.confirm_awase_write(1, Some(true)),
+            AwaseWriteConfirm::default()
+        );
+        w.arm_direct(1, 1000, W);
+        assert_eq!(w.carried_awase_write(), Some(false));
+    }
+
+    /// 書き込みから窓の長さ以上たった控えは引き継がない（読みが止まっている間に残っただけ）。取り出した控えは捨てる。
+    #[test]
+    fn stale_pending_write_is_not_carried() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 1000 - W);
+        w.arm_direct(1, 1000, W);
+        assert_eq!(w.carried_awase_write(), None);
+    }
+
+    /// 別のスコープの読みが来たら控えを捨てる。別のスコープの arm では引き継がない。
+    #[test]
+    fn pending_write_respects_scope() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        w.arm_direct(2, 1000, W);
+        assert_eq!(w.carried_awase_write(), None);
+
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        assert_eq!(
+            w.confirm_awase_write(2, Some(true)),
+            AwaseWriteConfirm::default()
+        );
+        w.arm_direct(1, 1000, W);
+        assert_eq!(
+            w.carried_awase_write(),
+            None,
+            "別のスコープの読みで控えを捨てた"
+        );
+    }
+
+    /// 外部注入の監視窓（ADR-205）の arm は控えを取り出さない。後から同じ窓が直接観測へ格上げ（延長）されたら引き継ぐ。
+    /// 窓の延長の時点で、窓の途中に書いた控えも引き継ぐ（延長で `last_arm_ms` が書き込みより後ろへずれ、R3 から外れても守る）。
+    #[test]
+    fn only_direct_arm_takes_the_pending_write_including_extension() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, true, 950);
+        w.arm(1, 1000, W);
+        assert_eq!(
+            w.carried_awase_write(),
+            None,
+            "ADR-205 の arm では取り出さない"
+        );
+        w.arm_direct(1, 1050, W);
+        assert_eq!(
+            w.carried_awase_write(),
+            Some(true),
+            "格上げの arm で引き継ぐ"
+        );
+
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.arm_direct(1, 1000, W);
+        w.note_awase_open_write(1, false, 1100);
+        w.arm_direct(1, 1150, W);
+        assert_eq!(w.last_arm_ms(), Some(1150));
+        assert_eq!(w.carried_awase_write(), Some(false));
+        // 延長で控えが無ければ、引き継いだものは変えない。
+        w.arm_direct(1, 1200, W);
+        assert_eq!(w.carried_awase_write(), Some(false));
+    }
+
+    /// 新しい書き込みは古い控えを置き換える。
+    #[test]
+    fn newer_awase_write_replaces_the_pending_one() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 900);
+        w.note_awase_open_write(1, true, 950);
+        assert_eq!(
+            w.confirm_awase_write(1, Some(false)),
+            AwaseWriteConfirm::default()
+        );
+        w.arm_direct(1, 1000, W);
+        assert_eq!(w.carried_awase_write(), Some(true));
     }
 }

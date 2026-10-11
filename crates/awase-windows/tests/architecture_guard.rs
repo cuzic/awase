@@ -4739,6 +4739,72 @@ fn ms_ime_native_direct_follow_takes_only_closed_to_open() {
     );
 }
 
+/// ADR-256（BUG-199）: 直接観測の窓は、arm より前の、まだ読みで確かめられていない awase 自身の SendInput の書き込みを守る。配線を固定する。
+///
+/// - 控えるのは `record_ime_apply_result_in_scope` の `ImeOpenOutcome::Applied`（SendInput）だけ。ImmCross（`AppliedWithoutSendInput`）を
+///   含めると読める窓の同期的な書き込みまで控え、逆に `Applied` を外すと BUG-199 が戻る。どちらも Linux の他のテストでは配線の外れとして見えない
+///   （ハブのテストは `#[cfg(windows)]`）。
+/// - `follow_direct_read_in_scope` は、窓の生死を見る前に読みで書き込みを確かめ（`confirm_awase_write`）、R3 の後・予測のガードと判定
+///   （`classify_direct_read_for`）の前で、未確認の書き込みと食い違う読みを採らない（`direct_read_held_by_awase_write`）。
+/// - 控えを窓へ引き継ぐのは直接観測の窓の arm だけ（ADR-205 の基準値の窓では取り出さない）。
+#[test]
+fn direct_follow_holds_reads_for_unconfirmed_awase_write() {
+    let ps = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/platform_state.rs",
+    )));
+    assert_eq!(
+        ps.matches(".note_awase_open_write(").count(),
+        1,
+        "未確認の書き込みを控えるのは record_ime_apply_result_in_scope の1箇所だけ"
+    );
+    let record = ps
+        .split("fn record_ime_apply_result_in_scope")
+        .nth(1)
+        .expect("record_ime_apply_result_in_scope が無い");
+    let record = &record[..record.find("\n    }\n").unwrap_or(record.len())];
+    let record_squashed: String = record.split_whitespace().collect();
+    assert!(
+        record_squashed.contains(
+            "ifmatches!(outcome,awase::platform::ImeOpenOutcome::Applied){self.external_change_watch.note_awase_open_write(scope,open,ts);}"
+        ),
+        "SendInput の書き込み（Applied）だけを控えること: {record}"
+    );
+
+    let follow = ps
+        .split("fn follow_direct_read_in_scope")
+        .nth(1)
+        .expect("follow_direct_read_in_scope が無い");
+    let follow = &follow[..follow.find("\n    }\n").unwrap_or(follow.len())];
+    let f: String = follow.split_whitespace().collect();
+    let pos = |needle: &str| {
+        f.find(needle)
+            .unwrap_or_else(|| panic!("follow_direct_read_in_scope に {needle} が無い: {follow}"))
+    };
+    let confirm = pos(".confirm_awase_write(scope,read_open)");
+    let live = pos(".direct_live(");
+    let r3 = pos("self.last_explicit_ime_action_ms>=armed_at");
+    let hold = pos("external_change_watch::direct_read_held_by_awase_write(carried,read_open)");
+    let prediction = pos(".key_effect()");
+    let classify = pos("external_change_watch::classify_direct_read_for(");
+    assert!(
+        confirm < live && live < r3 && r3 < hold && hold < prediction && prediction < classify,
+        "順序は 確かめる → 窓の生死 → R3 → 未確認の書き込みの保持 → 予測のガード → 判定: {follow}"
+    );
+
+    let watch = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/external_change_watch.rs",
+    )));
+    let arm = watch.split("fn arm_with").nth(1).expect("arm_with が無い");
+    let arm = &arm[..arm.find("\n    }\n").unwrap_or(arm.len())];
+    let arm_squashed: String = arm.split_whitespace().collect();
+    assert!(
+        arm_squashed.contains(
+            "letcarried=ifdirect{self.take_pending_write(scope,now_ms,window_ms)}else{None};"
+        ),
+        "控えを窓へ引き継ぐのは直接観測の窓の arm だけ: {arm}"
+    );
+}
+
 /// ADR-158 TE3 / PR #377 レビュー M6-1: `Runtime::can_use_imm32_cross_process` は `#[track_caller]` を持つ。
 /// 直前に別の関数を挿入すると属性と doc だけが新しい関数へ移り、呼び出し元の棚卸しが黙って壊れる。
 #[test]
