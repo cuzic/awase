@@ -7,7 +7,7 @@ summary: |-
   スパイク(ブランチ ci/scancode-vm-spike)で、windows-latest のホスト型ランナーが入れ子 Hyper-V VM を起動でき、WinPE の SYSTEM ハイブへオフラインで Scancode Map を書いて起動し、VM のキーボードへ PressKey でキーを送り、VM 内の Raw Input の `vk` を読めることを確認した(対照・ペア・3巡回の両向きの4シナリオが PASS)。
   本 ADR は、これを本番のワークフローにする方針を決める。判定点(Raw Input の vk は左右を区別しないので LL フックを足す)、「検証不能」と FAIL の区別、シナリオと期待値の出どころ(トートロジーを避ける)、範囲と限界を扱う。
 status: |-
-  起草 r3(2026-10-11)。Opus round1(Blocker 2・Must 6・Should 7・Nit 4)・round2(Must 4・Should 5・Nit 3)を反映。スパイクは GitHub ホスト型で検証済み。本番ワークフロー(段階1)は未実装。
+  起草 r3(2026-10-11)、段階1の実測を追記(同日、ブランチ ci/scancode-vm-spike の run 38167039891 で Q2〜Q5 に答えが出た)。Opus round1(Blocker 2・Must 6・Should 7・Nit 4)・round2(Must 4・Should 5・Nit 3)を反映。スパイクは GitHub ホスト型で検証済み。本番ワークフロー(段階1)は未実装。
 related_adr:
   - "ADR-230"
   - "ADR-248"
@@ -62,6 +62,16 @@ ADR-230/248 の画面は、`HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layou
 11. **費用**: 1シナリオ1起動のままだと10〜15シナリオで35〜50分になりうる(未測定)。互いに素なキー集合の写像は1つのマップにまとめて1回の起動にする(from 重複のように他と干渉するシナリオは単独)。上限は再試行を含めて1ジョブ45分(`timeout-minutes` は50)とし、超える場合は VM を2〜3台並列(各 1GB)にする。
 12. **ライセンス・公開**: WinPE は ADK 由来で、評価版 Windows イメージは使わない。ISO や VHDX は成果物にしない。artifact は、スクリーンショット・`probe.log`(打鍵の記録のみ)・シナリオ JSON。ADK を `actions/cache` に入れる場合、公開リポジトリのキャッシュは fork の PR のワークフローからも読めることを前提に、イメージ由来のファイルは入れない。
 13. **probe の修正**: doc コメント(Raw Input の `MakeCode` は変換後、という記述)を観測に合わせて直す。終了キー F12 は写像前の `make` に依存して終了でき、シナリオで F12 の位置を写像しても終了できる、という性質を意図として書く。
+
+## 段階1の実測(2026-10-11、run 38167039891、headSha `5899c636`)
+
+`ci/scancode-vm-spike` 上のハーネス(塊方式・検証不能の判定・再試行)で、control / pair / cycle / cycle-reverse が PASS、q3-pressk / q3-scan が OBSERVED。決定との差分と Q の答え:
+
+- **Q4(LL フック): 使えない**。`SetWindowsHookExW(WH_KEYBOARD_LL)` は2種類(hMod あり/なし)とも成功を返すが、WinPE ではコールバックが1度も呼ばれなかった(`LL`/`LL2` の行が0件、Raw Input と `WM_KEYDOWN` は同じ打鍵で届く)。**決定2 の第2の観測点は `WM_KEYDOWN`/`WM_SYSKEYDOWN` に置き換える**: `wParam`(仮想キー、左右の区別なし)と `lParam` のスキャンコード・拡張ビット(左右はこれで分かる。Ctrl は E0 の有無、Shift はスキャンコード)。probe の窓は前面・フォーカス付きで起動する。
+- **Q5(写像点): Raw Input の `MakeCode` は写像の前、`WM_KEYDOWN` の `lParam` のスキャンコードは写像の後**(ペア A⇄B で A を押すと raw 0x1E・WM 0x30、3巡回も同様)。ADR-230 :87-88 の「入れ替えた位置のキーは入れ替え先のスキャンコードとして OS に見える」は、ウィンドウメッセージの経路では成り立つ。Raw Input の `MakeCode` だけが例外。**ただし awase が使う LL フックが見る `scanCode` が写像後かは WinPE では確かめられない**(Q4)ので、決定の (b) の懸念(親指ラッチの同定の食い違い)は、実機の確認項目として残す。ADR-230 :84-88 の推測(kbdclass で効く)は、LL フックの値については未確認のまま。
+- **Q3(送れるキー)**: `PressKey` の VK で、左右の Ctrl・Alt(E0 の有無が正しく出る)と矢印キー(E0)は送れた。`TypeScancodes(Scancodes: UInt8Array)` が存在し、JIS 専用キー(スキャンコード 0x7B・0x79・0x70・0x29・0x73・0x7D)を生のスキャンコードで送れた(拡張キーは E0 を前置、離すときは 0x80 を足す)。ただし WinPE の既定配列は US で、これらの `VKey` は 0xFF・0xEB・0xC0・0xC1 になる。**スキャンコードのレベルの検証はできるが、JIS 配列の VK の検証は、JIS レイアウトを WinPE に入れられるまで不可**(未確認)。
+- **Q2(起動時間)**: probe は約20秒で打鍵を受け取り始める(最初の約3塊を取りこぼす)。画面の色の検出(緑・マゼンタ)は、サムネイル(`GetVirtualSystemThumbnailImage`、先頭に4バイトの余りがある16bit)で 160×120 は常に空、320×240 でも検出できなかったので**不採用**にし、塊の送信は**固定75秒**にした(約3.5倍の余裕。足りなければ検証不能になり再試行される)。1シナリオは約80秒(スパイクの約155秒から短縮)、6シナリオで約10分。
+- **決定8の完了条件(N=10 連続)は未実施**。Q1(失敗率)も未測定。段階1の残りは、連続実行での測定、本番ワークフロー(パスフィルタ・定期実行・`INCONCLUSIVE` の表示)への移行。
 
 ## 範囲と限界
 
