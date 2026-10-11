@@ -27,6 +27,10 @@ pub enum LockReason {
     HasUnlistedKey,
     /// US 配列に物理キーが無い JIS 専用キー（過去に JIS 配列で書かれた入れ替え）。
     NoPhysicalKey,
+    /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）が入っていて、設定すると二重になる。
+    CapsFilterDriver,
+    /// 親指キーが IME の ON/OFF キーも兼ねていて、入れ替えると IME の切り替えが働かなくなる。
+    ThumbImeRole,
 }
 
 impl LockReason {
@@ -47,6 +51,12 @@ impl LockReason {
                 "この画面で選べないキーを含む入れ替えです。「戻す」で解除できます。"
             }
             Self::NoPhysicalKey => "この配列に物理キーが無い入れ替えです。「戻す」で解除できます。",
+            Self::CapsFilterDriver => {
+                "Caps を Ctrl にするドライバ（Ctrl2cap など）が入っているため、二重になります。ドライバをアンインストールして再起動すると設定できます。"
+            }
+            Self::ThumbImeRole => {
+                "親指キーが IME の ON/OFF キーも兼ねているため、入れ替えられません。「キー設定」の IME ON/OFF から外すと設定できます。"
+            }
         }
     }
 }
@@ -74,6 +84,10 @@ pub struct DiagramContext<'a> {
     pub caps_extra: bool,
     /// JIS 配列か。
     pub jis: bool,
+    /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）が入っている。
+    pub caps_filter: bool,
+    /// IME の ON/OFF キーも兼ねている親指キーのスキャンコード。
+    pub ime_role_thumbs: &'a [u16],
 }
 
 fn pair_containing(pairs: &[Pair], pos: u16) -> Option<Pair> {
@@ -112,6 +126,8 @@ pub fn displayed_function(pairs: &[Pair], caps_extra: bool, pos: u16) -> u16 {
 pub fn locked_note(reason: LockReason, pos: u16) -> &'static str {
     match reason {
         LockReason::CapsExtraOn if pos == SCANCODE_CAPS_EISU => "Ctrl として動作中",
+        LockReason::CapsFilterDriver => "ドライバが入っています",
+        LockReason::ThumbImeRole => "IME キーも兼ねています",
         _ => "動かせません",
     }
 }
@@ -168,6 +184,19 @@ pub fn position_state(ctx: &DiagramContext<'_>, pos: u16) -> PositionState {
     let locked = |reason, releasable| PositionState::Locked { reason, releasable };
     if ctx.caps_extra && (pos == SCANCODE_CAPS_EISU || pos == SCANCODE_LEFT_CTRL) {
         return locked(LockReason::CapsExtraOn, false);
+    }
+    if ctx.caps_filter && (pos == SCANCODE_CAPS_EISU || pos == SCANCODE_LEFT_CTRL) {
+        // すでに入れ替えがあるなら「戻す」だけできる。新しくは作れない。
+        return locked(
+            LockReason::CapsFilterDriver,
+            pair_containing(ctx.pairs, pos).is_some(),
+        );
+    }
+    if ctx.ime_role_thumbs.contains(&pos) {
+        return locked(
+            LockReason::ThumbImeRole,
+            pair_containing(ctx.pairs, pos).is_some(),
+        );
     }
     if let Some(pair) = pair_containing(ctx.pairs, pos) {
         let (a, b) = pair.keys();
@@ -337,6 +366,8 @@ mod tests {
             detected,
             caps_extra,
             jis,
+            caps_filter: false,
+            ime_role_thumbs: &[],
         }
     }
 
@@ -463,9 +494,114 @@ mod tests {
             LockReason::OtherToolOverlap,
             LockReason::HasUnlistedKey,
             LockReason::NoPhysicalKey,
+            LockReason::CapsFilterDriver,
+            LockReason::ThumbImeRole,
         ] {
             assert!(!refusal_text(DropRefusal::TargetLocked(reason)).is_empty());
         }
+    }
+
+    #[test]
+    fn a_caps_filter_driver_locks_caps_and_ctrl_positions_and_refuses_new_settings() {
+        let detected = detect_swap_pairs(&[]);
+        let ctx = DiagramContext {
+            pairs: &[],
+            detected: &detected,
+            caps_extra: false,
+            jis: true,
+            caps_filter: true,
+            ime_role_thumbs: &[],
+        };
+        for k in [CAPS, LCTRL] {
+            assert_eq!(
+                position_state(&ctx, k),
+                PositionState::Locked {
+                    reason: LockReason::CapsFilterDriver,
+                    releasable: false
+                }
+            );
+        }
+        assert_eq!(position_state(&ctx, SPC), PositionState::Editable);
+        // Caps/Ctrl の位置・機能を含むドロップは、元でも先でも断る。ほかのキー同士は通る。
+        assert!(matches!(
+            drop_function(&ctx, &[], SPC, CAPS),
+            Err(DropRefusal::TargetLocked(LockReason::CapsFilterDriver))
+        ));
+        assert!(matches!(
+            drop_function(&ctx, &[], CAPS, SPC),
+            Err(DropRefusal::SourceLocked(LockReason::CapsFilterDriver))
+        ));
+        assert!(drop_function(&ctx, &[], HEN, SPC).is_ok());
+        // すでに Caps↔Ctrl の入れ替えがあるときは、「戻す」(解除)だけ許す。
+        let existing = entries_of(&[Pair::new(CAPS, LCTRL)]);
+        let detected = detect_swap_pairs(&existing);
+        let pairs = [Pair::new(CAPS, LCTRL)];
+        let ctx = DiagramContext {
+            pairs: &pairs,
+            detected: &detected,
+            caps_extra: false,
+            jis: true,
+            caps_filter: true,
+            ime_role_thumbs: &[],
+        };
+        assert_eq!(
+            position_state(&ctx, CAPS),
+            PositionState::Locked {
+                reason: LockReason::CapsFilterDriver,
+                releasable: true
+            }
+        );
+        assert!(release_position(&pairs, CAPS).is_empty());
+    }
+
+    #[test]
+    fn a_thumb_key_that_is_also_an_ime_key_is_locked_in_the_diagram() {
+        let detected = detect_swap_pairs(&[]);
+        let thumbs = [HEN];
+        let ctx = DiagramContext {
+            pairs: &[],
+            detected: &detected,
+            caps_extra: false,
+            jis: true,
+            caps_filter: false,
+            ime_role_thumbs: &thumbs,
+        };
+        assert_eq!(
+            position_state(&ctx, HEN),
+            PositionState::Locked {
+                reason: LockReason::ThumbImeRole,
+                releasable: false
+            }
+        );
+        assert_eq!(position_state(&ctx, MUH), PositionState::Editable);
+        assert!(matches!(
+            drop_function(&ctx, &[], SPC, HEN),
+            Err(DropRefusal::TargetLocked(LockReason::ThumbImeRole))
+        ));
+        assert!(matches!(
+            drop_function(&ctx, &[], HEN, SPC),
+            Err(DropRefusal::SourceLocked(LockReason::ThumbImeRole))
+        ));
+        assert!(drop_function(&ctx, &[], MUH, SPC).is_ok());
+        // すでに 変換⇄スペース があるときは「戻す」だけ。
+        let existing = entries_of(&[Pair::new(HEN, SPC)]);
+        let detected = detect_swap_pairs(&existing);
+        let pairs = [Pair::new(HEN, SPC)];
+        let ctx = DiagramContext {
+            pairs: &pairs,
+            detected: &detected,
+            caps_extra: false,
+            jis: true,
+            caps_filter: false,
+            ime_role_thumbs: &thumbs,
+        };
+        assert_eq!(
+            position_state(&ctx, HEN),
+            PositionState::Locked {
+                reason: LockReason::ThumbImeRole,
+                releasable: true
+            }
+        );
     }
 
     #[test]

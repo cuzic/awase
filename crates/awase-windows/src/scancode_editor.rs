@@ -60,6 +60,10 @@ pub enum Unavailable {
     JisOnlyKey,
     /// 「Caps を Ctrl としても使う」をオンにしたいが、英数 / Caps か左 Ctrl を他の行で使っている。
     CapsKeysInUse,
+    /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）が入っていて、英数 / Caps か左 Ctrl を含む設定は二重になる。
+    CapsFilterDriver,
+    /// 親指キー（無変換/変換）が、IME の ON/OFF キー（`keys.ime_on`/`ime_off`/`ime_toggle` に修飾キーなしで書いたキー）も兼ねている。
+    ThumbImeRole,
 }
 
 impl Unavailable {
@@ -74,6 +78,12 @@ impl Unavailable {
             Self::JisOnlyKey => "JIS 配列にだけあるキーを含むため、この配列では使えません。",
             Self::CapsKeysInUse => {
                 "「英数 / Caps」か「左 Ctrl」を、ほかの入れ替えで使っています。入れ替えを外すとオンにできます。"
+            }
+            Self::CapsFilterDriver => {
+                "Caps を Ctrl にするドライバ（Ctrl2cap など）が入っているため、「英数 / Caps」と「左 Ctrl」の設定は二重になります。ドライバをアンインストールして再起動すると設定できます。"
+            }
+            Self::ThumbImeRole => {
+                "親指キーが IME の ON/OFF キーも兼ねているため、入れ替えると IME の切り替えが働かなくなります。「キー設定」の IME ON/OFF（keys.ime_on/ime_off/ime_toggle）から外すと設定できます。"
             }
         }
     }
@@ -104,6 +114,14 @@ pub fn registry_state(detected: &Detected) -> RegistryState {
 
 /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）の名前（小文字）。
 const CAPS_TO_CTRL_FILTERS: [&str; 2] = ["ctrl2cap", "caps2ctrl"];
+
+/// キーボードクラスのフィルタドライバに、Caps を Ctrl にするもの（Ctrl2cap など）があるか。
+#[must_use]
+pub fn caps_filter_present(filters: &[String]) -> bool {
+    filters
+        .iter()
+        .any(|f| CAPS_TO_CTRL_FILTERS.contains(&f.to_lowercase().as_str()))
+}
 
 /// キーボードクラスのフィルタドライバに、Caps を Ctrl にするもの（Ctrl2cap など）があれば、画面に出す注意の文面。
 /// それは `Scancode Map` とは別の仕組みで、この画面では設定も解除もできず、同じキーをこの画面でも入れ替えると二重になる。
@@ -219,6 +237,10 @@ pub struct EditorState {
     initial_caps: bool,
     rows: Vec<Row>,
     caps_extra: bool,
+    /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap など）が入っている（`Scancode Map` とは別の仕組み）。
+    caps_filter: bool,
+    /// IME の ON/OFF キーも兼ねている親指キーのスキャンコード（入れ替えさせない）。
+    ime_role_thumbs: Vec<u16>,
 }
 
 impl EditorState {
@@ -241,7 +263,62 @@ impl EditorState {
             initial_caps: detected.caps_extra_ctrl,
             rows,
             caps_extra: detected.caps_extra_ctrl,
+            caps_filter: false,
+            ime_role_thumbs: Vec::new(),
         }
+    }
+
+    /// IME の ON/OFF キーも兼ねている親指キーのスキャンコードを設定する（読み込み時に1回）。
+    pub fn set_ime_role_thumbs(&mut self, keys: Vec<u16>) {
+        self.ime_role_thumbs = keys;
+    }
+
+    /// IME の ON/OFF キーも兼ねている親指キーのスキャンコード。
+    #[must_use]
+    pub fn ime_role_thumbs(&self) -> &[u16] {
+        &self.ime_role_thumbs
+    }
+
+    /// IME の ON/OFF キーも兼ねている親指キーを含む、新しい入れ替えを足している（適用させない）。読み込み時からあるものは止めない。
+    #[must_use]
+    pub fn ime_role_conflict(&self) -> bool {
+        self.pairs().iter().any(|p| {
+            let (a, b) = p.keys();
+            !self.initial_pairs.contains(p)
+                && (self.ime_role_thumbs.contains(&a) || self.ime_role_thumbs.contains(&b))
+        })
+    }
+
+    /// Caps を Ctrl にするキーボードフィルタドライバが入っているかを設定する（読み込み時に1回）。
+    pub fn set_caps_filter(&mut self, present: bool) {
+        self.caps_filter = present;
+    }
+
+    /// Caps を Ctrl にするキーボードフィルタドライバが入っているか。
+    #[must_use]
+    pub const fn caps_filter(&self) -> bool {
+        self.caps_filter
+    }
+
+    /// 読み込み時になかった「英数 / Caps」「左 Ctrl」を含む設定（入れ替えのペア・Caps を Ctrl としても使う）を、いま足しているか。
+    #[must_use]
+    pub fn adds_caps_ctrl_mapping(&self) -> bool {
+        let is_caps_or_ctrl = |k: u16| k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL;
+        let involves = |p: &Pair| {
+            let (a, b) = p.keys();
+            is_caps_or_ctrl(a) || is_caps_or_ctrl(b)
+        };
+        let new_pair = self
+            .pairs()
+            .iter()
+            .any(|p| involves(p) && !self.initial_pairs.contains(p));
+        new_pair || (self.caps_extra && !self.initial_caps)
+    }
+
+    /// フィルタドライバが入っているのに、二重になる設定を足そうとしている（適用させない）。
+    #[must_use]
+    pub fn caps_filter_conflict(&self) -> bool {
+        self.caps_filter && self.adds_caps_ctrl_mapping()
     }
 
     /// 編集行。
@@ -309,6 +386,10 @@ impl EditorState {
                 Some(Unavailable::KeyInUse)
             } else if self.caps_extra && (k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL) {
                 Some(Unavailable::CapsExtraOn)
+            } else if self.caps_filter && (k == SCANCODE_CAPS_EISU || k == SCANCODE_LEFT_CTRL) {
+                Some(Unavailable::CapsFilterDriver)
+            } else if self.ime_role_thumbs.contains(&k) {
+                Some(Unavailable::ThumbImeRole)
             } else if !jis && is_jis_only(k) {
                 Some(Unavailable::JisOnlyKey)
             } else {
@@ -339,16 +420,21 @@ impl EditorState {
     /// 「Caps を追加の Ctrl にする」をオンにできるか（Caps か左 Ctrl を使う行があるとオンにできない）。
     #[must_use]
     pub fn caps_extra_available(&self) -> bool {
-        !self
-            .rows
-            .iter()
-            .any(|r| r.uses(SCANCODE_CAPS_EISU) || r.uses(SCANCODE_LEFT_CTRL))
+        !self.caps_filter
+            && !self
+                .rows
+                .iter()
+                .any(|r| r.uses(SCANCODE_CAPS_EISU) || r.uses(SCANCODE_LEFT_CTRL))
     }
 
     /// 「Caps を Ctrl としても使う」をオンにできない理由（できるなら `None`）。
     #[must_use]
     pub fn caps_extra_unavailable(&self) -> Option<Unavailable> {
-        (!self.caps_extra_available()).then_some(Unavailable::CapsKeysInUse)
+        if self.caps_filter {
+            Some(Unavailable::CapsFilterDriver)
+        } else {
+            (!self.caps_extra_available()).then_some(Unavailable::CapsKeysInUse)
+        }
     }
 
     /// チェックを変える。オンにできないとき（[`Self::caps_extra_available`] が偽）は変えずに `false`。
@@ -486,6 +572,8 @@ pub enum Caution {
     SpaceMoved,
     /// 親指キーに設定されているキーを含む既存のペアを外す。親指シフトの物理位置が元に戻る。
     ThumbKeyRestored { thumb: u16 },
+    /// 左右の親指キーどうしを入れ替える。左親指と右親指が逆になり、親指シフトの出力が左右逆になる。
+    ThumbKeysSwapped { a: u16, b: u16 },
 }
 
 /// ペアの集合から、注意が要る組を挙げる（重複なし、出現順）。
@@ -499,6 +587,9 @@ pub fn cautions(pairs: &[Pair], thumb_scancodes: &[u16]) -> Vec<Caution> {
     };
     for pair in pairs {
         let (a, b) = pair.keys();
+        if thumb_scancodes.contains(&a) && thumb_scancodes.contains(&b) {
+            push(Caution::ThumbKeysSwapped { a, b });
+        }
         for (key, other) in [(a, b), (b, a)] {
             if thumb_scancodes.contains(&key) {
                 if other == SCANCODE_CAPS_EISU {
@@ -533,6 +624,11 @@ pub fn caution_text(caution: Caution) -> String {
         Caution::ThumbKeyRestored { thumb } => format!(
             "親指キーに設定している「{}」の入れ替えを外します。親指シフトを押す物理的な位置が、元に戻ります。",
             key_label(thumb)
+        ),
+        Caution::ThumbKeysSwapped { a, b } => format!(
+            "親指キーに設定している「{}」と「{}」どうしを入れ替えます。左右の親指キーが逆になり、親指シフトの出力が左右逆になります。",
+            key_label(a),
+            key_label(b)
         ),
     }
 }
@@ -660,6 +756,106 @@ mod tests {
     }
 
     #[test]
+    fn cautions_cover_a_pair_of_the_two_thumb_keys() {
+        // 親指キーが 無変換(左)・変換(右) のとき。
+        let thumbs = [MUH, HEN];
+        // 左右の親指キーどうし: 左右逆の注意に加え、それぞれ位置が動く注意も出る。
+        let c = cautions(&[Pair::new(MUH, HEN)], &thumbs);
+        assert!(
+            c.contains(&Caution::ThumbKeysSwapped { a: HEN, b: MUH })
+                || c.contains(&Caution::ThumbKeysSwapped { a: MUH, b: HEN })
+        );
+        assert!(c.contains(&Caution::ThumbKeyMoved { thumb: MUH }));
+        // 親指キーを含む通常の入れ替え(無変換⇄左 Alt)に、左右逆の注意は出ない。
+        let c = cautions(&[Pair::new(MUH, LALT)], &thumbs);
+        assert!(c
+            .iter()
+            .all(|x| !matches!(x, Caution::ThumbKeysSwapped { .. })));
+        // 関係ない入れ替えには注意が出ない。
+        assert!(cautions(&[Pair::new(LALT, SCANCODE_RIGHT_ALT)], &thumbs).is_empty());
+        for caution in &c {
+            assert!(!caution_text(*caution).is_empty());
+        }
+        assert!(!caution_text(Caution::ThumbKeysSwapped { a: MUH, b: HEN }).is_empty());
+    }
+
+    #[test]
+    fn a_thumb_key_that_is_also_an_ime_key_cannot_be_swapped() {
+        // 変換が IME ON/OFF キーも兼ねている。
+        let mut e = editor(&[]);
+        e.set_ime_role_thumbs(vec![HEN]);
+        assert_eq!(e.ime_role_thumbs(), &[HEN]);
+        // 変換を含むワンクリック(変換 ⇄ スペース)は使えず、理由が出る。含まないものは使える。
+        assert_eq!(
+            e.quick_unavailable(&QUICK_PAIRS[1], true),
+            Some(Unavailable::ThumbImeRole)
+        );
+        assert_eq!(e.quick_unavailable(&QUICK_PAIRS[0], true), None);
+        // 無理に作っても、適用の段で止める。
+        e.set_pairs(&[Pair::new(HEN, SPC)]);
+        assert!(e.ime_role_conflict());
+        e.set_pairs(&[Pair::new(CAPS, LCTRL)]);
+        assert!(!e.ime_role_conflict());
+        // 読み込み時からある入れ替えは止めない（外す・そのままは通る）。
+        let mut had = editor(&[(HEN, SPC), (SPC, HEN)]);
+        had.set_ime_role_thumbs(vec![HEN]);
+        assert!(!had.ime_role_conflict());
+        had.release_all();
+        assert!(!had.ime_role_conflict());
+    }
+
+    #[test]
+    fn caps_filter_present_matches_the_notice() {
+        let names = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert!(caps_filter_present(&names(&["kbdclass", "Ctrl2Cap"])));
+        assert!(!caps_filter_present(&names(&["HPKbfDriver", "kbdclass"])));
+        assert_eq!(
+            caps_filter_present(&names(&["ctrl2cap"])),
+            caps_filter_notice(&names(&["ctrl2cap"])).is_some()
+        );
+    }
+
+    #[test]
+    fn caps_filter_blocks_new_caps_and_ctrl_settings_but_not_others() {
+        let mut e = editor(&[]);
+        e.set_caps_filter(true);
+        // ワンクリックとチェックボックスは使えない。
+        assert_eq!(
+            e.quick_unavailable(&QUICK_PAIRS[0], true),
+            Some(Unavailable::CapsFilterDriver)
+        );
+        assert_eq!(
+            e.caps_extra_unavailable(),
+            Some(Unavailable::CapsFilterDriver)
+        );
+        assert!(!e.set_caps_extra(true));
+        // 英数 / Caps も左 Ctrl も含まない入れ替えは、そのまま使える。
+        assert_eq!(e.quick_unavailable(&QUICK_PAIRS[1], true), None);
+        assert!(e.add_quick(&QUICK_PAIRS[1], true));
+        assert!(!e.caps_filter_conflict());
+        // 無理に作っても、適用の段で止める。
+        e.set_pairs(&[Pair::new(CAPS, LCTRL)]);
+        assert!(e.caps_filter_conflict());
+        e.set_pairs(&[Pair::new(LCTRL, SPC)]);
+        assert!(e.caps_filter_conflict());
+    }
+
+    #[test]
+    fn caps_filter_does_not_block_releasing_or_keeping_an_existing_setting() {
+        // すでに入れ替えがある状態で、あとからドライバが見つかった（読み込み時の設定は止めない）。
+        let mut e = editor(&[(CAPS, LCTRL), (LCTRL, CAPS)]);
+        e.set_caps_filter(true);
+        assert!(!e.adds_caps_ctrl_mapping());
+        assert!(!e.caps_filter_conflict());
+        e.release_all();
+        assert!(!e.caps_filter_conflict());
+        // ドライバが無ければ、新しい設定も止めない。
+        let mut free = editor(&[]);
+        free.set_pairs(&[Pair::new(CAPS, LCTRL)]);
+        assert!(free.adds_caps_ctrl_mapping() && !free.caps_filter_conflict());
+    }
+
+    #[test]
     fn set_pairs_and_release_all_edit_the_state() {
         let mut e = editor(&[(MUH, LALT), (LALT, MUH)]);
         assert!(!e.is_dirty());
@@ -728,6 +924,8 @@ mod tests {
             Unavailable::CapsExtraOn,
             Unavailable::JisOnlyKey,
             Unavailable::CapsKeysInUse,
+            Unavailable::CapsFilterDriver,
+            Unavailable::ThumbImeRole,
         ] {
             assert!(!u.text().is_empty());
         }

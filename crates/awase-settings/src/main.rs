@@ -14,8 +14,8 @@ use awase_windows::scancode_diagram::{
     function_at, locked_note, position_state, refusal_text, release_position, unlisted_pairs,
 };
 use awase_windows::scancode_editor::{
-    EditorState, QUICK_PAIRS, caps_filter_notice, confirmation_lines, key_label, registry_state,
-    status_line, swap_error_text, worker_exit_text,
+    EditorState, QUICK_PAIRS, Unavailable, caps_filter_notice, caps_filter_present,
+    confirmation_lines, key_label, registry_state, status_line, swap_error_text, worker_exit_text,
 };
 use awase_windows::scancode_pairs::{Detected, Entry, Pair, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
@@ -3195,7 +3195,7 @@ impl SettingsApp {
         ui.add_space(4.0);
 
         if self.scancode_map_view.is_none() {
-            self.scancode_map_view = Some(load_scancode_view());
+            self.scancode_map_view = Some(load_scancode_view(self.ime_role_thumb_scancodes()));
         }
         let jis = matches!(
             self.config.general.keyboard_model,
@@ -3240,7 +3240,7 @@ impl SettingsApp {
         match action {
             ScancodeAction::None => {}
             ScancodeAction::Reload => {
-                self.scancode_map_view = Some(load_scancode_view());
+                self.scancode_map_view = Some(load_scancode_view(self.ime_role_thumb_scancodes()));
                 self.scancode_map_last_message = None;
             }
             ScancodeAction::Apply => self.request_scancode_apply(),
@@ -3255,6 +3255,32 @@ impl SettingsApp {
                 self.scancode_restart_confirm = true;
             }
         }
+    }
+
+    /// IME の ON/OFF キー（`keys.ime_on`/`ime_off`/`ime_toggle` に修飾キーなしで書いたキー）も兼ねている親指キーのスキャンコード。
+    /// これらを含む入れ替えは、IME の切り替えが働かなくなるので設定させない（ADR-248）。
+    fn ime_role_thumb_scancodes(&self) -> Vec<u16> {
+        use awase_windows::state::alt_impersonation::resolve_thumb_key;
+        use awase_windows::vk::{VK_CONVERT, VK_NONCONVERT};
+        [
+            &self.config.general.left_thumb_key,
+            &self.config.general.right_thumb_key,
+        ]
+        .into_iter()
+        .filter(|name| {
+            resolve_thumb_key(name).is_some_and(|(vk, _)| {
+                let canonical = if vk == VK_NONCONVERT {
+                    "NONCONVERT"
+                } else if vk == VK_CONVERT {
+                    "CONVERT"
+                } else {
+                    return false;
+                };
+                self.config.keys.has_bare_role_key(canonical)
+            })
+        })
+        .flat_map(|name| thumb_key_scancodes(name))
+        .collect()
     }
 
     /// 設定の親指キーに当たるスキャンコード（確認ダイアログの注意書き用）。
@@ -3275,6 +3301,13 @@ impl SettingsApp {
             Some(ScancodeMapView::Loaded(loaded)) => {
                 let preview = loaded.editor.preview(&loaded.entries, &thumbs);
                 match &preview.plan {
+                    // 二重になる設定は適用させない（図・ボタンでも作れないが、念のため適用の段で止める）。
+                    _ if loaded.editor.caps_filter_conflict() => {
+                        Err(Unavailable::CapsFilterDriver.text().to_string())
+                    }
+                    _ if loaded.editor.ime_role_conflict() => {
+                        Err(Unavailable::ThumbImeRole.text().to_string())
+                    }
                     Err(e) => Err(swap_error_text(*e)),
                     Ok(plan) => Ok((
                         ApplyRequest {
@@ -3341,7 +3374,7 @@ impl SettingsApp {
         }
         // 操作直後にのみ再読み込みする（毎フレーム読まない）。
         if !registry_untouched {
-            self.scancode_map_view = Some(load_scancode_view());
+            self.scancode_map_view = Some(load_scancode_view(self.ime_role_thumb_scancodes()));
         }
     }
 
@@ -5039,18 +5072,21 @@ enum ScancodeAction {
     Apply,
 }
 
-fn load_scancode_view() -> ScancodeMapView {
+fn load_scancode_view(ime_role_thumbs: Vec<u16>) -> ScancodeMapView {
     match scancode_map_admin::read_raw_entries() {
         scancode_map_admin::ScancodeMapRead::Loaded(entries) => {
             let detected = detect_swap_pairs(&entries);
-            let editor = EditorState::from_detected(&detected);
+            let mut editor = EditorState::from_detected(&detected);
+            let filters = scancode_map_admin::read_keyboard_filters();
+            editor.set_caps_filter(caps_filter_present(&filters));
+            editor.set_ime_role_thumbs(ime_role_thumbs);
             ScancodeMapView::Loaded(Box::new(ScancodeMapLoaded {
                 entries,
                 detected,
                 editor,
                 selected: None,
                 diagram_message: None,
-                filter_notice: caps_filter_notice(&scancode_map_admin::read_keyboard_filters()),
+                filter_notice: caps_filter_notice(&filters),
             }))
         }
         scancode_map_admin::ScancodeMapRead::Corrupt => ScancodeMapView::Corrupt,
@@ -5207,6 +5243,8 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
         detected: &loaded.detected,
         caps_extra,
         jis,
+        caps_filter: loaded.editor.caps_filter(),
+        ime_role_thumbs: loaded.editor.ime_role_thumbs(),
     };
     let entries = &loaded.entries;
     let mut new_pairs: Option<Vec<Pair>> = None;
