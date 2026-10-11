@@ -7,6 +7,7 @@
 #include <ntddkbd.h>
 
 #define AWASE_IOCTL_INJECT CTL_CODE(FILE_DEVICE_KEYBOARD, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define AWASE_IOCTL_STATUS CTL_CODE(FILE_DEVICE_KEYBOARD, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 typedef struct _EXT {
     PDEVICE_OBJECT Lower;
@@ -18,6 +19,8 @@ typedef struct _KEY_CMD {
 } KEY_CMD;
 
 static CONNECT_DATA g_conn;
+static volatile LONG g_seenQuery, g_seenAny, g_modified;
+static ULONG g_origType, g_origSubtype;
 static ULONG g_jis;   // Parameters\JisType=1 のとき、キーボードの種類を 106/109 JIS(type 7, subtype 2)と申告し直す。既定は 0(何もしない)。
 static PDEVICE_OBJECT g_ctl;
 
@@ -46,6 +49,8 @@ static NTSTATUS QueryAttrDone(PDEVICE_OBJECT dev, PIRP irp, PVOID ctx)
     if (NT_SUCCESS(irp->IoStatus.Status) && irp->IoStatus.Information >= sizeof(KEYBOARD_ATTRIBUTES)) {
         PKEYBOARD_ATTRIBUTES a = (PKEYBOARD_ATTRIBUTES)irp->AssociatedIrp.SystemBuffer;
         if (a != NULL) {
+            g_origType = a->KeyboardIdentifier.Type; g_origSubtype = a->KeyboardIdentifier.Subtype;
+            InterlockedIncrement(&g_modified);
             a->KeyboardIdentifier.Type = 7;
             a->KeyboardIdentifier.Subtype = 2;
             a->KeyboardMode = 1;
@@ -63,6 +68,16 @@ static NTSTATUS Dispatch(PDEVICE_OBJECT dev, PIRP irp)
         PIO_STACK_LOCATION sp = IoGetCurrentIrpStackLocation(irp);
         if (sp->MajorFunction == IRP_MJ_CREATE || sp->MajorFunction == IRP_MJ_CLOSE || sp->MajorFunction == IRP_MJ_CLEANUP)
             return CtlCreateClose(dev, irp);
+        if (sp->MajorFunction == IRP_MJ_DEVICE_CONTROL &&
+            sp->Parameters.DeviceIoControl.IoControlCode == AWASE_IOCTL_STATUS) {
+            ULONG *o = (ULONG *)irp->AssociatedIrp.SystemBuffer;
+            if (sp->Parameters.DeviceIoControl.OutputBufferLength >= 7 * sizeof(ULONG)) {
+                o[0] = g_jis; o[1] = (ULONG)g_seenAny; o[2] = (ULONG)g_seenQuery; o[3] = (ULONG)g_modified; o[4] = g_origType; o[5] = g_origSubtype; o[6] = (g_conn.ClassService != NULL);
+                irp->IoStatus.Status = STATUS_SUCCESS; irp->IoStatus.Information = 7 * sizeof(ULONG);
+            } else { irp->IoStatus.Status = STATUS_BUFFER_TOO_SMALL; irp->IoStatus.Information = 0; }
+            IoCompleteRequest(irp, IO_NO_INCREMENT);
+            return irp->IoStatus.Status;
+        }
         if (sp->MajorFunction == IRP_MJ_DEVICE_CONTROL &&
             sp->Parameters.DeviceIoControl.IoControlCode == AWASE_IOCTL_INJECT) {
             NTSTATUS st = STATUS_DEVICE_NOT_CONNECTED;
@@ -97,6 +112,13 @@ static NTSTATUS Dispatch(PDEVICE_OBJECT dev, PIRP irp)
         irp->IoStatus.Information = 0;
         IoCompleteRequest(irp, IO_NO_INCREMENT);
         return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    {
+        PIO_STACK_LOCATION spq = IoGetCurrentIrpStackLocation(irp);
+        if (spq->MajorFunction == IRP_MJ_DEVICE_CONTROL) {
+            InterlockedIncrement(&g_seenAny);
+            if (spq->Parameters.DeviceIoControl.IoControlCode == IOCTL_KEYBOARD_QUERY_ATTRIBUTES) InterlockedIncrement(&g_seenQuery);
+        }
     }
     if (g_jis) {
         PIO_STACK_LOCATION sp2 = IoGetCurrentIrpStackLocation(irp);

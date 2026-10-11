@@ -32,6 +32,12 @@ public static class AwaseKb {
     a[0].type = 1; a[0].u.ki.vk = vk; a[0].u.ki.scan = scan; a[0].u.ki.flags = up ? 2u : 0u; a[0].u.ki.extra = new UIntPtr(extra);
     SendInput(1, a, Marshal.SizeOf(typeof(INPUT)));
   }
+  public static string Status(IntPtr h) {
+    byte[] o = new byte[28]; int ret;
+    bool ok = DeviceIoControl(h, 0x000B2004, null, 0, o, o.Length, out ret, IntPtr.Zero);
+    if (!ok) return "status ioctl failed " + Marshal.GetLastWin32Error();
+    return string.Format("jis={0} seenAny={1} seenQuery={2} modified={3} origType={4} origSubtype={5} connected={6}", BitConverter.ToUInt32(o,0), BitConverter.ToUInt32(o,4), BitConverter.ToUInt32(o,8), BitConverter.ToUInt32(o,12), BitConverter.ToUInt32(o,16), BitConverter.ToUInt32(o,20), BitConverter.ToUInt32(o,24));
+  }
   public static int Inject(IntPtr h, ushort[] makeAndFlags) {
     byte[] b = new byte[makeAndFlags.Length * 2];
     Buffer.BlockCopy(makeAndFlags, 0, b, 0, b.Length);

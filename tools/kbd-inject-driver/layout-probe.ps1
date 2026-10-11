@@ -23,6 +23,7 @@ Write-Host ("GetKeyboardType: type={0} subtype={1} fkeys={2}" -f [KbInfo]::GetKe
 Write-Host ("layout name={0} hkl=0x{1:X}" -f $sb.ToString(), [int64][KbInfo]::GetKeyboardLayout(0))
 $h = [AwaseKb]::CreateFile('\\.\AwaseKbInject', [uint32]3221225472, 3, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero)
 if ($h -eq [IntPtr]::new(-1)) { Write-Host '::error::制御デバイスを開けない'; exit 3 }
+Write-Host "driver status: $([AwaseKb]::Status($h))"
 Write-Host "LL hook installed: $([AwaseKb]::Install())"
 function Pump($ms) { $end = (Get-Date).AddMilliseconds($ms); while ((Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 10 } }
 # 万一ハングしたとき(Alt のメニュー、モーダルのループなど)に、結果を出して終わる保険。
