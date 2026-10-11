@@ -23,6 +23,8 @@ related_adr:
 
 **実装状況(段階3a、2026-10-10)**: `kp_run_inner` の `engine.on_input` 直後に `kp_stage_late_keymap` を配線した(`force_consume` + effects 末尾の `ReinjectKey`(Space の Down→Up の対) + `Engine::record_shell_consumed`)。**送信は決定2・4 の「`SendKeys`」ではなく `ReinjectKey` にした**(PR #598 の Opus レビュー B1・M1: `KeyAction::Key` は Down しか送らず Up が欠け、同期で実行される `SendKeys` は `spawn_local` で後から送られる先行の素通し文字を追い越しうる。物理 Space の素通しと同じ経路に乗せれば、先行の文字と FIFO で並ぶ。決定8(4)の「出力層との整合」の実例。検証計画2(c)の「foo bar」対照は CI で確かめる)。`RawKeyEvent.impersonated`(hook.rs が Alt なりすましで vk を書き換えたときに立てる)を足した。条件6-i の4源は `Engine::key_has_ime_function` に集約し、TIP 種別による `Unknown` 化は純粋関数 `resolve_direct_input_effect` に置いた(#597 Opus S3)。**未配線**: 条件7b の ADR-245 の戻り待ち(殻へ配線する PR 2 が develop に無く、`half_width_return_pending` は常に偽)、境界 journal への「遅いルールで消費した」印(debug ログ `[late-keymap]` のみ)、設定画面の列・衝突警告・CI 構成(段階3b)。
 
+**実装状況(段階3b、衝突警告、2026-10-11)**: `warn_on_engine_hotkey_collision` を、警告文を返す純粋関数 `engine_hotkey_collision_warnings` に分け、遅いルール(`ime = "off"`)の `from` が `keys.engine_on/off`・`keys.ime_on/off/toggle` と同じキーのときは「そのキーは IME の機能を持つため発動しません」(決定5)と出す(従来の「[[keymap]] が先に消費するため〜発火しなくなります」は遅いルールには誤りだった。#596 S4)。無変換の遅いルールで `general.muhenkan_solo_tap_dedicated_fn_key` が設定されているときも警告する。IME 設定・学習表由来の役割は実行時にしか決まらないので、読み込み時の警告には載せず、発動時の `[late-keymap]` デバッグログに任せる。変換側の専用 Fn キー設定は `GeneralConfig` に無いので対象外。
+
 ## コンテキスト
 
 ### 報告
