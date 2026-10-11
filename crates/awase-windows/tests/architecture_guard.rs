@@ -7121,6 +7121,44 @@ fn derive_key_shadow_action_routes_ms_ime_to_msime_native_key_role() {
     );
 }
 
+/// ADR-188 案2: 打鍵時点の予測は、FSM がその打鍵の前に送り直す親指（`fsm_resent_mode_keys(decision)`）の効果を重ねて引く
+/// （`predict_after_resent`）。`runtime/key_pipeline.rs` は `#[cfg(windows)]` で Linux のホストテストに現れないので、
+/// つなぎ目（決定から送り直しを取り出して渡す・重ねる入口で予測する）が外れても純関数の単体テストは全て通ってしまう。
+/// 外れると、素通し設定で無変換を押したまま変換/英数を押したときの予測が外れ、予測優先のガード（c353bcbb）が窓内の
+/// 正しい読みを捨てる（CI run 38065774507 の sc-armc-*-passthru）。判定の網羅は `key_effect_predictor.rs` の単体テスト。
+#[test]
+fn key_effect_prediction_overlays_the_fsm_resent_thumb() {
+    let path = "src/runtime/key_pipeline.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let squash = |s: &str| -> String { s.chars().filter(|c| !c.is_whitespace()).collect() };
+    let track = squash(&non_comment_lines(extract_fn_body(
+        production,
+        "fn kp_stage_key_effect_track(",
+    )));
+    for token in [
+        "letresent=crate::state::key_effect_predictor::fsm_resent_mode_keys(decision);",
+        "self.kp_predict_key_effect(event.vk_code,passive_rule_eligible,&resent);",
+    ] {
+        assert!(
+            track.contains(token),
+            "{path} の kp_stage_key_effect_track に `{token}` が無い（ADR-188 案2 のつなぎ目が外れている）"
+        );
+    }
+    let predict = squash(&non_comment_lines(extract_fn_body(
+        production,
+        "fn kp_predict_key_effect(",
+    )));
+    assert!(
+        predict.contains("keymap.predict_after_resent(resent,vk.0,&input,override_table)"),
+        "{path} の kp_predict_key_effect は送り直しを重ねる入口（predict_after_resent）で予測すること"
+    );
+    assert!(
+        !predict.contains(".predict_with_override("),
+        "{path} の kp_predict_key_effect が predict_with_override を直接呼んでいる（送り直した親指の効果が抜ける）"
+    );
+}
+
 /// `kp_apply_conv_engine_sync`（idle-conv-check の conv 観測由来の engine 同期）は、
 /// 書き込みと対の副作用（`ImeApplyRequested` の dispatch・イベント世代の確保・
 /// `TIMER_IME_REFRESH` の kill）を持たない（ADR-213 P2d-1、旧 C2）。
