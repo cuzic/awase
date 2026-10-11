@@ -13,6 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         lang: [en-US, ja-JP]
+        klid: ['00000411', '00000409']
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -40,4 +41,6 @@ jobs:
 
       - name: 日本語キーの Down/Up の vk を測る
         shell: pwsh
+        env:
+          PROBE_KLID: ${{ matrix.klid }}
         run: ./tools/kbd-inject-driver/layout-probe.ps1

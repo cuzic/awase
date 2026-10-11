@@ -5,6 +5,18 @@ Add-Type -AssemblyName System.Windows.Forms
 $src = Get-Content (Join-Path $PSScriptRoot 'AwaseKb.cs') -Raw
 Add-Type -TypeDefinition $src
 Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class KbInfo { [DllImport("user32.dll")] public static extern int GetKeyboardType(int n); [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint t); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool GetKeyboardLayoutName(System.Text.StringBuilder s); [DllImport("user32.dll")] public static extern uint MapVirtualKeyW(uint c, uint t); }'
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class KbLayout { [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr LoadKeyboardLayoutW(string klid, uint flags); [DllImport("user32.dll")] public static extern IntPtr ActivateKeyboardLayout(IntPtr h, uint flags); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
+# 測る窓: 前面・フォーカスを持つ Form を作り、スレッドのレイアウトを環境変数 PROBE_KLID(既定 00000411=日本語)にする。LL フックの vk は入力先のレイアウトで決まる。
+$klid = if ($env:PROBE_KLID) { $env:PROBE_KLID } else { '00000411' }
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'layout-probe'; $form.TopMost = $true; $form.Width = 300; $form.Height = 120
+$tb = New-Object System.Windows.Forms.TextBox; $form.Controls.Add($tb)
+$form.Show(); $form.Activate(); $tb.Focus() | Out-Null
+$hkl = [KbLayout]::LoadKeyboardLayoutW($klid, 1)
+[void][KbLayout]::ActivateKeyboardLayout($hkl, 0)
+[void][KbLayout]::SetForegroundWindow($form.Handle)
+Start-Sleep -Milliseconds 800
+[System.Windows.Forms.Application]::DoEvents()
 $sb = New-Object System.Text.StringBuilder 16
 [void][KbInfo]::GetKeyboardLayoutName($sb)
 Write-Host ("GetKeyboardType: type={0} subtype={1} fkeys={2}" -f [KbInfo]::GetKeyboardType(0), [KbInfo]::GetKeyboardType(1), [KbInfo]::GetKeyboardType(2))
