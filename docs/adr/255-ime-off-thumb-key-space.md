@@ -33,6 +33,8 @@ related_adr:
 
 **物理キー相当の通し(段階3b、2026-10-11、GitHub Windows CI、各 n=1)**: windows-latest(Windows Server 2025、bcdedit の testsigning が既に Yes・Secure Boot なし・HVCI なし)に、自作のキーボードフィルタドライバ `awasekbf`(WDM、`tools/kbd-inject-driver/`、テスト署名)を NuGet の WDK でビルドして入れ、Hyper-V Virtual Keyboard(hyperkbd)デバイスの UpperFilters に載せると、ドライバへの IOCTL で流したスキャンコードが kbdclass のコールバックを通り、`WH_KEYBOARD_LL` には `LLKHF_INJECTED` なし・`dwExtraInfo` 0(SendInput は injected=1)で届く(run 38132643604)。この経路で、設定画面が保存した `[[keymaps]]` を awase が読み、IME OFF の無変換を Space にする通し(`sc-late-space-physical-iv{40,20,8}`、`typing_stress --inject-driver`)が、連打 4/4・押しっぱなし 4/4 で PASS(run 38133637289、`driver_sends=272`)。**限界**: ドライバのインストールはテスト署名のホスト型ランナー専用(スクリプトが GITHUB_ACTIONS 以外では実行を拒否する)。`VK_IME_ON/OFF` などスキャンコードを持たないキーは従来どおり目印付き SendInput。利用者の IME 設定・本物の USB キーボード・自動リピートの OS 実装(ここでは make の連続で代用)は未確認。Larger runner のカスタムイメージは、個人所有のリポジトリでは使えず(組織の Team/Enterprise が要る)、この方法で不要になった。WinPE の入れ子 VM(ci/scancode-vm-spike)は msiexec・ctfmon・IME が無く GJI を入れられないので、この用途には使わない。
 
+**ドライバ方式の日本語キー(JIS)の再現(段階3b、2026-10-11、GitHub Windows CI、run 38139382930)**: Hyper-V の仮想キーボードは `GetKeyboardType` が type=4(101/102 配列)で、そのままだと日本語キーのスキャンコードが JIS の vk に変換されない(無変換 0x7B→0xEB、ひらがな 0x70・変換 0x79→0xFF、半角/全角 0x29→0xC0)。`awasekbf` に `Parameters\JisType=1`(`install-driver.ps1 -JisType`)を足し、`IOCTL_KEYBOARD_QUERY_ATTRIBUTES`(**通常ではなく内部デバイス制御**で来る)の完了ルーチンで type 7・subtype 2 に書き換えると、ひらがな 0x70 は **Down=0xF2/Up=0xF0**、半角/全角 0x29 は Down=0xF4/Up=0xF3(BUG-131/132 の物理キーの Down/Up 非対称)、無変換→0x1D、変換→0x1C になる。vk 直接指定の SendInput(従来の e2e)は Down/Up とも同じ vk で、この非対称は再現できなかった。呼んだプロセス側の `GetKeyboardType` は 4 のまま。計測は `tools/kbd-inject-driver/layout-probe.ps1`。注意: フォーカスのある窓へ Alt を流すとシステムメニューのモーダルループで止まる。
+
 ## コンテキスト
 
 ### 報告
