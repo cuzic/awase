@@ -1164,7 +1164,7 @@ jobs:
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
           # 設定画面で保存した設定を使う(ADR-255 の保存→読み込み→動作の通し)。via_settings='preset' のときだけ:
           # dist\config.toml を awase-settings で開き、再割り当てタブの「無変換・変換を IME OFF のとき Space にする」を押し、Ctrl+S で保存する。
-          # (rules で差し込まず、GUI が書いた [[keymaps]] を awase が読む。窓の位置は起動ごとに変わるので EnumWindows で最大の可視窓を探す。)
+          # (クリック位置: 診断が1件のとき button は窓の左上から y≈245、2件のとき≈259 なので、両方に当たる y=252 を押す。rules で差し込まず、GUI が書いた [[keymaps]] を awase が読む。窓の位置は起動ごとに変わるので EnumWindows で最大の可視窓を探す。)
           if ('${{ matrix.cfg.via_settings }}' -eq 'preset') {
             Add-Type -AssemblyName System.Windows.Forms
             Add-Type -AssemblyName System.Drawing
@@ -1217,7 +1217,7 @@ jobs:
             Write-Host "settings window: $($b -join ',')"
             Snap2 '1-before'
             if ($null -eq $b) { throw 'awase-settings の窓が見つからない' }
-            [void][WinFind2]::SetCursorPos($b[0] + 248, $b[1] + 259)
+            [void][WinFind2]::SetCursorPos($b[0] + 200, $b[1] + 252)
             Start-Sleep -Milliseconds 400
             [WinFind2]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 100; [WinFind2]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
             Start-Sleep -Seconds 2
