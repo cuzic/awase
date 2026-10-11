@@ -3050,6 +3050,20 @@ impl SettingsApp {
                         }
                     }
                     let late = rule.ime.as_deref() == Some(KEYMAP_IME_OFF);
+                    if !late
+                        && let Some(reason) = keymap_forbidden_reason(
+                            &parse_combo_str(&rule.from).3,
+                            left_thumb_vk,
+                            right_thumb_vk,
+                            false,
+                        )
+                    {
+                        // 「OFF のとき」から「いつでも」に戻したときなど、from が使えないキーのままのルール。
+                        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), "⚠from が使えません")
+                            .on_hover_text(format!(
+                                "{reason}\nこのまま保存すると、このルールは無効になります。"
+                            ));
+                    }
                     // 狭い幅で from のドロップダウンが右端に切れるのを避けるため、アプリ・IME の状態と
                     // from → to の間で行を分ける（ComboBox は内部で横並びの入れ子を作り、折り返せない）。
                     ui.end_row();
@@ -3092,20 +3106,6 @@ impl SettingsApp {
                     capture_button(ui, &mut capturing, from_target);
                     if changed {
                         rule.from = format_combo(ctrl, shift, alt, &main);
-                    }
-                    if !late
-                        && let Some(reason) = keymap_forbidden_reason(
-                            &main,
-                            left_thumb_vk,
-                            right_thumb_vk,
-                            false,
-                        )
-                    {
-                        // 「OFF のとき」から「いつでも」に戻したときなど、from が使えないキーのままのルール。
-                        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), "⚠使えません")
-                            .on_hover_text(format!(
-                                "{reason}\nこのまま保存すると、このルールは無効になります。"
-                            ));
                     }
 
                     ui.label("→");
@@ -6930,6 +6930,7 @@ mod layout_tab_repro {
             new_keymap_from_shift: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
+            new_keymap_ime_off: false,
             capturing: None,
             new_disable_app: String::new(),
             layout_file_path_buf: layout_path.display().to_string(),
@@ -8519,5 +8520,42 @@ mod layout_tab_repro {
         let snapshot = apply_adr192_recommended_replacement(&mut config);
         undo_adr192_recommended_replacement(&mut config, snapshot);
         assert_eq!(toml::to_string(&config).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod late_keymap_ui_tests {
+    use super::{LATE_FROM_KEYS, is_late_from_combo, late_from_canonical};
+
+    #[test]
+    fn late_from_accepts_only_bare_muhenkan_and_henkan() {
+        for ok in ["VK_NONCONVERT", "VK_CONVERT", "無変換", "変換"] {
+            assert!(is_late_from_combo(ok), "{ok}");
+        }
+        for ng in [
+            "Ctrl+VK_NONCONVERT",
+            "Shift+変換",
+            "Alt+無変換",
+            "VK_SPACE",
+            "VK_A",
+            "",
+        ] {
+            assert!(!is_late_from_combo(ng), "{ng:?}");
+        }
+    }
+
+    #[test]
+    fn late_from_canonical_uses_the_option_spelling() {
+        assert_eq!(late_from_canonical("無変換"), "VK_NONCONVERT");
+        assert_eq!(late_from_canonical("変換"), "VK_CONVERT");
+        assert_eq!(late_from_canonical("VK_NONCONVERT"), "VK_NONCONVERT");
+        assert_eq!(late_from_canonical("VK_A"), "VK_A");
+    }
+
+    #[test]
+    fn late_from_options_are_all_valid_late_froms() {
+        for (_, internal) in LATE_FROM_KEYS {
+            assert!(is_late_from_combo(internal), "{internal}");
+        }
     }
 }
