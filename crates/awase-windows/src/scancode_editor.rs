@@ -254,6 +254,17 @@ pub struct EditorState {
     foreign_keys: Vec<u16>,
 }
 
+/// 他のツールのエントリが from か to にしているキー（0 は「無効化」の to なので除く）。
+fn foreign_keys(detected: &Detected) -> Vec<u16> {
+    let mut keys = Vec::new();
+    for &((from, to), _) in &detected.unclaimed {
+        keys.push(from);
+        keys.push(to);
+    }
+    keys.retain(|&k| k != 0);
+    keys
+}
+
 impl EditorState {
     /// レジストリの現在値の分類（[`crate::scancode_pairs::detect_swap_pairs`] の結果）から編集状態を作る。
     #[must_use]
@@ -278,12 +289,7 @@ impl EditorState {
             caps_extra: detected.caps_extra_ctrl,
             caps_filter: false,
             ime_role_thumbs: Vec::new(),
-            foreign_keys: detected
-                .unclaimed
-                .iter()
-                .flat_map(|&(entry, _)| [entry.0, entry.1])
-                .filter(|&k| k != 0)
-                .collect(),
+            foreign_keys: foreign_keys(detected),
         }
     }
 
