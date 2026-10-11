@@ -3050,6 +3050,9 @@ impl SettingsApp {
                         }
                     }
                     let late = rule.ime.as_deref() == Some(KEYMAP_IME_OFF);
+                    // 狭い幅で from のドロップダウンが右端に切れるのを避けるため、アプリ・IME の状態と
+                    // from → to の間で行を分ける（ComboBox は内部で横並びの入れ子を作り、折り返せない）。
+                    ui.end_row();
 
                     // from: modifiers + main key + capture button
                     // Alt 修飾は GUI から選べない（ADR-114 決定5 — バックエンドが
