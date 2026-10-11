@@ -3409,6 +3409,98 @@ mod tests {
         );
     }
 
+    /// 送り直しが複数キー: `SendKeys` が複数あっても、1 つの `SendKeys` に複数のキーがあっても、送る順のまま
+    /// 対象キーだけを返す。F13〜F24（ADR-247、IME の役割を持たない F キーも追随の対象）は含め、awase 自身の
+    /// IME ON/OFF（0x16/0x1A）は含めない（`is_followed_mode_key` と同じ判定）。
+    #[test]
+    fn fsm_resent_mode_keys_keeps_order_across_multiple_keys_and_send_keys() {
+        use awase::engine::{Effect, InputEffect};
+        use awase::types::{KeyAction, VkCode};
+        assert_eq!(
+            fsm_resent_mode_keys(&resend_decision(&[0x1D, 0x41, 0x1C])),
+            vec![0x1D, 0x1C],
+            "1 つの SendKeys の中の文字キーは飛ばし、順序は保つ"
+        );
+        let mut d = resend_decision(&[0x1C]);
+        d.push_effect(Effect::Input(InputEffect::SendKeys(vec![
+            KeyAction::Key(VkCode(0x16)),
+            KeyAction::Key(VkCode(0x7C)),
+            KeyAction::Key(VkCode(0x1A)),
+            KeyAction::Key(VkCode(0x1D)),
+        ])));
+        assert_eq!(
+            fsm_resent_mode_keys(&d),
+            vec![0x1C, 0x7C, 0x1D],
+            "複数の SendKeys は effects の順に連結。F13 は含め、IME ON/OFF は除く"
+        );
+    }
+
+    /// 送り直しが複数キー: 先頭のキーの後の状態から次のキーを引く（打鍵前の状態で引き直さない）。
+    /// MS-IME プリセットのかなで 無変換 1 回（C19→C1B、押下後の変換モードが分かる）→ 英数 は予測できるが、
+    /// 無変換 2 回（2 回目は全角カタカナの無変換で押下後の変換モードが表で不明、開いたまま）→ 英数 は予測しない。
+    /// ATOK のかなで 無変換 2 回（かな→閉、閉→開〈押下後の変換モード不明〉）→ 英数 も、開いたまま変換モードが
+    /// 分からないので予測しない（1 回なら閉のままで、次の打鍵を引ける）。
+    #[test]
+    fn predict_after_resent_folds_multiple_resent_keys_in_order() {
+        let kana = input(true, ROMAJI, false, NOTRACK);
+        let msime = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        assert!(
+            msime
+                .predict_after_resent(&[0x1D], 0xF0, &kana, None)
+                .is_some(),
+            "無変換 1 回なら全角カタカナ（変換モードが分かる）から英数を引ける"
+        );
+        assert_eq!(
+            msime.predict_after_resent(&[0x1D, 0x1D], 0xF0, &kana, None),
+            None,
+            "2 回目の無変換で開いたまま変換モードが不明になる → 予測しない"
+        );
+        let atok = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
+        assert!(
+            atok.predict_after_resent(&[0x1D], 0x1C, &kana, None)
+                .is_some(),
+            "無変換 1 回（かな→閉）の後の変換は引ける"
+        );
+        assert_eq!(
+            atok.predict_after_resent(&[0x1D, 0x1D], 0xF0, &kana, None),
+            None,
+            "2 回目の無変換で閉→開（押下後の変換モード不明）→ 予測しない"
+        );
+    }
+
+    /// 送り直したキーには、表に無い受動キーの規則（ADR-211 の F13、`passive_rule_eligible`）を当てない（安全側）。
+    /// 打鍵（最後の `vk`）がその規則の対象になる入力でも、送り直した F13 では規則が働かず、F13 は表に無いので
+    /// 予測できない → 全体を予測しない。規則を当てていたら（閉→開、追跡の変換モードを保つ）次の無変換を引けてしまう。
+    #[test]
+    fn predict_after_resent_does_not_apply_the_passive_rule_to_resent_keys() {
+        let msime = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        let closed = PredictInput {
+            passive_rule_eligible: true,
+            ..input(
+                false,
+                ROMAJI,
+                false,
+                KeyTrack {
+                    conv: Some(Conv::C19),
+                    stage: Stage::None,
+                },
+            )
+        };
+        let opened = msime
+            .predict(F13, &closed)
+            .expect("打鍵としての F13 には ADR-211 の規則が当たる");
+        assert_eq!(opened.effect.open, Some(true));
+        assert!(
+            msime.predict(0x1D, &closed.after(opened)).is_some(),
+            "規則を当てた後の状態なら無変換を引ける（対照）"
+        );
+        assert_eq!(
+            msime.predict_after_resent(&[F13], 0x1D, &closed, None),
+            None,
+            "送り直した F13 には規則を当てない"
+        );
+    }
+
     /// CI run 38065774507（sc-armc-gji-atok-passthru）の外れ: ATOK でかなのとき、無変換を押したまま変換を押すと、
     /// FSM が無変換を送り直す（かな→閉）ので、変換は閉から開く。送り直しを重ねない予測は「かな→閉」で外れていた。
     #[test]
