@@ -8310,6 +8310,62 @@ fn mode_key_follow_skips_auto_repeat_at_entry() {
     );
 }
 
+/// ADR-247 追補（#592）: 自動リピートの除外は、IME の役割を持たない F13〜F24 を含めて、追随の副作用
+/// （直接観測の窓 `arm_direct_external_change_watch`・通過マーク `arm_mode_key_pass_mark`・読み直しの予約
+/// `schedule_ime_refresh`）の**どれよりも前**の早期 return で効くこと。
+///
+/// 上の `mode_key_follow_skips_auto_repeat_at_entry` は述語の呼び出しが本体にあることしか見ない。ここでは
+/// (1) 述語が `||!…` で or 連結された入口の条件の中にあり、その条件の直後の `{return;}` で抜けること、
+/// (2) 対象キーの判定（`is_followed_mode_key`、F13〜F24 を含む）より前に置かれていること（キーの種類に依らず除外）、
+/// (3) 述語〜その `{return;}` の間にも、それより前にも副作用の呼び出しが無いこと、を文字位置の順序で固定する。
+#[test]
+fn mode_key_follow_repeat_return_precedes_every_side_effect() {
+    let src = read_crate_file("src/runtime/key_pipeline.rs");
+    let body: String = non_comment_lines(extract_fn_body(&src, "fn kp_stage_mode_key_follow"))
+        .split_whitespace()
+        .collect();
+    let pred = "||!crate::state::mode_key_pass::mode_key_follow_admits_repeat(event.was_down)";
+    let pred_pos = body
+        .find(pred)
+        .expect("入口の条件に `|| !…mode_key_follow_admits_repeat(event.was_down)` があること");
+    let followed_pos = body
+        .find("crate::vk::is_followed_mode_key(event.vk_code)")
+        .expect("入口の条件に is_followed_mode_key があること");
+    assert!(
+        pred_pos < followed_pos,
+        "リピートの除外は対象キーの判定より前（IME の役割を持たない F13〜F24 も同じく除外する）"
+    );
+    let return_pos = body.find("{return;}").expect("入口の早期 return");
+    assert!(
+        pred_pos < return_pos && followed_pos < return_pos,
+        "リピートの除外と対象キーの判定は、最初の `{{return;}}` の条件の中にあること"
+    );
+    // 述語から最初の return までは同じ `if` の条件（別の `{` を挟まない）。
+    let cond = &body[pred_pos..return_pos];
+    assert!(
+        !cond.contains('{') && !cond.contains(';'),
+        "リピートの除外は最初の早期 return と同じ条件の中にあること: {cond}"
+    );
+    // 本体の先頭は `{if` で、その `if` の条件が最初の `{return;}` まで続く（別の文を挟まない）。
+    assert!(
+        body.starts_with("{if") && !body[..return_pos].contains(';'),
+        "入口の `if` の前に別の文を置かない"
+    );
+    for side_effect in [
+        "arm_direct_external_change_watch(",
+        "arm_mode_key_pass_mark(",
+        "schedule_ime_refresh(",
+    ] {
+        let pos = body
+            .find(side_effect)
+            .unwrap_or_else(|| panic!("kp_stage_mode_key_follow に {side_effect} が無い"));
+        assert!(
+            return_pos < pos,
+            "{side_effect} はリピートを除外する早期 return より後でなければならない"
+        );
+    }
+}
+
 /// ADR-253（BUG-198）: 再注入の `KEYBDINPUT`（`wVk`/`wScan`/`dwFlags`）は純粋関数 `vk::reinject_key_spec`
 /// から取る。`RawKeyEvent::reinject` が `wScan=0`・UNICODE 無しを直書きに戻すと、他アプリが
 /// `KEYEVENTF_UNICODE` で注入した文字（`VK_PACKET`）が保留→再注入で失われる。
