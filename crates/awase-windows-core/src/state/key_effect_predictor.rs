@@ -925,6 +925,22 @@ impl KeyEffectKeymap {
         )
     }
 
+    /// このGJIのキーマップで、`vk`（F13〜F24）がどこか（どの状態・修飾の有無を問わず）に IME の機能を持つか（ADR-256、BUG-199）。
+    /// Microsoft IME本体のキーマップ（`MsImeNative`）では表を読まないので`Unknown`。F13〜F24 以外も`Unknown`。
+    #[must_use]
+    pub fn gji_fkey_function(&self, vk: u16) -> awase_gji_config::role::FKeyFunction {
+        use awase_gji_config::role::FKeyFunction;
+        if matches!(self.preset, KeymapPreset::MsImeNative) || !(0x7C..=0x87).contains(&vk) {
+            return FKeyFunction::Unknown;
+        }
+        awase_gji_config::role::fkey_function(
+            self.session_keymap,
+            self.custom_table.as_deref(),
+            &self.overlay_keymaps,
+            &format!("VK_F{}", vk - 0x6F),
+        )
+    }
+
     /// このGJIのキーマップで、`vk`（無変換/変換）が直接入力状態（IME OFF）で IME の機能を持つか
     /// （ADR-255 決定2 条件6-ii）。Microsoft IME本体のキーマップ（`MsImeNative`）では表を読まないので
     /// `Unknown`（今回は発動しない）。
@@ -3625,6 +3641,54 @@ mod tests {
             got.effect.mode,
             last.effect.mode.or(step.effect.mode),
             "送り直した無変換の入力モードの効果は、後の打鍵が上書きしない限り残る"
+        );
+    }
+
+    /// ADR-256: F13〜F24 の機能の有無（BUG-199 の F18=機能なし／逆向きの F17=機能あり）。MS-IME 本体・F キー以外は Unknown。
+    #[test]
+    fn gji_fkey_function_distinguishes_f18_from_custom_f17() {
+        use awase_gji_config::role::FKeyFunction;
+        let table =
+            "status\tkey\tcommand\nDirectInput\tON\tIMEOn\nDirectInput\tF17\tIMEOn\n".to_string();
+        let custom = KeyEffectKeymap::from_config(
+            Some(awase_gji_config::SESSION_KEYMAP_CUSTOM),
+            Some(table),
+            &[],
+        )
+        .expect("CUSTOM");
+        assert_eq!(
+            custom.gji_fkey_function(0x80),
+            FKeyFunction::HasFunction,
+            "F17"
+        );
+        assert_eq!(
+            custom.gji_fkey_function(0x81),
+            FKeyFunction::NoFunction,
+            "F18"
+        );
+        assert_eq!(
+            custom.gji_fkey_function(0x1C),
+            FKeyFunction::Unknown,
+            "変換"
+        );
+        let atok =
+            KeyEffectKeymap::from_config(Some(awase_gji_config::SESSION_KEYMAP_ATOK), None, &[])
+                .expect("ATOK");
+        assert_eq!(atok.gji_fkey_function(0x81), FKeyFunction::NoFunction);
+        let msime =
+            KeyEffectKeymap::from_config(Some(awase_gji_config::SESSION_KEYMAP_MSIME), None, &[])
+                .expect("MSIME");
+        assert_eq!(
+            msime.gji_fkey_function(0x7C),
+            FKeyFunction::HasFunction,
+            "MS-IME プリセットの F13"
+        );
+        assert_eq!(msime.gji_fkey_function(0x81), FKeyFunction::NoFunction);
+        let native = KeyEffectKeymap::for_msime_native(false, None, None, None);
+        assert_eq!(
+            native.gji_fkey_function(0x81),
+            FKeyFunction::Unknown,
+            "MS-IME 本体"
         );
     }
 }

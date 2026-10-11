@@ -4637,7 +4637,9 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
         !executor.contains("external_change_watch_applies_for("),
         "executor の直接観測は GJI 限定の述語ではなく direct_mode_key_watch_kind_for を使うこと（ADR-244 D2）"
     );
-    assert!(key_pipeline.contains("self.direct_mode_key_watch_kind().is_some()"));
+    // ADR-256: key_pipeline は直接観測の窓の種別（保持の判定に使う）を受け取る形で述語を通す。
+    let key_pipeline_squashed: String = key_pipeline.split_whitespace().collect();
+    assert!(key_pipeline_squashed.contains("self.direct_mode_key_watch_kind().filter("));
     let follow = ime_refresh
         .split("fn ir_follow_direct_mode_key_read")
         .nth(1)
@@ -4736,6 +4738,138 @@ fn ms_ime_native_direct_follow_takes_only_closed_to_open() {
     assert!(
         matches!((p1, p2, p3), (Some(a), Some(b), Some(c)) if a < b && b < c),
         "開閉の追随は write_observer_poll → intent_store.remove → pass_through_observed の順の 3 副作用だけで書くこと: {open_branch}"
+    );
+}
+
+/// ADR-256（BUG-199）: 直接観測の窓は、arm より前の、まだ読みで確かめられていない awase 自身の SendInput の書き込みを守る。配線を固定する。
+///
+/// - 控えるのは `record_ime_apply_result_in_scope` の `ImeOpenOutcome::Applied`（SendInput）だけ。ImmCross（`AppliedWithoutSendInput`）を
+///   含めると読める窓の同期的な書き込みまで控え、逆に `Applied` を外すと BUG-199 が戻る。どちらも Linux の他のテストでは配線の外れとして見えない
+///   （ハブのテストは `#[cfg(windows)]`）。
+/// - `follow_direct_read_in_scope` は、窓の生死を見る前に読みで書き込みを確かめ（`confirm_awase_write`）、R3 の後・予測のガードと判定
+///   （`classify_direct_read_for`）の前で、未確認の書き込みと食い違う読みを採らない（`direct_read_held_by_awase_write`）。
+/// - 控えを窓へ引き継ぐのは直接観測の窓の arm だけ（ADR-205 の基準値の窓では取り出さない）。
+#[test]
+fn direct_follow_holds_reads_for_unconfirmed_awase_write() {
+    let ps = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/platform_state.rs",
+    )));
+    assert_eq!(
+        ps.matches(".note_awase_open_write(").count(),
+        1,
+        "未確認の書き込みを控えるのは record_ime_apply_result_in_scope の1箇所だけ"
+    );
+    let dispatch = ps
+        .split("pub fn dispatch_event")
+        .nth(1)
+        .expect("dispatch_event が無い");
+    let dispatch = &dispatch[..dispatch.find("\n    }\n").unwrap_or(dispatch.len())];
+    let dispatch_squashed: String = dispatch.split_whitespace().collect();
+    assert!(
+        dispatch_squashed.contains(
+            "ifmatches!(event,ImeEvent::FocusChanged{..}|ImeEvent::FocusHwndUpdated{..}){self.external_change_watch.clear_awase_writes();}"
+        ),
+        "フォーカスが移ったら awase の未確認の書き込みを捨てること(レビュー S3): {dispatch}"
+    );
+    let record = ps
+        .split("fn record_ime_apply_result_in_scope")
+        .nth(1)
+        .expect("record_ime_apply_result_in_scope が無い");
+    let record = &record[..record.find("\n    }\n").unwrap_or(record.len())];
+    let record_squashed: String = record.split_whitespace().collect();
+    assert!(
+        record_squashed.contains(
+            "ifmatches!(outcome,awase::platform::ImeOpenOutcome::Applied){self.external_change_watch.note_awase_open_write(scope,open,ts);}"
+        ),
+        "SendInput の書き込み（Applied）だけを控えること: {record}"
+    );
+
+    let follow = ps
+        .split("fn follow_direct_read_in_scope")
+        .nth(1)
+        .expect("follow_direct_read_in_scope が無い");
+    let follow = &follow[..follow.find("\n    }\n").unwrap_or(follow.len())];
+    let f: String = follow.split_whitespace().collect();
+    let pos = |needle: &str| {
+        f.find(needle)
+            .unwrap_or_else(|| panic!("follow_direct_read_in_scope に {needle} が無い: {follow}"))
+    };
+    let confirm = pos("self.note_direct_read_for_awase_write(read_open,now_ms,scope);");
+    let live = pos(".direct_live(");
+    let r3 = pos("self.last_explicit_ime_action_ms>=armed_at");
+    let hold = pos("self.awase_write_holds_direct_read(read_open,read_conv,tick_ms,armed_at,kind)");
+    let prediction = pos(".key_effect()");
+    let classify = pos("external_change_watch::classify_direct_read_for(");
+    assert!(
+        confirm < live && live < r3 && r3 < hold && hold < prediction && prediction < classify,
+        "順序は 確かめる → 窓の生死 → R3 → 未確認の書き込みの保持 → 予測のガード → 判定: {follow}"
+    );
+    // 確かめる側・保持する側の中身(ハブの補助関数)。
+    let body = |name: &str| -> String {
+        let b = ps
+            .split(&format!("fn {name}"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("{name} が無い"));
+        b[..b.find("\n    }\n").unwrap_or(b.len())]
+            .split_whitespace()
+            .collect()
+    };
+    assert!(
+        body("note_direct_read_for_awase_write").contains(".confirm_awase_write(scope,read_open)"),
+        "読みで未確認の書き込みを確かめること"
+    );
+    assert!(
+        body("awase_write_holds_direct_read")
+            .contains("external_change_watch::direct_read_held_by_awase_write(carried,read_open)"),
+        "保持の判定は純関数 direct_read_held_by_awase_write"
+    );
+
+    let watch = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/external_change_watch.rs",
+    )));
+    let arm = watch.split("fn arm_with").nth(1).expect("arm_with が無い");
+    let arm = &arm[..arm.find("\n    }\n").unwrap_or(arm.len())];
+    let arm_squashed: String = arm.split_whitespace().collect();
+    assert!(
+        arm_squashed.contains(
+            "letcarried=matchdirect{Some(true)=>self.take_pending_write(scope,now_ms,window_ms),Some(false)=>{self.pending_write=None;None}None=>None,};"
+        ),
+        "控えを窓へ引き継ぐのは直接観測の窓の arm だけ: {arm}"
+    );
+
+    // 所有者決定(役割のないキーに限定): 物理キーの arm は役割の判定(純関数 awase_write_hold_admission)を渡し、FSM 再送出
+    // (親指キー=無変換/変換)は保持を効かせない(Unknown)。判定は GJI × 無修飾 × 表に行なしだけ Admitted。
+    let kp: String = non_comment_lines(production_code_only(&read_crate_file(
+        "src/runtime/key_pipeline.rs",
+    )))
+    .split_whitespace()
+    .collect();
+    assert!(
+        kp.contains("external_change_watch::awase_write_hold_admission(")
+            && kp.contains(".gji_fkey_function(event.vk_code.0)")
+            && kp.contains(".arm_direct_external_change_watch(now_ms,hold)"),
+        "key_pipeline の直接観測の arm は役割の判定を渡すこと"
+    );
+    let ex: String = non_comment_lines(production_code_only(&read_crate_file(
+        "src/runtime/executor.rs",
+    )))
+    .split_whitespace()
+    .collect();
+    assert!(
+        ex.contains(".arm_direct_external_change_watch(now,crate::state::external_change_watch::HoldAdmission::Unknown,)")
+            || ex.contains(".arm_direct_external_change_watch(now,crate::state::external_change_watch::HoldAdmission::Unknown)"),
+        "FSM 再送出の arm は保持を効かせないこと"
+    );
+    let adm = watch
+        .split("fn awase_write_hold_admission")
+        .nth(1)
+        .expect("awase_write_hold_admission が無い");
+    let adm = &adm[..adm.find("\n}\n").unwrap_or(adm.len())];
+    let adm_squashed: String = adm.split_whitespace().collect();
+    assert!(
+        adm_squashed.contains("Some(FKeyFunction::NoFunction)=>HoldAdmission::Admitted,")
+            && adm_squashed.matches("HoldAdmission::Admitted").count() == 1,
+        "Admitted は表に行なしのときだけ: {adm}"
     );
 }
 

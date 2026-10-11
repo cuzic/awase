@@ -1764,12 +1764,15 @@ impl Runtime {
         }
         // ADR-188: Shift 付きを含め、GJI × Imm32Unavailable では直接観測の窓を開く（基準値なしで窓内の読みを
         // belief と照合する）。変換中（候補窓が出ている間）は開かない（読み取りを増やさない、M2）。
-        if self.direct_mode_key_watch_kind().is_some()
-            && !crate::tsf::observer::ime_composition_active_now()
-        {
+        let watch_kind = self
+            .direct_mode_key_watch_kind()
+            .filter(|_| !crate::tsf::observer::ime_composition_active_now());
+        if let Some(kind) = watch_kind {
+            let now_ms = hook::current_tick_ms();
+            let hold = self.kp_direct_watch_hold_admission(kind, event, now_ms);
             self.platform_state
                 .ime
-                .arm_direct_external_change_watch(hook::current_tick_ms());
+                .arm_direct_external_change_watch(now_ms, hold);
             self.schedule_ime_refresh(20);
         }
         // Shift 押下中（Shift+無変換/変換 = ATOK ではかな⇔半角英数で開閉を変えない、ADR-186 残る問題2）は
@@ -1791,6 +1794,30 @@ impl Runtime {
             "[mode-key-follow] mode key PassThrough(vk=0x{:02X}): IME refresh scheduled (20ms)",
             event.vk_code.0
         );
+    }
+
+    /// ADR-256（所有者決定「役割のないキーに限定」）: 直接観測の窓を開くこの打鍵で、直前の awase の書き込みを窓へ引き継いで
+    /// よいか。このキーが GJI の表に行を持たない（GJI × 無修飾 × F13〜F24）と確かめられたときだけ `Admitted`。判定は純関数
+    /// `awase_write_hold_admission`、ここはキーマップの取得（予測と同じ `KeymapCache::get_gji`）だけ。
+    fn kp_direct_watch_hold_admission(
+        &mut self,
+        kind: crate::state::ime_kind::ImeKindId,
+        event: &RawKeyEvent,
+        now_ms: u64,
+    ) -> crate::state::external_change_watch::HoldAdmission {
+        let m = event.modifier_snapshot;
+        let fkey = match kind {
+            crate::state::ime_kind::ImeKindId::Gji => self
+                .key_effect_keymap
+                .get_gji(now_ms)
+                .map(|k| k.gji_fkey_function(event.vk_code.0)),
+            crate::state::ime_kind::ImeKindId::MsIme => None,
+        };
+        crate::state::external_change_watch::awase_write_hold_admission(
+            kind,
+            fkey,
+            m.shift || m.ctrl || m.alt || m.win,
+        )
     }
 
     /// 物理キーの押下ごとに、打鍵時点の予測と隠れ状態の追跡（`kp_predict_key_effect`）を呼ぶ。

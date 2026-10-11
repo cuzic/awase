@@ -142,6 +142,56 @@ pub fn direct_input_effect(
     }
 }
 
+/// F13〜F24 のキーが、この GJI 設定のどこか（どの状態・修飾の有無を問わず）に IME の機能を持つか（ADR-256、BUG-199）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FKeyFunction {
+    /// 行がある（プリセットの MS-IME/MOBILE の F13、CUSTOM の表にそのキーを含む行）。IME の状態を変えうる。
+    HasFunction,
+    /// 表が読めて、このキーの行がどこにも無い。GJI はこのキーで IME の状態を変えない。
+    NoFunction,
+    /// 判断できない（F13〜F24 以外・未知の `session_keymap`・overlay あり）。
+    Unknown,
+}
+
+/// `vk_name`（`VK_F13`〜`VK_F24`。他は `Unknown`）が、この GJI 設定のどこかで IME の機能を持つか（ADR-256）。
+///
+/// - プリセット: Mozc `b4bbc42f` の TSV では F13〜F24 の行は MS-IME/MOBILE の `DirectInput F13 IMEOn` だけ
+///   （テスト `preset_fkey_function_matches_mozc_tsv`）。
+/// - CUSTOM: 状態・コマンドを問わず、キー表記の最後の語（修飾を除いたメインキー）がそのキーの行が 1 つでもあれば `HasFunction`
+///   （`Shift F18` も数える。修飾付きで押したかは呼び出し側が別に見る）。
+/// - overlay があるときは書き換える行を数えないので `Unknown`（決定6-3 と同じく判断できない側へ倒す）。
+#[must_use]
+pub fn fkey_function(
+    session_keymap: Option<i64>,
+    custom_keymap_table: Option<&str>,
+    overlay_keymaps: &[i64],
+    vk_name: &str,
+) -> FKeyFunction {
+    let Some(key) = vk_name.strip_prefix("VK_") else {
+        return FKeyFunction::Unknown;
+    };
+    let is_f13_to_f24 = key
+        .strip_prefix('F')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (13..=24).contains(&n));
+    if !is_f13_to_f24 || !overlay_keymaps.is_empty() {
+        return FKeyFunction::Unknown;
+    }
+    let has_row = match source(session_keymap, custom_keymap_table) {
+        Source::Preset(Preset::MsIme | Preset::Mobile) => key == "F13",
+        Source::Preset(Preset::Atok | Preset::Kotoeri) => false,
+        Source::Custom(table) => parse_custom_keymap_table(table)
+            .iter()
+            .any(|row| row.key.split_whitespace().next_back() == Some(key)),
+        Source::Unknown => return FKeyFunction::Unknown,
+    };
+    if has_row {
+        FKeyFunction::HasFunction
+    } else {
+        FKeyFunction::NoFunction
+    }
+}
+
 /// 役割を何から決めるか（決定4 の判別）。
 enum Source<'a> {
     Preset(Preset),
@@ -1148,5 +1198,64 @@ DirectInput\tON\tIMEOn
             None
         );
         assert_eq!(effect_in_custom(&table, "VK_A", true, false), None);
+    }
+
+    /// ADR-256: プリセットの F13〜F24 の行の有無を Mozc の TSV（候補キーの行の抜き出し）と突き合わせる。
+    #[test]
+    fn preset_fkey_function_matches_mozc_tsv() {
+        for (session, tsv) in [
+            (Some(SESSION_KEYMAP_MSIME), MS_IME_TSV),
+            (Some(SESSION_KEYMAP_ATOK), ATOK_TSV),
+            (Some(SESSION_KEYMAP_KOTOERI), KOTOERI_TSV),
+            (Some(SESSION_KEYMAP_MOBILE), MOBILE_TSV),
+            (None, MS_IME_TSV),
+        ] {
+            for n in 13..=24 {
+                let key = format!("F{n}");
+                let in_tsv = tsv
+                    .lines()
+                    .any(|l| l.split('\t').nth(1) == Some(key.as_str()));
+                let expected = if in_tsv {
+                    FKeyFunction::HasFunction
+                } else {
+                    FKeyFunction::NoFunction
+                };
+                assert_eq!(
+                    fkey_function(session, None, &[], &format!("VK_{key}")),
+                    expected,
+                    "{session:?} {key}"
+                );
+            }
+        }
+    }
+
+    /// ADR-256: CUSTOM は状態・コマンド・修飾を問わず行があれば機能あり。F13〜F24 以外・overlay・未知の設定は Unknown。
+    #[test]
+    fn fkey_function_custom_rows_and_unknowns() {
+        let table = custom("DirectInput\tF17\tIMEOn\nPrecomposition\tShift F19\tCommit\n");
+        let f = |vk: &str| fkey_function(Some(SESSION_KEYMAP_CUSTOM), Some(&table), &[], vk);
+        assert_eq!(f("VK_F17"), FKeyFunction::HasFunction);
+        assert_eq!(
+            f("VK_F19"),
+            FKeyFunction::HasFunction,
+            "修飾付きの行も数える"
+        );
+        assert_eq!(f("VK_F18"), FKeyFunction::NoFunction);
+        assert_eq!(f("VK_F1"), FKeyFunction::Unknown);
+        assert_eq!(f("VK_NONCONVERT"), FKeyFunction::Unknown);
+        assert_eq!(f("F18"), FKeyFunction::Unknown);
+        assert_eq!(
+            fkey_function(
+                Some(SESSION_KEYMAP_CUSTOM),
+                Some(&table),
+                &[SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF],
+                "VK_F18"
+            ),
+            FKeyFunction::Unknown
+        );
+        assert_eq!(
+            fkey_function(Some(99), None, &[], "VK_F18"),
+            FKeyFunction::Unknown
+        );
     }
 }
