@@ -480,6 +480,8 @@ struct SettingsApp {
     // 修飾を禁止・skip するため）。
     new_keymap_from_main: String,
     new_keymap_to_main: String,
+    /// 新規ルールの「IME の状態」が「OFF のとき」か（ADR-255。`ime = "off"` の遅いルール）。
+    new_keymap_ime_off: bool,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
     // disable_apps add-buffer（プロセス名のみ、class 不要）
@@ -758,6 +760,7 @@ impl SettingsApp {
             new_keymap_from_shift: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
+            new_keymap_ime_off: false,
             capturing: None,
             new_disable_app: String::new(),
             // 配列編集タブの状態は「配列編集」タブを開くまで読み込まない
@@ -2412,7 +2415,20 @@ impl SettingsApp {
                 };
                 match target {
                     CaptureTarget::ExistingFrom(i) => {
-                        if !reject(&internal, false, &mut self.status)
+                        let late = self
+                            .config
+                            .keymaps
+                            .get(i)
+                            .is_some_and(|r| r.ime.as_deref() == Some(KEYMAP_IME_OFF));
+                        if late {
+                            if is_late_from_combo(&format_combo(ctrl, shift, false, &internal)) {
+                                if let Some(rule) = self.config.keymaps.get_mut(i) {
+                                    rule.from = late_from_canonical(&internal);
+                                }
+                            } else {
+                                self.status = LATE_FROM_REJECT.to_owned();
+                            }
+                        } else if !reject(&internal, false, &mut self.status)
                             && let Some(rule) = self.config.keymaps.get_mut(i)
                         {
                             rule.from = format_combo(ctrl, shift, false, &internal);
@@ -2427,6 +2443,13 @@ impl SettingsApp {
                             && let Some(step) = rule.to.get_mut(step_i)
                         {
                             *step = internal;
+                        }
+                    }
+                    CaptureTarget::NewFrom if self.new_keymap_ime_off => {
+                        if is_late_from_combo(&format_combo(ctrl, shift, false, &internal)) {
+                            self.new_keymap_from_main = late_from_canonical(&internal);
+                        } else {
+                            self.status = LATE_FROM_REJECT.to_owned();
                         }
                     }
                     CaptureTarget::NewFrom => {
@@ -2943,6 +2966,47 @@ impl SettingsApp {
         );
         ui.add_space(8.0);
 
+        // ADR-255: IME が OFF のときだけ、無変換/変換を Space にする入口。
+        ui.horizontal_wrapped(|ui| {
+            let present = [("VK_NONCONVERT"), ("VK_CONVERT")].iter().all(|from| {
+                self.config
+                    .keymaps
+                    .iter()
+                    .any(|r| r.ime.as_deref() == Some(KEYMAP_IME_OFF) && r.from == *from && r.to == ["VK_SPACE"])
+            });
+            if ui
+                .add_enabled(!present, egui::Button::new("無変換・変換を IME OFF のとき Space にする"))
+                .on_hover_text(
+                    "押すと: IME が OFF のとき、無変換と変換の単独押しを Space（空白）にするルールを2つ追加します。\n\
+                     IME が ON のときは、これまでどおり親指シフトとして働きます。",
+                )
+                .clicked()
+            {
+                for from in ["VK_NONCONVERT", "VK_CONVERT"] {
+                    if !self.config.keymaps.iter().any(|r| {
+                        r.ime.as_deref() == Some(KEYMAP_IME_OFF) && r.from == from && r.to == ["VK_SPACE"]
+                    }) {
+                        self.config.keymaps.push(awase::config::KeymapRule {
+                            app: None,
+                            from: from.to_owned(),
+                            to: vec!["VK_SPACE".to_owned()],
+                            ime: Some(KEYMAP_IME_OFF.to_owned()),
+                        });
+                    }
+                }
+            }
+        });
+        ui.collapsing("「IME の状態: OFF のとき」のルールの注意", |ui| {
+            ui.label(
+                "・押し続けても繰り返しません（1回押すと1回だけ送ります）。\n\
+                 ・「半角英数」（IME は開いたまま英数モード）の状態では動きません。\n\
+                 ・IME は ON なのに awase が OFF と思っているときは、無変換が Space（IME によっては変換や全角スペース）になることがあります。\n\
+                 ・IME 側の割り当てが読めないとき（Microsoft IME 本体のキー設定など）は、何もしません。\n\
+                 ・Google 日本語入力の「キー設定」に、直接入力の無変換/変換の行（空白入力など）があると、そのキーでは動きません。",
+            );
+        });
+        ui.add_space(4.0);
+
         // local copy of capturing to avoid borrow-conflict with self.config.keymaps below
         let mut capturing = self.capturing;
         let (left_thumb_vk, right_thumb_vk) = keymap_thumb_vks(&self.config.general);
@@ -2975,6 +3039,18 @@ impl SettingsApp {
                         };
                     }
 
+                    // IME の状態（ADR-255）: 「いつでも」か「OFF のとき」（`ime = "off"` の遅いルール）。
+                    let late = rule.ime.as_deref() == Some(KEYMAP_IME_OFF);
+                    let mut ime_off = late;
+                    if ime_condition_combo(ui, &format!("ime_cond_{i}"), &mut ime_off) {
+                        rule.ime = ime_off.then(|| KEYMAP_IME_OFF.to_owned());
+                        if ime_off && !is_late_from_combo(&rule.from) {
+                            // 遅いルールの from は無修飾の無変換/変換に限る（ADR-255 決定1）。
+                            rule.from = "VK_NONCONVERT".to_owned();
+                        }
+                    }
+                    let late = rule.ime.as_deref() == Some(KEYMAP_IME_OFF);
+
                     // from: modifiers + main key + capture button
                     // Alt 修飾は GUI から選べない（ADR-114 決定5 — バックエンドが
                     // 'from' の Alt 修飾を禁止・skip するため、対称性を保つ）。
@@ -2983,21 +3059,50 @@ impl SettingsApp {
                     // 別途警告して skip する）。
                     let (mut ctrl, mut shift, alt, mut main) = parse_combo_str(&rule.from);
                     let mut changed = false;
-                    changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
-                    changed |= ui.checkbox(&mut shift, "Shift").changed();
-                    if main_key_combo(
-                        ui,
-                        &format!("from_main_{i}"),
-                        &mut main,
-                        "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。",
-                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
-                    ) {
-                        changed = true;
+                    if late {
+                        // 遅いルールは無修飾の無変換/変換だけ（修飾キーのチェックは出さない）。
+                        if main_key_combo(
+                            ui,
+                            &format!("from_main_{i}"),
+                            &mut main,
+                            "IME が OFF のとき、この親指キーを単独で押すと to のキーを送ります。",
+                            late_from_key_options(),
+                        ) {
+                            changed = true;
+                            ctrl = false;
+                            shift = false;
+                        }
+                    } else {
+                        changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
+                        changed |= ui.checkbox(&mut shift, "Shift").changed();
+                        if main_key_combo(
+                            ui,
+                            &format!("from_main_{i}"),
+                            &mut main,
+                            "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。",
+                            keymap_from_key_options(left_thumb_vk, right_thumb_vk),
+                        ) {
+                            changed = true;
+                        }
                     }
                     let from_target = CaptureTarget::ExistingFrom(i);
                     capture_button(ui, &mut capturing, from_target);
                     if changed {
                         rule.from = format_combo(ctrl, shift, alt, &main);
+                    }
+                    if !late
+                        && let Some(reason) = keymap_forbidden_reason(
+                            &main,
+                            left_thumb_vk,
+                            right_thumb_vk,
+                            false,
+                        )
+                    {
+                        // 「OFF のとき」から「いつでも」に戻したときなど、from が使えないキーのままのルール。
+                        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), "⚠使えません")
+                            .on_hover_text(format!(
+                                "{reason}\nこのまま保存すると、このルールは無効になります。"
+                            ));
                     }
 
                     ui.label("→");
@@ -3091,19 +3196,42 @@ impl SettingsApp {
                 .on_hover_text("対象プロセス名（例: vim.exe）。空欄で全アプリ対象。");
                 ui.end_row();
 
+                ui.label("  IME の状態:").on_hover_text(IME_CONDITION_HOVER);
+                if ime_condition_combo(ui, "new_ime_cond", &mut self.new_keymap_ime_off)
+                    && self.new_keymap_ime_off
+                {
+                    // 遅いルールの from は無修飾の無変換/変換に限る。
+                    self.new_keymap_from_ctrl = false;
+                    self.new_keymap_from_shift = false;
+                    if !is_late_from_combo(&self.new_keymap_from_main) {
+                        self.new_keymap_from_main.clear();
+                    }
+                }
+                ui.end_row();
+
                 let from_hover =
                     "変換元のキーです。左の Ctrl/Shift と組み合わせて判定します（Alt 修飾は使用できません）。";
                 ui.label("  from:").on_hover_text(from_hover);
                 ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
-                    ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
-                    main_key_combo(
-                        ui,
-                        "new_from_main",
-                        &mut self.new_keymap_from_main,
-                        from_hover,
-                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
-                    );
+                    if self.new_keymap_ime_off {
+                        main_key_combo(
+                            ui,
+                            "new_from_main",
+                            &mut self.new_keymap_from_main,
+                            "IME が OFF のとき単独で押すキー（無変換/変換）です。",
+                            late_from_key_options(),
+                        );
+                    } else {
+                        ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
+                        ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
+                        main_key_combo(
+                            ui,
+                            "new_from_main",
+                            &mut self.new_keymap_from_main,
+                            from_hover,
+                            keymap_from_key_options(left_thumb_vk, right_thumb_vk),
+                        );
+                    }
                     capture_button(ui, &mut capturing, CaptureTarget::NewFrom);
                 })
                 .response
@@ -3158,8 +3286,9 @@ impl SettingsApp {
                     } else {
                         vec![self.new_keymap_to_main.clone()]
                     },
-                    ime: None,
+                    ime: self.new_keymap_ime_off.then(|| KEYMAP_IME_OFF.to_owned()),
                 });
+                self.new_keymap_ime_off = false;
                 self.new_keymap_app.clear();
                 self.new_keymap_from_ctrl = false;
                 self.new_keymap_from_shift = false;
@@ -5795,6 +5924,68 @@ fn physical_key_options() -> impl Iterator<Item = &'static (&'static str, &'stat
     })
 }
 
+/// `[[keymap]]` の `ime` の値（ADR-255）。IME OFF のときだけ当たる「遅いルール」。
+const KEYMAP_IME_OFF: &str = "off";
+
+const IME_CONDITION_HOVER: &str = "いつでも: IME の状態を問わず、親指シフトより先に照合します（従来の動き）。\n\
+     OFF のとき: IME が OFF（親指シフトが働かない状態）のときだけ、無変換/変換の単独押しに当たります。";
+
+const LATE_FROM_REJECT: &str =
+    "「IME が OFF のとき」のルールの from は、修飾キーなしの無変換/変換だけです。";
+
+/// 遅いルールの from に選べるキー（無修飾の無変換/変換だけ。ADR-255 決定1）。
+const LATE_FROM_KEYS: &[(&str, &str)] = &[("無変換", "VK_NONCONVERT"), ("変換", "VK_CONVERT")];
+
+fn late_from_key_options() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    LATE_FROM_KEYS.iter()
+}
+
+/// `from` が遅いルールとして使える（修飾なしの無変換/変換）か。
+fn is_late_from_combo(from: &str) -> bool {
+    let (ctrl, shift, alt, main) = parse_combo_str(from);
+    !ctrl
+        && !shift
+        && !alt
+        && matches!(
+            VkCode::from_name(&main),
+            Some(vk) if vk == awase_windows::vk::VK_NONCONVERT || vk == awase_windows::vk::VK_CONVERT
+        )
+}
+
+/// キャプチャで得た無変換/変換の内部表記（`"無変換"` 等）を、遅いルールの候補の表記（`VK_NONCONVERT`/`VK_CONVERT`）にそろえる。
+fn late_from_canonical(internal: &str) -> String {
+    match VkCode::from_name(internal) {
+        Some(vk) if vk == awase_windows::vk::VK_NONCONVERT => "VK_NONCONVERT".to_owned(),
+        Some(vk) if vk == awase_windows::vk::VK_CONVERT => "VK_CONVERT".to_owned(),
+        _ => internal.to_owned(),
+    }
+}
+
+/// 「IME の状態」のドロップダウン。`ime_off` が変わったら true。
+fn ime_condition_combo(ui: &mut egui::Ui, id: &str, ime_off: &mut bool) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if *ime_off {
+            "OFF のとき"
+        } else {
+            "いつでも"
+        })
+        .width(90.0)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(!*ime_off, "いつでも").clicked() && *ime_off {
+                *ime_off = false;
+                changed = true;
+            }
+            if ui.selectable_label(*ime_off, "OFF のとき").clicked() && !*ime_off {
+                *ime_off = true;
+                changed = true;
+            }
+        })
+        .response
+        .on_hover_text(IME_CONDITION_HOVER);
+    changed
+}
+
 /// `KEYMAP_MAIN_KEYS` から、keymap の from 側で禁止される VK を除いた候補一覧。
 fn keymap_from_key_options(
     left_thumb_vk: VkCode,
@@ -5920,6 +6111,7 @@ fn key_display_name(internal: &str) -> &str {
     KEYMAP_MAIN_KEYS
         .iter()
         .find(|(_, v)| *v == internal)
+        .or_else(|| LATE_FROM_KEYS.iter().find(|(_, v)| *v == internal))
         .map_or(internal, |(d, _)| *d)
 }
 

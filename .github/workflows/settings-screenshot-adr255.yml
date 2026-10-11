@@ -1,0 +1,130 @@
+# (ADR-255 設定画面の確認用、マージ前に削除) awase-settings の画面を実 Windows(windows-latest)で開いてスクリーンショットを撮る診断用ワークフロー(ADR-248)。
+# 狭いウィンドウでの表示崩れを目で確認するためのもの。成果物は artifact `settings-screenshots`(PNG)。
+name: settings-screenshot-adr255
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/adr255-settings-ui]
+
+jobs:
+  shot:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build awase-settings.exe
+        run: cargo build --profile settings-release --locked -p awase-settings
+
+      - name: Take screenshots
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class Win {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+            [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+            [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+          }
+          "@
+          [void][Win]::SetProcessDPIAware()
+          $exe = Join-Path $PWD "target/settings-release/awase-settings.exe"
+          New-Item -ItemType Directory -Force -Path shots | Out-Null
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          Write-Host "primary screen: $($bounds.Width)x$($bounds.Height)"
+          function Snap($name, $rect) {
+            $bmp = New-Object System.Drawing.Bitmap $rect.Width, $rect.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($rect.X, $rect.Y, 0, 0, $bmp.Size)
+            $bmp.Save((Join-Path $PWD "shots/$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+          }
+          $cfgDir = Join-Path $PWD "shotcfg"
+          New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+          function Write-Cfg($name, $rules) {
+            $path = Join-Path $cfgDir "$name.toml"
+            [IO.File]::WriteAllText($path, $rules, (New-Object Text.UTF8Encoding($false)))
+            return $path
+          }
+          function Launch($cfgPath, $w, $h) {
+            $env:AWASE_SETTINGS_INITIAL_TAB = "keymap"
+            $env:AWASE_SETTINGS_WINDOW_SIZE = "${w}x${h}"
+            $p = Start-Process -FilePath $exe -ArgumentList "`"$cfgPath`"" -PassThru
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Date) -lt $deadline) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { break }; Start-Sleep -Milliseconds 500 }
+            Start-Sleep -Seconds 8
+            [void][Win]::SetForegroundWindow($p.MainWindowHandle)
+            Start-Sleep -Seconds 1
+            return $p
+          }
+          function Click-Name($hwnd, $name) {
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+            $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)
+            $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+            Write-Host "UIA '$name': $($found.Count) element(s)"
+            if ($found.Count -eq 0) {
+              $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "UIA total descendants: $($all.Count)"
+              foreach ($e in ($all | Select-Object -First 40)) { Write-Host "  - [$($e.Current.ControlType.ProgrammaticName)] '$($e.Current.Name)'" }
+              return $false
+            }
+            $best = $null
+            foreach ($e in $found) {
+              if ($null -eq $best -or $e.Current.BoundingRectangle.X -lt $best.Current.BoundingRectangle.X) { $best = $e }
+            }
+            $b = $best.Current.BoundingRectangle
+            $cx = [int]($b.X + $b.Width / 2); $cy = [int]($b.Y + $b.Height / 2)
+            Write-Host "click '$name' at $cx,$cy"
+            [void][Win]::SetCursorPos($cx, $cy)
+            Start-Sleep -Milliseconds 300
+            [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 100
+            [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+            return $true
+          }
+
+          # 1) ルールなし(既定)の画面と、プリセットボタンを押した後
+          $c0 = Write-Cfg "empty" "[general]`r`n"
+          $p = Launch $c0 760 900
+          Snap "1-empty-760-screen" $bounds
+          $ok = Click-Name $p.MainWindowHandle "無変換・変換を IME OFF のとき Space にする"
+          Start-Sleep -Seconds 2
+          Snap "2-after-preset-760-screen" $bounds
+          $ok2 = Click-Name $p.MainWindowHandle "「IME の状態: OFF のとき」のルールの注意"
+          Start-Sleep -Seconds 2
+          Snap "3-notes-open-760-screen" $bounds
+          Write-Host "clicks: preset=$ok notes=$ok2"
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          # 2) 遅いルール・通常ルールが混ざった設定(手書きの from=VK_NONCONVERT 付き・ime なしの親指キーも)
+          $mixed = @(
+            '[general]', '',
+            '[[keymap]]', 'from = "VK_NONCONVERT"', 'to = ["VK_SPACE"]', 'ime = "off"', '',
+            '[[keymap]]', 'from = "VK_CONVERT"', 'to = ["VK_SPACE"]', 'ime = "off"', 'app = "notepad.exe"', '',
+            '[[keymap]]', 'from = "Ctrl+VK_I"', 'to = ["VK_F7"]', '',
+            '[[keymap]]', 'from = "VK_NONCONVERT"', 'to = ["VK_SPACE"]', ''
+          ) -join "`r`n"
+          $c1 = Write-Cfg "mixed" $mixed
+          foreach ($w in @(760, 480)) {
+            $p = Launch $c1 $w 900
+            Snap "4-mixed-$w-screen" $bounds
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          }
+          Get-ChildItem shots | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: settings-screenshots-adr255
+          path: shots/*.png
+          if-no-files-found: warn
