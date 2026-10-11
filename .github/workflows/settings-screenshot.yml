@@ -5,7 +5,7 @@ name: settings-screenshot
 on:
   workflow_dispatch:
   push:
-    branches: [ci/settings-screenshot, feat/adr248-ctrl2cap-detect]
+    branches: [ci/settings-screenshot, feat/adr248-filter-guard]
 
 jobs:
   shot:

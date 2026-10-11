@@ -14,8 +14,8 @@ use awase_windows::scancode_diagram::{
     function_at, locked_note, position_state, refusal_text, release_position, unlisted_pairs,
 };
 use awase_windows::scancode_editor::{
-    EditorState, QUICK_PAIRS, caps_filter_notice, confirmation_lines, key_label, registry_state,
-    status_line, swap_error_text, worker_exit_text,
+    EditorState, QUICK_PAIRS, Unavailable, caps_filter_notice, caps_filter_present,
+    confirmation_lines, key_label, registry_state, status_line, swap_error_text, worker_exit_text,
 };
 use awase_windows::scancode_pairs::{Detected, Entry, Pair, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
@@ -3275,6 +3275,10 @@ impl SettingsApp {
             Some(ScancodeMapView::Loaded(loaded)) => {
                 let preview = loaded.editor.preview(&loaded.entries, &thumbs);
                 match &preview.plan {
+                    // 二重になる設定は適用させない（図・ボタンでも作れないが、念のため適用の段で止める）。
+                    _ if loaded.editor.caps_filter_conflict() => {
+                        Err(Unavailable::CapsFilterDriver.text().to_string())
+                    }
                     Err(e) => Err(swap_error_text(*e)),
                     Ok(plan) => Ok((
                         ApplyRequest {
@@ -5043,14 +5047,16 @@ fn load_scancode_view() -> ScancodeMapView {
     match scancode_map_admin::read_raw_entries() {
         scancode_map_admin::ScancodeMapRead::Loaded(entries) => {
             let detected = detect_swap_pairs(&entries);
-            let editor = EditorState::from_detected(&detected);
+            let mut editor = EditorState::from_detected(&detected);
+            let filters = scancode_map_admin::read_keyboard_filters();
+            editor.set_caps_filter(caps_filter_present(&filters));
             ScancodeMapView::Loaded(Box::new(ScancodeMapLoaded {
                 entries,
                 detected,
                 editor,
                 selected: None,
                 diagram_message: None,
-                filter_notice: caps_filter_notice(&scancode_map_admin::read_keyboard_filters()),
+                filter_notice: caps_filter_notice(&filters),
             }))
         }
         scancode_map_admin::ScancodeMapRead::Corrupt => ScancodeMapView::Corrupt,
@@ -5207,6 +5213,7 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
         detected: &loaded.detected,
         caps_extra,
         jis,
+        caps_filter: loaded.editor.caps_filter(),
     };
     let entries = &loaded.entries;
     let mut new_pairs: Option<Vec<Pair>> = None;
