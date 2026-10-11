@@ -246,3 +246,17 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
    **撤去**: `ScancodeMapPreset`/`ScancodeMapSelection`/`current_preset`/`compute_new_entries`/`detect_status`、`--scancode-map` CLI、
    `run_elevated_worker`/`request_elevated_change`/`read_status`(ADR-217。旧 Swap は1ペアとして、旧 CapsAsExtraCtrl はチェックボックスとして読める)。
 5. 実機確認。
+
+## 改訂(ADR-248 段階3、2026-10-11): 3つ以上の循環
+
+ADR-248 決定6により、決定3の分類表に次の行を足す(ペアは長さ2の循環)。`A→B` は「`A` の位置が `B` の機能を出す」エントリ。
+
+| レジストリの内容 | 分類 | 備考 |
+| --- | --- | --- |
+| `A→B, B→C, C→A`(各キーが from にも to にも全エントリの中で1回ずつだけ、採用済みペアのキーと被らない) | 編集できる循環(awase の入れ替え) | 許可リストには関係なく読む(許可リスト外でも解除できる)。新規に作る・変えるときだけ許可リストを当てる |
+| 上に加えて、同じ from か同じ to の他ツールのエントリがある | 他ツールのエントリ(Unclaimed、読み取り専用) | 循環としては読まない |
+| `A→B, B→A, B→C, C→A` | ペア `A⇄B` + Unclaimed 2件 | ペアが先 |
+| `Caps→左Ctrl, 左Ctrl→X, X→Caps` | 3巡回 | 循環が Caps 追加 Ctrl より先。プリセット+他ツール2件には読まない |
+| `Caps→左Ctrl` だけ(閉じない) | Caps 追加 Ctrl(従来どおり) | |
+
+書き込みの事後条件: 書いた結果を読み戻して、要求した単位がそのまま読め、Caps 追加 Ctrl を要求したならそのまま読めること。満たさなければ `SwapError::Reclassified` で拒否する(他ツールの開いた鎖が、足したエントリで閉じて循環に読み替わるのを防ぐ)。単位の「残す・消す」は、ペアも循環も、エントリがすべて値として一致するかどうかで決める。昇格 CLI の引数は `cycles=` を必須にした(`pairs=` の次、空でも出す)。

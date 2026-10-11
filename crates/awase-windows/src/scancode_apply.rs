@@ -125,9 +125,10 @@ fn set<T>(slot: &mut Option<T>, name: &'static str, parsed: Option<T>) -> Result
 }
 
 impl ApplyRequest {
-    /// 1つのコマンドライン引数へ直列化する。形式: `pairs=007B-0038,0079-0039;caps=0;expect=003A>001D,001D>003A;displace=0`
-    /// （スキャンコードは常に4桁の16進。空の一覧は空文字列）。3つ以上の循環があるときだけ、`pairs=` の次に
-    /// `cycles=007B>0079>0039,...`（`>` でキーを順に並べる。位置→機能の向きのまま）を足す。
+    /// 1つのコマンドライン引数へ直列化する。形式:
+    /// `pairs=007B-0038,0079-0039;cycles=0039>007B>0079;caps=0;expect=003A>001D,001D>003A;displace=0`
+    /// （スキャンコードは常に4桁の16進。空の一覧は空文字列。`cycles` は `>` でキーを順に並べる。位置→機能の向きのまま）。
+    /// `cycles` は必須（空でも出す）: 省略を許すと、古い形式の要求が既存の循環を確認なしで消す（Opus コードレビュー S2）。
     #[must_use]
     pub fn to_spec(&self) -> String {
         let pairs = self
@@ -145,25 +146,20 @@ impl ApplyRequest {
             .map(|&(from, to)| format!("{}>{}", hex4(from), hex4(to)))
             .collect::<Vec<_>>()
             .join(",");
-        let cycles = if self.cycles.is_empty() {
-            String::new()
-        } else {
-            let list = self
-                .cycles
-                .iter()
-                .map(|c| {
-                    c.keys()
-                        .iter()
-                        .map(|&k| hex4(k))
-                        .collect::<Vec<_>>()
-                        .join(">")
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            format!(";cycles={list}")
-        };
+        let cycles = self
+            .cycles
+            .iter()
+            .map(|c| {
+                c.keys()
+                    .iter()
+                    .map(|&k| hex4(k))
+                    .collect::<Vec<_>>()
+                    .join(">")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         format!(
-            "pairs={pairs}{cycles};caps={};expect={expect};displace={}",
+            "pairs={pairs};cycles={cycles};caps={};expect={expect};displace={}",
             u8::from(self.caps_extra_ctrl),
             u8::from(self.allow_displace)
         )
@@ -192,8 +188,8 @@ impl ApplyRequest {
         }
         Ok(Self {
             pairs: pairs.ok_or(SpecError::MissingOrDuplicateKey("pairs"))?,
-            // 循環は無いことが多いので省略できる（古い形式の要求もそのまま読める）。
-            cycles: cycles.unwrap_or_default(),
+            // 必須。省略した古い形式の要求は読まない（書かずに終わる）。
+            cycles: cycles.ok_or(SpecError::MissingOrDuplicateKey("cycles"))?,
             caps_extra_ctrl: caps.ok_or(SpecError::MissingOrDuplicateKey("caps"))?,
             expected: expect.ok_or(SpecError::MissingOrDuplicateKey("expect"))?,
             allow_displace: displace.ok_or(SpecError::MissingOrDuplicateKey("displace"))?,
@@ -397,13 +393,13 @@ mod tests {
         let spec = req.to_spec();
         assert_eq!(
             spec,
-            "pairs=0038-007B,0039-E038;caps=1;expect=003A>001D,001D>0099;displace=1"
+            "pairs=0038-007B,0039-E038;cycles=;caps=1;expect=003A>001D,001D>0099;displace=1"
         );
         assert_eq!(ApplyRequest::from_spec(&spec), Ok(req));
     }
 
     #[test]
-    fn spec_with_cycles_round_trips_and_old_specs_without_cycles_still_parse() {
+    fn spec_with_cycles_round_trips_and_a_spec_without_cycles_is_refused() {
         let mut req = request(&[Pair::new(MUH, LALT)], false, &[], false);
         req.cycles = vec![Cycle::new(&[0x007B, 0x0079, 0x0039]).unwrap()];
         let spec = req.to_spec();
@@ -412,10 +408,12 @@ mod tests {
             "pairs=0038-007B;cycles=0039>007B>0079;caps=0;expect=;displace=0"
         );
         assert_eq!(ApplyRequest::from_spec(&spec), Ok(req));
-        // 循環の無い古い形式は、循環なしとして読める。
-        let old = ApplyRequest::from_spec("pairs=;caps=0;expect=;displace=0").unwrap();
-        assert!(old.cycles.is_empty());
-        // 壊れた循環（2つ・重複・0 や不正な16進を含む）と重複した cycles は拒否する。
+        // `cycles` が無い古い形式は読まない（読めてしまうと、レジストリの既存の循環を確認なしで消す）。
+        assert_eq!(
+            ApplyRequest::from_spec("pairs=;caps=0;expect=;displace=0"),
+            Err(SpecError::MissingOrDuplicateKey("cycles"))
+        );
+        // 壊れた循環（2つ・重複・0 を含む）と重複した cycles は拒否する。
         for bad in [
             "pairs=;cycles=007B>0079;caps=0;expect=;displace=0",
             "pairs=;cycles=007B>0079>007B;caps=0;expect=;displace=0",
@@ -449,7 +447,7 @@ mod tests {
     #[test]
     fn spec_with_empty_lists_round_trips() {
         let req = request(&[], false, &[], false);
-        assert_eq!(req.to_spec(), "pairs=;caps=0;expect=;displace=0");
+        assert_eq!(req.to_spec(), "pairs=;cycles=;caps=0;expect=;displace=0");
         assert_eq!(ApplyRequest::from_spec(&req.to_spec()), Ok(req));
     }
 
@@ -457,15 +455,15 @@ mod tests {
     fn spec_rejects_malformed_input() {
         for bad in [
             "",
-            "pairs=;caps=0;expect=",
-            "pairs=;caps=2;expect=;displace=0",
-            "pairs=007B;caps=0;expect=;displace=0",
-            "pairs=007B-00;caps=0;expect=;displace=0",
-            "pairs=007B-00ZZ;caps=0;expect=;displace=0",
-            "pairs=;caps=0;expect=003A-001D;displace=0",
-            "pairs=;caps=0;expect=;displace=0;extra=1",
-            "pairs=;pairs=;caps=0;expect=;displace=0",
-            "pairs=;caps=0;expect=;displace=0;",
+            "pairs=;cycles=;caps=0;expect=",
+            "pairs=;cycles=;caps=2;expect=;displace=0",
+            "pairs=007B;cycles=;caps=0;expect=;displace=0",
+            "pairs=007B-00;cycles=;caps=0;expect=;displace=0",
+            "pairs=007B-00ZZ;cycles=;caps=0;expect=;displace=0",
+            "pairs=;cycles=;caps=0;expect=003A-001D;displace=0",
+            "pairs=;cycles=;caps=0;expect=;displace=0;extra=1",
+            "pairs=;pairs=;cycles=;caps=0;expect=;displace=0",
+            "pairs=;cycles=;caps=0;expect=;displace=0;",
         ] {
             assert!(
                 ApplyRequest::from_spec(bad).is_err(),
@@ -645,5 +643,60 @@ mod tests {
         assert!(read_back_matches(&[], None));
         assert!(!read_back_matches(&[], Some(&bytes)));
         assert!(!read_back_matches(&written, Some(&[1, 2, 3])));
+    }
+
+    #[test]
+    fn a_cycle_is_written_with_the_documented_byte_order_and_read_back_in_the_same_direction() {
+        // 無変換(0x7B)の位置は変換(0x79)を、変換の位置はスペース(0x39)を、スペースの位置は無変換を出す。
+        // Scancode Map のエントリは `to(2バイト) from(2バイト)` の順（リトルエンディアン）。
+        let c = Cycle::new(&[0x007B, 0x0079, 0x0039]).unwrap();
+        assert_eq!(c.keys(), &[0x0039, 0x007B, 0x0079]);
+        let entries = c.entries();
+        assert_eq!(
+            entries,
+            vec![(0x0039, 0x007B), (0x007B, 0x0079), (0x0079, 0x0039)]
+        );
+        let bytes = build_bytes(&entries).unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0, 0, 0, 0, 0, 0, 0, 0, // ヘッダ
+                4, 0, 0, 0, // エントリ数+1
+                0x7B, 0x00, 0x39,
+                0x00, // スペース(0x39)の位置が 無変換(0x7B) を出す
+                0x79, 0x00, 0x7B, 0x00, // 無変換の位置が 変換(0x79) を出す
+                0x39, 0x00, 0x79, 0x00, // 変換の位置が スペースを出す
+                0, 0, 0, 0, // 終端
+            ]
+        );
+        // 読み戻すと、同じ向きの循環になる（逆向きではない）。
+        let back = parse_entries_strict(&bytes).unwrap();
+        let read = crate::scancode_pairs::detect_swap_pairs(&back);
+        assert_eq!(read.cycles, vec![c]);
+        assert!(read.pairs.is_empty() && read.unclaimed.is_empty());
+    }
+
+    #[test]
+    fn decide_does_not_write_when_the_request_returns_the_existing_cycle_unchanged() {
+        let c = Cycle::new(&[MUH, 0x0079, 0x0039]).unwrap();
+        let existing = c.entries();
+        let mut req = request(&[], false, &existing, false);
+        req.cycles = vec![c];
+        let raw_existing = raw(&existing);
+        assert_eq!(
+            decide(raw_existing.as_deref(), &req),
+            Decision::Stop(WorkerExit::Ok)
+        );
+    }
+
+    #[test]
+    fn decide_refuses_caps_extra_that_would_close_a_foreign_chain() {
+        let existing = [(LCTRL, MUH), (MUH, CAPS)];
+        let req = request(&[], true, &existing, true);
+        let raw_existing = raw(&existing);
+        assert_eq!(
+            decide(raw_existing.as_deref(), &req),
+            Decision::Stop(WorkerExit::Invalid)
+        );
     }
 }

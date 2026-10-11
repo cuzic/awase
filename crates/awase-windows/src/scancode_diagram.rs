@@ -10,9 +10,9 @@
 use crate::scancode_editor::is_jis_only;
 use crate::scancode_map::{SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL};
 use crate::scancode_pairs::{
-    compute_swap_write_with_cycles, Cycle, Detected, Entry, Pair, SwapError, ALLOWED_SCANCODES,
-    SCANCODE_HANKAKU_ZENKAKU, SCANCODE_HENKAN, SCANCODE_KANA, SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN,
-    SCANCODE_RIGHT_ALT, SCANCODE_SPACE,
+    compute_swap_write_with_cycles, moved_keys, Cycle, Detected, Entry, Pair, SwapError,
+    ALLOWED_SCANCODES, SCANCODE_HANKAKU_ZENKAKU, SCANCODE_HENKAN, SCANCODE_KANA, SCANCODE_LEFT_ALT,
+    SCANCODE_MUHENKAN, SCANCODE_RIGHT_ALT, SCANCODE_SPACE,
 };
 
 /// 位置が動かせない理由。
@@ -307,6 +307,9 @@ pub enum DropRefusal {
     TargetLocked(LockReason),
     /// 書き込みの検査（許可リスト・Caps 追加 Ctrl・他ツールの to との衝突）に落ちた。
     Invalid(SwapError),
+    /// ドロップで位置や機能が変わるキーに、動かせないキー（IME キーも兼ねる親指キー、フィルタドライバのある Caps/Ctrl）が含まれる。
+    /// ドロップした2つの位置がどちらも動かせるときでも、単位の中で機能が動く先が動かせないキーのとき（循環）に起きる。
+    Blocked(LockReason),
 }
 
 /// ドロップの結果。
@@ -365,6 +368,17 @@ pub fn drop_function(
         }
         n
     };
+    // 位置か機能が変わるキーに、動かせないキーが含まれるなら断る（適用の段の判定 `EditorState::*_conflict` と同じ基準。
+    // ドロップした2つの位置が動かせても、単位の中で機能が動く先が動かせないキーのことがある）。
+    let touched = moved_keys(&current, &next);
+    if ctx.caps_filter
+        && (touched.contains(&SCANCODE_CAPS_EISU) || touched.contains(&SCANCODE_LEFT_CTRL))
+    {
+        return Err(DropRefusal::Blocked(LockReason::CapsFilterDriver));
+    }
+    if ctx.ime_role_thumbs.iter().any(|k| touched.contains(k)) {
+        return Err(DropRefusal::Blocked(LockReason::ThumbImeRole));
+    }
     let (pairs, cycles) = decompose(&next);
     compute_swap_write_with_cycles(existing, &pairs, &cycles, ctx.caps_extra)
         .map_err(DropRefusal::Invalid)?;
@@ -381,9 +395,9 @@ pub fn drop_function(
 #[must_use]
 pub fn refusal_text(refusal: DropRefusal) -> String {
     match refusal {
-        DropRefusal::SourceLocked(reason) | DropRefusal::TargetLocked(reason) => {
-            reason.text().to_string()
-        }
+        DropRefusal::SourceLocked(reason)
+        | DropRefusal::TargetLocked(reason)
+        | DropRefusal::Blocked(reason) => reason.text().to_string(),
         DropRefusal::Invalid(error) => crate::scancode_editor::swap_error_text(error),
     }
 }
@@ -396,23 +410,30 @@ pub fn drop_hint(
     label: impl Fn(u16) -> String,
 ) -> String {
     match result {
-        Ok(effect) if effect.unit_len == 0 => {
-            format!("ここへ落とすと、「{}」の位置が元に戻ります。", label(pos))
-        }
         Ok(effect) if effect.source == pos => "ここへ落としても、変わりません。".to_string(),
+        Ok(effect) if effect.unit_len == 0 => format!(
+            "ここへ落とすと、「{}」の位置が元に戻ります（ほかの位置は変わりません）。",
+            label(pos)
+        ),
         Ok(effect) if effect.unit_len > 2 => format!(
-            "ここへ落とすと、「{}」と「{}」の位置の中身が入れ替わります（{}個のキーの循環になります）。",
+            "ここへ落とすと、「{}」と「{}」の位置の中身が入れ替わります（{}個のキーの循環になります。ほかの位置は変わりません）。",
             label(effect.source),
             label(pos),
             effect.unit_len
         ),
         Ok(effect) => format!(
-            "ここへ落とすと、「{}」と「{}」の位置の中身が入れ替わります。",
+            "ここへ落とすと、「{}」と「{}」の位置の中身が入れ替わります（ほかの位置は変わりません）。",
             label(effect.source),
             label(pos)
         ),
         Err(refusal) => refusal_text(*refusal),
     }
+}
+
+/// 位置 `pos` が属する単位（ペアまたは循環）の長さ。入れ替えに入っていなければ 0。
+#[must_use]
+pub fn unit_len_at(pairs: &[Pair], cycles: &[Cycle], pos: u16) -> usize {
+    unit_containing(pairs, cycles, pos).map_or(0, |u| u.keys().len())
 }
 
 /// 位置 `pos` が属する単位（ペアまたは循環）を丸ごと解く（「この位置を戻す」）。削除なので書き込みの検査に常に通る。
@@ -954,5 +975,39 @@ mod tests {
         assert!(oks > 300, "{oks}");
         // ペアだけの検査関数も、結果をそのまま受け付ける（互換）。
         compute_swap_write(&[], &[], false).unwrap();
+    }
+
+    #[test]
+    fn a_drop_that_moves_a_blocked_key_inside_a_cycle_is_refused_but_other_drops_are_not() {
+        // 4巡回 MUH→HEN→SPC→LALT→MUH。変換(HEN)が IME の ON/OFF も兼ねる。
+        let cycles = [cycle(&[MUH, HEN, SPC, LALT])];
+        let (existing, detected) = registry(&[], &cycles);
+        let thumbs = [HEN];
+        let mut c = ctx(&[], &cycles, &detected, false, true);
+        c.ime_role_thumbs = &thumbs;
+        // スペースの位置の機能(LALT)を LALT の位置へ戻す: 変換の位置も機能も変わらない → 通る(3巡回に縮む)。
+        let ok = drop_function(&c, &existing, LALT, LALT).unwrap();
+        assert_eq!(ok.cycles, vec![cycle(&[MUH, HEN, SPC])]);
+        // 変換の機能(いま MUH の位置)を LALT の位置へ落とすと、変換の機能が動く → 断る。
+        assert_eq!(
+            drop_function(&c, &existing, HEN, LALT),
+            Err(DropRefusal::Blocked(LockReason::ThumbImeRole))
+        );
+        // Caps フィルタ: Caps を含む循環の中で、Caps の機能が動くドロップは断る。
+        let cyc2 = [cycle(&[CAPS, MUH, SPC])];
+        let (existing2, detected2) = registry(&[], &cyc2);
+        let mut c2 = ctx(&[], &cyc2, &detected2, false, true);
+        c2.caps_filter = true;
+        // 循環 Caps→無変換→スペース→Caps（Caps の位置は無変換を、無変換の位置はスペースを、スペースの位置は Caps を出す）。
+        // 無変換・スペースの位置は動かせるが、スペースの機能(無変換の位置)をスペースの位置へ戻すと、Caps の機能が
+        // スペースの位置から無変換の位置へ動く（結果は Caps⇄無変換のペア）。フィルタドライバのある Caps の機能が動くので断る。
+        assert_eq!(
+            drop_function(&c2, &existing2, SPC, SPC),
+            Err(DropRefusal::Blocked(LockReason::CapsFilterDriver))
+        );
+        // Caps の位置も機能も変えないドロップ(スペースの機能を左 Alt の位置へ落とす = 無変換と左 Alt の位置の中身を入れ替える)は、
+        // Caps が同じ循環の中にあっても通る。結果は 4巡回(Caps→無変換→左 Alt→スペース→Caps)。
+        let ok = drop_function(&c2, &existing2, SPC, LALT).unwrap();
+        assert_eq!(ok.cycles, vec![cycle(&[CAPS, MUH, LALT, SPC])]);
     }
 }

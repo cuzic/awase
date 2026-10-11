@@ -138,6 +138,44 @@ impl Cycle {
     }
 }
 
+/// ペアと循環を「位置 → 機能」のエントリにする（恒等の位置は含まない）。
+#[must_use]
+pub fn permutation_entries(pairs: &[Pair], cycles: &[Cycle]) -> Vec<Entry> {
+    let mut out: Vec<Entry> = pairs.iter().flat_map(|p| p.entries()).collect();
+    out.extend(cycles.iter().flat_map(Cycle::entries));
+    out
+}
+
+/// 2つの置換（[`permutation_entries`] の形）の間で、位置または機能が変わるキー。
+/// 位置 P の機能が変わるなら、P と、変わる前後の機能を含む。単位の中身が変わっても、位置も機能も変わらないキーは含まない。
+#[must_use]
+pub fn touched_keys(before: &[Entry], after: &[Entry]) -> Vec<u16> {
+    let image = |sig: &[Entry], k: u16| sig.iter().find(|e| e.0 == k).map_or(k, |e| e.1);
+    let mut positions: Vec<u16> = before.iter().chain(after).map(|e| e.0).collect();
+    positions.sort_unstable();
+    positions.dedup();
+    let mut out: Vec<u16> = Vec::new();
+    for p in positions {
+        let (b, a) = (image(before, p), image(after, p));
+        if b != a {
+            out.extend([p, b, a]);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// [`touched_keys`] のうち、変更後の置換にまだ入っている（位置か機能として入れ替えに残っている）キー。恒等へ戻って入れ替えから
+/// 外れたキーは含まない。「動かせないキーを入れ替えに新しく入れた・動かした」の判定に使う（解除は含まない）。
+#[must_use]
+pub fn moved_keys(before: &[Entry], after: &[Entry]) -> Vec<u16> {
+    touched_keys(before, after)
+        .into_iter()
+        .filter(|&k| after.iter().any(|e| e.0 == k || e.1 == k))
+        .collect()
+}
+
 /// ペアとして読めなかった理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnclaimedReason {
@@ -326,6 +364,9 @@ pub enum SwapError {
     CapsExtraConflict { key: u16 },
     /// 新規に作るエントリのキーが、保持する他ツールのエントリの to に現れる（多対一を新たに作る）。
     CollidesWithForeignTarget { entry: Entry },
+    /// 書いた結果を読み戻すと、要求した入れ替えがそのまま読めない、または「Caps を Ctrl としても使う」が別の入れ替えに
+    /// 読み替わる（他ツールの開いた鎖が、足したエントリで閉じて循環になる、など）。他ツールのエントリを無断で awase の入れ替えにしないため拒否する。
+    Reclassified,
 }
 
 /// [`compute_swap_write`] の結果。
@@ -535,6 +576,20 @@ pub fn compute_swap_write_with_cycles(
         .collect();
     let mut out = out_existing;
     out.extend(added);
+    // 事後条件: 書いた結果を読み戻すと、要求した単位がそのまま読め、Caps 追加 Ctrl を要求したならそのまま読める。
+    // 他ツールの開いた鎖が、足したエントリで閉じて循環に読み替わると、他ツールの設定が確認なしで awase の入れ替えになり、
+    // 以後の「戻す」「すべて解除」で消えてしまう（Opus コードレビュー S1）。
+    let read = detect_swap_pairs(&out);
+    let read_units: Vec<Unit> = read
+        .pairs
+        .iter()
+        .map(|d| Unit::from_pair(d.pair))
+        .chain(read.cycles.iter().map(Unit::from_cycle))
+        .collect();
+    let all_read = units.iter().all(|u| read_units.iter().any(|r| r.same(u)));
+    if !all_read || (caps_extra_ctrl && !read.caps_extra_ctrl) {
+        return Err(SwapError::Reclassified);
+    }
     Ok(WritePlan {
         entries: out,
         displaced,
@@ -971,16 +1026,8 @@ mod tests {
         let mut ok = 0usize;
         for existing in &lists {
             let before = detect_swap_pairs(existing);
-            let before_pairs: Vec<Pair> = before.pairs.iter().map(|d| d.pair).collect();
             // 何も変えない呼び出しは恒等、削除だけは常に成功する。
-            let same = compute_swap_write_with_cycles(
-                existing,
-                &before_pairs,
-                &before.cycles,
-                before.caps_extra_ctrl,
-            )
-            .expect("恒等は常に通る");
-            assert_eq!(&same.entries, existing, "identity: {existing:?}");
+            assert_identity_write(existing, &before);
             let removal = compute_swap_write(existing, &[], false).expect("全削除は常に通る");
             assert!(removal.entries.len() <= existing.len());
             for pairs in &pair_sets {
@@ -1002,12 +1049,6 @@ mod tests {
                     assert!(
                         after.caps_extra_ctrl == caps
                             || (caps && got.contains(&Pair::new(CAPS, LCTRL)))
-                            // 他ツールのエントリと合わせて、閉じた循環に読み替わった（`Caps→左 Ctrl` はその1エントリ）。
-                            || (caps
-                                && after
-                                    .cycles
-                                    .iter()
-                                    .any(|c| c.entries().contains(&(CAPS, LCTRL))))
                             || (after.caps_extra_ctrl
                                 && before.unclaimed.iter().any(|&(e, _)| e == (CAPS, LCTRL))),
                         "existing={existing:?} pairs={pairs:?} caps={caps}"
@@ -1062,6 +1103,19 @@ mod tests {
             .collect()
     }
 
+    /// 読んだ分類をそのまま渡した書き込みは恒等（何も変えない）。
+    fn assert_identity_write(existing: &[Entry], before: &Detected) {
+        let pairs: Vec<Pair> = before.pairs.iter().map(|d| d.pair).collect();
+        let same = compute_swap_write_with_cycles(
+            existing,
+            &pairs,
+            &before.cycles,
+            before.caps_extra_ctrl,
+        )
+        .expect("恒等は常に通る");
+        assert_eq!(same.entries, existing, "identity: {existing:?}");
+    }
+
     fn dup_from(entries: &[Entry]) -> usize {
         let mut froms: Vec<u16> = entries.iter().map(|e| e.0).collect();
         froms.sort_unstable();
@@ -1101,14 +1155,7 @@ mod tests {
             assert!(removal.displaced.is_empty());
 
             // 何も変えない呼び出しは恒等。
-            let same = compute_swap_write_with_cycles(
-                &existing,
-                &before_pairs,
-                &before.cycles,
-                before.caps_extra_ctrl,
-            )
-            .expect("恒等は常に通る");
-            assert_eq!(same.entries, existing);
+            assert_identity_write(&existing, &before);
 
             let Ok(plan) = compute_swap_write(&existing, &pairs, caps) else {
                 continue;
@@ -1135,12 +1182,6 @@ mod tests {
             assert!(
                 after.caps_extra_ctrl == caps
                     || (caps && got.contains(&Pair::new(CAPS, LCTRL)))
-                    // 他ツールのエントリと合わせて、閉じた循環に読み替わった（`Caps→左 Ctrl` はその1エントリ）。
-                    || (caps
-                        && after
-                            .cycles
-                            .iter()
-                            .any(|c| c.entries().contains(&(CAPS, LCTRL))))
                     // 消したペアと重なっていた他ツールの `Caps→左 Ctrl` が、単独になって Caps 追加 Ctrl に読めるようになった。
                     || (after.caps_extra_ctrl
                         && before.unclaimed.iter().any(|&(e, _)| e == (CAPS, LCTRL))),
@@ -1272,21 +1313,22 @@ mod tests {
     fn creating_keeping_editing_and_removing_a_cycle() {
         let c1 = Cycle::new(&[MUH, HEN, SPC]).unwrap();
         // 作る。
-        let plan = compute_swap_write_with_cycles(&[], &[], &[c1.clone()], false).unwrap();
+        let plan =
+            compute_swap_write_with_cycles(&[], &[], std::slice::from_ref(&c1), false).unwrap();
         let mut e = plan.entries.clone();
         e.sort_unstable();
         let mut want = c1.entries();
         want.sort_unstable();
         assert_eq!(e, want);
         // 何も変えない呼び出しは恒等。
-        let same =
-            compute_swap_write_with_cycles(&plan.entries, &[], &[c1.clone()], false).unwrap();
+        let same = compute_swap_write_with_cycles(&plan.entries, &[], &[c1], false).unwrap();
         assert_eq!(same.entries, plan.entries);
         // 向きを変えた循環に置き換える: 元のエントリは消え、新しいエントリが入る。
         let c2 = Cycle::new(&[MUH, SPC, HEN]).unwrap();
         let edited =
-            compute_swap_write_with_cycles(&plan.entries, &[], &[c2.clone()], false).unwrap();
-        let mut got = edited.entries.clone();
+            compute_swap_write_with_cycles(&plan.entries, &[], std::slice::from_ref(&c2), false)
+                .unwrap();
+        let mut got = edited.entries;
         got.sort_unstable();
         let mut want = c2.entries();
         want.sort_unstable();
@@ -1298,7 +1340,11 @@ mod tests {
         let to_pair =
             compute_swap_write_with_cycles(&plan.entries, &[Pair::new(MUH, HEN)], &[], false)
                 .unwrap();
-        assert_eq!(to_pair.entries.len(), 2);
+        let mut got = to_pair.entries;
+        got.sort_unstable();
+        let mut want = Pair::new(MUH, HEN).entries().to_vec();
+        want.sort_unstable();
+        assert_eq!(got, want);
     }
 
     #[test]
@@ -1377,5 +1423,106 @@ mod tests {
             checked += 1;
         }
         assert_eq!(checked, 24);
+    }
+
+    #[test]
+    fn caps_extra_ctrl_that_would_close_a_foreign_chain_is_rejected_not_reclassified() {
+        // 他ツールの `左Ctrl→無変換`・`無変換→Caps`。ここへ `Caps→左Ctrl`(Caps を Ctrl としても使う)を足すと3つのエントリが
+        // 閉じた循環になり、他ツールの2件が確認なしで awase の入れ替えに読み替わる（Opus コードレビュー S1）。
+        let existing = [(LCTRL, MUH), (MUH, CAPS)];
+        assert_eq!(
+            compute_swap_write_with_cycles(&existing, &[], &[], true),
+            Err(SwapError::Reclassified)
+        );
+        // オフのままなら、他ツールのエントリは保持される。
+        let same = compute_swap_write_with_cycles(&existing, &[], &[], false).unwrap();
+        assert_eq!(same.entries, existing);
+        // 許可リスト外のキーを経由する鎖も同じ。
+        let existing = [(LCTRL, 0x0010), (0x0010, CAPS)];
+        assert_eq!(
+            compute_swap_write_with_cycles(&existing, &[], &[], true),
+            Err(SwapError::Reclassified)
+        );
+        // 閉じない鎖なら通る。
+        let existing = [(LCTRL, MUH)];
+        assert!(compute_swap_write_with_cycles(&existing, &[], &[], true).is_ok());
+    }
+
+    #[test]
+    fn every_transition_between_permutations_of_four_keys_leaves_exactly_the_target() {
+        let keys = [LALT, SPC, MUH, HEN];
+        let perms = all_permutations(&keys);
+        let mut checked = 0;
+        for from in &perms {
+            let (fp, fc) = decompose(&keys, from);
+            let start = compute_swap_write_with_cycles(&[], &fp, &fc, false)
+                .unwrap()
+                .entries;
+            for to in &perms {
+                let (tp, tc) = decompose(&keys, to);
+                let plan = compute_swap_write_with_cycles(&start, &tp, &tc, false)
+                    .expect("許可リスト内の置換どうしの遷移は通る");
+                let mut got = plan.entries.clone();
+                got.sort_unstable();
+                let mut want: Vec<Entry> = keys
+                    .iter()
+                    .zip(to)
+                    .filter(|(k, v)| k != v)
+                    .map(|(&k, &v)| (k, v))
+                    .collect();
+                want.sort_unstable();
+                assert_eq!(got, want, "{from:?} -> {to:?}");
+                assert!(plan.displaced.is_empty(), "{from:?} -> {to:?}");
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 24 * 24);
+    }
+
+    #[test]
+    fn random_registries_and_permutation_requests_keep_the_invariants() {
+        let keys = [LALT, SPC, MUH, HEN];
+        let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+        let mut ok = 0;
+        for _ in 0..30_000 {
+            let mut existing = random_entries(&mut rng);
+            existing.dedup();
+            let before = detect_swap_pairs(&existing);
+            let before_pairs: Vec<Pair> = before.pairs.iter().map(|d| d.pair).collect();
+            // 何も変えない呼び出しは恒等、全削除は常に通る。
+            let same = compute_swap_write_with_cycles(
+                &existing,
+                &before_pairs,
+                &before.cycles,
+                before.caps_extra_ctrl,
+            )
+            .expect("恒等は常に通る");
+            assert_eq!(same.entries, existing);
+            assert!(compute_swap_write_with_cycles(&existing, &[], &[], false).is_ok());
+            // 4キーのランダムな置換 + Caps 追加 Ctrl を要求する。通ったら、要求した単位と Caps 追加 Ctrl は読み戻せる。
+            let mut image = keys.to_vec();
+            for i in (1..image.len()).rev() {
+                image.swap(i, rng.below(i + 1));
+            }
+            let (pairs, cycles) = decompose(&keys, &image);
+            let caps = rng.below(2) == 0;
+            let Ok(plan) = compute_swap_write_with_cycles(&existing, &pairs, &cycles, caps) else {
+                continue;
+            };
+            ok += 1;
+            let after = detect_swap_pairs(&plan.entries);
+            let got_pairs: Vec<Pair> = after.pairs.iter().map(|d| d.pair).collect();
+            for p in &pairs {
+                assert!(got_pairs.contains(p), "{existing:?} {image:?}");
+            }
+            for c in &cycles {
+                assert!(after.cycles.contains(c), "{existing:?} {image:?}");
+            }
+            assert!(
+                !caps || after.caps_extra_ctrl,
+                "{existing:?} {image:?} caps"
+            );
+        }
+        assert!(ok > 5_000, "{ok}");
     }
 }

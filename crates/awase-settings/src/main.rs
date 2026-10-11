@@ -12,7 +12,7 @@ use awase_windows::scancode_apply::ApplyRequest;
 use awase_windows::scancode_diagram::{
     DiagramContext, EditUnit, PositionState, diagram_rows, displayed_function, drop_function,
     drop_hint, function_at_units, locked_note, position_state, refusal_text, release_position,
-    release_unit, unlisted_units,
+    release_unit, unit_len_at, unlisted_units,
 };
 use awase_windows::scancode_editor::{
     EditorState, QUICK_PAIRS, Unavailable, caps_filter_notice, caps_filter_present,
@@ -5323,6 +5323,26 @@ fn scancode_editor_ui(
     }
 
     ui.add_space(8.0);
+    // 適用すると変わる位置を、常に文字でも出す（図の色だけに頼らない。確認ダイアログが出ない入れ替えでも内容が分かる）。
+    let changes = editor.changes();
+    if !changes.is_empty() || editor.caps_extra_changed() {
+        ui.label("適用すると変わる位置:");
+        for (pos, before, after) in changes {
+            ui.weak(format!(
+                "　「{}」の位置: 「{}」 → 「{}」",
+                key_label(pos),
+                key_label(before),
+                key_label(after)
+            ));
+        }
+        if editor.caps_extra_changed() {
+            ui.weak(if editor.caps_extra() {
+                "　「英数 / Caps」: Ctrl としても使う（オンにする）"
+            } else {
+                "　「英数 / Caps」: Ctrl としても使う（オフにする）"
+            });
+        }
+    }
     let dirty = editor.is_dirty();
     let incomplete = editor.has_incomplete();
     ui.horizontal_wrapped(|ui| {
@@ -5470,9 +5490,20 @@ fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: b
                                             ..
                                         }
                                 );
-                            if releasable && ui.small_button("戻す").clicked() {
-                                new_units = Some(release_position(&pairs, &cycles, pos));
-                                selected = None;
+                            if releasable {
+                                // 位置の属する入れ替えを丸ごと解く。3つ以上の循環では、触っていない位置も戻るので、ボタンに書く。
+                                let len = unit_len_at(&pairs, &cycles, pos);
+                                let button = if len >= 3 {
+                                    ui.small_button(format!("解除({len}個)")).on_hover_text(format!(
+                                        "この入れ替え（{len}個のキー）を丸ごと元に戻します。1つの位置だけ戻すには、その位置の機能を自分の位置へドラッグしてください。"
+                                    ))
+                                } else {
+                                    ui.small_button("戻す")
+                                };
+                                if button.clicked() {
+                                    new_units = Some(release_position(&pairs, &cycles, pos));
+                                    selected = None;
+                                }
                             }
                         });
                     }
