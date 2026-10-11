@@ -1165,7 +1165,7 @@ jobs:
           # 設定画面で保存した設定を使う(ADR-255 の保存→読み込み→動作の通し)。via_settings='preset' のときだけ。
           if ('${{ matrix.cfg.via_settings }}' -eq 'preset') {
             & "$PWD\tools\e2e\ime_key_matrix\save_via_settings.ps1"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($LASTEXITCODE -eq 3) { exit 3 }  # スクリプトが失敗(ime = off が2件書かれなかった)のときだけ。正常終了では $LASTEXITCODE が $null のことがあり、-ne 0 だと step ごと終わってしまう
           }
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
           # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
