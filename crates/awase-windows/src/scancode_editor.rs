@@ -7,9 +7,10 @@
 use crate::scancode_apply::WorkerExit;
 use crate::scancode_map::{SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL};
 use crate::scancode_pairs::{
-    compute_swap_write_with_cycles, moved_keys, permutation_entries, Cycle, Detected, Entry, Pair,
-    SwapError, WritePlan, ALLOWED_SCANCODES, SCANCODE_HANKAKU_ZENKAKU, SCANCODE_HENKAN,
-    SCANCODE_KANA, SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN, SCANCODE_RIGHT_ALT, SCANCODE_SPACE,
+    compute_swap_write_with_cycles, moved_keys, permutation_entries, touched_keys, Cycle, Detected,
+    Entry, Pair, SwapError, WritePlan, ALLOWED_SCANCODES, SCANCODE_HANKAKU_ZENKAKU,
+    SCANCODE_HENKAN, SCANCODE_KANA, SCANCODE_LEFT_ALT, SCANCODE_MUHENKAN, SCANCODE_RIGHT_ALT,
+    SCANCODE_SPACE,
 };
 
 /// スキャンコードの表示名。許可リスト外（他ツールのエントリなど）は「不明なキー(0x003B)」の形（ADR-248 決定8）。
@@ -64,8 +65,6 @@ pub enum Unavailable {
     CapsFilterDriver,
     /// 他のツールが from か to にしているキーを含む（awase の入れ替えには使えない。図でもロックされる位置）。
     OtherToolSetting,
-    /// 「Caps を Ctrl としても使う」をオンにすると、他ツールの設定と組み合わさって別の入れ替えに読み替わる。
-    CapsWouldReclassify,
     /// 親指キー（無変換/変換）が、IME の ON/OFF キー（`keys.ime_on`/`ime_off`/`ime_toggle` に修飾キーなしで書いたキー）も兼ねている。
     ThumbImeRole,
 }
@@ -86,7 +85,6 @@ impl Unavailable {
             Self::CapsFilterDriver => {
                 "Caps を Ctrl にするドライバ（Ctrl2cap など）が入っているため、「英数 / Caps」と「左 Ctrl」の設定は二重になります。ドライバをアンインストールして再起動すると設定できます。"
             }
-            Self::CapsWouldReclassify => CAPS_WOULD_RECLASSIFY_TEXT,
             Self::OtherToolSetting => {
                 "他のツールがこのキーを設定しています。変えるときはそのツールで変更してください（図でも動かせません）。"
             }
@@ -258,7 +256,7 @@ pub struct EditorState {
 }
 
 /// 「Caps を Ctrl としても使う」をオンにすると、他ツールの設定と組み合わさって別の入れ替えに読み替わってしまうときの理由。
-const CAPS_WOULD_RECLASSIFY_TEXT: &str = "他のツールの設定（「左 Ctrl → …」など）と組み合わさって、英数 / Caps と左 Ctrl が入れ替えに変わってしまうため、「Caps を Ctrl としても使う」はオンにできません。他のツールの設定を先に外してください。";
+const CAPS_WOULD_RECLASSIFY_TEXT: &str = "他のツールの設定（「左 Ctrl → …」など）と組み合わさって、英数 / Caps と左 Ctrl が入れ替えに変わってしまうため、「Caps を Ctrl としても使う」はオンにできません。そのツールで外してください（awase からは外せません）。";
 
 /// 他のツールのエントリが from か to にしているキー（0 は「無効化」の to なので除く）。
 fn foreign_keys(detected: &Detected) -> Vec<u16> {
@@ -502,15 +500,17 @@ impl EditorState {
                 .any(|c| c.contains(SCANCODE_CAPS_EISU) || c.contains(SCANCODE_LEFT_CTRL))
     }
 
-    /// 「Caps を Ctrl としても使う」をオンにすると、他ツールの設定と組み合わさって別の入れ替えに読み替わるか。
-    /// `existing` は UI が読んだ生のエントリ列。オンにしたまま適用して初めて止まることが無いよう、チェックボックスの段で使う。
+    /// 「Caps を Ctrl としても使う」をオンにすると、書き込みの検査で断られる理由（オフなら通り、オンにすると落ちるときだけ。他ツールの設定と
+    /// 組み合わさって別の入れ替えに読み替わる `Reclassified`、他ツールの to との衝突、など）。`existing` は UI が読んだ生のエントリ列。
+    /// オンにしたまま適用して初めて止まることが無いよう、チェックボックスの段で使う。編集中の別の誤りで落ちるときは `None`。
     #[must_use]
-    pub fn caps_extra_would_reclassify(&self, existing: &[Entry]) -> bool {
-        !self.caps_extra
-            && matches!(
-                compute_swap_write_with_cycles(existing, &self.pairs(), &self.cycles, true),
-                Err(SwapError::Reclassified)
-            )
+    pub fn caps_extra_refusal(&self, existing: &[Entry]) -> Option<SwapError> {
+        if self.caps_extra
+            || compute_swap_write_with_cycles(existing, &self.pairs(), &self.cycles, false).is_err()
+        {
+            return None;
+        }
+        compute_swap_write_with_cycles(existing, &self.pairs(), &self.cycles, true).err()
     }
 
     /// 「Caps を Ctrl としても使う」をオンにできない理由（できるなら `None`）。
@@ -616,21 +616,13 @@ impl EditorState {
     #[must_use]
     pub fn preview(&self, existing: &[Entry], thumb_scancodes: &[u16]) -> Preview {
         let pairs = self.pairs();
-        // 注意は、読み込み時から出る機能が変わった位置だけが対象（適用済みの入れ替えに毎回出すと、警告を読まずに押すようになる。
-        // 単位の中身が変わっても、位置も機能も変わらない親指キーには出さない。Opus コードレビュー round2 N1）。
-        let changes = self.changes();
-        let changed_sig: Vec<Entry> = changes
-            .iter()
-            .filter(|&&(p, _, a)| a != p)
-            .map(|&(p, _, a)| (p, a))
-            .collect();
-        let mut cautions = cautions_from_permutation(&changed_sig, thumb_scancodes);
-        // 親指キーの位置が、入れ替えを外して元に戻る。
-        for &(p, b, a) in &changes {
-            if a == p && b != p && thumb_scancodes.contains(&p) {
-                cautions.push(Caution::ThumbKeyRestored { thumb: p });
-            }
-        }
+        // 注意は、読み込み時から位置か機能が変わったキーだけが対象（適用済みの入れ替えに毎回出すと、警告を読まずに押すようになる。
+        // 単位の中身が変わっても、位置も機能も変わらない親指キーには出さない。Opus コードレビュー round2 N1・round3 S1）。
+        let cautions = cautions_for_change(
+            &permutation_entries(&self.initial_pairs, &self.initial_cycles),
+            &permutation_entries(&pairs, &self.cycles),
+            thumb_scancodes,
+        );
         Preview {
             cautions,
             plan: compute_swap_write_with_cycles(existing, &pairs, &self.cycles, self.caps_extra),
@@ -670,13 +662,24 @@ pub fn cautions_with_cycles(
     cautions_from_permutation(&permutation_entries(pairs, &owned), thumb_scancodes)
 }
 
-/// 置換（「位置 → 機能」のエントリ。恒等の位置は含まない）から注意を挙げる。向きを見る（循環では向きで意味が変わる）:
-/// - 親指キー t の位置が Caps/英数 の機能を出す（σ(t) = Caps）→ 英数の Shift+CapsLock の動きが t の位置へ移る（`CapsWithThumbKey`）。
-/// - 親指キー t の位置がそれ以外の機能を出す → 親指シフトを押す物理位置が動く（`ThumbKeyMoved`）。
-/// - 親指キー t1 の位置が、他方の親指キー t2 の機能を出す → 左右の親指キーが逆になる（`ThumbKeysSwapped`）。
-/// - スペースの位置が別の機能を出す → スペースでの変換操作が移る（`SpaceMoved`）。
+/// 置換（「位置 → 機能」のエントリ。恒等の位置は含まない）から注意を挙げる（適用前の置換が空のときの [`cautions_for_change`]）。
 fn cautions_from_permutation(sig: &[Entry], thumb_scancodes: &[u16]) -> Vec<Caution> {
-    let image = |k: u16| sig.iter().find(|e| e.0 == k).map_or(k, |e| e.1);
+    cautions_for_change(&[], sig, thumb_scancodes)
+}
+
+/// 適用前の置換 `before` から適用後の置換 `after`（どちらも「位置 → 機能」のエントリ。恒等の位置は含まない）へ変わるときの注意を
+/// 挙げる。向きと、位置・機能の両方を見る（Opus コードレビュー round3 S1）:
+/// - 親指キー t の位置か機能が変わり、いまも入れ替えに入っている（[`moved_keys`]）: 親指シフトを押す物理位置が動く（`ThumbKeyMoved`）。
+///   うち、いま t の位置が Caps/英数 の機能を出す（σ'(t) = Caps）なら、英数の Shift+CapsLock の動きが t の位置へ移る（`CapsWithThumbKey`）。
+/// - 親指キー t1 のいまの位置が、他方の親指キー t2 の機能を出し、どちらかが動いた: 左右の親指キーが逆になる（`ThumbKeysSwapped`）。
+/// - 親指キー t の位置か機能が変わり、恒等へ戻った（[`touched_keys`] に入り [`moved_keys`] に入らない）: 元に戻る（`ThumbKeyRestored`）。
+/// - スペースの位置か機能が動いた: スペースでの変換操作が移る（`SpaceMoved`）。
+///
+/// 位置の出力は変わらず、そのキーの機能を出す位置だけが変わる編集（機能が別の位置へ移る）も、動いたものとして数える。
+fn cautions_for_change(before: &[Entry], after: &[Entry], thumb_scancodes: &[u16]) -> Vec<Caution> {
+    let image = |k: u16| after.iter().find(|e| e.0 == k).map_or(k, |e| e.1);
+    let touched = touched_keys(before, after);
+    let moved = moved_keys(before, after);
     let mut out: Vec<Caution> = Vec::new();
     let mut push = |c: Caution| {
         if !out.contains(&c) {
@@ -684,11 +687,11 @@ fn cautions_from_permutation(sig: &[Entry], thumb_scancodes: &[u16]) -> Vec<Caut
         }
     };
     for &t in thumb_scancodes {
-        let f = image(t);
-        if f == t {
+        if !moved.contains(&t) {
             continue;
         }
-        if thumb_scancodes.contains(&f) {
+        let f = image(t);
+        if f != t && thumb_scancodes.contains(&f) {
             push(Caution::ThumbKeysSwapped {
                 a: t.min(f),
                 b: t.max(f),
@@ -700,7 +703,12 @@ fn cautions_from_permutation(sig: &[Entry], thumb_scancodes: &[u16]) -> Vec<Caut
             push(Caution::ThumbKeyMoved { thumb: t });
         }
     }
-    if image(SCANCODE_SPACE) != SCANCODE_SPACE {
+    for &t in thumb_scancodes {
+        if touched.contains(&t) && !moved.contains(&t) {
+            push(Caution::ThumbKeyRestored { thumb: t });
+        }
+    }
+    if moved.contains(&SCANCODE_SPACE) {
         push(Caution::SpaceMoved);
     }
     out
@@ -1028,7 +1036,6 @@ mod tests {
             Unavailable::CapsFilterDriver,
             Unavailable::ThumbImeRole,
             Unavailable::OtherToolSetting,
-            Unavailable::CapsWouldReclassify,
         ] {
             assert!(!u.text().is_empty());
         }
@@ -1434,6 +1441,29 @@ mod tests {
     }
 
     #[test]
+    fn cautions_follow_a_function_that_moves_even_when_the_position_output_stays() {
+        // round3 p1: 読み込み時 左Alt→変換→スペース→左Alt（左Alt の位置が変換=親指キーを出す）。編集で 変換⇄スペース のペアにする。
+        // 変換の位置の出力は変わらない（スペース）が、変換の機能を出す位置が 左Alt → スペース へ動く。
+        let existing = [(LALT, HEN), (HEN, SPC), (SPC, LALT)];
+        let mut e = editor(&existing);
+        e.set_units(&[Pair::new(HEN, SPC)], &[]);
+        let p = e.preview(&existing, &[HEN]);
+        assert!(
+            p.cautions.contains(&Caution::ThumbKeyMoved { thumb: HEN })
+                && p.cautions.contains(&Caution::SpaceMoved),
+            "{:?}",
+            p.cautions
+        );
+        // round3 p2: 左Alt→スペース→変換→左Alt を スペース⇄変換 にする。スペースの機能が 左Alt の位置 → 変換の位置へ動く。
+        let existing = [(LALT, SPC), (SPC, HEN), (HEN, LALT)];
+        let mut e = editor(&existing);
+        e.set_units(&[Pair::new(SPC, HEN)], &[]);
+        let p = e.preview(&existing, &[]);
+        assert_eq!(p.cautions, vec![Caution::SpaceMoved]);
+        assert!(p.needs_confirmation());
+    }
+
+    #[test]
     fn cautions_target_only_positions_that_changed_since_load() {
         // round2 N1: 4巡回 無変換→変換→スペース→左Alt→無変換 のうち、変換の位置も機能も変わらない編集では、親指キー=変換の注意を出さない。
         let existing = [(MUH, HEN), (HEN, SPC), (SPC, LALT), (LALT, MUH)];
@@ -1459,15 +1489,29 @@ mod tests {
     }
 
     #[test]
-    fn caps_extra_that_would_reclassify_is_known_before_applying() {
+    fn caps_extra_refusal_is_known_before_applying() {
+        // 他ツールの開いた鎖が閉じる（Reclassified）。
         let existing = [(LCTRL, MUH), (MUH, CAPS)];
         let mut e = editor(&existing);
-        assert!(e.caps_extra_would_reclassify(&existing));
-        // 鎖が閉じないなら問題ない。すでにオンのときは聞かない。
-        assert!(!editor(&[(LCTRL, MUH)]).caps_extra_would_reclassify(&[(LCTRL, MUH)]));
-        assert!(!editor(&[]).caps_extra_would_reclassify(&[]));
+        assert_eq!(
+            e.caps_extra_refusal(&existing),
+            Some(SwapError::Reclassified)
+        );
+        // 他ツールの `X→左Ctrl` があると、to が衝突する。
+        let existing2 = [(MUH, LCTRL)];
+        assert!(matches!(
+            editor(&existing2).caps_extra_refusal(&existing2),
+            Some(SwapError::CollidesWithForeignTarget { .. })
+        ));
+        // 鎖が閉じないなら問題ない。何も無ければ聞かない。
+        assert_eq!(
+            editor(&[(LCTRL, MUH)]).caps_extra_refusal(&[(LCTRL, MUH)]),
+            None
+        );
+        assert_eq!(editor(&[]).caps_extra_refusal(&[]), None);
+        // すでにオンのときは聞かない。
         assert!(e.set_caps_extra(true));
-        assert!(!e.caps_extra_would_reclassify(&existing));
+        assert_eq!(e.caps_extra_refusal(&existing), None);
     }
 
     #[test]
