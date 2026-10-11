@@ -160,3 +160,20 @@ related_adr:
 - 補足: MS-IME プリセットの無変換で conv=27/19(0x1B/0x13、全角カタカナ)が出た。NATIVE ビットは立つので `AssumedRomaji` になり、R2 の方針で矛盾しない。probe の setup が `setup_kana=false` になる試行が ATOK の compose で 2 件あった(IME 状態の準備の失敗で、本件と無関係)。
 
 結論: 基準値なしの観測案(追記4)で第1段の実装に進んでよい。
+
+## 2026-10-11 追記7: FSM の親指の送り直しで窓を開き直した打鍵では、予測のガードを外す(案1)
+
+c353bcbb のガード(打鍵時点の予測がこの打鍵に付いていれば、窓内の読みで予測を覆さない)は、素通し設定(`*_solo_tap_always_suppress=false`)で
+無変換を押したまま別キーを押すと誤る。FSM が保留中の 無変換 を単独タップとして送り直し(executor の `SendKeys`)、予測は物理キーの効果だけから
+作られるので外れる。ガードが正しい読みを捨て、`sc-armc-gji-atok-passthru` の 変換 14/16 FAIL、`sc-armc-gji-msimepreset-passthru` の 英数 15/16 FAIL
+(run 38065774507)。ガードを外すとこれは直るが、c353bcbb が防いだ MS-IME プリセットの 変換 単独押し(IME が窓より遅い)が PASS→RECOVER に戻る
+(run 38091839446)。`[arm-diag]` では、前者は物理の arm・予測・FSM の送り直しの arm が同じ tick、後者は物理の arm だけ。時刻の比較では区別できない。
+
+**決定**: 窓に「FSM の送出で arm した時刻」(`resend_arm_ms`)を持たせ、executor の FSM 送出は `arm_direct_resend` で印を付ける(物理の通過・外部注入は付けない)。
+ガードの判定は純関数 `external_change_watch::prediction_guard(pred_at, armed_at, resend_at)` に置き、送り直しの印が予測の時刻以後にあるときだけ外す
+(`LiftedByResend`、`[direct-follow] prediction guard lifted by FSM resend` を出す)。belief への書き込みは既存の 3 副作用のまま。
+別担当の案2(送り直した効果を予測に重ねる)とは排他の代替案。
+
+**CI 実機(run 38094299769、修正 + 計測)**: `sc-armc-*` 8 構成で、atok/msimepreset の passthru は 48/48 PASS(修正前 34/48・33/48)、slow は 47/48(修正前 33/48・32/48、
+残る 1 件ずつは変換サーバの一時停止による窓の限界)。`sc-adr209-chrome-msime`(-stale)・`sc-follow-chrome-msime-henkan`・`sc-bug149-chrome-msime`(-passthru)は
+修正前(ガードあり)と同じ数(PASS 3/3・3/3・2/2、bug149 は 6/15/3・6/12/6)。印が付いてガードが外れたのは `sc-armc-*-passthru*` だけで、上の退行側の 5 シナリオでは 0 件。
