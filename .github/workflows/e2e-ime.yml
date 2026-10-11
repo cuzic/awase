@@ -467,8 +467,8 @@ jobs:
                 ('d-henkan-imeon', '1A,1C,1A,1D', 'DirectInput,ON,IMEOn|DirectInput,Henkan,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'),
                 ('d-muhenkan-imeon', '1A,1D,1A,1C', 'DirectInput,ON,IMEOn|DirectInput,Muhenkan,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'))],
             # ADR-255 段階3b: 速い連打で「foo bar」の順序が入れ替わらないか・押したまま(自動リピート相当)で Space が1個か。typing_stress --mode=lateorder、判定は check_lateorder.py。
-            # 対照 ctl は物理 Space を直接注入(ルールなし)。iv=キー間隔ms。形は edit(自プロセスの入力欄、IMM)。
-            *[cfg(f'sc-late-space-fast-{nm}', 'observe', check='lateorder', keymap=0, runs=1, wait=420, until='2026-11-10', tsv='DirectInput,ON,IMEOn', rules=rl,
+            # 対照 ctl は物理 Space を直接注入(ルールなし)。iv=キー間隔ms。形は edit(自プロセスの入力欄、IMM)。keymap=2(GJI の MS-IME プリセット)は無変換が DirectInput で IME の機能を持たない(CUSTOM 表だと準備確認で IME が開かない)。
+            *[cfg(f'sc-late-space-fast-{nm}', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', rules=rl,
                   stress=f'--form=edit --mode=lateorder --trials=4 --reps=5 --interval={iv} --lateorder-key={k} --layout=@REPO@/layout/nicola_keytop.yab')
               for nm, iv, k, rl in (('iv40', 40, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv20', 20, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv8', 8, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('ctl-iv8', 8, '20', ''))],
             # v2 チェックリスト B2 副次: 既定の [keys](keys.ime_toggle が空)× GJI プリセットで、Alt+半角/全角(0x19)が実 IME と Engine(belief)をずらさないこと。
