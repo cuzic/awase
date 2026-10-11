@@ -606,6 +606,59 @@ mod tests {
         );
     }
 
+    /// ADR-244 D4（#595）の表テスト: 読み（開閉 3 値 × conv 5 値）× belief（開閉 × 英数）の全組み合わせで、
+    /// - GJI は [`classify_direct_read`] と完全に同じ（D4 の緩和は GJI に影響しない）。
+    /// - MS-IME 本体の英数の軸は [`classify_direct_read`] と同じ（従来どおり）。
+    /// - MS-IME 本体の開閉の軸は「閉→開」（`Some(true)`）だけで、`Some(false)`（開→閉）は決して返さない。
+    ///   読めない（`None`）・belief と同じ読みでは開閉を追随しない。
+    #[test]
+    fn classify_direct_read_for_table_over_all_reads_and_beliefs() {
+        use crate::state::ime_kind::ImeKindId;
+        let opens = [None, Some(true), Some(false)];
+        // かな(0x19)・カタカナ(0x1B)・半角英数(0x10)・全角英数(0x18)・0・読めない
+        let convs = [
+            Some(0x19),
+            Some(0x1B),
+            Some(0x10),
+            Some(0x18),
+            Some(0),
+            None,
+        ];
+        for read_open in opens {
+            for read_conv in convs {
+                for belief_open in [true, false] {
+                    for belief_eisu in [true, false] {
+                        let ctx = format!(
+                            "read_open={read_open:?} read_conv={read_conv:?} \
+                             belief_open={belief_open} belief_eisu={belief_eisu}"
+                        );
+                        let base =
+                            classify_direct_read(read_open, read_conv, belief_open, belief_eisu);
+                        let gji = classify_direct_read_for(
+                            ImeKindId::Gji,
+                            read_open,
+                            read_conv,
+                            belief_open,
+                            belief_eisu,
+                        );
+                        assert_eq!(gji, base, "GJI は従来どおり: {ctx}");
+                        let ms = classify_direct_read_for(
+                            ImeKindId::MsIme,
+                            read_open,
+                            read_conv,
+                            belief_open,
+                            belief_eisu,
+                        );
+                        assert_eq!(ms.eisu, base.eisu, "MS-IME の英数の軸は従来どおり: {ctx}");
+                        let want_open = (read_open == Some(true) && !belief_open).then_some(true);
+                        assert_eq!(ms.open, want_open, "MS-IME の開閉は閉→開だけ: {ctx}");
+                        assert_ne!(ms.open, Some(false), "MS-IME は開→閉を採らない: {ctx}");
+                    }
+                }
+            }
+        }
+    }
+
     /// ADR-244 D4: GJI は従来どおり両軸（ADR-188 の挙動を変えない）。
     #[test]
     fn gji_keeps_both_axes() {
