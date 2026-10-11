@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, ci/adr255-saved-by-settings, fix/bug189-most-recent-trusted]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/adr255-saved-by-settings' && 'sc-late-space-saved-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -101,9 +101,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -471,6 +471,10 @@ jobs:
             *[cfg(f'sc-late-space-fast-{nm}', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', rules=rl,
                   stress=f'--form=edit --mode=lateorder --trials=4 --reps=5 --interval={iv} --lateorder-key={k} --layout=@REPO@/layout/nicola_keytop.yab')
               for nm, iv, k, rl in (('iv40', 40, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv20', 20, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv8', 8, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('ctl-iv8', 8, '20', ''))],
+            # ADR-255 の通し: 設定画面(awase-settings)のプリセットボタン+Ctrl+S が書いた [[keymaps]] を awase が読み、連打・押しっぱなしで Space が出るか。
+            # rules ではなく via_settings='preset'。typing_stress --mode=lateorder は keymap=2(MS-IME プリセット)。
+            cfg('sc-late-space-saved-iv20', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', via_settings='preset',
+                stress='--form=edit --mode=lateorder --trials=4 --reps=5 --interval=20 --lateorder-key=1D --layout=@REPO@/layout/nicola_keytop.yab'),
             # v2 チェックリスト B2 副次: 既定の [keys](keys.ime_toggle が空)× GJI プリセットで、Alt+半角/全角(0x19)が実 IME と Engine(belief)をずらさないこと。
             # sc-kanji-role-* は CUSTOM 表(keymap=0)+ tsv だったが、こちらは tsv も keys 上書きも無い「既定のまま」。プリセット(ATOK=1 / MS-IME=2)の
             # Hankaku/Zenkaku 行はトグルのはずなので kanjirole-closed(IME が閉じ、Engine も OFF に追随)を期待する。実測前なので observe。
@@ -1158,6 +1162,66 @@ jobs:
           }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
+          # 設定画面で保存した設定を使う(ADR-255 の保存→読み込み→動作の通し)。via_settings='preset' のときだけ:
+          # dist\config.toml を awase-settings で開き、再割り当てタブの「無変換・変換を IME OFF のとき Space にする」を押し、Ctrl+S で保存する。
+          # (rules で差し込まず、GUI が書いた [[keymaps]] を awase が読む。窓の位置は起動ごとに変わるので EnumWindows で最大の可視窓を探す。)
+          if ('${{ matrix.cfg.via_settings }}' -eq 'preset') {
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type -TypeDefinition '
+            using System;
+            using System.Runtime.InteropServices;
+            public class WinFind2 {
+              public delegate bool EnumProc(IntPtr h, IntPtr l);
+              [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);
+              [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+              [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+              [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out R r);
+              [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+              [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+              [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+              [StructLayout(LayoutKind.Sequential)] public struct R { public int L, T, Rt, B; }
+              public static int[] Largest(uint pid) {
+                int[] best = null; long area = 0;
+                EnumWindows((h, l) => {
+                  uint p; GetWindowThreadProcessId(h, out p);
+                  if (p == pid && IsWindowVisible(h)) {
+                    R r; GetWindowRect(h, out r);
+                    long a = (long)(r.Rt - r.L) * (r.B - r.T);
+                    if (a > area) { area = a; best = new int[] { r.L, r.T, r.Rt - r.L, r.B - r.T }; }
+                  }
+                  return true;
+                }, IntPtr.Zero);
+                return best;
+              }
+            }
+            '
+            [void][WinFind2]::SetProcessDPIAware()
+            $env:AWASE_SETTINGS_INITIAL_TAB = 'keymap'
+            $env:AWASE_SETTINGS_WINDOW_SIZE = '760x700'
+            $sp = Start-Process -FilePath "$PWD\dist\awase-settings.exe" -ArgumentList "`"$PWD\dist\config.toml`"" -PassThru
+            $b = $null
+            for ($i = 0; $i -lt 60 -and $null -eq $b; $i++) {
+              Start-Sleep -Seconds 1
+              $b = [WinFind2]::Largest([uint32]$sp.Id)
+              if ($null -ne $b -and $b[2] -lt 300) { $b = $null }
+            }
+            Start-Sleep -Seconds 6
+            $b = [WinFind2]::Largest([uint32]$sp.Id)
+            Write-Host "settings window: $($b -join ',')"
+            if ($null -eq $b) { throw 'awase-settings の窓が見つからない' }
+            [void][WinFind2]::SetCursorPos($b[0] + 248, $b[1] + 259)
+            Start-Sleep -Milliseconds 400
+            [WinFind2]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 100; [WinFind2]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Seconds 2
+            [System.Windows.Forms.SendKeys]::SendWait('^s')
+            Start-Sleep -Seconds 6
+            if (-not $sp.HasExited) { Stop-Process -Id $sp.Id -Force }
+            Write-Host '===== config.toml after settings save ====='
+            Get-Content "$PWD\dist\config.toml" -Raw -Encoding utf8 | Select-String -Pattern 'keymaps|ime =|from =|to =' | ForEach-Object { Write-Host $_.Line }
+            Write-Host '===== end ====='
+            $saved = Get-Content "$PWD\dist\config.toml" -Raw -Encoding utf8
+            if (([regex]::Matches($saved, 'ime\s*=\s*"off"')).Count -ne 2) { Write-Host '::error::設定画面の保存で ime = off が 2 件書かれなかった'; exit 3 }
+          }
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
           # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n[imm_capability.`"typing_stress.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
