@@ -48,6 +48,10 @@ static NTSTATUS QueryAttrDone(PDEVICE_OBJECT dev, PIRP irp, PVOID ctx)
     if (irp->PendingReturned) IoMarkIrpPending(irp);
     if (NT_SUCCESS(irp->IoStatus.Status) && irp->IoStatus.Information >= sizeof(KEYBOARD_ATTRIBUTES)) {
         PKEYBOARD_ATTRIBUTES a = (PKEYBOARD_ATTRIBUTES)irp->AssociatedIrp.SystemBuffer;
+        if (a == NULL) {
+            PIO_STACK_LOCATION cur = IoGetCurrentIrpStackLocation(irp);
+            a = (PKEYBOARD_ATTRIBUTES)cur->Parameters.DeviceIoControl.Type3InputBuffer;
+        }
         if (a != NULL) {
             g_origType = a->KeyboardIdentifier.Type; g_origSubtype = a->KeyboardIdentifier.Subtype;
             InterlockedIncrement(&g_modified);
@@ -141,6 +145,18 @@ static NTSTATUS InternalIoctl(PDEVICE_OBJECT dev, PIRP irp)
         PCONNECT_DATA cd = (PCONNECT_DATA)sp->Parameters.DeviceIoControl.Type3InputBuffer;
         if (cd != NULL && sp->Parameters.DeviceIoControl.InputBufferLength >= sizeof(CONNECT_DATA)) {
             g_conn = *cd;   // 元のコールバックを控えるだけ。経路は変えず、そのまま下へ流す。
+        }
+    }
+    if (dev != g_ctl) {
+        InterlockedIncrement(&g_seenAny);
+        if (sp->Parameters.DeviceIoControl.IoControlCode == IOCTL_KEYBOARD_QUERY_ATTRIBUTES) {
+            InterlockedIncrement(&g_seenQuery);
+            if (g_jis) {
+                PEXT ext = (PEXT)dev->DeviceExtension;
+                IoCopyCurrentIrpStackLocationToNext(irp);
+                IoSetCompletionRoutine(irp, QueryAttrDone, NULL, TRUE, TRUE, TRUE);
+                return IoCallDriver(ext->Lower, irp);
+            }
         }
     }
     return Pass(dev, irp);
