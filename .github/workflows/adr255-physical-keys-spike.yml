@@ -15,7 +15,7 @@ jobs:
         lang: [en-US, ja-JP]
         klid: ['00000411', '00000409']
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +41,7 @@ jobs:
 
       - name: 日本語キーの Down/Up の vk を測る
         shell: pwsh
+        timeout-minutes: 8
         env:
           PROBE_KLID: ${{ matrix.klid }}
         run: ./tools/kbd-inject-driver/layout-probe.ps1

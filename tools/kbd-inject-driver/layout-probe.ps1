@@ -25,14 +25,19 @@ $h = [AwaseKb]::CreateFile('\\.\AwaseKbInject', [uint32]3221225472, 3, [IntPtr]:
 if ($h -eq [IntPtr]::new(-1)) { Write-Host '::error::制御デバイスを開けない'; exit 3 }
 Write-Host "LL hook installed: $([AwaseKb]::Install())"
 function Pump($ms) { $end = (Get-Date).AddMilliseconds($ms); while ((Get-Date) -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 10 } }
+# 万一ハングしたとき(Alt のメニュー、モーダルのループなど)に、結果を出して終わる保険。
+$global:watchdog = [Diagnostics.Stopwatch]::StartNew()
+function Check-Time { if ($global:watchdog.Elapsed.TotalSeconds -gt 240) { Write-Host '::warning::240 秒を超えたので途中で打ち切る'; throw 'timeout' } }
 Pump 300
 # (名前, スキャンコード, E0)。JIS 配列の日本語キー。
 $keys = @(
   @('ひらがな(カタカナひらがなローマ字)', 0x70, 0), @('無変換', 0x7B, 0), @('変換', 0x79, 0), @('半角/全角', 0x29, 0),
-  @('英数(Caps)', 0x3A, 0), @('Fn 風 F13 相当(0x64)', 0x64, 0), @('円記号 ¥', 0x7D, 0), @('バックスラッシュ _', 0x73, 0), @('A(対照)', 0x1E, 0), @('左Alt', 0x38, 0), @('右Alt', 0x38, 2)
+  @('英数(Caps)', 0x3A, 0), @('Fn 風 F13 相当(0x64)', 0x64, 0), @('円記号 ¥', 0x7D, 0), @('バックスラッシュ _', 0x73, 0), @('A(対照)', 0x1E, 0),
+  @('右Ctrl(E0)', 0x1D, 2), @('矢印 ←(E0)', 0x4B, 2)
 )
 $rows = @()
 foreach ($k in $keys) {
+  Check-Time
   foreach ($shift in @($false, $true)) {
     [AwaseKb]::Log.Clear()
     if ($shift) { [void][AwaseKb]::Inject($h, [uint16[]](0x2A, 0)); Pump 120 }   # 左 Shift の make
