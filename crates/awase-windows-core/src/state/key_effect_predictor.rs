@@ -761,8 +761,9 @@ pub fn plan_key_effect_track(f: &KeyTrackFacts) -> Option<bool> {
     Some(!in_table && !f.was_down && !delegated && !any_modifier)
 }
 
-/// ADR-188 案2: この打鍵の決定（`Decision`）で、FSM が打鍵の前に IME へ送り直すモードキー（保留中の親指の単独タップ）を
-/// 送る順に返す。対象は打鍵を通す決定（`PassThroughWith`）の `SendKeys` にある `KeyAction::Key` のうち、
+/// ADR-188 案2: FSM が打鍵の前に IME へ送り直すモードキー（保留中の親指の単独タップ）を、送る順に返す。
+///
+/// 対象は打鍵を通す決定（`PassThroughWith`）の `SendKeys` にある `KeyAction::Key` のうち、
 /// 通過マーク・直接観測の窓を開く対象（[`crate::vk::is_followed_mode_key`]）——executor が送出時に窓を開き直すキー
 /// （`runtime/executor.rs::dispatch_effect`）と同じ判定。executor は `effects` を送ってから打鍵を再注入するので、
 /// IME には ここで返すキー → 打鍵 の順に届く。
