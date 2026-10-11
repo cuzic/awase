@@ -163,42 +163,10 @@ pub struct Detected {
     pub unclaimed: Vec<(Entry, UnclaimedReason)>,
 }
 
-/// エントリ列を、編集できるペア・Caps 追加 Ctrl プリセット・他ツールのエントリ（Unclaimed）に分類する
-/// （ADR-230 決定3の分類表）。分類は配列にも許可リストにも依存しない。
-#[must_use]
-pub fn detect_swap_pairs(entries: &[Entry]) -> Detected {
-    let mut used = vec![false; entries.len()];
-    let mut taken_keys: Vec<u16> = Vec::new();
-    let mut accepted: Vec<Pair> = Vec::new();
-
-    // ペアは「(a,b) と (b,a) が両方ある、互いに別キー、キーが既存ペアと被らない」もの。入力順に最初のものを採る。
-    for (i, &(a, b)) in entries.iter().enumerate() {
-        if used[i]
-            || a == b
-            || a == 0
-            || b == 0
-            || taken_keys.contains(&a)
-            || taken_keys.contains(&b)
-        {
-            continue;
-        }
-        let Some(j) = entries
-            .iter()
-            .enumerate()
-            .position(|(j, &e)| j != i && !used[j] && e == (b, a))
-        else {
-            continue;
-        };
-        used[i] = true;
-        used[j] = true;
-        taken_keys.push(a);
-        taken_keys.push(b);
-        accepted.push(Pair::new(a, b));
-    }
-
-    // 3つ以上の閉じた循環（ADR-248 決定6）。採用済みペアのキーと被らず、from も to も全エントリの中で1回ずつだけのエントリを
-    // たどって元へ戻るもの。許可リストには関係なく読む（ペアと同じ。作る・変えるときだけ許可リストを当てる）。
-    // Caps 追加 Ctrl より先に見る: `Caps→左Ctrl, 左Ctrl→X, X→Caps` は、プリセット+他ツール2件ではなく1つの循環。
+/// 3つ以上の閉じた循環を探す（ADR-248 決定6）。採用済みペアのキーと被らず、from も to も全エントリの中で1回ずつだけの
+/// エントリをたどって元へ戻るもの。許可リストには関係なく読む（ペアと同じ。作る・変えるときだけ許可リストを当てる）。
+/// 見つけた循環のエントリは `used` に印を付ける。
+fn find_cycles(entries: &[Entry], used: &mut [bool], taken_keys: &[u16]) -> Vec<Cycle> {
     let candidate: Vec<usize> = (0..entries.len())
         .filter(|&i| {
             let (a, b) = entries[i];
@@ -246,6 +214,45 @@ pub fn detect_swap_pairs(entries: &[Entry]) -> Detected {
             cycles.push(cycle);
         }
     }
+    cycles
+}
+
+/// エントリ列を、編集できるペア・Caps 追加 Ctrl プリセット・他ツールのエントリ（Unclaimed）に分類する
+/// （ADR-230 決定3の分類表）。分類は配列にも許可リストにも依存しない。
+#[must_use]
+pub fn detect_swap_pairs(entries: &[Entry]) -> Detected {
+    let mut used = vec![false; entries.len()];
+    let mut taken_keys: Vec<u16> = Vec::new();
+    let mut accepted: Vec<Pair> = Vec::new();
+
+    // ペアは「(a,b) と (b,a) が両方ある、互いに別キー、キーが既存ペアと被らない」もの。入力順に最初のものを採る。
+    for (i, &(a, b)) in entries.iter().enumerate() {
+        if used[i]
+            || a == b
+            || a == 0
+            || b == 0
+            || taken_keys.contains(&a)
+            || taken_keys.contains(&b)
+        {
+            continue;
+        }
+        let Some(j) = entries
+            .iter()
+            .enumerate()
+            .position(|(j, &e)| j != i && !used[j] && e == (b, a))
+        else {
+            continue;
+        };
+        used[i] = true;
+        used[j] = true;
+        taken_keys.push(a);
+        taken_keys.push(b);
+        accepted.push(Pair::new(a, b));
+    }
+
+    // 3つ以上の閉じた循環（ADR-248 決定6）。Caps 追加 Ctrl より先に見る:
+    // `Caps→左Ctrl, 左Ctrl→X, X→Caps` は、プリセット+他ツール2件ではなく1つの循環。
+    let cycles = find_cycles(entries, &mut used, &taken_keys);
 
     // Caps 追加 Ctrl: `Caps→左 Ctrl` が単独（逆向きがペアに取られていない）で残っている。
     // ただし Caps が採用済みペアのキーなら、同じ `Caps→左 Ctrl`（ペアの複製や、ペア `Caps⇄X` に重なる from 重複）は
@@ -391,7 +398,9 @@ impl Unit {
     }
 }
 
-/// [`compute_swap_write`] のペアに、3つ以上の循環 `cycles`（ADR-248 決定6）を加えたもの。ペアと循環は同じ「単位」として検査する:
+/// [`compute_swap_write`] のペアに、3つ以上の循環 `cycles`（ADR-248 決定6）を加えたもの。
+///
+/// ペアと循環は同じ「単位」として検査する:
 /// 同じキーが複数の単位に現れてはならず、新規に作る単位のキーは許可リスト内で、Caps 追加 Ctrl・他ツールの to と衝突しない。
 /// 「残す・消す」の単位は、ペアも循環も、エントリがすべて値として一致するかどうか（1つでも変われば、元の単位を消して新規に作る）。
 ///
