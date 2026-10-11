@@ -677,7 +677,88 @@ fn scan_for(vk: u32) -> u16 {
 const SCAN_ONLY: u32 = 0x1_0000;
 const NOSCAN: u32 = 0x2_0000;
 
+/// ADR-255: `--inject-driver`(キーボードフィルタドライバ awasekbf 経由、`tools/kbd-inject-driver/`)。vk を直接指定する SendInput と違い、
+/// スキャンコードを kbdclass のコールバックへ流すので、キーボードレイアウトの変換(JIS なら `install-driver.ps1 -JisType` が必要)を通り、
+/// 物理キーと同じ Down/Up の vk(ひらがな 0x70 は Down=0xF2/Up=0xF0)でフックに届く。`scan_for` が 0 のキーは従来どおり SendInput。
+mod driver_inject {
+    use std::sync::OnceLock;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            sa: *const core::ffi::c_void,
+            disp: u32,
+            flags: u32,
+            tmpl: isize,
+        ) -> isize;
+        fn DeviceIoControl(
+            h: isize,
+            code: u32,
+            inb: *const core::ffi::c_void,
+            inl: u32,
+            outb: *mut core::ffi::c_void,
+            outl: u32,
+            ret: *mut u32,
+            ov: *mut core::ffi::c_void,
+        ) -> i32;
+    }
+
+    const IOCTL_INJECT: u32 = 0x000B_2000;
+    pub static SENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn handle() -> Option<isize> {
+        static H: OnceLock<Option<isize>> = OnceLock::new();
+        *H.get_or_init(|| {
+            if !std::env::args().any(|a| a == "--inject-driver") {
+                return None;
+            }
+            let name: Vec<u16> = "\\\\.\\AwaseKbInject\0".encode_utf16().collect();
+            // SAFETY: NUL 終端の UTF-16 の名前。失敗は -1 で返る。
+            let h =
+                unsafe { CreateFileW(name.as_ptr(), 0xC000_0000, 3, core::ptr::null(), 3, 0, 0) };
+            if h == -1 || h == 0 {
+                eprintln!("[spike] --inject-driver: AwaseKbInject を開けない(SendInput に戻す)");
+                None
+            } else {
+                eprintln!("[spike] --inject-driver: ドライバ(awasekbf)経由でキーを送る");
+                Some(h)
+            }
+        })
+    }
+
+    /// ドライバで送れたら true。
+    pub fn send(scan: u16, down: bool) -> bool {
+        let Some(h) = handle() else { return false };
+        if scan == 0 {
+            return false;
+        }
+        let cmd: [u16; 2] = [scan, if down { 0 } else { 1 }];
+        let mut ret = 0u32;
+        SENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: 4 バイトの入力バッファ。出力なし。
+        let ok = unsafe {
+            DeviceIoControl(
+                h,
+                IOCTL_INJECT,
+                cmd.as_ptr().cast(),
+                4,
+                core::ptr::null_mut(),
+                0,
+                &raw mut ret,
+                core::ptr::null_mut(),
+            )
+        };
+        ok != 0
+    }
+}
+
 fn send_key(vk: u32, down: bool) {
+    if vk & (SCAN_ONLY | NOSCAN) == 0 && driver_inject::send(scan_for(vk), down) {
+        return;
+    }
     let up = if down {
         KEYBD_EVENT_FLAGS(0)
     } else {
@@ -2927,6 +3008,7 @@ fn validate_args() {
         "--free",
         "--grid-adaptive",
         "--hz",
+        "--inject-driver",
         "--msime",
         "--notify",
         "--notify-comp",
