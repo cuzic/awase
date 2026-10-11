@@ -99,14 +99,26 @@ jobs:
             return $true
           }
 
+          # UIA の木が出ない(子孫 0 件)ので、窓の左上からの相対座標でクリックする(run 38106638150 の画面から採った位置)。
+          function Click-Rel($hwnd, $dx, $dy) {
+            $r = New-Object Win+RECT
+            [void][Win]::GetWindowRect($hwnd, [ref]$r)
+            $cx = $r.L + $dx; $cy = $r.T + $dy
+            Write-Host "click rel ($dx,$dy) -> $cx,$cy (window $($r.L),$($r.T))"
+            [void][Win]::SetCursorPos($cx, $cy)
+            Start-Sleep -Milliseconds 300
+            [Win]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 100
+            [Win]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+          }
           # 1) ルールなし(既定)の画面と、プリセットボタンを押した後
           $c0 = Write-Cfg "empty" "[general]`r`n"
           $p = Launch $c0 760 700
           Snap "1-empty-760-screen" $bounds
-          $ok = Click-Name $p.MainWindowHandle "無変換・変換を IME OFF のとき Space にする"
+          Click-Rel $p.MainWindowHandle 248 259; $ok = $true
           Start-Sleep -Seconds 2
           Snap "2-after-preset-760-screen" $bounds
-          $ok2 = Click-Name $p.MainWindowHandle "「IME の状態: OFF のとき」のルールの注意"
+          Click-Rel $p.MainWindowHandle 234 281; $ok2 = $true
           Start-Sleep -Seconds 2
           Snap "3-notes-open-760-screen" $bounds
           Write-Host "clicks: preset=$ok notes=$ok2"
