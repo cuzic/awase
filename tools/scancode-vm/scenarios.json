@@ -42,7 +42,7 @@
     { "name": "pair-and-caps-extra", "kind": "verify", "source": "decide",
       "request": { "existing": [], "pairs": [[123, 121]], "cycles": [], "caps_extra_ctrl": true, "allow_displace": true },
       "press": ["Muhenkan", "Henkan", "Caps"], "expect": ["Henkan", "Muhenkan", "LCtrl"], "note": "ペアと Caps 追加 Ctrl の併用" },
-    { "name": "from-duplicate", "kind": "observe", "source": "raw", "entries": [[30, 31], [30, 32]],
-      "press": ["A"], "expect": [], "note": "同じ from が2つ。A の位置が S(先勝ち)か D(後勝ち)かを記録する。ADR-230 の未確認。結果を ADR に書いたら verify に昇格" }
+    { "name": "from-duplicate", "kind": "verify", "source": "raw", "entries": [[30, 31], [30, 32]],
+      "press": ["A"], "expect": ["S"], "note": "同じ from が2つ。先勝ち(先頭の A→S が効く)。2026-10-11 に observe で確認して verify に昇格(ADR-230 の未確認、ADR-257)" }
   ]
 }
