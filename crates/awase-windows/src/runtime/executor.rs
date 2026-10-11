@@ -635,7 +635,11 @@ impl DecisionExecutor {
                 if super::direct_mode_key_watch_kind_for(platform.current_app_profile()).is_some()
                     && !crate::tsf::observer::ime_composition_active_now()
                 {
-                    ime.arm_direct_external_change_watch(now);
+                    // FSM が送り直すのは親指キー（無変換/変換）で、IME の表に役割を持ちうるので、ADR-256 の保持は効かせない。
+                    ime.arm_direct_external_change_watch(
+                        now,
+                        crate::state::external_change_watch::HoldAdmission::Unknown,
+                    );
                 }
                 ime.arm_mode_key_pass_mark(
                     now,

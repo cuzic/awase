@@ -4637,7 +4637,9 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
         !executor.contains("external_change_watch_applies_for("),
         "executor の直接観測は GJI 限定の述語ではなく direct_mode_key_watch_kind_for を使うこと（ADR-244 D2）"
     );
-    assert!(key_pipeline.contains("self.direct_mode_key_watch_kind().is_some()"));
+    // ADR-256: key_pipeline は直接観測の窓の種別（保持の判定に使う）を受け取る形で述語を通す。
+    let key_pipeline_squashed: String = key_pipeline.split_whitespace().collect();
+    assert!(key_pipeline_squashed.contains("self.direct_mode_key_watch_kind().filter("));
     let follow = ime_refresh
         .split("fn ir_follow_direct_mode_key_read")
         .nth(1)
@@ -4814,6 +4816,41 @@ fn direct_follow_holds_reads_for_unconfirmed_awase_write() {
             "letcarried=ifdirect{self.take_pending_write(scope,now_ms,window_ms)}else{None};"
         ),
         "控えを窓へ引き継ぐのは直接観測の窓の arm だけ: {arm}"
+    );
+
+    // 所有者決定(役割のないキーに限定): 物理キーの arm は役割の判定(純関数 awase_write_hold_admission)を渡し、FSM 再送出
+    // (親指キー=無変換/変換)は保持を効かせない(Unknown)。判定は GJI × 無修飾 × 表に行なしだけ Admitted。
+    let kp: String = non_comment_lines(production_code_only(&read_crate_file(
+        "src/runtime/key_pipeline.rs",
+    )))
+    .split_whitespace()
+    .collect();
+    assert!(
+        kp.contains("external_change_watch::awase_write_hold_admission(")
+            && kp.contains(".gji_fkey_function(event.vk_code.0)")
+            && kp.contains(".arm_direct_external_change_watch(now_ms,hold)"),
+        "key_pipeline の直接観測の arm は役割の判定を渡すこと"
+    );
+    let ex: String = non_comment_lines(production_code_only(&read_crate_file(
+        "src/runtime/executor.rs",
+    )))
+    .split_whitespace()
+    .collect();
+    assert!(
+        ex.contains(".arm_direct_external_change_watch(now,crate::state::external_change_watch::HoldAdmission::Unknown,)")
+            || ex.contains(".arm_direct_external_change_watch(now,crate::state::external_change_watch::HoldAdmission::Unknown)"),
+        "FSM 再送出の arm は保持を効かせないこと"
+    );
+    let adm = watch
+        .split("fn awase_write_hold_admission")
+        .nth(1)
+        .expect("awase_write_hold_admission が無い");
+    let adm = &adm[..adm.find("\n}\n").unwrap_or(adm.len())];
+    let adm_squashed: String = adm.split_whitespace().collect();
+    assert!(
+        adm_squashed.contains("Some(FKeyFunction::NoFunction)=>HoldAdmission::Admitted,")
+            && adm_squashed.matches("HoldAdmission::Admitted").count() == 1,
+        "Admitted は表に行なしのときだけ: {adm}"
     );
 }
 

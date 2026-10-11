@@ -491,17 +491,28 @@ impl ImeStateHub {
 
     /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（読めない窓＝GJI／同定済み MS-IME 本体 × `Imm32Unavailable`、ADR-244）。直接観測の窓を開く／延ばす。
     ///
+    /// `hold`（ADR-256、[`super::external_change_watch::awase_write_hold_admission`]）: 窓を開いたキーが IME の状態を変えないと
+    /// 確かめられたときだけ、未確認の awase の書き込みを窓へ引き継ぐ。それ以外は控えを捨て、窓内の読みを採る。
+    ///
     /// crate 内（殻 `shell.rs` と単体テスト）だけが呼ぶ。閉ループのハーネスには公開しない（`PLATFORM_STATE_PUB_FNS` を増やさない）。
     pub(crate) fn arm_direct_external_change_watch_in_scope(
         &mut self,
         now_ms: u64,
+        hold: super::external_change_watch::HoldAdmission,
         scope: crate::state::foreground_scope::ForegroundScope,
     ) {
+        let had_pending = self.external_change_watch.has_pending_awase_write();
         self.external_change_watch.arm_direct(
             scope,
             now_ms,
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+            hold.admitted(),
         );
+        if had_pending && !hold.admitted() {
+            tracing::info!(
+                "[direct-follow] awase-write not carried hold={hold:?}: 窓を開いたキーが IME を変えうるので、未確認の awase の書き込みを引き継がない (ADR-256)"
+            );
+        }
         if let Some(w) = self.external_change_watch.carried_awase_write() {
             tracing::info!(
                 "[direct-follow] awase-write carried open={w}: 窓の arm 時点で awase の書き込みが未確認 → 同じ値を読むまで窓内の読みを採らない (ADR-256、BUG-199)"
@@ -3844,8 +3855,11 @@ mod tests {
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
         ps.ime
             .record_confirmed_in_scope(true, 90, test_foreground_scope());
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         assert_eq!(
             ps.ime.follow_direct_read_in_scope(
                 Some(false),
@@ -3897,8 +3911,11 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         let read = |ps: &mut PlatformState, conv: u32, t: u64| {
             ps.ime.follow_direct_read_in_scope(
                 Some(true),
@@ -3939,8 +3956,11 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         let read = |ps: &mut PlatformState, open: bool, conv: u32, t: u64| {
             ps.ime.follow_direct_read_in_scope(
                 Some(open),
@@ -3983,8 +4003,11 @@ mod tests {
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
         assert!(!ps.ime.effective_open_at(TickMs(200)));
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         let read = |ps: &mut PlatformState, open: bool, t: u64| {
             ps.ime.follow_direct_read_in_scope(
                 Some(open),
@@ -4020,8 +4043,11 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         ps.ime.note_explicit_ime_action(TickMs(1010));
         let read = |ps: &mut PlatformState, t: u64| {
             ps.ime.follow_direct_read_in_scope(
@@ -4037,8 +4063,11 @@ mod tests {
         assert_eq!(read(&mut ps, 1032), None);
         assert!(!ps.ime.effective_open_at(TickMs(1040)));
         assert!(ps.ime.explicit_intent().is_some(), "意図は残る");
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1200, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1200,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         assert_eq!(read(&mut ps, 1232), Some(direct_follow(Some(true), None)));
         assert!(ps.ime.effective_open_at(TickMs(1240)));
     }
@@ -4049,8 +4078,11 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         ps.ime.note_explicit_ime_action(TickMs(1010));
         assert_eq!(
             ps.ime.follow_direct_read_in_scope(
@@ -4066,8 +4098,11 @@ mod tests {
         );
         assert!(ps.ime.explicit_intent().is_some(), "意図は残る");
         // 新しい物理キー(再 arm)の後の読みは採る。
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1200, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1200,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         assert_eq!(
             ps.ime.follow_direct_read_in_scope(
                 Some(false),
@@ -4090,8 +4125,11 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         // トグル開始の前: belief を英数にする(窓の読みが英数)。
         assert_eq!(
             ps.ime.follow_direct_read_in_scope(
@@ -4121,8 +4159,11 @@ mod tests {
         );
         assert_eq!(ps.ime.input_mode(), InputModeState::ObservedEisu);
         // 新しい物理キー(再 arm)の後の NATIVE の読みは採る。
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1200, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1200,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         assert_eq!(
             ps.ime.follow_direct_read_in_scope(
                 Some(true),
@@ -4171,8 +4212,11 @@ mod tests {
             910,
             test_foreground_scope(),
         );
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Admitted,
+            test_foreground_scope(),
+        );
         for t in [1032, 1090, 1150, 1274] {
             assert_eq!(read_gji_direct(&mut ps, Some(true), t), None, "t={t}");
             assert!(!ps.ime.effective_open_at(TickMs(t + 1)), "t={t}");
@@ -4189,14 +4233,47 @@ mod tests {
         assert!(ps.ime.effective_open_at(TickMs(1296)));
     }
 
+    /// 所有者決定（役割のないキーに限定）: 窓を開いたキーが IME の役割を持ちうる（`KeyHasFunction`・`Unknown`・`Modified`）なら、
+    /// arm の直前の awase の書き込みを引き継がず、最初の食い違う読み（利用者がそのキーで開いた）に追随する（逆向きの筋書き）。
+    #[test]
+    fn follow_direct_read_does_not_hold_when_the_arming_key_may_change_the_ime() {
+        use crate::state::external_change_watch::HoldAdmission;
+        for hold in [
+            HoldAdmission::KeyHasFunction,
+            HoldAdmission::Unknown,
+            HoldAdmission::Modified,
+        ] {
+            let mut ps = ps_for_test();
+            dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+            dispatch_and_record_explicit_intent(&mut ps, false, 900);
+            ps.ime.record_ime_apply_result_in_scope(
+                false,
+                awase::platform::ImeOpenOutcome::Applied,
+                None,
+                910,
+                test_foreground_scope(),
+            );
+            ps.ime
+                .arm_direct_external_change_watch_in_scope(1000, hold, test_foreground_scope());
+            assert_eq!(
+                read_gji_direct(&mut ps, Some(true), 1032),
+                Some(direct_follow(Some(true), None)),
+                "{hold:?}"
+            );
+        }
+    }
+
     /// 対照: awase の書き込みが無ければ（従来どおり）最初の食い違う読みで追随する。
     #[test]
     fn follow_direct_read_without_awase_write_follows_the_first_read() {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 900);
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         assert_eq!(
             read_gji_direct(&mut ps, Some(true), 1032),
             Some(direct_follow(Some(true), None))
@@ -4236,8 +4313,11 @@ mod tests {
                 // 窓の外の読み（窓が無いので追随はしない）で書き込みを確かめる。
                 assert_eq!(read_gji_direct(&mut ps, Some(false), 940), None);
             }
-            ps.ime
-                .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+            ps.ime.arm_direct_external_change_watch_in_scope(
+                1000,
+                crate::state::external_change_watch::HoldAdmission::Admitted,
+                test_foreground_scope(),
+            );
             assert_eq!(
                 read_gji_direct(&mut ps, Some(true), 1032),
                 Some(direct_follow(Some(true), None)),
@@ -4265,8 +4345,11 @@ mod tests {
             },
             TickMs(950),
         );
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Admitted,
+            test_foreground_scope(),
+        );
         assert_eq!(
             read_gji_direct(&mut ps, Some(true), 1032),
             Some(direct_follow(Some(true), None))
@@ -4305,8 +4388,11 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         let other = crate::state::foreground_scope::ForegroundScope {
             pid: 43,
             hwnd: 0x9999,
@@ -4320,8 +4406,11 @@ mod tests {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, true, 100);
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         assert_eq!(
             follow(&mut ps, 1000 + 301, test_foreground_scope()),
             None,
@@ -4336,8 +4425,11 @@ mod tests {
     fn follow_direct_read_defers_to_a_key_effect_prediction_made_after_arm() {
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1000, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1000,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         // 打鍵(arm)の直後に、開く予測が付く。
         ps.ime.dispatch_event(
             ImeEvent::KeyEffectPredicted {
@@ -4365,8 +4457,11 @@ mod tests {
         }
         assert!(ps.ime.effective_open_at(TickMs(1260)));
         // 予測が無い打鍵(新しい物理キーで再 arm し、予測より後の arm)なら採る。
-        ps.ime
-            .arm_direct_external_change_watch_in_scope(1400, test_foreground_scope());
+        ps.ime.arm_direct_external_change_watch_in_scope(
+            1400,
+            crate::state::external_change_watch::HoldAdmission::Unknown,
+            test_foreground_scope(),
+        );
         assert_eq!(
             ps.ime.follow_direct_read_in_scope(
                 Some(false),

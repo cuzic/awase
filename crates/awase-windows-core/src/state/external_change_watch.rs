@@ -140,6 +140,12 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
         gone.then_some((w, a.effective_holds))
     }
 
+    /// まだ読みで確かめられていない awase の書き込みの控えがあるか（ログ用）。
+    #[must_use]
+    pub const fn has_pending_awase_write(&self) -> bool {
+        self.pending_write.is_some()
+    }
+
     /// 直接観測の窓へ引き継いだ、まだ確かめられていない awase の書き込み（ログ・テスト用）。窓が無ければ `None`。
     #[must_use]
     pub fn carried_awase_write(&self) -> Option<bool> {
@@ -163,23 +169,33 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
     /// 外部注入の IME キーを見たら呼ぶ。同じスコープの窓が生きていれば基準値を保ったまま延ばす
     /// （延長は最初の arm から `window_ms * 2` までで、窓の寿命は最大でその時点から `window_ms` 後＝`window_ms * 3`）。そうでなければ新しく開き、基準値は直近の読み（同じスコープ）。
     pub fn arm(&mut self, scope: S, now_ms: u64, window_ms: u64) {
-        self.arm_with(scope, now_ms, window_ms, false);
+        self.arm_with(scope, now_ms, window_ms, None);
     }
 
     /// ADR-188: 物理のモードキー通過／FSM 再送出で直接観測の窓を開く。生きている同じスコープの窓があれば Direct に
     /// 格上げして延ばす（基準値は保つ。Direct の窓は基準値を使わない）。
-    pub fn arm_direct(&mut self, scope: S, now_ms: u64, window_ms: u64) {
-        self.arm_with(scope, now_ms, window_ms, true);
+    ///
+    /// `hold_admitted`（ADR-256、[`awase_write_hold_admission`]）: 窓を開いたキーが IME の状態を変えないと確かめられたか。
+    /// `true` のときだけ未確認の awase の書き込みを窓へ引き継ぐ。`false`（役割があるかもしれないキー）なら控えを捨て、
+    /// 生きている窓が引き継いでいた書き込みも解く（そのキーで利用者が IME を変えたかもしれないので、窓内の読みを採る）。
+    pub fn arm_direct(&mut self, scope: S, now_ms: u64, window_ms: u64, hold_admitted: bool) {
+        self.arm_with(scope, now_ms, window_ms, Some(hold_admitted));
     }
 
-    fn arm_with(&mut self, scope: S, now_ms: u64, window_ms: u64, direct: bool) {
+    fn arm_with(&mut self, scope: S, now_ms: u64, window_ms: u64, direct: Option<bool>) {
         // ADR-256: 直接観測の窓の arm（延長を含む）だけが、未確認の awase の書き込みを引き継ぐ（1 回限り）。
-        // 外部注入の監視窓（ADR-205、基準値あり）の arm では控えを取り出さない。
-        let carried = if direct {
-            self.take_pending_write(scope, now_ms, window_ms)
-        } else {
-            None
+        // 外部注入の監視窓（ADR-205、基準値あり、`direct == None`）の arm では控えを取り出さない。
+        // 役割があるかもしれないキーの arm（`Some(false)`）は控えを捨て、引き継いでいた書き込みも解く。
+        let carried = match direct {
+            Some(true) => self.take_pending_write(scope, now_ms, window_ms),
+            Some(false) => {
+                self.pending_write = None;
+                None
+            }
+            None => None,
         };
+        let release = direct == Some(false);
+        let direct = direct.is_some();
         if let Some(a) = self.armed.as_mut() {
             let alive = a.scope == scope && now_ms.saturating_sub(a.last_arm_ms) <= window_ms;
             if alive {
@@ -188,7 +204,7 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
                     .saturating_add(window_ms.saturating_mul(MAX_EXTENSION_FACTOR));
                 a.last_arm_ms = now_ms.min(cap);
                 a.direct |= direct;
-                if carried.is_some() {
+                if carried.is_some() || release {
                     a.awase_write = carried;
                 }
                 return;
@@ -295,6 +311,55 @@ pub struct AwaseWriteConfirm {
 #[must_use]
 pub const fn pending_write_in_flight(same_scope: bool, age_ms: u64, window_ms: u64) -> bool {
     same_scope && age_ms < window_ms
+}
+
+/// ADR-256（所有者決定 2026-10-11「役割のないキーに限定」）: 直接観測の窓を開いたキーについて、未確認の awase の
+/// 書き込みを窓へ引き継いでよいか（保持を効かせてよいか）と、効かせない理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldAdmission {
+    /// GJI の表で、このキー（F13〜F24、無修飾）の行がどこにも無い: キーは IME の状態を変えないので、窓内の「書き込みと逆の値」は
+    /// awase の書き込みが未到達なだけ。保持する。
+    Admitted,
+    /// 表にこのキーの行がある（利用者がこのキーで IME を変えたかもしれない）。
+    KeyHasFunction,
+    /// 修飾付きの打鍵（表の修飾付きの行・IME の既定動作を確かめていない）。
+    Modified,
+    /// GJI 以外（Microsoft IME 本体は F キーの表を読まない）・F13〜F24 以外・表が読めない・overlay・未知の設定。
+    Unknown,
+}
+
+impl HoldAdmission {
+    /// 保持を効かせるか。
+    #[must_use]
+    pub const fn admitted(self) -> bool {
+        matches!(self, Self::Admitted)
+    }
+}
+
+/// [`HoldAdmission`] を決める純関数（ADR-256）。役割を確かめられなければ保持しない（逆向きの筋書き
+/// 〈利用者が役割のあるキーで IME を開いた〉を壊さない側へ倒す）。
+///
+/// - `kind`: 直接観測の窓の IME 種別。GJI だけが対象（Microsoft IME 本体は F キーの表を読まない）。
+/// - `fkey`: GJI の表で、このキーがどこかに行を持つか（`KeyEffectKeymap::gji_fkey_function`。キーマップが読めなければ `None`）。
+/// - `modified`: Shift/Ctrl/Alt/Win のどれかを押したままか。
+#[must_use]
+pub fn awase_write_hold_admission(
+    kind: crate::state::ime_kind::ImeKindId,
+    fkey: Option<awase_gji_config::role::FKeyFunction>,
+    modified: bool,
+) -> HoldAdmission {
+    use awase_gji_config::role::FKeyFunction;
+    if !matches!(kind, crate::state::ime_kind::ImeKindId::Gji) {
+        return HoldAdmission::Unknown;
+    }
+    if modified {
+        return HoldAdmission::Modified;
+    }
+    match fkey {
+        Some(FKeyFunction::NoFunction) => HoldAdmission::Admitted,
+        Some(FKeyFunction::HasFunction) => HoldAdmission::KeyHasFunction,
+        Some(FKeyFunction::Unknown) | None => HoldAdmission::Unknown,
+    }
 }
 
 /// ADR-256（BUG-199）: 直接観測の窓内の読み（`read`）を、窓へ引き継いだ awase の書き込み（`carried`）のために採らないか。
@@ -558,7 +623,7 @@ mod tests {
     fn direct_window_never_closes_and_baseline_observe_is_skipped() {
         let mut w = ExternalChangeWatch::<u32>::new();
         w.record_read(1, Some(true));
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert!(w.direct_live(1, 1030, W));
         // 基準値(true)と違う読みでも、Direct の窓では ADR-205 の差分照合は行わず窓も閉じない。
         assert_eq!(
@@ -573,7 +638,7 @@ mod tests {
     fn baseline_window_is_not_direct_and_direct_wins_when_both_armed() {
         let mut w = armed_after_open_read();
         assert!(!w.direct_live(1, 1010, W));
-        w.arm_direct(1, 1100, W);
+        w.arm_direct(1, 1100, W, true);
         assert!(
             w.direct_live(1, 1110, W),
             "生きている窓へ Direct を足すと格上げ"
@@ -586,10 +651,10 @@ mod tests {
     #[test]
     fn direct_window_expires_and_respects_scope() {
         let mut w = ExternalChangeWatch::<u32>::new();
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert!(!w.direct_live(2, 1010, W), "スコープ違いは破棄");
         let mut w = ExternalChangeWatch::<u32>::new();
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert!(!w.direct_live(1, 1000 + W + 1, W));
         assert_eq!(w.last_arm_ms(), None, "切れた窓は破棄済み");
     }
@@ -598,9 +663,9 @@ mod tests {
     fn last_arm_ms_tracks_re_arm() {
         let mut w = ExternalChangeWatch::<u32>::new();
         assert_eq!(w.last_arm_ms(), None);
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert_eq!(w.last_arm_ms(), Some(1000));
-        w.arm_direct(1, 1100, W);
+        w.arm_direct(1, 1100, W, true);
         assert_eq!(w.last_arm_ms(), Some(1100));
     }
 
@@ -816,7 +881,7 @@ mod tests {
     fn awase_write_before_arm_is_carried_and_held_until_window_expires() {
         let mut w = ExternalChangeWatch::<u32>::new();
         w.note_awase_open_write(1, false, 910);
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert_eq!(w.carried_awase_write(), Some(false));
         for t in [1020, 1080, 1140, 1274] {
             assert_eq!(
@@ -836,7 +901,7 @@ mod tests {
         assert!(!w.direct_live(1, 1301, W));
         assert_eq!(w.carried_awase_write(), None);
         // 控えは 1 回限り（次の窓には引き継がない）。
-        w.arm_direct(1, 1400, W);
+        w.arm_direct(1, 1400, W, true);
         assert_eq!(w.carried_awase_write(), None);
     }
 
@@ -845,7 +910,7 @@ mod tests {
     fn matching_read_in_window_releases_the_carried_write() {
         let mut w = ExternalChangeWatch::<u32>::new();
         w.note_awase_open_write(1, false, 950);
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert_eq!(
             w.confirm_awase_write(1, Some(false)),
             AwaseWriteConfirm {
@@ -872,7 +937,7 @@ mod tests {
                 carried: None
             }
         );
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert_eq!(w.carried_awase_write(), None);
     }
 
@@ -885,7 +950,7 @@ mod tests {
             w.confirm_awase_write(1, Some(true)),
             AwaseWriteConfirm::default()
         );
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert_eq!(w.carried_awase_write(), Some(false));
     }
 
@@ -894,7 +959,7 @@ mod tests {
     fn stale_pending_write_is_not_carried() {
         let mut w = ExternalChangeWatch::<u32>::new();
         w.note_awase_open_write(1, false, 1000 - W);
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert_eq!(w.carried_awase_write(), None);
     }
 
@@ -903,7 +968,7 @@ mod tests {
     fn pending_write_respects_scope() {
         let mut w = ExternalChangeWatch::<u32>::new();
         w.note_awase_open_write(1, false, 950);
-        w.arm_direct(2, 1000, W);
+        w.arm_direct(2, 1000, W, true);
         assert_eq!(w.carried_awase_write(), None);
 
         let mut w = ExternalChangeWatch::<u32>::new();
@@ -912,7 +977,7 @@ mod tests {
             w.confirm_awase_write(2, Some(true)),
             AwaseWriteConfirm::default()
         );
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert_eq!(
             w.carried_awase_write(),
             None,
@@ -932,7 +997,7 @@ mod tests {
             None,
             "ADR-205 の arm では取り出さない"
         );
-        w.arm_direct(1, 1050, W);
+        w.arm_direct(1, 1050, W, true);
         assert_eq!(
             w.carried_awase_write(),
             Some(true),
@@ -940,13 +1005,13 @@ mod tests {
         );
 
         let mut w = ExternalChangeWatch::<u32>::new();
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         w.note_awase_open_write(1, false, 1100);
-        w.arm_direct(1, 1150, W);
+        w.arm_direct(1, 1150, W, true);
         assert_eq!(w.last_arm_ms(), Some(1150));
         assert_eq!(w.carried_awase_write(), Some(false));
         // 延長で控えが無ければ、引き継いだものは変えない。
-        w.arm_direct(1, 1200, W);
+        w.arm_direct(1, 1200, W, true);
         assert_eq!(w.carried_awase_write(), Some(false));
     }
 
@@ -960,7 +1025,7 @@ mod tests {
             w.confirm_awase_write(1, Some(false)),
             AwaseWriteConfirm::default()
         );
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert_eq!(w.carried_awase_write(), Some(true));
     }
 
@@ -970,12 +1035,12 @@ mod tests {
         let mut w = ExternalChangeWatch::<u32>::new();
         w.note_awase_open_write(1, false, 950);
         w.clear_awase_writes();
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         assert_eq!(w.carried_awase_write(), None);
 
         let mut w = ExternalChangeWatch::<u32>::new();
         w.note_awase_open_write(1, false, 950);
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         w.clear_awase_writes();
         assert_eq!(w.carried_awase_write(), None);
         assert!(w.direct_live(1, 1010, W), "窓そのものは残す");
@@ -986,7 +1051,7 @@ mod tests {
     fn expired_unconfirmed_awase_write_reports_effective_holds() {
         let mut w = ExternalChangeWatch::<u32>::new();
         w.note_awase_open_write(1, false, 950);
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         w.note_effective_hold();
         w.note_effective_hold();
         assert_eq!(
@@ -1006,8 +1071,46 @@ mod tests {
         // 確認済みなら出さない。
         let mut w = ExternalChangeWatch::<u32>::new();
         w.note_awase_open_write(1, false, 950);
-        w.arm_direct(1, 1000, W);
+        w.arm_direct(1, 1000, W, true);
         w.confirm_awase_write(1, Some(false));
         assert_eq!(w.expired_unconfirmed_awase_write(1, 1301, W), None);
+    }
+
+    /// 所有者決定（役割のないキーに限定）: 判定の表。GJI × 無修飾 × 行なしだけ保持する。
+    #[test]
+    fn awase_write_hold_admission_table() {
+        use crate::state::ime_kind::ImeKindId::{Gji, MsIme};
+        use awase_gji_config::role::FKeyFunction::{HasFunction, NoFunction, Unknown};
+        for (kind, fkey, modified, want) in [
+            (Gji, Some(NoFunction), false, HoldAdmission::Admitted), // BUG-199 の F18
+            (Gji, Some(HasFunction), false, HoldAdmission::KeyHasFunction), // 逆向きの F17(IME 有効化)
+            (Gji, Some(NoFunction), true, HoldAdmission::Modified),         // Shift+F18 等
+            (Gji, Some(Unknown), false, HoldAdmission::Unknown), // 無変換/変換・overlay・未知の設定
+            (Gji, None, false, HoldAdmission::Unknown),          // キーマップが読めない
+            (MsIme, Some(NoFunction), false, HoldAdmission::Unknown), // MS-IME 本体
+        ] {
+            let got = awase_write_hold_admission(kind, fkey, modified);
+            assert_eq!(got, want, "{kind:?} {fkey:?} modified={modified}");
+            assert_eq!(got.admitted(), want == HoldAdmission::Admitted);
+        }
+    }
+
+    /// 役割があるかもしれないキーで窓を開いたら、控えを引き継がず捨てる。生きている窓の引き継ぎも解く。
+    #[test]
+    fn non_admitted_direct_arm_drops_pending_and_releases_carried() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        w.arm_direct(1, 1000, W, false);
+        assert_eq!(w.carried_awase_write(), None);
+        w.arm_direct(1, 1010, W, true);
+        assert_eq!(w.carried_awase_write(), None, "控えは捨てた");
+
+        let mut w = ExternalChangeWatch::<u32>::new();
+        w.note_awase_open_write(1, false, 950);
+        w.arm_direct(1, 1000, W, true);
+        assert_eq!(w.carried_awase_write(), Some(false));
+        w.arm_direct(1, 1100, W, false);
+        assert_eq!(w.carried_awase_write(), None, "役割のあるキーの延長で解く");
+        assert!(w.direct_live(1, 1150, W));
     }
 }

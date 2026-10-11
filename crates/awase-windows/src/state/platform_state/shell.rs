@@ -113,8 +113,17 @@ impl ImeStateHub {
 
     /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（GJI／同定済み MS-IME 本体 × `Imm32Unavailable`、ADR-188・ADR-244）。現在のフォアグラウンドに
     /// 対する直接観測の窓を開く／延ばす。
-    pub(crate) fn arm_direct_external_change_watch(&mut self, now_ms: u64) {
-        self.arm_direct_external_change_watch_in_scope(now_ms, crate::win32::foreground_scope());
+    /// `hold`: ADR-256 の保持を効かせてよいか（窓を開いたキーの役割の判定、`awase_write_hold_admission`）。
+    pub(crate) fn arm_direct_external_change_watch(
+        &mut self,
+        now_ms: u64,
+        hold: crate::state::external_change_watch::HoldAdmission,
+    ) {
+        self.arm_direct_external_change_watch_in_scope(
+            now_ms,
+            hold,
+            crate::win32::foreground_scope(),
+        );
     }
 
     /// 直接観測の窓の中の prefetch 済みの読みを belief と照合し、食い違う軸へ追随する（ADR-188）。
