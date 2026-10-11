@@ -29,6 +29,8 @@ related_adr:
 
 **実装状況(段階3b、境界 journal の印、2026-10-11)**: 手書きの `[late-keymap]` debug ログ 2 行(発動・見送り)を、`JournalEntry::LateKeymap { record: LateKeymapRecord }`(発動か・`to` のキー数・見送りの理由 `LateKeymapSkip::label`)の記録に置き換えた(ADR-250 段階 4-1 と同じ型。debug のまま、target は `awase::journal`、メッセージの先頭は `[late-keymap]` を維持するので、`architecture_guard` の info 以上の arm の固定表は変えない)。記録するのは `find_late_match` が当たった打鍵だけ(毎打鍵は記録しない)。`KeyEventSummary` に `impersonated`(Alt なりすまし由来)を足した。
 
+**保存→読み込みの確認(段階3b、2026-10-11、GitHub Windows CI、1回)**: 空の設定を設定画面で開き、プリセットボタンを押して Ctrl+S で保存すると、設定ファイルに `[[keymaps]]` の2件(`from = "VK_NONCONVERT"`/`"VK_CONVERT"`、`to = ["VK_SPACE"]`、`ime = "off"`)が書かれ(run 38116671651)、開き直すと2件とも画面に出て、keymap の診断警告は出なかった。実機(awase.exe が保存した設定を読んで Space を出す)は未確認。
+
 ## コンテキスト
 
 ### 報告
