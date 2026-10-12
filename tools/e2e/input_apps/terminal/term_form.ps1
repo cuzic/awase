@@ -1,11 +1,12 @@
-# Windows Terminal 内で動かす「入力を受けて、そのまま {dump} へ書き出す」最小の入力先(typing_stress --form=ext --ext=windows-terminal 用)。
-# コンソールが受け取った文字(IME で確定した結果を含む)を貯め、キーごとに UTF-8 のファイルへ全文を書き直す。
-#   Ctrl+A のあとの Backspace = 全消去(typing_stress の clear が送る操作)。Backspace = 1 文字消す。Enter は無視する。
+# Minimal input target that runs inside Windows Terminal (typing_stress --form=ext --ext=windows-terminal).
+# It collects the characters the console receives (including IME-committed text) and rewrites the whole text to the dump file on every key.
+#   Ctrl+A followed by Backspace = clear all (what typing_stress's clear sends). Backspace = delete one char. Enter is ignored.
+# NOTE: keep this file ASCII-only. Windows PowerShell 5.1 reads a BOM-less UTF-8 file as ANSI, so non-ASCII comments become mojibake.
 param([Parameter(Mandatory = $true)][string]$Dump)
 $enc = New-Object System.Text.UTF8Encoding($false)
 $sb = New-Object System.Text.StringBuilder
 $selectAll = $false
-# 原子的に書く(.tmp へ書いてから置き換える)。読み手が書き込み途中の本文を読まないようにし、共有違反などで落ちないよう数回やり直す。
+# Write atomically (write to .tmp, then replace) so the reader never sees a half-written text; retry a few times on sharing violations.
 function Save {
     $tmp = $Dump + '.tmp'
     for ($i = 0; $i -lt 5; $i++) {
