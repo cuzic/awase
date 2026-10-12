@@ -5,7 +5,7 @@ title: |-
 summary: |-
   要望: IME キーや Ctrl/Alt などを入れ替えたい。現状は ADR-111(Caps⇔Ctrl)・ADR-126(Caps→追加 Ctrl)の2プリセットだけ。所有者判断(2026-10-06): 自由度は「全単射しか作れない」程度でよい。提案: 入れ替えペア `A⇄B` の集合を編集する UI に一般化する(Swap は1ペアとして読む。ADR-126 の片方向だけプリセットに残す)。Opus round1 の指摘で、(1)「awase が書いたエントリの所有を cache.toml に記録する」案は ADR-126 が却下済みで、置き場所としても不適(exe 隣の捨ててよい学習キャッシュ vs HKLM・全ユーザー)なので取り下げ、レジストリを唯一の真実とし全件を表示して、読んだ状態との差分で書く方式に改めた、(2)全単射の保証は awase のペアの中だけで、第三者エントリとの合成(多対一)をマージ関数で検査する、(3)読み戻し失敗時の巻き戻し・昇格側への受け渡しの比較交換・ADR-127 との整合を決定に加えた。ADR-110(hook ベース)は再導入しない。
 status: |-
-  起草(2026-10-06)、設計は Opus 3 ラウンドで収束(`docs/adr/review/230-opus-review-round{1,2,3}.md`)。段階1(純粋関数)・段階2(ADR-127 追記)・段階3(昇格 CLI)は実装済み(PR #501、Opus コードレビュー `230-opus-code-review-round1.md`〈Blocker 1・Should-fix 5〉を反映)。段階4(設定画面の UI。Swap プリセットの廃止を含む)も実装済み(CI の型検査・テストまで。実機での操作確認は未実施)。段階5(適用済み状態の実機確認)は未着手。GJI 側は別 ADR(ADR-231)。
+  起草(2026-10-06)、設計は Opus 3 ラウンドで収束(`docs/adr/review/230-opus-review-round{1,2,3}.md`)。段階1(純粋関数)・段階2(ADR-127 追記)・段階3(昇格 CLI)は実装済み(PR #501、Opus コードレビュー `230-opus-code-review-round1.md`〈Blocker 1・Should-fix 5〉を反映)。段階4(設定画面の UI。Swap プリセットの廃止を含む)も実装済み(CI の型検査・テストまで。実機での操作確認は未実施)。段階5(実機確認)は、WinPE の入れ子 VM で確かめられる範囲を ADR-257 で済ませた(2026-10-11〜12、`scancode-vm-verify`)。実機に残る項目は「実装の段階」5 の一覧。GJI 側は別 ADR(ADR-231)。
 related_adr:
   - "ADR-110"
   - "ADR-111"
@@ -85,7 +85,8 @@ Set 1 スキャンコードを `u16`(上位バイトが E0)で持ち、`u8 + boo
   Ctrl+Alt+Del も入れ替え後の位置で打てる(**推測**: Scancode Map はキーボードクラスドライバで効き、その上の win32k の
   SAS 判定は変換後の値を見るはず。未確認で、実機確認の項目)ので締め出しの危険は低い、と検討済みとして残す。入れ替え後に CapsLock が点いたままログオンすると大文字小文字が分かりにくい点だけ UI に書く。
 - **押しっぱなしにできないキーの懸念は不要**: Scancode Map はキーボードクラスドライバで効き、キーボードレイアウト(JIS の
-  vk 変換)より前に scancode を書き換える。入れ替えた位置のキーは、入れ替え先の scancode のキーとして OS に見える。フック
+  vk 変換)より前に scancode を書き換える(**VM で確認**〈ADR-257〉: 写像は Raw Input の採取点より後・`WM_KEYDOWN` より前で、入れ替え先のスキャンコードと VK でウィンドウに届く。
+  ただし「キーボードクラスドライバで」という層の特定は観測と食い違いうる〈Raw Input の `MakeCode` は写像前〉。効く順序の結論は変わらない)。入れ替えた位置のキーは、入れ替え先の scancode のキーとして OS に見える。フック
   ベースのリマップ(ADR-110)で問題になった「押下状態・Down/Up の非対称」は、この層には当てはまらない(所有者判断 2026-10-06)。
   参考の実測(JIS キーボード1台、フックで 1 秒押しっぱなしを記録): 半角/全角(0x29)・かな(0x70)も押している間 DOWN が繰り返され、
   押し続けられる。半角/全角だけは押下中に DOWN/UP が約 31 ms 周期で交互に出る(vk 0xF3/0xF4、レイアウト層の変換)が、
@@ -246,7 +247,19 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
    親指キーを含むペアの相手だけを変えたときは「位置が変わります」だけを出す(「元に戻ります」と並べない)。Opus コードレビュー(PR #540 round1〈Blocker なし・Should-fix 7〉・round2〈Should-fix 2〉)を反映。ウィンドウを閉じるとき、未適用の変更があれば破棄確認を出す(egui の `close_requested`)。
    **撤去**: `ScancodeMapPreset`/`ScancodeMapSelection`/`current_preset`/`compute_new_entries`/`detect_status`、`--scancode-map` CLI、
    `run_elevated_worker`/`request_elevated_change`/`read_status`(ADR-217。旧 Swap は1ペアとして、旧 CapsAsExtraCtrl はチェックボックスとして読める)。
-5. 実機確認。
+5. 実機確認。**VM で済んだもの**(ADR-257、WinPE の入れ子 Hyper-V VM、`.github/workflows/scancode-vm-verify.yml`。書き込んだバイト列で OS が実際にキーを入れ替えるか):
+   ペア・3循環(両向き・1回だけの適用)・Caps 追加 Ctrl・Caps⇄左 Ctrl・スペース⇄変換・左右 Alt の入れ替え(拡張ビットだけが違う)・JIS キーの3循環・
+   他ツールのエントリを保持したままの書き込み・同じ from の重複(**先勝ち**)。入れ替えた位置のキーは、入れ替え先のスキャンコードと VK でウィンドウ
+   (`WM_KEYDOWN`)に届く。写像は Raw Input の採取点より後で、VK 変換(レイアウト)より前に掛かる(Raw Input の `MakeCode` だけが写像前の値)。
+   **実機に残るもの**(VM では確かめられない。UAC・再起動・実機の HID 経路・日本語配列・awase 本体が要る。clipwire 経由の実機確認を前提にする):
+   - UAC を通した実際の書き込み(昇格 CLI から `HKLM` へ)と、「適用 → 再起動」「適用 → シャットダウン → 電源オン」での効きの違い(ADR-248 Q2、高速スタートアップ)。
+   - **awase の LL フックが見る `scanCode`・`vkCode` が写像後か**(WinPE では LL フックが呼ばれず未検証。Raw Input の `MakeCode` は写像前だった)。写像前なら、
+     親指キーの同定(`vk::thumb_latch_identity`・`should_release_thumb_latch`、スキャンコード+拡張ビット)と VK がずれ、BUG-131/132 型の固着が
+     入れ替えた位置のキーで起きうるので、hook 側の同定を見直す BUG/ADR を起票する(ADR-257 Q5)。
+   - `0x003A` を別キーと入れ替えたときの Shift 分岐(`VK_CAPITAL`)。日本語配列(kbd106)を WinPE に入れられれば VM でも可(未試行)。
+   - Ctrl+Alt+Del(SAS)・ログオン画面・セーフモード・画面キーボード・WinRE でのオフライン削除の手順(ADR-248 Q3)。
+   - Ctrl2cap など kbdclass の UpperFilters ドライバとの重なり(合成順序は、写像が上位で掛かると推定されるが未確認)。
+   - 日本語配列の VK(WinPE は US 配列で、JIS 専用キーの VK は 0xFF 等になるため、スキャンコードまでしか検証していない)。
 
 ## 改訂(ADR-248 段階3、2026-10-11): 3つ以上の循環
 
