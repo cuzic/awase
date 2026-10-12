@@ -5,9 +5,9 @@ title: |-
 summary: |-
   BUG-200: IME が実際は OFF で awase の認識が ON のとき、TsfNative の窓で打った文字が raw TSF リテラル回収の Backspace で消える(実機で人工再現、tsf 形 4/4 で本文が空、IMM の edit 形は英字が残る)。
   回収は「GJI の動きの証拠が無い」ことだけで literal と判定するが、IME が OFF のときも証拠は出ないので区別できない。TsfNative の窓は実 IME の開閉を読めない(himc_null)。
-  決定は2段: D0 で TSF の開閉を実際に読めるかを実機で測る(先)。読めれば D1(閉を観測したら回収せず journal に残す)、読めなければ D2(give-up の Backspace だけの経路を止める)を選ぶ。
+  決定は2段: D0 で TSF の開閉を実際に読めるかを実機で測った(結果: 別プロセスの窓の開閉を読める手段は無い)。よって D2(give-up の Backspace だけの経路を止める)が主たる措置。D1(閉を観測したら回収せず journal に残す)は読み出し口が見つかったときの上乗せ。
 status: |-
-  起草(2026-10-12)。D0(実測)待ち。実装なし。Opus レビュー未実施(D0 の結果で決定が分かれるため、測ってから回す)。
+  起草(2026-10-12)。D0 の (a)(b)(c) を測定し、D1 は採れず D2 が主たる措置と暫定判断(同日)。実装なし。Opus レビュー未実施(D2 の実装前に回す)。
 related_adr:
   - "ADR-246"
   - "ADR-212"
@@ -66,6 +66,19 @@ TsfNative の窓で、**IME を閉じたときに、実 IME の開閉を観測�
 
 結論(暫定): 「観測が閉を示せば回収しない」(D1)は、現状の観測が awase の外からの閉じ方に追随しないため、そのままでは効かない。D1 を採るなら、回収の判定時に開閉を読み直す
 読み出し口((a) か、TsfNative でも使える別の読み)が要る。読み出し口が決まるまで、D2(give-up の Backspace を止める)が、観測に依らず取れる最小の措置。
+
+**D0 (a) の測定(2026-10-12、dragonflyg4、GJI、`compartment_notify_probe --seq=16,close,open,close,1A,16,close --richedit`、awase 停止、n=1 走行・close 3回)**:
+`close`/`open` は既定 IME ウィンドウへの `WM_IME_CONTROL(IMC_SETOPENSTATUS)`(awase も TSF も経由しない閉じ方)。
+
+- **スレッド compartment**(`KEYBOARD_OPENCLOSE`、窓を持つスレッドで読む): `close` に 0〜1ms で通知(`OPENCLOSE=0`)、`open` に 0〜1ms で `=1`、50ms ポーリングで 20〜51ms。IME ON キー(`0x16`)は 1〜6ms。
+  awase の外からの閉じ方にも追随する。**ただし窓を持つスレッドの中でしか読めない**(`ITfThreadMgr` はスレッド単位。awase のプロセスから、別プロセスの Chrome のスレッドの値は読めない)。
+- **大域 compartment**(`ITfThreadMgr::GetGlobalCompartment` 経由、`KEYBOARD_OPENCLOSE`): 取得は成功し、初期値 `Some(0)`。close・open・IME ON キーのいずれでも**一度も変化しなかった**(`GPOLL` が0件)。実際の開閉を反映しない。
+- したがって、awase のプロセスから別プロセスの TsfNative の窓の開閉を TSF の compartment で読む手段は、この測定の範囲では**無い**。
+
+**D0 の結論(暫定)**: D1(閉を観測したら回収しない)は、TsfNative の窓で使える信頼できる読み出し口が無いため、現状では採れない。
+(c) の `IMC_GETOPENSTATUS` は、ハーネスの読みで `false` を返したが、閉じた手段と同じ IMM の経路で、実際の状態との独立な照合は取れていない(Chrome で信頼できるかは未測定)。
+awase が `Imm32Unavailable` の窓で IMM を読まない設計判断は、その信頼性への疑いに基づく。以上から**主たる措置は D2**(観測に依らず、取り返しのつかない削除を避ける)とし、
+D1 は将来、信頼できる読み出し口が見つかったときの上乗せとして残す。
 
 **残りの D0**: (1) (a) の compartment を、`tsf` 形(自プロセスの窓)で、閉じた直後・ON に戻した直後に読む(`typing_stress` に読み出しを足す。`ITfThreadMgr` はスレッド単位のため、窓を作った UI スレッド側で読む)。
 (2) 回収の判定の時点で awase が何を見ているかを知るための診断ログ(`RawTsfLiteralRecovery` アームの直前に、観測の値と古さを `info` で出す。挙動は変えない)。

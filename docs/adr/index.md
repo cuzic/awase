@@ -264,7 +264,7 @@
 | [255](255-ime-off-thumb-key-space.md) | IME OFF のときだけ無変換/変換を Space にする——`[[keymap]]` に `ime = "off"` を足し、エンジンの判断の後に照合する | 改訂 r7(専用設定から `[[keymap]]` 方式へ)。Opus r7 の Must 3 件を反映済み。実装は報告者の回答待ちで保留 |
 | [256](256-direct-follow-awase-write-in-flight-guard.md) | 直接観測の窓で、届く前の awase 自身の開閉の書き込みを窓内の古い読みで覆さない(BUG-199) | 実装(2026-10-11)。役割のないキーに限定(A1′)、本件 25/30→0、回帰不変、逆向きは同じ run の比較で差なし |
 | [257](257-scancode-map-vm-verification.md) | Scancode Map の効きを、GitHub ホスト型 Windows ランナー上の入れ子 VM(WinPE)で実機相当に検証する | 段階1〜3 を実装・反映済み(2026-10-12、PR #617・#618)。12シナリオ PASS、from 重複は先勝ち。残りは連続実行の測定と、実機に残る確認(ADR-230 段階5) |
-| [258](258-raw-tsf-literal-recovery-requires-ime-open-evidence.md) | raw TSF リテラル回収に「IME が開いている」証拠を要求する(BUG-200) | 起草(2026-10-12)。D0(TSF の開閉を実機で測る)待ち。実装なし |
+| [258](258-raw-tsf-literal-recovery-requires-ime-open-evidence.md) | raw TSF リテラル回収に「IME が開いている」証拠を要求する(BUG-200) | 起草(2026-10-12)。D0 を測定し、D2(give-up の Backspace を止める)が主たる措置と暫定判断。実装なし |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
