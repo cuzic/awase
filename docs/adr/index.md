@@ -264,7 +264,7 @@
 | [255](255-ime-off-thumb-key-space.md) | IME OFF のときだけ無変換/変換を Space にする——`[[keymap]]` に `ime = "off"` を足し、エンジンの判断の後に照合する | 改訂 r7(専用設定から `[[keymap]]` 方式へ)。Opus r7 の Must 3 件を反映済み。実装は報告者の回答待ちで保留 |
 | [256](256-direct-follow-awase-write-in-flight-guard.md) | 直接観測の窓で、届く前の awase 自身の開閉の書き込みを窓内の古い読みで覆さない(BUG-199) | 実装(2026-10-11)。役割のないキーに限定(A1′)、本件 25/30→0、回帰不変、逆向きは同じ run の比較で差なし |
 | [257](257-scancode-map-vm-verification.md) | Scancode Map の効きを、GitHub ホスト型 Windows ランナー上の入れ子 VM(WinPE)で実機相当に検証する | 段階1〜3 を実装・反映済み(2026-10-12、PR #617・#618)。12シナリオ PASS、from 重複は先勝ち。残りは連続実行の測定と、実機に残る確認(ADR-230 段階5) |
-| [258](258-raw-tsf-literal-recovery-requires-ime-open-evidence.md) | BUG-200: BUG-074(ADR-227 (i))の追随が実機で効かない — 先に原因を測る | 起草・D0' 実測済み(2026-10-12): 追随は設計どおり働き、残る害は最初の1打鍵の消失。第一候補は ADR-227 (i) を初回の回収まで広げること。実装なし |
+| [258](258-raw-tsf-literal-recovery-requires-ime-open-evidence.md) | BUG-200: BUG-074(ADR-227 (i))の追随が実機で効かない — 先に原因を測る | 起草・D0' 実測済み(2026-10-12): 追随は設計どおり働き、残る害は最初の1打鍵の消失。案 D5(初回から追随を arm し回収を短く保留)、Opus レビュー待ち。実装なし |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

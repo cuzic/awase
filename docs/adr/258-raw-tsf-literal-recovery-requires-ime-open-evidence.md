@@ -7,7 +7,7 @@ summary: |-
   これは BUG-074 / ADR-227 と同じ構成で、ADR-227 (i)(give-up を読み直しのきっかけにして追随する、PR #480、CI 検証済み・実機未検証)が実機で働いていない証拠かもしれない(`[external-change]`・`Engine deactivated` が出ない)。
   初版の D1・D2・D3 は取り下げた。D0' で、追随(ADR-227 (i))は GJI × Imm32Unavailable × 明示意図 ON では実機でも働くと分かった(最初の再現で追随しなかったのは、ハーネスの注入が明示意図に昇格しなかったため)。残る害は、追随の前に最初の1打鍵が回収の Backspace で消えること。第一候補は ADR-227 (i) を初回の回収まで広げること。
 status: |-
-  起草(2026-10-12)。Opus レビュー(重大5件)を受けて改訂し、D0' を実測した(同日): 追随は設計どおり働く。残る害は最初の1打鍵の消失。修正方針の第一候補は ADR-227 (i) を初回の回収まで広げること。実装なし(Opus レビュー前)。
+  起草(2026-10-12)。Opus レビュー(重大5件)を受けて改訂し、D0' を実測した(同日): 追随は設計どおり働く。残る害は最初の1打鍵の消失。修正方針は案 D5(初回の literal 判定でも追随を arm し、回収を追随の読みが終わるまで短く保留する)。実装なし(D5 の Opus レビュー待ち)。
 related_adr:
   - "ADR-227"
   - "ADR-205"
@@ -80,13 +80,31 @@ ADR-227 (i)(PR #480、`900a5f3e`)は「CI 検証済み・実機未検証」の�
 **結論(D0')**: ADR-227 (i) は、GJI × Imm32Unavailable × 明示意図 ON では、実機でも設計どおり働く。BUG-200 の残る害は、**追随が働く前に、最初の1打鍵が回収の Backspace で消える**こと(利用者が「半角英数が消された」と見た現象と合う: 外から IME が閉じられたあとの最初の1語)。
 なお、明示意図が無い場合(IME を物理の ON キーでなく言語バー等で ON にした、など)は (i) の対象外で、追随しない(`no_explicit_intent`)ので、literal の回収は続く。この場合の実害は未測定(Q6)。
 
-### 修正方針(案。D0' の結果を受けて)
+### 修正方針(案 D5): 初回の literal 判定でも追随を arm し、回収を追随の読みが終わるまで短く保留する
 
-最初の1打鍵の消失を減らす。追随(ADR-227 (i))が give-up の約 60〜80ms 後に `open=false` を読めている(= prefetch の読みは、1回目の literal 判定〈1打から約 340ms〉の時点でも閉を示す見込み)ので、
-**1回目の回収(Backspace + 再送)の前にも、GJI × Imm32Unavailable × 明示意図 ON のときだけ、prefetch の読みを確かめる**(ADR-227 (i) を初回まで広げる)案を第一候補にする。
-読みが閉なら、回収せず追随だけ行う(最初の1打鍵は literal のまま画面に残る=打った英数が残る)。読みが開、または読めないときは、従来どおり回収する。
-未決の設計: 回収の判定を遅らせずに読みを間に合わせる方法(読みは非同期で、判定の時点で値が無い場合の扱い)、`GiveUpTracker`・`consecutive_count` との整合、ADR-205 の柵(基準値・focus 世代・明示意図)。
-D3(推論で belief を変える案)は採らない。実装の前に、ADR-227 (i) の改訂として Opus レビューを回す。
+**目的**: 外から IME が閉じられたあとの最初の1打鍵が、追随より前に回収の Backspace で消えるのを防ぐ(D0' の結果。追随自体は give-up の 61〜82ms 後に完了する)。
+
+**案**: 既存の追随(ADR-227 (i))を、2回目(give-up)ではなく**1回目の `SuspectedLiteral`(`consecutive == 0` の回収)から**使う。新しい読みの仕組みは足さない。
+
+1. **条件**(ADR-227 (i) と同じ): GJI × Imm32Unavailable(`external_change_watch_applies`)、プローブ開始時と同じ focus 世代、明示意図 ON(`giveup_follow_decision` が `Arm`)。条件を満たさなければ従来どおり(回収をそのまま予約)。
+2. **arm**: 1回目の `SuspectedLiteral` の verdict で `ir_follow_after_literal_giveup` と同じ手順(`arm_external_change_watch` → 基準値を控える → `schedule_ime_refresh(MODE_KEY_PASS_REREAD_MS)`)を行い、journal に `GiveUpFollow`(`cold_seq`・outcome・基準値)を残す(既存の記録をそのまま使う)。
+3. **保留**: `io.set_raw_literal`(Backspace + 再送の予約)を**即時に確定せず**、保留として持つ。保留の期限は追随の読みが終わるまでの上限 `LITERAL_RECOVERY_HOLD_MS`(実測で決める。D0' の追随は give-up から 61〜82ms、再読みの間隔は `MODE_KEY_PASS_REREAD_MS` = 60ms なので、候補は 80〜150ms。`tuning.rs` の規約どおり実測値と導出を添える。**未測定**)。
+4. **解決**: 保留の期限までに追随が完了して認識が OFF になった(`Engine deactivated` と同じ効き方。`desired_open`/`effective_open` が閉)なら、保留を**捨てる**(Backspace も再送もしない。literal の文字は画面に残る)。journal に `RecoveryDiscarded(FollowedClosed)` を残す。
+   期限が来ても追随が起きなければ、保留を従来どおり確定する(Backspace + 再送)。追随が起きなかった=読みが開(または読めない)なので、cold-start の回収として扱う。
+5. **既存との整合**: 回収の宛先照合(ADR-246、`flush_raw_tsf_literal_recovery` の前景窓・世代の照合)は、保留の確定時にも通す。2回目の give-up の追随(従来の (i))は変えない(保留が捨てられなければ、従来の流れ)。
+
+**検討した別案と、採らなかった理由**
+- 回収の前に同期で `IMC_GETOPENSTATUS` を1回読む: 別プロセスへの `SendMessage` が最大 300ms ブロックしうる(`run_with_timeout` が要る)うえ、(i) の基準値・古い読みの扱い(最初の再読みは GJI の処理前の古い状態を読むことがある、tuning.rs の `MODE_KEY_PASS_REREAD_MS` の導出)を再実装することになる。既存の追随に乗るほうが、規約(`ime-belief-architecture.md`: 観測 → classify → reduce、belief は `follow_external_change` だけが動かす)に収まる。
+- 推論で belief を変える(D3): 取り下げ済み(上)。
+
+**リスクと未決(レビューで見てほしい点)**
+- **cold-start の回収への遅延**: 条件(GJI × Imm32Unavailable × 明示意図 ON)を満たす cold-start の literal 回収が、`LITERAL_RECOVERY_HOLD_MS` だけ遅れる。BUG-002 系の「待ちが足りない」を悪化させないか(回収の再送のタイミングは cold の準備待ちと絡む)。
+- **保留中の打鍵**: probe 中の打鍵は退避キュー(`OUTPUT_GATE`・`pending_deferred`、ADR-156)に入る。追随で Engine が止まったとき、退避中の打鍵はどう流れるか(literal の romaji が漏れる可能性。`flush_stale_deferred_vks_after_recovery` などの解放側との整合)。
+- **世代・カウンタ**: `GiveUpTracker`(`suspected` を2回目で数える)、`consecutive_count`(`FocusChange`/`SetOpenTrue` で 0 に戻る)との相互作用。1回目で arm した追随が、2回目の give-up の追随と二重にならないか(監視窓の再 arm の冪等性)。
+- **誤判定**: 本当は ON で cold-start の最初の literal のとき、追随が(基準値の扱いで)誤って閉を読むと、回収を捨てて文字が literal のまま残り、認識も OFF になる。ADR-205 の柵(基準値・focus 世代・明示意図)が守ってくれるか。D0 で偽陽性 0/30(ADR-227)は 2回目の give-up を契機にした読みで、1回目での偽陽性率は未測定。
+- **実機で測るもの**: (1) 追随が1回目から arm されたときの、arm から `Engine deactivated` までの ms の分布(`LITERAL_RECOVERY_HOLD_MS` の根拠)。(2) 同じ構成で cold-start が本当に ON の窓(実 Chrome の cold)で、保留が捨てられないこと(偽陽性)。この端末では実 Chrome・WT の cold が literal 化しない(上)ので、(2) は `typing_stress --form=tsf` の cold 系(`--cold`・`--idle`)や、`--suspend-proc=GoogleIMEJaRenderer`(ADR-227 の再現手段)で作る。
+
+**テスト(再発ファミリー: IME belief・warmup。`fix-requires-evidence.md` の (a))**: `giveup_follow_decision` と同様に純粋関数へ切り出す(入力: `consecutive`・条件・追随の結果・保留の経過 ms → 出力: 保留を確定/捨てる/待つ)。単体テストで表にする。実機の回帰は `typing_stress --form=tsf --mode=drift-on`(本文が空にならず、`awase.log` に `backspace ×` が出ないこと)。
 
 ## 参考(結論に使わない): 不具合報告 47 件の集計
 
