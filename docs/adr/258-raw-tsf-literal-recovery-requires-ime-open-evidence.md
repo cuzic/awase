@@ -136,6 +136,7 @@ K3 の合格条件(arm 後の閉への追随 0 件、literal 30 回以上)は、
    (belief・監視窓・refresh のパイプラインは通らず、journal にだけ書く。literal の前の読みだけでは、本当に閉じている場面と開いている cold-start の場面を区別できない=Opus レビュー K1)。
    実利用の不具合報告(ADR-095)から、literal が起きたときに `read_after` が `Some(false)`(閉)だった件数を数える。**本当に ON の窓で `Some(false)` が出れば偽陽性**(D5' は採れない)。IME が実際に ON か OFF かは journal からは分からないので、
    `read_after == Some(false)` の件を、同じ報告の `[external-change]` の追随や、利用者の症状(英数が消えた)と突き合わせて読む。
+   読みは前面窓の `hwndFocus` を対象にするので、判定から読みの完了までに focus 世代が変わったら捨てて `first_literal_read_discarded_focus_moved` を残す(別の窓の開閉を集計に入れない)。
    **時点のずれ**: この読みは literal の判定(キーから約 340ms)の直後で、D5' が arm する cold の段の開始時(キーの直後)の約 60〜80ms 後の読みとは約 300ms ずれる。cold の準備が進んだ後の読みなので、D5' の偽陽性率を過小に見積もる側に偏りうる。
 1. 報告の集計で合格したら D5' を実装(純粋関数への切り出し + 単体テスト、M2 のリセット、M4 の journal)。再発ファミリー(IME belief・warmup・defer/replay キューの解放条件)なので、各ファミリーの (a) を満たす。実装の前に Opus レビューを再度回す。
 2. 実機の回帰は `typing_stress --form=tsf --mode=drift-on`(対で書く): 外部クローズ(IME OFF)では**本文 = 送った romaji(例 `ka`)で `backspace ×` が出ない**こと、cold-start の対照(真に ON)では従来どおり `backspace ×` と再送が出ること(片側だけだと「常に捨てる」誤実装も通る)。宛先が変わったとき(ADR-246 `DiscardedStale`)と保留の優先順位(宛先照合が先)も表に入れる。

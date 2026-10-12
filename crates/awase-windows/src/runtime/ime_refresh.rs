@@ -394,6 +394,11 @@ impl Runtime {
     ///   所要 ms を journal にだけ書く(belief・監視窓・refresh のパイプラインは通らない)。literal の前の直近の読み(`last_read`)だけでは、
     ///   本当に閉じている場面と開いている cold-start の場面を区別できない(Opus レビュー K1)ので、後の読みを足した。
     ///   実利用の不具合報告で `read_after` が `Some(false)` かを集計し、D5' の偽陽性(開いているのに閉と読む)が 0 かを確かめる。
+    ///
+    /// 副作用: 読みは前面窓の `hwndFocus` を対象にする(literal の窓と同じとは限らない)ので、判定から読みの完了までに focus 世代が
+    /// 変わったら読みを捨てて `first_literal_read_discarded_focus_moved` を記録する(別の窓の開閉で偽陽性の集計を汚さない)。
+    /// 読みの所要 ms は `send_health`(IME 書き込みのブレーカ)の入力に 1 サンプル足される(`read_ime_state_full` の既存の挙動)。
+    /// belief・キャッシュ・`imm-learning` の miss カウント・actuation のフェンスには書かない。
     pub(crate) fn ir_observe_first_literal(
         &mut self,
         evidence: crate::tsf::literal_facts::FirstLiteralEvidence,
@@ -433,10 +438,24 @@ impl Runtime {
             return;
         }
         let t0 = crate::hook::current_tick_ms();
+        let gen_at_observe = gen_now;
         win32_async::spawn_local(async move {
             let snap = crate::ime::read_ime_state_full_async().await;
             let _ = crate::with_app(|app| {
                 let read_after_ms = crate::hook::current_tick_ms().saturating_sub(t0);
+                if app.platform.output.ime_mode_focus_gen.get() != gen_at_observe {
+                    app.platform_state.ime.journal.record(
+                        crate::journal::JournalEntry::FirstLiteralObserve {
+                            cold_seq,
+                            outcome: "first_literal_read_discarded_focus_moved",
+                            consecutive_before,
+                            last_read,
+                            read_after: None,
+                            read_after_ms: Some(read_after_ms),
+                        },
+                    );
+                    return;
+                }
                 tracing::debug!(
                     "[first-literal-observe] cold={cold_seq} read_after={:?} after {read_after_ms}ms",
                     snap.ime_on
