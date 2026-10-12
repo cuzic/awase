@@ -2,11 +2,20 @@
 # コンソールが受け取った文字(IME で確定した結果を含む)を貯め、キーごとに UTF-8 のファイルへ全文を書き直す。
 #   Ctrl+A のあとの Backspace = 全消去(typing_stress の clear が送る操作)。Backspace = 1 文字消す。Enter は無視する。
 param([Parameter(Mandatory = $true)][string]$Dump)
-$ErrorActionPreference = 'Stop'
 $enc = New-Object System.Text.UTF8Encoding($false)
 $sb = New-Object System.Text.StringBuilder
 $selectAll = $false
-function Save { [IO.File]::WriteAllText($Dump, $sb.ToString(), $enc) }
+# 原子的に書く(.tmp へ書いてから置き換える)。読み手が書き込み途中の本文を読まないようにし、共有違反などで落ちないよう数回やり直す。
+function Save {
+    $tmp = $Dump + '.tmp'
+    for ($i = 0; $i -lt 5; $i++) {
+        try {
+            [IO.File]::WriteAllText($tmp, $sb.ToString(), $enc)
+            Move-Item -LiteralPath $tmp -Destination $Dump -Force -ErrorAction Stop
+            return
+        } catch { Start-Sleep -Milliseconds 20 }
+    }
+}
 Save
 Write-Host 'term_form: type here (awase typing_stress target)'
 while ($true) {

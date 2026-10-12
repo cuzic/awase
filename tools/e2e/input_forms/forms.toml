@@ -273,17 +273,20 @@ raw_control = true
 
 # Windows Terminal(TsfNative 相当の経路: 窓クラス Windows.UI.Input.InputSite.WindowClass)。
 # 中で term_form.ps1 を動かし、受け取った文字を {dump} へ書き出させて読む(端末の画面は UIA で読みにくいため)。
-# 起動は wt.exe(--title と --suppressApplicationTitle で窓を特定する。-w new で既存の窓を使い回さない)。
-# ADR-258 D0(連続 literal の実測)用。実機(dragonflyg4)での使用を想定し、CI の構成には入れていない。
-# 注意: 終了時にハーネスが窓の持ち主のプロセスを閉じる。**clipwire を Windows Terminal の窓の中で動かしていると、同じプロセスに同居して clipwire も落ちる**
-# (2026-10-12 に dragonflyg4 で発生)。実機で使う前に、clipwire を Windows Terminal の外(別のコンソール)で動かすこと。
+# 起動は wt.exe(--title と --suppressApplicationTitle で窓を特定する。-w new で既存の窓を使い回さない)。窓のタイトルは
+# 走行ごとに一意({dump} を含める)にして、前回の残りの窓を掴まない。
+# ADR-258 D0(連続 literal の実測)用。**CI の構成(tsx-ext-*)には入れない**(imes = [] で項目を作らせない。e2e-ime.yml は各項目を
+# imes × intervals で展開するので、空にすれば何も作られない)。実機(dragonflyg4)専用。
+# 終了は close = "wm_close"(窓へ WM_CLOSE だけ。プロセスを殺さない)。Windows Terminal は 1 つのプロセスが利用者の他の窓・
+# シェル・clipwire を持つことがあり、taskkill /F /T だとそれらまで落ちる(2026-10-12 に dragonflyg4 で clipwire が落ちた)。
 [forms.windows-terminal]
 toolkit = "Windows Terminal (WinUI/TSF)"
 setup = "none"
-exe = ["C:/Users/cuzic/AppData/Local/Microsoft/WindowsApps/wt.exe", "C:/Windows/System32/wt.exe"]
-args = ["-w", "new", "--title", "awase-ts-term", "--suppressApplicationTitle", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{repo}/tools/e2e/input_apps/terminal/term_form.ps1", "{dump}"]
-window = { title = "awase-ts-term" }
+exe = ["wt.exe"]
+args = ["-w", "new", "--title", "awase-ts-term {dump}", "--suppressApplicationTitle", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{repo}/tools/e2e/input_apps/terminal/term_form.ps1", "{dump}"]
+window = { title = "awase-ts-term {dump}" }
 any_pid = true
 read = "dump"
 intervals = [20]
-
+imes = []
+close = "wm_close"
