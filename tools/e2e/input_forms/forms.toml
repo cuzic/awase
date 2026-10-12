@@ -282,7 +282,8 @@ raw_control = true
 [forms.windows-terminal]
 toolkit = "Windows Terminal (WinUI/TSF)"
 setup = "none"
-exe = ["wt.exe"]
+# 絶対パスが先(WindowsApps のエイリアスは、Rust の Command が PATH の名前 wt.exe では引けない端末がある)。無ければ PATH の名前へ。
+exe = ["C:/Users/cuzic/AppData/Local/Microsoft/WindowsApps/wt.exe", "wt.exe"]
 args = ["-w", "new", "--title", "awase-ts-term {dump}", "--suppressApplicationTitle", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{repo}/tools/e2e/input_apps/terminal/term_form.ps1", "{dump}"]
 window = { title = "awase-ts-term {dump}" }
 any_pid = true
