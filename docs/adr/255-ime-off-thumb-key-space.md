@@ -373,3 +373,18 @@ ime = "off"
 - 無変換の物理イベントは `scan=0x7B vk=0x1D injected=0`。
 
 **限界(未確認のまま)**: n=1 回。利用者の IME(GJI か MS-IME か)を記録していない。composition 中・belief が外れた窓・TsfNative(Chrome・Windows Terminal)・実 Chrome は未測定。「foo bar」の連続入力での順序は実機では見ていない(CI の `sc-late-space-fast-*` で確認済み)。設定画面で保存した設定を実機の awase が読む通しは、今回は手編集で代えた。検証後に dragonflyg4 の `config.toml` は元に戻した。**決定6(実機確認までリリースに入れない)の条件のうち、物理キーで IME OFF の無変換が Space になる基本動作は満たした。残りを満たすかは所有者の判断。**
+
+### 実機での自動化確認(2026-10-12、dragonflyg4、`typing_stress --mode=lateorder`、人の操作なし)
+
+develop `7812c9df` のビルドで、`[[keymaps]]` の `VK_NONCONVERT`→`VK_SPACE`/`ime = "off"` を設定ファイルに手で追記し、`AWASE_TEST_INJECTION=1` 付きの awase(デバッグビルド。目印付き注入を物理扱いにする)に対して `typing_stress` を走らせた。IME は GJI(`typing_stress` の config 記録 `ime":"gji"`)。`--trials=3 --reps=5 --interval=20`、各形 n=1 回(3試行)。
+
+| 形 | burst(「foo」+無変換+「bar」×5) | hold(押しっぱなし→`x`) |
+| --- | --- | --- |
+| `edit`(自プロセスの Win32 EDIT、IMM32) | 3/3 が `foo bar`×5 と一致 | 3/3 が ` x`(Space 1個) |
+| `tsf`(`RICHEDIT50W`をChrome_RenderWidgetHostHWNDへスーパークラス化、TsfNative 相当) | 3/3 一致 | 3/3 一致 |
+
+- `AWASE_TEST_INJECTION=1` なしでは1回目に Space が1つも出なかった(注入キーは物理扱いにならず `foobar…` のまま)。**この環境変数が要る**ことの対照になる。
+- 実 Chrome(`--form=chromepage`)は、dragonflyg4 で利用者の Chrome が起動済み+scoop 版の起動の癖(shim 経由、サンドボックスの権限エラー)で、起動した pid の Chrome 窓を特定できず `[FATAL]` で終了した。**実 Chrome は未確認のまま**。
+- 前面窓が無い(画面ロック中)と `typing_stress` は注入せず abort する。リモート検証の前に画面のロック解除が要る。
+- **未確認のまま**: composition 中(ADR の決定条件「composition なし」)に無変換を押したとき Space が出ないこと、belief が外れた窓(IME の実際の状態と awase の belief が食い違う窓)、Windows Terminal・実 Chrome、MS-IME、設定画面で保存した設定の読み込み(実機)。`typing_stress` に composition 中の無変換を押す場面(scenario)は無く、足すにはコード変更が要る。
+
