@@ -960,7 +960,7 @@ mod tests {
 
     #[test]
     fn s2_removal_reports_entries_that_may_start_to_take_effect() {
-        // Caps 追加 Ctrl を外すと、同じ from の隠れていた `Caps→変換` が効き出しうる（OS の先勝ち/後勝ちは未確認）。
+        // Caps 追加 Ctrl を外すと、同じ from の隠れていた `Caps→変換` が効き出しうる（同じ from のエントリは OS が先頭のものを効かせる=先勝ち。WinPE の VM で確認、ADR-257・2026-10-11）。
         let existing = vec![
             (CAPS, LCTRL),
             (LALT, HEN),

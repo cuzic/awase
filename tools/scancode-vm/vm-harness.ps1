@@ -17,7 +17,10 @@ param(
   [string] $WorkDir = 'C:\scancode_vm',
   [string] $ShotDir = 'C:\shots',
   # 塊を送り続ける秒数。WinPE の起動は約20秒(スパイクで probe が3塊目から受け取り始めた)ので、75秒は約3.5倍の余裕。足りなければ検証不能になり再試行される。
-  [int] $ChunkSeconds = 75
+  [int] $ChunkSeconds = 75,
+  # 手書きのシナリオ表(入力と期待。ここだけが正)と、本番経路で作ったバイト列の golden(ADR-257 決定10)。
+  [string] $ScenariosFile = "$PSScriptRoot\scenarios.json",
+  [string] $MapsFile = "$PSScriptRoot\scenario-maps.json"
 )
 $ErrorActionPreference = 'Stop'
 $script:verifyExit = 0
@@ -188,7 +191,7 @@ function Get-Chunk($events, [string]$kind, [int]$n) {
 }
 
 # keys: @{ vk; sc; ext } の配列(押すキーと、その写像前のスキャンコード)。expectSc: 各キーを押したときに出るはずのキーのスキャンコード
-#   (verify のとき。手書き。期待の vk は、対照シナリオで測った表 $script:ctrlVk から引く)。kind: verify / observe / control。
+#   (verify のとき。手書き。期待は、対照シナリオで測った表 $script:ctrl(名前→WM の vk, sc, ext)から引く)。kind: verify / observe / control。
 function Invoke-Scenario([string]$name, [string]$kind, [byte[]]$map, $keys, $expectSc) {
   Write-Host "::group::scenario $name ($kind)"
   $wim = "$WorkDir\$name.wim"; $vhdx = "$WorkDir\$name.vhdx"
@@ -259,13 +262,22 @@ function Invoke-Scenario([string]$name, [string]$kind, [byte[]]$map, $keys, $exp
         if ($llC[$i].sc -ne $rawC[$i].make -or $llC[$i].ext -ne $rawC[$i].e0) { $result = 'FAIL'; $detail += ("(b) key{0} LL sc=0x{1:X2}/e{2} != Raw make=0x{3:X2}/e{4}; " -f $i, $llC[$i].sc, $llC[$i].ext, $rawC[$i].make, $rawC[$i].e0) }
         if ($keys[$i].letter -and $llC[$i].vk -ne $keys[$i].vk) { $result = 'FAIL'; $detail += ("(c) key{0} LL vk=0x{1:X2} != 0x{2:X2}; " -f $i, $llC[$i].vk, $keys[$i].vk) }
       }
-      if ($result -eq 'PASS') { for ($i = 0; $i -lt $n; $i++) { $script:ctrlVk[$keys[$i].sc * 2 + $keys[$i].ext] = $llC[$i].vk } }
+      if ($result -eq 'PASS') { for ($i = 0; $i -lt $n; $i++) { $script:ctrl[$keys[$i].name] = [pscustomobject]@{ vk = $llC[$i].vk; sc = $llC[$i].sc; ext = $llC[$i].ext } } }
     } elseif ($kind -eq 'observe') {
       $result = 'OBSERVED'
+      $detail = 'got: ' + ((0..($n - 1) | ForEach-Object { '{0}->vk=0x{1:X2} sc=0x{2:X2} ext={3}' -f $keys[$_].name, $llC[$_].vk, $llC[$_].sc, $llC[$_].ext }) -join '; ')
     } else {
-      $exp = @(); foreach ($sc in $expectSc) { $exp += $script:ctrlVk[$sc * 2] }
+      # 期待(手書きの名前)→ 対照で実測した (vk, スキャンコード, 拡張ビット)。押したキーごとに、WM の3つ組が期待と一致すること。
+      $exp = @(); foreach ($nm in $expectSc) { $exp += $script:ctrl[$nm] }
       if ($exp -contains $null) { $result = 'INCONCLUSIVE'; $detail = 'conditions: 5(対照の表に無いキー)' }
-      elseif (($got -join ',') -ne ($exp -join ',')) { $result = 'FAIL'; $detail = ('expected LL vk=[{0}] got=[{1}]' -f (($exp | ForEach-Object { '0x{0:X2}' -f $_ }) -join ','), (($got | ForEach-Object { '0x{0:X2}' -f $_ }) -join ',')) }
+      else {
+        for ($i = 0; $i -lt $n; $i++) {
+          if ($llC[$i].vk -ne $exp[$i].vk -or $llC[$i].sc -ne $exp[$i].sc -or $llC[$i].ext -ne $exp[$i].ext) {
+            $result = 'FAIL'
+            $detail += ('key{0}({1}) expected vk=0x{2:X2} sc=0x{3:X2} ext={4} got vk=0x{5:X2} sc=0x{6:X2} ext={7}; ' -f $i, $keys[$i].name, $exp[$i].vk, $exp[$i].sc, $exp[$i].ext, $llC[$i].vk, $llC[$i].sc, $llC[$i].ext)
+          }
+        }
+      }
     }
   }
   Write-Host ("RESULT {0}: {1} {2}" -f $name, $result, $detail)
@@ -279,38 +291,33 @@ function Invoke-WithRetry([string]$name, [string]$kind, $map, $keys, $expectSc) 
   return $r
 }
 
-# Scancode Map のバイト列(ヘッダ + 件数+1 + エントリ(to 2バイト, from 2バイト, LE) + 終端)。entries は (from, to) の並び。
-function New-MapBytes([int[][]]$entries) {
-  $b = New-Object System.Collections.Generic.List[byte]
-  $b.AddRange([byte[]](0,0,0,0, 0,0,0,0)); $b.AddRange([BitConverter]::GetBytes([uint32]($entries.Count + 1)))
-  foreach ($e in $entries) { $from = $e[0]; $to = $e[1]; $b.AddRange([BitConverter]::GetBytes([uint16]$to)); $b.AddRange([BitConverter]::GetBytes([uint16]$from)) }
-  $b.AddRange([byte[]](0,0,0,0))
-  return ,$b.ToArray()
+function ConvertTo-Bytes([string]$hex) {
+  $b = New-Object byte[] ($hex.Length / 2)
+  for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [Convert]::ToByte($hex.Substring(2 * $i, 2), 16) }
+  return ,$b
 }
 
-# Q3: Msvm_Keyboard のメソッドの一覧(TypeScancodes があるか)。
+# Msvm_Keyboard のメソッド一覧(Q3、診断)。
 Get-CimClass -Namespace $ns -ClassName Msvm_Keyboard | ForEach-Object { $_.CimClassMethods } | ForEach-Object { Write-Host ('Msvm_Keyboard method: {0}({1})' -f $_.Name, (($_.Parameters | ForEach-Object { $_.Name + ':' + $_.CimType }) -join ', ')) }
 
 New-BaseWim
-$script:ctrlVk = @{}   # (scancode*2+ext) → 対照で測った LL vkCode
-function K([int]$vk, [int]$sc, [int]$ext = 0, [bool]$letter = $false, [bool]$scan = $false) { return [pscustomobject]@{ vk = $vk; sc = $sc; ext = $ext; letter = $letter; scan = $scan } }
-$kA = K 0x41 0x1E 0 $true; $kS = K 0x53 0x1F 0 $true; $kD = K 0x44 0x20 0 $true; $kB = K 0x42 0x30 0 $true
-$A = 0x1E; $S = 0x1F; $D = 0x20; $B = 0x30
+$spec = Get-Content $ScenariosFile -Raw -Encoding UTF8 | ConvertFrom-Json
+$maps = Get-Content $MapsFile -Raw | ConvertFrom-Json
+$script:ctrl = @{}   # キー名 → 対照で測った WM の (vk, sc, ext)
+$byName = @{}
+$controlKeys = @()
+foreach ($k in $spec.control_keys) {
+  $o = [pscustomobject]@{ name = $k.name; vk = [int]$k.vk; sc = [int]$k.sc; ext = [int]$k.ext; letter = [bool]$k.letter; scan = [bool]$k.scan }
+  $byName[$k.name] = $o; $controlKeys += $o
+}
 $results = [ordered]@{}
-# 対照(最初に単独で回す)。写像なしで A,S,D,B を押し、LL の vkCode の表を作る。対照が通らなければ、残りは検証不能にする。
-$results['control'] = Invoke-WithRetry 'control' 'control' $null @($kA, $kS, $kD, $kB) $null
+# 対照(最初に単独で回す)。写像なしで全キーを押し、WM の (vk, sc, ext) の表を作る。対照が通らなければ、残りは検証不能にする。
+$results['control'] = Invoke-WithRetry 'control' 'control' $null $controlKeys $null
 if ($results['control'] -eq 'PASS') {
-  # ペア: A の位置は B を出し、B の位置は A を出す(期待は手書き: A を押すと B のキーが出る)。
-  $results['pair'] = Invoke-WithRetry 'pair' 'verify' (New-MapBytes @(@($A, $B), @($B, $A))) @($kA, $kB) @($B, $A)
-  # 3巡回 A→S→D→A(A の位置は S を、S の位置は D を、D の位置は A を出す)。1回だけの適用なら A→S, S→D, D→A。
-  $results['cycle'] = Invoke-WithRetry 'cycle' 'verify' (New-MapBytes @(@($A, $S), @($S, $D), @($D, $A))) @($kA, $kS, $kD) @($S, $D, $A)
-  # 逆向き: A の位置は D を、D の位置は S を、S の位置は A を出す。
-  $results['cycle-reverse'] = Invoke-WithRetry 'cycle-reverse' 'verify' (New-MapBytes @(@($A, $D), @($D, $S), @($S, $A))) @($kA, $kS, $kD) @($D, $A, $S)
-  # Q3: 送れるキーの範囲。写像なし・期待値なしで、受け取った値を記録するだけ。PressKey の VK(修飾・拡張キー)と、TypeScancodes の生スキャンコード(JIS 専用キー)。
-  $q3pk = @((K 0xA2 0x1D 0), (K 0xA3 0x1D 1), (K 0xA4 0x38 0), (K 0xA5 0x38 1), (K 0x25 0x4B 1))
-  $results['q3-pressk'] = Invoke-Scenario 'q3-pressk' 'observe' $null $q3pk $null
-  $q3sc = @((K 0 0x7B 0 $false $true), (K 0 0x79 0 $false $true), (K 0 0x70 0 $false $true), (K 0 0x29 0 $false $true), (K 0 0x73 0 $false $true), (K 0 0x7D 0 $false $true), (K 0 0x1D 1 $false $true), (K 0 0x38 1 $false $true))
-  $results['q3-scan'] = Invoke-Scenario 'q3-scan' 'observe' $null $q3sc $null
+  foreach ($sc in $spec.scenarios) {
+    $keys = @($sc.press | ForEach-Object { $byName[$_] })
+    $results[$sc.name] = Invoke-WithRetry $sc.name $sc.kind (ConvertTo-Bytes $maps.($sc.name)) $keys @($sc.expect)
+  }
 }
 $results.GetEnumerator() | ForEach-Object { Write-Host "SUMMARY $($_.Key) = $($_.Value)" }
 if ($results.Values -contains 'FAIL') { exit 1 }
