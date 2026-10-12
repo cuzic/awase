@@ -7,7 +7,7 @@ summary: |-
   これは BUG-074 / ADR-227 と同じ構成で、ADR-227 (i)(give-up を読み直しのきっかけにして追随する、PR #480、CI 検証済み・実機未検証)が実機で働いていない証拠かもしれない(`[external-change]`・`Engine deactivated` が出ない)。
   初版の D1・D2・D3 は取り下げた。D0' で、追随(ADR-227 (i))は GJI × Imm32Unavailable × 明示意図 ON では実機でも働くと分かった(最初の再現で追随しなかったのは、ハーネスの注入が明示意図に昇格しなかったため)。残る害は、追随の前に最初の1打鍵が回収の Backspace で消えること。第一候補は ADR-227 (i) を初回の回収まで広げること。
 status: |-
-  起草(2026-10-12)。Opus レビュー(重大5件)を受けて改訂し、D0' を実測した(同日): 追随は設計どおり働く。残る害は最初の1打鍵の消失。修正方針は案 D5(初回の literal 判定でも追随を arm し、回収を追随の読みが終わるまで短く保留する)。実装なし(D5 の Opus レビュー待ち)。
+  起草(2026-10-12)。Opus レビュー(重大5件)を受けて改訂し、D0' を実測した(同日): 追随は設計どおり働く。残る害は最初の1打鍵の消失。修正方針は案 D5'(cold の段の開始時に追随を arm し、判定の時点で閉なら回収しない)。Opus 設計レビュー(条件付き可・K1〜K3)を反映済み。段階0(観測だけ + 偽陽性の測定)が先。実装なし。
 related_adr:
   - "ADR-227"
   - "ADR-205"
@@ -80,31 +80,48 @@ ADR-227 (i)(PR #480、`900a5f3e`)は「CI 検証済み・実機未検証」の�
 **結論(D0')**: ADR-227 (i) は、GJI × Imm32Unavailable × 明示意図 ON では、実機でも設計どおり働く。BUG-200 の残る害は、**追随が働く前に、最初の1打鍵が回収の Backspace で消える**こと(利用者が「半角英数が消された」と見た現象と合う: 外から IME が閉じられたあとの最初の1語)。
 なお、明示意図が無い場合(IME を物理の ON キーでなく言語バー等で ON にした、など)は (i) の対象外で、追随しない(`no_explicit_intent`)ので、literal の回収は続く。この場合の実害は未測定(Q6)。
 
-### 修正方針(案 D5): 初回の literal 判定でも追随を arm し、回収を追随の読みが終わるまで短く保留する
+### 修正方針(案 D5 → D5' を第一候補に。Opus 設計レビュー〈K1〜K3・M1〜M5〉を反映、2026-10-12)
 
-**目的**: 外から IME が閉じられたあとの最初の1打鍵が、追随より前に回収の Backspace で消えるのを防ぐ(D0' の結果。追随自体は give-up の 61〜82ms 後に完了する)。
+**目的(K2 で訂正)**: 外から IME が閉じられたあとの最初の1打鍵が、追随より前に回収の Backspace で**消える**のを、「**消さない(痕跡を残す)**」に変える。
+**直るのは「消えない」まで**で、利用者が打った英数が正しく出るわけではない: 追随で回収を捨てたとき画面に残るのは、エンジン ON で変換済みの NICOLA のローマ字(`ka` など)であり、押した物理キーの英字ではない。
+保留中・probe 中に退避した後続の打鍵も、変換済みの romaji として漏れる(D0' の測定は1打鍵なので見えていない)。退避中の打鍵を元の物理キーとして流し直すかは、別の課題(非目標)。
 
-**案**: 既存の追随(ADR-227 (i))を、2回目(give-up)ではなく**1回目の `SuspectedLiteral`(`consecutive == 0` の回収)から**使う。新しい読みの仕組みは足さない。
+**案 D5(保留)**: 1回目の `SuspectedLiteral` で追随を arm し、`set_raw_literal`(BS + 再送の予約)を追随の読みが終わるまで保留する。保留を捨てるのは「閉への追随」のときだけ。
+**案 D5'(arm の前倒し。M1、第一候補)**: 条件(GJI × Imm32Unavailable × 明示意図 ON)を満たす **cold の段の開始時**に監視窓を arm する。追随の読み(60〜80ms)は literal 判定(キーから約 340ms)より前に終わるので、
+判定の時点で既に閉へ追随していれば回収を出さない。**保留も新しい timer も `LITERAL_RECOVERY_HOLD_MS` も要らず、cold-start の回収は遅れない**(`complexity-budget.md` の観点でも定数が増えない)。
+代わりに arm の回数が cold の段ごとに増える(読みは prefetch で追加の I/O は無い)。`MODE_KEY_PASS_MARK_WINDOW_MS`(300ms)は判定より短いが、閉の読みは最初の再読みで出るので足りる見込み(**未確認**)。段の途中で Engine が止まったときの probe の扱い(`cancel_probe` が走るか)の確認が要る。
 
-1. **条件**(ADR-227 (i) と同じ): GJI × Imm32Unavailable(`external_change_watch_applies`)、プローブ開始時と同じ focus 世代、明示意図 ON(`giveup_follow_decision` が `Arm`)。条件を満たさなければ従来どおり(回収をそのまま予約)。
-2. **arm**: 1回目の `SuspectedLiteral` の verdict で `ir_follow_after_literal_giveup` と同じ手順(`arm_external_change_watch` → 基準値を控える → `schedule_ime_refresh(MODE_KEY_PASS_REREAD_MS)`)を行い、journal に `GiveUpFollow`(`cold_seq`・outcome・基準値)を残す(既存の記録をそのまま使う)。
-3. **保留**: `io.set_raw_literal`(Backspace + 再送の予約)を**即時に確定せず**、保留として持つ。保留の期限は追随の読みが終わるまでの上限 `LITERAL_RECOVERY_HOLD_MS`(実測で決める。D0' の追随は give-up から 61〜82ms、再読みの間隔は `MODE_KEY_PASS_REREAD_MS` = 60ms なので、候補は 80〜150ms。`tuning.rs` の規約どおり実測値と導出を添える。**未測定**)。
-4. **解決**: 保留の期限までに追随が完了して認識が OFF になった(`Engine deactivated` と同じ効き方。`desired_open`/`effective_open` が閉)なら、保留を**捨てる**(Backspace も再送もしない。literal の文字は画面に残る)。journal に `RecoveryDiscarded(FollowedClosed)` を残す。
-   期限が来ても追随が起きなければ、保留を従来どおり確定する(Backspace + 再送)。追随が起きなかった=読みが開(または読めない)なので、cold-start の回収として扱う。
-5. **既存との整合**: 回収の宛先照合(ADR-246、`flush_raw_tsf_literal_recovery` の前景窓・世代の照合)は、保留の確定時にも通す。2回目の give-up の追随(従来の (i))は変えない(保留が捨てられなければ、従来の流れ)。
+**共通の必須事項(実装前に決める)**
 
-**検討した別案と、採らなかった理由**
-- 回収の前に同期で `IMC_GETOPENSTATUS` を1回読む: 別プロセスへの `SendMessage` が最大 300ms ブロックしうる(`run_with_timeout` が要る)うえ、(i) の基準値・古い読みの扱い(最初の再読みは GJI の処理前の古い状態を読むことがある、tuning.rs の `MODE_KEY_PASS_REREAD_MS` の導出)を再実装することになる。既存の追随に乗るほうが、規約(`ime-belief-architecture.md`: 観測 → classify → reduce、belief は `follow_external_change` だけが動かす)に収まる。
-- 推論で belief を変える(D3): 取り下げ済み(上)。
+- **K1 保留の置き場所と解き方(D5 を採る場合)**: 現行は、drain handler(`handle_wm_drain_output_queue`)が `flush_raw_tsf_literal_recovery` を無条件に流し、その後でフックが溜めた打鍵(`INPUT_DEFER`)をエンジンへ流す。保留は「予約ありの flush を、追随の結果が出るまで先送りする」ことになり、
+  (i) **層**: `Output` は belief を読めないので、判断は `state/raw_recovery_plan.rs` の純粋関数(`plan_raw_recovery` を広げる。入力 `{eligible, recorded_at_ms, now_ms, hold_ms, followed_closed_at_ms: Option<u64>}`、出力 `Send / Hold(remaining) / Discard`)にし、
+  runtime が「閉へ追随した」事実を `Output` へ**一方向に入れる**(前例: `platform.set_conv_mode_authority` → `output.set_conv_mutation_allowed`)。
+  (ii) **解く契機が2つ**: 追随が閉へ揃えた直後(runtime が `WM_DRAIN_OUTPUT_QUEUE` を投げ直す)と、期限(timer か `TIMER_TSF_PROBE` の延長)。無いと、予約が `RAW_TSF_LITERAL` に残り、`raw_recovery_owns_deferred()` が真のままで `pending_deferred` が次の打鍵まで解放されない(BUG-38・ADR-123 型)。`DRAIN_PENDING`/`DRAIN_RERUN_PENDING` との再入に注意。
+  (iii) **保留中の打鍵**: `pending_deferred` を通らない出力(素通しの物理キー、`ReinjectKey`、Enter・Space などの確定キー)が、保留中に BS より先に宛先へ届くかは**未確認**。届くと後の BS が別の文字を消す。安全な形は「保留中は `INPUT_DEFER` も流さない(probe の段を延長し `OUTPUT_GATE` を握る)」=保留を probe の FSM の中の段にし、ProbeIo に「閉への追随が起きたか」の事実を渡す。
+  (iv) **解放窓口の表**(再発ファミリー「defer/replay キューの解放条件」): `cancel_probe`・`discard_raw_recovery_if_moved`・`TIMER_TSF_GATE` の `replay_later`・drain-before-send(`drain_pending_deferred_before_send_if_queue_only`)のすべてで、保留中の振る舞いを表にする(**実装前に ADR へ書く**)。
+  D5'(arm の前倒し)なら、この保留の機構が不要になる。
+- **K3 偽陽性の根拠(訂正)**: 初版が引いた ADR-227 の「偽陽性 0/30」は、外部クローズなしの cold で give-up も suspected も 0 件(= 追随が**一度も arm されなかった**)測定で、「arm したときに読みが誤って閉を返す率」ではない。
+  D5/D5' が arm するのは、TSF の文脈が準備できていない最中(cold の段、または literal と判定された時点)で、この時点の GJI × Chrome の `IMC_GETOPENSTATUS` が 1 を返し続けるかは**未測定**(ADR-205 の 1→0 の測定は、閉じる操作の前後の読み)。
+  誤って閉を読むと、回収を捨てるだけでなく、**Engine を止めて明示意図を削除**し(`follow_external_change_in_scope`)、以後は物理キーが ON の IME へ素通しになって化ける。ADR-227 の所有者条件(偽陽性がほぼ 0 と示せること)を満たす測定が要る。
+  **合格条件(数で)**: `typing_stress --form=tsf` の cold の literal を `--suspend-proc=GoogleIMEJaRenderer`(ADR-227 の再現手段)などで N=30 回以上作り(本当に IME は ON)、**arm 後の閉への追随 0 件・`Engine deactivated` 0 件**。この測定を実装より前(または観測だけの段階)に置く。
+  **開く方向の副作用**: 基準値は「同じスコープの直近の読み」(`external_change_watch.rs`)。直近の読みが古い `false`(以前 OFF だった頃)で、その後に物理キーで ON にして一度も読んでいない場合、arm すると `Changed(true)` になり、開く方向へ追随して**明示意図が消える**(`intent_store.remove`)。今まで give-up のときだけだったこの副作用が、arm の頻度とともに広がる。D5/D5' は arm 自体の副作用も評価する。
+- **M2 `consecutive_count`**: `mark_cold_raw_tsf` は判定の時点で +1 し、0 に戻るのは `FocusChange`・`SetOpenTrue`(awase 自身の `SetOpen(true)` の適用だけ)・`CompositionConfirmed`。利用者が物理の ON キーで IME を戻すと `SetOpenTrue` にならず、次の cold literal が `consecutive != 0` の分岐に入って BS だけで文字を失う(BUG-27 追補4 と同形。現行の (i) の追随の後にも同じ穴があるはずだが**未確認**)。
+  追随で回収を捨てたとき、または閉への追随のとき、`reset_consecutive_count` を呼ぶ(`consecutive` のリセット条件に足す)ことを決める。
+- **M3 証拠の入口**: `GiveUpTracker::note_record` は `gave_up && suspected >= 2` でしか証拠を返さない。1回目(D5)の arm には、tracker の外に新しい証拠(`FirstLiteralEvidence { cold_seq, focus_gen }`)を足す(tracker の条件を変えると、`giveup_tracker_tests` と `GiveUpFollow` の意味が変わる)。D5'(段の開始時の arm)は、段の開始の入口が別に要る。
+  focus 世代は tracker が `note_vk_sent` で覚える最初の送信時の世代と同じ値を使える。2回目の give-up の arm は、同じスコープで生きている窓なら基準値を保って延長する(`ExternalChangeWatch::arm_with`、延長の上限は最初の arm から `window_ms * 2`)ので二重の追随にならない(コードで確認済み)。
+- **M4 journal**: 1回目・段開始の arm を `GiveUpFollow` として記録すると、give-up が起きていないのに「give-up 契機」と読めて、報告の集計(`gave_up` で数えるもの)が混ざる。`trigger: first_literal | stage_start | give_up` を足すか、別の variant にする。`RecoveryDiscarded(FollowedClosed)` は新しい variant なので `journal_policy` の notable 判定と replay の扱いを決める。
+- **M5 保留の長さ(D5 のみ)**: 候補 80〜150ms は「give-up から追随まで 61〜82ms」に基づき、1回目の判定の時点の分布は別物(測る前提)。D0' は1試行1打鍵で、利用者は1語続けて打つ(`SkipTyping` 中でも prefetch が走るか、読みの間隔が延びないかを測る条件に入れる。未確認)。
+  `tuning-constants.md` のとおり、実測の ms と導出を添える。再読みの間隔は 60ms(`MODE_KEY_PASS_REREAD_MS`、モードキー直後の古い読み対策)だが、外部クローズはずっと前なので 0〜20ms にできるかも検討する(その場合、上限は prefetch の読みのタイムアウト 50ms + offload から導出)。
 
-**リスクと未決(レビューで見てほしい点)**
-- **cold-start の回収への遅延**: 条件(GJI × Imm32Unavailable × 明示意図 ON)を満たす cold-start の literal 回収が、`LITERAL_RECOVERY_HOLD_MS` だけ遅れる。BUG-002 系の「待ちが足りない」を悪化させないか(回収の再送のタイミングは cold の準備待ちと絡む)。
-- **保留中の打鍵**: probe 中の打鍵は退避キュー(`OUTPUT_GATE`・`pending_deferred`、ADR-156)に入る。追随で Engine が止まったとき、退避中の打鍵はどう流れるか(literal の romaji が漏れる可能性。`flush_stale_deferred_vks_after_recovery` などの解放側との整合)。
-- **世代・カウンタ**: `GiveUpTracker`(`suspected` を2回目で数える)、`consecutive_count`(`FocusChange`/`SetOpenTrue` で 0 に戻る)との相互作用。1回目で arm した追随が、2回目の give-up の追随と二重にならないか(監視窓の再 arm の冪等性)。
-- **誤判定**: 本当は ON で cold-start の最初の literal のとき、追随が(基準値の扱いで)誤って閉を読むと、回収を捨てて文字が literal のまま残り、認識も OFF になる。ADR-205 の柵(基準値・focus 世代・明示意図)が守ってくれるか。D0 で偽陽性 0/30(ADR-227)は 2回目の give-up を契機にした読みで、1回目での偽陽性率は未測定。
-- **実機で測るもの**: (1) 追随が1回目から arm されたときの、arm から `Engine deactivated` までの ms の分布(`LITERAL_RECOVERY_HOLD_MS` の根拠)。(2) 同じ構成で cold-start が本当に ON の窓(実 Chrome の cold)で、保留が捨てられないこと(偽陽性)。この端末では実 Chrome・WT の cold が literal 化しない(上)ので、(2) は `typing_stress --form=tsf` の cold 系(`--cold`・`--idle`)や、`--suspend-proc=GoogleIMEJaRenderer`(ADR-227 の再現手段)で作る。
+**検討した別案**
+- 回収の前に同期で `IMC_GETOPENSTATUS` を1回読む: 別プロセスへの `SendMessage` が最大 300ms ブロックしうる(`run_with_timeout` が要る)うえ、基準値・古い読みの扱いを再実装することになる。
+- 推論で belief を変える(D3): 取り下げ済み。
+- D5(保留)と D5'(arm の前倒し): 上のとおり。**D5' を第一候補**にする(保留・timer・新しい定数が要らず、cold-start の回収を遅らせない)。ただし K3 の測定の結果次第で、arm の頻度が増える害が大きければ D5(1回目で arm)に戻る。
 
-**テスト(再発ファミリー: IME belief・warmup。`fix-requires-evidence.md` の (a))**: `giveup_follow_decision` と同様に純粋関数へ切り出す(入力: `consecutive`・条件・追随の結果・保留の経過 ms → 出力: 保留を確定/捨てる/待つ)。単体テストで表にする。実機の回帰は `typing_stress --form=tsf --mode=drift-on`(本文が空にならず、`awase.log` に `backspace ×` が出ないこと)。
+**進め方(段階)**
+0. **観測だけ**(挙動は変えない): 条件を満たす cold の段で、arm したと仮定したときの prefetch の読み(値・古さ)を `info` ログと journal に残す。`typing_stress --form=tsf` の cold(`--cold`・`--idle`・`--suspend-proc`)で N≥30 回走らせ、K3 の合格条件を数える。
+1. 合格したら D5' を実装(純粋関数への切り出し + 単体テスト、M2 のリセット、M4 の journal)。再発ファミリー(IME belief・warmup・defer/replay キューの解放条件)なので、各ファミリーの (a) を満たす。実装の前に Opus レビューを再度回す。
+2. 実機の回帰は `typing_stress --form=tsf --mode=drift-on`(対で書く): 外部クローズ(IME OFF)では**本文 = 送った romaji(例 `ka`)で `backspace ×` が出ない**こと、cold-start の対照(真に ON)では従来どおり `backspace ×` と再送が出ること(片側だけだと「常に捨てる」誤実装も通る)。宛先が変わったとき(ADR-246 `DiscardedStale`)と保留の優先順位(宛先照合が先)も表に入れる。
 
 ## 参考(結論に使わない): 不具合報告 47 件の集計
 
@@ -119,10 +136,7 @@ R2 の直近 47 件の `journal.json` で `LiteralDetect` の連続 `SuspectedLi
 
 ## 検証計画
 
-1. D0'(上)。結果を本 ADR に追記して修正方針を決める。
-2. 回帰の対照: `typing_stress --form=tsf --mode=drift-on` が、修正後に「本文が空でない(英字が残る)か、追随して Engine が止まる」こと。現状(本文が空、4/4)が対照。CI への構成追加は、D0' で再現の作り方が決まってから。
-3. 純粋関数の単体テスト(`giveup_follow_decision` など、修正に応じて)。再発ファミリー(IME belief・warmup)なので `fix-requires-evidence.md` の (a) を満たす。
-4. 副作用の確認: cold-start の literal 回収(BUG-002 系)が従来どおり働く。
+上の「進め方(段階)」に一本化した(段階0 = 観測だけ + K3 の測定、段階1 = D5' の実装 + 純粋関数の単体テスト + Opus 再レビュー、段階2 = 実機の回帰を対で)。副作用の確認として、cold-start の literal 回収(BUG-002 系)が従来どおり働くことを必ず見る。
 
 ## 未決(Q)
 
