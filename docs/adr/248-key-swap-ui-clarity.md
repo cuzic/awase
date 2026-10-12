@@ -252,3 +252,5 @@ KeyTweak(PCWorld・Softpedia)、Karabiner-Elements(公式 doc・MacRumors)、mac
 GNOME/xkb(opensource.com)、Vial(feedback.vial.today)。ユーザーレビューの一次情報は多くは集められず、
 「ずれ」の表の右列は各ツールの公式 doc・FAQ・紹介記事の要約に基づく「示唆」。画面を直接見ていないツールがある。
 Opus round1(`docs/adr/review/248-opus-review-round1.md`)は出典を開いておらず、表の主張を記憶と突き合わせて「未確認」と評価した。
+
+**Q2 実機の追記(2026-10-12)**: dragonflyg4(高速スタートアップ有効)で、「適用 → 再起動」「適用 → シャットダウン → 電源オン」の両方で適用が反映され、解除も同様に反映された。書き込み直後は効かない。詳細は ADR-230 段階5 の実機確認の節。
