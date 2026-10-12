@@ -513,6 +513,10 @@ mod app {
             POLL.with(|p| {
                 let gmgr = unsafe { thread_mgr.GetGlobalCompartment() }.ok();
                 let glast = gmgr.as_ref().and_then(|g| read_value(g, GUIDS[0]));
+                out(&format!(
+                    "大域 OPENCLOSE: GetGlobalCompartment={} 初期値={glast:?}",
+                    if gmgr.is_some() { "ok" } else { "失敗" }
+                ));
                 *p.borrow_mut() = Some(PollState {
                     cmgr: cmgr.clone(),
                     gmgr,
