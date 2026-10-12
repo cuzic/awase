@@ -55,6 +55,22 @@ TsfNative の窓で、**IME を閉じたときに、実 IME の開閉を観測�
 記録するもの: 閉じてから各読み出しが `false` になるまでの ms、`Some(false)` と `None`(読めない)の別、読みが実際の状態と食い違った回数。
 **API の読みだけで状態を断定しない**(実タイピングの結果と突き合わせる)。
 
+**D0 の途中結果(2026-10-12、dragonflyg4、`typing_stress --form=tsf --mode=drift-on`、GJI、n=4 の1走行分の `awase.log`、13:28:14〜13:28:21Z)**:
+
+- (b) awase の観測(`[external-change]`、`ObserverPoll`): ハーネスが物理の `VK_IME_OFF`/`VK_IME_ON` を押したとき(13:28:14.28 と 14.95)は、押下の約 26〜40ms 後に
+  `open=false`/`open=true` を観測し、`Engine deactivated`/`activated` に切り替えた。**awase を経由しない直接 close**(13:28:16.458、`WM_IME_CONTROL`)のあとは、
+  2 秒以上 `[external-change]` も `Engine deactivated` も出なかった(`drift_on_check` の 500ms・2000ms の時点でも awase は ON のまま)。観測はキー駆動で、awase の外からの閉じ方には追随しない。
+- (c) `IMC_GETOPENSTATUS`(ハーネス側の読み)は `false` を返した(`real_ime_open=false`)が、これは閉じた手段(`WM_IME_CONTROL`)と同じ経路の読みで、実際の状態の独立な確認ではない。
+  awase 側は、この窓(`Chrome_RenderWidgetHostHWND`、`profile=Imm32Unavailable`、`himc_null=true`)では IMM の読みを使わず、回収の判定時のログも `open=-`(読んでいない)。
+- (a) TSF の `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`: **未測定**(下の「残りの D0」)。
+
+結論(暫定): 「観測が閉を示せば回収しない」(D1)は、現状の観測が awase の外からの閉じ方に追随しないため、そのままでは効かない。D1 を採るなら、回収の判定時に開閉を読み直す
+読み出し口((a) か、TsfNative でも使える別の読み)が要る。読み出し口が決まるまで、D2(give-up の Backspace を止める)が、観測に依らず取れる最小の措置。
+
+**残りの D0**: (1) (a) の compartment を、`tsf` 形(自プロセスの窓)で、閉じた直後・ON に戻した直後に読む(`typing_stress` に読み出しを足す。`ITfThreadMgr` はスレッド単位のため、窓を作った UI スレッド側で読む)。
+(2) 回収の判定の時点で awase が何を見ているかを知るための診断ログ(`RawTsfLiteralRecovery` アームの直前に、観測の値と古さを `info` で出す。挙動は変えない)。
+(3) 実 Chrome で、閉じた直後に実際に打って英字が出る(= 本当に OFF)ことを確かめる(awase なし、`--no-awase`)。
+
 ### D1(D0 で閉を読めたとき): 閉を観測したら回収しない
 
 `RawTsfLiteralRecovery` の実行前に、新しい(窓の長さ以内の)観測が `open=false` なら、Backspace も再送もせず、journal に
