@@ -8,6 +8,8 @@
 //!
 //! 使い方: `compartment_notify_probe [--seq=16,1A,F2,F2,1D,1C] [--gap=1500] [--poll=50] [--richedit] [--log=<path>]`
 //!   `--seq`: 注入する VK（16進、カンマ区切り）。既定は IME ON → IME OFF → ひらがな×2 → 無変換 → 変換。
+//!   `--seq` には VK のほかに `close`/`open` を書ける(ADR-258 D0)。`close`/`open` は awase も TSF も経由せず、既定 IME ウィンドウへ
+//!   `WM_IME_CONTROL(IMC_SETOPENSTATUS, 0/1)` を送って実 IME を閉じる/開く(awase の外からの閉じ方の再現)。compartment がこれに追随するかを `NOTIFY`/`POLL` で見る。
 //!   `--gap`: キー間隔(ms)。`--poll`: 比較用に、メインスレッドのタイマーで compartment を読む間隔(ms、0で無効)。
 //!   `--richedit`: 入力欄を素の `EDIT` でなく `RICHEDIT50W` にする。
 //! キーは `SendInput`（`AWASE_TEST_INJECTION=1` の awase が物理キー扱いする目印付き）で注入する。
@@ -105,6 +107,7 @@ mod app {
     };
     use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
         KEYEVENTF_KEYUP, VIRTUAL_KEY,
@@ -119,12 +122,19 @@ mod app {
     use windows::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
         GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, KillTimer, PostMessageW,
-        PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetTimer, ShowWindow,
+        PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow, SetTimer, ShowWindow,
         TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, MSG, SW_SHOW, WM_CLOSE, WM_DESTROY,
         WM_TIMER, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     use super::sink::{name_of, read_value, CompSink, Event, Events};
+
+    /// `--seq` の `close`/`open`(`WM_IME_CONTROL` で実 IME を閉じる/開く)を表す番兵。VK(0x00〜0xFF)と重ならない値。
+    const IMECTL_CLOSE: u32 = 0x1_0000;
+    const IMECTL_OPEN: u32 = 0x1_0001;
+    /// `WM_IME_CONTROL`(0x0283)と、そのサブコマンド `IMC_SETOPENSTATUS`(0x0006)。
+    const WM_IME_CONTROL_MSG: u32 = 0x0283;
+    const IMC_SETOPENSTATUS: usize = 0x0006;
 
     /// スパイク/chrome_probe と同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
     const AUTO_MARKER: usize = awase_windows::hook::TEST_INJECTION_MARKER;
@@ -331,6 +341,17 @@ mod app {
         let seq_arg = arg_value(&args, "--seq=").unwrap_or_else(|| "16,1A,F2,F2,1D,1C".to_string());
         let mut seq: Vec<u32> = Vec::new();
         for tok in seq_arg.split(',') {
+            match tok.trim() {
+                "close" => {
+                    seq.push(IMECTL_CLOSE);
+                    continue;
+                }
+                "open" => {
+                    seq.push(IMECTL_OPEN);
+                    continue;
+                }
+                _ => {}
+            }
             match u32::from_str_radix(tok.trim(), 16) {
                 Ok(v) => seq.push(v),
                 Err(_) => {
@@ -519,6 +540,22 @@ mod app {
                         push("ABORT", format!("vk=0x{vk:02X} の前にフォーカスが外れた"));
                         break 'run;
                     }
+                    if *vk == IMECTL_CLOSE || *vk == IMECTL_OPEN {
+                        let open = usize::from(*vk == IMECTL_OPEN);
+                        push("IMECTL", if open == 1 { "open" } else { "close" }.to_string());
+                        // SAFETY: edit は有効な窓。既定 IME ウィンドウへ WM_IME_CONTROL を同期で送る(別スレッドの窓でも可)。
+                        unsafe {
+                            let ime_wnd = ImmGetDefaultIMEWnd(edit);
+                            let _ = SendMessageW(
+                                ime_wnd,
+                                WM_IME_CONTROL_MSG,
+                                Some(WPARAM(IMC_SETOPENSTATUS)),
+                                Some(LPARAM(open as isize)),
+                            );
+                        }
+                        sleep(gap_ms);
+                        continue;
+                    }
                     push("KEY", format!("0x{vk:02X}"));
                     send_key(*vk, true);
                     sleep(40);
@@ -564,10 +601,14 @@ mod app {
             ));
         }
         out("--- キーごとの遅延(押下→最初の通知/ポーリング検出) ---");
-        for (i, e) in ev.iter().enumerate().filter(|(_, e)| e.kind == "KEY") {
+        for (i, e) in ev
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.kind == "KEY" || e.kind == "IMECTL")
+        {
             let next_key = ev[i + 1..]
                 .iter()
-                .find(|x| x.kind == "KEY")
+                .find(|x| x.kind == "KEY" || x.kind == "IMECTL")
                 .map_or(u128::MAX, |x| x.at_ms);
             let first = |kind: &str| {
                 ev[i + 1..]
@@ -576,7 +617,8 @@ mod app {
                     .map(|x| format!("{}ms ({} {:?})", x.at_ms - e.at_ms, x.name, x.value))
             };
             out(&format!(
-                "KEY {}: NOTIFY={} POLL={}",
+                "{} {}: NOTIFY={} POLL={}",
+                e.kind,
                 e.name,
                 first("NOTIFY").unwrap_or_else(|| "なし".to_string()),
                 first("POLL").unwrap_or_else(|| "なし".to_string())
