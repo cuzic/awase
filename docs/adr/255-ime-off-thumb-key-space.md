@@ -397,3 +397,13 @@ develop `7812c9df` のビルドで、`[[keymaps]]` の `VK_NONCONVERT`→`VK_SPA
 
 **まだ確認していないこと**: belief が OFF なのに実際には composition がある窓(IME の実際の状態と awase の belief が食い違う窓)。この窓を作るには、awase が見ずに IME を ON にする方法(自プロセスの窓の HIMC 操作、`--mode=drift` 系)が要り、別プロセスの入力先では使えない。
 
+### 設定画面で保存した設定の実機での通し・Chrome と Windows Terminal(2026-10-12、dragonflyg4、開発ビルド、所有者の手操作)
+
+所有者が awase-settings(開発ビルド)で「無変換・変換を IME OFF のとき Space にする」のプリセットボタンを押し、Ctrl+S で保存した。設定ファイルには `[[keymaps]]` が2件(`from = "VK_NONCONVERT"`/`"VK_CONVERT"`、`to = ["VK_SPACE"]`、`ime = "off"`)書かれた。awase を再起動して読み込ませ、Chrome(検証ページの入力欄・アドレスバー)と Windows Terminal(cmd)の窓で、IME OFF のとき無変換を押してもらった。
+
+- 所有者の回答: **「空白が入った」**(窓ごとの内訳は聞いていない。Chrome の入力欄・アドレスバー・Windows Terminal のそれぞれで入ったかは、回答の粒度では区別できない)。
+- LL フックの記録: IME OFF で無変換を3回続けて押すと、毎回、注入の Space(`vk=0x20 injected=1 extra=0x4B45594D`)が出た。IME ON のときの無変換は Space ではなく `VK_IME_OFF` の注入になった(従来の動作)。
+- 設定画面で保存 → awase が読む(実機)は、このとおり通った。
+
+**限界**: 窓ごとの結果は未区別。MS-IME・belief が外れた窓は未確認。検証後に `config.toml` は元に戻した。
+
