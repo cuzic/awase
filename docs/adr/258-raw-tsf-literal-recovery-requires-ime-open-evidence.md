@@ -5,9 +5,9 @@ title: |-
 summary: |-
   BUG-200: 外部から実 IME が閉じ belief が ON のままのとき、Imm32Unavailable × GJI の窓で打った文字が raw TSF リテラル回収の Backspace で消える。実機(dragonflyg4)で人工再現(`--form=tsf --mode=drift-on`、本文が空 4/4)。
   これは BUG-074 / ADR-227 と同じ構成で、ADR-227 (i)(give-up を読み直しのきっかけにして追随する、PR #480、CI 検証済み・実機未検証)が実機で働いていない証拠かもしれない(`[external-change]`・`Engine deactivated` が出ない)。
-  初版の D1(別プロセスの開閉を読む手段は無い)・D2・D3 は、窓の種別の取り違えと ADR-227 r1 の撤回理由の見落としで取り下げた。先に、追随(`GiveUpFollow`)が何を出したかを journal で測る(D0')。
+  初版の D1・D2・D3 は取り下げた。D0' で、追随(ADR-227 (i))は GJI × Imm32Unavailable × 明示意図 ON では実機でも働くと分かった(最初の再現で追随しなかったのは、ハーネスの注入が明示意図に昇格しなかったため)。残る害は、追随の前に最初の1打鍵が回収の Backspace で消えること。第一候補は ADR-227 (i) を初回の回収まで広げること。
 status: |-
-  起草(2026-10-12)。Opus レビュー(重大5件)を受けて改訂: 初版の D1・D2・D3 を取り下げ、D0'(`GiveUpFollow` の outcome を取る)に置き換えた。実装なし。journal の取得は未達(ダンプのトリガーが発動しなかった)。
+  起草(2026-10-12)。Opus レビュー(重大5件)を受けて改訂し、D0' を実測した(同日): 追随は設計どおり働く。残る害は最初の1打鍵の消失。修正方針の第一候補は ADR-227 (i) を初回の回収まで広げること。実装なし(Opus レビュー前)。
 related_adr:
   - "ADR-227"
   - "ADR-205"
@@ -63,11 +63,30 @@ ADR-227 (i)(PR #480、`900a5f3e`)は「CI 検証済み・実機未検証」の�
 
 取得方法の候補: (a) journal のダンプ(Alt+変換 → Alt+無変換 → Alt+変換。今回の試行では発動せず、トリガーの条件〈タイムアウト・修飾キーの扱い〉は未確認)、(b) 不具合報告(ADR-095)、(c) `typing_stress` が再現の直後に journal を取る口を足す。
 
-### 修正方針(D0' の結果で決める。いまは決めない)
+### D0' の結果(2026-10-12、dragonflyg4、`typing_stress --form=tsf --mode=drift-on --trials=4`、GJI、awase 開発ビルドを `AWASE_TEST_INJECTION=1` で起動)
 
-- 1 の `stale_focus` なら、再現側の問題(プローブ開始時と focus 世代が違う、など)の可能性がある。**`no_explicit_intent` なら再現側の問題とは言えない**: ハーネスは物理の `VK_IME_ON` を送っており、それで明示意図が付かないなら awase 側の問題(実利用の ON キーでも同じ)になる。いずれも BUG-074 の実機未検証を実機で埋める手順になる。
-- 2 または 3 なら、(i) の穴を直す(例: 初回の回収の前にも prefetch の読みを使う=ADR-227 (i) を初回まで広げる。基準値の扱いの見直し)。これは ADR-227 の改訂として、`ime-belief-architecture.md` の規約に沿って行う。
-- D3 のような「推論で belief を変える」案は採らない。
+`awase.log` の時刻(4試行とも同じ流れ。数字は1試行目 16:44:16〜17 と、4試行の範囲):
+
+1. 明示意図 ON(`[shadow-toggle] ... step="IntentPromoted" ... action="TurnOn"`)のあと、ハーネスが awase を経由せず実 IME を閉じる。
+2. NICOLA 単打1回 → `[key-output] KeyInput(batched): romaji="ka"`。約 340ms 後に `[raw-tsf-literal] ... raw TSF literal suspected → backspace ×1 + re-send "ka"`(1回目の回収)。
+3. 再送した `ka` も literal。約 330ms 後に `consecutive raw-tsf-literal (count=2) → giving up, backs=1 cleanup only (no re-send)`。
+4. **give-up の 61〜82ms 後に `[external-change] ... open=false へ追随` と `Engine deactivated`(ADR-227 (i) が働いた)**。以後の打鍵は素通しになる。
+5. 本文は空(4/4)。**最初の1打鍵(2回の送信ぶん)が、2回の Backspace で消える**。追随より前に消える。
+
+**最初の走行(追随が起きなかった。`awase.log` に `[external-change]` なし)との違い**: その awase は `AWASE_TEST_INJECTION=1` なしで起動しており、ハーネスが注入した `VK_IME_ON` は `step="InjectedNotPromoted"` で、
+明示意図に昇格しなかった。ADR-227 (i) の条件「明示意図が ON のまま」を満たさず(`no_explicit_intent`)、追随しなかった。**初回の走行の「追随しない」は、ハーネス側の条件(環境変数なし)による**。
+(journal のダンプ〈Alt+変換 → Alt+無変換 → Alt+変換を目印付きで注入〉は、この環境でも発動せず、`[mode-key-follow]` の通常の変換/無変換として扱われた。`GiveUpFollow` の outcome を journal から直接読むことはできなかったが、`awase.log` の `[external-change]` の有無で足りた。)
+
+**結論(D0')**: ADR-227 (i) は、GJI × Imm32Unavailable × 明示意図 ON では、実機でも設計どおり働く。BUG-200 の残る害は、**追随が働く前に、最初の1打鍵が回収の Backspace で消える**こと(利用者が「半角英数が消された」と見た現象と合う: 外から IME が閉じられたあとの最初の1語)。
+なお、明示意図が無い場合(IME を物理の ON キーでなく言語バー等で ON にした、など)は (i) の対象外で、追随しない(`no_explicit_intent`)ので、literal の回収は続く。この場合の実害は未測定(Q6)。
+
+### 修正方針(案。D0' の結果を受けて)
+
+最初の1打鍵の消失を減らす。追随(ADR-227 (i))が give-up の約 60〜80ms 後に `open=false` を読めている(= prefetch の読みは、1回目の literal 判定〈1打から約 340ms〉の時点でも閉を示す見込み)ので、
+**1回目の回収(Backspace + 再送)の前にも、GJI × Imm32Unavailable × 明示意図 ON のときだけ、prefetch の読みを確かめる**(ADR-227 (i) を初回まで広げる)案を第一候補にする。
+読みが閉なら、回収せず追随だけ行う(最初の1打鍵は literal のまま画面に残る=打った英数が残る)。読みが開、または読めないときは、従来どおり回収する。
+未決の設計: 回収の判定を遅らせずに読みを間に合わせる方法(読みは非同期で、判定の時点で値が無い場合の扱い)、`GiveUpTracker`・`consecutive_count` との整合、ADR-205 の柵(基準値・focus 世代・明示意図)。
+D3(推論で belief を変える案)は採らない。実装の前に、ADR-227 (i) の改訂として Opus レビューを回す。
 
 ## 参考(結論に使わない): 不具合報告 47 件の集計
 
@@ -89,10 +108,11 @@ R2 の直近 47 件の `journal.json` で `LiteralDetect` の連続 `SuspectedLi
 
 ## 未決(Q)
 
-- Q1: D0' の取得方法(上の (a)〜(c))。ダンプのトリガーが今回発動しなかった理由。
-- Q2: 再現の「ON にそろえる」が実利用の ON キーと同じ明示意図を残すか。
+- Q1(解消): D0' は `awase.log` の `[external-change]` で足りた。journal のダンプ(目印付きの Alt+変換…)が発動しない理由は未確認(重要ではない)。
+- Q2(解消): 物理の ON キーで明示意図が付く(`IntentPromoted`)。環境変数なしの awase ではハーネスの注入は昇格しない(`InjectedNotPromoted`)ので、再現には `AWASE_TEST_INJECTION=1` が要る。
 - Q3: 22:14(JST)の WT の警告と BUG-188(WT では give-up が起きない)の食い違い。
 - Q4: 所有者が自然発生で見た消え方は、本件と同じか。次に起きたら不具合報告(ADR-095)を取る。
+- Q6: 明示意図が無い場合(言語バー等で ON にした)の実害。ADR-227 (i) の対象外。
 - Q5: TsfNative(WT)での開閉の読み出し口(別プロセスへの `IMC_GETOPENSTATUS`、言語バー、入力インジケーターの UIA)。BUG-200 の窓(Imm32Unavailable)には不要。
 
 ## 出典
