@@ -127,6 +127,9 @@ D2 を単独で採ることは**しない**。
 `raw TSF literal suspected`・`giving up` は **0 件**。この端末の実 Chrome は、60 秒アイドルでは cold-start で literal 化せず、連続 literal の最大回数は 0。
 (ADR-193 の「Chrome の cold-start は CI で再現できない」と同じ傾向。手動での同種の試行は、打鍵が `awase.log` に1行も記録されておらず、エンジンが動いていなかったので無効とした。)
 
+**Windows Terminal の cold(2026-10-12、同じ実機、`typing_stress --form=ext --ext=windows-terminal`〈PR で追加〉、`--idle=60000 --trials=4 --len=6`、`profile=TsfNative class=Windows.UI.Input.InputSite.WindowClass`)**:
+4試行とも6文字が期待どおり。`awase.log` は `setopen-per-vk-confirmed`(cold=7〜11、5回)のみで、literal 判定は **0 件**。実 Chrome と同じく、60 秒アイドルの cold では literal 化しなかった。
+
 **Q5 の結論**: cold-start の連続 literal の最大回数は、実測では決められない(再現しない)。N は、利用者の報告の集計(回復した列の最長 3、未回復の列は 3 と 6)に頼るしかない。
 そこで D3 は**観測から始める**(下の「進め方」)。
 
@@ -155,7 +158,7 @@ D2 を単独で採ることは**しない**。
 - Q2: `consecutive == 0` の1回目の Backspace + 再送は、IME が OFF のとき本当に本文を変えないか(再送が literal として戻るだけか)。D0 の実機記録で確かめる。
 - Q3: 実 Chrome・Windows Terminal・MS-IME で同じ消え方をするか(今回は GJI の `tsf` 形だけ)。
 - Q4: 所有者が自然発生で見た消え方は、本件と同じか。次に起きたら不具合報告(ADR-095)を取る。
-- Q5(回答、2026-10-12): D3 の N。実 Chrome の cold(60 秒アイドル×5回)では literal が 0 件で、実測では決まらない。N=4(暫定)で観測から始める。Windows Terminal は未測定。
+- Q5(回答、2026-10-12): D3 の N。実 Chrome・Windows Terminal の cold(60 秒アイドル×各5回)では literal が 0 件で、実測では決まらない。N=4(暫定)で観測から始める。
 
 ## 出典
 
