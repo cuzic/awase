@@ -362,3 +362,14 @@ ime = "off"
 8. MS-IME 本体の無変換/変換の値 0〜3 と「値なし」の既定の効果。確かめるまで `Unknown`(発動しない)のままだが、MS-IME 利用者にも効かせる要望が出たときの測定方法。
 9. 再変換(既定の MS-IME プリセットの変換は `Reconvert`)を Space で上書きしてよいと選べる余地を残すか。今回は GJI のキー設定を CUSTOM にして該当行を消す案内で足りるはずなので入れず、需要が出てから扱う(R4-S1)。
 10. (閉じた)所有者の提案(エンジンへ消費した Down を登録する)は、レビューの追加評価で採ることになった(決定4)。
+
+## 実機確認(2026-10-12、dragonflyg4、実機の HID キーボード、develop `7812c9df` のビルド)
+
+`[[keymaps]]` に `from = "VK_NONCONVERT"`/`to = ["VK_SPACE"]`/`ime = "off"` を設定ファイルへ追記(設定画面は使わず手で編集)して awase を再起動し、LL フックで全打鍵を記録した(PowerShell `Add-Type` の記録専用フック、`CallNextHookEx` に渡す)。IME の切り替えは半角/全角キー(vk=0xF3/0xF4、scan=0x29)。結果:
+
+- IME OFF で無変換を押すと、Down の直後に注入の Space(`vk=0x20 injected=1 extra=0x4B45594D`、Down→Up の対)が1つ出る。ゆっくり1回・素早く3回(間隔約 180ms)とも、1回ごとに Space が1つ。メモ帳でも空白が入った(所有者確認)。
+- IME ON で無変換を押しても Space は出ない。
+- IME OFF で約 1.2 秒押し続けた(Down が約 31ms 間隔で 25 回リピート)間に出た Space は、最初の Down の1つだけ(リピートでは出ない)。離したときに Space の Down/Up は追加されず、押されたままの Space は残らない。
+- 無変換の物理イベントは `scan=0x7B vk=0x1D injected=0`。
+
+**限界(未確認のまま)**: n=1 回。利用者の IME(GJI か MS-IME か)を記録していない。composition 中・belief が外れた窓・TsfNative(Chrome・Windows Terminal)・実 Chrome は未測定。「foo bar」の連続入力での順序は実機では見ていない(CI の `sc-late-space-fast-*` で確認済み)。設定画面で保存した設定を実機の awase が読む通しは、今回は手編集で代えた。検証後に dragonflyg4 の `config.toml` は元に戻した。**決定6(実機確認までリリースに入れない)の条件のうち、物理キーで IME OFF の無変換が Space になる基本動作は満たした。残りを満たすかは所有者の判断。**
