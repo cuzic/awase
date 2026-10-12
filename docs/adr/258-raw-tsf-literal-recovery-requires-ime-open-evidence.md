@@ -107,6 +107,21 @@ D2 を単独で採ることは**しない**。
 - 認識の更新は `.claude/rules/ime-belief-architecture.md` の規約(観測 → 純粋な `classify_*` → `reduce()`)に従い、新しい観測(「連続 literal が N に達した」)として足す。belief の欄へ直接書かない。
 - 未決: N の値(cold-start の実際の最大連続数を、実 Chrome・Windows Terminal の cold 状態で測る)。「OFF に直した」あと、本当は ON の窓(cold-start が N 回を超えて続いた場合)でどう回復するか(次の ON キーで戻る、など)。
 
+**N の根拠になる集計(2026-10-12、R2 の不具合報告、取得できた直近 47 件の `journal.json`、`LiteralDetect` の verdict を `seq` 順に並べた。中身は引用せず数だけ)**:
+
+- verdict の総数: `CompositionConfirmed` 278、`SuspectedLiteral` 29(literal 判定は全体の約 9%)。`SuspectedLiteral` を含む報告は 47 件中 **3 件**。
+- 連続 `SuspectedLiteral`(間に `CompositionConfirmed` を挟まない列)は 9 本:
+
+| 長さ | 本数 | 終わり方 |
+| --- | --- | --- |
+| 2 | 4 | すべて `CompositionConfirmed` で回復 |
+| 3 | 3 | 2 本は回復、1 本は journal の終わりまで回復の記録なし |
+| 6 | 2 | journal の終わりまで回復の記録なし |
+
+- 回復した列の最長は 3。回復しなかった(`open_end`)列は 3 と 6。`open_end` は、本当に回復しなかった場合と、journal の窓(約10分)が切れた場合の両方がありうる。
+- **限界**: 9 本・3 報告と少ない。IME が実際に OFF だった列と、cold-start で ON のまま失敗した列を区別できない(journal は IME の実状態を持たない)。`awase.log` の抜粋では `composition confirmed` の行が0件で、列の終わりは journal からしか分からない。
+- 暫定の読み: N を 4 にすると、回復した列(最長 3)は打ち切らず、長さ 6 の列は打ち切れる。ただし根拠は弱く、**N は 4 を暫定値とし、実 Chrome・Windows Terminal の cold 状態の実測で確定する**(Q5)。
+
 ### 非目標
 
 - awase の認識が実状から外れたままになること自体(drift correction が TsfNative で ON に戻さない件)は、本 ADR では扱わない(ADR-188・ADR-212 の領域)。本 ADR は「外れたときに文字を消さない」だけ。
@@ -126,6 +141,7 @@ D2 を単独で採ることは**しない**。
 - Q2: `consecutive == 0` の1回目の Backspace + 再送は、IME が OFF のとき本当に本文を変えないか(再送が literal として戻るだけか)。D0 の実機記録で確かめる。
 - Q3: 実 Chrome・Windows Terminal・MS-IME で同じ消え方をするか(今回は GJI の `tsf` 形だけ)。
 - Q4: 所有者が自然発生で見た消え方は、本件と同じか。次に起きたら不具合報告(ADR-095)を取る。
+- Q5: D3 の N。上の集計は 9 本と少ない。実 Chrome・Windows Terminal を cold にして打ったときの、連続 literal の最大回数を測る。
 
 ## 出典
 
