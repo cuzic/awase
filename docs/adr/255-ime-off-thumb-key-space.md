@@ -407,3 +407,14 @@ develop `7812c9df` のビルドで、`[[keymaps]]` の `VK_NONCONVERT`→`VK_SPA
 
 **限界**: 窓ごとの結果は未区別。MS-IME・belief が外れた窓は未確認。検証後に `config.toml` は元に戻した。
 
+### 実 Chrome と Windows Terminal での `lateorder`(2026-10-12、dragonflyg4、GJI、開発ビルド `7428362f`、`AWASE_TEST_INJECTION=1`、人の操作なし)
+
+設定ファイルに `VK_NONCONVERT`→`VK_SPACE`/`ime = "off"` を足し、`typing_stress --mode=lateorder --trials=3 --reps=5 --interval=20 --lateorder-key=1D` を、実 Chrome(`--form=chromepage`、scoop 版の実体 `chrome.exe`、ページ内の textarea)と Windows Terminal(`--form=ext --ext=windows-terminal`、`TsfNative`、PR #621 の形)に対して走らせた。各形 n=1 回(3試行)。
+
+| 形 | burst(「foo」+無変換+「bar」×5、20ms) | hold(押しっぱなし→`x`) |
+| --- | --- | --- |
+| 実 Chrome(`chromepage`) | 3/3 が `foo bar`×5 と一致 | 3/3 が ` x`(Space 1個) |
+| Windows Terminal(`ext windows-terminal`) | 3/3 が一致 | 3/3 が一致 |
+
+これで、`edit`・`tsf`・実 Chrome・Windows Terminal の4形で、IME OFF の無変換が連打でも押しっぱなしでも期待どおり Space になることを確認した(GJI)。**残る未確認**: MS-IME(本体は設計上、遅いルールが発動しない)、belief が外れた窓(BUG-200 / ADR-258 で性質を調べた: 追随の前に最初の1打鍵が回収で消える。ADR-255 の遅いルールの範囲外)。検証後に `config.toml` は元に戻した。
+
