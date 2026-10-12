@@ -8,14 +8,20 @@
 //!  - `hold`: key を押したまま KeyDown を 6 回(33ms 間隔、自動リピート相当)送ってから離し、続けて `x` を打つ。
 //!    期待は ` x`(Space が 1 個だけ。押されっぱなしなら `x` の後ろに空白が続く、リピートが漏れれば空白が複数)。
 //!    対照(key=20)は OS の自動リピートの扱いに依存するので、この種別の期待は遅いルールのときだけ意味を持つ。
-//! 記録は `lateorder` 行(判定は check_lateorder.py)。
+//! 追加(`--lateorder-comp`、既定オフ。composition の有無と遅いルールの発動条件 = ADR-255 決定2-6 の実機確認用):
+//!  - `comp_off`: IME ON → `a` を 1 打(未確定文字が出る)→ 物理 OFF(`VK_IME_OFF`)→ key を 1 打。未確定は OFF で確定し、
+//!    その後の key が遅いルールで Space になるはず。期待は「(確定文字) + ` `」(確定文字の中身は問わず、末尾が Space で先頭側が空でない)。
+//!    未確定の印(composing フラグ)が確定後も残ると Space が出ず、確定文字だけになる。
+//!  - `comp_on`: IME ON → `a` を 1 打(未確定文字)→ key を 1 打(belief は ON なので遅いルールは当たらない)→ Enter。
+//!    期待は Space が増えないこと(IME の ON 側の扱いのまま)。対照として本文を記録する。
+//! 記録は `lateorder` 行(判定は check_lateorder.py。`comp_off`/`comp_on` は `--lateorder-comp` のときだけ出る行で、目視で読む)。
 
 use serde_json::json;
 use windows::Win32::Foundation::HWND;
 
 use crate::{
     arg_value, clear_text, focus_ok, press, read_text_maybe_settled, rec, refocus, send_key,
-    sleep_ms, utc_hms,
+    sleep_ms, turn_ime_on, utc_hms, VK_RETURN,
 };
 
 const VK_IME_OFF: u32 = 0x1A;
@@ -51,8 +57,9 @@ pub(crate) fn lateorder_scenario(child: HWND) {
         .unwrap_or(0x1D);
     let kscan = scan_of(key);
     let settle = crate::has_flag("--settle-read");
+    let comp = crate::has_flag("--lateorder-comp");
     rec(
-        &json!({"type":"lateorder_config","key":format!("{key:#x}"),"reps":reps,"interval_ms":iv,"trials":trials}),
+        &json!({"type":"lateorder_config","comp":comp,"key":format!("{key:#x}"),"reps":reps,"interval_ms":iv,"trials":trials}),
     );
     for n in 0..trials {
         if !focus_ok() {
@@ -99,5 +106,35 @@ pub(crate) fn lateorder_scenario(child: HWND) {
         sleep_ms(1500);
         let text = read_text_maybe_settled(child, settle);
         rec(&json!({"type":"lateorder","n":n,"kind":"hold","utc":t0,"expect":" x","text":text}));
+        if comp {
+            // --- comp_off: 未確定 → 物理 OFF(確定)→ key。Space が出るはず ---
+            turn_ime_on(0);
+            clear_text(child);
+            sleep_ms(300);
+            let t0 = utc_hms();
+            press(KEY_A.0, KEY_A.1, 12);
+            sleep_ms(400);
+            press(VK_IME_OFF, 0x70, 50);
+            sleep_ms(1000);
+            press(key, kscan, 12);
+            sleep_ms(1500);
+            let text = read_text_maybe_settled(child, settle);
+            rec(&json!({"type":"lateorder","n":n,"kind":"comp_off","utc":t0,
+                "expect":"(確定文字)+空白","text":text}));
+            // --- comp_on: 未確定 → key(belief は ON、遅いルールは当たらない)→ Enter ---
+            turn_ime_on(0);
+            clear_text(child);
+            sleep_ms(300);
+            let t0 = utc_hms();
+            press(KEY_A.0, KEY_A.1, 12);
+            sleep_ms(400);
+            press(key, kscan, 12);
+            sleep_ms(600);
+            press(VK_RETURN, 0x1C, 50);
+            sleep_ms(1500);
+            let text = read_text_maybe_settled(child, settle);
+            rec(&json!({"type":"lateorder","n":n,"kind":"comp_on","utc":t0,
+                "expect":"(Space は増えない)","text":text}));
+        }
     }
 }
