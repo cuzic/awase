@@ -122,6 +122,20 @@ D2 を単独で採ることは**しない**。
 - **限界**: 9 本・3 報告と少ない。IME が実際に OFF だった列と、cold-start で ON のまま失敗した列を区別できない(journal は IME の実状態を持たない)。`awase.log` の抜粋では `composition confirmed` の行が0件で、列の終わりは journal からしか分からない。
 - 暫定の読み: N を 4 にすると、回復した列(最長 3)は打ち切らず、長さ 6 の列は打ち切れる。ただし根拠は弱く、**N は 4 を暫定値とし、実 Chrome・Windows Terminal の cold 状態の実測で確定する**(Q5)。
 
+**N の実測の試み(2026-10-12、dragonflyg4、GJI、実 Chrome、`typing_stress --form=chromepage --mode=nicola --kinds=single --trials=4 --len=6 --idle=60000`)**:
+各試行の前に 60 秒アイドルして cold にし、NICOLA 単打6文字を注入した。結果: 4試行とも6文字が期待どおり(ゴミ・欠落なし)。`awase.log` には `chrome-per-vk-confirmed`(cold=2〜6、5回)だけで、
+`raw TSF literal suspected`・`giving up` は **0 件**。この端末の実 Chrome は、60 秒アイドルでは cold-start で literal 化せず、連続 literal の最大回数は 0。
+(ADR-193 の「Chrome の cold-start は CI で再現できない」と同じ傾向。手動での同種の試行は、打鍵が `awase.log` に1行も記録されておらず、エンジンが動いていなかったので無効とした。)
+
+**Q5 の結論**: cold-start の連続 literal の最大回数は、実測では決められない(再現しない)。N は、利用者の報告の集計(回復した列の最長 3、未回復の列は 3 と 6)に頼るしかない。
+そこで D3 は**観測から始める**(下の「進め方」)。
+
+**進め方(D3 を一度に入れない)**:
+1. 段階1(観測のみ、挙動は変えない): 連続 literal が N=4 に達した時点を、journal に「もし D3 なら打ち切っていた」印(`LiteralStreakWouldAbandon`)として残す。回収も認識も従来どおり。
+2. 不具合報告・CI(`typing_stress --form=tsf --mode=drift-on` の対照)で、印が出た列が「実際に IME OFF だった」か「cold-start で ON のまま失敗した」かを、本文と突き合わせて確かめる。
+3. 誤判定(cold-start の ON の列に印が出る)が報告に出ないことを確かめてから、段階2(回収の打ち切りと認識の OFF 化)に昇格する。
+(昇格は報告が出てから、という ADR-225/226 の流儀に合わせる。)
+
 ### 非目標
 
 - awase の認識が実状から外れたままになること自体(drift correction が TsfNative で ON に戻さない件)は、本 ADR では扱わない(ADR-188・ADR-212 の領域)。本 ADR は「外れたときに文字を消さない」だけ。
@@ -141,7 +155,7 @@ D2 を単独で採ることは**しない**。
 - Q2: `consecutive == 0` の1回目の Backspace + 再送は、IME が OFF のとき本当に本文を変えないか(再送が literal として戻るだけか)。D0 の実機記録で確かめる。
 - Q3: 実 Chrome・Windows Terminal・MS-IME で同じ消え方をするか(今回は GJI の `tsf` 形だけ)。
 - Q4: 所有者が自然発生で見た消え方は、本件と同じか。次に起きたら不具合報告(ADR-095)を取る。
-- Q5: D3 の N。上の集計は 9 本と少ない。実 Chrome・Windows Terminal を cold にして打ったときの、連続 literal の最大回数を測る。
+- Q5(回答、2026-10-12): D3 の N。実 Chrome の cold(60 秒アイドル×5回)では literal が 0 件で、実測では決まらない。N=4(暫定)で観測から始める。Windows Terminal は未測定。
 
 ## 出典
 
