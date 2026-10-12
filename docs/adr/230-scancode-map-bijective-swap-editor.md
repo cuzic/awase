@@ -253,7 +253,7 @@ CI(windows-latest)は物理キーボードが無く、Scancode Map は再起動�
    (`WM_KEYDOWN`)に届く。写像は Raw Input の採取点より後で、VK 変換(レイアウト)より前に掛かる(Raw Input の `MakeCode` だけが写像前の値)。
    **実機に残るもの**(VM では確かめられない。UAC・再起動・実機の HID 経路・日本語配列・awase 本体が要る。clipwire 経由の実機確認を前提にする):
    - UAC を通した実際の書き込み(昇格 CLI から `HKLM` へ)と、「適用 → 再起動」「適用 → シャットダウン → 電源オン」での効きの違い(ADR-248 Q2、高速スタートアップ)。
-   - **awase の LL フックが見る `scanCode`・`vkCode` が写像後か**(WinPE では LL フックが呼ばれず未検証。Raw Input の `MakeCode` は写像前だった)。写像前なら、
+   - **awase の LL フックが見る `scanCode`・`vkCode` が写像後か**: **済(2026-10-12、dragonflyg4 実機、ADR-257 Q5 追記)。写像後だった**(`Caps→左Ctrl` で Caps が `vk=0xA2 scan=0x1D`)。測ったのは Caps→Ctrl のみで、ペア・3循環・左右 Alt は未測定。以下は写像前だった場合の備え(不要になった)。(旧: WinPE では LL フックが呼ばれず未検証。Raw Input の `MakeCode` は写像前だった)写像前なら、
      親指キーの同定(`vk::thumb_latch_identity`・`should_release_thumb_latch`、スキャンコード+拡張ビット)と VK がずれ、BUG-131/132 型の固着が
      入れ替えた位置のキーで起きうるので、hook 側の同定を見直す BUG/ADR を起票する(ADR-257 Q5)。
    - `0x003A` を別キーと入れ替えたときの Shift 分岐(`VK_CAPITAL`)。日本語配列(kbd106)を WinPE に入れられれば VM でも可(未試行)。
