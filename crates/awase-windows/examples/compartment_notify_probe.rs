@@ -146,6 +146,9 @@ mod app {
     struct PollState {
         cmgr: ITfCompartmentMgr,
         last: [Option<i32>; 3],
+        /// 大域(global)compartment(`ITfThreadMgr::GetGlobalCompartment`)。スレッドをまたいで読める開閉の候補(ADR-258 D0)。
+        gmgr: Option<ITfCompartmentMgr>,
+        glast: Option<i32>,
         t0: Instant,
         events: Events,
     }
@@ -290,6 +293,20 @@ mod app {
             let mut p = p.borrow_mut();
             let Some(p) = p.as_mut() else { return };
             let at_ms = p.t0.elapsed().as_millis();
+            if let Some(gm) = &p.gmgr {
+                let v = read_value(gm, GUIDS[0]);
+                if v != p.glast {
+                    p.glast = v;
+                    if let Ok(mut ev) = p.events.lock() {
+                        ev.push(Event {
+                            at_ms,
+                            kind: "GPOLL",
+                            name: name_of(GUIDS[0]).to_string(),
+                            value: v,
+                        });
+                    }
+                }
+            }
             for (i, g) in GUIDS.iter().enumerate() {
                 let v = read_value(&p.cmgr, g);
                 if v != p.last[i] {
@@ -494,8 +511,12 @@ mod app {
 
         if poll_ms > 0 {
             POLL.with(|p| {
+                let gmgr = unsafe { thread_mgr.GetGlobalCompartment() }.ok();
+                let glast = gmgr.as_ref().and_then(|g| read_value(g, GUIDS[0]));
                 *p.borrow_mut() = Some(PollState {
                     cmgr: cmgr.clone(),
+                    gmgr,
+                    glast,
                     last: [
                         read_value(&cmgr, GUIDS[0]),
                         read_value(&cmgr, GUIDS[1]),
@@ -617,11 +638,12 @@ mod app {
                     .map(|x| format!("{}ms ({} {:?})", x.at_ms - e.at_ms, x.name, x.value))
             };
             out(&format!(
-                "{} {}: NOTIFY={} POLL={}",
+                "{} {}: NOTIFY={} POLL={} GPOLL(大域)={}",
                 e.kind,
                 e.name,
                 first("NOTIFY").unwrap_or_else(|| "なし".to_string()),
-                first("POLL").unwrap_or_else(|| "なし".to_string())
+                first("POLL").unwrap_or_else(|| "なし".to_string()),
+                first("GPOLL").unwrap_or_else(|| "なし".to_string())
             ));
         }
         out("=== 完了 ===");
