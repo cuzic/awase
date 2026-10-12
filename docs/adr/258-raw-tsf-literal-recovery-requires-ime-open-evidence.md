@@ -1,109 +1,101 @@
 ---
 id: ADR-258
 title: |-
-  raw TSF リテラル回収に「IME が開いている」証拠を要求する(BUG-200)
+  BUG-200: BUG-074(ADR-227 (i))の追随が実機で効かない — 先に原因を測る
 summary: |-
-  BUG-200: IME が実際は OFF で awase の認識が ON のとき、TsfNative の窓で打った文字が raw TSF リテラル回収の Backspace で消える(実機で人工再現、tsf 形 4/4 で本文が空、IMM の edit 形は英字が残る)。
-  回収は「GJI の動きの証拠が無い」ことだけで literal と判定するが、IME が OFF のときも証拠は出ないので区別できない。TsfNative の窓は実 IME の開閉を読めない(himc_null)。
-  決定は2段: D0 で TSF の開閉を実際に読めるかを実機で測る(先)。読めれば D1(閉を観測したら回収せず journal に残す)、読めなければ D2(give-up の Backspace だけの経路を止める)を選ぶ。
+  BUG-200: 外部から実 IME が閉じ belief が ON のままのとき、Imm32Unavailable × GJI の窓で打った文字が raw TSF リテラル回収の Backspace で消える。実機(dragonflyg4)で人工再現(`--form=tsf --mode=drift-on`、本文が空 4/4)。
+  これは BUG-074 / ADR-227 と同じ構成で、ADR-227 (i)(give-up を読み直しのきっかけにして追随する、PR #480、CI 検証済み・実機未検証)が実機で働いていない証拠かもしれない(`[external-change]`・`Engine deactivated` が出ない)。
+  初版の D1(別プロセスの開閉を読む手段は無い)・D2・D3 は、窓の種別の取り違えと ADR-227 r1 の撤回理由の見落としで取り下げた。先に、追随(`GiveUpFollow`)が何を出したかを journal で測る(D0')。
 status: |-
-  起草(2026-10-12)。D0(実測)待ち。実装なし。Opus レビュー未実施(D0 の結果で決定が分かれるため、測ってから回す)。
+  起草(2026-10-12)。Opus レビュー(重大5件)を受けて改訂: 初版の D1・D2・D3 を取り下げ、D0'(`GiveUpFollow` の outcome を取る)に置き換えた。実装なし。journal の取得は未達(ダンプのトリガーが発動しなかった)。
 related_adr:
+  - "ADR-227"
+  - "ADR-205"
   - "ADR-246"
   - "ADR-212"
   - "ADR-100"
   - "ADR-188"
 ---
 
-# ADR-258: raw TSF リテラル回収に「IME が開いている」証拠を要求する(BUG-200)
+# ADR-258: BUG-200 — BUG-074(ADR-227 (i))の追随が実機で効かない
 
 ## 背景
 
 所有者の報告(2026-10-12): 「IME OFF・エンジン ON のとき、半角英数を入れると、その英数が消された」。自然発生は再現しなかったが、
-[BUG-200](../known-bugs/BUG-200.md) のとおり実機で人工的に再現でき、同じ時間帯の `awase.log` に同じ回収の警告が残っていた。
+[BUG-200](../known-bugs/BUG-200.md) のとおり実機で人工再現できた。この構成は [BUG-074](../known-bugs/BUG-074.md) / [ADR-227](227-bug074-giveup-as-closed-ime-evidence.md) と同じで、
+ADR-227 (i)(PR #480、`900a5f3e`)は「CI 検証済み・実機未検証」のまま。**BUG-200 は、(i) が実機で働いていない(または効かない条件がある)ことの証拠**として扱う。
 
 ## 事実(`origin/develop` `7812c9df` の開発ビルド、dragonflyg4、GJI、2026-10-12)
 
-- **再現**(各 n=4): `typing_stress --form=tsf --mode=drift-on`。IME を ON にそろえ、ハーネスが awase を経由せず実 IME を閉じる(`WM_IME_CONTROL`)。
-  2 秒待っても `real_ime_open=false`(awase は ON に戻さない)。NICOLA 単打を1回打つと、本文が空(4/4)。同じ手順の `--form=edit`(IMM)は本文 `w`(英字が残る、4/4)。
-- **ログ**(13:28:19Z、`target\debug\awase.log`): `[raw-tsf-literal] ... raw TSF literal suspected → backspace ×1 + re-send "ka" scheduled + mark cold`、
-  続けて `consecutive raw-tsf-literal (count=2..5) → giving up, backs=1 cleanup only (no re-send)`。
-- **判定の仕組み**(`output/probe_io.rs` の `ProbeAction::RawTsfLiteralRecovery` アーム、`tsf/literal_facts.rs::DetectEvidence`): 1打ごとに GJI の動きの証拠
-  (`show_changed`・`candidate_visible`・`write_delta` など)を待ち、無ければ literal と判定する。`consecutive == 0` なら Backspace ×`backs` + romaji 再送、
-  `consecutive != 0`(give-up)は **Backspace だけ(再送なし)**。
-- IME が実際に OFF のときも、GJI の動きは無いので、証拠が無い点は「cold-start で literal 化した」ときと**区別できない**。
-- TsfNative の窓は `himc_null=true`(`[comp-probe]` ログ)で、IMM では実 IME の開閉を読めない。
-- 自然発生の窓ごとの内訳は未確認。同日 22:14(JST)の手動確認の `awase.log` に同じ警告が Chrome(`Chrome_RenderWidgetHostHWND`)と
-  Windows Terminal(`Windows.UI.Input.InputSite.WindowClass`、TsfNative)で出ているが、所有者の消えた文字との対応は取れていない。
-- 関連の既存決定: ADR-246 は回収の**宛先の窓**の照合だけを足した(IME の状態は見ない)。ADR-212 P3 は give-up の reinit(VK_IME_OFF→ON)を撤去し、
-  Backspace だけを残した。ADR-100 決定3 は give-up で romaji が失われることを journal に残す。
+- **再現**(各 n=4、2回走行): `typing_stress --form=tsf --mode=drift-on`。IME を ON にそろえ(ハーネスは物理の `VK_IME_ON` を送る。これで awase に明示意図 ON が付く**はず**だが、設計意図で、確かめていない=Q2)、ハーネスが awase を経由せず実 IME を閉じる(`WM_IME_CONTROL`)。
+  2 秒待っても awase は ON のまま(`[external-change]`・`Engine deactivated` が出ない)。NICOLA 単打1回で本文が空(4/4、2走行とも)。同じ手順の `--form=edit`(IMM)は `w`(英字が残る、4/4)。
+- **窓の種別**: 再現した窓は `Chrome_RenderWidgetHostHWND`、`profile=Imm32Unavailable`、`himc_null=true`(`[comp-probe]`)。**TsfNative ではない**。
+  (初版はこれを TsfNative と書いて混同した。ADR-227 の背景にも、`--form=tsf` の窓は Imm32Unavailable と書いてある。)
+- **ログ**(13:28:19Z): `[raw-tsf-literal] ... raw TSF literal suspected → backspace ×1 + re-send "ka"`、続いて `consecutive raw-tsf-literal (count=2..5) → giving up, backs=1 cleanup only (no re-send)`。
+  give-up は 4 回続いたが、`ir_follow_after_literal_giveup` の結果は `awase.log` に出ない(`GiveUpFollow` は journal にだけ残る)。
+- **開閉の読み**: この窓の種別(`is_tsf_native_window` でない)では、runtime の prefetch が別プロセスの窓へ `IMC_GETOPENSTATUS` を送って開閉を読む(`ime.rs::read_ime_state_full`、ADR-205。GJI では実 Chrome で 1→0 が読めることが測定済み。
+  MS-IME × 実 Chrome は常に 0 で信用できないため除外)。回収のアーム(`probe_io.rs`)自体は読まないが、ADR-227 (i) はこの prefetch の読みで追随する設計。
+- **TsfNative(Windows Terminal)**: ADR-227 の D0-5(BUG-188、run 37237143414)では、外部クローズ後も give-up が起きない(`giveup=0 suspected=0`)。今回の実機で WT の cold に literal は出なかった(下)。
+  22:14(JST)の手動確認の `awase.log` に WT の窓の回収の警告があるが、BUG-188 と食い違い、原因を確かめていない(Q3)。
+- **TSF compartment(この調査で測った。BUG-200 の窓の種別と別の話)**(GJI、自前の RichEdit 窓、`compartment_notify_probe`): `WM_IME_CONTROL` の close/open にスレッド compartment `KEYBOARD_OPENCLOSE` が 0〜1ms で追随(awase の外からの閉じ方でも TSF 側に伝わる=閉じた事実の独立な確認)。
+  大域 compartment(`GetGlobalCompartment`)は取得できるが一度も変化しない(TIP が大域を鏡のように書かないという推測と合うが、GJI の実装は見ていない。**別プロセスの読み出し口が無い証拠にはならない**)。
+  別プロセスの窓への `IMC_GETOPENSTATUS`・言語バー・入力インジケーターの UIA は未測定。
 
-## 問題
+## 初版の D1・D2・D3 の取り下げ
 
-回収は「IME が ON なのに literal 化した」場合のための処理だが、**IME が実際に OFF のとき**にも発動する。そのときの Backspace は、
-ユーザーが打った(OFF なので本来そのまま出てよい)英数を消す。awase の認識が実状から外れる(IME を awase 以外が閉じた)ときにだけ起きるが、
-外れた状態を awase は 2 秒以上続けて ON のままにする(`drift_on_check` で戻らない)ので、窓は短くない。
+- **D1**(「別プロセスの開閉を読める手段は無い」から「閉を観測したら回収しない」が採れない): 窓の種別の取り違えで誤り。Imm32Unavailable × GJI には読み(ADR-205 の prefetch)がある。
+- **D2**(give-up の Backspace を止める): IME が実際に ON の cold-start 失敗で、画面に残ったゴミを掃除できなくなる(所有者の指摘)。
+- **D3**(連続 literal が N 回続いたら回収を打ち切り、認識を OFF に直す): ADR-227 の r1 で撤回された案と同じ形。(i) 明示意図があると観測は belief を動かさない(`effective_open` が意図を優先)、
+  (ii) 否定的証拠(literal の連続)から閉を推論するのは `GjiIoInference` の一方向方針と `.claude/rules/ime-belief-architecture.md` の事故(観測が無いことを根拠に desired を書き換えた)と同型、
+  (iii) TsfNative では閉じた IME でも conv に NATIVE ビットが残り、idle の `ConvOpenInference(true)` が追随を打ち消して振動する(BUG-188 の B1)、(iv) ADR-227 の所有者条件(追随は偽陽性がほぼ 0 と示せること)を満たす測定が無い。
+  また、「連続 literal が打鍵のたびに続く」の根拠にした `count=2..5` は、**試行をまたいだ**増加(各試行は1打)で、「N 文字だけ失う」の見積もりは ADR-227 D0-3(`kaka` が画面に残る)と合わない。
 
-## 決定
+## 決定(案)
 
-### D0: 測る(最初。実装の前に)
+### D0': 追随が何を出したかを測る(最初。実装の前に)
 
-TsfNative の窓で、**IME を閉じたときに、実 IME の開閉を観測で読めるか**を実機で測る。読み出し口の候補:
-(a) TSF の `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`(`tsf/observer/`、compartment の通知は 2〜5ms で届くという既存の実測)、
-(b) `ImeStateHub` の直接観測(ADR-188 の窓の中の読み)、(c) 既定 IME ウィンドウへの `IMC_GETOPENSTATUS`(`startup_typed.real_ime_open_before_type` が使う読み)。
-測る対象は `tsf` 形と実 Chrome(`chromepage`)、IME は GJI(と、可能なら MS-IME)。IME を閉じる方法は、ハーネスの `WM_IME_CONTROL`(今回)と、物理の半角/全角キー。
-記録するもの: 閉じてから各読み出しが `false` になるまでの ms、`Some(false)` と `None`(読めない)の別、読みが実際の状態と食い違った回数。
-**API の読みだけで状態を断定しない**(実タイピングの結果と突き合わせる)。
+同じ再現(`--form=tsf --mode=drift-on`)で、journal の `JournalEntry::GiveUpFollow { outcome, baseline }` と `[external-change]` を取り、(i) が働かなかった理由を次のどれかに絞る:
 
-**D0 の途中結果(2026-10-12、dragonflyg4、`typing_stress --form=tsf --mode=drift-on`、GJI、n=4 の1走行分の `awase.log`、13:28:14〜13:28:21Z)**:
+1. `outcome` が `no_explicit_intent`(「ON にそろえる」の操作が awase に明示意図を残さない)または `stale_focus`(プローブ開始時と focus 世代が違う)。
+2. 追随を arm したが、読み直しの読みが閉を示さなかった(基準値が既に 0 で `Changed` にならない、など。ADR-205 の基準値の扱い)。
+3. 追随したが、次の試行の「ON にそろえる」で戻され、また literal になった。
+4. `GiveUpFollow` が**1件も出ない**。コードの読みでは、試行1で1件、世代が変わらなければ試行3でもう1件出るはず(実ログは未確認)。0件なら、give-up の証拠を作る側の配線(`take_giveup_evidence`・`GiveUpTracker`)か、focus 世代の扱いの問題で、(i) の前段が働いていない。
 
-- (b) awase の観測(`[external-change]`、`ObserverPoll`): ハーネスが物理の `VK_IME_OFF`/`VK_IME_ON` を押したとき(13:28:14.28 と 14.95)は、押下の約 26〜40ms 後に
-  `open=false`/`open=true` を観測し、`Engine deactivated`/`activated` に切り替えた。**awase を経由しない直接 close**(13:28:16.458、`WM_IME_CONTROL`)のあとは、
-  2 秒以上 `[external-change]` も `Engine deactivated` も出なかった(`drift_on_check` の 500ms・2000ms の時点でも awase は ON のまま)。観測はキー駆動で、awase の外からの閉じ方には追随しない。
-- (c) `IMC_GETOPENSTATUS`(ハーネス側の読み)は `false` を返した(`real_ime_open=false`)が、これは閉じた手段(`WM_IME_CONTROL`)と同じ経路の読みで、実際の状態の独立な確認ではない。
-  awase 側は、この窓(`Chrome_RenderWidgetHostHWND`、`profile=Imm32Unavailable`、`himc_null=true`)では IMM の読みを使わず、回収の判定時のログも `open=-`(読んでいない)。
-- (a) TSF の `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`: **未測定**(下の「残りの D0」)。
+取得方法の候補: (a) journal のダンプ(Alt+変換 → Alt+無変換 → Alt+変換。今回の試行では発動せず、トリガーの条件〈タイムアウト・修飾キーの扱い〉は未確認)、(b) 不具合報告(ADR-095)、(c) `typing_stress` が再現の直後に journal を取る口を足す。
 
-結論(暫定): 「観測が閉を示せば回収しない」(D1)は、現状の観測が awase の外からの閉じ方に追随しないため、そのままでは効かない。D1 を採るなら、回収の判定時に開閉を読み直す
-読み出し口((a) か、TsfNative でも使える別の読み)が要る。読み出し口が決まるまで、D2(give-up の Backspace を止める)が、観測に依らず取れる最小の措置。
+### 修正方針(D0' の結果で決める。いまは決めない)
 
-**残りの D0**: (1) (a) の compartment を、`tsf` 形(自プロセスの窓)で、閉じた直後・ON に戻した直後に読む(`typing_stress` に読み出しを足す。`ITfThreadMgr` はスレッド単位のため、窓を作った UI スレッド側で読む)。
-(2) 回収の判定の時点で awase が何を見ているかを知るための診断ログ(`RawTsfLiteralRecovery` アームの直前に、観測の値と古さを `info` で出す。挙動は変えない)。
-(3) 実 Chrome で、閉じた直後に実際に打って英字が出る(= 本当に OFF)ことを確かめる(awase なし、`--no-awase`)。
+- 1 の `stale_focus` なら、再現側の問題(プローブ開始時と focus 世代が違う、など)の可能性がある。**`no_explicit_intent` なら再現側の問題とは言えない**: ハーネスは物理の `VK_IME_ON` を送っており、それで明示意図が付かないなら awase 側の問題(実利用の ON キーでも同じ)になる。いずれも BUG-074 の実機未検証を実機で埋める手順になる。
+- 2 または 3 なら、(i) の穴を直す(例: 初回の回収の前にも prefetch の読みを使う=ADR-227 (i) を初回まで広げる。基準値の扱いの見直し)。これは ADR-227 の改訂として、`ime-belief-architecture.md` の規約に沿って行う。
+- D3 のような「推論で belief を変える」案は採らない。
 
-### D1(D0 で閉を読めたとき): 閉を観測したら回収しない
+## 参考(結論に使わない): 不具合報告 47 件の集計
 
-`RawTsfLiteralRecovery` の実行前に、新しい(窓の長さ以内の)観測が `open=false` なら、Backspace も再送もせず、journal に
-`Skipped(ImeClosedObserved)` を残す。観測が `None`(読めない)のときは現行どおり回収する(読めない窓でのこれまでの挙動を変えない)。
-判断は純粋関数にする(`LiteralDetectFsm` の `emit_recovery_actions` の入力に「観測の開閉」を足す。`output/probe_io.rs` は Facts を渡すだけ)。
+R2 の直近 47 件の `journal.json` で `LiteralDetect` の連続 `SuspectedLiteral` を数えた(列 9 本、3 報告。回復した列の最長 3、未回復 3 と 6)。
+**この集計は N の根拠にならない**: `journal_policy.rs::literal_detect_is_notable` が、普通の `CompositionConfirmed` を journal に書かない(`suppressed_confirms` に数だけ入る)ので、比率(約 9%)は意味を持たない。
+`consecutive_count` は `FocusChange`/`SetOpenTrue` で 0 に戻り、集計の「列」とは定義が違う。標本は実質 3 報告程度で、N=4 で回復列と未回復列を分けられたのは偶然。IME が実際に OFF だったか否かも journal からは分からない。
 
-### D2(D0 で閉を読めないとき): give-up の Backspace だけの経路を止める
+## 実機の cold の実測(参考)
 
-`consecutive != 0`(give-up)の「Backspace だけ(再送なし)」は、正しく literal 化していた場合も文字を失うだけで回復しない(再送が無いため)。
-IME の状態が分からないなら、**取り返しのつかない削除を避ける**側に倒し、give-up では Backspace を送らず journal に残すだけにする。
-`consecutive == 0` の1回目(Backspace + 再送)は変えない(再送で本文が戻るため、IME が OFF でも英字が重なるだけで文字は失われない見込み。D0 の記録で確かめる)。
-
-### 非目標
-
-- awase の認識が実状から外れたままになること自体(drift correction が TsfNative で ON に戻さない件)は、本 ADR では扱わない(ADR-188・ADR-212 の領域)。本 ADR は「外れたときに文字を消さない」だけ。
-- 回収そのものの撤去(ADR-212 の方向)は、Chrome の cold-start literal(BUG-002 系)への影響を測っていないので扱わない。
+実 Chrome(`chromepage`)と Windows Terminal(`--form=ext --ext=windows-terminal`)で、60 秒アイドル後の NICOLA 単打 6 文字 × 4 試行は、ゴミ・欠落なし。`awase.log` は `*-per-vk-confirmed`(cold=2〜6 と 7〜11)のみで、literal 判定は 0 件。
+この端末では cold-start の literal を再現できないため(ADR-193 と同じ傾向)、連続 literal の長さは実測できない。
 
 ## 検証計画
 
-1. D0 の実測(上)。結果を本 ADR に追記して D1/D2 を選ぶ。
-2. 回帰テスト(`fix-requires-evidence.md` の warmup/belief 系): 純粋関数の単体テスト(`literal_detect_fsm.rs`、観測 `Some(false)`・`Some(true)`・`None` × `consecutive` 0/1以上 の表)。
-3. 実機/CI: `typing_stress --form=tsf --mode=drift-on` を使う。修正後の期待は「本文が空でない(英字が残る)」かつ `awase.log` に `backspace ×` が出ないこと(D1)。
-   現状の失敗(本文が空、4/4)が回帰の対照になる。CI の `e2e-ime.yml` への構成追加は、D0 で読み出し口が決まってから。
-4. 副作用の確認: cold-start の literal 回収(BUG-002 系、`sc-` の Chrome 構成)が従来どおり働く(`CompositionConfirmed` の割合が変わらない)。
+1. D0'(上)。結果を本 ADR に追記して修正方針を決める。
+2. 回帰の対照: `typing_stress --form=tsf --mode=drift-on` が、修正後に「本文が空でない(英字が残る)か、追随して Engine が止まる」こと。現状(本文が空、4/4)が対照。CI への構成追加は、D0' で再現の作り方が決まってから。
+3. 純粋関数の単体テスト(`giveup_follow_decision` など、修正に応じて)。再発ファミリー(IME belief・warmup)なので `fix-requires-evidence.md` の (a) を満たす。
+4. 副作用の確認: cold-start の literal 回収(BUG-002 系)が従来どおり働く。
 
 ## 未決(Q)
 
-- Q1: D0 の読み出し口(a)(b)(c)のどれが、TsfNative の GJI で実際の開閉に追随するか。追随しない(TIP が実状を反映しない)読み出し口は採らない。
-- Q2: `consecutive == 0` の1回目の Backspace + 再送は、IME が OFF のとき本当に本文を変えないか(再送が literal として戻るだけか)。D0 の実機記録で確かめる。
-- Q3: 実 Chrome・Windows Terminal・MS-IME で同じ消え方をするか(今回は GJI の `tsf` 形だけ)。
+- Q1: D0' の取得方法(上の (a)〜(c))。ダンプのトリガーが今回発動しなかった理由。
+- Q2: 再現の「ON にそろえる」が実利用の ON キーと同じ明示意図を残すか。
+- Q3: 22:14(JST)の WT の警告と BUG-188(WT では give-up が起きない)の食い違い。
 - Q4: 所有者が自然発生で見た消え方は、本件と同じか。次に起きたら不具合報告(ADR-095)を取る。
+- Q5: TsfNative(WT)での開閉の読み出し口(別プロセスへの `IMC_GETOPENSTATUS`、言語バー、入力インジケーターの UIA)。BUG-200 の窓(Imm32Unavailable)には不要。
 
 ## 出典
 
-- [BUG-200](../known-bugs/BUG-200.md)(再現手順・ログ)。
-- `crates/awase-windows/src/output/probe_io.rs`(`RawTsfLiteralRecovery` アーム)、`crates/awase-windows-core/src/tsf/literal_facts.rs`、`crates/awase-windows/examples/typing_stress/main.rs`(`--mode=drift-on`)。
+- [BUG-200](../known-bugs/BUG-200.md)、[BUG-074](../known-bugs/BUG-074.md)、[ADR-227](227-bug074-giveup-as-closed-ime-evidence.md)、[ADR-205](205-observe-external-ime-close-in-imm32-unavailable-windows.md)。
+- `crates/awase-windows/src/output/probe_io.rs`、`runtime/ime_refresh.rs::ir_follow_after_literal_giveup`、`crates/awase-windows-core/src/tsf/literal_facts.rs`、`crates/awase-windows/examples/typing_stress/main.rs`(`--mode=drift-on`)、`examples/compartment_notify_probe.rs`。

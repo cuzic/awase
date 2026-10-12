@@ -8,6 +8,8 @@
 //!
 //! 使い方: `compartment_notify_probe [--seq=16,1A,F2,F2,1D,1C] [--gap=1500] [--poll=50] [--richedit] [--log=<path>]`
 //!   `--seq`: 注入する VK（16進、カンマ区切り）。既定は IME ON → IME OFF → ひらがな×2 → 無変換 → 変換。
+//!   `--seq` には VK のほかに `close`/`open` を書ける(ADR-258 D0)。`close`/`open` は awase も TSF も経由せず、既定 IME ウィンドウへ
+//!   `WM_IME_CONTROL(IMC_SETOPENSTATUS, 0/1)` を送って実 IME を閉じる/開く(awase の外からの閉じ方の再現)。compartment がこれに追随するかを `NOTIFY`/`POLL` で見る。
 //!   `--gap`: キー間隔(ms)。`--poll`: 比較用に、メインスレッドのタイマーで compartment を読む間隔(ms、0で無効)。
 //!   `--richedit`: 入力欄を素の `EDIT` でなく `RICHEDIT50W` にする。
 //! キーは `SendInput`（`AWASE_TEST_INJECTION=1` の awase が物理キー扱いする目印付き）で注入する。
@@ -105,6 +107,7 @@ mod app {
     };
     use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
         KEYEVENTF_KEYUP, VIRTUAL_KEY,
@@ -119,12 +122,19 @@ mod app {
     use windows::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
         GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, KillTimer, PostMessageW,
-        PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetTimer, ShowWindow,
+        PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow, SetTimer, ShowWindow,
         TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, MSG, SW_SHOW, WM_CLOSE, WM_DESTROY,
         WM_TIMER, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     use super::sink::{name_of, read_value, CompSink, Event, Events};
+
+    /// `--seq` の `close`/`open`(`WM_IME_CONTROL` で実 IME を閉じる/開く)を表す番兵。VK(0x00〜0xFF)と重ならない値。
+    const IMECTL_CLOSE: u32 = 0x1_0000;
+    const IMECTL_OPEN: u32 = 0x1_0001;
+    /// `WM_IME_CONTROL`(0x0283)と、そのサブコマンド `IMC_SETOPENSTATUS`(0x0006)。
+    const WM_IME_CONTROL_MSG: u32 = 0x0283;
+    const IMC_SETOPENSTATUS: usize = 0x0006;
 
     /// スパイク/chrome_probe と同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
     const AUTO_MARKER: usize = awase_windows::hook::TEST_INJECTION_MARKER;
@@ -136,6 +146,9 @@ mod app {
     struct PollState {
         cmgr: ITfCompartmentMgr,
         last: [Option<i32>; 3],
+        /// 大域(global)compartment(`ITfThreadMgr::GetGlobalCompartment`)。スレッドをまたいで読める開閉の候補(ADR-258 D0)。
+        gmgr: Option<ITfCompartmentMgr>,
+        glast: Option<i32>,
         t0: Instant,
         events: Events,
     }
@@ -280,6 +293,20 @@ mod app {
             let mut p = p.borrow_mut();
             let Some(p) = p.as_mut() else { return };
             let at_ms = p.t0.elapsed().as_millis();
+            if let Some(gm) = &p.gmgr {
+                let v = read_value(gm, GUIDS[0]);
+                if v != p.glast {
+                    p.glast = v;
+                    if let Ok(mut ev) = p.events.lock() {
+                        ev.push(Event {
+                            at_ms,
+                            kind: "GPOLL",
+                            name: name_of(GUIDS[0]).to_string(),
+                            value: v,
+                        });
+                    }
+                }
+            }
             for (i, g) in GUIDS.iter().enumerate() {
                 let v = read_value(&p.cmgr, g);
                 if v != p.last[i] {
@@ -331,7 +358,24 @@ mod app {
         let seq_arg = arg_value(&args, "--seq=").unwrap_or_else(|| "16,1A,F2,F2,1D,1C".to_string());
         let mut seq: Vec<u32> = Vec::new();
         for tok in seq_arg.split(',') {
+            match tok.trim() {
+                "close" => {
+                    seq.push(IMECTL_CLOSE);
+                    continue;
+                }
+                "open" => {
+                    seq.push(IMECTL_OPEN);
+                    continue;
+                }
+                _ => {}
+            }
             match u32::from_str_radix(tok.trim(), 16) {
+                Ok(v) if v > 0xFF => {
+                    eprintln!(
+                        "--seq の要素 {tok:?} は VK(0x00〜0xFF)の範囲外です(--seq={seq_arg})"
+                    );
+                    std::process::exit(2);
+                }
                 Ok(v) => seq.push(v),
                 Err(_) => {
                     eprintln!(
@@ -473,8 +517,17 @@ mod app {
 
         if poll_ms > 0 {
             POLL.with(|p| {
+                // SAFETY: thread_mgr は Activate 済みの有効な ITfThreadMgr(同じスレッドから呼ぶ)。
+                let gmgr = unsafe { thread_mgr.GetGlobalCompartment() }.ok();
+                let glast = gmgr.as_ref().and_then(|g| read_value(g, GUIDS[0]));
+                out(&format!(
+                    "大域 OPENCLOSE: GetGlobalCompartment={} 初期値={glast:?}",
+                    if gmgr.is_some() { "ok" } else { "失敗" }
+                ));
                 *p.borrow_mut() = Some(PollState {
                     cmgr: cmgr.clone(),
+                    gmgr,
+                    glast,
                     last: [
                         read_value(&cmgr, GUIDS[0]),
                         read_value(&cmgr, GUIDS[1]),
@@ -518,6 +571,38 @@ mod app {
                     if !focus_on_probe(top, edit) {
                         push("ABORT", format!("vk=0x{vk:02X} の前にフォーカスが外れた"));
                         break 'run;
+                    }
+                    if *vk == IMECTL_CLOSE || *vk == IMECTL_OPEN {
+                        let open = isize::from(*vk == IMECTL_OPEN);
+                        // SAFETY: edit は有効な窓。既定 IME ウィンドウへ WM_IME_CONTROL を同期で送る(別スレッドの窓でも可)。
+                        // ime_wnd が NULL(既定 IME ウィンドウが無い)のときは送れず、閉じる操作が効いていないので、結果を記録に残す。
+                        let (ime_wnd, ret) = unsafe {
+                            let ime_wnd = ImmGetDefaultIMEWnd(edit);
+                            let ret = if ime_wnd.0.is_null() {
+                                None
+                            } else {
+                                Some(
+                                    SendMessageW(
+                                        ime_wnd,
+                                        WM_IME_CONTROL_MSG,
+                                        Some(WPARAM(IMC_SETOPENSTATUS)),
+                                        Some(LPARAM(open)),
+                                    )
+                                    .0,
+                                )
+                            };
+                            (ime_wnd, ret)
+                        };
+                        push(
+                            "IMECTL",
+                            format!(
+                                "{} ime_wnd={:?} ret={ret:?}",
+                                if open == 1 { "open" } else { "close" },
+                                ime_wnd.0
+                            ),
+                        );
+                        sleep(gap_ms);
+                        continue;
                     }
                     push("KEY", format!("0x{vk:02X}"));
                     send_key(*vk, true);
@@ -564,10 +649,14 @@ mod app {
             ));
         }
         out("--- キーごとの遅延(押下→最初の通知/ポーリング検出) ---");
-        for (i, e) in ev.iter().enumerate().filter(|(_, e)| e.kind == "KEY") {
+        for (i, e) in ev
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.kind == "KEY" || e.kind == "IMECTL")
+        {
             let next_key = ev[i + 1..]
                 .iter()
-                .find(|x| x.kind == "KEY")
+                .find(|x| x.kind == "KEY" || x.kind == "IMECTL")
                 .map_or(u128::MAX, |x| x.at_ms);
             let first = |kind: &str| {
                 ev[i + 1..]
@@ -576,10 +665,16 @@ mod app {
                     .map(|x| format!("{}ms ({} {:?})", x.at_ms - e.at_ms, x.name, x.value))
             };
             out(&format!(
-                "KEY {}: NOTIFY={} POLL={}",
+                "{} {}: NOTIFY={} POLL={} GPOLL(大域)={}",
+                e.kind,
                 e.name,
                 first("NOTIFY").unwrap_or_else(|| "なし".to_string()),
-                first("POLL").unwrap_or_else(|| "なし".to_string())
+                first("POLL").unwrap_or_else(|| "なし".to_string()),
+                if poll_ms == 0 {
+                    "未測定(--poll=0)".to_string()
+                } else {
+                    first("GPOLL").unwrap_or_else(|| "なし".to_string())
+                }
             ));
         }
         out("=== 完了 ===");
