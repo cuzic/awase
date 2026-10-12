@@ -143,6 +143,18 @@ pub struct GiveUpEvidence {
     pub focus_gen: FocusGen,
 }
 
+/// 一連の literal 疑いの**1回目**(`SuspectedLiteral`、まだ give-up でない)の証拠(ADR-258 段階0)。
+/// runtime が「この時点で arm したら、読みは何だったか」を journal に**記録するだけ**(arm しない・belief を動かさない)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FirstLiteralEvidence {
+    pub cold_seq: u64,
+    /// 一連の literal 疑いの最初の VK 送信時の `Output::ime_mode_focus_gen`(`GiveUpEvidence` と同じ)。
+    pub focus_gen: FocusGen,
+    /// 記録時点の `consecutive_count`(0 でなければ、外部クローズへの追随の後など、前の連鎖の数え残りがある)。
+    /// 「連鎖の1回目」は tracker の連鎖(`suspected == 0`)で決め、`consecutive_count` は集計側で分けられるよう記録に残す。
+    pub consecutive_before: u32,
+}
+
 /// `LiteralDetectRecord` の列から give-up の証拠を判定する純粋な状態機械(ADR-227)。
 ///
 /// **途切れずに続いた** `SuspectedLiteral` が 2 回以上あり、最新の記録が give-up(`gave_up`)のときだけ証拠を返す。
@@ -165,6 +177,30 @@ impl GiveUpTracker {
             *self = Self::default();
         }
         self.focus_gen.get_or_insert(focus_gen);
+    }
+
+    /// 1回目の literal 疑い(ADR-258 段階0)の証拠を返す。**内部状態を変えない**(`note_record` の前に呼ぶ)。
+    ///
+    /// 条件: verdict が `SuspectedLiteral`、まだ give-up でない(`gave_up == false`)、この tracker の連鎖で最初(`suspected == 0`)、
+    /// かつ `note_vk_sent` で最初の送信時の世代を覚えている。`consecutive_before`(`consecutive_count`)は条件に使わない:
+    /// 外部クローズへの追随の後に IME を戻した場合などに、前の連鎖の数え残りで 1 以上になるが、それも「1回目」として記録したい
+    /// (ADR-258 の Opus レビュー M1)。give-up の証拠(`note_record` の戻り値)とは独立で、同じ連鎖の2回目の記録では返さない。
+    #[must_use]
+    pub fn first_literal_evidence(
+        &self,
+        record: &LiteralDetectRecord,
+    ) -> Option<FirstLiteralEvidence> {
+        if record.facts.verdict != LiteralVerdict::SuspectedLiteral
+            || record.gave_up
+            || self.suspected != 0
+        {
+            return None;
+        }
+        Some(FirstLiteralEvidence {
+            cold_seq: record.cold_seq.value(),
+            focus_gen: self.focus_gen?,
+            consecutive_before: record.consecutive_before,
+        })
     }
 
     /// verdict の記録を 1 件取り込む。条件を満たす give-up なら証拠を返し、内部状態を空に戻す。
@@ -218,6 +254,18 @@ impl GiveUpFollowDecision {
             Self::StaleFocus => "stale_focus",
             Self::NoExplicitIntent => "no_explicit_intent",
             Self::Arm => "armed",
+        }
+    }
+
+    /// 1回目の literal(ADR-258 段階0)で記録する outcome。`Arm` は実際には arm していない(仮定)ので別の名前にする
+    /// (`GiveUpFollow` の `outcome` と混ぜないため)。
+    #[must_use]
+    pub const fn first_literal_outcome(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "first_literal_not_applicable",
+            Self::StaleFocus => "first_literal_stale_focus",
+            Self::NoExplicitIntent => "first_literal_no_explicit_intent",
+            Self::Arm => "first_literal_would_arm",
         }
     }
 }
@@ -279,6 +327,113 @@ mod giveup_tracker_tests {
             session_marked: false,
             romaji: Some("ka".into()),
         }
+    }
+
+    #[test]
+    fn first_literal_evidence_is_only_for_the_first_ungave_suspected_of_a_chain_and_does_not_mutate(
+    ) {
+        let mut t = GiveUpTracker::default();
+        // 送信を覚える前は返さない(世代が無い)。
+        assert_eq!(
+            t.first_literal_evidence(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None
+        );
+        t.note_vk_sent(FocusGen::new(5));
+        let before = t.clone();
+        assert_eq!(
+            t.first_literal_evidence(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            Some(FirstLiteralEvidence {
+                cold_seq: 7,
+                focus_gen: FocusGen::new(5),
+                consecutive_before: 0
+            })
+        );
+        assert_eq!(t, before, "内部状態を変えない");
+        // 確定・StaleConfirm・give-up は返さない。
+        for v in [
+            LiteralVerdict::CompositionConfirmed,
+            LiteralVerdict::StaleConfirm,
+            LiteralVerdict::SessionSkip,
+            LiteralVerdict::PlanSkippedLiteral,
+            LiteralVerdict::VetoExpired,
+            LiteralVerdict::AbortedNoVerdict,
+        ] {
+            assert_eq!(t.first_literal_evidence(&rec(v, false)), None, "{v:?}");
+        }
+        assert_eq!(
+            t.first_literal_evidence(&rec(LiteralVerdict::SuspectedLiteral, true)),
+            None,
+            "give-up の記録(consecutive_before が 1)は2回目"
+        );
+        // 1回目を数えた後(note_record)は、同じ連鎖では返さない。
+        assert_eq!(
+            t.note_record(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None
+        );
+        assert_eq!(
+            t.first_literal_evidence(&rec(LiteralVerdict::SuspectedLiteral, false)),
+            None,
+            "連鎖の途中(数え済み)では返さない"
+        );
+    }
+
+    /// Opus レビュー M1/M4: `consecutive_before > 0` でも(外部クローズへの追随の後に IME を戻した場合の数え残り)、
+    /// tracker の連鎖の1回目(`suspected == 0`)なら返し、`consecutive_before` を証拠に載せる。連鎖の途中(数え済み)では返さない。
+    #[test]
+    fn first_literal_evidence_uses_the_trackers_chain_not_consecutive_before_and_carries_it() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(FocusGen::new(5));
+        let mut r = rec(LiteralVerdict::SuspectedLiteral, false);
+        r.consecutive_before = 3; // 前の連鎖の数え残り(gave_up は偽)
+        assert_eq!(
+            t.first_literal_evidence(&r),
+            Some(FirstLiteralEvidence {
+                cold_seq: 7,
+                focus_gen: FocusGen::new(5),
+                consecutive_before: 3
+            })
+        );
+        // tracker が既に数えた連鎖の途中(suspected > 0)なら、consecutive_before が 0 でも返さない。
+        assert_eq!(t.note_record(&r), None);
+        r.consecutive_before = 0;
+        assert_eq!(t.first_literal_evidence(&r), None);
+    }
+
+    /// 配線の取り違え対策(Opus レビュー M4): 「送信 → 1回目 → 再送 → give-up」の列で、1回目だけが first-literal の証拠になり、
+    /// give-up の証拠は従来どおり2回目で出る(`note_record` の入力・戻り値は変わらない)。
+    #[test]
+    fn a_full_chain_yields_first_literal_evidence_once_and_giveup_evidence_unchanged() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(FocusGen::new(5));
+        let first = rec(LiteralVerdict::SuspectedLiteral, false);
+        let fl = t.first_literal_evidence(&first);
+        assert_eq!(fl.map(|e| e.cold_seq), Some(7));
+        assert_eq!(t.note_record(&first), None);
+        t.note_vk_sent(FocusGen::new(5));
+        let second = rec(LiteralVerdict::SuspectedLiteral, true);
+        assert_eq!(
+            t.first_literal_evidence(&second),
+            None,
+            "2回目は証拠にならない"
+        );
+        assert_eq!(
+            t.note_record(&second),
+            Some(GiveUpEvidence {
+                cold_seq: 7,
+                focus_gen: FocusGen::new(5)
+            }),
+            "give-up の証拠は従来どおり"
+        );
+    }
+
+    #[test]
+    fn first_literal_outcome_names_are_distinct_from_giveup_outcomes() {
+        use GiveUpFollowDecision::*;
+        for d in [NotApplicable, StaleFocus, NoExplicitIntent, Arm] {
+            assert!(d.first_literal_outcome().starts_with("first_literal_"));
+            assert_ne!(d.first_literal_outcome(), d.outcome());
+        }
+        assert_eq!(Arm.first_literal_outcome(), "first_literal_would_arm");
     }
 
     #[test]

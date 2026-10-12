@@ -554,6 +554,20 @@ pub enum JournalEntry {
         outcome: &'static str,
         baseline: Option<bool>,
     },
+    /// ADR-258 段階0(観測だけ): 一連の literal 疑いの**1回目**で、「ここで追随を arm していたら何が起きたか」を残す
+    /// (arm はしない・belief は動かさない)。`outcome` は `first_literal_*`(`GiveUpFollowDecision::first_literal_outcome`)。
+    /// `last_read` は literal の**前**の直近の読み(時刻なし。古いことがある)、`read_after` は literal の直後に1回だけ取った
+    /// prefetch と同じ読み(`read_ime_state_full_async`、journal にだけ書く)、`read_after_ms` は literal の判定からその読みの完了までの ms。
+    /// 本当に閉じている場面(BUG-200)と、開いている cold-start の場面は、`read_after` が `Some(false)` か `Some(true)` かで区別できる
+    /// (偽陽性 = 開いているのに `Some(false)`)。`consecutive_before` は `consecutive_count` の数え残り(集計側で分ける)。
+    FirstLiteralObserve {
+        cold_seq: u64,
+        outcome: &'static str,
+        consecutive_before: u32,
+        last_read: Option<bool>,
+        read_after: Option<bool>,
+        read_after_ms: Option<u64>,
+    },
     /// IME open/close 適用の完了（ADR-086 §4 INV-18、Phase 3 item 2）。
     ///
     /// `record_ime_apply_result` は `generation.is_some()` のときだけ
@@ -894,6 +908,7 @@ impl JournalEntry {
             | Self::LateKeymap { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
+            | Self::FirstLiteralObserve { .. }
             | Self::ConvClassifyCall { .. } => false,
         }
     }
@@ -910,6 +925,7 @@ impl JournalEntry {
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
             | Self::LiteralDetect { .. }
+            | Self::FirstLiteralObserve { .. }
             | Self::DeferredRecoveryFlush { .. } => LaneKind::Timing,
             Self::ImeActuation { .. }
             | Self::SentInput { .. }
@@ -1303,6 +1319,27 @@ impl JournalEntry {
                     outcome = *outcome,
                     baseline,
                     "give-up follow"
+                );
+            }
+            Self::FirstLiteralObserve {
+                cold_seq,
+                outcome,
+                consecutive_before,
+                last_read,
+                read_after,
+                read_after_ms,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    cold_seq,
+                    outcome = *outcome,
+                    consecutive_before,
+                    last_read,
+                    read_after,
+                    read_after_ms,
+                    "first-literal observe (ADR-258 stage 0)"
                 );
             }
             Self::ImeOpenApplied {

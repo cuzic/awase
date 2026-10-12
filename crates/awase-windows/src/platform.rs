@@ -37,6 +37,8 @@ pub struct WindowsPlatform {
     /// ADR-227: give-up の証拠の判定(純粋)と、runtime が取り出すまでの 1 件。
     giveup_tracker: crate::tsf::literal_facts::GiveUpTracker,
     pending_giveup: Option<crate::tsf::literal_facts::GiveUpEvidence>,
+    /// ADR-258 段階0: 1回目の literal 疑いの証拠(runtime が journal に記録するだけ。arm しない)。
+    pending_first_literal: Option<crate::tsf::literal_facts::FirstLiteralEvidence>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +90,7 @@ impl WindowsPlatform {
             pending_literal_vk: None,
             giveup_tracker: crate::tsf::literal_facts::GiveUpTracker::default(),
             pending_giveup: None,
+            pending_first_literal: None,
         }
     }
 
@@ -274,6 +277,10 @@ impl WindowsPlatform {
                         record.consecutive_before,
                         self.giveup_tracker
                     );
+                    // ADR-258 段階0: 1回目の literal 疑い(`note_record` が数える前に判定する。tracker は変えない)。
+                    if let Some(first) = self.giveup_tracker.first_literal_evidence(&record) {
+                        self.pending_first_literal = Some(first);
+                    }
                     if let Some(evidence) = self.giveup_tracker.note_record(&record) {
                         tracing::debug!(
                             "[giveup-follow] give-up の証拠を保持 cold={} focus_gen={}",
@@ -292,6 +299,13 @@ impl WindowsPlatform {
         if terminal_timer {
             self.flush_pending_literal_vk_as_aborted();
         }
+    }
+
+    /// ADR-258 段階0: 1回目の literal 疑いの証拠を 1 件取り出す(runtime の `TIMER_TSF_PROBE` が give-up の証拠の後に呼ぶ)。
+    pub(crate) fn take_first_literal_evidence(
+        &mut self,
+    ) -> Option<crate::tsf::literal_facts::FirstLiteralEvidence> {
+        self.pending_first_literal.take()
     }
 
     /// ADR-227: give-up の証拠を 1 件取り出す(runtime の `TIMER_TSF_PROBE` が `advance_tsf_probe` の直後に呼ぶ)。

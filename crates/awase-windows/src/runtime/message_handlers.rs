@@ -515,6 +515,10 @@ pub(crate) unsafe fn handle_wm_timer(
             if let Some(evidence) = app.platform.take_giveup_evidence() {
                 app.ir_follow_after_literal_giveup(evidence);
             }
+            // ADR-258 段階0: 1回目の literal 疑いを journal に記録するだけ(arm しない)。
+            if let Some(first) = app.platform.take_first_literal_evidence() {
+                app.ir_observe_first_literal(first);
+            }
         }
         Some(id) if id == TIMER_TSF_GATE => {
             app.platform.timer.kill(TIMER_TSF_GATE);
