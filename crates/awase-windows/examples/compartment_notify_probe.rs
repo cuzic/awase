@@ -567,7 +567,10 @@ mod app {
                     }
                     if *vk == IMECTL_CLOSE || *vk == IMECTL_OPEN {
                         let open = usize::from(*vk == IMECTL_OPEN);
-                        push("IMECTL", if open == 1 { "open" } else { "close" }.to_string());
+                        push(
+                            "IMECTL",
+                            if open == 1 { "open" } else { "close" }.to_string(),
+                        );
                         // SAFETY: edit は有効な窓。既定 IME ウィンドウへ WM_IME_CONTROL を同期で送る(別スレッドの窓でも可)。
                         unsafe {
                             let ime_wnd = ImmGetDefaultIMEWnd(edit);
