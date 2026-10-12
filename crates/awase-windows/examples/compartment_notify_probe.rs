@@ -370,6 +370,12 @@ mod app {
                 _ => {}
             }
             match u32::from_str_radix(tok.trim(), 16) {
+                Ok(v) if v > 0xFF => {
+                    eprintln!(
+                        "--seq の要素 {tok:?} は VK(0x00〜0xFF)の範囲外です(--seq={seq_arg})"
+                    );
+                    std::process::exit(2);
+                }
                 Ok(v) => seq.push(v),
                 Err(_) => {
                     eprintln!(
@@ -511,6 +517,7 @@ mod app {
 
         if poll_ms > 0 {
             POLL.with(|p| {
+                // SAFETY: thread_mgr は Activate 済みの有効な ITfThreadMgr(同じスレッドから呼ぶ)。
                 let gmgr = unsafe { thread_mgr.GetGlobalCompartment() }.ok();
                 let glast = gmgr.as_ref().and_then(|g| read_value(g, GUIDS[0]));
                 out(&format!(
@@ -566,21 +573,34 @@ mod app {
                         break 'run;
                     }
                     if *vk == IMECTL_CLOSE || *vk == IMECTL_OPEN {
-                        let open = usize::from(*vk == IMECTL_OPEN);
+                        let open = isize::from(*vk == IMECTL_OPEN);
+                        // SAFETY: edit は有効な窓。既定 IME ウィンドウへ WM_IME_CONTROL を同期で送る(別スレッドの窓でも可)。
+                        // ime_wnd が NULL(既定 IME ウィンドウが無い)のときは送れず、閉じる操作が効いていないので、結果を記録に残す。
+                        let (ime_wnd, ret) = unsafe {
+                            let ime_wnd = ImmGetDefaultIMEWnd(edit);
+                            let ret = if ime_wnd.0.is_null() {
+                                None
+                            } else {
+                                Some(
+                                    SendMessageW(
+                                        ime_wnd,
+                                        WM_IME_CONTROL_MSG,
+                                        Some(WPARAM(IMC_SETOPENSTATUS)),
+                                        Some(LPARAM(open)),
+                                    )
+                                    .0,
+                                )
+                            };
+                            (ime_wnd, ret)
+                        };
                         push(
                             "IMECTL",
-                            if open == 1 { "open" } else { "close" }.to_string(),
+                            format!(
+                                "{} ime_wnd={:?} ret={ret:?}",
+                                if open == 1 { "open" } else { "close" },
+                                ime_wnd.0
+                            ),
                         );
-                        // SAFETY: edit は有効な窓。既定 IME ウィンドウへ WM_IME_CONTROL を同期で送る(別スレッドの窓でも可)。
-                        unsafe {
-                            let ime_wnd = ImmGetDefaultIMEWnd(edit);
-                            let _ = SendMessageW(
-                                ime_wnd,
-                                WM_IME_CONTROL_MSG,
-                                Some(WPARAM(IMC_SETOPENSTATUS)),
-                                Some(LPARAM(open as isize)),
-                            );
-                        }
                         sleep(gap_ms);
                         continue;
                     }
@@ -650,7 +670,11 @@ mod app {
                 e.name,
                 first("NOTIFY").unwrap_or_else(|| "なし".to_string()),
                 first("POLL").unwrap_or_else(|| "なし".to_string()),
-                first("GPOLL").unwrap_or_else(|| "なし".to_string())
+                if poll_ms == 0 {
+                    "未測定(--poll=0)".to_string()
+                } else {
+                    first("GPOLL").unwrap_or_else(|| "なし".to_string())
+                }
             ));
         }
         out("=== 完了 ===");
