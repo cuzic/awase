@@ -386,6 +386,43 @@ impl Runtime {
         }
     }
 
+    /// ADR-258 段階0(観測だけ): 一連の literal 疑いの**1回目**で、「ここで arm したら何が起きていたか」を journal に記録する。
+    /// **arm しない・読み直しを予約しない・belief を動かさない**(挙動は変えない)。`outcome` は `first_literal_*`(`giveup_follow_decision` の
+    /// 判定の別名。`Arm` は `first_literal_would_arm`)、`baseline` は「いま arm したら基準値になっていた直近の読み」。
+    /// 実利用の不具合報告で、literal が起きたときの読みが閉を示していたか(偽陽性)を集計するための記録(D5' の合格条件)。
+    pub(crate) fn ir_observe_first_literal(
+        &mut self,
+        evidence: crate::tsf::literal_facts::FirstLiteralEvidence,
+    ) {
+        let applies = self.external_change_watch_applies();
+        let gen_now = self.platform.output.ime_mode_focus_gen.get();
+        let intent = self.platform_state.ime.explicit_intent();
+        let decision = crate::tsf::literal_facts::giveup_follow_decision(
+            applies,
+            evidence.focus_gen,
+            gen_now,
+            intent,
+        );
+        let last_read = if applies {
+            self.platform_state.ime.external_change_last_read()
+        } else {
+            None
+        };
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::GiveUpFollow {
+                cold_seq: evidence.cold_seq,
+                outcome: decision.first_literal_outcome(),
+                baseline: last_read,
+            });
+        tracing::debug!(
+            "[first-literal-observe] cold={} outcome={} last_read={last_read:?}",
+            evidence.cold_seq,
+            decision.first_literal_outcome()
+        );
+    }
+
     // ── Stage 4: Engine 通知と次回スケジュール ──
     //
     // Phase 4: Engine に RefreshState（active 遷移検知）

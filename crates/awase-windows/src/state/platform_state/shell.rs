@@ -83,6 +83,11 @@ impl ImeStateHub {
         self.expire_mode_key_pass_mark_in_scope(now_ms, tick_ms, crate::win32::foreground_scope())
     }
 
+    /// 現在のフォアグラウンドの直近の読み(ADR-258 段階0 の journal 記録用)。
+    pub(crate) fn external_change_last_read(&self) -> Option<bool> {
+        self.external_change_last_read_in_scope(crate::win32::foreground_scope())
+    }
+
     /// 外部注入の IME キーを見たら呼ぶ（読めない窓のみ）。現在のフォアグラウンドに対する監視窓を開く／延ばす。
     pub(crate) fn arm_external_change_watch(&mut self, now_ms: u64) {
         self.arm_external_change_watch_in_scope(now_ms, crate::win32::foreground_scope());

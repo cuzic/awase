@@ -166,6 +166,12 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
         }
     }
 
+    /// 同じスコープの直近の読み(ADR-258 段階0 の journal 記録用。arm した場合に基準値になる値)。別スコープ・未記録は `None`。
+    #[must_use]
+    pub fn last_read_for(&self, scope: S) -> Option<bool> {
+        self.last_read.filter(|(s, _)| *s == scope).map(|(_, v)| v)
+    }
+
     /// 外部注入の IME キーを見たら呼ぶ。同じスコープの窓が生きていれば基準値を保ったまま延ばす
     /// （延長は最初の arm から `window_ms * 2` までで、窓の寿命は最大でその時点から `window_ms` 後＝`window_ms * 3`）。そうでなければ新しく開き、基準値は直近の読み（同じスコープ）。
     pub fn arm(&mut self, scope: S, now_ms: u64, window_ms: u64) {
@@ -571,6 +577,24 @@ mod tests {
             w.observe(1, 1030, W, Some(false)),
             ChangeVerdict::NoEvidence
         );
+    }
+
+    /// ADR-258 段階0: `last_read_for` は同じスコープの直近の読みだけを返す(読めなかった `None` は記録されない・別スコープは返さない)。
+    #[test]
+    fn last_read_for_returns_only_the_same_scopes_last_known_read() {
+        let mut w = ExternalChangeWatch::<u32>::new();
+        assert_eq!(w.last_read_for(1), None, "未記録");
+        w.record_read(1, Some(true));
+        assert_eq!(w.last_read_for(1), Some(true));
+        assert_eq!(w.last_read_for(2), None, "別スコープは返さない");
+        w.record_read(1, None);
+        assert_eq!(
+            w.last_read_for(1),
+            Some(true),
+            "読めなかった(None)は記録を消さない"
+        );
+        w.record_read(1, Some(false));
+        assert_eq!(w.last_read_for(1), Some(false));
     }
 
     #[test]

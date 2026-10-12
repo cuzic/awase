@@ -429,6 +429,14 @@ impl ImeStateHub {
             .arm(scope, now_ms, crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS);
     }
 
+    /// 同じスコープの直近の読み(ADR-258 段階0 の journal 記録用。arm したら基準値になる値)。読むだけで状態は変えない。
+    pub(crate) fn external_change_last_read_in_scope(
+        &self,
+        scope: crate::state::foreground_scope::ForegroundScope,
+    ) -> Option<bool> {
+        self.external_change_watch.last_read_for(scope)
+    }
+
     /// 監視窓の基準値(ログ用。ADR-227 の give-up 契機で、追随が起きなかった理由を区別する)。
     pub(crate) fn external_change_baseline(&self) -> Option<bool> {
         self.external_change_watch.baseline()
