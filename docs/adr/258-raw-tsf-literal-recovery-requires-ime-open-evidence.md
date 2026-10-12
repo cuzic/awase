@@ -27,7 +27,7 @@ ADR-227 (i)(PR #480、`900a5f3e`)は「CI 検証済み・実機未検証」の�
 
 ## 事実(`origin/develop` `7812c9df` の開発ビルド、dragonflyg4、GJI、2026-10-12)
 
-- **再現**(各 n=4、2回走行): `typing_stress --form=tsf --mode=drift-on`。IME を ON にそろえ(明示意図 ON が付く)、ハーネスが awase を経由せず実 IME を閉じる(`WM_IME_CONTROL`)。
+- **再現**(各 n=4、2回走行): `typing_stress --form=tsf --mode=drift-on`。IME を ON にそろえ(ハーネスは物理の `VK_IME_ON` を送る。これで awase に明示意図 ON が付く**はず**だが、設計意図で、確かめていない=Q2)、ハーネスが awase を経由せず実 IME を閉じる(`WM_IME_CONTROL`)。
   2 秒待っても awase は ON のまま(`[external-change]`・`Engine deactivated` が出ない)。NICOLA 単打1回で本文が空(4/4、2走行とも)。同じ手順の `--form=edit`(IMM)は `w`(英字が残る、4/4)。
 - **窓の種別**: 再現した窓は `Chrome_RenderWidgetHostHWND`、`profile=Imm32Unavailable`、`himc_null=true`(`[comp-probe]`)。**TsfNative ではない**。
   (初版はこれを TsfNative と書いて混同した。ADR-227 の背景にも、`--form=tsf` の窓は Imm32Unavailable と書いてある。)
@@ -59,12 +59,13 @@ ADR-227 (i)(PR #480、`900a5f3e`)は「CI 検証済み・実機未検証」の�
 1. `outcome` が `no_explicit_intent`(「ON にそろえる」の操作が awase に明示意図を残さない)または `stale_focus`(プローブ開始時と focus 世代が違う)。
 2. 追随を arm したが、読み直しの読みが閉を示さなかった(基準値が既に 0 で `Changed` にならない、など。ADR-205 の基準値の扱い)。
 3. 追随したが、次の試行の「ON にそろえる」で戻され、また literal になった。
+4. `GiveUpFollow` が**1件も出ない**。コードの読みでは、試行1で1件、世代が変わらなければ試行3でもう1件出るはず(実ログは未確認)。0件なら、give-up の証拠を作る側の配線(`take_giveup_evidence`・`GiveUpTracker`)か、focus 世代の扱いの問題で、(i) の前段が働いていない。
 
 取得方法の候補: (a) journal のダンプ(Alt+変換 → Alt+無変換 → Alt+変換。今回の試行では発動せず、トリガーの条件〈タイムアウト・修飾キーの扱い〉は未確認)、(b) 不具合報告(ADR-095)、(c) `typing_stress` が再現の直後に journal を取る口を足す。
 
 ### 修正方針(D0' の結果で決める。いまは決めない)
 
-- 1 なら、再現側の問題(本物の ON キーで ON にしてから閉じる、など)で、(i) は実利用では働いている可能性がある。BUG-074 の実機未検証を実機で埋める手順になる。
+- 1 の `stale_focus` なら、再現側の問題(プローブ開始時と focus 世代が違う、など)の可能性がある。**`no_explicit_intent` なら再現側の問題とは言えない**: ハーネスは物理の `VK_IME_ON` を送っており、それで明示意図が付かないなら awase 側の問題(実利用の ON キーでも同じ)になる。いずれも BUG-074 の実機未検証を実機で埋める手順になる。
 - 2 または 3 なら、(i) の穴を直す(例: 初回の回収の前にも prefetch の読みを使う=ADR-227 (i) を初回まで広げる。基準値の扱いの見直し)。これは ADR-227 の改訂として、`ime-belief-architecture.md` の規約に沿って行う。
 - D3 のような「推論で belief を変える」案は採らない。
 
