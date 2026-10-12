@@ -131,8 +131,12 @@ ADR-227 (i)(PR #480、`900a5f3e`)は「CI 検証済み・実機未検証」の�
 K3 の合格条件(arm 後の閉への追随 0 件、literal 30 回以上)は、**実験室では満たせず、満たせない理由が分かった**。よって、段階0 は実験室の測定をやめ、**実利用の環境で観測だけを出荷して集める**形に改める(下)。
 
 **進め方(段階)**
-0. **観測だけを出荷する**(挙動は変えない、デバッグビルドに限らずリリースに入れる): 条件(GJI × Imm32Unavailable × 明示意図 ON)を満たす cold の段で、arm したと仮定したときの prefetch の読み(値・古さ・基準値)を journal に残す(新しい variant、`journal_policy` の notable 判定も決める)。
-   実利用の不具合報告(ADR-095)から、literal が起きたときの読みが「閉」だったか「開」だったかを集計し、**literal 判定の最中に読みが誤って閉を返さないこと**(偽陽性 0)を、報告で確かめる。実験室で測れない(上)ので、これが唯一の根拠になる。
+0. **観測だけを出荷する**(挙動は変えない。PR #622、`JournalEntry::FirstLiteralObserve`): 一連の literal 疑いの1回目(tracker の連鎖の最初)で、判定(`first_literal_would_arm | not_applicable | stale_focus | no_explicit_intent`)、literal の前の直近の読み(`last_read`、時刻なし)、
+   `consecutive_before`(`consecutive_count` の数え残り)を記録する。`would_arm`(GJI × Imm32Unavailable × 明示意図 ON)のときは、literal の**直後**に prefetch と同じ読み(`read_ime_state_full_async`)を**1回だけ**取り、`read_after` と所要 ms(`read_after_ms`)も記録する
+   (belief・監視窓・refresh のパイプラインは通らず、journal にだけ書く。literal の前の読みだけでは、本当に閉じている場面と開いている cold-start の場面を区別できない=Opus レビュー K1)。
+   実利用の不具合報告(ADR-095)から、literal が起きたときに `read_after` が `Some(false)`(閉)だった件数を数える。**本当に ON の窓で `Some(false)` が出れば偽陽性**(D5' は採れない)。IME が実際に ON か OFF かは journal からは分からないので、
+   `read_after == Some(false)` の件を、同じ報告の `[external-change]` の追随や、利用者の症状(英数が消えた)と突き合わせて読む。
+   **時点のずれ**: この読みは literal の判定(キーから約 340ms)の直後で、D5' が arm する cold の段の開始時(キーの直後)の約 60〜80ms 後の読みとは約 300ms ずれる。cold の準備が進んだ後の読みなので、D5' の偽陽性率を過小に見積もる側に偏りうる。
 1. 報告の集計で合格したら D5' を実装(純粋関数への切り出し + 単体テスト、M2 のリセット、M4 の journal)。再発ファミリー(IME belief・warmup・defer/replay キューの解放条件)なので、各ファミリーの (a) を満たす。実装の前に Opus レビューを再度回す。
 2. 実機の回帰は `typing_stress --form=tsf --mode=drift-on`(対で書く): 外部クローズ(IME OFF)では**本文 = 送った romaji(例 `ka`)で `backspace ×` が出ない**こと、cold-start の対照(真に ON)では従来どおり `backspace ×` と再送が出ること(片側だけだと「常に捨てる」誤実装も通る)。宛先が変わったとき(ADR-246 `DiscardedStale`)と保留の優先順位(宛先照合が先)も表に入れる。
 

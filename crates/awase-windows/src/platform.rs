@@ -301,13 +301,14 @@ impl WindowsPlatform {
         }
     }
 
-    /// ADR-227: give-up の証拠を 1 件取り出す(runtime の `TIMER_TSF_PROBE` が `advance_tsf_probe` の直後に呼ぶ)。
+    /// ADR-258 段階0: 1回目の literal 疑いの証拠を 1 件取り出す(runtime の `TIMER_TSF_PROBE` が give-up の証拠の後に呼ぶ)。
     pub(crate) fn take_first_literal_evidence(
         &mut self,
     ) -> Option<crate::tsf::literal_facts::FirstLiteralEvidence> {
         self.pending_first_literal.take()
     }
 
+    /// ADR-227: give-up の証拠を 1 件取り出す(runtime の `TIMER_TSF_PROBE` が `advance_tsf_probe` の直後に呼ぶ)。
     pub(crate) fn take_giveup_evidence(
         &mut self,
     ) -> Option<crate::tsf::literal_facts::GiveUpEvidence> {

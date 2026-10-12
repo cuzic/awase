@@ -150,6 +150,9 @@ pub struct FirstLiteralEvidence {
     pub cold_seq: u64,
     /// 一連の literal 疑いの最初の VK 送信時の `Output::ime_mode_focus_gen`(`GiveUpEvidence` と同じ)。
     pub focus_gen: FocusGen,
+    /// 記録時点の `consecutive_count`(0 でなければ、外部クローズへの追随の後など、前の連鎖の数え残りがある)。
+    /// 「連鎖の1回目」は tracker の連鎖(`suspected == 0`)で決め、`consecutive_count` は集計側で分けられるよう記録に残す。
+    pub consecutive_before: u32,
 }
 
 /// `LiteralDetectRecord` の列から give-up の証拠を判定する純粋な状態機械(ADR-227)。
@@ -178,9 +181,10 @@ impl GiveUpTracker {
 
     /// 1回目の literal 疑い(ADR-258 段階0)の証拠を返す。**内部状態を変えない**(`note_record` の前に呼ぶ)。
     ///
-    /// 条件: verdict が `SuspectedLiteral`、まだ give-up でない(`gave_up == false`)、この連鎖で最初(`consecutive_before == 0`)、
-    /// かつ `note_vk_sent` で最初の送信時の世代を覚えている。give-up の証拠(`note_record` の戻り値)とは独立で、
-    /// 同じ連鎖の2回目の記録では返さない(1回目の arm 仮定の読みだけを残すため)。
+    /// 条件: verdict が `SuspectedLiteral`、まだ give-up でない(`gave_up == false`)、この tracker の連鎖で最初(`suspected == 0`)、
+    /// かつ `note_vk_sent` で最初の送信時の世代を覚えている。`consecutive_before`(`consecutive_count`)は条件に使わない:
+    /// 外部クローズへの追随の後に IME を戻した場合などに、前の連鎖の数え残りで 1 以上になるが、それも「1回目」として記録したい
+    /// (ADR-258 の Opus レビュー M1)。give-up の証拠(`note_record` の戻り値)とは独立で、同じ連鎖の2回目の記録では返さない。
     #[must_use]
     pub fn first_literal_evidence(
         &self,
@@ -188,7 +192,6 @@ impl GiveUpTracker {
     ) -> Option<FirstLiteralEvidence> {
         if record.facts.verdict != LiteralVerdict::SuspectedLiteral
             || record.gave_up
-            || record.consecutive_before != 0
             || self.suspected != 0
         {
             return None;
@@ -196,6 +199,7 @@ impl GiveUpTracker {
         Some(FirstLiteralEvidence {
             cold_seq: record.cold_seq.value(),
             focus_gen: self.focus_gen?,
+            consecutive_before: record.consecutive_before,
         })
     }
 
@@ -252,11 +256,9 @@ impl GiveUpFollowDecision {
             Self::Arm => "armed",
         }
     }
-}
 
-impl GiveUpFollowDecision {
-    /// 1回目の literal(ADR-258 段階0)で記録する outcome。`Arm` は実際には arm していない(仮定)ので、別の名前にする
-    /// (`GiveUpFollow` の `outcome` を `gave_up` 契機の集計と混ぜないため。journal の形は変えない)。
+    /// 1回目の literal(ADR-258 段階0)で記録する outcome。`Arm` は実際には arm していない(仮定)ので別の名前にする
+    /// (`GiveUpFollow` の `outcome` と混ぜないため)。
     #[must_use]
     pub const fn first_literal_outcome(self) -> &'static str {
         match self {
@@ -342,7 +344,8 @@ mod giveup_tracker_tests {
             t.first_literal_evidence(&rec(LiteralVerdict::SuspectedLiteral, false)),
             Some(FirstLiteralEvidence {
                 cold_seq: 7,
-                focus_gen: FocusGen::new(5)
+                focus_gen: FocusGen::new(5),
+                consecutive_before: 0
             })
         );
         assert_eq!(t, before, "内部状態を変えない");
@@ -371,6 +374,55 @@ mod giveup_tracker_tests {
             t.first_literal_evidence(&rec(LiteralVerdict::SuspectedLiteral, false)),
             None,
             "連鎖の途中(数え済み)では返さない"
+        );
+    }
+
+    /// Opus レビュー M1/M4: `consecutive_before > 0` でも(外部クローズへの追随の後に IME を戻した場合の数え残り)、
+    /// tracker の連鎖の1回目(`suspected == 0`)なら返し、`consecutive_before` を証拠に載せる。連鎖の途中(数え済み)では返さない。
+    #[test]
+    fn first_literal_evidence_uses_the_trackers_chain_not_consecutive_before_and_carries_it() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(FocusGen::new(5));
+        let mut r = rec(LiteralVerdict::SuspectedLiteral, false);
+        r.consecutive_before = 3; // 前の連鎖の数え残り(gave_up は偽)
+        assert_eq!(
+            t.first_literal_evidence(&r),
+            Some(FirstLiteralEvidence {
+                cold_seq: 7,
+                focus_gen: FocusGen::new(5),
+                consecutive_before: 3
+            })
+        );
+        // tracker が既に数えた連鎖の途中(suspected > 0)なら、consecutive_before が 0 でも返さない。
+        assert_eq!(t.note_record(&r), None);
+        r.consecutive_before = 0;
+        assert_eq!(t.first_literal_evidence(&r), None);
+    }
+
+    /// 配線の取り違え対策(Opus レビュー M4): 「送信 → 1回目 → 再送 → give-up」の列で、1回目だけが first-literal の証拠になり、
+    /// give-up の証拠は従来どおり2回目で出る(`note_record` の入力・戻り値は変わらない)。
+    #[test]
+    fn a_full_chain_yields_first_literal_evidence_once_and_giveup_evidence_unchanged() {
+        let mut t = GiveUpTracker::default();
+        t.note_vk_sent(FocusGen::new(5));
+        let first = rec(LiteralVerdict::SuspectedLiteral, false);
+        let fl = t.first_literal_evidence(&first);
+        assert_eq!(fl.map(|e| e.cold_seq), Some(7));
+        assert_eq!(t.note_record(&first), None);
+        t.note_vk_sent(FocusGen::new(5));
+        let second = rec(LiteralVerdict::SuspectedLiteral, true);
+        assert_eq!(
+            t.first_literal_evidence(&second),
+            None,
+            "2回目は証拠にならない"
+        );
+        assert_eq!(
+            t.note_record(&second),
+            Some(GiveUpEvidence {
+                cold_seq: 7,
+                focus_gen: FocusGen::new(5)
+            }),
+            "give-up の証拠は従来どおり"
         );
     }
 

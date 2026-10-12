@@ -386,14 +386,19 @@ impl Runtime {
         }
     }
 
-    /// ADR-258 段階0(観測だけ): 一連の literal 疑いの**1回目**で、「ここで arm したら何が起きていたか」を journal に記録する。
-    /// **arm しない・読み直しを予約しない・belief を動かさない**(挙動は変えない)。`outcome` は `first_literal_*`(`giveup_follow_decision` の
-    /// 判定の別名。`Arm` は `first_literal_would_arm`)、`baseline` は「いま arm したら基準値になっていた直近の読み」。
-    /// 実利用の不具合報告で、literal が起きたときの読みが閉を示していたか(偽陽性)を集計するための記録(D5' の合格条件)。
+    /// ADR-258 段階0(観測だけ): 一連の literal 疑いの**1回目**で、「ここで追随を arm していたら何が起きたか」を journal に
+    /// `FirstLiteralObserve` として記録する。**arm しない・読み直しを予約しない・belief を動かさない**(挙動は変えない)。
+    ///
+    /// - 判定(`giveup_follow_decision`)が `Arm`(= GJI × Imm32Unavailable × 明示意図 ON)以外なら、判定だけを記録して終わる。
+    /// - `Arm` のときは、literal の**直後**に prefetch と同じ読み(`read_ime_state_full_async`)を**1回だけ**取り、結果(`read_after`)と
+    ///   所要 ms を journal にだけ書く(belief・監視窓・refresh のパイプラインは通らない)。literal の前の直近の読み(`last_read`)だけでは、
+    ///   本当に閉じている場面と開いている cold-start の場面を区別できない(Opus レビュー K1)ので、後の読みを足した。
+    ///   実利用の不具合報告で `read_after` が `Some(false)` かを集計し、D5' の偽陽性(開いているのに閉と読む)が 0 かを確かめる。
     pub(crate) fn ir_observe_first_literal(
         &mut self,
         evidence: crate::tsf::literal_facts::FirstLiteralEvidence,
     ) {
+        use crate::tsf::literal_facts::GiveUpFollowDecision;
         let applies = self.external_change_watch_applies();
         let gen_now = self.platform.output.ime_mode_focus_gen.get();
         let intent = self.platform_state.ime.explicit_intent();
@@ -403,24 +408,51 @@ impl Runtime {
             gen_now,
             intent,
         );
+        let outcome = decision.first_literal_outcome();
         let last_read = if applies {
             self.platform_state.ime.external_change_last_read()
         } else {
             None
         };
-        self.platform_state
-            .ime
-            .journal
-            .record(crate::journal::JournalEntry::GiveUpFollow {
-                cold_seq: evidence.cold_seq,
-                outcome: decision.first_literal_outcome(),
-                baseline: last_read,
-            });
+        let cold_seq = evidence.cold_seq;
+        let consecutive_before = evidence.consecutive_before;
         tracing::debug!(
-            "[first-literal-observe] cold={} outcome={} last_read={last_read:?}",
-            evidence.cold_seq,
-            decision.first_literal_outcome()
+            "[first-literal-observe] cold={cold_seq} outcome={outcome} consecutive_before={consecutive_before} last_read={last_read:?}"
         );
+        if decision != GiveUpFollowDecision::Arm {
+            self.platform_state.ime.journal.record(
+                crate::journal::JournalEntry::FirstLiteralObserve {
+                    cold_seq,
+                    outcome,
+                    consecutive_before,
+                    last_read,
+                    read_after: None,
+                    read_after_ms: None,
+                },
+            );
+            return;
+        }
+        let t0 = crate::hook::current_tick_ms();
+        win32_async::spawn_local(async move {
+            let snap = crate::ime::read_ime_state_full_async().await;
+            let _ = crate::with_app(|app| {
+                let read_after_ms = crate::hook::current_tick_ms().saturating_sub(t0);
+                tracing::debug!(
+                    "[first-literal-observe] cold={cold_seq} read_after={:?} after {read_after_ms}ms",
+                    snap.ime_on
+                );
+                app.platform_state.ime.journal.record(
+                    crate::journal::JournalEntry::FirstLiteralObserve {
+                        cold_seq,
+                        outcome,
+                        consecutive_before,
+                        last_read,
+                        read_after: snap.ime_on,
+                        read_after_ms: Some(read_after_ms),
+                    },
+                );
+            });
+        });
     }
 
     // ── Stage 4: Engine 通知と次回スケジュール ──
