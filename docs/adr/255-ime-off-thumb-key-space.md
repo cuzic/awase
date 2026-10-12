@@ -388,3 +388,12 @@ develop `7812c9df` のビルドで、`[[keymaps]]` の `VK_NONCONVERT`→`VK_SPA
 - 前面窓が無い(画面ロック中)と `typing_stress` は注入せず abort する。リモート検証の前に画面のロック解除が要る。
 - **未確認のまま**: composition 中(ADR の決定条件「composition なし」)に無変換を押したとき Space が出ないこと、belief が外れた窓(IME の実際の状態と awase の belief が食い違う窓)、Windows Terminal・実 Chrome、MS-IME、設定画面で保存した設定の読み込み(実機)。`typing_stress` に composition 中の無変換を押す場面(scenario)は無く、足すにはコード変更が要る。
 
+### composition 中の発動条件(2026-10-12、dragonflyg4、`typing_stress --mode=lateorder --lateorder-comp`、GJI、各形 3 試行)
+
+`--lateorder-comp`(既定オフ。`lateorder.rs`)で決定2-6「composition なし」の周辺を実機で見た。`edit`・`tsf` とも3試行すべて同じ結果:
+
+- `comp_off`(IME ON → `a` を1打(未確定)→ 物理 OFF(`VK_IME_OFF`、未確定は確定される)→ 無変換): 確定した1文字の**あとに Space が1つ**付いた(本文の末尾が Space)。OFF で確定した後は composition の印が残らず、遅いルールが当たる。
+- `comp_on`(IME ON → `a` を1打(未確定)→ 無変換 → Enter): **Space は増えない**(確定した1文字だけ)。belief が ON の間は遅いルールが当たらない(IME が無変換を処理する)。
+
+**まだ確認していないこと**: belief が OFF なのに実際には composition がある窓(IME の実際の状態と awase の belief が食い違う窓)。この窓を作るには、awase が見ずに IME を ON にする方法(自プロセスの窓の HIMC 操作、`--mode=drift` 系)が要り、別プロセスの入力先では使えない。
+
