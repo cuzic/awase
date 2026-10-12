@@ -118,9 +118,22 @@ ADR-227 (i)(PR #480、`900a5f3e`)は「CI 検証済み・実機未検証」の�
 - 推論で belief を変える(D3): 取り下げ済み。
 - D5(保留)と D5'(arm の前倒し): 上のとおり。**D5' を第一候補**にする(保留・timer・新しい定数が要らず、cold-start の回収を遅らせない)。ただし K3 の測定の結果次第で、arm の頻度が増える害が大きければ D5(1回目で arm)に戻る。
 
+**段階0 の実測の結果(2026-10-12、dragonflyg4、GJI、awase 開発ビルドを `AWASE_TEST_INJECTION=1` で起動 = 明示意図 ON)— 実験室では K3 を成立させられない**
+
+読みの形は awase の prefetch と同じ(`hwndFocus` → `ImmGetDefaultIMEWnd` → `SendMessageTimeout(WM_IME_CONTROL, IMC_GETOPENSTATUS, 50ms)`)で、別プロセスのサンプラー(10ms 間隔、PowerShell の `Add-Type`)で取った。
+
+1. **`typing_stress --form=tsf --kinds=single,mixed --trials=6 --suspend-proc=GoogleIMEJaRenderer --suspend-ms=2500`**(12試行、IME は ON のまま Renderer を止める): `tsf` 形(自前の RichEdit 窓、IMM のコンテキストあり)の読みは**約8,000回すべて 1**(閉を返さない)。`[external-change]` 0 件。ただし **literal 判定が 0 件**で、cold の literal は起きなかった(arm の時点を迎えていない)。
+2. **`text_store_probe --class=Chrome_RenderWidgetHostHWND --deny-sync --seq=16,4B,41`**(TSF の同期ロックを拒否して literal を作る。30回 × 2 走行): literal 判定は 60〜90 件、`[external-change]` は **0 件**。
+   **ただし、この窓の読みは常に 0**(クラス名つきサンプラーで 14,689 回中 14,689 回が 0)。窓に IMM のコンテキストが無く、IMM 経由の `IMC_GETOPENSTATUS` は実際の IME の状態を反映しない。追随は基準値からの変化を見るので、読みが最初から 0 で動かないこの窓では起きないだけで、**「偽陽性が 0」の証拠にならない**。
+3. 実 Chrome・Windows Terminal の cold(60 秒アイドル)は、この端末では literal 化しない(先の節)。
+
+**結論**: 実験室の手段では、「実 Chrome の cold の最中の `IMC_GETOPENSTATUS` が、IME が ON のとき閉を返さないか」を、literal が起きた状況で測れない(literal が起きる窓は IMM の読みが動かず、IMM の読みが動く窓では literal が起きない)。
+K3 の合格条件(arm 後の閉への追随 0 件、literal 30 回以上)は、**実験室では満たせず、満たせない理由が分かった**。よって、段階0 は実験室の測定をやめ、**実利用の環境で観測だけを出荷して集める**形に改める(下)。
+
 **進め方(段階)**
-0. **観測だけ**(挙動は変えない): 条件を満たす cold の段で、arm したと仮定したときの prefetch の読み(値・古さ)を `info` ログと journal に残す。`typing_stress --form=tsf` の cold(`--cold`・`--idle`・`--suspend-proc`)で N≥30 回走らせ、K3 の合格条件を数える。
-1. 合格したら D5' を実装(純粋関数への切り出し + 単体テスト、M2 のリセット、M4 の journal)。再発ファミリー(IME belief・warmup・defer/replay キューの解放条件)なので、各ファミリーの (a) を満たす。実装の前に Opus レビューを再度回す。
+0. **観測だけを出荷する**(挙動は変えない、デバッグビルドに限らずリリースに入れる): 条件(GJI × Imm32Unavailable × 明示意図 ON)を満たす cold の段で、arm したと仮定したときの prefetch の読み(値・古さ・基準値)を journal に残す(新しい variant、`journal_policy` の notable 判定も決める)。
+   実利用の不具合報告(ADR-095)から、literal が起きたときの読みが「閉」だったか「開」だったかを集計し、**literal 判定の最中に読みが誤って閉を返さないこと**(偽陽性 0)を、報告で確かめる。実験室で測れない(上)ので、これが唯一の根拠になる。
+1. 報告の集計で合格したら D5' を実装(純粋関数への切り出し + 単体テスト、M2 のリセット、M4 の journal)。再発ファミリー(IME belief・warmup・defer/replay キューの解放条件)なので、各ファミリーの (a) を満たす。実装の前に Opus レビューを再度回す。
 2. 実機の回帰は `typing_stress --form=tsf --mode=drift-on`(対で書く): 外部クローズ(IME OFF)では**本文 = 送った romaji(例 `ka`)で `backspace ×` が出ない**こと、cold-start の対照(真に ON)では従来どおり `backspace ×` と再送が出ること(片側だけだと「常に捨てる」誤実装も通る)。宛先が変わったとき(ADR-246 `DiscardedStale`)と保留の優先順位(宛先照合が先)も表に入れる。
 
 ## 参考(結論に使わない): 不具合報告 47 件の集計
