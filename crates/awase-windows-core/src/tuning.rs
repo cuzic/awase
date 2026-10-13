@@ -82,14 +82,16 @@ pub const LONG_IDLE_MS: u64 = 10_000;
 
 /// Chrome VK パスでの「長期 idle」判定閾値 (ms)。
 ///
-/// `GjiFsm::long_idle_ms_for(InjectionMode::Vk)` が参照し、`ColdKind::classify` の
-/// Short/Medium/Long 重症度分岐（cold-start warmup の経路選択に使う）の cutoff になる。
+/// `GjiFsm::long_idle_ms_for(InjectionMode::Vk)` が参照し、`OnWarm` 入場時に開始する
+/// `GjiTimer::LongIdle` の長さになる（満了すると `OnCold(Long)` へ落ちる）。
+/// `ColdKind::classify` の Short/Medium/Long 分岐は `LONG_IDLE_MS` と `MEDIUM_IDLE_PROBE_MS`
+/// だけを見ており、この定数は参照しない。
 ///
 /// 予防的な Chrome プローブ最小待機の延長（20ms→200ms）機構自体は 2026-07-18 に
-/// 撤去した（`docs/known-bugs.md` BUG-24 参照、per-VK confirm に一本化）。この定数の
+/// 撤去した（`docs/known-bugs/BUG-024.md` 参照、per-VK confirm に一本化）。この定数の
 /// 元々の実測根拠（idle=6312ms 後に Chrome TSF の composition context 再初期化に
-/// ~145ms かかった事例, cold=1040）は撤去された機構向けだったが、値自体は
-/// `ColdKind` 分岐の cutoff として引き続き使われている。
+/// ~145ms かかった事例, cold=1040）は撤去された機構向けだったため、値は実測で
+/// 裏付けられていない（`measured(pending = true)`）。
 ///
 /// TSF/GJI パス（WezTerm 等）は GJI セッション生存期間に依存するため `LONG_IDLE_MS` を使用する。
 #[measured_macro::measured(pending = true)]
