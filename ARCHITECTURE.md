@@ -48,14 +48,16 @@ IMM32 ブリッジが機能しないアプリ（Chrome・WezTerm 等の TSF ネ�
 
 ### TSF コールドスタートの自動回復
 
-WezTerm 等の TSF ネイティブアプリでは、フォーカス直後や Enter 確定後に IME のコンポジションコンテキストが未初期化（コールド）状態になることがあります。この状態で最初のローマ字キーを送ると、IME 初期化前に処理されて ASCII としてそのまま出力されます（例: 「これで」→「koれで」）。
+WezTerm 等の TSF ネイティブアプリでは、フォーカス直後や長い無操作のあと、IME のコンポジションコンテキストが未初期化（コールド）状態になることがあります。この状態で最初のローマ字キーを送ると、IME 初期化前に処理されて ASCII としてそのまま出力されます（例: 「これで」→「koれで」）。
 
-awase はこれを次の手順で処理します：
+現行の awase は、事前に F2 を送って待つ方式ではなく、**1 文字ずつ送って確かめ、漏れたら回収する**方式（per-VK confirm）で処理します（2026-07-18 に待機方式を撤去、`d4956490`）。
 
-1. F2（`VK_DBE_HIRAGANA`）を先行送信して IME 初期化を促す
-2. `MsgWaitForMultipleObjects` + WinEvent `OBJ_NAMECHANGE` でコンポジションウィンドウの初期化完了をイベント駆動で検出する（上限 1000ms）
-3. 初期化完了後にローマ字を送信する
-4. それでも ASCII として漏れた場合は `LiteralDetector` が検出してバックスペースで除去し、正しいローマ字を再送する
+1. cold と判定したら、IMM32 のローマ字モードを復元し、待たずに送信へ進む
+2. ローマ字を 1 VK ずつ送り、`LiteralDetector` が候補ウィンドウの表示や GJI の書き込み量で、変換が始まったかを確かめる
+3. 確認できたら次の 1 文字へ進む
+4. ASCII として漏れた場合は、バックスペースで除去して再送する（2 文字目以降は ESC を先に送る）
+
+詳細は [docs/overview/topics/01-gji-coldstart.md](docs/overview/topics/01-gji-coldstart.md) を参照してください。
 
 ---
 
@@ -156,6 +158,8 @@ cargo test -p timed-fsm           # timed-fsm フレームワークテスト
 
 上表は主要な決定の抜粋。全 ADR（現在 87 件）の一覧・現在のステータスは
 [docs/adr/index.md](docs/adr/index.md) を参照。
+
+図解つきの概要は [docs/overview/README.md](docs/overview/README.md)（個別トピック 11 本）を参照してください。
 
 開発者ガイド: [docs/layer-boundaries.md](docs/layer-boundaries.md) に
 レイヤー境界ルール集（A〜E カテゴリ、計 13 項目）を集約している。
