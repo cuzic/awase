@@ -209,14 +209,29 @@ WinEvent（EVENT_SYSTEM_FOREGROUND 等）
     ↓
 FocusTracker::on_focus_change()
     ├─ MSAA / UIA で UI フレームワーク検出
-    ├─ ImmCapability（IMM32 対応 / TSF 専用 / ImmCross）
+    ├─ ImmCapability（学習した IMM32 の可否: Works / Unavailable）
     └─ HwndImeCache（ウィンドウごとの IME 状態キャッシュ）
 ```
 
 ### アプリ種別と制御方式
 
-| 分類 | 例 | IME 制御方式 |
+アプリは 2 つの軸で分類します(2026-10-13 に現行コードに合わせて書き直し。旧表の `ImmCapable` / `TsfOnly` / `ImmCross` / `Unknown` は現行の型名ではありません)。
+
+| 軸 | 型 | 値 | 決めるもの |
+|---|---|---|---|
+| 出力方式 | `AppKind` | `Win32` / `TsfNative` / `Uwp` | Unicode 直接注入か VK キーストロークか |
+| IME 制御 | `AppImeProfile` | `Standard` / `Imm32Unavailable` / `TsfNative` / `InputRelay` | IMM32 を使ってよいか、actuation を所有するか |
+
+| `AppImeProfile` | 例 | IME 制御 |
 |---|---|---|
+| `Standard` | メモ帳 | IMM32 で読み書きできる |
+| `Imm32Unavailable` | Chrome / Edge / Electron / Windows Terminal | IMM32 が効かない。状態は shadow に委ね、VK で制御 |
+| `TsfNative` | WezTerm | HIMC が NULL。VK を送って制御 |
+| `InputRelay` | `app_overrides.input_relay_apps` に登録したもの | awase は IME を操作しない |
+
+制御方式(ImmCross → GjiDirect → MsImeDirect)は `ime_controller.rs` の戦略で、プロファイルとは別です。詳細は [docs/overview/topics/02-chrome-tsf-apps.md](overview/topics/02-chrome-tsf-apps.md) を参照してください。
+
+---|---|---|
 | `ImmCapable` | メモ帳, VSCode | IMM32（ImmGetContext 経由） |
 | `TsfOnly` | Windows Terminal | TSF probe + VK_DBE_HIRAGANA |
 | `ImmCross` | LINE, Qt アプリ | 別プロセス ImmSetOpenStatus + KANJI 物理キー Consume |
