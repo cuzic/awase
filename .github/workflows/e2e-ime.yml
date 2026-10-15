@@ -325,6 +325,10 @@ jobs:
             # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
             # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
             # 8周目(同じ構成を再測定): 押下ごとの字形の時系列を見る(1.8秒窓の集計は次のセットアップの戻りを拾っていた)。F1(カタカナ)・F4/F5 を足し、間隔を 50ms に。
+            # 11周目: GJI のカスタムキー表で、6 モードの各コマンド(InputMode*)を F5〜F9 に割り当て、全角英数・半角カナにも到達して字形を取る(F11=IMEOn、F12=IMEOff)。
+            cfg('sc-ind-six-cust', 'observe', check='consistency', awase='false', keymap=0, runs=1, wait=330,
+                args='--seq=7A,74,75,76,77,78,74,77,75,78,76,7B,7A,76,77,7B,7A,75,74,78,76,77,75,7B,7A,74', side='ime_indicator_probe', side_args='--duration=260 --interval=50',
+                tsv='DirectInput,F5,InputModeHiragana|Precomposition,F5,InputModeHiragana|DirectInput,F6,InputModeFullKatakana|Precomposition,F6,InputModeFullKatakana|DirectInput,F7,InputModeHalfKatakana|Precomposition,F7,InputModeHalfKatakana|DirectInput,F8,InputModeFullAlphanumeric|Precomposition,F8,InputModeFullAlphanumeric|DirectInput,F9,InputModeHalfAlphanumeric|Precomposition,F9,InputModeHalfAlphanumeric|DirectInput,F11,IMEOn|Precomposition,F12,IMEOff'),
             # 10周目: IMM で書いた変換モードは字形に出ない(9周目)ので、キーで 6 モードに到達する。文字種キー(F0 英数・F1 カタカナ・F2 ひらがな)と
             # 幅キー(F3 半角・F4 全角)の組合せ。自前の窓・awase なし。到達した (開閉, 変換モード) は KEY 行の +1500ms 観測、字形は 50ms 間隔で取る。
             *[cfg(f'sc-ind-six-keys-{pn}', 'observe', check='consistency', awase='false', keymap=pk, runs=1, wait=330,
