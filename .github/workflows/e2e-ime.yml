@@ -104,6 +104,11 @@ jobs:
           def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings='', driver=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
                         keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings, driver=driver)
+
+          _ON_OFF = 'DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff'
+          EISU_COMPOSITE = _ON_OFF + '|DirectInput,Eisu,IMEOn|Precomposition,Eisu,ToggleAlphanumericMode|Composition,Eisu,ToggleAlphanumericMode|Conversion,Eisu,ToggleAlphanumericMode'
+          EISU_NO_ROW = _ON_OFF
+          EISU_CLOSES = _ON_OFF + '|DirectInput,Eisu,IMEOn|Precomposition,Eisu,IMEOff|Composition,Eisu,IMEOff|Conversion,Eisu,IMEOff'
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -325,6 +330,34 @@ jobs:
                   args='--seq=16,F0,F0,1A,F0,F0',
                   tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Eisu,IMEOn|Precomposition,Eisu,ToggleAlphanumericMode|Composition,Eisu,ToggleAlphanumericMode|Conversion,Eisu,ToggleAlphanumericMode')
               for suf, aw in (('', 'true'), ('-noawase', 'false'))],
+            # --- 英数=複合キー(IME ON 兼 英数トグル)の周辺ケース(不具合報告 01M4QSFH1B の切り分け、観測のみ。only='sc-eisu-composite-*') ---
+            # 一太郎(Imm32Unavailable=awase が実 IME の状態を読めない窓)を cache=unavailable で近似する。読めない窓では、閉→英数で開く追随は
+            # 予測(CUSTOM で表に英数の行があると同梱表の予測は打ち切られ、学習表が無いと予測なし)にしか頼れない。ここが食い違えば設計の隙間。
+            *[cfg(f'sc-eisu-composite-{nm}', 'observe', check='consistency', keymap=km, runs=2, cache=ca, awase='true',
+                  args=f'--seq={seq}', tsv=tsv)
+              for nm, km, ca, seq, tsv in (
+                # 読めない窓・閉から始める(最初の英数が閉→開)。
+                ('unavail-closed-first', 0, 'unavailable', '1A,F0,F0,F0', EISU_COMPOSITE),
+                # 読めない窓・一通り(ON→英数×2→OFF→英数×2)。
+                ('unavail-full', 0, 'unavailable', '16,F0,F0,1A,F0,F0', EISU_COMPOSITE),
+                # 読めない窓・外部の閉(注入の IME OFF は awase の意図にならない)の後の英数。stale な belief からの英数。
+                ('unavail-stale-close', 0, 'unavailable', '16,1A,F0,F0,F0', EISU_COMPOSITE),
+                # 英数の行が無い CUSTOM 表(ON/OFF の行だけ)。英数は GJI 既定のまま。
+                ('no-eisu-row', 0, 'works', '16,F0,F0,1A,F0,F0', EISU_NO_ROW),
+                ('no-eisu-row-unavail', 0, 'unavailable', '1A,F0,F0,F0', EISU_NO_ROW),
+                # 英数が閉じる表(直接入力では IMEOn、入力状態では IMEOff)。
+                ('eisu-closes', 0, 'works', '16,F0,F0,1A,F0,F0', EISU_CLOSES),
+                ('eisu-closes-unavail', 0, 'unavailable', '16,F0,F0,1A,F0,F0', EISU_CLOSES),
+                # プリセット(ATOK=1・MS-IME=2)の英数。
+                ('atok-preset', 1, 'works', '16,F0,F0,1A,F0,F0', ''),
+                ('msime-preset', 2, 'works', '16,F0,F0,1A,F0,F0', ''),
+                ('atok-preset-unavail', 1, 'unavailable', '1A,F0,F0,F0', ''),
+                ('msime-preset-unavail', 2, 'unavailable', '1A,F0,F0,F0', ''),
+              )],
+            # 外部から閉じられた IME(他アプリで OFF にして移ってくる状況の近似)を、フォーカスを外して戻した後に見る。CUSTOM+複合の英数表。
+            *[cfg(f'sc-eisu-composite-refocus-{form}', 'observe', check='driftrecovery', keymap=0, wait=200, tsv=EISU_COMPOSITE,
+                  stress=f'--form={form} --mode=drift-on --refocus --trials=10 --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('tsf', 'edit')],
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
