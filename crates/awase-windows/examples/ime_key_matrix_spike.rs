@@ -383,6 +383,7 @@ thread_local! {
     static AUTO_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// (実行時刻ms, VK, KeyDownか) の注入予約。
     /// `--setseq` の引数。前面・入力欄フォーカスが確立してから予約へ展開する(予約があるとフォーカス復帰が走らないため)。
+    static PRESSSEQ_PENDING: RefCell<Option<String>> = const { RefCell::new(None) };
     static SETSEQ_PENDING: RefCell<Option<String>> = const { RefCell::new(None) };
     static AUTO_QUEUE: RefCell<Vec<(u64, u32, bool)>> = const { RefCell::new(Vec::new()) };
     /// `--charthumb=CHAR,THUMB`: (文字VK, 親指VK, 残りラウンド数)。`auto_drive` がフォーカス確認のあとでラウンドごとに予約する。
@@ -820,6 +821,7 @@ fn script_vk(vk: u32) -> u32 {
 /// `--setseq` 用の擬似 VK(AUTO_QUEUE の vk 欄に載せる): 書き込み/読み戻し。
 const SETIME_FLAG: u32 = 0x4000_0000;
 const READIME_FLAG: u32 = 0x2000_0000;
+const LOGPRESS_FLAG: u32 = 0x1000_0000;
 
 /// `--setseq` を予約へ展開する。最初に IME ON/ひらがなキーを押してインジケーターを有効にし、そのあと 3.5 秒間隔で IMM に書く。
 fn enqueue_setseq(v: &str, now: u64) {
@@ -839,6 +841,23 @@ fn enqueue_setseq(v: &str, now: u64) {
             let mut q = q.borrow_mut();
             q.push((at, code, true));
             q.push((at + 1200, READIME_FLAG, true));
+        });
+    }
+}
+
+/// `--pressseq=VK,...`(16進)を予約へ展開する。キーを 3.5 秒間隔で注入し、押下時刻と 1.5 秒後の読み戻しを記録する
+/// (`--seq` はフックが認識するキーしか記録しないので、F5〜F9 などをカスタム表で割り当てて測るために作った)。
+fn enqueue_pressseq(v: &str, now: u64) {
+    let base = now + 3000;
+    for (i, t) in v.split(',').enumerate() {
+        let at = base + (i as u64) * 3500;
+        let vk = u32::from_str_radix(t.trim(), 16)
+            .unwrap_or_else(|_| arg_error(&format!("--pressseq が不正: {t:?}")));
+        queue_press(at, vk);
+        AUTO_QUEUE.with(|q| {
+            let mut q = q.borrow_mut();
+            q.push((at, LOGPRESS_FLAG | vk, true));
+            q.push((at + 1500, READIME_FLAG, true));
         });
     }
 }
@@ -874,7 +893,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         d
     });
     for (_, vk, down) in due {
-        if vk & (SETIME_FLAG | READIME_FLAG) != 0 {
+        if vk & (SETIME_FLAG | READIME_FLAG | LOGPRESS_FLAG) != 0 {
             // `--setseq`: キーではなく、IMM で (開閉, 変換モード) を直接書く/読み戻す(字形との対応づけ用)。
             if down {
                 if vk & SETIME_FLAG != 0 {
@@ -887,6 +906,8 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                         open,
                         conv
                     ));
+                } else if vk & LOGPRESS_FLAG != 0 {
+                    append_log(&format!("[PRESS] utc={} vk={:#04x}", utc_stamp(), vk & 0xFF));
                 } else {
                     append_log(&format!(
                         "[READIME] utc={} {}",
@@ -954,6 +975,10 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                 return;
             }
         }
+    }
+    if let Some(v) = PRESSSEQ_PENDING.with(|p| p.borrow_mut().take()) {
+        enqueue_pressseq(&v, now);
+        return;
     }
     if let Some(v) = SETSEQ_PENDING.with(|p| p.borrow_mut().take()) {
         enqueue_setseq(&v, now);
@@ -3109,6 +3134,7 @@ fn validate_args() {
         "--seed=",
         "--seq=",
         "--setseq=",
+        "--pressseq=",
         "--charthumb=",
         "--chord=",
         "--chord-at=",
@@ -3288,6 +3314,13 @@ fn run() -> WinResult<()> {
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
         SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
         SETSEQ_PENDING.with(|p| *p.borrow_mut() = Some(v));
+    }
+    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--pressseq=").map(str::to_owned)) {
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
+        PRESSSEQ_PENDING.with(|p| *p.borrow_mut() = Some(v));
     }
     if std::env::args().any(|a| a == "--hz") {
         HZ_MODE.with(|h| *h.borrow_mut() = true);
