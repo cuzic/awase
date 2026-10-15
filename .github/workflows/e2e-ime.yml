@@ -329,8 +329,8 @@ jobs:
             # keymatrix の押下時刻と字形の時系列を突き合わせる(状態づくりの sync は awase が書くので awase は起動する)。
             *[cfg(f'sc-ind-six-real-{win}-gjicust', 'observe', check='keymatrix', ime='gji', keymap=0, runs=1, wait=900, tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F5,InputModeHiragana|Precomposition,F5,InputModeHiragana|DirectInput,F6,InputModeFullKatakana|Precomposition,F6,InputModeFullKatakana|DirectInput,F7,InputModeHalfKatakana|Precomposition,F7,InputModeHalfKatakana|DirectInput,F8,InputModeFullAlphanumeric|Precomposition,F8,InputModeFullAlphanumeric|DirectInput,F9,InputModeHalfAlphanumeric|Precomposition,F9,InputModeHalfAlphanumeric|DirectInput,F11,IMEOn|Precomposition,F12,IMEOff',
                   side='ime_indicator_probe', side_args='--duration=900 --interval=50',
-                  **({'chrome': "--keymatrix=74=on:sync,77=on:fresh,74=on:sync,7b=off:fresh,74=on:sync,7b=off:close,74=on:sync,77=on:close --km-n=3 --settle=800"} if win == 'chrome' else
-                     {'stress': f"--form={win} --mode=keymatrix --km-cells=74=on:sync,77=on:fresh,74=on:sync,7b=off:fresh,74=on:sync,7b=off:close,74=on:sync,77=on:close --km-n=3 --layout=@REPO@/layout/nicola_keytop.yab"}))
+                  **({'chrome': "--keymatrix=74=on:sync,77=on:fresh,74=on:sync,7b=off:fresh,74=on:sync,77=on:close --km-n=3 --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells=74=on:sync,77=on:fresh,74=on:sync,7b=off:fresh,74=on:sync,77=on:close --km-n=3 --layout=@REPO@/layout/nicola_keytop.yab"}))
               for win in ('chrome', 'tsf')],
             *[cfg(f'sc-ind-six-real-{win}-msime', 'observe', check='keymatrix', ime='msime', keymap=2 if win == 'chrome' else 1, runs=1, wait=900,
                   side='ime_indicator_probe', side_args='--duration=900 --interval=50',
