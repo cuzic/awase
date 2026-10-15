@@ -325,6 +325,12 @@ jobs:
             # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
             # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
             # 8周目(同じ構成を再測定): 押下ごとの字形の時系列を見る(1.8秒窓の集計は次のセットアップの戻りを拾っていた)。F1(カタカナ)・F4/F5 を足し、間隔を 50ms に。
+            # 9周目: 6 モード(ひらがな 0x09・カタカナ 0x0B・全角英数 0x08・半角英数 0x00・半角カタカナ 0x03・直接入力=閉)が字形で区別できるか。
+            # 自前の窓で IMM(WM_IME_CONTROL)により (開閉, 変換モード) を直接書き(--setseq、ROMAN ビット 0x10 つき/なしの両方)、1.2 秒後に読み戻す。
+            # 字形(ime_indicator_probe)は 50ms 間隔。突き合わせは [SETIME]/[READIME] の時刻と字形の変化点で行う。
+            *[cfg(f'sc-ind-six-{pn}', 'observe', check='consistency', awase='false', keymap=pk, runs=1, wait=300,
+                  args='--setseq=c,19,1b,18,10,13,c,1b,19,13,10,18,19,10,1b,c,13,18,09,0b,08,00,03,c,0b,09,03,00,08,c', side='ime_indicator_probe', side_args='--duration=220 --interval=50')
+              for pn, pk in (('msime', 2), ('atok', 1))],
             # 7周目: タスクバーの IME 入力インジケーター(「あ」/「A」)の字形を、画面から取り込めるか(ime_indicator_probe、観測のみ。awase なし)。
             # 1回目(自前の窓 `ime_key_matrix_spike` の --seq): 字形のハッシュが実 IME の状態(閉・開かな・開半角英数)に完全に追随した(約0.15〜0.3秒遅れ)。
             # 2回目(ここ): 観測の無い窓(実 Chrome・RichEdit の tsf フォーム)でも追随するか、ほかのモード(カタカナ=ひらがな後の F1)でハッシュが分かれるかを見る。

@@ -815,6 +815,10 @@ fn script_vk(vk: u32) -> u32 {
     }
 }
 
+/// `--setseq` 用の擬似 VK(AUTO_QUEUE の vk 欄に載せる): 書き込み/読み戻し。
+const SETIME_FLAG: u32 = 0x4000_0000;
+const READIME_FLAG: u32 = 0x2000_0000;
+
 /// 押して離す（`--hold` ms 保持）を、`at` を起点に予約する。
 fn queue_press(at: u64, vk: u32) {
     AUTO_QUEUE.with(|q| {
@@ -846,6 +850,29 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         d
     });
     for (_, vk, down) in due {
+        if vk & (SETIME_FLAG | READIME_FLAG) != 0 {
+            // `--setseq`: キーではなく、IMM で (開閉, 変換モード) を直接書く/読み戻す(字形との対応づけ用)。
+            if down {
+                if vk & SETIME_FLAG != 0 {
+                    let open = vk & 0x0100_0000 != 0;
+                    let conv = vk & 0xFFFF;
+                    grid_set_ime(hwnd, open, conv);
+                    append_log(&format!(
+                        "[SETIME] utc={} open={} conv={:#04x}",
+                        utc_stamp(),
+                        open,
+                        conv
+                    ));
+                } else {
+                    append_log(&format!(
+                        "[READIME] utc={} {}",
+                        utc_stamp(),
+                        take_snapshot(hwnd).compact()
+                    ));
+                }
+            }
+            continue;
+        }
         send_key(vk, down);
     }
     // 全手順完了の少し後に、自動でウィンドウを閉じる(ログはファイルへ保存済み)。
@@ -3053,6 +3080,7 @@ fn validate_args() {
         "--walk=",
         "--seed=",
         "--seq=",
+        "--setseq=",
         "--charthumb=",
         "--chord=",
         "--chord-at=",
@@ -3223,6 +3251,30 @@ fn run() -> WinResult<()> {
     }
     if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--seq=").map(str::to_owned)) {
         let _ = SEQ_TABLE.set(parse_seq(&v));
+    }
+    // `--setseq=c,19,1b,18,10,13,09,0b,00,03`: `c`=閉(変換モード 0x19 のまま)、16進=開+その変換モード。
+    // 3.5 秒間隔で IMM に書き、1.2 秒後に読み戻す。字形(ime_indicator_probe)との突き合わせ用。
+    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--setseq=").map(str::to_owned)) {
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
+        let base = now_ms() + 9000;
+        for (i, t) in v.split(',').enumerate() {
+            let at = base + (i as u64) * 3500;
+            let code = if t.trim() == "c" {
+                SETIME_FLAG | 0x19
+            } else {
+                let conv = u32::from_str_radix(t.trim(), 16)
+                    .unwrap_or_else(|_| arg_error(&format!("--setseq が不正: {t:?}")));
+                SETIME_FLAG | 0x0100_0000 | conv
+            };
+            AUTO_QUEUE.with(|q| {
+                let mut q = q.borrow_mut();
+                q.push((at, code, true));
+                q.push((at + 1200, READIME_FLAG, true));
+            });
+        }
     }
     if std::env::args().any(|a| a == "--hz") {
         HZ_MODE.with(|h| *h.borrow_mut() = true);
