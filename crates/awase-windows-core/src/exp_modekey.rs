@@ -10,6 +10,8 @@
 //! - `b1e`: `b1` と同じだが、英数キー(`TableKey::Eisu`)だけに限る(ATOK のひらがな・入力中の無変換に当てない)。
 //! - `b3`: 直接観測の窓の「予測が付いたキーは読みを採らない」(ADR-188 追記6)を、予測が値を持つ軸だけにする(持たない軸の読みは採る)。
 //! - `noread`: IME 状態の読み(`read_ime_state_full`)をすべて失敗させる。一太郎(`ImmGetDefaultIMEWnd`=NULL で読み自体が不可)の模擬。
+//! - `b1o`: `b1e`(英数キーだけ)を、窓内の IME の読みが実際に効いている窓(直近 [`OBSERVABLE_MS`] に読みが成功した)だけに適用する。
+//!   観測の無い窓では belief が追随せず、従来の予測は belief が正しい多数派で当たるので、そこでは B1 を入れない(4周目の noread の結果)。
 //! - `x`: 読めない窓の GJI で、打鍵の結果(GJI の候補ウィンドウが出たか)から実 IME が組み立て中かを推定し、belief を直す。
 //! 未設定・空は従来の挙動。
 
@@ -27,10 +29,41 @@ pub struct ExpModeKey {
     pub toggle_guard_eisu_only: bool,
     pub per_axis_follow: bool,
     pub no_read: bool,
+    pub toggle_guard_observable: bool,
 }
 
 /// `y` の probe 値(ms)。CI の再現手順(フォーカスを外して戻す)の経過より短くして、機構が働くかを見る。本番値ではない。
 pub const Y_AGE_MS: u64 = 200;
+/// 読みが「効いている」とみなす期間(ms): 直近にこの期間内で `conversion_mode` の読みが成功したこと。
+pub const OBSERVABLE_MS: u64 = 30_000;
+
+static LAST_READ_OK_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    // 0 は「一度も読めていない」の意味にするので、1 から数える。
+    u64::try_from(
+        START
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX - 1)
+        + 1
+}
+
+/// IME の読み(conv)が成功したことを記録する(`read_ime_state_full` が呼ぶ)。
+pub fn note_read_ok() {
+    LAST_READ_OK_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 直近 [`OBSERVABLE_MS`] に読みが成功したか(一度も無ければ偽)。
+#[must_use]
+pub fn observable() -> bool {
+    let last = LAST_READ_OK_MS.load(std::sync::atomic::Ordering::Relaxed);
+    last != 0 && now_ms().saturating_sub(last) <= OBSERVABLE_MS
+}
+
 /// `x` の待ち時間(ms): 先頭の文字キーから、候補ウィンドウが出るかを見るまで。
 pub const X_WAIT_MS: u64 = 600;
 
@@ -49,6 +82,7 @@ pub fn parse(s: &str) -> ExpModeKey {
             "b1e" => f.toggle_guard_eisu_only = true,
             "b3" => f.per_axis_follow = true,
             "noread" => f.no_read = true,
+            "b1o" => f.toggle_guard_observable = true,
             _ => {}
         }
     }

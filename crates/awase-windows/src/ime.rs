@@ -537,6 +537,20 @@ pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> 
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
 pub unsafe fn read_ime_state_full() -> ImeSnapshot {
+    // SAFETY: 呼び出し元が `read_ime_state_full` の前提(メインスレッド等)を満たす。
+    let snap = unsafe { read_ime_state_full_inner() };
+    if snap.conversion_mode.is_some() {
+        awase_windows_core::exp_modekey::note_read_ok(); // 使い捨てのスパイク(exp_modekey の b1o)
+    }
+    snap
+}
+
+/// [`read_ime_state_full`] の本体。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+#[must_use]
+unsafe fn read_ime_state_full_inner() -> ImeSnapshot {
     // 使い捨てのスパイク(exp_modekey の noread): 一太郎のように読み自体ができない窓の模擬。全部「検出失敗」を返す。
     if awase_windows_core::exp_modekey::flags().no_read {
         return ImeSnapshot {

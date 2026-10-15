@@ -564,7 +564,10 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
     if input.unreadable
         && (exp.toggle_guard_keep
             || exp.toggle_guard_unknown
-            || (exp.toggle_guard_eisu_only && key == TableKey::Eisu))
+            || (exp.toggle_guard_eisu_only && key == TableKey::Eisu)
+            || (exp.toggle_guard_observable
+                && key == TableKey::Eisu
+                && crate::exp_modekey::observable()))
         && is_conv_toggle(table, input.open, conv, stage, key, c)
     {
         effect.mode = if exp.toggle_guard_unknown {
