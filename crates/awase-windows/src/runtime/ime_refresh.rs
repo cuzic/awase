@@ -167,6 +167,7 @@ impl Runtime {
         // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。
         self.ir_follow_direct_mode_key_read(ime_snap);
         self.ir_exp_recheck(ime_snap);
+        self.ir_exp_x();
         match strategy {
             ImeReadStrategy::SkipTyping => Self::ir_log_skip_typing_read(ime_snap),
             ImeReadStrategy::Blacklist => {
@@ -287,6 +288,37 @@ impl Runtime {
         }
     }
 
+    /// 使い捨てのスパイク(exp_modekey の x): 先頭の文字キーから `X_WAIT_MS` 後に、GJI の候補ウィンドウが出たか(=実 IME が
+    /// かなで組み立て中か)を、belief と照合して直す。読めない窓でも、候補ウィンドウの SHOW は外から観測できる。
+    fn ir_exp_x(&mut self) {
+        let Some(x) = self.exp_x else {
+            return;
+        };
+        let now = crate::hook::current_tick_ms();
+        if now < x.at_ms + awase_windows_core::exp_modekey::X_WAIT_MS {
+            return;
+        }
+        self.exp_x = None;
+        let showed = crate::tsf::observer::candidate_show_count() != x.show_before;
+        let accepted =
+            crate::state::probe_admission::AcceptedObservation::for_sync(self.focus_fence());
+        let applied = self.platform_state.ime.exp_x_apply(
+            x.belief_open,
+            x.belief_eisu,
+            showed,
+            now,
+            crate::state::TickMs(now),
+            accepted,
+            x.at_ms,
+        );
+        tracing::info!(
+            "[exp-x] belief(open={}, eisu={}) candidate_shown={showed} → {:?}",
+            x.belief_open,
+            x.belief_eisu,
+            applied
+        );
+    }
+
     /// 使い捨てのスパイク(exp_modekey の a): 物理のモードキーを通した後、打鍵が止まってから1回だけ実 IME を読み直し、
     /// belief と食い違う軸へ追随する。窓内は従来どおり予測に任せる(ADR-188 追記6: 処理前の古い読みで予測を覆さない)が、
     /// 窓が閉じた後に外れた予測を直す経路が無い(読めない窓ではポーリングが止まる)ので、その穴を埋められるかを見る。
@@ -323,6 +355,7 @@ impl Runtime {
             accepted,
             kind,
             armed_ms,
+            !awase_windows_core::exp_modekey::flags().recheck_after_idle,
         );
         tracing::info!(
             "[exp-recheck] read open={:?} conv={:?} idle={idle_ms}ms → follow={:?}",

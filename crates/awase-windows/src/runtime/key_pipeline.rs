@@ -1790,7 +1790,8 @@ impl Runtime {
             .ime
             .arm_mode_key_pass_mark(now, readable);
         // 使い捨てのスパイク(exp_modekey の a): 読めない窓の GJI/MS-IME 本体で、打鍵が止まってから1回だけ実 IME を読み直す。
-        if awase_windows_core::exp_modekey::flags().recheck_after_idle
+        let exp_flags = awase_windows_core::exp_modekey::flags();
+        if (exp_flags.recheck_after_idle || exp_flags.recheck_eisu_only)
             && self.direct_mode_key_watch_kind().is_some()
         {
             self.exp_recheck = Some((now, now + 4000));
@@ -1854,6 +1855,33 @@ impl Runtime {
             has_shadow_action: event.ime_relevance.shadow_action.is_some(),
             has_sync_direction: event.ime_relevance.sync_direction.is_some(),
         };
+        // 使い捨てのスパイク(exp_modekey の x): 読めない窓の GJI で、打鍵が止まった後の先頭の文字キーの時点の belief と
+        // GJI 候補ウィンドウの SHOW 累計を控える(評価は ir_exp_x)。
+        if awase_windows_core::exp_modekey::flags().typing_feedback
+            && facts.is_physical_key_down
+            && (0x41..=0x5A).contains(&facts.vk)
+            && !(m.ctrl || m.alt || m.win)
+        {
+            let now = hook::current_tick_ms();
+            let first = now.saturating_sub(self.exp_x_last_key_ms) >= crate::tuning::TYPING_IDLE_MS;
+            self.exp_x_last_key_ms = now;
+            if first
+                && self.exp_x.is_none()
+                && self.direct_mode_key_watch_kind() == Some(crate::state::ime_kind::ImeKindId::Gji)
+            {
+                self.exp_x = Some(super::ExpX {
+                    at_ms: now,
+                    show_before: crate::tsf::observer::candidate_show_count(),
+                    belief_open: self
+                        .platform_state
+                        .ime
+                        .effective_open_at(crate::state::TickMs(now)),
+                    belief_eisu: self.platform_state.ime.input_mode()
+                        == awase::engine::InputModeState::ObservedEisu,
+                });
+                self.schedule_ime_refresh(60);
+            }
+        }
         let Some(passive_rule_eligible) =
             crate::state::key_effect_predictor::plan_key_effect_track(&facts)
         else {

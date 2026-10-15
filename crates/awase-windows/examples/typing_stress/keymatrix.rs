@@ -423,8 +423,20 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             press(VK_RETURN, 0x1C, 50);
             sleep_ms(700);
             let text = read_text(child);
+            // 使い捨てのスパイク(`--km-twice`): 1文字目の後に打鍵の結果からの推定(exp_modekey の x)が働く時間を空け、2文字目の結果も見る。
+            let typed2 = if std::env::args().any(|a| a == "--km-twice") {
+                clear_text(child);
+                sleep_ms(300);
+                press(probe.vk, probe.scan, 60);
+                sleep_ms(700);
+                press(VK_RETURN, 0x1C, 50);
+                sleep_ms(700);
+                json!({"text":read_text(child),"expect":probe.kana.to_string()})
+            } else {
+                serde_json::Value::Null
+            };
             rec(
-                &json!({"type":"km_trial","cell":cell.label,"key":cell.key,"kind":cell.kind_name(),
+                &json!({"type":"km_trial","typed2":typed2,"cell":cell.label,"key":cell.key,"kind":cell.kind_name(),
                 "gap":cell.gap_name(),"n":i,"r0":r0,"target":target,"utc":utc0,"pre_ok":pre_ok,
                 "pre_api":pre_api,"commit":commit,"text_commit":text_commit,"text_post":text_post,"presses":presses,"focus_lost":focus_lost,"fresh":fresh_info,
                 "typed":{"press_utc":press_utc,"text":text,"expect":probe.kana.to_string(),

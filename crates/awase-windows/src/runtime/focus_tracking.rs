@@ -698,6 +698,20 @@ impl Runtime {
                          (stale false or explicit IME OFF is newer) — treating as cache miss"
                     );
                 }
+                // 使い捨てのスパイク(exp_modekey の y): 読めない窓の古い ON のキャッシュは、押下より前の明示 OFF より古い、または
+                // 経過が長い(probe 値)ときは復元しない。報告 01M4QSFH1B: 141秒前の ON を復元して実 IME(OFF)とずれた。
+                let exp_discard = awase_windows_core::exp_modekey::flags().cache_age_guard
+                    && is_imm_broken
+                    && cache_hit.is_some_and(|s| {
+                        s.ime_on
+                            && (tick_ms.0.saturating_sub(s.recorded_ms)
+                                > awase_windows_core::exp_modekey::Y_AGE_MS
+                                || pre_focus_explicit_off_ms > s.recorded_ms)
+                    });
+                if exp_discard {
+                    tracing::info!("[exp-y] Imm32Unavailable: 古い ON のキャッシュを復元しない");
+                }
+                let discard_cache = discard_cache || exp_discard;
                 let effective_cache = if discard_cache { None } else { cache_hit };
                 let effective_cache_miss = effective_cache.is_none();
                 self.platform_state

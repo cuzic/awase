@@ -617,6 +617,57 @@ impl ImeStateHub {
         Some(follow)
     }
 
+    /// 使い捨てのスパイク(exp_modekey の x): 先頭の文字キーの後に GJI の候補ウィンドウが出たか(`showed`)から、実 IME が
+    /// かなで組み立て中かを推定し、belief とずれていれば直す。読みを使わない(読めない窓向け)。
+    /// - belief がかな(開・英数でない)なのに出なかった → 実機は英数か閉 → 入力モードを英数へ。
+    /// - belief が英数なのに出た → 実機はかな → かなへ。
+    /// - belief が閉なのに出た → 実機は開・かな → 開・かなへ。
+    /// 押下後に belief が変わっていた・awase が IME へ書いていたら何もしない。
+    pub(crate) fn exp_x_apply(
+        &mut self,
+        snap_open: bool,
+        snap_eisu: bool,
+        showed: bool,
+        now_ms: u64,
+        tick_ms: TickMs,
+        accepted: crate::state::probe_admission::AcceptedObservation,
+        armed_at: u64,
+    ) -> Option<&'static str> {
+        if self.last_explicit_ime_action_ms >= armed_at {
+            return None;
+        }
+        if self.effective_open_at(tick_ms) != snap_open
+            || (self.input_mode() == InputModeState::ObservedEisu) != snap_eisu
+        {
+            return None;
+        }
+        let kana = InputModeState::AssumedRomaji {
+            reason: awase::engine::AssumedReason::ImmBridgeBroken,
+        };
+        let (label, open, mode) = match (snap_open, snap_eisu, showed) {
+            (true, false, false) => ("かな→英数", None, InputModeState::ObservedEisu),
+            (true, true, true) => ("英数→かな", None, kana),
+            (false, _, true) => ("閉→開・かな", Some(true), kana),
+            _ => return None,
+        };
+        if let Some(open) = open {
+            self.write_observer_poll(open, tick_ms, accepted);
+            if let Some(hwnd) = self.shadow_model.current_focus() {
+                self.intent_store.remove(hwnd);
+            }
+        }
+        self.dispatch_event(
+            ImeEvent::InputModeObserved {
+                mode,
+                source: ObservationSource::GjiIoInference,
+                confidence: ObservationConfidence::Medium,
+            },
+            tick_ms,
+        );
+        self.last_external_change_ms = now_ms;
+        Some(label)
+    }
+
     /// 使い捨てのスパイク(exp_modekey の a): 打鍵が止まった後の読みを belief と照合し、食い違う軸へ追随する。
     /// `follow_direct_read_in_scope` と違い、窓も「予測が付いた打鍵は採らない」規則も見ない(窓の後で、読みは処理後の値)。
     /// awase 自身が押下より後に IME へ書いていたら採らない(R3 と同じ)。開閉の軸は観測が信頼できない環境があるので、
@@ -630,17 +681,21 @@ impl ImeStateHub {
         accepted: crate::state::probe_admission::AcceptedObservation,
         kind: crate::state::ime_kind::ImeKindId,
         armed_at: u64,
+        eisu_only: bool,
     ) -> Option<super::external_change_watch::DirectFollow> {
         if self.last_explicit_ime_action_ms >= armed_at {
             return None;
         }
-        let follow = super::external_change_watch::classify_direct_read_for(
+        let mut follow = super::external_change_watch::classify_direct_read_for(
             kind,
             read_open,
             read_conv,
             self.effective_open_at(tick_ms),
             self.input_mode() == InputModeState::ObservedEisu,
         );
+        if eisu_only {
+            follow.open = None; // z: 開閉の読みは採らない(実 Chrome で a が悪化した)
+        }
         if follow.is_none() {
             return None;
         }

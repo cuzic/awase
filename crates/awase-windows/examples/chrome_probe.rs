@@ -1037,9 +1037,17 @@ fn run_keymatrix(p: &mut Probe, spec: &str, args: &[String]) {
                     sleep(1000);
                 }
             }
+            // 使い捨てのスパイク(`--km-twice`): 1回目の打鍵の後に推定(exp_modekey の x)が働く時間を空け、2回目の結果も見る。
+            let typed2 = if args.iter().any(|a| a == "--km-twice") && pre_ok {
+                sleep(900);
+                let got2 = p.probe_logged("keymatrix 2回目");
+                serde_json::json!(got2.label())
+            } else {
+                serde_json::Value::Null
+            };
             p.log.line(&format!(
                 "KM {}",
-                serde_json::json!({"type":"km_trial","cell":cell.label,"key":cell.key,"kind":cell.kind,
+                serde_json::json!({"type":"km_trial","typed2":typed2,"cell":cell.label,"key":cell.key,"kind":cell.kind,
                     "gap":cell.gap,"n":i,"r0":r0,"target":target,"utc":utc0,"pre_ok":pre_ok,
                     "pre_api":pre_api,"presses":presses,"focus_lost":p.focus_lost,"fresh":fresh})
             ));

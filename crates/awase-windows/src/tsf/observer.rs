@@ -584,6 +584,11 @@ pub(crate) fn candidate_was_seen() -> bool {
     TSF_OBS.candidate_was_seen.load(Ordering::Relaxed)
 }
 
+/// GJI candidate window が SHOW になった累計回数(使い捨てのスパイク exp_modekey の x が、打鍵の前後の差で「組み立てが始まったか」を見る)。
+pub(crate) fn candidate_show_count() -> u32 {
+    TSF_OBS.gji_candidate_show.value()
+}
+
 /// 現時点で GJI candidate window が可視かどうか。診断ログ用 live 読み取り。
 pub(crate) fn gji_candidate_visible_now() -> bool {
     TSF_OBS.gji_candidate_visible.load(Ordering::Relaxed)

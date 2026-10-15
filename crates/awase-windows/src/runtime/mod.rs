@@ -315,6 +315,15 @@ impl PostBypassEntry {
 /// コンポーネント間の相互参照はなく、`Runtime` を介してのみ通信する。
 ///
 /// 注意: 判断ロジックを追加しないこと。判断は Engine が担う。
+/// 使い捨てのスパイク(exp_modekey の x)の保留中の推定。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExpX {
+    pub(crate) at_ms: u64,
+    pub(crate) show_before: u32,
+    pub(crate) belief_open: bool,
+    pub(crate) belief_eisu: bool,
+}
+
 pub struct Runtime {
     engine: Engine,
     executor: DecisionExecutor,
@@ -345,6 +354,10 @@ pub struct Runtime {
     /// 使い捨てのスパイク(exp_modekey の a): 物理のモードキーを通した後の「打鍵が止まってからの1回の読み直し」の予約。
     /// `(押下時刻ms, 打ち切り時刻ms)`。読み直しを済ませるか打ち切り時刻を過ぎたら `None`。
     pub(crate) exp_recheck: Option<(u64, u64)>,
+    /// 使い捨てのスパイク(exp_modekey の x): 先頭の文字キーの時点の belief と GJI 候補ウィンドウの SHOW 累計。評価は X_WAIT_MS 後。
+    pub(crate) exp_x: Option<ExpX>,
+    /// 使い捨てのスパイク(exp_modekey の x): 直前の物理の文字キーの時刻(先頭の文字キーかの判定)。
+    pub(crate) exp_x_last_key_ms: u64,
     /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
     key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache,
     state_dependent_key_warning: crate::state::state_dependent_key_warning::WarningTracker,
@@ -1145,7 +1158,7 @@ impl Runtime {
     /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
     pub fn reschedule_ime_refresh(&mut self) {
         // 使い捨てのスパイク(exp_modekey の a): 読み直しの予約が残っている間は、従来の停止条件より先に tick を保つ。
-        if self.exp_recheck.is_some() {
+        if self.exp_recheck.is_some() || self.exp_x.is_some() {
             self.schedule_ime_refresh(60);
             return;
         }
@@ -1503,6 +1516,8 @@ impl Runtime {
             key_effect_keymap: crate::state::key_effect_predictor::KeymapCache::default(),
             last_ime_read_ok: true,
             exp_recheck: None,
+            exp_x: None,
+            exp_x_last_key_ms: 0,
             key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache::default(),
             state_dependent_key_warning:
                 crate::state::state_dependent_key_warning::WarningTracker::default(),
