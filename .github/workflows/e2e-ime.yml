@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'exp/mode-key-recheck' && 'sc-ind-six-cust') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'exp/mode-key-recheck' && 'sc-ind-six-msimenative') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -325,6 +325,9 @@ jobs:
             # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
             # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
             # 8周目(同じ構成を再測定): 押下ごとの字形の時系列を見る(1.8秒窓の集計は次のセットアップの戻りを拾っていた)。F1(カタカナ)・F4/F5 を足し、間隔を 50ms に。
+            # 12周目: 本物の Microsoft IME(GJI の MS-IME プリセットではない)で 6 モードの字形。MS-IME 本体は IMM の書き込みが効く可能性があるので --setseq で書く。
+            cfg('sc-ind-six-msimenative', 'observe', check='consistency', awase='false', ime='msime', runs=1, wait=330,
+                args='--setseq=c,19,1b,18,10,13,c,1b,19,13,10,18,19,10,1b,c,13,18,09,0b,08,00,03,c,0b,09,03,00,08,c', side='ime_indicator_probe', side_args='--duration=220 --interval=50'),
             # 11周目: GJI のカスタムキー表で、6 モードの各コマンド(InputMode*)を F5〜F9 に割り当て、全角英数・半角カナにも到達して字形を取る(F11=IMEOn、F12=IMEOff)。
             cfg('sc-ind-six-cust', 'observe', check='consistency', awase='false', keymap=0, runs=1, wait=330,
                 args='--pressseq=7A,74,75,76,77,78,74,77,75,78,76,7B,7A,76,77,7B,7A,75,74,78,76,77,75,7B,7A,74', side='ime_indicator_probe', side_args='--duration=260 --interval=50',
