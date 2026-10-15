@@ -327,8 +327,8 @@ jobs:
             # 7周目: タスクバーの IME 入力インジケーター(「あ」/「A」)の字形を、画面から取り込めるか(ime_indicator_probe、観測のみ。awase なし)。
             # 1回目(自前の窓 `ime_key_matrix_spike` の --seq): 字形のハッシュが実 IME の状態(閉・開かな・開半角英数)に完全に追随した(約0.15〜0.3秒遅れ)。
             # 2回目(ここ): 観測の無い窓(実 Chrome・RichEdit の tsf フォーム)でも追随するか、ほかのモード(カタカナ=ひらがな後の F1)でハッシュが分かれるかを見る。
-            # awase なし(awase='false')なので、typed は IME 単体の結果(か=開・かな、ka=閉か半角英数)。実 IME の開閉は各押下後の api(IMC_GETOPENSTATUS)で見る。
-            *[cfg(f'sc-ind-{win}-{pn}', 'observe', check='keymatrix', ime='gji', awase='false', keymap=pk, runs=1, wait=900,
+            # keymatrix の状態づくり(sync)は awase が書くので、awase は起動する(字形と実 IME の対応は awase の有無に依らない)。実 IME は各押下後の api(IMC_GETOPENSTATUS)と typed で見る。
+            *[cfg(f'sc-ind-{win}-{pn}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=1, wait=900,
                   side='ime_indicator_probe', side_args='--duration=800 --interval=100',
                   **({'chrome': "--keymatrix=f2=on:sync,f0=tog:sync,f1=on:sync,f3=tog:sync,1a=off:sync --km-n=3 --settle=800"} if win == 'chrome' else
                      {'stress': f"--form={win} --mode=keymatrix --km-cells=f2=on:sync,f0=tog:sync,f1=on:sync,f3=tog:sync,1a=off:sync --km-n=3 --layout=@REPO@/layout/nicola_keytop.yab"}))
