@@ -166,6 +166,7 @@ impl Runtime {
         self.ir_follow_external_change(ime_snap);
         // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。
         self.ir_follow_direct_mode_key_read(ime_snap);
+        self.ir_exp_recheck(ime_snap);
         match strategy {
             ImeReadStrategy::SkipTyping => Self::ir_log_skip_typing_read(ime_snap),
             ImeReadStrategy::Blacklist => {
@@ -284,6 +285,51 @@ impl Runtime {
                  (意図を捨て desired を揃える。awase は IME を書かない)"
             );
         }
+    }
+
+    /// 使い捨てのスパイク(exp_modekey の a): 物理のモードキーを通した後、打鍵が止まってから1回だけ実 IME を読み直し、
+    /// belief と食い違う軸へ追随する。窓内は従来どおり予測に任せる(ADR-188 追記6: 処理前の古い読みで予測を覆さない)が、
+    /// 窓が閉じた後に外れた予測を直す経路が無い(読めない窓ではポーリングが止まる)ので、その穴を埋められるかを見る。
+    fn ir_exp_recheck(&mut self, ime_snap: Option<&crate::ime::ImeSnapshot>) {
+        let Some((armed_ms, deadline_ms)) = self.exp_recheck else {
+            return;
+        };
+        let now = crate::hook::current_tick_ms();
+        if now > deadline_ms {
+            tracing::info!("[exp-recheck] gave up (deadline)");
+            self.exp_recheck = None;
+            return;
+        }
+        let last_activity = self.platform_state.gate.last_hook_activity_ms.max(
+            crate::tsf::probe_bridge::OUTPUT_GATE
+                .last_vk_output_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
+        let idle_ms = now.saturating_sub(last_activity);
+        if crate::state::ime_read_strategy::is_typing(idle_ms) {
+            return; // まだ打鍵中。次の tick(60ms)で再確認する。
+        }
+        let (Some(kind), Some(snap)) = (self.direct_mode_key_watch_kind(), ime_snap) else {
+            return; // 読みが無い。打ち切り時刻まで待つ。
+        };
+        self.exp_recheck = None;
+        let accepted =
+            crate::state::probe_admission::AcceptedObservation::for_sync(self.focus_fence());
+        let follow = self.platform_state.ime.exp_recheck_read(
+            snap.ime_on,
+            snap.conversion_mode,
+            now,
+            crate::state::TickMs(now),
+            accepted,
+            kind,
+            armed_ms,
+        );
+        tracing::info!(
+            "[exp-recheck] read open={:?} conv={:?} idle={idle_ms}ms → follow={:?}",
+            snap.ime_on,
+            snap.conversion_mode,
+            follow
+        );
     }
 
     /// ADR-188（BUG-149/150 の Chrome 版）・ADR-244（BUG-186）: 読めない窓（`Imm32Unavailable`）の GJI／同定済み MS-IME 本体で、

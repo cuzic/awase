@@ -1789,6 +1789,13 @@ impl Runtime {
         self.platform_state
             .ime
             .arm_mode_key_pass_mark(now, readable);
+        // 使い捨てのスパイク(exp_modekey の a): 読めない窓の GJI/MS-IME 本体で、打鍵が止まってから1回だけ実 IME を読み直す。
+        if awase_windows_core::exp_modekey::flags().recheck_after_idle
+            && self.direct_mode_key_watch_kind().is_some()
+        {
+            self.exp_recheck = Some((now, now + 4000));
+            tracing::info!("[exp-recheck] armed vk=0x{:02X}", event.vk_code.0);
+        }
         self.schedule_ime_refresh(20);
         tracing::info!(
             "[mode-key-follow] mode key PassThrough(vk=0x{:02X}): IME refresh scheduled (20ms)",

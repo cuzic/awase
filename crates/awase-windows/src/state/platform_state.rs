@@ -617,6 +617,61 @@ impl ImeStateHub {
         Some(follow)
     }
 
+    /// 使い捨てのスパイク(exp_modekey の a): 打鍵が止まった後の読みを belief と照合し、食い違う軸へ追随する。
+    /// `follow_direct_read_in_scope` と違い、窓も「予測が付いた打鍵は採らない」規則も見ない(窓の後で、読みは処理後の値)。
+    /// awase 自身が押下より後に IME へ書いていたら採らない(R3 と同じ)。開閉の軸は観測が信頼できない環境があるので、
+    /// `classify_direct_read_for` が種別ごとに絞った結果をそのまま使う。
+    pub(crate) fn exp_recheck_read(
+        &mut self,
+        read_open: Option<bool>,
+        read_conv: Option<u32>,
+        now_ms: u64,
+        tick_ms: TickMs,
+        accepted: crate::state::probe_admission::AcceptedObservation,
+        kind: crate::state::ime_kind::ImeKindId,
+        armed_at: u64,
+    ) -> Option<super::external_change_watch::DirectFollow> {
+        if self.last_explicit_ime_action_ms >= armed_at {
+            return None;
+        }
+        let follow = super::external_change_watch::classify_direct_read_for(
+            kind,
+            read_open,
+            read_conv,
+            self.effective_open_at(tick_ms),
+            self.input_mode() == InputModeState::ObservedEisu,
+        );
+        if follow.is_none() {
+            return None;
+        }
+        if let Some(open) = follow.open {
+            self.write_observer_poll(open, tick_ms, accepted);
+            if let Some(hwnd) = self.shadow_model.current_focus() {
+                self.intent_store.remove(hwnd);
+            }
+            self.pass_through_observed(tick_ms, true, true);
+        }
+        if let Some(eisu) = follow.eisu {
+            let mode = if eisu {
+                InputModeState::ObservedEisu
+            } else {
+                InputModeState::AssumedRomaji {
+                    reason: awase::engine::AssumedReason::ImmBridgeBroken,
+                }
+            };
+            self.dispatch_event(
+                ImeEvent::InputModeObserved {
+                    mode,
+                    source: ObservationSource::ConvBitsInference,
+                    confidence: ObservationConfidence::Medium,
+                },
+                tick_ms,
+            );
+        }
+        self.last_external_change_ms = now_ms;
+        Some(follow)
+    }
+
     /// ADR-256: prefetch 済みの開閉の読みで、未確認の awase の書き込みを確かめる（同じ値なら解く。窓の有無によらず毎回）。
     /// 引き継いだ書き込みが未確認のまま窓が切れていたら、そのことをログに残す（計測用、挙動は変えない）。
     fn note_direct_read_for_awase_write(

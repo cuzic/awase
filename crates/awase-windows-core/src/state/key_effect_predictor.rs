@@ -547,18 +547,53 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
         return None;
     };
     // 押下後の変換モードが不明（閉になる/開く遷移など）のときは、追跡を捨てる。入力モードは種（Unknown）だけ反映する。
-    let effect = PredictedEffect {
+    let mut effect = PredictedEffect {
         open: (c.after_open != input.open).then_some(c.after_open),
         mode: c
             .after_conv
             .and_then(|cv| mode_effect(input.mode, cv))
             .or_else(|| seeded.then(kana_mode)),
     };
-    let track = KeyTrack {
+    let mut track = KeyTrack {
         conv: c.after_conv,
         stage: next_stage(stage, key, c.disp, c.after_open),
     };
+    // 使い捨てのスパイク(exp_modekey の b1/b2): 読めない窓の状態依存のトグルキーは、belief が間違っていると
+    // 実機と逆位相で反転し続けるので、入力モードの予測を適用しない(b1)/不明に戻す(b2)。
+    let exp = crate::exp_modekey::flags();
+    if input.unreadable
+        && (exp.toggle_guard_keep || exp.toggle_guard_unknown)
+        && is_conv_toggle(table, input.open, conv, stage, key, c)
+    {
+        effect.mode = if exp.toggle_guard_unknown {
+            Some(InputModeState::Unknown)
+        } else {
+            None
+        };
+        track.conv = None;
+    }
     Some(Prediction { effect, track })
+}
+
+/// この打鍵が、開状態で変換モードを入れ替えるトグルか(かな→英数かつ英数→かな)。表のデータから決める。
+fn is_conv_toggle(
+    table: &[Cell],
+    open: bool,
+    conv: Conv,
+    stage: Stage,
+    key: TableKey,
+    c: &Cell,
+) -> bool {
+    if !open || !c.after_open {
+        return false;
+    }
+    let other = if conv == Conv::C10 {
+        Conv::C19
+    } else {
+        Conv::C10
+    };
+    c.after_conv == Some(other)
+        && find_in(table, open, other, stage, key).is_some_and(|o| o.after_conv == Some(conv))
 }
 
 /// 旧UIの`StyleList\\Custom`の表(`S4key`・`key`)の、無変換/変換(無修飾)の行から、打鍵時予測のセルを作る
@@ -2225,6 +2260,41 @@ mod tests {
     }
 
     /// ADR-209 決定1・2: 読めない窓・閉状態の無修飾の変換は開閉だけ予測する（モードは変えない）。
+    /// スパイク(exp_modekey): 開状態の英数は、MS-IME プリセットでかな↔半角英数を入れ替えるトグル。閉状態・変換は違う。
+    #[test]
+    fn exp_is_conv_toggle_detects_the_eisu_toggle_from_the_table() {
+        let table = table_of(KeymapPreset::MsIme);
+        let eisu = |open, conv, stage| find_in(table, open, conv, stage, TableKey::Eisu);
+        let c = eisu(true, Conv::C19, Stage::None).expect("開・かな・英数の行");
+        assert!(is_conv_toggle(
+            table,
+            true,
+            Conv::C19,
+            Stage::None,
+            TableKey::Eisu,
+            c
+        ));
+        let c10 = eisu(true, Conv::C10, Stage::None).expect("開・英数・英数の行");
+        assert!(is_conv_toggle(
+            table,
+            true,
+            Conv::C10,
+            Stage::None,
+            TableKey::Eisu,
+            c10
+        ));
+        // 閉状態の英数は開く(トグルではない)。
+        let closed = eisu(false, Conv::C19, Stage::None).expect("閉・英数の行");
+        assert!(!is_conv_toggle(
+            table,
+            false,
+            Conv::C19,
+            Stage::None,
+            TableKey::Eisu,
+            closed
+        ));
+    }
+
     #[test]
     fn adr209_unreadable_window_henkan_opens_without_touching_mode() {
         for session in [None, Some(-1), Some(2)] {

@@ -342,6 +342,9 @@ pub struct Runtime {
     /// 直前のOS読み取り（`OsPoll`）で観測（`ime_on`）を得られたか。時間切れ・空振りは`false`。
     /// 通過マークの窓の間の読み直し間隔（成功なら60ms、失敗なら窓の終了時の1回）に使う。
     last_ime_read_ok: bool,
+    /// 使い捨てのスパイク(exp_modekey の a): 物理のモードキーを通した後の「打鍵が止まってからの1回の読み直し」の予約。
+    /// `(押下時刻ms, 打ち切り時刻ms)`。読み直しを済ませるか打ち切り時刻を過ぎたら `None`。
+    pub(crate) exp_recheck: Option<(u64, u64)>,
     /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
     key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache,
     state_dependent_key_warning: crate::state::state_dependent_key_warning::WarningTracker,
@@ -1141,6 +1144,11 @@ impl Runtime {
 
     /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
     pub fn reschedule_ime_refresh(&mut self) {
+        // 使い捨てのスパイク(exp_modekey の a): 読み直しの予約が残っている間は、従来の停止条件より先に tick を保つ。
+        if self.exp_recheck.is_some() {
+            self.schedule_ime_refresh(60);
+            return;
+        }
         // TsfNative は read_ime_state_full が常に None、GJI も predates-focus-change でスキップ。
         // explicit_intent の有無に関わらずポーリングで得られる情報がないため常に停止する。
         // explicit_intent が確定している他プロファイルも同様に停止。
@@ -1494,6 +1502,7 @@ impl Runtime {
             drift_plan_edges: crate::state::drift_plan::DriftEdgeTracker::new(),
             key_effect_keymap: crate::state::key_effect_predictor::KeymapCache::default(),
             last_ime_read_ok: true,
+            exp_recheck: None,
             key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache::default(),
             state_dependent_key_warning:
                 crate::state::state_dependent_key_warning::WarningTracker::default(),

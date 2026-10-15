@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, exp/mode-key-recheck]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'exp/mode-key-recheck' && 'sc-exp-modekey-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -101,9 +101,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings='', driver=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings='', driver='', exp=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings, driver=driver)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings, driver=driver, exp=exp)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -139,6 +139,7 @@ jobs:
           # keys: abs=絶対キー用(Ctrl+変換/Ctrl+無変換に加えて、無変換/変換の単独タップを bare の keys.ime_off/ime_on にする=ADR-206 の役割由来)、
           #       tog=無変換の単独タップを keys.ime_toggle にする(トグルの検証用。0xF3/0x19 は IME/awase の shadow トグルで設定不要)。
           KM_KEYS = dict(abs='ime_on = ["Ctrl+変換", "VK_CONVERT"]; ime_off = ["Ctrl+無変換", "VK_NONCONVERT"]', tog='ime_toggle = ["VK_NONCONVERT"]')
+          KM_EISU = 'f0=tog:close,f0=tog:fresh,f0=tog:sync,f0=tog:open'
           def km_cells(grp, msime):
             if grp == 'abs':
               c = ['ctrl+1c=on:close', 'ctrl+1d=off:open', 'ctrl+1c=on:sync', 'ctrl+1d=off:sync', '1c=on:close', '1d=off:open', '16=on:close', '1a=off:open']
@@ -317,6 +318,15 @@ jobs:
             cfg('sc-solotap-after-passthrough-close-gji-atok', 'observe', check='consistency', keymap=0, runs=2,
                 args='--seq=16,F0,1D,1D,1D',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Eisu,IMEOff|Composition,Eisu,IMEOff|Conversion,Eisu,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
+            # 使い捨てのスパイク(exp/mode-key-recheck、develop にはマージしない): 英数(複合キー)を belief とずれた状態で押したときの追随を、
+            # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
+            # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
+            *[cfg(f'sc-exp-modekey-{win}-{en}', 'observe', check='keymatrix', ime='gji', keymap=2, runs=1, wait=2400, exp=ex,
+                  keys='ime_toggle = ["VK_NONCONVERT"]',
+                  **({'chrome': f"--keymatrix={KM_EISU} --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_EISU} --layout=@REPO@/layout/nicola_keytop.yab"}))
+              for win in ('tsf', 'chrome')
+              for en, ex in (('base', ''), ('a', 'a'), ('b1', 'b1'), ('b2', 'b2'), ('ab1', 'a,b1'))],
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
@@ -1185,6 +1195,8 @@ jobs:
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n[imm_capability.`"typing_stress.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
+          # 使い捨てのスパイク(exp/mode-key-recheck): 実験フラグ(exp_modekey、カンマ区切り a,b1,b2)。空なら従来の挙動。
+          $env:AWASE_EXP_MODEKEY = '${{ matrix.cfg.exp }}'
           # 順序: スパイクを先に起動し、初期化(TSF/ActivateProfile)が終わってから awase を起動する。
           # スパイクの初期化中に awase がIMMをプローブすると応答が無く、3回連続の miss で Edit を「IMM不可」と
           # 誤学習して conv を読まなくなる。--activate-gji はキーフックをawase起動後に遅延インストールし、
