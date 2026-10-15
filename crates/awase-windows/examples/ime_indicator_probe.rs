@@ -208,6 +208,65 @@ mod app {
         }
     }
 
+    /// 画面全体を 32bit の BMP として保存する(`--shots=<間隔秒>`。インジケーターやツールバーが実際に描かれているかを画像で見る用)。
+    unsafe fn save_screen_bmp(path: &str) {
+        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+        // SAFETY: GDI の呼び出し。取得したハンドルは必ず解放する。
+        unsafe {
+            let (w, h) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+            if w <= 0 || h <= 0 {
+                return;
+            }
+            let dc = GetDC(None);
+            let mem = CreateCompatibleDC(Some(dc));
+            let bmp = CreateCompatibleBitmap(dc, w, h);
+            let old = SelectObject(mem, HGDIOBJ(bmp.0));
+            let ok = BitBlt(mem, 0, 0, w, h, Some(dc), 0, 0, SRCCOPY).is_ok();
+            let mut bi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: u32::try_from(std::mem::size_of::<BITMAPINFOHEADER>()).unwrap_or(40),
+                    biWidth: w,
+                    biHeight: -h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut buf = vec![0u8; usize::try_from(w * h * 4).unwrap_or(0)];
+            let lines = GetDIBits(
+                mem,
+                bmp,
+                0,
+                u32::try_from(h).unwrap_or(0),
+                Some(buf.as_mut_ptr().cast()),
+                &mut bi,
+                DIB_RGB_COLORS,
+            );
+            SelectObject(mem, old);
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+            let _ = DeleteDC(mem);
+            ReleaseDC(None, dc);
+            if !ok || lines == 0 {
+                return;
+            }
+            let mut out = Vec::with_capacity(54 + buf.len());
+            out.extend_from_slice(b"BM");
+            out.extend_from_slice(&u32::try_from(54 + buf.len()).unwrap_or(0).to_le_bytes());
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            out.extend_from_slice(&54u32.to_le_bytes());
+            out.extend_from_slice(&40u32.to_le_bytes());
+            out.extend_from_slice(&w.to_le_bytes());
+            out.extend_from_slice(&(-h).to_le_bytes());
+            out.extend_from_slice(&1u16.to_le_bytes());
+            out.extend_from_slice(&32u16.to_le_bytes());
+            out.extend_from_slice(&[0u8; 24]);
+            out.extend_from_slice(&buf);
+            let _ = std::fs::write(path, out);
+        }
+    }
+
     /// 前回と同じ集合から入力インジケーターの要素を探す。
     unsafe fn find_indicator(auto: &IUIAutomation, root: HWND) -> Option<IUIAutomationElement> {
         // SAFETY: auto・root は有効。
@@ -305,6 +364,9 @@ mod app {
         }
         let t0 = Instant::now();
         let mut tick = 0u64;
+        let shots_every: Option<u64> = arg("--shots=").and_then(|v| v.parse().ok());
+        let mut shot_t = std::time::Instant::now().checked_sub(Duration::from_secs(3600)).unwrap_or_else(std::time::Instant::now);
+        let mut shots_n = 0u32;
         while t0.elapsed() < Duration::from_secs(duration) {
             let mut now = BTreeSet::new();
             for (name, p) in &classes {
@@ -350,6 +412,15 @@ mod app {
                             prev_hash = hash;
                         }
                     }
+                }
+            }
+            if let Some(every) = shots_every {
+                if shot_t.elapsed() >= Duration::from_secs(every) && shots_n < 12 {
+                    shot_t = std::time::Instant::now();
+                    // SAFETY: GDI の呼び出し(ハンドルは関数内で解放)。
+                    unsafe { save_screen_bmp(&format!("indshot-{shots_n:02}.bmp")) };
+                    log.line(&format!("IND-SHOT n={shots_n}"));
+                    shots_n += 1;
                 }
             }
             if tick % 50 == 0 {
