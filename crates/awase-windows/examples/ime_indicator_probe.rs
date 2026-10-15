@@ -188,7 +188,8 @@ mod app {
                 .map(|p| (u32::from(p[0]) * 29 + u32::from(p[1]) * 150 + u32::from(p[2]) * 77) >> 8)
                 .collect();
             let mean = luma.iter().sum::<u32>() / u32::try_from(luma.len()).unwrap_or(1).max(1);
-            let bits: Vec<bool> = luma.iter().map(|&l| l > mean + 20).collect();
+            // 背景より明るい字形も暗い字形も拾う(明るい背景に暗い字形だと、片側だけでは全部「空白」になる、MS-IME 本体で発覚)。
+            let bits: Vec<bool> = luma.iter().map(|&l| l.abs_diff(mean) > 20).collect();
             let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
             for b in &bits {
                 hash ^= u64::from(*b);
