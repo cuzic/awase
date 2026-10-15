@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, ci/e2e-eisu-composite]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'ci/e2e-eisu-composite' && 'sc-eisu-composite-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -317,6 +317,14 @@ jobs:
             cfg('sc-solotap-after-passthrough-close-gji-atok', 'observe', check='consistency', keymap=0, runs=2,
                 args='--seq=16,F0,1D,1D,1D',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Eisu,IMEOff|Composition,Eisu,IMEOff|Conversion,Eisu,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
+            # 不具合報告 01M4QSFH1B(一太郎・GJI の CUSTOM 表で英数=VK_DBE_ALPHANUMERIC が「IME ON 兼 英数トグル」)の確認(観測のみ)。
+            # 表: DirectInput の Eisu=IMEOn(閉から開く)、Precomposition/Composition/Conversion の Eisu=ToggleAlphanumericMode。
+            # --seq: 16=IME ON → F0(英数: 開のまま半角英数) → F0(かなへ戻る) → 1A=IME OFF → F0(閉から開く=冪等 ON の側) → F0(英数トグル)。
+            # 各押下の後の実 IME の開閉・変換モードと Engine(belief)の食い違いを見る。-noawase は awase なしの対照(GJI 単体の実挙動)。
+            *[cfg(f'sc-eisu-composite-gji-custom{suf}', 'observe', check='consistency', keymap=0, runs=2, awase=aw,
+                  args='--seq=16,F0,F0,1A,F0,F0',
+                  tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Eisu,IMEOn|Precomposition,Eisu,ToggleAlphanumericMode|Composition,Eisu,ToggleAlphanumericMode|Conversion,Eisu,ToggleAlphanumericMode')
+              for suf, aw in (('', 'true'), ('-noawase', 'false'))],
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
