@@ -1491,6 +1491,7 @@ jobs:
             env.txt
             dist/compartment_notify_probe.log
             dist/ime_indicator_probe.log
+            dist/indshot-*.bmp
             dist/compartment_notify_probe_diag.log
             dist/awase.log
             dist/chrome_probe.log
