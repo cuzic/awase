@@ -1412,6 +1412,7 @@ mod tests {
             track: KeyTrack::default(),
             unreadable: false,
             passive_rule_eligible: false,
+            observable_toggle_guard: false,
         };
         // (2) 学習した通りの結果。
         let p = super::super::key_effect_predictor::predict_in_table(&cells, 0xF2, &closed)

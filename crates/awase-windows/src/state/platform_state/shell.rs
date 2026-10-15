@@ -152,6 +152,17 @@ impl ImeStateHub {
         )
     }
 
+    /// ADR-260 決定1: 現在の前景スコープで、`conversion_mode` を持つ IME の読みが成功したことを記録する。
+    pub(crate) fn note_conv_read_ok(&mut self) {
+        self.note_conv_read_ok_in_scope(crate::win32::foreground_scope());
+    }
+
+    /// ADR-260 決定1: 現在の前景スコープが「窓内の読みが効く窓」か（フォーカスを得てから読みが成功したか）。
+    #[must_use]
+    pub(crate) fn conv_read_ok_now(&self) -> bool {
+        self.conv_read_ok_in_scope(crate::win32::foreground_scope())
+    }
+
     /// 通過マークの窓が**切れた後**の最初の成功観測で、`desired_open`を観測へ揃える（BUG-158追補2）。
     /// 本体は核の `align_after_expired_mode_key_pass_in_scope` を参照。
     pub(crate) fn align_after_expired_mode_key_pass(
