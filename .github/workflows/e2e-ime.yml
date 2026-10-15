@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'exp/mode-key-recheck' && 'sc-exp-modekey-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'exp/mode-key-recheck' && 'sc-exp-modekey-*,sc-ind-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -101,9 +101,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings='', driver='', exp=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings='', driver='', exp='', side='', side_args=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings, driver=driver, exp=exp)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings, driver=driver, exp=exp, side=side, side_args=side_args)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -324,6 +324,13 @@ jobs:
             # 使い捨てのスパイク(exp/mode-key-recheck、develop にはマージしない): 英数(複合キー)を belief とずれた状態で押したときの追随を、
             # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
             # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
+            # 7周目: タスクバーの IME 入力インジケーター(「あ」/「A」)を UIA で読めるか(ime_indicator_probe、観測のみ。awase なし)。
+            # ime_key_matrix_spike の --seq で IME の状態を変えながら(IME ON → 英数 → 英数 → IME OFF → 英数 → 英数 → ひらがな → IME OFF → IME ON → 半角全角×2)、
+            # 並行して UIA でタスクバーの要素を取り直し、変化を時刻つきで記録する。実 IME の状態は spike の KEY 行(A/B/T 観測)と時刻で突き合わせる。
+            # 最初の分かれ目: windows-latest に Shell_TrayWnd と入力インジケーターの要素があるか(IND-ROOTS・IND-DUMP の行)。
+            *[cfg(f'sc-ind-{pn}', 'observe', check='consistency', awase='false', keymap=pk, runs=1, wait=240,
+                  args='--seq=16,F0,F0,1A,F0,F0,F2,1A,16,F3,F3', side='ime_indicator_probe', side_args='--duration=200 --interval=100')
+              for pn, pk in (('msime', 2), ('atok', 1))],
             # 6周目: 観測の無い窓(noread=awase の読みを全部失敗させる、一太郎の模擬)で、各 IME キーを 1 回だけ押したとき(--km-max-press=1)の
             # 結果(typed)を、GJI の MS-IME プリセット(keymap=2)・ATOK プリセット(keymap=1)×tsf・実 Chrome で測る。
             # 目的: ずれた状態(close/fresh/sync/open/on:sync/on:fresh)から 1 回で Engine と実 IME がそろう(=リセットに使える)キーはどれか。
@@ -905,6 +912,7 @@ jobs:
           # awase-settings は tsx-bugreport-*(bin=baseline)だけが使う。撤去(mutator)ビルドでは egui の再リンクを払わない。
           if ('${{ matrix.cfg.name }}' -eq 'baseline') { cargo build -p awase-settings --bin awase-settings }
           cargo build -p awase-windows --example chrome_probe
+          cargo build -p awase-windows --example ime_indicator_probe
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\debug\awase.exe dist\
           Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
@@ -914,6 +922,7 @@ jobs:
           # tsx-bugreport-*(typing_stress --form=bugreport)が実体を起動するのに要る。typing_stress.exe と同じ dist\ に置く。
           if ('${{ matrix.cfg.name }}' -eq 'baseline') { Copy-Item target\debug\awase-settings.exe dist\ }
           Copy-Item target\debug\examples\chrome_probe.exe dist\
+          Copy-Item target\debug\examples\ime_indicator_probe.exe dist\
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
@@ -1280,6 +1289,10 @@ jobs:
               if ((Test-Path typing_stress.log) -and (Select-String -Path typing_stress.log -Pattern '=== 完了 ===' -Quiet)) { break }
             }
           } else {
+          # 副プロセス(side)。タスクバーの IME インジケーターを UIA で読むプローブ(ime_indicator_probe)を、スパイクと並行して動かす。
+          if ('${{ matrix.cfg.side }}' -ne '') {
+            Start-Process -FilePath ".\${{ matrix.cfg.side }}.exe" -ArgumentList "${{ matrix.cfg.side_args }} --log=${{ matrix.cfg.side }}.log"
+          }
           $spikeArgs = '--auto --hold=180 --activate-gji ${{ matrix.cfg.args }}'.Replace('@REPO@', $env:GITHUB_WORKSPACE.Replace('\', '/'))
           Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList $spikeArgs
           for ($i = 0; $i -lt 40; $i++) {
@@ -1446,6 +1459,7 @@ jobs:
             offrca.json
             env.txt
             dist/compartment_notify_probe.log
+            dist/ime_indicator_probe.log
             dist/compartment_notify_probe_diag.log
             dist/awase.log
             dist/chrome_probe.log
