@@ -571,20 +571,30 @@ impl ImeStateHub {
         // IME が処理を終えるのが窓（300ms）より遅いと、窓内の読みは処理前の古い状態を返す。それで予測を覆すと、
         // 後から IME が処理を終えても誰も追随しない（実測: MS-IME プリセットの 変換 で `[key-effect-miss]` を起こし
         // Engine が OFF のままになった、ADR-188 追記6）。観測が要るのは予測が効かない打鍵（Shift 付き・FSM の再送出）。
-        if self
+        // 使い捨てのスパイク(exp_modekey の b3): 予測が値を持つ軸だけ読みを採らない(持たない軸は採る)。
+        let pred_now = self
             .shadow_model
             .key_effect()
-            .is_some_and(|pred| pred.at_ms >= armed_at)
-        {
+            .filter(|pred| pred.at_ms >= armed_at);
+        let per_axis = awase_windows_core::exp_modekey::flags().per_axis_follow;
+        if pred_now.is_some() && !per_axis {
             return None;
         }
-        let follow = super::external_change_watch::classify_direct_read_for(
+        let mut follow = super::external_change_watch::classify_direct_read_for(
             kind,
             read_open,
             read_conv,
             self.effective_open_at(tick_ms),
             self.input_mode() == InputModeState::ObservedEisu,
         );
+        if let Some(pred) = pred_now {
+            if pred.open.is_some() {
+                follow.open = None;
+            }
+            if pred.mode.is_some() {
+                follow.eisu = None;
+            }
+        }
         if follow.is_none() {
             return None;
         }

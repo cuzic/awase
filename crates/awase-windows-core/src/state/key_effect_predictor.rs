@@ -562,7 +562,9 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
     // 実機と逆位相で反転し続けるので、入力モードの予測を適用しない(b1)/不明に戻す(b2)。
     let exp = crate::exp_modekey::flags();
     if input.unreadable
-        && (exp.toggle_guard_keep || exp.toggle_guard_unknown)
+        && (exp.toggle_guard_keep
+            || exp.toggle_guard_unknown
+            || (exp.toggle_guard_eisu_only && key == TableKey::Eisu))
         && is_conv_toggle(table, input.open, conv, stage, key, c)
     {
         effect.mode = if exp.toggle_guard_unknown {

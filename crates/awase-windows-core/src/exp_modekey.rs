@@ -7,6 +7,9 @@
 //! - `b2`: 同じ条件で、入力モードを `Unknown` に戻す(1周目で効果なし)。
 //! - `z`: `a` と同じ読み直しを、入力モード(英数かどうか)の軸だけにする(開閉の読みは採らない。実 Chrome で `a` が悪化した対策)。
 //! - `y`: 読めない窓で、古い HwndCache の ON を復元しない(押下より前の明示 OFF より古い・経過が [`Y_AGE_MS`] を超える)。
+//! - `b1e`: `b1` と同じだが、英数キー(`TableKey::Eisu`)だけに限る(ATOK のひらがな・入力中の無変換に当てない)。
+//! - `b3`: 直接観測の窓の「予測が付いたキーは読みを採らない」(ADR-188 追記6)を、予測が値を持つ軸だけにする(持たない軸の読みは採る)。
+//! - `noread`: IME 状態の読み(`read_ime_state_full`)をすべて失敗させる。一太郎(`ImmGetDefaultIMEWnd`=NULL で読み自体が不可)の模擬。
 //! - `x`: 読めない窓の GJI で、打鍵の結果(GJI の候補ウィンドウが出たか)から実 IME が組み立て中かを推定し、belief を直す。
 //! 未設定・空は従来の挙動。
 
@@ -21,6 +24,9 @@ pub struct ExpModeKey {
     pub recheck_eisu_only: bool,
     pub cache_age_guard: bool,
     pub typing_feedback: bool,
+    pub toggle_guard_eisu_only: bool,
+    pub per_axis_follow: bool,
+    pub no_read: bool,
 }
 
 /// `y` の probe 値(ms)。CI の再現手順(フォーカスを外して戻す)の経過より短くして、機構が働くかを見る。本番値ではない。
@@ -40,6 +46,9 @@ pub fn parse(s: &str) -> ExpModeKey {
             "z" => f.recheck_eisu_only = true,
             "y" => f.cache_age_guard = true,
             "x" => f.typing_feedback = true,
+            "b1e" => f.toggle_guard_eisu_only = true,
+            "b3" => f.per_axis_follow = true,
+            "noread" => f.no_read = true,
             _ => {}
         }
     }

@@ -537,6 +537,18 @@ pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> 
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
 pub unsafe fn read_ime_state_full() -> ImeSnapshot {
+    // 使い捨てのスパイク(exp_modekey の noread): 一太郎のように読み自体ができない窓の模擬。全部「検出失敗」を返す。
+    if awase_windows_core::exp_modekey::flags().no_read {
+        return ImeSnapshot {
+            is_japanese_ime: Some(true),
+            ime_on: None,
+            is_romaji: None,
+            conversion_mode: None,
+            is_tsf_native: false,
+            focused_class: None,
+            probe_timed_out: true,
+        };
+    }
     // この読み取りの間にIME窓への問い合わせが時間切れになったかを、スナップショットへ載せる。
     crate::imm::reset_probe_timed_out();
     // 0. フォーカスウィンドウを一度解決して全クエリに使う。
