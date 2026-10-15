@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'exp/mode-key-recheck' && 'sc-ind-six-msimekeys,sc-ind-six-msimenative') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'exp/mode-key-recheck' && 'sc-ind-six-real-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -325,6 +325,18 @@ jobs:
             # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
             # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
             # 8周目(同じ構成を再測定): 押下ごとの字形の時系列を見る(1.8秒窓の集計は次のセットアップの戻りを拾っていた)。F1(カタカナ)・F4/F5 を足し、間隔を 50ms に。
+            # 14周目: 観測の無い窓(実 Chrome・RichEdit の tsf)で 6 モードの字形が追随するか。GJI はカスタムキー表(InputMode* を F5〜F9)、本物の MS-IME は F2/F1/F0/F3/F4。
+            # keymatrix の押下時刻と字形の時系列を突き合わせる(状態づくりの sync は awase が書くので awase は起動する)。
+            *[cfg(f'sc-ind-six-real-{win}-gjicust', 'observe', check='keymatrix', ime='gji', keymap=0, runs=1, wait=900, tsv='DirectInput,F5,InputModeHiragana|Precomposition,F5,InputModeHiragana|DirectInput,F6,InputModeFullKatakana|Precomposition,F6,InputModeFullKatakana|DirectInput,F7,InputModeHalfKatakana|Precomposition,F7,InputModeHalfKatakana|DirectInput,F8,InputModeFullAlphanumeric|Precomposition,F8,InputModeFullAlphanumeric|DirectInput,F9,InputModeHalfAlphanumeric|Precomposition,F9,InputModeHalfAlphanumeric|DirectInput,F11,IMEOn|Precomposition,F12,IMEOff',
+                  side='ime_indicator_probe', side_args='--duration=900 --interval=50',
+                  **({'chrome': "--keymatrix=74=on:sync,75=on:sync,76=on:sync,77=on:sync,78=on:sync,7b=off:sync --km-n=3 --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells=74=on:sync,75=on:sync,76=on:sync,77=on:sync,78=on:sync,7b=off:sync --km-n=3 --layout=@REPO@/layout/nicola_keytop.yab"}))
+              for win in ('chrome', 'tsf')],
+            *[cfg(f'sc-ind-six-real-{win}-msime', 'observe', check='keymatrix', ime='msime', keymap=2 if win == 'chrome' else 1, runs=1, wait=900,
+                  side='ime_indicator_probe', side_args='--duration=900 --interval=50',
+                  **({'chrome': "--keymatrix=f2=on:sync,f1=on:sync,f2=on:sync,f4=tog:sync,f3=tog:sync,f0=tog:sync --km-n=3 --settle=800 --msime"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells=f2=on:sync,f1=on:sync,f2=on:sync,f4=tog:sync,f3=tog:sync,f0=tog:sync --km-n=3 --layout=@REPO@/layout/nicola_keytop.yab --msime"}))
+              for win in ('chrome', 'tsf')],
             # 13周目: 本物の MS-IME(--msime)に、キー注入だけで各モードを作る(--pressseq)。文字種(F0 英数・F1 カタカナ・F2 ひらがな)・幅(F3/F4)・ローマ字(F5/F6)・無変換/変換。
             cfg('sc-ind-six-msimekeys', 'observe', check='consistency', awase='false', ime='msime', runs=1, wait=330,
                 args='--msime --pressseq=F2,F1,F1,F0,F0,F2,F4,F4,F3,F3,F2,1D,1D,1C,1C,F2,F0,F4,F1,F3,F2,1A,16,F2,F1,F4,F3,F0,F4,F3,F2,F0,F1,F4,F0,F3', side='ime_indicator_probe', side_args='--duration=220 --interval=50 --shots=15'),
