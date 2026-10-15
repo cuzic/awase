@@ -324,14 +324,15 @@ jobs:
             # 使い捨てのスパイク(exp/mode-key-recheck、develop にはマージしない): 英数(複合キー)を belief とずれた状態で押したときの追随を、
             # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
             # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
+            # 8周目(同じ構成を再測定): 押下ごとの字形の時系列を見る(1.8秒窓の集計は次のセットアップの戻りを拾っていた)。F1(カタカナ)・F4/F5 を足し、間隔を 50ms に。
             # 7周目: タスクバーの IME 入力インジケーター(「あ」/「A」)の字形を、画面から取り込めるか(ime_indicator_probe、観測のみ。awase なし)。
             # 1回目(自前の窓 `ime_key_matrix_spike` の --seq): 字形のハッシュが実 IME の状態(閉・開かな・開半角英数)に完全に追随した(約0.15〜0.3秒遅れ)。
             # 2回目(ここ): 観測の無い窓(実 Chrome・RichEdit の tsf フォーム)でも追随するか、ほかのモード(カタカナ=ひらがな後の F1)でハッシュが分かれるかを見る。
             # keymatrix の状態づくり(sync)は awase が書くので、awase は起動する(字形と実 IME の対応は awase の有無に依らない)。実 IME は各押下後の api(IMC_GETOPENSTATUS)と typed で見る。
             *[cfg(f'sc-ind-{win}-{pn}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=1, wait=900,
-                  side='ime_indicator_probe', side_args='--duration=800 --interval=100',
-                  **({'chrome': "--keymatrix=f2=on:sync,f0=tog:sync,f1=on:sync,f3=tog:sync,1a=off:sync --km-n=3 --settle=800"} if win == 'chrome' else
-                     {'stress': f"--form={win} --mode=keymatrix --km-cells=f2=on:sync,f0=tog:sync,f1=on:sync,f3=tog:sync,1a=off:sync --km-n=3 --layout=@REPO@/layout/nicola_keytop.yab"}))
+                  side='ime_indicator_probe', side_args='--duration=1200 --interval=50',
+                  **({'chrome': "--keymatrix=f2=on:sync,f1=on:sync,f2=on:sync,f4=tog:sync,f5=tog:sync,f2=on:sync,f0=tog:sync,f3=tog:sync,1a=off:sync --km-n=4 --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells=f2=on:sync,f1=on:sync,f2=on:sync,f4=tog:sync,f5=tog:sync,f2=on:sync,f0=tog:sync,f3=tog:sync,1a=off:sync --km-n=4 --layout=@REPO@/layout/nicola_keytop.yab"}))
               for win in ('chrome', 'tsf')
               for pn, pk in (('msime', 2), ('atok', 1))],
             # 6周目: 観測の無い窓(noread=awase の読みを全部失敗させる、一太郎の模擬)で、各 IME キーを 1 回だけ押したとき(--km-max-press=1)の
