@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'ci/e2e-eisu-composite' && 'sc-eisu-composite-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'ci/e2e-eisu-composite' && 'sc-hwndcache-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -358,6 +358,16 @@ jobs:
             *[cfg(f'sc-eisu-composite-refocus-{form}', 'observe', check='driftrecovery', keymap=0, wait=200, tsv=EISU_COMPOSITE,
                   stress=f'--form={form} --mode=drift-on --refocus --trials=10 --layout=@REPO@/layout/nicola_keytop.yab')
               for form in ('tsf', 'edit')],
+            # 不具合報告 01M4QSFH1B(一太郎=読めない窓)の再現試行(観測のみ、only='sc-hwndcache-*')。app log の流れ: 直前のアプリで IME OFF →
+            # 一太郎へ移動 → `HwndCache: restore ime_on=true`(古いキャッシュ、141秒前) → Engine activated → 実 IME は OFF のまま(タスクバーは OFF)。
+            # typing_stress --mode=drift-on: VK_IME_ON で ON にそろえ(awase の明示意図 ON)、ハーネスが実 IME を直接閉じ(他アプリで OFF にした近似)、
+            # --refocus でタスクバーへフォーカスを外して戻し(HwndCache の復元を通す)、かな単打して確定したテキストを見る。-norefocus は対照(復元を通さない)。
+            # cache=unavailable は awase が実 IME を読めない(=Imm32Unavailable 相当)。ATOK プリセット・cal-driftrec と同じ前提(readiness が通ることを優先)。
+            *[cfg(f'sc-hwndcache-{form}-{rf}-{cn}', 'observe', check='driftrecovery', keymap=1, wait=200, cache=cn,
+                  stress=f'--form={form} --mode=drift-on {"--refocus " if rf == "refocus" else ""}--trials=10 --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('tsf', 'edit')
+              for rf in ('refocus', 'norefocus')
+              for cn in ('works', 'unavailable')],
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
