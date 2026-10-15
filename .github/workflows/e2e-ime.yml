@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, feat/adr260-eisu-toggle-guard]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -139,6 +139,7 @@ jobs:
           # keys: abs=絶対キー用(Ctrl+変換/Ctrl+無変換に加えて、無変換/変換の単独タップを bare の keys.ime_off/ime_on にする=ADR-206 の役割由来)、
           #       tog=無変換の単独タップを keys.ime_toggle にする(トグルの検証用。0xF3/0x19 は IME/awase の shadow トグルで設定不要)。
           KM_KEYS = dict(abs='ime_on = ["Ctrl+変換", "VK_CONVERT"]; ime_off = ["Ctrl+無変換", "VK_NONCONVERT"]', tog='ime_toggle = ["VK_NONCONVERT"]')
+          KM_EISU = 'f0=tog:close,f0=tog:fresh,f0=tog:sync,f0=tog:open,f0=on:sync,f0=on:fresh'
           def km_cells(grp, msime):
             if grp == 'abs':
               c = ['ctrl+1c=on:close', 'ctrl+1d=off:open', 'ctrl+1c=on:sync', 'ctrl+1d=off:sync', '1c=on:close', '1d=off:open', '16=on:close', '1a=off:open']
@@ -317,6 +318,15 @@ jobs:
             cfg('sc-solotap-after-passthrough-close-gji-atok', 'observe', check='consistency', keymap=0, runs=2,
                 args='--seq=16,F0,1D,1D,1D',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Eisu,IMEOff|Composition,Eisu,IMEOff|Conversion,Eisu,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
+            # ADR-260: 英数(複合キー)を belief とずれた状態で押したときの追随(観測のみ、only='sc-eisu-km-*' かブランチ feat/adr260-eisu-toggle-guard)。
+            # 本実装(B1o+B3)の確認。読みが効く窓(tsf・実 Chrome)で、typed の「ずれ」(tsf: ｗ・ka、chrome: 素通しのかな・英数なのに Engine ON)が 0 になること。
+            # `--km-twice` で 2 文字目も記録する。ATOK は閉の英数が開かない対照。
+            *[cfg(f'sc-eisu-km-{win}-{pn}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=3, wait=2400,
+                  keys='ime_toggle = ["VK_NONCONVERT"]',
+                  **({'chrome': f"--keymatrix={KM_EISU} --km-twice --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_EISU} --km-twice --layout=@REPO@/layout/nicola_keytop.yab"}))
+              for win in ('tsf', 'chrome')
+              for pn, pk in (('msime', 2), ('atok', 1))],
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,

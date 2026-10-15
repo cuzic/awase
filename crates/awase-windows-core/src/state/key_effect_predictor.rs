@@ -394,6 +394,11 @@ pub struct PredictInput {
     /// （KeyDown・自動リピートでない・非 injected・`shadow_action`/`sync_direction` が無い・エンジンが消費していない・修飾なし）を
     /// `kp_stage_key_effect_track` が計算して渡す。規則は窓の種類にも ADR-209 の設定にも依らない。
     pub passive_rule_eligible: bool,
+    /// ADR-260 決定1: 窓内の IME の読みが効いている窓（直接観測の窓が働く GJI の `Imm32Unavailable`、現在のスコープで読みが
+    /// 成功済み、学習済みの IMM 能力が `Unavailable` でない）か。真のとき、開状態の英数トグルは入力モードを予測しない
+    /// （直接観測が belief を直す）。観測の無い窓では偽（従来の予測のまま。外すと belief が一致している切替が悪化する）。
+    /// 窓別の規則（`unreadable`、ADR-209）とは独立に、呼び出し側（`kp_predict_key_effect`）が計算する。
+    pub observable_toggle_guard: bool,
 }
 
 impl PredictInput {
@@ -547,18 +552,53 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
         return None;
     };
     // 押下後の変換モードが不明（閉になる/開く遷移など）のときは、追跡を捨てる。入力モードは種（Unknown）だけ反映する。
-    let effect = PredictedEffect {
+    let mut effect = PredictedEffect {
         open: (c.after_open != input.open).then_some(c.after_open),
         mode: c
             .after_conv
             .and_then(|cv| mode_effect(input.mode, cv))
             .or_else(|| seeded.then(kana_mode)),
     };
-    let track = KeyTrack {
+    let mut track = KeyTrack {
         conv: c.after_conv,
         stage: next_stage(stage, key, c.disp, c.after_open),
     };
+    // ADR-260 決定1（B1o）: 窓内の読みが効く窓の、開状態の英数トグルは、入力モードを予測せず追跡も捨てる。belief が実機と
+    // 逆位相だと、予測も実機も同じ向きに反転し続けて逆位相が固定される。予測を付けなければ `KeyEffectPredicted` が
+    // fence を進めず `key_effect` も残らないので、直接観測の窓の読みが belief と照合される。`Unknown` の種（かな）も残さない
+    // （残すと入力モードの軸の読みが塞がる）。適用は英数だけ（トグルの判定は表のデータだが、ATOK のひらがな・入力中の無変換には
+    // 当てない）。
+    if input.observable_toggle_guard
+        && key == TableKey::Eisu
+        && is_conv_toggle(table, input.open, conv, stage, key, *c)
+    {
+        effect.mode = None;
+        track.conv = None;
+    }
     Some(Prediction { effect, track })
+}
+
+/// この打鍵が、開状態で変換モードを入れ替えるトグルか（かな→英数かつ英数→かな）。
+///
+/// 表のデータから決める（ADR-260）。
+fn is_conv_toggle(
+    table: &[Cell],
+    open: bool,
+    conv: Conv,
+    stage: Stage,
+    key: TableKey,
+    c: Cell,
+) -> bool {
+    if !open || !c.after_open {
+        return false;
+    }
+    let other = if conv == Conv::C10 {
+        Conv::C19
+    } else {
+        Conv::C10
+    };
+    c.after_conv == Some(other)
+        && find_in(table, open, other, stage, key).is_some_and(|o| o.after_conv == Some(conv))
 }
 
 /// 旧UIの`StyleList\\Custom`の表(`S4key`・`key`)の、無変換/変換(無修飾)の行から、打鍵時予測のセルを作る
@@ -1197,6 +1237,7 @@ impl KeyEffectKeymap {
         for &resent_vk in resent {
             let step_input = PredictInput {
                 passive_rule_eligible: false,
+                observable_toggle_guard: false,
                 ..state
             };
             let step = self.predict_with_override(resent_vk, &step_input, override_table)?;
@@ -1413,6 +1454,7 @@ pub fn hiragana_key_is_set(
             },
             unreadable,
             passive_rule_eligible: false,
+            observable_toggle_guard: false,
         };
         let p = keymap.predict_with_override(VK_HIRAGANA, &input, learned)?;
         Some(match (p.track.conv, p.effect.mode) {
@@ -1723,6 +1765,7 @@ mod tests {
             track,
             unreadable: false,
             passive_rule_eligible: false,
+            observable_toggle_guard: false,
         }
     }
 
@@ -2224,6 +2267,112 @@ mod tests {
         }
     }
 
+    fn observable_input(open: bool, mode: InputModeState) -> PredictInput {
+        PredictInput {
+            observable_toggle_guard: true,
+            ..input(open, mode, false, NOTRACK)
+        }
+    }
+
+    /// ADR-260 決定1（B1o）: 窓内の読みが効く窓の、開状態の英数トグルは入力モードを予測せず、追跡も捨てる。
+    /// MS-IME・ATOK の両プリセット、かな(C19)・英数(C10)の両方から。開閉の予測は変えない。
+    #[test]
+    fn adr260_observable_window_eisu_toggle_predicts_no_mode_and_drops_the_track() {
+        for preset in [KeymapPreset::MsIme, KeymapPreset::Atok] {
+            for mode in [ROMAJI, InputModeState::ObservedEisu] {
+                let on =
+                    predict(preset, 0xF0, &observable_input(true, mode)).expect("英数は予測する");
+                assert_eq!(on.effect.mode, None, "{preset:?} {mode:?}");
+                assert_eq!(on.effect.open, None, "開のまま");
+                assert_eq!(on.track.conv, None, "追跡を捨てる");
+                // 観測の無い窓(ガード偽)は従来どおり反転を予測する。
+                let off =
+                    predict(preset, 0xF0, &input(true, mode, false, NOTRACK)).expect("従来の予測");
+                assert!(off.effect.mode.is_some(), "{preset:?} {mode:?}");
+                assert!(off.track.conv.is_some());
+            }
+        }
+    }
+
+    /// ADR-260 決定3: 適用は英数だけ。ATOK のひらがな(0xF2)・入力中の無変換(0x1D)・閉状態の英数・変換は、ガードが真でも従来どおり。
+    /// （`hiragana_key_is_set` と ADR-188 案2 の `predict_after_resent` を壊さない。）
+    #[test]
+    fn adr260_guard_applies_only_to_the_eisu_key_in_open_state() {
+        let atok = KeymapPreset::Atok;
+        for vk in [0xF2_u16, 0x1D, 0x1C] {
+            for mode in [ROMAJI, InputModeState::ObservedEisu] {
+                let g = predict(atok, vk, &observable_input(true, mode));
+                let n = predict(atok, vk, &input(true, mode, false, NOTRACK));
+                assert_eq!(
+                    g.map(|p| (p.effect, p.track)),
+                    n.map(|p| (p.effect, p.track)),
+                    "vk={vk:#x} {mode:?}"
+                );
+            }
+        }
+        // 閉状態の英数(MS-IME: 閉→開・かな)は変えない。
+        let g = predict(KeymapPreset::MsIme, 0xF0, &observable_input(false, ROMAJI));
+        let n = predict(
+            KeymapPreset::MsIme,
+            0xF0,
+            &input(false, ROMAJI, false, NOTRACK),
+        );
+        assert_eq!(
+            g.map(|p| (p.effect, p.track)),
+            n.map(|p| (p.effect, p.track))
+        );
+        assert_eq!(g.expect("閉の英数は予測する").effect.open, Some(true));
+    }
+
+    /// ADR-260: Unknown の種（かな）も残さない（残すと `Some(かな)` が予測として残り、入力モードの軸の読みが塞がる）。
+    #[test]
+    fn adr260_guard_does_not_seed_kana_when_the_mode_is_unknown() {
+        let p = predict(
+            KeymapPreset::MsIme,
+            0xF0,
+            &observable_input(true, InputModeState::Unknown),
+        )
+        .expect("英数は予測する");
+        assert_eq!(p.effect.mode, None);
+        assert_eq!(p.track.conv, None);
+    }
+
+    /// `is_conv_toggle` は表のデータで決まる: 開状態の英数は MS-IME・ATOK ともトグル、閉状態の英数・MS-IME 本体の表は違う。
+    #[test]
+    fn adr260_is_conv_toggle_is_decided_by_the_table() {
+        for preset in [KeymapPreset::MsIme, KeymapPreset::Atok] {
+            let table = table_of(preset);
+            for conv in [Conv::C19, Conv::C10] {
+                let c =
+                    find_in(table, true, conv, Stage::None, TableKey::Eisu).expect("開・英数の行");
+                assert!(
+                    is_conv_toggle(table, true, conv, Stage::None, TableKey::Eisu, *c),
+                    "{preset:?} {conv:?}"
+                );
+            }
+        }
+        let table = table_of(KeymapPreset::MsIme);
+        let closed =
+            find_in(table, false, Conv::C19, Stage::None, TableKey::Eisu).expect("閉・英数の行");
+        assert!(!is_conv_toggle(
+            table,
+            false,
+            Conv::C19,
+            Stage::None,
+            TableKey::Eisu,
+            *closed
+        ));
+        let native = table_of(KeymapPreset::MsImeNative);
+        for conv in [Conv::C19, Conv::C10] {
+            if let Some(c) = find_in(native, true, conv, Stage::None, TableKey::Eisu) {
+                assert!(
+                    !is_conv_toggle(native, true, conv, Stage::None, TableKey::Eisu, *c),
+                    "MS-IME 本体は対象外"
+                );
+            }
+        }
+    }
+
     /// ADR-209 決定1・2: 読めない窓・閉状態の無修飾の変換は開閉だけ予測する（モードは変えない）。
     #[test]
     fn adr209_unreadable_window_henkan_opens_without_touching_mode() {
@@ -2367,6 +2516,7 @@ mod tests {
     fn eligible_input(open: bool, mode: InputModeState) -> PredictInput {
         PredictInput {
             passive_rule_eligible: true,
+            observable_toggle_guard: false,
             ..input(open, mode, false, NOTRACK)
         }
     }
@@ -2819,6 +2969,7 @@ mod tests {
             track,
             unreadable: true,
             passive_rule_eligible: false,
+            observable_toggle_guard: false,
         };
         // 前提: 古い追跡 C19 のままだと、無変換・ひらがなには予測が付く（変換・英数は表のセルの有無で付かない）。
         for vk in [0x1D_u16, 0xF2] {
@@ -2934,6 +3085,7 @@ mod tests {
                         v.push(PredictInput {
                             unreadable,
                             passive_rule_eligible: true,
+                            observable_toggle_guard: false,
                             ..input(open, ROMAJI, composing, KeyTrack { conv: None, stage })
                         });
                     }
@@ -3133,6 +3285,7 @@ mod tests {
         for open in [false, true] {
             let inp = PredictInput {
                 passive_rule_eligible: true,
+                observable_toggle_guard: false,
                 ..unreadable_input(open, ROMAJI)
             };
             for vk in [0x1Cu16, 0x1D, 0xF2, 0xF3, 0xF4, 0x19, 0x7C] {
@@ -3492,6 +3645,7 @@ mod tests {
         let msime = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
         let closed = PredictInput {
             passive_rule_eligible: true,
+            observable_toggle_guard: false,
             ..input(
                 false,
                 ROMAJI,

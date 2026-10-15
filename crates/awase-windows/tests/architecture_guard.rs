@@ -8527,3 +8527,85 @@ fn raw_key_event_reinject_builds_input_from_reinject_key_spec() {
         "reinject 本体に wScan/KEYUP の直書きを戻さないこと（reinject_key_spec に集約）"
     );
 }
+
+/// ADR-260: 英数トグルの入力モードを予測しない窓の判定（B1o）と、直接観測の予測ガードの軸ごとの化（B3）の配線を固定する。
+///
+/// - `press_axes`（今回の打鍵が値を付けた軸）を書くのは `apply_key_effect_prediction` だけ。`ImeModel::key_effect()` は新しい予測が触れない軸に
+///   前の未照合の値を持ち越し、時刻も新しい打鍵のものにするので、GJI の軸の判定には使わない（持ち越しで `tog:open` の読みが塞がる）。
+/// - `follow_direct_read_in_scope` は、GJI では `press_axes` を `mask_follow_by_press_axes` に通し、MS-IME 本体だけ従来の打鍵全体のガード（`key_effect()`）を残す。
+/// - 読みが効く窓の判定（`kp_observable_toggle_guard`）は、GJI の直接観測の窓・現在のスコープでの読みの成功・学習済みの IMM 能力が
+///   `Unavailable` でないこと、の 3 つすべて。プロセス全体の時刻や設定（`predict_henkan_open_in_unreadable_windows`）には結び付けない。
+/// - 読みの成功の記録は `FocusChanged` で失効する。
+#[test]
+fn adr260_eisu_toggle_guard_and_per_axis_follow_are_wired_as_decided() {
+    let ps = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/platform_state.rs",
+    )));
+    let squashed: String = ps.split_whitespace().collect();
+    assert_eq!(
+        squashed.matches("self.press_axes=Some(").count(),
+        1,
+        "press_axes を書くのは apply_key_effect_prediction の 1 箇所だけ"
+    );
+    let apply = ps
+        .split("pub fn apply_key_effect_prediction")
+        .nth(1)
+        .expect("apply_key_effect_prediction が無い");
+    let apply = &apply[..apply.find("\n    }\n").unwrap_or(apply.len())];
+    let apply_sq: String = apply.split_whitespace().collect();
+    let axes_at = apply_sq
+        .find("self.press_axes=Some(")
+        .expect("apply_key_effect_prediction が press_axes を書かない");
+    let dispatch_at = apply_sq
+        .find("self.dispatch_event(ImeEvent::KeyEffectPredicted")
+        .expect("KeyEffectPredicted の dispatch が無い");
+    assert!(
+        axes_at < dispatch_at,
+        "今回の軸は dispatch の前に記録すること（reduce の持ち越しとは独立）: {apply}"
+    );
+    let follow = ps
+        .split("fn follow_direct_read_in_scope")
+        .nth(1)
+        .expect("follow_direct_read_in_scope が無い");
+    let follow = &follow[..follow.find("\n    }\n").unwrap_or(follow.len())];
+    let f: String = follow.split_whitespace().collect();
+    assert!(
+        f.contains("self.press_axes.filter(|(at_ms,_)|*at_ms>=armed_at)"),
+        "GJI の軸は今回の打鍵（armed_at 以後）の press_axes で決めること: {follow}"
+    );
+    assert!(
+        f.contains("mask_follow_by_press_axes(follow,axes)")
+            && f.contains("!matches!(kind,crate::state::ime_kind::ImeKindId::Gji)&&self.shadow_model.key_effect()"),
+        "GJI は軸ごと（mask_follow_by_press_axes）、MS-IME 本体だけ従来の key_effect() の打鍵全体のガード: {follow}"
+    );
+    assert!(
+        squashed.contains(
+            "ifmatches!(event,ImeEvent::FocusChanged{..}){self.conv_read_ok_scope=None;}"
+        ),
+        "読みの成功の記録は FocusChanged で失効すること（プロセス全体の時刻にしない）"
+    );
+
+    let kp = non_comment_lines(production_code_only(&read_crate_file(
+        "src/runtime/key_pipeline.rs",
+    )));
+    let guard = kp
+        .split("fn kp_observable_toggle_guard")
+        .nth(1)
+        .expect("kp_observable_toggle_guard が無い");
+    let guard = &guard[..guard.find("\n    }\n").unwrap_or(guard.len())];
+    let g: String = guard.split_whitespace().collect();
+    for needle in [
+        "self.direct_mode_key_watch_kind()==Some(crate::state::ime_kind::ImeKindId::Gji)",
+        "self.platform_state.ime.conv_read_ok_now()",
+        "crate::focus::classifier::ImmCapability::Unavailable",
+    ] {
+        assert!(
+            g.contains(needle),
+            "kp_observable_toggle_guard に {needle} が無い: {guard}"
+        );
+    }
+    assert!(
+        !g.contains("predict_henkan_open_in_unreadable_windows"),
+        "B1o の窓の判定は、変換の窓別の規則（ADR-209）の設定に結び付けない: {guard}"
+    );
+}

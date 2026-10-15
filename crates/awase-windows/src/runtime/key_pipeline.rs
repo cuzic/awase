@@ -1880,6 +1880,18 @@ impl Runtime {
         }
     }
 
+    /// ADR-260 決定1: 開状態の英数トグルの入力モードを予測しない窓（窓内の IME の読みが効いている窓）か。次の**すべて**:
+    /// GJI の直接観測の窓が働く（`Imm32Unavailable`）、現在のスコープでフォーカスを得てから `conversion_mode` の読みが成功済み、
+    /// 学習済みの IMM 能力が `Unavailable` でない（一太郎のように読み自体ができない窓を除く）。窓別の規則（ADR-209）の設定とは独立。
+    fn kp_observable_toggle_guard(&self) -> bool {
+        self.direct_mode_key_watch_kind() == Some(crate::state::ime_kind::ImeKindId::Gji)
+            && self.platform_state.ime.conv_read_ok_now()
+            && self.platform.focus.imm_capability(
+                self.platform.focus.process_name(),
+                self.platform.focus.class_name(),
+            ) != Some(crate::focus::classifier::ImmCapability::Unavailable)
+    }
+
     /// ADR-191 決定3・4: 通したキーの効果を、学習した表（`key_effect_predictor`）から**打鍵の時点で**予測して
     /// beliefへ反映する（awaseはIMEへ書かない）。観測を待たないので、読めないアプリ（TsfNative等）でも
     /// Engineが即追随する。後続の観測（`MODE_KEY_PASS_*`の読み直し）がsettle後に照合し、食い違えば観測が勝つ
@@ -1902,6 +1914,8 @@ impl Runtime {
         use crate::tsf::observer::{tsf_obs, ActiveImeKind};
         let obs = tsf_obs();
         let now_ms = hook::current_tick_ms();
+        // ADR-260: キーマップの借用（下）より前に計算する。
+        let observable_toggle_guard = self.kp_observable_toggle_guard();
         // GJI: config1.db のキーマップ。Microsoft IME本体: **TIP の CLSID が Microsoft IME 本体と一致したときだけ**
         // （`ms_ime_native_identified`）レジストリのキー割り当て。`active_ime_kind() == MicrosoftIme` は「GJI 以外」の
         // 意味で ATOK・Japanist・未知の TIP・IMM32 HKL も含み、`ime_kind_detected()` も「CLSID 判定が一度でも走った」
@@ -1942,6 +1956,7 @@ impl Runtime {
             ),
             unreadable,
             passive_rule_eligible,
+            observable_toggle_guard,
         };
         let Some(prediction) = keymap.predict_after_resent(resent, vk.0, &input, override_table)
         else {

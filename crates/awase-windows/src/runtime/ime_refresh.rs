@@ -162,6 +162,10 @@ impl Runtime {
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.explicit_intent(),
         );
+        // ADR-260 決定1: conv の読みが成功したスコープを記録する（窓内の読みが効く窓かの判定。フォーカスで失効）。
+        if ime_snap.is_some_and(|snap| snap.conversion_mode.is_some()) {
+            self.platform_state.ime.note_conv_read_ok();
+        }
         // ADR-205: 打鍵中（SkipTyping）でも、prefetch 済みの開閉の読みを外部変化の監視窓に照合する（追加 I/O なし）。
         self.ir_follow_external_change(ime_snap);
         // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。

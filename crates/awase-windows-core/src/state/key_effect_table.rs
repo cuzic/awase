@@ -790,6 +790,7 @@ mod classification_tests {
             track: KeyTrack::default(),
             unreadable: true,
             passive_rule_eligible: false,
+            observable_toggle_guard: false,
         };
         for vk in [0x1C_u16, 0x1D, 0xF0, 0xF2] {
             assert_eq!(
