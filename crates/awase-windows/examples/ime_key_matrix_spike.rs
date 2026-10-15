@@ -3259,7 +3259,10 @@ fn run() -> WinResult<()> {
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
         SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
-        let base = now_ms() + 9000;
+        // 先に IME ON キーを 1 回押す(押さないとインジケーターが「無効」のままで、IMM の書き込みが字形に出ない)。
+        queue_press(now_ms() + 6000, 0x16);
+        queue_press(now_ms() + 9500, 0xF2);
+        let base = now_ms() + 15000;
         for (i, t) in v.split(',').enumerate() {
             let at = base + (i as u64) * 3500;
             let code = if t.trim() == "c" {
