@@ -644,6 +644,15 @@ impl ImeStateHub {
                 },
                 tick_ms,
             );
+            // ADR-260（Opus レビュー R1）: reduce の fence（`KEY_EFFECT_SETTLE_MS`）が、前の打鍵から持ち越された未照合の
+            // 入力モードの予測を理由に、この観測を拒否することがある。その軸は「採った」ことにしない（戻り値・ログ・
+            // ADR-245 の持続トグルの手放しが、実際には動いていない belief を前提にしないため）。窓が続く間の次の読みで採られる。
+            if (self.input_mode() == InputModeState::ObservedEisu) != eisu {
+                follow.eisu = None;
+            }
+        }
+        if follow.is_none() {
+            return None;
         }
         // 追随の直後に、閉じる前の GJI I/O 推測が結果を上書きしない柵（ADR-205 と同じ、ADR-188 M7）。
         self.last_external_change_ms = now_ms;
@@ -4632,9 +4641,11 @@ mod tests {
     }
 
     /// ADR-260 決定2: 軸の判定は今回の打鍵だけ。前の打鍵が予測して照合されないまま持ち越された入力モードの予測
-    /// （`key_effect()` が持ち越して時刻を新しい打鍵のものにする）で、今回の打鍵が予測していない軸を塞がない。
+    /// （`key_effect()` が持ち越して時刻を新しい打鍵のものにする）で、今回の打鍵が予測していない軸を**判定では**塞がない。
+    /// ただし reduce の fence（`KEY_EFFECT_SETTLE_MS`）は、持ち越しの入力モードの予測が新しい間は観測を拒否する
+    /// （Opus レビュー R1）。拒否された軸は「採った」ことにせず（戻り値は `None`・belief は不変）、fence の後の読みで採られる。
     #[test]
-    fn follow_direct_read_gji_ignores_a_carried_over_axis_from_an_earlier_press() {
+    fn follow_direct_read_gji_carried_over_axis_is_adopted_after_the_reduce_fence() {
         use crate::state::ime_kind::ImeKindId;
         let mut ps = ps_for_test();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
@@ -4654,19 +4665,33 @@ mod tests {
             carried.mode.is_some() && carried.at_ms >= 1000,
             "前提: 持ち越しの入力モードの予測が、今回の時刻で残る: {carried:?}"
         );
-        assert_eq!(
+        let read = |ps: &mut PlatformState, t: u64| {
             ps.ime.follow_direct_read_in_scope(
                 Some(true),
                 Some(16),
-                1032,
-                TickMs(1032),
+                t,
+                TickMs(t),
                 follow_fence(),
                 ImeKindId::Gji,
-                test_foreground_scope()
-            ),
-            Some(direct_follow(None, Some(true))),
-            "今回の打鍵が予測していない英数の軸は、持ち越しで塞がれない"
+                test_foreground_scope(),
+            )
+        };
+        // fence の間（1001 + 170ms 未満）: 判定では塞がないが、reduce が拒否する。採ったことにしない。
+        assert_eq!(
+            read(&mut ps, 1032),
+            None,
+            "fence の間の読みは採られず、追随したことにもならない"
         );
+        assert_ne!(ps.ime.input_mode(), InputModeState::ObservedEisu);
+        // fence の後（窓 300ms の中）: 採られる。
+        let t = 1001 + crate::tuning::KEY_EFFECT_SETTLE_MS + 1;
+        assert!(t < 1000 + 300, "前提: 窓の中");
+        assert_eq!(
+            read(&mut ps, t),
+            Some(direct_follow(None, Some(true))),
+            "fence の後の読みで採られる"
+        );
+        assert_eq!(ps.ime.input_mode(), InputModeState::ObservedEisu);
     }
 
     /// ADR-260 決定2: MS-IME 本体は従来どおり、予測が付いた打鍵の読みを軸を問わず採らない（回帰を測るまで範囲外）。

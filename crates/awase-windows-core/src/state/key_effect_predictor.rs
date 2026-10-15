@@ -1251,6 +1251,9 @@ impl KeyEffectKeymap {
                 return None;
             }
         }
+        // ADR-260: 送り直しの途中の打鍵には当てない（`step_input` が偽）が、最後の打鍵（ユーザーが押したキー）には呼び出し側の値を伝える。
+        // `after` は `..self` で途中の `false` を引き継ぐので、ここで戻す。
+        state.observable_toggle_guard = input.observable_toggle_guard;
         let last = self.predict_with_override(vk, &state, override_table)?;
         Some(Prediction {
             effect: effect.overlaid_by(last.effect),
@@ -2335,6 +2338,26 @@ mod tests {
         .expect("英数は予測する");
         assert_eq!(p.effect.mode, None);
         assert_eq!(p.track.conv, None);
+    }
+
+    /// ADR-260（Opus レビュー R3）: `predict_after_resent` の最後の打鍵（英数）には、呼び出し側のガードが伝わる。
+    /// 途中の送り直し（変換。開状態を保つ親指）には当てない。ガードが偽なら従来どおり。
+    #[test]
+    fn adr260_guard_reaches_the_last_key_after_resent_thumbs() {
+        let km = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        let guarded = km.predict_after_resent(&[0x1C], 0xF0, &observable_input(true, ROMAJI), None);
+        let plain =
+            km.predict_after_resent(&[0x1C], 0xF0, &input(true, ROMAJI, false, NOTRACK), None);
+        // 無変換の効果が表で分かる構成でだけ予測が返る。返らない場合は、ガードの有無で結果が同じ（None 同士）であること。
+        match (guarded, plain) {
+            (Some(g), Some(p)) => {
+                // 追跡（最後の打鍵のもの）: ガードありは捨て、従来は反転後の変換モードを持つ。効果の入力モードには途中の送り直しの分が重なる。
+                assert_eq!(g.track.conv, None, "最後の英数は追跡を捨てる");
+                assert!(p.track.conv.is_some(), "従来は英数の予測で追跡が残る");
+            }
+            (None, None) => {}
+            (g, p) => panic!("ガードの有無で予測の有無が変わった: {g:?} / {p:?}"),
+        }
     }
 
     /// `is_conv_toggle` は表のデータで決まる: 開状態の英数は MS-IME・ATOK ともトグル、閉状態の英数・MS-IME 本体の表は違う。
