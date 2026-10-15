@@ -18,13 +18,19 @@ mod app {
     use std::io::Write as _;
     use std::time::{Duration, Instant};
 
-    use windows::core::{w, BOOL, PCWSTR};
-    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::core::{w, Interface, BOOL, PCWSTR};
+    use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        HGDIOBJ, SRCCOPY,
+    };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation, IUIAutomationElement, TreeScope_Descendants,
+        CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationLegacyIAccessiblePattern,
+        TreeScope_Descendants, UIA_LegacyIAccessiblePatternId,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, FindWindowW, GetClassNameW, GetWindowTextW, IsWindowVisible,
@@ -95,6 +101,135 @@ mod app {
         }
     }
 
+    /// 入力インジケーター要素の、名前以外の情報(HelpText・ItemStatus・LegacyIAccessible・矩形)。
+    unsafe fn indicator_props(el: &IUIAutomationElement) -> (String, RECT) {
+        // SAFETY: el は有効な COM オブジェクト。
+        unsafe {
+            let help = el
+                .CurrentHelpText()
+                .map(|b| b.to_string())
+                .unwrap_or_default();
+            let status = el
+                .CurrentItemStatus()
+                .map(|b| b.to_string())
+                .unwrap_or_default();
+            let rect = el.CurrentBoundingRectangle().unwrap_or_default();
+            let legacy = el
+                .GetCurrentPattern(UIA_LegacyIAccessiblePatternId)
+                .ok()
+                .and_then(|u| u.cast::<IUIAutomationLegacyIAccessiblePattern>().ok())
+                .map(|p| {
+                    format!(
+                        "name={:?} value={:?} desc={:?} state={:#x} help={:?}",
+                        p.CurrentName().map(|b| b.to_string()).unwrap_or_default(),
+                        p.CurrentValue().map(|b| b.to_string()).unwrap_or_default(),
+                        p.CurrentDescription()
+                            .map(|b| b.to_string())
+                            .unwrap_or_default(),
+                        p.CurrentState().unwrap_or(0),
+                        p.CurrentHelp().map(|b| b.to_string()).unwrap_or_default()
+                    )
+                })
+                .unwrap_or_else(|| "(LegacyIAccessible なし)".to_owned());
+            (
+                format!(
+                    "help={help:?} status={status:?} rect=({},{},{},{}) legacy[{legacy}]",
+                    rect.left, rect.top, rect.right, rect.bottom
+                ),
+                rect,
+            )
+        }
+    }
+
+    /// 画面の矩形を取り込み、輝度を平均で 2 値化した ASCII アートと FNV ハッシュを返す(インジケーターの「あ」/「A」の字形を見る)。
+    unsafe fn capture_art(r: RECT) -> Option<(u64, String)> {
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        if w <= 0 || h <= 0 || w > 200 || h > 200 {
+            return None;
+        }
+        // SAFETY: GDI の呼び出し。取得したハンドルは必ず解放する。
+        unsafe {
+            let dc = GetDC(None);
+            let mem = CreateCompatibleDC(Some(dc));
+            let bmp = CreateCompatibleBitmap(dc, w, h);
+            let old = SelectObject(mem, HGDIOBJ(bmp.0));
+            let ok = BitBlt(mem, 0, 0, w, h, Some(dc), r.left, r.top, SRCCOPY).is_ok();
+            let mut bi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: u32::try_from(std::mem::size_of::<BITMAPINFOHEADER>()).unwrap_or(40),
+                    biWidth: w,
+                    biHeight: -h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut buf = vec![0u8; usize::try_from(w * h * 4).unwrap_or(0)];
+            let lines = GetDIBits(
+                mem,
+                bmp,
+                0,
+                u32::try_from(h).unwrap_or(0),
+                Some(buf.as_mut_ptr().cast()),
+                &mut bi,
+                DIB_RGB_COLORS,
+            );
+            SelectObject(mem, old);
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+            let _ = DeleteDC(mem);
+            ReleaseDC(None, dc);
+            if !ok || lines == 0 {
+                return None;
+            }
+            let luma: Vec<u32> = buf
+                .chunks_exact(4)
+                .map(|p| (u32::from(p[0]) * 29 + u32::from(p[1]) * 150 + u32::from(p[2]) * 77) >> 8)
+                .collect();
+            let mean = luma.iter().sum::<u32>() / u32::try_from(luma.len()).unwrap_or(1).max(1);
+            let bits: Vec<bool> = luma.iter().map(|&l| l > mean + 20).collect();
+            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+            for b in &bits {
+                hash ^= u64::from(*b);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            let wu = usize::try_from(w).unwrap_or(1);
+            let art = bits
+                .chunks(wu)
+                .map(|row| {
+                    row.iter()
+                        .map(|&b| if b { '#' } else { '.' })
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            Some((hash, art))
+        }
+    }
+
+    /// 前回と同じ集合から入力インジケーターの要素を探す。
+    unsafe fn find_indicator(auto: &IUIAutomation, root: HWND) -> Option<IUIAutomationElement> {
+        // SAFETY: auto・root は有効。
+        unsafe {
+            let el = auto.ElementFromHandle(root).ok()?;
+            let cond = auto.CreateTrueCondition().ok()?;
+            let arr = el.FindAll(TreeScope_Descendants, &cond).ok()?;
+            for i in 0..arr.Length().unwrap_or(0) {
+                if let Ok(c) = arr.GetElement(i) {
+                    if c.CurrentName()
+                        .map(|b| b.to_string())
+                        .unwrap_or_default()
+                        .starts_with("Tray Input Indicator")
+                    {
+                        return Some(c);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     unsafe fn collect(auto: &IUIAutomation, root: HWND) -> BTreeSet<String> {
         let mut set = BTreeSet::new();
         // SAFETY: auto は有効な IUIAutomation。root は FindWindow で得たハンドル。
@@ -162,6 +297,12 @@ mod app {
             unsafe { FindWindowW(p, PCWSTR::null()) }.unwrap_or_default()
         };
         let mut prev: BTreeSet<String> = BTreeSet::new();
+        let mut prev_props = String::new();
+        let mut prev_hash = 0u64;
+        // SAFETY: プロセスの DPI 認識を有効にして、UIA の矩形と画面座標をそろえる。
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::SetProcessDPIAware();
+        }
         let t0 = Instant::now();
         let mut tick = 0u64;
         while t0.elapsed() < Duration::from_secs(duration) {
@@ -189,6 +330,26 @@ mod app {
                 }
                 for l in prev.difference(&now) {
                     log.line(&format!("IND - {l}"));
+                }
+            }
+            // 入力インジケーターの名前以外の情報と、画面上の字形(「あ」/「A」)の変化。
+            let tray = find(w!("Shell_TrayWnd"));
+            if !tray.0.is_null() {
+                // SAFETY: auto・tray は有効。
+                if let Some(ind) = unsafe { find_indicator(&auto, tray) } {
+                    // SAFETY: ind は有効。
+                    let (props, rect) = unsafe { indicator_props(&ind) };
+                    if props != prev_props {
+                        log.line(&format!("IND-PROPS {props}"));
+                        prev_props = props;
+                    }
+                    // SAFETY: GDI の呼び出し(ハンドルは関数内で解放)。
+                    if let Some((hash, art)) = unsafe { capture_art(rect) } {
+                        if hash != prev_hash {
+                            log.line(&format!("IND-PIX hash={hash:016x} art={art}"));
+                            prev_hash = hash;
+                        }
+                    }
                 }
             }
             if tick % 50 == 0 {
