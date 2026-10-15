@@ -141,6 +141,7 @@ jobs:
           KM_KEYS = dict(abs='ime_on = ["Ctrl+変換", "VK_CONVERT"]; ime_off = ["Ctrl+無変換", "VK_NONCONVERT"]', tog='ime_toggle = ["VK_NONCONVERT"]')
           KM_EISU = 'f0=tog:close,f0=tog:fresh,f0=tog:sync,f0=tog:open'
           KM_EISU_EXP = KM_EISU + ',f0=on:sync,f0=on:fresh'
+          KM_KEYS_CELLS = lambda vk: ','.join(f'{vk}={c}' for c in ('tog:close', 'tog:fresh', 'tog:sync', 'tog:open', 'on:sync', 'on:fresh'))
           EISU_COMPOSITE = 'DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Eisu,IMEOn|Precomposition,Eisu,ToggleAlphanumericMode|Composition,Eisu,ToggleAlphanumericMode|Conversion,Eisu,ToggleAlphanumericMode'
           def km_cells(grp, msime):
             if grp == 'abs':
@@ -323,19 +324,19 @@ jobs:
             # 使い捨てのスパイク(exp/mode-key-recheck、develop にはマージしない): 英数(複合キー)を belief とずれた状態で押したときの追随を、
             # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
             # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
-            # 5周目: b1o = B1(英数のみ)を、窓内の IME の読みが直近 30 秒以内に成功している窓だけに適用する。b3 = 追記6 のガードを軸ごと。
-            # noread = awase の読みを全部失敗させる(一太郎の模擬)。観測の無い窓では従来と同じ値に戻ること、読みが効く窓では 0 になることを見る。
-            # keymap: 2=GJI の MS-IME プリセット、1=ATOK。`--km-twice` で 2 文字目も記録する。
-            *[cfg(f'sc-exp-modekey-{win}-{pn}-{en}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=3, wait=2400, exp=ex,
-                  keys='ime_toggle = ["VK_NONCONVERT"]',
-                  **({'chrome': f"--keymatrix={KM_EISU_EXP} --km-twice --settle=800"} if win == 'chrome' else
-                     {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_EISU_EXP} --km-twice --layout=@REPO@/layout/nicola_keytop.yab"}))
+            # 6周目: 観測の無い窓(noread=awase の読みを全部失敗させる、一太郎の模擬)で、各 IME キーを 1 回だけ押したとき(--km-max-press=1)の
+            # 結果(typed)を、GJI の MS-IME プリセット(keymap=2)・ATOK プリセット(keymap=1)×tsf・実 Chrome で測る。
+            # 目的: ずれた状態(close/fresh/sync/open/on:sync/on:fresh)から 1 回で Engine と実 IME がそろう(=リセットに使える)キーはどれか。
+            # 変換・無変換は、素通しにする設定(*_solo_tap_always_suppress=false)で IME へ届ける(既定の Suppress では単独タップは IME を動かさない、ADR-206)。
+            # 判定は付けない(observe)。typed の読み方は ADR-260 の測定と同じ。
+            *[cfg(f'sc-exp-modekey-keys-{win}-{pn}-{kn}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=1, wait=2400, exp='noread', general=gn,
+                  **({'chrome': f"--keymatrix={KM_KEYS_CELLS(kv)} --km-max-press=1 --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_KEYS_CELLS(kv)} --km-max-press=1 --layout=@REPO@/layout/nicola_keytop.yab"}))
               for win in ('tsf', 'chrome')
-              for pn, pk, variants in (
-                  ('ms', 2, (('base', ''), ('b1o', 'b1o'), ('b1ob3', 'b1o,b3'),
-                             ('nr-base', 'noread'), ('nr-b1o', 'noread,b1o'), ('nr-b1ob3', 'noread,b1o,b3'))),
-                  ('atok', 1, (('base', ''), ('b1ob3', 'b1o,b3'))))
-              for en, ex in variants],
+              for pn, pk in (('ms', 2), ('atok', 1))
+              for kn, kv, gn in (('eisu', 'f0', ''), ('hanzen', 'f3', ''), ('hira', 'f2', ''), ('kata', 'f1', ''),
+                                 ('henkan', '1c', 'henkan_solo_tap_always_suppress = false'),
+                                 ('muhenkan', '1d', 'muhenkan_solo_tap_always_suppress = false'))],
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
