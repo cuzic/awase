@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'ci/e2e-eisu-composite' && 'sc-hwndcache-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'ci/e2e-eisu-composite' && 'sc-hwndcache-*,sc-eisu-km-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -144,6 +144,7 @@ jobs:
           # keys: abs=絶対キー用(Ctrl+変換/Ctrl+無変換に加えて、無変換/変換の単独タップを bare の keys.ime_off/ime_on にする=ADR-206 の役割由来)、
           #       tog=無変換の単独タップを keys.ime_toggle にする(トグルの検証用。0xF3/0x19 は IME/awase の shadow トグルで設定不要)。
           KM_KEYS = dict(abs='ime_on = ["Ctrl+変換", "VK_CONVERT"]; ime_off = ["Ctrl+無変換", "VK_NONCONVERT"]', tog='ime_toggle = ["VK_NONCONVERT"]')
+          KM_EISU = 'f0=tog:close,f0=tog:fresh,f0=tog:sync,f0=tog:open'
           def km_cells(grp, msime):
             if grp == 'abs':
               c = ['ctrl+1c=on:close', 'ctrl+1d=off:open', 'ctrl+1c=on:sync', 'ctrl+1d=off:sync', '1c=on:close', '1d=off:open', '16=on:close', '1a=off:open']
@@ -368,6 +369,18 @@ jobs:
               for form in ('tsf', 'edit')
               for rf in ('refocus', 'norefocus')
               for cn in ('works', 'unavailable')],
+            # 不具合報告 01M4QSFH1B の2つめの問題「英数を押してもモードのずれが解消しない」の再現試行(観測のみ、only='sc-eisu-km-*')。
+            # 英数(0xF0)は GJI の MS-IME プリセット(keymap=2)・複合 CUSTOM 表で「閉なら開いてかな、開ならかな↔半角英数のトグル」の複合キー。
+            # belief が実 IME とずれた状態(close=awase に ON を書かせた後に実 IME を外から閉じる / fresh=awase 再起動で belief 未知 / sync=ずれなし /
+            # open=awase に OFF を書かせた後に実 IME を外から開く)で英数を押すと、予測(開ならトグル)と実機(閉なら開く)が食い違い、
+            # 以後の押下でも噛み合わないままになる疑い。判定は付けず、km_trial の typed(NICOLA/か/ka)と押下ごとの api500/api2000 を読む。
+            # 対照は ATOK プリセット(keymap=1。閉の英数は開かない)。窓=edit(ImmCross)/tsf/chrome(実 Chrome=Imm32Unavailable)。
+            *[cfg(f'sc-eisu-km-{win}-{pn}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=1, wait=2400,
+                  keys='ime_toggle = ["VK_NONCONVERT"]',
+                  **({'chrome': f"--keymatrix={KM_EISU} --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_EISU} --layout=@REPO@/layout/nicola_keytop.yab"}))
+              for win in ('edit', 'tsf', 'chrome')
+              for pn, pk in (('msimepreset', 2), ('atok', 1))],
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
