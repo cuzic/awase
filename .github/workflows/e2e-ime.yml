@@ -327,7 +327,7 @@ jobs:
             # 8周目(同じ構成を再測定): 押下ごとの字形の時系列を見る(1.8秒窓の集計は次のセットアップの戻りを拾っていた)。F1(カタカナ)・F4/F5 を足し、間隔を 50ms に。
             # 12周目: 本物の Microsoft IME(GJI の MS-IME プリセットではない)で 6 モードの字形。MS-IME 本体は IMM の書き込みが効く可能性があるので --setseq で書く。
             cfg('sc-ind-six-msimenative', 'observe', check='consistency', awase='false', ime='msime', runs=1, wait=330,
-                args='--setseq=c,19,1b,18,10,13,c,1b,19,13,10,18,19,10,1b,c,13,18,09,0b,08,00,03,c,0b,09,03,00,08,c', side='ime_indicator_probe', side_args='--duration=220 --interval=50'),
+                args='--msime --setseq=c,19,1b,18,10,13,c,1b,19,13,10,18,19,10,1b,c,13,18,09,0b,08,00,03,c,0b,09,03,00,08,c', side='ime_indicator_probe', side_args='--duration=220 --interval=50'),
             # 11周目: GJI のカスタムキー表で、6 モードの各コマンド(InputMode*)を F5〜F9 に割り当て、全角英数・半角カナにも到達して字形を取る(F11=IMEOn、F12=IMEOff)。
             cfg('sc-ind-six-cust', 'observe', check='consistency', awase='false', keymap=0, runs=1, wait=330,
                 args='--pressseq=7A,74,75,76,77,78,74,77,75,78,76,7B,7A,76,77,7B,7A,75,74,78,76,77,75,7B,7A,74', side='ime_indicator_probe', side_args='--duration=260 --interval=50',
