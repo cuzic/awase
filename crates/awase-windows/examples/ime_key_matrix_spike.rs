@@ -382,6 +382,8 @@ thread_local! {
     /// `--auto`: 手順のキーをスパイク自身が SendInput で注入する（RPA的な自動実行）。
     static AUTO_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// (実行時刻ms, VK, KeyDownか) の注入予約。
+    /// `--setseq` の引数。前面・入力欄フォーカスが確立してから予約へ展開する(予約があるとフォーカス復帰が走らないため)。
+    static SETSEQ_PENDING: RefCell<Option<String>> = const { RefCell::new(None) };
     static AUTO_QUEUE: RefCell<Vec<(u64, u32, bool)>> = const { RefCell::new(Vec::new()) };
     /// `--charthumb=CHAR,THUMB`: (文字VK, 親指VK, 残りラウンド数)。`auto_drive` がフォーカス確認のあとでラウンドごとに予約する。
     static CHARTHUMB: RefCell<Option<(u32, u32, u32)>> = const { RefCell::new(None) };
@@ -819,6 +821,28 @@ fn script_vk(vk: u32) -> u32 {
 const SETIME_FLAG: u32 = 0x4000_0000;
 const READIME_FLAG: u32 = 0x2000_0000;
 
+/// `--setseq` を予約へ展開する。最初に IME ON/ひらがなキーを押してインジケーターを有効にし、そのあと 3.5 秒間隔で IMM に書く。
+fn enqueue_setseq(v: &str, now: u64) {
+    queue_press(now + 500, 0x16);
+    queue_press(now + 4000, 0xF2);
+    let base = now + 8000;
+    for (i, t) in v.split(',').enumerate() {
+        let at = base + (i as u64) * 3500;
+        let code = if t.trim() == "c" {
+            SETIME_FLAG | 0x19
+        } else {
+            let conv = u32::from_str_radix(t.trim(), 16)
+                .unwrap_or_else(|_| arg_error(&format!("--setseq が不正: {t:?}")));
+            SETIME_FLAG | 0x0100_0000 | conv
+        };
+        AUTO_QUEUE.with(|q| {
+            let mut q = q.borrow_mut();
+            q.push((at, code, true));
+            q.push((at + 1200, READIME_FLAG, true));
+        });
+    }
+}
+
 /// 押して離す（`--hold` ms 保持）を、`at` を起点に予約する。
 fn queue_press(at: u64, vk: u32) {
     AUTO_QUEUE.with(|q| {
@@ -930,6 +954,10 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                 return;
             }
         }
+    }
+    if let Some(v) = SETSEQ_PENDING.with(|p| p.borrow_mut().take()) {
+        enqueue_setseq(&v, now);
+        return;
     }
     if let Some((vk_char, vk_thumb, left)) = CHARTHUMB.with(|c| *c.borrow()) {
         if left > 0 {
@@ -3259,25 +3287,7 @@ fn run() -> WinResult<()> {
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
         SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
-        // 先に IME ON キーを 1 回押す(押さないとインジケーターが「無効」のままで、IMM の書き込みが字形に出ない)。
-        queue_press(now_ms() + 6000, 0x16);
-        queue_press(now_ms() + 9500, 0xF2);
-        let base = now_ms() + 15000;
-        for (i, t) in v.split(',').enumerate() {
-            let at = base + (i as u64) * 3500;
-            let code = if t.trim() == "c" {
-                SETIME_FLAG | 0x19
-            } else {
-                let conv = u32::from_str_radix(t.trim(), 16)
-                    .unwrap_or_else(|_| arg_error(&format!("--setseq が不正: {t:?}")));
-                SETIME_FLAG | 0x0100_0000 | conv
-            };
-            AUTO_QUEUE.with(|q| {
-                let mut q = q.borrow_mut();
-                q.push((at, code, true));
-                q.push((at + 1200, READIME_FLAG, true));
-            });
-        }
+        SETSEQ_PENDING.with(|p| *p.borrow_mut() = Some(v));
     }
     if std::env::args().any(|a| a == "--hz") {
         HZ_MODE.with(|h| *h.borrow_mut() = true);
