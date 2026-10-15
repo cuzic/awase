@@ -3,9 +3,9 @@ id: ADR-259
 title: |-
   不具合報告にカスタム表の IME 関連行と学習表のセルを添付する
 summary: |-
-  報告 01M4QSFH1B(一太郎・GJI の CUSTOM)で、英数が複合キーかを報告の分類結果から判定できなかった。journal の範囲では英数の予測は開・トグルとして正しく、実 GJI と読める窓での awase の追随も CI で正しかった。この報告自体の原因は未特定。同種の報告で、カスタム表の IME 関連行(型で閉じた固定語彙)と学習表のセル(予測に使われる理由つき)を見られるようにする。予測を出した分岐を journal に残す案(決定5-1)を次の着手とする。
+  報告 01M4QSFH1B(一太郎・GJI の CUSTOM)で、英数が複合キーかを報告の分類結果から判定できなかった。別アプリの区間で英数を押した予測は開・トグルとして正しく、実 GJI と読める窓での awase の追随も CI で正しかった。この報告自体の原因は未特定。同種の報告で、カスタム表の IME 関連行(型で閉じた固定語彙)と学習表のセル(予測に使われる理由つき)を見られるようにする。予測を出した分岐を journal に残す案(決定5-1)を次の着手とする。
 status: |-
-  起草(2026-10-14)。Opus レビュー round 2 まで反映。実装なし。
+  起草(2026-10-14)。Opus レビュー round 3 で収束(実装に進んでよい、B なし)。実装なし。
 related_adr:
   - "ADR-095"
   - "ADR-148"
@@ -25,13 +25,13 @@ related_adr:
 不具合報告 `01M4QSFH1B02DQ9B8AXBYVRQ39`(GJI・一太郎、2026-10-12。issue #623)の切り分けで、報告に載っている情報では次が判定できなかった。
 
 - GJI は `session_keymap = 0`(CUSTOM)で、英数(`VK_DBE_ALPHANUMERIC`)が `ime_on_keys` と `mode_toggle_alphanumeric_keys` の両方に分類されていた。DirectInput の行が IMEOn で、開状態の行が `ToggleAlphanumericMode` という複合キーなのか、別の組み合わせなのかは、分類結果からは分からない。
-- 報告の journal では、英数の効果予測が `open: null`、mode と conv だけを動かしていた。`PredictedEffect.open` の `None` は「予測なし」ではなく「開閉は変えない」である(`key_effect_predictor.rs:346-351`)。journal の範囲では、英数を押した時点の belief は開(conv が C19 から C10)で、これはトグルとして素直な予測であり、閉状態の英数の予測は journal に現れていない。
+- 報告の journal では、英数の効果予測が `open: null`、mode と conv だけを動かしていた。`PredictedEffect.open` の `None` は「予測なし」ではなく「開閉は変えない」である(`key_effect_predictor.rs:346-351`)。journal の後半(別アプリ〈Mery・一太郎・Chrome〉の区間、経過 20,006〜20,034 秒)で英数を押した時点の belief は開(conv が C19 から C10)で、これはトグルとして素直な予測であり、閉状態の英数の予測は journal に現れていない。
 - 予測を出した分岐が、学習表のセルなのか、窓別の規則(ADR-209・211・247)なのかも、報告からは分からない(`predict_with_override` は学習表より先にこれらの分岐を引く)。
 - 報告に載っているのは、キーの分類(`ime_on_keys` など)と、学習表の件数・判定・指紋・同梱表との差の一部だけ(ADR-148、ADR196-T2)。表そのものは載っていない。
 
-実 GJI での確認(2026-10-14、GitHub Actions run 38658180992、`sc-eisu-composite-gji-custom`)では、DirectInput の英数=IMEOn、開状態の英数=ToggleAlphanumericMode の表で、閉状態の英数を押すと IME が開き(open=1・conv=0x19)、開状態では 0x19 と 0x10 を行き来した。この読める窓の構成では awase の Engine も実 IME に追随した。複合キーの挙動そのものは実機で確かめられたので、報告から要るのは「その環境の表が実際にそうなっているか」である。
+実 GJI での確認(2026-10-14、GitHub Actions run 38658180992、`sc-eisu-composite-gji-custom`)では、DirectInput の英数=IMEOn、開状態の英数=ToggleAlphanumericMode の表で、閉状態の英数を押すと IME が開き(open=1・conv=0x19)、開状態では 0x19 と 0x10 を行き来した。この読める窓(`cache=works`)の構成では awase の Engine も実 IME に追随した。一太郎は `profile=Imm32Unavailable` で、`predict_with_override` の「読めない窓」(`unreadable`、ADR-209 の窓別の規則が学習表より先に答える)に当たるかは未確認である。当たるなら、この CI の根拠は報告者の条件をカバーしない。読めない窓の構成(`cache=unavailable`)は、別の run(`sc-eisu-composite-unavail-*`)で試している。複合キーの挙動そのものは実機で確かめられたので、報告から要るのは「その環境の表が実際にそうなっているか」である。
 
-**報告 01M4QSFH1B で実際に何が食い違ったか**は、journal の範囲では確定していない。一太郎(`profile=Imm32Unavailable`・Win32)へのフォーカス直後、belief は open=false(`HeuristicDefault`・Low)で始まり、ObserverPoll が false(Medium)を返した後、数秒後に open=true を返した。その間に conv が C19 から C10 へ変わり `ObservedEisu` が観測された。報告者の言う「タスクバーは OFF なのに入力は全角」がどの時点のどの値の食い違いかは、journal の KeyInput・予測の分岐が足りず特定できていない。この区間に物理の IME キーの打鍵は 0 件で、英数の打鍵は後続の区間(別アプリ)にしかない。したがって決定1・2 だけでは 01M4QSFH1B の原因は分からないかもしれず、予測を出した分岐の記録(決定5-1)が要る。issue #623 は決定1・2 だけでは閉じない。
+**報告 01M4QSFH1B で実際に何が食い違ったか**は、journal の範囲では確定していない。一太郎(`profile=Imm32Unavailable`・Win32)へのフォーカス直後、belief は open=false(`HeuristicDefault`・Low)で始まり、ObserverPoll が false(Medium)を返した後、数秒後に open=true を返した。その間に(打鍵ではなく観測として)conv が C19 から C10 へ変わり `ObservedEisu` が観測された。上で述べた英数の打鍵による C19→C10 とは別の出来事で、時刻もアプリも違う。報告者の言う「タスクバーは OFF なのに入力は全角」がどの時点のどの値の食い違いかは、journal の KeyInput・予測の分岐が足りず特定できていない。この区間に物理の IME キーの打鍵は 0 件で、英数の打鍵は後続の区間(別アプリ)にしかない。したがって決定1・2 だけでは 01M4QSFH1B の原因は分からないかもしれず、予測を出した分岐の記録(決定5-1)が要る。issue #623 は決定1・2 だけでは閉じない。
 
 「IME キーを押せば belief が直る」という設計に照らして、報告者の環境がその範囲内かを、実機の表を見ずに判断できない。この ADR は、その判断に要る材料を報告に足す。
 
@@ -57,12 +57,12 @@ related_adr:
 
 **1-4. 落とした行は理由別の件数で示す(件数だけで、内容は送らない)。** 数える対象は `parse_custom_keymap_table` が返した行(見出し行・空行・3 列に満たない行はパーサが既に捨てているので、二重に捨てない)。壊れた行の数は今回は数えない。1 行は次の順で最初に当たった理由に **1 回だけ**数える(件数は排他)。
 
-1. コマンドが語彙に無い → `other_command`(普通の編集コマンド〈Backspace・Convert など〉が大半)。語彙に無いコマンドのうち `IME`・`Mode`・`Alphanumeric`・`KanaType` を含むものは、別に `unknown_ime_like_command` として数える(綴り違いの IME コマンドが実機の表にあるかを見るため。件数だけなので漏れは無い)。
+1. コマンドが語彙に無い → `other_command`(普通の編集コマンド〈Backspace・Convert など〉が大半)。このうち、コマンド名に `IME` を含む、または `CompositionMode`・`InputMode` で始まるものを、内訳として `unknown_ime_like_command` にも数える(綴り違いの IME コマンドが実機の表にあるかを見るため。数えるだけで、送る文字列の判定には使わないので、前方一致でも漏れは無い)。`Alphanumeric`・`KanaType`・`Mode` の部分一致は使わない(プリセットの `DisplayAs*Alphanumeric`・`ConvertTo*Alphanumeric` の行に毎回当たり、信号にならない)。実装の最初のテストで、Mozc のプリセット TSV(ms-ime・atok・kotoeri)を通して `unknown_ime_like_command == 0` になることを固定してから条件を確定する。
 2. 状態が 6 語に無い → `unknown_status`。
 3. キーに空白を含む(修飾キー付き)→ `modified_key_ime_rows`(`Shift Eisu` のような、belief に効くのに送らない IME 行。**これが一番大事**)。
-4. キーが VK に写らない(`Kanji` など、仕様で写さないものを含む)→ `unmapped_key`。`Kanji` は ATOK・MS-IME 由来の表のほとんどにあり毎回 0 でなくなるので、`kanji_rows` として分けて数える。
+4. キーが VK に写らない(`Kanji` など、仕様で写さないものを含む)→ `unmapped_key`。このうち `Kanji` の行は、ATOK・MS-IME 由来の表のほとんどにあり毎回 0 でなくなるので、内訳として `kanji_rows` にも数える。
 
-`total_rows` は「パーサが返した行数」。送った行数と上の件数の合計が一致する(重複をまとめた行数は `merged_duplicates` で別に示す)ようにして、テストで固定する。欠けた行が「無い」のか「送れなかった」のかを、件数で区別できるようにする。
+`total_rows` は「パーサが返した行数」。不変条件を式で固定し、テストで検証する: `total_rows = sent + merged_duplicates + other_command + unknown_status + modified_key_ime_rows + unmapped_key`。`sent` は別名・重複をまとめた後に送った行数(`Hankaku/Zenkaku` のように `keys` が 2 つの行も 1 行と数える)、`merged_duplicates` は正規化でまとめて減った行数。`unknown_ime_like_command ⊆ other_command`、`kanji_rows ⊆ unmapped_key` は内訳で、合計に足さない。修飾キーの判定は、`mozc_key_vk_names` と同じく前後の空白を落としてから行う(`" Eisu"` のような行を落とさない)。欠けた行が「無い」のか「送れなかった」のかを、件数で区別できるようにする。
 
 ### 決定2: 学習表のセルを、予測に使われるかの理由つきの短い書式で添付する
 
@@ -74,10 +74,12 @@ related_adr:
   - `!m`: 開状態で mode が `Conv` に表せず捨てられた。
   - `!c`: 閉状態のセルどうしが食い違い(`after_open` か `disp`)、同じ (stage, key) のグループごと捨てられた。**閉状態の英数がどう効くかを見るのに要る印**。
   - `~`: 閉グループの mode が食い違い、予測には使われるが追跡(`after_conv`)が捨てられた。
+  - 印の優先は `!k` > `!m`(`lookup_slot` はキーの判定を開閉の判定より先に行う)。`prediction` の無いセル(`>-`)は、グループに入る前に落ちるので `!c`・`~` の判定に数えず、キーが表に無いときだけ `!k` を付ける。`!c`・`~` はグループの全員に付ける(先頭だけが使われるわけではない)。
+  - 印は「表が採用されていれば使われるか」を示す。実際に使われているかは `in_use`・`use_learned_keymap_table` で決まる(不採用・失効・opt-out のとき、印なしのセルも予測には使われない)。凡例(ADR と `bug-report-fetch` スキル)にこの注意を書く。
   - 印なし: 予測に使われる。押した後の mode が表せない開セルは `after_conv: None` として使われるので、印を付けない。
   - 閉状態のセルは mode を見ない(`lookup_slot` は閉なら conv をワイルドカードにする)ので、「Conv に表せない mode」を理由に印を付けない。
-- 順は (status, key) の順。
-- 件数の上限は定数で持つ。学習キー数 × 32(状態)から導き(学習キーが増えても正規の表が切られない)、直書きしない。現状は 14 キーで 448 件。超えた分は `cell_count − cells.len()` で分かる。上限は手で作った・壊れたファイル(最大 4MiB)への防衛としてだけ意味がある。
+- 順は (status, key) の順。`Status` が derive する `Ord`(open, mode, composing)の順とする。
+- 件数の上限は定数で持つ。学習キー数 × 32(状態: open 2 × `raw & 0x0B` の 8 値 × composing 2)から導き(学習キーが増えても正規の表が切られない)、直書きしない。学習キー(`awase-keymap-learn-win` のバイナリ内の `KEYS`)は awase-windows から見えないので、`KEYS` を共有クレート `awase-keymap-learn` へ `pub const` として移す(学習の挙動は変わらない)。現状は 14 キーで 448 件。超えた分は `cell_count − cells.len()` で分かる。上限は手で作った・壊れたファイル(最大 4MiB)への防衛としてだけ意味がある。
 
 学習表は「IME 状態 × キー番号」だけで打鍵内容を含まない(ADR-195)。書き手は学習プロセスの固定のキーだけを打つ(`awase-keymap-learn-win`)。キー番号・mode は数値で、任意文字列の経路は無い。
 
