@@ -140,6 +140,7 @@ jobs:
           #       tog=無変換の単独タップを keys.ime_toggle にする(トグルの検証用。0xF3/0x19 は IME/awase の shadow トグルで設定不要)。
           KM_KEYS = dict(abs='ime_on = ["Ctrl+変換", "VK_CONVERT"]; ime_off = ["Ctrl+無変換", "VK_NONCONVERT"]', tog='ime_toggle = ["VK_NONCONVERT"]')
           KM_EISU = 'f0=tog:close,f0=tog:fresh,f0=tog:sync,f0=tog:open'
+          KM_EISU_EXP = KM_EISU + ',f0=on:sync,f0=on:fresh'
           def km_cells(grp, msime):
             if grp == 'abs':
               c = ['ctrl+1c=on:close', 'ctrl+1d=off:open', 'ctrl+1c=on:sync', 'ctrl+1d=off:sync', '1c=on:close', '1d=off:open', '16=on:close', '1a=off:open']
@@ -321,12 +322,13 @@ jobs:
             # 使い捨てのスパイク(exp/mode-key-recheck、develop にはマージしない): 英数(複合キー)を belief とずれた状態で押したときの追随を、
             # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
             # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
-            *[cfg(f'sc-exp-modekey-{win}-{en}', 'observe', check='keymatrix', ime='gji', keymap=2, runs=1, wait=2400, exp=ex,
+            # 2周目: 閉から始まる 'on' セル(belief も実 IME も閉で、英数で開く)を足し、3回繰り返して揺れを見る。b2 は1周目で効果なし(外す)。
+            *[cfg(f'sc-exp-modekey-{win}-{en}', 'observe', check='keymatrix', ime='gji', keymap=2, runs=3, wait=2400, exp=ex,
                   keys='ime_toggle = ["VK_NONCONVERT"]',
-                  **({'chrome': f"--keymatrix={KM_EISU} --settle=800"} if win == 'chrome' else
-                     {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_EISU} --layout=@REPO@/layout/nicola_keytop.yab"}))
+                  **({'chrome': f"--keymatrix={KM_EISU_EXP} --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_EISU_EXP} --layout=@REPO@/layout/nicola_keytop.yab"}))
               for win in ('tsf', 'chrome')
-              for en, ex in (('base', ''), ('a', 'a'), ('b1', 'b1'), ('b2', 'b2'), ('ab1', 'a,b1'))],
+              for en, ex in (('base', ''), ('a', 'a'), ('b1', 'b1'), ('ab1', 'a,b1'))],
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
