@@ -19,8 +19,8 @@ mod app {
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::UI::TextServices::{
-        CLSID_TF_LangBarMgr, ITfLangBarItem, ITfLangBarItemButton, ITfLangBarItemMgr,
-        ITfLangBarMgr, TF_LANGBARITEMINFO,
+        CLSID_TF_LangBarMgr, CLSID_TF_ThreadMgr, ITfLangBarItem, ITfLangBarItemButton,
+        ITfLangBarItemMgr, ITfLangBarMgr, ITfThreadMgr, TF_LANGBARITEMINFO,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
@@ -104,6 +104,20 @@ mod app {
         Ok(format!("got_tid={got_tid} items=[{}]", out.join(" ; ")))
     }
 
+    /// `GetThreadMarshalInterface`(別プロセス向けのマーシャリング経路)を試す。結果は「成功/HRESULT」だけ。
+    fn marshal_try(mgr: &ITfLangBarMgr, tid: u32) -> String {
+        let mut out = Vec::new();
+        for dw_type in [0u32, 1, 2] {
+            // SAFETY: mgr は有効な COM 参照。
+            let r = unsafe { mgr.GetThreadMarshalInterface(tid, dw_type, &ITfLangBarItemMgr::IID) };
+            out.push(match r {
+                Ok(_) => format!("type{dw_type}=OK"),
+                Err(e) => format!("type{dw_type}=hr{:x}", e.code().0),
+            });
+        }
+        out.join(",")
+    }
+
     pub fn run() -> anyhow::Result<()> {
         let path = arg("--log=").unwrap_or_else(|| "langbar_inputmode_probe.log".to_owned());
         let duration: u64 = arg("--duration=").and_then(|v| v.parse().ok()).unwrap_or(60);
@@ -116,6 +130,21 @@ mod app {
         // SAFETY: 標準的な COM オブジェクト生成。
         let mgr: ITfLangBarMgr = unsafe { CoCreateInstance(&CLSID_TF_LangBarMgr, None, CLSCTX_INPROC_SERVER) }?;
         log.line("ITfLangBarMgr: OK");
+        // 正の対照: 自スレッドで ITfThreadMgr を Activate してから、自スレッドの項目が読めるか。
+        // SAFETY: 標準的な COM オブジェクト生成。
+        let tm: Option<ITfThreadMgr> = unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER) }.ok();
+        if let Some(tm) = tm.as_ref() {
+            // SAFETY: tm は有効な COM 参照。
+            let r = unsafe { tm.Activate() };
+            log.line(&format!("LB-CTRL ThreadMgr.Activate={:?}", r.as_ref().map(|_| "OK").map_err(|e| e.code().0)));
+        }
+        // SAFETY: 読み取りのみ。
+        let self_tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+        match items_of(&mgr, self_tid) {
+            Ok(v) => log.line(&format!("LB-CTRL self tid={self_tid} {v}")),
+            Err(e) => log.line(&format!("LB-CTRL self tid={self_tid} ERR {e}")),
+        }
+        log.line(&format!("LB-CTRL self marshal {}", marshal_try(&mgr, self_tid)));
 
         let end = Instant::now() + Duration::from_secs(duration);
         let mut prev: std::collections::HashMap<&'static str, String> = std::collections::HashMap::new();
@@ -142,7 +171,7 @@ mod app {
                     Err(e) => format!("tid={tid} LB-ERR {e}"),
                 };
                 if prev.get(kind) != Some(&cur) {
-                    log.line(&format!("LB kind={kind} {cur}"));
+                    log.line(&format!("LB kind={kind} {cur} marshal[{}]", marshal_try(&mgr, tid)));
                     prev.insert(kind, cur);
                 }
             }
