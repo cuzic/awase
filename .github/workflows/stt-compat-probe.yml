@@ -81,12 +81,16 @@ jobs:
           using System;
           using System.Runtime.InteropServices;
           public static class Kb {
+            public static int LastError;
             [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
-            [StructLayout(LayoutKind.Explicit)] public struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public KEYBDINPUT ki; }
+            [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+            [StructLayout(LayoutKind.Explicit)] public struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public MOUSEINPUT mi; [FieldOffset(8)] public KEYBDINPUT ki; }
             [DllImport("user32.dll", SetLastError=true)] public static extern uint SendInput(uint n, INPUT[] p, int cb);
             public static uint Key(ushort vk, bool up) {
               var i = new INPUT[1]; i[0].type = 1; i[0].ki.wVk = vk; i[0].ki.dwFlags = up ? 2u : 0u;
-              return SendInput(1, i, Marshal.SizeOf(typeof(INPUT)));
+              uint r = SendInput(1, i, Marshal.SizeOf(typeof(INPUT)));
+              if (r == 0) LastError = Marshal.GetLastWin32Error();
+              return r;
             }
           }
           '@
@@ -97,6 +101,8 @@ jobs:
           $r += "H down:    $([Kb]::Key(0x48, $false))"
           $r += "H up:      $([Kb]::Key(0x48, $true))"
           $r += "LWIN up:   $([Kb]::Key(0x5B, $true))"
+          $r += "INPUT のサイズ(x64 は 40 が正): $([System.Runtime.InteropServices.Marshal]::SizeOf([Type]'Kb+INPUT'))"
+          $r += "最後のエラー(0 は無し): $([Kb]::LastError)"
           Start-Sleep -Seconds 4
           $after = Snapshot
           $out = @('### SendInput の戻り値(1 なら OS が受け付けた)') + $r
