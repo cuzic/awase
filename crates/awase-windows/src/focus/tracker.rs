@@ -163,7 +163,8 @@ impl FocusTracker {
             if Self::should_log_demotion(same_window, prev_profile, overridden) {
                 tracing::info!(
                     "[imm-learning] profile 降格: process={:?} class={:?} {:?} → {:?} \
-                     (実測学習 ImmCapability::Unavailable。誤学習なら cache.toml の \
+                     (実測学習 ImmCapability::Unavailable。学習の経路は同 process/class の \
+                     `IMM capability learned` 行〔NULL 連続観測か miss 閾値超え〕。誤学習なら cache.toml の \
                      [imm_capability] から該当 process/class を削除)",
                     self.current.process_name,
                     self.current.class_name,

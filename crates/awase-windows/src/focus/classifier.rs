@@ -305,6 +305,15 @@ impl ImmCapabilityStore {
             if process_pending.is_empty() {
                 self.pending_unavailable.remove(&process_name);
             }
+            // 学習の経路をログに残す。もう一方の書き手（IME 検出ミス数の閾値超え）は
+            // `Runtime::learn_imm_capability_from_miss` が `(miss a→b)` 付きで出す。
+            // 降格ログ（`tracker.rs`）には経路が無いので、どちらの `IMM capability learned`
+            // 行が先に出たかで、報告ログから経路を判別できるようにする。
+            tracing::info!(
+                "IMM capability learned: {process_name}/{class_name} → Unavailable \
+                 (ImmGetDefaultIMEWnd=NULL を {} 回連続観測)",
+                Self::UNAVAILABLE_CONFIRM_THRESHOLD
+            );
             self.learn(process_name, class_name, ImmCapability::Unavailable);
         }
     }
