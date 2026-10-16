@@ -142,7 +142,7 @@ mod app {
     }
 
     /// 画面の矩形を取り込み、輝度を平均で 2 値化した ASCII アートと FNV ハッシュを返す(インジケーターの「あ」/「A」の字形を見る)。
-    unsafe fn capture_art(r: RECT) -> Option<(u64, String)> {
+    unsafe fn capture_art(r: RECT) -> Option<(u64, String, Vec<u8>, i32, i32)> {
         let (w, h) = (r.right - r.left, r.bottom - r.top);
         if w <= 0 || h <= 0 || w > 200 || h > 200 {
             return None;
@@ -205,7 +205,8 @@ mod app {
                 })
                 .collect::<Vec<_>>()
                 .join("/");
-            Some((hash, art))
+            let gray: Vec<u8> = luma.iter().map(|&l| u8::try_from(l.min(255)).unwrap_or(255)).collect();
+            Some((hash, art, gray, w, h))
         }
     }
 
@@ -409,10 +410,17 @@ mod app {
                         prev_props = props;
                     }
                     // SAFETY: GDI の呼び出し(ハンドルは関数内で解放)。
-                    if let Some((hash, art)) = unsafe { capture_art(rect) } {
+                    if let Some((hash, art, gray, gw, gh)) = unsafe { capture_art(rect) } {
                         if hash != prev_hash {
                             log.line(&format!("IND-PIX hash={hash:016x} art={art}"));
                             prev_hash = hash;
+                            // `--raw=<dir>`: 2 値化前のグレースケールを PGM(P5)で保存する(閾値・正規化の感度をオフラインで比べる用)。
+                            if let Some(dir) = arg("--raw=") {
+                                let _ = std::fs::create_dir_all(&dir);
+                                let mut data = format!("P5\n{gw} {gh}\n255\n").into_bytes();
+                                data.extend_from_slice(&gray);
+                                let _ = std::fs::write(format!("{dir}/{tick:06}-{hash:016x}.pgm"), data);
+                            }
                         }
                     }
                 }

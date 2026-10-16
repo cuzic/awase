@@ -487,6 +487,28 @@ mod app {
                     }
                 }
             }
+            "cycle" => {
+                // 1 つの窓で、`--keys=<16進VKをカンマ区切り>` を順に押し、押すたびに実 IME の状態(TRUTH)を記録する。字形の画像は並行する
+                // `ime_indicator_probe --raw=<dir>` が保存する(DPI・テーマを替えた画像の収集用)。`--n` は全体の繰り返し数。
+                let keys: Vec<u32> = arg("--keys=")
+                    .unwrap_or_else(|| "F2,F1,F3,F4,F0,1A".to_owned())
+                    .split(',')
+                    .filter_map(|v| u32::from_str_radix(v.trim(), 16).ok())
+                    .collect();
+                let a = spawn_window("A", 40, false, false);
+                focus(&a);
+                sleep_ms(800);
+                press(0x16);
+                sleep_ms(800);
+                for i in 0..n {
+                    for &vk in &keys {
+                        press(vk);
+                        sleep_ms(1500);
+                        truth(&a);
+                        log(&format!("CYCLE i={i} vk={vk:02X}"));
+                    }
+                }
+            }
             "noimm" => {
                 // A=ひらがな の窓から、IMM の無い窓(C1: ImmAssociateContextEx(NULL)、C2: ImmDisableIME)へ移る。
                 let a = spawn_window("A", 40, false, false);
