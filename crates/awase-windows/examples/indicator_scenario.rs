@@ -5,6 +5,11 @@
 //! ログ: `SW …`(前面化の時刻)/ `PRESS vk=…` / `TRUTH <名> open=.. conv=..`(窓のスレッドの IME の実状態、IMC で読む)/ `FOCUS fg_tid=.. focus_tid=..` / `=== 完了 ===`。
 
 #[cfg(windows)]
+#[allow(dead_code, unused_imports, clippy::all, clippy::pedantic, clippy::nursery, unsafe_code)]
+#[path = "text_store_probe.rs"]
+mod tsp;
+
+#[cfg(windows)]
 mod app {
     use std::io::Write as _;
     use std::sync::mpsc;
@@ -22,7 +27,9 @@ mod app {
         MapVirtualKeyW, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
         KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
     };
-    use windows::Win32::UI::TextServices::{CLSID_TF_InputProcessorProfiles, ITfInputProcessorProfileMgr};
+    use windows::Win32::UI::TextServices::{
+        CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfContext, ITfInputProcessorProfileMgr, ITfThreadMgr,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW,
         GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, SendMessageW, WM_GETTEXT, WM_SETTEXT,
@@ -135,6 +142,8 @@ mod app {
         top: HWND,
         edit: HWND,
         tid: u32,
+        /// TSF ストアの窓なら、ストアのログ(最後の `LockReleased` がストアの現在のテキスト)。
+        store: Option<crate::tsp::store::Log>,
     }
 
     /// 新しいスレッドに、最上位の窓 + EDIT を作る。`disable_ime`=スレッドで ImmDisableIME(0)、`assoc_null`=EDIT の IME コンテキストを外す。
@@ -199,6 +208,66 @@ mod app {
             top: HWND(t as *mut _),
             edit: HWND(e as *mut _),
             tid,
+            store: None,
+        }
+    }
+
+    /// 自前の TSF text store を持つ窓(子の入力欄なし)を、新しいスレッドに作る。`imm`: "default"=何もしない、"assoc"=窓の IMM コンテキストを外す、
+    /// "disable"=スレッドで ImmDisableIME(0)(UWP などの TSF のみの形)。IME が動くかは `type_probe` の打鍵結果で見る。
+    fn spawn_tsf_window(name: &'static str, x: i32, imm: &'static str) -> Win {
+        let (tx, rx) = mpsc::channel::<(isize, u32, crate::tsp::store::Log)>();
+        std::thread::spawn(move || {
+            register_class();
+            // SAFETY: 窓・TSF の初期化はすべてこのスレッドで行い、メッセージループもこのスレッドで回す。
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+                if imm == "disable" {
+                    let _ = ImmDisableIME(0);
+                }
+                let thread_mgr: ITfThreadMgr = CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER).expect("ThreadMgr");
+                let client_id = thread_mgr.Activate().expect("Activate");
+                let hi = GetModuleHandleW(None).unwrap_or_default();
+                let top = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    w!("ScenWnd"),
+                    PCWSTR(w!("scen-tsf").as_ptr()),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    x,
+                    60,
+                    320,
+                    140,
+                    None,
+                    None,
+                    Some(hi.into()),
+                    None,
+                )
+                .unwrap_or_default();
+                if imm == "assoc" {
+                    let _ = ImmAssociateContextEx(top, windows::Win32::UI::Input::Ime::HIMC(std::ptr::null_mut()), 0);
+                }
+                crate::tsp::store::TOP.store(top.0 as isize, std::sync::atomic::Ordering::SeqCst);
+                let t0 = std::time::Instant::now();
+                let slog: crate::tsp::store::Log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let store: windows::core::IUnknown = crate::tsp::store::Store::new(std::sync::Arc::clone(&slog), t0, 0, false, false).into();
+                let doc = thread_mgr.CreateDocumentMgr().expect("CreateDocumentMgr");
+                let mut ctx: Option<ITfContext> = None;
+                let mut cookie = 0u32;
+                doc.CreateContext(client_id, 0, &store, &raw mut ctx, &raw mut cookie).expect("CreateContext");
+                doc.Push(&ctx.expect("ctx")).expect("Push");
+                let _ = thread_mgr.AssociateFocus(top, &doc);
+                let _ = thread_mgr.SetFocus(&doc);
+                let _ = tx.send((top.0 as isize, GetCurrentThreadId(), slog));
+                pump();
+                let _ = thread_mgr.Deactivate();
+            }
+        });
+        let (t, tid, slog) = rx.recv().expect("tsf window");
+        Win {
+            name,
+            top: HWND(t as *mut _),
+            edit: HWND(t as *mut _),
+            tid,
+            store: Some(slog),
         }
     }
 
@@ -235,6 +304,7 @@ mod app {
             top: parent,
             edit: HWND(e as *mut _),
             tid,
+            store: None,
         }
     }
 
@@ -335,6 +405,15 @@ mod app {
             sleep_ms(250);
         }
         sleep_ms(500);
+        if let Some(slog) = &w.store {
+            let text = slog
+                .lock()
+                .ok()
+                .and_then(|l| l.iter().rev().find(|r| r.tag == "LockReleased").map(|r| r.detail.clone()))
+                .unwrap_or_default();
+            log(&format!("TYPED {} store={text:?}", w.name));
+            return;
+        }
         let mut buf = [0u16; 64];
         // SAFETY: 同一プロセスの窓へのメッセージ。buf はローカル。
         let n = unsafe { SendMessageW(w.edit, WM_GETTEXT, Some(WPARAM(buf.len())), Some(LPARAM(buf.as_mut_ptr() as isize))) }.0;
@@ -425,6 +504,37 @@ mod app {
                         sleep_ms(1800);
                         truth(&a);
                         log(&format!("ROUND i={i} shown=A"));
+                    }
+                }
+            }
+            "tsfstore" => {
+                // 自前の TSF text store の窓 T(IMM との関わりは --imm=default|assoc|disable)。IME が動くかは打鍵結果(ストアのテキスト)で見る。
+                // 字形が T 自身の状態を映すか、直前の窓のままかを、直前の窓の状態を替えて区別する(A=ひらがな、B=半角英数。T は 1 段階目=ひらがな、2 段階目=半角英数)。
+                let imm: &'static str = match arg("--imm=").as_deref() {
+                    Some("assoc") => "assoc",
+                    Some("disable") => "disable",
+                    _ => "default",
+                };
+                log(&format!("tsfstore imm={imm}"));
+                let a = spawn_window("A", 40, false, false);
+                let b = spawn_window("B", 400, false, false);
+                let t = spawn_tsf_window("T", 700, imm);
+                set_state(&a, 0xF2);
+                set_state(&b, 0xF0);
+                for phase in 0..2 {
+                    set_state(&t, if phase == 0 { 0xF2 } else { 0xF0 });
+                    type_probe(&t);
+                    for i in 0..n {
+                        let prev = if phase == 0 { &b } else { &a };
+                        focus(prev);
+                        sleep_ms(1800);
+                        truth(prev);
+                        log(&format!("ROUND phase={phase} i={i} shown={}", prev.name));
+                        focus(&t);
+                        sleep_ms(2200);
+                        type_probe(&t);
+                        truth(&t);
+                        log(&format!("ROUND phase={phase} i={i} shown=T prev={}", prev.name));
                     }
                 }
             }

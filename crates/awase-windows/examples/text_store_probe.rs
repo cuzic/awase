@@ -28,7 +28,7 @@
 // `#[implement(...)]`（windows-rs）が生成する内部コードがこのリポジトリの pedantic/nursery deny に触れるため、
 // マクロ生成部分にまとめて allow する（`spike_langbar_input_mode.rs` と同じ扱い）。
 #[allow(clippy::ref_as_ptr, clippy::inline_always)]
-mod store {
+pub(crate) mod store {
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicIsize, Ordering};
     use std::sync::{Arc, Mutex};

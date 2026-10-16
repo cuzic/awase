@@ -327,9 +327,9 @@ jobs:
             # 8周目(同じ構成を再測定): 押下ごとの字形の時系列を見る(1.8秒窓の集計は次のセットアップの戻りを拾っていた)。F1(カタカナ)・F4/F5 を足し、間隔を 50ms に。
             # 16周目(ADR-261 D0-1/D0-2 の近似/D0-10): 窓の切替・IMM の無い窓・フォーカススレッドと前面スレッドの違いで、字形がどう動くか。
             # indicator_scenario が窓とスレッドを作り、SW(前面化)/PRESS/TRUTH(窓のスレッドの実 IME)を記録。字形は ime_indicator_probe(50ms)。
-            *[cfg(f'sc-scen-{sc}-{pn}', 'observe', check='scen', awase='false', ime=im, keymap=km, runs=1, wait=260, scen=f'--scen={sc} --n=6{extra}',
+            *[cfg(f'sc-scen-tsfstore-{imm}-{pn}', 'observe', check='scen', awase='false', ime=im, keymap=km, runs=1, wait=260, scen=f'--scen=tsfstore --imm={imm} --n=6{extra}',
                   side='ime_indicator_probe', side_args='--duration=300 --interval=50')
-              for sc in ('tsfonly',)
+              for imm in ('default', 'assoc', 'disable')
               for pn, im, km, extra in (('gji', 'gji', 2, ''), ('msime', 'msime', 2, ' --msime'))],
             # 15周目(ADR-261 D0-0′): 別プロセスの入力モードを、言語バーの項目の文字列(ITfLangBarMgr::GetThreadLangBarItemMgr → GetText/GetTooltipString)で読めるか。
             # langbar_inputmode_probe が前面・フォーカスのスレッドの全項目を読み、spike の KEY/READIME/PRESS 行と時刻で突き合わせる。
