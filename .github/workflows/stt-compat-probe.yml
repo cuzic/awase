@@ -1,0 +1,115 @@
+name: stt-compat-probe
+
+# 音声入力ソフト・Windows 標準の音声入力(Win+H)との相性を CI で確かめる前の、ランナーの観測(判定は付けない)。
+# 見るもの: Windows の版、音声デバイスの有無、仮想音声デバイスの入手経路、注入した Win+H で音声入力が出るか。
+# 動く条件: ci/stt-compat-probe への push、手動起動(workflow_dispatch は既定ブランチにこのファイルがあるときだけ使える)。
+# 約 5 分。e2e-ime.yml には組み込まない(共有ファイルを避けるため)。
+on:
+  push:
+    branches: [ci/stt-compat-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stt-compat-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ランナーの Windows の版
+        shell: pwsh
+        run: |
+          $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          $rows = @(
+            "ProductName=$($cv.ProductName)",
+            "EditionID=$($cv.EditionID)",
+            "InstallationType=$($cv.InstallationType)",
+            "CurrentBuild=$($cv.CurrentBuild).$($cv.UBR)",
+            "ImageOS=$env:ImageOS",
+            "ImageVersion=$env:ImageVersion"
+          )
+          $rows | ForEach-Object { Write-Host $_ }
+          "## ランナーの Windows`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          ($rows | ForEach-Object { "- $_" }) | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+      - name: 音声デバイスの有無
+        shell: pwsh
+        run: |
+          $out = @()
+          $svc = Get-Service Audiosrv, AudioEndpointBuilder -ErrorAction SilentlyContinue | Select-Object Name, Status, StartType
+          $out += "### サービス"
+          $out += ($svc | Format-Table -AutoSize | Out-String)
+          $ep = Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue | Select-Object Status, FriendlyName
+          $out += "### AudioEndpoint ($(@($ep).Count) 件)"
+          $out += ($ep | Format-Table -AutoSize | Out-String)
+          $snd = Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | Select-Object Name, Status, Manufacturer
+          $out += "### Win32_SoundDevice ($(@($snd).Count) 件)"
+          $out += ($snd | Format-Table -AutoSize | Out-String)
+          $out | ForEach-Object { Write-Host $_ }
+          "## 音声デバイス`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          $out | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+      - name: 仮想音声デバイスの入手経路(入れずに調べるだけ)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $out = @()
+          foreach ($q in @('vb-cable', 'virtual-audio', 'vac', 'scream')) {
+            $out += "### choco search $q"
+            $out += (choco search $q --limit-output 2>&1 | Select-Object -First 8 | Out-String)
+          }
+          $out | ForEach-Object { Write-Host $_ }
+          "## 仮想音声デバイスの候補(choco の検索のみ。入れてはいない)`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          $out | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+      - name: 注入した Win+H で音声入力が出るか
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Kb {
+            [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+            [StructLayout(LayoutKind.Explicit)] public struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public KEYBDINPUT ki; }
+            [DllImport("user32.dll", SetLastError=true)] public static extern uint SendInput(uint n, INPUT[] p, int cb);
+            public static uint Key(ushort vk, bool up) {
+              var i = new INPUT[1]; i[0].type = 1; i[0].ki.wVk = vk; i[0].ki.dwFlags = up ? 2u : 0u;
+              return SendInput(1, i, Marshal.SizeOf(typeof(INPUT)));
+            }
+          }
+          '@
+          function Snapshot { Get-Process | Where-Object { $_.MainWindowTitle -ne '' -or $_.ProcessName -match 'TextInput|Voice|Speech|InputApp' } | Select-Object ProcessName, Id, MainWindowTitle | Sort-Object ProcessName }
+          $before = Snapshot
+          $r = @()
+          $r += "LWIN down: $([Kb]::Key(0x5B, $false))"
+          $r += "H down:    $([Kb]::Key(0x48, $false))"
+          $r += "H up:      $([Kb]::Key(0x48, $true))"
+          $r += "LWIN up:   $([Kb]::Key(0x5B, $true))"
+          Start-Sleep -Seconds 4
+          $after = Snapshot
+          $out = @('### SendInput の戻り値(1 なら OS が受け付けた)') + $r
+          $out += '### 送信前のウィンドウ付きプロセス'
+          $out += ($before | Format-Table -AutoSize | Out-String)
+          $out += '### 送信 4 秒後'
+          $out += ($after | Format-Table -AutoSize | Out-String)
+          $names = @($before.ProcessName)
+          $new = @($after | Where-Object { $names -notcontains $_.ProcessName })
+          $out += "### 新しく現れたプロセス: $(@($new).Count) 件"
+          $out += ($new | Format-Table -AutoSize | Out-String)
+          $out | ForEach-Object { Write-Host $_ }
+          "## 注入した Win+H`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          $out | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
