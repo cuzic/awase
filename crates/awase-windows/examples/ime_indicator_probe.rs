@@ -368,6 +368,7 @@ mod app {
         let shots_every: Option<u64> = arg("--shots=").and_then(|v| v.parse().ok());
         let mut shot_t = std::time::Instant::now().checked_sub(Duration::from_secs(3600)).unwrap_or_else(std::time::Instant::now);
         let mut shots_n = 0u32;
+        let (mut cost_sum, mut cost_n, mut cost_max) = (0f64, 0u32, 0f64);
         while t0.elapsed() < Duration::from_secs(duration) {
             let mut now = BTreeSet::new();
             for (name, p) in &classes {
@@ -395,6 +396,7 @@ mod app {
                     log.line(&format!("IND - {l}"));
                 }
             }
+            let cost_t = std::time::Instant::now();
             // 入力インジケーターの名前以外の情報と、画面上の字形(「あ」/「A」)の変化。
             let tray = find(w!("Shell_TrayWnd"));
             if !tray.0.is_null() {
@@ -413,6 +415,17 @@ mod app {
                             prev_hash = hash;
                         }
                     }
+                }
+            }
+            {
+                let ms = cost_t.elapsed().as_secs_f64() * 1000.0;
+                cost_sum += ms;
+                cost_n += 1;
+                if ms > cost_max {
+                    cost_max = ms;
+                }
+                if tick % 50 == 0 && cost_n > 0 {
+                    log.line(&format!("IND-COST n={cost_n} avg_ms={:.1} max_ms={cost_max:.1}", cost_sum / f64::from(cost_n)));
                 }
             }
             if let Some(every) = shots_every {

@@ -400,6 +400,27 @@ mod app {
                     }
                 }
             }
+            "noimm2" => {
+                // ImmDisableIME の窓(C2)の字形が「直前の窓の状態のまま(古い)」か「その窓固有」かを、直前の窓の状態を替えて区別する。
+                // A=ひらがな、B=半角英数。B→C2、A→C2 を繰り返す。字形が直前に追随するなら古い証拠、常に同じなら固有。
+                let a = spawn_window("A", 40, false, false);
+                let b = spawn_window("B", 400, false, false);
+                let c2 = spawn_window("C2", 700, true, false);
+                set_state(&a, 0xF2);
+                set_state(&b, 0xF0);
+                for i in 0..n {
+                    for prev in [&b, &a] {
+                        focus(prev);
+                        sleep_ms(1800);
+                        truth(prev);
+                        log(&format!("ROUND i={i} shown={}", prev.name));
+                        focus(&c2);
+                        sleep_ms(2200);
+                        truth(&c2);
+                        log(&format!("ROUND i={i} shown=C2 prev={}", prev.name));
+                    }
+                }
+            }
             "focusthread" => {
                 // F(最上位、スレッド TF)の中に、別スレッド TG の EDIT(G)を子として置く。前面=TF、フォーカス=EF または EG。
                 let f = spawn_window("F", 40, false, false);
