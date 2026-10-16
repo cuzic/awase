@@ -384,6 +384,15 @@ mod app {
         (ok.0 != 0).then_some(r)
     }
 
+    fn ime_set(ime: HWND, cmd: usize, lp: isize) -> Option<usize> {
+        let mut r: usize = 0;
+        // SAFETY: 他スレッドの IME 窓への WM_IME_CONTROL(タイムアウト付き)。
+        let ok = unsafe {
+            SendMessageTimeoutW(ime, WM_IME_CONTROL, WPARAM(cmd), LPARAM(lp), SMTO_ABORTIFHUNG, 300, Some(&raw mut r))
+        };
+        (ok.0 != 0).then_some(r)
+    }
+
     fn truth(w: &Win) {
         // SAFETY: 読み取りのみ。
         let ime = unsafe { ImmGetDefaultIMEWnd(w.edit) };
@@ -500,7 +509,34 @@ mod app {
                 sleep_ms(800);
                 press(0x16);
                 sleep_ms(800);
+                // `--steps=<open>:<conv>,…`(16進): IMM で開閉と変換モードを書く(IMM が効く窓=MS-IME 本体向け)。
+                let steps: Vec<(isize, isize)> = arg("--steps=")
+                    .map(|v| {
+                        v.split(',')
+                            .filter_map(|t| {
+                                let (o, c) = t.split_once(':')?;
+                                Some((isize::from_str_radix(o, 16).ok()?, isize::from_str_radix(c, 16).ok()?))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !steps.is_empty() {
+                    // SAFETY: 既定の IME 窓の取得のみ。
+                    let ime = unsafe { ImmGetDefaultIMEWnd(a.edit) };
+                    for i in 0..n {
+                        for &(o, c) in &steps {
+                            let _ = ime_set(ime, 2, c);
+                            let _ = ime_set(ime, 6, o);
+                            sleep_ms(1500);
+                            truth(&a);
+                            log(&format!("CYCLE i={i} set open={o:X} conv={c:X}"));
+                        }
+                    }
+                }
                 for i in 0..n {
+                    if !steps.is_empty() {
+                        break;
+                    }
                     for &vk in &keys {
                         press(vk);
                         sleep_ms(1500);
