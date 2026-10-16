@@ -15,7 +15,7 @@ mod app {
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };
-    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::Input::Ime::{ImmAssociateContextEx, ImmDisableIME, ImmGetDefaultIMEWnd};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -25,7 +25,7 @@ mod app {
     use windows::Win32::UI::TextServices::{CLSID_TF_InputProcessorProfiles, ITfInputProcessorProfileMgr};
     use windows::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-        GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId,
+        GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, SendMessageW, WM_GETTEXT, WM_SETTEXT,
         RegisterClassW, SendMessageTimeoutW, SetForegroundWindow, TranslateMessage, GUITHREADINFO,
         MSG, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_IME_CONTROL, WNDCLASSW,
         WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
@@ -139,6 +139,11 @@ mod app {
 
     /// 新しいスレッドに、最上位の窓 + EDIT を作る。`disable_ime`=スレッドで ImmDisableIME(0)、`assoc_null`=EDIT の IME コンテキストを外す。
     fn spawn_window(name: &'static str, x: i32, disable_ime: bool, assoc_null: bool) -> Win {
+        spawn_window_cls(name, x, disable_ime, assoc_null, false)
+    }
+
+    /// `rich`=EDIT の代わりに TSF 対応の RichEdit(`RICHEDIT50W`)を作る。
+    fn spawn_window_cls(name: &'static str, x: i32, disable_ime: bool, assoc_null: bool, rich: bool) -> Win {
         let (tx, rx) = mpsc::channel::<(isize, isize, u32)>();
         std::thread::spawn(move || {
             register_class();
@@ -163,9 +168,12 @@ mod app {
                     None,
                 )
                 .unwrap_or_default();
+                if rich {
+                    let _ = LoadLibraryW(w!("Msftedit.dll"));
+                }
                 let edit = CreateWindowExW(
                     WINDOW_EX_STYLE(0),
-                    w!("EDIT"),
+                    if rich { w!("RICHEDIT50W") } else { w!("EDIT") },
                     PCWSTR::null(),
                     WS_CHILD | WS_VISIBLE | WS_BORDER | WINDOW_STYLE(0x80),
                     10,
@@ -318,6 +326,26 @@ mod app {
         log(&format!("TRUTH {} open={open:?} conv={conv:?}", w.name));
     }
 
+    /// 実際の IME の効果を、打った出力で読む(IMM が読めない窓でも使える正解): `ka` + Enter を打って、窓のテキストを読む。
+    fn type_probe(w: &Win) {
+        for vk in [0x4B_u32, 0x41, 0x0D] {
+            key(vk, true);
+            sleep_ms(60);
+            key(vk, false);
+            sleep_ms(250);
+        }
+        sleep_ms(500);
+        let mut buf = [0u16; 64];
+        // SAFETY: 同一プロセスの窓へのメッセージ。buf はローカル。
+        let n = unsafe { SendMessageW(w.edit, WM_GETTEXT, Some(WPARAM(buf.len())), Some(LPARAM(buf.as_mut_ptr() as isize))) }.0;
+        let text = String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0).min(63)]);
+        log(&format!("TYPED {} text={text:?}", w.name));
+        // SAFETY: 同上。
+        unsafe {
+            let _ = SendMessageW(w.edit, WM_SETTEXT, Some(WPARAM(0)), Some(LPARAM(w!("").as_ptr() as isize)));
+        }
+    }
+
     fn focus_info() {
         // SAFETY: 読み取りのみ。
         unsafe {
@@ -397,6 +425,32 @@ mod app {
                         sleep_ms(1800);
                         truth(&a);
                         log(&format!("ROUND i={i} shown=A"));
+                    }
+                }
+            }
+            "tsfonly" => {
+                // IMM を無効にした TSF のみのスレッド T(スレッドで ImmDisableIME + TSF 対応の RichEdit)。UWP などの形。
+                // IME が動いていること(打った出力)を確かめたうえで、字形が T 自身の状態を映すか、直前の窓のままかを、
+                // 直前の窓の状態を替えて区別する。A=ひらがな、B=半角英数。T は 1 段階目=ひらがな、2 段階目=半角英数。
+                let a = spawn_window("A", 40, false, false);
+                let b = spawn_window("B", 400, false, false);
+                let t = spawn_window_cls("T", 700, true, false, true);
+                set_state(&a, 0xF2);
+                set_state(&b, 0xF0);
+                for phase in 0..2 {
+                    // T の状態を作る(1 段階目 F2=ひらがな、2 段階目 F0=半角英数)。打って確かめる。
+                    set_state(&t, if phase == 0 { 0xF2 } else { 0xF0 });
+                    type_probe(&t);
+                    for i in 0..n {
+                        let prev = if phase == 0 { &b } else { &a };
+                        focus(prev);
+                        sleep_ms(1800);
+                        truth(prev);
+                        log(&format!("ROUND phase={phase} i={i} shown={}", prev.name));
+                        focus(&t);
+                        sleep_ms(2200);
+                        type_probe(&t);
+                        log(&format!("ROUND phase={phase} i={i} shown=T prev={}", prev.name));
                     }
                 }
             }

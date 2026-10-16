@@ -329,7 +329,7 @@ jobs:
             # indicator_scenario が窓とスレッドを作り、SW(前面化)/PRESS/TRUTH(窓のスレッドの実 IME)を記録。字形は ime_indicator_probe(50ms)。
             *[cfg(f'sc-scen-{sc}-{pn}', 'observe', check='scen', awase='false', ime=im, keymap=km, runs=1, wait=260, scen=f'--scen={sc} --n=6{extra}',
                   side='ime_indicator_probe', side_args='--duration=300 --interval=50')
-              for sc in ('noimm2',)
+              for sc in ('tsfonly',)
               for pn, im, km, extra in (('gji', 'gji', 2, ''), ('msime', 'msime', 2, ' --msime'))],
             # 15周目(ADR-261 D0-0′): 別プロセスの入力モードを、言語バーの項目の文字列(ITfLangBarMgr::GetThreadLangBarItemMgr → GetText/GetTooltipString)で読めるか。
             # langbar_inputmode_probe が前面・フォーカスのスレッドの全項目を読み、spike の KEY/READIME/PRESS 行と時刻で突き合わせる。
