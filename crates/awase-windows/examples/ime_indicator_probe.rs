@@ -282,6 +282,11 @@ mod app {
                         .map(|b| b.to_string())
                         .unwrap_or_default()
                         .starts_with("Tray Input Indicator")
+                        // 日本語表示の Windows では名前が「トレイ入力インジケーター …」(dragonflyg4 で確認)。
+                        || c.CurrentName()
+                            .map(|b| b.to_string())
+                            .unwrap_or_default()
+                            .starts_with("トレイ入力インジケーター")
                     {
                         return Some(c);
                     }
