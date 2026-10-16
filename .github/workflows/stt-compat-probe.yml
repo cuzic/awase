@@ -119,3 +119,38 @@ jobs:
           '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
           $out | Out-File -Append $env:GITHUB_STEP_SUMMARY
           '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+      - name: 注入した Win+H の対照つき観測(窓・画面・UI 要素)
+        shell: powershell
+        continue-on-error: true
+        run: |
+          .\tools\ci\stt-probe\winh-probe.ps1 -OutDir stt-probe-out
+          Get-Content stt-probe-out\report.md -Encoding UTF8 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      - name: 仮想音声デバイス(vb-cable)を入れて音声デバイスが見えるか
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $out = @()
+          choco install vb-cable -y --no-progress 2>&1 | Select-Object -Last 25 | ForEach-Object { $out += "$_" }
+          Start-Sleep -Seconds 5
+          $ep = Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue | Select-Object Status, FriendlyName
+          $out += "### AudioEndpoint ($(@($ep).Count) 件)"
+          $out += ($ep | Format-Table -AutoSize | Out-String)
+          $snd = Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | Select-Object Name, Status, Manufacturer
+          $out += "### Win32_SoundDevice ($(@($snd).Count) 件)"
+          $out += ($snd | Format-Table -AutoSize | Out-String)
+          $out | ForEach-Object { Write-Host $_ }
+          "## vb-cable のインストール`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          $out | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+      - name: 画面と報告を保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stt-probe-out
+          path: stt-probe-out
+          if-no-files-found: warn
+          retention-days: 7
