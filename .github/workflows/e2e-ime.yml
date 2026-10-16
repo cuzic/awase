@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'exp/mode-key-recheck' && 'sc-lb-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'exp/mode-key-recheck' && 'sc-scen-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -101,9 +101,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings='', driver='', exp='', side='', side_args=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings='', driver='', exp='', side='', side_args='', scen=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings, driver=driver, exp=exp, side=side, side_args=side_args)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings, driver=driver, exp=exp, side=side, side_args=side_args, scen=scen)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -325,6 +325,12 @@ jobs:
             # 対策案 A(打鍵が止まってからの読み直し)・B1(読めない窓のトグルは入力モードを予測しない)・B2(不明に戻す)で比べる。
             # 判定は付けず(observe)、km_trial の typed(NICOLA か/ｗ/w/ka)を数える(結果の読み方は ADR-259 の議論)。
             # 8周目(同じ構成を再測定): 押下ごとの字形の時系列を見る(1.8秒窓の集計は次のセットアップの戻りを拾っていた)。F1(カタカナ)・F4/F5 を足し、間隔を 50ms に。
+            # 16周目(ADR-261 D0-1/D0-2 の近似/D0-10): 窓の切替・IMM の無い窓・フォーカススレッドと前面スレッドの違いで、字形がどう動くか。
+            # indicator_scenario が窓とスレッドを作り、SW(前面化)/PRESS/TRUTH(窓のスレッドの実 IME)を記録。字形は ime_indicator_probe(50ms)。
+            *[cfg(f'sc-scen-{sc}-{pn}', 'observe', check='scen', awase='false', ime=im, keymap=km, runs=1, wait=260, scen=f'--scen={sc} --n=6{extra}',
+                  side='ime_indicator_probe', side_args='--duration=300 --interval=50')
+              for sc in ('switch', 'noimm', 'focusthread')
+              for pn, im, km, extra in (('gji', 'gji', 2, ''), ('msime', 'msime', 2, ' --msime'))],
             # 15周目(ADR-261 D0-0′): 別プロセスの入力モードを、言語バーの項目の文字列(ITfLangBarMgr::GetThreadLangBarItemMgr → GetText/GetTooltipString)で読めるか。
             # langbar_inputmode_probe が前面・フォーカスのスレッドの全項目を読み、spike の KEY/READIME/PRESS 行と時刻で突き合わせる。
             cfg('sc-lb-gjikeys-msime', 'observe', check='consistency', awase='false', keymap=2, runs=1, wait=330,
@@ -960,6 +966,7 @@ jobs:
           cargo build -p awase-windows --example chrome_probe
           cargo build -p awase-windows --example ime_indicator_probe
           cargo build -p awase-windows --example langbar_inputmode_probe
+          cargo build -p awase-windows --example indicator_scenario
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\debug\awase.exe dist\
           Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
@@ -971,6 +978,7 @@ jobs:
           Copy-Item target\debug\examples\chrome_probe.exe dist\
           Copy-Item target\debug\examples\ime_indicator_probe.exe dist\
           Copy-Item target\debug\examples\langbar_inputmode_probe.exe dist\
+          Copy-Item target\debug\examples\indicator_scenario.exe dist\
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
@@ -1322,6 +1330,17 @@ jobs:
               Start-Sleep -Seconds 2
               if ((Test-Path chrome_probe.log) -and (Select-String -Path chrome_probe.log -Pattern '全ケース完了' -Quiet)) { break }
             }
+          } elseif ('${{ matrix.cfg.scen }}' -ne '') {
+            # ADR-261 の測定シナリオ(indicator_scenario.exe): 窓の切替・IMM の無い窓・フォーカス/前面スレッドの違いで字形がどう動くか。
+            if ('${{ matrix.cfg.side }}' -ne '') {
+              Start-Process -FilePath ".\${{ matrix.cfg.side }}.exe" -ArgumentList "${{ matrix.cfg.side_args }} --log=${{ matrix.cfg.side }}.log"
+            }
+            Start-Process -FilePath .\indicator_scenario.exe -ArgumentList '${{ matrix.cfg.scen }} --log=indicator_scenario.log'
+            $deadline = (Get-Date).AddSeconds(${{ matrix.cfg.wait }})
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 2
+              if ((Test-Path indicator_scenario.log) -and (Select-String -Path indicator_scenario.log -Pattern '=== 完了 ===' -Quiet)) { break }
+            }
           } elseif ('${{ matrix.cfg.stress }}' -ne '') {
             # 高速打鍵ストレス(typing_stress.exe): 入力欄の窓を作り GJI/MS-IME を有効化 → 「READY-FOR-AWASE」を出したら awase を起動 →
             # exe が awase.log を確認して10秒待ち、IME を ON にして各速度で打鍵・読み戻し → 「=== 完了 ===」。seed は回番号。
@@ -1380,6 +1399,8 @@ jobs:
               "probe: 判定なし(ログ回収のみ, rc=0) KEY行=$pkeys。解析は notify_latency.py" | Tee-Object -FilePath result.txt
               $global:LASTEXITCODE = 0
             }
+          } elseif ('${{ matrix.cfg.check }}' -eq 'scen') {
+            if (Test-Path dist\indicator_scenario.log) { "scen: ログ回収のみ(rc=0)" | Tee-Object -FilePath result.txt; $global:LASTEXITCODE = 0 } else { "scen: ログが無い(INVALID, rc=3)" | Tee-Object -FilePath result.txt; $global:LASTEXITCODE = 3 }
           } elseif ('${{ matrix.cfg.check }}' -eq 'typing') {
             python tools\e2e\ime_key_matrix\check_typing_stress.py --json typing.json dist\typing_stress.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'driftcorrection') {
@@ -1515,6 +1536,7 @@ jobs:
             dist/compartment_notify_probe.log
             dist/ime_indicator_probe.log
             dist/langbar_inputmode_probe.log
+            dist/indicator_scenario.log
             dist/indshot-*.bmp
             dist/compartment_notify_probe_diag.log
             dist/awase.log
