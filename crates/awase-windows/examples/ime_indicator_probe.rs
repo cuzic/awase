@@ -367,7 +367,16 @@ mod app {
         let mut prev_hash = 0u64;
         // SAFETY: プロセスの DPI 認識を有効にして、UIA の矩形と画面座標をそろえる。
         unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::SetProcessDPIAware();
+            // awase.exe と同じ PerMonitorV2(-4)。`--dpi-aware=system` なら従来の System(学習プロセスの近似)。
+            #[link(name = "user32")]
+            extern "system" {
+                fn SetProcessDpiAwarenessContext(v: isize) -> i32;
+            }
+            if arg("--dpi-aware=").as_deref() == Some("system") {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SetProcessDPIAware();
+            } else {
+                let _ = SetProcessDpiAwarenessContext(-4);
+            }
         }
         let t0 = Instant::now();
         let mut tick = 0u64;
