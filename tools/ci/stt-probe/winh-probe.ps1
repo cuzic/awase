@@ -1,4 +1,4 @@
-# 注入した Win+H で音声入力のパネルが出るかを、対照つきで観測する(判定は付けない)。
+﻿# 注入した Win+H で音声入力のパネルが出るかを、対照つきで観測する(判定は付けない)。
 # Windows PowerShell 5.1 で動かす(UI Automation の .NET Framework 版を使うため)。
 # 手順: 窓の一覧 → 対照(Shift のタップ)→ 窓の一覧+画面 → Win+H → 窓の一覧+画面+UI 要素 → もう一度 Win+H → 窓の一覧。
 param([string]$OutDir = "stt-probe-out")

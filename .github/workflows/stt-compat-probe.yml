@@ -133,6 +133,28 @@ jobs:
         run: |
           $out = @()
           choco install vb-cable -y --no-progress 2>&1 | Select-Object -Last 25 | ForEach-Object { $out += "$_" }
+          $d = 'C:\ProgramData\chocolatey\lib\vb-cable\tools'
+          $out += "### 展開されたファイル"
+          $out += (Get-ChildItem $d -Recurse -File | Select-Object -First 30 -ExpandProperty FullName | Out-String)
+          # 署名者を信頼済みにして、ドライバ導入時の確認ダイアログを避ける
+          $cat = Get-ChildItem $d -Recurse -Filter '*.cat' | Select-Object -First 1
+          if ($cat) {
+            $sig = Get-AuthenticodeSignature $cat.FullName
+            $out += "cat=$($cat.Name) signature=$($sig.Status)"
+            if ($sig.SignerCertificate) {
+              $cer = Join-Path $env:TEMP 'vbaudio.cer'
+              Export-Certificate -Cert $sig.SignerCertificate -FilePath $cer | Out-Null
+              Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
+              $out += "TrustedPublisher に署名者を追加: $($sig.SignerCertificate.Subject)"
+            }
+          }
+          $setup = Get-ChildItem $d -Recurse -Filter 'VBCABLE_Setup_x64.exe' | Select-Object -First 1
+          if ($setup) {
+            $p = Start-Process $setup.FullName -ArgumentList '-i','-h' -Wait -PassThru -WorkingDirectory $setup.DirectoryName
+            $out += "VBCABLE_Setup_x64.exe -i -h => exit $($p.ExitCode)"
+          } else { $out += "VBCABLE_Setup_x64.exe が見つからない" }
+          Start-Sleep -Seconds 10
+          Restart-Service Audiosrv -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
           $ep = Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue | Select-Object Status, FriendlyName
           $out += "### AudioEndpoint ($(@($ep).Count) 件)"
