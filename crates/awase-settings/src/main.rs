@@ -7145,10 +7145,11 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction, NewComboBuf, PhysicalPos,
-        SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue, apply_adr192_recommended_replacement,
-        empty_yab_layout, find_config_path, has_adr192_warning_context, load_yab_layout,
-        resolve_layouts_dir, undo_adr192_recommended_replacement,
+        AUTO_DETECT_MODES, CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction,
+        NewComboBuf, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue,
+        apply_adr192_recommended_replacement, apps_to_text, auto_detect_section, empty_yab_layout,
+        find_config_path, has_adr192_warning_context, load_yab_layout, resolve_layouts_dir,
+        text_to_apps, undo_adr192_recommended_replacement,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
