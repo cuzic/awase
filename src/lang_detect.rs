@@ -647,6 +647,7 @@ impl EpisodeTracker {
 
 /// [`HoldController::on_key`]・[`HoldController::on_timer`] の結果。呼び出し側（殻）が順に実行する。
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)] // 独立した判定フラグ（日本語/英数/保持中/保持開始）を 1:1 で表している
 pub struct HoldStep<T> {
     /// 保持せず、通常どおり流す打鍵（エピソードに属さない、または保持しないエピソードの打鍵）
     pub pass: Option<T>,

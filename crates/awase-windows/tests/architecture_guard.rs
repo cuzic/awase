@@ -2404,7 +2404,10 @@ fn applied_direct_assignments_are_accounted_for() {
         // へ移した（挙動不変。`record_confirmed` はこれを呼ぶだけ）。書き込み点の総数は変わらない。
         // 8→9。`PanicReset`のreduce内で、全面リセット時にappliedを`Unknown`へ落とす1件を追加
         // （BUG-182。`reduce()`内の正規書き込み）。
-        ("src/state/ime_model.rs", 9),
+        // 9→10。`LangDetectOff`のreduce内で、英数と判定してIME OFFキーを送ったときappliedを`Unknown`へ落とす1件を追加
+        // （ADR-263 `ime_on_off`。送った結果を読めない窓があるので`Confirmed`と主張せず、古い`Confirmed(true)`が
+        // 後続のONの書き込みをalready-matchedで省かないようにする。`reduce()`内の正規書き込み）。
+        ("src/state/ime_model.rs", 10),
         ("src/state/platform_state.rs", 1),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
