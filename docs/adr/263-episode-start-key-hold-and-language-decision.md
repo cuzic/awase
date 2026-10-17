@@ -11,7 +11,7 @@ summary: |-
   対象は belief が ON の観測の無い窓に限る(belief が OFF の窓は Engine が非活性で何も変わらない)。英数の素通し・IME OFF の書き込み・読める窓での動作は将来の別モード(本 ADR の範囲外)。
   ADR-262 の D2〜D4(最初の同時打鍵を契機にした ON)を置き換える。ADR-262 の段階 A(presync 停止)と、ADR-212 の例外(ON のみ)は引き継ぐ。
 status: |-
-  起草(2026-10-17)→ Opus round 1(Blocker 4・Major 9・minor 7)と所有者判断(既定は日本語のときの IME ON だけ、OFF は取り下げ、窓が変わったら保持した打鍵は捨てる)を受けて書き直し(2026-10-17)。実装なし。round 2 待ち。
+  起草(2026-10-17)→ Opus round 1(Blocker 4・Major 9・minor 7)と所有者判断(既定は日本語のときの IME ON だけ、OFF は取り下げ、窓が変わったら保持した打鍵は捨てる)を受けて書き直し(2026-10-17)。round 2(Blocker 1・Major 5・minor 5)を受けて再度直した(2026-10-17)。実装なし。
   **ADR-260・ADR-261・ADR-262 のマージ後に本 ADR をマージする**(本文のリンクが切れるため)。
 related_adr:
   - "ADR-019"
@@ -34,6 +34,9 @@ related_adr:
 
 ## 背景
 
+- **#623 の実状態は未確定**: 報告文の「タスクバーは OFF なのに**入力は全角ローマ字**」は、実 IME が OFF(半角の英字が直接入る)ではなく「ON かつ全角英数」を示唆する(全角の英字が出るのは ON の全角英数のとき)。
+  その場合 `VK_IME_ON` は既に開いているので何もせず、本 ADR の ON の書き込みは #623 を直さない(本題は「ON かつ ひらがな」)。app log の belief の値からの「belief ON・実 OFF」は推定で、観測ではない。
+  PR 2b の前に報告者の実機で「一太郎で、タスクバーが OFF のとき、awase なしで英字を打つと半角か全角か」を確かめる(ADR-261 の D0-2 と同じ依頼にまとめる)。`observe`(PR 2a)のジャーナルも手掛かりになる。
 - issue #623(一太郎・GJI): 窓内の IMM が読めない窓(`ImmCapability::Unavailable` と学習された窓)では、belief(ON)と実 IME(OFF)がずれる。報告は「タスクバーは OFF なのに入力は全角ローマ字」「英数を押してもずれが直らない」。
   読んで直す手段が無い(ADR-261 は字形で読む案、ADR-262 は最初の同時打鍵を契機に ON を書く案)。
 - 所有者の着想(2026-10-17): 窓切替直後・長い無操作のあとだけ、最大 2.5 秒・7 打鍵の打鍵列から入力が英数か親指シフトかを統計的に判定し、日本語なら IME を ON にしてから注入を始める。
@@ -56,6 +59,7 @@ related_adr:
   belief が OFF の窓は Engine が非活性で保持しても何も変わらない(保持しない)。
 - **エピソードの開始**: 前面窓(`ForegroundScope` の hwnd)が変わった直後、または最後のフック打鍵から長い無操作のあとの最初の Down。hwnd 単位にする(一太郎の複数文書の窓の切替は `focus_epoch`〔プロセス単位〕では拾えない)。
   無操作の長さは `deliver_key_event` が `last_hook_activity_ms` を上書きする**前**に読む。無操作の閾値は新しい定数として `#[measured]` と実測を添える(`LONG_IDLE_MS` は GJI の cold 判定用で意味が違うので流用しない)。
+- **保持を始めるのは判定の材料になる打鍵だけ**: 文字キー(`Char`)・親指・Shift の Down。矢印・Tab・Delete・F キー・Home/End 等の Down で始まるエピソードは保持しない(無操作のあとのカーソル移動が止まる)。
 - **保持を始めない場合**: 変換中(`tsf::observer::ime_composition_active_now()`。未確定文字列に QWERTY を足すと取り返しがつかない)、`FocusKind::NonText`、IME キー、修飾付き(Ctrl/Alt/Win。ただし Alt なりすましの親指は `impersonated` を見て対象にする)、awase の注入、`exclude_apps` のアプリ。
 
 ### D2: 保持
@@ -66,15 +70,17 @@ related_adr:
 - **場所と器**: `runtime/message_handlers.rs::deliver_key_event` の `consume_post_bypass` の後、`process_key_event` の前(`[[keymap]]` の latch より後なので Down/Up の非対称にならない)。器は `timed-fsm` の `HoldingGate<新しい状態機械, RawKeyEvent>`、置き場所は `PlatformState`/`Runtime` のフィールド(裸の `static` を作らない)。
   解放は `INPUT_DEFER.replay_later(held)`(TsfGate と同じ経路。`take_all` が timestamp 昇順に並べ替える)。2.5 秒のタイマーは新しいタイマー ID(TsfGate の `TIMER_TSF_GATE` と同じ形)。
 - **再保持の防止は出所ではなく印で行う**: 再生された打鍵は `KeyOrigin::DeferredReplay` で届くが、窓切替直後の最初の打鍵は `FOCUS_RESYNC`/`OUTPUT_GATE` 経由でも `DeferredReplay` として届く(`app/mod.rs:643-663`)ので、出所で見ると最初の打鍵を保持し損ねる。エピソードの状態機械が「このエピソードで保持した打鍵の `press_id`」と「判定済み」を持つ。
-- **打ち切り(保持を即解放して通常処理)**: IME キー、修飾付き打鍵、Esc/BackSpace/Enter、7 打鍵、2.5 秒、判定の確定。**前面窓の再変更では、保持した打鍵を捨てる**(元の窓の打鍵が新しい窓、チャット欄やアドレス欄へ入る誤送信を避ける。捨てた件数は journal に残す。所有者判断)。マウス操作はフックで見えないので、前面窓の変化(`ForegroundScope`)で補う。
+- **フォーカス追跡の遅れ**: Alt+Tab 直後の最初の打鍵では、awase のフォーカス追跡(`demoted_by_learning`・belief)が前の窓の値のことがある(フォーカスの検出は WinEvent/500ms のリフレッシュ)。対象の判定(観測の無い窓かつ belief ON)は**解放(判定の確定)の時点でやり直し**、保持の開始時は「前面窓の hwnd が `FocusTracker` の現在の hwnd と一致しないなら、追跡が追いつくまで保持する(上限内)」とする。
+- **打ち切り(保持を即解放して通常処理)**: 判定の材料でない Down(矢印・Tab・Delete・F キー・Space〔親指でないとき〕・Esc/BackSpace/Enter 等。契機の打鍵は保持列の最後に積む)、IME キー、修飾付き打鍵、7 打鍵、2.5 秒、判定の確定。
+  **すべての解放点(判定の確定・打ち切りの打鍵・2.5 秒のタイマー)で、保持の開始時の `ForegroundScope` と今の前面窓(`win32::foreground_scope()`)を照合し、違えば捨てる**。**前面窓が変わっていたら、保持した打鍵は捨てる**(元の窓の打鍵が新しい窓、チャット欄やアドレス欄へ入る誤送信を避ける。捨てた件数は journal に残す。所有者判断)。マウス操作はフックで見えないので、前面窓の変化(`ForegroundScope`)で補う。
 
 ### D3: 判定(純粋、ルートの `awase` crate)
 
 - 入力は分類済みの値だけ: `PhysicalPos` の列と、親指と文字の重なり(下記)。生の VK は見ない(ADR-019)。
 - **日本語の確定**: 親指キーと文字キーの**重なり**が出たこと(親指の Down と文字の Down の間にどちらの Up も無い、または文字の Down の後でその Up の前に親指の Down が来る)。Down/Up の順序だけで決まり、打鍵時刻は使わない。
-  親指の単独タップ(重なりなし)は証拠にしない。**これにより、Space を親指キーにした構成(`keyboard_layout = "us"` の現実的な代替〔`config.rs:186-188`〕)や ADR-255 の構成で、英文の語間の Space が日本語の証拠にならない**。
+  親指の単独タップ(重なりなし)は証拠にしない。**ただし Space を親指キーにした構成(`keyboard_layout = "us"` の現実的な代替〔`config.rs:186-188`〕)では、英文のロールオーバー(`e` Down→Space Down→`e` Up、Space Down→`q` Down→Space Up)で重なりが成立してしまう。重なりを証拠にせず、エピソードを対象外にする**(述語: `left_thumb_key`/`right_thumb_key` の解決結果が `VK_SPACE`。ADR-255 と同じ扱い)。無変換/変換・F13〜F24・Alt なりすましは英文の打鍵に現れないので、重なりは使える。`observe` で Space 親指の利用者の誤判定率を実測する。
   `[[keymaps]]` に `ime = "off"` で親指キー(無変換/変換/`left/right_thumb_key`)を Space に写す規則がある構成では、エピソードを対象外にする(ADR-255 の述語は ADR-262 D2-5 と同じ)。
-- **逐次判定**: 重なりが出ない間は、打鍵ごとに `LLR = log P_ja(仮名列) − log P_bg(キー列)` を更新し、`LLR ≥ A` で日本語、`LLR ≤ −B` で「英数」、7 打鍵/2.5 秒で未決なら「決めない」。**「英数」と「決めない」は同じ扱い**(今の流れに戻す)ので、B を大きく取り、日本語側の確信だけを使ってよい。
+- **逐次判定**: 重なりが出ない間は、打鍵ごとに `LLR = log P_ja(仮名列) − log P_bg(キー列)` を更新し、`LLR ≥ A` で日本語、`LLR ≤ −B` で「英数」、7 打鍵/2.5 秒で未決なら「決めない」。**「英数」と「決めない」は同じ扱い**(今の流れに戻す)。英数と決めても害は「早く流す」だけなので、**B は小さめ(早く流す)、A は大きめ(ON を慎重に)の非対称**にする。B を大きくすると、英数のエピソードが毎回 7 打鍵/2.5 秒まで保持されて遅れが最大になる。評価の (A,B) の表はこの向きで出し直す。
   - `P_ja`: 未シフト面(`YabLayout.normal` の `YabFace::get(PhysicalPos)`、`kana` が `Some` のもの)でデコードした仮名列。`data/ngram_hiragana` の 2 連(3 連は任意)。
     **`NgramModel::frequency_score` は使えない**(未知の組で `0.0` を返すが、表の値は `log10`〔最大 0〕なので未知が最頻の組と同じ点になり、行和も取れない)。表の生の値を読む口を足すか、判定器用に別にロードして `10^score` と下限で条件付き確率を作る(評価の `eval5.py` と同じ)。
   - `P_bg`: 初版は一様(言語非依存)。将来は多言語プール、または利用者自身の IME OFF 打鍵からの適応学習。**英語専用のモデルは作らない**。
@@ -91,6 +97,8 @@ related_adr:
 - 機構は ADR-262 D3: `press=None` の order を `platform.apply_ime_open_with_view` 経由で起案(`issue_actuation_order`)。`applied` は書き換えない・`Confirmed` を記録しない(`record_ime_apply_result` を呼ばない)・`platform.on_ime_applied` は呼ぶ。`RESTRICTED_CALLS` の `apply_ime_open_with_view` の許可呼び出し元と件数ガード(1→2)に登録する。
   無操作のエピソードではフォーカス変更が無く GjiFsm が `OnWarm` のままだと、ON の後の `ImeOn` は無視されて warm のまま最初のローマ字を送る(BUG-002 系)。`GjiEvent::Reopen`(`ReopenSource` に契機を 1 つ足す)で OFF→ON(cold)に同期する(ADR-262 round 3 のとおり)。
   ADR-262 の段階 A(presync 停止)を前提にする。
+  **ずれていない日本語のエピソード(実 IME が既に ON)でも書き込みの費用を払う**: `mark_composition_cold(SetOpenTrue)` と `Reopen` による GJI の cold 化(最初の文字の probe)、MS-IME では `on_set_open_applied` による IMC 確認待ち(観測の無い窓は IMC を読めないので `MS_IME_READY_CONFIRM_MS = 400` ms の期限切れまで待つ)。
+  (i) 観測の無い窓の ON の書き込みでは MS-IME の確認待ちを始めない。(ii) GJI の cold 化が必要か(ON が no-op だった場合は不要か)は PR 2b の CI で最初の文字の待ちを測って決める。(iii) 遅れの予算(保持+書き込み後の待ち)を revert 条件に ms で書く。
 - 授権: `issue_open_warrant` の通常経路。一太郎は `FEEDBACK_BLIND` なので、belief が ON なら Step 4c の `OwnSsot` で ON が通る。TTL 内の明示 OFF の意図があれば止まる(利用者の意図を尊重する正しい挙動)。
 - **IME OFF の書き込みを取り下げる理由**: D1 は belief を動かさない。英数と判定したとき `desired_open` は ON のままで、Step 4c の `finalize(requested=false, resolved=true)` は不一致の `None` になり、OFF は必ず `Unwarranted` で送られない。通すには新しい `WarrantBasis`(ADR-087 の授権の原則の変更)か belief を OFF に動かす新しいイベントが要る。実機で必要性が出てから別の ADR で決める。
 - **入力モード(ひらがな)について**: ここで書くのは開閉だけ。GJI の `VK_IME_ON` は前回のモードを復元するので、前回が半角英数だと ON を書いても半角英数のままになる(報告の「英数を押してもずれが直らない」の一因)。「ON かつ ひらがな」を作る手段(キーと順序)は Q7 のままで、実機(一太郎・GJI)で確かめるまで書かない。
@@ -111,19 +119,19 @@ max_ms = 2500
 
 ### D7: 観測(journal)
 
-境界で 1 エピソード 1 件を記録する: 窓の種別、無操作の長さ、決めた打鍵数、判定(日本語/英数/未決)、**打鍵ごとの LLR の増分の列**、**重なりが初めて出た打鍵の位置**、エピソード内の訂正(BackSpace の連打・明示の IME キー)の位置、打ち切りの理由、捨てた打鍵数、書き込みの有無、belief、`applied`。
-**キー位置の列は記録しない**(ADR-250 の方式。核が理由つき Plan を返し、殻が境界で記録)。「エピソード内で後に重なりが出た = 日本語」をラベルにして、中身なしで閾値を再校正できる。`observe` はこれで閾値の再校正に使う。
+境界で 1 エピソード 1 件を記録する: 窓の種別、無操作の長さ、決めた打鍵数、判定(日本語/英数/未決)、**打鍵ごとの LLR の増分の列**、**重なりが初めて出た打鍵の位置**、エピソード内の訂正(BackSpace の連打・明示の IME キー)の位置、打ち切りの理由、捨てた打鍵数、書き込みの有無とその outcome(`Applied`/`Unwarranted`/`UnsafeToToggle`)、belief、`applied`。
+保持はメモリ上だけで、中身は journal に出さない(パスワード欄を含む。ブラウザのパスワード欄は学習降格の窓ではないので対象外の見込み)。**キー位置の列は記録しない**(ADR-250 の方式。核が理由つき Plan を返し、殻が境界で記録)。「エピソード内で後に重なりが出た = 日本語」をラベルにして、中身なしで閾値を再校正できる。`observe` はこれで閾値の再校正に使う。
 
 ## 段階
 
 1. **PR 1(core、Linux で検証)**: 判定の純粋関数(重なり、仮名 2 連の条件付き確率、一様背景、逐次判定)、単体テスト、人工データ数十件での回帰。`tuning` の定数は `#[measured]` と評価の実測を添える。
 2. **PR 2a(`observe`)**: 保持なしの影の判定と journal(D7)。挙動を変えない。実ジャーナルで誤り率を確かめる。
-3. **PR 2b(`ime_on`)**: 保持(D2)と再生、D4・D5 の書き込み。ガードテスト更新(`architecture_guard` の `process_key_event` 1 件・`apply_ime_open_with_view` の件数・再保持防止・`KeyInput` の構築点)。ADR-262 の段階 A が前提。
+3. **PR 2b(`ime_on`)**: 保持(D2)と再生、D4・D5 の書き込み。ガードテスト更新(`architecture_guard` の `process_key_event` 1 件・`apply_ime_open_with_view` の件数・再保持防止・`KeyInput` の構築点)。ADR-262 の段階 A が前提。**#623 の実状態の報告者確認(上記)が済むまで PR 2b の既定を `ime_on` にしない**。ガードは、`deliver_key_event` の新しい分岐が `consume_post_bypass` の後・`process_key_event` の前にあること、`INPUT_DEFER.replay_later` の呼び出し元の件数(defer/replay キューのファミリー: 全ての待避/解放窓口に配線)を固定する。
 各 PR で Opus の敵対的レビューを通す。実機は CI の読めない窓の模擬(ADR-261 の TSF のみの窓)と報告者の実機。
 
 ## revert 条件
 
-実機(一太郎・GJI 等)で、(a) 保持の遅れが体感で不快、(b) 保持した打鍵の順序の乱れ・消失(窓切替時の件数が多い)、(c) 日本語の判定が外れて ON が書かれる回数が `observe` のログの想定を超える、(d) ON の直後に最初の文字がリテラル化する、のいずれかが見られたら `mode` の既定を戻すか機能ごと取り下げ、失敗条件(アプリ・IME・症状)を `docs/experiments.md` に残す。
+実機(一太郎・GJI 等)で、(a) 保持の遅れが体感で不快(遅れの予算: 保持と書き込み後の待ちの合計。実測してから ms を決める)、(b) 保持した打鍵の順序の乱れ・消失(窓切替時の件数が多い)、(c) 日本語の判定が外れて ON が書かれる回数が `observe` のログの想定を超える、(d) ON の直後に最初の文字がリテラル化する、のいずれかが見られたら `mode` の既定を戻すか機能ごと取り下げ、失敗条件(アプリ・IME・症状)を `docs/experiments.md` に残す。
 
 ## 範囲外・未決
 
