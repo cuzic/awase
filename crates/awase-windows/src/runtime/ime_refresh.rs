@@ -764,14 +764,19 @@ impl Runtime {
             .is_effectively_tsf_native(self.platform.focus.class_name());
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        // ADR-098 決定1-a（BUG-69 F2 の修正）: TsfNative では `applied` を
+        // ADR-098 決定1-a（BUG-69 F2 の修正）: TsfNative（と、ADR-262 段階 A で実測学習により降格された窓）では `applied` を
         // `Unknown` のまま維持する（`focus_tracking.rs` の hard pre-sync が
         // 非 TsfNative について既に守っている不変条件——INV-A97-1——を
         // ここでも適用する）。何も apply していないのに belief を `applied
         // = Confirmed` として書くと、（撤去済みの）`apply_force_on_for_imm_broken` の
         // スパムガードが恒久的に早期 return し、BUG-16 の修正が TsfNative で
         // 一度も実効しない（詳細は known-bugs.md BUG-69 / ADR-098）。
-        if !new_profile_is_tsf_native {
+        // ADR-262 段階 A: 実測学習で降格された窓（一太郎等）でも写さない。presync より後の同じリフレッシュで
+        // この写しが `Confirmed(effective_open)` を書き戻すと、presync を止めた意味がなくなる。
+        if crate::state::applied_mirror_plan::may_mirror_applied_on_focus(
+            new_profile_is_tsf_native,
+            self.platform.focus.is_demoted_by_learning(),
+        ) {
             let ime_on_now = self.platform_state.ime.effective_open();
             self.platform_state
                 .ime
@@ -842,7 +847,7 @@ impl Runtime {
 
     /// 起動時の初期値のままの `desired_open` を最初の成功観測へ 1 回だけ揃える（BUG-163、代案A）。
     ///
-    /// 揃えた値が「開」で、非 TsfNative なら、フォーカス時にスキップした先同期（`presync_applied_open_on`。GJI への ImeOn
+    /// 揃えた値が「開」で、写してよい窓（非 TsfNative かつ実測学習で降格された窓でない。ADR-262 段階 A）なら、フォーカス時にスキップした先同期（`presync_applied_open_on`。GJI への ImeOn
     /// 通知を含む）をここで行う。「閉」なら行わない（IME を閉じて起動したとき awase が開けない）。
     fn ir_align_placeholder_desired(&mut self) {
         if !self.engine.is_user_enabled() || !self.platform_state.ime.belief.is_japanese_ime() {
@@ -862,8 +867,12 @@ impl Runtime {
             .platform
             .current_app_profile()
             .is_effectively_tsf_native(self.platform.focus.class_name());
-        // ADR-262 段階 A: 読めないと学習された窓では先同期しない（`focus_tracking.rs` の同じ分岐と対）。
-        if open && !tsf_native && !self.platform.focus.is_demoted_by_learning() {
+        if open
+            && crate::state::applied_mirror_plan::may_mirror_applied_on_focus(
+                tsf_native,
+                self.platform.focus.is_demoted_by_learning(),
+            )
+        {
             self.presync_applied_open_on(tick_ms);
         }
     }

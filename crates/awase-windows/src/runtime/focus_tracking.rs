@@ -178,11 +178,13 @@ impl Runtime {
         tick_ms
     }
 
-    /// 非 TsfNative で、IME が ON である belief を `applied` へ先同期し、GJI なら GjiFsm へも ImeOn を通知する。
+    /// 非 TsfNative で、実測学習で降格された窓でもなく、IME が ON である belief を `applied` へ先同期し、GJI なら
+    /// GjiFsm へも ImeOn を通知する（呼び出し側が `state::applied_mirror_plan::may_mirror_applied_on_focus` で絞る。
+    /// TsfNative と学習降格の窓は `applied` を Unknown のまま維持する。ADR-098 決定 1-a・ADR-262 段階 A）。
     ///
     /// フォーカス直後の OS 観測値を applied に先同期して、直後の Engine ON が古い applied を根拠に不要な再送へ進む
-    /// ことを防ぐ（KanjiToggle 機構は撤去済みだが、applied_snapshot を未更新のままにすると focus-resync / force-on の
-    /// 判断が古い状態を参照するため、この pre-sync は Standard でも必要）。
+    /// ことを防ぐ。（旧: focus-resync / force-on の判断が古い状態を参照するため必要、としていたが、force-on は
+    /// `621bf93c` で撤去、focus-resync は `applied` を読まない〔ADR-262 round 3 で確認〕ので、残る目的はこれだけ。）
     ///
     /// BUG-18: HwndCacheRestored / mirror_applied_open は belief 層（ImeModel）だけを ON に戻し、GjiFsm には一切通知
     /// しない。無操作中の AppKind 往復（TsfNative⇔Uwp）で本経路を繰り返し通ると、直前の実 IME-OFF で
@@ -779,10 +781,11 @@ impl Runtime {
         // では先同期しない。読めない窓の `applied=Confirmed(true)` は何も書いていない偽の確定で（ADR-098 が TsfNative で
         // 止めた型と同じ）、GJI の already-matched が後続の ON の書き込みを省く（#623）。GjiFsm の ImeOn は、最初の
         // ローマ字の送信時に ADR-203 (i) の level 突合（`OnImeOnBelief`）が代わりに行う。
-        if !is_effectively_tsf_native_now
-            && !self.platform_state.ime.desired_is_placeholder()
+        if crate::state::applied_mirror_plan::may_mirror_applied_on_focus(
+            is_effectively_tsf_native_now,
+            self.platform.focus.is_demoted_by_learning(),
+        ) && !self.platform_state.ime.desired_is_placeholder()
             && self.platform_state.ime.effective_open()
-            && !self.platform.focus.is_demoted_by_learning()
         {
             self.presync_applied_open_on(tick_ms);
         }

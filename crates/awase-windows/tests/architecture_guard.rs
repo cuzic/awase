@@ -3670,31 +3670,59 @@ fn drift_diagnostic_guard_detects_an_unguarded_call() {
     assert!(!drift_diagnostic_call_is_guarded("nothing"));
 }
 
-/// ADR-262 段階 A: 窓内の IMM が読めないと学習された窓（`ImmCapability::Unavailable` で `Standard` から降格）では、
-/// 先同期（`presync_applied_open_on`）を行わない。何も書いていないのに `applied=Confirmed(true)` を作ると、
-/// GJI の already-matched が後続の ON の書き込みを省く（#623）。先同期の呼び出し元 2 箇所の両方に降格の判定が要る
-/// （片方だけ止めると、もう片方の経路〔最初の成功観測での揃え〕から偽の確定が戻る）。
+/// ADR-262 段階 A: フォーカス変更で belief を `applied` へ写す（偽の `Confirmed` を書きうる）殻の 3 箇所は、
+/// すべて `state/applied_mirror_plan.rs::may_mirror_applied_on_focus`（TsfNative と、実測学習で降格された窓を除く）を通す。
+/// 1 箇所でも抜けると、読めない窓（一太郎等）の `applied` が偽の `Confirmed(true)` に戻り、GJI の already-matched が
+/// 後続の ON の書き込みを省く（#623）。写しの書き込み先: `presync_applied_open_on` の呼び出し 2 箇所
+/// （`focus_tracking.rs` のフォーカス時と `ir_align_placeholder_desired`）と、`ir_post_focus_change_snapshot` の `record_confirmed`。
 #[test]
-fn presync_is_skipped_for_windows_demoted_by_learning_at_both_call_sites() {
+fn applied_mirror_on_focus_goes_through_the_plan_at_all_three_sites() {
     let focus = production_code_only(&read_crate_file("src/runtime/focus_tracking.rs"));
     let refresh = production_code_only(&read_crate_file("src/runtime/ime_refresh.rs"));
-    for (name, src) in [("focus_tracking.rs", &focus), ("ime_refresh.rs", &refresh)] {
-        let calls: Vec<usize> = src
-            .match_indices("self.presync_applied_open_on(")
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(calls.len(), 1, "{name}: 先同期の呼び出しは 1 箇所");
-        let head = &src[..calls[0]];
-        let guard_at = head.rfind("is_demoted_by_learning()").unwrap_or_else(|| {
-            panic!(
-                "{name}: 先同期の直前に `is_demoted_by_learning()` の判定が必要（ADR-262 段階 A）"
-            )
-        });
-        assert!(
-            calls[0] - guard_at < 200,
-            "{name}: 降格の判定は先同期の直前にあること（ADR-262 段階 A）"
-        );
-    }
+    let plan = "applied_mirror_plan::may_mirror_applied_on_focus(";
+
+    // (1) フォーカス時の先同期
+    assert_eq!(
+        focus.matches(plan).count(),
+        1,
+        "focus_tracking.rs: 判断の呼び出しは先同期の 1 箇所"
+    );
+    let call = focus
+        .find("self.presync_applied_open_on(")
+        .expect("focus_tracking.rs: 先同期の呼び出し");
+    let at = focus[..call]
+        .rfind(plan)
+        .expect("先同期の直前に判断が必要（ADR-262 段階 A）");
+    assert!(call - at < 600, "判断は先同期の条件の中にあること");
+    assert!(
+        focus[..at].ends_with("if crate::state::"),
+        "判断を否定して使わない（条件の先頭に置く）"
+    );
+
+    // (2) 最初の成功観測での揃え
+    let align = extract_fn_body(&refresh, "fn ir_align_placeholder_desired");
+    assert!(
+        align.contains(plan),
+        "ir_align_placeholder_desired: 先同期の前に判断を通すこと（ADR-262 段階 A）"
+    );
+    assert!(
+        align.contains("if open\n            && crate::state::applied_mirror_plan"),
+        "揃えた値が「開」のときだけ、判断を通ったものが先同期を行う"
+    );
+
+    // (3) 決定 1-a の mirror
+    let snap = extract_fn_body(&refresh, "fn ir_post_focus_change_snapshot");
+    let rec = snap
+        .find(".record_confirmed(")
+        .expect("ir_post_focus_change_snapshot: mirror の record_confirmed");
+    let at = snap[..rec]
+        .rfind(plan)
+        .expect("mirror の直前に判断が必要（ADR-262 段階 A、B1）");
+    assert!(rec - at < 400, "判断は mirror の条件であること");
+    assert!(
+        snap[..at].ends_with("if crate::state::"),
+        "判断を否定して使わない（mirror の条件そのもの）"
+    );
 }
 
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。
@@ -3739,8 +3767,8 @@ fn startup_placeholder_desired_is_not_treated_as_intent() {
     );
     let body = extract_fn_body(refresh_prod, "fn ir_align_placeholder_desired");
     assert!(
-        body.contains("if open && !tsf_native"),
-        "揃えた値が「開」の非 TsfNative だけ、スキップした先同期を行う（閉なら行わない）"
+        body.contains("if open\n            && crate::state::applied_mirror_plan::may_mirror_applied_on_focus("),
+        "揃えた値が「開」で、写してよい窓（非 TsfNative かつ学習降格でない）だけ、スキップした先同期を行う（閉なら行わない）"
     );
 }
 

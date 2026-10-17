@@ -521,6 +521,7 @@ const CORE_MODULES: &[&str] = &[
     "alt_impersonation",
     "app_ime_policy",
     "app_suppression",
+    "applied_mirror_plan",
     "belief",
     "conv_after_open",
     "conv_classify",
