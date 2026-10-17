@@ -9,6 +9,7 @@ mod ime_coordinator;
 mod ime_refresh;
 mod key_pipeline;
 mod lang_check;
+mod lang_detect_shadow;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;
@@ -324,6 +325,8 @@ pub struct Runtime {
     focus_tracker: focus_tracker::FocusTracker,
     /// ADR-223 段階 0: 打鍵時の入力言語の記録(記録のみ、belief は変えない)
     lang_check: lang_check::LangCheck,
+    /// ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの影の判定（記録のみ、挙動を変えない）
+    lang_detect: lang_detect_shadow::LangDetectShadow,
     /// Platform 層の全状態
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
@@ -1486,6 +1489,7 @@ impl Runtime {
                 sync_off_keys,
             ),
             lang_check: lang_check::LangCheck::default(),
+            lang_detect: lang_detect_shadow::LangDetectShadow::disabled(),
             platform_state,
             all_keymaps,
             post_bypass_rules,

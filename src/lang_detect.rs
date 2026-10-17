@@ -247,6 +247,8 @@ pub struct EpisodeDetector {
     presses: usize,
     prev: Option<char>,
     llr: f64,
+    /// 打鍵ごとの対数尤度比の増分（ログ用。キー位置は含まない）
+    trace: Vec<f32>,
     verdict: Verdict,
 }
 
@@ -265,6 +267,7 @@ impl EpisodeDetector {
             presses: 0,
             prev: None,
             llr: 0.0,
+            trace: Vec::new(),
             verdict: Verdict::Pending,
         }
     }
@@ -279,6 +282,12 @@ impl EpisodeDetector {
     #[must_use]
     pub const fn llr(&self) -> f64 {
         self.llr
+    }
+
+    /// 打鍵ごとの対数尤度比の増分の列（ログ用。表が使えないときは空）
+    #[must_use]
+    pub fn llr_trace(&self) -> &[f32] {
+        &self.trace
     }
 
     /// 数えた文字キーの Down の数（自動リピートは数えない）
@@ -323,7 +332,10 @@ impl EpisodeDetector {
         }
         self.presses += 1;
         if model.usable {
-            self.llr += model.delta(self.prev, pos);
+            let delta = model.delta(self.prev, pos);
+            self.llr += delta;
+            #[allow(clippy::cast_possible_truncation)] // ログ用の増分。f32 の精度で足りる
+            self.trace.push(delta as f32);
             self.prev = model.key_kana.get(&pos).copied();
         }
 
@@ -341,6 +353,249 @@ impl EpisodeDetector {
         } else {
             Verdict::Pending
         });
+    }
+}
+
+/// 1 打鍵の役割（殻が `RawKeyEvent` から作る）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRole {
+    /// 文字キー（物理位置）
+    Char(PhysicalPos),
+    /// 親指キー
+    Thumb(ThumbSide),
+    /// Shift など修飾キー自身のイベント（エピソードに影響しない）
+    Modifier,
+    /// 判定の材料でない打鍵（矢印・Tab・Space〔親指でないとき〕・Enter・BackSpace・Esc 等）
+    Other,
+}
+
+/// エピソードの追跡器に渡す 1 打鍵
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObservedKey {
+    pub role: KeyRole,
+    /// Down なら `true`
+    pub down: bool,
+    /// Ctrl/Alt/Win を伴う・awase の注入・IME キー（エピソードを打ち切る）
+    pub excluded: bool,
+    pub timestamp_ms: u64,
+}
+
+/// エピソードが始まった契機
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// 前面窓が変わった直後
+    WindowSwitch,
+    /// 長い無操作のあと
+    Idle,
+}
+
+impl Trigger {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WindowSwitch => "window-switch",
+            Self::Idle => "idle",
+        }
+    }
+}
+
+/// エピソードを閉じた理由
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    /// 日本語/日本語でないが確定した
+    Decided,
+    /// `max_keys` 打鍵まで見ても決まらなかった
+    MaxKeys,
+    /// `max_ms` が経った
+    Timeout,
+    /// 前面窓が変わった
+    WindowChanged,
+    /// 修飾付き・注入・IME キーが来た
+    ExcludedKey,
+    /// 判定の材料でない打鍵（矢印・Tab・Enter 等）が来た
+    NonMaterialKey,
+}
+
+impl StopReason {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Decided => "decided",
+            Self::MaxKeys => "max-keys",
+            Self::Timeout => "timeout",
+            Self::WindowChanged => "window-changed",
+            Self::ExcludedKey => "excluded-key",
+            Self::NonMaterialKey => "non-material-key",
+        }
+    }
+}
+
+/// 閉じたエピソードの結果（ログ用。キー位置の列は含まない）
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpisodeOutcome {
+    pub trigger: Trigger,
+    pub verdict: Verdict,
+    pub stop: StopReason,
+    pub presses: usize,
+    pub llr: f64,
+    pub llr_trace: Vec<f32>,
+    /// エピソード開始時の無操作の長さ（窓切替の契機でも、直前の打鍵からの経過）
+    pub idle_ms: u64,
+    pub duration_ms: u64,
+}
+
+/// 追跡器の設定
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackerConfig {
+    pub params: DetectParams,
+    pub thumb_overlap: ThumbOverlap,
+    /// この長さ以上の無操作のあとの最初の打鍵でエピソードを始める
+    pub idle_threshold_ms: u64,
+    /// エピソードの最大の長さ
+    pub max_ms: u64,
+}
+
+#[derive(Debug)]
+struct ActiveEpisode {
+    detector: EpisodeDetector,
+    trigger: Trigger,
+    idle_ms: u64,
+    scope: u64,
+    started_ms: u64,
+}
+
+/// 窓切替直後・長い無操作のあとのエピソードを見つけ、判定器を回して結果を返す追跡器（挙動を変えない観測用）。
+///
+/// 殻は取り込み口（フックの打鍵が届いた順）で `on_key` を呼ぶ。`scope` は前面窓を表す識別子
+/// （hwnd と pid から作る。窓が変わったかの比較にだけ使う）。
+#[derive(Debug)]
+pub struct EpisodeTracker {
+    cfg: TrackerConfig,
+    last_scope: Option<u64>,
+    last_key_ms: Option<u64>,
+    armed: Option<(Trigger, u64)>,
+    active: Option<ActiveEpisode>,
+}
+
+impl EpisodeTracker {
+    #[must_use]
+    pub const fn new(cfg: TrackerConfig) -> Self {
+        Self {
+            cfg,
+            last_scope: None,
+            last_key_ms: None,
+            armed: None,
+            active: None,
+        }
+    }
+
+    /// 打鍵を 1 つ渡す。エピソードが閉じたら結果を返す。
+    ///
+    /// 開始は、窓切替または長い無操作のあとの**最初の Down**が文字キーか親指のとき（修飾なし・注入でない）。
+    /// 矢印・Tab・Enter 等で始まる再開はエピソードにしない。
+    pub fn on_key(
+        &mut self,
+        model: &KanaModel,
+        key: ObservedKey,
+        scope: u64,
+    ) -> Option<EpisodeOutcome> {
+        let now = key.timestamp_ms;
+        let mut outcome = self.close_if_stale(scope, now);
+        self.arm(scope, now);
+        self.maybe_start(key, scope);
+        if self.active.is_some() {
+            let closed = self.feed(model, key, now);
+            if outcome.is_none() {
+                outcome = closed;
+            }
+        }
+        outcome
+    }
+
+    /// 進行中のエピソードが、窓の変化・期限で閉じる。
+    fn close_if_stale(&mut self, scope: u64, now: u64) -> Option<EpisodeOutcome> {
+        let active = self.active.as_ref()?;
+        if active.scope != scope {
+            self.finish(StopReason::WindowChanged, now)
+        } else if now.saturating_sub(active.started_ms) >= self.cfg.max_ms {
+            self.finish(StopReason::Timeout, now)
+        } else {
+            None
+        }
+    }
+
+    /// 窓切替・無操作を検出して武装する（エピソードが無いときだけ）。窓切替が無操作より優先される。
+    fn arm(&mut self, scope: u64, now: u64) {
+        let idle = self.last_key_ms.map_or(0, |last| now.saturating_sub(last));
+        if self.active.is_none() {
+            if self.last_scope != Some(scope) {
+                self.armed = Some((Trigger::WindowSwitch, idle));
+            } else if self.armed.is_none() && idle >= self.cfg.idle_threshold_ms {
+                self.armed = Some((Trigger::Idle, idle));
+            }
+        }
+        self.last_scope = Some(scope);
+        self.last_key_ms = Some(now);
+    }
+
+    /// 武装後の最初の Down で、エピソードを始めるか見送る（Shift 等の修飾キー自身は数えない）。
+    fn maybe_start(&mut self, key: ObservedKey, scope: u64) {
+        if !key.down || self.active.is_some() || key.role == KeyRole::Modifier {
+            return;
+        }
+        let Some((trigger, idle_ms)) = self.armed.take() else {
+            return;
+        };
+        let material = !key.excluded && matches!(key.role, KeyRole::Char(_) | KeyRole::Thumb(_));
+        if material {
+            self.active = Some(ActiveEpisode {
+                detector: EpisodeDetector::new(self.cfg.params, self.cfg.thumb_overlap, [false; 2]),
+                trigger,
+                idle_ms,
+                scope,
+                started_ms: key.timestamp_ms,
+            });
+        }
+    }
+
+    fn feed(&mut self, model: &KanaModel, key: ObservedKey, now: u64) -> Option<EpisodeOutcome> {
+        if key.down && key.excluded {
+            return self.finish(StopReason::ExcludedKey, now);
+        }
+        let event = match key.role {
+            KeyRole::Modifier => return None,
+            KeyRole::Other => {
+                return key
+                    .down
+                    .then(|| self.finish(StopReason::NonMaterialKey, now))
+                    .flatten();
+            }
+            KeyRole::Char(pos) if key.down => DetectEvent::CharDown(pos),
+            KeyRole::Char(pos) => DetectEvent::CharUp(pos),
+            KeyRole::Thumb(side) if key.down => DetectEvent::ThumbDown(side),
+            KeyRole::Thumb(side) => DetectEvent::ThumbUp(side),
+        };
+        let active = self.active.as_mut()?;
+        let verdict = active.detector.observe(model, event);
+        match verdict {
+            Verdict::Pending => None,
+            Verdict::Undecided => self.finish(StopReason::MaxKeys, now),
+            Verdict::Japanese(_) | Verdict::NotJapanese => self.finish(StopReason::Decided, now),
+        }
+    }
+
+    fn finish(&mut self, stop: StopReason, now: u64) -> Option<EpisodeOutcome> {
+        let active = self.active.take()?;
+        Some(EpisodeOutcome {
+            trigger: active.trigger,
+            verdict: active.detector.verdict(),
+            stop,
+            presses: active.detector.presses(),
+            llr: active.detector.llr(),
+            llr_trace: active.detector.llr_trace().to_vec(),
+            idle_ms: active.idle_ms,
+            duration_ms: now.saturating_sub(active.started_ms),
+        })
     }
 }
 
@@ -574,6 +829,162 @@ mod tests {
             d.observe(&model, DetectEvent::CharDown(pos(1, 1))),
             Verdict::Japanese(JapaneseEvidence::ThumbOverlap)
         );
+    }
+
+    // ---- EpisodeTracker ----
+
+    fn tracker_cfg() -> TrackerConfig {
+        TrackerConfig {
+            params: params(100.0, 100.0, 7),
+            thumb_overlap: ThumbOverlap::Enabled,
+            idle_threshold_ms: 3000,
+            max_ms: 2500,
+        }
+    }
+
+    fn key(role: KeyRole, down: bool, t: u64) -> ObservedKey {
+        ObservedKey {
+            role,
+            down,
+            excluded: false,
+            timestamp_ms: t,
+        }
+    }
+
+    #[test]
+    fn window_switch_starts_an_episode_and_overlap_closes_it() {
+        let model = tiny_model();
+        let mut t = EpisodeTracker::new(tracker_cfg());
+        // 最初の打鍵（窓 1）: 文字 Down でエピソード開始。決まらない。
+        assert!(t
+            .on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1)
+            .is_none());
+        // 親指 Down（文字が押下中）で日本語（重なり）。
+        let out = t
+            .on_key(&model, key(KeyRole::Thumb(ThumbSide::Left), true, 20), 1)
+            .expect("closed");
+        assert_eq!(out.trigger, Trigger::WindowSwitch);
+        assert_eq!(
+            out.verdict,
+            Verdict::Japanese(JapaneseEvidence::ThumbOverlap)
+        );
+        assert_eq!(out.stop, StopReason::Decided);
+        assert_eq!(out.presses, 1);
+    }
+
+    #[test]
+    fn same_window_short_idle_does_not_start_a_new_episode() {
+        let model = tiny_model();
+        let mut t = EpisodeTracker::new(tracker_cfg());
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1);
+        t.on_key(&model, key(KeyRole::Thumb(ThumbSide::Left), true, 20), 1);
+        // 決定後、同じ窓で 100ms 後の打鍵ではエピソードを始めない。
+        assert!(t
+            .on_key(&model, key(KeyRole::Char(pos(1, 2)), true, 120), 1)
+            .is_none());
+        assert!(t
+            .on_key(&model, key(KeyRole::Thumb(ThumbSide::Left), true, 130), 1)
+            .is_none());
+    }
+
+    #[test]
+    fn long_idle_starts_an_episode_with_idle_trigger() {
+        let model = tiny_model();
+        let mut t = EpisodeTracker::new(tracker_cfg());
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1);
+        t.on_key(&model, key(KeyRole::Thumb(ThumbSide::Left), true, 20), 1);
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), false, 30), 1);
+        t.on_key(&model, key(KeyRole::Thumb(ThumbSide::Left), false, 40), 1);
+        // 10 秒後（同じ窓）: 無操作の契機。
+        t.on_key(&model, key(KeyRole::Char(pos(1, 2)), true, 10_040), 1);
+        let out = t
+            .on_key(
+                &model,
+                key(KeyRole::Thumb(ThumbSide::Right), true, 10_050),
+                1,
+            )
+            .expect("closed");
+        assert_eq!(out.trigger, Trigger::Idle);
+        assert_eq!(out.idle_ms, 10_000);
+    }
+
+    #[test]
+    fn episode_is_not_started_by_a_non_material_key() {
+        let model = tiny_model();
+        let mut t = EpisodeTracker::new(tracker_cfg());
+        // 窓切替の最初の Down が矢印（Other）なら、エピソードにしない。
+        assert!(t.on_key(&model, key(KeyRole::Other, true, 10), 1).is_none());
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 20), 1);
+        assert!(t
+            .on_key(&model, key(KeyRole::Thumb(ThumbSide::Left), true, 30), 1)
+            .is_none());
+    }
+
+    #[test]
+    fn modifier_key_events_do_not_consume_the_arm() {
+        let model = tiny_model();
+        let mut t = EpisodeTracker::new(tracker_cfg());
+        t.on_key(&model, key(KeyRole::Modifier, true, 5), 1);
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1);
+        let out = t
+            .on_key(&model, key(KeyRole::Thumb(ThumbSide::Left), true, 20), 1)
+            .expect("closed");
+        assert_eq!(out.stop, StopReason::Decided);
+    }
+
+    #[test]
+    fn non_material_or_excluded_key_closes_the_episode() {
+        let model = tiny_model();
+        let mut t = EpisodeTracker::new(tracker_cfg());
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1);
+        let out = t
+            .on_key(&model, key(KeyRole::Other, true, 20), 1)
+            .expect("closed");
+        assert_eq!(out.stop, StopReason::NonMaterialKey);
+
+        let mut t = EpisodeTracker::new(tracker_cfg());
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1);
+        let mut excluded = key(KeyRole::Char(pos(1, 2)), true, 20);
+        excluded.excluded = true;
+        let out = t.on_key(&model, excluded, 1).expect("closed");
+        assert_eq!(out.stop, StopReason::ExcludedKey);
+    }
+
+    #[test]
+    fn window_change_and_timeout_close_the_episode() {
+        let model = tiny_model();
+        let mut t = EpisodeTracker::new(tracker_cfg());
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1);
+        let out = t
+            .on_key(&model, key(KeyRole::Char(pos(1, 2)), true, 20), 2)
+            .expect("closed");
+        assert_eq!(out.stop, StopReason::WindowChanged);
+
+        let mut t = EpisodeTracker::new(tracker_cfg());
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1);
+        t.on_key(&model, key(KeyRole::Char(pos(1, 1)), false, 20), 1);
+        let out = t
+            .on_key(&model, key(KeyRole::Char(pos(1, 2)), true, 2_600), 1)
+            .expect("closed");
+        assert_eq!(out.stop, StopReason::Timeout);
+    }
+
+    #[test]
+    fn episode_outcome_carries_the_likelihood_trace() {
+        let model = tiny_model();
+        let mut cfg = tracker_cfg();
+        cfg.params = params(1.0, 100.0, 7);
+        let mut t = EpisodeTracker::new(cfg);
+        let mut last = None;
+        for (i, col) in [1_u8, 2, 3].into_iter().enumerate() {
+            let ts = 10 + u64::try_from(i).expect("i") * 10;
+            let down = t.on_key(&model, key(KeyRole::Char(pos(1, col)), true, ts), 1);
+            let up = t.on_key(&model, key(KeyRole::Char(pos(1, col)), false, ts + 1), 1);
+            last = last.or(down).or(up);
+        }
+        let out = last.expect("closed by likelihood");
+        assert_eq!(out.verdict, Verdict::Japanese(JapaneseEvidence::Likelihood));
+        assert_eq!(out.llr_trace.len(), out.presses);
     }
 
     // ---- 実データ（data/ngram_hiragana.csv.gz と layout/nicola.yab）での回帰 ----
