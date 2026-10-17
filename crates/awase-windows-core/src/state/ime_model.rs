@@ -791,6 +791,15 @@ impl ImeModel {
                 // （BUG-182。`applied_open`のdoc・ADR-098決定1-b・BUG-156と同じ原則）。
                 self.applied = AppliedImeState::Unknown;
             }
+            ImeEvent::LangDetectOff => {
+                // ADR-263 `ime_on_off`: 英数入力と判定して IME OFF を送った。belief を OFF へ寄せ、Engine を非活性にする
+                // （belief が ON のままだと、Engine が英字をローマ字に変換し続ける）。利用者の明示操作ではないので
+                // `last_intent` は設定しない（`has_user_explicit_intent()` を汚染せず、後続の実観測が上書きできる）。
+                // 送った結果は読めない窓があるので、`applied` は `Confirmed` と主張せず `Unknown` に落とす。
+                self.desired_open = false;
+                self.desired_is_placeholder = false;
+                self.applied = AppliedImeState::Unknown;
+            }
             ImeEvent::HwndCacheRestored { target } => {
                 // HWND キャッシュ復元: 前回フォーカス時の desired_open を回復する。
                 // ユーザーの能動的操作ではないため last_intent を設定しない。

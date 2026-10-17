@@ -1751,3 +1751,13 @@ pub fn send_hiragana_key() -> bool {
     // 本関数もメッセージループのスレッド（`with_app` の中）からだけ呼ばれる。
     unsafe { send_ime_mode_key(crate::vk::VK_DBE_HIRAGANA) }
 }
+
+/// ADR-263 `ime_on_off`: 英数入力と判定できたとき、IME OFF キー（`VK_IME_OFF`、冪等）を 1 回送る。
+///
+/// 呼び出し元が、Alt/Win が押されていないことを確かめてから呼ぶこと。メインスレッドから呼ぶこと。
+#[must_use]
+pub fn send_ime_off_key() -> bool {
+    // SAFETY: `send_ime_mode_key` は Win32 SendInput を呼ぶだけで、メインスレッドからの呼び出しが前提。
+    // 本関数もメッセージループのスレッド（`with_app` の中）からだけ呼ばれる。
+    unsafe { send_ime_mode_key(crate::vk::VK_IME_OFF) }
+}

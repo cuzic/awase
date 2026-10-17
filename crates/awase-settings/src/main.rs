@@ -4410,7 +4410,7 @@ impl SettingsApp {
 // ── 窓切替直後の日本語/英数の判定（ADR-263、上級者向け）──
 
 /// `[auto_detect]` の動作の選択肢（設定画面の表示順）。
-const AUTO_DETECT_MODES: [(awase::config::AutoDetectMode, &str, &str); 3] = [
+const AUTO_DETECT_MODES: [(awase::config::AutoDetectMode, &str, &str); 4] = [
     (awase::config::AutoDetectMode::Off, "無効", "何もしません。"),
     (
         awase::config::AutoDetectMode::Observe,
@@ -4426,6 +4426,14 @@ const AUTO_DETECT_MODES: [(awase::config::AutoDetectMode, &str, &str); 3] = [
          英数と判定した・決まらなかった場合は、保持した打鍵をそのまま流すだけです。\n\
          対象は、窓内の IME 状態が読めないと学習された窓（一太郎など）で、awase が IME ON と\n\
          みなしているときだけです。保持中に窓が変わると、保持した打鍵は捨てられます。",
+    ),
+    (
+        awase::config::AutoDetectMode::ImeOnOff,
+        "日本語ならひらがなに、英数なら IME OFF にする（利用者の責任）",
+        "「日本語と判定したら IME をひらがなにする」に加えて、打鍵列が英数（英語・コード・他言語）と\n\
+         判定できたときは、IME OFF キーを 1 回送って awase の想定も OFF にし、保持した打鍵をそのまま流します。\n\
+         日本語を英数と誤判定すると IME が OFF になり、IME ON のキーを押すまで戻りません。\n\
+         誤判定の率は「IME OFF にする確信度」で決まります（大きいほど誤りが減り、判定が遅くなります）。",
     ),
 ];
 
@@ -4486,7 +4494,10 @@ fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
                 }
             });
     });
-    if cfg.mode == awase::config::AutoDetectMode::ImeOn {
+    if matches!(
+        cfg.mode,
+        awase::config::AutoDetectMode::ImeOn | awase::config::AutoDetectMode::ImeOnOff
+    ) {
         ui.colored_label(
             egui::Color32::from_rgb(200, 120, 0),
             "実機での確認が済んでいない機能です。不具合があれば「記録のみ」に戻してください。\n\
@@ -4497,22 +4508,30 @@ fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
         .iter()
         .find(|(scope, _, _)| *scope == cfg.scope)
         .map_or("（不明）", |(_, label, _)| *label);
-    ui.add_enabled_ui(cfg.mode == awase::config::AutoDetectMode::ImeOn, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("対象の窓:");
-            egui::ComboBox::from_id_salt("auto_detect_scope")
-                .selected_text(selected_scope)
-                .width(300.0)
-                .show_ui(ui, |ui| {
-                    for (scope, label, hover) in AUTO_DETECT_SCOPES {
-                        ui.selectable_value(&mut cfg.scope, scope, label)
-                            .on_hover_text(hover);
-                    }
-                });
-        });
-    });
-    if cfg.mode == awase::config::AutoDetectMode::ImeOn
-        && cfg.scope == awase::config::AutoDetectScope::All
+    ui.add_enabled_ui(
+        matches!(
+            cfg.mode,
+            awase::config::AutoDetectMode::ImeOn | awase::config::AutoDetectMode::ImeOnOff
+        ),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.label("対象の窓:");
+                egui::ComboBox::from_id_salt("auto_detect_scope")
+                    .selected_text(selected_scope)
+                    .width(300.0)
+                    .show_ui(ui, |ui| {
+                        for (scope, label, hover) in AUTO_DETECT_SCOPES {
+                            ui.selectable_value(&mut cfg.scope, scope, label)
+                                .on_hover_text(hover);
+                        }
+                    });
+            });
+        },
+    );
+    if matches!(
+        cfg.mode,
+        awase::config::AutoDetectMode::ImeOn | awase::config::AutoDetectMode::ImeOnOff
+    ) && cfg.scope == awase::config::AutoDetectScope::All
     {
         ui.colored_label(
             egui::Color32::from_rgb(200, 120, 0),
@@ -4574,6 +4593,24 @@ fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
             )
             .on_hover_text(hover);
         });
+        ui.add_enabled_ui(
+            cfg.mode == awase::config::AutoDetectMode::ImeOnOff,
+            |ui| {
+                ui.horizontal(|ui| {
+                    let hover = "「日本語ならひらがなに、英数なら IME OFF にする」で、IME OFF を送るために必要な\n\
+                                 「日本語でない」確信度です。大きいほど、日本語を英数と誤判定して IME を OFF にする率が\n\
+                                 下がります（人工データの評価では、12 で約 4%、14 で約 3.7%、20 で約 2.8%）が、\n\
+                                 判定が遅くなり、打鍵の保持が長くなります（平均 3.5〜4.4 打鍵）。";
+                    ui.label("IME OFF にする確信度:").on_hover_text(hover);
+                    ui.add(
+                        egui::DragValue::new(&mut cfg.off_threshold)
+                            .range(0.0..=30.0)
+                            .speed(0.1),
+                    )
+                    .on_hover_text(hover);
+                });
+            },
+        );
         let apps_hover = "プロセス名（例: taro.exe）をカンマか空白で区切って入力します。大文字小文字と .exe の有無は区別しません。\n\
                           「動作」が「日本語と判定したら IME をひらがなにする」のときだけ効きます。";
         ui.horizontal(|ui| {

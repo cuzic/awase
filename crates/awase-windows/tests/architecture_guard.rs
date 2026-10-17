@@ -3765,6 +3765,30 @@ fn lang_detect_hiragana_write_goes_through_the_gate_and_syncs_after() {
     );
 }
 
+/// ADR-263 `ime_on_off`: IME OFF キー（`VK_IME_OFF`）の送信も 1 箇所だけで、送る前に純粋な判断 `ime_off_write_skip_reason`
+/// を通し、送った後に `on_ime_applied(false, ..)` と belief の OFF（`apply_lang_detect_off`。`last_intent` は設定しない）を行う。
+/// belief を OFF にしないと、Engine が活性のまま英字をローマ字に変換し続ける。
+#[test]
+fn lang_detect_ime_off_write_goes_through_the_gate_and_updates_belief_after() {
+    let src_full = read_crate_file("src/runtime/lang_detect_shadow.rs");
+    let src = production_code_only(&src_full);
+    let calls: Vec<usize> = src
+        .match_indices("crate::ime::send_ime_off_key()")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(calls.len(), 1, "IME OFF キーの送信は 1 箇所だけ");
+    let head = &src[..calls[0]];
+    let tail = &src[calls[0]..];
+    assert!(
+        head.contains("ime_off_write_skip_reason(self.lang_detect_write_facts(false))"),
+        "IME OFF キーの送信の前に純粋な判断 `ime_off_write_skip_reason` を通すこと（ADR-263）"
+    );
+    assert!(
+        tail.contains("on_ime_applied(false") && tail.contains("apply_lang_detect_off("),
+        "送った後に `on_ime_applied(false, ..)` と belief の OFF を行うこと"
+    );
+}
+
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。
 ///
 /// - フォーカス時の先同期（`applied` の `record_confirmed(true)` と GJI への ImeOn 通知＝long-cold の

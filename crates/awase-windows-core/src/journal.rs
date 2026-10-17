@@ -132,8 +132,10 @@ pub struct LangDetectRecord {
     pub profile: &'static str,
     /// 判定時点の belief（IME が開いているか）。不明なら `None`
     pub belief_open: Option<bool>,
-    /// 判定に応じた動作（`none` / `hiragana-sent` / `skipped-belief-off` / `skipped-observed-window` /
-    /// `skipped-modifier-held` / `skipped-send-failed`）。`observe` では常に `none`
+    /// 判定に応じた動作（`none` / `hiragana-sent`〔日本語→ひらがなキー〕/ `ime-off-sent`〔英数→IME OFF〕/
+    /// `observe-only`〔保持しなかったエピソードの日本語判定〕/ `skipped-belief-off` / `skipped-observed-window` /
+    /// `skipped-focus-lag` / `skipped-explicit-off` / `skipped-explicit-on` / `skipped-modifier-held` /
+    /// `skipped-send-failed`）。`observe` では常に `none`
     pub action: &'static str,
     /// 保持中に前面窓が変わって捨てた打鍵の数
     pub discarded: u32,

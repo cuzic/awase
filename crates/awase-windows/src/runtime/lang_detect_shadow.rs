@@ -15,8 +15,9 @@ use std::time::Duration;
 
 use awase::config::{AutoDetectConfig, AutoDetectMode, AutoDetectScope};
 use awase::lang_detect::{
-    hiragana_write_skip_reason, DetectParams, HoldController, HoldStep, JapaneseEvidence,
-    KanaModel, KeyRole, ObservedKey, ThumbOverlap, TrackerConfig, Verdict, WriteFacts,
+    hiragana_write_skip_reason, ime_off_write_skip_reason, DetectParams, HoldController, HoldStep,
+    JapaneseEvidence, KanaModel, KeyRole, ObservedKey, ThumbOverlap, TrackerConfig, Verdict,
+    WriteFacts,
 };
 use awase::ngram::NgramModel;
 use awase::platform::{ImeOpenOutcome, TsfComposition as _};
@@ -71,7 +72,13 @@ impl LangDetectShadow {
         let tracker_cfg = TrackerConfig {
             params: DetectParams {
                 ja_threshold: cfg.ja_threshold,
-                en_threshold: cfg.en_threshold,
+                // `ime_on_off` は『日本語でない』の確信度で IME OFF を送るので、より強い確信を要求する
+                // （その分、英数側の保持が長くなる）。他のモードは早く流すための小さめの値。
+                en_threshold: if cfg.mode == AutoDetectMode::ImeOnOff {
+                    cfg.off_threshold.max(cfg.en_threshold)
+                } else {
+                    cfg.en_threshold
+                },
                 max_keys: usize::try_from(cfg.max_keys).unwrap_or(7),
             },
             // 重なりを証拠にする。Space を親指にした構成では保持自体をしない（`hold_config_ok`）ので、
@@ -101,6 +108,11 @@ impl LangDetectShadow {
 
     const fn is_active(&self) -> bool {
         !matches!(self.mode, AutoDetectMode::Off)
+    }
+
+    /// 打鍵を保持して書き込みまで行うモードか（`ime_on`・`ime_on_off`）
+    const fn is_hold_mode(&self) -> bool {
+        matches!(self.mode, AutoDetectMode::ImeOn | AutoDetectMode::ImeOnOff)
     }
 
     /// 配列が変わった（または初回）なら、未シフト面でモデルを作り直す。
@@ -225,7 +237,7 @@ impl super::Runtime {
     /// 観測の無い窓（実測学習で降格された窓）で、belief が ON、NonText でなく、IME の変換中でない（変換中は未確定文字列に
     /// 打鍵が足されるので保持しない）。フォーカス追跡が前面窓に追いついていること。
     fn lang_detect_may_hold(&self) -> bool {
-        self.lang_detect.mode == AutoDetectMode::ImeOn
+        self.lang_detect.is_hold_mode()
             && self.lang_detect.hold_config_ok
             && self.lang_detect_focus_in_sync()
             && self.platform_state.ime.effective_open()
@@ -238,13 +250,14 @@ impl super::Runtime {
     }
 
     /// ひらがなキーを送ってよいかの事実を集める（判断は `awase::lang_detect::hiragana_write_skip_reason`）。
-    fn lang_detect_write_facts(&self) -> WriteFacts {
+    fn lang_detect_write_facts(&self, target_open: bool) -> WriteFacts {
         WriteFacts {
             belief_open: self.platform_state.ime.effective_open(),
             unobserved_window: self.lang_detect_window_in_scope(),
             non_text: self.platform_state.focus.focus_kind == FocusKind::NonText,
             focus_in_sync: self.lang_detect_focus_in_sync(),
-            explicit_off_intent: self.platform_state.ime.explicit_intent() == Some(false),
+            explicit_opposite_intent: self.platform_state.ime.explicit_intent()
+                == Some(!target_open),
             modifier_held: crate::hook::ime_mode_key_injection_blocked_by_modifier(),
         }
     }
@@ -263,10 +276,10 @@ impl super::Runtime {
     /// scan 無しのモードキーを処理しないという実機の記録がある（`kp_restore_kana_from_half_width` 付近のコメント）。
     /// scan 付きは実 IME が OFF の窓でかなロック等を汚すハザードがある（BUG-015 追補7）ため使わない。
     fn lang_detect_write_hiragana(&mut self) -> &'static str {
-        if self.lang_detect.mode != AutoDetectMode::ImeOn {
+        if !self.lang_detect.is_hold_mode() {
             return "none";
         }
-        if let Some(reason) = hiragana_write_skip_reason(self.lang_detect_write_facts()) {
+        if let Some(reason) = hiragana_write_skip_reason(self.lang_detect_write_facts(true)) {
             return reason;
         }
         if !crate::ime::send_hiragana_key() {
@@ -275,6 +288,32 @@ impl super::Runtime {
         self.platform.on_ime_applied(true, ImeOpenOutcome::Applied);
         self.kp_reopen_gji_fsm(crate::state::gji_direct_mechanism::ReopenSource::LangDetect);
         "hiragana-sent"
+    }
+
+    /// 英数入力と判定したとき（`ime_on_off`）、IME OFF キーを 1 回送り、awase の想定も OFF に寄せる。送れない前提なら理由を返す。
+    ///
+    /// 前提と限界は `lang_detect_write_hiragana` と同じ（belief ON・対象の窓・Alt/Win が押されていない・フォーカス追跡が
+    /// 前面窓に追いついている）。利用者が直近に明示的に IME ON を選んでいるときは送らない（その意図を尊重する）。
+    /// **日本語を英数と誤判定すると IME が OFF になり、利用者が IME ON キーを押すまで戻らない**（`ime_on_off` は利用者の責任）。
+    ///
+    /// 送った**あと**に、`on_ime_applied(false, Applied)`（composition を cold に・GjiFsm の OFF 同期は receipt が行う）と、
+    /// belief の OFF（`apply_lang_detect_off`。`last_intent` は設定しない）を行う。belief を OFF にしないと、Engine が活性のまま
+    /// 英字をローマ字に変換し続ける。
+    fn lang_detect_write_ime_off(&mut self) -> &'static str {
+        if self.lang_detect.mode != AutoDetectMode::ImeOnOff {
+            return "none";
+        }
+        if let Some(reason) = ime_off_write_skip_reason(self.lang_detect_write_facts(false)) {
+            return reason;
+        }
+        if !crate::ime::send_ime_off_key() {
+            return "skipped-send-failed";
+        }
+        self.platform.on_ime_applied(false, ImeOpenOutcome::Applied);
+        self.platform_state
+            .ime
+            .apply_lang_detect_off(crate::state::TickMs(crate::hook::current_tick_ms()));
+        "ime-off-sent"
     }
 
     /// 取り込み口から、フックの打鍵 1 つにつき 1 回呼ぶ（KeyDown/KeyUp とも）。
@@ -315,16 +354,20 @@ impl super::Runtime {
     fn lang_detect_apply(&mut self, step: HoldStep<RawKeyEvent>) -> LangDetectIntake {
         let action = if step.japanese {
             self.lang_detect_write_hiragana()
+        } else if step.english {
+            self.lang_detect_write_ime_off()
         } else {
             "none"
         };
         let discarded = u32::try_from(step.discarded).unwrap_or(u32::MAX);
         let step_japanese = step.japanese;
+        let step_english = step.english;
         for outcome in step.outcomes {
             let (verdict, evidence) = verdict_labels(outcome.verdict);
             #[allow(clippy::cast_possible_truncation)] // ログ用。f32 の精度で足りる
             let llr = outcome.llr as f32;
             let japanese = matches!(outcome.verdict, Verdict::Japanese(_));
+            let not_japanese = outcome.verdict == Verdict::NotJapanese;
             let record = crate::journal::LangDetectRecord {
                 trigger: outcome.trigger.label(),
                 verdict,
@@ -338,10 +381,16 @@ impl super::Runtime {
                 profile: profile_label(self.platform.current_app_profile()),
                 belief_open: Some(self.platform_state.ime.effective_open()),
                 // 日本語と判定したが保持していなかった（観測だけのエピソード）は `observe-only`。
-                action: match (japanese, step_japanese) {
-                    (true, true) => action,
-                    (true, false) => "observe-only",
-                    (false, _) => "none",
+                action: if japanese {
+                    if step_japanese {
+                        action
+                    } else {
+                        "observe-only"
+                    }
+                } else if not_japanese && step_english {
+                    action
+                } else {
+                    "none"
                 },
                 discarded,
             };
