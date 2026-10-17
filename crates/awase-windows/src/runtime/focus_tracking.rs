@@ -184,7 +184,9 @@ impl Runtime {
     ///
     /// フォーカス直後の OS 観測値を applied に先同期して、直後の Engine ON が古い applied を根拠に不要な再送へ進む
     /// ことを防ぐ。（旧: focus-resync / force-on の判断が古い状態を参照するため必要、としていたが、force-on は
-    /// `621bf93c` で撤去、focus-resync は `applied` を読まない〔ADR-262 round 3 で確認〕ので、残る目的はこれだけ。）
+    /// `621bf93c` で撤去、focus-resync は `applied` を読まない〔ADR-262 round 3 で確認〕。この「再送の防止」も、
+    /// ActivationSync の撤去〔ADR-213〕と押下の書き込みの view 未知化〔ADR-208 D1〕で実質は残っていない。実際に残る目的は
+    /// 下の BUG-18 の GjiFsm への ImeOn 通知と、`press=None` の ON の already-matched の材料である。）
     ///
     /// BUG-18: HwndCacheRestored / mirror_applied_open は belief 層（ImeModel）だけを ON に戻し、GjiFsm には一切通知
     /// しない。無操作中の AppKind 往復（TsfNative⇔Uwp）で本経路を繰り返し通ると、直前の実 IME-OFF で

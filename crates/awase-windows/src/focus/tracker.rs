@@ -382,6 +382,43 @@ mod tests {
     }
 
     #[test]
+    fn learned_demotion_is_reported_only_when_the_profile_actually_changes() {
+        // `demoted_by_learning = overridden != static`（ADR-262 段階 A）。静的リスト由来の
+        // `Imm32Unavailable`/`TsfNative`/`InputRelay` は学習が `Unavailable` でも変わらないので降格にならない。
+        for (static_profile, learned, demoted) in [
+            (
+                AppImeProfile::Standard,
+                Some(ImmCapability::Unavailable),
+                true,
+            ),
+            (AppImeProfile::Standard, Some(ImmCapability::Works), false),
+            (AppImeProfile::Standard, None, false),
+            (
+                AppImeProfile::Imm32Unavailable,
+                Some(ImmCapability::Unavailable),
+                false,
+            ),
+            (
+                AppImeProfile::TsfNative,
+                Some(ImmCapability::Unavailable),
+                false,
+            ),
+            (
+                AppImeProfile::InputRelay,
+                Some(ImmCapability::Unavailable),
+                false,
+            ),
+        ] {
+            let overridden = FocusTracker::apply_learned_imm_capability(static_profile, learned);
+            assert_eq!(
+                overridden != static_profile,
+                demoted,
+                "{static_profile:?} × {learned:?}"
+            );
+        }
+    }
+
+    #[test]
     fn standard_with_learned_works_or_unlearned_stays() {
         assert_eq!(
             FocusTracker::apply_learned_imm_capability(

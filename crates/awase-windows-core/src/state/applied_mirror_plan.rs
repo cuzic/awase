@@ -5,9 +5,10 @@
 //! GJI の already-matched は `applied` が向きと一致すると後続の ON の書き込みを省くので、偽の `Confirmed(true)` は
 //! #623（belief ON・実 IME OFF）を直せなくする。
 //!
-//! 写しを行う殻の 3 箇所は、すべてこの関数を通す（`tests/architecture_guard.rs` が固定）:
+//! 写しを行う殻の到達可能な 3 箇所は、すべてこの関数を通す（`tests/architecture_guard.rs` が固定）:
 //! `runtime/focus_tracking.rs` の先同期（`presync_applied_open_on` の呼び出し）、
 //! `runtime/ime_refresh.rs::ir_align_placeholder_desired`、`runtime/ime_refresh.rs::ir_post_focus_change_snapshot`。
+//! `runtime/mod.rs::process_deferred_keys` にも同型の写しがあるが本番到達不能（ADR-098 決定 5）。復活させるときはこの関数を通すこと。
 
 /// フォーカス変更で `applied` へ写してよいなら `true`。
 ///

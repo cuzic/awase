@@ -200,8 +200,9 @@ pub mod focus_probe_plan;
 pub mod msaa_role_plan;
 // 同期分類（ウィンドウスタイル・クラス名）の判断表（純粋）。本番の呼び出し元 focus/classify.rs は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod focus_classify_plan;
-// resolve_focus_kind の前段の優先順位（純粋）。本番の呼び出し元 focus/kind_classifier.rs は #[cfg(windows)]、Linux ではテストだけが使う。
+// フォーカス変更時に belief を applied へ写してよいかの可否（純粋。ADR-262 段階 A）。本番の呼び出し元 runtime/ は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod applied_mirror_plan;
+// resolve_focus_kind の前段の優先順位（純粋）。本番の呼び出し元 focus/kind_classifier.rs は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod focus_resolve_plan;
 pub mod transition;
 // FCIS F3: `runtime/executor.rs` の execute_relay/drain_deferred/defer 側の「即時/キュー/ガード」判断の核（純粋）。
