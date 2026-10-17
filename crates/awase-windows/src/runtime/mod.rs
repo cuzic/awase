@@ -1434,7 +1434,8 @@ impl Runtime {
         // 到達すれば、直前の `poll_and_classify_ime` の新鮮な観測を経由せず
         // `effective_open()`（belief、explicit-intent 分岐が優先される）を
         // そのまま書く点に注意。将来 sync key gate を復活させる際は
-        // `focus_tracking.rs:409` と同型のプロファイル分岐を検討すること。
+        // `focus_tracking.rs:409` と同型のプロファイル分岐（`state::applied_mirror_plan::may_mirror_applied_on_focus`
+        // が見る TsfNative と実測学習による降格）を検討すること。
         let observed_ime_on = self.platform_state.ime.effective_open();
         self.platform_state
             .ime
