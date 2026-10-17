@@ -1,0 +1,83 @@
+name: indicator-taskbar-verify
+
+# ADR-261 D0-4: タスクバーの状態(自動的に隠す・上/左/右)と MS-IME のツールバーが、入力インジケーターの字形の取り込み
+# (UIA の矩形・画面外・中心の窓・撮れた画像)にどう影響するかを windows-latest で測る。測定専用(使い捨て)。
+# 動く条件: ci/indicator-taskbar-verify への push、手動起動(workflow_dispatch は既定ブランチにこのファイルがあるときだけ使える)。
+on:
+  push:
+    branches: [ci/indicator-taskbar-verify]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: indicator-taskbar-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: indicator-taskbar
+      - name: プローブとシナリオをビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --example ime_indicator_probe --example indicator_scenario
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\examples\ime_indicator_probe.exe dist\
+          Copy-Item target\debug\examples\indicator_scenario.exe dist\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin
+          path: dist/
+          retention-days: 3
+
+  verify:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        cond: [shown, autohide, top, left, right, toolbar]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin
+          path: dist
+      - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $list = Get-WinUserLanguageList
+          $list.Add("ja-JP")
+          Set-WinUserLanguageList -LanguageList $list -Force
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          "TIP_REGISTERED=$(Test-Path $tipKey)"
+          if (-not (Test-Path $tipKey)) { Add-WindowsCapability -Online -Name 'Language.Basic~~~ja-JP~0.0.1.0' 2>&1 | Select-Object -Last 3 }
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: 条件 ${{ matrix.cond }} を測る
+        shell: pwsh
+        run: ./tools/ci/indicator_taskbar/run.ps1 -Cond '${{ matrix.cond }}' -Dist dist -Out out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ matrix.cond }}
+          path: |
+            out/
+          retention-days: 7

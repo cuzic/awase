@@ -365,6 +365,7 @@ mod app {
         let mut prev: BTreeSet<String> = BTreeSet::new();
         let mut prev_props = String::new();
         let mut prev_hash = 0u64;
+        let mut prev_geom = String::new();
         // SAFETY: プロセスの DPI 認識を有効にして、UIA の矩形と画面座標をそろえる。
         unsafe {
             // awase.exe と同じ PerMonitorV2(-4)。`--dpi-aware=system` なら従来の System(学習プロセスの近似)。
@@ -414,6 +415,48 @@ mod app {
             let cost_t = std::time::Instant::now();
             // 入力インジケーターの名前以外の情報と、画面上の字形(「あ」/「A」)の変化。
             let tray = find(w!("Shell_TrayWnd"));
+            // ADR-261 D0-4: タスクバーの状態(自動非表示・位置・オーバーフロー)で、矩形・画面外・中心の窓がどう変わるか(変化点だけ記録)。
+            {
+                use windows::Win32::Foundation::POINT;
+                use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowRect, WindowFromPoint};
+                let mut trect = RECT::default();
+                if !tray.0.is_null() {
+                    // SAFETY: tray は有効なウィンドウ。
+                    let _ = unsafe { GetWindowRect(tray, &raw mut trect) };
+                }
+                let g = if tray.0.is_null() {
+                    "tray=none".to_owned()
+                } else {
+                    // SAFETY: tray は有効。
+                    match unsafe { find_indicator(&auto, tray) } {
+                        Some(ind) => {
+                            // SAFETY: ind は有効。
+                            let r = unsafe { ind.CurrentBoundingRectangle() }.unwrap_or_default();
+                            // SAFETY: ind は有効。
+                            let off = unsafe { ind.CurrentIsOffscreen() }.map(|b| b.as_bool()).ok();
+                            let pt = POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+                            // SAFETY: 座標から窓を引くだけ。
+                            let w = unsafe { WindowFromPoint(pt) };
+                            let mut buf = [0u16; 64];
+                            // SAFETY: buf は有効。
+                            let n = if w.0.is_null() { 0 } else { unsafe { GetClassNameW(w, &mut buf) } };
+                            let cls = String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)]);
+                            format!(
+                                "found rect=({},{},{},{}) offscreen={off:?} wfp_class={cls:?} tray_rect=({},{},{},{})",
+                                r.left, r.top, r.right, r.bottom, trect.left, trect.top, trect.right, trect.bottom
+                            )
+                        }
+                        None => format!(
+                            "indicator=notfound tray_rect=({},{},{},{})",
+                            trect.left, trect.top, trect.right, trect.bottom
+                        ),
+                    }
+                };
+                if g != prev_geom {
+                    log.line(&format!("IND-GEOM {g}"));
+                    prev_geom = g;
+                }
+            }
             if !tray.0.is_null() {
                 // SAFETY: auto・tray は有効。
                 if let Some(ind) = unsafe { find_indicator(&auto, tray) } {
