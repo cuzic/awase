@@ -7235,7 +7235,8 @@ mod layout_tab_repro {
     use super::{
         AUTO_DETECT_PRESETS, CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction,
         NewComboBuf, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue,
-        apply_adr192_recommended_replacement, apps_to_text, auto_detect_section, empty_yab_layout,
+        apply_adr192_recommended_replacement, apply_auto_detect_preset, apps_to_text,
+        auto_detect_details, auto_detect_preset_index, auto_detect_section, empty_yab_layout,
         find_config_path, has_adr192_warning_context, load_yab_layout, resolve_layouts_dir,
         text_to_apps, undo_adr192_recommended_replacement,
     };
