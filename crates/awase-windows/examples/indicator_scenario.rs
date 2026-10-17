@@ -546,6 +546,13 @@ mod app {
                         log(&format!("CYCLE i={i} vk={vk:02X}"));
                     }
                 }
+                // `--hold=<秒>`: 状態を作ったあと、窓にフォーカスを残したまま待つ(別プロセスがインジケーターを右クリックして、メニューを測る用)。
+                if let Some(h) = arg("--hold=").and_then(|v| v.parse::<u64>().ok()) {
+                    focus(&a);
+                    log(&format!("HOLD start {h}s"));
+                    sleep_ms(h * 1000);
+                    log("HOLD end");
+                }
             }
             "noimm" => {
                 // A=ひらがな の窓から、IMM の無い窓(C1: ImmAssociateContextEx(NULL)、C2: ImmDisableIME)へ移る。

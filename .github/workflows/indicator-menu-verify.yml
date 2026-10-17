@@ -1,0 +1,108 @@
+name: indicator-menu-verify
+
+# ADR-261 の延長: タスクバーの入力インジケーターの右クリックメニューを、(1)開いた瞬間に検知できるか(WinEvent・UIA のイベント)、
+# (2)メニューの項目と現在のモード(チェック済みの項目)を読めるか、を windows-latest で測る(MS-IME・GJI)。測定専用(使い捨て)。
+# 動く条件: ci/indicator-menu-verify への push、手動起動(workflow_dispatch は既定ブランチにこのファイルがあるときだけ使える)。
+on:
+  push:
+    branches: [ci/indicator-menu-verify]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: indicator-menu-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: indicator-taskbar
+      - name: シナリオをビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --example indicator_scenario
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\examples\indicator_scenario.exe dist\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin
+          path: dist/
+          retention-days: 3
+
+  verify:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        ime: [msime, gji]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin
+          path: dist
+      - name: Google 日本語入力をインストール
+        if: matrix.ime == 'gji'
+        shell: pwsh
+        run: ./tools/ci/install-gji.ps1
+      - name: 入力言語を ja-JP + GJI に設定(MS-IME プリセットの config1.db)
+        if: matrix.ime == 'gji'
+        shell: pwsh
+        run: |
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $bytes = [System.Collections.Generic.List[byte]]::new()
+          $bytes.AddRange([byte[]](0xB0,0x01,0x00,0xC8,0x02,2))
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), $bytes.ToArray())
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
+        if: matrix.ime == 'msime'
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $list = Get-WinUserLanguageList
+          $list.Add("ja-JP")
+          Set-WinUserLanguageList -LanguageList $list -Force
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          "TIP_REGISTERED=$(Test-Path $tipKey)"
+          if (-not (Test-Path $tipKey)) { Add-WindowsCapability -Online -Name 'Language.Basic~~~ja-JP~0.0.1.0' 2>&1 | Select-Object -Last 3 }
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: メニューを測る(${{ matrix.ime }})
+        shell: pwsh
+        run: ./tools/ci/indicator_menu/run.ps1 -Ime '${{ matrix.ime }}' -Dist dist -Out out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ matrix.ime }}
+          path: |
+            out/
+          retention-days: 7
