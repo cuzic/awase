@@ -53,12 +53,15 @@ related_adr:
 |---|---|
 | 開いた瞬間の検知 | **WinEvent の `EVENT_SYSTEM_MENUSTART`・`MENUPOPUPSTART` と、UI Automation の `MenuOpened` が、全 15 状態で各 1 回ずつ発火**した。閉じるときは `MENUPOPUPEND`・`MENUEND`・`MenuClosed` |
 | どの窓のメニューか | **`MENUSTART` の hwnd はフォーカス中の入力欄そのもの**で、メニューはその窓のスレッドで出る。窓の識別がイベントだけで分かる。メニューのクラスは `#32768`(標準の Win32 メニュー) |
-| フォーカスの副作用 | 前面窓の変化(`EVENT_SYSTEM_FOREGROUND`)は出なかった。awase を起動した状態は未確認 |
+| フォーカスの副作用 | 前面窓の変化(`EVENT_SYSTEM_FOREGROUND`)は出なかった。awase を起動した状態の影響は下の行(メニュー窓への `EVENT_OBJECT_FOCUS` を awase が窓の切替として拾う) |
 | 読み取り | UI Automation で `MenuItem` が読め、**現在のモードの項目に `SelectionItemPattern.IsSelected=True`** が付く |
 | MS-IME の項目 | `AutomationId` = `Item 101`(ひらがな)・`102`(全角カタカナ)・`103`(全角英数)・`104`(半角カタカナ)・`105`(半角英数)。本物の MS-IME は閉と半角英数が同じ |
 | GJI の項目 | `Item 11`(ひらがな)・`12`(全角カタカナ)・`14`(全角英数)・`15`(半角カタカナ)・`13`(半角英数)・**`10`(Direct Input = IME 閉)**。開閉まで読める |
 | 通常の窓(IMM が読める。5 状態) | MS-IME のひらがな・カタカナ・半角英数、GJI の ON・OFF で、選ばれた項目が設定した状態と一致 |
 | **観測の無い窓の近似(10 状態)** | 自前の TSF text store の窓。`assoc` = 窓の IMM コンテキストなし、`disable` = スレッドで `ImmDisableIME`(IMM の読みは常に open=0/conv=0)。MS-IME 3 状態 × 2 + GJI 2 状態 × 2 の**全 10 状態で、`IsSelected` の項目が窓の実状態と一致**した。実状態は、キーで状態を作り、打った出力で読んだ(MS-IME: ひらがな→「か」・カタカナ→「カ」・英数→何も入らない、GJI: ON→「か」・OFF→何も入らない) |
+| **選んだ項目の反映**(run 39079041821。awase なし・あり × 通常の窓・観測の無い窓の近似 × MS-IME・GJI の 8 通り) | 項目を押すと**実際にモードが切り替わった**。再度メニューを開いて読むと、MS-IME は `Item 101`→`103`、GJI は `Item 11`→`10`(Direct Input)で、8 通りすべてで押した項目が選ばれていた |
+| **選んだ項目の検知** | **UI Automation の `InvokePattern.InvokedEvent` は 0 件**(押しても発火しなかった)で、検知に使えない。閉じたあとのメニューは読めない。代わりの候補は、メニュー窓への `EVENT_OBJECT_FOCUS`(`idChild`=ハイライトされた項目)の、閉じる直前の値(未確認。FOCUS 自体はメニュー窓に対して発火した) |
+| **awase を起動した状態の影響**(同上、awase は debug・`RUST_LOG=debug`・`cache.toml` で窓の IMM 能力を works/unavailable に固定) | ①**メニューを開いた瞬間には awase は反応しない**。②**項目にマウスが乗った時点(開いて約 2.2 秒後)で、メニュー窓(クラス `#32768`)への `EVENT_OBJECT_FOCUS` を awase が「窓の切替」として拾い**、`[focus-sync] hwnd=… class="#32768"`・`[tsf-gate] focus change → PendingWarmup (held cleared)`(保持キーの解除)・メニュー窓への UIA 分類(`NonText`)が走った。③**選択のあとの belief の動き**: GJI の通常の窓では `true→false`(選んだ Direct Input と一致)。**GJI の観測の無い窓の近似では `false→true`(実状態は Direct Input=閉なので逆向き)**、MS-IME の 2 通りでは変化なし。②の focus 追跡の反応が原因か、通常の定期観測の結果かは**切り分けていない**(メニューを開かない対照が無い) |
 | 言語依存 | 項目名は表示言語で変わるが、**`AutomationId` は変わらない**(IME ごとに別の体系) |
 
 MS-IME の項目数は測定により 17 件と 18 件があった(状態や表示によって、モード以外の項目が増減する)。項目の判定は件数でなく `AutomationId` で行う。
@@ -104,6 +107,7 @@ ID は実測した版(Windows Server 2025 build 26100 の MS-IME、CI の GJI)�
 
 - **段階 1(shadow)**: belief には入れない。journal と不具合報告に `indicator_menu { read, 同定の成否, 読んだ状態, その時点の belief, 一致/不一致 }` だけを出す(ID・状態のみ。他のアプリのメニューの名前・内容は出さない)。
   読める窓で、直接の読み(High)と突き合わせて**一致率**を出せる(正解のある一致率)。観測の無い窓の正解は、メニューで選ばれた項目と、利用者の打ち直し・打った出力でしか取れない(一太郎の実機)。
+- **選択前の状態であることに注意**: 開いた瞬間に読むのは**利用者が項目を選ぶ前**の状態で、選ぶと窓のモードが変わる(実測: 8 通りで押した項目が反映された)。選んだ項目の検知手段が確定するまで(M0-3)、証拠として使うのは「選ばずに閉じた」ときに限る(`MENUPOPUPEND` の後に、押した項目が分からないものは破棄する)。
 - **段階 2(belief 配線)**: 新しい `ObservationSource::IndicatorMenu`、`confidence` は High 相当(IME 自身の UI の読み)。入力モードは `InputModeObserved`、開閉は `ObserverReported` の規約に従い、
   **`authority() = BeliefOnly`**(`derive_actuating` に入れない。drift correction の書き込みを引き起こさない。ADR-261 決定 6 の入口条件 2 と同じ理由)。
   ADR-261 決定 6 の入口条件(古い値で正しい予測を覆さない・`Miss` の後に古い `Hit` を残さない)は、**メニューは「今」の状態を読む**ので遅れの問題は小さいが、
@@ -121,6 +125,13 @@ ID は実測した版(Windows Server 2025 build 26100 の MS-IME、CI の GJI)�
   UI Automation(アクセシビリティ API)は画面の取り込みより穏当だが、「低レベルフック + 他アプリの UI の走査」はウイルス対策の行動検出に当たりうるので、D0 で確かめる。
 - UI Automation の探索が固まる恐れ(ワーカーとタイムアウト、連続失敗でそのセッションの停止)。
 
+### 決定 8: メニューの間は、メニュー窓へのフォーカスを窓の切替として扱わない(M0-2 の実測から)
+
+awase の focus 追跡は、メニュー窓(クラス `#32768`)への `EVENT_OBJECT_FOCUS` を窓の切替として拾い、`tsf-gate` の `PendingWarmup`(保持キーの解除)や UIA 分類を走らせる(上の実測)。
+**`MENUSTART`〜`MENUEND`(同じスレッド)の間は、`#32768` のクラスの窓へのフォーカスを、`focus-sync`・`HwndCache` の保存/復元・`tsf-gate` の遷移の対象にしない**(メニューの間は元の窓にフォーカスが残っているものとして扱う)。
+これが無いと、メニューを開く操作(証拠を取る操作)自体が、belief・保持キー・TSF の状態を乱す。`focus_tracking.rs` 系は再発ファミリー(`fix-requires-evidence`)なので、実装時は golden か journal のテストを足す。
+**選択のあとの belief の逆向きの動き**(GJI の観測の無い窓の近似で `false→true`)は、原因が未切り分け(メニューを開かない対照が要る。M0-2)。本案の belief 配線(決定 5)の前に、メニューの証拠が awase 自身の定期観測と**食い違わない/上書きする**順序を決める必要がある。
+
 ## 却下案
 
 - **awase が周期的・契機でインジケーターを右クリックしてメニューを開いて読む**: メニューが利用者の画面に出て、フォーカスを奪い、入力を妨げる。読むのは利用者が開いたときだけ(決定 0)。
@@ -134,8 +145,8 @@ ID は実測した版(Windows Server 2025 build 26100 の MS-IME、CI の GJI)�
 | ID | 内容 | 測り方 |
 |---|---|---|
 | M0-1(go/no-go) | **一太郎の実機**で、右クリックメニューが出て、`IsSelected` が実際の入力と一致するか。一太郎が TSF 経由でメニューを出す窓かは実機でしか分からない | 実機(報告者への依頼、または一太郎を持つ環境) |
-| M0-2 | **awase を起動した状態**でのフォーカス追跡・belief・`HwndCache` への影響(メニューが開いている間・閉じた直後) | CI(awase あり) |
-| M0-3 | **利用者が選んだ項目の検知**(UI Automation の `InvokedEvent`、または閉じた後の再読)。選んだ時点で窓のモードが確定する | CI |
+| M0-2 一部完了 | **awase を起動した状態**(上の実測。focus 追跡の反応は確認済み → 決定 8)。未了: メニューを開かない対照との差(選択後の belief の逆向きの動きの原因)、`HwndCache` への影響、メニューを開いたまま打鍵した場合 | CI(対照あり) |
+| M0-3 一部完了 | **利用者が選んだ項目の検知**: `InvokedEvent` は発火せず**不可**(上の実測)。未了: メニュー窓の `EVENT_OBJECT_FOCUS` の `idChild`(閉じる直前の値が選んだ項目か)、キーボード(↑↓・Enter)で選んだ場合 | CI |
 | M0-4 | 他のアプリの右クリックメニューを読むコスト・固まり、同定に失敗したときの破棄 | CI(多数のメニュー) |
 | M0-5 | IME の版による `AutomationId` の変化(MS-IME の以前のバージョン互換モード〔ADR-254〕、GJI の版、Windows 10 の言語バー) | 構成を増やす |
 | M0-6 | 他の IME(ATOK 等)・複数言語・「アプリごとに入力方式を切り替える」設定でのメニュー | — |
