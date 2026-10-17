@@ -3747,7 +3747,7 @@ fn lang_detect_hiragana_write_goes_through_the_gate_and_syncs_after() {
     let head = &src[..calls[0]];
     let tail = &src[calls[0]..];
     assert!(
-        head.contains("hiragana_write_skip_reason(self.lang_detect_write_facts())"),
+        head.contains("hiragana_write_skip_reason(self.lang_detect_write_facts(true))"),
         "ひらがなキーの送信の前に純粋な判断 `hiragana_write_skip_reason` を通すこと（ADR-263 D5）"
     );
     for need in [
