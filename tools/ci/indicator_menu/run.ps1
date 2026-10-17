@@ -132,11 +132,22 @@ function Measure-State($tag, $scenArgs) {
 Log "ime=$Ime"
 [MW]::Start()
 if ($Ime -eq 'msime') {
+  # 通常の窓(IMM が読める)
   Measure-State 'msime-hira'   '--msime --steps=1:19'
   Measure-State 'msime-kata'   '--msime --steps=1:1b'
   Measure-State 'msime-halfalnum' '--msime --steps=0:10'
+  # 観測の無い窓の近似(自前の TSF text store の窓)。IMM の関わり: assoc=窓の IMM コンテキストなし / disable=ImmDisableIME。キーで状態を作り、打った出力で実状態を読む。
+  foreach ($imm in @('assoc','disable')) {
+    Measure-State "msime-tsf-$imm-hira" "--msime --win=tsf --imm=$imm --keys=F2"
+    Measure-State "msime-tsf-$imm-kata" "--msime --win=tsf --imm=$imm --keys=F1"
+    Measure-State "msime-tsf-$imm-alnum" "--msime --win=tsf --imm=$imm --keys=F0"
+  }
 } else {
   Measure-State 'gji-on'  '--keys=16'
   Measure-State 'gji-off' '--keys=1A'
+  foreach ($imm in @('assoc','disable')) {
+    Measure-State "gji-tsf-$imm-on"  "--win=tsf --imm=$imm --keys=16"
+    Measure-State "gji-tsf-$imm-off" "--win=tsf --imm=$imm --keys=1A"
+  }
 }
 Log '完了'

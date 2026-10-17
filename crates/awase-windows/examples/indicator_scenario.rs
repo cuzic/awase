@@ -504,7 +504,14 @@ mod app {
                     .split(',')
                     .filter_map(|v| u32::from_str_radix(v.trim(), 16).ok())
                     .collect();
-                let a = spawn_window("A", 40, false, false);
+                // `--win=tsf [--imm=default|assoc|disable]`: IMM で状態を読めない/嘘をつく窓(自前の TSF text store の窓。観測の無い窓の近似)。
+                let tsf = arg("--win=").as_deref() == Some("tsf");
+                let imm: &'static str = match arg("--imm=").as_deref() {
+                    Some("assoc") => "assoc",
+                    Some("disable") => "disable",
+                    _ => "default",
+                };
+                let a = if tsf { spawn_tsf_window("A", 40, imm) } else { spawn_window("A", 40, false, false) };
                 focus(&a);
                 sleep_ms(800);
                 press(0x16);
@@ -543,6 +550,10 @@ mod app {
                         press(vk);
                         sleep_ms(1500);
                         truth(&a);
+                        if tsf {
+                            // IMM が読めない窓の実状態は、打った出力(かな/ローマ字)で読む。
+                            type_probe(&a);
+                        }
                         log(&format!("CYCLE i={i} vk={vk:02X}"));
                     }
                 }
