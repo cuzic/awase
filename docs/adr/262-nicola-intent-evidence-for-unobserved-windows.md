@@ -148,8 +148,10 @@ BUG-016 の教訓は「発火しすぎ」ではなく**フォーカス直後の�
 
 ## 段階
 
-- **段階 A(先に単独で行う。書き込みを足さない)**: `ImmCapability::Unavailable` の窓で `presync_applied_open_on`(`runtime/focus_tracking.rs:193-197`・`:778-783`、`ime_refresh.rs:845-866`)を止める
-  (ADR-098 決定 1-a の TsfNative と同じ扱い)。偽の `Confirmed(true)` が無くなり、`applied` が Unknown のままになるので、D3 の view の未知化(押下に依らない別名の関数)と GjiFsm の `Reopen` の追加は要らなくなる。
+- **段階 A(先に単独で行う。書き込みを足さない)**: 実測学習で `Standard` から降格された窓(`FocusTracker::demoted_by_learning`。静的リスト由来の `Imm32Unavailable` は含まない)で、
+  `applied` へ写す 3 箇所(`presync_applied_open_on` の呼び出し 2 箇所〔`runtime/focus_tracking.rs`・`ime_refresh.rs::ir_align_placeholder_desired`〕と、
+  同じリフレッシュで後から走る `ir_post_focus_change_snapshot` の mirror〔ADR-098 決定 1-a〕)を、すべて `state/applied_mirror_plan.rs::may_mirror_applied_on_focus` に通して止める
+  (ADR-098 決定 1-a の TsfNative と同じ扱い)。実装は `fix/adr262-stage-a-presync-unavailable`(Opus レビュー 2 往復で Blocker 0)。偽の `Confirmed(true)` が無くなり、`applied` が Unknown のままになるので、D3 の view の未知化(押下に依らない別名の関数)と GjiFsm の `Reopen` の追加は要らなくなる。
   presync の目的は、ActivationSync(ADR-213 で撤去)と force-on(`621bf93c` で撤去)の撤去後ほぼ消えており、GjiFsm への ImeOn 通知は ADR-203 の level 突合 `OnImeOnBelief`(`gji_direct_mechanism.rs:55-57`)が代わりに行う。
   この変更は IME belief ファミリー(`focus_tracking.rs`)なので、`fix-requires-evidence.md` の (a) 回帰テストか (b) `docs/known-bugs/BUG-NNN.md` を添える。
   これだけでは実 IME は OFF のままで、#623 の症状は直らない(偽の確定を作らなくなるだけ)。段階 0 のログで、段階 A の前後を分けて見られる利点がある。
