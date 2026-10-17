@@ -1316,7 +1316,9 @@ impl JournalEntry {
                 );
             }
             Self::LangDetect { record } => {
-                tracing::info!(
+                // debug（既定の app log には出さない。journal 本体には全項目が残る。ADR-250 決定 5）。
+                // 打鍵ごとの尤度比の増分の列は journal にだけ残し、ここでは件数だけ出す。
+                tracing::debug!(
                     target: "awase::journal",
                     seq,
                     elapsed_ms,
@@ -1326,11 +1328,11 @@ impl JournalEntry {
                     stop = record.stop,
                     presses = record.presses,
                     llr = record.llr,
-                    llr_trace = ?record.llr_trace,
+                    llr_steps = record.llr_trace.len(),
                     idle_ms = record.idle_ms,
                     duration_ms = record.duration_ms,
                     profile = record.profile,
-                    belief_open = ?record.belief_open,
+                    belief_open = record.belief_open,
                     "[lang-detect]"
                 );
             }
