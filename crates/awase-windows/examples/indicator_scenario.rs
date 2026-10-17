@@ -525,6 +525,8 @@ mod app {
                     let ime = unsafe { ImmGetDefaultIMEWnd(a.edit) };
                     for i in 0..n {
                         for &(o, c) in &steps {
+                            // 書き込みの瞬間を記録する(字形の変化との突き合わせ用。GJI の PRESS と同じ役割)。
+                            log(&format!("SET open={o:X} conv={c:X}"));
                             let _ = ime_set(ime, 2, c);
                             let _ = ime_set(ime, 6, o);
                             sleep_ms(1500);
