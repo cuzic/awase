@@ -50,7 +50,9 @@ public static class MW {
   public static string Describe(AutomationElement e) {
     var c = e.Current; string extra = "";
     object p;
-    try { if (e.TryGetCurrentPattern(LegacyIAccessiblePattern.Pattern, out p)) { var l = (LegacyIAccessiblePattern)p; extra += " legacy[state=0x" + l.Current.State.ToString("X") + " role=" + l.Current.Role + "]"; } } catch {}
+    try { if (c.ItemStatus != null && c.ItemStatus.Length > 0) extra += " itemstatus=" + c.ItemStatus; } catch {}
+    try { if (c.HelpText != null && c.HelpText.Length > 0) extra += " help=" + c.HelpText; } catch {}
+    try { extra += " ids=" + string.Join(",", Array.ConvertAll(e.GetSupportedPatterns(), x => x.ProgrammaticName.Replace("Identifiers.Pattern", ""))); } catch {}
     try { if (e.TryGetCurrentPattern(TogglePattern.Pattern, out p)) extra += " toggle=" + ((TogglePattern)p).Current.ToggleState; } catch {}
     try { if (e.TryGetCurrentPattern(SelectionItemPattern.Pattern, out p)) extra += " selected=" + ((SelectionItemPattern)p).Current.IsSelected; } catch {}
     return c.ControlType.ProgrammaticName.Replace("ControlType.", "") + " | name=" + c.Name + " | class=" + c.ClassName + " | id=" + c.AutomationId + " | rect=" + (int)c.BoundingRectangle.Left + "," + (int)c.BoundingRectangle.Top + "," + (int)c.BoundingRectangle.Right + "," + (int)c.BoundingRectangle.Bottom + extra;
