@@ -131,3 +131,8 @@ related_adr:
 2. 補正的な書き込み(drift correction)を外すと、belief と実 IME のずれが観測で上書きされるまで残る。P6 で持続時間を先に測る。
 3. CI(打鍵ストレス)は失敗が0件の環境で感度が低い。実機の A/B と、ログの目印での経路確認を必須にする。
 4. ActivationSync を止めると、GjiFsm の取り残し(BUG-170 型)や、予測の誤りの表面化が起きうる(決定5)。
+
+## 追記(2026-10-17): 観測の無い窓での補正的な書き込みの例外
+
+所有者判断により、「ImmCapability::Unavailable の窓で、エピソードごとに 1 回、親指シフトの同時打鍵の確定を契機に IME ON を明示する」補正的な書き込みを、本 ADR の方針の例外として認める。
+撤去した force-on(BUG-016 の修正)の絞った復元にあたる。詳細・revert 条件は [ADR-262](262-nicola-intent-evidence-for-unobserved-windows.md)。他の窓・他の契機への拡張は認めない。
