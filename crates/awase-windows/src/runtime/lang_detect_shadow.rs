@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use awase::config::{AutoDetectConfig, AutoDetectMode};
+use awase::config::{AutoDetectConfig, AutoDetectMode, AutoDetectScope};
 use awase::lang_detect::{
     hiragana_write_skip_reason, DetectParams, HoldController, HoldStep, JapaneseEvidence,
     KanaModel, KeyRole, ObservedKey, ThumbOverlap, TrackerConfig, Verdict, WriteFacts,
@@ -47,6 +47,8 @@ pub(super) struct LangDetectShadow {
     include_apps: Vec<String>,
     exclude_apps: Vec<String>,
     max_ms: u32,
+    /// `ime_on` の対象にする窓の範囲（既定は観測の無い窓だけ。`all` は利用者の責任）
+    scope: AutoDetectScope,
 }
 
 /// 設定のプロセス名の正規化（小文字化し、末尾の `.exe` を落とす）
@@ -93,6 +95,7 @@ impl LangDetectShadow {
             include_apps: cfg.include_apps.iter().map(|a| normalize_app(a)).collect(),
             exclude_apps: cfg.exclude_apps.iter().map(|a| normalize_app(a)).collect(),
             max_ms: cfg.max_ms,
+            scope: cfg.scope,
         }
     }
 
@@ -203,6 +206,20 @@ impl super::Runtime {
         foreground.is_valid() && foreground.pid == self.platform.focus.pid()
     }
 
+    /// `ime_on` の対象の窓か。既定は観測の無い窓（実測学習で降格された窓）だけ。`scope = all` なら読める窓も含める。
+    /// TSF ネイティブの窓（`FOCUS_RESYNC` が最初の打鍵を取り込み口で扱う）と入力中継ツールの窓は常に対象外。
+    fn lang_detect_window_in_scope(&self) -> bool {
+        let profile = self.platform.current_app_profile();
+        if matches!(
+            profile,
+            AppImeProfile::TsfNative | AppImeProfile::InputRelay
+        ) {
+            return false;
+        }
+        self.lang_detect.scope == AutoDetectScope::All
+            || self.platform.focus.is_demoted_by_learning()
+    }
+
     /// 保持してよい窓・状態か（エピソードが**始まる**打鍵でだけ効く。進行中のエピソードの保持は変わらない）。
     ///
     /// 観測の無い窓（実測学習で降格された窓）で、belief が ON、NonText でなく、IME の変換中でない（変換中は未確定文字列に
@@ -212,7 +229,7 @@ impl super::Runtime {
             && self.lang_detect.hold_config_ok
             && self.lang_detect_focus_in_sync()
             && self.platform_state.ime.effective_open()
-            && self.platform.focus.is_demoted_by_learning()
+            && self.lang_detect_window_in_scope()
             && self.platform_state.focus.focus_kind != FocusKind::NonText
             && !crate::tsf::observer::ime_composition_active_now()
             && self
@@ -224,7 +241,7 @@ impl super::Runtime {
     fn lang_detect_write_facts(&self) -> WriteFacts {
         WriteFacts {
             belief_open: self.platform_state.ime.effective_open(),
-            unobserved_window: self.platform.focus.is_demoted_by_learning(),
+            unobserved_window: self.lang_detect_window_in_scope(),
             non_text: self.platform_state.focus.focus_kind == FocusKind::NonText,
             focus_in_sync: self.lang_detect_focus_in_sync(),
             explicit_off_intent: self.platform_state.ime.explicit_intent() == Some(false),

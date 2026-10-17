@@ -4429,6 +4429,22 @@ const AUTO_DETECT_MODES: [(awase::config::AutoDetectMode, &str, &str); 3] = [
     ),
 ];
 
+/// `[auto_detect]` の対象の窓の範囲の選択肢（設定画面の表示順）。
+const AUTO_DETECT_SCOPES: [(awase::config::AutoDetectScope, &str, &str); 2] = [
+    (
+        awase::config::AutoDetectScope::Unobserved,
+        "IME の状態が読めない窓だけ（既定）",
+        "窓内の IME 状態が読めないと学習された窓（一太郎など）だけを対象にします。",
+    ),
+    (
+        awase::config::AutoDetectScope::All,
+        "すべての窓（利用者の責任）",
+        "IME の状態が読める窓（Chrome など）も対象にします。読める窓では awase の想定が実際の状態に\n\
+         追随するため、判定の書き込みと食い違うことがあります（drift correction が戻すなど）。\n\
+         TSF ネイティブの窓と入力中継ツールの窓は、この設定でも対象外です。",
+    ),
+];
+
 /// プロセス名の一覧を、設定画面の 1 行の入力欄に出す文字列にする（カンマ区切り）。
 fn apps_to_text(apps: &[String]) -> String {
     apps.join(", ")
@@ -4475,6 +4491,32 @@ fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
             egui::Color32::from_rgb(200, 120, 0),
             "実機での確認が済んでいない機能です。不具合があれば「記録のみ」に戻してください。\n\
              Space を親指キーにした構成や、ADR-255 の遅いルールがある構成では、打鍵を保持しません。",
+        );
+    }
+    let selected_scope = AUTO_DETECT_SCOPES
+        .iter()
+        .find(|(scope, _, _)| *scope == cfg.scope)
+        .map_or("（不明）", |(_, label, _)| *label);
+    ui.add_enabled_ui(cfg.mode == awase::config::AutoDetectMode::ImeOn, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("対象の窓:");
+            egui::ComboBox::from_id_salt("auto_detect_scope")
+                .selected_text(selected_scope)
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    for (scope, label, hover) in AUTO_DETECT_SCOPES {
+                        ui.selectable_value(&mut cfg.scope, scope, label)
+                            .on_hover_text(hover);
+                    }
+                });
+        });
+    });
+    if cfg.mode == awase::config::AutoDetectMode::ImeOn
+        && cfg.scope == awase::config::AutoDetectScope::All
+    {
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 120, 0),
+            "すべての窓を対象にしています。IME の状態が読める窓では、判定の書き込みが awase の想定と食い違うことがあります。",
         );
     }
     ui.add_space(4.0);
@@ -7145,11 +7187,11 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        AUTO_DETECT_MODES, CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction,
-        NewComboBuf, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue,
-        apply_adr192_recommended_replacement, apps_to_text, auto_detect_section, empty_yab_layout,
-        find_config_path, has_adr192_warning_context, load_yab_layout, resolve_layouts_dir,
-        text_to_apps, undo_adr192_recommended_replacement,
+        AUTO_DETECT_MODES, AUTO_DETECT_SCOPES, CLIPBOARD_HISTORY_LEN, Face, KanaTable,
+        LayoutDiscardAction, NewComboBuf, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab, ValueKind,
+        YabValue, apply_adr192_recommended_replacement, apps_to_text, auto_detect_section,
+        empty_yab_layout, find_config_path, has_adr192_warning_context, load_yab_layout,
+        resolve_layouts_dir, text_to_apps, undo_adr192_recommended_replacement,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -7349,6 +7391,21 @@ mod layout_tab_repro {
             vec!["taro.exe", "chrome.exe", "wezterm.exe", "code.exe"]
         );
         assert!(text_to_apps("  ,  ").is_empty());
+    }
+
+    #[test]
+    fn auto_detect_scopes_cover_every_scope_once() {
+        use awase::config::AutoDetectScope;
+        for scope in [AutoDetectScope::Unobserved, AutoDetectScope::All] {
+            assert_eq!(
+                AUTO_DETECT_SCOPES
+                    .iter()
+                    .filter(|(s, _, _)| *s == scope)
+                    .count(),
+                1,
+                "{scope:?} は設定画面の選択肢に 1 回だけ出す"
+            );
+        }
     }
 
     #[test]

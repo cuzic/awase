@@ -538,6 +538,18 @@ pub enum AutoDetectMode {
     ImeOn,
 }
 
+/// `ime_on` の対象にする窓の範囲（ADR-263）。**既定より広い範囲は利用者の責任**で選ぶ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoDetectScope {
+    /// 窓内の IME 状態が読めないと実測学習された窓（一太郎など）だけ。既定。
+    #[default]
+    Unobserved,
+    /// 読める窓（Chrome 等）も対象にする。読める窓では awase の belief が実状態に追随するので、判定の書き込みと
+    /// 食い違うことがある（drift correction が戻すなど）。TSF ネイティブの窓と入力中継ツールの窓は常に対象外。
+    All,
+}
+
 /// 窓切替直後・長い無操作のあとの最初の打鍵から日本語/英数を判定する機能の設定（ADR-263）。
 ///
 /// `observe` は影の判定とログだけ（挙動を変えない）。`ime_on` は打鍵の保持と、日本語と判定したときのひらがなキー 1 回の送信まで行う。
@@ -545,6 +557,8 @@ pub enum AutoDetectMode {
 #[serde(default)]
 pub struct AutoDetectConfig {
     pub mode: AutoDetectMode,
+    /// `ime_on` の対象にする窓の範囲。既定は観測の無い窓だけ。`all` は利用者の責任で選ぶ。
+    pub scope: AutoDetectScope,
     /// 空なら観測の無い窓に限らずすべての窓で影の判定を行う。指定した場合はそのプロセス名の窓だけ（将来の `ime_on` 用。`observe` では無視）。
     pub include_apps: Vec<String>,
     /// 対象外にするプロセス名（将来の `ime_on` 用。`observe` では無視）。
@@ -567,6 +581,7 @@ impl Default for AutoDetectConfig {
     fn default() -> Self {
         Self {
             mode: AutoDetectMode::default(),
+            scope: AutoDetectScope::default(),
             include_apps: Vec::new(),
             exclude_apps: Vec::new(),
             max_keys: 7,
@@ -3296,6 +3311,7 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
         // [auto_detect] が無くても既定で影の判定（observe。挙動を変えない）が有効。ADR-263 PR 2a。
         let config: AppConfig = toml::from_str("[general]\n").unwrap();
         assert_eq!(config.auto_detect.mode, AutoDetectMode::Observe);
+        assert_eq!(config.auto_detect.scope, AutoDetectScope::Unobserved);
         assert_eq!(config.auto_detect.max_keys, 7);
         assert_eq!(config.auto_detect.max_ms, 2500);
         assert!((config.auto_detect.ja_threshold - 4.0).abs() < f64::EPSILON);
@@ -3307,11 +3323,13 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
         let toml_str = r#"
 [auto_detect]
 mode = "off"
+scope = "all"
 idle_ms = 5000
 en_threshold = 6.0
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.auto_detect.mode, AutoDetectMode::Off);
+        assert_eq!(config.auto_detect.scope, AutoDetectScope::All);
         assert_eq!(config.auto_detect.idle_ms, 5000);
         assert!((config.auto_detect.en_threshold - 6.0).abs() < f64::EPSILON);
         // 指定しなかった項目は既定のまま
