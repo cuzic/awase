@@ -61,7 +61,7 @@ related_adr:
 | **観測の無い窓の近似(10 状態)** | 自前の TSF text store の窓。`assoc` = 窓の IMM コンテキストなし、`disable` = スレッドで `ImmDisableIME`(IMM の読みは常に open=0/conv=0)。MS-IME 3 状態 × 2 + GJI 2 状態 × 2 の**全 10 状態で、`IsSelected` の項目が窓の実状態と一致**した。実状態は、キーで状態を作り、打った出力で読んだ(MS-IME: ひらがな→「か」・カタカナ→「カ」・英数→何も入らない、GJI: ON→「か」・OFF→何も入らない) |
 | **選んだ項目の反映**(run 39079041821。awase なし・あり × 通常の窓・観測の無い窓の近似 × MS-IME・GJI の 8 通り) | 項目を押すと**実際にモードが切り替わった**。再度メニューを開いて読むと、MS-IME は `Item 101`→`103`、GJI は `Item 11`→`10`(Direct Input)で、8 通りすべてで押した項目が選ばれていた |
 | **選んだ項目の検知** | **UI Automation の `InvokePattern.InvokedEvent` は 0 件**(押しても発火しなかった)で、検知に使えない。閉じたあとのメニューは読めない。代わりの候補は、メニュー窓への `EVENT_OBJECT_FOCUS`(`idChild`=ハイライトされた項目)の、閉じる直前の値(未確認。FOCUS 自体はメニュー窓に対して発火した) |
-| **awase を起動した状態の影響**(同上、awase は debug・`RUST_LOG=debug`・`cache.toml` で窓の IMM 能力を works/unavailable に固定) | ①**メニューを開いた瞬間には awase は反応しない**。②**項目にマウスが乗った時点(開いて約 2.2 秒後)で、メニュー窓(クラス `#32768`)への `EVENT_OBJECT_FOCUS` を awase が「窓の切替」として拾い**、`[focus-sync] hwnd=… class="#32768"`・`[tsf-gate] focus change → PendingWarmup (held cleared)`(保持キーの解除)・メニュー窓への UIA 分類(`NonText`)が走った。③**選択のあとの belief の動き**: GJI の通常の窓では `true→false`(選んだ Direct Input と一致)。**GJI の観測の無い窓の近似では `false→true`(実状態は Direct Input=閉なので逆向き)**、MS-IME の 2 通りでは変化なし。②の focus 追跡の反応が原因か、通常の定期観測の結果かは**切り分けていない**(メニューを開かない対照が無い) |
+| **awase を起動した状態の影響**(同上、awase は debug・`RUST_LOG=debug`・`cache.toml` で窓の IMM 能力を works/unavailable に固定) | ①**メニューを開いた瞬間には awase は反応しない**。②**開いて約 2.1〜2.2 秒後に、メニュー窓(クラス `#32768`)への `EVENT_OBJECT_FOCUS` が出て、awase が「窓の切替」として拾い**(**項目を押す約 1 秒前で、4 通りとも同じ遅れ**。ホバー・選択が原因とは言えない。カーソルは右クリックした位置=メニューの角に残っていた。原因〔メニュー自身の遅れたフォーカス通知か、UI Automation の読み取りか、カーソル下の項目の強調か〕は未切り分け)、`[focus-sync] hwnd=… class="#32768"`・`[tsf-gate] focus change → PendingWarmup (held cleared)`(保持キーの解除)・メニュー窓への UIA 分類(`NonText`)が走った。③**選択のあとの belief の動き**: GJI の通常の窓では `true→false`(選んだ Direct Input と一致)。**GJI の観測の無い窓の近似では `false→true`(実状態は Direct Input=閉なので逆向き)**、MS-IME の 2 通りでは変化なし。②の focus 追跡の反応が原因か、通常の定期観測の結果かは**切り分けていない**(メニューを開かない対照が無い) |
 | 言語依存 | 項目名は表示言語で変わるが、**`AutomationId` は変わらない**(IME ごとに別の体系) |
 
 MS-IME の項目数は測定により 17 件と 18 件があった(状態や表示によって、モード以外の項目が増減する)。項目の判定は件数でなく `AutomationId` で行う。
@@ -127,7 +127,7 @@ ID は実測した版(Windows Server 2025 build 26100 の MS-IME、CI の GJI)�
 
 ### 決定 8: メニューの間は、メニュー窓へのフォーカスを窓の切替として扱わない(M0-2 の実測から)
 
-awase の focus 追跡は、メニュー窓(クラス `#32768`)への `EVENT_OBJECT_FOCUS` を窓の切替として拾い、`tsf-gate` の `PendingWarmup`(保持キーの解除)や UIA 分類を走らせる(上の実測)。
+awase の focus 追跡は、メニューを開いて約 2 秒後に出るメニュー窓(クラス `#32768`)への `EVENT_OBJECT_FOCUS` を窓の切替として拾い、`tsf-gate` の `PendingWarmup`(保持キーの解除)や UIA 分類を走らせる(上の実測)。
 **`MENUSTART`〜`MENUEND`(同じスレッド)の間は、`#32768` のクラスの窓へのフォーカスを、`focus-sync`・`HwndCache` の保存/復元・`tsf-gate` の遷移の対象にしない**(メニューの間は元の窓にフォーカスが残っているものとして扱う)。
 これが無いと、メニューを開く操作(証拠を取る操作)自体が、belief・保持キー・TSF の状態を乱す。`focus_tracking.rs` 系は再発ファミリー(`fix-requires-evidence`)なので、実装時は golden か journal のテストを足す。
 **選択のあとの belief の逆向きの動き**(GJI の観測の無い窓の近似で `false→true`)は、原因が未切り分け(メニューを開かない対照が要る。M0-2)。本案の belief 配線(決定 5)の前に、メニューの証拠が awase 自身の定期観測と**食い違わない/上書きする**順序を決める必要がある。
