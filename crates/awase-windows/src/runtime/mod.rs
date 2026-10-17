@@ -10,6 +10,7 @@ mod ime_refresh;
 mod key_pipeline;
 mod lang_check;
 mod lang_detect_shadow;
+pub(crate) use lang_detect_shadow::LangDetectIntake;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;

@@ -132,6 +132,11 @@ pub struct LangDetectRecord {
     pub profile: &'static str,
     /// 判定時点の belief（IME が開いているか）。不明なら `None`
     pub belief_open: Option<bool>,
+    /// 判定に応じた動作（`none` / `hiragana-sent` / `skipped-belief-off` / `skipped-observed-window` /
+    /// `skipped-modifier-held` / `skipped-send-failed`）。`observe` では常に `none`
+    pub action: &'static str,
+    /// 保持中に前面窓が変わって捨てた打鍵の数
+    pub discarded: u32,
 }
 
 /// shadow IME トグル(`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` ほか)の判断の段(ADR-250 段階 4-1)。
@@ -1333,6 +1338,8 @@ impl JournalEntry {
                     duration_ms = record.duration_ms,
                     profile = record.profile,
                     belief_open = record.belief_open,
+                    action = record.action,
+                    discarded = record.discarded,
                     "[lang-detect]"
                 );
             }
@@ -2613,11 +2620,14 @@ mod tests {
                 duration_ms: 120,
                 profile: "imm32-unavailable",
                 belief_open: Some(true),
+                action: "hiragana-sent",
+                discarded: 0,
             },
         });
         let json = j.to_json().unwrap();
         assert!(json.contains("LangDetect"));
         assert!(json.contains("thumb-overlap"));
         assert!(json.contains("llr_trace"));
+        assert!(json.contains("hiragana-sent"));
     }
 }
