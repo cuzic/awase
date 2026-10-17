@@ -14,32 +14,42 @@
 //! 結果は次の 4 つ。**「日本語でない」と「決められない」は殻では同じ扱い**（保持した打鍵を今までと同じ流れに戻す）
 //! なので、`en_threshold` は小さめ（英数側を早く流す）、`ja_threshold` は大きめ（日本語を慎重に）の非対称にする。
 //!
+//! 尤度比の単位は自然対数（nats）。背景の一様分布の台 `N_keys` は、配列の未シフト面（`YabFace`）で定義されているキーの数
+//! （`nicola.yab` で 44）。仮名 n-gram の表は `score = log10(最大を 1 とした相対頻度)` の形（`data/ngram_hiragana`）を前提にする。
+//!
+//! 呼び出し側（殻）の約束: 判定に使う文字キーの Down を渡したら、その Up も必ず渡す（渡し損ねると、その文字が
+//! 押下中のまま残り、後の親指の単独タップが重なりとして成立する）。Space を親指キーにした構成では
+//! `ThumbOverlap::Disabled` を選ぶ（型で選ばせ、忘れないようにしている）。
+//!
 //! このモジュールは OS・時刻・生の VK を持たない。入力は分類済みの `PhysicalPos` だけ（ADR-019）。
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::engine::fsm_types::ThumbSide;
 use crate::ngram::NgramModel;
 use crate::scanmap::PhysicalPos;
 use crate::yab::{YabFace, YabValue};
 
-/// .yab の面の行数・列数の上限（`yab::MAX_ROWS`/`MAX_COLS` と同じ）
+/// .yab の面の行数・列数の上限（`yab::MAX_ROWS`/`MAX_COLS` の値の写し。`yab` 側を変えたらここも合わせる）
 const GRID_ROWS: u8 = 4;
 const GRID_COLS: u8 = 13;
 
-/// 親指キーの左右
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThumbSide {
-    Left,
-    Right,
+const fn thumb_index(side: ThumbSide) -> usize {
+    match side {
+        ThumbSide::Left => 0,
+        ThumbSide::Right => 1,
+    }
 }
 
-impl ThumbSide {
-    const fn index(self) -> usize {
-        match self {
-            Self::Left => 0,
-            Self::Right => 1,
-        }
-    }
+/// 親指と文字キーの重なりを日本語の証拠にするか。殻が必ず選ぶ（既定なし）。
+///
+/// Space を親指キーにした構成（`keyboard_layout = "us"` の代替）や ADR-255 の構成では、英文のロールオーバー
+/// （`e` Down→Space Down→`e` Up）でも重なりが成立するので `Disabled` にする。`Disabled` のとき親指のイベントは無視され、
+/// 日本語の確定は仮名 n-gram の尤度比だけになる（実質ほとんど確定しない。殻はエピソードごと対象外にしてよい）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThumbOverlap {
+    Enabled,
+    Disabled,
 }
 
 /// 判定器への入力（分類済みの打鍵イベント）
@@ -85,17 +95,21 @@ impl Verdict {
 /// 判定のパラメータ
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DetectParams {
-    /// この値以上で日本語と確定する（自然対数の尤度比）。大きめにして ON を慎重にする
+    /// この値以上で日本語と確定する（nats）。大きいほど ON の誤確定が減る
     pub ja_threshold: f64,
-    /// `-` この値以下で「日本語でない」とする。小さめにして英数側を早く流す
+    /// `-` この値以下で「日本語でない」とする（nats）。小さいほど英数側が早く流れるが、
+    /// 親指がまだ出ていない日本語を取り逃す（日本語の確定が減る）
     pub en_threshold: f64,
     /// 判定に使う打鍵（Down）の最大数。超えたら `Undecided`
     pub max_keys: usize,
 }
 
 impl Default for DetectParams {
-    /// 人工データのオフライン評価（2026-10-17、`ja_threshold = 4` で他言語の誤確定 0.2%、`en_threshold = 8` で
-    /// 日本語の確定 91.9%・他言語の保持は平均 2.9 打鍵）。実ジャーナルで再校正する（ADR-263 PR 2a）。
+    /// 人工データのオフライン評価（2026-10-17。出典: `research-private/v3-eval/eval7.py` と
+    /// `2026-10-17-v3-eval-first-run.md` の「第4回」）。`ja_threshold = 4` で他言語の日本語への誤確定 0.2%。
+    /// `en_threshold` ごとの（日本語の確定, 他言語の保持の平均打鍵）は 4: (79.6%, 1.9)、8: (91.9%, 2.9)、
+    /// 14: (95.1%, 4.0)、100: (98.2%, 6.7)。8 は日本語の取り逃し 8% と英数側の保持 3 打鍵弱の折り合い。
+    /// 日本語の確定のほぼ全部は親指の重なりで、尤度比は『英数側を早く流す』ために効く。実ジャーナルで再校正する（PR 2a）。
     fn default() -> Self {
         Self {
             ja_threshold: 4.0,
@@ -124,12 +138,15 @@ pub struct KanaModel {
     floor: f64,
     /// 左の文字の頻度の総和
     total: f64,
+    /// 表が使えるか（語彙が空でない）。使えないとき尤度比は計算せず、日本語を尤度だけで確定しない
+    usable: bool,
 }
 
 impl KanaModel {
     /// 仮名 n-gram の生の表と、未シフト面（`normal`）から作る。
     ///
-    /// 表が空でも作れる（その場合、仮名の尤度はすべて下限になり、日本語とは決まらない）。
+    /// 表が空でも作れるが、その場合 `usable()` が偽になり、判定器は尤度比を使わない（重なりだけで日本語を確定する）。
+    /// 空の表では 1 打鍵ごとに `+ln(N_keys)` が積まれて日本語に確定してしまうため、必ず `usable()` で分岐する。
     #[must_use]
     pub fn new(ngram: &NgramModel, normal: &YabFace) -> Self {
         let mut key_kana = FxHashMap::default();
@@ -165,6 +182,7 @@ impl KanaModel {
             min = min.min(f);
         }
         let total: f64 = left.values().sum();
+        let usable = !vocab.is_empty() && total > 0.0;
         let floor = if min.is_finite() { min * 0.1 } else { 1e-12 };
 
         Self {
@@ -176,7 +194,14 @@ impl KanaModel {
             vocab,
             floor,
             total,
+            usable,
         }
+    }
+
+    /// 仮名 n-gram の表が使えるか
+    #[must_use]
+    pub const fn usable(&self) -> bool {
+        self.usable
     }
 
     /// 1 打鍵ぶんの対数尤度比の増分 `ln P_ja(token | prev) − ln(1/N_keys)`。
@@ -196,14 +221,14 @@ impl KanaModel {
         let ja = match prev {
             Some(a) if self.vocab.contains(&a) => {
                 let listed = self.listed.get(&a).copied().unwrap_or(0) as f64;
-                let denominator =
-                    self.left.get(&a).copied().unwrap_or(0.0) + (vocab_len - listed) * self.floor;
+                let denominator = (vocab_len - listed)
+                    .mul_add(self.floor, self.left.get(&a).copied().unwrap_or(0.0));
                 let numerator = self.freq.get(&(a, token)).copied().unwrap_or(self.floor);
                 (numerator / denominator).ln()
             }
             _ => {
                 let left = self.left.get(&token).copied().unwrap_or(0.0);
-                ((left + self.floor) / (self.total + vocab_len * self.floor)).ln()
+                ((left + self.floor) / vocab_len.mul_add(self.floor, self.total)).ln()
             }
         };
         ja - background
@@ -214,9 +239,9 @@ impl KanaModel {
 ///
 /// 決まったあと（`Pending` 以外）は結果が変わらず、以降のイベントは無視される。
 #[derive(Debug)]
-pub struct EpisodeDetector<'m> {
-    model: &'m KanaModel,
+pub struct EpisodeDetector {
     params: DetectParams,
+    thumb_overlap: ThumbOverlap,
     held_chars: FxHashSet<PhysicalPos>,
     held_thumbs: [bool; 2],
     presses: usize,
@@ -225,14 +250,18 @@ pub struct EpisodeDetector<'m> {
     verdict: Verdict,
 }
 
-impl<'m> EpisodeDetector<'m> {
+impl EpisodeDetector {
+    /// 判定器を作る。`thumbs_held` はエピソードの開始前から押されていた親指（左, 右。`RawKeyEvent` の
+    /// `left/right_thumb_down_snapshot`）で、連続シフトの途中や窓切替の直前から押したままの親指の重なりを取り逃さないため。
+    /// `KanaModel` は持たず、`observe` のたびに借りる（殻が `KanaModel` と判定器を同じ構造体に持てる。
+    /// 設定のリロードでモデルが差し替わっても、進行中のエピソードが古いモデルを使い続けない）。
     #[must_use]
-    pub fn new(model: &'m KanaModel, params: DetectParams) -> Self {
+    pub fn new(params: DetectParams, thumb_overlap: ThumbOverlap, thumbs_held: [bool; 2]) -> Self {
         Self {
-            model,
             params,
+            thumb_overlap,
             held_chars: FxHashSet::default(),
-            held_thumbs: [false; 2],
+            held_thumbs: thumbs_held,
             presses: 0,
             prev: None,
             llr: 0.0,
@@ -258,50 +287,60 @@ impl<'m> EpisodeDetector<'m> {
         self.presses
     }
 
-    /// 打鍵イベントを 1 つ渡し、判定を返す。
-    pub fn observe(&mut self, event: DetectEvent) -> Verdict {
+    /// 打鍵イベントを 1 つ渡し、判定を返す。`model` は毎回同じものを渡すこと。
+    pub fn observe(&mut self, model: &KanaModel, event: DetectEvent) -> Verdict {
         if self.verdict.is_decided() {
             return self.verdict;
         }
         match event {
+            DetectEvent::ThumbDown(_) | DetectEvent::ThumbUp(_)
+                if self.thumb_overlap == ThumbOverlap::Disabled => {}
             DetectEvent::ThumbDown(side) => {
-                if !self.held_chars.is_empty() {
-                    self.verdict = Verdict::Japanese(JapaneseEvidence::ThumbOverlap);
+                if self.held_chars.is_empty() {
+                    self.held_thumbs[thumb_index(side)] = true;
                 } else {
-                    self.held_thumbs[side.index()] = true;
+                    self.verdict = Verdict::Japanese(JapaneseEvidence::ThumbOverlap);
                 }
             }
-            DetectEvent::ThumbUp(side) => self.held_thumbs[side.index()] = false,
+            DetectEvent::ThumbUp(side) => self.held_thumbs[thumb_index(side)] = false,
             DetectEvent::CharUp(pos) => {
                 self.held_chars.remove(&pos);
             }
-            DetectEvent::CharDown(pos) => self.on_char_down(pos),
+            DetectEvent::CharDown(pos) => self.on_char_down(model, pos),
         }
         self.verdict
     }
 
-    fn on_char_down(&mut self, pos: PhysicalPos) {
+    fn on_char_down(&mut self, model: &KanaModel, pos: PhysicalPos) {
         // 押したままの自動リピート（Up より前の再送）は数えない
         if !self.held_chars.insert(pos) {
             return;
         }
-        if self.held_thumbs.iter().any(|&down| down) {
+        if self.thumb_overlap == ThumbOverlap::Enabled && self.held_thumbs.iter().any(|&down| down)
+        {
             self.verdict = Verdict::Japanese(JapaneseEvidence::ThumbOverlap);
             return;
         }
         self.presses += 1;
-        self.llr += self.model.delta(self.prev, pos);
-        self.prev = self.model.key_kana.get(&pos).copied();
+        if model.usable {
+            self.llr += model.delta(self.prev, pos);
+            self.prev = model.key_kana.get(&pos).copied();
+        }
 
-        self.verdict = if self.llr >= self.params.ja_threshold {
-            Verdict::Japanese(JapaneseEvidence::Likelihood)
+        let by_likelihood = if self.llr >= self.params.ja_threshold {
+            Some(Verdict::Japanese(JapaneseEvidence::Likelihood))
         } else if self.llr <= -self.params.en_threshold {
-            Verdict::NotJapanese
-        } else if self.presses >= self.params.max_keys {
+            Some(Verdict::NotJapanese)
+        } else {
+            None
+        }
+        // 表が使えないときは尤度比を積んでいないので、閾値が 0 以下でも尤度では決めない
+        .filter(|_| model.usable);
+        self.verdict = by_likelihood.unwrap_or(if self.presses >= self.params.max_keys {
             Verdict::Undecided
         } else {
             Verdict::Pending
-        };
+        });
     }
 }
 
@@ -350,13 +389,14 @@ mod tests {
     #[test]
     fn thumb_down_while_char_held_is_overlap() {
         let model = tiny_model();
-        let mut d = EpisodeDetector::new(&model, params(100.0, 100.0, 7));
+        let mut d =
+            EpisodeDetector::new(params(100.0, 100.0, 7), ThumbOverlap::Enabled, [false; 2]);
         assert_eq!(
-            d.observe(DetectEvent::CharDown(pos(1, 1))),
+            d.observe(&model, DetectEvent::CharDown(pos(1, 1))),
             Verdict::Pending
         );
         assert_eq!(
-            d.observe(DetectEvent::ThumbDown(ThumbSide::Left)),
+            d.observe(&model, DetectEvent::ThumbDown(ThumbSide::Left)),
             Verdict::Japanese(JapaneseEvidence::ThumbOverlap)
         );
     }
@@ -364,13 +404,14 @@ mod tests {
     #[test]
     fn char_down_while_thumb_held_is_overlap() {
         let model = tiny_model();
-        let mut d = EpisodeDetector::new(&model, params(100.0, 100.0, 7));
+        let mut d =
+            EpisodeDetector::new(params(100.0, 100.0, 7), ThumbOverlap::Enabled, [false; 2]);
         assert_eq!(
-            d.observe(DetectEvent::ThumbDown(ThumbSide::Right)),
+            d.observe(&model, DetectEvent::ThumbDown(ThumbSide::Right)),
             Verdict::Pending
         );
         assert_eq!(
-            d.observe(DetectEvent::CharDown(pos(1, 2))),
+            d.observe(&model, DetectEvent::CharDown(pos(1, 2))),
             Verdict::Japanese(JapaneseEvidence::ThumbOverlap)
         );
     }
@@ -378,11 +419,12 @@ mod tests {
     #[test]
     fn thumb_tap_alone_is_not_evidence() {
         let model = tiny_model();
-        let mut d = EpisodeDetector::new(&model, params(100.0, 100.0, 7));
-        d.observe(DetectEvent::ThumbDown(ThumbSide::Left));
-        d.observe(DetectEvent::ThumbUp(ThumbSide::Left));
+        let mut d =
+            EpisodeDetector::new(params(100.0, 100.0, 7), ThumbOverlap::Enabled, [false; 2]);
+        d.observe(&model, DetectEvent::ThumbDown(ThumbSide::Left));
+        d.observe(&model, DetectEvent::ThumbUp(ThumbSide::Left));
         assert_eq!(
-            d.observe(DetectEvent::CharDown(pos(1, 1))),
+            d.observe(&model, DetectEvent::CharDown(pos(1, 1))),
             Verdict::Pending
         );
     }
@@ -390,11 +432,12 @@ mod tests {
     #[test]
     fn char_released_before_thumb_is_not_overlap() {
         let model = tiny_model();
-        let mut d = EpisodeDetector::new(&model, params(100.0, 100.0, 7));
-        d.observe(DetectEvent::CharDown(pos(1, 1)));
-        d.observe(DetectEvent::CharUp(pos(1, 1)));
+        let mut d =
+            EpisodeDetector::new(params(100.0, 100.0, 7), ThumbOverlap::Enabled, [false; 2]);
+        d.observe(&model, DetectEvent::CharDown(pos(1, 1)));
+        d.observe(&model, DetectEvent::CharUp(pos(1, 1)));
         assert_eq!(
-            d.observe(DetectEvent::ThumbDown(ThumbSide::Left)),
+            d.observe(&model, DetectEvent::ThumbDown(ThumbSide::Left)),
             Verdict::Pending
         );
     }
@@ -402,10 +445,11 @@ mod tests {
     #[test]
     fn auto_repeat_is_not_counted() {
         let model = tiny_model();
-        let mut d = EpisodeDetector::new(&model, params(100.0, 100.0, 7));
-        d.observe(DetectEvent::CharDown(pos(1, 1)));
-        d.observe(DetectEvent::CharDown(pos(1, 1)));
-        d.observe(DetectEvent::CharDown(pos(1, 1)));
+        let mut d =
+            EpisodeDetector::new(params(100.0, 100.0, 7), ThumbOverlap::Enabled, [false; 2]);
+        d.observe(&model, DetectEvent::CharDown(pos(1, 1)));
+        d.observe(&model, DetectEvent::CharDown(pos(1, 1)));
+        d.observe(&model, DetectEvent::CharDown(pos(1, 1)));
         assert_eq!(d.presses(), 1);
     }
 
@@ -413,11 +457,11 @@ mod tests {
     fn natural_kana_sequence_reaches_japanese_by_likelihood() {
         let model = tiny_model();
         // か→た→こ→さ は表で自然。閾値を低くして、尤度だけで日本語に届くことを確かめる。
-        let mut d = EpisodeDetector::new(&model, params(1.0, 100.0, 7));
+        let mut d = EpisodeDetector::new(params(1.0, 100.0, 7), ThumbOverlap::Enabled, [false; 2]);
         let mut last = Verdict::Pending;
         for col in 1..=4 {
-            last = d.observe(DetectEvent::CharDown(pos(1, col)));
-            d.observe(DetectEvent::CharUp(pos(1, col)));
+            last = d.observe(&model, DetectEvent::CharDown(pos(1, col)));
+            d.observe(&model, DetectEvent::CharUp(pos(1, col)));
         }
         assert_eq!(last, Verdict::Japanese(JapaneseEvidence::Likelihood));
         assert!(d.llr() >= 1.0);
@@ -427,11 +471,11 @@ mod tests {
     fn unnatural_sequence_becomes_not_japanese() {
         let model = tiny_model();
         // 記号キー(0,0)は仮名に読めず、尤度が下限になる。en_threshold を低くして早く「日本語でない」になる。
-        let mut d = EpisodeDetector::new(&model, params(100.0, 5.0, 7));
+        let mut d = EpisodeDetector::new(params(100.0, 5.0, 7), ThumbOverlap::Enabled, [false; 2]);
         let mut last = Verdict::Pending;
         for _ in 0..3 {
-            last = d.observe(DetectEvent::CharDown(pos(0, 0)));
-            d.observe(DetectEvent::CharUp(pos(0, 0)));
+            last = d.observe(&model, DetectEvent::CharDown(pos(0, 0)));
+            d.observe(&model, DetectEvent::CharUp(pos(0, 0)));
         }
         assert_eq!(last, Verdict::NotJapanese);
     }
@@ -439,11 +483,12 @@ mod tests {
     #[test]
     fn max_keys_without_a_decision_is_undecided() {
         let model = tiny_model();
-        let mut d = EpisodeDetector::new(&model, params(1000.0, 1000.0, 3));
+        let mut d =
+            EpisodeDetector::new(params(1000.0, 1000.0, 3), ThumbOverlap::Enabled, [false; 2]);
         let mut last = Verdict::Pending;
         for col in 1..=3 {
-            last = d.observe(DetectEvent::CharDown(pos(1, col)));
-            d.observe(DetectEvent::CharUp(pos(1, col)));
+            last = d.observe(&model, DetectEvent::CharDown(pos(1, col)));
+            d.observe(&model, DetectEvent::CharUp(pos(1, col)));
         }
         assert_eq!(last, Verdict::Undecided);
     }
@@ -451,37 +496,84 @@ mod tests {
     #[test]
     fn verdict_is_sticky_after_a_decision() {
         let model = tiny_model();
-        let mut d = EpisodeDetector::new(&model, params(100.0, 100.0, 7));
-        d.observe(DetectEvent::CharDown(pos(1, 1)));
-        let decided = d.observe(DetectEvent::ThumbDown(ThumbSide::Left));
+        let mut d =
+            EpisodeDetector::new(params(100.0, 100.0, 7), ThumbOverlap::Enabled, [false; 2]);
+        d.observe(&model, DetectEvent::CharDown(pos(1, 1)));
+        let decided = d.observe(&model, DetectEvent::ThumbDown(ThumbSide::Left));
         assert_eq!(
-            d.observe(DetectEvent::ThumbUp(ThumbSide::Left)),
+            d.observe(&model, DetectEvent::ThumbUp(ThumbSide::Left)),
             decided,
             "決まったあとはイベントを無視する"
         );
     }
 
     #[test]
-    fn empty_ngram_never_decides_japanese_by_likelihood() {
+    fn empty_ngram_is_unusable_and_never_decides_japanese_by_likelihood() {
+        // 面は複数キー（N>=2）にする。1 キーだと背景の増分が 0 になり、空の表のバグを見逃す。
         let ngram = NgramModel::new(0, 0, 0);
         let mut face = YabFace::new();
-        face.insert(
-            pos(1, 1),
-            YabValue::Romaji {
-                romaji: "ka".to_string(),
-                kana: Some('か'),
-            },
-        );
-        let model = KanaModel::new(&ngram, &face);
-        let mut d = EpisodeDetector::new(&model, DetectParams::default());
-        for _ in 0..3 {
-            d.observe(DetectEvent::CharDown(pos(1, 1)));
-            d.observe(DetectEvent::CharUp(pos(1, 1)));
+        for (col, (romaji, kana)) in [("ka", 'か'), ("ta", 'た'), ("ko", 'こ')]
+            .into_iter()
+            .enumerate()
+        {
+            face.insert(
+                pos(1, u8::try_from(col + 1).expect("col")),
+                YabValue::Romaji {
+                    romaji: romaji.to_string(),
+                    kana: Some(kana),
+                },
+            );
         }
-        assert!(!matches!(
-            d.verdict(),
-            Verdict::Japanese(JapaneseEvidence::Likelihood)
-        ));
+        let model = KanaModel::new(&ngram, &face);
+        assert!(!model.usable());
+        let mut d =
+            EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
+        let mut last = Verdict::Pending;
+        for col in 1..=3 {
+            last = d.observe(&model, DetectEvent::CharDown(pos(1, col)));
+            d.observe(&model, DetectEvent::CharUp(pos(1, col)));
+            assert!(
+                !matches!(last, Verdict::Japanese(_)),
+                "表が空なのに日本語と確定した（{col} 打鍵目）"
+            );
+        }
+        assert!(
+            d.llr().abs() < f64::EPSILON,
+            "表が使えないとき尤度比は積まない"
+        );
+        // max_keys（7）まで見ても尤度では決まらず、重なりだけが日本語の根拠になる。
+        assert_eq!(last, Verdict::Pending);
+    }
+
+    #[test]
+    fn disabled_thumb_overlap_ignores_thumb_events() {
+        let model = tiny_model();
+        let mut d =
+            EpisodeDetector::new(params(100.0, 100.0, 7), ThumbOverlap::Disabled, [false; 2]);
+        d.observe(&model, DetectEvent::CharDown(pos(1, 1)));
+        assert_eq!(
+            d.observe(&model, DetectEvent::ThumbDown(ThumbSide::Left)),
+            Verdict::Pending,
+            "Space を親指にした構成では重なりを証拠にしない"
+        );
+        assert_eq!(
+            d.observe(&model, DetectEvent::CharDown(pos(1, 2))),
+            Verdict::Pending
+        );
+    }
+
+    #[test]
+    fn thumb_held_before_the_episode_counts_as_overlap() {
+        let model = tiny_model();
+        let mut d = EpisodeDetector::new(
+            params(100.0, 100.0, 7),
+            ThumbOverlap::Enabled,
+            [true, false],
+        );
+        assert_eq!(
+            d.observe(&model, DetectEvent::CharDown(pos(1, 1))),
+            Verdict::Japanese(JapaneseEvidence::ThumbOverlap)
+        );
     }
 
     // ---- 実データ（data/ngram_hiragana.csv.gz と layout/nicola.yab）での回帰 ----
@@ -510,10 +602,11 @@ mod tests {
     }
 
     fn run(model: &KanaModel, text: &str) -> (Verdict, usize) {
-        let mut d = EpisodeDetector::new(model, DetectParams::default());
+        let mut d =
+            EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
         for c in text.chars() {
-            d.observe(DetectEvent::CharDown(qwerty(c)));
-            d.observe(DetectEvent::CharUp(qwerty(c)));
+            d.observe(model, DetectEvent::CharDown(qwerty(c)));
+            d.observe(model, DetectEvent::CharUp(qwerty(c)));
             if d.verdict().is_decided() {
                 break;
             }
@@ -542,9 +635,9 @@ mod tests {
     #[test]
     fn english_code_is_released_early_as_not_japanese() {
         let model = real_model();
-        // 「thequickbrown」は 4 打鍵目までに尤度が大きく下がる（評価: -9.3, -11.5, -44.8）。7 打鍵を待たずに解放できる。
+        // 「thequickbrown」は 2 打鍵目で尤度比が -9.3（1 打鍵目 -2.2）となり、en_threshold = 8 を超える。7 打鍵を待たずに解放できる。
         let (verdict, presses) = run(&model, "thequickbrown");
         assert_eq!(verdict, Verdict::NotJapanese);
-        assert!(presses <= 4, "保持が長すぎる: {presses} 打鍵");
+        assert!(presses <= 3, "保持が長すぎる: {presses} 打鍵");
     }
 }
