@@ -3727,12 +3727,13 @@ fn applied_mirror_on_focus_goes_through_the_plan_at_all_three_sites() {
     );
 }
 
-/// ADR-263 PR 2b: 日本語と判定したときのひらがなキー（`VK_DBE_HIRAGANA`）の送信は 1 箇所だけで、送る前に
-/// 修飾キー（Alt/Win。Alt 中の合成かなキーは JIS かな入力への切替に化ける）・belief ON・観測の無い窓を確かめる。
-/// 条件を確かめずに送ると、実 IME が OFF の窓や Alt+Tab の直後に、モードキーがキーボード自体の状態を壊す
+/// ADR-263 PR 2b: 日本語と判定したときのひらがなキー（`VK_DBE_HIRAGANA`）の送信は 1 箇所だけで、送る前に純粋な判断
+/// `hiragana_write_skip_reason`（belief ON・観測の無い窓・NonText でない・フォーカス追跡が前面窓に追いついている・
+/// 明示 OFF の意図が無い・Alt/Win が押されていない）を通し、送った後に `on_ime_applied` と GjiFsm の Reopen を行う。
+/// 判断を通さずに送ると、実 IME が OFF の窓や Alt+Tab の直後に、モードキーがキーボード自体の状態を壊す
 /// （BUG-008・BUG-015 追補7・`kp_restore_kana_from_half_width` と同じハザード）。
 #[test]
-fn lang_detect_hiragana_write_checks_modifier_belief_and_window_first() {
+fn lang_detect_hiragana_write_goes_through_the_gate_and_syncs_after() {
     let src_full = read_crate_file("src/runtime/lang_detect_shadow.rs");
     let src = production_code_only(&src_full);
     let calls: Vec<usize> = src
@@ -3741,16 +3742,27 @@ fn lang_detect_hiragana_write_checks_modifier_belief_and_window_first() {
         .collect();
     assert_eq!(calls.len(), 1, "ひらがなキーの送信は 1 箇所だけ");
     let head = &src[..calls[0]];
+    let tail = &src[calls[0]..];
+    assert!(
+        head.contains("hiragana_write_skip_reason(self.lang_detect_write_facts())"),
+        "ひらがなキーの送信の前に純粋な判断 `hiragana_write_skip_reason` を通すこと（ADR-263 D5）"
+    );
     for need in [
         "ime_mode_key_injection_blocked_by_modifier()",
         "effective_open()",
         "is_demoted_by_learning()",
+        "explicit_intent()",
+        "lang_detect_focus_in_sync()",
     ] {
         assert!(
-            head.contains(need),
-            "ひらがなキーの送信の前に `{need}` の確認が必要（ADR-263 D5）"
+            src.contains(need),
+            "ひらがなキーの送信の前提 `{need}` を集めること（ADR-263 D5）"
         );
     }
+    assert!(
+        tail.contains("on_ime_applied(") && tail.contains("ReopenSource::LangDetect"),
+        "送った後に `on_ime_applied` と GjiFsm の Reopen（cold 同期）を行うこと"
+    );
 }
 
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。

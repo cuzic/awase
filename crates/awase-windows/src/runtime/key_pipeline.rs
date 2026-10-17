@@ -1864,7 +1864,10 @@ impl Runtime {
     ///
     /// 発火は「GjiFsm 戦略のとき（`f2_warmup_owned`、種別推測ではなく戦略の実体。INV-42）」かつ
     /// 候補窓が不可視のときだけ（`reopen_obligation`）。`GjiFsm` 側も `OnCold`/`OnComposing` では何もしない。
-    fn kp_reopen_gji_fsm(&mut self, source: crate::state::gji_direct_mechanism::ReopenSource) {
+    pub(super) fn kp_reopen_gji_fsm(
+        &mut self,
+        source: crate::state::gji_direct_mechanism::ReopenSource,
+    ) {
         if !self.platform.output.f2_warmup_owned() {
             return;
         }

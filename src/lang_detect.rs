@@ -539,6 +539,20 @@ impl EpisodeTracker {
         self.active.is_some()
     }
 
+    /// 進行中のエピソードが始まった前面窓の識別子
+    #[must_use]
+    pub fn active_scope(&self) -> Option<u64> {
+        self.active.as_ref().map(|a| a.scope)
+    }
+
+    /// 進行中のエピソードの期限の時刻（開始 + `max_ms`）
+    #[must_use]
+    pub fn active_deadline_ms(&self) -> Option<u64> {
+        self.active
+            .as_ref()
+            .map(|a| a.started_ms.saturating_add(self.cfg.max_ms))
+    }
+
     /// 進行中のエピソードを、期限（タイマー）などの外部の理由で閉じる。
     pub fn force_close(&mut self, stop: StopReason, now_ms: u64) -> Option<EpisodeOutcome> {
         self.finish(stop, now_ms)
@@ -753,16 +767,71 @@ impl<T> HoldController<T> {
         out
     }
 
-    /// 期限のタイマーが発火した。保持中のエピソードを閉じて、保持した打鍵を解放する。
-    pub fn on_timer(&mut self, now_ms: u64) -> HoldStep<T> {
+    /// 期限のタイマーが発火した。保持中のエピソードを閉じる。`scope` は今の前面窓の識別子。
+    ///
+    /// 前面窓が保持の開始時と違えば（マウスで窓を変えたあとに次の打鍵が来なかった場合）、保持した打鍵は**捨てる**
+    /// （元の窓の打鍵が新しい窓へ出る誤送信を避ける）。同じなら解放する。
+    pub fn on_timer(&mut self, scope: u64) -> HoldStep<T> {
         let mut out = HoldStep::empty();
-        if let Some(outcome) = self.tracker.force_close(StopReason::Timeout, now_ms) {
-            out.release.append(&mut self.held);
+        let deadline = self.tracker.active_deadline_ms().unwrap_or(0);
+        let Some(started_scope) = self.tracker.active_scope() else {
+            self.episode_live = false;
+            self.holding = false;
+            return out;
+        };
+        let (stop, discard) = if started_scope == scope {
+            (StopReason::Timeout, false)
+        } else {
+            (StopReason::WindowChanged, true)
+        };
+        if let Some(outcome) = self.tracker.force_close(stop, deadline) {
+            if discard {
+                out.discarded += self.held.len();
+                self.held.clear();
+            } else {
+                out.release.append(&mut self.held);
+            }
             out.outcomes.push(outcome);
         }
         self.episode_live = false;
         self.holding = false;
         out
+    }
+}
+
+/// ひらがなキーを送ってよいかの判断に使う事実（殻が集める）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // 独立した前提条件を 1:1 で表している
+pub struct WriteFacts {
+    /// belief が IME ON
+    pub belief_open: bool,
+    /// 観測の無い窓（実測学習で降格された窓）
+    pub unobserved_window: bool,
+    /// NonText（タスクバー等）
+    pub non_text: bool,
+    /// 前面窓と awase のフォーカス追跡が同じプロセスを指している（Alt+Tab 直後は追跡が遅れる）
+    pub focus_in_sync: bool,
+    /// 利用者が直近に明示的に IME OFF を選んでいる（その意図を尊重して書かない）
+    pub explicit_off_intent: bool,
+    /// Alt/Win が押されている（Alt 中の合成かなキーは JIS かな入力への切替に化ける。BUG-008）
+    pub modifier_held: bool,
+}
+
+/// ひらがなキーを送れない理由（送ってよければ `None`）。判断の順序が優先順位。純粋。
+#[must_use]
+pub const fn hiragana_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
+    if !f.belief_open {
+        Some("skipped-belief-off")
+    } else if !f.unobserved_window || f.non_text {
+        Some("skipped-observed-window")
+    } else if !f.focus_in_sync {
+        Some("skipped-focus-lag")
+    } else if f.explicit_off_intent {
+        Some("skipped-explicit-off")
+    } else if f.modifier_held {
+        Some("skipped-modifier-held")
+    } else {
+        None
     }
 }
 
@@ -1167,8 +1236,10 @@ mod tests {
         let s1 = c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
         assert!(s1.pass.is_none() && s1.release.is_empty());
         assert!(s1.holding && s1.started_holding);
-        let s2 = c.on_key(&model, key(KeyRole::Char(pos(1, 1)), false, 15), 2, 1, true);
+        // 修飾キー自身のイベントも保持列に入る（順序を保つため）。エピソードには影響しない。
+        let s2 = c.on_key(&model, key(KeyRole::Modifier, true, 15), 2, 1, true);
         assert!(s2.pass.is_none() && s2.holding && !s2.started_holding);
+        // 文字がまだ押されたまま親指を押す = 重なり。
         let s3 = c.on_key(
             &model,
             key(KeyRole::Thumb(ThumbSide::Left), true, 20),
@@ -1269,12 +1340,12 @@ mod tests {
         let mut c = hold_controller();
         c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
         c.on_key(&model, key(KeyRole::Char(pos(1, 1)), false, 15), 2, 1, true);
-        let s = c.on_timer(2_600);
+        let s = c.on_timer(1);
         assert_eq!(s.release, vec![1, 2]);
         assert!(!s.holding && !s.japanese);
         assert_eq!(s.outcomes[0].stop, StopReason::Timeout);
         // タイマーが二重に発火しても何も起きない。
-        assert!(c.on_timer(2_700).release.is_empty());
+        assert!(c.on_timer(1).release.is_empty());
     }
 
     #[test]
@@ -1293,6 +1364,95 @@ mod tests {
         assert_eq!(s.release, vec![1]);
         assert_eq!(s.discarded, 0);
         assert_eq!(s.outcomes[0].stop, StopReason::Timeout);
+    }
+
+    #[test]
+    fn timer_after_the_window_changed_discards_the_held_keys() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), false, 15), 2, 1, true);
+        // マウスで窓を変えた（scope 2）あと、次の打鍵が来ないまま期限のタイマーが発火した。
+        let s = c.on_timer(2);
+        assert!(s.release.is_empty());
+        assert_eq!(s.discarded, 2);
+        assert_eq!(s.outcomes[0].stop, StopReason::WindowChanged);
+        assert!(!s.holding);
+    }
+
+    fn all_clear() -> WriteFacts {
+        WriteFacts {
+            belief_open: true,
+            unobserved_window: true,
+            non_text: false,
+            focus_in_sync: true,
+            explicit_off_intent: false,
+            modifier_held: false,
+        }
+    }
+
+    #[test]
+    fn hiragana_is_written_only_when_every_precondition_holds() {
+        assert_eq!(hiragana_write_skip_reason(all_clear()), None);
+    }
+
+    #[test]
+    fn hiragana_write_is_skipped_with_the_first_failing_reason() {
+        let cases = [
+            (
+                WriteFacts {
+                    belief_open: false,
+                    ..all_clear()
+                },
+                "skipped-belief-off",
+            ),
+            (
+                WriteFacts {
+                    unobserved_window: false,
+                    ..all_clear()
+                },
+                "skipped-observed-window",
+            ),
+            (
+                WriteFacts {
+                    non_text: true,
+                    ..all_clear()
+                },
+                "skipped-observed-window",
+            ),
+            (
+                WriteFacts {
+                    focus_in_sync: false,
+                    ..all_clear()
+                },
+                "skipped-focus-lag",
+            ),
+            (
+                WriteFacts {
+                    explicit_off_intent: true,
+                    ..all_clear()
+                },
+                "skipped-explicit-off",
+            ),
+            (
+                WriteFacts {
+                    modifier_held: true,
+                    ..all_clear()
+                },
+                "skipped-modifier-held",
+            ),
+        ];
+        for (facts, reason) in cases {
+            assert_eq!(hiragana_write_skip_reason(facts), Some(reason), "{facts:?}");
+        }
+        // 複数が同時に偽でも、belief OFF が最優先。
+        let many = WriteFacts {
+            belief_open: false,
+            modifier_held: true,
+            explicit_off_intent: true,
+            ..all_clear()
+        };
+        assert_eq!(hiragana_write_skip_reason(many), Some("skipped-belief-off"));
     }
 
     // ---- 実データ（data/ngram_hiragana.csv.gz と layout/nicola.yab）での回帰 ----

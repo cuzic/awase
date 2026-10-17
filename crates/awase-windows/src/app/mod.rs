@@ -492,12 +492,12 @@ fn init_lang_detect_validated(config: &ValidatedConfig, diag: &mut StartupDiagno
     };
     // 保持と両立しない設定: Space を親指キーにした構成（英文のロールオーバーでも親指と文字の重なりが成立する）と、
     // ADR-255 の遅いルール（`[[keymaps]]` の `ime = "off"`、IME OFF のとき親指キーを Space として打つ）。
-    let space_thumb = [
+    // 表記ゆれ（`"Space"`・`"vk_space"` 等）を取りこぼさないよう、名前の一致ではなく VK を比べる（ADR-201 決定 1）。
+    let space_thumb = crate::state::alt_impersonation::is_thumb_key_vk(
         &config.general.left_thumb_key,
         &config.general.right_thumb_key,
-    ]
-    .iter()
-    .any(|name| name.trim().eq_ignore_ascii_case("VK_SPACE"));
+        crate::vk::VK_SPACE,
+    );
     let late_keymap = config
         .keymaps
         .iter()
@@ -690,6 +690,8 @@ fn handle_hook_key_event(mut event: awase::types::RawKeyEvent) {
     // ADR-263: 窓切替直後・長い無操作のあとのエピソード先頭の打鍵の判定。`observe` は記録だけ（常に通す）。
     // `ime_on` は観測の無い窓で打鍵を保持し、日本語入力と判定できたときだけひらがなキーを送ってから流す。
     // パニック復旧キー・ジャーナルのダンプ契機は、保持より前（上の KeyDown 処理）で必ず見る。
+    // 既知の限界: RUNTIME が借用中（再入）で `with_app` が `None` のときは判定にも保持にも入らず、後段の `None` 経路で
+    // `INPUT_DEFER` に積まれる。保持中にこの再入が起きると、保持列より先に再生される（ネストしたメッセージポンプ中だけ）。
     if matches!(
         with_app(|app| app.lang_detect_on_key(&event)),
         Some(crate::runtime::LangDetectIntake::Consumed)

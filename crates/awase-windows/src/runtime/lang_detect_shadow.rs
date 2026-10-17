@@ -15,10 +15,11 @@ use std::time::Duration;
 
 use awase::config::{AutoDetectConfig, AutoDetectMode};
 use awase::lang_detect::{
-    DetectParams, HoldController, HoldStep, JapaneseEvidence, KanaModel, KeyRole, ObservedKey,
-    ThumbOverlap, TrackerConfig, Verdict,
+    hiragana_write_skip_reason, DetectParams, HoldController, HoldStep, JapaneseEvidence,
+    KanaModel, KeyRole, ObservedKey, ThumbOverlap, TrackerConfig, Verdict, WriteFacts,
 };
 use awase::ngram::NgramModel;
+use awase::platform::{ImeOpenOutcome, PlatformRuntime as _};
 use awase::types::{KeyClassification, KeyEventType, RawKeyEvent};
 
 use crate::focus::class_names::AppImeProfile;
@@ -46,8 +47,6 @@ pub(super) struct LangDetectShadow {
     include_apps: Vec<String>,
     exclude_apps: Vec<String>,
     max_ms: u32,
-    /// 直近の打鍵の時刻（ミリ秒。タイマーでエピソードを閉じるときの時刻に使う）
-    last_key_ms: u64,
 }
 
 /// 設定のプロセス名の正規化（小文字化し、末尾の `.exe` を落とす）
@@ -94,7 +93,6 @@ impl LangDetectShadow {
             include_apps: cfg.include_apps.iter().map(|a| normalize_app(a)).collect(),
             exclude_apps: cfg.exclude_apps.iter().map(|a| normalize_app(a)).collect(),
             max_ms: cfg.max_ms,
-            last_key_ms: 0,
         }
     }
 
@@ -131,7 +129,6 @@ impl LangDetectShadow {
         may_hold: bool,
     ) -> Option<HoldStep<RawKeyEvent>> {
         let model = self.model.as_ref()?;
-        self.last_key_ms = key.timestamp_ms;
         Some(self.controller.on_key(model, key, event, scope, may_hold))
     }
 }
@@ -196,13 +193,24 @@ fn verdict_labels(verdict: Verdict) -> (&'static str, Option<&'static str>) {
 }
 
 impl super::Runtime {
+    /// 前面窓（OS）と awase のフォーカス追跡が同じプロセスを指しているか。
+    ///
+    /// Alt+Tab 直後の打鍵では、フォーカスの検出（WinEvent・500ms のリフレッシュ）が追いついておらず、
+    /// `demoted_by_learning`・belief・`focus_kind` が**前の窓**の値のことがある。そのまま使うと、たとえば
+    /// 一太郎から Chrome へ移った直後に、一太郎の値で Chrome の打鍵を保持し、Chrome へひらがなキーを送ってしまう。
+    fn lang_detect_focus_in_sync(&self) -> bool {
+        let foreground = crate::win32::foreground_scope();
+        foreground.is_valid() && foreground.pid == self.platform.focus.pid()
+    }
+
     /// 保持してよい窓・状態か（エピソードが**始まる**打鍵でだけ効く。進行中のエピソードの保持は変わらない）。
     ///
-    /// 観測の無い窓（実測学習で降格された窓）で、belief が ON、NonText でなく、IME の変換中でないこと
-    /// （変換中は未確定文字列に打鍵が足されるので保持しない）。
+    /// 観測の無い窓（実測学習で降格された窓）で、belief が ON、NonText でなく、IME の変換中でない（変換中は未確定文字列に
+    /// 打鍵が足されるので保持しない）。フォーカス追跡が前面窓に追いついていること。
     fn lang_detect_may_hold(&self) -> bool {
         self.lang_detect.mode == AutoDetectMode::ImeOn
             && self.lang_detect.hold_config_ok
+            && self.lang_detect_focus_in_sync()
             && self.platform_state.ime.effective_open()
             && self.platform.focus.is_demoted_by_learning()
             && self.platform_state.focus.focus_kind != FocusKind::NonText
@@ -212,31 +220,44 @@ impl super::Runtime {
                 .app_allowed(&self.platform.focus.current.process_name)
     }
 
+    /// ひらがなキーを送ってよいかの事実を集める（判断は `awase::lang_detect::hiragana_write_skip_reason`）。
+    fn lang_detect_write_facts(&self) -> WriteFacts {
+        WriteFacts {
+            belief_open: self.platform_state.ime.effective_open(),
+            unobserved_window: self.platform.focus.is_demoted_by_learning(),
+            non_text: self.platform_state.focus.focus_kind == FocusKind::NonText,
+            focus_in_sync: self.lang_detect_focus_in_sync(),
+            explicit_off_intent: self.platform_state.ime.explicit_intent() == Some(false),
+            modifier_held: crate::hook::ime_mode_key_injection_blocked_by_modifier(),
+        }
+    }
+
     /// 日本語と判定したとき、ひらがなキーを 1 回送る。送る前提を満たさなければ送らず、理由を返す。
     ///
-    /// 前提: belief が ON、観測の無い窓、NonText でない、Alt/Win が押されていない（Alt 中の合成かなキーは
-    /// JIS かな入力への切替に化ける。`kp_restore_kana_from_half_width` と同じ判定）。Ctrl/Shift は送信口が一時解放する。
-    /// 解放時点でもう一度確かめる（保持の間にフォーカス追跡や belief が変わりうる）。
+    /// 前提は送信直前に確かめ直す（保持の間にフォーカス追跡や belief が変わりうる）。Alt/Win 中は送らない（Alt 中の合成かな
+    /// キーは JIS かな入力への切替に化ける。BUG-008、`kp_restore_kana_from_half_width` と同じ判定）。利用者が明示的に
+    /// IME OFF を選んでいるときも送らない（その意図を尊重する。ADR-263 D5 の授権の代わり）。Ctrl/Shift は送信口が一時解放する。
+    ///
+    /// 送った**あと**に、`on_ime_applied`（composition を cold に・MS-IME のモード FSM の未確認化）と GjiFsm の
+    /// OFF→ON（`Reopen`）を行う。これを欠くと、無操作のエピソードで GjiFsm が warm のまま、開いた直後の最初の
+    /// ローマ字を送ってリテラル化する（BUG-002 系）。`applied` は書き換えない（ADR-262 D3）。
+    ///
+    /// 限界: `send_ime_mode_key` は scan=0 で送る。GJI（mozc 系）は VK だけで判定するので効く見込みだが、MS-IME(TSF) は
+    /// scan 無しのモードキーを処理しないという実機の記録がある（`kp_restore_kana_from_half_width` 付近のコメント）。
+    /// scan 付きは実 IME が OFF の窓でかなロック等を汚すハザードがある（BUG-015 追補7）ため使わない。
     fn lang_detect_write_hiragana(&mut self) -> &'static str {
         if self.lang_detect.mode != AutoDetectMode::ImeOn {
             return "none";
         }
-        if !self.platform_state.ime.effective_open() {
-            return "skipped-belief-off";
+        if let Some(reason) = hiragana_write_skip_reason(self.lang_detect_write_facts()) {
+            return reason;
         }
-        if !self.platform.focus.is_demoted_by_learning()
-            || self.platform_state.focus.focus_kind == FocusKind::NonText
-        {
-            return "skipped-observed-window";
+        if !crate::ime::send_hiragana_key() {
+            return "skipped-send-failed";
         }
-        if crate::hook::ime_mode_key_injection_blocked_by_modifier() {
-            return "skipped-modifier-held";
-        }
-        if crate::ime::send_hiragana_key() {
-            "hiragana-sent"
-        } else {
-            "skipped-send-failed"
-        }
+        self.platform.on_ime_applied(true, ImeOpenOutcome::Applied);
+        self.kp_reopen_gji_fsm(crate::state::gji_direct_mechanism::ReopenSource::LangDetect);
+        "hiragana-sent"
     }
 
     /// 取り込み口から、フックの打鍵 1 つにつき 1 回呼ぶ（KeyDown/KeyUp とも）。
@@ -265,9 +286,11 @@ impl super::Runtime {
     }
 
     /// 保持の期限のタイマー（`TIMER_LANG_HOLD`）。保持中のエピソードを閉じて、保持した打鍵を解放する。
+    ///
+    /// 前面窓が保持の開始時と違えば、保持した打鍵は捨てる（マウスで窓を変えたあとに次の打鍵が来なかった場合）。
     pub(crate) fn lang_detect_on_timer(&mut self) {
-        let now = self.lang_detect.last_key_ms;
-        let step = self.lang_detect.controller.on_timer(now);
+        let scope = scope_id(crate::win32::foreground_scope());
+        let step = self.lang_detect.controller.on_timer(scope);
         let _ = self.lang_detect_apply(step);
     }
 
@@ -279,6 +302,7 @@ impl super::Runtime {
             "none"
         };
         let discarded = u32::try_from(step.discarded).unwrap_or(u32::MAX);
+        let step_japanese = step.japanese;
         for outcome in step.outcomes {
             let (verdict, evidence) = verdict_labels(outcome.verdict);
             #[allow(clippy::cast_possible_truncation)] // ログ用。f32 の精度で足りる
@@ -296,7 +320,12 @@ impl super::Runtime {
                 duration_ms: outcome.duration_ms,
                 profile: profile_label(self.platform.current_app_profile()),
                 belief_open: Some(self.platform_state.ime.effective_open()),
-                action: if japanese { action } else { "none" },
+                // 日本語と判定したが保持していなかった（観測だけのエピソード）は `observe-only`。
+                action: match (japanese, step_japanese) {
+                    (true, true) => action,
+                    (true, false) => "observe-only",
+                    (false, _) => "none",
+                },
                 discarded,
             };
             self.platform_state
@@ -316,12 +345,16 @@ impl super::Runtime {
             crate::INPUT_DEFER.replay_later(step.release);
         }
 
-        if step.started_holding {
-            self.platform.timer.set(
-                crate::TIMER_LANG_HOLD,
-                Duration::from_millis(u64::from(self.lang_detect.max_ms)),
-            );
-        } else if !step.holding {
+        // 保持が続くなら、始まったときにだけ期限のタイマーを置く。保持が終わったなら、同じ打鍵で始まって確定した
+        // 場合を含めて必ず外す（残すと、次の（保持しない）エピソードをタイマーが途中で閉じてしまう）。
+        if step.holding {
+            if step.started_holding {
+                self.platform.timer.set(
+                    crate::TIMER_LANG_HOLD,
+                    Duration::from_millis(u64::from(self.lang_detect.max_ms)),
+                );
+            }
+        } else {
             self.platform.timer.kill(crate::TIMER_LANG_HOLD);
         }
 
@@ -340,6 +373,10 @@ impl super::Runtime {
         ngram: Option<NgramModel>,
         hold_config_ok: bool,
     ) {
+        // 設定リロードで作り直す前に、保持中の打鍵を解放する（作り直しで黙って消えないように）。
+        let scope = scope_id(crate::win32::foreground_scope());
+        let step = self.lang_detect.controller.on_timer(scope);
+        let _ = self.lang_detect_apply(step);
         self.platform.timer.kill(crate::TIMER_LANG_HOLD);
         self.lang_detect = LangDetectShadow::new(cfg, ngram, hold_config_ok);
     }
