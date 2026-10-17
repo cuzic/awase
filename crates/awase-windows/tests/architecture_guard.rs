@@ -3677,8 +3677,10 @@ fn drift_diagnostic_guard_detects_an_unguarded_call() {
 /// （`focus_tracking.rs` のフォーカス時と `ir_align_placeholder_desired`）と、`ir_post_focus_change_snapshot` の `record_confirmed`。
 #[test]
 fn applied_mirror_on_focus_goes_through_the_plan_at_all_three_sites() {
-    let focus = production_code_only(&read_crate_file("src/runtime/focus_tracking.rs"));
-    let refresh = production_code_only(&read_crate_file("src/runtime/ime_refresh.rs"));
+    let focus_src = read_crate_file("src/runtime/focus_tracking.rs");
+    let refresh_src = read_crate_file("src/runtime/ime_refresh.rs");
+    let focus = production_code_only(&focus_src);
+    let refresh = production_code_only(&refresh_src);
     let plan = "applied_mirror_plan::may_mirror_applied_on_focus(";
 
     // (1) フォーカス時の先同期
