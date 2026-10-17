@@ -266,6 +266,7 @@
 | [257](257-scancode-map-vm-verification.md) | Scancode Map の効きを、GitHub ホスト型 Windows ランナー上の入れ子 VM(WinPE)で実機相当に検証する | 段階1〜3 を実装・反映済み(2026-10-12、PR #617・#618)。12シナリオ PASS、from 重複は先勝ち。残りは連続実行の測定と、実機に残る確認(ADR-230 段階5) |
 | [258](258-raw-tsf-literal-recovery-requires-ime-open-evidence.md) | BUG-200: BUG-074(ADR-227 (i))の追随が実機で効かない — 先に原因を測る | 起草・D0' 実測済み(2026-10-12): 追随は設計どおり働き、残る害は最初の1打鍵の消失。案 D5'(cold の段の開始時に追随を arm)。Opus 設計レビュー反映済み、段階0(観測だけ + 偽陽性の測定)が先。実装なし |
 | [262](262-nicola-intent-evidence-for-unobserved-windows.md) | 観測の無い窓で、親指シフトの最初の同時打鍵を契機に IME ON を明示する(撤去した force-on の絞った復元、ADR-212 の例外) | round 3 レビューを受けて文面を直した(2026-10-17)。実装なし。段階 A(presync 停止)から |
+| [263](263-episode-start-key-hold-and-language-decision.md) | 観測の無い窓で、エピソード先頭の打鍵を保持し、日本語入力と判定できたときだけ IME ON を送る(ADR-262 の契機を置き換える) | 起草(2026-10-17)。Opus round 1 を受けて書き直し。round 2 待ち |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
