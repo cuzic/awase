@@ -7270,7 +7270,8 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
 /// - `gji_on_ime_off(`: receipt（`sync_gji` の `OnImeOff` 腕）のみ（OFF は awase の actuation 由来だけ）
 /// - `sync_gji(`（ungated 側の `state/gji_direct_mechanism.rs` を除く）: (i) `send_keys` の level 突合
 ///   （`platform.rs`）、(ii) `kp_reopen_gji_fsm`（`key_pipeline.rs`）
-/// - `kp_reopen_gji_fsm(`: 物理キー予測 ON・shadow toggle の既に ON（no-op 分岐）・OFF→ON に倒した瞬間の3か所
+/// - `kp_reopen_gji_fsm(`: 物理キー予測 ON・shadow toggle の既に ON（no-op 分岐）・OFF→ON に倒した瞬間の3か所、
+///   と ADR-263 PR 2b の日本語判定後のひらがなキー送信直後（`lang_detect_shadow.rs`）の1か所
 #[test]
 fn gji_fsm_sync_entry_points_are_accounted_for() {
     let table: &[(&str, &[(&str, usize)])] = &[
@@ -7287,7 +7288,14 @@ fn gji_fsm_sync_entry_points_are_accounted_for() {
             "sync_gji(",
             &[("src/platform.rs", 1), ("src/runtime/key_pipeline.rs", 1)],
         ),
-        ("kp_reopen_gji_fsm(", &[("src/runtime/key_pipeline.rs", 3)]),
+        (
+            "kp_reopen_gji_fsm(",
+            &[
+                ("src/runtime/key_pipeline.rs", 3),
+                // ADR-263 PR 2b: 日本語と判定してひらがなキーを送った直後（awase が IME へ書いた同期）
+                ("src/runtime/lang_detect_shadow.rs", 1),
+            ],
+        ),
     ];
     for (needle, expected) in table {
         for rel in list_src_files() {
