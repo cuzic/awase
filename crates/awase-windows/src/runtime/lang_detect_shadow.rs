@@ -19,7 +19,7 @@ use awase::lang_detect::{
     KanaModel, KeyRole, ObservedKey, ThumbOverlap, TrackerConfig, Verdict, WriteFacts,
 };
 use awase::ngram::NgramModel;
-use awase::platform::{ImeOpenOutcome, PlatformRuntime as _};
+use awase::platform::{ImeOpenOutcome, TsfComposition as _};
 use awase::types::{KeyClassification, KeyEventType, RawKeyEvent};
 
 use crate::focus::class_names::AppImeProfile;
