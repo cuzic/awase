@@ -243,7 +243,6 @@ impl NgramModel {
     ///
     /// `frequency_score` は未知の組を `0.0`（= 最頻の組と同じ点）で返すため確率には使えない。
     /// 言語判定（`lang_detect`）のように条件付き確率を作りたい呼び出し元は、こちらで生の表を読む。
-    #[must_use]
     pub fn bigram_scores(&self) -> impl Iterator<Item = ((char, char), f32)> + '_ {
         self.bigram.iter().map(|(&k, &v)| (k, v))
     }
