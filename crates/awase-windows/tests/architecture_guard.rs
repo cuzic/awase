@@ -3670,6 +3670,33 @@ fn drift_diagnostic_guard_detects_an_unguarded_call() {
     assert!(!drift_diagnostic_call_is_guarded("nothing"));
 }
 
+/// ADR-262 段階 A: 窓内の IMM が読めないと学習された窓（`ImmCapability::Unavailable` で `Standard` から降格）では、
+/// 先同期（`presync_applied_open_on`）を行わない。何も書いていないのに `applied=Confirmed(true)` を作ると、
+/// GJI の already-matched が後続の ON の書き込みを省く（#623）。先同期の呼び出し元 2 箇所の両方に降格の判定が要る
+/// （片方だけ止めると、もう片方の経路〔最初の成功観測での揃え〕から偽の確定が戻る）。
+#[test]
+fn presync_is_skipped_for_windows_demoted_by_learning_at_both_call_sites() {
+    let focus = production_code_only(&read_crate_file("src/runtime/focus_tracking.rs"));
+    let refresh = production_code_only(&read_crate_file("src/runtime/ime_refresh.rs"));
+    for (name, src) in [("focus_tracking.rs", &focus), ("ime_refresh.rs", &refresh)] {
+        let calls: Vec<usize> = src
+            .match_indices("self.presync_applied_open_on(")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(calls.len(), 1, "{name}: 先同期の呼び出しは 1 箇所");
+        let head = &src[..calls[0]];
+        let guard_at = head.rfind("is_demoted_by_learning()").unwrap_or_else(|| {
+            panic!(
+                "{name}: 先同期の直前に `is_demoted_by_learning()` の判定が必要（ADR-262 段階 A）"
+            )
+        });
+        assert!(
+            calls[0] - guard_at < 200,
+            "{name}: 降格の判定は先同期の直前にあること（ADR-262 段階 A）"
+        );
+    }
+}
+
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。
 ///
 /// - フォーカス時の先同期（`applied` の `record_confirmed(true)` と GJI への ImeOn 通知＝long-cold の

@@ -862,7 +862,8 @@ impl Runtime {
             .platform
             .current_app_profile()
             .is_effectively_tsf_native(self.platform.focus.class_name());
-        if open && !tsf_native {
+        // ADR-262 段階 A: 読めないと学習された窓では先同期しない（`focus_tracking.rs` の同じ分岐と対）。
+        if open && !tsf_native && !self.platform.focus.is_demoted_by_learning() {
             self.presync_applied_open_on(tick_ms);
         }
     }

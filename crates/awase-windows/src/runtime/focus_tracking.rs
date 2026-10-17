@@ -775,9 +775,14 @@ impl Runtime {
         // `VK_IME_OFF→VK_IME_ON` reinit）を行うと、IME を閉じて起動したとき awase が IME を開けてしまう。
         // 初期値のままの間は行わず、最初の成功観測が「開」だったときに `ir_align_placeholder_desired` が同じ処理を行う
         // （観測が「閉」なら行わない。GjiFsm は閉の IME と整合した OffCold のまま）。
+        // ADR-262 段階 A: 窓内の IMM が読めないと学習された窓（`ImmCapability::Unavailable` で `Standard` から降格）
+        // では先同期しない。読めない窓の `applied=Confirmed(true)` は何も書いていない偽の確定で（ADR-098 が TsfNative で
+        // 止めた型と同じ）、GJI の already-matched が後続の ON の書き込みを省く（#623）。GjiFsm の ImeOn は、最初の
+        // ローマ字の送信時に ADR-203 (i) の level 突合（`OnImeOnBelief`）が代わりに行う。
         if !is_effectively_tsf_native_now
             && !self.platform_state.ime.desired_is_placeholder()
             && self.platform_state.ime.effective_open()
+            && !self.platform.focus.is_demoted_by_learning()
         {
             self.presync_applied_open_on(tick_ms);
         }
