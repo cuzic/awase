@@ -7,7 +7,7 @@ $Dist = (Resolve-Path $Dist).Path
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $Out = (Resolve-Path $Out).Path
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
-Add-Type -ReferencedAssemblies UIAutomationClient,UIAutomationTypes,WindowsBase -TypeDefinition @"
+try { Add-Type -ErrorAction Stop -ReferencedAssemblies UIAutomationClient,UIAutomationTypes,WindowsBase,System.Collections,System.Collections.Concurrent,System.Runtime,System.Linq,System.Console -TypeDefinition @"
 using System; using System.Collections.Concurrent; using System.Runtime.InteropServices; using System.Text; using System.Windows.Automation;
 public static class MW {
   public delegate void WinEventProc(IntPtr hook, uint ev, IntPtr hwnd, int idObj, int idChild, uint thread, uint time);
@@ -51,7 +51,7 @@ public static class MW {
     return c.ControlType.ProgrammaticName.Replace("ControlType.", "") + " | name=" + c.Name + " | class=" + c.ClassName + " | id=" + c.AutomationId + " | rect=" + (int)c.BoundingRectangle.Left + "," + (int)c.BoundingRectangle.Top + "," + (int)c.BoundingRectangle.Right + "," + (int)c.BoundingRectangle.Bottom + extra;
   }
 }
-"@
+"@ } catch { Write-Host "Add-Type 失敗: $($_.Exception.Message)"; exit 1 }
 function Log($m) { $l = "[$([DateTime]::UtcNow.ToString('HH:mm:ss.fffZ'))] $m"; Write-Host $l; Add-Content -Path "$Out\run.log" -Value $l -Encoding utf8 }
 function Pump($sec) { $end = [DateTime]::UtcNow.AddSeconds($sec); while ([DateTime]::UtcNow -lt $end) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 20 } }
 function Drain($file) { $s = ''; $x = $null; while ([MW]::Q.TryDequeue([ref]$x)) { $s += $x + "`n" }; if ($s) { Add-Content -Path $file -Value $s -Encoding utf8 }; return $s }
