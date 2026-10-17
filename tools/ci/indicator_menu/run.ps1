@@ -7,7 +7,13 @@ $Dist = (Resolve-Path $Dist).Path
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $Out = (Resolve-Path $Out).Path
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
-try { Add-Type -ErrorAction Stop -ReferencedAssemblies UIAutomationClient,UIAutomationTypes,WindowsBase,System.Collections,System.Collections.Concurrent,System.Runtime,System.Linq,System.Console -TypeDefinition @"
+$refs = @(
+  [System.Windows.Automation.AutomationElement].Assembly.Location,
+  [System.Windows.Automation.ControlType].Assembly.Location,
+  [System.Windows.Rect].Assembly.Location,
+  'System.Collections', 'System.Collections.Concurrent', 'System.Runtime', 'System.Linq', 'System.Console')
+Write-Host ("refs: " + ($refs -join '; '))
+try { Add-Type -ErrorAction Stop -ReferencedAssemblies $refs -TypeDefinition @"
 using System; using System.Collections.Concurrent; using System.Runtime.InteropServices; using System.Text; using System.Windows.Automation;
 public static class MW {
   public delegate void WinEventProc(IntPtr hook, uint ev, IntPtr hwnd, int idObj, int idChild, uint thread, uint time);
