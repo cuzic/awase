@@ -11,6 +11,7 @@ summary: |-
   ADR-191 の「warmup は既存の例外として残す」「EngineDecision」は、本 ADR で縮小・改訂する(所有者方針が ADR-191 より新しい)。各段は1PR・revert しやすい単位・実機A/B と CI で退行を確認し、`docs/experiments.md` に判定を残す。
   所有者決定: 左 Shift 単独タップの半角英数トグルは残す(対象外)、ActivationSync は実機で実送信の件数を測ってから止める。CI結果を受けた判断(2026-10-01): 全面停止は却下し、`handle_engine_activation_sync` の gate による縮小は実書き込みを止めないため取り下げた。P2 は方針見直しとして保留する。
 status: |-
+  例外 1 件(2026-10-17、所有者判断): 観測の無い窓での補正的な書き込みを ADR-262 が絞って復元する(本文末尾の追記)。
   ほぼ実装済み(v2.0.0 に含まれる)。P0・P1・P3・P4・P5・P6(b)(c) は develop 実装済み、P2〈ActivationSync〉は ADR-213 の P2a〜P2d-2 で撤去済み(ActivationSync の型・ハンドラは現行コードに無い、2026-10-04 確認)。P6 の (a) drift correction は『許可』として意図的に残す。
   旧(2026-10-04 更新前):
   採用(2026-09-30)。実装状況(2026-10-01): P0(#398)・P1(#399)・P3+P5 の reinit 分(#402)・P4(#401)・P5 の Unicode long-cold warmup(#403)・P6 の (b)(c)(#404)は develop に実装済み。P2(ActivationSync)は [ADR-213](213-shadow-toggle-off-to-on-explicit-actuation-then-remove-activation-sync.md) の段階(P2a〜P2c)で再開(P2a は PR #408)。全面停止は CI で却下、gate による縮小は無効のため取り下げ。新スレッド=閉は ADR-191 の belief 側の改善として実装済み。GJI は CI で検証済み。同定済み MS-IME 本体にも適用されるが、その経路は CI 未検証。
@@ -26,6 +27,7 @@ related_adr:
   - "ADR-207"
   - "ADR-211"
   - "ADR-213"
+  - "ADR-262"
 ---
 
 # ADR-212: 予防的・補正的な IME actuation の段階的撤去

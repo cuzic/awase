@@ -11,7 +11,7 @@ summary: |-
   ADR-261(字形で読む)とは独立で、字形が読めればそちらを優先する。段階 0 は挙動を変えず、訂正の代理指標を読める窓と対照して取る。
 status: |-
   起草(2026-10-16)→ Opus round 1(Blocker 4・Major 6・minor 6)で書き直し(2026-10-17)→ round 2(Blocker 1・Major 4・minor 4)を受けて再び書き直し(2026-10-17)。
-  実装なし。測定なし。round 3 の再確認待ち。**ADR-260・ADR-261 のマージ後に本 ADR をマージする**(本文のリンクが切れるため)。
+  実装なし。測定なし。round 3(Blocker 0・Major 3・minor 5)を受けて文面を直した(2026-10-17)。段階 0 に進むことにレビュアーの異論なし。**ADR-260・ADR-261 のマージ後に本 ADR をマージする**(本文のリンクが切れるため)。
 related_adr:
   - "ADR-098"
   - "ADR-179"
@@ -71,7 +71,14 @@ belief OFF・実 ON の向きには「同時打鍵の成立」を判定する主
 
 契機は、Engine が親指キーを含む NICOLA の同時打鍵を**確定**した時点。確定は `Engine::on_input` だけでなく `Engine::on_timeout`(文字キーが先で親指を待つ側。`runtime/message_handlers.rs:722`・`:1844`)でも起きる。
 `Decision` には「同時打鍵を確定した」印が無い(`src/engine/decision.rs:26-31` の `InputEffect` は `SendKeys`・`ReinjectKey`)。
-**ルート `awase` crate の `Decision` に、確定した打鍵の種類の印を足す**(core が分類済みの情報を返す。ADR-019 に反しない)。回帰テストは `src/engine/tests.rs`。処理は executor(`runtime/executor.rs::execute_one`/`dispatch_effect`)で行い、`on_input` と `on_timeout` の両方を覆う。
+**印は `Effect` の variant にしない**(`Decision::effects_mut()` の `PassThrough`→`PassThroughWith` 昇格、effect の件数を固定するテスト〔`decision.rs` 12 件・`fsm_adapter.rs` 9 件〕、`tests/scenarios.rs:158`、executor の `dispatch_effect` を壊すため)。
+次の形にする(core が分類済みの情報を返す。ADR-019 に反しない)。
+- 同時打鍵の確定の唯一の合流点 `NicolaFsm::resolve_char_thumb_as_simultaneous`(`src/engine/nicola_fsm.rs:1172-1189`、呼び出し元 4 か所)の成功の分岐(`lookup_face` が `Some` で `consume_thumb` を呼ぶ側)で、
+  「この評価で同時打鍵を確定した」one-shot のフラグを立てる。面の判定は `Face::thumb_side()` が `Some` のときに限る(Shift+親指の面は D2-4 の「修飾キーなし」で除外)。
+- `Engine` が `on_input`(`engine.rs:571-591`)と `on_timeout`(`:596-611`)の両方で、そのフラグを `Decision` のフィールド(effect ではないメタ情報)へ移す。既存の one-shot の取り出し口
+  (`take_engine_off_requested`・`take_ime_open_requested`)にならう。`on_command` の全アームでフラグを捨てる(次の無関係なイベントで誤発火させない)。
+- 回帰テストは `src/engine/tests.rs`: (i) 同時打鍵で立つ、(ii) 単打・親指単独・`lookup_face` が `None` の単打への落ちでは立たない、(iii) `on_timeout` の確定で立つ、(iv) 次のイベントに残留しない。
+処理は executor で行い、`on_input` と `on_timeout` の両方を覆う。
 
 以下を全部満たすときだけ動く。
 
@@ -80,26 +87,36 @@ belief OFF・実 ON の向きには「同時打鍵の成立」を判定する主
 3. そのエピソード内で、利用者が明示の IME キーを押していないこと(前の窓での押下は数えない)。理由: #623 の再現手順がまさに「前の窓で OFF にして移る」ため。
    **ただし**、これは英数の意図の弱い証拠を捨てる判断でもある(N-M3)。誤爆の害より #623 を直す利益が大きいと判断した、と記録する。段階 0 で、前の窓で OFF にして移ったエピソードの訂正率を別に出す。
 4. 修飾キーなし、かつ awase 自身の注入でないこと。
-5. **ADR-255(IME OFF のとき親指キーを Space にする)が有効な構成では動かさない**。#623 の向き(belief ON・実 OFF)は、ADR-255 の利用者が「OFF だと思っている」状況そのもので、
+5. **ADR-255(IME OFF のとき親指キーを Space にする)が有効な構成では動かさない**。述語は「`[[keymaps]]` に、`from` が親指キー(無変換/変換、または `left/right_thumb_key`)で `ime = "off"` の規則が 1 つでもある」(ADR-255 は r7 で専用設定からこの形に変わった)。
+   Alt なりすまし(`RawKeyEvent.impersonated`)の構成を含めるかは実装時に決める。#623 の向き(belief ON・実 OFF)は、ADR-255 の利用者が「OFF だと思っている」状況そのもので、
    Space のつもりの親指キーと次の英字の重なりを NICOLA の同時打鍵と取り違えて IME を開く害が、D1 の非対称の目的に反するため。
 
 ### D3: 動作 — 入口を 1 つ足す
 
 - 純粋な判断(Plan)を `state/` に置く。引数は Facts(窓の種別・エピソード・ラッチ・直前の明示キーの有無・ADR-255 の有無)、戻りは「何もしない/ON を送る」と理由。journal には境界で記録する(ADR-250)。
-- 実行は新しい order 起案の入口 1 つ。既存の同期の合流点 `ImeController::apply`(→ 核の `apply_sync`)を通す(`apply_sync` の呼び出し元の件数ガード〔`tests/architecture_guard.rs:5646-5649`〕を変えない)。
+- 実行は新しい order 起案の入口 1 つ。drift correction と同じく `press=None` の書き込みなので、`platform.apply_ime_open_with_view` を通し、order の発行は `runtime/mod.rs::issue_actuation_order` を使う
+  (`ImeController::apply` → `apply_sync` を直接の合流点にしない。`apply_sync` の許可リスト〔`("apply_sync", &["apply", "dispatch_set_open"])`〕は変わらず、`issue_self_actuation_order_is_called_only_from_dispatch_set_open` にも触れない)。
   - `press=None`。`claim_press_write` は呼ばない。
   - 送るかどうかの判断の入力(view の `shadow_on`)は **未知にする**。`ime_actuation_decision::explicit_press_shadow_on`(`:219-227`)は名前が「押下」なので、押下に依らない別名の関数を足して使う。
     未知化が要る理由は、背景の presync による偽の `Confirmed(true)` で、GjiDirect の already-matched 省略(`ime_controller.rs:228-247`)が働くため。MsImeDirect には省略が無いので、未知化は GJI でだけ効く。
   - model の `applied` は**書き換えない**(presync の `Confirmed(true)` のまま)。「未知のまま」とは書かない。
-  - 完了の記録: `record_confirmed` は書かない(効いていない ON を確認済みにしない)。`record_ime_apply_result_in_scope`(`platform_state.rs:1410-1433`)は呼ばないので、
-    同関数の先頭の ADR-256 の `note_awase_open_write`(`:1418-1422`)も走らない。ADR-256 の書き込み遅延の抑止が要るかは未決(Q8)。
-  - **GjiFsm を OFF→ON(cold)として同期する**。#623 ではフォーカス時の presync で GjiFsm はすでに ImeOn(warm 扱い)だが、実 IME は閉じているので、本 ADR の ON で初めて開く。
-    同期しないと GjiFsm が cold の扱い(probe/保留)に入らない。`GjiFsmSync` に variant を足す(ADR-203 の `gji_sync_origin_comes_from_the_sync_variant` ガードの対象)。warmup ファミリーなので回帰テストか BUG 記録を添える。
+  - 完了の記録は**分けて扱う**。外すのは `record_ime_apply_result`(`applied` の Confirmed と、同関数の先頭の ADR-256 の `note_awase_open_write`、`platform_state.rs:1410-1433`)だけ(効いていない ON を確認済みにしない)。
+    `platform.on_ime_applied`(`platform.rs:1158-1222`。`mark_composition_cold(SetOpenTrue)`・MS-IME の `ime_mode_fsm.on_set_open_applied` の未確認化・GjiFsm の receipt の settle を行う)は**呼ぶ**。
+    これを落とすと、ON を送ったあとも composition が warm 扱いのまま、MS-IME のモード FSM が確認済みのままになり、cold-start のリテラル化を自分で招く。
+    `on_ime_apply_complete`(`runtime/mod.rs:930-977`)をそのまま流用しない。`OpenApplyReason` に新しい値(旧 `ImmBrokenForceOn` を含む)は足さない。journal は本 ADR の境界記録で代える。
+    `post_ime_refresh`(20ms 後の再試行)を呼ぶかは未決(Q8。呼ぶと BUG-069 の再試行の要素が 1 つ戻るが、Confirmed を書かないので固着は起きない)。ADR-256 の抑止(`note_awase_open_write`)だけを呼ぶかも Q8。
+  - `last_explicit_ime_action_ms` は更新する(`key_pipeline.rs:549`・`:779-788` の idle conv check と、`platform_state.rs:538-563` の direct-follow の窓が自分の書き込みを外部の変化と誤読しないため。旧 force-on も `note_explicit_ime_action` で同じ扱いだった)。
+    **ただし D2-3 の「明示の IME キーを押していない」の判定には、この値を使わない**(自分の書き込みを利用者の明示と取り違える)。物理の押下の記録を別に使う。
+  - **GjiFsm を OFF→ON(cold)として同期する**。#623 ではフォーカス時の presync で GjiFsm はすでに ImeOn(warm 扱い)で、`gji_on_ime_on` は `OffCold` のときだけ cold に遷移する(`tsf/gji_fsm.rs:597-618`)ので、ON を送ったあとに呼んでも何も起きない。
+    新しい `GjiFsmSync` variant は要らない。既存の `GjiEvent::Reopen`(ADR-203 決定 2。`OnWarm → OnCold`、`OnCold`・`OnComposing` では何もしないので probe・pending・未確定文字を保持する)を使い、
+    `ReopenSource`(`state/gji_direct_mechanism.rs:66-86`)に variant を 1 つ足す。`Reopen(_)` の origin の doc〔「awase が IME へ書いていない同期」〕は「または awase の書き込み後に既に ON 扱いの FSM を開き直す同期」に直す。
+    ADR-203 の `gji_sync_origin_comes_from_the_sync_variant` ガード(`architecture_guard.rs:7258-7270`)は壊れない。warmup ファミリーなので回帰テストか BUG 記録を添える。
+    **この同期は、presync を先に止める場合(「段階」の段階 A)は不要になる**(下記)。
 - 授権: `press=None` は通常の `issue_open_warrant`(`state/open_warrant.rs`)。一太郎は `FEEDBACK_BLIND`(`app_ime_policy.rs:131-140`)なので、belief ON なら Step 4c の `OwnSsot` で通る。
   **その hwnd に TTL 内の明示 OFF の意図が IntentStore に残っていれば、Step 1 で `Unwarranted` となり止まる**。これは利用者の意図を尊重する正しい挙動で、新しい basis は足さない。
-- ガード: `RESTRICTED_CALLS`(`lints/actuation_call_guard/src/lib.rs:58-`)の `apply_sync` の許可呼び出し元に、この入口の関数を登録する。`tests/architecture_guard.rs` には、この入口の assert
-  (`claim_press_write` を呼ばないこと・`press=None` であること・`apply_sync` を通すこと)を足す。`press_id_is_claimed_and_carried_at_every_order_issuing_entry` は入口ごとの固定の assert を並べる形なので、同じ形で足す。
-  `issue_self_actuation_order_is_called_only_from_dispatch_set_open`(`:5580`)に触れないことを確認する。
+- ガード: `RESTRICTED_CALLS`(`lints/actuation_call_guard/src/lib.rs:58-`)の `("apply_ime_open_with_view", &["ir_apply_drift_correction"])` にこの入口の関数名を足し、
+  `tests/architecture_guard.rs` の `.apply_ime_open_with_view(` の件数ガードを 1→2 にする(`fix-requires-evidence.md` の「IME actuation 合流点」行が、この件数ガードを一次情報としている)。
+  `press_id_is_claimed_and_carried_at_every_order_issuing_entry` は入口ごとの固定の assert を並べる形なので、この入口の assert(`claim_press_write` を呼ばないこと・`press=None` であること)を同じ形で足す。
 
 ### D4: 出力との順序
 
@@ -115,21 +132,35 @@ belief OFF・実 ON の向きには「同時打鍵の成立」を判定する主
 
 ### D6: 旧機構との違いと、撤去の理由に対する立場
 
-旧 `apply_force_on_for_imm_broken` は毎打鍵の前に(クールダウンつきで)発火し、BUG-016 の settle の穴と BUG-069(ADR-098 F2: スパムガードの恒久無効化)を生んだ。
-本 ADR は、(1) 発火をエピソード 1 回のラッチに限る、(2) 契機を意図の証拠にする、(3) applied を書き換えない、(4) 読める窓には出さない、で絞る。
-エピソードのラッチが BUG-016 の settle の穴と BUG-069 のどちらを構造的に避けるかは、実装前に当時のコードと各 BUG の記録を読んで追記する(未決 Q6)。
+旧 `apply_force_on_for_imm_broken`(撤去前のコード `621bf93c^:crates/awase-windows/src/runtime/mod.rs` 958-1012 行)の事実は次のとおり。
+- 唯一の呼び出し元は `ir_stage_notify` の Phase 4a(**周期リフレッシュ**)。doc 自身が ADR-086 INV-15 の「生の周期タイマー」に該当する既知の逸脱と書いていた。キー入力直前のトリガーは ADR-094 で撤去済みだった。
+- BUG-016(`docs/known-bugs/BUG-016.md`)の原因は、force-on が settle 中に**スキップされ、再試行が無かった**こと(発火が足りなかった)。修正は settle 明けの再試行(`schedule_settle_retry`)。
+  さらに当時は `platform.set_ime_open` が Imm32Unavailable では no-op で、効いていなかった。
+- BUG-069(ADR-098 F2)は、force-on 自身の発火ではなく、(i) 別機構 `mirror_applied_open` の `applied=Confirmed` 偽装がスパムガードを誤発火させ恒久的に無効化したこと、
+  (ii) 決定 1-c: Failed のとき `record_ime_apply_result` が `Confirmed{open:false}` を書き、`on_ime_apply_complete` の `post_ime_refresh()`(20ms 後の再試行)と組み合わさって 50Hz の無限再試行ループになったこと、が原因。
+- 旧 force-on も view の `applied` を `None` にして GJI の already-matched を外していた(`force_on_and_correct_romaji` の doc)ので、D3 の view の未知化には前例がある。
+
+本 ADR は、(1) 完了の記録(`applied`)をしない、(2) エピソード 1 回のラッチ、(3) 周期に乗らず確定の打鍵を契機にする、の 3 点で、BUG-069 の 3 要素(偽装・完了の記録・周期の再試行)を構造的に持たない。
+BUG-016 の教訓は「発火しすぎ」ではなく**フォーカス直後の最初の打鍵までに確実に 1 回届けること**である。本 ADR は確定の打鍵を契機にするので settle の窓とは独立になる(ただし D5 のとおり、確定より前の単打は救えない)。
 
 **revert 条件**(`experiment-logging.md`): 段階 1 の実機(一太郎・GJI)で、(a) 確定直後のリテラル化が増える、(b) 英数で打つ人の IME を開いて訂正(BackSpace・明示の IME キー)が増える、のどちらかが段階 0 のログと比べて見られたら取り下げ、
 `docs/experiments.md` に失敗条件(アプリ・IME・症状)を残す。再導入の行も、実装時に `docs/experiments.md` へ足す。
 
 ## 段階
 
+- **段階 A(先に単独で行う。書き込みを足さない)**: `ImmCapability::Unavailable` の窓で `presync_applied_open_on`(`runtime/focus_tracking.rs:193-197`・`:778-783`、`ime_refresh.rs:845-866`)を止める
+  (ADR-098 決定 1-a の TsfNative と同じ扱い)。偽の `Confirmed(true)` が無くなり、`applied` が Unknown のままになるので、D3 の view の未知化(押下に依らない別名の関数)と GjiFsm の `Reopen` の追加は要らなくなる。
+  presync の目的は、ActivationSync(ADR-213 で撤去)と force-on(`621bf93c` で撤去)の撤去後ほぼ消えており、GjiFsm への ImeOn 通知は ADR-203 の level 突合 `OnImeOnBelief`(`gji_direct_mechanism.rs:55-57`)が代わりに行う。
+  この変更は IME belief ファミリー(`focus_tracking.rs`)なので、`fix-requires-evidence.md` の (a) 回帰テストか (b) `docs/known-bugs/BUG-NNN.md` を添える。
+  これだけでは実 IME は OFF のままで、#623 の症状は直らない(偽の確定を作らなくなるだけ)。段階 0 のログで、段階 A の前後を分けて見られる利点がある。
+  段階 A の前に、`ime_refresh.rs:794` の `warmup_ime_on()`(`applied ?? belief`)と、GjiDirect の already-matched(`ime_controller.rs:228-247`)で drift correction の書き込みが増えないことを確かめる。
 - **段階 0(挙動を変えない)**: D2 を満たすエピソードで、次を境界で journal に記録する。
   - 窓切替/無操作からの経過 ms、プロセス名・クラス名、belief(open/mode と観測元)、`ImmCapability` の学習状態(降格が何回目のフォーカスで起きたか)、`presync` が書いた `applied` の値。
   - 利用者の訂正の代理指標: 確定の直後 N 秒以内の BackSpace の連打、明示の IME キー、Esc(生の時刻を残す。N と連打の閾値は今は決めない)。
   - GJI の受け付け可能時間の実測(D4)。
   - **対照群**: 読める窓(実 Chrome・tsf フォーム等。direct-follow で実状態が分かる)で、同じエピソードの定義の訂正率を同じログで取る。NICOLA の利用者は普通の入力でも確定直後に BackSpace を打つので、
     観測の無い窓の率が読める窓より有意に高いことを合格基準にする。読める窓では、実状態が belief と食い違ったエピソードと訂正の相関も測れる(代理指標の較正)。
+  - 件数の下限: 各群 n≥20 のエピソード。満たさないときは判定を保留し、ログを溜め続ける(報告者が 1 人なので、検定の形にはしない)。
   - 合格しなければ、直す対象が見つからなかったことになり、本 ADR は撤回する。
 - **段階 1(設定で有効化、既定は無効)**: D2〜D4 を実装する。報告者の実機で、訂正の頻度が減るか、一太郎で ON が効くかを検証する。段階 1 の前に、ADR-261 の CI の窓に GjiDirect の ON を送って効くかを安く確かめる価値がある。
 
@@ -144,17 +175,14 @@ belief OFF・実 ON の向きには「同時打鍵の成立」を判定する主
 ADR-261 は「読む」、本 ADR は「書く」。ADR-261 が go で字形が読めるなら、字形の読みを優先し、本 ADR の段階 1 は動かさない。
 ADR-261 が no-go(H1)でも、所有者判断により書き込みが効くことを前提とし、段階 1 で検証する。両 ADR の実機確認(インジケーター・実入力・SendInput の ON の一致)は、報告者への依頼を一回にまとめる。
 
-## 代替: presync を止める(撤去で直す案)
+## presync の停止との関係
 
-`presync_applied_open_on` を `ImmCapability::Unavailable` の窓で止めれば(ADR-098 決定 1-a の TsfNative と同じ扱い)、偽の `Confirmed(true)` が無くなり、view の未知化が要らなくなる。書き込みを足さない、撤去の方向の案である。
-presync の目的(直後の Engine ON が古い applied を根拠に不要な再送へ進むことの防止、GjiFsm への ImeOn 通知)が、Unavailable の窓で今も生きているかは未確認(ActivationSync は ADR-213 で撤去済みなので、前者は残っていない可能性が高い)。
-ただし、これだけでは「実 IME が OFF のまま」は直らない(偽の確定を作らなくなるだけ)ので、本 ADR の代わりにはならず、併用の候補にとどめる(未決 Q9)。
+presync の停止は「段階 A」として先に単独で行う(上記)。本 ADR の D3 は、段階 A が済んだ前提で書く場合は view の未知化と GjiFsm の `Reopen` が要らなくなり、簡素になる。
+段階 A を行わない場合に備えて、D3 には両方の記述を残してある。どちらで進めるかは、段階 A の結果(段階 0 のログ)を見て決める。
 
 ## 未決事項
 
 - Q1: class_name 単位の学習(`cache.toml`)のため、同じクラス名の別アプリへ広がる範囲(BUG-107 型)。
 - Q3: 無操作の閾値、訂正の代理指標の N 秒、GJI の受け付け可能時間(段階 0 で実測)。
-- Q6: エピソードのラッチが、旧機構の BUG-016 の settle の穴・BUG-069 のどちらを構造的に避けるか。
 - Q7: 初回の窓切替は降格前(`Standard`/`ImmCross`)なので対象外になる。降格の契機とタイミング次第で、最初のエピソードを取りこぼす。
-- Q8: ADR-256 の書き込み遅延の抑止(`note_awase_open_write`)だけを、完了の記録なしで呼ぶ必要があるか。
-- Q9: presync の停止(上記)を、本 ADR と併用するか、先に単独で行うか。
+- Q8: ADR-256 の抑止(`note_awase_open_write`)だけを呼ぶか。`post_ime_refresh` を呼ぶか。
