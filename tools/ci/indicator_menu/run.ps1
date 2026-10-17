@@ -39,6 +39,7 @@ public static class MW {
     Automation.AddAutomationEventHandler(AutomationElement.MenuOpenedEvent, AutomationElement.RootElement, TreeScope.Subtree, UiaH("UIA-MenuOpened"));
     Automation.AddAutomationEventHandler(AutomationElement.MenuClosedEvent, AutomationElement.RootElement, TreeScope.Subtree, UiaH("UIA-MenuClosed"));
     Automation.AddAutomationEventHandler(WindowPattern.WindowOpenedEvent, AutomationElement.RootElement, TreeScope.Subtree, UiaH("UIA-WindowOpened"));
+    Automation.AddAutomationEventHandler(InvokePattern.InvokedEvent, AutomationElement.RootElement, TreeScope.Subtree, UiaH("UIA-Invoked"));
   }
   static AutomationEventHandler UiaH(string kind) {
     return delegate(object s, AutomationEventArgs e) {
@@ -83,6 +84,92 @@ function Top-Windows($file, $label) {
   $A=[System.Windows.Automation.AutomationElement]; $T=[System.Windows.Automation.TreeScope]; $tc=[System.Windows.Automation.Condition]::TrueCondition
   Add-Content -Path $file -Value "### トップレベル窓 $label" -Encoding utf8
   foreach($x in $A::RootElement.FindAll($T::Children,$tc)){ Add-Content -Path $file -Value ("  " + [MW]::Describe($x)) -Encoding utf8 }
+}
+
+
+function Start-Awase($d, $cls) {
+  $w = "$d\awase"; New-Item -ItemType Directory -Force -Path $w | Out-Null
+  Copy-Item "$Dist\awase.exe" $w -Force
+  "[general]`n" | Set-Content -Path "$w\config.toml" -Encoding utf8
+  # 窓の IMM の能力を先に学習済みにする(CI の初回プローブが遅く誤学習されるのを防ぐ。観測の無い窓の近似では unavailable)
+  "[imm_capability.`"indicator_scenario.exe`"]`nScenWnd = `"$cls`"`nEDIT = `"$cls`"`n" | Set-Content -Path "$w\cache.toml" -Encoding utf8
+  $env:RUST_LOG = 'debug'; $env:AWASE_TEST_INJECTION = '1'
+  $p = Start-Process -FilePath "$w\awase.exe" -WorkingDirectory $w -PassThru -WindowStyle Hidden
+  Pump 8
+  Log "awase 起動 pid=$($p.Id) cls=$cls"
+  return $p
+}
+function Stop-Awase($p, $d) {
+  if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+  Pump 1
+  if (Test-Path "$d\awase\awase.log") { Copy-Item "$d\awase\awase.log" "$d\awase.log" -Force }
+}
+function Open-Menu($d, $label) {
+  $ind = Find-Indicator
+  if (-not $ind) { Log "$label : インジケーターが見つからない"; return $null }
+  $r = $ind.Current.BoundingRectangle; $cx=[int](($r.Left+$r.Right)/2); $cy=[int](($r.Top+$r.Bottom)/2)
+  [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($cx, $cy); Pump 1
+  [void](Drain "$d\events.log")
+  Log "$label : 右クリック"
+  [MW]::mouse_event(0x8,0,0,0,[UIntPtr]::Zero); [MW]::mouse_event(0x10,0,0,0,[UIntPtr]::Zero)
+  Pump 2
+  return $true
+}
+function Read-Selected($label) {
+  $A=[System.Windows.Automation.AutomationElement]; $T=[System.Windows.Automation.TreeScope]
+  $sel = @(); $n = 0
+  foreach($m in $A::RootElement.FindAll($T::Descendants,(New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty,[System.Windows.Automation.ControlType]::MenuItem)))){
+    $n++
+    $o = $null
+    if ($m.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$o)) { if ($o.Current.IsSelected) { $sel += $m.Current.AutomationId } }
+  }
+  Log "$label : MenuItem=$n 選択=$($sel -join ',')"
+  return $sel
+}
+function Click-Item($itemId) {
+  $A=[System.Windows.Automation.AutomationElement]; $T=[System.Windows.Automation.TreeScope]
+  foreach($m in $A::RootElement.FindAll($T::Descendants,(New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty,[System.Windows.Automation.ControlType]::MenuItem)))){
+    if ($m.Current.AutomationId -eq $itemId) {
+      $tr = $m.Current.BoundingRectangle
+      [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int](($tr.Left+$tr.Right)/2), [int](($tr.Top+$tr.Bottom)/2)); Pump 1
+      [MW]::mouse_event(0x2,0,0,0,[UIntPtr]::Zero); [MW]::mouse_event(0x4,0,0,0,[UIntPtr]::Zero)
+      return $true
+    }
+  }
+  return $false
+}
+# awase を起動した状態で、メニューを開いて(1)読む (2)項目を選ぶ (3)もう一度開いて、選んだ項目が反映されたかを読む。awase.log を残す。
+function Measure-Select($tag, $scenArgs, $itemId, $cls, [bool]$withAwase) {
+  $d = "$Out\$tag"; New-Item -ItemType Directory -Force -Path $d | Out-Null
+  Log "=== $tag 開始($scenArgs, 選ぶ項目=$itemId, awase=$withAwase)"
+  $ap = $null
+  if ($withAwase) { $ap = Start-Awase $d $cls }
+  $p = Start-Process -FilePath "$Dist\indicator_scenario.exe" -ArgumentList "--scen=cycle $scenArgs --n=1 --hold=60 --log=$d\scen.log" -PassThru -WindowStyle Hidden
+  Pump 10
+  [void](Drain "$d\events-before.log")
+  $t0 = [DateTime]::UtcNow
+  if (Open-Menu $d '1回目') {
+    $before = Read-Selected '選択前'
+    Shot "$tag-menu1"
+    $ev1 = Drain "$d\events.log"
+    Log "1回目の検知: POPUPSTART=$(([regex]::Matches($ev1,'WINEVENT POPUPSTART')).Count) MenuOpened=$(([regex]::Matches($ev1,'UIA-MenuOpened')).Count)"
+    $ok = Click-Item $itemId
+    Log "項目 $itemId を押した: $ok"
+    Pump 3
+    $ev2 = Drain "$d\events.log"
+    Log "選択後のイベント: Invoked=$(([regex]::Matches($ev2,'UIA-Invoked')).Count) POPUPEND=$(([regex]::Matches($ev2,'WINEVENT POPUPEND')).Count) MENUEND=$(([regex]::Matches($ev2,'WINEVENT MENUEND')).Count) MenuClosed=$(([regex]::Matches($ev2,'UIA-MenuClosed')).Count)"
+    Pump 2
+    if (Open-Menu $d '2回目') {
+      $after = Read-Selected '選択後(再読)'
+      Shot "$tag-menu2"
+      [void](Drain "$d\events.log")
+      [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Pump 2
+    }
+  }
+  [void](Drain "$d\events.log")
+  Log "終了 $tag (開始から $([int]([DateTime]::UtcNow - $t0).TotalSeconds) 秒)"
+  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Pump 2
+  if ($ap) { Stop-Awase $ap $d }
 }
 
 function Measure-State($tag, $scenArgs) {
@@ -132,22 +219,16 @@ function Measure-State($tag, $scenArgs) {
 Log "ime=$Ime"
 [MW]::Start()
 if ($Ime -eq 'msime') {
-  # 通常の窓(IMM が読める)
-  Measure-State 'msime-hira'   '--msime --steps=1:19'
-  Measure-State 'msime-kata'   '--msime --steps=1:1b'
-  Measure-State 'msime-halfalnum' '--msime --steps=0:10'
-  # 観測の無い窓の近似(自前の TSF text store の窓)。IMM の関わり: assoc=窓の IMM コンテキストなし / disable=ImmDisableIME。キーで状態を作り、打った出力で実状態を読む。
-  foreach ($imm in @('assoc','disable')) {
-    Measure-State "msime-tsf-$imm-hira" "--msime --win=tsf --imm=$imm --keys=F2"
-    Measure-State "msime-tsf-$imm-kata" "--msime --win=tsf --imm=$imm --keys=F1"
-    Measure-State "msime-tsf-$imm-alnum" "--msime --win=tsf --imm=$imm --keys=F0"
-  }
+  # 通常の窓(IMM が読める。cache は works)
+  Measure-Select 'msime-normal-noawase'   '--msime --steps=1:19'  'Item 103' 'works'       $false
+  Measure-Select 'msime-normal-awase'     '--msime --steps=1:19'  'Item 103' 'works'       $true
+  # 観測の無い窓の近似(TSF text store の窓 assoc。cache は unavailable)
+  Measure-Select 'msime-tsf-noawase'      '--msime --win=tsf --imm=assoc --keys=F2' 'Item 103' 'unavailable' $false
+  Measure-Select 'msime-tsf-awase'        '--msime --win=tsf --imm=assoc --keys=F2' 'Item 103' 'unavailable' $true
 } else {
-  Measure-State 'gji-on'  '--keys=16'
-  Measure-State 'gji-off' '--keys=1A'
-  foreach ($imm in @('assoc','disable')) {
-    Measure-State "gji-tsf-$imm-on"  "--win=tsf --imm=$imm --keys=16"
-    Measure-State "gji-tsf-$imm-off" "--win=tsf --imm=$imm --keys=1A"
-  }
+  Measure-Select 'gji-normal-noawase'     '--keys=16' 'Item 10' 'works'       $false
+  Measure-Select 'gji-normal-awase'       '--keys=16' 'Item 10' 'works'       $true
+  Measure-Select 'gji-tsf-noawase'        '--win=tsf --imm=assoc --keys=16' 'Item 10' 'unavailable' $false
+  Measure-Select 'gji-tsf-awase'          '--win=tsf --imm=assoc --keys=16' 'Item 10' 'unavailable' $true
 }
 Log '完了'
