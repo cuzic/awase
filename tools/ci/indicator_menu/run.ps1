@@ -7,11 +7,10 @@ $Dist = (Resolve-Path $Dist).Path
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $Out = (Resolve-Path $Out).Path
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
-$refs = @(
-  [System.Windows.Automation.AutomationElement].Assembly.Location,
-  [System.Windows.Automation.ControlType].Assembly.Location,
-  [System.Windows.Rect].Assembly.Location,
+$uiaDir = Split-Path ([System.Windows.Automation.AutomationElement].Assembly.Location)
+$refs = @("$uiaDir\UIAutomationClient.dll", "$uiaDir\UIAutomationTypes.dll", "$uiaDir\WindowsBase.dll",
   'System.Collections', 'System.Collections.Concurrent', 'System.Runtime', 'System.Linq', 'System.Console')
+foreach ($r in $refs[0..2]) { Write-Host "ref $r exists=$(Test-Path $r)" }
 Write-Host ("refs: " + ($refs -join '; '))
 try { Add-Type -ErrorAction Stop -ReferencedAssemblies $refs -TypeDefinition @"
 using System; using System.Collections.Concurrent; using System.Runtime.InteropServices; using System.Text; using System.Windows.Automation;
