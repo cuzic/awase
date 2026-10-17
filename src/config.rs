@@ -538,7 +538,7 @@ pub enum AutoDetectMode {
 ///
 /// PR 2a の時点では `observe`（影の判定とログだけ）しかない。打鍵の保持・IME への書き込みは後続の PR
 /// （`ime_on`）で足す。
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AutoDetectConfig {
     pub mode: AutoDetectMode,
