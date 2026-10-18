@@ -82,6 +82,148 @@ pub fn mozc_key_vk_names(key: &str) -> &'static [&'static str] {
     }
 }
 
+/// 不具合報告(ADR-259)に載せてよい `custom_keymap_table` の「状態」列の固定語彙(6 語)。
+const DIAGNOSTIC_STATUSES: &[&str] = &[
+    "DirectInput",
+    "Precomposition",
+    "Composition",
+    "Conversion",
+    "Prediction",
+    "Suggestion",
+];
+
+/// 不具合報告に載せてよい `command` 列の固定語彙(16 語、IME の開閉・入力モードに関わるものだけ)。
+/// ワイルドカード・前方一致では判定しない。`classify_command` だけに頼らない(`InputMode*` が落ちる)。
+const DIAGNOSTIC_COMMANDS: &[&str] = &[
+    "IMEOn",
+    "IMEOff",
+    "CancelAndIMEOff",
+    "ToggleAlphanumericMode",
+    "SwitchKanaType",
+    "CompositionModeSwitchKanaType",
+    "CompositionModeHiragana",
+    "CompositionModeFullKatakana",
+    "CompositionModeHalfKatakana",
+    "CompositionModeFullAlphanumeric",
+    "CompositionModeHalfAlphanumeric",
+    "InputModeHiragana",
+    "InputModeFullKatakana",
+    "InputModeHalfKatakana",
+    "InputModeFullAlphanumeric",
+    "InputModeHalfAlphanumeric",
+];
+
+/// 不具合報告に載せてよい `custom_keymap_table` の 1 行。**3 つとも `'static`**: `config1.db` 由来の
+/// `String` が出力に入る余地が型に無く、「allowlist が唯一の防壁」(ADR-148)をコンパイラが守る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DiagnosticRow {
+    pub status: &'static str,
+    pub keys: &'static [&'static str],
+    pub command: &'static str,
+}
+
+/// [`diagnostic_rows`] が落とした行の理由別の件数(内容は持たない)。
+///
+/// 不変条件: `total_rows = sent + merged_duplicates + other_command + unknown_status +
+/// modified_key_ime_rows + unmapped_key`(1 行は最初に当たった理由に 1 回だけ数える)。
+/// `unknown_ime_like_command ⊆ other_command`、`kanji_rows ⊆ unmapped_key` は内訳で、合計に足さない。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiagnosticRowCounts {
+    /// パーサ(`parse_custom_keymap_table`)が返した行数。見出し行・空行・3 列に満たない行は含まない。
+    pub total_rows: u32,
+    /// 別名・重複をまとめた後に送る行数(`keys` が 2 つの行も 1 行)。
+    pub sent: u32,
+    /// 正規化でまとめて減った行数。
+    pub merged_duplicates: u32,
+    /// コマンドが語彙に無い行(普通の編集コマンドが大半)。
+    pub other_command: u32,
+    /// `other_command` のうち、コマンド名に `IME` を含む、または `CompositionMode`・`InputMode` で始まるもの
+    /// (綴り違いの IME コマンドの検出。数えるだけで、送る文字列の判定には使わない)。
+    pub unknown_ime_like_command: u32,
+    /// 状態が 6 語に無い行。
+    pub unknown_status: u32,
+    /// キーに空白を含む(修飾キー付き)IME 行。belief に効くのに送らない。
+    pub modified_key_ime_rows: u32,
+    /// キーが VK に写らない行(`Kanji` など仕様で写さないものを含む)。
+    pub unmapped_key: u32,
+    /// `unmapped_key` のうち `Kanji` の行(プリセット由来の表のほとんどにあり、信号を埋めるので分ける)。
+    pub kanji_rows: u32,
+}
+
+/// [`diagnostic_rows`] の結果。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiagnosticRows {
+    /// (状態, キー, コマンド)の順に並べ、重複をまとめた行。
+    pub rows: Vec<DiagnosticRow>,
+    pub counts: DiagnosticRowCounts,
+}
+
+fn clamp_u32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// 不具合報告(ADR-259)用に、`custom_keymap_table` の IME 関連の行を固定語彙だけ通して返す。
+///
+/// 判定の順は「コマンド → 状態 → キーの空白(修飾キー付き)→ キーの写像」で、落とした行は最初に当たった
+/// 理由に 1 回だけ数える([`DiagnosticRowCounts`])。同じ (状態, キー) に違うコマンドが付いた行は両方残す
+/// (GJI がどちらを使うか分からない矛盾で、診断に要る)。
+#[must_use]
+pub fn diagnostic_rows(custom_keymap_table: &str) -> DiagnosticRows {
+    use std::collections::BTreeSet;
+    let parsed = parse_custom_keymap_table(custom_keymap_table);
+    let mut counts = DiagnosticRowCounts {
+        total_rows: clamp_u32(parsed.len()),
+        ..DiagnosticRowCounts::default()
+    };
+    let mut kept: BTreeSet<DiagnosticRow> = BTreeSet::new();
+    let mut kept_before_dedupe: usize = 0;
+    for row in &parsed {
+        let command = row.command.trim();
+        let Some(&command_static) = DIAGNOSTIC_COMMANDS.iter().find(|c| **c == command) else {
+            counts.other_command += 1;
+            if command.contains("IME")
+                || command.starts_with("CompositionMode")
+                || command.starts_with("InputMode")
+            {
+                counts.unknown_ime_like_command += 1;
+            }
+            continue;
+        };
+        let Some(&status_static) = DIAGNOSTIC_STATUSES
+            .iter()
+            .find(|s| **s == row.status.trim())
+        else {
+            counts.unknown_status += 1;
+            continue;
+        };
+        let key = row.key.trim();
+        if key.contains(char::is_whitespace) {
+            counts.modified_key_ime_rows += 1;
+            continue;
+        }
+        let keys = mozc_key_vk_names(key);
+        if keys.is_empty() {
+            counts.unmapped_key += 1;
+            if key.eq_ignore_ascii_case("kanji") {
+                counts.kanji_rows += 1;
+            }
+            continue;
+        }
+        kept_before_dedupe += 1;
+        kept.insert(DiagnosticRow {
+            status: status_static,
+            keys,
+            command: command_static,
+        });
+    }
+    counts.sent = clamp_u32(kept.len());
+    counts.merged_duplicates = clamp_u32(kept_before_dedupe - kept.len());
+    DiagnosticRows {
+        rows: kept.into_iter().collect(),
+        counts,
+    }
+}
+
 /// GJI の custom keymap から抽出した、IME ON/OFF 検出に使える VK 名の集合。
 /// いずれも `awase::config::ImeDetectConfig.toggle/on/off` へそのまま
 /// 反映できる形（`VkCode::from_name` が受理する文字列）。
@@ -361,7 +503,7 @@ fn classify_and_push(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_ime_keys, extract_mode_keys, mozc_key_vk_names,
+        diagnostic_rows, extract_ime_keys, extract_mode_keys, mozc_key_vk_names,
         set_mode_keys_confirmed_by_input_progress_status, GjiImeKeys, GjiModeKeys,
     };
     use crate::command::GjiCompositionMode;
@@ -676,5 +818,131 @@ DirectInput\tEisu\tToggleAlphanumericMode
 Composition\tEisu\tCompositionModeHiragana
 ";
         assert!(set_mode_keys_confirmed_by_input_progress_status(text).is_empty());
+    }
+
+    fn counts_sum_matches(c: &super::DiagnosticRowCounts) {
+        assert_eq!(
+            c.total_rows,
+            c.sent
+                + c.merged_duplicates
+                + c.other_command
+                + c.unknown_status
+                + c.modified_key_ime_rows
+                + c.unmapped_key,
+            "{c:?}"
+        );
+        assert!(c.unknown_ime_like_command <= c.other_command);
+        assert!(c.kanji_rows <= c.unmapped_key);
+    }
+
+    /// ADR-259: 3 列とも固定語彙だけを返し、語彙外・修飾キー付き・写らないキーの行は理由別に数える。
+    #[test]
+    fn diagnostic_rows_keep_only_allowlisted_ime_rows_and_count_the_rest() {
+        let table = "status\tkey\tcommand\n\
+            DirectInput\tEisu\tIMEOn\n\
+            Precomposition\tEisu\tToggleAlphanumericMode\n\
+            Composition\tHankaku/Zenkaku\tIMEOff\n\
+            Composition\tShift Eisu\tIMEOff\n\
+            Composition\tKanji\tIMEOff\n\
+            Composition\ta\tInsertCharacter\n\
+            Composition\tEisu\tIMESomethingNew\n\
+            Composition\tEisu\tCompositionModeHiraganaX\n\
+            SecretStatus\tEisu\tIMEOn\n\
+            SecretStatus\tShift Eisu\tIMEOn\n\
+            broken line without tabs\n";
+        let r = diagnostic_rows(table);
+        let rows: Vec<_> = r
+            .rows
+            .iter()
+            .map(|r| (r.status, r.keys.to_vec(), r.command))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "Composition",
+                    vec!["VK_DBE_SBCSCHAR", "VK_DBE_DBCSCHAR"],
+                    "IMEOff"
+                ),
+                ("DirectInput", vec!["VK_DBE_ALPHANUMERIC"], "IMEOn"),
+                (
+                    "Precomposition",
+                    vec!["VK_DBE_ALPHANUMERIC"],
+                    "ToggleAlphanumericMode"
+                ),
+            ]
+        );
+        let c = r.counts;
+        assert_eq!(c.total_rows, 10, "見出しと壊れた行は数えない");
+        assert_eq!(c.sent, 3);
+        assert_eq!(
+            c.other_command, 3,
+            "InsertCharacter・IMESomethingNew・CompositionModeHiraganaX"
+        );
+        assert_eq!(c.unknown_ime_like_command, 2, "近い綴りは数えるが送らない");
+        assert_eq!(
+            c.unknown_status, 2,
+            "状態が語彙外の行は、修飾キー付きでも unknown_status に 1 回だけ"
+        );
+        assert_eq!(c.modified_key_ime_rows, 1);
+        assert_eq!(c.unmapped_key, 1);
+        assert_eq!(c.kanji_rows, 1);
+        counts_sum_matches(&c);
+    }
+
+    /// 別名・大文字小文字違いは 1 行にまとめ、同じ (状態, キー) に違うコマンドが付いた行は両方残す。
+    #[test]
+    fn diagnostic_rows_merge_aliases_but_keep_contradictions() {
+        let table = "DirectInput\tHankaku\tIMEOn\n\
+            DirectInput\tZenkaku\tIMEOn\n\
+            DirectInput\tHankaku/Zenkaku\tIMEOn\n\
+            DirectInput\t Eisu \tIMEOn\n\
+            DirectInput\teisu\tIMEOff\n";
+        let r = diagnostic_rows(table);
+        assert_eq!(r.counts.total_rows, 5);
+        assert_eq!(r.counts.sent, 3);
+        assert_eq!(r.counts.merged_duplicates, 2);
+        assert!(
+            r.rows
+                .iter()
+                .any(|x| x.keys == ["VK_DBE_ALPHANUMERIC"] && x.command == "IMEOff"),
+            "矛盾する行は両方残る"
+        );
+        assert!(
+            r.rows
+                .iter()
+                .any(|x| x.keys == ["VK_DBE_ALPHANUMERIC"] && x.command == "IMEOn"),
+            "前後に空白のあるキーは写像できる行を落とさない"
+        );
+        counts_sum_matches(&r.counts);
+    }
+
+    /// 出力の文字列はすべて固定表のどれかと一致する(入力から来た文字列が無い)。
+    #[test]
+    fn diagnostic_rows_output_comes_only_from_the_fixed_tables() {
+        let table = include_str!(
+            "../../../docs/adr/186-measurements/config1-custom-keymap-table-ignored.tsv"
+        );
+        let r = diagnostic_rows(table);
+        assert!(!r.rows.is_empty());
+        for row in &r.rows {
+            assert!(super::DIAGNOSTIC_STATUSES.contains(&row.status));
+            assert!(super::DIAGNOSTIC_COMMANDS.contains(&row.command));
+            assert!(!row.keys.is_empty());
+        }
+        counts_sum_matches(&r.counts);
+    }
+
+    /// 実機由来の 175 行の表(MS-IME プリセット相当)では、IME らしい未知のコマンドは 0 件
+    /// (`DisplayAs*`・`ConvertTo*Alphanumeric` の行に当たらないよう、条件を `IME` を含む/
+    /// `CompositionMode`・`InputMode` で始まるものだけにした根拠)。
+    #[test]
+    fn diagnostic_rows_real_preset_table_has_no_ime_like_unknown_commands() {
+        let table = include_str!(
+            "../../../docs/adr/186-measurements/config1-custom-keymap-table-ignored.tsv"
+        );
+        let c = diagnostic_rows(table).counts;
+        assert_eq!(c.unknown_ime_like_command, 0, "{c:?}");
+        assert_eq!(c.total_rows, 174, "見出しを除く行数");
     }
 }
