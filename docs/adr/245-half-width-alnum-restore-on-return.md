@@ -7,7 +7,7 @@ summary: |-
   F2/VK_DBE_HIRAGANA は移動先 B に届く。A は半角英数のまま残り、awase のトグルフラグだけが下りる(MS-IME 本体・GJI とも CI で 5/5)。
   仕様(ADR-107 の検証項目 4)は「往復しても英数状態が持ち越されない」で、所有者は 2026-10-08 に「A に戻ったらかなに戻す」と判断した。本 ADR は、離脱時には IME へ何も送らず(belief は従来どおり戻す)、A を覚えておいて、A に戻って最初の打鍵の手前で復元する案(B)を定める。
 status: |-
-  起草・改訂(2026-10-08)。所有者判断=「A に戻ったらかなに戻す」(案 B)・ATOK は送らずトグルを立て直す・エンジン OFF 中も復元する。Opus round1(Blocker 3・Must 6・Should 7・Nit 4)・round2(Blocker 0・Must 5・Should 4)・round3(Blocker 0・Must 2・Should 3)・round4(Blocker 0・Must 2・Should 2・Nit 1)を反映済み。round4 の判定=R4-1・R4-2 の追記を条件に実装に進んでよい(追記済み)。未決 Q3・Q4(実測)。 追補 2(MS-IME 本体の復元後の観測と最初の打鍵の保持)は 2026-10-18 に r2 を起草、Opus round 2 待ち。
+  起草・改訂(2026-10-08)。所有者判断=「A に戻ったらかなに戻す」(案 B)・ATOK は送らずトグルを立て直す・エンジン OFF 中も復元する。Opus round1(Blocker 3・Must 6・Should 7・Nit 4)・round2(Blocker 0・Must 5・Should 4)・round3(Blocker 0・Must 2・Should 3)・round4(Blocker 0・Must 2・Should 2・Nit 1)を反映済み。round4 の判定=R4-1・R4-2 の追記を条件に実装に進んでよい(追記済み)。未決 Q3・Q4(実測)。 追補 2(MS-IME 本体の復元後の観測と最初の打鍵の保持)は 2026-10-18 に r3 を起草(round 2 は Blocker 1・Must 4・Should 4・Nit 4 を反映)、Opus round 3 待ち。
 related_adr:
   - "ADR-107"
   - "ADR-084"
@@ -99,8 +99,10 @@ related_adr:
 - 同一プロセス内の窓移動の修正(Q4 で測るのみ)。
 - 観測起点の書き込みの整理(`docs/tasks/observation-driven-writes-inventory-2026-10-08.md` の A〜C)。本 ADR は個別の欠陥の修正で、整理の方向とは独立。
 
-## 追補 2(2026-10-18): MS-IME 本体は復元の書き込みの後に開閉を読み直し、最初の打鍵はその観測が着くまで保持する(改訂 r2、Opus round 2 待ち)
+## 追補 2(2026-10-18): MS-IME 本体は復元の書き込みの後に開閉を読み直し、最初の打鍵はその観測が着くまで保持する(改訂 r3、Opus round 3 待ち)
 
+> r3(round 2 の反映): R1 を 1 回目の `Written` の直後・160ms のスリープの前に置く(B-1')、R1 より前に始まった ImmCrossProbe の読みの棄却(M-1)、drain の途中で始まる保持(M-2)、完了の札(M-3)、予約の前提にフォーカス追跡の一致(M-4)、契機の表の修正(S-1)。`docs/adr/review/245-add2-opus-review-round2.md`。
+>
 > 経緯: 初版(c85e668b)は「`Engine::compute_active` が真になるまで保持」だった。Opus round 1(Blocker 2・Must 6・Should 6・Nit 5、`docs/adr/review/245-add2-opus-review-round1.md`)が、解放条件の前提(belief が書き込みの数 ms 後に追いつく)は 35 件中 8 件しか裏付けが無いと指摘し、`typed2` 実験で確かめて設計を組み替えた。
 
 ### 事実(PR #666 の CI。run 39119247220 / 39120344451 / 39121954515、head 25857f9e / 4c745b00)
@@ -114,15 +116,20 @@ related_adr:
 ### 決定(案)
 
 1. **対象は IMC 経路(`entry.uses_imc_conv_write`)の `Resume`(`ExitOwnership::FromResume` の復元)だけ**。GJI の `Resume`/`RebuildToggle`、`Drop`、`Deferred`、通常のトグル OFF(`FromToggle`)は変えない。`sc-focusrestore-msime-lshift`(Shift タップの Exit が戻り待ちを取る経路)も同じ `FromResume` の復元を通るので、R1 で直る見込み(未検証、typed2 で見る)。
-2. **R1: 復元の書き込みの直後に、A の開閉を読み直して belief に記録する。** `kp_restore_kana_from_half_width` の `spawn_local` が `Written` の NATIVE 確認で復元完了を判断した直後(`key_pipeline.rs` の「復元完了」の分岐)で、`read_ime_state_full_async()` を 1 回呼び、結果を FocusProbe の ImmCrossProbe と**同じ経路**(`write_imm_cross_probe(open, ..)` と `classify_fetched_snapshot` → `ImeEvent::InputModeObserved { source: ImmCrossProbe, confidence: High }`)で記録する。実装は FocusProbe 側の記録ブロック(`key_pipeline.rs` の `[ImmCrossProbe] child-hwnd IME=..` の `spawn_local`)を `Runtime` のメソッド `record_imm_cross_probe_observation(snap, ticket, read_started)` に括り出して共有する(コピーしない)。
+2. **R1: 復元の書き込みの直後に、A の開閉を読み直して belief に記録する。** `kp_restore_kana_from_half_width` の `spawn_local` の **1 回目(`attempt == 0`)の `Written` の直後、160ms の `sleep_ms(RETRY_INTERVAL_MS)` の前**に `read_ime_state_full_async()` を 1 回だけ呼び(Opus r2 B-1': 「復元完了」の分岐=NATIVE 確認は書き込みの約 160ms 後で、期限 100ms より必ず遅い。2 回目以降のリトライの `Written` では読まない。「NATIVE 未確認のまま終了」の分岐は R1 と無関係)、結果を FocusProbe の ImmCrossProbe と**同じ経路**(`write_imm_cross_probe(open, ..)` と `classify_fetched_snapshot` → `ImeEvent::InputModeObserved { source: ImmCrossProbe, confidence: High }`)で記録する。実装は FocusProbe 側の記録ブロック(`key_pipeline.rs` の `[ImmCrossProbe] child-hwnd IME=..` の `spawn_local`。開閉に加えて `classify_fetched_snapshot` → `InputModeObserved` も出す側)を `Runtime` のメソッド `record_imm_cross_probe_observation(snap, ticket, read_started)` に括り出して共有する(コピーしない)。**括り出すのは `key_pipeline.rs` の側だけで、同じファイルに置く**(`architecture_guard.rs::input_mode_observed_construction_sites_are_accounted_for` の件数 `key_pipeline.rs` = 2 を変えない)。`focus_tracking.rs` の ImmCrossProbe(開閉だけを書く)は挙動が違うので統合しない。括り出しの前後で `write_imm_cross_probe` → `effective_open()` を読む → `classify_fetched_snapshot` の順序が変わらないことをレビュー点にする(Opus r2 S-2)。ログのタグは R1 のときだけ `[ImmCrossProbe/resume]` に分ける(journal の値は変えない。S-4)。
    - **新しい belief 更新経路は作らない**(既存の `ObservationSource::ImmCrossProbe`/High のまま。`ime-belief-architecture.md` の「Observe → pure classify → reduce」を守る)。読み取りの開始時刻を観測の時刻にする規律(FocusProbe 側のレビュー指摘 A-M2)も同じ。
    - **宛先の照合**: `ImmLikeTicket { fence }` を、Resume の判断の時点(同期、段の中)で `self.focus_fence()` から採って `spawn_local` へ渡し、記録は `admit_epoch_in_app` を通す(復元の途中でフォーカスが動いたら棄却=何もしない)。
+   - **R1 より前に始まった ImmCrossProbe の読みの棄却(Opus r2 M-1)**: 観測ストアは観測元ごとに 1 枠で後から着いたものが勝ち、`offload` は呼び出しごとに別スレッドなので、読みの完了順は開始順と一致しない。R1 と同じ枠に書くものが 2 つある: (i) フォーカス時の ImmCrossProbe(`focus_tracking.rs`)、(ii) 最初の打鍵の `kp_stage_focus_probe`(半角英数の段の**前**)が起動する ImmCrossProbe(conv 0x10 を読めば `InputModeObserved{ObservedEisu, High}` も出す)。書き込み前に始まった読みが R1 より後に着くと、閉・英数で上書きして Engine が止まる。→ **読みの開始時刻 `read_started` が「直近の復元の書き込みの起案時刻」より前の ImmCrossProbe は、(i)(ii) の両方で棄却する**。起案時刻は Resume の段で `Output` の `Cell<TickMs>`(`resume_restore_floor`)に 1 回書く(`note_explicit_ime_action` を打つ時点と同じ)。比較は `ImmLikeTicket` を通る admission の呼び出し側(`admit_epoch_in_app` の中ではなく、2 つの記録ブロックの手前)に置き、reducer には規則を足さない。単体テスト(時刻の比較は純関数に出す)と、「(i)(ii) の読みが R1 より後に着く」ケースを検証節に足す。
+   - **予約の前提(Opus r2 M-4)**: Resume の判断の時点で、フォーカス追跡が前面窓に追いついていること(`lang_detect_focus_in_sync()` と同じ条件)。追いついていなければ R1 も R2 も予約せず(PR 2 のままの挙動)、ログに理由を出す。`focus_fence()`・`current_app_profile()`・`belief.is_japanese_ime()` はすべて追跡側の値なので、この前提の**後**に読む(B のまま採って、棄却・宛先違い〈A の読みを B の hwnd として記録〉・予約の誤りを起こさない)。決定 8 の判定もこの前提の後。
    - **R1 は R2(保持)が無くても単独で効く**: 最初の打鍵は `w` のままだが、2 打鍵目から NICOLA が効く。実装の順序は R1 → R2 とし、R1 だけで先にマージできる単位にする。
 3. **R2: Resume の最初の打鍵を保持し、R1 の観測が記録されたら再生する。**
    - **保持を始める打鍵**: `kp_stage_half_width_return` が `Resume`(IMC 経路、かつ R1 の観測を予約したとき)を返した KeyDown。`kp_run_inner` から `CallbackResult::Consumed` を返し、`ResumeHold` に積む。
    - **保持中の後続の打鍵を足す場所は取り込み口**(`app/mod.rs::handle_hook_key_event`、`lang_detect_on_key` の直後、`OUTPUT_GATE`・`FOCUS_RESYNC` の判定より前)。`kp_run_inner` の中に置かない(`[[keymap]]` 照合・Nested/NonText の即時 reinject・`[[post_bypass]]`・TsfGate・ime-off-rescue・`FOCUS_RESYNC` の defer が先に打鍵を取って順序が入れ替わる、Opus B-2)。再生は `handle_wm_drain_output_queue` → `deliver_key_event(DeferredReplay)` で取り込み口を通らないので二重に保持されない。
-   - **解放の条件(上から先に成立したもの)**: (a) R1 の観測が記録された、または復元が失敗/中断/世代不一致で終わった(`Observed` / `RestoreEnded`)。(b) 保持の開始から `HALF_WIDTH_RESUME_HOLD_MAX_MS`(`Deadline`)。(c) 保持が上限(4 件)に達した(`Cap`)。(d) 契機の表(下)。
+   - **解放の条件(上から先に成立したもの)**: (a) 復元タスクの**完了の札**が通知した(R1 が記録した、または記録できずに終わった)。(b) 保持の開始から `HALF_WIDTH_RESUME_HOLD_MAX_MS`(`Deadline`)。(c) 保持が上限(4 件)に達した(`Cap`)。(d) 契機の表(下)。
    - **(a) は Engine の活性を条件にしない**(Opus M-3)。観測が記録されれば、Engine が活性になるかはその時点の belief が決める。Engine OFF の構成・IME が本当に閉の構成でも、観測の着いた ~7ms 後に素通しで再生されるだけで、100ms の余計な遅れは出ない。
+   - **完了の札(Opus r2 M-3)**: R2 を予約したら、復元タスクへ drop 時に 1 回だけ通知する RAII の値(`ResumeDoneToken`)を渡す。タスクのあらゆる終わり方で通知が出る: `ActuationTarget::capture` が `None`、`still_owner` 偽、1 回目が `Failed`/`Aborted` のまま 160ms のスリープに入る場合(R1 は 1 回目の書き込みの直後に 1 回だけ行うので、書き込みが成功しなければ「読めなかった」として通知)、`snap.ime_on` が `None`、`admit_epoch_in_app` の棄却、`with_app` が `None`(`post_to_main_thread_with` で再送する。`with_app_or_repost_with` と同じ流儀)。通知の理由を `Observed` / `CaptureFailed` / `NotOwner` / `FirstWriteFailed` / `ReadNone` / `Rejected` に分けてログに出し、CI のログ断片検査で数える。
+   - **保持中なら足す判定は取り込み口と `deliver_key_event` の先頭の両方に置く(Opus r2 M-2)**: Resume の打鍵自体が `INPUT_DEFER` 経由(OUTPUT_GATE 中・`has_pending_drain`・`with_app` が `None`・TsfGate/ime-off-rescue の再生)で届くことがあり、drain の途中で保持が始まると同じバッチの後続は取り込み口を通らずに追い越す。`deliver_key_event(DeferredReplay)` の先頭(origin を問わない)でも、保持中なら足す。R2 自身の再生は保持が終わった後でしか drain に来ないので二重に保持されない。
+   - **ADR-263 の保持との排他(Opus r2 N-2)**: MS-IME 本体の Resume は `effective_open` が偽で、`lang_detect_may_hold` の `lang_detect_engine_active()` が偽になる。したがって窓切替後の最初の打鍵のエピソードは「保持しない」で始まり、その打鍵は取り込み口で `Pass` されて R2 の判定に届く。R2 の再生は `lang_detect_on_key` を二度通らない。`lang_detect_may_hold` の条件が変わると排他が崩れるので、architecture_guard (i) の順序の固定が保険。
    - **解放は「保持していた打鍵+解放の契機になった打鍵」を同じ列で `INPUT_DEFER.replay_later` に渡す**(Opus M-1。(c) で契機の打鍵を通常処理して追い越させない)。
    - **BS は送らない**。
 4. **契機の表(解放=再生か破棄か。Opus M-4・S-4)**
@@ -132,12 +139,12 @@ related_adr:
    | R1 の観測の記録/復元の終了 | 再生 |
    | `HALF_WIDTH_RESUME_HOLD_MAX_MS` の一発タイマー | 再生(従来どおり素通し。BS は送らない) |
    | 保持の上限(4) | 再生(契機の打鍵も同じ列の末尾) |
-   | 前面窓の変化(`ir_notify_focus_changed`、保持の開始時の `ForegroundScope` と不一致) | **Down が保持に入っている打鍵だけを破棄**し、Down が保持の外にある KeyUp(保持の前に OS へ届いた Down の Up)は再生する(押されたまま残さない)。件数をログに残す |
+   | 前面窓の変化(`ir_notify_focus_changed`、保持の開始時の `ForegroundScope` と不一致) | **保持の中の打鍵をすべて捨てる**。保持が無くなった後に、捨てた Down に対応する KeyUp が来たら**保持に足さず通常どおり通す**(OS から見れば Down の無い Up で無害)。件数をログに残す |
    | `WM_PANIC_RESET`・エンジンのトグル・設定の再読み込み・セッションのロック | 再生(失うより遅れさせる)。タイマーを kill する |
-   | 保持の外で既に OS に届いた Down の KeyUp が保持中に来る | 保持に足さず、通常どおり処理(保持列の順序は Down を持つ打鍵だけに適用) |
+   | 保持の外で既に OS に届いた Down の KeyUp が保持中に来る | 保持に足さず、通常どおり処理(保持列の順序は Down を持つ打鍵だけに適用)。**キーの同一性は `vk::thumb_latch_identity(scan, extended)` で取り、vk では判定しない**(`VK_DBE_*` は Down/Up で vk が変わり、左右の Alt は raw の scan が同じで拡張ビットだけが違う)。リピート(`was_down`)の Down は、同じ同一性の Down が保持の中にあれば保持に足し、無ければ(B で押されたままのキー)保持に足さず通す |
 
 5. **解放の期限は一発タイマー `TIMER_RESUME_HOLD`(ID 112、`TIMER_LANG_HOLD = 111` の次。エンジンの `TIMER_PENDING`/`TIMER_SPECULATIVE` とは別の番号空間)を保持の開始時に 1 回だけ張る**。周期ポーリングは使わない(初版の 10ms 周期は実効約 15.6ms に丸められ、打鍵が続く間は WM_TIMER が遅れる。Opus M-5)。解放(a)(c)(d)でも必ず kill する。
-6. **`HALF_WIDTH_RESUME_HOLD_MAX_MS = 100`**(`tuning.rs`、`#[measured_macro::measured(...)]`)。導出: 書き込みの実測最大 6.0ms(n=35)+ 直後の `read_ime_state_full_async`(ログの `[ime-io] cross_process cmd=0x0001 kind=probe` が `elapsed_us=177〜529`)で、観測の記録までの典型は ~7ms。期限はこれが**来ないとき**の最悪の遅れの上限で、(a) が成立する通常は ~7ms で解放する。cross-process の IMC 読み書きは応答しない窓で最大 300ms(`run_with_timeout`)かかりうるが、その窓を体感の遅れ 100ms を超えて待たせない側に倒す(期限後は素通しで従来の挙動)。**dragonflyg4(負荷時)の分布は未測定。実測してから定数を確定する条件を `tuning.rs` のコメントとコミット本文に書く**(`tuning-constants.md`)。
+6. **`HALF_WIDTH_RESUME_HOLD_MAX_MS = 100`**(`tuning.rs`、`#[measured_macro::measured(...)]`)。**測定と判断を分ける**(Opus r2 N-1): 測定=観測の記録までの典型 ~7ms(下)、100ms という上限は「観測が来ないときの打ち切り」の判断(来ないときは素通しで PR 2 と同じ結果になる)であり、測定から導いた値ではない。典型 ~7ms は R1 を 1 回目の `Written` の直後に置くこと(決定 2)が前提。導出: 書き込みの実測最大 6.0ms(n=35)+ 直後の `read_ime_state_full_async`(ログの `[ime-io] cross_process cmd=0x0001 kind=probe` が `elapsed_us=177〜529`)で、観測の記録までの典型は ~7ms。期限はこれが**来ないとき**の最悪の遅れの上限で、(a) が成立する通常は ~7ms で解放する。cross-process の IMC 読み書きは応答しない窓で最大 300ms(`run_with_timeout`)かかりうるが、その窓を体感の遅れ 100ms を超えて待たせない側に倒す(期限後は素通しで従来の挙動)。**dragonflyg4(負荷時)の分布は未測定。実測してから定数を確定する条件を `tuning.rs` のコメントとコミット本文に書く**(`tuning-constants.md`)。
 7. **確認ゲートとの関係(Opus S-2)**: R2 が保証するのは「Engine の判断の時点の belief」だけ。出力のタイミングは既存の msime-ready ゲート(`output/vk_send.rs`・`output/probe_io.rs`、復元が張る `confirm_gate_deadline_override_ms`)が IMC の NATIVE を確認するまで待つ側で保証する。実モードと IMC の食い違いはどちらも保証しない(typed2 の実測では実モードは戻っている)。
 8. **適用するプロファイル(Opus S-5)**: R1 の読みは FocusProbe の ImmCrossProbe と同じ条件(`AppImeProfile::Standard` かつ `is_japanese_ime`)でだけ予約する。TsfNative の A(Chrome・WezTerm 等)+ MS-IME 本体では R1 を予約しないので、**R2 も保持しない**(観測が着かないため毎回期限まで待つ事態を避ける)。この組み合わせの実機の分布は未確認。
 9. **再生で段の前の処理が二重に走ること(Opus S-6)**: 保持した打鍵は再生で `kp_run_inner` の先頭(`lang_check_apply`・`enrich_*`・`try_hold_key`・ime-off-rescue Phase A・`kp_stage_focus_probe`)を再び通る。実装の PR で 1 行ずつ冪等を確かめ、結果をこの ADR に追記する(確かめるまでマージしない)。起案した打鍵は戻り待ちを取り出し済みなので、`kp_stage_half_width_return` は 2 回目を何もしない。
@@ -150,9 +157,10 @@ related_adr:
 
 ### 検証
 
+- 純粋な関数: ImmCrossProbe の棄却の判定(`read_started < resume_restore_floor`)の表(floor より前・同時・後、floor 未設定)。(i)(ii) の読みが R1 より後に着いても belief を巻き戻さないこと(M-1)。
 - 純粋な状態機械(`state/half_width_resume_hold.rs`、時刻・スコープは引数): 解放(a)〜(d)、順序(Down→Up→次の Down)、契機の打鍵を末尾に含めた列、Down が保持外の KeyUp だけが保持中に来て窓が変わる、保持が空のとき何もしない、Engine OFF 相当(観測のみで解放)。
-- `architecture_guard`: (i) 保持の足し込みが取り込み口(`handle_hook_key_event`)にあり、`OUTPUT_GATE` の判定より前にあること、(ii) 解放が `INPUT_DEFER.replay_later` だけで `SendInput`・Backspace・`apply_*`・`record_explicit_intent` を呼ばないこと、(iii) `TIMER_RESUME_HOLD` が解放の全経路で kill されること、(iv) R1 の記録が `record_imm_cross_probe_observation` を通ること(FocusProbe 側と共有)。
-- CI(`e2e-ime`): `typed2` を観測から**判定に格上げ**する(`expect=resume` の構成で `typed2 == か`。R1 の直接の検証)。`sc-focusrestore-msime{,-abc,-bopen,-twice}` の strict(最初の打鍵が `か`)は R2。**戻って続けて 2〜3 文字を `SendInput` 1 回にまとめて打つ構成**(`wk` → `かき`、Opus M-6)を足し、順序を見る。ログ断片検査で `[half-width-return] 保持の解放: reason=Observed|RestoreEnded|Deadline|Cap|FocusChanged` を出させ、strict の MS-IME 構成で `Deadline` が 0 件であること。エンジン OFF の構成を observe で 1 本。
+- `architecture_guard`: (i) 保持の足し込みが取り込み口(`handle_hook_key_event`)にあり、`OUTPUT_GATE` の判定より前にあること、かつ `deliver_key_event` の先頭にもあること(M-2)、(ii) 解放が `INPUT_DEFER.replay_later` だけで `SendInput`・Backspace・`apply_*`・`record_explicit_intent` を呼ばないこと、(iii) `TIMER_RESUME_HOLD` が解放の全経路で kill されること、(iv) R1 の記録が `record_imm_cross_probe_observation` を通ること(FocusProbe 側と共有)。
+- CI(`e2e-ime`): `typed2` を観測から**判定に格上げ**する(`expect=resume` の構成で `typed2 == か`。R1 の直接の検証)。`sc-focusrestore-msime{,-abc,-bopen,-twice}` の strict(最初の打鍵が `か`)は R2。**戻って続けて 2〜3 文字を `SendInput` 1 回にまとめて打つ構成**(`wk` → `かき`、Opus M-6)を足し、順序を見る。ログ断片検査で `[half-width-return] 保持の解放: reason=Observed|RestoreEnded|Deadline|Cap|FocusChanged` を出させ、strict の MS-IME 構成で `Deadline` が 0 件であること。エンジン OFF の構成を observe で 1 本。通常の Exit(`FromToggle`)が R1 を要らない根拠は未確認なので(Opus r2 S-3。離脱が無くトグルに入る前の open の観測が残っている、という推測)、Shift タップで抜けてから 2 打鍵する構成を observe で 1 本足して `[effective-open-flip]` を見る。
 - `*-alttab` は CI の注入で窓が切り替わらないハーネスの問題(`alttab_ok=false`)で本追補とは独立。`gjimsime-shiftchar`・`msime-shiftchar` は `Deferred → Resume` なので R2 で同じ保持に乗る見込み。
 
 ### 却下した案
@@ -170,4 +178,6 @@ related_adr:
 - 実機(dragonflyg4)の負荷時の分布と、IME の応答が遅い窓。
 - TsfNative の A + MS-IME 本体の挙動(R1 を予約しないので変わらない)。
 - 保持中にもう 1 つ物理キーが来る高速打鍵(同時打鍵の親指キーを含む)の順序。CI の複数文字構成で見る。
+- R1 の読みは追跡側ではなくライブのフォーカス窓を読む(書き込みは捕獲した hwnd)。捕獲後にフォーカスだけが動いた場合(`TargetMoved` と同じ型)は別の窓を読みうる(FocusProbe と同じ既知の性質、Opus r2 N-3)。
+- 復元のリトライは MS-IME が後から誤って英数へ戻す(最大 478ms)ことに備えているが、R1 は 1 回しか読まないので、その誤切替の後は belief が古いまま残る。従来の経路(idle-conv-check)で拾える範囲で、本追補の範囲外(N-4)。
 - `INPUT_DEFER` の drain が、解放の直後に取り込み口へ来る物理キーに対して順序を保つか(`lang_detect` の再生と同じ前提。Opus round 1 の論点)。
