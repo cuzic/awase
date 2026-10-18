@@ -3,7 +3,7 @@ id: ADR-267
 title: |-
   mozc-readable の共有メモリに「組成の段階・候補の種類・未確定文字列の長さ・処理したキーの通番・アプリ起因の遷移」を足す(version 3)
 status: |-
-  提案(2026-10-18、起草。Opus round1 の指摘〈致命3・重要6・軽微5〉を反映した第2版)。publisher・読み手とも未実装。round2 の再確認待ち
+  提案(2026-10-18、起草。Opus round1〈致命3・重要6・軽微5〉・round2〈致命1・重要4・軽微5〉の指摘を反映した第3版)。publisher・読み手とも未実装。round3 の再確認待ち
 related_adr:
   - "ADR-191"
   - "ADR-265"
@@ -13,20 +13,20 @@ related_adr:
 
 ## 背景
 
-ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に出す値は、IME の開閉・入力モード・`active` だけである。「いま未確定文字列(preedit)があるか」「変換中か」「候補が出ているか」「未確定文字列の長さ」「アプリの指示(入力スコープ)で打鍵なしに状態が変わったか」は分からない。
+ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に出す値は、IME の開閉・入力モード・`active` だけである。「いま未確定文字列(preedit)があるか」「変換中か」「候補が出ているか」「未確定文字列の長さ」「入力欄(入力スコープ)が入力モードを指定しているか」は分からない。
 
 需要(ユーザー指摘 2026-10-18):
 
 1. **QMK など自作キーボード**: 「組成中・変換中だけ別レイヤーにする」「候補が出ている間だけ Enter/矢印の意味を変える」「OLED に表示する」。
 2. **awase**: 
-   - 打鍵なしの状態遷移(パスワード欄など、アプリの指示で IME の状態が変わる)を、推測ではなく IME 自身の申告で知る。
-   - 送ったキーを TIP が受け取ったかの直接の証拠(`key_seq`)。
+   - 入力欄(パスワード欄など)が入力モードを指定していることを、推測ではなく IME 自身の申告(`scope_forced_mode`)で知る。**awase 側の実害は未確認**(known-bugs に、パスワード欄で Mozc が直接入力に落ちているのに awase が開だと思って送る型の報告は見つからない。BUG-141 の password への言及はテキスト入力欄の種別ごとの挙動の話で別件)。実害が確認できるまで観測のみ。
+   - 送ったキーを TIP が見たかの目安(`key_seq`)と、組成の値がどの打鍵まで反映済みかの印(`composition_key_seq`)。
    - 未確定文字列の長さ(参考値)。
    - **BackSpace 数の検算は需要から外す**。round1(R1-C1)で、`flush_raw_tsf_literal_backspaces` / `ze_bs_count` は「IME を素通りしたリテラル」を消す数で preedit の長さとは別の量であり、しかもその経路は `gji_active`(GoogleIMEJaConverter の I/O 観測)が前提で、mozc-readable の窓では走らないと分かった(`warm_send_plan.rs::plan_literal_detect` が `GjiNotActive` で Skip、`tsf/observer.rs::gji_is_active_ime`)。検算の対象は構造的に 0 件になる。mozc 系でリテラル検出を行う必要があるかは未確認で、必要になれば別 ADR とする。
 
 ## 決定
 
-### D1. 構造体を version 3 にし、末尾に 32 バイト追記する(80 バイト)
+### D1. 構造体を version 3 にし、末尾に 32 バイト追記する(80 バイト。詰めて 64 にする案はユーザー判断で見送り)
 
 オフセット 0〜47 は変えない(追記のみ。互換を壊すときだけ `version` を上げる、の取り決めに従う)。version 2 で `reserved` は `active` に使い切っており、version を上げずに済む空きは無い(R1-M4)。
 
@@ -36,12 +36,13 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 | 52 | u32 | `candidate_category` | 0=候補の窓なし、1=`SUGGESTION`、2=`PREDICTION`、3=`CONVERSION`。値は `commands::Category` に揃え `static_assert` で固定。`TipUiHandler` の表示判定〈`IsVisible`〉を通した結果で、UI-less モードでは 0 |
 | 56 | u32 | `preedit_utf16_len` | 未確定文字列の UTF-16 の長さ(TIP が文書へ書く長さと同じ単位)。`phase=0` なら 0 |
 | 60 | u32 | `preedit_cursor` | 未確定文字列内のカーソル位置。**UTF-32 のコードポイント単位**(Mozc の `output.preedit().cursor()` の単位) |
-| 64 | u32 | `key_seq` | TIP が処理したキーダウンの通番(`TipKeyeventHandler::OnKeyDown` で eaten の有無に関わらず +1、ラップあり)。**打鍵ごとに毎回書く**(値が変わるため。pulse はしない) |
-| 68 | u32 | `override_active` | 1 のとき、アプリの指示(入力スコープなど)で `effective_*` が Mozc セッション本来の値から上書きされている |
-| 72 | u32 | `last_change_cause` | 直近の状態変化(開閉・モード・`override_active`)の原因。0=不明、1=打鍵(Mozc の応答)、2=アプリの指示(入力スコープ)、3=フォーカス移動、4=外部からの切り替え(Win+Space など) |
-| 76 | u32 | `reserved` | 0 |
+| 64 | u32 | `key_seq` | TIP が見たキーダウンの通番。`TipKeyeventHandler::OnTestKeyDown` と `OnPreservedKey` の 2 か所で +1(`OnKeyDown` では数えない。TSF は `OnTestKeyDown` が eaten=FALSE のキーに `OnKeyDown` を呼ばないため。数えると食べたキーが 2 回になる)。ラップあり。**打鍵ごとに毎回書く**(pulse はしない) |
+| 68 | u32 | `scope_forced_mode` | 入力スコープが 1 つのモードに決まるときの「モード+1」(0=スコープによる指定なし)。`GetOverriddenState` の `states.size() == 1` の分岐で決まる。入力欄がそう指定している、という事実で、打鍵では消えない(R2-I3) |
+| 72 | u32 | `reserved` | 0 |
+| 76 | u32 | `composition_key_seq` | `phase`・`candidate_category`・`preedit_*` を書いた時点の `key_seq` の値。読み手は `composition_key_seq >= 自分が送った打鍵の番号` のときだけ組成の項目を採る(R2-I2) |
 
 - `version` は `3`、サイズは 80 バイト。
+- 配置: `update_tick_ms`(u64)がオフセット 40(8 の倍数)、追記の u32×8 が 48〜79、合計 80(8 の倍数)で暗黙の詰め物は入らない(R2-M5)。`offsetof` で 48・64・76 を固定する `static_assert` も足す。今後の追記は 80 から始め、u64 は 8 の倍数のオフセットに置く。参考: Python は `struct.Struct("<10IQ8I")`(= 80)、Rust は `#[repr(C)]` と `const _: () = assert!(size_of::<T>() == 80);`。
 - 変更点の一覧(publisher): `static_assert(sizeof(TipSharedState) == 48)` を 80 に、`Snapshot`・`operator==`・`Flush()` の書き込みに新フィールドを全部足す(足し忘れると ADR-265 R2-C2a と同じ「変化したのに書かれない」が起きる)。
 
 ### D2. 長さは UTF-16 で出す(R1-I5)
@@ -61,32 +62,36 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 ### D5. 値の鮮度は `key_seq` で判定する(旧 D5 を置き換え。R1-C3)
 
 - 旧案の「`update_tick_ms` が直近の打鍵より新しいか」は成り立たない。publisher は変化が無ければ書かないので、「処理したが値が変わらなかった」と「まだ処理していない」の区別がつかず、ADR-265 D3 の読み取り規約(`update_tick_ms` による新しさの判定はしない)とも矛盾する。`seq` が進んだかも同じ理由で使えない。
-- 読み手は、自分が送った(または観測した)キーダウンの数と `key_seq` を突き合わせ、TIP が追いついたかを判定する。`key_seq` は毎回書く唯一の項目である。
+- `key_seq` は「TIP が見たキーダウンの回数の目安」であり、送ったキーの数と完全には一致しない(アプリが `ITfKeystrokeMgr::TestKeyDown` を同じキーで複数回呼ぶと重複して数える。未確認)。IME が閉じていて食べないキーも、`OnTestKeyDown` で数えるので進む(`OnKeyDown` で数えると、IME が閉じた状態では進まず「TIP がキーを受け取っていない」と区別できなくなる。R2-I1)。
+- `key_seq` は編集セッションの外で進み、組成の項目は編集セッションの末尾(D7)で書かれるので、`key_seq` だけでは組成の項目が反映済みかは分からない(`k` を送って `key_seq` が進んでも、編集セッションが走る前は `phase=0`)。そこで D7 の公開時に、その時点の `key_seq` を `composition_key_seq` として一緒に書く。読み手は `composition_key_seq >= 自分が送った打鍵の番号` のときだけ組成の項目を採る(R2-I2)。
 - 値は「TIP が編集セッションの中で公開した時点」の状態である。`OnOutputReceivedImpl` は Word の回避策で `TF_ES_ASYNC` に切り替えることがあり、受け取りと公開の間にアプリがロックを与えるまでの遅れが入る。読み手は、このずれを前提にする。
 
 ### D6. 書き込みと pulse を分ける(旧 Q2 を閉じる。R1-I6)
 
-- `Flush()` の判定を 2 つに分ける。**書くかどうか**は全項目の比較(`key_seq` を含む)、**pulse するかどうか**は状態の項目(`active`・開閉・モード・`phase`・`candidate_category`・`override_active`・`last_change_cause`)の変化だけ。`preedit_utf16_len`・`preedit_cursor`・`key_seq` だけの変化では pulse しない。
+- `Flush()` の判定を 2 つに分ける。**書くかどうか**は全項目の比較(`key_seq` を含む)、**pulse するかどうか**は状態の項目(`active`・開閉・モード・`phase`・`candidate_category`・`scope_forced_mode`)の変化だけ。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` だけの変化では pulse しない。
 - 書き込みのコスト(`InterlockedIncrement` 2 回と数個のストア)は、打鍵ごとに既にある mozc_server への IPC 往復(ms 単位)に比べて無視できる。測定は書き込みの遅さではなく、「連続打鍵で pulse の回数が状態の変化回数と一致する」ことの CI 確認だけにする。
 - 通知イベントを 2 つに分ける案は、イベント名の増加が identity の置換表と AppContainer の名前空間(ADR-265 で通知イベントの名前空間は未確認)の両方に波及するため採らない。
 
 ### D7. 公開位置は編集セッションの末尾にする(R1-I1)
 
 - 現行の `Publish` は `TipInputModeManager` の各 mutator の `PublishOnExit` からだけ呼ばれ、`Output` を受け取らない。引数に足すのではなく、`SetActive` と同じく別の setter(`SetComposition(...)`)を新設する。
-- 呼ぶ場所は `TipEditSessionImpl::UpdateContext` / `OnCompositionTerminated` の末尾(`UpdateUI` の直前、または `TipUiHandler::Update` の中)とし、`last_output()` から値を作る。`UpdatePrivateContext` の中では呼ばない。理由: (1) `if (!output.has_status()) return S_FALSE;` の早期 return で、status の無い Output の更新を取りこぼす。(2) `UpdatePreeditAndComposition` より前に呼ばれるので、そこが `E_FAIL` でも `phase` が出てしまう。
+- 呼ぶ場所は `TipEditSessionImpl::UpdateContext` / `OnCompositionTerminated` の末尾に当たる **`TipUiHandler::Update` の中**とし、`last_output()` から値を作る。`candidate_category` を決める `FillVisibility`(`IsVisible` 越し)がここでしか計算されないため、ここで書けば判定を二重に書かずに済む。`Update` は `UpdateContext`・`OnCompositionTerminated` に加えて `OnEndEdit`・`AsyncSetFocusEditSessionImpl` からも呼ばれるので、同じスレッドの別 context へのフォーカス移動も一部拾える(R2-M1)。`UpdatePrivateContext` の中では呼ばない。理由: (1) `if (!output.has_status()) return S_FALSE;` の早期 return で、status の無い Output の更新を取りこぼす。(2) `UpdatePreeditAndComposition` より前に呼ばれるので、そこが `E_FAIL` でも `phase` が出てしまう。
 - `candidate_category` は `TipUiHandler` の表示判定(`FillVisibility`・`TipUiElementManager::IsVisible`)を通した結果を同じ場所で取る(R1-C2)。
 
-### D8. アプリ起因の遷移を申告する(ユーザー指摘 2026-10-18)
+### D8. 入力欄が入力モードを指定していることを申告する(ユーザー指摘 2026-10-18、round2 で縮小)
 
-- 打鍵なしで状態が変わる(入力スコープでパスワード欄に入り、IME が閉じる/半角英数になる、など)ことを、`override_active` と `last_change_cause` で外に出す。version 2 でも `effective_*` と `tsf_*` の食い違いからは推測できるが、「いま食い違っている」ことしか分からず、遷移の瞬間と原因は分からない。
-- awase は、これを belief の「打鍵由来ではない変化」として扱える(drift correction が推測で拾っていた類い)。**最初は journal に記録するだけの観測**とし、belief は動かさない(誤補正は本リポジトリで最も事故の多い領域のため)。
-- 原因が特定できない変化は `last_change_cause=0`(不明)に倒す。どの原因を正確に出せるかは Mozc 側のコード次第で、**未確認**(Q1)。
+- ユーザー指摘の動機は「打鍵なしで IME の状態が変わる(パスワード欄など)ことを、awase などが分かるようにしたい」。当初は `override_active`(差があるか)と `last_change_cause`(遷移の原因)を提案したが、round2 で次のとおり成り立たないと分かった。
+  - `override_active` を「`effective_*` と `tsf_*` に差がある」で定義すると、パスワード欄で利用者が IME を開いた時点で両方が開になり(`OnReceiveCommand` が両方に `status.activated()` を入れる)、スコープがパスワードのままでも 0 になる。差が出ない上書き(ひらがな指定のスコープにひらがなで入る)もある(R2-I3)。
+  - `last_change_cause` は mutator 単位では原因を決められない。`OnReceiveCommand` には打鍵・言語バー・候補窓のマウス操作が全部入り、compartment の `OnChange` は **awase 自身の `ImmSetOpenStatus` でも呼ばれる**ので、awase の actuation が「外部」と申告される。後で belief に入れると、ADR-212 で撤去した補正的 actuation との往復になる(R2-C1)。正しく作るには、原因を入口で決め、編集セッションのオブジェクトで運ぶ設計(非同期のセッションで入口の情報が消えるため)が要り、費用に見合う需要が確認できていない。**`last_change_cause` は本版では入れない。** 需要(実害)が確認できてから別 ADR(version 4)で扱う。その際の注意として round2 の R2-C1 の表(入口と原因の対応)と、awase 自身の書き込みの除外が要ることを残す。
+- 代わりに **`scope_forced_mode`** を出す。入力スコープが 1 つのモードに決まる(`GetOverriddenState` の `states.size() == 1`)ときの「モード+1」で、0 は指定なし。入力欄がそう指定しているという事実で、打鍵では消えない。「いま差がある」は、読み手が version 2 の `effective_*` と `tsf_*` から導く(新しい項目は要らない)。
+- 入力スコープの上書きは compartment に書かれない(`OnChangeInputScope` は `kUpdateUI` を返すだけ)ので、awase が IMM/TSF から読む開閉は上書き後の値と食い違う。これが version 2 でも食い違いから推測できる根拠である。
+- awase の drift correction はこれを**見ていない**はず(IMM/TSF の観測と belief の食い違いで再送するため)。したがって「drift correction が推測で拾っていた類い」とは書かない。段階 3 の別 ADR は「drift correction の置き換え」ではなく、「入力欄が指定しているモードを belief の入力に加えるか」として議論する。最初は journal に記録するだけで、belief は動かさない。
 
 ### D9. 読み手の規約(R1-I2、R1-I4)
 
 - **map サイズ**: 長寿命のプロセスは旧 DLL のまま 48 バイトのセクションを作り続けるので、新旧が同時に存在する。読み手は「サイズ 0(セクション全体)で map する」か、「48 で map して `version` を読み、`version >= 3` のときだけ 80 で map し直す」。80 固定で map すると、version 2 のブロックの開閉・モードまで読めなくなる。
-- **書き手の `ERROR_ALREADY_EXISTS`**: 同名のセクションが旧サイズ(48)で残っていると、`MapViewOfFile(..., 80)` が失敗し、`tried_ = true` でそのスレッドは二度と書かない。この場合は 48 だけ書く(version 2 として振る舞う)ことにする。
-- **`active == 0` のときは他の項目を無視する**ことを必須として仕様書に書く。`Deactivate` は組成の項目を触らないので、IME を切り替えた後も `phase` が残りうる。あわせて `Deactivate` で `phase`・`candidate_category`・`preedit_utf16_len` を 0 に落とす。
+- **書き手の `ERROR_ALREADY_EXISTS`**: 同名のセクションが旧サイズ(48)で残っていると、`MapViewOfFile(..., 80)` が失敗し、`tried_ = true` でそのスレッドは二度と書かない。この場合は **`version=2` として 48 だけ書く**(`Get()` は `version` を無条件に書くので、そのままだと 48 バイトのセクションに `version=3` が載り、D9 第 1 項の読み手が 80 で map し直して失敗する)。`ThreadSlot` に「書ける大きさ」を持たせ、48 のときは `Flush()` も 48 以降に触れない(R2-M2)。
+- **`active == 0` のときは他の項目を無視する**ことを必須として仕様書に書く。`Deactivate` は組成の項目を触らないので、IME を切り替えた後も `phase` が残りうる。あわせて `Deactivate` で `phase`・`candidate_category`・`preedit_utf16_len`・`preedit_cursor`・`scope_forced_mode`・`composition_key_seq` を 0 に落とす。`key_seq`(通番)は残す(R2-M4)。
 - **context とスレッドのずれ**: 組成の状態は `ITfContext` ごと(`TipPrivateContext::last_output`)だが、共有メモリはスレッドごとに 1 スロット(`thread_local ThreadSlot`)。同じスレッドの別 context へフォーカスが移っても、キーを押すまで更新されないことがある。段階 1 の CI で何が出るかを確かめ、仕様書に書く。
 
 ## 却下した代案
@@ -97,19 +102,19 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 ## 実装の段階
 
 1. **mozc-readable**: `readable/docs/shared-memory.md` に version 3 を書く(仕様が正)。D7 の位置に `SetComposition` を配線し、`Snapshot`・`Flush()` を直す。CI で別プロセスから次を確かめる。
-   - `phase`: 入力前=0、`k`=1、Space=2、Enter=0。
+   - `phase`: 入力前=0、`k`=1、Space=2、Enter=0。予測の候補を Tab/↓ で選んだとき(`candidate_category=PREDICTION`)に 1 か 2 のどちらになるか、BS の動きが変換中と同じか(R2-M3)。
    - `candidate_category`: `ka` の時点は 0 または `SUGGESTION`、Space 後は `CONVERSION`(確定後に予測を出す設定は固定して外す)。
-   - `key_seq`: 値が変わらない打鍵でも進む。
+   - `key_seq`: 値が変わらない打鍵でも進む。**IME を閉じた状態のキーでも進む**。`composition_key_seq` が `key_seq` に追いつくまで `phase` を採らない読み方で、`k` の直後に `phase=1` が読めること。
    - 組成中に同じ窓の別 context へ移る/Win+Space で別 IME に切り替える、のときに何が出るか。
-   - パスワード欄(入力スコープ)に入ったとき `override_active=1`・`last_change_cause=2` か。
+   - パスワード欄(入力スコープ)に入ったとき `scope_forced_mode` が立つか。その状態で IME を開いても立ったままか。ひらがな指定のスコープに入ったときはどうか。
    - 連続打鍵で pulse の回数が状態の変化回数と一致する。
-2. **awase**: ADR-265 段階 1 の Observe が入った後で、journal に `phase`・`candidate_category`・`key_seq`・`override_active`・`last_change_cause` を記録する(観測のみ)。
-3. 記録の結果を見て、belief への反映(D8)や `key_seq` を使った「TIP が追いついたか」の判定を、別の ADR にする。
-4. **QMK 向け**: `readable/docs/examples/read_ime_state.py` を version 3 対応にする(D9 の map 規約に注意。現状の `assert STRUCT.size == 48` と `MapViewOfFile(..., STRUCT.size)` は書き換えが要る)。`phase`・`candidate_category`・`override_active` を Raw HID で送る例を足す(スケッチのまま。実機未検証と明記)。
+2. **awase**: ADR-265 段階 1 の Observe が入った後で、journal に `phase`・`candidate_category`・`key_seq`・`composition_key_seq`・`scope_forced_mode` を記録する(観測のみ)。
+3. 記録の結果を見て、belief への反映(D8)や `key_seq`/`composition_key_seq` を使った「TIP が追いついたか」の判定を、別の ADR にする。
+4. **QMK 向け**: `readable/docs/examples/read_ime_state.py` を version 3 対応にする(D9 の map 規約に注意。現状の `assert STRUCT.size == 48` と `MapViewOfFile(..., STRUCT.size)` は書き換えが要る)。`phase`・`candidate_category`・`scope_forced_mode` を Raw HID で送る例を足す(スケッチのまま。実機未検証と明記)。
 
 ## 未決
 
-- **Q1**: `last_change_cause` の各原因を、Mozc の実コードのどの地点で正確に区別できるか(特に「外部からの切り替え」と「フォーカス移動」)。取れない原因は 0 に倒す。
+- **Q1**: awase 側で、入力欄が指定するモードと belief が食い違って困った実例があるか(known-bugs・journal で探す)。無ければ `scope_forced_mode` は QMK 向けの表示用に留める。
 - **Q2**: Mozc の `Category` の値(`commands::Category`)と `static_assert` で固定できる範囲の確認。
 
 ## 確認していないこと
