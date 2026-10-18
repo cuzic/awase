@@ -645,12 +645,13 @@ fn is_known_open_gap(
 /// （最初の版で 360 本中 59 本、原因別 51 種に割れた）。ここで調べるのは、belief が正しいときに予測が嘘を
 /// つかないこと。段階の追跡（`KeyTrack`）は観測では直らないので、複数打鍵にわたる追跡のずれは見える。
 ///
-/// **既知のずれ(件数を固定して数える。増えたら赤)**: 閉じた状態から始めて、belief の入力モードが `Unknown` のまま
-/// 最初に IME を開くキー。閉の間の変換モードは観測しない(BUG-57/ADR-239)ので belief のモードは不明のままで、
-/// 予測器は不明のとき既定のかなで種をまく(`predict_in_table` の `seeded`)。IME が半角英数(0x10)を覚えていると
-/// 食い違う(ATOK)。「閉じる前のモードを覚えておく」は、開いていたときに観測したモードを `None`=変えない で
-/// 残す形ですでに動いている(Opus レビュー B2)ので、直すべきは種のまき方で、規則の追加ではない。
-/// 一方、`Unknown` でないのに閉→開でモードがずれる場合は本物の食い違いとして失敗にする。
+/// **既知のずれ(件数を固定して数える。増えたら赤)**: 閉から始めて、IME が一度も開く前に最初に開くキー。閉の間は
+/// 変換モードを観測しない(BUG-57/ADR-239)ので belief のモードは観測されないまま、最初の打鍵で既定のかなの種が入る
+/// (`predict_in_table` の `seeded`。`Unknown` のとき、IME が閉でも表に無いキーや閉→閉のキーで入る)。IME が半角英数
+/// (0x10)を覚えていると、開いた結果と食い違う(ATOK)。「閉じる前のモードを覚えておく」は、開いていたとき観測した
+/// モードを `None`=変えない で残す形ですでに動いている(Opus レビュー B2)ので、直すべきは種のまき方で、規則の追加ではない。
+/// 一度でも開いた後の閉→開のずれは、観測したモードが残るはずなので、本物の食い違いとして失敗にする。
+/// (Opus レビューは「最初に開く打鍵で belief が Unknown」と見積もったが、実測では種は開く打鍵より前の打鍵で入る。)
 #[test]
 fn random_key_walks_keep_predictions_consistent_with_truth() {
     const SEEDS: u64 = 60;
@@ -708,8 +709,12 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                         .unwrap_or(r.input_open);
                     let opened_from_closed =
                         !b.open && r.truth_after.open && predicted_open == r.truth_after.open;
-                    if opened_from_closed && matches!(r.input_mode, InputModeState::Unknown) {
-                        // belief のモードが不明のまま既定のかなで種をまいた(上の「既知のずれ」)。
+                    // この歩みで IME が一度も開いたことがない=belief のモードは一度も観測されず、最初の打鍵で
+                    // 入った既定のかなの種(`Unknown` のとき、閉でも表に無いキー・閉→閉のキーで入る)のまま。
+                    let never_open_before = h.predictions[..i]
+                        .iter()
+                        .all(|p| !p.truth_before.open && !p.truth_after.open);
+                    if opened_from_closed && never_open_before {
                         seeded_gap += 1;
                         continue;
                     }
