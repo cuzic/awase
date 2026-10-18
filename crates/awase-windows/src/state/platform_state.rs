@@ -3102,6 +3102,144 @@ mod tests {
         }
     }
 
+    // ── ADR-268: 共有メモリの受け入れた読みを belief に使う(`report_mozc_shm`) ──
+
+    fn mozc_shm_state(open: bool) -> crate::state::mozc_shm::ShmState {
+        use crate::state::mozc_shm::{CompositionMode, ShmState};
+        ShmState {
+            version: 2,
+            tsf_open: open,
+            tsf_mode: Some(CompositionMode::Hiragana),
+            effective_open: open,
+            effective_mode: Some(CompositionMode::Hiragana),
+        }
+    }
+
+    /// 明示意図 ON・`applied=Confirmed(開)` の窓を作る。
+    fn ps_with_open_intent_and_applied() -> PlatformState {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        ps.ime
+            .record_confirmed_in_scope(true, 90, test_foreground_scope());
+        assert_eq!(ps.ime.explicit_intent(), Some(true));
+        assert!(ps.ime.effective_open_at(TickMs(110)));
+        assert!(ps.ime.model().applied_state().applied_open().is_some());
+        ps
+    }
+
+    /// 外から閉じられた（操作より後に共有メモリが閉に変わった）とき、明示意図が残っていても belief が事実に追随し、
+    /// 食い違う `applied` が未確認へ降格する（ADR-268 D3・D4。明示意図・`IntentStore` が観測より優先される問題の対策）。
+    #[test]
+    fn report_mozc_shm_follows_an_external_close_and_demotes_applied() {
+        use crate::state::mozc_shm::ShmUse;
+        let mut ps = ps_with_open_intent_and_applied();
+        // 基準（awase の最後の操作）= 100。update_tick 5000 > 100 → 操作より後に変わった事実。
+        let used = ps
+            .ime
+            .report_mozc_shm(mozc_shm_state(false), 5000, 5100, 100, TickMs(5100));
+        assert_eq!(
+            used,
+            ShmUse::Use {
+                open: false,
+                disagrees: true
+            }
+        );
+        assert_eq!(ps.ime.explicit_intent(), None, "明示意図は外れる");
+        assert!(!ps.ime.model().desired_open(), "desired_open は事実に揃う");
+        assert!(
+            !ps.ime.effective_open_at(TickMs(5100)),
+            "belief は閉に追随する"
+        );
+        assert_eq!(
+            ps.ime.model().applied_state().applied_open(),
+            None,
+            "食い違う applied は未確認へ降格する"
+        );
+    }
+
+    /// 操作の直後（update_tick が基準以下で、SETTLE 未満）の読みは、IME の処理前かもしれないので、何も変えない。
+    #[test]
+    fn report_mozc_shm_holds_a_read_right_after_an_operation() {
+        use crate::state::mozc_shm::ShmUse;
+        let mut ps = ps_with_open_intent_and_applied();
+        let used = ps
+            .ime
+            .report_mozc_shm(mozc_shm_state(false), 100, 110, 100, TickMs(110));
+        assert_eq!(used, ShmUse::Held);
+        assert_eq!(ps.ime.explicit_intent(), Some(true));
+        assert!(ps.ime.effective_open_at(TickMs(110)));
+        assert!(ps.ime.model().applied_state().applied_open().is_some());
+    }
+
+    /// `tsf_open != effective_open` の読みは belief に報告しない。
+    #[test]
+    fn report_mozc_shm_does_not_report_a_split_read() {
+        use crate::state::mozc_shm::ShmUse;
+        let mut ps = ps_with_open_intent_and_applied();
+        let mut split = mozc_shm_state(false);
+        split.effective_open = true;
+        let used = ps.ime.report_mozc_shm(split, 5000, 5100, 100, TickMs(5100));
+        assert_eq!(used, ShmUse::Split);
+        assert_eq!(ps.ime.explicit_intent(), Some(true));
+        assert!(ps.ime.effective_open_at(TickMs(5100)));
+    }
+
+    /// 共有メモリが belief・desired と一致するなら、報告するだけで追随しない（明示意図を消さない）。
+    #[test]
+    fn report_mozc_shm_agreeing_read_keeps_the_explicit_intent() {
+        use crate::state::mozc_shm::ShmUse;
+        let mut ps = ps_with_open_intent_and_applied();
+        let used = ps
+            .ime
+            .report_mozc_shm(mozc_shm_state(true), 5000, 5100, 100, TickMs(5100));
+        assert_eq!(
+            used,
+            ShmUse::Use {
+                open: true,
+                disagrees: false
+            }
+        );
+        assert_eq!(ps.ime.explicit_intent(), Some(true));
+        assert!(ps.ime.effective_open_at(TickMs(5100)));
+    }
+
+    /// 書き込みが IME に届かず共有メモリが変わらなかった場面（N2）: update_tick は操作より前のままだが、操作から SETTLE
+    /// 以上経っていれば「書き込みが効かなかった」事実として追随する（belief が開のまま IME は閉で固定されない）。
+    #[test]
+    fn report_mozc_shm_follows_a_lost_write_after_settle() {
+        use crate::state::mozc_shm::ShmUse;
+        let mut ps = ps_with_open_intent_and_applied();
+        let settle = crate::tuning::KEY_EFFECT_SETTLE_MS;
+        let baseline = 1000;
+        // update_tick 900 < baseline 1000。now が baseline + settle - 1 の間は Held、settle で追随。
+        let held = ps.ime.report_mozc_shm(
+            mozc_shm_state(false),
+            900,
+            baseline + settle - 1,
+            baseline,
+            TickMs(baseline + settle - 1),
+        );
+        assert_eq!(held, ShmUse::Held);
+        assert_eq!(ps.ime.explicit_intent(), Some(true));
+        let used = ps.ime.report_mozc_shm(
+            mozc_shm_state(false),
+            900,
+            baseline + settle,
+            baseline,
+            TickMs(baseline + settle),
+        );
+        assert_eq!(
+            used,
+            ShmUse::Use {
+                open: false,
+                disagrees: true
+            }
+        );
+        assert_eq!(ps.ime.explicit_intent(), None);
+        assert!(!ps.ime.effective_open_at(TickMs(baseline + settle)));
+    }
+
     fn follow_fence() -> crate::state::probe_admission::AcceptedObservation {
         crate::state::probe_admission::AcceptedObservation::for_sync(
             crate::state::probe_admission::FocusFence {
