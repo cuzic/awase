@@ -464,6 +464,27 @@ const fn is_char_vk(vk: u16) -> bool {
     matches!(vk, 0x30..=0x39 | 0x41..=0x5A | 0xBA..=0xC0 | 0xDB..=0xDF)
 }
 
+/// 表に（段階, Esc）のセルが無いときの、Esc の後の入力中の段階。`None` は「触らない」（段階を更新せず、予測も返さない）。
+///
+/// - 入力中（`Typing`）の Esc は未確定文字列を破棄するので `Stage::None`（`next_stage` の Esc の規則と同じ。BUG-162）。
+/// - 変換中（Space〈`ConvSpace`〉・変換キー〈`ConvHenkan`〉）の Esc は、入力中（読み）へ戻るだけで入力は破棄されない
+///   （`Stage::Typing`）。実測（BUG-205、run 39092296146〈変換キー〉・39096991882〈Space〉、3 IME × 間隔 2 通り × 各 10 回・
+///   全て同じ結果）: Esc の直後に押したキーの結果が入力中の行と一致し、入力なしの行とは違う。
+/// - 無変換で入った変換中（`ConvMuhenkan`）の Esc は IME によって逆（BUG-205、run 39100379679・39102332571、sp1/sp2 × 開始
+///   0x19/0x10）。MS-IME 系（GJI のプリセット・本体）は入力が残る（入力中に戻る）が、その表には（変換中〈無変換〉, Esc）→保持の
+///   セルがあり、この関数に来ず `next_stage` が `Typing` にする。ATOK は入力を**破棄**し、次のキーの結果が入力なしの行と一致する
+///   （全 6 キー・4/4）。ATOK の表には `ConvMuhenkan` の行が無い（入力中の無変換で変換モードが 0x19→0x10 に変わる）ので、
+///   `conv_muhenkan_modeled`（表に `ConvMuhenkan` の行がある）が偽のときだけ `None` にする（その他の表の変換中〈無変換〉の Esc は
+///   未測定のまま触らない）。
+const fn esc_stage_without_cell(stage: Stage, conv_muhenkan_modeled: bool) -> Option<Stage> {
+    match stage {
+        Stage::Typing => Some(Stage::None),
+        Stage::ConvSpace | Stage::ConvHenkan => Some(Stage::Typing),
+        Stage::ConvMuhenkan if !conv_muhenkan_modeled => Some(Stage::None),
+        _ => None,
+    }
+}
+
 /// 表を引いて予測を返す。予測できない（表に無い・非決定・プリセット外）ときは`None`。
 ///
 /// 表に無いキー（文字キー等）は、開閉・入力モードを変えないが、変換中の段階だけは`Typing`へ戻す
@@ -535,24 +556,12 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
         .flatten()
     }) else {
         // BUG-162: 表に該当セルが無い（ATOK の入力中/変換中〈Space〉の Esc は保持/破棄が割れるので生成時に除外される）
-        // ときは、開閉・入力モードは予測しない（観測に委ねる）が、**入力中の段階の追跡は更新する**（更新しないと古い段階が残り、
-        // 次の無変換などが古い行で誤予測され、Engine が活性化して `SetOpen(true)` で IME を書き戻す。読めない窓では観測が追跡を直せない）。
-        // - 入力中（`Typing`）の Esc は未確定文字列を破棄するので、段階は `next_stage` の Esc の規則と同じ（`Stage::None`）。
-        // - 変換中（Space〈`ConvSpace`〉・変換キー〈`ConvHenkan`〉）の Esc は、入力中（読み）へ戻るだけで入力は破棄されない
-        //   （`Stage::Typing`）。実測（BUG-205、run 39092296146〈変換キー〉・39096991882〈Space〉、3 IME × 間隔 2 通り × 各 10 回・
-        //   全て同じ結果）: Esc の直後に押したキーの結果が入力中の行と一致し、入力なしの行とは違う。
-        // - 無変換で入った変換中（`ConvMuhenkan`）の Esc は IME によって逆（BUG-205、run 39100379679・39102332571、sp1/sp2 × 開始
-        //   0x19/0x10）。MS-IME 系（GJI のプリセット・本体）は入力が残る（入力中に戻る）が、その表には（変換中〈無変換〉, Esc）→保持の
-        //   セルがあり、この分岐に来ず `next_stage` が `Typing` にする。ATOK は入力を**破棄**し、次のキーの結果が入力なしの行と一致する
-        //   （全 6 キー・4/4）。ATOK の表には `ConvMuhenkan` の行が無い（入力中の無変換で変換モードが 0x19→0x10 に変わる）ので、
-        //   「表に `ConvMuhenkan` の行が無い」ときだけ `None` にする（その他の表の変換中〈無変換〉の Esc は未測定のまま触らない）。
+        // ときは、開閉・入力モードは予測しない（観測に委ねる）が、入力中の段階の追跡は更新する（段階の規則は
+        // [`esc_stage_without_cell`]）。更新しないと古い段階が残り、次の無変換などが古い行で誤予測され、Engine が活性化して
+        // `SetOpen(true)` で IME を書き戻す。読めない窓では観測が追跡を直せない。
         if matches!(key, TableKey::Esc) {
-            let next_stage = match input.track.stage {
-                Stage::Typing => Some(Stage::None),
-                Stage::ConvSpace | Stage::ConvHenkan => Some(Stage::Typing),
-                Stage::ConvMuhenkan if !stage_modeled(Stage::ConvMuhenkan) => Some(Stage::None),
-                _ => None,
-            };
+            let next_stage =
+                esc_stage_without_cell(input.track.stage, stage_modeled(Stage::ConvMuhenkan));
             if let Some(stage) = next_stage {
                 return Some(Prediction {
                     effect: PredictedEffect {
