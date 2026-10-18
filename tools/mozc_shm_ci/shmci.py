@@ -679,6 +679,31 @@ def flip_loop(w, truths, rounds, rng, events):
     tids = list(info)
     last = None
     ok_n = ng_n = lost = 0
+    # 準備: 切り替えのキーが窓に届いて状態が変わるか、変わるまでの時間はどれくらいか(診断。測定の前提)
+    for k in range(8):
+        x = tids[k % len(tids)]
+        fg = w.force_foreground(info[x]["hwnd"])
+        time.sleep(0.5)
+        want = 1 - cur[x]
+        before = w.read_block(x)
+        t0 = time.time()
+        w.send_vk(0xF2 if want else 0x19)
+        lat = None
+        while time.time() - t0 < 3.0:
+            a = w.read_block(x)
+            if a is not None and int(a[5]) == want:
+                lat = time.time() - t0
+                break
+            time.sleep(0.01)
+        a = w.read_block(x)
+        print(f"flip-probe {k}: tid={x} fg={fg} want={want} before={before and (before[5], before[9])} "
+              f"after={a and (a[5], a[9])} latency_s={lat}", flush=True)
+        if lat is not None:
+            cur[x] = want
+        elif a is not None:
+            cur[x] = int(a[5])
+        events.append({"ev": "truth", "t": t0, "tid": x, "name": info[x]["name"], "pid": info[x]["pid"],
+                       "hwnd": info[x]["hwnd"], "open": cur[x], "confirmed": True})
     for i in range(rounds):
         x = rng.choice([t for t in tids if t != last])
         if not w.force_foreground(info[x]["hwnd"]):
