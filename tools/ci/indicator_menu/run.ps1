@@ -1,7 +1,7 @@
 # ADR-261 の延長: 利用者がタスクバーの入力インジケーターを右クリックしてメニューを開いたとき、(1)開いた瞬間を検知できるか(WinEvent と UI Automation のイベント)、
 # (2)メニューの項目と「現在のモード」(チェック済みの項目)を読めるかを測る。測定専用。
 # 使い方: run.ps1 -Ime msime|gji -Dist dist -Out out
-param([Parameter(Mandatory)][string]$Ime, [string]$Dist = 'dist', [string]$Out = 'out')
+param([Parameter(Mandatory)][string]$Ime, [string]$Dist = 'dist', [string]$Out = 'out', [string]$Mode = 'full')
 $ErrorActionPreference = 'Continue'
 $Dist = (Resolve-Path $Dist).Path
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
@@ -30,7 +30,7 @@ public static class MW {
     string name = ev == 3 ? "FOREGROUND" : ev == 4 ? "MENUSTART" : ev == 5 ? "MENUEND" : ev == 6 ? "POPUPSTART" : ev == 7 ? "POPUPEND" :
       ev == 0x8000 ? "CREATE" : ev == 0x8002 ? "SHOW" : ev == 0x8003 ? "HIDE" : ev == 0x8005 ? "FOCUS" : ev.ToString("X");
     if ((ev == 0x8000 || ev == 0x8002 || ev == 0x8003) && idObj != 0) return;   // 窓そのもの以外の CREATE/SHOW/HIDE は捨てる
-    Q.Enqueue(Ts() + " WINEVENT " + name + " hwnd=0x" + hwnd.ToString("X") + " class=" + c + " title=" + t + " visible=" + (hwnd != IntPtr.Zero && IsWindowVisible(hwnd)) + " idObj=" + idObj + " thread=" + thread);
+    Q.Enqueue(Ts() + " WINEVENT " + name + " hwnd=0x" + hwnd.ToString("X") + " class=" + c + " title=" + t + " visible=" + (hwnd != IntPtr.Zero && IsWindowVisible(hwnd)) + " idObj=" + idObj + " idChild=" + idChild + " thread=" + thread);
   }
   public static void Start() {
     proc = new WinEventProc(OnEv);
@@ -172,6 +172,112 @@ function Measure-Select($tag, $scenArgs, $itemId, $cls, [bool]$withAwase) {
   if ($ap) { Stop-Awase $ap $d }
 }
 
+
+function Item-Center($itemId) {
+  $A=[System.Windows.Automation.AutomationElement]; $T=[System.Windows.Automation.TreeScope]
+  foreach($m in $A::RootElement.FindAll($T::Descendants,(New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty,[System.Windows.Automation.ControlType]::MenuItem)))){
+    if ($m.Current.AutomationId -eq $itemId) { $r=$m.Current.BoundingRectangle; return @([int](($r.Left+$r.Right)/2), [int](($r.Top+$r.Bottom)/2)) }
+  }
+  return $null
+}
+function Focus-Events($ev) { ([regex]::Matches($ev,'WINEVENT FOCUS hwnd=0x\w+ class=#32768 .*?idChild=(-?\d+)') | ForEach-Object { $_.Groups[1].Value }) -join ',' }
+
+# 右クリックからメニュー項目が読めるまでの時間を測る(ms)。
+function Measure-Latency($tag, $scenArgs, $cls) {
+  $d = "$Out\$tag"; New-Item -ItemType Directory -Force -Path $d | Out-Null
+  Log "=== $tag 開始(読み取りの遅れ。$scenArgs)"
+  $ap = Start-Awase $d $cls
+  $p = Start-Process -FilePath "$Dist\indicator_scenario.exe" -ArgumentList "--scen=cycle $scenArgs --n=1 --hold=45 --log=$d\scen.log" -PassThru -WindowStyle Hidden
+  Pump 10; [void](Drain "$d\events-before.log")
+  $ind = Find-Indicator
+  if ($ind) {
+    $r = $ind.Current.BoundingRectangle
+    [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int](($r.Left+$r.Right)/2), [int](($r.Top+$r.Bottom)/2)); Pump 1
+    [void](Drain "$d\events.log")
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    [MW]::mouse_event(0x8,0,0,0,[UIntPtr]::Zero); [MW]::mouse_event(0x10,0,0,0,[UIntPtr]::Zero)
+    $hw = $null; $tpop = -1; $first = -1; $firstSel = ''; $polls = @()
+    $A=[System.Windows.Automation.AutomationElement]; $T=[System.Windows.Automation.TreeScope]
+    while ($sw.ElapsedMilliseconds -lt 4000) {
+      [System.Windows.Forms.Application]::DoEvents()
+      if (-not $hw) {
+        $q = Drain "$d\events.log"
+        if ($q -match 'POPUPSTART hwnd=0x([0-9A-F]+)') { $hw = $Matches[1]; $tpop = $sw.ElapsedMilliseconds }
+      }
+      if ($hw) {
+        $t1 = $sw.ElapsedMilliseconds
+        try {
+          $el = $A::FromHandle([IntPtr][Convert]::ToInt64($hw,16))
+          $items = $el.FindAll($T::Descendants,(New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty,[System.Windows.Automation.ControlType]::MenuItem)))
+          $n = $items.Count; $sel = @()
+          foreach($m in $items){ $o=$null; if($m.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$o)){ if($o.Current.IsSelected){ $sel += $m.Current.AutomationId } } }
+          $polls += "t=${t1}ms 読み取り所要=$($sw.ElapsedMilliseconds - $t1)ms n=$n sel=$($sel -join ',')"
+          if ($n -gt 0 -and $sel.Count -gt 0 -and $first -lt 0) { $first = $t1; $firstSel = ($sel -join ',') }
+        } catch { $polls += "t=${t1}ms 失敗: $($_.Exception.Message)" }
+        if ($polls.Count -ge 12 -or ($first -ge 0 -and $polls.Count -ge 3)) { break }
+      }
+    }
+    Log "右クリック→POPUPSTART を見た: ${tpop}ms / 項目と選択が読めた最初の時刻: ${first}ms(選択=$firstSel)"
+    $polls | Out-File -FilePath "$d\polls.txt" -Encoding utf8
+    [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Pump 2
+  } else { Log 'インジケーターが見つからない' }
+  [void](Drain "$d\events.log")
+  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Pump 2
+  Stop-Awase $ap $d
+}
+
+# 項目の選び方(マウスのホバー→クリック / キーボードの↓→Enter)と、FOCUS イベントの idChild を記録する。
+function Measure-Interact($tag, $scenArgs, $cls, $kind, $hover1, $target) {
+  $d = "$Out\$tag"; New-Item -ItemType Directory -Force -Path $d | Out-Null
+  Log "=== $tag 開始($kind。$scenArgs, ホバー=$hover1, 選ぶ=$target)"
+  $ap = Start-Awase $d $cls
+  $p = Start-Process -FilePath "$Dist\indicator_scenario.exe" -ArgumentList "--scen=cycle $scenArgs --n=1 --hold=60 --log=$d\scen.log" -PassThru -WindowStyle Hidden
+  Pump 10; [void](Drain "$d\events-before.log")
+  if (Open-Menu $d '1回目') {
+    $before = Read-Selected '選択前'
+    $evA = Drain "$d\events.log"
+    Log "ここまでの FOCUS(idChild): [$(Focus-Events $evA)]"
+    if ($kind -eq 'hover') {
+      $c1 = Item-Center $hover1
+      if ($c1) { [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($c1[0], $c1[1]); Pump 1.5 }
+      $evB = Drain "$d\events.log"; Log "ホバー($hover1)後の FOCUS(idChild): [$(Focus-Events $evB)]"
+      $c2 = Item-Center $target
+      if ($c2) { [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($c2[0], $c2[1]); Pump 1.5 }
+      $evC = Drain "$d\events.log"; Log "ホバー($target)後の FOCUS(idChild): [$(Focus-Events $evC)]"
+      [void](Click-Item $target)
+    } else {
+      foreach($k in @('{DOWN}','{DOWN}')) { [System.Windows.Forms.SendKeys]::SendWait($k); Pump 1; $e = Drain "$d\events.log"; Log "$k 後の FOCUS(idChild): [$(Focus-Events $e)]" }
+      [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    }
+    Pump 3
+    $evD = Drain "$d\events.log"
+    Log "選択後: FOCUS(idChild)=[$(Focus-Events $evD)] POPUPEND=$(([regex]::Matches($evD,'WINEVENT POPUPEND')).Count) Invoked=$(([regex]::Matches($evD,'UIA-Invoked')).Count)"
+    Pump 2
+    if (Open-Menu $d '2回目') { [void](Read-Selected '選択後(再読)'); [void](Drain "$d\events.log"); [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Pump 2 }
+  }
+  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Pump 2
+  Stop-Awase $ap $d
+}
+
+# 対照: awase だけを起動し、メニューを開いて何もしない(UI Automation の読み取りもイベント登録も、マウス移動もしない)。
+function Measure-Control($tag, $scenArgs, $cls, $indRect) {
+  $d = "$Out\$tag"; New-Item -ItemType Directory -Force -Path $d | Out-Null
+  Log "=== $tag 開始(対照: 開いて何もしない。$scenArgs)"
+  $ap = Start-Awase $d $cls
+  $p = Start-Process -FilePath "$Dist\indicator_scenario.exe" -ArgumentList "--scen=cycle $scenArgs --n=1 --hold=45 --log=$d\scen.log" -PassThru -WindowStyle Hidden
+  Start-Sleep 10
+  [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($indRect[0], $indRect[1]); Start-Sleep 1
+  $tc = [DateTime]::UtcNow.ToString('HH:mm:ss.fffZ')
+  Log "右クリック(対照)"
+  [MW]::mouse_event(0x8,0,0,0,[UIntPtr]::Zero); [MW]::mouse_event(0x10,0,0,0,[UIntPtr]::Zero)
+  Start-Sleep 6
+  Shot "$tag-menu"
+  [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep 2
+  Log "ESC 送出 (対照)"
+  Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 1
+  Stop-Awase $ap $d
+}
+
 function Measure-State($tag, $scenArgs) {
   $d = "$Out\$tag"; New-Item -ItemType Directory -Force -Path $d | Out-Null
   Log "=== $tag 開始($scenArgs)"
@@ -216,19 +322,35 @@ function Measure-State($tag, $scenArgs) {
   Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Pump 2
 }
 
-Log "ime=$Ime"
-[MW]::Start()
-if ($Ime -eq 'msime') {
-  # 通常の窓(IMM が読める。cache は works)
-  Measure-Select 'msime-normal-noawase'   '--msime --steps=1:19'  'Item 103' 'works'       $false
-  Measure-Select 'msime-normal-awase'     '--msime --steps=1:19'  'Item 103' 'works'       $true
-  # 観測の無い窓の近似(TSF text store の窓 assoc。cache は unavailable)
-  Measure-Select 'msime-tsf-noawase'      '--msime --win=tsf --imm=assoc --keys=F2' 'Item 103' 'unavailable' $false
-  Measure-Select 'msime-tsf-awase'        '--msime --win=tsf --imm=assoc --keys=F2' 'Item 103' 'unavailable' $true
+Log "ime=$Ime mode=$Mode"
+if ($Mode -eq 'control') {
+  # インジケーターの位置だけ先に取っておく(UI Automation はメニューを開く前に済ませる)
+  $ind0 = Find-Indicator
+  $rc = $ind0.Current.BoundingRectangle; $indRect = @([int](($rc.Left+$rc.Right)/2), [int](($rc.Top+$rc.Bottom)/2))
+  Log "インジケーター中心=$($indRect -join ',')"
+  if ($Ime -eq 'msime') {
+    Measure-Control 'msime-normal-control' '--msime --steps=1:19' 'works' $indRect
+    Measure-Control 'msime-tsf-control' '--msime --win=tsf --imm=assoc --keys=F2' 'unavailable' $indRect
+  } else {
+    Measure-Control 'gji-normal-control' '--keys=16' 'works' $indRect
+    Measure-Control 'gji-tsf-control' '--win=tsf --imm=assoc --keys=16' 'unavailable' $indRect
+  }
 } else {
-  Measure-Select 'gji-normal-noawase'     '--keys=16' 'Item 10' 'works'       $false
-  Measure-Select 'gji-normal-awase'       '--keys=16' 'Item 10' 'works'       $true
-  Measure-Select 'gji-tsf-noawase'        '--win=tsf --imm=assoc --keys=16' 'Item 10' 'unavailable' $false
-  Measure-Select 'gji-tsf-awase'          '--win=tsf --imm=assoc --keys=16' 'Item 10' 'unavailable' $true
+  [MW]::Start()
+  if ($Ime -eq 'msime') {
+    $cases = @(@('normal','--msime --steps=1:19','works'), @('tsf','--msime --win=tsf --imm=assoc --keys=F2','unavailable'))
+    foreach($c in $cases) {
+      Measure-Latency  "msime-$($c[0])-latency"  $c[1] $c[2]
+      Measure-Interact "msime-$($c[0])-hover"    $c[1] $c[2] 'hover' 'Item 102' 'Item 103'
+      Measure-Interact "msime-$($c[0])-kbd"      $c[1] $c[2] 'kbd'   '' ''
+    }
+  } else {
+    $cases = @(@('normal','--keys=16','works'), @('tsf','--win=tsf --imm=assoc --keys=16','unavailable'))
+    foreach($c in $cases) {
+      Measure-Latency  "gji-$($c[0])-latency"  $c[1] $c[2]
+      Measure-Interact "gji-$($c[0])-hover"    $c[1] $c[2] 'hover' 'Item 12' 'Item 10'
+      Measure-Interact "gji-$($c[0])-kbd"      $c[1] $c[2] 'kbd'   '' ''
+    }
+  }
 }
 Log '完了'
