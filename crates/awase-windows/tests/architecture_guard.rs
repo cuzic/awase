@@ -9261,3 +9261,24 @@ fn half_width_return_wiring_adr245_pr2() {
         "commit_enter_* は Enter 時の win32::foreground_scope() を渡す(ADR-245 決定2)"
     );
 }
+
+/// BUG-207: 変換サーバーの I/O 監視は、アクティブな TIP で対象を選ぶ。Mozc 系（Mozc Readable）で
+/// `GoogleIMEJaConverter` に固定されると、Mozc が正しく変換していても書き込みが増えず、
+/// raw-tsf-literal と誤判定して入力済みの文字を消す。
+#[test]
+fn gji_monitor_selects_converter_by_active_tip() {
+    let monitor = read_crate_file("src/tsf/gji_monitor.rs");
+    let prod = production_code_only(&monitor);
+    assert!(
+        !prod.contains("\"GoogleIMEJaConverter\"") && !prod.contains("\"mozc_server\""),
+        "gji_monitor.rs にプロセス名を直書きしない。選び方は converter_target.rs（純関数）に置く（BUG-207）"
+    );
+    assert!(
+        prod.contains("converter_target(") && prod.contains("try_attach(current_target)"),
+        "監視の対象は converter_target(アクティブな TIP) で選び、try_attach に渡す（BUG-207）"
+    );
+    assert!(
+        prod.contains("m.target != current_target"),
+        "アクティブな TIP が変わったら別の変換サーバーへ付け替える（BUG-207）"
+    );
+}
