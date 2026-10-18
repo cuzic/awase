@@ -449,7 +449,11 @@ const fn next_stage(prev: Stage, key: TableKey, disp: Disp, open_after: bool) ->
             TableKey::Henkan => Stage::ConvHenkan,
             TableKey::Muhenkan => Stage::ConvMuhenkan,
             TableKey::Space => Stage::ConvSpace,
-            TableKey::Esc => Stage::None,
+            // 保持された Esc(変換中・候補ウィンドウの Esc)は、入力中(読み)へ戻るだけで、入力は破棄されない。
+            // 実測(BUG-205、run 39092296146、3 IME × 各 10 回・全て同じ結果): 変換→Esc の直後に押した無変換などの結果が、
+            // 入力中の行と一致する(入力なしの行とは違う)。`None` にすると、入力中を観測できない窓で「入力中でない」と
+            // 読まれ、次の無変換が「IME を閉じる」と誤予測される。破棄された Esc(`Disp::Discarded`)は上の枝で `None`。
+            TableKey::Esc => Stage::Typing,
             _ => prev,
         },
     }
@@ -1996,8 +2000,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             p2.track.stage,
-            Stage::None,
-            "変換中のEscは入力中(Typing)に戻る"
+            Stage::Typing,
+            "変換中のEscは入力中(Typing)に戻る(実測 BUG-205: 次のキーの結果が入力中の行と一致)"
         );
         // 入力中(Typing)のEscは破棄(入力中でなくなる)。
         let p3 = predict(KeymapPreset::Atok, 0x1B, &typing).unwrap();
