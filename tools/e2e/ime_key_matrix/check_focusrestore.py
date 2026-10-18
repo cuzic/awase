@@ -76,7 +76,7 @@ def conv_of(st, win_key="A"):
     return v if v is not None else w.get("imc_conv")
 
 
-def verdict(cfg, t, stages, awase):
+def verdict(cfg, t, stages, awase, first_key_literal_ok=False):
     """strict の判定。(理由のリスト)を返す。空なら合格。"""
     n = t["n"]
     scn = cfg.get("scenario", "basic")
@@ -135,7 +135,9 @@ def verdict(cfg, t, stages, awase):
         if tap2_conv is None or not tap2_conv & NATIVE:
             why.append(f"次の左 Shift タップでかなに戻らなかった(tap2 の conv={hx(tap2_conv)})")
     else:
-        if text != typed["expect"]:
+        typed2_ok = (t.get("typed2") or {}).get("text", "").strip() == typed["expect"]
+        # --first-key-literal-ok(ADR-245 追補 2。R2=最初の打鍵の保持が入るまで): 最初の打鍵が素の文字で出ても、2 打鍵目がかななら許す。
+        if text != typed["expect"] and not (first_key_literal_ok and typed2_ok):
             why.append(f"戻って最初の打鍵がかなにならない(本文 {text!r}、期待 {typed['expect']!r})")
         # ADR-245 追補 2 R1: 復元の書き込みの後に A の開閉を読み直して belief に記録するので、2 打鍵目からは Engine が効く
         # (R2=最初の打鍵の保持が入るまで、最初の打鍵 `text` は上で落ちてよい)。typed2 が無い古い結果は見ない。
@@ -151,6 +153,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json")
     ap.add_argument("--strict", action="store_true")
+    ap.add_argument("--first-key-literal-ok", action="store_true",
+                    help="expect=resume で、戻って最初の打鍵が素の文字でも 2 打鍵目(typed2)がかななら許す(ADR-245 追補 2。R2 が入るまで)")
     ap.add_argument("ts_log")
     ap.add_argument("awase_log", nargs="?")
     a = ap.parse_args()
@@ -179,7 +183,7 @@ def main():
         print(f"  utc: start={t['utc']} tap1={t['utc_tap1']} away={t['utc_away']} back={t['utc_back']} type={t['utc_type']} tap2={t['utc_tap2']} end={t['utc_end']}")
         for s in (s for s in stages if s["n"] == n):
             print(f"  {s['stage']:7} +{s['at_ms']:<5} {s['utc']} fg={s['fg']:5} A[{win(s['A'])}]  B[{win(s['B'])}]")
-        v = verdict(cfg, t, stages, awase)
+        v = verdict(cfg, t, stages, awase, a.first_key_literal_ok)
         if v is None:
             print("  FOCUSRESTORE_VERDICT: 観測のみ")
         else:

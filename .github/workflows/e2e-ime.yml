@@ -573,9 +573,12 @@ jobs:
             #   rebuild=GJI の ATOK プリセット(keymap=1。F2 が純粋なトグルなので注入せずトグルを立て直す=戻った A は英数のまま、次の左 Shift タップでかな)。
             # ATOK プリセットは gji-atok として CI に既にある(SC_IMES の keymap=1)ので、RebuildToggle も実機で固定できる。
             # 観測のみ: ctl(B へ移さない対照)・sameproc(同一プロセス内の窓移動、Q4)・bimeoff(B で IME OFF してから戻る、effective_open 偽の Drop)。
-            *[cfg(f'sc-focusrestore-{ime_name}{suf}', 'observe' if suf in ('-ctl', '-sameproc', '-bimeoff') else 'pass', check='focusrestore', ime=ime, keymap=km, runs=1, wait=480,
-                  general='half_width_alnum_toggle = "all"', until='2026-11-08' if suf in ('-ctl', '-sameproc', '-bimeoff') else '',
-                  checkargs='' if suf in ('-ctl', '-sameproc', '-bimeoff') else '--strict',
+            #   alttab も観測のみ(2026-10-18): CI の SendInput の Alt+Tab は窓を切り替えない(alttab_ok=false。ハーネスの問題で製品の挙動ではない)。
+            # --first-key-literal-ok(ADR-245 追補 2): MS-IME 本体(IMC 経路)と gjimsime-shiftchar(Deferred→Resume)は、戻って最初の打鍵が素の文字で出る
+            #   ことを許し、2 打鍵目(typed2)がかなであることを必須にする。最初の打鍵を保持する R2 が入ったら外す。
+            *[cfg(f'sc-focusrestore-{ime_name}{suf}', 'observe' if suf in ('-ctl', '-sameproc', '-bimeoff', '-alttab') else 'pass', check='focusrestore', ime=ime, keymap=km, runs=1, wait=480,
+                  general='half_width_alnum_toggle = "all"', until='2026-11-08' if suf in ('-ctl', '-sameproc', '-bimeoff', '-alttab') else '',
+                  checkargs='' if suf in ('-ctl', '-sameproc', '-bimeoff', '-alttab') else '--strict' + (' --first-key-literal-ok' if ime_name == 'msime' or (ime_name == 'gjimsime' and suf == '-shiftchar') else ''),
                   stress=f"--form=edit --mode=focus-restore --fr-n=5 --fr-expect={fexp}{flags} --layout=@REPO@/layout/nicola_keytop.yab{msime}")
               for ime_name, ime, km, msime, fexp in (('msime', 'msime', 1, ' --msime', 'resume'), ('gji', 'gji', 1, '', 'rebuild'), ('gjimsime', 'gji', 2, '', 'resume'))
               for suf, flags in (('', ''), ('-ctl', ' --fr-control'), ('-bopen', ' --fr-b-open'), ('-sameproc', ' --fr-sameproc'),
