@@ -3,7 +3,7 @@ id: ADR-267
 title: |-
   mozc-readable の共有メモリに「組成の段階・候補の種類・未確定文字列の長さ・処理したキーの通番・入力欄のモード指定」を足す(version 3)
 status: |-
-  提案(2026-10-18、起草。Opus round1〈致命3・重要6・軽微5〉・round2〈致命1・重要4・軽微5〉・round3〈重要1・軽微4〉の指摘を反映した第4版)。publisher・読み手とも未実装。round4 の再確認待ち
+  提案(2026-10-18、起草。Opus round1〈致命3・重要6・軽微5〉・round2〈致命1・重要4・軽微5〉・round3〈重要1・軽微4〉の指摘を反映した第4版。round4 で収束、軽微3件を反映済み)。publisher・読み手とも未実装
 related_adr:
   - "ADR-191"
   - "ADR-265"
@@ -62,9 +62,12 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 ### D5. 値の鮮度は `key_seq` で判定する(旧 D5 を置き換え。R1-C3)
 
 - 旧案の「`update_tick_ms` が直近の打鍵より新しいか」は成り立たない。publisher は変化が無ければ書かないので、「処理したが値が変わらなかった」と「まだ処理していない」の区別がつかず、ADR-265 D3 の読み取り規約(`update_tick_ms` による新しさの判定はしない)とも矛盾する。`seq` が進んだかも同じ理由で使えない。
-- `key_seq` は「TIP が見たキーダウンの回数の目安」であり、送ったキーの数と完全には一致しない(アプリが `ITfKeystrokeMgr::TestKeyDown` を同じキーで複数回呼ぶと重複して数え、逆に `TestKeyDown` なしで `KeyDown` を直接呼ぶと数えられない。どちらも未確認で、CI で Chrome・WezTerm・Notepad に送った打鍵数と `key_seq` の増分を 1 回ずつ記録して確かめる。R3-M1)。IME が閉じていて食べないキーも、`OnTestKeyDown` で数えるので進む(`OnKeyDown` で数えると、IME が閉じた状態では進まず「TIP がキーを受け取っていない」と区別できなくなる。R2-I1)。
+- `key_seq` は「TIP が見たキーダウンの回数の目安」であり、送ったキーの数と完全には一致しない(アプリが `ITfKeystrokeMgr::TestKeyDown` を同じキーで複数回呼ぶと重複して数え、逆に `TestKeyDown` なしで `KeyDown` を直接呼ぶと数えられない。どちらも未確認で、`VKBackBasedDeleter` が送る BackSpace が `key_seq` に入るかも未確認(R4-M3)。CI で Chrome・WezTerm・Notepad に送った打鍵数と `key_seq` の増分を 1 回ずつ記録して確かめる。R3-M1)。IME が閉じていて食べないキーも、`OnTestKeyDown` で数えるので進む(`OnKeyDown` で数えると、IME が閉じた状態では進まず「TIP がキーを受け取っていない」と区別できなくなる。R2-I1)。
 - `key_seq` は編集セッションの外で進み、組成の項目は編集セッションの末尾(D7)で書かれるので、`key_seq` だけでは組成の項目が反映済みかは分からない(`k` を送って `key_seq` が進んでも、編集セッションが走る前は `phase=0`)。そこで `composition_key_seq` を一緒に書く。ただし**公開した時点の `key_seq` を読んではいけない**: 非同期の編集セッション(Word の回避策の `TF_ES_ASYNC`)では、打鍵 N の編集セッションが走る前に打鍵 N+1 の `key_seq` が進み、中身は N の `Output` なのに N+1 が付く。`OnEndEdit`・`AsyncSetFocusEditSessionImpl` からの `Update` も、打鍵と無関係に最新の `key_seq` を付けてしまう(R3-I1)。
-- 作り方: `TipPrivateContext` に `last_output_key_seq` を持たせ、`last_output` を更新する地点(`UpdatePrivateContext` の `*private_context->mutable_last_output() = output;`、`OnTest` 内の `should_be_sent_to_server && temporal_output.has_consumed()` の書き換え)で、その `Output` を生んだ打鍵の番号を入れる。番号は、編集セッションのオブジェクトを作る `OnOutputReceivedImpl` で、その時点の `key_seq` を保存して運ぶ(運ぶのは打鍵の番号 1 つで、経路は 1 か所)。打鍵に由来しない `Output`(言語バー、`OnCompositionTerminated` の SUBMIT など)は直前の値を引き継ぐ。`Update` は `last_output_key_seq` をそのまま書く。
+- 作り方: `TipPrivateContext` に `last_output_key_seq` を持たせ、`last_output` を更新する地点(`UpdatePrivateContext` の `*private_context->mutable_last_output() = output;`、`OnTest` 内の `should_be_sent_to_server && temporal_output.has_consumed()` の書き換え)で、その `Output` を生んだ打鍵の番号を入れる。番号は、編集セッションのオブジェクトを作る `OnOutputReceivedImpl` で、その時点の `key_seq` を保存して運ぶ(運ぶのは打鍵の番号 1 つで、経路は 1 か所)。打鍵に由来しない `Output`(言語バー、`OnCompositionTerminated` の SUBMIT など)は直前の値を引き継ぐ。
+  - 番号は `OnOutputReceivedImpl` の**引数**にする。打鍵の経路(`OnKey`、`TurnOnImeAndTryToReconvertFromIme`、`UndoCommint`)だけが番号を渡し、`ReconvertFromApplicationSync`(アプリからの再変換)は「なし」(直前の値を引き継ぐ)を渡す。そうしないと、打鍵 M の編集セッションが `TF_ES_ASYNC` で予約中のときに、再変換の Output に M が付く(R4-M2)。
+  - `OnTest` 内の書き換え(`should_be_sent_to_server && temporal_output.has_consumed()`)は、そのコマンドが `TEST_SEND_KEY` か `SEND_KEY` かで分かれる。`TEST_SEND_KEY` ならサーバーが打鍵を処理した結果ではないので、この地点では番号を進めず(直前の値を引き継ぐ)、組成の項目もこの Output からは作らない。`SEND_KEY` なら上の書き方のまま。実装時に確かめる(R4-M1)。
+  - `Update` は `last_output_key_seq` をそのまま書く。
 - 読み手は `(int32_t)(composition_key_seq - 自分が送った打鍵の番号) >= 0` のときだけ組成の項目を採る(R2-I2、R3-M3)。
 - 値は「TIP が編集セッションの中で公開した時点」の状態である。`OnOutputReceivedImpl` は Word の回避策で `TF_ES_ASYNC` に切り替えることがあり、受け取りと公開の間にアプリがロックを与えるまでの遅れが入る。読み手は、このずれを前提にする。
 
