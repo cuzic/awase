@@ -1,125 +1,96 @@
-# ADR-265 段階 2b: 共有メモリを belief へ接続する設計(案)
+# ADR-265 段階 2b: 共有メモリを belief と applied へ接続する設計(案 v2、2026-10-18)
 
-状態: **設計のみ**(2026-10-18、実装は別セッション rust-nicola-05)。
-根拠の出典: [ADR-265 D3](../adr/265-mozc-readable-integration.md)、[段階 2 の測定結果](adr265-stage2-measurement-result.md)、
-[ime-belief-architecture](../../.claude/rules/ime-belief-architecture.md)。コードは `develop` の `8eef489e` で読んだ(読んだだけで、ビルドも実機も未実施)。
+状態: **設計案**(実装前。リポジトリの運用により、実装の前に ADR 化と Opus の敵対的レビューを経る。ADR-214 の再開に当たる部分を含む)。
+v1 からの変更の理由: Opus の敵対的レビュー(結論: C1・C2 致命、H1〜H3 重大)と、実機実験([結果](adr265-belief-experiments-result.md))。レビューの主要な 5 点は、`develop` のコードで私が確かめた
+(drift correction の根拠は `ConvOpenInference` だけを除外して authority・窓の照合を見ない、`record_any` は常に `expires_at: None`、`resolve_open_at` の優先順は 明示意図 → 打鍵予測 → `derive_any`、`ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE=false`、`AppliedImeState::is_confirmed()` の本番の呼び出しは無い)。残りの記述はレビューの読みで、実装時に再確認する。
+コードは `develop` の `779fc52f` 前後で読んだ(ビルド・実行はしていない)。
 
-## 0. 方針(利用者決定、2026-10-18)
+## 0. 方針(利用者決定)
 
-- 共有メモリは Mozc 自身の状態の**事実**であり、推測(ObserverPoll・conv ビット等)より優先する。**最初から High で入れる**(Low→Medium の段階は置かない)。
-- 理由(利用者): v2 の設計では、モードずれは一定の確率で起きる前提。mozc-readable を入れる利用者は、最初から「事実を優先する動作」を期待している。
-  影響は mozc-readable を入れた環境だけ(他の IME ではブロックが見つからず、何も起きない)。
-- 自動判定(設定なし)。`mozc_shm_shadow` のオプトインは belief への接続では要求しない(診断用の journal の設定としては残す)。
-- High は「事実として採る**窓の照合を通った読み**だけ」に限る。窓を取り違えた事実は事実ではないので、照合は緩めない(§2)。
+1. 共有メモリは Mozc 自身の状態の事実なので、belief へ**最初から High** で入れる。自動判定(設定なし)。
+2. **`applied` は、実機検証が通った窓の種類に限り、共有メモリで Confirmed にする**。範囲外は降格(`Unknown`)のみ。検証の基準・結果は [adr265-applied-confirmed-verification.md](adr265-applied-confirmed-verification.md)・[結果](adr265-belief-experiments-result.md)。
+3. 規則 R の条件 3(`update_tick_ms` が直前の操作より後)は **`>=`**(利用者決定。strict だと `GetTickCount64` の分解能 約 15.6ms で便益がほとんど出ない)。`>=` の危険は未検証(§8 の V4)。
+4. IME へ送る根拠(`derive_actuating`・授権)には**入れない**(`BeliefOnly`)。「すでにその状態なら送らない」は `applied` が担う(§5)。
 
 ## 1. 目的と、やらないこと
+- 目的: mozc-readable が動いている窓で、(a) IME の開閉の belief を共有メモリで正す、(b) 古い `applied` が「一致」と言って必要な送信を省く(ADR-214 の P1)のを防ぐ。
+- やらない: `input_mode` には入れない。`desired_open` を書かない。IME へ何も送らない(drift correction 経由も含めて。§3)。
 
-- 目的: mozc-readable が動いている窓で、IME の**開閉**の belief を共有メモリの値で正す(外から閉じられた・物理キーで変わった後のずれ。BUG-200 の系統)。
-- やらない: `input_mode` には入れない(`belief_mode` は romaji/kana の入力方式で、共有メモリの hiragana/katakana とは別物。測定でも開閉だけを比べた)。
-  `desired_open` を書かない。IME へ何も送らない。
+## 2. belief への入れ方(Part A)
 
-## 2. 入れ方(既存の型にそろえる)
-
-| 項目 | 案 | 理由 |
+| 項目 | 内容 | 理由 |
 | --- | --- | --- |
-| 新しい source | `ObservationSource::MozcShm`(+ `evidence::MozcShm`) | `ConvOpenInference` と同形。他の source の偽装はしない |
-| 入口 | `ImeStateHub::report_mozc_shm_open(open, hwnd, focus_epoch, tick)`(`report_conv_open_inference` の隣、`platform_state.rs:2028` 付近) | 呼び出し元を 1 つに絞る。`architecture_guard` の件数と `observation_source_guard` の対象を更新 |
-| 信頼度 | **High** | 利用者決定。`derive_filtered` の High 単独の採用に乗る(最新の High を採る) |
-| authority | `BeliefOnly` | `derive_actuating` は `open_warrant.rs` の Step 3 だけが使う「OS の IME へ書いてよいかの授権」の入力で、「すでにその状態だから送らない」の判断ではない(§5)。授権に使う必要は今は無い |
-| 読む値 | `tsf_open` を既定。`tsf_open != effective_open` のときは報告しない(journal にだけ残す) | 食い違いの意味(パスワード欄等)が未測定。事実が割れているときは採らない |
-| 窓の照合 | `derive_filtered` の `is_identity_ok` に `MozcShm` を足し、**epoch と hwnd の両方**を照合(`FocusProbe`/`ImmCrossProbe` と同じ) | High は他の観測を上書きするので、窓を切り替えた直後の古い読みを採らないための必須条件 |
-| 受け入れ | `Outcome::Accepted`(magic・version・seq・pid・`active=1`)のときだけ報告。それ以外・読めなかったときは報告しない | 採らないより間違って採る方が高くつく |
+| source | `ObservationSource::MozcShm`(+ `evidence::MozcShm`)。信頼度 High、authority `BeliefOnly` | 利用者決定。授権(`open_warrant.rs` Step 3 の `derive_actuating`)には載せない |
+| 入口 | `ImeStateHub::report_mozc_shm_open(open, hwnd, focus_epoch, tick)`(`report_conv_open_inference` の隣)。呼び出し元は 1 つ | `architecture_guard` の件数・`observation_source_guard` の対象を更新 |
+| 読む値 | `tsf_open` を既定。`tsf_open != effective_open` のときは報告しない | 割れる場面は未測定(E4 は結論なし)。割れているときは採らない |
+| 窓の照合 | `derive_filtered` の `is_identity_ok` に `MozcShm` を足す(epoch+hwnd)。**加えて**、`most_recent_trusted` / `_excluding` にも照合を入れる、または TTL(下)で足りるなら不要 | レビュー H2: 鮮度・照合は `derive_filtered` の中だけで、フォールバックは見ない |
+| 鮮度(古い値を残さない) | `record_any` で `source == MozcShm` のときだけ `expires_at = Some(at + TTL)`(`at` から決まる値で、journal 再生でも同じ)。TTL は tuning 定数(`#[measured]`)。受け入れている間は毎 tick 報告し、読めない・`active=0`・別窓の tick から報告が止まる | レビュー H2: 既存の `expires_at` と `is_expired` を全読み手(`most_recent_trusted` を含む)が見るので、3 つの読み手で同時に失効する。TTL の値は報告間隔(約 500ms)+余裕から導き、実測を添える(tuning-constants) |
+| 報告の頻度 | 値が変わったときと、TTL の半分ごと | レビュー M3: 毎 tick だと journal の State の枠(2048)が約 17 分で入れ替わる |
+| 読む対象 | mozc-readable の TIP が有効な窓だけ(GJI 系の TIP のとき、または (tid, pid) ごとに `NotFound` を覚えてフォーカスが変わるまで読まない) | レビュー M4: 自動判定で全利用者に毎 tick の Win32 呼び出しが走るのを避ける |
 
-## 3. 古い値を残さない(High にしたので必須)
+### 2-1. drift correction との相互作用(C1。実装前に必須)
+- `evaluate_drift` の根拠(`most_recent_trusted_excluding(now, &[ConvOpenInference])`)と、`read_back` の `EXCLUDED_FROM_ANY_FRESH_EVIDENCE` から `MozcShm` を**除外**する。除かないと、High の共有メモリが明示意図と食い違うたびに drift correction が IME を開け直し(Standard の窓)、Blind の窓では BUG-114 型の再武装ループと BUG-124 型の「@」を起こす。
+- 除外だけでは belief が直らない(C2)ので、§2-2 と組にする。
 
-TIP が無効になった後も、共有メモリは最後の値を残す(`active=0`)。High の観測が残ると、他の観測を上書きし続ける。
+### 2-2. 外から変わったときの追随(C2)
+- `resolve_open_at` の優先順は 明示意図(`last_intent`)→ 打鍵予測 → `derive_any`。High の `MozcShm` は 3 番目からで、さらに上に `IntentStore`(ON 10 秒・OFF 30 秒、hwnd ごと)がある。外から閉じられても belief は直らない。
+- 共有メモリの読みが「**awase の操作より後に、外で変わった**」と判定できたとき(`update_tick_ms >= max(awase の最後の開閉の書き込み, 最後のモードキー)`、かつ値が belief と食い違う)は、既存の追随経路と同じ 3 手を実行する: `report_mozc_shm_open`(High)→ `intent_store.remove(hwnd)` → `pass_through_observed(tick, true, true)`(`last_intent` を捨て、`desired_open` を観測に揃え、食い違う `applied` を `Unknown` に落とす)。手本は `platform_state.rs` の `follow_external_change_in_scope` / `follow_direct_read_in_scope`。
+  desired が事実に揃うので、drift correction は発火する理由を失う。`ModeKeyPassedThrough` の新しい呼び出し元を足すだけで、新しい `ImeEvent` variant は要らない(`ime_event_guard` もそのまま通る)。`architecture_guard.rs` の「3 手の順序」のガードを新しい関数にも足す。
+- 「awase の操作より前」の読み(`update_tick_ms < 基準`)は、追随せずに捨てる。
+- 打鍵予測の照合(`KEY_EFFECT_SETTLE_MS = 170`)の前に、`update_tick_ms < 予測の時刻`(打鍵より後に変化していない)なら「処理前」として照合しない(レビュー M1)。実機の遅れは最大 95ms(E3)で 170ms に余裕があるが、負荷時・TSF ネイティブの窓は未測定。
 
-- **受け入れている間は毎 tick 報告し続ける**(いまの影の読みは「変化したときだけ」記録するので、報告用の経路は別にする)。`active=0`・別窓・読めなくなった tick から報告が止まる。
-- 観測の鮮度は `OBSERVATION_FRESH_WINDOW_MS = 3000`(`tuning.rs:69`)で切れる。**3 秒は、段階 2 の基準(`active=0` から 1 秒後の誤採用 0)より緩い**。
-  High では、TIP を外してから最大 3 秒、古い open が採られうる。選択肢:
-  (a) 3 秒を受け入れる、(b) 観測を無効にするイベントを足す(`reduce` に variant が増え、複雑性予算の対象)、(c) この source だけ鮮度を短くする(報告の間隔 500ms + 余裕で 1.2 秒前後。`tuning.rs` の定数追加なので、tuning-constants の規約により実測値を添える)。
-  **High にするので (c) を推奨**(段階 A の猶予が無いため)。`is_expired` が source ごとの TTL を持てるかは**コードで未確認**。
+## 3. IME へ何も送らないことの確認
+`BeliefOnly` は `derive_actuating` にだけ効く。drift correction と `read_back` は authority を見ない(C1)ので、§2-1 の除外が「何も送らない」を成り立たせる。テストで固定する(§7)。
 
 ## 4. 読む頻度
+既存の約 500ms の tick のまま。キー直後の約 0.5 秒は古い belief のまま(現状と同じ)。pulse(`Local\mozc-readable-ime-changed`)での読み直しは別の段階。
 
-- 既存の ~500ms の tick(`mozc_shm_on_tick`)のまま始める。キーの約 61 ms 後に共有メモリは変わるので、キー直後の約 0.5 秒は古い belief のまま(現状と同じで、悪化しない)。
-- 次の段階: `Local\mozc-readable-ime-changed`(pulse、取りこぼす前提)を読み直しの合図にする。本設計には含めない。
+## 5. `applied` の確認済み化(Part B。ADR-214 の再開に当たる)
 
-## 5. 段階
+### 5-1. なぜ要るか
+押下以外の送信(ツールバー、アプリ起点のモード変更、トレイ・Engine コマンド、drift correction)は、awase の外で変わった IME の状態に対して、古い `applied` を根拠に「一致」と見て**送信を省く**ことがある(ADR-214 の P1)。省略の判断は `DecisionInputs.shadow_on` = `applied_open()`(awase が最後に書いた値の記録)を見る。belief(`effective_open`)は見ない。したがって belief を直しても省略は直らない。
 
+### 5-2. 規則 R(利用者決定: 条件 3 は `>=`)
+共有メモリの 1 回の読みから `applied` を Confirmed(`eff_open`)にしてよいのは、次を**すべて**満たすとき:
+1. 受け入れ条件を通る(magic・version・seq・pid・`active=1`)+窓の照合(epoch・hwnd)。
+2. `tsf_open == effective_open`。
+3. `update_tick_ms >= max(直前の awase の開閉の書き込みの `GetTickCount64`, 直前の打鍵の `GetTickCount64`)`。
+満たさないときは何も書かない(または、食い違いが分かっているなら §2-2 の降格)。
+
+### 5-3. 適用する窓の範囲(検証が通った種類だけ)
+- 確認済み: 素の Win32 窓(IMM で読める窓)と Edge(TSF ネイティブ)(A: 各 40 回、食い違い 0。B: 素の Win32 窓 50 回、食い違い 0。古い読みは観測されず)。
+- **範囲外は降格のみ**(`Unknown` に落とすだけ。Confirmed は書かない): ツールバーのメニュー、パスワード欄、Chrome・Windows Terminal・その他の TSF ネイティブ、負荷時、複数窓、連続した打鍵。
+- 窓の種類の判定をコードでどう書くか(クラス名の表か、`AppKind` か)は、ADR で決める。TsfNative を一括で入れず、**確認済みの窓の種類を列挙する**(列挙に無ければ降格のみ)。
+
+### 5-4. 書き込み点(レビュー H3)
+- `record_confirmed_in_scope` は reduce を通らず、`note_awase_write_for_mode_key_pass_in_scope`(モードキー通過の記録)と `confirm_applied`(pending の解除)の副作用を持つ。**流用しない**(awase の apply が飛行中に共有メモリが同じ値を示すと、pending を消して本物の完了を `Stale` にし、warmup の副作用が走らなくなる)。
+- 新しい `ImeEvent` variant(例 `AppliedConfirmedByShm { open, scope }`)を `reduce()` に足す。pending と mode-key-pass には触れない(テストで固定)。journal の直列化形式(ADR-082)・`ime_event_guard`(dylint)・`architecture_guard` の構築件数・`applied_direct_assignments_are_accounted_for` を更新する。
+- `AppliedImeState` で Confirmed と Optimistic を区別する本番コードは無い(`is_confirmed()` の本番の呼び出し 0 件)。したがって実際の効果は「`Unknown` を `Some(x)` に戻す」ことと、古い `Some(!x)` を `Some(x)` に直すこと。ADR-214 決定 1(`Sent`/`Confirmed` の型の分離)はしない。API 成功で Confirmed が書かれる問題は残り、共有メモリで読める窓だけは次の tick で真値に上書きされる。
+
+### 5-5. 残る危険(隠さない)
+- **E1 の不一致が未解決**: 外からの変更(ツールバー等)が共有メモリに出ない場合が本当にあるなら、`applied` が古いまま Confirmed として残り、必要な送信を省く(逆向きの P1)。規則 R では防げない(R は新しい読みの正しさを守るが、公開されなかった変化は見えない)。**未解決のまま実装に進むなら、この危険を ADR に書いて受け入れる**。
+- `>=` の危険(直前の別の変化が同じ 15.6ms の目盛りに書かれた古い読みを通す)は未検証(§8 の V4)。
+- TsfNative の窓では Engine 経路の押下も `applied` を未知にしない(`ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE=false`)ので、`applied` が誤っていれば押下の送信も省かれる(H1)。確認済みの窓の種類を絞る理由。
+
+## 6. 段階
 | 段階 | 内容 |
 | --- | --- |
-| 1(本設計) | `MozcShm` を High・`BeliefOnly` で報告。自動判定 |
-| 2(別 ADR) | pulse で読む、`input_mode` へ、**「すでにその状態なら送らない」に共有メモリを使う**(下の §5-1) |
+| 1 | Part A(§2)+drift の除外(§2-1)+追随(§2-2)+TTL。IME へ何も送らない |
+| 2 | Part B(§5)。範囲は確認済みの窓の種類だけ。降格は範囲外にも適用 |
+| 3(別 ADR) | pulse での読み直し、`input_mode`、確認済みの範囲の拡大(測定した窓の種類から) |
 
-### 5-1. 「すでにその状態なら送らない」は belief(High)では効かない(2026-10-18、コードを読んで確認)
+## 7. ガードとテスト
+- `drift_correction`: `MozcShm` だけが根拠のとき `evaluate_drift` が `Ok` にならない。`read_back` の `AnyFreshEvidence` の除外のテスト。
+- `observation_store`: (i) TTL の失効が `derive_any`・`most_recent_trusted`・`_excluding` の全部に効く、(ii) 窓の照合(epoch・hwnd)、(iii) `BeliefOnly` が `derive_actuating` に入らない、(iv) High は ObserverPoll(Medium)と食い違っても採られる(利用者決定)。
+- 追随: `update_tick_ms >= 基準` で追随する、`< 基準` で追随しない、3 手の順序のガード、`pass_through_observed` で食い違う `applied` が `Unknown` に落ちる。
+- Part B: 規則 R の 3 条件それぞれの否定、範囲外の窓で Confirmed を書かない、pending と mode-key-pass に触れない、`update_tick_ms == 基準`(`>=` の境界)の扱い。
+- `architecture_guard`: 新 source の網羅 `match`(`observation_store.rs` の `get`/`set`、`ime_event.rs` の `authority`)、新 variant の構築件数。`lints/observation_source_guard`: 新 source の構築を `report_mozc_shm_open` だけに限る。
+- 回帰の置き場所: `fix-requires-evidence` の「IME belief」と「force-write / actuation」のファミリー。同じ PR にテストを足す。tuning 定数(TTL)は実測値を本文に書く。
 
-- 送らない判断(already-matched)は、`DecisionInputs.shadow_on` = `ImeModel::applied_state().applied_open()`(`AppliedImeState`: Unknown / Optimistic / Confirmed。
-  **awase 自身が最後に書いた値の記録**)を見る(`ime_actuation_decision.rs` の `gji_direct_already_matches` など)。`effective_open`(観測から導く belief)は見ない。
-  したがって、共有メモリを High で belief に入れても、この省略は変わらない。
-- 明示キーの押下(`press.is_some()`)は、`explicit_press_applied_pair` が `applied` を意図的に**未知にして**から決める(押下ごとに送る設計。
-  `sync_actuation.rs` のテスト `dispatch_sends_off_for_each_press_even_when_applied_is_already_off`)。共有メモリが「すでに閉」と言っていても、押下の書き込みは省かれない。
-- 共有メモリで省略するなら、`applied` を `Confirmed` にする経路(Observe → classify → reduce の新しい入口)と、押下の未知化との関係(ADR-208 L1、ADR-214 Sent/Confirmed)を決める別 ADR が要る。
-  `derive_actuating`(授権)には載せない。理由は §2 の authority の行。
-- 未確認: 実際に「すでに合っているのに送った」事例がどの程度あるか(journal の `ActuationDecision` で数えていない)。数えてから別 ADR を起こす。
-
-## 6. マージの条件(設計の遠慮の代わりに、測れていないものを条件にする)
-
-段階 2 の基準(N≥200・食い違い 0)は満たしたが、次は**測れていない**。実装 PR のマージ前に、少なくとも (1) を CI で通す:
-(1) 状態を変えた直後のフォーカス移動(flip)——**2026-10-18 に CI で測れた**(run `39119069498`、切り替え依頼 158 件を処理、mismatch 0・wrong thread 0・stale 0。結果は `adr265-stage2-measurement-result.md` の追補)。PR #667 のマージを実装 PR の前提にする、
-(2) スレッド ID の再利用(再現せず、結論なし。`pid` 照合と epoch/hwnd 照合が防ぐ設計)、
-(3) 物理キーでの複数の窓・フォーカス直後(実機は Notepad 1 窓、28 回中 belief 誤り 1)、(4) 負荷時の `read_us`(**測れた**: CI の負荷下で p99 126µs・最大 128µs)。
-(2)〜(4) が 0 件のままなら、PR 本文に「未測定」と書いて出す(止めない。利用者決定)。
-
-## 7. 実装の注意(ガードとテスト)
-
-- **drift correction との相互作用(未確認、最優先で読む)**: `platform_state.rs::check_drift_correction` は、`ConvOpenInference` と `HeuristicDefault` だけを明示的に除外するガードを持つ
-  (`ime_event.rs` の `HeuristicDefault` の doc)。`MozcShm` が High で明示意図(ユーザーの ON/OFF)と食い違ったとき、drift correction が IME へ再送して**事実と争う**恐れがある
-  (BUG-173 追補3 の、GJI で収束しなかった再送の型)。`MozcShm` をこのガードの対象にするかを、実装前に決める。
-- `architecture_guard.rs`: `ObserverReported` の構築箇所の件数、新 source の網羅 `match`(`observation_store.rs:262〜301` の `get`/`set`、`ime_event.rs` の `authority`)に variant を足す。
-- `lints/observation_source_guard`: 新 source の構築を `report_mozc_shm_open` だけに限る。
-- `observation_store` の単体テスト: (i) epoch/hwnd が違うと採られない、(ii) `BeliefOnly` は `derive_actuating` に入らない、(iii) 鮮度で失効する、
-  (iv) High は ObserverPoll(Medium)と食い違っても採られる(利用者決定)、(v) `active=0` で報告が止まる。
-- 回帰の置き場所: `fix-requires-evidence` の「IME belief」ファミリーなので、同じ PR にテストを足す。
-
-## 8. 未確認・決めること
-
-- 未確認: `is_expired` が source ごとの TTL を持てるか(§3)、`Observed::<evidence::…>` の足し方、drift correction との相互作用(§7)。
-- 決めてほしい: (1) §3 の古い値の扱い(a/b/c。推奨は c)、(2) §7 の drift correction のガードに `MozcShm` を入れるか(推奨: 入れて、belief だけを正す。事実と争う再送をしない)。
-
-## 9. `applied` を共有メモリで確認済みにする入口(案、2026-10-18)
-
-### 9-1. なぜ要るか(利用者の指摘と、コードの確認)
-
-- 押下以外の送信は実際にある(利用者の指摘): ツールバーからの切り替え、アプリ側からのモード変更、パスワード入力欄など。これらは awase の**外から** IME の状態を変える。
-- そのあと `applied`(awase が最後に書いた値の記録)は古くなる。害は 2 方向ある: (i)すでに合っているのに送る(無駄、被害は小さい)、
-  (ii)**合っていないのに「合っている」と見て送らない**(重い。ADR-214 の P1: トレイ起点の `SetOpen` が古い `applied` で GjiDirect の送信を省かれる)。入口は (ii) を直す。
-- 既存の `external_change_watch`(ADR-205/256)では足りない(コードを読んで確認): 対象は読めない窓(`Imm32Unavailable`)だけで、外部注入キーの直後の短い窓でしか動かず、直す先は belief で `applied` ではない。
-  ツールバー・アプリ起点の変更を継続的に拾って `applied` を直す仕組みは、いまは無い。
-
-### 9-2. 入口の形
-
-- 新しい入口 `ImeStateHub::confirm_applied_from_shm(...)` と、それが dispatch する新しい `ImeEvent` variant(例 `AppliedConfirmedByObservation { open, scope }`)。
-  `reduce()` が `applied = Confirmed { open, at_ms }` を書く(`record_confirmed_in_scope` と同じ書き込み点、ime-belief-architecture の「唯一の書き込み点」を守る)。
-  新しい variant なので、`ime_event_guard`(dylint)と `architecture_guard.rs` の構築箇所の件数に載せる。
-- 入力は §2 と同じ受け入れた読み(窓の照合: epoch・hwnd・`active=1`・pid)。**belief への報告(§2)とは別の入口**にする(belief は観測、`applied` は「IME に反映済みの値」で性質が違う)。
-- 向きは両方向。共有メモリが「閉」で `applied` が `Confirmed(open)` なら `Confirmed(closed)` に直す(ここが P1 の修正)。
-
-### 9-3. 守る条件
-
-| 条件 | 内容 | 理由 |
-| --- | --- | --- |
-| パスワード欄 | `tsf_open != effective_open` のときは**確認済みにしない**。`applied` を `Unknown` にする(次の送信を省かない) | 入力スコープの上書きで 2 つの値が割れる場面。どちらを「IME の状態」とするか未測定なので、省略の根拠にしない側へ倒す |
-| awase 自身の書き込み直後 | ADR-256 の `pending_write`(まだ同じ値の読みで確かめられていない自分の書き込み)がある間は、**古い値を確認済みとして書き戻さない**。同じ値を読むか窓が切れるまで保留 | 書き込みは約 61ms 遅れて共有メモリに現れる。直後の読みで `applied` を古い値に戻すと BUG-199 型の逆戻りになる |
-| 明示キーの押下 | 変えない。`explicit_press_applied_pair` の未知化は残す | 押下ごとに送る設計(ADR-208 L1)。この入口は `press=None` の経路(トレイ・Engine コマンド・drift correction)にだけ効く |
-| 窓の切り替え | 照合は epoch+hwnd。窓が変わったら `applied` の既存の扱い(フォーカスで未知に戻す)に従う | 別の窓の事実を書かない |
-| 共有メモリが読めない・`active=0` | 何もしない(`applied` を動かさない) | 事実が無いときに推測で書かない |
-
-### 9-4. しないこと・未確認
-
-- `Sent`/`Confirmed` の型の分離(ADR-214 決定1)はしない。この入口は、共有メモリで読める窓だけで古い `applied` を事実で上書きする。
-  API 成功で `Confirmed` が書かれる問題(ADR-214 の背景)は残るが、次の tick で共有メモリが真値で上書きする。
-- 未確認: (a) フォーカス変更で `applied` が `Unknown` に戻る場所(`record_confirmed_in_scope` のスコープの扱い)をまだ読んでいない、
-  (b) `pending_write` を `applied` の保留にも使えるか(いまは直接観測の窓の保留用)、(c) 「アプリ起点・ツールバー」の変更の頻度と、古い `applied` で実際に送信が省かれた事例の数
-  (journal の dump が無く数えていない。数えるのは、この入口の効果の確認の手段で、着手の条件ではない)、(d) `tsf_open != effective_open` の実際の頻度(パスワード欄で測っていない)。
-- 実装は ADR-214 の再開に当たるので、**ADR の起票と Opus の敵対的レビューを経てから**実装する(リポジトリの運用)。この節はその叩き台。
+## 8. 未確認・追加の検証
+- V4(`>=` の安全性): 直前の別の変化を同じ目盛りに作る(2 つの IME キーを数 ms 以内に連続で送る)と、古い読みが規則 R を通るか。実装前か、段階 2 の合格条件に入れる。
+- E1 の不一致の原因(外からの変更が共有メモリに出るか)。
+- TTL の値(報告間隔と読みの遅れの実測から)。
+- 確認済みの窓の種類の列挙(クラス名・`AppKind` の表)。
+- 「新しい窓の最初のキーは効かない」(先に a+Enter を 1 回打つと効く)の因果。BUG-200 との関係。別の調査。
+- 複雑性: 新 source・新 evidence・新 `ImeEvent` variant・ハブの入口 2 本・tuning 定数 1 本・窓種の表。ADR に、削除できるものとの対応(1-in-1-out の趣旨、`complexity-budget.md` は未発効)を書く。
