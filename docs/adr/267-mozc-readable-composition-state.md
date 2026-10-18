@@ -33,11 +33,11 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 | オフセット | 型 | 名前 | 意味 |
 | --- | --- | --- | --- |
 | 48 | u32 | `phase` | 0=組成なし、1=組成中(読みを入力中)、2=変換中(Space 後など。preedit に注目文節〈`annotation == HIGHLIGHT`〉がある) |
-| 52 | u32 | `candidate_category` | 0=候補の窓なし、1=`SUGGESTION`、2=`PREDICTION`、3=`CONVERSION`。値は `commands::Category` に揃え `static_assert` で固定。`TipUiHandler` の表示判定〈`IsVisible`〉を通した結果で、UI-less モードでは 0 |
+| 52 | u32 | `candidate_category` | 0=候補の窓なし、1=`SUGGESTION`、2=`PREDICTION`、3=`CONVERSION`。この数値は `commands::Category` の値(CONVERSION=0, PREDICTION=1, SUGGESTION=2)とは**別**で、publisher が switch で明示的に写す(実装で判明、R4 後の訂正)。`TipUiHandler` の表示判定〈`IsVisible`〉を通した結果で、UI-less モードでは 0 |
 | 56 | u32 | `preedit_utf16_len` | 未確定文字列の UTF-16 の長さ(TIP が文書へ書く長さと同じ単位)。`phase=0` なら 0 |
 | 60 | u32 | `preedit_cursor` | 未確定文字列内のカーソル位置。**UTF-32 のコードポイント単位**(Mozc の `output.preedit().cursor()` の単位) |
 | 64 | u32 | `key_seq` | TIP が見たキーダウンの通番。`TipKeyeventHandler::OnTestKeyDown` と `OnPreservedKey` の 2 か所で、**関数の入口(中の `OnTest` の早期 return より前)**で +1(`OnKeyDown` では数えない。TSF は `OnTestKeyDown` が eaten=FALSE のキーに `OnKeyDown` を呼ばないため。数えると食べたキーが 2 回になる)。ラップあり。**打鍵ごとに毎回書く**(pulse はしない) |
-| 68 | u32 | `scope_forced_mode` | 入力スコープが 1 つのモードに決まるときの「`commands::CompositionMode` の値+1」(0=スコープによる指定なし。値は 0〜5 に `static_assert` で固定)。**1(DIRECT)は「IME を閉じる」指定で、`effective_mode` は変わらない**(`StatePair(false, base_state.conversion_mode)`)。`GetOverriddenState` の `states.size() == 1` の分岐で決まる。入力欄がそう指定している、という事実で、打鍵では消えない(R2-I3) |
+| 68 | u32 | `scope_forced_mode` | 入力スコープが 1 つのモードに決まるときの「`commands::CompositionMode` の値+1」(0=スコープによる指定なし。取りうる値は 1〜6)。**1(DIRECT)は「IME を閉じる」指定で、`effective_mode` は変わらない**(`StatePair(false, base_state.conversion_mode)`)。`GetOverriddenState` の `states.size() == 1` の分岐で決まる。入力欄がそう指定している、という事実で、打鍵では消えない(R2-I3) |
 | 72 | u32 | `server_ready` | 1 のとき、この TIP が Mozc サーバーから応答を受け取れている(warm)。0=まだ応答を受けていない、または直近の呼び出しが失敗した(cold の疑い)。D10。**仮説の段階で、実測で採否を決める** |
 | 76 | u32 | `composition_key_seq` | `phase`・`candidate_category`・`preedit_*` の元になった `Output` を**生んだ打鍵**の番号(公開した時点の `key_seq` ではない。R3-I1)。読み手は `(int32_t)(composition_key_seq - 自分が送った打鍵の番号) >= 0` のときだけ組成の項目を採る(ラップを考慮した比較。R3-M3。Python の例も同じ書き方にする) |
 
@@ -128,7 +128,7 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 
 1. **mozc-readable**: `readable/docs/shared-memory.md` に version 3 を書く(仕様が正)。D7 の位置に `SetComposition` を配線し、`Snapshot`・`Flush()` を直す。CI で別プロセスから次を確かめる。
    - `phase`: 入力前=0、`k`=1、Space=2、Enter=0。予測の候補を Tab/↓ で選んだとき(`candidate_category=PREDICTION`)に 1 か 2 のどちらになるか、BS の動きが変換中と同じか(R2-M3)。
-   - `candidate_category`: `ka` の時点は 0 または `SUGGESTION`、Space 後は `CONVERSION`(確定後に予測を出す設定は固定して外す)。
+   - `candidate_category`: `k` の時点で `SUGGESTION`(実測 1)、1 回目の Space 後は 0、2 回目の Space で `CONVERSION`(実測 3)(確定後に予測を出す設定は固定して外す)。
    - `composition_key_seq`: 連続打鍵中に、その時点の `preedit_utf16_len` が実際に反映している打鍵の番号を超えない(`TF_ES_ASYNC` を強制する CI 用のスイッチ、または Word の回避策が効くアプリで確かめる)。
    - `key_seq`: 値が変わらない打鍵でも進む。**IME を閉じた状態のキーでも進む**。`composition_key_seq` が `key_seq` に追いつくまで `phase` を採らない読み方で、`k` の直後に `phase=1` が読めること。
    - 組成中に同じ窓の別 context へ移る/Win+Space で別 IME に切り替える、のときに何が出るか。
@@ -144,7 +144,6 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 
 - **Q1**: awase 側で、入力欄が指定するモードと belief が食い違って困った実例があるか(known-bugs・journal で探す)。無ければ `scope_forced_mode` は QMK 向けの表示用に留める。
 - **Q3**: D11 の N−M が文書に残ったリテラル数と一致するか(段階 1 の測定。一致しなければ D11 を却下する)。
-- **Q2**: Mozc の `Category` の値(`commands::Category`)と `static_assert` で固定できる範囲の確認。
 
 ## 確認していないこと
 
