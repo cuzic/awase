@@ -38,6 +38,11 @@ pub enum AssumedReason {
     /// 物理モードキーの打鍵時点で、キーマップの表から予測した入力モード（ADR-191 決定3）。
     /// 観測ではない。settle 後の観測が確認・訂正する（読めないアプリでは予測が残る）。
     KeyEffectPrediction,
+    /// awase の起動直後の既定値（`ImeModel::new()`）。まだ一度も観測していない。
+    /// 閉の間は入力モードを観測しない（BUG-57 / ADR-239）ので、IME が閉で始まると開くまでこの値が残る
+    /// （BUG-204 / ADR-266: 以前は `ObservedRomaji`＝「観測済み」と名乗っていた。挙動は同じ。
+    /// `is_romaji_capable` は `ObservedRomaji` と `AssumedRomaji` を区別しない）。
+    Startup,
 }
 
 impl InputModeState {
