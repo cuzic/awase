@@ -1297,6 +1297,16 @@ pub(super) fn run_all() -> Result<()> {
         tracing::warn!("{e}");
     }
     let _focus_hook_guard = install_focus_hook().map_err(|e| tracing::warn!("{e}")).ok();
+    // ADR-264 段階 1: `[diagnostics] indicator_menu_shadow = true`（既定は無効のオプトイン）のときだけ、入力インジケーターの
+    // 右クリックメニューの読み取りワーカーと WinEvent フックを起動する（観測のみ。belief・IME には何もしない）。
+    // ガードは `run_all` の終わりまで保持する（drop でスレッド停止・フック解除）。設定の反映は再起動後。
+    let _indicator_menu_guards = if config.diagnostics.indicator_menu_shadow {
+        let (worker, tx) = crate::observer::indicator_menu::spawn_indicator_menu_worker();
+        let _ = with_app(|app| app.init_indicator_menu(Some(tx)));
+        Some((worker, crate::observer::indicator_menu::install_menu_hook()))
+    } else {
+        None
+    };
     let _obs_hook_guards = crate::tsf::observer::install_observation_hooks();
 
     // issue #165 自己修復 opus round2 B1(iii): `hook_alive_tick_ms`を

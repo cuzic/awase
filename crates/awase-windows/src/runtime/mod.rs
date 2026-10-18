@@ -7,6 +7,7 @@ mod focus_tracking;
 mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
+mod indicator_menu_shadow;
 mod key_pipeline;
 mod lang_check;
 mod lang_detect_shadow;
@@ -327,6 +328,8 @@ pub struct Runtime {
     lang_check: lang_check::LangCheck,
     /// ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの影の判定（記録のみ、挙動を変えない）
     lang_detect: lang_detect_shadow::LangDetectShadow,
+    /// ADR-264 段階 1: 入力インジケーターの右クリックメニューの影の読み（記録のみ、挙動を変えない。既定は無効）
+    indicator_menu: indicator_menu_shadow::IndicatorMenuShadow,
     /// Platform 層の全状態
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
@@ -1491,6 +1494,7 @@ impl Runtime {
             ),
             lang_check: lang_check::LangCheck::default(),
             lang_detect: lang_detect_shadow::LangDetectShadow::disabled(),
+            indicator_menu: indicator_menu_shadow::IndicatorMenuShadow::disabled(),
             platform_state,
             all_keymaps,
             post_bypass_rules,

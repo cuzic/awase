@@ -393,6 +393,50 @@ impl MenuOutcome {
     }
 }
 
+/// 同じ種類の読み取りを続けて依頼しない最短の間隔（ミリ秒）。
+///
+/// **実測値ではない暫定の安全弁**（段階 1 は観測のみで、値は D0 の実測で決める。ADR-264 決定 2）。右クリックで開いた 1 つの
+/// メニューは `EVENT_SYSTEM_MENUPOPUPSTART` を 1 回だけ出す（CI の実測）ので、これは連打・サブメニューの入れ子への歯止め。
+pub const MIN_REQUEST_INTERVAL_MS: u64 = 300;
+
+/// 依頼したまま結果が返らないとき、失われたとみなして次の依頼を許す長さ（ミリ秒）。
+///
+/// **実測値ではない暫定の安全弁**。読み取りワーカーが UI Automation で固まった場合に、永久に止まらないための上限
+/// （ワーカーは依頼を 1 件ずつ順に処理するので、固まっていれば次の依頼も待たされる。段階 1 の観測なので許容する）。
+pub const PENDING_STALE_MS: u64 = 5_000;
+
+/// 読み取りを依頼してよいか（純粋）。`since_last_request_ms` = 前回の依頼からの経過（無ければ `None`）、
+/// `pending_age_ms` = 結果待ちの依頼の経過（結果待ちが無ければ `None`）。
+///
+/// 前回から [`MIN_REQUEST_INTERVAL_MS`] 以上たち、かつ結果待ちが無い（または [`PENDING_STALE_MS`] 以上たって失われた）ときだけ許す。
+#[must_use]
+pub const fn may_request_read(
+    since_last_request_ms: Option<u64>,
+    pending_age_ms: Option<u64>,
+) -> bool {
+    if let Some(since) = since_last_request_ms {
+        if since < MIN_REQUEST_INTERVAL_MS {
+            return false;
+        }
+    }
+    match pending_age_ms {
+        Some(age) => age >= PENDING_STALE_MS,
+        None => true,
+    }
+}
+
+/// いまの IME（`TSF_OBS.table_ime_kind()` の結果）から、メニューの表を選ぶ（純粋）。
+///
+/// GJI と、**同定できた本物の MS-IME** だけ。ATOK・第三者 IME・未同定（`None`）は `None`（読まない）。
+#[must_use]
+pub const fn menu_ime_for(kind: Option<crate::state::ime_kind::ImeKindId>) -> Option<MenuIme> {
+    match kind {
+        Some(crate::state::ime_kind::ImeKindId::Gji) => Some(MenuIme::Gji),
+        Some(crate::state::ime_kind::ImeKindId::MsIme) => Some(MenuIme::MsIme),
+        None => None,
+    }
+}
+
 /// 点 `(x, y)` が矩形 `[left, right) × [top, bottom)` の中にあるか（Win32 の `RECT` と同じ半開区間）。
 ///
 /// カーソルがタスクバーの上にあるときだけメニューを読む前置きのフィルタに使う（ADR-264 決定 1）。
@@ -751,6 +795,30 @@ mod tests {
         let rec = outcome(MenuIme::MsIme, Ok(r), 16, 84).to_record("tsf-native", Some(false));
         assert_eq!(rec.mode, Some("half-alnum"));
         assert_eq!(rec.open, None);
+    }
+
+    #[test]
+    fn may_request_read_applies_the_interval_and_the_pending_guard() {
+        // 初回(前回なし・結果待ちなし)は許す
+        assert!(may_request_read(None, None));
+        // 前回から間隔未満は許さない
+        assert!(!may_request_read(Some(MIN_REQUEST_INTERVAL_MS - 1), None));
+        assert!(may_request_read(Some(MIN_REQUEST_INTERVAL_MS), None));
+        // 結果待ちの間は許さない(失われたとみなす前)
+        assert!(!may_request_read(Some(10_000), Some(PENDING_STALE_MS - 1)));
+        // 結果待ちが長すぎれば失われたとみなして許す
+        assert!(may_request_read(Some(10_000), Some(PENDING_STALE_MS)));
+        // 間隔の条件は結果待ちが失われていても効く
+        assert!(!may_request_read(Some(1), Some(PENDING_STALE_MS)));
+    }
+
+    #[test]
+    fn menu_ime_for_maps_only_identified_gji_and_native_msime() {
+        use crate::state::ime_kind::ImeKindId;
+        assert_eq!(menu_ime_for(Some(ImeKindId::Gji)), Some(MenuIme::Gji));
+        assert_eq!(menu_ime_for(Some(ImeKindId::MsIme)), Some(MenuIme::MsIme));
+        // 未同定(ATOK・第三者 IME・IMM32 のみ)は読まない
+        assert_eq!(menu_ime_for(None), None);
     }
 
     #[test]
