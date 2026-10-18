@@ -170,7 +170,7 @@ def main():
                 print(f"  {s['stage']:7} +{s['at_ms']:<5} {s['utc']} fg={s['fg']:5} A[{win(s['A'])}]")
             continue
         entered_n += 1
-        print(f"\n=== trial n={n} taps={t.get('taps')} control={t.get('control')} away_ok={t.get('away_ok')} back_ok={t.get('back_ok')} typed={t['typed']['text']!r} (expect {t['typed']['expect']!r}) ===")
+        print(f"\n=== trial n={n} taps={t.get('taps')} control={t.get('control')} away_ok={t.get('away_ok')} back_ok={t.get('back_ok')} typed={t['typed']['text']!r} typed2={(t.get('typed2') or {}).get('text')!r} (expect {t['typed']['expect']!r}) ===")
         print(f"  utc: start={t['utc']} tap1={t['utc_tap1']} away={t['utc_away']} back={t['utc_back']} type={t['utc_type']} tap2={t['utc_tap2']} end={t['utc_end']}")
         for s in (s for s in stages if s["n"] == n):
             print(f"  {s['stage']:7} +{s['at_ms']:<5} {s['utc']} fg={s['fg']:5} A[{win(s['A'])}]  B[{win(s['B'])}]")

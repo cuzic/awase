@@ -555,6 +555,10 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         let utc_type = utc_hms();
         let text = type_probe_in_a(child, &probe);
         stage(n, "typed", 0, a, b);
+        // typed2(観測のみ): 1 打鍵目のあとに同じキーをもう一度打つ。復元が実モードまで効いていれば 2 打鍵目はかなになる
+        // (ADR-245 追補 2 の Opus M-2: IMC の書き込みだけで実モードが戻るかを、保持の設計より先に確かめる)。
+        let text2 = type_probe_in_a(child, &probe);
+        stage(n, "typed2", 0, a, b);
         // tap2: もう一度左 Shift 単独タップ。
         let utc_tap2 = utc_hms();
         press(VK_LSHIFT, SCAN_LSHIFT, 60);
@@ -564,7 +568,7 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
             &json!({"type":"fr_trial","n":n,"control":control,"scenario":scenario_name(scn),"utc":utc0,"utc_tap1":utc_tap1,
             "entered":true,"taps":taps,"utc_away":utc_away,"utc_back":utc_back,"utc_type":utc_type,"utc_tap2":utc_tap2,"utc_end":utc_end,
             "away_ok":away_ok,"back_ok":back_ok,"alttab_ok":alttab_ok,"b_typed":b_typed,"first_text":first_text,
-            "typed":{"text":text,"expect":probe.kana.to_string(),"expect_romaji":probe.romaji.to_string(),"vk":probe.vk,"ok":text.trim() == probe.kana.to_string()}}),
+            "typed2":{"text":text2},"typed":{"text":text,"expect":probe.kana.to_string(),"expect_romaji":probe.romaji.to_string(),"vk":probe.vk,"ok":text.trim() == probe.kana.to_string()}}),
         );
         // 次の試行へ持ち越さない: A を前面に戻し、半角英数のままなら Shift 単独タップで戻す余地は残さず、次の turn_ime_on に任せる。
         if !focus_ok() {
