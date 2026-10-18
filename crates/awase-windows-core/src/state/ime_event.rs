@@ -359,14 +359,6 @@ pub enum ImeEvent {
     /// を true にしてはならない。HwndCache 復元コードはこれを使うこと。
     HwndCacheRestored { target: bool },
 
-    /// ADR-263 `ime_on_off`: 打鍵列から英数入力と判定し、IME OFF キー（`VK_IME_OFF`）を送った。
-    ///
-    /// awase 自身の書き込みの結果を belief に反映する（`desired_open = false`）。**`last_intent` は設定しない**
-    /// （利用者の明示操作ではない推論なので、`has_user_explicit_intent()` を true にしてはならない。実観測は上書きできる）。
-    /// `UserImeSetIntent` の偽装ではない。`HwndCacheRestored` と同じ扱いで、`applied` は `Unknown` に落とす
-    /// （送った結果を読めない窓があるので `Confirmed` と主張しない）。
-    LangDetectOff,
-
     /// OS への適用を開始した。
     ///
     /// `ctrl_held` は dispatch 時点で Ctrl が押下されていたか。reducer が

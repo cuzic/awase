@@ -130,12 +130,12 @@ pub struct LangDetectRecord {
     /// 窓の IME プロファイル（`standard` / `imm32-unavailable` / `tsf-native` / `input-relay`）。
     /// 実測学習で降格された窓と静的リスト由来の窓は、ここでは区別しない（プロセス名・クラス名と cache.toml で後から引く）
     pub profile: &'static str,
-    /// 判定時点の belief（IME が開いているか）。不明なら `None`
+    /// 判定時点の belief（IME が開いているか。書き込みの**前**の値）。不明なら `None`
     pub belief_open: Option<bool>,
     /// 判定に応じた動作（`none` / `hiragana-sent`〔日本語→ひらがなキー〕/ `ime-off-sent`〔英数→IME OFF〕/
     /// `observe-only`〔保持しなかったエピソードの日本語判定〕/ `skipped-belief-off` / `skipped-observed-window` /
     /// `skipped-focus-lag` / `skipped-explicit-off` / `skipped-explicit-on` / `skipped-modifier-held` /
-    /// `skipped-send-failed`）。`observe` では常に `none`
+    /// `skipped-send-failed`）。`observe` では日本語と判定したエピソードが `observe-only`、それ以外は `none`
     pub action: &'static str,
     /// 保持中に前面窓が変わって捨てた打鍵の数
     pub discarded: u32,

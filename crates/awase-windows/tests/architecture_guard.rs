@@ -2404,10 +2404,7 @@ fn applied_direct_assignments_are_accounted_for() {
         // へ移した（挙動不変。`record_confirmed` はこれを呼ぶだけ）。書き込み点の総数は変わらない。
         // 8→9。`PanicReset`のreduce内で、全面リセット時にappliedを`Unknown`へ落とす1件を追加
         // （BUG-182。`reduce()`内の正規書き込み）。
-        // 9→10。`LangDetectOff`のreduce内で、英数と判定してIME OFFキーを送ったときappliedを`Unknown`へ落とす1件を追加
-        // （ADR-263 `ime_on_off`。送った結果を読めない窓があるので`Confirmed`と主張せず、古い`Confirmed(true)`が
-        // 後続のONの書き込みをalready-matchedで省かないようにする。`reduce()`内の正規書き込み）。
-        ("src/state/ime_model.rs", 10),
+        ("src/state/ime_model.rs", 9),
         ("src/state/platform_state.rs", 1),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
@@ -3769,10 +3766,11 @@ fn lang_detect_hiragana_write_goes_through_the_gate_and_syncs_after() {
 }
 
 /// ADR-263 `ime_on_off`: IME OFF キー（`VK_IME_OFF`）の送信も 1 箇所だけで、送る前に純粋な判断 `ime_off_write_skip_reason`
-/// を通し、送った後に `on_ime_applied(false, ..)` と belief の OFF（`apply_lang_detect_off`。`last_intent` は設定しない）を行う。
-/// belief を OFF にしないと、Engine が活性のまま英字をローマ字に変換し続ける。
+/// を通し、送った後に `on_ime_applied(false, ..)` と、その前面窓の間の素通し（`bypass_scope`）の設定を行う。
+/// belief（`desired_open`）は動かさない: `effective_open()` は打鍵時予測・観測を `desired_open` より優先するので、belief を
+/// OFF に寄せても Engine は非活性にならず、保持した英字がローマ字に変換されて OFF の IME へ入る（レビュー B1）。
 #[test]
-fn lang_detect_ime_off_write_goes_through_the_gate_and_updates_belief_after() {
+fn lang_detect_ime_off_write_goes_through_the_gate_and_bypasses_the_engine_after() {
     let src_full = read_crate_file("src/runtime/lang_detect_shadow.rs");
     let src = production_code_only(&src_full);
     let calls: Vec<usize> = src
@@ -3787,8 +3785,12 @@ fn lang_detect_ime_off_write_goes_through_the_gate_and_updates_belief_after() {
         "IME OFF キーの送信の前に純粋な判断 `ime_off_write_skip_reason` を通すこと（ADR-263）"
     );
     assert!(
-        tail.contains("on_ime_applied(false") && tail.contains("apply_lang_detect_off("),
-        "送った後に `on_ime_applied(false, ..)` と belief の OFF を行うこと"
+        tail.contains("on_ime_applied(false") && tail.contains("bypass_scope = Some("),
+        "送った後に `on_ime_applied(false, ..)` と素通しの設定を行うこと"
+    );
+    assert!(
+        !src.contains("apply_lang_detect_off") && !src.contains("LangDetectOff"),
+        "belief（desired_open）は動かさない。素通しで Engine を通さない（レビュー B1）"
     );
 }
 
@@ -4206,7 +4208,8 @@ fn enqueue_reinject_call_sites_are_accounted_for() {
             ("src/runtime/key_pipeline.rs".to_string(), 1),
             // TIMER_IME_OFF_RESCUE の再処理が deliver_key_event 経由に統合された分、
             // message_handlers.rs 側の直接呼び出しが1件減った(5→4、追加発見E)。
-            ("src/runtime/message_handlers.rs".to_string(), 4),
+            // 5。ADR-263 `ime_on_off`: 英数と判定して IME OFF を送ったあとの素通し（`lang_detect_bypass_takes`）。
+            ("src/runtime/message_handlers.rs".to_string(), 5),
         ],
         "enqueue_reinject call sites are limited to deliver_key_event plus the documented pending-replay exceptions"
     );

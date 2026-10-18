@@ -1607,14 +1607,6 @@ impl ImeStateHub {
             .apply_eisu_candidate_update(crate::state::eisu_candidate::CandidateUpdate::Clear);
     }
 
-    /// ADR-263 `ime_on_off`: 英数入力と判定して IME OFF キーを送った結果を belief に反映する（`LangDetectOff` の**唯一の dispatch 元**）。
-    ///
-    /// `desired_open` を OFF に寄せて Engine を非活性にするだけで、`last_intent`・`IntentStore` は触らない
-    /// （利用者の明示操作ではない推論。実観測が上書きできる）。
-    pub(crate) fn apply_lang_detect_off(&mut self, tick_ms: TickMs) {
-        self.dispatch_event(ImeEvent::LangDetectOff, tick_ms);
-    }
-
     /// `hwnd_cache` の復元結果を belief / shadow_model に反映する。
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。

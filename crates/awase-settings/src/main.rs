@@ -4446,8 +4446,8 @@ const AUTO_DETECT_PRESETS: [(
         awase::config::AutoDetectScope::All,
         "すべての窓で、日本語ならひらがなにする（利用者の責任）",
         "上の動作を、IME の状態が読める窓（Chrome など）にも広げます。読める窓では awase の想定が\n\
-         実際の状態に追随するため、判定の書き込みと食い違うことがあります（drift correction が戻すなど）。\n\
-         TSF ネイティブの窓と入力中継ツールの窓は、この設定でも対象外です。\n\
+         実際の状態に追随するため、判定の書き込みの結果が次の観測で揃うまで食い違うことがあります。\n\
+         TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。\n\
          英数と判定した場合は、保持した打鍵をそのまま流すだけで、IME OFF は送りません。",
     ),
     (
@@ -4458,7 +4458,7 @@ const AUTO_DETECT_PRESETS: [(
          awase の想定も OFF にして、保持した打鍵をそのまま流します。\n\
          日本語を英数と誤判定すると IME が OFF になり、IME ON のキーを押すまで戻りません。\n\
          誤判定の率は、詳細の「IME OFF にする確信度」で決まります。\n\
-         TSF ネイティブの窓と入力中継ツールの窓は、この設定でも対象外です。",
+         TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。",
     ),
 ];
 
@@ -4550,6 +4550,11 @@ fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
     });
 }
 
+/// 0.1 刻みに丸める（`DragValue` の操作で `4.1000000000000005` のような値が保存されないように）。
+fn round_tenth(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
 /// 「詳細」の中身: 数値の設定と、対象にする/外すアプリ。
 fn auto_detect_details(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectConfig) {
     ui.horizontal(|ui| {
@@ -4589,9 +4594,11 @@ fn auto_detect_details(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
         ui.add(
             egui::DragValue::new(&mut cfg.ja_threshold)
                 .range(0.0..=20.0)
-                .speed(0.1),
+                .speed(0.1)
+                .fixed_decimals(1),
         )
         .on_hover_text(hover);
+        cfg.ja_threshold = round_tenth(cfg.ja_threshold);
     });
     ui.horizontal(|ui| {
         let hover = "日本語でないと判断して、保持した打鍵を早く流す確信度です。小さいほど早く流れますが、\n\
@@ -4601,9 +4608,11 @@ fn auto_detect_details(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
         ui.add(
             egui::DragValue::new(&mut cfg.en_threshold)
                 .range(0.0..=20.0)
-                .speed(0.1),
+                .speed(0.1)
+                .fixed_decimals(1),
         )
         .on_hover_text(hover);
+        cfg.en_threshold = round_tenth(cfg.en_threshold);
     });
     ui.add_enabled_ui(
         cfg.mode == awase::config::AutoDetectMode::ImeOnOff,
@@ -4617,35 +4626,56 @@ fn auto_detect_details(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
                 ui.add(
                     egui::DragValue::new(&mut cfg.off_threshold)
                         .range(0.0..=30.0)
-                        .speed(0.1),
+                        .speed(0.1)
+                        .fixed_decimals(1),
                 )
                 .on_hover_text(hover);
+                cfg.off_threshold = round_tenth(cfg.off_threshold);
             });
         },
     );
-    let apps_hover = "プロセス名（例: taro.exe）をカンマか空白で区切って入力します。大文字小文字と .exe の有無は区別しません。\n\
+    let apps_hover = "プロセス名（例: taro36.exe）をカンマか空白で区切って入力します。大文字小文字と .exe の有無は区別しません。\n\
                       打鍵を保持する動作（「記録のみ」以外）のときだけ効きます。";
+    apps_text_edit(
+        ui,
+        "auto_detect_include_apps",
+        "対象にするアプリ（空欄=すべて）:",
+        apps_hover,
+        &mut cfg.include_apps,
+    );
+    apps_text_edit(
+        ui,
+        "auto_detect_exclude_apps",
+        "対象外にするアプリ:",
+        apps_hover,
+        &mut cfg.exclude_apps,
+    );
+}
+
+/// プロセス名の一覧の入力欄。編集中の文字列は egui の一時領域に持ち、区切り（カンマ・空白）を打てるようにする
+/// （毎フレーム一覧から作り直すと、区切りを打った直後に消えて 2 つ目を入力できない）。フォーカスが外れたら
+/// 一時領域を捨て、次のフレームで一覧から正規化した文字列を出し直す。
+fn apps_text_edit(
+    ui: &mut egui::Ui,
+    id_source: &str,
+    label: &str,
+    hover: &str,
+    apps: &mut Vec<String>,
+) {
+    let id = ui.make_persistent_id(id_source);
     ui.horizontal(|ui| {
-        ui.label("対象にするアプリ（空欄=すべて）:")
-            .on_hover_text(apps_hover);
-        let mut text = apps_to_text(&cfg.include_apps);
-        if ui
-            .text_edit_singleline(&mut text)
-            .on_hover_text(apps_hover)
-            .changed()
-        {
-            cfg.include_apps = text_to_apps(&text);
+        ui.label(label).on_hover_text(hover);
+        let mut text = ui
+            .data_mut(|d| d.get_temp::<String>(id))
+            .unwrap_or_else(|| apps_to_text(apps));
+        let response = ui.text_edit_singleline(&mut text).on_hover_text(hover);
+        if response.changed() {
+            *apps = text_to_apps(&text);
         }
-    });
-    ui.horizontal(|ui| {
-        ui.label("対象外にするアプリ:").on_hover_text(apps_hover);
-        let mut text = apps_to_text(&cfg.exclude_apps);
-        if ui
-            .text_edit_singleline(&mut text)
-            .on_hover_text(apps_hover)
-            .changed()
-        {
-            cfg.exclude_apps = text_to_apps(&text);
+        if response.lost_focus() {
+            ui.data_mut(|d| d.remove::<String>(id));
+        } else {
+            ui.data_mut(|d| d.insert_temp(id, text));
         }
     });
 }

@@ -107,5 +107,5 @@ force_tsf = [
 # ja_threshold = 4.0      # 日本語と確定する確信度（対数尤度比）。親指と文字キーの重なりは無条件で日本語
 # en_threshold = 8.0      # 日本語でないと判断して早く流す確信度
 # off_threshold = 14.0    # mode = "ime_on_off" で IME OFF を送るために必要な『日本語でない』確信度（大きいほど誤って OFF にする率が下がるが判定が遅い）
-# include_apps = []       # 対象にするプロセス名（空=すべて）。例: ["taro.exe"]
+# include_apps = []       # 対象にするプロセス名（空=すべて）。例: ["taro36.exe"]
 # exclude_apps = []       # 対象外にするプロセス名

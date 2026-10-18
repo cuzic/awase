@@ -50,6 +50,9 @@ pub(super) struct LangDetectShadow {
     max_ms: u32,
     /// `ime_on` の対象にする窓の範囲（既定は観測の無い窓だけ。`all` は利用者の責任）
     scope: AutoDetectScope,
+    /// `ime_on_off` で英数と判定して IME OFF キーを送ったあと、この前面窓の間は打鍵を Engine に渡さず素通しにする
+    /// （窓の識別子。IME のキー・親指キー・窓の変化・新しい保持のエピソードで解ける）。
+    bypass_scope: Option<u64>,
 }
 
 /// 設定のプロセス名の正規化（小文字化し、末尾の `.exe` を落とす）
@@ -103,6 +106,7 @@ impl LangDetectShadow {
             exclude_apps: cfg.exclude_apps.iter().map(|a| normalize_app(a)).collect(),
             max_ms: cfg.max_ms,
             scope: cfg.scope,
+            bypass_scope: None,
         }
     }
 
@@ -148,27 +152,28 @@ impl LangDetectShadow {
     }
 }
 
+/// IME のキー（IME 制御・モードキー・同期キー・IME 設定由来の役割を持つキー）か。
+fn is_ime_key(event: &RawKeyEvent) -> bool {
+    let ime = &event.ime_relevance;
+    ime.is_ime_control || ime.is_ime_mode_key || ime.is_sync_key || ime.shadow_action.is_some()
+}
+
 /// `RawKeyEvent` から追跡器への 1 打鍵を作る（純粋）。
 pub(super) fn observed_key(event: &RawKeyEvent) -> ObservedKey {
     let down = matches!(event.event_type, KeyEventType::KeyDown);
     let m = event.modifier_snapshot;
-    let ime = &event.ime_relevance;
     // Alt なりすましの親指（`"Left Alt"`）は Alt が立ちうるので、`impersonated` なら除外しない（ADR-263 m6）。
     let alt = m.alt && !event.impersonated;
-    let excluded = event.injected
-        || m.ctrl
-        || alt
-        || m.win
-        || ime.is_ime_control
-        || ime.is_ime_mode_key
-        || ime.is_sync_key
-        || ime.shadow_action.is_some();
+    let excluded = event.injected || m.ctrl || alt || m.win || is_ime_key(event);
     let role = match event.key_classification {
         KeyClassification::Char => event.physical_pos.map_or(KeyRole::Other, KeyRole::Char),
         KeyClassification::LeftThumb => KeyRole::Thumb(awase::engine::fsm_types::ThumbSide::Left),
         KeyClassification::RightThumb => KeyRole::Thumb(awase::engine::fsm_types::ThumbSide::Right),
         KeyClassification::Passthrough => {
-            if event.modifier_key.is_some() {
+            // 修飾キー自身と、語の区切りの Space（親指でないとき）は、エピソードに影響しない（保持はして順序を保つ）。
+            // Space で打ち切ると、英文は最初の語（3〜5 文字）で終わり、`off_threshold` の確信に届かない。評価（Space を除いた
+            // キー列）と同じ条件にそろえるため、Space は透明に扱う。
+            if event.modifier_key.is_some() || event.vk_code == crate::vk::VK_SPACE {
                 KeyRole::Modifier
             } else {
                 KeyRole::Other
@@ -208,39 +213,54 @@ fn verdict_labels(verdict: Verdict) -> (&'static str, Option<&'static str>) {
 }
 
 impl super::Runtime {
-    /// 前面窓（OS）と awase のフォーカス追跡が同じプロセスを指しているか。
+    /// 前面窓（OS）と awase のフォーカス追跡が同じ窓を指しているか（プロセスと、ルート窓が分かっていればその hwnd）。
     ///
     /// Alt+Tab 直後の打鍵では、フォーカスの検出（WinEvent・500ms のリフレッシュ）が追いついておらず、
     /// `demoted_by_learning`・belief・`focus_kind` が**前の窓**の値のことがある。そのまま使うと、たとえば
     /// 一太郎から Chrome へ移った直後に、一太郎の値で Chrome の打鍵を保持し、Chrome へひらがなキーを送ってしまう。
+    /// 同じプロセスの別の窓（一太郎の文書の窓、Chrome の窓間）の切替も見逃さないよう、hwnd も比べる。
     fn lang_detect_focus_in_sync(&self) -> bool {
         let foreground = crate::win32::foreground_scope();
-        foreground.is_valid() && foreground.pid == self.platform.focus.pid()
+        if !foreground.is_valid() || foreground.pid != self.platform.focus.pid() {
+            return false;
+        }
+        let tracked_root = self.platform.focus.current.root_hwnd;
+        tracked_root == 0 || tracked_root == foreground.hwnd.unsigned_abs()
     }
 
     /// `ime_on` の対象の窓か。既定は観測の無い窓（実測学習で降格された窓）だけ。`scope = all` なら読める窓も含める。
-    /// TSF ネイティブの窓（`FOCUS_RESYNC` が最初の打鍵を取り込み口で扱う）と入力中継ツールの窓は常に対象外。
+    /// 実質 TSF ネイティブの窓（プロファイルが `Imm32Unavailable` でも `is_effectively_tsf_native` が真の Windows Terminal 等。
+    /// `FOCUS_RESYNC` が最初の打鍵を取り込み口で扱い、単発の `VK_IME_OFF` は BUG-124 型の「@」の条件になる）と、
+    /// 入力中継ツールの窓は常に対象外。
     fn lang_detect_window_in_scope(&self) -> bool {
         let profile = self.platform.current_app_profile();
-        if matches!(
-            profile,
-            AppImeProfile::TsfNative | AppImeProfile::InputRelay
-        ) {
+        if matches!(profile, AppImeProfile::InputRelay)
+            || profile.is_effectively_tsf_native(self.platform.focus.class_name())
+        {
             return false;
         }
         self.lang_detect.scope == AutoDetectScope::All
             || self.platform.focus.is_demoted_by_learning()
     }
 
+    /// awase の Engine が、今の belief で活性か（IME ON で、入力モードがローマ字入力と見られる）。
+    ///
+    /// 保持して判定する前提は、IME が開いているだけでは足りない。入力モードが英数系の belief のとき Engine は非活性で、
+    /// ひらがなキーを送ると IME はひらがなになるのに、保持した打鍵は素のキーのまま IME に入る（ローマ字が仮名に化ける）。
+    fn lang_detect_engine_active(&self) -> bool {
+        let ctx = self.build_ctx();
+        self.engine.compute_active(&ctx)
+    }
+
     /// 保持してよい窓・状態か（エピソードが**始まる**打鍵でだけ効く。進行中のエピソードの保持は変わらない）。
     ///
-    /// 観測の無い窓（実測学習で降格された窓）で、belief が ON、NonText でなく、IME の変換中でない（変換中は未確定文字列に
-    /// 打鍵が足されるので保持しない）。フォーカス追跡が前面窓に追いついていること。
+    /// 対象の窓で、Engine が活性、NonText でなく、IME の変換中でない（変換中は未確定文字列に打鍵が足されるので保持しない）。
+    /// フォーカス追跡が前面窓に追いついていること。
     fn lang_detect_may_hold(&self) -> bool {
         self.lang_detect.is_hold_mode()
             && self.lang_detect.hold_config_ok
             && self.lang_detect_focus_in_sync()
-            && self.platform_state.ime.effective_open()
+            && self.lang_detect_engine_active()
             && self.lang_detect_window_in_scope()
             && self.platform_state.focus.focus_kind != FocusKind::NonText
             && !crate::tsf::observer::ime_composition_active_now()
@@ -249,10 +269,11 @@ impl super::Runtime {
                 .app_allowed(&self.platform.focus.current.process_name)
     }
 
-    /// ひらがなキーを送ってよいかの事実を集める（判断は `awase::lang_detect::hiragana_write_skip_reason`）。
+    /// ひらがなキー/IME OFF キーを送ってよいかの事実を集める（判断は `awase::lang_detect` の純粋関数）。
+    /// `belief_open` は「awase の Engine が活性」（IME ON かつローマ字入力と見られる）。
     fn lang_detect_write_facts(&self, target_open: bool) -> WriteFacts {
         WriteFacts {
-            belief_open: self.platform_state.ime.effective_open(),
+            belief_open: self.lang_detect_engine_active(),
             unobserved_window: self.lang_detect_window_in_scope(),
             non_text: self.platform_state.focus.focus_kind == FocusKind::NonText,
             focus_in_sync: self.lang_detect_focus_in_sync(),
@@ -275,6 +296,8 @@ impl super::Runtime {
     /// 限界: `send_ime_mode_key` は scan=0 で送る。GJI（mozc 系）は VK だけで判定するので効く見込みだが、MS-IME(TSF) は
     /// scan 無しのモードキーを処理しないという実機の記録がある（`kp_restore_kana_from_half_width` 付近のコメント）。
     /// scan 付きは実 IME が OFF の窓でかなロック等を汚すハザードがある（BUG-015 追補7）ため使わない。
+    /// これは BUG-015 追補7（『実 IME が確実に ON でない限りモードキーを注入しない』）への、所有者判断（2026-10-17、利用者が設定で
+    /// 選んだときだけ）による例外。Alt/Win を確かめ、scan 無しで送ることでハザードを避ける。
     fn lang_detect_write_hiragana(&mut self) -> &'static str {
         if !self.lang_detect.is_hold_mode() {
             return "none";
@@ -290,15 +313,16 @@ impl super::Runtime {
         "hiragana-sent"
     }
 
-    /// 英数入力と判定したとき（`ime_on_off`）、IME OFF キーを 1 回送り、awase の想定も OFF に寄せる。送れない前提なら理由を返す。
+    /// 英数入力と判定したとき（`ime_on_off`）、IME OFF キーを 1 回送る。送れない前提なら理由を返す。
     ///
-    /// 前提と限界は `lang_detect_write_hiragana` と同じ（belief ON・対象の窓・Alt/Win が押されていない・フォーカス追跡が
+    /// 前提と限界は `lang_detect_write_hiragana` と同じ（Engine が活性・対象の窓・Alt/Win が押されていない・フォーカス追跡が
     /// 前面窓に追いついている）。利用者が直近に明示的に IME ON を選んでいるときは送らない（その意図を尊重する）。
     /// **日本語を英数と誤判定すると IME が OFF になり、利用者が IME ON キーを押すまで戻らない**（`ime_on_off` は利用者の責任）。
     ///
-    /// 送った**あと**に、`on_ime_applied(false, Applied)`（composition を cold に・GjiFsm の OFF 同期は receipt が行う）と、
-    /// belief の OFF（`apply_lang_detect_off`。`last_intent` は設定しない）を行う。belief を OFF にしないと、Engine が活性のまま
-    /// 英字をローマ字に変換し続ける。
+    /// 送った**あと**に、`on_ime_applied(false, Applied)`（composition を cold に・GjiFsm の OFF 同期は receipt が行う）を行い、
+    /// この前面窓の間は打鍵を Engine に渡さず素通しにする（`bypass_scope`）。**belief（`desired_open`）は動かさない**:
+    /// `effective_open()` は打鍵時予測・観測を `desired_open` より優先するので、belief を OFF に寄せても Engine は非活性に
+    /// ならず、保持した英字がローマ字に変換されて OFF にした IME へ入る（レビュー B1）。
     fn lang_detect_write_ime_off(&mut self) -> &'static str {
         if self.lang_detect.mode != AutoDetectMode::ImeOnOff {
             return "none";
@@ -310,10 +334,33 @@ impl super::Runtime {
             return "skipped-send-failed";
         }
         self.platform.on_ime_applied(false, ImeOpenOutcome::Applied);
-        self.platform_state
-            .ime
-            .apply_lang_detect_off(crate::state::TickMs(crate::hook::current_tick_ms()));
+        self.lang_detect.bypass_scope = Some(scope_id(crate::win32::foreground_scope()));
         "ime-off-sent"
+    }
+
+    /// 素通しの間（`ime_on_off` で英数と判定して IME OFF を送ったあと）か、この打鍵を Engine に渡さず素通しにするか。
+    ///
+    /// 前面窓が変わっていれば解いて `false`。IME のキー（IME 制御・モードキー）と親指キーの Down は、利用者が日本語入力へ
+    /// 戻ろうとしているので素通しを解いて `false`（通常の処理に戻る）。それ以外（Up を含む）は `true`。
+    /// 呼び出し元（`deliver_key_event`）が `true` なら `enqueue_reinject` する。
+    pub(crate) fn lang_detect_bypass_takes(&mut self, event: &RawKeyEvent) -> bool {
+        let Some(armed) = self.lang_detect.bypass_scope else {
+            return false;
+        };
+        if scope_id(crate::win32::foreground_scope()) != armed {
+            self.lang_detect.bypass_scope = None;
+            return false;
+        }
+        let down = matches!(event.event_type, KeyEventType::KeyDown);
+        let thumb = matches!(
+            event.key_classification,
+            KeyClassification::LeftThumb | KeyClassification::RightThumb
+        );
+        if down && (is_ime_key(event) || thumb) {
+            self.lang_detect.bypass_scope = None;
+            return false;
+        }
+        true
     }
 
     /// 取り込み口から、フックの打鍵 1 つにつき 1 回呼ぶ（KeyDown/KeyUp とも）。
@@ -352,6 +399,12 @@ impl super::Runtime {
 
     /// `HoldStep` を実行する: journal、IME への書き込み、保持した打鍵の再生、タイマー。
     fn lang_detect_apply(&mut self, step: HoldStep<RawKeyEvent>) -> LangDetectIntake {
+        // 新しい保持のエピソードが始まったら、素通しは解く（そのエピソードの判定で改めて決める）。
+        if step.started_holding {
+            self.lang_detect.bypass_scope = None;
+        }
+        // 判定時点の belief（書き込みの**前**に読む）。
+        let belief_before = self.platform_state.ime.effective_open();
         let action = if step.japanese {
             self.lang_detect_write_hiragana()
         } else if step.english {
@@ -379,7 +432,7 @@ impl super::Runtime {
                 idle_ms: outcome.idle_ms,
                 duration_ms: outcome.duration_ms,
                 profile: profile_label(self.platform.current_app_profile()),
-                belief_open: Some(self.platform_state.ime.effective_open()),
+                belief_open: Some(belief_before),
                 // 日本語と判定したが保持していなかった（観測だけのエピソード）は `observe-only`。
                 action: if japanese {
                     if step_japanese {
@@ -407,6 +460,8 @@ impl super::Runtime {
         }
 
         // 保持した打鍵は、書き込みのあとに順序どおりに流す（先頭に書き込みの合成キー、続いて元の打鍵）。
+        // 英数と判定して IME OFF を送った場合は、`bypass_scope` が立っているので、再生された打鍵は
+        // `deliver_key_event` の `lang_detect_bypass_takes` に当たって Engine を通らず、そのまま OS へ流れる（順序どおり）。
         if !step.release.is_empty() {
             crate::INPUT_DEFER.replay_later(step.release);
         }

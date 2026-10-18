@@ -523,7 +523,7 @@ impl Default for DiagnosticsConfig {
 
 /// 窓切替直後・長い無操作のあとの最初の打鍵から日本語/英数を判定する機能の動作（ADR-263）。
 ///
-/// 上級者向けで、`awase-settings` GUI には当面出さない。
+/// 設定画面では、`mode` と `scope` の意味のある組み合わせを 5 択にまとめて出す（`awase-settings` の上級者向け設定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoDetectMode {
@@ -549,8 +549,9 @@ pub enum AutoDetectScope {
     /// 窓内の IME 状態が読めないと実測学習された窓（一太郎など）だけ。既定。
     #[default]
     Unobserved,
-    /// 読める窓（Chrome 等）も対象にする。読める窓では awase の belief が実状態に追随するので、判定の書き込みと
-    /// 食い違うことがある（drift correction が戻すなど）。TSF ネイティブの窓と入力中継ツールの窓は常に対象外。
+    /// 読める窓（Chrome 等）も対象にする。読める窓では awase の belief が観測で実状態に追随するので、判定の書き込みの
+    /// 結果が次の観測で揃うまで食い違うことがある。実質 TSF ネイティブの窓（Windows Terminal 等）と入力中継ツールの窓は
+    /// 常に対象外。
     All,
 }
 
