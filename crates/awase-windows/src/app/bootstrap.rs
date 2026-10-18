@@ -778,6 +778,8 @@ pub(super) fn initialize_app(
         );
         app.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
         app.set_hook_self_heal_enabled(config.diagnostics.hook_self_heal);
+        // ADR-265 段階 1: mozc-readable の共有メモリの影の読み（観測のみ。既定は無効のオプトイン。反映は再起動後）
+        app.init_mozc_shm(config.diagnostics.mozc_shm_shadow);
         app.set_passthrough_thumb_mode_keys(&config.general);
         app.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         app.set_muhenkan_dedicated_fn_key_config(dedicated_fn_key);

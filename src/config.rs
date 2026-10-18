@@ -519,6 +519,13 @@ pub struct DiagnosticsConfig {
     /// 記録しない（同定に失敗したときは件数と所要だけ）。**反映は awase の再起動後**（フックと読み取りの
     /// スレッドは起動時に 1 度だけ作る）。
     pub indicator_menu_shadow: bool,
+    /// mozc-readable（共有メモリへ IME の開閉・入力モードを書き出す Mozc の fork）の共有メモリを、フォーカスを持つ窓の
+    /// スレッドについて読んで journal に残す（ADR-265 段階 1。**belief には入れず、IME へは何も書かない**観測）。
+    ///
+    /// 既定は**無効**（オプトイン）。有効にすると、IME リフレッシュの tick（約 500ms）で共有メモリを 1 回読み、フォーカスが
+    /// 変わったときと結論が変わったときだけ記録する。mozc-readable を入力方式にしていない窓では「読めない」と記録するだけ。
+    /// **反映は awase の再起動後**（起動時に 1 度だけ渡す）。
+    pub mozc_shm_shadow: bool,
 }
 
 impl Default for DiagnosticsConfig {
@@ -526,6 +533,7 @@ impl Default for DiagnosticsConfig {
         Self {
             hook_self_heal: true,
             indicator_menu_shadow: false,
+            mozc_shm_shadow: false,
         }
     }
 }
@@ -2173,6 +2181,20 @@ engine_off_solo_triple = "VK_NONCONVERT"
             config.diagnostics.hook_self_heal,
             "指定しなかった項目は既定のまま"
         );
+    }
+
+    #[test]
+    fn test_mozc_shm_shadow_defaults_to_disabled() {
+        let config: AppConfig = toml::from_str("[general]\n").unwrap();
+        assert!(!config.diagnostics.mozc_shm_shadow);
+    }
+
+    #[test]
+    fn test_mozc_shm_shadow_can_be_enabled_without_touching_the_other_diagnostics() {
+        let config: AppConfig = toml::from_str("[diagnostics]\nmozc_shm_shadow = true\n").unwrap();
+        assert!(config.diagnostics.mozc_shm_shadow);
+        assert!(config.diagnostics.hook_self_heal);
+        assert!(!config.diagnostics.indicator_menu_shadow);
     }
 
     #[test]

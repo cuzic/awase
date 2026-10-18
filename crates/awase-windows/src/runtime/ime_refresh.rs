@@ -70,6 +70,9 @@ impl Runtime {
             return;
         }
 
+        // ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ。無効なら何もしない）。
+        self.mozc_shm_on_tick(focus.focus_changed);
+
         let strategy = self.ir_stage_strategy(&focus);
         self.ir_stage_observe(&focus, strategy, ime_snap);
         self.ir_stage_notify();

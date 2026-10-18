@@ -10,3 +10,4 @@ pub mod ime_observer;
 pub mod indicator_menu;
 pub mod kana_lock;
 pub mod layout_observer;
+pub mod mozc_shm;

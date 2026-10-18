@@ -574,6 +574,7 @@ const CORE_MODULES: &[&str] = &[
     "late_keymap_plan",
     "layout_language",
     "mode_key_pass",
+    "mozc_shm",
     "msaa_role_plan",
     "observation_store",
     "open_warrant",

@@ -8774,6 +8774,89 @@ fn indicator_menu_shadow_is_observe_only_and_opt_in() {
     assert_eq!(boot.matches("install_menu_hook(").count(), 1);
 }
 
+/// ADR-265 段階 1: mozc-readable の共有メモリの影の読みは**観測だけ**で、belief・IME・打鍵に書かない。
+///
+/// - 読み取り（`observer/mozc_shm.rs`）と記録（`runtime/mozc_shm_shadow.rs`）は、belief・IME 制御・観測ストアに入れる型/関数を
+///   一切使わない（belief への配線は段階 2 で別レビュー、信頼度は Low から。ADR-265 D3）。
+/// - ランタイム側が `platform_state` に触れるのは、belief の読み取り 2 つ（`effective_open()`・`input_mode()`、照合の材料として
+///   記録に添えるだけ）と記録（`journal.record(`）の 3 箇所だけ。
+/// - 有効化は `[diagnostics] mozc_shm_shadow` を起動時に 1 度だけ渡す（既定は無効のオプトイン）。
+/// - `ir_execute` の呼び出しは `app_disabled` の打ち切りの後（無効アプリにフォーカス中は読まない）。
+///
+/// 複数行のメソッドチェーン（`rustfmt` が改行する）を見逃さないよう、コメント行を除いて空白を詰めてから照合する。
+#[test]
+fn mozc_shm_shadow_is_observe_only_and_opt_in() {
+    fn compact(rel: &str) -> String {
+        read_crate_file(rel)
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<String>()
+            .split_whitespace()
+            .collect()
+    }
+    let runtime = compact("src/runtime/mozc_shm_shadow.rs");
+    let observer = compact("src/observer/mozc_shm.rs");
+
+    for (name, code) in [
+        ("runtime/mozc_shm_shadow.rs", &runtime),
+        ("observer/mozc_shm.rs", &observer),
+    ] {
+        for forbidden in [
+            "ImeEvent",
+            "ObserverReported",
+            "InputModeObserved",
+            "ObservationSource",
+            "SendInput",
+            "send_input",
+            "apply_ime",
+            "set_ime_open",
+            "desired_open",
+            "actuate",
+            "KeyEffect",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "{name} は観測だけ（ADR-265 段階 1）。belief・IME・打鍵に書く `{forbidden}` を使わないこと"
+            );
+        }
+    }
+
+    // ランタイム側の platform_state への接触は、belief の読み取り 2 つと記録の 3 つだけ。
+    assert_eq!(
+        runtime.matches("platform_state").count(),
+        3,
+        "mozc_shm_shadow.rs が platform_state に触れるのは effective_open()・input_mode()（読み取り）と journal.record(（記録）の 3 箇所だけ"
+    );
+    assert!(runtime.contains("platform_state.ime.effective_open()"));
+    assert!(runtime.contains("platform_state.ime.input_mode()"));
+    assert!(runtime.contains(
+        "platform_state.ime.journal.record(crate::journal::JournalEntry::MozcShm{record})"
+    ));
+
+    // 有効化は設定の値を起動時に 1 度だけ渡す。
+    let boot = compact("src/app/bootstrap.rs");
+    assert_eq!(
+        boot.matches("app.init_mozc_shm(config.diagnostics.mozc_shm_shadow)")
+            .count(),
+        1,
+        "bootstrap.rs は `[diagnostics] mozc_shm_shadow` を起動時に 1 度だけ init_mozc_shm へ渡すこと"
+    );
+
+    // 呼び出しは `app_disabled` の打ち切りの後。
+    let refresh = compact("src/runtime/ime_refresh.rs");
+    let disabled = refresh
+        .find("ifself.platform_state.focus.app_disabled{return;}")
+        .expect("ir_execute は app_disabled で打ち切ること");
+    let call = refresh
+        .find("self.mozc_shm_on_tick(focus.focus_changed)")
+        .expect("ir_execute は mozc_shm_on_tick を呼ぶこと");
+    assert!(
+        disabled < call,
+        "mozc_shm_on_tick は app_disabled の打ち切りの後に呼ぶ（無効アプリにフォーカス中は読まない）"
+    );
+    assert_eq!(refresh.matches("self.mozc_shm_on_tick(").count(), 1);
+}
+
 /// ADR-260: 英数トグルの入力モードを予測しない窓の判定（B1o）と、直接観測の予測ガードの軸ごとの化（B3）の配線を固定する。
 ///
 /// - `press_axes`（今回の打鍵が値を付けた軸）を書くのは `apply_key_effect_prediction` だけ。`ImeModel::key_effect()` は新しい予測が触れない軸に
