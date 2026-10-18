@@ -216,6 +216,8 @@ impl EvBuilder {
             left_thumb_down_snapshot: None,
             right_thumb_down_snapshot: None,
             injected: self.injected,
+            foreign_ctrl: false,
+            impersonated: false,
         }
     }
 }
@@ -659,6 +661,34 @@ fn test_muhenkan_always_suppress_false_preserves_legacy_passthrough() {
     );
 }
 
+/// ADR-188 案2（#601）の前提: 親指（無変換）を保留したまま素通しのキーを押すと、FSM は保留中の親指を単独タップとして
+/// 確定してから素通しする。送り直す（打鍵を通す決定に親指の生 VK を載せる）のは単独タップ設定が Passthrough の
+/// ときだけで、Suppress（`muhenkan_solo_tap_always_suppress=true`）では生 VK を載せない＝送り直しが無い
+/// （`fsm_resent_mode_keys` が空になり、打鍵時点の予測に親指の効果を重ねない）。
+#[test]
+fn test_pending_thumb_resend_before_passthrough_key_only_when_solo_tap_is_passthrough() {
+    for (always_suppress, expect_resend) in [(false, true), (true, false)] {
+        let mut engine =
+            make_engine_with_thumb_key_solo_tap_config_ex(false, always_suppress, false, false);
+        let r = engine.on_event(Ev::down(VK_NONCONVERT).at(0).build());
+        assert_pending(&r);
+        let r = engine.on_event(Ev::down(VK_RETURN).at(30_000).build());
+        assert!(
+            !r.consumed,
+            "素通しのキーは通す（always_suppress={always_suppress}）"
+        );
+        let resent = r
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT));
+        assert_eq!(
+            resent, expect_resend,
+            "always_suppress={always_suppress}: 保留中の無変換の送り直し {:?}",
+            r.actions
+        );
+    }
+}
+
 /// ADR-091 §D3.2: `set_muhenkan_solo_tap_dedicated_fn_key(Some(vk))` が設定されている場合、
 /// `muhenkan_solo_tap_always_suppress=true`（既定値）による抑制より優先され、
 /// composing=false でも素の VK_NONCONVERT ではなく専用 Fn キーが送出される。
@@ -921,6 +951,8 @@ fn test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass() 
             left_thumb_down_snapshot: None,
             right_thumb_down_snapshot: None,
             injected: false,
+            foreign_ctrl: false,
+            impersonated: false,
         };
 
         let result = engine.on_event(down);
@@ -970,6 +1002,8 @@ fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
+        impersonated: false,
     };
 
     let result = engine.on_event(down);
@@ -1209,6 +1243,8 @@ fn enter_thumb_down_event(ts: Timestamp) -> RawKeyEvent {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
+        impersonated: false,
     }
 }
 
@@ -3093,6 +3129,8 @@ fn test_nicola_state_stores_scan_code() {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
+        impersonated: false,
     };
 
     let result = engine.on_event(event);
@@ -3130,6 +3168,8 @@ fn test_pending_char_thumb_stores_char_scan() {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
+        impersonated: false,
     };
     engine.on_event(char_event);
 
@@ -3149,6 +3189,8 @@ fn test_pending_char_thumb_stores_char_scan() {
         left_thumb_down_snapshot: None,
         right_thumb_down_snapshot: None,
         injected: false,
+        foreign_ctrl: false,
+        impersonated: false,
     };
     let result = engine.on_event(thumb_event);
     assert_pending(&result);
@@ -6305,6 +6347,37 @@ mod engine_integration_tests {
         assert!(!d.is_consumed(), "Ctrl KeyDown should pass through");
     }
 
+    /// ADR-249(BUG-197): 音声入力ソフトの注入 Ctrl+V。フックが注入された打鍵の snapshot に ctrl を足せば
+    /// (`ctx.modifiers.ctrl=true`)、V↓ は `OsModifierHeld` で素通しされ NICOLA 変換されない。
+    /// Ctrl↑ が V↑ より先に来ても V↑ は食われない(`handle_bypass` が出力履歴から外す)。
+    #[test]
+    fn injected_ctrl_v_with_foreign_ctrl_snapshot_passes_through_without_nicola_conversion() {
+        let mut engine = make_test_engine();
+        let mut ctx = ime_on_ctx();
+        ctx.modifiers.ctrl = true;
+
+        let v_down = engine.on_input(Ev::down(VK_A).at(100).injected(true).build(), &ctx);
+        assert!(
+            !v_down.is_consumed(),
+            "注入 Ctrl 中の 文字↓ は NICOLA 変換せず素通し"
+        );
+
+        // Ctrl↑ が先に来た後の 文字↑(ctx の ctrl は既に落ちている)
+        let v_up = engine.on_input(Ev::up(VK_A).at(200).injected(true).build(), &ime_on_ctx());
+        assert!(
+            !v_up.is_consumed(),
+            "文字↑ も素通し(食われると V が押されたままになる)"
+        );
+    }
+
+    /// 対照: ctrl が無い注入文字キー は従来どおり Char として変換される(修正前の「ふ」。テストの配列では V が無いので A で代用)。
+    #[test]
+    fn injected_v_without_ctrl_is_converted_as_before() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_A).at(100).injected(true).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+    }
+
     #[test]
     fn on_input_alt_key_passes_through() {
         let mut engine = make_test_engine();
@@ -7249,6 +7322,192 @@ mod engine_integration_tests {
             engine.debug_state_label(),
             before,
             "flush で印が消え、リピートが FSM に渡る"
+        );
+    }
+
+    /// ADR-255 決定2 条件6-i: エンジンが知る IME の機能が無いキーだけが偽。4源のどれでも真。
+    #[test]
+    fn key_has_ime_function_covers_every_source() {
+        let down = |vk| Ev::down(vk).at(100).build();
+        // 何も設定が無い無変換/変換・文字キーは偽。
+        let plain = make_test_engine();
+        assert!(!plain.key_has_ime_function(&down(VK_NONCONVERT)));
+        assert!(!plain.key_has_ime_function(&down(VK_CONVERT)));
+        assert!(!plain.key_has_ime_function(&down(VK_A)));
+        // IME 設定由来の役割(単独タップ設定が Passthrough でなくても数える)。押した側だけ。
+        let role = engine_with_role_toggle_on_muhenkan();
+        assert!(role.key_has_ime_function(&down(VK_NONCONVERT)));
+        assert!(!role.key_has_ime_function(&down(VK_CONVERT)));
+        assert!(!role.key_has_ime_function(&down(VK_A)));
+        // IME 側が定める開閉の方向(sync_direction)。
+        let synced = Ev::down(VK_NONCONVERT)
+            .at(100)
+            .sync_direction(ShadowImeAction::TurnOn)
+            .build();
+        assert!(plain.key_has_ime_function(&synced));
+        // 専用 Fn キー(無変換側だけ)。
+        // (無変換/変換が親指キーとして設定されている構成。設定されていない vk は常に偽。)
+        let mut fn_key = make_test_engine();
+        fn_key.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(true, false),
+            Some(VK_CONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fn_key.set_muhenkan_solo_tap_dedicated_fn_key(Some(VkCode(0x7C)));
+        assert!(fn_key.key_has_ime_function(&down(VK_NONCONVERT)));
+        assert!(!fn_key.key_has_ime_function(&down(VK_CONVERT)));
+    }
+
+    /// ADR-255 決定2 条件1: 非活性の理由が IME OFF のときだけ真。
+    #[test]
+    fn ime_off_inactive_is_true_only_for_ime_off_reason() {
+        let engine = make_test_engine();
+        assert!(engine.ime_off_inactive(&ime_off_ctx()));
+        assert!(!engine.ime_off_inactive(&ime_on_ctx()));
+        let not_japanese = InputContext {
+            is_japanese_ime: false,
+            ..ime_off_ctx()
+        };
+        assert!(
+            !engine.ime_off_inactive(&not_japanese),
+            "NotJapaneseIme は含めない"
+        );
+    }
+
+    /// ADR-255 決定2: 非活性の素通しの KeyDown は KeyLifecycle に何も残さない。
+    /// KeyUp も素通し(Consume 義務なし)のまま。
+    #[test]
+    fn passed_through_down_leaves_no_lifecycle_record() {
+        let mut engine = make_test_engine();
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(!down.is_consumed());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(150).build(), &ime_off_ctx());
+        assert!(!up.is_consumed(), "素通しの Down に対する Up は素通し");
+    }
+
+    /// ADR-255 決定4: シェルが消費した Down を登録すると、Up はエンジンが消費して OS に届かない
+    /// (Space は effects で Down+Up を完結しているので、無変換の Up は不要)。
+    #[test]
+    fn shell_consumed_down_makes_the_up_consumed() {
+        let mut engine = make_test_engine();
+        let down = Ev::down(VK_NONCONVERT).at(100).build();
+        let d = engine.on_input(down, &ime_off_ctx());
+        assert!(!d.is_consumed());
+        engine.record_shell_consumed(&down);
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(150).build(), &ime_off_ctx());
+        assert!(up.is_consumed());
+        // 義務は 1 回で消える。
+        let up2 = engine.on_input(Ev::up(VK_NONCONVERT).at(160).build(), &ime_off_ctx());
+        assert!(!up2.is_consumed());
+    }
+
+    /// ADR-255 決定4: 登録した親指の自動リピート Down は、非活性のままでも `phase1_held` の
+    /// ガードで Consume され、遅いルールに到達しない。Up で印が消える。
+    #[test]
+    fn shell_consumed_thumb_repeat_is_consumed_until_up() {
+        let mut engine = make_test_engine();
+        let down = Ev::down(VK_NONCONVERT).at(100).build();
+        let _ = engine.on_input(down, &ime_off_ctx());
+        engine.record_shell_consumed(&down);
+        let rep = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(600).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert!(rep.is_consumed());
+        let _ = engine.on_input(Ev::up(VK_NONCONVERT).at(700).build(), &ime_off_ctx());
+        // 印が消えた後は、リピートの Down も phase1_held のガードに入らず素通しになる
+        // (Up で印を消す処理を落とすと、ここが Consume のままになって落ちる)。
+        let again = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(800).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert!(!again.is_consumed());
+    }
+
+    /// ADR-255 決定4: リピートの Down(`was_down`)を登録しても `phase1_held` は立たない。
+    #[test]
+    fn shell_consumed_repeat_down_does_not_arm_phase1_held() {
+        let mut engine = make_test_engine();
+        let rep = Ev::down(VK_NONCONVERT).at(600).repeat().build();
+        engine.record_shell_consumed(&rep);
+        let next = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(700).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert!(!next.is_consumed(), "印が無いのでリピートは素通しのまま");
+    }
+
+    /// ADR-255 決定4(ii)・決定8(1): 押している間にフォーカスが移ると、登録済みの Down に対して
+    /// KeyUp の `ReinjectKey` が 1 回出る。その後の物理 Up は素通しになり、リピートの Down も素通し
+    /// (`phase1_held` は flush で消える)。ADR-206 の役割経路と同じ挙動。
+    #[test]
+    fn focus_change_reinjects_key_up_once_for_shell_consumed_down() {
+        let mut engine = make_test_engine();
+        let down = Ev::down(VK_NONCONVERT).at(100).build();
+        let _ = engine.on_input(down, &ime_off_ctx());
+        engine.record_shell_consumed(&down);
+
+        let d = engine.on_command(EngineCommand::FocusChanged, &ime_off_ctx());
+        let key_ups: Vec<_> = effects_of(&d)
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Effect::Input(InputEffect::ReinjectKey(evt))
+                        if evt.vk_code == VK_NONCONVERT
+                            && matches!(evt.event_type, KeyEventType::KeyUp)
+                )
+            })
+            .collect();
+        assert_eq!(
+            key_ups.len(),
+            1,
+            "KeyUp の再注入は 1 回: {:?}",
+            effects_of(&d)
+        );
+
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_off_ctx());
+        assert!(!up.is_consumed(), "flush 後の物理 Up は素通し");
+        let rep = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(300).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert!(!rep.is_consumed(), "phase1_held は flush で消えている");
+    }
+
+    /// ADR-255 決定4(Opus R-M1): 無変換/変換が親指キーに分類されない構成(右親指を Space にした等)でも、
+    /// 登録した Down のリピートは Consume され、Up は飲まれる(Down/Up の非対称にならない)。
+    #[test]
+    fn shell_consumed_key_not_classified_as_thumb_still_keeps_down_up_symmetric() {
+        let mut engine = make_test_engine();
+        let mut down = Ev::down(VK_CONVERT).at(100).build();
+        down.key_classification = crate::types::KeyClassification::Passthrough;
+        let _ = engine.on_input(down, &ime_off_ctx());
+        engine.record_shell_consumed(&down);
+        let mut rep = Ev::down(VK_CONVERT).at(600).repeat().build();
+        rep.key_classification = crate::types::KeyClassification::Passthrough;
+        assert!(
+            engine.on_input(rep, &ime_off_ctx()).is_consumed(),
+            "リピートが素通しになると OS に Down だけが届く"
+        );
+        let mut up = Ev::up(VK_CONVERT).at(700).build();
+        up.key_classification = crate::types::KeyClassification::Passthrough;
+        assert!(engine.on_input(up, &ime_off_ctx()).is_consumed());
+    }
+
+    /// ADR-255 決定4: 登録済みの Down の Up は、Up の時点でエンジンが活性でも消費される。
+    /// (flush による KeyUp の再注入は `release_pending_and_reinject` の経路で、本 PR では固定しない。)
+    #[test]
+    fn shell_consumed_down_up_is_consumed_even_if_engine_became_active() {
+        let mut engine = make_test_engine();
+        let down = Ev::down(VK_NONCONVERT).at(100).build();
+        let _ = engine.on_input(down, &ime_off_ctx());
+        engine.record_shell_consumed(&down);
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(150).build(), &ime_on_ctx());
+        assert!(
+            up.is_consumed(),
+            "活性側の文脈でも登録済みの Up は消費される"
         );
     }
 

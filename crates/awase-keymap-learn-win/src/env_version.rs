@@ -188,7 +188,7 @@ pub fn probe_current_fingerprint() -> Option<awase_keymap_learn::staleness::Fing
 
     let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
     let tip = awase_windows::tsf::query_tip_identity_on_current_sta();
-    let probe = tip.map(awase_windows::state::key_effect_runtime::current_fingerprint_probe);
+    let probe = tip.map(awase_windows::key_effect_io::current_fingerprint_probe);
     if initialized {
         unsafe { CoUninitialize() };
     }

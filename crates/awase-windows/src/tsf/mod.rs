@@ -27,7 +27,7 @@ mod gji_monitor;
 #[cfg(windows)]
 pub(crate) mod ime_mode_fsm;
 #[cfg_attr(not(windows), allow(dead_code))]
-pub mod literal_facts;
+pub use awase_windows_core::tsf::literal_facts;
 #[cfg(windows)]
 pub mod observer;
 #[cfg(windows)]

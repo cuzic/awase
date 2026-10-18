@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, ci/e2e-focus-restore-13-17, ci/adr245-pr3-strict-focusrestore, fix/bug189-most-recent-trusted]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, feat/adr260-eisu-toggle-guard, feat/adr245-pr2-pr3-rebased]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-pr2-pr3-rebased') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -101,9 +101,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', until='', setup='', prepare='', rules='', via_settings='', driver=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, until=until, setup=setup, prepare=prepare, rules=rules, via_settings=via_settings, driver=driver)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -139,6 +139,7 @@ jobs:
           # keys: abs=絶対キー用(Ctrl+変換/Ctrl+無変換に加えて、無変換/変換の単独タップを bare の keys.ime_off/ime_on にする=ADR-206 の役割由来)、
           #       tog=無変換の単独タップを keys.ime_toggle にする(トグルの検証用。0xF3/0x19 は IME/awase の shadow トグルで設定不要)。
           KM_KEYS = dict(abs='ime_on = ["Ctrl+変換", "VK_CONVERT"]; ime_off = ["Ctrl+無変換", "VK_NONCONVERT"]', tog='ime_toggle = ["VK_NONCONVERT"]')
+          KM_EISU = 'f0=tog:close,f0=tog:fresh,f0=tog:sync,f0=tog:open,f0=on:sync,f0=on:fresh'
           def km_cells(grp, msime):
             if grp == 'abs':
               c = ['ctrl+1c=on:close', 'ctrl+1d=off:open', 'ctrl+1c=on:sync', 'ctrl+1d=off:sync', '1c=on:close', '1d=off:open', '16=on:close', '1a=off:open']
@@ -278,6 +279,9 @@ jobs:
             *[cfg(f'sc-dbe-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}')
               for ime_name, ime, km, msime in SC_IMES],
+            # ADR-255: sc-dbe-gji-msime を、ドライバ経由のスキャンコード(JIS 申告、物理キーと同じ Down/Up の vk)で打つ比較。従来の vk 直接指定の sc-dbe-gji-msime と結果を比べる。
+            cfg('sc-dbe-gji-msime-drv', 'observe', check='consistency', ime='gji', keymap=2, driver='jis', until='2026-11-10',
+                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --inject-driver'),
             *[cfg(f'sc-kanji-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,19,19,16,1A,16,1A,19,F2,1A{msime}')
               for ime_name, ime, km, msime in SC_IMES],
@@ -314,6 +318,23 @@ jobs:
             cfg('sc-solotap-after-passthrough-close-gji-atok', 'observe', check='consistency', keymap=0, runs=2,
                 args='--seq=16,F0,1D,1D,1D',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Eisu,IMEOff|Composition,Eisu,IMEOff|Conversion,Eisu,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
+            # ADR-260: 英数(複合キー)を belief とずれた状態で押したときの追随(観測のみ、only='sc-eisu-km-*' かブランチ feat/adr260-eisu-toggle-guard)。
+            # 本実装(B1o+B3)の確認。読みが効く窓(tsf・実 Chrome)で、typed の「ずれ」(tsf: ｗ・ka、chrome: 素通しのかな・英数なのに Engine ON)が 0 になること。
+            # `--km-twice` で 2 文字目も記録する。ATOK は閉の英数が開かない対照。
+            *[cfg(f'sc-eisu-km-{win}-{pn}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=3, wait=2400, until='2026-11-10',
+                  keys='ime_toggle = ["VK_NONCONVERT"]',
+                  **({'chrome': f"--keymatrix={KM_EISU} --km-twice --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_EISU} --km-twice --layout=@REPO@/layout/nicola_keytop.yab"}))
+              for win in ('tsf', 'chrome')
+              for pn, pk in (('msime', 2), ('atok', 1))],
+            # ADR-260 の持ち越しの測定(Opus レビュー R6 (e)): 測る英数の前に、ひらがな(0xF2、MS-IME プリセットではかなへ SET)を 1 回押す
+            # (`--km-pre=f2`)。belief が英数のときのひらがなは入力モードの予測(かな)を持ち越し、直接観測の判定は今回の打鍵の軸で決める(B3)。
+            # 持ち越しの入力モードの予測は reduce の fence(170ms)の間は観測を拒否する(R1)。typed の「ずれ」が 0 になること。
+            *[cfg(f'sc-eisu-km-carry-{win}-msime', 'observe', check='keymatrix', ime='gji', keymap=2, runs=3, wait=2400, until='2026-11-10',
+                  keys='ime_toggle = ["VK_NONCONVERT"]',
+                  **({'chrome': f"--keymatrix=f0=tog:open,f0=tog:close,f0=tog:fresh,f0=on:fresh --km-pre=f2 --km-twice --settle=800"} if win == 'chrome' else
+                     {'stress': f"--form={win} --mode=keymatrix --km-cells=f0=tog:open,f0=tog:close,f0=tog:fresh,f0=on:fresh --km-pre=f2 --km-twice --layout=@REPO@/layout/nicola_keytop.yab"}))
+              for win in ('tsf', 'chrome')],
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
@@ -337,6 +358,43 @@ jobs:
             cfg('sc-t1e-chrome-f13', 'pass', check='chromeprobe', keymap=0, runs=1, wait=400,
                 chrome='--f13 --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
+            # 外部報告(ANSI 配列、物理キーを F14〜F17 に割り当てる構成。英数=F16・IME ON=F17、親指=F14/F15)の再現(観測のみ、only='sc-f16-*' で回す)。
+            # F13〜F24 は学習表にセルが無く(key_effect_table.rs の NARROWABLE_KEYS 注記)、打鍵時予測が付かない。実 Chrome(TsfNative)で
+            # 「かな→F16=半角英数(`ka`)」「F16 の半角英数→F17=かなに戻り Engine が追随(NICOLA)」を見る。FAIL=`ka`のまま/Engine OFF の `か` は belief のずれ。
+            # -awimeon: F17 は awase の keys.ime_on(GJI 表に F17 行なし)。-gjif17: F17 は GJI 表(Precomposition=ひらがな/DirectInput=IMEOn)で awase は素通し。
+            # -noawase は -gjif17 の表で awase なしの対照(GJI 単体なら `か`)。表のひらがな行(0xF2)は chrome_probe の前提状態づくり(半角英数→かな)用。
+            *[cfg(f'sc-f16-alnum-chrome-{suf}', 'observe', check='chromeprobe', keymap=0, runs=1, wait=500, awase=aw, keys=ks,
+                  general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
+                  chrome=f'--f16-alnum --repeat=3 --settle=800{na}', until='2026-11-09',
+                  tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff'
+                      '|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric'
+                      '|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana' + f17)
+              for suf, aw, ks, na, f17 in (
+                  ('awimeon', 'true', 'ime_on = ["VK_F17"]', '', ''),
+                  ('gjif17', 'true', '', '', '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn'),
+                  ('gjif17-noawase', 'false', '', ' --no-awase', '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn'))],
+            # ADR-247 の A/B: F13〜F24 の追随を 案2(直接観測=vk.rs の is_followed_mode_key)と案1(CUSTOM 表の行からの予測)に分けて外す。
+            # 無印(上の -gjif17)=両方あり / -obsonly=予測を外す(a10) / -predonly=観測を外す(a9) / -none=両方外す(a11、修正前相当)。
+            *[cfg(f'sc-f16-alnum-chrome-gjif17-{suf}', 'observe', mutator=mu, check='chromeprobe', keymap=0, runs=1, wait=500,
+                  general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
+                  chrome='--f16-alnum --repeat=3 --settle=800', until='2026-11-09',
+                  tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff'
+                      '|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric'
+                      '|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana'
+                      '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn')
+              for suf, mu in (('obsonly', 'a10-no-fkey-predict.sh'), ('predonly', 'a9-no-fkey-observe.sh'), ('none', 'a11-no-fkey-follow.sh'))],
+            # ADR-247 の追随の速さ: F16 を押してから打つまでの待ち(--settle)を 0/60/150ms に縮め、案2(観測)と案1(予測)のどちらが最初の文字から正しいかを比べる。
+            # ビルドは上の -gjif17-{obsonly,predonly,none} を使い回す(bin=)。full=両案あり(baseline)。各 6 周。only='sc-f16-settle-*'。
+            *[cfg(f'sc-f16-settle-{suf}-t{t}', 'observe', bin=b, check='chromeprobe', keymap=0, runs=1, wait=500,
+                  general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
+                  chrome=f'--f16-alnum --repeat=6 --settle={t}', until='2026-11-09',
+                  tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff'
+                      '|Precomposition,F16,InputModeHalfAlphanumeric|Composition,F16,InputModeHalfAlphanumeric'
+                      '|Precomposition,Hiragana,InputModeHiragana|Composition,Hiragana,InputModeHiragana'
+                      '|Precomposition,F17,InputModeHiragana|DirectInput,F17,IMEOn')
+              for suf, b in (('full', None), ('obsonly', 'sc-f16-alnum-chrome-gjif17-obsonly'),
+                             ('predonly', 'sc-f16-alnum-chrome-gjif17-predonly'), ('none', 'sc-f16-alnum-chrome-gjif17-none'))
+              for t in (0, 60, 150)],
             # ADR-209(2026-09-30): 読めない窓(実 Chrome=Imm32Unavailable)で、GJI の MS-IME プリセット(keymap=2)の IME OFF から変換を
             # 単独で押す(素通し)と IME が開き、awase の Engine が追随して NICOLA になる。stale=実機と同じ古い custom_keymap_table 付き。
             # off=設定 predict_henkan_open_in_unreadable_windows=false の対照(追随しない=IME ON・Engine OFF で `か` になり FAIL するはず)。
@@ -417,6 +475,31 @@ jobs:
             # T1(e) の一部(ADR-199 決定18): F13 をトグルにした CUSTOM 表で、F13(0x7C)が GJI に効くか。IME OFF から F13→開、もう一度→閉。
             cfg('sc-t1e-f13-toggle', 'observe', check='consistency', awase='false', keymap=0, runs=1,
                 args='--seq=1A,7C,7C', tsv='DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff'),
+            # ADR-255 段階3b: 遅いルール(`[[keymap]] ime = "off"`、無変換/変換→Space)の実機検証。GJI の CUSTOM 表(DirectInput に無変換/変換の行なし=NoFunction)、awase あり。
+            # --seq: 1A=IME OFF、16=IME ON、1D=無変換、1C=変換、他は VK の16進(46=F 4F=O 42=B 41=A 52=R)。判定なし(collect)。スパイクログの KEY 行の tail で空白の有無・順序を見る。
+            *[cfg(f'sc-late-space-{nm}', 'observe', check='collect', keymap=0, runs=1, wait=240, until='2026-11-10',
+                  args=f'--seq={seq}', tsv=tsv, rules=rl)
+              for nm, seq, tsv, rl in (
+                ('a-off', '1A,1D,1C', 'DirectInput,ON,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'),
+                ('a-off-norule', '1A,1D,1C', 'DirectInput,ON,IMEOn', ''),
+                ('b-on', '16,1D,1C', 'DirectInput,ON,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'),
+                ('c-order', '1A,46,4F,4F,1D,42,41,52', 'DirectInput,ON,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'),
+                ('c-order-norule', '1A,46,4F,4F,20,42,41,52', 'DirectInput,ON,IMEOn', ''),
+                ('d-henkan-imeon', '1A,1C,1A,1D', 'DirectInput,ON,IMEOn|DirectInput,Henkan,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'),
+                ('d-muhenkan-imeon', '1A,1D,1A,1C', 'DirectInput,ON,IMEOn|DirectInput,Muhenkan,IMEOn', 'VK_NONCONVERT,VK_SPACE,off|VK_CONVERT,VK_SPACE,off'))],
+            # ADR-255 段階3b: 速い連打で「foo bar」の順序が入れ替わらないか・押したまま(自動リピート相当)で Space が1個か。typing_stress --mode=lateorder、判定は check_lateorder.py。
+            # 対照 ctl は物理 Space を直接注入(ルールなし)。iv=キー間隔ms。形は edit(自プロセスの入力欄、IMM)。keymap=2(GJI の MS-IME プリセット)は無変換が DirectInput で IME の機能を持たない(CUSTOM 表だと準備確認で IME が開かない)。
+            *[cfg(f'sc-late-space-fast-{nm}', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', rules=rl,
+                  stress=f'--form=edit --mode=lateorder --trials=4 --reps=5 --interval={iv} --lateorder-key={k} --layout=@REPO@/layout/nicola_keytop.yab')
+              for nm, iv, k, rl in (('iv40', 40, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv20', 20, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv8', 8, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('ctl-iv8', 8, '20', ''))],
+            # ADR-255 の通し: 設定画面(awase-settings)のプリセットボタン+Ctrl+S が書いた [[keymaps]] を awase が読み、連打・押しっぱなしで Space が出るか。
+            # rules ではなく via_settings='preset'。typing_stress --mode=lateorder は keymap=2(MS-IME プリセット)。
+            cfg('sc-late-space-saved-iv20', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', via_settings='preset',
+                stress='--form=edit --mode=lateorder --trials=4 --reps=5 --interval=20 --lateorder-key=1D --layout=@REPO@/layout/nicola_keytop.yab'),
+            # ADR-255: 設定画面で保存した設定 + ドライバ経由(物理キーと同じ経路)の通し。LLKHF_INJECTED も dwExtraInfo の目印も無いキーで、遅いルールが働くか。
+            *[cfg(f'sc-late-space-physical-iv{iv}', 'observe', check='lateorder', keymap=2, runs=1, wait=480, until='2026-11-10', via_settings='preset', driver='1',
+                  stress=f'--form=edit --mode=lateorder --trials=4 --reps=5 --interval={iv} --lateorder-key=1D --inject-driver --layout=@REPO@/layout/nicola_keytop.yab')
+              for iv in (40, 20, 8)],
             # v2 チェックリスト B2 副次: 既定の [keys](keys.ime_toggle が空)× GJI プリセットで、Alt+半角/全角(0x19)が実 IME と Engine(belief)をずらさないこと。
             # sc-kanji-role-* は CUSTOM 表(keymap=0)+ tsv だったが、こちらは tsv も keys 上書きも無い「既定のまま」。プリセット(ATOK=1 / MS-IME=2)の
             # Hankaku/Zenkaku 行はトグルのはずなので kanjirole-closed(IME が閉じ、Engine も OFF に追随)を期待する。実測前なので observe。
@@ -768,12 +851,12 @@ jobs:
             configs = [c for c in configs if any(fnmatch.fnmatchcase(c['name'], o) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-', 'sc-focusrestore-'))
-                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-', 'sc-focusrestore-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-', 'sc-focusrestore-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-', 'sc-focusrestore-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-table-', 'sc-preedit-', 'sc-focusrestore-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-', 'sc-focusrestore-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -921,7 +1004,8 @@ jobs:
         if: matrix.cfg.ime != 'msime'
         shell: pwsh
         run: |
-          choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+          ./tools/ci/install-gji.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 入力言語をja-JP + GJI に設定、キーマッププリセット(ATOK/MS-IME)の config1.db を書く
         if: matrix.cfg.ime != 'msime'
@@ -1110,8 +1194,26 @@ jobs:
             if ($cfg -match "(?m)^$key *=") { $cfg = $cfg -replace "(?m)^$key *=.*$", $line }
             else { $cfg = $cfg -replace '(?m)^\[keys\]\s*$', "[keys]`r`n$line" }
           }
+          # [[keymap]] の追加(`|` 区切りのルール、各ルールは `from,to,ime`。ime は空なら省略)。ADR-255 の遅いルール(ime = "off")の検証用。
+          $rules = '${{ matrix.cfg.rules }}'
+          foreach ($r in ($rules -split '\|' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $f = $r -split ','
+            $cfg = $cfg.TrimEnd() + "`r`n`r`n[[keymap]]`r`nfrom = `"$($f[0])`"`r`nto = [`"$($f[1])`"]`r`n"
+            if ($f.Count -gt 2 -and $f[2]) { $cfg += "ime = `"$($f[2])`"`r`n" }
+          }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
+          # ADR-255: キーボードフィルタドライバ(tools/kbd-inject-driver)を入れる。typing_stress の --inject-driver で、物理キーと同じ経路(LLKHF_INJECTED なし)でキーを送る。
+          if ('${{ matrix.cfg.driver }}' -in '1', 'jis') {
+            # 'jis': キーボードの種類を JIS(type 7)と申告し直して、スキャンコード→JIS の vk 変換(物理キーの Down/Up の非対称)を通す。
+            if ('${{ matrix.cfg.driver }}' -eq 'jis') { & "$PWD\tools\kbd-inject-driver\install-driver.ps1" -JisType } else { & "$PWD\tools\kbd-inject-driver\install-driver.ps1" }
+            if (-not $?) { Write-Host '::error::キーボードフィルタドライバを入れられなかった'; exit 3 }
+          }
+          # 設定画面で保存した設定を使う(ADR-255 の保存→読み込み→動作の通し)。via_settings='preset' のときだけ。
+          if ('${{ matrix.cfg.via_settings }}' -eq 'preset') {
+            & "$PWD\tools\e2e\ime_key_matrix\save_via_settings.ps1"
+            if ($LASTEXITCODE -eq 3) { exit 3 }  # スクリプトが失敗(ime = off が2件書かれなかった)のときだけ。正常終了では $LASTEXITCODE が $null のことがあり、-ne 0 だと step ごと終わってしまう
+          }
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
           # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n[imm_capability.`"typing_stress.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
@@ -1231,6 +1333,8 @@ jobs:
             python tools\e2e\ime_key_matrix\check_reopen.py --json reopen.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'preedit') {
             python tools\e2e\ime_key_matrix\check_preedit.py --json preedit.json dist\typing_stress.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'lateorder') {
+            python tools\e2e\ime_key_matrix\check_lateorder.py --json lateorder.json dist\typing_stress.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'driftrecovery') {
             if ('${{ matrix.cfg.chrome }}' -ne '') {
               python tools\e2e\ime_key_matrix\check_drift_recovery_chrome.py dist\chrome_probe.log dist\awase.log | Tee-Object -FilePath result.txt
@@ -1350,8 +1454,10 @@ jobs:
             typing.json
             reopen.json
             preedit.json
+            lateorder.json
             keymatrix.json
             focusrestore.json
+            settings-save-*.png
             offrca.json
             env.txt
             dist/compartment_notify_probe.log

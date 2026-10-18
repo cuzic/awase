@@ -45,12 +45,14 @@
 
 mod support;
 
+use awase::engine::decision::InactiveReason;
+use awase::engine::{ActivationState, AssumedReason, InputModeState};
 use awase_windows::state::open_warrant::WarrantBasis;
 use support::harness::{Harness, Setup, Source, WriteOrigin};
 use support::invariants::{
     assert_ok, belief_matches_truth_at_end, p1_no_warranted_write_without_intent,
     p2_no_stale_stage_after_unpredicted_key, p3_startup_aligns_desired_without_drift,
-    predictions_agree_with_truth,
+    prediction_mismatch, predictions_agree_with_truth,
 };
 use support::pseudo_ime::{Grid, TrueStage, TrueState, CONV_ALNUM, CONV_HIRAGANA};
 
@@ -60,6 +62,7 @@ const VK_ENTER: u16 = 0x0D;
 const VK_MUHENKAN: u16 = 0x1D;
 const VK_HIRAGANA: u16 = 0xF2;
 const VK_SPACE: u16 = 0x20;
+const VK_HENKAN: u16 = 0x1C;
 
 const fn state(open: bool, conv: u32) -> TrueState {
     TrueState {
@@ -127,13 +130,12 @@ fn bug162_stage2_activation_set_open_does_not_open_ime_closed_outside_awase() {
     assert_ok(&h, p1_no_warranted_write_without_intent(&h));
 }
 
-/// 未起票（BUG-162 A の1段目の範囲外）: 変換中（Space）の Esc は ATOK 表にセルが無く（保持/破棄が割れる）、
-/// 1段目の修正は「従来どおり予測なし」で追跡した段階 `ConvSpace` を残す。実 IME（格子第3版）は
-/// `on-c19-conv-space|esc` → `ON/0x19/保持`。**擬似 IME の仮定**（変換中の Esc で「保持」なら入力中＝読みへ戻る、
-/// `support/pseudo_ime.rs`）の下では、続く無変換は入力中の無変換（`on-c19-typing|muhenkan` → 半角英数 `0x10`）
-/// だが、予測器は古い `ConvSpace` の行（ひらがなのまま）を引く。仮定を実機で確かめるまで未起票のまま残す。
+/// BUG-205（BUG-162 A の1段目の範囲外）: 変換中（Space）の Esc は ATOK 表にセルが無く（保持/破棄が割れる）、
+/// 以前は「予測なし」で追跡した段階 `ConvSpace` を古いまま残していた。実 IME（格子第3版）は
+/// `on-c19-conv-space|esc` → `ON/0x19/保持`。実機の測定（run 39096991882、`--grid=s6`、3 IME × 間隔 2 通り × 各 10 回・全て同じ結果）で、
+/// Esc の直後は入力中（Typing＝読み）へ戻る（続く無変換の結果が入力中の行と一致する: ATOK は半角英数 `0x10`）と確定した。
+/// 予測器は、表にセルが無い変換中〈Space〉の Esc で追跡する段階を `Typing` に更新する（開閉・モードは予測しない）。
 #[test]
-#[ignore = "未起票: 変換中の Esc の後の古い段階（擬似 IME の仮定に依存）。起票・修正後に外す"]
 fn conversion_esc_does_not_leave_stale_conv_stage() {
     let mut h = Harness::start(Setup::imm_cross(state(true, CONV_HIRAGANA)));
     h.advance_ms(100)
@@ -148,6 +150,53 @@ fn conversion_esc_does_not_leave_stale_conv_stage() {
         .key(VK_MUHENKAN)
         .advance_ms(20);
     assert_ok(&h, p2_no_stale_stage_after_unpredicted_key(&h));
+    // 予測が返った場合も、真の結果（続く無変換は入力中の無変換）と食い違わない。
+    assert_ok(&h, predictions_agree_with_truth(&h));
+}
+
+/// BUG-204 関連: 前の窓で半角英数(belief が `ObservedEisu`)のまま、起動後に作られた新しいスレッドの読めない窓(`Imm32Unavailable`)へ移り、
+/// 実 IME は閉×ひらがな(ADR-191 §3.2)。変換キー(ATOK では閉→開で変換モードが不明のため予測は `mode: None`)で開くと、belief の層では
+/// 前の窓の `ObservedEisu` が残り、Engine が `Inactive(NotRomajiInput)` で止まる。窓の切り替え(`assume_closed_for_new_thread`・
+/// `reset_stale_ime_on_for_imm_broken`)は開閉だけを低信頼で記録し、`correction_for_imm_broken` は `ObservedEisu` を意図的に対象外にし、
+/// `KeyEffectPredicted` は `mode` が `Some` のときだけ `input_mode` を書く。
+///
+/// **本番では救われる(実機 CI で確認、run 39113514316、ATOK × 実 Chrome × 3/3 で Engine が追随)**。本番は変換キーを通した 20ms 後に
+/// `mode-key-follow`(`[direct-follow]`)が IME の実状態を直接読み、`ObservedEisu` を訂正する(ログ: `read_ime_state_full ... cross native=true roman=false`
+/// → `[direct-follow] モードキー直後の窓の中で実状態が belief と違った → eisu=Some(false) へ追随` → `Engine activated`)。ハーネスはこの段を写さない
+/// ので、このテストは偽の陽性(ハーネスの限界)を記録するもの。ハーネスに `mode-key-follow` を足したら、この `#[ignore]` を外して回帰テストにできる。
+/// GJI の MS-IME プリセット・MS-IME 本体は実機で前提(Chrome を半角英数にする)が作れず未測定。
+#[test]
+#[ignore = "ハーネスが本番の mode-key-follow(モードキー通過後 20ms の直接読み)を写していない偽の陽性。本番は救われる(実機 CI run 39113514316、ATOK)。ハーネスに足したら外す"]
+fn stale_eisu_blocks_engine_after_predicted_open_in_a_new_thread_window() {
+    // 窓 A: 読める窓で IME 開・半角英数。観測で belief が ObservedEisu になる。
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)));
+    h.advance_ms(100).observe(Source::ImmCross).advance_ms(200);
+    assert_eq!(
+        h.model().input_mode(),
+        InputModeState::ObservedEisu,
+        "前提: 窓 A で半角英数と観測した\n{}",
+        h.trace()
+    );
+    // 窓 B: 起動後に作られた新しいスレッドの読めない窓。実 IME は閉×ひらがな。
+    h.focus_change_to_new_thread_unreadable(state(false, CONV_HIRAGANA))
+        .advance_ms(100);
+    // 変換キーで IME が開く(ATOK: 閉→開、変換モードは不明のため予測は mode: None)。
+    h.key(VK_HENKAN).advance_ms(100);
+    assert_eq!(
+        h.ime.state(),
+        state(true, CONV_HIRAGANA),
+        "前提: 実 IME は開いてひらがな\n{}",
+        h.trace()
+    );
+    assert!(
+        !matches!(
+            h.activation(),
+            ActivationState::Inactive(InactiveReason::NotRomajiInput)
+        ),
+        "実 IME はひらがなで開いているのに、belief が前の窓の ObservedEisu のまま Engine が NotRomajiInput で止まった: {:?}\n{}",
+        h.activation(),
+        h.trace()
+    );
 }
 
 /// BUG-163（P3）の入力列: IME を閉じた状態で起動し、500ms ごとに観測する。
@@ -577,4 +626,200 @@ fn q4_external_close_is_followed_with_adr205_and_never_reopened() {
         "追随のあとに awase の書き込みは無い（開け直さない）\n{}",
         h.trace()
     );
+}
+
+// ---------------------------------------------------------------------------
+// ランダムなキー列（手書きの数本では当たらない列の探索）
+// ---------------------------------------------------------------------------
+
+/// 決定的な擬似乱数（依存を増やさない。シード固定で CI 上でも再現できる）。
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0 >> 33
+    }
+
+    fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+        items[usize::try_from(self.next()).unwrap_or(0) % items.len()]
+    }
+}
+
+/// 表にある13種のキーと、文字キー（入力中を作る）。`pseudo_ime::grid_key_name` と同じ範囲。
+const WALK_KEYS: [u16; 15] = [
+    0x08, 0xF0, 0x0D, 0x1B, 0xF3, 0x1C, 0xF2, 0x1A, 0x16, 0x19, 0xF1, 0x1D, 0x20, VK_K, 0x41,
+];
+
+/// 擬似 IME の真値（生データ）が実測を持つ範囲だけを通るランダムなキー列で、予測器の予測が
+/// 真の結果と食い違わないこと（1打鍵ごとの正しさ）。
+///
+/// 手書きシナリオ（BUG-162 など）は、既に見つかった列しか守れない。ここでは3つの格子（ATOK・GJI の MS-IME・
+/// MS-IME 本体）× 窓の種類2通りで、シード固定のキー列を流して未発見の食い違いを探す。
+/// 窓の種類は、入力中を観測できる窓（`composing_visible`）と、できない窓（予測器が段階の追跡だけに頼る）。
+///
+/// **各キーの直前に観測して belief を真値に合わせる**。予測が返らないキー（表に無い・非決定のセル）は「観測に
+/// 任せる」設計なので、観測を挟まないと、その後の食い違いが全て設計どおりの帰結として現れて原因が埋もれる
+/// （最初の版で 360 本中 59 本、原因別 51 種に割れた）。ここで調べるのは、belief が正しいときに予測が嘘を
+/// つかないこと。段階の追跡（`KeyTrack`）は観測では直らないので、複数打鍵にわたる追跡のずれは見える。
+///
+/// **既知のずれ(件数を固定して数える。増えたら赤。BUG-204)**: 閉から始めて、IME が一度も開く前に最初に開くキー。
+/// belief の入力モードの初期値は `ImeModel::new()` の `AssumedRomaji{Startup}`(まだ観測していない既定値。以前は `ObservedRomaji`
+/// で「観測済み」と名乗っていた。`is_romaji_capable` は同じ扱いなので挙動は同じ)で、閉の間は入力モードを観測しない
+/// (BUG-57/ADR-239。ハーネスも開いているときだけ観測する)ので、閉で始まると開くまで初期値のまま残る。ATOK の閉のセルは全て
+/// `after_conv=None` で `mode: None`(変えない)なので、閉→開でも残り、IME が半角英数(0x10)を覚えていると、開いた結果と食い違う。
+/// 判定の根拠は、その時点の `input_mode` が初期値のままであることの検査(下の `assert_eq!`)。
+/// (この段落は書き直している。最初は「`Unknown` のとき最初の打鍵で既定のかなの種が入る」と書いたが、`Unknown` は
+/// 本番でもハーネスでも流れず〈`seeded` の経路は到達しない〉、初期値が原因だった。Opus レビューで判明。)
+/// 一度でも開いた後の閉→開のずれは、観測したモードが残るはずなので、本物の食い違いとして失敗にする。
+#[test]
+fn random_key_walks_keep_predictions_consistent_with_truth() {
+    const SEEDS: u64 = 60;
+    const LEN: usize = 12;
+    let starts = [
+        (false, CONV_ALNUM),
+        (false, CONV_HIRAGANA),
+        (true, CONV_ALNUM),
+        (true, CONV_HIRAGANA),
+    ];
+    // 最初の食い違いだけを数える(以後の食い違いは最初のずれの連鎖)。(格子, 窓, 直前のキー, 押す前の真の状態, キー)
+    // ごとに集計し、同じ原因の列をまとめて見えるようにする。
+    let mut cells: std::collections::BTreeMap<String, (usize, String)> =
+        std::collections::BTreeMap::new();
+    let mut failing_walks = 0usize;
+    let mut initial_mode_gap = 0usize;
+    let mut walks = 0usize;
+    let mut steps = 0usize;
+    for grid in [Grid::Atok, Grid::GjiMsime, Grid::MsimeNative] {
+        for composing_visible in [true, false] {
+            for seed in 0..SEEDS {
+                let mut rng = Lcg(seed + 1);
+                let (open, conv) = rng.pick(&starts);
+                let mut setup = Setup::imm_cross(state(open, conv)).with_grid(grid);
+                setup.composing_visible = composing_visible;
+                let mut h = Harness::start(setup);
+                // 起動直後に一度観測して belief を真値に合わせる(実機は起動時に読む)。ただし閉のときは入力モードを
+                // 観測しないので、閉で始まると belief の入力モードは初期値(`AssumedRomaji{Startup}`)のまま(BUG-204)。
+                h.advance_ms(100).observe(Source::ImmCross).advance_ms(200);
+                let mut keys: Vec<u16> = Vec::new();
+                for _ in 0..LEN {
+                    let vk = rng.pick(&WALK_KEYS);
+                    if !h.ime.knows(vk) {
+                        continue;
+                    }
+                    h.advance_ms(50)
+                        .observe(Source::ImmCross)
+                        .advance_ms(50)
+                        .key(vk);
+                    keys.push(vk);
+                }
+                walks += 1;
+                steps += keys.len();
+                let mut real = None;
+                for (i, r) in h.predictions.iter().enumerate() {
+                    let Some(m) = prediction_mismatch(r) else {
+                        continue;
+                    };
+                    let b = r.truth_before;
+                    // 開閉は合っていて、モードだけがずれた「閉→開」(開閉のずれは本物の食い違い)。
+                    let predicted_open = r
+                        .prediction
+                        .and_then(|p| p.effect.open)
+                        .unwrap_or(r.input_open);
+                    let opened_from_closed =
+                        !b.open && r.truth_after.open && predicted_open == r.truth_after.open;
+                    // この歩みで IME が一度も開いたことがない=belief の入力モードは一度も観測されず、初期値のまま。
+                    let never_open_before = h.predictions[..i]
+                        .iter()
+                        .all(|p| !p.truth_before.open && !p.truth_after.open);
+                    if opened_from_closed && never_open_before {
+                        // 機序の確認: その時点の belief の入力モードは、初期値(`AssumedRomaji{Startup}`)のまま。
+                        // 違えば、BUG-204 の機序の理解が誤り(過去に 2 回、コードを読まずに推測して外した)。
+                        assert_eq!(
+                            r.input_mode,
+                            InputModeState::AssumedRomaji {
+                                reason: AssumedReason::Startup
+                            },
+                            "BUG-204 の機序の前提が崩れた: grid={grid:?} seed={seed} step={}",
+                            r.step
+                        );
+                        initial_mode_gap += 1;
+                        continue;
+                    }
+                    real = real.or(Some((i, r, m)));
+                }
+                let first = real;
+                if let Some((i, r, m)) = first {
+                    failing_walks += 1;
+                    let prev = i.checked_sub(1).map_or_else(
+                        || "なし".to_owned(),
+                        |j| format!("{:02X}", h.predictions[j].vk),
+                    );
+                    let b = r.truth_before;
+                    let sig = format!(
+                        "{grid:?} 観測可能={composing_visible} 直前=0x{prev} 押す前=(open={},conv=0x{:02X},{:?}) キー=0x{:02X}",
+                        b.open, b.conv, b.stage, r.vk
+                    );
+                    let seq: Vec<String> = keys.iter().map(|k| format!("{k:02X}")).collect();
+                    let entry = cells.entry(sig).or_insert_with(|| {
+                        (
+                            0,
+                            format!("例 seed={seed} キー列=[{}]\n    {m}", seq.join(" ")),
+                        )
+                    });
+                    entry.0 += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        steps > walks,
+        "ほとんどのキーが実測の範囲外で飛ばされた（walks={walks} steps={steps}）。開始状態かキー集合を見直すこと"
+    );
+    eprintln!("既知のずれ: 初期値の入力モードが残った閉→開 {initial_mode_gap} 件 / {steps} 打鍵");
+    let report: Vec<String> = cells
+        .iter()
+        .map(|(sig, (n, ex))| format!("{n:3} 本  {sig}\n    {ex}"))
+        .collect();
+    assert!(
+        cells.is_empty(),
+        "{failing_walks} / {walks} 本のキー列で予測が真値と食い違った（steps={steps}）。最初の食い違いの原因別 {} 種:\n{}",
+        cells.len(),
+        report.join("\n")
+    );
+    // 既知のずれは件数を固定する。増減したら原因を見直すこと(黙って増えるのを防ぐ)。
+    assert_eq!(
+        initial_mode_gap, EXPECTED_INITIAL_MODE_GAP,
+        "初期値の入力モードが残って閉→開がずれた件数が変わった"
+    );
+}
+
+/// 閉から始め、この歩みで IME が一度も開く前に最初に開くキーで、belief の入力モードの初期値(`AssumedRomaji{Startup}`)が
+/// 残って食い違う件数(固定)。BUG-204。初期値を「観測済み」と名乗らない値にしても、閉のキーは `mode: None` なので理由は
+/// 開くまで残り、件数は変わらない見込み(Opus レビュー)。実際に減るのは、閉の間のモードの証拠源(ADR-261・264)が入ったとき。
+/// 初出: ATOK・閉・半角英数で始まる 16 シード × 窓 2 通り = 32(CI の実測で確定)。
+const EXPECTED_INITIAL_MODE_GAP: usize = 32;
+
+/// 固定の列で確かめる、変換中の Esc の後の段階(BUG-205 の回帰テスト)。
+/// ATOK・入力中を観測できない窓で、`ime-on → a → 変換 → Esc → カタカナ → 無変換` の無変換の予測が真の結果と合うか。
+/// 実機の測定(run 39092296146、`--grid=s5`、3 IME × 各 10 回・全て同じ結果)で、変換→Esc の直後は入力中(Typing)に
+/// 戻る(次に押したキーの結果が入力中の行と一致する)と確定した。予測器の `next_stage` が Esc の保持を `None` にしていたため、
+/// 入力中を観測できない窓で「入力中でない」と読まれ、無変換が IME を閉じると誤予測していた(修正済み)。
+/// (履歴は、PredictionRecord が積まれたキーだけを数える。`knows` で飛ばしたキーは含まない。)
+#[test]
+fn esc_in_conversion_next_key_stage() {
+    let mut setup = Setup::imm_cross(state(false, CONV_HIRAGANA)).with_grid(Grid::Atok);
+    setup.composing_visible = false;
+    let mut h = Harness::start(setup);
+    h.advance_ms(100).observe(Source::ImmCross).advance_ms(200);
+    for vk in [0x16, 0x41, 0x1C, VK_ESC, 0xF1, VK_MUHENKAN] {
+        h.advance_ms(50)
+            .observe(Source::ImmCross)
+            .advance_ms(50)
+            .key(vk);
+    }
+    assert_ok(&h, predictions_agree_with_truth(&h));
 }

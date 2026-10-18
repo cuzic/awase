@@ -7,8 +7,12 @@ mod focus_tracking;
 mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
+mod indicator_menu_shadow;
 mod key_pipeline;
 mod lang_check;
+mod lang_detect_shadow;
+mod mozc_shm_shadow;
+pub(crate) use lang_detect_shadow::LangDetectIntake;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;
@@ -18,6 +22,7 @@ mod transport;
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 
 use crate::focus::FocusKind;
+use crate::key_effect_io::{KeymapCacheShellExt as _, RuntimeTableCacheShellExt as _};
 use awase::config::ValidatedConfig;
 use awase::engine::{
     Engine, EngineCommand, InputContext, InputModeState, KanaLockHysteresis, ModeKeyConfig,
@@ -323,6 +328,12 @@ pub struct Runtime {
     focus_tracker: focus_tracker::FocusTracker,
     /// ADR-223 段階 0: 打鍵時の入力言語の記録(記録のみ、belief は変えない)
     lang_check: lang_check::LangCheck,
+    /// ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの影の判定（記録のみ、挙動を変えない）
+    lang_detect: lang_detect_shadow::LangDetectShadow,
+    /// ADR-264 段階 1: 入力インジケーターの右クリックメニューの影の読み（記録のみ、挙動を変えない。既定は無効）
+    indicator_menu: indicator_menu_shadow::IndicatorMenuShadow,
+    /// ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ、挙動を変えない。既定は無効）
+    mozc_shm: mozc_shm_shadow::MozcShmShadow,
     /// Platform 層の全状態
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
@@ -334,6 +345,8 @@ pub struct Runtime {
     /// 進行中の IME actuation 試行（ADR-080）。`desired` 変化・`FocusChanged`・
     /// `Resolution` 確定でのみ破棄・再構築する（`runtime/ime_actuation.rs`）。
     active_actuation: Option<ime_actuation::Actuation>,
+    /// drift correction の計画を edge 記録するための追跡(ADR-250 段階 1)。理由が変わった tick だけ journal へ載せる。
+    drift_plan_edges: crate::state::drift_plan::DriftEdgeTracker,
     /// `config1.db` のキーマップ（打鍵時予測用）のキャッシュ。打鍵ごとに読み直さない。
     key_effect_keymap: crate::state::key_effect_predictor::KeymapCache,
     /// 直前のOS読み取り（`OsPoll`）で観測（`ime_on`）を得られたか。時間切れ・空振りは`false`。
@@ -485,9 +498,11 @@ impl Runtime {
         // Alt なりすまし中は本物の Alt 押下を無視する（hook.rs の
         // `is_alt_impersonation_active` doc 参照。ここを直さないと、hook.rs 側の
         // RawKeyEvent.modifier_snapshot は正しく補正されていても、
-        // bypass_reason() が実際に見る PhysicalKeyState.modifiers はこの
-        // build_ctx() の戻り値から来る（別経路）ため、なりすましたキーが
-        // 常に OsModifierHeld でバイパスされてしまう）。
+        // この build_ctx() の戻り値（タイマー・フォーカス・refresh 用の別経路）は
+        // 補正されないままになる）。なお打鍵の bypass_reason() が見る ctx は
+        // `key_pipeline.rs` が hook 時点の `event.modifier_snapshot` から組む
+        // （ADR-129）ので、ここではない。他アプリの注入 Ctrl（ADR-249）も
+        // 打鍵の snapshot にだけ足しており、この関数には入れない。
         if crate::hook::is_alt_impersonation_active() {
             modifiers.alt = false;
         }
@@ -676,7 +691,7 @@ impl Runtime {
         if is_kanji && event.injected {
             return; // injected は付けない。静的 Toggle のまま（現行と同じ）。
         }
-        if !is_kanji && !crate::vk::is_role_candidate(event.vk_code) {
+        if !is_kanji && !crate::vk_windows::is_role_candidate_cached(event.vk_code) {
             return;
         }
         let is_fkey = crate::vk::is_role_fkey(event.vk_code);
@@ -1426,7 +1441,8 @@ impl Runtime {
         // 到達すれば、直前の `poll_and_classify_ime` の新鮮な観測を経由せず
         // `effective_open()`（belief、explicit-intent 分岐が優先される）を
         // そのまま書く点に注意。将来 sync key gate を復活させる際は
-        // `focus_tracking.rs:409` と同型のプロファイル分岐を検討すること。
+        // `focus_tracking.rs:409` と同型のプロファイル分岐（`state::applied_mirror_plan::may_mirror_applied_on_focus`
+        // が見る TsfNative と実測学習による降格）を検討すること。
         let observed_ime_on = self.platform_state.ime.effective_open();
         self.platform_state
             .ime
@@ -1481,11 +1497,15 @@ impl Runtime {
                 sync_off_keys,
             ),
             lang_check: lang_check::LangCheck::default(),
+            lang_detect: lang_detect_shadow::LangDetectShadow::disabled(),
+            indicator_menu: indicator_menu_shadow::IndicatorMenuShadow::disabled(),
+            mozc_shm: mozc_shm_shadow::MozcShmShadow::disabled(),
             platform_state,
             all_keymaps,
             post_bypass_rules,
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
+            drift_plan_edges: crate::state::drift_plan::DriftEdgeTracker::new(),
             key_effect_keymap: crate::state::key_effect_predictor::KeymapCache::default(),
             last_ime_read_ok: true,
             key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache::default(),
@@ -1747,13 +1767,14 @@ impl Runtime {
         // 正しくなるよう、フォーカス変更直後に新ウィンドウの class/pid から同期更新する。
         // WezTerm(ForceTsf) → Chrome 等の遷移でも hint を新ウィンドウから引くため stale にならない。
         {
+            use crate::win32::HwndIdExt as _;
             let hwnd = hwnd_id.to_hwnd();
             let class_name = crate::focus::classify::get_class_name_string(hwnd);
             if !class_name.is_empty() {
                 let pid = crate::focus::classify::get_window_process_id(hwnd);
                 let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
                 let hint = self.platform.injection_hint_for(pid, &class_name);
-                let new_mode = crate::output::types::InjectionMode::from((hint, new_app_kind));
+                let new_mode = crate::output::types::injection_mode_for(hint, new_app_kind);
                 self.platform.update_injection_mode(new_mode);
                 tracing::debug!(
                     "[focus-sync] hwnd=0x{:X} class={class_name:?} \

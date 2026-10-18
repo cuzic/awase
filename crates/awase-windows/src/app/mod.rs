@@ -31,7 +31,8 @@ use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
     WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED,
-    WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG,
+    WM_INDICATOR_MENU_READ, WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
+    WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -467,6 +468,53 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
     }
 }
 
+/// ADR-263 PR 2a: `[auto_detect]` の影の判定を起動する（`mode = off` や n-gram 表が読めないときは何もしない）。
+///
+/// 仮名 n-gram の表は `Engine` が持つもの（`init_ngram_validated`）とは別に、生の表を読むためにもう一度ロードする
+/// （`NgramModel::frequency_score` は未知の組を最頻と同点で返すので確率に使えない。ADR-263 D3）。
+fn init_lang_detect_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
+    use awase::config::AutoDetectMode;
+    let cfg = &config.auto_detect;
+    let ngram = if cfg.mode == AutoDetectMode::Off {
+        None
+    } else if let Some(ref path) = config.general.ngram_file {
+        let path = resolve_relative(path);
+        match NgramModel::from_file(&path, 0, 0, 0) {
+            Ok(model) => Some(model),
+            Err(e) => {
+                diag.warn(format!(
+                    "auto_detect: n-gramモデル解析失敗（影の判定は無効）: {e}"
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // 保持と両立しない設定: Space を親指キーにした構成（英文のロールオーバーでも親指と文字の重なりが成立する）と、
+    // ADR-255 の遅いルール（`[[keymaps]]` の `ime = "off"`、IME OFF のとき親指キーを Space として打つ）。
+    // 表記ゆれ（`"Space"`・`"vk_space"` 等）を取りこぼさないよう、名前の一致ではなく VK を比べる（ADR-201 決定 1）。
+    let space_thumb = crate::state::alt_impersonation::is_thumb_key_vk(
+        &config.general.left_thumb_key,
+        &config.general.right_thumb_key,
+        crate::vk::VK_SPACE,
+    );
+    let late_keymap = config
+        .keymaps
+        .iter()
+        .any(|rule| rule.ime.as_deref() == Some("off"));
+    let hold_config_ok = !space_thumb && !late_keymap;
+    if matches!(cfg.mode, AutoDetectMode::ImeOn | AutoDetectMode::ImeOnEisu) && !hold_config_ok {
+        diag.warn(
+            "auto_detect: mode = \"ime_on\"/\"ime_on_eisu\" は、Space を親指キーにした構成と ADR-255 の遅いルール \
+             ([[keymaps]] の ime = \"off\") では打鍵を保持しません（判定の記録だけ行います）"
+                .to_string(),
+        );
+    }
+    let cfg = cfg.clone();
+    let _ = with_app(|app| app.init_lang_detect(&cfg, ngram, hold_config_ok));
+}
+
 /// `WM_INPUTLANGCHANGE` 時にキーボードレイアウトを検証する（message_handlers から呼ばれる）
 pub(crate) fn check_keyboard_layout_on_change() {
     let (is_japanese, lang_id) = ime::keyboard_layout_info();
@@ -564,6 +612,13 @@ pub(crate) fn dispatch_engine_message(
                 message_handlers::handle_wm_focus_kind_update(app, wparam, lparam);
             });
         }
+        // ADR-264 段階 1: 入力インジケーターの右クリックメニューの読み取りワーカーの結果（記録のみ。挙動を変えない）。
+        WM_INDICATOR_MENU_READ => {
+            let (wparam, lparam) = (wparam.0, lparam.0);
+            with_app_or_repost_with(WM_INDICATOR_MENU_READ, wparam, lparam, |app| {
+                app.indicator_menu_on_result(wparam, lparam);
+            });
+        }
         WM_HOTKEY if wparam.0 == HOTKEY_ID_TOGGLE as usize => {
             let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
         }
@@ -639,6 +694,17 @@ fn handle_hook_key_event(mut event: awase::types::RawKeyEvent) {
         if fired == Some(true) {
             crate::win32::post_to_main_thread(WM_DUMP_JOURNAL);
         }
+    }
+    // ADR-263: 窓切替直後・長い無操作のあとのエピソード先頭の打鍵の判定。`observe` は記録だけ（常に通す）。
+    // `ime_on` は観測の無い窓で打鍵を保持し、日本語入力と判定できたときだけひらがなキーを送ってから流す。
+    // パニック復旧キー・ジャーナルのダンプ契機は、保持より前（上の KeyDown 処理）で必ず見る。
+    // 既知の限界: RUNTIME が借用中（再入）で `with_app` が `None` のときは判定にも保持にも入らず、後段の `None` 経路で
+    // `INPUT_DEFER` に積まれる。保持中にこの再入が起きると、保持列より先に再生される（ネストしたメッセージポンプ中だけ）。
+    if matches!(
+        with_app(|app| app.lang_detect_on_key(&event)),
+        Some(crate::runtime::LangDetectIntake::Consumed)
+    ) {
+        return;
     }
     let defer_for_resync =
         crate::focus_resync::FOCUS_RESYNC.is_armed() && event.starts_focus_resync();
@@ -792,6 +858,7 @@ pub(crate) fn reload_config() {
     diag.warn_config(&load_notes, config_warnings);
 
     init_ngram_validated(&config, &mut diag);
+    init_lang_detect_validated(&config, &mut diag);
 
     let engine_on = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut diag);
     let engine_off = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut diag);
@@ -836,6 +903,7 @@ pub(crate) fn reload_config() {
         &ime_off,
         &ime_toggle,
         config.general.engine_toggle_hotkey.as_deref(),
+        config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref(),
     );
     let mut special_keys = SpecialKeyCombos {
         engine_on,

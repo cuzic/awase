@@ -40,7 +40,7 @@ fn all_mods() -> Vec<(bool, bool, bool)> {
 fn hotkey_readable(s: &str) -> bool {
     #[cfg(windows)]
     {
-        awase_windows::vk::parse_hotkey(s).is_some()
+        awase_windows::vk_windows::parse_hotkey(s).is_some()
     }
     #[cfg(not(windows))]
     {

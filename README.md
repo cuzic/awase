@@ -288,6 +288,16 @@ awase はフォーカス中のアプリを自動識別し、出力方式を切�
 
 ---
 
+## mozc-readable(任意・開発中)
+
+[mozc-readable](https://github.com/cuzic/mozc-readable) は、Google 日本語入力のオープンソース版 [Mozc](https://github.com/google/mozc) に「IME の開閉・入力モードを他のプロセスから読める」変更を加えた非公式のビルドです。awase が読めない窓の IME の状態を推測ではなく IME 自身の値で知るために作っています。
+
+- **awase 本体はまだこの値を読みません**(開発中。方針は [ADR-265](docs/adr/265-mozc-readable-integration.md))。いま入れても awase の動作は変わりません。
+- 配布は mozc-readable の GitHub Releases です(最初の Release が出てから、awase.cc のインストール欄にも載せます)。署名はありません。
+- **自作キーボード(QMK など)を作る人へ**: 共有メモリの仕様と、読み取りの最小例があります。OLED やレイヤーを IME の状態に連動させる用途を想定しています。→ [共有メモリ仕様](https://github.com/cuzic/mozc-readable/blob/readable/readable/docs/shared-memory.md)
+
+---
+
 ## トラブルシューティング
 
 **文字が入力されない / おかしな文字になる**  

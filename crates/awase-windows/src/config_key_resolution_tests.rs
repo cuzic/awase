@@ -116,7 +116,7 @@ fn load_config_text(text: &str) -> Result<AppConfig, String> {
 fn hotkey_readable(s: &str) -> bool {
     #[cfg(windows)]
     {
-        crate::vk::parse_hotkey(s).is_some()
+        crate::vk_windows::parse_hotkey(s).is_some()
     }
     #[cfg(not(windows))]
     {

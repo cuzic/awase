@@ -244,6 +244,34 @@ pub fn read_raw_entries() -> ScancodeMapRead {
     }
 }
 
+/// キーボードクラスのフィルタドライバ名（`UpperFilters` と `LowerFilters`）を読む。読めなかったときは空（注意の表示を諦めるだけ）。
+/// 診断用に、環境変数 `AWASE_SETTINGS_FAKE_FILTERS`（`,` 区切り）があればそれを返す（CI のスクリーンショット用）。
+#[must_use]
+pub fn read_keyboard_filters() -> Vec<String> {
+    if let Ok(fake) = std::env::var("AWASE_SETTINGS_FAKE_FILTERS") {
+        return fake
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    #[cfg(windows)]
+    {
+        let mut all = Vec::new();
+        for name in ["UpperFilters", "LowerFilters"] {
+            if let Ok(mut v) = awase_windows::scancode_map::read_keyboard_class_filters(name) {
+                all.append(&mut v);
+            }
+        }
+        all
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
 /// OS を再起動する（5秒後。確認ダイアログを通したあとにだけ呼ぶこと）。
 ///
 /// # Errors

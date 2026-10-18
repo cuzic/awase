@@ -35,6 +35,9 @@ use super::observer::{ActiveImeKind, TSF_OBS};
 /// `discover_and_cache_gji_clsid` により一度だけセットされる。
 /// `None` = GJI 未インストールまたは `EnumProfiles` で発見できなかった。
 static GJI_CLSID: OnceLock<GUID> = OnceLock::new();
+/// GJI 系（Google 日本語入力・Mozc とそのフォーク）の TIP の CLSID 全部（`ActiveImeKind` の判定用）。
+/// `GJI_CLSID`（Google 版のみ、`TipIdentity::Gji` 用）とは別に持つ。
+static GJI_FAMILY_CLSIDS: OnceLock<Vec<GUID>> = OnceLock::new();
 static PROFILE_DESCRIPTIONS: RwLock<Vec<ProfileDescription>> = RwLock::new(Vec::new());
 
 #[derive(Debug, Clone)]
@@ -78,9 +81,15 @@ pub(super) fn discover_and_cache_gji_clsid(
     mgr: &ITfInputProcessorProfileMgr,
     profiles: &ITfInputProcessorProfiles,
 ) {
-    if GJI_CLSID.get().is_some() {
+    if GJI_CLSID.get().is_some() && GJI_FAMILY_CLSIDS.get().is_some() {
         return;
     }
+    let family = find_gji_family_clsids(mgr, profiles);
+    tracing::info!(
+        "[tip-detect] GJI family CLSIDs: {}",
+        family.iter().map(fmt_guid).collect::<Vec<_>>().join(", ")
+    );
+    let _ = GJI_FAMILY_CLSIDS.set(family);
     match find_gji_clsid(mgr, profiles) {
         Some(clsid) => {
             let _ = GJI_CLSID.set(clsid);
@@ -90,6 +99,42 @@ pub(super) fn discover_and_cache_gji_clsid(
             tracing::info!("[tip-detect] GJI not found in EnumProfiles(JA)");
         }
     }
+}
+
+/// 日本語 TIP のうち、表示名が GJI 系（[`is_gji_family_description`]）のものの CLSID を全部集める。
+fn find_gji_family_clsids(
+    mgr: &ITfInputProcessorProfileMgr,
+    profiles: &ITfInputProcessorProfiles,
+) -> Vec<GUID> {
+    let mut found = Vec::new();
+    unsafe {
+        let Ok(enumerator) = mgr.EnumProfiles(0x0411 /* Japanese */) else {
+            return found;
+        };
+        loop {
+            let mut prof = TF_INPUTPROCESSORPROFILE::default();
+            let mut fetched: u32 = 0;
+            let res = enumerator.Next(std::slice::from_mut(&mut prof), &raw mut fetched);
+            if res.is_err() || fetched == 0 {
+                break;
+            }
+            if prof.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR {
+                continue;
+            }
+            if let Ok(bstr) = profiles.GetLanguageProfileDescription(
+                &raw const prof.clsid,
+                prof.langid,
+                &raw const prof.guidProfile,
+            ) {
+                if crate::state::ime_kind::is_gji_family_description(&bstr.to_string())
+                    && !found.contains(&prof.clsid)
+                {
+                    found.push(prof.clsid);
+                }
+            }
+        }
+    }
+    found
 }
 
 fn find_gji_clsid(
@@ -165,6 +210,8 @@ fn enabled_ja_tips(mgr: &ITfInputProcessorProfileMgr) -> Vec<crate::state::ime_k
 /// `MicrosoftIme` になるこの軸だけ単発フリップに無防備だった）。
 ///
 /// - プロセス内キャッシュ済み GJI CLSID と一致 → `(GoogleJapaneseInput, Gji)`
+/// - GJI 系（Mozc とそのフォーク）の CLSID と一致 → `(GoogleJapaneseInput, Other)`（`TipIdentity::Gji` は
+///   Google 版のみ。`config1.db` を読む相手を広げないため）
 /// - それ以外の TIP または IMM32 HKL → `(MicrosoftIme, MsImeNative | Other)`
 /// - 取得失敗 → `None`（呼び出し元はフォールバック値を使う）
 pub(super) fn query_active_kind(
@@ -192,7 +239,10 @@ pub(super) fn query_active_kind(
             Some(prof.clsid.to_u128()),
             GJI_CLSID.get().map(GUID::to_u128),
         );
-        if identity == TipIdentity::Gji {
+        let in_family = GJI_FAMILY_CLSIDS
+            .get()
+            .is_some_and(|set| set.contains(&prof.clsid));
+        if identity == TipIdentity::Gji || in_family {
             return Some((ActiveImeKind::GoogleJapaneseInput, identity));
         }
         Some((ActiveImeKind::MicrosoftIme, identity))

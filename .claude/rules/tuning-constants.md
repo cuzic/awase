@@ -1,10 +1,10 @@
 # タイミング定数の変更規約（`tuning.rs`）
 
-paths: `crates/awase-windows/src/tuning.rs`
+paths: `crates/awase-windows-core/src/tuning.rs`
 
 ## ルール
 
-`crates/awase-windows/src/tuning.rs` の **タイミング定数**（probe の min/max、idle 閾値、
+`crates/awase-windows-core/src/tuning.rs` の **タイミング定数**（probe の min/max、idle 閾値、
 warmup 待機、settle grace など、`_MS` 系の定数）を変更するコミットは、本文に
 **実測値** を含めること。
 
@@ -37,7 +37,7 @@ warmup 待機、settle grace など、`_MS` 系の定数）を変更するコミ
 ## 避けるべきパターン: 同じ定数ファミリーの盲目的エスカレーション
 
 Chrome probe の最小待機は、別々のバグ修正のたびに **同じ役割の定数が段階的に釣り上がって
-きた**（`git log --follow -- crates/awase-windows/src/tuning.rs` で確認）:
+きた**（`git log --follow -- crates/awase-windows-core/src/tuning.rs` で確認）:
 
 ```
 CHROME_PROBE_MIN_MS = 20        （c74a7ba, timing.rs 統合時）

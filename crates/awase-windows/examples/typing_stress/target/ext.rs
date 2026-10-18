@@ -77,11 +77,17 @@ struct Spec {
     /// 窓が出てから入力を始めるまでの待ち(ms)。
     #[serde(default)]
     settle_ms: u64,
+    /// 終了のしかた。既定(空)は窓の持ち主のプロセス木を `taskkill /F /T` で止める。`wm_close` は窓へ `WM_CLOSE` を送るだけで、
+    /// プロセスを殺さない(Windows Terminal のように 1 つのプロセスが利用者の他の窓も持つ入力先向け。ADR-258 のレビュー C4)。
+    #[serde(default)]
+    close: String,
 }
 
 struct Ext {
     spawned: u32,
     win_pid: u32,
+    /// `close = "wm_close"` のとき true(プロセスを殺さず、窓へ WM_CLOSE だけ送る)。
+    close_wm: bool,
     helper: Mutex<Option<Child>>,
     dump: PathBuf,
     profile: PathBuf,
@@ -163,7 +169,8 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
     };
     log(&format!("[init] ext={name} 起動 pid={spawned} exe={exe}"));
 
-    let want_title = spec.window.title.clone();
+    // 窓のタイトルにも {dump} などを置換できる(走行ごとに一意にして、前回の残りの窓を掴まないため)。
+    let want_title = spec.window.title.as_ref().map(&subst);
     let want_class = spec.window.class.clone();
     let accept = move |h: HWND| {
         want_title
@@ -233,8 +240,15 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
         });
         if !ok {
             log_helper_err(&dump);
-            kill_tree(win_pid);
-            kill_tree(spawned);
+            if spec.close == "wm_close" {
+                // SAFETY: top は見つけた窓。WM_CLOSE を投函するだけで、プロセスは殺さない(shutdown と同じ理由)。
+                unsafe {
+                    let _ = PostMessageW(Some(top), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+            } else {
+                kill_tree(win_pid);
+                kill_tree(spawned);
+            }
             fatal(&format!(
                 "{name}: 読み戻しファイルが現れない: {}",
                 dump.display()
@@ -246,6 +260,7 @@ pub(super) fn launch() -> Box<dyn InputTarget> {
     Box::new(Ext {
         spawned,
         win_pid,
+        close_wm: spec.close == "wm_close",
         helper: Mutex::new(helper),
         dump,
         profile,
@@ -405,8 +420,16 @@ impl InputTarget for Ext {
         if let Some(mut h) = self.helper.lock().ok().and_then(|mut g| g.take()) {
             let _ = h.kill();
         }
-        kill_tree(self.win_pid);
-        kill_tree(self.spawned);
+        if self.close_wm {
+            // SAFETY: TOP は入力先の最上位窓。WM_CLOSE を投函するだけで、プロセスは殺さない。
+            unsafe {
+                let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+            sleep_ms(500);
+        } else {
+            kill_tree(self.win_pid);
+            kill_tree(self.spawned);
+        }
         for ext in ["", ".err", ".tmp", ".helper.log"] {
             let _ = std::fs::remove_file(format!("{}{ext}", self.dump.display()));
         }

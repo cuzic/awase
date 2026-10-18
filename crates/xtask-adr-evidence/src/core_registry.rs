@@ -46,11 +46,16 @@ pub fn added_modules(base: &[String], head: &[String]) -> Vec<String> {
     head.iter().filter(|h| !base.contains(h)).cloned().collect()
 }
 
+/// `name` の mutants 登録の有無。核 crate（`awase-windows-core`、ADR-229 D4）へ移ったファイルと、
+/// 殻の crate（`awase-windows`、`platform_state`・`sync_actuation`）に残ったファイルの両方のパスを受け付ける。
 pub fn in_mutants(toml: &str, name: &str) -> bool {
-    let want = format!("\"crates/awase-windows/src/state/{name}.rs\"");
+    let wants = [
+        format!("\"crates/awase-windows-core/src/state/{name}.rs\""),
+        format!("\"crates/awase-windows/src/state/{name}.rs\""),
+    ];
     toml.lines()
         .filter(|l| !l.trim_start().starts_with('#'))
-        .any(|l| l.trim().trim_end_matches(',').trim() == want)
+        .any(|l| wants.contains(&l.trim().trim_end_matches(',').trim().to_string()))
 }
 
 /// mutants に未登録の追加名ごとの報告（空なら合格）。
@@ -60,8 +65,9 @@ pub fn check(added: &[String], mutants: &str) -> Vec<String> {
         .filter(|n| !in_mutants(mutants, n))
         .map(|n| {
             format!(
-                "CORE_MODULES に追加された `{n}` が .cargo/mutants-awase-windows.toml の examine_globs に未登録\
-                 （\"crates/awase-windows/src/state/{n}.rs\" を足す）"
+                "CORE_MODULES に追加された `{n}` が .cargo/mutants-awase-windows{{,-core}}.toml の examine_globs に未登録\
+                 （核 crate のファイルなら \"crates/awase-windows-core/src/state/{n}.rs\"〔-core.toml〕、\
+                 殻の crate のファイルなら \"crates/awase-windows/src/state/{n}.rs\" を足す）"
             )
         })
         .collect()
@@ -109,6 +115,23 @@ mod tests {
         let m =
             format!("{MUT_BEFORE_F2}    \"crates/awase-windows/src/state/msaa_role_plan.rs\",\n");
         assert!(check(&s(&["msaa_role_plan"]), &m).is_empty());
+    }
+
+    #[test]
+    fn mutants_accepts_core_crate_and_shell_crate_paths() {
+        // 核 crate（awase-windows-core）へ移ったファイルと、殻に残ったファイルの両方を受け付ける（ADR-229 D4）。
+        assert!(in_mutants(
+            "examine_globs = [\n    \"crates/awase-windows-core/src/state/foo.rs\",\n]\n",
+            "foo"
+        ));
+        assert!(in_mutants(
+            "examine_globs = [\n    \"crates/awase-windows/src/state/foo.rs\",\n]\n",
+            "foo"
+        ));
+        assert!(!in_mutants(
+            "examine_globs = [\n    \"crates/awase-windows-core/src/state/bar.rs\",\n]\n",
+            "foo"
+        ));
     }
 
     #[test]

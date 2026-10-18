@@ -110,6 +110,36 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[2.1.0] - 2026-10-12</h2>
+<blockquote>
+<p>Additions and fixes since v2.0.0. The two big additions are <strong>a setting that turns Muhenkan/Henkan into Space only while the IME is off</strong> and <strong>a rebuilt "Key swap" screen</strong>.</p>
+</blockquote>
+<h3>Added</h3>
+<ul>
+<li><strong>Muhenkan and Henkan can now act as Space only while the IME is off (opt-in; only people who set it up get it).</strong> Add `ime = "off"` to a `[[keymaps]]` entry in the settings file (for example `from = "VK_NONCONVERT"`, `to = ["VK_SPACE"]`, `ime = "off"`). In the settings window you can also use the "IME state" column on the Remap tab, or the "Make Muhenkan/Henkan Space while the IME is off" button. While the IME is on, those keys keep working as before (thumb-shift keys and so on). Even when you type fast, the Space does not change places with the letters around it, and holding the key down gives a single Space.</li>
+<li><strong>"Key swap" is now its own tab, and you can swap keys by dragging and dropping on a keyboard diagram.</strong> Besides swapping two keys, you can rotate three or more keys (for example A&rarr;B&rarr;C&rarr;A). The wording and layout of the screen were redone so it is clear how "swap" differs from "extra Ctrl", that a restart is needed, and whether the change has taken effect.</li>
+<li><strong>The settings window now stops you from configuring a Caps/Ctrl swap that conflicts with another tool.</strong> If a keyboard filter driver (such as Ctrl2cap) is installed, the screen shows a notice and does not let you stack another setting on top. Thumb keys that also serve as IME on/off keys can no longer be chosen for swapping.</li>
+<li><strong>NICOLA on/off now follows Eisu/IME-on keys that are assigned to F13&ndash;F24.</strong> On setups where keyboard-side remapping sends Eisu or IME-on as F13&ndash;F24, NICOLA used to stay on even after Google Japanese Input switched to half-width alphanumeric. Holding the key down (OS auto-repeat) does not trigger it.</li>
+<li><strong>The settings window has a button that opens the Google Japanese Input properties.</strong> If it cannot be opened, the window explains why and what to do.</li>
+<li><strong>With Microsoft IME in compatibility mode ("Use the previous version of Microsoft IME"), if you assigned things like "IME on/off" in the old "User-defined" screen, awase now predicts the IME opening and closing for Muhenkan/Henkan from the table you set (for apps where the IME state cannot be read).</strong> It only predicts when Muhenkan/Henkan open a closed IME, and when they are assigned to certain functions (full-width katakana, half-width alphanumeric, IME off, and so on) while you are not composing. In every other case (while composing or converting, or functions that have not been checked) it behaves as before.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>The wording of the single-tap Muhenkan/Henkan setting is now "Leave it to the IME".</strong> Settings that conflict with `keys.ime_on` and similar are reported as warnings.</li>
+<li><strong>If you changed the key template ("Key settings") in Microsoft IME, awase no longer makes wrong predictions that put NICOLA on/off out of step in apps where the IME state cannot be read (Chrome, Windows Terminal and so on).</strong> With compatibility mode and customised keys, or with a template such as ATOK selected, awase stops predicting IME opening/closing from Henkan/Muhenkan and so on, and follows the real IME state when it can be read. This is a safety change that stops a wrong prediction, not a fix for a symptom.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed characters you type being deleted over and over after the IME was closed from outside while NICOLA stayed on (Chrome, Edge and so on).</strong> awase now uses repeated failures of the recovery step as a cue to re-read the real IME state and turn NICOLA off. Input after that is no longer deleted.</li>
+<li><strong>Fixed Ctrl+V sent by voice-input software (such as Spokenly) turning into "&#x3075;".</strong> A Ctrl injected by another program is now counted as a modifier correctly.</li>
+<li><strong>Fixed characters that other software sends as Unicode text (`KEYEVENTF_UNICODE`) disappearing when they pass through awase.</strong> ASCII characters turning into thumb-shift characters is also fixed.</li>
+<li><strong>Fixed `[[post_bypass]]` settings not being applied when the settings are reloaded.</strong> A restart used to be required.</li>
+<li><strong>Fixed full-width Latin characters on the Shift layer coming out full-width only for the first character; they now come out as half-width ASCII.</strong></li>
+<li><strong>Fixed NICOLA staying off after you switch back to kana with an IME-side key from the persistent half-width alphanumeric state made by tapping left Shift alone (real Chrome).</strong> With Microsoft IME, also fixed nothing being typed when you switch to half-width alphanumeric right after the Hiragana key.</li>
+<li><strong>Fixed two cases with Microsoft IME where NICOLA stopped for a moment in the middle of typing and the thumb keys were passed to the IME as plain keys.</strong> One was in Flutter text fields, where an old reading took precedence over a newer observation; the other was NICOLA stopping when the OS reported "alphanumeric" for just an instant.</li>
+<li><strong>Fixed awase's own IME open/close, sent right after a mode key, sometimes being overturned by an old reading (Chrome with Google Japanese Input).</strong></li>
+<li><strong>Fixed the step that undoes and resends characters that came out as plain letters (the recovery step) possibly reaching a different window right after you switch windows.</strong> The step is now checked against the window it was sent to and discarded if it differs.</li>
+</ul>
 <h2>[2.0.0] - 2026-10-04</h2>
 <blockquote>
 <p><strong>This is the first stable release of v2. With it, v1 (last release: 1.21.2) reaches end of maintenance.</strong> See <a href="https://github.com/cuzic/awase/blob/main/docs/migration-v1-to-v2.md">docs/migration-v1-to-v2.md</a> (in Japanese) for the full list of differences from v1 and notes on carrying your settings over.

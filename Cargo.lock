@@ -440,7 +440,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "awase"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "flate2",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "awase-settings"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "awase",
  "awase-build-support",
@@ -560,9 +560,8 @@ dependencies = [
 
 [[package]]
 name = "awase-windows"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
- "actuation-choke-point-macro",
  "anyhow",
  "awase",
  "awase-build-support",
@@ -570,11 +569,10 @@ dependencies = [
  "awase-keymap-learn",
  "awase-replay",
  "awase-vkmap",
+ "awase-windows-core",
  "base64",
  "flate2",
  "itertools",
- "measured-macro",
- "proptest",
  "quanta",
  "serde",
  "serde_json",
@@ -588,6 +586,27 @@ dependencies = [
  "win32-worker",
  "windows 0.62.2",
  "windows-core 0.62.2",
+]
+
+[[package]]
+name = "awase-windows-core"
+version = "2.1.0"
+dependencies = [
+ "actuation-choke-point-macro",
+ "awase",
+ "awase-gji-config",
+ "awase-keymap-learn",
+ "awase-replay",
+ "awase-vkmap",
+ "measured-macro",
+ "proptest",
+ "quanta",
+ "serde",
+ "serde_json",
+ "strum 0.27.2",
+ "thiserror 2.0.20",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

@@ -9,11 +9,16 @@ use awase::scanmap::PhysicalPos;
 use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 use awase_windows::scancode_apply::ApplyRequest;
-use awase_windows::scancode_editor::{
-    EditorState, QUICK_PAIRS, Side, confirmation_lines, key_label, swap_error_text,
-    worker_exit_text,
+use awase_windows::scancode_diagram::{
+    DiagramContext, EditUnit, PositionState, diagram_rows, displayed_function, drop_function,
+    drop_hint, function_at_units, locked_note, position_state, refusal_text, release_position,
+    release_unit, unit_len_at, unlisted_units,
 };
-use awase_windows::scancode_pairs::{Detected, Entry, detect_swap_pairs};
+use awase_windows::scancode_editor::{
+    EditorState, QUICK_PAIRS, Unavailable, caps_filter_notice, caps_filter_present,
+    confirmation_lines, key_label, registry_state, status_line, swap_error_text, worker_exit_text,
+};
+use awase_windows::scancode_pairs::{Cycle, Detected, Entry, Pair, detect_swap_pairs};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
@@ -38,6 +43,8 @@ const HOMEPAGE_URL: &str = "https://awase.cc";
 enum Tab {
     Basic,
     Keys,
+    /// 「キーの入れ替え」(Scancode Map、ADR-230/248)。旧来は「ショートカット」タブに間借りしていた。
+    KeySwap,
     Keymap,
     DisableApps,
     Calibration,
@@ -374,7 +381,7 @@ fn main() -> eframe::Result<()> {
         // デフォルトサイズで開くと配列編集タブのキーボード図が右へはみ出す
         // ユーザー報告があった（2026-09-03。ウィンドウを広げれば表示は正常に
         // 戻る＝致命的ではないが既定値の追随漏れ）。
-        .with_inner_size([760.0, 650.0])
+        .with_inner_size(window_size_from_env().unwrap_or([760.0, 650.0]))
         // ウィンドウを小さくしても全項目にスクロール + 下部固定ボタンで届くため、
         // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
         .with_min_inner_size([420.0, 320.0])
@@ -382,6 +389,24 @@ fn main() -> eframe::Result<()> {
     startup_failure::run_with_fallback("awase-settings", viewport, move |cc| {
         Box::new(SettingsApp::new(cc, adr192_warning_context)) as Box<dyn eframe::App>
     })
+}
+
+/// 診断用: 環境変数 `AWASE_SETTINGS_INITIAL_TAB`（`key-swap`・`keymap` 等）で最初に開くタブを指定する。CI がタブを開いた状態の
+/// スクリーンショットを撮るためのもので、利用者向けの機能ではない（未設定・未知の値は「全般設定」）。
+fn initial_tab_from_env() -> Tab {
+    match std::env::var("AWASE_SETTINGS_INITIAL_TAB").as_deref() {
+        Ok("keys") => Tab::Keys,
+        Ok("key-swap") => Tab::KeySwap,
+        Ok("keymap") => Tab::Keymap,
+        _ => Tab::Basic,
+    }
+}
+
+/// 診断用: 環境変数 `AWASE_SETTINGS_WINDOW_SIZE`（`560x700` の形）で初期のウィンドウサイズを指定する（CI のスクリーンショット用）。
+fn window_size_from_env() -> Option<[f32; 2]> {
+    let value = std::env::var("AWASE_SETTINGS_WINDOW_SIZE").ok()?;
+    let (w, h) = value.split_once('x')?;
+    Some([w.trim().parse().ok()?, h.trim().parse().ok()?])
 }
 
 fn parse_bug_report_args(args: &[String]) -> bug_report::BugReportArgs {
@@ -456,6 +481,8 @@ struct SettingsApp {
     // 修飾を禁止・skip するため）。
     new_keymap_from_main: String,
     new_keymap_to_main: String,
+    /// 新規ルールの「IME の状態」が「OFF のとき」か（ADR-255。`ime = "off"` の遅いルール）。
+    new_keymap_ime_off: bool,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
     // disable_apps add-buffer（プロセス名のみ、class 不要）
@@ -567,7 +594,7 @@ struct SettingsApp {
 /// `keymap-learn-table.json`(config.tomlの隣。config.tomlの解決は`awase.exe`と同じ
 /// [`find_config_path`]、コマンドライン引数を優先)を読み、状態表示用の
 /// [`keymap_learn_status::TableState`]を作る。ファイルが無い・壊れている・4MB超過の場合は
-/// 表なし(内蔵表)として扱う(読み手`key_effect_runtime::read_persisted_table`と同じ棄却)。
+/// 表なし(内蔵表)として扱う(読み手`key_effect_io::read_persisted_table`と同じ棄却)。
 fn load_keymap_table_state(
     current_env: awase_keymap_learn::revalidation::EnvVersionProbe,
     custom_keymap_without_prediction: bool,
@@ -580,8 +607,7 @@ fn load_keymap_table_state(
         .map(|dir| dir.join("keymap-learn-table.json"));
     let (table, file_date) = path
         .and_then(|path| {
-            let table =
-                awase_windows::state::key_effect_runtime::read_persisted_table(&path).ok()?;
+            let table = awase_windows::key_effect_io::read_persisted_table(&path).ok()?;
             let date = std::fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .ok()
@@ -723,7 +749,7 @@ impl SettingsApp {
             config_load_state,
             show_dangerous_save_confirm: false,
             status: String::new(),
-            active_tab: Tab::Basic,
+            active_tab: initial_tab_from_env(),
             available_layouts,
             new_engine_on: NewComboBuf::default(),
             new_engine_off: NewComboBuf::default(),
@@ -735,6 +761,7 @@ impl SettingsApp {
             new_keymap_from_shift: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
+            new_keymap_ime_off: false,
             capturing: None,
             new_disable_app: String::new(),
             // 配列編集タブの状態は「配列編集」タブを開くまで読み込まない
@@ -1969,6 +1996,17 @@ impl SettingsApp {
         }
     }
 
+    /// 「キーの入れ替え」タブを開くとき、現在のレジストリの値で表示し直す。未適用の編集があるときは、その編集を残す。
+    fn refresh_scancode_view_on_open(&mut self) {
+        let dirty = matches!(
+            &self.scancode_map_view,
+            Some(ScancodeMapView::Loaded(loaded)) if loaded.editor.is_dirty() || loaded.editor.has_incomplete()
+        );
+        if !dirty {
+            self.scancode_map_view = None;
+        }
+    }
+
     fn clear_ime_on_tab_change(&mut self, new_tab: Tab) {
         if self.active_tab != new_tab {
             self.ime_composing = false;
@@ -2378,7 +2416,20 @@ impl SettingsApp {
                 };
                 match target {
                     CaptureTarget::ExistingFrom(i) => {
-                        if !reject(&internal, false, &mut self.status)
+                        let late = self
+                            .config
+                            .keymaps
+                            .get(i)
+                            .is_some_and(|r| r.ime.as_deref() == Some(KEYMAP_IME_OFF));
+                        if late {
+                            if is_late_from_combo(&format_combo(ctrl, shift, false, &internal)) {
+                                if let Some(rule) = self.config.keymaps.get_mut(i) {
+                                    rule.from = late_from_canonical(&internal);
+                                }
+                            } else {
+                                self.status = LATE_FROM_REJECT.to_owned();
+                            }
+                        } else if !reject(&internal, false, &mut self.status)
                             && let Some(rule) = self.config.keymaps.get_mut(i)
                         {
                             rule.from = format_combo(ctrl, shift, false, &internal);
@@ -2393,6 +2444,13 @@ impl SettingsApp {
                             && let Some(step) = rule.to.get_mut(step_i)
                         {
                             *step = internal;
+                        }
+                    }
+                    CaptureTarget::NewFrom if self.new_keymap_ime_off => {
+                        if is_late_from_combo(&format_combo(ctrl, shift, false, &internal)) {
+                            self.new_keymap_from_main = late_from_canonical(&internal);
+                        } else {
+                            self.status = LATE_FROM_REJECT.to_owned();
                         }
                     }
                     CaptureTarget::NewFrom => {
@@ -2909,6 +2967,47 @@ impl SettingsApp {
         );
         ui.add_space(8.0);
 
+        // ADR-255: IME が OFF のときだけ、無変換/変換を Space にする入口。
+        ui.horizontal_wrapped(|ui| {
+            let present = [("VK_NONCONVERT"), ("VK_CONVERT")].iter().all(|from| {
+                self.config
+                    .keymaps
+                    .iter()
+                    .any(|r| r.ime.as_deref() == Some(KEYMAP_IME_OFF) && r.from == *from && r.to == ["VK_SPACE"])
+            });
+            if ui
+                .add_enabled(!present, egui::Button::new("無変換・変換を IME OFF のとき Space にする"))
+                .on_hover_text(
+                    "押すと: IME が OFF のとき、無変換と変換の単独押しを Space（空白）にするルールを2つ追加します。\n\
+                     IME が ON のときは、これまでどおり親指シフトとして働きます。",
+                )
+                .clicked()
+            {
+                for from in ["VK_NONCONVERT", "VK_CONVERT"] {
+                    if !self.config.keymaps.iter().any(|r| {
+                        r.ime.as_deref() == Some(KEYMAP_IME_OFF) && r.from == from && r.to == ["VK_SPACE"]
+                    }) {
+                        self.config.keymaps.push(awase::config::KeymapRule {
+                            app: None,
+                            from: from.to_owned(),
+                            to: vec!["VK_SPACE".to_owned()],
+                            ime: Some(KEYMAP_IME_OFF.to_owned()),
+                        });
+                    }
+                }
+            }
+        });
+        ui.collapsing("「IME の状態: OFF のとき」のルールの注意", |ui| {
+            ui.label(
+                "・押し続けても繰り返しません（1回押すと1回だけ送ります）。\n\
+                 ・「半角英数」（IME は開いたまま英数モード）の状態では動きません。\n\
+                 ・IME は ON なのに awase が OFF と思っているときは、無変換が Space（IME によっては変換や全角スペース）になることがあります。\n\
+                 ・IME 側の割り当てが読めないとき（Microsoft IME 本体のキー設定など）は、何もしません。\n\
+                 ・Google 日本語入力の「キー設定」に、直接入力の無変換/変換の行（空白入力など）があると、そのキーでは動きません。",
+            );
+        });
+        ui.add_space(4.0);
+
         // local copy of capturing to avoid borrow-conflict with self.config.keymaps below
         let mut capturing = self.capturing;
         let (left_thumb_vk, right_thumb_vk) = keymap_thumb_vks(&self.config.general);
@@ -2941,6 +3040,35 @@ impl SettingsApp {
                         };
                     }
 
+                    // IME の状態（ADR-255）: 「いつでも」か「OFF のとき」（`ime = "off"` の遅いルール）。
+                    let late = rule.ime.as_deref() == Some(KEYMAP_IME_OFF);
+                    let mut ime_off = late;
+                    if ime_condition_combo(ui, &format!("ime_cond_{i}"), &mut ime_off) {
+                        rule.ime = ime_off.then(|| KEYMAP_IME_OFF.to_owned());
+                        if ime_off && !is_late_from_combo(&rule.from) {
+                            // 遅いルールの from は無修飾の無変換/変換に限る（ADR-255 決定1）。
+                            rule.from = "VK_NONCONVERT".to_owned();
+                        }
+                    }
+                    let late = rule.ime.as_deref() == Some(KEYMAP_IME_OFF);
+                    if !late
+                        && let Some(reason) = keymap_forbidden_reason(
+                            &parse_combo_str(&rule.from).3,
+                            left_thumb_vk,
+                            right_thumb_vk,
+                            false,
+                        )
+                    {
+                        // 「OFF のとき」から「いつでも」に戻したときなど、from が使えないキーのままのルール。
+                        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), "⚠from が使えません")
+                            .on_hover_text(format!(
+                                "{reason}\nこのまま保存すると、このルールは無効になります。"
+                            ));
+                    }
+                    // 狭い幅で from のドロップダウンが右端に切れるのを避けるため、アプリ・IME の状態と
+                    // from → to の間で行を分ける（ComboBox は内部で横並びの入れ子を作り、折り返せない）。
+                    ui.end_row();
+
                     // from: modifiers + main key + capture button
                     // Alt 修飾は GUI から選べない（ADR-114 決定5 — バックエンドが
                     // 'from' の Alt 修飾を禁止・skip するため、対称性を保つ）。
@@ -2949,16 +3077,31 @@ impl SettingsApp {
                     // 別途警告して skip する）。
                     let (mut ctrl, mut shift, alt, mut main) = parse_combo_str(&rule.from);
                     let mut changed = false;
-                    changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
-                    changed |= ui.checkbox(&mut shift, "Shift").changed();
-                    if main_key_combo(
-                        ui,
-                        &format!("from_main_{i}"),
-                        &mut main,
-                        "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。",
-                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
-                    ) {
-                        changed = true;
+                    if late {
+                        // 遅いルールは無修飾の無変換/変換だけ（修飾キーのチェックは出さない）。
+                        if main_key_combo(
+                            ui,
+                            &format!("from_main_{i}"),
+                            &mut main,
+                            "IME が OFF のとき、この親指キーを単独で押すと to のキーを送ります。",
+                            late_from_key_options(),
+                        ) {
+                            changed = true;
+                            ctrl = false;
+                            shift = false;
+                        }
+                    } else {
+                        changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
+                        changed |= ui.checkbox(&mut shift, "Shift").changed();
+                        if main_key_combo(
+                            ui,
+                            &format!("from_main_{i}"),
+                            &mut main,
+                            "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。",
+                            keymap_from_key_options(left_thumb_vk, right_thumb_vk),
+                        ) {
+                            changed = true;
+                        }
                     }
                     let from_target = CaptureTarget::ExistingFrom(i);
                     capture_button(ui, &mut capturing, from_target);
@@ -3057,19 +3200,42 @@ impl SettingsApp {
                 .on_hover_text("対象プロセス名（例: vim.exe）。空欄で全アプリ対象。");
                 ui.end_row();
 
+                ui.label("  IME の状態:").on_hover_text(IME_CONDITION_HOVER);
+                if ime_condition_combo(ui, "new_ime_cond", &mut self.new_keymap_ime_off)
+                    && self.new_keymap_ime_off
+                {
+                    // 遅いルールの from は無修飾の無変換/変換に限る。
+                    self.new_keymap_from_ctrl = false;
+                    self.new_keymap_from_shift = false;
+                    if !is_late_from_combo(&self.new_keymap_from_main) {
+                        self.new_keymap_from_main.clear();
+                    }
+                }
+                ui.end_row();
+
                 let from_hover =
                     "変換元のキーです。左の Ctrl/Shift と組み合わせて判定します（Alt 修飾は使用できません）。";
                 ui.label("  from:").on_hover_text(from_hover);
                 ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
-                    ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
-                    main_key_combo(
-                        ui,
-                        "new_from_main",
-                        &mut self.new_keymap_from_main,
-                        from_hover,
-                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
-                    );
+                    if self.new_keymap_ime_off {
+                        main_key_combo(
+                            ui,
+                            "new_from_main",
+                            &mut self.new_keymap_from_main,
+                            "IME が OFF のとき単独で押すキー（無変換/変換）です。",
+                            late_from_key_options(),
+                        );
+                    } else {
+                        ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
+                        ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
+                        main_key_combo(
+                            ui,
+                            "new_from_main",
+                            &mut self.new_keymap_from_main,
+                            from_hover,
+                            keymap_from_key_options(left_thumb_vk, right_thumb_vk),
+                        );
+                    }
                     capture_button(ui, &mut capturing, CaptureTarget::NewFrom);
                 })
                 .response
@@ -3124,7 +3290,9 @@ impl SettingsApp {
                     } else {
                         vec![self.new_keymap_to_main.clone()]
                     },
+                    ime: self.new_keymap_ime_off.then(|| KEYMAP_IME_OFF.to_owned()),
                 });
+                self.new_keymap_ime_off = false;
                 self.new_keymap_app.clear();
                 self.new_keymap_from_ctrl = false;
                 self.new_keymap_from_shift = false;
@@ -3132,8 +3300,10 @@ impl SettingsApp {
                 self.new_keymap_to_main.clear();
             }
         }
+    }
 
-        ui.add_space(16.0);
+    /// 「キーの入れ替え」タブ（ADR-248。「ショートカット」タブから独立させた）。
+    fn tab_key_swap(&mut self, ui: &mut egui::Ui) {
         self.scancode_map_section(ui);
     }
 
@@ -3141,19 +3311,24 @@ impl SettingsApp {
     ///
     /// ADR-127 の例外: このセクションの適用は画面共通の「適用」とは別の操作で、レジストリにだけ書く。
     fn scancode_map_section(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
         ui.heading("キーの入れ替え");
-        ui.label(
-            "選んだ2つのキーを入れ替えます（Windows の Scancode Map）。管理者権限の確認が1回表示されます。\n\
-             変更の反映には再起動が必要です（サインアウトでは反映されません。高速スタートアップが\n\
-             有効だと、シャットダウンしても反映されないことがあります）。\n\
-             この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続のセッション内では動作しません。\n\
-             この画面の「適用」は、上の画面全体の「適用」とは別です（設定ファイルは保存しません）。",
-        );
+        ui.label("選んだキーの位置を入れ替えます。変更は再起動後に有効になります。管理者権限の確認が1回表示されます。");
+        ui.collapsing("困ったとき", |ui| {
+            ui.label(
+                "入れ替えを元に戻すには、下の「すべて解除」→「入れ替えを適用」→ 再起動の順に行います。マウスだけで操作できます。",
+            );
+        });
+        ui.collapsing("くわしい注意", |ui| {
+            ui.label(
+                "・Windows の Scancode Map（レジストリ）に書き込みます。サインアウトでは反映されません。\n\
+                 ・高速スタートアップが有効だと、シャットダウンしても反映されないことがあります（「再起動」を使ってください）。\n\
+                 ・この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続のセッション内では動作しません。",
+            );
+        });
         ui.add_space(4.0);
 
         if self.scancode_map_view.is_none() {
-            self.scancode_map_view = Some(load_scancode_view());
+            self.scancode_map_view = Some(load_scancode_view(self.ime_role_thumb_scancodes()));
         }
         let jis = matches!(
             self.config.general.keyboard_model,
@@ -3162,6 +3337,7 @@ impl SettingsApp {
         let modal_open = self.scancode_apply_confirm.is_some()
             || self.scancode_restart_confirm
             || self.scancode_close_confirm;
+        let restart_pending = self.scancode_restart_pending;
         let mut action = ScancodeAction::None;
         match self.scancode_map_view.as_mut() {
             Some(ScancodeMapView::Corrupt) => {
@@ -3183,7 +3359,13 @@ impl SettingsApp {
             Some(ScancodeMapView::Loaded(loaded)) => {
                 // 確認ダイアログは非モーダルなので、開いている間は編集を止める（開いた後の編集が黙って捨てられるのを防ぐ）。
                 ui.add_enabled_ui(!modal_open, |ui| {
-                    action = scancode_editor_ui(ui, loaded, jis);
+                    // 枠で区切り、画面共通の「適用」とは別の操作だと分かるようにする（ADR-248 決定2）。
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.weak(
+                            "この枠の中は、設定ファイルとは別に、すぐ書き込みます（画面下の「適用」とは別の操作です）。",
+                        );
+                        action = scancode_editor_ui(ui, loaded, jis, restart_pending);
+                    });
                 });
             }
             None => {}
@@ -3191,7 +3373,7 @@ impl SettingsApp {
         match action {
             ScancodeAction::None => {}
             ScancodeAction::Reload => {
-                self.scancode_map_view = Some(load_scancode_view());
+                self.scancode_map_view = Some(load_scancode_view(self.ime_role_thumb_scancodes()));
                 self.scancode_map_last_message = None;
             }
             ScancodeAction::Apply => self.request_scancode_apply(),
@@ -3201,11 +3383,37 @@ impl SettingsApp {
             ui.label(msg);
         }
         if self.scancode_restart_pending {
-            ui.label("適用した変更は、再起動後に有効になります。");
+            // 「再起動待ち」の文面は状態行（scancode_editor_ui の先頭）に出す。ここは再起動ボタンだけ。
             if ui.button("今すぐ再起動…").clicked() {
                 self.scancode_restart_confirm = true;
             }
         }
+    }
+
+    /// IME の ON/OFF キー（`keys.ime_on`/`ime_off`/`ime_toggle` に修飾キーなしで書いたキー）も兼ねている親指キーのスキャンコード。
+    /// これらを含む入れ替えは、IME の切り替えが働かなくなるので設定させない（ADR-248）。
+    fn ime_role_thumb_scancodes(&self) -> Vec<u16> {
+        use awase_windows::state::alt_impersonation::resolve_thumb_key;
+        use awase_windows::vk::{VK_CONVERT, VK_NONCONVERT};
+        [
+            &self.config.general.left_thumb_key,
+            &self.config.general.right_thumb_key,
+        ]
+        .into_iter()
+        .filter(|name| {
+            resolve_thumb_key(name).is_some_and(|(vk, _)| {
+                let canonical = if vk == VK_NONCONVERT {
+                    "NONCONVERT"
+                } else if vk == VK_CONVERT {
+                    "CONVERT"
+                } else {
+                    return false;
+                };
+                self.config.keys.has_bare_role_key(canonical)
+            })
+        })
+        .flat_map(|name| thumb_key_scancodes(name))
+        .collect()
     }
 
     /// 設定の親指キーに当たるスキャンコード（確認ダイアログの注意書き用）。
@@ -3226,10 +3434,18 @@ impl SettingsApp {
             Some(ScancodeMapView::Loaded(loaded)) => {
                 let preview = loaded.editor.preview(&loaded.entries, &thumbs);
                 match &preview.plan {
+                    // 二重になる設定は適用させない（図・ボタンでも作れないが、念のため適用の段で止める）。
+                    _ if loaded.editor.caps_filter_conflict() => {
+                        Err(Unavailable::CapsFilterDriver.text().to_string())
+                    }
+                    _ if loaded.editor.ime_role_conflict() => {
+                        Err(Unavailable::ThumbImeRole.text().to_string())
+                    }
                     Err(e) => Err(swap_error_text(*e)),
                     Ok(plan) => Ok((
                         ApplyRequest {
                             pairs: loaded.editor.pairs(),
+                            cycles: loaded.editor.cycles().to_vec(),
                             caps_extra_ctrl: loaded.editor.caps_extra(),
                             expected: loaded.entries.clone(),
                             allow_displace: !plan.displaced.is_empty(),
@@ -3277,8 +3493,8 @@ impl SettingsApp {
         );
         self.scancode_map_last_message = Some(match outcome {
             ElevationOutcome::Success => {
-                "適用しました。反映するには再起動が必要です（サインアウトでは反映されません）。"
-                    .to_string()
+                // 再起動が必要な旨は状態行と「今すぐ再起動…」で示す（ここで繰り返さない）。
+                "適用しました。".to_string()
             }
             ElevationOutcome::Failed => "処理に失敗しました。".to_string(),
             ElevationOutcome::Rejected(exit) => worker_exit_text(exit).to_string(),
@@ -3292,7 +3508,7 @@ impl SettingsApp {
         }
         // 操作直後にのみ再読み込みする（毎フレーム読まない）。
         if !registry_untouched {
-            self.scancode_map_view = Some(load_scancode_view());
+            self.scancode_map_view = Some(load_scancode_view(self.ime_role_thumb_scancodes()));
         }
     }
 
@@ -4185,7 +4401,283 @@ impl SettingsApp {
             ui.text_edit_singleline(&mut self.config.general.layouts_dir)
                 .on_hover_text(layouts_dir_hover);
         });
+        ui.add_space(12.0);
+        ui.separator();
+        auto_detect_section(ui, &mut self.config.auto_detect);
     }
+}
+
+// ── 窓切替直後の日本語/英数の判定（ADR-263、上級者向け）──
+
+/// `[auto_detect]` の動作の選択肢（設定画面の 1 つのプルダウン）。内部の設定は `mode` と `scope` の 2 つの軸だが、
+/// 画面では意味のある組み合わせに集約する（軸を並べると分かりにくい。所有者判断 2026-10-17）。
+/// これに当たらない組み合わせ（config.toml に手書きした `ime_on` + `all` など）は「カスタム」と表示する。
+const AUTO_DETECT_PRESETS: [(
+    awase::config::AutoDetectMode,
+    awase::config::AutoDetectScope,
+    &str,
+    &str,
+); 5] = [
+    (
+        awase::config::AutoDetectMode::Off,
+        awase::config::AutoDetectScope::Unobserved,
+        "無効",
+        "何もしません。",
+    ),
+    (
+        awase::config::AutoDetectMode::Observe,
+        awase::config::AutoDetectScope::Unobserved,
+        "記録のみ（既定）",
+        "打鍵は今までどおりで、判定の結果をジャーナル（不具合報告に載る診断記録）に残すだけです。\n\
+         キー入力の挙動は変わりません。",
+    ),
+    (
+        awase::config::AutoDetectMode::ImeOn,
+        awase::config::AutoDetectScope::Unobserved,
+        "IME の状態が読めない窓で、日本語ならひらがなにする",
+        "一太郎など、窓内の IME 状態が読めないと学習された窓だけが対象です。\n\
+         Alt+Tab 直後や長い無操作のあとの最初の数打鍵を最大 2.5 秒だけ保持し、親指シフトで打っていると\n\
+         判定できたときだけ、ひらがなキーを 1 回送ってから保持した打鍵を流します。\n\
+         英数と判定した・決まらなかった場合は、保持した打鍵をそのまま流すだけです。\n\
+         awase が IME ON とみなしているときだけ動きます。保持中に窓が変わると、保持した打鍵は捨てられます。",
+    ),
+    (
+        awase::config::AutoDetectMode::ImeOn,
+        awase::config::AutoDetectScope::All,
+        "すべての窓で、日本語ならひらがなにする（利用者の責任）",
+        "上の動作を、IME の状態が読める窓（Chrome など）にも広げます。読める窓では awase の想定が\n\
+         実際の状態に追随するため、判定の書き込みの結果が次の観測で揃うまで食い違うことがあります。\n\
+         TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。\n\
+         英数と判定した場合は、保持した打鍵をそのまま流すだけで、半角英数にはしません。",
+    ),
+    (
+        awase::config::AutoDetectMode::ImeOnEisu,
+        awase::config::AutoDetectScope::All,
+        "すべての窓で、日本語ならひらがな・英数なら半角英数にする（利用者の責任）",
+        "上の動作に加えて、打鍵列が英数（英語・コード・他言語）と判定できたときは、左Shift単独タップと同じ半角英数\n\
+         （IME は ON のまま）に入り、保持した打鍵をそのまま流します。半角英数のトグルが有効な設定のときだけ働きます。\n\
+         日本語を英数と誤判定しても、Shift のタップなどで戻れます。\n\
+         誤判定の率は、詳細の「半角英数にする確信度」で決まります。\n\
+         TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。",
+    ),
+];
+
+/// 現在の設定が当たる選択肢の番号（当たらなければ `None` = カスタム）。
+fn auto_detect_preset_index(cfg: &awase::config::AutoDetectConfig) -> Option<usize> {
+    AUTO_DETECT_PRESETS
+        .iter()
+        .position(|(mode, scope, _, _)| *mode == cfg.mode && *scope == cfg.scope)
+}
+
+/// 選択肢を設定に反映する（`mode` と `scope` だけを書き換える。数値・アプリの指定は触らない）。
+fn apply_auto_detect_preset(cfg: &mut awase::config::AutoDetectConfig, index: usize) {
+    if let Some((mode, scope, _, _)) = AUTO_DETECT_PRESETS.get(index) {
+        cfg.mode = *mode;
+        cfg.scope = *scope;
+    }
+}
+
+/// プロセス名の一覧を、設定画面の 1 行の入力欄に出す文字列にする（カンマ区切り）。
+fn apps_to_text(apps: &[String]) -> String {
+    apps.join(", ")
+}
+
+/// 入力欄の文字列をプロセス名の一覧に直す（カンマ・空白・改行区切り、空は捨てる）。
+fn text_to_apps(text: &str) -> Vec<String> {
+    text.split(|c: char| c == ',' || c == '、' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// 「窓切替直後の日本語入力の判定」（ADR-263）の設定。上級者向けタブの末尾に置く。
+/// 画面に常に出すのは動作の選択肢（5 択）だけで、数値とアプリの指定は折りたたみの「詳細」に入れる。
+fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectConfig) {
+    ui.heading("窓切替直後の日本語入力の判定（上級者向け）");
+    ui.add_space(4.0);
+    ui.label(
+        "窓を切り替えた直後や、しばらく操作がなかったあとの最初の数打鍵から、\n\
+         親指シフトで打っているかどうかを判定します。IME の状態が読めない窓（一太郎など）で、\n\
+         awase の想定と実際の IME の状態がずれて、最初の文字が化けるのを防ぐための機能です。",
+    );
+    ui.add_space(4.0);
+
+    let current = auto_detect_preset_index(cfg);
+    let selected_text = current.map_or_else(
+        || format!("カスタム（{:?} / {:?}）", cfg.mode, cfg.scope),
+        |i| AUTO_DETECT_PRESETS[i].2.to_string(),
+    );
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.label("動作:");
+        egui::ComboBox::from_id_salt("auto_detect_preset")
+            .selected_text(selected_text)
+            .width(420.0)
+            .show_ui(ui, |ui| {
+                for (i, (_, _, label, hover)) in AUTO_DETECT_PRESETS.iter().enumerate() {
+                    if ui
+                        .selectable_label(current == Some(i), *label)
+                        .on_hover_text(*hover)
+                        .clicked()
+                    {
+                        chosen = Some(i);
+                    }
+                }
+            });
+    });
+    if let Some(i) = chosen {
+        apply_auto_detect_preset(cfg, i);
+    }
+    if matches!(
+        cfg.mode,
+        awase::config::AutoDetectMode::ImeOn | awase::config::AutoDetectMode::ImeOnEisu
+    ) {
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 120, 0),
+            "実機での確認が済んでいない機能です。不具合があれば「記録のみ」に戻してください。\n\
+             Space を親指キーにした構成や、ADR-255 の遅いルールがある構成では、打鍵を保持しません。",
+        );
+    }
+    ui.add_space(4.0);
+
+    let enabled = cfg.mode != awase::config::AutoDetectMode::Off;
+    ui.add_enabled_ui(enabled, |ui| {
+        egui::CollapsingHeader::new("詳細（数値・対象のアプリ）")
+            .id_salt("auto_detect_details")
+            .default_open(false)
+            .show(ui, |ui| auto_detect_details(ui, cfg));
+    });
+}
+
+/// 0.1 刻みに丸める（`DragValue` の操作で `4.1000000000000005` のような値が保存されないように）。
+fn round_tenth(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+/// 「詳細」の中身: 数値の設定と、対象にする/外すアプリ。
+fn auto_detect_details(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectConfig) {
+    ui.horizontal(|ui| {
+        let hover = "窓を切り替えたときのほか、この時間以上キー入力がなかったあとの最初の打鍵でも判定を始めます。";
+        ui.label("無操作とみなす時間:").on_hover_text(hover);
+        ui.add(
+            egui::DragValue::new(&mut cfg.idle_ms)
+                .range(500..=60_000)
+                .speed(100.0)
+                .suffix(" ms"),
+        )
+        .on_hover_text(hover);
+    });
+    ui.horizontal(|ui| {
+        let hover = "判定のために打鍵を保持する最大の時間です。これを過ぎると、判定が出ていなくても\n\
+                     保持した打鍵をそのまま流します。";
+        ui.label("保持する最大の時間:").on_hover_text(hover);
+        ui.add(
+            egui::DragValue::new(&mut cfg.max_ms)
+                .range(500..=10_000)
+                .speed(50.0)
+                .suffix(" ms"),
+        )
+        .on_hover_text(hover);
+    });
+    ui.horizontal(|ui| {
+        let hover =
+            "判定に使う打鍵の最大数です。これを超えても決まらなければ、判定せずそのまま流します。";
+        ui.label("判定に使う最大の打鍵数:").on_hover_text(hover);
+        ui.add(egui::DragValue::new(&mut cfg.max_keys).range(3..=15))
+            .on_hover_text(hover);
+    });
+    ui.horizontal(|ui| {
+        let hover = "日本語と確定する確信度（対数尤度比）です。大きいほど慎重になり、日本語の取り逃しが増えます。\n\
+                     親指と文字キーが重なって押された場合は、この値に関係なく日本語と判定します。";
+        ui.label("日本語と確定する確信度:").on_hover_text(hover);
+        ui.add(
+            egui::DragValue::new(&mut cfg.ja_threshold)
+                .range(0.0..=20.0)
+                .speed(0.1)
+                .fixed_decimals(1),
+        )
+        .on_hover_text(hover);
+        cfg.ja_threshold = round_tenth(cfg.ja_threshold);
+    });
+    ui.horizontal(|ui| {
+        let hover = "日本語でないと判断して、保持した打鍵を早く流す確信度です。小さいほど早く流れますが、\n\
+                     親指がまだ出ていない日本語の取り逃しが増えます。";
+        ui.label("日本語でないと判断する確信度:")
+            .on_hover_text(hover);
+        ui.add(
+            egui::DragValue::new(&mut cfg.en_threshold)
+                .range(0.0..=20.0)
+                .speed(0.1)
+                .fixed_decimals(1),
+        )
+        .on_hover_text(hover);
+        cfg.en_threshold = round_tenth(cfg.en_threshold);
+    });
+    ui.add_enabled_ui(
+        cfg.mode == awase::config::AutoDetectMode::ImeOnEisu,
+        |ui| {
+            ui.horizontal(|ui| {
+                let hover = "「英数なら半角英数にする」動作で、半角英数に入るために必要な「日本語でない」確信度です。\n\
+                             大きいほど、日本語を英数と誤判定して半角英数に入る率が下がります\n\
+                             （人工データの評価では、12 で約 4%、14 で約 3.7%、20 で約 2.8%）が、\n\
+                             判定が遅くなり、打鍵の保持が長くなります（平均 3.5〜4.4 打鍵）。";
+                ui.label("半角英数にする確信度:").on_hover_text(hover);
+                ui.add(
+                    egui::DragValue::new(&mut cfg.eisu_threshold)
+                        .range(0.0..=30.0)
+                        .speed(0.1)
+                        .fixed_decimals(1),
+                )
+                .on_hover_text(hover);
+                cfg.eisu_threshold = round_tenth(cfg.eisu_threshold);
+            });
+        },
+    );
+    let apps_hover = "プロセス名（例: taro36.exe）をカンマか空白で区切って入力します。大文字小文字と .exe の有無は区別しません。\n\
+                      打鍵を保持する動作（「記録のみ」以外）のときだけ効きます。";
+    apps_text_edit(
+        ui,
+        "auto_detect_include_apps",
+        "対象にするアプリ（空欄=すべて）:",
+        apps_hover,
+        &mut cfg.include_apps,
+    );
+    apps_text_edit(
+        ui,
+        "auto_detect_exclude_apps",
+        "対象外にするアプリ:",
+        apps_hover,
+        &mut cfg.exclude_apps,
+    );
+}
+
+/// プロセス名の一覧の入力欄。編集中の文字列は egui の一時領域に持ち、区切り（カンマ・空白）を打てるようにする
+/// （毎フレーム一覧から作り直すと、区切りを打った直後に消えて 2 つ目を入力できない）。フォーカスが外れたら
+/// 一時領域を捨て、次のフレームで一覧から正規化した文字列を出し直す。
+fn apps_text_edit(
+    ui: &mut egui::Ui,
+    id_source: &str,
+    label: &str,
+    hover: &str,
+    apps: &mut Vec<String>,
+) {
+    let id = ui.make_persistent_id(id_source);
+    ui.horizontal(|ui| {
+        ui.label(label).on_hover_text(hover);
+        let mut text = ui
+            .data_mut(|d| d.get_temp::<String>(id))
+            .unwrap_or_else(|| apps_to_text(apps));
+        let response = ui.text_edit_singleline(&mut text).on_hover_text(hover);
+        if response.changed() {
+            *apps = text_to_apps(&text);
+        }
+        if response.lost_focus() {
+            ui.data_mut(|d| d.remove::<String>(id));
+        } else {
+            ui.data_mut(|d| d.insert_temp(id, text));
+        }
+    });
 }
 
 // ── eframe::App ──
@@ -4283,9 +4775,14 @@ impl eframe::App for SettingsApp {
                     (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
                     (Tab::Keymap, "ショートカット"),
+                    (Tab::KeySwap, "キーの入れ替え"),
                     (Tab::Calibration, "IMEキー学習"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
+                        if tab == Tab::KeySwap && self.active_tab != Tab::KeySwap {
+                            // 開くたびに現在のレジストリの値を読み直す（未適用の編集があるときは捨てない）。
+                            self.refresh_scancode_view_on_open();
+                        }
                         self.clear_ime_on_tab_change(tab);
                         self.active_tab = tab;
                     }
@@ -4354,6 +4851,7 @@ impl eframe::App for SettingsApp {
                 .show(ui, |ui| match self.active_tab {
                     Tab::Basic => self.tab_basic(ui),
                     Tab::Keys => self.tab_keys(ui),
+                    Tab::KeySwap => self.tab_key_swap(ui),
                     Tab::Keymap => self.tab_keymap(ui),
                     Tab::DisableApps => self.tab_disable_apps(ui),
                     Tab::Calibration => self.tab_calibration(ui),
@@ -4963,6 +5461,12 @@ struct ScancodeMapLoaded {
     /// `entries` の分類（他ツールのエントリの一覧表示用）。
     detected: Detected,
     editor: EditorState,
+    /// クリックで選んでいる位置（クリック2回の入れ替えの1回目、ADR-248 決定5）。
+    selected: Option<u16>,
+    /// 図の操作を断った理由（次の操作まで残す）。
+    diagram_message: Option<String>,
+    /// Caps を Ctrl にするキーボードフィルタドライバ（Ctrl2cap 等）の注意。読み込み時に決める。
+    filter_notice: Option<String>,
 }
 
 /// 適用前の確認ダイアログの内容。
@@ -4978,15 +5482,21 @@ enum ScancodeAction {
     Apply,
 }
 
-fn load_scancode_view() -> ScancodeMapView {
+fn load_scancode_view(ime_role_thumbs: Vec<u16>) -> ScancodeMapView {
     match scancode_map_admin::read_raw_entries() {
         scancode_map_admin::ScancodeMapRead::Loaded(entries) => {
             let detected = detect_swap_pairs(&entries);
-            let editor = EditorState::from_detected(&detected);
+            let mut editor = EditorState::from_detected(&detected);
+            let filters = scancode_map_admin::read_keyboard_filters();
+            editor.set_caps_filter(caps_filter_present(&filters));
+            editor.set_ime_role_thumbs(ime_role_thumbs);
             ScancodeMapView::Loaded(Box::new(ScancodeMapLoaded {
                 entries,
                 detected,
                 editor,
+                selected: None,
+                diagram_message: None,
+                filter_notice: caps_filter_notice(&filters),
             }))
         }
         scancode_map_admin::ScancodeMapRead::Corrupt => ScancodeMapView::Corrupt,
@@ -4999,8 +5509,25 @@ fn scancode_editor_ui(
     ui: &mut egui::Ui,
     loaded: &mut ScancodeMapLoaded,
     jis: bool,
+    restart_pending: bool,
 ) -> ScancodeAction {
     let mut action = ScancodeAction::None;
+
+    // 状態行（ADR-248 決定1）: レジストリと起動時の値の関係（軸 A）と、未適用の編集（軸 B）。
+    let status = status_line(
+        registry_state(&loaded.detected),
+        restart_pending,
+        loaded.editor.is_dirty(),
+        loaded.editor.has_incomplete(),
+    );
+    ui.strong(&status.registry);
+    if let Some(edit) = &status.edit {
+        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), edit);
+    }
+    if let Some(notice) = &loaded.filter_notice {
+        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), notice);
+    }
+    ui.add_space(4.0);
 
     if !loaded.detected.unclaimed.is_empty() {
         ui.label("他のツールが設定している項目（awase は変更しません）:");
@@ -5014,52 +5541,21 @@ fn scancode_editor_ui(
         ui.colored_label(
             egui::Color32::from_rgb(200, 120, 0),
             format!(
-                "「{} ⇄ {}」は他のツールの設定と重なっています。削除すると、重なっていた設定が効き出す可能性があります。",
+                "「{} ⇄ {}」は他のツールの設定と重なっています。「戻す」で解除すると、重なっていた設定が効き出す可能性があります。",
                 key_label(a),
                 key_label(b)
             ),
         );
     }
 
+    ui.strong("キーの位置を入れ替える");
+    ui.label(
+        "入れ替えたいキーの機能をドラッグして、入れ替え先のキーに落とします（または、2つのキーを順にクリックします）。\n\
+         上の段が「キーの位置（物理キー）」、ボタンが「その位置で出る機能」です。",
+    );
+    scancode_diagram_ui(ui, loaded, jis);
     let editor = &mut loaded.editor;
-    let mut remove: Option<usize> = None;
-    for i in 0..editor.rows().len() {
-        ui.horizontal(|ui| {
-            for side in [Side::A, Side::B] {
-                if matches!(side, Side::B) {
-                    ui.label("⇄");
-                }
-                let row = editor.rows()[i];
-                let current = match side {
-                    Side::A => row.a,
-                    Side::B => row.b,
-                };
-                let candidates = editor.candidates(i, side, jis);
-                let mut chosen = current;
-                egui::ComboBox::from_id_salt(("scancode_pair", i, matches!(side, Side::B)))
-                    .selected_text(current.map_or_else(|| "選択".to_string(), key_label))
-                    .show_ui(ui, |ui| {
-                        for key in candidates {
-                            ui.selectable_value(&mut chosen, Some(key), key_label(key));
-                        }
-                    });
-                if chosen != current {
-                    editor.set_key(i, side, chosen);
-                }
-            }
-            if ui.button("削除").clicked() {
-                remove = Some(i);
-            }
-        });
-    }
-    if let Some(i) = remove {
-        editor.remove_row(i);
-    }
-
-    ui.horizontal(|ui| {
-        if ui.button("＋ ペアを追加").clicked() {
-            editor.add_row();
-        }
+    ui.horizontal_wrapped(|ui| {
         ui.label("よくある入れ替え:");
         for quick in &QUICK_PAIRS {
             let available = editor.quick_available(quick, jis);
@@ -5071,34 +5567,68 @@ fn scancode_editor_ui(
             }
         }
     });
+    // 無効のボタンには、理由をすぐ下に出す（ADR-248 決定4）。
+    for quick in &QUICK_PAIRS {
+        if let Some(reason) = editor.quick_unavailable(quick, jis) {
+            ui.weak(format!(
+                "「{}」は使えません: {}",
+                quick.label,
+                reason.text()
+            ));
+        }
+    }
+
+    ui.add_space(8.0);
+    ui.strong("Caps を Ctrl としても使う");
+    ui.label(
+        "「英数 / Caps」キーを Ctrl としても使えるようにします（元の左 Ctrl も残ります。英数キー自体は使えなくなります）。\n\
+         上の「キーの位置を入れ替える」とは別の設定です。",
+    );
 
     let mut caps = editor.caps_extra();
-    let caps_enabled = caps || editor.caps_extra_available();
+    // オンにすると書き込みの検査で断られる（他ツールの設定と組み合わさって読み替わる、他ツールの to と衝突する、など）ときは、
+    // 適用の段ではなくここで理由を出す。
+    let caps_refusal = editor.caps_extra_refusal(&loaded.entries);
+    let caps_enabled = caps || (editor.caps_extra_available() && caps_refusal.is_none());
     ui.add_enabled(
         caps_enabled,
-        egui::Checkbox::new(
-            &mut caps,
-            "英数 / Caps を追加の Ctrl にする（元の左 Ctrl は残ります。英数キー自体は使えなくなります）",
-        ),
+        egui::Checkbox::new(&mut caps, "英数 / Caps を Ctrl としても使う"),
     );
     if caps != editor.caps_extra() {
         editor.set_caps_extra(caps);
     }
+    if !caps_enabled {
+        if let Some(reason) = editor.caps_extra_unavailable() {
+            ui.weak(reason.text());
+        } else if let Some(refusal) = caps_refusal {
+            ui.weak(swap_error_text(refusal));
+        }
+    }
 
+    ui.add_space(8.0);
+    // 適用すると変わる位置を、常に文字でも出す（図の色だけに頼らない。確認ダイアログが出ない入れ替えでも内容が分かる）。
+    let changes = editor.changes();
+    if !changes.is_empty() || editor.caps_extra_changed() {
+        ui.label("適用すると変わる位置:");
+        for (pos, before, after) in changes {
+            ui.weak(format!(
+                "　「{}」の位置: 「{}」 → 「{}」",
+                key_label(pos),
+                key_label(before),
+                key_label(after)
+            ));
+        }
+        if editor.caps_extra_changed() {
+            ui.weak(if editor.caps_extra() {
+                "　「英数 / Caps」: Ctrl としても使う（オンにする）"
+            } else {
+                "　「英数 / Caps」: Ctrl としても使う（オフにする）"
+            });
+        }
+    }
     let dirty = editor.is_dirty();
     let incomplete = editor.has_incomplete();
-    if incomplete {
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 120, 0),
-            "片方しか選んでいない行があります（両方選ぶか、削除してください）。",
-        );
-    } else if dirty {
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 120, 0),
-            "未適用の変更があります。",
-        );
-    }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui
             .add_enabled(
                 dirty && !incomplete,
@@ -5109,16 +5639,198 @@ fn scancode_editor_ui(
             action = ScancodeAction::Apply;
         }
         if ui
-            .add_enabled(dirty || incomplete, egui::Button::new("元に戻す"))
+            .add_enabled(dirty || incomplete, egui::Button::new("編集を元に戻す"))
+            .on_hover_text("まだ適用していない編集を捨てて、いまのレジストリの状態に戻します。")
             .clicked()
         {
             editor.reset();
+            loaded.selected = None;
+            loaded.diagram_message = None;
         }
-        if ui.button("読み直す").clicked() {
+        if ui
+            .button("すべて解除")
+            .on_hover_text(
+                "すべての入れ替えと「Caps を Ctrl としても使う」を外します（他のツールが書いた入れ替えの形の設定も外れます）。\n\
+                 「入れ替えを適用」を押すまで書き込まれません。",
+            )
+            .clicked()
+        {
+            editor.release_all();
+            loaded.selected = None;
+            loaded.diagram_message = None;
+        }
+        if ui
+            .button("レジストリを読み直す")
+            .on_hover_text("レジストリを読み直します（編集中の内容は捨てられます）。")
+            .clicked()
+        {
             action = ScancodeAction::Reload;
         }
     });
     action
+}
+
+/// キーボード図の描画と操作の反映（ADR-248 決定5）。状態の判断は `awase_windows::scancode_diagram` の純粋関数が持ち、
+/// ここは描画と入力（ドラッグ&ドロップ・クリック2回・「戻す」）の反映だけ。
+fn scancode_diagram_ui(ui: &mut egui::Ui, loaded: &mut ScancodeMapLoaded, jis: bool) {
+    let pairs = loaded.editor.pairs();
+    let cycles = loaded.editor.cycles().to_vec();
+    let caps_extra = loaded.editor.caps_extra();
+    let ctx = DiagramContext {
+        pairs: &pairs,
+        cycles: &cycles,
+        detected: &loaded.detected,
+        caps_extra,
+        jis,
+        caps_filter: loaded.editor.caps_filter(),
+        ime_role_thumbs: loaded.editor.ime_role_thumbs(),
+    };
+    let entries = &loaded.entries;
+    let mut new_units: Option<(Vec<Pair>, Vec<Cycle>)> = None;
+    let mut message: Option<String> = None;
+    let mut hint: Option<String> = None;
+    let mut selected = loaded.selected;
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        selected = None;
+    }
+    // キーボード図は物理配置を保つために折り返さず、幅が足りないときは図だけ横にスクロールする。外側の ScrollArea::both() は
+    // 内容の実際の幅を検知できず右端が切れる（キーボード図 `draw_layout_keyboard_grid` と同じ理由。egui 0.31.1 の ScrollArea は
+    // content_max_size を可視サイズに収める）ので、この図専用のスクロール領域を持たせる。
+    egui::ScrollArea::horizontal()
+        .id_salt("scancode_diagram_scroll")
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            // 横スクロール領域の内側は幅が見かけの幅に押し込まれるので、キー名やボタンの文字を折り返させない
+            // （折り返すと、右端のキーの文字が縦に割れて行が縦に伸びる。CI のスクリーンショットで確認）。
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            for row in diagram_rows(&pairs, &cycles, jis) {
+                ui.horizontal(|ui| {
+                    for pos in row {
+                        let function = displayed_function(&pairs, &cycles, caps_extra, pos);
+                        let changed = function != pos;
+                        let state = position_state(&ctx, pos);
+                        let editable = matches!(state, PositionState::Editable);
+                        ui.vertical(|ui| {
+                            ui.weak(key_label(pos));
+                            let text = if changed {
+                                format!("→ {}", key_label(function))
+                            } else {
+                                key_label(pos)
+                            };
+                            let mut button = egui::Button::new(text)
+                                .min_size(egui::vec2(72.0, 28.0))
+                                .sense(egui::Sense::click_and_drag())
+                                .selected(selected == Some(pos));
+                            if changed {
+                                button = button.stroke(egui::Stroke::new(
+                                    2.0,
+                                    egui::Color32::from_rgb(200, 120, 0),
+                                ));
+                            }
+                            let resp = ui.add_enabled(editable, button);
+                            if editable {
+                                resp.dnd_set_drag_payload(function);
+                                if let Some(payload) = resp.dnd_hover_payload::<u16>() {
+                                    let result = drop_function(&ctx, entries, *payload, pos);
+                                    hint = Some(drop_hint(&result, pos, key_label));
+                                }
+                                if let Some(payload) = resp.dnd_release_payload::<u16>() {
+                                    match drop_function(&ctx, entries, *payload, pos) {
+                                        Ok(effect) => {
+                                            new_units = Some((effect.pairs, effect.cycles))
+                                        }
+                                        Err(refusal) => message = Some(refusal_text(refusal)),
+                                    }
+                                    selected = None;
+                                } else if resp.clicked() {
+                                    match selected {
+                                        None => selected = Some(pos),
+                                        Some(s) if s == pos => selected = None,
+                                        Some(s) => {
+                                            let from = function_at_units(&pairs, &cycles, s);
+                                            match drop_function(&ctx, entries, from, pos) {
+                                                Ok(effect) => {
+                                                    new_units = Some((effect.pairs, effect.cycles));
+                                                }
+                                                Err(refusal) => {
+                                                    message = Some(refusal_text(refusal))
+                                                }
+                                            }
+                                            selected = None;
+                                        }
+                                    }
+                                }
+                            } else if let PositionState::Locked { reason, .. } = state {
+                                resp.on_disabled_hover_text(reason.text());
+                                ui.weak(locked_note(reason, pos));
+                            }
+                            let releasable = changed
+                                && matches!(
+                                    state,
+                                    PositionState::Editable
+                                        | PositionState::Locked {
+                                            releasable: true,
+                                            ..
+                                        }
+                                );
+                            if releasable {
+                                // 位置の属する入れ替えを丸ごと解く。3つ以上の循環では、触っていない位置も戻るので、ボタンに書く。
+                                let len = unit_len_at(&pairs, &cycles, pos);
+                                let button = if len >= 3 {
+                                    ui.small_button(format!("解除({len}個)")).on_hover_text(format!(
+                                        "この入れ替え（{len}個のキー）を丸ごと元に戻します。1つの位置だけ戻すには、その位置の機能を自分の位置へドラッグしてください。"
+                                    ))
+                                } else {
+                                    ui.small_button("戻す")
+                                };
+                                if button.clicked() {
+                                    new_units = Some(release_position(&pairs, &cycles, pos));
+                                    selected = None;
+                                }
+                            }
+                        });
+                    }
+                });
+            }
+        });
+    // 図に描けない（許可リスト外のキーを含む）入れ替えは、一覧で解除する。
+    for unit in unlisted_units(&pairs, &cycles) {
+        let label = match &unit {
+            EditUnit::Pair(pair) => {
+                let (a, b) = pair.keys();
+                format!("{} ⇄ {}", key_label(a), key_label(b))
+            }
+            EditUnit::Cycle(cycle) => {
+                let names: Vec<String> = cycle.keys().iter().map(|&k| key_label(k)).collect();
+                format!("{} → {}", names.join(" → "), names[0])
+            }
+        };
+        ui.horizontal(|ui| {
+            ui.label(label);
+            if ui.small_button("解除").clicked() {
+                new_units = Some(release_unit(&pairs, &cycles, &unit));
+            }
+        });
+    }
+    if let Some(s) = selected {
+        ui.label(format!(
+            "「{}」を選んでいます。入れ替え先のキーをクリックしてください（Esc で取り消し）。",
+            key_label(function_at_units(&pairs, &cycles, s))
+        ));
+    }
+    if let Some(h) = &hint {
+        ui.weak(h);
+    }
+    if let Some(m) = &loaded.diagram_message {
+        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), m);
+    }
+    loaded.selected = selected;
+    if let Some((p, c)) = new_units {
+        loaded.editor.set_units(&p, &c);
+        loaded.diagram_message = None;
+    } else if message.is_some() {
+        loaded.diagram_message = message;
+    }
 }
 
 /// 左親指/右親指キーの候補にのみ追加する、Alt なりすまし用エントリ。
@@ -5584,6 +6296,68 @@ fn physical_key_options() -> impl Iterator<Item = &'static (&'static str, &'stat
     })
 }
 
+/// `[[keymap]]` の `ime` の値（ADR-255）。IME OFF のときだけ当たる「遅いルール」。
+const KEYMAP_IME_OFF: &str = "off";
+
+const IME_CONDITION_HOVER: &str = "いつでも: IME の状態を問わず、親指シフトより先に照合します（従来の動き）。\n\
+     OFF のとき: IME が OFF（親指シフトが働かない状態）のときだけ、無変換/変換の単独押しに当たります。";
+
+const LATE_FROM_REJECT: &str =
+    "「IME が OFF のとき」のルールの from は、修飾キーなしの無変換/変換だけです。";
+
+/// 遅いルールの from に選べるキー（無修飾の無変換/変換だけ。ADR-255 決定1）。
+const LATE_FROM_KEYS: &[(&str, &str)] = &[("無変換", "VK_NONCONVERT"), ("変換", "VK_CONVERT")];
+
+fn late_from_key_options() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    LATE_FROM_KEYS.iter()
+}
+
+/// `from` が遅いルールとして使える（修飾なしの無変換/変換）か。
+fn is_late_from_combo(from: &str) -> bool {
+    let (ctrl, shift, alt, main) = parse_combo_str(from);
+    !ctrl
+        && !shift
+        && !alt
+        && matches!(
+            VkCode::from_name(&main),
+            Some(vk) if vk == awase_windows::vk::VK_NONCONVERT || vk == awase_windows::vk::VK_CONVERT
+        )
+}
+
+/// キャプチャで得た無変換/変換の内部表記（`"無変換"` 等）を、遅いルールの候補の表記（`VK_NONCONVERT`/`VK_CONVERT`）にそろえる。
+fn late_from_canonical(internal: &str) -> String {
+    match VkCode::from_name(internal) {
+        Some(vk) if vk == awase_windows::vk::VK_NONCONVERT => "VK_NONCONVERT".to_owned(),
+        Some(vk) if vk == awase_windows::vk::VK_CONVERT => "VK_CONVERT".to_owned(),
+        _ => internal.to_owned(),
+    }
+}
+
+/// 「IME の状態」のドロップダウン。`ime_off` が変わったら true。
+fn ime_condition_combo(ui: &mut egui::Ui, id: &str, ime_off: &mut bool) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if *ime_off {
+            "OFF のとき"
+        } else {
+            "いつでも"
+        })
+        .width(90.0)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(!*ime_off, "いつでも").clicked() && *ime_off {
+                *ime_off = false;
+                changed = true;
+            }
+            if ui.selectable_label(*ime_off, "OFF のとき").clicked() && !*ime_off {
+                *ime_off = true;
+                changed = true;
+            }
+        })
+        .response
+        .on_hover_text(IME_CONDITION_HOVER);
+    changed
+}
+
 /// `KEYMAP_MAIN_KEYS` から、keymap の from 側で禁止される VK を除いた候補一覧。
 fn keymap_from_key_options(
     left_thumb_vk: VkCode,
@@ -5709,6 +6483,7 @@ fn key_display_name(internal: &str) -> &str {
     KEYMAP_MAIN_KEYS
         .iter()
         .find(|(_, v)| *v == internal)
+        .or_else(|| LATE_FROM_KEYS.iter().find(|(_, v)| *v == internal))
         .map_or(internal, |(d, _)| *d)
 }
 
@@ -6490,10 +7265,12 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction, NewComboBuf, PhysicalPos,
-        SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue, apply_adr192_recommended_replacement,
-        empty_yab_layout, find_config_path, has_adr192_warning_context, load_yab_layout,
-        resolve_layouts_dir, undo_adr192_recommended_replacement,
+        AUTO_DETECT_PRESETS, CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction,
+        NewComboBuf, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue,
+        apply_adr192_recommended_replacement, apply_auto_detect_preset, apps_to_text,
+        auto_detect_details, auto_detect_preset_index, auto_detect_section, empty_yab_layout,
+        find_config_path, has_adr192_warning_context, load_yab_layout, resolve_layouts_dir,
+        text_to_apps, undo_adr192_recommended_replacement,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -6524,6 +7301,7 @@ mod layout_tab_repro {
             new_keymap_from_shift: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
+            new_keymap_ime_off: false,
             capturing: None,
             new_disable_app: String::new(),
             layout_file_path_buf: layout_path.display().to_string(),
@@ -6680,6 +7458,98 @@ mod layout_tab_repro {
         }
     }
 
+    #[test]
+    fn apps_text_round_trips_and_accepts_mixed_separators() {
+        assert_eq!(apps_to_text(&[]), "");
+        assert_eq!(
+            apps_to_text(&["taro.exe".to_string(), "chrome.exe".to_string()]),
+            "taro.exe, chrome.exe"
+        );
+        assert_eq!(
+            text_to_apps("taro.exe, chrome.exe  wezterm.exe、 code.exe\n"),
+            vec!["taro.exe", "chrome.exe", "wezterm.exe", "code.exe"]
+        );
+        assert!(text_to_apps("  ,  ").is_empty());
+    }
+
+    #[test]
+    fn auto_detect_presets_are_unique_and_round_trip() {
+        use awase::config::AutoDetectConfig;
+        // 選択肢は (mode, scope) が重ならず、選ぶと設定がその選択肢に当たる（カスタムにならない）。
+        for (i, (mode, scope, _, _)) in AUTO_DETECT_PRESETS.iter().enumerate() {
+            assert_eq!(
+                AUTO_DETECT_PRESETS
+                    .iter()
+                    .filter(|(m, s, _, _)| m == mode && s == scope)
+                    .count(),
+                1,
+                "{mode:?}/{scope:?} は選択肢に 1 回だけ出す"
+            );
+            let mut cfg = AutoDetectConfig::default();
+            apply_auto_detect_preset(&mut cfg, i);
+            assert_eq!(auto_detect_preset_index(&cfg), Some(i));
+        }
+        assert!(
+            AUTO_DETECT_PRESETS.len() <= 5,
+            "選択肢は 5 つまで（所有者判断）"
+        );
+    }
+
+    #[test]
+    fn auto_detect_default_is_the_observe_preset() {
+        let cfg = awase::config::AutoDetectConfig::default();
+        let i = auto_detect_preset_index(&cfg).expect("既定は選択肢のどれかに当たる");
+        assert_eq!(
+            AUTO_DETECT_PRESETS[i].0,
+            awase::config::AutoDetectMode::Observe
+        );
+    }
+
+    #[test]
+    fn auto_detect_combination_outside_the_presets_is_custom_and_selecting_keeps_numbers() {
+        use awase::config::{AutoDetectMode, AutoDetectScope};
+        // config.toml に手書きした ime_on_eisu + unobserved（画面の選択肢から外した組み合わせ）は選択肢に無い = カスタム。
+        let mut cfg = awase::config::AutoDetectConfig {
+            mode: AutoDetectMode::ImeOnEisu,
+            scope: AutoDetectScope::Unobserved,
+            idle_ms: 9000,
+            ..awase::config::AutoDetectConfig::default()
+        };
+        assert_eq!(auto_detect_preset_index(&cfg), None);
+        // 選択肢を選んでも、数値・アプリの指定は変えない（mode と scope だけを書き換える）。
+        apply_auto_detect_preset(&mut cfg, 1);
+        assert_eq!(cfg.mode, AutoDetectMode::Observe);
+        assert_eq!(cfg.idle_ms, 9000);
+    }
+
+    #[test]
+    fn auto_detect_section_renders_in_every_mode_and_scope_without_panicking() {
+        use awase::config::{AutoDetectMode, AutoDetectScope};
+        for mode in [
+            AutoDetectMode::Off,
+            AutoDetectMode::Observe,
+            AutoDetectMode::ImeOn,
+            AutoDetectMode::ImeOnEisu,
+        ] {
+            for scope in [AutoDetectScope::Unobserved, AutoDetectScope::All] {
+                let mut cfg = awase::config::AutoDetectConfig {
+                    mode,
+                    scope,
+                    include_apps: vec!["taro.exe".to_string()],
+                    ..awase::config::AutoDetectConfig::default()
+                };
+                let ctx = eframe::egui::Context::default();
+                let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+                    eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                        auto_detect_section(ui, &mut cfg);
+                        // 折りたたみの中身は既定で閉じているので、直接も描画して確かめる。
+                        auto_detect_details(ui, &mut cfg);
+                    });
+                });
+            }
+        }
+    }
+
     /// `tab_basic`/`tab_keymap`/`tab_disable_apps`/
     /// `tab_advanced` がパニックしないことを固定する（2026-08-15、ホバー
     /// ヒント拡充で全タブに手を入れたため追加。`tab_disable_apps` は
@@ -6705,6 +7575,7 @@ mod layout_tab_repro {
             // ことをこのスモークテストで確認する（ベストプラクティス
             // レビュー指摘: 単一ステップだけでは "+" ボタンの経路が未検証）。
             to: vec!["VK_F7".to_string(), "VK_F8".to_string()],
+            ime: None,
         });
         config.post_bypass.push(awase::config::PostBypassRule {
             key: "Ctrl+B".to_string(),
@@ -8112,5 +8983,42 @@ mod layout_tab_repro {
         let snapshot = apply_adr192_recommended_replacement(&mut config);
         undo_adr192_recommended_replacement(&mut config, snapshot);
         assert_eq!(toml::to_string(&config).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod late_keymap_ui_tests {
+    use super::{LATE_FROM_KEYS, is_late_from_combo, late_from_canonical};
+
+    #[test]
+    fn late_from_accepts_only_bare_muhenkan_and_henkan() {
+        for ok in ["VK_NONCONVERT", "VK_CONVERT", "無変換", "変換"] {
+            assert!(is_late_from_combo(ok), "{ok}");
+        }
+        for ng in [
+            "Ctrl+VK_NONCONVERT",
+            "Shift+変換",
+            "Alt+無変換",
+            "VK_SPACE",
+            "VK_A",
+            "",
+        ] {
+            assert!(!is_late_from_combo(ng), "{ng:?}");
+        }
+    }
+
+    #[test]
+    fn late_from_canonical_uses_the_option_spelling() {
+        assert_eq!(late_from_canonical("無変換"), "VK_NONCONVERT");
+        assert_eq!(late_from_canonical("変換"), "VK_CONVERT");
+        assert_eq!(late_from_canonical("VK_NONCONVERT"), "VK_NONCONVERT");
+        assert_eq!(late_from_canonical("VK_A"), "VK_A");
+    }
+
+    #[test]
+    fn late_from_options_are_all_valid_late_froms() {
+        for (_, internal) in LATE_FROM_KEYS {
+            assert!(is_late_from_combo(internal), "{internal}");
+        }
     }
 }

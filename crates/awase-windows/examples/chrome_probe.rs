@@ -20,8 +20,13 @@
 //! その後 k,a を打って実際の IME 状態(打鍵結果)を確認する。`--or-ladder` は閉じなかった試行で別手段(再送・IMC・0xF3・0x19・TSF 大域 compartment)を順に試す。
 //! `--or-relaunch` は試行ごとに Chrome を起動し直す(ページ状態の蓄積の影響を切り分ける)。判定は check_offrca.py(`OFFRCA {json}` 行)。
 //!
-//! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--chrome=<chrome.exe>] [--log=<path>]`
+//! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--f16-alnum] [--chrome=<chrome.exe>] [--log=<path>]`
 //!   `--no-awase`: awase を止めた対照実験（かなのとき `か` を期待）。既定は awase 起動中（NICOLA を期待）。
+//! `--alnum-key=<hex>`: `Setup::Alnum`(半角英数にする)で押すキー。既定は 0xF2(ATOK)。GJI の MS-IME プリセットは F0。MS-IME 本体は英数キーが IME を閉じるので未対応。
+//! `--new-window-after=<alnum|kana|off>`(`--key=<hex>` と併用。BUG-204 の関連): 今の Chrome をその状態にしてから **Chrome を起動し直し**(新しいプロセス・スレッド=
+//! 読めない窓の新スレッド。IME は新しいスレッドの初期状態〈閉×ひらがな〉)、新しい窓で `--key` のキーを押して `ka` を打ち、Engine が追随するかを見る。
+//! `alnum` は前の窓で awase の belief が半角英数(`ObservedEisu`)になった状態で新しい窓へ移る(窓の切り替えは入力モードを直さない見込み)。`kana`・`off` は対照。
+//! PASS=NICOLA 文字(IME が開き Engine が追随)、FAIL の `か(かな・Engine素通し)`=IME は開いたが Engine が止まった(前の窓の半角英数が残った疑い)、`ka(英数/直接)`=IME が開かなかった。
 //! `--tray-cmd=<ID>` は awase のトレイウィンドウへメニュー選択と同じ WM_COMMAND を送る(ID は tray.rs の IDM_*。例: 52=IMM キャッシュのクリア)。
 //! `--file-state=<path>[,<path>...]` を併せて指定すると、送る前後でそのファイルの状態を `FILE_STATE` 行に出す(存在・長さ・FNV-1a。
 //! `unchanged=true/false` で「空のまま/不変」を判定できる。BUG-112/071 用)。ページ準備後・シナリオ開始前に1回行う。
@@ -432,9 +437,15 @@ enum Setup {
     Kana,
     Off,
     Alnum,
+    /// かな → F16(GJI の CUSTOM 表で半角英数へ)。`--f16-alnum` 用(筆者報告の構成: 英数キーが F16)。
+    AlnumF16,
 }
 
 /// 状態を「かな」「直接入力」「半角英数」に持っていく。状態はプローブ(打った文字)で確認する。
+/// `Setup::Alnum` で半角英数にするために押すキー(VK)。既定はひらがな(0xF2。ATOK ではかな⇔半角英数のトグル)。
+/// GJI の MS-IME プリセットではひらがなキーは常にかなになるので、英数キー(0xF0。かな⇔半角英数のトグル)を `--alnum-key=F0` で選ぶ。
+static ALNUM_KEY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0xF2);
+
 fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
     let kana_ok = |c: Class| {
         if awase {
@@ -462,11 +473,23 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
             sleep(500);
             p.probe_logged("setup:IME_OFF後") == Class::Plain
         }
-        Setup::Alnum => {
-            p.press(0xF2, false, 60);
+        Setup::AlnumF16 => {
+            p.press(VK_F16, false, 60);
             sleep(500);
             matches!(
-                p.probe_logged("setup:ひらがな(かな→半角英数)後"),
+                p.probe_logged("setup:F16(かな→半角英数)後"),
+                Class::Plain | Class::NicolaLiteral
+            )
+        }
+        Setup::Alnum => {
+            p.press(
+                ALNUM_KEY.load(std::sync::atomic::Ordering::Relaxed),
+                false,
+                60,
+            );
+            sleep(500);
+            matches!(
+                p.probe_logged("setup:半角英数にするキー(かな→半角英数)後"),
                 Class::Plain | Class::NicolaLiteral
             )
         }
@@ -474,6 +497,8 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
 }
 
 const VK_LSHIFT: u32 = 0xA0;
+const VK_F16: u32 = 0x7F;
+const VK_F17: u32 = 0x80;
 
 struct Case {
     name: &'static str,
@@ -498,6 +523,27 @@ const F13_CASES: [Case; 2] = [
         name: "直接入力→F13=かなON",
         setup: Setup::Off,
         vk: 0x7C,
+        shift: false,
+        expect_kana: true,
+    },
+];
+
+/// `--f16-alnum`(外部報告の構成、F13〜F24 は学習表にセルが無い): 英数=F16・IME ON=F17 の ANSI 配列利用者向け。
+/// GJI の CUSTOM 表で F16 を半角英数、F17 をひらがな(DirectInput では IME ON)にした構成で、
+/// 「かな→F16=半角英数(`ka`)」「F16 の半角英数→F17=かなに戻る(Engine が追随して NICOLA)」を実 Chrome で見る。
+/// 表と awase 設定(keys.ime_on の有無)は呼び出し側(ワークフロー)。
+const F16_ALNUM_CASES: [Case; 2] = [
+    Case {
+        name: "かな→F16=半角英数",
+        setup: Setup::Kana,
+        vk: VK_F16,
+        shift: false,
+        expect_kana: false,
+    },
+    Case {
+        name: "F16の半角英数→F17=かな",
+        setup: Setup::AlnumF16,
+        vk: VK_F17,
         shift: false,
         expect_kana: true,
     },
@@ -985,6 +1031,17 @@ fn run_keymatrix(p: &mut Probe, spec: &str, args: &[String]) {
             let pre_api = ime_control(0x0005, 0).map(|v| v != 0);
             let utc0 = utc_stamp();
             let mut presses = Vec::new();
+            // `--km-pre=<VK 16進>`(ADR-260 の持ち越しの測定): 測るキーの前に、このキーを 1 回押す。
+            if let Some(vk) = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--km-pre="))
+                .and_then(|v| u32::from_str_radix(v, 16).ok())
+            {
+                send_key(vk, true);
+                sleep(60);
+                send_key(vk, false);
+                sleep(700);
+            }
             if pre_ok {
                 for pi in 1..=max_press {
                     let utc = utc_stamp();
@@ -1004,9 +1061,17 @@ fn run_keymatrix(p: &mut Probe, spec: &str, args: &[String]) {
                     sleep(1000);
                 }
             }
+            // `--km-twice`: 1回目の打鍵の後に、直接観測の追随（ADR-260 の B1o・B3 など）が働く時間を空け、2回目の結果も記録する。
+            let typed2 = if args.iter().any(|a| a == "--km-twice") && pre_ok {
+                sleep(900);
+                let got2 = p.probe_logged("keymatrix 2回目");
+                serde_json::json!(got2.label())
+            } else {
+                serde_json::Value::Null
+            };
             p.log.line(&format!(
                 "KM {}",
-                serde_json::json!({"type":"km_trial","cell":cell.label,"key":cell.key,"kind":cell.kind,
+                serde_json::json!({"type":"km_trial","typed2":typed2,"cell":cell.label,"key":cell.key,"kind":cell.kind,
                     "gap":cell.gap,"n":i,"r0":r0,"target":target,"utc":utc0,"pre_ok":pre_ok,
                     "pre_api":pre_api,"presses":presses,"focus_lost":p.focus_lost,"fresh":fresh})
             ));
@@ -1490,6 +1555,14 @@ fn main() {
         .find_map(|a| a.strip_prefix("--repeat=").and_then(|v| v.parse().ok()))
         .unwrap_or(3);
     let awase = !args.iter().any(|a| a == "--no-awase");
+    // `--alnum-key=<hex>`: `Setup::Alnum`(半角英数にする)で押すキー。既定はひらがな(0xF2)。GJI の MS-IME プリセットは英数(F0)。
+    if let Some(vk) = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--alnum-key="))
+        .and_then(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).ok())
+    {
+        ALNUM_KEY.store(vk, std::sync::atomic::Ordering::Relaxed);
+    }
     // モードキーを押してから `k`,`a` を打つまでの待ち(ms)。EXPLICIT_IME_SUPPRESS_MS(1500)の内外を比べる用。
     let settle_ms: u64 = args
         .iter()
@@ -2117,6 +2190,11 @@ fn main() {
     let mut fail = 0usize;
     let mut invalid = 0usize;
     let mut recover = 0usize;
+    // `--new-window-after=<alnum|kana|off>`: `--key` のケースで、前提状態にしたあと Chrome を起動し直してからキーを押す(BUG-204 の関連)。
+    let new_window_after: Option<String> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--new-window-after="))
+        .map(str::to_string);
     // `--key=<hex>`(追随できる条件の調査): 閉状態(直接入力)からそのキーを1回押し、Engine が追随して NICOLA になるかを見る。
     // 追随=PASS、IME は開いたが Engine OFF(`か`)や開かない(`ka`)=FAIL。呼び出し側は expect=observe で結果だけ表に出す。
     let key_cases: Option<&'static [Case]> = args
@@ -2124,11 +2202,31 @@ fn main() {
         .find_map(|a| a.strip_prefix("--key="))
         .and_then(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).ok())
         .map(|vk| {
-            let name: &'static str =
-                Box::leak(format!("直接入力→0x{vk:02X}=かなON").into_boxed_str());
+            let (name, setup): (&'static str, Setup) = match new_window_after.as_deref() {
+                Some("alnum") => (
+                    Box::leak(
+                        format!("半角英数→Chrome 起動し直し→0x{vk:02X}=かなON").into_boxed_str(),
+                    ),
+                    Setup::Alnum,
+                ),
+                Some("kana") => (
+                    Box::leak(format!("かな→Chrome 起動し直し→0x{vk:02X}=かなON").into_boxed_str()),
+                    Setup::Kana,
+                ),
+                Some(_) => (
+                    Box::leak(
+                        format!("直接入力→Chrome 起動し直し→0x{vk:02X}=かなON").into_boxed_str(),
+                    ),
+                    Setup::Off,
+                ),
+                None => (
+                    Box::leak(format!("直接入力→0x{vk:02X}=かなON").into_boxed_str()),
+                    Setup::Off,
+                ),
+            };
             let cases: &'static [Case] = Box::leak(Box::new([Case {
                 name,
-                setup: Setup::Off,
+                setup,
                 vk,
                 shift: false,
                 expect_kana: true,
@@ -2139,6 +2237,8 @@ fn main() {
         k
     } else if args.iter().any(|a| a == "--f13") {
         &F13_CASES
+    } else if args.iter().any(|a| a == "--f16-alnum") {
+        &F16_ALNUM_CASES
     } else if args.iter().any(|a| a == "--henkan-open") {
         &HENKAN_OPEN_CASES
     } else {
@@ -2161,6 +2261,21 @@ fn main() {
                 p.log.line("RESULT INVALID: 前提状態にできなかった");
                 invalid += 1;
                 continue;
+            }
+            if new_window_after.is_some() {
+                // 前の窓(いまの Chrome)をその状態にしたまま、Chrome を起動し直す。新しいプロセス・スレッドの読めない窓へ移る
+                // (awase の belief は窓の切り替えで入力モードを直さない見込み。IME は新しいスレッドの初期状態〈閉×ひらがな〉)。
+                p.log
+                    .line("NEW_WINDOW: Chrome を起動し直す(前の窓の状態は上の setup)");
+                if !relaunch_chrome(&mut p, &mut child, &chrome, &profile, port) {
+                    p.log.line("RESULT INVALID: Chrome を起動し直せなかった");
+                    invalid += 1;
+                    continue;
+                }
+                p.focus_lost = false;
+                if !bring_to_front() {
+                    p.log.line("前面化に失敗(起動し直し後)");
+                }
             }
             p.press(c.vk, c.shift, 120);
             sleep(settle_ms);

@@ -235,7 +235,14 @@ fn run_core_registry(repo_root: &str, base_ref: &str) -> ExitCode {
     };
     let added = core_registry::added_modules(&base, &head);
     println!("CORE_MODULES に追加された名前: {added:?}");
-    let violations = core_registry::check(&added, &read(".cargo/mutants-awase-windows.toml"));
+    let violations = core_registry::check(
+        &added,
+        &format!(
+            "{}\n{}",
+            read(".cargo/mutants-awase-windows.toml"),
+            read(".cargo/mutants-awase-windows-core.toml")
+        ),
+    );
     if violations.is_empty() {
         println!("登録漏れなし。");
         ExitCode::SUCCESS

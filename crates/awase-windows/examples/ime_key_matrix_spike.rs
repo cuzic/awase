@@ -349,10 +349,15 @@ fn fmt_i32_hex(v: Option<i32>) -> String {
 /// 1 回のキー押下に対する記録待ちエントリ。
 struct Pending {
     label: String,
+    /// このキーを押した時刻(フック時刻)。`AFTER_MS` はここからの経過で数える。
     started_ms: u64,
     before: Snapshot,
     /// `AFTER_MS` の各時点で取れたスナップショット。
     afters: Vec<Snapshot>,
+    /// `afters` と同じ並び。そのスナップショットを取るより前に、後続のキーが押されていたら、その押下までの
+    /// 経過(ms)。`Some` なら、後続のキーの効果が混ざっている可能性があり、この打鍵の結果として使えない
+    /// (押下 i の +1500ms に、押下 i+1 の効果が入る、MS-IME 本体の歩みで 20/3840 打鍵あった)。
+    mixed_after_ms: Vec<Option<u64>>,
 }
 
 struct TsfState {
@@ -369,6 +374,8 @@ thread_local! {
     static LOG_BUF: RefCell<String> = const { RefCell::new(String::new()) };
     /// 直近の周期スナップショット（押下前状態として使う）。
     static LAST_SNAP: RefCell<Snapshot> = RefCell::new(Snapshot::default());
+    /// フックが受けた押下の時刻(古いものは捨てる)。後続のキーによる記録への混入の判定に使う。
+    static PRESS_LOG: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     /// フックが積んだ未処理のキー押下（タイマーで処理する）。
     static KEY_QUEUE: RefCell<Vec<KeyEvt>> = const { RefCell::new(Vec::new()) };
     static RICH_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
@@ -581,6 +588,9 @@ struct KeyEvt {
     vk: u32,
     ctrl: bool,
     shift: bool,
+    /// フックで押下を受けた時刻(`now_ms()`)。記録の起点と、後続のキーによる混入の判定に使う
+    /// (タイマーで取り出した時刻は周期や停滞の分だけ遅れる)。
+    at_ms: u64,
 }
 
 /// マトリクスの「状態」軸。
@@ -677,7 +687,106 @@ fn scan_for(vk: u32) -> u16 {
 const SCAN_ONLY: u32 = 0x1_0000;
 const NOSCAN: u32 = 0x2_0000;
 
+/// ADR-255: `--inject-driver`(キーボードフィルタドライバ awasekbf 経由、`tools/kbd-inject-driver/`)。vk を直接指定する SendInput と違い、
+/// スキャンコードを kbdclass のコールバックへ流すので、キーボードレイアウトの変換(JIS なら `install-driver.ps1 -JisType` が必要)を通り、
+/// 物理キーと同じ Down/Up の vk(ひらがな 0x70 は Down=0xF2/Up=0xF0)でフックに届く。`scan_for` が 0 のキーは従来どおり SendInput。
+mod driver_inject {
+    use std::sync::OnceLock;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            sa: *const core::ffi::c_void,
+            disp: u32,
+            flags: u32,
+            tmpl: isize,
+        ) -> isize;
+        fn DeviceIoControl(
+            h: isize,
+            code: u32,
+            inb: *const core::ffi::c_void,
+            inl: u32,
+            outb: *mut core::ffi::c_void,
+            outl: u32,
+            ret: *mut u32,
+            ov: *mut core::ffi::c_void,
+        ) -> i32;
+    }
+
+    const IOCTL_INJECT: u32 = 0x000B_2000;
+    pub static SENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn handle() -> Option<isize> {
+        static H: OnceLock<Option<isize>> = OnceLock::new();
+        *H.get_or_init(|| {
+            if !std::env::args().any(|a| a == "--inject-driver") {
+                return None;
+            }
+            let name: Vec<u16> = "\\\\.\\AwaseKbInject\0".encode_utf16().collect();
+            // SAFETY: NUL 終端の UTF-16 の名前。失敗は -1 で返る。
+            let h =
+                unsafe { CreateFileW(name.as_ptr(), 0xC000_0000, 3, core::ptr::null(), 3, 0, 0) };
+            if h == -1 || h == 0 {
+                eprintln!("[spike] --inject-driver: AwaseKbInject を開けない(SendInput に戻す)");
+                None
+            } else {
+                eprintln!("[spike] --inject-driver: ドライバ(awasekbf)経由でキーを送る");
+                Some(h)
+            }
+        })
+    }
+
+    pub fn available() -> bool {
+        handle().is_some()
+    }
+
+    /// ドライバで送れたら true。
+    pub fn send(scan: u16, down: bool) -> bool {
+        let Some(h) = handle() else { return false };
+        if scan == 0 {
+            return false;
+        }
+        let cmd: [u16; 2] = [scan, if down { 0 } else { 1 }];
+        let mut ret = 0u32;
+        SENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: 4 バイトの入力バッファ。出力なし。
+        let ok = unsafe {
+            DeviceIoControl(
+                h,
+                IOCTL_INJECT,
+                cmd.as_ptr().cast(),
+                4,
+                core::ptr::null_mut(),
+                0,
+                &raw mut ret,
+                core::ptr::null_mut(),
+            )
+        };
+        ok != 0
+    }
+}
+
 fn send_key(vk: u32, down: bool) {
+    if vk & (SCAN_ONLY | NOSCAN) == 0 {
+        // 物理の JIS キーボードでは、カタカナ(0xF1)は「カタカナひらがなローマ字」キー(0x70)の Shift 付き(単独はひらがな 0xF2)。
+        // 物理と同じ手順にするため、左 Shift(0x2A)の make を先に、break を後に挟む。
+        if vk == 0xF1 && driver_inject::available() {
+            if down {
+                driver_inject::send(0x2A, true);
+                driver_inject::send(0x70, true);
+            } else {
+                driver_inject::send(0x70, false);
+                driver_inject::send(0x2A, false);
+            }
+            return;
+        }
+        if driver_inject::send(scan_for(vk), down) {
+            return;
+        }
+    }
     let up = if down {
         KEYBD_EVENT_FLAGS(0)
     } else {
@@ -1091,6 +1200,21 @@ enum GComp {
     PrevHiragana,
     /// 履歴依存の確認用: 入力中に Esc で消して、入れ直した直後(直前キーは a)。
     PrevEsc,
+    /// 履歴依存の確認用(BUG-205): 変換キーで変換中に入り、Esc を押した直後。Esc が入力中へ戻すのか、破棄するのか、
+    /// 変換中のままなのかは未測定なので、入力中かどうかを検証しない(`grid_matches`)。結果は続くキーの結果が
+    /// `typing`・`conv-henkan`・`none` のどの行と一致するかで決める。
+    ConvHenkanEsc,
+    /// 履歴依存の確認用(BUG-205 追記): Space で変換中に入り、Esc を押した直後。ATOK の表では (変換中〈Space〉, Esc) が保持/破棄に
+    /// 割れた(以前の版)ので、Esc の後に入力が残るかも未測定。`ConvHenkanEsc` と同じく入力中かどうかを検証しない。
+    ConvSpaceEsc,
+    /// 履歴依存の確認用(BUG-205 追記): 無変換で変換中(英数変換)に入り、Esc を押した直後。ATOK は入力中の無変換で変換モードが 0x19→0x10 に
+    /// 変わる(ATOK の表に `ConvMuhenkan` の行は無い)ので、`s7` は (開, 0x19) と (開, 0x10) の両方から始める(変換モードは厳密に検証する)。
+    /// `ConvHenkanEsc` と同じく、Esc の後に入力が残るかは検証しない。
+    ConvMuhenkanEsc,
+    /// 履歴依存の確認用(`s7` の対照): `ConvMuhenkan`(k,a,無変換)と同じ状態を作るが、変換モードを検証しない。ATOK は入力中の無変換で
+    /// 変換モードが 0x19→0x10 に変わるため、`ConvMuhenkan` は ATOK で作れない(検証で飛ばされる)。通常の格子(s1〜s4)の
+    /// `ConvMuhenkan` の検証を緩めると学習表を汚す(0x10 の結果が 0x19 のセルに入る)ので、s7 専用の別の状態にした。
+    ConvMuhenkanLoose,
 }
 
 impl GComp {
@@ -1103,6 +1227,10 @@ impl GComp {
             Self::ConvMuhenkan => "conv-muhenkan",
             Self::PrevHiragana => "typing-prev-hiragana",
             Self::PrevEsc => "typing-prev-esc",
+            Self::ConvHenkanEsc => "conv-henkan-esc",
+            Self::ConvSpaceEsc => "conv-space-esc",
+            Self::ConvMuhenkanEsc => "conv-muhenkan-esc",
+            Self::ConvMuhenkanLoose => "conv-muhenkan-loose",
         }
     }
     /// この段階を作るキー列(VK)。
@@ -1115,6 +1243,10 @@ impl GComp {
             Self::ConvMuhenkan => &[0x4B, 0x41, 0x1D],
             Self::PrevHiragana => &[0x4B, 0x41, 0xF2],
             Self::PrevEsc => &[0x4B, 0x41, 0x1B, 0x4B, 0x41],
+            Self::ConvHenkanEsc => &[0x4B, 0x41, 0x1C, 0x1B],
+            Self::ConvSpaceEsc => &[0x4B, 0x41, 0x20, 0x1B],
+            Self::ConvMuhenkanEsc => &[0x4B, 0x41, 0x1D, 0x1B],
+            Self::ConvMuhenkanLoose => &[0x4B, 0x41, 0x1D],
         }
     }
 }
@@ -1211,9 +1343,13 @@ fn grid_shard_keys(shard: &str) -> &'static [u32] {
         "s2" => &[0xF1, 0xF0, 0x20],       // カタカナ 英数 Space
         "s3" => &[0x1B, 0x0D, 0x08],       // Esc Enter BS
         "s4" => &[0xF3, 0x19, 0x16, 0x1A], // 半角全角 漢字 IME_ON IME_OFF
+        // s5・s6・s7 は通常の格子(全状態 × キー)ではなく、`grid_build` の専用ブロック(変換中の Esc の直後。BUG-205)。
         _ => &[],
     }
 }
+
+/// `--grid=s5`(BUG-205)で、変換→Esc の直後の状態で押すキー: 無変換・カタカナ・ひらがな・変換・Space・Enter。
+const ESC_CTX_KEYS: [u32; 6] = [0x1D, 0xF1, 0xF2, 0x1C, 0x20, 0x0D];
 
 /// 試行回数: 入力中・変換中で結果が割れうるキーは4回、開閉系は2回(再現性)。
 fn grid_trials_for(key: u32) -> usize {
@@ -1333,6 +1469,79 @@ fn grid_build(
                         key,
                         trial: t + 1,
                     });
+                }
+            }
+        }
+    }
+    // s5(BUG-205): 変換→Esc の直後に押したキーの結果が、typing・conv-henkan・none のどの行と一致するかを見る。
+    // 対照(変換中・入力中・入力なし)を同じ実行に入れ、同じ環境・同じ時刻帯で比べる。(開, 0x19) だけ。
+    if shard == "s5" {
+        let n = cap.unwrap_or(10);
+        for t in 0..n {
+            for comp in [
+                GComp::ConvHenkanEsc,
+                GComp::ConvHenkan,
+                GComp::Typing,
+                GComp::None,
+            ] {
+                for key in ESC_CTX_KEYS {
+                    v.push(GridTrial {
+                        open: true,
+                        conv: 0x19,
+                        comp,
+                        key,
+                        trial: t + 1,
+                    });
+                }
+            }
+        }
+    }
+    // s6(BUG-205 追記): Space で入った変換中の Esc の直後。s5 の変換キー版と同じ作りで、対照に変換中〈Space〉・入力中・入力なしを入れる。
+    if shard == "s6" {
+        let n = cap.unwrap_or(10);
+        for t in 0..n {
+            for comp in [
+                GComp::ConvSpaceEsc,
+                GComp::ConvSpace,
+                GComp::Typing,
+                GComp::None,
+            ] {
+                for key in ESC_CTX_KEYS {
+                    v.push(GridTrial {
+                        open: true,
+                        conv: 0x19,
+                        comp,
+                        key,
+                        trial: t + 1,
+                    });
+                }
+            }
+        }
+    }
+    // s7(BUG-205 追記): 無変換で入った変換中の Esc の直後。(開, 0x19) と (開, 0x10) の両方から始める(ATOK は入力中の無変換で 0x10 になる。
+    // 作れない状態〈到達不能・セットアップ不能〉は既存の仕組みが飛ばす)。対照に変換中〈無変換〉・入力中・入力なしを入れる。
+    // 状態数が s5/s6 の 2 倍以上なので、既定の試行回数は 4(これまでの測定は全て 10/10 で同じ結果だった)。
+    // `ConvMuhenkanEsc`・`ConvMuhenkanLoose` は変換モードを検証しない(ATOK 用)。`ConvMuhenkan` は厳密(MS-IME 系用)。
+    if shard == "s7" {
+        let n = cap.unwrap_or(4);
+        for t in 0..n {
+            for conv in [0x19_u32, 0x10] {
+                for comp in [
+                    GComp::ConvMuhenkanEsc,
+                    GComp::ConvMuhenkanLoose,
+                    GComp::ConvMuhenkan,
+                    GComp::Typing,
+                    GComp::None,
+                ] {
+                    for key in ESC_CTX_KEYS {
+                        v.push(GridTrial {
+                            open: true,
+                            conv,
+                            comp,
+                            key,
+                            trial: t + 1,
+                        });
+                    }
                 }
             }
         }
@@ -1467,10 +1676,19 @@ fn grid_open_of(s: &Snapshot) -> Option<bool> {
 /// 目標の状態と一致しているか(閉じている状態は conv を問わない)。
 fn grid_matches(s: &Snapshot, t: &GridTrial) -> bool {
     let composing = s.comp.as_deref().is_some_and(|c| !c.is_empty());
-    if grid_open_of(s) != Some(t.open) || composing != (t.comp != GComp::None) {
+    // `ConvHenkanEsc` は Esc の後に入力が残るか消えるかを測るので、入力中かどうかは検証しない(消える場合に
+    // セットアップ不能で飛ばされ、測りたい場合が測れなくなる)。押す前の入力は「前」の行の comp に残る。
+    let comp_ok = matches!(
+        t.comp,
+        GComp::ConvHenkanEsc | GComp::ConvSpaceEsc | GComp::ConvMuhenkanEsc
+    ) || composing == (t.comp != GComp::None);
+    if grid_open_of(s) != Some(t.open) || !comp_ok {
         return false;
     }
-    !t.open || s.b_conv.or(s.a_conv) == Some(t.conv)
+    // ATOK は入力中の無変換で変換モードが 0x19→0x10 に変わる。s7 専用の `ConvMuhenkanEsc`・`ConvMuhenkanLoose` は変換モードを
+    // 検証しない(押す前の変換モードは GRID-PRE の conv に残る)。通常の `ConvMuhenkan` は厳密に検証する。
+    let conv_free = matches!(t.comp, GComp::ConvMuhenkanEsc | GComp::ConvMuhenkanLoose);
+    !t.open || conv_free || s.b_conv.or(s.a_conv) == Some(t.conv)
 }
 
 fn grid_obs(s: &Snapshot) -> String {
@@ -2405,12 +2623,20 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                         kb.scanCode,
                         utc_stamp()
                     );
+                    PRESS_LOG.with(|l| {
+                        let mut l = l.borrow_mut();
+                        l.push(now_ms_hook);
+                        if l.len() > 64 {
+                            l.remove(0);
+                        }
+                    });
                     KEY_QUEUE.with(|q| {
                         q.borrow_mut().push(KeyEvt {
                             label,
                             vk,
                             ctrl,
                             shift,
+                            at_ms: now_ms_hook,
                         });
                     });
                 }
@@ -2545,9 +2771,10 @@ fn on_timer(hwnd: HWND) {
             PENDING.with(|p| {
                 p.borrow_mut().push(Pending {
                     label: ev.label,
-                    started_ms: now,
+                    started_ms: ev.at_ms,
                     before: before.clone(),
                     afters: Vec::new(),
+                    mixed_after_ms: Vec::new(),
                 });
             });
         }
@@ -2561,6 +2788,15 @@ fn on_timer(hwnd: HWND) {
             let idx = e.afters.len();
             if idx < after_ms().len() && now >= e.started_ms + after_ms()[idx] {
                 e.afters.push(snap.clone());
+                // このスナップショットを取るより前(`now` まで)に、このキーより後のキーが押されていたら混入の疑い。
+                let next_press = PRESS_LOG.with(|l| {
+                    l.borrow()
+                        .iter()
+                        .copied()
+                        .find(|t| *t > e.started_ms && *t <= now)
+                });
+                e.mixed_after_ms
+                    .push(next_press.map(|t| t.saturating_sub(e.started_ms)));
             }
         }
         let mut i = 0;
@@ -2581,7 +2817,10 @@ fn on_timer(hwnd: HWND) {
         ));
         append_log(&format!("    前     : {}", e.before.compact()));
         for (i, ms) in after_ms().iter().enumerate() {
-            append_log(&format!("    +{ms}ms: {}", e.afters[i].compact()));
+            let mixed = e.mixed_after_ms[i].map_or_else(String::new, |d| {
+                format!(" [混入: 次の押下が{d}ms後に入っており、この時点の記録は使えない]")
+            });
+            append_log(&format!("    +{ms}ms: {}{mixed}", e.afters[i].compact()));
         }
         let diffs: Vec<String> = after_ms()
             .iter()
@@ -2927,6 +3166,7 @@ fn validate_args() {
         "--free",
         "--grid-adaptive",
         "--hz",
+        "--inject-driver",
         "--msime",
         "--notify",
         "--notify-comp",
@@ -2969,8 +3209,8 @@ fn validate_args() {
         };
         let v = &a[pre.len()..];
         match pre {
-            "--grid=" if !matches!(v, "s1" | "s2" | "s3" | "s4") => {
-                arg_error(&format!("--grid= は s1..s4 のいずれか: {a}"))
+            "--grid=" if !matches!(v, "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "s7") => {
+                arg_error(&format!("--grid= は s1..s7 のいずれか: {a}"))
             }
             "--grid-setup=" if !matches!(v, "keys" | "keys-immreset" | "imm") => arg_error(
                 &format!("--grid-setup= は keys / keys-immreset / imm のいずれか: {a}"),

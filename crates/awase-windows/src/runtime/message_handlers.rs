@@ -8,6 +8,7 @@
 //! sent message（`GetMessageW` の戻り値に現れない）に対応するため、
 //! `tray::tray_wnd_proc` からも呼ばれる（詳細は `tray_wnd_proc` の doc 参照）。
 
+use crate::journal_dump::JournalDumpExt as _;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -514,6 +515,10 @@ pub(crate) unsafe fn handle_wm_timer(
             if let Some(evidence) = app.platform.take_giveup_evidence() {
                 app.ir_follow_after_literal_giveup(evidence);
             }
+            // ADR-258 段階0: 1回目の literal 疑いを journal に記録するだけ(arm しない)。
+            if let Some(first) = app.platform.take_first_literal_evidence() {
+                app.ir_observe_first_literal(first);
+            }
         }
         Some(id) if id == TIMER_TSF_GATE => {
             app.platform.timer.kill(TIMER_TSF_GATE);
@@ -525,6 +530,11 @@ pub(crate) unsafe fn handle_wm_timer(
                 );
                 crate::INPUT_DEFER.replay_later(held);
             }
+        }
+        Some(id) if id == crate::TIMER_LANG_HOLD => {
+            // 一発タイマー（ADR-263 PR 2b）。冒頭で自ら kill する。
+            app.platform.timer.kill(crate::TIMER_LANG_HOLD);
+            app.lang_detect_on_timer();
         }
         Some(id) if id == crate::TIMER_IME_OFF_RESCUE => {
             if let Some(pending_event) = app.take_ime_off_rescue_pending() {
@@ -1404,12 +1414,11 @@ fn current_bug_report_diagnostics(
 fn build_bug_report_keymap_learn_summary(
     app: &Runtime,
 ) -> crate::bug_report::BugReportKeymapLearnSummary {
-    use crate::state::key_effect_runtime as ker;
     // 不具合報告の同梱表との突き合わせ診断は、予測時に実際に使った`(preset, check_against_bundled)`
     // （`RuntimeTableCache`が保持）で行う。GJI/本体どちらのキャッシュかを推測しない。
     crate::bug_report::BugReportKeymapLearnSummary::from_paths(
-        ker::table_file_path().as_deref(),
-        ker::last_attempt_file_path().as_deref(),
+        crate::key_effect_io::table_file_path().as_deref(),
+        crate::key_effect_io::last_attempt_file_path().as_deref(),
         app.use_learned_keymap_table,
         // `use_learned_keymap_table`がfalseの間は`get`が呼ばれずcellsが古いまま残るため併せて見る。
         app.use_learned_keymap_table && app.key_effect_runtime_table.is_active(),
@@ -1517,6 +1526,25 @@ fn build_bug_report_gji_keymap_summary(
         mode_toggle_kana_type_keys,
     } = custom_keymap_fields;
 
+    // ADR-259 決定1: 表のIME関連の行（3列とも固定語彙）と、送らなかった行の理由別の件数。
+    let (custom_keymap_rows, custom_keymap_rows_counts) = if custom_keymap_table_is_effective {
+        let table = raw_ref.custom_keymap_table.as_deref().unwrap_or("");
+        let diag = awase_gji_config::keymap::diagnostic_rows(table);
+        (
+            Some(
+                diag.rows
+                    .into_iter()
+                    .map(crate::bug_report::BugReportCustomKeymapRow::from)
+                    .collect(),
+            ),
+            Some(crate::bug_report::BugReportCustomKeymapRowCounts::from(
+                diag.counts,
+            )),
+        )
+    } else {
+        (None, None)
+    };
+
     let (henkan_classified, muhenkan_classified) =
         crate::gji_charset_autodetect::classify_thumb_key_ime_actions(raw_ref);
     let henkan_classified_kind = henkan_classified
@@ -1543,6 +1571,8 @@ fn build_bug_report_gji_keymap_summary(
         henkan_classified_kind,
         muhenkan_classified_kind,
         muhenkan_dedicated_fn_key_configured,
+        custom_keymap_rows,
+        custom_keymap_rows_counts,
     }
 }
 
@@ -1952,7 +1982,7 @@ pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
 /// WM_DUMP_JOURNAL ハンドラ（Alt+変換→Alt+無変換 ×2 でトリガー）
 pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
     // プローブ棄却統計をダンプ直前にログ出力してリセット
-    let stats = crate::state::probe_admission::drain_stats();
+    let stats = crate::probe_rejection_stats::drain_stats();
     if stats.epoch_mismatch > 0
         || stats.hwnd_mismatch_same_root > 0
         || stats.hwnd_mismatch_cross_root > 0

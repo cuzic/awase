@@ -37,6 +37,8 @@ pub struct WindowsPlatform {
     /// ADR-227: give-up の証拠の判定(純粋)と、runtime が取り出すまでの 1 件。
     giveup_tracker: crate::tsf::literal_facts::GiveUpTracker,
     pending_giveup: Option<crate::tsf::literal_facts::GiveUpEvidence>,
+    /// ADR-258 段階0: 1回目の literal 疑いの証拠(runtime が journal に記録するだけ。arm しない)。
+    pending_first_literal: Option<crate::tsf::literal_facts::FirstLiteralEvidence>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +90,7 @@ impl WindowsPlatform {
             pending_literal_vk: None,
             giveup_tracker: crate::tsf::literal_facts::GiveUpTracker::default(),
             pending_giveup: None,
+            pending_first_literal: None,
         }
     }
 
@@ -274,6 +277,10 @@ impl WindowsPlatform {
                         record.consecutive_before,
                         self.giveup_tracker
                     );
+                    // ADR-258 段階0: 1回目の literal 疑い(`note_record` が数える前に判定する。tracker は変えない)。
+                    if let Some(first) = self.giveup_tracker.first_literal_evidence(&record) {
+                        self.pending_first_literal = Some(first);
+                    }
                     if let Some(evidence) = self.giveup_tracker.note_record(&record) {
                         tracing::debug!(
                             "[giveup-follow] give-up の証拠を保持 cold={} focus_gen={}",
@@ -292,6 +299,13 @@ impl WindowsPlatform {
         if terminal_timer {
             self.flush_pending_literal_vk_as_aborted();
         }
+    }
+
+    /// ADR-258 段階0: 1回目の literal 疑いの証拠を 1 件取り出す(runtime の `TIMER_TSF_PROBE` が give-up の証拠の後に呼ぶ)。
+    pub(crate) fn take_first_literal_evidence(
+        &mut self,
+    ) -> Option<crate::tsf::literal_facts::FirstLiteralEvidence> {
+        self.pending_first_literal.take()
     }
 
     /// ADR-227: give-up の証拠を 1 件取り出す(runtime の `TIMER_TSF_PROBE` が `advance_tsf_probe` の直後に呼ぶ)。
@@ -850,17 +864,23 @@ impl WindowsPlatform {
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
         let outcome = self.output.flush_raw_tsf_literal_recovery();
         let outcome = match outcome {
-            crate::output::RawRecoveryOutcome::Flushed { vk_count } => {
-                crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count }
-            }
+            crate::output::RawRecoveryOutcome::Flushed {
+                vk_count,
+                focus_hwnd_changed,
+            } => crate::journal::DeferredRecoveryOutcomeSummary::Flushed {
+                vk_count,
+                focus_hwnd_changed,
+            },
             crate::output::RawRecoveryOutcome::DiscardedStale {
                 backs,
                 romaji_present,
                 deferred_vk_count,
+                focus_hwnd_changed,
             } => crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale {
                 backs,
                 romaji_present,
                 deferred_vk_count,
+                focus_hwnd_changed,
             },
         };
         let facts = match outcome {
@@ -870,9 +890,13 @@ impl WindowsPlatform {
             crate::journal::DeferredRecoveryOutcomeSummary::SkippedWhilePolling => {
                 crate::journal_policy::DeferredRecoveryFlushFacts::SkippedWhilePolling
             }
-            crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count } => {
-                crate::journal_policy::DeferredRecoveryFlushFacts::Flushed { vk_count }
-            }
+            crate::journal::DeferredRecoveryOutcomeSummary::Flushed {
+                vk_count,
+                focus_hwnd_changed,
+            } => crate::journal_policy::DeferredRecoveryFlushFacts::Flushed {
+                vk_count,
+                focus_hwnd_changed,
+            },
         };
         if crate::journal_policy::deferred_recovery_flush_is_notable(facts) {
             self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
@@ -907,11 +931,17 @@ impl WindowsPlatform {
         // 追随し忘れる退行を招く（/code-review 指摘・検討のうえ据え置き）。
         let vk_count = self.output.take_pending_drain_before_send_flush();
         if vk_count > 0 {
-            let facts = crate::journal_policy::DeferredRecoveryFlushFacts::Flushed { vk_count };
+            let facts = crate::journal_policy::DeferredRecoveryFlushFacts::Flushed {
+                vk_count,
+                focus_hwnd_changed: None,
+            };
             if crate::journal_policy::deferred_recovery_flush_is_notable(facts) {
                 self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
                     trigger: "drain_before_send",
-                    outcome: crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count },
+                    outcome: crate::journal::DeferredRecoveryOutcomeSummary::Flushed {
+                        vk_count,
+                        focus_hwnd_changed: None,
+                    },
                 });
             }
         }

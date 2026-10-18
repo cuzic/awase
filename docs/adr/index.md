@@ -253,6 +253,26 @@
 | [244](244-bug186-msime-chrome-persistent-toggle-follow.md) | 実 Chrome × MS-IME 本体で、半角英数の持続トグル中の IME 側モードキーに Engine を追随させる(BUG-186) | 実装済み・CI 検証済み・実機未確認(2026-10-08、PR #556): 直接観測を同定済み MS-IME 本体へ広げ、英数軸のみ採り、追随時にトグルを手放す。D8: トグル中は古い予測の追跡を捨てる(BUG-192 同梱) |
 | [245](245-half-width-alnum-restore-on-return.md) | プロセスをまたぐフォーカス移動で半角英数トグルを、戻ってきたときに復元する(BUG-193) | 起草・改訂(2026-10-08)。所有者判断=かなに戻す(案 B)。Opus round1〜4 反映済み、実装に進んでよい(PR 3 段)。未決 Q3・Q4(実測)
 | [246](246-raw-tsf-literal-recovery-focus-gen-guard.md) | RAW_TSF_LITERAL の回収に宛先(focus 世代+前景窓)の照合を足す(BUG-194) | 起草(2026-10-08)。実装済み(PR #557、2026-10-08)。実機未確認。 |
+| [247](247-fkey-mode-key-follow.md) | F13〜F24 のモードキー(英数=F16 等)に Engine を追随させる(BUG-196) | 起草(2026-10-10)。両案実装済み、CI の A/B で両案とも単独で効く(実機未確認)。案1の効果は未証明のまま残す。 |
+| [248](248-key-swap-ui-clarity.md) | 「キーの入れ替え」画面の分かりやすさの改善(2軸の状態行・適用ブロックの区切り・見出しの分離・無効理由・すべて解除と復旧手順・キーボード図へのドラッグ&ドロップ・置換への一般化) | 段階1・2と追加分、段階3(3つ以上の循環、PR #606)まで実装。段階3は Opus コードレビュー反映済み・実機の書き込み(向き・UAC・再起動)は未確認。Q2・Q3・ADR-230 段階5は未了。 |
+| [249](249-foreign-injected-modifier-ttl.md) | 他アプリが注入した Ctrl を、注入キー自身の修飾として期限付きで数える(BUG-197、Spokenly) | 起草・改訂(2026-10-10)。Opus round1〜3 で収束(Blocker なし)、実装済み(PR #580) |
+| [250](250-boundary-journal-and-log-unification.md) | journal を shell と core の境界で取り(診断用の Facts/Plan)、境界を通る手書きログを journal からの生成に寄せる(ADR-139 決定 4 の改訂) | 起草(2026-10-10)。所有者が「大きく統合する」を選択、tsf/・output/ もデータを上に渡す方式で統合(ガード :403 は緩めない)。Opus round9 で収束(Blocker 0・Must 0) |
+| [251](251-bug197-report-journal-replay-fixture.md) | BUG-197 の報告 journal を replay fixture として固定する(ADR-249 の回帰テスト (a)) | 実装済み(PR #582、2026-10-10)。実記録2例をラッチ経由で再生、CI の test は pass |
+| [252](252-foreign-ctrl-stuck-nonrecurrence-ci.md) | 注入 Ctrl↓ の KeyUp 欠落後に物理打鍵が通常どおり変換されることを CI で観測する(ADR-249 の stuck 非再発) | 実装・観測済み(2026-10-10、run 38046806775)。S1 は崩れていない |
+| [253](253-bug198-vk-packet-reinject.md) | 他アプリが注入した VK_PACKET の文字を、保留→再注入で失わない(BUG-198) | 起草(2026-10-10)。未実装、原因は仮説(段階0で切り分け) |
+| [254](254-msime-legacy-custom-keytable-read.md) | MS-IME 互換モード(旧UI)の Custom 表の扱い——第一段は「keystyle が既定でないとき MSIME_NATIVE の予測を止める」、表を読む第二段は検証後(ADR-197 の訂正) | 第一段を実装中(2026-10-10)。CI スパイク+実機(dragonflyg4)で、Custom の表は互換 ON のときだけ効く・名前付きスタイルは新旧エンジンで内蔵表が違うことを確認。第二段は未着手 |
+| [255](255-ime-off-thumb-key-space.md) | IME OFF のときだけ無変換/変換を Space にする——`[[keymap]]` に `ime = "off"` を足し、エンジンの判断の後に照合する | 改訂 r7(専用設定から `[[keymap]]` 方式へ)。Opus r7 の Must 3 件を反映済み。実装は報告者の回答待ちで保留 |
+| [256](256-direct-follow-awase-write-in-flight-guard.md) | 直接観測の窓で、届く前の awase 自身の開閉の書き込みを窓内の古い読みで覆さない(BUG-199) | 実装(2026-10-11)。役割のないキーに限定(A1′)、本件 25/30→0、回帰不変、逆向きは同じ run の比較で差なし |
+| [257](257-scancode-map-vm-verification.md) | Scancode Map の効きを、GitHub ホスト型 Windows ランナー上の入れ子 VM(WinPE)で実機相当に検証する | 段階1〜3 を実装・反映済み(2026-10-12、PR #617・#618)。12シナリオ PASS、from 重複は先勝ち。残りは連続実行の測定と、実機に残る確認(ADR-230 段階5) |
+| [258](258-raw-tsf-literal-recovery-requires-ime-open-evidence.md) | BUG-200: BUG-074(ADR-227 (i))の追随が実機で効かない — 先に原因を測る | 起草・D0' 実測済み(2026-10-12): 追随は設計どおり働き、残る害は最初の1打鍵の消失。案 D5'(cold の段の開始時に追随を arm)。Opus 設計レビュー反映済み、段階0(観測だけ + 偽陽性の測定)が先。実装なし |
+| [259](259-bug-report-custom-keymap-rows-and-learned-cells.md) | 不具合報告にカスタム表の IME 関連行と学習表のセルを添付する | 決定1〜3 実装(2026-10-15)・Opus レビュー収束 |
+| [260](260-eisu-toggle-no-mode-prediction-when-observable.md) | 読みが効く窓では英数トグルの入力モードを予測せず、直接観測の予測ガードを軸ごとにする | 実装中(PR #627。Opus レビュー条件付き可、マージ条件は未測定) |
+| [261](261-taskbar-indicator-glyph-observation-for-unreadable-windows.md) | 観測の無い窓の IME 状態を、タスクバーの入力インジケーターの字形から読む(実行環境で表を作り、表に当たったときだけ証拠にする) | 起草(2026-10-15)。実装なし、D0(未測定)を先に |
+| [262](262-nicola-intent-evidence-for-unobserved-windows.md) | 観測の無い窓で、親指シフトの最初の同時打鍵を契機に IME ON を明示する(撤去した force-on の絞った復元、ADR-212 の例外) | round 3 レビューを受けて文面を直した(2026-10-17)。実装なし。段階 A(presync 停止)から |
+| [263](263-episode-start-key-hold-and-language-decision.md) | 観測の無い窓で、エピソード先頭の打鍵を保持し、日本語入力と判定できたときだけ IME ON を送る(ADR-262 の契機を置き換える) | 起草(2026-10-17)。Opus round 1 を受けて書き直し。round 2 待ち |
+| [264](264-indicator-menu-mode-evidence.md) | 利用者がタスクバーの入力インジケーターの右クリックメニューを開いたときだけ、メニューの現在のモードを読んで IME の実状態の証拠にする(読むだけ) | 起草(2026-10-17)。実装なし、CI で測定済み。決定は案 |
+| [265](265-mozc-readable-integration.md) | mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定) | 提案。段階 1(observe のみ)は実装済み(PR #644)。段階 2 の基準は実機と CI で満たしたが、未測定の項目あり・belief への接続は利用者の判断待ち。段階 0 は未着手 |
+| [266](266-initial-input-mode-claims-observed.md) | belief の入力モードの初期値 ObservedRomaji が「観測済み」と名乗る問題(BUG-204)。実害の記録が出るまで挙動は変えず、機序と選択肢を記録する | 起草(2026-10-18)。実装なし。Opus レビュー round 1 を反映して書き直し。決定は保留(所有者判断 Q1) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
@@ -420,13 +440,14 @@ ADR-032 で IME 状態モデルが reducer 化されたあと、運用で見つ�
 | [review/178-opus-review-round1.md](review/178-opus-review-round1.md)〜[round12.md](review/178-opus-review-round12.md) | ADR-178 v1〜v13（バックアップ+復元方式、破棄済み）敵対的レビュー記録（Opus round1〜12） | [178](178-msi-uninstall-preserve-userdata.md) |
 | [review/178-opus-review-v14.md](review/178-opus-review-v14.md) | ADR-178 v14（Permanent+自己修復方式、現行）敵対的レビュー記録 | [178](178-msi-uninstall-preserve-userdata.md) |
 | [review/183-opus-review-round1.md](review/183-opus-review-round1.md) | ADR-183 Opus敵対的レビュー記録（round1） | [183](183-vk-kana-physical-delivery-passthrough.md) |
-| [review/184-opus-review-round1.md](review/184-opus-review-round1.md)〜[round6.md](review/184-opus-review-round6.md) | ADR-184 Opus敵対的レビュー記録（round1〜6） | [184](184-gji-atok-muhenkan-toggle-awase-owned-eisu-hiragana.md) |
-| [review/186-opus-review-round1.md](review/186-opus-review-round1.md)〜[round2.md](review/186-opus-review-round2.md) | ADR-186 Opus敵対的レビュー記録（round1〜2） | [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) |
-| [review/187-opus-review-round1.md](review/187-opus-review-round1.md)〜[round2.md](review/187-opus-review-round2.md) | ADR-187 Opus敵対的レビュー記録（round1〜2） | [187](187-atok-passthrough-mode-key-observed-belief-follow.md) |
-| [review/190-opus-review-round1.md](review/190-opus-review-round1.md)〜[round3.md](review/190-opus-review-round3.md) | ADR-190 Opus敵対的レビュー記録（round1〜3） | [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) |
+| [review/184-opus-review-round1.md](review/184-opus-review-round1.md)〜[round6.md](review/184-opus-review-round6.md) | ADR-184 Opus敵対的レビュー記録（round1〜7） | [184](184-gji-atok-muhenkan-toggle-awase-owned-eisu-hiragana.md) |
+| [review/186-opus-review-round1.md](review/186-opus-review-round1.md)〜[round2.md](review/186-opus-review-round2.md) | ADR-186 Opus敵対的レビュー記録（round1〜7） | [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) |
+| [review/187-opus-review-round1.md](review/187-opus-review-round1.md)〜[round2.md](review/187-opus-review-round2.md) | ADR-187 Opus敵対的レビュー記録（round1〜7） | [187](187-atok-passthrough-mode-key-observed-belief-follow.md) |
+| [review/190-opus-review-round1.md](review/190-opus-review-round1.md)〜[round3.md](review/190-opus-review-round3.md) | ADR-190 Opus敵対的レビュー記録（round1〜7） | [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) |
 | [review/193-opus-review-round1.md](review/193-opus-review-round1.md)〜[round3.md](review/193-opus-review-round3.md)、[plan-round1.md](review/193-opus-review-plan-round1.md)〜[plan-round5.md](review/193-opus-review-plan-round5.md) | ADR-193 Opus敵対的レビュー記録（本体3ラウンド＋計画5ラウンド） | [193](193-richedit-superclass-tsf-native-e2e-target.md) |
-| [review/196-opus-review-round1.md](review/196-opus-review-round1.md)〜[round5.md](review/196-opus-review-round5.md) | ADR-196 Opus敵対的レビュー記録（round1〜5） | [196](196-keymap-learn-truth-priority.md) |
+| [review/196-opus-review-round1.md](review/196-opus-review-round1.md)〜[round5.md](review/196-opus-review-round5.md) | ADR-196 Opus敵対的レビュー記録（round1〜7） | [196](196-keymap-learn-truth-priority.md) |
 | [review/197-opus-review-round1.md](review/197-opus-review-round1.md) | ADR-197 Opus敵対的レビュー記録（round1） | [197](197-msime-legacy-custom-keymap-runtime-warning.md) |
+| [review/255-opus-review-round1.md](review/255-opus-review-round1.md)〜[round7.md](review/255-opus-review-round7.md) | ADR-255 Opus敵対的レビュー記録（round1〜7） | [255](255-ime-off-thumb-key-space.md) |
 
 ---
 

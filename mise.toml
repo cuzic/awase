@@ -9,7 +9,7 @@ rust = "latest"
 # cargo-xwin の環境変数なしで素の cargo のまま通る (Linux 上で実測確認済み)。
 [tasks.check]
 description = "Compile check (Windows target)"
-run = "cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows"
+run = "cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows -p awase-windows-core"
 
 [tasks.clippy]
 description = "Run clippy lints (Windows target)"

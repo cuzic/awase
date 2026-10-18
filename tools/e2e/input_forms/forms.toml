@@ -270,3 +270,24 @@ runs = 8
 # run 37424423737: MS-IME は awase ありで FAIL(4/12 試行)、awase なしの対照は PASS。回数を増やして頻度を見る。
 # MS-IME で ready の「か」1 文字が「かかか」と重複した(run 37423541905)。awase なしの対照(tsx-raw-ext-*)で切り分ける。
 raw_control = true
+
+# Windows Terminal(TsfNative 相当の経路: 窓クラス Windows.UI.Input.InputSite.WindowClass)。
+# 中で term_form.ps1 を動かし、受け取った文字を {dump} へ書き出させて読む(端末の画面は UIA で読みにくいため)。
+# 起動は wt.exe(--title と --suppressApplicationTitle で窓を特定する。-w new で既存の窓を使い回さない)。窓のタイトルは
+# 走行ごとに一意({dump} を含める)にして、前回の残りの窓を掴まない。
+# ADR-258 D0(連続 literal の実測)用。**CI の構成(tsx-ext-*)には入れない**(imes = [] で項目を作らせない。e2e-ime.yml は各項目を
+# imes × intervals で展開するので、空にすれば何も作られない)。実機(dragonflyg4)専用。
+# 終了は close = "wm_close"(窓へ WM_CLOSE だけ。プロセスを殺さない)。Windows Terminal は 1 つのプロセスが利用者の他の窓・
+# シェル・clipwire を持つことがあり、taskkill /F /T だとそれらまで落ちる(2026-10-12 に dragonflyg4 で clipwire が落ちた)。
+[forms.windows-terminal]
+toolkit = "Windows Terminal (WinUI/TSF)"
+setup = "none"
+# 絶対パスが先(WindowsApps のエイリアスは、Rust の Command が PATH の名前 wt.exe では引けない端末がある)。無ければ PATH の名前へ。
+exe = ["C:/Users/cuzic/AppData/Local/Microsoft/WindowsApps/wt.exe", "wt.exe"]
+args = ["-w", "new", "--title", "awase-ts-term {dump}", "--suppressApplicationTitle", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{repo}/tools/e2e/input_apps/terminal/term_form.ps1", "{dump}"]
+window = { title = "awase-ts-term {dump}" }
+any_pid = true
+read = "dump"
+intervals = [20]
+imes = []
+close = "wm_close"

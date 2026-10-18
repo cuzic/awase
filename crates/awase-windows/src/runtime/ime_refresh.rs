@@ -73,6 +73,11 @@ impl Runtime {
         let strategy = self.ir_stage_strategy(&focus);
         self.ir_stage_observe(&focus, strategy, ime_snap);
         self.ir_stage_notify();
+
+        // ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ。無効なら何もしない）。
+        // この tick の観測・通知が終わった後に置く: 記録に添える belief に、同じ tick の更新が入るようにするため
+        // （前に置くと、同じ tick の観測で belief が動いても 1 tick 遅れた値が記録に残り、測定に偏りが出る）。
+        self.mozc_shm_on_tick(focus.focus_changed);
     }
 
     // ── Stage 1: フォーカス検出 ──
@@ -150,6 +155,13 @@ impl Runtime {
     // Phase 3.5: 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
     // Phase 3.7: 診断スナップショット（フォーカス変更後）
 
+    /// ADR-260 決定1: conv の読みが成功したスコープを記録する（`ir_stage_observe` の複雑度を保つために分けた）。
+    fn ir_note_conv_read_ok(&mut self, ime_snap: Option<&crate::ime::ImeSnapshot>) {
+        if ime_snap.is_some_and(|snap| snap.conversion_mode.is_some()) {
+            self.platform_state.ime.note_conv_read_ok();
+        }
+    }
+
     fn ir_stage_observe(
         &mut self,
         focus: &FocusInfo,
@@ -162,6 +174,8 @@ impl Runtime {
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.explicit_intent(),
         );
+        // ADR-260 決定1: conv の読みが成功したスコープを記録する（窓内の読みが効く窓かの判定。フォーカスで失効）。
+        self.ir_note_conv_read_ok(ime_snap);
         // ADR-205: 打鍵中（SkipTyping）でも、prefetch 済みの開閉の読みを外部変化の監視窓に照合する（追加 I/O なし）。
         self.ir_follow_external_change(ime_snap);
         // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。
@@ -289,7 +303,7 @@ impl Runtime {
     /// ADR-188（BUG-149/150 の Chrome 版）・ADR-244（BUG-186）: 読めない窓（`Imm32Unavailable`）の GJI／同定済み MS-IME 本体で、
     /// 物理のモードキー（Shift 付き・FSM の再送出を含む）の直後の直接観測の窓の中に、prefetch 済みの開閉・conv の読みを
     /// belief と照合し、食い違う軸へ追随する。基準値は使わず、awase は IME を書かない。awase 自身が窓の後に書いていたら
-    /// 採らない（R3）。MS-IME 本体は英数の軸だけを採る（`classify_direct_read_for`）。
+    /// 採らない（R3）。MS-IME 本体は英数の軸と、開閉の軸のうち「閉→開」の向きだけを採る（`classify_direct_read_for`）。
     ///
     /// 本体で NATIVE の読み（かな）へ追随したら、awase が立てた持続トグル（半角英数）を OS 書き込みなしで手放す
     /// （`should_abandon_on_observed_follow`）。残すと凍結が続き、次の Shift タップが「開始」でなく「解除」になる。
@@ -384,6 +398,94 @@ impl Runtime {
         if decision == GiveUpFollowDecision::Arm {
             self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
         }
+    }
+
+    /// ADR-258 段階0(観測だけ): 一連の literal 疑いの**1回目**で、「ここで追随を arm していたら何が起きたか」を journal に
+    /// `FirstLiteralObserve` として記録する。**arm しない・読み直しを予約しない・belief を動かさない**(挙動は変えない)。
+    ///
+    /// - 判定(`giveup_follow_decision`)が `Arm`(= GJI × Imm32Unavailable × 明示意図 ON)以外なら、判定だけを記録して終わる。
+    /// - `Arm` のときは、literal の**直後**に prefetch と同じ読み(`read_ime_state_full_async`)を**1回だけ**取り、結果(`read_after`)と
+    ///   所要 ms を journal にだけ書く(belief・監視窓・refresh のパイプラインは通らない)。literal の前の直近の読み(`last_read`)だけでは、
+    ///   本当に閉じている場面と開いている cold-start の場面を区別できない(Opus レビュー K1)ので、後の読みを足した。
+    ///   実利用の不具合報告で `read_after` が `Some(false)` かを集計し、D5' の偽陽性(開いているのに閉と読む)が 0 かを確かめる。
+    ///
+    /// 副作用: 読みは前面窓の `hwndFocus` を対象にする(literal の窓と同じとは限らない)ので、判定から読みの完了までに focus 世代が
+    /// 変わったら読みを捨てて `first_literal_read_discarded_focus_moved` を記録する(別の窓の開閉で偽陽性の集計を汚さない)。
+    /// 読みの所要 ms は `send_health`(IME 書き込みのブレーカ)の入力に 1 サンプル足される(`read_ime_state_full` の既存の挙動)。
+    /// belief・キャッシュ・`imm-learning` の miss カウント・actuation のフェンスには書かない。
+    pub(crate) fn ir_observe_first_literal(
+        &mut self,
+        evidence: crate::tsf::literal_facts::FirstLiteralEvidence,
+    ) {
+        use crate::tsf::literal_facts::GiveUpFollowDecision;
+        let applies = self.external_change_watch_applies();
+        let gen_now = self.platform.output.ime_mode_focus_gen.get();
+        let intent = self.platform_state.ime.explicit_intent();
+        let decision = crate::tsf::literal_facts::giveup_follow_decision(
+            applies,
+            evidence.focus_gen,
+            gen_now,
+            intent,
+        );
+        let outcome = decision.first_literal_outcome();
+        let last_read = if applies {
+            self.platform_state.ime.external_change_last_read()
+        } else {
+            None
+        };
+        let cold_seq = evidence.cold_seq;
+        let consecutive_before = evidence.consecutive_before;
+        tracing::debug!(
+            "[first-literal-observe] cold={cold_seq} outcome={outcome} consecutive_before={consecutive_before} last_read={last_read:?}"
+        );
+        if decision != GiveUpFollowDecision::Arm {
+            self.platform_state.ime.journal.record(
+                crate::journal::JournalEntry::FirstLiteralObserve {
+                    cold_seq,
+                    outcome,
+                    consecutive_before,
+                    last_read,
+                    read_after: None,
+                    read_after_ms: None,
+                },
+            );
+            return;
+        }
+        let t0 = crate::hook::current_tick_ms();
+        let gen_at_observe = gen_now;
+        win32_async::spawn_local(async move {
+            let snap = crate::ime::read_ime_state_full_async().await;
+            let _ = crate::with_app(|app| {
+                let read_after_ms = crate::hook::current_tick_ms().saturating_sub(t0);
+                if app.platform.output.ime_mode_focus_gen.get() != gen_at_observe {
+                    app.platform_state.ime.journal.record(
+                        crate::journal::JournalEntry::FirstLiteralObserve {
+                            cold_seq,
+                            outcome: "first_literal_read_discarded_focus_moved",
+                            consecutive_before,
+                            last_read,
+                            read_after: None,
+                            read_after_ms: Some(read_after_ms),
+                        },
+                    );
+                    return;
+                }
+                tracing::debug!(
+                    "[first-literal-observe] cold={cold_seq} read_after={:?} after {read_after_ms}ms",
+                    snap.ime_on
+                );
+                app.platform_state.ime.journal.record(
+                    crate::journal::JournalEntry::FirstLiteralObserve {
+                        cold_seq,
+                        outcome,
+                        consecutive_before,
+                        last_read,
+                        read_after: snap.ime_on,
+                        read_after_ms: Some(read_after_ms),
+                    },
+                );
+            });
+        });
     }
 
     // ── Stage 4: Engine 通知と次回スケジュール ──
@@ -702,14 +804,19 @@ impl Runtime {
             .is_effectively_tsf_native(self.platform.focus.class_name());
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        // ADR-098 決定1-a（BUG-69 F2 の修正）: TsfNative では `applied` を
+        // ADR-098 決定1-a（BUG-69 F2 の修正）: TsfNative（と、ADR-262 段階 A で実測学習により降格された窓）では `applied` を
         // `Unknown` のまま維持する（`focus_tracking.rs` の hard pre-sync が
         // 非 TsfNative について既に守っている不変条件——INV-A97-1——を
         // ここでも適用する）。何も apply していないのに belief を `applied
         // = Confirmed` として書くと、（撤去済みの）`apply_force_on_for_imm_broken` の
         // スパムガードが恒久的に早期 return し、BUG-16 の修正が TsfNative で
         // 一度も実効しない（詳細は known-bugs.md BUG-69 / ADR-098）。
-        if !new_profile_is_tsf_native {
+        // ADR-262 段階 A: 実測学習で降格された窓（一太郎等）でも写さない。presync より後の同じリフレッシュで
+        // この写しが `Confirmed(effective_open)` を書き戻すと、presync を止めた意味がなくなる。
+        if crate::state::applied_mirror_plan::may_mirror_applied_on_focus(
+            new_profile_is_tsf_native,
+            self.platform.focus.is_demoted_by_learning(),
+        ) {
             let ime_on_now = self.platform_state.ime.effective_open();
             self.platform_state
                 .ime
@@ -780,7 +887,7 @@ impl Runtime {
 
     /// 起動時の初期値のままの `desired_open` を最初の成功観測へ 1 回だけ揃える（BUG-163、代案A）。
     ///
-    /// 揃えた値が「開」で、非 TsfNative なら、フォーカス時にスキップした先同期（`presync_applied_open_on`。GJI への ImeOn
+    /// 揃えた値が「開」で、写してよい窓（非 TsfNative かつ実測学習で降格された窓でない。ADR-262 段階 A）なら、フォーカス時にスキップした先同期（`presync_applied_open_on`。GJI への ImeOn
     /// 通知を含む）をここで行う。「閉」なら行わない（IME を閉じて起動したとき awase が開けない）。
     fn ir_align_placeholder_desired(&mut self) {
         if !self.engine.is_user_enabled() || !self.platform_state.ime.belief.is_japanese_ime() {
@@ -800,7 +907,12 @@ impl Runtime {
             .platform
             .current_app_profile()
             .is_effectively_tsf_native(self.platform.focus.class_name());
-        if open && !tsf_native {
+        if open
+            && crate::state::applied_mirror_plan::may_mirror_applied_on_focus(
+                tsf_native,
+                self.platform.focus.is_demoted_by_learning(),
+            )
+        {
             self.presync_applied_open_on(tick_ms);
         }
     }
@@ -912,6 +1024,20 @@ impl Runtime {
         let now = std::time::Instant::now();
         let facts = self.ir_observe_drift_facts(now);
         let plan = decide_drift_plan(&facts);
+        // ADR-250 段階 1: 計画(送る・見送る・打ち切る・収束・保留)の理由と根拠を、**変わったときだけ**
+        // journal へ載せる(診断用。ログは手書きのまま、記録の有無は挙動を変えない)。edge の判定は
+        // `record` を呼ぶ前に殻が行う(畳んだ tick は呼ばないので、`emit_tracing` の行も出ない)。
+        if let Some(edge) = self.drift_plan_edges.observe(
+            &plan,
+            self.platform.output.ime_mode_focus_gen.get().get(),
+            now,
+        ) {
+            self.platform_state.ime.journal.record(
+                crate::journal::JournalEntry::DriftPlanDecided {
+                    record: edge.into(),
+                },
+            );
+        }
         // E1: 送らない・打ち切る・収束とみなす・保留する決定の根拠（`plan.basis()`）は、殻がログに出すだけ。
         let basis = plan.basis();
         let act = match plan {

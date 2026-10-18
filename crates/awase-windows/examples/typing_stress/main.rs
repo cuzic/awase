@@ -89,6 +89,7 @@
 mod focusrestore;
 mod jitter;
 mod keymatrix;
+mod lateorder;
 mod perturb;
 mod preedit;
 mod suspend;
@@ -724,7 +725,103 @@ struct Ev {
     down: bool,
 }
 
+/// ADR-255: `--inject-driver`(キーボードフィルタドライバ awasekbf 経由、`tools/kbd-inject-driver/`)。ドライバが kbdclass のコールバックへ
+/// スキャンコードを流すので、フックには物理キーと同じ形(LLKHF_INJECTED なし・dwExtraInfo 0)で届く。スキャンコードの無い仮想キー
+/// (`VK_IME_ON` など)は従来どおり SendInput(目印付き)にする。
+mod driver_inject {
+    use std::sync::OnceLock;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            sa: *const core::ffi::c_void,
+            disp: u32,
+            flags: u32,
+            tmpl: isize,
+        ) -> isize;
+        fn DeviceIoControl(
+            h: isize,
+            code: u32,
+            inb: *const core::ffi::c_void,
+            inl: u32,
+            outb: *mut core::ffi::c_void,
+            outl: u32,
+            ret: *mut u32,
+            ov: *mut core::ffi::c_void,
+        ) -> i32;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
+    }
+
+    const IOCTL_INJECT: u32 = 0x000B_2000;
+    /// ドライバへ送った回数(`done` の記録で、ドライバ経路が実際に使われたことを示す)。
+    pub static SENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn handle() -> Option<isize> {
+        static H: OnceLock<Option<isize>> = OnceLock::new();
+        *H.get_or_init(|| {
+            if !crate::has_flag("--inject-driver") {
+                return None;
+            }
+            let name: Vec<u16> = "\\\\.\\AwaseKbInject\0".encode_utf16().collect();
+            // SAFETY: NUL 終端の UTF-16 の名前。失敗は -1 で返る。
+            let h =
+                unsafe { CreateFileW(name.as_ptr(), 0xC000_0000, 3, core::ptr::null(), 3, 0, 0) };
+            if h == -1 || h == 0 {
+                crate::log(
+                    "[TS] --inject-driver: \\\\.\\AwaseKbInject を開けない(SendInput に戻す)",
+                );
+                None
+            } else {
+                crate::log("[TS] --inject-driver: ドライバ(awasekbf)経由でキーを送る(スキャンコードの無いキーだけ SendInput)");
+                Some(h)
+            }
+        })
+    }
+
+    /// ドライバで送れたら true。送れない(`--inject-driver` なし・ドライバなし・スキャンコードの無いキー)なら false。
+    pub fn send(vk: u32, down: bool) -> bool {
+        let Some(h) = handle() else { return false };
+        // MAPVK_VK_TO_VSC_EX(4): 拡張キーは上位バイトが 0xE0。
+        // SAFETY: 引数は値のみ。
+        let sc = unsafe { MapVirtualKeyW(vk, 4) };
+        if sc == 0 {
+            return false;
+        }
+        let make = (sc & 0xFF) as u16;
+        let mut flags: u16 = if down { 0 } else { 1 };
+        if (sc >> 8) == 0xE0 {
+            flags |= 2;
+        }
+        let cmd: [u16; 2] = [make, flags];
+        let mut ret = 0u32;
+        // SAFETY: 4 バイトの入力バッファ。出力なし。
+        SENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let ok = unsafe {
+            DeviceIoControl(
+                h,
+                IOCTL_INJECT,
+                cmd.as_ptr().cast(),
+                4,
+                core::ptr::null_mut(),
+                0,
+                &raw mut ret,
+                core::ptr::null_mut(),
+            )
+        };
+        ok != 0
+    }
+}
+
 fn send_key(vk: u32, scan: u16, down: bool) -> bool {
+    if driver_inject::send(vk, down) {
+        return true;
+    }
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -1544,6 +1641,7 @@ fn worker(form: Form) {
     let drift_on = mode_arg.as_deref() == Some("drift-on");
     let reopen = mode_arg.as_deref() == Some("reopen");
     let preedit = mode_arg.as_deref() == Some("preedit");
+    let lateorder = mode_arg.as_deref() == Some("lateorder");
     let keymatrix = mode_arg.as_deref() == Some("keymatrix");
     let focus_restore = mode_arg.as_deref() == Some("focus-restore");
     let startup = mode_arg.as_deref() == Some("startup");
@@ -1590,7 +1688,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if focus_restore {"focus-restore"} else if reopen {"reopen"} else if preedit {"preedit"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if focus_restore {"focus-restore"} else if reopen {"reopen"} else if preedit {"preedit"} else if lateorder {"lateorder"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "no_awase":has_flag("--no-awase"),"startup_skip_refocus2":has_flag("--startup-skip-refocus2"),
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
@@ -1685,6 +1783,11 @@ fn worker(form: Form) {
     }
     if preedit {
         preedit::preedit_scenario(child, &cells);
+        finish();
+        return;
+    }
+    if lateorder {
+        lateorder::lateorder_scenario(child);
         finish();
         return;
     }
@@ -1792,7 +1895,7 @@ fn worker(form: Form) {
 }
 
 fn finish() {
-    rec(&json!({"type":"done"}));
+    rec(&json!({"type":"done","driver_sends":driver_inject::SENT.load(Ordering::Relaxed)}));
     log("=== 完了 ===");
     target().shutdown();
     if !target().owns_himc() {

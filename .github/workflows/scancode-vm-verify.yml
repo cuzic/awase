@@ -1,0 +1,88 @@
+# Scancode Map の効きを、GitHub ホスト型の Windows ランナー上の入れ子 Hyper-V VM(WinPE)で検証する(ADR-257)。
+# 書き込んだバイト列で OS が実際にキーを入れ替えるか(向き・1回だけの適用・循環)を、ドライバ層を通るキー入力で確かめる。
+# awase 本体・IME は動かさない。required check にしない(入れ子仮想化の不調だけで PR がマージできなくなるのを避ける)。
+# 結果の種類: PASS / FAIL / INCONCLUSIVE(検証不能。前提条件の番号つき。VM を作り直して1回だけ再試行される)。
+# 失敗の通知は cron 行を最後に変えた人に飛ぶ(GitHub の仕様)。見る人は所有者。
+name: scancode-vm-verify
+
+on:
+  pull_request:
+    paths:
+      - crates/awase-windows/src/scancode_map.rs
+      - crates/awase-windows/src/scancode_pairs.rs
+      - crates/awase-windows/src/scancode_apply.rs
+      - crates/awase-windows/src/scancode_editor.rs
+      - crates/awase-settings/src/scancode_map_admin.rs
+      - tools/scancode-vm/**
+      - .github/workflows/scancode-vm-verify.yml
+  push:
+    branches: [develop]
+    paths:
+      - crates/awase-windows/src/scancode_map.rs
+      - crates/awase-windows/src/scancode_pairs.rs
+      - crates/awase-windows/src/scancode_apply.rs
+      - crates/awase-windows/src/scancode_editor.rs
+      - crates/awase-settings/src/scancode_map_admin.rs
+      - tools/scancode-vm/**
+      - .github/workflows/scancode-vm-verify.yml
+  schedule:
+    # 週1回。windows-latest のイメージ更新や ADK パッケージの版変更で、awase のコードが変わらなくても壊れることの検出用。
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: scancode-vm-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    # 再試行を含めて1ジョブ45分(ADR-257 決定11)。
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the ADK WinPE add-on if missing
+        shell: pwsh
+        run: |
+          $adk = 'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit'
+          if (-not (Test-Path "$adk\Windows Preinstallation Environment")) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            choco install windows-adk-winpe -y --no-progress 2>&1 | Select-Object -Last 15
+            Write-Host "choco install took $([int]$sw.Elapsed.TotalSeconds)s"
+          }
+          if (-not (Test-Path "$adk\Windows Preinstallation Environment")) { throw 'WinPE add-on is not installed' }
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/scancode-vm/probe
+
+      - name: "Build the probe (CRT statically linked; WinPE has no VC runtime)"
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --manifest-path tools/scancode-vm/probe/Cargo.toml
+
+      - name: Run the VM scenarios
+        id: vm
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force C:\shots | Out-Null
+          ./tools/scancode-vm/vm-harness.ps1 -ProbeExe "$PWD/tools/scancode-vm/probe/target/release/scancode-probe.exe" *>&1 | Tee-Object -FilePath C:\shots\run.log
+          $code = $LASTEXITCODE
+          # ジョブサマリの1行目に結果の種類を書く(検証不能が緑に紛れない)。
+          $lines = Get-Content C:\shots\run.log
+          $head = if ($code -eq 0) { 'PASS' } elseif ($code -eq 3) { 'INCONCLUSIVE (検証不能。前提条件の番号は下の RESULT 行)' } else { 'FAIL' }
+          $summary = @("## scancode-vm-verify: $head", '', '```')
+          $summary += $lines | Where-Object { $_ -match '^(RESULT|SUMMARY|INCONCLUSIVE)' }
+          $summary += '```'
+          $summary | Add-Content $env:GITHUB_STEP_SUMMARY
+          exit $code
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vm-artifacts
+          path: "C:\\shots\\*"
+          if-no-files-found: warn

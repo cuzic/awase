@@ -37,15 +37,13 @@ mod app {
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
     use awase_keymap_learn_win::RealImeDriver;
+    use awase_windows::key_effect_io::current_fingerprint_probe;
     use awase_windows::state::ime_kind::TipIdentity;
     use awase_windows::state::key_effect_predictor::TableKey;
-    use awase_windows::state::key_effect_runtime::current_fingerprint_probe;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    const KEYS: [u32; 14] = [
-        0x1D, 0x1C, 0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1B, 0x0D, 0x20, 0x08, 0x41,
-    ];
+    use awase_keymap_learn::LEARN_KEYS as KEYS;
 
     /// ADR-196決定1b-8: 判定書き換えモード起動フラグ。`awase-settings`の
     /// 「学習結果を使う」ボタン([ADR196-T4](../../../docs/tasks/adr196-t4-ui-status-and-adoption.md)、
@@ -300,7 +298,7 @@ mod app {
 
     /// ADR-195段階3〜4への結合(B1対応): 表を永続化フォーマットへ変換し、一時ファイル+
     /// renameで原子的に書き込む。キーマップ設定の指紋(ADR-195段階8、`awase_windows::state::
-    /// key_effect_runtime::current_fingerprint_probe`)と、IME本体の版(`env_version`、
+    /// key_effect_io::current_fingerprint_probe`)と、IME本体の版(`env_version`、
     /// ADR-196決定3b)を書く。指紋を計算できなかった(`Unavailable`)場合の判定の格下げ
     /// (`gate_on_fingerprint`)は呼び出し側が`judgement`へ反映済みであること。
     ///

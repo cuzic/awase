@@ -7,8 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const ENDPOINT_URL: &str = "https://report.awase.cc/v1/reports";
-pub const REPORT_HOST: &str = "report.awase.cc";
 // ADR-095 leaves the exact R2 lifecycle rule undecided. The client displays
 // 90 days as a practical review window with a clear deletion expectation.
 pub const RETENTION_HINT: &str = "約90日間保管後に自動削除";
@@ -259,6 +257,64 @@ pub struct BugReportGjiKeymapSummary {
     /// GJI/MS-IME共通の意味を持つため両summary型に同じフィールドを持たせる
     /// （専用Fnキーの有無自体は診断に有用なので残す）。
     pub muhenkan_dedicated_fn_key_configured: bool,
+    /// `custom_keymap_table_is_effective`のときだけ`Some`。IME関連の行（ADR-259 決定1）。3列とも固定語彙
+    /// （`BugReportCustomKeymapRow`は`From<DiagnosticRow>`でしか作れない）。旧JSONは`None`として読める。
+    #[serde(default)]
+    pub custom_keymap_rows: Option<Vec<BugReportCustomKeymapRow>>,
+    /// 送らなかった行の理由別の件数（ADR-259 決定1-4）。`custom_keymap_rows`と同時に`Some`。
+    #[serde(default)]
+    pub custom_keymap_rows_counts: Option<BugReportCustomKeymapRowCounts>,
+}
+
+/// `custom_keymap_table`のIME関連の1行（ADR-259 決定1）。フィールドは`serde`のためだけにあり、
+/// 作り方は`From<awase_gji_config::keymap::DiagnosticRow>`の1つに絞る（`DiagnosticRow`の3フィールドは
+/// すべて`'static`で、`config1.db`由来の`String`が入る余地が型に無い）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportCustomKeymapRow {
+    status: String,
+    keys: Vec<String>,
+    command: String,
+}
+
+impl From<awase_gji_config::keymap::DiagnosticRow> for BugReportCustomKeymapRow {
+    fn from(row: awase_gji_config::keymap::DiagnosticRow) -> Self {
+        Self {
+            status: row.status.to_owned(),
+            keys: row.keys.iter().map(|k| (*k).to_owned()).collect(),
+            command: row.command.to_owned(),
+        }
+    }
+}
+
+/// 送らなかった行の理由別の件数（`awase_gji_config::keymap::DiagnosticRowCounts`と同じ。ADR-259 決定1-4）。
+/// 不変条件は元の型のdoc参照。内容は持たない。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BugReportCustomKeymapRowCounts {
+    pub total_rows: u32,
+    pub sent: u32,
+    pub merged_duplicates: u32,
+    pub other_command: u32,
+    pub unknown_ime_like_command: u32,
+    pub unknown_status: u32,
+    pub modified_key_ime_rows: u32,
+    pub unmapped_key: u32,
+    pub kanji_rows: u32,
+}
+
+impl From<awase_gji_config::keymap::DiagnosticRowCounts> for BugReportCustomKeymapRowCounts {
+    fn from(c: awase_gji_config::keymap::DiagnosticRowCounts) -> Self {
+        Self {
+            total_rows: c.total_rows,
+            sent: c.sent,
+            merged_duplicates: c.merged_duplicates,
+            other_command: c.other_command,
+            unknown_ime_like_command: c.unknown_ime_like_command,
+            unknown_status: c.unknown_status,
+            modified_key_ime_rows: c.modified_key_ime_rows,
+            unmapped_key: c.unmapped_key,
+            kanji_rows: c.kanji_rows,
+        }
+    }
 }
 
 /// MS-IME「キーとタッチのカスタマイズ」（シンプルキー割当て）のレジストリ
@@ -365,6 +421,10 @@ pub struct BugReportKeymapLearnSummary {
     /// （例: `HankakuZenkaku:closed_stays_closed`）。採用の可否には依らず、読めた表のセルから求める。
     #[serde(default)]
     pub toggle_contradictions: Vec<String>,
+    /// 学習表のセル（ADR-259 決定2）。`table_file == "loaded"`のときだけ。書式は[`format_keymap_learn_cell`]。
+    /// 件数の上限は[`KEYMAP_LEARN_CELLS_MAX`]で、超えた分は`cell_count − cells.len()`で分かる。
+    #[serde(default)]
+    pub cells: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -386,6 +446,75 @@ pub struct BugReportKeymapLearnBundledDiff {
 }
 
 pub const KEYMAP_LEARN_MISMATCH_LIST_MAX: usize = 64;
+
+/// 添付する学習表のセル数の上限（ADR-259 決定2）。学習キー数 × 1キーあたりの状態数から導く。
+/// 正規の表はここに届かず、手で作った・壊れたファイルへの防衛としてだけ意味がある。
+pub const KEYMAP_LEARN_CELLS_MAX: usize =
+    awase_keymap_learn::LEARN_KEYS.len() * awase_keymap_learn::LEARN_STATUSES_PER_KEY;
+
+/// 学習表の1セルを固定書式にする（ADR-259 決定2）。
+///
+/// `open,mode,composing,key>open,mode,composing,disp[印]`。`mode`は16進で`raw & 0x0B`（半角英数〈conv 0x10〉は0）、
+/// `key`はVKの16進、`disp`は`N`/`K`/`D`/`C`（入力中でなければ`N`）。`prediction`の無いセルは`>-`。
+/// 印は「表が採用されていれば予測に使われるか」で、実際に使われているかは`in_use`を見る:
+/// `!k`=キーが予測の表に無い / `!m`=開状態でmodeが表せない / `!c`=閉グループが食い違いグループごと捨てられた /
+/// `~`=閉グループのmodeが食い違い追跡が捨てられる（予測には使われる）。
+#[must_use]
+pub fn format_keymap_learn_cell(
+    cell: &awase_keymap_learn::persist::PersistedCell,
+    usage: crate::state::key_effect_runtime::CellUse,
+) -> String {
+    use crate::state::key_effect_runtime::CellUse;
+    use awase_keymap_learn::model::Disposition;
+    let b = |v: bool| u8::from(v);
+    let s = cell.status;
+    let head = format!(
+        "{},{:x},{},{:x}",
+        b(s.open),
+        s.mode,
+        b(s.composing),
+        cell.key.0
+    );
+    let tail = cell.prediction.map_or_else(
+        || "-".to_owned(),
+        |o| {
+            let disp = match o.disp {
+                Disposition::None => 'N',
+                Disposition::Kept => 'K',
+                Disposition::Discarded => 'D',
+                Disposition::Committed => 'C',
+            };
+            format!(
+                "{},{:x},{},{disp}",
+                b(o.status.open),
+                o.status.mode,
+                b(o.status.composing)
+            )
+        },
+    );
+    let mark = match usage {
+        CellUse::Used | CellUse::NoPrediction => "",
+        CellUse::NoKey => "!k",
+        CellUse::ModeUnrepresentable => "!m",
+        CellUse::ClosedGroupDropped => "!c",
+        CellUse::ClosedGroupTrackingDropped => "~",
+    };
+    format!("{head}>{tail}{mark}")
+}
+
+/// 学習表のセルを`(status, key)`順（`Status`のderive `Ord`＝open, mode, composing）に並べ、
+/// [`KEYMAP_LEARN_CELLS_MAX`]件までを固定書式にする。
+#[must_use]
+pub fn keymap_learn_cells(cells: &[awase_keymap_learn::persist::PersistedCell]) -> Vec<String> {
+    let usage = crate::state::key_effect_runtime::classify_cell_use(cells);
+    let mut zipped: Vec<_> = cells.iter().zip(usage).collect();
+    zipped.sort_by_key(|(c, _)| (c.status, c.key));
+    zipped
+        .into_iter()
+        .take(KEYMAP_LEARN_CELLS_MAX)
+        .map(|(c, u)| format_keymap_learn_cell(c, u))
+        .collect()
+}
 
 fn clamp_u32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
@@ -441,8 +570,11 @@ impl BugReportKeymapLearnSummary {
         validation_key: Option<(crate::state::key_effect_predictor::KeymapPreset, bool)>,
     ) -> Self {
         use crate::state::key_effect_runtime as ker;
-        let table = table_path.map_or(Err(ker::RejectReason::NotFound), ker::read_persisted_table);
-        let last_attempt = last_attempt_path.map(ker::read_persisted_table);
+        let table = table_path.map_or(
+            Err(ker::RejectReason::NotFound),
+            crate::key_effect_io::read_persisted_table,
+        );
+        let last_attempt = last_attempt_path.map(crate::key_effect_io::read_persisted_table);
         let bundled_diff = table.as_ref().ok().and_then(|t| {
             let (preset, true) = validation_key? else {
                 return None;
@@ -525,6 +657,7 @@ impl BugReportKeymapLearnSummary {
                 }),
                 bundled_diff,
                 last_attempt_judgement,
+                cells: keymap_learn_cells(&t.cells),
                 toggle_contradictions: {
                     let cells = crate::state::key_effect_runtime::convert_cells(&t.cells);
                     crate::state::key_effect_table::NARROWABLE_KEYS
@@ -1560,6 +1693,16 @@ mod tests {
             henkan_classified_kind: Some("On".to_owned()),
             muhenkan_classified_kind: Some("Off".to_owned()),
             muhenkan_dedicated_fn_key_configured: false,
+            custom_keymap_rows: Some(vec![awase_gji_config::keymap::diagnostic_rows(
+                "DirectInput\tEisu\tIMEOn\n",
+            )
+            .rows[0]
+                .into()]),
+            custom_keymap_rows_counts: Some(
+                awase_gji_config::keymap::diagnostic_rows("DirectInput\tEisu\tIMEOn\n")
+                    .counts
+                    .into(),
+            ),
         }
     }
 
@@ -1587,7 +1730,87 @@ mod tests {
             bundled_diff: None,
             last_attempt_judgement: None,
             toggle_contradictions: Vec::new(),
+            cells: vec!["0,0,0,f0>1,9,0,N".to_owned()],
         }
+    }
+
+    fn cell_of(
+        open: bool,
+        mode: u8,
+        composing: bool,
+        key: u16,
+        pred: Option<(bool, u8, awase_keymap_learn::model::Disposition)>,
+    ) -> awase_keymap_learn::persist::PersistedCell {
+        use awase_keymap_learn::model::{KeyId, Outcome, Status};
+        awase_keymap_learn::persist::PersistedCell {
+            status: Status {
+                open,
+                mode,
+                composing,
+            },
+            key: KeyId(key),
+            prediction: pred.map(|(o, m, disp)| Outcome {
+                status: Status {
+                    open: o,
+                    mode: m,
+                    composing: false,
+                },
+                disp,
+            }),
+        }
+    }
+
+    /// ADR-259 決定2: 書式・並び順・印。閉状態の英数が食い違うグループは `!c`、キーが表に無い 0x41 は `!k`。
+    #[test]
+    fn keymap_learn_cells_format_order_and_marks() {
+        use awase_keymap_learn::model::Disposition::{Kept, None as NoDisp};
+        let cells = vec![
+            cell_of(true, 0x09, false, 0xF2, Some((true, 0x09, Kept))),
+            cell_of(false, 0x00, false, 0xF0, Some((true, 0x09, NoDisp))),
+            cell_of(false, 0x09, false, 0xF0, Some((false, 0x09, NoDisp))),
+            cell_of(true, 0x09, false, 0x41, Some((true, 0x09, Kept))),
+            cell_of(true, 0x01, false, 0xF2, None),
+        ];
+        let out = keymap_learn_cells(&cells);
+        assert_eq!(
+            out,
+            vec![
+                // 閉(open=false)が先。Status の Ord は (open, mode, composing)。
+                "0,0,0,f0>1,9,0,N!c".to_owned(),
+                "0,9,0,f0>0,9,0,N!c".to_owned(),
+                // 開・mode=1: 予測なしで、開状態で mode が表せないが、prediction が無いので >- (印は !m)。
+                "1,1,0,f2>-!m".to_owned(),
+                "1,9,0,41>1,9,0,K!k".to_owned(),
+                "1,9,0,f2>1,9,0,K".to_owned(),
+            ]
+        );
+    }
+
+    /// 件数の上限は学習キー数 × 状態数から導いた定数で、超えた分は切る。
+    #[test]
+    fn keymap_learn_cells_are_capped() {
+        assert_eq!(KEYMAP_LEARN_CELLS_MAX, 14 * 32);
+        let many: Vec<_> = (0..(KEYMAP_LEARN_CELLS_MAX + 10))
+            .map(|i| cell_of(true, 0x09, false, u16::try_from(0x100 + i).unwrap(), None))
+            .collect();
+        assert_eq!(keymap_learn_cells(&many).len(), KEYMAP_LEARN_CELLS_MAX);
+    }
+
+    /// 新フィールドが無い旧形式の JSON も読める（`load_diagnostics` が `.ok()` で全診断を消さない）。
+    #[test]
+    fn gji_keymap_and_learn_summaries_without_new_fields_still_deserialize() {
+        let mut v = serde_json::to_value(test_gji_keymap_summary()).unwrap();
+        let o = v.as_object_mut().unwrap();
+        o.remove("custom_keymap_rows");
+        o.remove("custom_keymap_rows_counts");
+        let parsed: BugReportGjiKeymapSummary = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed.custom_keymap_rows, None);
+        assert_eq!(parsed.custom_keymap_rows_counts, None);
+
+        let mut v = serde_json::to_value(test_keymap_learn_summary()).unwrap();
+        v.as_object_mut().unwrap().remove("cells");
+        let parsed: BugReportKeymapLearnSummary = serde_json::from_value(v).unwrap();
+        assert!(parsed.cells.is_empty());
     }
 
     fn learn_pcell(key: u16) -> awase_keymap_learn::persist::PersistedCell {

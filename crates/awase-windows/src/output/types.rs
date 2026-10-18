@@ -13,17 +13,18 @@ pub(crate) use crate::state::injection_mode::InjectionMode;
 ///   2. `InjectionHint::ForceVk`  → Vk
 ///   3. `AppKind::TsfNative`      → Vk
 ///   4. それ以外 (Win32 / Uwp)   → Unicode
-impl From<(InjectionHint, AppKind)> for InjectionMode {
-    fn from((hint, app_kind): (InjectionHint, AppKind)) -> Self {
-        match hint {
-            InjectionHint::ForceTsf => Self::Tsf,
-            InjectionHint::ForceVk => Self::Vk,
-            InjectionHint::Default => {
-                if app_kind == AppKind::TsfNative {
-                    Self::Vk
-                } else {
-                    Self::Unicode
-                }
+///
+/// 核の型 `InjectionMode` への `From<(InjectionHint, AppKind)>` は書けない（`InjectionHint` が殻の型、
+/// タプルは外部の型なので孤児規則に反する。ADR-229 D4）ため関数にした。
+pub(crate) fn injection_mode_for(hint: InjectionHint, app_kind: AppKind) -> InjectionMode {
+    match hint {
+        InjectionHint::ForceTsf => InjectionMode::Tsf,
+        InjectionHint::ForceVk => InjectionMode::Vk,
+        InjectionHint::Default => {
+            if app_kind == AppKind::TsfNative {
+                InjectionMode::Vk
+            } else {
+                InjectionMode::Unicode
             }
         }
     }

@@ -8,6 +8,8 @@
 //! このファイルも走査し、`_in_scope` 版の呼び出しがファイルごとに固定件数であることを確認する
 //! （`shell_methods_only_read_scope_once_and_delegate` が殻の中身も固定する）。
 
+use std::time::Instant;
+
 use super::{
     ApplyGeneration, FocusStore, GateStore, ImeApplyAcceptance, ImeStateHub, KeymapStore,
     PlatformState,
@@ -19,7 +21,10 @@ use crate::state::TickMs;
 // `pub(crate) fn` ではない書き方で置く（殻の形の検査は `pub(crate) fn` ごとに委譲 1 行を要求するため）。
 impl ImeStateHub {
     fn new() -> Self {
-        Self::with_clock(HubClock::wall(crate::hook::current_tick_ms))
+        Self::with_clock(
+            HubClock::wall(crate::hook::current_tick_ms, Instant::now),
+            quanta::Clock::new(),
+        )
     }
 }
 
@@ -78,6 +83,11 @@ impl ImeStateHub {
         self.expire_mode_key_pass_mark_in_scope(now_ms, tick_ms, crate::win32::foreground_scope())
     }
 
+    /// 現在のフォアグラウンドの直近の読み(ADR-258 段階0 の journal 記録用)。
+    pub(crate) fn external_change_last_read(&self) -> Option<bool> {
+        self.external_change_last_read_in_scope(crate::win32::foreground_scope())
+    }
+
     /// 外部注入の IME キーを見たら呼ぶ（読めない窓のみ）。現在のフォアグラウンドに対する監視窓を開く／延ばす。
     pub(crate) fn arm_external_change_watch(&mut self, now_ms: u64) {
         self.arm_external_change_watch_in_scope(now_ms, crate::win32::foreground_scope());
@@ -108,8 +118,17 @@ impl ImeStateHub {
 
     /// 物理のモードキー通過／FSM 再送出を見たら呼ぶ（GJI／同定済み MS-IME 本体 × `Imm32Unavailable`、ADR-188・ADR-244）。現在のフォアグラウンドに
     /// 対する直接観測の窓を開く／延ばす。
-    pub(crate) fn arm_direct_external_change_watch(&mut self, now_ms: u64) {
-        self.arm_direct_external_change_watch_in_scope(now_ms, crate::win32::foreground_scope());
+    /// `hold`: ADR-256 の保持を効かせてよいか（窓を開いたキーの役割の判定、`awase_write_hold_admission`）。
+    pub(crate) fn arm_direct_external_change_watch(
+        &mut self,
+        now_ms: u64,
+        hold: crate::state::external_change_watch::HoldAdmission,
+    ) {
+        self.arm_direct_external_change_watch_in_scope(
+            now_ms,
+            hold,
+            crate::win32::foreground_scope(),
+        );
     }
 
     /// 直接観測の窓の中の prefetch 済みの読みを belief と照合し、食い違う軸へ追随する（ADR-188）。
@@ -131,6 +150,17 @@ impl ImeStateHub {
             kind,
             crate::win32::foreground_scope(),
         )
+    }
+
+    /// ADR-260 決定1: 現在の前景スコープで、`conversion_mode` を持つ IME の読みが成功したことを記録する。
+    pub(crate) fn note_conv_read_ok(&mut self) {
+        self.note_conv_read_ok_in_scope(crate::win32::foreground_scope());
+    }
+
+    /// ADR-260 決定1: 現在の前景スコープが「窓内の読みが効く窓」か（フォーカスを得てから読みが成功したか）。
+    #[must_use]
+    pub(crate) fn conv_read_ok_now(&self) -> bool {
+        self.conv_read_ok_in_scope(crate::win32::foreground_scope())
     }
 
     /// 通過マークの窓が**切れた後**の最初の成功観測で、`desired_open`を観測へ揃える（BUG-158追補2）。

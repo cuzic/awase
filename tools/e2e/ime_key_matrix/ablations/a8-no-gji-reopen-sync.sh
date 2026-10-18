@@ -3,7 +3,7 @@
 # 修正前の挙動(物理 OFF→ON の後も GjiFsm が OnWarm/OffCold のまま)を再現し、sc-reopen-* の判定が退行を検出できる(FAIL する)ことの
 # 負の対照にする(ADR-203 (d)「修正前 FAIL・修正後 PASS の両方を実測」)。
 python3 - <<'PY'
-p1 = 'crates/awase-windows/src/state/gji_direct_mechanism.rs'
+p1 = 'crates/awase-windows-core/src/state/gji_direct_mechanism.rs'
 s = open(p1, encoding='utf8').read()
 old1 = "    send_has_romaji\n        && !injection_is_unicode"
 new1 = "    false\n        && send_has_romaji\n        && !injection_is_unicode"

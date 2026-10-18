@@ -74,6 +74,124 @@ impl Preset {
     }
 }
 
+impl Preset {
+    /// 無変換/変換のうち、このプリセットの `DirectInput` に**無修飾の行**を持つもの（ADR-255 決定2 条件6-ii）。
+    /// コマンドの種類（`IMEOn`・`Reconvert` 等）は問わない（行があれば機能あり）。出典は Mozc `b4bbc42f` の
+    /// `{ms-ime,atok,kotoeri,mobile}.tsv`。Mozc の更新では自動で追随しないので、手で取り直し、
+    /// テスト `preset_direct_input_vk_names_match_mozc_rows` で突き合わせる。
+    /// MS-IME/MOBILE は変換が `Reconvert`、ATOK は両方 `IMEOn`、KOTOERI は両方行なし。
+    const fn direct_input_vk_names(self) -> &'static [&'static str] {
+        match self {
+            Self::MsIme | Self::Mobile => &["VK_CONVERT"],
+            Self::Atok => &["VK_NONCONVERT", "VK_CONVERT"],
+            Self::Kotoeri => &[],
+        }
+    }
+}
+
+/// 直接入力（IME OFF）状態で、このキーに IME の機能があるか（ADR-255 決定2 条件6-ii）。
+/// 発動（Space 化）してよいのは `NoFunction` のときだけ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyDirectInputEffect {
+    /// 行がある（`IMEOn` に限らず `Reconvert`・`InsertSpace` 等も含む）、または既知のオーバーレイが書き換える。
+    HasFunction,
+    /// 表が読めて、このキーの `DirectInput` の無修飾の行もオーバーレイも無い。
+    NoFunction,
+    /// 判断できない（未知の `session_keymap`・未知のオーバーレイ・候補外のキー）。発動しない。
+    Unknown,
+}
+
+/// `vk_name`（無変換/変換のみ。他は `Unknown`）が、この GJI 設定の直接入力状態で IME の機能を持つか（ADR-255）。
+///
+/// - 未知の `session_keymap`（`source()` が `Unknown`）・未知のオーバーレイは `Unknown`（決定6-3、R4-S2）。
+/// - 既知のオーバーレイ（`OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF`）は無変換/変換の行を書き換えるので `HasFunction`。
+/// - CUSTOM は無修飾のキー名の完全一致の行だけを読む（`Shift Henkan` は数えない。後勝ち）。
+///   `Direct` は `DirectInput` の別名。`DirectInput` は継承を持たない。
+/// - TIP 未同定・MS-IME 本体・表が読めないときの `Unknown` は、この関数を呼ばない呼び出し側の責務。
+#[must_use]
+pub fn direct_input_effect(
+    session_keymap: Option<i64>,
+    custom_keymap_table: Option<&str>,
+    overlay_keymaps: &[i64],
+    vk_name: &str,
+) -> KeyDirectInputEffect {
+    if !matches!(vk_name, "VK_CONVERT" | "VK_NONCONVERT") {
+        return KeyDirectInputEffect::Unknown;
+    }
+    if overlay_keymaps
+        .iter()
+        .any(|&o| o != SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF)
+    {
+        return KeyDirectInputEffect::Unknown;
+    }
+    if !overlay_keymaps.is_empty() {
+        return KeyDirectInputEffect::HasFunction;
+    }
+    let has_row = match source(session_keymap, custom_keymap_table) {
+        Source::Preset(preset) => preset.direct_input_vk_names().contains(&vk_name),
+        Source::Custom(table) => {
+            let rows = parse_custom_keymap_table(table);
+            KeyStates::of(&rows, vk_name).0[Status::DirectInput.index()].is_some()
+        }
+        Source::Unknown => return KeyDirectInputEffect::Unknown,
+    };
+    if has_row {
+        KeyDirectInputEffect::HasFunction
+    } else {
+        KeyDirectInputEffect::NoFunction
+    }
+}
+
+/// F13〜F24 のキーが、この GJI 設定のどこか（どの状態・修飾の有無を問わず）に IME の機能を持つか（ADR-256、BUG-199）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FKeyFunction {
+    /// 行がある（プリセットの MS-IME/MOBILE の F13、CUSTOM の表にそのキーを含む行）。IME の状態を変えうる。
+    HasFunction,
+    /// 表が読めて、このキーの行がどこにも無い。GJI はこのキーで IME の状態を変えない。
+    NoFunction,
+    /// 判断できない（F13〜F24 以外・未知の `session_keymap`・overlay あり）。
+    Unknown,
+}
+
+/// `vk_name`（`VK_F13`〜`VK_F24`。他は `Unknown`）が、この GJI 設定のどこかで IME の機能を持つか（ADR-256）。
+///
+/// - プリセット: Mozc `b4bbc42f` の TSV では F13〜F24 の行は MS-IME/MOBILE の `DirectInput F13 IMEOn` だけ
+///   （テスト `preset_fkey_function_matches_mozc_tsv`）。
+/// - CUSTOM: 状態・コマンドを問わず、キー表記の最後の語（修飾を除いたメインキー）がそのキーの行が 1 つでもあれば `HasFunction`
+///   （`Shift F18` も数える。修飾付きで押したかは呼び出し側が別に見る）。
+/// - overlay があるときは書き換える行を数えないので `Unknown`（決定6-3 と同じく判断できない側へ倒す）。
+#[must_use]
+pub fn fkey_function(
+    session_keymap: Option<i64>,
+    custom_keymap_table: Option<&str>,
+    overlay_keymaps: &[i64],
+    vk_name: &str,
+) -> FKeyFunction {
+    let Some(key) = vk_name.strip_prefix("VK_") else {
+        return FKeyFunction::Unknown;
+    };
+    let is_f13_to_f24 = key
+        .strip_prefix('F')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (13..=24).contains(&n));
+    if !is_f13_to_f24 || !overlay_keymaps.is_empty() {
+        return FKeyFunction::Unknown;
+    }
+    let has_row = match source(session_keymap, custom_keymap_table) {
+        Source::Preset(Preset::MsIme | Preset::Mobile) => key == "F13",
+        Source::Preset(Preset::Atok | Preset::Kotoeri) => false,
+        Source::Custom(table) => parse_custom_keymap_table(table)
+            .iter()
+            .any(|row| row.key.split_whitespace().next_back() == Some(key)),
+        Source::Unknown => return FKeyFunction::Unknown,
+    };
+    if has_row {
+        FKeyFunction::HasFunction
+    } else {
+        FKeyFunction::NoFunction
+    }
+}
+
 /// 役割を何から決めるか（決定4 の判別）。
 enum Source<'a> {
     Preset(Preset),
@@ -273,6 +391,97 @@ impl KeyStates {
         Status::OPEN
             .iter()
             .all(|&status| self.effective(status) == Some(Effect::Close))
+    }
+}
+
+/// CUSTOM の表の 1 キーの 1 打鍵が、IME の開閉と入力モードに与える効果（ADR-247）。
+///
+/// 開閉トグルではない（[`KeyRole`] を持たない）が、入力モードを変えるキー（例: F16 を半角英数へ SET）を
+/// awase の打鍵時予測へ渡すために使う。`None` のフィールドは「変えない／分からない」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyModeEffect {
+    /// `Some(true)`=開く、`Some(false)`=閉じる。
+    pub open: Option<bool>,
+    /// 絶対設定系のコマンドが SET する入力モード。相対トグル系（`ToggleAlphanumericMode` 等）は `None`。
+    pub mode: Option<crate::command::GjiCompositionMode>,
+}
+
+/// CUSTOM の表で、`vk_name`（無修飾の打鍵）が `open`／`composing` の状態で与える効果（ADR-247）。
+///
+/// - 評価するのは CUSTOM かつ表が空でないときだけ（プリセットは学習表・同梱表が担当）。それ以外・候補外のキー・
+///   行が無いキーは `None`。`overlay_keymaps` があるときは書き換える行が分からないので `None`（決定6-3と同じ）。
+/// - 状態は閉=`DirectInput`、開かつ未確定文字列なし=`Precomposition`、開かつ入力中=`Composition`。変換中（`Conversion`）は
+///   段階の追跡に依存するので扱わない（呼び出し側が `Conversion` を渡さない）。状態の継承と後勝ちは Mozc に揃える。
+/// - `DirectInput` の絶対設定系コマンドは IME を開く（決定13・T1(c) 実機確認済み）。
+/// - `IMEOn`/`IMEOff`/絶対設定系以外のコマンド（相対トグル・未知）は `None`（予測しない）。
+#[must_use]
+pub fn custom_key_mode_effect(
+    session_keymap: Option<i64>,
+    custom_keymap_table: Option<&str>,
+    overlay_keymaps: &[i64],
+    vk_name: &str,
+    open: bool,
+    composing: bool,
+) -> Option<KeyModeEffect> {
+    if !ROLE_CANDIDATE_VK_NAMES.contains(&vk_name) || !overlay_keymaps.is_empty() {
+        return None;
+    }
+    let Source::Custom(table) = source(session_keymap, custom_keymap_table) else {
+        return None;
+    };
+    let status = match (open, composing) {
+        (false, _) => Status::DirectInput,
+        (true, false) => Status::Precomposition,
+        (true, true) => Status::Composition,
+    };
+    let mut commands: [Option<&str>; 7] = [None; 7];
+    let rows = parse_custom_keymap_table(table);
+    for row in &rows {
+        if !mozc_key_vk_names(&row.key).contains(&vk_name) {
+            continue;
+        }
+        if let Some(st) = Status::parse(&row.status) {
+            commands[st.index()] = Some(row.command.as_str());
+        }
+    }
+    let command = commands[status.index()].or_else(|| {
+        status
+            .inherits_from()
+            .and_then(|parent| commands[parent.index()])
+    })?;
+    command_mode_effect(status, command)
+}
+
+fn command_mode_effect(status: Status, command: &str) -> Option<KeyModeEffect> {
+    use crate::command::GjiCompositionMode as Mode;
+    let absolute = command
+        .strip_prefix("CompositionMode")
+        .or_else(|| command.strip_prefix("InputMode"))
+        .and_then(|name| match name {
+            "Hiragana" => Some(Mode::Hiragana),
+            "FullKatakana" => Some(Mode::FullKatakana),
+            "HalfKatakana" => Some(Mode::HalfKatakana),
+            "FullAlphanumeric" => Some(Mode::FullAlphanumeric),
+            "HalfAlphanumeric" => Some(Mode::HalfAlphanumeric),
+            _ => None,
+        });
+    if let Some(mode) = absolute {
+        // 閉状態の絶対設定は IME を開く。開状態では開閉は変えない。
+        return Some(KeyModeEffect {
+            open: (status == Status::DirectInput).then_some(true),
+            mode: Some(mode),
+        });
+    }
+    match classify_command(command) {
+        GjiModeCommand::ImeOn => Some(KeyModeEffect {
+            open: Some(true),
+            mode: None,
+        }),
+        GjiModeCommand::ImeOff => Some(KeyModeEffect {
+            open: Some(false),
+            mode: None,
+        }),
+        _ => None,
     }
 }
 
@@ -480,6 +689,133 @@ DirectInput\tON\tIMEOn
                 );
             }
         }
+    }
+
+    #[test]
+    fn preset_direct_input_vk_names_match_mozc_rows() {
+        for (preset, rows) in [
+            (Preset::MsIme, MS_IME_DIRECT_INPUT),
+            (Preset::Mobile, MS_IME_DIRECT_INPUT),
+            (Preset::Atok, ATOK_DIRECT_INPUT),
+            (Preset::Kotoeri, KOTOERI_DIRECT_INPUT),
+        ] {
+            let table = parse_custom_keymap_table(rows);
+            for vk_name in ["VK_NONCONVERT", "VK_CONVERT"] {
+                assert_eq!(
+                    KeyStates::of(&table, vk_name).0[Status::DirectInput.index()].is_some(),
+                    preset.direct_input_vk_names().contains(&vk_name),
+                    "{preset:?} {vk_name}"
+                );
+            }
+        }
+    }
+
+    fn effect(
+        session: Option<i64>,
+        table: Option<&str>,
+        overlays: &[i64],
+        vk: &str,
+    ) -> KeyDirectInputEffect {
+        direct_input_effect(session, table, overlays, vk)
+    }
+
+    #[test]
+    fn direct_input_effect_follows_the_preset_table_in_adr255() {
+        use KeyDirectInputEffect::{HasFunction, NoFunction};
+        // (session, 無変換, 変換): 決定2-6 の表。未設定・NONE・空の CUSTOM は MS-IME。
+        for (session, muhenkan, henkan) in [
+            (Some(SESSION_KEYMAP_MSIME), NoFunction, HasFunction),
+            (Some(SESSION_KEYMAP_MOBILE), NoFunction, HasFunction),
+            (None, NoFunction, HasFunction),
+            (Some(SESSION_KEYMAP_NONE), NoFunction, HasFunction),
+            (Some(SESSION_KEYMAP_CUSTOM), NoFunction, HasFunction),
+            (Some(SESSION_KEYMAP_ATOK), HasFunction, HasFunction),
+            (Some(SESSION_KEYMAP_KOTOERI), NoFunction, NoFunction),
+        ] {
+            assert_eq!(
+                effect(session, None, &[], "VK_NONCONVERT"),
+                muhenkan,
+                "{session:?}"
+            );
+            assert_eq!(
+                effect(session, None, &[], "VK_CONVERT"),
+                henkan,
+                "{session:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_input_effect_custom_table_rows() {
+        use KeyDirectInputEffect::{HasFunction, NoFunction};
+        let c = Some(SESSION_KEYMAP_CUSTOM);
+        // 行なし=NoFunction。他キーの行は関係ない。
+        assert_eq!(
+            effect(c, Some("DirectInput\tON\tIMEOn\n"), &[], "VK_NONCONVERT"),
+            NoFunction
+        );
+        // IMEOn・InsertSpace・Reconvert のどれでも行があれば機能あり(R4-M2)。
+        for cmd in ["IMEOn", "InsertSpace", "Reconvert"] {
+            let t = format!("DirectInput\tMuhenkan\t{cmd}\n");
+            assert_eq!(
+                effect(c, Some(&t), &[], "VK_NONCONVERT"),
+                HasFunction,
+                "{cmd}"
+            );
+        }
+        // 別名 Direct。
+        assert_eq!(
+            effect(c, Some("Direct\tHenkan\tIMEOn\n"), &[], "VK_CONVERT"),
+            HasFunction
+        );
+        // 修飾付きの行だけ=無修飾は NoFunction(R4-S3)。
+        assert_eq!(
+            effect(
+                c,
+                Some("DirectInput\tShift Henkan\tIMEOn\n"),
+                &[],
+                "VK_CONVERT"
+            ),
+            NoFunction
+        );
+        // DirectInput 以外の状態の行は数えない。
+        assert_eq!(
+            effect(
+                c,
+                Some("Precomposition\tMuhenkan\tIMEOff\n"),
+                &[],
+                "VK_NONCONVERT"
+            ),
+            NoFunction
+        );
+    }
+
+    #[test]
+    fn direct_input_effect_overlay_and_unknown_inputs() {
+        use KeyDirectInputEffect::{HasFunction, Unknown};
+        let known = SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF;
+        for vk in ["VK_NONCONVERT", "VK_CONVERT"] {
+            assert_eq!(
+                effect(Some(SESSION_KEYMAP_KOTOERI), None, &[known], vk),
+                HasFunction
+            );
+            // 未知のオーバーレイは Unknown(既知と並んでいても)。
+            assert_eq!(
+                effect(Some(SESSION_KEYMAP_KOTOERI), None, &[999], vk),
+                Unknown
+            );
+            assert_eq!(
+                effect(Some(SESSION_KEYMAP_KOTOERI), None, &[known, 999], vk),
+                Unknown
+            );
+            // 未知の session_keymap。
+            assert_eq!(effect(Some(99), None, &[], vk), Unknown);
+        }
+        // 候補外のキーは Unknown。
+        assert_eq!(
+            effect(Some(SESSION_KEYMAP_KOTOERI), None, &[], "VK_F13"),
+            Unknown
+        );
     }
 
     #[test]
@@ -762,6 +1098,164 @@ DirectInput\tON\tIMEOn
         assert_eq!(
             key_role(Some(SESSION_KEYMAP_MSIME), None, &[999], HZ[0]),
             None
+        );
+    }
+
+    // ---- ADR-247: CUSTOM の F キーの効果 ----
+
+    fn effect_in_custom(
+        table: &str,
+        vk_name: &str,
+        open: bool,
+        composing: bool,
+    ) -> Option<KeyModeEffect> {
+        custom_key_mode_effect(
+            Some(SESSION_KEYMAP_CUSTOM),
+            Some(table),
+            &[],
+            vk_name,
+            open,
+            composing,
+        )
+    }
+
+    #[test]
+    fn custom_f_key_sets_half_alphanumeric_when_open() {
+        use crate::command::GjiCompositionMode::HalfAlphanumeric;
+        let table = custom(
+            "Precomposition\tF16\tInputModeHalfAlphanumeric\nComposition\tF16\tCompositionModeHalfAlphanumeric\n",
+        );
+        let want = Some(KeyModeEffect {
+            open: None,
+            mode: Some(HalfAlphanumeric),
+        });
+        assert_eq!(effect_in_custom(&table, "VK_F16", true, false), want);
+        assert_eq!(effect_in_custom(&table, "VK_F16", true, true), want);
+        // 閉状態の行が無ければ予測しない。
+        assert_eq!(effect_in_custom(&table, "VK_F16", false, false), None);
+    }
+
+    #[test]
+    fn custom_f_key_absolute_mode_in_direct_input_opens() {
+        use crate::command::GjiCompositionMode::Hiragana;
+        let table = custom("DirectInput\tF17\tInputModeHiragana\n");
+        assert_eq!(
+            effect_in_custom(&table, "VK_F17", false, false),
+            Some(KeyModeEffect {
+                open: Some(true),
+                mode: Some(Hiragana)
+            })
+        );
+    }
+
+    #[test]
+    fn custom_f_key_ime_on_off_and_inheritance() {
+        let table = custom("DirectInput\tF18\tIMEOn\nComposition\tF18\tIMEOff\n");
+        assert_eq!(
+            effect_in_custom(&table, "VK_F18", false, false),
+            Some(KeyModeEffect {
+                open: Some(true),
+                mode: None
+            })
+        );
+        // Precomposition の行が無く、Composition の行は継承されない（継承は Suggestion→Composition 方向だけ）。
+        assert_eq!(effect_in_custom(&table, "VK_F18", true, false), None);
+        assert_eq!(
+            effect_in_custom(&table, "VK_F18", true, true),
+            Some(KeyModeEffect {
+                open: Some(false),
+                mode: None
+            })
+        );
+    }
+
+    #[test]
+    fn custom_f_key_effect_ignores_relative_toggles_presets_and_overlays() {
+        let table = custom("Precomposition\tF19\tToggleAlphanumericMode\n");
+        assert_eq!(effect_in_custom(&table, "VK_F19", true, false), None);
+        let table = custom("Precomposition\tF16\tInputModeHalfAlphanumeric\n");
+        // プリセット・表なし・オーバーレイあり・候補外のキーは評価しない。
+        assert_eq!(
+            custom_key_mode_effect(
+                Some(SESSION_KEYMAP_ATOK),
+                Some(&table),
+                &[],
+                "VK_F16",
+                true,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            custom_key_mode_effect(
+                Some(SESSION_KEYMAP_CUSTOM),
+                Some(&table),
+                &[999],
+                "VK_F16",
+                true,
+                false
+            ),
+            None
+        );
+        assert_eq!(effect_in_custom(&table, "VK_A", true, false), None);
+    }
+
+    /// ADR-256: プリセットの F13〜F24 の行の有無を Mozc の TSV（候補キーの行の抜き出し）と突き合わせる。
+    #[test]
+    fn preset_fkey_function_matches_mozc_tsv() {
+        for (session, tsv) in [
+            (Some(SESSION_KEYMAP_MSIME), MS_IME_TSV),
+            (Some(SESSION_KEYMAP_ATOK), ATOK_TSV),
+            (Some(SESSION_KEYMAP_KOTOERI), KOTOERI_TSV),
+            (Some(SESSION_KEYMAP_MOBILE), MOBILE_TSV),
+            (None, MS_IME_TSV),
+        ] {
+            for n in 13..=24 {
+                let key = format!("F{n}");
+                let in_tsv = tsv
+                    .lines()
+                    .any(|l| l.split('\t').nth(1) == Some(key.as_str()));
+                let expected = if in_tsv {
+                    FKeyFunction::HasFunction
+                } else {
+                    FKeyFunction::NoFunction
+                };
+                assert_eq!(
+                    fkey_function(session, None, &[], &format!("VK_{key}")),
+                    expected,
+                    "{session:?} {key}"
+                );
+            }
+        }
+    }
+
+    /// ADR-256: CUSTOM は状態・コマンド・修飾を問わず行があれば機能あり。F13〜F24 以外・overlay・未知の設定は Unknown。
+    #[test]
+    fn fkey_function_custom_rows_and_unknowns() {
+        let table = custom("DirectInput\tF17\tIMEOn\nPrecomposition\tShift F19\tCommit\n");
+        let f = |vk: &str| fkey_function(Some(SESSION_KEYMAP_CUSTOM), Some(&table), &[], vk);
+        assert_eq!(f("VK_F17"), FKeyFunction::HasFunction);
+        assert_eq!(
+            f("VK_F19"),
+            FKeyFunction::HasFunction,
+            "修飾付きの行も数える"
+        );
+        assert_eq!(f("VK_F18"), FKeyFunction::NoFunction);
+        assert_eq!(f("VK_F1"), FKeyFunction::Unknown);
+        assert_eq!(f("VK_NONCONVERT"), FKeyFunction::Unknown);
+        assert_eq!(f("F18"), FKeyFunction::Unknown);
+        assert_eq!(
+            fkey_function(
+                Some(SESSION_KEYMAP_CUSTOM),
+                Some(&table),
+                &[SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF],
+                "VK_F18"
+            ),
+            FKeyFunction::Unknown
+        );
+        assert_eq!(
+            fkey_function(Some(99), None, &[], "VK_F18"),
+            FKeyFunction::Unknown
         );
     }
 }

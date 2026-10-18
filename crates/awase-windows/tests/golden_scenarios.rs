@@ -413,7 +413,7 @@ fn scenario_9_hwnd_cache_restored_can_be_overridden_by_observation() {
         "HwndCacheRestored は last_intent を設定しない"
     );
     assert!(
-        model.effective_open(),
+        model.effective_open_at(Instant::now()),
         "High 観測が effective_open を上書きする（has_user_explicit_intent=false のため）"
     );
 }
@@ -434,7 +434,7 @@ fn scenario_10_user_intent_blocks_observation_but_hwnd_cache_does_not() {
         stale_observation.clone(),
     ]);
     assert!(
-        !model_intent.effective_open(),
+        !model_intent.effective_open_at(Instant::now()),
         "UserImeSetIntent(false) 後は explicit intent があるため、Medium 観測は effective_open を変えない"
     );
 
@@ -444,7 +444,7 @@ fn scenario_10_user_intent_blocks_observation_but_hwnd_cache_does_not() {
         stale_observation,
     ]);
     assert!(
-        model_cache.effective_open(),
+        model_cache.effective_open_at(Instant::now()),
         "HwndCacheRestored(false) 後は explicit intent がないため、Medium 観測が effective_open を上書きする"
     );
 }
@@ -475,7 +475,10 @@ fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
     ]);
     // ここまでが「詰み」状態の再現: IME ON でも input_mode が Eisu のままだと
     // engine は NotRomajiInput で活性化できない
-    assert!(deadlocked.effective_open(), "物理キーで IME ON にはなる");
+    assert!(
+        deadlocked.effective_open_at(Instant::now()),
+        "物理キーで IME ON にはなる"
+    );
     assert!(
         !deadlocked.input_mode().is_romaji_capable(),
         "救済なしでは ObservedEisu が残り engine が活性化できない (バグの再現)"
@@ -500,7 +503,10 @@ fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
         result: InputModeApplyResult::Applied,
     });
     let recovered = run_reducer(events);
-    assert!(recovered.effective_open(), "IME ON が維持される");
+    assert!(
+        recovered.effective_open_at(Instant::now()),
+        "IME ON が維持される"
+    );
     assert!(
         recovered.input_mode().is_romaji_capable(),
         "UserImeOnEisuReset で romaji-capable に回復し engine が活性化できる"
@@ -605,7 +611,10 @@ fn scenario_14_turn_on_while_open_recovers_stale_eisu() {
             confidence: ObservationConfidence::Medium,
         },
     ]);
-    assert!(deadlocked.effective_open(), "IME は open のまま");
+    assert!(
+        deadlocked.effective_open_at(Instant::now()),
+        "IME は open のまま"
+    );
     assert!(
         !deadlocked.input_mode().is_romaji_capable(),
         "OFF→ON 遷移を伴わないため UserImeOnEisuReset は発火せず ObservedEisu が残る \
@@ -637,7 +646,10 @@ fn scenario_14_turn_on_while_open_recovers_stale_eisu() {
         result: InputModeApplyResult::Applied,
     });
     let recovered = run_reducer(events);
-    assert!(recovered.effective_open(), "IME ON が維持される");
+    assert!(
+        recovered.effective_open_at(Instant::now()),
+        "IME ON が維持される"
+    );
     assert!(
         recovered.input_mode().is_romaji_capable(),
         "UserTurnOnEisuReset で romaji-capable に回復し engine が活性化できる"
@@ -671,7 +683,7 @@ fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive
         },
     ]);
     assert!(
-        toggled_on.effective_open(),
+        toggled_on.effective_open_at(Instant::now()),
         "半角英数トグルON は SetOpen を経由しないため IME は open のまま維持される"
     );
     assert!(
@@ -696,7 +708,10 @@ fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive
             result: InputModeApplyResult::Applied,
         },
     ]);
-    assert!(toggled_off.effective_open(), "IME ON は一貫して維持される");
+    assert!(
+        toggled_off.effective_open_at(Instant::now()),
+        "IME ON は一貫して維持される"
+    );
     assert!(
         toggled_off.input_mode().is_romaji_capable(),
         "トグルOFF で romaji-capable に復帰し engine が再度活性化できる"
@@ -726,7 +741,7 @@ fn scenario_15_gji_half_width_alnum_toggle_keeps_ime_open() {
     ]);
 
     assert!(
-        model.effective_open(),
+        model.effective_open_at(Instant::now()),
         "GJI entry/exit でも IME open は維持する"
     );
     assert!(
@@ -764,7 +779,10 @@ fn scenario_15_duplicate_restore_does_not_toggle_belief_back_to_eisu() {
         },
     ]);
 
-    assert!(model.effective_open(), "二重復元でも IME open は維持する");
+    assert!(
+        model.effective_open_at(Instant::now()),
+        "二重復元でも IME open は維持する"
+    );
     assert!(
         model.input_mode().is_romaji_capable(),
         "復元イベントが二度来ても belief は英数へ戻らない"
@@ -800,7 +818,10 @@ fn scenario_15_rebuild_toggle_after_cache_restore_ends_as_observed_eisu() {
         },
     ]);
 
-    assert!(model.effective_open(), "IME ON は維持される");
+    assert!(
+        model.effective_open_at(Instant::now()),
+        "IME ON は維持される"
+    );
     assert_eq!(
         model.input_mode(),
         InputModeState::ObservedEisu,

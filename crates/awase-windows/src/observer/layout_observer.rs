@@ -3,6 +3,7 @@
 
 use crate::state::ime_event::HwndId;
 use crate::state::layout_language::{classify_layout_language, lang_id};
+use crate::win32::HwndIdExt;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
