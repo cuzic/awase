@@ -25,9 +25,10 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationSelectionItemPattern, SetWinEventHook,
-    TreeScope_Descendants, UIA_MenuItemControlTypeId, UIA_SelectionItemPatternId, UnhookWinEvent,
-    HWINEVENTHOOK,
+    CUIAutomation, IUIAutomation, IUIAutomationLegacyIAccessiblePattern,
+    IUIAutomationSelectionItemPattern, SetWinEventHook, TreeScope_Descendants,
+    UIA_LegacyIAccessiblePatternId, UIA_MenuItemControlTypeId, UIA_SelectionItemPatternId,
+    UnhookWinEvent, HWINEVENTHOOK,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetCursorPos, GetWindowRect, EVENT_SYSTEM_MENUPOPUPSTART, WINEVENT_OUTOFCONTEXT,
@@ -171,6 +172,23 @@ unsafe fn read_menu_items(automation: &IUIAutomation, menu: HWND) -> Vec<MenuIte
             .ok()
             .and_then(|p| p.CurrentIsSelected().ok())
             .is_some_and(windows::core::BOOL::as_bool);
+        // 【検証ブランチだけの診断】
+        {
+            let name = el.CurrentName().map(|b| b.to_string()).unwrap_or_default();
+            let sel = el.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                UIA_SelectionItemPatternId,
+            );
+            let leg = el
+                .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                    UIA_LegacyIAccessiblePatternId,
+                )
+                .ok()
+                .and_then(|p| p.CurrentState().ok());
+            tracing::debug!(
+                "[indicator-menu] DIAG2 id={automation_id:?} name={name:?} sel_pattern_ok={} legacy_state={leg:?}",
+                sel.is_ok()
+            );
+        }
         items.push(MenuItem {
             automation_id,
             selected,
