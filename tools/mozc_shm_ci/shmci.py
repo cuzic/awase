@@ -124,7 +124,7 @@ def allowed_focus(focus, t, grace=GRACE_S):
 
 FOCUS_LEAD_S = 0.2     # focus イベントは force_foreground が戻ったあと(約 30ms 以上後)に書くので、awase が先に新しい窓を読むことがある
 INTERVAL_LEAD_S = 1.0    # 最初のフォーカス移動の直前から
-INTERVAL_TAIL_S = 3.0    # 最後のイベント(フォーカス移動・inactive)の後、awase の最後の tick が記録を出す分まで
+INTERVAL_TAIL_S = 1.8    # 最後のイベント(フォーカス移動・inactive)の後、awase の最後の tick が記録を出す分まで
 
 
 def measurement_interval(events):
@@ -708,15 +708,24 @@ def focus_loop(w, targets, rounds, rng, events, dwell=(0.35, 1.6)):
     for _ in range(rounds):
         choices = [t for t in targets if t[1] != last]
         name, tid, hwnd = rng.choice(choices)
-        ok = w.force_foreground(hwnd)
+        ok = switch_to(w, events, hwnd, tid, name)
         if ok:
-            events.append({"ev": "focus", "t": time.time(), "tid": tid, "name": name})
             last = tid
             ok_n += 1
         else:
             ng_n += 1
         time.sleep(rng.uniform(*dwell))
     return ok_n, ng_n
+
+
+def switch_to(w, events, hwnd, tid, name):
+    """前面にして、成功したら focus イベントを書く。時刻は呼ぶ直前(実際の切り替えは呼び出しの間に起きる。戻りの時刻だと、
+    予備手段(Alt+Esc)を使った遅い切り替えで、awase が先に新しい窓を読んだ記録が、フォーカス先でない読みに見える)。"""
+    t_call = time.time()
+    ok = w.force_foreground(hwnd)
+    if ok:
+        events.append({"ev": "focus", "t": t_call, "tid": tid, "name": name})
+    return ok
 
 
 FLIP_DELAYS = (0.05, 0.1, 0.15, 0.2, 0.3)
@@ -765,8 +774,7 @@ def flip_loop(w, truths, rounds, rng, events):
     # 準備: 切り替えの依頼が効くか、状態が変わるまでの時間(診断。測定の前提)
     for k in range(8):
         x = tids[k % len(tids)]
-        w.force_foreground(info[x]["hwnd"])
-        events.append({"ev": "focus", "t": time.time(), "tid": x, "name": info[x]["name"]})
+        switch_to(w, events, info[x]["hwnd"], x, info[x]["name"])
         time.sleep(0.5)
         want = 1 - known[x]
         t0 = time.time()
@@ -785,18 +793,16 @@ def flip_loop(w, truths, rounds, rng, events):
     ok_n = ng_n = lost = 0
     for i in range(rounds):
         x = rng.choice([t for t in tids if t != last])
-        if not w.force_foreground(info[x]["hwnd"]):
+        if not switch_to(w, events, info[x]["hwnd"], x, info[x]["name"]):
             ng_n += 1
             continue
-        events.append({"ev": "focus", "t": time.time(), "tid": x, "name": info[x]["name"]})
         time.sleep(0.6)                      # awase が x を読む時間
         observe(0.05)
         want = 1 - known[x]
         w.u32.PostMessageW(info[x]["hwnd"], 0x8001, want, 0)
         time.sleep(FLIP_DELAYS[i % len(FLIP_DELAYS)])
         y = rng.choice([t for t in tids if t != x])
-        if w.force_foreground(info[y]["hwnd"]):
-            events.append({"ev": "focus", "t": time.time(), "tid": y, "name": info[y]["name"]})
+        if switch_to(w, events, info[y]["hwnd"], y, info[y]["name"]):
             last = y
             ok_n += 1
         else:
