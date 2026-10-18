@@ -16,3 +16,11 @@
 前提: awase を `[diagnostics] mozc_shm_shadow = true` で起動し、Mozc Readable をインストールして、ja の入力方式を
 Mozc Readable だけにしておく(新しい窓がそれで始まる)。**測定中は実機を使えない**(キー注入とフォーカス移動)。
 実機で行った操作と後片付けは、結果の文書にある。
+
+## 追加測定(危ない場面。手順書の 6-2 章)
+
+- `drive_scenarios.py`(Windows。`drive_measure.py` を import する): `--scenario focus`(2 つの窓の間のフォーカス移動)と `--scenario away`
+  (Win+Space で TIP の無い入力方式へ切り替えて戻す)。
+- `scenarios.ps1`(Windows): 新しい Notepad と専用プロファイルの Chrome で、上の 2 つを走らせる。
+- `analyze_scenarios.py`(Linux 可): `scen_focus.jsonl`・`scen_away.jsonl` と `awase_measure.log` を突き合わせ、誤採用(MISMATCH・UNKNOWN-THREAD・
+  STALE・STALE-ADOPTION)を数える。判定は手順書で測定の前に固定した。合成データで、仕込んだ誤りの検出を確認済み。**ドライバーは Windows では未実行**。
