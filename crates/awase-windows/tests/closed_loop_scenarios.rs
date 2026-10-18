@@ -611,7 +611,7 @@ const WALK_KEYS: [u16; 15] = [
 /// 手書きシナリオ（BUG-162 など）は、既に見つかった列しか守れない。ここでは3つの格子（ATOK・GJI の MS-IME・
 /// MS-IME 本体）× 窓の種類2通りで、シード固定のキー列を流して未発見の食い違いを探す。
 /// 窓の種類は、入力中を観測できる窓（`composing_visible`）と、できない窓（予測器が段階の追跡だけに頼る。
-/// 一番厳しい条件）。途中の観測は挟まない（belief が予測だけで進む）。
+/// 一番厳しい条件）。起動直後に一度だけ観測し、以後は挟まない（belief が予測だけで進む）。
 ///
 /// 食い違いは1回の実行でまとめて報告する（CI を回し直さずに全体像を得るため）。
 #[test]
@@ -635,6 +635,9 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                 let mut setup = Setup::imm_cross(state(open, conv)).with_grid(grid);
                 setup.composing_visible = composing_visible;
                 let mut h = Harness::start(setup);
+                // 起動直後に一度観測して belief を真値に合わせる(実機は起動時に読む。観測が無いと belief が不明で、
+                // 予測器が既定のひらがなを仮定するため、真値が半角英数だと全打鍵が食い違って見える)。
+                h.advance_ms(100).observe(Source::ImmCross).advance_ms(200);
                 let mut keys: Vec<u16> = Vec::new();
                 for _ in 0..LEN {
                     let vk = rng.pick(&WALK_KEYS);
