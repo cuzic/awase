@@ -21,6 +21,8 @@ pub(super) struct MozcShmShadow {
     /// 共有メモリが開けなかった（`NotFound`）（スレッド、プロセス）。フォーカスが変わるまで読まない
     /// （mozc-readable を使わない利用者に、毎 tick の Win32 呼び出しを課さない。ADR-268 D1）。
     absent_for: Option<(u32, u32)>,
+    /// 【測定専用・マージしない】前回の tick の時刻（TTL の実測、ADR-268）。
+    dbg_last_tick_ms: Option<u64>,
 }
 
 impl MozcShmShadow {
@@ -29,6 +31,7 @@ impl MozcShmShadow {
             enabled: false,
             last: None,
             absent_for: None,
+            dbg_last_tick_ms: None,
         }
     }
 }
@@ -40,6 +43,7 @@ impl super::Runtime {
             enabled,
             last: None,
             absent_for: None,
+            dbg_last_tick_ms: None,
         };
     }
 
@@ -48,6 +52,15 @@ impl super::Runtime {
     /// 対象は、現在のフォーカス（`platform.focus.current`）の窓のスレッド。読む手順と受け入れ条件は
     /// `observer::mozc_shm::read` と `state::mozc_shm::outcome_of`。
     pub(super) fn mozc_shm_on_tick(&mut self, focus_changed: bool) {
+        // 【測定専用・マージしない】tick の間隔（ms）を 1 行で記録する。TTL（`MOZC_SHM_OBSERVATION_TTL_MS`）が
+        // 超えるべき「tick の最大間隔」の実測のため。
+        {
+            let now = crate::hook::current_tick_ms();
+            if let Some(prev) = self.mozc_shm.dbg_last_tick_ms {
+                tracing::info!(target: "awase::mozc_shm_tick", "[tick-gap] {}", now.saturating_sub(prev));
+            }
+            self.mozc_shm.dbg_last_tick_ms = Some(now);
+        }
         let hwnd_addr = self.platform.focus.current.hwnd;
         let pid = self.platform.focus.current.pid;
         if hwnd_addr == 0 || pid == 0 {
