@@ -50,7 +50,7 @@ use support::harness::{Harness, Setup, Source, WriteOrigin};
 use support::invariants::{
     assert_ok, belief_matches_truth_at_end, p1_no_warranted_write_without_intent,
     p2_no_stale_stage_after_unpredicted_key, p3_startup_aligns_desired_without_drift,
-    predictions_agree_with_truth,
+    prediction_mismatch, predictions_agree_with_truth,
 };
 use support::pseudo_ime::{Grid, TrueStage, TrueState, CONV_ALNUM, CONV_HIRAGANA};
 
@@ -624,7 +624,11 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
         (true, CONV_ALNUM),
         (true, CONV_HIRAGANA),
     ];
-    let mut failures: Vec<String> = Vec::new();
+    // 最初の食い違いだけを数える(以後の食い違いは最初のずれの連鎖)。(格子, 窓, 直前のキー, 押す前の真の状態, キー)
+    // ごとに集計し、同じ原因の列をまとめて見えるようにする。
+    let mut cells: std::collections::BTreeMap<String, (usize, String)> =
+        std::collections::BTreeMap::new();
+    let mut failing_walks = 0usize;
     let mut walks = 0usize;
     let mut steps = 0usize;
     for grid in [Grid::Atok, Grid::GjiMsime, Grid::MsimeNative] {
@@ -649,14 +653,30 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                 }
                 walks += 1;
                 steps += keys.len();
-                let result = predictions_agree_with_truth(&h)
-                    .and_then(|()| p2_no_stale_stage_after_unpredicted_key(&h));
-                if let Err(e) = result {
+                let first = h
+                    .predictions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, r)| prediction_mismatch(r).map(|m| (i, r, m)));
+                if let Some((i, r, m)) = first {
+                    failing_walks += 1;
+                    let prev = i.checked_sub(1).map_or_else(
+                        || "なし".to_owned(),
+                        |j| format!("{:02X}", h.predictions[j].vk),
+                    );
+                    let b = r.truth_before;
+                    let sig = format!(
+                        "{grid:?} 観測可能={composing_visible} 直前=0x{prev} 押す前=(open={},conv=0x{:02X},{:?}) キー=0x{:02X}",
+                        b.open, b.conv, b.stage, r.vk
+                    );
                     let seq: Vec<String> = keys.iter().map(|k| format!("{k:02X}")).collect();
-                    failures.push(format!(
-                        "grid={grid:?} composing_visible={composing_visible} seed={seed} 開始=({open},0x{conv:02X}) キー列=[{}]\n{e}",
-                        seq.join(" ")
-                    ));
+                    let entry = cells.entry(sig).or_insert_with(|| {
+                        (
+                            0,
+                            format!("例 seed={seed} キー列=[{}]\n    {m}", seq.join(" ")),
+                        )
+                    });
+                    entry.0 += 1;
                 }
             }
         }
@@ -665,15 +685,14 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
         steps > walks,
         "ほとんどのキーが実測の範囲外で飛ばされた（walks={walks} steps={steps}）。開始状態かキー集合を見直すこと"
     );
+    let report: Vec<String> = cells
+        .iter()
+        .map(|(sig, (n, ex))| format!("{n:3} 本  {sig}\n    {ex}"))
+        .collect();
     assert!(
-        failures.is_empty(),
-        "{} / {walks} 本のキー列で予測が真値と食い違った（steps={steps}）。先頭5本:\n{}",
-        failures.len(),
-        failures
-            .iter()
-            .take(5)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n---\n")
+        cells.is_empty(),
+        "{failing_walks} / {walks} 本のキー列で予測が真値と食い違った（steps={steps}）。最初の食い違いの原因別 {} 種:\n{}",
+        cells.len(),
+        report.join("\n")
     );
 }
