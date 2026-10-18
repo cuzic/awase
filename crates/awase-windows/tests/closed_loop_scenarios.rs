@@ -664,13 +664,15 @@ const WALK_KEYS: [u16; 15] = [
 /// （最初の版で 360 本中 59 本、原因別 51 種に割れた）。ここで調べるのは、belief が正しいときに予測が嘘を
 /// つかないこと。段階の追跡（`KeyTrack`）は観測では直らないので、複数打鍵にわたる追跡のずれは見える。
 ///
-/// **既知のずれ(件数を固定して数える。増えたら赤)**: 閉から始めて、IME が一度も開く前に最初に開くキー。閉の間は
-/// 変換モードを観測しない(BUG-57/ADR-239)ので belief のモードは観測されないまま、最初の打鍵で既定のかなの種が入る
-/// (`predict_in_table` の `seeded`。`Unknown` のとき、IME が閉でも表に無いキーや閉→閉のキーで入る)。IME が半角英数
-/// (0x10)を覚えていると、開いた結果と食い違う(ATOK)。「閉じる前のモードを覚えておく」は、開いていたとき観測した
-/// モードを `None`=変えない で残す形ですでに動いている(Opus レビュー B2)ので、直すべきは種のまき方で、規則の追加ではない。
+/// **既知のずれ(件数を固定して数える。増えたら赤。BUG-204)**: 閉から始めて、IME が一度も開く前に最初に開くキー。
+/// belief の入力モードの初期値は `ImeModel::new()` の `ObservedRomaji`(観測していないのに「観測済み」と名乗る既定値)で、
+/// 閉の間は入力モードを観測しない(BUG-57/ADR-239。ハーネスも開いているときだけ観測する)ので、閉で始まると開くまで
+/// `ObservedRomaji` のまま残る。ATOK の閉のセルは全て `after_conv=None` で `mode: None`(変えない)なので、閉→開でも
+/// 残り、IME が半角英数(0x10)を覚えていると、開いた結果と食い違う。判定の根拠は、その時点の `input_mode` が
+/// `ObservedRomaji` のままであることの検査(下の `assert_eq!`)。
+/// (この段落は 2 回書き直した。最初は「`Unknown` のとき最初の打鍵で既定のかなの種が入る」と書いたが、`Unknown` は
+/// 本番でもハーネスでも流れず〈`seeded` の経路は到達しない〉、初期値が原因だった。Opus レビューで判明。)
 /// 一度でも開いた後の閉→開のずれは、観測したモードが残るはずなので、本物の食い違いとして失敗にする。
-/// (Opus レビューは「最初に開く打鍵で belief が Unknown」と見積もったが、実測では種は開く打鍵より前の打鍵で入る。)
 #[test]
 fn random_key_walks_keep_predictions_consistent_with_truth() {
     const SEEDS: u64 = 60;
@@ -686,7 +688,7 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
     let mut cells: std::collections::BTreeMap<String, (usize, String)> =
         std::collections::BTreeMap::new();
     let mut failing_walks = 0usize;
-    let mut seeded_gap = 0usize;
+    let mut initial_mode_gap = 0usize;
     let mut walks = 0usize;
     let mut steps = 0usize;
     for grid in [Grid::Atok, Grid::GjiMsime, Grid::MsimeNative] {
@@ -697,8 +699,8 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                 let mut setup = Setup::imm_cross(state(open, conv)).with_grid(grid);
                 setup.composing_visible = composing_visible;
                 let mut h = Harness::start(setup);
-                // 起動直後に一度観測して belief を真値に合わせる(実機は起動時に読む。観測が無いと belief が不明で、
-                // 予測器が既定のひらがなを仮定するため、真値が半角英数だと全打鍵が食い違って見える)。
+                // 起動直後に一度観測して belief を真値に合わせる(実機は起動時に読む)。ただし閉のときは入力モードを
+                // 観測しないので、閉で始まると belief の入力モードは初期値の `ObservedRomaji` のまま(BUG-204)。
                 h.advance_ms(100).observe(Source::ImmCross).advance_ms(200);
                 let mut keys: Vec<u16> = Vec::new();
                 for _ in 0..LEN {
@@ -727,13 +729,20 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                         .unwrap_or(r.input_open);
                     let opened_from_closed =
                         !b.open && r.truth_after.open && predicted_open == r.truth_after.open;
-                    // この歩みで IME が一度も開いたことがない=belief のモードは一度も観測されず、最初の打鍵で
-                    // 入った既定のかなの種(`Unknown` のとき、閉でも表に無いキー・閉→閉のキーで入る)のまま。
+                    // この歩みで IME が一度も開いたことがない=belief の入力モードは一度も観測されず、初期値のまま。
                     let never_open_before = h.predictions[..i]
                         .iter()
                         .all(|p| !p.truth_before.open && !p.truth_after.open);
                     if opened_from_closed && never_open_before {
-                        seeded_gap += 1;
+                        // 機序の確認: その時点の belief の入力モードは、初期値の `ObservedRomaji` のまま。
+                        // 違えば、BUG-204 の機序の理解が誤り(過去に 2 回、コードを読まずに推測して外した)。
+                        assert_eq!(
+                            r.input_mode,
+                            InputModeState::ObservedRomaji,
+                            "BUG-204 の機序の前提が崩れた: grid={grid:?} seed={seed} step={}",
+                            r.step
+                        );
+                        initial_mode_gap += 1;
                         continue;
                     }
                     real = real.or(Some((i, r, m)));
@@ -766,7 +775,7 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
         steps > walks,
         "ほとんどのキーが実測の範囲外で飛ばされた（walks={walks} steps={steps}）。開始状態かキー集合を見直すこと"
     );
-    eprintln!("既知のずれ: Unknown の種 {seeded_gap} 件 / {steps} 打鍵");
+    eprintln!("既知のずれ: 初期値の入力モードが残った閉→開 {initial_mode_gap} 件 / {steps} 打鍵");
     let report: Vec<String> = cells
         .iter()
         .map(|(sig, (n, ex))| format!("{n:3} 本  {sig}\n    {ex}"))
@@ -779,17 +788,16 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
     );
     // 既知のずれは件数を固定する。増減したら原因を見直すこと(黙って増えるのを防ぐ)。
     assert_eq!(
-        seeded_gap, EXPECTED_SEEDED_GAP,
-        "belief のモードが Unknown の種で閉→開がずれた件数が変わった"
+        initial_mode_gap, EXPECTED_INITIAL_MODE_GAP,
+        "初期値の入力モードが残って閉→開がずれた件数が変わった"
     );
 }
 
-/// 閉から始め、この歩みで IME が一度も開く前に最初に開くキーで、既定のかなの種が外れる件数(固定)。
-/// 種は belief のモードが `Unknown` の間の最初の打鍵で入る(閉でも、表に無いキーや閉→閉のキーで入る)ので、
-/// 開く打鍵の時点では `Unknown` ではない。欠陥の本体は、仮定の種を belief に書き、観測したモードと区別できなく
-/// なること(BUG-204、Opus レビュー round 2 r2-M1)。種の書き方を直したら 0 に下がるはずで、そのとき定数を 0 にする。
-/// 初出: Opus レビューの見積もり 32(ATOK・閉・半角英数で始まる 16 シード × 窓 2 通り)と CI の実測が一致。
-const EXPECTED_SEEDED_GAP: usize = 32;
+/// 閉から始め、この歩みで IME が一度も開く前に最初に開くキーで、belief の入力モードの初期値(`ObservedRomaji`)が
+/// 残って食い違う件数(固定)。BUG-204。初期値を「観測済み」と名乗らない値にしても、閉のキーは `mode: None` なので理由は
+/// 開くまで残り、件数は変わらない見込み(Opus レビュー)。実際に減るのは、閉の間のモードの証拠源(ADR-261・264)が入ったとき。
+/// 初出: ATOK・閉・半角英数で始まる 16 シード × 窓 2 通り = 32(CI の実測で確定)。
+const EXPECTED_INITIAL_MODE_GAP: usize = 32;
 
 /// 固定の列で確かめる、変換中の Esc の後の段階(BUG-205 の回帰テスト)。
 /// ATOK・入力中を観測できない窓で、`ime-on → a → 変換 → Esc → カタカナ → 無変換` の無変換の予測が真の結果と合うか。
