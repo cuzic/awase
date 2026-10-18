@@ -8,9 +8,6 @@
 //! 有効なのは `[diagnostics] mozc_shm_shadow = true`（既定は無効のオプトイン）のときだけ。反映は再起動後
 //! （`app/bootstrap.rs` が起動時に 1 度だけ渡す）。
 
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-
 use crate::state::mozc_shm::{outcome_of, to_record, Outcome, Trigger};
 
 /// 影の読みの状態。無効のときは何もしない。
@@ -51,8 +48,7 @@ impl super::Runtime {
         if hwnd_addr == 0 || pid == 0 {
             return;
         }
-        // SAFETY: `GetWindowThreadProcessId` はどのスレッドからも呼べる非ブロッキング API。無効な hwnd は 0 を返す。
-        let tid = unsafe { GetWindowThreadProcessId(HWND(hwnd_addr as *mut _), None) };
+        let tid = crate::observer::mozc_shm::thread_of_window(hwnd_addr);
         if tid == 0 {
             return;
         }

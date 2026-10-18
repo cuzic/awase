@@ -364,7 +364,9 @@ pub fn format_sid(bytes: &[u8]) -> Option<String> {
 /// AppContainer の名前空間の、共有メモリのパス（`NtOpenSection` に渡す完全なパス）。
 #[must_use]
 pub fn app_container_section_path(session_id: u32, sid: &str, thread_id: u32) -> String {
-    format!("\\Sessions\\{session_id}\\AppContainerNamedObjects\\{sid}\\mozc-readable-ime-{thread_id}")
+    format!(
+        "\\Sessions\\{session_id}\\AppContainerNamedObjects\\{sid}\\mozc-readable-ime-{thread_id}"
+    )
 }
 
 /// 通常のプロセスの共有メモリの名前（`OpenFileMappingW` に渡す）。
@@ -393,7 +395,10 @@ mod tests {
 
     #[test]
     fn parse_reads_every_field_little_endian() {
-        let raw = RawBlock::parse(&bytes([MAGIC, 2, 8, 1, 3, 0, 5, 1908, 8284, 1], 0x0102_0304_0506));
+        let raw = RawBlock::parse(&bytes(
+            [MAGIC, 2, 8, 1, 3, 0, 5, 1908, 8284, 1],
+            0x0102_0304_0506,
+        ));
         assert_eq!(raw.magic, 0x5A52_444D);
         assert_eq!(raw.version, 2);
         assert_eq!(raw.seq, 8);
@@ -517,7 +522,10 @@ mod tests {
             route: Route::Local,
             block: Err(ReadFailure::NotFound),
         };
-        assert_eq!(outcome_of(&nf, 8284), Outcome::Failed(ReadFailure::NotFound));
+        assert_eq!(
+            outcome_of(&nf, 8284),
+            Outcome::Failed(ReadFailure::NotFound)
+        );
     }
 
     #[test]

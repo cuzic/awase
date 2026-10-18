@@ -18,7 +18,7 @@ use std::sync::atomic::{fence, AtomicU32, Ordering};
 use std::time::Instant;
 
 use windows::core::{s, w, HSTRING};
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND};
 use windows::Win32::Security::{
     GetTokenInformation, TokenAppContainerSid, TokenIsAppContainer, TokenSessionId, TOKEN_QUERY,
 };
@@ -29,6 +29,7 @@ use windows::Win32::System::Memory::{
 use windows::Win32::System::Threading::{
     OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 use crate::state::mozc_shm::{
     app_container_section_path, format_sid, local_mapping_name, RawBlock, ReadFailure, Reading,
@@ -76,6 +77,15 @@ enum AcProbe {
     AppContainer { session_id: u32, sid: String },
     /// 判定できなかった（段階の名前）
     Unresolved(&'static str),
+}
+
+/// ウィンドウ（`hwnd` のアドレス）を作ったスレッドの ID。無効な hwnd や取得できないときは 0。
+///
+/// `runtime/` には `unsafe` を書けない（独自 lint）ので、Win32 の呼び出しはここに置く。
+#[must_use]
+pub fn thread_of_window(hwnd_addr: usize) -> u32 {
+    // SAFETY: `GetWindowThreadProcessId` はどのスレッドからも呼べる非ブロッキング API。無効な hwnd は 0 を返す。
+    unsafe { GetWindowThreadProcessId(HWND(hwnd_addr as *mut _), None) }
 }
 
 /// 対象のスレッド（`thread_id`、プロセスは `process_id`）の共有メモリを 1 回読む。所要時間（マイクロ秒）も返す。
@@ -170,7 +180,8 @@ fn probe_app_container(process_id: u32) -> AcProbe {
         return AcProbe::Unresolved("no-pid");
     }
     // SAFETY: `process_id` は `GetWindowThreadProcessId` 経由で得た値。最小権限で開く（hook.rs の `foreground_window_is_elevated` と同じ流儀）。
-    let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) })
+    let Ok(process) =
+        (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) })
     else {
         return AcProbe::Unresolved("open-process");
     };
@@ -248,10 +259,9 @@ fn probe_token(token: HANDLE) -> AcProbe {
         let count = usize::from(sid_ptr.add(1).read());
         std::slice::from_raw_parts(sid_ptr, 8 + 4 * count.min(15))
     };
-    match format_sid(sid_bytes) {
-        Some(sid) => AcProbe::AppContainer { session_id, sid },
-        None => AcProbe::Unresolved("sid-format"),
-    }
+    format_sid(sid_bytes).map_or(AcProbe::Unresolved("sid-format"), |sid| {
+        AcProbe::AppContainer { session_id, sid }
+    })
 }
 
 /// `NtOpenSection` で、AppContainer の名前空間の共有メモリを読み取り専用で開く。
@@ -287,7 +297,8 @@ fn open_section(path: &str) -> Result<HANDLE, ReadFailure> {
     };
     let mut handle = HANDLE::default();
     // SAFETY: `handle`・`attributes`・`name`・`wide` はこの呼び出しの間スタック／ヒープ上で有効。
-    let status = unsafe { nt_open_section(&raw mut handle, SECTION_MAP_READ, &raw const attributes) };
+    let status =
+        unsafe { nt_open_section(&raw mut handle, SECTION_MAP_READ, &raw const attributes) };
     if status >= 0 {
         return Ok(handle);
     }
