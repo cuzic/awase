@@ -3727,6 +3727,44 @@ fn applied_mirror_on_focus_goes_through_the_plan_at_all_three_sites() {
     );
 }
 
+/// ADR-263 PR 2b: 日本語と判定したときのひらがなキー（`VK_DBE_HIRAGANA`）の送信は 1 箇所だけで、送る前に純粋な判断
+/// `hiragana_write_skip_reason`（belief ON・観測の無い窓・NonText でない・フォーカス追跡が前面窓に追いついている・
+/// 明示 OFF の意図が無い・Alt/Win が押されていない）を通し、送った後に `on_ime_applied` と GjiFsm の Reopen を行う。
+/// 判断を通さずに送ると、実 IME が OFF の窓や Alt+Tab の直後に、モードキーがキーボード自体の状態を壊す
+/// （BUG-008・BUG-015 追補7・`kp_restore_kana_from_half_width` と同じハザード）。
+#[test]
+fn lang_detect_hiragana_write_goes_through_the_gate_and_syncs_after() {
+    let src_full = read_crate_file("src/runtime/lang_detect_shadow.rs");
+    let src = production_code_only(&src_full);
+    let calls: Vec<usize> = src
+        .match_indices("crate::ime::send_hiragana_key()")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(calls.len(), 1, "ひらがなキーの送信は 1 箇所だけ");
+    let head = &src[..calls[0]];
+    let tail = &src[calls[0]..];
+    assert!(
+        head.contains("hiragana_write_skip_reason(self.lang_detect_write_facts())"),
+        "ひらがなキーの送信の前に純粋な判断 `hiragana_write_skip_reason` を通すこと（ADR-263 D5）"
+    );
+    for need in [
+        "ime_mode_key_injection_blocked_by_modifier()",
+        "effective_open()",
+        "is_demoted_by_learning()",
+        "explicit_intent()",
+        "lang_detect_focus_in_sync()",
+    ] {
+        assert!(
+            src.contains(need),
+            "ひらがなキーの送信の前提 `{need}` を集めること（ADR-263 D5）"
+        );
+    }
+    assert!(
+        tail.contains("on_ime_applied(") && tail.contains("ReopenSource::LangDetect"),
+        "送った後に `on_ime_applied` と GjiFsm の Reopen（cold 同期）を行うこと"
+    );
+}
+
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。
 ///
 /// - フォーカス時の先同期（`applied` の `record_confirmed(true)` と GJI への ImeOn 通知＝long-cold の
@@ -7232,7 +7270,8 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
 /// - `gji_on_ime_off(`: receipt（`sync_gji` の `OnImeOff` 腕）のみ（OFF は awase の actuation 由来だけ）
 /// - `sync_gji(`（ungated 側の `state/gji_direct_mechanism.rs` を除く）: (i) `send_keys` の level 突合
 ///   （`platform.rs`）、(ii) `kp_reopen_gji_fsm`（`key_pipeline.rs`）
-/// - `kp_reopen_gji_fsm(`: 物理キー予測 ON・shadow toggle の既に ON（no-op 分岐）・OFF→ON に倒した瞬間の3か所
+/// - `kp_reopen_gji_fsm(`: 物理キー予測 ON・shadow toggle の既に ON（no-op 分岐）・OFF→ON に倒した瞬間の3か所、
+///   と ADR-263 PR 2b の日本語判定後のひらがなキー送信直後（`lang_detect_shadow.rs`）の1か所
 #[test]
 fn gji_fsm_sync_entry_points_are_accounted_for() {
     let table: &[(&str, &[(&str, usize)])] = &[
@@ -7249,7 +7288,14 @@ fn gji_fsm_sync_entry_points_are_accounted_for() {
             "sync_gji(",
             &[("src/platform.rs", 1), ("src/runtime/key_pipeline.rs", 1)],
         ),
-        ("kp_reopen_gji_fsm(", &[("src/runtime/key_pipeline.rs", 3)]),
+        (
+            "kp_reopen_gji_fsm(",
+            &[
+                ("src/runtime/key_pipeline.rs", 3),
+                // ADR-263 PR 2b: 日本語と判定してひらがなキーを送った直後（awase が IME へ書いた同期）
+                ("src/runtime/lang_detect_shadow.rs", 1),
+            ],
+        ),
     ];
     for (needle, expected) in table {
         for rel in list_src_files() {

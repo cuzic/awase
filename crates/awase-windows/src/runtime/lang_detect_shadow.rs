@@ -1,42 +1,70 @@
-//! ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの**影の判定**（挙動を変えない観測）。
+//! ADR-263: 窓切替直後・長い無操作のあとのエピソード先頭の打鍵を判定する殻。
 //!
-//! 取り込み口（`app/mod.rs::handle_hook_key_event`、フックの打鍵が届いた順）で、打鍵を `awase::lang_detect::EpisodeTracker`
-//! に渡し、エピソードが閉じたら結果を journal（`JournalEntry::LangDetect`）に残す。打鍵は止めない・書き換えない・
-//! IME に何も書かない。目的は、実ジャーナルで判定の誤り率・閾値・無操作の長さを確かめること（PR 2b の前提）。
+//! - `mode = observe`（PR 2a）: 打鍵は止めず、判定器を影として走らせて結果を journal（`JournalEntry::LangDetect`）に残すだけ。
+//! - `mode = ime_on`（PR 2b）: 観測の無い窓（実測学習で降格された窓）で belief が ON のとき、エピソードの打鍵を最大
+//!   `max_keys` 打鍵・`max_ms` ミリ秒だけ**取り込み口で保持**し、日本語入力と判定できたときだけ、ひらがなキー
+//!   （`VK_DBE_HIRAGANA`）を 1 回送ってから、保持した打鍵を順序どおりに流す（`INPUT_DEFER.replay_later`）。
+//!   英数・決まらなかった・打ち切りのときは、保持した打鍵を今までと同じ流れに戻すだけ（IME に書かない・素通しにもしない）。
+//!   保持中に前面窓が変わったら、保持した打鍵は捨てる（元の窓の打鍵が別の窓へ入る誤送信を避ける）。
 //!
-//! 記録に**キー位置の列は含めない**（打鍵ごとの尤度比の増分の列と、親指との重なりの有無だけ）。
+//! 判断（保持・解放・判定）は root crate の `awase::lang_detect::HoldController`（純粋、Linux でテスト）。ここは
+//! `RawKeyEvent` の分類、IME への書き込みの前提条件の確認、journal、タイマー、再生の接続だけを持つ。
+//! 記録に**キー位置の列は含めない**。
+
+use std::time::Duration;
 
 use awase::config::{AutoDetectConfig, AutoDetectMode};
 use awase::lang_detect::{
-    DetectParams, EpisodeOutcome, EpisodeTracker, JapaneseEvidence, KanaModel, KeyRole,
-    ObservedKey, ThumbOverlap, TrackerConfig, Verdict,
+    hiragana_write_skip_reason, DetectParams, HoldController, HoldStep, JapaneseEvidence,
+    KanaModel, KeyRole, ObservedKey, ThumbOverlap, TrackerConfig, Verdict, WriteFacts,
 };
 use awase::ngram::NgramModel;
+use awase::platform::{ImeOpenOutcome, TsfComposition as _};
 use awase::types::{KeyClassification, KeyEventType, RawKeyEvent};
 
 use crate::focus::class_names::AppImeProfile;
+use crate::focus::FocusKind;
 
-/// 影の判定の状態。`mode = off`、または n-gram 表を読めなかったときは何もしない。
+/// 取り込み口への指示
+pub(crate) enum LangDetectIntake {
+    /// この打鍵は通常どおり処理を続ける
+    Pass,
+    /// この打鍵は保持した（または解放の再生に含めた）ので、取り込み口はここで終わる
+    Consumed,
+}
+
+/// 判定の状態。`mode = off`、または n-gram 表を読めなかったときは何もしない。
 pub(super) struct LangDetectShadow {
     mode: AutoDetectMode,
-    tracker: EpisodeTracker,
+    controller: HoldController<RawKeyEvent>,
     /// 仮名 n-gram の生の表（配列の切替でモデルを作り直すために持つ）
     ngram: Option<NgramModel>,
     model: Option<KanaModel>,
     /// `model` を作った配列の名前
     model_layout: String,
+    /// 設定が保持と両立するか（Space を親指にした構成・ADR-255 の遅いルールがあると偽。起動時に決める）
+    hold_config_ok: bool,
+    include_apps: Vec<String>,
+    exclude_apps: Vec<String>,
+    max_ms: u32,
+}
+
+/// 設定のプロセス名の正規化（小文字化し、末尾の `.exe` を落とす）
+fn normalize_app(name: &str) -> String {
+    let lower = name.trim().to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
 }
 
 impl LangDetectShadow {
     pub(super) fn disabled() -> Self {
-        Self::new(&AutoDetectConfig::default(), None, AutoDetectMode::Off)
+        Self::new(&AutoDetectConfig::default(), None, true)
     }
 
     /// `ngram` が `None`（表を読めなかった）ときは `mode` を問わず何もしない。
     pub(super) fn new(
         cfg: &AutoDetectConfig,
         ngram: Option<NgramModel>,
-        mode: AutoDetectMode,
+        hold_config_ok: bool,
     ) -> Self {
         let tracker_cfg = TrackerConfig {
             params: DetectParams {
@@ -44,27 +72,32 @@ impl LangDetectShadow {
                 en_threshold: cfg.en_threshold,
                 max_keys: usize::try_from(cfg.max_keys).unwrap_or(7),
             },
-            // 影の判定では、Space を親指にした構成の除外をしない（誤判定率を実測するため。記録で見分ける）
+            // 重なりを証拠にする。Space を親指にした構成では保持自体をしない（`hold_config_ok`）ので、
+            // 観測では見分けられるようにそのままにする（記録の `evidence` と `profile` で後から見分ける）。
             thumb_overlap: ThumbOverlap::Enabled,
             idle_threshold_ms: u64::from(cfg.idle_ms),
             max_ms: u64::from(cfg.max_ms),
         };
         let mode = if ngram.is_some() {
-            mode
+            cfg.mode
         } else {
             AutoDetectMode::Off
         };
         Self {
             mode,
-            tracker: EpisodeTracker::new(tracker_cfg),
+            controller: HoldController::new(tracker_cfg),
             ngram,
             model: None,
             model_layout: String::new(),
+            hold_config_ok,
+            include_apps: cfg.include_apps.iter().map(|a| normalize_app(a)).collect(),
+            exclude_apps: cfg.exclude_apps.iter().map(|a| normalize_app(a)).collect(),
+            max_ms: cfg.max_ms,
         }
     }
 
     const fn is_active(&self) -> bool {
-        matches!(self.mode, AutoDetectMode::Observe)
+        !matches!(self.mode, AutoDetectMode::Off)
     }
 
     /// 配列が変わった（または初回）なら、未シフト面でモデルを作り直す。
@@ -79,9 +112,24 @@ impl LangDetectShadow {
         self.model_layout = layout_name.to_string();
     }
 
-    fn on_key(&mut self, key: ObservedKey, scope: u64) -> Option<EpisodeOutcome> {
+    /// プロセス名が対象か（`include_apps` が空でなければその窓だけ、`exclude_apps` は除く）
+    fn app_allowed(&self, process_name: &str) -> bool {
+        let name = normalize_app(process_name);
+        if self.exclude_apps.contains(&name) {
+            return false;
+        }
+        self.include_apps.is_empty() || self.include_apps.contains(&name)
+    }
+
+    fn on_key(
+        &mut self,
+        key: ObservedKey,
+        event: RawKeyEvent,
+        scope: u64,
+        may_hold: bool,
+    ) -> Option<HoldStep<RawKeyEvent>> {
         let model = self.model.as_ref()?;
-        self.tracker.on_key(model, key, scope)
+        Some(self.controller.on_key(model, key, event, scope, may_hold))
     }
 }
 
@@ -145,10 +193,80 @@ fn verdict_labels(verdict: Verdict) -> (&'static str, Option<&'static str>) {
 }
 
 impl super::Runtime {
-    /// 取り込み口から、フックの打鍵 1 つにつき 1 回呼ぶ（KeyDown/KeyUp とも）。何も変えない。
-    pub(crate) fn lang_detect_on_key(&mut self, event: &RawKeyEvent) {
+    /// 前面窓（OS）と awase のフォーカス追跡が同じプロセスを指しているか。
+    ///
+    /// Alt+Tab 直後の打鍵では、フォーカスの検出（WinEvent・500ms のリフレッシュ）が追いついておらず、
+    /// `demoted_by_learning`・belief・`focus_kind` が**前の窓**の値のことがある。そのまま使うと、たとえば
+    /// 一太郎から Chrome へ移った直後に、一太郎の値で Chrome の打鍵を保持し、Chrome へひらがなキーを送ってしまう。
+    fn lang_detect_focus_in_sync(&self) -> bool {
+        let foreground = crate::win32::foreground_scope();
+        foreground.is_valid() && foreground.pid == self.platform.focus.pid()
+    }
+
+    /// 保持してよい窓・状態か（エピソードが**始まる**打鍵でだけ効く。進行中のエピソードの保持は変わらない）。
+    ///
+    /// 観測の無い窓（実測学習で降格された窓）で、belief が ON、NonText でなく、IME の変換中でない（変換中は未確定文字列に
+    /// 打鍵が足されるので保持しない）。フォーカス追跡が前面窓に追いついていること。
+    fn lang_detect_may_hold(&self) -> bool {
+        self.lang_detect.mode == AutoDetectMode::ImeOn
+            && self.lang_detect.hold_config_ok
+            && self.lang_detect_focus_in_sync()
+            && self.platform_state.ime.effective_open()
+            && self.platform.focus.is_demoted_by_learning()
+            && self.platform_state.focus.focus_kind != FocusKind::NonText
+            && !crate::tsf::observer::ime_composition_active_now()
+            && self
+                .lang_detect
+                .app_allowed(&self.platform.focus.current.process_name)
+    }
+
+    /// ひらがなキーを送ってよいかの事実を集める（判断は `awase::lang_detect::hiragana_write_skip_reason`）。
+    fn lang_detect_write_facts(&self) -> WriteFacts {
+        WriteFacts {
+            belief_open: self.platform_state.ime.effective_open(),
+            unobserved_window: self.platform.focus.is_demoted_by_learning(),
+            non_text: self.platform_state.focus.focus_kind == FocusKind::NonText,
+            focus_in_sync: self.lang_detect_focus_in_sync(),
+            explicit_off_intent: self.platform_state.ime.explicit_intent() == Some(false),
+            modifier_held: crate::hook::ime_mode_key_injection_blocked_by_modifier(),
+        }
+    }
+
+    /// 日本語と判定したとき、ひらがなキーを 1 回送る。送る前提を満たさなければ送らず、理由を返す。
+    ///
+    /// 前提は送信直前に確かめ直す（保持の間にフォーカス追跡や belief が変わりうる）。Alt/Win 中は送らない（Alt 中の合成かな
+    /// キーは JIS かな入力への切替に化ける。BUG-008、`kp_restore_kana_from_half_width` と同じ判定）。利用者が明示的に
+    /// IME OFF を選んでいるときも送らない（その意図を尊重する。ADR-263 D5 の授権の代わり）。Ctrl/Shift は送信口が一時解放する。
+    ///
+    /// 送った**あと**に、`on_ime_applied`（composition を cold に・MS-IME のモード FSM の未確認化）と GjiFsm の
+    /// OFF→ON（`Reopen`）を行う。これを欠くと、無操作のエピソードで GjiFsm が warm のまま、開いた直後の最初の
+    /// ローマ字を送ってリテラル化する（BUG-002 系）。`applied` は書き換えない（ADR-262 D3）。
+    ///
+    /// 限界: `send_ime_mode_key` は scan=0 で送る。GJI（mozc 系）は VK だけで判定するので効く見込みだが、MS-IME(TSF) は
+    /// scan 無しのモードキーを処理しないという実機の記録がある（`kp_restore_kana_from_half_width` 付近のコメント）。
+    /// scan 付きは実 IME が OFF の窓でかなロック等を汚すハザードがある（BUG-015 追補7）ため使わない。
+    fn lang_detect_write_hiragana(&mut self) -> &'static str {
+        if self.lang_detect.mode != AutoDetectMode::ImeOn {
+            return "none";
+        }
+        if let Some(reason) = hiragana_write_skip_reason(self.lang_detect_write_facts()) {
+            return reason;
+        }
+        if !crate::ime::send_hiragana_key() {
+            return "skipped-send-failed";
+        }
+        self.platform.on_ime_applied(true, ImeOpenOutcome::Applied);
+        self.kp_reopen_gji_fsm(crate::state::gji_direct_mechanism::ReopenSource::LangDetect);
+        "hiragana-sent"
+    }
+
+    /// 取り込み口から、フックの打鍵 1 つにつき 1 回呼ぶ（KeyDown/KeyUp とも）。
+    ///
+    /// `observe` では何も変えない（常に `Pass`）。`ime_on` では、保持した打鍵は `Consumed`（解放はタイマーか判定で、
+    /// `INPUT_DEFER` 経由の再生で流れる）。
+    pub(crate) fn lang_detect_on_key(&mut self, event: &RawKeyEvent) -> LangDetectIntake {
         if !self.lang_detect.is_active() {
-            return;
+            return LangDetectIntake::Pass;
         }
         let layout_name = self.platform.tray.current_layout_name().to_string();
         let normal = self
@@ -160,34 +278,106 @@ impl super::Runtime {
 
         let key = observed_key(event);
         let scope = scope_id(crate::win32::foreground_scope());
-        let Some(outcome) = self.lang_detect.on_key(key, scope) else {
-            return;
+        let may_hold = self.lang_detect_may_hold();
+        let Some(step) = self.lang_detect.on_key(key, *event, scope, may_hold) else {
+            return LangDetectIntake::Pass;
         };
-
-        let (verdict, evidence) = verdict_labels(outcome.verdict);
-        #[allow(clippy::cast_possible_truncation)] // ログ用。f32 の精度で足りる
-        let llr = outcome.llr as f32;
-        let record = crate::journal::LangDetectRecord {
-            trigger: outcome.trigger.label(),
-            verdict,
-            evidence,
-            stop: outcome.stop.label(),
-            presses: u32::try_from(outcome.presses).unwrap_or(u32::MAX),
-            llr,
-            llr_trace: outcome.llr_trace,
-            idle_ms: outcome.idle_ms,
-            duration_ms: outcome.duration_ms,
-            profile: profile_label(self.platform.current_app_profile()),
-            belief_open: Some(self.platform_state.ime.effective_open()),
-        };
-        self.platform_state
-            .ime
-            .journal
-            .record(crate::journal::JournalEntry::LangDetect { record });
+        self.lang_detect_apply(step)
     }
 
-    /// 起動時・設定リロード時に、`[auto_detect]` と n-gram の表で影の判定を作り直す。
-    pub(crate) fn init_lang_detect(&mut self, cfg: &AutoDetectConfig, ngram: Option<NgramModel>) {
-        self.lang_detect = LangDetectShadow::new(cfg, ngram, cfg.mode);
+    /// 保持の期限のタイマー（`TIMER_LANG_HOLD`）。保持中のエピソードを閉じて、保持した打鍵を解放する。
+    ///
+    /// 前面窓が保持の開始時と違えば、保持した打鍵は捨てる（マウスで窓を変えたあとに次の打鍵が来なかった場合）。
+    pub(crate) fn lang_detect_on_timer(&mut self) {
+        let scope = scope_id(crate::win32::foreground_scope());
+        let step = self.lang_detect.controller.on_timer(scope);
+        let _ = self.lang_detect_apply(step);
+    }
+
+    /// `HoldStep` を実行する: journal、IME への書き込み、保持した打鍵の再生、タイマー。
+    fn lang_detect_apply(&mut self, step: HoldStep<RawKeyEvent>) -> LangDetectIntake {
+        let action = if step.japanese {
+            self.lang_detect_write_hiragana()
+        } else {
+            "none"
+        };
+        let discarded = u32::try_from(step.discarded).unwrap_or(u32::MAX);
+        let step_japanese = step.japanese;
+        for outcome in step.outcomes {
+            let (verdict, evidence) = verdict_labels(outcome.verdict);
+            #[allow(clippy::cast_possible_truncation)] // ログ用。f32 の精度で足りる
+            let llr = outcome.llr as f32;
+            let japanese = matches!(outcome.verdict, Verdict::Japanese(_));
+            let record = crate::journal::LangDetectRecord {
+                trigger: outcome.trigger.label(),
+                verdict,
+                evidence,
+                stop: outcome.stop.label(),
+                presses: u32::try_from(outcome.presses).unwrap_or(u32::MAX),
+                llr,
+                llr_trace: outcome.llr_trace,
+                idle_ms: outcome.idle_ms,
+                duration_ms: outcome.duration_ms,
+                profile: profile_label(self.platform.current_app_profile()),
+                belief_open: Some(self.platform_state.ime.effective_open()),
+                // 日本語と判定したが保持していなかった（観測だけのエピソード）は `observe-only`。
+                action: match (japanese, step_japanese) {
+                    (true, true) => action,
+                    (true, false) => "observe-only",
+                    (false, _) => "none",
+                },
+                discarded,
+            };
+            self.platform_state
+                .ime
+                .journal
+                .record(crate::journal::JournalEntry::LangDetect { record });
+        }
+        if step.discarded > 0 {
+            tracing::debug!(
+                "[lang-detect] 保持中に前面窓が変わったので {} 打鍵を捨てた",
+                step.discarded
+            );
+        }
+
+        // 保持した打鍵は、書き込みのあとに順序どおりに流す（先頭に書き込みの合成キー、続いて元の打鍵）。
+        if !step.release.is_empty() {
+            crate::INPUT_DEFER.replay_later(step.release);
+        }
+
+        // 保持が続くなら、始まったときにだけ期限のタイマーを置く。保持が終わったなら、同じ打鍵で始まって確定した
+        // 場合を含めて必ず外す（残すと、次の（保持しない）エピソードをタイマーが途中で閉じてしまう）。
+        if step.holding {
+            if step.started_holding {
+                self.platform.timer.set(
+                    crate::TIMER_LANG_HOLD,
+                    Duration::from_millis(u64::from(self.lang_detect.max_ms)),
+                );
+            }
+        } else {
+            self.platform.timer.kill(crate::TIMER_LANG_HOLD);
+        }
+
+        if step.pass.is_some() {
+            LangDetectIntake::Pass
+        } else {
+            LangDetectIntake::Consumed
+        }
+    }
+
+    /// 起動時・設定リロード時に、`[auto_detect]` と n-gram の表で判定を作り直す。
+    /// `hold_config_ok` は、設定が保持と両立するか（Space を親指にした構成・ADR-255 の遅いルールがあると偽）。
+    pub(crate) fn init_lang_detect(
+        &mut self,
+        cfg: &AutoDetectConfig,
+        ngram: Option<NgramModel>,
+        hold_config_ok: bool,
+    ) {
+        // 設定リロードで作り直す前に、保持中の打鍵を解放する（作り直しで黙って消えないように）。
+        let scope = scope_id(crate::win32::foreground_scope());
+        let step = self.lang_detect.controller.on_timer(scope);
+        let _ = self.lang_detect_apply(step);
+        self.platform.timer.kill(crate::TIMER_LANG_HOLD);
+        self.lang_detect = LangDetectShadow::new(cfg, ngram, hold_config_ok);
     }
 }

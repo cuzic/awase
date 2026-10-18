@@ -532,12 +532,15 @@ pub enum AutoDetectMode {
     /// 打鍵は今までどおり流し、判定器を影として走らせて結果をログ（journal）に残すだけ（挙動を変えない）
     #[default]
     Observe,
+    /// 観測の無い窓（実測学習で降格された窓）で、belief が ON のとき、エピソード先頭の打鍵を短時間保持し、
+    /// 日本語入力と判定できたときだけ、ひらがなキーを 1 回送ってから流す（ADR-263 PR 2b）。
+    /// 英数と判定した・決まらなかった場合は、保持した打鍵を今までと同じ流れに戻す。
+    ImeOn,
 }
 
 /// 窓切替直後・長い無操作のあとの最初の打鍵から日本語/英数を判定する機能の設定（ADR-263）。
 ///
-/// PR 2a の時点では `observe`（影の判定とログだけ）しかない。打鍵の保持・IME への書き込みは後続の PR
-/// （`ime_on`）で足す。
+/// `observe` は影の判定とログだけ（挙動を変えない）。`ime_on` は打鍵の保持と、日本語と判定したときのひらがなキー 1 回の送信まで行う。
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AutoDetectConfig {
