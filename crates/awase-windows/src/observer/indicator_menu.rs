@@ -35,7 +35,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::focus::uia::SendableHwnd;
 use crate::state::indicator_menu::{classify_menu, rect_contains, MenuIme, MenuItem, MenuOutcome};
-use crate::win32::HwndExt as _;
 
 /// Win32 のポップアップメニュー窓のクラス名。
 ///
@@ -71,11 +70,17 @@ impl Drop for MenuHookGuard {
     }
 }
 
+/// `EVENT_SYSTEM_MENUPOPUPSTART` のコールバックの型（`SetWinEventHook` の `WINEVENTPROC`）。
+///
+/// コールバックの本体は `with_app` を呼ぶので、`observer/` ではなくオーケストレーター側（`app/bootstrap.rs`）に置く
+/// （`layer_boundary_guard` の B-1: `observer/` 内で `with_app` を直接呼ばない）。
+pub type MenuEventProc = unsafe extern "system" fn(HWINEVENTHOOK, u32, HWND, i32, i32, u32, u32);
+
 /// `EVENT_SYSTEM_MENUPOPUPSTART` の WinEvent フックを登録する（段階 1 はこのイベントだけ。ADR-264 決定 1 の範囲
 /// 0x4〜0x7 のうち、メニュー窓の表示だけを受ける）。失敗したら `None`（観測できないだけで、挙動は変わらない）。
 #[must_use]
-pub fn install_menu_hook() -> Option<MenuHookGuard> {
-    // SAFETY: `menu_popup_event_proc` は `'static` な extern "system" fn ポインタ。`WINEVENT_OUTOFCONTEXT` により
+pub fn install_menu_hook(proc: MenuEventProc) -> Option<MenuHookGuard> {
+    // SAFETY: `proc` は `'static` な extern "system" fn ポインタ（呼び出し側が渡す）。`WINEVENT_OUTOFCONTEXT` により
     //         コールバックはメッセージループスレッド（メインスレッド）で実行される。返されたフックは
     //         `WinEventHookGuard::drop` で `UnhookWinEvent` される。
     let hook = unsafe {
@@ -83,7 +88,7 @@ pub fn install_menu_hook() -> Option<MenuHookGuard> {
             EVENT_SYSTEM_MENUPOPUPSTART,
             EVENT_SYSTEM_MENUPOPUPSTART,
             None,
-            Some(menu_popup_event_proc),
+            Some(proc),
             0,
             0,
             WINEVENT_OUTOFCONTEXT,
@@ -98,25 +103,6 @@ pub fn install_menu_hook() -> Option<MenuHookGuard> {
         );
         Some(MenuHookGuard(hook))
     }
-}
-
-/// メニュー窓の表示のコールバック（メッセージループ上で実行される）。重い判断はしない。
-unsafe extern "system" fn menu_popup_event_proc(
-    _hook: HWINEVENTHOOK,
-    event: u32,
-    hwnd: HWND,
-    _id_object: i32,
-    _id_child: i32,
-    _event_thread: u32,
-    _event_time: u32,
-) {
-    if event != EVENT_SYSTEM_MENUPOPUPSTART {
-        return;
-    }
-    let Some(hwnd) = hwnd.non_null() else {
-        return;
-    };
-    let _ = crate::with_app(|app| app.indicator_menu_on_popup_start(hwnd));
 }
 
 /// この hwnd がポップアップメニュー窓（クラス `#32768`）か。
