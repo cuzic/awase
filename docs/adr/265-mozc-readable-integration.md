@@ -3,7 +3,7 @@ id: ADR-265
 title: |-
   mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定)
 status: |-
-  提案(2026-10-17、Opus round1・round2 の指摘を反映済み)。配布の自動化は PR #1 を作り直す前提、awase 側の読み取りは未実装
+  提案(2026-10-17、Opus round1〜3 の指摘を反映済み)。配布の自動化は PR #1 を作り直す前提、awase 側の読み取りは未実装
 related_adr:
   - "ADR-191"
   - "ADR-261"
@@ -67,18 +67,31 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 
 ### D4. 履歴の持ち方と upstream との衝突
 
-#### D4-1. 書き換えない「材料」ブランチ + `readable` の 1 本のワークフローで生成・ビルド・公開(R1-I1・C1、R2-N1)
+#### D4-1. 書き換えない「材料」ブランチ `main` + 2 本のワークフロー(R1-I1・C1、R2-N1、R3-F1〜F8)
 
-- 既定ブランチ `readable` には **upstream のソースを置かない**。持つのは材料だけ: `readable/identity.py`・`identity.toml`・`hooks.toml`、`readable/patches/publisher/`(下記)、`readable/ci/`、`readable/tools/`、`.github/workflows/`。`readable` は通常の PR と fast-forward だけで進む。force-push・`sync-base`・「載せ替え中に動いたら止める」の仕組みは不要。
-- **`build/<タグ>` ブランチは push しない**(R2-N1)。upstream のタグのツリーは upstream の `.github/workflows/` を含むので、push に Workflows 権限が要る見込みが高く、upstream の CI の誤起動も起きうる。生成(タグ → `identity.py apply` → patch 適用 → ci のコピー)からビルド・検証・公開までを、`readable` の 1 本のワークフローの中で行う(ジョブ間は artifact で渡す)。`workflow_run` は使わない。
-- 公開ジョブの前に GitHub の `environment` の承認を置く(人が 1 回見る、D4-5)。
-- Release のタグは **材料ブランチのコミット**に付ける(`v3.34.6239-readable.1` → `readable` の SHA)。Release 本文には upstream のタグ・材料ブランチの SHA・patch series の SHA を書き、生成したソースを `git archive` して asset に付ける(再現と監査のため)。
-- 既定ブランチが `readable` になるので `schedule` が動く(C1)。fork の既定ブランチを `master` から `readable` へ変えるのは段階 0 の作業。`master`(upstream のミラー)は消してよい(早期検知は upstream を直接 fetch する。GitHub の "Sync fork" は `readable` では出ない)。
-- **`readable` を空にする方法**: 現在の `readable`(C++ のソース入り、別セッションが作業中)は `legacy/readable-src` に残し、`readable` は upstream と履歴を共有しない孤立ブランチとして作り直す。fork の "ahead/behind" は意味のない数字になるが、動作は変わらない。`readable` の README に「`readable/tools/generate.sh <タグ>` で生成してビルドする」と書く。
-- **patch series は土台ごとに持つ**(R2-N3): `readable/patches/publisher/<土台>/`(例: `3.34.6239/`・`master/`)。各ディレクトリに `BASE`(patch を作った土台のコミット SHA)と `*.patch` を置く。新しいタグが出たら、そのタグ名のディレクトリがあればそれを、無ければ `master/` を試す。毎日の早期検知は `master/` を直し、現行タグの再リリースは、そのタグのディレクトリを直す。
-- **`git am -3` が 3-way になるよう、生成ジョブは `BASE` のコミットを fetch する**(R2-N2。blobless + 必要な blob の遅延取得でよい。取れるかは未確認なので、段階 0 で試す)。
-- **手元と CI で同じスクリプトを使う**(R2-N4): `readable/tools/generate.sh <タグ>`(生成して、`git am` が止まったところで終わる)と `readable/tools/refresh-patches.sh`(解消したツリーから `git format-patch <タグ>..` で series を作り直し、`BASE` も更新する)。CI の生成もこの `generate.sh` を呼ぶ。
-- **N+1 を作る契機は `readable/patches/**` と `identity.toml` の変更に限る**(path フィルタ、R2-N5)。ci やワークフローだけの変更は検証だけ走らせて公開しない。
+**ブランチ**
+- 材料ブランチは **`main`**(新規・upstream と履歴を共有しない孤立ブランチ)にする。既定ブランチを `main` へ変える。**`readable`(C++ のソース入り、別セッションが作業中)は今の場所のまま凍結する**(改名も force-push もしない。保護して push を禁止する)。PR #1 は閉じる(R3-F3)。force-push は 1 回も要らない。
+- `main` が持つのは材料だけ: `readable/identity.py`・`identity.toml`・`hooks.toml`、`readable/patches/publisher/`、`readable/ci/`、`readable/tools/`、`.github/workflows/`。upstream のソースは置かない。`main` は通常の PR と fast-forward だけで進む。
+- `build/<タグ>` ブランチは **push しない**(R2-N1)。upstream のタグのツリーは upstream の `.github/workflows/` を含み、push に Workflows 権限が要る見込みが高く、upstream の CI の誤起動も起きうるため。生成はワークフローのジョブの中だけで行う。
+- `master`(upstream のミラー)は消してよい(早期検知は upstream を直接 fetch する)。
+- `main` の README に「`readable/tools/generate.sh <タグ>` で生成してビルドする」と書く。
+
+**patch series**(R2-N2・N3、R3-F4・E1)
+- `readable/patches/publisher/<土台>/`(例: `3.34.6239/`・`master/`)。各ディレクトリに `BASE`(patch を作った土台のコミット SHA)と `*.patch`。新しいタグが出たら、そのタグ名のディレクトリがあればそれを、無ければ `master/` を使う。早期検知は `master/` を直す。
+- `git am -3` が 3-way になるよう、生成は `BASE` のコミットを fetch する(blobless + 遅延取得でよい。取れるかは未確認なので段階 0 で試す)。
+- `master/` の series で新しいタグを公開したら、公開ジョブが、使った series を `patches/publisher/<タグ>/` へコピーする PR を作る(その版の再リリースで `master/` がもう当たらなくなる事態を防ぐ)。`GITHUB_TOKEN` で作った PR は CI が起動しないが、中身が patch のコピーだけなので、マージ前に `workflow_dispatch` で生成だけ検査する。
+- `readable/tools/generate.sh <タグ>`(生成して、`git am` が止まったところで終わる)と `readable/tools/refresh-patches.sh`(解消したツリーから `git format-patch <BASE>..` で series を作り直し、`BASE` を新しい土台に更新する)。CI の生成もこの `generate.sh` を呼ぶ。
+
+**ワークフローは 2 本に分ける**(R3-F2)
+- `detect`(早期検知と停止の検知): `schedule`。**Linux**で `generate.sh` を使い、upstream の master に対して公開せずに生成・検査だけを試す。公開ジョブも `environment` も `concurrency` も持たない。これが止まらないように、毎回の最後に自分自身のワークフローを有効化し直す(`gh api -X PUT .../actions/workflows/<id>/enable`、`actions: write` はこのステップだけ)(R3-F1a)。
+- `release`(新しいタグの追随と公開): `schedule` と `workflow_dispatch`。ジョブは「生成とビルドと検証(Windows、生成も同じジョブの中で Git Bash の `generate.sh` を呼ぶ。`core.autocrlf=false`)」→「公開」。後段へ渡すのは MSI と `git archive` の tar だけ(R3-F6)。公開ジョブは `environment` の承認を要し、`concurrency` は公開ジョブにだけ付け、グループ名に upstream の版を入れる(`readable-publish-<タグ>`)。新しい版の `release` が始まったら、承認待ちの古い版の run を取り消す。
+- **GitHub の仕様に頼る前提(いずれもこのリポジトリでは未確認)**: 公開リポジトリの `schedule` は 60 日間リポジトリに動きが無いと無効化される(upstream のタグは 3〜4 か月おきなので普通に起きる。F1a の自己有効化に加え、awase 側の定期ジョブから mozc-readable のワークフローの状態と最後の run の日付を見て、止まっていたら Issue を立てる(F1b、併用))。承認待ちの run は `concurrency` のグループを持ち続ける(だから上のとおり分ける)。承認の期限は 30 日。
+
+**Release**(R3-F7)
+- Release のタグは **`main` のコミット**に付ける(`v3.34.6239-readable.1` → `main` の SHA)。本文には upstream のタグ・`main` の SHA・使った series の SHA を書く。生成したソースの `git archive` を `mozc-readable-<版>-source.tar.gz` として asset に付け、本文に「GitHub が自動で付ける Source code は生成スクリプト(材料)だけで、ビルドしたソースは `-source.tar.gz`」と書く。
+- **N+1 を作る契機**(R3-F5): ワークフローの中で「どの series を使うか(現行タグのディレクトリ、無ければ `master/`)」を決め、**使う series の SHA と `identity.toml` の SHA が、直近の同じ upstream 版の Release に記録した値と違う**ときだけ N+1 を作る。`master/` の修正だけでは、現行タグのディレクトリがあれば N+1 は起きない。ci やワークフローだけの変更も起きない。同じ材料の SHA で N+1 を作るのは、ビルド環境の都合で作り直すときだけで、手動の `workflow_dispatch` に限る(同じコミットに別名のタグを付けられる)。
+
+**権限**(R3-F8): ワークフローの既定は `contents: read`。`contents: write` は公開ジョブ、`issues: write` は Issue を立てるステップ、`actions: write` は自己有効化のステップにだけ付ける。upstream のスクリプト(`update_deps.py`)と Bazel を動かすビルドのジョブには書き込み権限を渡さない。
 
 #### D4-2. 3 層
 
@@ -112,15 +125,15 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 | D. 文面は通ったのにビルド・検証が失敗 | ワークフローの失敗 | 失敗ログ付きの Issue |
 
 - Issue は分類と upstream の版をキーに 1 件だけ立て、再発したらコメントを足す(`gh issue list --search "in:title <キー>" --state open` を見てから)。ワークフローの失敗は、失敗したジョブの最後のステップで Issue を立てる(黙って止まらない)。
-- **停止の検知**(R2-I5): 「upstream に公開済みより新しいタグがあるのに、最後の成功した生成から M 日(既定 7 日)たっても Release が無い」ときに Issue を立てる。`build/*` を push しないので、残存ブランチでは検知できない。
+- **停止の検知**(R2-I5): 「upstream に公開済みより新しいタグがあるのに、最後の成功した生成から M 日(既定 7 日)たっても Release が無い」ときに Issue を立てる(`detect` が行う。`detect` 自体が止まる場合の検知は D4-1 の F1b)。`build/*` を push しないので、残存ブランチでは検知できない。
 - 毎日 upstream の master に対して、公開せずに同じ生成(apply・patch 適用・check・見落とし検査)だけを試す(早期検知。`master/` の series を使う)。
-- 公開は `environment` の承認を通す。CI 上での AI による自動解消は、衝突の頻度を見てから決める。
+- 公開は `environment` の承認を通す。承認待ちのまま新しい版が来たら、古い版の承認待ちの run を取り消す(D4-1)。CI 上での AI による自動解消は、衝突の頻度を見てから決める。
 
 #### D4-6. ワークフローの安全(R1-I6・I7・I8、R2-N1)
 
 - `${{ }}` を shell に直接展開せず、`env:` 経由で渡し、`[[ "$TAG" =~ ^[0-9]+(\.[0-9]+){2,3}$ ]]` で検証してから使う。`GH_TOKEN` は必要なステップにだけ置く。リポジトリ内のスクリプトを動かすジョブでは `persist-credentials: false`。
-- `workflow_run` を使わないので、その出どころ検査は不要。公開ジョブは `readable` の同じワークフローの後段で、`environment` の承認を要する。pull request で起動するトリガーは、公開ジョブを持つワークフローには付けない。
-- 生成したツリーは push しないので、**Workflows 権限は不要**。トークンが要るのは Issue の作成と Release の公開だけで、`GITHUB_TOKEN`(`contents: write`・`issues: write`)で足りる見込み(PAT の `SYNC_TOKEN` は不要になる可能性が高い。段階 0 で確かめる)。
+- `workflow_run` を使わないので、その出どころ検査は不要。公開ジョブは `release` ワークフローの後段で、`environment` の承認を要する。pull request で起動するトリガーは、公開ジョブを持つワークフローには付けない。
+- 生成したツリーは push しないので、**Workflows 権限は不要**。トークンが要るのは Issue の作成、Release の公開、series をコピーする PR の作成、自己有効化だけで、ジョブ単位に絞った `GITHUB_TOKEN` で足りる見込み(PAT の `SYNC_TOKEN` は不要になる可能性が高い。段階 0 で確かめる)。
 
 #### D4-7. 検証の強化(R1-I3、R1-M6)
 
@@ -133,11 +146,12 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 - AppContainer の名前空間(上記)、日本語 UI での TIP の表示名、`SysProcs` コンポーネント GUID の共有、同じプロセスでの 2 つの `mozc_tip64.dll`、サービス表示名の重複時の SCM の挙動。
 - 新プロセスの最初のキーが落ちる件の、公式 Mozc との比較。
 - `tsf_*` と `effective_*` の食い違い(パスワード欄など)。
-- `GITHUB_TOKEN`(contents・issues の書き込み)だけで Release の公開と Issue の作成が足りるか(足りなければ fine-grained PAT)。
+- `GITHUB_TOKEN`(ジョブ単位に絞った権限)だけで Release の公開・Issue・series の PR・自己有効化が足りるか(足りなければ fine-grained PAT)。
+- GitHub の仕様として書いた前提(`schedule` の 60 日無効化、`concurrency` の待ちは 1 本、承認期限 30 日、`workflow_dispatch` は既定ブランチのファイルが前提)の実測。
 
 ## 段階
 
-0. **配布と追随の作り直し**(mozc-readable 側): D4-1 の材料ブランチ構成へ移す(PR #1 は rebase 方式なので閉じて作り直す)。別セッションの作業が終わってから。初回は 3.34.6239 向けの series を手で作り(分類 B の予行演習)、`git am -3` が blobless で 3-way になるかを試す。**完了条件**: identity の置換(表示名・発行元)を当てた MSI で、公式 Mozc との共存の CI(D4-7)が通り、最初の Release が出ていること。
+0. **配布と追随の作り直し**(mozc-readable 側): D4-1 の `main` 構成へ移す。別セッションの作業が終わってから。**順序**: ①`main` を孤立ブランチとして作り、`detect`・`release` を置く(`workflow_dispatch` と `schedule` は既定ブランチのワークフローでしか動かないので、②の前には手で試せない。試すなら同名のワークフローを一時的に今の既定ブランチ `master` に置く)→ ②既定ブランチを `main` に変える → ③PR #1 を閉じ、`readable` を保護(push 禁止)する。初回は 3.34.6239 向けの series を手で作り(分類 B の予行演習)、`git am -3` が blobless で 3-way になるかを試す。**完了条件**: identity の置換(表示名・発行元を含む)を当てた MSI で、公式 Mozc との共存の CI(D4-7)が通り、最初の Release が出ていること。
 1. mozc-readable に `active` を足す(version 2、`magic` を最後に書く)。awase に読み取りの Observe を足し、belief へは入れず journal に出して実機で一致を測る。AppContainer の測定も行う。
 2. 測定に基づき belief へ流す(Low から始め、基準を満たしたら Medium)。設定画面に状態表示。
 3. サイトの記述は D1 のとおり、事実になった文から足す。**mozc-readable の欄は、最初の Release(identity の置換を当てたもの)が出るまで `hidden` にしておく**(今は Release が 0 件で、リンクは空のページへ飛ぶ)。
