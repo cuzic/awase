@@ -79,6 +79,12 @@ def ensure_on(pids, out):
     # the first key of a fresh process can take about 8 s to act (cold start), so wait up to 40 s
     end = time.time() + 40
     n = 0
+    # 新しい窓では、TIP がテキスト入力を 1 回受けるまで IME キーが効かないことがある（rust-nicola-56 の実測）。
+    # 自前の窓に「a」と Enter を 1 回打って起こす（入力欄は自前のもの）。
+    dm.send_vk(0x41)
+    time.sleep(0.4)
+    dm.send_vk(0x0D)
+    time.sleep(0.8)
     while time.time() < end:
         _, ftid, fpid, fcls, _ = dm.focus_info()
         blk = dm.read_block(ftid, fpid) if fpid in pids else None
@@ -143,6 +149,83 @@ def e1watch(args, out):
     time.sleep(float(args.rounds))
     stop.set()
     out.emit(event="done", scenario="e1watch")
+    return 0
+
+
+TEST_INJECTION_MARKER = 0x5350494B  # awase.hook::TEST_INJECTION_MARKER (AWASE_TEST_INJECTION=1 の debug ビルドが物理キー扱いする)
+
+
+def send_marked(vk):
+    for flags in (0, 2):
+        i = dm.INPUT(type=1)
+        i.ki = dm.KEYBDINPUT(vk, 0, flags, 0, TEST_INJECTION_MARKER)
+        u32.SendInput(1, ctypes.byref(i), ctypes.sizeof(dm.INPUT))
+        time.sleep(0.03)
+
+
+def e5(args, out):
+    """ADR-268 D3 の検証: 明示意図(物理の IME キー)が残っている状態で、外から IME を閉じたとき、awase が追随するか。
+    awase は AWASE_TEST_INJECTION=1 で起動してあること。各周: 漢字キー(物理扱い)で閉→開(明示意図を作る)→数秒待つ
+    (tick のタイマーが止まるなら止まる時間)→ IMM で外から閉→ awase.log の `follow external change` を見る。"""
+    pids = {int(x) for x in args.pids.split(",") if x}
+    tt = text_thread(pids)
+    if not tt:
+        out.emit(event="abort", reason="no text focus")
+        return 2
+    h, tid, pid, cls = tt
+    if not ensure_on(pids, out):
+        out.emit(event="abort", reason="could not turn the IME on")
+        return 4
+    ime_wnd = imm.ImmGetDefaultIMEWnd(h)
+    out.emit(event="ready", tid=tid, pid=pid, ime_wnd=int(ime_wnd or 0))
+    if not ime_wnd:
+        out.emit(event="abort", reason="no default IME window")
+        return 5
+
+    def state():
+        b = dm.read_block(tid, pid)
+        return None if not b or "eff_open" not in b else b["eff_open"]
+
+    def host_has_focus():
+        return dm.focus_info()[2] in pids
+
+    time.sleep(2.0)
+    for r in range(args.rounds):
+        # 各周の頭で、ホスト窓にフォーカスを戻す（実験中にほかの窓へフォーカスが移ることがある。フォーカスの変化は
+        # 明示意図を消すので、フォーカスが保たれた周だけを集計する）。
+        if not ds.focus_text(pids)[0]:
+            out.emit(event="cycle_skipped", round=r, reason="could not focus the host")
+            time.sleep(2.0)
+            continue
+        time.sleep(0.5)
+        if not state() == 1:
+            ensure_on(pids, out)
+        focus_start = host_has_focus()
+        s0 = state()
+        send_marked(0x19)  # 漢字キー(物理扱い): トグル
+        time.sleep(1.5)
+        s1 = state()
+        send_marked(0x19)  # もう一度: 元の状態(開)へ。明示意図が残る
+        time.sleep(float(args.settle))  # 追随の tick が止まる時間を与える
+        s2 = state()
+        focus_before_ext = host_has_focus()
+        t_ext = time.time_ns()
+        ok, res, t0, t1 = imm_set_open(ime_wnd, 0)  # 外から閉じる(ツールバーの操作の代わり)
+        deadline = time.time() + 5.0
+        s3 = None
+        while time.time() < deadline:
+            s3 = state()
+            if s3 == 0:
+                break
+            time.sleep(0.01)
+        time.sleep(4.0)  # awase が追随する時間
+        focus_after = host_has_focus()
+        out.emit(event="cycle", round=r, t_ext_utc=dm.utc_iso(t_ext), send_ok=bool(ok), shm_before=s0, shm_after_key1=s1,
+                 shm_before_ext=s2, shm_after_ext=s3, focus_start=focus_start, focus_before_ext=focus_before_ext,
+                 focus_after=focus_after)
+        imm_set_open(ime_wnd, 1)  # 次の周のために外から開ける(awase はこれにも追随する)
+        time.sleep(2.0)
+    out.emit(event="done", scenario="e5")
     return 0
 
 
@@ -300,15 +383,16 @@ def e4(args, out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("exp", choices=["e1", "e1watch", "e2", "e3", "e4"])
+    ap.add_argument("exp", choices=["e1", "e1watch", "e2", "e3", "e4", "e5"])
     ap.add_argument("--pids", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--rounds", type=int, default=10)
     ap.add_argument("--load", type=int, default=0)
+    ap.add_argument("--settle", type=float, default=6.0)
     args = ap.parse_args()
     out = Out(args.out)
     out.emit(event="start", exp=args.exp)
-    sys.exit({"e1": e1, "e1watch": e1watch, "e2": e2, "e3": e3, "e4": e4}[args.exp](args, out))
+    sys.exit({"e1": e1, "e1watch": e1watch, "e2": e2, "e3": e3, "e4": e4, "e5": e5}[args.exp](args, out))
 
 
 if __name__ == "__main__":
