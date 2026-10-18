@@ -7,9 +7,8 @@ summary: |-
   drift correction の根拠からは除外する(除外しないと IME を開け直し続ける)。applied は、共有メモリと食い違ったら Unknown に降格するだけで、Confirmed への書き込みは
   効果を journal で示せてから別に足す。実機実験とOpusレビュー2ラウンドで設計を改めた。E1(外からの変更が共有メモリに出るか)の不一致は未解決。
 status: |-
-  実装中(2026-10-18)。D1・D2・D3 は develop にマージ済み(核 PR #678、配線 PR #679。CI は通過、実機未確認)。
-  未実装: `tsf_open != effective_open` のときの `applied` の降格(単独の入口が要る、未解決 3)、journal の頻度の方式(未解決 2)。
-  未確認: TTL の実測(`pending`)、E1 の不一致(未解決 1)、実機での動作。D4 の降格は、追随の中(`pass_through_observed(true, true)`)でのみ実装済み。
+  実装済み(2026-10-18)。D1〜D4 は develop にマージ済み(核 #678、配線 #679、降格と journal #682。CI は通過、実機は #679 まで確認)。
+  未確認: TTL の実測(`pending`)、E1 の不一致(未解決 1)、#682(降格・journal の重複除去)の実機での動作、Edge などの TSF ネイティブの窓・物理キー・実際の NICOLA の打鍵。
 related_adr:
   - "ADR-265"
   - "ADR-267"
@@ -84,14 +83,15 @@ related_adr:
 
 ## 未解決・実装前の確認
 1. **E1(外からの変更が共有メモリに出るか)の不一致**。公開されない外部変更があると、High の共有メモリが、正しい ObserverPoll(Medium)を上書きして、belief が古いまま固定される(mozc-readable を入れていない場合より悪くなりうる)。降格は `applied` の安全側なので影響しないが、belief の High にはこの危険が残る。IMM で読める窓で、High の共有メモリが新しい IMM の直接読みと食い違ったときの扱い(共有メモリを採らない、など)を、実装前に決める。
-2. TTL の値(500ms + prefetch の 300ms + ジッターの実測)。journal の頻度の方式(journal を伴わない延長にするか、TTL の半分ごとに絞るか)。
-3. `demote_applied` を、追随なしで単独に呼べるか。
+2. TTL の値(500ms + prefetch の 300ms + ジッターの実測)。~~journal の頻度の方式~~ → 解決(#682: 同じ報告は journal に書かない)。
+3. ~~`demote_applied` を、追随なしで単独に呼べるか。~~ → 解決(#682: `ImeEvent::AppliedDemoted` を足した。新しい variant は要らない、という当初の想定は外れた)。
 4. 「新しい窓の最初のキーは効かない」(先に a+Enter を 1 回打つと IME キーが効く)の因果と BUG-200 との関係(別の調査)。
 5. 共有メモリの version の上限(ADR-265 D3 の「version の扱い」、ADR-267 の v3 との関係)。
 
 ## 実装の状況(2026-10-18)
 - **済(develop にマージ、CI 通過、実機未確認)**: `ObservationSource::MozcShm`(High・BeliefOnly)、`Observed<MozcShm>::from_shm`、`record_any` の TTL(`MOZC_SHM_OBSERVATION_TTL_MS = 1000`、`pending`)、`is_identity_ok`、drift correction と `read_back` からの除外(D2)、純粋関数 `decide_use`・`read_is_after_baseline`(R3')、`ImeStateHub::report_mozc_shm`(報告+追随+降格)、`hook::last_operation_tick_ms`(基準 = `hook_alive_tick_ms` と ImmCross の発行時刻)、共有メモリが開けなかった (tid, pid) の記憶。ガード `mozc_shm_reader_touches_belief_only_through_report_mozc_shm`。
-- **未実装**: `tsf_open != effective_open` のときの降格(追随を伴わない降格の入口。`ModeKeyPassedThrough` は常に `last_intent` を捨てるので流用できない)、journal の頻度(毎 tick の `ObserverReported` が State の枠を消費する。journal を伴わない延長にするか、TTL の半分ごとに絞る)。
+- **#682 で追加(develop にマージ、CI 通過、実機未確認)**: `tsf_open != effective_open` のときの降格(`ImeEvent::AppliedDemoted { cause: AppliedDemoteCause }`、reducer は `applied` だけを書く。`ModeKeyPassedThrough` は常に `last_intent` を捨てるので流用できなかった。dispatch 元は `demote_applied_for_mozc_shm_split` の 1 箇所。`architecture_guard` の `.applied = ` の件数 9→10)、同じ共有メモリの報告の journal の重複除去(reduce はするが journal には書かない。`event_seq` に欠番ができる)。
+- **未実装**: なし(D1〜D4)。Confirmed(将来の拡張、§D4)は、効果を journal で示せてから別に足す。
 - **挙動の変化(マージ済み)**: mozc-readable の窓で、belief が共有メモリ(High)に従い、外から変えられると追随する。共有メモリが読めない窓は従来どおり。診断の記録(`[diagnostics] mozc_shm_shadow`)は従来どおりオプトイン。
 
 ## 段階
