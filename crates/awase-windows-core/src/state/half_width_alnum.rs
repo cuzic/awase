@@ -1075,8 +1075,8 @@ mod tests {
 
     use super::{
         exit_owns_write, plan_key_stage, plan_leave, return_pending_expired,
-        shift_key_down_disarms_guard, DropReason, KeyStageFacts, KeyStagePlan, LeavePlan,
-        ReturnPending, ReturnPendingEntry, RETURN_PENDING_CAPACITY,
+        shift_key_down_disarms_guard, DropReason, HalfWidthAlnumEffect, KeyStageFacts,
+        KeyStagePlan, LeavePlan, ReturnPending, ReturnPendingEntry, RETURN_PENDING_CAPACITY,
     };
     use crate::state::foreground_scope::ForegroundScope;
     use crate::state::TickMs;
