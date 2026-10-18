@@ -287,9 +287,11 @@ pub const TIMER_LANG_HOLD: usize = 111;
 /// ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持の期限タイマー ID。一発タイマーで、ハンドラ冒頭で自ら `kill` する。
 /// 保持の解放(完了の札・上限・フォーカス変化・panic・設定再読み込み)でも必ず kill される(`runtime/resume_hold.rs`)。
 pub const TIMER_RESUME_HOLD: usize = 112;
-/// ADR-268 D5: 共有メモリの専用の読みのタイマー ID。refresh の tick(`TIMER_IME_REFRESH`)は、明示意図があるとき・効果的に
-/// TSF ネイティブなときに止まる(他の stage を走らせないため)ので、共有メモリの読み・追随だけを切り離して回す。一発タイマーで、
-/// ハンドラ冒頭で自ら `kill` し、共有メモリのブロックがある間だけ読んだ後に張り直す(`runtime/mozc_shm_shadow.rs`)。
+/// ADR-268 D5: 共有メモリの専用の読みのタイマー ID。
+///
+/// refresh の tick(`TIMER_IME_REFRESH`)は、明示意図があるとき・効果的に TSF ネイティブなときに止まる(他の stage を
+/// 走らせないため)ので、共有メモリの読み・追随だけを切り離して回す。一発タイマーで、ハンドラ冒頭で自ら `kill` し、
+/// 共有メモリのブロックがある間だけ読んだ後に張り直す(`runtime/mozc_shm_shadow.rs`)。
 pub const TIMER_MOZC_SHM: usize = 113;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────

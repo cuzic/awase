@@ -109,14 +109,14 @@ impl super::Runtime {
             matches!(outcome, Outcome::Failed(ReadFailure::NotFound)).then_some((tid, pid));
         self.mozc_shm.polling = wants_timer(&outcome);
         // 読みの間隔が TTL（`MOZC_SHM_OBSERVATION_TTL_MS`）を超えたら記録する（TTL の見直しの材料。ADR-268）。
-        let read_ms = crate::hook::current_tick_ms();
+        let stamp_ms = crate::hook::current_tick_ms();
         if let Some(prev) = self.mozc_shm.last_read_ms {
-            let gap = read_ms.saturating_sub(prev);
+            let gap = stamp_ms.saturating_sub(prev);
             if self.mozc_shm.polling && gap > crate::tuning::MOZC_SHM_OBSERVATION_TTL_MS {
                 tracing::info!(target: "awase::mozc_shm", "[mozc-shm] read gap {gap}ms exceeds the observation TTL");
             }
         }
-        self.mozc_shm.last_read_ms = Some(read_ms);
+        self.mozc_shm.last_read_ms = Some(stamp_ms);
 
         // ADR-268: 受け入れた読みを belief に使う（IME へは何も書かない）。1 tick に 1 回、変化の有無によらず
         // 報告する（`MozcShm` の観測は TTL を持ち、報告が止まると失効するため）。基準の時刻は、awase の最後の操作
