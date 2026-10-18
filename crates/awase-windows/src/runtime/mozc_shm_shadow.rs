@@ -74,7 +74,7 @@ impl super::Runtime {
             let now_ms = crate::hook::current_tick_ms();
             let baseline_ms = crate::hook::last_operation_tick_ms();
             self.platform_state.ime.report_mozc_shm(
-                shm,
+                *shm,
                 raw.update_tick_ms,
                 now_ms,
                 baseline_ms,

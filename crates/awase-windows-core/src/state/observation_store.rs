@@ -1509,7 +1509,7 @@ mod tests {
     fn record_shm(s: &mut ObservationStore, open: bool, at: Instant) {
         use super::super::evidence::{MozcShm, Observed};
         s.record_belief(
-            Observed::<MozcShm>::from_shm(&shm_accepted(open), open, HwndId::NULL, 0),
+            Observed::<MozcShm>::from_shm(shm_accepted(open), open, HwndId::NULL, 0),
             at,
         );
     }

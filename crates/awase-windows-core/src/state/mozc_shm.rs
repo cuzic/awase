@@ -297,7 +297,7 @@ pub enum ShmUse {
 /// `GetTickCount64` の値）。`settle_ms` は `KEY_EFFECT_SETTLE_MS`。
 #[must_use]
 pub const fn decide_use(
-    shm: &ShmState,
+    shm: ShmState,
     update_tick_ms: u64,
     now_ms: u64,
     baseline_ms: u64,
@@ -773,13 +773,13 @@ mod tests {
         let st = shm(true, false);
         let tick = 5000;
         assert_eq!(
-            decide_use(&st, tick, 6000, 1000, 170, true, true),
+            decide_use(st, tick, 6000, 1000, 170, true, true),
             ShmUse::Split
         );
         let st = shm(false, true);
         let tick = 5000;
         assert_eq!(
-            decide_use(&st, tick, 6000, 1000, 170, true, true),
+            decide_use(st, tick, 6000, 1000, 170, true, true),
             ShmUse::Split
         );
     }
@@ -790,7 +790,7 @@ mod tests {
         let st = shm(false, false);
         let tick = 1000;
         assert_eq!(
-            decide_use(&st, tick, 1010, 1000, 170, true, true),
+            decide_use(st, tick, 1010, 1000, 170, true, true),
             ShmUse::Held
         );
     }
@@ -801,7 +801,7 @@ mod tests {
         let st = shm(true, true);
         let tick = 5000;
         assert_eq!(
-            decide_use(&st, tick, 6000, 1000, 170, true, true),
+            decide_use(st, tick, 6000, 1000, 170, true, true),
             ShmUse::Use {
                 open: true,
                 disagrees: false
@@ -809,7 +809,7 @@ mod tests {
         );
         // belief(effective_open)と食い違う → 追随
         assert_eq!(
-            decide_use(&st, tick, 6000, 1000, 170, false, true),
+            decide_use(st, tick, 6000, 1000, 170, false, true),
             ShmUse::Use {
                 open: true,
                 disagrees: true
@@ -817,7 +817,7 @@ mod tests {
         );
         // desired_open と食い違う(belief は共有メモリに従っているが desired が古い、N8)→ 追随
         assert_eq!(
-            decide_use(&st, tick, 6000, 1000, 170, true, false),
+            decide_use(st, tick, 6000, 1000, 170, true, false),
             ShmUse::Use {
                 open: true,
                 disagrees: true
@@ -832,11 +832,11 @@ mod tests {
         let st = shm(false, false);
         let tick = 900; // 操作(1000)より前のまま
         assert_eq!(
-            decide_use(&st, tick, 1100, 1000, 170, true, true),
+            decide_use(st, tick, 1100, 1000, 170, true, true),
             ShmUse::Held
         );
         assert_eq!(
-            decide_use(&st, tick, 1170, 1000, 170, true, true),
+            decide_use(st, tick, 1170, 1000, 170, true, true),
             ShmUse::Use {
                 open: false,
                 disagrees: true

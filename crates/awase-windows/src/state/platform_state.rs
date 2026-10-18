@@ -2059,7 +2059,7 @@ impl ImeStateHub {
     /// 戻り値は判断（診断の記録用）。
     pub(crate) fn report_mozc_shm(
         &mut self,
-        shm: &crate::state::mozc_shm::ShmState,
+        shm: crate::state::mozc_shm::ShmState,
         update_tick_ms: u64,
         now_ms: u64,
         baseline_ms: u64,
