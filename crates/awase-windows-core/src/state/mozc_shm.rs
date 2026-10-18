@@ -330,6 +330,17 @@ pub fn outcome_of(reading: &Reading, expected_pid: u32) -> Outcome {
     }
 }
 
+/// 専用の読みのタイマー(`TIMER_MOZC_SHM`、ADR-268 D5)を回し続けるか。
+///
+/// この窓のスレッドに共有メモリのブロックがある(開けた)なら真。開けなかった(`NotFound`)窓では回さない
+/// (mozc-readable を使わない利用者に何も課さない)。
+/// `Rejected`(`active=0` など)や読み取りの失敗(`Torn`・`Denied`・`Unresolved`)は、ブロックはあるので回し続ける
+/// (TIP が有効になる・読めるようになるのを見逃さない)。
+#[must_use]
+pub const fn wants_timer(outcome: &Outcome) -> bool {
+    !matches!(outcome, Outcome::Failed(ReadFailure::NotFound))
+}
+
 /// 何をきっかけに読んだか。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
@@ -842,5 +853,17 @@ mod tests {
                 disagrees: true
             }
         );
+    }
+
+    // ── ADR-268 D5: wants_timer ──
+
+    #[test]
+    fn wants_timer_only_when_the_block_exists() {
+        assert!(!wants_timer(&Outcome::Failed(ReadFailure::NotFound)));
+        assert!(wants_timer(&Outcome::Failed(ReadFailure::Torn)));
+        assert!(wants_timer(&Outcome::Failed(ReadFailure::Denied(5))));
+        assert!(wants_timer(&Outcome::Failed(ReadFailure::Unresolved("x"))));
+        assert!(wants_timer(&Outcome::Rejected(Rejection::Inactive)));
+        assert!(wants_timer(&Outcome::Accepted(shm(true, true))));
     }
 }
