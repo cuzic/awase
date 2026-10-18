@@ -86,3 +86,40 @@ TIP が無効になった後も、共有メモリは最後の値を残す(`activ
 
 - 未確認: `is_expired` が source ごとの TTL を持てるか(§3)、`Observed::<evidence::…>` の足し方、drift correction との相互作用(§7)。
 - 決めてほしい: (1) §3 の古い値の扱い(a/b/c。推奨は c)、(2) §7 の drift correction のガードに `MozcShm` を入れるか(推奨: 入れて、belief だけを正す。事実と争う再送をしない)。
+
+## 9. `applied` を共有メモリで確認済みにする入口(案、2026-10-18)
+
+### 9-1. なぜ要るか(利用者の指摘と、コードの確認)
+
+- 押下以外の送信は実際にある(利用者の指摘): ツールバーからの切り替え、アプリ側からのモード変更、パスワード入力欄など。これらは awase の**外から** IME の状態を変える。
+- そのあと `applied`(awase が最後に書いた値の記録)は古くなる。害は 2 方向ある: (i)すでに合っているのに送る(無駄、被害は小さい)、
+  (ii)**合っていないのに「合っている」と見て送らない**(重い。ADR-214 の P1: トレイ起点の `SetOpen` が古い `applied` で GjiDirect の送信を省かれる)。入口は (ii) を直す。
+- 既存の `external_change_watch`(ADR-205/256)では足りない(コードを読んで確認): 対象は読めない窓(`Imm32Unavailable`)だけで、外部注入キーの直後の短い窓でしか動かず、直す先は belief で `applied` ではない。
+  ツールバー・アプリ起点の変更を継続的に拾って `applied` を直す仕組みは、いまは無い。
+
+### 9-2. 入口の形
+
+- 新しい入口 `ImeStateHub::confirm_applied_from_shm(...)` と、それが dispatch する新しい `ImeEvent` variant(例 `AppliedConfirmedByObservation { open, scope }`)。
+  `reduce()` が `applied = Confirmed { open, at_ms }` を書く(`record_confirmed_in_scope` と同じ書き込み点、ime-belief-architecture の「唯一の書き込み点」を守る)。
+  新しい variant なので、`ime_event_guard`(dylint)と `architecture_guard.rs` の構築箇所の件数に載せる。
+- 入力は §2 と同じ受け入れた読み(窓の照合: epoch・hwnd・`active=1`・pid)。**belief への報告(§2)とは別の入口**にする(belief は観測、`applied` は「IME に反映済みの値」で性質が違う)。
+- 向きは両方向。共有メモリが「閉」で `applied` が `Confirmed(open)` なら `Confirmed(closed)` に直す(ここが P1 の修正)。
+
+### 9-3. 守る条件
+
+| 条件 | 内容 | 理由 |
+| --- | --- | --- |
+| パスワード欄 | `tsf_open != effective_open` のときは**確認済みにしない**。`applied` を `Unknown` にする(次の送信を省かない) | 入力スコープの上書きで 2 つの値が割れる場面。どちらを「IME の状態」とするか未測定なので、省略の根拠にしない側へ倒す |
+| awase 自身の書き込み直後 | ADR-256 の `pending_write`(まだ同じ値の読みで確かめられていない自分の書き込み)がある間は、**古い値を確認済みとして書き戻さない**。同じ値を読むか窓が切れるまで保留 | 書き込みは約 61ms 遅れて共有メモリに現れる。直後の読みで `applied` を古い値に戻すと BUG-199 型の逆戻りになる |
+| 明示キーの押下 | 変えない。`explicit_press_applied_pair` の未知化は残す | 押下ごとに送る設計(ADR-208 L1)。この入口は `press=None` の経路(トレイ・Engine コマンド・drift correction)にだけ効く |
+| 窓の切り替え | 照合は epoch+hwnd。窓が変わったら `applied` の既存の扱い(フォーカスで未知に戻す)に従う | 別の窓の事実を書かない |
+| 共有メモリが読めない・`active=0` | 何もしない(`applied` を動かさない) | 事実が無いときに推測で書かない |
+
+### 9-4. しないこと・未確認
+
+- `Sent`/`Confirmed` の型の分離(ADR-214 決定1)はしない。この入口は、共有メモリで読める窓だけで古い `applied` を事実で上書きする。
+  API 成功で `Confirmed` が書かれる問題(ADR-214 の背景)は残るが、次の tick で共有メモリが真値で上書きする。
+- 未確認: (a) フォーカス変更で `applied` が `Unknown` に戻る場所(`record_confirmed_in_scope` のスコープの扱い)をまだ読んでいない、
+  (b) `pending_write` を `applied` の保留にも使えるか(いまは直接観測の窓の保留用)、(c) 「アプリ起点・ツールバー」の変更の頻度と、古い `applied` で実際に送信が省かれた事例の数
+  (journal の dump が無く数えていない。数えるのは、この入口の効果の確認の手段で、着手の条件ではない)、(d) `tsf_open != effective_open` の実際の頻度(パスワード欄で測っていない)。
+- 実装は ADR-214 の再開に当たるので、**ADR の起票と Opus の敵対的レビューを経てから**実装する(リポジトリの運用)。この節はその叩き台。
