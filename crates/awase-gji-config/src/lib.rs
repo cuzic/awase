@@ -28,6 +28,7 @@
 pub mod command;
 pub mod keymap;
 pub mod known_keymap;
+pub mod product;
 pub mod role;
 pub mod tsv;
 pub mod wire;
@@ -35,6 +36,7 @@ pub mod wire;
 pub use command::{GjiCompositionMode, GjiModeCommand};
 pub use keymap::{GjiImeKeys, GjiModeKeys};
 pub use known_keymap::{classify_known_gji_keymap, KnownGjiKeymap};
+pub use product::ConfigProduct;
 
 /// `config1.db` の生バイト列から、IME ON/OFF 検出用の VK 名集合を抽出する。
 ///
@@ -140,6 +142,31 @@ mod tests {
     use super::{
         read_gji_ime_keys, GjiImeKeys, SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF,
     };
+
+    /// mozc-readable の CI(`readable/ci/config_make.py`)が、Mozc Readable の `config1.db` として置くバイト列と同じ形。
+    /// Mozc の `config.proto` の field 41（`session_keymap`、CUSTOM = 0）と field 42（`custom_keymap_table`）だけを持つ。
+    /// そのファイルを実際の Mozc Readable が読み込み、F8 が IME の ON/OFF のトグルになることは、mozc-readable 側の
+    /// CI（section `config`）で確かめる。ここは、awase の読み取りが同じファイルを同じに解釈することの回帰テスト。
+    fn mozc_f8_toggle_config() -> Vec<u8> {
+        let table = "status\tkey\tcommand\nDirectInput\tF8\tIMEOn\nPrecomposition\tF8\tIMEOff\n";
+        let mut bytes = vec![0xC8, 0x02, 0x00]; // field 41, varint 0 (CUSTOM)
+        bytes.extend_from_slice(&[0xD2, 0x02]); // field 42, length-delimited
+        bytes.push(u8::try_from(table.len()).unwrap()); // 65 バイト: 1 バイトの varint に収まる
+        bytes.extend_from_slice(table.as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn a_mozc_config_with_a_custom_f8_toggle_is_read_as_a_toggle_key() {
+        let bytes = mozc_f8_toggle_config();
+        assert_eq!(bytes.len(), 6 + 65);
+        let raw = crate::wire::parse_top_level(&bytes).unwrap();
+        assert_eq!(raw.session_keymap, Some(0)); // CUSTOM
+        let keys = read_gji_ime_keys(&bytes);
+        assert_eq!(keys.toggle, ["VK_F8"]);
+        assert!(keys.on.is_empty());
+        assert!(keys.off.is_empty());
+    }
 
     #[test]
     fn empty_bytes_yields_empty_keys() {
