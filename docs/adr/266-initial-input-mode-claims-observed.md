@@ -70,17 +70,22 @@ related_adr:
 (2) `reconcile_key_effect_mode` が `KEY_EFFECT_SETTLE_MS` 以内の観測を捨て、`[key-effect-miss] axis=mode` を出す(`:718-742`)、(3) `press_axes`(ADR-260 決定 2)が mode 軸を立て、直接観測の窓の読みを捨てる(`platform_state.rs:306-312`)。
 窓の中の正しい読みまで捨てるので、「不明」は今の `None` のほうが安全。
 
-## フォーカス移動で前の窓のモードが残る件(BUG-204 の関連、未再現)
+## フォーカス移動で前の窓のモードが残る件(BUG-204 の関連。実機で確認: ATOK では実害なし)
 
-`reduce_focus_changed` は `input_mode` を消さない。フォーカス移動の `input_mode` は主に次の経路で決まる(読解のみ):
+`reduce_focus_changed` は `input_mode` を消さない。フォーカス移動の `input_mode` は主に次の経路で決まる:
 - **hwnd キャッシュの復元**(`apply_hwnd_cache_restore`): `InputModeApplied{CacheRestore}` で `input_mode` を無条件に上書きする。`ObservedEisu` だけ `cache_restore_eisu_guard` で `AssumedRomaji` に倒す。キーは (pid, class_name)、最大 1 時間。ADR-191 §3.1 が誤りうると明記している hwnd 単位の記憶。
 - **新しいスレッドを閉とみなす経路**(ADR-212 P2、`assume_closed_for_new_thread`): 開閉だけを Low の `HeuristicDefault` として記録し、`input_mode` に触れない。ADR-191 §3.2 の「閉×**ひらがな**」の半分しか反映していない。
-- キャッシュが無く、新しいスレッドでもない場合だけ、前の窓のモードがそのまま残る。
 
-害になりうる最小の条件: 前の窓で `ObservedEisu` → awase の起動後に作られたスレッドの読めない窓へ移る → 実 IME は閉×ひらがな → 表の予測で開く(`mode: None`) → belief は `ObservedEisu` のまま開き、
-`NotRomajiInput` で Engine が止まる。`eisu_recovery.rs` の冒頭に記録されたデッドロックと同型で、**BUG-204 の食い違い(ローマ字が半角英数に送られる)より実害が大きい可能性**がある。
-表の予測で開く経路が `eisu_reset_on_ime_on` の対応表のどの行で救われるかは、未確認。ハーネスの `focus_change()` は擬似 IME の状態を共有し(スレッドごとに持たない)、現状では再現できない。
-再現の前提は、`PseudoIme` にスレッドごとの状態を持たせること。
+**閉ループのハーネスでの再現**(`stale_eisu_blocks_engine_after_predicted_open_in_a_new_thread_window`、`#[ignore]`): 前の窓が `ObservedEisu` → 新スレッドの読めない窓 → 変換キーで開く(ATOK の閉→開は `mode: None`)→ `ObservedEisu` のまま Engine が `NotRomajiInput` で止まる。
+
+**実機(本物の awase・実 Chrome)では救われた**(run 39113514316、`chrome_probe --key=1C --new-window-after=alnum`、ATOK、3/3 PASS):
+変換キーを通した 20ms 後に `mode-key-follow` が IME の実状態を直接読み(`read_ime_state_full ... cross native=true roman=false`)、`[direct-follow] モードキー直後の窓の中で実状態が belief と違った → eisu=Some(false) へ追随` で
+`ObservedEisu` を訂正し、`Engine activated` になった。ハーネスはこの段(`key_pipeline` の後段)を写さないので、閉ループの再現は偽の陽性。
+ログのタイムライン(1 回目): 09:02:40.698 ひらがなキーで `mode=Some(ObservedEisu)` → 09:02:43.919 新しい Chrome へ(`new-thread entry`、`mode=ObservedEisu` のまま)→ 09:02:45.608 変換キー(`open=Some(true) mode=None`)→ 09:02:45.638 `[direct-follow]` → `Engine activated`。
+
+**未測定**: GJI の MS-IME プリセット・MS-IME 本体(Chrome を半角英数にする前提が作れず INVALID 3/3)、変換キー以外のモード系キー(無変換・カタカナなど。`mode-key-follow` の対象かは未確認)、
+モードキーでなく表の予測だけで開く経路(物理キーが Suppress される場合など)。前の窓が直接入力のとき(`off` の対照)、ATOK・プリセットは新しい窓で `その他` と FAIL 3/3 だった理由は未確認(IME が開かないか別の挙動)。
+Opus レビューが指摘した「BUG-204 の食い違いより実害が大きい可能性」は、**少なくとも ATOK + 変換キー + Chrome では当たらなかった**。
 
 ## ADR-191 の引用の訂正
 
@@ -94,7 +99,7 @@ related_adr:
 1. **今回は挙動を変えない。** BUG-204・本 ADR・テストのコメントの機序を、初期値の `ObservedRomaji` に直す(実施済み)。閉ループのテストに、その時点の `input_mode == ObservedRomaji` を検査する `assert_eq!` を足し、機序の前提を実測で守る
    (CI で通れば本 ADR の機序が確定する。通らなければ、また誤っている)。
 2. **案 1(初期値の改名)と案 2(`seeded` の整理)は、所有者判断(Q1)とし、保留する。** 実害の記録が 0 件の段階では新しい仕組みを足さない方針。ただし誤診が 3 回起きた事実は、名前が嘘をつく費用の記録として残す。
-3. **フォーカス移動の経路を、BUG-204 の食い違いより先に測る価値がある**(実害が大きい可能性)。再現の前提はスレッドごとの擬似 IME。別 ADR または BUG として起票する(未起票)。
+3. **フォーカス移動の経路は、実機で確認した結果、ATOK + 変換キー + Chrome では実害なし**(上記)。他の IME・キーは未測定。ハーネスに `mode-key-follow` を足すかは別途判断する。
 4. **実害の測定(受動)。** 受け取った不具合報告の belief の入力モードの出所(不具合報告のスナップショットは `format!("{:?}", input_mode())` で理由も含む。journal は `variant_name` で理由が落ちる)を確認し、初期値の `ObservedRomaji` が後から観測や証拠源に覆された件数を数える。
 
 ## 未決・要確認

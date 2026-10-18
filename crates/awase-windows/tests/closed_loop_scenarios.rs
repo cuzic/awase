@@ -154,17 +154,19 @@ fn conversion_esc_does_not_leave_stale_conv_stage() {
     assert_ok(&h, predictions_agree_with_truth(&h));
 }
 
-/// BUG-204 関連(読解からの再現。**未修正**): 前の窓で半角英数(belief が `ObservedEisu`)のまま、起動後に作られた新しいスレッドの
-/// 読めない窓(`Imm32Unavailable`)へ移り、実 IME は閉×ひらがな(ADR-191 §3.2)。変換キー(ATOK では閉→開で変換モードが不明のため
-/// 予測は `mode: None`)で開くと、belief は前の窓の `ObservedEisu` のまま開き、Engine が `Inactive(NotRomajiInput)` で止まる。
-/// 窓の切り替えは `input_mode` を救済しない(`assume_closed_for_new_thread` も `reset_stale_ime_on_for_imm_broken` も開閉だけを
-/// 低信頼で記録し、`correction_for_imm_broken` は `ObservedEisu` を意図的に対象外にする)。`KeyEffectPredicted` は `mode` が `Some` の
-/// ときだけ `input_mode` を書く。ひらがなキー(`mode` を書く)や shadow-toggle の物理 IME キー(`eisu_reset_on_ime_on` の救済の対応表)は救われる。
+/// BUG-204 関連: 前の窓で半角英数(belief が `ObservedEisu`)のまま、起動後に作られた新しいスレッドの読めない窓(`Imm32Unavailable`)へ移り、
+/// 実 IME は閉×ひらがな(ADR-191 §3.2)。変換キー(ATOK では閉→開で変換モードが不明のため予測は `mode: None`)で開くと、belief の層では
+/// 前の窓の `ObservedEisu` が残り、Engine が `Inactive(NotRomajiInput)` で止まる。窓の切り替え(`assume_closed_for_new_thread`・
+/// `reset_stale_ime_on_for_imm_broken`)は開閉だけを低信頼で記録し、`correction_for_imm_broken` は `ObservedEisu` を意図的に対象外にし、
+/// `KeyEffectPredicted` は `mode` が `Some` のときだけ `input_mode` を書く。
 ///
-/// **限界**: ハーネスは本番の `key_pipeline` の他の段(物理 IME キーの `ObservedEisu` 救済など)を写さない。変換キーに IME 設定由来の
-/// 役割(ADR-199)があると、本番は別の経路を通る。このテストが示すのは「belief の層では救われない」ことで、本番の実害は実機で確かめる。
+/// **本番では救われる(実機 CI で確認、run 39113514316、ATOK × 実 Chrome × 3/3 で Engine が追随)**。本番は変換キーを通した 20ms 後に
+/// `mode-key-follow`(`[direct-follow]`)が IME の実状態を直接読み、`ObservedEisu` を訂正する(ログ: `read_ime_state_full ... cross native=true roman=false`
+/// → `[direct-follow] モードキー直後の窓の中で実状態が belief と違った → eisu=Some(false) へ追随` → `Engine activated`)。ハーネスはこの段を写さない
+/// ので、このテストは偽の陽性(ハーネスの限界)を記録するもの。ハーネスに `mode-key-follow` を足したら、この `#[ignore]` を外して回帰テストにできる。
+/// GJI の MS-IME プリセット・MS-IME 本体は実機で前提(Chrome を半角英数にする)が作れず未測定。
 #[test]
-#[ignore = "BUG-204 関連: 前の窓の ObservedEisu が、新しいスレッドの読めない窓で閉→開(変換キー)を経ても残り Engine が止まる。本番の key_pipeline の救済を写していないので実害は未確認"]
+#[ignore = "ハーネスが本番の mode-key-follow(モードキー通過後 20ms の直接読み)を写していない偽の陽性。本番は救われる(実機 CI run 39113514316、ATOK)。ハーネスに足したら外す"]
 fn stale_eisu_blocks_engine_after_predicted_open_in_a_new_thread_window() {
     // 窓 A: 読める窓で IME 開・半角英数。観測で belief が ObservedEisu になる。
     let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)));
