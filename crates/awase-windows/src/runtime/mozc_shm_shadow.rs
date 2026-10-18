@@ -9,7 +9,9 @@
 //!   前回の記録から結論が変わった tick にだけ journal（`JournalEntry::MozcShm`）と awase.log に残す。belief との
 //!   一致率・ずれを実ジャーナルで測るため。反映は再起動後（`app/bootstrap.rs` が起動時に 1 度だけ渡す）。
 
-use crate::state::mozc_shm::{outcome_of, to_record, Outcome, ReadFailure, RecordContext, Trigger};
+use crate::state::mozc_shm::{
+    outcome_of, to_record, wants_timer, Outcome, ReadFailure, RecordContext, Trigger,
+};
 
 /// 影の読みの状態。無効のときは何もしない。
 pub(super) struct MozcShmShadow {
@@ -21,6 +23,10 @@ pub(super) struct MozcShmShadow {
     /// 共有メモリが開けなかった（`NotFound`）（スレッド、プロセス）。フォーカスが変わるまで読まない
     /// （mozc-readable を使わない利用者に、毎 tick の Win32 呼び出しを課さない。ADR-268 D1）。
     absent_for: Option<(u32, u32)>,
+    /// 直前の読みで、この窓のスレッドに共有メモリのブロックがあった（専用のタイマーを回し続ける。ADR-268 D5）。
+    polling: bool,
+    /// 直前の読みの時刻（`GetTickCount64`）。間隔が TTL を超えたことを診断のログに出すため。
+    last_read_ms: Option<u64>,
 }
 
 impl MozcShmShadow {
@@ -29,6 +35,8 @@ impl MozcShmShadow {
             enabled: false,
             last: None,
             absent_for: None,
+            polling: false,
+            last_read_ms: None,
         }
     }
 }
@@ -40,6 +48,8 @@ impl super::Runtime {
             enabled,
             last: None,
             absent_for: None,
+            polling: false,
+            last_read_ms: None,
         };
     }
 
@@ -48,6 +58,37 @@ impl super::Runtime {
     /// 対象は、現在のフォーカス（`platform.focus.current`）の窓のスレッド。読む手順と受け入れ条件は
     /// `observer::mozc_shm::read` と `state::mozc_shm::outcome_of`。
     pub(super) fn mozc_shm_on_tick(&mut self, focus_changed: bool) {
+        self.mozc_shm_read_once(focus_changed);
+        self.mozc_shm_ensure_timer();
+    }
+
+    /// 専用のタイマー（`TIMER_MOZC_SHM`、ADR-268 D5）の満了。ハンドラ冒頭で kill 済み。
+    ///
+    /// refresh の tick は、明示意図があるとき・効果的に TSF ネイティブなときに止まる（他の stage を走らせないため）。
+    /// 共有メモリの読み・追随だけを切り離して、ブロックがある間、約 `MOZC_SHM_TIMER_MS` ごとに回す。無効アプリに
+    /// フォーカスがあるときは読まない（refresh の tick と同じ）。
+    pub(super) fn mozc_shm_on_timer(&mut self) {
+        if self.platform_state.focus.app_disabled {
+            self.mozc_shm.polling = false;
+            return;
+        }
+        self.mozc_shm_read_once(false);
+        self.mozc_shm_ensure_timer();
+    }
+
+    /// ブロックがある間は専用のタイマーを張る（既に張ってあれば触らない）。
+    fn mozc_shm_ensure_timer(&mut self) {
+        if self.mozc_shm.polling && !self.platform.timer.is_active(crate::TIMER_MOZC_SHM) {
+            self.platform.timer.set(
+                crate::TIMER_MOZC_SHM,
+                std::time::Duration::from_millis(crate::tuning::MOZC_SHM_TIMER_MS),
+            );
+        }
+    }
+
+    /// 現在のフォーカスの窓のスレッドの共有メモリを 1 回読んで、belief に使う（診断の記録を含む）。
+    fn mozc_shm_read_once(&mut self, focus_changed: bool) {
+        self.mozc_shm.polling = false;
         let hwnd_addr = self.platform.focus.current.hwnd;
         let pid = self.platform.focus.current.pid;
         if hwnd_addr == 0 || pid == 0 {
@@ -66,6 +107,16 @@ impl super::Runtime {
         let outcome = outcome_of(&reading, pid);
         self.mozc_shm.absent_for =
             matches!(outcome, Outcome::Failed(ReadFailure::NotFound)).then_some((tid, pid));
+        self.mozc_shm.polling = wants_timer(&outcome);
+        // 読みの間隔が TTL（`MOZC_SHM_OBSERVATION_TTL_MS`）を超えたら記録する（TTL の見直しの材料。ADR-268）。
+        let read_ms = crate::hook::current_tick_ms();
+        if let Some(prev) = self.mozc_shm.last_read_ms {
+            let gap = read_ms.saturating_sub(prev);
+            if self.mozc_shm.polling && gap > crate::tuning::MOZC_SHM_OBSERVATION_TTL_MS {
+                tracing::info!(target: "awase::mozc_shm", "[mozc-shm] read gap {gap}ms exceeds the observation TTL");
+            }
+        }
+        self.mozc_shm.last_read_ms = Some(read_ms);
 
         // ADR-268: 受け入れた読みを belief に使う（IME へは何も書かない）。1 tick に 1 回、変化の有無によらず
         // 報告する（`MozcShm` の観測は TTL を持ち、報告が止まると失効するため）。基準の時刻は、awase の最後の操作
