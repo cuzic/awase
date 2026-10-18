@@ -3,7 +3,7 @@ id: ADR-265
 title: |-
   mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定)
 status: |-
-  提案(2026-10-17、Opus round1〜3 の指摘を反映済み)。配布の自動化は PR #1 を作り直す前提、awase 側の読み取りは未実装
+  提案(2026-10-17、Opus round1〜4 で収束)。配布の自動化は PR #1 を作り直す前提、awase 側の読み取りは未実装
 related_adr:
   - "ADR-191"
   - "ADR-261"
@@ -83,15 +83,15 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 - `readable/tools/generate.sh <タグ>`(生成して、`git am` が止まったところで終わる)と `readable/tools/refresh-patches.sh`(解消したツリーから `git format-patch <BASE>..` で series を作り直し、`BASE` を新しい土台に更新する)。CI の生成もこの `generate.sh` を呼ぶ。
 
 **ワークフローは 2 本に分ける**(R3-F2)
-- `detect`(早期検知と停止の検知): `schedule`。**Linux**で `generate.sh` を使い、upstream の master に対して公開せずに生成・検査だけを試す。公開ジョブも `environment` も `concurrency` も持たない。これが止まらないように、毎回の最後に自分自身のワークフローを有効化し直す(`gh api -X PUT .../actions/workflows/<id>/enable`、`actions: write` はこのステップだけ)(R3-F1a)。
+- `detect`(早期検知と停止の検知): `schedule`。**Linux**で `generate.sh` を使い、upstream の master に対して公開せずに生成・検査だけを試す。公開ジョブも `environment` も `concurrency` も持たない。これが止まらないように、毎回の最後に `detect` と `release` の両方を有効化し直す(`gh api -X PUT .../actions/workflows/<id>/enable`)(R3-F1a、R4-G1)。**この呼び出しが 60 日の計時を戻すかは GitHub の仕様として明示されていない(未確認)**。
 - `release`(新しいタグの追随と公開): `schedule` と `workflow_dispatch`。ジョブは「生成とビルドと検証(Windows、生成も同じジョブの中で Git Bash の `generate.sh` を呼ぶ。`core.autocrlf=false`)」→「公開」。後段へ渡すのは MSI と `git archive` の tar だけ(R3-F6)。公開ジョブは `environment` の承認を要し、`concurrency` は公開ジョブにだけ付け、グループ名に upstream の版を入れる(`readable-publish-<タグ>`)。新しい版の `release` が始まったら、承認待ちの古い版の run を取り消す。
-- **GitHub の仕様に頼る前提(いずれもこのリポジトリでは未確認)**: 公開リポジトリの `schedule` は 60 日間リポジトリに動きが無いと無効化される(upstream のタグは 3〜4 か月おきなので普通に起きる。F1a の自己有効化に加え、awase 側の定期ジョブから mozc-readable のワークフローの状態と最後の run の日付を見て、止まっていたら Issue を立てる(F1b、併用))。承認待ちの run は `concurrency` のグループを持ち続ける(だから上のとおり分ける)。承認の期限は 30 日。
+- **GitHub の仕様に頼る前提(いずれもこのリポジトリでは未確認)**: 公開リポジトリの `schedule` は 60 日間リポジトリに動きが無いと無効化される(upstream のタグは 3〜4 か月おきなので普通に起きる。F1a の自己有効化に加え、awase 側の定期ジョブから mozc-readable のワークフローの状態と最後の run の日付を見て、止まっていたら Issue を立てる(F1b、併用。どの仕組みで止まっても最後はここで拾う。段階 0 の作業に書く))。承認待ちの run は `concurrency` のグループを持ち続ける(だから上のとおり分ける)。承認の期限は 30 日。
 
 **Release**(R3-F7)
-- Release のタグは **`main` のコミット**に付ける(`v3.34.6239-readable.1` → `main` の SHA)。本文には upstream のタグ・`main` の SHA・使った series の SHA を書く。生成したソースの `git archive` を `mozc-readable-<版>-source.tar.gz` として asset に付け、本文に「GitHub が自動で付ける Source code は生成スクリプト(材料)だけで、ビルドしたソースは `-source.tar.gz`」と書く。
-- **N+1 を作る契機**(R3-F5): ワークフローの中で「どの series を使うか(現行タグのディレクトリ、無ければ `master/`)」を決め、**使う series の SHA と `identity.toml` の SHA が、直近の同じ upstream 版の Release に記録した値と違う**ときだけ N+1 を作る。`master/` の修正だけでは、現行タグのディレクトリがあれば N+1 は起きない。ci やワークフローだけの変更も起きない。同じ材料の SHA で N+1 を作るのは、ビルド環境の都合で作り直すときだけで、手動の `workflow_dispatch` に限る(同じコミットに別名のタグを付けられる)。
+- Release のタグは **`main` のコミット**に付ける(`v3.34.6239-readable.1` → `main` の SHA)。本文には upstream のタグ・`main` の SHA・使った series を人向けに書く。機械可読な記録として `build-info.json`(`upstream_tag`・`main_sha`・`series_dir`・`series_tree_sha`〈`git rev-parse HEAD:readable/patches/publisher/<dir>`、ディレクトリの tree の SHA〉・`identity_sha`)を asset に付け、N+1 の判定はこれを読む(本文は人が編集しうる)。生成したソースの `git archive` を `mozc-readable-<版>-source.tar.gz` として asset に付け、本文に「GitHub が自動で付ける Source code は生成スクリプト(材料)だけで、ビルドしたソースは `-source.tar.gz`」と書く。
+- **N+1 を作る契機**(R3-F5): ワークフローの中で「どの series を使うか(現行タグのディレクトリ、無ければ `master/`)」を決め、**使う series の tree の SHA と `identity.toml` の SHA が、直近の同じ upstream 版の Release の `build-info.json` の値と違う**ときだけ N+1 を作る。`master/` の修正だけでは、現行タグのディレクトリがあれば N+1 は起きない。ci やワークフローだけの変更も起きない。同じ材料の SHA で N+1 を作るのは、ビルド環境の都合で作り直すときだけで、手動の `workflow_dispatch` に限る(同じコミットに別名のタグを付けられる)。
 
-**権限**(R3-F8): ワークフローの既定は `contents: read`。`contents: write` は公開ジョブ、`issues: write` は Issue を立てるステップ、`actions: write` は自己有効化のステップにだけ付ける。upstream のスクリプト(`update_deps.py`)と Bazel を動かすビルドのジョブには書き込み権限を渡さない。
+**権限**(R3-F8): ワークフローの既定は `contents: read`。`contents: write` は公開ジョブ、`issues: write` は Issue を立てるステップ、`actions: write` は自己有効化と、承認待ちの古い版の run の取り消し(`gh run cancel`)のステップにだけ、`pull-requests: write` は series をコピーする PR のステップにだけ付ける(後者はリポジトリの Settings → Actions の「Allow GitHub Actions to create and approve pull requests」の有効化も要る。既定では無効)。upstream のスクリプト(`update_deps.py`)と Bazel を動かすビルドのジョブには書き込み権限を渡さない。
 
 #### D4-2. 3 層
 
@@ -151,7 +151,15 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 
 ## 段階
 
-0. **配布と追随の作り直し**(mozc-readable 側): D4-1 の `main` 構成へ移す。別セッションの作業が終わってから。**順序**: ①`main` を孤立ブランチとして作り、`detect`・`release` を置く(`workflow_dispatch` と `schedule` は既定ブランチのワークフローでしか動かないので、②の前には手で試せない。試すなら同名のワークフローを一時的に今の既定ブランチ `master` に置く)→ ②既定ブランチを `main` に変える → ③PR #1 を閉じ、`readable` を保護(push 禁止)する。初回は 3.34.6239 向けの series を手で作り(分類 B の予行演習)、`git am -3` が blobless で 3-way になるかを試す。**完了条件**: identity の置換(表示名・発行元を含む)を当てた MSI で、公式 Mozc との共存の CI(D4-7)が通り、最初の Release が出ていること。
+0. **配布と追随の作り直し**(mozc-readable 側。別セッションの作業が終わってから)。
+   1. 別セッションの作業が終わった時点の `readable` の SHA を記録し、`readable` を保護する(push 禁止。別セッションの push が拒否されて作業の終わりが明確になる)(R4-G6a)。
+   2. その SHA から `git diff 0136c357 <SHA>` を 3 つに分ける: identity の差分 → `identity.toml` の表、publisher の差分 → `git format-patch` で `patches/publisher/master/`(`BASE`=`0136c357`)、`readable/ci/` と `readable-build.yaml` の中身 → `main` の `readable/ci/` と、別名の workflow(`readable-build.yaml` と同名を `main` に置かない)。`generate.sh` の出力のツリーと、凍結した `readable` のツリーが一致することを突き合わせて確かめる(R4-G6b)。
+   3. `main` を孤立ブランチとして作る(材料と `detect`・`release` を置く)。
+   4. 既定ブランチを `main` に変える(Release 0 件・サイトの欄は `hidden` なので影響する利用者はいない。Settings でいつでも戻せる。`master` に一時的なワークフローを置く案は採らない。消し忘れが混乱の元になるため)(R4-G7)。
+   5. `workflow_dispatch` で `detect` と `release`(公開ジョブは承認で止める)を試す。リポジトリ設定「Allow GitHub Actions to create and approve pull requests」を有効にする。
+   6. PR #1 を閉じる。
+   7. awase の既存の定期ワークフロー(または新規)に、mozc-readable の `detect`/`release` の `state != active`、または最後の run が 3 日以上前なら awase 側に Issue を立てるステップを足す(R4-G2)。
+   初回は 3.34.6239 向けの series を手で作り(分類 B の予行演習)、`git am -3` が blobless で 3-way になるかを試す。**完了条件**: identity の置換(表示名・発行元を含む)を当てた MSI で、公式 Mozc との共存の CI(D4-7)が通り、最初の Release が出ていること。
 1. mozc-readable に `active` を足す(version 2、`magic` を最後に書く)。awase に読み取りの Observe を足し、belief へは入れず journal に出して実機で一致を測る。AppContainer の測定も行う。
 2. 測定に基づき belief へ流す(Low から始め、基準を満たしたら Medium)。設定画面に状態表示。
 3. サイトの記述は D1 のとおり、事実になった文から足す。**mozc-readable の欄は、最初の Release(identity の置換を当てたもの)が出るまで `hidden` にしておく**(今は Release が 0 件で、リンクは空のページへ飛ぶ)。
