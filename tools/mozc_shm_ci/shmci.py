@@ -479,7 +479,12 @@ class Window:
 
     def create(self):
         w, u32, k32, ctypes = self.w, self.w.u32, self.w.k32, self.w.ctypes
-        self._wndproc = w.WNDPROC(lambda h, m, wp, lp: u32.DefWindowProcW(h, m, wp, lp))
+        def proc(h, m, wp, lp):
+            # 有効化されたら EDIT へキーボードフォーカスを移す(別プロセスが前面にした窓でも、キーが EDIT に届くように)
+            if m == 6 and (wp & 0xFFFF) != 0 and self.edit:
+                u32.SetFocus(self.edit)
+            return u32.DefWindowProcW(h, m, wp, lp)
+        self._wndproc = w.WNDPROC(proc)
         wc = w.WNDCLASSW()
         wc.lpfnWndProc = self._wndproc
         wc.hInstance = k32.GetModuleHandleW(None)
