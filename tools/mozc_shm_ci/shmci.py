@@ -681,6 +681,13 @@ def focus_loop(w, targets, rounds, rng, events, dwell=(0.35, 1.6)):
     last = None
     ok_n = 0
     ng_n = 0
+    # 準備で最後に作った窓が前面のまま始まる。その窓の focus イベントが無いと、開始直後の awase の読みが「どの窓も前面でなかった」
+    # ように見える(測定側のずれ)ので、今の前面を最初のフォーカス先として書く。
+    fg = w.u32.GetForegroundWindow()
+    for name, tid, hwnd in targets:
+        if hwnd == fg:
+            events.append({"ev": "focus", "t": time.time(), "tid": tid, "name": name})
+            last = tid
     for _ in range(rounds):
         choices = [t for t in targets if t[1] != last]
         name, tid, hwnd = rng.choice(choices)
