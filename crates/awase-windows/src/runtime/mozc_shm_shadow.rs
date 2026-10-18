@@ -8,7 +8,7 @@
 //! 有効なのは `[diagnostics] mozc_shm_shadow = true`（既定は無効のオプトイン）のときだけ。反映は再起動後
 //! （`app/bootstrap.rs` が起動時に 1 度だけ渡す）。
 
-use crate::state::mozc_shm::{outcome_of, to_record, Outcome, Trigger};
+use crate::state::mozc_shm::{outcome_of, to_record, Outcome, RecordContext, Trigger};
 
 /// 影の読みの状態。無効のときは何もしない。
 pub(super) struct MozcShmShadow {
@@ -71,14 +71,29 @@ impl super::Runtime {
         let belief_open = Some(self.platform_state.ime.effective_open());
         let belief_mode = Some(format!("{:?}", self.platform_state.ime.input_mode()));
         let record = to_record(
-            trigger,
-            reading.route,
             &outcome,
-            read_us,
-            profile,
-            belief_open,
-            belief_mode,
+            RecordContext {
+                trigger,
+                route: reading.route,
+                read_us,
+                profile,
+                thread_id: tid,
+                process_id: pid,
+                belief_open,
+                belief_mode,
+            },
         );
+        // 実機の測定用に、記録の全項目を 1 行の JSON で awase.log にも出す(info。専用の target なので `RUST_LOG` の指定は要らない)。
+        // 時刻は awase.log の行頭の壁時計(UTC)。journal 本体は `elapsed_ms`(journal 作成からの経過)で、壁時計ではない。
+        // 記録 1 件につき 1 行(フォーカス変更時と結論が変わったときだけ)で、打鍵の内容は含まない。
+        match serde_json::to_string(&record) {
+            Ok(json) => {
+                tracing::info!(target: "awase::mozc_shm", "[mozc-shm] {json}");
+            }
+            Err(e) => {
+                tracing::warn!(target: "awase::mozc_shm", "[mozc-shm] cannot serialize the record: {e}");
+            }
+        }
         self.platform_state
             .ime
             .journal

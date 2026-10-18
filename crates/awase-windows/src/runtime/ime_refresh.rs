@@ -70,12 +70,14 @@ impl Runtime {
             return;
         }
 
-        // ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ。無効なら何もしない）。
-        self.mozc_shm_on_tick(focus.focus_changed);
-
         let strategy = self.ir_stage_strategy(&focus);
         self.ir_stage_observe(&focus, strategy, ime_snap);
         self.ir_stage_notify();
+
+        // ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ。無効なら何もしない）。
+        // この tick の観測・通知が終わった後に置く: 記録に添える belief に、同じ tick の更新が入るようにするため
+        // （前に置くと、同じ tick の観測で belief が動いても 1 tick 遅れた値が記録に残り、測定に偏りが出る）。
+        self.mozc_shm_on_tick(focus.focus_changed);
     }
 
     // ── Stage 1: フォーカス検出 ──

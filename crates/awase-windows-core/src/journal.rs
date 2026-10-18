@@ -206,6 +206,10 @@ pub struct MozcShmRecord {
     pub belief_open: Option<bool>,
     /// 読んだ時点の belief（入力モード。`Debug` 表記）
     pub belief_mode: Option<String>,
+    /// 読んだスレッドの ID（フォーカスを持つ窓のスレッド。窓の出どころ〈hwndFocus / hwndActive〉までは区別できない）
+    pub thread_id: u32,
+    /// 読んだプロセスの ID（ブロックの `process_id` の照合に使った値）
+    pub process_id: u32,
 }
 
 /// shadow IME トグル(`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` ほか)の判断の段(ADR-250 段階 4-1)。
@@ -1459,6 +1463,8 @@ impl JournalEntry {
                     profile = record.profile,
                     belief_open = record.belief_open,
                     belief_mode = record.belief_mode.as_deref(),
+                    thread_id = record.thread_id,
+                    process_id = record.process_id,
                     "[mozc-shm]"
                 );
             }
@@ -2742,6 +2748,8 @@ mod tests {
                 profile: "tsf-native",
                 belief_open: Some(false),
                 belief_mode: Some("Hiragana".to_string()),
+                thread_id: 1908,
+                process_id: 8284,
             },
         });
         j.record(JournalEntry::MozcShm {
@@ -2760,6 +2768,8 @@ mod tests {
                 profile: "standard",
                 belief_open: None,
                 belief_mode: None,
+                thread_id: 4,
+                process_id: 5,
             },
         });
         let json = j.to_json().unwrap();
