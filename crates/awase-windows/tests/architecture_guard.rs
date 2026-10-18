@@ -4328,6 +4328,39 @@ fn timer_ime_off_rescue_calls_begin_key_batch_before_deliver_key_event() {
     );
 }
 
+/// BUG-202: `win_event_proc`（`EVENT_OBJECT_FOCUS`）は、コンテキストメニュー（クラス `#32768`）へのフォーカスを
+/// 窓の切替として扱わない。**判定は重複排除（`LAST_FOCUS_HWND.swap`）より前**でなければならない。後だと
+/// `LAST_FOCUS_HWND` がメニュー窓に上書きされ、メニューを閉じて元の窓へ戻る `FOCUS` が「新しい窓」として
+/// 再び拾われる（`tsf-gate` の `PendingWarmup`・held 破棄）。ADR-264 決定 7。
+#[test]
+fn win_event_proc_ignores_popup_menu_focus_before_dedup_and_dispatch() {
+    let content = read_crate_file("src/app/bootstrap.rs");
+    let body = extract_fn_body(&content, "unsafe extern \"system\" fn win_event_proc");
+    let menu_idx = body
+        .find("is_popup_menu_window_class")
+        .expect("win_event_proc は is_popup_menu_window_class でメニュー窓を弾くこと(BUG-202)");
+    let dedup_idx = body
+        .find("LAST_FOCUS_HWND.swap")
+        .expect("win_event_proc は LAST_FOCUS_HWND で連続フォーカスを重複排除すること");
+    let dispatch_idx = body
+        .find("on_window_focus_event")
+        .expect("win_event_proc は on_window_focus_event を呼ぶこと");
+    assert!(
+        menu_idx < dedup_idx,
+        "メニュー窓の判定は LAST_FOCUS_HWND.swap より前に置くこと(BUG-202)。後だと LAST_FOCUS_HWND が\
+         メニュー窓に上書きされ、メニューを閉じて元の窓へ戻る FOCUS が新しい窓として再び拾われる"
+    );
+    assert!(
+        menu_idx < dispatch_idx,
+        "メニュー窓の判定は on_window_focus_event より前に置くこと(BUG-202)"
+    );
+    assert_eq!(
+        body.matches("is_popup_menu_window_class").count(),
+        1,
+        "メニュー窓の判定は win_event_proc の入口にちょうど 1 回"
+    );
+}
+
 #[test]
 fn bootstrap_initial_focus_scope_precedes_ime_cache_initialization() {
     let content = read_crate_file("src/app/bootstrap.rs");
@@ -8664,6 +8697,81 @@ fn raw_key_event_reinject_builds_input_from_reinject_key_spec() {
         !code.contains("reinject_scan_code(") && !code.contains("KEYEVENTF_KEYUP"),
         "reinject 本体に wScan/KEYUP の直書きを戻さないこと（reinject_key_spec に集約）"
     );
+}
+
+/// ADR-264 段階 1: 入力インジケーターの右クリックメニューの影の読みは**観測だけ**で、belief・IME・打鍵に書かない。
+///
+/// - 読み取り（`observer/indicator_menu.rs`）と記録（`runtime/indicator_menu_shadow.rs`）は、belief・IME 制御・
+///   観測ストアに入れる型/関数を一切使わない（belief への直接配線は ADR-261 の段階 2 と一本化して別レビュー。ADR-264 決定 5）。
+/// - ランタイム側が `platform_state` に触れるのは、読み取り（`effective_open()`）と記録（`journal.record(`）の 2 箇所だけ。
+/// - 読み取りワーカーと WinEvent フックの起動は、`[diagnostics] indicator_menu_shadow` が真のときだけ（既定は無効のオプトイン）。
+///
+/// 複数行のメソッドチェーン（`rustfmt` が改行する）を見逃さないよう、コメント行を除いて空白を詰めてから照合する。
+#[test]
+fn indicator_menu_shadow_is_observe_only_and_opt_in() {
+    fn compact(rel: &str) -> String {
+        read_crate_file(rel)
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<String>()
+            .split_whitespace()
+            .collect()
+    }
+    let runtime = compact("src/runtime/indicator_menu_shadow.rs");
+    let observer = compact("src/observer/indicator_menu.rs");
+
+    for (name, code) in [
+        ("runtime/indicator_menu_shadow.rs", &runtime),
+        ("observer/indicator_menu.rs", &observer),
+    ] {
+        for forbidden in [
+            "ImeEvent",
+            "ObserverReported",
+            "InputModeObserved",
+            "ObservationSource",
+            "SendInput",
+            "send_input",
+            "apply_ime",
+            "set_ime_open",
+            "desired_open",
+            "actuate",
+            "KeyEffect",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "{name} は観測だけ（ADR-264 決定 5）。belief・IME・打鍵に書く `{forbidden}` を使わないこと"
+            );
+        }
+    }
+
+    // ランタイム側の platform_state への接触は、読み取りと記録の 2 つだけ。
+    assert_eq!(
+        runtime.matches("platform_state").count(),
+        2,
+        "indicator_menu_shadow.rs が platform_state に触れるのは effective_open()（読み取り）と journal.record(（記録）の 2 箇所だけ"
+    );
+    assert!(runtime.contains("platform_state.ime.effective_open()"));
+    assert!(runtime.contains(
+        "platform_state.ime.journal.record(crate::journal::JournalEntry::IndicatorMenu{record})"
+    ));
+
+    // 起動は設定が真のときだけ（ワーカー・フックとも 1 回、ガードの内側）。
+    let boot = compact("src/app/bootstrap.rs");
+    let gate = boot
+        .find("ifconfig.diagnostics.indicator_menu_shadow{")
+        .expect("bootstrap.rs は `[diagnostics] indicator_menu_shadow` が真のときだけ起動すること");
+    let worker = boot
+        .find("spawn_indicator_menu_worker()")
+        .expect("読み取りワーカーを起動すること");
+    let hook = boot
+        .find("install_menu_hook(menu_popup_event_proc)")
+        .expect("WinEvent フックを登録すること");
+    assert!(
+        gate < worker && worker < hook,
+        "ワーカーとフックの起動は設定のガードの内側（この順）"
+    );
+    assert_eq!(boot.matches("spawn_indicator_menu_worker()").count(), 1);
+    assert_eq!(boot.matches("install_menu_hook(").count(), 1);
 }
 
 /// ADR-260: 英数トグルの入力モードを予測しない窓の判定（B1o）と、直接観測の予測ガードの軸ごとの化（B3）の配線を固定する。

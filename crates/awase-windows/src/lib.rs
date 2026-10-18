@@ -299,6 +299,10 @@ pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_AP
 /// UIA 非同期判定完了通知用カスタムメッセージ
 #[cfg(windows)]
 pub const WM_FOCUS_KIND_UPDATE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 12;
+/// 入力インジケーターの右クリックメニューの読み取りワーカーの結果（ADR-264 段階 1）。
+/// `wParam`/`lParam` は `state::indicator_menu::MenuOutcome::pack` の符号化。
+#[cfg(windows)]
+pub const WM_INDICATOR_MENU_READ: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 28;
 /// フックコールバックからキューされた Effects の実行要求
 #[cfg(windows)]
 pub const WM_EXECUTE_EFFECTS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;

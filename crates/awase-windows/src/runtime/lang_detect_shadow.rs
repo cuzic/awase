@@ -192,7 +192,7 @@ fn scope_id(scope: crate::win32::ForegroundScope) -> u64 {
     u64::from(scope.pid).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hwnd
 }
 
-const fn profile_label(profile: AppImeProfile) -> &'static str {
+pub(super) const fn profile_label(profile: AppImeProfile) -> &'static str {
     match profile {
         AppImeProfile::Standard => "standard",
         AppImeProfile::Imm32Unavailable => "imm32-unavailable",
