@@ -1,0 +1,110 @@
+name: mozc-shm-e2e
+
+# ADR-265 段階 2: awase が mozc-readable の共有メモリを読む処理を、実際の Mozc Readable と動かして、
+# 実機の測定が測っていない「危ない場面」(フォーカス移動の直後、同じプロセスの別スレッド、AppContainer、
+# IME を切り替えたあとの古い共有メモリ)を GitHub Actions の Windows で測る。
+# 真値は操作から決め(窓ごとの IME 状態は設定した値)、awase.log の `[mozc-shm]` の記録を突き合わせる。
+# 道具: tools/mozc_shm_ci/(shmci.py と run_scenario.ps1)。mozc-readable 側の MSI と AppContainer 用の部品は、
+# cuzic/mozc-readable の readable ブランチから取る(最新の成功した readable-build の MSI)。
+#
+# workflow_dispatch は既定ブランチにワークフローが無いと使えないので、ci/mozc-shm-e2e への push でも回す。
+
+on:
+  push:
+    branches: [ci/mozc-shm-e2e]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: mozc-shm-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    # 突き合わせの判定(shmci.py analyze)の自己テスト。Windows 不要。
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/mozc_shm_ci/shmci.py selftest
+
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e
+          save-if: false
+      - name: awase をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item config.toml dist\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: awase-dist
+          path: dist
+          retention-days: 3
+
+  measure:
+    needs: [unit, build]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # stale は IME(レイアウト)の切り替えがセッション全体に効くので、専用のジョブにする。
+        # include だけで列挙する(既存の値と同じ項目を持つ include は、新しいジョブではなく既存のジョブに項目を足してしまう)。
+        include:
+          - scenario: focus
+          - scenario: threads
+          - scenario: appcontainer
+          # 対照: awase を起動せずに、AppContainer の窓を同じ手順で IME ON にできるか(awase の干渉かどうかの切り分け)
+          - scenario: appcontainer
+            noawase: '-NoAwase'
+          - scenario: stale
+          # 速い切り替え: 滞在 0.03〜0.4 秒(切り替えの直後に読む機会が増える。awase の読みは tick の周期を待たない場面も含む)
+          - scenario: focus
+            fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
+          - scenario: threads
+            fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
+    steps:
+      - uses: actions/checkout@v4
+      - name: mozc-readable の CI の部品(AppContainer 用)
+        uses: actions/checkout@v4
+        with:
+          repository: cuzic/mozc-readable
+          ref: readable
+          path: mozc-readable
+      - uses: actions/download-artifact@v4
+        with:
+          name: awase-dist
+          path: dist
+      - name: mozc-readable の MSI(最新の成功した readable-build)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $run = gh run list -R cuzic/mozc-readable --workflow readable-build.yaml --branch readable --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          Write-Host "mozc-readable readable-build run: $run"
+          gh run download $run -R cuzic/mozc-readable -n Mozc64_x64.msi -D msi
+          Get-ChildItem msi | Out-Host
+      - name: 場面を測る (${{ matrix.scenario }})
+        shell: pwsh
+        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario ${{ matrix.scenario }} -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Dist dist -OutDir out ${{ matrix.noawase }} ${{ matrix.fast }}
+      - name: 結果を残す
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mozc-shm-${{ matrix.scenario }}${{ matrix.noawase && '-control' || '' }}${{ matrix.fast && '-fast' || '' }}
+          path: out
+          if-no-files-found: ignore
+          retention-days: 7

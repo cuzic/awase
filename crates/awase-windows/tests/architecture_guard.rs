@@ -8854,7 +8854,22 @@ fn mozc_shm_shadow_is_observe_only_and_opt_in() {
         disabled < call,
         "mozc_shm_on_tick は app_disabled の打ち切りの後に呼ぶ（無効アプリにフォーカス中は読まない）"
     );
+    // この tick の観測・通知が終わった後に呼ぶ（記録に添える belief に、同じ tick の更新を入れる）。
+    let notify = refresh
+        .find("self.ir_stage_notify();")
+        .expect("ir_execute は ir_stage_notify を呼ぶこと");
+    assert!(
+        notify < call,
+        "mozc_shm_on_tick は ir_stage_notify の後に呼ぶ（同じ tick の belief の更新を記録に含めるため）"
+    );
     assert_eq!(refresh.matches("self.mozc_shm_on_tick(").count(), 1);
+
+    // 実機の測定用に、記録の全項目を 1 行の JSON で awase.log にも出す（info、専用の target。RUST_LOG の指定は要らない）。
+    assert!(runtime.contains("serde_json::to_string(&record)"));
+    assert!(
+        runtime.contains("tracing::info!(target:\"awase::mozc_shm\""),
+        "測定用の JSON 行は専用の target `awase::mozc_shm` の info で出すこと（journal の debug 行は全 journal の debug を有効にしないと出ない）"
+    );
 }
 
 /// ADR-260: 英数トグルの入力モードを予測しない窓の判定（B1o）と、直接観測の予測ガードの軸ごとの化（B3）の配線を固定する。
