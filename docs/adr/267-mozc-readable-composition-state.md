@@ -99,16 +99,14 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 - **`active == 0` のときは他の項目を無視する**ことを必須として仕様書に書く。`Deactivate` は組成の項目を触らないので、IME を切り替えた後も `phase` が残りうる。あわせて `Deactivate` で `phase`・`candidate_category`・`preedit_utf16_len`・`preedit_cursor`・`scope_forced_mode`・`composition_key_seq` を 0 に落とす。`key_seq`(通番)は残す(R2-M4)。
 - **context とスレッドのずれ**: 組成の状態は `ITfContext` ごと(`TipPrivateContext::last_output`)だが、共有メモリはスレッドごとに 1 スロット(`thread_local ThreadSlot`)。同じスレッドの別 context へフォーカスが移っても、キーを押すまで更新されないことがある。段階 1 の CI で何が出るかを確かめ、仕様書に書く。
 
-### D10. cold/warm の状態を `server_ready` で出す(ユーザー指摘 2026-10-18)
+### D10. cold/warm の状態を `server_ready` で出す(ユーザー指摘 2026-10-18。**根拠は無く、観測用の仮置き**)
 
-- 背景: mozc-readable の CI で、新しい runner の最初のキーが落ちることがあった。ウォームアップ(`F2=1:1,19=0:*` のシナリオ)を前置すると解消した(`readable/ci/verify.ps1`、コミット `e3dd2179f`: 「mozc_server was warm」の前後で結果が分かれた)。公式 Mozc でも再現しており、原因は未特定。**cold の正体が mozc_server の起動・接続待ちであるかは、まだ仮説**。
-- 出すもの: TIP がサーバーから応答を受け取れているか(`server_ready`)。安く足せる理由: (1) 追記の位置は `reserved`(72)で、ADR が決めた「0=不明/なし」に従えば version を上げずに済む。(2) 値は `Output` を受け取った地点(`UpdatePrivateContext` 周辺)と、サーバー呼び出しの失敗の地点で更新するだけで、新しい経路は要らない。
-- 採否は実測で決める(段階 1 の CI):
-  1. 新しい runner で、最初のキーの前に `server_ready` を読む(0 のはず)。
-  2. 0 の間に送ったキーが落ちる率と、1 になってから送ったキーが落ちる率を比べる。
-  3. 1 の間は落ちない、0 の間は落ちる、という差が出なければ、`server_ready` は cold の指標ではない。項目を外す(`reserved` に戻す)。
-- 読み手の使い方: awase は「1 になるまで打鍵を待つ/待たない」の判断材料に使える。QMK は表示のみ。**最初は観測のみ**(journal に記録)。
-- warm up を指示する経路(awase → TIP)は本 ADR の範囲外。`server_ready` の実測で準備不足が原因と分かってから、別の ADR(ADR-268)にする。
+- 当初の背景は、mozc-readable の CI で「新しい runner の最初のキーが落ちる」現象を mozc_server の起動・接続待ち(cold)と見たこと。**この根拠は成り立たない**。原因は検証スクリプト側で、コンソールの python/PowerShell を並行して起動すると、その窓(Windows Terminal)が前面を奪い、キーが別の窓に行っていた。公式の無改造 Mozc でも同じ現象で、TIP や mozc_server の状態とは関係が無かった(メモリ `reference_windows_ci_harness_pitfalls_2026_10_18`)。
+- したがって「Mozc 系の窓に cold/warm がある」という証拠は、今のところ無い。awase の cold/warm(GJI の F2 待ち、Chrome の TSF 文脈の再初期化 ~326ms〈BUG-002〉)は、ホストアプリ側の TSF 文脈の話であり、TIP が持つ状態ではない。
+- それでも `server_ready`(この TIP がサーバーから応答を受け取れているか)は、事実として取れるなら安い(追記の位置は `reserved`〈72〉、更新は応答を受けた地点と呼び出しが失敗した地点だけ)。「0=不明/なし、1=応答を受け取れている」と定義して**観測用に出す**。
+- **採否の条件**: 段階 1 の CI で、`server_ready` が 0 の間にキーを送ったときの結果が 1 の後と違う、という差が出たときだけ採る。差が出なければ項目を外して `reserved` に戻す(使われない項目を残さない。ADR-158 の複雑性予算)。外すときは version を上げずに済む(0 に戻すだけ)。
+- 読み手の使い方: 最初は journal への記録のみ。判断には使わない。
+- warm up を指示する経路(awase → TIP)は本 ADR の範囲外。cold/warm の存在が Mozc 系で実測できてから、別の ADR にする。
 
 ## 却下した代案
 
@@ -125,7 +123,7 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
    - 組成中に同じ窓の別 context へ移る/Win+Space で別 IME に切り替える、のときに何が出るか。
    - パスワード欄(入力スコープ)に入ったとき `scope_forced_mode` が立つか。その状態で IME を開いても立ったままか。ひらがな指定のスコープに入ったときはどうか。
    - 連続打鍵で pulse の回数が状態の変化回数と一致する。
-   - `server_ready`(D10): 新しい runner の最初のキーの前は 0 か。0 の間と 1 になってからで、キーが落ちる率に差があるか。
+   - `server_ready`(D10): 新しい runner の最初のキーの前は 0 か。0 の間と 1 になってからで、結果に差があるか(差が無ければ外す)。
 2. **awase**: ADR-265 段階 1 の Observe が入った後で、journal に `phase`・`candidate_category`・`key_seq`・`composition_key_seq`・`scope_forced_mode`・`server_ready` を記録する(観測のみ)。
 3. 記録の結果を見て、belief への反映(D8)や `key_seq`/`composition_key_seq` を使った「TIP が追いついたか」の判定を、別の ADR にする。
 4. **QMK 向け**: `readable/docs/examples/read_ime_state.py` を version 3 対応にする(D9 の map 規約に注意。現状の `assert STRUCT.size == 48` と `MapViewOfFile(..., STRUCT.size)` は書き換えが要る)。`phase`・`candidate_category`・`scope_forced_mode` を Raw HID で送る例を足す(スケッチのまま。実機未検証と明記)。
@@ -137,7 +135,7 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 
 ## 確認していないこと
 
-- 最初のキーが落ちる原因が mozc_server の起動・接続待ちであること(D10 は仮説)。サーバー呼び出しの失敗を TIP のどの地点で検知できるか。
+- Mozc 系の窓に cold/warm があるか(D10。根拠なし、観測用)。サーバー呼び出しの失敗を TIP のどの地点で検知できるか。
 
 - `candidate_category` を `IsVisible` 越しに取れるか(`TipUiHandler::Update` の中で取る前提。UI-less モードの扱いを含む)。
 - AppContainer 内の窓での読み取り(80 バイトでも名前空間の扱いは変わらない見込みだが、CI で確かめる)。
