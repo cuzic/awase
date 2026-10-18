@@ -511,12 +511,21 @@ pub struct DiagnosticsConfig {
     /// `false`にすることでビルド無しで無効化できる（自己修復以前の診断ログ出力自体は
     /// この設定に関係なく継続する）。
     pub hook_self_heal: bool,
+    /// タスクバーの入力インジケーターの右クリックメニューを、利用者が開いたときだけ読んで journal に残す
+    /// （ADR-264 段階 1。**belief には入れず、IME へは何も書かない**観測）。
+    ///
+    /// 既定は**無効**（オプトイン）。有効にすると、カーソルがタスクバーの上にあるときにメニューが開くと、
+    /// UI Automation でメニュー項目（`AutomationId`・選択の有無）を 1 回読む。他のアプリのメニューの内容は
+    /// 記録しない（同定に失敗したときは件数と所要だけ）。**反映は awase の再起動後**（フックと読み取りの
+    /// スレッドは起動時に 1 度だけ作る）。
+    pub indicator_menu_shadow: bool,
 }
 
 impl Default for DiagnosticsConfig {
     fn default() -> Self {
         Self {
             hook_self_heal: true,
+            indicator_menu_shadow: false,
         }
     }
 }
@@ -2142,6 +2151,28 @@ engine_off_solo_triple = "VK_NONCONVERT"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.diagnostics.hook_self_heal);
+    }
+
+    #[test]
+    fn test_indicator_menu_shadow_defaults_to_disabled() {
+        // 既定は無効(オプトイン。ADR-264 決定 6)。[diagnostics] が無くても、あっても指定が無ければ無効。
+        let config: AppConfig = toml::from_str("[general]\n").unwrap();
+        assert!(!config.diagnostics.indicator_menu_shadow);
+        let config: AppConfig = toml::from_str("[diagnostics]\nhook_self_heal = true\n").unwrap();
+        assert!(!config.diagnostics.indicator_menu_shadow);
+        // 既存の hook_self_heal の既定は変えない
+        assert!(config.diagnostics.hook_self_heal);
+    }
+
+    #[test]
+    fn test_indicator_menu_shadow_can_be_enabled_without_touching_hook_self_heal() {
+        let config: AppConfig =
+            toml::from_str("[diagnostics]\nindicator_menu_shadow = true\n").unwrap();
+        assert!(config.diagnostics.indicator_menu_shadow);
+        assert!(
+            config.diagnostics.hook_self_heal,
+            "指定しなかった項目は既定のまま"
+        );
     }
 
     #[test]

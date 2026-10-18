@@ -90,6 +90,7 @@ force_tsf = [
 # example-begin: config-diagnostics uncomment
 # [diagnostics]
 # hook_self_heal = true  # hook_starved 検知時にキーボードフックを自己修復する
+# indicator_menu_shadow = false  # 入力インジケーターの右クリックメニューを開いたとき現在のモードを読んで journal に残す(観測のみ。ADR-264。反映は再起動後)
 # example-end
 
 # 窓切替直後・長い無操作のあとの日本語入力の判定（ADR-263、上級者向け。設定画面の「上級者向け設定」タブからも変更できる）。

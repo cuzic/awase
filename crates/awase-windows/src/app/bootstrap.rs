@@ -896,6 +896,29 @@ unsafe extern "system" fn win_event_proc(
     });
 }
 
+/// ADR-264 段階 1: 入力インジケーターの右クリックメニューの影の読み（観測のみ）の WinEvent コールバック。
+/// `EVENT_SYSTEM_MENUPOPUPSTART`（メニュー窓の表示）で、メッセージループ上で呼ばれる。重い判断はせず、
+/// `Runtime::indicator_menu_on_popup_start` へ渡すだけ（前置きのフィルタはそちらが行う）。
+/// `observer/` 内では `with_app` を呼べない（B-1）ので、`win_event_proc` と同じくここ（`app/`）に置く。
+unsafe extern "system" fn menu_popup_event_proc(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    use windows::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_MENUPOPUPSTART;
+    if event != EVENT_SYSTEM_MENUPOPUPSTART {
+        return;
+    }
+    let Some(hwnd) = hwnd.non_null() else {
+        return;
+    };
+    let _ = with_app(|app| app.indicator_menu_on_popup_start(hwnd));
+}
+
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
 pub(super) fn install_ctrl_handler() -> Result<()> {
     unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::core::BOOL {
@@ -1310,6 +1333,19 @@ pub(super) fn run_all() -> Result<()> {
         tracing::warn!("{e}");
     }
     let _focus_hook_guard = install_focus_hook().map_err(|e| tracing::warn!("{e}")).ok();
+    // ADR-264 段階 1: `[diagnostics] indicator_menu_shadow = true`（既定は無効のオプトイン）のときだけ、入力インジケーターの
+    // 右クリックメニューの読み取りワーカーと WinEvent フックを起動する（観測のみ。belief・IME には何もしない）。
+    // ガードは `run_all` の終わりまで保持する（drop でスレッド停止・フック解除）。設定の反映は再起動後。
+    let _indicator_menu_guards = if config.diagnostics.indicator_menu_shadow {
+        let (worker, tx) = crate::observer::indicator_menu::spawn_indicator_menu_worker();
+        let _ = with_app(|app| app.init_indicator_menu(Some(tx)));
+        Some((
+            worker,
+            crate::observer::indicator_menu::install_menu_hook(menu_popup_event_proc),
+        ))
+    } else {
+        None
+    };
     let _obs_hook_guards = crate::tsf::observer::install_observation_hooks();
 
     // issue #165 自己修復 opus round2 B1(iii): `hook_alive_tick_ms`を

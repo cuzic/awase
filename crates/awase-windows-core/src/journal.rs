@@ -141,6 +141,35 @@ pub struct LangDetectRecord {
     pub discarded: u32,
 }
 
+/// 入力インジケーターの右クリックメニューの読みの結果 1 件(ADR-264 段階 1。挙動を変えない観測)。
+///
+/// 利用者がインジケーターの上で右クリックしてメニューを開いたときだけ、メニューの現在のモードを読んで残す。
+/// **belief には入れない**(shadow)。読める窓では直接の読みとの一致率、観測の無い窓では belief とのずれを後で突き合わせる。
+/// 他のアプリの右クリックメニューの内容は記録しない(同定に失敗した場合は `Miss` と件数・所要だけ)。
+#[derive(Debug, Clone, Serialize)]
+pub struct IndicatorMenuRecord {
+    /// 読んだ IME（`ms-ime` / `gji`）
+    pub ime: &'static str,
+    /// 結果（`hit` / `miss`）
+    pub verdict: &'static str,
+    /// `hit` のときの入力モード（`hiragana` / `full-katakana` / `full-alnum` / `half-katakana` / `half-alnum` / `direct-input`）
+    pub mode: Option<&'static str>,
+    /// `hit` のときの IME の開閉。不明（本物の MS-IME の半角英数は閉と同じ表示）なら `None`
+    pub open: Option<bool>,
+    /// `hit` のときの対応表の行の根拠（`observed` = 静的に観測済み / `inferred` = 項目名からの推定）
+    pub evidence: Option<&'static str>,
+    /// `miss` の理由（`empty-menu` / `missing-mode-items` / `missing-marker-items` / `no-selection` / `multiple-selection` / `selected-not-mode`）
+    pub miss_reason: Option<&'static str>,
+    /// 読んだ `MenuItem` の数
+    pub item_count: u32,
+    /// 読み取りの所要（ミリ秒）
+    pub read_ms: u32,
+    /// メニューを開いた時点の窓の IME プロファイル（`standard` / `imm32-unavailable` / `tsf-native` / `input-relay`）
+    pub profile: &'static str,
+    /// メニューを開いた時点の belief（IME が開いているか）。不明なら `None`
+    pub belief_open: Option<bool>,
+}
+
 /// shadow IME トグル(`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` ほか)の判断の段(ADR-250 段階 4-1)。
 ///
 /// 手書きの `[shadow-toggle]` ログ 11 行を置き換える(1:1)。`emit_tracing` は段ごとに**元の手書き行と同じレベル**
@@ -579,6 +608,8 @@ pub enum JournalEntry {
     LateKeymap { record: LateKeymapRecord },
     /// ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの影の判定（挙動を変えない観測）。
     LangDetect { record: LangDetectRecord },
+    /// ADR-264 段階 1: 入力インジケーターの右クリックメニューの読み(挙動を変えない観測。belief には入れない)。
+    IndicatorMenu { record: IndicatorMenuRecord },
     /// ADR-132 Phase 1: hook の IME-mode 診断ログを journal にも残す。
     HookImeModeDiagnostic { record: HookImeModeDiagnosticRecord },
     /// ADR-132 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
@@ -947,6 +978,7 @@ impl JournalEntry {
             | Self::ShadowToggle { .. }
             | Self::LateKeymap { .. }
             | Self::LangDetect { .. }
+            | Self::IndicatorMenu { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::FirstLiteralObserve { .. }
@@ -964,6 +996,7 @@ impl JournalEntry {
             Self::GjiFsmTransition { .. }
             | Self::HookImeModeDiagnostic { .. }
             | Self::LangDetect { .. }
+            | Self::IndicatorMenu { .. }
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
             | Self::LiteralDetect { .. }
@@ -1343,6 +1376,25 @@ impl JournalEntry {
                     action = record.action,
                     discarded = record.discarded,
                     "[lang-detect]"
+                );
+            }
+            Self::IndicatorMenu { record } => {
+                // debug（既定の app log には出さない。journal 本体には全項目が残る。ADR-250 決定 5）。
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    ime = record.ime,
+                    verdict = record.verdict,
+                    mode = record.mode,
+                    open = record.open,
+                    evidence = record.evidence,
+                    miss_reason = record.miss_reason,
+                    item_count = record.item_count,
+                    read_ms = record.read_ms,
+                    profile = record.profile,
+                    belief_open = record.belief_open,
+                    "[indicator-menu]"
                 );
             }
             Self::HookImeModeDiagnostic { record } => {
@@ -2606,6 +2658,46 @@ mod tests {
         assert!(json.contains("LateKeymap"));
         assert!(json.contains("Composing"));
     }
+    #[test]
+    fn indicator_menu_record_is_serialized_without_menu_contents() {
+        let (mut j, _mock) = mock_journal();
+        j.record(JournalEntry::IndicatorMenu {
+            record: IndicatorMenuRecord {
+                ime: "gji",
+                verdict: "hit",
+                mode: Some("direct-input"),
+                open: Some(false),
+                evidence: Some("observed"),
+                miss_reason: None,
+                item_count: 11,
+                read_ms: 109,
+                profile: "imm32-unavailable",
+                belief_open: Some(true),
+            },
+        });
+        j.record(JournalEntry::IndicatorMenu {
+            record: IndicatorMenuRecord {
+                ime: "ms-ime",
+                verdict: "miss",
+                mode: None,
+                open: None,
+                evidence: None,
+                miss_reason: Some("missing-mode-items"),
+                item_count: 7,
+                read_ms: 33,
+                profile: "standard",
+                belief_open: None,
+            },
+        });
+        let json = j.to_json().unwrap();
+        assert!(json.contains("IndicatorMenu"));
+        assert!(json.contains("direct-input"));
+        assert!(json.contains("missing-mode-items"));
+        // 項目の名前・AutomationId は記録しない(他のアプリのメニューの内容を残さない。ADR-264 決定 6)
+        assert!(!json.contains("Item 1"));
+        assert!(!json.contains("automation_id"));
+    }
+
     #[test]
     fn lang_detect_record_is_serialized_without_key_positions() {
         let (mut j, _mock) = mock_journal();

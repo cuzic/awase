@@ -46,6 +46,9 @@ pub mod alt_impersonation;
 pub mod generation;
 pub use generation::{ApplyGeneration, GenerationAllocator};
 pub mod app_ime_policy;
+// ADR-264 段階 1: タスクバーの入力インジケーターの右クリックメニューから現在の入力モードを読む純粋な判定
+// (IME ごとの表での完全一致・Observed/Inferred・メインスレッドへ渡す固定長の符号化)。Win32 を呼ばない(Linux でテストする)。
+pub mod indicator_menu;
 // ADR-229 W-a: await をまたぐ失効判定に使う生の `u32` 世代 2 種(`Output::ime_mode_focus_gen`・
 // `shift_conv_guard_gen`)の型。ungated(Linux で `next`/比較をテストする)。
 pub mod focus_gen;
