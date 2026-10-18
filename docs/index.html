@@ -681,7 +681,7 @@ footer p{margin-bottom:0.3rem}
         <div class="code-block">cargo build -p awase-windows --release</div>
       </details>
 
-      <details class="install-alt" id="mozc-readable" hidden>
+      <details class="install-alt" id="mozc-readable">
         <summary>mozc-readable（任意・実験的）</summary>
         <p style="color:var(--text-secondary);font-size:0.95rem">
           Google 日本語入力のオープンソース版 <a href="https://github.com/google/mozc">Mozc</a> に、
@@ -690,10 +690,19 @@ footer p{margin-bottom:0.3rem}
           公式の Mozc とは別名(別の識別子・別のインストール先)で作っています。
         </p>
         <a id="dl-mozc-readable" href="https://github.com/cuzic/mozc-readable/releases" class="btn btn-secondary" style="display:inline-block;margin:0.3rem 0 0.8rem">最新版をダウンロード (MSI)</a>
+        <p style="color:var(--text-secondary);font-size:0.95rem">
+          <strong>何が良くなるか:</strong> Chrome など、awase が IME の状態を読めない窓でも、IME 自身の値で ON/OFF を知れます。「IME ON のつもりで英字が入る」といった状態のずれが減ります。Mozc 系（Google 日本語入力のオープンソース版とその派生）の IME でだけ効きます。
+        </p>
+        <ol>
+          <li>上のボタンから MSI をダウンロードして実行します。</li>
+          <li>「設定 → 時刻と言語 → 言語と地域 → 日本語 → 言語のオプション」で、キーボードに「Mozc Readable」を追加します。</li>
+          <li>Win+Space で Mozc Readable に切り替えて使います。</li>
+        </ol>
         <ul>
+          <li>実験的なバージョンです。</li>
           <li>インストーラーに署名はありません。SmartScreen の警告が出ます。SHA-256 は Release の <code>SHA256SUMS.txt</code> にあります。</li>
           <li>利用者のプロファイルは公式の Mozc と分かれます。公式 Mozc のユーザー辞書は引き継がれません。</li>
-          <li>awase がこの値を使う機能は開発中です（現在の awase はまだ読みません）。</li>
+          <li>awase がこの値を読む機能は、v2.1.0 の次のバージョンから入ります。</li>
         </ul>
         <p style="color:var(--text-secondary);font-size:0.88rem">ソース: <a href="https://github.com/cuzic/mozc-readable">cuzic/mozc-readable</a>（BSD-3-Clause。Google とは無関係の非公式の派生版です）</p>
       </details>

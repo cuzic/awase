@@ -681,7 +681,7 @@ footer p{margin-bottom:0.3rem}
         <div class="code-block">cargo build -p awase-windows --release</div>
       </details>
 
-      <details class="install-alt" id="mozc-readable" hidden>
+      <details class="install-alt" id="mozc-readable">
         <summary>mozc-readable (optional, experimental)</summary>
         <p style="color:var(--text-secondary);font-size:0.95rem">
           A build of <a href="https://github.com/google/mozc">Mozc</a>, the open-source edition of Google Japanese Input,
@@ -690,10 +690,19 @@ footer p{margin-bottom:0.3rem}
           It is built with names and identifiers separate from the official Mozc.
         </p>
         <a id="dl-mozc-readable" href="https://github.com/cuzic/mozc-readable/releases" class="btn btn-secondary" style="display:inline-block;margin:0.3rem 0 0.8rem">Download the latest version (MSI)</a>
+        <p style="color:var(--text-secondary);font-size:0.95rem">
+          <strong>What improves:</strong> in windows such as Chrome where awase cannot read the IME state, it can use the IME's own on/off value. This reduces cases where awase and the IME disagree (for example, Latin letters typed while you think the IME is on). It only works with Mozc-family IMEs (the open-source Google Japanese Input and its derivatives).
+        </p>
+        <ol>
+          <li>Download the MSI with the button above and run it.</li>
+          <li>In Settings &rarr; Time &amp; language &rarr; Language &amp; region &rarr; Japanese &rarr; Language options, add "Mozc Readable" as a keyboard.</li>
+          <li>Switch to Mozc Readable with Win+Space.</li>
+        </ol>
         <ul>
+          <li>This is an experimental version.</li>
           <li>The installer is unsigned, so SmartScreen shows a warning. SHA-256 is in the release's <code>SHA256SUMS.txt</code>.</li>
           <li>Your profile is separate from the official Mozc; the official Mozc user dictionary is not carried over.</li>
-          <li>The awase feature that uses this value is under development (the current awase does not read it yet).</li>
+          <li>The awase feature that reads this value arrives in the version after v2.1.0.</li>
         </ul>
         <p style="color:var(--text-secondary);font-size:0.88rem">Source: <a href="https://github.com/cuzic/mozc-readable">cuzic/mozc-readable</a> (BSD-3-Clause; an unofficial derivative, not affiliated with Google)</p>
       </details>
