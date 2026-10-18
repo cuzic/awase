@@ -121,17 +121,34 @@ def allowed_focus(focus, t, grace=GRACE_S):
     return allowed
 
 
+INTERVAL_LEAD_S = 1.0    # 最初のフォーカス移動の直前から
+INTERVAL_TAIL_S = 3.0    # 最後のイベント(フォーカス移動・inactive)の後、awase の最後の tick が記録を出す分まで
+
+
+def measurement_interval(events):
+    """測定区間: 最初のフォーカス移動の少し前から、最後のイベントの少し後まで。なければ None。
+
+    それより前(窓の準備中)に awase が別の窓を読んだ記録は、この区間の外(真値の無いスレッドの読みが出てよい)。
+    """
+    ts = [e["t"] for e in events if e.get("ev") in ("focus", "inactive")]
+    if not ts:
+        return None
+    return (min(ts) - INTERVAL_LEAD_S, max(ts) + INTERVAL_TAIL_S)
+
+
 def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace=GRACE_S):
     """記録と events を突き合わせて集計する。dict を返す(ok が False なら食い違いがある)。"""
     truth, focus = build_timelines(events)
     known = set(truth)
+    interval = measurement_interval(events)
     stats = {
         "records": len(records),
         "accepted": 0,
         "accepted_known": 0,
         "mismatch_state": [],      # 受け入れた読みの開閉が真値と違う
         "wrong_thread": [],        # フォーカスのスレッドでも、直前のフォーカス先でもないスレッドを受け入れた
-        "unknown_accepted": [],    # 真値の無いスレッドの読みを受け入れた
+        "unknown_accepted": [],    # 真値の無いスレッドの読みを受け入れた(測定区間の内外を問わず)
+        "unknown_accepted_in_interval": [],   # そのうち、測定区間の内側(窓の準備中ではない)。食い違いに数える
         "stale_accepted": [],      # inactive になったあとに受け入れた
         "rejected_inactive": 0,
         "verdicts": {},
@@ -148,7 +165,10 @@ def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace
             continue
         stats["accepted"] += 1
         if tid not in known:
-            stats["unknown_accepted"].append({"t": t, "tid": tid})
+            item = {"t": t, "tid": tid}
+            stats["unknown_accepted"].append(item)
+            if interval and interval[0] <= t <= interval[1]:
+                stats["unknown_accepted_in_interval"].append(item)
             continue
         stats["accepted_known"] += 1
         al = allowed_states(truth[tid], t)
@@ -163,8 +183,11 @@ def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace
         af = allowed_focus(focus, t, focus_grace)
         if af is not None and tid not in af:
             stats["wrong_thread"].append({"t": t, "tid": tid, "allowed_focus": sorted(af)})
-    # 真値の無いスレッド(ランナーの別の窓など)の受け入れは、食い違いに数えない(知らせるだけ)。
-    problems = len(stats["mismatch_state"]) + len(stats["wrong_thread"]) + len(stats["stale_accepted"])
+    # 真値の無いスレッドの受け入れは、測定区間の外(窓の準備中に、ランナーの別の窓を読んだ)なら食い違いに数えず、
+    # 区間の内側なら数える(測定中に、こちらが前面にしていない窓を読んだ=フォーカスの取り違えの疑い)。
+    problems = (len(stats["mismatch_state"]) + len(stats["wrong_thread"]) + len(stats["stale_accepted"])
+                + len(stats["unknown_accepted_in_interval"]))
+    stats["interval"] = interval
     ok = problems == 0 and stats["accepted_known"] >= min_accepted
     if require_inactive and stats["rejected_inactive"] == 0:
         ok = False
@@ -183,9 +206,11 @@ def print_summary(stats):
     print(f"  rejected(inactive) : {stats['rejected_inactive']}")
     print(f"  mismatch (state)   : {len(stats['mismatch_state'])}")
     print(f"  wrong thread       : {len(stats['wrong_thread'])}")
-    print(f"  unknown accepted   : {len(stats['unknown_accepted'])}")
+    outside = len(stats["unknown_accepted"]) - len(stats["unknown_accepted_in_interval"])
+    print(f"  unknown accepted   : in the measurement interval: {len(stats['unknown_accepted_in_interval'])}"
+          f" / outside it (window setup): {outside}")
     print(f"  stale accepted     : {len(stats['stale_accepted'])}")
-    for key in ("mismatch_state", "wrong_thread", "unknown_accepted", "stale_accepted"):
+    for key in ("mismatch_state", "wrong_thread", "unknown_accepted_in_interval", "stale_accepted"):
         for item in stats[key][:10]:
             print(f"    {key}: {item}")
     if stats.get("note"):
@@ -258,9 +283,11 @@ def cmd_selftest(_args):
     s = analyze([rec(base + 3.2, 1, True)], fast, focus_grace=1.5)   # 1 のフォーカスは 1.3 秒前に終わり、窓 [1.7, 3.2] の外
     assert not s["ok"] and len(s["wrong_thread"]) == 1, s
 
-    # 真値の無いスレッドの読みは、数えるが食い違いにはしない(ランナーの別の窓かもしれない)
+    # 真値の無いスレッドの読み: 測定区間の外(窓の準備中)なら数えるだけ、区間の内側なら食い違い
+    s = analyze([rec(base - 20, 99, True), rec(base + 2.1, 1, True)], events)
+    assert s["ok"] and len(s["unknown_accepted"]) == 1 and not s["unknown_accepted_in_interval"], s
     s = analyze([rec(base + 2, 99, True), rec(base + 2.1, 1, True)], events)
-    assert s["ok"] and len(s["unknown_accepted"]) == 1 and s["accepted_known"] == 1, s
+    assert not s["ok"] and len(s["unknown_accepted_in_interval"]) == 1, s
 
     # rejected / failed は数えない(食い違いにならない)
     s = analyze([rec(base + 2, 1, None, "rejected", "inactive"), rec(base + 2.1, 1, None, "failed", "not-found")],
