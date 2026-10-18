@@ -98,3 +98,51 @@ related_adr:
 
 - 同一プロセス内の窓移動の修正(Q4 で測るのみ)。
 - 観測起点の書き込みの整理(`docs/tasks/observation-driven-writes-inventory-2026-10-08.md` の A〜C)。本 ADR は個別の欠陥の修正で、整理の方向とは独立。
+
+## 追補 2(2026-10-18): MS-IME 本体は最初の打鍵を保持し、復元が効いてから再生する(起草、Opus レビュー前)
+
+### 事実(PR #666 の CI、run 39119247220 → 39120344451、head 25857f9e)
+
+- 行 3 を GJI のエントリだけにすると(追補 1 相当、決定 5 の行 3 の注記)、MS-IME 本体は `plan=Resume` まで進み、復元の書き込み(`[imm-romaji] conv 0x10 → 0x19 success`)も効き、`typed` 時点の A は `imm=O/0x19` になる。**それでも `sc-focusrestore-msime*` の strict は FAIL**(本文 `w`、期待 `か`)。
+- 原因(awase.log の時刻): 最初の打鍵 `w` は Resume の段(`kp_stage_half_width_return`)で復元を**起案**したあと、同じ打鍵のうちに Engine の判断へ進む。Engine は A を非活性とみなす(MS-IME 本体は半角英数トグル中に `effective_open=false`)ので `decision=PassThrough` で素通しし、`w` は IME が 0x10 のまま OS へ入る。復元の書き込みは `actuate_conv_mode` の `spawn_local` なので、その**後**に実行される。
+- 実測(同 run の `sc-focusrestore-msime*` 6 構成 × 5 試行の awase.log、Resume 起案の時刻を 0 として): `[conv-actuate] Written` まで **2.8〜6.0ms(中央 4.9、n=35)**、`[effective-open-flip] → true` まで 3.4〜5.9ms(中央 4.9、n=8。ほかの試行は flip を 1 秒以内に出さない=belief が既に真だった等で未分類)。`Engine activated` のログは 60ms 前後だが、これは Engine が活性を**次の入力で**計算し直す(KeyUp)ためで、遅れの本体は ~5ms。
+- GJI が最初の打鍵から `か` になるのは、GJI の半角英数トグル中も `effective_open` が真で、`apply_input_mode_correction` が同期で効いて Engine が活性になるから(MS-IME 本体は開閉自体が変わるので同期に揃わない)。
+
+### 決定(案)
+
+1. **対象は IMC 経路(`entry.uses_imc_conv_write`)の `Resume` だけ**。GJI の `Resume`/`RebuildToggle`、`Drop`、`Deferred` は変えない。
+2. **Resume のとき、起案した打鍵(KeyDown)を `Consumed` にして保持し、保持が終わるまでの後続の打鍵(同じ打鍵の KeyUp・次の KeyDown/KeyUp)も同じ保持へ順序どおり足す**。保持は新設の `ResumeHold`(`state/half_width_resume_hold.rs`、純粋な状態機械。時刻・前面窓スコープ・Engine 活性は引数で受ける)が持つ。**打鍵は捨てない**(下の 4 の窓変更を除く)。
+3. **解放の条件(上から先に成立したもの)**:
+   (a) `Engine::compute_active(&build_ctx())` が真(復元が効いて Engine が活性になった。`lang_detect_engine_active` と同じ式)→ 保持した打鍵を `INPUT_DEFER.replay_later` で順序どおり再生する(Engine を通るので `か`)。
+   (b) 保持の開始から `HALF_WIDTH_RESUME_HOLD_MAX_MS` 経過(復元が効かなかった)→ そのまま再生する(従来どおり素通しで `w`。**BS は送らない**: 復元が効いた証拠が無いとき BS は別の文字を消す〈BUG-200 の機序〉)。
+   (c) 保持が上限個数(4)に達した → 先に解放してから新しい打鍵を通常どおり処理する。
+4. **前面窓が保持の開始時と違えば保持した打鍵は捨てる**(ADR-263 の `lang_detect_on_timer` と同じ扱い。別窓へ誤配送するより損失を取る)。journal でなくログに件数を残す。
+5. **解放の判定は専用の一発ポーリングタイマー `TIMER_RESUME_HOLD`(10ms 周期、保持中だけ)**。belief や `ImeEvent` の経路に手を入れない(事象駆動にすると `effective-open-flip` の発火点に保持の解放を差し込むことになり、`ime-belief-architecture.md` の領域へ触る)。10ms は実測の中央 4.9ms の 2 倍で、Windows のタイマー分解能の下限(約 15.6ms)に当たるので、実効は 1〜2 周期。
+6. **`HALF_WIDTH_RESUME_HOLD_MAX_MS = 100`**(`tuning.rs`、`#[measured]`)。導出: 復元の書き込みの実測最大 6.0ms(n=35)に、IMC の cross-process 書き込みが実機で遅い場合の余裕を見込む。上限は体感の遅れ(1 打鍵目だけ最大 100ms)と釣り合わせる。実機(dragonflyg4、負荷時)の分布は未測定。**コミット本文に実測を書く**(`tuning-constants.md`)。
+7. **既存の保持との関係**: `try_hold_key`(TsfGate)は PendingWarmup の保持で、解放は TSF モード確定。`lang_detect` の保持は Engine 活性が前提。本件は Engine が**非活性**の窓で、かつ解放が「Engine が活性になったか」。条件が違うので別の状態を持つが、**再生の口は同じ `INPUT_DEFER.replay_later`**(drain 側の順序・gate はそのまま使う)。
+
+### 再発ファミリーとの関係(fix-requires-evidence)
+
+- **defer/replay キューの解放条件**: 本件は `replay_later` の新しい呼び出し元を足す。drain 側の窓口(`drain_pending_deferred_before_send_if_queue_only` 等)は変えない。保持中に来る後続の物理キーは本機構の保持へ足す(live で素通しさせない)ので、`pending_deferred` を経由せず順序を壊さない設計とする。
+- **物理キー押下ラッチ(Down/Up 非対称)**: KeyDown を保持すると、その KeyUp が保持の外で素通しされる経路が一番危ない。保持が続く間は KeyUp も保持へ足し、解放は Down と Up を同じ再生に載せる。**保持が既に解放された後に来る KeyUp** は、再生の Down より先に OS へ届かないよう、再生が drain されるまで `INPUT_DEFER` の並びに従う(既存の `lang_detect` の再生と同じ前提。**Opus レビューで確かめる論点**)。
+- **belief**: 新しい belief 更新は無い(読むだけ: `compute_active`)。復元の書き込み(`actuate_conv_mode` と `apply_input_mode_correction`)は PR 2 のまま。
+
+### 検証
+
+- 純粋な状態機械(`state/half_width_resume_hold.rs`)の単体テスト(Linux): 解放(a)(b)(c)、窓変更で破棄、順序(Down→Up→次の Down)、上限、KeyUp だけ来る、保持が空のときは何もしない。
+- `architecture_guard`: 保持の解放が `INPUT_DEFER.replay_later` だけで、`SendInput`・Backspace・`apply_*` を呼ばないこと。`TIMER_RESUME_HOLD` が保持を空にしたとき kill されること。
+- CI(`e2e-ime`): `sc-focusrestore-msime{,-abc,-bopen,-twice}` の strict が PASS(最初の打鍵が `か`)。`msime-shiftchar`(Deferred→Resume)も同じ保持で PASS になるはず。`msime-lshift` は戻り待ちを Shift タップの Exit が取るので別経路で、`ｗ` の原因は別に調べる(本追補の範囲外)。`*-alttab` は CI の注入で窓が切り替わらないハーネスの問題で、本追補とは独立。
+
+### 却下した案
+
+| 案 | 却下理由 |
+|---|---|
+| BS して再注入(GJI の raw-tsf-literal 回収に倣う) | 回収は awase 自身の出力の literal を直す仕組みで、今回の `w` は素通しした物理キー。さらに画面に一瞬 `w` が見え、復元が効かなかったときの BS が別の文字を消す(BUG-200)。復元の成否を確かめてから通す保持のほうが、失うものが無い |
+| 復元の直後に open の belief を同期で真にする | belief 更新(`ime-belief-architecture.md`)に触る。事象駆動の解放も同じ領域に入る |
+| Engine を活性とみなして先に通す | `Engine::compute_active` は belief から出る。非活性のまま通すと NICOLA 変換が走らない |
+
+### 未確認
+
+- 実機(dragonflyg4)での分布、特に IME の応答が遅い窓(重い入力欄)。
+- 保持中にもう 1 つ物理キーが来る高速打鍵(同時打鍵の親指キーを含む)の順序。
+- `INPUT_DEFER` の drain が保持の解放と物理キーの間で順序を保つか(上の Opus 論点)。
