@@ -1,6 +1,8 @@
 # awase ワークアラウンド一覧
 
 > 最終調査: 2026-06-04
+>
+> **2026-10-13 追記(撤去済み項目)**: 6-F の programmatic F2 の送信・スキップと `F2_STALE_MS` は、`d4956490`(2026-07-18、F2 事前送信と待機行列の撤去)でコードから消えた(`git grep F2_STALE_MS` と `git grep physical_f2_valid_ms` は 0 件)。物理 F2 の検出(`composition_native_f2_down` → `ColdReason::F2NonTsf`)だけが残っている。現行の cold 回復は [docs/overview/topics/01-gji-coldstart.md](overview/topics/01-gji-coldstart.md) を参照。以降の本文は調査時点(2026-06-04)の記録で、この項目に関する判定「削除不可」は現在は当てはまらない。
 
 コードベースに存在する workaround・timing hack の一覧と、各項目が依然として必要か否かの判定を記録する。
 
@@ -213,7 +215,7 @@ MS-IME 系の ImmCross 失敗後は冪等な `MsImeDirect`（VK_IME_ON/OFF）へ
 
 ---
 
-### 6-F. `F2NonTsf` での programmatic F2 スキップ
+### 6-F. `F2NonTsf` での programmatic F2 スキップ(撤去済み: 冒頭の追記を参照)
 
 **場所:** `crates/awase-windows/src/output/vk_send.rs:132-144`
 

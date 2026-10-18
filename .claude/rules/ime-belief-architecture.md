@@ -27,7 +27,7 @@ Apply       dispatch_event → reduce()  ← belief の唯一の書き込み点
 
 観測には信頼度 (`ObservationConfidence::Low/Medium/High`) があり、`ImeModel::reduce()` は `ObserverReported` を受けても `desired_open` を直接書き換えない（`observations` に記録するのみ）。`effective_open()` が `derive_open()`（Medium+ の合意 / High 即採用）→ `most_recent_trusted()`（confidence 不問、フォールバック専用）→ `desired_open` の順で解決する。
 
-- **High confidence（ImmCross/FocusProbe 由来の子 hwnd 読み取り）**: `write_imm_cross_probe(open)` / `write_focus_probe(open)` を使う
+- **High confidence（ImmCross の子 hwnd 読み取り）**: `write_imm_cross_probe(open)` を使う。**`write_focus_probe(open)`（フォーカス直後の同期プローブ）は Low・BeliefOnly**（`state/evidence.rs` の宣言表。2026-10-13 訂正）
 - **Medium confidence（定期 poll）**: `apply_ime_update(&update)` 経由（`poll_and_classify_ime` の戻り値）
 - **観測が何もない場合の安全デフォルト推測**（cache miss 等）: `ObserverReported { source: ObservationSource::HeuristicDefault, confidence: Low, .. }` を使う（`reset_to_off_for_tsf_native_cache_miss` を参照）。**`UserImeSetIntent` を使ってはならない** — ユーザー意図を偽装することになり、confidence ガードを完全にバイパスする。
 - `dispatch_event(ImeEvent::ObserverReported { .. })` を直接呼ぶのは上記メソッドの内部に限る
