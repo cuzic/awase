@@ -436,6 +436,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # rust-cache のキーにはビルドプロファイルが入らない。settings-release(LTO) で作った
+          # 既存キャッシュを --release が「一致」として復元し、中身が別プロファイルのため
+          # 243 クレートを毎回再コンパイルしつつ「Cache up-to-date」で保存し直されない
+          # 状態だった(run 39111149176 で確認: 復元 hit でも Build 246〜322秒)。
+          # キーを分けて release 用のキャッシュを別に作らせる。
+          key: release-nolto
       - uses: taiki-e/install-action@nextest
 
       # LTO 込みの settings-release は使わない。実測 205 秒(windows-settings ジョブ 306 秒の
