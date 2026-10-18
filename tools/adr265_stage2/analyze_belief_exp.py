@@ -74,10 +74,15 @@ def e4(ev):
     f = [e for e in ev if e["event"] == "field"]
     if not f:
         print("no fields:", [e for e in ev if e["event"] in ("abort", "ready")]); return
+    from collections import Counter
+    c = Counter()
     for e in f:
         b = e["block"] or {}
-        print(f"field={e['field']:8s} ime={e['ime']:8s} eff=({b.get('eff_open')},{b.get('eff_mode')}) tsf=({b.get('tsf_open')},{b.get('tsf_mode')}) "
-              f"title: {e['title_before']!r} -> {e['title_after']!r}")
+        t = e["typed"] or {}
+        c[(e["field"], e["ime"], b.get("eff_open"), b.get("tsf_open"), t.get("last_kind"), t.get("len_delta"))] += 1
+    print("(field, ime key, eff_open, tsf_open, typed kind, len_delta): count")
+    for k, v in sorted(c.items(), key=lambda x: str(x[0])):
+        print(" ", k, v)
     split = [e for e in f if e["block"] and "eff_open" in e["block"] and e["block"]["eff_open"] != e["block"]["tsf_open"]]
     print(f"E4: records where tsf_open != effective_open: {len(split)}/{len(f)}")
 

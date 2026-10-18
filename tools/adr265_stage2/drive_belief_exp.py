@@ -28,7 +28,10 @@ imm.ImmGetDefaultIMEWnd.restype = wt.HWND
 u32.SendMessageTimeoutW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM, wt.UINT, wt.UINT, ctypes.c_void_p]
 u32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
 u32.GetWindowTextW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
-WM_IME_CONTROL, IMC_SETOPENSTATUS = 0x0283, 0x0006
+WM_IME_CONTROL, IMC_SETOPENSTATUS, IMC_GETOPENSTATUS = 0x0283, 0x0006, 0x0005
+WM_GETTEXT, WM_GETTEXTLENGTH = 0x000D, 0x000E
+u32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, ctypes.c_void_p]
+u32.SendMessageW.restype = ctypes.c_ssize_t
 
 
 class Out:
@@ -73,13 +76,20 @@ def text_thread(pids):
 
 
 def ensure_on(pids, out):
-    for _ in range(6):
-        _, ftid, fpid, _, _ = dm.focus_info()
+    # the first key of a fresh process can take about 8 s to act (cold start), so wait up to 40 s
+    end = time.time() + 40
+    n = 0
+    while time.time() < end:
+        _, ftid, fpid, fcls, _ = dm.focus_info()
         blk = dm.read_block(ftid, fpid) if fpid in pids else None
         if blk and blk.get("eff_open") == 1:
+            out.emit(event="ensure_on", ok=True, keys_sent=n)
             return True
-        dm.send_vk(0xF2)
+        if n < 3 or time.time() > end - 20:  # a few keys, then wait; more keys late if still off
+            dm.send_vk(0xF2)
+            n += 1
         time.sleep(1.5)
+    out.emit(event="ensure_on", ok=False, keys_sent=n, last_block=blk, focus_pid=fpid, focus_class=fcls)
     return False
 
 
@@ -121,6 +131,30 @@ def imm_set_open(ime_wnd, open_):
     return ok, res.value, t0, time.perf_counter_ns()
 
 
+def imm_get_open(ime_wnd):
+    res = ctypes.c_size_t(0)
+    ok = u32.SendMessageTimeoutW(ime_wnd, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0, 2, 1000, ctypes.byref(res))
+    return res.value if ok else None
+
+
+def typed_char_kind(hwnd, before_len):
+    """What did the last typed key produce? Reads the control text but NEVER stores it: only the length change and
+    the class of the last character ('hiragana' / 'ascii' / 'other') are returned (the text may be a user's document)."""
+    n = u32.SendMessageW(hwnd, WM_GETTEXTLENGTH, 0, None)
+    if n < 0 or n > 200000:
+        return None
+    buf = ctypes.create_unicode_buffer(n + 2)
+    u32.SendMessageW(hwnd, WM_GETTEXT, n + 1, ctypes.cast(buf, ctypes.c_void_p))
+    last = buf.value[-1:] if buf.value else ""
+    del buf
+    kind = "none" if not last else "hiragana" if "\u3040" <= last <= "\u309f" else "ascii" if last.isascii() else "other"
+    return {"len_delta": n - before_len, "last_kind": kind}
+
+
+def text_len(hwnd):
+    return u32.SendMessageW(hwnd, WM_GETTEXTLENGTH, 0, None)
+
+
 def wait_change(tid, pid, seq0, timeout_s):
     end = time.perf_counter() + timeout_s
     while time.perf_counter() < end:
@@ -153,8 +187,16 @@ def e2(args, out):
             seq0 = before.get("seq") if before else None
             ok, res, t0, t1 = imm_set_open(ime_wnd, want)
             blk, t2 = wait_change(tid, pid, seq0, 2.0)
+            getopen = imm_get_open(ime_wnd)
+            typed = None
+            if r < 3:  # output check: type 'a'; open -> hiragana, closed -> latin 'a'. Only the length change and the kind are kept.
+                fh, _, _, _, _ = dm.focus_info()
+                n0 = text_len(fh)
+                dm.send_vk(0x41)
+                time.sleep(0.5)
+                typed = typed_char_kind(fh, n0)
             out.emit(event="imm_write", round=r, want_open=want, send_ok=bool(ok), result=res,
-                     before=before, after=blk, changed=blk is not None,
+                     before=before, after=blk, changed=blk is not None, imm_getopen_after=getopen, typed=typed,
                      send_ms=(t1 - t0) / 1e6, delay_ms=(t2 - t1) / 1e6 if blk else None)
             time.sleep(1.0)
     out.emit(event="done", scenario="e2")
@@ -194,35 +236,42 @@ def e3(args, out):
     return 0
 
 
-def title_of(hwnd):
-    buf = ctypes.create_unicode_buffer(512)
-    u32.GetWindowTextW(hwnd, buf, 512)
-    return buf.value
+def click_at(h, fx, fy):
+    """Click at fractions (fx, fy) of the window rectangle (the host window: text edit ~0.28, password edit ~0.58)."""
+    r = wt.RECT()
+    u32.GetWindowRect(h, ctypes.byref(r))
+    u32.SetCursorPos(r.left + int((r.right - r.left) * fx), r.top + int((r.bottom - r.top) * fy))
+    u32.mouse_event(2, 0, 0, 0, 0)
+    u32.mouse_event(4, 0, 0, 0, 0)
 
 
 def e4(args, out):
+    """Win32 edit controls: a normal EDIT and an ES_PASSWORD EDIT in the same window (NOT a web password field).
+    For each field and for the IME on/off, record the block and what typing 'a' produces (kind only, never the text)."""
     pids = {int(x) for x in args.pids.split(",") if x}
-    h, clicks = ds.focus_text(pids)
-    if not h:
-        out.emit(event="abort", reason="no focus in the Edge window", clicks=clicks)
+    tt = text_thread(pids)
+    if not tt:
+        out.emit(event="abort", reason="no text focus")
         return 2
-    out.emit(event="ready", clicks=clicks, title=title_of(h))
-    # fields: the text field has the focus first (autofocus). Tab moves to the password field.
-    for field, key_to_move in (("text", None), ("password", 0x09), ("text", 0x09)):
-        if key_to_move:
-            dm.send_vk(key_to_move)
-            time.sleep(1.0)
-        _, ftid, fpid, fcls, how = dm.focus_info()
-        for state_vk, label in ((0xF2, "ime-on"), (0x19, "ime-off")):
-            dm.send_vk(state_vk)
-            time.sleep(1.5)
-            blk = dm.read_block(ftid, fpid) if fpid in pids else None
-            before_title = title_of(h)
-            for vk in (0x41, 0x4B):  # 'a' 'k' typed through the IME (hiragana: "あ" + pending k)
-                dm.send_vk(vk)
-                time.sleep(0.2)
+    h, tid, pid, cls = tt
+    if not ensure_on(pids, out):
+        out.emit(event="abort", reason="could not turn the IME on")
+        return 4
+    out.emit(event="ready", tid=tid, pid=pid, cls=cls)
+    for rep in range(args.rounds):
+        for field, fy in (("text", 0.28), ("password", 0.58)):
+            click_at(h, 0.5, fy)
             time.sleep(0.8)
-            out.emit(event="field", field=field, ime=label, block=blk, title_before=before_title, title_after=title_of(h))
+            fh, ftid, fpid, fcls, how = dm.focus_info()
+            for vk, label in ((0xF2, "ime-on"), (0x19, "ime-off")):
+                dm.send_vk(vk)
+                time.sleep(1.2)
+                blk = dm.read_block(ftid, fpid) if fpid in pids else None
+                n0 = text_len(fh)
+                dm.send_vk(0x41)
+                time.sleep(0.5)
+                typed = typed_char_kind(fh, n0)
+                out.emit(event="field", rep=rep, field=field, ime=label, focus_class=fcls, focus_tid=ftid, block=blk, typed=typed)
     out.emit(event="done", scenario="e4")
     return 0
 
