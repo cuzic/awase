@@ -1200,6 +1200,10 @@ enum GComp {
     PrevHiragana,
     /// 履歴依存の確認用: 入力中に Esc で消して、入れ直した直後(直前キーは a)。
     PrevEsc,
+    /// 履歴依存の確認用(BUG-205): 変換キーで変換中に入り、Esc を押した直後。Esc が入力中へ戻すのか、破棄するのか、
+    /// 変換中のままなのかは未測定なので、入力中かどうかを検証しない(`grid_matches`)。結果は続くキーの結果が
+    /// `typing`・`conv-henkan`・`none` のどの行と一致するかで決める。
+    ConvHenkanEsc,
 }
 
 impl GComp {
@@ -1212,6 +1216,7 @@ impl GComp {
             Self::ConvMuhenkan => "conv-muhenkan",
             Self::PrevHiragana => "typing-prev-hiragana",
             Self::PrevEsc => "typing-prev-esc",
+            Self::ConvHenkanEsc => "conv-henkan-esc",
         }
     }
     /// この段階を作るキー列(VK)。
@@ -1224,6 +1229,7 @@ impl GComp {
             Self::ConvMuhenkan => &[0x4B, 0x41, 0x1D],
             Self::PrevHiragana => &[0x4B, 0x41, 0xF2],
             Self::PrevEsc => &[0x4B, 0x41, 0x1B, 0x4B, 0x41],
+            Self::ConvHenkanEsc => &[0x4B, 0x41, 0x1C, 0x1B],
         }
     }
 }
@@ -1320,9 +1326,13 @@ fn grid_shard_keys(shard: &str) -> &'static [u32] {
         "s2" => &[0xF1, 0xF0, 0x20],       // カタカナ 英数 Space
         "s3" => &[0x1B, 0x0D, 0x08],       // Esc Enter BS
         "s4" => &[0xF3, 0x19, 0x16, 0x1A], // 半角全角 漢字 IME_ON IME_OFF
+        // s5 は通常の格子(全状態 × キー)ではなく、`grid_build` の専用ブロック(変換中の Esc の直後。BUG-205)。
         _ => &[],
     }
 }
+
+/// `--grid=s5`(BUG-205)で、変換→Esc の直後の状態で押すキー: 無変換・カタカナ・ひらがな・変換・Space・Enter。
+const ESC_CTX_KEYS: [u32; 6] = [0x1D, 0xF1, 0xF2, 0x1C, 0x20, 0x0D];
 
 /// 試行回数: 入力中・変換中で結果が割れうるキーは4回、開閉系は2回(再現性)。
 fn grid_trials_for(key: u32) -> usize {
@@ -1435,6 +1445,29 @@ fn grid_build(
         for t in 0..n {
             for comp in [GComp::PrevHiragana, GComp::PrevEsc] {
                 for key in [0x1B_u32, 0x1D] {
+                    v.push(GridTrial {
+                        open: true,
+                        conv: 0x19,
+                        comp,
+                        key,
+                        trial: t + 1,
+                    });
+                }
+            }
+        }
+    }
+    // s5(BUG-205): 変換→Esc の直後に押したキーの結果が、typing・conv-henkan・none のどの行と一致するかを見る。
+    // 対照(変換中・入力中・入力なし)を同じ実行に入れ、同じ環境・同じ時刻帯で比べる。(開, 0x19) だけ。
+    if shard == "s5" {
+        let n = cap.unwrap_or(10);
+        for t in 0..n {
+            for comp in [
+                GComp::ConvHenkanEsc,
+                GComp::ConvHenkan,
+                GComp::Typing,
+                GComp::None,
+            ] {
+                for key in ESC_CTX_KEYS {
                     v.push(GridTrial {
                         open: true,
                         conv: 0x19,
@@ -1576,7 +1609,10 @@ fn grid_open_of(s: &Snapshot) -> Option<bool> {
 /// 目標の状態と一致しているか(閉じている状態は conv を問わない)。
 fn grid_matches(s: &Snapshot, t: &GridTrial) -> bool {
     let composing = s.comp.as_deref().is_some_and(|c| !c.is_empty());
-    if grid_open_of(s) != Some(t.open) || composing != (t.comp != GComp::None) {
+    // `ConvHenkanEsc` は Esc の後に入力が残るか消えるかを測るので、入力中かどうかは検証しない(消える場合に
+    // セットアップ不能で飛ばされ、測りたい場合が測れなくなる)。押す前の入力は「前」の行の comp に残る。
+    let comp_ok = t.comp == GComp::ConvHenkanEsc || composing == (t.comp != GComp::None);
+    if grid_open_of(s) != Some(t.open) || !comp_ok {
         return false;
     }
     !t.open || s.b_conv.or(s.a_conv) == Some(t.conv)
@@ -3100,8 +3136,8 @@ fn validate_args() {
         };
         let v = &a[pre.len()..];
         match pre {
-            "--grid=" if !matches!(v, "s1" | "s2" | "s3" | "s4") => {
-                arg_error(&format!("--grid= は s1..s4 のいずれか: {a}"))
+            "--grid=" if !matches!(v, "s1" | "s2" | "s3" | "s4" | "s5") => {
+                arg_error(&format!("--grid= は s1..s5 のいずれか: {a}"))
             }
             "--grid-setup=" if !matches!(v, "keys" | "keys-immreset" | "imm") => arg_error(
                 &format!("--grid-setup= は keys / keys-immreset / imm のいずれか: {a}"),
