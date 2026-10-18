@@ -150,6 +150,13 @@ impl Runtime {
     // Phase 3.5: 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
     // Phase 3.7: 診断スナップショット（フォーカス変更後）
 
+    /// ADR-260 決定1: conv の読みが成功したスコープを記録する（`ir_stage_observe` の複雑度を保つために分けた）。
+    fn ir_note_conv_read_ok(&mut self, ime_snap: Option<&crate::ime::ImeSnapshot>) {
+        if ime_snap.is_some_and(|snap| snap.conversion_mode.is_some()) {
+            self.platform_state.ime.note_conv_read_ok();
+        }
+    }
+
     fn ir_stage_observe(
         &mut self,
         focus: &FocusInfo,
@@ -162,6 +169,8 @@ impl Runtime {
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.explicit_intent(),
         );
+        // ADR-260 決定1: conv の読みが成功したスコープを記録する（窓内の読みが効く窓かの判定。フォーカスで失効）。
+        self.ir_note_conv_read_ok(ime_snap);
         // ADR-205: 打鍵中（SkipTyping）でも、prefetch 済みの開閉の読みを外部変化の監視窓に照合する（追加 I/O なし）。
         self.ir_follow_external_change(ime_snap);
         // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。

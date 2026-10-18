@@ -1018,6 +1018,17 @@ fn run_keymatrix(p: &mut Probe, spec: &str, args: &[String]) {
             let pre_api = ime_control(0x0005, 0).map(|v| v != 0);
             let utc0 = utc_stamp();
             let mut presses = Vec::new();
+            // `--km-pre=<VK 16進>`(ADR-260 の持ち越しの測定): 測るキーの前に、このキーを 1 回押す。
+            if let Some(vk) = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--km-pre="))
+                .and_then(|v| u32::from_str_radix(v, 16).ok())
+            {
+                send_key(vk, true);
+                sleep(60);
+                send_key(vk, false);
+                sleep(700);
+            }
             if pre_ok {
                 for pi in 1..=max_press {
                     let utc = utc_stamp();
@@ -1037,9 +1048,17 @@ fn run_keymatrix(p: &mut Probe, spec: &str, args: &[String]) {
                     sleep(1000);
                 }
             }
+            // `--km-twice`: 1回目の打鍵の後に、直接観測の追随（ADR-260 の B1o・B3 など）が働く時間を空け、2回目の結果も記録する。
+            let typed2 = if args.iter().any(|a| a == "--km-twice") && pre_ok {
+                sleep(900);
+                let got2 = p.probe_logged("keymatrix 2回目");
+                serde_json::json!(got2.label())
+            } else {
+                serde_json::Value::Null
+            };
             p.log.line(&format!(
                 "KM {}",
-                serde_json::json!({"type":"km_trial","cell":cell.label,"key":cell.key,"kind":cell.kind,
+                serde_json::json!({"type":"km_trial","typed2":typed2,"cell":cell.label,"key":cell.key,"kind":cell.kind,
                     "gap":cell.gap,"n":i,"r0":r0,"target":target,"utc":utc0,"pre_ok":pre_ok,
                     "pre_api":pre_api,"presses":presses,"focus_lost":p.focus_lost,"fresh":fresh})
             ));
