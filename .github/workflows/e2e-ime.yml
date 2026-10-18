@@ -97,7 +97,8 @@ jobs:
           # pass(安定)/ fail(再現を固定、BUG と対応)/ 削除のどれかに決める。期限切れは test_e2e_plan.py が赤にする。
           # 既存の observe は observe_grandfathered.txt に載せてあり(縮める方向にだけ動かす)、observe_audit.py が一覧する。
           # summary は有効回が 2 回以上で全PASS なら『pass昇格候補』、全FAIL なら『fail固定候補』と出す。
-          # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME) / mozc=Mozc Readable(cuzic/mozc-readable の Release の MSI、BUG-207)
+          # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME) / mozc=Mozc Readable(cuzic/mozc-readable の Release の MSI、BUG-207) /
+          # mozc-gji=GJI も入れて変換サーバー(GoogleIMEJaConverter)を起動したまま、入力方式を Mozc Readable だけにする(BUG-207 の実際の条件、ADR-269)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
@@ -724,6 +725,13 @@ jobs:
                   stress=f'--form={form} --interval={iv} --mode=raw --no-awase --layout=@REPO@/layout/nicola_keytop.yab')
               for form in ('edit', 'tsf')
               for iv in (40, 10)],
+            # BUG-207 の実際の条件(Mozc がアクティブで GJI の変換サーバーも動いている、ADR-269 順序 2)。develop では GJI の監視に付いて誤判定する(はず)。
+            # 条件が成立しなければジョブが失敗する(ステップ『条件の確認(mozc-gji)』)。awase.log の `attached to GJI process`(develop)と
+            # `detaching`(修正後)で効果を見る。
+            *[cfg(f'ts-{form}-mozc-gji-{iv}ms', 'observe', check='typing', ime='mozc-gji', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('edit', 'tsf')
+              for iv in (40, 10)],
             # --- 打鍵の揺らぎ比較(tsj-、examples/typing_stress/jitter.rs): 固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit)を同じ入力先・IME・seed で比べる。
             # jit の分布の形は仮置き(範囲だけ docs/adr/182 の実機実測に合わせる: 親指↔文字の押下間隔 2〜93ms、文字先押しの割合 30%)。--jit-iv=0.5 は間隔の倍率の対数標準偏差。
             # 既定の only 空では回さない(下の除外に tsj- を足してある)。only='tsj-*' で回す。観測のみ、until までに「揺らぎで loss/reorder/literal が増えるか」を決める。
@@ -1018,7 +1026,7 @@ jobs:
 
       # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
       - name: Google 日本語入力をインストール(chocolatey、約30秒)
-        if: matrix.cfg.ime == 'gji'
+        if: matrix.cfg.ime == 'gji' || matrix.cfg.ime == 'mozc-gji'
         shell: pwsh
         run: |
           ./tools/ci/install-gji.ps1
@@ -1071,14 +1079,34 @@ jobs:
           Start-Sleep -Seconds 5
 
       # Mozc Readable(BUG-207): GJI と別の TIP(mozc_server が変換サーバー)。awase が Mozc 系で I/O の監視を mozc_server に向けるかを確かめる。
+      # mozc-gji: Mozc Readable の入力方式にする前に、GJI の変換サーバーを起動しておく(入力方式の一覧から GJI を外しても残る)。
+      - name: GJI の変換サーバーを起動しておく(mozc-gji)
+        if: matrix.cfg.ime == 'mozc-gji'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -Filter GoogleIMEJaConverter.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { Write-Host '##[error]GoogleIMEJaConverter.exe が見つからない'; exit 1 }
+          Start-Process $exe.FullName
+          Start-Sleep -Seconds 3
+
       - name: Mozc Readable をインストールして ja-JP の入力方式にする
-        if: matrix.cfg.ime == 'mozc'
+        if: matrix.cfg.ime == 'mozc' || matrix.cfg.ime == 'mozc-gji'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           ./tools/ci/install-mozc-readable.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # mozc-gji: BUG-207 の条件(Mozc がアクティブで、GJI の変換サーバーも動いている)が成立しているか。成立しなければこのジョブを失敗にする
+      # (Mozc 単独と同じ PASS を『直った』と読む誤りを防ぐ)。
+      - name: 条件の確認(mozc-gji)
+        if: matrix.cfg.ime == 'mozc-gji'
+        shell: pwsh
+        run: |
+          $gji = Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Format-Table Name, Id | Out-String | Write-Host
+          if (-not $gji) { Write-Host '##[error]条件不成立: GoogleIMEJaConverter が動いていない'; exit 1 }
 
       # Microsoft IME 本体: ja-JP の言語を追加すると標準の日本語IME(Microsoft IME)が入る。
       - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
