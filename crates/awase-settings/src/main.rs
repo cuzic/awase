@@ -7478,10 +7478,10 @@ mod layout_tab_repro {
     #[test]
     fn auto_detect_combination_outside_the_presets_is_custom_and_selecting_keeps_numbers() {
         use awase::config::{AutoDetectMode, AutoDetectScope};
-        // config.toml に手書きした ime_on + all は選択肢に無い = カスタム。
+        // config.toml に手書きした ime_on_off + unobserved（画面の選択肢から外した組み合わせ）は選択肢に無い = カスタム。
         let mut cfg = awase::config::AutoDetectConfig {
-            mode: AutoDetectMode::ImeOn,
-            scope: AutoDetectScope::All,
+            mode: AutoDetectMode::ImeOnOff,
+            scope: AutoDetectScope::Unobserved,
             idle_ms: 9000,
             ..awase::config::AutoDetectConfig::default()
         };
