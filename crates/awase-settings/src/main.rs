@@ -4442,20 +4442,22 @@ const AUTO_DETECT_PRESETS: [(
          awase が IME ON とみなしているときだけ動きます。保持中に窓が変わると、保持した打鍵は捨てられます。",
     ),
     (
-        awase::config::AutoDetectMode::ImeOnOff,
-        awase::config::AutoDetectScope::Unobserved,
-        "IME の状態が読めない窓で、日本語ならひらがな・英数なら IME OFF にする",
-        "上の動作に加えて、打鍵列が英数（英語・コード・他言語）と判定できたときは、IME OFF キーを 1 回送り、\n\
-         awase の想定も OFF にして、保持した打鍵をそのまま流します。\n\
-         日本語を英数と誤判定すると IME が OFF になり、IME ON のキーを押すまで戻りません（利用者の責任）。\n\
-         誤判定の率は、詳細の「IME OFF にする確信度」で決まります。",
+        awase::config::AutoDetectMode::ImeOn,
+        awase::config::AutoDetectScope::All,
+        "すべての窓で、日本語ならひらがなにする（利用者の責任）",
+        "上の動作を、IME の状態が読める窓（Chrome など）にも広げます。読める窓では awase の想定が\n\
+         実際の状態に追随するため、判定の書き込みと食い違うことがあります（drift correction が戻すなど）。\n\
+         TSF ネイティブの窓と入力中継ツールの窓は、この設定でも対象外です。\n\
+         英数と判定した場合は、保持した打鍵をそのまま流すだけで、IME OFF は送りません。",
     ),
     (
         awase::config::AutoDetectMode::ImeOnOff,
         awase::config::AutoDetectScope::All,
         "すべての窓で、日本語ならひらがな・英数なら IME OFF にする（利用者の責任）",
-        "IME の状態が読める窓（Chrome など）も対象にします。読める窓では awase の想定が実際の状態に\n\
-         追随するため、判定の書き込みと食い違うことがあります（drift correction が戻すなど）。\n\
+        "上の動作に加えて、打鍵列が英数（英語・コード・他言語）と判定できたときは、IME OFF キーを 1 回送り、\n\
+         awase の想定も OFF にして、保持した打鍵をそのまま流します。\n\
+         日本語を英数と誤判定すると IME が OFF になり、IME ON のキーを押すまで戻りません。\n\
+         誤判定の率は、詳細の「IME OFF にする確信度」で決まります。\n\
          TSF ネイティブの窓と入力中継ツールの窓は、この設定でも対象外です。",
     ),
 ];
