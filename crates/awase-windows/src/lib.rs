@@ -284,6 +284,9 @@ pub const TIMER_FOCUS_RESYNC: usize = 109;
 pub const TIMER_HOOK_WATCHDOG_CANARY_CHECK: usize = 110;
 /// ADR-263 PR 2b: エピソード先頭の打鍵の保持の期限タイマー ID。一発タイマーで、ハンドラ冒頭で自ら `kill` する。
 pub const TIMER_LANG_HOLD: usize = 111;
+/// ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持の期限タイマー ID。一発タイマーで、ハンドラ冒頭で自ら `kill` する。
+/// 保持の解放(完了の札・上限・フォーカス変化・panic・設定再読み込み)でも必ず kill される(`runtime/resume_hold.rs`)。
+pub const TIMER_RESUME_HOLD: usize = 112;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 
@@ -345,6 +348,10 @@ pub const WM_KANA_LOCK_WARNING_CHANGED: u32 = windows::Win32::UI::WindowsAndMess
 /// hook の IME-mode 診断ログを journal へ吸い上げる契機。
 #[cfg(windows)]
 pub const WM_HOOK_IME_MODE_DIAGNOSTIC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 27;
+/// ADR-245 追補 2 R2: 復元タスクの完了の札(`ResumeDoneToken`)が保持の解放を通知する。wparam = hold_id、lparam = 理由の符号
+/// (`ReleaseReason::code`)。`hold_id` が今の保持と一致するときだけ解放する。
+#[cfg(windows)]
+pub const WM_RESUME_HOLD_DONE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 29;
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 
 /// `RawKeyEvent` の SendInput 再注入ヘルパー。

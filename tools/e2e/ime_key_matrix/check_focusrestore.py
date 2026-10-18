@@ -135,15 +135,16 @@ def verdict(cfg, t, stages, awase, first_key_literal_ok=False):
         if tap2_conv is None or not tap2_conv & NATIVE:
             why.append(f"次の左 Shift タップでかなに戻らなかった(tap2 の conv={hx(tap2_conv)})")
     else:
-        typed2_ok = (t.get("typed2") or {}).get("text", "").strip() == typed["expect"]
+        expect2 = typed.get("expect2", typed["expect"])  # multi は typed が 2 打鍵(「かか」)、typed2 は 1 打鍵
+        typed2_ok = (t.get("typed2") or {}).get("text", "").strip() == expect2
         # --first-key-literal-ok(ADR-245 追補 2。R2=最初の打鍵の保持が入るまで): 最初の打鍵が素の文字で出ても、2 打鍵目がかななら許す。
         if text != typed["expect"] and not (first_key_literal_ok and typed2_ok):
             why.append(f"戻って最初の打鍵がかなにならない(本文 {text!r}、期待 {typed['expect']!r})")
         # ADR-245 追補 2 R1: 復元の書き込みの後に A の開閉を読み直して belief に記録するので、2 打鍵目からは Engine が効く
         # (R2=最初の打鍵の保持が入るまで、最初の打鍵 `text` は上で落ちてよい)。typed2 が無い古い結果は見ない。
         typed2 = (t.get("typed2") or {}).get("text")
-        if typed2 is not None and typed2.strip() != typed["expect"]:
-            why.append(f"2 打鍵目もかなにならない(typed2 {typed2.strip()!r}、期待 {typed['expect']!r}。復元の後に belief が追随していない)")
+        if typed2 is not None and typed2.strip() != expect2:
+            why.append(f"2 打鍵目もかなにならない(typed2 {typed2.strip()!r}、期待 {expect2!r}。復元の後に belief が追随していない)")
         if typed_conv is None or not typed_conv & NATIVE:
             why.append(f"typed 時点の A の conv に NATIVE が無い(conv={hx(typed_conv)})")
     return why

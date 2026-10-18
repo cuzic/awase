@@ -320,6 +320,8 @@ enum Scenario {
     Abc,
     /// B で IME を OFF にしてから A へ戻る(effective_open 偽の Drop。観測)。
     BImeOff,
+    /// 戻って、最初の打鍵から続けて 2 打鍵を短い間隔で打つ(ADR-245 追補 2 R2: 保持した打鍵が順序どおり再生されること)。
+    Multi,
 }
 
 fn scenario() -> Scenario {
@@ -330,6 +332,7 @@ fn scenario() -> Scenario {
         Some("twice") => Scenario::Twice,
         Some("abc") => Scenario::Abc,
         Some("bimeoff") => Scenario::BImeOff,
+        Some("multi") => Scenario::Multi,
         _ => Scenario::Basic,
     }
 }
@@ -343,6 +346,7 @@ fn scenario_name(s: Scenario) -> &'static str {
         Scenario::Twice => "twice",
         Scenario::Abc => "abc",
         Scenario::BImeOff => "bimeoff",
+        Scenario::Multi => "multi",
     }
 }
 
@@ -357,9 +361,14 @@ fn press_alt_tab() {
     send_key(0xA4, 0x38, false);
 }
 
-/// `probe` を打って Enter で確定し、A の本文を読んで消す。
-fn type_probe_in_a(child: HWND, probe: &Cell) -> String {
-    press(probe.vk, probe.scan, 60);
+/// `probe` を `burst` 回、短い間隔(20ms)で打って Enter で確定し、A の本文を読んで消す。
+fn type_probe_in_a(child: HWND, probe: &Cell, burst: u32) -> String {
+    for i in 0..burst {
+        press(probe.vk, probe.scan, 60);
+        if i + 1 < burst {
+            sleep_ms(20);
+        }
+    }
     sleep_ms(700);
     press(VK_RETURN, 0x1C, 50);
     sleep_ms(700);
@@ -553,11 +562,13 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         }
         // typed: かな単打を打って確定し、本文を読む。
         let utc_type = utc_hms();
-        let text = type_probe_in_a(child, &probe);
+        // multi: 最初の打鍵から続けて 2 打鍵(ADR-245 追補 2 R2: 保持した打鍵が順序どおり再生されて「かか」になること)。
+        let burst = if scn == Scenario::Multi { 2 } else { 1 };
+        let text = type_probe_in_a(child, &probe, burst);
         stage(n, "typed", 0, a, b);
         // typed2(観測のみ): 1 打鍵目のあとに同じキーをもう一度打つ。復元が実モードまで効いていれば 2 打鍵目はかなになる
         // (ADR-245 追補 2 の Opus M-2: IMC の書き込みだけで実モードが戻るかを、保持の設計より先に確かめる)。
-        let text2 = type_probe_in_a(child, &probe);
+        let text2 = type_probe_in_a(child, &probe, 1);
         stage(n, "typed2", 0, a, b);
         // tap2: もう一度左 Shift 単独タップ。
         let utc_tap2 = utc_hms();
@@ -568,7 +579,7 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
             &json!({"type":"fr_trial","n":n,"control":control,"scenario":scenario_name(scn),"utc":utc0,"utc_tap1":utc_tap1,
             "entered":true,"taps":taps,"utc_away":utc_away,"utc_back":utc_back,"utc_type":utc_type,"utc_tap2":utc_tap2,"utc_end":utc_end,
             "away_ok":away_ok,"back_ok":back_ok,"alttab_ok":alttab_ok,"b_typed":b_typed,"first_text":first_text,
-            "typed2":{"text":text2},"typed":{"text":text,"expect":probe.kana.to_string(),"expect_romaji":probe.romaji.to_string(),"vk":probe.vk,"ok":text.trim() == probe.kana.to_string()}}),
+            "typed2":{"text":text2},"typed":{"text":text,"expect":probe.kana.to_string().repeat(burst as usize),"expect2":probe.kana.to_string(),"expect_romaji":probe.romaji.to_string(),"vk":probe.vk,"ok":text.trim() == probe.kana.to_string().repeat(burst as usize)}}),
         );
         // 次の試行へ持ち越さない: A を前面に戻し、半角英数のままなら Shift 単独タップで戻す余地は残さず、次の turn_ime_on に任せる。
         if !focus_ok() {

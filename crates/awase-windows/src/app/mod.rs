@@ -32,7 +32,7 @@ use crate::{
     WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED,
     WM_INDICATOR_MENU_READ, WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
-    WM_RELOAD_CONFIG,
+    WM_RELOAD_CONFIG, WM_RESUME_HOLD_DONE,
 };
 
 // ── 定数 ──
@@ -581,6 +581,13 @@ pub(crate) fn dispatch_engine_message(
                 message_handlers::handle_wm_hook_ime_mode_diagnostic(app);
             });
         }
+        WM_RESUME_HOLD_DONE => {
+            // ADR-245 追補 2 R2: 復元タスクの完了の札の通知。`hold_id` が今の保持と一致するときだけ解放する。
+            let (wparam, lparam) = (wparam.0, lparam.0);
+            with_app_or_repost_with(WM_RESUME_HOLD_DONE, wparam, lparam, |app| {
+                app.resume_hold_on_done(wparam, lparam);
+            });
+        }
         WM_PANIC_RESET => {
             with_app_or_repost(WM_PANIC_RESET, |app| unsafe {
                 message_handlers::handle_wm_panic_reset(app);
@@ -704,6 +711,12 @@ fn handle_hook_key_event(mut event: awase::types::RawKeyEvent) {
         with_app(|app| app.lang_detect_on_key(&event)),
         Some(crate::runtime::LangDetectIntake::Consumed)
     ) {
+        return;
+    }
+    // ADR-245 追補 2 R2: 戻った窓の最初の打鍵を保持している間に届いた打鍵は保持に足す(OUTPUT_GATE・FOCUS_RESYNC の
+    // 判定より前。`[[keymap]]` 照合・Nested/NonText の即時 reinject・TsfGate などが先に取って順序が入れ替わらない)。
+    // `with_app` が `None`(再入)のときは足さず後段へ進む(`deliver_key_event` の先頭でも足す)。
+    if with_app(|app| app.resume_hold_on_key(&event)).unwrap_or(false) {
         return;
     }
     let defer_for_resync =

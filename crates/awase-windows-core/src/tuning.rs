@@ -502,3 +502,15 @@ pub const KEY_EFFECT_SETTLE_MS: u64 = 170;
 /// 他ツール(AutoHotkey `Send ^v`・PowerToys 等)の保持は未測定。実機での再測定は未了のため `pending`。
 #[measured_macro::measured(pending = true)]
 pub const FOREIGN_CTRL_TTL_MS: u64 = 1_000;
+
+/// ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持の期限 (ms)。R1 の観測が来ないとき(完了の札が通知しない・遅い)の
+/// 最悪の遅れの上限で、期限後は保持した打鍵を素通しで再生する(従来の挙動と同じ。BS は送らない)。
+///
+/// **測定と判断を分ける**: 測定=観測の記録までの典型 ~7ms(CI run 39123996600: 復元の起案から `[ImmCrossProbe/resume]` の
+/// 記録まで 2.6〜8.1ms・中央 6.3ms・p90 6.9ms、n=35。書き込みの `Written` まで 2.8〜6.0ms、n=35)。100ms は「来ないときに
+/// 体感の遅れをどこで打ち切るか」の判断で、測定から導いた値ではない(典型の約 14 倍。cross-process の IMC 読み書きが
+/// 応答しない窓で最大 300ms かかりうるが、それを体感の遅れ 100ms 超まで待たせない側に倒す)。
+/// dragonflyg4(負荷時)の分布は未測定。測ってから確定する(`HALF_WIDTH_RESUME_HOLD_MAX_MS` を上げる/下げる変更は、その実測を
+/// コミット本文に書くこと)。
+#[measured_macro::measured(value_ms = 100, margin_ms = 93, commit = "3842b651")]
+pub const HALF_WIDTH_RESUME_HOLD_MAX_MS: u64 = 100;
