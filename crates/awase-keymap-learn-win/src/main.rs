@@ -43,9 +43,7 @@ mod app {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    const KEYS: [u32; 14] = [
-        0x1D, 0x1C, 0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1B, 0x0D, 0x20, 0x08, 0x41,
-    ];
+    use awase_keymap_learn::LEARN_KEYS as KEYS;
 
     /// ADR-196決定1b-8: 判定書き換えモード起動フラグ。`awase-settings`の
     /// 「学習結果を使う」ボタン([ADR196-T4](../../../docs/tasks/adr196-t4-ui-status-and-adoption.md)、
