@@ -1207,6 +1207,10 @@ enum GComp {
     /// 履歴依存の確認用(BUG-205 追記): Space で変換中に入り、Esc を押した直後。ATOK の表では (変換中〈Space〉, Esc) が保持/破棄に
     /// 割れた(以前の版)ので、Esc の後に入力が残るかも未測定。`ConvHenkanEsc` と同じく入力中かどうかを検証しない。
     ConvSpaceEsc,
+    /// 履歴依存の確認用(BUG-205 追記): 無変換で変換中(英数変換)に入り、Esc を押した直後。ATOK は入力中の無変換で変換モードが 0x19→0x10 に
+    /// 変わる(ATOK の表に `ConvMuhenkan` の行は無い)ので、`s7` は (開, 0x19) と (開, 0x10) の両方から始める(変換モードは厳密に検証する)。
+    /// `ConvHenkanEsc` と同じく、Esc の後に入力が残るかは検証しない。
+    ConvMuhenkanEsc,
 }
 
 impl GComp {
@@ -1221,6 +1225,7 @@ impl GComp {
             Self::PrevEsc => "typing-prev-esc",
             Self::ConvHenkanEsc => "conv-henkan-esc",
             Self::ConvSpaceEsc => "conv-space-esc",
+            Self::ConvMuhenkanEsc => "conv-muhenkan-esc",
         }
     }
     /// この段階を作るキー列(VK)。
@@ -1235,6 +1240,7 @@ impl GComp {
             Self::PrevEsc => &[0x4B, 0x41, 0x1B, 0x4B, 0x41],
             Self::ConvHenkanEsc => &[0x4B, 0x41, 0x1C, 0x1B],
             Self::ConvSpaceEsc => &[0x4B, 0x41, 0x20, 0x1B],
+            Self::ConvMuhenkanEsc => &[0x4B, 0x41, 0x1D, 0x1B],
         }
     }
 }
@@ -1331,7 +1337,7 @@ fn grid_shard_keys(shard: &str) -> &'static [u32] {
         "s2" => &[0xF1, 0xF0, 0x20],       // カタカナ 英数 Space
         "s3" => &[0x1B, 0x0D, 0x08],       // Esc Enter BS
         "s4" => &[0xF3, 0x19, 0x16, 0x1A], // 半角全角 漢字 IME_ON IME_OFF
-        // s5・s6 は通常の格子(全状態 × キー)ではなく、`grid_build` の専用ブロック(変換中の Esc の直後。BUG-205)。
+        // s5・s6・s7 は通常の格子(全状態 × キー)ではなく、`grid_build` の専用ブロック(変換中の Esc の直後。BUG-205)。
         _ => &[],
     }
 }
@@ -1506,6 +1512,32 @@ fn grid_build(
             }
         }
     }
+    // s7(BUG-205 追記): 無変換で入った変換中の Esc の直後。(開, 0x19) と (開, 0x10) の両方から始める(ATOK は入力中の無変換で 0x10 になる。
+    // 作れない状態〈到達不能・セットアップ不能〉は既存の仕組みが飛ばす)。対照に変換中〈無変換〉・入力中・入力なしを入れる。
+    // 状態数が s5/s6 の 2 倍なので、既定の試行回数は 6(これまでの測定は全て 10/10 で同じ結果だった)。
+    if shard == "s7" {
+        let n = cap.unwrap_or(6);
+        for t in 0..n {
+            for conv in [0x19_u32, 0x10] {
+                for comp in [
+                    GComp::ConvMuhenkanEsc,
+                    GComp::ConvMuhenkan,
+                    GComp::Typing,
+                    GComp::None,
+                ] {
+                    for key in ESC_CTX_KEYS {
+                        v.push(GridTrial {
+                            open: true,
+                            conv,
+                            comp,
+                            key,
+                            trial: t + 1,
+                        });
+                    }
+                }
+            }
+        }
+    }
     if let Some(a) = adaptive {
         // 2パス目。試行番号が外側のループ(同じセルの繰り返しを時間的に離す)。
         let (mut nondet, mut audit) = (0usize, 0usize);
@@ -1638,8 +1670,10 @@ fn grid_matches(s: &Snapshot, t: &GridTrial) -> bool {
     let composing = s.comp.as_deref().is_some_and(|c| !c.is_empty());
     // `ConvHenkanEsc` は Esc の後に入力が残るか消えるかを測るので、入力中かどうかは検証しない(消える場合に
     // セットアップ不能で飛ばされ、測りたい場合が測れなくなる)。押す前の入力は「前」の行の comp に残る。
-    let comp_ok = matches!(t.comp, GComp::ConvHenkanEsc | GComp::ConvSpaceEsc)
-        || composing == (t.comp != GComp::None);
+    let comp_ok = matches!(
+        t.comp,
+        GComp::ConvHenkanEsc | GComp::ConvSpaceEsc | GComp::ConvMuhenkanEsc
+    ) || composing == (t.comp != GComp::None);
     if grid_open_of(s) != Some(t.open) || !comp_ok {
         return false;
     }
@@ -3164,8 +3198,8 @@ fn validate_args() {
         };
         let v = &a[pre.len()..];
         match pre {
-            "--grid=" if !matches!(v, "s1" | "s2" | "s3" | "s4" | "s5" | "s6") => {
-                arg_error(&format!("--grid= は s1..s6 のいずれか: {a}"))
+            "--grid=" if !matches!(v, "s1" | "s2" | "s3" | "s4" | "s5" | "s6" | "s7") => {
+                arg_error(&format!("--grid= は s1..s7 のいずれか: {a}"))
             }
             "--grid-setup=" if !matches!(v, "keys" | "keys-immreset" | "imm") => arg_error(
                 &format!("--grid-setup= は keys / keys-immreset / imm のいずれか: {a}"),
