@@ -561,7 +561,9 @@ def host_thread_main(w, name, want_open, ready_evt, results, idx, run_until, swi
     switched = False
     t0 = time.time()
     while time.time() < run_until:
+        prev_iter = time.time()
         w.pump(0.01)
+        seen_t = time.time()
         if win.pending is not None:
             want, win.pending = win.pending, None
             # 窓がまだ前面のときだけ送る(前面を奪い返すと、記録に無いフォーカス移動になる)。set_open と同じ経路で送る。
@@ -570,7 +572,7 @@ def host_thread_main(w, name, want_open, ready_evt, results, idx, run_until, swi
             if handled:
                 win.focus()
                 w.send_vk(0xF2 if want else 0x19)
-            emit({"ev": "flipreq", "t": time.time(), "tid": win.tid, "handled": handled, "fg": fgw, "hwnd": win.hwnd, "recv_t": win.recv_t})
+            emit({"ev": "flipreq", "t": time.time(), "tid": win.tid, "handled": handled, "fg": fgw, "hwnd": win.hwnd, "recv_t": win.recv_t, "prev_iter": prev_iter, "seen_t": seen_t})
         if switch_after and not switched and time.time() - t0 >= switch_after:
             switched = True
             # TIP の無いレイアウトへ切り替える(セッション全体に効く)。active が 0 になるのを待つ。
