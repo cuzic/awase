@@ -511,12 +511,75 @@ pub struct DiagnosticsConfig {
     /// `false`にすることでビルド無しで無効化できる（自己修復以前の診断ログ出力自体は
     /// この設定に関係なく継続する）。
     pub hook_self_heal: bool,
+    /// タスクバーの入力インジケーターの右クリックメニューを、利用者が開いたときだけ読んで journal に残す
+    /// （ADR-264 段階 1。**belief には入れず、IME へは何も書かない**観測）。
+    ///
+    /// 既定は**無効**（オプトイン）。有効にすると、カーソルがタスクバーの上にあるときにメニューが開くと、
+    /// UI Automation でメニュー項目（`AutomationId`・選択の有無）を 1 回読む。他のアプリのメニューの内容は
+    /// 記録しない（同定に失敗したときは件数と所要だけ）。**反映は awase の再起動後**（フックと読み取りの
+    /// スレッドは起動時に 1 度だけ作る）。
+    pub indicator_menu_shadow: bool,
 }
 
 impl Default for DiagnosticsConfig {
     fn default() -> Self {
         Self {
             hook_self_heal: true,
+            indicator_menu_shadow: false,
+        }
+    }
+}
+
+/// 窓切替直後・長い無操作のあとの最初の打鍵から日本語/英数を判定する機能の動作（ADR-263）。
+///
+/// 上級者向けで、`awase-settings` GUI には当面出さない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoDetectMode {
+    /// 何もしない
+    Off,
+    /// 打鍵は今までどおり流し、判定器を影として走らせて結果をログ（journal）に残すだけ（挙動を変えない）
+    #[default]
+    Observe,
+}
+
+/// 窓切替直後・長い無操作のあとの最初の打鍵から日本語/英数を判定する機能の設定（ADR-263）。
+///
+/// PR 2a の時点では `observe`（影の判定とログだけ）しかない。打鍵の保持・IME への書き込みは後続の PR
+/// （`ime_on`）で足す。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AutoDetectConfig {
+    pub mode: AutoDetectMode,
+    /// 空なら観測の無い窓に限らずすべての窓で影の判定を行う。指定した場合はそのプロセス名の窓だけ（将来の `ime_on` 用。`observe` では無視）。
+    pub include_apps: Vec<String>,
+    /// 対象外にするプロセス名（将来の `ime_on` 用。`observe` では無視）。
+    pub exclude_apps: Vec<String>,
+    /// 判定に使う打鍵（Down）の最大数
+    pub max_keys: u32,
+    /// エピソードの最大の長さ（ミリ秒）
+    pub max_ms: u32,
+    /// この長さ以上の無操作のあとの最初の打鍵でエピソードを始める（ミリ秒）。窓切替でも始まる
+    pub idle_ms: u32,
+    /// 日本語と確定する対数尤度比（nats）
+    pub ja_threshold: f64,
+    /// 日本語でないとする対数尤度比の大きさ（nats）
+    pub en_threshold: f64,
+}
+
+impl Default for AutoDetectConfig {
+    /// 閾値は人工データのオフライン評価による（`lang_detect::DetectParams::default` の doc 参照）。
+    /// `idle_ms` は影の観測で再校正するため、短め（3 秒）にして多めに記録する。
+    fn default() -> Self {
+        Self {
+            mode: AutoDetectMode::default(),
+            include_apps: Vec::new(),
+            exclude_apps: Vec::new(),
+            max_keys: 7,
+            max_ms: 2500,
+            idle_ms: 3000,
+            ja_threshold: 4.0,
+            en_threshold: 8.0,
         }
     }
 }
@@ -832,6 +895,9 @@ pub struct AppConfig {
     /// 診断・自己修復系のキルスイッチ（issue #165）。
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
+    /// 窓切替直後・長い無操作のあとの日本語/英数の判定（ADR-263）。
+    #[serde(default)]
+    pub auto_detect: AutoDetectConfig,
     #[serde(default)]
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
@@ -1096,6 +1162,8 @@ pub struct ValidatedConfig {
     pub app_overrides: AppOverrides,
     /// 診断・自己修復系のキルスイッチ（issue #165）。検証は行わない（bool のみ）。
     pub diagnostics: DiagnosticsConfig,
+    /// 窓切替直後・長い無操作のあとの日本語/英数の判定（ADR-263）。検証は行わない。
+    pub auto_detect: AutoDetectConfig,
     /// キーマップインターセプトルール
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール
@@ -1120,6 +1188,7 @@ impl From<ValidatedConfig> for AppConfig {
             keys: v.keys,
             app_overrides: v.app_overrides,
             diagnostics: v.diagnostics,
+            auto_detect: v.auto_detect,
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
             keystroke_macro: v.keystroke_macro,
@@ -1513,6 +1582,7 @@ impl AppConfig {
                 keys: self.keys,
                 app_overrides,
                 diagnostics: self.diagnostics,
+                auto_detect: self.auto_detect,
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
                 keystroke_macro: self.keystroke_macro,
@@ -2054,6 +2124,28 @@ engine_off_solo_triple = "VK_NONCONVERT"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.diagnostics.hook_self_heal);
+    }
+
+    #[test]
+    fn test_indicator_menu_shadow_defaults_to_disabled() {
+        // 既定は無効(オプトイン。ADR-264 決定 6)。[diagnostics] が無くても、あっても指定が無ければ無効。
+        let config: AppConfig = toml::from_str("[general]\n").unwrap();
+        assert!(!config.diagnostics.indicator_menu_shadow);
+        let config: AppConfig = toml::from_str("[diagnostics]\nhook_self_heal = true\n").unwrap();
+        assert!(!config.diagnostics.indicator_menu_shadow);
+        // 既存の hook_self_heal の既定は変えない
+        assert!(config.diagnostics.hook_self_heal);
+    }
+
+    #[test]
+    fn test_indicator_menu_shadow_can_be_enabled_without_touching_hook_self_heal() {
+        let config: AppConfig =
+            toml::from_str("[diagnostics]\nindicator_menu_shadow = true\n").unwrap();
+        assert!(config.diagnostics.indicator_menu_shadow);
+        assert!(
+            config.diagnostics.hook_self_heal,
+            "指定しなかった項目は既定のまま"
+        );
     }
 
     #[test]
@@ -3226,5 +3318,31 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
             "{:?}",
             bundled.load_warnings()
         );
+    }
+    #[test]
+    fn test_auto_detect_defaults_to_observe_with_measured_thresholds() {
+        // [auto_detect] が無くても既定で影の判定（observe。挙動を変えない）が有効。ADR-263 PR 2a。
+        let config: AppConfig = toml::from_str("[general]\n").unwrap();
+        assert_eq!(config.auto_detect.mode, AutoDetectMode::Observe);
+        assert_eq!(config.auto_detect.max_keys, 7);
+        assert_eq!(config.auto_detect.max_ms, 2500);
+        assert!((config.auto_detect.ja_threshold - 4.0).abs() < f64::EPSILON);
+        assert!((config.auto_detect.en_threshold - 8.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_auto_detect_can_be_turned_off_and_tuned() {
+        let toml_str = r#"
+[auto_detect]
+mode = "off"
+idle_ms = 5000
+en_threshold = 6.0
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.auto_detect.mode, AutoDetectMode::Off);
+        assert_eq!(config.auto_detect.idle_ms, 5000);
+        assert!((config.auto_detect.en_threshold - 6.0).abs() < f64::EPSILON);
+        // 指定しなかった項目は既定のまま
+        assert_eq!(config.auto_detect.max_keys, 7);
     }
 }

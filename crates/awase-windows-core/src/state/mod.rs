@@ -46,6 +46,9 @@ pub mod alt_impersonation;
 pub mod generation;
 pub use generation::{ApplyGeneration, GenerationAllocator};
 pub mod app_ime_policy;
+// ADR-264 段階 1: タスクバーの入力インジケーターの右クリックメニューから現在の入力モードを読む純粋な判定
+// (IME ごとの表での完全一致・Observed/Inferred・メインスレッドへ渡す固定長の符号化)。Win32 を呼ばない(Linux でテストする)。
+pub mod indicator_menu;
 // ADR-229 W-a: await をまたぐ失効判定に使う生の `u32` 世代 2 種(`Output::ime_mode_focus_gen`・
 // `shift_conv_guard_gen`)の型。ungated(Linux で `next`/比較をテストする)。
 pub mod focus_gen;
@@ -200,6 +203,8 @@ pub mod focus_probe_plan;
 pub mod msaa_role_plan;
 // 同期分類（ウィンドウスタイル・クラス名）の判断表（純粋）。本番の呼び出し元 focus/classify.rs は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod focus_classify_plan;
+// フォーカス変更時に belief を applied へ写してよいかの可否（純粋。ADR-262 段階 A）。本番の呼び出し元 runtime/ は #[cfg(windows)]、Linux ではテストだけが使う。
+pub mod applied_mirror_plan;
 // resolve_focus_kind の前段の優先順位（純粋）。本番の呼び出し元 focus/kind_classifier.rs は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod focus_resolve_plan;
 pub mod transition;

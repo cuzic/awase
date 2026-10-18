@@ -2152,8 +2152,8 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
 ///
 /// - `.record_optimistic(` = 1（`ir_apply_drift_correction`、ImmCross 分岐）。
 /// - `.record_confirmed(` = 5（`record_ime_apply_result` 内部/`ir_post_focus_change_snapshot`
-///   〈決定1-a、TsfNative ではスキップされ非 TsfNative のみ到達〉/
-///   `kp_stage_shadow_ime_toggle`/`focus_tracking.rs` hard pre-sync/
+///   〈決定1-a、TsfNative と実測学習で降格された窓ではスキップされる。ADR-262 段階 A〉/
+///   `kp_stage_shadow_ime_toggle`/`focus_tracking.rs` hard pre-sync〈同じく学習降格の窓ではスキップ〉/
 ///   `process_deferred_keys`〈本番到達不能なデッドコード、決定5参照〉）。
 #[test]
 fn applied_state_recorders_call_sites_are_accounted_for() {
@@ -3670,6 +3670,63 @@ fn drift_diagnostic_guard_detects_an_unguarded_call() {
     assert!(!drift_diagnostic_call_is_guarded("nothing"));
 }
 
+/// ADR-262 段階 A: フォーカス変更で belief を `applied` へ写す（偽の `Confirmed` を書きうる）殻の 3 箇所は、
+/// すべて `state/applied_mirror_plan.rs::may_mirror_applied_on_focus`（TsfNative と、実測学習で降格された窓を除く）を通す。
+/// 1 箇所でも抜けると、読めない窓（一太郎等）の `applied` が偽の `Confirmed(true)` に戻り、GJI の already-matched が
+/// 後続の ON の書き込みを省く（#623）。写しの書き込み先: `presync_applied_open_on` の呼び出し 2 箇所
+/// （`focus_tracking.rs` のフォーカス時と `ir_align_placeholder_desired`）と、`ir_post_focus_change_snapshot` の `record_confirmed`。
+#[test]
+fn applied_mirror_on_focus_goes_through_the_plan_at_all_three_sites() {
+    let focus_src = read_crate_file("src/runtime/focus_tracking.rs");
+    let refresh_src = read_crate_file("src/runtime/ime_refresh.rs");
+    let focus = production_code_only(&focus_src);
+    let refresh = production_code_only(&refresh_src);
+    let plan = "applied_mirror_plan::may_mirror_applied_on_focus(";
+
+    // (1) フォーカス時の先同期
+    assert_eq!(
+        focus.matches(plan).count(),
+        1,
+        "focus_tracking.rs: 判断の呼び出しは先同期の 1 箇所"
+    );
+    let call = focus
+        .find("self.presync_applied_open_on(")
+        .expect("focus_tracking.rs: 先同期の呼び出し");
+    let at = focus[..call]
+        .rfind(plan)
+        .expect("先同期の直前に判断が必要（ADR-262 段階 A）");
+    assert!(call - at < 600, "判断は先同期の条件の中にあること");
+    assert!(
+        focus[..at].ends_with("if crate::state::"),
+        "判断を否定して使わない（条件の先頭に置く）"
+    );
+
+    // (2) 最初の成功観測での揃え
+    let align = extract_fn_body(&refresh, "fn ir_align_placeholder_desired");
+    assert!(
+        align.contains(plan),
+        "ir_align_placeholder_desired: 先同期の前に判断を通すこと（ADR-262 段階 A）"
+    );
+    assert!(
+        align.contains("if open\n            && crate::state::applied_mirror_plan"),
+        "揃えた値が「開」のときだけ、判断を通ったものが先同期を行う"
+    );
+
+    // (3) 決定 1-a の mirror
+    let snap = extract_fn_body(&refresh, "fn ir_post_focus_change_snapshot");
+    let rec = snap
+        .find(".record_confirmed(")
+        .expect("ir_post_focus_change_snapshot: mirror の record_confirmed");
+    let at = snap[..rec]
+        .rfind(plan)
+        .expect("mirror の直前に判断が必要（ADR-262 段階 A、B1）");
+    assert!(rec - at < 400, "判断は mirror の条件であること");
+    assert!(
+        snap[..at].ends_with("if crate::state::"),
+        "判断を否定して使わない（mirror の条件そのもの）"
+    );
+}
+
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。
 ///
 /// - フォーカス時の先同期（`applied` の `record_confirmed(true)` と GJI への ImeOn 通知＝long-cold の
@@ -3712,8 +3769,8 @@ fn startup_placeholder_desired_is_not_treated_as_intent() {
     );
     let body = extract_fn_body(refresh_prod, "fn ir_align_placeholder_desired");
     assert!(
-        body.contains("if open && !tsf_native"),
-        "揃えた値が「開」の非 TsfNative だけ、スキップした先同期を行う（閉なら行わない）"
+        body.contains("if open\n            && crate::state::applied_mirror_plan::may_mirror_applied_on_focus("),
+        "揃えた値が「開」で、写してよい窓（非 TsfNative かつ学習降格でない）だけ、スキップした先同期を行う（閉なら行わない）"
     );
 }
 
@@ -8526,4 +8583,79 @@ fn raw_key_event_reinject_builds_input_from_reinject_key_spec() {
         !code.contains("reinject_scan_code(") && !code.contains("KEYEVENTF_KEYUP"),
         "reinject 本体に wScan/KEYUP の直書きを戻さないこと（reinject_key_spec に集約）"
     );
+}
+
+/// ADR-264 段階 1: 入力インジケーターの右クリックメニューの影の読みは**観測だけ**で、belief・IME・打鍵に書かない。
+///
+/// - 読み取り（`observer/indicator_menu.rs`）と記録（`runtime/indicator_menu_shadow.rs`）は、belief・IME 制御・
+///   観測ストアに入れる型/関数を一切使わない（belief への直接配線は ADR-261 の段階 2 と一本化して別レビュー。ADR-264 決定 5）。
+/// - ランタイム側が `platform_state` に触れるのは、読み取り（`effective_open()`）と記録（`journal.record(`）の 2 箇所だけ。
+/// - 読み取りワーカーと WinEvent フックの起動は、`[diagnostics] indicator_menu_shadow` が真のときだけ（既定は無効のオプトイン）。
+///
+/// 複数行のメソッドチェーン（`rustfmt` が改行する）を見逃さないよう、コメント行を除いて空白を詰めてから照合する。
+#[test]
+fn indicator_menu_shadow_is_observe_only_and_opt_in() {
+    fn compact(rel: &str) -> String {
+        read_crate_file(rel)
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<String>()
+            .split_whitespace()
+            .collect()
+    }
+    let runtime = compact("src/runtime/indicator_menu_shadow.rs");
+    let observer = compact("src/observer/indicator_menu.rs");
+
+    for (name, code) in [
+        ("runtime/indicator_menu_shadow.rs", &runtime),
+        ("observer/indicator_menu.rs", &observer),
+    ] {
+        for forbidden in [
+            "ImeEvent",
+            "ObserverReported",
+            "InputModeObserved",
+            "ObservationSource",
+            "SendInput",
+            "send_input",
+            "apply_ime",
+            "set_ime_open",
+            "desired_open",
+            "actuate",
+            "KeyEffect",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "{name} は観測だけ（ADR-264 決定 5）。belief・IME・打鍵に書く `{forbidden}` を使わないこと"
+            );
+        }
+    }
+
+    // ランタイム側の platform_state への接触は、読み取りと記録の 2 つだけ。
+    assert_eq!(
+        runtime.matches("platform_state").count(),
+        2,
+        "indicator_menu_shadow.rs が platform_state に触れるのは effective_open()（読み取り）と journal.record(（記録）の 2 箇所だけ"
+    );
+    assert!(runtime.contains("platform_state.ime.effective_open()"));
+    assert!(runtime.contains(
+        "platform_state.ime.journal.record(crate::journal::JournalEntry::IndicatorMenu{record})"
+    ));
+
+    // 起動は設定が真のときだけ（ワーカー・フックとも 1 回、ガードの内側）。
+    let boot = compact("src/app/bootstrap.rs");
+    let gate = boot
+        .find("ifconfig.diagnostics.indicator_menu_shadow{")
+        .expect("bootstrap.rs は `[diagnostics] indicator_menu_shadow` が真のときだけ起動すること");
+    let worker = boot
+        .find("spawn_indicator_menu_worker()")
+        .expect("読み取りワーカーを起動すること");
+    let hook = boot
+        .find("install_menu_hook(menu_popup_event_proc)")
+        .expect("WinEvent フックを登録すること");
+    assert!(
+        gate < worker && worker < hook,
+        "ワーカーとフックの起動は設定のガードの内側（この順）"
+    );
+    assert_eq!(boot.matches("spawn_indicator_menu_worker()").count(), 1);
+    assert_eq!(boot.matches("install_menu_hook(").count(), 1);
 }

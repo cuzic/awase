@@ -7,8 +7,10 @@ mod focus_tracking;
 mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
+mod indicator_menu_shadow;
 mod key_pipeline;
 mod lang_check;
+mod lang_detect_shadow;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;
@@ -333,6 +335,10 @@ pub struct Runtime {
     focus_tracker: focus_tracker::FocusTracker,
     /// ADR-223 段階 0: 打鍵時の入力言語の記録(記録のみ、belief は変えない)
     lang_check: lang_check::LangCheck,
+    /// ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの影の判定（記録のみ、挙動を変えない）
+    lang_detect: lang_detect_shadow::LangDetectShadow,
+    /// ADR-264 段階 1: 入力インジケーターの右クリックメニューの影の読み（記録のみ、挙動を変えない。既定は無効）
+    indicator_menu: indicator_menu_shadow::IndicatorMenuShadow,
     /// Platform 層の全状態
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
@@ -1452,7 +1458,8 @@ impl Runtime {
         // 到達すれば、直前の `poll_and_classify_ime` の新鮮な観測を経由せず
         // `effective_open()`（belief、explicit-intent 分岐が優先される）を
         // そのまま書く点に注意。将来 sync key gate を復活させる際は
-        // `focus_tracking.rs:409` と同型のプロファイル分岐を検討すること。
+        // `focus_tracking.rs:409` と同型のプロファイル分岐（`state::applied_mirror_plan::may_mirror_applied_on_focus`
+        // が見る TsfNative と実測学習による降格）を検討すること。
         let observed_ime_on = self.platform_state.ime.effective_open();
         self.platform_state
             .ime
@@ -1507,6 +1514,8 @@ impl Runtime {
                 sync_off_keys,
             ),
             lang_check: lang_check::LangCheck::default(),
+            lang_detect: lang_detect_shadow::LangDetectShadow::disabled(),
+            indicator_menu: indicator_menu_shadow::IndicatorMenuShadow::disabled(),
             platform_state,
             all_keymaps,
             post_bypass_rules,

@@ -40,6 +40,7 @@ examine_globs = [
     "crates/awase-windows-core/src/state/msaa_role_plan.rs",
     "crates/awase-windows-core/src/state/focus_classify_plan.rs",
     "crates/awase-windows-core/src/state/focus_resolve_plan.rs",
+    "crates/awase-windows-core/src/state/applied_mirror_plan.rs",
     "crates/awase-windows-core/src/state/relay_plan.rs",
     "crates/awase-windows-core/src/state/raw_recovery_plan.rs",
     "crates/awase-windows-core/src/state/deferred_gate_plan.rs",
@@ -48,6 +49,7 @@ examine_globs = [
     "crates/awase-windows-core/src/state/focus_gen.rs",
     "crates/awase-windows-core/src/state/half_width_alnum.rs",
     "crates/awase-windows-core/src/state/foreign_modifier.rs",
+    "crates/awase-windows-core/src/state/indicator_menu.rs",
     "crates/awase-windows-core/src/focus/class_names.rs",
     "crates/awase-windows-core/src/focus/kinds.rs",
 ]

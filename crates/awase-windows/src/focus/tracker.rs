@@ -30,6 +30,10 @@ pub(crate) struct FocusTracker {
     injection_mode_store: InjectionModeStore,
     hwnd_ime_cache: HwndImeCache,
     pub(crate) seen_threads: crate::focus::thread_scope::SeenThreads,
+    /// 現在の `app_profile` が実測学習（`ImmCapability::Unavailable`）で静的分類の `Standard` から
+    /// 降格されたものか（ADR-262 段階 A）。静的リスト由来の `Imm32Unavailable`（Chrome/Edge/UWP 等）は
+    /// 含まない。`update_with_process_name` が毎回再計算する。
+    demoted_by_learning: bool,
 }
 
 impl std::fmt::Debug for FocusTracker {
@@ -54,6 +58,7 @@ impl FocusTracker {
             injection_mode_store,
             hwnd_ime_cache: HwndImeCache::new(),
             seen_threads: crate::focus::thread_scope::SeenThreads::default(),
+            demoted_by_learning: false,
         }
     }
 
@@ -61,6 +66,11 @@ impl FocusTracker {
 
     pub(crate) const fn is_focused(&self) -> bool {
         self.current.is_focused()
+    }
+
+    /// 実測学習で `Standard` から降格された窓か（窓内の IMM が読めないと学習された窓。ADR-262 段階 A）。
+    pub(crate) const fn is_demoted_by_learning(&self) -> bool {
+        self.demoted_by_learning
     }
 
     pub(crate) const fn pid(&self) -> u32 {
@@ -158,6 +168,7 @@ impl FocusTracker {
             .imm_learning
             .get(&self.current.process_name, &self.current.class_name);
         let overridden = Self::apply_learned_imm_capability(self.current.app_profile, learned);
+        self.demoted_by_learning = overridden != self.current.app_profile;
         if overridden != self.current.app_profile {
             let same_window = prev_pid == pid && prev_class_name_matches;
             if Self::should_log_demotion(same_window, prev_profile, overridden) {
@@ -368,6 +379,43 @@ mod tests {
             AppImeProfile::Imm32Unavailable,
             "実測で IMM 不可と学習済みの Standard クラスは降格する"
         );
+    }
+
+    #[test]
+    fn learned_demotion_is_reported_only_when_the_profile_actually_changes() {
+        // `demoted_by_learning = overridden != static`（ADR-262 段階 A）。静的リスト由来の
+        // `Imm32Unavailable`/`TsfNative`/`InputRelay` は学習が `Unavailable` でも変わらないので降格にならない。
+        for (static_profile, learned, demoted) in [
+            (
+                AppImeProfile::Standard,
+                Some(ImmCapability::Unavailable),
+                true,
+            ),
+            (AppImeProfile::Standard, Some(ImmCapability::Works), false),
+            (AppImeProfile::Standard, None, false),
+            (
+                AppImeProfile::Imm32Unavailable,
+                Some(ImmCapability::Unavailable),
+                false,
+            ),
+            (
+                AppImeProfile::TsfNative,
+                Some(ImmCapability::Unavailable),
+                false,
+            ),
+            (
+                AppImeProfile::InputRelay,
+                Some(ImmCapability::Unavailable),
+                false,
+            ),
+        ] {
+            let overridden = FocusTracker::apply_learned_imm_capability(static_profile, learned);
+            assert_eq!(
+                overridden != static_profile,
+                demoted,
+                "{static_profile:?} × {learned:?}"
+            );
+        }
     }
 
     #[test]

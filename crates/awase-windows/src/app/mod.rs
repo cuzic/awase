@@ -31,7 +31,8 @@ use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
     WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED,
-    WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG,
+    WM_INDICATOR_MENU_READ, WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
+    WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -467,6 +468,33 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
     }
 }
 
+/// ADR-263 PR 2a: `[auto_detect]` の影の判定を起動する（`mode = off` や n-gram 表が読めないときは何もしない）。
+///
+/// 仮名 n-gram の表は `Engine` が持つもの（`init_ngram_validated`）とは別に、生の表を読むためにもう一度ロードする
+/// （`NgramModel::frequency_score` は未知の組を最頻と同点で返すので確率に使えない。ADR-263 D3）。
+fn init_lang_detect_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
+    use awase::config::AutoDetectMode;
+    let cfg = &config.auto_detect;
+    let ngram = if cfg.mode == AutoDetectMode::Off {
+        None
+    } else if let Some(ref path) = config.general.ngram_file {
+        let path = resolve_relative(path);
+        match NgramModel::from_file(&path, 0, 0, 0) {
+            Ok(model) => Some(model),
+            Err(e) => {
+                diag.warn(format!(
+                    "auto_detect: n-gramモデル解析失敗（影の判定は無効）: {e}"
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let cfg = cfg.clone();
+    let _ = with_app(|app| app.init_lang_detect(&cfg, ngram));
+}
+
 /// `WM_INPUTLANGCHANGE` 時にキーボードレイアウトを検証する（message_handlers から呼ばれる）
 pub(crate) fn check_keyboard_layout_on_change() {
     let (is_japanese, lang_id) = ime::keyboard_layout_info();
@@ -564,6 +592,13 @@ pub(crate) fn dispatch_engine_message(
                 message_handlers::handle_wm_focus_kind_update(app, wparam, lparam);
             });
         }
+        // ADR-264 段階 1: 入力インジケーターの右クリックメニューの読み取りワーカーの結果（記録のみ。挙動を変えない）。
+        WM_INDICATOR_MENU_READ => {
+            let (wparam, lparam) = (wparam.0, lparam.0);
+            with_app_or_repost_with(WM_INDICATOR_MENU_READ, wparam, lparam, |app| {
+                app.indicator_menu_on_result(wparam, lparam);
+            });
+        }
         WM_HOTKEY if wparam.0 == HOTKEY_ID_TOGGLE as usize => {
             let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
         }
@@ -625,6 +660,8 @@ pub(crate) fn dispatch_engine_message(
 fn handle_hook_key_event(mut event: awase::types::RawKeyEvent) {
     // ADR-223: 取り込み口で、フォーカス窓のスレッドの入力言語を読み、記録して `event` に載せる(再入時は読まない=不明)。
     let _ = with_app(|app| app.lang_check_on_keydown(&mut event));
+    // ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの影の判定（記録のみ。打鍵は変えない）。
+    let _ = with_app(|app| app.lang_detect_on_key(&event));
     if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
         let mods = event.modifier_snapshot;
         if let Some(is_on) = crate::panic_detect::get_panic_trigger_direction(
@@ -792,6 +829,7 @@ pub(crate) fn reload_config() {
     diag.warn_config(&load_notes, config_warnings);
 
     init_ngram_validated(&config, &mut diag);
+    init_lang_detect_validated(&config, &mut diag);
 
     let engine_on = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut diag);
     let engine_off = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut diag);
