@@ -1739,3 +1739,15 @@ pub unsafe fn set_ime_mode_for_target(
 // 効くと確認済みの値に固定した上で再検証して無反応と確定したため撤去した
 // （BUG-61 追補）。Win32 にこの入力方式を外部から切り替える公式手段は
 // 存在しないと確定している。
+
+/// ADR-263 PR 2b: 日本語入力と判定できたとき、ひらがなキー（`VK_DBE_HIRAGANA`、「IME ON かつ ひらがな」）を 1 回送る。
+///
+/// **呼び出し元が、Alt/Win が押されていないこと**（`hook::ime_mode_key_injection_blocked_by_modifier`）を確かめてから呼ぶこと
+/// （Alt 中の合成かなキーは JIS かな入力への切替に化ける。`kp_restore_kana_from_half_width` と同じ判定）。
+/// Ctrl/Shift は `send_ime_mode_key` が一時的に解放する。メインスレッドから呼ぶこと。
+#[must_use]
+pub fn send_hiragana_key() -> bool {
+    // SAFETY: `send_ime_mode_key` は Win32 SendInput を呼ぶだけで、メインスレッドからの呼び出しが前提。
+    // 本関数もメッセージループのスレッド（`with_app` の中）からだけ呼ばれる。
+    unsafe { send_ime_mode_key(crate::vk::VK_DBE_HIRAGANA) }
+}

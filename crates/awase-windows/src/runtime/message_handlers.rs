@@ -531,6 +531,11 @@ pub(crate) unsafe fn handle_wm_timer(
                 crate::INPUT_DEFER.replay_later(held);
             }
         }
+        Some(id) if id == crate::TIMER_LANG_HOLD => {
+            // 一発タイマー（ADR-263 PR 2b）。冒頭で自ら kill する。
+            app.platform.timer.kill(crate::TIMER_LANG_HOLD);
+            app.lang_detect_on_timer();
+        }
         Some(id) if id == crate::TIMER_IME_OFF_RESCUE => {
             if let Some(pending_event) = app.take_ime_off_rescue_pending() {
                 tracing::info!(
