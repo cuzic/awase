@@ -158,7 +158,7 @@ pub(crate) fn deliver_key_event(
     // (drain の途中で保持が始まっても、同じバッチの後続が追い越さない)。保持の外で既に OS に届いた Down の Up は
     // 足さず通す(`resume_hold_on_key` が判断する)。順序は「保持の判定 → `[[keymap]]` のラッチ」。ime-off-rescue の
     // 再生は保持の外で先に処理する(chronological に古く、origin の `skip_rescue_defer` を保つため。M-4')。
-    if !matches!(origin, KeyOrigin::ImeOffRescueReplay) && app.resume_hold_on_key(&event) {
+    if app.resume_hold_on_delivery(&event, origin) {
         return KeyDelivery::Consumed;
     }
 

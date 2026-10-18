@@ -66,6 +66,13 @@ impl Drop for ResumeDoneToken {
     }
 }
 
+/// 札が残っていれば、理由つきで通知して手放す(復元タスクの早期 return などで使う。複雑度を増やさないための 1 行ヘルパー)。
+pub(crate) fn notify_done(slot: &mut Option<ResumeDoneToken>, reason: ReleaseReason) {
+    if let Some(token) = slot.take() {
+        token.notify(reason);
+    }
+}
+
 /// 打鍵の物理キーとしての同一性(Down と Up で同じ値になること。`vk` では判定しない: `VK_DBE_*` は Down/Up で vk が変わる)。
 /// scan が主。左右の Alt/Ctrl は raw の scan が同じで拡張ビットだけが違うが、`RawKeyEvent` には拡張ビットが無いので、
 /// vk が左右を区別するキーだけ vk を畳み込む。
@@ -110,6 +117,19 @@ impl Runtime {
             event.vk_code.0
         );
         true
+    }
+
+    /// `deliver_key_event` の先頭用: origin が ime-off-rescue の再生でなければ、保持中の打鍵を保持に足す。
+    /// ime-off-rescue の再生は保持の外で先に処理する(時刻が古く、origin の `skip_rescue_defer` を保つため。Opus r3 M-4')。
+    pub(crate) fn resume_hold_on_delivery(
+        &mut self,
+        event: &RawKeyEvent,
+        origin: super::message_handlers::KeyOrigin,
+    ) -> bool {
+        !matches!(
+            origin,
+            super::message_handlers::KeyOrigin::ImeOffRescueReplay
+        ) && self.resume_hold_on_key(event)
     }
 
     /// 保持中なら打鍵を保持に足す。`true` = 保持に足した(呼び出し側は `Consumed`)。保持していなければ `false`。

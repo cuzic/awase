@@ -6,6 +6,7 @@
 //! フックコールバック本体から `Runtime::process_key_event` を呼ぶことで
 //! 同じ動作をより読みやすい形で表現する。
 
+use super::resume_hold::notify_done;
 use crate::hook;
 use crate::hook::CallbackResult;
 use crate::key_effect_io::{KeymapCacheShellExt as _, RuntimeTableCacheShellExt as _};
@@ -2632,6 +2633,21 @@ impl Runtime {
         }
     }
 
+    /// 復元タスクが持つ R1 の ticket と、R2(保持)の完了の札を取り出す。Resume の段が保持を始めていれば、その段が採った
+    /// ticket と札を渡す。無ければ(通常のトグル OFF・保持しない Resume)自分で採り、札は無い。
+    fn take_resume_r1(
+        &mut self,
+        ownership: ExitOwnership,
+    ) -> (
+        Option<crate::state::probe_admission::ImmLikeTicket>,
+        Option<super::resume_hold::ResumeDoneToken>,
+    ) {
+        match self.pending_resume_r1.take() {
+            Some((ticket, token)) => (Some(ticket), Some(token)),
+            None => (self.resume_observation_ticket(ownership), None),
+        }
+    }
+
     /// ADR-245 追補 2 R1 を予約できるなら、読みの宛先の ticket を返す(Resume の判断の時点で、同期に採る)。
     ///
     /// 前提: MS-IME 本体の戻り待ちの復元(`FromResume`)で、FocusProbe の ImmCrossProbe と同じ条件
@@ -2837,10 +2853,7 @@ impl Runtime {
             // ADR-245 追補 2 R1: 書き込みが最初に `Written` を返した直後に A の開閉を読み直して記録する。
             // R2(保持)の札を持っているなら、Resume の段が採った ticket と一緒に受け取る。無ければ(通常のトグル OFF・
             // 保持しない Resume)従来どおり自分で採る。
-            let (mut r1_ticket, mut done_token) = match self.pending_resume_r1.take() {
-                Some((ticket, token)) => (Some(ticket), Some(token)),
-                None => (self.resume_observation_ticket(ownership), None),
-            };
+            let (mut r1_ticket, mut done_token) = self.take_resume_r1(ownership);
 
             win32_async::spawn_local(async move {
                 // MS-IME の誤切替は shift up の後いつ来るか不定（実測: 478ms 後の
@@ -2851,9 +2864,7 @@ impl Runtime {
                 const MAX_TRIES: u32 = 4;
                 let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
                     tracing::debug!("[shift-conv-guard] capture 失敗（フォーカス無し） → 復元中止");
-                    if let Some(token) = done_token.take() {
-                        token.notify(ReleaseReason::CaptureFailed);
-                    }
+                    notify_done(&mut done_token, ReleaseReason::CaptureFailed);
                     return;
                 };
                 for attempt in 0..MAX_TRIES {
@@ -2891,9 +2902,7 @@ impl Runtime {
                             "[shift-conv-guard] 復元リトライ #{attempt}: 新しい hold が \
                              開始された (gen 不一致) ため中断"
                         );
-                        if let Some(token) = done_token.take() {
-                            token.notify(ReleaseReason::NotOwner);
-                        }
+                        notify_done(&mut done_token, ReleaseReason::NotOwner);
                         return;
                     }
                     let outcome =
@@ -2907,59 +2916,16 @@ impl Runtime {
                     match outcome {
                         crate::ime::ActuationOutcome::Written => {
                             if let Some(ticket) = r1_ticket.take() {
-                                // ADR-245 追補 2 R1: floor を立て(これ以前に始まった ImmCrossProbe の読みは棄却される)、
-                                // 160ms のスリープの前に開閉を読み直す。R1 自身の記録は floor を通さない。
-                                let floor_at = crate::state::TickMs(hook::current_tick_ms());
-                                let _ = crate::with_app(|runtime| {
-                                    runtime
-                                        .platform
-                                        .output
-                                        .resume_restore_floor
-                                        .set(Some(floor_at));
-                                });
-                                let read_started = crate::state::TickMs(hook::current_tick_ms());
-                                let snap = crate::ime::read_ime_state_full_async().await;
-                                // 通知の理由。記録できたときだけ `Observed`、with_app の再入などで記録に届かなければ `Rejected`。
-                                let mut reason = ReleaseReason::Rejected;
-                                let _ = crate::with_app(|app| {
-                                    if let Some(open) = snap.ime_on {
-                                        let recorded =
-                                            crate::probe_rejection_stats::admit_epoch_in_app(
-                                                app,
-                                                ticket,
-                                                "[ImmCrossProbe/resume] epoch rejected (focus changed since restore)",
-                                                |app, accepted| {
-                                                    app.record_imm_cross_probe_observation(
-                                                        &snap,
-                                                        open,
-                                                        read_started,
-                                                        accepted,
-                                                        true,
-                                                    );
-                                                },
-                                            );
-                                        if recorded.is_some() {
-                                            reason = ReleaseReason::Observed;
-                                        }
-                                    } else {
-                                        reason = ReleaseReason::ReadNone;
-                                        tracing::info!(
-                                            "[ImmCrossProbe/resume] ime_on=None (読めず、記録なし)"
-                                        );
-                                    }
-                                });
-                                // 記録 → 札の通知の順(通知を記録より先に走らせない。ADR-245 追補 2 の M-3')。
-                                if let Some(token) = done_token.take() {
-                                    token.notify(reason);
-                                }
+                                // ADR-245 追補 2 R1: 160ms のスリープの前に開閉を読み直して記録する。記録 → 札の通知の順
+                                // (通知を記録より先に走らせない。M-3')。
+                                let reason = observe_after_restore_write(ticket).await;
+                                notify_done(&mut done_token, reason);
                             }
                         }
                         crate::ime::ActuationOutcome::Failed => {
                             tracing::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
                             // R2 の札は 160ms のスリープをまたいで持たない(R1 は後の試行の最初の Written で行う)。
-                            if let Some(token) = done_token.take() {
-                                token.notify(ReleaseReason::FirstWriteFailed);
-                            }
+                            notify_done(&mut done_token, ReleaseReason::FirstWriteFailed);
                         }
                         crate::ime::ActuationOutcome::Aborted(reason) => {
                             // GenStale はこの直前の still_owner チェックとほぼ同じ条件
@@ -2971,9 +2937,7 @@ impl Runtime {
                             tracing::warn!(
                                 "[shift-conv-guard] conv 復元 write #{attempt}: Aborted({reason:?})"
                             );
-                            if let Some(token) = done_token.take() {
-                                token.notify(ReleaseReason::FirstWriteFailed);
-                            }
+                            notify_done(&mut done_token, ReleaseReason::FirstWriteFailed);
                         }
                     }
                     win32_async::sleep_ms(RETRY_INTERVAL_MS).await;
@@ -3188,6 +3152,47 @@ const fn streak_side(streak: KanaLockStreak) -> Option<bool> {
 struct FocusProbeGraceFlags {
     gji_grace_active: bool,
     gji_idle_ms: u64,
+}
+
+/// ADR-245 追補 2 R1: 復元の書き込みが最初に `Written` を返した直後に、A の開閉を読み直して記録する。
+///
+/// floor(これ以前に始まった ImmCrossProbe の読みを棄却する下限)を立ててから読み、FocusProbe の ImmCrossProbe と同じ経路
+/// (`record_imm_cross_probe_observation`、ImmCrossProbe/High)で記録する。R1 自身の記録は floor を通さない。
+/// 戻り値は完了の札の通知の理由: 記録できたときだけ `Observed`、`ime_on` が読めなければ `ReadNone`、admission の棄却や
+/// `with_app` の再入で記録に届かなければ `Rejected`。
+async fn observe_after_restore_write(
+    ticket: crate::state::probe_admission::ImmLikeTicket,
+) -> ReleaseReason {
+    let floor_at = crate::state::TickMs(hook::current_tick_ms());
+    let _ = crate::with_app(|runtime| {
+        runtime
+            .platform
+            .output
+            .resume_restore_floor
+            .set(Some(floor_at));
+    });
+    let read_started = crate::state::TickMs(hook::current_tick_ms());
+    let snap = crate::ime::read_ime_state_full_async().await;
+    let mut reason = ReleaseReason::Rejected;
+    let _ = crate::with_app(|app| {
+        let Some(open) = snap.ime_on else {
+            reason = ReleaseReason::ReadNone;
+            tracing::info!("[ImmCrossProbe/resume] ime_on=None (読めず、記録なし)");
+            return;
+        };
+        let recorded = crate::probe_rejection_stats::admit_epoch_in_app(
+            app,
+            ticket,
+            "[ImmCrossProbe/resume] epoch rejected (focus changed since restore)",
+            |app, accepted| {
+                app.record_imm_cross_probe_observation(&snap, open, read_started, accepted, true);
+            },
+        );
+        if recorded.is_some() {
+            reason = ReleaseReason::Observed;
+        }
+    });
+    reason
 }
 
 impl FocusProbeGraceFlags {

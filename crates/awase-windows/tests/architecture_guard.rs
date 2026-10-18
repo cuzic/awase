@@ -9055,12 +9055,12 @@ fn resume_hold_r2_wiring_adr245_add2() {
         .map(|i| deliver_at + i)
         .expect("keymap_latch の判定");
     let hold_in_deliver = mh[deliver_at..latch_at]
-        .find("app.resume_hold_on_key(&event)")
+        .find("app.resume_hold_on_delivery(&event,origin)")
         .expect("deliver_key_event の先頭に保持の判定がある");
     assert!(hold_in_deliver > 0);
     assert!(
-        mh[deliver_at..latch_at].contains("KeyOrigin::ImeOffRescueReplay"),
-        "ime-off-rescue の再生は保持の対象外(origin の skip_rescue_defer を保つ。M-4')"
+        code("src/runtime/resume_hold.rs").contains("KeyOrigin::ImeOffRescueReplay"),
+        "ime-off-rescue の再生は保持の対象外(origin の skip_rescue_defer を保つ。M-4')。判定は resume_hold_on_delivery"
     );
     assert!(
         mh.contains("TIMER_RESUME_HOLD=>")
@@ -9090,7 +9090,9 @@ fn resume_hold_r2_wiring_adr245_add2() {
     );
     // 札の消費は sleep の前。
     let first_fail = kp
-        .find("token.notify(ReleaseReason::FirstWriteFailed)")
+        .find(&squash(
+            "notify_done(&mut done_token, ReleaseReason::FirstWriteFailed)",
+        ))
         .expect("1 回目の失敗の分岐で札を消費する");
     let sleep_at = kp
         .find("win32_async::sleep_ms(RETRY_INTERVAL_MS).await")
