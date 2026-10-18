@@ -147,7 +147,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 ## 未確認(段階 1 の前に実測する)
 
 - AppContainer の窓からの SID の取得と通知イベントの名前空間(上記)、日本語 UI での TIP の表示名、`SysProcs` コンポーネント GUID の共有、同じプロセスでの 2 つの `mozc_tip64.dll`、サービス表示名の重複時の SCM の挙動。
-- 新プロセスの最初のキーが落ちる件の、公式 Mozc との比較。
+- ~~新プロセスの最初のキーが落ちる件の、公式 Mozc との比較。~~ **解決(2026-10-18、別セッションの実験、mozc-readable の Actions run `39104699356`)**: 原因は Mozc でも mozc-readable の publisher でもなく、**検証スクリプトが並行して起動したコンソールの窓が前面を奪っていたこと**だった(単独で起動した新しいプロセスの最初のキーは、公式の無改造 Mozc も mozc-readable も成功。コンソール併走で失敗した回は、すべて前面が Windows Terminal)。私が確認したのは単独起動の部分のログだけで、併走の成功率(公式 9/12、mozc-readable 11/12)は別セッションの報告による。mozc-readable の CI は `-NoNewWindow` で直している。なお、この実機の測定(段階 2)でも、ウォームアップ(新しい窓の最初の ON)は 1 回目で成功した(Chrome は、クリックでフォーカスを外していた間を除く)。
 - `tsf_*` と `effective_*` の食い違い(パスワード欄など)。
 - `GITHUB_TOKEN`(ジョブ単位に絞った権限)だけで Release の公開・Issue・series の PR・自己有効化が足りるか(足りなければ fine-grained PAT)。
 - GitHub の仕様として書いた前提(`schedule` の 60 日無効化、`concurrency` の待ちは 1 本、承認期限 30 日、`workflow_dispatch` は既定ブランチのファイルが前提)の実測。
