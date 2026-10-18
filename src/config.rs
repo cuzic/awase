@@ -47,7 +47,7 @@ pub enum KeystrokeSequencePolicy {
 
 /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルをどの IME で許可するか。
 ///
-/// 既定値 `MsImeOnly` は従来動作そのもの。設定GUIからは `Off`/`All` の
+/// 既定値は `All`（MS-IME / GJI の両方で有効）。設定GUIからは `Off`/`All` の
 /// 二択チェックボックスとして操作する（`MsImeOnly` はGUIからは選べない、
 /// config.toml に残っている場合のみ有効な中間値）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -55,10 +55,10 @@ pub enum KeystrokeSequencePolicy {
 pub enum HalfWidthAlnumTogglePolicy {
     /// MS-IME / GJI ともに機能全体を止める。
     Off,
-    /// 従来どおり MS-IME のみ許可する。
-    #[default]
+    /// MS-IME のみ許可する（旧既定。config.toml に明示した場合のみ有効）。
     MsImeOnly,
     /// MS-IME と Google 日本語入力の両方で許可する。
+    #[default]
     All,
 }
 
@@ -297,7 +297,7 @@ pub struct GeneralConfig {
     pub muhenkan_solo_tap_dedicated_fn_key: Option<String>,
     /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルの許可範囲。
     ///
-    /// 既定 `ms_ime_only` は従来動作を維持する。設定GUI（上級者向け設定）
+    /// 既定は `all`（MS-IME / GJI の両方で有効）。設定GUI（上級者向け設定）
     /// からは `off`/`all` の二択チェックボックスとして操作できる（実機ソーク
     /// 完了、2026-08-27）——`ms_ime_only` はGUIからは選べない中間値で、
     /// 既存ユーザーの config.toml に残っている場合のみ意味を持つ
@@ -426,7 +426,7 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_ignore_composing_guard: false,
             muhenkan_solo_tap_always_suppress: true,
             muhenkan_solo_tap_dedicated_fn_key: None,
-            half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::MsImeOnly,
+            half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::All,
             keystroke_sequence: KeystrokeSequencePolicy::On,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,
