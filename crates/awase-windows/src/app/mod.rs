@@ -503,9 +503,9 @@ fn init_lang_detect_validated(config: &ValidatedConfig, diag: &mut StartupDiagno
         .iter()
         .any(|rule| rule.ime.as_deref() == Some("off"));
     let hold_config_ok = !space_thumb && !late_keymap;
-    if cfg.mode == AutoDetectMode::ImeOn && !hold_config_ok {
+    if matches!(cfg.mode, AutoDetectMode::ImeOn | AutoDetectMode::ImeOnEisu) && !hold_config_ok {
         diag.warn(
-            "auto_detect: mode = \"ime_on\" は、Space を親指キーにした構成と ADR-255 の遅いルール \
+            "auto_detect: mode = \"ime_on\"/\"ime_on_eisu\" は、Space を親指キーにした構成と ADR-255 の遅いルール \
              ([[keymaps]] の ime = \"off\") では打鍵を保持しません（判定の記録だけ行います）"
                 .to_string(),
         );

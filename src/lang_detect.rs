@@ -647,6 +647,7 @@ impl EpisodeTracker {
 
 /// [`HoldController::on_key`]・[`HoldController::on_timer`] の結果。呼び出し側（殻）が順に実行する。
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)] // 独立した判定フラグ（日本語/英数/保持中/保持開始）を 1:1 で表している
 pub struct HoldStep<T> {
     /// 保持せず、通常どおり流す打鍵（エピソードに属さない、または保持しないエピソードの打鍵）
     pub pass: Option<T>,
@@ -659,6 +660,9 @@ pub struct HoldStep<T> {
     /// **保持していたエピソード**で日本語と確定した（`release` を流す**前**に、IME への書き込みの対象にしてよい）。
     /// 保持しなかったエピソード（観測だけ）の判定は `outcomes` の `verdict` で見る
     pub japanese: bool,
+    /// **保持していたエピソード**で、日本語でないと確定した（`NotJapanese`。`ime_on_eisu` の半角英数への切替の対象にしてよい）。
+    /// 未決（`Undecided`）や打ち切りでは立たない
+    pub english: bool,
     /// このステップのあとも保持が続いている（期限のタイマーを動かしておく）
     pub holding: bool,
     /// このステップで保持するエピソードが始まった（期限のタイマーを起動する）
@@ -673,6 +677,7 @@ impl<T> HoldStep<T> {
             discarded: 0,
             outcomes: Vec::new(),
             japanese: false,
+            english: false,
             holding: false,
             started_holding: false,
         }
@@ -755,6 +760,7 @@ impl<T> HoldController<T> {
             }
             if let Some(now) = step.closed_now {
                 out.japanese = self.holding && matches!(now.verdict, Verdict::Japanese(_));
+                out.english = self.holding && now.verdict == Verdict::NotJapanese;
                 out.release.append(&mut self.held);
                 self.episode_live = false;
                 self.holding = false;
@@ -811,28 +817,42 @@ pub struct WriteFacts {
     pub non_text: bool,
     /// 前面窓と awase のフォーカス追跡が同じプロセスを指している（Alt+Tab 直後は追跡が遅れる）
     pub focus_in_sync: bool,
-    /// 利用者が直近に明示的に IME OFF を選んでいる（その意図を尊重して書かない）
-    pub explicit_off_intent: bool,
+    /// 利用者が直近に、これから書く向きと**逆**の明示操作をしている（その意図を尊重して書かない。
+    /// ひらがなキー〔ON〕なら明示 OFF、IME OFF キーなら明示 ON）
+    pub explicit_opposite_intent: bool,
     /// Alt/Win が押されている（Alt 中の合成かなキーは JIS かな入力への切替に化ける。BUG-008）
     pub modifier_held: bool,
 }
 
-/// ひらがなキーを送れない理由（送ってよければ `None`）。判断の順序が優先順位。純粋。
-#[must_use]
-pub const fn hiragana_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
+/// 書き込み（ひらがなキー/IME OFF キー）を送れない共通の理由。判断の順序が優先順位。純粋。
+/// `explicit_label` は逆向きの明示操作があるときの理由の名前。
+const fn write_skip_reason(f: WriteFacts, explicit_label: &'static str) -> Option<&'static str> {
     if !f.belief_open {
         Some("skipped-belief-off")
     } else if !f.unobserved_window || f.non_text {
         Some("skipped-observed-window")
     } else if !f.focus_in_sync {
         Some("skipped-focus-lag")
-    } else if f.explicit_off_intent {
-        Some("skipped-explicit-off")
+    } else if f.explicit_opposite_intent {
+        Some(explicit_label)
     } else if f.modifier_held {
         Some("skipped-modifier-held")
     } else {
         None
     }
+}
+
+/// ひらがなキー（日本語と判定したときの IME ON）を送れない理由（送ってよければ `None`）。純粋。
+#[must_use]
+pub const fn hiragana_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
+    write_skip_reason(f, "skipped-explicit-off")
+}
+
+/// 半角英数トグルへ入れない理由（`ime_on_eisu` で英数と判定したとき）（送ってよければ `None`）。純粋。
+/// `belief_open` は『awase が IME ON とみなしている』こと（OFF とみなしているなら、入る意味が無い）。
+#[must_use]
+pub const fn eisu_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
+    write_skip_reason(f, "skipped-explicit-on")
 }
 
 #[cfg(test)]
@@ -1367,6 +1387,52 @@ mod tests {
     }
 
     #[test]
+    fn ime_off_write_uses_the_same_gate_with_its_own_explicit_label() {
+        assert_eq!(eisu_write_skip_reason(all_clear()), None);
+        let opposite = WriteFacts {
+            explicit_opposite_intent: true,
+            ..all_clear()
+        };
+        assert_eq!(
+            eisu_write_skip_reason(opposite),
+            Some("skipped-explicit-on"),
+            "IME OFF の書き込みで見送る逆向きの明示操作は、明示 ON"
+        );
+        assert_eq!(
+            hiragana_write_skip_reason(opposite),
+            Some("skipped-explicit-off")
+        );
+        let modifier = WriteFacts {
+            modifier_held: true,
+            ..all_clear()
+        };
+        assert_eq!(
+            eisu_write_skip_reason(modifier),
+            Some("skipped-modifier-held")
+        );
+    }
+
+    #[test]
+    fn english_flag_is_set_only_for_a_held_not_japanese_episode() {
+        let model = tiny_model();
+        let mut cfg = tracker_cfg();
+        cfg.params = params(100.0, 5.0, 7);
+        // 保持するエピソードで NotJapanese に確定: english = true。
+        let mut c: HoldController<u32> = HoldController::new(cfg);
+        let s = c.on_key(&model, key(KeyRole::Char(pos(0, 0)), true, 10), 1, 1, true);
+        assert!(s.english && !s.japanese);
+        // 保持しないエピソード（観測だけ）では立たない。
+        let mut c: HoldController<u32> = HoldController::new(cfg);
+        let s = c.on_key(&model, key(KeyRole::Char(pos(0, 0)), true, 10), 1, 1, false);
+        assert!(!s.english);
+        // 未決（max_keys）や打ち切りでは立たない。
+        let mut c: HoldController<u32> = HoldController::new(tracker_cfg());
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        let s = c.on_key(&model, key(KeyRole::Other, true, 20), 2, 1, true);
+        assert!(!s.english && !s.japanese);
+    }
+
+    #[test]
     fn timer_after_the_window_changed_discards_the_held_keys() {
         let model = tiny_model();
         let mut c = hold_controller();
@@ -1386,7 +1452,7 @@ mod tests {
             unobserved_window: true,
             non_text: false,
             focus_in_sync: true,
-            explicit_off_intent: false,
+            explicit_opposite_intent: false,
             modifier_held: false,
         }
     }
@@ -1429,7 +1495,7 @@ mod tests {
             ),
             (
                 WriteFacts {
-                    explicit_off_intent: true,
+                    explicit_opposite_intent: true,
                     ..all_clear()
                 },
                 "skipped-explicit-off",
@@ -1449,7 +1515,7 @@ mod tests {
         let many = WriteFacts {
             belief_open: false,
             modifier_held: true,
-            explicit_off_intent: true,
+            explicit_opposite_intent: true,
             ..all_clear()
         };
         assert_eq!(hiragana_write_skip_reason(many), Some("skipped-belief-off"));

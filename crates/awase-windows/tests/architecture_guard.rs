@@ -3744,7 +3744,7 @@ fn lang_detect_hiragana_write_goes_through_the_gate_and_syncs_after() {
     let head = &src[..calls[0]];
     let tail = &src[calls[0]..];
     assert!(
-        head.contains("hiragana_write_skip_reason(self.lang_detect_write_facts())"),
+        head.contains("hiragana_write_skip_reason(self.lang_detect_write_facts(true))"),
         "ひらがなキーの送信の前に純粋な判断 `hiragana_write_skip_reason` を通すこと（ADR-263 D5）"
     );
     for need in [
@@ -3762,6 +3762,41 @@ fn lang_detect_hiragana_write_goes_through_the_gate_and_syncs_after() {
     assert!(
         tail.contains("on_ime_applied(") && tail.contains("ReopenSource::LangDetect"),
         "送った後に `on_ime_applied` と GjiFsm の Reopen（cold 同期）を行うこと"
+    );
+}
+
+/// ADR-263 `ime_on_eisu`: 英数と判定したときは、左Shift単独タップと同じ半角英数トグルの入口に入る（IME OFF は送らない）。
+/// 入る前に純粋な判断 `eisu_write_skip_reason` と `plan_entry_for_language_detect` を通す。belief（`desired_open`）は
+/// 動かさず、専用の素通し（bypass）も持たない: Engine は `input_mode = ObservedEisu` で非活性になる。
+#[test]
+fn lang_detect_english_enters_the_half_width_alnum_toggle_through_the_gate() {
+    let src_full = read_crate_file("src/runtime/lang_detect_shadow.rs");
+    let src = production_code_only(&src_full);
+    let fn_start = src
+        .find("fn lang_detect_enter_half_width_alnum")
+        .expect("lang_detect_enter_half_width_alnum が必要");
+    let body = &src[fn_start..];
+    let gate = body
+        .find("eisu_write_skip_reason(self.lang_detect_write_facts(false))")
+        .expect("入る前に純粋な判断 `eisu_write_skip_reason` を通すこと（ADR-263）");
+    let plan = body
+        .find("plan_entry_for_language_detect(")
+        .expect("入口の計画は `plan_entry_for_language_detect` を通すこと");
+    let imc = body
+        .find("kp_enter_half_width_alnum_imc(")
+        .expect("MS-IME 経路は共有の entry ヘルパーを使うこと");
+    assert!(gate < plan && plan < imc, "判断 → 計画 → 実行の順");
+    assert_eq!(
+        src.matches("kp_enter_half_width_alnum_gji(").count(),
+        1,
+        "GJI 経路の entry も共有ヘルパー経由の 1 箇所だけ"
+    );
+    assert!(
+        !src.contains("send_ime_off_key")
+            && !src.contains("bypass_scope")
+            && !src.contains("apply_lang_detect_off")
+            && !src.contains("LangDetectOff"),
+        "IME OFF の送信・専用の素通し・belief の書き換えは持たない（レビュー B1）"
     );
 }
 
