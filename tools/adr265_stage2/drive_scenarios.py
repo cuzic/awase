@@ -2,7 +2,7 @@
 
 Reuses drive_measure.py (same directory). Targets are selected by PID (never by window class).
 
-  --scenario focus : two windows (Notepad, Chrome of our own profile) hold DIFFERENT IME states. Focus is switched
+  --scenario focus : two windows (Notepad and a plain Win32 test window, ui_host.py from mozc-readable) hold DIFFERENT IME states. Focus is switched
                      between them (slowly, then quickly). awase must report the state of the window that really has the
                      focus; right after a switch a short lag is tolerated and measured.
   --scenario away  : in one window the IME is on; the input method is switched to a layout without the TIP (Win+Space,
@@ -41,13 +41,49 @@ def win_space():
     key_event(VK_LWIN, 2)
 
 
-def goto(pids):
-    """Bring the biggest window of `pids` to the foreground. Returns hwnd or None."""
+def goto(pids, attempts=5):
+    """Bring the biggest window of `pids` to the foreground and VERIFY it. Returns hwnd or None.
+
+    Windows refuses to hand the foreground to a process that does not hold it (SetForegroundWindow fails
+    silently), so retry: plain, plain, tap Alt (unlocks it), plain, minimise+restore."""
     ws = dm.windows_of(pids)
     if not ws:
         return None
-    dm.force_foreground(ws[0])
-    return ws[0]
+    h = ws[0]
+    for i in range(attempts):
+        dm.force_foreground(h)
+        time.sleep(0.25)
+        if dm.fg_info()[2] in pids:
+            return h
+        if i == 1:
+            key_event(0x12, 0)  # VK_MENU down/up: makes the next SetForegroundWindow succeed
+            key_event(0x12, 2)
+        elif i == 3:
+            u32.ShowWindow(h, 6)  # SW_MINIMIZE
+            time.sleep(0.2)
+            u32.ShowWindow(h, 9)  # SW_RESTORE
+    return None
+
+
+def focus_text(pids, tries=4):
+    """Like a person after switching windows: bring the window forward, then click into the text area until the FOCUS
+    thread has a TIP block (a thread without a block, e.g. modern Notepad's frame / XAML input site, cannot take IME
+    keys). A click can also move the focus away from the text area (it toggles between the two threads), so check
+    after every click. Returns (hwnd, clicks) or (None, clicks)."""
+    h = goto(pids)
+    if not h:
+        return None, 0
+    clicks = 0
+    for _ in range(tries + 1):
+        _, ftid, fpid, _, _ = dm.focus_info()
+        if fpid in pids and dm.read_block(ftid, fpid) is not None:
+            return h, clicks
+        if clicks >= tries:
+            break
+        dm.click_inside(h)
+        clicks += 1
+        time.sleep(0.5)
+    return None, clicks
 
 
 def drive_to(pids, vk, eo, em, emit, what, tries=4):
@@ -74,45 +110,55 @@ def snapshot():
 
 def scenario_focus(args, emit):
     np_pids = {int(x) for x in args.notepad_pids.split(",") if x}
-    ch_pids = {int(x) for x in args.chrome_pids.split(",") if x}
-    wins = {"notepad": np_pids, "chrome": ch_pids}
-    # setup: Notepad = full katakana (1,2); Chrome = IME off (0,*)  -> the two windows hold different states
-    for name, setup in (("notepad", [(0xF2, 1, 1), (0xF1, 1, 2)]), ("chrome", [(0xF2, 1, 1), (0x19, 0, None)])):
-        if not goto(wins[name]):
-            emit(event="abort", reason=f"no window for {name}")
+    second_pids = {int(x) for x in args.second_pids.split(",") if x}
+    wins = {"notepad": np_pids, "second": second_pids}
+    # setup: Notepad = full katakana (1,2); the second window = IME off (0,*)  -> the two windows hold different states
+    for name, setup in (("notepad", [(0xF2, 1, 1), (0xF1, 1, 2)]), ("second", [(0xF2, 1, 1), (0x19, 0, None)])):
+        h, clicks = focus_text(wins[name])
+        if not h:
+            emit(event="abort", reason=f"no text focus for {name}", clicks=clicks)
             return 2
         time.sleep(1.0)
         for vk, eo, em in setup:
-            if not drive_to(wins[name], vk, eo, em, emit, f"{name}:{vk:#04x}"):
+            if not drive_to(wins[name], vk, eo, em, emit, f"{name}:{vk:#04x}", tries=8):
                 return 4
-    expected = {"notepad": (1, 2), "chrome": (0, None)}
+    expected = {"notepad": (1, 2), "second": (0, None)}
     emit(event="ready", expected={k: list(v) for k, v in expected.items()})
     n = 0
+    failed = 0
     # phase 1: slow alternation (settle 1.5 s each) ; phase 2: quick alternation (0.15 s apart, then settle)
     plan = [("slow", args.rounds, SETTLE_S)] + [("quick", args.rounds, 0.15)]
     for phase, rounds, gap in plan:
         for r in range(rounds):
-            for name in ("notepad", "chrome"):
+            for name in ("notepad", "second"):
                 t_send = time.time_ns()
-                if not goto(wins[name]):
-                    emit(event="abort", reason=f"lost window {name}")
-                    return 5
+                h, clicks = focus_text(wins[name])
+                if not h:
+                    emit(event="switch_failed", phase=phase, round=r, target=name,
+                         t_switch_utc=dm.utc_iso(t_send), fg_pid=dm.fg_info()[2], clicks=clicks)
+                    failed += 1
+                    if failed > 10:
+                        emit(event="abort", reason="too many failed switches")
+                        return 5
+                    continue
                 n += 1
                 time.sleep(gap)
                 ftid, fpid, fcls, how, blk = snapshot()
                 emit(event="switch", phase=phase, seq_no=n, round=r, target=name, t_switch_utc=dm.utc_iso(t_send),
+                     clicks=clicks,
                      expected_open=expected[name][0], expected_mode=expected[name][1], focus_tid=ftid, focus_pid=fpid,
                      focus_class=fcls, focus_from=how, focus_in_target=fpid in wins[name], driver_block=blk,
                      driver_matches_expected=dm.matches(blk, *expected[name]))
         time.sleep(SETTLE_S)  # let awase's last tick land before the next phase / the end
-    emit(event="done", scenario="focus", switches=n)
+    emit(event="done", scenario="focus", switches=n, failed_switches=failed)
     return 0
 
 
 def scenario_away(args, emit):
     pids = {int(x) for x in args.notepad_pids.split(",") if x}
-    if not goto(pids):
-        emit(event="abort", reason="no window")
+    h, clicks = focus_text(pids)
+    if not h:
+        emit(event="abort", reason="no text focus", clicks=clicks)
         return 2
     time.sleep(1.0)
     if not drive_to(pids, 0xF2, 1, 1, emit, "on"):
@@ -165,7 +211,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", choices=["focus", "away"], required=True)
     ap.add_argument("--notepad-pids", required=True)
-    ap.add_argument("--chrome-pids", default="")
+    ap.add_argument("--second-pids", default="")
     ap.add_argument("--rounds", type=int, default=25)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()

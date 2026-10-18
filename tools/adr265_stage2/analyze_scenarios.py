@@ -13,6 +13,8 @@ focus scenario (two windows with different, constant IME states):
 away scenario (input method switched away from the TIP and back):
   * STALE-ADOPTION : an accepted record with open=true in [t_away + LAG_S, t_back) -- the TIP was inactive
     (active=0), so any adopted open state is a leftover.
+  * NOT-NOTICED : awase's LAST record for the process before t_back is still an accepted open=true (records are only
+    written on change, so "no record at all after the grace period" would otherwise pass vacuously).
 """
 import json
 import os
@@ -62,7 +64,7 @@ def focus(d, awase):
         print("[focus] no switch events (the scenario aborted):", [e for e in ev if e["event"] in ("abort", "setup")][-3:])
         return 0, 0
     ident = {}  # target -> (pid, tid), expected
-    for name in ("notepad", "chrome"):
+    for name in ("notepad", "second"):
         c = Counter((e["focus_pid"], e["focus_tid"]) for e in sw if e["target"] == name and e["focus_in_target"])
         ident[name] = c.most_common(1)[0][0] if c else None
     exp = {e["target"]: (e["expected_open"], e["expected_mode"]) for e in sw}
@@ -152,10 +154,20 @@ def away(d, awase):
         acc = [(t, j) for t, j in span if j["verdict"] == "accepted"]
         bad = [(t, j) for t, j in acc if j["effective_open"]]
         verdicts = Counter((j["verdict"], j.get("reason")) for _, j in span)
+        before = [(t, j) for t, j in awase if t_away <= t < t_back and j["process_id"] == pid]
+        last = before[-1][1] if before else None
+        not_noticed = last is None or (last["verdict"] == "accepted" and last["effective_open"])
+        noticed_ms = None
+        for t, j in before:
+            if j["verdict"] != "accepted":
+                noticed_ms = int((t - t_away).total_seconds() * 1000)
+                break
         acc_total += len(acc)
-        stale_total += len(bad)
+        stale_total += len(bad) + (1 if not_noticed else 0)
         print(f"  round {r}: records while the TIP was inactive (after {LAG_S}s grace): {dict(verdicts)}  "
-              f"STALE-ADOPTION(open adopted while inactive): {len(bad)}")
+              f"STALE-ADOPTION(open adopted while inactive): {len(bad)}  "
+              f"awase's last record before 'back': {None if last is None else (last['verdict'], last.get('reason'))}  "
+              f"first non-accepted record after {noticed_ms} ms  NOT-NOTICED: {not_noticed}")
         for t, j in bad[:2]:
             print(f"     STALE-ADOPTION {t:%H:%M:%S.%f} open={j['effective_open']} mode={j['effective_mode']} tid={j['thread_id']}")
     print(f"[away] STALE-ADOPTION total: {stale_total}  (accepted records in the inactive spans: {acc_total})")
@@ -168,7 +180,9 @@ def main(d):
     n1, bad1 = focus(d, awase)
     n2, bad2 = away(d, awase)
     print(f"\nTOTAL focus: accepted={n1} wrong={bad1}   away: rounds={n2} stale adoptions={bad2}")
-    print("RESULT: " + ("NO wrong adoption found" if (bad1 + bad2) == 0 and (n1 > 0 or n2 > 0) else "WRONG ADOPTION(S) or no data"))
+    for name, n, bad in (("focus", n1, bad1), ("away", n2, bad2)):
+        verdict = "NO DATA (the scenario did not run)" if n == 0 else ("WRONG ADOPTION(S): %d" % bad if bad else "no wrong adoption found")
+        print(f"RESULT {name}: {verdict}")
 
 
 main(sys.argv[1])
