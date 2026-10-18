@@ -287,6 +287,16 @@ Identification results are learned and cached per app class name (`cache.toml`) 
 
 ---
 
+## mozc-readable (optional, under development)
+
+[mozc-readable](https://github.com/cuzic/mozc-readable) is an unofficial build of [Mozc](https://github.com/google/mozc), the open-source edition of Google Japanese Input, that lets other processes read the IME's on/off state and input mode. It exists so awase can use the IME's own value instead of guessing in windows it cannot read.
+
+- **awase itself does not read this value yet** (under development; see [ADR-265](docs/adr/265-mozc-readable-integration.md), in Japanese). Installing it today does not change awase's behavior.
+- It is distributed through mozc-readable's GitHub Releases (it will also appear in awase.cc's install section once the first release is out). The installer is unsigned.
+- **For people building their own keyboards (QMK etc.)**: there is a specification of the shared memory and a minimal reader example, aimed at tying an OLED or layers to the IME state. → [Shared-memory specification](docs/mozc-readable-shared-memory.md) (in Japanese)
+
+---
+
 ## Troubleshooting
 
 **No characters are typed / strange characters appear**  
