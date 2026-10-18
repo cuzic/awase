@@ -261,7 +261,7 @@ pub enum InputModeApplyStrategy {
     /// IMM-broken アプリ（Chrome/Edge 等）向けの強制補正 (AssumedRomaji)。
     /// IMM クロスプロセス呼び出しが不可のため、観測値を捨てて仮定に切り替える。
     ImmBrokenCorrection,
-    /// パニックリセット時の強制 ObservedRomaji 設定。
+    /// パニックリセット時の強制 ObservedRomaji 設定（belief は `InputModeState::ObservedRomaji` を書く）。
     PanicReset,
     /// hwnd キャッシュからの入力モード復元（前回フォーカス時の belief を再現）。
     CacheRestore,
