@@ -143,6 +143,8 @@ declare_evidence! {
     /// フォーカス変更直後の同期プローブ（`hwndFocus` の IMC。BUG-91 参照:
     /// 真の top-level ウィンドウとは限らない）。
     FocusProbe => BeliefPool, FocusProbe, Low;
+    /// mozc-readable の共有メモリの `tsf_open`（ADR-268）。High・BeliefOnly。
+    MozcShm => BeliefPool, MozcShm, High;
 }
 
 /// 出自が型で確定している open 観測。
@@ -246,6 +248,21 @@ impl Observed<ConvOpenInference> {
     #[must_use]
     pub const fn from_conv(
         _reason: ConvSyncReason,
+        open: bool,
+        hwnd: HwndId,
+        focus_epoch: FocusEpoch,
+    ) -> Self {
+        Self::new(open, hwnd, focus_epoch)
+    }
+}
+
+impl Observed<MozcShm> {
+    /// 共有メモリの**受け入れた**読み（`ShmState`）を witness に要求する。受け入れ条件（magic・version・seq・pid・
+    /// `active=1`）を通らなかった読みからは作れない。呼び出し側は `tsf_open == effective_open` を確かめてから渡すこと
+    /// （割れているときは報告せず `applied` を降格する。ADR-268 D1）。confidence は `High` 固定（呼び出し元は選べない）。
+    #[must_use]
+    pub const fn from_shm(
+        _accepted: &super::mozc_shm::ShmState,
         open: bool,
         hwnd: HwndId,
         focus_epoch: FocusEpoch,
@@ -434,12 +451,13 @@ mod tests {
         assert_pool::<HeuristicDefault>(ObservationAuthority::BeliefOnly);
         assert_pool::<HwndCache>(ObservationAuthority::BeliefOnly);
         assert_pool::<FocusProbe>(ObservationAuthority::BeliefOnly);
+        assert_pool::<MozcShm>(ObservationAuthority::BeliefOnly);
     }
 
-    /// 9 個の evidence 型が 9 個の異なるソースを覆っていること
-    /// （`PerSourceObservations` の 9 フィールドと 1:1）。
+    /// 10 個の evidence 型が 10 個の異なるソースを覆っていること
+    /// （`PerSourceObservations` の 10 フィールドと 1:1）。
     #[test]
-    fn evidence_sources_are_nine_distinct_recordable_sources() {
+    fn evidence_sources_are_ten_distinct_recordable_sources() {
         let sources = [
             ImmGetOpenStatus::SOURCE,
             ImmCrossProbe::SOURCE,
@@ -450,8 +468,9 @@ mod tests {
             HeuristicDefault::SOURCE,
             HwndCache::SOURCE,
             FocusProbe::SOURCE,
+            MozcShm::SOURCE,
         ];
-        assert_eq!(sources.len(), 9);
+        assert_eq!(sources.len(), 10);
         for (i, a) in sources.iter().enumerate() {
             for b in &sources[i + 1..] {
                 assert_ne!(a, b, "evidence 型が同じ ObservationSource を名乗っている");
