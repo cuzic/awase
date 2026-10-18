@@ -175,3 +175,19 @@ ja の入力方式は Mozc Readable のみ。窓ごとの IME 状態は、設定
 - **削除した残骸**(利用者の確認後): `Downloads` の MSI とドライバー(第 1 回の分)、`adr265-measure-out`、`awase-adr265-measure` の worktree(第 1 回の分)。この削除の `git worktree prune` が、
   利用者のチェックアウトの古い登録 3 件(ディレクトリがすでに無かった `awase-adr190`・`awase-ctrltest`・`awase-dv`)も消した(依頼していない変更。作業ツリーのファイルには影響なし)。
 - **追加測定の残骸(未削除、利用者の確認待ち)**: `Downloads` の MSI とドライバー・`ui_host_ci.py`、`adr265-measure-out`、`awase-adr265-measure` の worktree。
+
+## 追補: flip・負荷・スレッド ID 再利用の CI 結果(2026-10-18)
+
+別セッションの PR #667(`ci/mozc-shm-e2e2` → `develop`、head `e2036bfc`、未マージ)の Actions run `39119069498`(全 12 ジョブ success)。
+**私は run のログを読んで、次の数字を確かめた**(`gh run view 39119069498 --log`、`warning::NO`・`FAIL` の行は無し)。測定の設計とドライバーのコードは読んでいない。
+
+| 場面 | 結果(ログの値) |
+| --- | --- |
+| flip(状態を切り替えた 50〜300ms 後にフォーカスを移す、150 周) | 切り替えの依頼 158 件すべて処理、状態の変化 147 回、accepted 435(うち既知のスレッド 434、測定区間の外=窓の準備中の未知スレッド 1)、mismatch 0、wrong thread 0、stale accepted 0。キー送出から状態が変わるまで約 0.12 秒(flip-probe の latency_s 0.116〜0.123) |
+| load(CPU を使い切るプロセス 8 つ + 速い切り替え 200 周) | accepted 176、mismatch 0。`read_us` p50 51 / p95 91 / p99 126 / 最大 128 µs。通常の速い切り替え(focus 300 周)は p99 88 / 最大 132 µs。差は見えない |
+| tidreuse(60 スレッド) | distinct 60、**再利用された ID 0 件**。この環境では再利用が起きなかったので、**再利用時に古いブロックが残って誤採用されるかは測れていない**(`pid` 照合と epoch/hwnd 照合が防ぐ設計だが、実証は無い) |
+| 既存の場面(threads・appcontainer・stale・focus) | mismatch 0 |
+
+これで、belief への接続の設計([adr265-belief-connection-design.md](adr265-belief-connection-design.md) §6)の (1) 状態変更直後のフォーカス移動と (4) 負荷時の `read_us` は**CI で測れた**。
+未測定のまま残るのは (2) スレッド ID の再利用(再現せず)と (3) 物理キーでの複数の窓・フォーカス直後(実機は Notepad 1 窓)。
+注意: 真値の時刻の精度は約 0.1 秒、状態の許容は 0.3 秒(別セッションの記述。私は未確認)。flip で許容 0.3 秒より短い遅れの誤りは見えない。
