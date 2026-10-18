@@ -102,26 +102,26 @@ def allowed_states(timeline, t):
     return allowed
 
 
-def allowed_focus(focus, t):
-    """時刻 t の記録が読んでよいスレッドの集合: 直近のフォーカス先と、GRACE_S 秒以内に切り替えた直前のフォーカス先。"""
-    cur = None
-    prev = None
-    cur_t = None
-    for tf, tid in focus:
-        if tf <= t:
-            if tid != cur:
-                prev, cur, cur_t = cur, tid, tf
-        else:
-            break
-    if cur is None:
+def allowed_focus(focus, t, grace=GRACE_S):
+    """時刻 t の記録が読んでよいスレッドの集合: 直近 grace 秒の間に前面だったことのあるスレッド。
+
+    awase が検出するフォーカスは、実際の切り替えより遅れうる(非同期の読み取りを待つ)。切り替えが速いと、その遅れは
+    切り替え 1 回分を超えるので、「直前のフォーカス先 1 つ」ではなく、窓 [t - grace, t] と重なる区間のフォーカス先を
+    すべて許す。フォーカスがまだ決まっていなければ None。
+    """
+    if not focus or focus[0][0] > t:
         return None
-    s = {cur}
-    if prev is not None and cur_t is not None and t - cur_t < GRACE_S:
-        s.add(prev)
-    return s
+    allowed = set()
+    for k, (tf, tid) in enumerate(focus):
+        if tf > t:
+            break
+        end = focus[k + 1][0] if k + 1 < len(focus) else float("inf")
+        if end > t - grace:
+            allowed.add(tid)
+    return allowed
 
 
-def analyze(records, events, min_accepted=1, require_inactive=False):
+def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace=GRACE_S):
     """記録と events を突き合わせて集計する。dict を返す(ok が False なら食い違いがある)。"""
     truth, focus = build_timelines(events)
     known = set(truth)
@@ -160,7 +160,7 @@ def analyze(records, events, min_accepted=1, require_inactive=False):
             elif bool(r.get("tsf_open")) not in non_none:
                 stats["mismatch_state"].append({"t": t, "tid": tid, "tsf_open": r.get("tsf_open"),
                                                 "allowed": sorted(str(x) for x in al)})
-        af = allowed_focus(focus, t)
+        af = allowed_focus(focus, t, focus_grace)
         if af is not None and tid not in af:
             stats["wrong_thread"].append({"t": t, "tid": tid, "allowed_focus": sorted(af)})
     # 真値の無いスレッド(ランナーの別の窓など)の受け入れは、食い違いに数えない(知らせるだけ)。
@@ -202,7 +202,8 @@ def cmd_analyze(args):
             line = line.strip()
             if line:
                 events.append(json.loads(line))
-    stats = analyze(records, events, min_accepted=args.min_accepted, require_inactive=args.require_inactive)
+    stats = analyze(records, events, min_accepted=args.min_accepted, require_inactive=args.require_inactive,
+                    focus_grace=args.focus_grace)
     print_summary(stats)
     if args.summary_json:
         with open(args.summary_json, "w", encoding="utf-8") as f:
@@ -243,6 +244,18 @@ def cmd_selftest(_args):
     assert s["ok"], s
     # 切り替えから十分後は許さない
     s = analyze([rec(base + 6.5, 1, True)], events)
+    assert not s["ok"] and len(s["wrong_thread"]) == 1, s
+
+    # 速い切り替え: 2 回前のフォーカス先でも、grace の範囲内なら許す(awase のフォーカス検出の遅れ)。範囲外は許さない
+    fast = [{"ev": "truth", "t": base, "tid": 1, "open": 1}, {"ev": "truth", "t": base, "tid": 2, "open": 0},
+            {"ev": "truth", "t": base, "tid": 3, "open": 1},
+            {"ev": "focus", "t": base + 1.0, "tid": 1}, {"ev": "focus", "t": base + 1.3, "tid": 2},
+            {"ev": "focus", "t": base + 1.6, "tid": 3}]
+    s = analyze([rec(base + 1.8, 1, True)], fast, focus_grace=1.5)   # 1 のフォーカスは 0.3 秒前まで続いた
+    assert s["ok"], s
+    s = analyze([rec(base + 1.8, 1, True)], fast)                    # 既定の grace(0.9)でも、窓 [0.9, 1.8] と重なる
+    assert s["ok"], s
+    s = analyze([rec(base + 3.2, 1, True)], fast, focus_grace=1.5)   # 1 のフォーカスは 1.3 秒前に終わり、窓 [1.7, 3.2] の外
     assert not s["ok"] and len(s["wrong_thread"]) == 1, s
 
     # 真値の無いスレッドの読みは、数えるが食い違いにはしない(ランナーの別の窓かもしれない)
@@ -626,7 +639,7 @@ def cmd_drive(args):
     procs = []
     sinks = []
     scenario = args.scenario
-    lifetime = args.rounds * 1.6 + 90
+    lifetime = args.rounds * max(1.6, args.dwell_max + 0.3) + 90
     exit_code = 0
 
     try:
@@ -690,7 +703,7 @@ def cmd_drive(args):
             print(f"need at least 2 windows to move the focus between, got {len(targets)}: setup failed", flush=True)
             exit_code = 2
         else:
-            ok_n, ng_n = focus_loop(w, targets, args.rounds, rng, events)
+            ok_n, ng_n = focus_loop(w, targets, args.rounds, rng, events, dwell=(args.dwell_min, args.dwell_max))
             print(f"focus switches: {ok_n} took effect, {ng_n} did not (the window was not in the foreground afterwards)",
                   flush=True)
             if ok_n < max(10, args.rounds // 2):
@@ -759,6 +772,8 @@ def main(argv=None):
     d.add_argument("scenario", choices=["focus", "threads", "appcontainer", "stale"])
     d.add_argument("--events", required=True)
     d.add_argument("--rounds", type=int, default=100)
+    d.add_argument("--dwell-min", type=float, default=0.35, help="次の切り替えまでの最短の滞在(秒)")
+    d.add_argument("--dwell-max", type=float, default=1.6, help="次の切り替えまでの最長の滞在(秒)")
     d.add_argument("--seed", type=int, default=1)
     d.add_argument("--switch-after", type=float, default=12)
     d.add_argument("--mozc-ci-dir", default="mozc-readable/readable/ci")
@@ -768,6 +783,8 @@ def main(argv=None):
     a.add_argument("--events", required=True)
     a.add_argument("--min-accepted", type=int, default=20)
     a.add_argument("--require-inactive", action="store_true")
+    a.add_argument("--focus-grace", type=float, default=GRACE_S,
+                   help="記録のスレッドとして許す、直近のフォーカス先の範囲(秒)。速い切り替えでは長くする")
     a.add_argument("--summary-json")
 
     sub.add_parser("selftest")

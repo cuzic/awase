@@ -71,6 +71,11 @@ jobs:
           - scenario: appcontainer
             noawase: '-NoAwase'
           - scenario: stale
+          # 速い切り替え: 滞在 0.03〜0.4 秒(切り替えの直後に読む機会が増える。awase の読みは tick の周期を待たない場面も含む)
+          - scenario: focus
+            fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
+          - scenario: threads
+            fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
     steps:
       - uses: actions/checkout@v4
       - name: mozc-readable の CI の部品(AppContainer 用)
@@ -94,12 +99,12 @@ jobs:
           Get-ChildItem msi | Out-Host
       - name: 場面を測る (${{ matrix.scenario }})
         shell: pwsh
-        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario ${{ matrix.scenario }} -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Dist dist -OutDir out ${{ matrix.noawase }}
+        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario ${{ matrix.scenario }} -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Dist dist -OutDir out ${{ matrix.noawase }} ${{ matrix.fast }}
       - name: 結果を残す
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mozc-shm-${{ matrix.scenario }}${{ matrix.noawase && '-control' || '' }}
+          name: mozc-shm-${{ matrix.scenario }}${{ matrix.noawase && '-control' || '' }}${{ matrix.fast && '-fast' || '' }}
           path: out
           if-no-files-found: ignore
           retention-days: 7
