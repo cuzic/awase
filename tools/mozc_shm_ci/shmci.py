@@ -183,7 +183,8 @@ def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace
                 stats["mismatch_state"].append({"t": t, "tid": tid, "tsf_open": r.get("tsf_open"),
                                                 "allowed": sorted(str(x) for x in al)})
         af = allowed_focus(focus, t, focus_grace)
-        if af is not None and tid not in af:
+        in_interval = interval is None or interval[0] <= t <= interval[1]   # 後片付けで前面になった窓の読みは数えない
+        if in_interval and af is not None and tid not in af:
             stats["wrong_thread"].append({"t": t, "tid": tid, "allowed_focus": sorted(af)})
     # 真値の無いスレッドの受け入れは、測定区間の外(窓の準備中に、ランナーの別の窓を読んだ)なら食い違いに数えず、
     # 区間の内側なら数える(測定中に、こちらが前面にしていない窓を読んだ=フォーカスの取り違えの疑い)。
@@ -748,6 +749,10 @@ def flip_loop(w, truths, rounds, rng, events):
         return None if a is None or a[9] != 1 else int(a[5])
 
     known = {tid: int(info[tid]["open"]) for tid in tids}
+    fg0 = w.u32.GetForegroundWindow()           # 準備で最後に作った窓が前面のまま始まる(focus_loop と同じ理由で最初のフォーカス先に書く)
+    for tid in tids:
+        if info[tid]["hwnd"] == fg0:
+            events.append({"ev": "focus", "t": time.time(), "tid": tid, "name": info[tid]["name"]})
     last_old = {tid: time.time() for tid in tids}   # その窓が古い状態であると最後に確かめた時刻
 
     def observe(window_s):
