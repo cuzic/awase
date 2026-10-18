@@ -4407,7 +4407,7 @@ impl SettingsApp {
     }
 }
 
-// ── 窓切替直後の日本語/英数の判定（ADR-263、上級者向け）──
+// ── 打鍵列からの入力言語の推定（ADR-263、上級者向け）──
 
 /// `[auto_detect]` の動作の選択肢（設定画面の 1 つのプルダウン）。内部の設定は `mode` と `scope` の 2 つの軸だが、
 /// 画面では意味のある組み合わせに集約する（軸を並べると分かりにくい。所有者判断 2026-10-17）。
@@ -4434,31 +4434,31 @@ const AUTO_DETECT_PRESETS: [(
     (
         awase::config::AutoDetectMode::ImeOn,
         awase::config::AutoDetectScope::Unobserved,
-        "IME の状態が読めない窓で、日本語ならひらがなにする",
-        "一太郎など、窓内の IME 状態が読めないと学習された窓だけが対象です。\n\
+        "IME の状態が読めないウィンドウで、日本語ならひらがなにする",
+        "ウィンドウ内の IME 状態が読めないと学習されたウィンドウだけが対象です。\n\
          Alt+Tab 直後や長い無操作のあとの最初の数打鍵を最大 2.5 秒だけ保持し、親指シフトで打っていると\n\
          判定できたときだけ、ひらがなキーを 1 回送ってから保持した打鍵を流します。\n\
          英数と判定した・決まらなかった場合は、保持した打鍵をそのまま流すだけです。\n\
-         awase が IME ON とみなしているときだけ動きます。保持中に窓が変わると、保持した打鍵は捨てられます。",
+         awase が IME ON とみなしているときだけ動きます。保持中にウィンドウが変わると、保持した打鍵は捨てられます。",
     ),
     (
         awase::config::AutoDetectMode::ImeOn,
         awase::config::AutoDetectScope::All,
-        "すべての窓で、日本語ならひらがなにする（利用者の責任）",
-        "上の動作を、IME の状態が読める窓（Chrome など）にも広げます。読める窓では awase の想定が\n\
+        "すべてのウィンドウで、日本語ならひらがなにする",
+        "上の動作を、IME の状態が読めるウィンドウ（Chrome など）にも広げます。読めるウィンドウでは awase の想定が\n\
          実際の状態に追随するため、判定の書き込みの結果が次の観測で揃うまで食い違うことがあります。\n\
-         TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。\n\
+         TSF ネイティブのウィンドウ（Windows Terminal など）と入力中継ツールのウィンドウは、この設定でも対象外です。\n\
          英数と判定した場合は、保持した打鍵をそのまま流すだけで、半角英数にはしません。",
     ),
     (
         awase::config::AutoDetectMode::ImeOnEisu,
         awase::config::AutoDetectScope::All,
-        "すべての窓で、日本語ならひらがな・英数なら半角英数にする（利用者の責任）",
+        "すべてのウィンドウで、日本語ならひらがな・英数なら半角英数にする",
         "上の動作に加えて、打鍵列が英数（英語・コード・他言語）と判定できたときは、左Shift単独タップと同じ半角英数\n\
          （IME は ON のまま）に入り、保持した打鍵をそのまま流します。半角英数のトグルが有効な設定のときだけ働きます。\n\
          日本語を英数と誤判定しても、Shift のタップなどで戻れます。\n\
          誤判定の率は、詳細の「半角英数にする確信度」で決まります。\n\
-         TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。",
+         TSF ネイティブのウィンドウ（Windows Terminal など）と入力中継ツールのウィンドウは、この設定でも対象外です。",
     ),
 ];
 
@@ -4491,14 +4491,14 @@ fn text_to_apps(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// 「窓切替直後の日本語入力の判定」（ADR-263）の設定。上級者向けタブの末尾に置く。
+/// 「打鍵列からの入力言語の推定」（ADR-263）の設定。上級者向けタブの末尾に置く。
 /// 画面に常に出すのは動作の選択肢（5 択）だけで、数値とアプリの指定は折りたたみの「詳細」に入れる。
 fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectConfig) {
-    ui.heading("窓切替直後の日本語入力の判定（上級者向け）");
+    ui.heading("打鍵列からの入力言語の推定");
     ui.add_space(4.0);
     ui.label(
-        "窓を切り替えた直後や、しばらく操作がなかったあとの最初の数打鍵から、\n\
-         親指シフトで打っているかどうかを判定します。IME の状態が読めない窓（一太郎など）で、\n\
+        "ウィンドウを切り替えた直後や、しばらく操作がなかったあとの最初の数打鍵から、\n\
+         親指シフトで打っているかどうかを判定します。IME の状態が読めないウィンドウで、\n\
          awase の想定と実際の IME の状態がずれて、最初の文字が化けるのを防ぐための機能です。",
     );
     ui.add_space(4.0);
@@ -4511,7 +4511,7 @@ fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
     let mut chosen = None;
     ui.horizontal(|ui| {
         ui.label("動作:");
-        egui::ComboBox::from_id_salt("auto_detect_preset")
+        let combo = egui::ComboBox::from_id_salt("auto_detect_preset")
             .selected_text(selected_text)
             .width(420.0)
             .show_ui(ui, |ui| {
@@ -4525,6 +4525,9 @@ fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
                     }
                 }
             });
+        if let Some(i) = current {
+            combo.response.on_hover_text(AUTO_DETECT_PRESETS[i].3);
+        }
     });
     if let Some(i) = chosen {
         apply_auto_detect_preset(cfg, i);
@@ -4535,8 +4538,7 @@ fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
     ) {
         ui.colored_label(
             egui::Color32::from_rgb(200, 120, 0),
-            "実機での確認が済んでいない機能です。不具合があれば「記録のみ」に戻してください。\n\
-             Space を親指キーにした構成や、ADR-255 の遅いルールがある構成では、打鍵を保持しません。",
+            "実機での確認が済んでいない機能です。不具合があれば「記録のみ」に戻してください。",
         );
     }
     ui.add_space(4.0);
@@ -4558,7 +4560,7 @@ fn round_tenth(value: f64) -> f64 {
 /// 「詳細」の中身: 数値の設定と、対象にする/外すアプリ。
 fn auto_detect_details(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectConfig) {
     ui.horizontal(|ui| {
-        let hover = "窓を切り替えたときのほか、この時間以上キー入力がなかったあとの最初の打鍵でも判定を始めます。";
+        let hover = "ウィンドウを切り替えたときのほか、この時間以上キー入力がなかったあとの最初の打鍵でも判定を始めます。";
         ui.label("無操作とみなす時間:").on_hover_text(hover);
         ui.add(
             egui::DragValue::new(&mut cfg.idle_ms)
