@@ -477,6 +477,7 @@ class Window:
         self.edit = None
         self.tid = None
         self._wndproc = None
+        self.pending = None
 
     def create(self):
         w, u32, k32, ctypes = self.w, self.w.u32, self.w.k32, self.w.ctypes
@@ -487,8 +488,7 @@ class Window:
             if m == 0x8001:
                 # ドライバーからの依頼: この窓のスレッドの上で IME を切り替える(wp=1 ON / 0 OFF)。
                 # 別プロセスから SendInput しても効かなかった(run 39114480112)ので、ホスト自身のスレッドから送る。
-                self.focus()
-                self.w.send_vk(0xF2 if wp else 0x19)
+                self.pending = int(wp)   # キーはメインループで送る(ウィンドウプロシージャの中では TIP がキーを処理できない)
                 return 0
             return u32.DefWindowProcW(h, m, wp, lp)
         self._wndproc = w.WNDPROC(proc)
@@ -551,6 +551,10 @@ def host_thread_main(w, name, want_open, ready_evt, results, idx, run_until, swi
     t0 = time.time()
     while time.time() < run_until:
         w.pump(0.1)
+        if win.pending is not None:
+            want, win.pending = win.pending, None
+            w.u32.SetFocus(win.edit)          # 前面は奪わない(ドライバーが移した先にキーが届く場合も、状態の観測で拾う)
+            w.send_vk(0xF2 if want else 0x19)
         if switch_after and not switched and time.time() - t0 >= switch_after:
             switched = True
             # TIP の無いレイアウトへ切り替える(セッション全体に効く)。active が 0 になるのを待つ。
