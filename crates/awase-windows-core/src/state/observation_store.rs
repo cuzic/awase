@@ -1522,7 +1522,10 @@ mod tests {
         let mut s = ObservationStore::default();
         let t0 = Instant::now();
         record_shm(&mut s, true, t0);
-        let o = s.per_source.get(ObservationSource::MozcShm).expect("recorded");
+        let o = s
+            .per_source
+            .get(ObservationSource::MozcShm)
+            .expect("recorded");
         assert_eq!(o.expires_at, Some(t0 + ttl));
         assert_eq!(o.confidence, ObservationConfidence::High);
 
@@ -1536,14 +1539,17 @@ mod tests {
 
         let after = t0 + ttl;
         assert_eq!(s.derive_any(after).map(|d| d.value()), None);
-        assert!(s.most_recent_trusted(after).is_none(), "フォールバックでも古い値を採らない");
+        assert!(
+            s.most_recent_trusted(after).is_none(),
+            "フォールバックでも古い値を採らない"
+        );
         assert!(s.most_recent_trusted_excluding(after, &[]).is_none());
     }
 
     /// 対照: 共有メモリ以外の source は従来どおり TTL を持たない（挙動を変えない）。
     #[test]
     fn only_mozc_shm_gets_an_expiry() {
-        use super::super::evidence::{ObserverPoll, Observed};
+        use super::super::evidence::{Observed, ObserverPoll};
         use super::super::probe_admission::AcceptedObservation;
         let mut s = ObservationStore::default();
         let now = Instant::now();

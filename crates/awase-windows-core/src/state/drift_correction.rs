@@ -158,7 +158,10 @@ pub fn evaluate_drift(
             now,
             // `MozcShm`（ADR-268 D2）も根拠にしない: 共有メモリが明示意図と食い違うたびに IME を開け直す争いになる。
             // 外から変わった場合の追随は、drift correction ではなく `follow_external_change` 系の経路で行う。
-            &[ObservationSource::ConvOpenInference, ObservationSource::MozcShm],
+            &[
+                ObservationSource::ConvOpenInference,
+                ObservationSource::MozcShm,
+            ],
         )
         .ok_or(NoDrift::NoTrustedObservation)?;
     if trusted.age(now) > max_age {
@@ -246,10 +249,10 @@ mod tests {
             expires_at: None,
             focus_epoch: 0,
         };
-        model
-            .observations
-            .per_source
-            .set(ObservationSource::MozcShm, disagreeing(ObservationSource::MozcShm));
+        model.observations.per_source.set(
+            ObservationSource::MozcShm,
+            disagreeing(ObservationSource::MozcShm),
+        );
         assert_eq!(
             evaluate_drift(&model, now),
             Err(NoDrift::NoTrustedObservation),
