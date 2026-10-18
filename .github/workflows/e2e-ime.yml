@@ -251,7 +251,8 @@ jobs:
             # 無変換・カタカナ・ひらがな・変換・Space・Enter を各10回押し、結果が typing・conv-henkan・none のどの行と一致するかを見る。
             # 対照(変換中・入力中・入力なし)を同じ実行に入れる。(開,0x19) だけ。sp2 は --speed=2(状態を作るキー間隔を 350ms→175ms。予測候補の窓の
             # 有無で Esc の結果が割れうる〈KNOWN_UNSTABLE_NATIVE の注記〉ので、間隔を2通りにする)。解析: grid_learn.py <ime_key_matrix_spike.log>。
-            *[cfg(f'cal-escgrid-{ime_name}-{sp}', 'observe', check='collect', awase='false', runs=1, wait=3300, ime=ime, keymap=km,
+            # 測定済み(2026-10-18、run 39092296146、結果は BUG-205): 期限(until)までに、再測定が要らなければ削除する。
+            *[cfg(f'cal-escgrid-{ime_name}-{sp}', 'observe', check='collect', awase='false', runs=1, wait=3300, ime=ime, keymap=km, until='2026-11-30',
                   args=f'--grid=s5 --grid-setup=keys --grid-trials=10{msime}{spd}')
               for ime_name, ime, km, msime in SC_IMES
               for sp, spd in (('sp1', ''), ('sp2', ' --speed=2'))],
