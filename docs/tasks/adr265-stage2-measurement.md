@@ -39,22 +39,31 @@ belief に採ってよいか(Low → Medium)を、**測定の前に決めた基�
 2. インストールに**管理者権限(UAC)が要る**。clipwire は非管理者で動くので、昇格の手順(RunAs)が要る(利用者の操作が要る)。
 3. 実機に Python があるか(キー注入・読み取りの CI スクリプトを使うため)。無ければ PowerShell で書き直す。
 4. awase を、ADR-265 段階 1 の入った `develop`(PR #644、`101dfd2f` 以降)でビルドして動かす(`[diagnostics] mozc_shm_shadow = true`)。
-5. **記録の取り出し**: journal のホットキーダンプ(Alt+変換 → Alt+無変換 を 2 回連続。物理の Alt が要る見込み、`%TEMP%\awase_journal_<tick_ms>.json`)は、自動測定には向かない。`MozcShm` は Timing レーン(2048 件のリング、他の Timing 系と同居)に入り、100 操作ごとに人の手でダンプしないと古い方から追い出される(別セッションの確認)。そこで、**awase.log の `[mozc-shm]` の debug 行を集める**(1 行の JSON に記録の全項目と thread_id・process_id を出す形に、別セッションの PR で変更中。壁時計の時刻が付くので、操作側との時刻の突き合わせも解ける)。**要確認**(別セッションに質問済み): awase.log の場所、debug ログの有効化の方法、ローテーションと容量、性能への影響。
+5. **記録の取り出し**: journal のホットキーダンプ(Alt+変換 → Alt+無変換 を 2 回連続。物理の Alt が要る見込み、`%TEMP%\awase_journal_<tick_ms>.json`)は、自動測定には向かない。`MozcShm` は Timing レーン(2048 件のリング、他の Timing 系と同居)に入り、100 操作ごとに人の手でダンプしないと古い方から追い出される(別セッションの確認)。そこで、**awase.log の `[mozc-shm]` 行を集める**。以下は別セッションが develop のコードを読んで確認した内容(PR #649。**実機では未確認**):
+   - 出力: `[diagnostics] mozc_shm_shadow = true` だけで、target `awase::mozc_shm` の **info** で、行頭 `[mozc-shm] ` + 記録の全項目の 1 行 JSON(`thread_id`・`process_id` を含む)。`RUST_LOG` の指定は要らない(`awase::journal=debug` は全 journal の debug を出して打鍵を含むため、測定には使わない)。設定の反映は再起動後。
+   - 場所: awase の実行ファイルと同じフォルダーの `awase.log`。実機の dev ビルドなら `C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase\target\debug\awase.log`(clipwire の既存ターゲットの `dir` と、`awase-taskkill-test` の読み先から。**要確認**)。
+   - 時刻: 行頭は UTC の RFC3339(壁時計)。操作側のログも UTC で出して突き合わせる。
+   - ローテーション: 20 MiB を超えると `awase.log.old` へ 1 世代だけ移る。測定の前に `awase.log` の日付とサイズを記録する(同じファイルに他の info 以上のログも混ざる)。
+   - 性能: `mozc_shm_shadow = true` のときだけ、約 500 ms ごとに共有メモリを 1 回読む。所要は記録の `read_us`(マイクロ秒)で測れる。
 6. **実機の操作との干渉**: キー注入とフォーカス移動を行うので、測定中は実機を使えない。測定の時間帯を利用者が決める。
 7. 後始末: Mozc Readable のアンインストールと、入力方式(言語リスト)を元に戻す。実行前に、元の入力方式の一覧を記録する。
 
 ## 6. 集計
 
-awase.log の `[mozc-shm]` 行(1 行の JSON: `verdict`、`route`、`reason`、`tsf_open`・`tsf_mode`・`effective_*`、`version`、`profile`、`thread_id`、`process_id`、`belief_open`、`belief_mode`、時刻)を、操作側のログ(各キーの送信時刻と期待値)と**時刻で**突き合わせる。記録は共有メモリの結論が変わったとき(と、フォーカスが変わったとき)だけに出るので、各操作の「送信から次の送信まで」の間に出た最後の `accepted` の状態が、その操作の期待値と一致するかを見る(送信から約 61 ms で反映される実測がある。待ちは余裕を見て 1 秒)。
+awase.log の `[mozc-shm]` 行(1 行の JSON: `verdict`、`route`、`reason`、`tsf_open`・`tsf_mode`・`effective_*`、`version`、`profile`、`thread_id`、`process_id`、`belief_open`、`belief_mode`、行頭の UTC の時刻)を、操作側のログ(各キーの送信時刻と期待値)と**時刻で**突き合わせる。記録は共有メモリの結論が変わったとき(と、フォーカスが変わったとき)だけに出るので、各操作の「送信から次の送信まで」の間に出た最後の `accepted` の状態が、その操作の期待値と一致するかを見る(送信から約 61 ms で反映される実測がある。待ちは余裕を見て 1 秒)。
 
 報告する数字:
 - N(受け入れた読みの総数)、窓種ごとの内訳。
 - 食い違い件数(**基準: 0**)。1 件でもあれば、その窓種・操作・`route`・`reason`・`thread_id`・`process_id`・フォーカスの直前の状態。`thread_id` と `process_id` は、別のスレッドを読んだ(フォールバックなど)かの切り分けに使う。
 - 参考: `verdict=rejected`/`failed` の件数と `reason` の内訳(読めなかった割合。採用の可否の条件ではない)。
 - 利益の指標(belief が間違いで共有メモリが正しい件数)は、注入では過大に出るので報告しない(第 3 章)。
-- 偏りの注意(別セッションの確認): `belief_*` は記録を作った tick の値で、同じ tick の観測による更新は入らない(1 tick = 約 500 ms 遅れて見える)。呼び出しの位置を `ir_execute` の最後へ移す変更が、別セッションの PR で入る予定。
+- **`belief_open`・`belief_mode` の列は、注入の測定では集計の対象外にする**。release の awase は注入キーを物理とみなさないので、belief は追随せず、常に古い値になるはずで、見ると混乱する(別セッションの指摘)。記録は取るが、判定には使わない。
 
-## 7. 担当
+## 7. 実機の事前調査(読み取り専用)
+
+clipwire のターゲット `adr265-probe`(`~/.config/clipwire/targets.toml`、キー注入・インストール・設定変更はしない)で、次を確かめる: 昇格しているか、OS、Python の有無とパス、言語リストの入力方式、Mozc / Google 日本語入力の導入状況、awase のプロセス・チェックアウトのブランチと HEAD・設定ファイルの場所、Chrome の有無、C の空き容量、実機の時計(local と UTC)。**2026-10-18 時点では、dragonflyg4 がオフラインで、まだ実行できていない**(Tailscale が offline、`:9999` に接続できない)。
+
+## 8. 担当
 
 - 手順書・実機の操作・集計・ADR の更新: 私(rust-nicola セッション)。
 - awase 本体の belief への接続(Low から): 別セッション(rust-nicola-05)。基準を満たすまで Medium には上げない。
