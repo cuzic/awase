@@ -28,25 +28,53 @@ belief に採ってよいか(Low → Medium)を、**測定の前に決めた基�
 ## 4. 操作と窓
 
 - 操作: mozc-readable の CI と同じ列を繰り返す。`F2`(ひらがな、ON)→ `F1`(全角カタカナ)→ `F0`(半角英数)→ `F2` → `19`(OFF)。期待される (open, mode) は (1,1) → (1,2) → (1,3) → (1,1) → (0,*)。
-- 窓: メモ帳(通常の Win32)、Chrome(TSF ネイティブ)、AppContainer 内のプロセス(UWP の代用。`readable/ci/ac_launch.py`)。実在の UWP アプリ(Windows Terminal など)は別枠で数件。
+- 窓: メモ帳(通常の Win32)、Chrome(TSF ネイティブ。実機では scoop 経由の `C:\Users\cuzic\scoop\apps\googlechrome\current\chrome.exe`、2026-10-18 に確認)、AppContainer 内のプロセス(UWP の代用。`readable/ci/ac_launch.py`)。実在の UWP アプリ(Windows Terminal など)は別枠で数件。
 - 1 窓種あたり 20 周(5 遷移 × 20 = 100 件)を目安に、3 窓種で N ≥ 200 に届くようにする。届かなければ周回を増やす。
 - 各遷移の前後で入力先を切り替える周回も混ぜる(フォーカス移動直後の読み = スレッド選択の誤りが出やすい場面)。
 
 ## 5. 実機での実行(dragonflyg4、clipwire)
 
-**要確認の前提**(1 つでも崩れたら、先に直す):
-1. Mozc Readable の MSI を実機に渡す手段。MSI は mozc-readable の GitHub Actions の成果物(Release はまだ無い。ADR-265 段階 0 の後)。Linux 側で取得して実機へ運ぶ方法が要る(clipwire の exec で取得できるか未確認)。
-2. インストールに**管理者権限(UAC)が要る**。clipwire は非管理者で動くので、昇格の手順(RunAs)が要る(利用者の操作が要る)。
-3. 実機に Python があるか(キー注入・読み取りの CI スクリプトを使うため)。無ければ PowerShell で書き直す。
-4. awase を、ADR-265 段階 1 の入った `develop`(PR #644、`101dfd2f` 以降)でビルドして動かす(`[diagnostics] mozc_shm_shadow = true`)。
-5. **記録の取り出し**: journal のホットキーダンプ(Alt+変換 → Alt+無変換 を 2 回連続。物理の Alt が要る見込み、`%TEMP%\awase_journal_<tick_ms>.json`)は、自動測定には向かない。`MozcShm` は Timing レーン(2048 件のリング、他の Timing 系と同居)に入り、100 操作ごとに人の手でダンプしないと古い方から追い出される(別セッションの確認)。そこで、**awase.log の `[mozc-shm]` 行を集める**。以下は別セッションが develop のコードを読んで確認した内容(PR #649。**実機では未確認**):
-   - 出力: `[diagnostics] mozc_shm_shadow = true` だけで、target `awase::mozc_shm` の **info** で、行頭 `[mozc-shm] ` + 記録の全項目の 1 行 JSON(`thread_id`・`process_id` を含む)。`RUST_LOG` の指定は要らない(`awase::journal=debug` は全 journal の debug を出して打鍵を含むため、測定には使わない)。設定の反映は再起動後。
-   - 場所: awase の実行ファイルと同じフォルダーの `awase.log`。実機の dev ビルドなら `C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase\target\debug\awase.log`(clipwire の既存ターゲットの `dir` と、`awase-taskkill-test` の読み先から。**要確認**)。
-   - 時刻: 行頭は UTC の RFC3339(壁時計)。操作側のログも UTC で出して突き合わせる。
-   - ローテーション: 20 MiB を超えると `awase.log.old` へ 1 世代だけ移る。測定の前に `awase.log` の日付とサイズを記録する(同じファイルに他の info 以上のログも混ざる)。
-   - 性能: `mozc_shm_shadow = true` のときだけ、約 500 ms ごとに共有メモリを 1 回読む。所要は記録の `read_us`(マイクロ秒)で測れる。
-6. **実機の操作との干渉**: キー注入とフォーカス移動を行うので、測定中は実機を使えない。測定の時間帯を利用者が決める。
-7. 後始末: Mozc Readable のアンインストールと、入力方式(言語リスト)を元に戻す。実行前に、元の入力方式の一覧を記録する。
+### 5-1. 事前調査の結果(2026-10-18、読み取り専用で実行済み、`adr265-probe`・`adr265-probe2`)
+
+- 昇格していない(**MSI のインストールに UAC が要る**。利用者の応答が要る)。Windows 11 Pro、build 22631。
+- Python 3.10.12(`C:\Users\cuzic\scoop\shims\python.exe`)あり、`py` ランチャーは無い。mozc-readable の CI のスクリプト(標準ライブラリのみ)が 3.10 で動くかは**未確認**。
+- 入力方式: ja に Google 日本語入力と Microsoft IME、en-US。Mozc / Mozc Readable は未導入。Mozc Readable を足すと言語リストが変わる(終了後に元へ戻す。実行前の一覧は事前調査に記録済み)。
+- awase は稼働中(`...\awase\target\debug\awase.exe`、10/12 のビルド)。チェックアウトは `develop` の古い `7428362f` で、`config.toml` が変更済み(利用者の設定)、未追跡ファイルが複数。**このチェックアウトには触れない**(`git pull` もしない)。
+- Rust(cargo 1.98.1・rustc 1.98.1)と git(2.47.1)あり。`origin` は https://github.com/cuzic/awase.git。
+- 利用者は `C:\Users\cuzic\awase-*` に `git worktree` を作る使い方をしている。
+
+### 5-2. 準備(利用者の操作を妨げない部分。2026-10-18 に着手)
+
+1. **MSI**: mozc-readable の `readable`(`607a6a6`)の CI の成果物を Linux で取得し、Taildrop で実機の `Downloads` へ送った。実機側で `C:\Users\cuzic\Downloads\mozc-readable-607a6a6-x64.msi`(26,595,328 バイト)、SHA-256 `B4795AC7...1F80` が Linux 側と一致することを確認した。測定の直前に、その時点の最新の `readable` の成果物に差し替える。
+2. **測定用の awase は、別の worktree**: `C:\Users\cuzic\awase-adr265-measure`(`git worktree add --detach`、`develop` の `d916d18f`、既存のチェックアウトとは別のディレクトリ)。**ADR-265 の記録項目の追加(PR #649)がマージされたら、その SHA へ `git checkout --detach` で進めて再ビルドする**(それまでは依存関係を温めるだけ)。ビルドは `cargo build -p awase-windows --bin awase`(debug)で、clipwire のターゲット `adr265-measure-build-bg` / `adr265-measure-build-log`(ログ `C:\build-adr265-measure.log`)。
+
+### 5-3. 測定の直前(利用者の合図の後。実機を使えなくなる)
+
+1. **既存の awase を止める**(トレイから終了、または `taskkill`)。**止めずに測定用の awase を起動すると、キーボードフックが二重になる**(別セッションの指摘)。測定の最後に、元の awase(`...\awase\target\debug\awase.exe`、10/12 のビルド)を元の場所から起動し直す。
+2. **Mozc Readable をインストール**する(`msiexec /i ... /qn`、**UAC**)。入力方式に Mozc Readable を追加する(`Set-WinUserLanguageList`)。**実行前の言語リストを記録する**。
+3. **測定用の config.toml**: 測定用の awase の `target\debug\` に置く(別セッションの確認: 引数が無ければ exe の隣の `config.toml` が優先され、無ければ clone のリポジトリ直下。**既存のチェックアウトの `config.toml` には触れない**)。最小限は `[diagnostics]` に `mozc_shm_shadow = true`。他のセクションを省略してよい(serde の既定で補われる見込み)かは**未確認**で、足りなければ既定の `config.toml` を複製して `[diagnostics]` だけ足す。引数で明示する場合は、**第 1 引数にパスを置く**(`awase.exe C:\path\config.toml`、`--` で始まる引数の後に置くと読み飛ばされる)。引数で明示すると、`config.toml` が無くても自己修復で生成されない。
+4. 測定用の awase を、測定用のディレクトリから起動する。ログは exe と同じフォルダー(`target\debug\awase.log`)に出る。起動前に、`awase.log` の日付とサイズを記録する。
+5. キー注入と読み取りは、mozc-readable の CI のスクリプト(`ui_host.py`・`drive_foreground.py`・`reader.py`・`ac_launch.py`)を流用し、時刻は UTC で記録する。実機の Chrome のパスが CI と違う(scoop)ので、`Run-App` 相当の起動部分は実機用に書く。
+
+### 5-4. 測定の後
+
+1. 測定用の awase を止める。`awase.log` を Linux へ回収する。
+2. **Mozc Readable をアンインストール**し、言語リストを記録した元の状態に戻す。
+3. **元の awase を起動し直す**(止めた場合)。
+4. 測定用の worktree は、集計が終わるまで残し、その後に削除する(利用者に確認)。
+
+### 5-5. 実機の操作との干渉
+
+キー注入とフォーカス移動を行うので、測定中(約 20〜30 分の見込み、未測定)は実機を使えない。時間帯は利用者が合図する。
+
+### 5-6. 記録の取り出し
+
+journal のホットキーダンプ(Alt+変換 → Alt+無変換 を 2 回連続。物理の Alt が要る見込み、`%TEMP%\awase_journal_<tick_ms>.json`)は、自動測定には向かない。`MozcShm` は Timing レーン(2048 件のリング、他の Timing 系と同居)に入り、100 操作ごとに人の手でダンプしないと古い方から追い出される(別セッションの確認)。そこで、**awase.log の `[mozc-shm]` 行を集める**。以下は別セッションが develop のコードを読んで確認した内容(PR #649。**実機では未確認**):
+
+- 出力: `[diagnostics] mozc_shm_shadow = true` だけで、target `awase::mozc_shm` の **info** で、行頭 `[mozc-shm] ` + 記録の全項目の 1 行 JSON(`thread_id`・`process_id` を含む)。`RUST_LOG` の指定は要らない(`awase::journal=debug` は全 journal の debug を出して打鍵を含むため、測定には使わない)。設定の反映は再起動後。
+- 時刻: 行頭は UTC の RFC3339(壁時計)。操作側のログも UTC で出して突き合わせる(実機の時計は、事前調査で local と UTC の差が +9 時間であることを確認済み)。
+- ローテーション: 20 MiB を超えると `awase.log.old` へ 1 世代だけ移る。
+- 性能: `mozc_shm_shadow = true` のときだけ、約 500 ms ごとに共有メモリを 1 回読む。所要は記録の `read_us`(マイクロ秒)で測れる。
 
 ## 6. 集計
 
@@ -59,11 +87,7 @@ awase.log の `[mozc-shm]` 行(1 行の JSON: `verdict`、`route`、`reason`、`
 - 利益の指標(belief が間違いで共有メモリが正しい件数)は、注入では過大に出るので報告しない(第 3 章)。
 - **`belief_open`・`belief_mode` の列は、注入の測定では集計の対象外にする**。release の awase は注入キーを物理とみなさないので、belief は追随せず、常に古い値になるはずで、見ると混乱する(別セッションの指摘)。記録は取るが、判定には使わない。
 
-## 7. 実機の事前調査(読み取り専用)
-
-clipwire のターゲット `adr265-probe`(`~/.config/clipwire/targets.toml`、キー注入・インストール・設定変更はしない)で、次を確かめる: 昇格しているか、OS、Python の有無とパス、言語リストの入力方式、Mozc / Google 日本語入力の導入状況、awase のプロセス・チェックアウトのブランチと HEAD・設定ファイルの場所、Chrome の有無、C の空き容量、実機の時計(local と UTC)。**2026-10-18 時点では、dragonflyg4 がオフラインで、まだ実行できていない**(Tailscale が offline、`:9999` に接続できない)。
-
-## 8. 担当
+## 7. 担当
 
 - 手順書・実機の操作・集計・ADR の更新: 私(rust-nicola セッション)。
 - awase 本体の belief への接続(Low から): 別セッション(rust-nicola-05)。基準を満たすまで Medium には上げない。
