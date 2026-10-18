@@ -3,7 +3,7 @@ id: ADR-265
 title: |-
   mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定)
 status: |-
-  提案(2026-10-17、Opus round1〜4 で収束)。配布の自動化は PR #1 を作り直す前提、awase 側の読み取りは未実装
+  提案(2026-10-17、Opus round1〜4 で収束)。段階 1 は実装済み(observe のみ、PR #644、belief へは未接続・Windows 実機は未確認)。段階 0(配布と追随の作り直し)と段階 2 は未着手
 related_adr:
   - "ADR-191"
   - "ADR-261"
@@ -162,6 +162,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
    6. PR #1 を閉じる。
    7. awase の既存の定期ワークフロー(または新規)に、mozc-readable の `detect`/`release` の `state != active`、または最後の run が 3 日以上前なら awase 側に Issue を立てるステップを足す(R4-G2)。
    初回は 3.34.6239 向けの series を手で作り(分類 B の予行演習)、`git am -3` が blobless で 3-way になるかを試す。**完了条件**: identity の置換(表示名・発行元を含む)を当てた MSI で、公式 Mozc との共存の CI(D4-7)が通り、最初の Release が出ていること。
-1. mozc-readable に `active` を足す(version 2、`magic` を最後に書く)。**書き出し側は `readable` の `aa228f6` に入った(2026-10-18、CI 確認中。切り替え後の `active=0` の検査は Soft で未検証)**。awase に読み取りの Observe を足し、belief へは入れず journal に出して実機で一致を測る。AppContainer の測定も行う。
+1. **実装済み(2026-10-18)**: mozc-readable に `active` を足した(version 2、`magic` を最後に書く。`readable` の `aa228f6`)。CI(run `39098693442`)で、`active=1` と、同じスレッドを `ActivateKeyboardLayout` で TIP の無いレイアウトへ切り替えたあとの `active=0`、および AppContainer の窓の `NtOpenSection` での読み取りを実測した。awase 側の Observe は PR #644(`develop` の `101dfd2f`)で入った: 読み取りの規約(D3)に沿い、**journal に出すだけで belief へは入れない**。`ObservationSource` と `TipIdentity` の variant は足していない。設定は `[diagnostics] mozc_shm_shadow`(既定 false)。以上は別セッションの報告と、PR のタイトル・変更ファイルの一覧による(私はコードの中身を読んでいない)。
+   - **未実施・未確認**: Windows 実機での awase 本体の動作(CI はコンパイルとテストまで)。実機で `mozc_shm_shadow = true` にして mozc-readable の窓で journal を取り、belief との一致率を測る作業(段階 2 の基準の材料)は、まだ誰も行っていない。AppContainer 以外の窓種(Chrome・Notepad 以外のアプリ)の網羅、昇格していないトークンでの SID 取得、Win+Space など `ActivateKeyboardLayout` 以外の切り替えでの `active=0` も未確認。
 2. 測定に基づき belief へ流す(Low から始め、基準を満たしたら Medium)。設定画面に状態表示。
 3. サイトの記述は D1 のとおり、事実になった文から足す。**mozc-readable の欄は、最初の Release(identity の置換を当てたもの)が出るまで `hidden` にしておく**(今は Release が 0 件で、リンクは空のページへ飛ぶ)。
