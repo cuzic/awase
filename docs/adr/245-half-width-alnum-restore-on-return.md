@@ -193,3 +193,12 @@ related_adr:
 - R1 の読みは追跡側ではなくライブのフォーカス窓を読む(書き込みは捕獲した hwnd)。捕獲後にフォーカスだけが動いた場合(`TargetMoved` と同じ型)は別の窓を読みうる(FocusProbe と同じ既知の性質、Opus r2 N-3)。
 - 復元のリトライは MS-IME が後から誤って英数へ戻す(最大 478ms)ことに備えているが、R1 は 1 回しか読まないので、その誤切替の後は belief が古いまま残る。従来の経路(idle-conv-check)で拾える範囲で、本追補の範囲外(N-4)。
 - `INPUT_DEFER` の drain が、解放の直後に取り込み口へ来る物理キーに対して順序を保つか(`lang_detect` の再生と同じ前提。Opus round 1 の論点)。
+
+### 実装の記録(R2、2026-10-18、PR #675)
+
+- 実装は上の決定のとおり: 純粋な状態機械 `state/half_width_resume_hold.rs`、殻 `runtime/resume_hold.rs`、完了の札 `ResumeDoneToken`(`notify(self, reason)`、`Drop` は post だけ)、`TIMER_RESUME_HOLD`(112)、`WM_RESUME_HOLD_DONE`(WM_APP+29)、`HALF_WIDTH_RESUME_HOLD_MAX_MS = 100`。
+- **決定 4 の契機の表のうち、エンジンのトグルとセッションのロックは個別に配線していない**(期限の 100ms に任せる)。フォーカス変化(`ir_notify_focus_changed`)・`WM_PANIC_RESET`・設定の再読み込み(`init_lang_detect`)は解放(窓が違えば破棄)を呼ぶ。
+- ime-off-rescue の再生は `resume_hold_on_delivery` で保持の対象外にした(origin の `skip_rescue_defer` を保ち、時刻が古い打鍵を先に処理する)。保持に `(event, origin)` は積まず、`RawKeyEvent` だけを積む(対象外にしたので origin は常に Hook/DeferredReplay で、再生は `INPUT_DEFER` 経由になる)。
+- 複雑度(clippy `cognitive_complexity` 15)のため、札の通知 `notify_done`・R1 の読み直し `observe_after_restore_write`・ticket と札の取り出し `take_resume_r1` に切り出した。
+- CI の結果(run 39129301176、head 7bbf4ad1、`sc-focusrestore-*`): **MS-IME 本体は最初の打鍵から `か`**(basic・abc・bopen・twice・lshift・shiftchar が strict で PASS、`multi`〈20ms 間隔の 2 打鍵〉は 5/5 が「かか」)。保持は 40 件、**解放の理由は全て `Observed`(`Deadline` 0 件・`Discard` 0 件)、保持の長さは 0〜16ms**(`hook::current_tick_ms` の分解能 ~15.6ms の範囲)。1 回の保持で `held=1`: 20ms 間隔の 2 打鍵目は保持の解放後に届くので、CI の `multi` は**保持中に複数の打鍵が積まれる経路を通っていない**(その順序・上限・窓変化での破棄は状態機械の単体テストで固定)。
+- 未確認(実機 dragonflyg4): 負荷時の保持の長さの分布(100ms の根拠)、保持中に 2 打鍵以上が積まれる高速打鍵、TsfNative + MS-IME 本体(R1 を予約しないので保持しない)。
