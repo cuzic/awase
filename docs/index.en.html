@@ -680,6 +680,24 @@ footer p{margin-bottom:0.3rem}
         <h3>Build from source</h3>
         <div class="code-block">cargo build -p awase-windows --release</div>
       </details>
+
+      <details class="install-alt" id="mozc-readable">
+        <summary>mozc-readable (optional, experimental)</summary>
+        <p style="color:var(--text-secondary);font-size:0.95rem">
+          A build of <a href="https://github.com/google/mozc">Mozc</a>, the open-source edition of Google Japanese Input,
+          that lets other processes read the IME's on/off state and input mode.
+          It exists so awase can use the IME's own value instead of guessing in windows it cannot read.
+          It installs under a separate name from the official Mozc, so both can coexist.
+        </p>
+        <a id="dl-mozc-readable" href="https://github.com/cuzic/mozc-readable/releases" class="btn btn-secondary" style="display:inline-block;margin:0.3rem 0 0.8rem">Download the latest version (MSI)</a>
+        <ul>
+          <li>New upstream (google/mozc) releases are followed and published automatically.</li>
+          <li>The installer is unsigned, so SmartScreen shows a warning. SHA-256 is in the release's <code>SHA256SUMS.txt</code>.</li>
+          <li>awase detects mozc-readable automatically when it is in use. No setting is needed.</li>
+        </ul>
+        <p style="color:var(--text-secondary);font-size:0.88rem">Source: <a href="https://github.com/cuzic/mozc-readable">cuzic/mozc-readable</a> (BSD-3-Clause; not affiliated with Google)</p>
+      </details>
+
     </div>
   </div>
 </section>
@@ -839,6 +857,20 @@ footer p{margin-bottom:0.3rem}
 
     const zipFn = document.getElementById('zip-filename');
     if (zipFn && zip) zipFn.textContent = zip.name;
+  } catch (_) {}
+})();
+
+(async () => {
+  try {
+    const r = await fetch('https://api.github.com/repos/cuzic/mozc-readable/releases?per_page=5');
+    if (!r.ok) return;
+    for (const rel of await r.json()) {
+      const msi = rel.assets?.find(a => a.name.endsWith('.msi'));
+      if (!msi) continue;
+      const el = document.getElementById('dl-mozc-readable');
+      if (el) { el.href = msi.browser_download_url; el.textContent = `Download the latest version (MSI) ${rel.tag_name}`; }
+      break;
+    }
   } catch (_) {}
 })();
 </script>
