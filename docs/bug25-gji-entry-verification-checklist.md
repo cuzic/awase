@@ -5,7 +5,7 @@ GJI（Google 日本語入力）向け「左Shift単独タップ→IME-ON半角�
 Windows実機での動作確認手順。[known-bugs.md](known-bugs.md) BUG-25 追補6が要求する
 「Task 9」チェックリストを、実行可能な手順に展開したもの。
 
-**この機能は既定で無効（`ms_ime_only`）。** 本手順書は `half_width_alnum_toggle = "all"`
+**この機能の既定は `all`（2026-10-18〜。それ以前は `ms_ime_only`）。** 本手順書は `half_width_alnum_toggle = "all"`
 を明示設定した検証環境でのみ実施する。まだ実機ソークが完了しておらず、既知の限界
 （追補5〜8）がいくつかある前提で臨むこと。
 
