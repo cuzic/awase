@@ -54,7 +54,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 - **Windows 専用**で、**mozc-readable を入力方式にしている窓だけ**で値が出ます。公式の Mozc・Google 日本語入力・Microsoft IME には書き出し側がありません。読めない窓は **「不明」** として扱い、キーボード側で「閉」と決め打ちしないでください(誤表示になります)。
 - **現行は version 1** で、IME を Win+Space などで別の IME に切り替えても、最後の状態が残る見込みです(5-1。未実測)。version 2 で `active` を足して直す予定です。それまでは、複数の IME を切り替えて使う人は誤表示があり得ます。
 - 反映の遅さは、CI の実測で、キーを押してから共有メモリに反映されるまで約 61 ms でした。ブリッジの送信と、キーボード側の描画は別にかかります。
-- AppContainer で動くアプリ(UWP など)の窓では読めない見込みです(1 章。未確認)。
+- AppContainer で動くアプリ(UWP など)の窓は、`OpenFileMappingW` では読めず、`NtOpenSection` で名前空間のパスを指定する必要があります(4-4 章)。同梱の例は、この方法に対応していません(通常の窓だけ読めます)。
 - インストーラー(MSI)は署名がなく、SmartScreen の警告が出ます。配布は最初の Release が出てからです(ADR-265)。
 
 ## 1. オブジェクト名
@@ -68,7 +68,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 
 - マッピングは **スレッドごと**です(TSF の状態はスレッドごとに独立。ADR-191)。読み手は、読みたい窓の**キーボードフォーカスを持つスレッド**の ID で開きます(前面窓のスレッドとは限りません。UWP は前面が `ApplicationFrameHost` で、入力は別プロセスの `CoreWindow` のスレッドです)。
 - マッピングの DACL は、LocalSystem・Administrators・現在のユーザーに全権、`ALL APPLICATION PACKAGES` に読み取りです(`WinSandbox::kSharableFileForRead`)。
-- **AppContainer 内のプロセス(UWP など)が作る `Local\` は、`\Sessions\<n>\AppContainerNamedObjects\<AppContainer SID>\` に振り分けられます**。そのため、通常のプロセスの読み手は `Local\mozc-readable-ime-<TID>` の名前では開けない見込みです(未確認、ADR-265 の段階 1 の前に実測する)。開けなければ「その窓では読めない」として扱ってください。
+- **AppContainer 内のプロセス(UWP など)が作る `Local\` は、`\Sessions\<n>\AppContainerNamedObjects\<AppContainer SID>\` に振り分けられます**。そのため、`OpenFileMappingW("Local\\mozc-readable-ime-<TID>")` では届きません。**`NtOpenSection` で、その名前空間の完全なパスを指定すれば外から読めます**(CI で実測済み。4-4 章)。通知イベント(`...-changed`)も同じ名前空間に振り分けられる見込みですが、未確認です。
 
 ## 2. `TipSharedState`(version 1、48 バイト)
 
@@ -145,7 +145,21 @@ UnmapViewOfFile; CloseHandle                # 読むたびに閉じる(ハンド
 - `Local\mozc-readable-ime-changed` は **pulse** です。待っている間に別の処理で忙しかった読み手は取りこぼします。**起きるたびに、読みたいスレッドのブロックを読み直してください**(イベントは「読み直す合図」にだけ使う)。
 - manual-reset のイベントを `SetEvent` の直後に `ResetEvent` するので、待っている全員が起きます。
 
-### 4-4. 古い値への備え
+### 4-4. AppContainer(UWP など)の窓を読む
+
+対象のプロセスが AppContainer で動いているとき、共有メモリは次の名前で作られます(名前に `Local\` は付かない)。
+
+```text
+\Sessions\<セッション番号>\AppContainerNamedObjects\<AppContainer SID の文字列>\mozc-readable-ime-<TID>
+```
+
+読み手は `NtOpenSection`(`SECTION_MAP_READ`)でこのパスを開き、`NtMapViewOfSection` か、得たハンドルを `MapViewOfFile` に渡して読みます。以降の seqlock の手順・受け入れ条件は同じです。
+
+- **実測**: GitHub Actions(windows-2025)で、AppContainer 内で動かした窓(`ReadableCiHost`)のブロックを、AppContainer の外のプロセスから `NtOpenSection(\Sessions\2\AppContainerNamedObjects\S-1-15-2-…\mozc-readable-ime-1908)` で開き(NTSTATUS `0x00000000`)、開閉・モードが入力のたびに期待どおりに変わることを確認しました(mozc-readable の `readable` ブランチ `dbba777`、run `39097062197`)。
+- **未確認**: その検査では、読み手が AppContainer の SID を自分で起動した側から知っています。**任意の窓のプロセスから SID を取る手順**(対象プロセスのトークンの `TokenAppContainerSid`、`OpenProcessToken` が通るか)は、まだ実測していません。セッション番号は `ProcessIdToSessionId` で得られる見込みです。
+- 取れなかったとき(権限・SID が取れない)は、その窓を「不明」として扱ってください。
+
+### 4-5. 古い値への備え
 
 - `update_tick_ms` の新しさでブロックの生死を判定しないでください(変化が無ければ書かないため、長く変わらない窓が「古い」と誤判定される)。生存は `process_id` の照合と、(予定の)`active` で見ます。
 

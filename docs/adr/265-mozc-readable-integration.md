@@ -61,7 +61,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 - 取るフィールドは `tsf_*`(compartment 相当)を既定にする。`effective_*`(入力スコープの上書き後)と食い違うとき(パスワード欄など)の扱いは段階 1 で測って決める。
 - 通知イベントは「読み直す合図」にだけ使う(pulse なので取りこぼす前提)。
 
-**AppContainer**(R1-I12): AppContainer 内のプロセスの `Local\` 名前空間は `AppContainerNamedObjects\<SID>\` へ分かれ、開けない見込みが高い(CI の AppContainer 検査は準備段階で失敗していて結論が無い)。段階 1 の前に、`OpenFileMappingW` で届くか・`NtOpenSection` が要るかを CI で測る。開けなければ「UWP は従来経路」と明記する。
+**AppContainer**(R1-I12): AppContainer 内のプロセスの `Local\` 名前空間は `AppContainerNamedObjects\<SID>\` へ分かれ、`OpenFileMappingW` の `Local\` 名では届かない。**`NtOpenSection` で `\Sessions\<n>\AppContainerNamedObjects\<SID>\mozc-readable-ime-<TID>` を指定すれば外から読めることが CI で実測された**(mozc-readable の run `39097062197`、`readable` の `dbba777`)。未確認なのは、**任意の窓のプロセスから SID を取る手順**(`OpenProcessToken` の `TokenAppContainerSid`)と、通知イベントが同じ名前空間かどうかで、段階 1 で測る。SID が取れない窓は「不明」として従来経路へ戻る。
 
 **設定画面**: 検出状態(未インストール / 有効 / この窓で読めている)の表示と、ダウンロードへのリンクのみ。スイッチは置かない(自動判定が外れた報告が出たら強制オプションを足す)。
 
@@ -143,7 +143,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 
 ## 未確認(段階 1 の前に実測する)
 
-- AppContainer の名前空間(上記)、日本語 UI での TIP の表示名、`SysProcs` コンポーネント GUID の共有、同じプロセスでの 2 つの `mozc_tip64.dll`、サービス表示名の重複時の SCM の挙動。
+- AppContainer の窓からの SID の取得と通知イベントの名前空間(上記)、日本語 UI での TIP の表示名、`SysProcs` コンポーネント GUID の共有、同じプロセスでの 2 つの `mozc_tip64.dll`、サービス表示名の重複時の SCM の挙動。
 - 新プロセスの最初のキーが落ちる件の、公式 Mozc との比較。
 - `tsf_*` と `effective_*` の食い違い(パスワード欄など)。
 - `GITHUB_TOKEN`(ジョブ単位に絞った権限)だけで Release の公開・Issue・series の PR・自己有効化が足りるか(足りなければ fine-grained PAT)。
