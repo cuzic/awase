@@ -139,6 +139,10 @@ pub struct Output {
     /// `deadline_ms`（送信試行時点起点、BUG-13 の元々の cold-start 保護）が
     /// そのまま効く。`shift-conv-guard` と無関係な確認待ちには一切影響しない。
     pub(crate) confirm_gate_deadline_override_ms: std::cell::Cell<u64>,
+    /// ADR-245 追補 2 R1: MS-IME 本体の戻り待ちの復元(`FromResume`)の書き込みが最初に `Written` を返した時刻。
+    /// これ以前に始まった ImmCrossProbe の読みは、書き込み前の状態を見うるので棄却する
+    /// (`state::resume_observation::read_predates_restore_write`)。R1 を予約したときだけ書く。解除しない。
+    pub(crate) resume_restore_floor: std::cell::Cell<Option<crate::state::TickMs>>,
     /// `confirm_gate_deadline_override_ms` の所有権世代（ADR-084 BUG-49 追補2、
     /// Opus pass-5 レビュー指摘）。
     ///
@@ -294,6 +298,7 @@ impl Output {
             raw_focus_hwnd_changed: std::cell::Cell::new(None),
             ms_ime_gate_give_up: std::cell::Cell::new(false),
             confirm_gate_deadline_override_ms: std::cell::Cell::new(0),
+            resume_restore_floor: std::cell::Cell::new(None),
             shift_conv_guard_gen: std::cell::Cell::new(
                 crate::state::focus_gen::ShiftConvGuardGen::INITIAL,
             ),

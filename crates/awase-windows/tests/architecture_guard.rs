@@ -8956,6 +8956,57 @@ fn adr260_eisu_toggle_guard_and_per_axis_follow_are_wired_as_decided() {
     );
 }
 
+/// ADR-245 追補 2 R1: MS-IME 本体の戻り待ちの復元の書き込み直後の読み直しは、FocusProbe の ImmCrossProbe と
+/// 記録を共有し(新しい belief 更新経路を作らない)、書き込みより前に始まった読みを floor で棄却する。
+///
+/// - 記録は `Runtime::record_imm_cross_probe_observation` 1 か所(定義 1・呼び出し 2〈FocusProbe 側と R1〉)。
+///   `write_imm_cross_probe` を呼ぶのは key_pipeline.rs ではそのメソッドの中だけ(`InputModeObserved` の件数は
+///   `input_mode_observed_construction_sites_are_accounted_for` が 2 で固定している)。
+/// - floor の判定(`read_predates_restore_write`)は key_pipeline.rs(最初の打鍵の FocusProbe 起点)と
+///   focus_tracking.rs(フォーカス時)の ImmCrossProbe の両方にある。floor を書くのは復元タスク 1 か所。
+/// - R1 は `FromResume` の復元でだけ ticket を採る(`resume_observation_ticket`)。
+#[test]
+fn resume_observation_r1_shares_recording_and_floor_adr245_add2() {
+    let kp = non_comment_lines(production_code_only(&read_crate_file(
+        "src/runtime/key_pipeline.rs",
+    )));
+    let ft = non_comment_lines(production_code_only(&read_crate_file(
+        "src/runtime/focus_tracking.rs",
+    )));
+    assert_eq!(
+        kp.matches("fn record_imm_cross_probe_observation(").count(),
+        1,
+        "ImmCrossProbe の記録の共有メソッドは 1 つだけ"
+    );
+    assert_eq!(
+        kp.matches(".record_imm_cross_probe_observation(").count(),
+        2,
+        "呼び出しは FocusProbe 起点の ImmCrossProbe と R1 の 2 か所だけ"
+    );
+    assert_eq!(
+        kp.matches(".write_imm_cross_probe(").count(),
+        1,
+        "key_pipeline.rs で write_imm_cross_probe を呼ぶのは共有メソッドの中だけ(R1 に別経路を作らない)"
+    );
+    assert!(
+        kp.contains("read_predates_restore_write(") && ft.contains("read_predates_restore_write("),
+        "floor の判定は FocusProbe 起点とフォーカス時の ImmCrossProbe の両方にある(M-1')"
+    );
+    assert_eq!(
+        kp.matches("resume_restore_floor.set(").count(),
+        1,
+        "floor を書くのは復元タスクの最初の Written の直後 1 か所だけ"
+    );
+    assert!(
+        kp.contains("self.resume_observation_ticket(ownership)"),
+        "R1 は復元の起案の時点(同期)で ticket を採る"
+    );
+    assert!(
+        kp.contains("if ownership != ExitOwnership::FromResume"),
+        "R1 は FromResume の復元でだけ予約する(通常のトグル OFF は変えない)"
+    );
+}
+
 /// ADR-245 PR 2: 半角英数トグルの「戻ってきたときに復元」の配線の形を固定する。
 ///
 /// - 離脱(`ir_notify_focus_changed`)は復元(`kp_restore_kana_from_half_width`)を呼ばない。IME へ何も送らず、

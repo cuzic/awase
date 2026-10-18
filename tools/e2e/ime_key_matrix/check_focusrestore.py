@@ -137,6 +137,11 @@ def verdict(cfg, t, stages, awase):
     else:
         if text != typed["expect"]:
             why.append(f"戻って最初の打鍵がかなにならない(本文 {text!r}、期待 {typed['expect']!r})")
+        # ADR-245 追補 2 R1: 復元の書き込みの後に A の開閉を読み直して belief に記録するので、2 打鍵目からは Engine が効く
+        # (R2=最初の打鍵の保持が入るまで、最初の打鍵 `text` は上で落ちてよい)。typed2 が無い古い結果は見ない。
+        typed2 = (t.get("typed2") or {}).get("text")
+        if typed2 is not None and typed2.strip() != typed["expect"]:
+            why.append(f"2 打鍵目もかなにならない(typed2 {typed2.strip()!r}、期待 {typed['expect']!r}。復元の後に belief が追随していない)")
         if typed_conv is None or not typed_conv & NATIVE:
             why.append(f"typed 時点の A の conv に NATIVE が無い(conv={hx(typed_conv)})")
     return why

@@ -2553,6 +2553,94 @@ impl Runtime {
         }
     }
 
+    /// ImmCrossProbe の読み(`read_ime_state_full_async` の結果)を High の観測として記録する。FocusProbe の
+    /// ImmCrossProbe と、ADR-245 追補 2 R1(MS-IME 本体の復元の書き込み直後の読み直し、`resume = true`)が共有する。
+    ///
+    /// 手順は括り出す前と同じ: `write_imm_cross_probe` → `effective_open()` を読む → `classify_fetched_snapshot` →
+    /// 英数の候補の更新 → `InputModeObserved`(ImmCrossProbe/High)。新しい観測元・belief の更新経路は作らない。
+    /// 呼び出し側は admission(`admit_epoch_in_app`)を通した `accepted` を渡す。floor の判定は呼び出し側で行う
+    /// (R1 自身の記録は floor を通さない)。
+    pub(super) fn record_imm_cross_probe_observation(
+        &mut self,
+        snap: &crate::ime::ImeSnapshot,
+        open: bool,
+        read_started: crate::state::TickMs,
+        accepted: crate::state::probe_admission::AcceptedObservation,
+        resume: bool,
+    ) {
+        let tick_ms = read_started;
+        let ime = &mut self.platform_state.ime;
+        // ON/OFF: High confidence (ImmCrossProbe source)
+        ime.write_imm_cross_probe(open, tick_ms, accepted);
+        if resume {
+            // 段階 1(ADR-245 追補 2 決定 5): 書き込み直後の読みが開・閉のどちらを返すかの分布を CI で数える。
+            tracing::info!(
+                "[ImmCrossProbe/resume] child-hwnd IME={open} conv={:?} → High confidence 観測記録",
+                snap.conversion_mode.map(|c| format!("0x{c:08X}"))
+            );
+        } else {
+            tracing::debug!(
+                "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
+            );
+        }
+        // input_mode: Observe → pure decision → belief
+        // classify_fetched_snapshot = classify_ime_snapshot の同期 wrapper。
+        // ObservedEisu stale 回復を含む全 input_mode 判定をここに集約する。
+        let update = crate::observer::ime_observer::classify_fetched_snapshot(
+            snap,
+            tick_ms.0,
+            ime.effective_open(),
+            ime.is_force_on_guard_active(),
+            ime.input_mode(),
+            ime.belief.eisu_candidate(),
+            self.platform.focus.process_name(),
+        );
+        // ADR-238: 英数の候補も更新する(この経路は `input_mode` だけを dispatch するので、
+        // 候補の更新を `apply_ime_update` 経由で受けられない)。
+        ime.apply_eisu_candidate_update(update.eisu_candidate);
+        if let Some(mode) = update.new_input_mode {
+            use crate::state::ime_event::{ImeEvent, ObservationConfidence, ObservationSource};
+            ime.dispatch_event(
+                ImeEvent::InputModeObserved {
+                    mode,
+                    source: ObservationSource::ImmCrossProbe,
+                    confidence: ObservationConfidence::High,
+                },
+                tick_ms,
+            );
+        }
+    }
+
+    /// ADR-245 追補 2 R1 を予約できるなら、読みの宛先の ticket を返す(Resume の判断の時点で、同期に採る)。
+    ///
+    /// 前提: MS-IME 本体の戻り待ちの復元(`FromResume`)で、FocusProbe の ImmCrossProbe と同じ条件
+    /// (`AppImeProfile::Standard` かつ `is_japanese_ime`)、かつフォーカス追跡が前面窓に追いついていること
+    /// (`lang_detect_focus_in_sync()` に `tracked_root != 0` を足したもの。追跡側の root が未確定のときは、同一プロセスの
+    /// 別窓で B の fence を採りうる)。満たさなければ `None`(R1 は何もしない=PR 2 のままの挙動)。
+    fn resume_observation_ticket(
+        &self,
+        ownership: ExitOwnership,
+    ) -> Option<crate::state::probe_admission::ImmLikeTicket> {
+        if ownership != ExitOwnership::FromResume {
+            return None;
+        }
+        let eligible = matches!(
+            self.platform.current_app_profile(),
+            crate::focus::classify::AppImeProfile::Standard,
+        ) && self.platform_state.ime.belief.is_japanese_ime()
+            && self.platform.focus.current.root_hwnd != 0
+            && self.lang_detect_focus_in_sync();
+        if !eligible {
+            tracing::debug!(
+                "[ImmCrossProbe/resume] 予約しない (プロファイル/日本語 IME/フォーカス追跡の一致が揃わない)"
+            );
+            return None;
+        }
+        Some(crate::state::probe_admission::ImmLikeTicket {
+            fence: self.focus_fence(),
+        })
+    }
+
     /// 「IME-ON 半角英数」からかな入力への復元（トグルOFF・安全網の復元の共通処理）。
     ///
     /// 責務は belief 更新 + 復元注入 + `half_width_alnum_toggle_active=false` に
@@ -2725,6 +2813,8 @@ impl Runtime {
             // フォーカス変更は既存の `still_owner` チェックで先に検知される
             // （時間軸のフェンスは既存。ADR-086 が足すのは hwnd＝空間軸の検証）。
             let focus_gen = self.platform.output.ime_mode_focus_gen.get();
+            // ADR-245 追補 2 R1: 書き込みが最初に `Written` を返した直後に A の開閉を読み直して記録する。
+            let mut r1_ticket = self.resume_observation_ticket(ownership);
 
             win32_async::spawn_local(async move {
                 // MS-IME の誤切替は shift up の後いつ来るか不定（実測: 478ms 後の
@@ -2783,7 +2873,39 @@ impl Runtime {
                         })
                         .await;
                     match outcome {
-                        crate::ime::ActuationOutcome::Written => {}
+                        crate::ime::ActuationOutcome::Written => {
+                            if let Some(ticket) = r1_ticket.take() {
+                                // ADR-245 追補 2 R1: floor を立て(これ以前に始まった ImmCrossProbe の読みは棄却される)、
+                                // 160ms のスリープの前に開閉を読み直す。R1 自身の記録は floor を通さない。
+                                let floor_at = crate::state::TickMs(hook::current_tick_ms());
+                                let _ = crate::with_app(|runtime| {
+                                    runtime.platform.output.resume_restore_floor.set(Some(floor_at));
+                                });
+                                let read_started = crate::state::TickMs(hook::current_tick_ms());
+                                let snap = crate::ime::read_ime_state_full_async().await;
+                                let _ = crate::with_app(|app| match snap.ime_on {
+                                    Some(open) => {
+                                        crate::probe_rejection_stats::admit_epoch_in_app(
+                                            app,
+                                            ticket,
+                                            "[ImmCrossProbe/resume] epoch rejected (focus changed since restore)",
+                                            |app, accepted| {
+                                                app.record_imm_cross_probe_observation(
+                                                    &snap,
+                                                    open,
+                                                    read_started,
+                                                    accepted,
+                                                    true,
+                                                );
+                                            },
+                                        );
+                                    }
+                                    None => tracing::info!(
+                                        "[ImmCrossProbe/resume] ime_on=None (読めず、記録なし)"
+                                    ),
+                                });
+                            }
+                        }
                         crate::ime::ActuationOutcome::Failed => {
                             tracing::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
                         }
@@ -3269,47 +3391,29 @@ impl Runtime {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
+                        // ADR-245 追補 2 R1: 復元の書き込みの前に始まった読みは、書き込み前の状態(閉・英数)を見うる。
+                        // R1 の記録より後に着いて同じ枠を上書きしないよう棄却する(floor が無ければ従来どおり)。
+                        if crate::state::resume_observation::read_predates_restore_write(
+                            read_started,
+                            app.platform.output.resume_restore_floor.get(),
+                        ) {
+                            tracing::debug!(
+                                "[ImmCrossProbe] 復元の書き込みより前に始まった読みを棄却 (R1 floor)"
+                            );
+                            return;
+                        }
                         crate::probe_rejection_stats::admit_epoch_in_app(
                             app,
                             ticket,
                             "[ImmCrossProbe] epoch rejected (focus changed since probe spawn)",
                             |app, inner_accepted| {
-                                let tick_ms = read_started;
-                                let ime = &mut app.platform_state.ime;
-                                // ON/OFF: High confidence (ImmCrossProbe source)
-                                ime.write_imm_cross_probe(open, tick_ms, inner_accepted);
-                                tracing::debug!(
-                                    "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
+                                app.record_imm_cross_probe_observation(
+                                    &snap,
+                                    open,
+                                    read_started,
+                                    inner_accepted,
+                                    false,
                                 );
-                                // input_mode: Observe → pure decision → belief
-                                // classify_fetched_snapshot = classify_ime_snapshot の同期 wrapper。
-                                // ObservedEisu stale 回復を含む全 input_mode 判定をここに集約する。
-                                let update =
-                                    crate::observer::ime_observer::classify_fetched_snapshot(
-                                        &snap,
-                                        tick_ms.0,
-                                        ime.effective_open(),
-                                        ime.is_force_on_guard_active(),
-                                        ime.input_mode(),
-                                        ime.belief.eisu_candidate(),
-                                        app.platform.focus.process_name(),
-                                    );
-                                // ADR-238: 英数の候補も更新する(この経路は `input_mode` だけを dispatch するので、
-                                // 候補の更新を `apply_ime_update` 経由で受けられない)。
-                                ime.apply_eisu_candidate_update(update.eisu_candidate);
-                                if let Some(mode) = update.new_input_mode {
-                                    use crate::state::ime_event::{
-                                        ImeEvent, ObservationConfidence, ObservationSource,
-                                    };
-                                    ime.dispatch_event(
-                                        ImeEvent::InputModeObserved {
-                                            mode,
-                                            source: ObservationSource::ImmCrossProbe,
-                                            confidence: ObservationConfidence::High,
-                                        },
-                                        tick_ms,
-                                    );
-                                }
                             },
                         );
                     });
