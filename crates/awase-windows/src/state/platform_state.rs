@@ -2060,6 +2060,7 @@ impl ImeStateHub {
     pub(crate) fn report_mozc_shm(
         &mut self,
         shm: &crate::state::mozc_shm::ShmState,
+        update_tick_ms: u64,
         now_ms: u64,
         baseline_ms: u64,
         tick_ms: TickMs,
@@ -2069,6 +2070,7 @@ impl ImeStateHub {
         let desired = self.shadow_model.desired_open();
         let decision = decide_use(
             shm,
+            update_tick_ms,
             now_ms,
             baseline_ms,
             crate::tuning::KEY_EFFECT_SETTLE_MS,

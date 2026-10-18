@@ -1503,7 +1503,6 @@ mod tests {
             tsf_mode: Some(CompositionMode::Hiragana),
             effective_open: open,
             effective_mode: Some(CompositionMode::Hiragana),
-            update_tick_ms: 0,
         }
     }
 

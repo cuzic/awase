@@ -70,11 +70,12 @@ impl super::Runtime {
         // ADR-268: 受け入れた読みを belief に使う（IME へは何も書かない）。1 tick に 1 回、変化の有無によらず
         // 報告する（`MozcShm` の観測は TTL を持ち、報告が止まると失効するため）。基準の時刻は、awase の最後の操作
         // （全キー + ImmCross の発行）。`now_ms`・`update_tick_ms` は共に `GetTickCount64`。
-        if let Outcome::Accepted(shm) = &outcome {
+        if let (Outcome::Accepted(shm), Ok(raw)) = (&outcome, &reading.block) {
             let now_ms = crate::hook::current_tick_ms();
             let baseline_ms = crate::hook::last_operation_tick_ms();
             self.platform_state.ime.report_mozc_shm(
                 shm,
+                raw.update_tick_ms,
                 now_ms,
                 baseline_ms,
                 crate::state::TickMs(now_ms),
