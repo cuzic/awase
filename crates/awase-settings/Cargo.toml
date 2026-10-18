@@ -57,6 +57,9 @@ features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Networking_WinHttp",
+    # CreateMutexW（update_check.rs）の SECURITY_ATTRIBUTES 引数。以前は wgpu 系の
+    # 依存が windows crate の同 feature を有効にしていたことに頼っていた。
+    "Win32_Security",
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
