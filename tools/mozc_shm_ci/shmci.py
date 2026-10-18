@@ -197,7 +197,8 @@ def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace
     reqs = [e for e in events if e.get("ev") == "flipreq"]
     if reqs:
         stats["flip_requests"] = {"total": len(reqs), "handled": sum(1 for e in reqs if e.get("handled")),
-                                  "state_changes": sum(1 for e in events if e.get("ev") == "truth" and e.get("flip"))}
+                                  "state_changes": sum(1 for e in events if e.get("ev") == "truth" and e.get("flip")),
+                                  "sample": [(e.get("fg"), e.get("hwnd")) for e in reqs[:4]]}
     stats["interval"] = interval
     ok = problems == 0 and stats["accepted_known"] >= min_accepted
     if require_inactive and stats["rejected_inactive"] == 0:
@@ -562,11 +563,12 @@ def host_thread_main(w, name, want_open, ready_evt, results, idx, run_until, swi
         if win.pending is not None:
             want, win.pending = win.pending, None
             # 窓がまだ前面のときだけ送る(前面を奪い返すと、記録に無いフォーカス移動になる)。set_open と同じ経路で送る。
-            handled = w.u32.GetForegroundWindow() == win.hwnd
+            fgw = w.u32.GetForegroundWindow()
+            handled = fgw == win.hwnd
             if handled:
                 win.focus()
                 w.send_vk(0xF2 if want else 0x19)
-            emit({"ev": "flipreq", "t": time.time(), "tid": win.tid, "handled": handled})
+            emit({"ev": "flipreq", "t": time.time(), "tid": win.tid, "handled": handled, "fg": fgw, "hwnd": win.hwnd})
         if switch_after and not switched and time.time() - t0 >= switch_after:
             switched = True
             # TIP の無いレイアウトへ切り替える(セッション全体に効く)。active が 0 になるのを待つ。

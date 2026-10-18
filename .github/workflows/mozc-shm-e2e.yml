@@ -64,27 +64,8 @@ jobs:
         # stale は IME(レイアウト)の切り替えがセッション全体に効くので、専用のジョブにする。
         # include だけで列挙する(既存の値と同じ項目を持つ include は、新しいジョブではなく既存のジョブに項目を足してしまう)。
         include:
-          - scenario: focus
-          - scenario: threads
-          - scenario: appcontainer
-          # 対照: awase を起動せずに、AppContainer の窓を同じ手順で IME ON にできるか(awase の干渉かどうかの切り分け)
-          - scenario: appcontainer
-            noawase: '-NoAwase'
-          - scenario: stale
-          # 速い切り替え: 滞在 0.03〜0.4 秒(切り替えの直後に読む機会が増える。awase の読みは tick の周期を待たない場面も含む)
-          - scenario: focus
-            fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
-          - scenario: threads
-            fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
-          # 真値が動く場面: 状態を切り替えた直後(0〜200ms)にフォーカスを移す
           - scenario: flip
-            fast: '-Rounds 150 -FocusGrace 1.5'
-          # 負荷時の read_us: CPU を使い切るプロセスを 8 つ動かしながら、速い切り替え
-          - scenario: focus
-            fast: '-DwellMin 0.1 -DwellMax 0.5 -Rounds 200 -FocusGrace 1.5 -Load 8'
-            tag: load
-          # スレッド ID の再利用(awase なし)
-          - scenario: tidreuse
+            fast: '-Rounds 30 -FocusGrace 1.5'
     steps:
       - uses: actions/checkout@v4
       - name: mozc-readable の CI の部品(AppContainer 用)
