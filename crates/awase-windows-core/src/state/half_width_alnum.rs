@@ -599,6 +599,7 @@ pub enum DropReason {
     /// 「IME モードの役割」のキー。ユーザーが選んだモードを上書きしない。
     ImeModeRole,
     /// `effective_open()` が偽（B から持ち越された偽。belief が閉なのにトグルを立て直すと辻褄が合わない）。
+    /// GJI のエントリだけ（MS-IME 本体は半角英数トグル中に閉と読まれるので見ない）。
     EffectiveOpenFalse,
     /// Enter 時と照合時の IME 種別が違う。
     ImeKindMismatch,
@@ -681,7 +682,8 @@ pub struct KeyStageFacts {
 /// 0. KeyDown でない・auto-repeat・注入 → `Nothing`（S-PR2-2）
 /// 1. 修飾キー自身 → `Nothing`
 /// 2. IME モードの役割のキー（親指キーを除く） → `Drop(ImeModeRole)`
-/// 3. effective_open 偽・IME 種別不一致・app_disabled・寿命切れ → `Drop(..)`
+/// 3. effective_open 偽(GJI のみ。MS-IME 本体は半角英数トグル中に閉と読まれるので見ない)・IME 種別不一致・
+///    app_disabled・寿命切れ → `Drop(..)`
 /// 4. GJI で F2 が SET と確かめられない → `RebuildToggle`（修飾キーの有無を問わない）
 /// 5. 物理の修飾キー押下中 → `Deferred`
 /// 6. それ以外（親指キー+文字を含む） → `Resume`
@@ -693,7 +695,10 @@ pub const fn plan_key_stage(f: &KeyStageFacts) -> KeyStagePlan {
     if f.is_ime_mode_role_key && !f.is_thumb_key {
         return KeyStagePlan::Drop(DropReason::ImeModeRole);
     }
-    if !f.effective_open {
+    // MS-IME 本体(IMC 経路)は窓ごとに IME の状態を持ち、B の閉は A に持ち越されない。しかも半角英数トグル中の
+    // A 自身が閉(`imm=C`)と読まれる(CI run 39119247220: 戻った A は `imm=C/0x10`)。偽を持ち越しとみなすのは
+    // TSF 系(GJI)の窓だけ。
+    if !f.effective_open && !f.entry.uses_imc_conv_write {
         return KeyStagePlan::Drop(DropReason::EffectiveOpenFalse);
     }
     if f.entry.uses_imc_conv_write != f.uses_imc_conv_write_now {
@@ -1527,7 +1532,7 @@ mod tests {
             (
                 KeyStageFacts {
                     effective_open: false,
-                    ..facts()
+                    ..gji_facts()
                 },
                 DropReason::EffectiveOpenFalse,
             ),
@@ -1571,12 +1576,29 @@ mod tests {
         let f = KeyStageFacts {
             effective_open: false,
             physical_modifier_down: true,
-            ..facts()
+            ..gji_facts()
         };
         assert_eq!(
             plan_key_stage(&f),
             KeyStagePlan::Drop(DropReason::EffectiveOpenFalse)
         );
+    }
+
+    /// 行 3: MS-IME 本体(IMC 経路)は effective_open 偽でも Drop しない(半角英数トグル中の A 自身が閉と読まれる)。
+    /// 物理の修飾キー押下中なら Deferred、そうでなければ Resume。
+    #[test]
+    fn key_stage_msime_ignores_effective_open_false() {
+        let f = KeyStageFacts {
+            effective_open: false,
+            ..facts()
+        };
+        assert_eq!(plan_key_stage(&f), KeyStagePlan::Resume);
+        let f = KeyStageFacts {
+            effective_open: false,
+            physical_modifier_down: true,
+            ..facts()
+        };
+        assert_eq!(plan_key_stage(&f), KeyStagePlan::Deferred);
     }
 
     /// 寿命はちょうど上限なら有効（Resume）。
