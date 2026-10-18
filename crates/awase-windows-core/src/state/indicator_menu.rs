@@ -358,6 +358,49 @@ impl MenuOutcome {
     }
 }
 
+impl MenuOutcome {
+    /// journal の記録に変換する（純粋）。`profile`・`belief_open` は、メニューを開いた時点のもの。
+    ///
+    /// 項目の名前・`AutomationId` は記録に含めない（他のアプリのメニューの内容を残さない。ADR-264 決定 6）。
+    #[must_use]
+    pub fn to_record(
+        &self,
+        profile: &'static str,
+        belief_open: Option<bool>,
+    ) -> crate::journal::IndicatorMenuRecord {
+        let (verdict, mode, open, evidence, miss_reason) = match self.result {
+            Ok(r) => (
+                "hit",
+                Some(r.mode.label()),
+                r.open,
+                Some(r.evidence.label()),
+                None,
+            ),
+            Err(reason) => ("miss", None, None, None, Some(reason.label())),
+        };
+        crate::journal::IndicatorMenuRecord {
+            ime: self.ime.label(),
+            verdict,
+            mode,
+            open,
+            evidence,
+            miss_reason,
+            item_count: u32::from(self.item_count),
+            read_ms: u32::from(self.read_ms),
+            profile,
+            belief_open,
+        }
+    }
+}
+
+/// 点 `(x, y)` が矩形 `[left, right) × [top, bottom)` の中にあるか（Win32 の `RECT` と同じ半開区間）。
+///
+/// カーソルがタスクバーの上にあるときだけメニューを読む前置きのフィルタに使う（ADR-264 決定 1）。
+#[must_use]
+pub const fn rect_contains(left: i32, top: i32, right: i32, bottom: i32, x: i32, y: i32) -> bool {
+    x >= left && x < right && y >= top && y < bottom
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,6 +709,62 @@ mod tests {
         assert_eq!(MenuOutcome::unpack((1 << 1) | (1 << 5), 0), None);
         // 開閉が 3(未定義)
         assert_eq!(MenuOutcome::unpack(3 << 5, 0), None);
+    }
+
+    #[test]
+    fn to_record_keeps_no_menu_contents_and_names_hit_and_miss() {
+        let hit = outcome(
+            MenuIme::Gji,
+            Ok(MenuReading {
+                ime: MenuIme::Gji,
+                mode: MenuMode::DirectInput,
+                open: Some(false),
+                evidence: Evidence::Observed,
+            }),
+            11,
+            109,
+        )
+        .to_record("imm32-unavailable", Some(true));
+        assert_eq!(hit.ime, "gji");
+        assert_eq!(hit.verdict, "hit");
+        assert_eq!(hit.mode, Some("direct-input"));
+        assert_eq!(hit.open, Some(false));
+        assert_eq!(hit.evidence, Some("observed"));
+        assert_eq!(hit.miss_reason, None);
+        assert_eq!((hit.item_count, hit.read_ms), (11, 109));
+        assert_eq!(hit.profile, "imm32-unavailable");
+        assert_eq!(hit.belief_open, Some(true));
+
+        let miss = outcome(MenuIme::MsIme, Err(MissReason::MissingModeItems), 7, 33)
+            .to_record("standard", None);
+        assert_eq!(miss.ime, "ms-ime");
+        assert_eq!(miss.verdict, "miss");
+        assert_eq!((miss.mode, miss.open, miss.evidence), (None, None, None));
+        assert_eq!(miss.miss_reason, Some("missing-mode-items"));
+        assert_eq!(miss.belief_open, None);
+    }
+
+    /// 本物の MS-IME の半角英数は開閉不明のまま記録される(閉と読まない)。
+    #[test]
+    fn to_record_keeps_open_unknown_for_msime_half_alnum() {
+        let r = classify_menu(MenuIme::MsIme, &msime("Item 105")).unwrap();
+        let rec = outcome(MenuIme::MsIme, Ok(r), 16, 84).to_record("tsf-native", Some(false));
+        assert_eq!(rec.mode, Some("half-alnum"));
+        assert_eq!(rec.open, None);
+    }
+
+    #[test]
+    fn rect_contains_is_half_open_like_win32_rect() {
+        // CI の実測: タスクバー (0,720)-(1024,768)、右クリックしたカーソルは y=744
+        assert!(rect_contains(0, 720, 1024, 768, 832, 744));
+        assert!(rect_contains(0, 720, 1024, 768, 0, 720), "左上の角は内側");
+        assert!(!rect_contains(0, 720, 1024, 768, 1024, 744), "右端は外側");
+        assert!(!rect_contains(0, 720, 1024, 768, 832, 768), "下端は外側");
+        assert!(!rect_contains(0, 720, 1024, 768, 832, 719), "上は外側");
+        assert!(!rect_contains(0, 720, 1024, 768, -1, 744), "左は外側");
+        // 自動非表示で画面の外へ出たタスクバー (0,766)-(1024,814): 画面内のカーソルは 2 画素だけ重なる
+        assert!(rect_contains(0, 766, 1024, 814, 500, 767));
+        assert!(!rect_contains(0, 766, 1024, 814, 500, 700));
     }
 
     #[test]
