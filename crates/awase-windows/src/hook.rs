@@ -748,6 +748,13 @@ pub fn set_focus_app_disabled(disabled: bool) {
         .store(disabled, Ordering::Release);
 }
 
+/// 現在フォーカス中のアプリで awase が無効化されているか（`disable_apps` にマッチ）。
+/// 半角英数トグルの戻り待ちの復元（ADR-245）が、無効化された窓では復元しないために読む。
+#[must_use]
+pub fn is_focus_app_disabled() -> bool {
+    HOOK_STATE.focus_app_disabled.load(Ordering::Acquire)
+}
+
 /// `GeneralConfig::swallow_alt_kana_input_method_switch` を設定する（config 読み込み後に呼ぶ）。
 pub fn set_swallow_alt_kana_mode_switch(enabled: bool) {
     HOOK_STATE

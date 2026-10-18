@@ -217,7 +217,7 @@ impl super::Runtime {
     /// `demoted_by_learning`・belief・`focus_kind` が**前の窓**の値のことがある。そのまま使うと、たとえば
     /// 一太郎から Chrome へ移った直後に、一太郎の値で Chrome の打鍵を保持し、Chrome へひらがなキーを送ってしまう。
     /// 同じプロセスの別の窓（一太郎の文書の窓、Chrome の窓間）の切替も見逃さないよう、hwnd も比べる。
-    fn lang_detect_focus_in_sync(&self) -> bool {
+    pub(super) fn lang_detect_focus_in_sync(&self) -> bool {
         let foreground = crate::win32::foreground_scope();
         if !foreground.is_valid() || foreground.pid != self.platform.focus.pid() {
             return false;

@@ -545,6 +545,7 @@ const CORE_MODULES: &[&str] = &[
     "generation",
     "gji_direct_mechanism",
     "half_width_alnum",
+    "resume_observation",
     "foreign_modifier",
     "hook_state",
     "hub_clock",

@@ -21,7 +21,7 @@ GRANDFATHERED = os.path.join(HERE, "observe_grandfathered.txt")
 
 # plan の only 絞り込みを通さず全構成を得るためのパターン(先頭 1 文字の前方一致で全部拾い、除外対象の接頭辞は明示)。
 ONLY_ALL = ",".join([c + "*" for c in "abcdefghijklmnopqrstuvwxyz0123456789"] +
-                    ["sc-keymatrix-*", "sc-offrca-*", "sc-bug149-*", "sc-table-*", "sc-preedit-*"])
+                    ["sc-keymatrix-*", "sc-offrca-*", "sc-bug149-*", "sc-table-*", "sc-preedit-*", "sc-focusrestore-*"])
 
 
 def plan_source(workflow_path=WORKFLOW):

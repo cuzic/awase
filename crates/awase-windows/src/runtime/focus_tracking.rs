@@ -814,6 +814,16 @@ impl Runtime {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
+                        // ADR-245 追補 2 R1: 復元の書き込みの前に始まった読みは棄却する(floor が無ければ従来どおり)。
+                        if crate::state::resume_observation::read_predates_restore_write(
+                            read_started,
+                            app.platform.output.resume_restore_floor.get(),
+                        ) {
+                            tracing::debug!(
+                                "[ImmCrossProbe/focus] 復元の書き込みより前に始まった読みを棄却 (R1 floor)"
+                            );
+                            return;
+                        }
                         crate::probe_rejection_stats::admit_epoch_in_app(
                             app,
                             ticket,

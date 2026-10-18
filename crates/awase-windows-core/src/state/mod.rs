@@ -216,6 +216,8 @@ pub mod transition;
 // 呼び出し元（executor.rs）は `#[cfg(windows)]` のため非 Windows では未使用。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod relay_plan;
+// ADR-245 追補 2 R1: 復元の書き込み直後の読み直しと、それより前に始まった ImmCrossProbe の読みの棄却の判定。
+pub mod resume_observation;
 // FCIS F6: `output/mod.rs`・`output/vk_send.rs` の「probe/recovery 進行中は退避する」判断の核（純粋）。
 // 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。
 #[cfg_attr(not(windows), allow(dead_code))]
