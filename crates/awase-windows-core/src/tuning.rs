@@ -68,6 +68,16 @@ pub const EISU_CANDIDATE_LIFETIME_MS: u64 = 1_500;
 #[measured_macro::measured(pending = true)]
 pub const OBSERVATION_FRESH_WINDOW_MS: u64 = 3_000;
 
+/// mozc-readable の共有メモリの観測（`ObservationSource::MozcShm`）の有効期間 (ms)（ADR-268 D1）。
+///
+/// `ObservationStore::record_any` が `expires_at = at + この値` を付ける。報告が止まった（TIP が外れた・別窓・読めなくなった）
+/// あと、belief が古い値を採り続けないための期限。IME リフレッシュの tick の**最大間隔**より長くすること:
+/// tick のタイマー 500ms + prefetch（`run_with_timeout`）の最大待ち 300ms + ジッターの余裕 200ms = 1000ms。
+/// 500ms + 小さな余裕では、prefetch がタイムアウトした tick で期限が切れ、belief が一瞬フォールバックへ反転する。
+/// 実測根拠は未取得（tick 間隔の分布を実機の `awase.log` から測って、値を見直す）ので pending。
+#[measured_macro::measured(pending = true)]
+pub const MOZC_SHM_OBSERVATION_TTL_MS: u64 = 1_000;
+
 // === TSF warmup タイミング ===
 
 /// cold 発生前のアイドル時間がこれ以上なら「長期 idle」と判定する (ms)。

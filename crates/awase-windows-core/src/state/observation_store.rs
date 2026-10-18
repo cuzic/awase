@@ -252,6 +252,8 @@ pub struct PerSourceObservations {
     /// `ConvBitsInference`（input_mode 専用）とは別枠で、こちらは open/close の
     /// 観測として正式に扱う。常に `ObservationConfidence::Medium` 以下で record される。
     pub conv_open_inference: Option<ImeObservation>,
+    /// mozc-readable の共有メモリの `tsf_open`（ADR-268）。High・BeliefOnly。`record_any` が `expires_at`（TTL）を付ける。
+    pub mozc_shm: Option<ImeObservation>,
 }
 
 impl PerSourceObservations {
@@ -268,6 +270,7 @@ impl PerSourceObservations {
             ObservationSource::ImmCrossProbe => self.imm_cross_probe.as_ref(),
             ObservationSource::HeuristicDefault => self.heuristic_default.as_ref(),
             ObservationSource::ConvOpenInference => self.conv_open_inference.as_ref(),
+            ObservationSource::MozcShm => self.mozc_shm.as_ref(),
             // ConvBitsInference / GjiIoInference は input_mode 専用ソースで
             // ON/OFF 観測としては記録されない。
             ObservationSource::ConvBitsInference | ObservationSource::GjiIoInference => None,
@@ -295,6 +298,7 @@ impl PerSourceObservations {
             ObservationSource::ImmCrossProbe => self.imm_cross_probe = Some(obs),
             ObservationSource::HeuristicDefault => self.heuristic_default = Some(obs),
             ObservationSource::ConvOpenInference => self.conv_open_inference = Some(obs),
+            ObservationSource::MozcShm => self.mozc_shm = Some(obs),
             // ConvBitsInference / GjiIoInference は InputModeObserved 専用ソースで
             // ObserverReported（ON/OFF 観測）としては dispatch されないため、
             // この store には記録されない。
@@ -314,6 +318,7 @@ impl PerSourceObservations {
             self.imm_cross_probe.as_ref(),
             self.heuristic_default.as_ref(),
             self.conv_open_inference.as_ref(),
+            self.mozc_shm.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -330,6 +335,7 @@ impl PerSourceObservations {
         self.imm_cross_probe = None;
         self.heuristic_default = None;
         self.conv_open_inference = None;
+        self.mozc_shm = None;
     }
 }
 
@@ -468,7 +474,13 @@ impl ObservationStore {
                 at,
                 hwnd: observed.hwnd(),
                 confidence: observed.confidence(),
-                expires_at: None,
+                // ADR-268 D1: 共有メモリの観測だけが TTL を持つ（ほかの source は従来どおり無期限）。`at` から決まる値なので
+                // journal の再生でも同じ結果になる。`derive_any`・`most_recent_trusted`・`_excluding`・`consensus` の全読み手が
+                // `is_expired` を見るので、同時に失効する（`derive_filtered` の鮮度窓だけでは、フォールバックの
+                // `most_recent_trusted` が古い値を無期限に採ってしまう）。
+                expires_at: (source == ObservationSource::MozcShm).then(|| {
+                    at + Duration::from_millis(crate::tuning::MOZC_SHM_OBSERVATION_TTL_MS)
+                }),
                 focus_epoch: observed.focus_epoch(),
             },
         );
@@ -664,9 +676,12 @@ impl ObservationStore {
             // `Converged`（`Read` policy の収束確認、`OsPoll` 戦略の genuine
             // な `ObserverPoll` に依存）には一切影響しない。
             ReadBackQuery::AnyFreshEvidence => {
-                const EXCLUDED_FROM_ANY_FRESH_EVIDENCE: [ObservationSource; 2] = [
+                const EXCLUDED_FROM_ANY_FRESH_EVIDENCE: [ObservationSource; 3] = [
                     ObservationSource::ObserverPoll,
                     ObservationSource::ConvOpenInference,
+                    // ADR-268 D2: 共有メモリは数百 ms ごとに新しく記録され続けるので、除外しないと Blind の `GiveUp` 後の
+                    // クールダウンが無意味になり、再武装のループになる（BUG-114 と同型）。
+                    ObservationSource::MozcShm,
                 ];
                 let latest = self.most_recent_trusted_after_excluding(
                     now,
@@ -844,7 +859,9 @@ impl ObservationStore {
         // 両方を同時に埋めるため、片側だけ古くなるバグクラスは構造的に発生しない）。
         // 比較の瞬間だけ `FocusFence` に組み立てて `current_fence` と照合する。
         let is_identity_ok = |o: &ImeObservation| match o.source {
-            ObservationSource::ImmCrossProbe | ObservationSource::FocusProbe => {
+            ObservationSource::ImmCrossProbe
+            | ObservationSource::FocusProbe
+            | ObservationSource::MozcShm => {
                 let obs_fence = FocusFence {
                     epoch: o.focus_epoch,
                     hwnd: o.hwnd,
@@ -1476,6 +1493,130 @@ mod tests {
             "ConvOpenInference 単独の新しい観測も AnyFreshEvidence の再武装条件に\
              してはならない (BUG-114/ADR-134 Finding 5 第2弾、実機確認済み)"
         );
+    }
+
+    fn shm_accepted(open: bool) -> super::super::mozc_shm::ShmState {
+        use super::super::mozc_shm::CompositionMode;
+        super::super::mozc_shm::ShmState {
+            version: 2,
+            tsf_open: open,
+            tsf_mode: Some(CompositionMode::Hiragana),
+            effective_open: open,
+            effective_mode: Some(CompositionMode::Hiragana),
+        }
+    }
+
+    fn record_shm(s: &mut ObservationStore, open: bool, at: Instant) {
+        use super::super::evidence::{MozcShm, Observed};
+        s.record_belief(
+            Observed::<MozcShm>::from_shm(&shm_accepted(open), open, HwndId::NULL, 0),
+            at,
+        );
+    }
+
+    /// ADR-268 D1: 共有メモリの観測だけが TTL を持ち、全読み手（`derive_any`・`most_recent_trusted`・`_excluding`）が
+    /// 同時に失効を見る。`derive_filtered` の鮮度窓だけでは、フォールバックの `most_recent_trusted` が古い値を無期限に採る。
+    #[test]
+    fn mozc_shm_expires_in_every_reader_after_the_ttl() {
+        let ttl = Duration::from_millis(crate::tuning::MOZC_SHM_OBSERVATION_TTL_MS);
+        let mut s = ObservationStore::default();
+        let t0 = Instant::now();
+        record_shm(&mut s, true, t0);
+        let o = s
+            .per_source
+            .get(ObservationSource::MozcShm)
+            .expect("recorded");
+        assert_eq!(o.expires_at, Some(t0 + ttl));
+        assert_eq!(o.confidence, ObservationConfidence::High);
+
+        let before = t0 + ttl - Duration::from_millis(1);
+        assert_eq!(s.derive_any(before).map(|d| d.value()), Some(true));
+        assert_eq!(s.most_recent_trusted(before).map(|o| o.open), Some(true));
+        assert_eq!(
+            s.most_recent_trusted_excluding(before, &[]).map(|o| o.open),
+            Some(true)
+        );
+
+        let after = t0 + ttl;
+        assert_eq!(s.derive_any(after).map(|d| d.value()), None);
+        assert!(
+            s.most_recent_trusted(after).is_none(),
+            "フォールバックでも古い値を採らない"
+        );
+        assert!(s.most_recent_trusted_excluding(after, &[]).is_none());
+    }
+
+    /// 対照: 共有メモリ以外の source は従来どおり TTL を持たない（挙動を変えない）。
+    #[test]
+    fn only_mozc_shm_gets_an_expiry() {
+        use super::super::evidence::{Observed, ObserverPoll};
+        use super::super::probe_admission::AcceptedObservation;
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let accepted = AcceptedObservation::for_sync(FocusFence {
+            epoch: 0,
+            hwnd: HwndId::NULL,
+        });
+        s.record(Observed::<ObserverPoll>::from_poll(&accepted, true), now);
+        assert_eq!(
+            s.per_source
+                .get(ObservationSource::ObserverPoll)
+                .and_then(|o| o.expires_at),
+            None
+        );
+    }
+
+    /// ADR-268 D1: 窓の照合（epoch・hwnd）が `derive_any` で効く。
+    #[test]
+    fn mozc_shm_from_another_window_is_excluded_from_derive_any() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        record_shm(&mut s, true, now); // epoch 0, hwnd NULL
+        s.current_fence.epoch = 1; // フォーカスが別のプロセスへ移った
+        assert_eq!(s.derive_any(now).map(|d| d.value()), None);
+        s.current_fence.epoch = 0;
+        s.current_fence.hwnd = HwndId(7); // 同じプロセスの別の窓
+        assert_eq!(s.derive_any(now).map(|d| d.value()), None);
+        s.current_fence.hwnd = HwndId::NULL;
+        assert_eq!(s.derive_any(now).map(|d| d.value()), Some(true));
+    }
+
+    /// ADR-268 D1: authority は BeliefOnly。belief（`derive_any`）には入るが、actuation の根拠（`derive_actuating`）には入らない。
+    #[test]
+    fn mozc_shm_is_not_an_actuation_basis() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        record_shm(&mut s, true, now);
+        assert_eq!(s.derive_any(now).map(|d| d.value()), Some(true));
+        assert!(s.derive_actuating(now).is_none());
+    }
+
+    /// ADR-268 D2: 共有メモリは数百 ms ごとに新しく記録され続けるので、`AnyFreshEvidence` の再武装条件にしない
+    /// （BUG-114 と同型のループを避ける）。
+    #[test]
+    fn read_back_any_fresh_evidence_ignores_mozc_shm_alone() {
+        let since = Instant::now();
+        let now = since + Duration::from_millis(20);
+        let mut s = ObservationStore::default();
+        rec(&mut s, obs(true, ObservationSource::MozcShm, since));
+        let receipt = s.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 5);
+        assert_eq!(receipt.resolution(), Resolution::GaveUp);
+    }
+
+    #[test]
+    fn mozc_shm_participates_in_iter_and_clear_all() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        record_shm(&mut s, true, now);
+        assert_eq!(
+            s.per_source
+                .iter()
+                .filter(|o| o.source == ObservationSource::MozcShm)
+                .count(),
+            1
+        );
+        s.per_source.clear_all();
+        assert!(s.per_source.mozc_shm.is_none());
     }
 
     /// 上記2件と対になる確認: 除外対象**以外**のソース（例: `Gji`）が

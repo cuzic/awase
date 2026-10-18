@@ -120,6 +120,15 @@ pub enum ObservationSource {
     /// `FocusProbe` が（同じく `hwndFocus`、真の top-level ウィンドウとは限らない
     /// ——BUG-91 参照）IMC を読む（Low）のと対になる。
     ImmCrossProbe,
+    /// mozc-readable の共有メモリ（`Local\mozc-readable-ime-<tid>`）の `tsf_open`（ADR-268）。
+    ///
+    /// Mozc 自身の状態の自己申告（IME へ送った結果ではなく、TIP が書き出した事実）。High で belief に入れるが、
+    /// **authority は `BeliefOnly`**: IME へ送る根拠（`derive_actuating`・授権）には入れない。
+    /// 注意: `state/drift_correction.rs::evaluate_drift` と `ObservationStore::read_back` は authority を見ないので、
+    /// この source は両方の根拠から**明示的に除外**している（除外しないと、共有メモリが明示意図と食い違うたびに
+    /// drift correction が IME を開け直す。ADR-268 D2）。新しい読み手を足すときも同じ除外を考えること。
+    /// 窓の照合（epoch+hwnd）は `derive_filtered` の `is_identity_ok`、鮮度は `record_any` が付ける `expires_at`（TTL）。
+    MozcShm,
     /// 観測が一切ない状態（cache miss 等）での安全デフォルトの推測。
     ///
     /// 実際の外部観測ではなく awase 側のポリシー的な best-guess のため、
@@ -180,6 +189,7 @@ impl ObservationSource {
             | Self::Tsf => ObservationAuthority::Actuating,
             Self::ConvOpenInference
             | Self::HeuristicDefault
+            | Self::MozcShm
             | Self::HwndCache
             | Self::FocusProbe
             | Self::ConvBitsInference
@@ -592,6 +602,15 @@ mod tests {
         // 根拠となる情報が無いため BeliefOnly。
         assert_eq!(
             ObservationSource::ConvOpenInference.authority(),
+            ObservationAuthority::BeliefOnly
+        );
+    }
+
+    /// ADR-268 D1: 共有メモリは High で belief に入るが、IME へ送る根拠には入れない（BeliefOnly）。
+    #[test]
+    fn mozc_shm_is_belief_only() {
+        assert_eq!(
+            ObservationSource::MozcShm.authority(),
             ObservationAuthority::BeliefOnly
         );
     }

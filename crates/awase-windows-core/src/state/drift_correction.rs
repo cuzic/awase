@@ -154,7 +154,15 @@ pub fn evaluate_drift(
     // 正当な観測まで覆い隠すので、選ぶ前に除外する。
     let trusted = model
         .observations
-        .most_recent_trusted_excluding(now, &[ObservationSource::ConvOpenInference])
+        .most_recent_trusted_excluding(
+            now,
+            // `MozcShm`（ADR-268 D2）も根拠にしない: 共有メモリが明示意図と食い違うたびに IME を開け直す争いになる。
+            // 外から変わった場合の追随は、drift correction ではなく `follow_external_change` 系の経路で行う。
+            &[
+                ObservationSource::ConvOpenInference,
+                ObservationSource::MozcShm,
+            ],
+        )
         .ok_or(NoDrift::NoTrustedObservation)?;
     if trusted.age(now) > max_age {
         // 診断(ADR-233 の「drift が古い ICP で止まる疑い」の測定): 補正を見送った根拠の観測。明示意図があり乖離が続いている
@@ -219,6 +227,47 @@ mod tests {
             source: UserIntentSource::Command,
             at_ms: 0,
         });
+    }
+
+    /// ADR-268 D2: 共有メモリ（High・BeliefOnly）は drift correction の根拠にしない。根拠にすると、明示意図と食い違うたびに
+    /// IME を開け直す争いになる（Standard の窓）か、Blind の窓で再武装のループになる。
+    #[test]
+    fn mozc_shm_alone_is_never_a_drift_correction_basis() {
+        use crate::state::ime_event::{HwndId, ObservationConfidence};
+        use crate::state::observation_store::ImeObservation;
+        let now = Instant::now();
+        let mut model = ImeModel::default();
+        let desired = model.desired_open();
+        with_intent(&mut model, desired);
+        drifting_since(&mut model, now);
+        let disagreeing = |source| ImeObservation {
+            open: !desired,
+            source,
+            at: now,
+            hwnd: HwndId::NULL,
+            confidence: ObservationConfidence::High,
+            expires_at: None,
+            focus_epoch: 0,
+        };
+        model.observations.per_source.set(
+            ObservationSource::MozcShm,
+            disagreeing(ObservationSource::MozcShm),
+        );
+        assert_eq!(
+            evaluate_drift(&model, now),
+            Err(NoDrift::NoTrustedObservation),
+            "MozcShm だけが根拠のとき drift correction は発火しない"
+        );
+        // 対照: 同じ食い違いでも ObserverPoll なら根拠になる（除外が MozcShm だけに効いていることの固定）。
+        model.observations.per_source.set(
+            ObservationSource::ObserverPoll,
+            disagreeing(ObservationSource::ObserverPoll),
+        );
+        assert_ne!(
+            evaluate_drift(&model, now),
+            Err(NoDrift::NoTrustedObservation),
+            "ObserverPoll は従来どおり根拠になる"
+        );
     }
 
     #[test]
