@@ -256,6 +256,12 @@ jobs:
                   args=f'--grid=s5 --grid-setup=keys --grid-trials=10{msime}{spd}')
               for ime_name, ime, km, msime in SC_IMES
               for sp, spd in (('sp1', ''), ('sp2', ' --speed=2'))],
+            # BUG-205 追記(2026-10-18、観測のみ。only='cal-escspace-*' で回す): Space で入った変換中の Esc の直後(conv-space-esc)。cal-escgrid-* の Space 版。
+            # ATOK の表では (変換中〈Space〉, Esc) が保持/破棄に割れた(以前の版)ので、押す前の入力の有無(GRID-PRE の comp)と次のキーの結果を試行ごとに突き合わせる。
+            *[cfg(f'cal-escspace-{ime_name}-{sp}', 'observe', check='collect', awase='false', runs=1, wait=3300, ime=ime, keymap=km, until='2026-11-30',
+                  args=f'--grid=s6 --grid-setup=keys --grid-trials=10{msime}{spd}')
+              for ime_name, ime, km, msime in SC_IMES
+              for sp, spd in (('sp1', ''), ('sp2', ' --speed=2'))],
             *[cfg(f'cal-msnative-walk-s{n}', 'observe', check='collect', ime='msime', awase='false', runs=1,
                   args=f'--walk=100 --seed={n} --msime')
               for n in (3, 4)],
