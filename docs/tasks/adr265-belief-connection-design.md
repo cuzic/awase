@@ -25,7 +25,7 @@
 | 新しい source | `ObservationSource::MozcShm`(+ `evidence::MozcShm`) | `ConvOpenInference` と同形。他の source の偽装はしない |
 | 入口 | `ImeStateHub::report_mozc_shm_open(open, hwnd, focus_epoch, tick)`(`report_conv_open_inference` の隣、`platform_state.rs:2028` 付近) | 呼び出し元を 1 つに絞る。`architecture_guard` の件数と `observation_source_guard` の対象を更新 |
 | 信頼度 | **High** | 利用者決定。`derive_filtered` の High 単独の採用に乗る(最新の High を採る) |
-| authority | まず `BeliefOnly`(送信の判断 `derive_actuating` には入れない) | belief を正すだけで、IME への送信根拠にするかは別の判断(§5) |
+| authority | `BeliefOnly` | `derive_actuating` は `open_warrant.rs` の Step 3 だけが使う「OS の IME へ書いてよいかの授権」の入力で、「すでにその状態だから送らない」の判断ではない(§5)。授権に使う必要は今は無い |
 | 読む値 | `tsf_open` を既定。`tsf_open != effective_open` のときは報告しない(journal にだけ残す) | 食い違いの意味(パスワード欄等)が未測定。事実が割れているときは採らない |
 | 窓の照合 | `derive_filtered` の `is_identity_ok` に `MozcShm` を足し、**epoch と hwnd の両方**を照合(`FocusProbe`/`ImmCrossProbe` と同じ) | High は他の観測を上書きするので、窓を切り替えた直後の古い読みを採らないための必須条件 |
 | 受け入れ | `Outcome::Accepted`(magic・version・seq・pid・`active=1`)のときだけ報告。それ以外・読めなかったときは報告しない | 採らないより間違って採る方が高くつく |
@@ -50,7 +50,7 @@ TIP が無効になった後も、共有メモリは最後の値を残す(`activ
 | 段階 | 内容 |
 | --- | --- |
 | 1(本設計) | `MozcShm` を High・`BeliefOnly` で報告。自動判定 |
-| 2(別 ADR) | Actuating にする(送信の省略・drift correction の根拠にする)、pulse で読む、`input_mode` へ |
+| 2(別 ADR) | pulse で読む、`input_mode` へ。「すでにその状態なら送らない」は、belief(`effective_open`)と applied を見る既存の経路が High の belief を読むだけで効くかを**先に確認**する(未確認。Actuating にしなくてよい見込みだが、送信の省略を行う箇所をコードで追ってから判断する) |
 
 ## 6. マージの条件(設計の遠慮の代わりに、測れていないものを条件にする)
 
