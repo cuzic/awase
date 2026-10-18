@@ -61,7 +61,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 - 取るフィールドは `tsf_*`(compartment 相当)を既定にする。`effective_*`(入力スコープの上書き後)と食い違うとき(パスワード欄など)の扱いは段階 1 で測って決める。
 - 通知イベントは「読み直す合図」にだけ使う(pulse なので取りこぼす前提)。
 
-**AppContainer**(R1-I12): AppContainer 内のプロセスの `Local\` 名前空間は `AppContainerNamedObjects\<SID>\` へ分かれ、`OpenFileMappingW` の `Local\` 名では届かない。**`NtOpenSection` で `\Sessions\<n>\AppContainerNamedObjects\<SID>\mozc-readable-ime-<TID>` を指定すれば外から読めることが CI で実測された**(mozc-readable の run `39097062197`、`readable` の `dbba777`)。未確認なのは、**任意の窓のプロセスから SID を取る手順**(`OpenProcessToken` の `TokenAppContainerSid`)と、通知イベントが同じ名前空間かどうかで、段階 1 で測る。SID が取れない窓は「不明」として従来経路へ戻る。
+**AppContainer**(R1-I12): AppContainer 内のプロセスの `Local\` 名前空間は `AppContainerNamedObjects\<SID>\` へ分かれ、`OpenFileMappingW` の `Local\` 名では届かない。**`NtOpenSection` で `\Sessions\<n>\AppContainerNamedObjects\<SID>\mozc-readable-ime-<TID>` を指定すれば外から読めることが CI で実測された**(mozc-readable の run `39097062197`、`readable` の `dbba777`)。SID は対象窓の pid からトークンで取れることも同じ run で確かめた(`OpenProcess`→`OpenProcessToken`→`GetTokenInformation`、参照実装は `readable/ci/drive_foreground.py` の `appcontainer_sid()`)。未確認なのは、**昇格していない通常ユーザーのトークンで同じことが通るか**(CI のランナーは管理者)と、通知イベントが同じ名前空間かどうかで、段階 1 で測る。SID が取れない窓は「不明」として従来経路へ戻る。
 
 **設定画面**: 検出状態(未インストール / 有効 / この窓で読めている)の表示と、ダウンロードへのリンクのみ。スイッチは置かない(自動判定が外れた報告が出たら強制オプションを足す)。
 

@@ -77,7 +77,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 | オフセット | 型 | 名前 | 意味 |
 | --- | --- | --- | --- |
 | 0 | u32 | `magic` | `0x5A52444D`(メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`) |
-| 4 | u32 | `version` | 現行は `1` |
+| 4 | u32 | `version` | 現行は `2`(version 1 は古いビルド。6 章) |
 | 8 | u32 | `seq` | seqlock の番号。**書き込み中は奇数** |
 | 12 | u32 | `effective_open` | 0/1。Mozc のセッションから見た IME の開閉(入力スコープによる上書き後) |
 | 16 | u32 | `effective_mode` | `commands::CompositionMode`(Mozc のセッション) |
@@ -157,12 +157,13 @@ UnmapViewOfFile; CloseHandle                # 読むたびに閉じる(ハンド
 読み手は `NtOpenSection`(`SECTION_MAP_READ`)でこのパスを開き、`NtMapViewOfSection` か、得たハンドルを `MapViewOfFile` に渡して読みます。以降の seqlock の手順・受け入れ条件は同じです。
 
 - **実測**: GitHub Actions(windows-2025)で、AppContainer 内で動かした窓(`ReadableCiHost`)のブロックを、AppContainer の外のプロセスから `NtOpenSection(\Sessions\2\AppContainerNamedObjects\S-1-15-2-…\mozc-readable-ime-1908)` で開き(NTSTATUS `0x00000000`)、開閉・モードが入力のたびに期待どおりに変わることを確認しました(mozc-readable の `readable` ブランチ `dbba777`、run `39097062197`)。
-- **未確認**: その検査では、読み手が AppContainer の SID を自分で起動した側から知っています。**任意の窓のプロセスから SID を取る手順**(対象プロセスのトークンの `TokenAppContainerSid`、`OpenProcessToken` が通るか)は、まだ実測していません。セッション番号は `ProcessIdToSessionId` で得られる見込みです。
+- **SID の取り方(実測済み)**: 読み手は、対象の窓のプロセスの pid から、`OpenProcess`(`PROCESS_QUERY_LIMITED_INFORMATION` = 0x1000)→ `OpenProcessToken`(`TOKEN_QUERY` = 8)→ `GetTokenInformation`(`TokenIsAppContainer` = 29 で AppContainer かを確かめ、`TokenAppContainerSid` = 31 で SID を取る)→ `ConvertSidToStringSidW` で SID の文字列を得ます。セッション番号は `ProcessIdToSessionId` です(参照実装: mozc-readable の `readable/ci/drive_foreground.py` の `appcontainer_sid()` と `open_ac_section()`)。上の run では、パスの SID が、AppContainer を起動した側が出した SID と一致しました。
+- **未確認**: 昇格していない通常ユーザーのトークンで、同じ手順が通るか(CI のランナーは管理者で、昇格済みとみなせる)。通知イベント(`...-changed`)が同じ名前空間にあるかどうかも未確認です。
 - 取れなかったとき(権限・SID が取れない)は、その窓を「不明」として扱ってください。
 
 ### 4-5. 古い値への備え
 
-- `update_tick_ms` の新しさでブロックの生死を判定しないでください(変化が無ければ書かないため、長く変わらない窓が「古い」と誤判定される)。生存は `process_id` の照合と、(予定の)`active` で見ます。
+- `update_tick_ms` の新しさでブロックの生死を判定しないでください(変化が無ければ書かないため、長く変わらない窓が「古い」と誤判定される)。生存は `process_id` の照合と、`active` で見ます。
 
 ## 5. 既知の限界
 

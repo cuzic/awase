@@ -105,6 +105,8 @@ def main():
                 print("不明(この窓では読めない)")
             else:
                 print(f"{'開' if st['open'] else '閉'} / {st['mode']}")
+        if not ev:  # TIP がまだ一度も書いていないと開けない。開けるまで毎回やり直す
+            ev = k32.OpenEventW(SYNCHRONIZE, False, "Local\\mozc-readable-ime-changed")
         if ev:
             k32.WaitForSingleObject(ev, 1000)
         else:
