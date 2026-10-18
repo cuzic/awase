@@ -293,7 +293,7 @@ Identification results are learned and cached per app class name (`cache.toml`) 
 
 - **awase itself does not read this value yet** (under development; see [ADR-265](docs/adr/265-mozc-readable-integration.md), in Japanese). Installing it today does not change awase's behavior.
 - It is distributed through mozc-readable's GitHub Releases (it will also appear in awase.cc's install section once the first release is out). The installer is unsigned.
-- **For people building their own keyboards (QMK etc.)**: there is a specification of the shared memory and a minimal reader example, aimed at tying an OLED or layers to the IME state. → [Shared-memory specification](docs/mozc-readable-shared-memory.md) (in Japanese)
+- **For people building their own keyboards (QMK etc.)**: there is a specification of the shared memory and a minimal reader example, aimed at tying an OLED or layers to the IME state. → [Shared-memory specification](https://github.com/cuzic/mozc-readable/blob/readable/readable/docs/shared-memory.md) (in Japanese)
 
 ---
 

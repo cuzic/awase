@@ -22,6 +22,8 @@ awase は、IMM32 や TSF の compartment から IME の開閉・入力モード
 
 Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2・重要 15・軽微 7 の指摘を受けた。本版はそれを反映したものである。以下の「R1-xx」は同レビューの項目番号。
 
+**共有メモリの仕様書は mozc-readable 側が正**(`readable/docs/shared-memory.md`、https://github.com/cuzic/mozc-readable/blob/readable/readable/docs/shared-memory.md。ユーザー決定 2026-10-18)。awase 側には写しを置かない。awase 本体の読み取りの実装(段階 1 の Observe)は、publisher を作った別セッションの作業とする(同決定)。
+
 ## 決定
 
 ### D1. 配布は mozc-readable 側の GitHub Releases、awase.cc は最新版へのリンクを持つ

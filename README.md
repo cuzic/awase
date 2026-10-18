@@ -294,7 +294,7 @@ awase はフォーカス中のアプリを自動識別し、出力方式を切�
 
 - **awase 本体はまだこの値を読みません**(開発中。方針は [ADR-265](docs/adr/265-mozc-readable-integration.md))。いま入れても awase の動作は変わりません。
 - 配布は mozc-readable の GitHub Releases です(最初の Release が出てから、awase.cc のインストール欄にも載せます)。署名はありません。
-- **自作キーボード(QMK など)を作る人へ**: 共有メモリの仕様と、読み取りの最小例があります。OLED やレイヤーを IME の状態に連動させる用途を想定しています。→ [共有メモリ仕様](docs/mozc-readable-shared-memory.md)
+- **自作キーボード(QMK など)を作る人へ**: 共有メモリの仕様と、読み取りの最小例があります。OLED やレイヤーを IME の状態に連動させる用途を想定しています。→ [共有メモリ仕様](https://github.com/cuzic/mozc-readable/blob/readable/readable/docs/shared-memory.md)
 
 ---
 
