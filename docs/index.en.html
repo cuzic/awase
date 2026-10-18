@@ -687,15 +687,15 @@ footer p{margin-bottom:0.3rem}
           A build of <a href="https://github.com/google/mozc">Mozc</a>, the open-source edition of Google Japanese Input,
           that lets other processes read the IME's on/off state and input mode.
           It exists so awase can use the IME's own value instead of guessing in windows it cannot read.
-          It installs under a separate name from the official Mozc, so both can coexist.
+          It is built with names and identifiers separate from the official Mozc.
         </p>
         <a id="dl-mozc-readable" href="https://github.com/cuzic/mozc-readable/releases" class="btn btn-secondary" style="display:inline-block;margin:0.3rem 0 0.8rem">Download the latest version (MSI)</a>
         <ul>
-          <li>New upstream (google/mozc) releases are followed and published automatically.</li>
           <li>The installer is unsigned, so SmartScreen shows a warning. SHA-256 is in the release's <code>SHA256SUMS.txt</code>.</li>
-          <li>awase detects mozc-readable automatically when it is in use. No setting is needed.</li>
+          <li>Your profile is separate from the official Mozc; the official Mozc user dictionary is not carried over.</li>
+          <li>The awase feature that uses this value is under development (the current awase does not read it yet).</li>
         </ul>
-        <p style="color:var(--text-secondary);font-size:0.88rem">Source: <a href="https://github.com/cuzic/mozc-readable">cuzic/mozc-readable</a> (BSD-3-Clause; not affiliated with Google)</p>
+        <p style="color:var(--text-secondary);font-size:0.88rem">Source: <a href="https://github.com/cuzic/mozc-readable">cuzic/mozc-readable</a> (BSD-3-Clause; an unofficial derivative, not affiliated with Google)</p>
       </details>
 
     </div>

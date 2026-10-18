@@ -3,7 +3,7 @@ id: ADR-265
 title: |-
   mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定)
 status: |-
-  提案(2026-10-17)。段階 0(配布の自動化と awase.cc の欄)は着手済み、awase 側の読み取りは未実装
+  提案(2026-10-17、Opus round1 の指摘を反映済み・再確認待ち)。配布の自動化は PR #1 を作り直す前提、awase 側の読み取りは未実装
 related_adr:
   - "ADR-191"
   - "ADR-261"
@@ -13,87 +13,121 @@ related_adr:
 
 ## 背景
 
-awase は、Win32 の IMM32 や TSF の compartment から IME の開閉・入力モードを読めない窓(`Imm32Unavailable`)で、belief を推測に頼っている。ADR-191 §2 の CI 実測で、外部プロセスが TSF compartment からフォーカス窓の IME 状態を読めないことは確認済み。
+awase は、IMM32 や TSF の compartment から IME の開閉・入力モードを読めない窓(`Imm32Unavailable`)で、belief を推測に頼っている。ADR-191 §2 の CI 実測で、外部プロセスが TSF compartment からフォーカス窓の IME 状態を読めないことは確認済み。
 
 [cuzic/mozc-readable](https://github.com/cuzic/mozc-readable) は、Mozc の TIP から IME の開閉・モードを名前付き共有メモリへ書き出す fork である。
-- 書き出し先: `Local\mozc-readable-ime-<スレッド ID>`(48 バイト、seqlock、`tip_state_publisher.h` の `TipSharedState`)。
-- 通知: `Local\mozc-readable-ime-changed`(manual-reset イベントを SetEvent→ResetEvent で pulse)。
-- 公式 Mozc とは別 CLSID・別 UpgradeCode・別製品名で、同時にインストールできる。
+- 書き出し先: `Local\mozc-readable-ime-<スレッド ID>`(48 バイト、seqlock、`tip_state_publisher.h` の `TipSharedState`)。通知: `Local\mozc-readable-ime-changed`(pulse)。
+- 公式 Mozc とは別 CLSID・別 UpgradeCode・別製品名にしてある。
 - 効くのは mozc 系だけ(MS-IME・配布版 GJI には効かない)。全 IME 向けの近似は ADR-261(字形)が担う。
+
+Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2・重要 15・軽微 7 の指摘を受けた。本版はそれを反映したものである。以下の「R1-xx」は同レビューの項目番号。
 
 ## 決定
 
-### D1. 配布は mozc-readable 側の GitHub Releases、awase.cc は最新版へのリンクだけ持つ
+### D1. 配布は mozc-readable 側の GitHub Releases、awase.cc は最新版へのリンクを持つ
 
-- MSI は `cuzic/mozc-readable` の Release に `v<upstream の版>-readable.<N>` として置く(SHA256SUMS.txt 付き)。
-- `docs/index.html` / `index.en.html` の「インストール」に任意項目を置き、Releases API の最新の MSI へ張る(既存の awase の MSI と同じ方式)。awase の Release には同梱しない(版が独立し、署名・ライセンス表記が別になるため)。
-- 署名は無し。SmartScreen の警告を明記する。SignPath Foundation は後付けで検討する。
+- MSI は `cuzic/mozc-readable` の Release に `v<upstream の版>-readable.<N>` として置く(SHA256SUMS.txt 付き)。awase の Release には同梱しない(版・署名・ライセンス表記が別のため)。
+- `docs/index.html` / `index.en.html` の「インストール」に任意項目を置く(既存の awase の MSI と同じ方式で最新の MSI へ張る)。
+- 署名は無し(SmartScreen の警告を明記)。SignPath Foundation は後付けで検討する。
+- **サイトに書く文は、事実になってから足す**(R1-S1)。現時点で書けるのは「mozc-readable の MSI へのリンク」「署名なし」「利用者プロファイルが公式 Mozc と分かれる(辞書は引き継がれない)」だけ。「自動で追随して公開します」は最初の Release が出て追随が動いてから、「awase が自動で判定します」は awase 側の読み取りがマージされてから、「公式 Mozc と干渉しません」は共存の CI 検査(D4)が通ってから足す。
 
-### D2. upstream への追随は「リリースタグ」を基準に自動化する
+### D2. upstream への追随は、公開済みの版より新しい「リリースタグ」だけを対象にする
 
-- `readable-upstream-sync.yaml`: 毎日 `google/mozc` の `X.Y.Z` タグの最新を確認し、新しければ readable の差分をそのタグへ rebase した `sync/<タグ>` を作り、ビルドと検証(`readable-build.yaml`、インストール・共有メモリ・アンインストールの CI)を起動する。衝突したら Issue を立てて止まる(自動解決しない)。
-- `readable-release.yaml`: その検証が成功したら Release を公開し、載せ替え中に readable が動いていなければ readable を進める(動いていたら Issue で止め、readable は上書きしない)。
-- master 追随(nightly)は採らない: upstream が壊れている日の影響を受け、公開物の品質が日替わりになるため。
+- 対象タグは `^[0-9]+(\.[0-9]+){2,3}$`(4 区切りも拾う)。**直近に公開した Release の upstream 版より新しいもの**だけを選ぶ(R1-I2、古いタグへ「版を下げる」載せ替えをしない)。比較は版の順序(`sort -V`)で行い、`grep` ではタグの `.` を固定文字列として扱う(`grep -F`)。
+- 初回は 3.34.6239(最新タグ)を対象にする。このタグは `readable` の土台の upstream master(`0136c357`)より 216 コミット古く、`git apply --check` で `tip_input_mode_manager.{h,cc}` の差分が当たらないことが分かっている(upstream `6b5b8c12` がタグより後にある)。**初回は必ず publisher の手直しが要る**。これを D4 の分類 B の予行演習として扱う。
+- **readable 層だけの修正でも再リリースする**(R1-I4): publisher・identity・ci の層に変更が入ったら、現在の upstream 版のまま `-readable.<N+1>` を作る。
+- master 追随(nightly)は採らない。
 
-### D3. awase は「設定なし」で自動判定する。設定画面は状態表示とリンクだけ
+### D3. awase は設定なしで自動判定する。設定画面は状態表示とリンクだけ
 
-- インストール済みかの判定: 日本語で有効な TIP の列挙(`EnabledJaTip`)に mozc-readable 専用の CLSID があるか。純関数 `identify_*` に足し、Linux で全数テストする(`ime_kind.rs` の `TipIdentity` に variant を足す形)。
-- 窓ごとの状態の判定: 前面窓のスレッド ID の共有メモリが開け、`magic`/`version` が一致し、seqlock の読みが 2 回一致し、`update_tick_ms` が新しいときだけ「読めた」。それ以外は従来経路へ戻る(誤って採ると belief を壊すので、読めないことは無かったことにする)。
-- belief への入れ方: 観測(Observe)として取り、`classify_*` の純関数を経て `ObserverReported`/`InputModeObserved` へ流す(`ime-belief-architecture.md`)。**信頼度は実機の測定で決める**(測定前は Medium 以下)。`dispatch_event` を直接呼ぶ近道は作らない。
-- 通知イベントは「読み直す合図」にだけ使う(pulse なので取りこぼす前提で、起きるたびに前面窓の共有メモリを読み直す)。
-- 設定画面: 検出状態(未インストール / インストール済み・共有メモリ読み取り中 / 読めない窓あり)の表示と、ダウンロードへのリンクのみ。ON/OFF スイッチは置かない(自動判定が外れた報告が出たら強制オプションを足す)。
+**判定の材料**
+- 有効化済みか: 日本語で有効な TIP の列挙に mozc-readable 専用の CLSID があるか。これは「使える」ことを示すだけで、**その窓でいま使われている**ことを示さない(R1-C2)。
+- **いま使われているか**: publisher に `active`(その TIP が Activate 中は 1、Deactivate で 0)を足し、`TipTextService::Activate/Deactivate` で書いて seq を進める(`TipSharedState` の version を 2 に上げる)。awase は `active==1` のときだけ「読めた」とする。Win+Space で同じスレッドの IME を MS-IME に切り替えても共有メモリに「開・ひらがな」が残るため、`active` が無いと belief を開閉の取り違えという非対称な誤りへ寄せる(ADR-191・INV-45 に反する)。
+- `TipIdentity` に variant は足さない(R1-I13)。`TipIdentity` は送信キーの戦略選択(ImmCross → GjiDirect → MsImeDirect の golden)の入力で、足すと観測と無関係にキー選択が変わる。「共有メモリを読める」は独立した能力(`readable_tip_enabled: bool`)として持つ。mozc 系を GJI と同じに扱うかは別 ADR。
 
-### D4. upstream との衝突は「層」に分け、機械的な書き換えはスクリプトにする
+**読み取りの規約**(R1-I9・I10・I11)
+- 読むたびに Open → Map → 読む → Unmap → Close し、ハンドルを持ち続けない(プロセス終了後の古いブロックを保持しない)。
+- seqlock: `seq1` を読み、偶数でなければ捨て、中身を読み、`seq2` を読み、`seq1 == seq2` のときだけ採る(Rust では `read_volatile` と `fence(Acquire)`)。`seq == 0` は未公開として捨てる(publisher 側は `magic` を最後に書くよう直す)。
+- `process_id` が対象窓のプロセスの PID と一致しないものは捨てる(スレッド ID の再利用への対策)。
+- `update_tick_ms` による新しさの判定はしない(publisher は変化がなければ書かないので、生存の印にならない)。生存は `process_id` 照合と `active` で見る。
+- 読む対象のスレッドは、**キーボードフォーカスを持つ窓のスレッド**(`GetGUIThreadInfo` の `hwndFocus`、UWP は `CoreWindow` のスレッド。既存のフォーカス解決を使う)。前面窓のスレッドとは限らない。
+- 信頼境界は同一ユーザー(同じセッションの別プロセスが先に同名のマッピングを作れば値を偽れる)。これは脅威として許容し、ADR に明記する(R1-M7)。
 
-readable の upstream との差分は、性質の違う 3 層に分かれる(2026-10-17 時点で `readable` と upstream master `0136c357` を比べた実測: 既存ファイル 8 本の変更 + 新規ファイル)。衝突しうるのは第 2 層だけにする。
+**belief への入れ方**(R1-I14)
+- Observe → `classify_*` 純関数 → `ObserverReported`/`InputModeObserved`(ime-belief-architecture)。新しい `ObservationSource` を足すので、`architecture_guard.rs` の構築箇所の件数と `observation_source_guard` の対象を更新する。
+- 信頼度は **Low(記録のみ)から始める**。Medium は belief に採られる側なので安全側ではない。段階 1 の journal で一致率が基準(件数・率は段階 1 の測定後にここへ書く)を超えたら Medium に上げる。
+- 取るフィールドは `tsf_*`(compartment 相当)を既定にする。`effective_*`(入力スコープの上書き後)と食い違うとき(パスワード欄など)の扱いは段階 1 で測って決める。
+- 通知イベントは「読み直す合図」にだけ使う(pulse なので取りこぼす前提)。
 
-| 層 | 中身 | 衝突 | 扱い |
-| --- | --- | --- | --- |
-| identity | 別名化: GUID 3 つ、製品名・表示名、IPC/イベント/サービス/レジストリ名(`const.h`・`system_util.cc`・`tsf_profile.cc`・`installer_oss_64bit.wxs`・`build_installer.py`) | 行が動く・整形されるとき | **スクリプトが毎回生成**(rebase も cherry-pick もしない) |
-| publisher | `tip_state_publisher.{h,cc}`(新規)、`BUILD.bazel` の目標と依存、`tip_input_mode_manager.{h,cc}` の書き出しの呼び出し(`On*` 6 メソッドの先頭に `PublishOnExit`) | upstream が `TipInputModeManager` や `BUILD.bazel` を変えたとき | コミットとして持ち、cherry-pick。衝突するのはここだけ |
-| ci | `readable/ci/`・`.github/workflows/readable-*.yaml` | 無い(新規のみ) | cherry-pick |
+**AppContainer**(R1-I12): AppContainer 内のプロセスの `Local\` 名前空間は `AppContainerNamedObjects\<SID>\` へ分かれ、開けない見込みが高い(CI の AppContainer 検査は準備段階で失敗していて結論が無い)。段階 1 の前に、`OpenFileMappingW` で届くか・`NtOpenSection` が要るかを CI で測る。開けなければ「UWP は従来経路」と明記する。
 
-#### identity スクリプト(`readable/identity.py` + `readable/identity.toml`)
+**設定画面**: 検出状態(未インストール / 有効 / この窓で読めている)の表示と、ダウンロードへのリンクのみ。スイッチは置かない(自動判定が外れた報告が出たら強制オプションを足す)。
 
-- 標準ライブラリだけの Python(`tomllib`)。`apply` と `check` の 2 モード。
-- **GUID は 1 つの表から 3 つの書式を作る**: `{AFC9…}` の文字列、コメント、C の構造体 `0xafc94560, 0x63da, …`。表は「元の GUID → 新しい GUID」と、対象ファイルだけ持つ。新しい GUID は固定し、載せ替えで変えない(awase の TIP 同定の定数と一致させるため)。
-- **文字列は「元の 1 行 → 新しい 1 行」の表**で、各エントリは「対象ファイルで丸ごと 1 回だけ一致」を条件にする(0 回・2 回以上は失敗)。部分一致で置換しないので、無関係な `Mozc` を巻き込まない。
-- 冪等: 新しい行が既にあり元の行が無ければ何もしない。元も新しいも無ければ「アンカーが消えた」と、ファイル・エントリを名指しして失敗する。
-- `check`: ①`apply` を当てても差分が出ない、②元の GUID 3 つが `src/` のどこにも残っていない(`system_util.cc` が CLSID を直書きしていた件を、検査で防ぐ)、③新しい GUID が表にあるファイル以外に出ていない、④新しい GUID が `identity.toml` の固定値と一致する。
-- 失敗したら、直すのは `identity.toml` の該当エントリだけ(upstream の行に合わせる)。
+### D4. 履歴の持ち方と upstream との衝突
 
-#### publisher の見落とし検査(文面は衝突しないのに壊れる場合)
+#### D4-1. 書き換えない「材料」ブランチ + 使い捨ての `build/<タグ>`(R1-I1、R1-C1)
 
-`tip_input_mode_manager.cc` の `TipInputModeManager::On*` の定義を一覧し、`identity.toml` と同じ形式の `readable/hooks.toml` にある「書き出しを呼ぶ」「呼ばない(状態を変えない)」の 2 つの一覧と突き合わせる。upstream が `On*` を追加・改名したら、一覧に無いものが出るので失敗し、レビューを強制する。ビルドと `verify.ps1` は書き出しの正しさ(開閉・モードを別プロセスから読んで一致するか)の最終判定として残す。
+- 既定ブランチ `readable` には **upstream のソースを置かない**。持つのは材料だけにする: `readable/identity.py`・`identity.toml`・`hooks.toml`、`readable/patches/publisher/*.patch`(`git format-patch` の series)、`readable/ci/`、`.github/workflows/`。`readable` は通常の PR と fast-forward だけで進む。force-push・`sync-base`・「載せ替え中に動いたら止める」の仕組みは不要になる。
+- 各リリースは `build/<upstream タグ>-<N>` を使い捨てで生成する: タグを checkout → 材料ブランチの `identity.py apply`(M2: スクリプトは材料ブランチから動かす)→ `git am -3 patches/publisher/*` → ci を上書きコピー → ビルド → 検証 → Release のタグで固定する。`build/*` は Release のタグが指すので到達性は保たれる。
+- 既定ブランチが `readable` になるので `schedule`・`workflow_run` が動く(C1)。fork の既定ブランチを `master` から `readable` へ変える作業は ADR の決定として扱う(`master` は upstream のミラーとして残すか、消すか。残す場合は fork の compare の既定が `readable` になる点だけが影響)。
+- **現在の `readable`(C++ のソース入り、別セッションが作業中)からの移行**: 別セッションの作業が終わってから、`git diff` を identity / publisher / ci の 3 つに分けて材料ブランチを作る。現在の `readable` は `legacy/readable-src` として残す。
 
-#### ブランチと載せ替え
+#### D4-2. 3 層
 
-- `readable` は、upstream のタグ + identity コミット + publisher コミット + ci コミットの順に積む。各コミットにトレーラー `Readable-Layer: identity|publisher|ci` を付ける(15 コミットの履歴を 3〜4 コミットにまとめ直す。force-push が要るので、mozc-readable の別セッションの作業が終わってから行う)。
-- `sync/<タグ>`: タグを checkout → `identity.py apply` → コミット → `Readable-Layer: publisher` と `ci` を古い順に cherry-pick → `identity.py check` と hooks 検査 → ビルドと検証。
+| 層 | 中身 | 扱い |
+| --- | --- | --- |
+| identity | 別名化。GUID、製品名・表示名・発行元、IPC/イベント/サービス/レジストリ名 | `identity.py` が毎回生成。衝突しない |
+| publisher | `tip_state_publisher.{h,cc}`(新規)、`BUILD.bazel`、`tip_input_mode_manager`、`TipTextService` の Activate/Deactivate の呼び出し | patch series。`git am -3`。衝突しうるのはここだけ |
+| ci | `readable/ci/` | 生成時に上書きコピー。衝突しない |
 
-#### 衝突の分類と対応
+#### D4-3. identity スクリプト
+
+- 標準ライブラリだけの Python(`tomllib`)。`apply` と `check`。
+- GUID は 1 つの表から複数の書式を作る(R1-M1): `{AFC9…}` の文字列、コメント、C の構造体 `0xafc94560, 0x63da, …`、波括弧なしの `AFC9…`(`build_installer.py` の UpgradeCode)、小文字。新しい GUID は固定し、載せ替えで変えない(awase 側の CLSID の定数と一致させる)。
+- 文字列は「元の 1 行 → 新しい 1 行」の表で、各エントリは対象ファイルで丸ごと 1 回だけ一致を条件にする(0 回・2 回以上は失敗)。冪等。元も新しいも無ければ、ファイル・エントリを名指しして失敗する(分類 A)。
+- **置換表に入れるもの**(R1-I3): 既存の `const.h`・`system_util.cc`・`tsf_profile.cc`・`installer_oss_64bit.wxs`・`build_installer.py` に加え、`tip_resource.rc` の表示名(`IDS_IME_DISPLAYNAME`・`IDS_TEXTSERVICE_DISPLAYNAME_SYNONYM`、日本語 UI で言語の切り替えに見える名前)、`wxs` の `Manufacturer`(2 か所)・`Description`・`Feature Title`・エラー文言、`mozc_cache_service.rc`・`custom_action.rc`、`kSearchCandidateProviderName`、`kConfigurationDisplayname`。`wxs` の `SysProcs` コンポーネントが公式と同じキーパスを持ち、コンポーネント GUID が公式と同じになりうる(未確認)ので、製品ごとに分ける方法も検討する。
+- 置換後の行が長くなって upstream の整形と合わなくなる(R1-M3): 新しい名前は元の長さ以下にできるものは短くする。
+- `check`: ①`apply` を当てても差分が出ない、②元の GUID が `src/` のどこにも残っていない、③新しい GUID が `src/` の表にあるファイル以外に出ていない(`readable/ci/` は対象外)、④新しい GUID が `identity.toml` の固定値と一致する、⑤`src/win32` の `.rc`/`.wxs` に `"Mozc"` という完全一致の文字列が残っていない(許可リスト付き)。
+
+#### D4-4. publisher の見落とし検査(R1-I15、R1-I2c)
+
+- 検査の主軸は「`mozc_state_`・`tsf_state_` に代入する関数の集合 ⊆ 書き出しを呼ぶ関数の集合」(テキスト走査)。名前の一覧(`hooks.toml`)は補助。`TipTextService` の Activate/Deactivate も対象に含める。
+- `static_cast<int>(conversion_mode)` の型の入れ替わりを黙って通さないよう、`static_assert` で値(0〜5)を固定し、型や値の変更をビルド失敗にする。
+
+#### D4-5. 衝突の分類と対応
 
 | 分類 | 検知 | 対応 |
 | --- | --- | --- |
-| A. アンカー消失(identity) | `apply` が失敗 | `identity.toml` の該当エントリを直す小さな PR。判断は不要 |
-| B. publisher の cherry-pick 衝突 | cherry-pick が失敗 | 衝突マーカー付きの `sync/<タグ>` を push して Draft PR を作る。解消後は CI が判定する |
-| C. 一覧に無い `On*` | hooks 検査が失敗 | 呼ぶか呼ばないかを決めて `hooks.toml` を更新する Issue |
-| D. 文面は通ったのにビルド・検証が失敗 | `readable-build.yaml` の失敗 | 失敗ログ付きの Issue |
+| A. アンカー消失(identity) | `apply` が失敗 | `identity.toml` を直す小さな PR |
+| B. publisher の `git am` 衝突 | `git am -3` が失敗 | 衝突解消用のブランチと Draft PR を作る。patch を直す普通の PR になる |
+| C. 書き出しを呼ばない状態の変更 | 見落とし検査が失敗 | 呼ぶか呼ばないかを決める Issue |
+| D. 文面は通ったのにビルド・検証が失敗 | `readable-build` の失敗 | 失敗ログ付きの Issue |
 
-- Issue は分類と上流の版(タグまたは master の SHA)をキーに 1 件だけ立て、再発したらコメントを足す(毎日の重複を防ぐ)。
-- **早期検知**: 毎日 upstream の master に対して、push せずに同じ載せ替え(`apply`・cherry-pick・`check`・hooks 検査)だけを試し、失敗したら上の分類で Issue を立てる。タグは master から切られるので、リリースの数日〜数週間前に直せる。
-- **解消の自動化の範囲**: A は人(または私)が直す。B は Draft PR まで。解消後の CI が緑でも、人が 1 回見てから公開する(`verify.ps1` が見るのは書き出しの正しさだけで、新プロセスの最初のキーが落ちる件のような症状は見えないため)。CI 上での AI による自動解消は、衝突の頻度を見てから決める。
+- Issue は分類と upstream の版をキーに 1 件だけ立て、再発したらコメントを足す(`gh issue list --search "in:title <キー>" --state open` を見てから)。分類 D は release 側で `conclusion != success` かつ `build/*` のときに Issue を立てる。`build/<タグ>` が N 日以上残っていたら Issue を立てる(R1-I5、黙って止まらない)。
+- 毎日 upstream の master に対して、push せずに同じ生成(apply・am・check・見落とし検査)だけを試す(早期検知)。
+- 解消後は CI が緑でも、人が 1 回見てから公開する。CI 上での AI による自動解消は、衝突の頻度を見てから決める。
+
+#### D4-6. ワークフローの安全(R1-I6・I7・I8)
+
+- `${{ }}` を shell に直接展開せず、`env:` 経由で渡し、`[[ "$TAG" =~ ^[0-9]+(\.[0-9]+){2,3}$ ]]` で検証してから使う。`GH_TOKEN` は必要なステップにだけ置く。リポジトリ内のスクリプトを動かすジョブでは `persist-credentials: false` にし、push の直前だけ認証を付ける。
+- `workflow_run` の公開ジョブは、`head_repository.full_name == github.repository` かつ `event in (push, workflow_dispatch)` を条件にする。
+- `SYNC_TOKEN` は fine-grained PAT を `cuzic/mozc-readable` 1 つに限定し(Contents・Issues・Actions の read/write、有効期限付き)、材料ブランチ構成では生成ブランチにワークフローを含めないので Workflows 権限は付けない。設定の有無は未確認。
+
+#### D4-7. 検証の強化(R1-I3、R1-M6)
+
+- 公式 Mozc の MSI を先に入れ、readable を入れ、両方を切り替えて打鍵し、片方をアンインストールしてももう片方が動くことを CI で検査する(共存の主張の根拠。いまの `verify.ps1` は公式 Mozc が入っていない前提の検査しか無い)。
+- Chrome の検査(今は Soft で PASS している)を Hard に上げる。自動公開の判定に効くのは Hard だけ。
 
 ## 未確認(段階 1 の前に実測する)
 
-- Chrome 等の TSF ネイティブ、UWP/AppContainer で、`Local\` 名前空間の共有メモリが読めるか(AppContainer は分離される恐れ)。読めない窓は従来経路へ戻る設計だが、割合を測る。
-- 公式 Mozc との first-key(新プロセスの最初のキーが落ちる件)の比較。
-- 共有メモリの読み取りの信頼度(上の Medium 以下をどこまで上げてよいか)。
-- 変換モード以外の状態(必要になれば `TipSharedState` に追記、version を上げる)。
+- AppContainer の名前空間(上記)、日本語 UI での TIP の表示名、`SysProcs` コンポーネント GUID の共有、同じプロセスでの 2 つの `mozc_tip64.dll`、サービス表示名の重複時の SCM の挙動。
+- 新プロセスの最初のキーが落ちる件の、公式 Mozc との比較。
+- `tsf_*` と `effective_*` の食い違い(パスワード欄など)。
+- `SYNC_TOKEN` の設定有無。
 
 ## 段階
 
-0. 配布と追随の自動化、awase.cc の欄(mozc-readable PR #1、本 ADR と同じブランチの docs)。PR #1 の sync は rebase 方式なので、D4 の層方式(identity スクリプト + cherry-pick + 早期検知)へ作り直す。
-1. awase に TIP 同定と共有メモリ読み取りの Observe を足す(読むだけ、belief へは入れず journal に出して実機で一致を測る)。
-2. 測定に基づき belief へ流す(信頼度を決める)。設定画面に状態表示。
-3. awase.cc の記述「自動で判定します」は段階 2 のマージまで公開しない。
+0. **配布と追随の作り直し**(mozc-readable 側): D4-1 の材料ブランチ構成へ移す(PR #1 は rebase 方式なので閉じて作り直す)。別セッションの作業が終わってから。初回は 3.34.6239 向けに publisher を手で直す。
+1. mozc-readable に `active` を足す(version 2、`magic` を最後に書く)。awase に読み取りの Observe を足し、belief へは入れず journal に出して実機で一致を測る。AppContainer の測定も行う。
+2. 測定に基づき belief へ流す(Low から始め、基準を満たしたら Medium)。設定画面に状態表示。
+3. サイトの記述は D1 のとおり、事実になった文から足す。
