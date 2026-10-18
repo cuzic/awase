@@ -59,6 +59,7 @@ if ($NoAwase) {
 if (Test-Path $log) {
   Select-String -Path $log -Pattern '\[mozc-shm\]' | ForEach-Object { $_.Line } | Set-Content (Join-Path $OutDir 'mozc-shm.log') -Encoding utf8
   Get-Content $log -TotalCount 60 | Set-Content (Join-Path $OutDir 'awase-head.log') -Encoding utf8
+  Copy-Item $log (Join-Path $OutDir 'awase-full.log') -ErrorAction SilentlyContinue
   Write-Host ("awase.log lines with [mozc-shm]: " + (Get-Content (Join-Path $OutDir 'mozc-shm.log') | Measure-Object -Line).Lines)
 } else { Write-Host '::warning::awase.log not found' }
 

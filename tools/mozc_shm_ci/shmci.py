@@ -366,15 +366,29 @@ def win32():
         return buf.value
 
     def force_foreground(hwnd):
-        fg = u32.GetForegroundWindow()
-        cur = k32.GetCurrentThreadId()
-        fg_tid = tid_pid(fg)[0] if fg else 0
-        if fg_tid and fg_tid != cur:
-            u32.AttachThreadInput(cur, fg_tid, True)
-        u32.ShowWindow(hwnd, 9)
-        u32.SetForegroundWindow(hwnd)
-        if fg_tid and fg_tid != cur:
-            u32.AttachThreadInput(cur, fg_tid, False)
+        """hwnd を前面にする。前面になったか(GetForegroundWindow が hwnd か)を返す。
+
+        前面でないプロセスからの SetForegroundWindow は、前面の制限で黙って失敗することがある。
+        1) 今の前面のスレッドへ入力をアタッチする、2) それでも駄目なら Alt キーを一度押して(制限が外れる)もう一度。
+        """
+        def attempt():
+            fg = u32.GetForegroundWindow()
+            cur = k32.GetCurrentThreadId()
+            fg_tid = tid_pid(fg)[0] if fg else 0
+            if fg_tid and fg_tid != cur:
+                u32.AttachThreadInput(cur, fg_tid, True)
+            u32.ShowWindow(hwnd, 9)
+            u32.SetForegroundWindow(hwnd)
+            if fg_tid and fg_tid != cur:
+                u32.AttachThreadInput(cur, fg_tid, False)
+            time.sleep(0.03)
+            return u32.GetForegroundWindow() == hwnd
+
+        if attempt():
+            return True
+        u32.keybd_event(0x12, 0, 0, 0)   # VK_MENU down / up
+        u32.keybd_event(0x12, 0, 2, 0)
+        return attempt()
 
     views = {}
 
@@ -582,17 +596,26 @@ def drain_in_thread(p, sink):
 def focus_loop(w, targets, rounds, rng, events, dwell=(0.35, 1.6)):
     """targets: [(name, tid, hwnd)]。ランダムな順に前面にして、短い時間だけ待つ。
 
-    滞在は 0.35〜1.6 秒。0.05〜0.7 秒だと、awase はフォーカスの更新(非同期の読み取り)が次の切り替えで失効して、
-    読み取りまで進まず、記録がほとんど出なかった(48 秒で 1 件。run 39110651994)。それは安全側の挙動だが、測れない。
+    前面になったことを確かめてから focus イベントを書く(前面にならなかった切り替えは、書かずに数える)。
+    前面でないプロセスからの SetForegroundWindow は、黙って失敗することがある(失敗した切り替えを「フォーカスを移した」
+    と書くと、awase が何も読まないのが、読まなかったのではなく移っていなかっただけ、という見分けがつかない)。
+    戻り値は (成功した切り替え数, 失敗した切り替え数)。
     """
     last = None
+    ok_n = 0
+    ng_n = 0
     for _ in range(rounds):
         choices = [t for t in targets if t[1] != last]
         name, tid, hwnd = rng.choice(choices)
-        w.force_foreground(hwnd)
-        events.append({"ev": "focus", "t": time.time(), "tid": tid, "name": name})
-        last = tid
+        ok = w.force_foreground(hwnd)
+        if ok:
+            events.append({"ev": "focus", "t": time.time(), "tid": tid, "name": name})
+            last = tid
+            ok_n += 1
+        else:
+            ng_n += 1
         time.sleep(rng.uniform(*dwell))
+    return ok_n, ng_n
 
 
 def cmd_drive(args):
@@ -627,6 +650,13 @@ def cmd_drive(args):
             sinks.append([])
             drain_in_thread(p2, sinks[-1])
         elif scenario == "appcontainer":
+            # AppContainer のプロセスは mozc_server を自分では起動できない(サンドボックス)。通常のプロセスが先に IME を
+            # 有効にしてサーバーを起こしておく(mozc-readable の CI では、全セクションの前のウォームアップがこれ)。
+            warm = spawn_host(here, "W", "1", 40)
+            warm_events = read_events_until(warm, 1, 90)
+            print(f"warm-up: {[e for e in warm_events if e.get('ev') == 'truth']}", flush=True)
+            warm.terminate()
+            time.sleep(1.0)
             events += run_appcontainer_setup(args, here, procs, sinks)
             p = spawn_host(here, "B", "0", lifetime)
             procs.append(p)
@@ -660,7 +690,12 @@ def cmd_drive(args):
             print(f"need at least 2 windows to move the focus between, got {len(targets)}: setup failed", flush=True)
             exit_code = 2
         else:
-            focus_loop(w, targets, args.rounds, rng, events)
+            ok_n, ng_n = focus_loop(w, targets, args.rounds, rng, events)
+            print(f"focus switches: {ok_n} took effect, {ng_n} did not (the window was not in the foreground afterwards)",
+                  flush=True)
+            if ok_n < max(10, args.rounds // 2):
+                print("too few focus switches took effect: the measurement is not meaningful", flush=True)
+                exit_code = 3
         time.sleep(2.0)  # 最後の tick が記録を出すのを待つ
     finally:
         for p in procs:
