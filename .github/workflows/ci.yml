@@ -329,7 +329,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # dtolnay/rust-toolchain は windows-latest で毎回 20〜29 秒かかっていた(run 39114121400 の step 実測)。
+      # ランナーに rustup と stable(clippy/rustfmt 込み)が入っているため windows-latest の job では省く。
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy (awase-windows)
@@ -362,7 +363,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
 
@@ -445,7 +445,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           # rust-cache のキーにはビルドプロファイルが入らない。settings-release(LTO) で作った
