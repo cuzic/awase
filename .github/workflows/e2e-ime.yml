@@ -467,10 +467,15 @@ jobs:
             # 変換キー(0x1C)で IME を開いた後も残り、Engine が止まるか。chrome_probe --new-window-after=<alnum|kana|off>: 今の Chrome をその状態にしてから
             # Chrome を起動し直し(新しいプロセス・スレッド)、新しい窓で 0x1C を押して `ka` を打つ。PASS=NICOLA 文字、`か`=IME は開いたが Engine が止まった(バグ候補)、`ka`=IME が開かなかった。
             # alnum が本命、kana・off は対照(半角英数の持ち越しが原因かを切り分ける)、noawase は IME が実際に開くことの対照(`か` が期待)。
+            # 2026-10-18 追記: 変換キー(0x1C)は既定では右親指キーなので、awase は PendingThumb で握って IME へ届けない(最初の実行の `off` の FAIL の原因。
+            # 測定の設計の誤り)。`general=` で親指キーを VK_F14/F15 に割り当てる(`--henkan-open` と同じ)。GJI の MS-IME プリセットは英数キー(F0)で半角英数にする
+            # (`--alnum-key=F0`。ひらがなキーは常にかな)。MS-IME 本体は英数キーが IME を閉じ、半角英数(開いたまま)にする手段が別なので alnum は外す。
             *[cfg(f'sc-eisucarry-{pn}-{st}{suf}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=900, awase=aw, until='2026-11-30',
-                  chrome=f'--key=1C --new-window-after={st} --repeat=3 --settle=800{ms}{na}')
-              for pn, ime, km, ms in (('gji-atok', 'gji', 1, ''), ('gji-msimepreset', 'gji', 2, ''), ('msime', 'msime', 2, ' --msime'))
+                  general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
+                  chrome=f'--key=1C --new-window-after={st} --repeat=3 --settle=800{ms}{ak}{na}')
+              for pn, ime, km, ms, ak in (('gji-atok', 'gji', 1, '', ''), ('gji-msimepreset', 'gji', 2, '', ' --alnum-key=F0'), ('msime', 'msime', 2, ' --msime', ''))
               for st in ('alnum', 'kana', 'off')
+              if not (pn == 'msime' and st == 'alnum')
               for suf, aw, na in (('', 'true', ''), ('-noawase', 'false', ' --no-awase'))],
             # ADR-211: MS-IME/MOBILE プリセットの F13(閉状態からだけ開く受動のキー)。実 Chrome(読めない窓)で、IME OFF から F13 を押して
             # Engine が追随する(NICOLA)こと(合否)。stale=古い表つき。noawase=対照(IME が実際に開く=`か`、awase なしの実挙動)。

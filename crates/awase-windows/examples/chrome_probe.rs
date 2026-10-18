@@ -22,6 +22,7 @@
 //!
 //! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--f16-alnum] [--chrome=<chrome.exe>] [--log=<path>]`
 //!   `--no-awase`: awase を止めた対照実験（かなのとき `か` を期待）。既定は awase 起動中（NICOLA を期待）。
+//! `--alnum-key=<hex>`: `Setup::Alnum`(半角英数にする)で押すキー。既定は 0xF2(ATOK)。GJI の MS-IME プリセットは F0。MS-IME 本体は英数キーが IME を閉じるので未対応。
 //! `--new-window-after=<alnum|kana|off>`(`--key=<hex>` と併用。BUG-204 の関連): 今の Chrome をその状態にしてから **Chrome を起動し直し**(新しいプロセス・スレッド=
 //! 読めない窓の新スレッド。IME は新しいスレッドの初期状態〈閉×ひらがな〉)、新しい窓で `--key` のキーを押して `ka` を打ち、Engine が追随するかを見る。
 //! `alnum` は前の窓で awase の belief が半角英数(`ObservedEisu`)になった状態で新しい窓へ移る(窓の切り替えは入力モードを直さない見込み)。`kana`・`off` は対照。
@@ -441,6 +442,10 @@ enum Setup {
 }
 
 /// 状態を「かな」「直接入力」「半角英数」に持っていく。状態はプローブ(打った文字)で確認する。
+/// `Setup::Alnum` で半角英数にするために押すキー(VK)。既定はひらがな(0xF2。ATOK ではかな⇔半角英数のトグル)。
+/// GJI の MS-IME プリセットではひらがなキーは常にかなになるので、英数キー(0xF0。かな⇔半角英数のトグル)を `--alnum-key=F0` で選ぶ。
+static ALNUM_KEY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0xF2);
+
 fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
     let kana_ok = |c: Class| {
         if awase {
@@ -477,10 +482,14 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
             )
         }
         Setup::Alnum => {
-            p.press(0xF2, false, 60);
+            p.press(
+                ALNUM_KEY.load(std::sync::atomic::Ordering::Relaxed),
+                false,
+                60,
+            );
             sleep(500);
             matches!(
-                p.probe_logged("setup:ひらがな(かな→半角英数)後"),
+                p.probe_logged("setup:半角英数にするキー(かな→半角英数)後"),
                 Class::Plain | Class::NicolaLiteral
             )
         }
@@ -1546,6 +1555,14 @@ fn main() {
         .find_map(|a| a.strip_prefix("--repeat=").and_then(|v| v.parse().ok()))
         .unwrap_or(3);
     let awase = !args.iter().any(|a| a == "--no-awase");
+    // `--alnum-key=<hex>`: `Setup::Alnum`(半角英数にする)で押すキー。既定はひらがな(0xF2)。GJI の MS-IME プリセットは英数(F0)。
+    if let Some(vk) = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--alnum-key="))
+        .and_then(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).ok())
+    {
+        ALNUM_KEY.store(vk, std::sync::atomic::Ordering::Relaxed);
+    }
     // モードキーを押してから `k`,`a` を打つまでの待ち(ms)。EXPLICIT_IME_SUPPRESS_MS(1500)の内外を比べる用。
     let settle_ms: u64 = args
         .iter()
