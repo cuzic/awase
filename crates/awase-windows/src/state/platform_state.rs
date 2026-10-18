@@ -112,7 +112,7 @@ pub struct ImeStateHub {
     /// 直前に journal へ記録した `MozcShm` の報告（開閉・窓・フォーカスの世代）。同じ報告が続くときは reduce だけして
     /// journal には書かない（観測の TTL を延ばすために毎 tick 報告するので、書くと State の枠〈2048〉が約 17 分で
     /// 入れ替わる。ADR-268 D1、レビュー M3）。値・窓・世代のどれかが変われば書く。
-    last_mozc_shm_journaled: Option<(bool, crate::state::ime_event::HwndId, u64)>,
+    last_mozc_shm_journaled: Option<(bool, HwndId, u64)>,
 
     /// `effective_open()` の IntentStore 分岐が `shadow_model` と異なる値を
     /// 返している（＝実際に override している）間 `true`。遷移時のみ INFO
@@ -232,9 +232,7 @@ impl ImeStateHub {
         }
         // ADR-268 D1: 共有メモリの同じ報告の繰り返し（TTL を延ばすための毎 tick の報告）は、reduce はするが journal には書かない。
         let repeated_mozc_shm = match &event {
-            ImeEvent::ObserverReported(o)
-                if o.source() == crate::state::ime_event::ObservationSource::MozcShm =>
-            {
+            ImeEvent::ObserverReported(o) if o.source() == ObservationSource::MozcShm => {
                 let key = (o.open(), o.hwnd(), o.focus_epoch());
                 let repeated = self.last_mozc_shm_journaled == Some(key);
                 self.last_mozc_shm_journaled = Some(key);
