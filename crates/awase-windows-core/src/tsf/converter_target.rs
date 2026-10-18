@@ -32,9 +32,7 @@ const MOZC_PREFIXES: &[&str] = &["mozc_server"];
 #[must_use]
 pub const fn converter_target(gji_family: bool, identity: TipIdentity) -> ConverterTarget {
     match (gji_family, identity) {
-        (true, TipIdentity::Gji) | (false, _) | (true, TipIdentity::MsImeNative) => {
-            ConverterTarget::Gji
-        }
+        (true, TipIdentity::Gji | TipIdentity::MsImeNative) | (false, _) => ConverterTarget::Gji,
         (true, TipIdentity::Other) => ConverterTarget::MozcServer,
     }
 }
