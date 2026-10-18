@@ -170,7 +170,7 @@ unsafe fn read_menu_items(automation: &IUIAutomation, menu: HWND) -> Vec<MenuIte
             .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
             .ok()
             .and_then(|p| p.CurrentIsSelected().ok())
-            .is_some_and(|b| b.as_bool());
+            .is_some_and(windows::core::BOOL::as_bool);
         items.push(MenuItem {
             automation_id,
             selected,
