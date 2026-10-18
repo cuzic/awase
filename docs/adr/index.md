@@ -268,6 +268,8 @@
 | [259](259-bug-report-custom-keymap-rows-and-learned-cells.md) | 不具合報告にカスタム表の IME 関連行と学習表のセルを添付する | 決定1〜3 実装(2026-10-15)・Opus レビュー収束 |
 | [260](260-eisu-toggle-no-mode-prediction-when-observable.md) | 読みが効く窓では英数トグルの入力モードを予測せず、直接観測の予測ガードを軸ごとにする | 実装中(PR #627。Opus レビュー条件付き可、マージ条件は未測定) |
 | [261](261-taskbar-indicator-glyph-observation-for-unreadable-windows.md) | 観測の無い窓の IME 状態を、タスクバーの入力インジケーターの字形から読む(実行環境で表を作り、表に当たったときだけ証拠にする) | 起草(2026-10-15)。実装なし、D0(未測定)を先に |
+| [262](262-nicola-intent-evidence-for-unobserved-windows.md) | 観測の無い窓で、親指シフトの最初の同時打鍵を契機に IME ON を明示する(撤去した force-on の絞った復元、ADR-212 の例外) | round 3 レビューを受けて文面を直した(2026-10-17)。実装なし。段階 A(presync 停止)から |
+| [263](263-episode-start-key-hold-and-language-decision.md) | 観測の無い窓で、エピソード先頭の打鍵を保持し、日本語入力と判定できたときだけ IME ON を送る(ADR-262 の契機を置き換える) | 起草(2026-10-17)。Opus round 1 を受けて書き直し。round 2 待ち |
 | [264](264-indicator-menu-mode-evidence.md) | 利用者がタスクバーの入力インジケーターの右クリックメニューを開いたときだけ、メニューの現在のモードを読んで IME の実状態の証拠にする(読むだけ) | 起草(2026-10-17)。実装なし、CI で測定済み。決定は案 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
