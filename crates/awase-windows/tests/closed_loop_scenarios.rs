@@ -1,3 +1,9 @@
+/// 固定の列で確かめる、変換中の Esc の後の段階(ランダム探索の唯一の実質的な食い違いの再現)。
+/// ATOK・入力中を観測できない窓で、`ime-on → a → 変換 → Esc → カタカナ → 無変換` の無変換の予測が真の結果と合うか。
+/// **真値は擬似 IME の仮定**(Esc 後は Typing=読みへ戻る)で、予測器の `next_stage` は Esc 後を None にする。
+/// どちらにも実測の根拠が無い。実機で `変換 → Esc` の直後の挙動(Typing・変換中・なし のどれの行と一致するか)を
+/// 測って決め、擬似 IME か予測器のどちらか片方を直して `#[ignore]` を外す。
+/// (履歴は、PredictionRecord が積まれたキーだけを数える。`knows` で飛ばしたキーは含まない。)
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! 擬似 IME を使った閉ループのシナリオテスト（Linux ホストで動く）。
 //!
@@ -614,7 +620,7 @@ const WALK_KEYS: [u16; 15] = [
 /// 表に無い場合の BUG-162 の分岐は通らない。食い違いは、段階を進める2つの手書き規則 `next_stage` の Esc の行
 /// (予測器 `key_effect_predictor.rs` は `Esc => None`、擬似 IME `pseudo_ime.rs` は `0x1B => Typing`)が違うこと。
 /// どちらも実測の根拠が無い(実機の測定は ATOK で判別できる事例が 0 件)。どちらが実 IME に近いかは未決。
-/// 履歴(直前3打鍵)まで見て一致したときだけ数える。固定の列は `esc_in_conversion_returns_to_typing_for_next_key`。
+/// 履歴(直前3打鍵)まで見て一致したときだけ数える。固定の列は `esc_in_conversion_next_key_stage`。
 fn is_known_open_gap(
     grid: Grid,
     composing_visible: bool,
@@ -789,8 +795,11 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
     );
 }
 
-/// 閉から始めて belief のモードが `Unknown` のまま最初に開くキーで、既定のかなの種が外れる件数(固定)。
-/// 初出: Opus レビューの見積もりは 32(ATOK・閉・半角英数で始まる 16 シード × 窓 2 通り)。
+/// 閉から始め、この歩みで IME が一度も開く前に最初に開くキーで、既定のかなの種が外れる件数(固定)。
+/// 種は belief のモードが `Unknown` の間の最初の打鍵で入る(閉でも、表に無いキーや閉→閉のキーで入る)ので、
+/// 開く打鍵の時点では `Unknown` ではない。欠陥の本体は、仮定の種を belief に書き、観測したモードと区別できなく
+/// なること(Opus レビュー round 2 r2-M1)。種の書き方を直したら 0 に下がるはずで、そのとき定数を 0 にする。
+/// 初出: Opus レビューの見積もり 32(ATOK・閉・半角英数で始まる 16 シード × 窓 2 通り)と CI の実測が一致。
 const EXPECTED_SEEDED_GAP: usize = 32;
 
 /// 固定の列で確かめる、変換中の Esc の後の段階(ランダム探索の唯一の実質的な食い違いの再現)。
@@ -800,7 +809,7 @@ const EXPECTED_SEEDED_GAP: usize = 32;
 /// `変換 → Esc` の直後の挙動を測って決める(未測定)。決まったら `#[ignore]` を外す。
 #[test]
 #[ignore = "未起票: 変換中の Esc 後の段階。予測器 Esc→None と擬似 IME Esc→Typing のどちらも実測の根拠なし。実機測定で決める"]
-fn esc_in_conversion_returns_to_typing_for_next_key() {
+fn esc_in_conversion_next_key_stage() {
     let mut setup = Setup::imm_cross(state(false, CONV_HIRAGANA)).with_grid(Grid::Atok);
     setup.composing_visible = false;
     let mut h = Harness::start(setup);
