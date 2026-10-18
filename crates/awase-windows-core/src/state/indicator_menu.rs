@@ -517,7 +517,9 @@ mod tests {
     #[test]
     fn another_apps_menu_is_a_miss_even_if_ids_collide() {
         let other = menu(
-            &["Item 10", "Item 11", "Item 12", "Item 13", "Item 14", "Item 15", "Item 100"],
+            &[
+                "Item 10", "Item 11", "Item 12", "Item 13", "Item 14", "Item 15", "Item 100",
+            ],
             &["Item 11"],
         );
         // モード項目は揃うが、GJI 固有の非モード項目(20/21/22/30/31)が無い
@@ -672,6 +674,9 @@ mod tests {
         assert_eq!(MenuIme::Gji.label(), "gji");
         assert_eq!(MenuMode::DirectInput.label(), "direct-input");
         assert_eq!(Evidence::Inferred.label(), "inferred");
-        assert_eq!(MissReason::MissingMarkerItems.label(), "missing-marker-items");
+        assert_eq!(
+            MissReason::MissingMarkerItems.label(),
+            "missing-marker-items"
+        );
     }
 }

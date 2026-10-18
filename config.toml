@@ -90,4 +90,5 @@ force_tsf = [
 # example-begin: config-diagnostics uncomment
 # [diagnostics]
 # hook_self_heal = true  # hook_starved 検知時にキーボードフックを自己修復する
+# indicator_menu_shadow = false  # 入力インジケーターの右クリックメニューを開いたとき現在のモードを読んで journal に残す(観測のみ。ADR-264。反映は再起動後)
 # example-end
