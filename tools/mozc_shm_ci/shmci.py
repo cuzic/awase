@@ -445,7 +445,21 @@ def win32():
             return True
         u32.keybd_event(0x12, 0, 0, 0)   # VK_MENU down / up
         u32.keybd_event(0x12, 0, 2, 0)
+        # Alt の単独押下は、窓をメニューモード(モーダルのループ)に入れる。ループは次の入力か窓の無効化まで戻らず、
+        # ホストのメッセージ処理が約 3.5 秒止まり、IME 切り替えのキーも窓に届かなかった(run 39117224907 / 39117465698)。
+        # Esc でメニューモードを抜ける。
+        time.sleep(0.02)
+        u32.keybd_event(0x1B, 0, 0, 0)
+        u32.keybd_event(0x1B, 0, 2, 0)
+        time.sleep(0.05)
         return attempt()
+
+    # 前面にする制限の時間を 0 にする(別プロセスからの SetForegroundWindow が通りやすくなる。失敗しても続ける)。
+    try:
+        u32.SystemParametersInfoW.argtypes = [wt.UINT, wt.UINT, ctypes.c_void_p, wt.UINT]
+        u32.SystemParametersInfoW(0x2001, 0, None, 2)
+    except Exception:
+        pass
 
     views = {}
 
