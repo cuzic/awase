@@ -907,7 +907,11 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                         conv
                     ));
                 } else if vk & LOGPRESS_FLAG != 0 {
-                    append_log(&format!("[PRESS] utc={} vk={:#04x}", utc_stamp(), vk & 0xFF));
+                    append_log(&format!(
+                        "[PRESS] utc={} vk={:#04x}",
+                        utc_stamp(),
+                        vk & 0xFF
+                    ));
                 } else {
                     append_log(&format!(
                         "[READIME] utc={} {}",
@@ -3315,7 +3319,8 @@ fn run() -> WinResult<()> {
         SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
         SETSEQ_PENDING.with(|p| *p.borrow_mut() = Some(v));
     }
-    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--pressseq=").map(str::to_owned)) {
+    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--pressseq=").map(str::to_owned))
+    {
         AUTO_MODE.with(|m| *m.borrow_mut() = true);
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);

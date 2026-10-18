@@ -176,6 +176,14 @@ unsafe fn read_menu_items(automation: &IUIAutomation, menu: HWND) -> Vec<MenuIte
             selected,
         });
     }
+    // 【検証ブランチだけの診断。本番の PR には入れない】読んだ AutomationId を確かめる(段階 1 の同定が miss になった原因の切り分け)。
+    tracing::debug!(
+        "[indicator-menu] DIAG items={:?}",
+        items
+            .iter()
+            .map(|i| (i.automation_id.as_str(), i.selected))
+            .collect::<Vec<_>>()
+    );
     items
 }
 
