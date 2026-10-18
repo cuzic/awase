@@ -55,6 +55,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 - `process_id` が対象窓のプロセスの PID と一致しないものは捨てる(スレッド ID の再利用への対策)。
 - `update_tick_ms` による新しさの判定はしない(publisher は変化がなければ書かないので、生存の印にならない)。生存は `process_id` 照合と `active` で見る。
 - 読む対象のスレッドは、**キーボードフォーカスを持つ窓のスレッド**(`GetGUIThreadInfo` の `hwndFocus`、UWP は `CoreWindow` のスレッド。既存のフォーカス解決を使う)。前面窓のスレッドとは限らない。
+  - **実装(PR #644)との差**: 実装は、awase の既存のフォーカス解決の窓(`platform.focus.current.hwnd`)のスレッドを `thread_of_window` で求める(`runtime/mozc_shm_shadow.rs`、私が確認)。別セッションの確認では、そのフォーカス解決は `hwndFocus` を使い、無ければ `hwndActive` の窓へフォールバックする(私はフォーカス解決のコードは読んでいない)。つまり上の「`hwndFocus` のスレッド」とは厳密には一致しない。UWP の `CoreWindow` のスレッドを特別に扱っているかは未確認。
 - 信頼境界は同一ユーザー(同じセッションの別プロセスが先に同名のマッピングを作れば値を偽れる)。これは脅威として許容し、ADR に明記する(R1-M7)。
 
 **belief への入れ方**(R1-I14)
@@ -162,7 +163,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
    6. PR #1 を閉じる。
    7. awase の既存の定期ワークフロー(または新規)に、mozc-readable の `detect`/`release` の `state != active`、または最後の run が 3 日以上前なら awase 側に Issue を立てるステップを足す(R4-G2)。
    初回は 3.34.6239 向けの series を手で作り(分類 B の予行演習)、`git am -3` が blobless で 3-way になるかを試す。**完了条件**: identity の置換(表示名・発行元を含む)を当てた MSI で、公式 Mozc との共存の CI(D4-7)が通り、最初の Release が出ていること。
-1. **実装済み(2026-10-18)**: mozc-readable に `active` を足した(version 2、`magic` を最後に書く。`readable` の `aa228f6`)。CI(run `39098693442`)で、`active=1` と、同じスレッドを `ActivateKeyboardLayout` で TIP の無いレイアウトへ切り替えたあとの `active=0`、および AppContainer の窓の `NtOpenSection` での読み取りを実測した。awase 側の Observe は PR #644(`develop` の `101dfd2f`)で入った: 読み取りの規約(D3)に沿い、**journal に出すだけで belief へは入れない**。`ObservationSource` と `TipIdentity` の variant は足していない。設定は `[diagnostics] mozc_shm_shadow`(既定 false)。以上は別セッションの報告と、PR のタイトル・変更ファイルの一覧による(私はコードの中身を読んでいない)。
+1. **実装済み(2026-10-18)**: mozc-readable に `active` を足した(version 2、`magic` を最後に書く。`readable` の `aa228f6`)。CI(run `39098693442`)で、`active=1` と、同じスレッドを `ActivateKeyboardLayout` で TIP の無いレイアウトへ切り替えたあとの `active=0`、および AppContainer の窓の `NtOpenSection` での読み取りを実測した。awase 側の Observe は PR #644(`develop` の `101dfd2f`)で入った: 読み取りの規約(D3)に沿い、**journal に出すだけで belief へは入れない**。`ObservationSource` と `TipIdentity` の variant は足していない。設定は `[diagnostics] mozc_shm_shadow`(既定 false。`src/config.rs` と、既定を固定するテスト `test_mozc_shm_shadow_defaults_to_disabled` を私が確認。反映は再起動後)。journal には `JournalEntry::MozcShm { record }` で記録し、`ir_execute`(既存の IME リフレッシュ、約 500ms の tick。`runtime/ime_refresh.rs` の呼び出しを私が確認)から読む。記録は、フォーカス変更時と結果が変わったときだけで、belief の値(`belief_open`・`belief_mode`)を添える(別セッションの報告。一致率の測定に使う)。以上は別セッションの報告と、PR のタイトル・変更ファイルの一覧による(私はコードの中身を読んでいない)。
    - **未実施・未確認**: Windows 実機での awase 本体の動作(CI はコンパイルとテストまで)。実機で `mozc_shm_shadow = true` にして mozc-readable の窓で journal を取り、belief との一致率を測る作業(段階 2 の基準の材料)は、まだ誰も行っていない。AppContainer 以外の窓種(Chrome・Notepad 以外のアプリ)の網羅、昇格していないトークンでの SID 取得、Win+Space など `ActivateKeyboardLayout` 以外の切り替えでの `active=0` も未確認。
 2. 測定に基づき belief へ流す(Low から始め、基準を満たしたら Medium)。設定画面に状態表示。
 3. サイトの記述は D1 のとおり、事実になった文から足す。**mozc-readable の欄は、最初の Release(identity の置換を当てたもの)が出るまで `hidden` にしておく**(今は Release が 0 件で、リンクは空のページへ飛ぶ)。
