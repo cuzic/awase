@@ -2579,9 +2579,7 @@ impl Runtime {
                 snap.conversion_mode.map(|c| format!("0x{c:08X}"))
             );
         } else {
-            tracing::debug!(
-                "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
-            );
+            tracing::debug!("[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録");
         }
         // input_mode: Observe → pure decision → belief
         // classify_fetched_snapshot = classify_ime_snapshot の同期 wrapper。
@@ -2879,12 +2877,16 @@ impl Runtime {
                                 // 160ms のスリープの前に開閉を読み直す。R1 自身の記録は floor を通さない。
                                 let floor_at = crate::state::TickMs(hook::current_tick_ms());
                                 let _ = crate::with_app(|runtime| {
-                                    runtime.platform.output.resume_restore_floor.set(Some(floor_at));
+                                    runtime
+                                        .platform
+                                        .output
+                                        .resume_restore_floor
+                                        .set(Some(floor_at));
                                 });
                                 let read_started = crate::state::TickMs(hook::current_tick_ms());
                                 let snap = crate::ime::read_ime_state_full_async().await;
-                                let _ = crate::with_app(|app| match snap.ime_on {
-                                    Some(open) => {
+                                let _ = crate::with_app(|app| {
+                                    if let Some(open) = snap.ime_on {
                                         crate::probe_rejection_stats::admit_epoch_in_app(
                                             app,
                                             ticket,
@@ -2899,10 +2901,11 @@ impl Runtime {
                                                 );
                                             },
                                         );
+                                    } else {
+                                        tracing::info!(
+                                            "[ImmCrossProbe/resume] ime_on=None (読めず、記録なし)"
+                                        );
                                     }
-                                    None => tracing::info!(
-                                        "[ImmCrossProbe/resume] ime_on=None (読めず、記録なし)"
-                                    ),
                                 });
                             }
                         }
