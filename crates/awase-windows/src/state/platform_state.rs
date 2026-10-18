@@ -2046,6 +2046,57 @@ impl ImeStateHub {
             tick_ms,
         );
     }
+
+    /// ADR-268 D1・D3: mozc-readable の共有メモリの**受け入れた読み**を belief に使う（`runtime/mozc_shm_shadow.rs` から、
+    /// 1 tick に 1 回）。IME へは何も書かない。
+    ///
+    /// 判断は純粋関数 `state::mozc_shm::decide_use`（R3'）。`Split`（`tsf_open != effective_open`）と `Held`
+    /// （操作の直後で処理前かもしれない読み）は何もしない。`Use` は `ObserverReported(MozcShm, High)` を記録する。
+    /// belief（`effective_open`）または `desired_open` と食い違うときは、外から変わったものとして既存の追随と同じ 3 手を行う:
+    /// 観測の記録（上）→ 対象の明示意図（`IntentStore`）を削除 → `ModeKeyPassedThrough{align_desired, demote_applied}`
+    /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。
+    /// 意図が残ると、観測より優先されて belief が直らない（ADR-268 D3、`resolve_open_at` の優先順）。
+    /// 戻り値は判断（診断の記録用）。
+    pub(crate) fn report_mozc_shm(
+        &mut self,
+        shm: &crate::state::mozc_shm::ShmState,
+        now_ms: u64,
+        baseline_ms: u64,
+        tick_ms: TickMs,
+    ) -> crate::state::mozc_shm::ShmUse {
+        use crate::state::mozc_shm::{decide_use, ShmUse};
+        let effective = self.effective_open_at(tick_ms);
+        let desired = self.shadow_model.desired_open();
+        let decision = decide_use(
+            shm,
+            now_ms,
+            baseline_ms,
+            crate::tuning::KEY_EFFECT_SETTLE_MS,
+            effective,
+            desired,
+        );
+        let ShmUse::Use { open, disagrees } = decision else {
+            return decision;
+        };
+        let fence = self.shadow_model.observations.current_fence();
+        self.dispatch_event(
+            ImeEvent::ObserverReported(
+                Observed::<evidence::MozcShm>::from_shm(shm, open, fence.hwnd, fence.epoch).into(),
+            ),
+            tick_ms,
+        );
+        if disagrees {
+            if let Some(hwnd) = self.shadow_model.current_focus() {
+                self.intent_store.remove(hwnd);
+            }
+            self.pass_through_observed(tick_ms, true, true);
+            self.last_external_change_ms = now_ms;
+            tracing::info!(
+                "[mozc-shm] follow external change open={open} effective_was={effective} desired_was={desired}"
+            );
+        }
+        decision
+    }
 }
 
 #[cfg(test)]

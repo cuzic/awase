@@ -258,6 +258,8 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
         record_actuation_decision_skipped(DecisionSite::ImmCrossWrite);
         (None, false)
     };
+    // ADR-268 D3: 共有メモリの読みが「この書き込みより後の事実か」を判定する基準（ImmCross はフックを通らない）。
+    crate::hook::note_imm_cross_write();
     let command = match &op {
         ImmCrossOp::Targeted {
             conv_after_open, ..

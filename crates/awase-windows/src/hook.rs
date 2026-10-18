@@ -61,6 +61,10 @@ struct HookState {
     /// 自己注入キー含む全コールバックで更新する。エンジンスレッドの
     /// watchdog がここを読む。
     hook_alive_tick_ms: AtomicU64,
+    /// 最後に ImmCross で IME へ書き込みを**発行**した時刻（`GetTickCount64`）。0 = 未発行（ADR-268 D3）。
+    /// ImmCross の書き込みはフックを通らない（`hook_alive_tick_ms` に入らない）ので、共有メモリの読みが
+    /// 「awase の操作より後の事実か」を判定する基準（`max(hook_alive_tick_ms, この値)`）に別に足す。
+    imm_cross_write_tick_ms: AtomicU64,
     /// `install_hook` がフックスレッドからの TID 通知を待つスロット。
     /// 0 = 待機中、`u32::MAX` = `SetWindowsHookExW` 失敗、それ以外 = フックスレッド TID。
     hook_tid_init_slot: AtomicU32,
@@ -153,6 +157,7 @@ impl HookState {
             last_ime_mode_hook_ms: AtomicU64::new(0),
             cached_thumb_vks: AtomicU32::new(0),
             hook_alive_tick_ms: AtomicU64::new(0),
+            imm_cross_write_tick_ms: AtomicU64::new(0),
             hook_tid_init_slot: AtomicU32::new(0),
             physical_key_state: [const { AtomicBool::new(false) }; 256],
             physical_key_down_at_ms: [const { AtomicU64::new(0) }; 256],
@@ -317,6 +322,20 @@ pub(crate) fn tick_hook_alive() {
 /// フックコールバックの最終活動タイムスタンプ（ms）を返す
 pub fn hook_alive_tick_ms() -> u64 {
     HOOK_STATE.hook_alive_tick_ms.load(Ordering::Relaxed)
+}
+
+/// ImmCross で IME へ書き込みを発行した時刻を記録する（`runtime/open_chain.rs::imm_cross_write` の発行時、ADR-268 D3）。
+pub(crate) fn note_imm_cross_write() {
+    HOOK_STATE
+        .imm_cross_write_tick_ms
+        .store(current_tick_ms(), Ordering::Relaxed);
+}
+
+/// 共有メモリの読みが「awase の最後の操作より後の事実か」を判定する基準の時刻（ms、`GetTickCount64`）。
+/// `max(hook_alive_tick_ms, 最後の ImmCross の書き込みの発行時刻)`。全キー（自分の SendInput と KeyUp を含む）と
+/// ImmCross の書き込みの、どちらか新しい方（ADR-268 D3 の R3'）。
+pub fn last_operation_tick_ms() -> u64 {
+    hook_alive_tick_ms().max(HOOK_STATE.imm_cross_write_tick_ms.load(Ordering::Relaxed))
 }
 
 fn hook_tid_reset() {
