@@ -521,6 +521,87 @@ impl Default for DiagnosticsConfig {
     }
 }
 
+/// 窓切替直後・長い無操作のあとの最初の打鍵から日本語/英数を判定する機能の動作（ADR-263）。
+///
+/// 設定画面では、`mode` と `scope` の意味のある組み合わせを 5 択にまとめて出す（`awase-settings` の上級者向け設定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoDetectMode {
+    /// 何もしない
+    Off,
+    /// 打鍵は今までどおり流し、判定器を影として走らせて結果をログ（journal）に残すだけ（挙動を変えない）
+    #[default]
+    Observe,
+    /// 観測の無い窓（実測学習で降格された窓）で、belief が ON のとき、エピソード先頭の打鍵を短時間保持し、
+    /// 日本語入力と判定できたときだけ、ひらがなキーを 1 回送ってから流す（ADR-263 PR 2b）。
+    /// 英数と判定した・決まらなかった場合は、保持した打鍵を今までと同じ流れに戻す。
+    ImeOn,
+    /// `ime_on` に加えて、英数入力と判定できたとき、左Shift単独タップと同じ**半角英数トグル**に入る（IME は ON のまま。
+    /// Engine は非活性になり、保持した打鍵をそのまま流す）。半角英数トグルが有効な設定のときだけ働く。**利用者の責任**:
+    /// 日本語を英数と誤判定しても、Shift のタップなどで戻れる（誤判定の率は `eisu_threshold` で決まる）。
+    ImeOnEisu,
+}
+
+/// `ime_on` の対象にする窓の範囲（ADR-263）。**既定より広い範囲は利用者の責任**で選ぶ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoDetectScope {
+    /// 窓内の IME 状態が読めないと実測学習された窓（一太郎など）だけ。既定。
+    #[default]
+    Unobserved,
+    /// 読める窓（Chrome 等）も対象にする。読める窓では awase の belief が観測で実状態に追随するので、判定の書き込みの
+    /// 結果が次の観測で揃うまで食い違うことがある。実質 TSF ネイティブの窓（Windows Terminal 等）と入力中継ツールの窓は
+    /// 常に対象外。
+    All,
+}
+
+/// 窓切替直後・長い無操作のあとの最初の打鍵から日本語/英数を判定する機能の設定（ADR-263）。
+///
+/// `observe` は影の判定とログだけ（挙動を変えない）。`ime_on` は打鍵の保持と、日本語と判定したときのひらがなキー 1 回の送信まで行う。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AutoDetectConfig {
+    pub mode: AutoDetectMode,
+    /// `ime_on` の対象にする窓の範囲。既定は観測の無い窓だけ。`all` は利用者の責任で選ぶ。
+    pub scope: AutoDetectScope,
+    /// 空なら観測の無い窓に限らずすべての窓で影の判定を行う。指定した場合はそのプロセス名の窓だけ（将来の `ime_on` 用。`observe` では無視）。
+    pub include_apps: Vec<String>,
+    /// 対象外にするプロセス名（将来の `ime_on` 用。`observe` では無視）。
+    pub exclude_apps: Vec<String>,
+    /// 判定に使う打鍵（Down）の最大数
+    pub max_keys: u32,
+    /// エピソードの最大の長さ（ミリ秒）
+    pub max_ms: u32,
+    /// この長さ以上の無操作のあとの最初の打鍵でエピソードを始める（ミリ秒）。窓切替でも始まる
+    pub idle_ms: u32,
+    /// 日本語と確定する対数尤度比（nats）
+    pub ja_threshold: f64,
+    /// 日本語でないとする対数尤度比の大きさ（nats）
+    pub en_threshold: f64,
+    /// `ime_on_eisu` で半角英数に入るために必要な「日本語でない」確信度（nats。`en_threshold` 以上にする）。
+    /// 大きいほど誤って半角英数に入る率が下がるが、英数の判定が遅くなる（保持が長くなる）。
+    pub eisu_threshold: f64,
+}
+
+impl Default for AutoDetectConfig {
+    /// 閾値は人工データのオフライン評価による（`lang_detect::DetectParams::default` の doc 参照）。
+    /// `idle_ms` は影の観測で再校正するため、短め（3 秒）にして多めに記録する。
+    fn default() -> Self {
+        Self {
+            mode: AutoDetectMode::default(),
+            scope: AutoDetectScope::default(),
+            include_apps: Vec::new(),
+            exclude_apps: Vec::new(),
+            max_keys: 7,
+            max_ms: 2500,
+            idle_ms: 3000,
+            ja_threshold: 4.0,
+            en_threshold: 8.0,
+            eisu_threshold: 14.0,
+        }
+    }
+}
+
 // 既定はすべて空（`#[derive(Default)]`）。経緯:
 // - 2026-08-16: 「漢字」（VK_KANJI）を `toggle` の既定から外した。当時 `keys.ime_toggle` が同じ
 //   VK_KANJI を既定で持っており、同一の物理キー押下に対して `kp_stage_shadow_ime_toggle`（このフィールド由来、
@@ -832,6 +913,9 @@ pub struct AppConfig {
     /// 診断・自己修復系のキルスイッチ（issue #165）。
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
+    /// 窓切替直後・長い無操作のあとの日本語/英数の判定（ADR-263）。
+    #[serde(default)]
+    pub auto_detect: AutoDetectConfig,
     #[serde(default)]
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
@@ -1096,6 +1180,8 @@ pub struct ValidatedConfig {
     pub app_overrides: AppOverrides,
     /// 診断・自己修復系のキルスイッチ（issue #165）。検証は行わない（bool のみ）。
     pub diagnostics: DiagnosticsConfig,
+    /// 窓切替直後・長い無操作のあとの日本語/英数の判定（ADR-263）。検証は行わない。
+    pub auto_detect: AutoDetectConfig,
     /// キーマップインターセプトルール
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール
@@ -1120,6 +1206,7 @@ impl From<ValidatedConfig> for AppConfig {
             keys: v.keys,
             app_overrides: v.app_overrides,
             diagnostics: v.diagnostics,
+            auto_detect: v.auto_detect,
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
             keystroke_macro: v.keystroke_macro,
@@ -1513,6 +1600,7 @@ impl AppConfig {
                 keys: self.keys,
                 app_overrides,
                 diagnostics: self.diagnostics,
+                auto_detect: self.auto_detect,
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
                 keystroke_macro: self.keystroke_macro,
@@ -3226,5 +3314,35 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
             "{:?}",
             bundled.load_warnings()
         );
+    }
+    #[test]
+    fn test_auto_detect_defaults_to_observe_with_measured_thresholds() {
+        // [auto_detect] が無くても既定で影の判定（observe。挙動を変えない）が有効。ADR-263 PR 2a。
+        let config: AppConfig = toml::from_str("[general]\n").unwrap();
+        assert_eq!(config.auto_detect.mode, AutoDetectMode::Observe);
+        assert_eq!(config.auto_detect.scope, AutoDetectScope::Unobserved);
+        assert_eq!(config.auto_detect.max_keys, 7);
+        assert_eq!(config.auto_detect.max_ms, 2500);
+        assert!((config.auto_detect.ja_threshold - 4.0).abs() < f64::EPSILON);
+        assert!((config.auto_detect.en_threshold - 8.0).abs() < f64::EPSILON);
+        assert!((config.auto_detect.eisu_threshold - 14.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_auto_detect_can_be_turned_off_and_tuned() {
+        let toml_str = r#"
+[auto_detect]
+mode = "off"
+scope = "all"
+idle_ms = 5000
+en_threshold = 6.0
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.auto_detect.mode, AutoDetectMode::Off);
+        assert_eq!(config.auto_detect.scope, AutoDetectScope::All);
+        assert_eq!(config.auto_detect.idle_ms, 5000);
+        assert!((config.auto_detect.en_threshold - 6.0).abs() < f64::EPSILON);
+        // 指定しなかった項目は既定のまま
+        assert_eq!(config.auto_detect.max_keys, 7);
     }
 }
