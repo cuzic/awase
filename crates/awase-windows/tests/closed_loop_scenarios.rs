@@ -45,7 +45,8 @@
 
 mod support;
 
-use awase::engine::InputModeState;
+use awase::engine::decision::InactiveReason;
+use awase::engine::{ActivationState, InputModeState};
 use awase_windows::state::open_warrant::WarrantBasis;
 use support::harness::{Harness, Setup, Source, WriteOrigin};
 use support::invariants::{
@@ -61,6 +62,7 @@ const VK_ENTER: u16 = 0x0D;
 const VK_MUHENKAN: u16 = 0x1D;
 const VK_HIRAGANA: u16 = 0xF2;
 const VK_SPACE: u16 = 0x20;
+const VK_HENKAN: u16 = 0x1C;
 
 const fn state(open: bool, conv: u32) -> TrueState {
     TrueState {
@@ -150,6 +152,51 @@ fn conversion_esc_does_not_leave_stale_conv_stage() {
     assert_ok(&h, p2_no_stale_stage_after_unpredicted_key(&h));
     // 予測が返った場合も、真の結果（続く無変換は入力中の無変換）と食い違わない。
     assert_ok(&h, predictions_agree_with_truth(&h));
+}
+
+/// BUG-204 関連: 前の窓で半角英数(belief が `ObservedEisu`)のまま、起動後に作られた新しいスレッドの読めない窓(`Imm32Unavailable`)へ移り、
+/// 実 IME は閉×ひらがな(ADR-191 §3.2)。変換キー(ATOK では閉→開で変換モードが不明のため予測は `mode: None`)で開くと、belief の層では
+/// 前の窓の `ObservedEisu` が残り、Engine が `Inactive(NotRomajiInput)` で止まる。窓の切り替え(`assume_closed_for_new_thread`・
+/// `reset_stale_ime_on_for_imm_broken`)は開閉だけを低信頼で記録し、`correction_for_imm_broken` は `ObservedEisu` を意図的に対象外にし、
+/// `KeyEffectPredicted` は `mode` が `Some` のときだけ `input_mode` を書く。
+///
+/// **本番では救われる(実機 CI で確認、run 39113514316、ATOK × 実 Chrome × 3/3 で Engine が追随)**。本番は変換キーを通した 20ms 後に
+/// `mode-key-follow`(`[direct-follow]`)が IME の実状態を直接読み、`ObservedEisu` を訂正する(ログ: `read_ime_state_full ... cross native=true roman=false`
+/// → `[direct-follow] モードキー直後の窓の中で実状態が belief と違った → eisu=Some(false) へ追随` → `Engine activated`)。ハーネスはこの段を写さない
+/// ので、このテストは偽の陽性(ハーネスの限界)を記録するもの。ハーネスに `mode-key-follow` を足したら、この `#[ignore]` を外して回帰テストにできる。
+/// GJI の MS-IME プリセット・MS-IME 本体は実機で前提(Chrome を半角英数にする)が作れず未測定。
+#[test]
+#[ignore = "ハーネスが本番の mode-key-follow(モードキー通過後 20ms の直接読み)を写していない偽の陽性。本番は救われる(実機 CI run 39113514316、ATOK)。ハーネスに足したら外す"]
+fn stale_eisu_blocks_engine_after_predicted_open_in_a_new_thread_window() {
+    // 窓 A: 読める窓で IME 開・半角英数。観測で belief が ObservedEisu になる。
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)));
+    h.advance_ms(100).observe(Source::ImmCross).advance_ms(200);
+    assert_eq!(
+        h.model().input_mode(),
+        InputModeState::ObservedEisu,
+        "前提: 窓 A で半角英数と観測した\n{}",
+        h.trace()
+    );
+    // 窓 B: 起動後に作られた新しいスレッドの読めない窓。実 IME は閉×ひらがな。
+    h.focus_change_to_new_thread_unreadable(state(false, CONV_HIRAGANA))
+        .advance_ms(100);
+    // 変換キーで IME が開く(ATOK: 閉→開、変換モードは不明のため予測は mode: None)。
+    h.key(VK_HENKAN).advance_ms(100);
+    assert_eq!(
+        h.ime.state(),
+        state(true, CONV_HIRAGANA),
+        "前提: 実 IME は開いてひらがな\n{}",
+        h.trace()
+    );
+    assert!(
+        !matches!(
+            h.activation(),
+            ActivationState::Inactive(InactiveReason::NotRomajiInput)
+        ),
+        "実 IME はひらがなで開いているのに、belief が前の窓の ObservedEisu のまま Engine が NotRomajiInput で止まった: {:?}\n{}",
+        h.activation(),
+        h.trace()
+    );
 }
 
 /// BUG-163（P3）の入力列: IME を閉じた状態で起動し、500ms ごとに観測する。

@@ -31,15 +31,17 @@ use std::time::Instant;
 
 use awase::config::ConfirmMode;
 use awase::engine::{
-    Decision, Effect, Engine, EngineCommand, ImeEffect, InputContext, InputModeState, NicolaFsm,
-    SpecialKeyCombos,
+    ActivationState, Decision, Effect, Engine, EngineCommand, ImeEffect, InputContext,
+    InputModeState, NicolaFsm, SpecialKeyCombos,
 };
 use awase::scanmap::KeyboardModel;
 use awase::types::VkCode;
 use awase::yab::YabLayout;
 use awase_windows::state::conv_classify::ConvSyncReason;
 use awase_windows::state::drift_correction::{check_drift_correction, DriftCorrection};
-use awase_windows::state::evidence::{ConvOpenInference, ImmCrossProbe, Observed, ObserverPoll};
+use awase_windows::state::evidence::{
+    ConvOpenInference, HeuristicDefault, ImmCrossProbe, Observed, ObserverPoll,
+};
 use awase_windows::state::foreground_scope::ForegroundScope;
 use awase_windows::state::hub_clock::HubClock;
 use awase_windows::state::ime_event::{
@@ -401,6 +403,52 @@ impl Harness {
         self.handle_engine_decision(&decision);
         self.settle("focus_change()".into(), None);
         self
+    }
+
+    /// 起動後に作られた新しいスレッドの、読めない窓(`Imm32Unavailable`)へ移る(BUG-204 の関連、フォーカス移動の再現用)。
+    ///
+    /// - 擬似 IME は、その新しいスレッドの IME の状態に置き換える(`new_thread_initial`。ADR-191 §3.2: 新しいスレッドは
+    ///   閉×ひらがな)。`focus_change()` は擬似 IME を共有のままにするが、実際の IME はスレッドごとに状態を持つ。
+    /// - 本番の `focus_tracking`(`Imm32Unavailable` のキャッシュ無し・新スレッド)と同じく、`FocusChanged` の後に
+    ///   「新しいスレッドは閉」という観測(`assume_closed_for_new_thread` 相当。低信頼の `HeuristicDefault`)を記録する。
+    ///   **入力モードには触れない**(本番も触れない)。本番の関数は `pub(crate)` なので、同じ事象を流す。
+    /// - 本番の `key_pipeline` の他の段(物理 IME キーの `ObservedEisu` 救済など)は写さない。
+    pub fn focus_change_to_new_thread_unreadable(
+        &mut self,
+        new_thread_initial: super::pseudo_ime::TrueState,
+    ) -> &mut Self {
+        let from = self.focus;
+        self.epoch += 1;
+        self.focus = HwndId(self.focus.0 + 1);
+        self.setup.profile = ImePolicyProfile::Imm32Unavailable;
+        self.ime = PseudoIme::from_grid(self.setup.grid, new_thread_initial);
+        self.last_conv_raw = None;
+        self.reduce(ImeEvent::FocusChanged {
+            from: Some(from),
+            to: self.focus,
+            profile: self.setup.profile,
+            focus_epoch: self.epoch,
+        });
+        self.reduce(ImeEvent::ObserverReported(
+            Observed::<HeuristicDefault>::at_startup(
+                self.setup.profile,
+                false,
+                HwndId::NULL,
+                self.epoch,
+            )
+            .into(),
+        ));
+        let ctx = self.ctx();
+        let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
+        self.handle_engine_decision(&decision);
+        self.settle("focus_change_to_new_thread_unreadable()".into(), None);
+        self
+    }
+
+    /// 現在の belief で、Engine が有効か(`Engine::compute_state`。IME ON・日本語 IME・ローマ字入力と判断できるか)。
+    #[must_use]
+    pub fn activation(&self) -> ActivationState {
+        self.engine.compute_state(&self.ctx())
     }
 
     /// ユーザーの明示操作（IME ON/OFF コンボ等、`UserIntentSource::Command`）で開閉を指定する。
