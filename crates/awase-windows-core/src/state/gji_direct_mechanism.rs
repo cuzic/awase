@@ -71,6 +71,8 @@ pub enum ReopenSource {
     ShadowNoop,
     /// shadow toggle で OFF→ON に倒した瞬間。
     ShadowToggle,
+    /// ADR-263: 日本語入力と判定して、ひらがなキーを送った直後。**awase が IME へ書いた**同期（他の 3 つは書いていない）。
+    LangDetect,
 }
 
 impl ReopenSource {
@@ -81,6 +83,7 @@ impl ReopenSource {
             Self::Predict => "Reopen(BeliefSync:predict)",
             Self::ShadowNoop => "Reopen(BeliefSync:shadow-noop)",
             Self::ShadowToggle => "Reopen(BeliefSync:shadow-toggle)",
+            Self::LangDetect => "Reopen(BeliefSync:lang-detect)",
         }
     }
 }
@@ -466,7 +469,7 @@ mod tests {
     #[test]
     fn reopen_is_suppressed_only_while_candidate_visible() {
         use ReopenSource::*;
-        for src in [Predict, ShadowNoop, ShadowToggle] {
+        for src in [Predict, ShadowNoop, ShadowToggle, LangDetect] {
             assert_eq!(reopen_obligation(false, src), Some(GjiFsmSync::Reopen(src)));
             assert_eq!(reopen_obligation(true, src), None);
         }
@@ -479,9 +482,10 @@ mod tests {
             Predict.trigger(),
             ShadowNoop.trigger(),
             ShadowToggle.trigger(),
+            LangDetect.trigger(),
         ];
         assert!(t.iter().all(|s| s.starts_with("Reopen(BeliefSync:")));
-        assert_eq!(t.iter().collect::<std::collections::HashSet<_>>().len(), 3);
+        assert_eq!(t.iter().collect::<std::collections::HashSet<_>>().len(), 4);
     }
 
     #[test]

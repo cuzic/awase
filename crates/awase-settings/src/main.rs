@@ -4401,7 +4401,283 @@ impl SettingsApp {
             ui.text_edit_singleline(&mut self.config.general.layouts_dir)
                 .on_hover_text(layouts_dir_hover);
         });
+        ui.add_space(12.0);
+        ui.separator();
+        auto_detect_section(ui, &mut self.config.auto_detect);
     }
+}
+
+// ── 窓切替直後の日本語/英数の判定（ADR-263、上級者向け）──
+
+/// `[auto_detect]` の動作の選択肢（設定画面の 1 つのプルダウン）。内部の設定は `mode` と `scope` の 2 つの軸だが、
+/// 画面では意味のある組み合わせに集約する（軸を並べると分かりにくい。所有者判断 2026-10-17）。
+/// これに当たらない組み合わせ（config.toml に手書きした `ime_on` + `all` など）は「カスタム」と表示する。
+const AUTO_DETECT_PRESETS: [(
+    awase::config::AutoDetectMode,
+    awase::config::AutoDetectScope,
+    &str,
+    &str,
+); 5] = [
+    (
+        awase::config::AutoDetectMode::Off,
+        awase::config::AutoDetectScope::Unobserved,
+        "無効",
+        "何もしません。",
+    ),
+    (
+        awase::config::AutoDetectMode::Observe,
+        awase::config::AutoDetectScope::Unobserved,
+        "記録のみ（既定）",
+        "打鍵は今までどおりで、判定の結果をジャーナル（不具合報告に載る診断記録）に残すだけです。\n\
+         キー入力の挙動は変わりません。",
+    ),
+    (
+        awase::config::AutoDetectMode::ImeOn,
+        awase::config::AutoDetectScope::Unobserved,
+        "IME の状態が読めない窓で、日本語ならひらがなにする",
+        "一太郎など、窓内の IME 状態が読めないと学習された窓だけが対象です。\n\
+         Alt+Tab 直後や長い無操作のあとの最初の数打鍵を最大 2.5 秒だけ保持し、親指シフトで打っていると\n\
+         判定できたときだけ、ひらがなキーを 1 回送ってから保持した打鍵を流します。\n\
+         英数と判定した・決まらなかった場合は、保持した打鍵をそのまま流すだけです。\n\
+         awase が IME ON とみなしているときだけ動きます。保持中に窓が変わると、保持した打鍵は捨てられます。",
+    ),
+    (
+        awase::config::AutoDetectMode::ImeOn,
+        awase::config::AutoDetectScope::All,
+        "すべての窓で、日本語ならひらがなにする（利用者の責任）",
+        "上の動作を、IME の状態が読める窓（Chrome など）にも広げます。読める窓では awase の想定が\n\
+         実際の状態に追随するため、判定の書き込みの結果が次の観測で揃うまで食い違うことがあります。\n\
+         TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。\n\
+         英数と判定した場合は、保持した打鍵をそのまま流すだけで、半角英数にはしません。",
+    ),
+    (
+        awase::config::AutoDetectMode::ImeOnEisu,
+        awase::config::AutoDetectScope::All,
+        "すべての窓で、日本語ならひらがな・英数なら半角英数にする（利用者の責任）",
+        "上の動作に加えて、打鍵列が英数（英語・コード・他言語）と判定できたときは、左Shift単独タップと同じ半角英数\n\
+         （IME は ON のまま）に入り、保持した打鍵をそのまま流します。半角英数のトグルが有効な設定のときだけ働きます。\n\
+         日本語を英数と誤判定しても、Shift のタップなどで戻れます。\n\
+         誤判定の率は、詳細の「半角英数にする確信度」で決まります。\n\
+         TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。",
+    ),
+];
+
+/// 現在の設定が当たる選択肢の番号（当たらなければ `None` = カスタム）。
+fn auto_detect_preset_index(cfg: &awase::config::AutoDetectConfig) -> Option<usize> {
+    AUTO_DETECT_PRESETS
+        .iter()
+        .position(|(mode, scope, _, _)| *mode == cfg.mode && *scope == cfg.scope)
+}
+
+/// 選択肢を設定に反映する（`mode` と `scope` だけを書き換える。数値・アプリの指定は触らない）。
+fn apply_auto_detect_preset(cfg: &mut awase::config::AutoDetectConfig, index: usize) {
+    if let Some((mode, scope, _, _)) = AUTO_DETECT_PRESETS.get(index) {
+        cfg.mode = *mode;
+        cfg.scope = *scope;
+    }
+}
+
+/// プロセス名の一覧を、設定画面の 1 行の入力欄に出す文字列にする（カンマ区切り）。
+fn apps_to_text(apps: &[String]) -> String {
+    apps.join(", ")
+}
+
+/// 入力欄の文字列をプロセス名の一覧に直す（カンマ・空白・改行区切り、空は捨てる）。
+fn text_to_apps(text: &str) -> Vec<String> {
+    text.split(|c: char| c == ',' || c == '、' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// 「窓切替直後の日本語入力の判定」（ADR-263）の設定。上級者向けタブの末尾に置く。
+/// 画面に常に出すのは動作の選択肢（5 択）だけで、数値とアプリの指定は折りたたみの「詳細」に入れる。
+fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectConfig) {
+    ui.heading("窓切替直後の日本語入力の判定（上級者向け）");
+    ui.add_space(4.0);
+    ui.label(
+        "窓を切り替えた直後や、しばらく操作がなかったあとの最初の数打鍵から、\n\
+         親指シフトで打っているかどうかを判定します。IME の状態が読めない窓（一太郎など）で、\n\
+         awase の想定と実際の IME の状態がずれて、最初の文字が化けるのを防ぐための機能です。",
+    );
+    ui.add_space(4.0);
+
+    let current = auto_detect_preset_index(cfg);
+    let selected_text = current.map_or_else(
+        || format!("カスタム（{:?} / {:?}）", cfg.mode, cfg.scope),
+        |i| AUTO_DETECT_PRESETS[i].2.to_string(),
+    );
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.label("動作:");
+        egui::ComboBox::from_id_salt("auto_detect_preset")
+            .selected_text(selected_text)
+            .width(420.0)
+            .show_ui(ui, |ui| {
+                for (i, (_, _, label, hover)) in AUTO_DETECT_PRESETS.iter().enumerate() {
+                    if ui
+                        .selectable_label(current == Some(i), *label)
+                        .on_hover_text(*hover)
+                        .clicked()
+                    {
+                        chosen = Some(i);
+                    }
+                }
+            });
+    });
+    if let Some(i) = chosen {
+        apply_auto_detect_preset(cfg, i);
+    }
+    if matches!(
+        cfg.mode,
+        awase::config::AutoDetectMode::ImeOn | awase::config::AutoDetectMode::ImeOnEisu
+    ) {
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 120, 0),
+            "実機での確認が済んでいない機能です。不具合があれば「記録のみ」に戻してください。\n\
+             Space を親指キーにした構成や、ADR-255 の遅いルールがある構成では、打鍵を保持しません。",
+        );
+    }
+    ui.add_space(4.0);
+
+    let enabled = cfg.mode != awase::config::AutoDetectMode::Off;
+    ui.add_enabled_ui(enabled, |ui| {
+        egui::CollapsingHeader::new("詳細（数値・対象のアプリ）")
+            .id_salt("auto_detect_details")
+            .default_open(false)
+            .show(ui, |ui| auto_detect_details(ui, cfg));
+    });
+}
+
+/// 0.1 刻みに丸める（`DragValue` の操作で `4.1000000000000005` のような値が保存されないように）。
+fn round_tenth(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+/// 「詳細」の中身: 数値の設定と、対象にする/外すアプリ。
+fn auto_detect_details(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectConfig) {
+    ui.horizontal(|ui| {
+        let hover = "窓を切り替えたときのほか、この時間以上キー入力がなかったあとの最初の打鍵でも判定を始めます。";
+        ui.label("無操作とみなす時間:").on_hover_text(hover);
+        ui.add(
+            egui::DragValue::new(&mut cfg.idle_ms)
+                .range(500..=60_000)
+                .speed(100.0)
+                .suffix(" ms"),
+        )
+        .on_hover_text(hover);
+    });
+    ui.horizontal(|ui| {
+        let hover = "判定のために打鍵を保持する最大の時間です。これを過ぎると、判定が出ていなくても\n\
+                     保持した打鍵をそのまま流します。";
+        ui.label("保持する最大の時間:").on_hover_text(hover);
+        ui.add(
+            egui::DragValue::new(&mut cfg.max_ms)
+                .range(500..=10_000)
+                .speed(50.0)
+                .suffix(" ms"),
+        )
+        .on_hover_text(hover);
+    });
+    ui.horizontal(|ui| {
+        let hover =
+            "判定に使う打鍵の最大数です。これを超えても決まらなければ、判定せずそのまま流します。";
+        ui.label("判定に使う最大の打鍵数:").on_hover_text(hover);
+        ui.add(egui::DragValue::new(&mut cfg.max_keys).range(3..=15))
+            .on_hover_text(hover);
+    });
+    ui.horizontal(|ui| {
+        let hover = "日本語と確定する確信度（対数尤度比）です。大きいほど慎重になり、日本語の取り逃しが増えます。\n\
+                     親指と文字キーが重なって押された場合は、この値に関係なく日本語と判定します。";
+        ui.label("日本語と確定する確信度:").on_hover_text(hover);
+        ui.add(
+            egui::DragValue::new(&mut cfg.ja_threshold)
+                .range(0.0..=20.0)
+                .speed(0.1)
+                .fixed_decimals(1),
+        )
+        .on_hover_text(hover);
+        cfg.ja_threshold = round_tenth(cfg.ja_threshold);
+    });
+    ui.horizontal(|ui| {
+        let hover = "日本語でないと判断して、保持した打鍵を早く流す確信度です。小さいほど早く流れますが、\n\
+                     親指がまだ出ていない日本語の取り逃しが増えます。";
+        ui.label("日本語でないと判断する確信度:")
+            .on_hover_text(hover);
+        ui.add(
+            egui::DragValue::new(&mut cfg.en_threshold)
+                .range(0.0..=20.0)
+                .speed(0.1)
+                .fixed_decimals(1),
+        )
+        .on_hover_text(hover);
+        cfg.en_threshold = round_tenth(cfg.en_threshold);
+    });
+    ui.add_enabled_ui(
+        cfg.mode == awase::config::AutoDetectMode::ImeOnEisu,
+        |ui| {
+            ui.horizontal(|ui| {
+                let hover = "「英数なら半角英数にする」動作で、半角英数に入るために必要な「日本語でない」確信度です。\n\
+                             大きいほど、日本語を英数と誤判定して半角英数に入る率が下がります\n\
+                             （人工データの評価では、12 で約 4%、14 で約 3.7%、20 で約 2.8%）が、\n\
+                             判定が遅くなり、打鍵の保持が長くなります（平均 3.5〜4.4 打鍵）。";
+                ui.label("半角英数にする確信度:").on_hover_text(hover);
+                ui.add(
+                    egui::DragValue::new(&mut cfg.eisu_threshold)
+                        .range(0.0..=30.0)
+                        .speed(0.1)
+                        .fixed_decimals(1),
+                )
+                .on_hover_text(hover);
+                cfg.eisu_threshold = round_tenth(cfg.eisu_threshold);
+            });
+        },
+    );
+    let apps_hover = "プロセス名（例: taro36.exe）をカンマか空白で区切って入力します。大文字小文字と .exe の有無は区別しません。\n\
+                      打鍵を保持する動作（「記録のみ」以外）のときだけ効きます。";
+    apps_text_edit(
+        ui,
+        "auto_detect_include_apps",
+        "対象にするアプリ（空欄=すべて）:",
+        apps_hover,
+        &mut cfg.include_apps,
+    );
+    apps_text_edit(
+        ui,
+        "auto_detect_exclude_apps",
+        "対象外にするアプリ:",
+        apps_hover,
+        &mut cfg.exclude_apps,
+    );
+}
+
+/// プロセス名の一覧の入力欄。編集中の文字列は egui の一時領域に持ち、区切り（カンマ・空白）を打てるようにする
+/// （毎フレーム一覧から作り直すと、区切りを打った直後に消えて 2 つ目を入力できない）。フォーカスが外れたら
+/// 一時領域を捨て、次のフレームで一覧から正規化した文字列を出し直す。
+fn apps_text_edit(
+    ui: &mut egui::Ui,
+    id_source: &str,
+    label: &str,
+    hover: &str,
+    apps: &mut Vec<String>,
+) {
+    let id = ui.make_persistent_id(id_source);
+    ui.horizontal(|ui| {
+        ui.label(label).on_hover_text(hover);
+        let mut text = ui
+            .data_mut(|d| d.get_temp::<String>(id))
+            .unwrap_or_else(|| apps_to_text(apps));
+        let response = ui.text_edit_singleline(&mut text).on_hover_text(hover);
+        if response.changed() {
+            *apps = text_to_apps(&text);
+        }
+        if response.lost_focus() {
+            ui.data_mut(|d| d.remove::<String>(id));
+        } else {
+            ui.data_mut(|d| d.insert_temp(id, text));
+        }
+    });
 }
 
 // ── eframe::App ──
@@ -6989,10 +7265,12 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction, NewComboBuf, PhysicalPos,
-        SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue, apply_adr192_recommended_replacement,
-        empty_yab_layout, find_config_path, has_adr192_warning_context, load_yab_layout,
-        resolve_layouts_dir, undo_adr192_recommended_replacement,
+        AUTO_DETECT_PRESETS, CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction,
+        NewComboBuf, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue,
+        apply_adr192_recommended_replacement, apply_auto_detect_preset, apps_to_text,
+        auto_detect_details, auto_detect_preset_index, auto_detect_section, empty_yab_layout,
+        find_config_path, has_adr192_warning_context, load_yab_layout, resolve_layouts_dir,
+        text_to_apps, undo_adr192_recommended_replacement,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -7177,6 +7455,98 @@ mod layout_tab_repro {
                     app.tab_keys(ui);
                 });
             });
+        }
+    }
+
+    #[test]
+    fn apps_text_round_trips_and_accepts_mixed_separators() {
+        assert_eq!(apps_to_text(&[]), "");
+        assert_eq!(
+            apps_to_text(&["taro.exe".to_string(), "chrome.exe".to_string()]),
+            "taro.exe, chrome.exe"
+        );
+        assert_eq!(
+            text_to_apps("taro.exe, chrome.exe  wezterm.exe、 code.exe\n"),
+            vec!["taro.exe", "chrome.exe", "wezterm.exe", "code.exe"]
+        );
+        assert!(text_to_apps("  ,  ").is_empty());
+    }
+
+    #[test]
+    fn auto_detect_presets_are_unique_and_round_trip() {
+        use awase::config::AutoDetectConfig;
+        // 選択肢は (mode, scope) が重ならず、選ぶと設定がその選択肢に当たる（カスタムにならない）。
+        for (i, (mode, scope, _, _)) in AUTO_DETECT_PRESETS.iter().enumerate() {
+            assert_eq!(
+                AUTO_DETECT_PRESETS
+                    .iter()
+                    .filter(|(m, s, _, _)| m == mode && s == scope)
+                    .count(),
+                1,
+                "{mode:?}/{scope:?} は選択肢に 1 回だけ出す"
+            );
+            let mut cfg = AutoDetectConfig::default();
+            apply_auto_detect_preset(&mut cfg, i);
+            assert_eq!(auto_detect_preset_index(&cfg), Some(i));
+        }
+        assert!(
+            AUTO_DETECT_PRESETS.len() <= 5,
+            "選択肢は 5 つまで（所有者判断）"
+        );
+    }
+
+    #[test]
+    fn auto_detect_default_is_the_observe_preset() {
+        let cfg = awase::config::AutoDetectConfig::default();
+        let i = auto_detect_preset_index(&cfg).expect("既定は選択肢のどれかに当たる");
+        assert_eq!(
+            AUTO_DETECT_PRESETS[i].0,
+            awase::config::AutoDetectMode::Observe
+        );
+    }
+
+    #[test]
+    fn auto_detect_combination_outside_the_presets_is_custom_and_selecting_keeps_numbers() {
+        use awase::config::{AutoDetectMode, AutoDetectScope};
+        // config.toml に手書きした ime_on_eisu + unobserved（画面の選択肢から外した組み合わせ）は選択肢に無い = カスタム。
+        let mut cfg = awase::config::AutoDetectConfig {
+            mode: AutoDetectMode::ImeOnEisu,
+            scope: AutoDetectScope::Unobserved,
+            idle_ms: 9000,
+            ..awase::config::AutoDetectConfig::default()
+        };
+        assert_eq!(auto_detect_preset_index(&cfg), None);
+        // 選択肢を選んでも、数値・アプリの指定は変えない（mode と scope だけを書き換える）。
+        apply_auto_detect_preset(&mut cfg, 1);
+        assert_eq!(cfg.mode, AutoDetectMode::Observe);
+        assert_eq!(cfg.idle_ms, 9000);
+    }
+
+    #[test]
+    fn auto_detect_section_renders_in_every_mode_and_scope_without_panicking() {
+        use awase::config::{AutoDetectMode, AutoDetectScope};
+        for mode in [
+            AutoDetectMode::Off,
+            AutoDetectMode::Observe,
+            AutoDetectMode::ImeOn,
+            AutoDetectMode::ImeOnEisu,
+        ] {
+            for scope in [AutoDetectScope::Unobserved, AutoDetectScope::All] {
+                let mut cfg = awase::config::AutoDetectConfig {
+                    mode,
+                    scope,
+                    include_apps: vec!["taro.exe".to_string()],
+                    ..awase::config::AutoDetectConfig::default()
+                };
+                let ctx = eframe::egui::Context::default();
+                let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+                    eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                        auto_detect_section(ui, &mut cfg);
+                        // 折りたたみの中身は既定で閉じているので、直接も描画して確かめる。
+                        auto_detect_details(ui, &mut cfg);
+                    });
+                });
+            }
         }
     }
 

@@ -531,6 +531,11 @@ pub(crate) unsafe fn handle_wm_timer(
                 crate::INPUT_DEFER.replay_later(held);
             }
         }
+        Some(id) if id == crate::TIMER_LANG_HOLD => {
+            // 一発タイマー（ADR-263 PR 2b）。冒頭で自ら kill する。
+            app.platform.timer.kill(crate::TIMER_LANG_HOLD);
+            app.lang_detect_on_timer();
+        }
         Some(id) if id == crate::TIMER_IME_OFF_RESCUE => {
             if let Some(pending_event) = app.take_ime_off_rescue_pending() {
                 tracing::info!(
@@ -1521,6 +1526,25 @@ fn build_bug_report_gji_keymap_summary(
         mode_toggle_kana_type_keys,
     } = custom_keymap_fields;
 
+    // ADR-259 決定1: 表のIME関連の行（3列とも固定語彙）と、送らなかった行の理由別の件数。
+    let (custom_keymap_rows, custom_keymap_rows_counts) = if custom_keymap_table_is_effective {
+        let table = raw_ref.custom_keymap_table.as_deref().unwrap_or("");
+        let diag = awase_gji_config::keymap::diagnostic_rows(table);
+        (
+            Some(
+                diag.rows
+                    .into_iter()
+                    .map(crate::bug_report::BugReportCustomKeymapRow::from)
+                    .collect(),
+            ),
+            Some(crate::bug_report::BugReportCustomKeymapRowCounts::from(
+                diag.counts,
+            )),
+        )
+    } else {
+        (None, None)
+    };
+
     let (henkan_classified, muhenkan_classified) =
         crate::gji_charset_autodetect::classify_thumb_key_ime_actions(raw_ref);
     let henkan_classified_kind = henkan_classified
@@ -1547,6 +1571,8 @@ fn build_bug_report_gji_keymap_summary(
         henkan_classified_kind,
         muhenkan_classified_kind,
         muhenkan_dedicated_fn_key_configured,
+        custom_keymap_rows,
+        custom_keymap_rows_counts,
     }
 }
 

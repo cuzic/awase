@@ -2152,8 +2152,8 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
 ///
 /// - `.record_optimistic(` = 1（`ir_apply_drift_correction`、ImmCross 分岐）。
 /// - `.record_confirmed(` = 5（`record_ime_apply_result` 内部/`ir_post_focus_change_snapshot`
-///   〈決定1-a、TsfNative ではスキップされ非 TsfNative のみ到達〉/
-///   `kp_stage_shadow_ime_toggle`/`focus_tracking.rs` hard pre-sync/
+///   〈決定1-a、TsfNative と実測学習で降格された窓ではスキップされる。ADR-262 段階 A〉/
+///   `kp_stage_shadow_ime_toggle`/`focus_tracking.rs` hard pre-sync〈同じく学習降格の窓ではスキップ〉/
 ///   `process_deferred_keys`〈本番到達不能なデッドコード、決定5参照〉）。
 #[test]
 fn applied_state_recorders_call_sites_are_accounted_for() {
@@ -3670,6 +3670,136 @@ fn drift_diagnostic_guard_detects_an_unguarded_call() {
     assert!(!drift_diagnostic_call_is_guarded("nothing"));
 }
 
+/// ADR-262 段階 A: フォーカス変更で belief を `applied` へ写す（偽の `Confirmed` を書きうる）殻の 3 箇所は、
+/// すべて `state/applied_mirror_plan.rs::may_mirror_applied_on_focus`（TsfNative と、実測学習で降格された窓を除く）を通す。
+/// 1 箇所でも抜けると、読めない窓（一太郎等）の `applied` が偽の `Confirmed(true)` に戻り、GJI の already-matched が
+/// 後続の ON の書き込みを省く（#623）。写しの書き込み先: `presync_applied_open_on` の呼び出し 2 箇所
+/// （`focus_tracking.rs` のフォーカス時と `ir_align_placeholder_desired`）と、`ir_post_focus_change_snapshot` の `record_confirmed`。
+#[test]
+fn applied_mirror_on_focus_goes_through_the_plan_at_all_three_sites() {
+    let focus_src = read_crate_file("src/runtime/focus_tracking.rs");
+    let refresh_src = read_crate_file("src/runtime/ime_refresh.rs");
+    let focus = production_code_only(&focus_src);
+    let refresh = production_code_only(&refresh_src);
+    let plan = "applied_mirror_plan::may_mirror_applied_on_focus(";
+
+    // (1) フォーカス時の先同期
+    assert_eq!(
+        focus.matches(plan).count(),
+        1,
+        "focus_tracking.rs: 判断の呼び出しは先同期の 1 箇所"
+    );
+    let call = focus
+        .find("self.presync_applied_open_on(")
+        .expect("focus_tracking.rs: 先同期の呼び出し");
+    let at = focus[..call]
+        .rfind(plan)
+        .expect("先同期の直前に判断が必要（ADR-262 段階 A）");
+    assert!(call - at < 600, "判断は先同期の条件の中にあること");
+    assert!(
+        focus[..at].ends_with("if crate::state::"),
+        "判断を否定して使わない（条件の先頭に置く）"
+    );
+
+    // (2) 最初の成功観測での揃え
+    let align = extract_fn_body(&refresh, "fn ir_align_placeholder_desired");
+    assert!(
+        align.contains(plan),
+        "ir_align_placeholder_desired: 先同期の前に判断を通すこと（ADR-262 段階 A）"
+    );
+    assert!(
+        align.contains("if open\n            && crate::state::applied_mirror_plan"),
+        "揃えた値が「開」のときだけ、判断を通ったものが先同期を行う"
+    );
+
+    // (3) 決定 1-a の mirror
+    let snap = extract_fn_body(&refresh, "fn ir_post_focus_change_snapshot");
+    let rec = snap
+        .find(".record_confirmed(")
+        .expect("ir_post_focus_change_snapshot: mirror の record_confirmed");
+    let at = snap[..rec]
+        .rfind(plan)
+        .expect("mirror の直前に判断が必要（ADR-262 段階 A、B1）");
+    assert!(rec - at < 400, "判断は mirror の条件であること");
+    assert!(
+        snap[..at].ends_with("if crate::state::"),
+        "判断を否定して使わない（mirror の条件そのもの）"
+    );
+}
+
+/// ADR-263 PR 2b: 日本語と判定したときのひらがなキー（`VK_DBE_HIRAGANA`）の送信は 1 箇所だけで、送る前に純粋な判断
+/// `hiragana_write_skip_reason`（belief ON・観測の無い窓・NonText でない・フォーカス追跡が前面窓に追いついている・
+/// 明示 OFF の意図が無い・Alt/Win が押されていない）を通し、送った後に `on_ime_applied` と GjiFsm の Reopen を行う。
+/// 判断を通さずに送ると、実 IME が OFF の窓や Alt+Tab の直後に、モードキーがキーボード自体の状態を壊す
+/// （BUG-008・BUG-015 追補7・`kp_restore_kana_from_half_width` と同じハザード）。
+#[test]
+fn lang_detect_hiragana_write_goes_through_the_gate_and_syncs_after() {
+    let src_full = read_crate_file("src/runtime/lang_detect_shadow.rs");
+    let src = production_code_only(&src_full);
+    let calls: Vec<usize> = src
+        .match_indices("crate::ime::send_hiragana_key()")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(calls.len(), 1, "ひらがなキーの送信は 1 箇所だけ");
+    let head = &src[..calls[0]];
+    let tail = &src[calls[0]..];
+    assert!(
+        head.contains("hiragana_write_skip_reason(self.lang_detect_write_facts(true))"),
+        "ひらがなキーの送信の前に純粋な判断 `hiragana_write_skip_reason` を通すこと（ADR-263 D5）"
+    );
+    for need in [
+        "ime_mode_key_injection_blocked_by_modifier()",
+        "effective_open()",
+        "is_demoted_by_learning()",
+        "explicit_intent()",
+        "lang_detect_focus_in_sync()",
+    ] {
+        assert!(
+            src.contains(need),
+            "ひらがなキーの送信の前提 `{need}` を集めること（ADR-263 D5）"
+        );
+    }
+    assert!(
+        tail.contains("on_ime_applied(") && tail.contains("ReopenSource::LangDetect"),
+        "送った後に `on_ime_applied` と GjiFsm の Reopen（cold 同期）を行うこと"
+    );
+}
+
+/// ADR-263 `ime_on_eisu`: 英数と判定したときは、左Shift単独タップと同じ半角英数トグルの入口に入る（IME OFF は送らない）。
+/// 入る前に純粋な判断 `eisu_write_skip_reason` と `plan_entry_for_language_detect` を通す。belief（`desired_open`）は
+/// 動かさず、専用の素通し（bypass）も持たない: Engine は `input_mode = ObservedEisu` で非活性になる。
+#[test]
+fn lang_detect_english_enters_the_half_width_alnum_toggle_through_the_gate() {
+    let src_full = read_crate_file("src/runtime/lang_detect_shadow.rs");
+    let src = production_code_only(&src_full);
+    let fn_start = src
+        .find("fn lang_detect_enter_half_width_alnum")
+        .expect("lang_detect_enter_half_width_alnum が必要");
+    let body = &src[fn_start..];
+    let gate = body
+        .find("eisu_write_skip_reason(self.lang_detect_write_facts(false))")
+        .expect("入る前に純粋な判断 `eisu_write_skip_reason` を通すこと（ADR-263）");
+    let plan = body
+        .find("plan_entry_for_language_detect(")
+        .expect("入口の計画は `plan_entry_for_language_detect` を通すこと");
+    let imc = body
+        .find("kp_enter_half_width_alnum_imc(")
+        .expect("MS-IME 経路は共有の entry ヘルパーを使うこと");
+    assert!(gate < plan && plan < imc, "判断 → 計画 → 実行の順");
+    assert_eq!(
+        src.matches("kp_enter_half_width_alnum_gji(").count(),
+        1,
+        "GJI 経路の entry も共有ヘルパー経由の 1 箇所だけ"
+    );
+    assert!(
+        !src.contains("send_ime_off_key")
+            && !src.contains("bypass_scope")
+            && !src.contains("apply_lang_detect_off")
+            && !src.contains("LangDetectOff"),
+        "IME OFF の送信・専用の素通し・belief の書き換えは持たない（レビュー B1）"
+    );
+}
+
 /// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。
 ///
 /// - フォーカス時の先同期（`applied` の `record_confirmed(true)` と GJI への ImeOn 通知＝long-cold の
@@ -3712,8 +3842,8 @@ fn startup_placeholder_desired_is_not_treated_as_intent() {
     );
     let body = extract_fn_body(refresh_prod, "fn ir_align_placeholder_desired");
     assert!(
-        body.contains("if open && !tsf_native"),
-        "揃えた値が「開」の非 TsfNative だけ、スキップした先同期を行う（閉なら行わない）"
+        body.contains("if open\n            && crate::state::applied_mirror_plan::may_mirror_applied_on_focus("),
+        "揃えた値が「開」で、写してよい窓（非 TsfNative かつ学習降格でない）だけ、スキップした先同期を行う（閉なら行わない）"
     );
 }
 
@@ -7175,7 +7305,8 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
 /// - `gji_on_ime_off(`: receipt（`sync_gji` の `OnImeOff` 腕）のみ（OFF は awase の actuation 由来だけ）
 /// - `sync_gji(`（ungated 側の `state/gji_direct_mechanism.rs` を除く）: (i) `send_keys` の level 突合
 ///   （`platform.rs`）、(ii) `kp_reopen_gji_fsm`（`key_pipeline.rs`）
-/// - `kp_reopen_gji_fsm(`: 物理キー予測 ON・shadow toggle の既に ON（no-op 分岐）・OFF→ON に倒した瞬間の3か所
+/// - `kp_reopen_gji_fsm(`: 物理キー予測 ON・shadow toggle の既に ON（no-op 分岐）・OFF→ON に倒した瞬間の3か所、
+///   と ADR-263 PR 2b の日本語判定後のひらがなキー送信直後（`lang_detect_shadow.rs`）の1か所
 #[test]
 fn gji_fsm_sync_entry_points_are_accounted_for() {
     let table: &[(&str, &[(&str, usize)])] = &[
@@ -7192,7 +7323,14 @@ fn gji_fsm_sync_entry_points_are_accounted_for() {
             "sync_gji(",
             &[("src/platform.rs", 1), ("src/runtime/key_pipeline.rs", 1)],
         ),
-        ("kp_reopen_gji_fsm(", &[("src/runtime/key_pipeline.rs", 3)]),
+        (
+            "kp_reopen_gji_fsm(",
+            &[
+                ("src/runtime/key_pipeline.rs", 3),
+                // ADR-263 PR 2b: 日本語と判定してひらがなキーを送った直後（awase が IME へ書いた同期）
+                ("src/runtime/lang_detect_shadow.rs", 1),
+            ],
+        ),
     ];
     for (needle, expected) in table {
         for rel in list_src_files() {
@@ -8525,5 +8663,87 @@ fn raw_key_event_reinject_builds_input_from_reinject_key_spec() {
     assert!(
         !code.contains("reinject_scan_code(") && !code.contains("KEYEVENTF_KEYUP"),
         "reinject 本体に wScan/KEYUP の直書きを戻さないこと（reinject_key_spec に集約）"
+    );
+}
+
+/// ADR-260: 英数トグルの入力モードを予測しない窓の判定（B1o）と、直接観測の予測ガードの軸ごとの化（B3）の配線を固定する。
+///
+/// - `press_axes`（今回の打鍵が値を付けた軸）を書くのは `apply_key_effect_prediction` だけ。`ImeModel::key_effect()` は新しい予測が触れない軸に
+///   前の未照合の値を持ち越し、時刻も新しい打鍵のものにするので、GJI の軸の判定には使わない（持ち越しで `tog:open` の読みが塞がる）。
+/// - `follow_direct_read_in_scope` は、GJI では `press_axes` を `mask_follow_by_press_axes` に通し、MS-IME 本体だけ従来の打鍵全体のガード（`key_effect()`）を残す。
+/// - 読みが効く窓の判定（`kp_observable_toggle_guard`）は、GJI の直接観測の窓・現在のスコープでの読みの成功・学習済みの IMM 能力が
+///   `Unavailable` でないこと、の 3 つすべて。プロセス全体の時刻や設定（`predict_henkan_open_in_unreadable_windows`）には結び付けない。
+/// - 読みの成功の記録は `FocusChanged` で失効する。
+#[test]
+fn adr260_eisu_toggle_guard_and_per_axis_follow_are_wired_as_decided() {
+    let ps = non_comment_lines(production_code_only(&read_crate_file(
+        "src/state/platform_state.rs",
+    )));
+    let squashed: String = ps.split_whitespace().collect();
+    assert_eq!(
+        squashed.matches("self.press_axes=Some(").count(),
+        1,
+        "press_axes を書くのは apply_key_effect_prediction の 1 箇所だけ"
+    );
+    let apply = ps
+        .split("pub fn apply_key_effect_prediction")
+        .nth(1)
+        .expect("apply_key_effect_prediction が無い");
+    let apply = &apply[..apply.find("\n    }\n").unwrap_or(apply.len())];
+    let apply_sq: String = apply.split_whitespace().collect();
+    let axes_at = apply_sq
+        .find("self.press_axes=Some(")
+        .expect("apply_key_effect_prediction が press_axes を書かない");
+    let dispatch_at = apply_sq
+        .find("self.dispatch_event(ImeEvent::KeyEffectPredicted")
+        .expect("KeyEffectPredicted の dispatch が無い");
+    assert!(
+        axes_at < dispatch_at,
+        "今回の軸は dispatch の前に記録すること（reduce の持ち越しとは独立）: {apply}"
+    );
+    let follow = ps
+        .split("fn follow_direct_read_in_scope")
+        .nth(1)
+        .expect("follow_direct_read_in_scope が無い");
+    let follow = &follow[..follow.find("\n    }\n").unwrap_or(follow.len())];
+    let f: String = follow.split_whitespace().collect();
+    assert!(
+        f.contains("self.press_axes.filter(|(at_ms,_)|*at_ms>=armed_at)"),
+        "GJI の軸は今回の打鍵（armed_at 以後）の press_axes で決めること: {follow}"
+    );
+    assert!(
+        f.contains("mask_follow_by_press_axes(follow,axes)")
+            && f.contains("!matches!(kind,crate::state::ime_kind::ImeKindId::Gji)&&self.shadow_model.key_effect()"),
+        "GJI は軸ごと（mask_follow_by_press_axes）、MS-IME 本体だけ従来の key_effect() の打鍵全体のガード: {follow}"
+    );
+    assert!(
+        squashed.contains(
+            "ifmatches!(event,ImeEvent::FocusChanged{..}){self.conv_read_ok_scope=None;}"
+        ),
+        "読みの成功の記録は FocusChanged で失効すること（プロセス全体の時刻にしない）"
+    );
+
+    let kp = non_comment_lines(production_code_only(&read_crate_file(
+        "src/runtime/key_pipeline.rs",
+    )));
+    let guard = kp
+        .split("fn kp_observable_toggle_guard")
+        .nth(1)
+        .expect("kp_observable_toggle_guard が無い");
+    let guard = &guard[..guard.find("\n    }\n").unwrap_or(guard.len())];
+    let g: String = guard.split_whitespace().collect();
+    for needle in [
+        "self.direct_mode_key_watch_kind()==Some(crate::state::ime_kind::ImeKindId::Gji)",
+        "self.platform_state.ime.conv_read_ok_now()",
+        "crate::focus::classifier::ImmCapability::Unavailable",
+    ] {
+        assert!(
+            g.contains(needle),
+            "kp_observable_toggle_guard に {needle} が無い: {guard}"
+        );
+    }
+    assert!(
+        !g.contains("predict_henkan_open_in_unreadable_windows"),
+        "B1o の窓の判定は、変換の窓別の規則（ADR-209）の設定に結び付けない: {guard}"
     );
 }

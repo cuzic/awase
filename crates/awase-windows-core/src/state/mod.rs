@@ -157,6 +157,7 @@ pub mod ime_read_strategy;
 // （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
 pub mod intent_store;
 pub mod key_effect_predictor;
+pub mod key_effect_rules;
 pub mod key_effect_runtime;
 pub mod key_effect_table;
 // ADR-195 段階0。key_effect_predictor（経路1）・awase-gji-config::keymap（経路2）・
@@ -200,6 +201,8 @@ pub mod focus_probe_plan;
 pub mod msaa_role_plan;
 // 同期分類（ウィンドウスタイル・クラス名）の判断表（純粋）。本番の呼び出し元 focus/classify.rs は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod focus_classify_plan;
+// フォーカス変更時に belief を applied へ写してよいかの可否（純粋。ADR-262 段階 A）。本番の呼び出し元 runtime/ は #[cfg(windows)]、Linux ではテストだけが使う。
+pub mod applied_mirror_plan;
 // resolve_focus_kind の前段の優先順位（純粋）。本番の呼び出し元 focus/kind_classifier.rs は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod focus_resolve_plan;
 pub mod transition;

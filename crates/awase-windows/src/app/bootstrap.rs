@@ -30,10 +30,10 @@ use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
 use super::logging;
 use super::{
     build_panic_trigger_combos, cli_arg_config_path, ensure_default_layouts_exist,
-    init_ime_sync_keys, init_ngram_validated, load_config, parse_key_combos, resolve_relative,
-    run_message_loop, set_taskbar_created_msg, HotKeyGuard, RapidPressTracker, StartupDiagnostics,
-    DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS,
-    WM_DUPLICATE_INSTANCE,
+    init_ime_sync_keys, init_lang_detect_validated, init_ngram_validated, load_config,
+    parse_key_combos, resolve_relative, run_message_loop, set_taskbar_created_msg, HotKeyGuard,
+    RapidPressTracker, StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE,
+    HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
 };
 
 fn show_no_layouts_dialog(layouts_dir: &Path) {
@@ -1284,6 +1284,7 @@ pub(super) fn run_all() -> Result<()> {
     );
 
     init_ngram_validated(&config, &mut diag);
+    init_lang_detect_validated(&config, &mut diag);
     let _engine_window_guard = crate::runtime::engine_window::create_engine_window()?;
     let (hook_guard, _toggle_hotkey_guard, _app_override_hotkey_guard) =
         install_hooks_and_hotkeys_validated(&config, &mut diag)?;
