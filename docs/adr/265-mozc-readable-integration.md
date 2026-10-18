@@ -58,6 +58,23 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
   - **実装(PR #644)との差**: 実装は、awase の既存のフォーカス解決の窓(`platform.focus.current.hwnd`)のスレッドを `thread_of_window` で求める(`runtime/mozc_shm_shadow.rs`、私が確認)。別セッションの確認では、そのフォーカス解決は `hwndFocus` を使い、無ければ `hwndActive` の窓へフォールバックする(私はフォーカス解決のコードは読んでいない)。つまり上の「`hwndFocus` のスレッド」とは厳密には一致しない。UWP の `CoreWindow` のスレッドを特別に扱っているかは未確認。
 - 信頼境界は同一ユーザー(同じセッションの別プロセスが先に同名のマッピングを作れば値を偽れる)。これは脅威として許容し、ADR に明記する(R1-M7)。
 
+**version の扱い**(2026-10-18 追記。[ADR-267](267-mozc-readable-composition-state.md) の version 3 の提案を受けて)
+
+- **読み手は、常に先頭 48 バイトだけを map する**(サイズ 0 でも 80 固定でもない)。48 バイトのセクションも 80 バイトのセクションも読める。80 固定で map すると、旧 DLL が作った 48 バイトのセクション
+  (version 2)が読めなくなる(ADR-267 D9)。
+- **version の上限を持つ**: 受け入れるのは `MIN_VERSION <= version <= MAX_COMPATIBLE_VERSION`。`MAX_COMPATIBLE_VERSION` は、**先頭 48 バイトの意味が version 2 と同じであることを確かめた最大の版**
+  (いまは 2。ADR-267 の version 3 が実装され、先頭 48 バイトが不変であることを mozc-readable の CI と awase の実測で確かめたら 3)。それを超える版のブロックは、`rejected`(`version-unknown`)として採らない。
+  理由: 共有メモリの仕様は「追記でも `version` を上げる」ので、version 番号だけでは、先頭 48 バイトの意味が不変かが分からない。開閉の取り違えは非対称な被害になる(ADR-191・INV-45)ので、
+  未確認の版は採らない側に倒す。
+- **現状の実装との差**(私がコードを読んで確認。`develop` の `dd4fb7ab` 時点): 読み取りは `MapViewOfFile(.., 48)` で先頭 48 バイトだけを map していて、上の第 1 項は満たしている。
+  **しかし、version の上限は無い**(`state/mozc_shm.rs` の `MIN_VERSION = 2` だけで、`VersionTooOld` 以外の理由で捨てない)。したがって、ADR-267 の version 3 が、先頭 48 バイトを変えないという前提を守る限りは、
+  いまの実装のままで正しく読めるが、**version 4 以降で先頭 48 バイトの意味が変わると、意味の違う値を採ってしまう**。上限を足す変更(`Rejection::VersionTooNew` と、その理由 `version-unknown` のテスト)は、
+  awase 本体の変更で、別セッション(rust-nicola-05)の担当。version 3 の実装(mozc-readable の publisher)より前に入れておくのが安全。
+- **mozc 側の仕様書(正)への依頼**: 「先頭 48 バイト(オフセット 0〜47)の意味は、version 2 以降の全ての版で凍結する。変えるなら、別のマッピング名にする(または version 2 の読み手が捨てる印を設ける)」を、
+  仕様書に明記してほしい。現状の仕様書の取り決め(「互換を壊すときだけ `version` を上げる」)と、ADR-267 の「追記でも version を上げる」(version 3)が、食い違っている。
+- 未確認: ADR-267 の version 3 の実装後に、先頭 48 バイトが実際に不変であること(CI)。`ERROR_ALREADY_EXISTS` で旧サイズが残ったとき書き手が `version=2` として 48 バイトだけ書く(ADR-267 D9)場合に、
+  awase が version 2 として読むこと(読み取りの規約から、読めるはずだが、実測していない)。
+
 **belief への入れ方**(R1-I14)
 - Observe → `classify_*` 純関数 → `ObserverReported`/`InputModeObserved`(ime-belief-architecture)。新しい `ObservationSource` を足すので、`architecture_guard.rs` の構築箇所の件数と `observation_source_guard` の対象を更新する。
 - 信頼度は **Low(記録のみ)から始める**。Medium は belief に採られる側なので安全側ではない。段階 1 の journal で一致率が基準(件数・率は段階 1 の測定後にここへ書く)を超えたら Medium に上げる。
