@@ -3765,32 +3765,38 @@ fn lang_detect_hiragana_write_goes_through_the_gate_and_syncs_after() {
     );
 }
 
-/// ADR-263 `ime_on_off`: IME OFF キー（`VK_IME_OFF`）の送信も 1 箇所だけで、送る前に純粋な判断 `ime_off_write_skip_reason`
-/// を通し、送った後に `on_ime_applied(false, ..)` と、その前面窓の間の素通し（`bypass_scope`）の設定を行う。
-/// belief（`desired_open`）は動かさない: `effective_open()` は打鍵時予測・観測を `desired_open` より優先するので、belief を
-/// OFF に寄せても Engine は非活性にならず、保持した英字がローマ字に変換されて OFF の IME へ入る（レビュー B1）。
+/// ADR-263 `ime_on_eisu`: 英数と判定したときは、左Shift単独タップと同じ半角英数トグルの入口に入る（IME OFF は送らない）。
+/// 入る前に純粋な判断 `eisu_write_skip_reason` と `plan_entry_for_language_detect` を通す。belief（`desired_open`）は
+/// 動かさず、専用の素通し（bypass）も持たない: Engine は `input_mode = ObservedEisu` で非活性になる。
 #[test]
-fn lang_detect_ime_off_write_goes_through_the_gate_and_bypasses_the_engine_after() {
+fn lang_detect_english_enters_the_half_width_alnum_toggle_through_the_gate() {
     let src_full = read_crate_file("src/runtime/lang_detect_shadow.rs");
     let src = production_code_only(&src_full);
-    let calls: Vec<usize> = src
-        .match_indices("crate::ime::send_ime_off_key()")
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(calls.len(), 1, "IME OFF キーの送信は 1 箇所だけ");
-    let head = &src[..calls[0]];
-    let tail = &src[calls[0]..];
-    assert!(
-        head.contains("ime_off_write_skip_reason(self.lang_detect_write_facts(false))"),
-        "IME OFF キーの送信の前に純粋な判断 `ime_off_write_skip_reason` を通すこと（ADR-263）"
+    let fn_start = src
+        .find("fn lang_detect_enter_half_width_alnum")
+        .expect("lang_detect_enter_half_width_alnum が必要");
+    let body = &src[fn_start..];
+    let gate = body
+        .find("eisu_write_skip_reason(self.lang_detect_write_facts(false))")
+        .expect("入る前に純粋な判断 `eisu_write_skip_reason` を通すこと（ADR-263）");
+    let plan = body
+        .find("plan_entry_for_language_detect(")
+        .expect("入口の計画は `plan_entry_for_language_detect` を通すこと");
+    let imc = body
+        .find("kp_enter_half_width_alnum_imc(")
+        .expect("MS-IME 経路は共有の entry ヘルパーを使うこと");
+    assert!(gate < plan && plan < imc, "判断 → 計画 → 実行の順");
+    assert_eq!(
+        src.matches("kp_enter_half_width_alnum_gji(").count(),
+        1,
+        "GJI 経路の entry も共有ヘルパー経由の 1 箇所だけ"
     );
     assert!(
-        tail.contains("on_ime_applied(false") && tail.contains("bypass_scope = Some("),
-        "送った後に `on_ime_applied(false, ..)` と素通しの設定を行うこと"
-    );
-    assert!(
-        !src.contains("apply_lang_detect_off") && !src.contains("LangDetectOff"),
-        "belief（desired_open）は動かさない。素通しで Engine を通さない（レビュー B1）"
+        !src.contains("send_ime_off_key")
+            && !src.contains("bypass_scope")
+            && !src.contains("apply_lang_detect_off")
+            && !src.contains("LangDetectOff"),
+        "IME OFF の送信・専用の素通し・belief の書き換えは持たない（レビュー B1）"
     );
 }
 
@@ -4208,8 +4214,7 @@ fn enqueue_reinject_call_sites_are_accounted_for() {
             ("src/runtime/key_pipeline.rs".to_string(), 1),
             // TIMER_IME_OFF_RESCUE の再処理が deliver_key_event 経由に統合された分、
             // message_handlers.rs 側の直接呼び出しが1件減った(5→4、追加発見E)。
-            // 5。ADR-263 `ime_on_off`: 英数と判定して IME OFF を送ったあとの素通し（`lang_detect_bypass_takes`）。
-            ("src/runtime/message_handlers.rs".to_string(), 5),
+            ("src/runtime/message_handlers.rs".to_string(), 4),
         ],
         "enqueue_reinject call sites are limited to deliver_key_event plus the documented pending-replay exceptions"
     );

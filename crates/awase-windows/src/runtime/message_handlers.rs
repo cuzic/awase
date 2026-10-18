@@ -236,15 +236,6 @@ pub(crate) fn deliver_key_event(
         return delivery;
     }
 
-    // ── ADR-263 `ime_on_off`: 英数と判定して IME OFF を送ったあとの素通し ──
-    // その前面窓の間は、打鍵を Engine に渡さず OS へ素通しにする（belief は動かさない。`effective_open()` は
-    // 観測・打鍵時予測を優先するので、belief を OFF に寄せても Engine は非活性にならない）。IME のキー・親指キーの Down・
-    // 窓の変化で解ける（`lang_detect_bypass_takes`）。`consume_post_bypass`（1 打鍵限り）と違い、エピソードの間続く。
-    if app.lang_detect_bypass_takes(&event) {
-        app.executor.enqueue_reinject(event);
-        return KeyDelivery::Reinjected;
-    }
-
     // ImeOffRescueReplay（追加発見E）: 救済窓 defer を再度かけない専用経路
     // （`kp_run_inner` の `skip_rescue_defer=true` 相当）を通す。
     let result = if matches!(origin, KeyOrigin::ImeOffRescueReplay) {

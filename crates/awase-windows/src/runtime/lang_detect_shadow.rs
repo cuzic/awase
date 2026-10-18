@@ -15,12 +15,14 @@ use std::time::Duration;
 
 use awase::config::{AutoDetectConfig, AutoDetectMode, AutoDetectScope};
 use awase::lang_detect::{
-    hiragana_write_skip_reason, ime_off_write_skip_reason, DetectParams, HoldController, HoldStep,
+    eisu_write_skip_reason, hiragana_write_skip_reason, DetectParams, HoldController, HoldStep,
     JapaneseEvidence, KanaModel, KeyRole, ObservedKey, ThumbOverlap, TrackerConfig, Verdict,
     WriteFacts,
 };
 use awase::ngram::NgramModel;
 use awase::platform::{ImeOpenOutcome, TsfComposition as _};
+
+use crate::state::half_width_alnum::HalfWidthAlnumEffect;
 use awase::types::{KeyClassification, KeyEventType, RawKeyEvent};
 
 use crate::focus::class_names::AppImeProfile;
@@ -50,9 +52,6 @@ pub(super) struct LangDetectShadow {
     max_ms: u32,
     /// `ime_on` の対象にする窓の範囲（既定は観測の無い窓だけ。`all` は利用者の責任）
     scope: AutoDetectScope,
-    /// `ime_on_off` で英数と判定して IME OFF キーを送ったあと、この前面窓の間は打鍵を Engine に渡さず素通しにする
-    /// （窓の識別子。IME のキー・親指キー・窓の変化・新しい保持のエピソードで解ける）。
-    bypass_scope: Option<u64>,
 }
 
 /// 設定のプロセス名の正規化（小文字化し、末尾の `.exe` を落とす）
@@ -75,10 +74,10 @@ impl LangDetectShadow {
         let tracker_cfg = TrackerConfig {
             params: DetectParams {
                 ja_threshold: cfg.ja_threshold,
-                // `ime_on_off` は『日本語でない』の確信度で IME OFF を送るので、より強い確信を要求する
+                // `ime_on_eisu` は『日本語でない』の確信度で 半角英数へ入るので、より強い確信を要求する
                 // （その分、英数側の保持が長くなる）。他のモードは早く流すための小さめの値。
-                en_threshold: if cfg.mode == AutoDetectMode::ImeOnOff {
-                    cfg.off_threshold.max(cfg.en_threshold)
+                en_threshold: if cfg.mode == AutoDetectMode::ImeOnEisu {
+                    cfg.eisu_threshold.max(cfg.en_threshold)
                 } else {
                     cfg.en_threshold
                 },
@@ -106,7 +105,6 @@ impl LangDetectShadow {
             exclude_apps: cfg.exclude_apps.iter().map(|a| normalize_app(a)).collect(),
             max_ms: cfg.max_ms,
             scope: cfg.scope,
-            bypass_scope: None,
         }
     }
 
@@ -114,9 +112,9 @@ impl LangDetectShadow {
         !matches!(self.mode, AutoDetectMode::Off)
     }
 
-    /// 打鍵を保持して書き込みまで行うモードか（`ime_on`・`ime_on_off`）
+    /// 打鍵を保持して書き込みまで行うモードか（`ime_on`・`ime_on_eisu`）
     const fn is_hold_mode(&self) -> bool {
-        matches!(self.mode, AutoDetectMode::ImeOn | AutoDetectMode::ImeOnOff)
+        matches!(self.mode, AutoDetectMode::ImeOn | AutoDetectMode::ImeOnEisu)
     }
 
     /// 配列が変わった（または初回）なら、未シフト面でモデルを作り直す。
@@ -171,7 +169,7 @@ pub(super) fn observed_key(event: &RawKeyEvent) -> ObservedKey {
         KeyClassification::RightThumb => KeyRole::Thumb(awase::engine::fsm_types::ThumbSide::Right),
         KeyClassification::Passthrough => {
             // 修飾キー自身と、語の区切りの Space（親指でないとき）は、エピソードに影響しない（保持はして順序を保つ）。
-            // Space で打ち切ると、英文は最初の語（3〜5 文字）で終わり、`off_threshold` の確信に届かない。評価（Space を除いた
+            // Space で打ち切ると、英文は最初の語（3〜5 文字）で終わり、`eisu_threshold` の確信に届かない。評価（Space を除いた
             // キー列）と同じ条件にそろえるため、Space は透明に扱う。
             if event.modifier_key.is_some() || event.vk_code == crate::vk::VK_SPACE {
                 KeyRole::Modifier
@@ -313,54 +311,55 @@ impl super::Runtime {
         "hiragana-sent"
     }
 
-    /// 英数入力と判定したとき（`ime_on_off`）、IME OFF キーを 1 回送る。送れない前提なら理由を返す。
+    /// 英数入力と判定したとき（`ime_on_eisu`）、**半角英数トグルに入る**（IME は ON のまま）。送れない前提なら理由を返す。
     ///
-    /// 前提と限界は `lang_detect_write_hiragana` と同じ（Engine が活性・対象の窓・Alt/Win が押されていない・フォーカス追跡が
-    /// 前面窓に追いついている）。利用者が直近に明示的に IME ON を選んでいるときは送らない（その意図を尊重する）。
-    /// **日本語を英数と誤判定すると IME が OFF になり、利用者が IME ON キーを押すまで戻らない**（`ime_on_off` は利用者の責任）。
+    /// 左Shift単独タップの半角英数トグル（ADR-107・ADR-245）と同じ入口・同じ状態を使う: GJI は `VK_DBE_ALPHANUMERIC`、
+    /// MS-IME は IMC への conv 書き込み。入ったあとは `input_mode = ObservedEisu` の belief で Engine が非活性になり、
+    /// 保持した打鍵は素通しで流れる。開閉の belief（`desired_open`）は動かさない。戻り方も同じ（左Shift の再タップ・
+    /// 右Shift・IME のキー・窓を離れたときの戻り待ちと復帰時の復元）。日本語を英数と誤判定しても Shift タップで戻れる。
     ///
-    /// 送った**あと**に、`on_ime_applied(false, Applied)`（composition を cold に・GjiFsm の OFF 同期は receipt が行う）を行い、
-    /// この前面窓の間は打鍵を Engine に渡さず素通しにする（`bypass_scope`）。**belief（`desired_open`）は動かさない**:
-    /// `effective_open()` は打鍵時予測・観測を `desired_open` より優先するので、belief を OFF に寄せても Engine は非活性に
-    /// ならず、保持した英字がローマ字に変換されて OFF にした IME へ入る（レビュー B1）。
-    fn lang_detect_write_ime_off(&mut self) -> &'static str {
-        if self.lang_detect.mode != AutoDetectMode::ImeOnOff {
+    /// 前提: 半角英数トグルの設定が entry を許すこと・Engine が活性・対象の窓・Alt/Win が押されていない・フォーカス追跡が
+    /// 前面窓に追いついている・利用者が直近に明示的に IME ON を選んでいない（`eisu_write_skip_reason`）。
+    fn lang_detect_enter_half_width_alnum(&mut self) -> &'static str {
+        if self.lang_detect.mode != AutoDetectMode::ImeOnEisu {
             return "none";
         }
-        if let Some(reason) = ime_off_write_skip_reason(self.lang_detect_write_facts(false)) {
+        if let Some(reason) = eisu_write_skip_reason(self.lang_detect_write_facts(false)) {
             return reason;
         }
-        if !crate::ime::send_ime_off_key() {
-            return "skipped-send-failed";
+        let uses_imc_conv_write = crate::tsf::observer::tsf_obs().active_ime_kind()
+            == crate::tsf::observer::ActiveImeKind::MicrosoftIme;
+        let entry_ime_ok = self.platform_state.ime.effective_open()
+            && self.platform_state.ime.belief.is_japanese_ime()
+            && self.engine.is_user_enabled();
+        let pending_for_scope = self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .find_return_pending(crate::win32::foreground_scope())
+            .is_some();
+        match self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .plan_entry_for_language_detect(entry_ime_ok, uses_imc_conv_write, pending_for_scope)
+        {
+            HalfWidthAlnumEffect::EnterViaImcWrite => {
+                self.kp_enter_half_width_alnum_imc(
+                    crate::state::ConvMutationReason::LangDetectEnglish,
+                    "打鍵列から英数と判定",
+                );
+                "half-width-alnum-entered"
+            }
+            HalfWidthAlnumEffect::EnterViaGjiSendInput => {
+                if self.kp_enter_half_width_alnum_gji(false, "打鍵列から英数と判定") {
+                    "half-width-alnum-entered"
+                } else {
+                    "skipped-send-failed"
+                }
+            }
+            _ => "skipped-toggle-unavailable",
         }
-        self.platform.on_ime_applied(false, ImeOpenOutcome::Applied);
-        self.lang_detect.bypass_scope = Some(scope_id(crate::win32::foreground_scope()));
-        "ime-off-sent"
-    }
-
-    /// 素通しの間（`ime_on_off` で英数と判定して IME OFF を送ったあと）か、この打鍵を Engine に渡さず素通しにするか。
-    ///
-    /// 前面窓が変わっていれば解いて `false`。IME のキー（IME 制御・モードキー）と親指キーの Down は、利用者が日本語入力へ
-    /// 戻ろうとしているので素通しを解いて `false`（通常の処理に戻る）。それ以外（Up を含む）は `true`。
-    /// 呼び出し元（`deliver_key_event`）が `true` なら `enqueue_reinject` する。
-    pub(crate) fn lang_detect_bypass_takes(&mut self, event: &RawKeyEvent) -> bool {
-        let Some(armed) = self.lang_detect.bypass_scope else {
-            return false;
-        };
-        if scope_id(crate::win32::foreground_scope()) != armed {
-            self.lang_detect.bypass_scope = None;
-            return false;
-        }
-        let down = matches!(event.event_type, KeyEventType::KeyDown);
-        let thumb = matches!(
-            event.key_classification,
-            KeyClassification::LeftThumb | KeyClassification::RightThumb
-        );
-        if down && (is_ime_key(event) || thumb) {
-            self.lang_detect.bypass_scope = None;
-            return false;
-        }
-        true
     }
 
     /// 取り込み口から、フックの打鍵 1 つにつき 1 回呼ぶ（KeyDown/KeyUp とも）。
@@ -399,16 +398,12 @@ impl super::Runtime {
 
     /// `HoldStep` を実行する: journal、IME への書き込み、保持した打鍵の再生、タイマー。
     fn lang_detect_apply(&mut self, step: HoldStep<RawKeyEvent>) -> LangDetectIntake {
-        // 新しい保持のエピソードが始まったら、素通しは解く（そのエピソードの判定で改めて決める）。
-        if step.started_holding {
-            self.lang_detect.bypass_scope = None;
-        }
         // 判定時点の belief（書き込みの**前**に読む）。
         let belief_before = self.platform_state.ime.effective_open();
         let action = if step.japanese {
             self.lang_detect_write_hiragana()
         } else if step.english {
-            self.lang_detect_write_ime_off()
+            self.lang_detect_enter_half_width_alnum()
         } else {
             "none"
         };
@@ -460,8 +455,8 @@ impl super::Runtime {
         }
 
         // 保持した打鍵は、書き込みのあとに順序どおりに流す（先頭に書き込みの合成キー、続いて元の打鍵）。
-        // 英数と判定して IME OFF を送った場合は、`bypass_scope` が立っているので、再生された打鍵は
-        // `deliver_key_event` の `lang_detect_bypass_takes` に当たって Engine を通らず、そのまま OS へ流れる（順序どおり）。
+        // 英数と判定して半角英数トグルに入った場合は、`input_mode = ObservedEisu` で Engine が非活性なので、
+        // 再生された打鍵は Engine を通らず、そのまま OS へ流れる（順序どおり）。
         if !step.release.is_empty() {
             crate::INPUT_DEFER.replay_later(step.release);
         }

@@ -536,10 +536,10 @@ pub enum AutoDetectMode {
     /// 日本語入力と判定できたときだけ、ひらがなキーを 1 回送ってから流す（ADR-263 PR 2b）。
     /// 英数と判定した・決まらなかった場合は、保持した打鍵を今までと同じ流れに戻す。
     ImeOn,
-    /// `ime_on` に加えて、英数入力と判定できたとき、IME OFF キーを 1 回送り、awase の想定も OFF に寄せる（Engine を
-    /// 非活性にして、保持した打鍵をそのまま流す）。**利用者の責任**: 日本語を英数と誤判定すると IME が OFF になり、
-    /// 利用者が IME ON キーを押すまで戻らない（誤判定の率は `off_threshold` で決まる）。
-    ImeOnOff,
+    /// `ime_on` に加えて、英数入力と判定できたとき、左Shift単独タップと同じ**半角英数トグル**に入る（IME は ON のまま。
+    /// Engine は非活性になり、保持した打鍵をそのまま流す）。半角英数トグルが有効な設定のときだけ働く。**利用者の責任**:
+    /// 日本語を英数と誤判定しても、Shift のタップなどで戻れる（誤判定の率は `eisu_threshold` で決まる）。
+    ImeOnEisu,
 }
 
 /// `ime_on` の対象にする窓の範囲（ADR-263）。**既定より広い範囲は利用者の責任**で選ぶ。
@@ -578,9 +578,9 @@ pub struct AutoDetectConfig {
     pub ja_threshold: f64,
     /// 日本語でないとする対数尤度比の大きさ（nats）
     pub en_threshold: f64,
-    /// `ime_on_off` で IME OFF を送るために必要な「日本語でない」確信度（nats。`en_threshold` 以上にする）。
-    /// 大きいほど誤って IME を OFF にする率が下がるが、英数の判定が遅くなる（保持が長くなる）。
-    pub off_threshold: f64,
+    /// `ime_on_eisu` で半角英数に入るために必要な「日本語でない」確信度（nats。`en_threshold` 以上にする）。
+    /// 大きいほど誤って半角英数に入る率が下がるが、英数の判定が遅くなる（保持が長くなる）。
+    pub eisu_threshold: f64,
 }
 
 impl Default for AutoDetectConfig {
@@ -597,7 +597,7 @@ impl Default for AutoDetectConfig {
             idle_ms: 3000,
             ja_threshold: 4.0,
             en_threshold: 8.0,
-            off_threshold: 14.0,
+            eisu_threshold: 14.0,
         }
     }
 }
@@ -3325,7 +3325,7 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
         assert_eq!(config.auto_detect.max_ms, 2500);
         assert!((config.auto_detect.ja_threshold - 4.0).abs() < f64::EPSILON);
         assert!((config.auto_detect.en_threshold - 8.0).abs() < f64::EPSILON);
-        assert!((config.auto_detect.off_threshold - 14.0).abs() < f64::EPSILON);
+        assert!((config.auto_detect.eisu_threshold - 14.0).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -4448,16 +4448,16 @@ const AUTO_DETECT_PRESETS: [(
         "上の動作を、IME の状態が読める窓（Chrome など）にも広げます。読める窓では awase の想定が\n\
          実際の状態に追随するため、判定の書き込みの結果が次の観測で揃うまで食い違うことがあります。\n\
          TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。\n\
-         英数と判定した場合は、保持した打鍵をそのまま流すだけで、IME OFF は送りません。",
+         英数と判定した場合は、保持した打鍵をそのまま流すだけで、半角英数にはしません。",
     ),
     (
-        awase::config::AutoDetectMode::ImeOnOff,
+        awase::config::AutoDetectMode::ImeOnEisu,
         awase::config::AutoDetectScope::All,
-        "すべての窓で、日本語ならひらがな・英数なら IME OFF にする（利用者の責任）",
-        "上の動作に加えて、打鍵列が英数（英語・コード・他言語）と判定できたときは、IME OFF キーを 1 回送り、\n\
-         awase の想定も OFF にして、保持した打鍵をそのまま流します。\n\
-         日本語を英数と誤判定すると IME が OFF になり、IME ON のキーを押すまで戻りません。\n\
-         誤判定の率は、詳細の「IME OFF にする確信度」で決まります。\n\
+        "すべての窓で、日本語ならひらがな・英数なら半角英数にする（利用者の責任）",
+        "上の動作に加えて、打鍵列が英数（英語・コード・他言語）と判定できたときは、左Shift単独タップと同じ半角英数\n\
+         （IME は ON のまま）に入り、保持した打鍵をそのまま流します。半角英数のトグルが有効な設定のときだけ働きます。\n\
+         日本語を英数と誤判定しても、Shift のタップなどで戻れます。\n\
+         誤判定の率は、詳細の「半角英数にする確信度」で決まります。\n\
          TSF ネイティブの窓（Windows Terminal など）と入力中継ツールの窓は、この設定でも対象外です。",
     ),
 ];
@@ -4531,7 +4531,7 @@ fn auto_detect_section(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
     }
     if matches!(
         cfg.mode,
-        awase::config::AutoDetectMode::ImeOn | awase::config::AutoDetectMode::ImeOnOff
+        awase::config::AutoDetectMode::ImeOn | awase::config::AutoDetectMode::ImeOnEisu
     ) {
         ui.colored_label(
             egui::Color32::from_rgb(200, 120, 0),
@@ -4615,22 +4615,22 @@ fn auto_detect_details(ui: &mut egui::Ui, cfg: &mut awase::config::AutoDetectCon
         cfg.en_threshold = round_tenth(cfg.en_threshold);
     });
     ui.add_enabled_ui(
-        cfg.mode == awase::config::AutoDetectMode::ImeOnOff,
+        cfg.mode == awase::config::AutoDetectMode::ImeOnEisu,
         |ui| {
             ui.horizontal(|ui| {
-                let hover = "「英数なら IME OFF にする」動作で、IME OFF を送るために必要な「日本語でない」確信度です。\n\
-                             大きいほど、日本語を英数と誤判定して IME を OFF にする率が下がります\n\
+                let hover = "「英数なら半角英数にする」動作で、半角英数に入るために必要な「日本語でない」確信度です。\n\
+                             大きいほど、日本語を英数と誤判定して半角英数に入る率が下がります\n\
                              （人工データの評価では、12 で約 4%、14 で約 3.7%、20 で約 2.8%）が、\n\
                              判定が遅くなり、打鍵の保持が長くなります（平均 3.5〜4.4 打鍵）。";
-                ui.label("IME OFF にする確信度:").on_hover_text(hover);
+                ui.label("半角英数にする確信度:").on_hover_text(hover);
                 ui.add(
-                    egui::DragValue::new(&mut cfg.off_threshold)
+                    egui::DragValue::new(&mut cfg.eisu_threshold)
                         .range(0.0..=30.0)
                         .speed(0.1)
                         .fixed_decimals(1),
                 )
                 .on_hover_text(hover);
-                cfg.off_threshold = round_tenth(cfg.off_threshold);
+                cfg.eisu_threshold = round_tenth(cfg.eisu_threshold);
             });
         },
     );
@@ -7508,9 +7508,9 @@ mod layout_tab_repro {
     #[test]
     fn auto_detect_combination_outside_the_presets_is_custom_and_selecting_keeps_numbers() {
         use awase::config::{AutoDetectMode, AutoDetectScope};
-        // config.toml に手書きした ime_on_off + unobserved（画面の選択肢から外した組み合わせ）は選択肢に無い = カスタム。
+        // config.toml に手書きした ime_on_eisu + unobserved（画面の選択肢から外した組み合わせ）は選択肢に無い = カスタム。
         let mut cfg = awase::config::AutoDetectConfig {
-            mode: AutoDetectMode::ImeOnOff,
+            mode: AutoDetectMode::ImeOnEisu,
             scope: AutoDetectScope::Unobserved,
             idle_ms: 9000,
             ..awase::config::AutoDetectConfig::default()
@@ -7529,7 +7529,7 @@ mod layout_tab_repro {
             AutoDetectMode::Off,
             AutoDetectMode::Observe,
             AutoDetectMode::ImeOn,
-            AutoDetectMode::ImeOnOff,
+            AutoDetectMode::ImeOnEisu,
         ] {
             for scope in [AutoDetectScope::Unobserved, AutoDetectScope::All] {
                 let mut cfg = awase::config::AutoDetectConfig {

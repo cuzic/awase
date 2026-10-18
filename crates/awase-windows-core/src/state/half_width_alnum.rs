@@ -304,6 +304,33 @@ impl HalfWidthAlnumState {
         }
     }
 
+    /// 打鍵列から英数入力と判定したとき（ADR-263 `ime_on_eisu`）の entry を計画する。
+    ///
+    /// 左Shift単独タップの entry と**同じ条件**（`entry_policy`・`entry_ime_ok`）で、同じ 2 経路（IMC write /
+    /// GJI SendInput）のどちらかを選ぶ。すでに持続トグルが有効、または戻り待ちが積まれているときは何もしない
+    /// （二重に入らない。戻り待ちのある窓で入ると、戻ったときの復元と食い違う）。
+    #[must_use]
+    pub fn plan_entry_for_language_detect(
+        &self,
+        entry_ime_ok: bool,
+        uses_imc_conv_write: bool,
+        pending_for_scope: bool,
+    ) -> HalfWidthAlnumEffect {
+        let policy_allows_entry = match self.entry_policy {
+            HalfWidthAlnumTogglePolicy::Off => false,
+            HalfWidthAlnumTogglePolicy::MsImeOnly => uses_imc_conv_write,
+            HalfWidthAlnumTogglePolicy::All => true,
+        };
+        if self.toggle_held || pending_for_scope || !policy_allows_entry || !entry_ime_ok {
+            return HalfWidthAlnumEffect::Nothing;
+        }
+        if uses_imc_conv_write {
+            HalfWidthAlnumEffect::EnterViaImcWrite
+        } else {
+            HalfWidthAlnumEffect::EnterViaGjiSendInput
+        }
+    }
+
     /// IMC(MS-IME)経路のcommit。呼び出し元は現行`key_pipeline.rs`と同じく
     /// `actuate_conv_mode`呼び出しの**前**に無条件で呼ぶこと（順序を変えると
     /// 挙動変更になる、§3原則2）。
@@ -1536,5 +1563,63 @@ mod tests {
         assert!(KeyStagePlan::Resume.consumes_entry());
         assert!(!KeyStagePlan::Nothing.consumes_entry());
         assert!(!KeyStagePlan::Deferred.consumes_entry());
+    }
+    #[test]
+    fn language_detect_entry_follows_the_same_conditions_as_the_shift_tap_entry() {
+        let mut st = HalfWidthAlnumState::default();
+        st.set_policy(HalfWidthAlnumTogglePolicy::All);
+        assert_eq!(
+            st.plan_entry_for_language_detect(true, false, false),
+            HalfWidthAlnumEffect::EnterViaGjiSendInput
+        );
+        assert_eq!(
+            st.plan_entry_for_language_detect(true, true, false),
+            HalfWidthAlnumEffect::EnterViaImcWrite
+        );
+        // IME が使えない・日本語 IME でない・Engine が無効（entry_ime_ok が偽）なら入らない。
+        assert_eq!(
+            st.plan_entry_for_language_detect(false, true, false),
+            HalfWidthAlnumEffect::Nothing
+        );
+    }
+
+    #[test]
+    fn language_detect_entry_respects_the_policy() {
+        let mut st = HalfWidthAlnumState::default();
+        st.set_policy(HalfWidthAlnumTogglePolicy::Off);
+        assert_eq!(
+            st.plan_entry_for_language_detect(true, true, false),
+            HalfWidthAlnumEffect::Nothing,
+            "半角英数トグルを無効にしている利用者には入らない"
+        );
+        st.set_policy(HalfWidthAlnumTogglePolicy::MsImeOnly);
+        assert_eq!(
+            st.plan_entry_for_language_detect(true, false, false),
+            HalfWidthAlnumEffect::Nothing,
+            "MS-IME だけを許す設定では GJI には入らない"
+        );
+        assert_eq!(
+            st.plan_entry_for_language_detect(true, true, false),
+            HalfWidthAlnumEffect::EnterViaImcWrite
+        );
+    }
+
+    #[test]
+    fn language_detect_entry_does_not_double_enter() {
+        let mut st = HalfWidthAlnumState::default();
+        st.set_policy(HalfWidthAlnumTogglePolicy::All);
+        st.commit_enter_gji();
+        assert_eq!(
+            st.plan_entry_for_language_detect(true, false, false),
+            HalfWidthAlnumEffect::Nothing,
+            "すでに持続トグル中"
+        );
+        let mut st = HalfWidthAlnumState::default();
+        st.set_policy(HalfWidthAlnumTogglePolicy::All);
+        assert_eq!(
+            st.plan_entry_for_language_detect(true, false, true),
+            HalfWidthAlnumEffect::Nothing,
+            "戻り待ちのある窓では入らない（戻ったときの復元と食い違う）"
+        );
     }
 }

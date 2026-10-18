@@ -660,7 +660,7 @@ pub struct HoldStep<T> {
     /// **保持していたエピソード**で日本語と確定した（`release` を流す**前**に、IME への書き込みの対象にしてよい）。
     /// 保持しなかったエピソード（観測だけ）の判定は `outcomes` の `verdict` で見る
     pub japanese: bool,
-    /// **保持していたエピソード**で、日本語でないと確定した（`NotJapanese`。`ime_on_off` の IME OFF の書き込みの対象にしてよい）。
+    /// **保持していたエピソード**で、日本語でないと確定した（`NotJapanese`。`ime_on_eisu` の半角英数への切替の対象にしてよい）。
     /// 未決（`Undecided`）や打ち切りでは立たない
     pub english: bool,
     /// このステップのあとも保持が続いている（期限のタイマーを動かしておく）
@@ -848,10 +848,10 @@ pub const fn hiragana_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
     write_skip_reason(f, "skipped-explicit-off")
 }
 
-/// IME OFF キー（`ime_on_off` で英数と判定したとき）を送れない理由（送ってよければ `None`）。純粋。
-/// `belief_open` は『awase が IME ON とみなしている』こと（OFF とみなしているなら、送る意味が無い）。
+/// 半角英数トグルへ入れない理由（`ime_on_eisu` で英数と判定したとき）（送ってよければ `None`）。純粋。
+/// `belief_open` は『awase が IME ON とみなしている』こと（OFF とみなしているなら、入る意味が無い）。
 #[must_use]
-pub const fn ime_off_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
+pub const fn eisu_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
     write_skip_reason(f, "skipped-explicit-on")
 }
 
@@ -1388,13 +1388,13 @@ mod tests {
 
     #[test]
     fn ime_off_write_uses_the_same_gate_with_its_own_explicit_label() {
-        assert_eq!(ime_off_write_skip_reason(all_clear()), None);
+        assert_eq!(eisu_write_skip_reason(all_clear()), None);
         let opposite = WriteFacts {
             explicit_opposite_intent: true,
             ..all_clear()
         };
         assert_eq!(
-            ime_off_write_skip_reason(opposite),
+            eisu_write_skip_reason(opposite),
             Some("skipped-explicit-on"),
             "IME OFF の書き込みで見送る逆向きの明示操作は、明示 ON"
         );
@@ -1407,7 +1407,7 @@ mod tests {
             ..all_clear()
         };
         assert_eq!(
-            ime_off_write_skip_reason(modifier),
+            eisu_write_skip_reason(modifier),
             Some("skipped-modifier-held")
         );
     }
