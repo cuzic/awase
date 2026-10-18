@@ -2,7 +2,7 @@
 
 [mozc-readable](https://github.com/cuzic/mozc-readable) の TIP(Mozc の TSF 入力方式)が書き出す、IME の開閉・入力モードの共有メモリの仕様です。awase を含め、外部のプロセスが「いまの IME の状態」を読むための取り決めです。方針と経緯は [ADR-265](adr/265-mozc-readable-integration.md) を参照してください。
 
-- **版**: 現行の実装は **version 1**。**version 2**(`active` の追加など)は ADR-265 で決めた予定で、**まだ実装されていません**。本書では version 1 を「現行」、version 2 を「予定」と区別して書きます。
+- **版**: **version 2** が `readable` ブランチに入っています(コミット `aa228f6`、2026-10-18)。**CI の確認中で、リリース済みのビルドはまだありません**(特に、IME を切り替えたあとの `active=0` の検査は Soft で、未検証)。version 1(`reserved` のまま、`magic` が先に書かれる)の読み方は、古いビルド向けに 6 章に残します。
 - 出典: mozc-readable の `src/win32/tip/tip_state_publisher.{h,cc}`(`readable` ブランチ)。食い違いがあれば実装が正です。
 - 効く IME は mozc-readable だけです(公式の Mozc・Google 日本語入力・Microsoft IME には書き出し側が無い)。
 
@@ -52,7 +52,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 ### 使う前に知っておくこと
 
 - **Windows 専用**で、**mozc-readable を入力方式にしている窓だけ**で値が出ます。公式の Mozc・Google 日本語入力・Microsoft IME には書き出し側がありません。読めない窓は **「不明」** として扱い、キーボード側で「閉」と決め打ちしないでください(誤表示になります)。
-- **現行は version 1** で、IME を Win+Space などで別の IME に切り替えても、最後の状態が残る見込みです(5-1。未実測)。version 2 で `active` を足して直す予定です。それまでは、複数の IME を切り替えて使う人は誤表示があり得ます。
+- **version 2 では `active` で「いま mozc-readable が使われているか」が分かります**(5-1)。切り替え後に `active=0` になることの実測は、まだありません。version 1 のブロックは、IME を別の IME に切り替えても最後の状態が残るので、読み手は捨ててください。
 - 反映の遅さは、CI の実測で、キーを押してから共有メモリに反映されるまで約 61 ms でした。ブリッジの送信と、キーボード側の描画は別にかかります。
 - AppContainer で動くアプリ(UWP など)の窓は、`OpenFileMappingW` では読めず、`NtOpenSection` で名前空間のパスを指定する必要があります(4-4 章)。同梱の例は、この方法に対応していません(通常の窓だけ読めます)。
 - インストーラー(MSI)は署名がなく、SmartScreen の警告が出ます。配布は最初の Release が出てからです(ADR-265)。
@@ -70,7 +70,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 - マッピングの DACL は、LocalSystem・Administrators・現在のユーザーに全権、`ALL APPLICATION PACKAGES` に読み取りです(`WinSandbox::kSharableFileForRead`)。
 - **AppContainer 内のプロセス(UWP など)が作る `Local\` は、`\Sessions\<n>\AppContainerNamedObjects\<AppContainer SID>\` に振り分けられます**。そのため、`OpenFileMappingW("Local\\mozc-readable-ime-<TID>")` では届きません。**`NtOpenSection` で、その名前空間の完全なパスを指定すれば外から読めます**(CI で実測済み。4-4 章)。通知イベント(`...-changed`)も同じ名前空間に振り分けられる見込みですが、未確認です。
 
-## 2. `TipSharedState`(version 1、48 バイト)
+## 2. `TipSharedState`(version 2、48 バイト)
 
 リトルエンディアン。構造体の配置は外部インターフェースの一部で、**追記のみ・互換を壊すときは `version` を上げる**取り決めです。
 
@@ -85,7 +85,7 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 | 24 | u32 | `tsf_mode` | `commands::CompositionMode`(TSF) |
 | 28 | u32 | `thread_id` | 書き出したスレッドの ID(マッピング名の `<TID>` と同じ) |
 | 32 | u32 | `process_id` | 書き出したプロセスの ID |
-| 36 | u32 | `reserved` | 0 |
+| 36 | u32 | `active` | 1 のとき、この TIP がそのスレッドで有効(Activate から Deactivate まで)。version 1 では `reserved`(0) |
 | 40 | u64 | `update_tick_ms` | 最後に**変化を書いた**時の `GetTickCount64()` |
 
 ### 入力モードの値(`CompositionMode`、Mozc の `protocol/commands.proto`)
@@ -104,11 +104,12 @@ ZMK など Raw HID の仕組みが標準で無いファームについては、�
 - `effective_*` は、入力スコープ(パスワード欄など)による上書きの**後**の値です。
 - `tsf_*` は、TSF の compartment 相当の値です。awase の belief は compartment 相当なので、awase は `tsf_*` を既定にする予定です(ADR-265 D3)。両者が食い違うとき(パスワード欄など)の扱いは、実測してから決めます。
 
-## 3. 書き込み側の動作(現行)
+## 3. 書き込み側の動作(version 2)
 
-- マッピングは、そのスレッドで最初に `Publish` が呼ばれたときに作られます(`magic`・`version`・`thread_id`・`process_id` を書く。この時点の `seq` は 0、状態の 4 項目も 0)。
-- 書き出しは、`effective_open`・`effective_mode`・`tsf_open`・`tsf_mode` の **4 項目のどれかが変わったときだけ**です。変化が無ければ `seq` も進めず、イベントも pulse しません(フォーカス移動やクリックのたびに呼ばれるが、ほとんどは無変更のため)。したがって **`update_tick_ms` は「最後に変化した時刻」であり、生存の印ではありません**。
-- 書き込みの手順: `seq` を +1(奇数)→ 4 項目と `update_tick_ms` を書く → `seq` を +1(偶数)。どちらの +1 も全バリア(`InterlockedIncrement`)。
+- マッピングは、そのスレッドで最初に書き出しが要るときに作られます。**`magic` は最後に(メモリバリアの後で)書きます**。したがって `seq == 0` は「未公開」で、`magic` が正しくても中身はまだ有効ではありません。
+- 書き出しは、`effective_open`・`effective_mode`・`tsf_open`・`tsf_mode`・`active` の **5 項目のどれかが変わったときだけ**です(変化の判定は `active` を含む全体で比べる)。変化が無ければ `seq` も進めず、イベントも pulse しません(フォーカス移動やクリックのたびに呼ばれるが、ほとんどは無変更のため)。したがって **`update_tick_ms` は「最後に変化した時刻」であり、生存の印ではありません**。
+- 書き込みの手順: `seq` を +1(奇数)→ 5 項目と `update_tick_ms` を書く → `seq` を +1(偶数)。どちらの +1 も全バリア(`InterlockedIncrement`)。
+- `active` は、`TipTextService::ActivateEx` の先頭で 1、`Deactivate()` の(アンロード済みかの検査の直後)で 0 になります。
 - スレッドが終わるか DLL が外れるとビューとハンドルが閉じられ、**最後のハンドルが閉じるとマッピングは消えます**。
 
 ## 4. 読み手の規約
@@ -135,10 +136,10 @@ UnmapViewOfFile; CloseHandle                # 読むたびに閉じる(ハンド
 ### 4-2. 受け入れ条件(すべて満たしたときだけ「読めた」とする)
 
 1. `magic == 0x5A52444D`。
-2. `version >= 2`(予定。**version 1 のブロックは捨てる**。version 1 には `active` が無く、IME を切り替えた後も最後の状態が残るため。下の 5-1)。version 2 が出るまでの間は、version 1 を「記録のみ」にとどめ、belief には使わない(ADR-265 D3)。
+2. `version >= 2`(**version 1 のブロックは捨てる**。version 1 には `active` が無く、IME を切り替えた後も最後の状態が残るため。下の 5-1)。
 3. `seq` が偶数で、seqlock の読みが一致した。`seq == 0` は「未公開」(作った直後で、まだ最初の書き込みが無い)なので捨てる。
 4. `process_id` が、対象の窓のプロセスの PID と一致する(**スレッド ID は再利用される**ので、別プロセスの新しいスレッドが同じ番号になると古いブロックを読んでしまう)。
-5. (version 2 の予定)`active == 1`。
+5. `active == 1`。0 のときは、その窓では mozc-readable が使われていないので「不明」として扱う。
 
 ### 4-3. 通知イベント
 
@@ -165,15 +166,15 @@ UnmapViewOfFile; CloseHandle                # 読むたびに閉じる(ハンド
 
 ## 5. 既知の限界
 
-### 5-1. IME を切り替えても状態が残る(ソース上。未実測)
+### 5-1. IME を切り替えたときの `active`(実測は未)
 
-書き出し側は、TIP の無効化(Win+Space で同じスレッドの IME を MS-IME などへ切り替える)で何も書きません(`Deactivate` から呼ばれていない)。ソースの読み取りでは、マッピングはスレッドが生きている限り残り、最後の値(例: 開・ひらがな)のままです。version 1 の読み手は、**いま mozc-readable が使われているか**を判別できません。
+version 1 の書き出し側は、TIP の無効化(Win+Space で同じスレッドの IME を MS-IME などへ切り替える)で何も書かず、マッピングはスレッドが生きている限り最後の値(例: 開・ひらがな)のまま残る見込みでした(ソースの読み取り、未実測)。
 
-→ version 2 で `active`(Activate で 1、Deactivate で 0)を足す予定です。`active` も「変化したときだけ書く」判定の比較対象に入れます(入れないと、再 Activate のときに状態が前回と同じだと `active=1` が書かれない)。
+version 2 は、`active`(Activate で 1、Deactivate で 0)でこれを区別します。CI は、`active=1` を Hard、スレッドを英語レイアウトへ切り替えたあとの `active=0` を Soft で確認します。**Soft の方は未検証**で、`Deactivate` が実際に呼ばれる条件(IME の切り替えの種類)による差は測っていません。
 
 ### 5-2. 最初の書き込みの前
 
-マッピングを作った直後は `seq == 0` で、中身も 0(閉・`DIRECT`)です。version 1 では `magic` が先に書かれるので、この状態を「閉・直接入力」として読んでしまいます。→ 4-2 の 3(`seq == 0` は捨てる)で防ぎ、version 2 で書き出し側が `magic` を最後に書くよう直す予定です。
+`magic` は最後に書かれるので、マッピングができた直後で `magic` がまだ 0 のブロックは、受け入れ条件 1 で捨てられます。version 1 では `magic` が先に書かれ、中身が 0(閉・`DIRECT`)の状態を「閉・直接入力」として読んでしまう余地がありました。受け入れ条件 3(`seq == 0` は捨てる)は、どちらの版でも守ってください。
 
 ### 5-3. 信頼境界は同一ユーザー
 
@@ -184,17 +185,19 @@ UnmapViewOfFile; CloseHandle                # 読むたびに閉じる(ハンド
 - 開閉と、上の 6 つの入力モードだけです。変換中かどうか・候補・読みなどは出しません。
 - 新しいプロセスの最初の打鍵が落ちることがある件は、この仕様とは別の、mozc-readable 側の既知の問題です(原因は未特定)。
 
-## 6. version 2(予定)
+## 6. version 1 との違い(古いビルドを読む場合)
 
-ADR-265 D3・段階 1 で決めた変更です。**未実装**。
+version 2 で変わったのは次の 3 点です(`readable` の `aa228f6`)。
 
-- `active`(u32、0/1)を追加する(`reserved` を使うか末尾へ追記するかは実装時に決め、本書を更新する)。`TipTextService` の Activate で 1、Deactivate で 0 を書き、`seq` を進める。
-- `Unchanged()` の比較に `active` を含める。
-- 最初の書き込みで `magic` を最後に書く(`seq == 0` の未公開状態が正しい値に見えないようにする)。
-- `version` を 2 に上げる。読み手は `version >= 2` だけを採る。
+- `reserved`(オフセット 36)が `active` になった。
+- 変化の判定が `active` を含む全体の比較になった。
+- `magic` を最後に書くようになった(`seq == 0` が確実に「未公開」を表す)。
+
+version 1 のブロックを読む場合は、`active` が無いので「いま使われているか」を判別できません。このため、**version 1 は捨ててください**(受け入れ条件 2)。
 
 ## 7. 変更履歴
 
 | 日付 | 内容 |
 | --- | --- |
 | 2026-10-18 | 初版。version 1(現行実装)と version 2(予定)を記述。自作キーボード向けの使い道と最小例を追加 |
+| 2026-10-18 | version 2 が `readable` の `aa228f6` に入ったため、「予定」を実装済み(CI 確認中・リリース前)に改める。`reserved` は `active` に |

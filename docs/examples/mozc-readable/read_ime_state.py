@@ -6,6 +6,7 @@
       実行: uv run read_ime_state.py   (停止は Ctrl+C)
 
 **未検証**: この例は Linux 上で構文だけ確認したもので、Windows 実機では動かしていない。
+AppContainer(UWP など)の窓は読めない(`NtOpenSection` が要る。仕様書 4-4 章)。version 2 のビルドが前提。
 動かして食い違いがあれば、仕様書(と実装)が正。
 """
 import ctypes
@@ -75,10 +76,12 @@ def read_state(tid, pid):
             seq2 = struct.unpack("<I", ctypes.string_at(view + 8, 4))[0]
             if seq1 != seq2:
                 continue
-            magic, version, seq, eo, em, to, tm, btid, bpid, _res, tick = STRUCT.unpack(raw)
+            magic, version, seq, eo, em, to, tm, btid, bpid, active, tick = STRUCT.unpack(raw)
             if magic != MAGIC or seq == 0:  # seq==0: 作った直後でまだ書かれていない
                 return None
             if bpid != pid:  # スレッド ID は再利用される。別プロセスの古いブロックを読まない
+                return None
+            if version < 2 or not active:  # v1 は「いま使われているか」が分からない。active=0 は他の IME に切り替え済み
                 return None
             return {"version": version, "open": bool(to), "mode": MODES.get(tm, f"?{tm}"),
                     "effective_open": bool(eo), "effective_mode": MODES.get(em, f"?{em}")}
@@ -101,8 +104,7 @@ def main():
             if st is None:
                 print("不明(この窓では読めない)")
             else:
-                note = "" if st["version"] >= 2 else "  [version 1: IME を切り替えた後の残りを区別できない]"
-                print(f"{'開' if st['open'] else '閉'} / {st['mode']}{note}")
+                print(f"{'開' if st['open'] else '閉'} / {st['mode']}")
         if ev:
             k32.WaitForSingleObject(ev, 1000)
         else:
