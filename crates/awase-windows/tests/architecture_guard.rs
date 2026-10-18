@@ -2404,7 +2404,9 @@ fn applied_direct_assignments_are_accounted_for() {
         // へ移した（挙動不変。`record_confirmed` はこれを呼ぶだけ）。書き込み点の総数は変わらない。
         // 8→9。`PanicReset`のreduce内で、全面リセット時にappliedを`Unknown`へ落とす1件を追加
         // （BUG-182。`reduce()`内の正規書き込み）。
-        ("src/state/ime_model.rs", 9),
+        // 9→10。`AppliedDemoted`のreduce内で、applied だけを未確認へ落とす1件を追加
+        // （ADR-268 D4。`reduce()`内の正規書き込み）。
+        ("src/state/ime_model.rs", 10),
         ("src/state/platform_state.rs", 1),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];

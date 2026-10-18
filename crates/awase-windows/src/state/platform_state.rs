@@ -109,6 +109,10 @@ pub struct ImeStateHub {
     /// 最後に外部変化へ追随した時刻（ms）。追随の直後に、閉じる前の GJI I/O 推測が `ObserverPoll(true)` で
     /// 追随結果を上書きしないための柵（`observe_gji_after_focus` の第1引数）に使う（ADR-205 round3 m1）。
     last_external_change_ms: u64,
+    /// 直前に journal へ記録した `MozcShm` の報告（開閉・窓・フォーカスの世代）。同じ報告が続くときは reduce だけして
+    /// journal には書かない（観測の TTL を延ばすために毎 tick 報告するので、書くと State の枠〈2048〉が約 17 分で
+    /// 入れ替わる。ADR-268 D1、レビュー M3）。値・窓・世代のどれかが変われば書く。
+    last_mozc_shm_journaled: Option<(bool, HwndId, u64)>,
 
     /// `effective_open()` の IntentStore 分岐が `shadow_model` と異なる値を
     /// 返している（＝実際に override している）間 `true`。遷移時のみ INFO
@@ -171,6 +175,7 @@ impl ImeStateHub {
             mode_key_pass_mark: ModeKeyPassLatch::new(),
             external_change_watch: super::external_change_watch::ExternalChangeWatch::new(),
             last_external_change_ms: 0,
+            last_mozc_shm_journaled: None,
             intent_override_logged: std::cell::Cell::new(false),
             last_effective_open: std::cell::Cell::new(None),
             last_mrt_shadow: std::cell::Cell::new(None),
@@ -225,16 +230,28 @@ impl ImeStateHub {
         if matches!(event, ImeEvent::FocusChanged { .. }) {
             self.conv_read_ok_scope = None;
         }
+        // ADR-268 D1: 共有メモリの同じ報告の繰り返し（TTL を延ばすための毎 tick の報告）は、reduce はするが journal には書かない。
+        let repeated_mozc_shm = match &event {
+            ImeEvent::ObserverReported(o) if o.source() == ObservationSource::MozcShm => {
+                let key = (o.open(), o.hwnd(), o.focus_epoch());
+                let repeated = self.last_mozc_shm_journaled == Some(key);
+                self.last_mozc_shm_journaled = Some(key);
+                repeated
+            }
+            _ => false,
+        };
         let time = self
             .event_log
             .record_at(&event, tick_ms, self.clock.now_instant());
         let envelope = ImeEventEnvelope { time, event };
         self.shadow_model.reduce(&envelope);
-        self.journal.record(JournalEntry::ImeEvent {
-            event: envelope.event,
-            event_seq: time.seq,
-            tick_ms: time.tick_ms,
-        });
+        if !repeated_mozc_shm {
+            self.journal.record(JournalEntry::ImeEvent {
+                event: envelope.event,
+                event_seq: time.seq,
+                tick_ms: time.tick_ms,
+            });
+        }
     }
 
     /// 明示キー押下 `press` の向き `open` の書き込みを**予約**する（order の発行直前に呼ぶ。ADR-208 決定2 D1）。
@@ -2047,6 +2064,21 @@ impl ImeStateHub {
         );
     }
 
+    /// `AppliedDemoted` の**唯一のdispatch元**（ADR-268 D4）。共有メモリの `tsf_open != effective_open` のとき、`applied`
+    /// （awase 自身の書き込みの記録）を省略の根拠にしないよう未確認へ落とす。明示意図・`desired_open`・観測には触れない。
+    /// `applied` が既に `Unknown` なら何もしない（journal に無駄な行を足さない）。
+    fn demote_applied_for_mozc_shm_split(&mut self, tick_ms: TickMs) {
+        if self.shadow_model.applied_state().applied_open().is_none() {
+            return;
+        }
+        self.dispatch_event(
+            ImeEvent::AppliedDemoted {
+                cause: crate::state::ime_event::AppliedDemoteCause::MozcShmSplit,
+            },
+            tick_ms,
+        );
+    }
+
     /// ADR-268 D1・D3: mozc-readable の共有メモリの**受け入れた読み**を belief に使う（`runtime/mozc_shm_shadow.rs` から、
     /// 1 tick に 1 回）。IME へは何も書かない。
     ///
@@ -2077,6 +2109,9 @@ impl ImeStateHub {
             effective,
             desired,
         );
+        if decision == ShmUse::Split {
+            self.demote_applied_for_mozc_shm_split(tick_ms);
+        }
         let ShmUse::Use { open, disagrees } = decision else {
             return decision;
         };
@@ -3181,8 +3216,68 @@ mod tests {
         split.effective_open = true;
         let used = ps.ime.report_mozc_shm(split, 5000, 5100, 100, TickMs(5100));
         assert_eq!(used, ShmUse::Split);
-        assert_eq!(ps.ime.explicit_intent(), Some(true));
-        assert!(ps.ime.effective_open_at(TickMs(5100)));
+        assert_eq!(ps.ime.explicit_intent(), Some(true), "明示意図は残る");
+        assert!(
+            ps.ime.effective_open_at(TickMs(5100)),
+            "belief は変わらない"
+        );
+        assert_eq!(
+            ps.ime.model().applied_state().applied_open(),
+            None,
+            "割れた読みでは applied を省略の根拠にしない（降格、ADR-268 D4）"
+        );
+    }
+
+    /// 割れた読みが続いても、`applied` が既に未確認なら降格のイベントを足さない（journal を汚さない）。
+    #[test]
+    fn report_mozc_shm_split_demotion_is_not_repeated() {
+        let mut ps = ps_with_open_intent_and_applied();
+        let mut split = mozc_shm_state(false);
+        split.effective_open = true;
+        let _ = ps.ime.report_mozc_shm(split, 5000, 5100, 100, TickMs(5100));
+        let first = ps
+            .ime
+            .journal
+            .to_json()
+            .expect("journal")
+            .matches("AppliedDemoted")
+            .count();
+        let _ = ps.ime.report_mozc_shm(split, 5000, 5600, 100, TickMs(5600));
+        let second = ps
+            .ime
+            .journal
+            .to_json()
+            .expect("journal")
+            .matches("AppliedDemoted")
+            .count();
+        assert_eq!(first, 1);
+        assert_eq!(second, 1, "applied が既に Unknown なら dispatch しない");
+    }
+
+    /// 同じ報告が毎 tick 続いても journal には 1 件だけ（TTL を延ばす reduce は毎回行う）。値が変われば書く。
+    #[test]
+    fn report_mozc_shm_repeated_reports_are_journaled_once() {
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let count = |ps: &PlatformState| {
+            ps.ime
+                .journal
+                .to_json()
+                .expect("journal")
+                .matches("\"MozcShm\"")
+                .count()
+        };
+        let before = count(&ps);
+        for i in 0..5u64 {
+            let _ =
+                ps.ime
+                    .report_mozc_shm(mozc_shm_state(true), 5000, 5100 + i, 100, TickMs(5100 + i));
+        }
+        assert_eq!(count(&ps) - before, 1, "同じ報告は 1 件だけ journal に書く");
+        let _ = ps
+            .ime
+            .report_mozc_shm(mozc_shm_state(false), 6000, 6100, 100, TickMs(6100));
+        assert_eq!(count(&ps) - before, 2, "値が変われば書く");
     }
 
     /// 共有メモリが belief・desired と一致するなら、報告するだけで追随しない（明示意図を消さない）。

@@ -60,6 +60,14 @@ pub enum UserIntentSource {
     Command,
 }
 
+/// `ImeEvent::AppliedDemoted` の理由（journal に残す。ADR-268 D4）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum AppliedDemoteCause {
+    /// 共有メモリの `tsf_open != effective_open`（入力スコープの上書き等）。どちらを IME の状態とするかが未測定なので、
+    /// `applied` を省略の根拠にしない。
+    MozcShmSplit,
+}
+
 /// Observation のソース (外部観測の種類)。
 ///
 /// `serde::Serialize`/`Deserialize` は ADR-082「第一歩」2. の
@@ -489,6 +497,14 @@ pub enum ImeEvent {
         /// 無くても、追跡状態が変わる打鍵ではこのイベントを送る。
         track: crate::state::key_effect_predictor::KeyTrack,
     },
+
+    /// `applied`（awase 自身の書き込みの記録）を、理由つきで**未確認（`Unknown`）へ落とす**だけのイベント（ADR-268 D4）。
+    ///
+    /// reducer は `applied` 以外（`last_intent`・`desired_open`・観測・`pending`）には触れない。
+    /// `ModeKeyPassedThrough` は常に `last_intent` を捨てるので、「明示意図は残したまま `applied` だけを降格する」用途には使えない。
+    /// 降格は安全側の遷移（誤って送信を省く危険を消し、被害は余分な送信 1 回）なので、`applied` が `Unknown` のとき
+    /// 呼び出し側は dispatch しない。dispatch 元は `ImeStateHub::demote_applied_for_mozc_shm_split` の 1 箇所に限定する。
+    AppliedDemoted { cause: AppliedDemoteCause },
 
     // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
     // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,
