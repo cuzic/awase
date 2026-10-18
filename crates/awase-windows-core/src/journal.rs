@@ -170,6 +170,44 @@ pub struct IndicatorMenuRecord {
     pub belief_open: Option<bool>,
 }
 
+/// ADR-265 段階 1: mozc-readable の共有メモリ（48 バイト、version 2）の読み（挙動を変えない観測。**belief には入れない**）。
+///
+/// フォーカスが変わった tick と、前回の記録から結論が変わった tick にだけ残す。読んだ時点の belief（`belief_open`・
+/// `belief_mode`）を添えるのは、読める窓での一致率と、観測の無い窓でのずれを、実ジャーナルで後から突き合わせるため。
+/// ウィンドウのクラス名・プロセス名・タイトルは含めない（`FocusTransition` と時刻で突き合わせられる）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MozcShmRecord {
+    /// きっかけ（`focus` / `change`）
+    pub trigger: &'static str,
+    /// 読んだ経路（`local` / `app-container`）
+    pub route: &'static str,
+    /// 結論（`accepted` / `rejected` / `failed`）
+    pub verdict: &'static str,
+    /// `rejected` の理由（`bad-magic` / `version-too-old` / `torn` / `unpublished` / `pid-mismatch` / `inactive`）、
+    /// または `failed` の理由（`not-found` / `denied` / `retries-exhausted` / 経路を始められなかった段）
+    pub reason: Option<&'static str>,
+    /// `denied` のときの NTSTATUS
+    pub nt_status: Option<u32>,
+    /// `accepted` のときのブロックの `version`
+    pub version: Option<u32>,
+    /// `accepted` のときの TSF から見える IME の開閉
+    pub tsf_open: Option<bool>,
+    /// `accepted` のときの TSF から見える入力モード（範囲外の値なら `None`）
+    pub tsf_mode: Option<&'static str>,
+    /// `accepted` のときの Mozc のセッションから見た IME の開閉
+    pub effective_open: Option<bool>,
+    /// `accepted` のときの Mozc のセッションから見た入力モード（範囲外の値なら `None`）
+    pub effective_mode: Option<&'static str>,
+    /// 読み取りの所要（マイクロ秒）
+    pub read_us: u32,
+    /// 読んだ時点の窓の IME プロファイル（`standard` / `imm32-unavailable` / `tsf-native` / `input-relay`）
+    pub profile: &'static str,
+    /// 読んだ時点の belief（IME が開いているか）
+    pub belief_open: Option<bool>,
+    /// 読んだ時点の belief（入力モード。`Debug` 表記）
+    pub belief_mode: Option<String>,
+}
+
 /// shadow IME トグル(`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` ほか)の判断の段(ADR-250 段階 4-1)。
 ///
 /// 手書きの `[shadow-toggle]` ログ 11 行を置き換える(1:1)。`emit_tracing` は段ごとに**元の手書き行と同じレベル**
@@ -610,6 +648,8 @@ pub enum JournalEntry {
     LangDetect { record: LangDetectRecord },
     /// ADR-264 段階 1: 入力インジケーターの右クリックメニューの読み(挙動を変えない観測。belief には入れない)。
     IndicatorMenu { record: IndicatorMenuRecord },
+    /// ADR-265 段階 1: mozc-readable の共有メモリの読み(挙動を変えない観測。belief には入れない)。
+    MozcShm { record: MozcShmRecord },
     /// ADR-132 Phase 1: hook の IME-mode 診断ログを journal にも残す。
     HookImeModeDiagnostic { record: HookImeModeDiagnosticRecord },
     /// ADR-132 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
@@ -979,6 +1019,7 @@ impl JournalEntry {
             | Self::LateKeymap { .. }
             | Self::LangDetect { .. }
             | Self::IndicatorMenu { .. }
+            | Self::MozcShm { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::FirstLiteralObserve { .. }
@@ -997,6 +1038,7 @@ impl JournalEntry {
             | Self::HookImeModeDiagnostic { .. }
             | Self::LangDetect { .. }
             | Self::IndicatorMenu { .. }
+            | Self::MozcShm { .. }
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
             | Self::LiteralDetect { .. }
@@ -1395,6 +1437,29 @@ impl JournalEntry {
                     profile = record.profile,
                     belief_open = record.belief_open,
                     "[indicator-menu]"
+                );
+            }
+            Self::MozcShm { record } => {
+                // debug（既定の app log には出さない。journal 本体には全項目が残る。ADR-250 決定 5）。
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    trigger = record.trigger,
+                    route = record.route,
+                    verdict = record.verdict,
+                    reason = record.reason,
+                    nt_status = record.nt_status,
+                    version = record.version,
+                    tsf_open = record.tsf_open,
+                    tsf_mode = record.tsf_mode,
+                    effective_open = record.effective_open,
+                    effective_mode = record.effective_mode,
+                    read_us = record.read_us,
+                    profile = record.profile,
+                    belief_open = record.belief_open,
+                    belief_mode = record.belief_mode.as_deref(),
+                    "[mozc-shm]"
                 );
             }
             Self::HookImeModeDiagnostic { record } => {
@@ -2657,6 +2722,54 @@ mod tests {
         let json = j.to_json().unwrap();
         assert!(json.contains("LateKeymap"));
         assert!(json.contains("Composing"));
+    }
+    #[test]
+    fn mozc_shm_record_is_serialized_with_state_and_belief_but_without_window_identity() {
+        let (mut j, _mock) = mock_journal();
+        j.record(JournalEntry::MozcShm {
+            record: MozcShmRecord {
+                trigger: "focus",
+                route: "app-container",
+                verdict: "accepted",
+                reason: None,
+                nt_status: None,
+                version: Some(2),
+                tsf_open: Some(true),
+                tsf_mode: Some("full-katakana"),
+                effective_open: Some(true),
+                effective_mode: Some("hiragana"),
+                read_us: 87,
+                profile: "tsf-native",
+                belief_open: Some(false),
+                belief_mode: Some("Hiragana".to_string()),
+            },
+        });
+        j.record(JournalEntry::MozcShm {
+            record: MozcShmRecord {
+                trigger: "change",
+                route: "app-container",
+                verdict: "failed",
+                reason: Some("denied"),
+                nt_status: Some(0xC000_0022),
+                version: None,
+                tsf_open: None,
+                tsf_mode: None,
+                effective_open: None,
+                effective_mode: None,
+                read_us: 12,
+                profile: "standard",
+                belief_open: None,
+                belief_mode: None,
+            },
+        });
+        let json = j.to_json().unwrap();
+        assert!(json.contains("MozcShm"));
+        assert!(json.contains("full-katakana"));
+        assert!(json.contains("denied"));
+        // ウィンドウのクラス名・プロセス名・タイトルは記録しない（FocusTransition と時刻で突き合わせる）
+        assert!(!json.contains("class_name"));
+        assert!(!json.contains("process_name"));
+        assert!(!json.contains("title"));
     }
     #[test]
     fn indicator_menu_record_is_serialized_without_menu_contents() {

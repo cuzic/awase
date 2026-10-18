@@ -51,6 +51,7 @@ examine_globs = [
     "crates/awase-windows-core/src/state/half_width_alnum.rs",
     "crates/awase-windows-core/src/state/foreign_modifier.rs",
     "crates/awase-windows-core/src/state/indicator_menu.rs",
+    "crates/awase-windows-core/src/state/mozc_shm.rs",
     "crates/awase-windows-core/src/focus/class_names.rs",
     "crates/awase-windows-core/src/focus/kinds.rs",
 ]
