@@ -262,7 +262,7 @@ impl Observed<MozcShm> {
     /// （割れているときは報告せず `applied` を降格する。ADR-268 D1）。confidence は `High` 固定（呼び出し元は選べない）。
     #[must_use]
     pub const fn from_shm(
-        _accepted: &super::mozc_shm::ShmState,
+        _accepted: super::mozc_shm::ShmState,
         open: bool,
         hwnd: HwndId,
         focus_epoch: FocusEpoch,
