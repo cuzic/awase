@@ -4328,6 +4328,39 @@ fn timer_ime_off_rescue_calls_begin_key_batch_before_deliver_key_event() {
     );
 }
 
+/// BUG-202: `win_event_proc`（`EVENT_OBJECT_FOCUS`）は、コンテキストメニュー（クラス `#32768`）へのフォーカスを
+/// 窓の切替として扱わない。**判定は重複排除（`LAST_FOCUS_HWND.swap`）より前**でなければならない。後だと
+/// `LAST_FOCUS_HWND` がメニュー窓に上書きされ、メニューを閉じて元の窓へ戻る `FOCUS` が「新しい窓」として
+/// 再び拾われる（`tsf-gate` の `PendingWarmup`・held 破棄）。ADR-264 決定 7。
+#[test]
+fn win_event_proc_ignores_popup_menu_focus_before_dedup_and_dispatch() {
+    let content = read_crate_file("src/app/bootstrap.rs");
+    let body = extract_fn_body(&content, "unsafe extern \"system\" fn win_event_proc");
+    let menu_idx = body
+        .find("is_popup_menu_window_class")
+        .expect("win_event_proc は is_popup_menu_window_class でメニュー窓を弾くこと(BUG-202)");
+    let dedup_idx = body
+        .find("LAST_FOCUS_HWND.swap")
+        .expect("win_event_proc は LAST_FOCUS_HWND で連続フォーカスを重複排除すること");
+    let dispatch_idx = body
+        .find("on_window_focus_event")
+        .expect("win_event_proc は on_window_focus_event を呼ぶこと");
+    assert!(
+        menu_idx < dedup_idx,
+        "メニュー窓の判定は LAST_FOCUS_HWND.swap より前に置くこと(BUG-202)。後だと LAST_FOCUS_HWND が\
+         メニュー窓に上書きされ、メニューを閉じて元の窓へ戻る FOCUS が新しい窓として再び拾われる"
+    );
+    assert!(
+        menu_idx < dispatch_idx,
+        "メニュー窓の判定は on_window_focus_event より前に置くこと(BUG-202)"
+    );
+    assert_eq!(
+        body.matches("is_popup_menu_window_class").count(),
+        1,
+        "メニュー窓の判定は win_event_proc の入口にちょうど 1 回"
+    );
+}
+
 #[test]
 fn bootstrap_initial_focus_scope_precedes_ime_cache_initialization() {
     let content = read_crate_file("src/app/bootstrap.rs");
