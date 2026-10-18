@@ -8,6 +8,9 @@
 //! 導いたルールは、IME ごとの oracle(期待する挙動の仕様)として、`ImeModel` や予測器との
 //! 突き合わせテストに使える。実行時の判断にはまだ配線していない(読み取り専用の導出)。
 //!
+//! これは演繹ではなく**推定**(帰納)。測った範囲のセルから一般化したルールであり、測っていない
+//! 状態でも成り立つ保証はない(1試行だけのセルも含む)。関数名を `infer_*` にしているのはそのため。
+//!
 //! 方針: **証拠が片側だけなら主張しない**。開閉の4ルール(`SetOn`/`SetOff`/`Toggle`/`Identity`)は、
 //! 閉と開の両方の未入力セルがあるときだけ名乗る。片側だけだと複数のルールが同時に当てはまる
 //! (閉で開く1セルだけなら `SetOn` も `Toggle` も真)ので、`Insufficient` にする。
@@ -57,7 +60,7 @@ pub enum CompositionRule {
     Varies,
 }
 
-/// 1キー分の導出結果。
+/// 1キー分の推定結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyRules {
     pub key: TableKey,
@@ -105,7 +108,7 @@ const fn all_keys_is_exhaustive(k: TableKey) {
 }
 
 /// `key` の未入力セルから開閉のルールを導く。
-fn deduce_open(cells: &[Cell], key: TableKey) -> OpenRule {
+fn infer_open(cells: &[Cell], key: TableKey) -> OpenRule {
     let idle: Vec<&Cell> = cells
         .iter()
         .filter(|c| c.key() == key && c.stage() == Stage::None)
@@ -132,7 +135,7 @@ fn deduce_open(cells: &[Cell], key: TableKey) -> OpenRule {
 }
 
 /// `key` の未入力の開→開セルから、変換モードのルールを導く。
-fn deduce_mode(cells: &[Cell], key: TableKey) -> ModeRule {
+fn infer_mode(cells: &[Cell], key: TableKey) -> ModeRule {
     let stays: Vec<(Conv, Option<Conv>)> = cells
         .iter()
         .filter(|c| c.key() == key && c.stage() == Stage::None && c.open() && c.after_open())
@@ -158,7 +161,7 @@ fn deduce_mode(cells: &[Cell], key: TableKey) -> ModeRule {
 }
 
 /// `key` の入力中・変換中の(開状態の)セルから、行方のルールを導く。
-fn deduce_composition(cells: &[Cell], key: TableKey) -> CompositionRule {
+fn infer_composition(cells: &[Cell], key: TableKey) -> CompositionRule {
     let mut disps = cells
         .iter()
         .filter(|c| c.key() == key && c.stage() != Stage::None)
@@ -175,21 +178,21 @@ fn deduce_composition(cells: &[Cell], key: TableKey) -> CompositionRule {
 
 /// 1キーのルールを導く。
 #[must_use]
-pub fn deduce_key_rules(cells: &[Cell], key: TableKey) -> KeyRules {
+pub fn infer_key_rules(cells: &[Cell], key: TableKey) -> KeyRules {
     KeyRules {
         key,
-        open_when_idle: deduce_open(cells, key),
-        mode_when_staying_open: deduce_mode(cells, key),
-        composition: deduce_composition(cells, key),
+        open_when_idle: infer_open(cells, key),
+        mode_when_staying_open: infer_mode(cells, key),
+        composition: infer_composition(cells, key),
     }
 }
 
 /// 全キーのルールを [`ALL_KEYS`] の順に導く。
 #[must_use]
-pub fn deduce_all(cells: &[Cell]) -> Vec<KeyRules> {
+pub fn infer_all(cells: &[Cell]) -> Vec<KeyRules> {
     ALL_KEYS
         .iter()
-        .map(|k| deduce_key_rules(cells, *k))
+        .map(|k| infer_key_rules(cells, *k))
         .collect()
 }
 
@@ -214,12 +217,12 @@ mod tests {
     #[test]
     fn closed_only_evidence_claims_no_rule() {
         let cells = [idle(false, None, HZ, true, None)];
-        assert_eq!(deduce_open(&cells, HZ), OpenRule::Insufficient);
+        assert_eq!(infer_open(&cells, HZ), OpenRule::Insufficient);
     }
 
     #[test]
     fn no_idle_cells_is_unmeasured() {
-        assert_eq!(deduce_open(&[], HZ), OpenRule::Unmeasured);
+        assert_eq!(infer_open(&[], HZ), OpenRule::Unmeasured);
     }
 
     #[test]
@@ -231,10 +234,10 @@ mod tests {
                 idle(true, c, HZ, open_after, c),
             ]
         };
-        assert_eq!(deduce_open(&mk(true, false), HZ), OpenRule::Toggle);
-        assert_eq!(deduce_open(&mk(true, true), HZ), OpenRule::SetOn);
-        assert_eq!(deduce_open(&mk(false, false), HZ), OpenRule::SetOff);
-        assert_eq!(deduce_open(&mk(false, true), HZ), OpenRule::Identity);
+        assert_eq!(infer_open(&mk(true, false), HZ), OpenRule::Toggle);
+        assert_eq!(infer_open(&mk(true, true), HZ), OpenRule::SetOn);
+        assert_eq!(infer_open(&mk(false, false), HZ), OpenRule::SetOff);
+        assert_eq!(infer_open(&mk(false, true), HZ), OpenRule::Identity);
     }
 
     #[test]
@@ -245,7 +248,7 @@ mod tests {
             idle(true, Some(Conv::C19), HZ, false, None),
             idle(true, Some(Conv::C10), HZ, true, Some(Conv::C10)),
         ];
-        assert_eq!(deduce_open(&cells, HZ), OpenRule::StateDependent);
+        assert_eq!(infer_open(&cells, HZ), OpenRule::StateDependent);
     }
 
     #[test]
@@ -261,13 +264,13 @@ mod tests {
                 disp,
             )
         };
-        assert_eq!(deduce_composition(&[], K::Esc), CompositionRule::Unmeasured);
+        assert_eq!(infer_composition(&[], K::Esc), CompositionRule::Unmeasured);
         assert_eq!(
-            deduce_composition(&[typing(Disp::Discarded)], K::Esc),
+            infer_composition(&[typing(Disp::Discarded)], K::Esc),
             CompositionRule::Same(Disp::Discarded)
         );
         assert_eq!(
-            deduce_composition(&[typing(Disp::Discarded), typing(Disp::Kept)], K::Esc),
+            infer_composition(&[typing(Disp::Discarded), typing(Disp::Kept)], K::Esc),
             CompositionRule::Varies
         );
     }
@@ -280,20 +283,20 @@ mod tests {
             idle(true, a, K::Hiragana, true, a),
             idle(true, b, K::Hiragana, true, a),
         ];
-        assert_eq!(deduce_mode(&sets, K::Hiragana), ModeRule::Sets(Conv::C19));
+        assert_eq!(infer_mode(&sets, K::Hiragana), ModeRule::Sets(Conv::C19));
         // 2種類の変換モードから測って、どちらも保った。
         let keeps = [
             idle(true, a, K::Space, true, a),
             idle(true, b, K::Space, true, b),
         ];
-        assert_eq!(deduce_mode(&keeps, K::Space), ModeRule::Preserves);
+        assert_eq!(infer_mode(&keeps, K::Space), ModeRule::Preserves);
         // 一部が不明。
         let part = [
             idle(true, a, K::Eisu, true, a),
             idle(true, b, K::Eisu, true, None),
         ];
-        assert_eq!(deduce_mode(&part, K::Eisu), ModeRule::Varies);
-        assert_eq!(deduce_mode(&[], K::Eisu), ModeRule::Unknown);
+        assert_eq!(infer_mode(&part, K::Eisu), ModeRule::Varies);
+        assert_eq!(infer_mode(&[], K::Eisu), ModeRule::Unknown);
     }
 
     /// 既存の `toggle_contradiction`(ADR-199 決定6-2)との差分テスト。両側を測ったキーでは
@@ -308,7 +311,7 @@ mod tests {
         ] {
             let cells = bundled_table(preset);
             for key in ALL_KEYS {
-                let rule = deduce_open(cells, key);
+                let rule = infer_open(cells, key);
                 let contradiction = toggle_contradiction(cells, key);
                 match rule {
                     OpenRule::Unmeasured | OpenRule::Insufficient => {}
@@ -326,8 +329,8 @@ mod tests {
     }
 
     #[test]
-    fn deduce_all_covers_every_key_in_order() {
-        let all = deduce_all(bundled_table(KeymapPreset::Atok));
+    fn infer_all_covers_every_key_in_order() {
+        let all = infer_all(bundled_table(KeymapPreset::Atok));
         assert_eq!(all.len(), ALL_KEYS.len());
         for (r, k) in all.iter().zip(ALL_KEYS) {
             assert_eq!(r.key, k);
