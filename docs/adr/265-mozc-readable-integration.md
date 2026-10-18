@@ -3,7 +3,7 @@ id: ADR-265
 title: |-
   mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定)
 status: |-
-  提案(2026-10-17、Opus round1〜4 で収束)。配布の自動化は PR #1 を作り直す前提、awase 側の読み取りは未実装
+  提案(2026-10-17、Opus round1〜4 で収束)。段階 1 は実装済み(observe のみ、PR #644、belief へは未接続・Windows 実機は未確認)。段階 0(配布と追随の作り直し)と段階 2 は未着手
 related_adr:
   - "ADR-191"
   - "ADR-261"
@@ -55,6 +55,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 - `process_id` が対象窓のプロセスの PID と一致しないものは捨てる(スレッド ID の再利用への対策)。
 - `update_tick_ms` による新しさの判定はしない(publisher は変化がなければ書かないので、生存の印にならない)。生存は `process_id` 照合と `active` で見る。
 - 読む対象のスレッドは、**キーボードフォーカスを持つ窓のスレッド**(`GetGUIThreadInfo` の `hwndFocus`、UWP は `CoreWindow` のスレッド。既存のフォーカス解決を使う)。前面窓のスレッドとは限らない。
+  - **実装(PR #644)との差**: 実装は、awase の既存のフォーカス解決の窓(`platform.focus.current.hwnd`)のスレッドを `thread_of_window` で求める(`runtime/mozc_shm_shadow.rs`、私が確認)。別セッションの確認では、そのフォーカス解決は `hwndFocus` を使い、無ければ `hwndActive` の窓へフォールバックする(私はフォーカス解決のコードは読んでいない)。つまり上の「`hwndFocus` のスレッド」とは厳密には一致しない。UWP の `CoreWindow` のスレッドを特別に扱っているかは未確認。
 - 信頼境界は同一ユーザー(同じセッションの別プロセスが先に同名のマッピングを作れば値を偽れる)。これは脅威として許容し、ADR に明記する(R1-M7)。
 
 **belief への入れ方**(R1-I14)
@@ -146,7 +147,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
 ## 未確認(段階 1 の前に実測する)
 
 - AppContainer の窓からの SID の取得と通知イベントの名前空間(上記)、日本語 UI での TIP の表示名、`SysProcs` コンポーネント GUID の共有、同じプロセスでの 2 つの `mozc_tip64.dll`、サービス表示名の重複時の SCM の挙動。
-- 新プロセスの最初のキーが落ちる件の、公式 Mozc との比較。
+- ~~新プロセスの最初のキーが落ちる件の、公式 Mozc との比較。~~ **解決(2026-10-18、別セッションの実験、mozc-readable の Actions run `39104699356`)**: 原因は Mozc でも mozc-readable の publisher でもなく、**検証スクリプトが並行して起動したコンソールの窓が前面を奪っていたこと**だった(単独で起動した新しいプロセスの最初のキーは、公式の無改造 Mozc も mozc-readable も成功。コンソール併走で失敗した回は、すべて前面が Windows Terminal)。私が確認したのは単独起動の部分のログだけで、併走の成功率(公式 9/12、mozc-readable 11/12)は別セッションの報告による。mozc-readable の CI は `-NoNewWindow` で直している。なお、この実機の測定(段階 2)でも、ウォームアップ(新しい窓の最初の ON)は 1 回目で成功した(Chrome は、クリックでフォーカスを外していた間を除く)。
 - `tsf_*` と `effective_*` の食い違い(パスワード欄など)。
 - `GITHUB_TOKEN`(ジョブ単位に絞った権限)だけで Release の公開・Issue・series の PR・自己有効化が足りるか(足りなければ fine-grained PAT)。
 - GitHub の仕様として書いた前提(`schedule` の 60 日無効化、`concurrency` の待ちは 1 本、承認期限 30 日、`workflow_dispatch` は既定ブランチのファイルが前提)の実測。
@@ -162,6 +163,11 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
    6. PR #1 を閉じる。
    7. awase の既存の定期ワークフロー(または新規)に、mozc-readable の `detect`/`release` の `state != active`、または最後の run が 3 日以上前なら awase 側に Issue を立てるステップを足す(R4-G2)。
    初回は 3.34.6239 向けの series を手で作り(分類 B の予行演習)、`git am -3` が blobless で 3-way になるかを試す。**完了条件**: identity の置換(表示名・発行元を含む)を当てた MSI で、公式 Mozc との共存の CI(D4-7)が通り、最初の Release が出ていること。
-1. mozc-readable に `active` を足す(version 2、`magic` を最後に書く)。**書き出し側は `readable` の `aa228f6` に入った(2026-10-18、CI 確認中。切り替え後の `active=0` の検査は Soft で未検証)**。awase に読み取りの Observe を足し、belief へは入れず journal に出して実機で一致を測る。AppContainer の測定も行う。
+1. **実装済み(2026-10-18)**: mozc-readable に `active` を足した(version 2、`magic` を最後に書く。`readable` の `aa228f6`)。CI(run `39098693442`)で、`active=1` と、同じスレッドを `ActivateKeyboardLayout` で TIP の無いレイアウトへ切り替えたあとの `active=0`、および AppContainer の窓の `NtOpenSection` での読み取りを実測した。awase 側の Observe は PR #644(`develop` の `101dfd2f`)で入った: 読み取りの規約(D3)に沿い、**journal に出すだけで belief へは入れない**。`ObservationSource` と `TipIdentity` の variant は足していない。設定は `[diagnostics] mozc_shm_shadow`(既定 false。`src/config.rs` と、既定を固定するテスト `test_mozc_shm_shadow_defaults_to_disabled` を私が確認。反映は再起動後)。journal には `JournalEntry::MozcShm { record }` で記録し、`ir_execute`(既存の IME リフレッシュ、約 500ms の tick。`runtime/ime_refresh.rs` の呼び出しを私が確認)から読む。記録は、フォーカス変更時と結果が変わったときだけで、belief の値(`belief_open`・`belief_mode`)を添える(別セッションの報告。一致率の測定に使う)。以上は別セッションの報告と、PR のタイトル・変更ファイルの一覧による(私はコードの中身を読んでいない)。
+   - **未実施・未確認**: Windows 実機での awase 本体の動作(CI はコンパイルとテストまで)。実機で `mozc_shm_shadow = true` にして mozc-readable の窓で journal を取り、belief との一致率を測る作業(段階 2 の基準の材料)は、まだ誰も行っていない。AppContainer 以外の窓種(Chrome・Notepad 以外のアプリ)の網羅、昇格していないトークンでの SID 取得、Win+Space など `ActivateKeyboardLayout` 以外の切り替えでの `active=0` も未確認。
 2. 測定に基づき belief へ流す(Low から始め、基準を満たしたら Medium)。設定画面に状態表示。
+   - **測定(2026-10-18 ユーザー決定)**: まず実機 dragonflyg4 で行う。手順は [docs/tasks/adr265-stage2-measurement.md](../tasks/adr265-stage2-measurement.md)(草案、実機では未実行)。CI への組み込みは基準が決まってから。
+   - **測定の結果(2026-10-18、[結果](../tasks/adr265-stage2-measurement-result.md))**: 固定した基準は**満たした**。実機の第 1 回(Notepad と Chrome 各 150、N=300、食い違い 0、フォーカスと違うスレッドを読んだ記録 0)に加え、実機の追加測定(IME 切り替え 25 往復、古い共有メモリの誤採用 0、awase は毎回 TIP の無効を検知)と、別セッションの GitHub Actions(Windows)での測定(フォーカス移動・同一プロセスの別スレッド・AppContainer・IME 切り替え後、受け入れた読み 約 960 件、食い違い 0。run `39111907389`。私は run と要約の数字を確認し、測定の設計とドライバーのコードは読んでいない)。**今も測れていないもの**: スレッド ID の再利用、状態を切り替えた直後にフォーカスを移す場面、物理キーでの操作と belief との比較(採用の利益)、負荷時の `read_us`、実機でのフォーカス移動と AppContainer。belief への接続(Medium)に進むかは、これらの扱いと合わせて利用者の判断待ち。
+   - **Medium に上げる基準(測定の前に固定、同ユーザー決定)**: 開閉(open)について、受け入れた読み(`verdict=accepted`)の総数 **N ≥ 200** のうち、**操作から決まる正解と食い違う件数が 0**。1 件でも食い違えば Low のまま(journal に記録するだけ)にして原因を調べる。一致率(99% など)にしないのは、開閉の取り違えが非対称な被害になる(ADR-191・INV-45)ので、誤採用を 1 件でも許さないため。入力モード(mode)は、open が基準を満たした後に別に判断する。結果に合わせて基準を変えない。
+   - **担当(同ユーザー決定)**: awase 本体の belief への接続(Low から)は別セッション(rust-nicola-05)、測定の手順・実機の操作・集計・この ADR の更新は rust-nicola セッション。
 3. サイトの記述は D1 のとおり、事実になった文から足す。**mozc-readable の欄は、最初の Release(identity の置換を当てたもの)が出るまで `hidden` にしておく**(今は Release が 0 件で、リンクは空のページへ飛ぶ)。
