@@ -33,6 +33,9 @@
 /// 現状ファイル読み込みのみで副作用が冪等なため実害は無いが、今後どちらかに
 /// 一度きりの副作用（ファイルロック取得・IPC登録等）を足す場合は、この
 /// ファクトリが複数回呼ばれても安全であることを確認すること。
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
+use awase_settings_wgpu::{egui_wgpu, wgpu};
+
 type AppFactory = std::rc::Rc<dyn Fn(&eframe::CreationContext<'_>) -> Box<dyn eframe::App>>;
 
 /// Glow(OpenGL) → wgpu(Direct3D 12 / Vulkan) の順で起動を試みる。
@@ -54,7 +57,7 @@ pub(crate) fn run_with_fallback(
     run_with_fallback_impl(app_name, viewport, std::rc::Rc::new(app_creator))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn run_with_fallback_impl(
     app_name: &str,
     viewport: eframe::egui::ViewportBuilder,
@@ -106,7 +109,7 @@ fn run_with_fallback_impl(
     wgpu_result
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(all(target_os = "windows", feature = "wgpu-fallback")))]
 fn run_with_fallback_impl(
     app_name: &str,
     viewport: eframe::egui::ViewportBuilder,
@@ -147,7 +150,7 @@ fn app_label(app_name: &str) -> &str {
 /// アダプタを強制してしまう。「実GPUがあればそれを、無ければソフトウェアへ」
 /// という優先順位は `egui_wgpu::WgpuSetupCreateNew::native_adapter_selector` で
 /// 全アダプタを見て自前で選ぶしかない。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn select_wgpu_adapter(
     adapters: &[wgpu::Adapter],
     surface: Option<&wgpu::Surface<'_>>,
@@ -173,7 +176,7 @@ fn select_wgpu_adapter(
     Err("互換性のある wgpu アダプタが見つかりませんでした".to_owned())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 struct EnvDiagnosis {
     remote_session: bool,
     /// デスクトップに接続中のプライマリアダプタ名（`EnumDisplayDevicesW`）。
@@ -187,7 +190,7 @@ struct EnvDiagnosis {
     only_software_wgpu_adapters: bool,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn env_report_lines(diag: &EnvDiagnosis) -> Vec<String> {
     vec![
         "── 検出した環境情報 ──".to_owned(),
@@ -216,7 +219,7 @@ fn env_report_lines(diag: &EnvDiagnosis) -> Vec<String> {
     ]
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(all(target_os = "windows", feature = "wgpu-fallback")))]
 pub(crate) fn describe(app_name: &str, err: &eframe::Error) -> String {
     format!(
         "{}の起動に失敗しました。\n\nエラー詳細: {err}",
@@ -232,7 +235,7 @@ pub(crate) fn describe(app_name: &str, err: &eframe::Error) -> String {
 /// 通常のグラフィックドライバ不足を超えた、より深刻な環境異常
 /// （Direct3D/Vulkan 関連のシステムファイル破損等）を示唆するため、
 /// その旨も付記する。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn describe_fallback_failure(
     app_name: &str,
     glow_err: &eframe::Error,
@@ -277,7 +280,7 @@ fn describe_fallback_failure(
 /// 実際の原因ごとに対処法を出し分ける。`eframe::Error` の中身（`glutin`/`egui_glow`
 /// が報告した理由）と、能動的に調べた実機の状況の両方を根拠にする。単一の
 /// 固定文言に頼らず、根拠が無いケースでは「特定できなかった」ことを正直に示す。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn advice_for(err: &eframe::Error, diag: &EnvDiagnosis) -> String {
     let remote_note = diag.remote_session.then(|| {
         "\n\nこの PC は現在リモートデスクトップ接続で操作されています。RDP 経由では\n\
@@ -313,7 +316,7 @@ fn advice_for(err: &eframe::Error, diag: &EnvDiagnosis) -> String {
 }
 
 /// 検出したグラフィックスアダプタ名に応じた対処法を返す。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn driver_advice(diag: &EnvDiagnosis) -> String {
     match (is_effectively_fallback_driver(diag), diag.primary_adapter.as_deref()) {
         (true, Some(name)) => format!(
@@ -351,7 +354,7 @@ fn driver_advice(diag: &EnvDiagnosis) -> String {
 /// 列挙するアダプタの `DeviceType`（`Cpu` = ソフトウェア実装）はロケールに
 /// 依存しない事実であるため、こちらを優先し、文字列一致は補助的な根拠として
 /// OR で組み合わせる。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn is_effectively_fallback_driver(diag: &EnvDiagnosis) -> bool {
     diag.only_software_wgpu_adapters
         || diag
@@ -362,7 +365,7 @@ fn is_effectively_fallback_driver(diag: &EnvDiagnosis) -> bool {
 
 /// Windows 標準のソフトウェア/仮想フォールバックドライバの既知の名称
 /// （英語ロケール向けの補助的な判定、[`is_effectively_fallback_driver`] 参照）。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn is_fallback_adapter_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.contains("basic render")
@@ -388,7 +391,7 @@ fn is_fallback_adapter_name(name: &str) -> bool {
 /// `catch_unwind` で隔離し、panic した場合は「ソフトウェアのみとは
 /// 言い切れない」（＝ `false`、文字列ヒューリスティックへフォールバック）
 /// として扱う。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn only_software_wgpu_adapters_available() -> bool {
     std::panic::catch_unwind(|| {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -404,7 +407,7 @@ fn only_software_wgpu_adapters_available() -> bool {
     .unwrap_or(false)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn diagnose_environment() -> EnvDiagnosis {
     EnvDiagnosis {
         remote_session: is_remote_session(),
@@ -415,7 +418,7 @@ fn diagnose_environment() -> EnvDiagnosis {
 }
 
 /// リモートデスクトップ接続で実行されているか（`GetSystemMetrics(SM_REMOTESESSION)`）。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn is_remote_session() -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
     // SAFETY: 引数を取らない単純な照会 API。
@@ -424,7 +427,7 @@ fn is_remote_session() -> bool {
 
 /// デスクトップに接続中（`DISPLAY_DEVICE_ATTACHED_TO_DESKTOP`）のプライマリ
 /// グラフィックスアダプタ名を `EnumDisplayDevicesW` で取得する。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn primary_display_adapter_name() -> Option<String> {
     use windows::Win32::Graphics::Gdi::{
         DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICEW, EnumDisplayDevicesW,
@@ -457,7 +460,7 @@ fn primary_display_adapter_name() -> Option<String> {
 
 /// 指定した DLL を今このプロセスから読み込めるかを確認する（読み込めた場合は
 /// 直ちに解放し、DLL の参照カウントを変化させない）。
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "wgpu-fallback"))]
 fn can_load_library(name: &str) -> bool {
     use windows::Win32::Foundation::FreeLibrary;
     use windows::Win32::System::LibraryLoader::LoadLibraryW;
