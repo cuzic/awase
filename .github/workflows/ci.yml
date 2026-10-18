@@ -9,6 +9,14 @@ on:
   # mutants ジョブ自体は if で workflow_dispatch 起動時のみに絞ってある。
   workflow_dispatch:
 
+# 同じ PR・ブランチへ続けて push したとき、古い run を打ち切って新しい run だけを走らせる
+# (直近の run 一覧では同一ブランチへの連続 push が多く、古い run の Windows ランナー
+# 分が丸ごと無駄になっていた)。main/develop への push は履歴ごとに結果を残したいので
+# 打ち切らない(run_id を群に含めて衝突させない)。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/v1-main' || github.ref == 'refs/heads/v1-develop') && github.run_id || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -330,13 +338,12 @@ jobs:
 
       # --locked: コミット済みCargo.lock(audit/machete jobが検査した実体)からの
       # 意図しないドリフトをpush/PR毎に検知する(release.ymlと同じ理由)。
-      - name: Build awase.exe
-        run: cargo build --release --locked -p awase-windows
-
-      # 学習プロセス（release.yml が同梱する。ADR-195/196）。PR で Windows 向けの
-      # ビルド崩れを検知するため、release.yml と同じコマンドでビルドする。
-      - name: Build awase-keymap-learn-win.exe
-        run: cargo build --release --locked -p awase-keymap-learn-win
+      # 学習プロセス awase-keymap-learn-win（release.yml が同梱する。ADR-195/196）も
+      # PR で Windows 向けのビルド崩れを検知するため同じ呼び出しでビルドする。
+      # 2 本を別々の cargo 呼び出しにしていた旧版は、共有依存の解決・フィンガープリント
+      # 確認を 2 回払っていた(実測: awase.exe 46秒 + learn-win 30秒 = 76秒)。
+      - name: Build awase.exe / awase-keymap-learn-win.exe
+        run: cargo build --release --locked -p awase-windows -p awase-keymap-learn-win
 
       - name: Install Japanese IME
         shell: pwsh
@@ -431,10 +438,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
 
-      # settings-release: release.yml と同じ理由で専用プロファイルを使う
-      # （[profile.settings-release]、Cargo.toml）。
+      # LTO 込みの settings-release は使わない。実測 205 秒(windows-settings ジョブ 306 秒の
+      # 2/3、run 39110529037)で、このジョブが run 全体のクリティカルパスだった。
+      # CI が確かめたいのは「ビルドが通る」ことで、LTO を掛けるかは結果に影響しない。
+      # 配布物は release.yml が settings-release で自前に作る(ここの成果物は
+      # windows-package のパッケージング検査専用で、出荷されない)。
       - name: Build awase-settings.exe
-        run: cargo build --profile settings-release --locked -p awase-settings
+        run: cargo build --release --locked -p awase-settings
 
       # awase-settings は今まで実 Windows でテストが一度も走っていなかった
       # （build のみで test 未実行）。egui::Grid が行内 add_space() で panic する
@@ -448,7 +458,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: awase-settings-exe
-          path: target/settings-release/awase-settings.exe
+          path: target/release/awase-settings.exe
           retention-days: 7
 
   # 2026-09-23: dist/zip/MSI 配布物は release.yml がタグ push 時に自前で
@@ -480,7 +490,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: awase-settings-exe
-          path: target/settings-release
+          path: target/release
 
       - name: Prepare distribution
         shell: bash
@@ -488,7 +498,7 @@ jobs:
           mkdir -p dist/layout dist/data dist/scripts
           cp target/release/awase.exe dist/
           cp target/release/awase-keymap-learn-win.exe dist/
-          cp target/settings-release/awase-settings.exe dist/
+          cp target/release/awase-settings.exe dist/
           cp config.toml dist/
           cp layout/*.yab dist/layout/
           cp data/*.csv.gz dist/data/ 2>/dev/null || true
