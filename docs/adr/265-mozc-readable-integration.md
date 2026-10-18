@@ -43,6 +43,47 @@ awase は、Win32 の IMM32 や TSF の compartment から IME の開閉・入�
 - 通知イベントは「読み直す合図」にだけ使う(pulse なので取りこぼす前提で、起きるたびに前面窓の共有メモリを読み直す)。
 - 設定画面: 検出状態(未インストール / インストール済み・共有メモリ読み取り中 / 読めない窓あり)の表示と、ダウンロードへのリンクのみ。ON/OFF スイッチは置かない(自動判定が外れた報告が出たら強制オプションを足す)。
 
+### D4. upstream との衝突は「層」に分け、機械的な書き換えはスクリプトにする
+
+readable の upstream との差分は、性質の違う 3 層に分かれる(2026-10-17 時点で `readable` と upstream master `0136c357` を比べた実測: 既存ファイル 8 本の変更 + 新規ファイル)。衝突しうるのは第 2 層だけにする。
+
+| 層 | 中身 | 衝突 | 扱い |
+| --- | --- | --- | --- |
+| identity | 別名化: GUID 3 つ、製品名・表示名、IPC/イベント/サービス/レジストリ名(`const.h`・`system_util.cc`・`tsf_profile.cc`・`installer_oss_64bit.wxs`・`build_installer.py`) | 行が動く・整形されるとき | **スクリプトが毎回生成**(rebase も cherry-pick もしない) |
+| publisher | `tip_state_publisher.{h,cc}`(新規)、`BUILD.bazel` の目標と依存、`tip_input_mode_manager.{h,cc}` の書き出しの呼び出し(`On*` 6 メソッドの先頭に `PublishOnExit`) | upstream が `TipInputModeManager` や `BUILD.bazel` を変えたとき | コミットとして持ち、cherry-pick。衝突するのはここだけ |
+| ci | `readable/ci/`・`.github/workflows/readable-*.yaml` | 無い(新規のみ) | cherry-pick |
+
+#### identity スクリプト(`readable/identity.py` + `readable/identity.toml`)
+
+- 標準ライブラリだけの Python(`tomllib`)。`apply` と `check` の 2 モード。
+- **GUID は 1 つの表から 3 つの書式を作る**: `{AFC9…}` の文字列、コメント、C の構造体 `0xafc94560, 0x63da, …`。表は「元の GUID → 新しい GUID」と、対象ファイルだけ持つ。新しい GUID は固定し、載せ替えで変えない(awase の TIP 同定の定数と一致させるため)。
+- **文字列は「元の 1 行 → 新しい 1 行」の表**で、各エントリは「対象ファイルで丸ごと 1 回だけ一致」を条件にする(0 回・2 回以上は失敗)。部分一致で置換しないので、無関係な `Mozc` を巻き込まない。
+- 冪等: 新しい行が既にあり元の行が無ければ何もしない。元も新しいも無ければ「アンカーが消えた」と、ファイル・エントリを名指しして失敗する。
+- `check`: ①`apply` を当てても差分が出ない、②元の GUID 3 つが `src/` のどこにも残っていない(`system_util.cc` が CLSID を直書きしていた件を、検査で防ぐ)、③新しい GUID が表にあるファイル以外に出ていない、④新しい GUID が `identity.toml` の固定値と一致する。
+- 失敗したら、直すのは `identity.toml` の該当エントリだけ(upstream の行に合わせる)。
+
+#### publisher の見落とし検査(文面は衝突しないのに壊れる場合)
+
+`tip_input_mode_manager.cc` の `TipInputModeManager::On*` の定義を一覧し、`identity.toml` と同じ形式の `readable/hooks.toml` にある「書き出しを呼ぶ」「呼ばない(状態を変えない)」の 2 つの一覧と突き合わせる。upstream が `On*` を追加・改名したら、一覧に無いものが出るので失敗し、レビューを強制する。ビルドと `verify.ps1` は書き出しの正しさ(開閉・モードを別プロセスから読んで一致するか)の最終判定として残す。
+
+#### ブランチと載せ替え
+
+- `readable` は、upstream のタグ + identity コミット + publisher コミット + ci コミットの順に積む。各コミットにトレーラー `Readable-Layer: identity|publisher|ci` を付ける(15 コミットの履歴を 3〜4 コミットにまとめ直す。force-push が要るので、mozc-readable の別セッションの作業が終わってから行う)。
+- `sync/<タグ>`: タグを checkout → `identity.py apply` → コミット → `Readable-Layer: publisher` と `ci` を古い順に cherry-pick → `identity.py check` と hooks 検査 → ビルドと検証。
+
+#### 衝突の分類と対応
+
+| 分類 | 検知 | 対応 |
+| --- | --- | --- |
+| A. アンカー消失(identity) | `apply` が失敗 | `identity.toml` の該当エントリを直す小さな PR。判断は不要 |
+| B. publisher の cherry-pick 衝突 | cherry-pick が失敗 | 衝突マーカー付きの `sync/<タグ>` を push して Draft PR を作る。解消後は CI が判定する |
+| C. 一覧に無い `On*` | hooks 検査が失敗 | 呼ぶか呼ばないかを決めて `hooks.toml` を更新する Issue |
+| D. 文面は通ったのにビルド・検証が失敗 | `readable-build.yaml` の失敗 | 失敗ログ付きの Issue |
+
+- Issue は分類と上流の版(タグまたは master の SHA)をキーに 1 件だけ立て、再発したらコメントを足す(毎日の重複を防ぐ)。
+- **早期検知**: 毎日 upstream の master に対して、push せずに同じ載せ替え(`apply`・cherry-pick・`check`・hooks 検査)だけを試し、失敗したら上の分類で Issue を立てる。タグは master から切られるので、リリースの数日〜数週間前に直せる。
+- **解消の自動化の範囲**: A は人(または私)が直す。B は Draft PR まで。解消後の CI が緑でも、人が 1 回見てから公開する(`verify.ps1` が見るのは書き出しの正しさだけで、新プロセスの最初のキーが落ちる件のような症状は見えないため)。CI 上での AI による自動解消は、衝突の頻度を見てから決める。
+
 ## 未確認(段階 1 の前に実測する)
 
 - Chrome 等の TSF ネイティブ、UWP/AppContainer で、`Local\` 名前空間の共有メモリが読めるか(AppContainer は分離される恐れ)。読めない窓は従来経路へ戻る設計だが、割合を測る。
@@ -52,7 +93,7 @@ awase は、Win32 の IMM32 や TSF の compartment から IME の開閉・入�
 
 ## 段階
 
-0. 配布と追随の自動化、awase.cc の欄(mozc-readable PR #1、本 ADR と同じブランチの docs)。
+0. 配布と追随の自動化、awase.cc の欄(mozc-readable PR #1、本 ADR と同じブランチの docs)。PR #1 の sync は rebase 方式なので、D4 の層方式(identity スクリプト + cherry-pick + 早期検知)へ作り直す。
 1. awase に TIP 同定と共有メモリ読み取りの Observe を足す(読むだけ、belief へは入れず journal に出して実機で一致を測る)。
 2. 測定に基づき belief へ流す(信頼度を決める)。設定画面に状態表示。
 3. awase.cc の記述「自動で判定します」は段階 2 のマージまで公開しない。
