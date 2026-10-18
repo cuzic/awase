@@ -87,9 +87,11 @@ impl super::Runtime {
         // 時刻は awase.log の行頭の壁時計(UTC)。journal 本体は `elapsed_ms`(journal 作成からの経過)で、壁時計ではない。
         // 記録 1 件につき 1 行(フォーカス変更時と結論が変わったときだけ)で、打鍵の内容は含まない。
         match serde_json::to_string(&record) {
-            Ok(json) => tracing::info!(target: "awase::mozc_shm", "[mozc-shm] {json}"),
+            Ok(json) => {
+                tracing::info!(target: "awase::mozc_shm", "[mozc-shm] {json}");
+            }
             Err(e) => {
-                tracing::warn!(target: "awase::mozc_shm", "[mozc-shm] cannot serialize the record: {e}")
+                tracing::warn!(target: "awase::mozc_shm", "[mozc-shm] cannot serialize the record: {e}");
             }
         }
         self.platform_state
