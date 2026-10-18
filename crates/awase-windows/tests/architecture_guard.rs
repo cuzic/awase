@@ -8967,14 +8967,17 @@ fn adr260_eisu_toggle_guard_and_per_axis_follow_are_wired_as_decided() {
 /// - R1 は `FromResume` の復元でだけ ticket を採る(`resume_observation_ticket`)。
 #[test]
 fn resume_observation_r1_shares_recording_and_floor_adr245_add2() {
-    let kp = non_comment_lines(production_code_only(&read_crate_file(
+    // rustfmt が呼び出しを複数行に折る(`.resume_restore_floor\n.set(..)` 等)ので、空白を除いてから数える。
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
+    let kp = squash(&non_comment_lines(production_code_only(&read_crate_file(
         "src/runtime/key_pipeline.rs",
-    )));
-    let ft = non_comment_lines(production_code_only(&read_crate_file(
+    ))));
+    let ft = squash(&non_comment_lines(production_code_only(&read_crate_file(
         "src/runtime/focus_tracking.rs",
-    )));
+    ))));
     assert_eq!(
-        kp.matches("fn record_imm_cross_probe_observation(").count(),
+        kp.matches(&squash("fn record_imm_cross_probe_observation("))
+            .count(),
         1,
         "ImmCrossProbe の記録の共有メソッドは 1 つだけ"
     );
@@ -8993,16 +8996,16 @@ fn resume_observation_r1_shares_recording_and_floor_adr245_add2() {
         "floor の判定は FocusProbe 起点とフォーカス時の ImmCrossProbe の両方にある(M-1')"
     );
     assert_eq!(
-        kp.matches("resume_restore_floor.set(").count(),
+        kp.matches(".resume_restore_floor.set(").count(),
         1,
         "floor を書くのは復元タスクの最初の Written の直後 1 か所だけ"
     );
     assert!(
-        kp.contains("self.resume_observation_ticket(ownership)"),
+        kp.contains(&squash("self.resume_observation_ticket(ownership)")),
         "R1 は復元の起案の時点(同期)で ticket を採る"
     );
     assert!(
-        kp.contains("if ownership != ExitOwnership::FromResume"),
+        kp.contains(&squash("if ownership != ExitOwnership::FromResume")),
         "R1 は FromResume の復元でだけ予約する(通常のトグル OFF は変えない)"
     );
 }
