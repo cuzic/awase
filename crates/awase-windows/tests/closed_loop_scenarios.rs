@@ -792,7 +792,7 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
 /// 閉から始め、この歩みで IME が一度も開く前に最初に開くキーで、既定のかなの種が外れる件数(固定)。
 /// 種は belief のモードが `Unknown` の間の最初の打鍵で入る(閉でも、表に無いキーや閉→閉のキーで入る)ので、
 /// 開く打鍵の時点では `Unknown` ではない。欠陥の本体は、仮定の種を belief に書き、観測したモードと区別できなく
-/// なること(Opus レビュー round 2 r2-M1)。種の書き方を直したら 0 に下がるはずで、そのとき定数を 0 にする。
+/// なること(BUG-204、Opus レビュー round 2 r2-M1)。種の書き方を直したら 0 に下がるはずで、そのとき定数を 0 にする。
 /// 初出: Opus レビューの見積もり 32(ATOK・閉・半角英数で始まる 16 シード × 窓 2 通り)と CI の実測が一致。
 const EXPECTED_SEEDED_GAP: usize = 32;
 
@@ -803,7 +803,7 @@ const EXPECTED_SEEDED_GAP: usize = 32;
 /// 測って決め、擬似 IME か予測器のどちらか片方を直して `#[ignore]` を外す。
 /// (履歴は、PredictionRecord が積まれたキーだけを数える。`knows` で飛ばしたキーは含まない。)
 #[test]
-#[ignore = "未起票: 変換中の Esc 後の段階。予測器 Esc→None と擬似 IME Esc→Typing のどちらも実測の根拠なし。実機測定で決める"]
+#[ignore = "BUG-205: 未確定。予測器 Esc→None と擬似 IME Esc→Typing のどちらも実測の根拠なし。実機測定で決めて外す"]
 fn esc_in_conversion_next_key_stage() {
     let mut setup = Setup::imm_cross(state(false, CONV_HIRAGANA)).with_grid(Grid::Atok);
     setup.composing_visible = false;
