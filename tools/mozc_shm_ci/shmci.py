@@ -355,6 +355,7 @@ def win32():
     u32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
     u32.GetWindowThreadProcessId.restype = wt.DWORD
     u32.AttachThreadInput.argtypes = [wt.DWORD, wt.DWORD, wt.BOOL]
+    u32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
     u32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
     u32.IsWindowVisible.argtypes = [wt.HWND]
     u32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
@@ -483,6 +484,12 @@ class Window:
             # 有効化されたら EDIT へキーボードフォーカスを移す(別プロセスが前面にした窓でも、キーが EDIT に届くように)
             if m == 6 and (wp & 0xFFFF) != 0 and self.edit:
                 u32.SetFocus(self.edit)
+            if m == 0x8001:
+                # ドライバーからの依頼: この窓のスレッドの上で IME を切り替える(wp=1 ON / 0 OFF)。
+                # 別プロセスから SendInput しても効かなかった(run 39114480112)ので、ホスト自身のスレッドから送る。
+                self.focus()
+                self.w.send_vk(0xF2 if wp else 0x19)
+                return 0
             return u32.DefWindowProcW(h, m, wp, lp)
         self._wndproc = w.WNDPROC(proc)
         wc = w.WNDCLASSW()
@@ -674,41 +681,58 @@ FLIP_DELAYS = (0.0, 0.02, 0.05, 0.1, 0.2)
 
 
 def flip_loop(w, truths, rounds, rng, events):
-    """真値が動く場面: 前面の窓の IME 状態を切り替え(ON=ひらがなキー、OFF=半角/全角キー)、すぐあとに別の窓へフォーカスを移す。
+    """真値が動く場面: 前面の窓の IME 状態を切り替え、すぐあとに別の窓へフォーカスを移す。
 
-    切り替えてから移すまでの間隔は 0 / 20 / 50 / 100 / 200 ms を順に使う。真値は切り替えのキーを送る直前の時刻から新しい
-    状態(状態の許容は --state-grace で短くする)。キーが効かなかったときは、共有メモリの実際の値を真値に直す(数える)。
+    切り替えはその窓のスレッド自身が行う(WM_APP+1 を送る。別プロセスからの SendInput は効かなかった)。
+    依頼から移すまでの間隔は 0 / 20 / 50 / 100 / 200 ms を順に使う。窓の状態が変わった時刻は、移したあとに全窓の共有メモリを
+    5ms 間隔で読んで、変わったのを見つけた時刻にする(キーがどの窓に届いたかを仮定しない)。見つけた時刻は実際の変化より
+    最大で数 ms 遅れるので、突き合わせの状態の許容(--state-grace)はそれより十分長くする。
+    戻り値は (移せた回数, 移せなかった回数, 状態が変わらなかった回数)。
     """
-    cur = {t["tid"]: int(t["open"]) for t in truths}
     info = {t["tid"]: t for t in truths if t.get("hwnd")}
     tids = list(info)
-    last = None
-    ok_n = ng_n = lost = 0
-    # 準備: 切り替えのキーが窓に届いて状態が変わるか、変わるまでの時間はどれくらいか(診断。測定の前提)
+
+    def cur_state(tid):
+        a = w.read_block(tid)
+        return None if a is None or a[9] != 1 else int(a[5])
+
+    known = {tid: int(info[tid]["open"]) for tid in tids}
+
+    def observe(window_s):
+        """全窓の状態を window_s 秒の間 5ms ごとに読んで、変わったものを events に書く。変わった窓の数を返す。"""
+        changed = 0
+        end = time.time() + window_s
+        while time.time() < end:
+            for tid in tids:
+                st = cur_state(tid)
+                if st is not None and st != known[tid]:
+                    known[tid] = st
+                    changed += 1
+                    events.append({"ev": "truth", "t": time.time(), "tid": tid, "name": info[tid]["name"],
+                                   "pid": info[tid]["pid"], "hwnd": info[tid]["hwnd"], "open": st,
+                                   "confirmed": True, "flip": True})
+            time.sleep(0.005)
+        return changed
+
+    # 準備: 切り替えの依頼が効くか、状態が変わるまでの時間(診断。測定の前提)
     for k in range(8):
         x = tids[k % len(tids)]
-        fg = w.force_foreground(info[x]["hwnd"])
+        w.force_foreground(info[x]["hwnd"])
         time.sleep(0.5)
-        want = 1 - cur[x]
-        before = w.read_block(x)
+        want = 1 - known[x]
         t0 = time.time()
-        w.send_vk(0xF2 if want else 0x19)
+        w.u32.PostMessageW(info[x]["hwnd"], 0x8001, want, 0)
         lat = None
         while time.time() - t0 < 3.0:
-            a = w.read_block(x)
-            if a is not None and int(a[5]) == want:
+            st = cur_state(x)
+            if st == want:
                 lat = time.time() - t0
                 break
-            time.sleep(0.01)
-        a = w.read_block(x)
-        print(f"flip-probe {k}: tid={x} fg={fg} want={want} before={before and (before[5], before[9])} "
-              f"after={a and (a[5], a[9])} latency_s={lat}", flush=True)
-        if lat is not None:
-            cur[x] = want
-        elif a is not None:
-            cur[x] = int(a[5])
-        events.append({"ev": "truth", "t": t0, "tid": x, "name": info[x]["name"], "pid": info[x]["pid"],
-                       "hwnd": info[x]["hwnd"], "open": cur[x], "confirmed": True})
+            time.sleep(0.005)
+        print(f"flip-probe {k}: tid={x} want={want} latency_s={lat}", flush=True)
+        observe(0.05)
+    last = None
+    ok_n = ng_n = lost = 0
     for i in range(rounds):
         x = rng.choice([t for t in tids if t != last])
         if not w.force_foreground(info[x]["hwnd"]):
@@ -716,12 +740,9 @@ def flip_loop(w, truths, rounds, rng, events):
             continue
         events.append({"ev": "focus", "t": time.time(), "tid": x, "name": info[x]["name"]})
         time.sleep(0.6)                      # awase が x を読む時間
-        want = 1 - cur[x]
-        t_send = time.time()
-        w.send_vk(0xF2 if want else 0x19)
-        events.append({"ev": "truth", "t": t_send, "tid": x, "name": info[x]["name"], "pid": info[x]["pid"],
-                       "hwnd": info[x]["hwnd"], "open": want, "confirmed": True, "flip": True})
-        cur[x] = want
+        observe(0.05)
+        want = 1 - known[x]
+        w.u32.PostMessageW(info[x]["hwnd"], 0x8001, want, 0)
         time.sleep(FLIP_DELAYS[i % len(FLIP_DELAYS)])
         y = rng.choice([t for t in tids if t != x])
         if w.force_foreground(info[y]["hwnd"]):
@@ -731,13 +752,8 @@ def flip_loop(w, truths, rounds, rng, events):
         else:
             ng_n += 1
             last = x
-        time.sleep(0.5)
-        a = w.read_block(x)                  # キーが効いたか
-        if a is not None and a[9] == 1 and int(a[5]) != want:
+        if observe(0.8) == 0:
             lost += 1
-            cur[x] = int(a[5])
-            events.append({"ev": "truth", "t": time.time() - 0.5, "tid": x, "name": info[x]["name"],
-                           "pid": info[x]["pid"], "hwnd": info[x]["hwnd"], "open": int(a[5]), "confirmed": True})
     return ok_n, ng_n, lost
 
 

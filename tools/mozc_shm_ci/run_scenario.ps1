@@ -79,7 +79,7 @@ Write-Host '== analyze'
 $minAccepted = if ($Scenario -eq 'stale') { 1 } else { 20 }
 $extra = @()
 if ($Scenario -eq 'stale') { $extra += '--require-inactive' }
-if ($Scenario -eq 'flip') { $extra += @('--state-grace', '0.25') }
+if ($Scenario -eq 'flip') { $extra += @('--state-grace', '0.3') }
 python "$here\shmci.py" analyze --awase-log $log --events $events --min-accepted $minAccepted --focus-grace $FocusGrace --summary-json (Join-Path $OutDir 'summary.json') @extra
 $analyzeExit = $LASTEXITCODE
 
