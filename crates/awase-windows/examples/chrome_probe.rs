@@ -22,6 +22,10 @@
 //!
 //! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--f16-alnum] [--chrome=<chrome.exe>] [--log=<path>]`
 //!   `--no-awase`: awase を止めた対照実験（かなのとき `か` を期待）。既定は awase 起動中（NICOLA を期待）。
+//! `--new-window-after=<alnum|kana|off>`(`--key=<hex>` と併用。BUG-204 の関連): 今の Chrome をその状態にしてから **Chrome を起動し直し**(新しいプロセス・スレッド=
+//! 読めない窓の新スレッド。IME は新しいスレッドの初期状態〈閉×ひらがな〉)、新しい窓で `--key` のキーを押して `ka` を打ち、Engine が追随するかを見る。
+//! `alnum` は前の窓で awase の belief が半角英数(`ObservedEisu`)になった状態で新しい窓へ移る(窓の切り替えは入力モードを直さない見込み)。`kana`・`off` は対照。
+//! PASS=NICOLA 文字(IME が開き Engine が追随)、FAIL の `か(かな・Engine素通し)`=IME は開いたが Engine が止まった(前の窓の半角英数が残った疑い)、`ka(英数/直接)`=IME が開かなかった。
 //! `--tray-cmd=<ID>` は awase のトレイウィンドウへメニュー選択と同じ WM_COMMAND を送る(ID は tray.rs の IDM_*。例: 52=IMM キャッシュのクリア)。
 //! `--file-state=<path>[,<path>...]` を併せて指定すると、送る前後でそのファイルの状態を `FILE_STATE` 行に出す(存在・長さ・FNV-1a。
 //! `unchanged=true/false` で「空のまま/不変」を判定できる。BUG-112/071 用)。ページ準備後・シナリオ開始前に1回行う。
@@ -2169,6 +2173,11 @@ fn main() {
     let mut fail = 0usize;
     let mut invalid = 0usize;
     let mut recover = 0usize;
+    // `--new-window-after=<alnum|kana|off>`: `--key` のケースで、前提状態にしたあと Chrome を起動し直してからキーを押す(BUG-204 の関連)。
+    let new_window_after: Option<String> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--new-window-after="))
+        .map(str::to_string);
     // `--key=<hex>`(追随できる条件の調査): 閉状態(直接入力)からそのキーを1回押し、Engine が追随して NICOLA になるかを見る。
     // 追随=PASS、IME は開いたが Engine OFF(`か`)や開かない(`ka`)=FAIL。呼び出し側は expect=observe で結果だけ表に出す。
     let key_cases: Option<&'static [Case]> = args
@@ -2176,11 +2185,31 @@ fn main() {
         .find_map(|a| a.strip_prefix("--key="))
         .and_then(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).ok())
         .map(|vk| {
-            let name: &'static str =
-                Box::leak(format!("直接入力→0x{vk:02X}=かなON").into_boxed_str());
+            let (name, setup): (&'static str, Setup) = match new_window_after.as_deref() {
+                Some("alnum") => (
+                    Box::leak(
+                        format!("半角英数→Chrome 起動し直し→0x{vk:02X}=かなON").into_boxed_str(),
+                    ),
+                    Setup::Alnum,
+                ),
+                Some("kana") => (
+                    Box::leak(format!("かな→Chrome 起動し直し→0x{vk:02X}=かなON").into_boxed_str()),
+                    Setup::Kana,
+                ),
+                Some(_) => (
+                    Box::leak(
+                        format!("直接入力→Chrome 起動し直し→0x{vk:02X}=かなON").into_boxed_str(),
+                    ),
+                    Setup::Off,
+                ),
+                None => (
+                    Box::leak(format!("直接入力→0x{vk:02X}=かなON").into_boxed_str()),
+                    Setup::Off,
+                ),
+            };
             let cases: &'static [Case] = Box::leak(Box::new([Case {
                 name,
-                setup: Setup::Off,
+                setup,
                 vk,
                 shift: false,
                 expect_kana: true,
@@ -2215,6 +2244,21 @@ fn main() {
                 p.log.line("RESULT INVALID: 前提状態にできなかった");
                 invalid += 1;
                 continue;
+            }
+            if new_window_after.is_some() {
+                // 前の窓(いまの Chrome)をその状態にしたまま、Chrome を起動し直す。新しいプロセス・スレッドの読めない窓へ移る
+                // (awase の belief は窓の切り替えで入力モードを直さない見込み。IME は新しいスレッドの初期状態〈閉×ひらがな〉)。
+                p.log
+                    .line("NEW_WINDOW: Chrome を起動し直す(前の窓の状態は上の setup)");
+                if !relaunch_chrome(&mut p, &mut child, &chrome, &profile, port) {
+                    p.log.line("RESULT INVALID: Chrome を起動し直せなかった");
+                    invalid += 1;
+                    continue;
+                }
+                p.focus_lost = false;
+                if !bring_to_front() {
+                    p.log.line("前面化に失敗(起動し直し後)");
+                }
             }
             p.press(c.vk, c.shift, 120);
             sleep(settle_ms);
