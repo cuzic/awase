@@ -109,18 +109,20 @@ def allowed_focus(focus, t, grace=GRACE_S):
     切り替え 1 回分を超えるので、「直前のフォーカス先 1 つ」ではなく、窓 [t - grace, t] と重なる区間のフォーカス先を
     すべて許す。フォーカスがまだ決まっていなければ None。
     """
-    if not focus or focus[0][0] > t:
+    if not focus or focus[0][0] - FOCUS_LEAD_S > t:
         return None
     allowed = set()
     for k, (tf, tid) in enumerate(focus):
+        tf -= FOCUS_LEAD_S
         if tf > t:
             break
-        end = focus[k + 1][0] if k + 1 < len(focus) else float("inf")
+        end = focus[k + 1][0] - FOCUS_LEAD_S if k + 1 < len(focus) else float("inf")
         if end > t - grace:
             allowed.add(tid)
     return allowed
 
 
+FOCUS_LEAD_S = 0.2     # focus イベントは force_foreground が戻ったあと(約 30ms 以上後)に書くので、awase が先に新しい窓を読むことがある
 INTERVAL_LEAD_S = 1.0    # 最初のフォーカス移動の直前から
 INTERVAL_TAIL_S = 3.0    # 最後のイベント(フォーカス移動・inactive)の後、awase の最後の tick が記録を出す分まで
 
@@ -192,6 +194,10 @@ def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace
         stats["read_us"] = {"n": len(us), "p50": pct(0.5), "p95": pct(0.95), "p99": pct(0.99), "max": us[-1]}
     problems = (len(stats["mismatch_state"]) + len(stats["wrong_thread"]) + len(stats["stale_accepted"])
                 + len(stats["unknown_accepted_in_interval"]))
+    reqs = [e for e in events if e.get("ev") == "flipreq"]
+    if reqs:
+        stats["flip_requests"] = {"total": len(reqs), "handled": sum(1 for e in reqs if e.get("handled")),
+                                  "state_changes": sum(1 for e in events if e.get("ev") == "truth" and e.get("flip"))}
     stats["interval"] = interval
     ok = problems == 0 and stats["accepted_known"] >= min_accepted
     if require_inactive and stats["rejected_inactive"] == 0:
@@ -215,6 +221,8 @@ def print_summary(stats):
     print(f"  unknown accepted   : in the measurement interval: {len(stats['unknown_accepted_in_interval'])}"
           f" / outside it (window setup): {outside}")
     print(f"  stale accepted     : {len(stats['stale_accepted'])}")
+    if stats.get("flip_requests"):
+        print(f"  flip requests      : {stats['flip_requests']}")
     if stats.get("read_us"):
         print(f"  read_us            : {stats['read_us']}")
     for key in ("mismatch_state", "wrong_thread", "unknown_accepted_in_interval", "stale_accepted"):
@@ -550,11 +558,15 @@ def host_thread_main(w, name, want_open, ready_evt, results, idx, run_until, swi
     switched = False
     t0 = time.time()
     while time.time() < run_until:
-        w.pump(0.1)
+        w.pump(0.01)
         if win.pending is not None:
             want, win.pending = win.pending, None
-            w.u32.SetFocus(win.edit)          # 前面は奪わない(ドライバーが移した先にキーが届く場合も、状態の観測で拾う)
-            w.send_vk(0xF2 if want else 0x19)
+            # 窓がまだ前面のときだけ送る(前面を奪い返すと、記録に無いフォーカス移動になる)。set_open と同じ経路で送る。
+            handled = w.u32.GetForegroundWindow() == win.hwnd
+            if handled:
+                win.focus()
+                w.send_vk(0xF2 if want else 0x19)
+            emit({"ev": "flipreq", "t": time.time(), "tid": win.tid, "handled": handled})
         if switch_after and not switched and time.time() - t0 >= switch_after:
             switched = True
             # TIP の無いレイアウトへ切り替える(セッション全体に効く)。active が 0 になるのを待つ。
@@ -681,14 +693,14 @@ def focus_loop(w, targets, rounds, rng, events, dwell=(0.35, 1.6)):
     return ok_n, ng_n
 
 
-FLIP_DELAYS = (0.0, 0.02, 0.05, 0.1, 0.2)
+FLIP_DELAYS = (0.05, 0.1, 0.15, 0.2, 0.3)
 
 
 def flip_loop(w, truths, rounds, rng, events):
     """真値が動く場面: 前面の窓の IME 状態を切り替え、すぐあとに別の窓へフォーカスを移す。
 
     切り替えはその窓のスレッド自身が行う(WM_APP+1 を送る。別プロセスからの SendInput は効かなかった)。
-    依頼から移すまでの間隔は 0 / 20 / 50 / 100 / 200 ms を順に使う。窓の状態が変わった時刻は、移したあとに全窓の共有メモリを
+    依頼から移すまでの間隔は 50 / 100 / 150 / 200 / 300 ms を順に使う。窓の状態が変わった時刻は、移したあとに全窓の共有メモリを
     5ms 間隔で読んで、変わったのを見つけた時刻にする(キーがどの窓に届いたかを仮定しない)。見つけた時刻は実際の変化より
     最大で数 ms 遅れるので、突き合わせの状態の許容(--state-grace)はそれより十分長くする。
     戻り値は (移せた回数, 移せなかった回数, 状態が変わらなかった回数)。
