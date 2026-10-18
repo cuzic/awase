@@ -46,7 +46,7 @@
 mod support;
 
 use awase::engine::decision::InactiveReason;
-use awase::engine::{ActivationState, InputModeState};
+use awase::engine::{ActivationState, AssumedReason, InputModeState};
 use awase_windows::state::open_warrant::WarrantBasis;
 use support::harness::{Harness, Setup, Source, WriteOrigin};
 use support::invariants::{
@@ -667,12 +667,12 @@ const WALK_KEYS: [u16; 15] = [
 /// つかないこと。段階の追跡（`KeyTrack`）は観測では直らないので、複数打鍵にわたる追跡のずれは見える。
 ///
 /// **既知のずれ(件数を固定して数える。増えたら赤。BUG-204)**: 閉から始めて、IME が一度も開く前に最初に開くキー。
-/// belief の入力モードの初期値は `ImeModel::new()` の `ObservedRomaji`(観測していないのに「観測済み」と名乗る既定値)で、
-/// 閉の間は入力モードを観測しない(BUG-57/ADR-239。ハーネスも開いているときだけ観測する)ので、閉で始まると開くまで
-/// `ObservedRomaji` のまま残る。ATOK の閉のセルは全て `after_conv=None` で `mode: None`(変えない)なので、閉→開でも
-/// 残り、IME が半角英数(0x10)を覚えていると、開いた結果と食い違う。判定の根拠は、その時点の `input_mode` が
-/// `ObservedRomaji` のままであることの検査(下の `assert_eq!`)。
-/// (この段落は 2 回書き直した。最初は「`Unknown` のとき最初の打鍵で既定のかなの種が入る」と書いたが、`Unknown` は
+/// belief の入力モードの初期値は `ImeModel::new()` の `AssumedRomaji{Startup}`(まだ観測していない既定値。以前は `ObservedRomaji`
+/// で「観測済み」と名乗っていた。`is_romaji_capable` は同じ扱いなので挙動は同じ)で、閉の間は入力モードを観測しない
+/// (BUG-57/ADR-239。ハーネスも開いているときだけ観測する)ので、閉で始まると開くまで初期値のまま残る。ATOK の閉のセルは全て
+/// `after_conv=None` で `mode: None`(変えない)なので、閉→開でも残り、IME が半角英数(0x10)を覚えていると、開いた結果と食い違う。
+/// 判定の根拠は、その時点の `input_mode` が初期値のままであることの検査(下の `assert_eq!`)。
+/// (この段落は書き直している。最初は「`Unknown` のとき最初の打鍵で既定のかなの種が入る」と書いたが、`Unknown` は
 /// 本番でもハーネスでも流れず〈`seeded` の経路は到達しない〉、初期値が原因だった。Opus レビューで判明。)
 /// 一度でも開いた後の閉→開のずれは、観測したモードが残るはずなので、本物の食い違いとして失敗にする。
 #[test]
@@ -702,7 +702,7 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                 setup.composing_visible = composing_visible;
                 let mut h = Harness::start(setup);
                 // 起動直後に一度観測して belief を真値に合わせる(実機は起動時に読む)。ただし閉のときは入力モードを
-                // 観測しないので、閉で始まると belief の入力モードは初期値の `ObservedRomaji` のまま(BUG-204)。
+                // 観測しないので、閉で始まると belief の入力モードは初期値(`AssumedRomaji{Startup}`)のまま(BUG-204)。
                 h.advance_ms(100).observe(Source::ImmCross).advance_ms(200);
                 let mut keys: Vec<u16> = Vec::new();
                 for _ in 0..LEN {
@@ -736,11 +736,13 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                         .iter()
                         .all(|p| !p.truth_before.open && !p.truth_after.open);
                     if opened_from_closed && never_open_before {
-                        // 機序の確認: その時点の belief の入力モードは、初期値の `ObservedRomaji` のまま。
+                        // 機序の確認: その時点の belief の入力モードは、初期値(`AssumedRomaji{Startup}`)のまま。
                         // 違えば、BUG-204 の機序の理解が誤り(過去に 2 回、コードを読まずに推測して外した)。
                         assert_eq!(
                             r.input_mode,
-                            InputModeState::ObservedRomaji,
+                            InputModeState::AssumedRomaji {
+                                reason: AssumedReason::Startup
+                            },
                             "BUG-204 の機序の前提が崩れた: grid={grid:?} seed={seed} step={}",
                             r.step
                         );
@@ -795,7 +797,7 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
     );
 }
 
-/// 閉から始め、この歩みで IME が一度も開く前に最初に開くキーで、belief の入力モードの初期値(`ObservedRomaji`)が
+/// 閉から始め、この歩みで IME が一度も開く前に最初に開くキーで、belief の入力モードの初期値(`AssumedRomaji{Startup}`)が
 /// 残って食い違う件数(固定)。BUG-204。初期値を「観測済み」と名乗らない値にしても、閉のキーは `mode: None` なので理由は
 /// 開くまで残り、件数は変わらない見込み(Opus レビュー)。実際に減るのは、閉の間のモードの証拠源(ADR-261・264)が入ったとき。
 /// 初出: ATOK・閉・半角英数で始まる 16 シード × 窓 2 通り = 32(CI の実測で確定)。

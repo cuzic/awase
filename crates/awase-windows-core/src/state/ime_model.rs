@@ -322,7 +322,11 @@ impl ImeModel {
         Self {
             desired_open: true,
             desired_is_placeholder: true,
-            input_mode: InputModeState::ObservedRomaji, // ImeBelief 初期値に合わせる
+            // 起動直後の既定値。まだ観測していないので「観測済み」とは名乗らない（BUG-204 / ADR-266。以前は
+            // `ObservedRomaji`）。`is_romaji_capable` は同じ扱いなので Engine の有効化は変わらない。
+            input_mode: InputModeState::AssumedRomaji {
+                reason: awase::engine::AssumedReason::Startup,
+            },
             last_intent: None,
             observations: ObservationStore::default(),
             app_policy: AppImePolicy::standard(),
@@ -1176,6 +1180,11 @@ mod tests {
     use crate::state::force_guard::{ForceGuard, ForceOnReason};
     use std::time::Instant;
 
+    /// `ImeModel::new()` の入力モードの初期値（観測していないので「観測済み」とは名乗らない。BUG-204 / ADR-266）。
+    const STARTUP_MODE: InputModeState = InputModeState::AssumedRomaji {
+        reason: awase::engine::AssumedReason::Startup,
+    };
+
     fn envelope(seq: u64, event: ImeEvent) -> ImeEventEnvelope {
         ImeEventEnvelope {
             time: EventTime {
@@ -1222,7 +1231,7 @@ mod tests {
     fn fully_populated_model(now: Instant) -> ImeModel {
         let mut model = ImeModel::new();
         model.desired_open = false; // 既定 true
-        model.input_mode = InputModeState::ObservedEisu; // 既定 ObservedRomaji
+        model.input_mode = InputModeState::ObservedEisu; // 既定 STARTUP_MODE
         model.last_intent = Some(RecordedIntent {
             target: false,
             source: UserIntentSource::SyncKey,
@@ -2446,7 +2455,7 @@ mod tests {
 
     #[test]
     fn input_mode_observed_low_confidence_is_ignored() {
-        let mut model = ImeModel::new(); // input_mode = ObservedRomaji (初期値)
+        let mut model = ImeModel::new(); // input_mode = STARTUP_MODE (初期値)
         model.reduce(&envelope(
             1,
             ImeEvent::InputModeObserved {
@@ -2457,7 +2466,7 @@ mod tests {
         ));
         assert_eq!(
             model.input_mode(),
-            InputModeState::ObservedRomaji,
+            STARTUP_MODE,
             "Low confidence の観測は input_mode を上書きしない"
         );
     }
@@ -3584,8 +3593,8 @@ mod tests {
     #[test]
     fn input_mode_applied_updates_input_mode() {
         let mut model = ImeModel::new();
-        // 初期状態は ObservedRomaji
-        assert_eq!(model.input_mode(), InputModeState::ObservedRomaji);
+        // 初期状態は STARTUP_MODE
+        assert_eq!(model.input_mode(), STARTUP_MODE);
 
         model.reduce(&envelope(
             1,
@@ -3605,8 +3614,8 @@ mod tests {
     #[test]
     fn input_mode_applied_skipped_does_not_update_input_mode() {
         let mut model = ImeModel::new();
-        // 初期状態は ObservedRomaji
-        assert_eq!(model.input_mode(), InputModeState::ObservedRomaji);
+        // 初期状態は STARTUP_MODE
+        assert_eq!(model.input_mode(), STARTUP_MODE);
 
         model.reduce(&envelope(
             1,
@@ -3618,7 +3627,7 @@ mod tests {
         ));
         assert_eq!(
             model.input_mode(),
-            InputModeState::ObservedRomaji,
+            STARTUP_MODE,
             "InputModeApplied(Skipped) は input_mode を変更しない"
         );
     }
