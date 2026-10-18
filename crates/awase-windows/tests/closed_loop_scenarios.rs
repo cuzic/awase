@@ -578,3 +578,99 @@ fn q4_external_close_is_followed_with_adr205_and_never_reopened() {
         h.trace()
     );
 }
+
+// ---------------------------------------------------------------------------
+// ランダムなキー列（手書きの数本では当たらない列の探索）
+// ---------------------------------------------------------------------------
+
+/// 決定的な擬似乱数（依存を増やさない。シード固定で CI 上でも再現できる）。
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0 >> 33
+    }
+
+    fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+        items[usize::try_from(self.next()).unwrap_or(0) % items.len()]
+    }
+}
+
+/// 表にある13種のキーと、文字キー（入力中を作る）。`pseudo_ime::grid_key_name` と同じ範囲。
+const WALK_KEYS: [u16; 15] = [
+    0x08, 0xF0, 0x0D, 0x1B, 0xF3, 0x1C, 0xF2, 0x1A, 0x16, 0x19, 0xF1, 0x1D, 0x20, VK_K, 0x41,
+];
+
+/// 擬似 IME の真値（生データ）が実測を持つ範囲だけを通るランダムなキー列で、予測器の予測が
+/// 真の結果と食い違わないこと（`predictions_agree_with_truth`・P2）。
+///
+/// 手書きシナリオ（BUG-162 など）は、既に見つかった列しか守れない。ここでは3つの格子（ATOK・GJI の MS-IME・
+/// MS-IME 本体）× 窓の種類2通りで、シード固定のキー列を流して未発見の食い違いを探す。
+/// 窓の種類は、入力中を観測できる窓（`composing_visible`）と、できない窓（予測器が段階の追跡だけに頼る。
+/// 一番厳しい条件）。途中の観測は挟まない（belief が予測だけで進む）。
+///
+/// 食い違いは1回の実行でまとめて報告する（CI を回し直さずに全体像を得るため）。
+#[test]
+fn random_key_walks_keep_predictions_consistent_with_truth() {
+    const SEEDS: u64 = 60;
+    const LEN: usize = 12;
+    let starts = [
+        (false, CONV_ALNUM),
+        (false, CONV_HIRAGANA),
+        (true, CONV_ALNUM),
+        (true, CONV_HIRAGANA),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    let mut walks = 0usize;
+    let mut steps = 0usize;
+    for grid in [Grid::Atok, Grid::GjiMsime, Grid::MsimeNative] {
+        for composing_visible in [true, false] {
+            for seed in 0..SEEDS {
+                let mut rng = Lcg(seed + 1);
+                let (open, conv) = rng.pick(&starts);
+                let mut setup = Setup::imm_cross(state(open, conv)).with_grid(grid);
+                setup.composing_visible = composing_visible;
+                let mut h = Harness::start(setup);
+                let mut keys: Vec<u16> = Vec::new();
+                for _ in 0..LEN {
+                    let vk = rng.pick(&WALK_KEYS);
+                    if !h.ime.knows(vk) {
+                        continue;
+                    }
+                    h.advance_ms(50).key(vk);
+                    keys.push(vk);
+                }
+                walks += 1;
+                steps += keys.len();
+                let result = predictions_agree_with_truth(&h)
+                    .and_then(|()| p2_no_stale_stage_after_unpredicted_key(&h));
+                if let Err(e) = result {
+                    let seq: Vec<String> = keys.iter().map(|k| format!("{k:02X}")).collect();
+                    failures.push(format!(
+                        "grid={grid:?} composing_visible={composing_visible} seed={seed} 開始=({open},0x{conv:02X}) キー列=[{}]\n{e}",
+                        seq.join(" ")
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        steps > walks,
+        "ほとんどのキーが実測の範囲外で飛ばされた（walks={walks} steps={steps}）。開始状態かキー集合を見直すこと"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} / {walks} 本のキー列で予測が真値と食い違った（steps={steps}）。先頭5本:\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n---\n")
+    );
+}
