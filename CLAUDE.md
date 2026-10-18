@@ -96,6 +96,7 @@ crates/awase-macos/           macOS platform stub
 crates/win32-async/           Async executor + blocking-API timeout isolation (run_with_timeout)
 crates/win32-worker/          Worker-thread primitives used by win32-async
 crates/awase-settings/        Settings GUI (eframe/egui) — separate binary, awase-settings.exe
+crates/awase-settings-wgpu/   wgpu/egui-wgpu/eframe "wgpu" feature の置き場（awase-settings の optional 依存 `wgpu-fallback`、既定 ON。PR の CI だけ外す）
 crates/awase-gji-config/      GJI (Google 日本語入力) config file handling
 crates/awase-vkmap/           VK code / scan code mapping tables
 crates/awase-keymap-learn/     IME key-effect learning (not the ADR-176 calibration UI), pure logic, OS-independent (ADR-191/195/196):

@@ -537,9 +537,9 @@ dependencies = [
  "awase-build-support",
  "awase-keymap-learn",
  "awase-keymap-learn-win",
+ "awase-settings-wgpu",
  "awase-windows",
  "eframe",
- "egui-wgpu",
  "glutin",
  "pollster",
  "rfd",
@@ -547,8 +547,16 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "wgpu",
  "windows 0.58.0",
+]
+
+[[package]]
+name = "awase-settings-wgpu"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui-wgpu",
+ "wgpu",
 ]
 
 [[package]]

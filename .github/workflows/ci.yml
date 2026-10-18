@@ -461,15 +461,20 @@ jobs:
       # CI が確かめたいのは「ビルドが通る」ことで、LTO を掛けるかは結果に影響しない。
       # 配布物は release.yml が settings-release で自前に作る(ここの成果物は
       # windows-package のパッケージング検査専用で、出荷されない)。
+      #
+      # --no-default-features: wgpu フォールバック（feature wgpu-fallback、既定で有効）を
+      # 外す。wgpu-core/hal・naga・gpu-allocator 等でビルド対象が 288→239 クレートに減る
+      # （cargo tree --target x86_64-pc-windows-msvc で確認）。wgpu 有りのビルドとテストは
+      # push to develop/main の windows-settings-full ジョブと release.yml が行う。
       - name: Build awase-settings.exe
-        run: cargo build --release --locked -p awase-settings
+        run: cargo build --release --locked -p awase-settings --no-default-features
 
       # awase-settings は今まで実 Windows でテストが一度も走っていなかった
       # （build のみで test 未実行）。egui::Grid が行内 add_space() で panic する
       # 不具合（プレビュータブを開くと無言のまま強制終了）が Linux 上の headless
       # 再現テストでは検出できても実 Windows で再現するかは未検証だったため追加。
       - name: Run awase-settings tests (Windows)
-        run: cargo nextest run -p awase-settings
+        run: cargo nextest run -p awase-settings --no-default-features
 
       # windows-package ジョブがパッケージング用にダウンロードする。
       - name: Upload awase-settings.exe (for packaging)
@@ -478,6 +483,27 @@ jobs:
           name: awase-settings-exe
           path: target/release/awase-settings.exe
           retention-days: 7
+
+  # windows-settings は PR を速くするため wgpu フォールバックを外してビルドする。
+  # 出荷物と同じ feature（既定）でのビルドと startup_failure 等のテストは、マージ後の
+  # push でここが確かめる（PR のクリティカルパスには載らない）。タグ push 時は
+  # release.yml が同じ構成で再びビルドする。キャッシュは windows-settings と別キー。
+  windows-settings-full:
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-nolto-wgpu
+      - uses: taiki-e/install-action@nextest
+
+      - name: Build awase-settings.exe (wgpu-fallback)
+        run: cargo build --release --locked -p awase-settings
+
+      - name: Run awase-settings tests (Windows, wgpu-fallback)
+        run: cargo nextest run -p awase-settings
 
   # 2026-09-23: dist/zip/MSI 配布物は release.yml がタグ push 時に自前で
   # 別途ビルドしており(ci.yml のこのジョブの成果物を消費する自動化は

@@ -1,0 +1,20 @@
+[package]
+name = "awase-settings-wgpu"
+version = "0.1.0"
+edition = "2024"
+description = "awase-settings の wgpu フォールバック用依存の置き場（optional 依存にするための薄い crate）"
+publish = false
+
+[dependencies]
+# eframe の "wgpu" feature は target 別・feature 別に条件付けできないため、
+# 「Windows かつ wgpu-fallback 有効のときだけ eframe/wgpu を有効にする」を
+# この crate への optional な target 依存で表す（awase-settings/Cargo.toml 参照）。
+eframe = { version = "0.31", features = ["wgpu"] }
+# "dx12" は eframe の "wgpu" feature が転送しない（metal/webgpu しか要求しない）ため
+# ここで明示する。WARP（d3d10warp.dll）は DX12 バックエンドにのみある。
+wgpu = { version = "24", default-features = false, features = ["dx12"] }
+egui-wgpu = "0.31"
+
+[package.metadata.cargo-machete]
+# コードからは使わないが、"wgpu" feature を有効にするための宣言（上記コメント参照）。
+ignored = ["eframe"]
