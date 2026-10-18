@@ -8776,18 +8776,21 @@ fn indicator_menu_shadow_is_observe_only_and_opt_in() {
     assert_eq!(boot.matches("install_menu_hook(").count(), 1);
 }
 
-/// ADR-265 段階 1: mozc-readable の共有メモリの影の読みは**観測だけ**で、belief・IME・打鍵に書かない。
+/// ADR-265 段階 1・ADR-268: mozc-readable の共有メモリの読みは、**belief への入口を 1 つだけ**持ち、IME・打鍵には書かない。
 ///
-/// - 読み取り（`observer/mozc_shm.rs`）と記録（`runtime/mozc_shm_shadow.rs`）は、belief・IME 制御・観測ストアに入れる型/関数を
-///   一切使わない（belief への配線は段階 2 で別レビュー、信頼度は Low から。ADR-265 D3）。
-/// - ランタイム側が `platform_state` に触れるのは、belief の読み取り 2 つ（`effective_open()`・`input_mode()`、照合の材料として
-///   記録に添えるだけ）と記録（`journal.record(`）の 3 箇所だけ。
-/// - 有効化は `[diagnostics] mozc_shm_shadow` を起動時に 1 度だけ渡す（既定は無効のオプトイン）。
+/// - 読み取り（`observer/mozc_shm.rs`）は観測だけ。belief・IME 制御・観測ストアに入れる型/関数を一切使わない。
+/// - 記録・接続（`runtime/mozc_shm_shadow.rs`）も、belief・IME 制御・観測ストアに入れる型/関数（`ImeEvent`・
+///   `ObserverReported`・`ObservationSource` など）を直接は使わない。belief への入口は
+///   `platform_state.ime.report_mozc_shm(` の 1 つだけ（判断・記録・追随は `ImeStateHub` 側。ADR-268 D1・D3）。
+/// - ランタイム側が `platform_state` に触れるのは、belief の読み取り 2 つ（`effective_open()`・`input_mode()`、診断の記録に
+///   添えるだけ）、記録（`journal.record(`）、belief への入口（`report_mozc_shm(`）の 4 箇所だけ。
+/// - 診断の記録の有効化は `[diagnostics] mozc_shm_shadow` を起動時に 1 度だけ渡す（既定は無効のオプトイン）。
+///   belief への接続はこのフラグと無関係に常に動く（ADR-268 D1、自動判定）。
 /// - `ir_execute` の呼び出しは `app_disabled` の打ち切りの後（無効アプリにフォーカス中は読まない）。
 ///
 /// 複数行のメソッドチェーン（`rustfmt` が改行する）を見逃さないよう、コメント行を除いて空白を詰めてから照合する。
 #[test]
-fn mozc_shm_shadow_is_observe_only_and_opt_in() {
+fn mozc_shm_reader_touches_belief_only_through_report_mozc_shm() {
     fn compact(rel: &str) -> String {
         read_crate_file(rel)
             .lines()
@@ -8818,24 +8821,29 @@ fn mozc_shm_shadow_is_observe_only_and_opt_in() {
         ] {
             assert!(
                 !code.contains(forbidden),
-                "{name} は観測だけ（ADR-265 段階 1）。belief・IME・打鍵に書く `{forbidden}` を使わないこと"
+                "{name} は belief・IME・打鍵に直接書かない（ADR-265・ADR-268）。`{forbidden}` を使わないこと（belief への入口は report_mozc_shm だけ）"
             );
         }
     }
 
-    // ランタイム側の platform_state への接触は、belief の読み取り 2 つと記録の 3 つだけ。
+    // ランタイム側の platform_state への接触は、belief の読み取り 2 つ・記録・belief への入口の 4 つだけ。
     assert_eq!(
         runtime.matches("platform_state").count(),
-        3,
-        "mozc_shm_shadow.rs が platform_state に触れるのは effective_open()・input_mode()（読み取り）と journal.record(（記録）の 3 箇所だけ"
+        4,
+        "mozc_shm_shadow.rs が platform_state に触れるのは effective_open()・input_mode()（読み取り）、journal.record(（記録）、report_mozc_shm(（belief への入口）の 4 箇所だけ"
     );
     assert!(runtime.contains("platform_state.ime.effective_open()"));
     assert!(runtime.contains("platform_state.ime.input_mode()"));
     assert!(runtime.contains(
         "platform_state.ime.journal.record(crate::journal::JournalEntry::MozcShm{record})"
     ));
+    assert_eq!(
+        runtime.matches("platform_state.ime.report_mozc_shm(").count(),
+        1,
+        "共有メモリの読みを belief に使う入口は ImeStateHub::report_mozc_shm の 1 つだけ（ADR-268）"
+    );
 
-    // 有効化は設定の値を起動時に 1 度だけ渡す。
+    // 診断の記録の有効化は設定の値を起動時に 1 度だけ渡す（belief への接続はこのフラグと無関係）。
     let boot = compact("src/app/bootstrap.rs");
     assert_eq!(
         boot.matches("app.init_mozc_shm(config.diagnostics.mozc_shm_shadow)")
