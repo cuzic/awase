@@ -128,13 +128,14 @@ fn bug162_stage2_activation_set_open_does_not_open_ime_closed_outside_awase() {
     assert_ok(&h, p1_no_warranted_write_without_intent(&h));
 }
 
-/// 未起票（BUG-162 A の1段目の範囲外）: 変換中（Space）の Esc は ATOK 表にセルが無く（保持/破棄が割れる）、
+/// BUG-205 追記（BUG-162 A の1段目の範囲外）: 変換中（Space）の Esc は ATOK 表にセルが無く（保持/破棄が割れる）、
 /// 1段目の修正は「従来どおり予測なし」で追跡した段階 `ConvSpace` を残す。実 IME（格子第3版）は
 /// `on-c19-conv-space|esc` → `ON/0x19/保持`。**擬似 IME の仮定**（変換中の Esc で「保持」なら入力中＝読みへ戻る、
 /// `support/pseudo_ime.rs`）の下では、続く無変換は入力中の無変換（`on-c19-typing|muhenkan` → 半角英数 `0x10`）
-/// だが、予測器は古い `ConvSpace` の行（ひらがなのまま）を引く。仮定を実機で確かめるまで未起票のまま残す。
+/// だが、予測器は古い `ConvSpace` の行（ひらがなのまま）を引く。変換キー（henkan）で入った変換中の Esc は実機で測定して
+/// 修正した（`esc_in_conversion_next_key_stage`）が、Space で入った場合は未測定なので、実機で確かめるまでこのテストは無効のまま残す。
 #[test]
-#[ignore = "未起票: 変換中の Esc の後の古い段階（擬似 IME の仮定に依存）。起票・修正後に外す"]
+#[ignore = "BUG-205 追記: Space で入った変換中の Esc は未測定(表にセルが無く段階が古いまま残る)。変換キーで入った場合は実測して修正済み。Space の実測後に外す"]
 fn conversion_esc_does_not_leave_stale_conv_stage() {
     let mut h = Harness::start(Setup::imm_cross(state(true, CONV_HIRAGANA)));
     h.advance_ms(100)
@@ -606,33 +607,6 @@ const WALK_KEYS: [u16; 15] = [
     0x08, 0xF0, 0x0D, 0x1B, 0xF3, 0x1C, 0xF2, 0x1A, 0x16, 0x19, 0xF1, 0x1D, 0x20, VK_K, 0x41,
 ];
 
-/// 既知の食い違い(ランダム探索で1本): 入力中を観測できない窓の ATOK で、`変換 → Esc → カタカナ → 無変換` の後、
-/// 擬似 IME は Esc で入力中(Typing)へ戻ると仮定し、無変換は変換中(無変換)になって IME は開いたままだが、
-/// 予測器は入力中の段階が None に落ちて「入力中でない」と見なし、無変換で IME が閉じると予測する。
-///
-/// 機序(Opus レビュー B1): 表には ATOK の `(C19, 変換中, Esc) → 保持` のセルがある(`key_effect_table.rs`)ので、
-/// 表に無い場合の BUG-162 の分岐は通らない。食い違いは、段階を進める2つの手書き規則 `next_stage` の Esc の行
-/// (予測器 `key_effect_predictor.rs` は `Esc => None`、擬似 IME `pseudo_ime.rs` は `0x1B => Typing`)が違うこと。
-/// どちらも実測の根拠が無い(実機の測定は ATOK で判別できる事例が 0 件)。どちらが実 IME に近いかは未決。
-/// 履歴(直前3打鍵)まで見て一致したときだけ数える。固定の列は `esc_in_conversion_next_key_stage`。
-fn is_known_open_gap(
-    grid: Grid,
-    composing_visible: bool,
-    preds: &[support::harness::PredictionRecord],
-    i: usize,
-) -> bool {
-    let r = &preds[i];
-    let b = r.truth_before;
-    let history: Vec<u16> = preds[i.saturating_sub(3)..i].iter().map(|p| p.vk).collect();
-    grid == Grid::Atok
-        && !composing_visible
-        && b.open
-        && b.conv == CONV_HIRAGANA
-        && b.stage == TrueStage::Typing
-        && r.vk == VK_MUHENKAN
-        && history == [0x1C, VK_ESC, 0xF1]
-}
-
 /// 擬似 IME の真値（生データ）が実測を持つ範囲だけを通るランダムなキー列で、予測器の予測が
 /// 真の結果と食い違わないこと（1打鍵ごとの正しさ）。
 ///
@@ -668,8 +642,6 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
         std::collections::BTreeMap::new();
     let mut failing_walks = 0usize;
     let mut seeded_gap = 0usize;
-    let mut known_open_gap = 0usize;
-    let mut after_known_open_gap = 0usize;
     let mut walks = 0usize;
     let mut steps = 0usize;
     for grid in [Grid::Atok, Grid::GjiMsime, Grid::MsimeNative] {
@@ -698,7 +670,6 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                 walks += 1;
                 steps += keys.len();
                 let mut real = None;
-                let mut known_open_gap_seen = false;
                 for (i, r) in h.predictions.iter().enumerate() {
                     let Some(m) = prediction_mismatch(r) else {
                         continue;
@@ -718,17 +689,6 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                         .all(|p| !p.truth_before.open && !p.truth_after.open);
                     if opened_from_closed && never_open_before {
                         seeded_gap += 1;
-                        continue;
-                    }
-                    if is_known_open_gap(grid, composing_visible, &h.predictions, i) {
-                        known_open_gap += 1;
-                        known_open_gap_seen = true;
-                        continue;
-                    }
-                    // 既知の食い違いの後は、失った段階が残って後続の打鍵も食い違う(同じ原因の連鎖)。黙って捨てず、
-                    // 件数を固定して数える。
-                    if known_open_gap_seen {
-                        after_known_open_gap += 1;
                         continue;
                     }
                     real = real.or(Some((i, r, m)));
@@ -761,9 +721,7 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
         steps > walks,
         "ほとんどのキーが実測の範囲外で飛ばされた（walks={walks} steps={steps}）。開始状態かキー集合を見直すこと"
     );
-    eprintln!(
-        "既知のずれ: Unknown の種 {seeded_gap} 件、変換中の Esc 後の段階 {known_open_gap} 件(その連鎖 {after_known_open_gap} 件) / {steps} 打鍵"
-    );
+    eprintln!("既知のずれ: Unknown の種 {seeded_gap} 件 / {steps} 打鍵");
     let report: Vec<String> = cells
         .iter()
         .map(|(sig, (n, ex))| format!("{n:3} 本  {sig}\n    {ex}"))
@@ -779,14 +737,6 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
         seeded_gap, EXPECTED_SEEDED_GAP,
         "belief のモードが Unknown の種で閉→開がずれた件数が変わった"
     );
-    assert_eq!(
-        known_open_gap, 1,
-        "変換中の Esc 後の段階の食い違い(既知1件)の件数が変わった"
-    );
-    assert_eq!(
-        after_known_open_gap, 1,
-        "変換中の Esc 後の段階の食い違いの連鎖(同じ歩みの後続の打鍵、既知1件)の件数が変わった"
-    );
 }
 
 /// 閉から始め、この歩みで IME が一度も開く前に最初に開くキーで、既定のかなの種が外れる件数(固定)。
@@ -796,14 +746,13 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
 /// 初出: Opus レビューの見積もり 32(ATOK・閉・半角英数で始まる 16 シード × 窓 2 通り)と CI の実測が一致。
 const EXPECTED_SEEDED_GAP: usize = 32;
 
-/// 固定の列で確かめる、変換中の Esc の後の段階(ランダム探索の唯一の実質的な食い違いの再現)。
+/// 固定の列で確かめる、変換中の Esc の後の段階(BUG-205 の回帰テスト)。
 /// ATOK・入力中を観測できない窓で、`ime-on → a → 変換 → Esc → カタカナ → 無変換` の無変換の予測が真の結果と合うか。
-/// **真値は擬似 IME の仮定**(Esc 後は Typing=読みへ戻る)で、予測器の `next_stage` は Esc 後を None にする。
-/// どちらにも実測の根拠が無い。実機で `変換 → Esc` の直後の挙動(Typing・変換中・なし のどれの行と一致するか)を
-/// 測って決め、擬似 IME か予測器のどちらか片方を直して `#[ignore]` を外す。
+/// 実機の測定(run 39092296146、`--grid=s5`、3 IME × 各 10 回・全て同じ結果)で、変換→Esc の直後は入力中(Typing)に
+/// 戻る(次に押したキーの結果が入力中の行と一致する)と確定した。予測器の `next_stage` が Esc の保持を `None` にしていたため、
+/// 入力中を観測できない窓で「入力中でない」と読まれ、無変換が IME を閉じると誤予測していた(修正済み)。
 /// (履歴は、PredictionRecord が積まれたキーだけを数える。`knows` で飛ばしたキーは含まない。)
 #[test]
-#[ignore = "BUG-205: 未確定。予測器 Esc→None と擬似 IME Esc→Typing のどちらも実測の根拠なし。実機測定で決めて外す"]
 fn esc_in_conversion_next_key_stage() {
     let mut setup = Setup::imm_cross(state(false, CONV_HIRAGANA)).with_grid(Grid::Atok);
     setup.composing_visible = false;
