@@ -38,7 +38,7 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 | 60 | u32 | `preedit_cursor` | 未確定文字列内のカーソル位置。**UTF-32 のコードポイント単位**(Mozc の `output.preedit().cursor()` の単位) |
 | 64 | u32 | `key_seq` | TIP が見たキーダウンの通番。`TipKeyeventHandler::OnTestKeyDown` と `OnPreservedKey` の 2 か所で、**関数の入口(中の `OnTest` の早期 return より前)**で +1(`OnKeyDown` では数えない。TSF は `OnTestKeyDown` が eaten=FALSE のキーに `OnKeyDown` を呼ばないため。数えると食べたキーが 2 回になる)。ラップあり。**打鍵ごとに毎回書く**(pulse はしない) |
 | 68 | u32 | `scope_forced_mode` | 入力スコープが 1 つのモードに決まるときの「`commands::CompositionMode` の値+1」(0=スコープによる指定なし。値は 0〜5 に `static_assert` で固定)。**1(DIRECT)は「IME を閉じる」指定で、`effective_mode` は変わらない**(`StatePair(false, base_state.conversion_mode)`)。`GetOverriddenState` の `states.size() == 1` の分岐で決まる。入力欄がそう指定している、という事実で、打鍵では消えない(R2-I3) |
-| 72 | u32 | `reserved` | 0。将来この位置に意味を持たせるときは「0=不明/なし」と決めれば、version を上げずに追記できる(version 3 の読み手は無視する) |
+| 72 | u32 | `server_ready` | 1 のとき、この TIP が Mozc サーバーから応答を受け取れている(warm)。0=まだ応答を受けていない、または直近の呼び出しが失敗した(cold の疑い)。D10。**仮説の段階で、実測で採否を決める** |
 | 76 | u32 | `composition_key_seq` | `phase`・`candidate_category`・`preedit_*` の元になった `Output` を**生んだ打鍵**の番号(公開した時点の `key_seq` ではない。R3-I1)。読み手は `(int32_t)(composition_key_seq - 自分が送った打鍵の番号) >= 0` のときだけ組成の項目を採る(ラップを考慮した比較。R3-M3。Python の例も同じ書き方にする) |
 
 - `version` は `3`、サイズは 80 バイト。
@@ -99,6 +99,17 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 - **`active == 0` のときは他の項目を無視する**ことを必須として仕様書に書く。`Deactivate` は組成の項目を触らないので、IME を切り替えた後も `phase` が残りうる。あわせて `Deactivate` で `phase`・`candidate_category`・`preedit_utf16_len`・`preedit_cursor`・`scope_forced_mode`・`composition_key_seq` を 0 に落とす。`key_seq`(通番)は残す(R2-M4)。
 - **context とスレッドのずれ**: 組成の状態は `ITfContext` ごと(`TipPrivateContext::last_output`)だが、共有メモリはスレッドごとに 1 スロット(`thread_local ThreadSlot`)。同じスレッドの別 context へフォーカスが移っても、キーを押すまで更新されないことがある。段階 1 の CI で何が出るかを確かめ、仕様書に書く。
 
+### D10. cold/warm の状態を `server_ready` で出す(ユーザー指摘 2026-10-18)
+
+- 背景: mozc-readable の CI で、新しい runner の最初のキーが落ちることがあった。ウォームアップ(`F2=1:1,19=0:*` のシナリオ)を前置すると解消した(`readable/ci/verify.ps1`、コミット `e3dd2179f`: 「mozc_server was warm」の前後で結果が分かれた)。公式 Mozc でも再現しており、原因は未特定。**cold の正体が mozc_server の起動・接続待ちであるかは、まだ仮説**。
+- 出すもの: TIP がサーバーから応答を受け取れているか(`server_ready`)。安く足せる理由: (1) 追記の位置は `reserved`(72)で、ADR が決めた「0=不明/なし」に従えば version を上げずに済む。(2) 値は `Output` を受け取った地点(`UpdatePrivateContext` 周辺)と、サーバー呼び出しの失敗の地点で更新するだけで、新しい経路は要らない。
+- 採否は実測で決める(段階 1 の CI):
+  1. 新しい runner で、最初のキーの前に `server_ready` を読む(0 のはず)。
+  2. 0 の間に送ったキーが落ちる率と、1 になってから送ったキーが落ちる率を比べる。
+  3. 1 の間は落ちない、0 の間は落ちる、という差が出なければ、`server_ready` は cold の指標ではない。項目を外す(`reserved` に戻す)。
+- 読み手の使い方: awase は「1 になるまで打鍵を待つ/待たない」の判断材料に使える。QMK は表示のみ。**最初は観測のみ**(journal に記録)。
+- warm up を指示する経路(awase → TIP)は本 ADR の範囲外。`server_ready` の実測で準備不足が原因と分かってから、別の ADR(ADR-268)にする。
+
 ## 却下した代案
 
 - **別のマッピング名**(例 `Local\mozc-readable-comp-<tid>`)に分ける案: D9 の互換問題は消え、更新頻度の違う値を分けられるが、AppContainer 経由の読み取り(`NtOpenSection`)と identity の置換表が 2 倍になる。同じマッピング + D9 の読み手規約の方が安い。
@@ -114,7 +125,8 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
    - 組成中に同じ窓の別 context へ移る/Win+Space で別 IME に切り替える、のときに何が出るか。
    - パスワード欄(入力スコープ)に入ったとき `scope_forced_mode` が立つか。その状態で IME を開いても立ったままか。ひらがな指定のスコープに入ったときはどうか。
    - 連続打鍵で pulse の回数が状態の変化回数と一致する。
-2. **awase**: ADR-265 段階 1 の Observe が入った後で、journal に `phase`・`candidate_category`・`key_seq`・`composition_key_seq`・`scope_forced_mode` を記録する(観測のみ)。
+   - `server_ready`(D10): 新しい runner の最初のキーの前は 0 か。0 の間と 1 になってからで、キーが落ちる率に差があるか。
+2. **awase**: ADR-265 段階 1 の Observe が入った後で、journal に `phase`・`candidate_category`・`key_seq`・`composition_key_seq`・`scope_forced_mode`・`server_ready` を記録する(観測のみ)。
 3. 記録の結果を見て、belief への反映(D8)や `key_seq`/`composition_key_seq` を使った「TIP が追いついたか」の判定を、別の ADR にする。
 4. **QMK 向け**: `readable/docs/examples/read_ime_state.py` を version 3 対応にする(D9 の map 規約に注意。現状の `assert STRUCT.size == 48` と `MapViewOfFile(..., STRUCT.size)` は書き換えが要る)。`phase`・`candidate_category`・`scope_forced_mode` を Raw HID で送る例を足す(スケッチのまま。実機未検証と明記)。
 
@@ -124,6 +136,8 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 - **Q2**: Mozc の `Category` の値(`commands::Category`)と `static_assert` で固定できる範囲の確認。
 
 ## 確認していないこと
+
+- 最初のキーが落ちる原因が mozc_server の起動・接続待ちであること(D10 は仮説)。サーバー呼び出しの失敗を TIP のどの地点で検知できるか。
 
 - `candidate_category` を `IsVisible` 越しに取れるか(`TipUiHandler::Update` の中で取る前提。UI-less モードの扱いを含む)。
 - AppContainer 内の窓での読み取り(80 バイトでも名前空間の扱いは変わらない見込みだが、CI で確かめる)。
