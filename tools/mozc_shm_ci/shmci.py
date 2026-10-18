@@ -487,6 +487,7 @@ class Window:
         self.tid = None
         self._wndproc = None
         self.pending = None
+        self.recv_t = None
 
     def create(self):
         w, u32, k32, ctypes = self.w, self.w.u32, self.w.k32, self.w.ctypes
@@ -497,6 +498,7 @@ class Window:
             if m == 0x8001:
                 # ドライバーからの依頼: この窓のスレッドの上で IME を切り替える(wp=1 ON / 0 OFF)。
                 # 別プロセスから SendInput しても効かなかった(run 39114480112)ので、ホスト自身のスレッドから送る。
+                self.recv_t = time.time()
                 self.pending = int(wp)   # キーはメインループで送る(ウィンドウプロシージャの中では TIP がキーを処理できない)
                 return 0
             return u32.DefWindowProcW(h, m, wp, lp)
@@ -568,7 +570,7 @@ def host_thread_main(w, name, want_open, ready_evt, results, idx, run_until, swi
             if handled:
                 win.focus()
                 w.send_vk(0xF2 if want else 0x19)
-            emit({"ev": "flipreq", "t": time.time(), "tid": win.tid, "handled": handled, "fg": fgw, "hwnd": win.hwnd})
+            emit({"ev": "flipreq", "t": time.time(), "tid": win.tid, "handled": handled, "fg": fgw, "hwnd": win.hwnd, "recv_t": win.recv_t})
         if switch_after and not switched and time.time() - t0 >= switch_after:
             switched = True
             # TIP の無いレイアウトへ切り替える(セッション全体に効く)。active が 0 になるのを待つ。
@@ -746,7 +748,8 @@ def flip_loop(w, truths, rounds, rng, events):
         time.sleep(0.5)
         want = 1 - known[x]
         t0 = time.time()
-        w.u32.PostMessageW(info[x]["hwnd"], 0x8001, want, 0)
+        ret = w.u32.PostMessageW(info[x]["hwnd"], 0x8001, want, 0)
+        events.append({"ev": "post", "t": t0, "tid": x, "ret": int(ret)})
         lat = None
         while time.time() - t0 < 3.0:
             st = cur_state(x)
