@@ -45,31 +45,38 @@ related_adr:
 ## 決定
 
 ### D1. Mozc 系では GJI の監視を外す(案 E、段階 1、PR #686)
-`converter_target`(コア、純関数): GJI 系かつ `TipIdentity::Gji` でない TIP は `ConverterTarget::None`、それ以外は `Gji`。`gji_monitor` は `None` のとき GJI の監視を外し(`gji_monitor_ok=false`)、`Gji` のときだけ接続する。判定は走らない(Mozc 単独環境の develop と同じ挙動)。GJI 系でない TIP(MS-IME・ATOK)と Google 版 GJI は変わらない。
+`converter_target`(コア、純関数): GJI 系かつ `TipIdentity::Gji` でない TIP は `ConverterTarget::NoEvidence`、それ以外は `Gji`。`gji_monitor` は `NoEvidence` のとき GJI の監視を外し(`gji_monitor_ok=false`、`gji_last_io_ms`・`gji_last_write_ms`・`gji_attach_ms`・`gji_write_bytes` も 0 に戻す)、`Gji` のときだけ接続する。判定は走らない。GJI 系でない TIP(MS-IME・ATOK)と Google 版 GJI は変わらない。
 
-**根拠**: Mozc で本物の raw-tsf-literal が起きた記録は 1 件もなく、観測したのは誤判定だけ(BUG-207・CI)。誤判定の害(Escape が組成中の文字を全部取り消す。`literal_detect_fsm.rs:89-92`。2 回目以降は BS×1 で諦める)は、未検出の害(リテラルが見える形で残り、打ち直せる)より大きい。
+- **Mozc 単独環境**: 一度も接続せず、TSF_OBS の値まで develop と同じ(0 のまま)。違いは、develop が 3 秒ごとに出していた `no GJI process found` の debug ログが出なくなることだけ。
+- **GJI と Mozc の両方がある環境**: detach で上の値を 0 に戻すので、`gji_monitor_ok` を見ない読み手(`observer::gji_idle_ms` → GjiFsm の Long/Short の判断、FocusProbe の `gji_io=`、`[h1-send] gji_idle=`)も Mozc 単独の develop と同じになる。**副次の変化**: develop では Mozc がアクティブでも GJI の変換サーバーのバックグラウンド I/O が `observe_gji_after_focus` を通って `write_observer_poll(true)` し、Mozc の belief を GJI の無関係な I/O で ON に書く汚染があった(`ime_refresh.rs:189-212`)。D1 の後はこれが止まる(IME belief の挙動の変化。良い方向)。
+- **切替の窓を縮める**: 証拠を外す向き(`Gji → NoEvidence`)は安全側(安全網を外すだけ)なので 1 回の観測で即時に切り替え、付ける向きだけ 2 連続を要求する(窓は最大約 4 秒 → 約 2 秒)。
+
+**根拠**: Mozc で本物の raw-tsf-literal が起きた記録は 1 件もない。ただし**探す仕組みも無かった**(Mozc 単独では判定が走らず、CI の awase なしの対照は warm で cold・idle の揺さぶりが無い)ので、「起きないことを確かめた」わけではない。順序 4 がそれを確かめる。観測したのは誤判定だけ(BUG-207・CI)。誤判定の害(Escape が組成中の文字を全部取り消す。`literal_detect_fsm.rs:89-92`。2 回目以降は BS×1 で諦める)は、未検出の害(リテラルが見える形で残り、打ち直せる)より大きい。
 
 ### D2. Mozc 用の証拠は、観測してから決める(段階 2、未着手)
 次の選択肢は、判定窓ごとの生の証拠(`DetectEvidence`: `write_delta`・`write_ops_delta`・`show_changed`・`evidence_fresh`、`probe.rs:632-667`)を Mozc と GJI の両方で観測してから評価する。リテラル側のサンプルが 0 件の今は、閾値を導出できない(`tuning-constants.md`: 閾値を変えるなら実測値を本文に。`COMPOSITION_BYTES_THRESHOLD` は `tuning.rs` ではなく `probe.rs` の `const` なので、規約の精神として適用する。Mozc 用に別の値を足すなら `tuning.rs` に `#[measured]` 付きで置く)。
 
-- **A. 書き込み回数・量**: Mozc はモードキーでも `w_ops=+1〜2`(`+0.0KB`)なので、回数では「受けた」と「組成した」を分けられない。分けられそうなのはバイト数(モードキー 0.0KB、文字キー 0.2〜0.4KB)。F2 の先行バッチの IPC が per-VK の 1 つ目の窓に入るので 1 つ目は汚れる。
-- **B. `MozcCandidateWindow` の SHOW**: fork の `src/base/const.h:118`(`cuzic/mozc-readable` の `v3.34.6239-readable.1`、tag 386580f4 の `src/base/const.h` で確認)。子音 1 VK では候補が出ないので、per-VK の 1 つ目は救えない。`gji_candidate_visible_now`(`probe_fsm.rs:387`)も同じクラス名に依存する。
-- **C. 共有メモリ(ADR-267 version 3 の `phase`)**: IME 自身の値。反映の遅れは F2 から約 230ms(CI、tsf)、edit で一瞬 false に落ちて 1ms 後に戻る例があり、per-VK の deadline(約 300ms)と同じ桁。遅れの分布を先に測る。awase は version 2 までしか受け入れない(ADR-265 D3)。
+- **A. 書き込み回数・量**: Mozc はモードキーでも `w_ops=+1〜2`(`+0.0KB`)なので、回数では「受けた」と「組成した」を分けられない。分けられそうなのはバイト数(モードキー 0.0KB、文字キー: per-VK の romaji 送信の判定窓で 0.2〜0.3KB。edit・rich の Unicode 送信の 10ms サンプルでは 0.4KB 程度も出るが、入力経路が違うので混ぜない)。F2 の先行バッチの IPC が per-VK の 1 つ目の窓に入るので 1 つ目は汚れる。
+- **B. `MozcCandidateWindow` の SHOW**: fork の `src/base/const.h:118`(`cuzic/mozc-readable` の `v3.34.6239-readable.1`、tag 386580f4 の `src/base/const.h` で確認)。子音 1 VK では候補が出ないはず(未確認)で、per-VK の 1 つ目は救えないと考えている。`gji_candidate_visible_now`(`probe_fsm.rs:387`)も同じクラス名に依存する。
+- **C. 共有メモリ(ADR-267 version 3 の `phase`)**: IME 自身の値。反映の遅れは F2 から約 230ms(CI、tsf)、edit で `DeriveHigh(MozcShm)` が一瞬 false にし、共有メモリが 1ms 後に `open=true` を報告したが belief が戻ったのは約 50ms 後だった例があり、per-VK の deadline(約 300ms)と同じ桁。遅れの分布を先に測る。awase は version 2 までしか受け入れない(ADR-265 D3)。
 - **D. 判定しない**: D1 がこの扱い。
 
 ## 既知の限界(D1 の後も残る)
 
 - TIP 切替後、デバウンス(2 秒ポーリング × 2 連続、最大約 4 秒)の間は旧ターゲットを見続ける。Google 版 GJI → Mozc では、その間だけ BUG-207 の症状が出うる。「アプリごとに入力方式を切り替える」設定では前面アプリの TIP と一致しないことがある。
-- 監視を外す/付けるとき、`gji_write_bytes` はプロセスをまたいで不連続(`gji_monitor.rs`)。送信前にベースラインを取った `LiteralDetector` が切替をまたぐと、消す(新しい累積が小さい)/二重入力(`gji_last_write_ms` が古いまま `StaleConfirm`)のどちらも起きうる。GJI の再起動(`GJI process exited, will re-attach`)でも前からある跳び。D1 は Mozc 切替では監視を外して `gji_monitor_ok` を偽にするので、跳びを使う経路は絞られるが、ゼロではない。
+- 判定の途中で detach または GJI が終了すると、カウンタが凍って deadline で SuspectedLiteral(消す)になりうる。判定が `gji_active` の変化を見ないことによる(跳びではない)。GJI の終了/TIP 切替が判定の窓(約 300ms)に重なる確率は低く、BUG-207 の主経路ではない。別件にしてよい。(「二重入力〈StaleConfirm〉」は D1 では起きない: 判定が作られるのは `gji_active` が真のときだけで、再接続は `gji_monitor_ok=false` の間に起きるため、切替をまたいで跳びを読む判定は構造的に存在しない。一度目の設計〈同じループで付け替え〉に対する指摘だった。)
+- 前面アプリの TIP と、別スレッドの `GetActiveProfile` が示す TIP が一致しないことがある(「アプリごとに入力方式を切り替える」設定)。直らない。候補: 前面プロセスの共有メモリ(ADR-265 の version 2 の `active`)が Mozc の稼働を示していたら `NoEvidence` にする(今回は実装しない)。
+- `tsf_ctx`(COM 初期化)が取れないと target が `Gji` のまま固定され、GJI と Mozc が両方ある環境では BUG-207 が残る。
 - `converter_target(true, MsImeNative)` は起こり得ない組み合わせで `Gji` を返す(黙って)。`GJI_CLSID`(`OnceLock`)を起動時に取りこぼすと、Google 版が `(GoogleJapaneseInput, Other)` → `None` になり、GJI だけの環境で判定が無効になる(family と clsid は同じ列挙と同じ照合なので可能性は低い)。
 
 ## 実測・検証の順序
 
-1. 修正後の Mozc 単独 CI(`ts-tsf-mozc-*`)で、develop と同じ PASS に戻ること(PR #686 の CI)。
-2. **GJI と Mozc を両方入れた構成**(BUG-207 の実際の条件)を `e2e-ime` に足し、develop(誤判定が出るはず)と修正後(出ない)を比べる。現行の CI は GJI なしで、この条件を作れていない。
-3. 観測のみの PR: `DetectEvidence` を判定ごとに `awase.log` へ出し、Mozc と GJI の tsf で分布を取る(GJI の子音 1 VK も 350B を越えない〈`probe_fsm.rs:366`〉ので、GJI の per-VK は SHOW と候補可視の近道に支えられている、という仮説もここで確かめる)。
+1. 修正後の Mozc 単独 CI(`ts-tsf-mozc-*`)で、develop と同じ PASS に戻ること(PR #686 の CI)。**D1 では Mozc 単独のコードの経路が develop と同じ**なので、これは退行が無いことの確認にしかならず、D1 の効果の確認にはならない。効果を示せるのは順序 2 だけ。
+2. **GJI と Mozc を両方入れた構成** `ts-{edit,tsf}-mozc-gji-{40,10}ms`(`ime=mozc-gji`、BUG-207 の実際の条件)を `e2e-ime` に足した。GJI を入れて `GoogleIMEJaConverter.exe` を起動してから、入力方式を Mozc Readable だけにする。変換サーバーが動いていなければジョブを失敗にする(条件不成立を PASS と読まないため)。develop(`attached to GJI process`、誤判定が出るはず)と修正後(`detaching`)を、awase.log で比べる。develop 側は `ci/bug-207-baseline-mozc`。
+3. 観測のみの PR: `DetectEvidence` を判定ごとに `awase.log` へ出し、Mozc と GJI の tsf で分布を取る。**D1 では Mozc で判定が走らないので、Mozc の `DetectEvidence` は 1 件も出ない。**分布を取るには、(i) `mozc_server` に観測専用で接続する(`gji_monitor_ok` とは別の旗にし、`gji_is_active_ime()` には効かせない)か、(ii) 判定を影で走らせる(verdict は計算して journal に出すが回収〈Escape・BS・再送〉はしない。送り方は Mozc 単独の develop のまま〈一括送信〉にして、窓だけ測る。per-VK の送り方自体が挙動を変えるため)かのどちらかが要る。(ii) のほうが判定窓と揃う(GJI の子音 1 VK も 350B を越えない〈`probe_fsm.rs:366`〉ので、GJI の per-VK は SHOW と候補可視の近道に支えられている、という仮説もここで確かめる)。
 4. Mozc で本物のリテラルが起きるかを、awase なしで測る(`ts-raw-tsf-mozc-*` に cold・idle の揺さぶりを足す)。起きないなら、Mozc に安全網は要らない(D1 で確定)。
-5. 実機(dragonflyg4)で、Mozc Readable だけにして文字が消えないこと、`[raw-tsf-literal]` が出ないこと(日本語入力が止まるため、利用者に予告して許可を得てから)。
+5. TIP 切替の窓を測る構成(GJI → Mozc を切り替えた直後の 0〜5 秒に打鍵し、`detaching` の時刻と `raw-tsf-literal` の有無を並べる。順序 2 の派生、未作成)。
+6. 実機(dragonflyg4)。読むだけの前提確認(日本語入力は止まらない): GJI がインストールされたままか、変換サーバーがなぜ常駐しているか、「アプリごとに入力方式を切り替える」の設定。そのうえで Mozc Readable だけにして、文字が消えないこと、`[raw-tsf-literal]` が出ないこと、`detaching` が 1 回出て `gji_io=` が 0 起点になること(日本語入力が止まるため、利用者に予告して許可を得てから)。
 
 ## 記録の修正(ハーネス側)
 

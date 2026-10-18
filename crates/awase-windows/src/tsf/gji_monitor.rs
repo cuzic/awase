@@ -5,7 +5,7 @@
 //! バックグラウンドスレッドが Google 日本語入力 Converter プロセスの
 //! I/O カウンタを 10ms ごとにサンプリングし、[`super::observer::TSF_OBS`] を更新する。
 //! GJI が再起動した場合は自動的に再接続する。
-//! アクティブな TIP が Mozc 系のときは接続しない（[`ConverterTarget::None`]。BUG-207、ADR-269）:
+//! アクティブな TIP が Mozc 系のときは接続しない（[`ConverterTarget::NoEvidence`]。BUG-207、ADR-269）:
 //! GJI の変換サーバーが同時に動いていても、その静止した I/O を literal 判定の証拠にしない。
 
 use std::mem::size_of;
@@ -401,9 +401,14 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     }
                     let observed_target =
                         converter_target(kind == ActiveImeKind::GoogleJapaneseInput, identity);
-                    if let Some(confirmed) =
+                    // 証拠を外す向き（Gji → NoEvidence）は安全側（安全網を外すだけで誤判定は増えない）なので
+                    // 1 回の観測で即時に切り替え、付ける向きだけ 2 連続を要求する（切替後の窓を約 4 秒 → 約 2 秒に縮める）。
+                    let confirmed_target = if observed_target == ConverterTarget::NoEvidence {
+                        (observed_target != current_target).then_some(observed_target)
+                    } else {
                         target_debounce.observe(observed_target, current_target)
-                    {
+                    };
+                    if let Some(confirmed) = confirmed_target {
                         tracing::info!(
                             "[tip-detect] converter target → {confirmed:?} (was {current_target:?}, \
                              kind={kind:?} identity={identity:?})"
@@ -431,11 +436,17 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
 
         // Mozc 系がアクティブなら GJI の監視を外す（BUG-207）。`gji_monitor_ok` が偽になるので
         // `gji_is_active_ime()` も偽になり、literal 判定は走らない（Mozc 単独環境と同じ挙動）。
-        if current_target == ConverterTarget::None && monitor.is_some() {
+        if current_target == ConverterTarget::NoEvidence && monitor.is_some() {
             tracing::info!(
                 "[gji-monitor] no GJI evidence for the active TIP ({current_target:?}), detaching"
             );
             TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
+            // `gji_monitor_ok` を見ない読み手（`gji_idle_ms`、FocusProbe の `gji_io=`）が、外した GJI の
+            // 最後の値を「GJI が静止している」と読まないよう、Mozc 単独環境（一度も接続しない）と同じ 0 に戻す。
+            TSF_OBS.gji_last_io_ms.store(0, Ordering::Relaxed);
+            TSF_OBS.gji_last_write_ms.store(0, Ordering::Relaxed);
+            TSF_OBS.gji_attach_ms.store(0, Ordering::Relaxed);
+            TSF_OBS.gji_write_bytes.store(0, Ordering::Relaxed);
             monitor = None;
         }
 

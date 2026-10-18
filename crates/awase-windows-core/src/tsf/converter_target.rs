@@ -18,7 +18,7 @@ pub enum ConverterTarget {
     /// Google 日本語入力の変換サーバー（GJI 系でない TIP がアクティブでも、従来どおりこれを見る）。
     Gji,
     /// 使える証拠がない（Mozc 系）。監視に接続せず、`gji_is_active_ime()` を偽にして判定を走らせない。
-    None,
+    NoEvidence,
 }
 
 /// Google 日本語入力の変換サーバーのプロセス名の接頭辞（大文字小文字無視）。
@@ -32,7 +32,7 @@ const GJI_PREFIXES: &[&str] = &["GoogleIMEJaConverter", "GoogleJapaneseInputConv
 #[must_use]
 pub const fn converter_target(gji_family: bool, identity: TipIdentity) -> ConverterTarget {
     match (gji_family, identity) {
-        (true, TipIdentity::Other) => ConverterTarget::None,
+        (true, TipIdentity::Other) => ConverterTarget::NoEvidence,
         (true, TipIdentity::Gji | TipIdentity::MsImeNative) | (false, _) => ConverterTarget::Gji,
     }
 }
@@ -70,7 +70,7 @@ mod tests {
     fn mozc_family_tip_has_no_gji_evidence() {
         assert_eq!(
             converter_target(true, TipIdentity::Other),
-            ConverterTarget::None
+            ConverterTarget::NoEvidence
         );
     }
 
