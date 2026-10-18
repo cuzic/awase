@@ -73,7 +73,7 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 
 ### D6. 書き込みと pulse を分ける(旧 Q2 を閉じる。R1-I6)
 
-- `Flush()` の判定を 2 つに分ける。**書くかどうか**は全項目の比較(`key_seq` を含む)、**pulse するかどうか**は状態の項目(`active`・開閉・モード・`phase`・`candidate_category`・`scope_forced_mode`)の変化だけ。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` だけの変化では pulse しない。
+- `Flush()` の判定を 2 つに分ける。**書くかどうか**は全項目の比較(`key_seq` を含む)、**pulse するかどうか**は状態の項目(`active`・開閉・モード・`phase`・`candidate_category`・`scope_forced_mode`・`server_ready`)の変化だけ。`preedit_utf16_len`・`preedit_cursor`・`key_seq`・`composition_key_seq` だけの変化では pulse しない。
 - 書き込みのコスト(`InterlockedIncrement` 2 回と数個のストア)は、打鍵ごとに既にある mozc_server への IPC 往復(ms 単位)に比べて無視できる。測定は書き込みの遅さではなく、「連続打鍵で pulse の回数が状態の変化回数と一致する」ことの CI 確認だけにする。
 - 通知イベントを 2 つに分ける案は、イベント名の増加が identity の置換表と AppContainer の名前空間(ADR-265 で通知イベントの名前空間は未確認)の両方に波及するため採らない。
 
