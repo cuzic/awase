@@ -739,6 +739,7 @@ def flip_loop(w, truths, rounds, rng, events):
         return None if a is None or a[9] != 1 else int(a[5])
 
     known = {tid: int(info[tid]["open"]) for tid in tids}
+    last_old = {tid: time.time() for tid in tids}   # その窓が古い状態であると最後に確かめた時刻
 
     def observe(window_s):
         """全窓の状態を window_s 秒の間 5ms ごとに読んで、変わったものを events に書く。変わった窓の数を返す。"""
@@ -747,10 +748,15 @@ def flip_loop(w, truths, rounds, rng, events):
         while time.time() < end:
             for tid in tids:
                 st = cur_state(tid)
+                if st is not None and st == known[tid]:
+                    last_old[tid] = time.time()
                 if st is not None and st != known[tid]:
                     known[tid] = st
                     changed += 1
-                    events.append({"ev": "truth", "t": time.time(), "tid": tid, "name": info[tid]["name"],
+                    # 変化は「最後に古い状態を確かめた時刻」から「見つけた時刻」の間に起きた。窓を移す処理の間は読めないので、
+                    # 見つけた時刻を真値の時刻にすると、その間に awase が新しい状態を読んだ記録が食い違いに見える。
+                    # 早い方(最後に古い状態を確かめた時刻)を真値の時刻にし、許容(--state-grace)で古い状態の読みも受ける。
+                    events.append({"ev": "truth", "t": last_old[tid], "detected": time.time(), "tid": tid, "name": info[tid]["name"],
                                    "pid": info[tid]["pid"], "hwnd": info[tid]["hwnd"], "open": st,
                                    "confirmed": True, "flip": True})
             time.sleep(0.005)
@@ -760,6 +766,7 @@ def flip_loop(w, truths, rounds, rng, events):
     for k in range(8):
         x = tids[k % len(tids)]
         w.force_foreground(info[x]["hwnd"])
+        events.append({"ev": "focus", "t": time.time(), "tid": x, "name": info[x]["name"]})
         time.sleep(0.5)
         want = 1 - known[x]
         t0 = time.time()
