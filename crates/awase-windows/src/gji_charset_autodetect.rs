@@ -251,7 +251,9 @@ fn classify_vk_in_ime_keys(
 /// 開始時・終了時の`config1.db`比較（opus-adversarial-consult 2026-09-23 B-3）と
 /// 既知構成判定に直接呼べるよう`pub`で再エクスポートする。
 #[cfg(windows)]
-pub use windows_impl::{bundled_preset_for_adjudication, read_config1_db, BundledPresetLookup};
+pub use windows_impl::{
+    bundled_preset_for_adjudication, read_config1_db, read_config1_db_for, BundledPresetLookup,
+};
 #[cfg(windows)]
 pub(crate) use windows_impl::{config1_db_stamp, is_configured_thumb_key, read_key_effect_keymap};
 
@@ -271,15 +273,22 @@ mod windows_impl {
     /// `config1.db`のパス。`%USERPROFILE%\AppData\LocalLow\Google\Google Japanese Input\config1.db`
     /// （実機確認済み、Google 日本語入力はIMEとして低整合性レベルのプロセスから
     /// も読める必要があるため`LocalLow`配下に置かれる）。
-    fn config1_db_path() -> Option<std::path::PathBuf> {
+    /// 製品ごとの `config1.db` のパス（`%USERPROFILE%\AppData\LocalLow\…`）。置き場所の表は
+    /// `awase_gji_config::ConfigProduct::relative_path`（Mozc の `GetUserProfileDirectory` に合わせてある）。
+    fn config1_db_path_for(product: awase_gji_config::ConfigProduct) -> Option<std::path::PathBuf> {
         let profile = std::env::var_os("USERPROFILE")?;
         let mut path = std::path::PathBuf::from(profile);
         path.push("AppData");
         path.push("LocalLow");
-        path.push("Google");
-        path.push("Google Japanese Input");
-        path.push("config1.db");
+        for part in product.relative_path() {
+            path.push(part);
+        }
         Some(path)
+    }
+
+    /// Google 日本語入力の `config1.db` のパス。
+    fn config1_db_path() -> Option<std::path::PathBuf> {
+        config1_db_path_for(awase_gji_config::ConfigProduct::GoogleJapaneseInput)
     }
 
     /// `config1.db`を読む。存在しない・読めない場合は`None`（エラーにしない、
@@ -288,7 +297,17 @@ mod windows_impl {
     /// `GjiRawConfig`は存在しないため）。
     #[must_use]
     pub fn read_config1_db() -> Option<Vec<u8>> {
-        let path = config1_db_path()?;
+        read_config1_db_for(awase_gji_config::ConfigProduct::GoogleJapaneseInput)
+    }
+
+    /// 製品を指定して `config1.db` を読む（Mozc・mozc-readable の分。パースは `awase-gji-config` が共通に使える。
+    /// protobuf の形式は GJI と同じ）。存在しない・読めない場合は`None`（エラーにしない）。
+    ///
+    /// 呼び出し側が「どの製品が有効か」を決める（この関数は、IME の同定をしない。ADR-265 D3 により、
+    /// mozc-readable は `TipIdentity` の variant ではなく独立の能力として扱う）。
+    #[must_use]
+    pub fn read_config1_db_for(product: awase_gji_config::ConfigProduct) -> Option<Vec<u8>> {
+        let path = config1_db_path_for(product)?;
         std::fs::read(&path).ok()
     }
 
