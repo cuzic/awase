@@ -321,7 +321,7 @@ jobs:
             # ADR-260: 英数(複合キー)を belief とずれた状態で押したときの追随(観測のみ、only='sc-eisu-km-*' かブランチ feat/adr260-eisu-toggle-guard)。
             # 本実装(B1o+B3)の確認。読みが効く窓(tsf・実 Chrome)で、typed の「ずれ」(tsf: ｗ・ka、chrome: 素通しのかな・英数なのに Engine ON)が 0 になること。
             # `--km-twice` で 2 文字目も記録する。ATOK は閉の英数が開かない対照。
-            *[cfg(f'sc-eisu-km-{win}-{pn}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=3, wait=2400,
+            *[cfg(f'sc-eisu-km-{win}-{pn}', 'observe', check='keymatrix', ime='gji', keymap=pk, runs=3, wait=2400, until='2026-11-10',
                   keys='ime_toggle = ["VK_NONCONVERT"]',
                   **({'chrome': f"--keymatrix={KM_EISU} --km-twice --settle=800"} if win == 'chrome' else
                      {'stress': f"--form={win} --mode=keymatrix --km-cells={KM_EISU} --km-twice --layout=@REPO@/layout/nicola_keytop.yab"}))
@@ -330,7 +330,7 @@ jobs:
             # ADR-260 の持ち越しの測定(Opus レビュー R6 (e)): 測る英数の前に、ひらがな(0xF2、MS-IME プリセットではかなへ SET)を 1 回押す
             # (`--km-pre=f2`)。belief が英数のときのひらがなは入力モードの予測(かな)を持ち越し、直接観測の判定は今回の打鍵の軸で決める(B3)。
             # 持ち越しの入力モードの予測は reduce の fence(170ms)の間は観測を拒否する(R1)。typed の「ずれ」が 0 になること。
-            *[cfg(f'sc-eisu-km-carry-{win}-msime', 'observe', check='keymatrix', ime='gji', keymap=2, runs=3, wait=2400,
+            *[cfg(f'sc-eisu-km-carry-{win}-msime', 'observe', check='keymatrix', ime='gji', keymap=2, runs=3, wait=2400, until='2026-11-10',
                   keys='ime_toggle = ["VK_NONCONVERT"]',
                   **({'chrome': f"--keymatrix=f0=tog:open,f0=tog:close,f0=tog:fresh,f0=on:fresh --km-pre=f2 --km-twice --settle=800"} if win == 'chrome' else
                      {'stress': f"--form={win} --mode=keymatrix --km-cells=f0=tog:open,f0=tog:close,f0=tog:fresh,f0=on:fresh --km-pre=f2 --km-twice --layout=@REPO@/layout/nicola_keytop.yab"}))
