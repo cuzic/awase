@@ -11,7 +11,7 @@ name: mozc-shm-e2e
 
 on:
   push:
-    branches: [ci/mozc-shm-e2e]
+    branches: [ci/mozc-shm-e2e, ci/mozc-shm-e2e2]
   workflow_dispatch:
 
 permissions:
@@ -76,6 +76,15 @@ jobs:
             fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
           - scenario: threads
             fast: '-DwellMin 0.03 -DwellMax 0.4 -Rounds 300 -FocusGrace 1.5'
+          # 真値が動く場面: 状態を切り替えた直後(0〜200ms)にフォーカスを移す
+          - scenario: flip
+            fast: '-Rounds 150 -FocusGrace 1.5'
+          # 負荷時の read_us: CPU を使い切るプロセスを 8 つ動かしながら、速い切り替え
+          - scenario: focus
+            fast: '-DwellMin 0.1 -DwellMax 0.5 -Rounds 200 -FocusGrace 1.5 -Load 8'
+            tag: load
+          # スレッド ID の再利用(awase なし)
+          - scenario: tidreuse
     steps:
       - uses: actions/checkout@v4
       - name: mozc-readable の CI の部品(AppContainer 用)
@@ -104,7 +113,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mozc-shm-${{ matrix.scenario }}${{ matrix.noawase && '-control' || '' }}${{ matrix.fast && '-fast' || '' }}
+          name: mozc-shm-${{ matrix.scenario }}${{ matrix.noawase && '-control' || '' }}${{ matrix.fast && '-fast' || '' }}${{ matrix.tag && format('-{0}', matrix.tag) || '' }}
           path: out
           if-no-files-found: ignore
           retention-days: 7

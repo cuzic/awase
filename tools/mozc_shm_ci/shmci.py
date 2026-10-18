@@ -81,7 +81,7 @@ def build_timelines(events):
     return truth, focus
 
 
-def allowed_states(timeline, t):
+def allowed_states(timeline, t, grace=GRACE_S):
     """時刻 t の記録が持ってよい状態の集合(True / False / None=inactive)。直近 GRACE_S 秒内の変化を許す。
 
     真値が決まる前(timeline が空、または最初の項目より前)は None を返す(判定しない)。
@@ -92,7 +92,7 @@ def allowed_states(timeline, t):
     last_before = None
     have_before = False
     for te, val in timeline:
-        if te <= t - GRACE_S:
+        if te <= t - grace:
             last_before = val
             have_before = True
         elif te <= t:
@@ -109,20 +109,22 @@ def allowed_focus(focus, t, grace=GRACE_S):
     切り替え 1 回分を超えるので、「直前のフォーカス先 1 つ」ではなく、窓 [t - grace, t] と重なる区間のフォーカス先を
     すべて許す。フォーカスがまだ決まっていなければ None。
     """
-    if not focus or focus[0][0] > t:
+    if not focus or focus[0][0] - FOCUS_LEAD_S > t:
         return None
     allowed = set()
     for k, (tf, tid) in enumerate(focus):
+        tf -= FOCUS_LEAD_S
         if tf > t:
             break
-        end = focus[k + 1][0] if k + 1 < len(focus) else float("inf")
+        end = focus[k + 1][0] - FOCUS_LEAD_S if k + 1 < len(focus) else float("inf")
         if end > t - grace:
             allowed.add(tid)
     return allowed
 
 
+FOCUS_LEAD_S = 0.2     # focus イベントは force_foreground が戻ったあと(約 30ms 以上後)に書くので、awase が先に新しい窓を読むことがある
 INTERVAL_LEAD_S = 1.0    # 最初のフォーカス移動の直前から
-INTERVAL_TAIL_S = 3.0    # 最後のイベント(フォーカス移動・inactive)の後、awase の最後の tick が記録を出す分まで
+INTERVAL_TAIL_S = 1.8    # 最後のイベント(フォーカス移動・inactive)の後、awase の最後の tick が記録を出す分まで
 
 
 def measurement_interval(events):
@@ -136,7 +138,7 @@ def measurement_interval(events):
     return (min(ts) - INTERVAL_LEAD_S, max(ts) + INTERVAL_TAIL_S)
 
 
-def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace=GRACE_S):
+def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace=GRACE_S, state_grace=GRACE_S):
     """記録と events を突き合わせて集計する。dict を返す(ok が False なら食い違いがある)。"""
     truth, focus = build_timelines(events)
     known = set(truth)
@@ -171,7 +173,7 @@ def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace
                 stats["unknown_accepted_in_interval"].append(item)
             continue
         stats["accepted_known"] += 1
-        al = allowed_states(truth[tid], t)
+        al = allowed_states(truth[tid], t, state_grace)
         if al is not None:
             non_none = {x for x in al if x is not None}
             if not non_none:
@@ -181,12 +183,23 @@ def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace
                 stats["mismatch_state"].append({"t": t, "tid": tid, "tsf_open": r.get("tsf_open"),
                                                 "allowed": sorted(str(x) for x in al)})
         af = allowed_focus(focus, t, focus_grace)
-        if af is not None and tid not in af:
+        in_interval = interval is None or interval[0] <= t <= interval[1]   # 後片付けで前面になった窓の読みは数えない
+        if in_interval and af is not None and tid not in af:
             stats["wrong_thread"].append({"t": t, "tid": tid, "allowed_focus": sorted(af)})
     # 真値の無いスレッドの受け入れは、測定区間の外(窓の準備中に、ランナーの別の窓を読んだ)なら食い違いに数えず、
     # 区間の内側なら数える(測定中に、こちらが前面にしていない窓を読んだ=フォーカスの取り違えの疑い)。
+    us = sorted(r["read_us"] for _t, r in records if isinstance(r.get("read_us"), (int, float)))
+    if us:
+        def pct(q):
+            return us[min(len(us) - 1, int(len(us) * q))]
+        stats["read_us"] = {"n": len(us), "p50": pct(0.5), "p95": pct(0.95), "p99": pct(0.99), "max": us[-1]}
     problems = (len(stats["mismatch_state"]) + len(stats["wrong_thread"]) + len(stats["stale_accepted"])
                 + len(stats["unknown_accepted_in_interval"]))
+    reqs = [e for e in events if e.get("ev") == "flipreq"]
+    if reqs:
+        stats["flip_requests"] = {"total": len(reqs), "handled": sum(1 for e in reqs if e.get("handled")),
+                                  "state_changes": sum(1 for e in events if e.get("ev") == "truth" and e.get("flip")),
+                                  "sample": [(e.get("fg"), e.get("hwnd")) for e in reqs[:4]]}
     stats["interval"] = interval
     ok = problems == 0 and stats["accepted_known"] >= min_accepted
     if require_inactive and stats["rejected_inactive"] == 0:
@@ -210,6 +223,10 @@ def print_summary(stats):
     print(f"  unknown accepted   : in the measurement interval: {len(stats['unknown_accepted_in_interval'])}"
           f" / outside it (window setup): {outside}")
     print(f"  stale accepted     : {len(stats['stale_accepted'])}")
+    if stats.get("flip_requests"):
+        print(f"  flip requests      : {stats['flip_requests']}")
+    if stats.get("read_us"):
+        print(f"  read_us            : {stats['read_us']}")
     for key in ("mismatch_state", "wrong_thread", "unknown_accepted_in_interval", "stale_accepted"):
         for item in stats[key][:10]:
             print(f"    {key}: {item}")
@@ -228,7 +245,7 @@ def cmd_analyze(args):
             if line:
                 events.append(json.loads(line))
     stats = analyze(records, events, min_accepted=args.min_accepted, require_inactive=args.require_inactive,
-                    focus_grace=args.focus_grace)
+                    focus_grace=args.focus_grace, state_grace=args.state_grace)
     print_summary(stats)
     if args.summary_json:
         with open(args.summary_json, "w", encoding="utf-8") as f:
@@ -348,6 +365,7 @@ def win32():
     u32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
     u32.GetWindowThreadProcessId.restype = wt.DWORD
     u32.AttachThreadInput.argtypes = [wt.DWORD, wt.DWORD, wt.BOOL]
+    u32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
     u32.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
     u32.IsWindowVisible.argtypes = [wt.HWND]
     u32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
@@ -428,7 +446,21 @@ def win32():
             return True
         u32.keybd_event(0x12, 0, 0, 0)   # VK_MENU down / up
         u32.keybd_event(0x12, 0, 2, 0)
+        # Alt の単独押下は、窓をメニューモード(モーダルのループ)に入れる。ループは次の入力か窓の無効化まで戻らず、
+        # ホストのメッセージ処理が約 3.5 秒止まり、IME 切り替えのキーも窓に届かなかった(run 39117224907 / 39117465698)。
+        # Esc でメニューモードを抜ける。
+        time.sleep(0.02)
+        u32.keybd_event(0x1B, 0, 0, 0)
+        u32.keybd_event(0x1B, 0, 2, 0)
+        time.sleep(0.05)
         return attempt()
+
+    # 前面にする制限の時間を 0 にする(別プロセスからの SetForegroundWindow が通りやすくなる。失敗しても続ける)。
+    try:
+        u32.SystemParametersInfoW.argtypes = [wt.UINT, wt.UINT, ctypes.c_void_p, wt.UINT]
+        u32.SystemParametersInfoW(0x2001, 0, None, 2)
+    except Exception:
+        pass
 
     views = {}
 
@@ -469,10 +501,22 @@ class Window:
         self.edit = None
         self.tid = None
         self._wndproc = None
+        self.pending = None
+        self.recv_t = None
 
     def create(self):
         w, u32, k32, ctypes = self.w, self.w.u32, self.w.k32, self.w.ctypes
-        self._wndproc = w.WNDPROC(lambda h, m, wp, lp: u32.DefWindowProcW(h, m, wp, lp))
+        def proc(h, m, wp, lp):
+            # 注意: ここ(WM_ACTIVATE)で SetFocus しない。有効化の途中での SetFocus は、ループが約 3.5 秒止まった
+            # (run 39117224907 の診断: 窓が前面になってからドライバーが次の窓へ移すまで、PeekMessage から戻らなかった)。
+            if m == 0x8001:
+                # ドライバーからの依頼: この窓のスレッドの上で IME を切り替える(wp=1 ON / 0 OFF)。
+                # 別プロセスから SendInput しても効かなかった(run 39114480112)ので、ホスト自身のスレッドから送る。
+                self.recv_t = time.time()
+                self.pending = int(wp)   # キーはメインループで送る(ウィンドウプロシージャの中では TIP がキーを処理できない)
+                return 0
+            return u32.DefWindowProcW(h, m, wp, lp)
+        self._wndproc = w.WNDPROC(proc)
         wc = w.WNDCLASSW()
         wc.lpfnWndProc = self._wndproc
         wc.hInstance = k32.GetModuleHandleW(None)
@@ -531,7 +575,18 @@ def host_thread_main(w, name, want_open, ready_evt, results, idx, run_until, swi
     switched = False
     t0 = time.time()
     while time.time() < run_until:
-        w.pump(0.1)
+        prev_iter = time.time()
+        w.pump(0.01)
+        seen_t = time.time()
+        if win.pending is not None:
+            want, win.pending = win.pending, None
+            # 窓がまだ前面のときだけ送る(前面を奪い返すと、記録に無いフォーカス移動になる)。set_open と同じ経路で送る。
+            fgw = w.u32.GetForegroundWindow()
+            handled = fgw == win.hwnd
+            if handled:
+                win.focus()
+                w.send_vk(0xF2 if want else 0x19)
+            emit({"ev": "flipreq", "t": time.time(), "tid": win.tid, "handled": handled, "fg": fgw, "hwnd": win.hwnd, "recv_t": win.recv_t, "prev_iter": prev_iter, "seen_t": seen_t})
         if switch_after and not switched and time.time() - t0 >= switch_after:
             switched = True
             # TIP の無いレイアウトへ切り替える(セッション全体に効く)。active が 0 になるのを待つ。
@@ -644,18 +699,182 @@ def focus_loop(w, targets, rounds, rng, events, dwell=(0.35, 1.6)):
     last = None
     ok_n = 0
     ng_n = 0
+    # 準備で最後に作った窓が前面のまま始まる。その窓の focus イベントが無いと、開始直後の awase の読みが「どの窓も前面でなかった」
+    # ように見える(測定側のずれ)ので、今の前面を最初のフォーカス先として書く。
+    fg = w.u32.GetForegroundWindow()
+    for name, tid, hwnd in targets:
+        if hwnd == fg:
+            events.append({"ev": "focus", "t": time.time(), "tid": tid, "name": name})
+            last = tid
     for _ in range(rounds):
         choices = [t for t in targets if t[1] != last]
         name, tid, hwnd = rng.choice(choices)
-        ok = w.force_foreground(hwnd)
+        ok = switch_to(w, events, hwnd, tid, name)
         if ok:
-            events.append({"ev": "focus", "t": time.time(), "tid": tid, "name": name})
             last = tid
             ok_n += 1
         else:
             ng_n += 1
         time.sleep(rng.uniform(*dwell))
     return ok_n, ng_n
+
+
+def switch_to(w, events, hwnd, tid, name):
+    """前面にして、成功したら focus イベントを書く。時刻は呼ぶ直前(実際の切り替えは呼び出しの間に起きる。戻りの時刻だと、
+    予備手段(Alt+Esc)を使った遅い切り替えで、awase が先に新しい窓を読んだ記録が、フォーカス先でない読みに見える)。"""
+    t_call = time.time()
+    ok = w.force_foreground(hwnd)
+    if ok:
+        events.append({"ev": "focus", "t": t_call, "tid": tid, "name": name})
+    return ok
+
+
+FLIP_DELAYS = (0.05, 0.1, 0.15, 0.2, 0.3)
+
+
+def flip_loop(w, truths, rounds, rng, events):
+    """真値が動く場面: 前面の窓の IME 状態を切り替え、すぐあとに別の窓へフォーカスを移す。
+
+    切り替えはその窓のスレッド自身が行う(WM_APP+1 を送る。別プロセスからの SendInput は効かなかった)。
+    依頼から移すまでの間隔は 50 / 100 / 150 / 200 / 300 ms を順に使う。窓の状態が変わった時刻は、移したあとに全窓の共有メモリを
+    5ms 間隔で読んで、変わったのを見つけた時刻にする(キーがどの窓に届いたかを仮定しない)。見つけた時刻は実際の変化より
+    最大で数 ms 遅れるので、突き合わせの状態の許容(--state-grace)はそれより十分長くする。
+    戻り値は (移せた回数, 移せなかった回数, 状態が変わらなかった回数)。
+    """
+    info = {t["tid"]: t for t in truths if t.get("hwnd")}
+    tids = list(info)
+
+    def cur_state(tid):
+        a = w.read_block(tid)
+        return None if a is None or a[9] != 1 else int(a[5])
+
+    known = {tid: int(info[tid]["open"]) for tid in tids}
+    fg0 = w.u32.GetForegroundWindow()           # 準備で最後に作った窓が前面のまま始まる(focus_loop と同じ理由で最初のフォーカス先に書く)
+    for tid in tids:
+        if info[tid]["hwnd"] == fg0:
+            events.append({"ev": "focus", "t": time.time(), "tid": tid, "name": info[tid]["name"]})
+    last_old = {tid: time.time() for tid in tids}   # その窓が古い状態であると最後に確かめた時刻
+
+    def observe(window_s):
+        """全窓の状態を window_s 秒の間 5ms ごとに読んで、変わったものを events に書く。変わった窓の数を返す。"""
+        changed = 0
+        end = time.time() + window_s
+        while time.time() < end:
+            for tid in tids:
+                st = cur_state(tid)
+                if st is not None and st == known[tid]:
+                    last_old[tid] = time.time()
+                if st is not None and st != known[tid]:
+                    known[tid] = st
+                    changed += 1
+                    # 変化は「最後に古い状態を確かめた時刻」から「見つけた時刻」の間に起きた。窓を移す処理の間は読めないので、
+                    # 見つけた時刻を真値の時刻にすると、その間に awase が新しい状態を読んだ記録が食い違いに見える。
+                    # 早い方(最後に古い状態を確かめた時刻)を真値の時刻にし、許容(--state-grace)で古い状態の読みも受ける。
+                    events.append({"ev": "truth", "t": last_old[tid], "detected": time.time(), "tid": tid, "name": info[tid]["name"],
+                                   "pid": info[tid]["pid"], "hwnd": info[tid]["hwnd"], "open": st,
+                                   "confirmed": True, "flip": True})
+            time.sleep(0.005)
+        return changed
+
+    # 準備: 切り替えの依頼が効くか、状態が変わるまでの時間(診断。測定の前提)
+    for k in range(8):
+        x = tids[k % len(tids)]
+        switch_to(w, events, info[x]["hwnd"], x, info[x]["name"])
+        time.sleep(0.5)
+        want = 1 - known[x]
+        t0 = time.time()
+        ret = w.u32.PostMessageW(info[x]["hwnd"], 0x8001, want, 0)
+        events.append({"ev": "post", "t": t0, "tid": x, "ret": int(ret)})
+        lat = None
+        while time.time() - t0 < 3.0:
+            st = cur_state(x)
+            if st == want:
+                lat = time.time() - t0
+                break
+            time.sleep(0.005)
+        print(f"flip-probe {k}: tid={x} want={want} latency_s={lat}", flush=True)
+        observe(0.05)
+    last = None
+    ok_n = ng_n = lost = 0
+    for i in range(rounds):
+        x = rng.choice([t for t in tids if t != last])
+        if not switch_to(w, events, info[x]["hwnd"], x, info[x]["name"]):
+            ng_n += 1
+            continue
+        time.sleep(0.6)                      # awase が x を読む時間
+        observe(0.05)
+        want = 1 - known[x]
+        w.u32.PostMessageW(info[x]["hwnd"], 0x8001, want, 0)
+        time.sleep(FLIP_DELAYS[i % len(FLIP_DELAYS)])
+        y = rng.choice([t for t in tids if t != x])
+        if switch_to(w, events, info[y]["hwnd"], y, info[y]["name"]):
+            last = y
+            ok_n += 1
+        else:
+            ng_n += 1
+            last = x
+        if observe(0.8) == 0:
+            lost += 1
+    return ok_n, ng_n, lost
+
+
+def cmd_burn(_args):
+    """CPU を使い切る(負荷時の read_us を測るための重り)。親が止める。"""
+    while True:
+        pass
+
+
+def start_burners(n, procs):
+    ps = []
+    for _ in range(n):
+        p = subprocess.Popen([sys.executable, "-u", os.path.abspath(__file__), "burn"], creationflags=0x08000000)
+        ps.append(p)
+        procs.append(p)
+    if n:
+        print(f"load: {n} CPU-burning processes started", flush=True)
+    return ps
+
+
+def cmd_tidreuse(args):
+    """スレッド ID の再利用: スレッドを順に作っては捨て、同じ ID が再び使われたとき、前のスレッドの共有メモリが残っていないか。
+
+    各スレッドは、自分の ID の共有メモリを窓を作る前に読み(前の持ち主の残り)、窓を作って IME を ON にして、終わる。
+    再利用された ID で、窓を作る前に active=1 のブロックが見えれば、新しいスレッドが TIP を持つ前に、古い持ち主の状態を
+    読む可能性がある(awase は process_id の一致も見るので、別のプロセスの残りは採らない。同じプロセスの再利用が残る)。
+    """
+    import threading
+    w = win32()
+    seen = {}
+    rows = []
+    lock = threading.Lock()
+
+    def body(n):
+        tid = w.k32.GetCurrentThreadId()
+        pre = w.read_block(tid)
+        win = Window(w, f"R{n}", f"R{n}")
+        win.create()
+        ok = win.set_open(1)
+        post = w.read_block(tid)
+        with lock:
+            rows.append({"n": n, "tid": tid, "reused": tid in seen, "pre": pre, "set_ok": ok, "post": post})
+            seen[tid] = seen.get(tid, 0) + 1
+        w.u32.DestroyWindow(win.hwnd)
+
+    for n in range(args.threads):
+        th = threading.Thread(target=body, args=(n,))
+        th.start()
+        th.join(30)
+        time.sleep(0.05)
+    reused = [r for r in rows if r["reused"]]
+    stale = [r for r in reused if r["pre"] is not None and r["pre"][9] == 1]
+    seen_pre = [r for r in reused if r["pre"] is not None]
+    print(f"threads: {len(rows)}, distinct thread ids: {len(seen)}, reused ids: {len(reused)}")
+    print(f"reused and a shared block existed before the new thread created its window: {len(seen_pre)}")
+    print(f"  of those, still active=1 (the previous owner's state is readable as if it were the new thread's): {len(stale)}")
+    for r in stale[:10]:
+        print(f"    tid={r['tid']} n={r['n']} pre={r['pre']}")
+    print(f"IME could not be set to ON in the new thread: {sum(1 for r in rows if not r['set_ok'])}")
+    return 0
 
 
 def cmd_drive(args):
@@ -670,7 +889,7 @@ def cmd_drive(args):
     exit_code = 0
 
     try:
-        if scenario == "focus":
+        if scenario in ("focus", "flip"):
             specs = [("A", "1"), ("B", "0"), ("C", "1"), ("D", "0")]       # 別プロセス 4 つ。ON/OFF を交互に
             for name, opens in specs:
                 p = spawn_host(here, name, opens, lifetime)
@@ -726,10 +945,18 @@ def cmd_drive(args):
             w.force_foreground(s["hwnd"])
             events.append({"ev": "focus", "t": time.time(), "tid": s["tid"], "name": s["name"]})
             time.sleep(args.switch_after + 12)
+        elif scenario == "flip":
+            ok_n, ng_n, lost = flip_loop(w, truths, args.rounds, rng, events)
+            print(f"flip rounds: {ok_n} flipped and moved the focus, {ng_n} focus moves did not take effect, "
+                  f"{lost} IME-state changes did not happen (truth was corrected from the shared memory)", flush=True)
+            if ok_n < max(10, args.rounds // 2):
+                print("too few flips took effect: the measurement is not meaningful", flush=True)
+                exit_code = 3
         elif len(targets) < 2:
             print(f"need at least 2 windows to move the focus between, got {len(targets)}: setup failed", flush=True)
             exit_code = 2
         else:
+            burners = start_burners(args.load, procs)
             ok_n, ng_n = focus_loop(w, targets, args.rounds, rng, events, dwell=(args.dwell_min, args.dwell_max))
             print(f"focus switches: {ok_n} took effect, {ng_n} did not (the window was not in the foreground afterwards)",
                   flush=True)
@@ -796,12 +1023,13 @@ def main(argv=None):
     h.add_argument("--switch-after", type=float, default=0, help="この秒数後に、先頭のスレッドを TIP の無いレイアウトへ切り替える")
 
     d = sub.add_parser("drive")
-    d.add_argument("scenario", choices=["focus", "threads", "appcontainer", "stale"])
+    d.add_argument("scenario", choices=["focus", "threads", "appcontainer", "stale", "flip"])
     d.add_argument("--events", required=True)
     d.add_argument("--rounds", type=int, default=100)
     d.add_argument("--dwell-min", type=float, default=0.35, help="次の切り替えまでの最短の滞在(秒)")
     d.add_argument("--dwell-max", type=float, default=1.6, help="次の切り替えまでの最長の滞在(秒)")
     d.add_argument("--seed", type=int, default=1)
+    d.add_argument("--load", type=int, default=0, help="測定中、CPU を使い切るプロセスをこの数だけ動かす(負荷時の read_us)")
     d.add_argument("--switch-after", type=float, default=12)
     d.add_argument("--mozc-ci-dir", default="mozc-readable/readable/ci")
 
@@ -812,12 +1040,18 @@ def main(argv=None):
     a.add_argument("--require-inactive", action="store_true")
     a.add_argument("--focus-grace", type=float, default=GRACE_S,
                    help="記録のスレッドとして許す、直近のフォーカス先の範囲(秒)。速い切り替えでは長くする")
+    a.add_argument("--state-grace", type=float, default=GRACE_S,
+                   help="状態の変化から、記録が新しい状態に追いつくまでの許容(秒)。flip では短くする")
     a.add_argument("--summary-json")
 
+    sub.add_parser("burn")
+    t = sub.add_parser("tidreuse")
+    t.add_argument("--threads", type=int, default=60)
     sub.add_parser("selftest")
 
     args = ap.parse_args(argv)
-    return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest}[args.cmd](args)
+    return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest,
+            "burn": cmd_burn, "tidreuse": cmd_tidreuse}[args.cmd](args)
 
 
 if __name__ == "__main__":
