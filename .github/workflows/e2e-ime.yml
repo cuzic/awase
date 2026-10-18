@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, feat/adr260-eisu-toggle-guard, feat/adr245-r2-resume-hold]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, feat/adr260-eisu-toggle-guard, feat/adr245-r2-resume-hold, fix/bug-207-mozc-server-io-monitor]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || (github.ref_name == 'fix/bug-207-mozc-server-io-monitor' && '*-mozc-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -97,7 +97,7 @@ jobs:
           # pass(安定)/ fail(再現を固定、BUG と対応)/ 削除のどれかに決める。期限切れは test_e2e_plan.py が赤にする。
           # 既存の observe は observe_grandfathered.txt に載せてあり(縮める方向にだけ動かす)、observe_audit.py が一覧する。
           # summary は有効回が 2 回以上で全PASS なら『pass昇格候補』、全FAIL なら『fail固定候補』と出す。
-          # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
+          # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME) / mozc=Mozc Readable(cuzic/mozc-readable の Release の MSI、BUG-207)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
@@ -713,6 +713,17 @@ jobs:
               for form in ('edit', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
               for iv in (10, 2)],
+            # --- Mozc Readable(BUG-207): 高速打鍵ストレスを Mozc 系の TIP で回す。awase が raw-tsf-literal と誤判定して文字を消さないか
+            # (I/O の監視を mozc_server に向ける修正の確認)。ts-<入力先>-mozc-<間隔>ms は awase あり、ts-raw-<入力先>-mozc-<間隔>ms は awase なしの対照。
+            # 名前に -mozc- を含むので、fix/bug-207-mozc-server-io-monitor への push は only='*-mozc-*' で回る。観測のみ(崩れても赤にしない)。
+            *[cfg(f'ts-{form}-mozc-{iv}ms', 'observe', check='typing', ime='mozc', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('edit', 'rich', 'tsf')
+              for iv in (40, 10)],
+            *[cfg(f'ts-raw-{form}-mozc-{iv}ms', 'observe', check='typing', ime='mozc', awase='false', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form={form} --interval={iv} --mode=raw --no-awase --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('edit', 'tsf')
+              for iv in (40, 10)],
             # --- 打鍵の揺らぎ比較(tsj-、examples/typing_stress/jitter.rs): 固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit)を同じ入力先・IME・seed で比べる。
             # jit の分布の形は仮置き(範囲だけ docs/adr/182 の実機実測に合わせる: 親指↔文字の押下間隔 2〜93ms、文字先押しの割合 30%)。--jit-iv=0.5 は間隔の倍率の対数標準偏差。
             # 既定の only 空では回さない(下の除外に tsj- を足してある)。only='tsj-*' で回す。観測のみ、until までに「揺らぎで loss/reorder/literal が増えるか」を決める。
@@ -1007,14 +1018,14 @@ jobs:
 
       # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
       - name: Google 日本語入力をインストール(chocolatey、約30秒)
-        if: matrix.cfg.ime != 'msime'
+        if: matrix.cfg.ime == 'gji'
         shell: pwsh
         run: |
           ./tools/ci/install-gji.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 入力言語をja-JP + GJI に設定、キーマッププリセット(ATOK/MS-IME)の config1.db を書く
-        if: matrix.cfg.ime != 'msime'
+        if: matrix.cfg.ime == 'gji'
         shell: pwsh
         run: |
           $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
@@ -1058,6 +1069,16 @@ jobs:
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
+
+      # Mozc Readable(BUG-207): GJI と別の TIP(mozc_server が変換サーバー)。awase が Mozc 系で I/O の監視を mozc_server に向けるかを確かめる。
+      - name: Mozc Readable をインストールして ja-JP の入力方式にする
+        if: matrix.cfg.ime == 'mozc'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./tools/ci/install-mozc-readable.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Microsoft IME 本体: ja-JP の言語を追加すると標準の日本語IME(Microsoft IME)が入る。
       - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
