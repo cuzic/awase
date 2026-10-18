@@ -108,6 +108,17 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 - 読み手の使い方: 最初は journal への記録のみ。判断には使わない。
 - warm up を指示する経路(awase → TIP)は本 ADR の範囲外。cold/warm の存在が Mozc 系で実測できてから、別の ADR にする。
 
+### D11. 素通りしたキーの数を `key_seq` の差で測れるか確かめる(ユーザー指摘 2026-10-18。**仮説。測定が先で、採否は未定**)
+
+背景は D1 の「BackSpace 数の検算は需要から外す」と同じ問題の別の角度である。`flush_raw_tsf_literal_backspaces` の BackSpace 数(`RAW_TSF_LITERAL.backs`)は、IME を素通りして文書に出た文字の数で、`preedit_utf16_len`(IME の中の長さ)とは別の量である。素通りしたキーは TIP が見ていないので、TIP が「正しい数」を直接書くことはできない。
+
+代わりに、awase が送ったキーの数 N と、同じ区間で `key_seq` が進んだ数 M の差 N−M を「TIP が見なかったキーの数」の候補にする。cold で最初の数打鍵が落ちる型の回収を、固定のヒューリスティックでなく測った値で決められる可能性がある。
+
+- 成立しない見込みの点(測定で確かめる): `key_seq` は重複や漏れがある(D5。`TestKeyDown` の複数回呼び出し、`KeyDown` の直呼び)。素通りしたキーが全部リテラルとして文書に残るとは限らず、落ちるだけのキーもある(N−M は文書に残った数の上限にすぎない)。cold で TIP がまだ動いていないスレッドには、そもそも書き手がいない。
+- 効く範囲は mozc-readable の窓だけ。GJI 配布版・MS-IME では使えない。
+- 測定(段階 1 の CI に足す): Chrome・WezTerm・Notepad に既知の打鍵列を、新しい runner の最初のキーから送り、(a) N−M、(b) 文書に実際に残ったリテラルの文字数、(c) 現行ヒューリスティックの BackSpace 数、を 1 打鍵列ごとに記録する。(a)=(b) が全打鍵列で成り立たなければこの D11 は却下し、却下した代案の節に移す。
+- 採る場合も、awase の BackSpace 回数の決定への接続は別の ADR とする(この ADR は観測のみ)。
+
 ## 却下した代案
 
 - **別のマッピング名**(例 `Local\mozc-readable-comp-<tid>`)に分ける案: D9 の互換問題は消え、更新頻度の違う値を分けられるが、AppContainer 経由の読み取り(`NtOpenSection`)と identity の置換表が 2 倍になる。同じマッピング + D9 の読み手規約の方が安い。
@@ -123,6 +134,7 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
    - 組成中に同じ窓の別 context へ移る/Win+Space で別 IME に切り替える、のときに何が出るか。
    - パスワード欄(入力スコープ)に入ったとき `scope_forced_mode` が立つか。その状態で IME を開いても立ったままか。ひらがな指定のスコープに入ったときはどうか。
    - 連続打鍵で pulse の回数が状態の変化回数と一致する。
+   - `key_seq` の差(D11): 上の測定(a)(b)(c)を記録する。
    - `server_ready`(D10): 新しい runner の最初のキーの前は 0 か。0 の間と 1 になってからで、結果に差があるか(差が無ければ外す)。
 2. **awase**: ADR-265 段階 1 の Observe が入った後で、journal に `phase`・`candidate_category`・`key_seq`・`composition_key_seq`・`scope_forced_mode`・`server_ready` を記録する(観測のみ)。
 3. 記録の結果を見て、belief への反映(D8)や `key_seq`/`composition_key_seq` を使った「TIP が追いついたか」の判定を、別の ADR にする。
@@ -131,6 +143,7 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 ## 未決
 
 - **Q1**: awase 側で、入力欄が指定するモードと belief が食い違って困った実例があるか(known-bugs・journal で探す)。無ければ `scope_forced_mode` は QMK 向けの表示用に留める。
+- **Q3**: D11 の N−M が文書に残ったリテラル数と一致するか(段階 1 の測定。一致しなければ D11 を却下する)。
 - **Q2**: Mozc の `Category` の値(`commands::Category`)と `static_assert` で固定できる範囲の確認。
 
 ## 確認していないこと
