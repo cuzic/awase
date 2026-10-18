@@ -25,9 +25,8 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationLegacyIAccessiblePattern,
-    IUIAutomationSelectionItemPattern, SetWinEventHook, TreeScope_Descendants,
-    UIA_LegacyIAccessiblePatternId, UIA_MenuItemControlTypeId, UIA_SelectionItemPatternId,
+    CUIAutomation, IUIAutomation, IUIAutomationLegacyIAccessiblePattern, SetWinEventHook,
+    TreeScope_Descendants, UIA_LegacyIAccessiblePatternId, UIA_MenuItemControlTypeId,
     UnhookWinEvent, HWINEVENTHOOK,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -167,41 +166,19 @@ unsafe fn read_menu_items(automation: &IUIAutomation, menu: HWND) -> Vec<MenuIte
             .CurrentAutomationId()
             .map(|b| b.to_string())
             .unwrap_or_default();
+        // STATE_SYSTEM_CHECKED（0x10）。実機では SelectionItemPattern が取れず、このビットに現在のモードが出る。
         let selected = el
-            .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
+            .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                UIA_LegacyIAccessiblePatternId,
+            )
             .ok()
-            .and_then(|p| p.CurrentIsSelected().ok())
-            .is_some_and(windows::core::BOOL::as_bool);
-        // 【検証ブランチだけの診断】
-        {
-            let name = el.CurrentName().map(|b| b.to_string()).unwrap_or_default();
-            let sel = el.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
-                UIA_SelectionItemPatternId,
-            );
-            let leg = el
-                .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
-                    UIA_LegacyIAccessiblePatternId,
-                )
-                .ok()
-                .and_then(|p| p.CurrentState().ok());
-            tracing::debug!(
-                "[indicator-menu] DIAG2 id={automation_id:?} name={name:?} sel_pattern_ok={} legacy_state={leg:?}",
-                sel.is_ok()
-            );
-        }
+            .and_then(|p| p.CurrentState().ok())
+            .is_some_and(|st| st & 0x10 != 0);
         items.push(MenuItem {
             automation_id,
             selected,
         });
     }
-    // 【検証ブランチだけの診断。本番の PR には入れない】読んだ AutomationId を確かめる(段階 1 の同定が miss になった原因の切り分け)。
-    tracing::debug!(
-        "[indicator-menu] DIAG items={:?}",
-        items
-            .iter()
-            .map(|i| (i.automation_id.as_str(), i.selected))
-            .collect::<Vec<_>>()
-    );
     items
 }
 
