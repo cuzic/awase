@@ -8,7 +8,8 @@ param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'st
       [string]$Dist = 'dist',
       [string]$MozcCiDir = 'mozc-readable\readable\ci',
       [int]$Rounds = 120,
-      [string]$OutDir = 'out')
+      [string]$OutDir = 'out',
+      [switch]$NoAwase)
 $ErrorActionPreference = 'Stop'
 $Clsid   = '{AFC94560-63DA-488E-9227-B04F3EF34B5B}'
 $Profile = '{7D7B9A38-A0A4-4390-9706-509E98A8C791}'
@@ -24,14 +25,20 @@ $l[0].InputMethodTips.Add("0411:$Clsid$Profile")
 Set-WinUserLanguageList $l -Force
 Write-Host ((Get-WinUserLanguageList | ForEach-Object { "$($_.LanguageTag): $($_.InputMethodTips -join ',')" }) -join "`n")
 
-Write-Host '== start awase (mozc_shm_shadow = true)'
-$cfg = Join-Path $Dist 'config.toml'
-if (-not (Test-Path $cfg)) { throw "config.toml not found in $Dist" }
-Add-Content -Path $cfg -Value "`n[diagnostics]`nmozc_shm_shadow = true`n"
-$aw = Start-Process -FilePath (Join-Path $Dist 'awase.exe') -WorkingDirectory $Dist -PassThru
-Start-Sleep -Seconds 8
-if ($aw.HasExited) { Write-Host "awase exited early, code $($aw.ExitCode)"; Get-Content (Join-Path $Dist 'awase.log') -ErrorAction SilentlyContinue | Select-Object -Last 40; exit 1 }
-Write-Host "awase pid $($aw.Id)"
+$aw = $null
+if ($NoAwase) {
+  # 対照: awase を起動せずに、同じ手順で窓を IME ON にできるか(awase が干渉しているのか、手順の問題かを切り分ける)
+  Write-Host '== control: awase is NOT started'
+} else {
+  Write-Host '== start awase (mozc_shm_shadow = true)'
+  $cfg = Join-Path $Dist 'config.toml'
+  if (-not (Test-Path $cfg)) { throw "config.toml not found in $Dist" }
+  Add-Content -Path $cfg -Value @('', '[diagnostics]', 'mozc_shm_shadow = true')
+  $aw = Start-Process -FilePath (Join-Path $Dist 'awase.exe') -WorkingDirectory $Dist -PassThru
+  Start-Sleep -Seconds 8
+  if ($aw.HasExited) { Write-Host "awase exited early, code $($aw.ExitCode)"; Get-Content (Join-Path $Dist 'awase.log') -ErrorAction SilentlyContinue | Select-Object -Last 40; exit 1 }
+  Write-Host "awase pid $($aw.Id)"
+}
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $events = Join-Path $OutDir 'events.jsonl'
@@ -42,6 +49,11 @@ python "$here\shmci.py" drive $Scenario --events $events --rounds $Rounds --mozc
 $driveExit = $LASTEXITCODE
 Write-Host "drive exit code: $driveExit"
 Start-Sleep -Seconds 2
+if ($NoAwase) {
+  # 対照は、設定(窓を ON にできたか)だけを見る。drive は設定に失敗しても窓を残してループへ進まず、exit 2 か 0 を返す。
+  Write-Host "control result: drive exit code $driveExit (0 = the window could be set to IME on without awase)"
+  exit $driveExit
+}
 
 # 結果を、後から読めるように残す(awase.log は大きいので [mozc-shm] の行と、冒頭だけ)
 if (Test-Path $log) {
@@ -51,12 +63,13 @@ if (Test-Path $log) {
 } else { Write-Host '::warning::awase.log not found' }
 
 Write-Host '== analyze'
-$minAccepted = if ($Scenario -eq 'stale') { 3 } else { 20 }
+# stale は窓が動かないので、受け入れた記録は少ない(フォーカス 1 回 + 状態の変化)。ほかは 100 回の移動で十分な件数が出る。
+$minAccepted = if ($Scenario -eq 'stale') { 1 } else { 20 }
 $extra = @()
 if ($Scenario -eq 'stale') { $extra += '--require-inactive' }
 python "$here\shmci.py" analyze --awase-log $log --events $events --min-accepted $minAccepted --summary-json (Join-Path $OutDir 'summary.json') @extra
 $analyzeExit = $LASTEXITCODE
 
-Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue
+if ($aw) { Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue }
 if ($driveExit -ne 0) { exit $driveExit }
 exit $analyzeExit

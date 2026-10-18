@@ -62,7 +62,15 @@ jobs:
       fail-fast: false
       matrix:
         # stale は IME(レイアウト)の切り替えがセッション全体に効くので、専用のジョブにする。
-        scenario: [focus, threads, appcontainer, stale]
+        # include だけで列挙する(既存の値と同じ項目を持つ include は、新しいジョブではなく既存のジョブに項目を足してしまう)。
+        include:
+          - scenario: focus
+          - scenario: threads
+          - scenario: appcontainer
+          # 対照: awase を起動せずに、AppContainer の窓を同じ手順で IME ON にできるか(awase の干渉かどうかの切り分け)
+          - scenario: appcontainer
+            noawase: '-NoAwase'
+          - scenario: stale
     steps:
       - uses: actions/checkout@v4
       - name: mozc-readable の CI の部品(AppContainer 用)
@@ -86,12 +94,12 @@ jobs:
           Get-ChildItem msi | Out-Host
       - name: 場面を測る (${{ matrix.scenario }})
         shell: pwsh
-        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario ${{ matrix.scenario }} -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Dist dist -OutDir out
+        run: ./tools/mozc_shm_ci/run_scenario.ps1 -Scenario ${{ matrix.scenario }} -Msi "${{ github.workspace }}\msi\Mozc64.msi" -Dist dist -OutDir out ${{ matrix.noawase }}
       - name: 結果を残す
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mozc-shm-${{ matrix.scenario }}
+          name: mozc-shm-${{ matrix.scenario }}${{ matrix.noawase && '-control' || '' }}
           path: out
           if-no-files-found: ignore
           retention-days: 7

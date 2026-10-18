@@ -579,8 +579,12 @@ def drain_in_thread(p, sink):
     return th
 
 
-def focus_loop(w, targets, rounds, rng, events, dwell=(0.05, 0.7)):
-    """targets: [(name, tid, hwnd)]。ランダムな順に前面にして、短い時間だけ待つ。"""
+def focus_loop(w, targets, rounds, rng, events, dwell=(0.35, 1.6)):
+    """targets: [(name, tid, hwnd)]。ランダムな順に前面にして、短い時間だけ待つ。
+
+    滞在は 0.35〜1.6 秒。0.05〜0.7 秒だと、awase はフォーカスの更新(非同期の読み取り)が次の切り替えで失効して、
+    読み取りまで進まず、記録がほとんど出なかった(48 秒で 1 件。run 39110651994)。それは安全側の挙動だが、測れない。
+    """
     last = None
     for _ in range(rounds):
         choices = [t for t in targets if t[1] != last]
@@ -599,7 +603,8 @@ def cmd_drive(args):
     procs = []
     sinks = []
     scenario = args.scenario
-    lifetime = args.rounds * 0.9 + 60
+    lifetime = args.rounds * 1.6 + 90
+    exit_code = 0
 
     try:
         if scenario == "focus":
@@ -651,6 +656,9 @@ def cmd_drive(args):
             w.force_foreground(s["hwnd"])
             events.append({"ev": "focus", "t": time.time(), "tid": s["tid"], "name": s["name"]})
             time.sleep(args.switch_after + 12)
+        elif len(targets) < 2:
+            print(f"need at least 2 windows to move the focus between, got {len(targets)}: setup failed", flush=True)
+            exit_code = 2
         else:
             focus_loop(w, targets, args.rounds, rng, events)
         time.sleep(2.0)  # 最後の tick が記録を出すのを待つ
@@ -668,7 +676,7 @@ def cmd_drive(args):
             for e in sorted(events, key=lambda e: e.get("t", 0)):
                 f.write(json.dumps(e, ensure_ascii=True) + "\n")
         print(f"wrote {len(events)} events to {args.events}", flush=True)
-    return 0
+    return exit_code
 
 
 def run_appcontainer_setup(args, here, procs, sinks):
@@ -715,7 +723,7 @@ def main(argv=None):
     d = sub.add_parser("drive")
     d.add_argument("scenario", choices=["focus", "threads", "appcontainer", "stale"])
     d.add_argument("--events", required=True)
-    d.add_argument("--rounds", type=int, default=120)
+    d.add_argument("--rounds", type=int, default=100)
     d.add_argument("--seed", type=int, default=1)
     d.add_argument("--switch-after", type=float, default=12)
     d.add_argument("--mozc-ci-dir", default="mozc-readable/readable/ci")
