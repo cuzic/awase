@@ -128,14 +128,12 @@ fn bug162_stage2_activation_set_open_does_not_open_ime_closed_outside_awase() {
     assert_ok(&h, p1_no_warranted_write_without_intent(&h));
 }
 
-/// BUG-205 追記（BUG-162 A の1段目の範囲外）: 変換中（Space）の Esc は ATOK 表にセルが無く（保持/破棄が割れる）、
-/// 1段目の修正は「従来どおり予測なし」で追跡した段階 `ConvSpace` を残す。実 IME（格子第3版）は
-/// `on-c19-conv-space|esc` → `ON/0x19/保持`。**擬似 IME の仮定**（変換中の Esc で「保持」なら入力中＝読みへ戻る、
-/// `support/pseudo_ime.rs`）の下では、続く無変換は入力中の無変換（`on-c19-typing|muhenkan` → 半角英数 `0x10`）
-/// だが、予測器は古い `ConvSpace` の行（ひらがなのまま）を引く。変換キー（henkan）で入った変換中の Esc は実機で測定して
-/// 修正した（`esc_in_conversion_next_key_stage`）が、Space で入った場合は未測定なので、実機で確かめるまでこのテストは無効のまま残す。
+/// BUG-205（BUG-162 A の1段目の範囲外）: 変換中（Space）の Esc は ATOK 表にセルが無く（保持/破棄が割れる）、
+/// 以前は「予測なし」で追跡した段階 `ConvSpace` を古いまま残していた。実 IME（格子第3版）は
+/// `on-c19-conv-space|esc` → `ON/0x19/保持`。実機の測定（run 39096991882、`--grid=s6`、3 IME × 間隔 2 通り × 各 10 回・全て同じ結果）で、
+/// Esc の直後は入力中（Typing＝読み）へ戻る（続く無変換の結果が入力中の行と一致する: ATOK は半角英数 `0x10`）と確定した。
+/// 予測器は、表にセルが無い変換中〈Space〉の Esc で追跡する段階を `Typing` に更新する（開閉・モードは予測しない）。
 #[test]
-#[ignore = "BUG-205 追記: Space で入った変換中の Esc は未測定(表にセルが無く段階が古いまま残る)。変換キーで入った場合は実測して修正済み。Space の実測後に外す"]
 fn conversion_esc_does_not_leave_stale_conv_stage() {
     let mut h = Harness::start(Setup::imm_cross(state(true, CONV_HIRAGANA)));
     h.advance_ms(100)
@@ -150,6 +148,8 @@ fn conversion_esc_does_not_leave_stale_conv_stage() {
         .key(VK_MUHENKAN)
         .advance_ms(20);
     assert_ok(&h, p2_no_stale_stage_after_unpredicted_key(&h));
+    // 予測が返った場合も、真の結果（続く無変換は入力中の無変換）と食い違わない。
+    assert_ok(&h, predictions_agree_with_truth(&h));
 }
 
 /// BUG-163（P3）の入力列: IME を閉じた状態で起動し、500ms ごとに観測する。
