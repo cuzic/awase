@@ -9010,6 +9010,130 @@ fn resume_observation_r1_shares_recording_and_floor_adr245_add2() {
     );
 }
 
+/// ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持の配線の形を固定する。
+///
+/// - 保持の足し込みは取り込み口(`handle_hook_key_event`)で `OUTPUT_GATE`/`FOCUS_RESYNC` の判定より前、かつ
+///   `deliver_key_event` の先頭(`[[keymap]]` のラッチより前、`ImeOffRescueReplay` は対象外)にある(Opus r2 M-2・r3 M-4')。
+/// - `kp_run_inner` では Phase A の直後・`kp_stage_focus_probe` の前にも足す(Phase A の入れ子で始まった保持)。
+/// - 解放は `INPUT_DEFER.replay_later` だけ。`SendInput`・Backspace・`apply_*`・`record_explicit_intent` を呼ばない
+///   (BUG-200: 復元の証拠なしの BS は別の文字を消す。belief を更新しない)。
+/// - `TIMER_RESUME_HOLD` は保持の開始で 1 回 set し、解放の出口(`resume_hold_finish`)の再生・破棄の両方と
+///   タイマーのハンドラで kill する。
+/// - 完了の札は、1 回目の書き込みが失敗した分岐で、160ms の `sleep_ms(RETRY_INTERVAL_MS)` の前に消費する(Opus r4 S-1)。
+/// - 札の `Drop` は `with_app` を呼ばない(Opus r3 M-3')。
+#[test]
+fn resume_hold_r2_wiring_adr245_add2() {
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
+    let code = |rel: &str| {
+        squash(&non_comment_lines(production_code_only(&read_crate_file(
+            rel,
+        ))))
+    };
+
+    // 取り込み口
+    let app = code("src/app/mod.rs");
+    let hold_at = app
+        .find("app.resume_hold_on_key(&event)")
+        .expect("取り込み口に保持の足し込みがある");
+    let gate_at = app
+        .find("OUTPUT_GATE.is_active()")
+        .expect("取り込み口に OUTPUT_GATE の判定がある");
+    assert!(
+        hold_at < gate_at,
+        "保持の足し込みは OUTPUT_GATE の判定より前(ADR-245 追補 2 M-2)"
+    );
+    assert!(
+        app.find("WM_RESUME_HOLD_DONE=>").is_some() && app.contains("app.resume_hold_on_done("),
+        "完了の札の通知を受けるハンドラがある"
+    );
+
+    // deliver_key_event
+    let mh = code("src/runtime/message_handlers.rs");
+    let deliver_at = mh.find("fndeliver_key_event(").expect("deliver_key_event");
+    let latch_at = mh[deliver_at..]
+        .find("keymap_latch.is_latched(")
+        .map(|i| deliver_at + i)
+        .expect("keymap_latch の判定");
+    let hold_in_deliver = mh[deliver_at..latch_at]
+        .find("app.resume_hold_on_key(&event)")
+        .expect("deliver_key_event の先頭に保持の判定がある");
+    assert!(hold_in_deliver > 0);
+    assert!(
+        mh[deliver_at..latch_at].contains("KeyOrigin::ImeOffRescueReplay"),
+        "ime-off-rescue の再生は保持の対象外(origin の skip_rescue_defer を保つ。M-4')"
+    );
+    assert!(
+        mh.contains("TIMER_RESUME_HOLD=>")
+            && mh.contains("timer.kill(crate::TIMER_RESUME_HOLD)")
+            && mh.contains("app.resume_hold_on_timer()"),
+        "タイマーのハンドラは冒頭で kill してから解放する"
+    );
+
+    // key_pipeline
+    let kp = code("src/runtime/key_pipeline.rs");
+    let phase_a = kp.find("take_ime_off_rescue_pending()").expect("Phase A");
+    let nested_hold = kp[phase_a..]
+        .find("self.resume_hold_on_key(&event)")
+        .map(|i| phase_a + i)
+        .expect("Phase A の直後に保持の判定がある(入れ子で始まった保持)");
+    let focus_probe = kp[phase_a..]
+        .find("self.kp_stage_focus_probe();")
+        .map(|i| phase_a + i)
+        .expect("kp_stage_focus_probe");
+    assert!(
+        nested_hold < focus_probe,
+        "Phase A の入れ子の保持の判定は kp_stage_focus_probe の前"
+    );
+    assert!(
+        kp.contains(&squash("if self.kp_stage_half_width_return(&event) {")),
+        "段が保持したら kp_run_inner は Consumed を返す"
+    );
+    // 札の消費は sleep の前。
+    let first_fail = kp
+        .find("token.notify(ReleaseReason::FirstWriteFailed)")
+        .expect("1 回目の失敗の分岐で札を消費する");
+    let sleep_at = kp
+        .find("win32_async::sleep_ms(RETRY_INTERVAL_MS).await")
+        .expect("リトライの sleep");
+    assert!(
+        first_fail < sleep_at,
+        "札は 160ms のスリープをまたいで持たない(スリープの前に消費する。Opus r4 S-1)"
+    );
+
+    // 殻
+    let rh = code("src/runtime/resume_hold.rs");
+    assert_eq!(
+        rh.matches(".replay_later(").count(),
+        1,
+        "保持の再生は INPUT_DEFER.replay_later の 1 か所だけ"
+    );
+    for forbidden in [
+        "send_input",
+        "SendInput",
+        "VK_BACK",
+        "apply_",
+        "record_explicit_intent",
+        "set_ime_open",
+        "dispatch_event",
+        "with_app(",
+    ] {
+        assert!(
+            !rh.contains(forbidden),
+            "resume_hold.rs は {forbidden} を使わない(IME へ書かない・belief を更新しない・札の Drop は with_app を呼ばない)"
+        );
+    }
+    assert_eq!(
+        rh.matches("timer.set(crate::TIMER_RESUME_HOLD").count(),
+        1,
+        "期限タイマーは保持の開始で 1 回だけ set する"
+    );
+    assert_eq!(
+        rh.matches("timer.kill(crate::TIMER_RESUME_HOLD)").count(),
+        2,
+        "解放の出口で再生・破棄の両方が kill する"
+    );
+}
+
 /// ADR-245 PR 2: 半角英数トグルの「戻ってきたときに復元」の配線の形を固定する。
 ///
 /// - 離脱(`ir_notify_focus_changed`)は復元(`kp_restore_kana_from_half_width`)を呼ばない。IME へ何も送らず、

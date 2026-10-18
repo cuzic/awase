@@ -12,6 +12,7 @@ mod key_pipeline;
 mod lang_check;
 mod lang_detect_shadow;
 mod mozc_shm_shadow;
+mod resume_hold;
 pub(crate) use lang_detect_shadow::LangDetectIntake;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
@@ -334,6 +335,14 @@ pub struct Runtime {
     indicator_menu: indicator_menu_shadow::IndicatorMenuShadow,
     /// ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ、挙動を変えない。既定は無効）
     mozc_shm: mozc_shm_shadow::MozcShmShadow,
+    /// ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持(MS-IME 本体の復元後、R1 の観測が記録されるまで)。
+    resume_hold: crate::state::half_width_resume_hold::ResumeHold<RawKeyEvent>,
+    /// R2: Resume の段が作った R1 の ticket と完了の札。`kp_restore_kana_from_half_width` が取り出して復元タスクへ渡す
+    /// (取り出されなかった札は段が `NotOwner` で通知する)。
+    pending_resume_r1: Option<(
+        crate::state::probe_admission::ImmLikeTicket,
+        resume_hold::ResumeDoneToken,
+    )>,
     /// Platform 層の全状態
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
@@ -1500,6 +1509,8 @@ impl Runtime {
             lang_detect: lang_detect_shadow::LangDetectShadow::disabled(),
             indicator_menu: indicator_menu_shadow::IndicatorMenuShadow::disabled(),
             mozc_shm: mozc_shm_shadow::MozcShmShadow::disabled(),
+            resume_hold: crate::state::half_width_resume_hold::ResumeHold::new(),
+            pending_resume_r1: None,
             platform_state,
             all_keymaps,
             post_bypass_rules,

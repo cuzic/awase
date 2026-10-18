@@ -489,6 +489,11 @@ impl super::Runtime {
         ngram: Option<NgramModel>,
         hold_config_ok: bool,
     ) {
+        // ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持も、設定の再読み込みで解放する（黙って消えないように）。
+        self.resume_hold_release(
+            None,
+            crate::state::half_width_resume_hold::ReleaseReason::ConfigReload,
+        );
         // 設定リロードで作り直す前に、保持中の打鍵を解放する（作り直しで黙って消えないように）。
         let scope = scope_id(crate::win32::foreground_scope());
         let step = self.lang_detect.controller.on_timer(scope);

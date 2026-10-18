@@ -154,6 +154,14 @@ pub(crate) fn deliver_key_event(
         app.platform_state.gate.last_hook_activity_ms = hook::current_tick_ms();
     }
 
+    // ADR-245 追補 2 R2(Opus r2 M-2): 戻った窓の最初の打鍵を保持している間に届いた打鍵は、origin を問わず保持に足す
+    // (drain の途中で保持が始まっても、同じバッチの後続が追い越さない)。保持の外で既に OS に届いた Down の Up は
+    // 足さず通す(`resume_hold_on_key` が判断する)。順序は「保持の判定 → `[[keymap]]` のラッチ」。ime-off-rescue の
+    // 再生は保持の外で先に処理する(chronological に古く、origin の `skip_rescue_defer` を保つため。M-4')。
+    if !matches!(origin, KeyOrigin::ImeOffRescueReplay) && app.resume_hold_on_key(&event) {
+        return KeyDelivery::Consumed;
+    }
+
     let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
 
     // ── `[[keymap]]` latch チェック（ADR-114 決定2 ステップ1、最優先）──
@@ -530,6 +538,11 @@ pub(crate) unsafe fn handle_wm_timer(
                 );
                 crate::INPUT_DEFER.replay_later(held);
             }
+        }
+        Some(id) if id == crate::TIMER_RESUME_HOLD => {
+            // 一発タイマー(ADR-245 追補 2 R2)。冒頭で自ら kill する。
+            app.platform.timer.kill(crate::TIMER_RESUME_HOLD);
+            app.resume_hold_on_timer();
         }
         Some(id) if id == crate::TIMER_LANG_HOLD => {
             // 一発タイマー（ADR-263 PR 2b）。冒頭で自ら kill する。
@@ -926,6 +939,11 @@ pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usiz
 
 /// WM_PANIC_RESET ハンドラ
 pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
+    // ADR-245 追補 2 R2: 保持中の打鍵は失わず再生する(窓が違えば捨てる)。
+    app.resume_hold_release(
+        None,
+        crate::state::half_width_resume_hold::ReleaseReason::PanicReset,
+    );
     app.panic_reset();
 }
 

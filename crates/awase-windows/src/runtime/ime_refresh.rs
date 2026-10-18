@@ -529,6 +529,12 @@ impl Runtime {
     // ── フォーカス変更通知 ──
 
     fn ir_notify_focus_changed(&mut self, skip_imm_query: bool) {
+        // ADR-245 追補 2 R2: 戻った窓の最初の打鍵を保持している間にフォーカスが変わったら、保持を解放する。前面窓が保持の
+        // 開始時と違えば、保持した打鍵は捨てる(別窓へ誤配送しない。窓の照合は解放の出口の 1 か所)。
+        self.resume_hold_release(
+            None,
+            crate::state::half_width_resume_hold::ReleaseReason::FocusChanged,
+        );
         // 別アプリ/ウィンドウへ遷移したら進行中の actuation 試行を破棄する
         // （ADR-080 破棄条件2）。新しいフォーカス先では desired/観測前提が変わる
         // ため、attempts を持ち越さず次の tick で作り直す。
