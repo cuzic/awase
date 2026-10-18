@@ -330,8 +330,10 @@ pub fn outcome_of(reading: &Reading, expected_pid: u32) -> Outcome {
     }
 }
 
-/// 専用の読みのタイマー(`TIMER_MOZC_SHM`、ADR-268 D5)を回し続けるか。この窓のスレッドに共有メモリのブロックがある
-/// (開けた)なら真。開けなかった(`NotFound`)窓では回さない(mozc-readable を使わない利用者に何も課さない)。
+/// 専用の読みのタイマー(`TIMER_MOZC_SHM`、ADR-268 D5)を回し続けるか。
+///
+/// この窓のスレッドに共有メモリのブロックがある(開けた)なら真。開けなかった(`NotFound`)窓では回さない
+/// (mozc-readable を使わない利用者に何も課さない)。
 /// `Rejected`(`active=0` など)や読み取りの失敗(`Torn`・`Denied`・`Unresolved`)は、ブロックはあるので回し続ける
 /// (TIP が有効になる・読めるようになるのを見逃さない)。
 #[must_use]
