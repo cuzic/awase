@@ -310,6 +310,7 @@ impl Harness {
             track: self.hub.model().key_track(),
             unreadable: false,
             passive_rule_eligible,
+            observable_toggle_guard: false,
         };
         let prediction = self.keymap.predict(vk, &input);
         let press = self.ime.press(vk);

@@ -565,6 +565,7 @@ const CORE_MODULES: &[&str] = &[
     "input_barrier",
     "intent_store",
     "key_effect_predictor",
+    "key_effect_rules",
     "key_effect_runtime",
     "key_effect_table",
     "key_sequence_policy",

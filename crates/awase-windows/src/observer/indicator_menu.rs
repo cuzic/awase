@@ -36,12 +36,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::focus::uia::SendableHwnd;
 use crate::state::indicator_menu::{classify_menu, rect_contains, MenuIme, MenuItem, MenuOutcome};
 
-/// Win32 のポップアップメニュー窓のクラス名。
-///
-/// BUG-202（PR #636）の `is_popup_menu_window_class`（`awase-windows-core`）と同じ。同 PR のマージ後に共通化する
-/// （ブランチが独立なので、ここではリテラルで持つ）。
-const POPUP_MENU_CLASS: &str = "#32768";
-
 /// 読み取りワーカーへの依頼。
 #[derive(Clone, Copy, Debug)]
 pub struct MenuReadRequest {
@@ -108,7 +102,9 @@ pub fn install_menu_hook(proc: MenuEventProc) -> Option<MenuHookGuard> {
 /// この hwnd がポップアップメニュー窓（クラス `#32768`）か。
 #[must_use]
 pub fn is_popup_menu_window(hwnd: HWND) -> bool {
-    crate::focus::classify::get_class_name_string(hwnd) == POPUP_MENU_CLASS
+    crate::focus::class_names::is_popup_menu_window_class(
+        &crate::focus::classify::get_class_name_string(hwnd),
+    )
 }
 
 /// カーソルがタスクバー（`Shell_TrayWnd`）の矩形の上にあるか。

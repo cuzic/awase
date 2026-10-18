@@ -17,6 +17,7 @@ examine_globs = [
     "crates/awase-windows-core/src/state/ime_model.rs",
     "crates/awase-windows-core/src/state/ime_profile_driver.rs",
     "crates/awase-windows-core/src/state/key_effect_predictor.rs",
+    "crates/awase-windows-core/src/state/key_effect_rules.rs",
     "crates/awase-windows-core/src/state/key_effect_runtime.rs",
     "crates/awase-windows-core/src/state/observation_store.rs",
     "crates/awase-windows-core/src/state/conv_classify.rs",

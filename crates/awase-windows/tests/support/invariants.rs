@@ -58,7 +58,7 @@ const fn mode_is_native(mode: InputModeState) -> bool {
 ///
 /// 開閉は `effect.open`（`None` なら打鍵前の belief の開閉のまま）、入力モードのかな/英数は
 /// `effect.mode`（`None` なら打鍵前の belief のまま）を予測値とし、開いているときだけモードを比べる。
-fn prediction_mismatch(r: &PredictionRecord) -> Option<String> {
+pub fn prediction_mismatch(r: &PredictionRecord) -> Option<String> {
     let p = r.prediction?;
     let predicted_open = p.effect.open.unwrap_or(r.input_open);
     let predicted_native = mode_is_native(p.effect.mode.unwrap_or(r.input_mode));

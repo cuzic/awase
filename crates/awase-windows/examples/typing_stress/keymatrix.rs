@@ -384,6 +384,13 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             };
             sleep_ms(wait_ms);
             let pre_api = real_ime_open(child);
+            // `--km-pre=<VK 16進>`(ADR-260 の持ち越しの測定): 測るキーの前に、このキーを 1 回押す(例: belief が英数のときにひらがな=かなへ SET。
+            // 入力モードの予測が照合されずに持ち越される状況を作る)。
+            if let Some(vk) = arg_value("--km-pre=").and_then(|v| u32::from_str_radix(&v, 16).ok())
+            {
+                press(vk, scan_of(vk), 60);
+                sleep_ms(700);
+            }
             let mut presses = Vec::new();
             if comp && pre_ok && pre_api == Some(r0) {
                 press(probe.vk, probe.scan, 60);
@@ -423,8 +430,20 @@ pub(crate) fn keymatrix_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             press(VK_RETURN, 0x1C, 50);
             sleep_ms(700);
             let text = read_text(child);
+            // `--km-twice`: 1文字目の後に、直接観測の追随（ADR-260 の B1o・B3 など）が働く時間を空け、2文字目の結果も記録する。
+            let typed2 = if std::env::args().any(|a| a == "--km-twice") {
+                clear_text(child);
+                sleep_ms(300);
+                press(probe.vk, probe.scan, 60);
+                sleep_ms(700);
+                press(VK_RETURN, 0x1C, 50);
+                sleep_ms(700);
+                json!({"text":read_text(child),"expect":probe.kana.to_string()})
+            } else {
+                serde_json::Value::Null
+            };
             rec(
-                &json!({"type":"km_trial","cell":cell.label,"key":cell.key,"kind":cell.kind_name(),
+                &json!({"type":"km_trial","typed2":typed2,"cell":cell.label,"key":cell.key,"kind":cell.kind_name(),
                 "gap":cell.gap_name(),"n":i,"r0":r0,"target":target,"utc":utc0,"pre_ok":pre_ok,
                 "pre_api":pre_api,"commit":commit,"text_commit":text_commit,"text_post":text_post,"presses":presses,"focus_lost":focus_lost,"fresh":fresh_info,
                 "typed":{"press_utc":press_utc,"text":text,"expect":probe.kana.to_string(),

@@ -444,6 +444,17 @@ pub struct EpisodeOutcome {
     pub duration_ms: u64,
 }
 
+/// `EpisodeTracker::on_key_step` の結果
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyStep {
+    /// この打鍵が来る前から進行中だったエピソードが、窓の変化・期限で閉じた（この打鍵はそのエピソードに属さない）
+    pub closed_prev: Option<EpisodeOutcome>,
+    /// この打鍵でエピソードが閉じた（この打鍵はそのエピソードに属する）
+    pub closed_now: Option<EpisodeOutcome>,
+    /// この打鍵が、進行中のエピソード（この打鍵で始まったもの、この打鍵で閉じたものを含む）に属するか
+    pub in_episode: bool,
+}
+
 /// 追跡器の設定
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TrackerConfig {
@@ -489,7 +500,7 @@ impl EpisodeTracker {
         }
     }
 
-    /// 打鍵を 1 つ渡す。エピソードが閉じたら結果を返す。
+    /// 打鍵を 1 つ渡す。エピソードが閉じたら結果を返す（観測用。保持しない呼び出し向けの簡易版）。
     ///
     /// 開始は、窓切替または長い無操作のあとの**最初の Down**が文字キーか親指のとき（修飾なし・注入でない）。
     /// 矢印・Tab・Enter 等で始まる再開はエピソードにしない。
@@ -499,17 +510,52 @@ impl EpisodeTracker {
         key: ObservedKey,
         scope: u64,
     ) -> Option<EpisodeOutcome> {
+        let step = self.on_key_step(model, key, scope);
+        step.closed_prev.or(step.closed_now)
+    }
+
+    /// [`Self::on_key`] の詳細版。閉じたエピソードがこの打鍵に属するか（`in_episode`）を返す。
+    pub fn on_key_step(&mut self, model: &KanaModel, key: ObservedKey, scope: u64) -> KeyStep {
         let now = key.timestamp_ms;
-        let mut outcome = self.close_if_stale(scope, now);
+        let closed_prev = self.close_if_stale(scope, now);
         self.arm(scope, now);
         self.maybe_start(key, scope);
-        if self.active.is_some() {
-            let closed = self.feed(model, key, now);
-            if outcome.is_none() {
-                outcome = closed;
-            }
+        let in_episode = self.active.is_some();
+        let closed_now = if in_episode {
+            self.feed(model, key, now)
+        } else {
+            None
+        };
+        KeyStep {
+            closed_prev,
+            closed_now,
+            in_episode,
         }
-        outcome
+    }
+
+    /// 進行中のエピソードがあるか
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
+
+    /// 進行中のエピソードが始まった前面窓の識別子
+    #[must_use]
+    pub fn active_scope(&self) -> Option<u64> {
+        self.active.as_ref().map(|a| a.scope)
+    }
+
+    /// 進行中のエピソードの期限の時刻（開始 + `max_ms`）
+    #[must_use]
+    pub fn active_deadline_ms(&self) -> Option<u64> {
+        self.active
+            .as_ref()
+            .map(|a| a.started_ms.saturating_add(self.cfg.max_ms))
+    }
+
+    /// 進行中のエピソードを、期限（タイマー）などの外部の理由で閉じる。
+    pub fn force_close(&mut self, stop: StopReason, now_ms: u64) -> Option<EpisodeOutcome> {
+        self.finish(stop, now_ms)
     }
 
     /// 進行中のエピソードが、窓の変化・期限で閉じる。
@@ -597,6 +643,216 @@ impl EpisodeTracker {
             duration_ms: now.saturating_sub(active.started_ms),
         })
     }
+}
+
+/// [`HoldController::on_key`]・[`HoldController::on_timer`] の結果。呼び出し側（殻）が順に実行する。
+#[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)] // 独立した判定フラグ（日本語/英数/保持中/保持開始）を 1:1 で表している
+pub struct HoldStep<T> {
+    /// 保持せず、通常どおり流す打鍵（エピソードに属さない、または保持しないエピソードの打鍵）
+    pub pass: Option<T>,
+    /// 解放して、順序どおりに流す打鍵（保持していた打鍵と、解放の契機になった打鍵）
+    pub release: Vec<T>,
+    /// 捨てた打鍵の数（保持中に前面窓が変わった）
+    pub discarded: usize,
+    /// 閉じたエピソードの結果（古いものが先）
+    pub outcomes: Vec<EpisodeOutcome>,
+    /// **保持していたエピソード**で日本語と確定した（`release` を流す**前**に、IME への書き込みの対象にしてよい）。
+    /// 保持しなかったエピソード（観測だけ）の判定は `outcomes` の `verdict` で見る
+    pub japanese: bool,
+    /// **保持していたエピソード**で、日本語でないと確定した（`NotJapanese`。`ime_on_eisu` の半角英数への切替の対象にしてよい）。
+    /// 未決（`Undecided`）や打ち切りでは立たない
+    pub english: bool,
+    /// このステップのあとも保持が続いている（期限のタイマーを動かしておく）
+    pub holding: bool,
+    /// このステップで保持するエピソードが始まった（期限のタイマーを起動する）
+    pub started_holding: bool,
+}
+
+impl<T> HoldStep<T> {
+    const fn empty() -> Self {
+        Self {
+            pass: None,
+            release: Vec::new(),
+            discarded: 0,
+            outcomes: Vec::new(),
+            japanese: false,
+            english: false,
+            holding: false,
+            started_holding: false,
+        }
+    }
+}
+
+/// エピソード先頭の打鍵を保持し、判定が出たら順序どおりに解放するコントローラ（ADR-263 D2、純粋）。
+///
+/// 保持するのは**エピソードの全打鍵**（Down も Up も、判定の材料でない打鍵も）。保持しないエピソード
+/// （`may_hold = false`）でも判定と結果の記録は行う（観測）。窓が変わっていたら保持した打鍵は捨てる。
+/// 殻は `japanese` なら IME への書き込みを行ってから `release` を流す。
+#[derive(Debug)]
+pub struct HoldController<T> {
+    tracker: EpisodeTracker,
+    held: Vec<T>,
+    /// 進行中のエピソードがある（`tracker` が持つ）か
+    episode_live: bool,
+    /// 進行中のエピソードで打鍵を保持しているか
+    holding: bool,
+}
+
+impl<T> HoldController<T> {
+    #[must_use]
+    pub const fn new(cfg: TrackerConfig) -> Self {
+        Self {
+            tracker: EpisodeTracker::new(cfg),
+            held: Vec::new(),
+            episode_live: false,
+            holding: false,
+        }
+    }
+
+    /// 保持中か
+    #[must_use]
+    pub const fn is_holding(&self) -> bool {
+        self.holding
+    }
+
+    /// 保持している打鍵の数
+    #[must_use]
+    pub const fn held_len(&self) -> usize {
+        self.held.len()
+    }
+
+    /// 取り込み口の打鍵を 1 つ渡す。`may_hold` は、この打鍵で**エピソードが始まる場合に**保持するか
+    /// （対象の窓・設定による。進行中のエピソードの保持は変わらない）。
+    pub fn on_key(
+        &mut self,
+        model: &KanaModel,
+        key: ObservedKey,
+        event: T,
+        scope: u64,
+        may_hold: bool,
+    ) -> HoldStep<T> {
+        let mut out = HoldStep::empty();
+        let step = self.tracker.on_key_step(model, key, scope);
+
+        if let Some(prev) = step.closed_prev {
+            if prev.stop == StopReason::WindowChanged {
+                out.discarded += self.held.len();
+                self.held.clear();
+            } else {
+                out.release.append(&mut self.held);
+            }
+            self.episode_live = false;
+            self.holding = false;
+            out.outcomes.push(prev);
+        }
+
+        if step.in_episode {
+            if !self.episode_live {
+                self.episode_live = true;
+                self.holding = may_hold;
+                out.started_holding = may_hold;
+            }
+            if self.holding {
+                self.held.push(event);
+            } else {
+                out.pass = Some(event);
+            }
+            if let Some(now) = step.closed_now {
+                out.japanese = self.holding && matches!(now.verdict, Verdict::Japanese(_));
+                out.english = self.holding && now.verdict == Verdict::NotJapanese;
+                out.release.append(&mut self.held);
+                self.episode_live = false;
+                self.holding = false;
+                out.outcomes.push(now);
+            }
+        } else {
+            out.pass = Some(event);
+        }
+        out.holding = self.holding;
+        out
+    }
+
+    /// 期限のタイマーが発火した。保持中のエピソードを閉じる。`scope` は今の前面窓の識別子。
+    ///
+    /// 前面窓が保持の開始時と違えば（マウスで窓を変えたあとに次の打鍵が来なかった場合）、保持した打鍵は**捨てる**
+    /// （元の窓の打鍵が新しい窓へ出る誤送信を避ける）。同じなら解放する。
+    pub fn on_timer(&mut self, scope: u64) -> HoldStep<T> {
+        let mut out = HoldStep::empty();
+        let deadline = self.tracker.active_deadline_ms().unwrap_or(0);
+        let Some(started_scope) = self.tracker.active_scope() else {
+            self.episode_live = false;
+            self.holding = false;
+            return out;
+        };
+        let (stop, discard) = if started_scope == scope {
+            (StopReason::Timeout, false)
+        } else {
+            (StopReason::WindowChanged, true)
+        };
+        if let Some(outcome) = self.tracker.force_close(stop, deadline) {
+            if discard {
+                out.discarded += self.held.len();
+                self.held.clear();
+            } else {
+                out.release.append(&mut self.held);
+            }
+            out.outcomes.push(outcome);
+        }
+        self.episode_live = false;
+        self.holding = false;
+        out
+    }
+}
+
+/// ひらがなキーを送ってよいかの判断に使う事実（殻が集める）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // 独立した前提条件を 1:1 で表している
+pub struct WriteFacts {
+    /// belief が IME ON
+    pub belief_open: bool,
+    /// 観測の無い窓（実測学習で降格された窓）
+    pub unobserved_window: bool,
+    /// NonText（タスクバー等）
+    pub non_text: bool,
+    /// 前面窓と awase のフォーカス追跡が同じプロセスを指している（Alt+Tab 直後は追跡が遅れる）
+    pub focus_in_sync: bool,
+    /// 利用者が直近に、これから書く向きと**逆**の明示操作をしている（その意図を尊重して書かない。
+    /// ひらがなキー〔ON〕なら明示 OFF、IME OFF キーなら明示 ON）
+    pub explicit_opposite_intent: bool,
+    /// Alt/Win が押されている（Alt 中の合成かなキーは JIS かな入力への切替に化ける。BUG-008）
+    pub modifier_held: bool,
+}
+
+/// 書き込み（ひらがなキー/IME OFF キー）を送れない共通の理由。判断の順序が優先順位。純粋。
+/// `explicit_label` は逆向きの明示操作があるときの理由の名前。
+const fn write_skip_reason(f: WriteFacts, explicit_label: &'static str) -> Option<&'static str> {
+    if !f.belief_open {
+        Some("skipped-belief-off")
+    } else if !f.unobserved_window || f.non_text {
+        Some("skipped-observed-window")
+    } else if !f.focus_in_sync {
+        Some("skipped-focus-lag")
+    } else if f.explicit_opposite_intent {
+        Some(explicit_label)
+    } else if f.modifier_held {
+        Some("skipped-modifier-held")
+    } else {
+        None
+    }
+}
+
+/// ひらがなキー（日本語と判定したときの IME ON）を送れない理由（送ってよければ `None`）。純粋。
+#[must_use]
+pub const fn hiragana_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
+    write_skip_reason(f, "skipped-explicit-off")
+}
+
+/// 半角英数トグルへ入れない理由（`ime_on_eisu` で英数と判定したとき）（送ってよければ `None`）。純粋。
+/// `belief_open` は『awase が IME ON とみなしている』こと（OFF とみなしているなら、入る意味が無い）。
+#[must_use]
+pub const fn eisu_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
+    write_skip_reason(f, "skipped-explicit-on")
 }
 
 #[cfg(test)]
@@ -985,6 +1241,284 @@ mod tests {
         let out = last.expect("closed by likelihood");
         assert_eq!(out.verdict, Verdict::Japanese(JapaneseEvidence::Likelihood));
         assert_eq!(out.llr_trace.len(), out.presses);
+    }
+
+    // ---- HoldController ----
+
+    fn hold_controller() -> HoldController<u32> {
+        HoldController::new(tracker_cfg())
+    }
+
+    #[test]
+    fn episode_keys_are_held_and_released_in_order_on_overlap() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        let s1 = c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        assert!(s1.pass.is_none() && s1.release.is_empty());
+        assert!(s1.holding && s1.started_holding);
+        // 修飾キー自身のイベントも保持列に入る（順序を保つため）。エピソードには影響しない。
+        let s2 = c.on_key(&model, key(KeyRole::Modifier, true, 15), 2, 1, true);
+        assert!(s2.pass.is_none() && s2.holding && !s2.started_holding);
+        // 文字がまだ押されたまま親指を押す = 重なり。
+        let s3 = c.on_key(
+            &model,
+            key(KeyRole::Thumb(ThumbSide::Left), true, 20),
+            3,
+            1,
+            true,
+        );
+        assert!(s3.japanese);
+        assert_eq!(s3.release, vec![1, 2, 3]);
+        assert!(!s3.holding && s3.pass.is_none());
+        assert_eq!(s3.outcomes.len(), 1);
+        assert!(!c.is_holding());
+    }
+
+    #[test]
+    fn keys_outside_an_episode_pass_through() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        // 武装された最初の Down が矢印（Other）なら、エピソードにせず通す。
+        let s = c.on_key(&model, key(KeyRole::Other, true, 10), 7, 1, true);
+        assert_eq!(s.pass, Some(7));
+        assert!(s.release.is_empty() && !s.holding);
+    }
+
+    #[test]
+    fn episode_without_may_hold_is_observed_but_never_held() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        let s1 = c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, false);
+        assert_eq!(s1.pass, Some(1));
+        assert!(!s1.holding && !s1.started_holding);
+        let s2 = c.on_key(
+            &model,
+            key(KeyRole::Thumb(ThumbSide::Left), true, 20),
+            2,
+            1,
+            false,
+        );
+        assert_eq!(s2.pass, Some(2));
+        assert!(s2.release.is_empty());
+        assert!(
+            !s2.japanese,
+            "保持していないエピソードは書き込みの対象にしない"
+        );
+        assert_eq!(s2.outcomes.len(), 1);
+        assert_eq!(
+            s2.outcomes[0].verdict,
+            Verdict::Japanese(JapaneseEvidence::ThumbOverlap),
+            "判定は outcome に残る"
+        );
+    }
+
+    #[test]
+    fn window_change_discards_the_held_keys() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), false, 15), 2, 1, true);
+        // 窓 2 の打鍵: 古いエピソードは WindowChanged で閉じ、保持した 2 打鍵は捨てる。新しいエピソードはこの打鍵で始まる。
+        let s = c.on_key(&model, key(KeyRole::Char(pos(1, 2)), true, 20), 3, 2, true);
+        assert_eq!(s.discarded, 2);
+        assert!(s.release.is_empty());
+        assert_eq!(s.outcomes[0].stop, StopReason::WindowChanged);
+        assert!(
+            s.holding && s.started_holding,
+            "新しいエピソードで保持を始める"
+        );
+        assert!(s.pass.is_none());
+    }
+
+    #[test]
+    fn non_material_key_releases_held_keys_with_the_trigger_last() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        let s = c.on_key(&model, key(KeyRole::Other, true, 20), 2, 1, true);
+        assert_eq!(s.release, vec![1, 2], "契機の打鍵は保持列の最後");
+        assert!(!s.japanese && !s.holding);
+        assert_eq!(s.outcomes[0].stop, StopReason::NonMaterialKey);
+    }
+
+    #[test]
+    fn not_japanese_verdict_releases_without_the_write_flag() {
+        let model = tiny_model();
+        let mut cfg = tracker_cfg();
+        cfg.params = params(100.0, 5.0, 7);
+        let mut c: HoldController<u32> = HoldController::new(cfg);
+        // 記号キー(0,0)は仮名に読めず、1 打鍵目で NotJapanese になる。
+        let s = c.on_key(&model, key(KeyRole::Char(pos(0, 0)), true, 10), 1, 1, true);
+        assert_eq!(s.release, vec![1]);
+        assert!(!s.japanese);
+        assert_eq!(s.outcomes[0].verdict, Verdict::NotJapanese);
+    }
+
+    #[test]
+    fn timer_releases_the_held_keys() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), false, 15), 2, 1, true);
+        let s = c.on_timer(1);
+        assert_eq!(s.release, vec![1, 2]);
+        assert!(!s.holding && !s.japanese);
+        assert_eq!(s.outcomes[0].stop, StopReason::Timeout);
+        // タイマーが二重に発火しても何も起きない。
+        assert!(c.on_timer(1).release.is_empty());
+    }
+
+    #[test]
+    fn stale_timeout_on_the_next_key_releases_and_starts_a_new_episode() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        // タイマーが間に合わず、期限後に同じ窓の次の打鍵が来た: 古い保持を解放（捨てない）して、新しい判定へ。
+        let s = c.on_key(
+            &model,
+            key(KeyRole::Char(pos(1, 2)), true, 3_000),
+            2,
+            1,
+            true,
+        );
+        assert_eq!(s.release, vec![1]);
+        assert_eq!(s.discarded, 0);
+        assert_eq!(s.outcomes[0].stop, StopReason::Timeout);
+    }
+
+    #[test]
+    fn ime_off_write_uses_the_same_gate_with_its_own_explicit_label() {
+        assert_eq!(eisu_write_skip_reason(all_clear()), None);
+        let opposite = WriteFacts {
+            explicit_opposite_intent: true,
+            ..all_clear()
+        };
+        assert_eq!(
+            eisu_write_skip_reason(opposite),
+            Some("skipped-explicit-on"),
+            "IME OFF の書き込みで見送る逆向きの明示操作は、明示 ON"
+        );
+        assert_eq!(
+            hiragana_write_skip_reason(opposite),
+            Some("skipped-explicit-off")
+        );
+        let modifier = WriteFacts {
+            modifier_held: true,
+            ..all_clear()
+        };
+        assert_eq!(
+            eisu_write_skip_reason(modifier),
+            Some("skipped-modifier-held")
+        );
+    }
+
+    #[test]
+    fn english_flag_is_set_only_for_a_held_not_japanese_episode() {
+        let model = tiny_model();
+        let mut cfg = tracker_cfg();
+        cfg.params = params(100.0, 5.0, 7);
+        // 保持するエピソードで NotJapanese に確定: english = true。
+        let mut c: HoldController<u32> = HoldController::new(cfg);
+        let s = c.on_key(&model, key(KeyRole::Char(pos(0, 0)), true, 10), 1, 1, true);
+        assert!(s.english && !s.japanese);
+        // 保持しないエピソード（観測だけ）では立たない。
+        let mut c: HoldController<u32> = HoldController::new(cfg);
+        let s = c.on_key(&model, key(KeyRole::Char(pos(0, 0)), true, 10), 1, 1, false);
+        assert!(!s.english);
+        // 未決（max_keys）や打ち切りでは立たない。
+        let mut c: HoldController<u32> = HoldController::new(tracker_cfg());
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        let s = c.on_key(&model, key(KeyRole::Other, true, 20), 2, 1, true);
+        assert!(!s.english && !s.japanese);
+    }
+
+    #[test]
+    fn timer_after_the_window_changed_discards_the_held_keys() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), false, 15), 2, 1, true);
+        // マウスで窓を変えた（scope 2）あと、次の打鍵が来ないまま期限のタイマーが発火した。
+        let s = c.on_timer(2);
+        assert!(s.release.is_empty());
+        assert_eq!(s.discarded, 2);
+        assert_eq!(s.outcomes[0].stop, StopReason::WindowChanged);
+        assert!(!s.holding);
+    }
+
+    fn all_clear() -> WriteFacts {
+        WriteFacts {
+            belief_open: true,
+            unobserved_window: true,
+            non_text: false,
+            focus_in_sync: true,
+            explicit_opposite_intent: false,
+            modifier_held: false,
+        }
+    }
+
+    #[test]
+    fn hiragana_is_written_only_when_every_precondition_holds() {
+        assert_eq!(hiragana_write_skip_reason(all_clear()), None);
+    }
+
+    #[test]
+    fn hiragana_write_is_skipped_with_the_first_failing_reason() {
+        let cases = [
+            (
+                WriteFacts {
+                    belief_open: false,
+                    ..all_clear()
+                },
+                "skipped-belief-off",
+            ),
+            (
+                WriteFacts {
+                    unobserved_window: false,
+                    ..all_clear()
+                },
+                "skipped-observed-window",
+            ),
+            (
+                WriteFacts {
+                    non_text: true,
+                    ..all_clear()
+                },
+                "skipped-observed-window",
+            ),
+            (
+                WriteFacts {
+                    focus_in_sync: false,
+                    ..all_clear()
+                },
+                "skipped-focus-lag",
+            ),
+            (
+                WriteFacts {
+                    explicit_opposite_intent: true,
+                    ..all_clear()
+                },
+                "skipped-explicit-off",
+            ),
+            (
+                WriteFacts {
+                    modifier_held: true,
+                    ..all_clear()
+                },
+                "skipped-modifier-held",
+            ),
+        ];
+        for (facts, reason) in cases {
+            assert_eq!(hiragana_write_skip_reason(facts), Some(reason), "{facts:?}");
+        }
+        // 複数が同時に偽でも、belief OFF が最優先。
+        let many = WriteFacts {
+            belief_open: false,
+            modifier_held: true,
+            explicit_opposite_intent: true,
+            ..all_clear()
+        };
+        assert_eq!(hiragana_write_skip_reason(many), Some("skipped-belief-off"));
     }
 
     // ---- 実データ（data/ngram_hiragana.csv.gz と layout/nicola.yab）での回帰 ----

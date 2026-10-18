@@ -59,6 +59,24 @@ pub fn is_tsf_native_window(class_name: &str) -> bool {
     )
 }
 
+/// Win32 のポップアップメニュー窓（`TrackPopupMenu` 等が作るコンテキストメニュー）のクラス名。
+///
+/// どのアプリの右クリックメニューも、この標準クラスの窓として出る。入力インジケーターの
+/// 右クリックメニュー（IME が TSF 経由で出す）も同じ。
+pub const POPUP_MENU_WINDOW_CLASS: &str = "#32768";
+
+/// ポップアップメニュー窓（[`POPUP_MENU_WINDOW_CLASS`]）か。
+///
+/// メニューの項目がハイライトされる（マウスのホバー・キーボード）と、メニュー窓へ
+/// `EVENT_OBJECT_FOCUS` が出る。**メニューは元の窓にフォーカスを残したまま別の窓（メニュー窓）へ
+/// このイベントを出すだけで、入力先の窓は変わらない**。これを窓の切替として扱うと、
+/// `tsf-gate` が `PendingWarmup` に戻って保持中の打鍵が捨てられ、フォーカス窓の分類
+/// （`HwndCache`・UIA）が走る（BUG-202、ADR-264 決定 7）。
+#[must_use]
+pub fn is_popup_menu_window_class(class_name: &str) -> bool {
+    class_name == POPUP_MENU_WINDOW_CLASS
+}
+
 /// awase 自身の UI ウィンドウ（トレイ／設定画面）か。
 ///
 /// ここから読んだ IMM の conv/romaji 値は「ユーザーが編集しているアプリの入力方式」
@@ -375,6 +393,38 @@ pub fn detect_app_kind(class_name: &str) -> AppKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // BUG-202: コンテキストメニュー（クラス `#32768`）へのフォーカスは窓の切替ではない。
+    // 判定は完全一致(クラス名の部分一致で他の窓を巻き込まないこと)。
+    #[test]
+    fn popup_menu_window_class_is_exactly_the_win32_menu_class() {
+        assert!(is_popup_menu_window_class("#32768"));
+        assert_eq!(POPUP_MENU_WINDOW_CLASS, "#32768");
+    }
+
+    #[test]
+    fn popup_menu_window_class_does_not_match_real_input_windows() {
+        for class in [
+            "",
+            "Edit",
+            "ScenWnd",
+            "Chrome_WidgetWin_1",
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Windows.UI.Input.InputSite.WindowClass",
+            // 前後に文字が付いたものは別の窓(完全一致であること)
+            "#327680",
+            " #32768",
+            "#32768 ",
+            // 別の標準クラス(ダイアログ #32770、デスクトップ #32769)
+            "#32770",
+            "#32769",
+        ] {
+            assert!(
+                !is_popup_menu_window_class(class),
+                "{class:?} はメニュー窓ではない"
+            );
+        }
+    }
 
     // BUG-106追補3・4: awase自身のトレイ/設定画面から読んだ観測を、
     // ユーザーが編集中のアプリの入力方式として誤ってbeliefに採用していた。

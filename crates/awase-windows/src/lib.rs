@@ -282,6 +282,8 @@ pub const TIMER_FOCUS_RESYNC: usize = 109;
 /// 一発タイマーで、ハンドラ冒頭で自ら `kill` する（`TIMER_TSF_GATE`/
 /// `TIMER_POWER_RESUME`と同じ流儀）。
 pub const TIMER_HOOK_WATCHDOG_CANARY_CHECK: usize = 110;
+/// ADR-263 PR 2b: エピソード先頭の打鍵の保持の期限タイマー ID。一発タイマーで、ハンドラ冒頭で自ら `kill` する。
+pub const TIMER_LANG_HOLD: usize = 111;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 

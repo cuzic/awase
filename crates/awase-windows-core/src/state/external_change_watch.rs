@@ -398,6 +398,40 @@ impl DirectFollow {
     }
 }
 
+/// 今回の打鍵の予測（`Prediction.effect`）が値を持つ軸（ADR-260 決定2）。直接観測の窓の読みのうち、この軸のものだけを捨てる。
+///
+/// `ImeModel::key_effect()` は使わない: `KeyEffectPredicted` の reduce は、新しい予測が触れない軸に前の未照合の値を持ち越し、時刻を
+/// 新しい打鍵のものにする。入力モードの予測は belief と一致したとき照合されずに残るので、`key_effect()` で判定すると、
+/// 今回の打鍵が予測していない軸まで塞がる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PressAxes {
+    /// 今回の打鍵の予測が開閉を予測した。
+    pub open: bool,
+    /// 今回の打鍵の予測が入力モードを予測した。
+    pub mode: bool,
+}
+
+impl PressAxes {
+    /// 今回の打鍵の予測から作る。
+    #[must_use]
+    pub const fn from_effect(open: Option<bool>, mode_predicted: bool) -> Self {
+        Self {
+            open: open.is_some(),
+            mode: mode_predicted,
+        }
+    }
+}
+
+/// ADR-188 追記6 の「予測が付いた打鍵は窓内の読みを採らない」を、今回の打鍵の予測が値を持つ軸だけにする純関数（ADR-260 決定2）。
+/// 予測が値を持つ軸の読みは捨て（古い読みで正しい予測を覆さない）、持たない軸の読みは採る。
+#[must_use]
+pub const fn mask_follow_by_press_axes(follow: DirectFollow, axes: PressAxes) -> DirectFollow {
+    DirectFollow {
+        open: if axes.open { None } else { follow.open },
+        eisu: if axes.mode { None } else { follow.eisu },
+    }
+}
+
 /// 窓内の読み（`read_open`・`read_conv`）を belief（`belief_open`・`belief_eisu`）と照合し、追随する軸を返す純関数。
 ///
 /// - 開閉は `read_open` が belief と違うときだけ。
@@ -847,6 +881,49 @@ mod tests {
     /// ADR-244 D4（#595）の表テスト: 読み（開閉 3 値 × conv 5 値）× belief（開閉 × 英数）の全組み合わせで、
     /// - GJI は [`classify_direct_read`] と完全に同じ（D4 の緩和は GJI に影響しない）。
     /// - MS-IME 本体の英数の軸は [`classify_direct_read`] と同じ（従来どおり）。
+    /// ADR-260 決定2: 今回の打鍵の予測が値を持つ軸だけ読みを捨てる。全組み合わせ。
+    #[test]
+    fn mask_follow_by_press_axes_drops_only_predicted_axes() {
+        let opens = [None, Some(true), Some(false)];
+        let eisus = [None, Some(true), Some(false)];
+        for open in opens {
+            for eisu in eisus {
+                let follow = DirectFollow { open, eisu };
+                for ao in [false, true] {
+                    for am in [false, true] {
+                        let got =
+                            mask_follow_by_press_axes(follow, PressAxes { open: ao, mode: am });
+                        assert_eq!(
+                            got.open,
+                            if ao { None } else { open },
+                            "{follow:?} {ao} {am}"
+                        );
+                        assert_eq!(
+                            got.eisu,
+                            if am { None } else { eisu },
+                            "{follow:?} {ao} {am}"
+                        );
+                    }
+                }
+            }
+        }
+        // 予測が無い(軸が両方偽)打鍵は何も捨てない。
+        let f = DirectFollow {
+            open: Some(true),
+            eisu: Some(true),
+        };
+        assert_eq!(mask_follow_by_press_axes(f, PressAxes::default()), f);
+        // 開閉だけを予測した打鍵(閉→開の英数)は、英数の軸の読みを採る(tog:open の機序)。
+        let axes = PressAxes::from_effect(Some(true), false);
+        assert_eq!(
+            mask_follow_by_press_axes(f, axes),
+            DirectFollow {
+                open: None,
+                eisu: Some(true)
+            }
+        );
+    }
+
     /// - MS-IME 本体の開閉の軸は「閉→開」（`Some(true)`）だけで、`Some(false)`（開→閉）は決して返さない。
     ///   読めない（`None`）・belief と同じ読みでは開閉を追随しない。
     #[test]

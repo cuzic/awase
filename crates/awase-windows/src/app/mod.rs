@@ -491,8 +491,28 @@ fn init_lang_detect_validated(config: &ValidatedConfig, diag: &mut StartupDiagno
     } else {
         None
     };
+    // 保持と両立しない設定: Space を親指キーにした構成（英文のロールオーバーでも親指と文字の重なりが成立する）と、
+    // ADR-255 の遅いルール（`[[keymaps]]` の `ime = "off"`、IME OFF のとき親指キーを Space として打つ）。
+    // 表記ゆれ（`"Space"`・`"vk_space"` 等）を取りこぼさないよう、名前の一致ではなく VK を比べる（ADR-201 決定 1）。
+    let space_thumb = crate::state::alt_impersonation::is_thumb_key_vk(
+        &config.general.left_thumb_key,
+        &config.general.right_thumb_key,
+        crate::vk::VK_SPACE,
+    );
+    let late_keymap = config
+        .keymaps
+        .iter()
+        .any(|rule| rule.ime.as_deref() == Some("off"));
+    let hold_config_ok = !space_thumb && !late_keymap;
+    if matches!(cfg.mode, AutoDetectMode::ImeOn | AutoDetectMode::ImeOnEisu) && !hold_config_ok {
+        diag.warn(
+            "auto_detect: mode = \"ime_on\"/\"ime_on_eisu\" は、Space を親指キーにした構成と ADR-255 の遅いルール \
+             ([[keymaps]] の ime = \"off\") では打鍵を保持しません（判定の記録だけ行います）"
+                .to_string(),
+        );
+    }
     let cfg = cfg.clone();
-    let _ = with_app(|app| app.init_lang_detect(&cfg, ngram));
+    let _ = with_app(|app| app.init_lang_detect(&cfg, ngram, hold_config_ok));
 }
 
 /// `WM_INPUTLANGCHANGE` 時にキーボードレイアウトを検証する（message_handlers から呼ばれる）
@@ -660,8 +680,6 @@ pub(crate) fn dispatch_engine_message(
 fn handle_hook_key_event(mut event: awase::types::RawKeyEvent) {
     // ADR-223: 取り込み口で、フォーカス窓のスレッドの入力言語を読み、記録して `event` に載せる(再入時は読まない=不明)。
     let _ = with_app(|app| app.lang_check_on_keydown(&mut event));
-    // ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの影の判定（記録のみ。打鍵は変えない）。
-    let _ = with_app(|app| app.lang_detect_on_key(&event));
     if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
         let mods = event.modifier_snapshot;
         if let Some(is_on) = crate::panic_detect::get_panic_trigger_direction(
@@ -676,6 +694,17 @@ fn handle_hook_key_event(mut event: awase::types::RawKeyEvent) {
         if fired == Some(true) {
             crate::win32::post_to_main_thread(WM_DUMP_JOURNAL);
         }
+    }
+    // ADR-263: 窓切替直後・長い無操作のあとのエピソード先頭の打鍵の判定。`observe` は記録だけ（常に通す）。
+    // `ime_on` は観測の無い窓で打鍵を保持し、日本語入力と判定できたときだけひらがなキーを送ってから流す。
+    // パニック復旧キー・ジャーナルのダンプ契機は、保持より前（上の KeyDown 処理）で必ず見る。
+    // 既知の限界: RUNTIME が借用中（再入）で `with_app` が `None` のときは判定にも保持にも入らず、後段の `None` 経路で
+    // `INPUT_DEFER` に積まれる。保持中にこの再入が起きると、保持列より先に再生される（ネストしたメッセージポンプ中だけ）。
+    if matches!(
+        with_app(|app| app.lang_detect_on_key(&event)),
+        Some(crate::runtime::LangDetectIntake::Consumed)
+    ) {
+        return;
     }
     let defer_for_resync =
         crate::focus_resync::FOCUS_RESYNC.is_armed() && event.starts_focus_resync();

@@ -67,6 +67,8 @@ ANCHORS = [
     ("giving up", "check_drift_recovery.py"),
     ("GJI reinit", "check_drift_recovery.py"),
     ("VK_IME_ON 送信", "check_drift_recovery.py"),
+    # ime_key_matrix_spike.rs の記録の混入の印(後続のキーの効果が +Nms の記録に混ざった行。effect_learning.parse_snap が除外する)
+    ("[混入: 次の押下が", "effect_learning.py"),
     ("[mode-key-follow]", "mode_key_pass_timeline.py"),
     ("mode key PassThrough", "mode_key_pass_timeline.py"),
     ("IME snapshot: ", "mode_key_pass_timeline.py"),

@@ -866,6 +866,19 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
+    // BUG-202: コンテキストメニュー（クラス `#32768`）の項目がハイライトされると（マウスのホバー・
+    // キーボード）、メニュー窓へ `EVENT_OBJECT_FOCUS` が出る。メニューは元の窓にフォーカスを残した
+    // まま別の窓へこのイベントを出すだけで、入力先は変わらない。これを窓の切替として扱うと
+    // `tsf-gate` が `PendingWarmup` に戻って held の打鍵が捨てられ、フォーカス窓の分類も走る。
+    // **重複排除（`LAST_FOCUS_HWND`）より前で弾く**: 後だと `LAST_FOCUS_HWND` がメニュー窓に
+    // 上書きされ、メニューを閉じて元の窓へ戻る `FOCUS` が「新しい窓」として再び拾われる。
+    // 入力インジケーターの右クリックメニュー（ADR-264）もこの標準クラス。
+    if crate::focus::class_names::is_popup_menu_window_class(
+        &crate::focus::classify::get_class_name_string(hwnd),
+    ) {
+        return;
+    }
+
     let hwnd_isize = hwnd.0 as isize;
     if LAST_FOCUS_HWND.swap(hwnd_isize, AtomicOrdering::Relaxed) == hwnd_isize {
         return;
