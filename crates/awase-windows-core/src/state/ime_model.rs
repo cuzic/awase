@@ -964,6 +964,14 @@ impl ImeModel {
                     }
                 }
             }
+            ImeEvent::AppliedDemoted { cause } => {
+                // ADR-268 D4: `applied` だけを未確認へ落とす（明示意図・`desired_open`・観測・`pending` には触れない）。
+                // 降格は安全側（誤った省略を消し、被害は余分な送信 1 回）なので、向きの比較はしない。
+                tracing::debug!("[ime-model] applied demoted cause={cause:?}");
+                if self.applied.applied_open().is_some() {
+                    self.applied = AppliedImeState::Unknown;
+                }
+            }
         }
         // ADR-108 決定4: パージは match の後。期限切れ transition にも、自分自身の
         // 完了で解決される最後の一回を与える。タイムアウトはスロット寿命の上限で
@@ -1438,6 +1446,43 @@ mod tests {
             "ModeKeyPassedThrough は last_intent と desired_open（と、それに伴う desired_is_placeholder・\
              食い違う applied の未確認化）以外を書き換えてはならない"
         );
+    }
+
+    /// ADR-268 D4: `AppliedDemoted` が書くのは `applied`（Some → Unknown）だけ。明示意図・`desired_open`・観測・`pending` には触れない。
+    /// 既に `Unknown` なら何も変えない。
+    #[test]
+    fn applied_demoted_touches_only_applied() {
+        use crate::state::ime_event::AppliedDemoteCause;
+        let now = Instant::now();
+        let demote = |seq| {
+            envelope(
+                seq,
+                ImeEvent::AppliedDemoted {
+                    cause: AppliedDemoteCause::MozcShmSplit,
+                },
+            )
+        };
+
+        let mut model = fully_populated_model(now);
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 7,
+        };
+        assert!(model.last_intent.is_some());
+        model.reduce(&demote(1));
+        assert_eq!(model.applied, AppliedImeState::Unknown);
+
+        let mut expected = fully_populated_model(now);
+        expected.applied = AppliedImeState::Unknown;
+        assert_eq!(
+            format!("{model:?}"),
+            format!("{expected:?}"),
+            "AppliedDemoted は applied 以外（last_intent・desired_open・観測・pending）を書き換えてはならない"
+        );
+
+        let before = format!("{model:?}");
+        model.reduce(&demote(2));
+        assert_eq!(format!("{model:?}"), before, "既に Unknown なら変えない");
     }
 
     /// BUG-163: 起動時の `desired_open`（初期値 true）は「初期値のまま」で、意図・復元・揃えのどれかが書くと外れる。
