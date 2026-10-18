@@ -349,10 +349,15 @@ fn fmt_i32_hex(v: Option<i32>) -> String {
 /// 1 回のキー押下に対する記録待ちエントリ。
 struct Pending {
     label: String,
+    /// このキーを押した時刻(フック時刻)。`AFTER_MS` はここからの経過で数える。
     started_ms: u64,
     before: Snapshot,
     /// `AFTER_MS` の各時点で取れたスナップショット。
     afters: Vec<Snapshot>,
+    /// `afters` と同じ並び。そのスナップショットを取るより前に、後続のキーが押されていたら、その押下までの
+    /// 経過(ms)。`Some` なら、後続のキーの効果が混ざっている可能性があり、この打鍵の結果として使えない
+    /// (押下 i の +1500ms に、押下 i+1 の効果が入る、MS-IME 本体の歩みで 20/3840 打鍵あった)。
+    mixed_after_ms: Vec<Option<u64>>,
 }
 
 struct TsfState {
@@ -369,6 +374,8 @@ thread_local! {
     static LOG_BUF: RefCell<String> = const { RefCell::new(String::new()) };
     /// 直近の周期スナップショット（押下前状態として使う）。
     static LAST_SNAP: RefCell<Snapshot> = RefCell::new(Snapshot::default());
+    /// フックが受けた押下の時刻(古いものは捨てる)。後続のキーによる記録への混入の判定に使う。
+    static PRESS_LOG: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     /// フックが積んだ未処理のキー押下（タイマーで処理する）。
     static KEY_QUEUE: RefCell<Vec<KeyEvt>> = const { RefCell::new(Vec::new()) };
     static RICH_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
@@ -581,6 +588,9 @@ struct KeyEvt {
     vk: u32,
     ctrl: bool,
     shift: bool,
+    /// フックで押下を受けた時刻(`now_ms()`)。記録の起点と、後続のキーによる混入の判定に使う
+    /// (タイマーで取り出した時刻は周期や停滞の分だけ遅れる)。
+    at_ms: u64,
 }
 
 /// マトリクスの「状態」軸。
@@ -2504,12 +2514,20 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                         kb.scanCode,
                         utc_stamp()
                     );
+                    PRESS_LOG.with(|l| {
+                        let mut l = l.borrow_mut();
+                        l.push(now_ms_hook);
+                        if l.len() > 64 {
+                            l.remove(0);
+                        }
+                    });
                     KEY_QUEUE.with(|q| {
                         q.borrow_mut().push(KeyEvt {
                             label,
                             vk,
                             ctrl,
                             shift,
+                            at_ms: now_ms_hook,
                         });
                     });
                 }
@@ -2644,9 +2662,10 @@ fn on_timer(hwnd: HWND) {
             PENDING.with(|p| {
                 p.borrow_mut().push(Pending {
                     label: ev.label,
-                    started_ms: now,
+                    started_ms: ev.at_ms,
                     before: before.clone(),
                     afters: Vec::new(),
+                    mixed_after_ms: Vec::new(),
                 });
             });
         }
@@ -2660,6 +2679,15 @@ fn on_timer(hwnd: HWND) {
             let idx = e.afters.len();
             if idx < after_ms().len() && now >= e.started_ms + after_ms()[idx] {
                 e.afters.push(snap.clone());
+                // このスナップショットを取るより前(`now` まで)に、このキーより後のキーが押されていたら混入の疑い。
+                let next_press = PRESS_LOG.with(|l| {
+                    l.borrow()
+                        .iter()
+                        .copied()
+                        .find(|t| *t > e.started_ms && *t <= now)
+                });
+                e.mixed_after_ms
+                    .push(next_press.map(|t| t.saturating_sub(e.started_ms)));
             }
         }
         let mut i = 0;
@@ -2680,7 +2708,10 @@ fn on_timer(hwnd: HWND) {
         ));
         append_log(&format!("    前     : {}", e.before.compact()));
         for (i, ms) in after_ms().iter().enumerate() {
-            append_log(&format!("    +{ms}ms: {}", e.afters[i].compact()));
+            let mixed = e.mixed_after_ms[i].map_or_else(String::new, |d| {
+                format!(" [混入: 次の押下が{d}ms後に入っており、この時点の記録は使えない]")
+            });
+            append_log(&format!("    +{ms}ms: {}{mixed}", e.afters[i].compact()));
         }
         let diffs: Vec<String> = after_ms()
             .iter()
