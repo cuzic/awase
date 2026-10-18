@@ -167,6 +167,7 @@ Opus による round1 レビュー(`opus-review-adr265-round1.md`)で、致命 2
    - **未実施・未確認**: Windows 実機での awase 本体の動作(CI はコンパイルとテストまで)。実機で `mozc_shm_shadow = true` にして mozc-readable の窓で journal を取り、belief との一致率を測る作業(段階 2 の基準の材料)は、まだ誰も行っていない。AppContainer 以外の窓種(Chrome・Notepad 以外のアプリ)の網羅、昇格していないトークンでの SID 取得、Win+Space など `ActivateKeyboardLayout` 以外の切り替えでの `active=0` も未確認。
 2. 測定に基づき belief へ流す(Low から始め、基準を満たしたら Medium)。設定画面に状態表示。
    - **測定(2026-10-18 ユーザー決定)**: まず実機 dragonflyg4 で行う。手順は [docs/tasks/adr265-stage2-measurement.md](../tasks/adr265-stage2-measurement.md)(草案、実機では未実行)。CI への組み込みは基準が決まってから。
+   - **測定の結果(2026-10-18、[結果](../tasks/adr265-stage2-measurement-result.md))**: 固定した基準は**満たした**(Notepad と Chrome 各 150、N=300、食い違い 0、フォーカスと違うスレッドを読んだ記録 0)。ただし、条件は素直で(同じ 6 キーの周回、注入キー、1 台・約 8.5 分)、**基準が守ろうとしている場面(フォーカス移動直後、IME の切り替え後の古い共有メモリ、同じプロセスの別スレッドへの移動、AppContainer)は測っていない**。belief への接続(Medium)に進むかは、追加測定の要否と合わせて利用者の判断待ち。
    - **Medium に上げる基準(測定の前に固定、同ユーザー決定)**: 開閉(open)について、受け入れた読み(`verdict=accepted`)の総数 **N ≥ 200** のうち、**操作から決まる正解と食い違う件数が 0**。1 件でも食い違えば Low のまま(journal に記録するだけ)にして原因を調べる。一致率(99% など)にしないのは、開閉の取り違えが非対称な被害になる(ADR-191・INV-45)ので、誤採用を 1 件でも許さないため。入力モード(mode)は、open が基準を満たした後に別に判断する。結果に合わせて基準を変えない。
    - **担当(同ユーザー決定)**: awase 本体の belief への接続(Low から)は別セッション(rust-nicola-05)、測定の手順・実機の操作・集計・この ADR の更新は rust-nicola セッション。
 3. サイトの記述は D1 のとおり、事実になった文から足す。**mozc-readable の欄は、最初の Release(identity の置換を当てたもの)が出るまで `hidden` にしておく**(今は Release が 0 件で、リンクは空のページへ飛ぶ)。
