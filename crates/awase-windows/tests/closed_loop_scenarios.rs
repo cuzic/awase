@@ -669,6 +669,7 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
     let mut failing_walks = 0usize;
     let mut seeded_gap = 0usize;
     let mut known_open_gap = 0usize;
+    let mut after_known_open_gap = 0usize;
     let mut walks = 0usize;
     let mut steps = 0usize;
     for grid in [Grid::Atok, Grid::GjiMsime, Grid::MsimeNative] {
@@ -697,6 +698,7 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                 walks += 1;
                 steps += keys.len();
                 let mut real = None;
+                let mut known_open_gap_seen = false;
                 for (i, r) in h.predictions.iter().enumerate() {
                     let Some(m) = prediction_mismatch(r) else {
                         continue;
@@ -720,6 +722,13 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
                     }
                     if is_known_open_gap(grid, composing_visible, &h.predictions, i) {
                         known_open_gap += 1;
+                        known_open_gap_seen = true;
+                        continue;
+                    }
+                    // 既知の食い違いの後は、失った段階が残って後続の打鍵も食い違う(同じ原因の連鎖)。黙って捨てず、
+                    // 件数を固定して数える。
+                    if known_open_gap_seen {
+                        after_known_open_gap += 1;
                         continue;
                     }
                     real = real.or(Some((i, r, m)));
@@ -753,7 +762,7 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
         "ほとんどのキーが実測の範囲外で飛ばされた（walks={walks} steps={steps}）。開始状態かキー集合を見直すこと"
     );
     eprintln!(
-        "既知のずれ: Unknown の種 {seeded_gap} 件、変換中の Esc 後の段階 {known_open_gap} 件 / {steps} 打鍵"
+        "既知のずれ: Unknown の種 {seeded_gap} 件、変換中の Esc 後の段階 {known_open_gap} 件(その連鎖 {after_known_open_gap} 件) / {steps} 打鍵"
     );
     let report: Vec<String> = cells
         .iter()
@@ -773,6 +782,10 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
     assert_eq!(
         known_open_gap, 1,
         "変換中の Esc 後の段階の食い違い(既知1件)の件数が変わった"
+    );
+    assert_eq!(
+        after_known_open_gap, 1,
+        "変換中の Esc 後の段階の食い違いの連鎖(同じ歩みの後続の打鍵、既知1件)の件数が変わった"
     );
 }
 
