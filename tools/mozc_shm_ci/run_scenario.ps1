@@ -3,7 +3,7 @@
 # 窓にキーを送るので、コンソール窓を作るプロセスを並行して起動しない(窓が前面を奪って、キーが別の窓に行く)。
 # python のヘルパーは shmci.py の中で CREATE_NO_WINDOW で起動する。ここでは Start-Process -Wait を使わない
 # (TIP を読み込んだプロセスが起動する mozc_server が子孫として残り、-Wait が戻らない)。
-param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale')][string]$Scenario,
+param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'stale', 'flip', 'tidreuse')][string]$Scenario,
       [Parameter(Mandatory)][string]$Msi,
       [string]$Dist = 'dist',
       [string]$MozcCiDir = 'mozc-readable\readable\ci',
@@ -11,6 +11,7 @@ param([Parameter(Mandatory)][ValidateSet('focus', 'threads', 'appcontainer', 'st
       [double]$DwellMin = 0.35,
       [double]$DwellMax = 1.6,
       [double]$FocusGrace = 0.9,
+      [int]$Load = 0,
       [string]$OutDir = 'out',
       [switch]$NoAwase)
 $ErrorActionPreference = 'Stop'
@@ -28,6 +29,14 @@ $l[0].InputMethodTips.Add("0411:$Clsid$Profile")
 Set-WinUserLanguageList $l -Force
 Write-Host ((Get-WinUserLanguageList | ForEach-Object { "$($_.LanguageTag): $($_.InputMethodTips -join ',')" }) -join "`n")
 
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($Scenario -eq 'tidreuse') {
+  # スレッド ID の再利用は awase を使わず、共有メモリの残りだけを見る(測定のみ。判定はしない)
+  Write-Host '== tidreuse (no awase)'
+  python "$here\shmci.py" tidreuse --threads 60
+  exit $LASTEXITCODE
+}
+
 $aw = $null
 if ($NoAwase) {
   # 対照: awase を起動せずに、同じ手順で窓を IME ON にできるか(awase が干渉しているのか、手順の問題かを切り分ける)
@@ -43,12 +52,11 @@ if ($NoAwase) {
   Write-Host "awase pid $($aw.Id)"
 }
 
-$here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $events = Join-Path $OutDir 'events.jsonl'
 $log = Join-Path $Dist 'awase.log'
 
 Write-Host "== drive: $Scenario"
-python "$here\shmci.py" drive $Scenario --events $events --rounds $Rounds --dwell-min $DwellMin --dwell-max $DwellMax --mozc-ci-dir $MozcCiDir
+python "$here\shmci.py" drive $Scenario --events $events --rounds $Rounds --dwell-min $DwellMin --dwell-max $DwellMax --load $Load --mozc-ci-dir $MozcCiDir
 $driveExit = $LASTEXITCODE
 Write-Host "drive exit code: $driveExit"
 Start-Sleep -Seconds 2
@@ -71,6 +79,7 @@ Write-Host '== analyze'
 $minAccepted = if ($Scenario -eq 'stale') { 1 } else { 20 }
 $extra = @()
 if ($Scenario -eq 'stale') { $extra += '--require-inactive' }
+if ($Scenario -eq 'flip') { $extra += @('--state-grace', '0.25') }
 python "$here\shmci.py" analyze --awase-log $log --events $events --min-accepted $minAccepted --focus-grace $FocusGrace --summary-json (Join-Path $OutDir 'summary.json') @extra
 $analyzeExit = $LASTEXITCODE
 

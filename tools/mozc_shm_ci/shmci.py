@@ -81,7 +81,7 @@ def build_timelines(events):
     return truth, focus
 
 
-def allowed_states(timeline, t):
+def allowed_states(timeline, t, grace=GRACE_S):
     """時刻 t の記録が持ってよい状態の集合(True / False / None=inactive)。直近 GRACE_S 秒内の変化を許す。
 
     真値が決まる前(timeline が空、または最初の項目より前)は None を返す(判定しない)。
@@ -92,7 +92,7 @@ def allowed_states(timeline, t):
     last_before = None
     have_before = False
     for te, val in timeline:
-        if te <= t - GRACE_S:
+        if te <= t - grace:
             last_before = val
             have_before = True
         elif te <= t:
@@ -136,7 +136,7 @@ def measurement_interval(events):
     return (min(ts) - INTERVAL_LEAD_S, max(ts) + INTERVAL_TAIL_S)
 
 
-def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace=GRACE_S):
+def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace=GRACE_S, state_grace=GRACE_S):
     """記録と events を突き合わせて集計する。dict を返す(ok が False なら食い違いがある)。"""
     truth, focus = build_timelines(events)
     known = set(truth)
@@ -171,7 +171,7 @@ def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace
                 stats["unknown_accepted_in_interval"].append(item)
             continue
         stats["accepted_known"] += 1
-        al = allowed_states(truth[tid], t)
+        al = allowed_states(truth[tid], t, state_grace)
         if al is not None:
             non_none = {x for x in al if x is not None}
             if not non_none:
@@ -185,6 +185,11 @@ def analyze(records, events, min_accepted=1, require_inactive=False, focus_grace
             stats["wrong_thread"].append({"t": t, "tid": tid, "allowed_focus": sorted(af)})
     # 真値の無いスレッドの受け入れは、測定区間の外(窓の準備中に、ランナーの別の窓を読んだ)なら食い違いに数えず、
     # 区間の内側なら数える(測定中に、こちらが前面にしていない窓を読んだ=フォーカスの取り違えの疑い)。
+    us = sorted(r["read_us"] for _t, r in records if isinstance(r.get("read_us"), (int, float)))
+    if us:
+        def pct(q):
+            return us[min(len(us) - 1, int(len(us) * q))]
+        stats["read_us"] = {"n": len(us), "p50": pct(0.5), "p95": pct(0.95), "p99": pct(0.99), "max": us[-1]}
     problems = (len(stats["mismatch_state"]) + len(stats["wrong_thread"]) + len(stats["stale_accepted"])
                 + len(stats["unknown_accepted_in_interval"]))
     stats["interval"] = interval
@@ -210,6 +215,8 @@ def print_summary(stats):
     print(f"  unknown accepted   : in the measurement interval: {len(stats['unknown_accepted_in_interval'])}"
           f" / outside it (window setup): {outside}")
     print(f"  stale accepted     : {len(stats['stale_accepted'])}")
+    if stats.get("read_us"):
+        print(f"  read_us            : {stats['read_us']}")
     for key in ("mismatch_state", "wrong_thread", "unknown_accepted_in_interval", "stale_accepted"):
         for item in stats[key][:10]:
             print(f"    {key}: {item}")
@@ -228,7 +235,7 @@ def cmd_analyze(args):
             if line:
                 events.append(json.loads(line))
     stats = analyze(records, events, min_accepted=args.min_accepted, require_inactive=args.require_inactive,
-                    focus_grace=args.focus_grace)
+                    focus_grace=args.focus_grace, state_grace=args.state_grace)
     print_summary(stats)
     if args.summary_json:
         with open(args.summary_json, "w", encoding="utf-8") as f:
@@ -658,6 +665,111 @@ def focus_loop(w, targets, rounds, rng, events, dwell=(0.35, 1.6)):
     return ok_n, ng_n
 
 
+FLIP_DELAYS = (0.0, 0.02, 0.05, 0.1, 0.2)
+
+
+def flip_loop(w, truths, rounds, rng, events):
+    """真値が動く場面: 前面の窓の IME 状態を切り替え(ON=ひらがなキー、OFF=半角/全角キー)、すぐあとに別の窓へフォーカスを移す。
+
+    切り替えてから移すまでの間隔は 0 / 20 / 50 / 100 / 200 ms を順に使う。真値は切り替えのキーを送る直前の時刻から新しい
+    状態(状態の許容は --state-grace で短くする)。キーが効かなかったときは、共有メモリの実際の値を真値に直す(数える)。
+    """
+    cur = {t["tid"]: int(t["open"]) for t in truths}
+    info = {t["tid"]: t for t in truths if t.get("hwnd")}
+    tids = list(info)
+    last = None
+    ok_n = ng_n = lost = 0
+    for i in range(rounds):
+        x = rng.choice([t for t in tids if t != last])
+        if not w.force_foreground(info[x]["hwnd"]):
+            ng_n += 1
+            continue
+        events.append({"ev": "focus", "t": time.time(), "tid": x, "name": info[x]["name"]})
+        time.sleep(0.6)                      # awase が x を読む時間
+        want = 1 - cur[x]
+        t_send = time.time()
+        w.send_vk(0xF2 if want else 0x19)
+        events.append({"ev": "truth", "t": t_send, "tid": x, "name": info[x]["name"], "pid": info[x]["pid"],
+                       "hwnd": info[x]["hwnd"], "open": want, "confirmed": True, "flip": True})
+        cur[x] = want
+        time.sleep(FLIP_DELAYS[i % len(FLIP_DELAYS)])
+        y = rng.choice([t for t in tids if t != x])
+        if w.force_foreground(info[y]["hwnd"]):
+            events.append({"ev": "focus", "t": time.time(), "tid": y, "name": info[y]["name"]})
+            last = y
+            ok_n += 1
+        else:
+            ng_n += 1
+            last = x
+        time.sleep(0.5)
+        a = w.read_block(x)                  # キーが効いたか
+        if a is not None and a[9] == 1 and int(a[5]) != want:
+            lost += 1
+            cur[x] = int(a[5])
+            events.append({"ev": "truth", "t": time.time() - 0.5, "tid": x, "name": info[x]["name"],
+                           "pid": info[x]["pid"], "hwnd": info[x]["hwnd"], "open": int(a[5]), "confirmed": True})
+    return ok_n, ng_n, lost
+
+
+def cmd_burn(_args):
+    """CPU を使い切る(負荷時の read_us を測るための重り)。親が止める。"""
+    while True:
+        pass
+
+
+def start_burners(n, procs):
+    ps = []
+    for _ in range(n):
+        p = subprocess.Popen([sys.executable, "-u", os.path.abspath(__file__), "burn"], creationflags=0x08000000)
+        ps.append(p)
+        procs.append(p)
+    if n:
+        print(f"load: {n} CPU-burning processes started", flush=True)
+    return ps
+
+
+def cmd_tidreuse(args):
+    """スレッド ID の再利用: スレッドを順に作っては捨て、同じ ID が再び使われたとき、前のスレッドの共有メモリが残っていないか。
+
+    各スレッドは、自分の ID の共有メモリを窓を作る前に読み(前の持ち主の残り)、窓を作って IME を ON にして、終わる。
+    再利用された ID で、窓を作る前に active=1 のブロックが見えれば、新しいスレッドが TIP を持つ前に、古い持ち主の状態を
+    読む可能性がある(awase は process_id の一致も見るので、別のプロセスの残りは採らない。同じプロセスの再利用が残る)。
+    """
+    import threading
+    w = win32()
+    seen = {}
+    rows = []
+    lock = threading.Lock()
+
+    def body(n):
+        tid = w.k32.GetCurrentThreadId()
+        pre = w.read_block(tid)
+        win = Window(w, f"R{n}", f"R{n}")
+        win.create()
+        ok = win.set_open(1)
+        post = w.read_block(tid)
+        with lock:
+            rows.append({"n": n, "tid": tid, "reused": tid in seen, "pre": pre, "set_ok": ok, "post": post})
+            seen[tid] = seen.get(tid, 0) + 1
+        w.u32.DestroyWindow(win.hwnd)
+
+    for n in range(args.threads):
+        th = threading.Thread(target=body, args=(n,))
+        th.start()
+        th.join(30)
+        time.sleep(0.05)
+    reused = [r for r in rows if r["reused"]]
+    stale = [r for r in reused if r["pre"] is not None and r["pre"][9] == 1]
+    seen_pre = [r for r in reused if r["pre"] is not None]
+    print(f"threads: {len(rows)}, distinct thread ids: {len(seen)}, reused ids: {len(reused)}")
+    print(f"reused and a shared block existed before the new thread created its window: {len(seen_pre)}")
+    print(f"  of those, still active=1 (the previous owner's state is readable as if it were the new thread's): {len(stale)}")
+    for r in stale[:10]:
+        print(f"    tid={r['tid']} n={r['n']} pre={r['pre']}")
+    print(f"IME could not be set to ON in the new thread: {sum(1 for r in rows if not r['set_ok'])}")
+    return 0
+
+
 def cmd_drive(args):
     w = win32()
     here = os.path.dirname(os.path.abspath(__file__))
@@ -670,7 +782,7 @@ def cmd_drive(args):
     exit_code = 0
 
     try:
-        if scenario == "focus":
+        if scenario in ("focus", "flip"):
             specs = [("A", "1"), ("B", "0"), ("C", "1"), ("D", "0")]       # 別プロセス 4 つ。ON/OFF を交互に
             for name, opens in specs:
                 p = spawn_host(here, name, opens, lifetime)
@@ -726,10 +838,18 @@ def cmd_drive(args):
             w.force_foreground(s["hwnd"])
             events.append({"ev": "focus", "t": time.time(), "tid": s["tid"], "name": s["name"]})
             time.sleep(args.switch_after + 12)
+        elif scenario == "flip":
+            ok_n, ng_n, lost = flip_loop(w, truths, args.rounds, rng, events)
+            print(f"flip rounds: {ok_n} flipped and moved the focus, {ng_n} focus moves did not take effect, "
+                  f"{lost} IME-state changes did not happen (truth was corrected from the shared memory)", flush=True)
+            if ok_n < max(10, args.rounds // 2):
+                print("too few flips took effect: the measurement is not meaningful", flush=True)
+                exit_code = 3
         elif len(targets) < 2:
             print(f"need at least 2 windows to move the focus between, got {len(targets)}: setup failed", flush=True)
             exit_code = 2
         else:
+            burners = start_burners(args.load, procs)
             ok_n, ng_n = focus_loop(w, targets, args.rounds, rng, events, dwell=(args.dwell_min, args.dwell_max))
             print(f"focus switches: {ok_n} took effect, {ng_n} did not (the window was not in the foreground afterwards)",
                   flush=True)
@@ -796,12 +916,13 @@ def main(argv=None):
     h.add_argument("--switch-after", type=float, default=0, help="この秒数後に、先頭のスレッドを TIP の無いレイアウトへ切り替える")
 
     d = sub.add_parser("drive")
-    d.add_argument("scenario", choices=["focus", "threads", "appcontainer", "stale"])
+    d.add_argument("scenario", choices=["focus", "threads", "appcontainer", "stale", "flip"])
     d.add_argument("--events", required=True)
     d.add_argument("--rounds", type=int, default=100)
     d.add_argument("--dwell-min", type=float, default=0.35, help="次の切り替えまでの最短の滞在(秒)")
     d.add_argument("--dwell-max", type=float, default=1.6, help="次の切り替えまでの最長の滞在(秒)")
     d.add_argument("--seed", type=int, default=1)
+    d.add_argument("--load", type=int, default=0, help="測定中、CPU を使い切るプロセスをこの数だけ動かす(負荷時の read_us)")
     d.add_argument("--switch-after", type=float, default=12)
     d.add_argument("--mozc-ci-dir", default="mozc-readable/readable/ci")
 
@@ -812,12 +933,18 @@ def main(argv=None):
     a.add_argument("--require-inactive", action="store_true")
     a.add_argument("--focus-grace", type=float, default=GRACE_S,
                    help="記録のスレッドとして許す、直近のフォーカス先の範囲(秒)。速い切り替えでは長くする")
+    a.add_argument("--state-grace", type=float, default=GRACE_S,
+                   help="状態の変化から、記録が新しい状態に追いつくまでの許容(秒)。flip では短くする")
     a.add_argument("--summary-json")
 
+    sub.add_parser("burn")
+    t = sub.add_parser("tidreuse")
+    t.add_argument("--threads", type=int, default=60)
     sub.add_parser("selftest")
 
     args = ap.parse_args(argv)
-    return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest}[args.cmd](args)
+    return {"host": cmd_host, "drive": cmd_drive, "analyze": cmd_analyze, "selftest": cmd_selftest,
+            "burn": cmd_burn, "tidreuse": cmd_tidreuse}[args.cmd](args)
 
 
 if __name__ == "__main__":
