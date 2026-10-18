@@ -130,8 +130,15 @@ pub struct LangDetectRecord {
     /// 窓の IME プロファイル（`standard` / `imm32-unavailable` / `tsf-native` / `input-relay`）。
     /// 実測学習で降格された窓と静的リスト由来の窓は、ここでは区別しない（プロセス名・クラス名と cache.toml で後から引く）
     pub profile: &'static str,
-    /// 判定時点の belief（IME が開いているか）。不明なら `None`
+    /// 判定時点の belief（IME が開いているか。書き込みの**前**の値）。不明なら `None`
     pub belief_open: Option<bool>,
+    /// 判定に応じた動作（`none` / `hiragana-sent`〔日本語→ひらがなキー〕/ `ime-off-sent`〔英数→IME OFF〕/
+    /// `observe-only`〔保持しなかったエピソードの日本語判定〕/ `skipped-belief-off` / `skipped-observed-window` /
+    /// `skipped-focus-lag` / `skipped-explicit-off` / `skipped-explicit-on` / `skipped-modifier-held` /
+    /// `skipped-send-failed`）。`observe` では日本語と判定したエピソードが `observe-only`、それ以外は `none`
+    pub action: &'static str,
+    /// 保持中に前面窓が変わって捨てた打鍵の数
+    pub discarded: u32,
 }
 
 /// shadow IME トグル(`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` ほか)の判断の段(ADR-250 段階 4-1)。
@@ -1333,6 +1340,8 @@ impl JournalEntry {
                     duration_ms = record.duration_ms,
                     profile = record.profile,
                     belief_open = record.belief_open,
+                    action = record.action,
+                    discarded = record.discarded,
                     "[lang-detect]"
                 );
             }
@@ -2613,11 +2622,14 @@ mod tests {
                 duration_ms: 120,
                 profile: "imm32-unavailable",
                 belief_open: Some(true),
+                action: "hiragana-sent",
+                discarded: 0,
             },
         });
         let json = j.to_json().unwrap();
         assert!(json.contains("LangDetect"));
         assert!(json.contains("thumb-overlap"));
         assert!(json.contains("llr_trace"));
+        assert!(json.contains("hiragana-sent"));
     }
 }

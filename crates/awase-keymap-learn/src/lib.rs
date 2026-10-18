@@ -39,3 +39,14 @@ pub mod strategy;
 pub mod table;
 pub mod verify;
 pub mod walk_trace;
+
+/// 学習プロセス(`awase-keymap-learn-win`)が打つ、実機の VK コード。学習表のセルのキーはこの中から選ばれる。
+///
+/// 学習の挙動は変えず、不具合報告(ADR-259)が「学習キー数 × 状態数」から添付する学習表のセル数の上限を導くために、
+/// バイナリクレートの中から共有クレートへ移した。
+pub const LEARN_KEYS: [u32; 14] = [
+    0x1D, 0x1C, 0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1B, 0x0D, 0x20, 0x08, 0x41,
+];
+
+/// 学習表の 1 キーあたりの状態数の上限: open(2)× `raw & 0x0B` の取りうる値(8)× composing(2)。
+pub const LEARN_STATUSES_PER_KEY: usize = 2 * 8 * 2;

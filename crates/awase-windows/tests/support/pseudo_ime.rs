@@ -197,6 +197,20 @@ const fn grid_key_name(vk: u16) -> Option<&'static str> {
     })
 }
 
+/// 格子のセル名（`on-c19-typing|esc` 形式）。閉のときの段階は常に `none`。
+fn cell_name(before: TrueState, key: &str) -> String {
+    format!(
+        "{}-c{:02x}-{}|{key}",
+        if before.open { "on" } else { "off" },
+        before.conv,
+        if before.open {
+            before.stage.grid_name()
+        } else {
+            "none"
+        },
+    )
+}
+
 /// 文字を入力するキー（英数字・記号）か（予測器の `is_char_vk` と同じ範囲）。
 const fn is_char_vk(vk: u16) -> bool {
     matches!(vk, 0x30..=0x39 | 0x41..=0x5A | 0xBA..=0xC0 | 0xDB..=0xDF)
@@ -321,21 +335,19 @@ impl PseudoIme {
         self.state = new;
     }
 
+    /// いまの状態から `vk` を押したときの真値が生データにあるか。無ければ `press` は panic する。
+    /// ランダムなキー列が、実測のある範囲だけを通るための問い合わせ。
+    #[must_use]
+    pub fn knows(&self, vk: u16) -> bool {
+        grid_key_name(vk).is_none_or(|key| self.table.contains_key(&cell_name(self.state, key)))
+    }
+
     /// 物理キー1回の押下（生キーが IME に届いた）。
     pub fn press(&mut self, vk: u16) -> PressOutcome {
         let before = self.state;
         let after = match grid_key_name(vk) {
             Some(key) => {
-                let cell = format!(
-                    "{}-c{:02x}-{}|{key}",
-                    if before.open { "on" } else { "off" },
-                    before.conv,
-                    if before.open {
-                        before.stage.grid_name()
-                    } else {
-                        "none"
-                    },
-                );
+                let cell = cell_name(before, key);
                 let o = self.table.get(&cell).copied().unwrap_or_else(|| {
                     panic!(
                         "擬似 IME の真値が無い: `{cell}`（grid-tables/atok.json に実測が無い状態・キー。\

@@ -40,6 +40,10 @@ NAMES = {
 
 
 def parse_snap(text):
+    if "[混入" in text:
+        # 記録の起点より後のキーの効果が混ざっている(ime_key_matrix_spike.rs が `[混入: 次の押下が…]` を付ける)。
+        # A/B 不一致と同じく観測不能として除外する(混ざった値を『このキーの結果』として表に入れない)。
+        return None
     m = SNAP_RE.search(text)
     if not m:
         return None

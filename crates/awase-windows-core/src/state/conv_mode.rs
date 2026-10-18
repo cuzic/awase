@@ -99,6 +99,9 @@ pub enum ConvMutationReason {
     /// MS-IME が物理 Shift 単独タップを半角英数切替と誤認するのを打ち消す安全網
     /// （`kp_shift_conv_guard_key_down`、BUG-15/BUG-49）。
     ShiftSoloTapCounter,
+    /// ADR-263 `ime_on_eisu`: 打鍵列から英数入力と判定して、半角英数トグルへ入る
+    /// （MS-IME の IMC write 経路。Shift 単独タップの entry と同じ書き込み）。
+    LangDetectEnglish,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -108,6 +111,7 @@ impl ConvMutationReason {
     pub const fn as_unconfirm_label(self) -> &'static str {
         match self {
             Self::ShiftSoloTapCounter => "shift-conv-guard entry",
+            Self::LangDetectEnglish => "lang-detect entry",
         }
     }
 }
