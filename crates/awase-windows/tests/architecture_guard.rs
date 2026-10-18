@@ -9262,11 +9262,11 @@ fn half_width_return_wiring_adr245_pr2() {
     );
 }
 
-/// BUG-207: 変換サーバーの I/O 監視は、アクティブな TIP で対象を選ぶ。Mozc 系（Mozc Readable）で
-/// `GoogleIMEJaConverter` に固定されると、Mozc が正しく変換していても書き込みが増えず、
-/// raw-tsf-literal と誤判定して入力済みの文字を消す。
+/// BUG-207 / ADR-269: Mozc 系がアクティブなときは、GJI の変換サーバーの I/O を literal 判定の証拠にしない。
+/// GJI の変換サーバーが同時に動いていると、静止した GJI を見て「書き込みなし = リテラル」と誤判定し、
+/// 入力済みの文字を消す。選び方は `converter_target`（純関数）に置き、監視は `ConverterTarget::None` で外す。
 #[test]
-fn gji_monitor_selects_converter_by_active_tip() {
+fn gji_monitor_drops_gji_evidence_when_mozc_family_is_active() {
     let monitor = read_crate_file("src/tsf/gji_monitor.rs");
     let prod = production_code_only(&monitor);
     assert!(
@@ -9274,11 +9274,12 @@ fn gji_monitor_selects_converter_by_active_tip() {
         "gji_monitor.rs にプロセス名を直書きしない。選び方は converter_target.rs（純関数）に置く（BUG-207）"
     );
     assert!(
-        prod.contains("converter_target(") && prod.contains("try_attach(current_target)"),
-        "監視の対象は converter_target(アクティブな TIP) で選び、try_attach に渡す（BUG-207）"
+        prod.contains("converter_target(")
+            && prod.contains("current_target == ConverterTarget::Gji"),
+        "監視への接続は converter_target(アクティブな TIP) が Gji のときだけ行う（BUG-207）"
     );
     assert!(
-        prod.contains("m.target != current_target"),
-        "アクティブな TIP が変わったら別の変換サーバーへ付け替える（BUG-207）"
+        prod.contains("current_target == ConverterTarget::None && monitor.is_some()"),
+        "Mozc 系がアクティブになったら GJI の監視を外す（gji_is_active_ime が偽になり判定が走らない。BUG-207）"
     );
 }

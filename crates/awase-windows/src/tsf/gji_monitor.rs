@@ -2,11 +2,11 @@
 // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! GJI プロセス I/O モニター。
 //!
-//! バックグラウンドスレッドが、アクティブな TIP の変換サーバー（Google 日本語入力なら
-//! `GoogleIMEJaConverter`、Mozc 系なら `mozc_server`。選び方は
-//! [`ConverterTarget`]、BUG-207）の I/O カウンタを 10ms ごとにサンプリングし、
-//! [`super::observer::TSF_OBS`] を更新する（`gji_*` の名前は Mozc 系を見ているときも同じ）。
-//! 変換サーバーが再起動した場合や、アクティブな TIP が変わった場合は自動的に再接続する。
+//! バックグラウンドスレッドが Google 日本語入力 Converter プロセスの
+//! I/O カウンタを 10ms ごとにサンプリングし、[`super::observer::TSF_OBS`] を更新する。
+//! GJI が再起動した場合は自動的に再接続する。
+//! アクティブな TIP が Mozc 系のときは接続しない（[`ConverterTarget::None`]。BUG-207、ADR-269）:
+//! GJI の変換サーバーが同時に動いていても、その静止した I/O を literal 判定の証拠にしない。
 
 use std::mem::size_of;
 use std::sync::atomic::Ordering;
@@ -21,15 +21,15 @@ use windows::Win32::System::Threading::{
 
 use super::observer::{ActiveImeKind, TSF_OBS};
 use crate::tsf::converter_target::{
-    converter_target, is_converter_process, searched_prefixes, ConverterTarget,
+    converter_target, is_gji_converter_process, searched_prefixes, ConverterTarget,
 };
 
 // ── GJI プロセス発見 ─────────────────────────────────────────────────────────
 
-/// プロセス一覧から `target` の変換サーバーの PID を探す。
+/// プロセス一覧から GJI converter の PID を探す。
 /// マッチしたプロセス名もあわせて返す。
 /// 見つからない場合は "Google" を含む全プロセスをデバッグログに出力する。
-fn find_gji_pid(target: ConverterTarget) -> Option<(u32, String)> {
+fn find_gji_pid() -> Option<(u32, String)> {
     // SAFETY: `TH32CS_SNAPPROCESS` フラグと PID=0（全プロセス対象）は有効な引数。
     //         返されるハンドルは使用後に `CloseHandle` で必ず閉じる。
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
@@ -52,7 +52,7 @@ fn find_gji_pid(target: ConverterTarget) -> Option<(u32, String)> {
                 .position(|&c| c == 0)
                 .unwrap_or(entry.szExeFile.len());
             let name = String::from_utf16_lossy(&entry.szExeFile[..name_end]);
-            if is_converter_process(target, &name) {
+            if is_gji_converter_process(&name) {
                 found = Some((entry.th32ProcessID, name));
                 break;
             }
@@ -74,13 +74,11 @@ fn find_gji_pid(target: ConverterTarget) -> Option<(u32, String)> {
     let _ = unsafe { CloseHandle(snapshot) };
 
     match &found {
-        Some((pid, name)) => {
-            tracing::debug!("[gji-monitor] found converter process ({target:?}): {name} pid={pid}");
-        }
+        Some((pid, name)) => tracing::debug!("[gji-monitor] found GJI process: {name} pid={pid}"),
         None => {
             tracing::debug!(
-                "[gji-monitor] no converter process found ({target:?}, searched prefixes: {:?}), google/japanese procs: {google_procs:?}",
-                searched_prefixes(target),
+                "[gji-monitor] no GJI process found (searched prefixes: {:?}), google/japanese procs: {google_procs:?}",
+                searched_prefixes(),
             );
         }
     }
@@ -118,8 +116,6 @@ impl GjiIoDelta {
 
 struct GjiMonitor {
     handle: HANDLE,
-    /// 接続している変換サーバーの種類（アクティブな TIP が変わったら付け替える。BUG-207）。
-    target: ConverterTarget,
     last_read_ops: u64,
     last_write_ops: u64,
     /// パイプ・セクション経由 IPC などが OtherOperationCount に計上される
@@ -141,9 +137,9 @@ struct GjiMonitor {
 unsafe impl Send for GjiMonitor {}
 
 impl GjiMonitor {
-    /// `target` の変換サーバーのプロセスに接続する。失敗したら None。
-    fn try_attach(target: ConverterTarget) -> Option<Self> {
-        let (pid, _name) = find_gji_pid(target)?;
+    /// GJI converter プロセスに接続する。失敗したら None。
+    fn try_attach() -> Option<Self> {
+        let (pid, _name) = find_gji_pid()?;
         // SAFETY: `pid` は `find_gji_pid` で発見した有効なプロセス ID。
         //         `PROCESS_QUERY_INFORMATION` は I/O カウンタ取得に必要な最小権限。
         //         返されるハンドルは `Drop` で `CloseHandle` される。
@@ -152,7 +148,6 @@ impl GjiMonitor {
         let now_ms = crate::hook::current_tick_ms();
         let mut monitor = Self {
             handle,
-            target,
             last_read_ops: 0,
             last_write_ops: 0,
             last_other_ops: 0,
@@ -341,7 +336,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         )
     };
 
-    // 監視する変換サーバー（アクティブな TIP で選ぶ。BUG-207）。TIP が分からない間は従来どおり GJI。
+    // literal 判定の証拠にする変換サーバー（アクティブな TIP で選ぶ。BUG-207）。TIP が分からない間は従来どおり GJI。
     let mut current_target = ConverterTarget::Gji;
 
     // TSF プロファイル COM オブジェクトを生成（失敗しても GJI モニタリングは継続）
@@ -375,8 +370,8 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
     // 単発フリップで warmup 戦略を破棄しないためのデバウンス（`ImeKindDebounce` 参照）。
     let mut kind_debounce = ImeKindDebounce::new();
     let mut identity_debounce = TipIdentityDebounce::new();
-    // 変換サーバーの付け替えも同じデバウンスの規律で確定させる（単発のフリップで
-    // GJI ⇄ mozc_server を往復して I/O のベースラインを捨てない）。
+    // 証拠の切り替え（GJI ⇄ なし）も同じデバウンスの規律で確定させる（単発のフリップで
+    // 監視の接続・切断を往復しない）。
     let mut target_debounce = Debounce::<ConverterTarget>::new();
 
     loop {
@@ -434,21 +429,19 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
             }
         }
 
-        // アクティブな TIP が変わったら、別の変換サーバーへ付け替える（BUG-207）。
-        if monitor.as_ref().is_some_and(|m| m.target != current_target) {
+        // Mozc 系がアクティブなら GJI の監視を外す（BUG-207）。`gji_monitor_ok` が偽になるので
+        // `gji_is_active_ime()` も偽になり、literal 判定は走らない（Mozc 単独環境と同じ挙動）。
+        if current_target == ConverterTarget::None && monitor.is_some() {
             tracing::info!(
-                "[gji-monitor] converter target changed to {current_target:?}, will re-attach"
+                "[gji-monitor] no GJI evidence for the active TIP ({current_target:?}), detaching"
             );
             TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
             monitor = None;
-            next_attach_ms = now;
         }
 
-        if monitor.is_none() && now >= next_attach_ms {
-            if let Some(m) = GjiMonitor::try_attach(current_target) {
-                tracing::info!(
-                    "[gji-monitor] attached to {current_target:?} converter process (I/O monitoring enabled)"
-                );
+        if monitor.is_none() && current_target == ConverterTarget::Gji && now >= next_attach_ms {
+            if let Some(m) = GjiMonitor::try_attach() {
+                tracing::info!("[gji-monitor] attached to GJI process (I/O monitoring enabled)");
                 // 接続時刻を先に記録する（`last_change_ms` は累積カウンタの初回読みで立つ接続時点の値で、実 I/O ではない。BUG-176）。
                 TSF_OBS
                     .gji_attach_ms
