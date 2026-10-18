@@ -38,6 +38,16 @@ impl ImeKindId {
     pub const ALL: [Self; 2] = [Self::Gji, Self::MsIme];
 }
 
+/// TIP の表示名が GJI 系（Google 日本語入力、または Mozc とそのフォーク）かを返す。純関数。
+///
+/// Mozc は GJI の OSS 版で、キー設定の語彙・IME の挙動が同じなので、`ImeKindId::Gji` /
+/// `ActiveImeKind::GoogleJapaneseInput` の側に分類する（キー戦略と打鍵時予測の表の選択軸）。
+/// 一方 `TipIdentity::Gji`（`config1.db` など Google 版固有の処理の対象）は広げない。
+#[must_use]
+pub fn is_gji_family_description(description: &str) -> bool {
+    description.contains("Google") || description.to_ascii_lowercase().contains("mozc")
+}
+
 /// Microsoft IME（日本語、TSF の TIP）の CLSID。`{03B5835F-F03C-411B-9CE2-AA23E1171E36}`。
 ///
 /// 打鍵時予測の表（Microsoft IME本体用）とベリーフトグルを当てる相手を、「GJI ではない」ではなく
@@ -97,6 +107,17 @@ pub const fn identify_tip(clsid: Option<u128>, gji_clsid: Option<u128>) -> TipId
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gji_family_description_covers_google_and_mozc_forks() {
+        assert!(is_gji_family_description("Google 日本語入力"));
+        assert!(is_gji_family_description("Mozc"));
+        assert!(is_gji_family_description("Mozc Readable"));
+        assert!(is_gji_family_description("mozc (custom)"));
+        assert!(!is_gji_family_description("Microsoft IME"));
+        assert!(!is_gji_family_description("ATOK"));
+        assert!(!is_gji_family_description(""));
+    }
 
     #[test]
     fn all_covers_every_variant() {
