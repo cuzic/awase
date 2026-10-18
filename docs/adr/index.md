@@ -271,6 +271,7 @@
 | [262](262-nicola-intent-evidence-for-unobserved-windows.md) | 観測の無い窓で、親指シフトの最初の同時打鍵を契機に IME ON を明示する(撤去した force-on の絞った復元、ADR-212 の例外) | round 3 レビューを受けて文面を直した(2026-10-17)。実装なし。段階 A(presync 停止)から |
 | [263](263-episode-start-key-hold-and-language-decision.md) | 観測の無い窓で、エピソード先頭の打鍵を保持し、日本語入力と判定できたときだけ IME ON を送る(ADR-262 の契機を置き換える) | 起草(2026-10-17)。Opus round 1 を受けて書き直し。round 2 待ち |
 | [264](264-indicator-menu-mode-evidence.md) | 利用者がタスクバーの入力インジケーターの右クリックメニューを開いたときだけ、メニューの現在のモードを読んで IME の実状態の証拠にする(読むだけ) | 起草(2026-10-17)。実装なし、CI で測定済み。決定は案 |
+| [265](265-mozc-readable-integration.md) | mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定) | 提案。Opus round4 で収束。実装は未着手 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

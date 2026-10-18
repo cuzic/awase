@@ -680,6 +680,24 @@ footer p{margin-bottom:0.3rem}
         <h3>ソースからビルド</h3>
         <div class="code-block">cargo build -p awase-windows --release</div>
       </details>
+
+      <details class="install-alt" id="mozc-readable" hidden>
+        <summary>mozc-readable（任意・実験的）</summary>
+        <p style="color:var(--text-secondary);font-size:0.95rem">
+          Google 日本語入力のオープンソース版 <a href="https://github.com/google/mozc">Mozc</a> に、
+          IME の ON/OFF と入力モードを他のプロセスから読めるようにする変更を加えたビルドです。
+          awase が読めない窓の IME 状態を、推測ではなく IME 自身の値で知るために作っています。
+          公式の Mozc とは別名(別の識別子・別のインストール先)で作っています。
+        </p>
+        <a id="dl-mozc-readable" href="https://github.com/cuzic/mozc-readable/releases" class="btn btn-secondary" style="display:inline-block;margin:0.3rem 0 0.8rem">最新版をダウンロード (MSI)</a>
+        <ul>
+          <li>インストーラーに署名はありません。SmartScreen の警告が出ます。SHA-256 は Release の <code>SHA256SUMS.txt</code> にあります。</li>
+          <li>利用者のプロファイルは公式の Mozc と分かれます。公式 Mozc のユーザー辞書は引き継がれません。</li>
+          <li>awase がこの値を使う機能は開発中です（現在の awase はまだ読みません）。</li>
+        </ul>
+        <p style="color:var(--text-secondary);font-size:0.88rem">ソース: <a href="https://github.com/cuzic/mozc-readable">cuzic/mozc-readable</a>（BSD-3-Clause。Google とは無関係の非公式の派生版です）</p>
+      </details>
+
     </div>
   </div>
 </section>
@@ -839,6 +857,20 @@ footer p{margin-bottom:0.3rem}
 
     const zipFn = document.getElementById('zip-filename');
     if (zipFn && zip) zipFn.textContent = zip.name;
+  } catch (_) {}
+})();
+
+(async () => {
+  try {
+    const r = await fetch('https://api.github.com/repos/cuzic/mozc-readable/releases?per_page=5');
+    if (!r.ok) return;
+    for (const rel of await r.json()) {
+      const msi = rel.assets?.find(a => a.name.endsWith('.msi'));
+      if (!msi) continue;
+      const el = document.getElementById('dl-mozc-readable');
+      if (el) { el.href = msi.browser_download_url; el.textContent = `最新版をダウンロード (MSI) ${rel.tag_name}`; }
+      break;
+    }
   } catch (_) {}
 })();
 </script>
