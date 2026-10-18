@@ -262,6 +262,12 @@ jobs:
                   args=f'--grid=s6 --grid-setup=keys --grid-trials=10{msime}{spd}')
               for ime_name, ime, km, msime in SC_IMES
               for sp, spd in (('sp1', ''), ('sp2', ' --speed=2'))],
+            # BUG-205 追記(2026-10-18、観測のみ。only='cal-escmuh-*' で回す): 無変換で入った変換中の Esc の直後(conv-muhenkan-esc)。cal-escgrid-/cal-escspace- の無変換版。
+            # (開,0x19) と (開,0x10) の両方から始める(ATOK は入力中の無変換で変換モードが 0x10 になる)。作れない状態は飛ばされる。1 周 6 回、2 つの間隔。
+            *[cfg(f'cal-escmuh-{ime_name}-{sp}', 'observe', check='collect', awase='false', runs=1, wait=3300, ime=ime, keymap=km, until='2026-11-30',
+                  args=f'--grid=s7 --grid-setup=keys{msime}{spd}')
+              for ime_name, ime, km, msime in SC_IMES
+              for sp, spd in (('sp1', ''), ('sp2', ' --speed=2'))],
             *[cfg(f'cal-msnative-walk-s{n}', 'observe', check='collect', ime='msime', awase='false', runs=1,
                   args=f'--walk=100 --seed={n} --msime')
               for n in (3, 4)],
