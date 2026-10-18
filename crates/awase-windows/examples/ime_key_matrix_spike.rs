@@ -1211,6 +1211,10 @@ enum GComp {
     /// 変わる(ATOK の表に `ConvMuhenkan` の行は無い)ので、`s7` は (開, 0x19) と (開, 0x10) の両方から始める(変換モードは厳密に検証する)。
     /// `ConvHenkanEsc` と同じく、Esc の後に入力が残るかは検証しない。
     ConvMuhenkanEsc,
+    /// 履歴依存の確認用(`s7` の対照): `ConvMuhenkan`(k,a,無変換)と同じ状態を作るが、変換モードを検証しない。ATOK は入力中の無変換で
+    /// 変換モードが 0x19→0x10 に変わるため、`ConvMuhenkan` は ATOK で作れない(検証で飛ばされる)。通常の格子(s1〜s4)の
+    /// `ConvMuhenkan` の検証を緩めると学習表を汚す(0x10 の結果が 0x19 のセルに入る)ので、s7 専用の別の状態にした。
+    ConvMuhenkanLoose,
 }
 
 impl GComp {
@@ -1226,6 +1230,7 @@ impl GComp {
             Self::ConvHenkanEsc => "conv-henkan-esc",
             Self::ConvSpaceEsc => "conv-space-esc",
             Self::ConvMuhenkanEsc => "conv-muhenkan-esc",
+            Self::ConvMuhenkanLoose => "conv-muhenkan-loose",
         }
     }
     /// この段階を作るキー列(VK)。
@@ -1241,6 +1246,7 @@ impl GComp {
             Self::ConvHenkanEsc => &[0x4B, 0x41, 0x1C, 0x1B],
             Self::ConvSpaceEsc => &[0x4B, 0x41, 0x20, 0x1B],
             Self::ConvMuhenkanEsc => &[0x4B, 0x41, 0x1D, 0x1B],
+            Self::ConvMuhenkanLoose => &[0x4B, 0x41, 0x1D],
         }
     }
 }
@@ -1514,13 +1520,15 @@ fn grid_build(
     }
     // s7(BUG-205 追記): 無変換で入った変換中の Esc の直後。(開, 0x19) と (開, 0x10) の両方から始める(ATOK は入力中の無変換で 0x10 になる。
     // 作れない状態〈到達不能・セットアップ不能〉は既存の仕組みが飛ばす)。対照に変換中〈無変換〉・入力中・入力なしを入れる。
-    // 状態数が s5/s6 の 2 倍なので、既定の試行回数は 6(これまでの測定は全て 10/10 で同じ結果だった)。
+    // 状態数が s5/s6 の 2 倍以上なので、既定の試行回数は 4(これまでの測定は全て 10/10 で同じ結果だった)。
+    // `ConvMuhenkanEsc`・`ConvMuhenkanLoose` は変換モードを検証しない(ATOK 用)。`ConvMuhenkan` は厳密(MS-IME 系用)。
     if shard == "s7" {
-        let n = cap.unwrap_or(6);
+        let n = cap.unwrap_or(4);
         for t in 0..n {
             for conv in [0x19_u32, 0x10] {
                 for comp in [
                     GComp::ConvMuhenkanEsc,
+                    GComp::ConvMuhenkanLoose,
                     GComp::ConvMuhenkan,
                     GComp::Typing,
                     GComp::None,
@@ -1677,7 +1685,10 @@ fn grid_matches(s: &Snapshot, t: &GridTrial) -> bool {
     if grid_open_of(s) != Some(t.open) || !comp_ok {
         return false;
     }
-    !t.open || s.b_conv.or(s.a_conv) == Some(t.conv)
+    // ATOK は入力中の無変換で変換モードが 0x19→0x10 に変わる。s7 専用の `ConvMuhenkanEsc`・`ConvMuhenkanLoose` は変換モードを
+    // 検証しない(押す前の変換モードは GRID-PRE の conv に残る)。通常の `ConvMuhenkan` は厳密に検証する。
+    let conv_free = matches!(t.comp, GComp::ConvMuhenkanEsc | GComp::ConvMuhenkanLoose);
+    !t.open || conv_free || s.b_conv.or(s.a_conv) == Some(t.conv)
 }
 
 fn grid_obs(s: &Snapshot) -> String {
