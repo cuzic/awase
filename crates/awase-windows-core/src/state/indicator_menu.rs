@@ -96,14 +96,15 @@ impl Evidence {
 pub struct MenuItem {
     /// UI Automation の `AutomationId`（例: `Item 101`・`Separator 6`）
     pub automation_id: String,
-    /// `SelectionItemPattern.IsSelected`（パターンが無い項目は `false`）
+    /// 現在のモードの印（LegacyIAccessible の状態の CHECKED ビット。SelectionItemPattern は実機で取れない）
     pub selected: bool,
 }
 
 /// `Item N` の `N`（コマンド ID またはサブメニュー項目の位置）。`Separator N` など別の形式は `None`。
 #[must_use]
 pub fn parse_command_id(automation_id: &str) -> Option<u32> {
-    let n = automation_id.strip_prefix("Item ")?;
+    // 実機(ネイティブ UIA)では数字だけ（`101`）。管理側の UIA 経由の旧表記 `Item 101` も読む。
+    let n = automation_id.strip_prefix("Item ").unwrap_or(automation_id);
     // 先頭が数字で、全部が数字のときだけ（`12x`・`+1`・空は不可）。
     if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -512,6 +513,7 @@ mod tests {
     #[test]
     fn parse_command_id_reads_only_item_numbers() {
         assert_eq!(parse_command_id("Item 101"), Some(101));
+        assert_eq!(parse_command_id("101"), Some(101));
         assert_eq!(parse_command_id("Item 0"), Some(0));
         assert_eq!(parse_command_id("Separator 6"), None);
         assert_eq!(parse_command_id("Item"), None);

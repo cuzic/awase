@@ -25,9 +25,9 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationSelectionItemPattern, SetWinEventHook,
-    TreeScope_Descendants, UIA_MenuItemControlTypeId, UIA_SelectionItemPatternId, UnhookWinEvent,
-    HWINEVENTHOOK,
+    CUIAutomation, IUIAutomation, IUIAutomationLegacyIAccessiblePattern, SetWinEventHook,
+    TreeScope_Descendants, UIA_LegacyIAccessiblePatternId, UIA_MenuItemControlTypeId,
+    UnhookWinEvent, HWINEVENTHOOK,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetCursorPos, GetWindowRect, EVENT_SYSTEM_MENUPOPUPSTART, WINEVENT_OUTOFCONTEXT,
@@ -166,11 +166,14 @@ unsafe fn read_menu_items(automation: &IUIAutomation, menu: HWND) -> Vec<MenuIte
             .CurrentAutomationId()
             .map(|b| b.to_string())
             .unwrap_or_default();
+        // STATE_SYSTEM_CHECKED（0x10）。実機では SelectionItemPattern が取れず、このビットに現在のモードが出る。
         let selected = el
-            .GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
+            .GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                UIA_LegacyIAccessiblePatternId,
+            )
             .ok()
-            .and_then(|p| p.CurrentIsSelected().ok())
-            .is_some_and(windows::core::BOOL::as_bool);
+            .and_then(|p| p.CurrentState().ok())
+            .is_some_and(|st| st & 0x10 != 0);
         items.push(MenuItem {
             automation_id,
             selected,
