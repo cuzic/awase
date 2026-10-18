@@ -292,19 +292,33 @@ impl Trigger {
     }
 }
 
-/// 結論を journal の記録に変換する（純粋）。
+/// 記録に添える、読んだ時点の文脈。
 ///
-/// `profile`・`belief_open`・`belief_mode` は読んだ時点の窓と belief（段階 1 は照合の材料としてだけ添える。belief へは入れない）。
+/// `belief_open`・`belief_mode` は読んだ時点の belief（段階 1 は照合の材料としてだけ添える。belief へは入れない）。
+/// `thread_id`・`process_id` は読んだ対象（`pid` はブロックの `process_id` の照合に使った値）。
+#[derive(Debug, Clone)]
+pub struct RecordContext {
+    /// きっかけ
+    pub trigger: Trigger,
+    /// 読んだ経路
+    pub route: Route,
+    /// 読み取りの所要（マイクロ秒）
+    pub read_us: u32,
+    /// 読んだ時点の窓の IME プロファイル
+    pub profile: &'static str,
+    /// 読んだスレッドの ID
+    pub thread_id: u32,
+    /// 読んだプロセスの ID
+    pub process_id: u32,
+    /// 読んだ時点の belief（IME が開いているか）
+    pub belief_open: Option<bool>,
+    /// 読んだ時点の belief（入力モード、`Debug` 表記）
+    pub belief_mode: Option<String>,
+}
+
+/// 結論を journal の記録に変換する（純粋）。
 #[must_use]
-pub fn to_record(
-    trigger: Trigger,
-    route: Route,
-    outcome: &Outcome,
-    read_us: u32,
-    profile: &'static str,
-    belief_open: Option<bool>,
-    belief_mode: Option<String>,
-) -> MozcShmRecord {
+pub fn to_record(outcome: &Outcome, ctx: RecordContext) -> MozcShmRecord {
     let (verdict, reason, nt_status, state) = match outcome {
         Outcome::Accepted(s) => ("accepted", None, None, Some(s)),
         Outcome::Rejected(r) => ("rejected", Some(r.label()), None, None),
@@ -316,8 +330,8 @@ pub fn to_record(
         Outcome::Failed(ReadFailure::Torn) => ("failed", Some("retries-exhausted"), None, None),
     };
     MozcShmRecord {
-        trigger: trigger.label(),
-        route: route.label(),
+        trigger: ctx.trigger.label(),
+        route: ctx.route.label(),
         verdict,
         reason,
         nt_status,
@@ -328,10 +342,12 @@ pub fn to_record(
         effective_mode: state
             .and_then(|s| s.effective_mode)
             .map(CompositionMode::label),
-        read_us,
-        profile,
-        belief_open,
-        belief_mode,
+        read_us: ctx.read_us,
+        profile: ctx.profile,
+        belief_open: ctx.belief_open,
+        belief_mode: ctx.belief_mode,
+        thread_id: ctx.thread_id,
+        process_id: ctx.process_id,
     }
 }
 
@@ -560,18 +576,34 @@ mod tests {
         assert_ne!(a, c);
     }
 
+    fn ctx(trigger: Trigger, route: Route) -> RecordContext {
+        RecordContext {
+            trigger,
+            route,
+            read_us: 1,
+            profile: "standard",
+            thread_id: 1908,
+            process_id: 8284,
+            belief_open: None,
+            belief_mode: None,
+        }
+    }
+
     #[test]
-    fn record_for_an_accepted_block_carries_state_and_belief() {
+    fn record_for_an_accepted_block_carries_state_belief_and_target() {
         let o = Outcome::Accepted(classify(&good(), 8284).unwrap());
         let rec = to_record(
-            Trigger::Focus,
-            Route::AppContainer,
             &o,
-            42,
-            "tsf-native",
-            Some(false),
-            Some("Hiragana".to_string()),
+            RecordContext {
+                read_us: 42,
+                profile: "tsf-native",
+                belief_open: Some(false),
+                belief_mode: Some("Hiragana".to_string()),
+                ..ctx(Trigger::Focus, Route::AppContainer)
+            },
         );
+        assert_eq!(rec.thread_id, 1908);
+        assert_eq!(rec.process_id, 8284);
         assert_eq!(rec.trigger, "focus");
         assert_eq!(rec.route, "app-container");
         assert_eq!(rec.verdict, "accepted");
@@ -588,37 +620,22 @@ mod tests {
     #[test]
     fn record_for_a_rejection_or_failure_has_a_reason_and_no_state() {
         let rec = to_record(
-            Trigger::Change,
-            Route::Local,
             &Outcome::Rejected(Rejection::Inactive),
-            1,
-            "standard",
-            None,
-            None,
+            ctx(Trigger::Change, Route::Local),
         );
         assert_eq!(rec.verdict, "rejected");
         assert_eq!(rec.reason, Some("inactive"));
         assert_eq!(rec.tsf_open, None);
         let rec = to_record(
-            Trigger::Change,
-            Route::AppContainer,
             &Outcome::Failed(ReadFailure::Denied(0xC000_0022)),
-            1,
-            "standard",
-            None,
-            None,
+            ctx(Trigger::Change, Route::AppContainer),
         );
         assert_eq!(rec.verdict, "failed");
         assert_eq!(rec.reason, Some("denied"));
         assert_eq!(rec.nt_status, Some(0xC000_0022));
         let rec = to_record(
-            Trigger::Change,
-            Route::AppContainer,
             &Outcome::Failed(ReadFailure::Unresolved("sid")),
-            1,
-            "standard",
-            None,
-            None,
+            ctx(Trigger::Change, Route::AppContainer),
         );
         assert_eq!(rec.reason, Some("sid"));
     }
