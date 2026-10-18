@@ -124,6 +124,28 @@ def e1(args, out):
     return 0
 
 
+def e1watch(args, out):
+    """E1 (automatic): focus the host's text edit, turn the IME on, then only record every shared-block change of that
+    thread for --rounds seconds (the actions are done by e1_uia.ps1, which logs its own UTC timestamps)."""
+    pids = {int(x) for x in args.pids.split(",") if x}
+    tt = text_thread(pids)
+    if not tt:
+        out.emit(event="abort", reason="no text focus")
+        return 2
+    h, tid, pid, cls = tt
+    if not ensure_on(pids, out):
+        out.emit(event="abort", reason="could not turn the IME on")
+        return 4
+    out.emit(event="ready", tid=tid, pid=pid, cls=cls)
+    stop = threading.Event()
+    t = threading.Thread(target=watcher, args=(out, tid, pid, stop), daemon=True)
+    t.start()
+    time.sleep(float(args.rounds))
+    stop.set()
+    out.emit(event="done", scenario="e1watch")
+    return 0
+
+
 def imm_set_open(ime_wnd, open_):
     res = ctypes.c_size_t(0)
     t0 = time.perf_counter_ns()
@@ -278,7 +300,7 @@ def e4(args, out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("exp", choices=["e1", "e2", "e3", "e4"])
+    ap.add_argument("exp", choices=["e1", "e1watch", "e2", "e3", "e4"])
     ap.add_argument("--pids", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--rounds", type=int, default=10)
@@ -286,7 +308,7 @@ def main():
     args = ap.parse_args()
     out = Out(args.out)
     out.emit(event="start", exp=args.exp)
-    sys.exit({"e1": e1, "e2": e2, "e3": e3, "e4": e4}[args.exp](args, out))
+    sys.exit({"e1": e1, "e1watch": e1watch, "e2": e2, "e3": e3, "e4": e4}[args.exp](args, out))
 
 
 if __name__ == "__main__":
