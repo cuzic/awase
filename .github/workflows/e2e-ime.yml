@@ -247,27 +247,6 @@ jobs:
             *[cfg(f'cal-notify-msimenative-s{n}', 'observe', check='collect', ime='msime', awase='false', runs=1, wait=1500,
                   args=f'--grid=s{n} --grid-setup=keys --fast --speed=2 --grid-adaptive --notify --msime')
               for n in (1, 2, 3, 4)],
-            # BUG-205(2026-10-18、観測のみ。only='cal-escgrid-*' で回す。既定の only 空では cal-* ごと除かれる): 変換→Esc の直後(conv-henkan-esc)で
-            # 無変換・カタカナ・ひらがな・変換・Space・Enter を各10回押し、結果が typing・conv-henkan・none のどの行と一致するかを見る。
-            # 対照(変換中・入力中・入力なし)を同じ実行に入れる。(開,0x19) だけ。sp2 は --speed=2(状態を作るキー間隔を 350ms→175ms。予測候補の窓の
-            # 有無で Esc の結果が割れうる〈KNOWN_UNSTABLE_NATIVE の注記〉ので、間隔を2通りにする)。解析: grid_learn.py <ime_key_matrix_spike.log>。
-            # 測定済み(2026-10-18、run 39092296146、結果は BUG-205): 期限(until)までに、再測定が要らなければ削除する。
-            *[cfg(f'cal-escgrid-{ime_name}-{sp}', 'observe', check='collect', awase='false', runs=1, wait=3300, ime=ime, keymap=km, until='2026-11-30',
-                  args=f'--grid=s5 --grid-setup=keys --grid-trials=10{msime}{spd}')
-              for ime_name, ime, km, msime in SC_IMES
-              for sp, spd in (('sp1', ''), ('sp2', ' --speed=2'))],
-            # BUG-205 追記(2026-10-18、観測のみ。only='cal-escspace-*' で回す): Space で入った変換中の Esc の直後(conv-space-esc)。cal-escgrid-* の Space 版。
-            # ATOK の表では (変換中〈Space〉, Esc) が保持/破棄に割れた(以前の版)ので、押す前の入力の有無(GRID-PRE の comp)と次のキーの結果を試行ごとに突き合わせる。
-            *[cfg(f'cal-escspace-{ime_name}-{sp}', 'observe', check='collect', awase='false', runs=1, wait=3300, ime=ime, keymap=km, until='2026-11-30',
-                  args=f'--grid=s6 --grid-setup=keys --grid-trials=10{msime}{spd}')
-              for ime_name, ime, km, msime in SC_IMES
-              for sp, spd in (('sp1', ''), ('sp2', ' --speed=2'))],
-            # BUG-205 追記(2026-10-18、観測のみ。only='cal-escmuh-*' で回す): 無変換で入った変換中の Esc の直後(conv-muhenkan-esc)。cal-escgrid-/cal-escspace- の無変換版。
-            # (開,0x19) と (開,0x10) の両方から始める(ATOK は入力中の無変換で変換モードが 0x10 になる)。作れない状態は飛ばされる。1 周 6 回、2 つの間隔。
-            *[cfg(f'cal-escmuh-{ime_name}-{sp}', 'observe', check='collect', awase='false', runs=1, wait=3300, ime=ime, keymap=km, until='2026-11-30',
-                  args=f'--grid=s7 --grid-setup=keys{msime}{spd}')
-              for ime_name, ime, km, msime in SC_IMES
-              for sp, spd in (('sp1', ''), ('sp2', ' --speed=2'))],
             *[cfg(f'cal-msnative-walk-s{n}', 'observe', check='collect', ime='msime', awase='false', runs=1,
                   args=f'--walk=100 --seed={n} --msime')
               for n in (3, 4)],
@@ -463,20 +442,6 @@ jobs:
                   chrome=f'--table --repeat=2 --settle=800{ms}')
               for pn, ime, km, ms in (('gji-atok', 'gji', 1, ''), ('gji-msimepreset', 'gji', 2, ''), ('msime', 'msime', 2, ' --msime'))
               for pt, gen in (('suppress', ''), ('passthru', '; muhenkan_solo_tap_always_suppress = false'))],
-            # BUG-204 の関連(2026-10-18、観測のみ。only='sc-eisucarry-*' で回す): 前の窓の半角英数(belief の ObservedEisu)が、新しいスレッドの読めない窓で
-            # 変換キー(0x1C)で IME を開いた後も残り、Engine が止まるか。chrome_probe --new-window-after=<alnum|kana|off>: 今の Chrome をその状態にしてから
-            # Chrome を起動し直し(新しいプロセス・スレッド)、新しい窓で 0x1C を押して `ka` を打つ。PASS=NICOLA 文字、`か`=IME は開いたが Engine が止まった(バグ候補)、`ka`=IME が開かなかった。
-            # alnum が本命、kana・off は対照(半角英数の持ち越しが原因かを切り分ける)、noawase は IME が実際に開くことの対照(`か` が期待)。
-            # 2026-10-18 追記: 変換キー(0x1C)は既定では右親指キーなので、awase は PendingThumb で握って IME へ届けない(最初の実行の `off` の FAIL の原因。
-            # 測定の設計の誤り)。`general=` で親指キーを VK_F14/F15 に割り当てる(`--henkan-open` と同じ)。GJI の MS-IME プリセットは英数キー(F0)で半角英数にする
-            # (`--alnum-key=F0`。ひらがなキーは常にかな)。MS-IME 本体は英数キーが IME を閉じ、半角英数(開いたまま)にする手段が別なので alnum は外す。
-            *[cfg(f'sc-eisucarry-{pn}-{st}{suf}', 'observe', check='chromeprobe', ime=ime, keymap=km, runs=1, wait=900, awase=aw, until='2026-11-30',
-                  general='left_thumb_key = "VK_F14"; right_thumb_key = "VK_F15"',
-                  chrome=f'--key=1C --new-window-after={st} --repeat=3 --settle=800{ms}{ak}{na}')
-              for pn, ime, km, ms, ak in (('gji-atok', 'gji', 1, '', ''), ('gji-msimepreset', 'gji', 2, '', ' --alnum-key=F0'), ('msime', 'msime', 2, ' --msime', ''))
-              for st in ('alnum', 'kana', 'off')
-              if not (pn == 'msime' and st == 'alnum')
-              for suf, aw, na in (('', 'true', ''), ('-noawase', 'false', ' --no-awase'))],
             # ADR-211: MS-IME/MOBILE プリセットの F13(閉状態からだけ開く受動のキー)。実 Chrome(読めない窓)で、IME OFF から F13 を押して
             # Engine が追随する(NICOLA)こと(合否)。stale=古い表つき。noawase=対照(IME が実際に開く=`か`、awase なしの実挙動)。
             *[cfg(f'sc-adr211-chrome-msime-f13{suf}', exp, check='chromeprobe', keymap=2, runs=1, wait=500, custom_table=ct, awase=aw,
@@ -870,12 +835,12 @@ jobs:
             configs = [c for c in configs if any(fnmatch.fnmatchcase(c['name'], o) for o in only)]
             # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
             # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
-            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-', 'sc-eisucarry-'))
-                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-', 'sc-eisucarry-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
+            configs = [c for c in configs if not c['name'].startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-'))
+                       or any(o.startswith(('sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-')) and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-', 'sc-eisucarry-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])

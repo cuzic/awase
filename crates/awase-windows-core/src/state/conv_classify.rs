@@ -819,6 +819,8 @@ mod tests {
                 Just(AssumedReason::AppKindExcluded),
                 Just(AssumedReason::ForceOnGuardActive),
                 Just(AssumedReason::UserHalfWidthAlnumToggleOff),
+                Just(AssumedReason::KeyEffectPrediction),
+                Just(AssumedReason::Startup),
             ]
         }
 
