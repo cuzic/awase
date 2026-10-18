@@ -133,6 +133,83 @@ pub fn convert_cells(cells: &[PersistedCell]) -> Vec<Cell> {
     out
 }
 
+/// 学習表の生セル1件が、予測（[`convert_cells`]）に**採用されていれば**使われるか（ADR-259 決定2。不具合報告の印）。
+///
+/// 実際に使われているかは、表の採否（`in_use`・`use_learned_keymap_table`）で決まる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellUse {
+    /// 予測に使われる。
+    Used,
+    /// 予測が無い（`prediction: None`、非決定と判定済み・未測定）。
+    NoPrediction,
+    /// キーが予測の表に無い（`TableKey::from_vk`。学習キーのうち 0x41〈`A`〉など）。`!k`。
+    NoKey,
+    /// 開状態で変換モードが`Conv`に表せず捨てられた。`!m`。
+    ModeUnrepresentable,
+    /// 閉状態の同じ`(stage, key)`のセルどうしで`after_open`か`disp`が食い違い、グループごと捨てられた。`!c`。
+    ClosedGroupDropped,
+    /// 閉グループの押下後の変換モードだけが食い違い、予測には使われるが追跡が捨てられる。`~`。
+    ClosedGroupTrackingDropped,
+}
+
+/// 生セルごとの [`CellUse`]（入力と同じ順、同じ長さ）。判定は`convert_cells`と同じ
+/// `lookup_slot`・`convert_cell`・`merge_closed_cells`を通す（写し直すと予測側が変わったときにずれる）。
+/// 優先は `NoKey` > `ModeUnrepresentable`（`lookup_slot`はキーの判定を先に行う）。
+#[must_use]
+pub fn classify_cell_use(cells: &[PersistedCell]) -> Vec<CellUse> {
+    let mut out = vec![CellUse::Used; cells.len()];
+    // 閉セルのグループ: (stage, key, 生セルの添字)。
+    let mut groups: Vec<(Stage, TableKey, Vec<usize>)> = Vec::new();
+    for (i, pc) in cells.iter().enumerate() {
+        if TableKey::from_vk(pc.key.0).is_none() {
+            out[i] = CellUse::NoKey;
+            continue;
+        }
+        if lookup_slot(pc).is_none() {
+            out[i] = CellUse::ModeUnrepresentable;
+            continue;
+        }
+        let Some(cell) = convert_cell(pc) else {
+            out[i] = CellUse::NoPrediction;
+            continue;
+        };
+        if cell.open() {
+            continue;
+        }
+        if let Some(g) = groups
+            .iter_mut()
+            .find(|g| g.0 == cell.stage() && g.1 == cell.key())
+        {
+            g.2.push(i);
+        } else {
+            groups.push((cell.stage(), cell.key(), vec![i]));
+        }
+    }
+    for (_, _, idx) in &groups {
+        let group: Vec<Cell> = idx
+            .iter()
+            .filter_map(|&i| convert_cell(&cells[i]))
+            .collect();
+        let mark = match merge_closed_cells(&group) {
+            None => Some(CellUse::ClosedGroupDropped),
+            Some(_)
+                if group
+                    .iter()
+                    .any(|c| c.after_conv() != group[0].after_conv()) =>
+            {
+                Some(CellUse::ClosedGroupTrackingDropped)
+            }
+            Some(_) => None,
+        };
+        if let Some(mark) = mark {
+            for &i in idx {
+                out[i] = mark;
+            }
+        }
+    }
+    out
+}
+
 /// 同じ`(stage, key)`の閉セル群を1セルへ畳む。開閉（`after_open`）と行方（`disp`）が全セルで
 /// 一致するときだけ採用し、押下後の変換モードだけが食い違うなら`after_conv: None`
 /// （「押下後の変換が不明」＝追跡を捨てる、既存の意味）にする。`after_open`/`disp`が食い違う
@@ -793,6 +870,77 @@ mod tests {
         }
     }
 
+    /// ADR-259 決定2: 印の集合 = `convert_cells` に採用されなかったセルの集合（判定を写し直していないこと）。
+    #[test]
+    fn classify_cell_use_matches_what_convert_cells_adopts() {
+        let cells = vec![
+            // 開・かな→かな（使われる）。
+            pcell(true, 0x09, false, 0xF2, Some((true, 0x09))),
+            // 予測なし。
+            pcell(true, 0x09, false, 0xF2, None),
+            // キーが表に無い（0x41）。予測なしでも !k が優先。
+            pcell(true, 0x09, false, 0x41, Some((true, 0x09))),
+            pcell(true, 0x09, false, 0x41, None),
+            // 開状態で mode が表せない（0x01）。
+            pcell(true, 0x01, false, 0xF2, Some((true, 0x09))),
+            // 閉状態の mode は見ない（mode=0x08 でも使われる）。
+            pcell(false, 0x08, false, 0xF0, Some((true, 0x09))),
+            // 押下後の mode が表せない開セルは使われる（after_conv=None）。
+            pcell(true, 0x09, false, 0x1D, Some((true, 0x01))),
+        ];
+        let marks = classify_cell_use(&cells);
+        assert_eq!(
+            marks,
+            vec![
+                CellUse::Used,
+                CellUse::NoPrediction,
+                CellUse::NoKey,
+                CellUse::NoKey,
+                CellUse::ModeUnrepresentable,
+                CellUse::Used,
+                CellUse::Used,
+            ]
+        );
+        let used: Vec<PersistedCell> = cells
+            .iter()
+            .zip(&marks)
+            .filter(|(_, m)| matches!(m, CellUse::Used | CellUse::ClosedGroupTrackingDropped))
+            .map(|(c, _)| *c)
+            .collect();
+        assert_eq!(convert_cells(&used).len(), convert_cells(&cells).len());
+    }
+
+    /// 閉状態の英数: 同じ(stage,key)の閉セルで after_open が食い違うとグループごと !c、after_conv だけ食い違うと ~。
+    #[test]
+    fn classify_cell_use_marks_closed_groups_as_a_whole() {
+        // 閉・mode 0x00 の英数は開く、閉・mode 0x09 の英数は開かない: after_open が食い違う → グループごと捨てる。
+        let dropped = vec![
+            pcell(false, 0x00, false, 0xF0, Some((true, 0x09))),
+            pcell(false, 0x09, false, 0xF0, Some((false, 0x09))),
+        ];
+        assert_eq!(
+            classify_cell_use(&dropped),
+            vec![CellUse::ClosedGroupDropped; 2]
+        );
+        assert!(convert_cells(&dropped).is_empty());
+        // 開くのは同じで、押下後の mode だけ違う: 予測には使われるが追跡が捨てられる。
+        let tracking = vec![
+            pcell(false, 0x00, false, 0xF0, Some((true, 0x09))),
+            pcell(false, 0x09, false, 0xF0, Some((true, 0x00))),
+        ];
+        assert_eq!(
+            classify_cell_use(&tracking),
+            vec![CellUse::ClosedGroupTrackingDropped; 2]
+        );
+        assert_eq!(convert_cells(&tracking).len(), 1);
+        // 別の stage の閉セルは別グループ。
+        let separate = vec![
+            pcell(false, 0x00, false, 0xF0, Some((true, 0x09))),
+            pcell(false, 0x00, true, 0xF0, Some((false, 0x09))),
+        ];
+        assert_eq!(classify_cell_use(&separate), vec![CellUse::Used; 2]);
+    }
+
     #[test]
     fn converts_a_simple_open_to_close_cell() {
         // ひらがな(0xF2)開→英数(0x00)相当、閉じないケース: open=true mode=0x09(ひらがな) -> after open=true mode=0x00(英数)。
@@ -1412,6 +1560,7 @@ mod tests {
             track: KeyTrack::default(),
             unreadable: false,
             passive_rule_eligible: false,
+            observable_toggle_guard: false,
         };
         // (2) 学習した通りの結果。
         let p = super::super::key_effect_predictor::predict_in_table(&cells, 0xF2, &closed)
