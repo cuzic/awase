@@ -50,7 +50,18 @@ TIP が無効になった後も、共有メモリは最後の値を残す(`activ
 | 段階 | 内容 |
 | --- | --- |
 | 1(本設計) | `MozcShm` を High・`BeliefOnly` で報告。自動判定 |
-| 2(別 ADR) | pulse で読む、`input_mode` へ。「すでにその状態なら送らない」は、belief(`effective_open`)と applied を見る既存の経路が High の belief を読むだけで効くかを**先に確認**する(未確認。Actuating にしなくてよい見込みだが、送信の省略を行う箇所をコードで追ってから判断する) |
+| 2(別 ADR) | pulse で読む、`input_mode` へ、**「すでにその状態なら送らない」に共有メモリを使う**(下の §5-1) |
+
+### 5-1. 「すでにその状態なら送らない」は belief(High)では効かない(2026-10-18、コードを読んで確認)
+
+- 送らない判断(already-matched)は、`DecisionInputs.shadow_on` = `ImeModel::applied_state().applied_open()`(`AppliedImeState`: Unknown / Optimistic / Confirmed。
+  **awase 自身が最後に書いた値の記録**)を見る(`ime_actuation_decision.rs` の `gji_direct_already_matches` など)。`effective_open`(観測から導く belief)は見ない。
+  したがって、共有メモリを High で belief に入れても、この省略は変わらない。
+- 明示キーの押下(`press.is_some()`)は、`explicit_press_applied_pair` が `applied` を意図的に**未知にして**から決める(押下ごとに送る設計。
+  `sync_actuation.rs` のテスト `dispatch_sends_off_for_each_press_even_when_applied_is_already_off`)。共有メモリが「すでに閉」と言っていても、押下の書き込みは省かれない。
+- 共有メモリで省略するなら、`applied` を `Confirmed` にする経路(Observe → classify → reduce の新しい入口)と、押下の未知化との関係(ADR-208 L1、ADR-214 Sent/Confirmed)を決める別 ADR が要る。
+  `derive_actuating`(授権)には載せない。理由は §2 の authority の行。
+- 未確認: 実際に「すでに合っているのに送った」事例がどの程度あるか(journal の `ActuationDecision` で数えていない)。数えてから別 ADR を起こす。
 
 ## 6. マージの条件(設計の遠慮の代わりに、測れていないものを条件にする)
 
