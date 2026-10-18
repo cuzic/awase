@@ -492,9 +492,8 @@ class Window:
     def create(self):
         w, u32, k32, ctypes = self.w, self.w.u32, self.w.k32, self.w.ctypes
         def proc(h, m, wp, lp):
-            # 有効化されたら EDIT へキーボードフォーカスを移す(別プロセスが前面にした窓でも、キーが EDIT に届くように)
-            if m == 6 and (wp & 0xFFFF) != 0 and self.edit:
-                u32.SetFocus(self.edit)
+            # 注意: ここ(WM_ACTIVATE)で SetFocus しない。有効化の途中での SetFocus は、ループが約 3.5 秒止まった
+            # (run 39117224907 の診断: 窓が前面になってからドライバーが次の窓へ移すまで、PeekMessage から戻らなかった)。
             if m == 0x8001:
                 # ドライバーからの依頼: この窓のスレッドの上で IME を切り替える(wp=1 ON / 0 OFF)。
                 # 別プロセスから SendInput しても効かなかった(run 39114480112)ので、ホスト自身のスレッドから送る。
