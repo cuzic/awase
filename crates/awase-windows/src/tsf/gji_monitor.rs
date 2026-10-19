@@ -383,14 +383,15 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         // 通知も発行しない（`ImeKindDebounce` — 単発の誤検出で warmup 戦略
         // (`GjiFsm`/`MsImeStrategy`) が丸ごと再構築され、確立済みの
         // OnWarm/OnComposing が失われるのを防ぐ）。
-        if let Some((ref mgr, _)) = tsf_ctx {
+        if tsf_ctx.is_some() {
             if now >= next_clsid_check_ms {
                 next_clsid_check_ms = now + 2_000;
                 // 新しいスレッドで問い合わせる（このスレッドの `mgr` は、起動後の入力方式の切り替えに追随しない。BUG-207）。
-                // 取れなければ従来どおりこのスレッドの `mgr` で問い合わせる。
-                let queried = super::tip_detector::query_active_kind_on_fresh_thread()
-                    .or_else(|| super::tip_detector::query_active_kind(mgr));
-                if let Some((kind, identity)) = queried {
+                // 取れなかった tick は「観測なし」で何も更新しない（古い値へ戻さない。新旧の値が混ざるとデバウンスが壊れる）。
+                // 種別・識別・証拠の対象は、このポーリングのデバウンスを通ってだけ変わる（GJI への接続時にも書き込まない）。
+                if let Some((kind, identity)) =
+                    super::tip_detector::query_active_kind_on_fresh_thread()
+                {
                     let current = TSF_OBS.active_ime_kind();
                     if let Some(confirmed) = kind_debounce.observe(kind, current) {
                         if TSF_OBS.set_tsf_active_kind(confirmed) {
@@ -466,28 +467,9 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     .store(m.last_change_ms(), Ordering::Relaxed);
                 TSF_OBS.gji_monitor_ok.store(true, Ordering::Release);
                 monitor = Some(m);
-                // GJI プロセスにアタッチした時点で CLSID を即時確認する。
-                // プロセス存在だけでは「GJI がアクティブ IME」とは限らないため、
+                // 種別・識別の確定は、定期のポーリング（デバウンス付き）だけが行う。接続時に起動時の古い `mgr` で
+                // 問い合わせて書き戻すと、デバウンスを通った新しい値を古い値で上書きする（Opus round 4、BUG-207）。
                 // WM_IME_KIND_CHANGED はプロセス存在ではなく CLSID 結果の変化時のみ発行する。
-                if let Some((ref mgr, _)) = tsf_ctx {
-                    if let Some((kind, identity)) = super::tip_detector::query_active_kind(mgr) {
-                        if TSF_OBS.set_tsf_active_kind(kind) {
-                            tracing::info!("[tip-detect] IME kind → {kind:?} (on GJI attach)");
-                            crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
-                        }
-                        // 変化をログに残す（レビュー round3 B-NR3: 取りこぼして識別が黙って止まると
-                        // triage できない。CLSID を取りこぼした形跡は起動時の `dump_profiles`〈info、全CLSID
-                        // 列挙〉と突き合わせる）。
-                        if TSF_OBS.set_ms_ime_native_identified(
-                            identity == crate::state::ime_kind::TipIdentity::MsImeNative,
-                        ) {
-                            tracing::info!(
-                                "[tip-detect] TIP identity → {identity:?} (on GJI attach)"
-                            );
-                        }
-                    }
-                    next_clsid_check_ms = now + 2_000;
-                }
             } else {
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                 next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;

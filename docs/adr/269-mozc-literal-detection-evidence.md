@@ -62,9 +62,14 @@ related_adr:
 - **D. 判定しない**: D1 がこの扱い。
 
 ### D1a. アクティブな TIP の問い合わせは新しい STA スレッドで行う(CI で判明、段階 1 の前提)
-`gji-io-monitor` スレッドはメッセージループを持たない。そこで起動時に作った `ITfInputProcessorProfileMgr` の `GetActiveProfile` は、起動後にセッション内で入力方式を切り替えても古い値を返し続けた(CI: 起動時は Google 版 GJI、`typing_stress --switch-mozc-ms` が 7 秒後に Mozc へ切り替えても 15 秒以上 `initial IME kind: ... (Gji)` のまま、`detaching` も出ない。run 39181228739)。2 秒ごとのポーリングを短命の新しい STA スレッドで行う(`tip_detector::query_active_kind_on_fresh_thread`、取れなければ従来の問い合わせにフォールバック)。**この変更は Mozc に限らず、全 IME のアクティブな TIP の判定経路に及ぶ**(デバウンスは従来どおり)。
+`gji-io-monitor` スレッドで起動時に作った `ITfInputProcessorProfileMgr` の `GetActiveProfile` は、起動後にセッション内で入力方式を切り替えても古い値を返し続けた(CI: 起動時は Google 版 GJI、`typing_stress --switch-mozc-ms` が `ActivateProfile`〈`TF_IPPMF_FORSESSION`〉で 7 秒後に Mozc へ切り替えても 15 秒以上 `initial IME kind: ... (Gji)` のまま、`detaching` も出ない。run 39181228739)。2 秒ごとのポーリングを短命の新しい STA スレッドで行う(`tip_detector::query_active_kind_on_fresh_thread`)。**この変更は Mozc に限らず、全 IME のアクティブな TIP の判定経路に及ぶ**(デバウンスは従来どおり)。
 
-**実測(run 39182258683、`ts-tsf-mozc-switch-{8000,20000}ms`、起動時は実 GJI、`ime=mozc-gji-real`):** 切り替えの約 1.4〜1.8 秒後に `converter target → NoEvidence` と `detaching` が 1 回ずつ出る(4/4)。8000ms は修正前・一度目の修正 INVALID ×4 → PASS ×2(疑い 0)。20000ms は PASS(疑い 1 は切り替え前の GJI の打鍵〈未確認〉)。監視を外す経路・`gji_*` を 0 に戻す処理・即時の切り替えが CI で動いた。
+- **原因は未確定**: 「メッセージループが無いから」は未検証(新しいスレッドにもループは無いのに追随した)。インスタンスの寿命かスレッドの状態かは分からない。BUG-009 の「per-thread `GetActiveProfile` 固着」仮説の棄却は『起動時の検出は正しかった』ことが根拠で、『起動後に追随しない』ことは否定していない(矛盾しない)。BUG-195 の CI 観測(窓を持たない監視スレッドは、前面窓の切り替えでなく既定の入力方式の上書きを見る可能性が高い)の方が原因に近い。**Win+Space と同じ効果か、「アプリごとに入力方式を切り替える」が ON のとき前面アプリの TIP と一致するかは未確認**(BUG-195 では CI で Win+Space が効かなかった)。D1a は BUG-195 の挙動も変えうる(起動後の上書きの変更に追随する)。
+- **取れなかった tick は飛ばす**: 新しいスレッドの問い合わせが失敗/時間切れ(`run_with_timeout` 300ms)なら「観測なし」で何も更新しない。古い mgr の値には戻さない(新旧の値が混ざるとデバウンスが壊れる。外す向きは 1 回で確定するので、古い値が Mozc だと GJI の安全網が約 4 秒外れる)。**GJI への接続時にも種別を書き戻さない**(古い mgr の値でデバウンスを通った新しい値を上書きし、MS-IME の利用者が GJI の literal 判定を受ける経路があった)。種別・識別・証拠の対象は、ポーリングのデバウンスを通ってだけ変わる。
+- **所要時間は未測定**: スレッドの生成と COM の初期化は ms 単位のはずだが測っていない。debug ログ `[tip-detect] fresh-thread query: Nms` で CI の分布を見てから書く。per-VK の判定窓は約 300ms。
+- **前面のTIPとずれたときの最悪**: 新しいスレッドの値が前面アプリの実際の TIP とずれるとき、新しく悪化するのは『前面は Google 版 GJI なのに Mozc と読む』だけ(GJI の安全網が外れ、cold リテラルが回収されず残る向き。消す向きではない)。GJI と Mozc を両方入れ、「アプリごと」ON か上書きと実際の利用がずれる利用者に限る。『前面は Mozc なのに GJI と読む』『MS-IME・ATOK なのに GJI と読む』『GJI なのに MS-IME と読む』は develop と同じ(BUG-195 と同型)。
+
+**実測(run 39182258683、`ts-tsf-mozc-switch-{8000,20000}ms`、起動時は実 GJI、`ime=mozc-gji-real`):** 切り替え(`[switch]`)から `converter target → NoEvidence` と `detaching` が 1 回ずつ出るまで 1.49〜1.82 秒(4/4)。8000ms は修正前・一度目の修正 INVALID ×4 → PASS ×2 だが、**8000ms は切り替えから detach の窓の間に打鍵が無い**(`ready` は 22 秒以降)ので、「切り替えの後の打鍵」の確認であって窓の確認ではない。窓の中で打っているのは 20000ms の 2 本だけ(n=2、warm の連続打鍵、誤判定なし)。20000ms の疑い 1 はどちらも切り替えの前(本物の GJI のリテラルか誤判定かは未確認)。`detaching` の行は確かめたが、detach 後に `gji_io=`/`gji_idle=` が Mozc 単独の develop と同じ値になったことの直接の証拠は未確認。
 
 ## 既知の限界(D1 の後も残る)
 
@@ -74,11 +79,11 @@ related_adr:
 - `tsf_ctx`(COM 初期化)が取れないと target が `Gji` のまま固定され、GJI と Mozc が両方ある環境では BUG-207 が残る。
 - `converter_target(true, MsImeNative)` は起こり得ない組み合わせで `Gji` を返す(黙って)。`GJI_CLSID`(`OnceLock`)を起動時に取りこぼすと、Google 版が `(GoogleJapaneseInput, Other)` → `None` になり、GJI だけの環境で判定が無効になる(family と clsid は同じ列挙と同じ照合なので可能性は低い)。
 
-## 段階 2 の前提: Mozc で本物のリテラルは再現するか(CI、run 39182258683)
+## 段階 2 の前提: Mozc で本物のリテラルは起きるか(CI、観測のみ)
 
-`ts-{,raw-}{tsf,chromepage}-mozc-{cold,idle}-20ms`(cold=準備確認を省いた最初の入力、idle=各試行の前に 5 秒待つ。awase なしの対照と、安全網なしの awase ありの両方。入力先は tsf と実 Chrome のページ): **32/32 PASS**(リテラル・消失・入れ替わり・誤判定 0)。Mozc で本物のリテラルは、この範囲では再現しなかった。
+`ts-{,raw-}{tsf,chromepage}-mozc-{cold,idle}-20ms`(run 39182258683。cold=準備確認を省いた最初の入力、idle=各試行の前に 5 秒待つ。awase なしの対照と、安全網なしの awase ありの両方。入力先は tsf と CI の Chrome のページ): 32 本とも PASS(リテラル・消失・入れ替わり・誤判定 0)。機会の数は、cold の開始 16 回(awase なし 8・あり 8)と 5 秒 idle の後の試行 96(48・48)。**この条件では、リテラルは観測されなかった。**
 
-**限界**: idle は 5 秒で、GJI のリテラルが出る長い idle(数十秒)より短い。陽性対照(リテラルを出せることが分かっている構成)でハーネスの検出力を確かめていない。CI の Chrome は専用デスクトップで、実機とは経路が違う。そのため `ts-{,raw-}{tsf,chromepage}-mozc-longidle-20ms`(idle 30 秒)を追加した。リテラルが再現しないなら D1(判定しない)の根拠が増え、再現するなら段階 2(Mozc 用の証拠)に進む。
+**言い過ぎないこと**: 『起きない』ことを示したのではなく『観測されなかった』だけ。**陽性対照がまだ無い**: 同じハーネスで、リテラルが起きると分かっている構成(GJI、awase なし)が literal>0 を出せるかを確かめていない。出せなければ、この CI の環境(専用デスクトップの Chrome)ではリテラル自体が起きず、Mozc の 0 件は何も言っていない。そのため (i) idle 30 秒の `ts-{,raw-}{tsf,chromepage}-mozc-longidle-20ms` と、(ii) 陽性対照 `ts-raw-{tsf,chromepage}-gji-{cold,idle,longidle}-20ms`(`--mozc` なし)を追加した。D1(判定しない)の根拠には『起きた観測が無い』として使い、陽性対照が literal>0 を出すまで段階 2 の前提の結論は保留する。
 
 ## 実測・検証の順序
 

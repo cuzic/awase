@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || (github.ref_name == 'fix/bug-207-mozc-server-io-monitor' && '*-mozc-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || (github.ref_name == 'fix/bug-207-mozc-server-io-monitor' && '*-mozc-*,ts-raw-*-gji-cold-*,ts-raw-*-gji-idle-*,ts-raw-*-gji-longidle-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -761,6 +761,14 @@ jobs:
                   stress=f'--form={form} --interval=20 --kinds=single,mixed --trials=3 --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mozc ' + (('--mode=raw --no-awase ' if raw else '') + '--idle=30000'))
               for raw in ('', 'raw-')
               for form in ('tsf', 'chromepage')],
+            # 陽性対照(Opus round 4): Mozc の cold/idle/longidle と同じ構成を GJI・awase なしで回す(--mozc なし)。GJI の Chrome の cold リテラルは
+            # 実機で 8.7〜28 秒の idle の後に観測されている(tuning-constants.md の 79134f5・9a7e699)。CI でも GJI で literal>0 が出れば、ハーネスと
+            # Chrome の経路にリテラルを検出する力があると言え、Mozc の 0 件に意味が出る。GJI でも 0 件なら、この CI の環境ではリテラル自体が起きず、
+            # Mozc の結果は何も言っていない。
+            *[cfg(f'ts-raw-{form}-gji-{kind}-20ms', 'observe', check='typing', ime='gji', awase='false', runs=rn, wait=wt, until='2026-11-10',
+                  stress=f'--form={form} --interval=20 --kinds=single,mixed --trials={tr} --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mode=raw --no-awase {flag}')
+              for form in ('tsf', 'chromepage')
+              for kind, flag, tr, rn, wt in (('cold', '--cold', 1, 4, 900), ('idle', '--idle=5000', 3, 4, 900), ('longidle', '--idle=30000', 3, 2, 1500))],
             # --- 打鍵の揺らぎ比較(tsj-、examples/typing_stress/jitter.rs): 固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit)を同じ入力先・IME・seed で比べる。
             # jit の分布の形は仮置き(範囲だけ docs/adr/182 の実機実測に合わせる: 親指↔文字の押下間隔 2〜93ms、文字先押しの割合 30%)。--jit-iv=0.5 は間隔の倍率の対数標準偏差。
             # 既定の only 空では回さない(下の除外に tsj- を足してある)。only='tsj-*' で回す。観測のみ、until までに「揺らぎで loss/reorder/literal が増えるか」を決める。
