@@ -26,6 +26,7 @@ pub(crate) mod gji_fsm;
 mod gji_monitor;
 #[cfg(windows)]
 pub(crate) mod ime_mode_fsm;
+pub use awase_windows_core::tsf::converter_target;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub use awase_windows_core::tsf::literal_facts;
 #[cfg(windows)]

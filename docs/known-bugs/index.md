@@ -217,3 +217,4 @@
 | デバッグ方法 | [debugging-guide.md](debugging-guide.md) |
 | 2026-07-25: Windows実機での`cargo test --lib -p awase-windows`初回実行で判明したテスト自体の不具合（実装バグではない） | [NOTE-2026-07-25-test-infra.md](NOTE-2026-07-25-test-infra.md) |
 | FEATURE-115: 打鍵列機能（ADR-115）実装状況・既知の限界 | [FEATURE-115.md](FEATURE-115.md) |
+| [BUG-207](BUG-207.md) | 修正を PR にした(2026-10-18、CI 待ち)。実機の確認は未実施 | Mozc Readable で入力すると、awase が raw-tsf-literal と誤判定して入力した文字をバックスペースで消す(I/O の監視が GoogleIMEJaConverter に固定され、Mozc 系の mozc_server を見ていない) |

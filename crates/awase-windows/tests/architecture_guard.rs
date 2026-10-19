@@ -9263,3 +9263,25 @@ fn half_width_return_wiring_adr245_pr2() {
         "commit_enter_* は Enter 時の win32::foreground_scope() を渡す(ADR-245 決定2)"
     );
 }
+
+/// BUG-207 / ADR-269: Mozc 系がアクティブなときは、GJI の変換サーバーの I/O を literal 判定の証拠にしない。
+/// GJI の変換サーバーが同時に動いていると、静止した GJI を見て「書き込みなし = リテラル」と誤判定し、
+/// 入力済みの文字を消す。選び方は `converter_target`（純関数）に置き、監視は `ConverterTarget::NoEvidence` で外す。
+#[test]
+fn gji_monitor_drops_gji_evidence_when_mozc_family_is_active() {
+    let monitor = read_crate_file("src/tsf/gji_monitor.rs");
+    let prod = production_code_only(&monitor);
+    assert!(
+        !prod.contains("\"GoogleIMEJaConverter\"") && !prod.contains("\"mozc_server\""),
+        "gji_monitor.rs にプロセス名を直書きしない。選び方は converter_target.rs（純関数）に置く（BUG-207）"
+    );
+    assert!(
+        prod.contains("converter_target(")
+            && prod.contains("current_target == ConverterTarget::Gji"),
+        "監視への接続は converter_target(アクティブな TIP) が Gji のときだけ行う（BUG-207）"
+    );
+    assert!(
+        prod.contains("current_target == ConverterTarget::NoEvidence && monitor.is_some()"),
+        "Mozc 系がアクティブになったら GJI の監視を外す（gji_is_active_ime が偽になり判定が走らない。BUG-207）"
+    );
+}

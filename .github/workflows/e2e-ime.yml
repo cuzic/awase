@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, feat/adr260-eisu-toggle-guard, feat/adr245-r2-resume-hold]
+    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, feat/adr260-eisu-toggle-guard, feat/adr245-r2-resume-hold, fix/bug-207-mozc-server-io-monitor]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || (github.ref_name == 'fix/bug-207-mozc-server-io-monitor' && '*-mozc-*,ts-raw-*-gji-cold-*,ts-raw-*-gji-idle-*,ts-raw-*-gji-longidle-*,ts-tsf-gji-40ms,ts-tsf-gji-10ms,ts-tsf-msime-40ms,ts-tsf-msime-10ms') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -97,7 +97,9 @@ jobs:
           # pass(安定)/ fail(再現を固定、BUG と対応)/ 削除のどれかに決める。期限切れは test_e2e_plan.py が赤にする。
           # 既存の observe は observe_grandfathered.txt に載せてあり(縮める方向にだけ動かす)、observe_audit.py が一覧する。
           # summary は有効回が 2 回以上で全PASS なら『pass昇格候補』、全FAIL なら『fail固定候補』と出す。
-          # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
+          # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME) / mozc=Mozc Readable(cuzic/mozc-readable の Release の MSI、BUG-207) /
+          # mozc-gji=同名のダミー(GoogleIMEJaConverter)を静止して動かしたまま、入力方式を Mozc Readable だけにする(BUG-207 の条件、ADR-269) /
+          # mozc-gji-real=実 GJI も入れて(変換サーバー起動)、Mozc Readable も入れ、typing_stress の --mozc で Mozc をアクティブにする
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
@@ -713,6 +715,60 @@ jobs:
               for form in ('edit', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
               for iv in (10, 2)],
+            # --- Mozc Readable(BUG-207): 高速打鍵ストレスを Mozc 系の TIP で回す。awase が raw-tsf-literal と誤判定して文字を消さないか
+            # (I/O の監視を mozc_server に向ける修正の確認)。ts-<入力先>-mozc-<間隔>ms は awase あり、ts-raw-<入力先>-mozc-<間隔>ms は awase なしの対照。
+            # 名前に -mozc- を含むので、fix/bug-207-mozc-server-io-monitor への push は only='*-mozc-*' で回る。観測のみ(崩れても赤にしない)。
+            *[cfg(f'ts-{form}-mozc-{iv}ms', 'observe', check='typing', ime='mozc', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
+              for form in ('edit', 'rich', 'tsf')
+              for iv in (40, 10)],
+            *[cfg(f'ts-raw-{form}-mozc-{iv}ms', 'observe', check='typing', ime='mozc', awase='false', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form={form} --interval={iv} --mode=raw --no-awase --layout=@REPO@/layout/nicola_keytop.yab --mozc')
+              for form in ('edit', 'tsf')
+              for iv in (40, 10)],
+            # BUG-207 の実際の条件(Mozc がアクティブで GJI の変換サーバーも動いている、ADR-269 順序 2)。develop では GJI の監視に付いて誤判定する(はず)。
+            # 条件が成立しなければジョブが失敗する(ステップ『条件の確認(mozc-gji)』)。awase.log の `attached to GJI process`(develop)と
+            # `detaching`(修正後)で効果を見る。
+            *[cfg(f'ts-{form}-mozc-gji-{iv}ms', 'observe', check='typing', ime='mozc-gji', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
+              for form in ('edit', 'tsf')
+              for iv in (40, 10)],
+            # 実 GJI も入れた版(ADR-269): GJI を実際にインストールし、GJI の変換サーバーを起動したまま Mozc Readable も入れ、
+            # typing_stress の --mozc でセッション内の入力方式を Mozc にする(GJI の TIP も有効なまま)。利用者の『GJI と Mozc の両方を入れて
+            # Mozc を有効にしている』環境に最も近い。条件(アクティブな TIP が Mozc 系、GJI の変換サーバーが動作中)が成立しなければ失敗にする。
+            *[cfg(f'ts-{form}-mozc-gjireal-{iv}ms', 'observe', check='typing', ime='mozc-gji-real', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
+              for form in ('edit', 'tsf')
+              for iv in (40, 10)],
+            # 途中で GJI から Mozc へ切り替える版(ADR-269 順序 5): 実 GJI がアクティブな状態で awase を起動し(監視は GJI に付く)、
+            # typing_stress が起動の N ms 後に Mozc Readable へ切り替える(--switch-mozc-ms)。修正後の awase は `detaching` を出して
+            # 監視を外す。develop は外さず、切替後に静止した GJI を見て誤判定しうる。監視を外す経路・gji_* を 0 に戻す処理・即時の切り替えを CI で動かす。
+            *[cfg(f'ts-tsf-mozc-switch-{ms}ms', 'observe', check='typing', ime='mozc-gji-real', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form=tsf --interval=40 --layout=@REPO@/layout/nicola_keytop.yab --switch-mozc-ms={ms}')
+              for ms in (8000, 20000)],
+            # Mozc で本物のリテラル(日本語にならず英字のまま出る)が起きるかの再現実験(ADR-269 順序 4、段階 2 の前提)。
+            # awase なしの対照(ts-raw-*-mozc-cold/idle-*)は『Mozc 単体が cold・長い idle の最初の入力を受けられるか』、awase あり
+            # (ts-*-mozc-cold/idle-*)は『安全網(literal 判定)なしで Mozc に何が起きるか』。入力先は tsf(Chrome 風の RichEdit)と実 Chrome(chromepage)。
+            # cold=準備確認を省いた最初の入力、idle=各試行の前に5秒待つ。観測のみ。
+            *[cfg(f'ts-{raw}{form}-mozc-{kind}-20ms', 'observe', check='typing', ime='mozc', awase='false' if raw else 'true', runs=4, wait=900, until='2026-11-10',
+                  stress=f'--form={form} --interval=20 --kinds=single,mixed --trials={tr} --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mozc ' + (('--mode=raw --no-awase ' if raw else '') + flag))
+              for raw in ('', 'raw-')
+              for form in ('tsf', 'chromepage')
+              for kind, flag, tr in (('cold', '--cold', 1), ('idle', '--idle=5000', 3))],
+            # 上の cold/idle(5秒)で Mozc にリテラルは出なかった(run 39182258683、32/32 PASS)。GJI のリテラルは数十秒の長い idle で出ることが多い
+            # (BUG-002 など)ので、idle を 30 秒にして同じ実験を繰り返す。
+            *[cfg(f'ts-{raw}{form}-mozc-longidle-20ms', 'observe', check='typing', ime='mozc', awase='false' if raw else 'true', runs=2, wait=1500, until='2026-11-10',
+                  stress=f'--form={form} --interval=20 --kinds=single,mixed --trials=3 --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mozc ' + (('--mode=raw --no-awase ' if raw else '') + '--idle=30000'))
+              for raw in ('', 'raw-')
+              for form in ('tsf', 'chromepage')],
+            # 陽性対照(Opus round 4): Mozc の cold/idle/longidle と同じ構成を GJI・awase なしで回す(--mozc なし)。GJI の Chrome の cold リテラルは
+            # 実機で 8.7〜28 秒の idle の後に観測されている(tuning-constants.md の 79134f5・9a7e699)。CI でも GJI で literal>0 が出れば、ハーネスと
+            # Chrome の経路にリテラルを検出する力があると言え、Mozc の 0 件に意味が出る。GJI でも 0 件なら、この CI の環境ではリテラル自体が起きず、
+            # Mozc の結果は何も言っていない。
+            *[cfg(f'ts-raw-{form}-gji-{kind}-20ms', 'observe', check='typing', ime='gji', awase='false', runs=rn, wait=wt, until='2026-11-10',
+                  stress=f'--form={form} --interval=20 --kinds=single,mixed --trials={tr} --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mode=raw --no-awase {flag}')
+              for form in ('tsf', 'chromepage')
+              for kind, flag, tr, rn, wt in (('cold', '--cold', 1, 4, 900), ('idle', '--idle=5000', 3, 4, 900), ('longidle', '--idle=30000', 3, 2, 1500))],
             # --- 打鍵の揺らぎ比較(tsj-、examples/typing_stress/jitter.rs): 固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit)を同じ入力先・IME・seed で比べる。
             # jit の分布の形は仮置き(範囲だけ docs/adr/182 の実機実測に合わせる: 親指↔文字の押下間隔 2〜93ms、文字先押しの割合 30%)。--jit-iv=0.5 は間隔の倍率の対数標準偏差。
             # 既定の only 空では回さない(下の除外に tsj- を足してある)。only='tsj-*' で回す。観測のみ、until までに「揺らぎで loss/reorder/literal が増えるか」を決める。
@@ -1007,14 +1063,14 @@ jobs:
 
       # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
       - name: Google 日本語入力をインストール(chocolatey、約30秒)
-        if: matrix.cfg.ime != 'msime'
+        if: matrix.cfg.ime == 'gji' || matrix.cfg.ime == 'mozc-gji-real'
         shell: pwsh
         run: |
           ./tools/ci/install-gji.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 入力言語をja-JP + GJI に設定、キーマッププリセット(ATOK/MS-IME)の config1.db を書く
-        if: matrix.cfg.ime != 'msime'
+        if: matrix.cfg.ime == 'gji'
         shell: pwsh
         run: |
           $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
@@ -1058,6 +1114,52 @@ jobs:
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
+
+      # Mozc Readable(BUG-207): GJI と別の TIP(mozc_server が変換サーバー)。awase が Mozc 系で I/O の監視を mozc_server に向けるかを確かめる。
+      # mozc-gji(BUG-207 の条件): 名前が GoogleIMEJaConverter のダミープロセス(powershell.exe のコピーが待機するだけ)を動かす。
+      # awase の監視はプロセス名で GJI の変換サーバーを探し、その累積 I/O が増えないことを literal の根拠にする。実際の GJI を
+      # 入れると、GJI の TIP が既定でアクティブのままになり Mozc がアクティブという条件を作れなかった(run 39178603274・39179133289:
+      # regsvr32 /u でも TIP が残った)。ダミーは静止した GJI の変換サーバーと同じ見え方(同名で I/O が増えない)を、TIP 抜きで作る。
+      - name: 静止した GJI の変換サーバー(同名のダミー)を起動しておく(mozc-gji)
+        if: matrix.cfg.ime == 'mozc-gji'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'fake-gji'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $exe = Join-Path $dir 'GoogleIMEJaConverter.exe'
+          Copy-Item "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" $exe
+          Start-Process $exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 7200' -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue | Format-Table Name, Id, Path | Out-String | Write-Host
+
+      - name: 実 GJI の変換サーバーを起動しておく(mozc-gji-real)
+        if: matrix.cfg.ime == 'mozc-gji-real'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -Filter GoogleIMEJaConverter.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { Write-Host '##[error]GoogleIMEJaConverter.exe が見つからない'; exit 1 }
+          Start-Process $exe.FullName
+          Start-Sleep -Seconds 3
+          Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue | Format-Table Name, Id, Path | Out-String | Write-Host
+
+      - name: Mozc Readable をインストールして ja-JP の入力方式にする
+        if: matrix.cfg.ime == 'mozc' || matrix.cfg.ime == 'mozc-gji' || matrix.cfg.ime == 'mozc-gji-real'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./tools/ci/install-mozc-readable.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # mozc-gji: BUG-207 の条件(Mozc がアクティブで、GJI の変換サーバーも動いている)が成立しているか。成立しなければこのジョブを失敗にする
+      # (Mozc 単独と同じ PASS を『直った』と読む誤りを防ぐ)。
+      - name: 条件の確認(mozc-gji)
+        if: matrix.cfg.ime == 'mozc-gji' || matrix.cfg.ime == 'mozc-gji-real'
+        shell: pwsh
+        run: |
+          $gji = Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Format-Table Name, Id | Out-String | Write-Host
+          if (-not $gji) { Write-Host '##[error]条件不成立: GoogleIMEJaConverter が動いていない'; exit 1 }
 
       # Microsoft IME 本体: ja-JP の言語を追加すると標準の日本語IME(Microsoft IME)が入る。
       - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
@@ -1447,6 +1549,29 @@ jobs:
             }
           }
           exit 0
+
+      # mozc-gji: awase が見たアクティブな TIP が Mozc 系で、GJI の変換サーバーも動いていたか(awase.log)。違えば条件不成立で失敗にする。
+      - name: 条件の確認2(mozc-gji、awase.log)
+        if: matrix.cfg.ime == 'mozc-gji' || matrix.cfg.ime == 'mozc-gji-real'
+        shell: pwsh
+        run: |
+          $log = 'dist\awase.log'
+          $kind = if (Test-Path $log) { Select-String -Path $log -Pattern 'initial IME kind: (\S+) \((\w+)\)' | Select-Object -First 1 } else { $null }
+          $conv = Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue
+          $detach = if (Test-Path $log) { @(Select-String -Path $log -Pattern 'detaching').Count } else { 0 }
+          $isSwitch = '${{ matrix.cfg.name }}' -like '*-switch-*'
+          Write-Host ("initial IME kind: " + $(if ($kind) { $kind.Matches[0].Value } else { '(none)' }) + " / GJI converter running: " + [bool]$conv + " / detaching: " + $detach + " / switch config: " + $isSwitch)
+          if (-not $kind) { Write-Host '##[error]条件不成立: initial IME kind が awase.log に無い'; exit 1 }
+          $k = $kind.Matches[0].Groups[1].Value
+          $id = $kind.Matches[0].Groups[2].Value
+          if ($k -ne 'GoogleJapaneseInput') { Write-Host "##[error]条件不成立: アクティブな TIP が GJI 系ではない ($k)"; exit 1 }
+          if ($isSwitch) {
+            # 途中で GJI から Mozc へ切り替える構成: 起動時は Google 版 GJI (Gji)。切替後の detaching は修正後の awase だけが出す(develop は 0)。
+            if ($id -ne 'Gji') { Write-Host "##[error]条件不成立: 起動時のアクティブな TIP が Google 版 GJI ではない ($id)"; exit 1 }
+          } elseif ($id -ne 'Other') {
+            Write-Host "##[error]条件不成立: アクティブな TIP が Mozc 系 (Other) ではない ($id)"; exit 1
+          }
+          if (-not $conv) { Write-Host '##[error]条件不成立: GJI の変換サーバーが動いていない'; exit 1 }
 
       - uses: actions/upload-artifact@v4
         if: always()
