@@ -354,6 +354,12 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                 identity == crate::state::ime_kind::TipIdentity::MsImeNative,
             );
             current_target = converter_target(kind == ActiveImeKind::GoogleJapaneseInput, identity);
+            // 起動時に Mozc 系がアクティブなら、ここで既に NoEvidence。以後 `TargetSwitch::observe` は変化が無いので
+            // `None` を返し続け、確定時の書き込みは実行されない。ここでも書く（BUG-208 のレビュー N1）。
+            TSF_OBS.gji_evidence_absent.store(
+                current_target == ConverterTarget::NoEvidence,
+                Ordering::Release,
+            );
             tracing::info!(
                 "[tip-detect] initial IME kind: {kind:?} ({identity:?}), converter target: {current_target:?}"
             );
@@ -412,12 +418,13 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                              kind={kind:?} identity={identity:?})"
                     );
                     current_target = confirmed;
-                    // 監視を外す前に立てる（`gji_is_active_ime()` が偽になる前から、応答待ちの読み手が先に止まる）。
-                    TSF_OBS.gji_evidence_absent.store(
-                        current_target == ConverterTarget::NoEvidence,
-                        Ordering::Release,
-                    );
                 }
+                // 毎回、無条件に書く（変化したときだけだと、起動時から Mozc のとき一度も書かれない。N1）。
+                // 監視を外す処理（下）より前に立てる（`gji_is_active_ime()` が偽になる前から、応答待ちの読み手が先に止まる）。
+                TSF_OBS.gji_evidence_absent.store(
+                    current_target == ConverterTarget::NoEvidence,
+                    Ordering::Release,
+                );
                 // TipIdentity も同じデバウンスの規律で確定させる（NR1）。ATOK と Microsoft IME 本体は
                 // どちらも上の ActiveImeKind では MicrosoftIme のため、こちらが単発フリップの唯一の防御。
                 let current_identity = TSF_OBS.current_tip_identity();

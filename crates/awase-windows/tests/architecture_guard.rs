@@ -9296,10 +9296,87 @@ fn gji_monitor_drops_gji_evidence_when_mozc_family_is_active() {
         prod.contains("current_target == ConverterTarget::NoEvidence && monitor.is_some()"),
         "Mozc 系がアクティブになったら GJI の監視を外す（gji_is_active_ime が偽になり判定が走らない。BUG-207）"
     );
-    // BUG-208: 「証拠が無いと確定」を、確定した target から導いて立てる（応答待ち・eager unicode を止める読み手の信号）。
-    let squashed: String = prod.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
-        squashed.contains("gji_evidence_absent.store(current_target==ConverterTarget::NoEvidence,Ordering::Release,)"),
-        "gji_monitor は確定した converter target が NoEvidence かどうかを gji_evidence_absent に書く（BUG-208）"
+        gji_evidence_absent_flag_is_written_at_startup_and_every_poll(prod),
+        "gji_monitor は gji_evidence_absent を、起動時の target 取得の直後と、ポーリングの毎回(target が変化したときの中ではなく外)に書く（BUG-208 のレビュー N1）"
+    );
+}
+
+/// BUG-208(レビュー N1): `gji_evidence_absent` は、(1) 起動時の target 取得の直後と、(2) ポーリングの毎回、
+/// `TargetSwitch` が確定したとき**の外**で書く。確定したときの中だけだと、起動時から Mozc 系（target が最初から
+/// NoEvidence で、以後 `observe` が変化なしの `None` を返し続ける）では一度も書かれず、応答待ちが解けない。
+fn gji_evidence_absent_flag_is_written_at_startup_and_every_poll(prod: &str) -> bool {
+    let sq: String = non_comment_lines(prod)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let store = "gji_evidence_absent.store(current_target==ConverterTarget::NoEvidence,Ordering::Release,);";
+    // (1) 起動時の target 取得の直後
+    let init = format!(
+        "current_target=converter_target(kind==ActiveImeKind::GoogleJapaneseInput,identity);TSF_OBS.{store}"
+    );
+    if !sq.contains(&init) {
+        return false;
+    }
+    // (2) `if let Some(confirmed) = confirmed_target { .. }` の外（直後）に書く。中には書かない。
+    let head = "ifletSome(confirmed)=confirmed_target{";
+    let Some(start) = sq.find(head) else {
+        return false;
+    };
+    let body_start = start + head.len();
+    let mut depth = 1usize;
+    let mut end = None;
+    for (off, ch) in sq[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(body_start + off);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(end) = end else {
+        return false;
+    };
+    let inside = &sq[body_start..end];
+    let after = &sq[end + 1..];
+    !inside.contains("gji_evidence_absent.store(") && after.starts_with(&format!("TSF_OBS.{store}"))
+}
+
+#[test]
+fn gji_evidence_absent_flag_position_check_detects_the_n1_bug() {
+    let monitor = read_crate_file("src/tsf/gji_monitor.rs");
+    let prod = production_code_only(&monitor).to_string();
+    assert!(gji_evidence_absent_flag_is_written_at_startup_and_every_poll(&prod));
+    // 変異 1: 書き込みを「確定したとき」の中に戻す（レビュー N1 の元のバグ）
+    let unconditional = "TSF_OBS.gji_evidence_absent.store(\n                    current_target == ConverterTarget::NoEvidence,\n                    Ordering::Release,\n                );";
+    let mut inside = prod.clone();
+    assert!(
+        inside.contains(unconditional),
+        "変異の鍵が実コードと一致しない"
+    );
+    inside = inside.replacen(unconditional, "", 1);
+    inside = inside.replacen(
+        "current_target = confirmed;\n",
+        "current_target = confirmed;\n TSF_OBS.gji_evidence_absent.store(current_target == ConverterTarget::NoEvidence, Ordering::Release,);\n",
+        1,
+    );
+    assert_ne!(inside, prod);
+    assert!(
+        !gji_evidence_absent_flag_is_written_at_startup_and_every_poll(&inside),
+        "確定したときの中だけに書く形を検出できない"
+    );
+    // 変異 2: 起動時の書き込みを消す
+    let init_store = "            TSF_OBS.gji_evidence_absent.store(\n                current_target == ConverterTarget::NoEvidence,\n                Ordering::Release,\n            );\n";
+    assert!(prod.contains(init_store), "変異の鍵が実コードと一致しない");
+    let no_init = prod.replacen(init_store, "", 1);
+    assert_ne!(no_init, prod);
+    assert!(
+        !gji_evidence_absent_flag_is_written_at_startup_and_every_poll(&no_init),
+        "起動時の書き込みが無い形を検出できない"
     );
 }

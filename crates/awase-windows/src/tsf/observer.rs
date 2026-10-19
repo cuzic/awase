@@ -561,19 +561,20 @@ pub(crate) fn gji_other_bytes() -> u64 {
     TSF_OBS.gji_other_bytes.load(Ordering::Relaxed)
 }
 
+/// アクティブな TIP が Mozc 系で、GJI の I/O が証拠にならないと確定しているか（BUG-208、ADR-269 D3）。
+/// `gji_is_active_ime()` の否定ではない: 本物の GJI で監視が一時的に未接続のときも `gji_is_active_ime()` は
+/// 偽だが、こちらは偽のまま（従来どおり GJI の応答を待つ）。Mozc 系 → GJI に切り替えた直後は、
+/// `gji_monitor` が target を確定する（最大 4 秒）まで真のまま残りうる。
+pub(crate) fn gji_evidence_absent() -> bool {
+    TSF_OBS.gji_evidence_absent.load(Ordering::Acquire)
+}
+
 /// GJI プロセスが起動済みかつアクティブ IME として CLSID ベースで選択されているかどうか。
 ///
 /// `gji_monitor_ok`（プロセス稼働）だけでは、GJI Converter が起動中でも
 /// MS-IME がアクティブな場合に GJI と誤判定してしまう。
 /// `tsf_active_kind == GoogleJapaneseInput`（CLSID 判定）を合わせることで
 /// MS-IME 使用中の LiteralDetect 誤発火（BS 連射）を防ぐ。
-/// アクティブな TIP が Mozc 系で、GJI の I/O が証拠にならないと確定しているか（BUG-208、ADR-269 D3）。
-/// `gji_is_active_ime()` の否定ではない: 本物の GJI で監視が一時的に未接続のときも `gji_is_active_ime()` は
-/// 偽だが、こちらは偽のまま（従来どおり GJI の応答を待つ）。
-pub(crate) fn gji_evidence_absent() -> bool {
-    TSF_OBS.gji_evidence_absent.load(Ordering::Acquire)
-}
-
 pub(crate) fn gji_is_active_ime() -> bool {
     TSF_OBS.gji_monitor_ok.load(Ordering::Acquire)
         && TSF_OBS.tsf_active_kind.load(Ordering::Acquire) == 1
