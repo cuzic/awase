@@ -98,7 +98,8 @@ jobs:
           # 既存の observe は observe_grandfathered.txt に載せてあり(縮める方向にだけ動かす)、observe_audit.py が一覧する。
           # summary は有効回が 2 回以上で全PASS なら『pass昇格候補』、全FAIL なら『fail固定候補』と出す。
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME) / mozc=Mozc Readable(cuzic/mozc-readable の Release の MSI、BUG-207) /
-          # mozc-gji=同名のダミー(GoogleIMEJaConverter)を静止して動かしたまま、入力方式を Mozc Readable だけにする(BUG-207 の条件、ADR-269)
+          # mozc-gji=同名のダミー(GoogleIMEJaConverter)を静止して動かしたまま、入力方式を Mozc Readable だけにする(BUG-207 の条件、ADR-269) /
+          # mozc-gji-real=実 GJI も入れて(変換サーバー起動)、Mozc Readable も入れ、typing_stress の --mozc で Mozc をアクティブにする
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
@@ -718,18 +719,25 @@ jobs:
             # (I/O の監視を mozc_server に向ける修正の確認)。ts-<入力先>-mozc-<間隔>ms は awase あり、ts-raw-<入力先>-mozc-<間隔>ms は awase なしの対照。
             # 名前に -mozc- を含むので、fix/bug-207-mozc-server-io-monitor への push は only='*-mozc-*' で回る。観測のみ(崩れても赤にしない)。
             *[cfg(f'ts-{form}-mozc-{iv}ms', 'observe', check='typing', ime='mozc', runs=2, wait=420, until='2026-11-10',
-                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab')
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
               for form in ('edit', 'rich', 'tsf')
               for iv in (40, 10)],
             *[cfg(f'ts-raw-{form}-mozc-{iv}ms', 'observe', check='typing', ime='mozc', awase='false', runs=2, wait=420, until='2026-11-10',
-                  stress=f'--form={form} --interval={iv} --mode=raw --no-awase --layout=@REPO@/layout/nicola_keytop.yab')
+                  stress=f'--form={form} --interval={iv} --mode=raw --no-awase --layout=@REPO@/layout/nicola_keytop.yab --mozc')
               for form in ('edit', 'tsf')
               for iv in (40, 10)],
             # BUG-207 の実際の条件(Mozc がアクティブで GJI の変換サーバーも動いている、ADR-269 順序 2)。develop では GJI の監視に付いて誤判定する(はず)。
             # 条件が成立しなければジョブが失敗する(ステップ『条件の確認(mozc-gji)』)。awase.log の `attached to GJI process`(develop)と
             # `detaching`(修正後)で効果を見る。
             *[cfg(f'ts-{form}-mozc-gji-{iv}ms', 'observe', check='typing', ime='mozc-gji', runs=2, wait=420, until='2026-11-10',
-                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab')
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
+              for form in ('edit', 'tsf')
+              for iv in (40, 10)],
+            # 実 GJI も入れた版(ADR-269): GJI を実際にインストールし、GJI の変換サーバーを起動したまま Mozc Readable も入れ、
+            # typing_stress の --mozc でセッション内の入力方式を Mozc にする(GJI の TIP も有効なまま)。利用者の『GJI と Mozc の両方を入れて
+            # Mozc を有効にしている』環境に最も近い。条件(アクティブな TIP が Mozc 系、GJI の変換サーバーが動作中)が成立しなければ失敗にする。
+            *[cfg(f'ts-{form}-mozc-gjireal-{iv}ms', 'observe', check='typing', ime='mozc-gji-real', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
               for form in ('edit', 'tsf')
               for iv in (40, 10)],
             # --- 打鍵の揺らぎ比較(tsj-、examples/typing_stress/jitter.rs): 固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit)を同じ入力先・IME・seed で比べる。
@@ -1026,7 +1034,7 @@ jobs:
 
       # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
       - name: Google 日本語入力をインストール(chocolatey、約30秒)
-        if: matrix.cfg.ime == 'gji'
+        if: matrix.cfg.ime == 'gji' || matrix.cfg.ime == 'mozc-gji-real'
         shell: pwsh
         run: |
           ./tools/ci/install-gji.ps1
@@ -1095,8 +1103,18 @@ jobs:
           Start-Sleep -Seconds 3
           Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue | Format-Table Name, Id, Path | Out-String | Write-Host
 
+      - name: 実 GJI の変換サーバーを起動しておく(mozc-gji-real)
+        if: matrix.cfg.ime == 'mozc-gji-real'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -Filter GoogleIMEJaConverter.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { Write-Host '##[error]GoogleIMEJaConverter.exe が見つからない'; exit 1 }
+          Start-Process $exe.FullName
+          Start-Sleep -Seconds 3
+          Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue | Format-Table Name, Id, Path | Out-String | Write-Host
+
       - name: Mozc Readable をインストールして ja-JP の入力方式にする
-        if: matrix.cfg.ime == 'mozc' || matrix.cfg.ime == 'mozc-gji'
+        if: matrix.cfg.ime == 'mozc' || matrix.cfg.ime == 'mozc-gji' || matrix.cfg.ime == 'mozc-gji-real'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1107,7 +1125,7 @@ jobs:
       # mozc-gji: BUG-207 の条件(Mozc がアクティブで、GJI の変換サーバーも動いている)が成立しているか。成立しなければこのジョブを失敗にする
       # (Mozc 単独と同じ PASS を『直った』と読む誤りを防ぐ)。
       - name: 条件の確認(mozc-gji)
-        if: matrix.cfg.ime == 'mozc-gji'
+        if: matrix.cfg.ime == 'mozc-gji' || matrix.cfg.ime == 'mozc-gji-real'
         shell: pwsh
         run: |
           $gji = Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue
@@ -1505,7 +1523,7 @@ jobs:
 
       # mozc-gji: awase が見たアクティブな TIP が Mozc 系で、GJI の変換サーバーも動いていたか(awase.log)。違えば条件不成立で失敗にする。
       - name: 条件の確認2(mozc-gji、awase.log)
-        if: matrix.cfg.ime == 'mozc-gji'
+        if: matrix.cfg.ime == 'mozc-gji' || matrix.cfg.ime == 'mozc-gji-real'
         shell: pwsh
         run: |
           $log = 'dist\awase.log'
