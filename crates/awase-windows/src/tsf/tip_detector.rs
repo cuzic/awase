@@ -249,6 +249,17 @@ pub(super) fn query_active_kind(
     }
 }
 
+/// [`query_active_kind_on_fresh_thread`] の時間切れで残る孤児スレッドの枠（このモジュール専用）。共有の既定プール
+/// （フォーカス分類の IMM32/MSAA/UIA が使う 8 枠）と分ける: TSF が詰まって枠を使い切ると、無関係なフォーカス分類まで
+/// 巻き添えでタイムアウト扱いになる（`hook.rs` の `HOOK_JOIN_LEAKED_THREADS` と同じ理由）。
+static TIP_QUERY_LEAKED_THREADS: crate::win32::LeakedThreadPool =
+    crate::win32::LeakedThreadPool::new(2);
+
+/// 新しいスレッドで取れない問い合わせがこの回数続いたとき、一度だけ warn を出す。
+const FRESH_QUERY_WARN_AFTER: u32 = 5;
+static FRESH_QUERY_CONSECUTIVE_FAILURES: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
 /// 新しい STA スレッドでアクティブな TIP を問い合わせる（BUG-207、ADR-269 D1a）。
 ///
 /// `gji-io-monitor` スレッドで起動時に作った `ITfInputProcessorProfileMgr` の `GetActiveProfile` は、起動後に
@@ -264,22 +275,37 @@ pub(super) fn query_active_kind(
 pub(super) fn query_active_kind_on_fresh_thread(
 ) -> Option<(ActiveImeKind, crate::state::ime_kind::TipIdentity)> {
     let started = std::time::Instant::now();
-    let result = win32_async::run_with_timeout(std::time::Duration::from_millis(300), || {
-        // SAFETY: 新しいスレッドの先頭で一度だけ初期化し、成功したときだけ COM オブジェクトを手放した後に対で終了する。
-        let init = unsafe {
-            windows::Win32::System::Com::CoInitializeEx(
-                None,
-                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-            )
-        };
-        let result = create_profile_ctx().and_then(|(mgr, _profiles)| query_active_kind(&mgr));
-        if init.is_ok() {
-            // SAFETY: 上の `CoInitializeEx` が成功したときだけ対にする。`result` は COM オブジェクトを持たない値。
-            unsafe { windows::Win32::System::Com::CoUninitialize() };
-        }
-        result
-    })
+    let result = win32_async::run_with_timeout_in(
+        &TIP_QUERY_LEAKED_THREADS,
+        std::time::Duration::from_millis(300),
+        || {
+            // SAFETY: 新しいスレッドの先頭で一度だけ初期化し、成功したときだけ COM オブジェクトを手放した後に対で終了する。
+            let init = unsafe {
+                windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                )
+            };
+            let result = create_profile_ctx().and_then(|(mgr, _profiles)| query_active_kind(&mgr));
+            if init.is_ok() {
+                // SAFETY: 上の `CoInitializeEx` が成功したときだけ対にする。`result` は COM オブジェクトを持たない値。
+                unsafe { windows::Win32::System::Com::CoUninitialize() };
+            }
+            result
+        },
+    )
     .flatten();
+    // 連続して取れない環境（COM が使えない等）では、種別が起動時の値のまま固定される。気づけるよう一度だけ warn を出す。
+    if result.is_some() {
+        FRESH_QUERY_CONSECUTIVE_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+    } else if FRESH_QUERY_CONSECUTIVE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        + 1
+        == FRESH_QUERY_WARN_AFTER
+    {
+        tracing::warn!(
+            "[tip-detect] fresh-thread query failed {FRESH_QUERY_WARN_AFTER} times in a row: the IME kind stays at its last value"
+        );
+    }
     tracing::debug!(
         "[tip-detect] fresh-thread query: {}ms ({})",
         started.elapsed().as_millis(),

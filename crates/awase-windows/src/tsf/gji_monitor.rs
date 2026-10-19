@@ -383,53 +383,50 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         // 通知も発行しない（`ImeKindDebounce` — 単発の誤検出で warmup 戦略
         // (`GjiFsm`/`MsImeStrategy`) が丸ごと再構築され、確立済みの
         // OnWarm/OnComposing が失われるのを防ぐ）。
-        if tsf_ctx.is_some() {
-            if now >= next_clsid_check_ms {
-                next_clsid_check_ms = now + 2_000;
-                // 新しいスレッドで問い合わせる（このスレッドの `mgr` は、起動後の入力方式の切り替えに追随しない。BUG-207）。
-                // 取れなかった tick は「観測なし」で何も更新しない（古い値へ戻さない。新旧の値が混ざるとデバウンスが壊れる）。
-                // 種別・識別・証拠の対象は、このポーリングのデバウンスを通ってだけ変わる（GJI への接続時にも書き込まない）。
-                if let Some((kind, identity)) =
-                    super::tip_detector::query_active_kind_on_fresh_thread()
-                {
-                    let current = TSF_OBS.active_ime_kind();
-                    if let Some(confirmed) = kind_debounce.observe(kind, current) {
-                        if TSF_OBS.set_tsf_active_kind(confirmed) {
-                            tracing::info!("[tip-detect] IME kind → {confirmed:?}");
-                            crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
-                        }
-                    } else if kind != current {
-                        tracing::debug!(
-                            "[tip-detect] IME kind candidate {kind:?} (current={current:?}), \
+        if tsf_ctx.is_some() && now >= next_clsid_check_ms {
+            next_clsid_check_ms = now + 2_000;
+            // 新しいスレッドで問い合わせる（このスレッドの `mgr` は、起動後の入力方式の切り替えに追随しない。BUG-207）。
+            // 取れなかった tick は「観測なし」で何も更新しない（古い値へ戻さない。新旧の値が混ざるとデバウンスが壊れる）。
+            // 種別・識別・証拠の対象は、このポーリングのデバウンスを通ってだけ変わる（GJI への接続時にも書き込まない）。
+            if let Some((kind, identity)) = super::tip_detector::query_active_kind_on_fresh_thread()
+            {
+                let current = TSF_OBS.active_ime_kind();
+                if let Some(confirmed) = kind_debounce.observe(kind, current) {
+                    if TSF_OBS.set_tsf_active_kind(confirmed) {
+                        tracing::info!("[tip-detect] IME kind → {confirmed:?}");
+                        crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                    }
+                } else if kind != current {
+                    tracing::debug!(
+                        "[tip-detect] IME kind candidate {kind:?} (current={current:?}), \
                              awaiting confirmation next tick"
-                        );
-                    }
-                    let observed_target =
-                        converter_target(kind == ActiveImeKind::GoogleJapaneseInput, identity);
-                    // 外す向きは即時、付ける向きは 2 連続（`TargetSwitch` 参照）。
-                    let confirmed_target = target_switch.observe(observed_target, current_target);
-                    if let Some(confirmed) = confirmed_target {
-                        tracing::info!(
-                            "[tip-detect] converter target → {confirmed:?} (was {current_target:?}, \
+                    );
+                }
+                let observed_target =
+                    converter_target(kind == ActiveImeKind::GoogleJapaneseInput, identity);
+                // 外す向きは即時、付ける向きは 2 連続（`TargetSwitch` 参照）。
+                let confirmed_target = target_switch.observe(observed_target, current_target);
+                if let Some(confirmed) = confirmed_target {
+                    tracing::info!(
+                        "[tip-detect] converter target → {confirmed:?} (was {current_target:?}, \
                              kind={kind:?} identity={identity:?})"
-                        );
-                        current_target = confirmed;
+                    );
+                    current_target = confirmed;
+                }
+                // TipIdentity も同じデバウンスの規律で確定させる（NR1）。ATOK と Microsoft IME 本体は
+                // どちらも上の ActiveImeKind では MicrosoftIme のため、こちらが単発フリップの唯一の防御。
+                let current_identity = TSF_OBS.current_tip_identity();
+                if let Some(confirmed) = identity_debounce.observe(identity, current_identity) {
+                    if TSF_OBS.set_ms_ime_native_identified(
+                        confirmed == crate::state::ime_kind::TipIdentity::MsImeNative,
+                    ) {
+                        tracing::info!("[tip-detect] TIP identity → {confirmed:?}");
                     }
-                    // TipIdentity も同じデバウンスの規律で確定させる（NR1）。ATOK と Microsoft IME 本体は
-                    // どちらも上の ActiveImeKind では MicrosoftIme のため、こちらが単発フリップの唯一の防御。
-                    let current_identity = TSF_OBS.current_tip_identity();
-                    if let Some(confirmed) = identity_debounce.observe(identity, current_identity) {
-                        if TSF_OBS.set_ms_ime_native_identified(
-                            confirmed == crate::state::ime_kind::TipIdentity::MsImeNative,
-                        ) {
-                            tracing::info!("[tip-detect] TIP identity → {confirmed:?}");
-                        }
-                    } else if identity != current_identity {
-                        tracing::debug!(
-                            "[tip-detect] TIP identity candidate {identity:?} \
+                } else if identity != current_identity {
+                    tracing::debug!(
+                        "[tip-detect] TIP identity candidate {identity:?} \
                              (current={current_identity:?}), awaiting confirmation next tick"
-                        );
-                    }
+                    );
                 }
             }
         }
