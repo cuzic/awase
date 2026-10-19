@@ -249,6 +249,37 @@ pub(super) fn query_active_kind(
     }
 }
 
+/// 新しい STA スレッドでアクティブな TIP を問い合わせる（BUG-207、ADR-269）。
+///
+/// `gji-io-monitor` スレッドはメッセージループを持たない。そこで起動時に作った `ITfInputProcessorProfileMgr` の
+/// `GetActiveProfile` は、起動後にセッション内で入力方式を切り替えても（`ActivateProfile` の `TF_IPPMF_FORSESSION`、
+/// Win+Space と同じ効果）古い値を返し続けた（CI: 起動時 Google 版 GJI、7 秒後に Mozc へ切り替えても 15 秒以上
+/// `(Gji)` のまま、run 39181228739）。短命の新しいスレッドで問い合わせると、その時点のセッションの値を返す
+/// （この関数を使う `monitor_loop` の 2 秒ごとのポーリングが、切り替えに追随できるかを CI で確かめる）。
+/// スレッドの生成と COM の初期化は ms 単位で、2 秒周期のポーリングには十分軽い。
+pub(super) fn query_active_kind_on_fresh_thread(
+) -> Option<(ActiveImeKind, crate::state::ime_kind::TipIdentity)> {
+    std::thread::Builder::new()
+        .name("tip-detect-fresh".into())
+        .spawn(|| {
+            // SAFETY: 新しいスレッドの先頭で一度だけ初期化し、COM オブジェクトを手放した後に対で終了する。
+            let _ = unsafe {
+                windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                )
+            };
+            let result = create_profile_ctx().and_then(|(mgr, _profiles)| query_active_kind(&mgr));
+            // SAFETY: 上の `CoInitializeEx` と対。`result` は COM オブジェクトを持たない値。
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+            result
+        })
+        .ok()?
+        .join()
+        .ok()
+        .flatten()
+}
+
 /// 現在のSTAスレッドでアクティブな`TipIdentity`を一発で問い合わせる（ADR196-T2「1e前半」）。
 ///
 /// [`query_active_kind`]と違い、`TSF_OBS`（awase.exeプロセスの観測ストア）へは一切書き込まない

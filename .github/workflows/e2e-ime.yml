@@ -746,6 +746,15 @@ jobs:
             *[cfg(f'ts-tsf-mozc-switch-{ms}ms', 'observe', check='typing', ime='mozc-gji-real', runs=2, wait=420, until='2026-11-10',
                   stress=f'--form=tsf --interval=40 --layout=@REPO@/layout/nicola_keytop.yab --switch-mozc-ms={ms}')
               for ms in (8000, 20000)],
+            # Mozc で本物のリテラル(日本語にならず英字のまま出る)が起きるかの再現実験(ADR-269 順序 4、段階 2 の前提)。
+            # awase なしの対照(ts-raw-*-mozc-cold/idle-*)は『Mozc 単体が cold・長い idle の最初の入力を受けられるか』、awase あり
+            # (ts-*-mozc-cold/idle-*)は『安全網(literal 判定)なしで Mozc に何が起きるか』。入力先は tsf(Chrome 風の RichEdit)と実 Chrome(chromepage)。
+            # cold=準備確認を省いた最初の入力、idle=各試行の前に5秒待つ。観測のみ。
+            *[cfg(f'ts-{raw}{form}-mozc-{kind}-20ms', 'observe', check='typing', ime='mozc', awase='false' if raw else 'true', runs=4, wait=900, until='2026-11-10',
+                  stress=f'--form={form} --interval=20 --kinds=single,mixed --trials={tr} --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mozc ' + (('--mode=raw --no-awase ' if raw else '') + flag))
+              for raw in ('', 'raw-')
+              for form in ('tsf', 'chromepage')
+              for kind, flag, tr in (('cold', '--cold', 1), ('idle', '--idle=5000', 3))],
             # --- 打鍵の揺らぎ比較(tsj-、examples/typing_stress/jitter.rs): 固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit)を同じ入力先・IME・seed で比べる。
             # jit の分布の形は仮置き(範囲だけ docs/adr/182 の実機実測に合わせる: 親指↔文字の押下間隔 2〜93ms、文字先押しの割合 30%)。--jit-iv=0.5 は間隔の倍率の対数標準偏差。
             # 既定の only 空では回さない(下の除外に tsj- を足してある)。only='tsj-*' で回す。観測のみ、until までに「揺らぎで loss/reorder/literal が増えるか」を決める。

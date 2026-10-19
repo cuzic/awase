@@ -386,7 +386,11 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         if let Some((ref mgr, _)) = tsf_ctx {
             if now >= next_clsid_check_ms {
                 next_clsid_check_ms = now + 2_000;
-                if let Some((kind, identity)) = super::tip_detector::query_active_kind(mgr) {
+                // 新しいスレッドで問い合わせる（このスレッドの `mgr` は、起動後の入力方式の切り替えに追随しない。BUG-207）。
+                // 取れなければ従来どおりこのスレッドの `mgr` で問い合わせる。
+                let queried = super::tip_detector::query_active_kind_on_fresh_thread()
+                    .or_else(|| super::tip_detector::query_active_kind(mgr));
+                if let Some((kind, identity)) = queried {
                     let current = TSF_OBS.active_ime_kind();
                     if let Some(confirmed) = kind_debounce.observe(kind, current) {
                         if TSF_OBS.set_tsf_active_kind(confirmed) {
