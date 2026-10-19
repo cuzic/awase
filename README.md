@@ -132,7 +132,7 @@ data/
 | ローマ字入力にする | **Ctrl+Shift+無変換** |
 | IME ON | **Ctrl+変換**（IME が既に ON の場合はひらがな・ローマ字・CapsLock OFF へリセット） |
 | IME OFF | **Ctrl+無変換** |
-| IME-ON 半角英数トグル（MS-IME のみ） | **左Shift 単独タップ**（他キーを介さず押して離す。もう一度タップで解除） |
+| IME-ON 半角英数トグル（既定で MS-IME・Google 日本語入力の両方で有効。設定画面の「上級者向け設定」タブで無効にできます） | **左Shift 単独タップ**（他キーを介さず押して離す。もう一度タップで解除） |
 | アプリ別動作を手動切替 | **Ctrl+Shift+F11** |
 
 > トレイアイコンを右クリック → 「設定」から GUI で変更できます。
@@ -288,12 +288,17 @@ awase はフォーカス中のアプリを自動識別し、出力方式を切�
 
 ---
 
-## mozc-readable(任意・開発中)
+## mozc-readable(任意・実験的)
 
 [mozc-readable](https://github.com/cuzic/mozc-readable) は、Google 日本語入力のオープンソース版 [Mozc](https://github.com/google/mozc) に「IME の開閉・入力モードを他のプロセスから読める」変更を加えた非公式のビルドです。awase が読めない窓の IME の状態を推測ではなく IME 自身の値で知るために作っています。
 
-- **awase 本体はまだこの値を読みません**(開発中。方針は [ADR-265](docs/adr/265-mozc-readable-integration.md))。いま入れても awase の動作は変わりません。
-- 配布は mozc-readable の GitHub Releases です(最初の Release が出てから、awase.cc のインストール欄にも載せます)。署名はありません。
+mozc-readable は IME の開閉と入力モードを IME 自身が出す値で awase に伝えるため、『awase の想定と実際の IME の状態がずれる』問題を根本から解決できる見込みです。まだ実験的な機能で、実機での検証を続けています。
+
+- awase は mozc-readable が共有メモリに出す値を読んで IME の開閉を知り、親指シフト(NICOLA)入力の ON/OFF をそれに合わせます(設定は不要です。mozc-readable を使っていない窓では何もしません。[ADR-268](docs/adr/268-mozc-shm-belief-connection.md))。
+- 窓の切り替えやひらがなキーの直後の最初のローマ字が、入力中の文字にならず英字のまま残ったときは、awase がそれを検出して消し、打ち直します([ADR-270](docs/adr/270-mozc-first-send-composition-check.md)、[BUG-209](docs/known-bugs/BUG-209.md))。
+- 配布は mozc-readable の [GitHub Releases](https://github.com/cuzic/mozc-readable/releases) です([awase.cc のインストール欄](https://awase.cc/#mozc-readable)からも入手できます)。署名はありません。
+- インストール後、Windows の言語設定で入力方式に「Mozc Readable」を追加して使います(入力方式の表示名は「Mozc Readable」です)。以前の版の上に入れた場合、新しい表示名が言語設定の一覧に反映されるのにサインアウトが要ることがあります。
+- Mozc(公式版・mozc-readable)は Google 日本語入力と同じ系統として扱います(IME のキー設定の自動読み取りは Google 日本語入力のみ)。
 - **自作キーボード(QMK など)を作る人へ**: 共有メモリの仕様と、読み取りの最小例があります。OLED やレイヤーを IME の状態に連動させる用途を想定しています。→ [共有メモリ仕様](https://github.com/cuzic/mozc-readable/blob/readable/readable/docs/shared-memory.md)
 
 ---

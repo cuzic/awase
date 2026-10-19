@@ -435,7 +435,7 @@ footer p{margin-bottom:0.3rem}
         <tr>
           <td><span class="cat cat-ime">IME</span></td>
           <td>左 <kbd>Shift</kbd> 単独タップ</td>
-          <td>「IME-ON 半角英数」持続トグル。他のキーを介さず押して離すと切替、もう一度タップで解除（現状 MS-IME のみ対応。GJI は今後対応予定）</td>
+          <td>「IME-ON 半角英数」持続トグル。他のキーを介さず押して離すと切替、もう一度タップで解除（既定で MS-IME・Google 日本語入力の両方で有効。「上級者向け設定」タブで無効にできます）</td>
         </tr>
         <tr>
           <td><span class="cat cat-engine">エンジン</span></td>
@@ -493,6 +493,7 @@ footer p{margin-bottom:0.3rem}
     <p class="note" style="margin-top:0.6rem">
       <strong>「IME-ON 半角英数」トグルについて：</strong>
       左 <kbd>Shift</kbd> 単独タップは、IME を開いたまま NICOLA エンジンだけを一時的に停止し、英数字を直接入力できるようにします（IME 自体は閉じないため、パスワード欄などとは異なる仕組みです）。もう一度左 <kbd>Shift</kbd> を単独タップすると通常のかな入力へ戻ります。右 <kbd>Shift</kbd> の単独タップやフォーカス変更でも自動的に解除されます。
+      トグル中に別のアプリの窓へ移ったあと元の窓に戻ると、戻った窓で最初のキーを打つ前に、その窓もかな入力に戻します（IME のキー設定によっては、窓は半角英数のままにして、awase 側のトグル状態を戻します）。同じアプリの中での窓の移動は対象外です。
     </p>
   </div>
 </section>
@@ -535,7 +536,7 @@ footer p{margin-bottom:0.3rem}
     <p class="section-lead">トレイアイコン右クリック → 「設定...」で開きます。変更後は「適用」ボタンで保存・即時反映されます。</p>
 
     <div class="card">
-      <h3>基本設定タブ</h3>
+      <h3>全般設定タブ</h3>
       <table class="tab-table">
         <tr><th>項目</th><th>説明</th></tr>
         <tr><td>キーボードモデル</td><td>JIS（日本語配列）または US（英語配列）を選択</td></tr>
@@ -597,8 +598,9 @@ footer p{margin-bottom:0.3rem}
     </div>
 
     <div class="card">
-      <h3>アプリ別設定タブ</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">プロセス名とウィンドウクラス名の組み合わせで、アプリごとに動作を上書きします。</p>
+      <h3>アプリ無効化タブ</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">指定したアプリにフォーカスがある間、awase を丸ごと無効化します（キー変換も IME 制御も行わず、生のキーがそのままアプリへ届きます）。プロセス名だけで指定し、大文字小文字・<code>.exe</code> の有無は区別しません。既定でリモートデスクトップ接続（<code>mstsc.exe</code>）が登録されています。設定ファイルでは <code>[app_overrides]</code> の <code>disable_apps</code> です。</p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">プロセス名とウィンドウクラス名の組み合わせでアプリごとに動作を上書きする次の設定は、設定画面には無く、<code>config.toml</code> の <code>[app_overrides]</code> を直接編集して設定します（下記「特定ウィンドウの動作オーバーライド」「アプリ別の出力モード上書き」参照）。</p>
       <table class="tab-table">
         <tr><th>設定種別</th><th>説明</th><th>用途例</th></tr>
         <tr><td>テキスト入力として強制</td><td>自動判定に関わらず常に NICOLA 入力を有効にする</td><td>誤ってバイパスされるアプリ</td></tr>
@@ -621,28 +623,66 @@ footer p{margin-bottom:0.3rem}
         <tr><td>3キー分岐マージン</td><td>文字→親指→文字と3キーが来た場合に、タイミングだけで確定するか n-gram で判定するかの境界（%）</td></tr>
         <tr><td>重なり不足マージン</td><td>文字キーと親指キーの物理的な重なり時間がこの割合未満だと「重なり不足」とみなす境界（%）</td></tr>
         <tr><td>Alt+かな による IME 入力方式切替を無効化する</td><td>MS-IME の「ローマ字入力⇔JISかな直接入力」切替ショートカットをブロック（既定: ON。JISかな直接入力に切り替わると awase 側からは復帰できないための保護）</td></tr>
-        <tr><td>GJI の無変換/変換/ひらがな/カタカナキー状態依存トグルを追従する</td><td>GJI 側のキーマップ設定がこれらのキーに状態依存の IME ON/OFF トグルを割り当てている場合、ベストエフォートで追従する（既定: OFF、自己責任。非冪等な動作のため既定では無効。詳細は known-bugs.md の BUG-115 を参照）</td></tr>
-        <tr><td>左Shift単独タップで半角英数トグルを有効にする</td><td>左Shift単独タップで、IMEをONにしたまま半角英数入力に切り替える（既定: OFF、実機ソーク中の機能）</td></tr>
+        <tr><td>左Shift単独タップで半角英数トグルを有効にする</td><td>左Shift単独タップで、IMEをONにしたまま半角英数入力に切り替える（既定: ON。MS-IME・Google 日本語入力の両方で有効）。設定ファイルでは <code>[general]</code> の <code>half_width_alnum_toggle</code> で、<code>"all"</code>（既定、両方で有効）・<code>"ms_ime_only"</code>（MS-IME のみ。設定画面からは選べず、設定ファイルに書いた場合だけ有効）・<code>"off"</code>（無効）を指定できます</td></tr>
+        <tr><td>打鍵列機能を有効にする</td><td>.yab の1セルに複数のキー操作を割り当てる打鍵列構文（Ctrl+キーの送信・セル内 <code>+</code> 区切りの複数アクション・<code>@</code>マクロ参照）を解釈する（既定: ON）。OFF にするとセルの文字列をそのまま文字として扱います（下記「句読点確定などの複数アクション（打鍵列機能）」参照）</td></tr>
         <tr><td>n-gram ファイル</td><td>n-gram 統計データのパス（.csv.gz または .toml）。同時打鍵のタイブレークに confirm_mode を問わず常に使われる</td></tr>
         <tr><td>n-gram 調整幅</td><td>n-gram 予測で同時打鍵閾値を調整する幅（ms）</td></tr>
         <tr><td>n-gram 最小/最大閾値</td><td>n-gram 予測で調整される閾値の下限・上限（ms）</td></tr>
         <tr><td>フォーカスデバウンス</td><td>Alt+Tab 連続操作時の誤検知を防ぐ待機時間（ms）</td></tr>
         <tr><td>IME ポーリング間隔</td><td>マウスで言語バーを操作したときなどの変化を検出する周期（ms）</td></tr>
         <tr><td>レイアウトディレクトリ</td><td>.yab ファイルを置くフォルダのパス</td></tr>
+        <tr><td>打鍵列からの入力言語の推定</td><td>ウィンドウを切り替えた直後や、しばらく操作がなかったあとの最初の数打鍵から、親指シフトで打っているかどうかを判定する機能です。IME の状態が読めないウィンドウで、awase の想定と実際の IME の状態がずれて最初の文字が化けるのを防ぐためのものです。「動作」は次の 5 つから選びます。
+          <ul>
+            <li>無効</li>
+            <li>記録のみ（既定） — 打鍵は今までどおりで、判定の結果をジャーナル（不具合報告に載る診断記録）に残すだけです。キー入力の挙動は変わりません</li>
+            <li>IME の状態が読めないウィンドウで、日本語ならひらがなにする</li>
+            <li>すべてのウィンドウで、日本語ならひらがなにする</li>
+            <li>すべてのウィンドウで、日本語ならひらがな・英数なら半角英数にする（半角英数トグルが有効な設定のときだけ働きます）</li>
+          </ul>
+          「ひらがなにする」系の 3 つは、設定画面自身が「実機での確認が済んでいない機能」と警告を出します。不具合があれば「記録のみ」に戻してください。数値と対象のアプリは折りたたみの「詳細（数値・対象のアプリ）」で調整できます。設定ファイルでは <code>[auto_detect]</code> の <code>mode</code>（<code>"off"</code>/<code>"observe"</code>/<code>"ime_on"</code>/<code>"ime_on_eisu"</code>、既定 <code>"observe"</code>）と <code>scope</code>（<code>"unobserved"</code>/<code>"all"</code>、既定 <code>"unobserved"</code>）です</td></tr>
       </table>
+      <p class="note">「打鍵列からの入力言語の推定」は、既定の「記録のみ」でも判定の結果をジャーナルに残します。ジャーナルは不具合報告でログを添付したときに送られるので、気になる場合は「無効」にするか、送信前のプレビューで確認してください。</p>
     </div>
 
     <div class="card">
-      <h3>キーの入れ替え（ショートカットタブ）</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">2つのキーを入れ替えます。Windowsのレジストリ（Scancode Map）を書き換えるため、キーボードの種類やアプリに関係なく効きます。入れ替えは「ペア」（AとBを入れ替える）の組み合わせで作ります。</p>
+      <h3>キーの入れ替えタブ</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">選んだキーの位置を入れ替えます。Windowsのレジストリ（Scancode Map）を書き換えるため、キーボードの種類やアプリに関係なく効きます。キーボード図の上で、入れ替えたいキーの機能をドラッグして入れ替え先のキーに落とします（または、2つのキーを順にクリックします）。2つのキーの入れ替えに加えて、3つ以上のキーを順に回す入れ替え（例: A→B→C→A）も作れます。</p>
       <table class="tab-table">
         <tr><th>操作</th><th>内容</th></tr>
-        <tr><td>＋ ペアを追加</td><td>行を追加し、2つのドロップダウンで入れ替えるキーを選びます（左Ctrl・左Alt・右Alt・スペース・無変換・変換・かな・半角/全角・英数/Caps。JIS専用のキーは、キーボード配列がJISのときだけ選べます）</td></tr>
-        <tr><td>よくある入れ替え</td><td>「英数/Caps ⇄ 左Ctrl」「変換 ⇄ スペース」をワンクリックで追加します</td></tr>
-        <tr><td>英数 / Caps を追加の Ctrl にする</td><td>英数（CapsLock）キーを追加のCtrlキーにします。元の左Ctrlキーはそのまま使えますが、英数キー自体は使えなくなります</td></tr>
+        <tr><td>キーの位置を入れ替える</td><td>キーボード図の上の段が「キーの位置（物理キー）」、ボタンが「その位置で出る機能」です。機能をドラッグ＆ドロップするか、2つのキーを順にクリックして入れ替えます。JIS専用のキーは、キーボード配列がJISのときだけ扱えます</td></tr>
+        <tr><td>よくある入れ替え</td><td>「英数 / Caps ⇄ 左 Ctrl」「変換 ⇄ スペース」をワンクリックで追加します</td></tr>
+        <tr><td>英数 / Caps を Ctrl としても使う</td><td>英数（CapsLock）キーを Ctrl としても使えるようにします。元の左Ctrlキーはそのまま使えますが、英数キー自体は使えなくなります。「キーの位置を入れ替える」とは別の設定です</td></tr>
         <tr><td>入れ替えを適用（要再起動）</td><td>レジストリに書き込みます。画面全体の「適用」とは別の操作で、設定ファイルは保存しません</td></tr>
+        <tr><td>すべて解除</td><td>入れ替えを元に戻すには「すべて解除」→「入れ替えを適用」→ 再起動の順に行います。1つの入れ替えだけを戻すには、キーの下の「戻す」（3つ以上の循環では「解除(N個)」）を押します</td></tr>
       </table>
-      <p class="note">注意が必要な組（英数と親指キー、親指キーに設定しているキー、スペース）や、他のツールの設定が消える場合は、適用の前に確認が表示されます。適用には管理者権限の確認（UAC）が1回表示され、反映には再起動が必要です（サインアウトのみでは反映されません）。この設定はPC全体（全ユーザー）に影響し、リモートデスクトップのセッション内では動作しません。他のツールが設定した入れ替えは、読み取り専用で一覧に表示され、awase は変更しません。</p>
+      <p class="note">IME の ON/OFF キーを兼ねている親指キーは、入れ替えの対象にできません。他のツールの設定が消える場合などは、適用の前に確認が表示されます。適用には管理者権限の確認（UAC）が1回表示され、反映には再起動が必要です（サインアウトのみでは反映されません。高速スタートアップが有効だと、シャットダウンしても反映されないことがあります）。この設定はPC全体（全ユーザー）に影響し、リモートデスクトップのセッション内では動作しません。他のツールが設定した入れ替えは、読み取り専用で一覧に表示され、awase は変更しません。</p>
+    </div>
+
+    <div class="card">
+      <h3>ショートカットタブ — IME が OFF のときだけ無変換・変換を Space にする</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">「ショートカット」タブ（ショートカット再割当）では、キー入力を別のキーへ置き換えるルールを登録できます。ルールの「IME の状態」を「OFF のとき」にすると、IME が OFF（親指シフトが働かない状態）のときだけ、無変換・変換キーの単独押しを別のキーにできます。「無変換・変換を IME OFF のとき Space にする」ボタンを押すと、無変換と変換を Space にするルールが2つ追加されます。IME が ON のときは、これまでどおり親指シフトとして働きます。使いたい人だけが設定する機能で、既定では登録されていません。</p>
+      <div class="code-block">[[keymaps]]
+from = "VK_NONCONVERT"
+to = ["VK_SPACE"]
+ime = "off"
+
+[[keymaps]]
+from = "VK_CONVERT"
+to = ["VK_SPACE"]
+ime = "off"</div>
+      <p class="note" style="margin-top:0.7rem"><code>ime = "off"</code> のルールの <code>from</code> に指定できるのは、修飾キーなしの無変換・変換だけです。押し続けても繰り返しません（1回押すと1回だけ送ります）。「半角英数」（IME は開いたまま英数モード）の状態では動きません。IME 側の割り当てが読めないとき（Microsoft IME 本体のキー設定など）や、Google 日本語入力の「キー設定」に直接入力の無変換/変換の行（空白入力など）があるときは、そのキーでは動きません。IME は ON なのに awase が OFF と思っているときは、無変換が Space（IME によっては変換や全角スペース）になることがあります。</p>
+    </div>
+
+    <div class="card">
+      <h3>IMEキー学習タブ</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">使っている IME で、どのキーを押すと IME の状態がどう変わるかを、全ての対応キー×状態について自動で巡回測定します。IME 状態の表示や NICOLA 入力の開閉が実際の入力とずれることがある場合に実行してください。</p>
+      <table class="tab-table">
+        <tr><th>操作</th><th>内容</th></tr>
+        <tr><td>学習を開始</td><td>測定を始めます。測定中は学習ウィンドウを前面に保ち、キーボードに触れないでください（他の窓へ切り替えたり物理キーを押すと、測定は失敗として中止されます）。進み具合と残り時間の目安が表示されます</td></tr>
+        <tr><td>キャンセル</td><td>測定を途中で止めます</td></tr>
+        <tr><td>学習結果を使う／軽量再検証を実行</td><td>学習結果の状態に応じて表示されます</td></tr>
+      </table>
+      <p class="note">学習の結果は <code>keymap-learn-table.json</code> に保存されます。トレイの「IME 制御の学習キャッシュをクリア」では削除されません。</p>
     </div>
   </div>
 </section>
@@ -787,13 +827,13 @@ force_tsf = [
 
     <div class="card">
       <h3>句読点確定などの複数アクション（打鍵列機能）</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">1つのキーで「文字を出力してから確定操作を送る」など、複数の動作をまとめて実行できる機能です（やまぶきの <code>CV4D</code> 相当）。既定では無効（Off）です。GUI にはまだトグルがなく、<code>config.toml</code> の直接編集でのみ有効化できます。</p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">1つのキーで「文字を出力してから確定操作を送る」など、複数の動作をまとめて実行できる機能です（やまぶきの <code>CV4D</code> 相当）。既定で有効（On）です。設定画面の「上級者向け設定」タブの「打鍵列機能を有効にする」で切り替えられます。</p>
       <div class="code-block" data-example="usage-ja-13" data-mode="asis">[general]
 # 打鍵列機能を有効化する
-#   "off" - 無効（デフォルト。既存の .yab をそのまま解釈）
-#   "on"  - 有効（.yab セル内の + 区切り・CV4D・@マクロ参照を解釈）
+#   "on"  - 有効（デフォルト。.yab セル内の + 区切り・CV4D・@マクロ参照を解釈）
+#   "off" - 無効（セルの文字列をそのまま文字として解釈）
 keystroke_sequence = "on"</div>
-      <p class="note" style="margin-top:0.7rem">有効化すると、<code>.yab</code> の1セル内で <code>+</code> 区切りにより複数の動作を並べられます。<code>CV4D</code> は Ctrl+M（変換候補の確定によく使われるキー）を表す記法です。</p>
+      <p class="note" style="margin-top:0.7rem">有効なときは、<code>.yab</code> の1セル内で <code>+</code> 区切りにより複数の動作を並べられます。<code>CV4D</code> は Ctrl+M（変換候補の確定によく使われるキー）を表す記法です。</p>
       <div class="code-block">[ローマ字シフト無し]
 '．'+CV4D,ka,ta,...</div>
       <p class="note">上の例は「。を出力してから Ctrl+M で確定する」という動作を1セルで定義しています。同じ動作を複数キーで使い回したい場合は、<code>[[keystroke_macro]]</code> で名前を付けて <code>@名前</code> で参照できます。</p>
@@ -879,7 +919,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <h3>切り替え方法</h3>
       <ul>
         <li><strong>トレイアイコン右クリック → 配列選択</strong> — 最も手軽な方法。即座に切り替わります</li>
-        <li><strong>設定画面「基本設定」タブ</strong> — レイアウトのドロップダウンで選択 → 「適用」</li>
+        <li><strong>設定画面「全般設定」タブ</strong> — レイアウトのドロップダウンで選択 → 「適用」</li>
         <li><strong>config.toml を編集</strong> — <code>default_layout = "nicola.yab"</code> でデフォルトを変更</li>
       </ul>
     </div>
@@ -888,7 +928,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <h3>カスタム配列を追加する</h3>
       <ol style="padding-left:1.4em;color:var(--text-secondary)">
         <li style="margin-bottom:0.4rem">新しい <code>.yab</code> ファイルを <code>config.toml</code> の <code>layouts_dir</code> に指定したフォルダに配置します（デフォルトは <code>config/</code>）</li>
-        <li style="margin-bottom:0.4rem">設定画面「基本設定」タブの「再スキャン」ボタンを押します</li>
+        <li style="margin-bottom:0.4rem">設定画面「全般設定」タブの「再スキャン」ボタンを押します</li>
         <li>ドロップダウンに新しい配列が表示されるので選択して「適用」します</li>
       </ol>
       <p class="note" style="margin-top:0.8rem">.yab 形式の詳細は <a href="https://github.com/cuzic/awase">GitHub</a> の README を参照してください。</p>
@@ -930,7 +970,17 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <ol>
         <li>トレイアイコンを右クリックして「<strong>不具合を報告...</strong>」を選択</li>
         <li>症状カテゴリを選択し、必要であれば説明を入力</li>
-        <li>ログ（journal + awase.log）・内部状態スナップショット・設定ファイル（config.toml）・配列ファイル（.yab）の添付を、チェックボックスで個別に外せます（既定はすべて添付）</li>
+        <li>添付する内容を、チェックボックスで個別に選べます。既定では「実行中のプロセス名一覧」以外のすべてを添付します。
+          <ul>
+            <li>ログ（journal + awase.log）</li>
+            <li>内部状態スナップショット</li>
+            <li>設定ファイル（config.toml）</li>
+            <li>配列ファイル（.yab）</li>
+            <li>変換判定の統計情報（3鍵同時打鍵の判定回数などの累積カウンタのみ。打鍵内容は含みません）</li>
+            <li>IME のキーマップ設定（無変換/変換キー等への IME ON/OFF の割り当て。Google 日本語入力のカスタム表の IME 関連の行と、キー効果の学習結果〈IME の状態×キーの番号だけ。打鍵内容は含みません〉を含みます）</li>
+            <li>実行中のプロセス名一覧（既定オフ。実行ファイル名のみで、フォルダのパスは含みません）</li>
+          </ul>
+        </li>
         <li>送信前プレビューで実際に送られる内容（JSON）を確認・編集できます。個人情報が含まれていないか気になる場合はここで編集・削除してください</li>
         <li>「送信」を押すと、開発者専用の非公開受付（<code>report.awase.cc</code>）へ送信されます。GitHub Issue など公開の場所には投稿されません</li>
       </ol>
@@ -1038,6 +1088,18 @@ engine_off_solo_triple = "VK_NONCONVERT"
     <p class="section-lead">利用者から寄せられた質問と回答をまとめました。</p>
 
     <div class="card">
+      <h3>IME は何に対応していますか？</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        Microsoft IME と Google 日本語入力に対応しています。
+      </p>
+      <p class="note">
+        Mozc（公式版・mozc-readable）は、Google 日本語入力と同じ系統として扱います（キー設定の自動読み取りは Google 日本語入力のみ）。
+        mozc-readable は IME の開閉と入力モードを IME 自身が出す値で awase に伝えるため、「awase の想定と実際の IME の状態がずれる」問題を根本から解決できる見込みです。
+        まだ実験的な機能で、実機での検証を続けています。
+      </p>
+    </div>
+
+    <div class="card">
       <h3>「と」と打つと「から」になるなど、法則的に文字化けする</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
         IME の入力方式が「ローマ字入力」ではなく「かな入力」になっている可能性が高いです。
@@ -1104,7 +1166,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
     <div class="card">
       <h3>同時打鍵がシビアで特定の文字（「れ」等）が入力しづらい</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem">
-        基本設定タブの「同時打鍵閾値」（既定 100ms）を少し上げてみてください。自分の打鍵速度に
+        全般設定タブの「同時打鍵閾値」（既定 100ms）を少し上げてみてください。自分の打鍵速度に
         合わせて 150〜250ms あたりで調整すると改善することがあります。<code>config.toml</code> を
         直接編集する場合は <code>simultaneous_threshold_ms</code> を書き換えます。
       </p>

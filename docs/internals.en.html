@@ -884,6 +884,14 @@ Chrome's process layout (simplified):
     from there.
   </p>
 
+  <p class="body">
+    However, when a Mozc-family IME (the official Mozc or mozc-readable) is in use, awase does not use
+    Google Japanese Input's I/O as evidence when judging "whether the romaji it sent was left as plain
+    letters instead of becoming composing text." Looking at the still-quiet I/O of a Google Japanese
+    Input running alongside Mozc led to misjudgments that deleted correctly typed characters
+    (ADR-269, BUG-207).
+  </p>
+
   <div class="callout green">
     <strong>Why I/O monitoring is effective:</strong>
     Google Japanese Input performs file reads and writes for things like dictionary lookups.
@@ -1119,17 +1127,19 @@ a key arrives
 
   <p class="body">
     awase manages this as an independent mode called <code>ObservedEisu</code> (observed alphanumeric).
-    When <code>ObservedEisu</code> is detected, it automatically switches to IME OFF (direct input)
-    within 500ms and deactivates the engine as well.
-    The user no longer has to notice and deal with it manually.
+    When <code>ObservedEisu</code> is detected, awase sends nothing to the IME.
+    Half-width alphanumeric is a state in which the IME stays ON, so awase does not switch to IME OFF
+    (direct input); it only updates its understanding of the input mode to alphanumeric, and stops the
+    engine (thumb-shift conversion) so keys pass through as they are (ADR-185).
+    Pressing an IME ON key resets the alphanumeric understanding and re-enables the engine.
   </p>
 
   <div class="callout">
-    <strong>Why alphanumeric mode must not be left as is:</strong>
+    <strong>Why alphanumeric mode is treated as a separate mode:</strong>
     If alphanumeric mode continues while the shadow model thinks "IME ON," an inconsistency persists
     in which awase tries to convert keys expecting hiragana input while letters are actually output.
-    By treating <code>ObservedEisu</code> as an explicit mode, awase can safely auto-recover, treating
-    "this state as anticipated."
+    By treating <code>ObservedEisu</code> as an explicit mode, awase can stop only the conversion
+    without rewriting the IME state, so the alphanumeric input the user chose can be used as is.
   </div>
 
   <!-- Section 14: sleep / unlock -->

@@ -132,7 +132,7 @@ Default key bindings:
 | Switch to romaji input | **Ctrl+Shift+無変換** |
 | IME ON | **Ctrl+変換** (if the IME is already ON, resets it to hiragana / romaji / CapsLock OFF) |
 | IME OFF | **Ctrl+無変換** |
-| Toggle IME-ON halfwidth alphanumeric (MS-IME only) | **Left Shift single tap** (press and release without any other key; tap again to cancel) |
+| Toggle IME-ON halfwidth alphanumeric (enabled by default for both MS-IME and Google Japanese Input; can be disabled in the settings app's Advanced Settings (上級者向け設定) tab) | **Left Shift single tap** (press and release without any other key; tap again to cancel) |
 | Manually switch per-app behavior | **Ctrl+Shift+F11** |
 
 > You can change these through the GUI by right-clicking the tray icon → "Settings".
@@ -287,12 +287,17 @@ Identification results are learned and cached per app class name (`cache.toml`) 
 
 ---
 
-## mozc-readable (optional, under development)
+## mozc-readable (optional, experimental)
 
 [mozc-readable](https://github.com/cuzic/mozc-readable) is an unofficial build of [Mozc](https://github.com/google/mozc), the open-source edition of Google Japanese Input, that lets other processes read the IME's on/off state and input mode. It exists so awase can use the IME's own value instead of guessing in windows it cannot read.
 
-- **awase itself does not read this value yet** (under development; see [ADR-265](docs/adr/265-mozc-readable-integration.md), in Japanese). Installing it today does not change awase's behavior.
-- It is distributed through mozc-readable's GitHub Releases (it will also appear in awase.cc's install section once the first release is out). The installer is unsigned.
+Because mozc-readable tells awase the IME's open/closed state and input mode using values the IME itself publishes, it is expected to fundamentally solve the problem of "awase's assumption drifting from the IME's actual state." It is still an experimental feature, and we are continuing to verify it on real machines.
+
+- awase reads the values mozc-readable publishes in shared memory to learn whether the IME is open or closed, and turns thumb-shift (NICOLA) input on or off to match (no setting needed; awase does nothing in windows that are not using mozc-readable; [ADR-268](docs/adr/268-mozc-shm-belief-connection.md), in Japanese).
+- If the first romaji right after switching windows or pressing the hiragana key is left as plain letters instead of becoming composing text, awase detects it, deletes it, and types it again ([ADR-270](docs/adr/270-mozc-first-send-composition-check.md), [BUG-209](docs/known-bugs/BUG-209.md), in Japanese).
+- It is distributed through mozc-readable's [GitHub Releases](https://github.com/cuzic/mozc-readable/releases) (also available from [the install section on awase.cc](https://awase.cc/index.en.html#mozc-readable)). The installer is unsigned.
+- After installing, add "Mozc Readable" as an input method in Windows language settings (the input method's display name is "Mozc Readable"). If you install over an earlier version, you may need to sign out before the new display name appears in the language settings list.
+- Mozc (the official edition and mozc-readable) is treated as the same family as Google Japanese Input (automatic reading of the IME's key settings is for Google Japanese Input only).
 - **For people building their own keyboards (QMK etc.)**: there is a specification of the shared memory and a minimal reader example, aimed at tying an OLED or layers to the IME state. → [Shared-memory specification](https://github.com/cuzic/mozc-readable/blob/readable/readable/docs/shared-memory.md) (in Japanese)
 
 ---
