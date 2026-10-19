@@ -98,7 +98,7 @@ jobs:
           # 既存の observe は observe_grandfathered.txt に載せてあり(縮める方向にだけ動かす)、observe_audit.py が一覧する。
           # summary は有効回が 2 回以上で全PASS なら『pass昇格候補』、全FAIL なら『fail固定候補』と出す。
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME) / mozc=Mozc Readable(cuzic/mozc-readable の Release の MSI、BUG-207) /
-          # mozc-gji=GJI も入れて変換サーバー(GoogleIMEJaConverter)を起動したまま、入力方式を Mozc Readable だけにする(BUG-207 の実際の条件、ADR-269)
+          # mozc-gji=同名のダミー(GoogleIMEJaConverter)を静止して動かしたまま、入力方式を Mozc Readable だけにする(BUG-207 の条件、ADR-269)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
@@ -1026,7 +1026,7 @@ jobs:
 
       # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
       - name: Google 日本語入力をインストール(chocolatey、約30秒)
-        if: matrix.cfg.ime == 'gji' || matrix.cfg.ime == 'mozc-gji'
+        if: matrix.cfg.ime == 'gji'
         shell: pwsh
         run: |
           ./tools/ci/install-gji.ps1
@@ -1079,21 +1079,21 @@ jobs:
           Start-Sleep -Seconds 5
 
       # Mozc Readable(BUG-207): GJI と別の TIP(mozc_server が変換サーバー)。awase が Mozc 系で I/O の監視を mozc_server に向けるかを確かめる。
-      # mozc-gji: Mozc Readable の入力方式にする前に、GJI の変換サーバーを起動しておく(入力方式の一覧から GJI を外しても残る)。
-      - name: GJI の変換サーバーを起動しておく(mozc-gji)
+      # mozc-gji(BUG-207 の条件): 名前が GoogleIMEJaConverter のダミープロセス(powershell.exe のコピーが待機するだけ)を動かす。
+      # awase の監視はプロセス名で GJI の変換サーバーを探し、その累積 I/O が増えないことを literal の根拠にする。実際の GJI を
+      # 入れると、GJI の TIP が既定でアクティブのままになり Mozc がアクティブという条件を作れなかった(run 39178603274・39179133289:
+      # regsvr32 /u でも TIP が残った)。ダミーは静止した GJI の変換サーバーと同じ見え方(同名で I/O が増えない)を、TIP 抜きで作る。
+      - name: 静止した GJI の変換サーバー(同名のダミー)を起動しておく(mozc-gji)
         if: matrix.cfg.ime == 'mozc-gji'
         shell: pwsh
         run: |
-          $exe = Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -Filter GoogleIMEJaConverter.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $exe) { Write-Host '##[error]GoogleIMEJaConverter.exe が見つからない'; exit 1 }
-          Start-Process $exe.FullName
+          $dir = Join-Path $env:RUNNER_TEMP 'fake-gji'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $exe = Join-Path $dir 'GoogleIMEJaConverter.exe'
+          Copy-Item "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" $exe
+          Start-Process $exe -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 7200' -WindowStyle Hidden
           Start-Sleep -Seconds 3
-          # GJI の TIP を登録解除する(変換サーバーは動いたまま残る)。入力方式の一覧から外すだけでは、GJI が既定の入力方式のまま
-          # アクティブになり、Mozc がアクティブという BUG-207 の条件を作れなかった(run 39178603274)。
-          $dir = $exe.DirectoryName
-          $tips = Get-ChildItem $dir -Filter '*.dll' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'tip' }
-          Write-Host ("GJI TIP DLL: " + (($tips | ForEach-Object { $_.Name }) -join ', '))
-          foreach ($d in $tips) { regsvr32.exe /u /s $d.FullName; Write-Host "regsvr32 /u $($d.Name): exit $LASTEXITCODE" }
+          Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue | Format-Table Name, Id, Path | Out-String | Write-Host
 
       - name: Mozc Readable をインストールして ja-JP の入力方式にする
         if: matrix.cfg.ime == 'mozc' || matrix.cfg.ime == 'mozc-gji'
