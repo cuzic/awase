@@ -1088,6 +1088,12 @@ jobs:
           if (-not $exe) { Write-Host '##[error]GoogleIMEJaConverter.exe が見つからない'; exit 1 }
           Start-Process $exe.FullName
           Start-Sleep -Seconds 3
+          # GJI の TIP を登録解除する(変換サーバーは動いたまま残る)。入力方式の一覧から外すだけでは、GJI が既定の入力方式のまま
+          # アクティブになり、Mozc がアクティブという BUG-207 の条件を作れなかった(run 39178603274)。
+          $dir = $exe.DirectoryName
+          $tips = Get-ChildItem $dir -Filter '*.dll' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'tip' }
+          Write-Host ("GJI TIP DLL: " + (($tips | ForEach-Object { $_.Name }) -join ', '))
+          foreach ($d in $tips) { regsvr32.exe /u /s $d.FullName; Write-Host "regsvr32 /u $($d.Name): exit $LASTEXITCODE" }
 
       - name: Mozc Readable をインストールして ja-JP の入力方式にする
         if: matrix.cfg.ime == 'mozc' || matrix.cfg.ime == 'mozc-gji'
@@ -1496,6 +1502,18 @@ jobs:
             }
           }
           exit 0
+
+      # mozc-gji: awase が見たアクティブな TIP が Mozc 系で、GJI の変換サーバーも動いていたか(awase.log)。違えば条件不成立で失敗にする。
+      - name: 条件の確認2(mozc-gji、awase.log)
+        if: matrix.cfg.ime == 'mozc-gji'
+        shell: pwsh
+        run: |
+          $log = 'dist\awase.log'
+          $kind = if (Test-Path $log) { Select-String -Path $log -Pattern 'initial IME kind: (\S+) \((\w+)\)' | Select-Object -First 1 } else { $null }
+          $conv = Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue
+          Write-Host ("initial IME kind: " + $(if ($kind) { $kind.Matches[0].Value } else { '(none)' }) + " / GJI converter running: " + [bool]$conv)
+          if (-not $kind -or $kind.Matches[0].Groups[2].Value -ne 'Other') { Write-Host '##[error]条件不成立: アクティブな TIP が Mozc 系(Other)ではない'; exit 1 }
+          if (-not $conv) { Write-Host '##[error]条件不成立: GJI の変換サーバーが動いていない'; exit 1 }
 
       - uses: actions/upload-artifact@v4
         if: always()
