@@ -72,6 +72,12 @@ related_adr:
 
 **実測(run 39182258683、`ts-tsf-mozc-switch-{8000,20000}ms`、起動時は実 GJI、`ime=mozc-gji-real`):** 切り替え(`[switch]`)から `converter target → NoEvidence` と `detaching` が 1 回ずつ出るまで 1.49〜1.82 秒(4/4、run 39182258683)。round 4 の修正後(run 39183922616)も 1.59〜1.77 秒で 4/4(PASS ×4)。8000ms は修正前・一度目の修正 INVALID ×4 → PASS ×2 だが、**8000ms は切り替えから detach の窓の間に打鍵が無い**(`ready` は 22 秒以降)ので、「切り替えの後の打鍵」の確認であって窓の確認ではない。窓の中で打っているのは 20000ms の 2 本だけ(n=2、warm の連続打鍵、誤判定なし)。20000ms の疑い 1 はどちらも切り替えの前(本物の GJI のリテラルか誤判定かは未確認)。`detaching` の行に加え、detach 後の `gji_idle` が 185921〜574734ms(0 起点で Mozc 単独の develop と同じ大きな値)になっていることを、run 39183922616 のログで確認した(Opus round 5)。
 
+### D3. `PendingGjiConfirm` と eager unicode も、GJI の証拠が無いと確定しているときは使わない(BUG-208、2026-10-19 追記)
+
+D1 は literal 判定を GJI の証拠から外したが、cold start の最初の打鍵を unicode(かな直接)で送る eager 経路(`decide_transmit_plan`)と、その後「`gji_last_io_ms` が新しくなるまで」次のキーも unicode で送る応答待ち(`is_post_unicode_pending`)は、GJI の I/O を前提にしたまま残っていた。Mozc 系では `gji_last_io_ms` が 0 のまま動かないので、解除条件が来ず、ほぼ全ての打鍵(実機のログで 506 回中 467 回)が unicode で送られて入力中の文字・変換候補ができない([BUG-208](../known-bugs/BUG-208.md))。
+
+アクティブな TIP が Mozc 系で GJI の証拠が無いと**確定している**とき(`gji_monitor` が確定した `converter_target` が `NoEvidence`。`tsf/observer.rs::gji_evidence_absent()`)だけ、この 2 経路を使わない。**`gji_is_active_ime()` の否定にはしない**: 本物の GJI で変換プロセスが未起動・再接続待ちの間は `gji_is_active_ime()` が偽になるが、そのとき cold の最初の打鍵を VK(LiteralDetect なし)に変えると、最も cold な場面でリテラル化の回収が無くなる(独立レビューの指摘 M1)。
+
 ## 既知の限界(D1 の後も残る)
 
 - TIP 切替後、旧ターゲットを見続ける窓がある。Google 版 GJI → Mozc(外す向き)は 1 回の観測で即時に外すので、最大約 2 秒(ポーリング周期)。Mozc → GJI(付ける向き)は 2 連続の観測が要るので最大約 4 秒(その間は証拠が無いだけで、誤判定は増えない)。GJI → Mozc の約 2 秒の間は BUG-207 の症状が出うる。「アプリごとに入力方式を切り替える」設定では前面アプリの TIP と一致しないことがある。

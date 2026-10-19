@@ -65,13 +65,24 @@ pub struct PostUnicodeFacts {
     /// 最後に unicode 送信した時刻。0 = 一度も送信していない。
     pub last_unicode_ms: u64,
     pub gji_last_io_ms: u64,
+    /// GJI の I/O が証拠にならないと**確定している**か（アクティブな TIP が Mozc 系で、GJI の監視を外した。
+    /// ADR-269 D1・D3）。`gji_last_io_ms` は 0 のまま動かない。本物の GJI で監視が一時的に未接続のときは偽
+    /// （従来どおり、GJI の応答を待つ）。
+    pub gji_evidence_absent: bool,
 }
 
 /// unicode 送信の後、GJI がまだ I/O 応答していないか（`PendingGjiConfirm`）。
 /// 真なら次のキーも unicode で強制送信する（先頭 VK のリテラル化を避ける）。
+///
+/// **GJI の証拠が無いと確定しているとき（`gji_evidence_absent`）は常に偽。** 応答を観測する手段が無いのに
+/// 「応答するまで」待つと、`gji_last_io_ms`（0 のまま）が最初の unicode 送信の時刻以下で成り立ち続け、永久に待つ。
+/// その間、ほぼ全てのキーが unicode（かな直接）で送られて入力中の文字・変換候補ができない
+/// （BUG-208。Mozc Readable で、ひらがなにはなるが候補にならない症状）。
 #[must_use]
 pub const fn is_post_unicode_pending(facts: PostUnicodeFacts) -> bool {
-    facts.last_unicode_ms != 0 && facts.gji_last_io_ms <= facts.last_unicode_ms
+    !facts.gji_evidence_absent
+        && facts.last_unicode_ms != 0
+        && facts.gji_last_io_ms <= facts.last_unicode_ms
 }
 
 /// `is_long_idle` の入力（名前付きで渡す）。
@@ -178,6 +189,7 @@ mod tests {
         is_post_unicode_pending(PostUnicodeFacts {
             last_unicode_ms,
             gji_last_io_ms,
+            gji_evidence_absent: false,
         })
     }
 
@@ -187,6 +199,24 @@ mod tests {
             gji_last_io_ms,
             threshold: threshold_ms,
         })
+    }
+
+    /// BUG-208: GJI の証拠が無いと確定している（Mozc 系）なら、unicode 送信の後でも応答待ちにしない。
+    #[test]
+    fn post_unicode_pending_is_never_true_when_gji_evidence_is_absent() {
+        for (last_unicode_ms, gji_last_io_ms) in [(100, 0), (100, 99), (100, 100), (u64::MAX, 0)] {
+            assert!(!is_post_unicode_pending(PostUnicodeFacts {
+                last_unicode_ms,
+                gji_last_io_ms,
+                gji_evidence_absent: true,
+            }));
+        }
+        // 対照: 同じ値でも、証拠が無いと確定していなければ（本物の GJI。監視が一時的に未接続でも）応答待ち（従来どおり）
+        assert!(is_post_unicode_pending(PostUnicodeFacts {
+            last_unicode_ms: 100,
+            gji_last_io_ms: 0,
+            gji_evidence_absent: false,
+        }));
     }
 
     #[test]

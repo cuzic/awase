@@ -174,6 +174,11 @@ pub struct TsfObservations {
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     pub(super) gji_monitor_ok: AtomicBool,
 
+    /// アクティブな TIP が Mozc 系で、GJI の I/O が証拠にならないと**確定している**か（`ConverterTarget::NoEvidence`、
+    /// ADR-269 D1）。`gji_monitor_ok` が偽なだけ（本物の GJI で変換プロセスが未起動・再接続待ち）とは区別する
+    /// （BUG-208。応答待ち・eager unicode を止めるのは前者のときだけ）。
+    pub(super) gji_evidence_absent: AtomicBool,
+
     /// GJI candidate が SHOW になってから次の `on_ime_applied` 呼び出しまでの間に
     /// 「shadow=OFF なのに候補ウィンドウが表示された（desync）」ことがあったかを記録するラッチ。
     ///
@@ -281,6 +286,7 @@ impl TsfObservations {
             gji_other_ops: AtomicU64::new(0),
             gji_other_bytes: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
+            gji_evidence_absent: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
             literal_session_confirmed_gen: AtomicU64::new(0),
             pending_start_composition: AtomicBool::new(false),
@@ -553,6 +559,14 @@ pub(crate) fn gji_other_ops() -> u64 {
 /// 参照できるよう、他のアクセサと対称に用意する（/code-review指摘、2026-09-07）。
 pub(crate) fn gji_other_bytes() -> u64 {
     TSF_OBS.gji_other_bytes.load(Ordering::Relaxed)
+}
+
+/// アクティブな TIP が Mozc 系で、GJI の I/O が証拠にならないと確定しているか（BUG-208、ADR-269 D3）。
+/// `gji_is_active_ime()` の否定ではない: 本物の GJI で監視が一時的に未接続のときも `gji_is_active_ime()` は
+/// 偽だが、こちらは偽のまま（従来どおり GJI の応答を待つ）。Mozc 系 → GJI に切り替えた直後は、
+/// `gji_monitor` が target を確定する（最大 4 秒）まで真のまま残りうる。
+pub(crate) fn gji_evidence_absent() -> bool {
+    TSF_OBS.gji_evidence_absent.load(Ordering::Acquire)
 }
 
 /// GJI プロセスが起動済みかつアクティブ IME として CLSID ベースで選択されているかどうか。
