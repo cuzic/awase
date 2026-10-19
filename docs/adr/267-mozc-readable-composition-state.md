@@ -3,10 +3,11 @@ id: ADR-267
 title: |-
   mozc-readable の共有メモリに「組成の段階・候補の種類・未確定文字列の長さ・処理したキーの通番・入力欄のモード指定」を足す(version 3)
 status: |-
-  提案(2026-10-18、起草。Opus round1〈致命3・重要6・軽微5〉・round2〈致命1・重要4・軽微5〉・round3〈重要1・軽微4〉の指摘を反映した第4版。round4 で収束、軽微3件を反映済み)。publisher・読み手とも未実装
+  提案(2026-10-18、起草。Opus round1〈致命3・重要6・軽微5〉・round2〈致命1・重要4・軽微5〉・round3〈重要1・軽微4〉の指摘を反映した第4版。round4 で収束、軽微3件を反映済み)。version 3 の publisher は mozc-readable PR #4 で実装済み(2026-10-18、`readable` に `a0c5074c`)。D12(version 4 の診断カウンタ)は PR #9(未マージ)。awase 側の読み手は未実装
 related_adr:
   - "ADR-191"
   - "ADR-265"
+  - "ADR-270"
 ---
 
 # ADR-267: mozc-readable の共有メモリに組成の状態を足す(version 3)
@@ -118,6 +119,29 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 - 効く範囲は mozc-readable の窓だけ。GJI 配布版・MS-IME では使えない。
 - 測定(段階 1 の CI に足す): Chrome・WezTerm・Notepad に既知の打鍵列を、新しい runner の最初のキーから送り、(a) N−M、(b) 文書に実際に残ったリテラルの文字数、(c) 現行ヒューリスティックの BackSpace 数、を 1 打鍵列ごとに記録する。(a)=(b) が全打鍵列で成り立たなければこの D11 は却下し、却下した代案の節に移す。
 - 採る場合も、awase の BackSpace 回数の決定への接続は別の ADR とする(この ADR は観測のみ)。
+
+### D12. version 4(112 バイト)で、入力中の文字ができない区間の原因を切り分ける診断カウンタを足す(2026-10-19 追記。実機の観測が動機)
+
+背景: 実機(Mozc Readable + Windows Terminal)で、約 7 秒間(UTC 2026-10-19 06:47:00.7〜06:47:07.8)、awase が 18 打鍵を送っても `phase=0`・`preedit_utf16_len=0` のままで、7 秒後に自然に戻る区間が記録された([ADR-270](270-mozc-no-composition-detection.md))。利用者は「ひらがなにはなるが候補にならない」と見ている。rust-nicola-89 のコード調査(2026-10-19、`origin/readable` の `a0c5074c`)で、有力な仮説は「打鍵ごとに TIP が SUBMIT を要求していて、`phase=1` の時間が数 ms で、20ms ごとの記録が取りこぼしている」(H1)。version 3 の項目では、これを確かめられない。
+
+- オフセット 0〜79 は変えない。80 から u32 を 8 個、合計 **112 バイト**、`version` は 4。実装は mozc-readable PR #9(head `56eaba794`)。
+
+| オフセット | 名前 | 意味 |
+| --- | --- | --- |
+| 80 | `composition_start_count` | `phase` が 0 から非 0 になった回数(単調増加、ラップあり) |
+| 84 | `submit_end_edit_count` | `OnEndEdit` が、selection が composition の外へ出たとして SUBMIT を要求した回数(H1 の経路 A) |
+| 88 | `submit_terminated_count` | `OnCompositionTerminated` で、アプリ側が composition を終了したので SUBMIT を送った回数(経路 B) |
+| 92 | `revert_count` | `OnEndEdit` が、composition の範囲が空として REVERT を要求した回数(経路 C) |
+| 96 | `submit_other_count` | UI 要素(候補窓・インジケーター)からの SUBMIT の回数 |
+| 100 | `edit_session_fail_count` | `RequestEditSession` が失敗した(または、編集セッションが失敗を返した)回数(H2) |
+| 104 | `diag_flags` | bit0: `use_async_lock_in_key_handler`、bit1: `last_output_is_test`(H2・H4) |
+| 108 | `update_context_id` | `TipUiHandler::Update` が最後に読んだ `ITfContext*` の下位 32 ビット(H3) |
+
+- 全項目とも**単調増加か、状態の値**で、取りこぼしが起きない。読み手は、ある時間の前後でカウンタの差を取る(例: 7 秒間に `composition_start_count` と `submit_*_count` が約 18 ずつ増えれば H1 が確定)。
+- 書き込みと pulse は D6 のとおり(状態の項目の変化だけ pulse する。カウンタだけの変化では pulse しない)。
+- 読み手の規約(D9)の拡張: 先頭 48 バイトを map して `version` を読み、`version >= 4` のときだけ 112 で map し直す(`version == 3` は 80)。`active == 0` のときは、診断項目を無視する。
+- **採否の条件**: これは診断用。ADR-270 の段階 2(回復)の設計が決まり、原因が確定したら、使われない項目は外す(version を上げずに 0 に戻す)。awase の belief・送信の判断には使わない。
+- **未確認**: 実機での値(ADR-270 の未確認 4)。version 3 の読み手が version 4 のブロックを正しく読めること(mozc-readable の CI)。
 
 ## 却下した代案
 
