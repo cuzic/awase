@@ -92,4 +92,12 @@ related_adr:
 | ts-tsf-mozc-gji-{10,40}ms(各 2 回) | **INVALID ×4**(`attached to GJI process` 1、`raw TSF literal suspected` 1、`giving up` 2) | **PASS ×4**(`attached` 0、`raw-tsf-literal` 0、`converter target` 1) |
 | ts-edit-mozc-gji-{10,40}ms | PASS(判定は走らない) | PASS |
 
+**実 GJI をインストールし、変換サーバーを起動したまま Mozc Readable もインストールし、`typing_stress --mozc` で Mozc をアクティブにした構成 `ime=mozc-gji-real`(2026-10-19、GJI の TIP も有効なまま。`initial IME kind: GoogleJapaneseInput (Other)` を確認):**
+
+| 構成 | 修正前 develop(run 39180505943) | 修正後(`561ad8b6`、run 39180466125) |
+| --- | --- | --- |
+| ts-tsf-mozc-gjireal-{10,40}ms(各 2 回) | **INVALID ×4**(`attached to GJI process` 1、疑い 1、諦め 2) | **PASS ×3**(`attached` 0、literal 0、`converter target: NoEvidence`)。残り 1 本は GJI の chocolatey インストールが 3 回失敗〈環境の揺れ、修正と無関係〉で未実行 |
+| ts-edit-mozc-gjireal-{10,40}ms | PASS ×2 | PASS ×2 |
+
+利用者の条件(GJI と Mozc の両方をインストールして Mozc を有効にしている)が、実 GJI でも CI で再現し、修正で消えた。
 修正前は BUG-207 の症状(静止した GJI を見て誤判定し、組成を消して諦める)が CI で再現し、修正後は消えた。**未確認**: 実機(dragonflyg4)、実 GJI の変換サーバー(ダミーは同名・静止のみ再現。U6)、TIP 切替の窓、段階 2(Mozc 用の証拠)。
