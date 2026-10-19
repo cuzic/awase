@@ -31,7 +31,7 @@
 //! `--form=edit|multi|rich|tsf|chromebar|chromepage|bugreport`(`--chrome-path=PATH` で Chrome を指定) / `--mode=nicola|raw|drift|drift-on|keymatrix|reopen` / `--interval=MS`(1文字あたりの間隔。既定20) /
 //! `--trials=N`(種別ごとの試行数。既定4。`--mode=drift` では試行回数として使う) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
-//! `--activate-gji`(GJI/MS-IME/Mozc Readable のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) / `--mozc`(有効化する IME を Mozc Readable に。GJI も入っている環境で Mozc をアクティブにする。BUG-207) /
+//! `--activate-gji`(GJI/MS-IME/Mozc Readable のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) / `--mozc`(有効化する IME を Mozc Readable に。GJI も入っている環境で Mozc をアクティブにする。BUG-207) / `--switch-mozc-ms=N`(起動から N ms 後に Mozc Readable へ切り替える) /
 //! `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH`。
 //! 打鍵の揺らぎ(`jitter.rs`、既定オフ): `--jit-iv=SIGMA` / `--jit-thumb=MIN_MS:MAX_MS` / `--jit-char-first=PCT`。
 //! `--mode=raw` は awase なしで、期待文字列と同じ内容をローマ字の生キーで同じ速度で注入する対照実験
@@ -698,6 +698,18 @@ fn activate_profile() {
             windows::core::GUID::from_u128(0x773EB24E_CA1D_4B1B_B420_FA985BB0B80D),
         )
     };
+    activate_profile_ids(&clsid, &profile);
+}
+
+/// Mozc Readable の TSF プロファイルをセッション内で有効化する(`--switch-mozc-ms` が、途中で GJI から切り替えるために使う)。
+fn activate_mozc_profile() {
+    activate_profile_ids(
+        &windows::core::GUID::from_u128(0xAFC94560_63DA_488E_9227_B04F3EF34B5B),
+        &windows::core::GUID::from_u128(0x7D7B9A38_A0A4_4390_9706_509E98A8C791),
+    );
+}
+
+fn activate_profile_ids(clsid: &windows::core::GUID, profile: &windows::core::GUID) {
     const TF_PROFILETYPE_INPUTPROCESSOR: u32 = 1;
     const TF_IPPMF_ENABLEPROFILE: u32 = 0x1;
     const TF_IPPMF_FORSESSION: u32 = 0x2000_0000;
@@ -709,8 +721,8 @@ fn activate_profile() {
                 let r = m.ActivateProfile(
                     TF_PROFILETYPE_INPUTPROCESSOR,
                     0x0411,
-                    &clsid,
-                    &profile,
+                    clsid,
+                    profile,
                     windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
                     TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
                 );
@@ -1964,6 +1976,21 @@ fn main() {
         activate_profile();
     }
     std::thread::spawn(move || worker(form));
+    // `--switch-mozc-ms=N`: 起動から N ミリ秒後に、セッション内の入力方式を Mozc Readable へ切り替える(GJI から途中で切り替える
+    // 経路の確認。awase が GJI の監視を外す経路を動かす。BUG-207、ADR-269)。
+    if let Some(ms) = arg_value("--switch-mozc-ms=").and_then(|v| v.parse::<u64>().ok()) {
+        std::thread::spawn(move || {
+            sleep_ms(ms);
+            unsafe {
+                let _ = windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+                );
+            }
+            log("[switch] Mozc Readable へ切り替える");
+            activate_mozc_profile();
+        });
+    }
     unsafe {
         let mut msg = MSG::default();
         while GetMessageW(&raw mut msg, None, 0, 0).as_bool() {

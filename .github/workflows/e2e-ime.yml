@@ -740,6 +740,12 @@ jobs:
                   stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab --mozc')
               for form in ('edit', 'tsf')
               for iv in (40, 10)],
+            # 途中で GJI から Mozc へ切り替える版(ADR-269 順序 5): 実 GJI がアクティブな状態で awase を起動し(監視は GJI に付く)、
+            # typing_stress が起動の N ms 後に Mozc Readable へ切り替える(--switch-mozc-ms)。修正後の awase は `detaching` を出して
+            # 監視を外す。develop は外さず、切替後に静止した GJI を見て誤判定しうる。監視を外す経路・gji_* を 0 に戻す処理・即時の切り替えを CI で動かす。
+            *[cfg(f'ts-tsf-mozc-switch-{ms}ms', 'observe', check='typing', ime='mozc-gji-real', runs=2, wait=420, until='2026-11-10',
+                  stress=f'--form=tsf --interval=40 --layout=@REPO@/layout/nicola_keytop.yab --switch-mozc-ms={ms}')
+              for ms in (8000, 20000)],
             # --- 打鍵の揺らぎ比較(tsj-、examples/typing_stress/jitter.rs): 固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit)を同じ入力先・IME・seed で比べる。
             # jit の分布の形は仮置き(範囲だけ docs/adr/182 の実機実測に合わせる: 親指↔文字の押下間隔 2〜93ms、文字先押しの割合 30%)。--jit-iv=0.5 は間隔の倍率の対数標準偏差。
             # 既定の only 空では回さない(下の除外に tsj- を足してある)。only='tsj-*' で回す。観測のみ、until までに「揺らぎで loss/reorder/literal が増えるか」を決める。
@@ -1529,8 +1535,19 @@ jobs:
           $log = 'dist\awase.log'
           $kind = if (Test-Path $log) { Select-String -Path $log -Pattern 'initial IME kind: (\S+) \((\w+)\)' | Select-Object -First 1 } else { $null }
           $conv = Get-Process GoogleIMEJaConverter -ErrorAction SilentlyContinue
-          Write-Host ("initial IME kind: " + $(if ($kind) { $kind.Matches[0].Value } else { '(none)' }) + " / GJI converter running: " + [bool]$conv)
-          if (-not $kind -or $kind.Matches[0].Groups[2].Value -ne 'Other') { Write-Host '##[error]条件不成立: アクティブな TIP が Mozc 系(Other)ではない'; exit 1 }
+          $detach = if (Test-Path $log) { @(Select-String -Path $log -Pattern 'detaching').Count } else { 0 }
+          $isSwitch = '${{ matrix.cfg.name }}' -like '*-switch-*'
+          Write-Host ("initial IME kind: " + $(if ($kind) { $kind.Matches[0].Value } else { '(none)' }) + " / GJI converter running: " + [bool]$conv + " / detaching: " + $detach + " / switch config: " + $isSwitch)
+          if (-not $kind) { Write-Host '##[error]条件不成立: initial IME kind が awase.log に無い'; exit 1 }
+          $k = $kind.Matches[0].Groups[1].Value
+          $id = $kind.Matches[0].Groups[2].Value
+          if ($k -ne 'GoogleJapaneseInput') { Write-Host "##[error]条件不成立: アクティブな TIP が GJI 系ではない ($k)"; exit 1 }
+          if ($isSwitch) {
+            # 途中で GJI から Mozc へ切り替える構成: 起動時は Google 版 GJI (Gji)。切替後の detaching は修正後の awase だけが出す(develop は 0)。
+            if ($id -ne 'Gji') { Write-Host "##[error]条件不成立: 起動時のアクティブな TIP が Google 版 GJI ではない ($id)"; exit 1 }
+          } elseif ($id -ne 'Other') {
+            Write-Host "##[error]条件不成立: アクティブな TIP が Mozc 系 (Other) ではない ($id)"; exit 1
+          }
           if (-not $conv) { Write-Host '##[error]条件不成立: GJI の変換サーバーが動いていない'; exit 1 }
 
       - uses: actions/upload-artifact@v4
