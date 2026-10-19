@@ -85,4 +85,11 @@ related_adr:
 
 ## 結果
 
-(実測後に追記する。)
+**BUG-207 の条件の CI 再現と修正の効果(2026-10-19、`ime=mozc-gji`: 同名のダミー変換サーバーが静止して動き、アクティブな TIP は Mozc、`initial IME kind: GoogleJapaneseInput (Other)` を `awase.log` で確認):**
+
+| 構成 | 修正前 develop(`ci/bug-207-baseline-mozc`、run 39179709667) | 修正後(`107cbacd`、run 39179706704) |
+| --- | --- | --- |
+| ts-tsf-mozc-gji-{10,40}ms(各 2 回) | **INVALID ×4**(`attached to GJI process` 1、`raw TSF literal suspected` 1、`giving up` 2) | **PASS ×4**(`attached` 0、`raw-tsf-literal` 0、`converter target` 1) |
+| ts-edit-mozc-gji-{10,40}ms | PASS(判定は走らない) | PASS |
+
+修正前は BUG-207 の症状(静止した GJI を見て誤判定し、組成を消して諦める)が CI で再現し、修正後は消えた。**未確認**: 実機(dragonflyg4)、実 GJI の変換サーバー(ダミーは同名・静止のみ再現。U6)、TIP 切替の窓、段階 2(Mozc 用の証拠)。
