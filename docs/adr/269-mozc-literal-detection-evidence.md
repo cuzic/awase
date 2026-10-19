@@ -88,6 +88,12 @@ related_adr:
 
 **結論**: リテラルの有無を CI で再現・修正することは、現状ではできない(GJI でも再現できない)。D1(Mozc では判定しない)は『誤判定の害 > 未検出の害』と『Mozc でリテラルが起きた観測が無い』(探す仕組みが無かった点を含む)に立つ暫定の既定であり、Mozc でリテラルが起きないことの証明ではない。Mozc 用の証拠(段階 2)を決めるには、**実機(Chrome、長い idle 後)の観測**が要る。そのための安全な手段は、判定を走らせず証拠だけを `awase.log` に出す観測専用の経路(D2 の (i) `mozc_server` への観測専用の接続、または (ii) 影の判定)で、利用者の実利用のログを集めること。
 
+## マージ前の確認(develop〈ADR-268 D5〉を取り込んだ `4e2f9082` の CI、run 39185849311・CI 39185853577・smoke 39185853760)
+
+- 全体の CI(PR のチェック 66 件 pass、3 件 skipping)と e2e-ime-smoke は成功。
+- Mozc の構成: `ts-{tsf,edit}-mozc-{gji,gjireal}-{10,40}ms` 16 本は PASS(`attached to GJI process` 0、literal 疑い 0、実 GJI のインストールも成功)。`ts-tsf-mozc-switch-{8000,20000}ms` 4 本も PASS(`detaching` 各 1 回)。
+- **D1a は全 IME のアクティブな TIP の判定経路に及ぶ**ので、MS-IME・GJI の per-VK の代表構成 `ts-tsf-{gji,msime}-{40,10}ms`(各 2 回)を修正前 develop(`ci/bug-207-baseline-mozc`、run 39185861786)と比べた: 8 本ずつすべて PASS(試行 12、literal・消失 0)。literal 疑いは GJI が各 1 回、MS-IME が 0 回で、修正前と同じ。IME 種別の変化(`IME kind →`)と `detaching` は 0 回で、develop と同じ。
+
 ## 実測・検証の順序
 
 1. 修正後の Mozc 単独 CI(`ts-tsf-mozc-*`)で、develop と同じ PASS に戻ること(PR #686 の CI)。**D1 では Mozc 単独のコードの経路が develop と同じ**なので、これは退行が無いことの確認にしかならず、D1 の効果の確認にはならない。効果を示せるのは順序 2 だけ。
