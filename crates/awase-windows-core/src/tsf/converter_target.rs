@@ -37,6 +37,46 @@ pub const fn converter_target(gji_family: bool, identity: TipIdentity) -> Conver
     }
 }
 
+/// 証拠の切り替え（`Gji` ⇄ `NoEvidence`）のデバウンス。
+///
+/// 外す向き（`NoEvidence`）は安全側（安全網を外すだけで誤判定は増えない）なので 1 回の観測で即時に切り替え、
+/// **同時に候補を消す**（消さないと、連続していない 2 回の `Gji` の観測で接続してしまう）。付ける向き（`Gji`）だけ
+/// 2 回連続の観測を要求する（単発のフリップで監視を往復しない）。
+#[derive(Debug, Default)]
+pub struct TargetSwitch {
+    candidate: Option<ConverterTarget>,
+}
+
+impl TargetSwitch {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { candidate: None }
+    }
+
+    /// 新しい観測を投入する。`current` を変えるべきなら新しい値を返す。
+    pub fn observe(
+        &mut self,
+        observed: ConverterTarget,
+        current: ConverterTarget,
+    ) -> Option<ConverterTarget> {
+        if observed == current {
+            self.candidate = None;
+            return None;
+        }
+        if observed == ConverterTarget::NoEvidence {
+            self.candidate = None;
+            return Some(observed);
+        }
+        if self.candidate == Some(observed) {
+            self.candidate = None;
+            Some(observed)
+        } else {
+            self.candidate = Some(observed);
+            None
+        }
+    }
+}
+
 /// プロセス名（`szExeFile`）が GJI の変換サーバーかどうか。
 #[must_use]
 pub fn is_gji_converter_process(name: &str) -> bool {
@@ -84,6 +124,64 @@ mod tests {
         ] {
             assert_eq!(converter_target(false, id), ConverterTarget::Gji);
         }
+    }
+
+    #[test]
+    fn no_evidence_is_applied_immediately() {
+        let mut sw = TargetSwitch::new();
+        assert_eq!(
+            sw.observe(ConverterTarget::NoEvidence, ConverterTarget::Gji),
+            Some(ConverterTarget::NoEvidence)
+        );
+    }
+
+    #[test]
+    fn gji_needs_two_consecutive_observations() {
+        let mut sw = TargetSwitch::new();
+        assert_eq!(
+            sw.observe(ConverterTarget::Gji, ConverterTarget::NoEvidence),
+            None
+        );
+        assert_eq!(
+            sw.observe(ConverterTarget::Gji, ConverterTarget::NoEvidence),
+            Some(ConverterTarget::Gji)
+        );
+    }
+
+    /// 連続していない 2 回の `Gji` の観測（間に `NoEvidence`）で接続しない（候補を消す）。
+    #[test]
+    fn non_consecutive_gji_observations_do_not_attach() {
+        let mut sw = TargetSwitch::new();
+        // 最初は Mozc 系（current = NoEvidence）。Gji を 1 回観測 → 候補。
+        assert_eq!(
+            sw.observe(ConverterTarget::Gji, ConverterTarget::NoEvidence),
+            None
+        );
+        // 間に NoEvidence（current と同じ）→ 候補が消える。
+        assert_eq!(
+            sw.observe(ConverterTarget::NoEvidence, ConverterTarget::NoEvidence),
+            None
+        );
+        // 再び Gji を 1 回観測 → まだ候補（接続しない）。
+        assert_eq!(
+            sw.observe(ConverterTarget::Gji, ConverterTarget::NoEvidence),
+            None
+        );
+    }
+
+    /// current が Gji のとき、NoEvidence → Gji のフリップは、NoEvidence で即時に切り替わった後、
+    /// 次の Gji 1 回では戻らない。
+    #[test]
+    fn single_flip_back_does_not_reattach() {
+        let mut sw = TargetSwitch::new();
+        assert_eq!(
+            sw.observe(ConverterTarget::NoEvidence, ConverterTarget::Gji),
+            Some(ConverterTarget::NoEvidence)
+        );
+        assert_eq!(
+            sw.observe(ConverterTarget::Gji, ConverterTarget::NoEvidence),
+            None
+        );
     }
 
     #[test]

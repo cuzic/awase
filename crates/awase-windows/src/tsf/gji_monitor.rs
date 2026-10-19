@@ -21,7 +21,7 @@ use windows::Win32::System::Threading::{
 
 use super::observer::{ActiveImeKind, TSF_OBS};
 use crate::tsf::converter_target::{
-    converter_target, is_gji_converter_process, searched_prefixes, ConverterTarget,
+    converter_target, is_gji_converter_process, searched_prefixes, ConverterTarget, TargetSwitch,
 };
 
 // ── GJI プロセス発見 ─────────────────────────────────────────────────────────
@@ -372,7 +372,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
     let mut identity_debounce = TipIdentityDebounce::new();
     // 証拠の切り替え（GJI ⇄ なし）も同じデバウンスの規律で確定させる（単発のフリップで
     // 監視の接続・切断を往復しない）。
-    let mut target_debounce = Debounce::<ConverterTarget>::new();
+    let mut target_switch = TargetSwitch::new();
 
     loop {
         let now = crate::hook::current_tick_ms();
@@ -401,13 +401,8 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     }
                     let observed_target =
                         converter_target(kind == ActiveImeKind::GoogleJapaneseInput, identity);
-                    // 証拠を外す向き（Gji → NoEvidence）は安全側（安全網を外すだけで誤判定は増えない）なので
-                    // 1 回の観測で即時に切り替え、付ける向きだけ 2 連続を要求する（切替後の窓を約 4 秒 → 約 2 秒に縮める）。
-                    let confirmed_target = if observed_target == ConverterTarget::NoEvidence {
-                        (observed_target != current_target).then_some(observed_target)
-                    } else {
-                        target_debounce.observe(observed_target, current_target)
-                    };
+                    // 外す向きは即時、付ける向きは 2 連続（`TargetSwitch` 参照）。
+                    let confirmed_target = target_switch.observe(observed_target, current_target);
                     if let Some(confirmed) = confirmed_target {
                         tracing::info!(
                             "[tip-detect] converter target → {confirmed:?} (was {current_target:?}, \
@@ -447,6 +442,11 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
             TSF_OBS.gji_last_write_ms.store(0, Ordering::Relaxed);
             TSF_OBS.gji_attach_ms.store(0, Ordering::Relaxed);
             TSF_OBS.gji_write_bytes.store(0, Ordering::Relaxed);
+            // 診断専用のカウンタ（BUG-75）も戻す。
+            TSF_OBS.gji_write_ops.store(0, Ordering::Relaxed);
+            TSF_OBS.gji_read_ops.store(0, Ordering::Relaxed);
+            TSF_OBS.gji_other_ops.store(0, Ordering::Relaxed);
+            TSF_OBS.gji_other_bytes.store(0, Ordering::Relaxed);
             monitor = None;
         }
 

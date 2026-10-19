@@ -63,7 +63,7 @@ related_adr:
 
 ## 既知の限界(D1 の後も残る)
 
-- TIP 切替後、デバウンス(2 秒ポーリング × 2 連続、最大約 4 秒)の間は旧ターゲットを見続ける。Google 版 GJI → Mozc では、その間だけ BUG-207 の症状が出うる。「アプリごとに入力方式を切り替える」設定では前面アプリの TIP と一致しないことがある。
+- TIP 切替後、旧ターゲットを見続ける窓がある。Google 版 GJI → Mozc(外す向き)は 1 回の観測で即時に外すので、最大約 2 秒(ポーリング周期)。Mozc → GJI(付ける向き)は 2 連続の観測が要るので最大約 4 秒(その間は証拠が無いだけで、誤判定は増えない)。GJI → Mozc の約 2 秒の間は BUG-207 の症状が出うる。「アプリごとに入力方式を切り替える」設定では前面アプリの TIP と一致しないことがある。
 - 判定の途中で detach または GJI が終了すると、カウンタが凍って deadline で SuspectedLiteral(消す)になりうる。判定が `gji_active` の変化を見ないことによる(跳びではない)。GJI の終了/TIP 切替が判定の窓(約 300ms)に重なる確率は低く、BUG-207 の主経路ではない。別件にしてよい。(「二重入力〈StaleConfirm〉」は D1 では起きない: 判定が作られるのは `gji_active` が真のときだけで、再接続は `gji_monitor_ok=false` の間に起きるため、切替をまたいで跳びを読む判定は構造的に存在しない。一度目の設計〈同じループで付け替え〉に対する指摘だった。)
 - 前面アプリの TIP と、別スレッドの `GetActiveProfile` が示す TIP が一致しないことがある(「アプリごとに入力方式を切り替える」設定)。直らない。候補: 前面プロセスの共有メモリ(ADR-265 の version 2 の `active`)が Mozc の稼働を示していたら `NoEvidence` にする(今回は実装しない)。
 - `tsf_ctx`(COM 初期化)が取れないと target が `Gji` のまま固定され、GJI と Mozc が両方ある環境では BUG-207 が残る。
@@ -72,10 +72,10 @@ related_adr:
 ## 実測・検証の順序
 
 1. 修正後の Mozc 単独 CI(`ts-tsf-mozc-*`)で、develop と同じ PASS に戻ること(PR #686 の CI)。**D1 では Mozc 単独のコードの経路が develop と同じ**なので、これは退行が無いことの確認にしかならず、D1 の効果の確認にはならない。効果を示せるのは順序 2 だけ。
-2. **GJI と Mozc を両方入れた構成** `ts-{edit,tsf}-mozc-gji-{40,10}ms`(`ime=mozc-gji`、BUG-207 の実際の条件)を `e2e-ime` に足した。**同名のダミープロセス**(`powershell.exe` のコピーを `GoogleIMEJaConverter.exe` と名付けて待機させる。awase の監視はプロセス名で探し、累積 I/O が増えないことを根拠にするので、静止した GJI の変換サーバーと同じ見え方になる)を動かしたまま、入力方式を Mozc Readable だけにする。実際の GJI を入れる方法は、GJI の TIP が既定でアクティブのままになり(`initial IME kind: GoogleJapaneseInput (Gji)`)、`regsvr32 /u` でも外れず、Mozc がアクティブという条件を作れなかった(run 39178603274・39179133289)。ダミーは実 GJI の I/O の全てを再現はしない(U6: 実 GJI の変換サーバーは起動直後や実打鍵で I/O が動く)。条件が成立しなければ(ダミーが動いていない、`awase.log` の `initial IME kind` が `(Other)` でない)ジョブを失敗にする(条件不成立を PASS と読まないため)。develop(`attached to GJI process`、誤判定が出るはず)と修正後(`detaching`)を、awase.log で比べる。develop 側は `ci/bug-207-baseline-mozc`。
+2. **GJI と Mozc を両方入れた構成** `ts-{edit,tsf}-mozc-gji-{40,10}ms`(`ime=mozc-gji`、BUG-207 の実際の条件)を `e2e-ime` に足した。**同名のダミープロセス**(`powershell.exe` のコピーを `GoogleIMEJaConverter.exe` と名付けて待機させる。awase の監視はプロセス名で探し、累積 I/O が増えないことを根拠にするので、静止した GJI の変換サーバーと同じ見え方になる)を動かしたまま、入力方式を Mozc Readable だけにする。実際の GJI を入れる方法は、GJI の TIP が既定でアクティブのままになり(`initial IME kind: GoogleJapaneseInput (Gji)`)、`regsvr32 /u` でも外れず、Mozc がアクティブという条件を作れなかった(run 39178603274・39179133289)。ダミーは実 GJI の I/O の全てを再現はしない(U6: 実 GJI の変換サーバーは起動直後や実打鍵で I/O が動く)。条件が成立しなければ(ダミーが動いていない、`awase.log` の `initial IME kind` が `(Other)` でない)ジョブを失敗にする(条件不成立を PASS と読まないため)。develop(`attached to GJI process`、誤判定が出るはず)と修正後(接続しない。起動時から `NoEvidence` なので `detaching` は出ない。`detaching` は途中で切り替える順序 5 の構成で出る)を、awase.log で比べる。develop 側は `ci/bug-207-baseline-mozc`。
 3. 観測のみの PR: `DetectEvidence` を判定ごとに `awase.log` へ出し、Mozc と GJI の tsf で分布を取る。**D1 では Mozc で判定が走らないので、Mozc の `DetectEvidence` は 1 件も出ない。**分布を取るには、(i) `mozc_server` に観測専用で接続する(`gji_monitor_ok` とは別の旗にし、`gji_is_active_ime()` には効かせない)か、(ii) 判定を影で走らせる(verdict は計算して journal に出すが回収〈Escape・BS・再送〉はしない。送り方は Mozc 単独の develop のまま〈一括送信〉にして、窓だけ測る。per-VK の送り方自体が挙動を変えるため)かのどちらかが要る。(ii) のほうが判定窓と揃う(GJI の子音 1 VK も 350B を越えない〈`probe_fsm.rs:366`〉ので、GJI の per-VK は SHOW と候補可視の近道に支えられている、という仮説もここで確かめる)。
 4. Mozc で本物のリテラルが起きるかを、awase なしで測る(`ts-raw-tsf-mozc-*` に cold・idle の揺さぶりを足す)。起きないなら、Mozc に安全網は要らない(D1 で確定)。
-5. TIP 切替の窓を測る構成(GJI → Mozc を切り替えた直後の 0〜5 秒に打鍵し、`detaching` の時刻と `raw-tsf-literal` の有無を並べる。順序 2 の派生、未作成)。
+5. 起動時は実 GJI で始めて途中で Mozc に切り替える構成 `ts-tsf-mozc-switch-{8000,20000}ms`(`typing_stress --switch-mozc-ms=N`、`ime=mozc-gji-real`)。監視を外す経路・`gji_*` を 0 に戻す処理・即時の切り替えを CI で動かす(ダミー方式は起動時から `NoEvidence` で、これらを一度も実行しない。Opus round 3)。`awase.log` の `detaching` の時刻と `raw-tsf-literal` の有無を並べて、切替の窓を測る。
 6. 実機(dragonflyg4)。読むだけの前提確認(日本語入力は止まらない): GJI がインストールされたままか、変換サーバーがなぜ常駐しているか、「アプリごとに入力方式を切り替える」の設定。そのうえで Mozc Readable だけにして、文字が消えないこと、`[raw-tsf-literal]` が出ないこと、`detaching` が 1 回出て `gji_io=` が 0 起点になること(日本語入力が止まるため、利用者に予告して許可を得てから)。
 
 ## 記録の修正(ハーネス側)
