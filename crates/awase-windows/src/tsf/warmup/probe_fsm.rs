@@ -153,6 +153,10 @@ pub(crate) fn decide_transmit_plan(
     } else {
         initial_used_eager || forces_prepend_f2
     };
+    // BUG-208: unicode（かな直接）の eager 送信は「GJI が I/O で応答したか」で後から確認する前提の迂回路。
+    // GJI の I/O を観測できない IME（Mozc 系。ADR-269 D1 で監視を外す）では確認する手段が無く、
+    // かなが composition を経ずに確定されるので入力中の文字・変換候補ができない。観測できないときは使わない。
+    let used_eager_path = used_eager_path && env.gji_active;
 
     // NameChangeWait タイムアウトで IME 準備が未確認のまま transmit したケースを
     // LiteralDetect で回収する。F2 をバッチに含めない場合も IME が cold の可能性がある。
@@ -952,6 +956,48 @@ mod tests {
             !plan.needs_literal,
             "nc_fired=true(NameChange確認済み)ならgji_active/is_long_cold問わずLiteralDetect不要のはず(BUG-40)"
         );
+    }
+
+    #[test]
+    fn decide_plan_without_gji_evidence_never_uses_unicode_eager_path() {
+        // BUG-208: GJI の I/O を観測できない（gji_active=false。Mozc 系）なら、どの組み合わせでも
+        // unicode（かな直接）の eager 送信にしない。かなが composition を経ずに確定されてしまう。
+        for nc_fired in [false, true] {
+            for is_tsf_mode in [false, true] {
+                for (initial_eager, forces_f2) in [(true, false), (false, true), (true, true)] {
+                    let obs = ProbeObservations {
+                        nc_fired,
+                        ..Default::default()
+                    };
+                    let env = TsfEnvSnapshot {
+                        is_tsf_mode,
+                        gji_active: false,
+                        ..Default::default()
+                    };
+                    let plan = decide_transmit_plan(initial_eager, obs, env, true, forces_f2, true);
+                    assert!(
+                        !plan.used_eager_path,
+                        "gji_active=false: nc_fired={nc_fired} tsf={is_tsf_mode} initial={initial_eager} f2={forces_f2}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decide_plan_with_gji_evidence_still_uses_unicode_eager_path() {
+        // 対照: GJI を観測できているなら従来どおり（nc_fired=true・Long cold・deferred なし → eager）。
+        let obs = ProbeObservations {
+            nc_fired: true,
+            ..Default::default()
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: true,
+            gji_active: true,
+            ..Default::default()
+        };
+        let plan = decide_transmit_plan(false, obs, env, true, true, true);
+        assert!(plan.used_eager_path, "GJI 観測あり: 従来どおり eager");
     }
 
     #[test]

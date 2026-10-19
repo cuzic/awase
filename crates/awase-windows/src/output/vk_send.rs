@@ -580,6 +580,7 @@ impl Output {
             warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts {
                 last_unicode_ms,
                 gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
+                gji_active: crate::tsf::observer::gji_is_active_ime(),
             })
         };
         let used_eager_path = if in_post_unicode_pending {

@@ -8282,7 +8282,7 @@ fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static 
         "fn send_romaji_as_tsf_warm(",
     )));
     for needle in [
-        "warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts{last_unicode_ms,gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),})",
+        "warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts{last_unicode_ms,gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),gji_active:crate::tsf::observer::gji_is_active_ime(),})",
         "warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts{now_ms:crate::hook::current_tick_ms(),gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),threshold:crate::tuning::LONG_IDLE_MS,})",
         "warm_send_plan::plan_literal_detect(",
         "long_idle:probe_long_idle",
@@ -8354,8 +8354,14 @@ fn warm_send_wiring_detector_catches_violations() {
         1,
     ));
     check_v(v.replacen(
-        "gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),\n            })",
-        "gji_last_io_ms: crate::hook::current_tick_ms(),\n            })",
+        "gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),\n                gji_active:",
+        "gji_last_io_ms: crate::hook::current_tick_ms(),\n                gji_active:",
+        1,
+    ));
+    // BUG-208: gji_active を落とす/定数にする（Mozc 系で応答待ちが永久に続く）
+    check_v(v.replacen(
+        "gji_active: crate::tsf::observer::gji_is_active_ime(),\n            })",
+        "gji_active: true,\n            })",
         1,
     ));
     // plan_literal_detect を残したまま結果を捨てる

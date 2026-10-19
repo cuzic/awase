@@ -65,13 +65,20 @@ pub struct PostUnicodeFacts {
     /// 最後に unicode 送信した時刻。0 = 一度も送信していない。
     pub last_unicode_ms: u64,
     pub gji_last_io_ms: u64,
+    /// GJI の I/O を観測できているか（`gji_is_active_ime()`）。Mozc 系では GJI の監視を外す
+    /// （ADR-269 D1）ので偽になり、`gji_last_io_ms` は 0 のまま動かない。
+    pub gji_active: bool,
 }
 
 /// unicode 送信の後、GJI がまだ I/O 応答していないか（`PendingGjiConfirm`）。
 /// 真なら次のキーも unicode で強制送信する（先頭 VK のリテラル化を避ける）。
+///
+/// **GJI の I/O を観測できないとき（`gji_active == false`）は常に偽。** 応答を観測する手段が無いのに
+/// 「応答するまで」待つと、永久に待ち続け、全てのキーが unicode（かな直接）で送られて入力中の文字・変換候補が
+/// できない（BUG-208。Mozc Readable で、ひらがなにはなるが候補にならない症状）。
 #[must_use]
 pub const fn is_post_unicode_pending(facts: PostUnicodeFacts) -> bool {
-    facts.last_unicode_ms != 0 && facts.gji_last_io_ms <= facts.last_unicode_ms
+    facts.gji_active && facts.last_unicode_ms != 0 && facts.gji_last_io_ms <= facts.last_unicode_ms
 }
 
 /// `is_long_idle` の入力（名前付きで渡す）。
@@ -178,6 +185,7 @@ mod tests {
         is_post_unicode_pending(PostUnicodeFacts {
             last_unicode_ms,
             gji_last_io_ms,
+            gji_active: true,
         })
     }
 
@@ -187,6 +195,24 @@ mod tests {
             gji_last_io_ms,
             threshold: threshold_ms,
         })
+    }
+
+    /// BUG-208: GJI の I/O を観測できない（Mozc 系）なら、unicode 送信の後でも応答待ちにしない。
+    #[test]
+    fn post_unicode_pending_is_never_true_without_gji_evidence() {
+        for (last_unicode_ms, gji_last_io_ms) in [(100, 0), (100, 99), (100, 100), (u64::MAX, 0)] {
+            assert!(!is_post_unicode_pending(PostUnicodeFacts {
+                last_unicode_ms,
+                gji_last_io_ms,
+                gji_active: false,
+            }));
+        }
+        // 対照: 同じ値でも、GJI を観測できていれば応答待ち（従来どおり）
+        assert!(is_post_unicode_pending(PostUnicodeFacts {
+            last_unicode_ms: 100,
+            gji_last_io_ms: 0,
+            gji_active: true,
+        }));
     }
 
     #[test]
