@@ -81,7 +81,7 @@ related_adr:
 
 ## 段階 2 の前提: Mozc で本物のリテラルは起きるか(CI、観測のみ)
 
-`ts-{,raw-}{tsf,chromepage}-mozc-{cold,idle}-20ms`(run 39182258683。cold=準備確認を省いた最初の入力、idle=各試行の前に 5 秒待つ。awase なしの対照と、安全網なしの awase ありの両方。入力先は tsf と CI の Chrome のページ): 32 本とも PASS(リテラル・消失・入れ替わり・誤判定 0)。機会の数は、cold の開始 16 回(awase なし 8・あり 8)と 5 秒 idle の後の試行 96(48・48)。**この条件では、リテラルは観測されなかった。**
+`ts-{,raw-}{tsf,chromepage}-mozc-{cold,idle}-20ms`(run 39182258683。cold=準備確認を省いた最初の入力、idle=各試行の前に 5 秒待つ。awase なしの対照と、安全網なしの awase ありの両方。入力先は tsf と CI の Chrome のページ): 32 本とも PASS(リテラル・消失・入れ替わり・誤判定 0)。機会の数は、cold の開始 16 回(awase なし 8・あり 8)と 5 秒 idle の後の試行 96(48・48)。**この条件では、リテラルは観測されなかった。** idle 30 秒の `ts-{,raw-}{tsf,chromepage}-mozc-longidle-20ms`(run 39183148517)も 8 本(試行 48 回、awase なし・あり 各 24)すべて PASS、リテラル 0。
 
 **言い過ぎないこと**: 『起きない』ことを示したのではなく『観測されなかった』だけ。**陽性対照がまだ無い**: 同じハーネスで、リテラルが起きると分かっている構成(GJI、awase なし)が literal>0 を出せるかを確かめていない。出せなければ、この CI の環境(専用デスクトップの Chrome)ではリテラル自体が起きず、Mozc の 0 件は何も言っていない。そのため (i) idle 30 秒の `ts-{,raw-}{tsf,chromepage}-mozc-longidle-20ms` と、(ii) 陽性対照 `ts-raw-{tsf,chromepage}-gji-{cold,idle,longidle}-20ms`(`--mozc` なし)を追加した。D1(判定しない)の根拠には『起きた観測が無い』として使い、陽性対照が literal>0 を出すまで段階 2 の前提の結論は保留する。
 
