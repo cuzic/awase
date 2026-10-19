@@ -276,6 +276,7 @@
 | [267](267-mozc-readable-composition-state.md) | mozc-readable の共有メモリに組成の段階・候補の種類・キー通番・入力欄のモード指定を足す(version 3) | 提案(Opus round4 で収束)。実装は未着手 |
 | [268](268-mozc-shm-belief-connection.md) | mozc-readable の共有メモリを belief に High で接続し、食い違う applied を降格する | 実装済み・D5 まで実機で検証済み(#678・#679・#682・#687、CI 通過)。未確認: TTL の最終値、E1 の不一致、TSF ネイティブの窓・物理キーでの追随 |
 | [269](269-mozc-literal-detection-evidence.md) | Mozc 系では GJI の I/O を literal 判定の証拠にしない(BUG-207) | 実装中(2026-10-18)。段階 1 は PR #686、段階 2 以降は観測が先 |
+| [270](270-mozc-first-send-composition-check.md) | Mozc で、cold の最初のローマ字を送った直後に、入力中の文字ができたかを共有メモリで確かめ、リテラルなら消して送り直す | 実装中(2026-10-19)。実機は未確認(BUG-209) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

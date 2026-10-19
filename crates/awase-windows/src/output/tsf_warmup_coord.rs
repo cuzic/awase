@@ -246,6 +246,20 @@ impl TsfWarmupCoordinator {
         *slot = Some(machine);
     }
 
+    /// 段が終わる直前に、後続の確認の FSM を `pending_tsf` に張る（ADR-270）。
+    ///
+    /// **段の記録（`StageRecord`）には触れない**。`install_pending_tsf` は `begin_stage()` で記録を初期化するので、
+    /// 段末の `take_stage_record` が、終わる段の記録（注入した・宛先）ではなく、張ったばかりの確認の段の空の記録を取り出して
+    /// しまう。後続の FSM が張られている間、後続のキーは `has_pending_tsf()` で保留される。
+    pub(crate) fn install_followup_tsf(&self, machine: Box<dyn TickableFsm>) {
+        let mut slot = self.pending_tsf.borrow_mut();
+        debug_assert!(
+            slot.is_none(),
+            "follow-up probe installed over a live probe"
+        );
+        *slot = Some(machine);
+    }
+
     /// `pending_tsf` を取り出す（`step_probe` の1ステップ処理用）。
     pub(crate) fn take_pending_tsf(&self) -> Option<Box<dyn TickableFsm>> {
         let m = self.pending_tsf.borrow_mut().take();
@@ -456,6 +470,48 @@ mod tests {
         fn cold_seq_hint(&self) -> crate::state::event_origin::Generation {
             crate::state::event_origin::Generation::INITIAL
         }
+    }
+
+    fn test_origin() -> crate::state::raw_recovery_plan::StageOrigin {
+        crate::state::raw_recovery_plan::StageOrigin {
+            focus_gen: crate::state::focus_gen::FocusGen::INITIAL,
+            foreground: crate::state::foreground_scope::ForegroundScope { pid: 7, hwnd: 70 },
+        }
+    }
+
+    /// ADR-270 のレビュー C1: 段末に後続の確認の FSM を張るとき、終わる段の記録を壊さない。
+    ///
+    /// `install_pending_tsf` は `begin_stage()` で記録を初期化するので、段末に使うと、`take_stage_record` が空の記録を
+    /// 取り出し、BUG-194 の宛先照合が効かず、成功した段が `WarmupAborted` で伝わる。
+    #[test]
+    fn install_followup_tsf_keeps_the_ending_stage_record() {
+        let coord = TsfWarmupCoordinator::new();
+        coord.begin_stage();
+        coord.stamp_stage_origin(test_origin());
+        coord.note_stage_injection();
+        coord.install_followup_tsf(Box::new(StubMachine { ticks: 0 }));
+        assert!(coord.has_pending_tsf());
+        let rec = coord.take_stage_record();
+        assert!(rec.injected, "終わる段の注入の記録が残っている");
+        assert!(!rec.recovered);
+        assert_eq!(
+            rec.origin,
+            Some(test_origin()),
+            "終わる段の宛先が残っている"
+        );
+    }
+
+    /// 対照: 段の開始に使う `install_pending_tsf` は、記録を初期化する（これが `install_followup_tsf` を別に持つ理由）。
+    #[test]
+    fn install_pending_tsf_resets_the_stage_record() {
+        let coord = TsfWarmupCoordinator::new();
+        coord.begin_stage();
+        coord.stamp_stage_origin(test_origin());
+        coord.note_stage_injection();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+        let rec = coord.take_stage_record();
+        assert!(!rec.injected);
+        assert_eq!(rec.origin, None);
     }
 
     #[test]

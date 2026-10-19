@@ -945,6 +945,26 @@ pub unsafe fn get_focused_hwnd() -> HWND {
         .unwrap_or_else(|| unsafe { GetForegroundWindow() })
 }
 
+/// ウィンドウのスレッドが、IME の読み取りに `timeout_ms` ミリ秒以内に応答するか（ADR-270）。
+///
+/// 既存の読み取り（`get_ime_conversion_mode_for_hwnd`。`imm.rs` の唯一の `SendMessageTimeoutW` を通る）をワーカースレッドで
+/// 実行し、`run_with_timeout` で待つ。IME への同期の呼び出し（Mozc サーバーの応答待ちなど）でスレッドが止まっていると
+/// 応答しない（ハングしているか、止まっている）。IME のウィンドウが無い窓も `false`（確かめられないので、消さない側）。
+///
+/// 応答しないとき、止まっている間に届いたキーはまだ処理されていないので、Backspace を送ってはいけない。メインスレッドから
+/// 直接送ると、待っている間に届く別スレッドからの送信メッセージで `with_app` に再入しうる（BUG-90）ので、ワーカーで実行する。
+#[must_use]
+pub fn window_thread_responds(hwnd_addr: usize, timeout_ms: u32) -> bool {
+    let wait = std::time::Duration::from_millis(u64::from(timeout_ms) + 10);
+    crate::win32::run_with_timeout(wait, move || {
+        // SAFETY: `hwnd_addr` は `GetGUIThreadInfo` が返したウィンドウのアドレス（無効になっていても `get_ime_wnd` が `None` を
+        //         返すか、`probe_ime_control` が失敗を返すだけ）。`probe_ime_control` は `SMTO_ABORTIFHUNG` の読み取りで、
+        //         actuation のフェンスを進めない（読み取り）。
+        unsafe { get_ime_conversion_mode_for_hwnd(HWND(hwnd_addr as *mut _), timeout_ms).is_some() }
+    })
+    .unwrap_or(false)
+}
+
 /// `get_focused_hwnd` の async 版（ワーカースレッドで実行）。
 ///
 /// [`ActuationTarget`] の捕獲・再検証の両方がこれを使う（ADR-086 §7-3）。

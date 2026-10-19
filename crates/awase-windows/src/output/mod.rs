@@ -111,6 +111,10 @@ pub struct Output {
     raw_literal_focus_hwnd: std::cell::Cell<Option<isize>>,
     /// 観測専用: 予約あり flush で `focus_hwnd_changed` を求めた結果。outcome に載せて取り出す。
     raw_focus_hwnd_changed: std::cell::Cell<Option<bool>>,
+    /// ADR-270: Mozc の最初の送信の後に張る「入力中の文字ができたかの確認」の予約。`dispatch_probe_actions` が段の終わりに
+    /// 立て、`step_probe` が段末の deferred 解放より前に取り出して `MozcComposeCheckFsm` を張る。
+    mozc_compose_request:
+        std::cell::RefCell<Option<crate::tsf::warmup::mozc_compose_check_fsm::MozcComposeTarget>>,
     /// MS-IME confirm-then-transmit ゲート（BUG-13）の give-up latch。
     ///
     /// `start_ms_ime_ready_poll` が「期限まで IMC が一度も確認できなかった」ときに立てる。
@@ -296,6 +300,7 @@ impl Output {
             raw_literal_origin: std::cell::Cell::new(None),
             raw_literal_focus_hwnd: std::cell::Cell::new(None),
             raw_focus_hwnd_changed: std::cell::Cell::new(None),
+            mozc_compose_request: std::cell::RefCell::new(None),
             ms_ime_gate_give_up: std::cell::Cell::new(false),
             confirm_gate_deadline_override_ms: std::cell::Cell::new(0),
             resume_restore_floor: std::cell::Cell::new(None),
@@ -1040,6 +1045,7 @@ impl Output {
                 is_tsf_mode: self.is_tsf_mode(),
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
                 gji_evidence_absent: crate::tsf::observer::gji_evidence_absent(),
+                stage_origin_now: Some(self.current_stage_origin()),
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),
                 confirm_gate_deadline_override_ms: self.confirm_gate_deadline_override_ms.get(),
@@ -1095,10 +1101,20 @@ impl Output {
                 let learned_tsf = end.reason == crate::tsf::gji_fsm::StageEndReason::UpgradedToTsf;
                 drop(machine);
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
+                // ADR-270: 段末の deferred 解放（`finish_probe_stage`）より前に、Mozc の確認を張る。張った後は
+                // `pending_tsf` があるので、後続のキーは保留されたまま、確認の終わりで解放される。
+                let compose_check_installed = self.install_mozc_compose_check_if_requested();
                 let gji_response = self.finish_probe_stage(end);
                 StepProbeResult {
-                    timer_cmd: TimerCommand::Kill {
-                        id: crate::TIMER_TSF_PROBE,
+                    timer_cmd: if compose_check_installed {
+                        TimerCommand::Continue {
+                            id: crate::TIMER_TSF_PROBE,
+                            delay: Duration::from_millis(10),
+                        }
+                    } else {
+                        TimerCommand::Kill {
+                            id: crate::TIMER_TSF_PROBE,
+                        }
                     },
                     gji_response,
                     needs_gji_composition_reset,
@@ -1108,6 +1124,33 @@ impl Output {
                 }
             }
         }
+    }
+
+    /// ADR-270: 予約があれば、Mozc の「入力中の文字ができたかの確認」を `pending_tsf` に張る。張ったら `true`。
+    ///
+    /// 予約は常にここで取り出す（張らなかった段の予約が、後の別の段に持ち越されない）。
+    fn install_mozc_compose_check_if_requested(&self) -> bool {
+        let Some(target) = self.mozc_compose_request.borrow_mut().take() else {
+            return false;
+        };
+        tracing::debug!(
+            "[mozc-compose] cold={} checking composition after sending {:?} (thread={} deadline={}ms)",
+            target.cold_seq.value(),
+            target.romaji,
+            target.thread_id,
+            crate::tuning::MOZC_COMPOSE_CHECK_MS
+        );
+        // 終わる段の記録を壊さない `install_followup_tsf` で張る（`install_pending_tsf` は `begin_stage()` で記録を初期化する）。
+        // 確認の FSM は、終わる段の宛先（最初の送信より前に採った値）を持って、宛先の窓が変わったら確認も回収もやめる。
+        let origin = self.warmup_coord.stage_origin();
+        self.warmup_coord.install_followup_tsf(Box::new(
+            crate::tsf::warmup::mozc_compose_check_fsm::MozcComposeCheckFsm::new(
+                target,
+                crate::tuning::MOZC_COMPOSE_CHECK_MS,
+                origin,
+            ),
+        ));
+        true
     }
 
     /// deferred VK の解放権が raw literal 回収 / GJI reinit retry 側にあるか（INV-F）。
@@ -1161,6 +1204,13 @@ impl Output {
         self.gji_end_probe_guard();
         // (b) GjiFsm への通知。
         let rec = self.warmup_coord.take_stage_record();
+        // ADR-270: 段末に確認の FSM が続いているなら、終わる段の宛先を、空になった記録へ引き継ぐ。確認の FSM が
+        // リテラルと判断して `record_raw_tsf_literal` を呼んだとき、BUG-194 の宛先照合が効くように。
+        if self.warmup_coord.has_pending_tsf() {
+            if let Some(origin) = rec.origin {
+                self.warmup_coord.stamp_stage_origin(origin);
+            }
+        }
         let probe_id = self.warmup_coord.take_probe_id()?;
         Some(self.gji_on_event(if rec.injected && !rec.recovered {
             crate::tsf::gji_fsm::GjiEvent::WarmupComplete { probe_id }

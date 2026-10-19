@@ -5195,6 +5195,69 @@ fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     );
 }
 
+/// ADR-270(レビュー C1): Mozc の確認の FSM は、段末に `install_followup_tsf`（段の記録を壊さない）で張り、`finish_probe_stage` の
+/// 前に張る（deferred の解放を見送らせるため）。`install_pending_tsf`（`begin_stage()` で記録を初期化する）で張ると、
+/// `finish_probe_stage` の `take_stage_record` が空の記録を取り出し、BUG-194 の宛先照合と GjiFsm への `WarmupComplete` が失われる。
+/// `finish_probe_stage` は、後続の FSM があるとき、終わる段の宛先を空になった記録へ引き継ぐ。
+#[test]
+fn mozc_compose_check_is_installed_without_resetting_the_ending_stage_record() {
+    let content = read_crate_file("src/output/mod.rs");
+    let production = production_code_only(&content);
+    let flat: String = non_comment_lines(production)
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    // 張る関数は install_followup_tsf を使い、install_pending_tsf を使わない。
+    let install_at = flat
+        .find("fninstall_mozc_compose_check_if_requested(")
+        .expect("install_mozc_compose_check_if_requested");
+    let install_body = &flat[install_at..];
+    let install_end = install_body
+        .find("truefn")
+        .or_else(|| install_body.find("true}"))
+        .unwrap_or(install_body.len().min(1500));
+    let install_body = &install_body[..install_end];
+    assert!(
+        install_body.contains("self.warmup_coord.install_followup_tsf("),
+        "Mozc の確認の FSM は `warmup_coord.install_followup_tsf` で張ること（ADR-270 レビュー C1）"
+    );
+    assert!(
+        !install_body.contains("install_pending_tsf("),
+        "Mozc の確認の FSM を `install_pending_tsf` で張らないこと（段の記録を初期化して、宛先と WarmupComplete を失う。ADR-270 レビュー C1）"
+    );
+    // step_probe の Ended アームでは、finish_probe_stage の前に張る。
+    let step_at = flat.find("fnstep_probe(").expect("step_probe");
+    let step_body = &flat[step_at..];
+    let compose = step_body
+        .find("self.install_mozc_compose_check_if_requested()")
+        .expect("step_probe は確認の FSM を張ること");
+    let finish = step_body
+        .find("self.finish_probe_stage(end)")
+        .expect("step_probe は finish_probe_stage を呼ぶこと");
+    assert!(
+        compose < finish,
+        "確認の FSM は `finish_probe_stage` の前に張ること（deferred の解放を見送らせるため。ADR-270）"
+    );
+    // finish_probe_stage は、後続の FSM があるとき、終わる段の宛先を引き継ぐ。
+    let finish_at = flat
+        .find("fnfinish_probe_stage(")
+        .expect("finish_probe_stage");
+    let finish_body = &flat[finish_at..];
+    let take = finish_body
+        .find("self.warmup_coord.take_stage_record()")
+        .expect("take_stage_record");
+    let stamp = finish_body
+        .find("self.warmup_coord.stamp_stage_origin(origin)")
+        .expect("finish_probe_stage は後続の FSM に宛先を引き継ぐこと");
+    let probe_id = finish_body
+        .find("self.warmup_coord.take_probe_id()")
+        .expect("take_probe_id");
+    assert!(
+        take < stamp && stamp < probe_id,
+        "宛先の引き継ぎは `take_stage_record` の後、`take_probe_id` の前に行うこと（ADR-270 レビュー C1）"
+    );
+}
+
 /// BUG-194(ADR-246): raw TSF literal の回収は、段の開始時に宛先(focus 世代 + 前景窓)を採り、flush 先頭で照合する。
 /// 空白を除いて比べる(rustfmt の改行位置に依存しない)。
 #[test]

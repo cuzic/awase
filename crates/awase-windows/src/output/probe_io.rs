@@ -11,6 +11,7 @@ use crate::tsf::literal_facts::{
     LiteralDetectTrace, LiteralDetectTraceItem, LiteralVerdict,
 };
 use crate::tsf::output::ColdReason;
+use crate::tsf::warmup::mozc_compose_check_fsm::MozcComposeTarget;
 use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tsf::TsfGateState;
 use awase::types::VkCode;
@@ -54,6 +55,17 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
+    /// ADR-270: Mozc で、この送信の後に入力中の文字の確認を張るなら、その対象を返す。**送信の直前**に呼ぶ
+    /// （まだ入力中の文字が無いことを確かめるため）。既定は張らない（テスト用の stub と、Mozc 系でない環境）。
+    fn mozc_compose_precheck(
+        &self,
+        _romaji: &str,
+        _cold_seq: Generation,
+    ) -> Option<MozcComposeTarget> {
+        None
+    }
+    /// ADR-270: 段が終わったら確認を張る予約（`Output::step_probe` の段末で取り出す）。既定は何もしない。
+    fn request_mozc_compose_check(&self, _target: MozcComposeTarget) {}
 }
 
 impl ProbeIo for Output {
@@ -121,6 +133,35 @@ impl ProbeIo for Output {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         self.warmup_coord.note_stage_recovery();
         self.warmup_coord.mark_composition_reset();
+    }
+
+    fn mozc_compose_precheck(
+        &self,
+        romaji: &str,
+        cold_seq: Generation,
+    ) -> Option<MozcComposeTarget> {
+        // GJI の証拠が無いと確定している（Mozc 系）ときだけ（ADR-269 D1、`gji_evidence_absent`）。
+        if !crate::tsf::observer::gji_evidence_absent() {
+            return None;
+        }
+        let (hwnd_addr, thread_id, process_id) =
+            crate::observer::mozc_shm::focus_thread_and_process()?;
+        let pre = crate::observer::mozc_shm::read_compose(thread_id, process_id);
+        let crate::state::mozc_shm::ComposeReading::Block(before) = pre else {
+            return None;
+        };
+        crate::state::mozc_shm::should_check_compose(pre, romaji).then(|| MozcComposeTarget {
+            cold_seq,
+            romaji: romaji.to_string(),
+            hwnd_addr,
+            thread_id,
+            process_id,
+            key_seq_before: before.key_seq,
+        })
+    }
+
+    fn request_mozc_compose_check(&self, target: MozcComposeTarget) {
+        *self.mozc_compose_request.borrow_mut() = Some(target);
     }
 }
 
@@ -461,6 +502,13 @@ where
                             let detector = plan
                                 .needs_literal
                                 .then(|| crate::tsf::probe::LiteralDetector::new(true));
+                            // ADR-270: Mozc の最初の送信の後に、入力中の文字ができたかを確かめる（unicode 送信は組成を作らない
+                            // ので対象外）。まだ入力中の文字が無いことを確かめるため、送信の直前に対象を決める。
+                            let mozc_check = if plan.used_eager_path {
+                                None
+                            } else {
+                                io.mozc_compose_precheck(&romaji, cold_seq)
+                            };
                             let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                             // 注入の記録は io.transmit_tsf 自身が note_stage_injection で行う。
                             // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
@@ -479,6 +527,9 @@ where
                                 detector,
                                 plan.literal_detect_ms,
                             ) {
+                                if let Some(target) = mozc_check {
+                                    io.request_mozc_compose_check(target);
+                                }
                                 break 'stage Some(StageEndReason::ProbeDone);
                             }
                         }

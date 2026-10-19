@@ -32,8 +32,9 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 use crate::state::mozc_shm::{
-    app_container_section_path, format_sid, local_mapping_name, RawBlock, ReadFailure, Reading,
-    Route, BLOCK_SIZE,
+    app_container_section_path, classify, format_sid, local_mapping_name, ComposeBlock,
+    ComposeReading, CompositionFields, RawBlock, ReadFailure, Reading, Route, BLOCK_SIZE,
+    V3_BLOCK_SIZE,
 };
 
 /// seqlock の再試行の上限（書き込みは数命令なので、実際には 1〜2 回で終わる）。
@@ -88,6 +89,33 @@ pub fn thread_of_window(hwnd_addr: usize) -> u32 {
     unsafe { GetWindowThreadProcessId(HWND(hwnd_addr as *mut _), None) }
 }
 
+/// 現在のキーボードフォーカスのウィンドウ（`GetGUIThreadInfo().hwndFocus`、取れなければ前景窓）の
+/// （hwnd のアドレス、それを作ったスレッド、プロセス）。
+///
+/// TSF の状態はフォーカスのスレッドごと（XAML のアプリでは、最上位のウィンドウのスレッドではない）。取れなければ `None`。
+/// 内部で `get_focused_hwnd`（ワーカースレッドで実行して最大 30ms 待つ）を呼ぶので、フックのコールバックの中から呼ばない
+/// （BUG-34）。呼び出し元は `TIMER_TSF_PROBE` のハンドラ（メインスレッド）。最初のローマ字の送信が最大 30ms 遅れうる。
+#[must_use]
+pub fn focus_thread_and_process() -> Option<(usize, u32, u32)> {
+    // SAFETY: メインスレッドから呼ぶ（`get_focused_hwnd` の要件）。Win32 を呼ぶだけで、結果の hwnd は無効でもよい。
+    let hwnd = unsafe { crate::ime::get_focused_hwnd() };
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let hwnd_addr = hwnd.0 as usize;
+    let (tid, pid) = thread_and_process_of_window(hwnd_addr);
+    (tid != 0 && pid != 0).then_some((hwnd_addr, tid, pid))
+}
+
+/// ウィンドウ（`hwnd` のアドレス）を作ったスレッドの ID とプロセスの ID。取得できないときは `(0, 0)`。
+#[must_use]
+pub fn thread_and_process_of_window(hwnd_addr: usize) -> (u32, u32) {
+    let mut pid = 0u32;
+    // SAFETY: `GetWindowThreadProcessId` はどのスレッドからも呼べる非ブロッキング API。`pid` はスタック上の出力先。無効な hwnd は 0 を返す。
+    let tid = unsafe { GetWindowThreadProcessId(HWND(hwnd_addr as *mut _), Some(&raw mut pid)) };
+    (tid, pid)
+}
+
 /// 対象のスレッド（`thread_id`、プロセスは `process_id`）の共有メモリを 1 回読む。所要時間（マイクロ秒）も返す。
 ///
 /// 通常のプロセスは `Local\` の名前で開く。開けなければ、対象が AppContainer のときだけ専用の名前空間のパスで開き直す。
@@ -100,48 +128,100 @@ pub fn read(thread_id: u32, process_id: u32) -> (Reading, u32) {
     (reading, read_us)
 }
 
-fn read_inner(thread_id: u32, process_id: u32) -> Reading {
+/// 共有メモリのハンドルを開く（通常のプロセスは `Local\`、開けなければ AppContainer の名前空間）。
+fn open_handle(thread_id: u32, process_id: u32) -> (Route, Result<HANDLE, ReadFailure>) {
     let name = HSTRING::from(local_mapping_name(thread_id));
     // SAFETY: `name` は NUL 終端の有効な文字列。失敗は `Err` で返る。
     if let Ok(handle) = unsafe { OpenFileMappingW(FILE_MAP_READ.0, false, &name) } {
-        return Reading {
-            route: Route::Local,
-            block: read_view(handle),
-        };
+        return (Route::Local, Ok(handle));
     }
     match probe_app_container(process_id) {
-        AcProbe::NotAppContainer => Reading {
-            route: Route::Local,
-            block: Err(ReadFailure::NotFound),
-        },
-        AcProbe::Unresolved(stage) => Reading {
-            route: Route::AppContainer,
-            block: Err(ReadFailure::Unresolved(stage)),
-        },
+        AcProbe::NotAppContainer => (Route::Local, Err(ReadFailure::NotFound)),
+        AcProbe::Unresolved(stage) => (Route::AppContainer, Err(ReadFailure::Unresolved(stage))),
         AcProbe::AppContainer { session_id, sid } => {
             let path = app_container_section_path(session_id, &sid, thread_id);
-            Reading {
-                route: Route::AppContainer,
-                block: open_section(&path).and_then(read_view),
-            }
+            (Route::AppContainer, open_section(&path))
         }
     }
 }
 
+fn read_inner(thread_id: u32, process_id: u32) -> Reading {
+    let (route, opened) = open_handle(thread_id, process_id);
+    Reading {
+        route,
+        block: opened.and_then(read_view),
+    }
+}
+
+/// 入力中の文字の確認（ADR-270）のために、対象のスレッドの共有メモリを読む。
+///
+/// 先頭 48 バイトで受け入れ条件（`classify`）を確かめ、`version >= 3` のときだけ 80 バイトまで読み直して追記分
+/// （入力の段階・`server_ready`・入力スコープの指定）を取る（ADR-267 D9: 先頭 48 バイトだけを map して `version` を
+/// 読み、足りれば 80 で map し直す）。belief にも IME にも何も書かない。読めない・受け入れられない・version 2 のときは
+/// `Unreadable`。
+#[must_use]
+pub fn read_compose(thread_id: u32, process_id: u32) -> ComposeReading {
+    let (_route, opened) = open_handle(thread_id, process_id);
+    let Ok(handle) = opened else {
+        return ComposeReading::Unreadable;
+    };
+    let reading = read_compose_inner(handle, process_id);
+    // SAFETY: `handle` は `open_handle` が返した有効なハンドルで、ここで 1 回だけ閉じる。
+    let _ = unsafe { CloseHandle(handle) };
+    reading
+}
+
+fn read_compose_inner(handle: HANDLE, process_id: u32) -> ComposeReading {
+    // 1 回目（48 バイト）は、80 バイトを map してよいか（`version >= 3`）の判定だけに使う（ADR-267 D9）。
+    let Ok(head) = read_bytes::<BLOCK_SIZE>(handle) else {
+        return ComposeReading::Unreadable;
+    };
+    if !matches!(classify(&RawBlock::parse(&head), process_id), Ok(s) if s.version >= 3) {
+        return ComposeReading::Unreadable;
+    }
+    let Ok(full) = read_bytes::<V3_BLOCK_SIZE>(handle) else {
+        return ComposeReading::Unreadable;
+    };
+    // 値はすべて 2 回目（80 バイト、1 回の seqlock）から取る。1 回目と 2 回目を組み合わせると、別の `seq` の値が混ざる。
+    let mut first = [0u8; BLOCK_SIZE];
+    first.copy_from_slice(&full[..BLOCK_SIZE]);
+    let raw = RawBlock::parse(&first);
+    let Ok(state) = classify(&raw, process_id) else {
+        return ComposeReading::Unreadable;
+    };
+    let fields = CompositionFields::parse(&full);
+    ComposeReading::Block(ComposeBlock {
+        active: true,
+        effective_open: state.effective_open,
+        effective_mode: raw.effective_mode,
+        phase: fields.phase,
+        scope_forced_mode: fields.scope_forced_mode,
+        server_ready: fields.server_ready != 0,
+        key_seq: fields.key_seq,
+        composition_key_seq: fields.composition_key_seq,
+    })
+}
+
 /// マップしたビューから seqlock の手順で 48 バイトを読み、ビューとハンドルを閉じる。
-#[allow(clippy::cast_ptr_alignment)] // ビューはページ境界から始まり、`seq` はオフセット 8 なので u32 の境界に揃っている
 fn read_view(handle: HANDLE) -> Result<RawBlock, ReadFailure> {
-    // SAFETY: `handle` は直前に開いた有効なセクション／ファイルマッピングのハンドル。読み取り専用で全 48 バイトをマップする。
-    let view = unsafe { MapViewOfFile(handle, FILE_MAP_READ, 0, 0, BLOCK_SIZE) };
+    let bytes = read_bytes::<BLOCK_SIZE>(handle);
+    // SAFETY: `handle` は呼び出し元が渡した有効なハンドルで、ここで 1 回だけ閉じる。
+    let _ = unsafe { CloseHandle(handle) };
+    bytes.map(|b| RawBlock::parse(&b))
+}
+
+/// ハンドルの先頭 `N` バイトを seqlock の手順で読む（ビューは閉じる。**ハンドルは閉じない**）。
+#[allow(clippy::cast_ptr_alignment)] // ビューはページ境界から始まり、`seq` はオフセット 8 なので u32 の境界に揃っている
+fn read_bytes<const N: usize>(handle: HANDLE) -> Result<[u8; N], ReadFailure> {
+    // SAFETY: `handle` は有効なセクション／ファイルマッピングのハンドル。読み取り専用で先頭 `N` バイトをマップする。
+    let view = unsafe { MapViewOfFile(handle, FILE_MAP_READ, 0, 0, N) };
     if view.Value.is_null() {
-        // SAFETY: `handle` は 1 回だけ閉じる。
-        let _ = unsafe { CloseHandle(handle) };
         return Err(ReadFailure::Unresolved("map-view"));
     }
     let base = view.Value.cast::<u8>().cast_const();
     let mut result = Err(ReadFailure::Torn);
     for _ in 0..SEQLOCK_ATTEMPTS {
-        // SAFETY: `base` から `BLOCK_SIZE` バイトは有効な読み取り専用のビュー。`seq`（オフセット 8）は u32 の境界に揃っている。
+        // SAFETY: `base` から `N` バイトは有効な読み取り専用のビュー。`seq`（オフセット 8）は u32 の境界に揃っている。
         //         書き出し側は `InterlockedIncrement`（全バリア）で `seq` を更新するので、原子的な読み取りと対になる。
         let seq1 = unsafe { AtomicU32::from_ptr(base.add(8).cast::<u32>().cast_mut()) }
             .load(Ordering::Acquire);
@@ -149,9 +229,9 @@ fn read_view(handle: HANDLE) -> Result<RawBlock, ReadFailure> {
             std::hint::spin_loop();
             continue;
         }
-        let mut bytes = [0u8; BLOCK_SIZE];
+        let mut bytes = [0u8; N];
         for (i, b) in bytes.iter_mut().enumerate() {
-            // SAFETY: `i < BLOCK_SIZE`。書き出し側が同時に書くことがあるので volatile で読み、結果は `seq` の一致で確かめる。
+            // SAFETY: `i < N`。書き出し側が同時に書くことがあるので volatile で読み、結果は `seq` の一致で確かめる。
             *b = unsafe { base.add(i).read_volatile() };
         }
         fence(Ordering::Acquire);
@@ -159,14 +239,13 @@ fn read_view(handle: HANDLE) -> Result<RawBlock, ReadFailure> {
         let seq2 = unsafe { AtomicU32::from_ptr(base.add(8).cast::<u32>().cast_mut()) }
             .load(Ordering::Relaxed);
         if seq1 == seq2 {
-            result = Ok(RawBlock::parse(&bytes));
+            result = Ok(bytes);
             break;
         }
     }
-    // SAFETY: `view` は `MapViewOfFile` が返したビューで、1 回だけ解除する。`handle` も 1 回だけ閉じる。
+    // SAFETY: `view` は `MapViewOfFile` が返したビューで、1 回だけ解除する。
     unsafe {
         let _ = UnmapViewOfFile(view);
-        let _ = CloseHandle(handle);
     }
     result
 }
