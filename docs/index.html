@@ -514,7 +514,7 @@ footer p{margin-bottom:0.3rem}
       <div class="compat-card">
         <span class="compat-tag" style="background:#16a34a">完全対応</span>
         <h3>Google 日本語入力</h3>
-        <p>Google 日本語入力の内部動作に合わせた専用の制御方式で、IME ON/OFF を確実かつ副作用なく切り替えます。</p>
+        <p>Google 日本語入力の内部動作に合わせた専用の制御方式で、IME ON/OFF を確実かつ副作用なく切り替えます。Mozc（公式版・mozc-readable）も Google 日本語入力と同じ系統として扱います（キー設定の自動読み取りは Google 日本語入力のみ）。</p>
       </div>
       <div class="compat-card">
         <span class="compat-tag" style="background:#16a34a">完全対応</span>
@@ -681,7 +681,7 @@ footer p{margin-bottom:0.3rem}
         <div class="code-block">cargo build -p awase-windows --release</div>
       </details>
 
-      <details class="install-alt" id="mozc-readable" hidden>
+      <details class="install-alt" id="mozc-readable">
         <summary>mozc-readable（任意・実験的）</summary>
         <p style="color:var(--text-secondary);font-size:0.95rem">
           Google 日本語入力のオープンソース版 <a href="https://github.com/google/mozc">Mozc</a> に、
@@ -689,11 +689,17 @@ footer p{margin-bottom:0.3rem}
           awase が読めない窓の IME 状態を、推測ではなく IME 自身の値で知るために作っています。
           公式の Mozc とは別名(別の識別子・別のインストール先)で作っています。
         </p>
+        <p style="color:var(--text-secondary);font-size:0.95rem">
+          mozc-readable は IME の開閉と入力モードを IME 自身が出す値で awase に伝えるため、『awase の想定と実際の IME の状態がずれる』問題を根本から解決できる見込みです。まだ実験的な機能で、実機での検証を続けています。
+        </p>
         <a id="dl-mozc-readable" href="https://github.com/cuzic/mozc-readable/releases" class="btn btn-secondary" style="display:inline-block;margin:0.3rem 0 0.8rem">最新版をダウンロード (MSI)</a>
         <ul>
+          <li>インストール後、Windows の言語設定で入力方式に「Mozc Readable」を追加して使います（入力方式の表示名は「Mozc Readable」です）。</li>
+          <li>以前の版の上に入れた場合、新しい表示名が言語設定の一覧に反映されるのにサインアウトが要ることがあります。</li>
           <li>インストーラーに署名はありません。SmartScreen の警告が出ます。SHA-256 は Release の <code>SHA256SUMS.txt</code> にあります。</li>
           <li>利用者のプロファイルは公式の Mozc と分かれます。公式 Mozc のユーザー辞書は引き継がれません。</li>
-          <li>awase がこの値を使う機能は開発中です（現在の awase はまだ読みません）。</li>
+          <li>awase は mozc-readable が共有メモリに出す値を読んで IME の開閉を知り、親指シフト（NICOLA）入力の ON/OFF をそれに合わせます（設定は不要です。mozc-readable を使っていない窓では何もしません）。</li>
+          <li>窓の切り替えやひらがなキーの直後の最初のローマ字が、入力中の文字にならず英字のまま残ったときは、awase がそれを検出して消し、打ち直します。</li>
         </ul>
         <p style="color:var(--text-secondary);font-size:0.88rem">ソース: <a href="https://github.com/cuzic/mozc-readable">cuzic/mozc-readable</a>（BSD-3-Clause。Google とは無関係の非公式の派生版です）</p>
       </details>
@@ -745,7 +751,7 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="faq-item">
         <p class="faq-q">IME は何に対応していますか？</p>
-        <p class="faq-a">Microsoft IME と Google 日本語入力に対応しています。従来ツールの多くは「トグルキー」で IME を切り替えるため、現在の状態を正確に把握していないと意図と逆の状態になってしまうという根本的な問題がありました。Google 日本語入力はとくに現在の IME 状態を外部から正しく取得できないため、この問題が起きやすい IME でした。awase は「IME を ON にする」「IME を OFF にする」という冪等（何度実行しても結果が変わらない）な操作で制御するため、状態がずれていても常に意図した結果になります。</p>
+        <p class="faq-a">Microsoft IME と Google 日本語入力に対応しています。Mozc（公式版と <a href="#mozc-readable">mozc-readable</a>）は Google 日本語入力と同じ系統として扱います。ただし、IME のキー設定の自動読み取りは Google 日本語入力だけが対象です。従来ツールの多くは「トグルキー」で IME を切り替えるため、現在の状態を正確に把握していないと意図と逆の状態になってしまうという根本的な問題がありました。Google 日本語入力はとくに現在の IME 状態を外部から正しく取得できないため、この問題が起きやすい IME でした。awase は「IME を ON にする」「IME を OFF にする」という冪等（何度実行しても結果が変わらない）な操作で制御するため、状態がずれていても常に意図した結果になります。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">他のキーリマッパー（AutoHotKey 等）と併用できますか？</p>

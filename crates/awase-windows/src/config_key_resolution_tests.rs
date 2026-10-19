@@ -42,7 +42,7 @@ const DOC_KNOWN_FAILURES: &[&str] = &[
     "usage-ja-2|default_mismatch|keys.engine_off_solo_repeat",
     "usage-ja-12|default_mismatch|keys.engine_off_solo_repeat",
     "usage-en-2|default_mismatch|keys.engine_off_solo_repeat",
-    "usage-en-10|default_mismatch|keys.engine_off_solo_repeat",
+    "usage-en-12|default_mismatch|keys.engine_off_solo_repeat",
 ];
 
 /// 合成 config の「既知の失敗」。書式は `"<ファイル名>|<種別>|<詳細>"`(種別は上と同じ)。
@@ -88,6 +88,9 @@ const DOC_BASELINE: &[(&str, usize)] = &[
     ("usage-en-8", 0),
     ("usage-en-9", 0),
     ("usage-en-10", 0),
+    ("usage-en-11", 0),
+    ("usage-en-12", 0),
+    ("usage-en-13", 0),
 ];
 
 /// 合成 config のファイル名と、`validate()` の警告数の基準(増えてはいけない)。

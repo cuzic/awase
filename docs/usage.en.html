@@ -435,7 +435,7 @@ footer p{margin-bottom:0.3rem}
         <tr>
           <td><span class="cat cat-ime">IME</span></td>
           <td>Left <kbd>Shift</kbd> solo tap</td>
-          <td>Sustained "IME-ON half-width alphanumeric" toggle. Press and release without pressing any other key to switch on; tap again to release (currently supported by MS-IME only; GJI support is planned)</td>
+          <td>Sustained "IME-ON half-width alphanumeric" toggle. Press and release without pressing any other key to switch on; tap again to release (enabled by default for both MS-IME and Google Japanese Input; you can turn it off on the "Advanced Settings" tab)</td>
         </tr>
         <tr>
           <td><span class="cat cat-engine">Engine</span></td>
@@ -493,6 +493,7 @@ footer p{margin-bottom:0.3rem}
     <p class="note" style="margin-top:0.6rem">
       <strong>About the "IME-ON half-width alphanumeric" toggle:</strong>
       A solo tap of left <kbd>Shift</kbd> temporarily stops only the NICOLA engine while keeping the IME open, letting you type alphanumeric characters directly (because the IME itself does not close, this works differently from a password field). Tapping left <kbd>Shift</kbd> alone again returns to normal kana input. It is also released automatically by a solo tap of the right <kbd>Shift</kbd> or by a focus change.
+      If you move to another app's window while the toggle is on and then come back, awase returns the original window to kana input too, before the first key you type there (depending on the IME's key settings, it may instead leave the window in half-width alphanumeric mode and reset awase's own toggle state). Moving between windows within the same app is not covered.
     </p>
   </div>
 </section>
@@ -535,7 +536,7 @@ footer p{margin-bottom:0.3rem}
     <p class="section-lead">Open it by right-clicking the tray icon → "Settings...". After making changes, use the "Apply" button to save them and apply them immediately.</p>
 
     <div class="card">
-      <h3>Basic Settings tab</h3>
+      <h3>General Settings tab</h3>
       <table class="tab-table">
         <tr><th>Item</th><th>Description</th></tr>
         <tr><td>Keyboard model</td><td>Choose JIS (Japanese layout) or US (English layout)</td></tr>
@@ -543,11 +544,15 @@ footer p{margin-bottom:0.3rem}
         <tr><td>Auto-start</td><td>Whether to start automatically at Windows logon</td></tr>
         <tr><td>Layout</td><td>Selects the .yab layout file to use. "Rescan" refreshes the list</td></tr>
       </table>
-      <p class="note">The confirm mode (<code>confirm_mode</code>) and the speculative-output wait (<code>speculative_delay_ms</code>) have been removed from the settings screen. Most users kept the default <code>wait</code>, and offering other modes there added more complexity than benefit. The n-gram tie-break (3-key branching and insufficient-overlap decisions) is always active regardless of <code>confirm_mode</code>. To change it, edit <code>config.toml</code> directly as described under "Confirm-mode options" below. The margins for 3-key branching and insufficient-overlap decisions (<code>timing_margin_percent</code> / <code>min_overlap_margin_percent</code>) can be adjusted with the sliders on the "Advanced settings" tab.</p>
+      <p class="note">The confirm mode (<code>confirm_mode</code>) and the speculative-output wait (<code>speculative_delay_ms</code>) have been removed from the settings screen. Most users kept the default <code>wait</code>, and offering other modes there added more complexity than benefit. The n-gram tie-break (3-key branching and insufficient-overlap decisions) is always active regardless of <code>confirm_mode</code>. To change it, edit <code>config.toml</code> directly as described under "Confirm-mode options" below. The margins for 3-key branching and insufficient-overlap decisions (<code>timing_margin_percent</code> / <code>min_overlap_margin_percent</code>) can be adjusted with the sliders on the "Advanced Settings" tab.</p>
     </div>
 
     <div class="card">
-      <h3>Confirm-mode options</h3>
+      <h3>Confirm-mode options (set manually in <code>config.toml</code>)</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        This item is currently not in the settings screen. To change it, write <code>confirm_mode</code>
+        directly in the <code>[general]</code> section of <code>config.toml</code> (default: <code>wait</code>).
+      </p>
       <table class="tab-table">
         <tr><th>Mode</th><th>Behavior</th><th>Suited for</th></tr>
         <tr><td>wait (default, recommended)</td><td>Holds until the timeout before committing. Most accurate</td><td>People who want to type slowly and accurately</td></tr>
@@ -563,10 +568,8 @@ footer p{margin-bottom:0.3rem}
         <tr><td>Right thumb key</td><td>The key used for the right thumb-shift key (default: VK_CONVERT = Henkan)</td></tr>
         <tr><td>IME ON/OFF keys</td><td>The keys awase actively sends to turn the IME ON/OFF (idempotent). Multiple entries allowed</td></tr>
         <tr><td>IME ON/OFF toggle</td><td>Key that flips ON⇔OFF based on the IME state at the moment it's pressed. Default: empty (follows the IME's own settings). Multiple entries allowed</td></tr>
-        <tr><td>Thumb Shift ON key</td><td>The key that turns the NICOLA engine ON. Multiple entries allowed</td></tr>
-        <tr><td>Thumb Shift OFF key</td><td>The key that turns the NICOLA engine OFF. Multiple entries allowed</td></tr>
-        <tr><td>Thumb Shift-toggle hotkey</td><td>A global hotkey that toggles the engine ON/OFF</td></tr>
       </table>
+      <p class="note">The keys that switch between thumb-shift input and romaji input (formerly called the "Thumb Shift ON/OFF keys") have moved to the "Advanced Settings" tab. See "Advanced Settings tab" below for details.</p>
       <p class="note">If you use GJI (Google Japanese Input) and have Muhenkan set as a thumb key, awase.exe reads config1.db at startup and whenever GJI is detected, and automatically decides whether to send a dedicated Fn key (default candidate: F21) instead of the raw Muhenkan key on a Muhenkan solo tap ("dedicated Fn-key conversion", ADR-091 §D3.2). This is for advanced users who want to toggle the character type (hiragana/katakana etc.) via a Muhenkan solo tap, and who also want to avoid "mode drift" (awase's assumption about GJI's state diverging from GJI's actual state). If GJI's config1.db doesn't yet have the "kana type switch" binding for that Fn key, awase.exe offers to add it via a popup (with your consent, backed up). There's currently no manual control for this in the settings screen. To pin a specific Fn key, edit <code>config.toml</code> directly, as shown in "Manually configuring GJI dedicated Fn-key conversion" below.</p>
       <p class="note">The "IME &rarr; awase" direction (keys awase interprets as external IME state changes, e.g. Hankaku/Zenkaku) has been removed from the GUI. It defaults to empty and is rarely needed, and the other candidates (IME-ON/IME-OFF keys) aren't physical keys, so exposing them in the GUI wasn't worth the clutter. You can still configure it by editing <code>config.toml</code> directly, as shown in "Manually setting IME-detection keys" below — but don't assign it the same key as "IME ON/OFF toggle" above, or that key will be double-processed and stop working correctly.</p>
     </div>
@@ -595,8 +598,9 @@ footer p{margin-bottom:0.3rem}
     </div>
 
     <div class="card">
-      <h3>Per-App Settings tab</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">Override behavior per app using the combination of process name and window class name.</p>
+      <h3>Disabled Apps tab</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">While one of the listed apps has focus, awase is disabled entirely (it does no key conversion and no IME control; raw keys go straight to the app). Apps are specified by process name only; case and the presence or absence of <code>.exe</code> are ignored. Remote Desktop Connection (<code>mstsc.exe</code>) is listed by default. In the settings file this is <code>disable_apps</code> under <code>[app_overrides]</code>.</p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">The following settings, which override behavior per app using the combination of process name and window class name, are not in the settings screen. Set them by editing <code>[app_overrides]</code> in <code>config.toml</code> directly (see "Overriding behavior for specific windows" and "Per-app output-mode override" below).</p>
       <table class="tab-table">
         <tr><th>Setting type</th><th>Description</th><th>Example use</th></tr>
         <tr><td>Force as text input</td><td>Always enable NICOLA input regardless of the automatic classification</td><td>Apps that are mistakenly bypassed</td></tr>
@@ -609,15 +613,76 @@ footer p{margin-bottom:0.3rem}
 
     <div class="card">
       <h3>Advanced Settings tab</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">This tab collects settings you won't touch day to day.</p>
       <table class="tab-table">
         <tr><th>Item</th><th>Description</th></tr>
-        <tr><td>n-gram file</td><td>Path to the n-gram statistics data (.csv.gz or .toml). Used in ngram_predictive mode</td></tr>
+        <tr><td>Switch to thumb-shift input</td><td>Keys that switch to thumb-shift input (NICOLA conversion) (formerly the "Thumb Shift ON key"). Multiple entries allowed</td></tr>
+        <tr><td>Switch to romaji input</td><td>Keys that switch to romaji input (passed through without conversion) (formerly the "Thumb Shift OFF key"). Multiple entries allowed</td></tr>
+        <tr><td>Switch to romaji input on five solo taps</td><td>Switches to romaji input when the specified key is tapped alone five times in a row within 400 ms. An emergency escape for a stuck Ctrl and similar situations</td></tr>
+        <tr><td>Thumb-shift input / romaji input toggle</td><td>A global hotkey that toggles between thumb-shift input and romaji input (formerly the "Thumb Shift-toggle hotkey"; default: Ctrl+Shift+F12)</td></tr>
+        <tr><td>3-key branching margin</td><td>When three keys arrive as character → thumb → character, the boundary (%) between committing on timing alone and deciding with n-gram</td></tr>
+        <tr><td>Insufficient-overlap margin</td><td>The boundary (%) below which the physical overlap time of a character key and a thumb key counts as "insufficient overlap"</td></tr>
+        <tr><td>Disable IME input-method switching via Alt+Kana</td><td>Blocks MS-IME's shortcut that switches between romaji input and JIS kana direct input (default: ON. This is a safeguard, because once the IME switches to JIS kana direct input, awase cannot switch it back)</td></tr>
+        <tr><td>Enable the half-width alphanumeric toggle on a left Shift solo tap</td><td>A solo tap of left Shift switches to half-width alphanumeric input while keeping the IME ON (default: ON; enabled for both MS-IME and Google Japanese Input). In the settings file this is <code>half_width_alnum_toggle</code> under <code>[general]</code>, which accepts <code>"all"</code> (default; enabled for both), <code>"ms_ime_only"</code> (MS-IME only; this cannot be chosen in the settings screen and only takes effect when written in the settings file), or <code>"off"</code> (disabled)</td></tr>
+        <tr><td>Enable keystroke sequences</td><td>Interprets the keystroke-sequence syntax that assigns several key operations to one .yab cell (sending Ctrl+key, multiple actions separated by <code>+</code> within a cell, and <code>@</code> macro references) (default: ON). When OFF, the text of each cell is treated as plain characters (see "Multiple actions such as committing on punctuation (keystroke sequences)" below)</td></tr>
+        <tr><td>n-gram file</td><td>Path to the n-gram statistics data (.csv.gz or .toml). Always used for the simultaneous-keystroke tie-break, regardless of confirm_mode</td></tr>
         <tr><td>n-gram adjustment range</td><td>The range (ms) by which n-gram prediction adjusts the simultaneous-keystroke threshold</td></tr>
         <tr><td>n-gram min/max threshold</td><td>The lower and upper bounds (ms) of the threshold adjusted by n-gram prediction</td></tr>
         <tr><td>Focus debounce</td><td>The wait (ms) that prevents false detection during rapid Alt+Tab switching</td></tr>
         <tr><td>IME polling interval</td><td>The period (ms) for detecting changes such as when you operate the language bar with the mouse</td></tr>
         <tr><td>Layout directory</td><td>Path to the folder that holds the .yab files</td></tr>
+        <tr><td>Input-language estimation from keystrokes</td><td>Judges from your first few keystrokes, right after you switch windows or after a period of inactivity, whether you are typing with thumb shift. It is meant to keep the first characters from coming out wrong in windows whose IME state awase cannot read, where awase's assumption and the actual IME state can drift apart. Choose one of the following five "behaviors":
+          <ul>
+            <li>Disabled</li>
+            <li>Record only (default) — keystrokes are handled as before; the result of the judgement is only recorded in the journal (the diagnostic record included in bug reports). Key input behavior does not change</li>
+            <li>In windows whose IME state can't be read, switch to hiragana if Japanese</li>
+            <li>In all windows, switch to hiragana if Japanese</li>
+            <li>In all windows, switch to hiragana if Japanese and to half-width alphanumeric if alphanumeric (works only when the half-width alphanumeric toggle is enabled)</li>
+          </ul>
+          For the three "switch to hiragana" options, the settings screen itself warns that the feature "has not yet been verified on real machines." If you run into problems, switch back to "Record only." The numbers and target apps can be adjusted under the collapsible "Details (numbers and target apps)." In the settings file these are <code>mode</code> (<code>"off"</code>/<code>"observe"</code>/<code>"ime_on"</code>/<code>"ime_on_eisu"</code>, default <code>"observe"</code>) and <code>scope</code> (<code>"unobserved"</code>/<code>"all"</code>, default <code>"unobserved"</code>) under <code>[auto_detect]</code></td></tr>
       </table>
+      <p class="note">"Input-language estimation from keystrokes" records the result of its judgement in the journal even in the default "Record only" mode. The journal is sent when you attach logs to a bug report, so if that concerns you, set it to "Disabled" or check the pre-send preview.</p>
+    </div>
+
+    <div class="card">
+      <h3>Key Swap tab</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">Swaps the positions of the keys you choose. Because it rewrites the Windows registry (Scancode Map), it works regardless of keyboard type or app. On the keyboard diagram, drag the function of the key you want to swap and drop it on the destination key (or click the two keys in turn). Besides swapping two keys, you can also create a swap that rotates three or more keys in turn (for example A→B→C→A).</p>
+      <table class="tab-table">
+        <tr><th>Operation</th><th>What it does</th></tr>
+        <tr><td>Swap key positions</td><td>On the keyboard diagram, the upper row is the "key position (physical key)" and the buttons are the "function produced at that position." Swap them by dragging and dropping a function, or by clicking two keys in turn. JIS-only keys can only be used when the keyboard layout is JIS</td></tr>
+        <tr><td>Common swaps</td><td>Adds "Eisu / Caps ⇄ Left Ctrl" or "Henkan ⇄ Space" with one click</td></tr>
+        <tr><td>Also use Eisu / Caps as Ctrl</td><td>Lets the Eisu (CapsLock) key also work as Ctrl. The original left Ctrl key keeps working, but the Eisu key itself can no longer be used. This is a separate setting from "Swap key positions"</td></tr>
+        <tr><td>Apply swaps (restart required)</td><td>Writes to the registry. This is separate from the window-wide "Apply" and does not save the settings file</td></tr>
+        <tr><td>Clear all</td><td>To undo the swaps, press "Clear all" → "Apply swaps" → restart, in that order. To undo just one swap, press "Revert" under the key ("Clear (N keys)" for a rotation of three or more)</td></tr>
+      </table>
+      <p class="note">A thumb key that also serves as the IME ON/OFF key cannot be swapped. A confirmation is shown before applying in cases such as when another tool's settings would be lost. Applying shows one administrator-privilege (UAC) prompt, and a restart is needed for the change to take effect (signing out alone is not enough; with Fast Startup enabled, shutting down may not apply it either). This setting affects the whole PC (all users) and does not work inside a Remote Desktop session. Swaps set by other tools are listed read-only, and awase does not change them.</p>
+    </div>
+
+    <div class="card">
+      <h3>Shortcuts tab — Muhenkan/Henkan as Space only while the IME is OFF</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">On the "Shortcuts" tab (shortcut remapping), you can register rules that replace a key input with another key. If you set a rule's "IME state" to "when OFF," a solo press of the Muhenkan or Henkan key can be turned into another key only while the IME is OFF (when thumb shift is not active). Pressing the "Make Muhenkan/Henkan Space while the IME is OFF" button adds two rules that turn Muhenkan and Henkan into Space. While the IME is ON, they keep working as thumb-shift keys as before. This is an opt-in feature for those who want it, and nothing is registered by default.</p>
+      <div class="code-block">[[keymaps]]
+from = "VK_NONCONVERT"
+to = ["VK_SPACE"]
+ime = "off"
+
+[[keymaps]]
+from = "VK_CONVERT"
+to = ["VK_SPACE"]
+ime = "off"</div>
+      <p class="note" style="margin-top:0.7rem">The <code>from</code> of an <code>ime = "off"</code> rule can only be Muhenkan or Henkan without modifiers. Holding the key down does not repeat (one press sends it once). It does not work in the "half-width alphanumeric" state (the IME stays open, in alphanumeric mode). It does not work for a key when awase cannot read the IME's assignment (such as Microsoft IME's own key settings), or when Google Japanese Input's "Key settings" has a Direct Input row for Muhenkan/Henkan (such as inserting a space). When the IME is actually ON but awase thinks it is OFF, Muhenkan may become a Space (or, depending on the IME, a conversion or a full-width space).</p>
+    </div>
+
+    <div class="card">
+      <h3>IME Key Learning tab</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">For the IME you use, automatically goes through every supported key × state and measures how pressing each key changes the IME state. Run it if the IME-state display or the opening/closing of NICOLA input sometimes drifts from what you actually type.</p>
+      <table class="tab-table">
+        <tr><th>Operation</th><th>What it does</th></tr>
+        <tr><td>Start learning</td><td>Starts the measurement. While it runs, keep the learning window in front and don't touch the keyboard (switching to another window or pressing a physical key aborts the measurement as a failure). Progress and an estimate of the remaining time are shown</td></tr>
+        <tr><td>Cancel</td><td>Stops the measurement partway</td></tr>
+        <tr><td>Use the learned results / Run a light re-verification</td><td>Shown depending on the state of the learned results</td></tr>
+      </table>
+      <p class="note">The learned results are saved in <code>keymap-learn-table.json</code>. They are not deleted by the tray's "Clear IME-control learning cache."</p>
     </div>
   </div>
 </section>
@@ -662,11 +727,16 @@ engine_off_solo_triple = "VK_NONCONVERT"</div>
 # Simultaneous-keystroke detection threshold (milliseconds). The NICOLA standard default is 100 ms.
 simultaneous_threshold_ms = 100
 
-# Confirm-mode selection
+# Confirm-mode selection (default: wait. Not in the settings screen; edit config.toml by hand)
 #   wait              - hold until the timeout (most accurate, default, recommended)
 #   ngram_predictive  - dynamically switch speculative/wait with n-gram prediction
 #   (the old speculative / two_phase / adaptive_timing were removed; if left in place awase warns and treats them as wait)
-confirm_mode = "wait"</div>
+confirm_mode = "wait"
+
+# Margins (%) for 3-key branching and insufficient-overlap decisions. Adjustable from the
+# "Advanced Settings" tab of the settings screen (default: 30 / 0).
+# timing_margin_percent = 30
+# min_overlap_margin_percent = 0</div>
     </div>
 
     <div class="card">
@@ -700,8 +770,19 @@ auto_start = "enabled"</div>
     </div>
 
     <div class="card">
+      <h3>Update-check settings</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">When you right-click the tray icon, awase checks for the latest version and shows it in the menu if a newer one is available (you can also switch this with the "Check for updates" checkbox in the settings screen). No version, OS, or device-specific information is sent. Use the setting below if you want to turn it off, or if you deploy this file directly in an unattended rollout.</p>
+      <div class="code-block" data-example="usage-en-7" data-mode="asis">[general]
+# Check for the latest version when the tray icon is right-clicked
+#   true  - check (default)
+#   false - no network communication at all
+update_check = true</div>
+      <p class="note">This is a per-user setting stored in the same place as <code>config.toml</code> (the install directory); there is no mechanism to apply it to the whole machine at once. If you want to disable it across an organization, place the file in each user's profile, or block access to <code>report.awase.cc</code> on the network side (blocking it does not affect how awase works).</p>
+    </div>
+
+    <div class="card">
       <h3>Overriding behavior for specific windows</h3>
-      <div class="code-block" data-example="usage-en-7" data-mode="asis">[app_overrides]
+      <div class="code-block" data-example="usage-en-8" data-mode="asis">[app_overrides]
 # Force text input in specific apps
 force_text = [
     { process = "myapp.exe", class = "MyWindowClass" },
@@ -716,7 +797,7 @@ force_bypass = [
 
     <div class="card">
       <h3>Per-app output-mode override</h3>
-      <div class="code-block" data-example="usage-en-8" data-mode="asis">[app_overrides]
+      <div class="code-block" data-example="usage-en-9" data-mode="asis">[app_overrides]
 # Send as VK keystrokes (Chrome / Edge / VS Code and other Electron-based apps)
 force_vk = [
     { process = "chrome.exe",  class = "Chrome_RenderWidgetHostHWND" },
@@ -732,7 +813,7 @@ force_tsf = [
     <div class="card">
       <h3>Manually setting IME-detection keys</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">Detects external IME state changes (e.g. the Hankaku/Zenkaku key). Not in the GUI — edit <code>config.toml</code> directly (most people don't need it). <code>toggle</code>, <code>on</code> and <code>off</code> all default to empty (the IME-On/IME-Off keys are followed automatically). Keys set in the "IME ON/OFF toggle" setting on the Keys tab (<code>keys.ime_toggle</code>, default: empty) are handled actively by awase — assigning the same key here too would double-process it and break it.</p>
-      <div class="code-block" data-example="usage-en-9" data-mode="uncomment">[keys.ime_detect]
+      <div class="code-block" data-example="usage-en-10" data-mode="uncomment">[keys.ime_detect]
 # Key that toggles the IME ON/OFF (default: empty. Don't set this to the
 # same key as "IME ON/OFF toggle" above — that causes double-processing)
 # toggle = ["VK_KANJI"]
@@ -742,6 +823,24 @@ force_tsf = [
 
 # Key that turns the IME directly OFF (default: empty)
 # off = ["VK_DBE_SBCSCHAR"]</div>
+    </div>
+
+    <div class="card">
+      <h3>Multiple actions such as committing on punctuation (keystroke sequences)</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">This feature lets one key perform several actions together, such as "output a character and then send a commit operation" (equivalent to Yamabuki's <code>CV4D</code>). It is enabled (On) by default. You can switch it with "Enable keystroke sequences" on the "Advanced Settings" tab of the settings screen.</p>
+      <div class="code-block" data-example="usage-en-13" data-mode="asis">[general]
+# Enable keystroke sequences
+#   "on"  - enabled (default. Interprets + separators, CV4D, and @macro references in .yab cells)
+#   "off" - disabled (interprets the text of each cell as plain characters)
+keystroke_sequence = "on"</div>
+      <p class="note" style="margin-top:0.7rem">When enabled, you can line up several actions within one <code>.yab</code> cell by separating them with <code>+</code>. <code>CV4D</code> is the notation for Ctrl+M (a key often used to commit a conversion candidate).</p>
+      <div class="code-block">[ローマ字シフト無し]
+'．'+CV4D,ka,ta,...</div>
+      <p class="note">The example above defines, in a single cell, the action "output 。 and then commit with Ctrl+M." If you want to reuse the same action on several keys, you can give it a name with <code>[[keystroke_macro]]</code> and refer to it as <code>@name</code>.</p>
+      <div class="code-block" data-example="usage-en-11" data-mode="asis">[[keystroke_macro]]
+name = "kakko"
+steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]</div>
+      <p class="note">Existing <code>.yab</code> files do not break when this is enabled (cells that do not contain <code>+</code> are interpreted as before). However, cells written in Yamabuki style without a separator (for example <code>．CV4D</code>) need to be rewritten with a <code>+</code> inserted (<code>．+CV4D</code>).</p>
     </div>
   </div>
 </section>
@@ -792,7 +891,7 @@ force_tsf = [
         A last resort for forcing the NICOLA engine to stop when even the normal shortcuts do not work — for example, when the Ctrl key is stuck.
         It is <strong>enabled by default</strong> (already assigned to the Muhenkan key).
       </p>
-      <div class="code-block" data-example="usage-en-10" data-mode="asis" data-default="keys">[keys]
+      <div class="code-block" data-example="usage-en-12" data-mode="asis" data-default="keys">[keys]
 # Key that turns the engine OFF when tapped alone three times within 400 ms (default: Muhenkan)
 engine_off_solo_triple = "VK_NONCONVERT"
 
@@ -818,7 +917,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <h3>How to switch</h3>
       <ul>
         <li><strong>Right-click the tray icon → Select layout</strong> — The easiest method. Switches immediately</li>
-        <li><strong>Settings window "Basic Settings" tab</strong> — Choose from the layout dropdown → "Apply"</li>
+        <li><strong>Settings window "General Settings" tab</strong> — Choose from the layout dropdown → "Apply"</li>
         <li><strong>Edit config.toml</strong> — Change the default with <code>default_layout = "nicola.yab"</code></li>
       </ul>
     </div>
@@ -827,7 +926,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <h3>Adding a custom layout</h3>
       <ol style="padding-left:1.4em;color:var(--text-secondary)">
         <li style="margin-bottom:0.4rem">Place a new <code>.yab</code> file in the folder specified by <code>layouts_dir</code> in <code>config.toml</code> (the default is <code>config/</code>)</li>
-        <li style="margin-bottom:0.4rem">Press the "Rescan" button on the "Basic Settings" tab of the Settings window</li>
+        <li style="margin-bottom:0.4rem">Press the "Rescan" button on the "General Settings" tab of the Settings window</li>
         <li>The new layout appears in the dropdown; select it and press "Apply"</li>
       </ol>
       <p class="note" style="margin-top:0.8rem">For details on the .yab format, see the README on <a href="https://github.com/cuzic/awase">GitHub</a>.</p>
@@ -869,7 +968,17 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <ol>
         <li>Right-click the tray icon and select <strong>"Report a bug..."</strong></li>
         <li>Choose a symptom category and, if useful, type a description</li>
-        <li>Logs (journal + awase.log), an internal state snapshot, the config file (config.toml), and the layout file (.yab) are each attached by a separate checkbox (all are checked by default; uncheck any you don't want to send)</li>
+        <li>You can choose what to attach with individual checkboxes. By default, everything except "List of running process names" is attached.
+          <ul>
+            <li>Logs (journal + awase.log)</li>
+            <li>Internal state snapshot</li>
+            <li>Config file (config.toml)</li>
+            <li>Layout file (.yab)</li>
+            <li>Conversion-decision statistics (cumulative counters only, such as the number of 3-key simultaneous-keystroke decisions; no keystroke content is included)</li>
+            <li>IME keymap settings (the IME ON/OFF assignments to Muhenkan/Henkan and similar keys. Includes the IME-related rows of Google Japanese Input's custom keymap and the key-effect learning results — only IME states × key numbers; no keystroke content is included)</li>
+            <li>List of running process names (off by default. Executable names only; folder paths are not included)</li>
+          </ul>
+        </li>
         <li>The pre-send preview shows exactly what will be sent (as JSON), and you can edit it. If you're worried it might contain personal information, edit or remove it here before sending</li>
         <li>Clicking "Send" submits it to a private intake endpoint for the developer (<code>report.awase.cc</code>). It is never posted anywhere public like a GitHub Issue</li>
       </ol>
@@ -881,6 +990,8 @@ engine_off_solo_triple = "VK_NONCONVERT"
         <li>Submissions are stored in private storage and automatically deleted after roughly 90 days</li>
         <li>The journal log includes your recent keystroke events (virtual key codes, etc.) verbatim. Nothing is masked, so if you were typing something sensitive, edit or remove that part in the pre-send preview before sending</li>
         <li>The submission does not include your source IP address (a hashed form is used only briefly for abuse-prevention rate limiting)</li>
+        <li>When "Check for updates" is enabled, awase asks the awase.cc server for the latest version when you right-click the tray icon. No version, OS, or device-specific information is sent (the connecting IP address is recorded in Cloudflare's standard access logs)</li>
+        <li>The update-check setting is stored in each user's <code>config.toml</code>. There is no machine-wide opt-out mechanism</li>
       </ul>
     </div>
   </div>
@@ -926,8 +1037,9 @@ engine_off_solo_triple = "VK_NONCONVERT"
     </div>
 
     <div class="card">
-      <h3>2. Adjust the confirm mode</h3>
+      <h3>2. Adjust the confirm mode (set manually in <code>config.toml</code>)</h3>
       <ul>
+        <li>It is not in the settings screen, so edit the <code>[general]</code> section of <code>config.toml</code> directly</li>
         <li>First try the default <code>confirm_mode = "wait"</code> (recommended; accurate but somewhat slower)</li>
         <li>If the delay bothers you, try <code>"ngram_predictive"</code></li>
       </ul>
@@ -963,6 +1075,126 @@ engine_off_solo_triple = "VK_NONCONVERT"
         <li>Explicitly turn the IME ON with <kbd>Ctrl</kbd>+<kbd>Henkan</kbd></li>
         <li>If that still does not resolve it, right-click the tray icon → toggle with "Enable/disable toggle"</li>
       </ul>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section id="faq">
+  <div class="container">
+    <h2 class="section-title">Frequently asked questions (FAQ)</h2>
+    <p class="section-lead">Questions we have received from users, with answers.</p>
+
+    <div class="card">
+      <h3>Which IMEs are supported?</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        Microsoft IME and Google Japanese Input are supported.
+      </p>
+      <p class="note">
+        Mozc (the official build and mozc-readable) is treated as the same family as Google Japanese Input (automatic reading of key settings is available for Google Japanese Input only).
+        Because mozc-readable reports the IME's open/closed state and input mode to awase using values the IME itself publishes, it is expected to be able to fix, at the root, the problem of "awase's assumption drifting from the actual IME state."
+        It is still an experimental feature, and we are continuing to verify it on real machines.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Characters come out garbled in a consistent pattern, such as "と" becoming "から"</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        Most likely the IME's input method is set to "kana input" instead of "romaji input."
+        For example, if "と" (<code>to</code> in romaji) is read as key positions on the JIS kana layout, it becomes "から",
+        and "か" (<code>ka</code>) becomes "のち" — this symptom appears when the romaji you type is output as-is
+        as characters on the JIS kana layout.
+      </p>
+      <p class="note">
+        awase assumes romaji input. Check the IME's settings and switch the input method
+        back to "romaji input." awase has no way to move the IME into JIS kana input,
+        so it cannot detect and fix this state automatically.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>I can only pick conversion candidates with the Space key (the thumb keys don't move to the next candidate)</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        By default, solo taps of the thumb keys (Henkan / Muhenkan) are always ignored to prevent IME misbehavior
+        (both "Always ignore a solo tap of the Henkan key" and "Always ignore a solo tap of the Muhenkan key"
+        on the "Key Settings" tab of the settings screen are enabled by default).
+      </p>
+      <p class="note">
+        If you want to use thumb-key solo taps to step through conversion candidates, uncheck the option for the key you actually
+        use as a thumb key ("Always ignore a solo tap of the Muhenkan key" if your left thumb key is Muhenkan, and
+        "Always ignore a solo tap of the Henkan key" if your right thumb key is Henkan).
+      </p>
+      <p class="note">
+        For a solo tap you have unchecked, if the IME assigns that key to IME on/off/toggle
+        (including when you wrote it in <code>keys.ime_on</code>/<code>ime_off</code>), awase does not pass the raw key to the OS;
+        instead it sends IME on/off <strong>just once</strong> according to the current state.
+        While the option is checked (the default), awase never moves the IME on a solo tap.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Pressing an IME on/off key leaves the IME and NICOLA states out of sync</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        When you press an IME key such as Ctrl+Henkan, Ctrl+Muhenkan, Hankaku/Zenkaku, Kana, or Kanji, awase makes sure — whatever its internal state —
+        that the actual IME state matches the meaning of the key within <strong>one</strong> press for absolute keys (IME on, IME off)
+        and within <strong>two</strong> presses for toggle keys (a guarantee meant to eliminate the "nothing changes no matter how many times I press it" situation).
+        The state can still drift temporarily, for example when another program operates the IME, but pressing the key again fixes it.
+      </p>
+      <p class="note">
+        Known exception: with MS-IME itself + real Chrome, the IME off that awase sends may not take effect (even right after restarting awase).
+        To turn the IME off in this combination, use a key that reaches MS-IME directly, such as the Eisu key.
+        This guarantee is not yet supported for Windows Terminal + Google Japanese Input, or for apps that relay input to another machine, such as Remote Desktop.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>The Muhenkan key misfires in the middle of a word (the kana type switches unintentionally, etc.)</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        Another key you meant to press simultaneously may, depending on timing, be detected as a solo tap
+        of the Muhenkan key. If you have unchecked the option in the item above, that solo tap is
+        sent straight to the OS / IME and causes an unintended mode switch.
+      </p>
+      <p class="note">
+        Checking "Always ignore a solo tap of the Muhenkan key" (enabled by default) stops solo taps from
+        being sent at all and prevents the misfire. Note, however, that with this setting enabled, the
+        "step through candidates with the thumb keys" behavior in the item above is not available — the two cannot be used together.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Simultaneous keystrokes are too strict, and some characters (such as "れ") are hard to type</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        Try raising the "Simultaneous-keystroke threshold" (default 100 ms) on the General Settings tab a little. Adjusting it
+        to somewhere around 150–250 ms to match your typing speed may help. If you edit <code>config.toml</code>
+        directly, change <code>simultaneous_threshold_ms</code>.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>In Chrome / Edge / Brave and similar, a different character such as "あ" flashes and disappears when typing the first character</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        This is normal. As a cold-start countermeasure, the "throwaway-keystroke feature" briefly sends a dummy character
+        to check whether the IME is ready to accept input. For details, see "If input does not work well in Chrome / Edge"
+        under "Initial setup steps." In some apps, such as text editors, the warm state is kept,
+        so this may not happen at all.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>I want to know which key symbols such as ： and ＠ are assigned to</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        The "NICOLA standard layout diagram" near the top of this page shows the assignment of every key. If you want your own
+        arrangement, you can change it in the "Layout Editor" tab of the settings screen or by editing the <code>.yab</code> file directly.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Things go wrong when used together with other thumb-shift software or resident IME tools</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        Avoid using awase together with resident software that, like awase, hooks keyboard input — such as Japanist or Yamabuki R.
+        The conflict can make input unstable. If you are switching to awase,
+        uninstall your existing thumb-shift software first.
+      </p>
     </div>
   </div>
 </section>
