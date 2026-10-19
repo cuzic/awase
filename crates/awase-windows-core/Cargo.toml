@@ -1,6 +1,6 @@
 [package]
 name = "awase-windows-core"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 description = "awase-windows の OS 非依存な核(IME 状態の判断・型・表)。windows crate に依存しない(ADR-229 D4)"
 publish = false
