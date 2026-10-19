@@ -68,6 +68,12 @@ pub const EISU_CANDIDATE_LIFETIME_MS: u64 = 1_500;
 #[measured_macro::measured(pending = true)]
 pub const OBSERVATION_FRESH_WINDOW_MS: u64 = 3_000;
 
+/// 共有メモリの専用の読みのタイマー（`TIMER_MOZC_SHM`、ADR-268 D5）の間隔 (ms)。refresh の tick の通常のポーリング
+/// （`ime_poll_interval_ms` の既定 500ms）と同じ値にそろえた。実測は未取得（専用タイマーの間隔の分布を、実機の
+/// `[mozc-shm] read gap` のログと journal から測って見直す）ので pending。
+#[measured_macro::measured(pending = true)]
+pub const MOZC_SHM_TIMER_MS: u64 = 500;
+
 /// mozc-readable の共有メモリの観測（`ObservationSource::MozcShm`）の有効期間 (ms)（ADR-268 D1）。
 ///
 /// `ObservationStore::record_any` が `expires_at = at + この値` を付ける。報告が止まった（TIP が外れた・別窓・読めなくなった）

@@ -8785,7 +8785,8 @@ fn indicator_menu_shadow_is_observe_only_and_opt_in() {
 ///   `ObserverReported`・`ObservationSource` など）を直接は使わない。belief への入口は
 ///   `platform_state.ime.report_mozc_shm(` の 1 つだけ（判断・記録・追随は `ImeStateHub` 側。ADR-268 D1・D3）。
 /// - ランタイム側が `platform_state` に触れるのは、belief の読み取り 2 つ（`effective_open()`・`input_mode()`、診断の記録に
-///   添えるだけ）、記録（`journal.record(`）、belief への入口（`report_mozc_shm(`）の 4 箇所だけ。
+///   添えるだけ）、記録（`journal.record(`）、belief への入口（`report_mozc_shm(`）、専用タイマーの無効アプリの判定
+///   （`focus.app_disabled`、ADR-268 D5）の 5 箇所だけ。
 /// - 診断の記録の有効化は `[diagnostics] mozc_shm_shadow` を起動時に 1 度だけ渡す（既定は無効のオプトイン）。
 ///   belief への接続はこのフラグと無関係に常に動く（ADR-268 D1、自動判定）。
 /// - `ir_execute` の呼び出しは `app_disabled` の打ち切りの後（無効アプリにフォーカス中は読まない）。
@@ -8828,12 +8829,13 @@ fn mozc_shm_reader_touches_belief_only_through_report_mozc_shm() {
         }
     }
 
-    // ランタイム側の platform_state への接触は、belief の読み取り 2 つ・記録・belief への入口の 4 つだけ。
+    // ランタイム側の platform_state への接触は、belief の読み取り 2 つ・記録・belief への入口・無効アプリの判定の 5 つだけ。
     assert_eq!(
         runtime.matches("platform_state").count(),
-        4,
-        "mozc_shm_shadow.rs が platform_state に触れるのは effective_open()・input_mode()（読み取り）、journal.record(（記録）、report_mozc_shm(（belief への入口）の 4 箇所だけ"
+        5,
+        "mozc_shm_shadow.rs が platform_state に触れるのは effective_open()・input_mode()（読み取り）、journal.record(（記録）、report_mozc_shm(（belief への入口）、focus.app_disabled（専用タイマーの無効アプリの判定、ADR-268 D5）の 5 箇所だけ"
     );
+    assert!(runtime.contains("platform_state.focus.app_disabled"));
     assert!(runtime.contains("platform_state.ime.effective_open()"));
     assert!(runtime.contains("platform_state.ime.input_mode()"));
     assert!(runtime.contains(

@@ -7,8 +7,10 @@ summary: |-
   drift correction の根拠からは除外する(除外しないと IME を開け直し続ける)。applied は、共有メモリと食い違ったら Unknown に降格するだけで、Confirmed への書き込みは
   効果を journal で示せてから別に足す。実機実験とOpusレビュー2ラウンドで設計を改めた。E1(外からの変更が共有メモリに出るか)の不一致は未解決。
 status: |-
-  実装済み(2026-10-18)。D1〜D4 は develop にマージ済み(核 #678、配線 #679、降格と journal #682。CI は通過、実機は #679 まで確認)。
-  未確認: TTL の実測(`pending`)、E1 の不一致(未解決 1)、#682(降格・journal の重複除去)の実機での動作、Edge などの TSF ネイティブの窓・物理キー・実際の NICOLA の打鍵。
+  実装済み・D5 まで実機で検証済み(2026-10-18)。D1〜D5 は develop にマージ済み(核 #678、配線 #679、降格と journal #682、専用タイマー D5 #687。CI は通過)。
+  実機の検証で、(1) TTL=1000ms は不足(tick の間隔の実測、1000ms 超が 8.8%、値は未変更で、専用タイマーの間隔の実測後に決める)、
+  (2) 明示意図が残っている間は外から閉じられても追随しなかった(有効な 5 周中 0 周)が、D5 で解決した(有効な 6 周中 6 周が 0.02〜0.36 秒で追随)ことが分かった。
+  未確認: E1 の不一致(未解決 1)、TTL の最終値、Edge などの TSF ネイティブの窓・実際のツールバー操作・物理キーでの追随、#682(降格・journal の重複除去)の実機での動作。
 related_adr:
   - "ADR-265"
   - "ADR-267"
@@ -83,7 +85,7 @@ related_adr:
 
 ## 未解決・実装前の確認
 1. **E1(外からの変更が共有メモリに出るか)の不一致**。公開されない外部変更があると、High の共有メモリが、正しい ObserverPoll(Medium)を上書きして、belief が古いまま固定される(mozc-readable を入れていない場合より悪くなりうる)。降格は `applied` の安全側なので影響しないが、belief の High にはこの危険が残る。IMM で読める窓で、High の共有メモリが新しい IMM の直接読みと食い違ったときの扱い(共有メモリを採らない、など)を、実装前に決める。
-2. TTL の値(500ms + prefetch の 300ms + ジッターの実測)。~~journal の頻度の方式~~ → 解決(#682: 同じ報告は journal に書かない)。
+2. TTL の値: 実測した(2026-10-18、下の「実機での検証と訂正」)。1000ms は不足(refresh の tick の間隔で 1000ms 超が 55/625 件)。1500ms で 1000〜1500ms の範囲(11 件)は覆える。1500ms 超 44 件(tick が止まる間隔)は D5 で解決。**TTL の最終値は、D5 の専用タイマーの間隔の実測後に決める**(`[mozc-shm] read gap` のログを通常使用でためる)。まだ 1000ms のまま。~~journal の頻度の方式~~ → 解決(#682: 同じ報告は journal に書かない)。
 3. ~~`demote_applied` を、追随なしで単独に呼べるか。~~ → 解決(#682: `ImeEvent::AppliedDemoted` を足した。新しい variant は要らない、という当初の想定は外れた)。
 4. 「新しい窓の最初のキーは効かない」(先に a+Enter を 1 回打つと IME キーが効く)の因果と BUG-200 との関係(別の調査)。
 5. 共有メモリの version の上限(ADR-265 D3 の「version の扱い」、ADR-267 の v3 との関係)。
@@ -93,6 +95,28 @@ related_adr:
 - **#682 で追加(develop にマージ、CI 通過、実機未確認)**: `tsf_open != effective_open` のときの降格(`ImeEvent::AppliedDemoted { cause: AppliedDemoteCause }`、reducer は `applied` だけを書く。`ModeKeyPassedThrough` は常に `last_intent` を捨てるので流用できなかった。dispatch 元は `demote_applied_for_mozc_shm_split` の 1 箇所。`architecture_guard` の `.applied = ` の件数 9→10)、同じ共有メモリの報告の journal の重複除去(reduce はするが journal には書かない。`event_seq` に欠番ができる)。
 - **未実装**: なし(D1〜D4)。Confirmed(将来の拡張、§D4)は、効果を journal で示せてから別に足す。
 - **挙動の変化(マージ済み)**: mozc-readable の窓で、belief が共有メモリ(High)に従い、外から変えられると追随する。共有メモリが読めない窓は従来どおり。診断の記録(`[diagnostics] mozc_shm_shadow`)は従来どおりオプトイン。
+
+## 実機での検証と訂正(2026-10-18)
+詳細・数字は [adr265-belief-experiments-result.md](../tasks/adr265-belief-experiments-result.md) の追補。実機 dragonflyg4、1 台。
+
+### TTL の実測(tick の間隔)
+- 方法: 計測専用のブランチ(`measure/ttl-tick-gap`、マージしない)で、`mozc_shm_on_tick` の呼び出しごとに前回との間隔(ms)を awase.log に 1 行出した。通常の使い方(GJI、**mozc-readable は使っていない**)で約 22 分(UTC 22:25:59〜22:47:52)、625 件。
+- 結果: p50 **515ms**、p90 937ms、p95 2688ms、p99 27.6 秒、最大 **525 秒**。500〜599ms が 449 件(72%)。1000ms 超 **55 件**(8.8%)、うち 1000〜1500ms は 11 件(最大 1297ms)、1500ms 超 44 件、3 秒超 30 件。
+- **TTL=1000ms(500 + 300 + 200 の導出)は不足**: tick が動いている間でも 1000〜1500ms の間隔が出る(prefetch の待ち 300ms に、タイマーの張り直しとメインスレッドの遅れが重なると見られる。原因の突き合わせはしていない)。1500ms なら、この範囲は覆える。
+- 1500ms 超の間隔は、TTL では覆えない。コードの読みでは `reschedule_ime_refresh`(`runtime/mod.rs`)が、効果的に TSF ネイティブな窓と、`explicit_intent` があるときに tick のタイマーを張り直さない(再開はフォーカス変更・IME キーのとき)。ログとの突き合わせは未実施。
+- 限界: mozc-readable を使っていない状態の、tick の分布。長い間隔の頻度は利用者の使い方(明示意図・TSF ネイティブの窓)に依存し、mozc-readable を使ったときに同じとは限らない。
+
+### 明示意図が残っているとき、外からの変更に追随するか(D3 の穴)
+- 方法: awase を `AWASE_TEST_INJECTION=1` で起動し、マーカー付きの注入キー(物理キー扱い)で漢字キーを 2 回送って明示意図を作り(ログ: `[shadow-toggle] ... step="IntentPromoted" kind="PhysicalImeKey"`、belief は `decided_by ExplicitIntent`)、6 秒待ってから、外から IMM で閉じる。awase.log の `follow external change` と `effective-open-flip` を見る。自前の窓(`ui_host_exp.py`)、Mozc Readable だけ。ドライバー `tools/adr265_stage2/drive_belief_exp.py e5`。
+- 結果: **フォーカスが保たれ、外からの閉が実際に効いた有効な 5 周のすべてで、6 秒間、追随しなかった**(belief は `ExplicitIntent` の「開」のまま、IME は閉)。最初の測定(8 周)でも、きれいに測れた 1 周は同じ。フォーカスが他の窓へ移った周は、明示意図が消えるので結論に使わない(14 周中 9 周が該当)。
+- **訂正**: 前の「実機で D3 が動いた」(外から 50 回開閉して 51 件追随、drift 0)は、**明示意図が無い状態**の確認で、BUG-200 に近い場面(awase か利用者が開けたあと、ツールバーなどで閉じられる)を含んでいなかった。この場面では、D3 は働いていない。
+
+### D5(実装済み・実機で検証済み、PR #687): 共有メモリの読みを refresh の tick から切り離す
+- 内容: フォーカスの窓に共有メモリのブロックがあるとき(`NotFound` の記憶がない窓だけ。判断は純粋関数 `wants_timer`)、専用の一発タイマー `TIMER_MOZC_SHM`(113、約 `MOZC_SHM_TIMER_MS` = 500ms、実測は未取得で pending)で、読み・報告・追随・降格(`mozc_shm_read_once`)を回す。無効アプリでは回さない。refresh の tick(他の stage)は触らない。
+- 理由: refresh の tick は、`explicit_intent` があるとき・効果的に TSF ネイティブなときに、他の stage(ObserverPoll の観測、drift など)を走らせないために止めている。共有メモリの読みだけを切り離せば、その設計に触れずに、追随が動く。
+- ガード: `architecture_guard` の `mozc_shm_reader_touches_belief_only_through_report_mozc_shm` の `platform_state` の接触を 4→5 箇所(`focus.app_disabled`)。
+- 診断: 読みの間隔が TTL を超えたら `[mozc-shm] read gap Nms exceeds the observation TTL` を info で記録する(TTL の見直しの材料。窓の切り替えをまたぐ間隔も含みうる)。
+- **実機の検証(2026-10-18、dragonflyg4、自前の窓、Mozc Readable だけ、awase は `AWASE_TEST_INJECTION=1`)**: 明示意図が残る状態(物理扱いの漢字キー 2 回で `IntentPromoted`)で、外から IMM で閉じる。フォーカスが保たれ、外からの閉が効いた有効な周で、D5 の前は 0/5、**D5 のあとは 6/6 が 0.02〜0.36 秒(中央値 約 0.32 秒)で追随**(`DeriveHigh(MozcShm)`)。drift correction の発火 0 件。ほかの周は、フォーカスが他の窓へ移った等で結論に使わない。
 
 ## 段階
 1. 実装(D1〜D4)。テスト: drift の除外、TTL の全読み手への効果、R3' の 2 つの項、追随の 3 手、降格、ガードの更新。回帰は `fix-requires-evidence` の「IME belief」「force-write / actuation」のファミリー。tuning 定数は実測値を本文に。

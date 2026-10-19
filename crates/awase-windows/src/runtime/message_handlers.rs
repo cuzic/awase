@@ -544,6 +544,11 @@ pub(crate) unsafe fn handle_wm_timer(
             app.platform.timer.kill(crate::TIMER_RESUME_HOLD);
             app.resume_hold_on_timer();
         }
+        Some(id) if id == crate::TIMER_MOZC_SHM => {
+            // 一発タイマー（ADR-268 D5）。冒頭で自ら kill する。張り直しは `mozc_shm_on_timer` が決める。
+            app.platform.timer.kill(crate::TIMER_MOZC_SHM);
+            app.mozc_shm_on_timer();
+        }
         Some(id) if id == crate::TIMER_LANG_HOLD => {
             // 一発タイマー（ADR-263 PR 2b）。冒頭で自ら kill する。
             app.platform.timer.kill(crate::TIMER_LANG_HOLD);

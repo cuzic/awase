@@ -274,7 +274,7 @@
 | [265](265-mozc-readable-integration.md) | mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定) | 提案。段階 1(observe のみ)は実装済み(PR #644)。段階 2 の基準は実機と CI で満たしたが、未測定の項目あり・belief への接続は利用者の判断待ち。段階 0 は未着手 |
 | [266](266-initial-input-mode-claims-observed.md) | belief の入力モードの初期値 ObservedRomaji が「観測済み」と名乗る問題(BUG-204)。実害の記録が出るまで挙動は変えず、機序と選択肢を記録する | 起草(2026-10-18)。実装なし。Opus レビュー round 1 を反映して書き直し。決定は保留(所有者判断 Q1) |
 | [267](267-mozc-readable-composition-state.md) | mozc-readable の共有メモリに組成の段階・候補の種類・キー通番・入力欄のモード指定を足す(version 3) | 提案(Opus round4 で収束)。実装は未着手 |
-| [268](268-mozc-shm-belief-connection.md) | mozc-readable の共有メモリを belief に High で接続し、食い違う applied を降格する | 実装済み(#678・#679・#682、CI 通過。実機は #679 まで確認)。未確認: TTL の実測、E1 の不一致、#682 の実機での動作 |
+| [268](268-mozc-shm-belief-connection.md) | mozc-readable の共有メモリを belief に High で接続し、食い違う applied を降格する | 実装済み・D5 まで実機で検証済み(#678・#679・#682・#687、CI 通過)。未確認: TTL の最終値、E1 の不一致、TSF ネイティブの窓・物理キーでの追随 |
 | [269](269-mozc-literal-detection-evidence.md) | Mozc 系では GJI の I/O を literal 判定の証拠にしない(BUG-207) | 実装中(2026-10-18)。段階 1 は PR #686、段階 2 以降は観測が先 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
