@@ -246,10 +246,11 @@ impl TsfWarmupCoordinator {
         *slot = Some(machine);
     }
 
-    /// 段が終わる直前に、後続の確認の FSM を `pending_tsf` に張る（ADR-270）。**段の記録（`StageRecord`）には触れない**
-    /// （`install_pending_tsf` は `begin_stage()` で記録を初期化する。段末の `take_stage_record` が、終わる段の記録〈注入した・
-    /// 宛先〉ではなく、張ったばかりの確認の段の空の記録を取り出してしまう）。後続の FSM が張られている間、後続のキーは
-    /// `has_pending_tsf()` で保留される。
+    /// 段が終わる直前に、後続の確認の FSM を `pending_tsf` に張る（ADR-270）。
+    ///
+    /// **段の記録（`StageRecord`）には触れない**。`install_pending_tsf` は `begin_stage()` で記録を初期化するので、
+    /// 段末の `take_stage_record` が、終わる段の記録（注入した・宛先）ではなく、張ったばかりの確認の段の空の記録を取り出して
+    /// しまう。後続の FSM が張られている間、後続のキーは `has_pending_tsf()` で保留される。
     pub(crate) fn install_followup_tsf(&self, machine: Box<dyn TickableFsm>) {
         let mut slot = self.pending_tsf.borrow_mut();
         debug_assert!(
@@ -478,7 +479,8 @@ mod tests {
         }
     }
 
-    /// ADR-270 のレビュー C1: 段末に後続の確認の FSM を張るとき、終わる段の記録（注入した・宛先）を壊さない。
+    /// ADR-270 のレビュー C1: 段末に後続の確認の FSM を張るとき、終わる段の記録を壊さない。
+    ///
     /// `install_pending_tsf` は `begin_stage()` で記録を初期化するので、段末に使うと、`take_stage_record` が空の記録を
     /// 取り出し、BUG-194 の宛先照合が効かず、成功した段が `WarmupAborted` で伝わる。
     #[test]

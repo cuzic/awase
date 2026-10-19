@@ -84,9 +84,10 @@ pub const MOZC_SHM_TIMER_MS: u64 = 500;
 #[measured_macro::measured(pending = true)]
 pub const MOZC_COMPOSE_CHECK_MS: u64 = 300;
 
-/// Mozc の確認でリテラルと判断する直前に、対象のスレッドが応答するかを待つ時間 (ms)（ADR-270）。応答しない（IME の同期呼び出しで
-/// 止まっている・ハング）なら、キーがまだ処理されていない可能性があるので、Backspace を送らない。実測は未取得（実機の
-/// `[mozc-compose] ... target thread not responding` のログの件数で見直す）ので pending。
+/// Mozc の確認で、リテラルと判断する直前に、対象のスレッドの応答を待つ時間 (ms)（ADR-270）。
+///
+/// 応答しない（IME の同期呼び出しで止まっている・ハング）なら、キーがまだ処理されていない可能性があるので、Backspace を
+/// 送らない。実測は未取得（実機の `[mozc-compose] ... target thread not responding` のログの件数で見直す）ので pending。
 #[measured_macro::measured(pending = true)]
 pub const MOZC_COMPOSE_RESPONSE_CHECK_MS: u64 = 20;
 

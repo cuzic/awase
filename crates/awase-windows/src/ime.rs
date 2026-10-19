@@ -1,13 +1,11 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetConversionStatus, ImmGetOpenStatus, IME_COMPOSITION_STRING,
     IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, INPUT};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_NULL,
-};
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::focus::class_names::is_tsf_native_window;
 use crate::imm::{
@@ -947,33 +945,22 @@ pub unsafe fn get_focused_hwnd() -> HWND {
         .unwrap_or_else(|| unsafe { GetForegroundWindow() })
 }
 
-/// ウィンドウのスレッドが、メッセージ（`WM_NULL`）に `timeout_ms` ミリ秒以内に応答するか（ADR-270）。
+/// ウィンドウのスレッドが、IME の読み取りに `timeout_ms` ミリ秒以内に応答するか（ADR-270）。
 ///
-/// IME への同期の呼び出し（Mozc サーバーの応答待ちなど）でスレッドが止まっていると応答しない。応答しないなら `false`
-/// （ハングしているか、止まっている。止まっている間に届いたキーはまだ処理されていないので、Backspace を送ってはいけない）。
+/// 既存の読み取り（`get_ime_conversion_mode_for_hwnd`。`imm.rs` の唯一の `SendMessageTimeoutW` を通る）をワーカースレッドで
+/// 実行し、`run_with_timeout` で待つ。IME への同期の呼び出し（Mozc サーバーの応答待ちなど）でスレッドが止まっていると
+/// 応答しない（ハングしているか、止まっている）。IME のウィンドウが無い窓も `false`（確かめられないので、消さない側）。
 ///
-/// `SendMessageTimeoutW` はワーカースレッドで実行し、`run_with_timeout` で待つ（メインスレッドから直接送ると、待っている間に
-/// 届く別スレッドからの送信メッセージで `with_app` に再入しうる。BUG-90）。`SMTO_ABORTIFHUNG` は、既にハング判定済みの
-/// スレッドには即座に失敗を返す。
+/// 応答しないとき、止まっている間に届いたキーはまだ処理されていないので、Backspace を送ってはいけない。メインスレッドから
+/// 直接送ると、待っている間に届く別スレッドからの送信メッセージで `with_app` に再入しうる（BUG-90）ので、ワーカーで実行する。
 #[must_use]
 pub fn window_thread_responds(hwnd_addr: usize, timeout_ms: u32) -> bool {
     let wait = std::time::Duration::from_millis(u64::from(timeout_ms) + 10);
     crate::win32::run_with_timeout(wait, move || {
-        let mut result = 0usize;
-        // SAFETY: `hwnd_addr` は `GetGUIThreadInfo` が返したウィンドウのアドレス（無効になっていても `SendMessageTimeoutW` は
-        //         失敗を返すだけ）。`result` はスタック上の有効な `usize`。`SMTO_ABORTIFHUNG` でハング済みのスレッドを待たない。
-        let ok = unsafe {
-            SendMessageTimeoutW(
-                HWND(hwnd_addr as *mut _),
-                WM_NULL,
-                WPARAM(0),
-                LPARAM(0),
-                SMTO_ABORTIFHUNG,
-                timeout_ms,
-                Some(&raw mut result),
-            )
-        };
-        ok.0 != 0
+        // SAFETY: `hwnd_addr` は `GetGUIThreadInfo` が返したウィンドウのアドレス（無効になっていても `get_ime_wnd` が `None` を
+        //         返すか、`probe_ime_control` が失敗を返すだけ）。`probe_ime_control` は `SMTO_ABORTIFHUNG` の読み取りで、
+        //         actuation のフェンスを進めない（読み取り）。
+        unsafe { get_ime_conversion_mode_for_hwnd(HWND(hwnd_addr as *mut _), timeout_ms).is_some() }
     })
     .unwrap_or(false)
 }
