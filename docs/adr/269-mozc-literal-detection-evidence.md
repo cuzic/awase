@@ -61,6 +61,11 @@ related_adr:
 - **C. 共有メモリ(ADR-267 version 3 の `phase`)**: IME 自身の値。反映の遅れは F2 から約 230ms(CI、tsf)、edit で `DeriveHigh(MozcShm)` が一瞬 false にし、共有メモリが 1ms 後に `open=true` を報告したが belief が戻ったのは約 50ms 後だった例があり、per-VK の deadline(約 300ms)と同じ桁。遅れの分布を先に測る。awase は version 2 までしか受け入れない(ADR-265 D3)。
 - **D. 判定しない**: D1 がこの扱い。
 
+### D1a. アクティブな TIP の問い合わせは新しい STA スレッドで行う(CI で判明、段階 1 の前提)
+`gji-io-monitor` スレッドはメッセージループを持たない。そこで起動時に作った `ITfInputProcessorProfileMgr` の `GetActiveProfile` は、起動後にセッション内で入力方式を切り替えても古い値を返し続けた(CI: 起動時は Google 版 GJI、`typing_stress --switch-mozc-ms` が 7 秒後に Mozc へ切り替えても 15 秒以上 `initial IME kind: ... (Gji)` のまま、`detaching` も出ない。run 39181228739)。2 秒ごとのポーリングを短命の新しい STA スレッドで行う(`tip_detector::query_active_kind_on_fresh_thread`、取れなければ従来の問い合わせにフォールバック)。**この変更は Mozc に限らず、全 IME のアクティブな TIP の判定経路に及ぶ**(デバウンスは従来どおり)。
+
+**実測(run 39182258683、`ts-tsf-mozc-switch-{8000,20000}ms`、起動時は実 GJI、`ime=mozc-gji-real`):** 切り替えの約 1.4〜1.8 秒後に `converter target → NoEvidence` と `detaching` が 1 回ずつ出る(4/4)。8000ms は修正前・一度目の修正 INVALID ×4 → PASS ×2(疑い 0)。20000ms は PASS(疑い 1 は切り替え前の GJI の打鍵〈未確認〉)。監視を外す経路・`gji_*` を 0 に戻す処理・即時の切り替えが CI で動いた。
+
 ## 既知の限界(D1 の後も残る)
 
 - TIP 切替後、旧ターゲットを見続ける窓がある。Google 版 GJI → Mozc(外す向き)は 1 回の観測で即時に外すので、最大約 2 秒(ポーリング周期)。Mozc → GJI(付ける向き)は 2 連続の観測が要るので最大約 4 秒(その間は証拠が無いだけで、誤判定は増えない)。GJI → Mozc の約 2 秒の間は BUG-207 の症状が出うる。「アプリごとに入力方式を切り替える」設定では前面アプリの TIP と一致しないことがある。
@@ -68,6 +73,12 @@ related_adr:
 - 前面アプリの TIP と、別スレッドの `GetActiveProfile` が示す TIP が一致しないことがある(「アプリごとに入力方式を切り替える」設定)。直らない。候補: 前面プロセスの共有メモリ(ADR-265 の version 2 の `active`)が Mozc の稼働を示していたら `NoEvidence` にする(今回は実装しない)。
 - `tsf_ctx`(COM 初期化)が取れないと target が `Gji` のまま固定され、GJI と Mozc が両方ある環境では BUG-207 が残る。
 - `converter_target(true, MsImeNative)` は起こり得ない組み合わせで `Gji` を返す(黙って)。`GJI_CLSID`(`OnceLock`)を起動時に取りこぼすと、Google 版が `(GoogleJapaneseInput, Other)` → `None` になり、GJI だけの環境で判定が無効になる(family と clsid は同じ列挙と同じ照合なので可能性は低い)。
+
+## 段階 2 の前提: Mozc で本物のリテラルは再現するか(CI、run 39182258683)
+
+`ts-{,raw-}{tsf,chromepage}-mozc-{cold,idle}-20ms`(cold=準備確認を省いた最初の入力、idle=各試行の前に 5 秒待つ。awase なしの対照と、安全網なしの awase ありの両方。入力先は tsf と実 Chrome のページ): **32/32 PASS**(リテラル・消失・入れ替わり・誤判定 0)。Mozc で本物のリテラルは、この範囲では再現しなかった。
+
+**限界**: idle は 5 秒で、GJI のリテラルが出る長い idle(数十秒)より短い。陽性対照(リテラルを出せることが分かっている構成)でハーネスの検出力を確かめていない。CI の Chrome は専用デスクトップで、実機とは経路が違う。そのため `ts-{,raw-}{tsf,chromepage}-mozc-longidle-20ms`(idle 30 秒)を追加した。リテラルが再現しないなら D1(判定しない)の根拠が増え、再現するなら段階 2(Mozc 用の証拠)に進む。
 
 ## 実測・検証の順序
 

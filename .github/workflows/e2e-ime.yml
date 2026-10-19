@@ -755,6 +755,12 @@ jobs:
               for raw in ('', 'raw-')
               for form in ('tsf', 'chromepage')
               for kind, flag, tr in (('cold', '--cold', 1), ('idle', '--idle=5000', 3))],
+            # 上の cold/idle(5秒)で Mozc にリテラルは出なかった(run 39182258683、32/32 PASS)。GJI のリテラルは数十秒の長い idle で出ることが多い
+            # (BUG-002 など)ので、idle を 30 秒にして同じ実験を繰り返す。
+            *[cfg(f'ts-{raw}{form}-mozc-longidle-20ms', 'observe', check='typing', ime='mozc', awase='false' if raw else 'true', runs=2, wait=1500, until='2026-11-10',
+                  stress=f'--form={form} --interval=20 --kinds=single,mixed --trials=3 --len=15 --settle-read --layout=@REPO@/layout/nicola_keytop.yab --mozc ' + (('--mode=raw --no-awase ' if raw else '') + '--idle=30000'))
+              for raw in ('', 'raw-')
+              for form in ('tsf', 'chromepage')],
             # --- 打鍵の揺らぎ比較(tsj-、examples/typing_stress/jitter.rs): 固定間隔(base)と、間隔・親指ずれ・文字先押しに分布を持たせた版(jit)を同じ入力先・IME・seed で比べる。
             # jit の分布の形は仮置き(範囲だけ docs/adr/182 の実機実測に合わせる: 親指↔文字の押下間隔 2〜93ms、文字先押しの割合 30%)。--jit-iv=0.5 は間隔の倍率の対数標準偏差。
             # 既定の only 空では回さない(下の除外に tsj- を足してある)。only='tsj-*' で回す。観測のみ、until までに「揺らぎで loss/reorder/literal が増えるか」を決める。
