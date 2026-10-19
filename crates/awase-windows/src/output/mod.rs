@@ -111,6 +111,10 @@ pub struct Output {
     raw_literal_focus_hwnd: std::cell::Cell<Option<isize>>,
     /// 観測専用: 予約あり flush で `focus_hwnd_changed` を求めた結果。outcome に載せて取り出す。
     raw_focus_hwnd_changed: std::cell::Cell<Option<bool>>,
+    /// ADR-270: Mozc の最初の送信の後に張る「入力中の文字ができたかの確認」の予約。`dispatch_probe_actions` が段の終わりに
+    /// 立て、`step_probe` が段末の deferred 解放より前に取り出して `MozcComposeCheckFsm` を張る。
+    mozc_compose_request:
+        std::cell::RefCell<Option<crate::tsf::warmup::mozc_compose_check_fsm::MozcComposeTarget>>,
     /// MS-IME confirm-then-transmit ゲート（BUG-13）の give-up latch。
     ///
     /// `start_ms_ime_ready_poll` が「期限まで IMC が一度も確認できなかった」ときに立てる。
@@ -296,6 +300,7 @@ impl Output {
             raw_literal_origin: std::cell::Cell::new(None),
             raw_literal_focus_hwnd: std::cell::Cell::new(None),
             raw_focus_hwnd_changed: std::cell::Cell::new(None),
+            mozc_compose_request: std::cell::RefCell::new(None),
             ms_ime_gate_give_up: std::cell::Cell::new(false),
             confirm_gate_deadline_override_ms: std::cell::Cell::new(0),
             resume_restore_floor: std::cell::Cell::new(None),
@@ -1095,10 +1100,20 @@ impl Output {
                 let learned_tsf = end.reason == crate::tsf::gji_fsm::StageEndReason::UpgradedToTsf;
                 drop(machine);
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
+                // ADR-270: 段末の deferred 解放（`finish_probe_stage`）より前に、Mozc の確認を張る。張った後は
+                // `pending_tsf` があるので、後続のキーは保留されたまま、確認の終わりで解放される。
+                let compose_check_installed = self.install_mozc_compose_check_if_requested();
                 let gji_response = self.finish_probe_stage(end);
                 StepProbeResult {
-                    timer_cmd: TimerCommand::Kill {
-                        id: crate::TIMER_TSF_PROBE,
+                    timer_cmd: if compose_check_installed {
+                        TimerCommand::Continue {
+                            id: crate::TIMER_TSF_PROBE,
+                            delay: Duration::from_millis(10),
+                        }
+                    } else {
+                        TimerCommand::Kill {
+                            id: crate::TIMER_TSF_PROBE,
+                        }
                     },
                     gji_response,
                     needs_gji_composition_reset,
@@ -1108,6 +1123,29 @@ impl Output {
                 }
             }
         }
+    }
+
+    /// ADR-270: 予約があれば、Mozc の「入力中の文字ができたかの確認」を `pending_tsf` に張る。張ったら `true`。
+    ///
+    /// 予約は常にここで取り出す（張らなかった段の予約が、後の別の段に持ち越されない）。
+    fn install_mozc_compose_check_if_requested(&self) -> bool {
+        let Some(target) = self.mozc_compose_request.borrow_mut().take() else {
+            return false;
+        };
+        tracing::debug!(
+            "[mozc-compose] cold={} checking composition after sending {:?} (thread={} deadline={}ms)",
+            target.cold_seq.value(),
+            target.romaji,
+            target.thread_id,
+            crate::tuning::MOZC_COMPOSE_CHECK_MS
+        );
+        self.install_pending_tsf(Box::new(
+            crate::tsf::warmup::mozc_compose_check_fsm::MozcComposeCheckFsm::new(
+                target,
+                crate::tuning::MOZC_COMPOSE_CHECK_MS,
+            ),
+        ));
+        true
     }
 
     /// deferred VK の解放権が raw literal 回収 / GJI reinit retry 側にあるか（INV-F）。
@@ -1221,6 +1259,8 @@ impl Output {
     ///
     /// 呼び出し元は続けて `TIMER_TSF_PROBE` を kill すること（タイマー操作は platform の責務）。
     pub(crate) fn cancel_probe(&self) {
+        // ADR-270: 張る前の確認の予約も捨てる（宛先が変わった・エンジン停止）。
+        self.mozc_compose_request.borrow_mut().take();
         self.warmup_coord.clear_pending_tsf();
         self.gji_end_probe_guard();
         let _ = self.warmup_coord.take_probe_id();

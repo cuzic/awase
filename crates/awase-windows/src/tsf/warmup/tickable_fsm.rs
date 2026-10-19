@@ -2,7 +2,7 @@
 //!
 //! 10ms タイマー (`TIMER_TSF_PROBE`) から `tick()` が呼ばれるパターンを型として表現する。
 //!
-//! ## 実装一覧（本番実装 7 種 + テスト用 StubMachine）
+//! ## 実装一覧（本番実装 8 種 + テスト用 StubMachine）
 //!
 //! | 実装型 | ファイル | 用途 | 追加でオーバーライドするメソッド |
 //! |--------|---------|------|-----------------|
@@ -12,6 +12,7 @@
 //! | `LiteralDetectFsm` | `literal_detect_fsm.rs` | warm パスの post-transmit composition 確認（`LiteralDetectCore` ラッパー） | なし（Core のみ） |
 //! | `UnicodeColdWarmupFsm` | `unicode_cold_warmup_fsm.rs` | Unicode long-cold の deferred chars 送信（手書き FSM） | `push_deferred_unicode_chars` |
 //! | `ChromeProbe` | `chrome_probe.rs` | Chrome cold-start GJI readiness probe（内部 `TsfProbeCoro` ラッパー） | `apply_transmit_done`, `apply_vk_sent`（いずれも内部 `TsfProbeCoro` へ委譲） |
+//! | `MozcComposeCheckFsm` | `mozc_compose_check_fsm.rs` | Mozc の最初の送信の後、共有メモリの `phase` で入力中の文字ができたかを確認し、できなければリテラルとして回収（ADR-270） | なし（Core のみ） |
 //! | `UnicodeLiteralObserverFsm` | `unicode_literal_observer.rs` | Unicode 送信後の GJI write 観測（事後 Tsf 昇格） | なし |
 //!
 //! `Core`（`tick` / `cold_seq_hint`）は全実装型が実装する。上表は core 以外に

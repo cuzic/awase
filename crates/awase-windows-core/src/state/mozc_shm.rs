@@ -15,6 +15,10 @@ use crate::journal::MozcShmRecord;
 /// 共有メモリのブロックの大きさ（バイト）。
 pub const BLOCK_SIZE: usize = 48;
 
+/// version 3 以降のブロックの大きさ（ADR-267 D1）。先頭 48 バイトは version 2 と同じ意味で、belief への接続は常に先頭
+/// 48 バイトだけを読む（ADR-265 D3）。**入力中の文字の確認（ADR-270）だけが** 80 バイトを読む。
+pub const V3_BLOCK_SIZE: usize = 80;
+
 /// `magic`（メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`）。
 pub const MAGIC: u32 = 0x5A52_444D;
 
@@ -121,6 +125,53 @@ impl CompositionMode {
             Self::HalfAscii => "half-ascii",
             Self::FullAscii => "full-ascii",
             Self::HalfKatakana => "half-katakana",
+        }
+    }
+}
+
+/// version 3 の追記分（オフセット 48〜79、ADR-267 D1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompositionFields {
+    /// 0=組成なし、1=組成中（読みを入力中）、2=変換中
+    pub phase: u32,
+    /// 候補の窓の種類（0=なし、1=SUGGESTION、2=PREDICTION、3=CONVERSION）
+    pub candidate_category: u32,
+    /// 未確定文字列の UTF-16 の長さ
+    pub preedit_utf16_len: u32,
+    /// 未確定文字列内のカーソル位置（UTF-32 のコードポイント）
+    pub preedit_cursor: u32,
+    /// TIP が見たキーダウンの通番
+    pub key_seq: u32,
+    /// 入力スコープが 1 つのモードに決まるときの「モード + 1」（0=指定なし）
+    pub scope_forced_mode: u32,
+    /// この TIP が Mozc サーバーから応答を受け取れているなら 1
+    pub server_ready: u32,
+    /// 組成の項目の元になった出力を生んだ打鍵の `key_seq`
+    pub composition_key_seq: u32,
+}
+
+fn u32_at_v3(bytes: &[u8; V3_BLOCK_SIZE], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+impl CompositionFields {
+    /// 80 バイトの追記分（オフセット 48〜79）を解釈する（検証はしない）。
+    #[must_use]
+    pub fn parse(bytes: &[u8; V3_BLOCK_SIZE]) -> Self {
+        Self {
+            phase: u32_at_v3(bytes, 48),
+            candidate_category: u32_at_v3(bytes, 52),
+            preedit_utf16_len: u32_at_v3(bytes, 56),
+            preedit_cursor: u32_at_v3(bytes, 60),
+            key_seq: u32_at_v3(bytes, 64),
+            scope_forced_mode: u32_at_v3(bytes, 68),
+            server_ready: u32_at_v3(bytes, 72),
+            composition_key_seq: u32_at_v3(bytes, 76),
         }
     }
 }
@@ -458,6 +509,118 @@ pub fn app_container_section_path(session_id: u32, sid: &str, thread_id: u32) ->
 #[must_use]
 pub fn local_mapping_name(thread_id: u32) -> String {
     format!("Local\\mozc-readable-ime-{thread_id}")
+}
+
+// ── ADR-270: 入力中の文字の確認（純粋な判断。Win32 を呼ばない）──────────────────────────────
+
+/// 入力中の文字の確認の入力: ある時点の共有メモリの読み。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposeReading {
+    /// 読めない（ブロックが無い・壊れている・別プロセス・version 2 など）
+    Unreadable,
+    /// 読めた
+    Block(ComposeBlock),
+}
+
+/// 確認に使う項目だけを取り出したもの（80 バイトのブロックから）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComposeBlock {
+    /// TIP がそのスレッドで有効か（`active == 1`）
+    pub active: bool,
+    /// Mozc のセッションから見た IME の開閉
+    pub effective_open: bool,
+    /// Mozc のセッションから見た入力モード（`CompositionMode` の値）
+    pub effective_mode: u32,
+    /// 入力の段階（0=組成なし）
+    pub phase: u32,
+    /// 入力スコープによるモードの指定（0=なし）
+    pub scope_forced_mode: u32,
+    /// Mozc サーバーから応答を受け取れているか
+    pub server_ready: bool,
+}
+
+/// 入力中の文字ができるはずの入力モード（ひらがな・全角カタカナ・半角カタカナ）。半角英数・全角英数・直接入力は
+/// 組成を作らないので、できないのが正しい（確認しない）。
+const COMPOSING_MODES: [u32; 3] = [1, 2, 5];
+
+/// 確認の対象にするか（送信の**直前**の読みと、送るローマ字から）。
+///
+/// すべてが成り立つときだけ真: 読める、TIP が有効、IME が開いている、入力中の文字を作るモード、まだ入力中の文字が
+/// 無い（`phase == 0`。あるなら、この打鍵がリテラルかを組成の有無では言えない）、入力スコープが指定していない
+/// （パスワード欄など）、送るのが英小文字だけのローマ字（記号・数字・操作キーは、組成を作らない場合がある）。
+#[must_use]
+pub fn should_check_compose(pre: ComposeReading, romaji: &str) -> bool {
+    let ComposeReading::Block(b) = pre else {
+        return false;
+    };
+    b.active
+        && b.effective_open
+        && COMPOSING_MODES.contains(&b.effective_mode)
+        && b.phase == 0
+        && b.scope_forced_mode == 0
+        && !romaji.is_empty()
+        && romaji.chars().all(|c| c.is_ascii_lowercase())
+}
+
+/// 確認をやめる理由（消さない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposeSkip {
+    /// 読めなくなった（窓が変わった・TIP が切り替わった）
+    Unreadable,
+    /// TIP が無効になった、または IME が閉じた（キーがアプリに届いたのか、IME が受けたのかを言えない）
+    ImeNotActive,
+    /// Mozc サーバーが応答できていない。キーが握りつぶされた（文書に出ていない）可能性があり、Backspace で
+    /// 直前の文字を消すおそれがあるので、リテラルと断定しない
+    ServerNotReady,
+}
+
+/// 確認の結論。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposeVerdict {
+    /// まだ分からない（次の tick で読む）
+    Pending,
+    /// 入力中の文字ができた（正常）
+    Confirmed,
+    /// 期限までに入力中の文字ができなかった。サーバーが応答できる状態なので、キーは Mozc に食われず、アプリへ
+    /// リテラルで届いたと判断する
+    Literal,
+    /// 判断しない
+    Skip(ComposeSkip),
+}
+
+/// 送信から `elapsed_ms` たった時点の読みから、結論を出す。
+///
+/// 入力中の文字ができたら（`phase >= 1`）即座に `Confirmed`。できないまま `deadline_ms` に達したら、サーバーが応答できる
+/// 状態（`server_ready`）のときだけ `Literal`。読めない・TIP が無効・IME が閉じたときは `Skip`（確認をやめる）。
+///
+/// 既知の限界: 1 つのローマ字の途中（`ke` の `k` がリテラルで、`e` が組成を作る）の部分的なリテラルは、組成ができているので
+/// 検出できない。全体がリテラルになった場合（実機の `wo`・`ke`）だけを拾う。
+#[must_use]
+pub fn judge_compose(elapsed_ms: u64, deadline_ms: u64, reading: ComposeReading) -> ComposeVerdict {
+    let ComposeReading::Block(b) = reading else {
+        return ComposeVerdict::Skip(ComposeSkip::Unreadable);
+    };
+    if !b.active || !b.effective_open {
+        return ComposeVerdict::Skip(ComposeSkip::ImeNotActive);
+    }
+    if b.phase >= 1 {
+        return ComposeVerdict::Confirmed;
+    }
+    if elapsed_ms < deadline_ms {
+        return ComposeVerdict::Pending;
+    }
+    if b.server_ready {
+        ComposeVerdict::Literal
+    } else {
+        ComposeVerdict::Skip(ComposeSkip::ServerNotReady)
+    }
+}
+
+/// リテラルと判断したときに消す文字数。確認の対象は最初の 1 回の送信だけで、その間は後続のキーを保留する
+/// （数える必要が無い）ので、送ったローマ字の文字数に等しい（`wo` なら 2）。
+#[must_use]
+pub fn compose_literal_backs(romaji: &str) -> usize {
+    romaji.chars().count()
 }
 
 #[cfg(test)]
@@ -865,5 +1028,166 @@ mod tests {
         assert!(wants_timer(&Outcome::Failed(ReadFailure::Unresolved("x"))));
         assert!(wants_timer(&Outcome::Rejected(Rejection::Inactive)));
         assert!(wants_timer(&Outcome::Accepted(shm(true, true))));
+    }
+
+    // ── ADR-270: 入力中の文字の確認 ────────────────────────────────────────────────
+
+    fn compose_block(f: impl FnOnce(&mut ComposeBlock)) -> ComposeReading {
+        let mut b = ComposeBlock {
+            active: true,
+            effective_open: true,
+            effective_mode: 1,
+            phase: 0,
+            scope_forced_mode: 0,
+            server_ready: true,
+        };
+        f(&mut b);
+        ComposeReading::Block(b)
+    }
+
+    #[test]
+    fn composition_fields_parse_reads_every_v3_field_little_endian() {
+        let mut bytes = [0u8; V3_BLOCK_SIZE];
+        for (i, v) in [1u32, 3, 14, 7, 1000, 2, 1, 999].iter().enumerate() {
+            bytes[48 + i * 4..52 + i * 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let f = CompositionFields::parse(&bytes);
+        assert_eq!(
+            f,
+            CompositionFields {
+                phase: 1,
+                candidate_category: 3,
+                preedit_utf16_len: 14,
+                preedit_cursor: 7,
+                key_seq: 1000,
+                scope_forced_mode: 2,
+                server_ready: 1,
+                composition_key_seq: 999,
+            }
+        );
+    }
+
+    #[test]
+    fn should_check_only_when_composition_is_expected_and_empty() {
+        assert!(should_check_compose(compose_block(|_| {}), "wo"));
+        // 読めない
+        assert!(!should_check_compose(ComposeReading::Unreadable, "wo"));
+        // TIP が無効・IME が閉じている
+        assert!(!should_check_compose(
+            compose_block(|b| b.active = false),
+            "wo"
+        ));
+        assert!(!should_check_compose(
+            compose_block(|b| b.effective_open = false),
+            "wo"
+        ));
+        // 組成を作らないモード（半角英数・全角英数・直接入力）では、できないのが正しい
+        for mode in [0, 3, 4] {
+            assert!(
+                !should_check_compose(compose_block(|b| b.effective_mode = mode), "wo"),
+                "mode={mode}"
+            );
+        }
+        // 組成を作るモード（ひらがな・全角カタカナ・半角カタカナ）
+        for mode in [1, 2, 5] {
+            assert!(
+                should_check_compose(compose_block(|b| b.effective_mode = mode), "wo"),
+                "mode={mode}"
+            );
+        }
+        // すでに入力中の文字がある
+        assert!(!should_check_compose(compose_block(|b| b.phase = 1), "wo"));
+        // 入力欄がモードを指定している（パスワード欄など）
+        assert!(!should_check_compose(
+            compose_block(|b| b.scope_forced_mode = 1),
+            "wo"
+        ));
+        // 英小文字だけのローマ字だけ（記号・数字・空・大文字は対象外）
+        for romaji in ["", "-", ",", "[", "1", "Wo", "w o", "ltu!"] {
+            assert!(
+                !should_check_compose(compose_block(|_| {}), romaji),
+                "romaji={romaji:?}"
+            );
+        }
+        assert!(should_check_compose(compose_block(|_| {}), "ltu"));
+    }
+
+    #[test]
+    fn judge_compose_confirms_as_soon_as_composition_exists() {
+        assert_eq!(
+            judge_compose(0, 300, compose_block(|b| b.phase = 1)),
+            ComposeVerdict::Confirmed
+        );
+        assert_eq!(
+            judge_compose(299, 300, compose_block(|b| b.phase = 2)),
+            ComposeVerdict::Confirmed
+        );
+        // 期限を過ぎていても、組成があれば正常
+        assert_eq!(
+            judge_compose(5_000, 300, compose_block(|b| b.phase = 1)),
+            ComposeVerdict::Confirmed
+        );
+    }
+
+    #[test]
+    fn judge_compose_waits_until_the_deadline_then_calls_literal() {
+        assert_eq!(
+            judge_compose(0, 300, compose_block(|_| {})),
+            ComposeVerdict::Pending
+        );
+        assert_eq!(
+            judge_compose(299, 300, compose_block(|_| {})),
+            ComposeVerdict::Pending
+        );
+        assert_eq!(
+            judge_compose(300, 300, compose_block(|_| {})),
+            ComposeVerdict::Literal
+        );
+        assert_eq!(
+            judge_compose(301, 300, compose_block(|_| {})),
+            ComposeVerdict::Literal
+        );
+    }
+
+    #[test]
+    fn judge_compose_never_calls_literal_when_the_server_is_not_ready() {
+        // サーバーが応答できないときは、キーが握りつぶされた（文書に出ていない）可能性がある。Backspace で消さない。
+        assert_eq!(
+            judge_compose(300, 300, compose_block(|b| b.server_ready = false)),
+            ComposeVerdict::Skip(ComposeSkip::ServerNotReady)
+        );
+        assert_eq!(
+            judge_compose(10_000, 300, compose_block(|b| b.server_ready = false)),
+            ComposeVerdict::Skip(ComposeSkip::ServerNotReady)
+        );
+        // 期限前は待つだけ
+        assert_eq!(
+            judge_compose(10, 300, compose_block(|b| b.server_ready = false)),
+            ComposeVerdict::Pending
+        );
+    }
+
+    #[test]
+    fn judge_compose_skips_when_unreadable_or_ime_not_active() {
+        assert_eq!(
+            judge_compose(0, 300, ComposeReading::Unreadable),
+            ComposeVerdict::Skip(ComposeSkip::Unreadable)
+        );
+        assert_eq!(
+            judge_compose(400, 300, compose_block(|b| b.active = false)),
+            ComposeVerdict::Skip(ComposeSkip::ImeNotActive)
+        );
+        assert_eq!(
+            judge_compose(400, 300, compose_block(|b| b.effective_open = false)),
+            ComposeVerdict::Skip(ComposeSkip::ImeNotActive)
+        );
+    }
+
+    #[test]
+    fn compose_literal_backs_is_the_romaji_length() {
+        assert_eq!(compose_literal_backs("wo"), 2);
+        assert_eq!(compose_literal_backs("ke"), 2);
+        assert_eq!(compose_literal_backs("ltu"), 3);
+        assert_eq!(compose_literal_backs("a"), 1);
     }
 }

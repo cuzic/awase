@@ -219,3 +219,4 @@
 | FEATURE-115: 打鍵列機能（ADR-115）実装状況・既知の限界 | [FEATURE-115.md](FEATURE-115.md) |
 | [BUG-207](BUG-207.md) | 修正を PR にした(2026-10-18、CI 待ち)。実機の確認は未実施 | Mozc Readable で入力すると、awase が raw-tsf-literal と誤判定して入力した文字をバックスペースで消す(I/O の監視が GoogleIMEJaConverter に固定され、Mozc 系の mozc_server を見ていない) |
 | [BUG-208](BUG-208.md) | 修正を PR にした(2026-10-19)。実機の確認は未実施 | Mozc Readable で、ひらがなにはなるのに変換候補にならない(GJI 用の PendingGjiConfirm と eager unicode が Mozc で永久に続き、かなが直接送られる) |
+| [BUG-209](BUG-209.md) | 修正を PR にした(2026-10-19)。実機は未確認 | Mozc Readable で、cold の最初のローマ字がリテラルになる(「をもと」→「wo もと」。BUG-208 の修正が露出させた) |

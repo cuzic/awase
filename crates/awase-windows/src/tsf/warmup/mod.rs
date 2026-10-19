@@ -20,6 +20,7 @@
 //!   TickableFsm ラッパー状態: tick/apply_transmit_done/apply_vk_sent/prime）
 //! - [`ms_ime_ready_coro`]      — MsImeReadyCoro（MS-IME IMC 確認待ち, StepCoro, BUG-13）
 //! - [`literal_detect_fsm`]     — LiteralDetectCore/Fsm（literal 検出 単一所在地）
+//! - [`mozc_compose_check_fsm`] — MozcComposeCheckFsm（Mozc の最初の送信の後、入力中の文字ができたかを共有メモリで確認。ADR-270）
 //! - [`unicode_cold_warmup_fsm`]— UnicodeColdWarmupFsm（Unicode long-cold deferred）
 //! - [`unicode_literal_observer`]— UnicodeLiteralObserverFsm（GJI write 観測 → Tsf 昇格）
 //! - [`chrome_probe`]           — ChromeProbe（Chrome cold-start GJI readiness）
@@ -33,6 +34,7 @@ pub(crate) mod chrome_probe;
 pub(crate) mod cold_warmup;
 pub(crate) mod gji_warmup_coro;
 pub(crate) mod literal_detect_fsm;
+pub(crate) mod mozc_compose_check_fsm;
 pub(crate) mod ms_ime_ready_coro;
 pub(crate) mod probe_coro_state;
 pub(crate) mod probe_fsm;

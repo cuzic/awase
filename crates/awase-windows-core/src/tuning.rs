@@ -74,6 +74,15 @@ pub const OBSERVATION_FRESH_WINDOW_MS: u64 = 3_000;
 #[measured_macro::measured(pending = true)]
 pub const MOZC_SHM_TIMER_MS: u64 = 500;
 
+/// Mozc で、最初のローマ字を送ってから入力中の文字（共有メモリの `phase >= 1`）ができるのを待つ時間 (ms)（ADR-270 D2）。
+///
+/// 値は利用者の許容（「0.3 秒程度なら待たせてもよい」、2026-10-19）。実測（`shm3_rec` の記録と awase のログの突き合わせ、
+/// 打鍵の塊 20 件〈入力中の文字が空から始まった 19 件〉）: 最初の打鍵から入力中の文字ができるまでは 0.02〜0.06 秒、実機のリテラル
+/// （「wo もと」）は 0.34 秒。サンプルが小さく 1 台・1 アプリなので pending（確認ログ `[mozc-compose] ... confirmed after Nms` の
+/// 分布で見直す）。
+#[measured_macro::measured(pending = true)]
+pub const MOZC_COMPOSE_CHECK_MS: u64 = 300;
+
 /// mozc-readable の共有メモリの観測（`ObservationSource::MozcShm`）の有効期間 (ms)（ADR-268 D1）。
 ///
 /// `ObservationStore::record_any` が `expires_at = at + この値` を付ける。報告が止まった（TIP が外れた・別窓・読めなくなった）
