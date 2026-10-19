@@ -1045,6 +1045,7 @@ impl Output {
                 is_tsf_mode: self.is_tsf_mode(),
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
                 gji_evidence_absent: crate::tsf::observer::gji_evidence_absent(),
+                stage_origin_now: Some(self.current_stage_origin()),
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),
                 confirm_gate_deadline_override_ms: self.confirm_gate_deadline_override_ms.get(),
@@ -1139,10 +1140,14 @@ impl Output {
             target.thread_id,
             crate::tuning::MOZC_COMPOSE_CHECK_MS
         );
-        self.install_pending_tsf(Box::new(
+        // 終わる段の記録を壊さない `install_followup_tsf` で張る（`install_pending_tsf` は `begin_stage()` で記録を初期化する）。
+        // 確認の FSM は、終わる段の宛先（最初の送信より前に採った値）を持って、宛先の窓が変わったら確認も回収もやめる。
+        let origin = self.warmup_coord.stage_origin();
+        self.warmup_coord.install_followup_tsf(Box::new(
             crate::tsf::warmup::mozc_compose_check_fsm::MozcComposeCheckFsm::new(
                 target,
                 crate::tuning::MOZC_COMPOSE_CHECK_MS,
+                origin,
             ),
         ));
         true
@@ -1199,6 +1204,13 @@ impl Output {
         self.gji_end_probe_guard();
         // (b) GjiFsm への通知。
         let rec = self.warmup_coord.take_stage_record();
+        // ADR-270: 段末に確認の FSM が続いているなら、終わる段の宛先を、空になった記録へ引き継ぐ。確認の FSM が
+        // リテラルと判断して `record_raw_tsf_literal` を呼んだとき、BUG-194 の宛先照合が効くように。
+        if self.warmup_coord.has_pending_tsf() {
+            if let Some(origin) = rec.origin {
+                self.warmup_coord.stamp_stage_origin(origin);
+            }
+        }
         let probe_id = self.warmup_coord.take_probe_id()?;
         Some(self.gji_on_event(if rec.injected && !rec.recovered {
             crate::tsf::gji_fsm::GjiEvent::WarmupComplete { probe_id }
@@ -1259,8 +1271,6 @@ impl Output {
     ///
     /// 呼び出し元は続けて `TIMER_TSF_PROBE` を kill すること（タイマー操作は platform の責務）。
     pub(crate) fn cancel_probe(&self) {
-        // ADR-270: 張る前の確認の予約も捨てる（宛先が変わった・エンジン停止）。
-        self.mozc_compose_request.borrow_mut().take();
         self.warmup_coord.clear_pending_tsf();
         self.gji_end_probe_guard();
         let _ = self.warmup_coord.take_probe_id();

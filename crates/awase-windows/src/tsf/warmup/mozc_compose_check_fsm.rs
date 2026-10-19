@@ -8,8 +8,9 @@
 //! - **期限（`MOZC_COMPOSE_CHECK_MS`）までにできず、Mozc サーバーが応答できる状態** → リテラルと判断し、
 //!   `RawTsfLiteralRecovery`（送ったローマ字の文字数だけ Backspace して再送、cold の印付け）+ `Done`。GJI の回収と同じ
 //!   経路・同じ連続失敗の打ち切り（2 回目は消すだけで再送しない）を使う。
-//! - **判断しない**（読めない・IME が閉じた・サーバーが応答できない）→ `Done` だけ。サーバーが応答できないときは、
-//!   キーが握りつぶされた（文書に出ていない）可能性があり、Backspace で直前の文字を消すおそれがあるので消さない。
+//! - **判断しない**（読めない・IME が閉じた・サーバーが応答できない・宛先の窓が変わった・対象のスレッドが止まっている）→
+//!   `Done` だけ。サーバーが応答できないとき、または対象のスレッドが IME の同期呼び出しなどで止まっているときは、キーが
+//!   握りつぶされた・まだ処理されていない可能性があり、Backspace で直前の文字を消すおそれがあるので消さない。
 //!
 //! この FSM が張られている間（`pending_tsf`）、後続のキーは保留される（`defer_vks_if_probe_or_recovery_in_flight`）。
 //! 消す文字数を「送ったローマ字の文字数」と決められるのは、確認の対象を最初の 1 回の送信だけにして、その間に別の
@@ -19,6 +20,7 @@ use crate::state::event_origin::Generation;
 use crate::state::mozc_shm::{
     compose_literal_backs, judge_compose, ComposeReading, ComposeSkip, ComposeVerdict,
 };
+use crate::state::raw_recovery_plan::{plan_raw_recovery, RawRecoveryDisposition, StageOrigin};
 use crate::tsf::literal_facts::{
     DetectEvidence, DetectPath, DetectRoute, DetectTarget, LiteralDetectFacts, LiteralVerdict,
 };
@@ -31,12 +33,18 @@ use crate::tsf::warmup::tickable_fsm::TickableFsm;
 pub(crate) struct MozcComposeTarget {
     pub(crate) cold_seq: Generation,
     pub(crate) romaji: String,
+    /// 送った先のフォーカスの窓（hwnd のアドレス）。止まっていないかの確認に使う。
+    pub(crate) hwnd_addr: usize,
     pub(crate) thread_id: u32,
     pub(crate) process_id: u32,
+    /// 送信の直前の `key_seq`（ログ用。リテラルと判断した件で、TIP がキーを見たかを後から区別する）。
+    pub(crate) key_seq_before: u32,
 }
 
 pub(crate) struct MozcComposeCheckFsm {
     target: MozcComposeTarget,
+    /// 終わる段の宛先（最初の送信より前に採った値）。宛先の窓が変わったら確認も回収もやめる。
+    origin: Option<StageOrigin>,
     /// 送信した時刻（`GetTickCount64`）
     sent_ms: u64,
     /// 送信から待つ時間（ms）
@@ -46,12 +54,27 @@ pub(crate) struct MozcComposeCheckFsm {
 }
 
 impl MozcComposeCheckFsm {
-    pub(crate) fn new(target: MozcComposeTarget, check_ms: u64) -> Self {
+    pub(crate) fn new(
+        target: MozcComposeTarget,
+        check_ms: u64,
+        origin: Option<StageOrigin>,
+    ) -> Self {
         Self {
             target,
+            origin,
             sent_ms: crate::hook::current_tick_ms(),
             check_ms,
             _guard: OutputActiveGuard::begin(),
+        }
+    }
+
+    /// 宛先の窓が変わったか（段の宛先と、この tick の宛先から、既存の回収と同じ判断）。
+    fn target_moved(&self, now: Option<StageOrigin>) -> bool {
+        match (self.origin, now) {
+            (Some(_), Some(now)) => {
+                plan_raw_recovery(self.origin, now) == RawRecoveryDisposition::DiscardStale
+            }
+            _ => false,
         }
     }
 
@@ -101,12 +124,24 @@ fn facts(verdict: LiteralVerdict) -> LiteralDetectFacts {
 }
 
 impl TickableFsm for MozcComposeCheckFsm {
-    fn tick(&mut self, _env: TsfEnvSnapshot) -> Vec<ProbeAction> {
+    fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         let now_ms = crate::hook::current_tick_ms();
+        let elapsed_ms = now_ms.saturating_sub(self.sent_ms);
+        // 宛先の窓が変わったら、確認も回収もやめる（変わった窓へ Backspace を送らない）。
+        if self.target_moved(env.stage_origin_now) {
+            tracing::info!(
+                "[mozc-compose] cold={} skipped after {elapsed_ms}ms: target window changed",
+                self.target.cold_seq.value()
+            );
+            return vec![ProbeAction::Done];
+        }
         let reading =
             crate::observer::mozc_shm::read_compose(self.target.thread_id, self.target.process_id);
-        let (verdict, actions) = self.step(now_ms, reading);
-        let elapsed_ms = now_ms.saturating_sub(self.sent_ms);
+        let (verdict, mut actions) = self.step(now_ms, reading);
+        let (key_seq, composition_key_seq) = match reading {
+            ComposeReading::Block(b) => (b.key_seq, b.composition_key_seq),
+            ComposeReading::Unreadable => (0, 0),
+        };
         match verdict {
             ComposeVerdict::Pending => {}
             ComposeVerdict::Confirmed => {
@@ -116,12 +151,30 @@ impl TickableFsm for MozcComposeCheckFsm {
                 );
             }
             ComposeVerdict::Literal => {
-                tracing::warn!(
-                    "[mozc-compose] cold={} no composition {elapsed_ms}ms after sending {:?} (server ready) → literal; backspace ×{} + re-send",
-                    self.target.cold_seq.value(),
-                    self.target.romaji,
-                    compose_literal_backs(&self.target.romaji)
-                );
+                // 対象のスレッドが IME の同期呼び出し（Mozc サーバーの応答待ち）などで止まっていると、キーはまだ処理されて
+                // いない。その状態で Backspace を送ると、後から入力中の文字ができ、最初の Backspace がそれを消し、
+                // 2 つ目が文書の直前の正しい文字を消す。止まっているなら消さない。
+                let response_check_ms =
+                    u32::try_from(crate::tuning::MOZC_COMPOSE_RESPONSE_CHECK_MS)
+                        .unwrap_or(u32::MAX);
+                if crate::ime::window_thread_responds(self.target.hwnd_addr, response_check_ms) {
+                    tracing::warn!(
+                        "[mozc-compose] cold={} no composition {elapsed_ms}ms after sending {:?} (server ready) → literal; backspace ×{} + re-send (key_seq {}→{}, composition_key_seq {composition_key_seq})",
+                        self.target.cold_seq.value(),
+                        self.target.romaji,
+                        compose_literal_backs(&self.target.romaji),
+                        self.target.key_seq_before,
+                        key_seq
+                    );
+                } else {
+                    tracing::info!(
+                        "[mozc-compose] cold={} skipped after {elapsed_ms}ms: target thread not responding (may be blocked in the IME call; not deleting) (key_seq {}→{})",
+                        self.target.cold_seq.value(),
+                        self.target.key_seq_before,
+                        key_seq
+                    );
+                    actions = vec![ProbeAction::Done];
+                }
             }
             ComposeVerdict::Skip(reason) => {
                 let why = match reason {
@@ -155,9 +208,12 @@ mod tests {
             target: MozcComposeTarget {
                 cold_seq: Generation::INITIAL,
                 romaji: "wo".to_string(),
+                hwnd_addr: 3,
                 thread_id: 1,
                 process_id: 2,
+                key_seq_before: 0,
             },
+            origin: None,
             sent_ms,
             check_ms: 300,
             _guard: OutputActiveGuard::noop_for_test(),
@@ -172,6 +228,8 @@ mod tests {
             phase,
             scope_forced_mode: 0,
             server_ready,
+            key_seq: 0,
+            composition_key_seq: 0,
         })
     }
 
@@ -232,5 +290,26 @@ mod tests {
         let (v, a) = fsm(1_000).step(1_010, ComposeReading::Unreadable);
         assert_eq!(v, ComposeVerdict::Skip(ComposeSkip::Unreadable));
         assert!(matches!(a.as_slice(), [ProbeAction::Done]));
+    }
+
+    fn origin(pid: u32, hwnd: isize) -> StageOrigin {
+        StageOrigin {
+            focus_gen: crate::state::focus_gen::FocusGen::INITIAL,
+            foreground: crate::state::foreground_scope::ForegroundScope { pid, hwnd },
+        }
+    }
+
+    #[test]
+    fn target_moved_follows_the_existing_recovery_plan() {
+        let mut f = fsm(1_000);
+        // 宛先を採っていなければ判断しない（動いていないとみなす）
+        assert!(!f.target_moved(Some(origin(1, 10))));
+        f.origin = Some(origin(1, 10));
+        // 同じ前景窓なら動いていない
+        assert!(!f.target_moved(Some(origin(1, 10))));
+        // この tick の宛先を採れていなければ判断しない
+        assert!(!f.target_moved(None));
+        // 前景窓が変わったら動いた（既存の `plan_raw_recovery` と同じ判断）
+        assert!(f.target_moved(Some(origin(2, 20))));
     }
 }

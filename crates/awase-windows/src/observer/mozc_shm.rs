@@ -89,20 +89,22 @@ pub fn thread_of_window(hwnd_addr: usize) -> u32 {
     unsafe { GetWindowThreadProcessId(HWND(hwnd_addr as *mut _), None) }
 }
 
-/// 現在のキーボードフォーカスのウィンドウ（`GetGUIThreadInfo().hwndFocus`、取れなければ前景窓）を作ったスレッドとプロセス。
+/// 現在のキーボードフォーカスのウィンドウ（`GetGUIThreadInfo().hwndFocus`、取れなければ前景窓）の
+/// （hwnd のアドレス、それを作ったスレッド、プロセス）。
 ///
 /// TSF の状態はフォーカスのスレッドごと（XAML のアプリでは、最上位のウィンドウのスレッドではない）。取れなければ `None`。
-/// 内部で `get_focused_hwnd`（最大 30ms 待つ）を呼ぶので、フックのコールバックの中から呼ばない（BUG-34）。
-/// 呼び出し元は `TIMER_TSF_PROBE` のハンドラ（メインスレッド）。
+/// 内部で `get_focused_hwnd`（ワーカースレッドで実行して最大 30ms 待つ）を呼ぶので、フックのコールバックの中から呼ばない
+/// （BUG-34）。呼び出し元は `TIMER_TSF_PROBE` のハンドラ（メインスレッド）。最初のローマ字の送信が最大 30ms 遅れうる。
 #[must_use]
-pub fn focus_thread_and_process() -> Option<(u32, u32)> {
+pub fn focus_thread_and_process() -> Option<(usize, u32, u32)> {
     // SAFETY: メインスレッドから呼ぶ（`get_focused_hwnd` の要件）。Win32 を呼ぶだけで、結果の hwnd は無効でもよい。
     let hwnd = unsafe { crate::ime::get_focused_hwnd() };
     if hwnd.0.is_null() {
         return None;
     }
-    let (tid, pid) = thread_and_process_of_window(hwnd.0 as usize);
-    (tid != 0 && pid != 0).then_some((tid, pid))
+    let hwnd_addr = hwnd.0 as usize;
+    let (tid, pid) = thread_and_process_of_window(hwnd_addr);
+    (tid != 0 && pid != 0).then_some((hwnd_addr, tid, pid))
 }
 
 /// ウィンドウ（`hwnd` のアドレス）を作ったスレッドの ID とプロセスの ID。取得できないときは `(0, 0)`。
@@ -170,17 +172,21 @@ pub fn read_compose(thread_id: u32, process_id: u32) -> ComposeReading {
 }
 
 fn read_compose_inner(handle: HANDLE, process_id: u32) -> ComposeReading {
+    // 1 回目（48 バイト）は、80 バイトを map してよいか（`version >= 3`）の判定だけに使う（ADR-267 D9）。
     let Ok(head) = read_bytes::<BLOCK_SIZE>(handle) else {
         return ComposeReading::Unreadable;
     };
-    let raw = RawBlock::parse(&head);
-    let Ok(state) = classify(&raw, process_id) else {
-        return ComposeReading::Unreadable;
-    };
-    if state.version < 3 {
+    if !matches!(classify(&RawBlock::parse(&head), process_id), Ok(s) if s.version >= 3) {
         return ComposeReading::Unreadable;
     }
     let Ok(full) = read_bytes::<V3_BLOCK_SIZE>(handle) else {
+        return ComposeReading::Unreadable;
+    };
+    // 値はすべて 2 回目（80 バイト、1 回の seqlock）から取る。1 回目と 2 回目を組み合わせると、別の `seq` の値が混ざる。
+    let mut first = [0u8; BLOCK_SIZE];
+    first.copy_from_slice(&full[..BLOCK_SIZE]);
+    let raw = RawBlock::parse(&first);
+    let Ok(state) = classify(&raw, process_id) else {
         return ComposeReading::Unreadable;
     };
     let fields = CompositionFields::parse(&full);
@@ -191,6 +197,8 @@ fn read_compose_inner(handle: HANDLE, process_id: u32) -> ComposeReading {
         phase: fields.phase,
         scope_forced_mode: fields.scope_forced_mode,
         server_ready: fields.server_ready != 0,
+        key_seq: fields.key_seq,
+        composition_key_seq: fields.composition_key_seq,
     })
 }
 

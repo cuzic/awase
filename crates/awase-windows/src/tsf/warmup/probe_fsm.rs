@@ -72,6 +72,9 @@ pub(crate) struct TsfEnvSnapshot {
     /// GJI の I/O が証拠にならないと確定している（Mozc 系）か。`gji_active` の否定ではない
     /// （本物の GJI で監視が一時的に未接続のときは偽）。BUG-208。
     pub gji_evidence_absent: bool,
+    /// この tick の時点の宛先の識別（focus 世代 + 前景窓）。段の途中で宛先の窓が変わったかを、
+    /// `state::raw_recovery_plan::plan_raw_recovery` で判断するのに使う（ADR-270 の確認の FSM）。`None` = 採っていない。
+    pub stage_origin_now: Option<crate::state::raw_recovery_plan::StageOrigin>,
     /// 現在の IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
     pub ime_mode: crate::tsf::ime_mode_fsm::ImeModeState,
     /// `ime_mode` が `IMC_GETCONVERSIONMODE` で OS から確認済みなら true。

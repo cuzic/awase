@@ -144,13 +144,19 @@ impl ProbeIo for Output {
         if !crate::tsf::observer::gji_evidence_absent() {
             return None;
         }
-        let (thread_id, process_id) = crate::observer::mozc_shm::focus_thread_and_process()?;
+        let (hwnd_addr, thread_id, process_id) =
+            crate::observer::mozc_shm::focus_thread_and_process()?;
         let pre = crate::observer::mozc_shm::read_compose(thread_id, process_id);
+        let crate::state::mozc_shm::ComposeReading::Block(before) = pre else {
+            return None;
+        };
         crate::state::mozc_shm::should_check_compose(pre, romaji).then(|| MozcComposeTarget {
             cold_seq,
             romaji: romaji.to_string(),
+            hwnd_addr,
             thread_id,
             process_id,
+            key_seq_before: before.key_seq,
         })
     }
 

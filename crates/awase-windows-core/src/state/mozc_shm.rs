@@ -52,7 +52,7 @@ pub struct RawBlock {
     pub update_tick_ms: u64,
 }
 
-fn u32_at(bytes: &[u8; BLOCK_SIZE], offset: usize) -> u32 {
+fn u32_at<const N: usize>(bytes: &[u8; N], offset: usize) -> u32 {
     u32::from_le_bytes([
         bytes[offset],
         bytes[offset + 1],
@@ -150,28 +150,19 @@ pub struct CompositionFields {
     pub composition_key_seq: u32,
 }
 
-fn u32_at_v3(bytes: &[u8; V3_BLOCK_SIZE], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3],
-    ])
-}
-
 impl CompositionFields {
     /// 80 バイトの追記分（オフセット 48〜79）を解釈する（検証はしない）。
     #[must_use]
     pub fn parse(bytes: &[u8; V3_BLOCK_SIZE]) -> Self {
         Self {
-            phase: u32_at_v3(bytes, 48),
-            candidate_category: u32_at_v3(bytes, 52),
-            preedit_utf16_len: u32_at_v3(bytes, 56),
-            preedit_cursor: u32_at_v3(bytes, 60),
-            key_seq: u32_at_v3(bytes, 64),
-            scope_forced_mode: u32_at_v3(bytes, 68),
-            server_ready: u32_at_v3(bytes, 72),
-            composition_key_seq: u32_at_v3(bytes, 76),
+            phase: u32_at(bytes, 48),
+            candidate_category: u32_at(bytes, 52),
+            preedit_utf16_len: u32_at(bytes, 56),
+            preedit_cursor: u32_at(bytes, 60),
+            key_seq: u32_at(bytes, 64),
+            scope_forced_mode: u32_at(bytes, 68),
+            server_ready: u32_at(bytes, 72),
+            composition_key_seq: u32_at(bytes, 76),
         }
     }
 }
@@ -537,11 +528,24 @@ pub struct ComposeBlock {
     pub scope_forced_mode: u32,
     /// Mozc サーバーから応答を受け取れているか
     pub server_ready: bool,
+    /// TIP が見たキーダウンの通番（ログ用。リテラルと判断した件で、TIP がキーを見たかを後から区別するための材料）
+    pub key_seq: u32,
+    /// 組成の項目の元になった出力を生んだ打鍵の通番（ログ用）
+    pub composition_key_seq: u32,
 }
 
-/// 入力中の文字ができるはずの入力モード（ひらがな・全角カタカナ・半角カタカナ）。半角英数・全角英数・直接入力は
-/// 組成を作らないので、できないのが正しい（確認しない）。
-const COMPOSING_MODES: [u32; 3] = [1, 2, 5];
+/// 入力中の文字ができるはずの入力モード（ひらがな・全角カタカナ・半角カタカナ）か。半角英数・全角英数・直接入力は
+/// 組成を作らないので、できないのが正しい（確認しない）。範囲外の値は `false`。
+fn is_composing_mode(mode: u32) -> bool {
+    matches!(
+        CompositionMode::from_u32(mode),
+        Some(
+            CompositionMode::Hiragana
+                | CompositionMode::FullKatakana
+                | CompositionMode::HalfKatakana
+        )
+    )
+}
 
 /// 確認の対象にするか（送信の**直前**の読みと、送るローマ字から）。
 ///
@@ -555,7 +559,7 @@ pub fn should_check_compose(pre: ComposeReading, romaji: &str) -> bool {
     };
     b.active
         && b.effective_open
-        && COMPOSING_MODES.contains(&b.effective_mode)
+        && is_composing_mode(b.effective_mode)
         && b.phase == 0
         && b.scope_forced_mode == 0
         && !romaji.is_empty()
@@ -1040,6 +1044,8 @@ mod tests {
             phase: 0,
             scope_forced_mode: 0,
             server_ready: true,
+            key_seq: 0,
+            composition_key_seq: 0,
         };
         f(&mut b);
         ComposeReading::Block(b)
@@ -1088,6 +1094,15 @@ mod tests {
                 "mode={mode}"
             );
         }
+        // 範囲外の値（将来の値や壊れた値）も対象外
+        assert!(!should_check_compose(
+            compose_block(|b| b.effective_mode = 6),
+            "wo"
+        ));
+        assert!(!should_check_compose(
+            compose_block(|b| b.effective_mode = u32::MAX),
+            "wo"
+        ));
         // 組成を作るモード（ひらがな・全角カタカナ・半角カタカナ）
         for mode in [1, 2, 5] {
             assert!(
