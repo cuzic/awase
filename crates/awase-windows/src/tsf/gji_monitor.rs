@@ -412,6 +412,11 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                              kind={kind:?} identity={identity:?})"
                     );
                     current_target = confirmed;
+                    // 監視を外す前に立てる（`gji_is_active_ime()` が偽になる前から、応答待ちの読み手が先に止まる）。
+                    TSF_OBS.gji_evidence_absent.store(
+                        current_target == ConverterTarget::NoEvidence,
+                        Ordering::Release,
+                    );
                 }
                 // TipIdentity も同じデバウンスの規律で確定させる（NR1）。ATOK と Microsoft IME 本体は
                 // どちらも上の ActiveImeKind では MicrosoftIme のため、こちらが単発フリップの唯一の防御。

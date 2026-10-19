@@ -1039,6 +1039,7 @@ impl Output {
             crate::tsf::warmup::probe_fsm::TsfEnvSnapshot {
                 is_tsf_mode: self.is_tsf_mode(),
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
+                gji_evidence_absent: crate::tsf::observer::gji_evidence_absent(),
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),
                 confirm_gate_deadline_override_ms: self.confirm_gate_deadline_override_ms.get(),

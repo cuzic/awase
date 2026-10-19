@@ -8262,6 +8262,12 @@ fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static 
         production_code_only(output_mod),
         "fn assess_warmth(",
     )));
+    // BUG-208: step_probe が TsfEnvSnapshot に Mozc 系の確定(gji_evidence_absent)を実値で入れていること
+    // （定数にすると、decide_transmit_plan が Mozc 系でも eager unicode を選ぶ）。
+    let out_prod = squash(&non_comment_lines(production_code_only(output_mod)));
+    if !out_prod.contains("gji_evidence_absent:crate::tsf::observer::gji_evidence_absent(),") {
+        v.push("step_probe が TsfEnvSnapshot.gji_evidence_absent を gji_evidence_absent() の実値で入れていない(BUG-208)");
+    }
     for needle in [
         "warm_send_plan::plan_warmth(",
         "session_expired:plan.session_expired",
@@ -8282,7 +8288,7 @@ fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static 
         "fn send_romaji_as_tsf_warm(",
     )));
     for needle in [
-        "warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts{last_unicode_ms,gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),gji_active:crate::tsf::observer::gji_is_active_ime(),})",
+        "warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts{last_unicode_ms,gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),gji_evidence_absent:crate::tsf::observer::gji_evidence_absent(),})",
         "warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts{now_ms:crate::hook::current_tick_ms(),gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),threshold:crate::tuning::LONG_IDLE_MS,})",
         "warm_send_plan::plan_literal_detect(",
         "long_idle:probe_long_idle",
@@ -8354,14 +8360,14 @@ fn warm_send_wiring_detector_catches_violations() {
         1,
     ));
     check_v(v.replacen(
-        "gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),\n                gji_active:",
-        "gji_last_io_ms: crate::hook::current_tick_ms(),\n                gji_active:",
+        "gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),\n                gji_evidence_absent:",
+        "gji_last_io_ms: crate::hook::current_tick_ms(),\n                gji_evidence_absent:",
         1,
     ));
-    // BUG-208: gji_active を落とす/定数にする（Mozc 系で応答待ちが永久に続く）
+    // BUG-208: gji_evidence_absent を定数 false にする（Mozc 系で応答待ちが永久に続く）
     check_v(v.replacen(
-        "gji_active: crate::tsf::observer::gji_is_active_ime(),\n            })",
-        "gji_active: true,\n            })",
+        "gji_evidence_absent: crate::tsf::observer::gji_evidence_absent(),\n            })",
+        "gji_evidence_absent: false,\n            })",
         1,
     ));
     // plan_literal_detect を残したまま結果を捨てる
@@ -9289,5 +9295,11 @@ fn gji_monitor_drops_gji_evidence_when_mozc_family_is_active() {
     assert!(
         prod.contains("current_target == ConverterTarget::NoEvidence && monitor.is_some()"),
         "Mozc 系がアクティブになったら GJI の監視を外す（gji_is_active_ime が偽になり判定が走らない。BUG-207）"
+    );
+    // BUG-208: 「証拠が無いと確定」を、確定した target から導いて立てる（応答待ち・eager unicode を止める読み手の信号）。
+    let squashed: String = prod.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        squashed.contains("gji_evidence_absent.store(current_target==ConverterTarget::NoEvidence,Ordering::Release,)"),
+        "gji_monitor は確定した converter target が NoEvidence かどうかを gji_evidence_absent に書く（BUG-208）"
     );
 }
