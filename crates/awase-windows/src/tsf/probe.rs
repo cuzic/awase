@@ -1326,4 +1326,61 @@ mod tests {
         c.on_focus_changed();
         assert_eq!(c.negative_evidence_count(), 0);
     }
+
+    // ── WarmEpoch / CompositionState の状態(mutants で MISSED だった穴、ADR-272) ──
+
+    /// `last_unicode_transmit_ms` は set で入り、`mark_cold`・`on_focus_changed` で 0 に戻る。
+    #[test]
+    fn warm_epoch_unicode_transmit_is_set_and_reset() {
+        let e = WarmEpoch::new();
+        assert_eq!(e.last_unicode_transmit_ms(), 0);
+        e.set_last_unicode_transmit_ms(1234);
+        assert_eq!(e.last_unicode_transmit_ms(), 1234);
+        e.mark_cold();
+        assert_eq!(e.last_unicode_transmit_ms(), 0, "mark_cold でリセット");
+        e.set_last_unicode_transmit_ms(777);
+        e.on_focus_changed();
+        assert_eq!(e.last_unicode_transmit_ms(), 0, "フォーカス変更でリセット");
+    }
+
+    /// `increment_cold_start_count` は新値を返し、同じ値が `cold_start_count` に保存される。
+    #[test]
+    fn warm_epoch_increment_returns_and_stores_next_generation() {
+        let e = WarmEpoch::new();
+        let before = e.cold_start_count().value();
+        let a = e.increment_cold_start_count();
+        assert_eq!(a.value(), before + 1);
+        assert_eq!(e.cold_start_count().value(), a.value());
+        let b = e.increment_cold_start_count();
+        assert_eq!(b.value(), a.value() + 1);
+    }
+
+    /// `CompositionState` は WarmEpoch への委譲(unicode 送信時刻・cold-start 回数)を保つ。
+    #[test]
+    fn composition_state_delegates_unicode_transmit_and_cold_start_count() {
+        let c = CompositionState::new();
+        assert_eq!(c.last_unicode_transmit_ms(), 0);
+        c.set_last_unicode_transmit_ms(4321);
+        assert_eq!(c.last_unicode_transmit_ms(), 4321);
+        c.on_focus_changed();
+        assert_eq!(c.last_unicode_transmit_ms(), 0);
+
+        c.set_last_unicode_transmit_ms(99);
+        c.mark_composition_cold(crate::tsf::cold_reason::ColdReason::SetOpenTrue);
+        assert_eq!(c.last_unicode_transmit_ms(), 0, "cold マークでリセット");
+
+        let before = c.cold_start_count().value();
+        let n = c.increment_cold_start_count();
+        assert_eq!(n.value(), before + 1);
+        assert_eq!(c.cold_start_count().value(), n.value());
+    }
+
+    /// 一度も送信していない状態で cold にすると、idle は `u64::MAX`(= 無限)として記録される。
+    #[test]
+    fn composition_state_records_idle_at_last_cold() {
+        let c = CompositionState::new();
+        assert_eq!(c.idle_ms_at_last_cold(), 0);
+        c.mark_composition_cold(crate::tsf::cold_reason::ColdReason::SetOpenTrue);
+        assert_eq!(c.idle_ms_at_last_cold(), u64::MAX);
+    }
 }
