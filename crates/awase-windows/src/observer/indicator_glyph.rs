@@ -271,10 +271,11 @@ unsafe fn probe_once(automation: &IUIAutomation) -> (ProbeOutcome, Option<GlyphF
     )
 }
 
-/// 読み取りワーカーを起動する。専用スレッドで COM（STA）と `IUIAutomation` を持ち、依頼を 1 件ずつ処理して
-/// 前処理後の特徴を別のチャネル（戻り値の `Receiver`）へ送り、`WM_INDICATOR_GLYPH_READ`（`wParam`/`lParam` = [`ProbeOutcome::pack`]）
-/// をメインスレッドへ返す。依頼は届いた順に処理するので、
-/// 結果も依頼の順に返る（呼び出し側はその順で文脈を対応づける）。
+/// 読み取りワーカーを起動する。
+///
+/// 専用スレッドで COM（STA）と `IUIAutomation` を持ち、依頼を 1 件ずつ処理して、前処理後の特徴を別のチャネル（戻り値の
+/// `Receiver`）へ送り、`WM_INDICATOR_GLYPH_READ`（`wParam`/`lParam` = [`ProbeOutcome::pack`]）をメインスレッドへ返す。
+/// 依頼は届いた順に処理するので、結果も依頼の順に返る（呼び出し側はその順で文脈を対応づける）。
 ///
 /// 戻り値の `WorkerThread` をアプリ終了まで保持すること（drop 時に停止・join される）。
 #[must_use]
