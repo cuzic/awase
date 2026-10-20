@@ -34,7 +34,8 @@
     clippy::must_use_candidate,
     clippy::float_cmp,
     clippy::needless_range_loop,
-    clippy::manual_memcpy
+    clippy::manual_memcpy,
+    clippy::cognitive_complexity
 )]
 
 use serde::Serialize;
@@ -346,7 +347,11 @@ pub enum GlyphReading {
 }
 
 /// 特徴を表で分類する。最近傍の**クラス**を採るのは、距離が上限以内で、次点クラスとの距離比が下限以上のときだけ。
-pub fn classify_glyph(table: &GlyphTable, thresholds: &Thresholds, feature: &GlyphFeature) -> GlyphReading {
+pub fn classify_glyph(
+    table: &GlyphTable,
+    thresholds: &Thresholds,
+    feature: &GlyphFeature,
+) -> GlyphReading {
     if table.is_empty() {
         return GlyphReading::Miss(GlyphMiss::EmptyTable);
     }
@@ -396,7 +401,11 @@ pub fn classify_glyph(table: &GlyphTable, thresholds: &Thresholds, feature: &Gly
 }
 
 /// 画素から分類まで(前処理に失敗したら、その `Miss`)。
-pub fn classify_image(table: &GlyphTable, thresholds: &Thresholds, img: &GlyphGray) -> GlyphReading {
+pub fn classify_image(
+    table: &GlyphTable,
+    thresholds: &Thresholds,
+    img: &GlyphGray,
+) -> GlyphReading {
     match preprocess(img) {
         Ok(f) => classify_glyph(table, thresholds, &f),
         Err(m) => GlyphReading::Miss(m),
@@ -425,14 +434,19 @@ fn median(pixels: &[u8]) -> u8 {
 fn remove_frame(diff: &mut [u8], w: usize, h: usize) {
     let mut bad_rows = Vec::new();
     for y in 0..h {
-        let n = diff[y * w..(y + 1) * w].iter().filter(|&&v| v >= FRAME_PIXEL_DIFF).count();
+        let n = diff[y * w..(y + 1) * w]
+            .iter()
+            .filter(|&&v| v >= FRAME_PIXEL_DIFF)
+            .count();
         if n * 100 >= w * FRAME_FRACTION_PERCENT {
             bad_rows.push(y);
         }
     }
     let mut bad_cols = Vec::new();
     for x in 0..w {
-        let n = (0..h).filter(|&y| diff[y * w + x] >= FRAME_PIXEL_DIFF).count();
+        let n = (0..h)
+            .filter(|&y| diff[y * w + x] >= FRAME_PIXEL_DIFF)
+            .count();
         if n * 100 >= h * FRAME_FRACTION_PERCENT {
             bad_cols.push(x);
         }
@@ -484,7 +498,11 @@ fn resize_bicubic(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec
                     wsum += wx * wy;
                 }
             }
-            let v = if wsum.abs() > f32::EPSILON { acc / wsum } else { 0.0 };
+            let v = if wsum.abs() > f32::EPSILON {
+                acc / wsum
+            } else {
+                0.0
+            };
             out[y * dw + x] = v.round().clamp(0.0, 255.0) as u8;
         }
     }
@@ -498,7 +516,11 @@ fn otsu(img: &[u8]) -> u8 {
         hist[usize::from(p)] += 1;
     }
     let total = img.len() as f64;
-    let sum_all: f64 = hist.iter().enumerate().map(|(i, &n)| i as f64 * n as f64).sum();
+    let sum_all: f64 = hist
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| i as f64 * n as f64)
+        .sum();
     let (mut w_b, mut sum_b) = (0.0_f64, 0.0_f64);
     let (mut best_var, mut best_t) = (-1.0_f64, 0u8);
     for t in 0..256usize {
@@ -605,9 +627,13 @@ fn sobel(img: &[u8], w: usize, h: usize) -> Vec<u8> {
     let mut out = vec![0u8; w * h];
     for y in 0..h as isize {
         for x in 0..w as isize {
-            let gx = -at(x - 1, y - 1) - 2 * at(x - 1, y) - at(x - 1, y + 1) + at(x + 1, y - 1) + 2 * at(x + 1, y)
+            let gx = -at(x - 1, y - 1) - 2 * at(x - 1, y) - at(x - 1, y + 1)
+                + at(x + 1, y - 1)
+                + 2 * at(x + 1, y)
                 + at(x + 1, y + 1);
-            let gy = -at(x - 1, y - 1) - 2 * at(x, y - 1) - at(x + 1, y - 1) + at(x - 1, y + 1) + 2 * at(x, y + 1)
+            let gy = -at(x - 1, y - 1) - 2 * at(x, y - 1) - at(x + 1, y - 1)
+                + at(x - 1, y + 1)
+                + 2 * at(x, y + 1)
                 + at(x + 1, y + 1);
             out[y as usize * w + x as usize] = ((gx.abs() + gy.abs()) / 4).clamp(0, 255) as u8;
         }
@@ -672,7 +698,11 @@ fn bbox(mask: &[bool], w: usize, h: usize) -> Option<(usize, usize, usize, usize
 }
 
 /// 外接矩形を 20×20 の 2 値画像にする(各セルの前景の割合が半分以上なら真)。
-fn normalize(mask: &[bool], w: usize, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> [bool; FEATURE_AREA] {
+fn normalize(
+    mask: &[bool],
+    w: usize,
+    (x0, y0, x1, y1): (usize, usize, usize, usize),
+) -> [bool; FEATURE_AREA] {
     let bw = x1 - x0 + 1;
     let bh = y1 - y0 + 1;
     let mut out = [false; FEATURE_AREA];
@@ -773,7 +803,7 @@ fn symmetric_chamfer(
             sum / n as f32
         }
     };
-    (mean_to(a, dt_b) + mean_to(b, dt_a)) / 2.0
+    f32::midpoint(mean_to(a, dt_b), mean_to(b, dt_a))
 }
 
 #[cfg(test)]
@@ -782,23 +812,58 @@ mod tests {
 
     /// 9×9 の形(`#` が前景)。形どうしは互いに十分違う。
     const SHAPE_A: [&str; 9] = [
-        "....#....", "...#.#...", "..#...#..", ".#.....#.", ".#######.", ".#.....#.", ".#.....#.", ".#.....#.",
+        "....#....",
+        "...#.#...",
+        "..#...#..",
+        ".#.....#.",
+        ".#######.",
+        ".#.....#.",
+        ".#.....#.",
+        ".#.....#.",
         ".#.....#.",
     ];
     const SHAPE_BOX: [&str; 9] = [
-        "#########", "#.......#", "#.......#", "#.......#", "#.......#", "#.......#", "#.......#", "#.......#",
+        "#########",
+        "#.......#",
+        "#.......#",
+        "#.......#",
+        "#.......#",
+        "#.......#",
+        "#.......#",
+        "#.......#",
         "#########",
     ];
     const SHAPE_CROSS: [&str; 9] = [
-        "....#....", "....#....", "....#....", "....#....", "#########", "....#....", "....#....", "....#....",
+        "....#....",
+        "....#....",
+        "....#....",
+        "....#....",
+        "#########",
+        "....#....",
+        "....#....",
+        "....#....",
         "....#....",
     ];
     const SHAPE_E: [&str; 9] = [
-        "#########", "#........", "#........", "#........", "#######..", "#........", "#........", "#........",
+        "#########",
+        "#........",
+        "#........",
+        "#........",
+        "#######..",
+        "#........",
+        "#........",
+        "#........",
         "#########",
     ];
     const SHAPE_SLASH: [&str; 9] = [
-        "........#", ".......#.", "......#..", ".....#...", "....#....", "...#.....", "..#......", ".#.......",
+        "........#",
+        ".......#.",
+        "......#..",
+        ".....#...",
+        "....#....",
+        "...#.....",
+        "..#......",
+        ".#.......",
         "#........",
     ];
     const SHAPES: [&[&str; 9]; 5] = [&SHAPE_A, &SHAPE_BOX, &SHAPE_CROSS, &SHAPE_E, &SHAPE_SLASH];
@@ -949,7 +1014,9 @@ mod tests {
                 for dark in [false, true] {
                     let img = render(shape, w, h, dark, true);
                     match classify_image(&table, &Thresholds::default(), &img) {
-                        GlyphReading::Hit(hit) => assert_eq!(hit.class, want, "{w}x{h} dark={dark}"),
+                        GlyphReading::Hit(hit) => {
+                            assert_eq!(hit.class, want, "{w}x{h} dark={dark}")
+                        }
                         GlyphReading::Miss(m) => panic!("{w}x{h} dark={dark}: Miss({m:?})"),
                     }
                 }
@@ -981,7 +1048,10 @@ mod tests {
         };
         // 距離は 0 以上なので、負の上限ではどの見本にも近くない。
         let img = render(&SHAPE_A, 64, 48, true, false);
-        assert_eq!(classify_image(&table, &strict, &img), GlyphReading::Miss(GlyphMiss::TooFar));
+        assert_eq!(
+            classify_image(&table, &strict, &img),
+            GlyphReading::Miss(GlyphMiss::TooFar)
+        );
     }
 
     #[test]
@@ -989,7 +1059,10 @@ mod tests {
         // 表の 2 クラス(A と BOX)のどちらとも同じではない形(E)を読むと、最近傍と次点の距離比は有限。
         // 距離比の下限を極端に高くすれば Ambiguous、上限距離を十分大きくして TooFar を避ける。
         let mut table = GlyphTable::new();
-        for (class, shape) in [(GlyphClass::Closed, &SHAPE_A), (GlyphClass::FullAlnum, &SHAPE_BOX)] {
+        for (class, shape) in [
+            (GlyphClass::Closed, &SHAPE_A),
+            (GlyphClass::FullAlnum, &SHAPE_BOX),
+        ] {
             assert_eq!(
                 table.add(GlyphSample {
                     class,
@@ -1005,13 +1078,19 @@ mod tests {
             min_ratio_same_env: 1.0e6,
             min_ratio_common: 1.0e6,
         };
-        assert_eq!(classify_glyph(&table, &strict, &probe), GlyphReading::Miss(GlyphMiss::Ambiguous));
+        assert_eq!(
+            classify_glyph(&table, &strict, &probe),
+            GlyphReading::Miss(GlyphMiss::Ambiguous)
+        );
         let lenient = Thresholds {
             max_distance: 1.0e6,
             min_ratio_same_env: 0.0,
             min_ratio_common: 0.0,
         };
-        assert!(matches!(classify_glyph(&table, &lenient, &probe), GlyphReading::Hit(_)));
+        assert!(matches!(
+            classify_glyph(&table, &lenient, &probe),
+            GlyphReading::Hit(_)
+        ));
     }
 
     #[test]
@@ -1041,7 +1120,10 @@ mod tests {
             min_ratio_common: 1.0e6,
             ..Thresholds::default()
         };
-        assert!(matches!(classify_glyph(&table, &lenient, &probe), GlyphReading::Hit(_)));
+        assert!(matches!(
+            classify_glyph(&table, &lenient, &probe),
+            GlyphReading::Hit(_)
+        ));
         assert_eq!(
             classify_glyph(&table, &strict, &probe),
             GlyphReading::Miss(GlyphMiss::Ambiguous)
@@ -1056,11 +1138,20 @@ mod tests {
             feature: feature(shape, w, h, false, false),
             origin: SampleOrigin::SameEnv,
         };
-        assert_eq!(table.add(sample(GlyphClass::Hiragana, &SHAPE_A, 32, 24)), AddOutcome::Added);
+        assert_eq!(
+            table.add(sample(GlyphClass::Hiragana, &SHAPE_A, 32, 24)),
+            AddOutcome::Added
+        );
         // 同じクラス・同じ形(同じ画像)は重複。
-        assert_eq!(table.add(sample(GlyphClass::Hiragana, &SHAPE_A, 32, 24)), AddOutcome::Duplicate);
+        assert_eq!(
+            table.add(sample(GlyphClass::Hiragana, &SHAPE_A, 32, 24)),
+            AddOutcome::Duplicate
+        );
         // 別クラスに同じ形は衝突。
-        assert_eq!(table.add(sample(GlyphClass::FullAlnum, &SHAPE_A, 32, 24)), AddOutcome::Conflict);
+        assert_eq!(
+            table.add(sample(GlyphClass::FullAlnum, &SHAPE_A, 32, 24)),
+            AddOutcome::Conflict
+        );
         assert_eq!(table.len(), 1);
     }
 
