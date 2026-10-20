@@ -278,7 +278,7 @@
 | [269](269-mozc-literal-detection-evidence.md) | Mozc 系では GJI の I/O を literal 判定の証拠にしない(BUG-207) | 実装中(2026-10-18)。段階 1 は PR #686、段階 2 以降は観測が先 |
 | [270](270-mozc-first-send-composition-check.md) | Mozc で、cold の最初のローマ字を送った直後に、入力中の文字ができたかを共有メモリで確かめ、リテラルなら消して送り直す | 実装中(2026-10-19)。実機は未確認(BUG-209) |
 | [271](271-indicator-evidence-settings-levels.md) | 入力インジケーターを読む 2 つの証拠源(字形・右クリックメニュー)を、設定画面の 4 段階(無効／観測のみ／読めないウィンドウだけ／すべて)で選べるようにする | 起草(2026-10-20)。実装なし。Opus レビュー round 3 で収束・所有者判断 Q1〜Q5 決定済み。第 3・第 4 段階の belief 配線は別 ADR |
-| [272](272-thin-shell-move-pure-code-to-core.md) | shell を薄くする: 同じ crate 内で gate を外すのを先にし tsf/warmup から R7 として再開 | 段階 A 実装済み(refactor/thin-shell、2026-10-20)。段階 B・C は未着手 |
+| [272](272-thin-shell-move-pure-code-to-core.md) | shell を薄くする: 同じ crate 内で gate を外すのを先にし tsf/warmup から R7 として再開 | 段階 A 実装済み(2026-10-20)。段階 B は B0(仮想時計、#708)のみ、B1 は保留、C は未着手 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

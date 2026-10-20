@@ -3,7 +3,7 @@ id: ADR-272
 title: |-
   shell(awase-windows)を薄くする: 同じ crate の中で gate を外すのを先にし、tsf/warmup の FSM から R7 として再開する
 status: |-
-  段階 A は実装済み(2026-10-20、`refactor/thin-shell` ブランチ。PR #696・#699・#700・#701)。段階 B は B0(仮想時計、2026-10-20、PR #707)だけ実施し、B1(観測値の snapshot 化)は段階 C を決めるまで保留。段階 C は未着手
+  段階 A は実装済み(2026-10-20、`refactor/thin-shell` ブランチ。PR #696・#699・#700・#701)。段階 B は B0(仮想時計、2026-10-20、PR #708)だけ実施し、B1(観測値の snapshot 化)は段階 C を決めるまで保留。段階 C は未着手
 related_adr:
   - "ADR-019"
   - "ADR-156"
