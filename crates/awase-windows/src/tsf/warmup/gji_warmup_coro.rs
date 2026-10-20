@@ -209,7 +209,7 @@ async fn gji_coro_body(
                  gji_active={gji_active} used_eager_path={used_eager_path}",
                 cold_seq = cold_seq.value(),
             );
-            crate::ime_diagnostic::log_composition_probe(cold_seq, "skip-verify");
+            crate::tsf::log_composition_probe(cold_seq, "skip-verify");
         });
         return;
     }

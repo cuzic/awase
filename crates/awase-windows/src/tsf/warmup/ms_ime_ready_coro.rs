@@ -87,13 +87,13 @@ async fn ms_ime_ready_coro_body(
     // ── Phase 1: ImeModeFsm の NATIVE 確認待ち ─────────────────────────────
     // 確認の実体は Output::start_ms_ime_ready_poll の async IMC ポーリング。
     // ここでは env 経由で結果を観測するだけ（tick = TIMER_TSF_PROBE 10ms 間隔）。
-    let start_ms = crate::hook::current_tick_ms();
+    let start_ms = crate::clock::current_tick_ms();
     loop {
         let env = yield_step(ch.clone(), vec![]).await;
         if env_native_ready(env) {
             tracing::info!(
                 "[msime-ready] cold={cold_seq} IME mode NATIVE 確認 (+{}ms) → 送信 {romaji:?}",
-                crate::hook::current_tick_ms().saturating_sub(start_ms),
+                crate::clock::current_tick_ms().saturating_sub(start_ms),
                 cold_seq = cold_seq.value(),
             );
             break;
@@ -110,7 +110,7 @@ async fn ms_ime_ready_coro_body(
         // 続く `kp_restore_kana_from_half_width` のリトライループが
         // `shift_conv_guard_gen` が一致する限り毎試行ごとに同じ幅で押し出し続ける。
         let effective_deadline_ms = deadline_ms.max(env.confirm_gate_deadline_override_ms);
-        if crate::hook::current_tick_ms() >= effective_deadline_ms {
+        if crate::clock::current_tick_ms() >= effective_deadline_ms {
             // 安全弁: IMC が読めない環境でタイピングを止めない。
             // give-up latch（連続発動の抑止）は start_ms_ime_ready_poll 側が設定する。
             tracing::warn!(
@@ -276,7 +276,7 @@ mod tests {
         let _lk = GATE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let deadline = crate::hook::current_tick_ms() + 60_000;
+        let deadline = crate::clock::current_tick_ms() + 60_000;
         let mut coro = MsImeReadyCoro::new("wo", Generation::new(7), deadline, TransmitTarget::Tsf);
 
         // 未確認の間は待機（アクションなし）
@@ -304,7 +304,7 @@ mod tests {
         let _lk = GATE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let deadline = crate::hook::current_tick_ms() + 60_000;
+        let deadline = crate::clock::current_tick_ms() + 60_000;
         let mut coro =
             MsImeReadyCoro::new("ka", Generation::new(9), deadline, TransmitTarget::Chrome);
 
@@ -327,7 +327,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         // 安全弁: IMC が読めない環境でも期限でタイピングを止めない。
-        let deadline = crate::hook::current_tick_ms(); // 即座に期限切れ
+        let deadline = crate::clock::current_tick_ms(); // 即座に期限切れ
         let mut coro = MsImeReadyCoro::new("ka", Generation::new(8), deadline, TransmitTarget::Tsf);
 
         let actions = coro.tick(env(ImeModeState::Unknown, false));
@@ -355,7 +355,7 @@ mod tests {
         let _lk = GATE_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let deadline = crate::hook::current_tick_ms(); // 元の期限は即座に切れる
+        let deadline = crate::clock::current_tick_ms(); // 元の期限は即座に切れる
         let mut coro = MsImeReadyCoro::new("!", Generation::new(10), deadline, TransmitTarget::Tsf);
 
         for _ in 0..5 {
@@ -386,7 +386,7 @@ mod tests {
     /// バグになる）。
     #[test]
     fn coro_prefers_the_later_of_deadline_ms_and_finite_override() {
-        let already_passed_deadline = crate::hook::current_tick_ms(); // 即座に期限切れのはずの値
+        let already_passed_deadline = crate::clock::current_tick_ms(); // 即座に期限切れのはずの値
         let mut coro = MsImeReadyCoro::new(
             "de",
             Generation::new(11),
@@ -394,7 +394,7 @@ mod tests {
             TransmitTarget::Tsf,
         );
 
-        let future_override = crate::hook::current_tick_ms() + 10_000;
+        let future_override = crate::clock::current_tick_ms() + 10_000;
         let actions = coro.tick(env_with_override(ImeModeState::Off, true, future_override));
         assert!(
             actions.is_empty(),
@@ -420,7 +420,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let active_before = OUTPUT_GATE.is_active();
-        let deadline = crate::hook::current_tick_ms() + 60_000;
+        let deadline = crate::clock::current_tick_ms() + 60_000;
         let mut coro = MsImeReadyCoro::new("!", Generation::new(12), deadline, TransmitTarget::Tsf);
 
         // Phase 1: 未確認の間、tick を重ねても OUTPUT_GATE は動かない。

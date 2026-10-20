@@ -31,7 +31,9 @@
 //! Layer 2（`tsf` 直下）に残す。
 
 pub(crate) mod chrome_probe;
+#[cfg(windows)]
 pub(crate) mod cold_warmup;
+#[cfg(windows)]
 pub(crate) mod gji_warmup_coro;
 pub(crate) mod literal_detect_fsm;
 pub(crate) mod mozc_compose_check_fsm;

@@ -823,13 +823,8 @@ fn passthrough_or_swallow_for_impersonation(ncode: i32, wparam: WPARAM, lparam: 
     }
 }
 
-/// 現在時刻を `GetTickCount64` ミリ秒で返す。
-#[must_use]
-pub fn current_tick_ms() -> u64 {
-    // SAFETY: GetTickCount64 はどのスレッドからも安全に呼び出せるスレッドセーフな Win32 API。
-    //         引数なし・副作用なし・内部ロックにより安全性が保証される。
-    unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
-}
+/// 現在時刻をミリ秒で返す(実体は [`crate::clock::current_tick_ms`]、ADR-272 段階 A)。
+pub use crate::clock::current_tick_ms;
 
 /// OS 全体（他プロセス宛ても含む）で最後にユーザー入力（キー/マウス）があった
 /// `GetTickCount()` 時刻（ms）を返す。取得失敗時は `None`。

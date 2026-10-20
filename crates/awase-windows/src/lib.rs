@@ -23,9 +23,13 @@
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub use awase_windows_core::{indicator_evidence, journal, journal_policy, keymap, tuning, vk};
 pub mod bug_report;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod clock;
 pub mod config_diagnostics;
 #[cfg(test)]
 mod config_key_resolution_tests;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod conv_flags;
 pub mod focus;
 pub mod focus_resync;
 pub mod gji_charset_autodetect;
@@ -66,7 +70,7 @@ pub mod ime_controller;
 pub mod ime_diagnostic;
 #[cfg(windows)]
 pub(crate) mod imm;
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod input_defer;
 #[cfg(windows)]
 pub mod journal_dump;
@@ -119,10 +123,8 @@ pub use crate::state::PlatformState;
 pub use crate::state::{HookConfig, ImeBelief};
 pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 
-#[cfg(windows)]
 pub use crate::tsf::probe_bridge::{OUTPUT_GATE, WM_DRAIN_OUTPUT_QUEUE};
 
-#[cfg(windows)]
 pub use crate::input_defer::{InputDeferQueue, INPUT_DEFER};
 
 // ── クロススレッド共有グローバル状態（ADR-164 フェーズ6）──
