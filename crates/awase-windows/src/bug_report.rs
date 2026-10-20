@@ -876,8 +876,8 @@ impl BugReportIndicatorEvidence {
                 miss_reasons: menu.miss_reasons.clone(),
                 direct_match: menu.direct_match,
                 direct_mismatch: menu.direct_mismatch,
-                belief_match: menu.belief_match,
-                belief_mismatch: menu.belief_mismatch,
+                belief_match: menu.unobserved_match,
+                belief_mismatch: menu.unobserved_mismatch,
             },
         }
     }

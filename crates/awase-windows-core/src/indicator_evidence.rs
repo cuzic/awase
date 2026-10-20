@@ -70,8 +70,8 @@ pub struct IndicatorMenuCounters {
     pub miss_reasons: BTreeMap<String, u32>,
     pub direct_match: u32,
     pub direct_mismatch: u32,
-    pub belief_match: u32,
-    pub belief_mismatch: u32,
+    pub unobserved_match: u32,
+    pub unobserved_mismatch: u32,
 }
 
 impl IndicatorMenuCounters {
@@ -83,8 +83,8 @@ impl IndicatorMenuCounters {
             miss_reasons: BTreeMap::new(),
             direct_match: 0,
             direct_mismatch: 0,
-            belief_match: 0,
-            belief_mismatch: 0,
+            unobserved_match: 0,
+            unobserved_mismatch: 0,
         }
     }
 
@@ -112,9 +112,9 @@ impl IndicatorMenuCounters {
             }
             "imm32-unavailable" => {
                 if agree {
-                    &mut self.belief_match
+                    &mut self.unobserved_match
                 } else {
-                    &mut self.belief_mismatch
+                    &mut self.unobserved_mismatch
                 }
             }
             _ => return,
@@ -202,7 +202,7 @@ mod tests {
         c.record(&rec("hit", Some(true), "tsf-native", Some(true), None));
         assert_eq!((c.reads, c.hits), (7, 7));
         assert_eq!((c.direct_match, c.direct_mismatch), (1, 1));
-        assert_eq!((c.belief_match, c.belief_mismatch), (1, 1));
+        assert_eq!((c.unobserved_match, c.unobserved_mismatch), (1, 1));
     }
 
     #[test]
