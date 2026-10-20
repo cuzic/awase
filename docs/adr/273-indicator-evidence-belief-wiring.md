@@ -116,6 +116,12 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 - journal・報告: `ObservationSource` は journal の `AnyObservation` と `DriftCorrectionFixture` に乗るので、新しい種類で古い再生ツールが読めなくなる点を CHANGELOG に書く。ADR-271 D5 の `indicator_evidence` に件数を足すなら `bug_report.rs` の `SCHEMA_VERSION` と report worker を同じ PR で更新する。
 - CI(Windows): NULL 型の窓(`unavailable` 強制ではなく、実学習で降格する状態)で、ObserverPoll が来ない間に指標が belief を決めること、読める窓では belief が変わらないこと、GJI の窓で I/O 推論の ObserverPoll が居るとき指標が負けること(B1 を期待どおりに固定)。
 
+## 却下案
+
+- **トグル系のキーの後、awase がメニューを不可視で開いて読む案**(所有者判断 2026-10-20 で却下): 他プロセス(IME 側)が出すメニューに DWM の cloak は使えず、画面外への移動・透明化はメニュー表示の後の対処で数フレーム見える。
+  見た目を消しても、メニュー窓へのフォーカス移動(BUG-202)・選択直後の GJI の I/O 推論(BUG-203)・開くための右クリック注入またはカーソル移動は残る。ADR-261 が既に「背景で読むものではない」と却下した理由と同じ。
+  トグル系のキーの後に読む用途は、侵襲の小さい字形の読む場面③(D4。モード系の打鍵の後、柵が経ったあと)で満たす。UIA の `Invoke` でカーソルを動かさずに開けるかは測っていない(再検討するなら先に測る)。
+
 ## 段階
 
 1. 核(`awase-windows-core`): D1 の源・除外・reducer の分岐・同一性、D2 の分岐、`classify_*`、単体テストと golden。**`ui_max_level` は上げない**。
