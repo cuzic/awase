@@ -61,8 +61,6 @@ ALLOWED = {
     'hookinput': ['base'],
 }
 
-# コードの移動で消す予定の辺(`impl` や関数を別のモジュールへ移すまでの間だけ許す)。(参照元, 参照先, 理由)
-PLANNED_EDGE_REMOVALS = [
-    ('focus::class_names', 'state::ime_event',
-     'class_names.rs の `impl From<AppImeProfile> for ImePolicyProfile` とそのテストを ime_event.rs へ移す(ADR-274 D4 準備1)'),
-]
+# コードの移動で消す予定の辺(`impl` や関数を別のモジュールへ移すまでの間だけ許す)。(参照元, 参照先, 理由)。
+# ADR-274 段階 0 の 1(class_names.rs の `impl From<AppImeProfile> for ImePolicyProfile` を ime_event.rs へ)は済んだので空。
+PLANNED_EDGE_REMOVALS = []
