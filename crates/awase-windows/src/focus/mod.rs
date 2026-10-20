@@ -6,6 +6,10 @@
 // ── 純粋サブモジュール（全プラットフォーム）──────────────────────────────────────
 pub mod cache;
 pub mod current;
+// ADR-272 / ECRS F3: 学習ストアは Win32 を呼ばない。`classifier.rs`(Windows 専用)から分けて Linux でもテストする。
+// 利用側(tracker・bootstrap)が Windows 専用なので、Linux では未使用の項目が出る。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod learning_store;
 pub mod thread_scope;
 
 pub use awase_windows_core::focus::{
