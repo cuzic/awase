@@ -75,6 +75,10 @@ shell にある判断関数の数。行数は指標にしない(F5d の前例)�
    - 効果の見積り: Linux と mutants に入るテストは 48 本ではなく**約 80 本**(連れて ungate されるものを含む)。
 5. **段階 B(R7 の再開、段階 A の後)**: 前提条件を先頭に置く。
    (i) baseline を `SendInput` の前に取る順序(BUG-027/029/030/033、ADR-079)の固定テストを**先に**入れる。
+       2026-10-20: 固定テストを `architecture_guard.rs` に入れた(per-VK・一括送信の TSF/Chrome・`send_input_safe` の bump、
+       `per_vk_confirm_…`/`batch_transmit_…`/`probe_actuation_fence_bump_…`)。調査で warm パス(`vk_send.rs`)だけ baseline が
+       送信**後**だった(`80756f5c^` 以前から。送信前に作った detector は捨てられていた)と分かり、BUG-210 として送信前へ直し
+       `warm_path_takes_literal_baseline_before_transmit` で固定した。実害の実機ログは未確認。
    (ii) `OutputActiveGuard` は F-D4 どおり `wants_output_gate: bool` を値で返し、trait にしない。trait にするなら
    F-D1 の閉じた列挙の改訂と、タスク表 :33 の再着手条件(解放漏れを型で防ぐ手段・ゲート故障の実機再現)が先。
    (iii) `probe_fsm` が 6 回直接呼ぶ `log_composition_probe` は、診断要求の action として返し殻が実行する。

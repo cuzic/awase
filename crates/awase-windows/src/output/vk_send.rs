@@ -623,6 +623,10 @@ impl Output {
             });
         }
 
+        // 検出ベースラインは送信**前**に取る（BUG-210。送信後に取ると、warm の GJI が即応答した
+        // write がベースラインに吸収され、composition が成立していても差分 0 の literal 判定になりうる。
+        // `LiteralDetector::new` のドキュメント「ローマ字送信直前に呼ぶこと」）。使うかは送信後に決める。
+        let literal_detector = crate::tsf::probe::LiteralDetector::new(true);
         let ze_bs_count = TsfSendPipeline::transmit(romaji, chars, &outcome);
 
         // cold-start probe 機構を持つ IME（GJI 等）が LONG_IDLE_MS 以上静止している場合は
@@ -642,12 +646,13 @@ impl Output {
                 is_tsf_mode: self.is_tsf_mode(),
             });
         if matches!(literal_detect, warm_send_plan::LiteralDetectPlan::Install) {
-            // detector と guard は LiteralDetectFsm::new が内部生成するため渡さない。
+            // detector は送信前に取った `literal_detector` を渡す（guard は LiteralDetectFsm::new が内部生成）。
             // ze_bs_count は実際の値を渡す。
             self.install_pending_tsf(Box::new(
                 crate::tsf::warmup::literal_detect_fsm::LiteralDetectFsm::new(
                     cold_seq,
                     romaji.to_owned(),
+                    literal_detector,
                     crate::tsf::warmup::probe_fsm::ProbeObservations {
                         nc_fired: false,
                         ..Default::default()
@@ -660,7 +665,7 @@ impl Output {
         } else {
             // ze_bs_count は Probing+GJI 健全パスでのみ使う。
             // 他パスでは warm マーク済みで LiteralDetect 不要。
-            let _ = ze_bs_count;
+            let _ = (ze_bs_count, literal_detector);
             if let warm_send_plan::LiteralDetectPlan::Skip(reason) = literal_detect {
                 tracing::trace!("[literal-detect] skip reason={reason:?}");
             }
