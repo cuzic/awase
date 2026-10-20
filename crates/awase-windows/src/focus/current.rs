@@ -44,10 +44,6 @@ impl CurrentFocus {
 
     /// フォーカス情報をアトミックに更新する。
     /// `app_profile` は `class_name` と `process_name` から導出してキャッシュする。
-    pub fn update(&mut self, pid: u32, class_name: String, hwnd: usize, relay_apps: &[String]) {
-        self.update_with_process_name(pid, class_name, hwnd, relay_apps, None);
-    }
-
     /// 既に同一フォーカスプローブ内で取得済みの process_name があれば再利用して更新する。
     // `process_name` は `self.process_name` へそのまま move するため所有権が要る
     // （`unwrap_or_else` 経由で move、下記本体参照）。`&str` で受けて呼び出し元で

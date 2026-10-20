@@ -1348,11 +1348,6 @@ impl WindowsPlatform {
         self.focus.injection_hint_for(pid, class_name)
     }
 
-    /// フォーカス情報と `AppImeProfile` キャッシュをアトミックに更新する。
-    pub fn update_focus_info(&mut self, process_id: u32, class_name: String, hwnd: usize) {
-        self.focus.update(process_id, class_name, hwnd);
-    }
-
     /// 同一フォーカスプローブ内で取得済みの process_name を再利用して更新する。
     pub fn update_focus_info_with_process_name(
         &mut self,

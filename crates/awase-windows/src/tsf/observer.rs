@@ -312,18 +312,6 @@ impl TsfObservations {
         self.gji_attach_ms.load(Ordering::Relaxed)
     }
 
-    /// GJI モニターが利用可能かを読み取る（Acquire）。
-    #[must_use]
-    pub fn gji_monitor_ok(&self) -> bool {
-        self.gji_monitor_ok.load(Ordering::Acquire)
-    }
-
-    /// GJI candidate window が現在表示中かを読み取る（Relaxed）。
-    #[must_use]
-    pub fn gji_candidate_visible(&self) -> bool {
-        self.gji_candidate_visible.load(Ordering::Relaxed)
-    }
-
     /// 現在（GJI/MS-IME 問わず）IME composition window が可視かどうかを読み取る（Relaxed）。
     ///
     /// `EVENT_OBJECT_IME_SHOW`/`HIDE` により更新される（`win_event_obs.rs`）。
