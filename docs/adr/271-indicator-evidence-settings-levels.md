@@ -84,7 +84,7 @@ ADR-261 決定 4 は「段階 2 で belief に入れるのは観測の無い窓�
 読める窓は打鍵量の大半で、`all` の害の面積は `unobserved` より桁で大きい。したがって:
 
 - **この「Medium が High を追い越さない」は `unobserved` を含む第 3 段階以上の入口条件**(D3 末尾)にする。`unobserved` の述語は IMM が読めないことだけを見て他の High 源の有無を見ないので、`unobserved` の窓にも High の観測がある: ADR-268 の `MozcShm`(High・BeliefOnly。一太郎 + mozc-readable で `is_demoted_by_learning` が真のまま High を持つ)、TSF ネイティブのクラス(Windows Terminal・WezTerm 等。TSF 側の観測の信頼度は未確認)。D2b の `all` 固有の条件は便益の場面だけ。ADR-233 の順位キーで、インジケーターの読みが新しい時刻で入っても直接の読み・予測を上書きしないことを golden/journal リプレイで固定する。
-- **`all` の便益の場面は未実証**。読める窓には直接の読みが既にあり、`all` が足すのは「直接の読みが外れているとき」だけ。所有者の要望(④)なので枠は残すが、**配線の PR 時点で便益の場面を 1 つ以上示せなければ `all` は画面から外す**(Q2)。外しても列挙の `All` と設定ファイルの `"all"` は受理し続け(`serde(alias)` で `Unobserved` に読み替え、警告を出す。variant を消すと型エラーで設定全体が `ConfigLoadState::Dangerous` になり、ADR-217 の旧値の受理にも反する)、読み替えた値は保存で書き戻さない。
+- **`all` の便益の場面は未実証**。読める窓には直接の読みが既にあり、`all` が足すのは「直接の読みが外れているとき」だけ。所有者の要望(④)なので枠は残すが、**配線の PR 時点で便益の場面を 1 つ以上示せなければ `all` は画面から外す**(Q2)。外すと決まるまでは `All` を列挙に残す(画面でグレーアウトするだけ。alias は不要)。外すときは variant を消して `#[serde(alias = "all")]` を `Unobserved` に付け、警告は `from_toml_str` が生の表を見て積む既存の作法(`confirm_mode` の旧値の警告と同じ)で出す(variant だけ消すと `"all"` が型エラーで設定全体が `ConfigLoadState::Dangerous` になり、ADR-217 の旧値の受理にも反する)。読み替えた値は保存で書き戻さない。
 
 #### D2c. 字形の見本の収集・永続化(字形のみ)
 
@@ -93,7 +93,7 @@ ADR-261 決定 2 の受け身の収集(読める窓で直接の読みと組に�
 
 ### D3. 第 3・第 4 段階は、belief への配線 ADR が決まるまで選べない。保存は書き換えない
 
-- `awase` クレートに `EvidenceSource::ui_max_level() -> EvidenceLevel`(現状: `menu` = `Observe`、`glyph` = `Off`)を「画面で選べる上限=Windows の殻の実装の到達度」として置く(`awase-settings` が `awase-windows` に依存しないので、画面と殻が共有できる場所がコアしかない。Linux/macOS の殻には証拠源が無い)。配線 PR が上げる唯一の場所にする。
+- `awase-windows-core` に `EvidenceSource::ui_max_level() -> EvidenceLevel`(現状: `menu` = `Observe`、`glyph` = `Off`)を「画面で選べる上限=Windows の殻の実装の到達度」として **`awase-windows-core`** に置く(Windows 固有の事実なのでルートの `awase` コアには置かない。Linux で単体テストでき、`awase-settings` は `awase-windows` の re-export 経由で参照する。`awase` コアには `EvidenceLevel`・`IndicatorEvidenceConfig` の型だけが残る)。配線 PR が上げる唯一の場所にする。
 - **実効値は使う時点で決める**(`awase-windows` の殻が `effective = min(configured, ui_max_level())` を起動時に 1 度計算して Runtime に固定する)。`validate()` と設定画面の保存は、**段階の丸めについては値を変えない**(旧キーの読み替えは D4 のとおり読み込み時に行う)。
   理由: 設定画面の保存(`awase-settings/src/main.rs` の三者比較: `base` と `validate()` 後の差分を書く)は、`validate()` が値を丸めると、利用者が無関係な項目を変えて「適用」しただけで `all` が `observe` として恒久的に書かれる(Opus B1)。
   `validate()` は丸めの警告を出さない。警告は起動時のログに 1 回と、画面の「設定値: all(この版では観測のみとして動作)」の表示だけにする(適用のたびの状態行に出すと、直した不具合〈`main.rs` の警告の再表示〉の再発になる)。
@@ -104,7 +104,7 @@ ADR-261 決定 2 の受け身の収集(読める窓で直接の読みと組に�
 ### D4. 既定と旧キー
 
 - **既定は両方 `off`**(ADR-261 Q2・ADR-264 決定 6 を維持)。ADR-263 の `auto_detect.mode` が既定 `observe` なのは、打鍵列の統計処理で画面や UI を読まないからで、同列には扱わない。
-- **旧キーの読み替えは `AppConfig::from_toml_str`(読み込みの唯一の入口)で行う**。殻の使う時点ではなく読み込み時に行うので、設定画面の `base` にも反映され、画面は実態どおり「記録だけする」を表示する(殻で読み替えると、画面は「使わない」、awase は記録、という最悪の向きの食い違いになる)。読み替えた値は次の「適用」で新キーとして書かれる(移行として望ましい)。
+- **旧キーの読み替えは `AppConfig::from_toml_str`(読み込みの唯一の入口)で行う**。殻の使う時点ではなく読み込み時に行うので、設定画面の `base` にも反映され、画面は実態どおり「記録だけする」を表示する(殻で読み替えると、画面は「使わない」、awase は記録、という最悪の向きの食い違いになる)。読み込み後は `base` も保存対象も `menu = Observe` で差分が無いので、**新キーは書かれない**(三者比較)。旧キーはディスクに残り、毎回の読み込みで読み替えられる(害は無い)。Q4 で旧キーの受理をやめるなら、その前に旧キーが `true` のファイルへ新キーを書き足す移行が要る。
 - **`[diagnostics] indicator_menu_shadow`**: v2.2.0 に同梱済み。ADR-217 は「config.rs の旧キーの受理は全て残す」(外部の既存 `config.toml` を守る)と決めているので、**読み替えを残す**: 新キー `indicator_evidence.menu` が未指定で旧キーが `true` なら `menu = "observe"` として扱い、`warn!` で新キーへの移行を促す。新キーがあればそちらが優先。
   フィールドは `#[serde(skip_serializing)]`(画面の全体書き出しが旧キーを書き戻さない)。v2.2.0 の CHANGELOG はこのキーを案内していない(利用者は所有者・CI・#623 の報告者程度)ので、読み替えを省き撤去キーの通知(ADR-207 の `config_load_diag::removed_notice`)だけにする案もある(Q4)。
 - `architecture_guard.rs::indicator_menu_shadow_is_observe_only_and_opt_in`(bootstrap の `config.diagnostics.indicator_menu_shadow` の文字列を探す)は、新しい分岐に合わせて更新する。
@@ -144,7 +144,7 @@ ADR-261 決定 6 の「`glyph_probe` の要約」は本 D5 の `indicator_eviden
 ## 影響
 
 - `src/config.rs`(型・旧キーの読み替え・`skip_serializing`・警告・テスト)、`config.toml` の例、`awase-settings`(節・プリセット表・グレーアウト・「設定値」の表示)、
-  `awase-windows`(`bootstrap.rs` の分岐を実効値に置換、`ui_max_level` との min)、`architecture_guard.rs` の更新、
+  `awase-windows-core`(`ui_max_level`)、`awase-windows`(`bootstrap.rs` の分岐を実効値に置換、`ui_max_level` との min)、`architecture_guard.rs` の更新、
   不具合報告の診断フィールド `indicator_evidence`(`awase-windows` 側の生成と `awase-settings/src/bug_report.rs` の載せ替え)。
 - ADR-264 決定 6・段階 5(同じスイッチ・設定画面)は本 ADR に置き換わる。ADR-261 段階 3 は残る(収集状況の表示と「見本を削除」)。ADR-261 決定 4 と ADR-264 決定 2 は改訂される: `all` が読める窓でも belief の証拠にする点(D2b)、`unobserved` 以上でも全ウィンドウを読む点(ADR-264 決定 2 の「shadow 以外は観測の無い窓でだけ読む」を、読み取りは全窓・belief への反映だけを絞る、に変える)。
 
