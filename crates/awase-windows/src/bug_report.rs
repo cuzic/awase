@@ -1033,6 +1033,15 @@ pub fn gunzip_base64(encoded: &str, max_bytes: usize) -> Result<String, std::io:
     String::from_utf8(out).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+/// 添付フラグ(`attach`)が立っているときだけ `value` を載せる。立っていなければ `None`(添付しない)。
+fn gate<T>(attach: bool, value: Option<T>) -> Option<T> {
+    if attach {
+        value
+    } else {
+        None
+    }
+}
+
 /// `build_payload` と同じだが、journal/app_log 添付の切り詰め上限
 /// （既定は `LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES`）を呼び出し側で指定できる。
 /// `build_payload_json_fitting` が `MAX_BODY_BYTES` に収まるまで
@@ -1061,46 +1070,15 @@ pub fn build_payload_with_log_budget(
     } else {
         None
     };
-    let state_snapshot = if input.attach_state_snapshot {
-        input.state_snapshot.clone()
-    } else {
-        None
-    };
-    let config_toml = if input.attach_config {
-        input.config_toml.map(str::to_owned)
-    } else {
-        None
-    };
-    let layout_yab = if input.attach_layout {
-        input.layout_yab.map(str::to_owned)
-    } else {
-        None
-    };
-    let retro_eval_stats = if input.attach_retro_eval_stats {
-        input.retro_eval_stats
-    } else {
-        None
-    };
-    let gji_keymap = if input.attach_ime_keymap {
-        input.gji_keymap.clone()
-    } else {
-        None
-    };
-    let msime_key_assignment = if input.attach_ime_keymap {
-        input.msime_key_assignment.clone()
-    } else {
-        None
-    };
-    let legacy_msime_keymap = if input.attach_ime_keymap {
-        input.legacy_msime_keymap.clone()
-    } else {
-        None
-    };
-    let keymap_learn = if input.attach_ime_keymap {
-        input.keymap_learn.clone()
-    } else {
-        None
-    };
+    // 添付フラグが立っているものだけを載せる(立っていなければ `None`)。
+    let state_snapshot = gate(input.attach_state_snapshot, input.state_snapshot.clone());
+    let config_toml = gate(input.attach_config, input.config_toml.map(str::to_owned));
+    let layout_yab = gate(input.attach_layout, input.layout_yab.map(str::to_owned));
+    let retro_eval_stats = gate(input.attach_retro_eval_stats, input.retro_eval_stats);
+    let gji_keymap = gate(input.attach_ime_keymap, input.gji_keymap.clone());
+    let msime_key_assignment = gate(input.attach_ime_keymap, input.msime_key_assignment.clone());
+    let legacy_msime_keymap = gate(input.attach_ime_keymap, input.legacy_msime_keymap.clone());
+    let keymap_learn = gate(input.attach_ime_keymap, input.keymap_learn.clone());
     let running_processes = if input.attach_running_processes {
         input.running_processes.as_ref().map(|processes| {
             processes
@@ -1143,11 +1121,10 @@ pub fn build_payload_with_log_budget(
         keymap_learn,
         attach_running_processes: input.attach_running_processes,
         running_processes,
-        indicator_evidence: if input.attach_state_snapshot {
-            input.indicator_evidence.clone()
-        } else {
-            None
-        },
+        indicator_evidence: gate(
+            input.attach_state_snapshot,
+            input.indicator_evidence.clone(),
+        ),
         reported_at: input.reported_at.to_owned(),
     })
 }
