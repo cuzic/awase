@@ -3,7 +3,7 @@ id: ADR-271
 title: |-
   shell(awase-windows)を薄くする: 同じ crate の中で gate を外すのを先にし、tsf/warmup の FSM から R7 として再開する
 status: |-
-  提案(2026-10-20、Opus レビュー 2 回分の指摘を反映済み)。実装は未着手
+  段階 A は実装済み(2026-10-20、`refactor/thin-shell` ブランチ。PR #696・#699・#700・#701)。段階 B(R7 の再開)と段階 C は未着手。実装は未着手
 related_adr:
   - "ADR-019"
   - "ADR-156"
@@ -111,3 +111,25 @@ GitHub Actions に任せる。段階 A は「Linux の `cargo nextest list` に 
 
 - 段階 B の (iv) の許容可否(実測が要る)。
 - 段階 C を実際にやる価値(増えるのは行数の差だけかもしれない。段階 A の結果で判断)。
+
+## 段階 A の結果(2026-10-20)
+
+`refactor/thin-shell` に PR #696(A-1)・#699(A-2a)・#700(A-2b)・#701(A-2c)をマージした。
+Linux の `cargo test -p awase-windows --lib` に加わったテストは次のとおり(各 PR の本文の実測):
+
+| PR | Linux の lib テスト | 加わったもの |
+|---|---|---|
+| #696 A-1 | +5 | `ime_mode_fsm`(時計と `IME_CMODE_*` を gate なしの場所へ) |
+| #699 A-2a | +23 (77→100 の `tsf::`) | `tsf/probe`(16)・`tsf/observer`(7)。`ColdReason` は `tsf/cold_reason.rs` へ |
+| #700 A-2b | +4 (467→471) | `input_defer`(`post_drain_output_queue` だけ cfg) |
+| #701 A-2c | +47 (471→518) | `tsf/warmup/` の FSM 群。`cold_warmup`・`gji_warmup_coro` は gate を残した |
+
+ADR の見積り(約 80 本)に対し、A-1〜A-2c の合計は約 79 本。`cold_warmup`・`gji_warmup_coro` は
+`with_app`・`ime`・`imm`・`win32_async` に依存するため、決定 4 のとおり Windows 専用のまま。
+
+**所見**
+- 壁時計に依存する `tsf::probe` のテストが、ホストの負荷が高いとき(load average 25 / 8 コア)に
+  lib 全体の 15 回中 5 回落ちた(60ms の sleep が 354ms になる等)。単体では 30 回中 0 回。
+  GitHub のランナーでは #699・#701 の `test` ジョブは通った。負荷による停止と見ているが、状態の漏れが
+  無いと確かめたのは `TSF_OBS` への store の所在(Windows 専用の 2 ファイルのみ)を grep しただけ。
+- `.cargo/mutants-awase-windows.toml` の `examine_globs` に 12 ファイルを足した。mutants の実行は未確認。

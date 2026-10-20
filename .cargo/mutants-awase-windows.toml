@@ -27,6 +27,21 @@ examine_globs = [
     "crates/awase-windows/src/lifetime_counter.rs",
     "crates/awase-windows/src/state/sync_actuation.rs",
     "crates/awase-windows/src/focus/cache.rs",
+    # ADR-271 段階 A で Linux でもビルドされるようになった FSM 群。グローバル(TSF_OBS・OUTPUT_GATE)を
+    # 直接触る observer.rs・probe_bridge.rs と、壁時計だけの clock.rs は対象にしない。
+    # 壁時計に依存するテスト(tsf/probe.rs)があるため、mutants の実行はまだ確かめていない。
+    "crates/awase-windows/src/input_defer.rs",
+    "crates/awase-windows/src/tsf/ime_mode_fsm.rs",
+    "crates/awase-windows/src/tsf/probe.rs",
+    "crates/awase-windows/src/tsf/warmup/chrome_probe.rs",
+    "crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs",
+    "crates/awase-windows/src/tsf/warmup/mozc_compose_check_fsm.rs",
+    "crates/awase-windows/src/tsf/warmup/ms_ime_ready_coro.rs",
+    "crates/awase-windows/src/tsf/warmup/probe_coro_state.rs",
+    "crates/awase-windows/src/tsf/warmup/probe_fsm.rs",
+    "crates/awase-windows/src/tsf/warmup/tickable_fsm.rs",
+    "crates/awase-windows/src/tsf/warmup/unicode_literal_observer.rs",
+    "crates/awase-windows/src/tsf/warmup/warmup_strategy.rs",
 ]
 
 # ビルドが数十秒かかることがあるため、自動タイムアウト推定が短すぎて
