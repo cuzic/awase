@@ -21,6 +21,8 @@
 
 // 呼び出し元（warmup_strategy.rs）は windows-gated のため非 Windows では未使用になる。
 #[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod cold_reason;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod gji_fsm;
 #[cfg(windows)]
 mod gji_monitor;
@@ -29,11 +31,11 @@ pub(crate) mod ime_mode_fsm;
 pub use awase_windows_core::tsf::converter_target;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub use awase_windows_core::tsf::literal_facts;
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod observer;
 #[cfg(windows)]
 pub mod output;
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod probe;
 #[cfg(windows)]
 pub mod probe_bridge;

@@ -89,7 +89,7 @@ impl TsfReadinessProbe {
         if !self.check_now(total_max_ms) {
             return None;
         }
-        let now = crate::hook::current_tick_ms();
+        let now = crate::clock::current_tick_ms();
         let monitor_healthy = TSF_OBS.gji_monitor_ok.load(Ordering::Acquire);
         let gji_last_io = TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed);
         let gji_idle_ms = now.saturating_sub(gji_last_io);
@@ -119,7 +119,7 @@ impl TsfReadinessProbe {
     /// 何度も出し入れされてきた領域（`tuning-constants.md` の釣り上げ履歴参照）。
     /// 「今 0 が渡っているから」という理由だけでこの分岐自体を削除しないこと。
     pub fn check_now(&self, total_max_ms: u64) -> bool {
-        let now = crate::hook::current_tick_ms();
+        let now = crate::clock::current_tick_ms();
         let max_deadline = self.warmup_sent_ms.saturating_add(total_max_ms);
         let min_deadline = self.warmup_sent_ms.saturating_add(self.min_ms);
 
@@ -211,12 +211,12 @@ impl WarmEpoch {
         if last == 0 {
             return u64::MAX;
         }
-        crate::hook::current_tick_ms().saturating_sub(last)
+        crate::clock::current_tick_ms().saturating_sub(last)
     }
 
     /// `last_send_ms` を現在時刻に更新する。
     pub fn update_last_send_ms(&self) {
-        let ms = crate::hook::current_tick_ms();
+        let ms = crate::clock::current_tick_ms();
         tracing::debug!("[mark-send] last_send_ms={ms}");
         self.last_send_ms.set(ms);
     }
@@ -247,7 +247,7 @@ impl Default for WarmEpoch {
 #[derive(Debug)]
 pub struct ColdContext {
     /// 最後に cold にマークされた理由
-    last_cold_reason: std::cell::Cell<crate::output::ColdReason>,
+    last_cold_reason: std::cell::Cell<crate::tsf::cold_reason::ColdReason>,
     /// 最後に cold になった時点での idle 時間（ms）
     idle_ms_at_last_cold: std::cell::Cell<u64>,
     /// `RawTsfLiteralRecovery` が連続で発火した回数
@@ -263,7 +263,9 @@ impl ColdContext {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            last_cold_reason: std::cell::Cell::new(crate::output::ColdReason::FocusChange),
+            last_cold_reason: std::cell::Cell::new(
+                crate::tsf::cold_reason::ColdReason::FocusChange,
+            ),
             idle_ms_at_last_cold: std::cell::Cell::new(0),
             raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
             negative_evidence_count: std::cell::Cell::new(0),
@@ -271,7 +273,7 @@ impl ColdContext {
     }
 
     /// cold にマークされた理由と idle 時間を記録する。
-    pub fn record_cold(&self, reason: crate::output::ColdReason, idle_ms: u64) {
+    pub fn record_cold(&self, reason: crate::tsf::cold_reason::ColdReason, idle_ms: u64) {
         self.last_cold_reason.set(reason);
         self.idle_ms_at_last_cold.set(idle_ms);
     }
@@ -310,7 +312,7 @@ impl ColdContext {
 
     /// 最後に cold にマークされた理由を返す。
     #[must_use]
-    pub const fn last_cold_reason(&self) -> crate::output::ColdReason {
+    pub const fn last_cold_reason(&self) -> crate::tsf::cold_reason::ColdReason {
         self.last_cold_reason.get()
     }
 
@@ -359,9 +361,9 @@ impl CompositionState {
     }
 
     /// IME composition context をコールド状態にマークする。
-    pub fn mark_composition_cold(&self, reason: crate::output::ColdReason) {
+    pub fn mark_composition_cold(&self, reason: crate::tsf::cold_reason::ColdReason) {
         let idle_ms = self.ms_since_last_send();
-        if reason == crate::output::ColdReason::RawTsfLiteralRecovery {
+        if reason == crate::tsf::cold_reason::ColdReason::RawTsfLiteralRecovery {
             let n = self.cold_ctx.increment_consecutive_count();
             tracing::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         } else {
@@ -374,7 +376,8 @@ impl CompositionState {
             // false positive ループを防ぐ。
             if matches!(
                 reason,
-                crate::output::ColdReason::FocusChange | crate::output::ColdReason::SetOpenTrue
+                crate::tsf::cold_reason::ColdReason::FocusChange
+                    | crate::tsf::cold_reason::ColdReason::SetOpenTrue
             ) {
                 self.cold_ctx.reset_consecutive_count();
             }
@@ -401,7 +404,7 @@ impl CompositionState {
         // FocusChange で last_cold_reason を更新し、F2NonTsf などの前回理由が
         // フォーカス遷移後も残り続けて誤判定される不具合を防ぐ。
         self.cold_ctx
-            .record_cold(crate::output::ColdReason::FocusChange, idle_ms);
+            .record_cold(crate::tsf::cold_reason::ColdReason::FocusChange, idle_ms);
         self.cold_ctx.reset_consecutive_count();
         tracing::debug!("[composition] focus changed → marked cold");
     }
@@ -437,7 +440,7 @@ impl CompositionState {
 
     /// 最後に cold にマークされた理由を返す。
     #[must_use]
-    pub const fn last_cold_reason(&self) -> crate::output::ColdReason {
+    pub const fn last_cold_reason(&self) -> crate::tsf::cold_reason::ColdReason {
         self.cold_ctx.last_cold_reason()
     }
 
@@ -582,7 +585,7 @@ impl LiteralDetector {
             gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
             write_bytes_baseline: crate::tsf::observer::gji_write_bytes(),
             veto_eligible,
-            epoch_send_ms: crate::hook::current_tick_ms(),
+            epoch_send_ms: crate::clock::current_tick_ms(),
             show_stale_hold_since_ms: std::cell::Cell::new(None),
             write_ops_baseline: crate::tsf::observer::gji_write_ops(),
             read_ops_baseline: crate::tsf::observer::gji_read_ops(),
@@ -610,7 +613,7 @@ impl LiteralDetector {
             gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
             write_bytes_baseline: write_bytes_before_vk,
             veto_eligible,
-            epoch_send_ms: crate::hook::current_tick_ms(),
+            epoch_send_ms: crate::clock::current_tick_ms(),
             show_stale_hold_since_ms: std::cell::Cell::new(None),
             write_ops_baseline: crate::tsf::observer::gji_write_ops(),
             read_ops_baseline: crate::tsf::observer::gji_read_ops(),
@@ -635,7 +638,7 @@ impl LiteralDetector {
         deadline_ms: u64,
         cold_seq: Generation,
     ) -> DetectEvidence {
-        let now = crate::hook::current_tick_ms();
+        let now = crate::clock::current_tick_ms();
         let last_write_ms = crate::tsf::observer::gji_last_write_ms();
         let fencing_active = last_write_ms != 0;
         DetectEvidence {
@@ -691,7 +694,7 @@ impl LiteralDetector {
     ///   判定にフォールバックする。
     #[must_use]
     pub fn check_now(&self, deadline_ms: u64) -> Option<DetectionResult> {
-        let now = crate::hook::current_tick_ms();
+        let now = crate::clock::current_tick_ms();
 
         // COMPOSITION_BYTES_THRESHOLD (350B) は「VK_A→'あ' のように1VKで
         // 完結する1文字」の実測（5サンプル）に基づく値であり、per-VK confirm
@@ -799,7 +802,7 @@ impl LiteralDetector {
     /// backspace で失われる（実機で確認済み）。
     #[must_use]
     pub(crate) fn visible_fencing_verdict(&self, deadline_ms: u64) -> Option<DetectionResult> {
-        let now = crate::hook::current_tick_ms();
+        let now = crate::clock::current_tick_ms();
         let last_write_ms = crate::tsf::observer::gji_last_write_ms();
         let fencing_active = last_write_ms != 0;
         let evidence_is_fresh = !fencing_active || last_write_ms >= self.epoch_send_ms;
@@ -817,7 +820,6 @@ impl LiteralDetector {
 }
 
 #[cfg(test)]
-#[cfg(windows)]
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering::SeqCst;
@@ -848,7 +850,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_monitor_ok.store(false, SeqCst);
 
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 0);
         poll_until_ready(&probe, 100);
 
@@ -858,7 +860,7 @@ mod tests {
         // GetTickCount64 側だけを定期的に補正しジャンプさせることがあり、SUT は正しく
         // 反応しているのに無関係な別クロックとの不一致でテストだけ誤検知で失敗しうる
         // （2026-08-15 実機、"fallback too short: 10ms" を確認。BUG-65 追補3参照）。
-        let elapsed = crate::hook::current_tick_ms().saturating_sub(now_ms);
+        let elapsed = crate::clock::current_tick_ms().saturating_sub(now_ms);
         // フォールバック: warmup_ms=now, remaining=100ms → sleep_ms(100)
         //
         // 診断用（2026-08-15）: `check_now()` の第一分岐は
@@ -883,7 +885,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
 
         // warmup 200ms 前、GJI 最終 I/O は warmup の 50ms 後（= 150ms 前）
         // → idle = 150ms > 80ms → settled 検出済み
@@ -911,7 +913,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
 
         // GJI は settled 状態だが min_ms=80 のため phase1 で 80ms 待機する
         TSF_OBS.gji_monitor_ok.store(true, SeqCst);
@@ -939,7 +941,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
 
         // GJI I/O は warmup より前 → warmup 後に I/O なし → 既に正常状態 → min_ms 経過で即解放
         TSF_OBS.gji_monitor_ok.store(true, SeqCst);
@@ -975,7 +977,7 @@ mod tests {
         state.update_last_send_ms();
         std::thread::sleep(std::time::Duration::from_millis(60));
 
-        state.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+        state.mark_composition_cold(crate::tsf::cold_reason::ColdReason::PassthroughConfirmKey);
         let first_idle = state.cold_ctx.idle_ms_at_last_cold();
         assert!(
             (40..150).contains(&first_idle),
@@ -984,7 +986,7 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(60));
 
-        state.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+        state.mark_composition_cold(crate::tsf::cold_reason::ColdReason::PassthroughConfirmKey);
         let second_idle = state.cold_ctx.idle_ms_at_last_cold();
         assert!(
             (40..150).contains(&second_idle),
@@ -1021,7 +1023,7 @@ mod tests {
         // しかし候補ウィンドウの SHOW イベントは観測されている。
         TSF_OBS.gji_candidate_show.notify();
 
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         let result = detector.check_now(now_ms + 10_000); // まだ deadline 未到達
         assert!(
             matches!(result, Some(DetectionResult::CompositionConfirmed)),
@@ -1046,7 +1048,7 @@ mod tests {
         // write_bytes・candidate_show とも変化なし（本物の literal 化を模擬）。
         assert!(!TSF_OBS.gji_candidate_show.has_changed(baseline_show));
 
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         let result = detector.check_now(now_ms); // deadline は既に到達済み
         assert!(
             matches!(result, Some(DetectionResult::SuspectedLiteral)),
@@ -1066,7 +1068,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(4_000, SeqCst);
         let detector = LiteralDetector::new_with_pre_send_baseline(4_000, true);
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         TSF_OBS.gji_last_write_ms.store(now_ms, SeqCst); // epoch_send_ms 以降
         TSF_OBS.gji_write_bytes.store(4_400, SeqCst); // 閾値(350B)超過
 
@@ -1097,11 +1099,11 @@ mod tests {
                                                                                  // 実行され、この非決定性が顕在化した)。saturating_subで明示的に確実な
                                                                                  // 過去時刻を作ることで解像度に依存しないようにする(下のcheck_now_show_only_confirm_*
                                                                                  // テストと同じ手法)。
-        let stale_write_ms = crate::hook::current_tick_ms().saturating_sub(50);
+        let stale_write_ms = crate::clock::current_tick_ms().saturating_sub(50);
         TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
         TSF_OBS.gji_write_bytes.store(5_400, SeqCst); // 閾値超過だが根拠は stale
 
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         let result = detector.check_now(now_ms + 10_000); // deadline 未到達
         assert!(
             matches!(result, Some(DetectionResult::StaleConfirm)),
@@ -1121,7 +1123,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(6_000, SeqCst);
-        let epoch_ms = crate::hook::current_tick_ms();
+        let epoch_ms = crate::clock::current_tick_ms();
         TSF_OBS
             .gji_last_write_ms
             .store(epoch_ms.saturating_sub(50), SeqCst); // stale
@@ -1129,7 +1131,7 @@ mod tests {
         let detector = LiteralDetector::new_with_pre_send_baseline(6_000, true);
         TSF_OBS.gji_candidate_show.notify(); // write_bytes は閾値未満のまま
 
-        let far_deadline = crate::hook::current_tick_ms() + 10_000;
+        let far_deadline = crate::clock::current_tick_ms() + 10_000;
         let held = detector.check_now(far_deadline);
         assert!(
             held.is_none(),
@@ -1139,7 +1141,7 @@ mod tests {
         // 猶予中に gji_last_write_ms が追いつく。
         TSF_OBS
             .gji_last_write_ms
-            .store(crate::hook::current_tick_ms(), SeqCst);
+            .store(crate::clock::current_tick_ms(), SeqCst);
         let resolved = detector.check_now(far_deadline);
         assert!(
             matches!(resolved, Some(DetectionResult::CompositionConfirmed)),
@@ -1156,7 +1158,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(7_000, SeqCst);
-        let epoch_ms = crate::hook::current_tick_ms();
+        let epoch_ms = crate::clock::current_tick_ms();
         TSF_OBS
             .gji_last_write_ms
             .store(epoch_ms.saturating_sub(50), SeqCst); // stale のまま追いつかない
@@ -1164,7 +1166,7 @@ mod tests {
         let detector = LiteralDetector::new_with_pre_send_baseline(7_000, true);
         TSF_OBS.gji_candidate_show.notify();
 
-        let far_deadline = crate::hook::current_tick_ms() + 10_000;
+        let far_deadline = crate::clock::current_tick_ms() + 10_000;
         let held = detector.check_now(far_deadline);
         assert!(held.is_none(), "猶予開始直後はまだ None のはず: {held:?}");
 
@@ -1199,7 +1201,7 @@ mod tests {
         let detector = LiteralDetector::new_with_pre_send_baseline(8_000, true);
         TSF_OBS.gji_candidate_show.notify(); // write_bytes は閾値未満のまま
 
-        let far_deadline = crate::hook::current_tick_ms() + 10_000;
+        let far_deadline = crate::clock::current_tick_ms() + 10_000;
         let result = detector.check_now(far_deadline);
         assert!(
             matches!(result, Some(DetectionResult::CompositionConfirmed)),
@@ -1236,7 +1238,7 @@ mod tests {
 
         let evidence = detector.evidence_now(
             false,
-            crate::hook::current_tick_ms() + 10_000,
+            crate::clock::current_tick_ms() + 10_000,
             Generation::new(1),
         );
         assert_eq!(
@@ -1267,7 +1269,7 @@ mod tests {
         crate::tsf::observer::reset_literal_session_confirmed();
 
         let detector = LiteralDetector::new(true);
-        let deadline = crate::hook::current_tick_ms() + 10_000;
+        let deadline = crate::clock::current_tick_ms() + 10_000;
 
         let before = detector.evidence_now(false, deadline, Generation::new(301));
         assert!(!before.literal_session_confirmed, "mark 前は false のはず");
@@ -1304,7 +1306,7 @@ mod tests {
 
     #[test]
     fn negative_evidence_count_survives_raw_recovery_cold_mark_but_resets_on_focus_and_set_open() {
-        use crate::output::ColdReason;
+        use crate::tsf::cold_reason::ColdReason;
         let c = CompositionState::new();
         c.increment_negative_evidence_count();
         // give-up の cold mark（RawTsfLiteralRecovery）自体はリセットしない。
