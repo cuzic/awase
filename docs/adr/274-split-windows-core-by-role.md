@@ -8,7 +8,7 @@ summary: |-
   進め方は葉から剥がす: (0) 準備のコード移動と、層の向きを CI で固定する `deps.py --check`、(1) 葉の crate(hookinput → `awase-hook-core`、plans → `awase-windows-plans`、殻から scancode・bug_report)、(2) 下へ剥がす(base → `awase-windows-base`、keyeffect → `awase-key-effect`)と、残りの `awase-windows-core` を `awase-ime-core` に改名。各 crate は分割前と同じ相対パスを保ち、git mv(類似度 100%)で、merge commit で入れる。
   Opus レビュー(round 1・2)の Blocker 2 件(見落とした循環、D4 の順序)と、黙って検査が外れる 9 か所(pre-push の正規表現・compile_fail doctest・dylint の -p ほか)を反映した。Opus は「今は 7 分割をやらずガードだけ」を勧めたが、所有者の方針に従い、費用を抑える葉から剥がす順にした。
 status: |-
-  起案・Opus レビュー round 1・2 反映済み(2026-10-20)。設計のみ。実装は未着手(段階 0 から)。
+  起案・Opus レビュー round 1・2 反映済み(2026-10-20)。段階 0(準備)は完了。段階 1(葉の crate を剥がす)は未着手。
 related_adr:
   - "ADR-019"
   - "ADR-229"
@@ -111,20 +111,19 @@ L1  hookinput  (3,904)      awase-hook-core     フック・修飾キー・半�
 
 ### D4: 順序
 
-**段階 0(準備。どれも挙動を変えない小さな PR)**
-1. **済み(PR #716)**: `class_names.rs:334` の `impl From<AppImeProfile> for ImePolicyProfile` と、そのテスト(584-603 行)を `ime_event.rs` へ移した。doc(「state 層が focus 層に直接依存しない設計を維持する」)は書き直した。
-2. (不要になった) Opus round 1 は `explicit_press.rs:1751` の `#[cfg(test)]` 内 `impl PhysicalKeyDisposition { fn legacy_… }` を、`PhysicalKeyDisposition` が keyeffect にある前提で E0116(inherent impl は別 crate の型に書けない)と指摘した。
+**段階 0(準備。どれも挙動を変えない小さな PR)。2026-10-20 に完了**
+1. 済み(PR #716): `class_names.rs:334` の `impl From<AppImeProfile> for ImePolicyProfile` と、そのテスト(584-603 行)を `ime_event.rs` へ移した。doc は書き直した。
+   `architecture_guard.rs` の `InputRelay` の出現数のガード(class_names 12 → 10、ime_event 0 → 2)も合わせた。
+2. 不要になった: Opus round 1 は `explicit_press.rs:1751` の `#[cfg(test)]` 内 `impl PhysicalKeyDisposition { fn legacy_… }` を、`PhysicalKeyDisposition` が keyeffect にある前提で E0116 と指摘した。
    `physical_disposition` を imecore に置く改訂後の割り当てでは、`explicit_press.rs` も同じ crate なので問題ない。
-3. `tools/core-split/deps.py --check` を CI のジョブにする。走査対象は引数の 1 ディレクトリではなく、**core 系 crate の `src/` の和**(コロン区切りで複数渡す。段階 0 の 5 の一覧から作る)。許可されていない依存(本番とテストの両方)、未割当のモジュール、
-   `assign.py` にあるのに走査で見つからないモジュール(移した crate が走査から漏れた)で落とす。走査が 1 ディレクトリのままだと、段階 1 で葉を別の crate へ移したとたんに、それらのファイルの検査が黙って消える。
-4. `[workspace.lints]` へ lints を寄せる(`[lints]` の 25 行が crate の数だけ複製されるのを避ける)。
-5. **core 系 crate の一覧を 1 か所に置く**(`tools/core-split/` か `xtask`。例: ワークスペースのメンバーのうち core に推移的に依存するもの)。次をそこから作るか、一覧と照合して落とす(足し忘れが BUG-116 と同じ穴になるのを防ぐ):
-   - `EXTRA_SRC_CRATES`(`tests/support/src_roots.rs`)と、`layer_boundary_guard.rs` の `crate_does_not_depend_on_windows`。
-   - `.githooks/pre-push:38,86` の正規表現(`crates/awase-[a-z-]+/src/` のように crate 名を問わない形でもよい)。段階 1 の hook-core と plans は再発ファミリーのファイルを含む(半角英数トグル・物理キー押下ラッチ・warmup・defer/replay・focus 遷移)ので、最初の PR から効く。
-   - `xtask-adr-evidence/src/core_registry.rs:53-54`(パスの直書き)と `main.rs:243`(読む mutants の設定が 2 ファイル固定)。
-   - `ci.yml` の `-p`(57・191・336・404 行)と mutants の matrix(`ci.yml:658`、`mutants-windows.yml:50`)。
-   - `deps.py` の走査対象(下の 3)。
-6. **統合テストの扱い**: `ci_test_coverage_guard.rs` は `crates/awase-windows/tests/*.rs` しか見ず、`cargo nextest run --workspace --lib` は統合テストを走らせない。移した crate の `tests/` は黙って走らなくなるので、統合テストは殻に残す(再公開で `awase_windows::scancode_*` が引ける)か、ガードの走査対象を core 系 crate の一覧に広げる。
+3. 済み(PR #718・#719): `tools/core-split/deps.py --check` を CI の `core-layers` ジョブにした。走査対象は `core-crates.txt` の src の和(`check_wiring.py roots`)で、
+   許可されていない依存(本番とテスト)、未割当のモジュール、`assign.py` にあるのに走査で見つからないモジュールで落ちる。
+4. 済み(PR #720): `awase-windows` と core の lints を、ルートの `[workspace.lints]` に寄せた(`[lints] workspace = true`)。
+5. 済み(PR #719): core 系 crate の一覧 `tools/core-split/core-crates.txt` を唯一の一覧にした。`check_wiring.py` が、`EXTRA_SRC_CRATES`・`ci.yml` の `-p`・mutants の matrix と設定・`mutants-windows.yml`・
+   `mise.toml`・xtask の `core_registry.rs`・`layer_boundary_guard.rs`・pre-push・`[lints] workspace = true` を照合し、足りなければ名指しして落ちる。
+   pre-push の正規表現は `@CORE_ROOTS@` の目印を一覧から展開して作る(xtask-adr-evidence も同じ展開で fix-requires-evidence の表と照合する)。
+6. 済み(本 PR): core 系 crate に統合テスト(`tests/*.rs`)を置かない規則を `check_wiring.py` で固定した。`ci_test_coverage_guard.rs` が見るのは殻の `tests/` だけで、
+   `cargo nextest run --workspace --lib` は統合テストを走らせないため、移した crate の統合テストはどこからも実行されなくなる。統合テストは殻に残し、再公開された経路で引く。
 
 **段階 1(葉から剥がす。`awase-windows-core` の名前とパスは変えない)**
 1. `awase-hook-core`(hookinput)。依存は base だけで、準備の変更が要らない。再公開の glob と段階 0 の 5 の仕組みの検証になる。
