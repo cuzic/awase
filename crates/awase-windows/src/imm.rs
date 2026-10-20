@@ -17,14 +17,9 @@ pub(crate) const IMC_SETOPENSTATUS: usize = 0x0006;
 pub(crate) const IMC_GETCONVERSIONMODE: usize = 0x0001;
 pub(crate) const IMC_SETCONVERSIONMODE: usize = 0x0002;
 
-/// ローマ字入力モードフラグ（0x0010）
-pub(crate) const IME_CMODE_ROMAN: u32 = 0x0010;
-/// 日本語ネイティブ入力モードフラグ（0x0001）
-pub(crate) const IME_CMODE_NATIVE: u32 = 0x0001;
-/// カタカナ入力モードフラグ（0x0002）
-pub(crate) const IME_CMODE_KATAKANA: u32 = 0x0002;
-/// 全角モードフラグ（0x0008）
-pub(crate) const IME_CMODE_FULLSHAPE: u32 = 0x0008;
+pub(crate) use crate::conv_flags::{
+    IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE, IME_CMODE_ROMAN,
+};
 
 // ─── GCS_* (ImmGetCompositionStringW のインデックス) ────────────────
 //

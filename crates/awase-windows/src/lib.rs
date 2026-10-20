@@ -23,9 +23,13 @@
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub use awase_windows_core::{journal, journal_policy, keymap, tuning, vk};
 pub mod bug_report;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod clock;
 pub mod config_diagnostics;
 #[cfg(test)]
 mod config_key_resolution_tests;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod conv_flags;
 pub mod focus;
 pub mod focus_resync;
 pub mod gji_charset_autodetect;
