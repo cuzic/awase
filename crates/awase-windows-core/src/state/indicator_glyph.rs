@@ -242,6 +242,8 @@ pub struct GlyphSample {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddOutcome {
     Added,
+    /// そのクラスの見本の数が上限に達している
+    Full,
     /// 同じクラスのほぼ同じ見本が既にある
     Duplicate,
     /// 別のクラスの見本に近すぎる(そのクラスの組の判定が曖昧になる。ADR-261 決定 2 の衝突)
@@ -277,6 +279,8 @@ pub struct GlyphTable {
     min_separation: f32,
     /// 同じクラスの見本どうしの距離がこれ以下なら `Duplicate`。
     duplicate_distance: f32,
+    /// 1 クラスの見本の数の上限(暫定。ADR-261 決定 2「上限は D0 で決める」)。
+    max_per_class: usize,
 }
 
 impl Default for GlyphTable {
@@ -285,6 +289,7 @@ impl Default for GlyphTable {
             samples: Vec::new(),
             min_separation: 0.4,
             duplicate_distance: 0.05,
+            max_per_class: 6,
         }
     }
 }
@@ -312,6 +317,15 @@ impl GlyphTable {
 
     /// 見本を足す。別クラスに近すぎれば `Conflict`、同じクラスにほぼ同じ見本があれば `Duplicate`。
     pub fn add(&mut self, sample: GlyphSample) -> AddOutcome {
+        if self
+            .samples
+            .iter()
+            .filter(|s| s.class == sample.class)
+            .count()
+            >= self.max_per_class
+        {
+            return AddOutcome::Full;
+        }
         for s in &self.samples {
             let d = s.feature.distance(&sample.feature);
             if s.class == sample.class {
@@ -409,6 +423,130 @@ pub fn classify_image(
     match preprocess(img) {
         Ok(f) => classify_glyph(table, thresholds, &f),
         Err(m) => GlyphReading::Miss(m),
+    }
+}
+
+// ───────────────────── belief の粗いラベルと、受け身の収集の判断(純粋) ─────────────────────
+
+/// belief が持つ粗い入力モード(閉・かな系・英数系)。段階 1 の shadow は、この粗いラベルで見本の表を作って突き合わせる。
+///
+/// ADR-261 決定 2 の `GlyphClass` は 6 つだが、belief の入力モードはひらがなとカタカナ(かな系)、半角英数と全角英数(英数系)を
+/// 区別しない。Engine が必要とするのは「開いていて、ローマ字入力か英数か」なので、まずこの 3 つで一致を見る。
+/// 表のキーには [`GlyphClass`] の代表(閉=`Closed`、かな系=`Hiragana`、英数系=`HalfAlnum`)を使う([`Self::class`])。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum BeliefLabel {
+    Closed,
+    Kana,
+    Eisu,
+}
+
+impl BeliefLabel {
+    /// journal・ログ用の短い名前。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Kana => "kana",
+            Self::Eisu => "eisu",
+        }
+    }
+
+    /// 表のキーに使う代表の [`GlyphClass`]。
+    pub const fn class(self) -> GlyphClass {
+        match self {
+            Self::Closed => GlyphClass::Closed,
+            Self::Kana => GlyphClass::Hiragana,
+            Self::Eisu => GlyphClass::HalfAlnum,
+        }
+    }
+
+    /// [`Self::class`] の逆(代表以外のクラスは `None`)。
+    pub const fn from_class(class: GlyphClass) -> Option<Self> {
+        match class {
+            GlyphClass::Closed => Some(Self::Closed),
+            GlyphClass::Hiragana => Some(Self::Kana),
+            GlyphClass::HalfAlnum => Some(Self::Eisu),
+            GlyphClass::FullKatakana | GlyphClass::FullAlnum | GlyphClass::HalfKatakana => None,
+        }
+    }
+}
+
+/// belief の (開閉, 入力モード) から粗いラベルを作る。**確認された状態だけ**を採る: 閉は入力モードに依らず `Closed`、開いていて
+/// `ObservedRomaji`/`ObservedKana` は `Kana`、`ObservedEisu` は `Eisu`。仮定(`AssumedRomaji`)・不明は `None`(ラベルにしない)。
+pub const fn belief_label(
+    open: bool,
+    mode: awase::engine::mode_state::InputModeState,
+) -> Option<BeliefLabel> {
+    use awase::engine::mode_state::InputModeState;
+    if !open {
+        return Some(BeliefLabel::Closed);
+    }
+    match mode {
+        InputModeState::ObservedRomaji | InputModeState::ObservedKana => Some(BeliefLabel::Kana),
+        InputModeState::ObservedEisu => Some(BeliefLabel::Eisu),
+        InputModeState::AssumedRomaji { .. } | InputModeState::Unknown => None,
+    }
+}
+
+/// 同じ窓の 2 回の取り込み(待ちが違う)の特徴の距離がこれ以下なら「字形が落ち着いている」(暫定。ADR-261 決定 2 の安定化)。
+pub const STABLE_DISTANCE: f32 = 0.05;
+
+/// 受け身の収集で、取り込み 1 回の特徴と、そのときの belief のラベル。
+#[derive(Debug, Clone, Copy)]
+pub struct Capture<'a> {
+    pub feature: &'a GlyphFeature,
+    pub label: Option<BeliefLabel>,
+}
+
+/// 見本として表に足してよいか(足すなら、そのラベル)。**読める窓**(`readable`。belief が直接の読みに追随している窓)で、
+/// 同じ窓の前回(待ちが短い方)の取り込みと今回で、ラベルが同じ(確認された状態)で、字形が落ち着いている(特徴の距離が
+/// [`STABLE_DISTANCE`] 以下)ときだけ。前回が無い(最初の取り込み)なら足さない。
+pub fn collect_label(
+    prev: Option<Capture<'_>>,
+    now: Capture<'_>,
+    readable: bool,
+) -> Option<BeliefLabel> {
+    if !readable {
+        return None;
+    }
+    let prev = prev?;
+    let label = now.label?;
+    if prev.label? != label {
+        return None;
+    }
+    (prev.feature.distance(now.feature) <= STABLE_DISTANCE).then_some(label)
+}
+
+/// 取り込み 1 回の照合の結果(journal に残す)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatchResult {
+    /// 照合で採ったラベル(`Hit` のとき)。代表以外のクラスに当たった場合は `None`
+    pub reading: Option<BeliefLabel>,
+    /// `Miss` の理由(`Hit` のときは `None`)
+    pub miss: Option<GlyphMiss>,
+    /// 最近傍の距離と距離比(`Hit` のとき)
+    pub distance: Option<f32>,
+    pub ratio: Option<f32>,
+}
+
+/// 表で分類し、journal 向けの結果にする。
+pub fn match_feature(
+    table: &GlyphTable,
+    thresholds: &Thresholds,
+    feature: &GlyphFeature,
+) -> MatchResult {
+    match classify_glyph(table, thresholds, feature) {
+        GlyphReading::Hit(h) => MatchResult {
+            reading: BeliefLabel::from_class(h.class),
+            miss: None,
+            distance: Some(h.distance),
+            ratio: Some(h.ratio),
+        },
+        GlyphReading::Miss(m) => MatchResult {
+            reading: None,
+            miss: Some(m),
+            distance: None,
+            ratio: None,
+        },
     }
 }
 
@@ -608,7 +746,38 @@ impl ProbeOutcome {
             delay_ms,
             profile,
             belief_open,
+            ..Default::default()
         }
+    }
+}
+
+/// 照合の結果を journal の記録に写す(`to_record` で作った記録に、照合・収集の欄を足す)。
+pub fn apply_match(
+    record: &mut crate::journal::IndicatorGlyphRecord,
+    m: &MatchResult,
+    belief: Option<BeliefLabel>,
+    collected: bool,
+    table_size: usize,
+) {
+    record.reading = m.reading.map(BeliefLabel::label);
+    record.match_miss = m.miss.map(GlyphMiss::label);
+    record.distance_x100 = m.distance.map(x100);
+    record.ratio_x100 = m.ratio.map(x100);
+    record.belief_label = belief.map(BeliefLabel::label);
+    record.agree = match (m.reading, belief) {
+        (Some(r), Some(b)) => Some(r == b),
+        _ => None,
+    };
+    record.collected = collected;
+    record.table_size = u32::try_from(table_size).unwrap_or(u32::MAX);
+}
+
+/// 距離・距離比を 100 倍の整数にする(無限大・巨大な値は 9999 で頭打ち)。
+fn x100(v: f32) -> u32 {
+    if v.is_finite() {
+        (v * 100.0).round().clamp(0.0, 9999.0) as u32
+    } else {
+        9999
     }
 }
 
@@ -1469,6 +1638,175 @@ mod tests {
         }
         .to_record("standard", None, 2500);
         assert_eq!((ok.verdict, ok.miss_reason), ("captured", None));
+    }
+
+    #[test]
+    fn belief_label_uses_only_confirmed_states() {
+        use awase::engine::mode_state::{AssumedReason, InputModeState as M};
+        assert_eq!(belief_label(false, M::Unknown), Some(BeliefLabel::Closed));
+        assert_eq!(
+            belief_label(false, M::ObservedEisu),
+            Some(BeliefLabel::Closed)
+        );
+        assert_eq!(
+            belief_label(true, M::ObservedRomaji),
+            Some(BeliefLabel::Kana)
+        );
+        assert_eq!(belief_label(true, M::ObservedKana), Some(BeliefLabel::Kana));
+        assert_eq!(belief_label(true, M::ObservedEisu), Some(BeliefLabel::Eisu));
+        assert_eq!(belief_label(true, M::Unknown), None);
+        assert_eq!(
+            belief_label(
+                true,
+                M::AssumedRomaji {
+                    reason: AssumedReason::ImmBridgeBroken
+                }
+            ),
+            None
+        );
+        // 代表のクラスとの往復。
+        for l in [BeliefLabel::Closed, BeliefLabel::Kana, BeliefLabel::Eisu] {
+            assert_eq!(BeliefLabel::from_class(l.class()), Some(l));
+        }
+        assert_eq!(BeliefLabel::from_class(GlyphClass::FullKatakana), None);
+    }
+
+    #[test]
+    fn collect_label_needs_a_readable_window_a_previous_capture_same_label_and_a_stable_glyph() {
+        let a = feature(&SHAPE_A, 32, 24, false, false);
+        let a_again = feature(&SHAPE_A, 32, 24, false, false);
+        let other = feature(&SHAPE_BOX, 32, 24, false, false);
+        let cap = |f, label| Capture { feature: f, label };
+        let k = Some(BeliefLabel::Kana);
+        // 条件がそろえば、そのラベルで集める。
+        assert_eq!(collect_label(Some(cap(&a, k)), cap(&a_again, k), true), k);
+        // 読めない窓・前回なし・ラベルなし・ラベルが違う・字形が違う(落ち着いていない)は集めない。
+        assert_eq!(
+            collect_label(Some(cap(&a, k)), cap(&a_again, k), false),
+            None
+        );
+        assert_eq!(collect_label(None, cap(&a_again, k), true), None);
+        assert_eq!(
+            collect_label(Some(cap(&a, k)), cap(&a_again, None), true),
+            None
+        );
+        assert_eq!(
+            collect_label(Some(cap(&a, None)), cap(&a_again, k), true),
+            None
+        );
+        assert_eq!(
+            collect_label(
+                Some(cap(&a, k)),
+                cap(&a_again, Some(BeliefLabel::Eisu)),
+                true
+            ),
+            None
+        );
+        assert_eq!(collect_label(Some(cap(&a, k)), cap(&other, k), true), None);
+    }
+
+    #[test]
+    fn match_feature_reports_the_coarse_label_or_the_miss_reason() {
+        let mut table = GlyphTable::new();
+        let sample = |label: BeliefLabel, shape: &[&str; 9]| GlyphSample {
+            class: label.class(),
+            feature: feature(shape, 32, 24, false, false),
+            origin: SampleOrigin::SameEnv,
+        };
+        assert_eq!(
+            table.add(sample(BeliefLabel::Kana, &SHAPE_A)),
+            AddOutcome::Added
+        );
+        assert_eq!(
+            table.add(sample(BeliefLabel::Closed, &SHAPE_BOX)),
+            AddOutcome::Added
+        );
+        let probe = feature(&SHAPE_A, 64, 48, true, true);
+        let m = match_feature(&table, &Thresholds::default(), &probe);
+        assert_eq!(m.reading, Some(BeliefLabel::Kana));
+        assert!(m.miss.is_none() && m.distance.is_some() && m.ratio.is_some());
+        let none = match_feature(&GlyphTable::new(), &Thresholds::default(), &probe);
+        assert_eq!(
+            (none.reading, none.miss),
+            (None, Some(GlyphMiss::EmptyTable))
+        );
+    }
+
+    #[test]
+    fn apply_match_fills_the_record_without_touching_the_capture_fields() {
+        let o = ProbeOutcome {
+            result: Ok(()),
+            width: 32,
+            height: 24,
+            dots: 900,
+            read_ms: 50,
+        };
+        let mut r = o.to_record("standard", Some(true), 900);
+        let hit = MatchResult {
+            reading: Some(BeliefLabel::Kana),
+            miss: None,
+            distance: Some(0.123),
+            ratio: Some(f32::INFINITY),
+        };
+        apply_match(&mut r, &hit, Some(BeliefLabel::Kana), true, 3);
+        assert_eq!(
+            (r.reading, r.match_miss, r.agree),
+            (Some("kana"), None, Some(true))
+        );
+        assert_eq!((r.distance_x100, r.ratio_x100), (Some(12), Some(9999)));
+        assert_eq!(
+            (r.belief_label, r.collected, r.table_size),
+            (Some("kana"), true, 3)
+        );
+        assert_eq!((r.verdict, r.width, r.dots), ("captured", 32, 900));
+        // 一致しない読み・照合の Miss・belief が無いとき。
+        apply_match(&mut r, &hit, Some(BeliefLabel::Eisu), false, 3);
+        assert_eq!(r.agree, Some(false));
+        let miss = MatchResult {
+            reading: None,
+            miss: Some(GlyphMiss::TooFar),
+            distance: None,
+            ratio: None,
+        };
+        apply_match(&mut r, &miss, Some(BeliefLabel::Kana), false, 0);
+        assert_eq!(
+            (r.reading, r.match_miss, r.agree, r.distance_x100),
+            (None, Some("too-far"), None, None)
+        );
+        apply_match(&mut r, &hit, None, false, 1);
+        assert_eq!(r.agree, None);
+    }
+
+    #[test]
+    fn table_caps_samples_per_class() {
+        let mut table = GlyphTable::new();
+        // 距離が離れた別の形を 7 つ同じクラスに入れようとすると、6 つで Full になる。
+        let shapes = [&SHAPE_A, &SHAPE_BOX, &SHAPE_CROSS, &SHAPE_E, &SHAPE_SLASH];
+        let mut added = 0;
+        let mut full = false;
+        for round in 0..2 {
+            for shape in shapes {
+                let mut s = *shape;
+                // 2 周目は最後の行を落として別の見本にする。
+                if round == 1 {
+                    s[8] = ".........";
+                }
+                match table.add(GlyphSample {
+                    class: GlyphClass::Hiragana,
+                    feature: feature(&s, 32, 24, false, false),
+                    origin: SampleOrigin::SameEnv,
+                }) {
+                    AddOutcome::Added => added += 1,
+                    AddOutcome::Full => full = true,
+                    AddOutcome::Duplicate | AddOutcome::Conflict => {}
+                }
+            }
+        }
+        assert!(added <= 6 && table.len() <= 6);
+        assert!(
+            full || added < 6,
+            "上限に達したら Full、達しないなら重複で弾かれている"
+        );
     }
 
     #[test]

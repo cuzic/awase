@@ -1379,8 +1379,9 @@ pub(super) fn run_all() -> Result<()> {
     // 入力インジケーターの字形の取り込みワーカーと WinEvent フックを起動する（観測のみ。belief・IME には何もしない）。
     let _indicator_glyph_guards =
         if effective_evidence.glyph >= awase::config::EvidenceLevel::Observe {
-            let (worker, tx) = crate::observer::indicator_glyph::spawn_indicator_glyph_worker();
-            let _ = with_app(|app| app.init_indicator_glyph(Some(tx)));
+            let (worker, tx, rx_feature) =
+                crate::observer::indicator_glyph::spawn_indicator_glyph_worker();
+            let _ = with_app(|app| app.init_indicator_glyph(Some(tx), Some(rx_feature)));
             Some((
                 worker,
                 crate::observer::indicator_glyph::install_foreground_hook(

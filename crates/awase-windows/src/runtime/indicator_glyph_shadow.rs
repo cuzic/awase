@@ -1,22 +1,33 @@
-//! ADR-261 段階 1: 入力インジケーターの字形の**影の取り込み**（挙動を変えない観測）。
+//! ADR-261 段階 1: 入力インジケーターの字形の**影の取り込み・照合・収集**（挙動を変えない観測）。
 //!
 //! 前面窓が変わったとき（`observer::indicator_glyph` の `EVENT_SYSTEM_FOREGROUND` の WinEvent が検知）、字形が実状態に追随する
 //! のを待ってから（0.9 秒後と 2.5 秒後の 2 回。字形の遅れは中央 0.2 秒・最大 0.68 秒、ADR-261）インジケーターの矩形を取り込み、
-//! 前処理まで進めた結果（大きさ・前景の点数・所要・失敗の理由）を journal（`JournalEntry::IndicatorGlyph`）に残す。
-//! **belief には入れない・IME へ何も書かない・打鍵は変えない・画素は保存しない**。目的は、実機で「取れる環境・取れない環境」と
-//! 失敗の理由の分布を実ジャーナルで確かめること（見本の表への照合と一致率は次の段階）。
+//! 前処理まで進める。その特徴を、見本の表（矩形の大きさ別。**起動ごとに作る**。永続化は次の段階）に**照合**し、結果
+//! （大きさ・前景の点数・所要・失敗の理由・照合の読みと belief の粗いラベルの一致）を journal（`JournalEntry::IndicatorGlyph`）に残す。
+//!
+//! 表は**受け身に集める**: 読める窓（`standard`。belief が直接の読みに追随している）で、同じ窓の 2 回の取り込みの belief のラベルが
+//! 同じ（確認された状態）で字形が落ち着いているときだけ、そのラベルの見本として足す（ADR-261 決定 2。belief の入力モードは
+//! ひらがな/カタカナ・半角/全角英数を区別しないので、ラベルは閉・かな・英数の 3 つ。`state::indicator_glyph::BeliefLabel`）。
+//!
+//! **belief には入れない・IME へ何も書かない・打鍵は変えない・画素は保存しない**。belief は読み取り（`effective_open()`・
+//! `input_mode()`）だけで、ラベルの作成と記録に使う。目的は、読める窓での一致率と、観測の無い窓での belief とのずれを、実ジャーナルで
+//! 確かめること。
 //!
 //! 有効なのは `[indicator_evidence] glyph` の実効の段階が `observe` 以上（既定は off のオプトイン。ADR-271）のときだけ。反映は再起動後
 //! （フックと読み取りスレッドは起動時に 1 度だけ作る。`app/bootstrap.rs`）。
 
-use std::collections::VecDeque;
-use std::sync::mpsc::Sender;
+use std::collections::{HashMap, VecDeque};
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
 use windows::Win32::Foundation::HWND;
 
+use crate::focus::class_names::AppImeProfile;
 use crate::observer::indicator_glyph::GlyphReadRequest;
-use crate::state::indicator_glyph::ProbeOutcome;
+use crate::state::indicator_glyph::{
+    apply_match, belief_label, collect_label, match_feature, AddOutcome, BeliefLabel, Capture,
+    GlyphFeature, GlyphSample, GlyphTable, ProbeOutcome, SampleOrigin, Thresholds,
+};
 
 /// 前面窓の変化から取り込むまでの待ち（ミリ秒）。字形の遅れ（最大 0.68 秒、ADR-261）より長い 2 点。
 const READ_DELAYS_MS: [u16; 2] = [900, 2500];
@@ -32,21 +43,36 @@ struct Pending {
     delay_ms: u32,
 }
 
+/// 同じ窓の前回（待ちが短い方）の取り込み。収集の判断（字形が落ち着いているか）に使う。
+struct LastCapture {
+    foreground: isize,
+    feature: GlyphFeature,
+    label: Option<BeliefLabel>,
+}
+
 /// 影の取り込みの状態。読み取りワーカーへの送信口が無ければ（無効のとき）何もしない。
 pub(super) struct IndicatorGlyphShadow {
     tx: Option<Sender<GlyphReadRequest>>,
+    /// ワーカーが返す前処理後の特徴（結果のメッセージと依頼の順に 1 対 1 で対応する）
+    rx_feature: Option<Receiver<Option<GlyphFeature>>>,
     pending: VecDeque<Pending>,
     last_trigger: Option<Instant>,
+    last_capture: Option<LastCapture>,
+    /// 見本の表（取り込んだ矩形の大きさ `(幅, 高さ)` 別。大きさは DPI に比例するので、環境の違いの代わりに使う）
+    tables: HashMap<(u16, u16), GlyphTable>,
     /// 取り込みの件数（不具合報告の要約用。画像・画素は持たない。ADR-271 D5）
     counters: crate::indicator_evidence::IndicatorGlyphCounters,
 }
 
 impl IndicatorGlyphShadow {
-    pub(super) const fn disabled() -> Self {
+    pub(super) fn disabled() -> Self {
         Self {
             tx: None,
+            rx_feature: None,
             pending: VecDeque::new(),
             last_trigger: None,
+            last_capture: None,
+            tables: HashMap::new(),
             counters: crate::indicator_evidence::IndicatorGlyphCounters::new(),
         }
     }
@@ -61,13 +87,16 @@ fn is_excluded_foreground_class(class: &str) -> bool {
 }
 
 impl super::Runtime {
-    /// 起動時に、読み取りワーカーへの送信口を渡して有効にする（`None` なら無効のまま）。
-    pub(crate) fn init_indicator_glyph(&mut self, tx: Option<Sender<GlyphReadRequest>>) {
+    /// 起動時に、読み取りワーカーへの送信口と特徴の受信口を渡して有効にする（`None` なら無効のまま）。
+    pub(crate) fn init_indicator_glyph(
+        &mut self,
+        tx: Option<Sender<GlyphReadRequest>>,
+        rx_feature: Option<Receiver<Option<GlyphFeature>>>,
+    ) {
         self.indicator_glyph = IndicatorGlyphShadow {
             tx,
-            pending: VecDeque::new(),
-            last_trigger: None,
-            counters: crate::indicator_evidence::IndicatorGlyphCounters::new(),
+            rx_feature,
+            ..IndicatorGlyphShadow::disabled()
         };
     }
 
@@ -115,10 +144,11 @@ impl super::Runtime {
             });
         }
         self.indicator_glyph.last_trigger = Some(now);
+        self.indicator_glyph.last_capture = None;
         tracing::debug!("[indicator-glyph] foreground changed → glyph reads requested");
     }
 
-    /// 読み取りワーカーの結果（`WM_INDICATOR_GLYPH_READ`）を受け、journal に残す。何も変えない。
+    /// 読み取りワーカーの結果（`WM_INDICATOR_GLYPH_READ`）を受け、照合・収集して journal に残す。何も変えない。
     ///
     /// 結果は依頼の順に返る。結果が返った時点で前面窓が依頼時と変わっていれば、字形は別の窓のものなので捨てる。
     /// 窓の IME プロファイルと belief は、**結果が返った時点**（フォーカス追跡が落ち着いた後）のものを添える。
@@ -129,6 +159,13 @@ impl super::Runtime {
             );
             return;
         };
+        // 特徴は結果と 1 対 1 に対応する。捨てる結果でも必ず 1 つ取り出して、対応を保つ。
+        let feature = self
+            .indicator_glyph
+            .rx_feature
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
+            .flatten();
         let Some(pending) = self.indicator_glyph.pending.pop_front() else {
             // 失われたとみなした依頼の遅れた結果、または二重配送。文脈が無いので記録しない。
             tracing::debug!("[indicator-glyph] result without a pending request; dropped");
@@ -139,9 +176,48 @@ impl super::Runtime {
             tracing::debug!("[indicator-glyph] foreground changed during the read; result dropped");
             return;
         }
-        let profile = super::lang_detect_shadow::profile_label(self.platform.current_app_profile());
-        let belief_open = Some(self.platform_state.ime.effective_open());
-        let record = outcome.to_record(profile, belief_open, pending.delay_ms);
+        let profile_kind = self.platform.current_app_profile();
+        let profile = super::lang_detect_shadow::profile_label(profile_kind);
+        let belief_open = self.platform_state.ime.effective_open();
+        let label = belief_label(belief_open, self.platform_state.ime.input_mode());
+        let mut record = outcome.to_record(profile, Some(belief_open), pending.delay_ms);
+
+        if let Some(f) = feature {
+            let key = (outcome.width, outcome.height);
+            let table = self.indicator_glyph.tables.entry(key).or_default();
+            // 照合は、収集する前の表で行う（自分自身を見本にして一致させない）。
+            let m = match_feature(table, &Thresholds::default(), &f);
+            // 収集: 2 回目（待ちが長い方）の取り込みで、同じ窓の 1 回目と比べて落ち着いていれば足す。
+            let is_second = pending.delay_ms == u32::from(READ_DELAYS_MS[1]);
+            let prev = self
+                .indicator_glyph
+                .last_capture
+                .as_ref()
+                .filter(|p| p.foreground == pending.foreground && is_second)
+                .map(|p| Capture {
+                    feature: &p.feature,
+                    label: p.label,
+                });
+            let readable = profile_kind == AppImeProfile::Standard;
+            let collected = collect_label(prev, Capture { feature: &f, label }, readable)
+                .is_some_and(|l| {
+                    table.add(GlyphSample {
+                        class: l.class(),
+                        feature: f.clone(),
+                        origin: SampleOrigin::SameEnv,
+                    }) == AddOutcome::Added
+                });
+            apply_match(&mut record, &m, label, collected, table.len());
+            self.indicator_glyph.last_capture = if is_second {
+                None
+            } else {
+                Some(LastCapture {
+                    foreground: pending.foreground,
+                    feature: f,
+                    label,
+                })
+            };
+        }
         self.indicator_glyph.counters.record(&record);
         self.platform_state
             .ime

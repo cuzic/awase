@@ -8861,7 +8861,8 @@ fn indicator_menu_shadow_is_observe_only_and_opt_in() {
 ///
 /// - 取り込み（`observer/indicator_glyph.rs`）と記録（`runtime/indicator_glyph_shadow.rs`）は、belief・IME 制御・
 ///   観測ストアに入れる型/関数を一切使わない（belief への配線は別 ADR。ADR-273）。
-/// - ランタイム側が `platform_state` に触れるのは、読み取り（`effective_open()`）と記録（`journal.record(`）の 2 箇所だけ。
+/// - ランタイム側が `platform_state` に触れるのは、belief の読み取り（`effective_open()`・`input_mode()`。見本のラベルと一致の記録に使う）と
+///   記録（`journal.record(`）の 3 箇所だけ。
 /// - 取り込みワーカーと WinEvent フックの起動は、`[indicator_evidence] glyph` の実効の段階（`min(設定値, ui_max_level())`）が
 ///   `observe` 以上のときだけ（既定は off のオプトイン。ADR-271）。
 /// - 画素は journal・メッセージに載せない（`ProbeOutcome` は大きさ・点数・所要・理由だけ。ADR-261 決定 7）。
@@ -8904,13 +8905,14 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
         }
     }
 
-    // ランタイム側の platform_state への接触は、読み取りと記録の 2 つだけ。
+    // ランタイム側の platform_state への接触は、belief の読み取り 2 つ（ラベルの作成に使う）と記録の 1 つだけ。
     assert_eq!(
         runtime.matches("platform_state").count(),
-        2,
-        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()（読み取り）と journal.record(（記録）の 2 箇所だけ"
+        3,
+        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()（読み取り）と journal.record(（記録）の 3 箇所だけ"
     );
     assert!(runtime.contains("platform_state.ime.effective_open()"));
+    assert!(runtime.contains("platform_state.ime.input_mode()"));
     assert!(runtime.contains(
         "platform_state.ime.journal.record(crate::journal::JournalEntry::IndicatorGlyph{record})"
     ));
