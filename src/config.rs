@@ -628,6 +628,19 @@ pub enum EvidenceLevel {
     All,
 }
 
+impl EvidenceLevel {
+    /// 設定ファイルと不具合報告での表記（`serde(rename_all = "snake_case")` と同じ）。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Observe => "observe",
+            Self::Unobserved => "unobserved",
+            Self::All => "all",
+        }
+    }
+}
+
 /// 入力インジケーターを読む証拠源ごとの段階（ADR-271）。字形とメニューは独立したスイッチ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(default)]

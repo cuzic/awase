@@ -730,6 +730,10 @@ pub struct BugReportPayload {
     pub attach_running_processes: bool,
     #[serde(default)]
     pub running_processes: Option<Vec<String>>,
+    /// ADR-271 D5。`attach_state_snapshot` に相乗り（件数だけの診断。新規フラグは足さない）。
+    /// `#[serde(default)]`必須（`SCHEMA_VERSION`を上げていないため）。
+    #[serde(default)]
+    pub indicator_evidence: Option<BugReportIndicatorEvidence>,
     pub reported_at: String,
 }
 
@@ -829,6 +833,56 @@ impl From<&awase::engine::RetroEvalStats> for BugReportRetroEvalStats {
     }
 }
 
+/// ADR-271 D5: 入力インジケーターを読む補助の実効の段階と、読みの件数。件数だけで内容（メニューの項目名・字形）は含まない。
+/// 段階は**設定値ではなく実効の段階**（`min(設定値, ui_max_level())`）で、`off` でも常に出す（旧版との区別のため）。
+/// `SCHEMA_VERSION` は上げていない（追加のみ。`#[serde(default)]` 必須）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportIndicatorEvidence {
+    /// 字形の実効の段階（`off`/`observe`/`unobserved`/`all`）。字形の読み取りは未実装の間は常に `off`
+    pub glyph_level: String,
+    pub menu: BugReportIndicatorMenuSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportIndicatorMenuSummary {
+    /// 右クリックメニューの実効の段階
+    pub level: String,
+    /// 読み取りの結果を受けた回数
+    pub reads: u32,
+    /// 同定できた回数
+    pub hits: u32,
+    /// 同定できなかった理由ごとの回数
+    pub miss_reasons: std::collections::BTreeMap<String, u32>,
+    /// 読める窓（`standard`）で、belief（直接の読みに追随）と一致した/しなかった回数
+    pub direct_match: u32,
+    pub direct_mismatch: u32,
+    /// 観測の無い窓（`imm32-unavailable`）で、belief と一致した/しなかった回数（意味が違うので分けて数える）
+    pub belief_match: u32,
+    pub belief_mismatch: u32,
+}
+
+impl BugReportIndicatorEvidence {
+    #[must_use]
+    pub fn new(
+        effective: crate::indicator_evidence::EffectiveEvidence,
+        menu: &crate::indicator_evidence::IndicatorMenuCounters,
+    ) -> Self {
+        Self {
+            glyph_level: effective.glyph.label().to_owned(),
+            menu: BugReportIndicatorMenuSummary {
+                level: effective.menu.label().to_owned(),
+                reads: menu.reads,
+                hits: menu.hits,
+                miss_reasons: menu.miss_reasons.clone(),
+                direct_match: menu.direct_match,
+                direct_mismatch: menu.direct_mismatch,
+                belief_match: menu.belief_match,
+                belief_mismatch: menu.belief_mismatch,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BugReportDiagnostics {
     pub ime_product_name: Option<String>,
@@ -862,6 +916,9 @@ pub struct BugReportDiagnostics {
     /// `#[serde(default)]`必須。
     #[serde(default)]
     pub running_processes: Option<Vec<String>>,
+    /// ADR-271 D5。上記と同じ理由で`#[serde(default)]`必須。
+    #[serde(default)]
+    pub indicator_evidence: Option<BugReportIndicatorEvidence>,
 }
 
 impl Default for BugReportDiagnostics {
@@ -880,6 +937,7 @@ impl Default for BugReportDiagnostics {
             legacy_msime_keymap: None,
             keymap_learn: None,
             running_processes: None,
+            indicator_evidence: None,
         }
     }
 }
@@ -924,6 +982,7 @@ pub struct BugReportInput<'a> {
     /// ボックス（`BugReportPayload::attach_running_processes`参照）。
     pub attach_running_processes: bool,
     pub running_processes: Option<Vec<String>>,
+    pub indicator_evidence: Option<BugReportIndicatorEvidence>,
     pub reported_at: &'a str,
 }
 
@@ -1084,6 +1143,11 @@ pub fn build_payload_with_log_budget(
         keymap_learn,
         attach_running_processes: input.attach_running_processes,
         running_processes,
+        indicator_evidence: if input.attach_state_snapshot {
+            input.indicator_evidence.clone()
+        } else {
+            None
+        },
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -1667,6 +1731,13 @@ mod tests {
             keymap_learn: Some(test_keymap_learn_summary()),
             attach_running_processes: true,
             running_processes: Some(vec!["explorer.exe".to_owned(), "powertoys.exe".to_owned()]),
+            indicator_evidence: Some(BugReportIndicatorEvidence::new(
+                crate::indicator_evidence::EffectiveEvidence {
+                    glyph: awase::config::EvidenceLevel::Off,
+                    menu: awase::config::EvidenceLevel::Observe,
+                },
+                &crate::indicator_evidence::IndicatorMenuCounters::new(),
+            )),
             reported_at: "2026-08-19T12:34:56Z",
         }
     }
@@ -2168,6 +2239,18 @@ mod tests {
             wake_post_failed_lifetime_count: 0,
             hook_ring_max_occupancy: 3,
         }
+    }
+
+    #[test]
+    fn indicator_evidence_is_attached_with_the_state_snapshot_and_shows_the_effective_level() {
+        let mut inp = input("説明", true, None);
+        let payload = build_payload(&inp).unwrap();
+        let ev = payload.indicator_evidence.expect("添付される");
+        assert_eq!(ev.menu.level, "observe");
+        assert_eq!(ev.glyph_level, "off");
+        // 添付しないときは出さない。
+        inp.attach_state_snapshot = false;
+        assert!(build_payload(&inp).unwrap().indicator_evidence.is_none());
     }
 
     #[test]

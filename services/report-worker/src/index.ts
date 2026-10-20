@@ -117,6 +117,10 @@ export interface BugReportPayload {
    * 報告は少ない見込み。 */
   attach_running_processes: boolean;
   running_processes: string[] | null;
+  /** ADR-271 D5。入力インジケーターを読む補助の実効の段階と読みの件数（内容は含まない）。
+   * `attach_state_snapshot`に相乗り。`SCHEMA_VERSION`は上げていないため旧クライアントの報告には
+   * 存在しない（optionalとして読む）。 */
+  indicator_evidence: Record<string, unknown> | null;
   reported_at: string;
 }
 
@@ -587,6 +591,8 @@ export function validatePayload(value: unknown): BugReportPayload {
   // issue #165（hook_starved）用。上記と同じ理由でoptionalとして読む。
   const attachRunningProcesses = optionalBoolean(value, "attach_running_processes");
   const runningProcesses = optionalNullableStringArray(value, "running_processes");
+  // ADR-271 D5: 上記と同じ理由でoptionalとして読む。attach_state_snapshot に相乗り。
+  const indicatorEvidence = optionalNullableRecord(value, "indicator_evidence");
   const reportedAt = requiredString(value, "reported_at");
   if (Number.isNaN(Date.parse(reportedAt))) {
     throw new HttpError(400, "reported_at_must_be_rfc3339");
@@ -638,6 +644,9 @@ export function validatePayload(value: unknown): BugReportPayload {
   if (!attachRunningProcesses && runningProcesses !== null) {
     throw new HttpError(400, "running_processes_requires_attach_running_processes");
   }
+  if (!attachStateSnapshot && indicatorEvidence !== null) {
+    throw new HttpError(400, "indicator_evidence_requires_attach_state_snapshot");
+  }
 
   return {
     schema_version: schemaVersion,
@@ -670,6 +679,7 @@ export function validatePayload(value: unknown): BugReportPayload {
     keymap_learn: keymapLearn,
     attach_running_processes: attachRunningProcesses,
     running_processes: runningProcesses,
+    indicator_evidence: indicatorEvidence,
     reported_at: reportedAt
   };
 }

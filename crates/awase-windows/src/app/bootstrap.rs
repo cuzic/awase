@@ -1340,6 +1340,7 @@ pub(super) fn run_all() -> Result<()> {
     // ガードは `run_all` の終わりまで保持する（drop でスレッド停止・フック解除）。設定の反映は再起動後。
     let effective_evidence =
         crate::indicator_evidence::EffectiveEvidence::from_config(&config.indicator_evidence);
+    let _ = with_app(|app| app.set_indicator_effective_evidence(effective_evidence));
     let _indicator_menu_guards = if effective_evidence.menu >= awase::config::EvidenceLevel::Observe
     {
         let (worker, tx) = crate::observer::indicator_menu::spawn_indicator_menu_worker();

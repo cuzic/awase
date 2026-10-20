@@ -1415,6 +1415,8 @@ fn current_bug_report_diagnostics(
     // issue #165（hook_starved）用（2026-09-28追記）。既定オフの独立チェック
     // ボックスでのみ実際に送信される（`BugReportPayload::attach_running_processes`）。
     let running_processes = Some(crate::app::list_all_running_process_names());
+    // ADR-271 D5: 実効の段階（`off` でも出す）と、右クリックメニューの読みの件数。
+    let indicator_evidence = Some(app.indicator_evidence_summary());
     crate::bug_report::BugReportDiagnostics {
         ime_product_name: crate::tsf::observer::current_ime_product_name(),
         keyboard_model: bug_report_keyboard_model(app.keyboard_model()).to_owned(),
@@ -1429,6 +1431,7 @@ fn current_bug_report_diagnostics(
         legacy_msime_keymap,
         keymap_learn,
         running_processes,
+        indicator_evidence,
     }
 }
 
