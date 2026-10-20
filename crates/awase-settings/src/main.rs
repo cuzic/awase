@@ -4404,6 +4404,126 @@ impl SettingsApp {
         ui.add_space(12.0);
         ui.separator();
         auto_detect_section(ui, &mut self.config.auto_detect);
+        ui.add_space(12.0);
+        ui.separator();
+        indicator_evidence_section(ui, &mut self.config.indicator_evidence);
+    }
+}
+
+// ── 入力インジケーターを読む補助（ADR-271、上級者向け）──
+
+/// 段階の画面での名前と説明（ADR-271 D6）。画面に出すのは `ui_max_level()` 以下の段階だけ。
+fn evidence_level_text(
+    source: awase_windows::indicator_evidence::EvidenceSource,
+    level: awase::config::EvidenceLevel,
+) -> (&'static str, &'static str) {
+    use awase::config::EvidenceLevel;
+    use awase_windows::indicator_evidence::EvidenceSource;
+    match (source, level) {
+        (_, EvidenceLevel::Off) => ("使わない", "内容を読みません。"),
+        (EvidenceSource::Menu, EvidenceLevel::Observe) => (
+            "記録だけする",
+            "入力インジケーターを右クリックしてメニューを開いたときだけ、現在のモードを記録します。\n動作は変わりません。不具合報告に件数が含まれます。",
+        ),
+        (EvidenceSource::Glyph, EvidenceLevel::Observe) => (
+            "記録だけする",
+            "インジケーターの字形を読んで記録します。動作は変わりません。",
+        ),
+        (_, EvidenceLevel::Unobserved) => (
+            "読めないウィンドウでだけ使う",
+            "IME の状態が読めないウィンドウでだけ、読んだ結果を awase の判断に使います。",
+        ),
+        (_, EvidenceLevel::All) => (
+            "すべてのウィンドウで使う",
+            "読めるウィンドウでも、読んだ結果を awase の判断に使います。利用者の責任で選びます。",
+        ),
+    }
+}
+
+/// 画面で選べる段階（`Off` から `ui_max_level()` まで）。
+fn evidence_levels_shown(
+    source: awase_windows::indicator_evidence::EvidenceSource,
+) -> Vec<awase::config::EvidenceLevel> {
+    use awase::config::EvidenceLevel::{All, Observe, Off, Unobserved};
+    [Off, Observe, Unobserved, All]
+        .into_iter()
+        .filter(|l| *l <= source.ui_max_level())
+        .collect()
+}
+
+/// 証拠源 1 つ分の行。`ui_max_level()` を超える設定値は書き換えず（保存は丸めない。ADR-271 D3）、注記だけ出す。
+fn evidence_row(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    source: awase_windows::indicator_evidence::EvidenceSource,
+    value: &mut awase::config::EvidenceLevel,
+) {
+    let effective = source.effective(*value);
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(evidence_level_text(source, effective).0)
+            .width(240.0)
+            .show_ui(ui, |ui| {
+                for level in evidence_levels_shown(source) {
+                    let (name, hover) = evidence_level_text(source, level);
+                    if ui
+                        .selectable_label(effective == level, name)
+                        .on_hover_text(hover)
+                        .clicked()
+                    {
+                        chosen = Some(level);
+                    }
+                }
+            });
+    });
+    ui.label(evidence_level_text(source, effective).1);
+    if effective != *value {
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 120, 0),
+            format!(
+                "設定値: {:?}(この版では「{}」として動作します。保存しない限り書き換えません)",
+                value,
+                evidence_level_text(source, effective).0
+            ),
+        );
+    }
+    if let Some(level) = chosen {
+        *value = level;
+    }
+}
+
+/// 「入力インジケーターを読む補助」（ADR-271）。上級者向けタブの末尾に置く。
+fn indicator_evidence_section(ui: &mut egui::Ui, cfg: &mut awase::config::IndicatorEvidenceConfig) {
+    use awase_windows::indicator_evidence::EvidenceSource;
+    ui.heading("入力インジケーターを読む補助（上級者向け）");
+    ui.add_space(4.0);
+    ui.label(
+        "IME の状態が読めないウィンドウで、タスクバーの入力インジケーターから現在の状態を知る補助です。\n\
+         画面の一部（字形）または UI の項目（メニュー）を読みます。ウイルス対策ソフトによっては\n\
+         不審な動作として検出することがあるため、既定は「使わない」です。IME へは何も書き込みません。\n\
+         反映は awase の再起動後です。",
+    );
+    ui.add_space(4.0);
+    evidence_row(
+        ui,
+        "indicator_evidence_menu",
+        "右クリックメニュー:",
+        EvidenceSource::Menu,
+        &mut cfg.menu,
+    );
+    // 字形はコードが入るまで選べない（`ui_max_level()` が `Off` の間は行ごと出さない）。
+    if EvidenceSource::Glyph.ui_max_level() >= awase::config::EvidenceLevel::Observe {
+        ui.add_space(4.0);
+        evidence_row(
+            ui,
+            "indicator_evidence_glyph",
+            "字形:",
+            EvidenceSource::Glyph,
+            &mut cfg.glyph,
+        );
     }
 }
 
@@ -7271,8 +7391,9 @@ mod layout_tab_repro {
         NewComboBuf, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue,
         apply_adr192_recommended_replacement, apply_auto_detect_preset, apps_to_text,
         auto_detect_details, auto_detect_preset_index, auto_detect_section, empty_yab_layout,
-        find_config_path, has_adr192_warning_context, load_yab_layout, resolve_layouts_dir,
-        text_to_apps, undo_adr192_recommended_replacement,
+        evidence_levels_shown, find_config_path, has_adr192_warning_context,
+        indicator_evidence_section, load_yab_layout, resolve_layouts_dir, text_to_apps,
+        undo_adr192_recommended_replacement,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -7550,6 +7671,34 @@ mod layout_tab_repro {
                 });
             }
         }
+    }
+
+    #[test]
+    fn indicator_evidence_section_hides_levels_above_the_ui_max_and_keeps_the_saved_value() {
+        use awase::config::{EvidenceLevel, IndicatorEvidenceConfig};
+        use awase_windows::indicator_evidence::EvidenceSource;
+        // メニューは off/observe の 2 段階だけ見せる。字形はコードが無い間は選べない。
+        assert_eq!(
+            evidence_levels_shown(EvidenceSource::Menu),
+            vec![EvidenceLevel::Off, EvidenceLevel::Observe]
+        );
+        assert_eq!(
+            evidence_levels_shown(EvidenceSource::Glyph),
+            vec![EvidenceLevel::Off]
+        );
+        // 上限を超える設定値（all）は、描画しても書き換えない。
+        let mut cfg = IndicatorEvidenceConfig {
+            glyph: EvidenceLevel::All,
+            menu: EvidenceLevel::All,
+        };
+        let ctx = eframe::egui::Context::default();
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                indicator_evidence_section(ui, &mut cfg);
+            });
+        });
+        assert_eq!(cfg.menu, EvidenceLevel::All);
+        assert_eq!(cfg.glyph, EvidenceLevel::All);
     }
 
     /// `tab_basic`/`tab_keymap`/`tab_disable_apps`/

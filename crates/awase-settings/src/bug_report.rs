@@ -386,6 +386,7 @@ impl BugReportApp {
                 keymap_learn: self.diagnostics.keymap_learn.clone(),
                 attach_running_processes: self.attach_running_processes,
                 running_processes: self.diagnostics.running_processes.clone(),
+                indicator_evidence: self.diagnostics.indicator_evidence.clone(),
                 reported_at: &self.reported_at,
             },
             MAX_BODY_BYTES,

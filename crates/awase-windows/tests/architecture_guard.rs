@@ -8783,7 +8783,7 @@ fn raw_key_event_reinject_builds_input_from_reinject_key_spec() {
 /// - 読み取り（`observer/indicator_menu.rs`）と記録（`runtime/indicator_menu_shadow.rs`）は、belief・IME 制御・
 ///   観測ストアに入れる型/関数を一切使わない（belief への直接配線は ADR-261 の段階 2 と一本化して別レビュー。ADR-264 決定 5）。
 /// - ランタイム側が `platform_state` に触れるのは、読み取り（`effective_open()`）と記録（`journal.record(`）の 2 箇所だけ。
-/// - 読み取りワーカーと WinEvent フックの起動は、`[diagnostics] indicator_menu_shadow` が真のときだけ（既定は無効のオプトイン）。
+/// - 読み取りワーカーと WinEvent フックの起動は、`[indicator_evidence] menu` の実効の段階（`min(設定値, ui_max_level())`）が `observe` 以上のときだけ（既定は off のオプトイン。ADR-271）。
 ///
 /// 複数行のメソッドチェーン（`rustfmt` が改行する）を見逃さないよう、コメント行を除いて空白を詰めてから照合する。
 #[test]
@@ -8837,8 +8837,12 @@ fn indicator_menu_shadow_is_observe_only_and_opt_in() {
     // 起動は設定が真のときだけ（ワーカー・フックとも 1 回、ガードの内側）。
     let boot = compact("src/app/bootstrap.rs");
     let gate = boot
-        .find("ifconfig.diagnostics.indicator_menu_shadow{")
-        .expect("bootstrap.rs は `[diagnostics] indicator_menu_shadow` が真のときだけ起動すること");
+        .find("ifeffective_evidence.menu>=awase::config::EvidenceLevel::Observe{")
+        .expect("bootstrap.rs は `[indicator_evidence] menu` の実効の段階が observe 以上のときだけ起動すること");
+    assert!(
+        boot.contains("EffectiveEvidence::from_config(&config.indicator_evidence)"),
+        "実効の段階は ui_max_level() で丸めた値（EffectiveEvidence）から決めること（ADR-271 D3）"
+    );
     let worker = boot
         .find("spawn_indicator_menu_worker()")
         .expect("読み取りワーカーを起動すること");

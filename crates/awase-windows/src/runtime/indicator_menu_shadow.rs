@@ -5,7 +5,7 @@
 //! **belief には入れない・IME へ何も書かない・打鍵は変えない**。目的は、読める窓で直接の読みとの一致率を、観測の無い窓で
 //! belief とのずれを、実ジャーナルで確かめること（ADR-264 決定 5。belief への配線は ADR-261 の段階 2 と一本化して別レビュー）。
 //!
-//! 有効なのは `[diagnostics] indicator_menu_shadow = true`（既定は無効のオプトイン）のときだけ。反映は再起動後
+//! 有効なのは `[indicator_evidence] menu` の実効の段階が `observe` 以上（既定は off のオプトイン。ADR-271）のときだけ。反映は再起動後
 //! （フックと読み取りスレッドは起動時に 1 度だけ作る。`app/bootstrap.rs`）。
 
 use std::sync::mpsc::Sender;
@@ -32,6 +32,10 @@ pub(super) struct IndicatorMenuShadow {
     tx: Option<Sender<MenuReadRequest>>,
     pending: Option<Pending>,
     last_request: Option<Instant>,
+    /// 読みの件数（不具合報告の要約用。内容は持たない。ADR-271 D5）
+    counters: crate::indicator_evidence::IndicatorMenuCounters,
+    /// 起動時に固定した実効の段階（`min(設定値, ui_max_level())`）。無効のときも持つ（報告は `off` でも段階を出す）
+    effective: Option<crate::indicator_evidence::EffectiveEvidence>,
 }
 
 impl IndicatorMenuShadow {
@@ -40,6 +44,8 @@ impl IndicatorMenuShadow {
             tx: None,
             pending: None,
             last_request: None,
+            counters: crate::indicator_evidence::IndicatorMenuCounters::new(),
+            effective: None,
         }
     }
 }
@@ -51,7 +57,31 @@ impl super::Runtime {
             tx,
             pending: None,
             last_request: None,
+            counters: crate::indicator_evidence::IndicatorMenuCounters::new(),
+            effective: self.indicator_menu.effective,
         };
+    }
+
+    /// 起動時に実効の段階を固定する（有効・無効にかかわらず呼ぶ。不具合報告が `off` でも段階を出すため。ADR-271 D5）。
+    pub(crate) fn set_indicator_effective_evidence(
+        &mut self,
+        effective: crate::indicator_evidence::EffectiveEvidence,
+    ) {
+        self.indicator_menu.effective = Some(effective);
+    }
+
+    /// 不具合報告の要約用に、実効の段階と読みの件数を返す（読み取りだけ）。
+    pub(crate) fn indicator_evidence_summary(
+        &self,
+    ) -> crate::bug_report::BugReportIndicatorEvidence {
+        let eff =
+            self.indicator_menu
+                .effective
+                .unwrap_or(crate::indicator_evidence::EffectiveEvidence {
+                    glyph: awase::config::EvidenceLevel::Off,
+                    menu: awase::config::EvidenceLevel::Off,
+                });
+        crate::bug_report::BugReportIndicatorEvidence::new(eff, &self.indicator_menu.counters)
     }
 
     /// `EVENT_SYSTEM_MENUPOPUPSTART`（`observer::indicator_menu::menu_popup_event_proc`）から呼ぶ。
@@ -130,6 +160,7 @@ impl super::Runtime {
             return;
         }
         let record = outcome.to_record(pending.profile, pending.belief_open);
+        self.indicator_menu.counters.record(&record);
         self.platform_state
             .ime
             .journal

@@ -15,6 +15,7 @@
 )]
 
 pub mod focus;
+pub mod indicator_evidence;
 pub mod journal;
 pub mod journal_policy;
 pub mod keymap;

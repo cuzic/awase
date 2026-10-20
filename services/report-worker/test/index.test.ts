@@ -44,6 +44,7 @@ const validPayload = {
   keymap_learn: null,
   attach_running_processes: false,
   running_processes: null,
+  indicator_evidence: null,
   reported_at: "2026-08-19T12:34:56Z"
 };
 
@@ -614,6 +615,32 @@ describe("payload validation", () => {
       attach_running_processes: false,
       running_processes: null
     });
+  });
+
+  // ADR-271 D5: SCHEMA_VERSION は上げていないため、indicator_evidence を送らない旧クライアントも受理する。
+  it("accepts payloads without indicator_evidence (pre-ADR-271 clients) and normalizes to null", () => {
+    const { indicator_evidence: _indicatorEvidence, ...payload } = validPayload;
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual({
+      ...payload,
+      indicator_evidence: null
+    });
+  });
+
+  it("keeps indicator_evidence when attach_state_snapshot is true and rejects it otherwise", () => {
+    const evidence = { glyph_level: "off", menu: { level: "observe", reads: 2 } };
+    const attached = {
+      ...validPayload,
+      attach_state_snapshot: true,
+      state_snapshot: {},
+      indicator_evidence: evidence
+    };
+    expect(parseAndValidatePayload(JSON.stringify(attached)).indicator_evidence).toEqual(evidence);
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({ ...validPayload, indicator_evidence: evidence })),
+      400,
+      "indicator_evidence_requires_attach_state_snapshot"
+    );
   });
 
   it("rejects a non-boolean attach_running_processes", () => {
