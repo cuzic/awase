@@ -170,6 +170,32 @@ pub struct IndicatorMenuRecord {
     pub belief_open: Option<bool>,
 }
 
+/// 入力インジケーターの字形の取り込み 1 回の結果(ADR-261 段階 1。挙動を変えない観測。**belief には入れない**)。
+///
+/// 前面窓が変わってから一定時間後に、インジケーターの矩形を取り込んで前処理まで進めた結果だけを残す。**元の画素・字形の
+/// 画像は記録しない**(大きさ・前景の点数・所要だけ。決定 7)。読める窓での直接の読みとの一致率は、見本の表ができる
+/// 次の段階で突き合わせる。
+#[derive(Debug, Clone, Serialize)]
+pub struct IndicatorGlyphRecord {
+    /// 結果(`captured` = 前処理まで通った / `miss`)
+    pub verdict: &'static str,
+    /// `miss` の理由(`no-indicator` / `ambiguous-indicator` / `bad-rect` / `capture-failed` / `empty-glyph`)
+    pub miss_reason: Option<&'static str>,
+    /// 取り込んだ矩形の大きさ(物理ピクセル。DPI に比例する)。取り込めなかったときは 0
+    pub width: u32,
+    pub height: u32,
+    /// 前処理後(高さ 96)の前景の点数。前処理まで進まなかったときは 0
+    pub dots: u32,
+    /// 取り込み〜前処理の所要(ミリ秒)
+    pub read_ms: u32,
+    /// 前面窓の変化から取り込むまで待った時間(ミリ秒。字形は実状態に 0.2〜0.7 秒遅れて追随する)
+    pub delay_ms: u32,
+    /// 依頼した時点の窓の IME プロファイル(`standard` / `imm32-unavailable` / `tsf-native` / `input-relay`)
+    pub profile: &'static str,
+    /// 依頼した時点の belief(IME が開いているか)。不明なら `None`
+    pub belief_open: Option<bool>,
+}
+
 /// ADR-265 段階 1: mozc-readable の共有メモリ（48 バイト、version 2）の読み（挙動を変えない観測。**belief には入れない**）。
 ///
 /// フォーカスが変わった tick と、前回の記録から結論が変わった tick にだけ残す。読んだ時点の belief（`belief_open`・
@@ -652,6 +678,8 @@ pub enum JournalEntry {
     LangDetect { record: LangDetectRecord },
     /// ADR-264 段階 1: 入力インジケーターの右クリックメニューの読み(挙動を変えない観測。belief には入れない)。
     IndicatorMenu { record: IndicatorMenuRecord },
+    /// ADR-261 段階 1: 入力インジケーターの字形の取り込み(挙動を変えない観測。belief には入れない)。
+    IndicatorGlyph { record: IndicatorGlyphRecord },
     /// ADR-265 段階 1: mozc-readable の共有メモリの読み(挙動を変えない観測。belief には入れない)。
     MozcShm { record: MozcShmRecord },
     /// ADR-132 Phase 1: hook の IME-mode 診断ログを journal にも残す。
@@ -1023,6 +1051,7 @@ impl JournalEntry {
             | Self::LateKeymap { .. }
             | Self::LangDetect { .. }
             | Self::IndicatorMenu { .. }
+            | Self::IndicatorGlyph { .. }
             | Self::MozcShm { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
@@ -1042,6 +1071,7 @@ impl JournalEntry {
             | Self::HookImeModeDiagnostic { .. }
             | Self::LangDetect { .. }
             | Self::IndicatorMenu { .. }
+            | Self::IndicatorGlyph { .. }
             | Self::MozcShm { .. }
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
@@ -1441,6 +1471,24 @@ impl JournalEntry {
                     profile = record.profile,
                     belief_open = record.belief_open,
                     "[indicator-menu]"
+                );
+            }
+            Self::IndicatorGlyph { record } => {
+                // debug（既定の app log には出さない。journal 本体には全項目が残る。ADR-250 決定 5）。
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    verdict = record.verdict,
+                    miss_reason = record.miss_reason,
+                    width = record.width,
+                    height = record.height,
+                    dots = record.dots,
+                    read_ms = record.read_ms,
+                    delay_ms = record.delay_ms,
+                    profile = record.profile,
+                    belief_open = record.belief_open,
+                    "[indicator-glyph]"
                 );
             }
             Self::MozcShm { record } => {
@@ -2819,6 +2867,44 @@ mod tests {
         // 項目の名前・AutomationId は記録しない(他のアプリのメニューの内容を残さない。ADR-264 決定 6)
         assert!(!json.contains("Item 1"));
         assert!(!json.contains("automation_id"));
+    }
+
+    #[test]
+    fn indicator_glyph_record_is_serialized_without_pixels() {
+        let (mut j, _mock) = mock_journal();
+        j.record(JournalEntry::IndicatorGlyph {
+            record: IndicatorGlyphRecord {
+                verdict: "captured",
+                miss_reason: None,
+                width: 32,
+                height: 24,
+                dots: 1234,
+                read_ms: 57,
+                delay_ms: 900,
+                profile: "imm32-unavailable",
+                belief_open: Some(true),
+            },
+        });
+        j.record(JournalEntry::IndicatorGlyph {
+            record: IndicatorGlyphRecord {
+                verdict: "miss",
+                miss_reason: Some("no-indicator"),
+                width: 0,
+                height: 0,
+                dots: 0,
+                read_ms: 3,
+                delay_ms: 2500,
+                profile: "standard",
+                belief_open: None,
+            },
+        });
+        let json = j.to_json().unwrap();
+        assert!(json.contains("IndicatorGlyph"));
+        assert!(json.contains("no-indicator"));
+        assert!(json.contains("imm32-unavailable"));
+        // 画素・画像は記録しない（大きさ・点数・所要だけ）。
+        assert!(!json.contains("pixels"));
+        assert!(!json.contains("image"));
     }
 
     #[test]

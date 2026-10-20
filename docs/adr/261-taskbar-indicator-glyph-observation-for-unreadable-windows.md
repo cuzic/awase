@@ -356,6 +356,19 @@ CI の実測(MS-IME 本体・GJI、通常の窓と、観測の無い窓の近似
 - **段階 2**: belief への配線(決定 6 の入口条件を満たす別 ADR/追記でレビュー)。#623 の本体の解消はここ。
 - **段階 3**: 設定画面に字形の収集状況を出す(環境指紋が変わったら自動で作り直す旨)。
 
+## 段階 1 の実装状況(2026-10-21)
+
+- **純粋部分**(PR #707): `awase-windows-core/src/state/indicator_glyph.rs` に前処理(背景差・枠線除去・96 高へ 3 次補間・大津・クロージング+穴埋め / Sobel+膨張・20×20・距離変換)と、最近傍の分類(`classify_glyph`)、見本の表(重複・衝突の判定)。閾値は暫定(D0-11)。
+- **取り込み(shadow、本 PR)**: 前面窓の変化(`EVENT_SYSTEM_FOREGROUND`)の 0.9 秒後と 2.5 秒後に、インジケーターの矩形を取り込んで前処理まで進め、結果(大きさ・前景の点数・所要・失敗の理由。**画素は残さない**)を journal(`IndicatorGlyph`)と不具合報告の件数に出す。`[indicator_evidence] glyph = "observe"` のオプトイン。belief・IME には書かない(`architecture_guard` の `indicator_glyph_shadow_is_observe_only_and_opt_in`)。表への照合と一致率は次の PR(受け身の収集)。
+
+### 実機(dragonflyg4、日本語 Windows 11・GJI)の発見(決定 1・決定 5 の補足)
+
+- **名前が「トレイ入力インジケーター」で始まる要素が 2 つある**(クラス `SystemTray.AccentButton`・`AutomationId=SystemTrayIcon`・パターンも同じ)。モードの字形(「あ」)を描くのは**名前が 1 行**の方(`… 右クリックで IME のオプションを表示します`)で、もう一方は IME 名と切替キーを**複数行**で持つ別のボタン(IME 自身のアイコン)。表示言語に依らず、**改行を含まない 1 つ**を選ぶ(`select_indicator`)。名前の接頭辞は `Tray Input Indicator`・`トレイ入力インジケーター`。
+- **DPI 対応のプロセスで取る**(PowerShell など DPI 非対応のプロセスでは UIA の矩形がずれる)。awase.exe は PerMonitorV2。
+- **ホバーのツールチップ窓(`Xaml_WindowedPopupClass`)が出ている間は、`Shell_TrayWnd` 配下の要素が UIA から見えなくなる**(26 要素 → 4 要素)。カーソルが「あ」の上にあるときに起きる。見つからなければ `Miss(no-indicator)`。
+- **タスクバーの高さは状態で変わる**(24 px の細い帯と 72 px)。矩形はその都度 UIA から取り、高さの固定値は使わない。
+- **`WindowFromPoint` は XAML のタスクバーの上でもタスクバーではなくデスクトップ(`SysListView32`)を返した**。決定 1 の「矩形の中心が `Shell_TrayWnd` 系の窓の上」の確認は実機では使えないので、取り込み前の確認にしない(覆われていれば一様・別の画像になり `Miss` に倒れる)。
+
 ## 所有者の判断(2026-10-15)
 
 - **Q1(表の作り方)**: **受け身の収集を主、IME キー学習への相乗りは受け身で集まらない状態の補助**(所有者が推奨案を選択)。

@@ -412,6 +412,204 @@ pub fn classify_image(
     }
 }
 
+// ───────────────────── インジケーター要素の選び方・プローブ結果(純粋) ─────────────────────
+
+/// インジケーター要素の名前の接頭辞(表示言語ごと)。日本語 Windows の実機(dragonflyg4)では `トレイ入力インジケーター`、
+/// CI(英語)では `Tray Input Indicator`。接頭辞が一致する要素が複数あるときの選び方は [`select_indicator`]。
+pub const INDICATOR_NAME_PREFIXES: [&str; 2] = ["Tray Input Indicator", "トレイ入力インジケーター"];
+
+/// 名前がインジケーターの接頭辞に当たるか。
+pub fn name_is_indicator(name: &str) -> bool {
+    INDICATOR_NAME_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// UI Automation で見つけた、名前がインジケーターの接頭辞に当たる要素 1 つ。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndicatorCandidate {
+    pub name: String,
+    /// `(left, top, right, bottom)`（物理ピクセル。呼び出し側が DPI 対応で取る）
+    pub rect: (i32, i32, i32, i32),
+}
+
+/// [`select_indicator`] が選べなかった理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectMiss {
+    /// 接頭辞に当たる要素が無い(タスクバーの自動非表示・インジケーター無し・UIA の木がツールチップ窓に隠れている等)
+    NotFound,
+    /// 接頭辞に当たる要素が複数あり、1 つに絞れない
+    Ambiguous,
+    /// 矩形が小さすぎる・空(画面外)
+    BadRect,
+}
+
+/// 字形を読む対象の要素を選ぶ。**実機の発見(ADR-261 決定 1)**: 日本語 Windows の実機では、名前が `トレイ入力インジケーター` で
+/// 始まる要素が 2 つある(クラス・`AutomationId`・パターンは同じ)。モードの字形(「あ」)を描くのは**名前が 1 行**の方
+/// (`… 右クリックで IME のオプションを表示します`)で、もう一方は IME 名・切替キーを**複数行**で持つ別のボタン
+/// (IME 自身のアイコン)。表示言語に依らず、改行を含まない 1 つを選ぶ。接頭辞に当たる要素が 1 つだけならそれを選ぶ。
+///
+/// # Errors
+/// 見つからない・絞れない・矩形が小さすぎるとき。
+pub fn select_indicator(candidates: &[IndicatorCandidate]) -> Result<usize, SelectMiss> {
+    let hits: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| name_is_indicator(&c.name))
+        .map(|(i, _)| i)
+        .collect();
+    let chosen = match hits.as_slice() {
+        [] => return Err(SelectMiss::NotFound),
+        [one] => *one,
+        many => {
+            let single_line: Vec<usize> = many
+                .iter()
+                .copied()
+                .filter(|&i| !candidates[i].name.contains('\n'))
+                .collect();
+            match single_line.as_slice() {
+                [one] => *one,
+                _ => return Err(SelectMiss::Ambiguous),
+            }
+        }
+    };
+    let (l, t, r, b) = candidates[chosen].rect;
+    if r.saturating_sub(l) < 8 || b.saturating_sub(t) < 8 {
+        return Err(SelectMiss::BadRect);
+    }
+    Ok(chosen)
+}
+
+/// 字形の取り込み 1 回の失敗の理由(journal・不具合報告に残す)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ProbeMiss {
+    /// インジケーターの要素が見つからない
+    NoIndicator,
+    /// 接頭辞に当たる要素が複数で絞れない
+    AmbiguousIndicator,
+    /// 矩形が小さすぎる・空
+    BadRect,
+    /// 画面の取り込み(GDI)に失敗した
+    CaptureFailed,
+    /// 取り込んだ画像が一様・前景が少ない(空白を閉と取り違えない)
+    EmptyGlyph,
+}
+
+impl ProbeMiss {
+    /// journal・ログ用の短い名前。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NoIndicator => "no-indicator",
+            Self::AmbiguousIndicator => "ambiguous-indicator",
+            Self::BadRect => "bad-rect",
+            Self::CaptureFailed => "capture-failed",
+            Self::EmptyGlyph => "empty-glyph",
+        }
+    }
+
+    const fn code(self) -> u32 {
+        match self {
+            Self::NoIndicator => 1,
+            Self::AmbiguousIndicator => 2,
+            Self::BadRect => 3,
+            Self::CaptureFailed => 4,
+            Self::EmptyGlyph => 5,
+        }
+    }
+
+    const fn from_code(code: u32) -> Option<Self> {
+        match code {
+            1 => Some(Self::NoIndicator),
+            2 => Some(Self::AmbiguousIndicator),
+            3 => Some(Self::BadRect),
+            4 => Some(Self::CaptureFailed),
+            5 => Some(Self::EmptyGlyph),
+            _ => None,
+        }
+    }
+}
+
+impl From<SelectMiss> for ProbeMiss {
+    fn from(m: SelectMiss) -> Self {
+        match m {
+            SelectMiss::NotFound => Self::NoIndicator,
+            SelectMiss::Ambiguous => Self::AmbiguousIndicator,
+            SelectMiss::BadRect => Self::BadRect,
+        }
+    }
+}
+
+/// 読み取りワーカーが返す、字形の取り込み 1 回の結果。**元の画素は持たない**(大きさ・前景の点数・所要だけ)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeOutcome {
+    /// `Ok(())` = 前処理まで通った(段階 1 の前半は、表への照合までは行わない)。`Err` = `Miss` の理由
+    pub result: Result<(), ProbeMiss>,
+    /// 取り込んだ矩形の大きさ(物理ピクセル。DPI に比例する)。取り込めなかったときは 0
+    pub width: u16,
+    pub height: u16,
+    /// 前処理後(高さ 96)の前景の点数。前処理まで進まなかったときは 0
+    pub dots: u16,
+    /// 取り込み〜前処理の所要(ミリ秒)
+    pub read_ms: u16,
+}
+
+impl ProbeOutcome {
+    /// `WM_INDICATOR_GLYPH_READ` の `(wParam, lParam)` に符号化する(32 ビットでも収まる固定長)。
+    /// `wParam` = 結果の符号(4 ビット)| 幅(10 ビット)<< 4 | 高さ(10 ビット)<< 14。`lParam` = 点数(16)| 所要(16)<< 16。
+    pub fn pack(self) -> (usize, isize) {
+        let code = match self.result {
+            Ok(()) => 0,
+            Err(m) => m.code(),
+        };
+        let w = u32::from(self.width.min(1023));
+        let h = u32::from(self.height.min(1023));
+        let wparam = code | (w << 4) | (h << 14);
+        let lparam = u32::from(self.dots) | (u32::from(self.read_ms) << 16);
+        (wparam as usize, lparam as i32 as isize)
+    }
+
+    /// [`Self::pack`] の逆。符号が未知なら `None`（壊れたメッセージ）。
+    pub fn unpack(wparam: usize, lparam: isize) -> Option<Self> {
+        let wp = wparam as u32;
+        let lp = lparam as i32 as u32;
+        let code = wp & 0xF;
+        let result = if code == 0 {
+            Ok(())
+        } else {
+            Err(ProbeMiss::from_code(code)?)
+        };
+        Some(Self {
+            result,
+            width: ((wp >> 4) & 0x3FF) as u16,
+            height: ((wp >> 14) & 0x3FF) as u16,
+            dots: (lp & 0xFFFF) as u16,
+            read_ms: (lp >> 16) as u16,
+        })
+    }
+
+    /// journal の記録にする。`profile`・`belief_open`・`delay_ms` は、読み取りを依頼した時点の文脈(呼び出し側が持つ)。
+    pub fn to_record(
+        self,
+        profile: &'static str,
+        belief_open: Option<bool>,
+        delay_ms: u32,
+    ) -> crate::journal::IndicatorGlyphRecord {
+        crate::journal::IndicatorGlyphRecord {
+            verdict: if self.result.is_ok() {
+                "captured"
+            } else {
+                "miss"
+            },
+            miss_reason: self.result.err().map(ProbeMiss::label),
+            width: u32::from(self.width),
+            height: u32::from(self.height),
+            dots: u32::from(self.dots),
+            read_ms: u32::from(self.read_ms),
+            delay_ms,
+            profile,
+            belief_open,
+        }
+    }
+}
+
 // ───────────────────────── 画像処理(すべて純粋) ─────────────────────────
 
 fn median(pixels: &[u8]) -> u8 {
@@ -1153,6 +1351,122 @@ mod tests {
             AddOutcome::Conflict
         );
         assert_eq!(table.len(), 1);
+    }
+
+    fn cand(name: &str, rect: (i32, i32, i32, i32)) -> IndicatorCandidate {
+        IndicatorCandidate {
+            name: name.to_owned(),
+            rect,
+        }
+    }
+
+    #[test]
+    fn select_indicator_picks_the_single_line_one_among_two_real_machine_candidates() {
+        // 実機(日本語 Windows)の 2 要素: 「あ」のボタンは 1 行、IME 自身のアイコンは複数行。順序に依らない。
+        let hint = cand(
+            "トレイ入力インジケーター 右クリックで IME のオプションを表示します",
+            (1726, 1256, 1758, 1280),
+        );
+        let info = cand("トレイ入力インジケーター 日本語\nGoogle 日本語入力\n\n入力方式を切り替えるには、Windows キー + Space キーを押します。", (1758, 1256, 1802, 1280));
+        let other = cand("ネットワーク wr9500n-a", (1802, 1256, 1830, 1280));
+        assert_eq!(
+            select_indicator(&[hint.clone(), info.clone(), other.clone()]),
+            Ok(0)
+        );
+        assert_eq!(select_indicator(&[other, info, hint]), Ok(2));
+    }
+
+    #[test]
+    fn select_indicator_handles_english_and_single_candidates() {
+        let en = cand(
+            "Tray Input Indicator Right click to show IME options",
+            (778, 720, 810, 768),
+        );
+        assert_eq!(select_indicator(&[en]), Ok(0));
+    }
+
+    #[test]
+    fn select_indicator_misses_on_none_ambiguous_and_bad_rect() {
+        let other = cand("ネットワーク", (0, 0, 32, 24));
+        assert_eq!(select_indicator(&[other]), Err(SelectMiss::NotFound));
+        assert_eq!(select_indicator(&[]), Err(SelectMiss::NotFound));
+        // 同じく 1 行の要素が 2 つ → 絞れない。
+        let a = cand("Tray Input Indicator A", (0, 0, 32, 24));
+        let b = cand("Tray Input Indicator B", (32, 0, 64, 24));
+        assert_eq!(select_indicator(&[a, b]), Err(SelectMiss::Ambiguous));
+        // 矩形が空(画面外・自動非表示)。
+        let tiny = cand("Tray Input Indicator", (0, 0, 0, 0));
+        assert_eq!(select_indicator(&[tiny]), Err(SelectMiss::BadRect));
+    }
+
+    #[test]
+    fn probe_outcome_round_trips_through_pack() {
+        let cases = [
+            ProbeOutcome {
+                result: Ok(()),
+                width: 32,
+                height: 24,
+                dots: 1234,
+                read_ms: 57,
+            },
+            ProbeOutcome {
+                result: Err(ProbeMiss::EmptyGlyph),
+                width: 64,
+                height: 48,
+                dots: 7,
+                read_ms: 187,
+            },
+            ProbeOutcome {
+                result: Err(ProbeMiss::NoIndicator),
+                width: 0,
+                height: 0,
+                dots: 0,
+                read_ms: 3,
+            },
+            ProbeOutcome {
+                result: Err(ProbeMiss::CaptureFailed),
+                width: 1023,
+                height: 1023,
+                dots: u16::MAX,
+                read_ms: u16::MAX,
+            },
+        ];
+        for c in cases {
+            let (w, l) = c.pack();
+            assert_eq!(ProbeOutcome::unpack(w, l), Some(c));
+        }
+        // 未知の符号は壊れたメッセージ。
+        assert_eq!(ProbeOutcome::unpack(0xF, 0), None);
+    }
+
+    #[test]
+    fn probe_outcome_record_carries_context_without_pixels() {
+        let o = ProbeOutcome {
+            result: Err(ProbeMiss::EmptyGlyph),
+            width: 32,
+            height: 24,
+            dots: 3,
+            read_ms: 40,
+        };
+        let r = o.to_record("imm32-unavailable", Some(true), 900);
+        assert_eq!((r.verdict, r.miss_reason), ("miss", Some("empty-glyph")));
+        assert_eq!(
+            (r.width, r.height, r.dots, r.read_ms, r.delay_ms),
+            (32, 24, 3, 40, 900)
+        );
+        assert_eq!(
+            (r.profile, r.belief_open),
+            ("imm32-unavailable", Some(true))
+        );
+        let ok = ProbeOutcome {
+            result: Ok(()),
+            width: 40,
+            height: 30,
+            dots: 900,
+            read_ms: 55,
+        }
+        .to_record("standard", None, 2500);
+        assert_eq!((ok.verdict, ok.miss_reason), ("captured", None));
     }
 
     #[test]

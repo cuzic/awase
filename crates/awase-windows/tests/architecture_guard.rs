@@ -8857,6 +8857,83 @@ fn indicator_menu_shadow_is_observe_only_and_opt_in() {
     assert_eq!(boot.matches("install_menu_hook(").count(), 1);
 }
 
+/// ADR-261 段階 1: 入力インジケーターの字形の影の取り込みは**観測だけ**で、belief・IME・打鍵に書かない。
+///
+/// - 取り込み（`observer/indicator_glyph.rs`）と記録（`runtime/indicator_glyph_shadow.rs`）は、belief・IME 制御・
+///   観測ストアに入れる型/関数を一切使わない（belief への配線は別 ADR。ADR-273）。
+/// - ランタイム側が `platform_state` に触れるのは、読み取り（`effective_open()`）と記録（`journal.record(`）の 2 箇所だけ。
+/// - 取り込みワーカーと WinEvent フックの起動は、`[indicator_evidence] glyph` の実効の段階（`min(設定値, ui_max_level())`）が
+///   `observe` 以上のときだけ（既定は off のオプトイン。ADR-271）。
+/// - 画素は journal・メッセージに載せない（`ProbeOutcome` は大きさ・点数・所要・理由だけ。ADR-261 決定 7）。
+///
+/// 複数行のメソッドチェーン（`rustfmt` が改行する）を見逃さないよう、コメント行を除いて空白を詰めてから照合する。
+#[test]
+fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
+    fn compact(rel: &str) -> String {
+        read_crate_file(rel)
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<String>()
+            .split_whitespace()
+            .collect()
+    }
+    let runtime = compact("src/runtime/indicator_glyph_shadow.rs");
+    let observer = compact("src/observer/indicator_glyph.rs");
+
+    for (name, code) in [
+        ("runtime/indicator_glyph_shadow.rs", &runtime),
+        ("observer/indicator_glyph.rs", &observer),
+    ] {
+        for forbidden in [
+            "ImeEvent",
+            "ObserverReported",
+            "InputModeObserved",
+            "ObservationSource",
+            "SendInput",
+            "send_input",
+            "apply_ime",
+            "set_ime_open",
+            "desired_open",
+            "actuate",
+            "KeyEffect",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "{name} は観測だけ（ADR-261 決定 0）。belief・IME・打鍵に書く `{forbidden}` を使わないこと"
+            );
+        }
+    }
+
+    // ランタイム側の platform_state への接触は、読み取りと記録の 2 つだけ。
+    assert_eq!(
+        runtime.matches("platform_state").count(),
+        2,
+        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()（読み取り）と journal.record(（記録）の 2 箇所だけ"
+    );
+    assert!(runtime.contains("platform_state.ime.effective_open()"));
+    assert!(runtime.contains(
+        "platform_state.ime.journal.record(crate::journal::JournalEntry::IndicatorGlyph{record})"
+    ));
+
+    // 起動は設定が真のときだけ（ワーカー・フックとも 1 回、ガードの内側）。
+    let boot = compact("src/app/bootstrap.rs");
+    let gate = boot
+        .find("ifeffective_evidence.glyph>=awase::config::EvidenceLevel::Observe{")
+        .expect("bootstrap.rs は `[indicator_evidence] glyph` の実効の段階が observe 以上のときだけ起動すること");
+    let worker = boot
+        .find("spawn_indicator_glyph_worker()")
+        .expect("取り込みワーカーを起動すること");
+    let hook = boot
+        .find("install_foreground_hook(indicator_glyph_foreground_event_proc")
+        .expect("WinEvent フックを登録すること");
+    assert!(
+        gate < worker && worker < hook,
+        "ワーカーとフックの起動は設定のガードの内側（この順）"
+    );
+    assert_eq!(boot.matches("spawn_indicator_glyph_worker()").count(), 1);
+    assert_eq!(boot.matches("install_foreground_hook(").count(), 1);
+}
+
 /// ADR-265 段階 1・ADR-268: mozc-readable の共有メモリの読みは、**belief への入口を 1 つだけ**持ち、IME・打鍵には書かない。
 ///
 /// - 読み取り（`observer/mozc_shm.rs`）は観測だけ。belief・IME 制御・観測ストアに入れる型/関数を一切使わない。

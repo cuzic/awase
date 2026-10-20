@@ -841,6 +841,20 @@ pub struct BugReportIndicatorEvidence {
     /// 字形の実効の段階（`off`/`observe`/`unobserved`/`all`）。字形の読み取りは未実装の間は常に `off`
     pub glyph_level: String,
     pub menu: BugReportIndicatorMenuSummary,
+    /// 字形の取り込みの件数（ADR-261 段階 1）。旧版の報告には無いので `#[serde(default)]` が必須
+    #[serde(default)]
+    pub glyph: BugReportIndicatorGlyphSummary,
+}
+
+/// 字形の取り込みの件数。画像・画素は含まない（件数と失敗の理由だけ。ADR-261 決定 7）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportIndicatorGlyphSummary {
+    /// 取り込みの結果を受けた回数
+    pub reads: u32,
+    /// 前処理まで通った回数
+    pub captured: u32,
+    /// 取り込めなかった理由ごとの回数
+    pub miss_reasons: std::collections::BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -866,6 +880,7 @@ impl BugReportIndicatorEvidence {
     pub fn new(
         effective: crate::indicator_evidence::EffectiveEvidence,
         menu: &crate::indicator_evidence::IndicatorMenuCounters,
+        glyph: &crate::indicator_evidence::IndicatorGlyphCounters,
     ) -> Self {
         Self {
             glyph_level: effective.glyph.label().to_owned(),
@@ -878,6 +893,11 @@ impl BugReportIndicatorEvidence {
                 direct_mismatch: menu.direct_mismatch,
                 belief_match: menu.unobserved_match,
                 belief_mismatch: menu.unobserved_mismatch,
+            },
+            glyph: BugReportIndicatorGlyphSummary {
+                reads: glyph.reads,
+                captured: glyph.captured,
+                miss_reasons: glyph.miss_reasons.clone(),
             },
         }
     }
@@ -1737,6 +1757,7 @@ mod tests {
                     menu: awase::config::EvidenceLevel::Observe,
                 },
                 &crate::indicator_evidence::IndicatorMenuCounters::new(),
+                &crate::indicator_evidence::IndicatorGlyphCounters::new(),
             )),
             reported_at: "2026-08-19T12:34:56Z",
         }
