@@ -32,6 +32,8 @@ const fn class_from_code(code: u8) -> Option<GlyphClass> {
 }
 
 /// 内蔵の見本を、前処理した特徴つきで返す（出所は [`SampleOrigin::Common`]）。
+#[must_use]
+#[allow(clippy::chunks_exact_with_const_size)] // `as_chunks` は新しい toolchain が前提。ここは実行時に 1 度だけ。
 pub fn common_samples() -> Vec<GlyphSample> {
     SEEDS
         .chunks_exact(ENTRY_LEN)
@@ -49,6 +51,7 @@ pub fn common_samples() -> Vec<GlyphSample> {
 }
 
 /// 内蔵の見本だけを持つ表。
+#[must_use]
 pub fn seeded_table() -> GlyphTable {
     GlyphTable::from_common_samples(common_samples())
 }
