@@ -120,6 +120,7 @@ fn elapsed_ms_u16(since: Instant) -> u16 {
 ///
 /// # Safety
 /// GDI の呼び出しだけ。ハンドルはこの関数の中で作って必ず解放する。
+#[allow(clippy::many_single_char_names)]
 unsafe fn capture_gray(rect: (i32, i32, i32, i32)) -> Option<GlyphGray> {
     let (l, t, r, b) = rect;
     let (w, h) = (r.checked_sub(l)?, b.checked_sub(t)?);
@@ -247,17 +248,17 @@ unsafe fn probe_once(automation: &IUIAutomation) -> ProbeOutcome {
         u16::try_from(gray.width()).unwrap_or(u16::MAX),
         u16::try_from(gray.height()).unwrap_or(u16::MAX),
     );
-    match preprocess(&gray) {
-        Ok(f) => ProbeOutcome {
+    // `preprocess` が返す失敗は、一様・前景が少ない画像だけ（表に関する `Miss` は分類側）。
+    preprocess(&gray).map_or_else(
+        |_| miss(ProbeMiss::EmptyGlyph, w, h),
+        |f| ProbeOutcome {
             result: Ok(()),
             width: w,
             height: h,
             dots: u16::try_from(f.dots()).unwrap_or(u16::MAX),
             read_ms: elapsed_ms_u16(started),
         },
-        // `preprocess` が返すのは一様・前景が少ない画像だけ（表に関する `Miss` は分類側）。
-        Err(_) => miss(ProbeMiss::EmptyGlyph, w, h),
-    }
+    )
 }
 
 /// 読み取りワーカーを起動する。専用スレッドで COM（STA）と `IUIAutomation` を持ち、依頼を 1 件ずつ処理して
