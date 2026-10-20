@@ -921,6 +921,29 @@ unsafe extern "system" fn menu_popup_event_proc(
     let _ = with_app(|app| app.indicator_menu_on_popup_start(hwnd));
 }
 
+/// ADR-261 段階 1: 入力インジケーターの字形の影の取り込み（観測のみ）の WinEvent コールバック。
+/// `EVENT_SYSTEM_FOREGROUND`（前面窓の変化）で、メッセージループ上で呼ばれる。重い判断はせず、
+/// `Runtime::indicator_glyph_on_foreground` へ渡すだけ（前置きのフィルタ・待ち時間はそちらとワーカーが扱う）。
+/// `observer/` 内では `with_app` を呼べない（B-1）ので、`menu_popup_event_proc` と同じくここ（`app/`）に置く。
+unsafe extern "system" fn indicator_glyph_foreground_event_proc(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    use windows::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_FOREGROUND;
+    if event != EVENT_SYSTEM_FOREGROUND {
+        return;
+    }
+    let Some(hwnd) = hwnd.non_null() else {
+        return;
+    };
+    let _ = with_app(|app| app.indicator_glyph_on_foreground(hwnd));
+}
+
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
 pub(super) fn install_ctrl_handler() -> Result<()> {
     unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::core::BOOL {
@@ -1352,6 +1375,21 @@ pub(super) fn run_all() -> Result<()> {
     } else {
         None
     };
+    // ADR-261 段階 1・ADR-271: `[indicator_evidence] glyph` の実効の段階が `observe` 以上のとき（既定は off のオプトイン）だけ、
+    // 入力インジケーターの字形の取り込みワーカーと WinEvent フックを起動する（観測のみ。belief・IME には何もしない）。
+    let _indicator_glyph_guards =
+        if effective_evidence.glyph >= awase::config::EvidenceLevel::Observe {
+            let (worker, tx) = crate::observer::indicator_glyph::spawn_indicator_glyph_worker();
+            let _ = with_app(|app| app.init_indicator_glyph(Some(tx)));
+            Some((
+                worker,
+                crate::observer::indicator_glyph::install_foreground_hook(
+                    indicator_glyph_foreground_event_proc,
+                ),
+            ))
+        } else {
+            None
+        };
     let _obs_hook_guards = crate::tsf::observer::install_observation_hooks();
 
     // issue #165 自己修復 opus round2 B1(iii): `hook_alive_tick_ms`を

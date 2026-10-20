@@ -22,12 +22,11 @@ pub enum EvidenceSource {
 impl EvidenceSource {
     /// この版の実装が対応する最大の段階（設定画面で選べる上限）。
     ///
-    /// メニューは journal に残す観測（`Observe`）まで。字形はコードが無いので `Off`。
+    /// 字形・メニューとも journal に残す観測（`Observe`）まで。belief への配線（`Unobserved`/`All`）は別 ADR（ADR-273）。
     #[must_use]
     pub const fn ui_max_level(self) -> EvidenceLevel {
         match self {
-            Self::Glyph => EvidenceLevel::Off,
-            Self::Menu => EvidenceLevel::Observe,
+            Self::Glyph | Self::Menu => EvidenceLevel::Observe,
         }
     }
 
@@ -123,6 +122,40 @@ impl IndicatorMenuCounters {
     }
 }
 
+/// 字形の取り込みの件数（不具合報告の要約用。画像・画素は含まない。ADR-271 D5）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndicatorGlyphCounters {
+    /// 取り込みの結果を受けた回数
+    pub reads: u32,
+    /// 前処理まで通った（`captured`）回数
+    pub captured: u32,
+    /// 取り込めなかった理由ごとの回数
+    pub miss_reasons: BTreeMap<String, u32>,
+}
+
+impl IndicatorGlyphCounters {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            reads: 0,
+            captured: 0,
+            miss_reasons: BTreeMap::new(),
+        }
+    }
+
+    /// journal に残す記録 1 件を数える。
+    pub fn record(&mut self, r: &crate::journal::IndicatorGlyphRecord) {
+        self.reads = self.reads.saturating_add(1);
+        if r.verdict == "captured" {
+            self.captured = self.captured.saturating_add(1);
+        } else {
+            let reason = r.miss_reason.unwrap_or("unknown");
+            let n = self.miss_reasons.entry(reason.to_owned()).or_insert(0);
+            *n = n.saturating_add(1);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,7 +168,7 @@ mod tests {
         };
         let e = EffectiveEvidence::from_config(&cfg);
         assert_eq!(e.menu, EvidenceLevel::Observe);
-        assert_eq!(e.glyph, EvidenceLevel::Off);
+        assert_eq!(e.glyph, EvidenceLevel::Observe);
     }
 
     #[test]
@@ -226,5 +259,27 @@ mod tests {
         assert_eq!((c.reads, c.hits), (3, 0));
         assert_eq!(c.miss_reasons.get("no-selection"), Some(&2));
         assert_eq!(c.miss_reasons.get("empty-menu"), Some(&1));
+    }
+    #[test]
+    fn glyph_counters_count_captures_and_miss_reasons_without_pixels() {
+        let rec = |verdict, miss_reason| crate::journal::IndicatorGlyphRecord {
+            verdict,
+            miss_reason,
+            width: 32,
+            height: 24,
+            dots: 100,
+            read_ms: 50,
+            delay_ms: 900,
+            profile: "standard",
+            belief_open: None,
+        };
+        let mut c = IndicatorGlyphCounters::default();
+        c.record(&rec("captured", None));
+        c.record(&rec("miss", Some("empty-glyph")));
+        c.record(&rec("miss", Some("empty-glyph")));
+        c.record(&rec("miss", Some("no-indicator")));
+        assert_eq!((c.reads, c.captured), (4, 1));
+        assert_eq!(c.miss_reasons.get("empty-glyph"), Some(&2));
+        assert_eq!(c.miss_reasons.get("no-indicator"), Some(&1));
     }
 }
