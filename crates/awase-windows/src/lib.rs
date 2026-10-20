@@ -70,7 +70,7 @@ pub mod ime_controller;
 pub mod ime_diagnostic;
 #[cfg(windows)]
 pub(crate) mod imm;
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod input_defer;
 #[cfg(windows)]
 pub mod journal_dump;
@@ -123,10 +123,8 @@ pub use crate::state::PlatformState;
 pub use crate::state::{HookConfig, ImeBelief};
 pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 
-#[cfg(windows)]
 pub use crate::tsf::probe_bridge::{OUTPUT_GATE, WM_DRAIN_OUTPUT_QUEUE};
 
-#[cfg(windows)]
 pub use crate::input_defer::{InputDeferQueue, INPUT_DEFER};
 
 // ── クロススレッド共有グローバル状態（ADR-164 フェーズ6）──

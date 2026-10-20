@@ -37,7 +37,7 @@ pub mod observer;
 pub mod output;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod probe;
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod probe_bridge;
 #[cfg(windows)]
 pub(super) mod tip_detector;
