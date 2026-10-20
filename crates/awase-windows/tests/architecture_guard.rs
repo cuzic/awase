@@ -5543,7 +5543,7 @@ fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() 
 /// `AppImeProfile::cannot_verify_real_ime_state` /
 /// `AppImeProfile::should_reprime_on_lightweight_focus_sync` の3メソッド
 /// （2026-09-10、自由関数から`impl AppImeProfile`のメソッドへ移動）、
-/// `From<AppImeProfile> for ImePolicyProfile`、`from_class_and_process` のいずれかで `InputRelay` の
+/// `From<AppImeProfile> for ImePolicyProfile`（ADR-274 段階 0 で `state/ime_event.rs` へ移動）、`from_class_and_process` のいずれかで `InputRelay` の
 /// 分岐が欠落していないか確認すること（欠落すると condition (b)/(c) が
 /// 別経路から迂回されうる、査読で指摘された最重要ポイント）。
 /// `production_code_only` は `#[cfg(test)]` の直後が文字どおり `mod tests` の
@@ -5586,7 +5586,10 @@ fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
 #[test]
 fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[
-        ("src/focus/class_names.rs", 12),
+        ("src/focus/class_names.rs", 10),
+        // ADR-274 段階 0 の 1: `From<AppImeProfile> for ImePolicyProfile`(`InputRelay` を `ImmCross` に写す分岐とその説明コメントの
+        // 2 件)を `class_names.rs` から `ime_event.rs` へ移した。合計は 12 のまま(10 + 2)。
+        ("src/state/ime_event.rs", 2),
         // ADR-208 L0: `plan` の本体（InputRelay の早期 return）は `state/physical_disposition.rs::plan_core` へ
         // 挙動を変えずに移した。`transport.rs` の `plan` は殻（`InputRelay` を名指ししない）。合計は 2 のまま。
         ("src/runtime/transport.rs", 0),
