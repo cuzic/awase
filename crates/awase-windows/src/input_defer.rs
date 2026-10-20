@@ -200,4 +200,23 @@ mod tests {
         let _ = q.take_all();
         assert_eq!(q.overflow_count.load(Ordering::Relaxed), 0);
     }
+
+    /// `pending_len_nonblocking` は積んだ件数を返す(`None`/固定値ではない)。
+    #[test]
+    fn pending_len_nonblocking_reports_queue_length() {
+        let q = InputDeferQueue::new();
+        assert_eq!(q.pending_len_nonblocking(), Some(0));
+        for i in 0..3u64 {
+            q.defer_during_output(evt(i));
+        }
+        assert_eq!(q.pending_len_nonblocking(), Some(3));
+        let _ = q.take_all();
+        assert_eq!(q.pending_len_nonblocking(), Some(0));
+    }
+
+    #[test]
+    fn debug_names_the_type() {
+        let q = InputDeferQueue::new();
+        assert!(format!("{q:?}").contains("InputDeferQueue"));
+    }
 }
