@@ -19,6 +19,11 @@ const SEED_WIDTH: usize = 32;
 const SEED_HEIGHT: usize = 24;
 const ENTRY_LEN: usize = 2 + SEED_WIDTH * SEED_HEIGHT;
 
+/// 内蔵データの 1 件ずつ（`[クラス|テーマ|画素]`）。
+fn entries() -> impl Iterator<Item = &'static [u8]> {
+    (0..SEEDS.len() / ENTRY_LEN).map(|i| &SEEDS[i * ENTRY_LEN..(i + 1) * ENTRY_LEN])
+}
+
 const fn class_from_code(code: u8) -> Option<GlyphClass> {
     match code {
         0 => Some(GlyphClass::Closed),
@@ -33,10 +38,8 @@ const fn class_from_code(code: u8) -> Option<GlyphClass> {
 
 /// 内蔵の見本を、前処理した特徴つきで返す（出所は [`SampleOrigin::Common`]）。
 #[must_use]
-#[allow(clippy::chunks_exact_with_const_size)] // `as_chunks` は新しい toolchain が前提。ここは実行時に 1 度だけ。
 pub fn common_samples() -> Vec<GlyphSample> {
-    SEEDS
-        .chunks_exact(ENTRY_LEN)
+    entries()
         .filter_map(|e| {
             let class = class_from_code(e[0])?;
             let gray = GlyphGray::new(SEED_WIDTH, SEED_HEIGHT, e[2..].to_vec())?;
@@ -65,8 +68,7 @@ mod tests {
 
     /// 見本のテーマ（0=ライト・1=ダーク）ごとの `(クラス, 特徴)`。
     fn by_theme(theme: u8) -> Vec<(GlyphClass, crate::state::indicator_glyph::GlyphFeature)> {
-        SEEDS
-            .chunks_exact(ENTRY_LEN)
+        entries()
             .filter(|e| e[1] == theme)
             .filter_map(|e| {
                 let class = class_from_code(e[0])?;
