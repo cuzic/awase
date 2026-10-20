@@ -10,7 +10,7 @@ summary: |-
   帰結として、指標が効くのは **IMM が NULL を返して ObserverPoll が来ない窓**に限られ、IMM が嘘の値を返す窓・GJI の I/O 推論が ObserverPoll を書く窓では負ける(B1)。便益は小さく、その窓の型(一太郎)は未確定(ADR-261 D0-2)なので、段階 2 の前提にする。
   ③「観測の無い窓」の述語は `is_demoted_by_learning`(=NULL 型)を採る。④遅れ対策: 字形は最後のモード系打鍵から最大遅れ+余裕が経つまで報告しない(必須)。窓の同一性と FocusGen・前面の一致を照合する。
 status: |-
-  起草(2026-10-20)。実装なし。Opus レビュー round 1(Blocker 3・Major 10・minor 10)・round 2(Blocker 1・Major 3・minor 5)・round 3(Blocker 1・Major 3・minor 4)を反映。round 4 待ち。決定は案。所有者判断 Q1〜Q3 は本文末尾。
+  起草(2026-10-20)。実装なし。Opus レビュー round 1(Blocker 3・Major 10・minor 10)・round 2(Blocker 1・Major 3・minor 5)・round 3(Blocker 1・Major 3・minor 4)・round 4(収束の確認: Blocker/Major なし、minor 6)を反映。**確定可**(Opus round 4、2026-10-20)。決定は案。所有者判断 Q1〜Q3 は本文末尾。
 related_adr:
   - "ADR-233"
   - "ADR-261"
@@ -55,7 +55,7 @@ related_adr:
   `ime_event.rs` の doc が言う `platform_state.rs::check_drift_correction` の `matches!` は存在しない(`check_drift_correction` は `evaluate_drift(..).ok()` だけ)ので、doc 側を直す(m1)。
 - **同一性(M8)**: `derive_filtered` の `is_identity_ok` に新しい源を足す(epoch+hwnd)。さらに、読んだ時点と適用時点で `FocusGen` が変わっていれば捨て(ADR-261 決定 5・ADR-264 決定 4)、前面窓が追跡中の窓と一致している(`lang_detect_focus_in_sync` と同じ型)ことを `classify_*` の入力にする。Alt+Tab 直後は `demoted_by_learning`・focus が前の窓の値のことがあり、場面①(フォーカス直後の字形)はちょうどそこに当たる。
 - **寿命(N2。round 1 の「TTL ≤ 3 秒」は撤回)**: 指標の寿命は**窓(フォーカス)の範囲**とする(`clear_on_focus_change`。同じプロセスの中の窓の変化は下の消去で守る)。短い TTL にしない理由: 報告は散発的(字形はフォーカスと最初の打鍵まわり、メニューは 1 回)で、3 秒で消すと、指標が guess と違う値を出すたびに利用者の操作なしに `effective-open-flip` が入るとき・戻るときの 2 回起きる。直接 `desired_open` を書かないまま「次の確かな観測まで保つ」には、寿命を窓の範囲にするしかない。
-  失効は**書き込み時の削除**で行う(決定的で journal の再生でも同じになる。読むときに無視する方式だと、MozcShm が失効したあとに数分前の指標が復活する): 字形の `Miss`、**Medium 以上の観測を記録するとき**(`record_any` の中で指標の 2 枠を消す。そちらが新しいので時刻順でも勝つ)、フォーカスの変化(`clear_on_focus_change`)、**同じプロセスの中の窓の変化**(`update_focus_window` が source を限定して指標の 2 枠を消す。`derive_filtered` の `is_identity_ok` は指標を読まないので、照合ではなく消去で同一性を守る。R2)。モード系の打鍵は予測が `resolve_open_at` の上位に載ることで置き換わる(指標は失効させない。予測が照合で消えたあと、指標が古ければ次の項の規則で負ける)。
+  失効は**書き込み時の削除**で行う(決定的で journal の再生でも同じになる。読むときに無視する方式だと、MozcShm が失効したあとに数分前の指標が復活する): 字形の `Miss`、**指標以外の Medium 以上の観測を記録するとき**(`record_any` の中で指標の 2 枠を消す。そちらが新しいので時刻順でも勝つ。**指標を記録するときは、もう片方の指標の枠だけを消す**〈新しい方が勝つ。メニューと字形が食い違って同時に残らない。m2〉)、フォーカスの変化(`clear_on_focus_change`)、**同じプロセスの中の窓の変化**(`update_focus_window` が source を限定して指標の 2 枠を消す。`derive_filtered` の `is_identity_ok` は指標を読まないので、照合ではなく消去で同一性を守る。R2)。モード系の打鍵は予測が `resolve_open_at` の上位に載ることで置き換わる(指標は失効させない。予測が照合で消えたあと、指標が古ければ次の項の規則で負ける)。
   `derive_any` の鮮度窓(3 秒)は指標に対しては働かない前提で、指標は `derive_filtered` から外し、D2 の独立した分岐でだけ読む。`most_recent_trusted` には、下の D2 の述語の (1)(新鮮な Medium 以上が居る)を満たす間は指標を入れない(Medium 同士の衝突を、指標の新しさだけで決めさせない)。**Q4(戻り先)はこれで「戻さない」と閉じる**。
 - **HWND キャッシュ経由の残り(M4)**: `runtime/focus_tracking.rs` が窓を離れるときに `effective_open()` を HWND キャッシュへ保存し、戻ると `HwndCacheRestored` が `desired_open` に書く。指標で決まった belief は、窓を往復するとキャッシュ経由で `desired_open` に**残る**(指標の寿命は窓の範囲なので、戻った窓では指標自体は消えている)。窓を離れるときの `effective_open()` はほぼ必ず指標の値になるので、「`desired_open` は書かない」は事実上「**直接は書かない**」に弱まる。既存の源にも共通の性質なので許容する。journal で追うには、`HwndImeSnapshot` が bool しか持たないので、保存時に「指標由来」を journal へ出す別の行を足す(キャッシュ側に源を持たせる変更は採らない。n3)。
 
@@ -65,7 +65,7 @@ related_adr:
 
 - **配置(M3)**: `resolve_open_at` の中に、`derive_any` と `most_recent_trusted` の間の**独立した分岐**として置く。`derive_any`(`derive_filtered`)の中には入れない: `derive_any` は `ModeKeyPassedThrough{align_desired}` と `align_placeholder_desired` が `desired_open` に書く根拠なので、中に入れると指標が `desired_open` を書き、D1 の「書かない」が破れる。
   この分岐は新しい `BaseDecision` の種類(`[effective-open-flip]` の出力と journal)と、`fallback_shadow` の早期 return の条件の更新を伴う(指標で決まった場面を「フォールバック」と数えない)。
-- **指標を採る述語は 1 本**: 指標を採るのは、**(1)新鮮な Medium 以上(指標を除く)が 1 件も無く、かつ (2)指標より新しく、失効していない Medium 以上(指標を除く)が無い**とき。(1) が Medium 同士の衝突(`derive_any` が `None`)を段 3 から外し、(2) が「新鮮でなくても指標より新しい観測には負ける」(ADR-233 の時刻順)を残す。失効済みの観測は数えない。`most_recent_trusted` に指標を入れない条件も (1) と同じ述語を使い、段 3 と同じ境界を共有する。Low(`HeuristicDefault`・`FocusProbe`)は Medium 以上に入らないので、指標が勝つ。
+- **指標を採る述語は 1 本**: 指標を採るのは、**(1)新鮮な Medium 以上(指標を除く)が 1 件も無く、かつ (2)指標より新しく、失効していない Medium 以上(指標を除く)が無い**とき。(1) が Medium 同士の衝突(`derive_any` が `None`)を段 3 から外し、(2) が「新鮮でなくても指標より新しい観測には負ける」(ADR-233 の時刻順)を残す。失効済みの観測は数えない。`most_recent_trusted` に指標を入れない条件も (1) と同じ述語を使い、段 3 と同じ境界を共有する。書き込み時の削除があるので (2) は常に真で冗長だが、削除の実装が漏れたときの防御として残す(実装で `most_recent_trusted` が指標を常に除く形にして述語を 1 箇所にしてもよい。m1)。Low(`HeuristicDefault`・`FocusProbe`)は Medium 以上に入らないので、指標が勝つ。
 - **時刻の経過で belief が変わる(d5)**: t=10 に ObserverPoll(GJI の I/O 推論で開)、t=11 に柵を通った指標(閉)が来ると、t=13 までは ObserverPoll が新鮮で開、t=13 に ObserverPoll が新鮮でなくなると (1)(2) を満たし、入力が何も無いのに閉へ変わる(`effective-open-flip`)。向きは正しいことが多いが、journal と `[effective-open-flip]` に「鮮度切れで繰り上がった」と理由を出す。
 
 | 同じ窓に居る相手 | 指標の勝ち負け | 理由・備考 |
@@ -101,7 +101,7 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 - **字形(B3)**: ADR-261 決定 6-1(b)の安定化(同じ字形が最大遅れ以上続いたとき)は、**それだけでは足りない**。`reconcile_key_effect_open` は届いた時刻と予測時刻の差が 170ms 以上の Medium で予測を消すので、押す**前**から変わらない字形(最大 0.68 秒の遅れで押下後も旧状態のまま)は安定化を通って、正しい予測を消す。
   したがって次を**必須**にする: **最後のモード系の打鍵(`KeyEffectPredicted`)から、最大遅れ+余裕(≥ 0.68 秒+α、α は D0 で測る)が経つまで字形を報告しない**。安定化の窓の起点は最後の打鍵より後とする。170ms 程度の柵では足りない。
 - **字形を読む場面を 1 つ足す(R3。ADR-261 決定 5 の改訂)**: 決定 5 の場面(①フォーカス・前面の変化、②その窓の最初の打鍵まわり)だけだと、モード系の打鍵(予測が付く)は「最初の打鍵」の後に来ることがほとんどで、柵の経った字形を読む場面が無く、NULL 型の窓では予測を照合する報告が来ない(予測がフォーカス中ずっと居座る)。
-  そこで③**モード系の打鍵の後、柵が経ったあとの最初の打鍵(またはタイマー 1 回)**で読む。読む回数・抑止(決定 5)の対象に入れる。足さない場合の帰結は「字形は予測を照合しない(予測が残る間は効かない)」で、D2 の(e)の条件にそう書く。
+  そこで③**モード系の打鍵の後、柵が経ったあとの最初の打鍵(またはタイマー 1 回)**で読む。読む回数・抑止(決定 5)の対象に入れる。ただし決定 5 の「同一 `FocusGen` で結果が変わらなければ再読しない」は、モード系の打鍵では `FocusGen` が変わらないので③と衝突する。**モード系の打鍵(`KeyEffectPredicted`)は再読の抑止を解く**例外を決定 5 の改訂に書く(m3)。③の「最初の打鍵」はモード系でない打鍵に限り(その打鍵自体がモード系なら柵は計り直し)、取り込みはフックの経路の外で行い結果は次の判断から効く(m4)。③は画面の取り込みを打鍵に結びつけ、ADR-261 決定 7 の「キーロガー+スクリーングラバー」の型に①②より近づくので、決定 7 の改訂として 1 行触れ、打鍵との時間的な相関を弱める「タイマー 1 回」の側を既定にする(m5)。足さない場合の帰結は「字形は予測を照合しない(予測が残る間は効かない)」で、D2 の(e)の条件にそう書く。
 - **柵は `classify_*` で必ず通す(N1)**: D1 が `reconcile_key_effect_open` を呼ぶ前提なので、柵の後でない指標は報告しない。
 - **メニュー**: 報告するのは、`MENUSTART`〜`MENUEND` の間に非 0 の `idChild` が 1 度も出ておらず、かつ **`MENUEND` が最後のモード系打鍵より柵の分だけ後**のときに限る(出ていれば選択された可能性があり読みは古い)。残る穴は ADR-264 のまま未解決として引き継ぐ: ①閉じるクリックがインジケーターへの左クリックとして届き、`idChild` なしで切り替わる(M0-10)、②キーボード選択で `idChild` が出るか(M0-3)、
   ③カーソルを動かせばほぼ必ず非 0 の `idChild` が出るので、報告が通る頻度は小さい(Q3)、④BUG-202 修正(`#32768` を窓の切替から外した)後も `idChild` が同じイベントで取れるか。1 回限りなので、柵で落とした報告は捨てられ、何も残らない。
@@ -109,7 +109,7 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 
 ### D5. 回帰テストと確認
 
-- `observation_store.rs`: ①新鮮な High+新しい指標 → High、②新しい指標+新鮮な ObserverPoll で食い違い → ObserverPoll、③ObserverPoll が来ない・失効、指標が新鮮 → 指標、④フォーカスの変化・字形の `Miss`・より新しい Medium 以上で失効する。新鮮な Medium 以上が居る間は `most_recent_trusted` に指標が入らない、⑤`evaluate_drift`・`read_back` の**両分岐**(`AnyFreshEvidence`・`Converged`)が指標を根拠にしない、⑥古い(新鮮でない)High+新しい指標 → 指標(ADR-233 との整合を固定)、⑦新鮮な Medium 同士の衝突のとき指標は衝突を決めない、⑧同じプロセスの中の窓の変化・Medium 以上の記録で指標の 2 枠が消える、⑨鮮度切れで繰り上がった場合の理由が journal に出る。
+- `observation_store.rs`: ①新鮮な High+新しい指標 → High、②新しい指標+新鮮な ObserverPoll で食い違い → ObserverPoll、③ObserverPoll が来ない・失効、指標が新鮮 → 指標、④フォーカスの変化・字形の `Miss`・より新しい Medium 以上で失効する。新鮮な Medium 以上が居る間は `most_recent_trusted` に指標が入らない、⑤`evaluate_drift`・`read_back` の**両分岐**(`AnyFreshEvidence`・`Converged`)が指標を根拠にしない、⑥古い(新鮮でない)High+新しい指標 → 指標(ADR-233 との整合を固定)、⑦′メニューと字形の食い違いで新しい方が勝つ(指標同士は互いの枠を消す)、⑦新鮮な Medium 同士の衝突のとき指標は衝突を決めない、⑧同じプロセスの中の窓の変化・Medium 以上の記録で指標の 2 枠が消える、⑨鮮度切れで繰り上がった場合の理由が journal に出る。
 - `ime_model.rs`: reducer が指標源について `update_drift` を呼ばない。指標源でも `reconcile_key_effect_open` が呼ばれ、柵を通した指標は予測を正しく照合する。柵の前の指標は報告されず予測を消さない。字形は最後のモード系打鍵から柵が経つまで報告されない。reducer の分岐は `ObserverReported` のアーム内で源を見て分け、`reduce_` 接頭辞のヘルパーに出す場合は名前をそろえる(`reduce_helpers_are_called_only_from_reduce_body`。n5)。
 - `architecture_guard.rs`: 指標源の報告口の生成点の件数固定(`mozc_shm_reader_touches_belief_only_through_report_mozc_shm` と同じ型)。カウンタ名に `belief_` を使わない。`observation_source_guard`(dylint)は D0 により入力モードを扱わないので更新しない。
 - 新しい tuning 定数(字形の打鍵後の柵の α・必要なら他。寿命は窓の範囲なので TTL 定数は無い)は `#[measured_macro::measured]` と実測 ms を添える(tuning-constants)。D0 の測定項目に「測るもの」を書く。
@@ -129,7 +129,7 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 - **Q1**: D2 の順位(指標は新鮮な Medium 以上に必ず負ける)で始めてよいか。代案は、`unobserved` に限り指標を Medium と同順位にして「新しい方が勝つ」とする。GJI の I/O 推論や嘘型の窓にも効くが、遅れた古い指標が正しい読みを潰す害を許す。
 - **Q2**: TSF ネイティブ窓の除外(D3)を外してよい条件(便益の示し方)。実行時に TSF と学習した窓の扱い。
 - **Q3**: メニューを先に `Unobserved` へ上げる順序の価値(開いた瞬間の 1 回だけで、`idChild` 条件のため報告が通る頻度が小さい)。
-- **Q5**: ADR-263 のひらがなキー送信(BUG-015 追補 7 の例外として許された書き込み)の前提 belief に、指標で決まった belief を含めてよいか。許さないなら、指標由来の `BaseDecision` のときは ADR-263 の書き込みを止める。
+- **Q5**: ADR-263 のひらがなキー送信(BUG-015 追補 7 の例外として許された書き込み)の前提 belief に、指標で決まった belief を含めてよいか。**判断が出るまでの既定は「止める」**(指標由来の `BaseDecision` のときは ADR-263 の書き込みを止める。安全側で、BUG-015 追補 7 の例外を利用者が選んだ範囲より広げない。配線 PR が判断を待たずに「許す」側で入らないようにする。m6)。
 - ~~Q4(TTL 切れの戻り先)~~: 寿命を窓の範囲にして「戻さない」と閉じた(D1)。
 
 ## 関連
