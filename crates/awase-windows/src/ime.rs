@@ -275,23 +275,9 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
     all_sent
 }
 
-/// 現在フォーカスされているウィンドウの IME 変換モード生値を返す（診断ログ専用）。
-///
-/// ビット定義: NATIVE=0x0001 KATAKANA=0x0002 FULLSHAPE=0x0008 ROMAN=0x0010
-///
-/// # Safety
-/// Calls Win32 APIs.
-#[must_use]
-pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
-    // SAFETY: get_focused_hwnd は unsafe fn で GetGUIThreadInfo().hwndFocus を優先し
-    //         GetForegroundWindow にフォールバックする（BUG-55 参照）。NULL を返す可能性が
-    //         あるが detect_ime_conversion_for_hwnd 内の non_null() チェックで処理される。
-    detect_ime_conversion_for_hwnd(unsafe { get_focused_hwnd() })
-}
-
 /// タイムアウト指定版 IME 変換モード取得（H1 タイミング計測専用）。
 ///
-/// `get_ime_conversion_mode_raw` の 50ms 固定タイムアウトを変更できるバージョン。
+/// 50ms 固定タイムアウトの版（`get_ime_conversion_mode_raw`、呼び出し元が無く撤去）の timeout を指定できる。
 /// 短い timeout_ms（例: 10ms）を指定することで、warmup 直後の応答時間を細かく計測できる。
 ///
 /// # Safety
