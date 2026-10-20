@@ -483,21 +483,23 @@ impl LiteralDetectFsm {
     /// `LiteralDetectFsm` を生成する。
     ///
     /// `literal_detect_ms` はタイムアウト期間（ms）。`OutputActiveGuard::begin()` を内部で
-    /// 呼び出し、`LiteralDetector::new(true)`（単語単位のバッチ確認のため veto 有効）と
-    /// deadline（`current_tick_ms() + literal_detect_ms`）を確定して `LiteralDetectCore` を
-    /// 組み立てる。
+    /// 呼び出し、deadline（`current_tick_ms() + literal_detect_ms`）を確定して
+    /// `LiteralDetectCore` を組み立てる。
+    ///
+    /// `detector` は**送信前**に `LiteralDetector::new(true)`（単語単位のバッチ確認のため veto 有効）で
+    /// 作ったものを渡すこと（BUG-210。ここで作ると送信後のベースラインになる）。
     ///
     /// `consecutive` は現在の連続 raw-tsf-literal 回数。0 かつ TSF mode のとき sacr warmup を起動する。
     pub(crate) fn new(
         cold_seq: Generation,
         romaji: String,
+        detector: LiteralDetector,
         observations: ProbeObservations,
         ze_bs_count: usize,
         literal_detect_ms: u64,
         consecutive: u32,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
-        let detector = LiteralDetector::new(true);
         let deadline_ms = crate::clock::current_tick_ms() + literal_detect_ms;
         Self {
             core: LiteralDetectCore::new(

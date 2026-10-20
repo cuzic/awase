@@ -9447,3 +9447,97 @@ fn gji_evidence_absent_flag_position_check_detects_the_n1_bug() {
         "起動時の書き込みが無い形を検出できない"
     );
 }
+
+// ── BUG-210 / ADR-272 段階 B (i): 検出ベースラインは SendInput の**前**に取る ─────────
+
+/// 空白を除いた生産コードの中で、`markers` が**この順に**現れることを確かめる（各 marker は直前の位置より後で探す）。
+/// 見つからない／順序が逆なら、どの marker で外れたかを示して失敗させる。
+fn assert_markers_in_order(path: &str, markers: &[&str], why: &str) {
+    let content = read_crate_file(path);
+    let squash: String = production_code_only(&content).split_whitespace().collect();
+    let mut from = 0;
+    for m in markers {
+        let key: String = m.split_whitespace().collect();
+        match squash[from..].find(&key) {
+            Some(at) => from += at + key.len(),
+            None => panic!("{path}: `{m}` が直前の marker より後に見つからない。{why}"),
+        }
+    }
+}
+
+/// per-VK confirm（BUG-027/029）: ベースラインを取る → 1 VK を送る → `apply_vk_sent`。
+#[test]
+fn per_vk_confirm_takes_literal_baseline_before_send_input() {
+    assert_markers_in_order(
+        "src/output/probe_io.rs",
+        &[
+            "LiteralDetector::new_with_pre_send_baseline(",
+            "crate::tsf::observer::gji_write_bytes()",
+            "io.send_single_tsf_vk(vk, needs_shift)",
+            "machine.apply_vk_sent(detector, deadline_ms)",
+        ],
+        "送信後に baseline を取ると、当該 VK の write が吸収されて literal を見逃す/誤る（BUG-027/029、ADR-079）",
+    );
+}
+
+/// 一括送信の TSF 経路・Chrome 経路（BUG-030）: `LiteralDetector::new(true)` → 送信 → `apply_transmit_done`。
+#[test]
+fn batch_transmit_takes_literal_baseline_before_send_input() {
+    assert_markers_in_order(
+        "src/output/probe_io.rs",
+        &[
+            "LiteralDetector::new(true)",
+            "io.transmit_tsf(",
+            "machine.apply_transmit_done(",
+            "TransmitTarget::Chrome => {",
+            "LiteralDetector::new(true)",
+            "io.transmit_chrome(",
+            "machine.apply_transmit_done(",
+        ],
+        "送信後に baseline を取ると、応答の速い GJI の write が吸収されて composition を literal と誤る（BUG-030/210）",
+    );
+}
+
+/// warm パス（BUG-210）: 検出ベースラインは `TsfSendPipeline::transmit` の前に取り、`LiteralDetectFsm::new` へ渡す。
+#[test]
+fn warm_path_takes_literal_baseline_before_transmit() {
+    assert_markers_in_order(
+        "src/output/vk_send.rs",
+        &[
+            "let literal_detector = crate::tsf::probe::LiteralDetector::new(true);",
+            "TsfSendPipeline::transmit(romaji, chars, &outcome)",
+            "LiteralDetectFsm::new(",
+            "literal_detector,",
+        ],
+        "warm パスの baseline が送信後だと、warm の GJI の即応答が吸収され誤って literal 判定になりうる（BUG-210）",
+    );
+    // `LiteralDetectFsm::new` が detector を内部で作る形（送信後の baseline）に戻らないこと。
+    let fsm = read_crate_file("src/tsf/warmup/literal_detect_fsm.rs");
+    let fsm: String = production_code_only(&fsm).split_whitespace().collect();
+    let imp = fsm
+        .find("implLiteralDetectFsm{")
+        .expect("impl LiteralDetectFsm");
+    let start = imp + fsm[imp..].find("fnnew(").expect("LiteralDetectFsm::new");
+    let body = &fsm[start..];
+    let end = body
+        .find("Self{core:")
+        .expect("LiteralDetectFsm::new の本体");
+    assert!(
+        body[..end].contains("detector:LiteralDetector,")
+            && !body[..end].contains("LiteralDetector::new("),
+        "LiteralDetectFsm::new は detector を引数で受け、内部で作らないこと（BUG-210）"
+    );
+}
+
+/// actuation フェンスの bump は `SendInput` の前に完了する（ADR-140 決定B の必須要件）。
+#[test]
+fn probe_actuation_fence_bump_precedes_send_input() {
+    assert_markers_in_order(
+        "src/win32.rs",
+        &[
+            "crate::probe_actuation_fence::bump()",
+            "unsafe { SendInput(inputs, size) }",
+        ],
+        "bump が SendInput より後だと、フェンスが actuation を検出できない（ADR-140 決定B）",
+    );
+}
