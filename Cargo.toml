@@ -23,6 +23,38 @@ lto = true
 codegen-units = 1
 strip = true
 
+# core 系 crate(`tools/core-split/core-crates.txt` の crate と、殻の `awase-windows`)が共有する lints
+# (ADR-274 段階 0 の 4)。以前は `awase-windows` と `awase-windows-core` の `[lints]` に同じ 25 行が複製されていた。
+# core を複数の crate に分けると複製が増えてずれるので、ここへ寄せ、各 crate は `[lints] workspace = true` で使う。
+# 他の crate(awase-settings・awase-keymap-learn など)は別の lints を持つので、この設定には参加しない。
+[workspace.lints.rust]
+unsafe_code = "warn"
+unused_qualifications = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+doc_markdown = "allow"
+# `unreachable_pub` (Rust lint) と矛盾するため allow: pub(crate) モジュール内の pub(crate) アイテムは両方が矛盾して fire する
+redundant_pub_crate = "allow"
+# Win32 内部 API 関数の全エラーパスを文書化するのは不要
+missing_errors_doc = "allow"
+# Windows 状態管理構造体は bool フラグが多数必要
+struct_excessive_bools = "allow"
+# 行数制限はコンパイラ向けロジックで越えることがある
+too_many_lines = "allow"
+# 内部コンストラクタの bool パラメータ
+fn_params_excessive_bools = "allow"
+# I/O 統計の u64 → f64 変換は許容精度
+cast_precision_loss = "allow"
+# 1.96 で新たに const 化可能と判断されたが、依存先が const でないため個別対応より blanket allow が安全
+missing_const_for_fn = "allow"
+
 [workspace.metadata.dylint]
 libraries = [
     { path = "lints/no_vk_as_scan" },
