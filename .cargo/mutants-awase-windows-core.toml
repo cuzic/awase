@@ -11,7 +11,7 @@
 # 核の変異を、核の単体テストだけでなく殻の統合テスト（closed_loop_scenarios・explicit_press_exhaustive・
 # golden_scenarios など、分割前は同じ crate のテストだった）でも判定する。指定しないと、統合テストでしか
 # 捕まらない変異が false MISSED になる（Opus PR #574 C4）。
-test_package = ["awase-windows-core", "awase-windows"]
+test_package = ["awase-windows-core", "awase-hook-core", "awase-windows"]
 
 examine_globs = [
     "crates/awase-windows-core/src/state/ime_model.rs",
@@ -27,7 +27,6 @@ examine_globs = [
     "crates/awase-windows-core/src/state/eisu_recovery.rs",
     "crates/awase-windows-core/src/state/force_guard.rs",
     "crates/awase-windows-core/src/state/belief.rs",
-    "crates/awase-windows-core/src/state/hook_state.rs",
     "crates/awase-windows-core/src/state/hub_clock.rs",
     "crates/awase-windows-core/src/state/app_ime_policy.rs",
     "crates/awase-windows-core/src/state/ime_event.rs",
@@ -48,10 +47,7 @@ examine_globs = [
     "crates/awase-windows-core/src/state/late_keymap_plan.rs",
     "crates/awase-windows-core/src/state/warm_send_plan.rs",
     "crates/awase-windows-core/src/state/focus_gen.rs",
-    "crates/awase-windows-core/src/state/half_width_alnum.rs",
     "crates/awase-windows-core/src/state/resume_observation.rs",
-    "crates/awase-windows-core/src/state/half_width_resume_hold.rs",
-    "crates/awase-windows-core/src/state/foreign_modifier.rs",
     "crates/awase-windows-core/src/state/indicator_glyph.rs",
     "crates/awase-windows-core/src/state/indicator_menu.rs",
     "crates/awase-windows-core/src/state/mozc_shm.rs",

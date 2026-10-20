@@ -15,7 +15,9 @@ CHECK = "--check" in sys.argv
 
 def load_modules():
     """`ROOTS`(コロン区切り。core 系 crate の `src/` の和)の全 `.rs` を、`src/` 内の相対パスのモジュール名で集める。
-    crate を分けても相対パスを保つ(ADR-274 D3)ので、同じ名前空間として扱える。同じ名前が複数の root にあれば NG。"""
+    crate を分けても相対パスを保つ(ADR-274 D3)ので、同じ名前空間として扱う。
+    `mod.rs`/`lib.rs` は crate ごとに 1 つずつあるのが正しい形（`state/mod.rs` が複数の crate に分かれる）ので、同名なら
+    「|」で連結して 1 つのモジュールとして読む（`read_module`）。`mod.rs` 以外の同名ファイルが複数の root にあれば NG。"""
     mods = {}
     for root in ROOTS:
         for dp, _, fs in os.walk(root):
@@ -24,15 +26,25 @@ def load_modules():
                     continue
                 p = os.path.join(dp, f)
                 rel = os.path.relpath(p, root)[:-3].replace(os.sep, "::")
+                is_mod = rel.endswith("::mod") or rel == "lib"
                 if rel.endswith("::mod"):
                     rel = rel[:-5]
                 if rel == "lib":
                     rel = ""
-                if rel in mods and rel != "":
-                    print(f"NG: モジュール {rel} が複数の root にある: {mods[rel]} と {p}")
-                    sys.exit(1)
-                mods.setdefault(rel, p)
+                if rel in mods:
+                    if not is_mod:
+                        print(f"NG: モジュール {rel} が複数の root にある: {mods[rel]} と {p}")
+                        sys.exit(1)
+                    mods[rel] = mods[rel] + "|" + p
+                else:
+                    mods[rel] = p
     return mods
+
+
+def read_module(p):
+    """`load_modules` が返すパス（複数の crate の `mod.rs` は「|」で連結）の中身を連結して読む。"""
+    return "\n".join(open(q, encoding="utf-8").read() for q in p.split("|"))
+
 
 def strip(text):
     """Return (code, comments) with comments/strings blanked (keep newlines)."""
@@ -161,7 +173,7 @@ def main():
     reexp = {}
     globs = collections.defaultdict(list)
     for m, p in mods.items():
-        code, _ = strip(open(p, encoding="utf-8").read())
+        code, _ = strip(read_module(p))
         for mm in re.finditer(r"pub(?:\([^)]*\))?\s+use\s+([^;]+);", code):
             body = mm.group(1).replace("\n", " ")
             body = re.sub(r"^(self|crate)::", "", body.strip())
@@ -194,7 +206,7 @@ def main():
     # pub items per module (for glob resolution)
     items = {}
     for m, p in mods.items():
-        code, _ = strip(open(p, encoding="utf-8").read())
+        code, _ = strip(read_module(p))
         items[m] = set(re.findall(r"^pub\s+(?:const\s+fn|fn|struct|enum|trait|type|const|static)\s+(" + IDENT + ")", code, re.M))
 
     def resolve(cur, segs):
@@ -235,7 +247,7 @@ def main():
     allowed = ns.get("ALLOWED", {})
     edges = {"prod": collections.defaultdict(list), "test": collections.defaultdict(list), "doc": collections.defaultdict(list)}
     for m, p in mods.items():
-        raw = open(p, encoding="utf-8").read()
+        raw = read_module(p)
         code, comments = strip(raw)
         prod, test = split_test(code)
         for kind, txt in (("prod", prod), ("test", test), ("doc", comments)):

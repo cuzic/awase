@@ -91,6 +91,13 @@ crates/awase-windows-core/    OS-independent core of awase-windows (ADR-229 D4):
                               keymap, journal(_policy), focus/{kinds,class_names,hwnd_cache}, tsf/literal_facts.
                               Same `src/` layout as before the split; awase-windows re-exports it (`pub use`) so
                               `crate::state::...` paths are unchanged. No `windows` dependency (guard-tested).
+                              ADR-274: being split into role-named cores (leaves first); the list of core crates is
+                              `tools/core-split/core-crates.txt` (wiring checked by `tools/core-split/check_wiring.py`,
+                              layer direction by `tools/core-split/deps.py --check`, both in the CI `core-layers` job).
+crates/awase-hook-core/       OS-independent core: hook / modifier-key / half-width-alnum toggle state (ADR-274 stage 1):
+                              state/{hook_state,hook_watchdog,alt_impersonation,foreign_modifier,win_key_guard,
+                              half_width_alnum,half_width_resume_hold}. Same `src/state/` relative paths as before the
+                              move; depends only on `awase` and `awase-windows-core`.
 crates/awase-linux/           Linux platform stub
 crates/awase-macos/           macOS platform stub
 crates/win32-async/           Async executor + blocking-API timeout isolation (run_with_timeout)

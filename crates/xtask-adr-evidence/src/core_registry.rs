@@ -46,16 +46,18 @@ pub fn added_modules(base: &[String], head: &[String]) -> Vec<String> {
     head.iter().filter(|h| !base.contains(h)).cloned().collect()
 }
 
-/// `name` の mutants 登録の有無。核 crate（`awase-windows-core`、ADR-229 D4）へ移ったファイルと、
-/// 殻の crate（`awase-windows`、`platform_state`・`sync_actuation`）に残ったファイルの両方のパスを受け付ける。
+/// `name` の mutants 登録の有無。殻の crate（`awase-windows`、`platform_state`・`sync_actuation`）と、
+/// 核 crate（`awase-windows-core`〔ADR-229 D4〕、`awase-hook-core`〔ADR-274〕など）のどれに置かれたファイルでも受け付ける:
+/// `"crates/<crate>/src/state/<name>.rs"` の形の行（`<crate>` は `/` を含まない 1 つのディレクトリ名）。
 pub fn in_mutants(toml: &str, name: &str) -> bool {
-    let wants = [
-        format!("\"crates/awase-windows-core/src/state/{name}.rs\""),
-        format!("\"crates/awase-windows/src/state/{name}.rs\""),
-    ];
+    let want = Regex::new(&format!(
+        r#"^"crates/[A-Za-z0-9_-]+/src/state/{}\.rs"$"#,
+        regex::escape(name)
+    ))
+    .unwrap();
     toml.lines()
         .filter(|l| !l.trim_start().starts_with('#'))
-        .any(|l| wants.contains(&l.trim().trim_end_matches(',').trim().to_string()))
+        .any(|l| want.is_match(l.trim().trim_end_matches(',').trim()))
 }
 
 /// mutants に未登録の追加名ごとの報告（空なら合格）。
@@ -65,9 +67,9 @@ pub fn check(added: &[String], mutants: &str) -> Vec<String> {
         .filter(|n| !in_mutants(mutants, n))
         .map(|n| {
             format!(
-                "CORE_MODULES に追加された `{n}` が .cargo/mutants-awase-windows{{,-core}}.toml の examine_globs に未登録\
-                 （核 crate のファイルなら \"crates/awase-windows-core/src/state/{n}.rs\"〔-core.toml〕、\
-                 殻の crate のファイルなら \"crates/awase-windows/src/state/{n}.rs\" を足す）"
+                "CORE_MODULES に追加された `{n}` が .cargo/mutants-awase-*.toml の examine_globs に未登録\
+                 （そのファイルを持つ crate の設定に \"crates/<crate>/src/state/{n}.rs\" を足す。\
+                 核 crate は awase-windows-core・awase-hook-core など、殻の crate は awase-windows）"
             )
         })
         .collect()
@@ -130,6 +132,24 @@ mod tests {
         ));
         assert!(!in_mutants(
             "examine_globs = [\n    \"crates/awase-windows-core/src/state/bar.rs\",\n]\n",
+            "foo"
+        ));
+    }
+
+    #[test]
+    fn mutants_accepts_any_core_crate_path() {
+        // ADR-274: 核 crate が増えても（awase-hook-core など）、その crate の設定に載っていれば登録済みとみなす。
+        assert!(in_mutants(
+            "examine_globs = [\n    \"crates/awase-hook-core/src/state/half_width_alnum.rs\",\n]\n",
+            "half_width_alnum"
+        ));
+        // crate のディレクトリ名に `/` を含むパスや、別のディレクトリ階層は受け付けない。
+        assert!(!in_mutants(
+            "examine_globs = [\n    \"crates/a/b/src/state/foo.rs\",\n]\n",
+            "foo"
+        ));
+        assert!(!in_mutants(
+            "examine_globs = [\n    \"crates/awase-hook-core/src/focus/foo.rs\",\n]\n",
             "foo"
         ));
     }

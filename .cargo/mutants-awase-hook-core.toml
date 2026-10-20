@@ -1,0 +1,45 @@
+# awase-hook-core 用スコープ限定設定（ADR-274 段階 1: フック・修飾キー・半角英数トグルの状態の核を別 crate にした）
+#
+# 使い方:
+#   cargo mutants -p awase-hook-core --config .cargo/mutants-awase-hook-core.toml
+#
+# 核 crate は windows crate に依存せず、全ファイルが Linux でもコンパイルされるので、`#[cfg(windows)]` による
+# false MISSED の心配は小さい。examine_globs で名指しするのは `.cargo/mutants-awase-windows-core.toml` と同じ理由
+# （登録し忘れの検出。xtask の `core-registry` が、base 比で足された名前の登録を検査する）。
+# 上位の crate のテスト（殻 `awase-windows` の統合テスト）でしか捕まらない変異が false MISSED にならないよう、
+# `test_package` にはこの crate より上の crate（殻）をすべて入れる（Opus PR #574 C4）。
+test_package = ["awase-hook-core", "awase-windows"]
+
+examine_globs = [
+    "crates/awase-hook-core/src/state/hook_state.rs",
+    "crates/awase-hook-core/src/state/half_width_alnum.rs",
+    "crates/awase-hook-core/src/state/half_width_resume_hold.rs",
+    "crates/awase-hook-core/src/state/foreign_modifier.rs",
+]
+
+exclude_re = [
+    # msime_key_assignment.rs: `windows_impl` モジュール全体が #[cfg(windows)]。
+    # Linux ではこのモジュール自体が存在しないため、中の関数（レジストリ読み取り・
+    # ポップアップ表示など実 Win32 呼び出し）への変異は常に false MISSED になる。
+    # ロジックの実体は同ファイルの `conflict_warning`（cfg 無し）に集約済みで、
+    # そちらは examine_globs の対象としてテスト済み。
+    "windows_impl::",
+
+    # conv_mode.rs: on_focus_changed は関数全体が #[cfg(windows)]。
+    "ConvModeMgr::on_focus_changed",
+
+    # conv_mode.rs: update_from_conv 内の HanKata→ZenKata ダウングレード抑制判定
+    # （147/148/152 行）だけが #[cfg(windows)] のインラインブロック。同じ関数の
+    # 他の分岐（142 行目の old == Some(new) 等）は cfg 無しで実際にテスト対象。
+    "conv_mode\\.rs:(147|148|152):",
+
+    # conv_mode.rs: ConvModeTarget::imm_conv_value の variant は HalfWidthAlnum（→ 0）だけなので、
+    # 「0 を返す」変異は元のコードと同じ値を返す等価変異（ADR-234 D0）。variant を足したら
+    # この除外は外すこと（足した variant の値を 0 にする変異もこの正規表現に当たり、黙って除外される）。
+    "ConvModeTarget::imm_conv_value -> u32 with 0$",
+
+    # observation_store.rs: trace_hwnd_only_mismatch は derive_filtered の識別照合で
+    # 「hwnd だけ不一致」を tracing::debug! に出すだけの関数で、判定に関わらない（ADR-234 D0。
+    # run 35920696097 の derive_filtered 822〜824 行の 4 件をこの関数へ切り出した）。
+    "trace_hwnd_only_mismatch",
+]

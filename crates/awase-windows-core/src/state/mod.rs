@@ -24,20 +24,11 @@ impl TickMs {
 pub mod belief;
 pub use belief::*;
 
-pub mod hook_state;
-pub use hook_state::*;
-
 pub mod conv_mode;
 pub use conv_mode::ConvModeAuthority;
 pub use conv_mode::ConvModeMgr;
 pub use conv_mode::{ConvActuationOutcome, ConvModeTarget, ConvMutationReason};
 
-// 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
-// hook.rs は #[cfg(windows)] のため非 Windows では未使用になる。BUG-41
-// （decide_alt_impersonation の KeyUp 状態クリア漏れ）が Windows 実機で初めて
-// テストが実行されるまで発見されなかったことの再発防止として、hook.rs から移設。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod alt_impersonation;
 // ADR-106 決定1: `ApplyGeneration` 専用アロケータ。`ImeEventLog.next_seq` から
 // 独立させ、fence 用の識別子が別目的の数を借用する問題（原因A）を解消する。
 // ungated（Linux で `allocate()` の単調増加・折り返し・wire エンコード往復を
@@ -64,21 +55,12 @@ pub mod raw_recovery_plan;
 // 「純粋判定を Linux でテストできるようにする」移設パターン。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod app_suppression;
-// hook.rs (#[cfg(windows)]) の唯一の呼び出し元。alt_impersonation と同じ
-// 「純粋判定を Linux でテストできるようにする」移設パターン。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod win_key_guard;
 // ADR-223 段階 0: 入力言語(HKL)の判定(純粋関数。Win32 を呼ばないので Linux でもテストできる)。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod layout_language;
 // ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
 // 配線はまだ無い（モジュール冒頭のスコープ節参照）。
 pub mod event_origin;
-// ADR-249(BUG-197): 他アプリが注入した Ctrl の期限付き記録(hook.rs の唯一の呼び出し元。純粋なので Linux でテストできる)。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod foreign_modifier;
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod half_width_alnum;
 pub mod ime_actuation;
 // ADR-208 L0: `runtime/transport.rs::PhysicalKeyDisposition::plan` の本体（配送判断の核）を挙動を変えずに
 // 移した。ungated にして、`explicit_press` の全列挙テストが本番と同じ判断コードを Linux で呼べるようにする。
@@ -176,9 +158,6 @@ pub mod state_dependent_key_warning;
 pub mod open_warrant;
 pub use ime_model::AppliedImeState;
 pub mod focus_resync_policy;
-// issue #165 (hook_starved) 自己修復の純粋判定。focus_resync_policy と同じ
-// ungated パターン（Win32 API を呼ばず Linux でテストできる）。
-pub mod hook_watchdog;
 pub mod hub_clock;
 pub mod input_barrier;
 // output/types.rs から移設（InjectionHint 依存の From 実装のみ output/ に残す）。
@@ -219,8 +198,6 @@ pub mod transition;
 pub mod relay_plan;
 // ADR-245 追補 2 R1: 復元の書き込み直後の読み直しと、それより前に始まった ImmCrossProbe の読みの棄却の判定。
 pub mod resume_observation;
-// ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持(純粋な状態機械。殻は runtime/resume_hold.rs)。
-pub mod half_width_resume_hold;
 // FCIS F6: `output/mod.rs`・`output/vk_send.rs` の「probe/recovery 進行中は退避する」判断の核（純粋）。
 // 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。
 #[cfg_attr(not(windows), allow(dead_code))]

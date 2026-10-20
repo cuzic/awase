@@ -5,7 +5,10 @@
 //! `sync_actuation`、`ime_decision_view` は殻の crate に残す: 記録系の `pub(crate)`（INV-A97-1）を
 //! コンパイラが強制し続けるため（所有者の決定、Opus 案 (d)）。
 
-pub use awase_windows_core::state::*;
+// 上位の crate が下位の crate の `state` を glob で再公開する（ADR-274 D3）ので、最上位の `awase-hook-core` を
+// 再公開すれば `awase-windows-core` の `state` も入る。`awase_windows_core::state::*` を並べると、名前がすべて
+// 重なって「未使用の import」になる（nightly の lint が指摘）。葉の core 系 crate が増えたら、それぞれの glob をここに並べる。
+pub use awase_hook_core::state::*;
 
 // 実機（Windows）以外では呼び出し元（`runtime/`・`app/`）が無く、未使用警告が出る。
 #[cfg_attr(not(windows), allow(dead_code))]

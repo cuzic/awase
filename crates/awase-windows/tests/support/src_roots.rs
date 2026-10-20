@@ -8,7 +8,8 @@ use std::path::Path;
 /// 核 crate は `src/` 以下で元の配置（`src/state/...` など）をそのまま保つ。これで
 /// ガードが持つ `"src/..."` のパス文字列も、`strip_prefix` した相対パスも変わらない。
 /// 分割前は空。
-pub(crate) const EXTRA_SRC_CRATES: &[&str] = &["crates/awase-windows-core"];
+pub(crate) const EXTRA_SRC_CRATES: &[&str] =
+    &["crates/awase-windows-core", "crates/awase-hook-core"];
 
 pub(crate) fn workspace_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

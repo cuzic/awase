@@ -111,8 +111,8 @@ def check():
                 )
         if not re.search(r"^\[lints\]\s*\nworkspace\s*=\s*true", read(d + "/Cargo.toml"), re.M):
             errors.append(f"{pkg}: Cargo.toml が `[lints] workspace = true` でない(ルートの [workspace.lints] を使う)")
-        if d not in lbg and pkg not in lbg:
-            errors.append(f"{pkg}: layer_boundary_guard.rs が {d} に触れていない(windows 非依存の検査から外れる)")
+        if "core-crates.txt" not in lbg and d not in lbg and pkg not in lbg:
+            errors.append(f"{pkg}: layer_boundary_guard.rs が core-crates.txt を読んでいない・{d} にも触れていない(windows 非依存の検査から外れる)")
     return errors
 
 
