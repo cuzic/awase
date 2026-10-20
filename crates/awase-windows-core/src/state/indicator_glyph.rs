@@ -230,6 +230,16 @@ pub enum SampleOrigin {
     Common,
 }
 
+impl SampleOrigin {
+    /// journal・ログ用の短い名前。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SameEnv => "same-env",
+            Self::Common => "common",
+        }
+    }
+}
+
 /// 表の見本 1 枚。
 #[derive(Debug, Clone)]
 pub struct GlyphSample {
@@ -309,6 +319,15 @@ impl GlyphTable {
 
     pub fn len(&self) -> usize {
         self.samples.len()
+    }
+
+    /// 共通の初期見本から表を作る(衝突・重複・上限の判定はしない。見本は出所が確かで、近い 2 クラスも意図的に持つ)。
+    /// 以後の `add`(同じ環境の見本)は通常の判定を受ける。
+    pub fn from_common_samples(samples: Vec<GlyphSample>) -> Self {
+        Self {
+            samples,
+            ..Self::default()
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -459,13 +478,14 @@ impl BeliefLabel {
         }
     }
 
-    /// [`Self::class`] の逆(代表以外のクラスは `None`)。
-    pub const fn from_class(class: GlyphClass) -> Option<Self> {
+    /// [`GlyphClass`] が属する粗いラベル(閉・かな系=ひらがな/カタカナ/半角カナ・英数系=全角英数/半角英数)。
+    pub const fn from_class(class: GlyphClass) -> Self {
         match class {
-            GlyphClass::Closed => Some(Self::Closed),
-            GlyphClass::Hiragana => Some(Self::Kana),
-            GlyphClass::HalfAlnum => Some(Self::Eisu),
-            GlyphClass::FullKatakana | GlyphClass::FullAlnum | GlyphClass::HalfKatakana => None,
+            GlyphClass::Closed => Self::Closed,
+            GlyphClass::Hiragana | GlyphClass::FullKatakana | GlyphClass::HalfKatakana => {
+                Self::Kana
+            }
+            GlyphClass::FullAlnum | GlyphClass::HalfAlnum => Self::Eisu,
         }
     }
 }
@@ -516,11 +536,92 @@ pub fn collect_label(
     (prev.feature.distance(now.feature) <= STABLE_DISTANCE).then_some(label)
 }
 
+/// ラベル単位の分類で採った読み。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct LabelHit {
+    pub label: BeliefLabel,
+    /// 最近傍の見本のクラス(journal の診断用。ラベルより細かい)
+    pub class: GlyphClass,
+    /// 最近傍の距離
+    pub distance: f32,
+    /// 次点のラベルとの距離比(次点が無ければ `f32::INFINITY`)
+    pub ratio: f32,
+    /// 最近傍の見本の出所
+    pub origin: SampleOrigin,
+}
+
+/// ラベル単位の読み。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LabelReading {
+    Hit(LabelHit),
+    Miss(GlyphMiss),
+}
+
+/// 特徴を**ラベル(閉・かな・英数)単位**で分類する。最近傍と次点を、クラスではなくラベルで比べる: 同じラベルの 2 クラス
+/// (全角英数と半角英数など)が近くても曖昧にならない(Engine が必要なのは、閉・かな系・英数系の区別だけ。ADR-261)。
+/// 採るのは、最近傍の距離が上限以内で、次点のラベルとの距離比が下限(最近傍の見本の出所で決まる)以上のときだけ。
+pub fn classify_label(
+    table: &GlyphTable,
+    thresholds: &Thresholds,
+    feature: &GlyphFeature,
+) -> LabelReading {
+    if table.is_empty() {
+        return LabelReading::Miss(GlyphMiss::EmptyTable);
+    }
+    let mut best: Vec<(BeliefLabel, GlyphClass, f32, SampleOrigin)> = Vec::new();
+    for s in &table.samples {
+        let d = s.feature.distance(feature);
+        let label = BeliefLabel::from_class(s.class);
+        match best.iter_mut().find(|e| e.0 == label) {
+            Some(e) => {
+                if d < e.2 {
+                    *e = (label, s.class, d, s.origin);
+                }
+            }
+            None => best.push((label, s.class, d, s.origin)),
+        }
+    }
+    best.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let (label, class, distance, origin) = best[0];
+    if distance > thresholds.max_distance {
+        return LabelReading::Miss(GlyphMiss::TooFar);
+    }
+    let ratio = match best.get(1) {
+        None => f32::INFINITY,
+        Some(&(_, _, second, _)) if distance <= f32::EPSILON => {
+            if second <= f32::EPSILON {
+                1.0
+            } else {
+                f32::INFINITY
+            }
+        }
+        Some(&(_, _, second, _)) => second / distance,
+    };
+    let need = match origin {
+        SampleOrigin::SameEnv => thresholds.min_ratio_same_env,
+        SampleOrigin::Common => thresholds.min_ratio_common,
+    };
+    if ratio < need {
+        return LabelReading::Miss(GlyphMiss::Ambiguous);
+    }
+    LabelReading::Hit(LabelHit {
+        label,
+        class,
+        distance,
+        ratio,
+        origin,
+    })
+}
+
 /// 取り込み 1 回の照合の結果(journal に残す)。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MatchResult {
-    /// 照合で採ったラベル(`Hit` のとき)。代表以外のクラスに当たった場合は `None`
+    /// 照合で採ったラベル(`Hit` のとき)
     pub reading: Option<BeliefLabel>,
+    /// 最近傍の見本のクラス(`Hit` のとき。診断用)
+    pub class: Option<GlyphClass>,
+    /// 最近傍の見本の出所(`Hit` のとき)
+    pub origin: Option<SampleOrigin>,
     /// `Miss` の理由(`Hit` のときは `None`)
     pub miss: Option<GlyphMiss>,
     /// 最近傍の距離と距離比(`Hit` のとき)
@@ -534,15 +635,19 @@ pub fn match_feature(
     thresholds: &Thresholds,
     feature: &GlyphFeature,
 ) -> MatchResult {
-    match classify_glyph(table, thresholds, feature) {
-        GlyphReading::Hit(h) => MatchResult {
-            reading: BeliefLabel::from_class(h.class),
+    match classify_label(table, thresholds, feature) {
+        LabelReading::Hit(h) => MatchResult {
+            reading: Some(h.label),
+            class: Some(h.class),
+            origin: Some(h.origin),
             miss: None,
             distance: Some(h.distance),
             ratio: Some(h.ratio),
         },
-        GlyphReading::Miss(m) => MatchResult {
+        LabelReading::Miss(m) => MatchResult {
             reading: None,
+            class: None,
+            origin: None,
             miss: Some(m),
             distance: None,
             ratio: None,
@@ -760,6 +865,8 @@ pub fn apply_match(
     table_size: usize,
 ) {
     record.reading = m.reading.map(BeliefLabel::label);
+    record.reading_class = m.class.map(GlyphClass::label);
+    record.reading_origin = m.origin.map(SampleOrigin::label);
     record.match_miss = m.miss.map(GlyphMiss::label);
     record.distance_x100 = m.distance.map(x100);
     record.ratio_x100 = m.ratio.map(x100);
@@ -1666,9 +1773,20 @@ mod tests {
         );
         // 代表のクラスとの往復。
         for l in [BeliefLabel::Closed, BeliefLabel::Kana, BeliefLabel::Eisu] {
-            assert_eq!(BeliefLabel::from_class(l.class()), Some(l));
+            assert_eq!(BeliefLabel::from_class(l.class()), l);
         }
-        assert_eq!(BeliefLabel::from_class(GlyphClass::FullKatakana), None);
+        assert_eq!(
+            BeliefLabel::from_class(GlyphClass::FullKatakana),
+            BeliefLabel::Kana
+        );
+        assert_eq!(
+            BeliefLabel::from_class(GlyphClass::HalfKatakana),
+            BeliefLabel::Kana
+        );
+        assert_eq!(
+            BeliefLabel::from_class(GlyphClass::FullAlnum),
+            BeliefLabel::Eisu
+        );
     }
 
     #[test]
@@ -1744,6 +1862,8 @@ mod tests {
         let mut r = o.to_record("standard", Some(true), 900);
         let hit = MatchResult {
             reading: Some(BeliefLabel::Kana),
+            class: Some(GlyphClass::FullKatakana),
+            origin: Some(SampleOrigin::Common),
             miss: None,
             distance: Some(0.123),
             ratio: Some(f32::INFINITY),
@@ -1764,6 +1884,8 @@ mod tests {
         assert_eq!(r.agree, Some(false));
         let miss = MatchResult {
             reading: None,
+            class: None,
+            origin: None,
             miss: Some(GlyphMiss::TooFar),
             distance: None,
             ratio: None,
