@@ -1,9 +1,10 @@
 // 新しい crate でも、core の `state/mod.rs` と同じ `#![allow(unreachable_pub)]`（再エクスポートの連鎖を支える `pub mod`）。
 #![allow(unreachable_pub)]
 
-//! フック・修飾キー・半角英数トグルの状態（ADR-274 段階 1）。`awase-windows-core` の `state/` から、分割前と同じ
-//! `src/state/` 内の相対パスのまま移した（`git mv`、類似度 100%）。依存は `awase`（ルート crate）と
-//! `awase-windows-core` の `vk`・`state::{TickMs, foreground_scope, ime_kind}` だけ。
+//! フック・修飾キー・半角英数トグルの状態（ADR-274 段階 1）。
+//!
+//! `awase-windows-core` の `state/` から、分割前と同じ `src/state/` 内の相対パスのまま移した（`git mv`、類似度 100%）。
+//! 依存は `awase`（ルート crate）と `awase-windows-core` の `vk`・`state::{TickMs, foreground_scope, ime_kind}` だけ。
 //!
 //! 下位の crate（`awase-windows-core`）の `state` を glob で再公開するので、移したファイルの中の
 //! `crate::state::TickMs` などは書き換えなくてよい。殻の `awase-windows` は `crate::state::...` の経路を変えずに使える。
