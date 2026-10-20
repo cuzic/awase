@@ -16,6 +16,8 @@ core 系 crate を足したとき、パスや `-p` を直書きしている場�
   - crates/xtask-adr-evidence/src/core_registry.rs が crate のディレクトリに触れていること
   - layer_boundary_guard.rs が crate のディレクトリに触れていること(windows に依存しない検査)
   - .githooks/pre-push が一覧を読むこと
+  - Cargo.toml が `[lints] workspace = true` で、ルートの `[workspace.lints]` を使うこと(lints が crate ごとに複製されて
+    ずれるのを防ぐ。ADR-274 段階 0 の 4)
 """
 import os
 import re
@@ -96,6 +98,8 @@ def check():
             errors.append(f"{pkg}: .cargo/mutants-{pkg}.toml が無い")
         if d not in registry and pkg not in registry:
             errors.append(f"{pkg}: xtask-adr-evidence の core_registry.rs が {d} に触れていない(mutants の登録を数えない)")
+        if not re.search(r"^\[lints\]\s*\nworkspace\s*=\s*true", read(d + "/Cargo.toml"), re.M):
+            errors.append(f"{pkg}: Cargo.toml が `[lints] workspace = true` でない(ルートの [workspace.lints] を使う)")
         if d not in lbg and pkg not in lbg:
             errors.append(f"{pkg}: layer_boundary_guard.rs が {d} に触れていない(windows 非依存の検査から外れる)")
     return errors
