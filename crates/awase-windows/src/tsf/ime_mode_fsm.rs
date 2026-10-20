@@ -31,9 +31,9 @@ pub(crate) enum ImeModeState {
 
 impl ImeModeState {
     pub(crate) fn from_conversion_mode(mode: u32) -> Self {
-        if mode & crate::imm::IME_CMODE_NATIVE == 0 {
+        if mode & crate::conv_flags::IME_CMODE_NATIVE == 0 {
             Self::Off
-        } else if mode & crate::imm::IME_CMODE_KATAKANA != 0 {
+        } else if mode & crate::conv_flags::IME_CMODE_KATAKANA != 0 {
             Self::Katakana
         } else {
             Self::Hiragana
@@ -103,7 +103,7 @@ impl ImeModeFsm {
         tracing::debug!("[ime-mode] SetOpen({open}) applied → {new_state:?} (belief, unconfirmed)");
         self.state = new_state;
         self.confirmed = false;
-        self.last_vk_send_ms = crate::hook::current_tick_ms();
+        self.last_vk_send_ms = crate::clock::current_tick_ms();
     }
 
     /// 外部要因で conv が変わった可能性があるとき、belief の state は保ったまま
@@ -217,7 +217,7 @@ mod tests {
     fn unconfirm_makes_native_ready_false_without_changing_state() {
         let mut fsm = ImeModeFsm::new();
         fsm.on_conversion_mode_read(Some(
-            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+            crate::conv_flags::IME_CMODE_NATIVE | crate::conv_flags::IME_CMODE_ROMAN,
         ));
         assert_eq!(fsm.state(), ImeModeState::Hiragana);
         assert!(fsm.is_native_ready(), "confirmed かつ Hiragana なら ready");
@@ -249,14 +249,14 @@ mod tests {
     fn on_conversion_mode_read_confirms_native_ready_again() {
         let mut fsm = ImeModeFsm::new();
         fsm.on_conversion_mode_read(Some(
-            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+            crate::conv_flags::IME_CMODE_NATIVE | crate::conv_flags::IME_CMODE_ROMAN,
         ));
         fsm.unconfirm("test");
         assert!(!fsm.is_native_ready());
 
         // IMC ポーリングが実際に NATIVE を確認し直すと ready に戻る。
         fsm.on_conversion_mode_read(Some(
-            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+            crate::conv_flags::IME_CMODE_NATIVE | crate::conv_flags::IME_CMODE_ROMAN,
         ));
         assert!(fsm.is_native_ready());
     }
@@ -274,7 +274,7 @@ mod tests {
         assert!(!fsm.is_native_ready());
 
         fsm.on_conversion_mode_hint(Some(
-            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+            crate::conv_flags::IME_CMODE_NATIVE | crate::conv_flags::IME_CMODE_ROMAN,
         ));
         assert_eq!(
             fsm.state(),
@@ -290,7 +290,7 @@ mod tests {
         // 真の confirm-then-transmit ポーリング（on_conversion_mode_read）が
         // 実際に確認して初めて ready になる。
         fsm.on_conversion_mode_read(Some(
-            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+            crate::conv_flags::IME_CMODE_NATIVE | crate::conv_flags::IME_CMODE_ROMAN,
         ));
         assert!(fsm.is_native_ready());
     }
