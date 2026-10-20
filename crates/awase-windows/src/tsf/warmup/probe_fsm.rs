@@ -1300,6 +1300,7 @@ mod tests {
         let _g = TSF_OBS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
 
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
@@ -1356,10 +1357,8 @@ mod tests {
 
         // 猶予期間（EPOCH_FENCE_GRACE_MS）が過ぎても gji_last_write_ms は追いつかない
         // （前世代の残存 GJI I/O のまま）ため、次 tick で StaleConfirm に確定する。
-        std::thread::sleep(std::time::Duration::from_millis(
-            // BUG-130 と同型: GetTickCount64 の量子化(~15.6ms)を吸収するため +50ms(+10ms では windows-build CI で稀に flake した)。
-            LiteralDetector::EPOCH_FENCE_GRACE_MS + 50,
-        ));
+        // 実時間の sleep は BUG-130 と同型で GetTickCount64 の量子化(~15.6ms)と CI の負荷でフレークした。仮想時計を進める(ADR-272 段階 B0)。
+        crate::clock::advance(LiteralDetector::EPOCH_FENCE_GRACE_MS + 50);
         let actions_after_stale = machine.tick(TsfEnvSnapshot {
             gji_active: true,
             gji_candidate_visible_now: true,

@@ -767,6 +767,7 @@ mod tests {
         let _g = VETO_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         reset_tsf_obs_for_veto_test();
 
         let detector = LiteralDetector::new(true);
@@ -795,10 +796,8 @@ mod tests {
         // 1 回目: hold に入る（veto_started_at_ms が確定する）。
         assert!(core.poll(visible_env).is_none());
 
-        // 上限を超えるまで実時間で待機する（候補ウィンドウ固着を模擬）。
-        std::thread::sleep(std::time::Duration::from_millis(
-            crate::tuning::GJI_CANDIDATE_VETO_CAP_MS + 50,
-        ));
+        // 上限を超えるまで仮想時計を進める（候補ウィンドウ固着を模擬。ADR-272 段階 B0）。
+        crate::clock::advance(crate::tuning::GJI_CANDIDATE_VETO_CAP_MS + 50);
 
         let actions = core
             .poll(visible_env)

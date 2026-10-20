@@ -823,7 +823,6 @@ impl LiteralDetector {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering::SeqCst;
-    use std::time::Instant;
 
     /// テスト間でグローバルな観測atomicが競合しないようにシリアライズするロック
     /// (`observer.rs`/`literal_detect_fsm.rs`と共有、`TSF_OBS_TEST_LOCK`参照)。
@@ -832,14 +831,23 @@ mod tests {
     /// `check_now` が `true` を返すまでポーリングする（旧 `wait_until_ready`、
     /// 本番未使用のため 2026-07-19 に撤去。`check_now` 自体のタイミング挙動を
     /// 検証するテスト専用の待機ヘルパーとしてここに残す）。
+    ///
+    /// 呼び出し側が `clock::freeze()` 済みであること。実時間は待たず、仮想時計を `POLL_MS` ずつ進める
+    /// (ADR-272 段階 B0)。`check_now` が永久に `false` を返す退行・変異は、回数の上限で panic として検出する
+    /// (実時間を待つと mutants の timeout になる)。
     fn poll_until_ready(probe: &TsfReadinessProbe, total_max_ms: u64) {
         const POLL_MS: u64 = 10;
-        loop {
+        let max_polls = total_max_ms / POLL_MS + 100;
+        for _ in 0..max_polls {
             if probe.check_now(total_max_ms) {
-                break;
+                return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+            crate::clock::advance(POLL_MS);
         }
+        panic!(
+            "check_now が {max_polls} 回(仮想 {}ms)たっても true を返さない",
+            max_polls * POLL_MS
+        );
     }
 
     /// GJI モニター不可のとき、total_max_ms ぶん待機して返る（フォールバックパス）
@@ -848,6 +856,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         TSF_OBS.gji_monitor_ok.store(false, SeqCst);
 
         let now_ms = crate::clock::current_tick_ms();
@@ -885,6 +894,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         let now_ms = crate::clock::current_tick_ms();
 
         // warmup 200ms 前、GJI 最終 I/O は warmup の 50ms 後（= 150ms 前）
@@ -895,11 +905,11 @@ mod tests {
         TSF_OBS.gji_monitor_ok.store(true, SeqCst);
         TSF_OBS.gji_last_io_ms.store(io_ms, SeqCst);
 
-        let start = Instant::now();
+        let start = crate::clock::current_tick_ms();
         let probe = TsfReadinessProbe::new(warmup_ms, Generation::INITIAL, 0); // min_ms=0
         poll_until_ready(&probe, 1_000);
 
-        let elapsed = start.elapsed().as_millis();
+        let elapsed = crate::clock::current_tick_ms() - start;
         // 即 settled（margin = POST_IDLE_MARGIN_MS = 30ms 以内）
         assert!(
             elapsed < 150,
@@ -913,6 +923,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         let now_ms = crate::clock::current_tick_ms();
 
         // GJI は settled 状態だが min_ms=80 のため phase1 で 80ms 待機する
@@ -921,11 +932,11 @@ mod tests {
             .gji_last_io_ms
             .store(now_ms.saturating_sub(200), SeqCst); // 200ms 前に I/O（warmup 前）
 
-        let start = Instant::now();
+        let start = crate::clock::current_tick_ms();
         let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 80); // min_ms=80
         poll_until_ready(&probe, 300);
 
-        let elapsed = start.elapsed().as_millis();
+        let elapsed = crate::clock::current_tick_ms() - start;
         // min_ms=80 の phase1 wait 後に即解放（I/O なし → 正常状態）
         // → 60ms 以上 200ms 以内に完了するはず
         assert!(elapsed >= 60, "phase1 min_wait not respected: {elapsed}ms");
@@ -941,6 +952,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         let now_ms = crate::clock::current_tick_ms();
 
         // GJI I/O は warmup より前 → warmup 後に I/O なし → 既に正常状態 → min_ms 経過で即解放
@@ -949,11 +961,11 @@ mod tests {
             .gji_last_io_ms
             .store(now_ms.saturating_sub(5_000), SeqCst);
 
-        let start = Instant::now();
+        let start = crate::clock::current_tick_ms();
         let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 0); // min_ms=0
         poll_until_ready(&probe, 1_000);
 
-        let elapsed = start.elapsed().as_millis();
+        let elapsed = crate::clock::current_tick_ms() - start;
         // min_ms=0 なので即解放（1000ms タイムアウトを待たない）
         assert!(elapsed < 100, "should release immediately, got {elapsed}ms");
     }
@@ -971,11 +983,12 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         let state = CompositionState::new();
 
         // 実際のローマ字送信 (send_keys 相当) を模擬した baseline。
         state.update_last_send_ms();
-        std::thread::sleep(std::time::Duration::from_millis(60));
+        crate::clock::advance(60);
 
         state.mark_composition_cold(crate::tsf::cold_reason::ColdReason::PassthroughConfirmKey);
         let first_idle = state.cold_ctx.idle_ms_at_last_cold();
@@ -984,7 +997,7 @@ mod tests {
             "1回目の idle は直前 sleep の ~60ms を反映するはず: {first_idle}ms"
         );
 
-        std::thread::sleep(std::time::Duration::from_millis(60));
+        crate::clock::advance(60);
 
         state.mark_composition_cold(crate::tsf::cold_reason::ColdReason::PassthroughConfirmKey);
         let second_idle = state.cold_ctx.idle_ms_at_last_cold();
@@ -1157,6 +1170,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         TSF_OBS.gji_write_bytes.store(7_000, SeqCst);
         let epoch_ms = crate::clock::current_tick_ms();
         TSF_OBS
@@ -1170,14 +1184,10 @@ mod tests {
         let held = detector.check_now(far_deadline);
         assert!(held.is_none(), "猶予開始直後はまだ None のはず: {held:?}");
 
-        // +10ms マージンは `GetTickCount64` の既定タイマー分解能（~15.6ms）より
-        // 小さく、CI runner 負荷下では実経過 30ms でも tick 差分が量子化により
-        // grace(20ms) 未満に丸まることがあった（windows-build run 34659416676
-        // で1回再現、`docs/known-bugs/BUG-131.md`）。tick 分解能を確実に上回る
-        // マージンに広げて量子化ぶれを吸収する。
-        std::thread::sleep(std::time::Duration::from_millis(
-            LiteralDetector::EPOCH_FENCE_GRACE_MS + 50,
-        ));
+        // 実時間の sleep は `GetTickCount64` の既定タイマー分解能（~15.6ms）と CI の負荷で
+        // フレークした（windows-build run 34659416676、`docs/known-bugs/BUG-131.md`）。
+        // 仮想時計を進めれば分解能にも負荷にも依らない（ADR-272 段階 B0）。
+        crate::clock::advance(LiteralDetector::EPOCH_FENCE_GRACE_MS + 50);
         let result = detector.check_now(far_deadline);
         assert!(
             matches!(result, Some(DetectionResult::StaleConfirm)),
