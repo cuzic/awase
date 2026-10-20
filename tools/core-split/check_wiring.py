@@ -16,6 +16,9 @@ core 系 crate を足したとき、パスや `-p` を直書きしている場�
   - crates/xtask-adr-evidence/src/core_registry.rs が crate のディレクトリに触れていること
   - layer_boundary_guard.rs が crate のディレクトリに触れていること(windows に依存しない検査)
   - .githooks/pre-push が一覧を読むこと
+  - core 系 crate に統合テスト(`tests/*.rs`)を置かないこと。統合テストは殻の `crates/awase-windows/tests/` に置く
+    (`ci_test_coverage_guard.rs` が見るのは殻の tests/ だけで、`cargo nextest run --workspace --lib` は統合テストを
+    走らせない。移した crate の統合テストは、どこからも実行されなくなる。ADR-274 段階 0 の 6)
   - Cargo.toml が `[lints] workspace = true` で、ルートの `[workspace.lints]` を使うこと(lints が crate ごとに複製されて
     ずれるのを防ぐ。ADR-274 段階 0 の 4)
 """
@@ -98,6 +101,14 @@ def check():
             errors.append(f"{pkg}: .cargo/mutants-{pkg}.toml が無い")
         if d not in registry and pkg not in registry:
             errors.append(f"{pkg}: xtask-adr-evidence の core_registry.rs が {d} に触れていない(mutants の登録を数えない)")
+        tests_dir = os.path.join(ROOT, d, "tests")
+        if os.path.isdir(tests_dir):
+            stray = sorted(f for f in os.listdir(tests_dir) if f.endswith(".rs"))
+            if stray:
+                errors.append(
+                    f"{pkg}: {d}/tests/ に統合テスト {stray} がある。CI で一度も走らない(ci_test_coverage_guard は殻の tests/ だけを見る)。"
+                    "殻の crates/awase-windows/tests/ に置く(再公開された経路で引ける)"
+                )
         if not re.search(r"^\[lints\]\s*\nworkspace\s*=\s*true", read(d + "/Cargo.toml"), re.M):
             errors.append(f"{pkg}: Cargo.toml が `[lints] workspace = true` でない(ルートの [workspace.lints] を使う)")
         if d not in lbg and pkg not in lbg:
