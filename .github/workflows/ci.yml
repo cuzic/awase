@@ -272,6 +272,17 @@ jobs:
   # いなかった」まま他ADRから権威として参照され続けた(2026-09-08に判明)。この
   # チェックはその再発を防ぐ——本文ファイルの追加を起票と同時に強制する形で、
   # 「本文なき権威」を構造的に作れなくする。Rustのビルドを要さないため独立ジョブとする。
+  # ADR-274: core の層の向き(base ← keyeffect ← imecore ← {plans, hookinput})を固定する。
+  # 本番とテストの `crate::`/`super::` の参照が `tools/core-split/assign.py` の ALLOWED の向きだけであること、
+  # 全モジュールが割り当て済みであること、assign.py にあるのに走査で見つからないモジュールが無いことを確かめる
+  # (crate を分けたとき、走査から漏れて検査が黙って縮むのを防ぐ)。Python 標準ライブラリだけで数秒で終わる。
+  core-layers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: core の層の向きを確認
+        run: python3 -I tools/core-split/deps.py crates/awase-windows-core/src tools/core-split/assign.py --check | tail -5
+
   adr-index-consistency:
     runs-on: ubuntu-latest
     steps:
