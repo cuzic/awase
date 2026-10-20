@@ -319,7 +319,7 @@ impl LiteralDetectCore {
                         self.consecutive,
                         crate::tsf::observer::gji_idle_ms(),
                     );
-                    crate::ime_diagnostic::log_composition_probe(self.cold_seq, "partial-literal");
+                    crate::tsf::log_composition_probe(self.cold_seq, "partial-literal");
                     return Some(self.recovery(
                         PARTIAL_LITERAL_BS,
                         true,
@@ -335,7 +335,7 @@ impl LiteralDetectCore {
                     self.cold_seq.value(),
                     crate::tsf::observer::gji_idle_ms(),
                 );
-                crate::ime_diagnostic::log_composition_probe(self.cold_seq, "confirmed");
+                crate::tsf::log_composition_probe(self.cold_seq, "confirmed");
                 // BUG-27 追補4: consecutive_count リセットを dispatcher の
                 // CompositionConfirmed ハンドラに一元化する（mark_literal_session_confirmed
                 // の直接呼び出しをやめ、ProbeAction 経由にする）。
@@ -363,7 +363,7 @@ impl LiteralDetectCore {
                         self.cold_seq.value(),
                         crate::tuning::GJI_CANDIDATE_VETO_CAP_MS,
                     );
-                    crate::ime_diagnostic::log_composition_probe(self.cold_seq, "veto-expired");
+                    crate::tsf::log_composition_probe(self.cold_seq, "veto-expired");
                     Some(vec![
                         ProbeAction::LiteralDetectNote {
                             cold_seq: self.cold_seq,
@@ -389,7 +389,7 @@ impl LiteralDetectCore {
                         self.consecutive,
                         crate::tsf::observer::gji_idle_ms(),
                     );
-                    crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
+                    crate::tsf::log_composition_probe(self.cold_seq, "suspected");
                     let (backs, escape_composition) =
                         word_level_recovery_params(false, self.ze_bs_count);
                     Some(self.recovery(backs, escape_composition, facts))
@@ -406,7 +406,7 @@ impl LiteralDetectCore {
                     self.cold_seq.value(),
                     self.romaji,
                 );
-                crate::ime_diagnostic::log_composition_probe(self.cold_seq, "epoch-fence-stale");
+                crate::tsf::log_composition_probe(self.cold_seq, "epoch-fence-stale");
                 let (backs, escape_composition) =
                     word_level_recovery_params(true, self.ze_bs_count);
                 Some(self.recovery(backs, escape_composition, facts))
@@ -448,7 +448,7 @@ impl LiteralDetectCore {
             self.veto_started_at_ms = None;
             return VetoDecision::NotApplicable;
         }
-        let now = crate::hook::current_tick_ms();
+        let now = crate::clock::current_tick_ms();
         let started_at = *self.veto_started_at_ms.get_or_insert(now);
         if now < started_at.saturating_add(crate::tuning::GJI_CANDIDATE_VETO_CAP_MS) {
             VetoDecision::Hold
@@ -498,7 +498,7 @@ impl LiteralDetectFsm {
     ) -> Self {
         let guard = OutputActiveGuard::begin();
         let detector = LiteralDetector::new(true);
-        let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
+        let deadline_ms = crate::clock::current_tick_ms() + literal_detect_ms;
         Self {
             core: LiteralDetectCore::new(
                 cold_seq,
@@ -733,7 +733,7 @@ mod tests {
         let detector = LiteralDetector::new(true);
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         let mut core = LiteralDetectCore::new(
             Generation::INITIAL,
             "ko".to_string(),
@@ -770,7 +770,7 @@ mod tests {
         let detector = LiteralDetector::new(true);
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         let mut core = LiteralDetectCore::new(
             Generation::INITIAL,
             "ko".to_string(),
@@ -826,7 +826,7 @@ mod tests {
         let detector = LiteralDetector::new_with_pre_send_baseline(5_000, false);
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         let mut core = LiteralDetectCore::new(
             Generation::INITIAL,
             "s".to_string(),
@@ -884,11 +884,11 @@ mod tests {
                                                                                  // このテストへの適用を見落としていたが、Windows実機の再実行で
                                                                                  // 単独の真の失敗として顕在化し発見)。saturating_subで明示的に確実な
                                                                                  // 過去時刻を作ることで解像度に依存しないようにする。
-        let stale_write_ms = crate::hook::current_tick_ms().saturating_sub(50);
+        let stale_write_ms = crate::clock::current_tick_ms().saturating_sub(50);
         TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
         TSF_OBS.gji_write_bytes.store(9_400, SeqCst); // 閾値超過だが根拠は stale
 
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         let mut core = LiteralDetectCore::new(
             Generation::INITIAL,
             "fu".to_string(),

@@ -62,7 +62,7 @@ impl MozcComposeCheckFsm {
         Self {
             target,
             origin,
-            sent_ms: crate::hook::current_tick_ms(),
+            sent_ms: crate::clock::current_tick_ms(),
             check_ms,
             _guard: OutputActiveGuard::begin(),
         }
@@ -125,7 +125,7 @@ fn facts(verdict: LiteralVerdict) -> LiteralDetectFacts {
 
 impl TickableFsm for MozcComposeCheckFsm {
     fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
-        let now_ms = crate::hook::current_tick_ms();
+        let now_ms = crate::clock::current_tick_ms();
         let elapsed_ms = now_ms.saturating_sub(self.sent_ms);
         // 宛先の窓が変わったら、確認も回収もやめる（変わった窓へ Backspace を送らない）。
         if self.target_moved(env.stage_origin_now) {
@@ -135,8 +135,7 @@ impl TickableFsm for MozcComposeCheckFsm {
             );
             return vec![ProbeAction::Done];
         }
-        let reading =
-            crate::observer::mozc_shm::read_compose(self.target.thread_id, self.target.process_id);
+        let reading = crate::tsf::read_mozc_compose(self.target.thread_id, self.target.process_id);
         let (verdict, mut actions) = self.step(now_ms, reading);
         let (key_seq, composition_key_seq) = match reading {
             ComposeReading::Block(b) => (b.key_seq, b.composition_key_seq),
@@ -157,7 +156,7 @@ impl TickableFsm for MozcComposeCheckFsm {
                 let response_check_ms =
                     u32::try_from(crate::tuning::MOZC_COMPOSE_RESPONSE_CHECK_MS)
                         .unwrap_or(u32::MAX);
-                if crate::ime::window_thread_responds(self.target.hwnd_addr, response_check_ms) {
+                if crate::tsf::window_thread_responds(self.target.hwnd_addr, response_check_ms) {
                     tracing::warn!(
                         "[mozc-compose] cold={} no composition {elapsed_ms}ms after sending {:?} (server ready) → literal; backspace ×{} + re-send (key_seq {}→{}, composition_key_seq {composition_key_seq})",
                         self.target.cold_seq.value(),

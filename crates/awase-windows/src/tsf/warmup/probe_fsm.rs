@@ -467,10 +467,7 @@ pub(crate) async fn run_per_vk_confirm(
 
     let (log_tag, literal_tag, confirmed_tag) = per_vk_confirm_tags(target);
 
-    let vk_chars: Vec<(VkCode, bool)> = romaji
-        .chars()
-        .filter_map(crate::output::resolve_ascii_to_vk)
-        .collect();
+    let vk_chars: Vec<(VkCode, bool)> = romaji.chars().filter_map(crate::vk::ascii_to_vk).collect();
     if vk_chars.is_empty() {
         yield_step(ch.clone(), vec![ProbeAction::Done]).await;
         return;
@@ -567,7 +564,7 @@ pub(crate) async fn run_per_vk_confirm(
                     vk.0,
                     cold_seq = cold_seq.value(),
                 );
-                crate::ime_diagnostic::log_composition_probe(cold_seq, literal_tag);
+                crate::tsf::log_composition_probe(cold_seq, literal_tag);
                 // emit_recovery_actions は常に RawTsfLiteralRecovery（backspace のみ、
                 // 捨て駒キーには倒れない）を返す。consecutive==0 なら dispatcher が
                 // romaji の再送を自然に次の cold パス（per-VK confirm）へ委ねる。
@@ -610,7 +607,7 @@ pub(crate) async fn run_per_vk_confirm(
                     vk.0,
                     cold_seq = cold_seq.value(),
                 );
-                crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
+                crate::tsf::log_composition_probe(cold_seq, "epoch-fence-stale");
                 let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
                     cold_seq,
                     romaji.to_string(),
@@ -629,7 +626,7 @@ pub(crate) async fn run_per_vk_confirm(
         vk_chars.len(),
         cold_seq = cold_seq.value(),
     );
-    crate::ime_diagnostic::log_composition_probe(cold_seq, confirmed_tag);
+    crate::tsf::log_composition_probe(cold_seq, confirmed_tag);
     // BUG-27 追補4: 最後の VK の pending_confirm は不要（mark_literal_session=true
     // 版のリセットで包含されるため）、破棄してよい。
     let _ = pending_confirm.take();
@@ -753,7 +750,7 @@ async fn tsf_probe_coro_body(
 
         let final_actions = match detection {
             DetectionResult::SuspectedLiteral => {
-                crate::ime_diagnostic::log_composition_probe(cold_seq, "suspected");
+                crate::tsf::log_composition_probe(cold_seq, "suspected");
                 let (backs, escape_composition) =
                     crate::tsf::warmup::literal_detect_fsm::word_level_recovery_params(
                         false,
@@ -775,7 +772,7 @@ async fn tsf_probe_coro_body(
                     "[raw-tsf-literal] cold={cold_seq} composition confirmed",
                     cold_seq = cold_seq.value(),
                 );
-                crate::ime_diagnostic::log_composition_probe(cold_seq, "confirmed");
+                crate::tsf::log_composition_probe(cold_seq, "confirmed");
                 vec![
                     ProbeAction::LiteralDetectNote { cold_seq, facts },
                     ProbeAction::Done,
@@ -796,7 +793,7 @@ async fn tsf_probe_coro_body(
                      backspace は送らず romaji 再送のみ行う",
                     cold_seq = cold_seq.value(),
                 );
-                crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
+                crate::tsf::log_composition_probe(cold_seq, "epoch-fence-stale");
                 let (backs, escape_composition) =
                     crate::tsf::warmup::literal_detect_fsm::word_level_recovery_params(
                         true,
@@ -1325,7 +1322,7 @@ mod tests {
             crate::tsf::observer::gji_write_bytes(),
             false,
         );
-        let deadline_ms = crate::hook::current_tick_ms() + 10_000;
+        let deadline_ms = crate::clock::current_tick_ms() + 10_000;
 
         // 前世代の残存 GJI I/O（今回の VK 送信より前）だけがある状態を模擬する。
         // detector構築時刻(epoch_send_ms)より確実に前のwrite根拠を作るため、実時間
@@ -1335,7 +1332,7 @@ mod tests {
         // trueになり、猶予に入らず即座にactionが出て「猶予期間中は空のはず」の
         // アサートがflakyに失敗する(2026-07-25、Windows実機で初めてこのテストを
         // 実行した際に顕在化)。
-        let stale_write_ms = crate::hook::current_tick_ms().saturating_sub(50);
+        let stale_write_ms = crate::clock::current_tick_ms().saturating_sub(50);
         TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
 
         // 候補ウィンドウが「既に可視」= 前世代の合成が残っている状態を模擬する。
@@ -1413,7 +1410,7 @@ mod tests {
 
         // 送信直前時点では GJI I/O がまだ観測されていない（同一世代内の
         // ポーリングラグを模擬）。
-        let epoch_ms = crate::hook::current_tick_ms();
+        let epoch_ms = crate::clock::current_tick_ms();
         TSF_OBS
             .gji_last_write_ms
             .store(epoch_ms.saturating_sub(50), SeqCst); // stale（epoch より前）
@@ -1422,7 +1419,7 @@ mod tests {
             crate::tsf::observer::gji_write_bytes(),
             false,
         );
-        let deadline_ms = crate::hook::current_tick_ms() + 10_000;
+        let deadline_ms = crate::clock::current_tick_ms() + 10_000;
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         machine.apply_vk_sent(detector, deadline_ms);
@@ -1442,7 +1439,7 @@ mod tests {
         // 猶予期間内に、このVK自身の送信によるGJI I/Oが観測されたことにする。
         TSF_OBS
             .gji_last_write_ms
-            .store(crate::hook::current_tick_ms(), SeqCst);
+            .store(crate::clock::current_tick_ms(), SeqCst);
         let actions_after_catchup = machine.tick(TsfEnvSnapshot {
             gji_active: true,
             gji_candidate_visible_now: true,
@@ -1493,7 +1490,7 @@ mod tests {
         // VK0 ('k') を write-bytes 閾値超過（genuinely fresh）で confirm する。
         let baseline = crate::tsf::observer::gji_write_bytes();
         let detector0 = LiteralDetector::new_with_pre_send_baseline(baseline, false);
-        let deadline0 = crate::hook::current_tick_ms() + 10_000;
+        let deadline0 = crate::clock::current_tick_ms() + 10_000;
         machine.apply_vk_sent(detector0, deadline0);
         let after_send0 = machine.tick(TsfEnvSnapshot {
             gji_active: true,
@@ -1507,7 +1504,7 @@ mod tests {
         TSF_OBS.gji_write_bytes.store(baseline + 400, SeqCst); // 閾値超過、fresh write
         TSF_OBS
             .gji_last_write_ms
-            .store(crate::hook::current_tick_ms(), SeqCst);
+            .store(crate::clock::current_tick_ms(), SeqCst);
         let actions_vk0_confirmed = machine.tick(TsfEnvSnapshot {
             gji_active: true,
             ..Default::default()
@@ -1525,7 +1522,7 @@ mod tests {
             crate::tsf::observer::gji_write_bytes(),
             false,
         );
-        let deadline1 = crate::hook::current_tick_ms(); // 既に期限切れ
+        let deadline1 = crate::clock::current_tick_ms(); // 既に期限切れ
         machine.apply_vk_sent(detector1, deadline1);
         let after_send1 = machine.tick(TsfEnvSnapshot {
             gji_active: true,

@@ -47,7 +47,7 @@ pub(super) mod tip_detector;
 #[cfg(windows)]
 pub use tip_detector::query_tip_identity_on_current_sta;
 pub(crate) mod tsf_gate;
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod warmup;
 #[cfg(windows)]
 mod win_event_obs;
@@ -55,3 +55,47 @@ mod win_event_obs;
 pub use tsf_gate::{
     GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, TsfReadiness, WARMUP_TIMEOUT_MS,
 };
+
+// ── Windows 専用の副作用への入口(ADR-271 段階 A-2c) ──
+//
+// `tsf/warmup/` の FSM が呼ぶ Win32 依存の関数は、ここで cfg を振り分ける。
+// 非 Windows(Linux のテスト)では観測点・副作用が無い値を返す。
+
+/// composition の診断ログを 1 行出す。非 Windows では何もしない。
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub(crate) fn log_composition_probe(
+    cold_seq: crate::state::event_origin::Generation,
+    label: &'static str,
+) {
+    #[cfg(windows)]
+    crate::ime_diagnostic::log_composition_probe(cold_seq, label);
+}
+
+/// Mozc の共有メモリから composition を読む。非 Windows では読めない(`Unreadable`)。
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub(crate) fn read_mozc_compose(
+    thread_id: u32,
+    process_id: u32,
+) -> crate::state::mozc_shm::ComposeReading {
+    #[cfg(windows)]
+    {
+        crate::observer::mozc_shm::read_compose(thread_id, process_id)
+    }
+    #[cfg(not(windows))]
+    {
+        crate::state::mozc_shm::ComposeReading::Unreadable
+    }
+}
+
+/// 窓のスレッドが `timeout_ms` 以内に応答するか。非 Windows では常に応答する。
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub(crate) fn window_thread_responds(hwnd_addr: usize, timeout_ms: u32) -> bool {
+    #[cfg(windows)]
+    {
+        crate::ime::window_thread_responds(hwnd_addr, timeout_ms)
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
