@@ -131,6 +131,17 @@ pub struct IndicatorGlyphCounters {
     pub captured: u32,
     /// 取り込めなかった理由ごとの回数
     pub miss_reasons: BTreeMap<String, u32>,
+    /// 表に照合して採った(`Hit`)回数と、`Miss` の理由ごとの回数
+    pub matched: u32,
+    pub match_misses: BTreeMap<String, u32>,
+    /// 読める窓（`standard`）で、照合の読みが belief（直接の読みに追随）と一致した/しなかった回数
+    pub direct_agree: u32,
+    pub direct_disagree: u32,
+    /// 観測の無い窓（`imm32-unavailable`）で、照合の読みが belief と一致した/しなかった回数（意味が違うので分けて数える）
+    pub unobserved_agree: u32,
+    pub unobserved_disagree: u32,
+    /// 見本として表に足した回数
+    pub collected: u32,
 }
 
 impl IndicatorGlyphCounters {
@@ -140,6 +151,13 @@ impl IndicatorGlyphCounters {
             reads: 0,
             captured: 0,
             miss_reasons: BTreeMap::new(),
+            matched: 0,
+            match_misses: BTreeMap::new(),
+            direct_agree: 0,
+            direct_disagree: 0,
+            unobserved_agree: 0,
+            unobserved_disagree: 0,
+            collected: 0,
         }
     }
 
@@ -153,6 +171,27 @@ impl IndicatorGlyphCounters {
             let n = self.miss_reasons.entry(reason.to_owned()).or_insert(0);
             *n = n.saturating_add(1);
         }
+        if r.reading.is_some() {
+            self.matched = self.matched.saturating_add(1);
+        }
+        if let Some(reason) = r.match_miss {
+            let n = self.match_misses.entry(reason.to_owned()).or_insert(0);
+            *n = n.saturating_add(1);
+        }
+        if r.collected {
+            self.collected = self.collected.saturating_add(1);
+        }
+        let Some(agree) = r.agree else {
+            return;
+        };
+        let slot = match (r.profile, agree) {
+            ("standard", true) => &mut self.direct_agree,
+            ("standard", false) => &mut self.direct_disagree,
+            ("imm32-unavailable", true) => &mut self.unobserved_agree,
+            ("imm32-unavailable", false) => &mut self.unobserved_disagree,
+            _ => return,
+        };
+        *slot = slot.saturating_add(1);
     }
 }
 
@@ -272,6 +311,7 @@ mod tests {
             delay_ms: 900,
             profile: "standard",
             belief_open: None,
+            ..Default::default()
         };
         let mut c = IndicatorGlyphCounters::default();
         c.record(&rec("captured", None));
@@ -281,5 +321,31 @@ mod tests {
         assert_eq!((c.reads, c.captured), (4, 1));
         assert_eq!(c.miss_reasons.get("empty-glyph"), Some(&2));
         assert_eq!(c.miss_reasons.get("no-indicator"), Some(&1));
+    }
+    #[test]
+    fn glyph_counters_separate_direct_agreement_from_belief_drift() {
+        let rec = |profile, agree, collected, reading| crate::journal::IndicatorGlyphRecord {
+            verdict: "captured",
+            profile,
+            agree,
+            collected,
+            reading,
+            ..Default::default()
+        };
+        let mut c = IndicatorGlyphCounters::default();
+        c.record(&rec("standard", Some(true), true, Some("kana")));
+        c.record(&rec("standard", Some(false), false, Some("eisu")));
+        c.record(&rec("imm32-unavailable", Some(true), false, Some("closed")));
+        c.record(&rec("imm32-unavailable", Some(false), false, Some("kana")));
+        // 一致が不明・その他のプロファイルは一致/不一致に数えない。
+        c.record(&rec("standard", None, false, None));
+        c.record(&rec("tsf-native", Some(true), false, Some("kana")));
+        assert_eq!((c.direct_agree, c.direct_disagree), (1, 1));
+        assert_eq!((c.unobserved_agree, c.unobserved_disagree), (1, 1));
+        assert_eq!((c.matched, c.collected), (5, 1));
+        let mut m = crate::journal::IndicatorGlyphRecord::default();
+        m.match_miss = Some("empty-table");
+        c.record(&m);
+        assert_eq!(c.match_misses.get("empty-table"), Some(&1));
     }
 }

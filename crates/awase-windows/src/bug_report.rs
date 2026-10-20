@@ -855,6 +855,24 @@ pub struct BugReportIndicatorGlyphSummary {
     pub captured: u32,
     /// 取り込めなかった理由ごとの回数
     pub miss_reasons: std::collections::BTreeMap<String, u32>,
+    /// 見本の表に照合して採った回数と、`Miss` の理由ごとの回数（旧版の報告には無いので `#[serde(default)]`）
+    #[serde(default)]
+    pub matched: u32,
+    #[serde(default)]
+    pub match_misses: std::collections::BTreeMap<String, u32>,
+    /// 読める窓（`standard`）で、照合の読みが belief（直接の読みに追随）と一致した/しなかった回数
+    #[serde(default)]
+    pub direct_agree: u32,
+    #[serde(default)]
+    pub direct_disagree: u32,
+    /// 観測の無い窓（`imm32-unavailable`）で、照合の読みが belief と一致した/しなかった回数（意味が違うので分けて数える）
+    #[serde(default)]
+    pub belief_agree: u32,
+    #[serde(default)]
+    pub belief_disagree: u32,
+    /// 見本として表に足した回数
+    #[serde(default)]
+    pub collected: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -898,6 +916,13 @@ impl BugReportIndicatorEvidence {
                 reads: glyph.reads,
                 captured: glyph.captured,
                 miss_reasons: glyph.miss_reasons.clone(),
+                matched: glyph.matched,
+                match_misses: glyph.match_misses.clone(),
+                direct_agree: glyph.direct_agree,
+                direct_disagree: glyph.direct_disagree,
+                belief_agree: glyph.unobserved_agree,
+                belief_disagree: glyph.unobserved_disagree,
+                collected: glyph.collected,
             },
         }
     }

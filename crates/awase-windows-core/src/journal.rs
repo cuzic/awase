@@ -175,7 +175,7 @@ pub struct IndicatorMenuRecord {
 /// 前面窓が変わってから一定時間後に、インジケーターの矩形を取り込んで前処理まで進めた結果だけを残す。**元の画素・字形の
 /// 画像は記録しない**(大きさ・前景の点数・所要だけ。決定 7)。読める窓での直接の読みとの一致率は、見本の表ができる
 /// 次の段階で突き合わせる。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct IndicatorGlyphRecord {
     /// 結果(`captured` = 前処理まで通った / `miss`)
     pub verdict: &'static str,
@@ -194,6 +194,22 @@ pub struct IndicatorGlyphRecord {
     pub profile: &'static str,
     /// 依頼した時点の belief(IME が開いているか)。不明なら `None`
     pub belief_open: Option<bool>,
+    /// 見本の表に照合して採ったラベル(`closed` / `kana` / `eisu`)。照合が `Miss` のとき・取り込めなかったときは `None`
+    pub reading: Option<&'static str>,
+    /// 照合が `Miss` の理由(`empty-table` / `too-far` / `ambiguous`)
+    pub match_miss: Option<&'static str>,
+    /// 最近傍の距離と、次点との距離比(どちらも 100 倍の整数。距離比は 9999 で頭打ち)
+    pub distance_x100: Option<u32>,
+    pub ratio_x100: Option<u32>,
+    /// その時点の belief の粗いラベル(`closed` / `kana` / `eisu`)。確認された状態でなければ `None`
+    pub belief_label: Option<&'static str>,
+    /// `reading` と `belief_label` が一致したか(どちらかが無ければ `None`)。読める窓(`standard`)では直接の読みとの一致、
+    /// 観測の無い窓(`imm32-unavailable`)では belief とのずれ(意味が違うので件数は別に数える)
+    pub agree: Option<bool>,
+    /// この取り込みを見本として表に足したか(読める窓で、ラベルが同じ・字形が落ち着いているときだけ)
+    pub collected: bool,
+    /// 照合した表(矩形の大きさ別)の見本の数
+    pub table_size: u32,
 }
 
 /// ADR-265 段階 1: mozc-readable の共有メモリ（48 バイト、version 2）の読み（挙動を変えない観測。**belief には入れない**）。
@@ -1488,6 +1504,14 @@ impl JournalEntry {
                     delay_ms = record.delay_ms,
                     profile = record.profile,
                     belief_open = record.belief_open,
+                    reading = record.reading,
+                    match_miss = record.match_miss,
+                    distance_x100 = record.distance_x100,
+                    ratio_x100 = record.ratio_x100,
+                    belief_label = record.belief_label,
+                    agree = record.agree,
+                    collected = record.collected,
+                    table_size = record.table_size,
                     "[indicator-glyph]"
                 );
             }
@@ -2883,6 +2907,7 @@ mod tests {
                 delay_ms: 900,
                 profile: "imm32-unavailable",
                 belief_open: Some(true),
+                ..Default::default()
             },
         });
         j.record(JournalEntry::IndicatorGlyph {
@@ -2896,6 +2921,7 @@ mod tests {
                 delay_ms: 2500,
                 profile: "standard",
                 belief_open: None,
+                ..Default::default()
             },
         });
         let json = j.to_json().unwrap();

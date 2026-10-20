@@ -39,8 +39,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::state::indicator_glyph::{
-    name_is_indicator, preprocess, select_indicator, GlyphGray, IndicatorCandidate, ProbeMiss,
-    ProbeOutcome,
+    name_is_indicator, preprocess, select_indicator, GlyphFeature, GlyphGray, IndicatorCandidate,
+    ProbeMiss, ProbeOutcome,
 };
 
 /// 読み取りワーカーへの依頼。
@@ -224,18 +224,23 @@ unsafe fn find_indicator_rect(
     Ok(candidates[chosen].rect)
 }
 
-/// 1 回取り込んで前処理まで進める（画素は返さない）。
+/// 1 回取り込んで前処理まで進める。返すのは結果と**前処理後の特徴**（20×20 の 2 値画像など。**元の画素は返さない**）。
 ///
 /// # Safety
 /// `automation` は有効な `IUIAutomation`（COM 初期化済みのスレッドで作ったもの）でなければならない。
-unsafe fn probe_once(automation: &IUIAutomation) -> ProbeOutcome {
+unsafe fn probe_once(automation: &IUIAutomation) -> (ProbeOutcome, Option<GlyphFeature>) {
     let started = Instant::now();
-    let miss = |m: ProbeMiss, w: u16, h: u16| ProbeOutcome {
-        result: Err(m),
-        width: w,
-        height: h,
-        dots: 0,
-        read_ms: elapsed_ms_u16(started),
+    let miss = |m: ProbeMiss, w: u16, h: u16| {
+        (
+            ProbeOutcome {
+                result: Err(m),
+                width: w,
+                height: h,
+                dots: 0,
+                read_ms: elapsed_ms_u16(started),
+            },
+            None,
+        )
     };
     let rect = match find_indicator_rect(automation) {
         Ok(r) => r,
@@ -251,25 +256,36 @@ unsafe fn probe_once(automation: &IUIAutomation) -> ProbeOutcome {
     // `preprocess` が返す失敗は、一様・前景が少ない画像だけ（表に関する `Miss` は分類側）。
     preprocess(&gray).map_or_else(
         |_| miss(ProbeMiss::EmptyGlyph, w, h),
-        |f| ProbeOutcome {
-            result: Ok(()),
-            width: w,
-            height: h,
-            dots: u16::try_from(f.dots()).unwrap_or(u16::MAX),
-            read_ms: elapsed_ms_u16(started),
+        |f| {
+            (
+                ProbeOutcome {
+                    result: Ok(()),
+                    width: w,
+                    height: h,
+                    dots: u16::try_from(f.dots()).unwrap_or(u16::MAX),
+                    read_ms: elapsed_ms_u16(started),
+                },
+                Some(f),
+            )
         },
     )
 }
 
-/// 読み取りワーカーを起動する。専用スレッドで COM（STA）と `IUIAutomation` を持ち、依頼を 1 件ずつ処理して
-/// `WM_INDICATOR_GLYPH_READ`（`wParam`/`lParam` = [`ProbeOutcome::pack`]）をメインスレッドへ返す。依頼は届いた順に処理するので、
-/// 結果も依頼の順に返る（呼び出し側はその順で文脈を対応づける）。
+/// 読み取りワーカーを起動する。
+///
+/// 専用スレッドで COM（STA）と `IUIAutomation` を持ち、依頼を 1 件ずつ処理して、前処理後の特徴を別のチャネル（戻り値の
+/// `Receiver`）へ送り、`WM_INDICATOR_GLYPH_READ`（`wParam`/`lParam` = [`ProbeOutcome::pack`]）をメインスレッドへ返す。
+/// 依頼は届いた順に処理するので、結果も依頼の順に返る（呼び出し側はその順で文脈を対応づける）。
 ///
 /// 戻り値の `WorkerThread` をアプリ終了まで保持すること（drop 時に停止・join される）。
 #[must_use]
-pub fn spawn_indicator_glyph_worker() -> (win32_worker::WorkerThread, mpsc::Sender<GlyphReadRequest>)
-{
+pub fn spawn_indicator_glyph_worker() -> (
+    win32_worker::WorkerThread,
+    mpsc::Sender<GlyphReadRequest>,
+    mpsc::Receiver<Option<GlyphFeature>>,
+) {
     let (tx, rx) = mpsc::channel::<GlyphReadRequest>();
+    let (tx_feature, rx_feature) = mpsc::channel::<Option<GlyphFeature>>();
     let worker = win32_worker::WorkerThread::spawn("indicator-glyph-worker", move |token| {
         // SAFETY: CoInitializeEx はスレッド開始直後に一度だけ呼ぶ。STA を初期化し、同スレッド内の COM 操作を安全にする。
         unsafe {
@@ -300,7 +316,9 @@ pub fn spawn_indicator_glyph_worker() -> (win32_worker::WorkerThread, mpsc::Send
                         break;
                     }
                     // SAFETY: `automation` は上で作った有効な COM オブジェクトで、同じスレッドから呼ぶ。
-                    let outcome = unsafe { probe_once(&automation) };
+                    let (outcome, feature) = unsafe { probe_once(&automation) };
+                    // 特徴は結果のメッセージより先に送る（メインスレッドは結果を受けたら特徴を 1 つ取り出す。依頼の順に対応する）。
+                    let _ = tx_feature.send(feature);
                     let (wp, lp) = outcome.pack();
                     crate::win32::post_to_main_thread_with(crate::WM_INDICATOR_GLYPH_READ, wp, lp);
                 }
@@ -319,5 +337,5 @@ pub fn spawn_indicator_glyph_worker() -> (win32_worker::WorkerThread, mpsc::Send
             }
         }
     });
-    (worker, tx)
+    (worker, tx, rx_feature)
 }
