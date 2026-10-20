@@ -280,8 +280,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: core の層の向きを確認
-        run: python3 -I tools/core-split/deps.py crates/awase-windows-core/src tools/core-split/assign.py --check | tail -5
+      - name: core 系 crate の配線(ci.yml の -p・mutants・EXTRA_SRC_CRATES・xtask・pre-push)を照合
+        run: python3 -I tools/core-split/check_wiring.py check
+      - name: core の層の向きを確認(走査対象は core-crates.txt の src の和)
+        run: python3 -I tools/core-split/deps.py "$(python3 -I tools/core-split/check_wiring.py roots)" tools/core-split/assign.py --check | tail -5
 
   adr-index-consistency:
     runs-on: ubuntu-latest
