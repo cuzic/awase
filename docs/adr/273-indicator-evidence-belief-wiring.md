@@ -3,6 +3,7 @@ id: ADR-273
 title: |-
   入力インジケーターの 2 つの証拠源(字形・右クリックメニュー)を belief へ入れる配線の入口条件と形(ADR-271 の第 3・第 4 段階)
 summary: |-
+  **【2026-10-20 改訂】右クリックメニューは belief に使わない(実機で信頼できず、所有者判断で断念。下の「メニューの配線を見送る」)。以降の配線の対象は字形だけで、メニューに関する記述は経緯として残す。**
   ADR-271 は設定の形(off/observe/unobserved/all)と実効値までを決め、belief への配線を別 ADR に残した。本 ADR はその配線の契約を決める。
   ①配線するのは IME の開閉だけ(入力モードは shadow のまま)。新しい ObservationSource(IndicatorMenu・TaskbarGlyph)を Medium・BeliefOnly で入れ、寿命は窓(フォーカス)の範囲とし、
   drift correction・read_back(Converged を含む)・reducer の drift 更新から明示的に外す(予測の照合は呼ぶ。遅れた指標が予測を消さないよう D4 の柵を通す)。
@@ -10,7 +11,7 @@ summary: |-
   帰結として、指標が効くのは **IMM が NULL を返して ObserverPoll が来ない窓**に限られ、IMM が嘘の値を返す窓・GJI の I/O 推論が ObserverPoll を書く窓では負ける(B1)。便益は小さく、その窓の型(一太郎)は未確定(ADR-261 D0-2)なので、段階 2 の前提にする。
   ③「観測の無い窓」の述語は `is_demoted_by_learning`(=NULL 型)を採る。④遅れ対策: 字形は最後のモード系打鍵から最大遅れ+余裕が経つまで報告しない(必須)。窓の同一性と FocusGen・前面の一致を照合する。
 status: |-
-  起草(2026-10-20)。実装なし。Opus レビュー round 1(Blocker 3・Major 10・minor 10)・round 2(Blocker 1・Major 3・minor 5)・round 3(Blocker 1・Major 3・minor 4)・round 4(収束の確認: Blocker/Major なし、minor 6)を反映。**確定可**(Opus round 4、2026-10-20)。所有者判断 Q1・Q2・Q3・Q5 は 2026-10-20 に決定済み。決定は案。所有者判断 Q1〜Q3 は本文末尾。
+  起草(2026-10-20)。実装なし。Opus レビュー round 1(Blocker 3・Major 10・minor 10)・round 2(Blocker 1・Major 3・minor 5)・round 3(Blocker 1・Major 3・minor 4)・round 4(収束の確認: Blocker/Major なし、minor 6)を反映。**確定可**(Opus round 4、2026-10-20)。所有者判断 Q1・Q2・Q5 は 2026-10-20 に決定済み。**メニューの配線は 2026-10-20 に断念(Q3 の「メニュー先行」は取り下げ)**。決定は案。所有者判断 Q1〜Q3 は本文末尾。
 related_adr:
   - "ADR-233"
   - "ADR-261"
@@ -116,6 +117,19 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 - journal・報告: `ObservationSource` は journal の `AnyObservation` と `DriftCorrectionFixture` に乗るので、新しい種類で古い再生ツールが読めなくなる点を CHANGELOG に書く。ADR-271 D5 の `indicator_evidence` に件数を足すなら `bug_report.rs` の `SCHEMA_VERSION` と report worker を同じ PR で更新する。
 - CI(Windows): NULL 型の窓(`unavailable` 強制ではなく、実学習で降格する状態)で、ObserverPoll が来ない間に指標が belief を決めること、読める窓では belief が変わらないこと、GJI の窓で I/O 推論の ObserverPoll が居るとき指標が負けること(B1 を期待どおりに固定)。
 
+## メニューの配線を見送る(2026-10-20、所有者判断)
+
+右クリックメニュー(ADR-264)を belief の証拠にすることは断念する。`menu` の設定は `Observe`(journal・不具合報告への記録)までで、`Unobserved`/`All` へは上げない。理由は dragonflyg4(実機、Windows 11・日本語・GJI、1 台)での実況検証:
+
+- **UIA では項目が読めない**: 手動で開いた `#32768`(約 236×266)の UIA の子要素は、検出の 0・0.5・1.5 秒後も、`MenuOpened`/`WindowOpened` を購読しても、RawView でも 0 件。ルートからの `MenuItem` 検索も 0 件。ADR-264 の CI の測定(`MenuItem`+`IsSelected`)は実機の GJI では成立しない。
+- **MSAA では読める**: `AccessibleObjectFromWindow(hwnd, OBJID_CLIENT)` で 13 項目と `STATE_SYSTEM_CHECKED` が取れる。ただし `AutomationId` は無く、項目の位置(1=ひらがな 2=全角カタカナ 3=全角英数 4=半角カタカナ 5=半角英数 6=直接入力 …)で引くことになる。
+- **読みが元の窓の状態と一致しない**: 自前の窓に GJI のモードを順に設定し、手動の右クリックでメニューを読んで IMM の実状態と比べた。1 回目は 6/6、2 回目は前面窓を記録して 4/12 一致。打鍵(`ka`)の確認を足した 3 回目は、正解が安定せず判定不能だったが、メニューは 12 回中 10 回が「ひらがな」を指した(打鍵が英数の回も同じ)。前面窓は自前の窓のままの回が多く、前面窓のずれでは説明できない。
+  有力な仮説(未確認): インジケーターのクリックで Explorer 側の TSF コンテキストへフォーカスが移り、メニューのチェックが元の窓でなくタスクバー側の既定(ひらがな)を映す。
+- 注入した右クリック(`mouse_event`、移動後 80 ms・押下 100〜150 ms・絶対座標)ではメニューが開かなかった(手動では開く)。自動の測定が成立しない。
+- 実機の発見(字形の実装にも関わるので残す): ①名前が「トレイ入力インジケーター」で始まる要素が **2 つ**ある(「あ」のボタンは末尾が「右クリックで IME のオプションを表示します」、青い丸のボタンは名前に IME 名が入る別物)。「接頭辞が一致する最初の要素」は誤る。②DPI 非対応のプロセスでは UIA の矩形がずれる。③ホバーのツールチップ窓(`Xaml_WindowedPopupClass`)が出ている間は `Shell_TrayWnd` 配下の要素が見えなくなる(26 → 4)。④タスクバーの高さ(72 px/24 px)は状態で変わる。
+
+これらにより、ADR-273 D1〜D5 のうちメニューに関する部分(`IndicatorMenu` の源・D4 のメニューの `idChild` 条件・段階 2 のメニュー行)は実装しない。字形の配線(`TaskbarGlyph`)は影響を受けない。ADR-264 の段階 2(belief への配線)も同じ理由で取り下げ、shadow(journal)は残す。
+
 ## 却下案
 
 - **トグル系のキーの後、awase がメニューを不可視で開いて読む案**(所有者判断 2026-10-20 で却下): 他プロセス(IME 側)が出すメニューに DWM の cloak は使えず、画面外への移動・透明化はメニュー表示の後の対処で数フレーム見える。
@@ -125,16 +139,16 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 ## 段階
 
 1. 核(`awase-windows-core`): D1 の源・除外・reducer の分岐・同一性、D2 の分岐、`classify_*`、単体テストと golden。**`ui_max_level` は上げない**。
-2. **前提(字形のみ。所有者判断 Q3 によりメニューには課さない)**: 一太郎(または報告者)の窓が NULL 型であることの確認(ADR-261 D0-2)。確認できなければ字形は止める。メニューでは D2 の(a)〜(e)の件数を journal に出し続けて事後に評価する(ゲートにしない。0 に近ければ `menu` を `Observe` へ戻す判断を所有者に出す)。
-3. メニュー(**先行**): 報告口と D4 の `idChild` 条件。CI 通過後に `menu` の `ui_max_level` を `Unobserved` へ。便益が小さい可能性は承知のうえで(Q3)、測定を待たずに進める。
-4. 字形: ADR-261 の段階 0〜1 が済んでから(別 PR)。D4 の柵を入れる。
+2. **前提**: 一太郎(または報告者)の窓が NULL 型であることの確認(ADR-261 D0-2)。確認できなければ字形は止める。D2 の(a)〜(e)の件数を shadow の journal で数える(0 に近ければ見送り)。
+3. ~~メニュー~~: **断念**(下の「メニューの配線を見送る」)。`menu` の `ui_max_level` は `Observe` のまま上げない。
+4. 字形: ADR-261 の段階 0〜1 が済んでから(別 PR)。D4 の柵を入れる。`glyph` の行を出し、`Unobserved` へ。
 5. `all`: 便益の場面を journal で示せたら `All` へ。示せなければ上げない(ADR-271 D2b)。
 
 ## 未解決(所有者)
 
 - **Q1(決定済み 2026-10-20)**: 指標は新鮮な Medium 以上に必ず負ける順位で進める(代案の同順位は採らない)。
 - **Q2(決定済み 2026-10-20)**: TSF ネイティブ窓は当面除外し、便益を示せたら外す。`all` は静的に `Standard` の窓に限る。
-- **Q3(決定済み 2026-10-20)**: メニューを先に `Unobserved` へ上げる。測定を待たない(字形のみ D0-2 が前提)。
+- ~~Q3(メニューを先に上げる)~~: **取り下げ**。実機の測定でメニューが信頼できなかったため、メニューの配線自体を断念した。
 - **Q5(決定済み 2026-10-20)**: 指標由来の belief のとき、ADR-263 の書き込みは**止める**(既定のとおり)。指標由来の `BaseDecision` を持つ間は ADR-263 のひらがなキー送信と保持を行わない。
 - ~~Q4(TTL 切れの戻り先)~~: 寿命を窓の範囲にして「戻さない」と閉じた(D1)。
 
