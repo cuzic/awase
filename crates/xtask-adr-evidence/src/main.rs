@@ -345,7 +345,23 @@ fn main() -> ExitCode {
     };
     let after_quote = &target_line[quote_start + 1..];
     let quote_end = after_quote.rfind('\'').unwrap_or(after_quote.len());
-    let target_regex_src = &after_quote[..quote_end];
+    // `@CORE_ROOTS@` は pre-push 自身が `core_crate_roots` で置き換える目印（core 系 crate のディレクトリの選択肢）。
+    // 同じ一覧（`tools/core-split/core-crates.txt`、ADR-274 段階 0 の 5）から作って照合する。
+    let core_roots = {
+        let list_path = Path::new(&repo_root).join("tools/core-split/core-crates.txt");
+        let list = std::fs::read_to_string(&list_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", list_path.display()));
+        let mut roots = vec!["crates/awase-windows".to_string()];
+        roots.extend(
+            list.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(|l| l.replace('.', "\\.")),
+        );
+        roots.join("|")
+    };
+    let target_regex_owned = after_quote[..quote_end].replace("@CORE_ROOTS@", &core_roots);
+    let target_regex_src = target_regex_owned.as_str();
 
     match regex::Regex::new(target_regex_src) {
         Ok(target_regex) => {
