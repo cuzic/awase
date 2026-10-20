@@ -3,7 +3,7 @@ id: ADR-272
 title: |-
   shell(awase-windows)を薄くする: 同じ crate の中で gate を外すのを先にし、tsf/warmup の FSM から R7 として再開する
 status: |-
-  段階 A は実装済み(2026-10-20、`refactor/thin-shell` ブランチ。PR #696・#699・#700・#701)。段階 B(R7 の再開)と段階 C は未着手。実装は未着手
+  段階 A は実装済み(2026-10-20、`refactor/thin-shell` ブランチ。PR #696・#699・#700・#701)。段階 B は B0(仮想時計、2026-10-20、PR #708)だけ実施し、B1(観測値の snapshot 化)は段階 C を決めるまで保留。段階 C は未着手
 related_adr:
   - "ADR-019"
   - "ADR-156"
@@ -137,3 +137,40 @@ ADR の見積り(約 80 本)に対し、A-1〜A-2c の合計は約 79 本。`col
   GitHub のランナーでは #699・#701 の `test` ジョブは通った。負荷による停止と見ているが、状態の漏れが
   無いと確かめたのは `TSF_OBS` への store の所在(Windows 専用の 2 ファイルのみ)を grep しただけ。
 - `.cargo/mutants-awase-windows.toml` の `examine_globs` に 12 ファイルを足した。mutants の実行は未確認。
+
+## 段階 B の結論(2026-10-20): B0 だけ採り、B1 は保留
+
+段階 A の後、段階 B の設計案(B1: 観測値と時刻を `TsfEnvSnapshot` に入れ、`LiteralDetector`/`TsfReadinessProbe` を
+snapshot 引数にする)を草稿にし、Opus に読み取り専用でレビューさせた(全文 [review/272-opus-stage-b-round1.md](review/272-opus-stage-b-round1.md))。
+結論は次のとおり。
+
+**1. (iv)「判定が最大 10ms 古くなる」は、この構造には当てはまらない。** `output/mod.rs::step_probe` は `tick_t` と
+`TsfEnvSnapshot` を作った直後に `machine.tick(env)` を呼ぶ(間に `await` も Win32 呼び出しも無い)。
+ただし当てはまらないのは **tick の中の判定だけ**で、次の 2 つは別の問題になる。
+
+**2. B1 の最大の落とし穴は「env を yield をまたいで持ち越すと now が凍る」こと。** `probe_fsm.rs::await_vk_detection`
+(約 381-442 行)は、可視の分岐のループで `yield_step` の戻り値を捨てて `visible_fencing_verdict` を再び呼ぶ。
+今は判定の中で時計を読むので動く。引数の `env.obs` を渡す形にすると `now` が凍り、`grace_hold_verdict` が
+`None` を返し続け、`OUTPUT_GATE` を保持したままキー入力が止まる。リテラル構築の位置を固定するガードでは防げない。
+やるなら `tick_seq` の assert・`PreSendBaseline`(送信前の取得専用の型、tick の snapshot からは作れない)・`Default` の撤去が前提。
+また epoch は送信**前**、deadline は送信**後**という非対称(ADR-079、BUG-210)は意図した設計で、B1 はこの時点を動かす。
+
+**3. 利益は B0 でほぼ全部得られる。** フレークの元は実時間の `sleep`(6 か所)と `Instant` の計測で、`TSF_OBS_TEST_LOCK` は
+直列化しているだけで原因ではない。そこで **B0**: `clock.rs` に `#[cfg(test)]` の仮想時計(`freeze`/`advance`、スレッドローカル)を足し、
+`sleep` と `Instant` を置き換える。本番(Windows)のコードの差分は 0 で、ADR-079・BUG-210・BUG-58 の時点は動かない。
+`poll_until_ready` は回数の上限を持ち、`check_now` が `true` を返さない退行・変異は、実時間を待たず panic になる(mutants の timeout の解消)。
+
+**4. B1 は段階 C を決めるときに、上の構造的な対策を前提に組み直す。** B2(`log_composition_probe` の action 化・
+`OutputActiveGuard` の値化)も同じ。後者は、`OutputActiveGuard` を構築時に取るのは 2 つだけで、残りは BUG-58 のとおり
+遅延で取る(`ms_ime_ready_coro` は Phase 1 で持ってはいけない)ため、構築時の bool では表せず tick ごとの値が要る。
+
+**5. 草稿の事実の訂正(レビューで判明)。** `LiteralDetector::new*` を本番で呼ぶのは殻だけ(FSM 内はテストのみ)。
+`log_composition_probe` は 13 件(うち `gji_warmup_coro.rs:212` は到達不能)。ロックを取るテストは 24 箇所(「約 32」は言及数)。
+`TsfReadinessProbe::check_now` の境界の分岐は、本番の 2 つの producer が `(0, 0)` を渡すため到達しない
+(mutants の MISSED 2 件は本番の挙動のテスト漏れではない)。
+
+**6. 副次の所見(別 PR の候補、未実施)。** `gji_warmup_coro.rs:196-215` の `!plan.needs_literal` の分岐は到達不能に見える
+(`needs_literal=false` なら dispatcher が `apply_transmit_done(None)` → `ProbeDone` で machine を drop し、
+コルーチンは Transmit の yield から再開されない)。`win32_async` の 2 行が `gji_warmup_coro` を個別に gate している唯一の
+Windows 依存に見えるので、消せれば Linux で走るテストが増える。`cargo check` での確認は未実施。
+
