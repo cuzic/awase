@@ -46,7 +46,6 @@ pub(crate) trait ProbeIo {
     /// 連続 raw TSF literal 回数を返す。
     fn consecutive_count(&self) -> u32;
     /// 連続カウントをリセットする（`DetectionResult::CompositionConfirmed` 確認時、BUG-27 追補4）。
-    /// 否定的証拠カウンタも同時にリセットされる（ADR-200）。
     fn reset_consecutive_count(&self);
     /// `RAW_TSF_LITERAL` グローバルを設定する（`consecutive == 0` のときのみ呼ばれる）。
     ///

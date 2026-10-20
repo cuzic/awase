@@ -132,10 +132,6 @@ impl FocusTracker {
 
     /// フォーカス情報を更新する。`app_profile` は `class_name` から自動導出したうえで、
     /// 実測学習（`ImmCapabilityStore`）による降格を適用する。
-    pub(crate) fn update(&mut self, pid: u32, class_name: String, hwnd: usize) {
-        self.update_with_process_name(pid, class_name, hwnd, None);
-    }
-
     pub(crate) fn update_with_process_name(
         &mut self,
         pid: u32,

@@ -5543,7 +5543,7 @@ fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() 
 /// `AppImeProfile::cannot_verify_real_ime_state` /
 /// `AppImeProfile::should_reprime_on_lightweight_focus_sync` の3メソッド
 /// （2026-09-10、自由関数から`impl AppImeProfile`のメソッドへ移動）、
-/// `From<AppImeProfile> for ImePolicyProfile`、`from_class_and_process` のいずれかで `InputRelay` の
+/// `From<AppImeProfile> for ImePolicyProfile`（ADR-274 段階 0 で `state/ime_event.rs` へ移動）、`from_class_and_process` のいずれかで `InputRelay` の
 /// 分岐が欠落していないか確認すること（欠落すると condition (b)/(c) が
 /// 別経路から迂回されうる、査読で指摘された最重要ポイント）。
 /// `production_code_only` は `#[cfg(test)]` の直後が文字どおり `mod tests` の
@@ -5586,7 +5586,10 @@ fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
 #[test]
 fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[
-        ("src/focus/class_names.rs", 12),
+        ("src/focus/class_names.rs", 10),
+        // ADR-274 段階 0 の 1: `From<AppImeProfile> for ImePolicyProfile`(`InputRelay` を `ImmCross` に写す分岐とその説明コメントの
+        // 2 件)を `class_names.rs` から `ime_event.rs` へ移した。合計は 12 のまま(10 + 2)。
+        ("src/state/ime_event.rs", 2),
         // ADR-208 L0: `plan` の本体（InputRelay の早期 return）は `state/physical_disposition.rs::plan_core` へ
         // 挙動を変えずに移した。`transport.rs` の `plan` は殻（`InputRelay` を名指ししない）。合計は 2 のまま。
         ("src/runtime/transport.rs", 0),
@@ -8857,6 +8860,85 @@ fn indicator_menu_shadow_is_observe_only_and_opt_in() {
     assert_eq!(boot.matches("install_menu_hook(").count(), 1);
 }
 
+/// ADR-261 段階 1: 入力インジケーターの字形の影の取り込みは**観測だけ**で、belief・IME・打鍵に書かない。
+///
+/// - 取り込み（`observer/indicator_glyph.rs`）と記録（`runtime/indicator_glyph_shadow.rs`）は、belief・IME 制御・
+///   観測ストアに入れる型/関数を一切使わない（belief への配線は別 ADR。ADR-273）。
+/// - ランタイム側が `platform_state` に触れるのは、belief の読み取り（`effective_open()`・`input_mode()`。見本のラベルと一致の記録に使う）と
+///   記録（`journal.record(`）の 3 箇所だけ。
+/// - 取り込みワーカーと WinEvent フックの起動は、`[indicator_evidence] glyph` の実効の段階（`min(設定値, ui_max_level())`）が
+///   `observe` 以上のときだけ（既定は off のオプトイン。ADR-271）。
+/// - 画素は journal・メッセージに載せない（`ProbeOutcome` は大きさ・点数・所要・理由だけ。ADR-261 決定 7）。
+///
+/// 複数行のメソッドチェーン（`rustfmt` が改行する）を見逃さないよう、コメント行を除いて空白を詰めてから照合する。
+#[test]
+fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
+    fn compact(rel: &str) -> String {
+        read_crate_file(rel)
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<String>()
+            .split_whitespace()
+            .collect()
+    }
+    let runtime = compact("src/runtime/indicator_glyph_shadow.rs");
+    let observer = compact("src/observer/indicator_glyph.rs");
+
+    for (name, code) in [
+        ("runtime/indicator_glyph_shadow.rs", &runtime),
+        ("observer/indicator_glyph.rs", &observer),
+    ] {
+        for forbidden in [
+            "ImeEvent",
+            "ObserverReported",
+            "InputModeObserved",
+            "ObservationSource",
+            "SendInput",
+            "send_input",
+            "apply_ime",
+            "set_ime_open",
+            "desired_open",
+            "actuate",
+            "KeyEffect",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "{name} は観測だけ（ADR-261 決定 0）。belief・IME・打鍵に書く `{forbidden}` を使わないこと"
+            );
+        }
+    }
+
+    // ランタイム側の platform_state への接触は、belief の読み取り 2 つ（ラベルの作成に使う）と記録の 1 つだけ。
+    assert_eq!(
+        runtime.matches("platform_state").count(),
+        3,
+        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()（読み取り）と journal.record(（記録）の 3 箇所だけ"
+    );
+    assert!(runtime.contains("platform_state.ime.effective_open()"));
+    assert!(runtime.contains("platform_state.ime.input_mode()"));
+    assert!(runtime.contains(
+        "platform_state.ime.journal.record(crate::journal::JournalEntry::IndicatorGlyph{record})"
+    ));
+
+    // 起動は設定が真のときだけ（ワーカー・フックとも 1 回、ガードの内側）。
+    let boot = compact("src/app/bootstrap.rs");
+    let gate = boot
+        .find("ifeffective_evidence.glyph>=awase::config::EvidenceLevel::Observe{")
+        .expect("bootstrap.rs は `[indicator_evidence] glyph` の実効の段階が observe 以上のときだけ起動すること");
+    let worker = boot
+        .find("spawn_indicator_glyph_worker()")
+        .expect("取り込みワーカーを起動すること");
+    let hook = boot
+        .find("install_foreground_hook(indicator_glyph_foreground_event_proc")
+        .expect("WinEvent フックを登録すること");
+    assert!(
+        gate < worker && worker < hook,
+        "ワーカーとフックの起動は設定のガードの内側（この順）"
+    );
+    assert_eq!(boot.matches("spawn_indicator_glyph_worker()").count(), 1);
+    assert_eq!(boot.matches("install_foreground_hook(").count(), 1);
+}
+
 /// ADR-265 段階 1・ADR-268: mozc-readable の共有メモリの読みは、**belief への入口を 1 つだけ**持ち、IME・打鍵には書かない。
 ///
 /// - 読み取り（`observer/mozc_shm.rs`）は観測だけ。belief・IME 制御・観測ストアに入れる型/関数を一切使わない。
@@ -9445,5 +9527,99 @@ fn gji_evidence_absent_flag_position_check_detects_the_n1_bug() {
     assert!(
         !gji_evidence_absent_flag_is_written_at_startup_and_every_poll(&no_init),
         "起動時の書き込みが無い形を検出できない"
+    );
+}
+
+// ── BUG-210 / ADR-272 段階 B (i): 検出ベースラインは SendInput の**前**に取る ─────────
+
+/// 空白を除いた生産コードの中で、`markers` が**この順に**現れることを確かめる（各 marker は直前の位置より後で探す）。
+/// 見つからない／順序が逆なら、どの marker で外れたかを示して失敗させる。
+fn assert_markers_in_order(path: &str, markers: &[&str], why: &str) {
+    let content = read_crate_file(path);
+    let squash: String = production_code_only(&content).split_whitespace().collect();
+    let mut from = 0;
+    for m in markers {
+        let key: String = m.split_whitespace().collect();
+        match squash[from..].find(&key) {
+            Some(at) => from += at + key.len(),
+            None => panic!("{path}: `{m}` が直前の marker より後に見つからない。{why}"),
+        }
+    }
+}
+
+/// per-VK confirm（BUG-027/029）: ベースラインを取る → 1 VK を送る → `apply_vk_sent`。
+#[test]
+fn per_vk_confirm_takes_literal_baseline_before_send_input() {
+    assert_markers_in_order(
+        "src/output/probe_io.rs",
+        &[
+            "LiteralDetector::new_with_pre_send_baseline(",
+            "crate::tsf::observer::gji_write_bytes()",
+            "io.send_single_tsf_vk(vk, needs_shift)",
+            "machine.apply_vk_sent(detector, deadline_ms)",
+        ],
+        "送信後に baseline を取ると、当該 VK の write が吸収されて literal を見逃す/誤る（BUG-027/029、ADR-079）",
+    );
+}
+
+/// 一括送信の TSF 経路・Chrome 経路（BUG-030）: `LiteralDetector::new(true)` → 送信 → `apply_transmit_done`。
+#[test]
+fn batch_transmit_takes_literal_baseline_before_send_input() {
+    assert_markers_in_order(
+        "src/output/probe_io.rs",
+        &[
+            "LiteralDetector::new(true)",
+            "io.transmit_tsf(",
+            "machine.apply_transmit_done(",
+            "TransmitTarget::Chrome => {",
+            "LiteralDetector::new(true)",
+            "io.transmit_chrome(",
+            "machine.apply_transmit_done(",
+        ],
+        "送信後に baseline を取ると、応答の速い GJI の write が吸収されて composition を literal と誤る（BUG-030/210）",
+    );
+}
+
+/// warm パス（BUG-210）: 検出ベースラインは `TsfSendPipeline::transmit` の前に取り、`LiteralDetectFsm::new` へ渡す。
+#[test]
+fn warm_path_takes_literal_baseline_before_transmit() {
+    assert_markers_in_order(
+        "src/output/vk_send.rs",
+        &[
+            "let literal_detector = crate::tsf::probe::LiteralDetector::new(true);",
+            "TsfSendPipeline::transmit(romaji, chars, &outcome)",
+            "LiteralDetectFsm::new(",
+            "literal_detector,",
+        ],
+        "warm パスの baseline が送信後だと、warm の GJI の即応答が吸収され誤って literal 判定になりうる（BUG-210）",
+    );
+    // `LiteralDetectFsm::new` が detector を内部で作る形（送信後の baseline）に戻らないこと。
+    let fsm = read_crate_file("src/tsf/warmup/literal_detect_fsm.rs");
+    let fsm: String = production_code_only(&fsm).split_whitespace().collect();
+    let imp = fsm
+        .find("implLiteralDetectFsm{")
+        .expect("impl LiteralDetectFsm");
+    let start = imp + fsm[imp..].find("fnnew(").expect("LiteralDetectFsm::new");
+    let body = &fsm[start..];
+    let end = body
+        .find("Self{core:")
+        .expect("LiteralDetectFsm::new の本体");
+    assert!(
+        body[..end].contains("detector:LiteralDetector,")
+            && !body[..end].contains("LiteralDetector::new("),
+        "LiteralDetectFsm::new は detector を引数で受け、内部で作らないこと（BUG-210）"
+    );
+}
+
+/// actuation フェンスの bump は `SendInput` の前に完了する（ADR-140 決定B の必須要件）。
+#[test]
+fn probe_actuation_fence_bump_precedes_send_input() {
+    assert_markers_in_order(
+        "src/win32.rs",
+        &[
+            "crate::probe_actuation_fence::bump()",
+            "unsafe { SendInput(inputs, size) }",
+        ],
+        "bump が SendInput より後だと、フェンスが actuation を検出できない（ADR-140 決定B）",
     );
 }

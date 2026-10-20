@@ -252,11 +252,6 @@ pub struct ColdContext {
     idle_ms_at_last_cold: std::cell::Cell<u64>,
     /// `RawTsfLiteralRecovery` が連続で発火した回数
     raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
-    /// 「literal だった」という否定的証拠（`SuspectedLiteral`）の累計（ADR-200 決定1）。
-    /// `StaleConfirm` は着弾を否定する証拠を持たない（BUG-075）ので数えない。
-    /// `consecutive` と同じ場所でリセットされる。give-up 時の reinit（VK_IME_OFF→ON は
-    /// 未確定 preedit を破棄する、BUG-168）を、この値が2以上のときだけ許すために使う。
-    negative_evidence_count: std::cell::Cell<u32>,
 }
 
 impl ColdContext {
@@ -268,7 +263,6 @@ impl ColdContext {
             ),
             idle_ms_at_last_cold: std::cell::Cell::new(0),
             raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
-            negative_evidence_count: std::cell::Cell::new(0),
         }
     }
 
@@ -285,23 +279,9 @@ impl ColdContext {
         n
     }
 
-    /// `RawTsfLiteralRecovery` 連続カウントをリセットする（否定的証拠カウンタも同時にリセットする）。
+    /// `RawTsfLiteralRecovery` 連続カウントをリセットする。
     pub fn reset_consecutive_count(&self) {
         self.raw_tsf_literal_consecutive_count.set(0);
-        self.negative_evidence_count.set(0);
-    }
-
-    /// 否定的証拠（`SuspectedLiteral`）カウンタをインクリメントして新値を返す。
-    pub fn increment_negative_evidence_count(&self) -> u32 {
-        let n = self.negative_evidence_count.get() + 1;
-        self.negative_evidence_count.set(n);
-        n
-    }
-
-    /// 否定的証拠（`SuspectedLiteral`）の累計を返す。
-    #[must_use]
-    pub const fn negative_evidence_count(&self) -> u32 {
-        self.negative_evidence_count.get()
     }
 
     /// 最後に cold になった時点での idle 時間（ms）を返す。
@@ -450,18 +430,7 @@ impl CompositionState {
         self.cold_ctx.consecutive_count()
     }
 
-    /// 否定的証拠（`SuspectedLiteral`）カウンタをインクリメントして新値を返す（ADR-200 決定1）。
-    pub fn increment_negative_evidence_count(&self) -> u32 {
-        self.cold_ctx.increment_negative_evidence_count()
-    }
-
-    /// 否定的証拠（`SuspectedLiteral`）の累計を返す（ADR-200 決定1）。
-    #[must_use]
-    pub const fn negative_evidence_count(&self) -> u32 {
-        self.cold_ctx.negative_evidence_count()
-    }
-
-    /// `RawTsfLiteralRecovery` 連続カウントをリセットする（否定的証拠カウンタも同時）。
+    /// `RawTsfLiteralRecovery` 連続カウントをリセットする。
     ///
     /// `DetectionResult::CompositionConfirmed`（非 partial）を確認した dispatcher が
     /// 呼ぶ（BUG-27 追補4）。フォーカス変更・`SetOpenTrue` 以外に、本物の confirm
@@ -823,7 +792,6 @@ impl LiteralDetector {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering::SeqCst;
-    use std::time::Instant;
 
     /// テスト間でグローバルな観測atomicが競合しないようにシリアライズするロック
     /// (`observer.rs`/`literal_detect_fsm.rs`と共有、`TSF_OBS_TEST_LOCK`参照)。
@@ -832,14 +800,23 @@ mod tests {
     /// `check_now` が `true` を返すまでポーリングする（旧 `wait_until_ready`、
     /// 本番未使用のため 2026-07-19 に撤去。`check_now` 自体のタイミング挙動を
     /// 検証するテスト専用の待機ヘルパーとしてここに残す）。
+    ///
+    /// 呼び出し側が `clock::freeze()` 済みであること。実時間は待たず、仮想時計を `POLL_MS` ずつ進める
+    /// (ADR-272 段階 B0)。`check_now` が永久に `false` を返す退行・変異は、回数の上限で panic として検出する
+    /// (実時間を待つと mutants の timeout になる)。
     fn poll_until_ready(probe: &TsfReadinessProbe, total_max_ms: u64) {
         const POLL_MS: u64 = 10;
-        loop {
+        let max_polls = total_max_ms / POLL_MS + 100;
+        for _ in 0..max_polls {
             if probe.check_now(total_max_ms) {
-                break;
+                return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+            crate::clock::advance(POLL_MS);
         }
+        panic!(
+            "check_now が {max_polls} 回(仮想 {}ms)たっても true を返さない",
+            max_polls * POLL_MS
+        );
     }
 
     /// GJI モニター不可のとき、total_max_ms ぶん待機して返る（フォールバックパス）
@@ -848,6 +825,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         TSF_OBS.gji_monitor_ok.store(false, SeqCst);
 
         let now_ms = crate::clock::current_tick_ms();
@@ -885,6 +863,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         let now_ms = crate::clock::current_tick_ms();
 
         // warmup 200ms 前、GJI 最終 I/O は warmup の 50ms 後（= 150ms 前）
@@ -895,11 +874,11 @@ mod tests {
         TSF_OBS.gji_monitor_ok.store(true, SeqCst);
         TSF_OBS.gji_last_io_ms.store(io_ms, SeqCst);
 
-        let start = Instant::now();
+        let start = crate::clock::current_tick_ms();
         let probe = TsfReadinessProbe::new(warmup_ms, Generation::INITIAL, 0); // min_ms=0
         poll_until_ready(&probe, 1_000);
 
-        let elapsed = start.elapsed().as_millis();
+        let elapsed = crate::clock::current_tick_ms() - start;
         // 即 settled（margin = POST_IDLE_MARGIN_MS = 30ms 以内）
         assert!(
             elapsed < 150,
@@ -913,6 +892,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         let now_ms = crate::clock::current_tick_ms();
 
         // GJI は settled 状態だが min_ms=80 のため phase1 で 80ms 待機する
@@ -921,11 +901,11 @@ mod tests {
             .gji_last_io_ms
             .store(now_ms.saturating_sub(200), SeqCst); // 200ms 前に I/O（warmup 前）
 
-        let start = Instant::now();
+        let start = crate::clock::current_tick_ms();
         let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 80); // min_ms=80
         poll_until_ready(&probe, 300);
 
-        let elapsed = start.elapsed().as_millis();
+        let elapsed = crate::clock::current_tick_ms() - start;
         // min_ms=80 の phase1 wait 後に即解放（I/O なし → 正常状態）
         // → 60ms 以上 200ms 以内に完了するはず
         assert!(elapsed >= 60, "phase1 min_wait not respected: {elapsed}ms");
@@ -941,6 +921,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         let now_ms = crate::clock::current_tick_ms();
 
         // GJI I/O は warmup より前 → warmup 後に I/O なし → 既に正常状態 → min_ms 経過で即解放
@@ -949,11 +930,11 @@ mod tests {
             .gji_last_io_ms
             .store(now_ms.saturating_sub(5_000), SeqCst);
 
-        let start = Instant::now();
+        let start = crate::clock::current_tick_ms();
         let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 0); // min_ms=0
         poll_until_ready(&probe, 1_000);
 
-        let elapsed = start.elapsed().as_millis();
+        let elapsed = crate::clock::current_tick_ms() - start;
         // min_ms=0 なので即解放（1000ms タイムアウトを待たない）
         assert!(elapsed < 100, "should release immediately, got {elapsed}ms");
     }
@@ -971,11 +952,12 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         let state = CompositionState::new();
 
         // 実際のローマ字送信 (send_keys 相当) を模擬した baseline。
         state.update_last_send_ms();
-        std::thread::sleep(std::time::Duration::from_millis(60));
+        crate::clock::advance(60);
 
         state.mark_composition_cold(crate::tsf::cold_reason::ColdReason::PassthroughConfirmKey);
         let first_idle = state.cold_ctx.idle_ms_at_last_cold();
@@ -984,7 +966,7 @@ mod tests {
             "1回目の idle は直前 sleep の ~60ms を反映するはず: {first_idle}ms"
         );
 
-        std::thread::sleep(std::time::Duration::from_millis(60));
+        crate::clock::advance(60);
 
         state.mark_composition_cold(crate::tsf::cold_reason::ColdReason::PassthroughConfirmKey);
         let second_idle = state.cold_ctx.idle_ms_at_last_cold();
@@ -1157,6 +1139,7 @@ mod tests {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
         TSF_OBS.gji_write_bytes.store(7_000, SeqCst);
         let epoch_ms = crate::clock::current_tick_ms();
         TSF_OBS
@@ -1170,14 +1153,10 @@ mod tests {
         let held = detector.check_now(far_deadline);
         assert!(held.is_none(), "猶予開始直後はまだ None のはず: {held:?}");
 
-        // +10ms マージンは `GetTickCount64` の既定タイマー分解能（~15.6ms）より
-        // 小さく、CI runner 負荷下では実経過 30ms でも tick 差分が量子化により
-        // grace(20ms) 未満に丸まることがあった（windows-build run 34659416676
-        // で1回再現、`docs/known-bugs/BUG-131.md`）。tick 分解能を確実に上回る
-        // マージンに広げて量子化ぶれを吸収する。
-        std::thread::sleep(std::time::Duration::from_millis(
-            LiteralDetector::EPOCH_FENCE_GRACE_MS + 50,
-        ));
+        // 実時間の sleep は `GetTickCount64` の既定タイマー分解能（~15.6ms）と CI の負荷で
+        // フレークした（windows-build run 34659416676、`docs/known-bugs/BUG-131.md`）。
+        // 仮想時計を進めれば分解能にも負荷にも依らない（ADR-272 段階 B0）。
+        crate::clock::advance(LiteralDetector::EPOCH_FENCE_GRACE_MS + 50);
         let result = detector.check_now(far_deadline);
         assert!(
             matches!(result, Some(DetectionResult::StaleConfirm)),
@@ -1291,39 +1270,97 @@ mod tests {
         crate::tsf::observer::reset_literal_session_confirmed();
     }
 
-    // ---- ADR-200: 否定的証拠カウンタの寿命は `consecutive` と同じ ----
+    // ---- 連続 recovery カウント(`consecutive`)の寿命 ----
+    // 否定的証拠カウンタ(ADR-200)は同じ場所でリセットされていたが、ADR-212 P3 以降本番の呼び出し元が無く撤去した
+    // (ADR-227 の追随案は別の `GiveUpTracker` で実装済み)。リセットの規則は `consecutive` で固定する。
 
     #[test]
-    fn negative_evidence_count_is_reset_together_with_consecutive() {
+    fn consecutive_count_is_reset_by_reset_consecutive_count() {
+        use crate::tsf::cold_reason::ColdReason;
         let c = CompositionState::new();
-        assert_eq!(c.increment_negative_evidence_count(), 1);
-        assert_eq!(c.increment_negative_evidence_count(), 2);
-        assert_eq!(c.negative_evidence_count(), 2);
+        c.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        c.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(c.consecutive_count(), 2);
         // CompositionConfirmed の dispatch（reset_consecutive_count）でリセットされる。
         c.reset_consecutive_count();
-        assert_eq!(c.negative_evidence_count(), 0);
+        assert_eq!(c.consecutive_count(), 0);
     }
 
     #[test]
-    fn negative_evidence_count_survives_raw_recovery_cold_mark_but_resets_on_focus_and_set_open() {
+    fn consecutive_count_survives_confirm_key_cold_mark_but_resets_on_focus_and_set_open() {
         use crate::tsf::cold_reason::ColdReason;
         let c = CompositionState::new();
-        c.increment_negative_evidence_count();
-        // give-up の cold mark（RawTsfLiteralRecovery）自体はリセットしない。
         c.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        assert_eq!(c.negative_evidence_count(), 1);
-        // 通常のタイピング操作の cold mark でもリセットしない（consecutive と同じ）。
+        assert_eq!(c.consecutive_count(), 1);
+        // 通常のタイピング操作の cold mark ではリセットしない。
         c.mark_composition_cold(ColdReason::PassthroughConfirmKey);
-        assert_eq!(c.negative_evidence_count(), 1);
+        assert_eq!(c.consecutive_count(), 1);
         // SetOpenTrue でリセット。
         c.mark_composition_cold(ColdReason::SetOpenTrue);
-        assert_eq!(c.negative_evidence_count(), 0);
+        assert_eq!(c.consecutive_count(), 0);
         // FocusChange（mark 経由と on_focus_changed 経由）でもリセット。
-        c.increment_negative_evidence_count();
+        c.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         c.mark_composition_cold(ColdReason::FocusChange);
-        assert_eq!(c.negative_evidence_count(), 0);
-        c.increment_negative_evidence_count();
+        assert_eq!(c.consecutive_count(), 0);
+        c.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         c.on_focus_changed();
-        assert_eq!(c.negative_evidence_count(), 0);
+        assert_eq!(c.consecutive_count(), 0);
+    }
+
+    // ── WarmEpoch / CompositionState の状態(mutants で MISSED だった穴、ADR-272) ──
+
+    /// `last_unicode_transmit_ms` は set で入り、`mark_cold`・`on_focus_changed` で 0 に戻る。
+    #[test]
+    fn warm_epoch_unicode_transmit_is_set_and_reset() {
+        let e = WarmEpoch::new();
+        assert_eq!(e.last_unicode_transmit_ms(), 0);
+        e.set_last_unicode_transmit_ms(1234);
+        assert_eq!(e.last_unicode_transmit_ms(), 1234);
+        e.mark_cold();
+        assert_eq!(e.last_unicode_transmit_ms(), 0, "mark_cold でリセット");
+        e.set_last_unicode_transmit_ms(777);
+        e.on_focus_changed();
+        assert_eq!(e.last_unicode_transmit_ms(), 0, "フォーカス変更でリセット");
+    }
+
+    /// `increment_cold_start_count` は新値を返し、同じ値が `cold_start_count` に保存される。
+    #[test]
+    fn warm_epoch_increment_returns_and_stores_next_generation() {
+        let e = WarmEpoch::new();
+        let before = e.cold_start_count().value();
+        let a = e.increment_cold_start_count();
+        assert_eq!(a.value(), before + 1);
+        assert_eq!(e.cold_start_count().value(), a.value());
+        let b = e.increment_cold_start_count();
+        assert_eq!(b.value(), a.value() + 1);
+    }
+
+    /// `CompositionState` は WarmEpoch への委譲(unicode 送信時刻・cold-start 回数)を保つ。
+    #[test]
+    fn composition_state_delegates_unicode_transmit_and_cold_start_count() {
+        let c = CompositionState::new();
+        assert_eq!(c.last_unicode_transmit_ms(), 0);
+        c.set_last_unicode_transmit_ms(4321);
+        assert_eq!(c.last_unicode_transmit_ms(), 4321);
+        c.on_focus_changed();
+        assert_eq!(c.last_unicode_transmit_ms(), 0);
+
+        c.set_last_unicode_transmit_ms(99);
+        c.mark_composition_cold(crate::tsf::cold_reason::ColdReason::SetOpenTrue);
+        assert_eq!(c.last_unicode_transmit_ms(), 0, "cold マークでリセット");
+
+        let before = c.cold_start_count().value();
+        let n = c.increment_cold_start_count();
+        assert_eq!(n.value(), before + 1);
+        assert_eq!(c.cold_start_count().value(), n.value());
+    }
+
+    /// 一度も送信していない状態で cold にすると、idle は `u64::MAX`(= 無限)として記録される。
+    #[test]
+    fn composition_state_records_idle_at_last_cold() {
+        let c = CompositionState::new();
+        assert_eq!(c.idle_ms_at_last_cold(), 0);
+        c.mark_composition_cold(crate::tsf::cold_reason::ColdReason::SetOpenTrue);
+        assert_eq!(c.idle_ms_at_last_cold(), u64::MAX);
     }
 }

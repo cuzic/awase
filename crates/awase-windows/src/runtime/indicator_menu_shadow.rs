@@ -81,7 +81,11 @@ impl super::Runtime {
                     glyph: awase::config::EvidenceLevel::Off,
                     menu: awase::config::EvidenceLevel::Off,
                 });
-        crate::bug_report::BugReportIndicatorEvidence::new(eff, &self.indicator_menu.counters)
+        crate::bug_report::BugReportIndicatorEvidence::new(
+            eff,
+            &self.indicator_menu.counters,
+            self.indicator_glyph_counters(),
+        )
     }
 
     /// `EVENT_SYSTEM_MENUPOPUPSTART`（`observer::indicator_menu::menu_popup_event_proc`）から呼ぶ。

@@ -373,7 +373,7 @@ impl Runtime {
         let process_changed = last_pid.is_some_and(|last| last != classified.process_id);
         // `focus_hwnd()` は `self.platform.focus.current.hwnd` を都度読む薄いラッパー
         // （`Runtime::focus_fence().hwnd`、ADR-106 決定3）。`prev_hwnd`/`new_hwnd` を
-        // 同一の生成元（このメソッド）から取ることで、`update_focus_info` 呼び出しの
+        // 同一の生成元（このメソッド）から取ることで、`update_focus_info_with_process_name` 呼び出しの
         // 前後で同じ式を2通りに書く重複を無くす（PR 109 コードレビュー指摘6）。
         // この時点ではまだ epoch は進んでいない（`on_focus_process_changed` は
         // 後続の `apply_focus_probe_result` 内で呼ばれる）ため、両軸を同時に運ぶ
@@ -430,7 +430,7 @@ impl Runtime {
             classified.process_name.clone(),
         );
 
-        // `update_focus_info` 直後のため `self.focus_hwnd()` は `classified.hwnd` と
+        // `update_focus_info_with_process_name` 直後のため `self.focus_hwnd()` は `classified.hwnd` と
         // 構築上必ず一致する（同じ値を2通りの式で書く重複を無くす、PR 109
         // コードレビュー指摘6）。hwnd 追従の詳細は
         // `notify_focus_hwnd_updated_if_needed` のドキュメントを参照。
@@ -504,7 +504,7 @@ impl Runtime {
     /// （BUG-78: リモートデスクトップ接続中にローカル側の awase が Ctrl キーの
     /// 押しっぱなし状態を起こす問題への対策）。
     ///
-    /// `advance_focus_tracking` の `update_focus_info` 直後、フォーカス変更のたびに
+    /// `advance_focus_tracking` の `update_focus_info_with_process_name` 直後、フォーカス変更のたびに
     /// 呼ぶ想定。`process_changed` を流用せず自前でエッジ判定する — `process_changed`
     /// は初回フォーカス（`last_pid == None`）で `false` になるため、無効化対象アプリが
     /// フォーカスを持ったまま awase が起動したケースを取りこぼす。

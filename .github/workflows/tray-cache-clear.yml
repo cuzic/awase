@@ -9,6 +9,7 @@ on:
     branches: [develop, v1-develop]
     paths:
       - 'crates/awase-windows/src/focus/classifier.rs'
+      - 'crates/awase-windows/src/focus/learning_store.rs'
       - 'crates/awase-windows/src/focus/tracker.rs'
       - 'crates/awase-windows/src/tray.rs'
       - 'crates/awase-windows/src/runtime/message_handlers.rs'

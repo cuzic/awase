@@ -326,37 +326,6 @@ impl AppImeProfile {
     }
 }
 
-/// `AppImeProfile` → `ImePolicyProfile` 変換。
-///
-/// focus 層でクラス名から決定した `AppImeProfile` を、state 層の event ペイロード型
-/// `ImePolicyProfile` に変換する。変換は runtime 境界（`focus_tracking.rs` 等）で行い、
-/// state 層が focus 層に直接依存しない設計を維持する。
-impl From<AppImeProfile> for crate::state::ime_event::ImePolicyProfile {
-    fn from(profile: AppImeProfile) -> Self {
-        match profile {
-            // InputRelay は Standard と同じ ImmCross に写す（issue #136 / BUG-90
-            // 決定4）。actuation の合流点3箇所（ime_controller.rs::
-            // ImeController::apply / runtime/open_chain.rs::
-            // run_open_chain_async / runtime/open_chain.rs::fallback_write）
-            // の gate が先に効いて ImeOpenOutcome::NotOwned を返すため、
-            // caps() が持つこの写像先の chain は実行時には使われない
-            // （Plain/Unknown と同じ「到達しない安全既定」パターン）。
-            //
-            // 注: 当初は runtime/executor.rs::dispatch_ime_set_open の1点だけで
-            // 足りると判断したが、runtime/key_pipeline.rs の shadow-toggle 経路
-            // （物理 IME キー押下 → IME OFF/ON、issue #136 の当該操作そのもの）
-            // がそこを通らずバイパスし、物理キーの Allow 素通しと awase 自身の
-            // actuate が同時に起きる二重 actuation（BUG-46型）を招いた
-            // （コードレビューで発見・修正、docs/known-bugs.md BUG-90 追補・
-            // ADR-119 参照）。gate をこの3箇所より減らす変更を検討する前に、
-            // 必ずそちらを読むこと。
-            AppImeProfile::Standard | AppImeProfile::InputRelay => Self::ImmCross,
-            AppImeProfile::Imm32Unavailable => Self::Imm32Unavailable,
-            AppImeProfile::TsfNative => Self::TsfNative,
-        }
-    }
-}
-
 /// ブラウザ系・Electron 系のトップレベルウィンドウクラスかどうかを判定する。
 ///
 /// Chrome 系（Chrome/Edge/Brave/Electron 等）および Firefox が対象。
@@ -579,28 +548,6 @@ mod tests {
                 "{profile:?}.can_read_imm32_open_status()"
             );
         }
-    }
-
-    /// `From<AppImeProfile> for ImePolicyProfile` の3分岐変換を固定する。
-    #[test]
-    fn app_ime_profile_converts_to_expected_policy_profile() {
-        use crate::state::ime_event::ImePolicyProfile;
-        assert_eq!(
-            ImePolicyProfile::from(AppImeProfile::Standard),
-            ImePolicyProfile::ImmCross
-        );
-        assert_eq!(
-            ImePolicyProfile::from(AppImeProfile::Imm32Unavailable),
-            ImePolicyProfile::Imm32Unavailable
-        );
-        assert_eq!(
-            ImePolicyProfile::from(AppImeProfile::TsfNative),
-            ImePolicyProfile::TsfNative
-        );
-        assert_eq!(
-            ImePolicyProfile::from(AppImeProfile::InputRelay),
-            ImePolicyProfile::ImmCross
-        );
     }
 
     #[test]

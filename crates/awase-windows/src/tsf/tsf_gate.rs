@@ -310,61 +310,6 @@ impl Default for TsfGate {
     }
 }
 
-// ── TsfReadiness ─────────────────────────────────────────────────────────────
-
-/// TSF 出力の準備状態を多次元で表す構造体。
-///
-/// [`TsfGateState`] 単体では表現できない「IME ON 状態」「注入モード」を
-/// 一つの型にまとめ、各種条件判定を名前付きメソッドで提供する。
-///
-/// # 各次元の意味
-///
-/// | フィールド | 条件 | 情報源 |
-/// |-----------|------|--------|
-/// | `gate` | ゲートの状態 | `TsfGate::state()` |
-/// | `ime_on` | IME ON/OFF シャドウ | `composition.last_applied_ime_on()` |
-/// | `is_tsf_mode` | 注入モードが TSF か | `resolve_injection_mode()` |
-///
-/// # 構築
-///
-/// `awase-windows` の `Output::tsf_readiness()` メソッドで生成する。
-/// このメソッドを通じてすべての条件が一箇所に集約される。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TsfReadiness {
-    /// ゲートの現在状態
-    pub gate: TsfGateState,
-    /// IME ON/OFF のシャドウ状態
-    pub ime_on: bool,
-    /// 注入モードが TSF かどうか（`resolve_injection_mode() == Tsf`）
-    pub is_tsf_mode: bool,
-}
-
-impl TsfReadiness {
-    /// キーをゲートで保留すべき状態か。
-    ///
-    /// `PendingWarmup` 中はキーを `held` に蓄積し、TSF/Bypass 確定後に再投入する。
-    #[must_use]
-    pub const fn is_holding(&self) -> bool {
-        matches!(self.gate, TsfGateState::PendingWarmup)
-    }
-
-    /// TSF モードで文字送信を実行できる状態か。
-    ///
-    /// `is_tsf_mode && gate != PendingWarmup` — `Probing` 中も送信可能。
-    #[must_use]
-    pub const fn can_send_tsf(&self) -> bool {
-        self.is_tsf_mode && !matches!(self.gate, TsfGateState::PendingWarmup)
-    }
-
-    /// すべての条件が整った完全な Ready 状態か。
-    ///
-    /// `is_tsf_mode && ime_on && gate == Ready`
-    #[must_use]
-    pub const fn is_fully_ready(&self) -> bool {
-        self.is_tsf_mode && self.ime_on && matches!(self.gate, TsfGateState::Ready)
-    }
-}
-
 // ── シナリオテスト ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -669,49 +614,5 @@ mod tests {
         let drained = gate.on_warmup_timeout();
         assert_eq!(drained.len(), 1);
         assert_eq!(gate.state(), TsfGateState::Bypass);
-    }
-
-    // ── TsfReadiness のテスト ─────────────────────────────────────────────
-
-    fn readiness(gate: TsfGateState, ime_on: bool, is_tsf_mode: bool) -> TsfReadiness {
-        TsfReadiness {
-            gate,
-            ime_on,
-            is_tsf_mode,
-        }
-    }
-
-    /// is_holding: PendingWarmup 中のみ true
-    #[test]
-    fn readiness_is_holding() {
-        assert!(readiness(TsfGateState::PendingWarmup, true, true).is_holding());
-        assert!(!readiness(TsfGateState::Probing, true, true).is_holding());
-        assert!(!readiness(TsfGateState::Ready, true, true).is_holding());
-        assert!(!readiness(TsfGateState::Bypass, true, true).is_holding());
-    }
-
-    /// can_send_tsf: TSF モード && PendingWarmup でない
-    #[test]
-    fn readiness_can_send_tsf() {
-        assert!(!readiness(TsfGateState::PendingWarmup, true, true).can_send_tsf());
-        assert!(readiness(TsfGateState::Probing, true, true).can_send_tsf());
-        assert!(readiness(TsfGateState::Ready, true, true).can_send_tsf());
-        // Bypass 中でも TSF モードなら送信可（TSF モードが Bypass になることは稀だが）
-        assert!(readiness(TsfGateState::Bypass, true, true).can_send_tsf());
-        // TSF モードでなければ不可
-        assert!(!readiness(TsfGateState::Ready, true, false).can_send_tsf());
-    }
-
-    /// is_fully_ready: 3次元すべてが揃った完全 Ready
-    #[test]
-    fn readiness_is_fully_ready() {
-        assert!(readiness(TsfGateState::Ready, true, true).is_fully_ready());
-        // gate が Ready でない → false
-        assert!(!readiness(TsfGateState::Probing, true, true).is_fully_ready());
-        assert!(!readiness(TsfGateState::PendingWarmup, true, true).is_fully_ready());
-        // ime_on=false → false
-        assert!(!readiness(TsfGateState::Ready, false, true).is_fully_ready());
-        // is_tsf_mode=false → false
-        assert!(!readiness(TsfGateState::Ready, true, false).is_fully_ready());
     }
 }

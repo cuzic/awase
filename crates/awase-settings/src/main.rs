@@ -4427,7 +4427,7 @@ fn evidence_level_text(
         ),
         (EvidenceSource::Glyph, EvidenceLevel::Observe) => (
             "記録だけする",
-            "インジケーターの字形を読んで記録します。動作は変わりません。",
+            "前面のウィンドウが変わったときに、タスクバーの入力インジケーターの小さな範囲を画面から取り込み、\n取り込めたか・失敗の理由だけを記録します。画像は保存も送信もしません。動作は変わりません。\nウイルス対策ソフトが画面の取り込みを検出する場合があります。不具合報告に件数が含まれます。",
         ),
         (_, EvidenceLevel::Unobserved) => (
             "読めないウィンドウでだけ使う",
@@ -7677,14 +7677,14 @@ mod layout_tab_repro {
     fn indicator_evidence_section_hides_levels_above_the_ui_max_and_keeps_the_saved_value() {
         use awase::config::{EvidenceLevel, IndicatorEvidenceConfig};
         use awase_windows::indicator_evidence::EvidenceSource;
-        // メニューは off/observe の 2 段階だけ見せる。字形はコードが無い間は選べない。
+        // メニュー・字形とも off/observe の 2 段階だけ見せる（belief への配線は別 ADR。ADR-273）。
         assert_eq!(
             evidence_levels_shown(EvidenceSource::Menu),
             vec![EvidenceLevel::Off, EvidenceLevel::Observe]
         );
         assert_eq!(
             evidence_levels_shown(EvidenceSource::Glyph),
-            vec![EvidenceLevel::Off]
+            vec![EvidenceLevel::Off, EvidenceLevel::Observe]
         );
         // 上限を超える設定値（all）は、描画しても書き換えない。
         let mut cfg = IndicatorEvidenceConfig {

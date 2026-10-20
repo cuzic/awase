@@ -53,7 +53,7 @@ pub(crate) mod warmup;
 mod win_event_obs;
 
 pub use tsf_gate::{
-    GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, TsfReadiness, WARMUP_TIMEOUT_MS,
+    GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, WARMUP_TIMEOUT_MS,
 };
 
 // ── Windows 専用の副作用への入口(ADR-272 段階 A-2c) ──

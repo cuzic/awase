@@ -841,6 +841,38 @@ pub struct BugReportIndicatorEvidence {
     /// 字形の実効の段階（`off`/`observe`/`unobserved`/`all`）。字形の読み取りは未実装の間は常に `off`
     pub glyph_level: String,
     pub menu: BugReportIndicatorMenuSummary,
+    /// 字形の取り込みの件数（ADR-261 段階 1）。旧版の報告には無いので `#[serde(default)]` が必須
+    #[serde(default)]
+    pub glyph: BugReportIndicatorGlyphSummary,
+}
+
+/// 字形の取り込みの件数。画像・画素は含まない（件数と失敗の理由だけ。ADR-261 決定 7）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportIndicatorGlyphSummary {
+    /// 取り込みの結果を受けた回数
+    pub reads: u32,
+    /// 前処理まで通った回数
+    pub captured: u32,
+    /// 取り込めなかった理由ごとの回数
+    pub miss_reasons: std::collections::BTreeMap<String, u32>,
+    /// 見本の表に照合して採った回数と、`Miss` の理由ごとの回数（旧版の報告には無いので `#[serde(default)]`）
+    #[serde(default)]
+    pub matched: u32,
+    #[serde(default)]
+    pub match_misses: std::collections::BTreeMap<String, u32>,
+    /// 読める窓（`standard`）で、照合の読みが belief（直接の読みに追随）と一致した/しなかった回数
+    #[serde(default)]
+    pub direct_agree: u32,
+    #[serde(default)]
+    pub direct_disagree: u32,
+    /// 観測の無い窓（`imm32-unavailable`）で、照合の読みが belief と一致した/しなかった回数（意味が違うので分けて数える）
+    #[serde(default)]
+    pub belief_agree: u32,
+    #[serde(default)]
+    pub belief_disagree: u32,
+    /// 見本として表に足した回数
+    #[serde(default)]
+    pub collected: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -866,6 +898,7 @@ impl BugReportIndicatorEvidence {
     pub fn new(
         effective: crate::indicator_evidence::EffectiveEvidence,
         menu: &crate::indicator_evidence::IndicatorMenuCounters,
+        glyph: &crate::indicator_evidence::IndicatorGlyphCounters,
     ) -> Self {
         Self {
             glyph_level: effective.glyph.label().to_owned(),
@@ -878,6 +911,18 @@ impl BugReportIndicatorEvidence {
                 direct_mismatch: menu.direct_mismatch,
                 belief_match: menu.unobserved_match,
                 belief_mismatch: menu.unobserved_mismatch,
+            },
+            glyph: BugReportIndicatorGlyphSummary {
+                reads: glyph.reads,
+                captured: glyph.captured,
+                miss_reasons: glyph.miss_reasons.clone(),
+                matched: glyph.matched,
+                match_misses: glyph.match_misses.clone(),
+                direct_agree: glyph.direct_agree,
+                direct_disagree: glyph.direct_disagree,
+                belief_agree: glyph.unobserved_agree,
+                belief_disagree: glyph.unobserved_disagree,
+                collected: glyph.collected,
             },
         }
     }
@@ -1033,6 +1078,15 @@ pub fn gunzip_base64(encoded: &str, max_bytes: usize) -> Result<String, std::io:
     String::from_utf8(out).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+/// 添付フラグ(`attach`)が立っているときだけ `value` を載せる。立っていなければ `None`(添付しない)。
+fn gate<T>(attach: bool, value: Option<T>) -> Option<T> {
+    if attach {
+        value
+    } else {
+        None
+    }
+}
+
 /// `build_payload` と同じだが、journal/app_log 添付の切り詰め上限
 /// （既定は `LOG_EXCERPT_UNCOMPRESSED_MAX_BYTES`）を呼び出し側で指定できる。
 /// `build_payload_json_fitting` が `MAX_BODY_BYTES` に収まるまで
@@ -1061,46 +1115,15 @@ pub fn build_payload_with_log_budget(
     } else {
         None
     };
-    let state_snapshot = if input.attach_state_snapshot {
-        input.state_snapshot.clone()
-    } else {
-        None
-    };
-    let config_toml = if input.attach_config {
-        input.config_toml.map(str::to_owned)
-    } else {
-        None
-    };
-    let layout_yab = if input.attach_layout {
-        input.layout_yab.map(str::to_owned)
-    } else {
-        None
-    };
-    let retro_eval_stats = if input.attach_retro_eval_stats {
-        input.retro_eval_stats
-    } else {
-        None
-    };
-    let gji_keymap = if input.attach_ime_keymap {
-        input.gji_keymap.clone()
-    } else {
-        None
-    };
-    let msime_key_assignment = if input.attach_ime_keymap {
-        input.msime_key_assignment.clone()
-    } else {
-        None
-    };
-    let legacy_msime_keymap = if input.attach_ime_keymap {
-        input.legacy_msime_keymap.clone()
-    } else {
-        None
-    };
-    let keymap_learn = if input.attach_ime_keymap {
-        input.keymap_learn.clone()
-    } else {
-        None
-    };
+    // 添付フラグが立っているものだけを載せる(立っていなければ `None`)。
+    let state_snapshot = gate(input.attach_state_snapshot, input.state_snapshot.clone());
+    let config_toml = gate(input.attach_config, input.config_toml.map(str::to_owned));
+    let layout_yab = gate(input.attach_layout, input.layout_yab.map(str::to_owned));
+    let retro_eval_stats = gate(input.attach_retro_eval_stats, input.retro_eval_stats);
+    let gji_keymap = gate(input.attach_ime_keymap, input.gji_keymap.clone());
+    let msime_key_assignment = gate(input.attach_ime_keymap, input.msime_key_assignment.clone());
+    let legacy_msime_keymap = gate(input.attach_ime_keymap, input.legacy_msime_keymap.clone());
+    let keymap_learn = gate(input.attach_ime_keymap, input.keymap_learn.clone());
     let running_processes = if input.attach_running_processes {
         input.running_processes.as_ref().map(|processes| {
             processes
@@ -1143,11 +1166,10 @@ pub fn build_payload_with_log_budget(
         keymap_learn,
         attach_running_processes: input.attach_running_processes,
         running_processes,
-        indicator_evidence: if input.attach_state_snapshot {
-            input.indicator_evidence.clone()
-        } else {
-            None
-        },
+        indicator_evidence: gate(
+            input.attach_state_snapshot,
+            input.indicator_evidence.clone(),
+        ),
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -1737,6 +1759,7 @@ mod tests {
                     menu: awase::config::EvidenceLevel::Observe,
                 },
                 &crate::indicator_evidence::IndicatorMenuCounters::new(),
+                &crate::indicator_evidence::IndicatorGlyphCounters::new(),
             )),
             reported_at: "2026-08-19T12:34:56Z",
         }

@@ -43,7 +43,7 @@ impl<'a> ColdWarmupSequence<'a> {
     /// `TsfReadinessProbe` の事前待機は行わない（即座に per-VK confirm へ進む
     /// [`WarmupStarted`] を返す）。
     pub(crate) fn run_start(&self, session_expired: bool, elapsed_ms: u64) -> WarmupStarted {
-        // 診断ログ (get_ime_conversion_mode_raw) と IMM32 ローマ字モード復元
+        // 診断ログ (get_ime_conversion_mode_raw_timeout) と IMM32 ローマ字モード復元
         // (set_ime_romaji_mode) は SendMessageTimeoutW を呼ぶため、メインスレッドで
         // 同期実行すると `with_app` 再入の原因になる。ワーカースレッドに offload する
         // async ラッパーを spawn_local で起動して退避する。
