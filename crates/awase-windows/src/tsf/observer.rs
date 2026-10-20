@@ -513,7 +513,7 @@ pub(crate) const fn gji_io_is_attach_artifact(last_io_ms: u64, attach_ms: u64) -
 
 /// 現在時刻と最終 GJI I/O 時刻の差（アイドル時間）を ms で返す。
 pub(crate) fn gji_idle_ms() -> u64 {
-    crate::hook::current_tick_ms().saturating_sub(gji_last_io_ms())
+    crate::clock::current_tick_ms().saturating_sub(gji_last_io_ms())
 }
 
 /// GJI プロセスの最終 WriteOperationCount 変化時刻 (ms) を返す。0 = 未観測。live 読み取り。
@@ -745,11 +745,12 @@ impl From<ActiveImeKind> for crate::state::ime_kind::ImeKindId {
 // GJI I/O モニターと WinEvent 観察フックは専用モジュールに分離している。
 // 外部からは引き続き `crate::tsf::observer::*` として参照できるよう re-export する。
 
+#[cfg(windows)]
 pub use super::gji_monitor::start_monitor_thread;
+#[cfg(windows)]
 pub use super::win_event_obs::{install_observation_hooks, WinEventHookGuard};
 
 #[cfg(test)]
-#[cfg(windows)]
 mod tests {
     use super::*;
 
