@@ -21,7 +21,7 @@
 //! `vk`（`parse_hotkey` のみ windows-gated）などの純粋モジュールのみコンパイルされる。
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
-pub use awase_windows_core::{journal, journal_policy, keymap, tuning, vk};
+pub use awase_windows_core::{indicator_evidence, journal, journal_policy, keymap, tuning, vk};
 pub mod bug_report;
 pub mod config_diagnostics;
 #[cfg(test)]

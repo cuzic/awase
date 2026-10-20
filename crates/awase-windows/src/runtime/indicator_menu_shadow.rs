@@ -5,7 +5,7 @@
 //! **belief には入れない・IME へ何も書かない・打鍵は変えない**。目的は、読める窓で直接の読みとの一致率を、観測の無い窓で
 //! belief とのずれを、実ジャーナルで確かめること（ADR-264 決定 5。belief への配線は ADR-261 の段階 2 と一本化して別レビュー）。
 //!
-//! 有効なのは `[diagnostics] indicator_menu_shadow = true`（既定は無効のオプトイン）のときだけ。反映は再起動後
+//! 有効なのは `[indicator_evidence] menu` の実効の段階が `observe` 以上（既定は off のオプトイン。ADR-271）のときだけ。反映は再起動後
 //! （フックと読み取りスレッドは起動時に 1 度だけ作る。`app/bootstrap.rs`）。
 
 use std::sync::mpsc::Sender;

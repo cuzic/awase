@@ -511,14 +511,6 @@ pub struct DiagnosticsConfig {
     /// `false`にすることでビルド無しで無効化できる（自己修復以前の診断ログ出力自体は
     /// この設定に関係なく継続する）。
     pub hook_self_heal: bool,
-    /// タスクバーの入力インジケーターの右クリックメニューを、利用者が開いたときだけ読んで journal に残す
-    /// （ADR-264 段階 1。**belief には入れず、IME へは何も書かない**観測）。
-    ///
-    /// 既定は**無効**（オプトイン）。有効にすると、カーソルがタスクバーの上にあるときにメニューが開くと、
-    /// UI Automation でメニュー項目（`AutomationId`・選択の有無）を 1 回読む。他のアプリのメニューの内容は
-    /// 記録しない（同定に失敗したときは件数と所要だけ）。**反映は awase の再起動後**（フックと読み取りの
-    /// スレッドは起動時に 1 度だけ作る）。
-    pub indicator_menu_shadow: bool,
     /// mozc-readable（共有メモリへ IME の開閉・入力モードを書き出す Mozc の fork）の共有メモリを、フォーカスを持つ窓の
     /// スレッドについて読んで journal に残す（ADR-265 段階 1。**belief には入れず、IME へは何も書かない**観測）。
     ///
@@ -532,7 +524,6 @@ impl Default for DiagnosticsConfig {
     fn default() -> Self {
         Self {
             hook_self_heal: true,
-            indicator_menu_shadow: false,
             mozc_shm_shadow: false,
         }
     }
@@ -617,6 +608,34 @@ impl Default for AutoDetectConfig {
             eisu_threshold: 14.0,
         }
     }
+}
+
+/// 入力インジケーターを読む証拠源（字形・右クリックメニュー）の使い方の段階（ADR-271）。段階は累積する（`Ord` は強さの順）。
+///
+/// どの段階でも IME へは何も書かない。`Unobserved`/`All` の belief への配線は別 ADR で決める
+/// ので、`awase-windows-core` の `ui_max_level()` を超える段階は実効値で丸める（保存は書き換えない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceLevel {
+    /// 読まない。既定（ウイルス対策ソフトの行動検出に当たりうるためオプトイン。ADR-261/264）。
+    #[default]
+    Off,
+    /// すべてのウィンドウで読み、journal・不具合報告に残す。belief の証拠にはしない。
+    Observe,
+    /// `Observe` に加え、IME 状態が読めないウィンドウでだけ belief の証拠にする。
+    Unobserved,
+    /// 読めるウィンドウでも belief の証拠にする。**利用者の責任**。
+    All,
+}
+
+/// 入力インジケーターを読む証拠源ごとの段階（ADR-271）。字形とメニューは独立したスイッチ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct IndicatorEvidenceConfig {
+    /// タスクバーのインジケーターの字形（ADR-261）。
+    pub glyph: EvidenceLevel,
+    /// インジケーターの右クリックメニュー（ADR-264）。
+    pub menu: EvidenceLevel,
 }
 
 // 既定はすべて空（`#[derive(Default)]`）。経緯:
@@ -933,6 +952,9 @@ pub struct AppConfig {
     /// 窓切替直後・長い無操作のあとの日本語/英数の判定（ADR-263）。
     #[serde(default)]
     pub auto_detect: AutoDetectConfig,
+    /// 入力インジケーターを読む証拠源の段階（ADR-271）。
+    #[serde(default)]
+    pub indicator_evidence: IndicatorEvidenceConfig,
     #[serde(default)]
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
@@ -1199,6 +1221,8 @@ pub struct ValidatedConfig {
     pub diagnostics: DiagnosticsConfig,
     /// 窓切替直後・長い無操作のあとの日本語/英数の判定（ADR-263）。検証は行わない。
     pub auto_detect: AutoDetectConfig,
+    /// 入力インジケーターを読む証拠源の段階（ADR-271）。**検証で丸めない**（実効値は使う時点で決める）。
+    pub indicator_evidence: IndicatorEvidenceConfig,
     /// キーマップインターセプトルール
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール
@@ -1224,6 +1248,7 @@ impl From<ValidatedConfig> for AppConfig {
             app_overrides: v.app_overrides,
             diagnostics: v.diagnostics,
             auto_detect: v.auto_detect,
+            indicator_evidence: v.indicator_evidence,
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
             keystroke_macro: v.keystroke_macro,
@@ -1618,6 +1643,7 @@ impl AppConfig {
                 app_overrides,
                 diagnostics: self.diagnostics,
                 auto_detect: self.auto_detect,
+                indicator_evidence: self.indicator_evidence,
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
                 keystroke_macro: self.keystroke_macro,
@@ -2162,25 +2188,58 @@ engine_off_solo_triple = "VK_NONCONVERT"
     }
 
     #[test]
-    fn test_indicator_menu_shadow_defaults_to_disabled() {
-        // 既定は無効(オプトイン。ADR-264 決定 6)。[diagnostics] が無くても、あっても指定が無ければ無効。
+    fn test_indicator_evidence_defaults_to_off() {
+        // 既定は両方 off(オプトイン。ADR-271 D4)。セクションが無くても、片方だけ指定しても。
         let config: AppConfig = toml::from_str("[general]\n").unwrap();
-        assert!(!config.diagnostics.indicator_menu_shadow);
-        let config: AppConfig = toml::from_str("[diagnostics]\nhook_self_heal = true\n").unwrap();
-        assert!(!config.diagnostics.indicator_menu_shadow);
-        // 既存の hook_self_heal の既定は変えない
-        assert!(config.diagnostics.hook_self_heal);
+        assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Off);
+        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::Off);
+        let config: AppConfig =
+            toml::from_str("[indicator_evidence]\nmenu = \"observe\"\n").unwrap();
+        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::Observe);
+        assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Off);
     }
 
     #[test]
-    fn test_indicator_menu_shadow_can_be_enabled_without_touching_hook_self_heal() {
+    fn test_indicator_evidence_levels_parse_and_order() {
         let config: AppConfig =
-            toml::from_str("[diagnostics]\nindicator_menu_shadow = true\n").unwrap();
-        assert!(config.diagnostics.indicator_menu_shadow);
+            toml::from_str("[indicator_evidence]\nglyph = \"unobserved\"\nmenu = \"all\"\n")
+                .unwrap();
+        assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Unobserved);
+        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::All);
         assert!(
-            config.diagnostics.hook_self_heal,
-            "指定しなかった項目は既定のまま"
+            EvidenceLevel::Off < EvidenceLevel::Observe
+                && EvidenceLevel::Observe < EvidenceLevel::Unobserved
+                && EvidenceLevel::Unobserved < EvidenceLevel::All
         );
+    }
+
+    #[test]
+    fn test_indicator_evidence_is_not_rounded_by_validate() {
+        // ADR-271 D3: 設定画面の保存が利用者の `all` を恒久的に書き換えないよう、validate は段階を丸めない。
+        let config: AppConfig =
+            toml::from_str("[indicator_evidence]\nglyph = \"all\"\nmenu = \"all\"\n").unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.indicator_evidence.menu, EvidenceLevel::All);
+        assert_eq!(validated.indicator_evidence.glyph, EvidenceLevel::All);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let back: AppConfig = validated.into();
+        assert_eq!(back.indicator_evidence.menu, EvidenceLevel::All);
+    }
+
+    #[test]
+    fn test_indicator_menu_shadow_old_key_is_noticed_only_when_true() {
+        // ADR-271 D4: 旧キーは撤去。true のときだけ通知し、読み替えない。false は無警告。
+        let load = |t: &str| AppConfig::from_toml_str(t).unwrap();
+        let (_, w) = load("[diagnostics]\nindicator_menu_shadow = true\n").validate();
+        assert!(
+            w.iter()
+                .any(|m| m.contains("indicator_menu_shadow") && m.contains("indicator_evidence")),
+            "{w:?}"
+        );
+        let config = load("[diagnostics]\nindicator_menu_shadow = true\n");
+        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::Off);
+        let (_, w) = load("[diagnostics]\nindicator_menu_shadow = false\n").validate();
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
@@ -2194,7 +2253,6 @@ engine_off_solo_triple = "VK_NONCONVERT"
         let config: AppConfig = toml::from_str("[diagnostics]\nmozc_shm_shadow = true\n").unwrap();
         assert!(config.diagnostics.mozc_shm_shadow);
         assert!(config.diagnostics.hook_self_heal);
-        assert!(!config.diagnostics.indicator_menu_shadow);
     }
 
     #[test]
