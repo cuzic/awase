@@ -1,1 +1,2 @@
 crates/awase-windows-core
+crates/awase-hook-core

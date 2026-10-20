@@ -5,6 +5,7 @@
 //! `sync_actuation`、`ime_decision_view` は殻の crate に残す: 記録系の `pub(crate)`（INV-A97-1）を
 //! コンパイラが強制し続けるため（所有者の決定、Opus 案 (d)）。
 
+pub use awase_hook_core::state::*;
 pub use awase_windows_core::state::*;
 
 // 実機（Windows）以外では呼び出し元（`runtime/`・`app/`）が無く、未使用警告が出る。

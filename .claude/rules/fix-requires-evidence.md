@@ -27,7 +27,7 @@
 
 ### 再発ファミリー（このルールが効く領域）
 
-> ADR-229 D4（crate の物理分割）以後、`state/`（`platform_state.rs`・`sync_actuation.rs`・`ime_decision_view.rs` を除く）・`vk.rs`・`tuning.rs`・`keymap.rs`・`journal*.rs`・`focus/{kinds,class_names,hwnd_cache}.rs`・`tsf/literal_facts.rs` は `crates/awase-windows-core/src/` にある（`src/` 以下の相対パスは分割前と同じ）。下の表のパスはこの相対パスで読むこと。`.githooks/pre-push` の正規表現は両 crate を見る。
+> ADR-229 D4（crate の物理分割）以後、`state/`（`platform_state.rs`・`sync_actuation.rs`・`ime_decision_view.rs` を除く）・`vk.rs`・`tuning.rs`・`keymap.rs`・`journal*.rs`・`focus/{kinds,class_names,hwnd_cache}.rs`・`tsf/literal_facts.rs` は `crates/awase-windows-core/src/` にある（`src/` 以下の相対パスは分割前と同じ）。ADR-274 段階 1 以降、`state/{hook_state,hook_watchdog,alt_impersonation,foreign_modifier,win_key_guard,half_width_alnum,half_width_resume_hold}.rs` は `crates/awase-hook-core/src/` に移った（相対パスは同じ）。下の表のパスはこの相対パスで読むこと。`.githooks/pre-push` の正規表現は `tools/core-split/core-crates.txt` の全 crate を見る（core 系 crate を足しても正規表現を直さない）。
 
 これまで同種のバグが何度も再燃してきた領域。ファイルの目安:
 

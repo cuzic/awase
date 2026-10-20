@@ -809,41 +809,56 @@ fn core_modules_have_no_tier2_violations() {
     );
 }
 
-/// 核 crate（`awase-windows-core`、ADR-229 D4）は windows crate にも殻の crate にも依存しない。
+/// 核 crate（`tools/core-split/core-crates.txt` の全 crate。`awase-windows-core`〔ADR-229 D4〕・`awase-hook-core`〔ADR-274〕など）は
+/// windows crate にも殻の crate にも依存しない。
 /// 以前は `CORE_MODULES` の `#[cfg(windows)]` 検出（テキスト走査）で守っていた「OS 非依存」を、crate の
 /// 依存関係（コンパイラ）で守る。`Cargo.toml` に Windows 系の依存を足すと落ちる。
+/// crate の一覧は `core-crates.txt` から読む（核 crate を足すとき、この検査から外れる穴を作らない。
+/// 一覧と各所の配線の照合は `tools/core-split/check_wiring.py`）。
 #[test]
-fn core_crate_does_not_depend_on_windows() {
-    let path = manifest().join("../awase-windows-core/Cargo.toml");
-    let toml =
-        fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} が読めません", path.display()));
+fn core_crates_do_not_depend_on_windows() {
+    let ws = manifest().join("../..");
+    let list_path = ws.join("tools/core-split/core-crates.txt");
+    let list = fs::read_to_string(&list_path)
+        .unwrap_or_else(|_| panic!("{} が読めません", list_path.display()));
+    let crates: Vec<&str> = list
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    assert!(!crates.is_empty(), "core-crates.txt が空です");
     let mut offenders = Vec::new();
-    for (n, l) in toml.lines().enumerate() {
-        let t = l.trim();
-        if t.starts_with('#') {
-            continue;
-        }
-        let key = t.split(['=', ' ']).next().unwrap_or("");
-        if [
-            "windows",
-            "windows-core",
-            "windows-sys",
-            "windows-targets",
-            "win32-async",
-            "win32-worker",
-            "awase-windows",
-        ]
-        .contains(&key)
-            || t.contains("cfg(windows)")
-            || t.contains("target_os")
-        {
-            offenders.push(format!("Cargo.toml:{}: {t}", n + 1));
+    for c in &crates {
+        let path = ws.join(c).join("Cargo.toml");
+        let toml =
+            fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} が読めません", path.display()));
+        for (n, l) in toml.lines().enumerate() {
+            let t = l.trim();
+            if t.starts_with('#') {
+                continue;
+            }
+            let key = t.split(['=', ' ']).next().unwrap_or("");
+            if [
+                "windows",
+                "windows-core",
+                "windows-sys",
+                "windows-targets",
+                "win32-async",
+                "win32-worker",
+                "awase-windows",
+            ]
+            .contains(&key)
+                || t.contains("cfg(windows)")
+                || t.contains("target_os")
+            {
+                offenders.push(format!("{c}/Cargo.toml:{}: {t}", n + 1));
+            }
         }
     }
     assert_empty(
-        "核 crate の依存 (ADR-229 D4)",
+        "核 crate の依存 (ADR-229 D4・ADR-274)",
         &offenders,
-        "awase-windows-core は windows crate・win32-*・awase-windows に依存しない（OS 非依存の核）。\
+        "核 crate（core-crates.txt）は windows crate・win32-*・awase-windows に依存しない（OS 非依存の核）。\
          Win32 に触るものは殻の awase-windows に置くこと。",
     );
 }

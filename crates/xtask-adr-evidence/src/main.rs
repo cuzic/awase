@@ -199,6 +199,35 @@ fn to_repo_relative_candidate(path: &str) -> String {
 
 mod core_registry;
 
+/// `.cargo/mutants-awase-*.toml` をすべて連結して返す（ファイル名の昇順）。核 crate が増えても足し忘れない。
+/// 1 件も無いときは panic（黙って「登録漏れなし」にしない）。
+fn all_mutants_configs(repo_root: &str) -> String {
+    let dir = Path::new(repo_root).join(".cargo");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", dir.display()))
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("mutants-awase-") && n.ends_with(".toml"))
+        })
+        .collect();
+    files.sort();
+    assert!(
+        !files.is_empty(),
+        ".cargo/mutants-awase-*.toml が 1 件も見つからない"
+    );
+    files
+        .iter()
+        .map(|p| {
+            std::fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("failed to read {}: {e}", p.display()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// FCIS V1: `core-registry <repo_root> <base_ref>`。`CORE_MODULES` に base 比で足された名前の
 /// 登録漏れを検査する。base が取れない・CORE_MODULES が読めないときは通さずに失敗する。
 fn run_core_registry(repo_root: &str, base_ref: &str) -> ExitCode {
@@ -237,11 +266,8 @@ fn run_core_registry(repo_root: &str, base_ref: &str) -> ExitCode {
     println!("CORE_MODULES に追加された名前: {added:?}");
     let violations = core_registry::check(
         &added,
-        &format!(
-            "{}\n{}",
-            read(".cargo/mutants-awase-windows.toml"),
-            read(".cargo/mutants-awase-windows-core.toml")
-        ),
+        // `.cargo/mutants-awase-*.toml` のすべて（殻・核 crate〔awase-windows-core・awase-hook-core など、ADR-274〕）。
+        &all_mutants_configs(repo_root),
     );
     if violations.is_empty() {
         println!("登録漏れなし。");

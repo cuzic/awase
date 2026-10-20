@@ -1,0 +1,18 @@
+[package]
+name = "awase-hook-core"
+version = "2.2.0"
+edition = "2021"
+description = "awase-windows の OS 非依存な核のうち、フック・修飾キー・半角英数トグルの状態(ADR-274)。windows crate に依存しない"
+publish = false
+
+[lib]
+name = "awase_hook_core"
+path = "src/lib.rs"
+
+# この crate は windows crate に依存しない(`core_crates_do_not_depend_on_windows` が固定する)。
+[dependencies]
+awase = { path = "../.." }
+awase-windows-core = { path = "../awase-windows-core" }
+
+[lints]
+workspace = true

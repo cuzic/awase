@@ -28,6 +28,8 @@ awase-gji-config = { path = "../awase-gji-config" }
 awase-vkmap = { path = "../awase-vkmap" }
 # 純粋な核(ADR-229 D4)。windows crate に依存しない。
 awase-windows-core = { path = "../awase-windows-core" }
+# フック・修飾キー・半角英数トグルの状態の核(ADR-274 段階 1)。windows crate に依存しない。
+awase-hook-core = { path = "../awase-hook-core" }
 # ADR-195段階4: T3の永続化スキーマ(`persist`モジュール)を読むためだけの依存。OS非依存クレート
 # なのでWindows限定にしない(coreがOS非依存クレートに依存されるだけ、という既存の向きに合わせる)。
 awase-keymap-learn = { path = "../awase-keymap-learn" }
