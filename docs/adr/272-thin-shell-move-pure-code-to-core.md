@@ -1,5 +1,5 @@
 ---
-id: ADR-271
+id: ADR-272
 title: |-
   shell(awase-windows)を薄くする: 同じ crate の中で gate を外すのを先にし、tsf/warmup の FSM から R7 として再開する
 status: |-
@@ -10,7 +10,7 @@ related_adr:
   - "ADR-229"
 ---
 
-# ADR-271: shell を薄くする
+# ADR-272: shell を薄くする
 
 ## 背景
 

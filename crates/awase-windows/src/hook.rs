@@ -823,7 +823,7 @@ fn passthrough_or_swallow_for_impersonation(ncode: i32, wparam: WPARAM, lparam: 
     }
 }
 
-/// 現在時刻をミリ秒で返す(実体は [`crate::clock::current_tick_ms`]、ADR-271 段階 A)。
+/// 現在時刻をミリ秒で返す(実体は [`crate::clock::current_tick_ms`]、ADR-272 段階 A)。
 pub use crate::clock::current_tick_ms;
 
 /// OS 全体（他プロセス宛ても含む）で最後にユーザー入力（キー/マウス）があった

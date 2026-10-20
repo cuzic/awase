@@ -56,7 +56,7 @@ pub use tsf_gate::{
     GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, TsfReadiness, WARMUP_TIMEOUT_MS,
 };
 
-// ── Windows 専用の副作用への入口(ADR-271 段階 A-2c) ──
+// ── Windows 専用の副作用への入口(ADR-272 段階 A-2c) ──
 //
 // `tsf/warmup/` の FSM が呼ぶ Win32 依存の関数は、ここで cfg を振り分ける。
 // 非 Windows(Linux のテスト)では観測点・副作用が無い値を返す。

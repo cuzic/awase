@@ -1,4 +1,4 @@
-//! 単調増加のミリ秒時計(ADR-271 段階 A)。
+//! 単調増加のミリ秒時計(ADR-272 段階 A)。
 //!
 //! Windows は `GetTickCount64`(OS 起動からの ms)。非 Windows は、`tsf/warmup/` のテストが
 //! `current_tick_ms().saturating_sub(50)` のように「少し前」の値を作るため、0 に張り付かない

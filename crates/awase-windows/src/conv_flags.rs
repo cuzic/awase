@@ -1,4 +1,4 @@
-//! IME 変換モード(conversion mode)のビットフラグ(ADR-271 段階 A)。
+//! IME 変換モード(conversion mode)のビットフラグ(ADR-272 段階 A)。
 //!
 //! `imm.rs` は Windows 専用のため、Linux でビルドする FSM(`tsf/ime_mode_fsm.rs` など)が
 //! 使う値だけをここへ置き、`imm` から再エクスポートする。

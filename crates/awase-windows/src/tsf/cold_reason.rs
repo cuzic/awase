@@ -1,4 +1,4 @@
-//! IME composition context がコールド状態になった理由(ADR-271 段階 A-2)。
+//! IME composition context がコールド状態になった理由(ADR-272 段階 A-2)。
 //!
 //! `tsf/output.rs` は Windows 専用のため、Linux でビルドする `tsf/probe.rs` などが使う
 //! この列挙だけをここへ置き、`tsf::output`・`output` から再エクスポートする。
