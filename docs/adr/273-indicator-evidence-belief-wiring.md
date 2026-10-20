@@ -121,8 +121,8 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 
 右クリックメニュー(ADR-264)を belief の証拠にすることは断念する。`menu` の設定は `Observe`(journal・不具合報告への記録)までで、`Unobserved`/`All` へは上げない。理由は dragonflyg4(実機、Windows 11・日本語・GJI、1 台)での実況検証:
 
-- **UIA では項目が読めない**: 手動で開いた `#32768`(約 236×266)の UIA の子要素は、検出の 0・0.5・1.5 秒後も、`MenuOpened`/`WindowOpened` を購読しても、RawView でも 0 件。ルートからの `MenuItem` 検索も 0 件。ADR-264 の CI の測定(`MenuItem`+`IsSelected`)は実機の GJI では成立しない。
-- **MSAA では読める**: `AccessibleObjectFromWindow(hwnd, OBJID_CLIENT)` で 13 項目と `STATE_SYSTEM_CHECKED` が取れる。ただし `AutomationId` は無く、項目の位置(1=ひらがな 2=全角カタカナ 3=全角英数 4=半角カタカナ 5=半角英数 6=直接入力 …)で引くことになる。
+- **.NET の UIA(`System.Windows.Automation`、UIA2)では項目が読めなかった**: 手動で開いた `#32768`(約 236×266)の子要素は、検出の 0・0.5・1.5 秒後も、`MenuOpened`/`WindowOpened` を購読しても、RawView でも 0 件。ルートからの `MenuItem` 検索も 0 件。ADR-264 の CI の測定(PowerShell の UIA2 で `MenuItem`+`IsSelected`)に当たる読み方は、実機の GJI では成立しなかった。**ただし awase の実装(`observer/indicator_menu.rs`)が使うのはネイティブの `IUIAutomation`(UIA3)+`LegacyIAccessible` の状態で、この経路で実機が読めるかは未確認**(本測定の範囲外。断念の根拠は下の「読みが元の窓の状態と一致しない」で、API には依らない)。
+- **MSAA(`IAccessible`)では読めた**: `AccessibleObjectFromWindow(hwnd, OBJID_CLIENT)` で 13 項目と `STATE_SYSTEM_CHECKED` が取れる。ただし `AutomationId` は無く、項目の位置(1=ひらがな 2=全角カタカナ 3=全角英数 4=半角カタカナ 5=半角英数 6=直接入力 …)で引くことになる。
 - **読みが元の窓の状態と一致しない**: 自前の窓に GJI のモードを順に設定し、手動の右クリックでメニューを読んで IMM の実状態と比べた。1 回目は 6/6、2 回目は前面窓を記録して 4/12 一致。打鍵(`ka`)の確認を足した 3 回目は、正解が安定せず判定不能だったが、メニューは 12 回中 10 回が「ひらがな」を指した(打鍵が英数の回も同じ)。前面窓は自前の窓のままの回が多く、前面窓のずれでは説明できない。
   有力な仮説(未確認): インジケーターのクリックで Explorer 側の TSF コンテキストへフォーカスが移り、メニューのチェックが元の窓でなくタスクバー側の既定(ひらがな)を映す。
 - 注入した右クリック(`mouse_event`、移動後 80 ms・押下 100〜150 ms・絶対座標)ではメニューが開かなかった(手動では開く)。自動の測定が成立しない。

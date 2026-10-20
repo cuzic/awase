@@ -28,7 +28,7 @@ related_adr:
 
 ## ステータス
 
-**【2026-10-20 追記】belief への配線(段階 2)は取り下げた([ADR-273](273-indicator-evidence-belief-wiring.md) の「メニューの配線を見送る」)。** 実機(Windows 11・日本語・GJI)で、UIA では項目が読めず(MSAA でだけ読める)、メニューのチェックが元の窓の状態と一致しなかった(1 回目 6/6、2 回目 4/12、3 回目は判定不能でメニューの 10/12 がひらがな)。決定 3 の `AutomationId` の読み方は実機では成立しない。shadow(journal・不具合報告)は残す。
+**【2026-10-20 追記】belief への配線(段階 2)は取り下げた([ADR-273](273-indicator-evidence-belief-wiring.md) の「メニューの配線を見送る」)。** 実機(Windows 11・日本語・GJI)で、メニューのチェックが元の窓の状態と一致しなかった(1 回目 6/6、2 回目 4/12、3 回目は判定不能でメニューの 10/12 がひらがな)。読み取りは、.NET の UIA(UIA2)では項目が 0 件で MSAA では読めた(awase が使うネイティブの UIA3+`LegacyIAccessible` の経路は未確認)。決定 3 の `AutomationId` の読み方が実機で成立するかは、この経路では未確認。shadow(journal・不具合報告)は残す。
 
 起草(2026-10-17)。実装なし。測定は使い捨てのスパイクブランチ(`ci/indicator-menu-verify`、develop にはマージしない)の GitHub Actions による。
 Opus レビュー round 1(Blocker 2・Major 8・minor 9)・round 2(Blocker 0・新規 Major 2・minor 9)を反映した(レビューの全文はセッションのスクラッチパッド。要点は本文の該当箇所に取り込んだ)。決定は**案**で、所有者判断を経ていない。
