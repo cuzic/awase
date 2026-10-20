@@ -112,8 +112,9 @@ L1  hookinput  (3,904)      awase-hook-core     フック・修飾キー・半�
 ### D4: 順序
 
 **段階 0(準備。どれも挙動を変えない小さな PR)**
-1. `class_names.rs:334` の `impl From<AppImeProfile> for ImePolicyProfile` と、そのテスト(584-603 行)を `ime_event.rs` へ移す。doc(「state 層が focus 層に直接依存しない設計を維持する」)は書き直す。
-2. `explicit_press.rs:1751` の `#[cfg(test)]` 内の `impl PhysicalKeyDisposition { fn legacy_… }`(ADR-208 L0 の逐語コピー、コメントに「L1 以降で削除してよい」)を削除するか自由関数に書き換える(inherent impl は別 crate の型に書けない)。
+1. **済み(PR #716)**: `class_names.rs:334` の `impl From<AppImeProfile> for ImePolicyProfile` と、そのテスト(584-603 行)を `ime_event.rs` へ移した。doc(「state 層が focus 層に直接依存しない設計を維持する」)は書き直した。
+2. (不要になった) Opus round 1 は `explicit_press.rs:1751` の `#[cfg(test)]` 内 `impl PhysicalKeyDisposition { fn legacy_… }` を、`PhysicalKeyDisposition` が keyeffect にある前提で E0116(inherent impl は別 crate の型に書けない)と指摘した。
+   `physical_disposition` を imecore に置く改訂後の割り当てでは、`explicit_press.rs` も同じ crate なので問題ない。
 3. `tools/core-split/deps.py --check` を CI のジョブにする。走査対象は引数の 1 ディレクトリではなく、**core 系 crate の `src/` の和**(コロン区切りで複数渡す。段階 0 の 5 の一覧から作る)。許可されていない依存(本番とテストの両方)、未割当のモジュール、
    `assign.py` にあるのに走査で見つからないモジュール(移した crate が走査から漏れた)で落とす。走査が 1 ディレクトリのままだと、段階 1 で葉を別の crate へ移したとたんに、それらのファイルの検査が黙って消える。
 4. `[workspace.lints]` へ lints を寄せる(`[lints]` の 25 行が crate の数だけ複製されるのを避ける)。
