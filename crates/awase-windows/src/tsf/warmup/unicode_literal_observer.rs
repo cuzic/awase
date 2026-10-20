@@ -71,7 +71,7 @@ impl TickableFsm for UnicodeLiteralObserverFsm {
         let current = crate::tsf::observer::gji_write_bytes();
         // 観測専用: 判定（下記 if/else）には一切使わない。HIMC 照合が Standard/ImmCross
         // プロファイルで何を返すかを実機ログで確認するためだけの呼び出し（module doc参照）。
-        crate::ime_diagnostic::log_composition_probe(self.cold_seq, "unicode-obs-himc-check");
+        crate::tsf::log_composition_probe(self.cold_seq, "unicode-obs-himc-check");
         if current == self.baseline_bytes {
             tracing::info!(
                 "[unicode-obs] cold={} {}ms GJI write なし → injection_mode Tsf 昇格",

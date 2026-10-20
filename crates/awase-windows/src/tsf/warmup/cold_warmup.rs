@@ -112,7 +112,7 @@ impl<'a> ColdWarmupSequence<'a> {
 
         WarmupStarted {
             probe: crate::tsf::probe::TsfReadinessProbe::new(
-                crate::hook::current_tick_ms(),
+                crate::clock::current_tick_ms(),
                 cold_seq,
                 0,
             ),

@@ -71,7 +71,7 @@ impl ProbeCoroState {
                 self.cold_seq.value(),
                 self.pending_vk_sent.is_some(),
                 self.pending_transmit_done.is_some(),
-                crate::hook::current_tick_ms(),
+                crate::clock::current_tick_ms(),
             );
         }
         let input = ProbeTickInput {
@@ -100,7 +100,7 @@ impl ProbeCoroState {
     ) -> bool {
         match detector {
             Some(det) => {
-                let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
+                let deadline_ms = crate::clock::current_tick_ms() + literal_detect_ms;
                 self.pending_transmit_done = Some(TransmitDonePayload {
                     romaji,
                     ze_bs_count,
@@ -128,7 +128,7 @@ impl ProbeCoroState {
             "[{log_tag}] cold={} apply_vk_sent SET deadline_ms={deadline_ms} \
              overwritten_unconsumed={overwritten} t={}ms",
             self.cold_seq.value(),
-            crate::hook::current_tick_ms(),
+            crate::clock::current_tick_ms(),
         );
         self.pending_vk_sent = Some(VkSentPayload {
             detector,
