@@ -13,6 +13,6 @@
 )]
 
 // 移したファイルの中の `crate::state::...`・`crate::indicator_evidence::...` が、分割前と同じ書き方で解決できるようにする。
-pub use awase_windows_core::{indicator_evidence, state};
+pub use awase_ime_core::{indicator_evidence, state};
 
 pub mod bug_report;

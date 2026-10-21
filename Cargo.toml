@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-windows-core", "crates/awase-windows-base", "crates/awase-key-effect", "crates/awase-hook-core", "crates/awase-windows-plans", "crates/awase-scancode", "crates/awase-bug-report", "crates/awase-linux", "crates/awase-macos", "crates/awase-settings", "crates/awase-settings-wgpu", "crates/awase-gji-config", "crates/awase-vkmap", "crates/awase-replay", "crates/awase-keymap-learn", "crates/awase-keymap-learn-win", "crates/awase-build-support", "crates/xtask-adr-evidence", "crates/measured-macro", "crates/actuation-choke-point-macro", "crates/e2e-uwp-inputsite-probe"]
+members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-ime-core", "crates/awase-windows-base", "crates/awase-key-effect", "crates/awase-hook-core", "crates/awase-windows-plans", "crates/awase-scancode", "crates/awase-bug-report", "crates/awase-linux", "crates/awase-macos", "crates/awase-settings", "crates/awase-settings-wgpu", "crates/awase-gji-config", "crates/awase-vkmap", "crates/awase-replay", "crates/awase-keymap-learn", "crates/awase-keymap-learn-win", "crates/awase-build-support", "crates/xtask-adr-evidence", "crates/measured-macro", "crates/actuation-choke-point-macro", "crates/e2e-uwp-inputsite-probe"]
 
 # awase-settings が wgpu(Direct3D 12 / Vulkan) フォールバックを取り込んだこと
 # （crates/awase-settings/src/startup_failure.rs）でリリースバイナリのサイズが
@@ -24,7 +24,7 @@ codegen-units = 1
 strip = true
 
 # core 系 crate(`tools/core-split/core-crates.txt` の crate と、殻の `awase-windows`)が共有する lints
-# (ADR-274 段階 0 の 4)。以前は `awase-windows` と `awase-windows-core` の `[lints]` に同じ 25 行が複製されていた。
+# (ADR-274 段階 0 の 4)。以前は `awase-windows` と `awase-ime-core` の `[lints]` に同じ 25 行が複製されていた。
 # core を複数の crate に分けると複製が増えてずれるので、ここへ寄せ、各 crate は `[lints] workspace = true` で使う。
 # 他の crate(awase-settings・awase-keymap-learn など)は別の lints を持つので、この設定には参加しない。
 [workspace.lints.rust]

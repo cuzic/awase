@@ -16,7 +16,7 @@ push_refs="$(cat)"
 # 参照: .claude/rules/fix-requires-evidence.md
 # core 系 crate のディレクトリ(`tools/core-split/core-crates.txt`、ADR-274)。新しい core 系 crate を足しても
 # 本ファイルの正規表現を直さずに済むよう、一覧から作る(直し忘れは BUG-116 と同型の穴になる)。
-# 出力は `crates/awase-windows|crates/awase-windows-core|...`(正規表現の選択肢)。
+# 出力は `crates/awase-windows|crates/awase-ime-core|...`(正規表現の選択肢)。
 core_crate_roots() {
     local top list dirs
     top=$(git rev-parse --show-toplevel 2>/dev/null || echo .)
@@ -25,7 +25,7 @@ core_crate_roots() {
     if [ -n "$dirs" ]; then
         printf 'crates/awase-windows|%s' "$dirs"
     else
-        printf 'crates/awase-windows|crates/awase-windows-core'
+        printf 'crates/awase-windows|crates/awase-ime-core'
     fi
 }
 

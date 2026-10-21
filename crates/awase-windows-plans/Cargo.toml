@@ -12,7 +12,7 @@ path = "src/lib.rs"
 # この crate は windows crate に依存しない(`core_crates_do_not_depend_on_windows` が固定する)。
 [dependencies]
 awase = { path = "../.." }
-awase-windows-core = { path = "../awase-windows-core" }
+awase-ime-core = { path = "../awase-ime-core" }
 tracing = "0.1"
 
 [lints]

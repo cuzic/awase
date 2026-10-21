@@ -8951,7 +8951,7 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
 ///
 /// 配線 PR（ADR-273 段階 2 以降）はこの件数を、許可する入口（`ImeStateHub` の 1 メソッド）の分だけ増やし、
 /// `mozc_shm_reader_touches_belief_only_through_report_mozc_shm` と同じ型のガードで入口を名指しする。
-/// （`list_src_files()` は awase-windows と awase-windows-core の `src` を合成して列挙する。）
+/// （`list_src_files()` は awase-windows と awase-ime-core の `src` を合成して列挙する。）
 #[test]
 fn taskbar_glyph_is_not_reported_from_production_yet() {
     const CORE_FILES: [&str; 6] = [

@@ -163,7 +163,7 @@ pub trait GjiSyncSink {
 /// ```
 /// #![deny(unused_must_use)]
 /// use awase::platform::ImeOpenOutcome;
-/// use awase_windows_core::state::gji_direct_mechanism::{
+/// use awase_ime_core::state::gji_direct_mechanism::{
 ///     ActuationReceipt, GjiFsmSync, GjiSyncSink,
 /// };
 ///
@@ -182,7 +182,7 @@ pub trait GjiSyncSink {
 /// ```compile_fail
 /// #![deny(unused_must_use)]
 /// use awase::platform::ImeOpenOutcome;
-/// use awase_windows_core::state::gji_direct_mechanism::ActuationReceipt;
+/// use awase_ime_core::state::gji_direct_mechanism::ActuationReceipt;
 ///
 /// // error: unused return value of `ActuationReceipt::new` that must be used
 /// ActuationReceipt::new(true, ImeOpenOutcome::Applied);

@@ -1,4 +1,4 @@
-crates/awase-windows-core
+crates/awase-ime-core
 crates/awase-hook-core
 crates/awase-windows-plans
 crates/awase-scancode

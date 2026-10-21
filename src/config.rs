@@ -613,7 +613,7 @@ impl Default for AutoDetectConfig {
 /// 入力インジケーターを読む証拠源（字形・右クリックメニュー）の使い方の段階（ADR-271）。段階は累積する（`Ord` は強さの順）。
 ///
 /// どの段階でも IME へは何も書かない。`Unobserved`/`All` の belief への配線は別 ADR で決める
-/// ので、`awase-windows-core` の `ui_max_level()` を超える段階は実効値で丸める（保存は書き換えない）。
+/// ので、`awase-ime-core` の `ui_max_level()` を超える段階は実効値で丸める（保存は書き換えない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceLevel {

@@ -136,8 +136,8 @@ pub enum Resolution {
 /// 通る双子（witness 構築子を通った観測は `AnyObservation` になれる）:
 ///
 /// ```
-/// use awase_windows_core::state::evidence::{AnyObservation, HeuristicDefault, Observed};
-/// use awase_windows_core::state::ime_event::{HwndId, ImePolicyProfile};
+/// use awase_ime_core::state::evidence::{AnyObservation, HeuristicDefault, Observed};
+/// use awase_ime_core::state::ime_event::{HwndId, ImePolicyProfile};
 ///
 /// let observed = Observed::<HeuristicDefault>::at_startup(
 ///     ImePolicyProfile::ImmCross,
@@ -153,8 +153,8 @@ pub enum Resolution {
 /// 差し替えただけ）:
 ///
 /// ```compile_fail
-/// use awase_windows_core::state::evidence::AnyObservation;
-/// use awase_windows_core::state::ime_actuation::{ConvergedReceipt, Resolution};
+/// use awase_ime_core::state::evidence::AnyObservation;
+/// use awase_ime_core::state::ime_actuation::{ConvergedReceipt, Resolution};
 ///
 /// let receipt = ConvergedReceipt::new(Resolution::Confirmed, 3);
 /// // error[E0277]: the trait bound `AnyObservation: From<ConvergedReceipt>`

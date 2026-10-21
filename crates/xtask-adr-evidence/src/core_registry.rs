@@ -47,7 +47,7 @@ pub fn added_modules(base: &[String], head: &[String]) -> Vec<String> {
 }
 
 /// `name` の mutants 登録の有無。殻の crate（`awase-windows`、`platform_state`・`sync_actuation`）と、
-/// 核 crate（`awase-windows-core`〔ADR-229 D4〕、`awase-hook-core`〔ADR-274〕など）のどれに置かれたファイルでも受け付ける:
+/// 核 crate（`awase-ime-core`〔ADR-229 D4〕、`awase-hook-core`〔ADR-274〕など）のどれに置かれたファイルでも受け付ける:
 /// `"crates/<crate>/src/state/<name>.rs"` の形の行（`<crate>` は `/` を含まない 1 つのディレクトリ名）。
 pub fn in_mutants(toml: &str, name: &str) -> bool {
     let want = Regex::new(&format!(
@@ -69,7 +69,7 @@ pub fn check(added: &[String], mutants: &str) -> Vec<String> {
             format!(
                 "CORE_MODULES に追加された `{n}` が .cargo/mutants-awase-*.toml の examine_globs に未登録\
                  （そのファイルを持つ crate の設定に \"crates/<crate>/src/state/{n}.rs\" を足す。\
-                 核 crate は awase-windows-core・awase-hook-core など、殻の crate は awase-windows）"
+                 核 crate は awase-ime-core・awase-hook-core など、殻の crate は awase-windows）"
             )
         })
         .collect()
@@ -121,9 +121,9 @@ mod tests {
 
     #[test]
     fn mutants_accepts_core_crate_and_shell_crate_paths() {
-        // 核 crate（awase-windows-core）へ移ったファイルと、殻に残ったファイルの両方を受け付ける（ADR-229 D4）。
+        // 核 crate（awase-ime-core）へ移ったファイルと、殻に残ったファイルの両方を受け付ける（ADR-229 D4）。
         assert!(in_mutants(
-            "examine_globs = [\n    \"crates/awase-windows-core/src/state/foo.rs\",\n]\n",
+            "examine_globs = [\n    \"crates/awase-ime-core/src/state/foo.rs\",\n]\n",
             "foo"
         ));
         assert!(in_mutants(
@@ -131,7 +131,7 @@ mod tests {
             "foo"
         ));
         assert!(!in_mutants(
-            "examine_globs = [\n    \"crates/awase-windows-core/src/state/bar.rs\",\n]\n",
+            "examine_globs = [\n    \"crates/awase-ime-core/src/state/bar.rs\",\n]\n",
             "foo"
         ));
     }

@@ -3,14 +3,14 @@
 
 //! TSF とフォーカスの「計画」（Facts → Plan の純粋な判断）。ADR-274 段階 1。
 //!
-//! `awase-windows-core` の `state/` から、分割前と同じ `src/state/` 内の相対パスのまま移した（`git mv`、類似度 100%）。
-//! 依存は `awase` と `awase-windows-core`（`focus`・`state::{TickMs, focus_gen, foreground_scope, observation_store,
+//! `awase-ime-core` の `state/` から、分割前と同じ `src/state/` 内の相対パスのまま移した（`git mv`、類似度 100%）。
+//! 依存は `awase` と `awase-ime-core`（`focus`・`state::{TickMs, focus_gen, foreground_scope, observation_store,
 //! physical_disposition}`）だけで、core のどこからも使われない葉。
 //!
-//! 下位の crate（`awase-windows-core`）の `state` を glob で再公開するので、移したファイルの中の
+//! 下位の crate（`awase-ime-core`）の `state` を glob で再公開するので、移したファイルの中の
 //! `super::observation_store::...` などは書き換えなくてよい。
 
-pub use awase_windows_core::state::*;
+pub use awase_ime_core::state::*;
 
 // FCIS F6b: `output/` の TSF 送信パイプライン（warm/cold・PendingGjiConfirm・LiteralDetect 設置）の判断の核（純粋）。
 // 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。

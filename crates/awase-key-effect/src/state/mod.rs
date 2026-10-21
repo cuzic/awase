@@ -3,7 +3,7 @@
 
 //! キー効果の学習結果の読み取りと予測（ADR-274 段階 2）。
 //!
-//! `awase-windows-core` の `state/` から、分割前と同じ `src/state/` 内の相対パスのまま移した（`git mv`、類似度 100%）。
+//! `awase-ime-core` の `state/` から、分割前と同じ `src/state/` 内の相対パスのまま移した（`git mv`、類似度 100%）。
 //! 依存は `awase`・`awase-windows-base`・`awase-gji-config`・`awase-keymap-learn` だけ。
 //!
 //! 下位の crate（`awase-windows-base`）の `state` を glob で再公開するので、移したファイルの中の

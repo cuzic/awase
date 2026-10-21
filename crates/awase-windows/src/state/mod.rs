@@ -1,12 +1,12 @@
 //! `state/` の殻側(ADR-229 D4)。
 //!
-//! 純粋な部品は `awase-windows-core` にあり、ここで再公開する
+//! 純粋な部品は `awase-ime-core` にあり、ここで再公開する
 //! （`crate::state::foo::Bar` のパスは分割前と同じ）。`ImeStateHub`/`PlatformState`（`platform_state`）と
 //! `sync_actuation`、`ime_decision_view` は殻の crate に残す: 記録系の `pub(crate)`（INV-A97-1）を
 //! コンパイラが強制し続けるため（所有者の決定、Opus 案 (d)）。
 
 // 上位の crate が下位の crate の `state` を glob で再公開する（ADR-274 D3）ので、葉の crate（`awase-hook-core`・`awase-windows-plans`）を
-// 再公開すれば `awase-windows-core` の `state` も入る。`awase_windows_core::state::*` を並べると、名前がすべて
+// 再公開すれば `awase-ime-core` の `state` も入る。`awase_ime_core::state::*` を並べると、名前がすべて
 // 重なって「未使用の import」になる（nightly の lint が指摘）。葉の core 系 crate が増えたら、それぞれの glob をここに並べる。
 pub use awase_hook_core::state::*;
 pub use awase_windows_plans::state::*;

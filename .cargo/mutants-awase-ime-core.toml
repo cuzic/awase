@@ -1,7 +1,7 @@
-# awase-windows-core 用スコープ限定設定（ADR-229 D4: crate の物理分割で、純粋な核を別 crate にした）
+# awase-ime-core 用スコープ限定設定（ADR-229 D4: crate の物理分割で、純粋な核を別 crate にした）
 #
 # 使い方:
-#   cargo mutants -p awase-windows-core --config .cargo/mutants-awase-windows-core.toml
+#   cargo mutants -p awase-ime-core --config .cargo/mutants-awase-ime-core.toml
 #
 # 殻の crate（awase-windows）の設定は .cargo/mutants-awase-windows.toml。核 crate は
 # windows crate に依存せず、全ファイルが Linux でもコンパイルされるので、`#[cfg(windows)]` による
@@ -11,35 +11,35 @@
 # 核の変異を、核の単体テストだけでなく殻の統合テスト（closed_loop_scenarios・explicit_press_exhaustive・
 # golden_scenarios など、分割前は同じ crate のテストだった）でも判定する。指定しないと、統合テストでしか
 # 捕まらない変異が false MISSED になる（Opus PR #574 C4）。
-test_package = ["awase-windows-core", "awase-hook-core", "awase-windows-plans", "awase-windows"]
+test_package = ["awase-ime-core", "awase-hook-core", "awase-windows-plans", "awase-windows"]
 
 examine_globs = [
-    "crates/awase-windows-core/src/state/ime_model.rs",
-    "crates/awase-windows-core/src/state/ime_profile_driver.rs",
-    "crates/awase-windows-core/src/state/observation_store.rs",
-    "crates/awase-windows-core/src/state/conv_classify.rs",
-    "crates/awase-windows-core/src/state/conv_mode.rs",
-    "crates/awase-windows-core/src/state/eisu_candidate.rs",
-    "crates/awase-windows-core/src/state/snapshot_input_mode.rs",
-    "crates/awase-windows-core/src/state/eisu_recovery.rs",
-    "crates/awase-windows-core/src/state/force_guard.rs",
-    "crates/awase-windows-core/src/state/belief.rs",
-    "crates/awase-windows-core/src/state/app_ime_policy.rs",
-    "crates/awase-windows-core/src/state/ime_event.rs",
-    "crates/awase-windows-core/src/state/input_barrier.rs",
-    "crates/awase-windows-core/src/state/probe_admission.rs",
-    "crates/awase-windows-core/src/state/physical_disposition.rs",
-    "crates/awase-windows-core/src/state/transition.rs",
-    "crates/awase-windows-core/src/state/drift_plan.rs",
-    "crates/awase-windows-core/src/state/drift_correction.rs",
-    "crates/awase-windows-core/src/state/ime_set_open_plan.rs",
-    "crates/awase-windows-core/src/state/applied_mirror_plan.rs",
-    "crates/awase-windows-core/src/state/resume_observation.rs",
-    "crates/awase-windows-core/src/state/indicator_glyph.rs",
-    "crates/awase-windows-core/src/state/indicator_glyph_seeds.rs",
-    "crates/awase-windows-core/src/state/indicator_glyph_store.rs",
-    "crates/awase-windows-core/src/state/indicator_menu.rs",
-    "crates/awase-windows-core/src/state/mozc_shm.rs",
+    "crates/awase-ime-core/src/state/ime_model.rs",
+    "crates/awase-ime-core/src/state/ime_profile_driver.rs",
+    "crates/awase-ime-core/src/state/observation_store.rs",
+    "crates/awase-ime-core/src/state/conv_classify.rs",
+    "crates/awase-ime-core/src/state/conv_mode.rs",
+    "crates/awase-ime-core/src/state/eisu_candidate.rs",
+    "crates/awase-ime-core/src/state/snapshot_input_mode.rs",
+    "crates/awase-ime-core/src/state/eisu_recovery.rs",
+    "crates/awase-ime-core/src/state/force_guard.rs",
+    "crates/awase-ime-core/src/state/belief.rs",
+    "crates/awase-ime-core/src/state/app_ime_policy.rs",
+    "crates/awase-ime-core/src/state/ime_event.rs",
+    "crates/awase-ime-core/src/state/input_barrier.rs",
+    "crates/awase-ime-core/src/state/probe_admission.rs",
+    "crates/awase-ime-core/src/state/physical_disposition.rs",
+    "crates/awase-ime-core/src/state/transition.rs",
+    "crates/awase-ime-core/src/state/drift_plan.rs",
+    "crates/awase-ime-core/src/state/drift_correction.rs",
+    "crates/awase-ime-core/src/state/ime_set_open_plan.rs",
+    "crates/awase-ime-core/src/state/applied_mirror_plan.rs",
+    "crates/awase-ime-core/src/state/resume_observation.rs",
+    "crates/awase-ime-core/src/state/indicator_glyph.rs",
+    "crates/awase-ime-core/src/state/indicator_glyph_seeds.rs",
+    "crates/awase-ime-core/src/state/indicator_glyph_store.rs",
+    "crates/awase-ime-core/src/state/indicator_menu.rs",
+    "crates/awase-ime-core/src/state/mozc_shm.rs",
 ]
 
 exclude_re = [

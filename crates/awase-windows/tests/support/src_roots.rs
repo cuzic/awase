@@ -4,12 +4,12 @@
 use std::path::Path;
 
 /// crate の物理分割（ADR-229 D4）で、ガードが走査する本番コードを持つ**追加の crate**
-/// （ワークスペース相対のディレクトリ。例: `"crates/awase-windows-core"`）。
+/// （ワークスペース相対のディレクトリ。例: `"crates/awase-ime-core"`）。
 /// 核 crate は `src/` 以下で元の配置（`src/state/...` など）をそのまま保つ。これで
 /// ガードが持つ `"src/..."` のパス文字列も、`strip_prefix` した相対パスも変わらない。
 /// 分割前は空。
 pub(crate) const EXTRA_SRC_CRATES: &[&str] = &[
-    "crates/awase-windows-core",
+    "crates/awase-ime-core",
     "crates/awase-windows-base",
     "crates/awase-key-effect",
     "crates/awase-hook-core",

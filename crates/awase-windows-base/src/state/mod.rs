@@ -3,7 +3,7 @@
 
 //! 土台の `state`（ADR-274 段階 2）: 世代・時計・IME 種別・アプリ分類など、他のどれにも依存しない型。
 //!
-//! `awase-windows-core` の `state/` から、分割前と同じ `src/state/` 内の相対パスのまま移した（`git mv`、類似度 100%）。
+//! `awase-ime-core` の `state/` から、分割前と同じ `src/state/` 内の相対パスのまま移した（`git mv`、類似度 100%）。
 //! 上位の crate は `pub use awase_windows_base::state::*;` で再公開するので、`crate::state::TickMs` などの経路は変わらない。
 
 // ── TickMs ─────────────────────────────────────────────────────────────────────

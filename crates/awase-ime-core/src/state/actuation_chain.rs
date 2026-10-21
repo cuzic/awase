@@ -66,10 +66,10 @@
 //!
 //! ```
 //! use awase::platform::ImeOpenOutcome;
-//! use awase_windows_core::state::actuation_chain::{
+//! use awase_ime_core::state::actuation_chain::{
 //!     Actuation, MechanismWriter, VerifiedTarget, WriteMechanism,
 //! };
-//! use awase_windows_core::state::open_warrant::{OpenWarrant, WarrantBasis};
+//! use awase_ime_core::state::open_warrant::{OpenWarrant, WarrantBasis};
 //!
 //! struct W;
 //! impl MechanismWriter for W {
@@ -92,10 +92,10 @@
 //!
 //! ```compile_fail
 //! use awase::platform::ImeOpenOutcome;
-//! use awase_windows_core::state::actuation_chain::{
+//! use awase_ime_core::state::actuation_chain::{
 //!     Actuation, MechanismWriter, WriteMechanism,
 //! };
-//! use awase_windows_core::state::open_warrant::{OpenWarrant, WarrantBasis};
+//! use awase_ime_core::state::open_warrant::{OpenWarrant, WarrantBasis};
 //!
 //! struct W;
 //! impl MechanismWriter for W {
