@@ -2124,7 +2124,6 @@ impl Runtime {
         }
     }
 
-
     /// システムトレイのバルーン通知を表示する。
     pub(crate) fn show_tray_balloon(&mut self, title: &str, text: &str) {
         self.platform.tray.show_balloon(title, text);
