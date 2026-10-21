@@ -11,6 +11,7 @@ use std::path::Path;
 pub(crate) const EXTRA_SRC_CRATES: &[&str] = &[
     "crates/awase-windows-core",
     "crates/awase-windows-base",
+    "crates/awase-key-effect",
     "crates/awase-hook-core",
     "crates/awase-windows-plans",
     "crates/awase-scancode",

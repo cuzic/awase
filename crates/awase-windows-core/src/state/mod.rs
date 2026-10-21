@@ -2,7 +2,9 @@
 // unreachable_pub lint はこの再エクスポートパターンを認識できないため抑制する。
 #![allow(unreachable_pub)]
 
-pub use awase_windows_base::state::*;
+// 下位の crate が順に再公開する（`awase-key-effect` が `awase-windows-base` の `state` を再公開する）ので、最上位の 1 つだけを並べる。
+// 両方を並べると名前がすべて重なって「未使用の import」になる（nightly の lint が指摘）。
+pub use awase_key_effect::state::*;
 
 // ── 純粋サブモジュール（全プラットフォーム）──────────────────────────────────────
 pub mod belief;
@@ -104,26 +106,11 @@ pub mod ime_read_strategy;
 // する。runtime への配線（既存 `ImeModel.last_intent` との統合）はまだ無い
 // （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
 pub mod intent_store;
-pub mod key_effect_predictor;
-pub mod key_effect_rules;
-pub mod key_effect_runtime;
-pub mod key_effect_table;
-// ADR-195 段階0。key_effect_predictor（経路1）・awase-gji-config::keymap（経路2）・
-// msime_key_assignment（経路3、windows専用だが呼び出しはruntime層が担う）の出力を
-// 統合する薄い集約層。ungated（純粋関数のみで、レジストリ等のI/Oはしない）。
-pub mod keymap_initial_hypothesis;
-pub mod state_dependent_key_warning;
 // ADR-087 Phase 2'/3 試験実装。intent_store と同じ ungated・未配線パターン。
 pub mod open_warrant;
 pub use ime_model::AppliedImeState;
 pub mod input_barrier;
 pub mod observation_store;
-// 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
-// runtime/message_handlers.rs::deliver_key_event は #[cfg(windows)] のため
-// 非 Windows では未使用になる。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod keymap_latch;
-pub mod late_keymap_plan;
 pub mod probe_admission;
 // フォーカス変更時に belief を applied へ写してよいかの可否（純粋。ADR-262 段階 A）。本番の呼び出し元 runtime/ は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod applied_mirror_plan;

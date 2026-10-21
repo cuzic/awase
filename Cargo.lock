@@ -496,6 +496,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "awase-key-effect"
+version = "2.2.0"
+dependencies = [
+ "awase",
+ "awase-gji-config",
+ "awase-keymap-learn",
+ "awase-windows-base",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "awase-keymap-learn"
 version = "0.1.0"
 dependencies = [
@@ -645,7 +657,7 @@ version = "2.2.0"
 dependencies = [
  "awase",
  "awase-gji-config",
- "awase-keymap-learn",
+ "awase-key-effect",
  "awase-replay",
  "awase-windows-base",
  "proptest",

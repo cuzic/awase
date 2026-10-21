@@ -9,6 +9,7 @@
 # false MISSED にならないように。Opus PR #574 C4）。土台は全員が依存するので、殻と葉の crate もすべて入る。
 test_package = [
     "awase-windows-base",
+    "awase-key-effect",
     "awase-windows-core",
     "awase-hook-core",
     "awase-windows-plans",
