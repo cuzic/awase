@@ -462,6 +462,8 @@ dependencies = [
 name = "awase-bug-report"
 version = "2.2.0"
 dependencies = [
+ "awase",
+ "awase-gji-config",
  "awase-keymap-learn",
  "awase-windows-core",
  "base64",

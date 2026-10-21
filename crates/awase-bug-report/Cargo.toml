@@ -11,6 +11,8 @@ path = "src/lib.rs"
 
 # この crate は windows crate に依存しない(`core_crates_do_not_depend_on_windows` が固定する)。
 [dependencies]
+awase = { path = "../.." }
+awase-gji-config = { path = "../awase-gji-config" }
 awase-windows-core = { path = "../awase-windows-core" }
 awase-keymap-learn = { path = "../awase-keymap-learn" }
 serde = { version = "1", features = ["derive"] }
