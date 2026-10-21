@@ -158,9 +158,12 @@ pub fn evaluate_drift(
             now,
             // `MozcShm`（ADR-268 D2）も根拠にしない: 共有メモリが明示意図と食い違うたびに IME を開け直す争いになる。
             // 外から変わった場合の追随は、drift correction ではなく `follow_external_change` 系の経路で行う。
+            // `TaskbarGlyph`（ADR-273 D1）も明示的に列挙する: 字形は専用の枠で `iter()` に出ないので今は効かないが、
+            // 将来 `iter()` を「全フィールド」に戻すリファクタがあっても、drift correction の根拠にならないようにする。
             &[
                 ObservationSource::ConvOpenInference,
                 ObservationSource::MozcShm,
+                ObservationSource::TaskbarGlyph,
             ],
         )
         .ok_or(NoDrift::NoTrustedObservation)?;
@@ -227,6 +230,35 @@ mod tests {
             source: UserIntentSource::Command,
             at_ms: 0,
         });
+    }
+
+    /// ADR-273 D1: 字形（Medium・BeliefOnly）は drift correction の根拠にしない（専用の枠で、`iter()` に出ない）。
+    #[test]
+    fn taskbar_glyph_alone_is_never_a_drift_correction_basis() {
+        use crate::state::ime_event::{HwndId, ObservationConfidence};
+        use crate::state::observation_store::ImeObservation;
+        let now = Instant::now();
+        let mut model = ImeModel::default();
+        let desired = model.desired_open();
+        with_intent(&mut model, desired);
+        drifting_since(&mut model, now);
+        model.observations.per_source.set(
+            ObservationSource::TaskbarGlyph,
+            ImeObservation {
+                open: !desired,
+                source: ObservationSource::TaskbarGlyph,
+                at: now,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                expires_at: None,
+                focus_epoch: 0,
+            },
+        );
+        assert_eq!(
+            evaluate_drift(&model, now),
+            Err(NoDrift::NoTrustedObservation),
+            "字形だけが根拠のとき drift correction は発火しない"
+        );
     }
 
     /// ADR-268 D2: 共有メモリ（High・BeliefOnly）は drift correction の根拠にしない。根拠にすると、明示意図と食い違うたびに

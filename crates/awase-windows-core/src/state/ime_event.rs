@@ -139,6 +139,17 @@ pub enum ObservationSource {
     /// drift correction が IME を開け直す。ADR-268 D2）。新しい読み手を足すときも同じ除外を考えること。
     /// 窓の照合（epoch+hwnd）は `derive_filtered` の `is_identity_ok`、鮮度は `record_any` が付ける `expires_at`（TTL）。
     MozcShm,
+    /// タスクバーの入力インジケーターの字形を、見本の表に照合して読んだ開閉（ADR-261・ADR-273）。
+    ///
+    /// **Medium・BeliefOnly**。`PerSourceObservations` の専用の枠（`taskbar_glyph`）に入り、**`iter()` に含まれない**ので、
+    /// `derive_any`・`most_recent_trusted*`・`read_back`・`consensus`・`evaluate_drift` の全読み手から既定で除外される
+    /// （default-deny。ADR-273 D1）。採るのは `ImeModel::resolve_open_at` の独立した分岐だけ（`derive_any` の後・
+    /// `most_recent_trusted` の前。新鮮な Medium 以上が無く、指標より新しい Medium 以上が無いとき）。寿命は窓の範囲:
+    /// 指標以外の Medium 以上の観測を記録するとき・字形の `Miss`・窓の変化（`update_focus_window`・`clear_on_focus_change`）で消える
+    /// （書き込み時の削除。journal の再生でも同じ結果になる）。reducer は `update_drift` を呼ばない（`reconcile_key_effect_open` は呼ぶ）。
+    /// 現状、本番に報告する経路は無い（`ui_max_level` が `Observe` の間は配線しない。ADR-273 段階 1。
+    /// `tests/architecture_guard.rs` の `taskbar_glyph_is_not_reported_from_production_yet` が本番での生成点を 0 に固定する）。
+    TaskbarGlyph,
     /// 観測が一切ない状態（cache miss 等）での安全デフォルトの推測。
     ///
     /// 実際の外部観測ではなく awase 側のポリシー的な best-guess のため、
@@ -149,14 +160,11 @@ pub enum ObservationSource {
     ///
     /// **新しい「外部観測の裏付けが一切ない、awase 自身の推測」バリアントを
     /// 追加するときの注意（BUG-110 追補9、/code-review 指摘）**:
-    /// `state/platform_state.rs::check_drift_correction` は `ConvOpenInference`
-    /// とこの `HeuristicDefault` の2つだけを明示的に列挙するガードを持つ
-    /// （`authority() == BeliefOnly` 全体ではなく、あえて狭い——`HwndCache`/
-    /// `FocusProbe`/`ConvBitsInference`/`GjiIoInference` を除外する理由は
-    /// 当該ガードのコメント参照）。同じ性質（外部観測の裏付けが無い自己推測）
-    /// を持つ新しいソースを追加する場合は、この enum に追加するだけでは
-    /// 自動的に保護対象へ入らない——`check_drift_correction` の
-    /// `matches!` も忘れず更新すること。
+    /// drift correction の根拠から外すソースは、`state/drift_correction.rs::evaluate_drift` の
+    /// `most_recent_trusted_excluding` の除外リストに**明示的に列挙**している（`ConvOpenInference`・`MozcShm`・`TaskbarGlyph`。
+    /// `authority() == BeliefOnly` 全体ではなく、あえて狭い——`HwndCache`/`FocusProbe`/`ConvBitsInference`/`GjiIoInference` を
+    /// 除外しない理由は当該リストのコメント参照）。同じ性質（外部観測の裏付けが無い自己推測）を持つ新しいソースを追加する場合は、
+    /// この enum に追加するだけでは自動的に保護対象へ入らない——その除外リストも忘れず更新すること。
     HeuristicDefault,
 }
 
@@ -200,6 +208,7 @@ impl ObservationSource {
             Self::ConvOpenInference
             | Self::HeuristicDefault
             | Self::MozcShm
+            | Self::TaskbarGlyph
             | Self::HwndCache
             | Self::FocusProbe
             | Self::ConvBitsInference
@@ -538,6 +547,12 @@ pub enum ImeEvent {
     /// 呼び出し側は dispatch しない。dispatch 元は `ImeStateHub::demote_applied_for_mozc_shm_split` の 1 箇所に限定する。
     AppliedDemoted { cause: AppliedDemoteCause },
 
+    /// 入力インジケーターの字形の読みを**取り消す**（字形が `Miss` になった: 表に近くない・曖昧）。reducer は字形の枠
+    /// （`ObservationStore::retract_indicator`）を消すだけで、`desired_open`・`applied`・ほかの観測には触れない（ADR-273 D1）。
+    /// 字形の枠には TTL が無く寿命が窓の範囲なので、`Miss` を落とすと古い `Hit` がそのフォーカスの間ずっと残ってしまう。
+    /// journal に乗る（再生でも決定的）。dispatch 元は配線 PR の `ImeStateHub` の 1 メソッドに限定する（現状は無い）。
+    IndicatorGlyphMissed,
+
     // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
     // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,
     // ctrl_held:true } の内部で行われる）、golden テストだけが生かしていた。
@@ -671,6 +686,15 @@ mod tests {
         // 根拠となる情報が無いため BeliefOnly。
         assert_eq!(
             ObservationSource::ConvOpenInference.authority(),
+            ObservationAuthority::BeliefOnly
+        );
+    }
+
+    /// ADR-273 D1: 字形は Medium で belief に入るが、IME へ送る根拠には入れない（BeliefOnly）。
+    #[test]
+    fn taskbar_glyph_is_belief_only() {
+        assert_eq!(
+            ObservationSource::TaskbarGlyph.authority(),
             ObservationAuthority::BeliefOnly
         );
     }

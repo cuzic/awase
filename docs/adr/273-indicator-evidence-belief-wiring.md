@@ -11,7 +11,7 @@ summary: |-
   帰結として、指標が効くのは **IMM が NULL を返して ObserverPoll が来ない窓**に限られ、IMM が嘘の値を返す窓・GJI の I/O 推論が ObserverPoll を書く窓では負ける(B1)。便益は小さく、その窓の型(一太郎)は未確定(ADR-261 D0-2)なので、段階 2 の前提にする。
   ③「観測の無い窓」の述語は `is_demoted_by_learning`(=NULL 型)を採る。④遅れ対策: 字形は最後のモード系打鍵から最大遅れ+余裕が経つまで報告しない(必須)。窓の同一性と FocusGen・前面の一致を照合する。
 status: |-
-  起草(2026-10-20)。実装なし。Opus レビュー round 1(Blocker 3・Major 10・minor 10)・round 2(Blocker 1・Major 3・minor 5)・round 3(Blocker 1・Major 3・minor 4)・round 4(収束の確認: Blocker/Major なし、minor 6)を反映。**確定可**(Opus round 4、2026-10-20)。所有者判断 Q1・Q2・Q5 は 2026-10-20 に決定済み。**メニューの配線は 2026-10-20 に断念(Q3 の「メニュー先行」は取り下げ)**。決定は案。所有者判断 Q1〜Q3 は本文末尾。
+  起草(2026-10-20)。**段階 1(核の実装、本番への配線なし)を実装中(2026-10-20、feat/adr273-indicator-source-core)**。Opus レビュー round 1(Blocker 3・Major 10・minor 10)・round 2(Blocker 1・Major 3・minor 5)・round 3(Blocker 1・Major 3・minor 4)・round 4(収束の確認: Blocker/Major なし、minor 6)を反映。**確定可**(Opus round 4、2026-10-20)。所有者判断 Q1・Q2・Q5 は 2026-10-20 に決定済み。**メニューの配線は 2026-10-20 に断念(Q3 の「メニュー先行」は取り下げ)**。決定は案。所有者判断 Q1〜Q3 は本文末尾。
 related_adr:
   - "ADR-233"
   - "ADR-261"
@@ -129,6 +129,27 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 - 実機の発見(字形の実装にも関わるので残す): ①名前が「トレイ入力インジケーター」で始まる要素が **2 つ**ある(「あ」のボタンは末尾が「右クリックで IME のオプションを表示します」、青い丸のボタンは名前に IME 名が入る別物)。「接頭辞が一致する最初の要素」は誤る。②DPI 非対応のプロセスでは UIA の矩形がずれる。③ホバーのツールチップ窓(`Xaml_WindowedPopupClass`)が出ている間は `Shell_TrayWnd` 配下の要素が見えなくなる(26 → 4)。④タスクバーの高さ(72 px/24 px)は状態で変わる。
 
 これらにより、ADR-273 D1〜D5 のうちメニューに関する部分(`IndicatorMenu` の源・D4 のメニューの `idChild` 条件・段階 2 のメニュー行)は実装しない。字形の配線(`TaskbarGlyph`)は影響を受けない。ADR-264 の段階 2(belief への配線)も同じ理由で取り下げ、shadow(journal)は残す。
+
+## 段階 1 の実装状況(2026-10-20、PR 〔核の実装・配線なし〕)
+
+核(`awase-windows-core`)だけを実装した。**本番には配線していない**(`ui_max_level` は `Observe` のまま。`architecture_guard::taskbar_glyph_is_not_reported_from_production_yet` が、殻に `TaskbarGlyph`・`from_glyph(`・`fence_glyph(` が 0 件であることを固定する)。
+
+- 実装は D1・D2 の設計を、**default-deny** の形にした: 字形の枠(`PerSourceObservations::taskbar_glyph`)を `iter()` に含めないので、`derive_any`・`most_recent_trusted*`・`read_back`(`Converged`・`AnyFreshEvidence` の両方)・`consensus`・`evaluate_drift` の全読み手から既定で除外される(除外リストを足すより漏れにくい。`evaluate_drift` の除外リストにも防御として明記した)。読み口は `ObservationStore::indicator_reading`(D2 の述語 (1)(2)・窓の同一性)と、`PerSourceObservations::indicator()` の 2 つだけ。
+- 採用は `resolve_open_at` の独立した分岐(`BaseDecision::IndicatorGlyph { promoted_by_staleness }`)。鮮度切れで時刻の経過だけで繰り上がったとき `promoted_by_staleness` が付く(D2 d5・D5 ⑨)。`desired_open` は書かない。
+- 寿命は書き込み時の削除: 指標以外の Medium 以上を**窓の同一性が合うときだけ**記録するとき・窓の変化(`update_focus_window`、hwnd が変わったときだけ)・`clear_on_focus_change`・`ImeEvent::IndicatorGlyphMissed`(字形が `Miss` になったとき)で消える。
+- D4 の柵を核に入れた: **`FencedGlyph`**(構築子は `fence_glyph` だけ。モード系の打鍵から `GLYPH_KEY_FENCE_MS`=1000ms〔ADR-261 の実測最大の遅れ 0.68 秒+マージン 0.32 秒。`pending`〕・フォーカスの世代・前面の一致)が `Observed::<TaskbarGlyph>::from_glyph` の witness になる。**reducer も**、最後のモード系の入力(`UserImeSetIntent`・`ImeApplyRequested`・`KeyEffectPredicted`・`ModeKeyPassedThrough`。awase 自身の書き込みを含む)から `GLYPH_KEY_FENCE_MS` 以内の字形を記録も照合もしない(二重の柵。`ImeModel::last_mode_key_tick_ms` は予測の照合で消えないので、予測が 170ms 後に別の観測で消えた後でも効く〔Opus RM1〕。`FocusChanged` で消す。journal の再生でも決定的。`KEY_EFFECT_SETTLE_MS`=170ms では足りない〔B3〕)。`fence_glyph` の 3 つの事実は呼び出し側の自己申告なので、本当の防御は reducer 側。
+- `promoted_by_staleness` は「字形が届いた時点では新鮮だった、字形と値の違う Medium 以上が、今は鮮度切れ」のときだけ付く(診断専用。GJI の窓で常に付いて過大に数えないため)。
+- reducer は字形で `update_drift` を呼ばない(`reconcile_key_effect_open` は呼ぶ)。
+
+### 配線 PR の注意(Opus レビュー、2026-10-20)
+
+- **R1 MozcShm が割れたとき**: ADR-268 は `tsf_open != effective_open` の間 MozcShm を報告しない。共有メモリが止まって TTL が切れたあとに字形(TIP の実状態を映す)が belief を決めると、ADR-268 が避けた向きへ倒れる。mozc 系の窓で割れている間(`AppliedDemoted{MozcShmSplit}` の間)は字形を報告しない。
+- **R2 見本の自己学習のループ**: 殻の shadow(`indicator_glyph_shadow`)は `effective_open()` から見本のラベルを作る。字形が belief を決めるようになると、字形が決めた belief で字形の見本にラベルを付け、誤読が `glyph_samples.json` に永続化して自分を強化する(`agree_open` の集計も同語反復になる)。**`decided_by.base == IndicatorGlyph` のときは収集も一致の記録もしない**。`current_profile()` が降格を反映するかも確かめる。
+- **R3 Q5 が HWND キャッシュ経由で抜ける**: 窓を離れるときの `effective_open()`(ほぼ字形の値)が HWND キャッシュに入り、戻ると `HwndCacheRestored` が `desired_open` を書く。その窓の `BaseDecision` は `DesiredFallback` になり、「字形由来の `BaseDecision` を持つ間は ADR-263 を止める」をすり抜ける。「指標由来」の印を HWND キャッシュ側で持つかを、Q5 の実装時に決める。
+- **R4 hwnd の意味**: 字形はキーボードフォーカスのスレッド(`hwndFocus`)に追随する(ADR-261 D0-10)。報告の `hwnd` は `current_fence.hwnd` と同じ意味で取ること。`hwndFocus` の子窓が頻繁に変わるアプリでは、`FocusHwndUpdated` のたびに字形が消えて効く時間がほぼ無くなる。shadow の journal で回数を測る。
+- **R5 柵**: 殻の `fence_glyph` だけでなく reducer にも二重に置いた(上記)。殻の `FenceCtx::since_last_mode_key_ms` の起点も reducer と同じ「最後のモード系の入力または awase の書き込み」に揃える。
+- **R7 柵の値(D4 の入口条件)**: `GLYPH_KEY_FENCE_MS`=1000ms の根拠の 0.68 秒はフォーカス切替後の遅れで、キー押下からの遅れ(0.1〜0.3 秒)とは別の量。ADR-261 D0-1 には外れ値が 1.35〜2.3 秒の構成がある。**配線の前に、外れ値の構成での押下からの遅れを測る**こと(`pending` のまま)。
+- **R6 `IntentStore` の層**: `platform_state` の `effective_open` は `IntentStore` で上書きする。`resolve_open_at` の `decided_by` だけで「字形由来」と判定すると、`IntentStore` が上書きしている場面を誤って字形由来と数える。R2・R3・Q5 の判定は hub の層の最終的な理由で行う。
 
 ## 却下案
 

@@ -526,6 +526,19 @@ pub const FOCUS_RESYNC_DEADLINE_MS: u64 = 100;
 #[measured_macro::measured(pending = true)]
 pub const KEY_EFFECT_SETTLE_MS: u64 = 170;
 
+/// 入力インジケーターの字形（`ObservationSource::TaskbarGlyph`）を belief に入れる前の、**モード系の打鍵からの柵** (ms)
+/// （ADR-273 D4・B3）。最後のモード系の打鍵（`KeyEffectPredicted` が付く打鍵）からこれだけ経つまで、字形の読みを報告しない。
+///
+/// **導出**: 字形は実状態に遅れて追随する。ADR-261 の実測で、フォーカス切替後に字形が追随するまでの遅れは中央 約 0.2 秒・
+/// **最大 0.68 秒**（CI、D0-1）、dragonflyg4 の実機でキー押下から字形が変わるまで約 0.1〜0.3 秒。押下の直後に読んだ字形は
+/// 押す前の状態を映しうるので、最大 0.68 秒 + マージン 0.32 秒 = 1000ms とする。`KEY_EFFECT_SETTLE_MS`（170ms）は予測と
+/// **同期的な**観測（IMM の読み）の遅れに合わせた値で、字形の遅れには足りない（B3）。柵の中の字形を捨てるだけなので、
+/// 長くしても Engine への影響は無く、字形が効き始めるのが遅れるだけ。**注意**: ADR-261 の D0-1 には「外れ値が 1.35〜2.3 秒の構成がある」
+/// とも書いてあり、0.68 秒はフォーカス切替後の遅れ（キー押下からの遅れは 0.1〜0.3 秒）で別の量。外れ値の構成での押下からの遅れを
+/// 測ることは、配線の入口条件（ADR-273 D4）。実機での再測定は未了のため `pending`。
+#[measured_macro::measured(pending = true)]
+pub const GLYPH_KEY_FENCE_MS: u64 = 1000;
+
 /// 他アプリが注入した Ctrl↓ を、**注入された打鍵の修飾としてだけ**数える期限 (ms)(ADR-249、BUG-197)。
 ///
 /// 音声入力ソフト Spokenly は `Ctrl↓ → V↓↑ → Ctrl↑` を注入して貼り付ける。**実測**(報告 `01M4J72G985T0FFT6XPN0SWCQQ` の
