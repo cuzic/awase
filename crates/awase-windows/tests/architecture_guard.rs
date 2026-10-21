@@ -3179,8 +3179,9 @@ fn per_source_set_is_confined_to_the_store() {
 /// 必要がある。
 #[test]
 fn per_source_fields_are_not_assigned_directly() {
-    // `PerSourceObservations` の 9 フィールド（`observation_store.rs`）。
-    const FIELDS: [&str; 9] = [
+    // `PerSourceObservations` の 11 フィールド（`observation_store.rs`）。`mozc_shm`（ADR-268）・`taskbar_glyph`（ADR-273）も含める
+    // （字形の枠の読み書きは `indicator()`/`clear_indicator()` を使う。`per_source.taskbar_glyph` を直接触らない）。
+    const FIELDS: [&str; 11] = [
         "focus_probe",
         "observer_poll",
         "gji",
@@ -3190,6 +3191,8 @@ fn per_source_fields_are_not_assigned_directly() {
         "imm_cross_probe",
         "heuristic_default",
         "conv_open_inference",
+        "mozc_shm",
+        "taskbar_glyph",
     ];
     let files = list_src_files();
     let mut hits: Vec<String> = Vec::new();
@@ -8937,6 +8940,57 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
     );
     assert_eq!(boot.matches("spawn_indicator_glyph_worker()").count(), 1);
     assert_eq!(boot.matches("install_foreground_hook(").count(), 1);
+}
+
+/// ADR-273 段階 1: 入力インジケーターの字形（`ObservationSource::TaskbarGlyph`）は、belief の**核にだけ**存在し、本番（殻）からは
+/// まだ生成も報告もされない。
+///
+/// - `TaskbarGlyph`・`IndicatorGlyphMissed` の語は、belief の核の定義ファイル（下の `CORE_FILES`）にだけ現れる。殻の本番コードには 0 件。
+/// - `from_glyph(`・`fence_glyph(` の**呼び出し**（定義 `fn …(` を除く）は、本番コード全体で 0 件。柵（`fence_glyph`）を通さない witness は
+///   型で作れないが、柵を通して報告する側（殻）が未配線であることをここで固定する。
+///
+/// 配線 PR（ADR-273 段階 2 以降）はこの件数を、許可する入口（`ImeStateHub` の 1 メソッド）の分だけ増やし、
+/// `mozc_shm_reader_touches_belief_only_through_report_mozc_shm` と同じ型のガードで入口を名指しする。
+/// （`list_src_files()` は awase-windows と awase-windows-core の `src` を合成して列挙する。）
+#[test]
+fn taskbar_glyph_is_not_reported_from_production_yet() {
+    const CORE_FILES: [&str; 6] = [
+        "src/state/drift_correction.rs",
+        "src/state/evidence.rs",
+        "src/state/ime_event.rs",
+        "src/state/ime_model.rs",
+        "src/state/indicator_glyph.rs",
+        "src/state/observation_store.rs",
+    ];
+    let mut hits: Vec<String> = Vec::new();
+    let (mut from_glyph_calls, mut fence_glyph_calls) = (0usize, 0usize);
+    for path in list_src_files() {
+        let content = read_crate_file(&path);
+        let production = non_comment_lines(production_code_only(&content));
+        if !CORE_FILES.contains(&path.as_str()) {
+            for token in ["TaskbarGlyph", "IndicatorGlyphMissed"] {
+                if production.contains(token) {
+                    hits.push(format!("{path}: {token}"));
+                }
+            }
+        }
+        from_glyph_calls += production.matches("from_glyph(").count();
+        from_glyph_calls -= production.matches("fn from_glyph(").count();
+        fence_glyph_calls += production.matches("fence_glyph(").count();
+        fence_glyph_calls -= production.matches("fn fence_glyph(").count();
+    }
+    assert!(
+        hits.is_empty(),
+        "字形（TaskbarGlyph）を belief へ報告する経路は、配線 PR（ADR-273 段階 2 以降）まで殻の本番に無いこと。実際: {hits:?}"
+    );
+    assert_eq!(
+        from_glyph_calls, 0,
+        "from_glyph( の呼び出しが本番にあってはならない（定義だけ）"
+    );
+    assert_eq!(
+        fence_glyph_calls, 0,
+        "fence_glyph( の呼び出しが本番にあってはならない（定義だけ）"
+    );
 }
 
 /// ADR-265 段階 1・ADR-268: mozc-readable の共有メモリの読みは、**belief への入口を 1 つだけ**持ち、IME・打鍵には書かない。

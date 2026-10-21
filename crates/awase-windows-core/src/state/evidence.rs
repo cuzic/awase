@@ -29,6 +29,7 @@ use super::conv_classify::ConvSyncReason;
 use super::ime_event::{
     HwndId, ImePolicyProfile, ObservationAuthority, ObservationConfidence, ObservationSource,
 };
+use super::indicator_glyph::{BeliefLabel, FencedGlyph};
 #[cfg(test)]
 use super::probe_admission::FocusFence;
 use super::probe_admission::{AcceptedObservation, FocusEpoch};
@@ -145,6 +146,8 @@ declare_evidence! {
     FocusProbe => BeliefPool, FocusProbe, Low;
     /// mozc-readable の共有メモリの `tsf_open`（ADR-268）。High・BeliefOnly。
     MozcShm => BeliefPool, MozcShm, High;
+    /// タスクバーの入力インジケーターの字形を表に照合した開閉（ADR-273）。Medium・BeliefOnly。
+    TaskbarGlyph => BeliefPool, TaskbarGlyph, Medium;
 }
 
 /// 出自が型で確定している open 観測。
@@ -268,6 +271,23 @@ impl Observed<MozcShm> {
         focus_epoch: FocusEpoch,
     ) -> Self {
         Self::new(open, hwnd, focus_epoch)
+    }
+}
+
+impl Observed<TaskbarGlyph> {
+    /// 字形を**ラベル単位で照合して `Hit` し、ADR-273 D4 の柵を通った読み**（[`FencedGlyph`]）を witness に要求する。
+    /// `Miss`（見本に近くない・曖昧）からも、柵を通っていない字形（押す前の状態を映した字形・別の窓の字形・前面と追跡がずれた字形）
+    /// からも作れない（`FencedGlyph` の構築子は `fence_glyph` だけ）。開閉は読みのラベルから決める: `Closed` なら閉、
+    /// かな・英数なら開。GJI では閉と半角英数が別の字形、MS-IME では {閉, 開+半角英数} が 1 つの `Closed`（ADR-261 決定 2）なので、
+    /// どちらの IME の表でもこの写しは正しい。「IME 無効」の字形（ADR-261 の `ce22e2`/`96a333`）が表に入った場合も `Closed` に写る。
+    /// confidence は `Medium` 固定（呼び出し元は選べない。H1 が否定され、実機の一致率が示されるまで High にしない）。
+    #[must_use]
+    pub const fn from_glyph(fenced: FencedGlyph, hwnd: HwndId, focus_epoch: FocusEpoch) -> Self {
+        Self::new(
+            !matches!(fenced.label(), BeliefLabel::Closed),
+            hwnd,
+            focus_epoch,
+        )
     }
 }
 
@@ -452,12 +472,13 @@ mod tests {
         assert_pool::<HwndCache>(ObservationAuthority::BeliefOnly);
         assert_pool::<FocusProbe>(ObservationAuthority::BeliefOnly);
         assert_pool::<MozcShm>(ObservationAuthority::BeliefOnly);
+        assert_pool::<TaskbarGlyph>(ObservationAuthority::BeliefOnly);
     }
 
-    /// 10 個の evidence 型が 10 個の異なるソースを覆っていること
-    /// （`PerSourceObservations` の 10 フィールドと 1:1）。
+    /// 11 個の evidence 型が 11 個の異なるソースを覆っていること
+    /// （`PerSourceObservations` の 11 フィールドと 1:1）。
     #[test]
-    fn evidence_sources_are_ten_distinct_recordable_sources() {
+    fn evidence_sources_are_eleven_distinct_recordable_sources() {
         let sources = [
             ImmGetOpenStatus::SOURCE,
             ImmCrossProbe::SOURCE,
@@ -469,8 +490,9 @@ mod tests {
             HwndCache::SOURCE,
             FocusProbe::SOURCE,
             MozcShm::SOURCE,
+            TaskbarGlyph::SOURCE,
         ];
-        assert_eq!(sources.len(), 10);
+        assert_eq!(sources.len(), 11);
         for (i, a) in sources.iter().enumerate() {
             for b in &sources[i + 1..] {
                 assert_ne!(a, b, "evidence 型が同じ ObservationSource を名乗っている");
