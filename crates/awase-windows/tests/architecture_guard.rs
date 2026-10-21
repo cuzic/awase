@@ -5542,8 +5542,8 @@ fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() 
 /// スナップショットガード（`.claude/rules/ime-belief-architecture.md` の
 /// 判断基準(c)）。件数が変わった場合、それが意図した変更（新しい消費箇所の追加等）
 /// なら定数を更新すればよい。意図せず減っていた場合は、`can_use_imm32_cross_process`
-/// / `uses_kanji_toggle` / `should_pass_physical_key`
-/// の3述語、`AppImeProfile::is_effectively_tsf_native` のメソッド
+/// / `uses_kanji_toggle`
+/// の2述語、`AppImeProfile::is_effectively_tsf_native` のメソッド
 /// （2026-09-10、自由関数から`impl AppImeProfile`のメソッドへ移動）、
 /// `From<AppImeProfile> for ImePolicyProfile`（ADR-274 段階 0 で `state/ime_event.rs` へ移動）、`from_class_and_process` のいずれかで `InputRelay` の
 /// 分岐が欠落していないか確認すること（欠落すると condition (b)/(c) が
