@@ -266,14 +266,6 @@ pub const IME_DETECT_MISS_THRESHOLD: u32 = 3;
 
 // === ドリフト補正 ===
 
-/// `desired` と `observed` の乖離がこの時間以上続いた場合にドリフト補正を発動する (ms)。
-///
-/// ポーリング間隔 500ms より小さい値にすると、ドリフト検出後の次のポーリング
-/// （drift_duration ≈ 500ms）で確実に補正が発動する。
-/// 短すぎるとフォーカス変化直後の一時的なズレで誤発動するため 400ms とする。
-#[measured_macro::measured(pending = true)]
-pub const DRIFT_CORRECTION_THRESHOLD_MS: u64 = 400;
-
 /// ドリフト補正の「信頼できる観測」として許可する最大観測年齢 (ms)。
 ///
 /// この時間より古い観測値は stale とみなしてドリフト補正の根拠として使わない。
@@ -320,7 +312,7 @@ pub const DRIFT_CORRECTION_OBS_MAX_AGE_MS: u64 = 1_500;
 /// # 値の根拠
 ///
 /// 実機ログで観測された give-up 巡回間隔は数百ms〜1秒未満（1巡が
-/// `DRIFT_CORRECTION_THRESHOLD_MS`=400ms 級の間隔で最大5回送信、巡回ごとに
+/// 400ms 級の間隔で最大5回送信、巡回ごとに
 /// 次の idle-conv-check で即再武装）。タイピング中の実用的な間隔として明確に
 /// 体感できる差を作るため 3 秒とした（実測ではなくレート制限ポリシー、上記
 /// 参照）。実機ソークで「まだ体感できる」「長すぎて BUG-51 が再現する」
@@ -334,12 +326,9 @@ pub const DRIFT_CORRECTION_OBS_MAX_AGE_MS: u64 = 1_500;
 ///   このクールダウンは無効化され、新しい `Actuation` が即座に5回まで送信
 ///   できる状態から再開する。連続した無限ループの再発ではなく、フォーカス
 ///   変更のたびに高々5回の再送という有界な事象に留まる。
-/// - `FeedbackPolicy::Blind::backoff` フィールド（`state/ime_actuation.rs`、
-///   `AppImePolicy::from_profile` が 400ms を設定）は構築されるだけで
-///   `ir_apply_drift_correction` から一度も読まれていない。つまり give-up
-///   バースト**内**の最大5回の送信自体は無間隔（本クールダウンが効くのは
-///   バースト**間**のみ）。本クールダウンとは独立した別の改善余地として
-///   記録しておく（本 BUG では対処しない）。
+/// - give-up バースト**内**の最大5回の送信は無間隔（本クールダウンが効くのは
+///   バースト**間**のみ）。旧 `FeedbackPolicy::Blind::backoff`（構築されるだけで一度も読まれなかった）は
+///   ECRS DD4-01 で撤去した。バースト内の間隔を空ける改善は、必要なら新しく実装すること。
 #[measured_macro::measured(pending = true)]
 pub const DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS: u64 = 3_000;
 
@@ -470,9 +459,9 @@ pub const MODE_KEY_PASS_REREAD_MS: u64 = 60;
 /// で generation 不一致の stale として黙って捨てられる——「pending 固着」を
 /// 「ハング時に完了を取りこぼす」という別の失敗モードに置き換えてしまう。
 ///
-/// BUG-34 実測（~5741ms）に安全マージンを載せた
-/// `IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS`（`state/platform_state.rs`、8000ms）と
-/// 同じ根拠・同じ値を採用する。
+/// BUG-34 実測（~5741ms）に安全マージンを載せた値（8000ms）。idle-conv-check の in-flight の
+/// 自己回復しきい値（`runtime/key_pipeline.rs`）も、同じ根拠・同じ値なのでこの定数を共用する
+/// （旧 `IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS` を統合、ECRS DD4-03）。
 #[measured_macro::measured(pending = true)]
 pub const IME_APPLY_PENDING_TIMEOUT_MS: u64 = 8_000;
 

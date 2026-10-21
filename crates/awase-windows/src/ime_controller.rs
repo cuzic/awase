@@ -243,26 +243,9 @@ pub(crate) fn apply_mechanism(
 /// |---|---|---|
 /// | 書き込み口 | `ImmCrossProcessStrategy::apply` と `MsImeDirectStrategy::apply` の**2 箇所** | 本関数の**1 箇所** |
 /// | 宛先 | `set_ime_romaji_mode()` が write 時点にライブクエリで**自己決定** | 起案時に捕獲した [`crate::ime::ActuationTarget`] |
-/// | 世代照合 | 無し | 型としては `view.focus.focus_gen` と照合し不一致なら `Aborted`。**ただし現在の呼び出し方では常に一致する**（下記） |
+/// | 世代照合 | 無し | 無し(完全同期で、捕獲と write の間にフォーカスが動く余地が無い。旧版の恒真の照合は撤去、ECRS DD2-03) |
 /// | 結果 | `let _ =` で握り潰し | `Written` 以外は必ずログに残す（INV-14） |
 /// | 発火条件 | 2 戦略に別々に書かれた（Linux から検査不能） | `decide_needs_romaji_pre_write`（ungated、全数テスト済み） |
-///
-/// # 世代照合は現状では恒真である（ADR-089 §9-22）
-///
-/// 本関数は `let focus_gen = view.focus.focus_gen;` で読んだ**同一の値**を
-/// `capture_blocking(focus_gen)` と
-/// `set_ime_romaji_mode_for_target_blocking(target, focus_gen)` の両方へ渡す。
-/// 前者は受け取った値をそのまま `ActuationTarget::focus_gen` に格納し、後者は
-/// それを引数と比較する。したがって **`GenStale` は原理的に返らない**——
-/// 間に `focus_gen` を読み直す点も await 点も無いため、比較は
-/// `focus_gen == focus_gen` に退化している。
-///
-/// これは欠陥ではなく意図した形である（同期経路には捕獲と write の間に
-/// フォーカスが動く余地が構造的に無い）が、**「世代照合があるから
-/// stale target への write は防げている」とは読まないこと**。実効的な
-/// 検出力を持つのは、将来この経路に await 点が挟まるか、
-/// `Output::ime_mode_focus_gen` を write 直前に読み直す形へ変えたときである。
-/// その時までは「構造だけがある」状態として扱う。
 ///
 /// **hwnd 解決の関数・タイムアウト・フォールバックは変えていない**——
 /// `ActuationTarget::capture_blocking` は旧 `set_ime_romaji_mode()` と同じ
@@ -315,7 +298,7 @@ fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView
         return;
     };
     // SAFETY: 同上。
-    let outcome = unsafe { crate::ime::set_ime_romaji_mode_for_target_blocking(target, focus_gen) };
+    let outcome = unsafe { crate::ime::set_ime_romaji_mode_for_target_blocking(target) };
     if outcome != crate::ime::ActuationOutcome::Written {
         // INV-14: `Aborted` を成功として扱わない。実機での競合頻度を事後に
         // 測れるよう必ずログに残す（ADR-086 §6 段4）。

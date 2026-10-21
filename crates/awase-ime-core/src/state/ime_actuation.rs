@@ -19,16 +19,10 @@ use super::ime_event::ObservationSource;
 )]
 pub enum FeedbackPolicy {
     /// 実読み戻しが可能（ImmCross 等）。
-    Read {
-        source: ObservationSource,
-        deadline: std::time::Duration,
-    },
+    Read { source: ObservationSource },
     /// 読み戻し手段が構造的に存在しない（Imm32Unavailable / TsfNative）。
     /// 有限回で必ず打ち切る。
-    Blind {
-        max_attempts: u32,
-        backoff: std::time::Duration,
-    },
+    Blind { max_attempts: u32 },
 }
 
 impl FeedbackPolicy {
@@ -363,16 +357,12 @@ mod tests {
     use super::*;
 
     fn blind(max_attempts: u32) -> FeedbackPolicy {
-        FeedbackPolicy::Blind {
-            max_attempts,
-            backoff: std::time::Duration::from_millis(0),
-        }
+        FeedbackPolicy::Blind { max_attempts }
     }
 
     fn read() -> FeedbackPolicy {
         FeedbackPolicy::Read {
             source: ObservationSource::ImmGetOpenStatus,
-            deadline: std::time::Duration::from_millis(0),
         }
     }
 

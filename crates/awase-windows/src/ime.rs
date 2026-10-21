@@ -1030,34 +1030,6 @@ impl ActuationTarget {
         hwnd.non_null().map(|hwnd| Self { hwnd, focus_gen })
     }
 
-    /// 同期経路用の再検証。**hwnd のライブクエリを行わず、フォーカス世代だけを
-    /// 照合する**（ADR-089 §6 Phase C item 12）。
-    ///
-    /// [`Self::verify_still_current`] は `get_focused_hwnd_async().await` で
-    /// hwnd を読み直すが、同期経路では
-    ///
-    /// 1. 捕獲から書き込みまでの間に await 点が無く、hwnd が動く余地が構造的に
-    ///    無い（同一フレーム内の連続した文である）。
-    /// 2. 読み直すと Win32 往復が 1 回から 2 回へ倍増し、打鍵ホットパスに乗る
-    ///    force-ON 経路のレイテンシが変わる（`.claude/rules/tuning-constants.md`
-    ///    が実測を要求する軸）。
-    ///
-    /// ため、世代照合のみを行う。**この照合は現状では常に一致する**——
-    /// `consume_force_open_pending` が同じ理由で置いている gen フェンス
-    /// （「本経路は完全に同期的なため実際には常に一致するが、将来この経路に
-    /// 非同期処理が挟まれた場合の回帰を防ぐため明示的に確認する」）と同じ
-    /// 性質のガードである。
-    fn verify_gen_only(
-        self,
-        current_focus_gen: crate::state::focus_gen::FocusGen,
-    ) -> TargetVerifyOutcome {
-        if self.focus_gen == current_focus_gen {
-            TargetVerifyOutcome::Current(self.hwnd)
-        } else {
-            TargetVerifyOutcome::GenStale
-        }
-    }
-
     /// 実行直前に呼ぶ。`read_current_focus_gen` は呼び出し元が最新の gen 値
     /// （典型的には `Cell<u64>::get`）を読むためのクロージャで、**hwnd の
     /// ライブクエリが完了した直後**（このメソッド内の唯一の await の後）に
@@ -1178,43 +1150,21 @@ pub(crate) enum AbortReason {
 /// （`tests/architecture_guard.rs::sync_romaji_write_goes_through_a_captured_target`
 /// が固定）。
 ///
-/// [`set_ime_conv_for_target`]（非同期版）との差:
-///
-/// | | 非同期版 | 本関数（同期版） |
-/// |---|---|---|
-/// | 再検証 | `verify_still_current`（hwnd ライブクエリ + gen 照合） | [`ActuationTarget::verify_gen_only`]（gen 照合のみ） |
-/// | Win32 往復 | 捕獲 1 + 再検証 1 + write | 捕獲 1 + write |
-/// | 呼び出し文脈 | `spawn_local` の中（await 点あり） | 完全同期（await 点なし） |
-///
-/// hwnd を読み直さない理由は [`ActuationTarget::verify_gen_only`] の doc を参照。
-/// **`Aborted` を成功として扱わないこと**（INV-14）——呼び出し元は結果を必ず
-/// ログに残す。
+/// [`set_ime_conv_for_target`]（非同期版）との差: 非同期版は `spawn_local` の中（await 点あり）で
+/// `verify_still_current`（hwnd のライブクエリ + フォーカス世代の照合）をしてから書くが、本関数は完全同期
+/// （捕獲から書き込みまで await 点が無く、同一フレームの連続した文）なので**再検証をしない**。
+/// 旧版は世代だけを照合する `verify_gen_only` を持っていたが、呼び出し元が同じ `focus_gen` を捕獲と照合の両方へ
+/// 渡していたため常に一致する恒真の比較で、撤去した（ECRS DD2-03、2026-10-21）。将来この経路に await 点を
+/// 挟むなら、非同期版の `verify_still_current` を使うこと。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub(crate) unsafe fn set_ime_romaji_mode_for_target_blocking(
     target: ActuationTarget,
-    current_focus_gen: crate::state::focus_gen::FocusGen,
 ) -> ActuationOutcome {
-    let hwnd = match target.verify_gen_only(current_focus_gen) {
-        TargetVerifyOutcome::Current(hwnd) => hwnd,
-        TargetVerifyOutcome::GenStale => {
-            tracing::debug!(
-                "[imm-romaji] Aborted(GenStale): captured_gen={} current_gen={current_focus_gen}",
-                target.focus_gen
-            );
-            return ActuationOutcome::Aborted(AbortReason::GenStale);
-        }
-        TargetVerifyOutcome::TargetMoved => {
-            // `verify_gen_only` は hwnd を読み直さないため構造的に返らないが、
-            // `TargetVerifyOutcome` の網羅性のために残す。
-            tracing::debug!("[imm-romaji] Aborted(TargetMoved)");
-            return ActuationOutcome::Aborted(AbortReason::TargetMoved);
-        }
-    };
     // SAFETY: hwnd は capture_blocking が non_null() で検証済みのウィンドウハンドル。
     //         set_ime_romaji_mode_for_hwnd は SendMessageTimeoutW ベースでタイムアウト付き。
-    if unsafe { set_ime_romaji_mode_for_hwnd(hwnd, None) } {
+    if unsafe { set_ime_romaji_mode_for_hwnd(target.hwnd, None) } {
         ActuationOutcome::Written
     } else {
         ActuationOutcome::Failed

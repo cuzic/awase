@@ -2610,10 +2610,7 @@ mod tests {
         use crate::state::event_origin::Generation;
         use crate::state::ime_actuation::{ActuationRecord, FeedbackPolicy};
 
-        let policy = FeedbackPolicy::Blind {
-            max_attempts: 5,
-            backoff: Duration::from_millis(400),
-        };
+        let policy = FeedbackPolicy::Blind { max_attempts: 5 };
         let (mut j, _mock) = mock_journal();
         // attempts=2 < max_attempts=5 なので action は Send に導出される。
         j.record(JournalEntry::ImeActuation {

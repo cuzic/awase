@@ -12,14 +12,12 @@ use super::actuation_chain::WriteMechanism;
 use super::ime_actuation::FeedbackPolicy;
 use super::ime_event::{ImePolicyProfile, ObservationSource};
 use super::ime_kind::ImeKindId;
-use std::time::Duration;
 
 /// Blind feedback（読み戻し不能プロファイル）で actuation を打ち切るまでの試行回数。
 ///
 /// **未検証の初期値**: 実 Windows 実機での soak テストによる裏付けはまだ無い
-/// （このサンドボックスでは実測できない）。`5 × backoff`（`backoff` は現状
-/// `DRIFT_CORRECTION_THRESHOLD_MS` を再利用、2026-07-25 時点で 400ms なので
-/// 最悪 ~2s）を「遅いが最終的に成功する訂正を早すぎる段階で諦めない程度に長く、
+/// （このサンドボックスでは実測できない）。最大 5 回(送信の間隔は決めていない。旧 `backoff` フィールドは構築されるだけで一度も読まれず、
+/// 閾値の定数 `DRIFT_CORRECTION_THRESHOLD_MS` とともに撤去した、ECRS DD4-01)を「遅いが最終的に成功する訂正を早すぎる段階で諦めない程度に長く、
 /// かつ本当に stuck な状態を延々叩き続けない程度に短い」妥当な出発点として
 /// 置いているだけ。この値を変更する場合は `.claude/rules/tuning-constants.md`
 /// に従い実機実測の根拠を本文に添えること。
@@ -67,12 +65,10 @@ const CHAIN_MS_IME_ONLY: &[WriteMechanism] = &[WriteMechanism::MsImeDirect];
 /// 読み戻し可能プロファイルの feedback（`AppImePolicy::from_profile` の旧リテラル）。
 const FEEDBACK_READ: FeedbackPolicy = FeedbackPolicy::Read {
     source: ObservationSource::ImmGetOpenStatus,
-    deadline: Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS),
 };
 /// 読み戻し手段が構造的に無いプロファイルの feedback。
 const FEEDBACK_BLIND: FeedbackPolicy = FeedbackPolicy::Blind {
     max_attempts: IME_ACTUATION_BLIND_MAX_ATTEMPTS,
-    backoff: Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS),
 };
 
 /// capability の唯一の宣言点（ADR-089 §2.8、INV-44）。
@@ -455,9 +451,7 @@ mod tests {
             p.default_feedback,
             FeedbackPolicy::Read {
                 source: ObservationSource::ImmGetOpenStatus,
-                deadline,
-            } if deadline
-                == Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
+            }
         ));
     }
 
@@ -482,8 +476,7 @@ mod tests {
             p.default_feedback,
             FeedbackPolicy::Blind {
                 max_attempts: IME_ACTUATION_BLIND_MAX_ATTEMPTS,
-                backoff,
-            } if backoff == Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
+            }
         ));
     }
 
@@ -494,8 +487,7 @@ mod tests {
             p.default_feedback,
             FeedbackPolicy::Blind {
                 max_attempts: IME_ACTUATION_BLIND_MAX_ATTEMPTS,
-                backoff,
-            } if backoff == Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
+            }
         ));
     }
 

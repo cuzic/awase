@@ -2469,7 +2469,7 @@ pub(crate) struct GateStore {
     /// 通過するたびに新しい offload 呼び出しが積み上がりワーカースレッドが増え続ける。
     /// 1 件 in-flight の間は新規 spawn をスキップし、完了時（epoch 棄却時も含む）に
     /// `with_app` 内で必ず `None` へ戻す。それに加えて、spawn からの経過時間が
-    /// [`IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS`] を超えていれば in-flight とはみなさず
+    /// `crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS`（BUG-34 のハング境界 + マージン。旧 `IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS` と同じ根拠・同じ値だったので 1 つに統合、ECRS DD4-03）を超えていれば in-flight とはみなさず
     /// 新規 spawn を許可する（完了取りこぼし時の自己回復）。
     pub idle_conv_check_in_flight_since_ms: Option<u64>,
     /// BUG-173追補: `shadow_action` を持つ IME 系キーの最初の KeyDown の配送結果（scan_code, Suppress したか）。
@@ -2482,14 +2482,6 @@ pub(crate) struct PostBypassArm {
     /// ログ・診断専用。判定には使わない。
     pub armed_focus_epoch: u64,
 }
-
-/// [`GateStore::idle_conv_check_in_flight_since_ms`] の自己回復しきい値。
-///
-/// BUG-34 の実測（WezTerm, ~5741ms、docs/known-bugs.md）が示す
-/// `HungAppTimeout` の既定値（~5000ms）+ マージンで、正当な in-flight 読み取り
-/// （offload 先のワーカースレッドが実際にハング境界までブロックしている場合）を
-/// 誤って「放棄された」と判定しないようにする。
-pub(crate) const IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS: u64 = 8_000;
 
 impl GateStore {
     pub(crate) fn new() -> Self {
@@ -2564,6 +2556,10 @@ impl PlatformState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// drift の追跡をバックデートする量(ms)。旧 `DRIFT_CORRECTION_THRESHOLD_MS + 50`。閾値は撤去済みで(ECRS DD4-01)、
+    /// 「十分続いた」と言える任意の長さ(`DRIFT_CORRECTION_OBS_MAX_AGE_MS` 未満)であればよい。
+    const DRIFT_BACKDATE_MS: u64 = 450;
 
     /// 仮想時計の基準 tick。実機（`GetTickCount64` = 起動からの経過）は通常 `IntentStore` の
     /// どの TTL よりも十分大きいので、最大の TTL の 2 倍を取って同じ位置関係にする
@@ -3106,9 +3102,7 @@ mod tests {
         // 十分続いた状態を作るため drift.started_at を直接バックデートする。
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
             started_at: std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(
-                    crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS + 50,
-                ))
+                .checked_sub(std::time::Duration::from_millis(DRIFT_BACKDATE_MS))
                 .expect("test instant can be backdated"),
         });
         let now = std::time::Instant::now();
@@ -3196,9 +3190,7 @@ mod tests {
         // （ConvOpenInference のテストと同様、乖離の追跡をバックデートして続いた状態を作る。）
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
             started_at: std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(
-                    crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS + 50,
-                ))
+                .checked_sub(std::time::Duration::from_millis(DRIFT_BACKDATE_MS))
                 .expect("test instant can be backdated"),
         });
         let now = std::time::Instant::now();
@@ -4176,9 +4168,7 @@ mod tests {
         // 観測 == desired なので drift correction は発火しない（揃える前は desired=false ≠ 観測 true で発火した）。
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
             started_at: std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(
-                    crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS + 50,
-                ))
+                .checked_sub(std::time::Duration::from_millis(DRIFT_BACKDATE_MS))
                 .expect("test instant can be backdated"),
         });
         let now = std::time::Instant::now();
