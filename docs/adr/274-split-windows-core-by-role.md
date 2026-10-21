@@ -8,7 +8,7 @@ summary: |-
   進め方は葉から剥がす: (0) 準備のコード移動と、層の向きを CI で固定する `deps.py --check`、(1) 葉の crate(hookinput → `awase-hook-core`、plans → `awase-windows-plans`、殻から scancode・bug_report)、(2) 下へ剥がす(base → `awase-windows-base`、keyeffect → `awase-key-effect`)と、残りの `awase-windows-core` を `awase-ime-core` に改名。各 crate は分割前と同じ相対パスを保ち、git mv(類似度 100%)で、merge commit で入れる。
   Opus レビュー(round 1・2)の Blocker 2 件(見落とした循環、D4 の順序)と、黙って検査が外れる 9 か所(pre-push の正規表現・compile_fail doctest・dylint の -p ほか)を反映した。Opus は「今は 7 分割をやらずガードだけ」を勧めたが、所有者の方針に従い、費用を抑える葉から剥がす順にした。
 status: |-
-  起案・Opus レビュー round 1・2 反映済み(2026-10-20)。段階 0(準備)と段階 1(葉の crate を剥がす)は完了。段階 2(下へ剥がす)に進むかは、判断点(下の「段階 1 の結果」)で所有者が決める。
+  Opus レビュー round 1・2 反映済み。段階 0(準備)・段階 1(葉の crate)・段階 2(下へ剥がす: 土台とキー効果。IME の核を awase-ime-core に改名)はすべて完了(2026-10-21)。残りは未決の整理だけ。
 related_adr:
   - "ADR-019"
   - "ADR-229"
@@ -237,4 +237,56 @@ core 系の合計 30,979 行の内訳: `awase-windows-core` 23,907・`awase-scan
 段階 2(下へ剥がす: `awase-windows-base`・`awase-key-effect`、`awase-windows-core` の `awase-ime-core` への改名)に進むか。
 段階 1 で、残りの `awase-windows-core`(base + keyeffect + imecore + journal)は 23,907 行(本番)で、core 系の 77% を占める。段階 2 は全 crate が依存する土台(`tuning`・`vk`・`converter_target` など、変更の多いファイル)を動かすので、
 費用の性質が段階 1 と違う(判断点 (d))。進めない場合の扱い(改名するか、description と `CLAUDE.md` だけ直すか)は、未決 3 で決める。
+
+## 段階 2 の結果(2026-10-21)
+
+判断点(段階 1 の後)では、所有者から明示の答えは来なかったが、「続けてください」の指示に従い、判断点 (d) の見積りを先に取ってから進めた。
+
+### 判断点 (d) の見積り
+
+2026-10-06 以降に core 系 crate を触った 115 コミットのうち、base のモジュールを触るのは 39(34%)。`state/mod.rs` の 16 件(どこかのモジュールを足すたびに触る)を除くと実質 22%。
+**base を別 crate にしても再ビルドは減らない**(今も base の変更は core 全体〔約 5.3 万行〕と下流を再ビルドする)。得られるのは、cargo による依存の向きの強制と、名前で責務が分かることだけ。
+複数クラスタにまたがるコミットは 24%。判断は「費用は小さく利益も限られるが、`awase-windows-core` に base + keyeffect + imecore が残ると名前が実態と合わない」で、進めた。
+
+### 実施したこと
+
+| crate | 内容 | PR |
+|---|---|---|
+| `awase-windows-base` | 土台: `tuning`・`vk`・`keymap`・`state/` の 10 ファイル・`focus/{mod,kinds,class_names}`・`tsf/converter_target`(17 ファイル) | #733 |
+| `awase-key-effect` | キー効果の学習結果の読み取りと予測(8 ファイル) | #735 |
+| `awase-ime-core`(旧 `awase-windows-core`) | IME の状態(belief)・観測・書き込み(actuation)の判断と journal。改名(ディレクトリも) | #736 |
+
+移動は `git mv`(rename 100%、中身は不変)。ADR-274 D2 の名前の案どおり。
+
+### 行数(本番コードの推定)
+
+| crate | 本番 | 全体(テスト込み) |
+|---|---|---|
+| awase-windows(殻) | 45,307 | 62,190 |
+| awase-ime-core | 16,999 | 36,626 |
+| awase-key-effect | 3,805 | 8,552 |
+| awase-windows-base | 3,434 | 5,904 |
+| awase-scancode | 2,344 | 5,097 |
+| awase-bug-report | 1,762 | 3,117 |
+| awase-hook-core | 1,689 | 3,958 |
+| awase-windows-plans | 1,277 | 2,498 |
+
+core 系の合計(本番) 31,310、割合 40.9%(分割直後 32.7% → ADR-272 前 34.0% → 段階 1 後 40.6% → 段階 2 後 40.9%)。
+段階 2 は行数を動かさず(core 系の内側の移動)、責務の名前と cargo の強制を得た。殻はまだ 45,307 行ある。
+
+### CI が見つけた問題（段階 2 の分、すべて音を立てて落ちた）
+
+1. 殻の `state/mod.rs`・core の `state/mod.rs` で、上位が下位を再公開する glob を並べると冗長(nightly の dylint)。**最上位の 1 つだけを並べる**（段階 1 に続き 2 度目）。
+2. core が使わなくなった依存（`awase-vkmap`・`measured-macro`・`awase-keymap-learn`）が `cargo machete` に落とされた。移動のたびに、移動後の使用ファイル数で外す依存を決める（私の「他に 1 ファイルある」という数え方はコメントを数えていた）。
+3. **`tools/` のスクリプトが移したファイルのパスを crate 付きで直書き**していた（`gen_key_effect_table.py`・`ablations/a10`・README）。前者は `architecture_guard::key_effect_table_matches_generator` で落ち、
+   `ablations/a9`（`vk.rs`）は #733 から**黙って壊れていた**（CI のガードに掛からない実機実験用）。`check_wiring.py` に、`tools/`・`.github/`・`.githooks/`・`.cargo/`・`.claude/`・`mise.toml`・`CLAUDE.md` が指す
+   `crates/<crate>/src/<ファイル>.rs` の実在を確かめる検査を足した（古いパスを戻すと名指しで落ちることを確認）。`.cargo/mutants-bug158-scope.toml` の古い参照は ADR-229 D4 以前からのもので許可リスト。
+4. `develop` に入った他セッションの PR（#731）が、私が移動した `tuning.rs` に 13 行を足していた。git が rename を追って自動マージした（競合は `DIRTY` として CI が起動しなかったので、取り込み直した）。
+
+### 残り（未決）
+
+- `awase-scancode` の移動先（`awase-settings` の中に置く案は採らなかった）: 決着済み（独立 crate のまま）。
+- `compile_fail` doctest の「対となる正しい形の doctest」(D5-2): 改名は一括置換で `use` を同じに直したので穴は出ていないが、対の doctest は未追加。
+- 殻（`awase-windows`、45,307 行）の整理は ADR-274 の範囲外。ECRS の候補（`docs/tasks/ecrs-awase-windows-2026-10-20/`）が引き続き残っている:
+  `platform_state.rs`・`sync_actuation.rs`（約 5,800 行）の core への移動（INV-A97-1 の反転が要る所有者判断）、UIA 非同期の撤去 など。
 
