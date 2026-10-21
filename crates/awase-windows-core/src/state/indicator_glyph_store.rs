@@ -105,6 +105,8 @@ fn mask_from_hex(hex: &str) -> Option<[bool; FEATURE_AREA]> {
     Some(mask)
 }
 
+// 縦横比は 0 以上に丸めてから整数にする（符号は失われない）。
+#[allow(clippy::cast_sign_loss)]
 fn to_stored(sample: &GlyphSample) -> StoredSample {
     let (masks, aspect, dots) = sample.feature.to_parts();
     StoredSample {
@@ -115,6 +117,8 @@ fn to_stored(sample: &GlyphSample) -> StoredSample {
     }
 }
 
+// 縦横比 × 1000 は 1.0e7 以下（`to_stored` で丸める）なので、`f32` への変換で精度は失われない。
+#[allow(clippy::cast_precision_loss)]
 fn from_stored(s: &StoredSample) -> Option<GlyphSample> {
     let class = GlyphClass::from_label(&s.class)?;
     let masks = [mask_from_hex(&s.masks[0])?, mask_from_hex(&s.masks[1])?];
