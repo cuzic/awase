@@ -14,6 +14,7 @@ use awase_keymap_learn::persist::Fingerprint;
 use awase_keymap_learn::persist::{self, LoadError, PersistedTable};
 use awase_keymap_learn::staleness::FingerprintProbe;
 
+use crate::bug_report::BugReportKeymapLearnSummary;
 use crate::state::key_effect_predictor::Cell;
 #[cfg(windows)]
 use crate::state::key_effect_predictor::{KeyEffectKeymap, KeymapCache};
@@ -152,6 +153,30 @@ pub fn read_persisted_table(path: &Path) -> Result<PersistedTable, RejectReason>
     })
 }
 
+/// 不具合報告の「学習表」の要約を、実ファイルを読んで組み立てる。
+///
+/// ファイルを読む部分は殻に置き、型の組み立て（[`BugReportKeymapLearnSummary::from_tables`]）だけを
+/// `bug_report` に残す（`bug_report` は OS・ファイルシステムに触れない。ADR-274）。
+/// `validation_key` は予測時に実際に使った `(preset, check_against_bundled)`。
+#[must_use]
+pub fn bug_report_keymap_learn_summary(
+    table_path: Option<&Path>,
+    last_attempt_path: Option<&Path>,
+    use_learned_keymap_table: bool,
+    in_use: bool,
+    validation_key: Option<(crate::state::key_effect_predictor::KeymapPreset, bool)>,
+) -> BugReportKeymapLearnSummary {
+    let table = table_path.map_or(Err(RejectReason::NotFound), read_persisted_table);
+    let last_attempt = last_attempt_path.map(read_persisted_table);
+    BugReportKeymapLearnSummary::from_tables(
+        &table,
+        &last_attempt,
+        use_learned_keymap_table,
+        in_use,
+        validation_key,
+    )
+}
+
 /// `RuntimeTableCache` の取得口（`#[cfg(windows)]`。ファイルのスタンプ・読込を殻で束ねる）。
 #[cfg(windows)]
 pub trait RuntimeTableCacheShellExt {
@@ -223,6 +248,66 @@ mod tests {
     };
 
     const NS: FingerprintProbe = FingerprintProbe::NotSupported;
+
+    fn learn_pcell(key: u16) -> awase_keymap_learn::persist::PersistedCell {
+        use awase_keymap_learn::model::{Disposition, KeyId, Outcome, Status};
+        let status = Status {
+            open: true,
+            mode: 0x09,
+            composing: false,
+        };
+        awase_keymap_learn::persist::PersistedCell {
+            status,
+            key: KeyId(key),
+            prediction: Some(Outcome {
+                status,
+                disp: Disposition::Kept,
+            }),
+        }
+    }
+
+    /// 実ファイルを読む経路（`bug_report_keymap_learn_summary`）: 学習表・退避ファイルの有無・破損が
+    /// `table_file`/`last_attempt_judgement`に区別されて出ること。
+    #[test]
+    fn keymap_learn_summary_reads_real_files() {
+        use awase_keymap_learn::judgement::{RejectedReason, TableJudgement};
+        use awase_keymap_learn::persist::PersistedTable;
+        let dir = std::env::temp_dir().join(format!("awase_from_paths_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let table_path = dir.join("keymap-learn-table.json");
+        let last_path = dir.join("keymap-learn-last-attempt.json");
+        let missing = dir.join("does-not-exist.json");
+
+        let table =
+            PersistedTable::new(vec![learn_pcell(1)]).with_judgement(TableJudgement::Accepted);
+        std::fs::write(&table_path, table.to_json().unwrap()).unwrap();
+        std::fs::write(&last_path, "{ not json").unwrap();
+
+        let s =
+            bug_report_keymap_learn_summary(Some(&table_path), Some(&last_path), true, false, None);
+        assert_eq!(s.table_file, "loaded");
+        assert_eq!(s.judgement.as_deref(), Some("Accepted"));
+        assert_eq!(s.last_attempt_judgement.as_deref(), Some("parse_error"));
+        assert_eq!(
+            s.bundled_diff, None,
+            "validation_keyが無ければ突き合わせない"
+        );
+
+        let s = bug_report_keymap_learn_summary(Some(&missing), Some(&missing), true, false, None);
+        assert_eq!(s.table_file, "not_learned");
+        assert_eq!(s.last_attempt_judgement.as_deref(), Some("not_found"));
+
+        let last = PersistedTable::new(vec![])
+            .with_judgement(TableJudgement::Rejected(RejectedReason::LowAccuracy));
+        std::fs::write(&last_path, last.to_json().unwrap()).unwrap();
+        let s = bug_report_keymap_learn_summary(None, Some(&last_path), true, false, None);
+        assert_eq!(s.table_file, "not_learned");
+        assert_eq!(
+            s.last_attempt_judgement.as_deref(),
+            Some("Rejected(LowAccuracy)")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// CI専用(`--ignored`、環境変数`KL_TABLE_PATH`): 実機の学習プロセスが書いた
     /// `keymap-learn-table.json`を実行時の採否判定(`load_runtime_table`)に通し、
