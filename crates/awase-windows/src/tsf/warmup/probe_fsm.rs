@@ -245,12 +245,6 @@ pub(crate) enum ProbeAction {
         escape_composition: bool,
         facts: LiteralDetectFacts,
     },
-    /// Unicode モードで GJI write が観測されなかった。
-    ///
-    /// [`crate::tsf::warmup::unicode_literal_observer::UnicodeLiteralObserverFsm`] が emit する。
-    /// dispatcher は `DispatchResult::LearnedTsf` を返し、呼び出し元 (`advance_tsf_probe`) が
-    /// フォーカス中クラスを `InjectionModeStore` に学習し injection_mode を Tsf に昇格させる。
-    UpgradeToTsf,
     /// `DetectionResult::CompositionConfirmed`（非 partial）を確認した。
     ///
     /// dispatcher は必ず `consecutive_count`（`RawTsfLiteralRecovery` 連続発火数）を

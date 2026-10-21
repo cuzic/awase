@@ -63,7 +63,6 @@ pub struct ProbeTickFacts {
     pub state_changed: bool,
     pub needs_composition_reset: bool,
     pub has_gji_response: bool,
-    pub learned_tsf: bool,
     pub completed: bool,
     pub terminal_timer: bool,
     pub is_first_tick: bool,
@@ -75,7 +74,6 @@ impl ProbeTickFacts {
         self.state_changed
             || self.needs_composition_reset
             || self.has_gji_response
-            || self.learned_tsf
             || self.completed
             || self.terminal_timer
             || self.is_first_tick
@@ -314,11 +312,6 @@ mod tests {
         .is_notable());
         assert!(ProbeTickFacts {
             has_gji_response: true,
-            ..ProbeTickFacts::default()
-        }
-        .is_notable());
-        assert!(ProbeTickFacts {
-            learned_tsf: true,
             ..ProbeTickFacts::default()
         }
         .is_notable());

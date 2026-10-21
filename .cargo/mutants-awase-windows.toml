@@ -45,7 +45,6 @@ examine_globs = [
     "crates/awase-windows/src/tsf/warmup/probe_coro_state.rs",
     "crates/awase-windows/src/tsf/warmup/probe_fsm.rs",
     "crates/awase-windows/src/tsf/warmup/tickable_fsm.rs",
-    "crates/awase-windows/src/tsf/warmup/unicode_literal_observer.rs",
     "crates/awase-windows/src/tsf/warmup/warmup_strategy.rs",
 ]
 

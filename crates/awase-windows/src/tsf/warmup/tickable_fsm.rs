@@ -12,7 +12,6 @@
 //! | `LiteralDetectFsm` | `literal_detect_fsm.rs` | warm パスの post-transmit composition 確認（`LiteralDetectCore` ラッパー） | なし（Core のみ） |
 //! | `UnicodeColdWarmupFsm` | `unicode_cold_warmup_fsm.rs` | Unicode long-cold の deferred chars 送信（手書き FSM） | `push_deferred_unicode_chars` |
 //! | `MozcComposeCheckFsm` | `mozc_compose_check_fsm.rs` | Mozc の最初の送信の後、共有メモリの `phase` で入力中の文字ができたかを確認し、できなければリテラルとして回収（ADR-270） | なし（Core のみ） |
-//! | `UnicodeLiteralObserverFsm` | `unicode_literal_observer.rs` | Unicode 送信後の GJI write 観測（事後 Tsf 昇格） | なし |
 //!
 //! `Core`（`tick` / `cold_seq_hint`）は全実装型が実装する。上表は core 以外に
 //! オーバーライドするメソッドのみを列挙する（デフォルト no-op を使うため）。

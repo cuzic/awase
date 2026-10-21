@@ -327,18 +327,6 @@ impl FocusTracker {
         self.imm_learning
             .clear_pending_unavailable(process_name, class_name);
     }
-
-    // ── Injection モード学習 ────────────────────────────────────────────────
-
-    /// class_name が Tsf モード必要と学習済みかどうか。
-    pub(crate) fn has_learned_injection_mode_tsf(&self, class_name: &str) -> bool {
-        self.injection_mode_store.has_tsf(class_name)
-    }
-
-    /// GJI write 観測で判明した「Tsf 必要」クラスを永続化する（事後昇格）。
-    pub(crate) fn learn_injection_mode_tsf(&mut self, class_name: String) {
-        self.injection_mode_store.learn_tsf(class_name);
-    }
 }
 
 #[cfg(test)]

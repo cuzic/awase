@@ -3067,13 +3067,7 @@ impl Runtime {
 
     /// VK/TSF の romaji 送信直前に OS のかな入力ロックを読む。
     fn kp_stage_kana_lock_warn(&mut self, decision: &awase::engine::Decision) {
-        // 生VK出力に影響する injection_mode は「Unicode 以外」という否定形
-        // イディオムで表現する（`output/mod.rs` 等の既存箇所と同じ）。肯定形の
-        // 許可リストだと、将来 Vk/Tsf 以外の生VK出力を伴う InjectionMode が
-        // 増えたときにこのゲートだけ黙って除外されうる。
-        if self.platform.output.injection_mode == crate::output::InjectionMode::Unicode
-            || !decision_contains_romaji_send(decision)
-        {
+        if !decision_contains_romaji_send(decision) {
             return;
         }
 

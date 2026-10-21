@@ -287,35 +287,26 @@ fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::T
 
 // ── InjectionModeStore ────────────────────────────────────────────────────────
 
-/// 事後昇格学習ストア：GJI write 観測によって「Tsf モードが必要」と判明した class_name を永続化する。
+/// 事後昇格学習ストア（読み取り専用）。
 ///
-/// `cache.toml` の `[injection_mode]` セクションに `class_name = "tsf"` の形式で保存する。
+/// `cache.toml` の `[injection_mode]` セクション（`class_name = "tsf"` の形式）に既に学習済みの
+/// class_name を読む。事後昇格の書き込み側は ADR-276 で撤去した（既存の利用者の学習結果を壊さないため読み取りは残す）。
+///
 /// `ForceOverrides::injection_hint()` が未マッチのとき、このストアを参照して `ForceTsf` を返す。
 #[derive(Debug)]
 pub struct InjectionModeStore {
     tsf_classes: std::collections::HashSet<String>,
-    base_dir: std::path::PathBuf,
 }
 
 impl InjectionModeStore {
-    pub(crate) fn new(base_dir: std::path::PathBuf) -> Self {
-        let tsf_classes = Self::load(&base_dir);
-        Self {
-            tsf_classes,
-            base_dir,
-        }
+    pub(crate) fn new(base_dir: &std::path::Path) -> Self {
+        let tsf_classes = Self::load(base_dir);
+        Self { tsf_classes }
     }
 
     /// class_name が Tsf モード必要と学習済みかどうか。
     pub(crate) fn has_tsf(&self, class_name: &str) -> bool {
         self.tsf_classes.contains(class_name)
-    }
-
-    /// class_name を Tsf 必要としてキャッシュに登録し永続化する（冪等）。
-    pub(crate) fn learn_tsf(&mut self, class_name: String) {
-        if self.tsf_classes.insert(class_name) {
-            self.save();
-        }
     }
 
     fn load(base_dir: &std::path::Path) -> std::collections::HashSet<String> {
@@ -343,18 +334,6 @@ impl InjectionModeStore {
             );
         }
         classes
-    }
-
-    fn save(&self) {
-        let mut section = toml::Table::new();
-        for class_name in &self.tsf_classes {
-            section.insert(class_name.clone(), toml::Value::String("tsf".to_string()));
-        }
-        let _ = save_section(&self.base_dir, "injection_mode", section);
-        tracing::debug!(
-            "Saved injection mode cache: {} TSF classes",
-            self.tsf_classes.len()
-        );
     }
 }
 

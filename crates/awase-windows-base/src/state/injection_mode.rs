@@ -11,9 +11,7 @@
 /// 出力注入モード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InjectionMode {
-    /// Unicode 直接注入（Win32/UWP デフォルト）
-    Unicode,
-    /// VK Batched 注入（Chrome/Edge/Electron — IME composition 経由）
+    /// VK Batched 注入（Win32/UWP/Chrome/Edge/Electron — IME composition 経由。既定、ADR-276）
     Vk,
     /// VK Sequential 注入（WezTerm — TSF 直結アプリ向け）
     Tsf,

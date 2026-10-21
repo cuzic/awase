@@ -68,7 +68,6 @@ pub(crate) enum StageEndReason {
     ProbeDone,
     GateBypass,
     NoResolvableVk,
-    UpgradedToTsf,
 }
 
 // ── PendingInput ─────────────────────────────────────────────────────────────
@@ -325,7 +324,7 @@ impl GjiFsm {
             state: GjiState::OffCold,
             epoch: FocusEpoch(0),
             next_probe_id: 0,
-            injection_mode: InjectionMode::Unicode,
+            injection_mode: InjectionMode::Vk,
         }
     }
 
@@ -1023,16 +1022,10 @@ impl TimedStateMachine for GjiFsm {
 ///
 /// - `Tsf`（WezTerm 等）: `LONG_IDLE_MS`（10 s）
 /// - `Vk`（Chrome/Edge 等）: `CHROME_LONG_IDLE_MS`（5 s）
-/// - `Unicode`（Win32 等）: `LONG_IDLE_MS`（保守的に長めに設定）
-// Tsf と Unicode がたまたま同じ値 (tuning::LONG_IDLE_MS) を使っているが、これは
-// injection mode ごとに個別チューニングされるテーブルであり、将来一方だけ値が
-// 変わる可能性があるため意図的に統合しない。
-#[allow(clippy::match_same_arms)]
 pub(crate) fn long_idle_ms_for(mode: InjectionMode) -> u64 {
     match mode {
         InjectionMode::Tsf => tuning::LONG_IDLE_MS,
         InjectionMode::Vk => tuning::CHROME_LONG_IDLE_MS,
-        InjectionMode::Unicode => tuning::LONG_IDLE_MS,
     }
 }
 
@@ -2659,10 +2652,10 @@ mod tests {
         fsm.on_event(GjiEvent::StartComposition);
         assert!(matches!(fsm.state(), GjiState::OnComposing { .. }));
         fsm.on_event(GjiEvent::Reopen {
-            injection_mode: InjectionMode::Unicode,
+            injection_mode: InjectionMode::Tsf,
             gji_idle_ms: 0,
         });
-        assert_eq!(fsm.injection_mode, InjectionMode::Unicode);
+        assert_eq!(fsm.injection_mode, InjectionMode::Tsf);
     }
 
     #[test]

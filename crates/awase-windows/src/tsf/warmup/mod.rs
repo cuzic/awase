@@ -22,7 +22,6 @@
 //! - [`literal_detect_fsm`]     — LiteralDetectCore/Fsm（literal 検出 単一所在地）
 //! - [`mozc_compose_check_fsm`] — MozcComposeCheckFsm（Mozc の最初の送信の後、入力中の文字ができたかを共有メモリで確認。ADR-270）
 //! - [`unicode_cold_warmup_fsm`]— UnicodeColdWarmupFsm（Unicode long-cold deferred）
-//! - [`unicode_literal_observer`]— UnicodeLiteralObserverFsm（GJI write 観測 → Tsf 昇格）
 //! - [`cold_warmup`]            — ColdWarmupSequence（`run_start` 単一経路、事前待機なし）
 //! - [`warmup_strategy`]        — ImeWarmupStrategy トレイト, MsImeStrategy
 //!
@@ -39,5 +38,4 @@ pub(crate) mod ms_ime_ready_coro;
 pub(crate) mod probe_coro_state;
 pub(crate) mod probe_fsm;
 pub(crate) mod tickable_fsm;
-pub(crate) mod unicode_literal_observer;
 pub(crate) mod warmup_strategy;

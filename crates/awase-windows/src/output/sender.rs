@@ -16,21 +16,8 @@ pub(crate) trait InjectionSender {
     fn mode_label(&self) -> &'static str;
 }
 
-pub(crate) struct UnicodeSender<'a>(pub &'a super::Output);
 pub(crate) struct VkSender<'a>(pub &'a super::Output);
 pub(crate) struct TsfSender<'a>(pub &'a super::Output);
-
-impl InjectionSender for UnicodeSender<'_> {
-    fn send_char(&self, ch: char) {
-        self.0.send_unicode_char(ch);
-    }
-    fn send_romaji(&self, romaji: &str) {
-        self.0.send_romaji_as_unicode(romaji);
-    }
-    fn mode_label(&self) -> &'static str {
-        "Unicode"
-    }
-}
 
 impl InjectionSender for VkSender<'_> {
     fn send_char(&self, ch: char) {
@@ -81,13 +68,8 @@ impl<'a> OutputSession<'a> {
 
     pub(crate) fn sender(&self) -> Box<dyn InjectionSender + '_> {
         match self.mode {
-            InjectionMode::Unicode => Box::new(UnicodeSender(self.output)),
             InjectionMode::Vk => Box::new(VkSender(self.output)),
             InjectionMode::Tsf => Box::new(TsfSender(self.output)),
         }
-    }
-
-    pub(crate) fn is_vk_mode(&self) -> bool {
-        self.mode != InjectionMode::Unicode
     }
 }

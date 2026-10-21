@@ -27,7 +27,7 @@ pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 
 /// 公開ヘルパー: ASCII → VK 変換（`platform.rs` の dispatcher 用）。
 pub(crate) use crate::vk::ascii_to_vk as resolve_ascii_to_vk;
-/// SendInput / Unicode / VK 送信コンポーネント。
+/// SendInput / VK 送信コンポーネント。
 pub(crate) use key_injector::{KeyInjector, VkMarker};
 /// 公開ヘルパー: TSF 送信パイプライン（`platform.rs` の dispatcher 用）。
 pub(crate) use vk_send::TsfSendPipeline;
@@ -61,7 +61,7 @@ pub(crate) fn fmt_ms(ms: u64) -> String {
 ///
 /// キー注入の低レベル操作は [`KeyInjector`] に委譲する Facade。
 pub struct Output {
-    /// SendInput / Unicode / VK 送信コンポーネント。
+    /// SendInput / VK 送信コンポーネント。
     ///
     /// `kana_table`・`symbol_to_vk`・`unicode_cold_defer` 等を内包し、
     /// 低レベルのキー注入操作を一括して管理する。
@@ -164,12 +164,6 @@ pub struct Output {
     /// 中断し、IMC write すら行わない（フォーカスが既に別の対象へ移っている
     /// 可能性があるため、無関係な書き込みもしない）。
     pub(crate) shift_conv_guard_gen: std::cell::Cell<crate::state::focus_gen::ShiftConvGuardGen>,
-    /// Unicode 送信後に GJI write 観測を行うフラグ。
-    ///
-    /// Platform::send_keys が Unicode モード + 未学習クラスのときにセットし、
-    /// send_keys 内の `KeyAction::Romaji` 処理で `UnicodeLiteralObserverFsm` をインストールする。
-    /// フラグは最初の Romaji 送信時に消費される（swap false）。
-    observe_unicode_literal: std::sync::atomic::AtomicBool,
     /// `ConvModeAuthority::AwaseOwned` のときだけ true。
     ///
     /// `send_eager_tsf_warmup` / `ImmSetConversionStatus` 等の conv mutation を一括ガードする。
@@ -259,9 +253,6 @@ pub(crate) struct StepProbeResult {
     /// `ProbeIo::mark_cold_raw_tsf` が呼ばれたとき true になる。
     /// `advance_tsf_probe` が `gji_on_composition_reset` を呼ぶために使う。
     pub needs_gji_composition_reset: bool,
-    /// `UnicodeLiteralObserverFsm` が GJI write なしと判断したとき true になる。
-    /// `advance_tsf_probe` がフォーカス中クラスを Tsf に昇格する。
-    pub learned_tsf: bool,
     pub completed_cold_seq: Option<u64>,
     pub literal_detect: crate::tsf::literal_facts::LiteralDetectTrace,
 }
@@ -293,7 +284,7 @@ impl Output {
             composition: crate::tsf::probe::CompositionState::new(),
             warmup_coord: TsfWarmupCoordinator::new(),
             tsf_gate: crate::tsf::TsfGate::new(),
-            injection_mode: InjectionMode::Unicode,
+            injection_mode: InjectionMode::Vk,
             conv_mode: crate::state::ConvModeMgr::default(),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(crate::state::focus_gen::FocusGen::INITIAL),
@@ -307,7 +298,6 @@ impl Output {
             shift_conv_guard_gen: std::cell::Cell::new(
                 crate::state::focus_gen::ShiftConvGuardGen::INITIAL,
             ),
-            observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
             conv_mutation_allowed: std::cell::Cell::new(false),
             runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
             pending_drain_before_send_flush: std::cell::Cell::new(0),
@@ -336,16 +326,6 @@ impl Output {
     pub(crate) fn set_conv_mutation_allowed(&self, allowed: bool) {
         self.conv_mutation_allowed.set(allowed);
     }
-
-    /// 次の Unicode モード Romaji 送信後に GJI write 観測を行うようリクエストする。
-    ///
-    /// `Platform::send_keys` が Unicode モード + 未学習クラスのときに呼ぶ。
-    pub(crate) fn request_unicode_observation(&self) {
-        self.observe_unicode_literal
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    // ── Unicode cold-start warmup ────────────────────────────────────────────
 
     /// フォーカス変更時に Runtime から呼ばれ、注入モードを更新する。
     pub(crate) const fn update_injection_mode(&mut self, mode: InjectionMode) {
@@ -727,12 +707,8 @@ impl Output {
     /// アクション列を順に実行する
     ///
     /// 注入モードは `resolve_injection_mode()` で決定:
-    /// - Unicode: Win32/UWP デフォルト。Unicode 直接注入で IME をバイパス。
-    /// - Vk: Chrome/Edge/Electron。Batched VK で IME composition。
+    /// - Vk: Win32/UWP/Chrome/Edge/Electron（既定、ADR-276）。Batched VK で IME composition。
     /// - Tsf: WezTerm 等。Sequential VK で TSF/IME に composition させる。
-    // 注入モード(Unicode/Vk/Tsf)ごとの分岐が本質的に多いディスパッチャ。分割は挙動変更
-    // リスクが高いため、複雑度警告のみ抑制する。
-    #[expect(clippy::cognitive_complexity)]
     pub fn send_keys(&self, actions: &[KeyAction]) {
         // モード解決 + OutputActiveGuard 取得をセッションオブジェクトに委譲
         let session = OutputSession::begin(self);
@@ -780,32 +756,6 @@ impl Output {
                 KeyAction::Romaji(s) => {
                     tracing::debug!("  → Romaji(\"{s}\") via {}", sender.mode_label());
                     sender.send_romaji(s);
-                    // Unicode モードで未学習クラスの場合、GJI write を観測して事後昇格を判断する。
-                    // observe_unicode_literal フラグは Platform が request_unicode_observation() でセット。
-                    // 最初の Romaji 送信時に 1 回だけ消費する（複数文字を 1 回の send_keys で送る場合も 1 度のみ）。
-                    if self
-                        .observe_unicode_literal
-                        .swap(false, std::sync::atomic::Ordering::Relaxed)
-                        && self.injection_mode == InjectionMode::Unicode
-                        && !self.warmup_coord.has_pending_tsf()
-                    {
-                        use crate::tsf::ime_mode_fsm::ImeModeState;
-                        let ime_state = self.ime_mode_fsm.borrow().state();
-                        if matches!(ime_state, ImeModeState::Hiragana | ImeModeState::Katakana) {
-                            let baseline = crate::tsf::observer::gji_write_bytes();
-                            let cold_seq = self.composition.cold_start_count();
-                            tracing::debug!(
-                                "[unicode-obs] cold={cold_seq} Unicode Romaji 送信後に GJI write 観測開始 \
-                                (baseline={baseline})",
-                                cold_seq = cold_seq.value(),
-                            );
-                            self.install_pending_tsf(Box::new(
-                                crate::tsf::warmup::unicode_literal_observer::UnicodeLiteralObserverFsm::new(
-                                    baseline, cold_seq,
-                                ),
-                            ));
-                        }
-                    }
                 }
                 KeyAction::KeySequence(s) => {
                     tracing::debug!("  → KeySequence(\"{s}\") via {}", sender.mode_label());
@@ -844,11 +794,9 @@ impl Output {
             }
         }
 
-        // VK/TSF モードで出力した場合、直後の IME ポーリングをガードするため
+        // VK/TSF モードで出力した直後の IME ポーリングをガードするため
         // タイムスタンプを記録する（母音落ち「て→tえ」防止）。
-        if session.is_vk_mode() {
-            Self::mark_vk_output();
-        }
+        Self::mark_vk_output();
 
         // executor が「output in-flight」判定に使う送信時刻を記録する。
         self.mark_send();
@@ -1065,7 +1013,6 @@ impl Output {
                 },
                 gji_response: None,
                 needs_gji_composition_reset: false,
-                learned_tsf: false,
                 completed_cold_seq: None,
                 literal_detect: crate::tsf::literal_facts::LiteralDetectTrace::default(),
             };
@@ -1091,14 +1038,12 @@ impl Output {
                     },
                     gji_response: None,
                     needs_gji_composition_reset,
-                    learned_tsf: false,
                     completed_cold_seq: None,
                     literal_detect,
                 }
             }
             probe_io::DispatchResult::Ended(end) => {
                 // `machine` はここで drop される（restore しない）＝段の終わり。
-                let learned_tsf = end.reason == crate::tsf::gji_fsm::StageEndReason::UpgradedToTsf;
                 drop(machine);
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
                 // ADR-270: 段末の deferred 解放（`finish_probe_stage`）より前に、Mozc の確認を張る。張った後は
@@ -1118,7 +1063,6 @@ impl Output {
                     },
                     gji_response,
                     needs_gji_composition_reset,
-                    learned_tsf,
                     completed_cold_seq: Some(cold_seq),
                     literal_detect,
                 }
@@ -1303,7 +1247,6 @@ impl awase::platform::CompositionOutput for Output {
         match self.injection_mode {
             InjectionMode::Vk => self.send_romaji_batched(romaji),
             InjectionMode::Tsf => self.send_romaji_as_tsf(romaji),
-            InjectionMode::Unicode => self.send_romaji_as_unicode(romaji),
         }
     }
 

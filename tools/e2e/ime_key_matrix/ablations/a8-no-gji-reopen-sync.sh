@@ -5,8 +5,8 @@
 python3 - <<'PY'
 p1 = 'crates/awase-ime-core/src/state/gji_direct_mechanism.rs'
 s = open(p1, encoding='utf8').read()
-old1 = "    send_has_romaji\n        && !injection_is_unicode"
-new1 = "    false\n        && send_has_romaji\n        && !injection_is_unicode"
+old1 = "    send_has_romaji && strategy_is_gji_fsm"
+new1 = "    false && send_has_romaji && strategy_is_gji_fsm"
 assert s.count(old1) == 1, 'needs_belief_sync_on の本体が見つからない'
 s = s.replace(old1, new1, 1)
 old2 = ") -> Option<GjiFsmSync> {\n    if candidate_visible {"
