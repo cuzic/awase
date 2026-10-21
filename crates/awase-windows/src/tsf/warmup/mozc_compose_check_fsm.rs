@@ -126,6 +126,31 @@ fn facts(verdict: LiteralVerdict) -> LiteralDetectFacts {
     }
 }
 
+/// 確認の `COMPOSE_SETTLE_RECHECK_MS` 後に `key_seq` を読み直してログに出す（観測専用。出力は止めない）。非 Windows では何もしない。
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn spawn_settled_recheck(
+    cold: u64,
+    thread_id: u32,
+    process_id: u32,
+    before: u32,
+    key_seq_at_confirm: u32,
+    sent: usize,
+) {
+    #[cfg(windows)]
+    win32_async::spawn_local(async move {
+        win32_async::sleep_ms(COMPOSE_SETTLE_RECHECK_MS).await;
+        if let ComposeReading::Block(b) = crate::tsf::read_mozc_compose(thread_id, process_id) {
+            // `settled` が送った文字数より多いのは、読み直すまでに次のキーが送られたとき（比較に使えない）。
+            tracing::info!(
+                "[mozc-compose] cold={cold} settled +{COMPOSE_SETTLE_RECHECK_MS}ms: sent {sent} chars, key_seq delta at confirm {}, settled {}, composition_key_seq {}",
+                key_seq_at_confirm.wrapping_sub(before),
+                b.key_seq.wrapping_sub(before),
+                b.composition_key_seq.wrapping_sub(before)
+            );
+        }
+    });
+}
+
 impl TickableFsm for MozcComposeCheckFsm {
     fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         let now_ms = crate::clock::current_tick_ms();
@@ -159,26 +184,14 @@ impl TickableFsm for MozcComposeCheckFsm {
                 // 確認は入力中の文字ができた時点（最短 16ms）で終わるので、2 打目がまだ数えられていないだけかもしれない
                 // （確認済み 21 回のうち 2 回が送った文字数より 1 少なかった、2026-10-21）。少し置いてもう一度読み、
                 // 足りないままか（本物の素通り）、揃うか（読む時点の競合）をログに残す。判断には使わない。
-                let cold = self.target.cold_seq.value();
-                let (thread_id, process_id) = (self.target.thread_id, self.target.process_id);
-                let (before, sent) = (
+                spawn_settled_recheck(
+                    self.target.cold_seq.value(),
+                    self.target.thread_id,
+                    self.target.process_id,
                     self.target.key_seq_before,
+                    key_seq,
                     compose_literal_backs(&self.target.romaji),
                 );
-                win32_async::spawn_local(async move {
-                    win32_async::sleep_ms(COMPOSE_SETTLE_RECHECK_MS).await;
-                    if let ComposeReading::Block(b) =
-                        crate::tsf::read_mozc_compose(thread_id, process_id)
-                    {
-                        // `settled` が送った文字数より多いのは、読み直すまでに次のキーが送られたとき（比較に使えない）。
-                        tracing::info!(
-                            "[mozc-compose] cold={cold} settled +{COMPOSE_SETTLE_RECHECK_MS}ms: sent {sent} chars, key_seq delta at confirm {}, settled {}, composition_key_seq {}",
-                            key_seq.wrapping_sub(before),
-                            b.key_seq.wrapping_sub(before),
-                            b.composition_key_seq.wrapping_sub(before)
-                        );
-                    }
-                });
             }
             ComposeVerdict::Literal => {
                 // 対象のスレッドが IME の同期呼び出し（Mozc サーバーの応答待ち）などで止まっていると、キーはまだ処理されて
