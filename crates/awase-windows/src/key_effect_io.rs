@@ -169,8 +169,8 @@ pub fn bug_report_keymap_learn_summary(
     let table = table_path.map_or(Err(RejectReason::NotFound), read_persisted_table);
     let last_attempt = last_attempt_path.map(read_persisted_table);
     BugReportKeymapLearnSummary::from_tables(
-        table,
-        last_attempt,
+        &table,
+        &last_attempt,
         use_learned_keymap_table,
         in_use,
         validation_key,

@@ -564,11 +564,11 @@ impl BugReportKeymapLearnSummary {
     /// `validation_key` は予測時に実際に使った `(preset, check_against_bundled)`。
     #[must_use]
     pub fn from_tables(
-        table: Result<
+        table: &Result<
             awase_keymap_learn::persist::PersistedTable,
             crate::state::key_effect_runtime::RejectReason,
         >,
-        last_attempt: Option<
+        last_attempt: &Option<
             Result<
                 awase_keymap_learn::persist::PersistedTable,
                 crate::state::key_effect_runtime::RejectReason,
@@ -586,8 +586,8 @@ impl BugReportKeymapLearnSummary {
             Some(ker::diff_against_bundled(&t.cells, preset))
         });
         Self::from_parts(
-            &table,
-            &last_attempt,
+            table,
+            last_attempt,
             use_learned_keymap_table,
             in_use,
             bundled_diff.as_ref(),
