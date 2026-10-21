@@ -153,7 +153,6 @@ async fn ms_ime_ready_coro_body(
             ProbeAction::Transmit {
                 cold_seq,
                 plan: TransmitPlan {
-                    used_eager_path: false,
                     needs_literal: false,
                     literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                 },

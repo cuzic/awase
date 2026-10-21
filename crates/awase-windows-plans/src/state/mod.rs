@@ -12,7 +12,7 @@
 
 pub use awase_ime_core::state::*;
 
-// FCIS F6b: `output/` の TSF 送信パイプライン（warm/cold・PendingGjiConfirm・LiteralDetect 設置）の判断の核（純粋）。
+// FCIS F6b: `output/` の TSF 送信パイプライン（warm/cold・LiteralDetect 設置）の判断の核（純粋）。
 // 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod warm_send_plan;

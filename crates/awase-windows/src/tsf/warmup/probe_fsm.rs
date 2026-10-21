@@ -69,9 +69,6 @@ use timed_fsm::coro::{yield_step, Channel, StepCoro};
 pub(crate) struct TsfEnvSnapshot {
     pub is_tsf_mode: bool,
     pub gji_active: bool,
-    /// GJI の I/O が証拠にならないと確定している（Mozc 系）か。`gji_active` の否定ではない
-    /// （本物の GJI で監視が一時的に未接続のときは偽）。BUG-208。
-    pub gji_evidence_absent: bool,
     /// この tick の時点の宛先の識別（focus 世代 + 前景窓）。段の途中で宛先の窓が変わったかを、
     /// `state::raw_recovery_plan::plan_raw_recovery` で判断するのに使う（ADR-270 の確認の FSM）。`None` = 採っていない。
     pub stage_origin_now: Option<crate::state::raw_recovery_plan::StageOrigin>,
@@ -82,9 +79,6 @@ pub(crate) struct TsfEnvSnapshot {
     /// `Output::confirm_gate_deadline_override_ms` の生値。`0` = 上書きなし。
     /// `MsImeReadyCoro` の期限判定に使う（ADR-084、BUG-49 追補2）。
     pub confirm_gate_deadline_override_ms: u64,
-    /// `TsfWarmupCoordinator` の deferred キューに現在何か積まれているか（覗き見、消費しない）。
-    /// `GjiWarmupCoro` の `decide_transmit_plan` eager path 判定に使う。
-    pub deferred_pending: bool,
     /// `crate::tsf::observer::gji_candidate_visible_now()` の生値。GJI candidate window が
     /// 現時点で可視かどうか（決定分岐から素の `AtomicBool` 読み取りを排除するため、
     /// `env` 経由の明示パラメータとして持つ。`.claude/rules/ime-belief-architecture.md`
@@ -119,8 +113,6 @@ pub(crate) struct ProbeObservations {
 /// `decide_transmit_plan` が確定した実行方針。dispatcher がそのまま実行する。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TransmitPlan {
-    /// Unicode TSF パス（true。かな直接送信）か VK ローマ字パス（false）か。
-    pub used_eager_path: bool,
     /// raw TSF literal の LiteralDetect フェーズを有効にするか。
     pub needs_literal: bool,
     /// LiteralDetect のタイムアウト期間（ms）。
@@ -131,16 +123,14 @@ pub(crate) struct TransmitPlan {
 ///
 /// `GjiWarmupCoro` 内から呼ばれるが、単独でテストも可能。副作用なし。
 pub(crate) fn decide_transmit_plan(
-    initial_used_eager: bool,
     obs: ProbeObservations,
     env: TsfEnvSnapshot,
-    deferred_empty: bool,
-    forces_prepend_f2: bool,
     is_long_cold: bool,
 ) -> TransmitPlan {
     // romaji バッチへの F2 直接同梱（第3の防御層）は DIAG_DISABLE_PROACTIVE_TSF_WARMUP を
     // 2026-07-19 に恒久化したことで撤去した。reactive な LiteralDetect のみに委ねる
     // （`docs/known-bugs.md` BUG-24 参照）。
+    // かな直接（Unicode）の eager 送信は ADR-276 で撤去した（常に VK ローマ字）。
 
     // nc_fired=false でも、confirm_key_tsf_hint（WezTerm 等で NameChange が発火しない
     // 既知ケース）かつ gji_settled（GJI が実際に I/O を返しており genuinely warm）の
@@ -149,21 +139,6 @@ pub(crate) fn decide_transmit_plan(
     // LiteralDetect が丸ごとスキップされる（BUG-40）。nc_fired 自体は書き換えない
     // （呼び出し元・`is_partial_literal` が生値として参照するため）。
     let nc_confirmed = obs.nc_fired || (obs.confirm_key_tsf_hint && obs.gji_settled);
-
-    // nc_confirmed=true: IME モード確認済み（Medium/Long cold かつ deferred なし → eager = Unicode path）。
-    // nc_confirmed=false + TSF mode: VK path 固定（unicode は GJI composition をバイパスし "nお" race が起きる）。
-    let used_eager_path = if nc_confirmed {
-        (initial_used_eager || forces_prepend_f2) && deferred_empty
-    } else if env.is_tsf_mode {
-        false
-    } else {
-        initial_used_eager || forces_prepend_f2
-    };
-    // BUG-208: unicode（かな直接）の eager 送信は「GJI が I/O で応答したか」で後から確認する前提の迂回路。
-    // GJI の I/O が証拠にならないと確定している IME（Mozc 系。ADR-269 D1 で監視を外す）では確認する手段が無く、
-    // かなが composition を経ずに確定されるので入力中の文字・変換候補ができない。その場合は使わない。
-    // 本物の GJI で監視が一時的に未接続なだけのとき（`gji_active` が偽）は従来どおり（`gji_evidence_absent` は偽）。
-    let used_eager_path = used_eager_path && !env.gji_evidence_absent;
 
     // NameChangeWait タイムアウトで IME 準備が未確認のまま transmit したケースを
     // LiteralDetect で回収する。F2 をバッチに含めない場合も IME が cold の可能性がある。
@@ -177,7 +152,6 @@ pub(crate) fn decide_transmit_plan(
     };
 
     TransmitPlan {
-        used_eager_path,
         needs_literal,
         literal_detect_ms,
     }
@@ -671,7 +645,6 @@ async fn tsf_probe_coro_body(
     // TSF 側 gji_coro_body の Phase 5b と共通実装（`run_per_vk_confirm`、2026-07-17 統合）。
     if needs_literal && env.literal_session_confirmed_gen != Some(cold_seq) {
         let plan = TransmitPlan {
-            used_eager_path: false,
             needs_literal: true,
             literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
         };
@@ -689,7 +662,6 @@ async fn tsf_probe_coro_body(
         vec![ProbeAction::Transmit {
             cold_seq,
             plan: TransmitPlan {
-                used_eager_path: false,
                 needs_literal,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
@@ -761,7 +733,7 @@ mod tests {
 
     #[test]
     fn decide_plan_nc_not_fired_tsf_not_long_idle_keeps_literal() {
-        // nc_fired=false + TSF mode + Short cold (forces_prepend_f2=false):
+        // nc_fired=false + TSF mode + Short cold:
         // IME 準備完了が未確認のため LiteralDetect は有効にして回収する。
         let obs = ProbeObservations {
             nc_fired: false,
@@ -773,7 +745,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, env, true, false, false);
+        let plan = decide_transmit_plan(obs, env, false);
 
         assert!(
             plan.needs_literal,
@@ -783,7 +755,7 @@ mod tests {
 
     #[test]
     fn decide_plan_nc_not_fired_tsf_long_idle_keeps_literal() {
-        // Long cold (forces_prepend_f2=true): LiteralDetect が有効（GJI 応答未確認）。
+        // Long cold: LiteralDetect が有効（GJI 応答未確認）。
         let obs = ProbeObservations {
             nc_fired: false,
             ..Default::default()
@@ -794,7 +766,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, env, true, true, true);
+        let plan = decide_transmit_plan(obs, env, true);
 
         assert!(plan.needs_literal, "tsf mode: LiteralDetect 有効");
     }
@@ -821,7 +793,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, env, true, false, false);
+        let plan = decide_transmit_plan(obs, env, false);
 
         assert!(
             !plan.needs_literal,
@@ -830,94 +802,8 @@ mod tests {
     }
 
     #[test]
-    fn decide_plan_with_gji_evidence_absent_never_uses_unicode_eager_path() {
-        // BUG-208: GJI の I/O が証拠にならないと確定している（gji_evidence_absent=true。Mozc 系）なら、
-        // どの組み合わせでも unicode（かな直接）の eager 送信にしない。かなが composition を経ずに確定されてしまう。
-        for nc_fired in [false, true] {
-            for is_tsf_mode in [false, true] {
-                for (initial_eager, forces_f2) in [(true, false), (false, true), (true, true)] {
-                    let obs = ProbeObservations {
-                        nc_fired,
-                        ..Default::default()
-                    };
-                    let env = TsfEnvSnapshot {
-                        is_tsf_mode,
-                        gji_active: false,
-                        gji_evidence_absent: true,
-                        ..Default::default()
-                    };
-                    let plan = decide_transmit_plan(initial_eager, obs, env, true, forces_f2, true);
-                    assert!(
-                        !plan.used_eager_path,
-                        "evidence_absent: nc_fired={nc_fired} tsf={is_tsf_mode} initial={initial_eager} f2={forces_f2}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn decide_plan_with_gji_evidence_still_uses_unicode_eager_path() {
-        // 対照: GJI の監視が健全なら従来どおり（nc_fired=true・Long cold・deferred なし → eager）。
-        let obs = ProbeObservations {
-            nc_fired: true,
-            ..Default::default()
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: true,
-            ..Default::default()
-        };
-        let plan = decide_transmit_plan(false, obs, env, true, true, true);
-        assert!(plan.used_eager_path, "GJI 観測あり: 従来どおり eager");
-    }
-
-    #[test]
-    fn decide_plan_gji_monitor_temporarily_down_keeps_unicode_eager_path() {
-        // BUG-208 のレビュー(M1): 本物の GJI で変換プロセスが未起動・再接続待ち（gji_active=false だが、
-        // Mozc 系と確定してはいない = gji_evidence_absent=false）のときは、従来どおり eager（リテラル化を避ける）。
-        // gji_active だけで eager を止めると、この最も cold な場面で LiteralDetect なしの VK 送信になって悪化する。
-        let obs = ProbeObservations {
-            nc_fired: true,
-            ..Default::default()
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: false,
-            gji_evidence_absent: false,
-            ..Default::default()
-        };
-        let plan = decide_transmit_plan(false, obs, env, true, true, true);
-        assert!(
-            plan.used_eager_path,
-            "監視が一時的に未接続の GJI: 従来どおり eager"
-        );
-    }
-
-    #[test]
-    fn decide_plan_nc_fired_with_deferred_vks_disables_eager_path() {
-        // nc_fired=true でも deferred_vks が存在する場合は unicode に戻さない（nお race 防止）。
-        let obs = ProbeObservations {
-            nc_fired: true,
-            ..Default::default()
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: false,
-            gji_active: false,
-            ..Default::default()
-        };
-
-        let plan = decide_transmit_plan(true, obs, env, false, false, false); // deferred_empty=false
-
-        assert!(
-            !plan.used_eager_path,
-            "deferred_vks あり: unicode TSF パスを使わない"
-        );
-    }
-
-    #[test]
     fn decide_plan_medium_cold_keeps_literal_on_ncwait_timeout() {
-        // Medium cold (forces_prepend_f2=true) + nc_fired=false → GJI 応答未確認のため
+        // Medium cold + nc_fired=false → GJI 応答未確認のため
         // LiteralDetect は有効なまま。
         let obs = ProbeObservations {
             nc_fired: false,
@@ -929,7 +815,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, env, true, true, false); // Medium cold
+        let plan = decide_transmit_plan(obs, env, false); // Medium cold
 
         assert!(plan.needs_literal, "GJI 応答未確認: LiteralDetect 有効");
     }
@@ -959,7 +845,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, env, true, false, false);
+        let plan = decide_transmit_plan(obs, env, false);
 
         assert!(
             plan.needs_literal,
@@ -983,7 +869,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, env, true, false, false);
+        let plan = decide_transmit_plan(obs, env, false);
 
         assert!(
             !plan.needs_literal,
@@ -1007,7 +893,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, env, true, false, false);
+        let plan = decide_transmit_plan(obs, env, false);
 
         assert!(!plan.needs_literal, "non-TSF: needs_literal は常に false");
     }

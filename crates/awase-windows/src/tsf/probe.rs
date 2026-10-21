@@ -77,12 +77,6 @@ pub struct CompositionState {
     last_send_ms: std::cell::Cell<u64>,
     /// Cold-start 発生回数カウンタ
     cold_start_count: std::cell::Cell<Generation>,
-    /// KEYEVENTF_UNICODE で文字を送信した時刻（ms）。0 = 未送信 / リセット済み。
-    ///
-    /// GJI probe が settled=false で完了した後 unicode fallback を使った際にセットされる。
-    /// `gji_last_io_ms() > last_unicode_transmit_ms` になれば GJI が応答したとみなし、
-    /// 次の warm パスは通常 VK sequential に戻る（`PendingGjiConfirm` 状態の SSOT）。
-    last_unicode_transmit_ms: std::cell::Cell<u64>,
     /// 最後に cold にマークされた理由
     last_cold_reason: std::cell::Cell<crate::tsf::cold_reason::ColdReason>,
     /// 最後に cold になった時点での idle 時間（ms）
@@ -103,7 +97,6 @@ impl CompositionState {
         Self {
             last_send_ms: std::cell::Cell::new(0),
             cold_start_count: std::cell::Cell::new(Generation::INITIAL),
-            last_unicode_transmit_ms: std::cell::Cell::new(0),
             last_cold_reason: std::cell::Cell::new(
                 crate::tsf::cold_reason::ColdReason::FocusChange,
             ),
@@ -135,7 +128,6 @@ impl CompositionState {
             }
             tracing::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         }
-        self.last_unicode_transmit_ms.set(0);
         self.last_cold_reason.set(reason);
         self.idle_ms_at_last_cold.set(idle_ms);
         // PassthroughConfirmKey/ReinjectConfirmKey は物理 Space/Enter/Escape が
@@ -153,7 +145,6 @@ impl CompositionState {
     /// フォーカスウィンドウが変わったことを通知する。
     pub fn on_focus_changed(&self) {
         let idle_ms = self.ms_since_last_send();
-        self.last_unicode_transmit_ms.set(0);
         // FocusChange で last_cold_reason を更新し、F2NonTsf などの前回理由が
         // フォーカス遷移後も残り続けて誤判定される不具合を防ぐ。
         self.last_cold_reason
@@ -226,17 +217,6 @@ impl CompositionState {
     /// でも「連続失敗」の連続性が切れるため、ここでもリセットが必要。
     pub fn reset_consecutive_count(&self) {
         self.raw_tsf_literal_consecutive_count.set(0);
-    }
-
-    /// unicode 送信時刻を返す。0 = 未送信。
-    #[must_use]
-    pub const fn last_unicode_transmit_ms(&self) -> u64 {
-        self.last_unicode_transmit_ms.get()
-    }
-
-    /// unicode 送信時刻をセットする（`PendingGjiConfirm` 状態の開始）。
-    pub fn set_last_unicode_transmit_ms(&self, ms: u64) {
-        self.last_unicode_transmit_ms.set(ms);
     }
 }
 
@@ -998,20 +978,10 @@ mod tests {
 
     // ── CompositionState の状態(mutants で MISSED だった穴、ADR-272) ──
 
-    /// unicode 送信時刻・cold-start 回数の set / reset / increment。
+    /// cold-start 回数の increment。
     #[test]
-    fn composition_state_delegates_unicode_transmit_and_cold_start_count() {
+    fn composition_state_increments_cold_start_count() {
         let c = CompositionState::new();
-        assert_eq!(c.last_unicode_transmit_ms(), 0);
-        c.set_last_unicode_transmit_ms(4321);
-        assert_eq!(c.last_unicode_transmit_ms(), 4321);
-        c.on_focus_changed();
-        assert_eq!(c.last_unicode_transmit_ms(), 0);
-
-        c.set_last_unicode_transmit_ms(99);
-        c.mark_composition_cold(crate::tsf::cold_reason::ColdReason::SetOpenTrue);
-        assert_eq!(c.last_unicode_transmit_ms(), 0, "cold マークでリセット");
-
         let before = c.cold_start_count().value();
         let n = c.increment_cold_start_count();
         assert_eq!(n.value(), before + 1);
