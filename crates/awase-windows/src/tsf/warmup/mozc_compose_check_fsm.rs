@@ -144,9 +144,14 @@ impl TickableFsm for MozcComposeCheckFsm {
         match verdict {
             ComposeVerdict::Pending => {}
             ComposeVerdict::Confirmed => {
+                // 観測だけ（判断は変えない）。送った文字数より `key_seq` の進みが少なければ、先頭の文字を TIP が見ていない
+                // （例: 「dえ」のように 1 文字目だけ文書へ素通りし、2 文字目から入力中になった）疑いがある。
                 tracing::info!(
-                    "[mozc-compose] cold={} composition confirmed after {elapsed_ms}ms",
-                    self.target.cold_seq.value()
+                    "[mozc-compose] cold={} composition confirmed after {elapsed_ms}ms (sent {} chars, key_seq {}→{}, composition_key_seq {composition_key_seq})",
+                    self.target.cold_seq.value(),
+                    compose_literal_backs(&self.target.romaji),
+                    self.target.key_seq_before,
+                    key_seq
                 );
             }
             ComposeVerdict::Literal => {
