@@ -662,6 +662,59 @@ mod tests {
         }
     }
 
+    /// 「IMM で読めるか」の 3 述語は、本番で作られるプロファイルすべてで同じ値になる(ECRS DD3-C、2026-10-21)。
+    ///
+    /// - `can_use_imm32_cross_process`(書ける)と `can_read_imm32_open_status`(読める)は、**プロファイルだけで**全 4 値で同値。
+    /// - `cannot_verify_real_ime_state(class)` は `Standard` のときだけクラス名に依存する(`is_effectively_tsf_native`)が、
+    ///   本番でプロファイルを作る経路は `from_class_and_process`(`focus/current.rs`)と、学習による降格
+    ///   (`Standard` → 非 `Standard` へ動かすだけ。`focus/tracker.rs::apply_learned_imm_capability`)の 2 つで、
+    ///   `Standard` は「IMM32 不可クラスでも TSF ネイティブクラスでもない」ときしか出ない。したがって
+    ///   `Standard` では `cannot_verify` は常に偽、非 `Standard` では常に真で、`!can_use_imm32_cross_process` と一致する。
+    ///
+    /// クラス名は、IMM32 不可クラスの全部・TSF ネイティブクラスの全部・無関係な名前・空文字(`Default` の窓)を列挙する。
+    #[test]
+    fn imm_readability_predicates_agree_for_every_production_profile() {
+        let all_profiles = [
+            AppImeProfile::Standard,
+            AppImeProfile::Imm32Unavailable,
+            AppImeProfile::TsfNative,
+            AppImeProfile::InputRelay,
+        ];
+        for p in all_profiles {
+            assert_eq!(
+                p.can_read_imm32_open_status(),
+                p.can_use_imm32_cross_process(),
+                "{p:?}: 読める/書けるがプロファイルで分かれた"
+            );
+        }
+
+        let mut classes: Vec<&str> = IMM32_UNAVAILABLE_CLASSES.to_vec();
+        classes.extend([
+            "Windows.UI.Core.CoreWindow",
+            "XamlExplorerHostIslandWindow",
+            "Windows.UI.Input.InputSite.WindowClass",
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "org.wezfurlong.wezterm",
+            "Notepad",
+            "Edit",
+            "",
+        ]);
+        let relay_sets: [Vec<String>; 2] = [vec![], vec!["relay.exe".to_string()]];
+        for class in &classes {
+            for relay_apps in &relay_sets {
+                for process in ["relay.exe", "app.exe"] {
+                    let profile = AppImeProfile::from_class_and_process(class, process, relay_apps);
+                    assert_eq!(
+                        profile.cannot_verify_real_ime_state(class),
+                        !profile.can_use_imm32_cross_process(),
+                        "{profile:?} class={class:?} process={process:?} relay={relay_apps:?}: \
+                         読み戻せない/書けないがずれた"
+                    );
+                }
+            }
+        }
+    }
+
     /// 4バケットそれぞれを代表するクラス名。
     /// - 両方該当: `CASCADIA_HOSTING_WINDOW_CLASS`（実機バグの震源、回帰テスト参照）
     /// - unavailable のみ: `Chrome_WidgetWin_1`（`is_tsf_native_window` には非該当）
