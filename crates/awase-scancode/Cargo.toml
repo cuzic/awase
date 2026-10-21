@@ -1,0 +1,16 @@
+[package]
+name = "awase-scancode"
+version = "2.2.0"
+edition = "2021"
+description = "Windows Scancode Map（キー入れ替え）の判断・編集モデル・表示文言・適用の核（OS 非依存、ADR-230・ADR-274）。外部の依存を持たない"
+publish = false
+
+[lib]
+name = "awase_scancode"
+path = "src/lib.rs"
+
+# この crate は windows crate にも他の crate にも依存しない(`core_crates_do_not_depend_on_windows` が固定する)。
+[dependencies]
+
+[lints]
+workspace = true

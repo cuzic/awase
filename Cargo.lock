@@ -538,6 +538,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "awase-scancode"
+version = "2.2.0"
+
+[[package]]
 name = "awase-settings"
 version = "2.2.0"
 dependencies = [
@@ -585,6 +589,7 @@ dependencies = [
  "awase-hook-core",
  "awase-keymap-learn",
  "awase-replay",
+ "awase-scancode",
  "awase-vkmap",
  "awase-windows-core",
  "awase-windows-plans",

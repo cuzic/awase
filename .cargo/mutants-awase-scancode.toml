@@ -1,0 +1,18 @@
+# awase-scancode 用スコープ限定設定（ADR-274 段階 1: Scancode Map の判断・編集モデル・適用の核を別 crate にした）
+#
+# 使い方:
+#   cargo mutants -p awase-scancode --config .cargo/mutants-awase-scancode.toml
+#
+# 外部の依存を持たず、全ファイルが Linux でもコンパイルされるので、`#[cfg(windows)]` による false MISSED の心配は無い
+# （レジストリ I/O は殻の `awase-windows` の `scancode_registry.rs`）。
+# `test_package` にはこの crate より上の crate〔殻〕をすべて入れる（殻の統合テスト `scancode_vm_scenarios` でしか
+# 捕まらない変異が false MISSED にならないように。`.cargo/mutants-awase-hook-core.toml` と同じ理由）。
+test_package = ["awase-scancode", "awase-windows"]
+
+examine_globs = [
+    "crates/awase-scancode/src/scancode_apply.rs",
+    "crates/awase-scancode/src/scancode_diagram.rs",
+    "crates/awase-scancode/src/scancode_editor.rs",
+    "crates/awase-scancode/src/scancode_map.rs",
+    "crates/awase-scancode/src/scancode_pairs.rs",
+]

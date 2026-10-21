@@ -8,20 +8,22 @@ name: scancode-vm-verify
 on:
   pull_request:
     paths:
-      - crates/awase-windows/src/scancode_map.rs
-      - crates/awase-windows/src/scancode_pairs.rs
-      - crates/awase-windows/src/scancode_apply.rs
-      - crates/awase-windows/src/scancode_editor.rs
+      - crates/awase-scancode/src/scancode_map.rs
+      - crates/awase-scancode/src/scancode_pairs.rs
+      - crates/awase-scancode/src/scancode_apply.rs
+      - crates/awase-scancode/src/scancode_editor.rs
+      - crates/awase-windows/src/scancode_registry.rs
       - crates/awase-settings/src/scancode_map_admin.rs
       - tools/scancode-vm/**
       - .github/workflows/scancode-vm-verify.yml
   push:
     branches: [develop]
     paths:
-      - crates/awase-windows/src/scancode_map.rs
-      - crates/awase-windows/src/scancode_pairs.rs
-      - crates/awase-windows/src/scancode_apply.rs
-      - crates/awase-windows/src/scancode_editor.rs
+      - crates/awase-scancode/src/scancode_map.rs
+      - crates/awase-scancode/src/scancode_pairs.rs
+      - crates/awase-scancode/src/scancode_apply.rs
+      - crates/awase-scancode/src/scancode_editor.rs
+      - crates/awase-windows/src/scancode_registry.rs
       - crates/awase-settings/src/scancode_map_admin.rs
       - tools/scancode-vm/**
       - .github/workflows/scancode-vm-verify.yml
