@@ -12,11 +12,12 @@ path = "src/lib.rs"
 # この crate は windows crate に依存しない(`crate_does_not_depend_on_windows` が固定する)。
 [dependencies]
 awase = { path = "../.." }
+# 土台（定数・仮想キー・キーマップ表・世代・時計・IME 種別・アプリ分類。ADR-274 段階 2）
+awase-windows-base = { path = "../awase-windows-base" }
 awase-gji-config = { path = "../awase-gji-config" }
 awase-vkmap = { path = "../awase-vkmap" }
 awase-keymap-learn = { path = "../awase-keymap-learn" }
 measured-macro = { path = "../measured-macro" }
-actuation-choke-point-macro = { path = "../actuation-choke-point-macro" }
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
@@ -26,9 +27,11 @@ quanta = "0.12"
 
 [features]
 # 殻の crate（`awase-windows`）のテストが使う、テスト専用の口（`set_desired_open_for_test` など）。本番では有効にしない。
-testing = []
+testing = ["awase-windows-base/testing"]
 
 [dev-dependencies]
+# core 自身のテスト（`tsf/literal_facts.rs` ほか）が土台の `FocusGen::new` を使う（`cfg(feature = "testing")`）。
+awase-windows-base = { path = "../awase-windows-base", features = ["testing"] }
 proptest = "1.11.0"
 # journal 再生 fixture のハーネス(ADR-229)。非公開の dev 専用 crate。
 awase-replay = { path = "../awase-replay" }

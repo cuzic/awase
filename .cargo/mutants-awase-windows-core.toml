@@ -27,7 +27,6 @@ examine_globs = [
     "crates/awase-windows-core/src/state/eisu_recovery.rs",
     "crates/awase-windows-core/src/state/force_guard.rs",
     "crates/awase-windows-core/src/state/belief.rs",
-    "crates/awase-windows-core/src/state/hub_clock.rs",
     "crates/awase-windows-core/src/state/app_ime_policy.rs",
     "crates/awase-windows-core/src/state/ime_event.rs",
     "crates/awase-windows-core/src/state/input_barrier.rs",
@@ -39,15 +38,12 @@ examine_globs = [
     "crates/awase-windows-core/src/state/ime_set_open_plan.rs",
     "crates/awase-windows-core/src/state/applied_mirror_plan.rs",
     "crates/awase-windows-core/src/state/late_keymap_plan.rs",
-    "crates/awase-windows-core/src/state/focus_gen.rs",
     "crates/awase-windows-core/src/state/resume_observation.rs",
     "crates/awase-windows-core/src/state/indicator_glyph.rs",
     "crates/awase-windows-core/src/state/indicator_glyph_seeds.rs",
     "crates/awase-windows-core/src/state/indicator_glyph_store.rs",
     "crates/awase-windows-core/src/state/indicator_menu.rs",
     "crates/awase-windows-core/src/state/mozc_shm.rs",
-    "crates/awase-windows-core/src/focus/class_names.rs",
-    "crates/awase-windows-core/src/focus/kinds.rs",
 ]
 
 exclude_re = [

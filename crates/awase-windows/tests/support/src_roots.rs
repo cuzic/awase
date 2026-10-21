@@ -10,6 +10,7 @@ use std::path::Path;
 /// 分割前は空。
 pub(crate) const EXTRA_SRC_CRATES: &[&str] = &[
     "crates/awase-windows-core",
+    "crates/awase-windows-base",
     "crates/awase-hook-core",
     "crates/awase-windows-plans",
     "crates/awase-scancode",

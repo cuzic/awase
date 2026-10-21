@@ -625,15 +625,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "awase-windows-core"
+name = "awase-windows-base"
 version = "2.2.0"
 dependencies = [
  "actuation-choke-point-macro",
  "awase",
  "awase-gji-config",
+ "awase-vkmap",
+ "measured-macro",
+ "serde",
+ "strum 0.27.2",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "awase-windows-core"
+version = "2.2.0"
+dependencies = [
+ "awase",
+ "awase-gji-config",
  "awase-keymap-learn",
  "awase-replay",
  "awase-vkmap",
+ "awase-windows-base",
  "measured-macro",
  "proptest",
  "quanta",
