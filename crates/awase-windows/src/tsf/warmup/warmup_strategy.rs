@@ -129,5 +129,5 @@ impl ImeWarmupStrategy for MsImeStrategy {
     fn needs_f2_probe(&self) -> bool {
         false
     }
-    // on_gji_event, on_gji_long_idle, gji_current_composition_epoch はすべてデフォルト実装を使用する。
+    // on_gji_event, on_gji_long_idle, gji_is_composing はすべてデフォルト実装を使用する。
 }
