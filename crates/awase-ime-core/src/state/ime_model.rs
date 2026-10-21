@@ -64,6 +64,17 @@ pub struct FallbackShadow {
     pub new: crate::state::observation_store::ImeObservation,
 }
 
+/// [`ImeModel::would_glyph_decide`] の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphWouldDecide {
+    /// 報告後の `resolve_open_at` が字形で決まるか
+    pub decided_by_glyph: bool,
+    /// 報告前の `resolve_open_at` の値
+    pub before: bool,
+    /// 報告後の `resolve_open_at` の値
+    pub after: bool,
+}
+
 /// `resolve_open_at()` の戻り値。`effective_open_at()` が返す `bool` に加えて、
 /// 「なぜその値になったか」を保持する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,21 +396,36 @@ impl ImeModel {
         }
     }
 
-    /// ADR-273 D2 (a)〜(e) の試算（副作用なし）: この字形の観測を**今記録したら**、belief を字形が決めるか。決めるなら `Some(flip)`
-    /// （`flip` は今の belief の値と違うか）、決めないなら（明示意図・予測・新鮮な Medium 以上など、他の根拠が勝つ）`None`。
-    /// 複製に対して記録して `resolve_open_at` を比べるだけで、モデルは変えない。設定が `observe` のときの journal に使う。
+    /// ADR-273 D2 (a)〜(e) の試算（副作用なし）: この字形の観測を**今報告したら**どうなるか。モデルの複製に、本物と同じ
+    /// `ObserverReported` を `reduce` に通す（柵・予測の照合〔N1〕・drift の扱いが本物と同じ）。モデルは変えない。
+    /// 設定が `observe` のときの journal に使う。複製はここ 1 か所だけ（`architecture_guard` が固定）。
+    ///
+    /// `decided_by_glyph` は、報告後の `resolve_open_at` が字形で決まるか（明示意図・新鮮な Medium 以上などが勝てば偽。
+    /// 柵を過ぎた字形が予測を照合して消した後に字形が決める場合は真）。`before`/`after` は報告の前後の `resolve_open_at` の値
+    /// （hub の層の `IntentStore` の上書きは掛けていない。hub が掛ける）。
     #[must_use]
     pub fn would_glyph_decide(
         &self,
         glyph: crate::state::evidence::AnyObservation,
         now: Instant,
-    ) -> Option<bool> {
+        tick_ms: u64,
+    ) -> GlyphWouldDecide {
         let before = self.resolve_open_at(now).value;
         let mut sim = self.clone();
-        sim.observations.record_replayed(glyph, now);
+        sim.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 0,
+                monotonic: now,
+                tick_ms,
+            },
+            event: ImeEvent::ObserverReported(glyph),
+        });
         let after = sim.resolve_open_at(now);
-        matches!(after.decided_by.base, BaseDecision::IndicatorGlyph { .. })
-            .then_some(after.value != before)
+        GlyphWouldDecide {
+            decided_by_glyph: matches!(after.decided_by.base, BaseDecision::IndicatorGlyph { .. }),
+            before,
+            after: after.value,
+        }
     }
 
     /// 打鍵履歴から追跡している隠れ状態（変換モード5種・変換中の段階）。

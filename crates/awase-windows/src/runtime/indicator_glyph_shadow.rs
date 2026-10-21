@@ -364,31 +364,34 @@ impl super::Runtime {
         }
         if let Some(reading) = glyph_reading {
             let is_second = pending.delay_ms == u32::from(READ_DELAYS_MS[1]);
-            if let Some(read_fence) = self.glyph_read_fence(&pending, is_second) {
-                // 設定が observe のままでも、対象の窓だったとして柵を通るかを記録する（belief には入れない）。段階 2 の前提の件数。
-                let facts = self.glyph_scope_facts();
-                let scope = glyph_scope_label(facts);
-                record.would_scope = Some(scope);
-                if scope != "none" {
-                    let preview = self.platform_state.ime.preview_indicator_glyph(
-                        reading,
-                        read_fence,
-                        self.lang_detect_focus_in_sync(),
-                        crate::state::TickMs(crate::hook::current_tick_ms()),
-                    );
-                    record.would_report = Some(preview.report.label());
-                    if preview.report.is_reported() {
-                        record.would_decide = Some(preview.decides.is_some());
-                        record.would_flip = preview.decides;
+            let read_fence = self.glyph_read_fence(&pending, is_second);
+            // 設定が observe のままでも、対象の窓だったとして柵を通るかを記録する（belief には入れない）。段階 2 の前提の件数。
+            // 基準が作れなかった読み（追跡のずれ）も分母に入れるため、窓の種類は基準の有無によらず出す。
+            let scope = glyph_scope_label(self.glyph_scope_facts());
+            record.would_scope = Some(scope);
+            match read_fence {
+                Some(read_fence) => {
+                    if scope != "none" {
+                        let preview = self.platform_state.ime.preview_indicator_glyph(
+                            reading,
+                            read_fence,
+                            self.lang_detect_focus_in_sync(),
+                            crate::state::TickMs(crate::hook::current_tick_ms()),
+                        );
+                        record.would_report = Some(preview.report.label());
+                        if preview.report.is_reported() {
+                            record.would_decide = Some(preview.decides.is_some());
+                            record.would_flip = preview.decides;
+                        }
                     }
+                    self.report_glyph_to_belief(reading, read_fence);
                 }
-                self.report_glyph_to_belief(reading, read_fence);
+                None if scope != "none" => record.would_report = Some("fenced:no-baseline"),
+                None => {}
             }
             if !is_second {
                 // 2 回目の基準: 1 回目を処理した時点の同一性（追跡が追いついていなければ作らない。2 回目は報告しない）。
-                self.indicator_glyph.baseline = self
-                    .glyph_read_fence(&pending, false)
-                    .map(|fence| (pending.foreground, fence));
+                self.indicator_glyph.baseline = read_fence.map(|fence| (pending.foreground, fence));
             }
         }
         self.indicator_glyph.counters.record(&record);

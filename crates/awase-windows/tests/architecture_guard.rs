@@ -9016,6 +9016,37 @@ fn taskbar_glyph_is_reported_only_through_the_hub_entry() {
     );
 }
 
+/// ADR-273 R2: `ImeModel` の複製は、字形の試算（`ImeModel::would_glyph_decide`、設定が `observe` のときの journal 用）の
+/// **1 件だけ**。belief の真実源は 1 つ（`.claude/rules/ime-belief-architecture.md`）で、複製を本番で持ち回る近道を開かない。
+#[test]
+fn ime_model_is_cloned_only_for_the_glyph_preview() {
+    const MODEL: &str = "src/state/ime_model.rs";
+    let mut in_model = 0usize;
+    let mut elsewhere: Vec<String> = Vec::new();
+    for path in list_src_files() {
+        let content = read_crate_file(&path);
+        let production = non_comment_lines(production_code_only(&content));
+        if path == MODEL {
+            in_model += production.matches("self.clone()").count();
+        }
+        for token in ["shadow_model.clone()", "model.clone()", "ImeModel::clone"] {
+            let n = production.matches(token).count();
+            // `shadow_model.clone()` は `model.clone()` にも含まれるので、後者だけで数える
+            if n > 0 && token != "shadow_model.clone()" {
+                elsewhere.push(format!("{path}: {token} ×{n}"));
+            }
+        }
+    }
+    assert_eq!(
+        in_model, 1,
+        "ime_model.rs の本番で self.clone() は would_glyph_decide の 1 件だけ"
+    );
+    assert!(
+        elsewhere.is_empty(),
+        "ImeModel の複製は would_glyph_decide の 1 件だけ。実際: {elsewhere:?}"
+    );
+}
+
 /// ADR-265 段階 1・ADR-268: mozc-readable の共有メモリの読みは、**belief への入口を 1 つだけ**持ち、IME・打鍵には書かない。
 ///
 /// - 読み取り（`observer/mozc_shm.rs`）は観測だけ。belief・IME 制御・観測ストアに入れる型/関数を一切使わない。

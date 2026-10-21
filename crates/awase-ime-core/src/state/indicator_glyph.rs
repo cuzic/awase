@@ -725,6 +725,10 @@ pub fn fence_glyph(hit: LabelHit, ctx: FenceCtx) -> Result<FencedGlyph, FenceMis
 /// 前面窓の変化の通知はフォーカス追跡より先に届くので、**依頼の時点の同一性は切り替える前の窓の値**になりうる。基準にするのは
 /// 1 回目を**処理した時点**の同一性 `current`（追跡が追いついた後）。ただし、前面が追跡中の窓と一致していない（`foreground_in_sync`
 /// が偽 = 追跡がまだ追いついていない）ときは、前の窓の同一性で新しい窓の字形を記録してしまうので、基準を作らない（`None`）。
+///
+/// `foreground_in_sync` の出所（殻の `lang_detect_focus_in_sync`）は pid と root 窓の一致だけを見る。**追跡が root を取れていない窓
+/// （`tracked_root == 0`）では真になり、同じトップレベルの中の子の欄の移動も見えない**。取り込みから処理までは数十 ms なので、その間の
+/// 移動は 2 回目の基準の照合と `update_focus_window` の削除で拾う。
 #[must_use]
 pub const fn first_read_fence(
     current: crate::state::probe_admission::FocusFence,

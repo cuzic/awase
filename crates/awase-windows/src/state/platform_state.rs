@@ -2264,6 +2264,27 @@ impl ImeStateHub {
         }
     }
 
+    /// D2 の (a)〜(e) の試算（副作用なし）: この字形を今報告したら、belief を字形が決めるか（決めるなら今の belief と違うか）。
+    /// モデルの試算（`reduce` を通す。予測の照合を含む）に、hub の層の `IntentStore` の上書きを掛ける: 意図が残っている間は
+    /// 本物の belief は意図の値のままなので、決めない（R6 と同じ）。
+    fn would_glyph_decide(
+        &self,
+        observation: evidence::AnyObservation,
+        tick_ms: TickMs,
+    ) -> Option<bool> {
+        let sim =
+            self.shadow_model
+                .would_glyph_decide(observation, self.clock.now_instant(), tick_ms.0);
+        if !sim.decided_by_glyph {
+            return None;
+        }
+        let (_, decision) = self.resolve_effective(tick_ms);
+        if decision.intent.is_some() {
+            return None;
+        }
+        Some(sim.after != sim.before)
+    }
+
     /// `report_indicator_glyph` が**どうなるか**を、何も記録せずに返す（設定が `observe` のときの journal 用。段階 2 の前提の件数を数える。
     /// belief には入れない）。柵を通る読み（`Reported`）のときは、それを今記録したら belief を字形が決めるか（`Some(flip)`）も返す。
     #[must_use]
@@ -2282,8 +2303,7 @@ impl ImeStateHub {
                 GlyphPlan::Retract => (GlyphReport::Retracted, None),
                 GlyphPlan::Report(observation) => (
                     GlyphReport::Reported,
-                    self.shadow_model
-                        .would_glyph_decide(observation, self.clock.now_instant()),
+                    self.would_glyph_decide(observation, tick_ms),
                 ),
             };
         GlyphPreview { report, decides }
@@ -3577,6 +3597,51 @@ mod tests {
         );
         assert_eq!(p.report, GlyphReport::Reported);
         assert_eq!(p.decides, None, "新鮮な ObserverPoll が勝つ");
+    }
+
+    /// 試算は本物と同じ reduce を通す: モードキーの予測があり、柵を過ぎた字形は予測を照合して消し、字形が belief を決める
+    /// （D2 の (e) は条件にならない。Opus RE2）。字形（開）は予測（閉）と違うので flip。
+    #[test]
+    fn preview_indicator_glyph_reconciles_the_prediction_like_the_real_reduce() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime.dispatch_event(
+            ImeEvent::KeyEffectPredicted {
+                open: Some(false),
+                mode: None,
+                track: crate::state::key_effect_predictor::KeyTrack::default(),
+            },
+            TickMs(1000),
+        );
+        let f = ps.ime.focus_fence();
+        let at = TickMs(1000 + crate::tuning::GLYPH_KEY_FENCE_MS);
+        let p = ps
+            .ime
+            .preview_indicator_glyph(glyph_hit(BeliefLabel::Kana), f, true, at);
+        assert_eq!(p.report, GlyphReport::Reported);
+        assert_eq!(
+            p.decides,
+            Some(true),
+            "柵を過ぎた字形は予測を照合して消し、字形が決める（開 ≠ 予測の閉 = flip）"
+        );
+    }
+
+    /// `IntentStore` に意図が残っている間は、本物の belief は意図の値のままなので、試算も字形は決めないとする（R6 と同じ）。
+    #[test]
+    fn preview_indicator_glyph_does_not_decide_while_the_intent_store_overrides() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        // モデルには意図を入れず、IntentStore にだけ記録する（hub の層の上書き）。
+        ps.ime
+            .record_explicit_intent(true, UserIntentSource::PhysicalImeKey, TickMs(100));
+        let f = ps.ime.focus_fence();
+        let p =
+            ps.ime
+                .preview_indicator_glyph(glyph_hit(BeliefLabel::Closed), f, true, TickMs(5000));
+        assert_eq!(p.report, GlyphReport::Reported);
+        assert_eq!(p.decides, None, "IntentStore が上書きしている");
     }
 
     /// 柵（モード系の入力の直後）の中の `Miss`（切り替わる途中の曖昧な画像）は、前の読みを取り消さない。
