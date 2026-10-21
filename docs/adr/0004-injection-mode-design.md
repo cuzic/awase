@@ -9,6 +9,8 @@ related_adr: []
 
 # ADR 0004: InjectionMode 三分岐設計
 
+> **2026-10-21 追記:** Unicode 分岐は [ADR-276](276-remove-unicode-injection.md) で撤去した。現在の `InjectionMode` は Vk / Tsf の 2 つで、`force_tsf` 以外は Vk。以下は撤去前の設計記録。
+
 **Status:** 安定（2026-05-19 現在）  
 **関連コミット:** `3e444b4`, `50c5b4b`, `a444984`, `73b69ebb`, `73ddbb8`, `41d8fee`, `a57fc81`, `281cebd`
 
