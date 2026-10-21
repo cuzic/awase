@@ -96,6 +96,47 @@ pub(super) fn warn_layout_fallback(
 /// 親指キー自体が Shift 修飾キーの場合、親指押下だけで Shift レベルが立つため
 /// 複合面は無効化する。
 #[must_use]
+/// 親指キー割り当て由来の Engine 設定を適用する（起動時とリロード時の共通手順、ECRS A2/R5）。
+///
+/// left/right のいずれかが Space / 無変換 / 変換 / Enter に割り当てられている場合、その VK を
+/// Engine/NicolaFsm に伝える。core 側は VK 番号の意味を知らず、ここで渡した値との等値比較のみで
+/// 判定する（`config.rs` の `space_thumb_*`・`muhenkan/henkan_solo_tap_*`・`enter_thumb_*` doc 参照）。
+pub(crate) fn apply_thumb_engine_config(
+    engine: &mut Engine,
+    left_vk: VkCode,
+    right_vk: VkCode,
+    general: &awase::config::GeneralConfig,
+) {
+    let find = |target: VkCode| [left_vk, right_vk].into_iter().find(|&vk| vk == target);
+    engine.set_space_thumb_config(
+        find(crate::vk::VK_SPACE),
+        TextKeyConfig {
+            ignore_composing_guard: general.space_thumb_ignore_composing_guard,
+            shift_literal: general.space_thumb_shift_literal,
+        },
+    );
+    engine.set_thumb_key_solo_tap_config(
+        find(crate::vk::VK_NONCONVERT),
+        ModeKeyConfig::from_legacy_bools(
+            general.muhenkan_solo_tap_ignore_composing_guard,
+            general.muhenkan_solo_tap_always_suppress,
+        ),
+        find(crate::vk::VK_CONVERT),
+        ModeKeyConfig::from_legacy_bools(
+            general.henkan_solo_tap_ignore_composing_guard,
+            general.henkan_solo_tap_always_suppress,
+        ),
+    );
+    engine.set_enter_thumb_config(
+        find(crate::vk::VK_RETURN),
+        TextKeyConfig {
+            ignore_composing_guard: general.enter_thumb_ignore_composing_guard,
+            shift_literal: general.enter_thumb_shift_literal,
+        },
+    );
+    engine.set_thumb_shift_faces_enabled(thumb_shift_faces_enabled_for(left_vk, right_vk));
+}
+
 pub(crate) fn thumb_shift_faces_enabled_for(left_vk: VkCode, right_vk: VkCode) -> bool {
     left_vk.classify_modifier() != Some(awase::types::ModifierKey::Shift)
         && right_vk.classify_modifier() != Some(awase::types::ModifierKey::Shift)
@@ -1248,64 +1289,11 @@ pub(super) fn run_all() -> Result<()> {
     let mut engine = Engine::new(fsm, special_keys);
     engine.set_thumb_forced_open_actions(forced_open_actions.0, forced_open_actions.1);
 
-    // left/right のいずれかが Space (VK_SPACE) に割り当てられている場合、
-    // その VK を Engine/NicolaFsm に伝える。core 側は VK 番号の意味を知らず、
-    // ここで渡した値との等値比較のみで「Space かどうか」を判定する
-    // （config.rs の space_thumb_ignore_composing_guard/space_thumb_shift_literal doc 参照）。
-    let space_thumb_vk = [left_thumb_vk, right_thumb_vk]
-        .into_iter()
-        .find(|&vk| vk == crate::vk::VK_SPACE);
-    engine.set_space_thumb_config(
-        space_thumb_vk,
-        TextKeyConfig {
-            ignore_composing_guard: config.general.space_thumb_ignore_composing_guard,
-            shift_literal: config.general.space_thumb_shift_literal,
-        },
-    );
-
     // ADR-120 決定0a 項目7(a): 物理 BACKSPACE の VK を Engine/NicolaFsm に伝える
     // （観測専用、実際の変換結果には一切影響しない）。
     engine.set_backspace_vk(Some(crate::vk::VK_BACK));
 
-    // 同様に、left/right のいずれかが無変換/変換に割り当てられている場合、
-    // その VK を伝える（config.rs の muhenkan/henkan_solo_tap_ignore_composing_guard
-    // doc 参照）。
-    let muhenkan_vk = [left_thumb_vk, right_thumb_vk]
-        .into_iter()
-        .find(|&vk| vk == crate::vk::VK_NONCONVERT);
-    let henkan_vk = [left_thumb_vk, right_thumb_vk]
-        .into_iter()
-        .find(|&vk| vk == crate::vk::VK_CONVERT);
-    engine.set_thumb_key_solo_tap_config(
-        muhenkan_vk,
-        ModeKeyConfig::from_legacy_bools(
-            config.general.muhenkan_solo_tap_ignore_composing_guard,
-            config.general.muhenkan_solo_tap_always_suppress,
-        ),
-        henkan_vk,
-        ModeKeyConfig::from_legacy_bools(
-            config.general.henkan_solo_tap_ignore_composing_guard,
-            config.general.henkan_solo_tap_always_suppress,
-        ),
-    );
-
-    // 同様に、left/right のいずれかが Enter に割り当てられている場合、その VK を
-    // 伝える（config.rs の enter_thumb_ignore_composing_guard/enter_thumb_shift_literal
-    // doc 参照）。
-    let enter_thumb_vk = [left_thumb_vk, right_thumb_vk]
-        .into_iter()
-        .find(|&vk| vk == crate::vk::VK_RETURN);
-    engine.set_enter_thumb_config(
-        enter_thumb_vk,
-        TextKeyConfig {
-            ignore_composing_guard: config.general.enter_thumb_ignore_composing_guard,
-            shift_literal: config.general.enter_thumb_shift_literal,
-        },
-    );
-    engine.set_thumb_shift_faces_enabled(thumb_shift_faces_enabled_for(
-        left_thumb_vk,
-        right_thumb_vk,
-    ));
+    apply_thumb_engine_config(&mut engine, left_thumb_vk, right_thumb_vk, &config.general);
     engine.apply_general_config(&config.general);
 
     if let Some(vk) = config
