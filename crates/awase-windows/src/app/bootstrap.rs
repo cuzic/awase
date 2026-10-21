@@ -91,11 +91,6 @@ pub(super) fn warn_layout_fallback(
     true
 }
 
-/// 親指+小指シフト複合面を有効にできる親指キー構成かを返す。
-///
-/// 親指キー自体が Shift 修飾キーの場合、親指押下だけで Shift レベルが立つため
-/// 複合面は無効化する。
-#[must_use]
 /// 親指キー割り当て由来の Engine 設定を適用する（起動時とリロード時の共通手順、ECRS A2/R5）。
 ///
 /// left/right のいずれかが Space / 無変換 / 変換 / Enter に割り当てられている場合、その VK を
@@ -137,6 +132,11 @@ pub(crate) fn apply_thumb_engine_config(
     engine.set_thumb_shift_faces_enabled(thumb_shift_faces_enabled_for(left_vk, right_vk));
 }
 
+/// 親指+小指シフト複合面を有効にできる親指キー構成かを返す。
+///
+/// 親指キー自体が Shift 修飾キーの場合、親指押下だけで Shift レベルが立つため
+/// 複合面は無効化する。
+#[must_use]
 pub(crate) fn thumb_shift_faces_enabled_for(left_vk: VkCode, right_vk: VkCode) -> bool {
     left_vk.classify_modifier() != Some(awase::types::ModifierKey::Shift)
         && right_vk.classify_modifier() != Some(awase::types::ModifierKey::Shift)
