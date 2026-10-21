@@ -13,6 +13,8 @@ related_adr:
   - "ADR-081"
 ---
 
+> **2026-10-21 追記:** 本 ADR の「やってはいけないこと」のうち `InjectionMode::Unicode` の廃止と `UnicodeLiteralObserverFsm` の撤去は、所有者判断で [ADR-276](276-remove-unicode-injection.md) により覆した（実施済み）。
+
 # ADR-083: `InjectionMode`（文字送信経路）をGJI専用にper-VK確認方式へ統一する構想の検討記録
 
 ## ステータス

@@ -280,9 +280,9 @@ awase はフォーカス中のアプリを自動識別し、出力方式を切�
 
 | アプリ種別 | 例 | 出力方式 |
 |-----------|-----|---------|
-| Win32 / WinForms | メモ帳、Word、Excel | Unicode 直接注入 |
+| Win32 / WinForms | メモ帳、Word、Excel | VK キーストローク |
 | TSF ネイティブ | Chrome, Edge, VS Code, WezTerm, Electron 系 | VK キーストローク |
-| UWP / XAML | Windows ストアアプリ | Unicode 直接注入 |
+| UWP / XAML | Windows ストアアプリ | VK キーストローク |
 
 識別結果はアプリのクラス名ごとに学習・キャッシュされ（`cache.toml`）、再起動後も維持されます。自動識別が合わない場合は `[app_overrides]` で手動指定できます。
 

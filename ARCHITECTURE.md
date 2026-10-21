@@ -67,9 +67,9 @@ awase はフォーカスが変わるたびに `AppKindClassifier` がアプリ�
 
 | `AppKind` | 判定基準 | 出力方式 |
 |-----------|---------|---------|
-| `Win32` | IMM32 ブリッジが動作する標準 Win32 アプリ | Unicode 直接注入 |
+| `Win32` | IMM32 ブリッジが動作する標準 Win32 アプリ | VK キーストローク |
 | `TsfNative` | IMM32 不可・TSF 直結（Chrome, VS Code, WezTerm 等） | VK キーストローク |
-| `Uwp` | UWP / XAML / DirectUI アプリ | Unicode 直接注入 |
+| `Uwp` | UWP / XAML / DirectUI アプリ | VK キーストローク |
 
 判定は以下の優先順で行われます：
 

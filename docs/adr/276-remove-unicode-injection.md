@@ -8,7 +8,7 @@ summary: |-
   残すもの: `.yab` の `\u`・クォートの直接指定と、表に無い文字(`－` など)の `KEYEVENTF_UNICODE`(BUG-066)、他アプリが注入した `VK_PACKET` の再注入(ADR-253)。
   A1・G1(GjiFsm への ImeOn 通知 2 か所)は、VK 注入だけの世界では G2 と二重であることをモデル検証(`tsf/gji_sync_model.rs`)で厳密に示した。Unicode 撤去と同時に外せる。
 status: |-
-  草案(2026-10-21)。所有者の方針は決定済み(「それでも Unicode 注入は撤去したい。コードを削減したいから」)。比較実験の一部(標準フォーム・LibreOffice は PASS)は反映済み。残りの入力先の結果と Opus レビューを反映して確定する。
+  実装済み(2026-10-21)。P1〜P2 は PR #767、P3〜P4 は PR #768 で develop にマージ。コードは 25+15 ファイルで約 916 行の純減(挿入 116・削除 1,032)。e2e は標準フォーム・Java・LibreOffice・Qt・WinForms・WPF・wx の typing が全て PASS、sc-reopen は期待どおり。未確認は WinUI3・Notepad++・Flutter・Electron の入力先と、実機(dragonflyg4)での LINE・Word・Excel。
 related_adr:
   - "ADR-0004"
   - "ADR-006"
@@ -75,6 +75,14 @@ ADR-083 の「やってはいけないこと」(`InjectionMode::Unicode` の廃�
 - **段階 PR ごとの検証:** Linux の単体テスト・モデル検証、`architecture_guard`、e2e-ime の既存構成(`sc-reopen-*`、`ts-*`、`tsx-ext-*`)。
 
 - **P1 の PR(#767)の実測(run 39670683857・39673784115、2026-10-21):** 撤去後のビルドで、Java Swing(GJI・MS-IME)・LibreOffice Writer(同)・Qt QLineEdit(GJI)・WinForms 3 種・WPF(MS-IME)・wxWidgets 2 種の typing が全構成 `verdict=PASS`(fail・loss・extra・literal・substitute すべて 0、28 ジョブ)。`sc-reopen-*` は期待どおり(修正を外した対照だけ FAIL)。WinUI3・WPF(GJI)・Notepad++・Flutter・Electron は構成が無い・未実行で未確認。
+
+## 実施結果(2026-10-21)
+
+- P1・P2(#767)と P3・P4(#768)を develop にマージした。差分は `crates`・`src`・`tools`・`.cargo` で挿入 116 行・削除 1,032 行(純減 916 行)。
+- 計画との違い: P1 だけでは使われなくなったコードが dead code になり clippy で落ちるため、P2 と P3 の一部も #767 に含めた。
+- 副産物: BUG-208(Mozc Readable で eager が永久に続く)は、eager 自体が無くなって根治した。
+- 注意: #768 の e2e で `sc-reopen-tsf-gji-gap900` が 144 試行中 1 回だけ FAIL(最初の試行の起動直後に stale_escape)した。再実行では出ず、偶発と判断している。マージ後に頻発するなら A1・G1 の撤去を疑う。
+- 残る確認: 実機での LINE・Word・Excel(利用者が日常的に使う)、WinUI3・Notepad++・Flutter・Electron の入力先。
 
 ## 段階
 

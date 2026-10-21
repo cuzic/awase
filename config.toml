@@ -48,9 +48,8 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # ]
 # example-end
 
-# ローマ字出力を VK キーストローク経由で送るアプリの明示指定。
-# Chrome/Edge/Electron 等 IME composition を VK 経由でないと扱えないアプリ向け。
-# Win32 モード（Unicode 直接注入）がデフォルトで動作する。
+# ローマ字出力の送り方の明示指定。既定では、すべてのアプリに VK キーストローク
+# （IME composition 経由）で送る（Unicode 直接注入は ADR-276 で撤去した）。
 #
 # force_tsf: VK Sequential モード（WezTerm 等 TSF 直結アプリ）
 #   IME composition + 漢字変換を有効にする。NICOLA フックはスルーして
