@@ -52,6 +52,11 @@ put('hookinput', [
     'state::hook_state', 'state::hook_watchdog', 'state::alt_impersonation', 'state::foreign_modifier',
     'state::win_key_guard', 'state::half_width_alnum', 'state::half_width_resume_hold',
 ])
+# 独立の葉: Scancode Map（キー入れ替え）。外部の依存を持たない（core の他のクラスタに依存しない）
+put('scancode', [
+    'scancode_apply', 'scancode_diagram', 'scancode_editor', 'scancode_map', 'scancode_pairs',
+])
+
 # 許可する依存の向き(A → B = A が B を使ってよい)。これ以外の本番コードの参照は `deps.py --check` が落とす
 ALLOWED = {
     'base': [],
@@ -59,6 +64,7 @@ ALLOWED = {
     'imecore': ['base', 'keyeffect'],
     'plans': ['base', 'imecore'],
     'hookinput': ['base'],
+    'scancode': [],
 }
 
 # コードの移動で消す予定の辺(`impl` や関数を別のモジュールへ移すまでの間だけ許す)。(参照元, 参照先, 理由)。

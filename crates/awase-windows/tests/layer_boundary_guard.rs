@@ -759,6 +759,11 @@ fn ungated_state_modules() -> Vec<String> {
     let mut names = Vec::new();
     for src in src_dirs() {
         let path = src.join("state/mod.rs");
+        // `state/` を持たない core 系 crate（`awase-scancode` など、ADR-274）は対象外。
+        // 持つ crate では読めなければ panic のまま（黙って飛ばさない）。
+        if !src.join("state").is_dir() {
+            continue;
+        }
         let content =
             fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} が読めません", path.display()));
         let lines: Vec<&str> = content.lines().collect();

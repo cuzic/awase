@@ -44,11 +44,11 @@ pub mod msime_key_assignment;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod msime_legacy_keymap;
 pub mod probe_rejection_stats;
-pub mod scancode_apply;
-pub mod scancode_diagram;
-pub mod scancode_editor;
-pub mod scancode_map;
-pub mod scancode_pairs;
+// Scancode Map（キー入れ替え）の判断・編集モデル・適用は OS 非依存の `awase-scancode` に移した（ADR-274 段階 1）。
+// `awase_windows::scancode_*` の経路を変えないよう再公開する。
+pub use awase_scancode::{
+    scancode_apply, scancode_diagram, scancode_editor, scancode_map, scancode_pairs,
+};
 // Windows Scancode Map のレジストリ I/O（`scancode_map` の純粋部から分けた殻のファイル。ADR-274）。
 #[cfg(windows)]
 pub mod scancode_registry;

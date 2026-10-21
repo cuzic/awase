@@ -102,6 +102,10 @@ crates/awase-windows-plans/   OS-independent core: TSF / focus "plans" (Facts â†
                               state/{warm_send_plan,deferred_gate_plan,raw_recovery_plan,relay_plan,post_bypass,
                               focus_classify_plan,focus_probe_plan,focus_resolve_plan,focus_resync_policy,
                               msaa_role_plan}, focus/hwnd_cache. Same relative paths as before the move (`focus/` spans crates).
+crates/awase-scancode/        OS-independent core: Scancode Map (key-swap) decisions / edit model / diagram text / apply
+                              (ADR-230, ADR-274 stage 1): scancode_{map,pairs,editor,diagram,apply}. No dependencies.
+                              The registry I/O stays in the shell (`awase-windows/src/scancode_registry.rs`, cfg(windows));
+                              awase-windows re-exports `awase_windows::scancode_*`.
 crates/awase-linux/           Linux platform stub
 crates/awase-macos/           macOS platform stub
 crates/win32-async/           Async executor + blocking-API timeout isolation (run_with_timeout)
