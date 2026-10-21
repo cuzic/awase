@@ -662,15 +662,12 @@ async fn tsf_probe_coro_body(
     ch: Rc<Channel<ProbeTickInput, Vec<ProbeAction>>>,
     romaji: String,
     probe: TsfReadinessProbe,
-    total_max_ms: u64,
     cold_seq: Generation,
 ) {
     // ── Phase 1: ChromeProbe ポーリング ──────────────────────────────────────
-    let env = loop {
+    let env = {
         let input = yield_step(ch.clone(), vec![]).await;
-        let Some(outcome) = probe.check_outcome(total_max_ms) else {
-            continue;
-        };
+        let outcome = probe.outcome();
         tracing::debug!(
             "[tsf-probe] cold={cold_seq} ChromeProbe 完了 ({}ms)",
             outcome.elapsed_ms,
@@ -679,7 +676,7 @@ async fn tsf_probe_coro_body(
         // VK_IME_OFF→VK_IME_ON を Chrome path で使わない（タイムアウト後のリセット専用）。
         // VK_IME_OFF が Chrome TSF context を壊し、VK_IME_ON が間に合わず na がリテラル化する。
         // ChromeProbe の F2 (VK_DBE_HIRAGANA) warmup のみで GJI を活性化する。
-        break input.env;
+        input.env
     };
 
     // ── Phase 2b: 直接 Chrome 送信 ──
@@ -839,12 +836,11 @@ impl TsfProbeCoro {
         romaji: &str,
         cold_seq: Generation,
         probe: TsfReadinessProbe,
-        total_max_ms: u64,
         guard: OutputActiveGuard,
     ) -> Self {
         let romaji = romaji.to_string();
         let coro = StepCoro::new(async move |ch| {
-            tsf_probe_coro_body(ch, romaji, probe, total_max_ms, cold_seq).await;
+            tsf_probe_coro_body(ch, romaji, probe, cold_seq).await;
         });
         Self {
             state: ProbeCoroState::new(coro, cold_seq, "TsfProbeCoro"),
@@ -1156,13 +1152,13 @@ mod tests {
     /// ロックを取らない — 呼び出し元ごとに他の TSF_OBS フィールドの初期化と
     /// まとめてロックを取りたいケースがあるため）。
     fn ready_chrome_probe() -> TsfProbeCoro {
-        // total_max_ms=0 → check_now が最初の tick で即 ready になる。
+        // 最初の tick で probe.outcome() を読んで進む。
         crate::tsf::observer::TSF_OBS
             .gji_monitor_ok
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let guard = OutputActiveGuard::noop_for_test();
-        let probe = TsfReadinessProbe::new(0, Generation::INITIAL, 0);
-        TsfProbeCoro::new_chrome("ka", Generation::INITIAL, probe, 0, guard)
+        let probe = TsfReadinessProbe::new(0, Generation::INITIAL);
+        TsfProbeCoro::new_chrome("ka", Generation::INITIAL, probe, guard)
     }
 
     #[test]

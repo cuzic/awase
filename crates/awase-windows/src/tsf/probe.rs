@@ -1,6 +1,6 @@
 //! judgement 層 — 観測データから TSF 状態を推測する。
 //!
-//! - `TsfReadinessProbe`: GJI I/O 静止を待って「composition が受け付け可能か」を判定
+//! - `TsfReadinessProbe`: 送信時点の GJI I/O 観測（settled / idle）を切り出す
 //! - `CompositionState`: warm/cold epoch 管理（フォーカス変更で自動無効化）
 //! - `LiteralDetector`: 文字送信後に GJI 候補ウィンドウ変化を監視して
 //!   「composition が成功したか / raw literal が出力されたか」を判定
@@ -10,53 +10,25 @@ use std::sync::atomic::Ordering;
 use crate::state::event_origin::Generation;
 use crate::tsf::literal_facts::{DetectEvidence, LiteralVerdict};
 use crate::tsf::observer::{Baseline, TSF_OBS};
-use crate::tuning::{GJI_IDLE_MS, POST_IDLE_MARGIN_MS};
 
 // ── TsfReadinessProbe ──
 
-/// TSF composition readiness を観測し「ready になるまで待つ」プローブ。
+/// cold-start 送信時点の GJI I/O 観測を切り出す probe（待機はしない）。
 ///
-/// `send_romaji_as_tsf` の固定 sleep を置き換える。
-///
-/// ## 判断ロジック（2フェーズ）
-///
-/// ### Phase 1 — 必須最小待機 (`min_ms` from `warmup_sent_ms`)
-///
-/// VK_IME_ON 送信直後は GJI の I/O がまだ始まっていない可能性がある。
-/// `min_ms` 経過するまでは GJI I/O の観測値を信頼せず待機する。
-///
-/// ### Phase 2 — GJI I/O 静止監視
-///
-/// - `last_io >= warmup_ms`（warmup 後に GJI I/O が発生した）かつ
-///   80ms 静止 → settled → `POST_IDLE_MARGIN_MS` 待機後に送信
-/// - `last_io < warmup_ms`（warmup 後に I/O なし）→ GJI は既に正常状態と推定、
-///   min_ms 経過済みなので即解放
-///   （WezTerm 等 F2 に応じて GJI I/O を出さないアプリでは常にこのパス）
-/// - `now >= max_deadline` → タイムアウト（フォールバック、通常は到達しない）
-///
-/// ## `min_ms` の目安（ColdReason 別）
-///
-/// | 状況 | min_ms |
-/// |---|---|
-/// | FocusChange / SetOpenTrue / NativeF2Consumed (long_idle) | 300ms |
-/// | FocusChange / SetOpenTrue / NativeF2Consumed (short_idle) | 100ms |
-/// | SessionExpired | 200ms |
-/// | PassthroughConfirmKey / ReinjectConfirmKey | 50ms |
-/// | SymbolVkSent | 30ms |
-/// | その他 | 100ms |
+/// 本番の producer（`cold_warmup.rs::run_start`・`vk_send.rs` の Chrome cold パス）は
+/// 予防 F2 / 事前待機の撤去（2026-07-18）以後 `min_ms=0`・`total_max_ms=0` しか渡さず（旧 API）、
+/// 旧 `check_now` の GJI 静止待ち（`GJI_IDLE_MS`/`POST_IDLE_MARGIN_MS`）は一度も通らなかった。
+/// 待機ロジックと 2 定数を撤去し、`warmup_sent_ms` 以後の GJI I/O の有無を返す
+/// [`outcome`](Self::outcome) だけを残した（ECRS T01）。
 #[derive(Debug)]
 pub struct TsfReadinessProbe {
     /// VK_IME_ON を送信した時刻 (GetTickCount64 ms)。
     pub warmup_sent_ms: u64,
     /// ログ相関用 cold-start シーケンス番号。
     pub cold_seq: Generation,
-    /// VK_IME_ON 送信から最低この ms が経過するまで I/O 観測を信頼しない。
-    pub min_ms: u64,
-    /// GJI 静止を最初に検出した時刻（POST_IDLE_MARGIN 用）。0 = 未検出。
-    settled_at_ms: std::cell::Cell<u64>,
 }
 
-/// [`TsfReadinessProbe::check_now`] が `true` を返したときに合わせて返す観測スナップショット。
+/// [`TsfReadinessProbe::outcome`] が返す観測スナップショット。
 #[derive(Debug)]
 pub struct GjiProbeOutcome {
     /// `warmup_sent_ms` からの経過時間（ms）
@@ -71,84 +43,24 @@ pub struct GjiProbeOutcome {
 
 impl TsfReadinessProbe {
     #[must_use]
-    pub const fn new(warmup_sent_ms: u64, cold_seq: Generation, min_ms: u64) -> Self {
+    pub const fn new(warmup_sent_ms: u64, cold_seq: Generation) -> Self {
         Self {
             warmup_sent_ms,
             cold_seq,
-            min_ms,
-            settled_at_ms: std::cell::Cell::new(0),
         }
     }
 
-    /// タイマーポーリング用判定。完了時に settle 情報も返す。
-    ///
-    /// `None` = まだ待機中、`Some(outcome)` = 送信可能。
-    /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
-    #[tracing::instrument(level = "debug", skip_all, fields(total_max_ms = total_max_ms))]
-    pub fn check_outcome(&self, total_max_ms: u64) -> Option<GjiProbeOutcome> {
-        if !self.check_now(total_max_ms) {
-            return None;
-        }
+    /// 現時点の観測スナップショット。
+    pub fn outcome(&self) -> GjiProbeOutcome {
         let now = crate::clock::current_tick_ms();
         let monitor_healthy = TSF_OBS.gji_monitor_ok.load(Ordering::Acquire);
         let gji_last_io = TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed);
-        let gji_idle_ms = now.saturating_sub(gji_last_io);
-        Some(GjiProbeOutcome {
+        GjiProbeOutcome {
             elapsed_ms: now.saturating_sub(self.warmup_sent_ms),
             settled: gji_last_io >= self.warmup_sent_ms,
             monitor_healthy,
-            gji_idle_ms,
-        })
-    }
-
-    /// タイマーポーリング用ノンブロッキング判定。
-    ///
-    /// `true` = 送信可能（GJI 静止 or タイムアウト）、`false` = まだ待機中。
-    /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
-    ///
-    /// 2026-07-19 時点、本番の producer（`cold_warmup.rs::run_start`・
-    /// `vk_send.rs` の Chrome cold パス）はいずれも `min_ms=0`・`total_max_ms=0`
-    /// を渡すため、`min_deadline`/`max_deadline` は共に `warmup_sent_ms` と等しくなり、
-    /// このメソッドは実質「常に最初の呼び出しで `true` を返す」（`GJI_IDLE_MS`/
-    /// `settled_at_ms`/`POST_IDLE_MARGIN_MS` の待機ロジックは通らない）。
-    /// これは値が静的に固定されている（`ProbeObservations.gji_resumed` や
-    /// `DIAG_DISABLE_PROACTIVE_TSF_WARMUP` のような）到達不能ではなく、両呼び出し元が
-    /// たまたま実行時に 0 を渡しているだけの状態（コンパイラは保証しない）。
-    /// 本メソッド自体は任意の `min_ms`/`total_max_ms` に対して汎用的に正しく動作する
-    /// タイミング primitive であり、cold-start 待機時間の調整は本リポジトリで
-    /// 何度も出し入れされてきた領域（`tuning-constants.md` の釣り上げ履歴参照）。
-    /// 「今 0 が渡っているから」という理由だけでこの分岐自体を削除しないこと。
-    pub fn check_now(&self, total_max_ms: u64) -> bool {
-        let now = crate::clock::current_tick_ms();
-        let max_deadline = self.warmup_sent_ms.saturating_add(total_max_ms);
-        let min_deadline = self.warmup_sent_ms.saturating_add(self.min_ms);
-
-        if !TSF_OBS.gji_monitor_ok.load(Ordering::Acquire) {
-            return now >= max_deadline;
+            gji_idle_ms: now.saturating_sub(gji_last_io),
         }
-        if now < min_deadline {
-            return false;
-        }
-        if now >= max_deadline {
-            return true;
-        }
-        let gji_io = TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed);
-        let found_io_after_warmup = gji_io >= self.warmup_sent_ms;
-        if found_io_after_warmup {
-            let gji_idle = now.saturating_sub(gji_io);
-            if gji_idle >= GJI_IDLE_MS {
-                let settled_at = self.settled_at_ms.get();
-                if settled_at == 0 {
-                    self.settled_at_ms.set(now);
-                    return false;
-                }
-                let since_settled = now.saturating_sub(settled_at);
-                return since_settled >= POST_IDLE_MARGIN_MS;
-            }
-            self.settled_at_ms.set(0); // GJI が再びアクティブになった
-        }
-        // warmup 後に GJI I/O が来ていない = GJI は既に正常状態 → min_ms 経過済みで即解放
-        true
     }
 }
 
@@ -797,146 +709,55 @@ mod tests {
     /// (`observer.rs`/`literal_detect_fsm.rs`と共有、`TSF_OBS_TEST_LOCK`参照)。
     use crate::tsf::observer::TSF_OBS_TEST_LOCK as TEST_LOCK;
 
-    /// `check_now` が `true` を返すまでポーリングする（旧 `wait_until_ready`、
-    /// 本番未使用のため 2026-07-19 に撤去。`check_now` 自体のタイミング挙動を
-    /// 検証するテスト専用の待機ヘルパーとしてここに残す）。
-    ///
-    /// 呼び出し側が `clock::freeze()` 済みであること。実時間は待たず、仮想時計を `POLL_MS` ずつ進める
-    /// (ADR-272 段階 B0)。`check_now` が永久に `false` を返す退行・変異は、回数の上限で panic として検出する
-    /// (実時間を待つと mutants の timeout になる)。
-    fn poll_until_ready(probe: &TsfReadinessProbe, total_max_ms: u64) {
-        const POLL_MS: u64 = 10;
-        let max_polls = total_max_ms / POLL_MS + 100;
-        for _ in 0..max_polls {
-            if probe.check_now(total_max_ms) {
-                return;
-            }
-            crate::clock::advance(POLL_MS);
-        }
-        panic!(
-            "check_now が {max_polls} 回(仮想 {}ms)たっても true を返さない",
-            max_polls * POLL_MS
-        );
-    }
-
-    /// GJI モニター不可のとき、total_max_ms ぶん待機して返る（フォールバックパス）
+    /// warmup 後に GJI I/O があれば settled、経過・idle は仮想時計から計算される
     #[test]
-    fn probe_fallback_waits_total_max_ms() {
-        let _g = TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _clock = crate::clock::freeze();
-        TSF_OBS.gji_monitor_ok.store(false, SeqCst);
-
-        let now_ms = crate::clock::current_tick_ms();
-        let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 0);
-        poll_until_ready(&probe, 100);
-
-        // `check_now()` 自体が `current_tick_ms()`（GetTickCount64）で判定するため、
-        // 経過時間の検証も同じクロックで行う。以前は `std::time::Instant`（別クロック、
-        // QueryPerformanceCounter 由来）で計測していたが、VM 環境ではハイパーバイザーが
-        // GetTickCount64 側だけを定期的に補正しジャンプさせることがあり、SUT は正しく
-        // 反応しているのに無関係な別クロックとの不一致でテストだけ誤検知で失敗しうる
-        // （2026-08-15 実機、"fallback too short: 10ms" を確認。BUG-65 追補3参照）。
-        let elapsed = crate::clock::current_tick_ms().saturating_sub(now_ms);
-        // フォールバック: warmup_ms=now, remaining=100ms → sleep_ms(100)
-        //
-        // 診断用（2026-08-15）: `check_now()` の第一分岐は
-        // `!gji_monitor_ok → return now >= max_deadline` であり、`current_tick_ms()`
-        // は単調増加のため、この分岐で `true` が返るなら本アサーション時点の
-        // `elapsed` は理論上必ず 100ms 以上になるはず。elapsed が 60ms 未満で
-        // 落ちるということは、この分岐を通っていない＝`gji_monitor_ok` が
-        // `true` のまま観測された、という意味のはず。原因の切り分けのため
-        // 失敗メッセージに現在値を含める。
-        assert!(
-            elapsed >= 60,
-            "fallback too short: {elapsed}ms (gji_monitor_ok={}, gji_last_io_ms={})",
-            TSF_OBS.gji_monitor_ok.load(Ordering::Acquire),
-            TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed),
-        );
-        assert!(elapsed < 400, "fallback too long: {elapsed}ms");
-    }
-
-    /// GJI モニター有効・warmup 後にすでに 80ms+ 静止していれば即 settled
-    #[test]
-    fn probe_phase2_detects_already_settled() {
+    fn outcome_settled_when_io_after_warmup() {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _clock = crate::clock::freeze();
         let now_ms = crate::clock::current_tick_ms();
-
-        // warmup 200ms 前、GJI 最終 I/O は warmup の 50ms 後（= 150ms 前）
-        // → idle = 150ms > 80ms → settled 検出済み
         let warmup_ms = now_ms.saturating_sub(200);
-        let io_ms = warmup_ms + 50;
-
         TSF_OBS.gji_monitor_ok.store(true, SeqCst);
-        TSF_OBS.gji_last_io_ms.store(io_ms, SeqCst);
+        TSF_OBS.gji_last_io_ms.store(warmup_ms + 50, SeqCst);
 
-        let start = crate::clock::current_tick_ms();
-        let probe = TsfReadinessProbe::new(warmup_ms, Generation::INITIAL, 0); // min_ms=0
-        poll_until_ready(&probe, 1_000);
-
-        let elapsed = crate::clock::current_tick_ms() - start;
-        // 即 settled（margin = POST_IDLE_MARGIN_MS = 30ms 以内）
-        assert!(
-            elapsed < 150,
-            "should settle quickly (idle>80ms), got {elapsed}ms"
-        );
+        let o = TsfReadinessProbe::new(warmup_ms, Generation::INITIAL).outcome();
+        assert!(o.settled);
+        assert!(o.monitor_healthy);
+        assert_eq!(o.elapsed_ms, 200);
+        assert_eq!(o.gji_idle_ms, 150);
     }
 
-    /// phase1: min_ms が経過するまで probe は I/O 観測を信頼しない
+    /// warmup 後に GJI I/O が無ければ settled=false（WezTerm 等 F2 に I/O を出さないアプリ）
     #[test]
-    fn probe_phase1_min_wait_respected() {
+    fn outcome_not_settled_when_no_io_after_warmup() {
         let _g = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _clock = crate::clock::freeze();
         let now_ms = crate::clock::current_tick_ms();
-
-        // GJI は settled 状態だが min_ms=80 のため phase1 で 80ms 待機する
-        TSF_OBS.gji_monitor_ok.store(true, SeqCst);
-        TSF_OBS
-            .gji_last_io_ms
-            .store(now_ms.saturating_sub(200), SeqCst); // 200ms 前に I/O（warmup 前）
-
-        let start = crate::clock::current_tick_ms();
-        let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 80); // min_ms=80
-        poll_until_ready(&probe, 300);
-
-        let elapsed = crate::clock::current_tick_ms() - start;
-        // min_ms=80 の phase1 wait 後に即解放（I/O なし → 正常状態）
-        // → 60ms 以上 200ms 以内に完了するはず
-        assert!(elapsed >= 60, "phase1 min_wait not respected: {elapsed}ms");
-        assert!(
-            elapsed < 200,
-            "should release at ~80ms, not wait full 300ms: {elapsed}ms"
-        );
-    }
-
-    /// warmup 後に GJI I/O が発生しない場合は min_ms 経過後に即解放（WezTerm 等の正常ケース）
-    #[test]
-    fn probe_phase2_ready_immediately_when_no_io_after_warmup() {
-        let _g = TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _clock = crate::clock::freeze();
-        let now_ms = crate::clock::current_tick_ms();
-
-        // GJI I/O は warmup より前 → warmup 後に I/O なし → 既に正常状態 → min_ms 経過で即解放
         TSF_OBS.gji_monitor_ok.store(true, SeqCst);
         TSF_OBS
             .gji_last_io_ms
             .store(now_ms.saturating_sub(5_000), SeqCst);
 
-        let start = crate::clock::current_tick_ms();
-        let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 0); // min_ms=0
-        poll_until_ready(&probe, 1_000);
+        let o = TsfReadinessProbe::new(now_ms, Generation::INITIAL).outcome();
+        assert!(!o.settled);
+        assert_eq!(o.elapsed_ms, 0);
+        assert_eq!(o.gji_idle_ms, 5_000);
+    }
 
-        let elapsed = crate::clock::current_tick_ms() - start;
-        // min_ms=0 なので即解放（1000ms タイムアウトを待たない）
-        assert!(elapsed < 100, "should release immediately, got {elapsed}ms");
+    /// モニター不可は monitor_healthy=false として伝わる
+    #[test]
+    fn outcome_reports_unhealthy_monitor() {
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _clock = crate::clock::freeze();
+        TSF_OBS.gji_monitor_ok.store(false, SeqCst);
+        let now_ms = crate::clock::current_tick_ms();
+        let o = TsfReadinessProbe::new(now_ms, Generation::INITIAL).outcome();
+        assert!(!o.monitor_healthy);
     }
 
     /// 確定キー(Space/Enter/Escape)連打時、ローマ字出力(send_keys)を伴わなくても

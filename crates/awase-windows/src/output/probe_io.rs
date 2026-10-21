@@ -829,23 +829,21 @@ mod tests {
 
     fn make_chrome_machine() -> crate::tsf::warmup::probe_fsm::TsfProbeCoro {
         let guard = OutputActiveGuard::noop_for_test();
-        let probe = crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0);
+        let probe = crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL);
         crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
             "ka",
             Generation::INITIAL,
             probe,
-            0,
             guard,
         )
     }
 
     fn make_gji_machine() -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
-        let probe = crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0);
+        let probe = crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL);
         crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro::new(
             "ka",
             Generation::INITIAL,
             probe,
-            0,
             ColdReason::FocusChange,
             false,
             false,
