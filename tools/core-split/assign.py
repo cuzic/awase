@@ -36,7 +36,7 @@ put('imecore', [
     'state::ime_read_strategy', 'state::ime_profile_driver', 'state::conv_after_open',
     'state::input_barrier', 'state::app_ime_policy',
     'state::key_sequence_policy', 'state::physical_disposition', 'state::mode_key_pass',
-    'state::mozc_shm', 'state::indicator_menu', 'state::indicator_glyph', 'indicator_evidence',
+    'state::mozc_shm', 'state::indicator_menu', 'state::indicator_glyph', 'state::indicator_glyph_seeds', 'indicator_evidence',
     # journal と、IME の判断を記録する型。`journal` は imecore のイベント型(DriftEdge・ConvTransition ほか)を記録し、
     # 観測源(mozc_shm・indicator_*)が `*Record` を返すので、依存が相互になる(測定済み)。分けずに imecore に含める
     'journal', 'journal_policy', 'state::ime_event_log', 'state::actuation_decision_record', 'tsf::literal_facts',

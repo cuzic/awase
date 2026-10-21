@@ -51,7 +51,6 @@ pub mod focus_gen;
 // FCIS P1: 純粋なデータ型を ungated へ移したもの(元の場所から pub use で再公開)。
 pub mod foreground_scope;
 pub mod ime_update;
-pub mod raw_recovery_plan;
 // hook.rs (#[cfg(windows)]) の唯一の呼び出し元。alt_impersonation と同じ
 // 「純粋判定を Linux でテストできるようにする」移設パターン。
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -158,7 +157,6 @@ pub mod state_dependent_key_warning;
 // ADR-087 Phase 2'/3 試験実装。intent_store と同じ ungated・未配線パターン。
 pub mod open_warrant;
 pub use ime_model::AppliedImeState;
-pub mod focus_resync_policy;
 pub mod hub_clock;
 pub mod input_barrier;
 // output/types.rs から移設（InjectionHint 依存の From 実装のみ output/ に残す）。
@@ -172,41 +170,13 @@ pub mod observation_store;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod keymap_latch;
 pub mod late_keymap_plan;
-// 呼び出し元（`runtime/message_handlers.rs`）は `#[cfg(windows)]` のため、非 Windows では未使用。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod post_bypass;
 pub mod probe_admission;
 pub mod scoped_latch;
-// 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
-// runtime/key_pipeline.rs の apply_focus_probe は #[cfg(windows)] のため非 Windows
-// では未使用になる。PR 109 コードレビュー指摘3: apply_focus_probe/apply_effective_ime
-// に埋め込まれていた match status {...} の決定ロジックを純粋関数として抽出し、
-// Linux で全数テストできるようにした。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod focus_probe_plan;
-// MSAA ロール値の表引き（純粋）。本番の呼び出し元 focus/msaa.rs は #[cfg(windows)]、Linux ではテストだけが使う。
-pub mod msaa_role_plan;
-// 同期分類（ウィンドウスタイル・クラス名）の判断表（純粋）。本番の呼び出し元 focus/classify.rs は #[cfg(windows)]、Linux ではテストだけが使う。
-pub mod focus_classify_plan;
 // フォーカス変更時に belief を applied へ写してよいかの可否（純粋。ADR-262 段階 A）。本番の呼び出し元 runtime/ は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod applied_mirror_plan;
-// resolve_focus_kind の前段の優先順位（純粋）。本番の呼び出し元 focus/kind_classifier.rs は #[cfg(windows)]、Linux ではテストだけが使う。
-pub mod focus_resolve_plan;
 pub mod transition;
-// FCIS F3: `runtime/executor.rs` の execute_relay/drain_deferred/defer 側の「即時/キュー/ガード」判断の核（純粋）。
-// 呼び出し元（executor.rs）は `#[cfg(windows)]` のため非 Windows では未使用。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod relay_plan;
 // ADR-245 追補 2 R1: 復元の書き込み直後の読み直しと、それより前に始まった ImmCrossProbe の読みの棄却の判定。
 pub mod resume_observation;
-// FCIS F6: `output/mod.rs`・`output/vk_send.rs` の「probe/recovery 進行中は退避する」判断の核（純粋）。
-// 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod deferred_gate_plan;
-// FCIS F6b: `output/` の TSF 送信パイプライン（warm/cold・PendingGjiConfirm・LiteralDetect 設置）の判断の核（純粋）。
-// 呼び出し元（`output/`）は `#[cfg(windows)]` のため非 Windows では未使用。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod warm_send_plan;
 
 // 純粋関数モジュール（conv_classify と同じ ungated パターン）。呼び出し元は
 // #[cfg(windows)] の ime_controller/runtime のみ。

@@ -587,6 +587,7 @@ dependencies = [
  "awase-replay",
  "awase-vkmap",
  "awase-windows-core",
+ "awase-windows-plans",
  "base64",
  "flate2",
  "itertools",
@@ -623,6 +624,15 @@ dependencies = [
  "strum 0.27.2",
  "thiserror 2.0.20",
  "toml",
+ "tracing",
+]
+
+[[package]]
+name = "awase-windows-plans"
+version = "2.2.0"
+dependencies = [
+ "awase",
+ "awase-windows-core",
  "tracing",
 ]
 
