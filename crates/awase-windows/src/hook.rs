@@ -1068,7 +1068,7 @@ std::thread_local! {
 /// されるまでの短い間、フックチェーンには残り続けるが実害は無い。
 ///
 /// PR #349コードレビュー指摘（reuse）: 「単調増加する世代カウンタでstaleな
-/// 応答を弾く」という仕組み自体は`WarmEpoch`/`cold_seq`/`Actuation.attempts`
+/// 応答を弾く」という仕組み自体は`CompositionState`/`cold_seq`/`Actuation.attempts`
 /// が個別に再実装してきた経緯があり、`state::event_origin::Generation`
 /// （ADR-082）がその統合型として既に存在する。生の`AtomicU32`ではなく
 /// `Generation`（`AtomicU64`に払い出し値を格納し、比較・取り出しは

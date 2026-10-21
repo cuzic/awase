@@ -1,7 +1,7 @@
 //! judgement 層 — 観測データから TSF 状態を推測する。
 //!
 //! - `TsfReadinessProbe`: 送信時点の GJI I/O 観測（settled / idle）を切り出す
-//! - `CompositionState`: warm/cold epoch 管理（フォーカス変更で自動無効化）
+//! - `CompositionState`: warm/cold 状態管理（フォーカス変更で自動無効化）
 //! - `LiteralDetector`: 文字送信後に GJI 候補ウィンドウ変化を監視して
 //!   「composition が成功したか / raw literal が出力されたか」を判定
 
@@ -65,15 +65,15 @@ impl TsfReadinessProbe {
     }
 }
 
-// ── WarmEpoch ──
+// ── CompositionState ──
 
-/// warmup epoch・送信タイミング・cold-start 回数を管理するサブ構造体。
+/// TSF composition context の warm/cold 状態を管理する。
 ///
-/// フォーカス epoch とウォーム epoch の組み合わせにより、
-/// フォーカス変更後の古いウォーム状態を自動無効化する。
+/// `Output` 構造体がこれをフィールドとして保持する。フォーカス変更後の古い
+/// ウォーム状態は `on_focus_changed` / `mark_composition_cold` で無効化する。
 #[derive(Debug)]
-pub struct WarmEpoch {
-    /// 最後の `send_keys` 完了時刻（ms）
+pub struct CompositionState {
+    /// 最後の `send_keys` 完了時刻（ms）。0 = 未送信。
     last_send_ms: std::cell::Cell<u64>,
     /// Cold-start 発生回数カウンタ
     cold_start_count: std::cell::Cell<Generation>,
@@ -83,41 +83,88 @@ pub struct WarmEpoch {
     /// `gji_last_io_ms() > last_unicode_transmit_ms` になれば GJI が応答したとみなし、
     /// 次の warm パスは通常 VK sequential に戻る（`PendingGjiConfirm` 状態の SSOT）。
     last_unicode_transmit_ms: std::cell::Cell<u64>,
+    /// 最後に cold にマークされた理由
+    last_cold_reason: std::cell::Cell<crate::tsf::cold_reason::ColdReason>,
+    /// 最後に cold になった時点での idle 時間（ms）
+    idle_ms_at_last_cold: std::cell::Cell<u64>,
+    /// `RawTsfLiteralRecovery` が連続で発火した回数
+    raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
 }
 
-impl WarmEpoch {
+impl Default for CompositionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CompositionState {
     #[must_use]
     pub const fn new() -> Self {
         Self {
             last_send_ms: std::cell::Cell::new(0),
             cold_start_count: std::cell::Cell::new(Generation::INITIAL),
             last_unicode_transmit_ms: std::cell::Cell::new(0),
+            last_cold_reason: std::cell::Cell::new(
+                crate::tsf::cold_reason::ColdReason::FocusChange,
+            ),
+            idle_ms_at_last_cold: std::cell::Cell::new(0),
+            raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
         }
     }
 
-    /// コールド状態にマークする（last_unicode_transmit_ms をリセット）。
-    pub fn mark_cold(&self) {
+    /// IME composition context をコールド状態にマークする。
+    pub fn mark_composition_cold(&self, reason: crate::tsf::cold_reason::ColdReason) {
+        let idle_ms = self.ms_since_last_send();
+        if reason == crate::tsf::cold_reason::ColdReason::RawTsfLiteralRecovery {
+            let n = self.increment_consecutive_count();
+            tracing::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+        } else {
+            // consecutive_count はフォーカス変更と SetOpenTrue（engine activation）でリセット。
+            // SetOpenTrue = engine が新たに IME ON を決定した瞬間。前回セッションのリテラル履歴は
+            // 新しい IME ON セッションには無関係なため、リセットして recovery の機会を再付与する。
+            // これにより「0xF2→literal→BS再送(count=1)→0xF0→0xF2→literal→give up→stuck」を防ぐ。
+            // PassthroughConfirmKey / ReinjectConfirmKey / SymbolVkSent 等の通常タイピング操作では
+            // リセットしないことで「GJI 非対応ウィンドウでスペースを押すたびに BS が発動する」
+            // false positive ループを防ぐ。
+            if matches!(
+                reason,
+                crate::tsf::cold_reason::ColdReason::FocusChange
+                    | crate::tsf::cold_reason::ColdReason::SetOpenTrue
+            ) {
+                self.reset_consecutive_count();
+            }
+            tracing::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+        }
         self.last_unicode_transmit_ms.set(0);
+        self.last_cold_reason.set(reason);
+        self.idle_ms_at_last_cold.set(idle_ms);
+        // PassthroughConfirmKey/ReinjectConfirmKey は物理 Space/Enter/Escape が
+        // 実際に OS の TSF composition context へ届くタイミングであり、それ自体が
+        // 「活動」である。send_keys() を経由しないローマ字非出力の確定キー連打では
+        // last_send_ms が更新されず、idle_ms が壁時計時間で単調増加し続けて通常の
+        // タイピングを long_idle と誤判定してしまう（2026-07-10 診断）。確定キー系
+        // の reason に限り last_send_ms をここで touch し、次回の idle_ms 計算を
+        // このイベント基準にリセットする。
+        if reason.is_confirm_key() {
+            self.update_last_send_ms();
+        }
     }
 
-    /// フォーカス変更時に last_unicode_transmit_ms をリセットする。
+    /// フォーカスウィンドウが変わったことを通知する。
     pub fn on_focus_changed(&self) {
+        let idle_ms = self.ms_since_last_send();
         self.last_unicode_transmit_ms.set(0);
-    }
-
-    /// unicode 送信時刻を返す。0 = 未送信。
-    #[must_use]
-    pub const fn last_unicode_transmit_ms(&self) -> u64 {
-        self.last_unicode_transmit_ms.get()
-    }
-
-    /// unicode 送信時刻をセットする。
-    pub fn set_last_unicode_transmit_ms(&self, ms: u64) {
-        self.last_unicode_transmit_ms.set(ms);
+        // FocusChange で last_cold_reason を更新し、F2NonTsf などの前回理由が
+        // フォーカス遷移後も残り続けて誤判定される不具合を防ぐ。
+        self.last_cold_reason
+            .set(crate::tsf::cold_reason::ColdReason::FocusChange);
+        self.idle_ms_at_last_cold.set(idle_ms);
+        self.reset_consecutive_count();
+        tracing::debug!("[composition] focus changed → marked cold");
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
-    /// 一度も送信していない場合は `u64::MAX` を返す。
+    /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
     #[must_use]
     pub fn ms_since_last_send(&self) -> u64 {
         let last = self.last_send_ms.get();
@@ -134,6 +181,12 @@ impl WarmEpoch {
         self.last_send_ms.set(ms);
     }
 
+    /// 最後に cold になった時点での idle 時間（ms）を返す。
+    #[must_use]
+    pub const fn idle_ms_at_last_cold(&self) -> u64 {
+        self.idle_ms_at_last_cold.get()
+    }
+
     /// cold-start 発生回数を返す。
     #[must_use]
     pub const fn cold_start_count(&self) -> Generation {
@@ -145,62 +198,6 @@ impl WarmEpoch {
         let n = self.cold_start_count.get().next();
         self.cold_start_count.set(n);
         n
-    }
-}
-
-impl Default for WarmEpoch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ── ColdContext ──
-
-/// cold になった理由・idle 時間・連続 recovery 回数を保持するサブ構造体。
-#[derive(Debug)]
-pub struct ColdContext {
-    /// 最後に cold にマークされた理由
-    last_cold_reason: std::cell::Cell<crate::tsf::cold_reason::ColdReason>,
-    /// 最後に cold になった時点での idle 時間（ms）
-    idle_ms_at_last_cold: std::cell::Cell<u64>,
-    /// `RawTsfLiteralRecovery` が連続で発火した回数
-    raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
-}
-
-impl ColdContext {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            last_cold_reason: std::cell::Cell::new(
-                crate::tsf::cold_reason::ColdReason::FocusChange,
-            ),
-            idle_ms_at_last_cold: std::cell::Cell::new(0),
-            raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
-        }
-    }
-
-    /// cold にマークされた理由と idle 時間を記録する。
-    pub fn record_cold(&self, reason: crate::tsf::cold_reason::ColdReason, idle_ms: u64) {
-        self.last_cold_reason.set(reason);
-        self.idle_ms_at_last_cold.set(idle_ms);
-    }
-
-    /// `RawTsfLiteralRecovery` 連続カウントをインクリメントして新値を返す。
-    pub fn increment_consecutive_count(&self) -> u32 {
-        let n = self.raw_tsf_literal_consecutive_count.get() + 1;
-        self.raw_tsf_literal_consecutive_count.set(n);
-        n
-    }
-
-    /// `RawTsfLiteralRecovery` 連続カウントをリセットする。
-    pub fn reset_consecutive_count(&self) {
-        self.raw_tsf_literal_consecutive_count.set(0);
-    }
-
-    /// 最後に cold になった時点での idle 時間（ms）を返す。
-    #[must_use]
-    pub const fn idle_ms_at_last_cold(&self) -> u64 {
-        self.idle_ms_at_last_cold.get()
     }
 
     /// 最後に cold にマークされた理由を返す。
@@ -214,133 +211,12 @@ impl ColdContext {
     pub const fn consecutive_count(&self) -> u32 {
         self.raw_tsf_literal_consecutive_count.get()
     }
-}
 
-impl Default for ColdContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ── CompositionState ──
-
-/// TSF composition context の warm/cold 状態を管理する。
-///
-/// `Output` 構造体がこれをフィールドとして保持する。
-/// 内部を責務別サブ構造体に分割している:
-/// - `warm_epoch`: warmup epoch・送信タイミング・cold-start 回数
-/// - `cold_ctx`: cold の理由・idle 時間・連続 recovery 回数
-#[derive(Debug)]
-pub struct CompositionState {
-    /// warmup epoch・送信タイミング・cold-start 回数
-    pub warm_epoch: WarmEpoch,
-    /// cold の理由・idle 時間・連続 recovery 回数
-    pub cold_ctx: ColdContext,
-}
-
-impl Default for CompositionState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CompositionState {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            warm_epoch: WarmEpoch::new(),
-            cold_ctx: ColdContext::new(),
-        }
-    }
-
-    /// IME composition context をコールド状態にマークする。
-    pub fn mark_composition_cold(&self, reason: crate::tsf::cold_reason::ColdReason) {
-        let idle_ms = self.ms_since_last_send();
-        if reason == crate::tsf::cold_reason::ColdReason::RawTsfLiteralRecovery {
-            let n = self.cold_ctx.increment_consecutive_count();
-            tracing::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
-        } else {
-            // consecutive_count はフォーカス変更と SetOpenTrue（engine activation）でリセット。
-            // SetOpenTrue = engine が新たに IME ON を決定した瞬間。前回セッションのリテラル履歴は
-            // 新しい IME ON セッションには無関係なため、リセットして recovery の機会を再付与する。
-            // これにより「0xF2→literal→BS再送(count=1)→0xF0→0xF2→literal→give up→stuck」を防ぐ。
-            // PassthroughConfirmKey / ReinjectConfirmKey / SymbolVkSent 等の通常タイピング操作では
-            // リセットしないことで「GJI 非対応ウィンドウでスペースを押すたびに BS が発動する」
-            // false positive ループを防ぐ。
-            if matches!(
-                reason,
-                crate::tsf::cold_reason::ColdReason::FocusChange
-                    | crate::tsf::cold_reason::ColdReason::SetOpenTrue
-            ) {
-                self.cold_ctx.reset_consecutive_count();
-            }
-            tracing::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
-        }
-        self.warm_epoch.mark_cold();
-        self.cold_ctx.record_cold(reason, idle_ms);
-        // PassthroughConfirmKey/ReinjectConfirmKey は物理 Space/Enter/Escape が
-        // 実際に OS の TSF composition context へ届くタイミングであり、それ自体が
-        // 「活動」である。send_keys() を経由しないローマ字非出力の確定キー連打では
-        // last_send_ms が更新されず、idle_ms が壁時計時間で単調増加し続けて通常の
-        // タイピングを long_idle と誤判定してしまう（2026-07-10 診断）。確定キー系
-        // の reason に限り last_send_ms をここで touch し、次回の idle_ms 計算を
-        // このイベント基準にリセットする。
-        if reason.is_confirm_key() {
-            self.warm_epoch.update_last_send_ms();
-        }
-    }
-
-    /// フォーカスウィンドウが変わったことを通知する。
-    pub fn on_focus_changed(&self) {
-        let idle_ms = self.ms_since_last_send();
-        self.warm_epoch.on_focus_changed();
-        // FocusChange で last_cold_reason を更新し、F2NonTsf などの前回理由が
-        // フォーカス遷移後も残り続けて誤判定される不具合を防ぐ。
-        self.cold_ctx
-            .record_cold(crate::tsf::cold_reason::ColdReason::FocusChange, idle_ms);
-        self.cold_ctx.reset_consecutive_count();
-        tracing::debug!("[composition] focus changed → marked cold");
-    }
-
-    /// 最後の `send_keys` 完了からの経過時間（ms）。
-    /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
-    #[must_use]
-    pub fn ms_since_last_send(&self) -> u64 {
-        self.warm_epoch.ms_since_last_send()
-    }
-
-    /// `last_send_ms` を現在時刻に更新する。
-    pub fn update_last_send_ms(&self) {
-        self.warm_epoch.update_last_send_ms();
-    }
-
-    /// 最後に cold になった時点での idle 時間（ms）を返す。
-    #[must_use]
-    pub const fn idle_ms_at_last_cold(&self) -> u64 {
-        self.cold_ctx.idle_ms_at_last_cold()
-    }
-
-    /// cold-start 発生回数を返す。
-    #[must_use]
-    pub const fn cold_start_count(&self) -> Generation {
-        self.warm_epoch.cold_start_count()
-    }
-
-    /// cold-start 発生回数をインクリメントして新値を返す。
-    pub fn increment_cold_start_count(&self) -> Generation {
-        self.warm_epoch.increment_cold_start_count()
-    }
-
-    /// 最後に cold にマークされた理由を返す。
-    #[must_use]
-    pub const fn last_cold_reason(&self) -> crate::tsf::cold_reason::ColdReason {
-        self.cold_ctx.last_cold_reason()
-    }
-
-    /// `RawTsfLiteralRecovery` が連続で発火した回数を返す。
-    #[must_use]
-    pub const fn consecutive_count(&self) -> u32 {
-        self.cold_ctx.consecutive_count()
+    /// `RawTsfLiteralRecovery` 連続カウントをインクリメントして新値を返す。
+    fn increment_consecutive_count(&self) -> u32 {
+        let n = self.raw_tsf_literal_consecutive_count.get() + 1;
+        self.raw_tsf_literal_consecutive_count.set(n);
+        n
     }
 
     /// `RawTsfLiteralRecovery` 連続カウントをリセットする。
@@ -349,18 +225,18 @@ impl CompositionState {
     /// 呼ぶ（BUG-27 追補4）。フォーカス変更・`SetOpenTrue` 以外に、本物の confirm
     /// でも「連続失敗」の連続性が切れるため、ここでもリセットが必要。
     pub fn reset_consecutive_count(&self) {
-        self.cold_ctx.reset_consecutive_count();
+        self.raw_tsf_literal_consecutive_count.set(0);
     }
 
     /// unicode 送信時刻を返す。0 = 未送信。
     #[must_use]
     pub const fn last_unicode_transmit_ms(&self) -> u64 {
-        self.warm_epoch.last_unicode_transmit_ms()
+        self.last_unicode_transmit_ms.get()
     }
 
     /// unicode 送信時刻をセットする（`PendingGjiConfirm` 状態の開始）。
     pub fn set_last_unicode_transmit_ms(&self, ms: u64) {
-        self.warm_epoch.set_last_unicode_transmit_ms(ms);
+        self.last_unicode_transmit_ms.set(ms);
     }
 }
 
@@ -782,7 +658,7 @@ mod tests {
         crate::clock::advance(60);
 
         state.mark_composition_cold(crate::tsf::cold_reason::ColdReason::PassthroughConfirmKey);
-        let first_idle = state.cold_ctx.idle_ms_at_last_cold();
+        let first_idle = state.idle_ms_at_last_cold();
         assert!(
             (40..150).contains(&first_idle),
             "1回目の idle は直前 sleep の ~60ms を反映するはず: {first_idle}ms"
@@ -791,7 +667,7 @@ mod tests {
         crate::clock::advance(60);
 
         state.mark_composition_cold(crate::tsf::cold_reason::ColdReason::PassthroughConfirmKey);
-        let second_idle = state.cold_ctx.idle_ms_at_last_cold();
+        let second_idle = state.idle_ms_at_last_cold();
         assert!(
             (40..150).contains(&second_idle),
             "確定キー連打のたびに last_send_ms がリセットされ idle は ~60ms のはず\
@@ -1129,35 +1005,9 @@ mod tests {
         assert_eq!(c.consecutive_count(), 0);
     }
 
-    // ── WarmEpoch / CompositionState の状態(mutants で MISSED だった穴、ADR-272) ──
+    // ── CompositionState の状態(mutants で MISSED だった穴、ADR-272) ──
 
-    /// `last_unicode_transmit_ms` は set で入り、`mark_cold`・`on_focus_changed` で 0 に戻る。
-    #[test]
-    fn warm_epoch_unicode_transmit_is_set_and_reset() {
-        let e = WarmEpoch::new();
-        assert_eq!(e.last_unicode_transmit_ms(), 0);
-        e.set_last_unicode_transmit_ms(1234);
-        assert_eq!(e.last_unicode_transmit_ms(), 1234);
-        e.mark_cold();
-        assert_eq!(e.last_unicode_transmit_ms(), 0, "mark_cold でリセット");
-        e.set_last_unicode_transmit_ms(777);
-        e.on_focus_changed();
-        assert_eq!(e.last_unicode_transmit_ms(), 0, "フォーカス変更でリセット");
-    }
-
-    /// `increment_cold_start_count` は新値を返し、同じ値が `cold_start_count` に保存される。
-    #[test]
-    fn warm_epoch_increment_returns_and_stores_next_generation() {
-        let e = WarmEpoch::new();
-        let before = e.cold_start_count().value();
-        let a = e.increment_cold_start_count();
-        assert_eq!(a.value(), before + 1);
-        assert_eq!(e.cold_start_count().value(), a.value());
-        let b = e.increment_cold_start_count();
-        assert_eq!(b.value(), a.value() + 1);
-    }
-
-    /// `CompositionState` は WarmEpoch への委譲(unicode 送信時刻・cold-start 回数)を保つ。
+    /// unicode 送信時刻・cold-start 回数の set / reset / increment。
     #[test]
     fn composition_state_delegates_unicode_transmit_and_cold_start_count() {
         let c = CompositionState::new();
