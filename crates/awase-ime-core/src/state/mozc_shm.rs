@@ -19,6 +19,9 @@ pub const BLOCK_SIZE: usize = 48;
 /// 48 バイトだけを読む（ADR-265 D3）。**入力中の文字の確認（ADR-270）だけが** 80 バイトを読む。
 pub const V3_BLOCK_SIZE: usize = 80;
 
+/// version 5 以降のブロックの大きさ（キーボードフォーカスの時刻を含む。mozc-readable の診断用の追記）。
+pub const V5_BLOCK_SIZE: usize = 144;
+
 /// `magic`（メモリ上のバイト列は `4D 44 52 5A`、ASCII の `MDRZ`）。
 pub const MAGIC: u32 = 0x5A52_444D;
 
@@ -59,6 +62,12 @@ fn u32_at<const N: usize>(bytes: &[u8; N], offset: usize) -> u32 {
         bytes[offset + 2],
         bytes[offset + 3],
     ])
+}
+
+fn u64_at<const N: usize>(bytes: &[u8; N], offset: usize) -> u64 {
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&bytes[offset..offset + 8]);
+    u64::from_le_bytes(b)
 }
 
 impl RawBlock {
@@ -164,6 +173,53 @@ impl CompositionFields {
             server_ready: u32_at(bytes, 72),
             composition_key_seq: u32_at(bytes, 76),
         }
+    }
+}
+
+/// version 5 の追記分（オフセット 112〜143）。TIP がキーを受け取る側になった時刻と、その後の最初のキーの時刻
+/// （いずれも `GetTickCount64()`、0=まだ無い）。診断用で、判断には使わない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FocusTicks {
+    /// `ITfKeyEventSink::OnSetFocus(TRUE)`
+    pub key_sink_focus_tick_ms: u64,
+    /// `ITfKeyEventSink::OnSetFocus(FALSE)`
+    pub key_sink_blur_tick_ms: u64,
+    /// `ITfThreadFocusSink::OnSetThreadFocus`
+    pub thread_focus_tick_ms: u64,
+    /// `key_sink_focus_tick_ms` の後に TIP が最初に数えたキーダウン
+    pub first_key_tick_ms: u64,
+}
+
+impl FocusTicks {
+    /// 144 バイトの追記分（オフセット 112〜143）を解釈する（検証はしない）。
+    #[must_use]
+    pub fn parse(bytes: &[u8; V5_BLOCK_SIZE]) -> Self {
+        Self {
+            key_sink_focus_tick_ms: u64_at(bytes, 112),
+            key_sink_blur_tick_ms: u64_at(bytes, 120),
+            thread_focus_tick_ms: u64_at(bytes, 128),
+            first_key_tick_ms: u64_at(bytes, 136),
+        }
+    }
+
+    /// ログ用。`sent_ms`（awase がキーを送った時刻、`GetTickCount64`）からの差を符号つきで出す（負=送る前）。
+    #[must_use]
+    pub fn describe_relative_to(&self, sent_ms: u64) -> String {
+        fn rel(tick: u64, sent_ms: u64) -> String {
+            if tick == 0 {
+                "none".to_string()
+            } else {
+                // `GetTickCount64` どうしの差なので、符号つきの i64 に収まる。
+                format!("{:+}ms", tick.wrapping_sub(sent_ms).cast_signed())
+            }
+        }
+        format!(
+            "key_sink_focus {}, key_sink_blur {}, thread_focus {}, first_key {}",
+            rel(self.key_sink_focus_tick_ms, sent_ms),
+            rel(self.key_sink_blur_tick_ms, sent_ms),
+            rel(self.thread_focus_tick_ms, sent_ms),
+            rel(self.first_key_tick_ms, sent_ms),
+        )
     }
 }
 
@@ -1204,5 +1260,33 @@ mod tests {
         assert_eq!(compose_literal_backs("ke"), 2);
         assert_eq!(compose_literal_backs("ltu"), 3);
         assert_eq!(compose_literal_backs("a"), 1);
+    }
+
+    #[test]
+    fn focus_ticks_parse_reads_the_version_5_fields_little_endian() {
+        let mut b = [0u8; V5_BLOCK_SIZE];
+        b[112..120].copy_from_slice(&1_000u64.to_le_bytes());
+        b[120..128].copy_from_slice(&2_000u64.to_le_bytes());
+        b[128..136].copy_from_slice(&3_000u64.to_le_bytes());
+        b[136..144].copy_from_slice(&4_000u64.to_le_bytes());
+        let t = FocusTicks::parse(&b);
+        assert_eq!(t.key_sink_focus_tick_ms, 1_000);
+        assert_eq!(t.key_sink_blur_tick_ms, 2_000);
+        assert_eq!(t.thread_focus_tick_ms, 3_000);
+        assert_eq!(t.first_key_tick_ms, 4_000);
+    }
+
+    #[test]
+    fn describe_relative_to_shows_the_signed_distance_from_the_send() {
+        let t = FocusTicks {
+            key_sink_focus_tick_ms: 10_120, // 送信の 20ms 後 = 送信が前景化より前
+            key_sink_blur_tick_ms: 0,
+            thread_focus_tick_ms: 9_950, // 送信の 150ms 前
+            first_key_tick_ms: 10_130,
+        };
+        assert_eq!(
+            t.describe_relative_to(10_100),
+            "key_sink_focus +20ms, key_sink_blur none, thread_focus -150ms, first_key +30ms"
+        );
     }
 }
