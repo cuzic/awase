@@ -528,6 +528,10 @@ jobs:
             # run 36654801007: 撤去しても入力先のテキスト・cold 経路・固着は変わらず PASS した(awase 自身の ImeOn 遷移が GjiFsm を同期する)。修正の有無は --require-sync(journal 上の同期)だけが検出できる。
             cfg('sc-reopen-tsf-gji-gap600-nofix', 'fail', mutator='a8-no-gji-reopen-sync.sh', check='reopen', runs=3, wait=420, checkargs='--require-cold --require-sync',
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab'),
+            # 撤去実験(ECRS DD5-01、ADR-203 決定 4): フォーカス時と IME 種別同期の GjiFsm への ImeOn 通知 2 か所を外したビルド(ablations/a12)でも、
+            # 上の sc-reopen-tsf-gji-gap600 と同じ判定(--require-cold --require-sync)が通ること=送信直前の level 突合(G2)が拾う。expect=pass。
+            cfg('sc-reopen-tsf-gji-gap600-a12', 'pass', mutator='a12-no-gji-point-sync.sh', check='reopen', runs=3, wait=420, checkargs='--require-cold --require-sync',
+                stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab'),
             cfg('sc-reopen-tsf-msime-gap600', 'pass', check='reopen', ime='msime', runs=3, wait=420,
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab --msime'),
             cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900, checkargs='--require-cold --require-sync',
