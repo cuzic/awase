@@ -457,16 +457,12 @@ mod tests {
     const MAX: u32 = 5;
 
     fn blind() -> FeedbackPolicy {
-        FeedbackPolicy::Blind {
-            max_attempts: MAX,
-            backoff: Duration::from_millis(0),
-        }
+        FeedbackPolicy::Blind { max_attempts: MAX }
     }
 
     fn read() -> FeedbackPolicy {
         FeedbackPolicy::Read {
             source: ObservationSource::ObserverPoll,
-            deadline: Duration::from_millis(300),
         }
     }
 

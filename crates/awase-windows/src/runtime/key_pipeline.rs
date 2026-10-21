@@ -603,7 +603,7 @@ impl Runtime {
         // BUG-34 横展開レビュー指摘: 完了 closure（下記 `with_app`）が再入で `None` を
         // 返した場合、フラグを戻す機会が失われ、以後 idle-conv-check が永久に発火
         // しなくなる恐れがあった。spawn 時刻を持たせ、
-        // `IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS` を超えていれば「放棄された」とみなして
+        // `IME_APPLY_PENDING_TIMEOUT_MS`（BUG-34 のハング境界 + マージン）を超えていれば「放棄された」とみなして
         // 新規 spawn を許可することで自己回復させる。
         // BUG-77 code review 追補: この in-flight フラグは「通常の idle-conv-check」の
         // 多重 spawn 防止専用であり、resync（`resync_generation.is_some()`）はこれを
@@ -619,7 +619,7 @@ impl Runtime {
         if resync_generation.is_none() {
             if let Some(since) = self.platform_state.gate.idle_conv_check_in_flight_since_ms {
                 let elapsed = now_ms_for_gate.saturating_sub(since);
-                if elapsed < crate::state::platform_state::IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS {
+                if elapsed < crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS {
                     tracing::debug!(
                         "[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ"
                     );

@@ -48,8 +48,8 @@
 //! hwnd 再クエリ（`async`）まで必須と読んだ場合にのみ正しい。**捕獲自体は
 //! `get_focused_hwnd()` 1 回**であり、旧 `set_ime_romaji_mode()` が内部で
 //! やっていたライブクエリと同一なので、「捕獲を write の外へ出す」だけなら
-//! 同期のままできる。再検証は focus 世代の照合のみで行う
-//! （`ActuationTarget::verify_gen_only` の doc 参照）。
+//! 同期のままできる。同期版は完全同期(await 点なし)なので再検証をしない
+//! （旧 `verify_gen_only` は恒真の比較だったので撤去、ECRS DD2-03）。
 //!
 //! 到達可能性（ADR-089 §6 Phase C 実施記録 C-7 と §9-21 の訂正）:
 //! `executor.rs`/`key_pipeline.rs` は `imm_cross_is_first_applicable` で async
