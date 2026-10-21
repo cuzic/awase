@@ -12,7 +12,7 @@
 //!
 //! - [`gji_monitor`] バックグラウンドスレッド → `TSF_OBS.gji_last_io_ms`, `TSF_OBS.gji_monitor_ok`
 //! - [`win_event_obs`] `observation_event_proc` → `TSF_OBS.gji_candidate_visible`,
-//!   `TSF_OBS.gji_candidate_show`, `TSF_OBS.focus_namechange`, `TSF_OBS.ime_composition_active`
+//!   `TSF_OBS.gji_candidate_show`, `TSF_OBS.ime_composition_active`
 //!
 //! [`ObservedState::from_snapshot()`]: crate::state::ime_decision_view::ObservedState::from_snapshot
 //! [`gji_monitor`]: super::gji_monitor
@@ -71,21 +71,11 @@ pub(in crate::tsf) struct Baseline(u32);
 /// 書き込み元:
 /// - `GjiMonitor` バックグラウンドスレッド → `gji_last_io_ms`, `gji_monitor_ok`
 /// - `observation_event_proc` → `gji_candidate_visible`, `gji_candidate_show`,
-///   `focus_namechange`, `ime_composition_active`
+///   `ime_composition_active`
 ///
 /// 読み取りは judgement 層 (`probe.rs`) と action 層 (`output.rs`) から行う。
 #[derive(Debug)]
 pub struct TsfObservations {
-    /// OBJ_NAMECHANGE 発火のたびに +1 されるカウンタ。現在は write-only。
-    ///
-    /// かつて `gji_warmup_coro.rs` の NameChangeWait フェーズ（Phase 3）がこのカウンタの
-    /// 変化を読み取って GJI 応答を判定していたが、`DIAG_DISABLE_PROACTIVE_TSF_WARMUP`
-    /// （常時 true）下で当該フェーズ自体が到達不能だったため撤去した（`docs/known-bugs.md`
-    /// BUG-24 参照）。書き込み側（`observation_event_proc` の NAMECHANGE イベント通知、
-    /// `send_eager_tsf_warmup` によるリセット）は WinEventHook 登録・他フィールドと絡む
-    /// ため本コミットでは触れず残している。
-    pub(in crate::tsf) focus_namechange: ChangeCounter,
-
     /// `GoogleJapaneseInputCandidateWindow` が `EVENT_OBJECT_SHOW` で表示されるたびに +1 されるカウンタ。
     ///
     /// raw TSF literal 検出用: cold start ローマ字送信後にこのカウンタが増えれば
@@ -274,7 +264,6 @@ impl TsfObservations {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            focus_namechange: ChangeCounter::new(),
             gji_candidate_show: ChangeCounter::new(),
             gji_candidate_visible: AtomicBool::new(false),
             gji_last_io_ms: AtomicU64::new(0),
@@ -445,7 +434,7 @@ impl TsfObservations {
 ///
 /// - `GjiMonitor` バックグラウンドスレッド → `gji_last_io_ms`, `gji_monitor_ok`
 /// - `observation_event_proc` → `gji_candidate_visible`, `gji_candidate_show`,
-///   `focus_namechange`, `composition_probe`
+///   `composition_probe`
 pub(in crate::tsf) static TSF_OBS: TsfObservations = TsfObservations::new();
 
 /// `TSF_OBS` への並行テストアクセスを直列化する唯一のロック。

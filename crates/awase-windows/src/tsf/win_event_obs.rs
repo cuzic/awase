@@ -2,7 +2,7 @@
 // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! WinEvent 観察フック。
 //!
-//! `SetWinEventHook` で GJI candidate window の SHOW/HIDE、OBJ_NAMECHANGE、
+//! `SetWinEventHook` で GJI candidate window の SHOW/HIDE、
 //! および IME イベントを捕捉し、[`super::observer::TSF_OBS`] を更新する。
 
 use std::sync::atomic::Ordering;
@@ -10,8 +10,7 @@ use std::sync::atomic::Ordering;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, EVENT_OBJECT_HIDE, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW,
-    WINEVENT_OUTOFCONTEXT,
+    GetClassNameW, EVENT_OBJECT_HIDE, EVENT_OBJECT_SHOW, WINEVENT_OUTOFCONTEXT,
 };
 
 use crate::win32::HwndExt as _;
@@ -53,30 +52,9 @@ impl Drop for WinEventHookGuard {
 ///
 /// | フック | イベント範囲 | 目的 |
 /// |---|---|---|
-/// | NAMECHANGE | 0x800C | WezTerm title 変更カウンタ（`focus_namechange`、現在 write-only。BUG-24 参照） |
 /// | OBJECT_SHOW/HIDE | 0x8002-0x8003 | GJI candidate window 表示状態追跡 → raw TSF literal 検出用 |
 pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     let mut hooks = Vec::new();
-
-    // SAFETY: `observation_event_proc` は `'static` な extern "system" fn ポインタ。
-    //         `WINEVENT_OUTOFCONTEXT` によりコールバックはメッセージループスレッドで実行される。
-    //         返されたフックは `WinEventHookGuard::drop` で `UnhookWinEvent` される。
-    let nc_hook = unsafe {
-        SetWinEventHook(
-            EVENT_OBJECT_NAMECHANGE,
-            EVENT_OBJECT_NAMECHANGE,
-            None,
-            Some(observation_event_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        )
-    };
-    if nc_hook.is_invalid() {
-        tracing::warn!("[obs-hook] failed to install NAMECHANGE hook");
-    } else {
-        hooks.push(WinEventHookGuard(nc_hook));
-    }
 
     // SAFETY: `observation_event_proc` は `'static` な extern "system" fn ポインタ。
     //         `WINEVENT_OUTOFCONTEXT` によりコールバックはメッセージループスレッドで実行される。
@@ -127,7 +105,7 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     hooks
 }
 
-/// WinEvent 観察コールバック。NAMECHANGE / IME_SHOW / IME_HIDE / IME_CHANGE を処理する。
+/// WinEvent 観察コールバック。OBJECT_SHOW / OBJECT_HIDE / IME_SHOW / IME_HIDE / IME_CHANGE を処理する。
 #[expect(clippy::cognitive_complexity)]
 unsafe extern "system" fn observation_event_proc(
     _hook: HWINEVENTHOOK,
@@ -144,13 +122,6 @@ unsafe extern "system" fn observation_event_proc(
     }
 
     match event {
-        EVENT_OBJECT_NAMECHANGE => {
-            let class = hwnd_class_name(hwnd);
-            if class.contains("CASCADIA") {
-                let seq = TSF_OBS.focus_namechange.notify();
-                tracing::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
-            }
-        }
         EVENT_OBJECT_SHOW => {
             let class = hwnd_class_name(hwnd);
             if class == GJI_CANDIDATE_CLASS {
