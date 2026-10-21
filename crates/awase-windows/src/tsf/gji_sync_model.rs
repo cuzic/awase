@@ -262,7 +262,7 @@ fn step(w: World, ev: Ev, v: Variant, unicode: bool) -> Option<Step> {
             if !w.belief {
                 return None; // エンジンは belief が ON のときだけ送る
             }
-            // G2: needs_belief_sync_on(send_has_romaji=true, injection_is_unicode, strategy_is_gji_fsm=kind_gji,
+            // G2: needs_belief_sync_on(send_has_romaji=true, strategy_is_gji_fsm=kind_gji,
             //                          gji_is_off_cold, probe_or_recovery_blocking=false)
             let g2_applies = v.g2 && w.kind_gji && w.off && (!unicode || v.g2_in_unicode);
             if g2_applies {

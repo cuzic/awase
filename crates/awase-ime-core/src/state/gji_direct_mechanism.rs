@@ -295,18 +295,17 @@ pub fn legacy_gji_sync_obligation(open: bool, outcome: ImeOpenOutcome) -> Option
 /// 揺れの影響を受けない、入口も問わない）。**種別（K 軸）ではなく戦略の実体（`needs_f2_probe`）で
 /// ゲートする**（INV-42）。
 ///
-/// 対象外: Unicode 注入モード（`GjiFsm` に `KeyInput` を送らず composition も迂回するため per-VK/ESC
-/// の害が無い）、probe・raw recovery/reinit の実行中（probe_id の相関が崩れる。次の送信で拾う）。
+/// 対象外: probe・raw recovery/reinit の実行中（probe_id の相関が崩れる。次の送信で拾う）。
+/// （Unicode 注入モードは ADR-276 で撤去した。かつては `GjiFsm` に `KeyInput` を送らず composition も
+/// 迂回するため対象外だった。）
 #[must_use]
 pub const fn needs_belief_sync_on(
     send_has_romaji: bool,
-    injection_is_unicode: bool,
     strategy_is_gji_fsm: bool,
     gji_is_off_cold: bool,
     probe_or_recovery_blocking: bool,
 ) -> bool {
     send_has_romaji
-        && !injection_is_unicode
         && strategy_is_gji_fsm
         && gji_is_off_cold
         && !probe_or_recovery_blocking
@@ -453,15 +452,15 @@ mod tests {
 
     #[test]
     fn belief_sync_on_decision_table_is_exhaustive() {
-        // 全 2^5 組: 真になるのは「ローマ字あり・非Unicode・GjiFsm戦略・OffCold・非blocking」の1通りだけ。
-        for bits in 0u8..32 {
+        // 全 2^4 組: 真になるのは「ローマ字あり・GjiFsm戦略・OffCold・非blocking」の1通りだけ。
+        for bits in 0u8..16 {
             let b = |i: u8| bits & (1 << i) != 0;
-            let (romaji, unicode, f2, off, blocking) = (b(0), b(1), b(2), b(3), b(4));
-            let want = romaji && !unicode && f2 && off && !blocking;
+            let (romaji, f2, off, blocking) = (b(0), b(1), b(2), b(3));
+            let want = romaji && f2 && off && !blocking;
             assert_eq!(
-                needs_belief_sync_on(romaji, unicode, f2, off, blocking),
+                needs_belief_sync_on(romaji, f2, off, blocking),
                 want,
-                "bits={bits:05b}"
+                "bits={bits:04b}"
             );
         }
     }

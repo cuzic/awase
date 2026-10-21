@@ -90,8 +90,7 @@ impl Runtime {
         // 呼ぶことで injection_hint() が新ウィンドウ (WezTerm 等) を正しく参照できる。
         {
             let hint = self.platform.injection_hint();
-            let new_mode =
-                crate::output::types::injection_mode_for(hint, self.platform_state.focus.app_kind);
+            let new_mode = crate::output::types::injection_mode_for(hint);
             self.platform.update_injection_mode(new_mode);
         }
         if process_changed {
@@ -133,8 +132,7 @@ impl Runtime {
         // injection_mode の再計算は呼び出し元に残す（指摘9: `on_focus_process_changed`
         // とは呼び出し順序が異なるため `enter_focus_scope` には含めない）。
         let hint = self.platform.injection_hint();
-        let new_mode =
-            crate::output::types::injection_mode_for(hint, self.platform_state.focus.app_kind);
+        let new_mode = crate::output::types::injection_mode_for(hint);
         self.platform.update_injection_mode(new_mode);
     }
 

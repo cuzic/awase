@@ -411,13 +411,8 @@ pub(crate) enum DispatchResult {
 
 impl DispatchResult {
     #[cfg(test)]
-    pub(crate) fn is_done(&self) -> bool {
-        matches!(self, Self::Ended(e) if e.reason != StageEndReason::UpgradedToTsf)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_learned_tsf(&self) -> bool {
-        matches!(self, Self::Ended(e) if e.reason == StageEndReason::UpgradedToTsf)
+    pub(crate) const fn is_done(&self) -> bool {
+        matches!(self, Self::Ended(_))
     }
 }
 
@@ -595,12 +590,6 @@ where
                         target: target.into(),
                     });
                     machine.apply_vk_sent(detector, deadline_ms);
-                }
-
-                ProbeAction::UpgradeToTsf => {
-                    // UnicodeLiteralObserverFsm が GJI write なしと判断した。
-                    // Done は後続 action として queue に入っているので、ここでは LearnedTsf を返す。
-                    break 'stage Some(StageEndReason::UpgradedToTsf);
                 }
 
                 ProbeAction::RawTsfLiteralRecovery {
@@ -954,21 +943,6 @@ mod tests {
                 })
             ),
             "ProbeAction::Done は ProbeDone で終わるはず: {result:?}"
-        );
-    }
-
-    #[test]
-    fn upgrade_to_tsf_ends_stage_as_learned_tsf() {
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let result = dispatch_for_test(&mut machine, vec![ProbeAction::UpgradeToTsf], &io);
-        assert!(
-            result.is_learned_tsf(),
-            "UpgradeToTsf は is_learned_tsf()==true で終わるはず: {result:?}"
-        );
-        assert!(
-            !result.is_done(),
-            "UpgradeToTsf は is_done() (warm/aborted 完了) ではない: {result:?}"
         );
     }
 

@@ -427,7 +427,6 @@ impl WindowsPlatform {
             state_changed: state_before_step != state_after_step,
             needs_composition_reset: result.needs_gji_composition_reset,
             has_gji_response: result.gji_response.is_some(),
-            learned_tsf: result.learned_tsf,
             completed: result.completed_cold_seq.is_some(),
             terminal_timer,
             is_first_tick: self.probe_tick_index == 1,
@@ -455,25 +454,8 @@ impl WindowsPlatform {
         if let Some(gji_resp) = result.gji_response {
             self.dispatch_gji_response(&gji_resp);
         }
-        if result.learned_tsf {
-            // UnicodeLiteralObserverFsm が GJI write なしと判断 → フォーカス中クラスを Tsf に昇格。
-            let class_name = self.focus.class_name().to_string();
-            tracing::info!("[injection-mode] {class_name:?} → Tsf 事後昇格（GJI write 未観測）");
-            self.focus.learn_injection_mode_tsf(class_name);
-            // 現セッション（現在のフォーカスウィンドウ）にも即時 Tsf モードを適用する。
-            self.output
-                .update_injection_mode(crate::output::InjectionMode::Tsf);
-            // 次の文字送信が cold-start TSF probe を正しく踏むよう composition を cold にリセット。
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::FocusChange);
-        }
-        if result.completed_cold_seq.is_some() || result.learned_tsf {
-            let outcome = if result.learned_tsf {
-                "LearnedTsf"
-            } else {
-                "Done"
-            };
-            self.note_tsf_probe_completed(outcome, result.completed_cold_seq, None);
+        if result.completed_cold_seq.is_some() {
+            self.note_tsf_probe_completed("Done", result.completed_cold_seq, None);
         }
         self.apply_timer_command(result.timer_cmd);
     }
@@ -539,27 +521,6 @@ impl WindowsPlatform {
                     self.active_tsf_probe_started_ms = Some((now_ms, u64::from(probe_id.0)));
                     self.reset_probe_tick_counters();
                     self.note_tsf_probe_started_from_gji_action(*probe_id);
-                    // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
-                    // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
-                    // 即 WarmupComplete を dispatch して OnWarm に遷移させる。
-                    // long-cold（≥10s idle）でも何も送らない（VK_IME_ON poke・warmup FSM・reinit は ADR-212 P3/P5 で撤去）。
-                    if self.output.injection_mode == crate::output::InjectionMode::Unicode {
-                        use crate::tsf::gji_fsm::GjiEvent;
-                        let state_before = self.gji_state_label();
-                        let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
-                            probe_id: *probe_id,
-                        });
-                        self.note_gji_transition("WarmupComplete(unicode)", state_before);
-                        // ADR-123 `/code-review` 指摘: このハンドラ内で直前に push した
-                        // TsfProbeStarted と Start/Complete を probe_id で突合できるよう、
-                        // cold_seq には（別の採番空間である）probe_id を入れない。
-                        self.note_tsf_probe_completed(
-                            "UnicodeImmediate",
-                            None,
-                            Some(u64::from(probe_id.0)),
-                        );
-                        self.dispatch_gji_response_from(origin, &warmup_resp);
-                    }
                 }
                 GjiAction::CancelProbe { probe_id } => {
                     if self.output.gji_current_probe_id() == Some(*probe_id) {
@@ -988,7 +949,6 @@ impl PlatformRuntime for WindowsPlatform {
         // lock しない。フックの応答時間に効く経路）。
         if crate::state::gji_direct_mechanism::needs_belief_sync_on(
             crate::state::gji_direct_mechanism::send_carries_romaji(actions),
-            self.output.injection_mode == crate::output::InjectionMode::Unicode,
             self.output.f2_warmup_owned(),
             self.output.gji_is_off_cold(),
             false,
@@ -999,15 +959,6 @@ impl PlatformRuntime for WindowsPlatform {
                 crate::state::gji_direct_mechanism::GjiFsmSync::OnImeOnBelief,
             );
         }
-        // Unicode モード + 未学習クラスなら、Romaji 送信後に GJI write 観測をリクエストする（事後昇格）。
-        if self.output.injection_mode == crate::output::InjectionMode::Unicode
-            && !self
-                .focus
-                .has_learned_injection_mode_tsf(self.focus.class_name())
-        {
-            self.output.request_unicode_observation();
-        }
-        // Unicode long-cold warmup(VK_IME_ON+VK_A+BS と文字の保留)は ADR-212 P5 で撤去した。
         self.output.send_keys(actions);
         self.drain_output_post_send_effects();
     }

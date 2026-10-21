@@ -358,18 +358,12 @@ pub fn log_composition_probe(cold_seq: Generation, label: &'static str) {
 /// 解決される注入モードのラベル文字列を返す（出力経路と同じロジックを参照する）。
 fn resolve_injection_mode_label() -> &'static str {
     use crate::focus::classifier::InjectionHint;
-    use crate::focus::AppKind;
 
     crate::with_app_ref(|app| {
-        let (hint, app_kind) = app.injection_hint();
+        let (hint, _) = app.injection_hint();
         match hint {
-            InjectionHint::ForceTsf => return "Tsf",
-            InjectionHint::ForceVk => return "Vk",
-            InjectionHint::Default => {}
-        }
-        match app_kind {
-            AppKind::TsfNative => "Vk",
-            _ => "Unicode",
+            InjectionHint::ForceTsf => "Tsf",
+            InjectionHint::ForceVk | InjectionHint::Default => "Vk",
         }
     })
     .unwrap_or("Unknown")

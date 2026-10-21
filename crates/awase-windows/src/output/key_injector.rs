@@ -16,8 +16,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 /// VK INPUT に使うマーカー種別。
 ///
-/// - `Injected`: Chrome/VK モードの単発キー送信（Unicode フォールバック経路の
-///   `send_romaji_per_key`、LSHIFT・VK_ESCAPE・VK_BACK 等）、scan code なし
+/// - `Injected`: Chrome/VK モードの単発キー送信（LSHIFT・VK_ESCAPE・VK_BACK 等）、scan code なし
 ///   （INJECTED_MARKER、`wScan=0`）
 /// - `InjectedWithScan`: Chrome composition 送信本体（scan code 付き、
 ///   INJECTED_MARKER。TSF 側の `make_tsf_key_input` と同じ construction を
@@ -128,26 +127,6 @@ impl KeyInjector {
         let mut inputs = Vec::with_capacity(4);
         Self::push_unicode_char_inputs(&mut inputs, ch, INJECTED_MARKER);
         let _ = crate::win32::send_input_safe(&inputs);
-    }
-
-    /// PerKey モード: 1文字ずつ個別の SendInput 呼び出し
-    #[expect(clippy::unused_self)]
-    pub(super) fn send_romaji_per_key(&self, romaji: &str) {
-        for ch in romaji.chars() {
-            if let Some((vk, needs_shift)) = crate::vk::ascii_to_vk(ch) {
-                Self::send_vk_pair(vk, needs_shift, VkMarker::Injected);
-            }
-        }
-    }
-
-    /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
-    pub(super) fn send_romaji_as_unicode(&self, romaji: &str) {
-        if let Some(kana) = self.kana_table.kana_for_romaji(romaji) {
-            self.send_unicode_char(kana);
-            return;
-        }
-        // テーブルにない場合はフォールバック
-        self.send_romaji_per_key(romaji);
     }
 
     // ── 静的ヘルパー（SendInput 操作） ────────────────────────────────────────

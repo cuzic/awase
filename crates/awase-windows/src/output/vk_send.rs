@@ -358,15 +358,6 @@ impl Output {
         KeyInjector::send_romaji_batch_immediate(romaji, chars);
     }
 
-    /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
-    ///
-    /// IME を経由せず、ひらがなを直接テキストフィールドに挿入する。
-    /// 変換テーブルにないローマ字は PerKey モードでフォールバック送信する。
-    /// 実際の変換・送信処理は `KeyInjector::send_romaji_as_unicode` に委譲する。
-    pub(super) fn send_romaji_as_unicode(&self, romaji: &str) {
-        self.injector.send_romaji_as_unicode(romaji);
-    }
-
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
     /// `KeyInjector::send_vk_runs` に委譲する。
     pub(super) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: Generation) {
@@ -492,8 +483,7 @@ impl Output {
     /// （`send_romaji_as_tsf` → `Tsf`、`send_romaji_batched` → `Chrome`）。
     /// `IMC_GETCONVERSIONMODE` の観測自体は injection mode に依存しないため、
     /// 呼び出し元を切り替えるだけで両モードに同じゲートを展開できる
-    /// （`InjectionMode::Unicode` は IME composition を経由しないため元々このゲートを
-    /// 呼ばず、対象外のままでよい）。
+    ///
     ///
     /// GJI の raw TSF literal 再送経路（`Output::flush_raw_tsf_literal_romaji` から
     /// `send_romaji_batched`/`send_romaji_batched_bypass_gate` 経由で呼ばれる）
