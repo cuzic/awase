@@ -187,7 +187,7 @@ pub struct TsfObservations {
     pub(super) candidate_was_seen: AtomicBool,
 
     /// `LiteralDetectCore` が最後に `CompositionConfirmed`（かつ非 partial-literal）を
-    /// 確認できた **`cold_seq`（`WarmEpoch::cold_start_count`）世代**。未確認なら `0`
+    /// 確認できた **`cold_seq`（`CompositionState::cold_start_count`）世代**。未確認なら `0`
     /// （`cold_start_count` は 0 始まりで、確認は必ず何らかの cold-start 後にしか
     /// 起こらないため `0` を「未確認」の番人値として使える）。
     ///
@@ -645,7 +645,7 @@ pub(crate) fn literal_session_confirmed_gen_snapshot() -> Option<Generation> {
 /// 同世代内の文字の literal-detect をスキップさせる。
 ///
 /// `cold_seq` は呼び出し元（`run_per_vk_confirm`/`LiteralDetectCore`）が確認した VK を
-/// 送信した時点の `WarmEpoch::cold_start_count()` であること（`0` は「未確認」の番人値
+/// 送信した時点の `CompositionState::cold_start_count()` であること（`0` は「未確認」の番人値
 /// のため渡さない）。
 pub(crate) fn mark_literal_session_confirmed(cold_seq: Generation) {
     debug_assert_ne!(
