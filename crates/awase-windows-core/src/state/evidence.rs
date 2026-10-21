@@ -29,7 +29,7 @@ use super::conv_classify::ConvSyncReason;
 use super::ime_event::{
     HwndId, ImePolicyProfile, ObservationAuthority, ObservationConfidence, ObservationSource,
 };
-use super::indicator_glyph::{BeliefLabel, LabelHit};
+use super::indicator_glyph::{BeliefLabel, FencedGlyph};
 #[cfg(test)]
 use super::probe_admission::FocusFence;
 use super::probe_admission::{AcceptedObservation, FocusEpoch};
@@ -275,12 +275,19 @@ impl Observed<MozcShm> {
 }
 
 impl Observed<TaskbarGlyph> {
-    /// 字形を**ラベル単位で照合して `Hit` した読み**（[`LabelHit`]）を witness に要求する。`Miss`（見本に近くない・曖昧）からは
-    /// 作れない。開閉は読みのラベルから決める（`Closed` なら閉、かな・英数なら開）。confidence は `Medium` 固定
-    /// （呼び出し元は選べない。H1 が否定され、実機の一致率が示されるまで High にしない。ADR-273）。
+    /// 字形を**ラベル単位で照合して `Hit` し、ADR-273 D4 の柵を通った読み**（[`FencedGlyph`]）を witness に要求する。
+    /// `Miss`（見本に近くない・曖昧）からも、柵を通っていない字形（押す前の状態を映した字形・別の窓の字形・前面と追跡がずれた字形）
+    /// からも作れない（`FencedGlyph` の構築子は `fence_glyph` だけ）。開閉は読みのラベルから決める: `Closed` なら閉、
+    /// かな・英数なら開。GJI では閉と半角英数が別の字形、MS-IME では {閉, 開+半角英数} が 1 つの `Closed`（ADR-261 決定 2）なので、
+    /// どちらの IME の表でもこの写しは正しい。「IME 無効」の字形（ADR-261 の `ce22e2`/`96a333`）が表に入った場合も `Closed` に写る。
+    /// confidence は `Medium` 固定（呼び出し元は選べない。H1 が否定され、実機の一致率が示されるまで High にしない）。
     #[must_use]
-    pub fn from_glyph(hit: LabelHit, hwnd: HwndId, focus_epoch: FocusEpoch) -> Self {
-        Self::new(hit.label != BeliefLabel::Closed, hwnd, focus_epoch)
+    pub const fn from_glyph(fenced: FencedGlyph, hwnd: HwndId, focus_epoch: FocusEpoch) -> Self {
+        Self::new(
+            !matches!(fenced.label(), BeliefLabel::Closed),
+            hwnd,
+            focus_epoch,
+        )
     }
 }
 

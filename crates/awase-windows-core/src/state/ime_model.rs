@@ -105,7 +105,11 @@ pub enum BaseDecision {
     },
     /// 入力インジケーターの字形の読み（ADR-273 D2）。`derive_any()` が `None` で、新鮮な Medium 以上が無く、
     /// 指標より新しい Medium 以上も無いとき（`ObservationStore::indicator_reading`）。`desired_open` は書かない。
-    IndicatorGlyph,
+    IndicatorGlyph {
+        /// 失効していない Medium 以上の観測（指標より古い）が居るのに、**鮮度が切れたために**指標が勝った（時刻の経過だけで
+        /// belief が変わった。入力が無いのに flip した理由を journal・`[effective-open-flip]` で区別する。D2 d5）。
+        promoted_by_staleness: bool,
+    },
     /// `derive_any()` が `None`（観測なし/矛盾）で `most_recent_trusted()` に
     /// フォールバック。
     MostRecentTrusted(ObservationSource),
@@ -484,7 +488,12 @@ impl ImeModel {
             // ADR-273 D2: `derive_any` の後・`most_recent_trusted` の前の独立した分岐。`derive_any`（`derive_filtered`）の中には
             // 入れない（`derive_any` は `ModeKeyPassedThrough` の `align_desired` と `align_placeholder_desired` が `desired_open` を
             // 書く根拠にするので、指標が `desired_open` に入ってしまう）。
-            (glyph.open, BaseDecision::IndicatorGlyph)
+            (
+                glyph.observation.open,
+                BaseDecision::IndicatorGlyph {
+                    promoted_by_staleness: glyph.promoted_by_staleness,
+                },
+            )
         } else if let Some(trusted) = self.observations.most_recent_trusted(now) {
             (
                 trusted.open,
@@ -813,6 +822,17 @@ impl ImeModel {
                 self.desired_is_placeholder = false;
             }
             ImeEvent::ObserverReported(observed) => {
+                // ADR-273 D4（二重の柵）: 殻は `fence_glyph` を通した字形だけを報告するが、**reducer も**、モード系の打鍵の予測が
+                // `GLYPH_KEY_FENCE_MS` 以内にあるときの字形を記録も照合もしない（journal の再生でも決定的。柵を殻だけに置くと
+                // 再生で確かめられない）。遅れて届いた押す前の状態の字形が、正しい予測を消して belief を押す前へ戻すのを防ぐ（B3）。
+                if observed.source() == ObservationSource::TaskbarGlyph
+                    && self.key_effect.is_some_and(|p| {
+                        envelope.time.tick_ms.saturating_sub(p.at_ms)
+                            < crate::tuning::GLYPH_KEY_FENCE_MS
+                    })
+                {
+                    return;
+                }
                 // 絶対ルール: Observer は desired_open を直接書き換えない。
                 // 値としての観測を記録する唯一の口（ADR-089 §2.1）。
                 self.observations
@@ -832,6 +852,7 @@ impl ImeModel {
                     envelope.time.tick_ms,
                 );
             }
+            ImeEvent::IndicatorGlyphMissed => self.observations.retract_indicator(),
             ImeEvent::FocusChanged {
                 profile,
                 to,
@@ -2258,7 +2279,7 @@ mod tests {
         label: crate::state::indicator_glyph::BeliefLabel,
     ) {
         use crate::state::evidence::{Observed, TaskbarGlyph};
-        use crate::state::indicator_glyph::{LabelHit, SampleOrigin};
+        use crate::state::indicator_glyph::{fence_glyph, FenceCtx, LabelHit, SampleOrigin};
         let hit = LabelHit {
             label,
             class: label.class(),
@@ -2266,7 +2287,18 @@ mod tests {
             ratio: f32::INFINITY,
             origin: SampleOrigin::Common,
         };
-        let any: AnyObservation = Observed::<TaskbarGlyph>::from_glyph(hit, HwndId::NULL, 0).into();
+        // 柵を通した読みだけが報告できる（モード系の打鍵が無く、フォーカス・前面が一致している文脈）。
+        let fenced = fence_glyph(
+            hit,
+            FenceCtx {
+                since_last_mode_key_ms: None,
+                focus_gen_unchanged: true,
+                foreground_in_sync: true,
+            },
+        )
+        .expect("柵を通る文脈");
+        let any: AnyObservation =
+            Observed::<TaskbarGlyph>::from_glyph(fenced, HwndId::NULL, 0).into();
         model.reduce(&envelope_at(
             seq,
             Instant::now(),
@@ -2284,7 +2316,12 @@ mod tests {
         report_glyph(&mut model, 1, 100, BeliefLabel::Closed);
         let res = model.resolve_open_at(Instant::now());
         assert!(!res.value, "閉の読みで belief は閉");
-        assert_eq!(res.decided_by.base, BaseDecision::IndicatorGlyph);
+        assert!(matches!(
+            res.decided_by.base,
+            BaseDecision::IndicatorGlyph {
+                promoted_by_staleness: false
+            }
+        ));
         assert_eq!(model.desired_open(), desired, "desired_open は書かない");
         // かな・英数の読みは開。
         for label in [BeliefLabel::Kana, BeliefLabel::Eisu] {
@@ -2292,7 +2329,12 @@ mod tests {
             report_glyph(&mut m, 1, 100, label);
             let res = m.resolve_open_at(Instant::now());
             assert!(res.value, "{label:?}");
-            assert_eq!(res.decided_by.base, BaseDecision::IndicatorGlyph);
+            assert!(matches!(
+                res.decided_by.base,
+                BaseDecision::IndicatorGlyph {
+                    promoted_by_staleness: false
+                }
+            ));
         }
     }
 
@@ -2329,7 +2371,9 @@ mod tests {
         report_glyph(&mut model, 1, 100, BeliefLabel::Closed);
         assert_eq!(
             model.resolve_open_at(Instant::now()).decided_by.base,
-            BaseDecision::IndicatorGlyph
+            BaseDecision::IndicatorGlyph {
+                promoted_by_staleness: false
+            }
         );
         observe_open(&mut model, 2, 200, true, ObservationConfidence::Medium);
         let res = model.resolve_open_at(Instant::now());
@@ -2367,30 +2411,125 @@ mod tests {
         );
     }
 
-    /// 字形も `reconcile_key_effect_open` を呼ぶ: settle 前の読みは予測を消さず、settle 後の読みは消す
-    /// （予測が居座り続けて、外から変わったときに古い予測が勝つのを防ぐ。D4 の柵は報告する側が通す）。
+    /// reducer の二重の柵（ADR-273 D4・B3）: モード系の打鍵の予測が `GLYPH_KEY_FENCE_MS` 以内にあるとき、字形は記録も照合もされない。
+    /// 予測の settle（`KEY_EFFECT_SETTLE_MS`=170ms）を過ぎていても、押す前の状態を映した字形は予測を消さない。柵の後は照合して予測を消す。
     #[test]
-    fn glyph_reconciles_the_key_effect_prediction_only_after_settle() {
+    fn reducer_drops_a_glyph_reported_inside_the_mode_key_fence() {
         use crate::state::indicator_glyph::BeliefLabel;
         let mut model = ImeModel::new();
         predict(&mut model, 1000, Some(false), None);
+        // settle（170ms）は過ぎているが柵（1000ms）の中: 字形は捨てられる。
         report_glyph(
             &mut model,
             2,
-            1000 + crate::tuning::KEY_EFFECT_SETTLE_MS - 1,
+            1000 + crate::tuning::KEY_EFFECT_SETTLE_MS,
             BeliefLabel::Kana,
         );
-        assert!(model.key_effect().is_some(), "settle 前は予測が残る");
+        assert!(model.key_effect().is_some(), "柵の中の字形は予測を消さない");
+        assert!(
+            model
+                .observations
+                .indicator_reading(Instant::now())
+                .is_none(),
+            "柵の中の字形は記録もされない"
+        );
+        // 柵の手前の最後の 1ms も捨てられ、柵の境界ちょうどから照合される。
         report_glyph(
             &mut model,
             3,
-            1000 + crate::tuning::KEY_EFFECT_SETTLE_MS,
+            1000 + crate::tuning::GLYPH_KEY_FENCE_MS - 1,
+            BeliefLabel::Kana,
+        );
+        assert!(model.key_effect().is_some());
+        report_glyph(
+            &mut model,
+            4,
+            1000 + crate::tuning::GLYPH_KEY_FENCE_MS,
             BeliefLabel::Kana,
         );
         assert!(
             model.key_effect().is_none(),
-            "settle 後の読みは予測を照合して消す"
+            "柵の後の読みは予測を照合して消す"
         );
+    }
+
+    /// 字形が `Miss` になったら読みを取り消す: 枠が消え、元の順位（ここでは `desired_open` への fallback）に戻る。`desired_open` は書かない。
+    #[test]
+    fn glyph_miss_event_retracts_the_reading() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        let desired = model.desired_open();
+        report_glyph(&mut model, 1, 100, BeliefLabel::Closed);
+        assert!(matches!(
+            model.resolve_open_at(Instant::now()).decided_by.base,
+            BaseDecision::IndicatorGlyph { .. }
+        ));
+        model.reduce(&envelope(2, ImeEvent::IndicatorGlyphMissed));
+        let res = model.resolve_open_at(Instant::now());
+        assert_eq!(res.decided_by.base, BaseDecision::DesiredFallback);
+        assert_eq!(res.value, desired);
+        assert_eq!(model.desired_open(), desired);
+    }
+
+    /// ①: 新鮮な High があれば、字形より High が決める（`derive_any` が即決）。
+    #[test]
+    fn a_fresh_high_observation_beats_the_glyph() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        report_glyph(&mut model, 1, 100, BeliefLabel::Closed);
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            200,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ImmCrossProbe,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            )),
+        ));
+        let res = model.resolve_open_at(Instant::now());
+        assert!(res.value);
+        assert_eq!(
+            res.decided_by.base,
+            BaseDecision::DeriveHigh(ObservationSource::ImmCrossProbe)
+        );
+    }
+
+    /// ⑦: 新鮮な Medium 同士が衝突しているとき、字形は衝突を決めない（`MostRecentTrusted` に落ち、`IndicatorGlyph` にならない）。
+    #[test]
+    fn the_glyph_never_decides_a_conflict_between_fresh_medium_observations() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        let any = |open, source| {
+            AnyObservation::restored_from_journal(
+                open,
+                source,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )
+        };
+        model.reduce(&envelope_at(
+            1,
+            Instant::now(),
+            100,
+            ImeEvent::ObserverReported(any(true, ObservationSource::ObserverPoll)),
+        ));
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            110,
+            ImeEvent::ObserverReported(any(false, ObservationSource::ConvOpenInference)),
+        ));
+        // 字形（Medium 以上の観測を記録した**後**に届く）。衝突のまま、字形は採られない。
+        report_glyph(&mut model, 3, 120, BeliefLabel::Closed);
+        let res = model.resolve_open_at(Instant::now());
+        assert!(matches!(
+            res.decided_by.base,
+            BaseDecision::MostRecentTrusted(_)
+        ));
     }
 
     #[test]

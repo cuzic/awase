@@ -658,6 +658,64 @@ pub fn classify_label(
     })
 }
 
+/// 字形の読みを belief に報告してよいかの文脈（ADR-273 D4 の柵）。呼び出し側（殻）が持つ事実を値で渡す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FenceCtx {
+    /// 最後のモード系の打鍵（`KeyEffectPredicted` が付く打鍵）からの経過(ms)。打鍵が無ければ `None`
+    pub since_last_mode_key_ms: Option<u64>,
+    /// 取り込みを依頼した時点と報告する時点で、フォーカスの世代（`FocusGen`）が同じか
+    pub focus_gen_unchanged: bool,
+    /// 前面窓が、awase のフォーカス追跡が追っている窓と一致しているか（`lang_detect_focus_in_sync` と同じ型）
+    pub foreground_in_sync: bool,
+}
+
+/// 柵を通らなかった理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum FenceMiss {
+    /// 最後のモード系の打鍵から [`crate::tuning::GLYPH_KEY_FENCE_MS`] 経っていない（押す前の状態を映しているかもしれない）
+    TooSoonAfterModeKey,
+    /// 取り込みの間にフォーカスの世代が変わった（別の窓の字形）
+    FocusMoved,
+    /// 前面窓が追跡中の窓と一致していない（Alt+Tab の直後など。字形は前面を映す）
+    ForegroundOutOfSync,
+}
+
+/// 柵を通った字形の読み。**belief へ報告できるのはこの型だけ**（`Observed::<TaskbarGlyph>::from_glyph` の witness）。
+/// 構築子は [`fence_glyph`] だけで、`LabelHit` を直接渡して作ることはできない（フィールドが private）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FencedGlyph {
+    hit: LabelHit,
+}
+
+impl FencedGlyph {
+    /// 読みのラベル。
+    #[must_use]
+    pub const fn label(&self) -> BeliefLabel {
+        self.hit.label
+    }
+}
+
+/// 字形の読み（照合で `Hit` したもの）に、ADR-273 D4 の柵を掛ける。**押す前の状態を映した字形・別の窓の字形・前面と追跡がずれた
+/// ときの字形は通さない**（B3: 遅れて届いた古い字形が、正しい予測を消して belief を押す前へ戻すのを防ぐ）。
+///
+/// # Errors
+/// 柵を通らなかったとき、その理由。
+pub fn fence_glyph(hit: LabelHit, ctx: FenceCtx) -> Result<FencedGlyph, FenceMiss> {
+    if !ctx.focus_gen_unchanged {
+        return Err(FenceMiss::FocusMoved);
+    }
+    if !ctx.foreground_in_sync {
+        return Err(FenceMiss::ForegroundOutOfSync);
+    }
+    if ctx
+        .since_last_mode_key_ms
+        .is_some_and(|ms| ms < crate::tuning::GLYPH_KEY_FENCE_MS)
+    {
+        return Err(FenceMiss::TooSoonAfterModeKey);
+    }
+    Ok(FencedGlyph { hit })
+}
+
 /// 取り込み 1 回の照合の結果(journal に残す)。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MatchResult {
@@ -2020,6 +2078,76 @@ mod tests {
             full || added < 6,
             "上限に達したら Full、達しないなら重複で弾かれている"
         );
+    }
+
+    fn hit(label: BeliefLabel) -> LabelHit {
+        LabelHit {
+            label,
+            class: label.class(),
+            distance: 0.0,
+            ratio: f32::INFINITY,
+            origin: SampleOrigin::Common,
+        }
+    }
+
+    /// ADR-273 D4: モード系の打鍵から柵（`GLYPH_KEY_FENCE_MS`）が経つまで、字形は報告できない。170ms（`KEY_EFFECT_SETTLE_MS`）では足りない。
+    #[test]
+    fn the_fence_blocks_glyphs_read_soon_after_a_mode_key_and_the_settle_time_is_not_enough() {
+        let ctx = |ms| FenceCtx {
+            since_last_mode_key_ms: ms,
+            focus_gen_unchanged: true,
+            foreground_in_sync: true,
+        };
+        let h = hit(BeliefLabel::Kana);
+        // 打鍵が無い → 通る。
+        assert!(fence_glyph(h, ctx(None)).is_ok());
+        // 柵の手前 → 通らない。予測の settle（170ms）を過ぎていても通らない。
+        let settle = crate::tuning::KEY_EFFECT_SETTLE_MS;
+        assert_eq!(
+            fence_glyph(h, ctx(Some(settle))),
+            Err(FenceMiss::TooSoonAfterModeKey)
+        );
+        assert_eq!(
+            fence_glyph(h, ctx(Some(crate::tuning::GLYPH_KEY_FENCE_MS - 1))),
+            Err(FenceMiss::TooSoonAfterModeKey)
+        );
+        // 柵の境界ちょうどから通る。
+        let ok = fence_glyph(h, ctx(Some(crate::tuning::GLYPH_KEY_FENCE_MS)));
+        assert_eq!(ok.map(|f| f.label()), Ok(BeliefLabel::Kana));
+        // 柵は ADR-261 の実測最大の遅れ(0.68 秒)より長い。
+        assert!(crate::tuning::GLYPH_KEY_FENCE_MS > 680);
+        assert!(crate::tuning::GLYPH_KEY_FENCE_MS > settle);
+    }
+
+    #[test]
+    fn the_fence_blocks_a_moved_focus_and_an_out_of_sync_foreground() {
+        let base = FenceCtx {
+            since_last_mode_key_ms: None,
+            focus_gen_unchanged: true,
+            foreground_in_sync: true,
+        };
+        let h = hit(BeliefLabel::Closed);
+        assert_eq!(
+            fence_glyph(
+                h,
+                FenceCtx {
+                    focus_gen_unchanged: false,
+                    ..base
+                }
+            ),
+            Err(FenceMiss::FocusMoved)
+        );
+        assert_eq!(
+            fence_glyph(
+                h,
+                FenceCtx {
+                    foreground_in_sync: false,
+                    ..base
+                }
+            ),
+            Err(FenceMiss::ForegroundOutOfSync)
+        );
+        assert!(fence_glyph(h, base).is_ok());
     }
 
     #[test]

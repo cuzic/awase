@@ -130,6 +130,25 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 
 これらにより、ADR-273 D1〜D5 のうちメニューに関する部分(`IndicatorMenu` の源・D4 のメニューの `idChild` 条件・段階 2 のメニュー行)は実装しない。字形の配線(`TaskbarGlyph`)は影響を受けない。ADR-264 の段階 2(belief への配線)も同じ理由で取り下げ、shadow(journal)は残す。
 
+## 段階 1 の実装状況(2026-10-21、PR 〔核の実装・配線なし〕)
+
+核(`awase-windows-core`)だけを実装した。**本番には配線していない**(`ui_max_level` は `Observe` のまま。`architecture_guard::taskbar_glyph_is_not_reported_from_production_yet` が、殻に `TaskbarGlyph`・`from_glyph(`・`fence_glyph(` が 0 件であることを固定する)。
+
+- 実装は D1・D2 の設計を、**default-deny** の形にした: 字形の枠(`PerSourceObservations::taskbar_glyph`)を `iter()` に含めないので、`derive_any`・`most_recent_trusted*`・`read_back`(`Converged`・`AnyFreshEvidence` の両方)・`consensus`・`evaluate_drift` の全読み手から既定で除外される(除外リストを足すより漏れにくい。`evaluate_drift` の除外リストにも防御として明記した)。読み口は `ObservationStore::indicator_reading`(D2 の述語 (1)(2)・窓の同一性)と、`PerSourceObservations::indicator()` の 2 つだけ。
+- 採用は `resolve_open_at` の独立した分岐(`BaseDecision::IndicatorGlyph { promoted_by_staleness }`)。鮮度切れで時刻の経過だけで繰り上がったとき `promoted_by_staleness` が付く(D2 d5・D5 ⑨)。`desired_open` は書かない。
+- 寿命は書き込み時の削除: 指標以外の Medium 以上を**窓の同一性が合うときだけ**記録するとき・窓の変化(`update_focus_window`、hwnd が変わったときだけ)・`clear_on_focus_change`・`ImeEvent::IndicatorGlyphMissed`(字形が `Miss` になったとき)で消える。
+- D4 の柵を核に入れた: **`FencedGlyph`**(構築子は `fence_glyph` だけ。モード系の打鍵から `GLYPH_KEY_FENCE_MS`=1000ms〔ADR-261 の実測最大の遅れ 0.68 秒+マージン 0.32 秒。`pending`〕・フォーカスの世代・前面の一致)が `Observed::<TaskbarGlyph>::from_glyph` の witness になる。**reducer も**、モード系の予測が柵の中にあるときの字形を記録も照合もしない(二重の柵。journal の再生でも決定的。`KEY_EFFECT_SETTLE_MS`=170ms では足りない〔B3〕)。
+- reducer は字形で `update_drift` を呼ばない(`reconcile_key_effect_open` は呼ぶ)。
+
+### 配線 PR の注意(Opus レビュー、2026-10-21)
+
+- **R1 MozcShm が割れたとき**: ADR-268 は `tsf_open != effective_open` の間 MozcShm を報告しない。共有メモリが止まって TTL が切れたあとに字形(TIP の実状態を映す)が belief を決めると、ADR-268 が避けた向きへ倒れる。mozc 系の窓で割れている間(`AppliedDemoted{MozcShmSplit}` の間)は字形を報告しない。
+- **R2 見本の自己学習のループ**: 殻の shadow(`indicator_glyph_shadow`)は `effective_open()` から見本のラベルを作る。字形が belief を決めるようになると、字形が決めた belief で字形の見本にラベルを付け、誤読が `glyph_samples.json` に永続化して自分を強化する(`agree_open` の集計も同語反復になる)。**`decided_by.base == IndicatorGlyph` のときは収集も一致の記録もしない**。`current_profile()` が降格を反映するかも確かめる。
+- **R3 Q5 が HWND キャッシュ経由で抜ける**: 窓を離れるときの `effective_open()`(ほぼ字形の値)が HWND キャッシュに入り、戻ると `HwndCacheRestored` が `desired_open` を書く。その窓の `BaseDecision` は `DesiredFallback` になり、「字形由来の `BaseDecision` を持つ間は ADR-263 を止める」をすり抜ける。「指標由来」の印を HWND キャッシュ側で持つかを、Q5 の実装時に決める。
+- **R4 hwnd の意味**: 字形はキーボードフォーカスのスレッド(`hwndFocus`)に追随する(ADR-261 D0-10)。報告の `hwnd` は `current_fence.hwnd` と同じ意味で取ること。`hwndFocus` の子窓が頻繁に変わるアプリでは、`FocusHwndUpdated` のたびに字形が消えて効く時間がほぼ無くなる。shadow の journal で回数を測る。
+- **R5 柵**: 殻の `fence_glyph` だけでなく reducer にも二重に置いた(上記)。
+- **R6 `IntentStore` の層**: `platform_state` の `effective_open` は `IntentStore` で上書きする。`resolve_open_at` の `decided_by` だけで「字形由来」と判定すると、`IntentStore` が上書きしている場面を誤って字形由来と数える。R2・R3・Q5 の判定は hub の層の最終的な理由で行う。
+
 ## 却下案
 
 - **トグル系のキーの後、awase がメニューを不可視で開いて読む案**(所有者判断 2026-10-20 で却下): 他プロセス(IME 側)が出すメニューに DWM の cloak は使えず、画面外への移動・透明化はメニュー表示の後の対処で数フレーム見える。

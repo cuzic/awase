@@ -331,6 +331,17 @@ impl PerSourceObservations {
         .flatten()
     }
 
+    /// 入力インジケーターの字形の枠（ADR-273）。`iter()` に含まれないので、読み取りはこの口か [`Self::get`] だけ。
+    #[must_use]
+    pub const fn indicator(&self) -> Option<&ImeObservation> {
+        self.taskbar_glyph.as_ref()
+    }
+
+    /// 字形の枠だけを消す（書き込み時の削除・窓の変化・字形の `Miss`。ADR-273 D1）。
+    pub const fn clear_indicator(&mut self) {
+        self.taskbar_glyph = None;
+    }
+
     /// 全ソースを clear する (フォーカス変更時用)
     pub const fn clear_all(&mut self) {
         self.focus_probe = None;
@@ -345,6 +356,15 @@ impl PerSourceObservations {
         self.mozc_shm = None;
         self.taskbar_glyph = None;
     }
+}
+
+/// 入力インジケーターの字形の読み（[`ObservationStore::indicator_reading`] の結果）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndicatorReading<'a> {
+    pub observation: &'a ImeObservation,
+    /// 失効していない Medium 以上の観測（指標より古い）が居るのに、**鮮度が切れたために**指標が勝った。時刻の経過だけで
+    /// belief が変わった（入力が無いのに flip した）ことを journal で区別するための印（ADR-273 D2 d5）。
+    pub promoted_by_staleness: bool,
 }
 
 /// desired と observed の乖離追跡 (DriftDetected event の根拠)。
@@ -475,11 +495,23 @@ impl ObservationStore {
             return;
         }
         // ADR-273 D1: 指標以外の Medium 以上の観測が来たら、指標の枠を消す（書き込み時の削除。journal の再生でも同じ結果になる）。
-        // 指標より新しい Medium 以上がある間は、指標は採られない（Medium が新しい読みを追い越さない）。
+        // **窓の同一性が合うときだけ**消す: 前の窓の観測（admission を通らない timer 経路の MozcShm など）が、今の窓の正しい
+        // 字形を消さないように（Opus レビュー minor 3）。指標より新しい Medium 以上がある間は、指標は採られない
+        // （Medium が新しい読みを追い越さない）。
+        let new_obs = ImeObservation {
+            open: observed.open(),
+            source,
+            at,
+            hwnd: observed.hwnd(),
+            confidence: observed.confidence(),
+            expires_at: None,
+            focus_epoch: observed.focus_epoch(),
+        };
         if source != ObservationSource::TaskbarGlyph
             && observed.confidence() >= ObservationConfidence::Medium
+            && observation_identity_ok(&new_obs, self.current_fence)
         {
-            self.per_source.taskbar_glyph = None;
+            self.per_source.clear_indicator();
         }
         self.per_source.set(
             source,
@@ -584,10 +616,12 @@ impl ObservationStore {
             "[focus-hwnd-track] update_focus_window: current_fence.hwnd {:?} -> {new_hwnd:?}",
             self.current_fence.hwnd
         );
+        // ADR-273 D1: 同じプロセスの中の窓の**変化**では、前の窓の指標を消す（hwnd が変わらない重複した更新では消さない。
+        // journal に重複した `FocusHwndUpdated` があっても再生の結果が同じになる）。
+        if self.current_fence.hwnd != new_hwnd {
+            self.per_source.clear_indicator();
+        }
         self.current_fence.hwnd = new_hwnd;
-        // ADR-273 D1: 同じプロセスの中の窓の変化では、前の窓の指標を消す（`derive_filtered` の `is_identity_ok` は指標を読まないので、
-        // 照合ではなく消去で同一性を守る）。
-        self.per_source.taskbar_glyph = None;
     }
 
     /// desired と observed の乖離を更新する。
@@ -620,8 +654,8 @@ impl ObservationStore {
     /// - **(2)** 指標より新しく、失効していない Medium 以上の観測（指標を除く）が無い（鮮度が切れていても、より新しい読みには負ける。
     ///   ADR-233 の時刻順）。書き込み時の削除（`record_any`）があるので通常は常に真だが、削除の漏れの防御として残す。
     #[must_use]
-    pub fn indicator_reading(&self, now: Instant) -> Option<&ImeObservation> {
-        let glyph = self.per_source.taskbar_glyph.as_ref()?;
+    pub fn indicator_reading(&self, now: Instant) -> Option<IndicatorReading<'_>> {
+        let glyph = self.per_source.indicator()?;
         if glyph.is_expired(now) || !observation_identity_ok(glyph, self.current_fence) {
             return None;
         }
@@ -632,7 +666,25 @@ impl ObservationStore {
                 && ((o.age(now) <= fresh_window && observation_identity_ok(o, self.current_fence))
                     || o.at > glyph.at)
         });
-        (!blocked).then_some(glyph)
+        if blocked {
+            return None;
+        }
+        // 時刻の経過だけで繰り上がったか（ADR-273 D2 d5）: 失効していない Medium 以上（指標より古い）が居るのに、鮮度が切れた
+        // ために指標が勝つ。journal・`[effective-open-flip]` で「入力が無いのに flip した」ことを区別する。
+        let promoted_by_staleness = self
+            .per_source
+            .iter()
+            .any(|o| o.confidence >= ObservationConfidence::Medium && !o.is_expired(now));
+        Some(IndicatorReading {
+            observation: glyph,
+            promoted_by_staleness,
+        })
+    }
+
+    /// 字形の読みを取り消す（字形の `Miss`: 表に近くない・曖昧になったとき。ADR-273 D1 の失効条件）。枠を消すだけで、
+    /// 以後は元の順位（`derive_any` → `most_recent_trusted` → `desired_open`）に戻る。`ImeEvent::IndicatorGlyphMissed` の reducer 専用。
+    pub fn retract_indicator(&mut self) {
+        self.per_source.clear_indicator();
     }
 
     /// `HeuristicDefault` 観測を返す（実在すれば）。ADR-087 §2.3 P15 Step 4a
@@ -991,10 +1043,6 @@ impl ObservationStore {
     }
 }
 
-/// ADR-106 決定3: epoch は一致しているのに hwnd だけ不一致で除外されるケース
-/// （同一プロセス内でのウィンドウ切替）を、epoch 不一致による除外と区別して
-/// 実機ログで確認できるようにする。ログを出すだけで判定には関わらない
-/// （`.cargo/mutants-awase-windows.toml` の `exclude_re` が関数名で除外する、ADR-234 D0）。
 /// フォーカス同一性の照合（ADR-106 決定3）。epoch + hwnd を現在の fence と照合するのは、フォーカス直後の probe 系
 /// （`ImmCrossProbe`・`FocusProbe`）・共有メモリ（`MozcShm`）・字形（`TaskbarGlyph`）だけ。ほかの source は無条件に通す。
 fn observation_identity_ok(o: &ImeObservation, current_fence: FocusFence) -> bool {
@@ -1014,6 +1062,10 @@ fn observation_identity_ok(o: &ImeObservation, current_fence: FocusFence) -> boo
     }
 }
 
+/// ADR-106 決定3: epoch は一致しているのに hwnd だけ不一致で除外されるケース
+/// （同一プロセス内でのウィンドウ切替）を、epoch 不一致による除外と区別して
+/// 実機ログで確認できるようにする。ログを出すだけで判定には関わらない
+/// （`.cargo/mutants-awase-windows.toml` の `exclude_re` が関数名で除外する、ADR-234 D0）。
 fn trace_hwnd_only_mismatch(o: &ImeObservation, obs_fence: FocusFence, current_fence: FocusFence) {
     if obs_fence.epoch == current_fence.epoch && obs_fence.hwnd != current_fence.hwnd {
         tracing::debug!(
@@ -2609,7 +2661,10 @@ mod tests {
             .read_back(later, since, ReadBackQuery::Converged { desired: true }, 5)
             .converged());
         // 専用の読み口だけが読める。
-        assert_eq!(s.indicator_reading(now).map(|o| o.open), Some(true));
+        assert_eq!(
+            s.indicator_reading(now).map(|r| r.observation.open),
+            Some(true)
+        );
     }
 
     /// (1): 新鮮な Medium 以上（指標を除く）がある間は、指標は採られない。Medium 同士の衝突を指標の新しさだけで決めさせない。
@@ -2635,7 +2690,10 @@ mod tests {
         );
         probe.confidence = ObservationConfidence::Low;
         rec(&mut s, probe);
-        assert_eq!(s.indicator_reading(now).map(|o| o.open), Some(false));
+        assert_eq!(
+            s.indicator_reading(now).map(|r| r.observation.open),
+            Some(false)
+        );
     }
 
     /// (2): 鮮度が切れていても、指標より**新しい** Medium 以上には負ける（ADR-233 の時刻順）。古い Medium 以上には勝つ。
@@ -2660,7 +2718,7 @@ mod tests {
         rec(&mut s, glyph(false, t0 + Duration::from_secs(5)));
         assert_eq!(
             s.indicator_reading(t0 + Duration::from_secs(10))
-                .map(|o| o.open),
+                .map(|r| r.observation.open),
             Some(false)
         );
         // 失効した観測は数えない（ADR-273 d1）。
@@ -2675,7 +2733,7 @@ mod tests {
         rec(&mut s, glyph(false, t0));
         assert_eq!(
             s.indicator_reading(t0 + Duration::from_secs(10))
-                .map(|o| o.open),
+                .map(|r| r.observation.open),
             Some(false)
         );
     }
@@ -2775,6 +2833,154 @@ mod tests {
         let mut other_hwnd = g;
         other_hwnd.hwnd = HwndId(6);
         rec(&mut s, other_hwnd);
+        assert!(s.indicator_reading(t0).is_none());
+    }
+    /// 新鮮だが窓の同一性が合わない High（前の窓の `ImmCrossProbe`）は、字形を止めない。
+    #[test]
+    fn a_fresh_high_observation_from_another_window_does_not_block_the_glyph() {
+        let t0 = Instant::now();
+        let mut s = ObservationStore::default();
+        s.clear_on_focus_change(FocusFence {
+            epoch: 2,
+            hwnd: HwndId(5),
+        });
+        let mut g = glyph(false, t0);
+        g.focus_epoch = 2;
+        g.hwnd = HwndId(5);
+        rec(&mut s, g);
+        // 古い epoch の High（新鮮）。同一性が合わないので数えない。
+        let mut icp = obs(true, ObservationSource::ImmCrossProbe, t0);
+        icp.confidence = ObservationConfidence::High;
+        icp.focus_epoch = 1;
+        icp.hwnd = HwndId(5);
+        rec(&mut s, icp);
+        assert_eq!(
+            s.indicator_reading(t0 + Duration::from_millis(100))
+                .map(|r| r.observation.open),
+            Some(false)
+        );
+        // 同一性が合う新鮮な High なら止める。
+        icp.focus_epoch = 2;
+        rec(&mut s, icp);
+        assert!(s
+            .indicator_reading(t0 + Duration::from_millis(100))
+            .is_none());
+    }
+
+    /// ⑥ を High で確かめる: 新鮮でない High（`expires_at: None` の古い `ImmCrossProbe`）+ 新しい字形 → 字形（ADR-233 の時刻順）。
+    #[test]
+    fn a_stale_high_observation_older_than_the_glyph_does_not_block_it() {
+        let t0 = Instant::now();
+        let mut s = ObservationStore::default();
+        let mut icp = obs(true, ObservationSource::ImmCrossProbe, t0);
+        icp.confidence = ObservationConfidence::High;
+        rec(&mut s, icp);
+        rec(&mut s, glyph(false, t0 + Duration::from_secs(5)));
+        let r = s
+            .indicator_reading(t0 + Duration::from_secs(10))
+            .expect("字形が勝つ");
+        assert!(!r.observation.open);
+        // 古い High が居るのに鮮度が切れて字形が勝った: 時刻の経過だけで繰り上がった印が付く。
+        assert!(r.promoted_by_staleness);
+    }
+
+    /// 時刻の経過だけで繰り上がった印（D2 d5）: 他の Medium 以上が無ければ付かない。
+    #[test]
+    fn promoted_by_staleness_is_set_only_when_an_older_medium_observation_exists() {
+        let t0 = Instant::now();
+        let mut s = ObservationStore::default();
+        rec(&mut s, glyph(true, t0));
+        assert!(
+            !s.indicator_reading(t0)
+                .expect("字形だけ")
+                .promoted_by_staleness
+        );
+        // 古い（鮮度外）Medium が居る → 付く。
+        let mut s = ObservationStore::default();
+        rec(&mut s, obs(false, ObservationSource::ObserverPoll, t0));
+        rec(&mut s, glyph(true, t0 + Duration::from_secs(5)));
+        assert!(
+            s.indicator_reading(t0 + Duration::from_secs(10))
+                .expect("字形が勝つ")
+                .promoted_by_staleness
+        );
+    }
+
+    /// 同じ時刻の境界: 字形と同じ `at` の Medium は「新しい」ではない（`>` が厳密）。鮮度の間はその Medium が止め、
+    /// 鮮度が切れると字形が勝つ（journal の再生で同じ時刻の envelope が並ぶ場合の決め方）。
+    #[test]
+    fn a_medium_observation_with_the_same_timestamp_is_not_newer_than_the_glyph() {
+        let t0 = Instant::now();
+        let mut s = ObservationStore::default();
+        rec(&mut s, obs(true, ObservationSource::ObserverPoll, t0));
+        rec(&mut s, glyph(false, t0));
+        assert!(
+            s.indicator_reading(t0 + Duration::from_secs(1)).is_none(),
+            "鮮度の間は Medium が止める"
+        );
+        assert_eq!(
+            s.indicator_reading(t0 + Duration::from_secs(10))
+                .map(|r| r.observation.open),
+            Some(false),
+            "鮮度が切れると字形が勝つ"
+        );
+    }
+
+    /// 書き込み時の削除は窓の同一性が合うときだけ: 前の窓の観測が、今の窓の正しい字形を消さない。
+    #[test]
+    fn deletion_ignores_observations_from_another_window() {
+        let t0 = Instant::now();
+        let any = |source, confidence, epoch| {
+            AnyObservation::restored_from_journal(true, source, HwndId(5), confidence, epoch)
+        };
+        let mut s = ObservationStore::default();
+        s.clear_on_focus_change(FocusFence {
+            epoch: 2,
+            hwnd: HwndId(5),
+        });
+        s.record_replayed(
+            any(
+                ObservationSource::TaskbarGlyph,
+                ObservationConfidence::Medium,
+                2,
+            ),
+            t0,
+        );
+        assert!(s.per_source.indicator().is_some());
+        // 前の epoch の共有メモリ（High）は、今の窓の字形を消さない。
+        s.record_replayed(
+            any(ObservationSource::MozcShm, ObservationConfidence::High, 1),
+            t0 + Duration::from_millis(10),
+        );
+        assert!(s.per_source.indicator().is_some());
+        // 今の窓の観測は消す。
+        s.record_replayed(
+            any(ObservationSource::MozcShm, ObservationConfidence::High, 2),
+            t0 + Duration::from_millis(20),
+        );
+        assert!(s.per_source.indicator().is_none());
+    }
+
+    /// 同じ hwnd での更新は消さない（journal に重複した `FocusHwndUpdated` があっても再生の結果が同じ）。
+    #[test]
+    fn update_focus_window_with_the_same_hwnd_keeps_the_glyph() {
+        let t0 = Instant::now();
+        let mut s = ObservationStore::default();
+        s.update_focus_window(HwndId(7));
+        rec(&mut s, glyph(true, t0));
+        s.update_focus_window(HwndId(7));
+        assert!(s.per_source.indicator().is_some());
+        s.update_focus_window(HwndId(8));
+        assert!(s.per_source.indicator().is_none());
+    }
+
+    /// 字形の `Miss`: 取り消すと枠が消える。
+    #[test]
+    fn retract_indicator_clears_the_slot() {
+        let t0 = Instant::now();
+        let mut s = ObservationStore::default();
+        rec(&mut s, glyph(true, t0));
+        s.retract_indicator();
         assert!(s.indicator_reading(t0).is_none());
     }
 }

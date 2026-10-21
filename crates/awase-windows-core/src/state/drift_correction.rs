@@ -158,9 +158,12 @@ pub fn evaluate_drift(
             now,
             // `MozcShm`（ADR-268 D2）も根拠にしない: 共有メモリが明示意図と食い違うたびに IME を開け直す争いになる。
             // 外から変わった場合の追随は、drift correction ではなく `follow_external_change` 系の経路で行う。
+            // `TaskbarGlyph`（ADR-273 D1）も明示的に列挙する: 字形は専用の枠で `iter()` に出ないので今は効かないが、
+            // 将来 `iter()` を「全フィールド」に戻すリファクタがあっても、drift correction の根拠にならないようにする。
             &[
                 ObservationSource::ConvOpenInference,
                 ObservationSource::MozcShm,
+                ObservationSource::TaskbarGlyph,
             ],
         )
         .ok_or(NoDrift::NoTrustedObservation)?;
