@@ -259,8 +259,6 @@ pub(crate) struct StepProbeResult {
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
 pub(crate) struct WarmupOutcome {
-    /// eager warmup パス（既存の F2 経由）を通ったか（Unicode 送信判定に使用）
-    pub used_eager_path: bool,
     /// cold start シーケンス番号（ログ相関用）
     pub cold_seq: Generation,
 }
@@ -992,12 +990,10 @@ impl Output {
             crate::tsf::warmup::probe_fsm::TsfEnvSnapshot {
                 is_tsf_mode: self.is_tsf_mode(),
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
-                gji_evidence_absent: crate::tsf::observer::gji_evidence_absent(),
                 stage_origin_now: Some(self.current_stage_origin()),
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),
                 confirm_gate_deadline_override_ms: self.confirm_gate_deadline_override_ms.get(),
-                deferred_pending: self.warmup_coord.has_pending_deferred(),
                 gji_candidate_visible_now: crate::tsf::observer::gji_candidate_visible_now(),
                 literal_session_confirmed_gen:
                     crate::tsf::observer::literal_session_confirmed_gen_snapshot(),

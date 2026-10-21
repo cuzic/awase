@@ -7,9 +7,11 @@
 //!
 //! - **A1** フォーカス復帰時の `presync_applied_open_on`(`runtime/focus_tracking.rs`)
 //! - **G1** IME 種別検出時の `sync_ime_kind_from_observation`(`runtime/message_handlers.rs`)
-//! - **G2** 送信直前の level 突合 `needs_belief_sync_on`(`platform.rs::send_keys`)。Unicode 注入では働かない
+//! - **G2** 送信直前の level 突合 `needs_belief_sync_on`(`platform.rs::send_keys`)
 //!
-//! A1・G1 が G2 と二重かどうかを、実機 CI を使わずに**厳密に**決める。
+//! A1・G1 が G2 と二重かどうかを、実機 CI を使わずに**厳密に**決めた(ADR-276。Unicode 注入が無くなり、
+//! 注入はすべて VK になったので、G2 は全送信で働く)。結果は「二重」で、A1・G1 は撤去した。`FULL` は撤去前の
+//! 配線、`NO_A1_G1` が現在の配線である。このモデルは、撤去が害を増やさなかったことの記録として残す。
 //!
 //! # 方法(2 段)
 //!
@@ -182,8 +184,6 @@ struct Variant {
     a1: bool,
     g1: bool,
     g2: bool,
-    /// G2 を Unicode 注入でも働かせる(案: A1・G1 を撤去する代わりに G2 を全モードへ広げる)。
-    g2_in_unicode: bool,
 }
 
 impl Variant {
@@ -191,21 +191,12 @@ impl Variant {
         a1: true,
         g1: true,
         g2: true,
-        g2_in_unicode: false,
     };
-    /// ablation a12: A1・G1 を外す。
+    /// 現在の配線(ADR-276 で A1・G1 を撤去した。ablation a12 と同じ)。
     const NO_A1_G1: Self = Self {
         a1: false,
         g1: false,
         g2: true,
-        g2_in_unicode: false,
-    };
-    /// A1・G1 を外し、G2 を Unicode 注入でも働かせる。
-    const NO_A1_G1_G2_EVERYWHERE: Self = Self {
-        a1: false,
-        g1: false,
-        g2: true,
-        g2_in_unicode: true,
     };
 }
 
@@ -215,7 +206,7 @@ struct Step {
     harm: bool,
 }
 
-fn step(w: World, ev: Ev, v: Variant, unicode: bool) -> Option<Step> {
+fn step(w: World, ev: Ev, v: Variant) -> Option<Step> {
     let mut n = w;
     let mut harm = false;
     match ev {
@@ -264,7 +255,7 @@ fn step(w: World, ev: Ev, v: Variant, unicode: bool) -> Option<Step> {
             }
             // G2: needs_belief_sync_on(send_has_romaji=true, strategy_is_gji_fsm=kind_gji,
             //                          gji_is_off_cold, probe_or_recovery_blocking=false)
-            let g2_applies = v.g2 && w.kind_gji && w.off && (!unicode || v.g2_in_unicode);
+            let g2_applies = v.g2 && w.kind_gji && w.off;
             if g2_applies {
                 n.off = false; // OnImeOnBelief
             }
@@ -289,7 +280,7 @@ fn initial_worlds() -> Vec<World> {
 }
 
 /// 到達可能な状態をすべて列挙し、害が起きる (状態, 事象) と、そこへ至る最短の事象列を返す。
-fn explore(v: Variant, unicode: bool) -> (BTreeSet<World>, BTreeMap<World, Vec<Ev>>) {
+fn explore(v: Variant) -> (BTreeSet<World>, BTreeMap<World, Vec<Ev>>) {
     let mut seen: BTreeSet<World> = BTreeSet::new();
     let mut parent: BTreeMap<World, (World, Ev)> = BTreeMap::new();
     let mut queue: VecDeque<World> = VecDeque::new();
@@ -310,7 +301,7 @@ fn explore(v: Variant, unicode: bool) -> (BTreeSet<World>, BTreeMap<World, Vec<E
     };
     while let Some(w) = queue.pop_front() {
         for ev in ALL_EVS {
-            let Some(s) = step(w, ev, v, unicode) else {
+            let Some(s) = step(w, ev, v) else {
                 continue;
             };
             if s.harm {
@@ -336,66 +327,22 @@ fn fmt_path(path: &[Ev]) -> String {
         .join(" → ")
 }
 
-/// VK 注入(G2 が働く)では、A1・G1 を外しても害のある状態は 1 つも増えない(G2 が全部拾う)。
+/// A1・G1 を外しても、害のある状態は 1 つも増えない(G2 が全部拾う)。ADR-276 の撤去の根拠。
 #[test]
-fn vk_injection_a1_g1_are_redundant_given_g2() {
-    let (_, full) = explore(Variant::FULL, false);
-    let (_, no_a1g1) = explore(Variant::NO_A1_G1, false);
+fn a1_g1_are_redundant_given_g2() {
+    let (_, full) = explore(Variant::FULL);
+    let (_, no_a1g1) = explore(Variant::NO_A1_G1);
     assert!(
         no_a1g1.is_empty(),
-        "VK 注入で A1・G1 を外すと害が出る状態がある(G2 では拾えない): {:?}",
+        "A1・G1 を外すと害が出る状態がある(G2 では拾えない): {:?}",
         no_a1g1.values().map(|p| fmt_path(p)).collect::<Vec<_>>()
     );
-    assert!(full.is_empty(), "VK 注入では基準も害ゼロのはず");
-}
-
-/// Unicode 注入(G2 が働かない)では、A1・G1 を外すと害のある状態が**増える**。つまり A1・G1 は G2 と二重ではない。
-/// 基準でも残る害(A1・G1 でも拾えない経路。ExtOn/ObsSync で belief だけ ON になる等)は両方に出る。
-#[test]
-fn unicode_injection_a1_g1_are_load_bearing() {
-    let (_, full) = explore(Variant::FULL, true);
-    let (_, no_a1g1) = explore(Variant::NO_A1_G1, true);
-    let only_without: Vec<String> = no_a1g1
-        .iter()
-        .filter(|(w, _)| !full.contains_key(*w))
-        .map(|(_, p)| fmt_path(p))
-        .collect();
-    assert!(
-        !only_without.is_empty(),
-        "Unicode 注入で A1・G1 を外しても害が増えない=A1・G1 は不要(モデル上)。基準の害: {:?}",
-        full.values().map(|p| fmt_path(p)).collect::<Vec<_>>()
-    );
-    // 増える害の代表(最短)を、将来の読み手のために固定する。
-    let shortest = only_without
-        .iter()
-        .min_by_key(|s| s.len())
-        .cloned()
-        .unwrap();
-    eprintln!("[gji-sync-model] Unicode 注入で A1/G1 を外すと増える害(最短): {shortest}");
-}
-
-/// 案: A1・G1 を撤去して G2 を Unicode 注入でも働かせると、どちらの注入モードでも害のある状態は基準を超えない。
-/// (基準に元からある害より増えないこと。実際に Unicode で G2 を働かせてよいかは別の判断=ADR-203 が除いた理由)
-#[test]
-fn extending_g2_to_unicode_subsumes_a1_g1_in_the_model() {
-    for unicode in [false, true] {
-        let (_, full) = explore(Variant::FULL, unicode);
-        let (_, alt) = explore(Variant::NO_A1_G1_G2_EVERYWHERE, unicode);
-        let extra: Vec<String> = alt
-            .iter()
-            .filter(|(w, _)| !full.contains_key(*w))
-            .map(|(_, p)| fmt_path(p))
-            .collect();
-        assert!(
-            extra.is_empty(),
-            "unicode={unicode}: G2 を全モードへ広げて A1・G1 を外すと基準にない害が出る: {extra:?}"
-        );
-    }
+    assert!(full.is_empty(), "撤去前の配線も害ゼロのはず");
 }
 
 /// 状態空間が小さい(厳密な列挙が現実的)ことを固定する。増えたらモデルの見直し時。
 #[test]
 fn state_space_is_small() {
-    let (seen, _) = explore(Variant::FULL, false);
+    let (seen, _) = explore(Variant::FULL);
     assert!(seen.len() <= 128, "到達可能な状態が多い: {}", seen.len());
 }

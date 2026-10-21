@@ -48,8 +48,6 @@ use timed_fsm::coro::{yield_step, Channel, StepCoro};
 #[derive(Clone, Copy)]
 struct GjiProbeCtx {
     cold_seq: Generation,
-    used_eager_path: bool,
-    forces_prepend_f2: bool,
     is_long_cold: bool,
 }
 
@@ -124,14 +122,7 @@ async fn gji_coro_body(
         confirm_key_tsf_hint: cold_reason.is_confirm_key() && env.is_tsf_mode,
     };
 
-    let plan = decide_transmit_plan(
-        ctx.used_eager_path,
-        observations,
-        env,
-        !env.deferred_pending,
-        ctx.forces_prepend_f2,
-        ctx.is_long_cold,
-    );
+    let plan = decide_transmit_plan(observations, env, ctx.is_long_cold);
 
     // transmit plan の判定結果（needs_literal になるかどうか、その入力になった
     // nc_fired/gji_settled/confirm_key_tsf_hint）は従来ログに一切出ておらず、部分
@@ -155,13 +146,12 @@ async fn gji_coro_body(
     // 有無）で判定しており、cold 直後の最初の1文字はほぼ確実に誤検知する（BUG-24）。
     // このセッションでまだ literal-detect を確認済みでない場合に限り、Chrome 側
     // Phase 2c と共通実装（`run_per_vk_confirm`、2026-07-17 統合）に romaji の VK 単位
-    // 送信+確認を委ねる。F2 prepend・unicode eager path は対象外とし（それ以外の経路は
+    // 送信+確認を委ねる。F2 prepend は対象外とし（それ以外の経路は
     // 下の通常 Transmit にフォールスルーする）、全 VK 確認できたらこのセッションの残りは
     // literal-detect 自体をスキップする
     // （`tsf::observer::mark_literal_session_confirmed`、`literal_detect_fsm.rs` 参照）。
     if plan.needs_literal
         && env.literal_session_confirmed_gen != Some(ctx.cold_seq)
-        && !plan.used_eager_path
         && env.is_tsf_mode
     {
         run_per_vk_confirm(ch.clone(), ctx.cold_seq, &romaji, plan, TransmitTarget::Tsf).await;
@@ -173,7 +163,7 @@ async fn gji_coro_body(
     // machine を drop するので、コルーチンは再開されない。
     //
     // `needs_literal=true` は上の per-VK confirm が必ず先に取る(ECRS MB-01、2026-10-21): `needs_literal` は
-    // `is_tsf_mode` のときだけ真で、そのとき `used_eager_path` は偽になる(`decide_transmit_plan`)。per-VK を外れるのは
+    // `is_tsf_mode` のときだけ真になる(`decide_transmit_plan`)。per-VK を外れるのは
     // `env.literal_session_confirmed_gen == Some(cold_seq)` のときだけだが、`cold_seq` は cold start のたびに新しく採番され
     // (`increment_cold_start_count` は `vk_send.rs`・`cold_warmup.rs` のコルーチン生成直前の 2 か所)、
     // `mark_literal_session_confirmed` に渡るのは完了した per-VK/warm LiteralDetect 自身の `cold_seq` なので、
@@ -217,14 +207,10 @@ impl GjiWarmupCoro {
         cold_seq: Generation,
         probe: TsfReadinessProbe,
         cold_reason: ColdReason,
-        used_eager_path: bool,
-        forces_prepend_f2: bool,
         is_long_cold: bool,
     ) -> Self {
         let ctx = GjiProbeCtx {
             cold_seq,
-            used_eager_path,
-            forces_prepend_f2,
             is_long_cold,
         };
         let romaji = romaji.to_string();

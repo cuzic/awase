@@ -404,7 +404,7 @@ impl TsfWarmupCoordinator {
 
     /// deferred キューが空でないかを覗き見る（消費しない）。
     ///
-    /// `decide_transmit_plan` の eager path 判定に使う。
+    #[cfg(test)]
     pub(crate) fn has_pending_deferred(&self) -> bool {
         !self.pending_deferred.borrow().is_empty()
     }

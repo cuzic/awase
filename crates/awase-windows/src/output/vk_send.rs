@@ -6,13 +6,10 @@ use super::{Output, VkSequence};
 use crate::state::deferred_gate_plan;
 use crate::state::event_origin::Generation;
 use crate::state::warm_send_plan;
-use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
-use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{DeferredOrigin, TransmitTarget};
 use awase::types::VkCode;
-use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
 /// ADR-123 変更A+C 決定4-2: `send_romaji_batched`/`send_romaji_as_tsf` の
 /// 新設 `defer_if_probe_in_flight` gate を適用するかどうか。
@@ -116,63 +113,29 @@ impl Output {
 
 /// TSF 送信パイプライン（transmit フェーズのみ）。
 ///
-/// - `transmit`: VK または Unicode kana で romaji を WezTerm に送信
+/// - `transmit`: VK run で romaji を WezTerm に送信（かな直接の Unicode 送信は ADR-276 で撤去した）
 ///
 /// warm パス（`send_romaji_as_tsf` の non-cold ブランチ）と
 /// `do_transmit_tsf`（タイマー FSM からの遅延送信）が使用する。
 pub(crate) struct TsfSendPipeline;
 
 impl TsfSendPipeline {
-    /// VK run または Unicode kana を送信し、バックスペース数を返す。
+    /// VK run を送信し、バックスペース数を返す。
     #[tracing::instrument(level = "debug", skip_all, fields(romaji = romaji))]
     pub(crate) fn transmit(
         romaji: &str,
         chars: &[(VkCode, bool)],
         outcome: &WarmupOutcome,
     ) -> usize {
-        // warm パス:
-        //   used_eager_path=true → unicode TSF（B↓A↓B↑A↑ VK の「b」チラつき回避）
-        //   used_eager_path=false → VK run
-        //   TSF-native (WezTerm): send_romaji_as_tsf_warm が false を設定するため常に VK run →
-        //     GJI コンポジション経由で候補ウィンドウが表示される。
-        let unicode_kana: Option<char> = if outcome.used_eager_path {
-            kana_for_romaji_static(romaji)
-        } else {
-            None
-        };
-
         let t_send = crate::hook::current_tick_ms();
         tracing::debug!(
-            "[tsf-transmit] cold={} romaji={:?} → {} t={}ms (eager={})",
+            "[tsf-transmit] cold={} romaji={:?} → vk-run t={}ms",
             outcome.cold_seq.value(),
             romaji,
-            if unicode_kana.is_some() {
-                "unicode"
-            } else {
-                "vk-run"
-            },
             t_send,
-            outcome.used_eager_path,
         );
-
-        unicode_kana.map_or_else(
-            || {
-                Output::send_vk_runs(chars, outcome.cold_seq);
-                chars.len()
-            },
-            |kana| {
-                tracing::debug!(
-                    "[h1-run] cold={} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
-                    outcome.cold_seq.value(),
-                    kana,
-                    kana as u32,
-                );
-                let mut inputs = Vec::with_capacity(4);
-                Output::push_unicode_char_inputs(&mut inputs, kana, TSF_MARKER);
-                let _ = crate::win32::send_input_safe(&inputs);
-                1
-            },
-        )
+        Output::send_vk_runs(chars, outcome.cold_seq);
+        chars.len()
     }
 }
 
@@ -413,13 +376,6 @@ impl Output {
             session_expired,
             prepend_f2_warmup,
         } = self.assess_warmth();
-        // 常に VK path で開始する（unicode は GJI コンポジションをバイパスして "nお" race を
-        // 起こすため）。true になる生きた経路は send_romaji_as_tsf_warm 内の
-        // PendingGjiConfirm オーバーライドのみ。
-        // 旧条件 `!is_tsf_mode() && eager_warmup_sent_ms() != 0` は恒偽だった
-        // （eager の書き手は can_warmup() = ime_on && is_tsf_mode ガード内のみで、
-        // 非 TSF epoch では常に 0。2026-07-06 到達不能パス監査 B1）。
-        let used_eager_path = false;
 
         tracing::debug!(
             "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
@@ -451,8 +407,6 @@ impl Output {
                 cold_seq,
                 started.probe,
                 started.cold_reason,
-                used_eager_path,
-                probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
             ));
             self.install_pending_tsf(coro);
@@ -469,7 +423,7 @@ impl Output {
         }
 
         // warm パス: 即座に送信
-        self.send_romaji_as_tsf_warm(romaji, &chars, used_eager_path);
+        self.send_romaji_as_tsf_warm(romaji, &chars);
     }
 
     /// MS-IME confirm-then-transmit ゲート（BUG-13）。defer した場合 `true` を返す。
@@ -549,40 +503,15 @@ impl Output {
         true
     }
 
-    fn send_romaji_as_tsf_warm(&self, romaji: &str, chars: &VkSequence, used_eager_path: bool) {
+    fn send_romaji_as_tsf_warm(&self, romaji: &str, chars: &VkSequence) {
         let t_warm = crate::hook::current_tick_ms();
         let cold_seq = self.composition.cold_start_count();
-
-        // PendingGjiConfirm: unicode 送信後 GJI がまだ I/O 応答していない状態。
-        // この間は VK sequential を送っても GJI composition が準備できておらず先頭 VK が
-        // リテラル化する（例: こ(unicode)+れ(VK) → こrえ）。
-        // GJI が応答するまで次のキーも unicode で送ることで race を回避する。
-        let in_post_unicode_pending = {
-            let last_unicode_ms = self.composition.last_unicode_transmit_ms();
-            warm_send_plan::is_post_unicode_pending(warm_send_plan::PostUnicodeFacts {
-                last_unicode_ms,
-                gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
-                gji_evidence_absent: crate::tsf::observer::gji_evidence_absent(),
-            })
-        };
-        let used_eager_path = if in_post_unicode_pending {
-            tracing::debug!(
-                "[tsf-warm-start] cold={cold_seq} PendingGjiConfirm: GJI 未応答 → romaji={romaji:?} を unicode で強制送信",
-                cold_seq = cold_seq.value(),
-            );
-            true
-        } else {
-            used_eager_path
-        };
 
         tracing::debug!(
             "[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={t_warm}ms",
             cold_seq = cold_seq.value(),
         );
-        let outcome = WarmupOutcome {
-            used_eager_path,
-            cold_seq,
-        };
+        let outcome = WarmupOutcome { cold_seq };
 
         {
             // 診断ログ: IMC_GETCONVERSIONMODE は SendMessageTimeoutW を呼ぶため、
@@ -785,12 +714,6 @@ impl Output {
     /// `KeyInjector::send_vk_pair` に委譲する。
     fn send_vk_pair(vk: VkCode, needs_shift: bool, marker: VkMarker) {
         KeyInjector::send_vk_pair(vk, needs_shift, marker);
-    }
-
-    /// `ch` を UTF-16 エンコードし、down/up ペアを `inputs` に追加する。
-    /// `KeyInjector::push_unicode_char_inputs` に委譲する。
-    fn push_unicode_char_inputs(inputs: &mut Vec<INPUT>, ch: char, marker: usize) {
-        KeyInjector::push_unicode_char_inputs(inputs, ch, marker);
     }
 }
 

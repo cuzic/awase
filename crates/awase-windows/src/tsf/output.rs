@@ -90,15 +90,6 @@ pub(crate) const fn make_key_input_ex(
     }
 }
 
-/// ローマ字文字列に対応するひらがな文字を返す静的ルックアップ。
-/// LazyLock で初回のみテーブルを構築し、以降は参照を返す。
-pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
-    use std::sync::LazyLock;
-    static TABLE: LazyLock<awase::kana_table::KanaTable> =
-        LazyLock::new(awase::kana_table::KanaTable::build);
-    TABLE.kana_for_romaji(romaji)
-}
-
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。
 ///
 /// `RAW_TSF_LITERAL.backs` に退避されたバックスペース数を読み取り、SendInput で送信する。

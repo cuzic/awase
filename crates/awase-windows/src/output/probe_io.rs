@@ -34,8 +34,7 @@ pub(crate) trait ProbeIo {
     /// Chrome バッチ送信を実行する。
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]);
     /// IME セッション最初の1文字の per-VK confirm ループ専用（BUG-24 追補）: 1 VK の
-    /// DOWN+UP を単独の SendInput で送信する。`transmit_tsf` と異なり F2 prepend /
-    /// unicode kana 分岐を一切行わない。
+    /// DOWN+UP を単独の SendInput で送信する。`transmit_tsf` と異なり F2 prepend を行わない。
     fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool);
     /// Chrome per-VK confirm 専用: 1 VK の
     /// DOWN+UP を `VkMarker::InjectedWithScan`（scan code 付き）で単独送信する。
@@ -81,17 +80,7 @@ impl ProbeIo for Output {
         // カタカナ/英数 charset への追従送信（VK_DBE_KATAKANA 等の leading warmup）は
         // BUG-19 のロックイン事故を受けて撤去した（`docs/known-bugs.md` BUG-19 参照）。
         self.warmup_coord.note_stage_injection();
-        let result = crate::output::TsfSendPipeline::transmit(romaji, chars, outcome);
-        // unicode パスを使った場合（used_eager_path=true かつ kana が存在する）は
-        // PendingGjiConfirm 状態に入る: GJI が I/O 応答するまで次の warm キーも unicode で送る。
-        if outcome.used_eager_path && crate::tsf::output::kana_for_romaji_static(romaji).is_some() {
-            let now = crate::hook::current_tick_ms();
-            self.composition.set_last_unicode_transmit_ms(now);
-            tracing::debug!(
-                "[post-unicode] PendingGjiConfirm 開始: last_unicode_transmit_ms={now} romaji={romaji:?}"
-            );
-        }
-        result
+        crate::output::TsfSendPipeline::transmit(romaji, chars, outcome)
     }
 
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]) {
@@ -465,10 +454,7 @@ where
                             }
                             // plan は FSM の enter_transmit_tsf が confirm 時点の env で確定済み。
                             // dispatcher は再導出せずそのまま使う。
-                            let outcome = WarmupOutcome {
-                                used_eager_path: plan.used_eager_path,
-                                cold_seq,
-                            };
+                            let outcome = WarmupOutcome { cold_seq };
                             {
                                 // 診断ログ: IMC_GETCONVERSIONMODE は SendMessageTimeoutW を呼ぶため、
                                 // with_app 再入を避けるため async タスクへオフロードする (Step 3)。
@@ -490,13 +476,9 @@ where
                                 );
                                 });
                             }
-                            // ADR-270: Mozc の最初の送信の後に、入力中の文字ができたかを確かめる（unicode 送信は組成を作らない
-                            // ので対象外）。まだ入力中の文字が無いことを確かめるため、送信の直前に対象を決める。
-                            let mozc_check = if plan.used_eager_path {
-                                None
-                            } else {
-                                io.mozc_compose_precheck(&romaji, cold_seq)
-                            };
+                            // ADR-270: Mozc の最初の送信の後に、入力中の文字ができたかを確かめる。
+                            // まだ入力中の文字が無いことを確かめるため、送信の直前に対象を決める。
+                            let mozc_check = io.mozc_compose_precheck(&romaji, cold_seq);
                             let _ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                             // 注入の記録は io.transmit_tsf 自身が note_stage_injection で行う。
                             // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
@@ -726,8 +708,6 @@ mod tests {
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
         reset_consecutive_called: Cell<bool>,
-        /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
-        last_used_eager_path: Cell<bool>,
     }
 
     impl Default for FakeProbeIo {
@@ -744,7 +724,6 @@ mod tests {
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
                 reset_consecutive_called: Cell::new(false),
-                last_used_eager_path: Cell::new(false),
             }
         }
     }
@@ -757,10 +736,9 @@ mod tests {
             &self,
             _romaji: &str,
             _chars: &[(VkCode, bool)],
-            outcome: &WarmupOutcome,
+            _outcome: &WarmupOutcome,
         ) -> usize {
             self.transmit_tsf_called.set(true);
-            self.last_used_eager_path.set(outcome.used_eager_path);
             self.tsf_transmit_result
         }
         fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
@@ -810,8 +788,6 @@ mod tests {
             probe,
             ColdReason::FocusChange,
             false,
-            false,
-            false,
         )
     }
 
@@ -857,7 +833,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
-                used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
@@ -880,7 +855,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
-                used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
@@ -910,7 +884,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
-                used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
@@ -1021,8 +994,7 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
-                used_eager_path: true, // nc_fired=true + gji_long_idle=true
-                needs_literal: false,  // gji_long_idle + !is_tsf_mode → false
+                needs_literal: false, // gji_long_idle + !is_tsf_mode → false
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
             romaji: "ka".to_string(),
@@ -1043,7 +1015,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
-                used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
@@ -1054,31 +1025,6 @@ mod tests {
         assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(!io.transmit_chrome_called.get());
-    }
-
-    #[test]
-    fn tsf_transmit_uses_eager_path_when_nc_not_fired() {
-        // nc_fired=false のとき、decide_transmit_plan が確定した used_eager_path=true が
-        // WarmupOutcome.used_eager_path=true として transmit_tsf に渡ることを確認する。
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                used_eager_path: true, // nc_fired=false + non-tsf → initial_used_eager || gji_long_idle
-                needs_literal: false,
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            romaji: "ki".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(result.is_done());
-        assert!(io.transmit_tsf_called.get());
-        assert!(
-            io.last_used_eager_path.get(),
-            "plan.used_eager_path=true は WarmupOutcome に反映されるべき"
-        );
     }
 
     // NOTE: `raw_tsf_literal_recovery_skips_set_literal_when_consecutive`（consecutive>0 で
@@ -1093,83 +1039,6 @@ mod tests {
     // 現在の意図（84e6942）と一致する後者のみを残す。
 
     #[test]
-    fn nc_not_fired_with_gji_long_idle_forces_unicode_tsf() {
-        // nc_fired=false（NameChangeWait タイムアウトまたはスキップ）かつ gji_long_idle のとき、
-        // 非 TSF mode では used_eager_path=false でも unicode TSF（used_eager_path=true）が強制される。
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                // nc_fired=false + non-tsf → initial_used_eager || gji_long_idle = false || true = true
-                used_eager_path: true,
-                needs_literal: false,
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            romaji: "ka".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(result.is_done());
-        assert!(io.transmit_tsf_called.get());
-        assert!(
-            io.last_used_eager_path.get(),
-            "plan.used_eager_path=true は WarmupOutcome に反映されるべき"
-        );
-    }
-
-    #[test]
-    fn tsf_mode_nc_not_fired_gji_active_uses_vk_path() {
-        // decide_transmit_plan: nc_fired=false + is_tsf_mode=true → used_eager_path=false (VK path)。
-        // KEYEVENTF_UNICODE は GJI コンポジションをバイパスして候補ウィンドウが出ないため TSF mode では使わない。
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                used_eager_path: false, // is_tsf_mode=true → VK path
-                needs_literal: false,
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            romaji: "i".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(result.is_done());
-        assert!(io.transmit_tsf_called.get());
-        assert!(
-            !io.last_used_eager_path.get(),
-            "plan.used_eager_path=false は WarmupOutcome に反映されるべき"
-        );
-    }
-
-    #[test]
-    fn tsf_mode_nc_not_fired_gji_long_idle_uses_vk_path() {
-        // decide_transmit_plan: nc_fired=false + is_tsf_mode=true → used_eager_path=false (VK path)。
-        // gji_long_idle=true でも TSF mode では KEYEVENTF_UNICODE による "nお" race を避けるため VK path。
-        // gji_active=false (default) → needs_literal=false → done=true。
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                used_eager_path: false, // is_tsf_mode=true → VK path
-                needs_literal: false,   // gji_active=false → false
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
-            },
-            romaji: "i".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(result.is_done());
-        assert!(io.transmit_tsf_called.get());
-        assert!(
-            !io.last_used_eager_path.get(),
-            "plan.used_eager_path=false (VK path) は WarmupOutcome に反映されるべき"
-        );
-    }
-
-    #[test]
     fn tsf_mode_cold_start_nc_not_fired_not_long_idle_skips_literal_detect() {
         // nc_fired=false + is_tsf_mode=true + !gji_long_idle かつ needs_literal=false のとき、
         // LiteralDetect フェーズへ入らず Done を即返す。
@@ -1178,7 +1047,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
-                used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
