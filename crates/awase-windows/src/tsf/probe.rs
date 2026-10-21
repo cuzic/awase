@@ -339,16 +339,7 @@ impl LiteralDetector {
     /// [`veto_eligible`](Self::veto_eligible) を参照。
     #[must_use]
     pub fn new(veto_eligible: bool) -> Self {
-        Self {
-            gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
-            write_bytes_baseline: crate::tsf::observer::gji_write_bytes(),
-            veto_eligible,
-            epoch_send_ms: crate::clock::current_tick_ms(),
-            show_stale_hold_since_ms: std::cell::Cell::new(None),
-            write_ops_baseline: crate::tsf::observer::gji_write_ops(),
-            read_ops_baseline: crate::tsf::observer::gji_read_ops(),
-            other_ops_baseline: crate::tsf::observer::gji_other_ops(),
-        }
+        Self::new_with_pre_send_baseline(crate::tsf::observer::gji_write_bytes(), veto_eligible)
     }
 
     /// VK 送信前に取得済みの WriteTransferCount ベースラインを使う `LiteralDetector` を生成する。
