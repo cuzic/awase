@@ -2227,6 +2227,68 @@ fn applied_state_recorders_call_sites_are_accounted_for() {
     }
 }
 
+/// 記録系 `record_optimistic`/`record_confirmed`/`record_ime_apply_result` を、`awase-windows` と
+/// `EXTRA_SRC_CRATES`（上の `applied_state_recorders_call_sites_are_accounted_for` が件数で固定する crate）**以外**の
+/// workspace の本番コードが名指さないことを固定する（ADR-275 の Opus レビュー F1-7）。
+///
+/// 今は `pub(crate)` が他 crate からの呼び出しをコンパイラで止めている。将来この 3 つが `pub` になったり、
+/// 新しい crate が `applied` を書く口を呼ぼうとしたときに、RECORDERS も dylint（`-p awase-windows` だけ）も
+/// 見ない crate が抜け道になるのを防ぐ。`EXTRA_SRC_CRATES` に足した crate は RECORDERS が見る。
+#[test]
+fn applied_state_recorders_are_not_named_outside_scanned_crates() {
+    let needles = [
+        "record_optimistic(",
+        "record_confirmed(",
+        "record_ime_apply_result(",
+    ];
+    let root = workspace_dir();
+    let scanned: std::collections::BTreeSet<std::path::PathBuf> = src_crate_dirs()
+        .into_iter()
+        .map(|d| d.canonicalize().unwrap_or(d))
+        .collect();
+    let mut candidates = vec![root.clone()];
+    for entry in fs::read_dir(root.join("crates")).expect("read_dir(crates)") {
+        let path = entry.expect("crates entry").path();
+        if path.is_dir() {
+            candidates.push(path);
+        }
+    }
+    let mut checked = 0usize;
+    let mut found: Vec<(String, usize)> = Vec::new();
+    for dir in candidates {
+        let canon = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        let src = dir.join("src");
+        if scanned.contains(&canon) || !src.is_dir() {
+            continue;
+        }
+        checked += 1;
+        let mut files = Vec::new();
+        walk_rs_files(&src, &mut files);
+        for file in files {
+            let content = fs::read_to_string(&file)
+                .unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
+            let production = production_code_only(&content);
+            let count: usize = needles
+                .iter()
+                .map(|n| count_real_calls(production, n))
+                .sum();
+            if count > 0 {
+                found.push((file.display().to_string(), count));
+            }
+        }
+    }
+    // 走査が空振りしていない（ルートの `awase` クレートと他の crate を実際に見ている）ことを固定する。
+    assert!(
+        checked >= 3,
+        "走査した crate が {checked} 個しかありません（ワークスペースの配置が変わった？）。"
+    );
+    assert!(
+        found.is_empty(),
+        "記録系（`applied` を書く口）を、RECORDERS が見ない crate が呼んでいます: {found:?}。\
+         INV-A97-1/BUG-69: 新しい呼び出し元は `EXTRA_SRC_CRATES` に足して RECORDERS の期待を更新するか、呼ぶのをやめてください。"
+    );
+}
+
 /// 殻（`shell.rs`）の各メソッドが「`foreground_scope()` を1回読んで、1つの `_in_scope` に委譲するだけ」
 /// であることを、メソッドごとに確かめる。違反があれば説明を返す。
 fn shell_shape_violation(code: &str) -> Option<String> {
