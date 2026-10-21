@@ -198,6 +198,11 @@ impl AppImeProfile {
 
     /// IMM32 クロスプロセス制御（`ImmSetOpenStatus` / `WM_IME_CONTROL`）が使えるか。
     ///
+    /// **読み(`IMC_GETOPENSTATUS`)も同じ述語**: 書けない窓(`Imm32Unavailable`/`TsfNative`/`InputRelay`)は IMM32 の状態値も
+    /// 信頼できず、実 IME の ON/OFF を確実に問い合わせられない(belief が実状態と乖離しても自力では気付けない、BUG-33/37)。
+    /// 旧 `can_read_imm32_open_status`・`cannot_verify_real_ime_state(class)` は本番で作られるプロファイルすべてでこれの
+    /// 真偽と一致したので統合した(ECRS DD3-C、全列挙は `imm_capability_follows_profile_for_every_production_derivation`)。
+    ///
     /// `false` のとき `WindowsPlatform::set_ime_open` や `ImmCrossProcessStrategy`
     /// は IMM32 クロスプロセス呼び出しをスキップする。
     ///
@@ -245,18 +250,6 @@ impl AppImeProfile {
         }
     }
 
-    /// IMM32 で IME open 状態（`IMC_GETOPENSTATUS`）をクロスプロセス取得できるか。
-    ///
-    /// `false` のとき `read_ime_state_fast` は `ime_on=None` を返し shadow 状態に委ねる。
-    /// `Imm32Unavailable` / `TsfNative` ともに IMM32 の状態値は信頼できない。
-    #[must_use]
-    pub const fn can_read_imm32_open_status(&self) -> bool {
-        match self {
-            Self::Standard => true,
-            Self::Imm32Unavailable | Self::TsfNative | Self::InputRelay => false,
-        }
-    }
-
     /// `*self == AppImeProfile::TsfNative` の代わりに使うべき「実質的に TSF ネイティブか」判定。
     ///
     /// `AppImeProfile::from_class_name` は `IMM32_UNAVAILABLE_CLASSES` を `is_tsf_native_window`
@@ -280,49 +273,6 @@ impl AppImeProfile {
             Self::InputRelay => false,
             Self::TsfNative => true,
         }
-    }
-
-    /// このプロファイルで、awase が実 OS IME ON/OFF 状態を確実に問い合わせられないか。
-    ///
-    /// `Imm32Unavailable`（Chrome/Edge 等、VK_KANJI 制御）と実質 TSF ネイティブ
-    /// （WezTerm/Windows Terminal 等）はいずれも `ImmGet*` 系 API が使えないか
-    /// 不安定なため、belief（shadow state）が実状態と乖離しても自力では気付けない
-    /// （BUG-33/BUG-37 参照）。
-    ///
-    /// 2026-09-10、自由関数`cannot_verify_real_ime_state(profile, class_name)`から
-    /// メソッドへ変更した（同上）。挙動は変更していない。
-    #[must_use]
-    pub fn cannot_verify_real_ime_state(&self, class_name: &str) -> bool {
-        match self {
-            Self::Standard => self.is_effectively_tsf_native(class_name),
-            // InputRelay は is_effectively_tsf_native 経由ではなく独立したアームで
-            // true にする（issue #136 / BUG-90 決定4）——is_effectively_tsf_native
-            // 側を true にすると、その6箇所の本番 consumer（TSF warmup/composition
-            // 再初期化ロジック等）が中継ウィンドウにも誤って走ってしまう。
-            Self::Imm32Unavailable | Self::TsfNative | Self::InputRelay => true,
-        }
-    }
-
-    /// BUG-37: 同一プロセス内フォーカス移動（Ctrl+T 新規タブ等）のような、belief を
-    /// 一切更新しない軽量フォーカスイベントで、次の入力に備えて composition を
-    /// 再プライム（cold mark）すべきかどうかを判定する純粋関数。
-    ///
-    /// `cannot_verify_real_ime_state` なプロファイルで belief（`effective_open`）が
-    /// 既に ON のときだけ true を返す。この種のプロファイルでは、実状態が belief と
-    /// 無断で乖離しても唯一の訂正チャネルである物理 IME キー押下すら shadow-toggle の
-    /// no-op（belief==要求値なら何もしない、`kp_stage_shadow_ime_toggle` 参照）に
-    /// 握り潰されるため、フォーカス移動のたびに「次の入力で再プライムする」フラグを
-    /// 立てておくことで実状態を belief に追従させる。
-    ///
-    /// 2026-09-10、自由関数`should_reprime_on_lightweight_focus_sync(profile, ..)`から
-    /// メソッドへ変更した（同上）。挙動は変更していない。
-    #[must_use]
-    pub fn should_reprime_on_lightweight_focus_sync(
-        &self,
-        class_name: &str,
-        belief_effective_open: bool,
-    ) -> bool {
-        self.cannot_verify_real_ime_state(class_name) && belief_effective_open
     }
 }
 
@@ -468,56 +418,41 @@ mod tests {
     }
 
     // BUG-37 回帰テスト: Ctrl+T 新規タブ等の同一プロセス内フォーカス移動で、
-    // belief=ON かつ実状態を問い合わせられないプロファイルのときだけ再プライムする。
+    // belief=ON かつ実状態を問い合わせられない窓だけ再プライムする。「問い合わせられない」は
+    // `!can_use_imm32_cross_process()`(旧 `cannot_verify_real_ime_state`、ECRS DD3-C で統合)。
 
     #[test]
-    fn chrome_with_belief_on_should_reprime() {
-        let profile = AppImeProfile::from_class_name("Chrome_WidgetWin_1");
-        assert!(profile.should_reprime_on_lightweight_focus_sync("Chrome_WidgetWin_1", true,));
+    fn unverifiable_windows_are_exactly_the_non_standard_profiles() {
+        for (class, expected_unverifiable) in [
+            ("Chrome_WidgetWin_1", true),
+            // Windows Terminal は profile=Imm32Unavailable(IMM32 不可クラスが TSF ネイティブより優先)。
+            ("CASCADIA_HOSTING_WINDOW_CLASS", true),
+            ("org.wezfurlong.wezterm", true),
+            // 通常の IMM32 アプリは実状態を問い合わせられるので、再プライムの機構は不要。
+            ("Notepad", false),
+        ] {
+            let profile = AppImeProfile::from_class_name(class);
+            assert_eq!(
+                !profile.can_use_imm32_cross_process(),
+                expected_unverifiable,
+                "{class}: {profile:?}"
+            );
+        }
     }
 
-    #[test]
-    fn chrome_with_belief_off_should_not_reprime() {
-        // belief=OFF なら実状態も OFF のはずで、余計な IME ON 化を起こさない。
-        let profile = AppImeProfile::from_class_name("Chrome_WidgetWin_1");
-        assert!(!profile.should_reprime_on_lightweight_focus_sync("Chrome_WidgetWin_1", false,));
-    }
-
-    #[test]
-    fn cascadia_with_belief_on_should_reprime_via_effectively_tsf_native() {
-        // Windows Terminal は profile=Imm32Unavailable だが is_effectively_tsf_native 経由で対象。
-        let profile = AppImeProfile::from_class_name("CASCADIA_HOSTING_WINDOW_CLASS");
-        assert!(profile
-            .should_reprime_on_lightweight_focus_sync("CASCADIA_HOSTING_WINDOW_CLASS", true,));
-    }
-
-    #[test]
-    fn wezterm_with_belief_on_should_reprime() {
-        let profile = AppImeProfile::from_class_name("org.wezfurlong.wezterm");
-        assert!(profile.should_reprime_on_lightweight_focus_sync("org.wezfurlong.wezterm", true,));
-    }
-
-    #[test]
-    fn standard_class_with_belief_on_should_not_reprime() {
-        // 通常の IMM32 アプリは実状態を問い合わせられるので、この機構は不要。
-        let profile = AppImeProfile::from_class_name("Notepad");
-        assert!(!profile.should_reprime_on_lightweight_focus_sync("Notepad", true,));
-    }
-
-    /// `AppImeProfile` の4つの bool getter（戦略選択の入口）を真理値表として固定する。
+    /// `AppImeProfile` の3つの bool getter（戦略選択の入口）を真理値表として固定する。
     /// これまで戻り値を直接 assert するテストが無く、反転（`matches!`/`!matches!` の
     /// 取り違え）が mutants で検知されなかった。
     #[test]
     fn app_ime_profile_getters_truth_table() {
-        // (profile, can_use_imm32_cross_process, uses_kanji_toggle,
-        //  should_pass_physical_key, can_read_imm32_open_status)
+        // (profile, can_use_imm32_cross_process, uses_kanji_toggle, should_pass_physical_key)
         let table = [
-            (AppImeProfile::Standard, true, false, true, true),
-            (AppImeProfile::Imm32Unavailable, false, true, false, false),
-            (AppImeProfile::TsfNative, false, false, true, false),
-            (AppImeProfile::InputRelay, false, false, true, false),
+            (AppImeProfile::Standard, true, false, true),
+            (AppImeProfile::Imm32Unavailable, false, true, false),
+            (AppImeProfile::TsfNative, false, false, true),
+            (AppImeProfile::InputRelay, false, false, true),
         ];
-        for (profile, cross_process, kanji_toggle, pass_physical, read_open_status) in table {
+        for (profile, cross_process, kanji_toggle, pass_physical) in table {
             assert_eq!(
                 profile.can_use_imm32_cross_process(),
                 cross_process,
@@ -533,11 +468,6 @@ mod tests {
                 pass_physical,
                 "{profile:?}.should_pass_physical_key()"
             );
-            assert_eq!(
-                profile.can_read_imm32_open_status(),
-                read_open_status,
-                "{profile:?}.can_read_imm32_open_status()"
-            );
         }
     }
 
@@ -547,10 +477,7 @@ mod tests {
         assert!(!profile.can_use_imm32_cross_process());
         assert!(!profile.uses_kanji_toggle());
         assert!(profile.should_pass_physical_key());
-        assert!(!profile.can_read_imm32_open_status());
         assert!(!profile.is_effectively_tsf_native("Windows.UI.Input.InputSite.WindowClass"));
-        assert!(profile.cannot_verify_real_ime_state("Notepad"));
-        assert!(profile.should_reprime_on_lightweight_focus_sync("Notepad", true));
     }
 
     /// `detect_app_kind` の3分岐を固定する。`teamswebview_is_chromium_like_imm32_unavailable`
@@ -592,8 +519,7 @@ mod tests {
     /// - `effectively_tsf_native`: is_tsf_native_class そのもの（`profile==TsfNative` は
     ///   `is_tsf_native_class && !is_unavailable` の場合にしか成立しないため、
     ///   `profile==TsfNative || is_tsf_native_class` を展開すると is_tsf_native_class に潰れる）。
-    /// - `cannot_verify`: unavailable か、実質 TSF ネイティブかのいずれか。
-    /// - 4つの getter は `profile` のみで決まる真理値表（`app_ime_profile_getters_truth_table`
+    /// - 3つの getter は `profile` のみで決まる真理値表（`app_ime_profile_getters_truth_table`
     ///   と同じ表だが、独立に書き起こす）。
     fn oracle_for(
         is_unavailable: bool,
@@ -610,31 +536,24 @@ mod tests {
             AppImeProfile::Standard
         };
         let effectively_tsf_native = !is_input_relay && is_tsf_native_class;
-        let cannot_verify = is_input_relay || is_unavailable || effectively_tsf_native;
-        // TsfNative と InputRelay はこの4述語の期待値がたまたま一致するが、
+        // TsfNative と InputRelay はこの3述語の期待値がたまたま一致するが、
         // このオラクルは profile ごとの行を明示的に書き下す真理値表として
         // 意図的に保つ（clippy::match_same_arms の統合提案には従わない —
         // 統合すると「どの profile がどの行か」が読みにくくなる）。
         #[allow(clippy::match_same_arms)]
-        let (
-            can_use_imm32_cross_process,
-            uses_kanji_toggle,
-            should_pass_physical_key,
-            can_read_imm32_open_status,
-        ) = match profile {
-            AppImeProfile::Standard => (true, false, true, true),
-            AppImeProfile::Imm32Unavailable => (false, true, false, false),
-            AppImeProfile::TsfNative => (false, false, true, false),
-            AppImeProfile::InputRelay => (false, false, true, false),
-        };
+        let (can_use_imm32_cross_process, uses_kanji_toggle, should_pass_physical_key) =
+            match profile {
+                AppImeProfile::Standard => (true, false, true),
+                AppImeProfile::Imm32Unavailable => (false, true, false),
+                AppImeProfile::TsfNative => (false, false, true),
+                AppImeProfile::InputRelay => (false, false, true),
+            };
         OracleResult {
             profile,
             effectively_tsf_native,
-            cannot_verify,
             can_use_imm32_cross_process,
             uses_kanji_toggle,
             should_pass_physical_key,
-            can_read_imm32_open_status,
         }
     }
 
@@ -642,11 +561,9 @@ mod tests {
     struct OracleResult {
         profile: AppImeProfile,
         effectively_tsf_native: bool,
-        cannot_verify: bool,
         can_use_imm32_cross_process: bool,
         uses_kanji_toggle: bool,
         should_pass_physical_key: bool,
-        can_read_imm32_open_status: bool,
     }
 
     fn actual_for(class_name: &str, process_name: &str, relay_apps: &[String]) -> OracleResult {
@@ -654,11 +571,54 @@ mod tests {
         OracleResult {
             profile,
             effectively_tsf_native: profile.is_effectively_tsf_native(class_name),
-            cannot_verify: profile.cannot_verify_real_ime_state(class_name),
             can_use_imm32_cross_process: profile.can_use_imm32_cross_process(),
             uses_kanji_toggle: profile.uses_kanji_toggle(),
             should_pass_physical_key: profile.should_pass_physical_key(),
-            can_read_imm32_open_status: profile.can_read_imm32_open_status(),
+        }
+    }
+
+    /// 旧 `can_read_imm32_open_status`・`cannot_verify_real_ime_state(class)` を `can_use_imm32_cross_process` に統合した
+    /// 前提(ECRS DD3-C、2026-10-21)を全列挙で固定する。
+    ///
+    /// 旧 `cannot_verify_real_ime_state(class)` は `Standard` のときだけクラス名に依存し(`is_effectively_tsf_native`)、
+    /// `Standard` + TSF ネイティブクラスでは `!can_use_imm32_cross_process` と食い違う。統合が成り立つのは、本番で
+    /// プロファイルを作る経路(`from_class_and_process`〈`focus/current.rs`〉と、`Standard` から動かすだけの学習降格
+    /// 〈`focus/tracker.rs::apply_learned_imm_capability`〉)が、`Standard` を「IMM32 不可クラスでも TSF ネイティブ
+    /// クラスでもない」ときにしか作らないから。クラス名は IMM32 不可クラスの全部・TSF ネイティブクラスの全部・
+    /// 無関係な名前・空文字(`Default` の窓)を列挙する。ここが崩れたら統合の前提が崩れたということ。
+    #[test]
+    fn imm_capability_follows_profile_for_every_production_derivation() {
+        let mut classes: Vec<&str> = IMM32_UNAVAILABLE_CLASSES.to_vec();
+        classes.extend([
+            "Windows.UI.Core.CoreWindow",
+            "XamlExplorerHostIslandWindow",
+            "Windows.UI.Input.InputSite.WindowClass",
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "org.wezfurlong.wezterm",
+            "Notepad",
+            "Edit",
+            "",
+        ]);
+        let relay_sets: [Vec<String>; 2] = [vec![], vec!["relay.exe".to_string()]];
+        for class in &classes {
+            for relay_apps in &relay_sets {
+                for process in ["relay.exe", "app.exe"] {
+                    let profile = AppImeProfile::from_class_and_process(class, process, relay_apps);
+                    assert_eq!(
+                        profile.can_use_imm32_cross_process(),
+                        profile == AppImeProfile::Standard,
+                        "{profile:?} class={class:?} process={process:?} relay={relay_apps:?}"
+                    );
+                    if profile == AppImeProfile::Standard {
+                        assert!(
+                            !IMM32_UNAVAILABLE_CLASSES.contains(class)
+                                && !is_tsf_native_window(class),
+                            "Standard が IMM32 不可/TSF ネイティブクラスで作られた: {class:?}。\
+                             旧 cannot_verify(class) と !can_use_imm32_cross_process が食い違う"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -713,20 +673,6 @@ mod tests {
                 mismatches.push(format!(
                     "{class_name}: actual={actual:?} expected(oracle)={expected:?}"
                 ));
-            }
-
-            // should_reprime_on_lightweight_focus_sync は cannot_verify && belief_open。
-            for &belief_open in &[false, true] {
-                let expected_reprime = expected.cannot_verify && belief_open;
-                let actual_reprime = actual
-                    .profile
-                    .should_reprime_on_lightweight_focus_sync(class_name, belief_open);
-                if actual_reprime != expected_reprime {
-                    mismatches.push(format!(
-                        "{class_name} belief_open={belief_open}: reprime actual={actual_reprime} \
-                         expected(oracle)={expected_reprime}"
-                    ));
-                }
             }
         }
         assert!(
@@ -784,8 +730,8 @@ mod tests {
                 "{class_name}"
             );
             assert!(
-                AppImeProfile::from_class_name(class_name).cannot_verify_real_ime_state(class_name),
-                "{class_name}: unavailable は常に cannot_verify=true のはず"
+                !AppImeProfile::from_class_name(class_name).can_use_imm32_cross_process(),
+                "{class_name}: unavailable は常に IMM32 を使えないはず"
             );
         }
     }

@@ -1956,7 +1956,7 @@ impl Runtime {
         // ADR-209: 窓の種類の判定だけをここで行い、規則そのものは純関数（`predict_with_override`）にある。
         let unreadable = self.predict_henkan_open_in_unreadable_windows && {
             let profile = self.platform.current_app_profile();
-            profile.cannot_verify_real_ime_state(self.platform.focus.class_name())
+            !profile.can_use_imm32_cross_process()
                 && profile != crate::focus::class_names::AppImeProfile::InputRelay
         };
         let input = PredictInput {
@@ -3582,7 +3582,7 @@ mod tests {
 
     #[test]
     fn focus_probe_open_status_is_not_observable_when_probe_returns_none_even_for_standard() {
-        // Standard は can_read_imm32_open_status()==true だが、probe 自体が
+        // Standard は can_use_imm32_cross_process()==true だが、probe 自体が
         // ime_on=None を返す（未フォーカス等）場合は NotObservable になる。
         assert!(matches!(
             FocusProbeOpenStatus::classify(None, AppImeProfile::Standard),

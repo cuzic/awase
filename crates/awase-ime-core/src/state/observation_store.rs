@@ -34,7 +34,7 @@ pub enum FocusProbeOpenStatus {
     /// IMM32 API から実際に読み取れた値。
     Read(ObservedOpenValue),
     /// このプロファイルでは IMM32 の open status を信頼できない
-    /// （`AppImeProfile::can_read_imm32_open_status() == false`、TsfNative /
+    /// （`AppImeProfile::can_use_imm32_cross_process() == false`、TsfNative /
     /// Imm32Unavailable）。
     NotObservable(AppImeProfile),
 }
@@ -42,14 +42,13 @@ pub enum FocusProbeOpenStatus {
 impl FocusProbeOpenStatus {
     /// `probe.ime_on`（raw な IMM32 読み取り結果）とプロファイルから判定する。
     #[must_use]
-    pub const fn classify(probe_ime_on: Option<bool>, profile: AppImeProfile) -> Self {
-        if !profile.can_read_imm32_open_status() {
+    pub fn classify(probe_ime_on: Option<bool>, profile: AppImeProfile) -> Self {
+        if !profile.can_use_imm32_cross_process() {
             return Self::NotObservable(profile);
         }
-        match probe_ime_on {
-            Some(on) => Self::Read(ObservedOpenValue(on)),
-            None => Self::NotObservable(profile),
-        }
+        probe_ime_on.map_or(Self::NotObservable(profile), |on| {
+            Self::Read(ObservedOpenValue(on))
+        })
     }
 }
 
@@ -1094,11 +1093,11 @@ mod tests {
     }
 
     /// issue #136 / BUG-90 決定4: `AppImeProfile::InputRelay`（PowerToys Mouse
-    /// Without Borders 等の入力中継ツール）は `can_read_imm32_open_status() ==
+    /// Without Borders 等の入力中継ツール）は `can_use_imm32_cross_process() ==
     /// false` なので、IMM32 open status を実際に読み取れた場合でも
     /// `NotObservable` になり `ObservedOpenValue` は構築されない。この窓由来の
     /// open 観測は belief に一切取り込まれない（条件(c)、タスク3で
-    /// `can_read_imm32_open_status(InputRelay) = false` を固定済み。ここでは
+    /// `can_use_imm32_cross_process(InputRelay) = false` を固定済み。ここでは
     /// `FocusProbeOpenStatus::classify` がその述語を正しく consume することを
     /// 固定する）。
     #[test]
