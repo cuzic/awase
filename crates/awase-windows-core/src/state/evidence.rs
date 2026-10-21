@@ -29,6 +29,7 @@ use super::conv_classify::ConvSyncReason;
 use super::ime_event::{
     HwndId, ImePolicyProfile, ObservationAuthority, ObservationConfidence, ObservationSource,
 };
+use super::indicator_glyph::{BeliefLabel, LabelHit};
 #[cfg(test)]
 use super::probe_admission::FocusFence;
 use super::probe_admission::{AcceptedObservation, FocusEpoch};
@@ -145,6 +146,8 @@ declare_evidence! {
     FocusProbe => BeliefPool, FocusProbe, Low;
     /// mozc-readable の共有メモリの `tsf_open`（ADR-268）。High・BeliefOnly。
     MozcShm => BeliefPool, MozcShm, High;
+    /// タスクバーの入力インジケーターの字形を表に照合した開閉（ADR-273）。Medium・BeliefOnly。
+    TaskbarGlyph => BeliefPool, TaskbarGlyph, Medium;
 }
 
 /// 出自が型で確定している open 観測。
@@ -268,6 +271,16 @@ impl Observed<MozcShm> {
         focus_epoch: FocusEpoch,
     ) -> Self {
         Self::new(open, hwnd, focus_epoch)
+    }
+}
+
+impl Observed<TaskbarGlyph> {
+    /// 字形を**ラベル単位で照合して `Hit` した読み**（[`LabelHit`]）を witness に要求する。`Miss`（見本に近くない・曖昧）からは
+    /// 作れない。開閉は読みのラベルから決める（`Closed` なら閉、かな・英数なら開）。confidence は `Medium` 固定
+    /// （呼び出し元は選べない。H1 が否定され、実機の一致率が示されるまで High にしない。ADR-273）。
+    #[must_use]
+    pub fn from_glyph(hit: LabelHit, hwnd: HwndId, focus_epoch: FocusEpoch) -> Self {
+        Self::new(hit.label != BeliefLabel::Closed, hwnd, focus_epoch)
     }
 }
 
@@ -452,12 +465,13 @@ mod tests {
         assert_pool::<HwndCache>(ObservationAuthority::BeliefOnly);
         assert_pool::<FocusProbe>(ObservationAuthority::BeliefOnly);
         assert_pool::<MozcShm>(ObservationAuthority::BeliefOnly);
+        assert_pool::<TaskbarGlyph>(ObservationAuthority::BeliefOnly);
     }
 
-    /// 10 個の evidence 型が 10 個の異なるソースを覆っていること
-    /// （`PerSourceObservations` の 10 フィールドと 1:1）。
+    /// 11 個の evidence 型が 11 個の異なるソースを覆っていること
+    /// （`PerSourceObservations` の 11 フィールドと 1:1）。
     #[test]
-    fn evidence_sources_are_ten_distinct_recordable_sources() {
+    fn evidence_sources_are_eleven_distinct_recordable_sources() {
         let sources = [
             ImmGetOpenStatus::SOURCE,
             ImmCrossProbe::SOURCE,
@@ -469,8 +483,9 @@ mod tests {
             HwndCache::SOURCE,
             FocusProbe::SOURCE,
             MozcShm::SOURCE,
+            TaskbarGlyph::SOURCE,
         ];
-        assert_eq!(sources.len(), 10);
+        assert_eq!(sources.len(), 11);
         for (i, a) in sources.iter().enumerate() {
             for b in &sources[i + 1..] {
                 assert_ne!(a, b, "evidence 型が同じ ObservationSource を名乗っている");

@@ -139,6 +139,16 @@ pub enum ObservationSource {
     /// drift correction が IME を開け直す。ADR-268 D2）。新しい読み手を足すときも同じ除外を考えること。
     /// 窓の照合（epoch+hwnd）は `derive_filtered` の `is_identity_ok`、鮮度は `record_any` が付ける `expires_at`（TTL）。
     MozcShm,
+    /// タスクバーの入力インジケーターの字形を、見本の表に照合して読んだ開閉（ADR-261・ADR-273）。
+    ///
+    /// **Medium・BeliefOnly**。`PerSourceObservations` の専用の枠（`taskbar_glyph`）に入り、**`iter()` に含まれない**ので、
+    /// `derive_any`・`most_recent_trusted*`・`read_back`・`consensus`・`evaluate_drift` の全読み手から既定で除外される
+    /// （default-deny。ADR-273 D1）。採るのは `ImeModel::resolve_open_at` の独立した分岐だけ（`derive_any` の後・
+    /// `most_recent_trusted` の前。新鮮な Medium 以上が無く、指標より新しい Medium 以上が無いとき）。寿命は窓の範囲:
+    /// 指標以外の Medium 以上の観測を記録するとき・字形の `Miss`・窓の変化（`update_focus_window`・`clear_on_focus_change`）で消える
+    /// （書き込み時の削除。journal の再生でも同じ結果になる）。reducer は `update_drift` を呼ばない（`reconcile_key_effect_open` は呼ぶ）。
+    /// 現状、本番に報告する経路は無い（`ui_max_level` が `Observe` の間は配線しない。ADR-273 段階 1）。
+    TaskbarGlyph,
     /// 観測が一切ない状態（cache miss 等）での安全デフォルトの推測。
     ///
     /// 実際の外部観測ではなく awase 側のポリシー的な best-guess のため、
@@ -200,6 +210,7 @@ impl ObservationSource {
             Self::ConvOpenInference
             | Self::HeuristicDefault
             | Self::MozcShm
+            | Self::TaskbarGlyph
             | Self::HwndCache
             | Self::FocusProbe
             | Self::ConvBitsInference
@@ -671,6 +682,15 @@ mod tests {
         // 根拠となる情報が無いため BeliefOnly。
         assert_eq!(
             ObservationSource::ConvOpenInference.authority(),
+            ObservationAuthority::BeliefOnly
+        );
+    }
+
+    /// ADR-273 D1: 字形は Medium で belief に入るが、IME へ送る根拠には入れない（BeliefOnly）。
+    #[test]
+    fn taskbar_glyph_is_belief_only() {
+        assert_eq!(
+            ObservationSource::TaskbarGlyph.authority(),
             ObservationAuthority::BeliefOnly
         );
     }

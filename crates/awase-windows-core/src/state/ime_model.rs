@@ -103,6 +103,9 @@ pub enum BaseDecision {
         first: ObservationSource,
         second: Option<ObservationSource>,
     },
+    /// 入力インジケーターの字形の読み（ADR-273 D2）。`derive_any()` が `None` で、新鮮な Medium 以上が無く、
+    /// 指標より新しい Medium 以上も無いとき（`ObservationStore::indicator_reading`）。`desired_open` は書かない。
+    IndicatorGlyph,
     /// `derive_any()` が `None`（観測なし/矛盾）で `most_recent_trusted()` に
     /// フォールバック。
     MostRecentTrusted(ObservationSource),
@@ -477,6 +480,11 @@ impl ImeModel {
                 }
             };
             (outcome.value(), decided_by)
+        } else if let Some(glyph) = self.observations.indicator_reading(now) {
+            // ADR-273 D2: `derive_any` の後・`most_recent_trusted` の前の独立した分岐。`derive_any`（`derive_filtered`）の中には
+            // 入れない（`derive_any` は `ModeKeyPassedThrough` の `align_desired` と `align_placeholder_desired` が `desired_open` を
+            // 書く根拠にするので、指標が `desired_open` に入ってしまう）。
+            (glyph.open, BaseDecision::IndicatorGlyph)
         } else if let Some(trusted) = self.observations.most_recent_trusted(now) {
             (
                 trusted.open,
@@ -507,6 +515,7 @@ impl ImeModel {
         if self.has_user_explicit_intent()
             || self.key_effect.and_then(|p| p.open).is_some()
             || self.observations.derive_any(now).is_some()
+            || self.observations.indicator_reading(now).is_some()
         {
             return None;
         }
@@ -808,12 +817,15 @@ impl ImeModel {
                 // 値としての観測を記録する唯一の口（ADR-089 §2.1）。
                 self.observations
                     .record_replayed(observed, envelope.time.monotonic);
-                // drift 追跡 (desired と observed の乖離)
-                self.observations.update_drift(
-                    self.desired_open,
-                    observed.open(),
-                    envelope.time.monotonic,
-                );
+                // drift 追跡 (desired と observed の乖離)。**字形（`TaskbarGlyph`）では追跡しない**（ADR-273 D1）:
+                // 指標が drift を `None` に戻すと、正当な補正（ObserverPoll の食い違い）を遅らせ、`drift_duration` も巻き戻る。
+                if observed.source() != ObservationSource::TaskbarGlyph {
+                    self.observations.update_drift(
+                        self.desired_open,
+                        observed.open(),
+                        envelope.time.monotonic,
+                    );
+                }
                 self.reconcile_key_effect_open(
                     observed.open(),
                     observed.confidence(),
@@ -2233,6 +2245,151 @@ mod tests {
         assert!(
             model.key_effect().is_none(),
             "両軸とも照合済みなら予測は消える"
+        );
+    }
+
+    // ───────── ADR-273: 入力インジケーターの字形（TaskbarGlyph）の採用 ─────────
+
+    /// 字形の読み（ラベル単位の `Hit`）を `ObserverReported` で報告する。
+    fn report_glyph(
+        model: &mut ImeModel,
+        seq: u64,
+        tick_ms: u64,
+        label: crate::state::indicator_glyph::BeliefLabel,
+    ) {
+        use crate::state::evidence::{Observed, TaskbarGlyph};
+        use crate::state::indicator_glyph::{LabelHit, SampleOrigin};
+        let hit = LabelHit {
+            label,
+            class: label.class(),
+            distance: 0.0,
+            ratio: f32::INFINITY,
+            origin: SampleOrigin::Common,
+        };
+        let any: AnyObservation = Observed::<TaskbarGlyph>::from_glyph(hit, HwndId::NULL, 0).into();
+        model.reduce(&envelope_at(
+            seq,
+            Instant::now(),
+            tick_ms,
+            ImeEvent::ObserverReported(any),
+        ));
+    }
+
+    /// 字形だけがあるとき、belief は字形に従う。`desired_open` は書かない。
+    #[test]
+    fn glyph_decides_open_when_nothing_else_does_and_never_writes_desired() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        let desired = model.desired_open();
+        report_glyph(&mut model, 1, 100, BeliefLabel::Closed);
+        let res = model.resolve_open_at(Instant::now());
+        assert!(!res.value, "閉の読みで belief は閉");
+        assert_eq!(res.decided_by.base, BaseDecision::IndicatorGlyph);
+        assert_eq!(model.desired_open(), desired, "desired_open は書かない");
+        // かな・英数の読みは開。
+        for label in [BeliefLabel::Kana, BeliefLabel::Eisu] {
+            let mut m = ImeModel::new();
+            report_glyph(&mut m, 1, 100, label);
+            let res = m.resolve_open_at(Instant::now());
+            assert!(res.value, "{label:?}");
+            assert_eq!(res.decided_by.base, BaseDecision::IndicatorGlyph);
+        }
+    }
+
+    /// 明示意図・打鍵時予測は字形より上位（`resolve_open_at` の順序）。
+    #[test]
+    fn explicit_intent_and_key_effect_prediction_beat_the_glyph() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        report_glyph(&mut model, 1, 100, BeliefLabel::Closed);
+        model.reduce(&envelope(
+            2,
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        let res = model.resolve_open_at(Instant::now());
+        assert!(res.value);
+        assert_eq!(res.decided_by.base, BaseDecision::ExplicitIntent);
+        // 予測（開）が字形（閉）に勝つ。
+        let mut model = ImeModel::new();
+        report_glyph(&mut model, 1, 100, BeliefLabel::Closed);
+        predict(&mut model, 200, Some(true), None);
+        let res = model.resolve_open_at(Instant::now());
+        assert!(res.value);
+        assert_eq!(res.decided_by.base, BaseDecision::KeyEffectPrediction);
+    }
+
+    /// 指標以外の Medium 以上の観測が新しく届くと、指標の枠は消え、新しい観測が決める（Medium が High・新しい読みを追い越さない）。
+    #[test]
+    fn a_newer_medium_observation_replaces_the_glyph() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        report_glyph(&mut model, 1, 100, BeliefLabel::Closed);
+        assert_eq!(
+            model.resolve_open_at(Instant::now()).decided_by.base,
+            BaseDecision::IndicatorGlyph
+        );
+        observe_open(&mut model, 2, 200, true, ObservationConfidence::Medium);
+        let res = model.resolve_open_at(Instant::now());
+        assert!(res.value, "新しい観測（開）が決める");
+        assert!(matches!(
+            res.decided_by.base,
+            BaseDecision::DeriveMedium { .. }
+        ));
+        // 以後、古い字形は復活しない（書き込み時の削除）。
+        assert!(model
+            .observations
+            .indicator_reading(Instant::now())
+            .is_none());
+    }
+
+    /// reducer は字形で `update_drift` を呼ばない（呼ぶと、正当な補正を遅らせる）。
+    #[test]
+    fn glyph_report_does_not_touch_the_drift_tracking() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        let desired = model.desired_open();
+        // desired と食い違う ObserverPoll で drift が始まる。
+        observe_open(&mut model, 1, 100, !desired, ObservationConfidence::Medium);
+        assert!(model.observations.drift_duration(Instant::now()).is_some());
+        // desired と**一致**する字形（呼ばれていれば drift は None に戻る）。
+        let label = if desired {
+            BeliefLabel::Kana
+        } else {
+            BeliefLabel::Closed
+        };
+        report_glyph(&mut model, 2, 200, label);
+        assert!(
+            model.observations.drift_duration(Instant::now()).is_some(),
+            "字形は drift を巻き戻さない"
+        );
+    }
+
+    /// 字形も `reconcile_key_effect_open` を呼ぶ: settle 前の読みは予測を消さず、settle 後の読みは消す
+    /// （予測が居座り続けて、外から変わったときに古い予測が勝つのを防ぐ。D4 の柵は報告する側が通す）。
+    #[test]
+    fn glyph_reconciles_the_key_effect_prediction_only_after_settle() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        predict(&mut model, 1000, Some(false), None);
+        report_glyph(
+            &mut model,
+            2,
+            1000 + crate::tuning::KEY_EFFECT_SETTLE_MS - 1,
+            BeliefLabel::Kana,
+        );
+        assert!(model.key_effect().is_some(), "settle 前は予測が残る");
+        report_glyph(
+            &mut model,
+            3,
+            1000 + crate::tuning::KEY_EFFECT_SETTLE_MS,
+            BeliefLabel::Kana,
+        );
+        assert!(
+            model.key_effect().is_none(),
+            "settle 後の読みは予測を照合して消す"
         );
     }
 

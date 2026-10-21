@@ -254,6 +254,10 @@ pub struct PerSourceObservations {
     pub conv_open_inference: Option<ImeObservation>,
     /// mozc-readable の共有メモリの `tsf_open`（ADR-268）。High・BeliefOnly。`record_any` が `expires_at`（TTL）を付ける。
     pub mozc_shm: Option<ImeObservation>,
+    /// タスクバーの入力インジケーターの字形（ADR-273）。Medium・BeliefOnly。**[`Self::iter`] に含めない**: `iter()` を使う全読み手
+    /// （`derive_any`・`most_recent_trusted*`・`read_back`・`consensus`）から既定で除外される（default-deny）。採るのは
+    /// [`ObservationStore::indicator_reading`] だけ。寿命は窓の範囲（書き込み時の削除。`record_any`・`update_focus_window`・`clear_all`）。
+    pub taskbar_glyph: Option<ImeObservation>,
 }
 
 impl PerSourceObservations {
@@ -271,6 +275,7 @@ impl PerSourceObservations {
             ObservationSource::HeuristicDefault => self.heuristic_default.as_ref(),
             ObservationSource::ConvOpenInference => self.conv_open_inference.as_ref(),
             ObservationSource::MozcShm => self.mozc_shm.as_ref(),
+            ObservationSource::TaskbarGlyph => self.taskbar_glyph.as_ref(),
             // ConvBitsInference / GjiIoInference は input_mode 専用ソースで
             // ON/OFF 観測としては記録されない。
             ObservationSource::ConvBitsInference | ObservationSource::GjiIoInference => None,
@@ -299,6 +304,7 @@ impl PerSourceObservations {
             ObservationSource::HeuristicDefault => self.heuristic_default = Some(obs),
             ObservationSource::ConvOpenInference => self.conv_open_inference = Some(obs),
             ObservationSource::MozcShm => self.mozc_shm = Some(obs),
+            ObservationSource::TaskbarGlyph => self.taskbar_glyph = Some(obs),
             // ConvBitsInference / GjiIoInference は InputModeObserved 専用ソースで
             // ObserverReported（ON/OFF 観測）としては dispatch されないため、
             // この store には記録されない。
@@ -306,7 +312,8 @@ impl PerSourceObservations {
         }
     }
 
-    /// 全ソースの観測値を iter (Some のみ)
+    /// 全ソースの観測値を iter (Some のみ)。**`taskbar_glyph`（ADR-273）は含めない**（default-deny。専用の読み口
+    /// [`ObservationStore::indicator_reading`] だけが読む）。
     pub fn iter(&self) -> impl Iterator<Item = &ImeObservation> {
         [
             self.focus_probe.as_ref(),
@@ -336,6 +343,7 @@ impl PerSourceObservations {
         self.heuristic_default = None;
         self.conv_open_inference = None;
         self.mozc_shm = None;
+        self.taskbar_glyph = None;
     }
 }
 
@@ -466,6 +474,13 @@ impl ObservationStore {
             tracing::debug!("[observation] {source:?} は open 観測プールに入らないため破棄");
             return;
         }
+        // ADR-273 D1: 指標以外の Medium 以上の観測が来たら、指標の枠を消す（書き込み時の削除。journal の再生でも同じ結果になる）。
+        // 指標より新しい Medium 以上がある間は、指標は採られない（Medium が新しい読みを追い越さない）。
+        if source != ObservationSource::TaskbarGlyph
+            && observed.confidence() >= ObservationConfidence::Medium
+        {
+            self.per_source.taskbar_glyph = None;
+        }
         self.per_source.set(
             source,
             ImeObservation {
@@ -570,6 +585,9 @@ impl ObservationStore {
             self.current_fence.hwnd
         );
         self.current_fence.hwnd = new_hwnd;
+        // ADR-273 D1: 同じプロセスの中の窓の変化では、前の窓の指標を消す（`derive_filtered` の `is_identity_ok` は指標を読まないので、
+        // 照合ではなく消去で同一性を守る）。
+        self.per_source.taskbar_glyph = None;
     }
 
     /// desired と observed の乖離を更新する。
@@ -591,6 +609,30 @@ impl ObservationStore {
     pub fn drift_duration(&self, now: Instant) -> Option<Duration> {
         self.drift
             .map(|d| now.saturating_duration_since(d.started_at))
+    }
+
+    /// タスクバーの入力インジケーターの字形の読み（ADR-273 D2 の述語）。**`resolve_open_at` の独立した分岐だけが使う**。
+    ///
+    /// 採るのは次のすべてを満たすとき:
+    /// - 枠があり、失効しておらず、窓の同一性（epoch + hwnd）が現在の fence と合う。
+    /// - **(1)** 新鮮（`OBSERVATION_FRESH_WINDOW_MS` 以内）で同一性の合う Medium 以上の観測（指標を除く）が 1 件も無い
+    ///   （`derive_any` が決めるか、Medium 同士の衝突のとき。衝突を指標の新しさだけで決めさせない）。
+    /// - **(2)** 指標より新しく、失効していない Medium 以上の観測（指標を除く）が無い（鮮度が切れていても、より新しい読みには負ける。
+    ///   ADR-233 の時刻順）。書き込み時の削除（`record_any`）があるので通常は常に真だが、削除の漏れの防御として残す。
+    #[must_use]
+    pub fn indicator_reading(&self, now: Instant) -> Option<&ImeObservation> {
+        let glyph = self.per_source.taskbar_glyph.as_ref()?;
+        if glyph.is_expired(now) || !observation_identity_ok(glyph, self.current_fence) {
+            return None;
+        }
+        let fresh_window = Duration::from_millis(crate::tuning::OBSERVATION_FRESH_WINDOW_MS);
+        let blocked = self.per_source.iter().any(|o| {
+            o.confidence >= ObservationConfidence::Medium
+                && !o.is_expired(now)
+                && ((o.age(now) <= fresh_window && observation_identity_ok(o, self.current_fence))
+                    || o.at > glyph.at)
+        });
+        (!blocked).then_some(glyph)
     }
 
     /// `HeuristicDefault` 観測を返す（実在すれば）。ADR-087 §2.3 P15 Step 4a
@@ -858,19 +900,7 @@ impl ObservationStore {
         // 広くなるため、ここでは統合しない——`record_any` が単一の `observed` から
         // 両方を同時に埋めるため、片側だけ古くなるバグクラスは構造的に発生しない）。
         // 比較の瞬間だけ `FocusFence` に組み立てて `current_fence` と照合する。
-        let is_identity_ok = |o: &ImeObservation| match o.source {
-            ObservationSource::ImmCrossProbe
-            | ObservationSource::FocusProbe
-            | ObservationSource::MozcShm => {
-                let obs_fence = FocusFence {
-                    epoch: o.focus_epoch,
-                    hwnd: o.hwnd,
-                };
-                trace_hwnd_only_mismatch(o, obs_fence, current_fence);
-                obs_fence == current_fence
-            }
-            _ => true,
-        };
+        let is_identity_ok = |o: &ImeObservation| observation_identity_ok(o, current_fence);
 
         // 1. High confidence: 単一ソースで即採用（最新のものを選ぶ）
         let high = self
@@ -965,6 +995,25 @@ impl ObservationStore {
 /// （同一プロセス内でのウィンドウ切替）を、epoch 不一致による除外と区別して
 /// 実機ログで確認できるようにする。ログを出すだけで判定には関わらない
 /// （`.cargo/mutants-awase-windows.toml` の `exclude_re` が関数名で除外する、ADR-234 D0）。
+/// フォーカス同一性の照合（ADR-106 決定3）。epoch + hwnd を現在の fence と照合するのは、フォーカス直後の probe 系
+/// （`ImmCrossProbe`・`FocusProbe`）・共有メモリ（`MozcShm`）・字形（`TaskbarGlyph`）だけ。ほかの source は無条件に通す。
+fn observation_identity_ok(o: &ImeObservation, current_fence: FocusFence) -> bool {
+    match o.source {
+        ObservationSource::ImmCrossProbe
+        | ObservationSource::FocusProbe
+        | ObservationSource::MozcShm
+        | ObservationSource::TaskbarGlyph => {
+            let obs_fence = FocusFence {
+                epoch: o.focus_epoch,
+                hwnd: o.hwnd,
+            };
+            trace_hwnd_only_mismatch(o, obs_fence, current_fence);
+            obs_fence == current_fence
+        }
+        _ => true,
+    }
+}
+
 fn trace_hwnd_only_mismatch(o: &ImeObservation, obs_fence: FocusFence, current_fence: FocusFence) {
     if obs_fence.epoch == current_fence.epoch && obs_fence.hwnd != current_fence.hwnd {
         tracing::debug!(
@@ -2531,5 +2580,201 @@ mod tests {
                 }
             }
         }
+    }
+    // ───────── ADR-273: 入力インジケーターの字形（TaskbarGlyph）の専用の枠 ─────────
+
+    fn glyph(open: bool, at: Instant) -> ImeObservation {
+        obs(open, ObservationSource::TaskbarGlyph, at)
+    }
+
+    /// default-deny: 字形の枠は `iter()` に入らないので、既存の全読み手は字形だけがあっても何も返さない。
+    #[test]
+    fn glyph_slot_is_invisible_to_every_generic_reader() {
+        let now = Instant::now();
+        let mut s = ObservationStore::default();
+        rec(&mut s, glyph(true, now));
+        assert!(s.per_source.iter().next().is_none());
+        assert!(s.derive_any(now).is_none());
+        assert!(s.derive_actuating(now).is_none());
+        assert!(s.most_recent_trusted(now).is_none());
+        assert!(s.most_recent_trusted_excluding(now, &[]).is_none());
+        let since = now;
+        let later = now + Duration::from_millis(20);
+        assert_eq!(
+            s.read_back(later, since, ReadBackQuery::AnyFreshEvidence, 5)
+                .resolution(),
+            Resolution::GaveUp
+        );
+        assert!(!s
+            .read_back(later, since, ReadBackQuery::Converged { desired: true }, 5)
+            .converged());
+        // 専用の読み口だけが読める。
+        assert_eq!(s.indicator_reading(now).map(|o| o.open), Some(true));
+    }
+
+    /// (1): 新鮮な Medium 以上（指標を除く）がある間は、指標は採られない。Medium 同士の衝突を指標の新しさだけで決めさせない。
+    #[test]
+    fn indicator_loses_to_a_fresh_medium_or_higher_observation() {
+        let t0 = Instant::now();
+        let now = t0 + Duration::from_millis(500);
+        for confidence in [ObservationConfidence::Medium, ObservationConfidence::High] {
+            let mut s = ObservationStore::default();
+            rec(&mut s, glyph(false, t0));
+            let mut poll = obs(true, ObservationSource::ObserverPoll, t0);
+            poll.confidence = confidence;
+            rec(&mut s, poll);
+            assert!(s.indicator_reading(now).is_none(), "{confidence:?}");
+        }
+        // Low（FocusProbe・HeuristicDefault）は Medium 以上に入らないので、指標が勝つ。
+        let mut s = ObservationStore::default();
+        rec(&mut s, glyph(false, t0));
+        let mut probe = obs(
+            true,
+            ObservationSource::FocusProbe,
+            t0 + Duration::from_millis(100),
+        );
+        probe.confidence = ObservationConfidence::Low;
+        rec(&mut s, probe);
+        assert_eq!(s.indicator_reading(now).map(|o| o.open), Some(false));
+    }
+
+    /// (2): 鮮度が切れていても、指標より**新しい** Medium 以上には負ける（ADR-233 の時刻順）。古い Medium 以上には勝つ。
+    #[test]
+    fn indicator_loses_to_a_stale_but_newer_observation_and_beats_an_older_one() {
+        let t0 = Instant::now();
+        // 指標は t0、ObserverPoll は t0+1s、問い合わせは t0+10s（ObserverPoll は鮮度外）→ 新しい読みに負ける。
+        let mut s = ObservationStore::default();
+        rec(&mut s, glyph(false, t0));
+        rec(
+            &mut s,
+            obs(
+                true,
+                ObservationSource::ObserverPoll,
+                t0 + Duration::from_secs(1),
+            ),
+        );
+        assert!(s.indicator_reading(t0 + Duration::from_secs(10)).is_none());
+        // 指標が t0+5s、ObserverPoll が t0（古い・鮮度外）→ 指標が勝つ。
+        let mut s = ObservationStore::default();
+        rec(&mut s, obs(true, ObservationSource::ObserverPoll, t0));
+        rec(&mut s, glyph(false, t0 + Duration::from_secs(5)));
+        assert_eq!(
+            s.indicator_reading(t0 + Duration::from_secs(10))
+                .map(|o| o.open),
+            Some(false)
+        );
+        // 失効した観測は数えない（ADR-273 d1）。
+        let mut s = ObservationStore::default();
+        let mut expired = obs(
+            true,
+            ObservationSource::MozcShm,
+            t0 + Duration::from_secs(1),
+        );
+        expired.expires_at = Some(t0 + Duration::from_secs(2));
+        rec(&mut s, expired);
+        rec(&mut s, glyph(false, t0));
+        assert_eq!(
+            s.indicator_reading(t0 + Duration::from_secs(10))
+                .map(|o| o.open),
+            Some(false)
+        );
+    }
+
+    /// 書き込み時の削除: 指標以外の Medium 以上を `record_replayed` で記録すると指標の枠が消える。Low では消えない。
+    #[test]
+    fn recording_a_medium_or_higher_observation_deletes_the_glyph_slot() {
+        let t0 = Instant::now();
+        let any = |open, source, confidence| {
+            AnyObservation::restored_from_journal(open, source, HwndId::NULL, confidence, 0)
+        };
+        let mut s = ObservationStore::default();
+        s.record_replayed(
+            any(
+                false,
+                ObservationSource::TaskbarGlyph,
+                ObservationConfidence::Medium,
+            ),
+            t0,
+        );
+        assert!(s.per_source.taskbar_glyph.is_some());
+        // Low は消さない。
+        s.record_replayed(
+            any(
+                true,
+                ObservationSource::FocusProbe,
+                ObservationConfidence::Low,
+            ),
+            t0 + Duration::from_millis(10),
+        );
+        assert!(s.per_source.taskbar_glyph.is_some());
+        // Medium 以上は消す。
+        s.record_replayed(
+            any(
+                true,
+                ObservationSource::ObserverPoll,
+                ObservationConfidence::Medium,
+            ),
+            t0 + Duration::from_millis(20),
+        );
+        assert!(s.per_source.taskbar_glyph.is_none());
+        // 指標自身を記録しても、自分の枠は消えない。
+        s.record_replayed(
+            any(
+                false,
+                ObservationSource::TaskbarGlyph,
+                ObservationConfidence::Medium,
+            ),
+            t0 + Duration::from_millis(30),
+        );
+        assert!(s.per_source.taskbar_glyph.is_some());
+        s.record_replayed(
+            any(
+                true,
+                ObservationSource::ImmCrossProbe,
+                ObservationConfidence::High,
+            ),
+            t0 + Duration::from_millis(40),
+        );
+        assert!(s.per_source.taskbar_glyph.is_none());
+    }
+
+    /// 窓の変化で消える: 同じプロセスの窓の変化（`update_focus_window`）・フォーカスの変化（`clear_on_focus_change`）。
+    #[test]
+    fn a_window_change_deletes_the_glyph_slot() {
+        let t0 = Instant::now();
+        let mut s = ObservationStore::default();
+        rec(&mut s, glyph(true, t0));
+        s.update_focus_window(HwndId(7));
+        assert!(s.per_source.taskbar_glyph.is_none());
+        rec(&mut s, glyph(true, t0));
+        s.clear_on_focus_change(FocusFence {
+            epoch: 3,
+            hwnd: HwndId(9),
+        });
+        assert!(s.per_source.taskbar_glyph.is_none());
+    }
+
+    /// 窓の同一性: epoch か hwnd が現在の fence と違う指標は採らない。
+    #[test]
+    fn indicator_is_dropped_when_its_window_identity_does_not_match() {
+        let t0 = Instant::now();
+        let mut s = ObservationStore::default();
+        s.clear_on_focus_change(FocusFence {
+            epoch: 2,
+            hwnd: HwndId(5),
+        });
+        let mut g = glyph(true, t0);
+        g.focus_epoch = 2;
+        g.hwnd = HwndId(5);
+        rec(&mut s, g);
+        assert!(s.indicator_reading(t0).is_some());
+        let mut other_epoch = g;
+        other_epoch.focus_epoch = 1;
+        rec(&mut s, other_epoch);
+        assert!(s.indicator_reading(t0).is_none());
+        let mut other_hwnd = g;
+        other_hwnd.hwnd = HwndId(6);
+        rec(&mut s, other_hwnd);
+        assert!(s.indicator_reading(t0).is_none());
     }
 }

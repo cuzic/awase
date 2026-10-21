@@ -229,6 +229,35 @@ mod tests {
         });
     }
 
+    /// ADR-273 D1: 字形（Medium・BeliefOnly）は drift correction の根拠にしない（専用の枠で、`iter()` に出ない）。
+    #[test]
+    fn taskbar_glyph_alone_is_never_a_drift_correction_basis() {
+        use crate::state::ime_event::{HwndId, ObservationConfidence};
+        use crate::state::observation_store::ImeObservation;
+        let now = Instant::now();
+        let mut model = ImeModel::default();
+        let desired = model.desired_open();
+        with_intent(&mut model, desired);
+        drifting_since(&mut model, now);
+        model.observations.per_source.set(
+            ObservationSource::TaskbarGlyph,
+            ImeObservation {
+                open: !desired,
+                source: ObservationSource::TaskbarGlyph,
+                at: now,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                expires_at: None,
+                focus_epoch: 0,
+            },
+        );
+        assert_eq!(
+            evaluate_drift(&model, now),
+            Err(NoDrift::NoTrustedObservation),
+            "字形だけが根拠のとき drift correction は発火しない"
+        );
+    }
+
     /// ADR-268 D2: 共有メモリ（High・BeliefOnly）は drift correction の根拠にしない。根拠にすると、明示意図と食い違うたびに
     /// IME を開け直す争いになる（Standard の窓）か、Blind の窓で再武装のループになる。
     #[test]
