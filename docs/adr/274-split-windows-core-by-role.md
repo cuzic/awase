@@ -8,7 +8,7 @@ summary: |-
   進め方は葉から剥がす: (0) 準備のコード移動と、層の向きを CI で固定する `deps.py --check`、(1) 葉の crate(hookinput → `awase-hook-core`、plans → `awase-windows-plans`、殻から scancode・bug_report)、(2) 下へ剥がす(base → `awase-windows-base`、keyeffect → `awase-key-effect`)と、残りの `awase-windows-core` を `awase-ime-core` に改名。各 crate は分割前と同じ相対パスを保ち、git mv(類似度 100%)で、merge commit で入れる。
   Opus レビュー(round 1・2)の Blocker 2 件(見落とした循環、D4 の順序)と、黙って検査が外れる 9 か所(pre-push の正規表現・compile_fail doctest・dylint の -p ほか)を反映した。Opus は「今は 7 分割をやらずガードだけ」を勧めたが、所有者の方針に従い、費用を抑える葉から剥がす順にした。
 status: |-
-  起案・Opus レビュー round 1・2 反映済み(2026-10-20)。段階 0(準備)は完了。段階 1(葉の crate を剥がす)は未着手。
+  起案・Opus レビュー round 1・2 反映済み(2026-10-20)。段階 0(準備)と段階 1(葉の crate を剥がす)は完了。段階 2(下へ剥がす)に進むかは、判断点(下の「段階 1 の結果」)で所有者が決める。
 related_adr:
   - "ADR-019"
   - "ADR-229"
@@ -187,3 +187,54 @@ CI が緑のまま検査が外れる:
 2. `awase-scancode` の移動先。`awase-settings` の中に置く案もある(参照元が `awase-settings` だけのため)。
 3. `awase-windows-core` を最後に `awase-ime-core` へ改名するか、そのまま残すか。改名する場合は、package 名だけか、ディレクトリ `crates/awase-windows-core/` も変えるか(後者は D5-9 の影響が大きい)。
 4. 段階 2 に進むかの判断(段階 1 の後)。
+
+## 段階 1 の結果(2026-10-21)
+
+葉の crate を 4 つ剥がし、すべて `develop` に入った(各 PR の CI は全て緑、`develop` の CI も成功)。
+
+| crate | 内容 | PR | 備考 |
+|---|---|---|---|
+| `awase-hook-core` | フック・修飾キー・半角英数トグルの状態(7 ファイル) | #723 | 最初の葉。CI で nightly の dylint(冗長な glob 再公開)と `too_long_first_doc_paragraph` を指摘され、直した |
+| `awase-windows-plans` | TSF とフォーカスの「計画」(10 ファイル + `focus/hwnd_cache.rs`) | #724 | `focus/` が複数の crate にまたがる最初の例。一発で通った |
+| `awase-scancode` | Scancode Map の判断・編集モデル・適用(5 ファイル) | #727(準備)・#729 | 準備: `scancode_map.rs` のレジストリ I/O を殻の `scancode_registry.rs` へ。VM 検証 `scancode-vm-verify` も成功 |
+| `awase-bug-report` | 不具合報告の組み立て(`bug_report.rs`) | #726(準備)・#730 | 準備: 学習表のファイル読み取りを殻の `key_effect_io` へ。移動後、殻の `flate2`・`base64`・`thiserror` が不要になった |
+
+移動はすべて `git mv`(rename 100%、中身は不変)。
+
+### 行数(本番コードの推定。ADR-272 前 → 現在)
+
+| | awase-windows | core 系の合計 | core 系の割合 |
+|---|---|---|---|
+| ADR-272 前(2026-10-20) | 48,626 | 25,024 | 34.0% |
+| 段階 1 完了(2026-10-21) | 45,307 | 30,979 | 40.6% |
+
+core 系の合計 30,979 行の内訳: `awase-windows-core` 23,907・`awase-scancode` 2,344・`awase-bug-report` 1,762・`awase-hook-core` 1,689・`awase-windows-plans` 1,277。
+殻は約 3,300 行減った(テスト込みでは `awase-windows` 62,190 行)。
+
+### 判断点の基準(D4)の実測
+
+- (a) **CI の所要時間**: `awase-hook-core` の PR(#723)で、`develop` の直近 4 回の中央値と比べた(各ジョブの `started_at`/`completed_at`)。
+  `test` +8 秒、`dylint` −15 秒、`windows-cross-check` −10 秒、`windows-test` −33 秒、`clippy` −7 秒はノイズの範囲。`windows-build` だけ +63 秒(191 秒。`develop` の 4 回は 102〜173 秒)で、
+  新しい crate の初回でキャッシュが効いていない可能性がある(1 サンプル)。以降の PR では目立った増加は見ていない(各 PR の所要時間は記録していない。次の測定は段階 2 の前に行う)。
+- (b) **同時変更の割合**: 未測定(段階 1 の後の 2 週間が要る)。
+- (c) **D5 の穴の件数**: 段階 1 の 4 つの PR で、CI が見つけた問題は次のとおりで、**穴(黙って検査が外れる)は 0 件**。すべて CI が音を立てて落ちた:
+  1. 冗長な glob 再公開(dylint)、2. 最初の doc 段落の長さ(clippy)、3. `state/mod.rs` が全 core 系 crate にあるという `layer_boundary_guard` の仮定(`awase-scancode` には `state/` が無い)、
+  4. `InputRelay` の出現数のガード(段階 0 の 1)、5. `adr-evidence-consistency` が pre-push の正規表現を読めなくなった(段階 0 の 5)、
+  6. `needless_pass_by_value`(`from_tables`)、7. **`awase-bug-report` の依存の漏れ**(`awase`・`awase-gji-config`)。
+  7 は私の依存の洗い出しが、crate 名を決め打ちの grep で、`use` 文の `awase_*::` を機械的に全部出していなかったため。CI のコンパイルエラーで即座に見つかった。
+  `core-layers` は、`develop` に新しく入ったモジュール(`indicator_glyph_seeds`・`indicator_glyph_store`)を未割当として検出し、割り当てを強いた(狙いどおりの働き)。
+- (d) 段階 2 の費用の見積り(base の変更頻度と再ビルドの広がり)は、段階 2 に進む場合に先に行う。
+
+### 気づいた点
+
+- 段階 0 の仕組み(`check_wiring.py`・`deps.py --check`・`core-layers` ジョブ)は、新しい crate を足すたびに必要な配線を名指ししてくれた。足し忘れは 0 件。
+- 依存の洗い出しは、`use` 文の crate 名を機械的に全部出す(`grep -oE '\b[a-z][a-z0-9_]*::'` の集計)こと。決め打ちの名前で grep しない。
+- ガードが「全 core 系 crate に `state/` がある」と仮定していた(`ungated_state_modules`)。葉の crate は `state/` を持たないことがある。
+- 殻の `state/mod.rs` では、葉の crate の glob を並べる(最上位の 1 つだけにすると、下位の glob が全名重なって nightly の lint が落とす。葉が複数あれば重ならない)。
+
+### 次(所有者の判断)
+
+段階 2(下へ剥がす: `awase-windows-base`・`awase-key-effect`、`awase-windows-core` の `awase-ime-core` への改名)に進むか。
+段階 1 で、残りの `awase-windows-core`(base + keyeffect + imecore + journal)は 23,907 行(本番)で、core 系の 77% を占める。段階 2 は全 crate が依存する土台(`tuning`・`vk`・`converter_target` など、変更の多いファイル)を動かすので、
+費用の性質が段階 1 と違う(判断点 (d))。進めない場合の扱い(改名するか、description と `CLAUDE.md` だけ直すか)は、未決 3 で決める。
+
