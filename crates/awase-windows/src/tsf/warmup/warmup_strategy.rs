@@ -9,7 +9,7 @@
 //! GJI 固有のイベント（`GjiEvent::ImeOn`、`FocusChange` 等）は依然 [`crate::tsf::gji_fsm::GjiFsm`]
 //! が直接処理する。このトレイトは `Output` が MS IME 対応を追加する際の足場として用意する。
 
-use crate::tsf::gji_fsm::{FocusEpoch, GjiAction, GjiEvent, GjiTimer, ProbeParams};
+use crate::tsf::gji_fsm::{GjiAction, GjiEvent, GjiTimer, ProbeParams};
 use timed_fsm::Response;
 
 // ── トレイト定義 ──────────────────────────────────────────────────────────────
@@ -42,11 +42,11 @@ pub(crate) trait ImeWarmupStrategy {
         Response::consume()
     }
 
-    /// OnComposing 状態の epoch を返す（EndComposition に使用）。
+    /// GjiFsm が OnComposing 状態か（EndComposition を送るかの判断に使用）。
     ///
-    /// MS IME / GJI が OnComposing でない場合は `None`（デフォルト）。
-    fn gji_current_composition_epoch(&self) -> Option<FocusEpoch> {
-        None
+    /// MS IME は常に `false`（デフォルト）。
+    fn gji_is_composing(&self) -> bool {
+        false
     }
 
     /// この戦略が F2 (VK_DBE_HIRAGANA) cold-start probe を必要とするか。
@@ -98,12 +98,9 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
         Self::on_timeout(self, GjiTimer::LongIdle)
     }
 
-    fn gji_current_composition_epoch(&self) -> Option<FocusEpoch> {
+    fn gji_is_composing(&self) -> bool {
         use crate::tsf::gji_fsm::GjiState;
-        match Self::state(self) {
-            GjiState::OnComposing { epoch, .. } => Some(*epoch),
-            _ => None,
-        }
+        matches!(Self::state(self), GjiState::OnComposing { .. })
     }
 
     fn diagnostic_state_label(&self) -> String {

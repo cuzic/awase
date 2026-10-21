@@ -13,7 +13,7 @@
 //!                                                              │
 //! OnComposing ◄── StartComposition ── OnWarm ◄───────────────┘
 //!     │                                  │
-//!     │ EndComposition(epoch ✓)     LongIdle timeout
+//!     │ EndComposition              LongIdle timeout
 //!     │                                  │
 //!     └──────────────── OnWarm          OnCold(Long, NotStarted)
 //! ```
@@ -23,7 +23,6 @@
 //! - `pending` は `OnCold` バリアント内に持つ（型レベルで OffCold/OnWarm/OnComposing の
 //!   pending を不正状態として排除）。
 //! - `probe_id` により stale な WarmupComplete/WarmupFailed を安全に弾く。
-//! - `epoch` により stale な EndComposition を安全に弾く。
 //! - `OnCold(Long)` は `LongIdle` タイムアウト直後に入る状態で、最初の `KeyInput` が
 //!   来るまで probe を開始しない（`ProbeStatus::NotStarted`）。
 //! - LongIdle タイマーは timed-fsm の `on_timeout` で管理し、
@@ -37,17 +36,6 @@ use crate::state::injection_mode::InjectionMode;
 use crate::tuning;
 
 // ── プリミティブ型 ────────────────────────────────────────────────────────────
-
-/// フォーカス epoch。stale な `EndComposition` を弾くための単調カウンタ。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct FocusEpoch(u32);
-
-impl FocusEpoch {
-    /// 次の epoch（単調増加、wrapping）。
-    pub(crate) const fn next(self) -> Self {
-        Self(self.0.wrapping_add(1))
-    }
-}
 
 /// probe ID。stale な `WarmupComplete` を弾くための識別子。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,10 +185,7 @@ pub(crate) enum GjiState {
     /// IME ON、TSF warm
     OnWarm { long_idle_ms: u64 },
     /// IME ON、TSF warm、変換中
-    OnComposing {
-        epoch: FocusEpoch,
-        warmup: ComposingWarmup,
-    },
+    OnComposing { warmup: ComposingWarmup },
 }
 
 // ── イベント・アクション・タイマー ──────────────────────────────────────────
@@ -244,8 +229,8 @@ pub(crate) enum GjiEvent {
     },
     /// `WM_IME_STARTCOMPOSITION`
     StartComposition,
-    /// `WM_IME_ENDCOMPOSITION`（epoch チェック付き）
-    EndComposition { epoch: FocusEpoch },
+    /// `WM_IME_ENDCOMPOSITION`
+    EndComposition,
     /// WezTerm が FocusChange 直後に内部で F2 を送信し TSF context を初期化した
     /// (reinject-tsf の NativeF2Consumed パス)。
     ///
@@ -310,8 +295,6 @@ pub(crate) enum GjiTimer {
 /// BUG-173 追補2 で解体した（キー打鍵契機の warmup 送信を撤去したため）。
 pub(crate) struct GjiFsm {
     state: GjiState,
-    /// `EndComposition` の stale 判定用 epoch
-    epoch: FocusEpoch,
     /// `ProbeId` の連番カウンタ
     next_probe_id: u32,
     /// 現在フォーカス中アプリの injection_mode（`long_idle_ms` 計算用）
@@ -322,7 +305,6 @@ impl GjiFsm {
     pub(crate) fn new() -> Self {
         Self {
             state: GjiState::OffCold,
-            epoch: FocusEpoch(0),
             next_probe_id: 0,
             injection_mode: InjectionMode::Vk,
         }
@@ -340,11 +322,6 @@ impl GjiFsm {
         let id = ProbeId(self.next_probe_id);
         self.next_probe_id = self.next_probe_id.wrapping_add(1);
         id
-    }
-
-    fn bump_epoch(&mut self) -> FocusEpoch {
-        self.epoch = self.epoch.next();
-        self.epoch
     }
 
     fn long_idle_ms(&self) -> u64 {
@@ -472,9 +449,7 @@ impl GjiFsm {
 
     /// OnWarm / OnCold(NotStarted) から OnComposing(AlreadyWarm) に遷移する。
     fn transition_warm_to_composing(&mut self) -> Response<GjiAction, GjiTimer> {
-        let epoch = self.bump_epoch();
         self.state = GjiState::OnComposing {
-            epoch,
             warmup: ComposingWarmup::AlreadyWarm,
         };
         Response::consume().with_kill_timer(GjiTimer::LongIdle)
@@ -487,9 +462,7 @@ impl GjiFsm {
         kind: ColdKind,
         pending: Vec<PendingInput>,
     ) -> Response<GjiAction, GjiTimer> {
-        let epoch = self.bump_epoch();
         self.state = GjiState::OnComposing {
-            epoch,
             warmup: ComposingWarmup::AwaitingProbe {
                 probe_id,
                 kind,
@@ -907,18 +880,8 @@ impl TimedStateMachine for GjiFsm {
             },
 
             // ── EndComposition ─────────────────────────────────────────────
-            GjiEvent::EndComposition { epoch } => {
-                if let GjiState::OnComposing {
-                    epoch: current_epoch,
-                    warmup,
-                } = &mut self.state
-                {
-                    if epoch != *current_epoch {
-                        tracing::debug!(
-                            "[gji-fsm] EndComposition: stale epoch {epoch:?} ≠ {current_epoch:?}, ignored"
-                        );
-                        return Response::consume();
-                    }
+            GjiEvent::EndComposition => {
+                if let GjiState::OnComposing { warmup } = &mut self.state {
                     match warmup {
                         ComposingWarmup::AlreadyWarm => self.transition_to_warm(vec![]),
                         ComposingWarmup::AwaitingProbe {
@@ -1724,36 +1687,10 @@ mod tests {
         fsm.on_event(GjiEvent::StartComposition);
         assert!(matches!(fsm.state(), GjiState::OnComposing { .. }));
 
-        let epoch = match fsm.state() {
-            GjiState::OnComposing { epoch, .. } => *epoch,
-            _ => panic!(),
-        };
-        let r = fsm.on_event(GjiEvent::EndComposition { epoch });
+        let r = fsm.on_event(GjiEvent::EndComposition);
         r.assert_consumed();
         r.assert_timer_set(GjiTimer::LongIdle);
         assert!(matches!(fsm.state(), GjiState::OnWarm { .. }));
-    }
-
-    #[test]
-    fn stale_end_composition_is_ignored() {
-        let mut fsm = GjiFsm::new();
-        fsm.on_event(ime_on());
-        let ev = complete(&fsm);
-        fsm.on_event(ev);
-        fsm.on_event(GjiEvent::StartComposition);
-        // FocusChange で epoch が進む
-        fsm.on_event(focus_change());
-        let ev2 = complete(&fsm);
-        fsm.on_event(ev2);
-        fsm.on_event(GjiEvent::StartComposition);
-
-        // 古い epoch で EndComposition → 無視
-        let r = fsm.on_event(GjiEvent::EndComposition {
-            epoch: FocusEpoch(0),
-        });
-        r.assert_consumed();
-        r.assert_action_count(0);
-        assert!(matches!(fsm.state(), GjiState::OnComposing { .. }));
     }
 
     // ── ImeOff ──────────────────────────────────────────────────────────
@@ -1998,13 +1935,9 @@ mod tests {
 
         // StartComposition → AwaitingProbe
         fsm.on_event(GjiEvent::StartComposition);
-        let epoch = match fsm.state() {
-            GjiState::OnComposing { epoch, .. } => *epoch,
-            _ => panic!("expected OnComposing"),
-        };
 
         // EndComposition → probe 継続したまま OnCold(Authorized) に戻る
-        let r = fsm.on_event(GjiEvent::EndComposition { epoch });
+        let r = fsm.on_event(GjiEvent::EndComposition);
         r.assert_consumed();
         // CancelProbe を出してはいけない
         assert!(
@@ -2140,11 +2073,7 @@ mod tests {
             }
         ));
 
-        let epoch = match fsm.state() {
-            GjiState::OnComposing { epoch, .. } => *epoch,
-            _ => panic!("expected OnComposing"),
-        };
-        fsm.on_event(GjiEvent::EndComposition { epoch });
+        fsm.on_event(GjiEvent::EndComposition);
 
         match fsm.state() {
             GjiState::OnCold {
@@ -2310,11 +2239,7 @@ mod tests {
             r.actions
         );
 
-        let epoch = match fsm.state() {
-            GjiState::OnComposing { epoch, .. } => *epoch,
-            _ => panic!("expected OnComposing"),
-        };
-        fsm.on_event(GjiEvent::EndComposition { epoch });
+        fsm.on_event(GjiEvent::EndComposition);
         assert!(
             matches!(
                 fsm.state(),

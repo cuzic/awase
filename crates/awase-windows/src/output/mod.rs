@@ -344,10 +344,9 @@ impl Output {
         self.warmup_coord.gji_state_label()
     }
 
-    /// `OnComposing` 状態の現在 epoch を返す。`EndComposition` イベント送信に使う。
-    /// `OnComposing` 以外の状態では `None`。
-    pub(crate) fn gji_current_composition_epoch(&self) -> Option<crate::tsf::gji_fsm::FocusEpoch> {
-        self.warmup_coord.gji_current_composition_epoch()
+    /// GjiFsm が `OnComposing` 状態か。`EndComposition` イベント送信の前提に使う。
+    pub(crate) fn gji_is_composing(&self) -> bool {
+        self.warmup_coord.gji_is_composing()
     }
 
     // ── ImeModeFsm ヘルパー ─────────────────────────────────────────────────────
