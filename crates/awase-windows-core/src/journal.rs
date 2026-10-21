@@ -209,6 +209,9 @@ pub struct IndicatorGlyphRecord {
     /// `reading` と `belief_label` が一致したか(どちらかが無ければ `None`)。読める窓(`standard`)では直接の読みとの一致、
     /// 観測の無い窓(`imm32-unavailable`)では belief とのずれ(意味が違うので件数は別に数える)
     pub agree: Option<bool>,
+    /// 開閉の軸だけの一致（`reading` が `closed` ⇔ belief が閉）。belief の入力モードが不明（`belief_label` が `None`）でも出る。
+    /// 読める窓では直接の読みとの一致、観測の無い窓・TSF ネイティブの窓では belief とのずれ（意味が違うので件数は別に数える）
+    pub agree_open: Option<bool>,
     /// この取り込みを見本として表に足したか(読める窓で、ラベルが同じ・字形が落ち着いているときだけ)
     pub collected: bool,
     /// 照合した表(矩形の大きさ別)の見本の数
@@ -1515,6 +1518,7 @@ impl JournalEntry {
                     ratio_x100 = record.ratio_x100,
                     belief_label = record.belief_label,
                     agree = record.agree,
+                    agree_open = record.agree_open,
                     collected = record.collected,
                     table_size = record.table_size,
                     "[indicator-glyph]"

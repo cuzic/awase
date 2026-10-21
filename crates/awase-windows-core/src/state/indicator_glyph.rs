@@ -856,7 +856,8 @@ impl ProbeOutcome {
     }
 }
 
-/// 照合の結果を journal の記録に写す(`to_record` で作った記録に、照合・収集の欄を足す)。
+/// 照合の結果を journal の記録に写す(`to_record` で作った記録に、照合・収集の欄を足す)。開閉の軸の一致(`agree_open`)は、
+/// 記録に入っている belief の開閉(`belief_open`)と読みから決める。
 pub fn apply_match(
     record: &mut crate::journal::IndicatorGlyphRecord,
     m: &MatchResult,
@@ -873,6 +874,11 @@ pub fn apply_match(
     record.belief_label = belief.map(BeliefLabel::label);
     record.agree = match (m.reading, belief) {
         (Some(r), Some(b)) => Some(r == b),
+        _ => None,
+    };
+    // 開閉の軸だけの一致: 字形が「閉」なら belief も閉のはず、かな・英数なら開のはず。入力モードが不明でも数えられる。
+    record.agree_open = match (m.reading, record.belief_open) {
+        (Some(r), Some(open)) => Some((r != BeliefLabel::Closed) == open),
         _ => None,
     };
     record.collected = collected;
@@ -1897,6 +1903,24 @@ mod tests {
         );
         apply_match(&mut r, &hit, None, false, 1);
         assert_eq!(r.agree, None);
+        // 開閉の軸: かなの読み × belief 開 = 一致、閉の読み × belief 開 = 不一致、belief 不明 = 数えない。
+        assert_eq!(r.agree_open, Some(true));
+        let closed = MatchResult {
+            reading: Some(BeliefLabel::Closed),
+            class: Some(GlyphClass::Closed),
+            origin: Some(SampleOrigin::Common),
+            miss: None,
+            distance: Some(0.0),
+            ratio: Some(1.0),
+        };
+        apply_match(&mut r, &closed, None, false, 1);
+        assert_eq!(r.agree_open, Some(false));
+        r.belief_open = Some(false);
+        apply_match(&mut r, &closed, None, false, 1);
+        assert_eq!(r.agree_open, Some(true));
+        r.belief_open = None;
+        apply_match(&mut r, &closed, None, false, 1);
+        assert_eq!(r.agree_open, None);
     }
 
     #[test]

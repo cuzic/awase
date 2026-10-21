@@ -873,6 +873,17 @@ pub struct BugReportIndicatorGlyphSummary {
     /// 見本として表に足した回数
     #[serde(default)]
     pub collected: u32,
+    /// 開閉の軸の一致/不一致を、窓の IME プロファイルごとに（入力モードが不明でも数えられる。`standard` は直接の読みとの一致、
+    /// それ以外は belief とのずれ。旧版の報告には無いので `#[serde(default)]`）
+    #[serde(default)]
+    pub open_axis: std::collections::BTreeMap<String, BugReportAgreeCount>,
+}
+
+/// 一致/不一致の件数。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportAgreeCount {
+    pub agree: u32,
+    pub disagree: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -923,6 +934,19 @@ impl BugReportIndicatorEvidence {
                 belief_agree: glyph.unobserved_agree,
                 belief_disagree: glyph.unobserved_disagree,
                 collected: glyph.collected,
+                open_axis: glyph
+                    .open_axis
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            BugReportAgreeCount {
+                                agree: v.agree,
+                                disagree: v.disagree,
+                            },
+                        )
+                    })
+                    .collect(),
             },
         }
     }
