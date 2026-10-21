@@ -1409,10 +1409,24 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
         "`fn effective_open_at(&self, now_ms: TickMs) -> bool` が {} 箇所あります（想定: 1）",
         bodies.len()
     );
+    // 判定本体は副作用なしの `resolve_effective`（`resolve_effective_open(` の唯一の呼び出し元。ADR-273 R2・R6 の
+    // `belief_is_decided_by_glyph` と共有する）に切り出してある。`effective_open_at` はそれを通ること。
+    let resolvers = extract_all_balanced_blocks(production, "fn resolve_effective(");
     assert_eq!(
-        count_real_calls(bodies[0], NEEDLE),
+        resolvers.len(),
         1,
-        "`ImeStateHub::effective_open_at()` の本体から `{NEEDLE}` が消えています。\n\
+        "`fn resolve_effective(&self, now_ms: TickMs) -> (…)` が {} 箇所あります（想定: 1）",
+        resolvers.len()
+    );
+    assert_eq!(
+        count_real_calls(bodies[0], "self.resolve_effective("),
+        1,
+        "`effective_open_at` は `self.resolve_effective(` を通ること"
+    );
+    assert_eq!(
+        count_real_calls(resolvers[0], NEEDLE),
+        1,
+        "`ImeStateHub::effective_open_at()` の本体（`resolve_effective`）から `{NEEDLE}` が消えています。\n\
          belief（`Engine::compute_state` の `ctx.ime_on`）が IntentStore の \
          明示意図上書きを通らなくなると、BUG-51 追補の再現手順\n\
          （明示 IME OFF → プロセスを跨ぐフォーカス変更 → 壊れた \
@@ -8867,7 +8881,7 @@ fn indicator_menu_shadow_is_observe_only_and_opt_in() {
 /// ADR-261 段階 1: 入力インジケーターの字形の影の取り込みは**観測だけ**で、belief・IME・打鍵に書かない。
 ///
 /// - 取り込み（`observer/indicator_glyph.rs`）と記録（`runtime/indicator_glyph_shadow.rs`）は、belief・IME 制御・
-///   観測ストアに入れる型/関数を一切使わない（belief への配線は別 ADR。ADR-273）。
+///   観測ストアに入れる型/関数を一切使わない（belief への入口は `ImeStateHub::report_indicator_glyph` の 1 つだけ。ADR-273）。
 /// - ランタイム側が `platform_state` に触れるのは、belief の読み取り（`effective_open()`・`input_mode()`。見本のラベルと一致の記録に使う）と
 ///   記録（`journal.record(`）の 3 箇所だけ。
 /// - 取り込みワーカーと WinEvent フックの起動は、`[indicator_evidence] glyph` の実効の段階（`min(設定値, ui_max_level())`）が
@@ -8912,14 +8926,29 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
         }
     }
 
-    // ランタイム側の platform_state への接触は、belief の読み取り 2 つ（ラベルの作成に使う）と記録の 1 つだけ。
+    // ランタイム側の platform_state への接触は、belief の読み取り（ラベルの作成・字形由来かの判定・フォーカスの世代）、
+    // 記録の 1 つ、記録だけの試算（`preview_indicator_glyph(`）、フォーカスの同一性（`focus_fence()` 1 箇所）、belief への入口（ADR-273。
+    // `report_indicator_glyph(` の 1 つだけ。判断・柵・記録は `ImeStateHub` 側）の 7 箇所だけ。
     assert_eq!(
         runtime.matches("platform_state").count(),
-        3,
-        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()（読み取り）と journal.record(（記録）の 3 箇所だけ"
+        7,
+        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()・belief_is_decided_by_glyph(・focus_fence()（読み取り）、preview_indicator_glyph(（記録だけの試算）、journal.record(（記録）、report_indicator_glyph(（入口）の 7 箇所だけ"
     );
     assert!(runtime.contains("platform_state.ime.effective_open()"));
     assert!(runtime.contains("platform_state.ime.input_mode()"));
+    assert!(runtime.contains(".belief_is_decided_by_glyph("));
+    assert_eq!(
+        runtime.matches("platform_state.ime.focus_fence()").count(),
+        1
+    );
+    assert_eq!(runtime.matches(".preview_indicator_glyph(").count(), 1);
+    assert_eq!(
+        runtime
+            .matches("platform_state.ime.report_indicator_glyph(")
+            .count(),
+        1,
+        "字形の belief への入口は ImeStateHub::report_indicator_glyph の 1 つだけ"
+    );
     assert!(runtime.contains(
         "platform_state.ime.journal.record(crate::journal::JournalEntry::IndicatorGlyph{record})"
     ));
@@ -8943,28 +8972,33 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
     assert_eq!(boot.matches("install_foreground_hook(").count(), 1);
 }
 
-/// ADR-273 段階 1: 入力インジケーターの字形（`ObservationSource::TaskbarGlyph`）は、belief の**核にだけ**存在し、本番（殻）からは
-/// まだ生成も報告もされない。
+/// ADR-273: 入力インジケーターの字形（`ObservationSource::TaskbarGlyph`）を belief に報告する経路は、**`ImeStateHub::report_indicator_glyph` の
+/// 1 つだけ**（`state/platform_state.rs`）。
 ///
-/// - `TaskbarGlyph`・`IndicatorGlyphMissed` の語は、belief の核の定義ファイル（下の `CORE_FILES`）にだけ現れる。殻の本番コードには 0 件。
-/// - `from_glyph(`・`fence_glyph(` の**呼び出し**（定義 `fn …(` を除く）は、本番コード全体で 0 件。柵（`fence_glyph`）を通さない witness は
-///   型で作れないが、柵を通して報告する側（殻）が未配線であることをここで固定する。
-///
-/// 配線 PR（ADR-273 段階 2 以降）はこの件数を、許可する入口（`ImeStateHub` の 1 メソッド）の分だけ増やし、
-/// `mozc_shm_reader_touches_belief_only_through_report_mozc_shm` と同じ型のガードで入口を名指しする。
+/// - `TaskbarGlyph`・`IndicatorGlyphMissed` の語は、belief の核の定義ファイル（下の `CORE_FILES`）と、入口のある `state/platform_state.rs`
+///   にだけ現れる。殻（`runtime/` など）の本番コードには 0 件。
+/// - `from_glyph(`・`fence_glyph(` の**呼び出し**（定義 `fn …(` を除く）は、本番コード全体で `state/platform_state.rs` の 1 件ずつ。
+///   柵（`fence_glyph`）を通さない witness は型で作れず、柵を通す入口が 1 つだけであることをここで固定する。
+/// - 入口の呼び出し元は `runtime/indicator_glyph_shadow.rs` の 1 件だけ。そこは設定の実効の段階が `unobserved` 以上で対象の窓のときだけ呼ぶ
+///   （`glyph_belief_in_scope`）。`EvidenceSource::ui_max_level()` が `Observe` の間は、実効の段階が上がらず、呼ばれない。
 /// （`list_src_files()` は awase-windows と awase-ime-core の `src` を合成して列挙する。）
 #[test]
-fn taskbar_glyph_is_not_reported_from_production_yet() {
-    const CORE_FILES: [&str; 6] = [
+fn taskbar_glyph_is_reported_only_through_the_hub_entry() {
+    const CORE_FILES: [&str; 7] = [
         "src/state/drift_correction.rs",
         "src/state/evidence.rs",
         "src/state/ime_event.rs",
         "src/state/ime_model.rs",
         "src/state/indicator_glyph.rs",
         "src/state/observation_store.rs",
+        "src/state/platform_state.rs",
     ];
+    const HUB: &str = "src/state/platform_state.rs";
+    const SHELL: &str = "src/runtime/indicator_glyph_shadow.rs";
     let mut hits: Vec<String> = Vec::new();
-    let (mut from_glyph_calls, mut fence_glyph_calls) = (0usize, 0usize);
+    let (mut from_glyph_calls, mut fence_glyph_calls, mut entry_calls) = (0usize, 0usize, 0usize);
+    let (mut from_glyph_in_hub, mut fence_glyph_in_hub, mut entry_in_shell) =
+        (0usize, 0usize, 0usize);
     for path in list_src_files() {
         let content = read_crate_file(&path);
         let production = non_comment_lines(production_code_only(&content));
@@ -8975,22 +9009,84 @@ fn taskbar_glyph_is_not_reported_from_production_yet() {
                 }
             }
         }
-        from_glyph_calls += production.matches("from_glyph(").count();
-        from_glyph_calls -= production.matches("fn from_glyph(").count();
-        fence_glyph_calls += production.matches("fence_glyph(").count();
-        fence_glyph_calls -= production.matches("fn fence_glyph(").count();
+        let from_glyph = production.matches("from_glyph(").count()
+            - production.matches("fn from_glyph(").count();
+        let fence_glyph = production.matches("fence_glyph(").count()
+            - production.matches("fn fence_glyph(").count();
+        let entry = production.matches("report_indicator_glyph(").count()
+            - production.matches("fn report_indicator_glyph(").count();
+        from_glyph_calls += from_glyph;
+        fence_glyph_calls += fence_glyph;
+        entry_calls += entry;
+        if path == HUB {
+            from_glyph_in_hub += from_glyph;
+            fence_glyph_in_hub += fence_glyph;
+        }
+        if path == SHELL {
+            entry_in_shell += entry;
+        }
     }
     assert!(
         hits.is_empty(),
-        "字形（TaskbarGlyph）を belief へ報告する経路は、配線 PR（ADR-273 段階 2 以降）まで殻の本番に無いこと。実際: {hits:?}"
+        "字形（TaskbarGlyph）を belief へ報告する経路は、核と ImeStateHub の入口（state/platform_state.rs）だけにあること。実際: {hits:?}"
+    );
+    // 入口のあるファイルの中でも、語の出現は入口（`report_indicator_glyph`）の中の 1 件ずつだけ。
+    let hub = non_comment_lines(production_code_only(&read_crate_file(HUB)));
+    assert_eq!(
+        hub.matches("IndicatorGlyphMissed").count(),
+        1,
+        "platform_state.rs の本番で IndicatorGlyphMissed は入口の dispatch の 1 件だけ"
     );
     assert_eq!(
-        from_glyph_calls, 0,
-        "from_glyph( の呼び出しが本番にあってはならない（定義だけ）"
+        hub.matches("evidence::TaskbarGlyph").count(),
+        1,
+        "platform_state.rs の本番で TaskbarGlyph は入口の witness 構築の 1 件だけ"
     );
     assert_eq!(
-        fence_glyph_calls, 0,
-        "fence_glyph( の呼び出しが本番にあってはならない（定義だけ）"
+        (from_glyph_calls, from_glyph_in_hub),
+        (1, 1),
+        "from_glyph( の呼び出しは state/platform_state.rs の入口の 1 件だけ"
+    );
+    assert_eq!(
+        (fence_glyph_calls, fence_glyph_in_hub),
+        (1, 1),
+        "fence_glyph( の呼び出しは state/platform_state.rs の入口の 1 件だけ"
+    );
+    assert_eq!(
+        (entry_calls, entry_in_shell),
+        (1, 1),
+        "report_indicator_glyph( の呼び出し元は runtime/indicator_glyph_shadow.rs の 1 件だけ"
+    );
+}
+
+/// ADR-273 R2: `ImeModel` の複製は、字形の試算（`ImeModel::would_glyph_decide`、設定が `observe` のときの journal 用）の
+/// **1 件だけ**。belief の真実源は 1 つ（`.claude/rules/ime-belief-architecture.md`）で、複製を本番で持ち回る近道を開かない。
+#[test]
+fn ime_model_is_cloned_only_for_the_glyph_preview() {
+    const MODEL: &str = "src/state/ime_model.rs";
+    let mut in_model = 0usize;
+    let mut elsewhere: Vec<String> = Vec::new();
+    for path in list_src_files() {
+        let content = read_crate_file(&path);
+        let production = non_comment_lines(production_code_only(&content));
+        if path == MODEL {
+            in_model += production.matches("self.clone()").count();
+        }
+        for token in ["shadow_model.clone()", "model.clone()", "ImeModel::clone"] {
+            let n = production.matches(token).count();
+            // `shadow_model.clone()` は `model.clone()` にも含まれるので、後者だけで数える
+            if n > 0 && token != "shadow_model.clone()" {
+                elsewhere.push(format!("{path}: {token} ×{n}"));
+            }
+        }
+    }
+    assert_eq!(
+        in_model, 1,
+        "ime_model.rs の本番で self.clone() は would_glyph_decide の 1 件だけ"
+    );
+    assert!(
+        elsewhere.is_empty(),
+        "ImeModel の複製は would_glyph_decide の 1 件だけ。実際: {elsewhere:?}"
     );
 }
 

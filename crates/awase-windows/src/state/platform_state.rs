@@ -1159,13 +1159,8 @@ impl ImeStateHub {
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
     pub fn effective_open_at(&self, now_ms: TickMs) -> bool {
-        let resolution = self.shadow_model.resolve_open_at(self.clock.now_instant());
+        let (resolution, decision) = self.resolve_effective(now_ms);
         let shadow = resolution.value;
-        let decision = self.intent_store.resolve_effective_open(
-            self.shadow_model.current_focus(),
-            shadow,
-            now_ms,
-        );
         match decision.intent {
             Some(intent) if decision.value != shadow => {
                 if !self.intent_override_logged.get() {
@@ -2133,6 +2128,238 @@ impl ImeStateHub {
             );
         }
         decision
+    }
+
+    /// belief の根拠の解決（副作用なし）: `shadow_model` の解決と、`IntentStore` の上書き。`effective_open_at`（診断のログを出す）と
+    /// `belief_is_decided_by_glyph`（診断のログを出さない）が共有する。`resolve_effective_open(` の呼び出しはここの 1 箇所だけ。
+    fn resolve_effective(
+        &self,
+        now_ms: TickMs,
+    ) -> (
+        crate::state::ime_model::OpenResolution,
+        crate::state::intent_store::IntentOverride,
+    ) {
+        let resolution = self.shadow_model.resolve_open_at(self.clock.now_instant());
+        let decision = self.intent_store.resolve_effective_open(
+            self.shadow_model.current_focus(),
+            resolution.value,
+            now_ms,
+        );
+        (resolution, decision)
+    }
+
+    /// 今の belief が、字形の読みで決まっているか（ADR-273 R2・R3・R6。Q5 の「指標由来の belief」の判定）。
+    ///
+    /// **hub の層の最終的な理由**で見る: `resolve_open_at` の `decided_by` が字形で、かつ `IntentStore` が上書きしていないとき
+    /// だけ真（`decided_by` だけで見ると、`IntentStore` が上書きしている場面を字形由来と数える。R6）。
+    /// 殻は、字形が決めた belief で字形の見本にラベルを付けない（自己学習のループを作らない。R2）のに使う。
+    #[must_use]
+    pub(crate) fn belief_is_decided_by_glyph(&self, now_ms: TickMs) -> bool {
+        use crate::state::ime_model::BaseDecision;
+        let (resolution, decision) = self.resolve_effective(now_ms);
+        matches!(
+            resolution.decided_by.base,
+            BaseDecision::IndicatorGlyph { .. }
+        ) && decision.value == resolution.value
+    }
+
+    /// 今のフォーカスの同一性（epoch + hwnd）。殻が字形の取り込みを依頼した時点の値として持ち、報告のときに
+    /// [`Self::report_indicator_glyph`] へ渡す（取り込みの間にフォーカスが動いたかを見る。ADR-273 D1 の M8）。
+    #[must_use]
+    pub(crate) const fn focus_fence(&self) -> crate::state::probe_admission::FocusFence {
+        self.shadow_model.observations.current_fence()
+    }
+
+    /// 字形の読みをどう扱うかの計画（副作用なし）。報告（`report_indicator_glyph`）と、記録だけの試算
+    /// （`preview_indicator_glyph`）が共有する。
+    fn plan_indicator_glyph(
+        &self,
+        reading: crate::state::indicator_glyph::LabelReading,
+        read_fence: crate::state::probe_admission::FocusFence,
+        foreground_in_sync: bool,
+        tick_ms: TickMs,
+    ) -> GlyphPlan {
+        use crate::state::indicator_glyph::{
+            fence_glyph, FenceCtx, FenceMiss, GlyphMiss, LabelReading,
+        };
+        // R1: mozc-readable の共有メモリの観測がある窓（失効したものを含む）。主な除外は殻の `block_present`（共有メモリの
+        // ブロックの有無）で、ここはブロックの有無の遷移の補助。
+        if self
+            .shadow_model
+            .observations
+            .observation(ObservationSource::MozcShm)
+            .is_some()
+        {
+            return GlyphPlan::MozcWindow;
+        }
+        // 取り込みを依頼した（または 1 回目に取り込んだ）時点の同一性と今が同じか。同じプロセスの中の欄の移動（hwnd）も見る。
+        let focus_gen_unchanged = read_fence == self.focus_fence();
+        let since_last_mode_key_ms = self.shadow_model.since_last_mode_key_ms(tick_ms.0);
+        match reading {
+            LabelReading::Miss(GlyphMiss::TooFar | GlyphMiss::Ambiguous) => {
+                // 字形が表に無い状態に変わった。`Hit` と同じ柵（窓の同一性・前面の一致・モード系の入力の直後）を通ったときだけ、
+                // 前の読みを取り消す（モードキーの直後は切り替わる途中の画像が曖昧になりやすく、柵の前の正しい読みを消さない）。
+                if !focus_gen_unchanged {
+                    GlyphPlan::Fenced(FenceMiss::FocusMoved)
+                } else if !foreground_in_sync {
+                    GlyphPlan::Fenced(FenceMiss::ForegroundOutOfSync)
+                } else if since_last_mode_key_ms
+                    .is_some_and(|ms| ms < crate::tuning::GLYPH_KEY_FENCE_MS)
+                {
+                    GlyphPlan::Fenced(FenceMiss::TooSoonAfterModeKey)
+                } else {
+                    GlyphPlan::Retract
+                }
+            }
+            // 環境の要因の Miss（画像の不具合・一様な画像・表が空）は、今の窓の正しい読みを消さない。
+            LabelReading::Miss(_) => GlyphPlan::Ignored,
+            LabelReading::Hit(hit) => {
+                let ctx = FenceCtx {
+                    since_last_mode_key_ms,
+                    focus_gen_unchanged,
+                    foreground_in_sync,
+                };
+                match fence_glyph(hit, ctx) {
+                    Ok(fenced) => GlyphPlan::Report(
+                        Observed::<evidence::TaskbarGlyph>::from_glyph(
+                            fenced,
+                            read_fence.hwnd,
+                            read_fence.epoch,
+                        )
+                        .into(),
+                    ),
+                    Err(miss) => GlyphPlan::Fenced(miss),
+                }
+            }
+        }
+    }
+
+    /// ADR-273 D1・D4: タスクバーのインジケーターの**字形の読み**を belief に使う（`runtime/indicator_glyph_shadow.rs` から、
+    /// 取り込み 1 回につき 1 回）。IME へは何も書かず、`desired_open`・`IntentStore` も書かない。
+    ///
+    /// `read_fence` は殻が**取り込みを処理した時点**の [`Self::focus_fence`]（1 回目は `first_read_fence` で追跡が追いついたとき
+    /// だけ、2 回目は 1 回目の時点のもの）。今と違えば（プロセスの変化だけでなく、同じプロセスの中の別の欄への移動も）別の窓の字形
+    /// なので捨てる。`Hit` は D4 の柵を `fence_glyph` で通したものだけ `ObserverReported(TaskbarGlyph, Medium)` にする。
+    /// `Miss` は `TooFar`/`Ambiguous` のときだけ、同じ柵を通れば枠を消す（`IndicatorGlyphMissed`）。適格性（窓の種類・設定の段階）は
+    /// 殻で済ませる。
+    pub(crate) fn report_indicator_glyph(
+        &mut self,
+        reading: crate::state::indicator_glyph::LabelReading,
+        read_fence: crate::state::probe_admission::FocusFence,
+        foreground_in_sync: bool,
+        tick_ms: TickMs,
+    ) -> GlyphReport {
+        match self.plan_indicator_glyph(reading, read_fence, foreground_in_sync, tick_ms) {
+            GlyphPlan::MozcWindow => GlyphReport::MozcWindow,
+            GlyphPlan::Ignored => GlyphReport::Ignored,
+            GlyphPlan::Fenced(miss) => GlyphReport::Fenced(miss),
+            GlyphPlan::Retract => {
+                self.dispatch_event(ImeEvent::IndicatorGlyphMissed, tick_ms);
+                GlyphReport::Retracted
+            }
+            GlyphPlan::Report(observation) => {
+                self.dispatch_event(ImeEvent::ObserverReported(observation), tick_ms);
+                GlyphReport::Reported
+            }
+        }
+    }
+
+    /// D2 の (a)〜(e) の試算（副作用なし）: この字形を今報告したら、belief を字形が決めるか（決めるなら今の belief と違うか）。
+    /// モデルの試算（`reduce` を通す。予測の照合を含む）に、hub の層の `IntentStore` の上書きを掛ける: 意図が残っている間は
+    /// 本物の belief は意図の値のままなので、決めない（R6 と同じ）。
+    fn would_glyph_decide(
+        &self,
+        observation: evidence::AnyObservation,
+        tick_ms: TickMs,
+    ) -> Option<bool> {
+        let sim =
+            self.shadow_model
+                .would_glyph_decide(observation, self.clock.now_instant(), tick_ms.0);
+        if !sim.decided_by_glyph {
+            return None;
+        }
+        let (_, decision) = self.resolve_effective(tick_ms);
+        if decision.intent.is_some() {
+            return None;
+        }
+        Some(sim.after != sim.before)
+    }
+
+    /// `report_indicator_glyph` が**どうなるか**を、何も記録せずに返す（設定が `observe` のときの journal 用。段階 2 の前提の件数を数える。
+    /// belief には入れない）。柵を通る読み（`Reported`）のときは、それを今記録したら belief を字形が決めるか（`Some(flip)`）も返す。
+    #[must_use]
+    pub(crate) fn preview_indicator_glyph(
+        &self,
+        reading: crate::state::indicator_glyph::LabelReading,
+        read_fence: crate::state::probe_admission::FocusFence,
+        foreground_in_sync: bool,
+        tick_ms: TickMs,
+    ) -> GlyphPreview {
+        let (report, decides) =
+            match self.plan_indicator_glyph(reading, read_fence, foreground_in_sync, tick_ms) {
+                GlyphPlan::MozcWindow => (GlyphReport::MozcWindow, None),
+                GlyphPlan::Ignored => (GlyphReport::Ignored, None),
+                GlyphPlan::Fenced(miss) => (GlyphReport::Fenced(miss), None),
+                GlyphPlan::Retract => (GlyphReport::Retracted, None),
+                GlyphPlan::Report(observation) => (
+                    GlyphReport::Reported,
+                    self.would_glyph_decide(observation, tick_ms),
+                ),
+            };
+        GlyphPreview { report, decides }
+    }
+}
+
+/// [`ImeStateHub::preview_indicator_glyph`] の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GlyphPreview {
+    pub report: GlyphReport,
+    /// `Reported` のとき: 今記録したら字形が belief を決めるか。決めるなら `Some(flip)`（今の belief と違うか）
+    pub decides: Option<bool>,
+}
+
+/// 字形の読みの扱いの計画（副作用なし）。
+enum GlyphPlan {
+    Report(evidence::AnyObservation),
+    Retract,
+    Fenced(crate::state::indicator_glyph::FenceMiss),
+    Ignored,
+    MozcWindow,
+}
+
+/// [`ImeStateHub::report_indicator_glyph`] の結果（journal・件数の記録用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GlyphReport {
+    /// 柵を通り、`ObserverReported` として記録した
+    Reported,
+    /// 柵を通らなかった（何も記録していない）
+    Fenced(crate::state::indicator_glyph::FenceMiss),
+    /// 字形が表に無い状態に変わったので、前の読みを取り消した
+    Retracted,
+    /// 環境の要因の `Miss`（画像の不具合・一様な画像・表が空）なので、何もしなかった
+    Ignored,
+    /// mozc-readable の共有メモリがある窓なので、何もしなかった（R1）
+    MozcWindow,
+}
+
+impl GlyphReport {
+    /// 柵を通って報告される（される）読みか。
+    pub(crate) const fn is_reported(self) -> bool {
+        matches!(self, Self::Reported)
+    }
+
+    /// journal 用の短い名前。
+    pub(crate) const fn label(self) -> &'static str {
+        use crate::state::indicator_glyph::FenceMiss;
+        match self {
+            Self::Reported => "reported",
+            Self::Retracted => "miss-changed",
+            Self::Ignored => "ignored",
+            Self::MozcWindow => "mozc-window",
+            Self::Fenced(FenceMiss::TooSoonAfterModeKey) => "fenced:too-soon",
+            Self::Fenced(FenceMiss::FocusMoved) => "fenced:focus-moved",
+            Self::Fenced(FenceMiss::ForegroundOutOfSync) => "fenced:out-of-sync",
+        }
     }
 }
 
@@ -3161,6 +3388,295 @@ mod tests {
         assert!(ps.ime.effective_open_at(TickMs(110)));
         assert!(ps.ime.model().applied_state().applied_open().is_some());
         ps
+    }
+
+    /// 字形の読み（ADR-273）。`label` を距離 0 で採った `Hit`。
+    fn glyph_hit(
+        label: crate::state::indicator_glyph::BeliefLabel,
+    ) -> crate::state::indicator_glyph::LabelReading {
+        use crate::state::indicator_glyph::{LabelHit, LabelReading, SampleOrigin};
+        LabelReading::Hit(LabelHit {
+            label,
+            class: label.class(),
+            distance: 0.0,
+            ratio: f32::INFINITY,
+            origin: SampleOrigin::Common,
+        })
+    }
+
+    /// 他に観測も意図も無い窓で、柵を通った字形（閉）が belief を決める。字形由来と判定される（R2・R6）。
+    #[test]
+    fn report_indicator_glyph_decides_a_window_without_other_evidence() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let f = ps.ime.focus_fence();
+        let r =
+            ps.ime
+                .report_indicator_glyph(glyph_hit(BeliefLabel::Closed), f, true, TickMs(5000));
+        assert_eq!(r, GlyphReport::Reported);
+        assert!(
+            !ps.ime.effective_open_at(TickMs(5000)),
+            "字形（閉）に追随する"
+        );
+        assert!(ps.ime.belief_is_decided_by_glyph(TickMs(5000)));
+        // 字形は desired_open を書かない（D1）。
+        assert!(ps.ime.model().desired_open(), "desired_open は既定のまま");
+    }
+
+    /// 明示意図の直後（柵の中）の字形は記録されない。柵が経った後は記録される（D4）。
+    #[test]
+    fn report_indicator_glyph_is_fenced_right_after_a_mode_key() {
+        use crate::state::indicator_glyph::{BeliefLabel, FenceMiss};
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 4000);
+        let f = ps.ime.focus_fence();
+        let r =
+            ps.ime
+                .report_indicator_glyph(glyph_hit(BeliefLabel::Closed), f, true, TickMs(4500));
+        assert_eq!(r, GlyphReport::Fenced(FenceMiss::TooSoonAfterModeKey));
+        assert!(!ps.ime.belief_is_decided_by_glyph(TickMs(4500)));
+        let r = ps.ime.report_indicator_glyph(
+            glyph_hit(BeliefLabel::Closed),
+            f,
+            true,
+            TickMs(4000 + crate::tuning::GLYPH_KEY_FENCE_MS),
+        );
+        assert_eq!(r, GlyphReport::Reported);
+    }
+
+    /// 取り込みの時点の同一性が今と違う（プロセスの変化・**同じプロセスの中の別の欄への移動**）字形や、前面が追跡と食い違う字形は
+    /// 報告されない（Opus E2）。
+    #[test]
+    fn report_indicator_glyph_is_fenced_when_focus_moved_or_out_of_sync() {
+        use crate::state::indicator_glyph::{BeliefLabel, FenceMiss};
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let f = ps.ime.focus_fence();
+        // 同じ epoch（同じプロセス）で hwnd だけが違う基準 = 取り込み後に別の欄へ移った。
+        let moved = crate::state::probe_admission::FocusFence {
+            hwnd: HwndId(TARGET_HWND.0 + 1),
+            ..f
+        };
+        assert_eq!(
+            ps.ime
+                .report_indicator_glyph(glyph_hit(BeliefLabel::Kana), moved, true, TickMs(9000)),
+            GlyphReport::Fenced(FenceMiss::FocusMoved)
+        );
+        assert_eq!(
+            ps.ime
+                .report_indicator_glyph(glyph_hit(BeliefLabel::Kana), f, false, TickMs(9000)),
+            GlyphReport::Fenced(FenceMiss::ForegroundOutOfSync)
+        );
+        assert!(!ps.ime.belief_is_decided_by_glyph(TickMs(9000)));
+    }
+
+    /// `TooFar`/`Ambiguous` の `Miss` は、窓の判定を通れば前の読みを取り消す。元の順位（desired_open への fallback）に戻る。
+    /// 環境の要因の `Miss`（一様な画像など）は何もしない。窓の判定を通らない `Miss` も取り消さない。
+    #[test]
+    fn report_indicator_glyph_miss_retracts_only_for_a_changed_glyph() {
+        use crate::state::indicator_glyph::{BeliefLabel, FenceMiss, GlyphMiss, LabelReading};
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let f = ps.ime.focus_fence();
+        ps.ime
+            .report_indicator_glyph(glyph_hit(BeliefLabel::Closed), f, true, TickMs(5000));
+        assert!(ps.ime.belief_is_decided_by_glyph(TickMs(5000)));
+        // 環境の要因の Miss は読みを残す。
+        for miss in [
+            GlyphMiss::EmptyGlyph,
+            GlyphMiss::EmptyTable,
+            GlyphMiss::BadImage,
+        ] {
+            let r = ps
+                .ime
+                .report_indicator_glyph(LabelReading::Miss(miss), f, true, TickMs(5500));
+            assert_eq!(r, GlyphReport::Ignored, "{miss:?}");
+            assert!(ps.ime.belief_is_decided_by_glyph(TickMs(5500)), "{miss:?}");
+        }
+        // 窓の判定を通らない Miss（前面が追跡と食い違う）は読みを残す。
+        let r = ps.ime.report_indicator_glyph(
+            LabelReading::Miss(GlyphMiss::Ambiguous),
+            f,
+            false,
+            TickMs(5600),
+        );
+        assert_eq!(r, GlyphReport::Fenced(FenceMiss::ForegroundOutOfSync));
+        assert!(ps.ime.belief_is_decided_by_glyph(TickMs(5600)));
+        // 表に無い状態に変わった Miss は取り消す。
+        let r = ps.ime.report_indicator_glyph(
+            LabelReading::Miss(GlyphMiss::TooFar),
+            f,
+            true,
+            TickMs(6000),
+        );
+        assert_eq!(r, GlyphReport::Retracted);
+        assert!(!ps.ime.belief_is_decided_by_glyph(TickMs(6000)));
+        assert!(
+            ps.ime.effective_open_at(TickMs(6000)),
+            "desired_open に戻る"
+        );
+    }
+
+    /// mozc-readable の共有メモリの観測がある窓では、字形を報告しない（R1。ブロックの有無の遷移の穴を核の側でも塞ぐ）。
+    #[test]
+    fn report_indicator_glyph_skips_a_window_with_a_mozc_shm_observation() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let fence = ps.ime.focus_fence();
+        ps.ime.dispatch_event(
+            ImeEvent::ObserverReported(
+                Observed::<evidence::MozcShm>::from_shm(
+                    mozc_shm_state(true),
+                    true,
+                    fence.hwnd,
+                    fence.epoch,
+                )
+                .into(),
+            ),
+            TickMs(1000),
+        );
+        let r = ps.ime.report_indicator_glyph(
+            glyph_hit(BeliefLabel::Closed),
+            fence,
+            true,
+            TickMs(9000),
+        );
+        assert_eq!(r, GlyphReport::MozcWindow);
+        assert!(!ps.ime.belief_is_decided_by_glyph(TickMs(9000)));
+    }
+
+    /// `preview_indicator_glyph` は `report_indicator_glyph` と同じ結果を返し、何も記録しない（設定が observe のときの journal 用）。
+    /// 他に根拠が無い窓では字形が belief を決め、今の belief（既定の開）と違う閉なら flip になる（D2 の (a)〜(e)）。
+    #[test]
+    fn preview_indicator_glyph_matches_the_report_and_records_nothing() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let f = ps.ime.focus_fence();
+        let p =
+            ps.ime
+                .preview_indicator_glyph(glyph_hit(BeliefLabel::Closed), f, true, TickMs(5000));
+        assert_eq!(p.report, GlyphReport::Reported);
+        assert_eq!(p.decides, Some(true), "字形が決め、今の belief（開）と違う");
+        assert!(
+            !ps.ime.belief_is_decided_by_glyph(TickMs(5000)),
+            "試算は記録しない"
+        );
+        let r =
+            ps.ime
+                .report_indicator_glyph(glyph_hit(BeliefLabel::Closed), f, true, TickMs(5000));
+        assert_eq!(p.report, r);
+        assert_eq!(p.report.label(), "reported");
+    }
+
+    /// 新鮮な Medium 以上の観測（ObserverPoll）が居る窓では、柵を通る読みでも字形は belief を決めない（`decides` は `None`）。
+    #[test]
+    fn preview_indicator_glyph_does_not_decide_when_a_fresh_observation_wins() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let fence = ps.ime.focus_fence();
+        ps.ime.dispatch_event(
+            ImeEvent::ObserverReported(evidence::AnyObservation::restored_from_journal(
+                true,
+                crate::state::ime_event::ObservationSource::ObserverPoll,
+                fence.hwnd,
+                crate::state::ime_event::ObservationConfidence::Medium,
+                fence.epoch,
+            )),
+            TickMs(BASE_TICK),
+        );
+        let p = ps.ime.preview_indicator_glyph(
+            glyph_hit(BeliefLabel::Closed),
+            fence,
+            true,
+            TickMs(BASE_TICK),
+        );
+        assert_eq!(p.report, GlyphReport::Reported);
+        assert_eq!(p.decides, None, "新鮮な ObserverPoll が勝つ");
+    }
+
+    /// 試算は本物と同じ reduce を通す: モードキーの予測があり、柵を過ぎた字形は予測を照合して消し、字形が belief を決める
+    /// （D2 の (e) は条件にならない。Opus RE2）。字形（開）は予測（閉）と違うので flip。
+    #[test]
+    fn preview_indicator_glyph_reconciles_the_prediction_like_the_real_reduce() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime.dispatch_event(
+            ImeEvent::KeyEffectPredicted {
+                open: Some(false),
+                mode: None,
+                track: crate::state::key_effect_predictor::KeyTrack::default(),
+            },
+            TickMs(1000),
+        );
+        let f = ps.ime.focus_fence();
+        let at = TickMs(1000 + crate::tuning::GLYPH_KEY_FENCE_MS);
+        let p = ps
+            .ime
+            .preview_indicator_glyph(glyph_hit(BeliefLabel::Kana), f, true, at);
+        assert_eq!(p.report, GlyphReport::Reported);
+        assert_eq!(
+            p.decides,
+            Some(true),
+            "柵を過ぎた字形は予測を照合して消し、字形が決める（開 ≠ 予測の閉 = flip）"
+        );
+    }
+
+    /// `IntentStore` に意図が残っている間は、本物の belief は意図の値のままなので、試算も字形は決めないとする（R6 と同じ）。
+    #[test]
+    fn preview_indicator_glyph_does_not_decide_while_the_intent_store_overrides() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        // モデルには意図を入れず、IntentStore にだけ記録する（hub の層の上書き）。
+        ps.ime
+            .record_explicit_intent(true, UserIntentSource::PhysicalImeKey, TickMs(100));
+        let f = ps.ime.focus_fence();
+        let p =
+            ps.ime
+                .preview_indicator_glyph(glyph_hit(BeliefLabel::Closed), f, true, TickMs(5000));
+        assert_eq!(p.report, GlyphReport::Reported);
+        assert_eq!(p.decides, None, "IntentStore が上書きしている");
+    }
+
+    /// 柵（モード系の入力の直後）の中の `Miss`（切り替わる途中の曖昧な画像）は、前の読みを取り消さない。
+    #[test]
+    fn report_indicator_glyph_miss_is_fenced_right_after_a_mode_key() {
+        use crate::state::indicator_glyph::{BeliefLabel, FenceMiss, GlyphMiss, LabelReading};
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let f = ps.ime.focus_fence();
+        ps.ime
+            .report_indicator_glyph(glyph_hit(BeliefLabel::Closed), f, true, TickMs(1000));
+        assert!(ps.ime.belief_is_decided_by_glyph(TickMs(1000)));
+        dispatch_and_record_explicit_intent(&mut ps, true, 4000);
+        let r = ps.ime.report_indicator_glyph(
+            LabelReading::Miss(GlyphMiss::Ambiguous),
+            f,
+            true,
+            TickMs(4300),
+        );
+        assert_eq!(r, GlyphReport::Fenced(FenceMiss::TooSoonAfterModeKey));
+    }
+
+    /// R6: `IntentStore` が上書きしている間は、字形が `decided_by` でも「字形由来の belief」とは数えない。
+    #[test]
+    fn belief_is_not_decided_by_glyph_while_the_intent_store_overrides() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let f = ps.ime.focus_fence();
+        ps.ime
+            .report_indicator_glyph(glyph_hit(BeliefLabel::Closed), f, true, TickMs(5000));
+        assert!(ps.ime.belief_is_decided_by_glyph(TickMs(5000)));
+        // 開の明示意図を IntentStore に記録（shadow_model の意図は字形より上位でもある）。
+        dispatch_and_record_explicit_intent(&mut ps, true, 5100);
+        assert!(!ps.ime.belief_is_decided_by_glyph(TickMs(5200)));
     }
 
     /// 外から閉じられた（操作より後に共有メモリが閉に変わった）とき、明示意図が残っていても belief が事実に追随し、

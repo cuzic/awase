@@ -64,6 +64,17 @@ pub struct FallbackShadow {
     pub new: crate::state::observation_store::ImeObservation,
 }
 
+/// [`ImeModel::would_glyph_decide`] の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphWouldDecide {
+    /// 報告後の `resolve_open_at` が字形で決まるか
+    pub decided_by_glyph: bool,
+    /// 報告前の `resolve_open_at` の値
+    pub before: bool,
+    /// 報告後の `resolve_open_at` の値
+    pub after: bool,
+}
+
 /// `resolve_open_at()` の戻り値。`effective_open_at()` が返す `bool` に加えて、
 /// 「なぜその値になったか」を保持する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,7 +202,7 @@ impl AppliedImeState {
 ///
 /// Step 3 時点: desired_open + last_intent + observations (per-source + drift) + policy。
 /// pending transition / barrier / force guard は後続 Step で追加。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImeModel {
     /// awase が IME をこうしたい状態。UserIntent のみが書き換える。
     ///
@@ -382,6 +393,41 @@ impl ImeModel {
         match self.last_mode_key_tick_ms {
             Some(t) => Some(now_tick_ms.saturating_sub(t)),
             None => None,
+        }
+    }
+
+    /// ADR-273 D2 (a)〜(e) の試算（副作用なし）: この字形の観測を**今報告したら**どうなるか。モデルの複製に、本物と同じ
+    /// `ObserverReported` を `reduce` に通す（柵・予測の照合〔N1〕・drift の扱いが本物と同じ）。モデルは変えない。
+    /// 設定が `observe` のときの journal に使う。複製はここ 1 か所だけ（`architecture_guard` が固定）。
+    ///
+    /// `decided_by_glyph` は、報告後の `resolve_open_at` が字形で決まるか（明示意図・新鮮な Medium 以上などが勝てば偽。
+    /// 柵を過ぎた字形が予測を照合して消した後に字形が決める場合は真）。`before`/`after` は報告の前後の `resolve_open_at` の値
+    /// （hub の層の `IntentStore` の上書きは掛けていない。hub が掛ける）。
+    #[must_use]
+    pub fn would_glyph_decide(
+        &self,
+        glyph: crate::state::evidence::AnyObservation,
+        now: Instant,
+        tick_ms: u64,
+    ) -> GlyphWouldDecide {
+        let before = self.resolve_open_at(now).value;
+        let mut sim = self.clone();
+        // 試算の reduce が本物のログ（`[key-effect-miss]` など、起きていない出来事）を出さないよう、購読者を外して通す。
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+            sim.reduce(&ImeEventEnvelope {
+                time: EventTime {
+                    seq: 0,
+                    monotonic: now,
+                    tick_ms,
+                },
+                event: ImeEvent::ObserverReported(glyph),
+            });
+        });
+        let after = sim.resolve_open_at(now);
+        GlyphWouldDecide {
+            decided_by_glyph: matches!(after.decided_by.base, BaseDecision::IndicatorGlyph { .. }),
+            before,
+            after: after.value,
         }
     }
 

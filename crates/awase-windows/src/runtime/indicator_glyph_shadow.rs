@@ -10,8 +10,9 @@
 //! 同じ（確認された状態）で字形が落ち着いているときだけ、そのラベルの見本として足す（ADR-261 決定 2。belief の入力モードは
 //! ひらがな/カタカナ・半角/全角英数を区別しないので、ラベルは閉・かな・英数の 3 つ。`state::indicator_glyph::BeliefLabel`）。
 //!
-//! **belief には入れない・IME へ何も書かない・打鍵は変えない・画素は保存しない**。belief は読み取り（`effective_open()`・
-//! `input_mode()`）だけで、ラベルの作成と記録に使う。目的は、読める窓での一致率と、観測の無い窓での belief とのずれを、実ジャーナルで
+//! **IME へ何も書かない・打鍵は変えない・画素は保存しない**。belief は読み取り（`effective_open()`・`input_mode()`）で
+//! ラベルの作成と記録に使う。**belief への報告（ADR-273）は、実効の段階が `unobserved` 以上の対象の窓でだけ**（`report_glyph_to_belief`。
+//! 現状は `ui_max_level` が `Observe` なので動かない）。目的は、読める窓での一致率と、観測の無い窓での belief とのずれを、実ジャーナルで
 //! 確かめること。
 //!
 //! 有効なのは `[indicator_evidence] glyph` の実効の段階が `observe` 以上（既定は off のオプトイン。ADR-271）のときだけ。反映は再起動後
@@ -27,10 +28,12 @@ use windows::Win32::Foundation::HWND;
 use crate::focus::class_names::AppImeProfile;
 use crate::observer::indicator_glyph::GlyphReadRequest;
 use crate::state::indicator_glyph::{
-    apply_match, belief_label, collect_label, match_feature, AddOutcome, BeliefLabel, Capture,
-    GlyphFeature, GlyphSample, GlyphTable, ProbeOutcome, SampleOrigin, Thresholds,
+    apply_match, belief_label, classify_label, collect_label, first_read_fence, glyph_scope_label,
+    glyph_window_in_scope, match_feature, AddOutcome, BeliefLabel, Capture, GlyphFeature,
+    GlyphSample, GlyphScopeFacts, GlyphTable, ProbeOutcome, SampleOrigin, Thresholds,
 };
 use crate::state::indicator_glyph_store::{EnvFingerprint, GlyphSampleFile};
+use crate::state::probe_admission::FocusFence;
 
 /// 見本の保存ファイル名（exe と同じディレクトリ。`cache.toml` とは別ファイル。ADR-261 決定 2）。
 const SAMPLES_FILENAME: &str = "glyph_samples.json";
@@ -64,6 +67,10 @@ pub(super) struct IndicatorGlyphShadow {
     pending: VecDeque<Pending>,
     last_trigger: Option<Instant>,
     last_capture: Option<LastCapture>,
+    /// 1 回目（待ちが短い方）の取り込みを処理した時点の（前面窓、フォーカスの同一性〔epoch + hwnd〕）。2 回目の取り込みの報告の基準
+    /// （前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点ではなく、追跡が追いついた後の 1 回目の時点を基準にする）。
+    /// 新しい依頼のたびに消す（1 回目が取り込めなかったときは基準が無く、2 回目は報告しない）
+    baseline: Option<(isize, FocusFence)>,
     /// 見本の表（環境指紋別。矩形の大きさ〔DPI に比例〕・背景の明暗・IME の種類・取り込み方式の版）。内蔵の共通の見本で始め、
     /// 保存済みの同じ環境の見本を足す
     tables: HashMap<EnvFingerprint, GlyphTable>,
@@ -82,6 +89,7 @@ impl IndicatorGlyphShadow {
             pending: VecDeque::new(),
             last_trigger: None,
             last_capture: None,
+            baseline: None,
             tables: HashMap::new(),
             store: GlyphSampleFile::default(),
             store_path: None,
@@ -151,6 +159,64 @@ impl super::Runtime {
         &self.indicator_glyph.counters
     }
 
+    /// 窓の種類の事実（D3・Q2・R1。判定は核の純粋関数 `glyph_window_in_scope`・`glyph_scope_label`）。
+    fn glyph_scope_facts(&self) -> GlyphScopeFacts {
+        let profile = self.platform.current_app_profile();
+        GlyphScopeFacts {
+            // 実効のプロファイル（学習で降格した後の値。降格した窓は `demoted_by_learning` の側で拾う）
+            effective_standard: profile == AppImeProfile::Standard,
+            demoted_by_learning: self.platform.focus.is_demoted_by_learning(),
+            tsf_native: profile.is_effectively_tsf_native(self.platform.focus.class_name()),
+            input_relay: matches!(profile, AppImeProfile::InputRelay),
+            mozc_block: self.mozc_shm.block_present(),
+        }
+    }
+
+    /// 字形を belief に使ってよい窓・設定か（ADR-273 D3・Q2・R1）。設定の実効の段階が `unobserved` 以上のときだけ（現状は
+    /// `EvidenceSource::ui_max_level()` が `Observe` なので実効の段階は上がらず、ここは常に偽）。窓の判定は核の純粋関数。
+    fn glyph_belief_in_scope(&self) -> bool {
+        let level = self
+            .effective_glyph_level()
+            .unwrap_or(awase::config::EvidenceLevel::Off);
+        glyph_window_in_scope(level, self.glyph_scope_facts())
+    }
+
+    /// 報告の基準となる同一性（ADR-273 D1 の M8、Opus RE1）。1 回目は**処理した時点**の同一性（追跡が追いついているときだけ。
+    /// 前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点の値は切り替える前の窓のものになりうる）、2 回目は
+    /// 1 回目の基準（同じ前面窓のときだけ）。無ければ報告しない。
+    fn glyph_read_fence(&self, pending: &Pending, is_second: bool) -> Option<FocusFence> {
+        if is_second {
+            self.indicator_glyph
+                .baseline
+                .filter(|(f, _)| *f == pending.foreground)
+                .map(|(_, fence)| fence)
+        } else {
+            first_read_fence(
+                self.platform_state.ime.focus_fence(),
+                self.lang_detect_focus_in_sync(),
+            )
+        }
+    }
+
+    /// 字形の読みを belief に報告する（ADR-273 D1・D4）。**設定の実効の段階が `unobserved` 以上で、対象の窓のときだけ**
+    /// （`glyph_belief_in_scope`。現状は `ui_max_level` が `Observe` なので動かない）。判断・柵・記録は `ImeStateHub` 側。
+    fn report_glyph_to_belief(
+        &mut self,
+        reading: crate::state::indicator_glyph::LabelReading,
+        read_fence: FocusFence,
+    ) {
+        if !self.glyph_belief_in_scope() {
+            return;
+        }
+        let outcome = self.platform_state.ime.report_indicator_glyph(
+            reading,
+            read_fence,
+            self.lang_detect_focus_in_sync(),
+            crate::state::TickMs(crate::hook::current_tick_ms()),
+        );
+        tracing::debug!("[indicator-glyph] belief report: {outcome:?}");
+    }
+
     /// `EVENT_SYSTEM_FOREGROUND`（`observer::indicator_glyph` の WinEvent）から呼ぶ。
     ///
     /// 前置きのフィルタ: 有効・タスクバーやメニューが前面になっただけではない・受け付け間隔・結果待ちが溜まっていない。
@@ -189,6 +255,7 @@ impl super::Runtime {
         }
         self.indicator_glyph.last_trigger = Some(now);
         self.indicator_glyph.last_capture = None;
+        self.indicator_glyph.baseline = None;
         tracing::debug!("[indicator-glyph] foreground changed → glyph reads requested");
     }
 
@@ -223,8 +290,19 @@ impl super::Runtime {
         let profile_kind = self.platform.current_app_profile();
         let profile = super::lang_detect_shadow::profile_label(profile_kind);
         let belief_open = self.platform_state.ime.effective_open();
-        let label = belief_label(belief_open, self.platform_state.ime.input_mode());
+        // R2: 字形が決めた belief で字形の見本にラベルを付けない（誤読が見本に永続化して自分を強化する・一致の集計が同語反復になる）。
+        // 判定は hub の層の最終的な理由（`IntentStore` の上書きを字形由来と数えない。R6）。
+        let decided_by_glyph = self
+            .platform_state
+            .ime
+            .belief_is_decided_by_glyph(crate::state::TickMs(crate::hook::current_tick_ms()));
+        let label = if decided_by_glyph {
+            None
+        } else {
+            belief_label(belief_open, self.platform_state.ime.input_mode())
+        };
         let mut record = outcome.to_record(profile, Some(belief_open), pending.delay_ms);
+        let mut glyph_reading = None;
 
         if let Some(f) = feature {
             // 環境指紋: 矩形の大きさ（DPI）・背景の明暗・IME の種類・取り込み方式の版。違う環境の表は使わない。
@@ -245,6 +323,7 @@ impl super::Runtime {
                 });
             // 照合は、収集する前の表で行う（自分自身を見本にして一致させない）。
             let m = match_feature(table, &Thresholds::default(), &f);
+            glyph_reading = Some(classify_label(table, &Thresholds::default(), &f));
             // 収集: 2 回目（待ちが長い方）の取り込みで、同じ窓の 1 回目と比べて落ち着いていれば足す。
             let is_second = pending.delay_ms == u32::from(READ_DELAYS_MS[1]);
             let prev = self
@@ -282,6 +361,38 @@ impl super::Runtime {
                     label,
                 })
             };
+        }
+        if let Some(reading) = glyph_reading {
+            let is_second = pending.delay_ms == u32::from(READ_DELAYS_MS[1]);
+            let read_fence = self.glyph_read_fence(&pending, is_second);
+            // 設定が observe のままでも、対象の窓だったとして柵を通るかを記録する（belief には入れない）。段階 2 の前提の件数。
+            // 基準が作れなかった読み（追跡のずれ）も分母に入れるため、窓の種類は基準の有無によらず出す。
+            let scope = glyph_scope_label(self.glyph_scope_facts());
+            record.would_scope = Some(scope);
+            match read_fence {
+                Some(read_fence) => {
+                    if scope != "none" {
+                        let preview = self.platform_state.ime.preview_indicator_glyph(
+                            reading,
+                            read_fence,
+                            self.lang_detect_focus_in_sync(),
+                            crate::state::TickMs(crate::hook::current_tick_ms()),
+                        );
+                        record.would_report = Some(preview.report.label());
+                        if preview.report.is_reported() {
+                            record.would_decide = Some(preview.decides.is_some());
+                            record.would_flip = preview.decides;
+                        }
+                    }
+                    self.report_glyph_to_belief(reading, read_fence);
+                }
+                None if scope != "none" => record.would_report = Some("fenced:no-baseline"),
+                None => {}
+            }
+            if !is_second {
+                // 2 回目の基準: 1 回目を処理した時点の同一性（追跡が追いついていなければ作らない。2 回目は報告しない）。
+                self.indicator_glyph.baseline = read_fence.map(|fence| (pending.foreground, fence));
+            }
         }
         self.indicator_glyph.counters.record(&record);
         self.platform_state

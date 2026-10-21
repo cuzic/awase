@@ -720,6 +720,73 @@ pub fn fence_glyph(hit: LabelHit, ctx: FenceCtx) -> Result<FencedGlyph, FenceMis
     Ok(FencedGlyph { hit })
 }
 
+/// 1 回目（前面窓の変化の 0.9 秒後）の取り込みの、報告の基準となるフォーカスの同一性（Opus RE1）。
+///
+/// 前面窓の変化の通知はフォーカス追跡より先に届くので、**依頼の時点の同一性は切り替える前の窓の値**になりうる。基準にするのは
+/// 1 回目を**処理した時点**の同一性 `current`（追跡が追いついた後）。ただし、前面が追跡中の窓と一致していない（`foreground_in_sync`
+/// が偽 = 追跡がまだ追いついていない）ときは、前の窓の同一性で新しい窓の字形を記録してしまうので、基準を作らない（`None`）。
+///
+/// `foreground_in_sync` の出所（殻の `lang_detect_focus_in_sync`）は pid と root 窓の一致だけを見る。**追跡が root を取れていない窓
+/// （`tracked_root == 0`）では真になり、同じトップレベルの中の子の欄の移動も見えない**。取り込みから処理までは数十 ms なので、その間の
+/// 移動は 2 回目の基準の照合と `update_focus_window` の削除で拾う。
+#[must_use]
+pub const fn first_read_fence(
+    current: crate::state::probe_admission::FocusFence,
+    foreground_in_sync: bool,
+) -> Option<crate::state::probe_admission::FocusFence> {
+    if foreground_in_sync {
+        Some(current)
+    } else {
+        None
+    }
+}
+
+/// 窓の種類についての事実（字形を belief に使ってよい窓かの判定の入力。ADR-273 D3・Q2・R1）。殻が集めて値で渡す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphScopeFacts {
+    /// **実効の**プロファイルが `Standard`（学習で降格した後の値。降格した窓は偽。静的に `Standard` の窓だけが真）
+    pub effective_standard: bool,
+    /// 実測学習で `Standard` から降格された窓（NULL 型。D3 の述語 `is_demoted_by_learning`）
+    pub demoted_by_learning: bool,
+    /// 実質 TSF ネイティブの窓（`is_effectively_tsf_native`）
+    pub tsf_native: bool,
+    /// 入力中継ツールの窓
+    pub input_relay: bool,
+    /// mozc-readable の共有メモリのブロックがある窓（そちらが High で読める。R1）
+    pub mozc_block: bool,
+}
+
+/// 字形を belief に使ってよい窓か（ADR-273 D3・Q2・R1）。
+///
+/// `level` が `unobserved` 未満なら常に偽。入力中継・実質 TSF ネイティブ・mozc の共有メモリがある窓は常に除外。
+/// `unobserved` は実測学習で降格された窓（NULL 型）だけ、`all` はそれに加えて静的に `Standard` の窓
+/// （**降格した窓を含む**。静的に `Imm32Unavailable` の窓は除外。降格は `Standard` からしか起きない）。
+#[must_use]
+pub fn glyph_window_in_scope(level: awase::config::EvidenceLevel, f: GlyphScopeFacts) -> bool {
+    use awase::config::EvidenceLevel;
+    if level < EvidenceLevel::Unobserved || f.input_relay || f.tsf_native || f.mozc_block {
+        return false;
+    }
+    if level == EvidenceLevel::All {
+        f.effective_standard || f.demoted_by_learning
+    } else {
+        f.demoted_by_learning
+    }
+}
+
+/// journal 用: この窓が `unobserved`/`all` のどちらの段階から字形を belief に使う対象か（`none` = どちらでも対象外）。
+#[must_use]
+pub fn glyph_scope_label(f: GlyphScopeFacts) -> &'static str {
+    use awase::config::EvidenceLevel;
+    if glyph_window_in_scope(EvidenceLevel::Unobserved, f) {
+        "unobserved"
+    } else if glyph_window_in_scope(EvidenceLevel::All, f) {
+        "all"
+    } else {
+        "none"
+    }
+}
+
 /// 取り込み 1 回の照合の結果(journal に残す)。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MatchResult {
@@ -2160,5 +2227,77 @@ mod tests {
         assert_eq!(GlyphClass::Hiragana.label(), "hiragana");
         assert_eq!(GlyphMiss::EmptyGlyph.label(), "empty-glyph");
         assert_eq!(GlyphMiss::Ambiguous.label(), "ambiguous");
+    }
+
+    fn scope(standard: bool, demoted: bool) -> GlyphScopeFacts {
+        GlyphScopeFacts {
+            effective_standard: standard,
+            demoted_by_learning: demoted,
+            tsf_native: false,
+            input_relay: false,
+            mozc_block: false,
+        }
+    }
+
+    /// ADR-273 D3・Q2: 窓の述語の表。`all` は `unobserved` の対象（降格した窓）を含む（Opus E1）。
+    #[test]
+    fn glyph_window_scope_table() {
+        use awase::config::EvidenceLevel::{All, Observe, Off, Unobserved};
+        // (level, 実効 Standard, 降格, 期待)
+        let table = [
+            (Off, true, false, false),
+            (Observe, false, true, false),
+            (Unobserved, true, false, false), // 読める窓は unobserved では対象外
+            (Unobserved, false, true, true),  // 降格した窓（実効は Imm32Unavailable）
+            (Unobserved, false, false, false), // 静的な Imm32Unavailable
+            (All, true, false, true),         // 静的 Standard
+            (All, false, true, true),         // 降格した窓を含む
+            (All, false, false, false),       // 静的 Imm32Unavailable は除外
+        ];
+        for (level, standard, demoted, want) in table {
+            assert_eq!(
+                glyph_window_in_scope(level, scope(standard, demoted)),
+                want,
+                "{level:?} standard={standard} demoted={demoted}"
+            );
+        }
+    }
+
+    /// 入力中継・TSF ネイティブ・mozc の共有メモリがある窓は、どの段階でも除外する（R1）。
+    #[test]
+    fn glyph_window_scope_excludes_relay_tsf_and_mozc() {
+        use awase::config::EvidenceLevel::{All, Unobserved};
+        for level in [Unobserved, All] {
+            let base = scope(true, true);
+            assert!(glyph_window_in_scope(level, base));
+            for f in [
+                GlyphScopeFacts {
+                    input_relay: true,
+                    ..base
+                },
+                GlyphScopeFacts {
+                    tsf_native: true,
+                    ..base
+                },
+                GlyphScopeFacts {
+                    mozc_block: true,
+                    ..base
+                },
+            ] {
+                assert!(!glyph_window_in_scope(level, f), "{level:?} {f:?}");
+            }
+        }
+        assert_eq!(glyph_scope_label(scope(false, true)), "unobserved");
+        assert_eq!(glyph_scope_label(scope(true, false)), "all");
+        assert_eq!(glyph_scope_label(scope(false, false)), "none");
+    }
+
+    /// 1 回目の基準: 追跡が追いついている（前面が一致）ときだけ、処理した時点の同一性。追いついていなければ作らない（RE1）。
+    #[test]
+    fn first_read_fence_requires_the_tracker_to_have_caught_up() {
+        use crate::state::probe_admission::FocusFence;
+        let cur = FocusFence::default();
+        assert_eq!(first_read_fence(cur, true), Some(cur));
+        assert_eq!(first_read_fence(cur, false), None);
     }
 }

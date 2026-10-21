@@ -141,6 +141,22 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 - `promoted_by_staleness` は「字形が届いた時点では新鮮だった、字形と値の違う Medium 以上が、今は鮮度切れ」のときだけ付く(診断専用。GJI の窓で常に付いて過大に数えないため)。
 - reducer は字形で `update_drift` を呼ばない(`reconcile_key_effect_open` は呼ぶ)。
 
+### 段階 2a: 殻の入口を作る(2026-10-21、配線 PR 1。**まだ動かない**)
+
+`ImeStateHub::report_indicator_glyph`(`state/platform_state.rs`)を、字形を belief に報告する**唯一の入口**として作った。`Hit` は `fence_glyph`(柵)を通したものだけ `ObserverReported(TaskbarGlyph, Medium)` にし、`Miss` は `IndicatorGlyphMissed` で枠を消す。呼び出し元は `runtime/indicator_glyph_shadow.rs` の 1 件だけで、`glyph_belief_in_scope()` が真のときだけ呼ぶ。**`EvidenceSource::ui_max_level()` は `Observe` のまま**なので、実効の段階が `unobserved` 以上にならず、本番では動かない(挙動は変わらない)。
+
+- 対象の窓(`glyph_belief_in_scope`): 入力中継ツール・実質 TSF ネイティブの窓・**mozc-readable の共有メモリがある窓(R1)**は除外。`unobserved` は実測学習で降格された窓(D3)、`all` は静的に `Standard` の窓(Q2)。
+- **R2・R6**: `belief_is_decided_by_glyph`(hub の層の最終的な理由。`IntentStore` の上書きを字形由来と数えない)が真のとき、見本のラベルを付けない(収集も一致の記録もしない)。
+- `FenceCtx::focus_gen_unchanged`: 前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点の同一性は切り替える前の窓のものになりうる。**1 回目(0.9 秒後)は処理した時点の同一性**を基準にする(追跡が追いついている=前面が一致のときだけ。`first_read_fence`)。2 回目(2.5 秒後)の基準は 1 回目の基準で、変わっていれば捨てる(Opus RE1)。
+- **窓の述語は核の純粋関数**(`glyph_window_in_scope`・`glyph_scope_label`、Linux の単体テストで D3・Q2 の表を固定)。`current_app_profile()` は降格後の実効値を返すので、`all` は「実効 `Standard` **または**降格された窓」とする(降格は `Standard` からしか起きない。静的な `Imm32Unavailable` だけが除外される)。`all` は `unobserved` の対象を含む(Opus E1)。
+- **窓の同一性は取り込みを処理した時点の `FocusFence`(epoch + hwnd)**: 1 回目は処理した時点(追跡が追いついているときだけ)、2 回目は 1 回目の基準の `ImeStateHub::focus_fence()` を `report_indicator_glyph` に渡し、今と違えば捨てる。同じプロセスの中の別の欄への移動(hwnd)も見る。`from_glyph` には報告の時点の fence でなく、この読みの fence を付ける(Opus E2)。1 回目が取り込めなかった・追跡が追いついていなかったときは基準が無く、2 回目は報告しない。
+- **`Miss` の取り消し**は `TooFar`/`Ambiguous`(字形が表に無い状態に変わった)で、窓の判定を通ったときだけ。画像の不具合・一様な画像・表が空は何もしない。
+- **R1 は二重**: 殻は共有メモリのブロックがある窓を除外し、hub も `MozcShm` の観測がある窓(失効したものを含む)では報告しない(遷移の穴)。
+- **`observe` のままでも件数を数える**: journal の `IndicatorGlyphRecord` に `would_scope`(`unobserved`/`all`/`none`)・`would_report`(`reported`/`miss-changed`/`ignored`/`mozc-window`/`fenced:…`。`miss-changed` は取り消しの条件を満たしたの意味で、observe では枠が空)・`would_decide`/`would_flip`(柵を通る読みを今記録したら字形が belief を**決めるか**〔明示意図・予測・新鮮な Medium 以上が勝てば偽〕、決めるなら今の belief と**違うか**。`ImeModel::would_glyph_decide`。複製に本物と同じ `ObserverReported` を `reduce` で通す〔柵を過ぎた字形は予測を照合して消すので、D2 の (e)「予測が無い」は条件にならない〕。hub が `IntentStore` の上書きを掛ける〔D2 の (d)〕。基準が作れなかった読みも `would_scope` は出し、`would_report = fenced:no-baseline` とする)を出す(`preview_indicator_glyph`。belief には入れない)。**`ui_max_level` を上げる入口条件**: 実機の journal で `would_decide` が真の件数(D2 の (a)〜(e))を数え、0 に近ければ見送る。
+- R1 の主は殻の `block_present`(共有メモリのブロックの有無)で、hub の `MozcShm` 観測の判定は遷移の補助(失効したものを含むので、同じ窓で TIP を替えてもフォーカスが変わるまで字形を使わない。安全側)。
+- 未決: 実行時に TSF と学習した窓(`injection_mode_store.has_tsf`)の扱い(Q2)。R3(HWND キャッシュ経由の R2 の穴)は Q5 の実装時に一緒に閉じる。
+- 残る入口条件(`ui_max_level` を上げる前): 一太郎(NULL 型)の確認(段階 2)、D2 の(a)〜(e)の件数を shadow の journal で数える、R3(HWND キャッシュ)・R4(hwnd の意味)の扱いを決める。
+
 ### 配線 PR の注意(Opus レビュー、2026-10-20)
 
 - **R1 MozcShm が割れたとき**: ADR-268 は `tsf_open != effective_open` の間 MozcShm を報告しない。共有メモリが止まって TTL が切れたあとに字形(TIP の実状態を映す)が belief を決めると、ADR-268 が避けた向きへ倒れる。mozc 系の窓で割れている間(`AppliedDemoted{MozcShmSplit}` の間)は字形を報告しない。

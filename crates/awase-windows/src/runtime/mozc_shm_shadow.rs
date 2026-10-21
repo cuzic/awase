@@ -30,6 +30,11 @@ pub(super) struct MozcShmShadow {
 }
 
 impl MozcShmShadow {
+    /// 直前の読みで、この窓のスレッドに共有メモリのブロックがあったか（字形を belief に使わない窓の判定。ADR-273 R1）。
+    pub(super) const fn block_present(&self) -> bool {
+        self.polling
+    }
+
     pub(super) const fn disabled() -> Self {
         Self {
             enabled: false,

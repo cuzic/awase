@@ -70,6 +70,11 @@ impl super::Runtime {
         self.indicator_menu.effective = Some(effective);
     }
 
+    /// 字形の実効の段階（起動時に固定したもの。まだ渡されていなければ `None`）。
+    pub(super) fn effective_glyph_level(&self) -> Option<awase::config::EvidenceLevel> {
+        self.indicator_menu.effective.map(|e| e.glyph)
+    }
+
     /// 不具合報告の要約用に、実効の段階と読みの件数を返す（読み取りだけ）。
     pub(crate) fn indicator_evidence_summary(
         &self,
