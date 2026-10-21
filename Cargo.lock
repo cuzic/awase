@@ -459,6 +459,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "awase-bug-report"
+version = "2.2.0"
+dependencies = [
+ "awase",
+ "awase-gji-config",
+ "awase-keymap-learn",
+ "awase-windows-core",
+ "base64",
+ "flate2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "awase-build-support"
 version = "0.1.0"
 dependencies = [
@@ -584,6 +599,7 @@ version = "2.2.0"
 dependencies = [
  "anyhow",
  "awase",
+ "awase-bug-report",
  "awase-build-support",
  "awase-gji-config",
  "awase-hook-core",
@@ -593,14 +609,11 @@ dependencies = [
  "awase-vkmap",
  "awase-windows-core",
  "awase-windows-plans",
- "base64",
- "flate2",
  "itertools",
  "quanta",
  "serde",
  "serde_json",
  "strum 0.27.2",
- "thiserror 2.0.20",
  "timed-fsm",
  "toml",
  "tracing",

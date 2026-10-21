@@ -22,7 +22,9 @@
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub use awase_windows_core::{indicator_evidence, journal, journal_policy, keymap, tuning, vk};
-pub mod bug_report;
+// 不具合報告のペイロードの組み立てなどは OS 非依存の `awase-bug-report` に移した（ADR-274 段階 1）。
+// `awase_windows::bug_report` の経路を変えないよう再公開する。
+pub use awase_bug_report::bug_report;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod clock;
 pub mod config_diagnostics;

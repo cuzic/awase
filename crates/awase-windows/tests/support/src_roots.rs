@@ -13,6 +13,7 @@ pub(crate) const EXTRA_SRC_CRATES: &[&str] = &[
     "crates/awase-hook-core",
     "crates/awase-windows-plans",
     "crates/awase-scancode",
+    "crates/awase-bug-report",
 ];
 
 pub(crate) fn workspace_dir() -> std::path::PathBuf {

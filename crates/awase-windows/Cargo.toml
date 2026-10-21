@@ -34,6 +34,8 @@ awase-hook-core = { path = "../awase-hook-core" }
 awase-windows-plans = { path = "../awase-windows-plans" }
 # Scancode Map（キー入れ替え）の判断・編集モデル・適用の核（ADR-274 段階 1）。外部の依存を持たない。
 awase-scancode = { path = "../awase-scancode" }
+# 不具合報告のペイロードの組み立て・サイズの縮め・再送計画・gzip の核（ADR-274 段階 1）。windows crate に依存しない。
+awase-bug-report = { path = "../awase-bug-report" }
 # ADR-195段階4: T3の永続化スキーマ(`persist`モジュール)を読むためだけの依存。OS非依存クレート
 # なのでWindows限定にしない(coreがOS非依存クレートに依存されるだけ、という既存の向きに合わせる)。
 awase-keymap-learn = { path = "../awase-keymap-learn" }
@@ -49,9 +51,6 @@ toml = "0.8"
 itertools = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-flate2 = "1"
-base64 = "0.22"
-thiserror = "2"
 strum = { version = "0.27", features = ["derive"] }
 quanta = "0.12"
 

@@ -36,7 +36,7 @@ put('imecore', [
     'state::ime_read_strategy', 'state::ime_profile_driver', 'state::conv_after_open',
     'state::input_barrier', 'state::app_ime_policy',
     'state::key_sequence_policy', 'state::physical_disposition', 'state::mode_key_pass',
-    'state::mozc_shm', 'state::indicator_menu', 'state::indicator_glyph', 'state::indicator_glyph_seeds', 'indicator_evidence',
+    'state::mozc_shm', 'state::indicator_menu', 'state::indicator_glyph', 'state::indicator_glyph_seeds', 'state::indicator_glyph_store', 'indicator_evidence',
     # journal と、IME の判断を記録する型。`journal` は imecore のイベント型(DriftEdge・ConvTransition ほか)を記録し、
     # 観測源(mozc_shm・indicator_*)が `*Record` を返すので、依存が相互になる(測定済み)。分けずに imecore に含める
     'journal', 'journal_policy', 'state::ime_event_log', 'state::actuation_decision_record', 'tsf::literal_facts',
@@ -57,6 +57,9 @@ put('scancode', [
     'scancode_apply', 'scancode_diagram', 'scancode_editor', 'scancode_map', 'scancode_pairs',
 ])
 
+# 葉: 不具合報告のペイロードの組み立て。keyeffect の表・imecore の証拠（インジケーター）を読む
+put('bugreport', ['bug_report'])
+
 # 許可する依存の向き(A → B = A が B を使ってよい)。これ以外の本番コードの参照は `deps.py --check` が落とす
 ALLOWED = {
     'base': [],
@@ -65,6 +68,7 @@ ALLOWED = {
     'plans': ['base', 'imecore'],
     'hookinput': ['base'],
     'scancode': [],
+    'bugreport': ['base', 'keyeffect', 'imecore'],
 }
 
 # コードの移動で消す予定の辺(`impl` や関数を別のモジュールへ移すまでの間だけ許す)。(参照元, 参照先, 理由)。

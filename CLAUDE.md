@@ -106,6 +106,8 @@ crates/awase-scancode/        OS-independent core: Scancode Map (key-swap) decis
                               (ADR-230, ADR-274 stage 1): scancode_{map,pairs,editor,diagram,apply}. No dependencies.
                               The registry I/O stays in the shell (`awase-windows/src/scancode_registry.rs`, cfg(windows));
                               awase-windows re-exports `awase_windows::scancode_*`.
+crates/awase-bug-report/      OS-independent core: bug-report payload build / size shrink / retry plan / gzip (ADR-274 stage 1):
+                              bug_report. The learned-table file read stays in the shell (`key_effect_io`).
 crates/awase-linux/           Linux platform stub
 crates/awase-macos/           macOS platform stub
 crates/win32-async/           Async executor + blocking-API timeout isolation (run_with_timeout)
