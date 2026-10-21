@@ -2,7 +2,8 @@
 //!
 //! 前面窓が変わったとき（`observer::indicator_glyph` の `EVENT_SYSTEM_FOREGROUND` の WinEvent が検知）、字形が実状態に追随する
 //! のを待ってから（0.9 秒後と 2.5 秒後の 2 回。字形の遅れは中央 0.2 秒・最大 0.68 秒、ADR-261）インジケーターの矩形を取り込み、
-//! 前処理まで進める。その特徴を、見本の表（矩形の大きさ別。**起動ごとに作る**。永続化は次の段階）に**照合**し、結果
+//! 前処理まで進める。その特徴を、見本の表（矩形の大きさ別。内蔵の共通の初期見本＝GJI の全 6 状態・ライト/ダークで始め、
+//! 同じ環境の見本を足していく。**起動ごとに作る**。永続化は次の段階）に**照合**し、結果
 //! （大きさ・前景の点数・所要・失敗の理由・照合の読みと belief の粗いラベルの一致）を journal（`JournalEntry::IndicatorGlyph`）に残す。
 //!
 //! 表は**受け身に集める**: 読める窓（`standard`。belief が直接の読みに追随している）で、同じ窓の 2 回の取り込みの belief のラベルが
@@ -184,7 +185,11 @@ impl super::Runtime {
 
         if let Some(f) = feature {
             let key = (outcome.width, outcome.height);
-            let table = self.indicator_glyph.tables.entry(key).or_default();
+            let table = self
+                .indicator_glyph
+                .tables
+                .entry(key)
+                .or_insert_with(crate::state::indicator_glyph_seeds::seeded_table);
             // 照合は、収集する前の表で行う（自分自身を見本にして一致させない）。
             let m = match_feature(table, &Thresholds::default(), &f);
             // 収集: 2 回目（待ちが長い方）の取り込みで、同じ窓の 1 回目と比べて落ち着いていれば足す。

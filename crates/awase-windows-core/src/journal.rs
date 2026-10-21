@@ -196,6 +196,9 @@ pub struct IndicatorGlyphRecord {
     pub belief_open: Option<bool>,
     /// 見本の表に照合して採ったラベル(`closed` / `kana` / `eisu`)。照合が `Miss` のとき・取り込めなかったときは `None`
     pub reading: Option<&'static str>,
+    /// 最近傍の見本のクラス(`hiragana` / `full-katakana` / …。ラベルより細かい診断用)と、その見本の出所(`common` / `same-env`)
+    pub reading_class: Option<&'static str>,
+    pub reading_origin: Option<&'static str>,
     /// 照合が `Miss` の理由(`empty-table` / `too-far` / `ambiguous`)
     pub match_miss: Option<&'static str>,
     /// 最近傍の距離と、次点との距離比(どちらも 100 倍の整数。距離比は 9999 で頭打ち)
@@ -1505,6 +1508,8 @@ impl JournalEntry {
                     profile = record.profile,
                     belief_open = record.belief_open,
                     reading = record.reading,
+                    reading_class = record.reading_class,
+                    reading_origin = record.reading_origin,
                     match_miss = record.match_miss,
                     distance_x100 = record.distance_x100,
                     ratio_x100 = record.ratio_x100,

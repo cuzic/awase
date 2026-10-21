@@ -563,6 +563,7 @@ const CORE_MODULES: &[&str] = &[
     "ime_update",
     "imm_evidence",
     "indicator_glyph",
+    "indicator_glyph_seeds",
     "indicator_menu",
     "injection_mode",
     "input_barrier",
