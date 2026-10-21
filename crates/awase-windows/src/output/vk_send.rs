@@ -288,7 +288,6 @@ impl Output {
             // confirm（tsf_probe_coro_body の Phase 2c）が送信後の confirm/recovery を
             // 担うため、送信前に GJI の準備を待つ予防は二重の保険だった。
             let f2_sent_ms = crate::hook::current_tick_ms();
-            let (probe_min_ms, probe_max_ms) = (0, 0);
             tracing::debug!(
                 "[h1-probe] cold={cold_seq} idle_at_cold={}ms F2/probe待機省略 → per-VK confirm へ",
                 self.composition.idle_ms_at_last_cold(),
@@ -308,16 +307,9 @@ impl Output {
             // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
             // （sync パスと同一経路）。RuntimeRequest::StartTsfProbe は belt-and-suspenders として積む。
             let guard = OutputActiveGuard::begin();
-            let probe =
-                crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
+            let probe = crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq);
             self.install_pending_tsf(Box::new(
-                crate::tsf::warmup::chrome_probe::ChromeProbe::new(
-                    romaji,
-                    cold_seq,
-                    probe,
-                    probe_max_ms,
-                    guard,
-                ),
+                crate::tsf::warmup::chrome_probe::ChromeProbe::new(romaji, cold_seq, probe, guard),
             ));
             self.runtime_outbox
                 .borrow_mut()
@@ -465,7 +457,6 @@ impl Output {
                 romaji,
                 cold_seq,
                 started.probe,
-                started.total_max_ms,
                 started.cold_reason,
                 used_eager_path,
                 probe_params.forces_prepend_f2,
@@ -838,8 +829,7 @@ mod tests {
             crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                 "x",
                 Generation::INITIAL,
-                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
-                0,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
                 OutputActiveGuard::begin(),
             ),
         ));

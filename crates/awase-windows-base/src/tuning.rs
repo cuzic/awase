@@ -21,18 +21,6 @@ pub const TYPING_IDLE_MS: u64 = 500;
 #[measured_macro::measured(pending = true)]
 pub const EXPLICIT_IME_SUPPRESS_MS: u64 = 1500;
 
-/// GJI I/O が静止したと判断するまでの時間 (ms)。
-///
-/// warmup 後に GJI I/O が発生した場合、この時間以上静止したら settled と判断する。
-#[measured_macro::measured(pending = true)]
-pub const GJI_IDLE_MS: u64 = 80;
-
-/// GJI 静止確認後の余裕マージン (ms)。
-///
-/// settled 検出後にさらにこの時間だけ待機してから送信する。
-#[measured_macro::measured(pending = true)]
-pub const POST_IDLE_MARGIN_MS: u64 = 30;
-
 /// GJI I/O を IME ON の証拠として認める判定ウィンドウ (ms)。
 ///
 /// 直近この時間以内に GJI I/O が観測された場合、Chrome 等の broken IMM

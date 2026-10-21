@@ -15,16 +15,9 @@ impl ChromeProbe {
         romaji: &str,
         cold_seq: Generation,
         probe: TsfReadinessProbe,
-        total_max_ms: u64,
         guard: OutputActiveGuard,
     ) -> Self {
-        Self(TsfProbeCoro::new_chrome(
-            romaji,
-            cold_seq,
-            probe,
-            total_max_ms,
-            guard,
-        ))
+        Self(TsfProbeCoro::new_chrome(romaji, cold_seq, probe, guard))
     }
 }
 
@@ -84,7 +77,7 @@ mod tests {
         // `TSF_OBS.gji_monitor_ok` はプロセス全体で共有される static のため、
         // `probe.rs`/`observer.rs`/`literal_detect_fsm.rs`/`probe_fsm.rs` と
         // 共有するロックで直列化する（BUG-65 追補4: この関数だけロックを持たず
-        // 無施錠で書き換えており、`tsf::probe::tests::probe_fallback_waits_total_max_ms`
+        // 無施錠で書き換えており、（旧）`tsf::probe::tests::probe_fallback_waits_total_max_ms`
         // を実機で決定論的に誤検知させていた）。
         let _g = crate::tsf::observer::TSF_OBS_TEST_LOCK
             .lock()
@@ -94,9 +87,9 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         crate::tsf::observer::reset_literal_session_confirmed();
         let guard = OutputActiveGuard::noop_for_test();
-        // total_max_ms=0 → 最初の tick で probe.check_outcome が即 ready になる。
-        let probe = TsfReadinessProbe::new(0, Generation::INITIAL, 0);
-        let mut chrome_probe = ChromeProbe::new("ka", Generation::INITIAL, probe, 0, guard);
+        // 最初の tick で probe.outcome() を読んで進む。
+        let probe = TsfReadinessProbe::new(0, Generation::INITIAL);
+        let mut chrome_probe = ChromeProbe::new("ka", Generation::INITIAL, probe, guard);
 
         let first_actions = chrome_probe.tick(TsfEnvSnapshot {
             gji_active: true,
@@ -144,8 +137,8 @@ mod tests {
     #[test]
     fn chrome_probe_apply_transmit_done_reaches_inner_coro() {
         let guard = OutputActiveGuard::noop_for_test();
-        let probe = TsfReadinessProbe::new(0, Generation::INITIAL, 0);
-        let mut chrome_probe = ChromeProbe::new("ka", Generation::INITIAL, probe, 0, guard);
+        let probe = TsfReadinessProbe::new(0, Generation::INITIAL);
+        let mut chrome_probe = ChromeProbe::new("ka", Generation::INITIAL, probe, guard);
 
         // `detector: Some(..)` を渡した場合、内側の `TsfProbeCoro::apply_transmit_done`
         // は `pending_transmit_done` に積んで `false`（＝まだ Done ではない、次 tick で

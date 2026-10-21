@@ -67,25 +67,19 @@ async fn gji_coro_body(
     ch: Rc<Channel<ProbeTickInput, Vec<ProbeAction>>>,
     romaji: String,
     probe: TsfReadinessProbe,
-    total_max_ms: u64,
     cold_reason: ColdReason,
     ctx: GjiProbeCtx,
 ) {
-    // env は 'initial ループの最初の yield で必ず設定される（loop は常に 1 回以上実行）。
-    let mut env: TsfEnvSnapshot;
-
     // ── Phase 1: GJI probe ───────────────────────────────────────────────────
-    let (nc_fired, gji_settled) = 'initial: loop {
+    let (mut env, nc_fired, gji_settled) = {
         // 最初の step() で input は消費されないため、env は 2 tick 目から更新される。
         // 10ms タイマー駆動の 1 tick ズレは動作に影響しない
         // （`GjiWarmupCoro::new` が construction 時に self-priming tick を行うため、
         //   外部から見た最初の tick は既にこの「捨てられる」1回を消費済みになっている）。
         let input = yield_step(ch.clone(), vec![]).await;
-        env = input.env;
+        let env = input.env;
 
-        let Some(outcome) = probe.check_outcome(total_max_ms) else {
-            continue;
-        };
+        let outcome = probe.outcome();
 
         // probe 完了時の実測値（elapsed/gji_idle/settled）は「予算に対して実際どれだけ
         // かかったか」を事後ログから直接確認するために必要（切り分けログ強化、2026-07-09）。
@@ -112,10 +106,10 @@ async fn gji_coro_body(
                 outcome.elapsed_ms,
                 outcome.settled,
             );
-            break 'initial (false, outcome.settled);
+            (env, false, outcome.settled)
+        } else {
+            (env, true, outcome.settled)
         }
-
-        break 'initial (true, outcome.settled);
     };
 
     // ── Phase 4: transmit plan 決定 ───────────────────────────────────────────
@@ -265,12 +259,10 @@ pub(crate) struct GjiWarmupCoro {
 
 impl GjiWarmupCoro {
     /// `GjiWarmupFsm::new` と同等のシグネチャ。`consecutive` は LiteralDetect 判定用。
-    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         romaji: &str,
         cold_seq: Generation,
         probe: TsfReadinessProbe,
-        total_max_ms: u64,
         cold_reason: ColdReason,
         used_eager_path: bool,
         forces_prepend_f2: bool,
@@ -286,7 +278,7 @@ impl GjiWarmupCoro {
         };
         let romaji = romaji.to_string();
         let coro = StepCoro::new(async move |ch| {
-            gji_coro_body(ch, romaji, probe, total_max_ms, cold_reason, ctx).await;
+            gji_coro_body(ch, romaji, probe, cold_reason, ctx).await;
         });
         Self {
             state: ProbeCoroState::new(coro, cold_seq, "GjiWarmupCoro"),

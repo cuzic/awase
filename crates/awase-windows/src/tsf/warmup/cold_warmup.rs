@@ -15,13 +15,11 @@
 /// `ColdWarmupSequence::run_start` の戻り値。
 ///
 /// 即座に実行できる部分（IMM32 設定等）は完了済み。
-/// 残りの待機はタイマー（TIMER_TSF_PROBE）で `TsfReadinessProbe::check_now` を
-/// ポーリングすることで行う。
+/// 残りの待機はタイマー（TIMER_TSF_PROBE）で `TsfReadinessProbe::outcome` を
+/// 読むことで行う。
 pub(crate) struct WarmupStarted {
-    /// GJI 静止プローブ
+    /// GJI I/O 観測の切り出し
     pub probe: crate::tsf::probe::TsfReadinessProbe,
-    /// probe の最大待機時間 (ms, warmup_sent_ms 起点)。予防的待機を撤去したため常に 0。
-    pub total_max_ms: u64,
     /// cold になった理由（NAMECHANGE フェーズの判断に使用）
     pub cold_reason: crate::output::ColdReason,
 }
@@ -114,9 +112,7 @@ impl<'a> ColdWarmupSequence<'a> {
             probe: crate::tsf::probe::TsfReadinessProbe::new(
                 crate::clock::current_tick_ms(),
                 cold_seq,
-                0,
             ),
-            total_max_ms: 0,
             cold_reason,
         }
     }

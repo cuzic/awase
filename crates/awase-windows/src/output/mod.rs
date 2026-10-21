@@ -1778,8 +1778,7 @@ mod tests {
                 crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                     "x",
                     Generation::INITIAL,
-                    crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
-                    0,
+                    crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
                     OutputActiveGuard::begin(),
                 ),
             ));
@@ -1843,8 +1842,7 @@ mod tests {
             crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                 "x",
                 Generation::INITIAL,
-                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
-                0,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
                 OutputActiveGuard::begin(),
             ),
         ));
@@ -1872,8 +1870,7 @@ mod tests {
             crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                 "x",
                 Generation::INITIAL,
-                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
-                0,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
                 OutputActiveGuard::begin(),
             ),
         ));
@@ -1896,8 +1893,7 @@ mod tests {
             crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                 "x",
                 Generation::INITIAL,
-                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
-                0,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
                 OutputActiveGuard::begin(),
             ),
         ));
@@ -1930,8 +1926,7 @@ mod tests {
             crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                 "x",
                 Generation::INITIAL,
-                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
-                0,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
                 OutputActiveGuard::begin(),
             ),
         ));
@@ -1960,8 +1955,7 @@ mod tests {
             crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                 "x",
                 Generation::INITIAL,
-                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
-                0,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
                 OutputActiveGuard::begin(),
             ),
         ));
