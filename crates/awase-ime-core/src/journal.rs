@@ -216,6 +216,12 @@ pub struct IndicatorGlyphRecord {
     pub collected: bool,
     /// 照合した表(矩形の大きさ別)の見本の数
     pub table_size: u32,
+    /// この窓が字形を belief に使う対象になる段階（`unobserved` / `all` / `none`。ADR-273 D3・Q2。記録だけで belief には入れない）。
+    /// 設定が `observe` のままでも出る（段階 2 の前提の件数を数えるため）。取り込めなかったときは `None`
+    pub would_scope: Option<&'static str>,
+    /// 対象の窓だったとして、柵を通って報告されたか（`reported` / `retracted` / `ignored` / `mozc-window` / `fenced:<理由>`）。
+    /// 記録だけで belief には入れない。対象外の窓・照合できなかったときは `None`
+    pub would_report: Option<&'static str>,
 }
 
 /// ADR-265 段階 1: mozc-readable の共有メモリ（48 バイト、version 2）の読み（挙動を変えない観測。**belief には入れない**）。

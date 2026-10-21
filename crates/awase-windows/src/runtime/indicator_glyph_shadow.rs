@@ -28,11 +28,12 @@ use windows::Win32::Foundation::HWND;
 use crate::focus::class_names::AppImeProfile;
 use crate::observer::indicator_glyph::GlyphReadRequest;
 use crate::state::indicator_glyph::{
-    apply_match, belief_label, classify_label, collect_label, match_feature, AddOutcome,
-    BeliefLabel, Capture, GlyphFeature, GlyphSample, GlyphTable, ProbeOutcome, SampleOrigin,
-    Thresholds,
+    apply_match, belief_label, classify_label, collect_label, glyph_scope_label,
+    glyph_window_in_scope, match_feature, AddOutcome, BeliefLabel, Capture, GlyphFeature,
+    GlyphSample, GlyphScopeFacts, GlyphTable, ProbeOutcome, SampleOrigin, Thresholds,
 };
 use crate::state::indicator_glyph_store::{EnvFingerprint, GlyphSampleFile};
+use crate::state::probe_admission::FocusFence;
 
 /// 見本の保存ファイル名（exe と同じディレクトリ。`cache.toml` とは別ファイル。ADR-261 決定 2）。
 const SAMPLES_FILENAME: &str = "glyph_samples.json";
@@ -49,6 +50,8 @@ struct Pending {
     /// 依頼したときの前面窓（結果が返ったときに前面窓が変わっていれば古いので捨てる）
     foreground: isize,
     delay_ms: u32,
+    /// 依頼した時点のフォーカスの同一性（epoch + hwnd。1 回目の取り込みの報告の基準。ADR-273 D1 の M8）
+    fence: FocusFence,
 }
 
 /// 同じ窓の前回（待ちが短い方）の取り込み。収集の判断（字形が落ち着いているか）に使う。
@@ -66,10 +69,10 @@ pub(super) struct IndicatorGlyphShadow {
     pending: VecDeque<Pending>,
     last_trigger: Option<Instant>,
     last_capture: Option<LastCapture>,
-    /// 1 回目（待ちが短い方）の取り込みの時点の（前面窓、フォーカスの世代）。2 回目の取り込みで、間にフォーカスが動いていないかを見る
-    /// （belief へ報告するときの `FenceCtx::focus_gen_unchanged`。前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点では
-    /// なく、追跡が追いついた後の 1 回目の時点を基準にする）
-    first_read_epoch: Option<(isize, u64)>,
+    /// 1 回目（待ちが短い方）の取り込みを処理した時点の（前面窓、フォーカスの同一性〔epoch + hwnd〕）。2 回目の取り込みの報告の基準
+    /// （前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点ではなく、追跡が追いついた後の 1 回目の時点を基準にする）。
+    /// 新しい依頼のたびに消す（1 回目が取り込めなかったときは基準が無く、2 回目は報告しない）
+    baseline: Option<(isize, FocusFence)>,
     /// 見本の表（環境指紋別。矩形の大きさ〔DPI に比例〕・背景の明暗・IME の種類・取り込み方式の版）。内蔵の共通の見本で始め、
     /// 保存済みの同じ環境の見本を足す
     tables: HashMap<EnvFingerprint, GlyphTable>,
@@ -88,7 +91,7 @@ impl IndicatorGlyphShadow {
             pending: VecDeque::new(),
             last_trigger: None,
             last_capture: None,
-            first_read_epoch: None,
+            baseline: None,
             tables: HashMap::new(),
             store: GlyphSampleFile::default(),
             store_path: None,
@@ -158,29 +161,37 @@ impl super::Runtime {
         &self.indicator_glyph.counters
     }
 
-    /// 字形を belief に使ってよい窓・設定か（ADR-273 D3・Q2・R1）。**設定の実効の段階が `unobserved` 以上**のときだけ（現状は
-    /// `EvidenceSource::ui_max_level()` が `Observe` なので、実効の段階は上がらず、ここは常に偽）。
-    ///
-    /// 窓: 入力中継ツールと実質 TSF ネイティブの窓は常に除外。mozc-readable の共有メモリがある窓も除外（そちらが High で読める。
-    /// 共有メモリが割れている間に字形が belief を決めると、ADR-268 が避けた向きへ倒れる。R1）。`unobserved` は実測学習で降格された窓
-    /// （NULL 型）だけ、`all` は静的に `Standard` のプロファイルの窓（降格したものを含む。静的な `Imm32Unavailable` は除外）。
-    fn glyph_belief_in_scope(&self) -> bool {
-        use awase::config::EvidenceLevel;
-        let level = self.effective_glyph_level().unwrap_or(EvidenceLevel::Off);
-        if level < EvidenceLevel::Unobserved {
-            return false;
-        }
+    /// 窓の種類の事実（D3・Q2・R1。判定は核の純粋関数 `glyph_window_in_scope`・`glyph_scope_label`）。
+    fn glyph_scope_facts(&self) -> GlyphScopeFacts {
         let profile = self.platform.current_app_profile();
-        if matches!(profile, AppImeProfile::InputRelay)
-            || profile.is_effectively_tsf_native(self.platform.focus.class_name())
-            || self.mozc_shm.block_present()
-        {
-            return false;
+        GlyphScopeFacts {
+            // 実効のプロファイル（学習で降格した後の値。降格した窓は `demoted_by_learning` の側で拾う）
+            effective_standard: profile == AppImeProfile::Standard,
+            demoted_by_learning: self.platform.focus.is_demoted_by_learning(),
+            tsf_native: profile.is_effectively_tsf_native(self.platform.focus.class_name()),
+            input_relay: matches!(profile, AppImeProfile::InputRelay),
+            mozc_block: self.mozc_shm.block_present(),
         }
-        if level == EvidenceLevel::All {
-            profile == AppImeProfile::Standard
+    }
+
+    /// 字形を belief に使ってよい窓・設定か（ADR-273 D3・Q2・R1）。設定の実効の段階が `unobserved` 以上のときだけ（現状は
+    /// `EvidenceSource::ui_max_level()` が `Observe` なので実効の段階は上がらず、ここは常に偽）。窓の判定は核の純粋関数。
+    fn glyph_belief_in_scope(&self) -> bool {
+        let level = self
+            .effective_glyph_level()
+            .unwrap_or(awase::config::EvidenceLevel::Off);
+        glyph_window_in_scope(level, self.glyph_scope_facts())
+    }
+
+    /// 報告の基準となる同一性。1 回目は依頼の時点、2 回目は 1 回目を処理した時点（同じ前面窓のときだけ）。無ければ報告しない。
+    fn glyph_read_fence(&self, pending: &Pending, is_second: bool) -> Option<FocusFence> {
+        if is_second {
+            self.indicator_glyph
+                .baseline
+                .filter(|(f, _)| *f == pending.foreground)
+                .map(|(_, fence)| fence)
         } else {
-            self.platform.focus.is_demoted_by_learning()
+            Some(pending.fence)
         }
     }
 
@@ -189,23 +200,14 @@ impl super::Runtime {
     fn report_glyph_to_belief(
         &mut self,
         reading: crate::state::indicator_glyph::LabelReading,
-        foreground: isize,
-        is_second: bool,
+        read_fence: FocusFence,
     ) {
         if !self.glyph_belief_in_scope() {
-            self.indicator_glyph.first_read_epoch = None;
             return;
         }
-        let epoch = self.platform_state.focus.focus_epoch;
-        let focus_gen_unchanged = if is_second {
-            self.indicator_glyph.first_read_epoch == Some((foreground, epoch))
-        } else {
-            self.indicator_glyph.first_read_epoch = Some((foreground, epoch));
-            true
-        };
         let outcome = self.platform_state.ime.report_indicator_glyph(
             reading,
-            focus_gen_unchanged,
+            read_fence,
             self.lang_detect_focus_in_sync(),
             crate::state::TickMs(crate::hook::current_tick_ms()),
         );
@@ -246,10 +248,12 @@ impl super::Runtime {
             self.indicator_glyph.pending.push_back(Pending {
                 foreground,
                 delay_ms: u32::from(delay),
+                fence: self.platform_state.ime.focus_fence(),
             });
         }
         self.indicator_glyph.last_trigger = Some(now);
         self.indicator_glyph.last_capture = None;
+        self.indicator_glyph.baseline = None;
         tracing::debug!("[indicator-glyph] foreground changed → glyph reads requested");
     }
 
@@ -357,11 +361,32 @@ impl super::Runtime {
             };
         }
         if let Some(reading) = glyph_reading {
-            self.report_glyph_to_belief(
-                reading,
-                pending.foreground,
-                pending.delay_ms == u32::from(READ_DELAYS_MS[1]),
-            );
+            let is_second = pending.delay_ms == u32::from(READ_DELAYS_MS[1]);
+            if let Some(read_fence) = self.glyph_read_fence(&pending, is_second) {
+                // 設定が observe のままでも、対象の窓だったとして柵を通るかを記録する（belief には入れない）。段階 2 の前提の件数。
+                let facts = self.glyph_scope_facts();
+                let scope = glyph_scope_label(facts);
+                record.would_scope = Some(scope);
+                if scope != "none" {
+                    record.would_report = Some(
+                        self.platform_state
+                            .ime
+                            .preview_indicator_glyph(
+                                reading,
+                                read_fence,
+                                self.lang_detect_focus_in_sync(),
+                                crate::state::TickMs(crate::hook::current_tick_ms()),
+                            )
+                            .label(),
+                    );
+                }
+                self.report_glyph_to_belief(reading, read_fence);
+            }
+            if !is_second {
+                // 2 回目の基準: 追跡が追いついた後の、1 回目を処理した時点の同一性。
+                self.indicator_glyph.baseline =
+                    Some((pending.foreground, self.platform_state.ime.focus_fence()));
+            }
         }
         self.indicator_glyph.counters.record(&record);
         self.platform_state

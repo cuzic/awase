@@ -148,6 +148,12 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 - 対象の窓(`glyph_belief_in_scope`): 入力中継ツール・実質 TSF ネイティブの窓・**mozc-readable の共有メモリがある窓(R1)**は除外。`unobserved` は実測学習で降格された窓(D3)、`all` は静的に `Standard` の窓(Q2)。
 - **R2・R6**: `belief_is_decided_by_glyph`(hub の層の最終的な理由。`IntentStore` の上書きを字形由来と数えない)が真のとき、見本のラベルを付けない(収集も一致の記録もしない)。
 - `FenceCtx::focus_gen_unchanged`: 前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点でなく**1 回目(0.9 秒後)の取り込みの時点の(前面窓、フォーカスの世代)を基準**にし、2 回目(2.5 秒後)で変わっていれば捨てる。
+- **窓の述語は核の純粋関数**(`glyph_window_in_scope`・`glyph_scope_label`、Linux の単体テストで D3・Q2 の表を固定)。`current_app_profile()` は降格後の実効値を返すので、`all` は「実効 `Standard` **または**降格された窓」とする(降格は `Standard` からしか起きない。静的な `Imm32Unavailable` だけが除外される)。`all` は `unobserved` の対象を含む(Opus E1)。
+- **窓の同一性は取り込みの時点の `FocusFence`(epoch + hwnd)**: 依頼の時点(1 回目の基準)と 1 回目を処理した時点(2 回目の基準)の `ImeStateHub::focus_fence()` を `report_indicator_glyph` に渡し、今と違えば捨てる。同じプロセスの中の別の欄への移動(hwnd)も見る。`from_glyph` には報告の時点の fence でなく、この読みの fence を付ける(Opus E2)。1 回目が取り込めなかったときは基準が無く、2 回目は報告しない。
+- **`Miss` の取り消し**は `TooFar`/`Ambiguous`(字形が表に無い状態に変わった)で、窓の判定を通ったときだけ。画像の不具合・一様な画像・表が空は何もしない。
+- **R1 は二重**: 殻は共有メモリのブロックがある窓を除外し、hub も `MozcShm` の観測がある窓(失効したものを含む)では報告しない(遷移の穴)。
+- **`observe` のままでも件数を数える**: journal の `IndicatorGlyphRecord` に `would_scope`(`unobserved`/`all`/`none`)と `would_report`(`reported`/`retracted`/`ignored`/`mozc-window`/`fenced:…`)を出す(`preview_indicator_glyph`。belief には入れない)。段階 2 の前提(D2 の (a)〜(e) の件数)の材料。
+- 未決: 実行時に TSF と学習した窓(`injection_mode_store.has_tsf`)の扱い(Q2)。R3(HWND キャッシュ経由の R2 の穴)は Q5 の実装時に一緒に閉じる。
 - 残る入口条件(`ui_max_level` を上げる前): 一太郎(NULL 型)の確認(段階 2)、D2 の(a)〜(e)の件数を shadow の journal で数える、R3(HWND キャッシュ)・R4(hwnd の意味)の扱いを決める。
 
 ### 配線 PR の注意(Opus レビュー、2026-10-20)
