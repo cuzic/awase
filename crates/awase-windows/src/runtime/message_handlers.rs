@@ -13,7 +13,6 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
 
 use crate::focus::FocusKind;
 use crate::hook;
@@ -1101,47 +1100,6 @@ pub(crate) unsafe fn handle_wm_inputlangchange(app: &mut Runtime) {
     app.invalidate_engine_context(ContextChange::InputLanguageChanged);
     app.refresh_ime_state_cache();
     check_keyboard_layout_on_change();
-}
-
-/// WM_FOCUS_KIND_UPDATE ハンドラ
-pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usize, lparam: isize) {
-    let kind_u8 = wparam as u8;
-    let app_kind_u8 = (wparam >> 8) as u8;
-    let result_hwnd = HWND(lparam as *mut _);
-    let kind = FocusKind::from_u8(kind_u8);
-
-    let mut info = GUITHREADINFO {
-        cbSize: size_of::<GUITHREADINFO>() as u32,
-        ..Default::default()
-    };
-    // ── UIA 非同期分類の適用は無効化されている（BUG-12）────────────────────────
-    //
-    // この handler は BUG-09（post_to_main_thread 誤配送）の修正まで一度も実行された
-    // ことがなく、配送を直した途端に 2 段階の実害が露出した:
-    //
-    // 1. キャッシュキー取り違え（BUG-11）: 遅延した platform.focus からキーを取り、
-    //    Alt+Tab メニューの NonText を Edge のキーでキャッシュ → Edge 永久 NonText。
-    // 2. キー粒度の構造的不一致（BUG-12、BUG-11 修正後も再発 2026-07-06T05:28 実機）:
-    //    帰属を result_hwnd から正しく導出しても、ブラウザ（Chrome_WidgetWin_1）の
-    //    focus kind は「ウィンドウ内のどの要素にフォーカスがあるか」で毎秒変わる。
-    //    ページ本文フォーカス時の**正しい** NonText を (pid, class) でキャッシュした
-    //    瞬間、テキスト欄に移っても再分類イベントが来ない（ウィンドウ内クリックは
-    //    フォーカス変更として観測できない）ため Edge 全体が永久 NonText になり、
-    //    全キーがエンジン素通し（「IME ON・Engine OFF」症状）。
-    //
-    // UIA 結果を安全に適用するには hwnd 粒度 + ウィンドウ内フォーカス要素の追跡
-    // （UIA FocusChanged イベント購読等）が必要で、(pid, class) キャッシュ設計とは
-    // 両立しない。それまでは配送修正前の実績ある挙動（結果は届くが適用しない）に
-    // 意図的に戻す。sync 分類（既知クラス・WS_EX_NOIME・MSAA）は従来どおり機能する。
-    let _ = app;
-    if GetGUIThreadInfo(0, &raw mut info).is_ok() && info.hwndFocus != result_hwnd {
-        tracing::debug!("UIA result for stale hwnd, ignoring");
-    } else {
-        tracing::debug!(
-            "UIA async result received (kind={kind:?} app_kind_u8={app_kind_u8}) — \
-             BUG-12 により適用せずログのみ"
-        );
-    }
 }
 
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_TOGGLE)

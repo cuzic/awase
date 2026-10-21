@@ -2124,14 +2124,6 @@ impl Runtime {
         }
     }
 
-    /// UIA ワーカースレッドへの送信チャネルを登録する。
-    pub(crate) fn set_uia_sender(
-        &mut self,
-        tx: std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>,
-    ) {
-        self.platform.set_uia_sender(tx);
-    }
-
     /// システムトレイのバルーン通知を表示する。
     pub(crate) fn show_tray_balloon(&mut self, title: &str, text: &str) {
         self.platform.tray.show_balloon(title, text);

@@ -33,8 +33,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetCursorPos, GetWindowRect, EVENT_SYSTEM_MENUPOPUPSTART, WINEVENT_OUTOFCONTEXT,
 };
 
-use crate::focus::uia::SendableHwnd;
 use crate::state::indicator_menu::{classify_menu, rect_contains, MenuIme, MenuItem, MenuOutcome};
+use crate::win32::SendableHwnd;
 
 /// 読み取りワーカーへの依頼。
 #[derive(Clone, Copy, Debug)]

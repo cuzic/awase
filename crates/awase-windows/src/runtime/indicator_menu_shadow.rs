@@ -13,9 +13,9 @@ use std::time::Instant;
 
 use windows::Win32::Foundation::HWND;
 
-use crate::focus::uia::SendableHwnd;
 use crate::observer::indicator_menu::{cursor_over_taskbar, is_popup_menu_window, MenuReadRequest};
 use crate::state::indicator_menu::{may_request_read, menu_ime_for, MenuIme, MenuOutcome};
+use crate::win32::SendableHwnd;
 
 /// 結果待ちの依頼に付けておく、メニューを開いた時点の文脈（結果が返ったら journal の記録に添える）。
 struct Pending {

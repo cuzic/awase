@@ -13,6 +13,24 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, PostMessageW, GUITHREADINFO,
 };
 
+/// `HWND` を `Send` 可能にするラッパー。
+///
+/// `HWND` は `*mut c_void` を含むため `Send` を実装していないが、ウィンドウハンドルの値自体はスレッド間で
+/// 安全に受け渡せる。ワーカースレッドへの HWND 送信専用（入力インジケーターの右クリックメニューの読み取り
+/// ワーカーなど）。以前は `focus/uia.rs`（UIA 非同期の分類ワーカー）にあったが、そのワーカーを撤去した
+/// （ECRS F1）ため、汎用の Win32 補助としてここに置く。
+#[derive(Clone, Copy)]
+pub struct SendableHwnd(pub HWND);
+
+impl std::fmt::Debug for SendableHwnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SendableHwnd").finish()
+    }
+}
+// Safety: HWND の値（ポインタ値）はスレッド間で安全に共有できる。ウィンドウハンドルはプロセス内でグローバルに
+// 有効であり、別スレッドから参照しても問題ない。
+unsafe impl Send for SendableHwnd {}
+
 /// タイムアウト付きで任意の処理をワーカースレッドで実行する。
 ///
 /// `win32_async::run_with_timeout` の re-export。
@@ -92,7 +110,7 @@ pub fn foreground_scope() -> ForegroundScope {
 /// ワーカースレッド（gji-io-monitor / UIA worker 等）から呼ぶとメッセージが誰にも
 /// 処理されず消失していた。これにより `WM_IME_KIND_CHANGED` が main に一度も届かず、
 /// MS-IME 環境でも warmup 戦略がデフォルトの GjiFsm のまま走り続けた
-/// （docs/known-bugs.md BUG-09）。`WM_FOCUS_KIND_UPDATE`（UIA worker 発）も同罪だった。
+/// （docs/known-bugs.md BUG-09）。`WM_FOCUS_KIND_UPDATE`（UIA worker 発、ECRS F1 で撤去）も同罪だった。
 ///
 /// `engine_hwnd()` がまだ `None` の起動最初期だけは互換フォールバックとして
 /// `PostMessageW(None, ..)` を使う。この分岐は BUG-09 と同型の罠を持つため、

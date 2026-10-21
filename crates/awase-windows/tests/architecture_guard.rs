@@ -2449,47 +2449,6 @@ fn applied_direct_assignments_are_accounted_for() {
 // `note_force_on_attempt`/`ForceOnRetryState` を丸ごと撤去したため、このテストが
 // 固定していた「呼び出し箇所数1」という前提自体が意味を失った。
 
-/// `handle_wm_focus_kind_update`（UIA 非同期分類結果のハンドラ、BUG-12 対策）が
-/// belief/state への書き込みを一切行わないことを固定する。
-///
-/// この handler は UIA の非同期分類結果を受け取るが、hwnd 粒度とウィンドウ内
-/// フォーカス要素追跡の設計が未解決のため、結果を意図的に破棄しログのみに
-/// とどめている（`let _ = app;` で書き込み手段自体を放棄、関数内コメント参照）。
-/// この no-op はコンパイラで強制されておらず「コメントのみの防御」であるため、
-/// 将来この handler に belief 書き込みロジックが足された場合、GjiFsm の
-/// `CompositionReset`/`NativeF2Consumed`（BUG-33 追補3・4）と同型の「弱い
-/// 非同期シグナルだけで belief を破壊し確定済み文字が消える」バグが構造的に
-/// 再発しうる。それを検知するため、この関数の本体に belief/state 書き込みと
-/// 思われる呼び出しパターンが一切出現しないことを固定する。
-#[test]
-fn uia_async_focus_kind_handler_does_not_write_belief() {
-    let path = "src/runtime/message_handlers.rs";
-    let content = read_crate_file(path);
-    let production = production_code_only(&content);
-    let body = extract_fn_body(production, "fn handle_wm_focus_kind_update");
-    for forbidden in [
-        "dispatch_event(",
-        "reduce(",
-        "ImeEvent::",
-        ".shadow_model.",
-        "force_guards",
-        ".belief.",
-        "learn_injection_mode",
-        "update_injection_mode",
-        "gji_on_",
-    ] {
-        assert!(
-            !body.contains(forbidden),
-            "{path} の handle_wm_focus_kind_update 内に belief/state 書き込みと \
-             思われるパターン `{forbidden}` が見つかりました。UIA 非同期結果は \
-             BUG-12 により意図的に適用しない設計です（hwnd 粒度・ウィンドウ内 \
-             フォーカス要素追跡の設計が未解決のため）。意図的に適用するよう \
-             変更したのであれば、関数内コメントの課題が解決されたことを確認した \
-             上でこのテストの期待値を更新してください。"
-        );
-    }
-}
-
 /// 早期 return 分岐の開始マーカー。`ir_apply_drift_correction`（FCIS F4 で observe→`decide_drift_plan`→
 /// execute に分けた後の execute）の中で、計画の `DriftStep` を分岐する `match act.step { ... }` の先頭。
 /// 旧 `match act_policy {`（`FeedbackPolicy` の分岐）に相当する。`Blind`/`GiveUp`・`Read`/`Confirmed` の
@@ -6654,7 +6613,6 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
         "runtime/ime_coordinator.rs",
         "focus/classifier.rs",
         "focus/classify.rs",
-        "focus/uia.rs",
         "focus/msaa.rs",
         "runtime/focus_tracking.rs",
         "state/conv_mode.rs",
