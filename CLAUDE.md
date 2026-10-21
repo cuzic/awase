@@ -94,6 +94,10 @@ crates/awase-windows-core/    OS-independent core of awase-windows (ADR-229 D4):
                               ADR-274: being split into role-named cores (leaves first); the list of core crates is
                               `tools/core-split/core-crates.txt` (wiring checked by `tools/core-split/check_wiring.py`,
                               layer direction by `tools/core-split/deps.py --check`, both in the CI `core-layers` job).
+crates/awase-windows-base/    OS-independent core base (ADR-274 stage 2): tuning, vk, keymap, state/{generation,event_origin,
+                              hub_clock,foreground_scope,injection_mode,layout_language,ime_kind,focus_gen,app_suppression,
+                              scoped_latch} + TickMs, focus/{kinds,class_names}, tsf/converter_target. No dependency on other
+                              core crates; every other core crate sits above it. Same relative paths as before the move.
 crates/awase-hook-core/       OS-independent core: hook / modifier-key / half-width-alnum toggle state (ADR-274 stage 1):
                               state/{hook_state,hook_watchdog,alt_impersonation,foreign_modifier,win_key_guard,
                               half_width_alnum,half_width_resume_hold}. Same `src/state/` relative paths as before the
@@ -210,7 +214,7 @@ a map of what to expect, not a substitute for reading them when the relevant are
   checkouts, not the same working tree.
 - `experiment-logging.md` — revert commits touching IME control/warmup/focus/key-selection must
   document the observed failure (app, IME, repro) in the commit body.
-- `tuning-constants.md` — changes to timing constants in `crates/awase-windows-core/src/tuning.rs` must
+- `tuning-constants.md` — changes to timing constants in `crates/awase-windows-base/src/tuning.rs` must
   cite a real measurement (ms) in the commit body, not "increase until it works."
 - `fix-requires-evidence.md` — fixes in the warmup/focus/belief/conv/key-selection "reincidence
   families" need either a regression test or a new `docs/known-bugs/BUG-NNN.md` entry.

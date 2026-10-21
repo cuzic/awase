@@ -2,23 +2,7 @@
 // unreachable_pub lint はこの再エクスポートパターンを認識できないため抑制する。
 #![allow(unreachable_pub)]
 
-// ── TickMs ─────────────────────────────────────────────────────────────────────
-
-/// `GetTickCount64` 由来のミリ秒タイムスタンプを表すニュータイプ。
-///
-/// state/ 層が `hook::current_tick_ms()` を直接呼び出す代わりに、
-/// 呼び出し元（runtime 層）からタイムスタンプを注入するために使う。
-/// これにより state/ が hook 実装に依存しない純粋な型になる。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, serde::Serialize)]
-pub struct TickMs(pub u64);
-
-impl TickMs {
-    /// `self - base` を飽和演算で計算して返す。
-    #[must_use]
-    pub const fn saturating_sub(self, base: u64) -> u64 {
-        self.0.saturating_sub(base)
-    }
-}
+pub use awase_windows_base::state::*;
 
 // ── 純粋サブモジュール（全プラットフォーム）──────────────────────────────────────
 pub mod belief;
@@ -29,13 +13,6 @@ pub use conv_mode::ConvModeAuthority;
 pub use conv_mode::ConvModeMgr;
 pub use conv_mode::{ConvActuationOutcome, ConvModeTarget, ConvMutationReason};
 
-// ADR-106 決定1: `ApplyGeneration` 専用アロケータ。`ImeEventLog.next_seq` から
-// 独立させ、fence 用の識別子が別目的の数を借用する問題（原因A）を解消する。
-// ungated（Linux で `allocate()` の単調増加・折り返し・wire エンコード往復を
-// 全数テストするため）。`ImeEvent`/`ImeTransition`（ungated）が `ApplyGeneration`
-// を保持するため非 Windows でも使用される。
-pub mod generation;
-pub use generation::{ApplyGeneration, GenerationAllocator};
 pub mod app_ime_policy;
 // ADR-264 段階 1: タスクバーの入力インジケーターの右クリックメニューから現在の入力モードを読む純粋な判定
 // (IME ごとの表での完全一致・Observed/Inferred・メインスレッドへ渡す固定長の符号化)。Win32 を呼ばない(Linux でテストする)。
@@ -45,24 +22,9 @@ pub mod indicator_glyph_store;
 pub mod indicator_menu;
 // ADR-265 段階 1: mozc-readable の共有メモリ(48 バイト、version 2)の解釈。受け入れ条件(magic・version・seq・pid・active)と
 // journal の記録への変換。Win32 を呼ばない(Linux でテストする)。belief には入れない。
-pub mod mozc_shm;
-// ADR-229 W-a: await をまたぐ失効判定に使う生の `u32` 世代 2 種(`Output::ime_mode_focus_gen`・
-// `shift_conv_guard_gen`)の型。ungated(Linux で `next`/比較をテストする)。
-pub mod focus_gen;
-// FCIS P1: 純粋なデータ型を ungated へ移したもの(元の場所から pub use で再公開)。
-pub mod foreground_scope;
-pub mod ime_update;
-// hook.rs (#[cfg(windows)]) の唯一の呼び出し元。alt_impersonation と同じ
-// 「純粋判定を Linux でテストできるようにする」移設パターン。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod app_suppression;
-// ADR-223 段階 0: 入力言語(HKL)の判定(純粋関数。Win32 を呼ばないので Linux でもテストできる)。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod layout_language;
-// ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
-// 配線はまだ無い（モジュール冒頭のスコープ節参照）。
-pub mod event_origin;
 pub mod ime_actuation;
+pub mod ime_update;
+pub mod mozc_shm;
 // ADR-208 L0: `runtime/transport.rs::PhysicalKeyDisposition::plan` の本体（配送判断の核）を挙動を変えずに
 // 移した。ungated にして、`explicit_press` の全列挙テストが本番と同じ判断コードを Linux で呼べるようにする。
 pub mod physical_disposition;
@@ -134,10 +96,6 @@ pub mod mode_key_pass;
 // ADR-205: 外部注入 IME キー直後の監視窓（`ImeStateHub::follow_external_change` からしか呼ばれない純粋な状態機械）。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod external_change_watch;
-// ADR-089 §2.8「K 軸の型」。`caps(p, k)` の導入（Phase C）に先立ち、Linux で
-// 全数テストできる ungated な IME 種別を置く。変換は `tsf/observer.rs` の
-// `From<ActiveImeKind>` 1 箇所のみ。
-pub mod ime_kind;
 // FCIS F1: `runtime/ime_refresh.rs::ir_decide_read_strategy` の純粋な核（読み取り方針の決定と理由）。
 pub mod ime_model;
 pub mod ime_read_strategy;
@@ -158,12 +116,7 @@ pub mod state_dependent_key_warning;
 // ADR-087 Phase 2'/3 試験実装。intent_store と同じ ungated・未配線パターン。
 pub mod open_warrant;
 pub use ime_model::AppliedImeState;
-pub mod hub_clock;
 pub mod input_barrier;
-// output/types.rs から移設（InjectionHint 依存の From 実装のみ output/ に残す）。
-// 唯一の ungated 呼び出し元は tsf::gji_fsm。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod injection_mode;
 pub mod observation_store;
 // 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
 // runtime/message_handlers.rs::deliver_key_event は #[cfg(windows)] のため
@@ -172,7 +125,6 @@ pub mod observation_store;
 pub mod keymap_latch;
 pub mod late_keymap_plan;
 pub mod probe_admission;
-pub mod scoped_latch;
 // フォーカス変更時に belief を applied へ写してよいかの可否（純粋。ADR-262 段階 A）。本番の呼び出し元 runtime/ は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod applied_mirror_plan;
 pub mod transition;

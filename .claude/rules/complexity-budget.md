@@ -14,7 +14,7 @@ E1が定める規約を文書化したものだが、発効条件（下記「発
   宣言する各チョークポイント（`set_ime_open`・`send_input_safe`・`actuate_ime_control`・
   `probe_ime_control`・`apply_ime_open_with_view`・`apply_sync`・`dispatch_set_open`。
   旧 `send_ime_control` は `actuate_`/`probe_` に分かれた。2026-10-13 時点のリスト）の許可呼び出し元リスト。
-- **tuning定数数**: `crates/awase-windows-core/src/tuning.rs`の`pub const`定数
+- **tuning定数数**: `crates/awase-windows-base/src/tuning.rs`の`pub const`定数
   （`#[measured_macro::measured(...)]`が必須、[tuning-constants](./tuning-constants.md)
   参照）。
 
