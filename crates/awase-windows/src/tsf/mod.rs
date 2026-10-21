@@ -87,6 +87,22 @@ pub(crate) fn read_mozc_compose(
     }
 }
 
+/// 対象のスレッドの共有メモリから、キーボードフォーカスの時刻（version 5）を読む。診断用。読めなければ `None`。
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub(crate) fn read_mozc_focus_ticks(
+    thread_id: u32,
+    process_id: u32,
+) -> Option<crate::state::mozc_shm::FocusTicks> {
+    #[cfg(windows)]
+    {
+        crate::observer::mozc_shm::read_focus_ticks(thread_id, process_id)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// 窓のスレッドが `timeout_ms` 以内に応答するか。非 Windows では常に応答する。
 #[cfg_attr(not(windows), allow(unused_variables))]
 pub(crate) fn window_thread_responds(hwnd_addr: usize, timeout_ms: u32) -> bool {

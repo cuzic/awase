@@ -71,6 +71,19 @@ impl MozcComposeCheckFsm {
         }
     }
 
+    /// 診断: TIP がキーを受け取る側になった時刻などを、送信の時刻からの差で出す（mozc-readable の version 5）。
+    fn log_focus_ticks(&self) {
+        if let Some(ticks) =
+            crate::tsf::read_mozc_focus_ticks(self.target.thread_id, self.target.process_id)
+        {
+            tracing::info!(
+                "[mozc-focus] cold={} relative to the send: {}",
+                self.target.cold_seq.value(),
+                ticks.describe_relative_to(self.sent_ms)
+            );
+        }
+    }
+
     /// 宛先の窓が変わったか（段の宛先と、この tick の宛先から、既存の回収と同じ判断）。
     fn target_moved(&self, now: Option<StageOrigin>) -> bool {
         match (self.origin, now) {
@@ -169,6 +182,10 @@ impl TickableFsm for MozcComposeCheckFsm {
             ComposeReading::Block(b) => (b.key_seq, b.composition_key_seq),
             ComposeReading::Unreadable => (0, 0),
         };
+        // 診断（判断には使わない）: 確認の結論が出たとき、キーボードフォーカスの時刻を送信の時刻と並べて出す。
+        if matches!(verdict, ComposeVerdict::Confirmed | ComposeVerdict::Literal) {
+            self.log_focus_ticks();
+        }
         match verdict {
             ComposeVerdict::Pending => {}
             ComposeVerdict::Confirmed => {
