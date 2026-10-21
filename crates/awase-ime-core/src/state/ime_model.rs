@@ -412,13 +412,16 @@ impl ImeModel {
     ) -> GlyphWouldDecide {
         let before = self.resolve_open_at(now).value;
         let mut sim = self.clone();
-        sim.reduce(&ImeEventEnvelope {
-            time: EventTime {
-                seq: 0,
-                monotonic: now,
-                tick_ms,
-            },
-            event: ImeEvent::ObserverReported(glyph),
+        // 試算の reduce が本物のログ（`[key-effect-miss]` など、起きていない出来事）を出さないよう、購読者を外して通す。
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+            sim.reduce(&ImeEventEnvelope {
+                time: EventTime {
+                    seq: 0,
+                    monotonic: now,
+                    tick_ms,
+                },
+                event: ImeEvent::ObserverReported(glyph),
+            });
         });
         let after = sim.resolve_open_at(now);
         GlyphWouldDecide {
