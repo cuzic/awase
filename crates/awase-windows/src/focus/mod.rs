@@ -31,5 +31,3 @@ pub mod msaa;
 pub mod probe;
 #[cfg(windows)]
 pub(crate) mod tracker;
-#[cfg(windows)]
-pub mod uia;

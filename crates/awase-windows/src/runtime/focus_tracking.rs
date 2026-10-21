@@ -96,10 +96,6 @@ impl Runtime {
         }
         if process_changed {
             self.on_focus_process_changed(&classified, prev_pid, &prev);
-        } else if classified.kind == FocusKind::Undetermined {
-            self.platform
-                .focus
-                .try_send_uia(crate::focus::uia::SendableHwnd(classified.hwnd));
         }
         process_changed
     }
@@ -854,12 +850,6 @@ impl Runtime {
                  (new window may have different IME state)"
             );
             self.platform_state.ime.reset_detect_state();
-        }
-
-        if classified.kind == FocusKind::Undetermined {
-            self.platform
-                .focus
-                .try_send_uia(crate::focus::uia::SendableHwnd(classified.hwnd));
         }
 
         // フォーカス復帰後 resync（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）: TsfNative は

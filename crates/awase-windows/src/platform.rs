@@ -1386,12 +1386,4 @@ impl WindowsPlatform {
         self.focus
             .clear_imm_pending_unavailable(process_name, class_name);
     }
-
-    /// UIA ワーカーへの送信チャネルを設定する。
-    pub fn set_uia_sender(
-        &mut self,
-        sender: std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>,
-    ) {
-        self.focus.set_uia_sender(sender);
-    }
 }

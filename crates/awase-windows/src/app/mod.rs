@@ -30,9 +30,9 @@ use crate::vk::VkCodeExt;
 use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
     WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST,
-    WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED,
-    WM_INDICATOR_GLYPH_READ, WM_INDICATOR_MENU_READ, WM_KANA_LOCK_WARNING_CHANGED,
-    WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG, WM_RESUME_HOLD_DONE,
+    WM_EXECUTE_EFFECTS, WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED, WM_INDICATOR_GLYPH_READ,
+    WM_INDICATOR_MENU_READ, WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
+    WM_RELOAD_CONFIG, WM_RESUME_HOLD_DONE,
 };
 
 // ── 定数 ──
@@ -612,12 +612,6 @@ pub(crate) fn dispatch_engine_message(
         }
         WM_INPUTLANGCHANGE => {
             let _ = with_app(|app| unsafe { message_handlers::handle_wm_inputlangchange(app) });
-        }
-        WM_FOCUS_KIND_UPDATE => {
-            let (wparam, lparam) = (wparam.0, lparam.0);
-            with_app_or_repost_with(WM_FOCUS_KIND_UPDATE, wparam, lparam, |app| unsafe {
-                message_handlers::handle_wm_focus_kind_update(app, wparam, lparam);
-            });
         }
         // ADR-264 段階 1: 入力インジケーターの右クリックメニューの読み取りワーカーの結果（記録のみ。挙動を変えない）。
         WM_INDICATOR_MENU_READ => {

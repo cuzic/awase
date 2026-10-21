@@ -3,8 +3,6 @@
 //! `WindowsPlatform` が散在して持っていた 6 つのフォーカス関連フィールドを
 //! `FocusTracker` に移動し、意味のある操作単位で API を提供する。
 
-use std::sync::mpsc::Sender;
-
 use crate::focus::FocusKind;
 use awase::engine::InputModeState;
 
@@ -14,18 +12,16 @@ use crate::focus::classifier::{
 };
 use crate::focus::current::CurrentFocus;
 use crate::focus::hwnd_cache::{HwndImeCache, HwndImeSnapshot};
-use crate::focus::uia::SendableHwnd;
 
 /// フォーカス追跡に関わる全状態を集約する構造体。
 ///
 /// `CurrentFocus`（ウィンドウ情報）、判定キャッシュ、IME キャッシュ、
-/// IMM 能力学習ストア、UIA 送信チャネルを一括で保持する。
+/// IMM 能力学習ストアを一括で保持する。
 pub(crate) struct FocusTracker {
     /// 現在フォーカス中のウィンドウ情報（pid / class_name / app_profile / process_name）
     pub(crate) current: CurrentFocus,
     cache: FocusCache,
     overrides: ForceOverrides,
-    uia_sender: Option<Sender<SendableHwnd>>,
     imm_learning: ImmCapabilityStore,
     injection_mode_store: InjectionModeStore,
     hwnd_ime_cache: HwndImeCache,
@@ -53,7 +49,6 @@ impl FocusTracker {
             current: CurrentFocus::unfocused(),
             cache,
             overrides,
-            uia_sender: None,
             imm_learning,
             injection_mode_store,
             hwnd_ime_cache: HwndImeCache::new(),
@@ -343,19 +338,6 @@ impl FocusTracker {
     /// GJI write 観測で判明した「Tsf 必要」クラスを永続化する（事後昇格）。
     pub(crate) fn learn_injection_mode_tsf(&mut self, class_name: String) {
         self.injection_mode_store.learn_tsf(class_name);
-    }
-
-    // ── UIA ─────────────────────────────────────────────────────────────────
-
-    pub(crate) fn set_uia_sender(&mut self, tx: Sender<SendableHwnd>) {
-        self.uia_sender = Some(tx);
-    }
-
-    /// UIA ワーカーに hwnd を送る。チャネル未設定または送信失敗は黙って無視する。
-    pub(crate) fn try_send_uia(&self, hwnd: SendableHwnd) {
-        if let Some(sender) = &self.uia_sender {
-            let _ = sender.send(hwnd);
-        }
     }
 }
 

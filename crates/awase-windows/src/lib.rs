@@ -303,18 +303,12 @@ pub const TIMER_MOZC_SHM: usize = 113;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 
-/// `WM_FOCUS_KIND_UPDATE` の wParam 上位 8bit が「AppKind 不明」を示すセンチネル値。
-pub const FOCUS_KIND_UPDATE_NO_APP_KIND: u8 = 0xFF;
-
 /// 設定リロード用カスタムメッセージ
 #[cfg(windows)]
 pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
-// WM_APP+11 (旧 WM_PROCESS_DEFERRED) / +13 / +14 (旧 WM_IME_KEY_DETECTED) は欠番。
+// WM_APP+11 (旧 WM_PROCESS_DEFERRED) / +12 (旧 WM_FOCUS_KIND_UPDATE、UIA 非同期判定の通知。ECRS F1 で撤去) / +13 / +14 (旧 WM_IME_KEY_DETECTED) は欠番。
 // +11/+14 は post 側がモジュール分割リファクタで消えた孤児ハンドラを 2026-07-06 の
 // 到達不能パス監査で撤去したもの。再利用より欠番のままが安全。
-/// UIA 非同期判定完了通知用カスタムメッセージ
-#[cfg(windows)]
-pub const WM_FOCUS_KIND_UPDATE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 12;
 /// 入力インジケーターの右クリックメニューの読み取りワーカーの結果（ADR-264 段階 1）。
 /// `wParam`/`lParam` は `state::indicator_menu::MenuOutcome::pack` の符号化。
 #[cfg(windows)]
