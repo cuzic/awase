@@ -750,14 +750,11 @@ pub const fn shift_key_down_disarms_guard(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        plan_half_width_alnum_action as plan, HalfWidthAlnumAction, HalfWidthAlnumState,
-        ShiftKeyUpKind,
-    };
+    use super::{plan_half_width_alnum_action as plan, HalfWidthAlnumAction, ShiftKeyUpKind};
 
     #[test]
     fn freezes_conv_observation_is_guard_or_toggle() {
-        let mut s = HalfWidthAlnumState::default();
+        let mut s = super::HalfWidthAlnumState::default();
         assert!(!s.freezes_conv_observation());
         s.arm_guard();
         assert!(s.freezes_conv_observation());
