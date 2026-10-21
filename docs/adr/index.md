@@ -281,6 +281,7 @@
 | [272](272-thin-shell-move-pure-code-to-core.md) | shell を薄くする: 同じ crate 内で gate を外すのを先にし tsf/warmup から R7 として再開 | 段階 A 実装済み(2026-10-20)。段階 B は B0(仮想時計、#708)のみ、B1 は保留、C は未着手 |
 | [273](273-indicator-evidence-belief-wiring.md) | 入力インジケーターの証拠源(字形・メニュー)を belief へ入れる配線の入口条件と形(ADR-271 の第 3・第 4 段階) | 起草(2026-10-20)。段階 1(核の実装・配線なし)実装中。Opus 4 ラウンドで収束(確定可) |
 | [274](274-split-windows-core-by-role.md) | awase-windows-core を役割ごとの複数の core に分け、名前で責務が分かるようにする(葉から剥がす) | 段階 0・1・2 はすべて完了、core は 7 crate + 殻(2026-10-21) |
+| [275](275-platform-state-core-move-deferred.md) | platform_state.rs・sync_actuation.rs の core への移動は見送る(記録系の強制を強める小 PR を 3 本) | 決定: 移動は見送り。Opus レビュー反映済み |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
