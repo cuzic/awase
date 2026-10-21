@@ -71,8 +71,10 @@ ADR-083 の「やってはいけないこと」(`InjectionMode::Unicode` の廃�
 ## 検証
 
 - **モデル検証(Linux、`tsf/gji_sync_model.rs`、PR #765):** 実物の `GjiFsm` の OffCold 性が 2 状態の抽象に全イベント列(長さ 6)で従うことを確かめた上で、A1・G1・G2 の有無ごとに到達可能な状態を厳密に列挙した。VK 注入では A1・G1 を外しても害は増えない。Unicode 注入では増える(= Unicode を残す限り外せない)。
-- **比較実験(GitHub の Windows ランナー、`a13-default-vk.sh`、`-dvk` 構成):** 既定を Vk にしたビルドと現状を、同じ入力先・同じ打鍵で並べる。入力先は標準フォーム(edit・multi・rich)と、実アプリ(`forms.toml`: LINE 再現の Qt〈line.exe〉、LibreOffice/OpenOffice、WinUI3、WPF、WinForms、Notepad++、Java)。結果(run 39598656539、2026-10-21): 既定を Vk にした `-dvk` 構成は、rich(GJI 5ms)・edit(MS-IME 20ms)・LibreOffice Writer(GJI 30ms、2 回)の typing で `verdict=PASS`(fail=0・loss=0・extra=0・reorder=0・literal=0・substitute=0、INVARIANTS=OK、VALIDITY=CLEAN)、preedit 構成も観測できた。Qt〈line.exe〉・WinUI3・WPF・Java など残りの入力先は未実施で、P1 の PR で測る。
+- **比較実験(GitHub の Windows ランナー、`a13-default-vk.sh`、`-dvk` 構成):** 既定を Vk にしたビルドと現状を、同じ入力先・同じ打鍵で並べる。入力先は標準フォーム(edit・multi・rich)と、実アプリ(`forms.toml`: LINE 再現の Qt〈line.exe〉、LibreOffice/OpenOffice、WinUI3、WPF、WinForms、Notepad++、Java)。結果(run 39598656539、2026-10-21): 既定を Vk にした `-dvk` 構成は、rich(GJI 5ms)・edit(MS-IME 20ms)・LibreOffice Writer(GJI 30ms、2 回)の typing で `verdict=PASS`(fail=0・loss=0・extra=0・reorder=0・literal=0・substitute=0、INVARIANTS=OK、VALIDITY=CLEAN)、preedit 構成も観測できた。
 - **段階 PR ごとの検証:** Linux の単体テスト・モデル検証、`architecture_guard`、e2e-ime の既存構成(`sc-reopen-*`、`ts-*`、`tsx-ext-*`)。
+
+- **P1 の PR(#767)の実測(run 39670683857・39673784115、2026-10-21):** 撤去後のビルドで、Java Swing(GJI・MS-IME)・LibreOffice Writer(同)・Qt QLineEdit(GJI)・WinForms 3 種・WPF(MS-IME)・wxWidgets 2 種の typing が全構成 `verdict=PASS`(fail・loss・extra・literal・substitute すべて 0、28 ジョブ)。`sc-reopen-*` は期待どおり(修正を外した対照だけ FAIL)。WinUI3・WPF(GJI)・Notepad++・Flutter・Electron は構成が無い・未実行で未確認。
 
 ## 段階
 
