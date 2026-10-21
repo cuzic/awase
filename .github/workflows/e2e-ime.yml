@@ -908,6 +908,26 @@ jobs:
                            kinds='single', trials=4, len=25, runs=_spec.get('runs', 2), wait=900)
                   _r.update(setup=_spec.get('setup', 'none'), prepare=' ; '.join(_spec.get('prepare', [])), until='2026-12-01')
                   configs.append(_r)
+          # --- 撤去実験 a13(ECRS): Win32/UWP の既定の注入モードを Unicode から Vk に変えたビルド(`-dvk`)で、同じ入力先・同じ打鍵を回して現状と並べる。---
+          # 「Unicode 注入が既定である理由は特に無く Vk でよいのでは」の検証。LINE(Qt)・Word・Excel 相当の入力先は forms.toml(qt-qlineedit は line.exe の名前でビルド、
+          # libreoffice-writer 等)と標準フォーム(edit/multi/rich)。現状(baseline)と同じ名前に -dvk を付けた構成が対になる。観測のみ(until)。
+          _DVK_NAMES = (
+            [f'ts-{_f}-{_i}-{_iv}ms' for _f in ('edit', 'multi', 'rich') for _i in ('gji', 'msime') for _iv in (20, 5)]
+            + [f'tsx-ext-{_n}-gji-{_iv}ms' for _n, _iv in (('qt-qlineedit', 20), ('libreoffice-writer', 30), ('openoffice-writer', 30), ('winui3-textbox', 30),
+                                                           ('wpf-textbox', 30), ('wf-textbox', 30), ('wf-richtextbox', 30), ('notepadpp', 30), ('java-swing-field', 30))]
+            + ['tsx-ext-qt-qlineedit-msime-20ms', 'sc-preedit-edit-gji', 'sc-preedit-rich-gji', 'sc-preedit-edit-msime']
+          )
+          _dvk_owner = None
+          for _c in [c for c in configs if c['name'] in _DVK_NAMES]:
+            _d = dict(_c)
+            _d['name'] = _c['name'] + '-dvk'
+            _d['mutator'] = 'a13-default-vk.sh'
+            _d['expect'] = 'observe'
+            _d['until'] = '2026-12-01'
+            if _dvk_owner is None:
+              _dvk_owner = _d['name']
+            _d['bin'] = _dvk_owner
+            configs.append(_d)
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(fnmatch.fnmatchcase(c['name'], o) for o in only)]
