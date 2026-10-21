@@ -2454,7 +2454,7 @@ mod tests {
         use crate::state::indicator_glyph::BeliefLabel;
         let mut model = ImeModel::new();
         predict(&mut model, 1000, Some(false), None);
-        // settle（170ms）は過ぎているが柵（1000ms）の中: 字形は捨てられる。
+        // settle（170ms）は過ぎているが柵（GLYPH_KEY_FENCE_MS）の中: 字形は捨てられる。
         report_glyph(
             &mut model,
             2,
