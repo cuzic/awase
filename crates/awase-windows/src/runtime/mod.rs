@@ -27,8 +27,7 @@ use crate::focus::FocusKind;
 use crate::key_effect_io::{KeymapCacheShellExt as _, RuntimeTableCacheShellExt as _};
 use awase::config::ValidatedConfig;
 use awase::engine::{
-    Engine, EngineCommand, InputContext, InputModeState, KanaLockHysteresis, ModeKeyConfig,
-    SpecialKeyCombos, TextKeyConfig,
+    Engine, EngineCommand, InputContext, InputModeState, KanaLockHysteresis, SpecialKeyCombos,
 };
 use awase::ngram::NgramModel;
 use awase::types::Timestamp;
@@ -2224,34 +2223,7 @@ impl Runtime {
                 left_alt_impersonates,
                 right_alt_impersonates,
             );
-            let space_thumb_vk = [left, right]
-                .into_iter()
-                .find(|&vk| vk == crate::vk::VK_SPACE);
-            self.engine.set_space_thumb_config(
-                space_thumb_vk,
-                TextKeyConfig {
-                    ignore_composing_guard: config.general.space_thumb_ignore_composing_guard,
-                    shift_literal: config.general.space_thumb_shift_literal,
-                },
-            );
-            let muhenkan_vk = [left, right]
-                .into_iter()
-                .find(|&vk| vk == crate::vk::VK_NONCONVERT);
-            let henkan_vk = [left, right]
-                .into_iter()
-                .find(|&vk| vk == crate::vk::VK_CONVERT);
-            self.engine.set_thumb_key_solo_tap_config(
-                muhenkan_vk,
-                ModeKeyConfig::from_legacy_bools(
-                    config.general.muhenkan_solo_tap_ignore_composing_guard,
-                    config.general.muhenkan_solo_tap_always_suppress,
-                ),
-                henkan_vk,
-                ModeKeyConfig::from_legacy_bools(
-                    config.general.henkan_solo_tap_ignore_composing_guard,
-                    config.general.henkan_solo_tap_always_suppress,
-                ),
-            );
+            crate::app::apply_thumb_engine_config(&mut self.engine, left, right, &config.general);
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
             let (fn_key, fn_key_warning) = resolve_dedicated_fn_key(manual_fn_key);
             warnings.extend(fn_key_warning);
@@ -2262,20 +2234,6 @@ impl Runtime {
                 &config.general.right_thumb_key,
                 crate::vk::VK_SPACE,
             ));
-            let enter_thumb_vk = [left, right]
-                .into_iter()
-                .find(|&vk| vk == crate::vk::VK_RETURN);
-            self.engine.set_enter_thumb_config(
-                enter_thumb_vk,
-                TextKeyConfig {
-                    ignore_composing_guard: config.general.enter_thumb_ignore_composing_guard,
-                    shift_literal: config.general.enter_thumb_shift_literal,
-                },
-            );
-            self.engine
-                .set_thumb_shift_faces_enabled(crate::app::thumb_shift_faces_enabled_for(
-                    left, right,
-                ));
             tracing::info!(
                 "Thumb keys updated: left={:?}, right={:?}",
                 config.general.left_thumb_key,
