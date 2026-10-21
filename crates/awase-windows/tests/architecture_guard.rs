@@ -2931,7 +2931,7 @@ fn fallback_write_bypasses_gji_shadow_on_via_none_override() {
 /// **ADR-090 A-1 で `warrant_pending_adr087()` は削除した。**
 /// `Requested → Warranted` の経路は
 /// (a) `Actuation::warrant(OpenWarrant)`（実 warrant を要求）と
-/// (b) `ActuationOrder::into_actuation_shadow()` / `into_actuation()` だけで
+/// (b) `ActuationOrder::into_actuation()`（旧 `into_actuation_shadow()` は撤去）だけで
 /// あり、`ActuationOrder` の唯一の構築経路 `issue()` は
 /// `issue_open_warrant()` の戻り値をそのまま受ける。したがって
 /// **「warrant を発行せずに actuation を起案する」ことが型として書けない**。
@@ -2939,27 +2939,13 @@ fn fallback_write_bypasses_gji_shadow_on_via_none_override() {
 /// 本テストは残った実行時の抜け道——`Actuation::request(` を
 /// `ActuationOrder` の外で呼ぶこと——を件数で塞ぐ。
 ///
-/// # 【重要】本テストが今固定しているのは「死んだコードが 2 箇所」である
+/// # 何を固定しているか
 ///
-/// 下で内訳 `[("src/state/actuation_chain.rs", 2)]` に固定している 2 箇所
-/// （`ActuationOrder::into_actuation` / `DriftEpisode::next_attempt`）は、
-/// **どちらも本番から到達不能**である（2026-08-12 の PR 最終レビューで確認）:
-///
-/// - `into_actuation` の参照は定義自体・`actuation_chain.rs` のモジュール doc・
-///   本コメントだけで、本番呼び出し元はゼロ。
-/// - `DriftEpisode::new` の呼び出しは `actuation_chain.rs` の
-///   `#[cfg(test)] mod tests` にしか無く、`DriftEpisode` 型ごと本番未配線。
-///
-/// A-1 後に本番で生きている `Requested → Warranted` 経路は
-/// **`into_actuation_shadow`（`ime_controller.rs` / `runtime/open_chain.rs`）
-/// の 1 本だけ**であり、それは warrant の有無に関わらず `Warranted` へ進める
-/// （授権が無ければ `Authorization::LegacyUnwarranted { would_have_blocked: true }`
-/// を載せるだけで**書き込みは止めない**）。つまり **A-1 の時点では
-/// `Warranted` は「実 `OpenWarrant` がある」ことを意味しない**。
-/// ADR-089 §2.3 が意図した型による保証が効き始めるのは、**A-2 で入口ごとに
-/// `into_actuation_shadow` → `into_actuation` へ差し替え終えたとき**である
-/// （入口ごとに実機ソークが必須、ADR-090 §6 ステップ 7 / §2.A A-5'）。
-/// **本テストが緑であることを「INV-47 は守られている」と読まないこと。**
+/// `state/actuation_chain.rs` の中の 1 箇所（`ActuationOrder::into_actuation`、実 `OpenWarrant` を伴う）
+/// だけが `Actuation::request(` を呼ぶ。本番の入口（`platform.rs::set_ime_open_ordered`・`open_chain.rs`・
+/// `sync_actuation.rs::apply_sync`）はすべてこれを通り、授権が無ければ書かない（A-2 強制済み）。
+/// 以前は `DriftEpisode::next_attempt` と `into_actuation_shadow`（A-1 の shadow）の分も数えていたが、
+/// どちらも本番未配線の死んだコードで撤去した（ECRS MA-02、2026-10-21）。
 ///
 /// # なぜ型で閉じないのか
 ///
@@ -2969,12 +2955,8 @@ fn fallback_write_bypasses_gji_shadow_on_via_none_override() {
 /// それは**正規経路の説明**として必要）。
 #[test]
 fn actuation_is_only_requested_through_actuation_order() {
-    // どちらも `state/actuation_chain.rs` の中で、**実 `OpenWarrant` を伴う**
-    // 構築だけ（ただし**2 箇所とも本番未配線の死んだコード**。上の doc 参照）:
-    //   1. `ActuationOrder::into_actuation`（A-2 用。本番呼び出し元ゼロ）
-    //   2. `DriftEpisode::next_attempt`（同一 warrant からの再試行。回数制限は
-    //      `FeedbackPolicy::decide_action` が持つ、INV-41。`DriftEpisode::new` は
-    //      テストからしか呼ばれておらず、これも本番未配線）
+    // `state/actuation_chain.rs` の中の `ActuationOrder::into_actuation` だけが、
+    // **実 `OpenWarrant` を伴って**構築する。
     // **`state/actuation_chain.rs` の外に出たら、それは warrant を持たない
     // 起案経路が復活したということ。**
     let files = list_src_files();
@@ -2989,10 +2971,9 @@ fn actuation_is_only_requested_through_actuation_order() {
     }
     assert_eq!(
         breakdown,
-        vec![("src/state/actuation_chain.rs".to_string(), 2)],
+        vec![("src/state/actuation_chain.rs".to_string(), 1)],
         "`Actuation::request(` の本番呼び出しは `state/actuation_chain.rs` の \
-         2 箇所（`ActuationOrder::into_actuation` / `DriftEpisode::next_attempt`、\
-         どちらも実 `OpenWarrant` を伴い、どちらも A-2 まで本番未配線）\
+         1 箇所（`ActuationOrder::into_actuation`、実 `OpenWarrant` を伴う）\
          だけにすること。実際: {breakdown:?}\n\
          実 actuation は `ActuationOrder::issue()`（= `issue_open_warrant()` を\
          必ず通る）から起案してください（ADR-090 §2.A・INV-47）。"

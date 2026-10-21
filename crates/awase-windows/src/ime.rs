@@ -1462,42 +1462,6 @@ mod actuation_target_tests {
     }
 }
 
-/// フォーカスウィンドウの IMM32 HIMC に composition string が存在するか確認する。
-///
-/// TSF warm probe 用。TSF が active な場合、romaji キー到達後に composition string が
-/// 非空になる。TSF が cold（未初期化）な場合、キーはリテラルとして抜けるため空のまま。
-///
-/// クロスプロセスで `ImmGetCompositionStringW`（GCS_COMPSTR）を呼び出す。
-/// TSF→IMM32 bridge が HIMC を更新するため、外部プロセスからも読み取り可能。
-///
-/// # Safety
-/// Win32 API を呼び出す。
-#[must_use]
-pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
-    if hwnd.non_null().is_none() {
-        return false;
-    }
-    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
-    //         ImmContextGuard は ImmGetContext/ImmReleaseContext を RAII で管理し、
-    //         NULL HIMC を取得した場合は None を返す。
-    let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
-        return false;
-    };
-    // GCS_COMPSTR: null バッファで呼ぶと composition string のバイト長を返す
-    // SAFETY: ctx.himc() は ImmContextGuard が保持する有効な HIMC。
-    //         lpBuf=None かつ dwBufLen=0 で呼ぶのは MSDN で明示的に許可されており
-    //         バッファオーバーフローの危険はない。
-    let len = unsafe {
-        ImmGetCompositionStringW(
-            ctx.himc(),
-            IME_COMPOSITION_STRING(crate::imm::GCS_COMPSTR),
-            None,
-            0,
-        )
-    };
-    len > 0
-}
-
 /// `ImmGetCompositionStringW` の各 index を読み取って診断用スナップショットを返す。
 ///
 /// 部分リテラル検出の実験用。送信した romaji が composition に正しく入ったかを

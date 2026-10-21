@@ -11,10 +11,10 @@
 //!
 //! # 型が保証しないもの（INV-41、誤読防止）
 //!
-//! **回数制限は型ではなく [`FeedbackPolicy::decide_action`] の責務である。**
+//! **回数制限は型ではなく [`FeedbackPolicy::decide_action`](crate::state::ime_actuation::FeedbackPolicy::decide_action) の責務である。**
 //! `FeedbackPolicy::Blind { max_attempts }` の下では、同一 warrant で最大
-//! `max_attempts` 回の成功 write が正常に起こりうる（[`DriftEpisode`] が
-//! attempt ごとに新しい `Actuation` を作る）。「型が回数を守っている」と
+//! `max_attempts` 回の成功 write が正常に起こりうる（呼び出し側が attempt ごとに
+//! 新しい `Actuation` を作る。再試行 episode の型 `DriftEpisode` は本番未配線だったので撤去した）。「型が回数を守っている」と
 //! 読み替えて `FeedbackPolicy::decide_action` の呼び出しを省くと ADR-080 / BUG-43 の
 //! give-up が無効化される。
 //!
@@ -44,13 +44,13 @@
 //!    `issue_open_warrant()` を必ず通るようにしたので、素通し入口は削除した**
 //!    （INV-47）。`Requested → Warranted` の経路は
 //!    (a) [`Actuation::warrant`]（実 `OpenWarrant` を要求）と
-//!    (b) [`ActuationOrder::into_actuation_shadow`] / [`ActuationOrder::into_actuation`]
+//!    (b) [`ActuationOrder::into_actuation`]
 //!    の 2 つだけである。
 //!
-//!    **ただし A-1 は shadow モードであり、授権が下りなくても書き込みは
-//!    止めない**——止めるのは A-2（入口ごと・実機ソーク必須）。
-//!    `Authorization::LegacyUnwarranted { would_have_blocked }` はその測定値で
-//!    ある（[`Authorization`] の doc を参照）。
+//!    A-1 は shadow モード（授権が下りなくても書き込みは止めない）だったが、
+//!    A-2（強制）が `c8bc1adc` で実装済みで、本番の入口はすべて
+//!    `into_actuation`（授権が無ければ `None`）を通る。shadow の入口
+//!    `into_actuation_shadow` は撤去した。
 //!
 //! # compile-fail ケース（ADR-089 §7 ケース1）
 //!
@@ -116,7 +116,6 @@ use std::marker::PhantomData;
 use awase::platform::ImeOpenOutcome;
 
 use super::event_origin::EventOrigin;
-use super::ime_actuation::{ActuationAction, FeedbackPolicy};
 use super::ime_event::HwndId;
 use super::open_warrant::{issue_open_warrant, issue_press_warrant, OpenWarrant, WarrantContext};
 
@@ -399,33 +398,10 @@ impl ActuationOrder {
         self.warrant.is_none()
     }
 
-    /// **A-1 shadow**: 授権の有無に関わらず `Warranted` へ進む。
+    /// 授権が下りていれば `Warranted`、下りていなければ `None`（A-2 の強制。ADR-090 §2.A）。
     ///
-    /// 授権が下りていなければ [`Authorization::LegacyUnwarranted`] に
-    /// `would_have_blocked: true` と `origin` を載せる。**書き込みは止めない**
-    /// ——止めるのは A-2（入口ごと・実機ソーク必須）である。
-    pub fn into_actuation_shadow(self) -> Actuation<Warranted> {
-        let authorization = self.warrant.map_or(
-            Authorization::LegacyUnwarranted {
-                would_have_blocked: true,
-                origin: Some(self.origin),
-            },
-            Authorization::Warrant,
-        );
-        Actuation {
-            open: self.open,
-            authorization,
-            target: None,
-            _state: PhantomData,
-        }
-    }
-
-    /// **A-2（強制）用。現時点で本番呼び出し元は無い。**
-    ///
-    /// 授権が下りていれば `Warranted`、下りていなければ `None`。
-    /// 入口ごとに A-1 の shadow ログで `would_have_blocked` の実発火頻度を
-    /// 測ってから、1 つずつこちらへ倒す（ADR-090 §6 ステップ 7）。
-    /// `try_force_on_bootstrap` は**最後**に回す方針だった（§4.9、`621bf93c` で撤去済み）。
+    /// 本番の入口（`platform.rs::set_ime_open_ordered`・`open_chain.rs`・`sync_actuation.rs::apply_sync`）は
+    /// すべてこれを通る。A-1 の shadow（授権が無くても書く）は撤去済み。
     #[must_use]
     pub fn into_actuation(self) -> Option<Actuation<Warranted>> {
         Actuation::request(self.open).warrant(self.warrant?)
@@ -627,63 +603,6 @@ pub trait AsyncMechanismWriter {
         mechanism: WriteMechanism,
         open: bool,
     ) -> impl std::future::Future<Output = ImeOpenOutcome>;
-}
-
-// ── DriftEpisode（ADR-089 §2.6）────────────────────────────────────────────────
-
-/// 再試行 episode。attempt ごとに新しい [`Actuation<Warranted>`] を作る。
-///
-/// **warrant の有効性は episode 単位**であり、`Actuation` 値のアフィン性
-/// （1 値 = 高々 1 回の成功 write）と、[`FeedbackPolicy::decide_action`] による
-/// 回数制限がここで組み合わさる（INV-41）。
-#[derive(Debug, Clone)]
-pub struct DriftEpisode {
-    warrant: OpenWarrant,
-    policy: FeedbackPolicy,
-    attempts: u32,
-}
-
-impl DriftEpisode {
-    /// episode を開始する。`warrant` は episode 全体で有効。
-    #[must_use]
-    pub const fn new(warrant: OpenWarrant, policy: FeedbackPolicy) -> Self {
-        Self {
-            warrant,
-            policy,
-            attempts: 0,
-        }
-    }
-
-    /// これまでに払い出した attempt 数。
-    #[must_use]
-    pub const fn attempts(&self) -> u32 {
-        self.attempts
-    }
-
-    /// この episode の feedback 方針。
-    #[must_use]
-    pub const fn policy(&self) -> FeedbackPolicy {
-        self.policy
-    }
-
-    /// この episode が目指す open 値。
-    #[must_use]
-    pub const fn target(&self) -> bool {
-        self.warrant.target
-    }
-
-    /// 次の attempt を払い出す。`FeedbackPolicy::decide_action` が `GiveUp` を返したら
-    /// `None`（**回数制限は型ではなくこの関数の責務**、INV-41）。
-    ///
-    /// `Actuation` 値を使い回さないこと——毎回ここで新規に作るのが
-    /// アフィン性の実効条件である。
-    pub fn next_attempt(&mut self) -> Option<Actuation<Warranted>> {
-        if self.policy.decide_action(self.attempts) == ActuationAction::GiveUp {
-            return None;
-        }
-        self.attempts += 1;
-        Actuation::request(self.warrant.target).warrant(self.warrant.clone())
-    }
 }
 
 #[cfg(test)]
@@ -906,54 +825,6 @@ mod tests {
     fn warrant_must_agree_with_requested_open() {
         assert!(Actuation::request(true).warrant(warrant(true)).is_some());
         assert!(Actuation::request(true).warrant(warrant(false)).is_none());
-    }
-
-    /// `DriftEpisode` は `Blind` の `max_attempts` で払い出しを止める
-    /// （**回数制限は型ではなく `FeedbackPolicy::decide_action`**、INV-41）。
-    #[test]
-    fn drift_episode_stops_at_blind_max_attempts() {
-        let policy = FeedbackPolicy::Blind {
-            max_attempts: 3,
-            backoff: std::time::Duration::from_millis(1),
-        };
-        let mut episode = DriftEpisode::new(warrant(true), policy);
-        for expected in 1..=3 {
-            let attempt = episode.next_attempt().expect("まだ諦めない");
-            assert!(attempt.open());
-            assert_eq!(episode.attempts(), expected);
-        }
-        assert!(episode.next_attempt().is_none(), "max_attempts で打ち切る");
-        assert_eq!(episode.attempts(), 3, "GiveUp では attempts を進めない");
-    }
-
-    /// `Read` は試行回数では打ち切らない（`FeedbackPolicy::decide_action` と同じ挙動）。
-    #[test]
-    fn drift_episode_never_gives_up_under_read_policy() {
-        let policy = FeedbackPolicy::Read {
-            source: ObservationSource::ImmGetOpenStatus,
-            deadline: std::time::Duration::from_millis(1),
-        };
-        let mut episode = DriftEpisode::new(warrant(false), policy);
-        for _ in 0..32 {
-            assert!(episode.next_attempt().is_some());
-        }
-        assert_eq!(episode.attempts(), 32);
-    }
-
-    /// episode の warrant は attempt へそのまま引き継がれる。
-    #[test]
-    fn episode_attempts_carry_the_episode_warrant() {
-        let policy = FeedbackPolicy::Read {
-            source: ObservationSource::ImmGetOpenStatus,
-            deadline: std::time::Duration::from_millis(1),
-        };
-        let mut episode = DriftEpisode::new(warrant(true), policy);
-        let attempt = episode.next_attempt().unwrap();
-        assert_eq!(
-            attempt.authorization(),
-            &Authorization::Warrant(warrant(true))
-        );
-        assert!(episode.target());
     }
 
     /// `verify` した target は最後まで保持される（ADR-086 INV-14 の型状態化）。
