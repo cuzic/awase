@@ -26,6 +26,8 @@ pub(crate) mod cold_reason;
 pub(crate) mod gji_fsm;
 #[cfg(windows)]
 mod gji_monitor;
+#[cfg(test)]
+mod gji_sync_model;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod ime_mode_fsm;
 pub use awase_ime_core::tsf::converter_target;
