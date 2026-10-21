@@ -285,7 +285,6 @@ fn thumb_down_timestamps_live_query_is_limited_to_designated_call_sites() {
     let known_sites: &[(&str, usize)] = &[
         ("src/hook.rs", 1),        // capture 時点で1回呼び RawKeyEvent へ埋め込む
         ("src/runtime/mod.rs", 1), // build_ctx
-        ("src/runtime/message_handlers.rs", 1), // タイマー直接発火経路（build_ctx 非経由）
     ];
     for (path, expected) in known_sites {
         let content = read_crate_file(path);

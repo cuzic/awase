@@ -723,23 +723,7 @@ pub(crate) unsafe fn handle_wm_timer(
                     .push((timer_id, wparam));
                 return;
             }
-            let mut modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-            // Alt なりすまし中の補正（`crate::hook::is_alt_impersonation_active` doc・
-            // `Runtime::build_ctx` の同様の補正参照）。タイマー満了経路
-            // （timeout_pending_thumb 等）でもここを直さないとなりすましが機能しない。
-            if hook::is_alt_impersonation_active() {
-                modifiers.alt = false;
-            }
-            let (left_thumb_down, right_thumb_down) = hook::thumb_down_timestamps();
-            let ctx = super::build_input_context(
-                app.platform_state.ime.effective_open(),
-                app.platform_state.ime.input_mode(),
-                app.platform_state.ime.belief.is_japanese_ime(),
-                crate::tsf::observer::ime_composition_active_now(),
-                &modifiers,
-                left_thumb_down,
-                right_thumb_down,
-            );
+            let ctx = app.build_ctx();
             let state_before = app.engine.debug_state_label();
             let decision = app.engine.on_timeout(timer_id, &ctx);
             notify_if_solo_off_triggered(app);

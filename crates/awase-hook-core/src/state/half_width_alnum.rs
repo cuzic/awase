@@ -457,6 +457,17 @@ impl HalfWidthAlnumState {
     pub const fn is_toggle_active(&self) -> bool {
         self.toggle_held
     }
+
+    /// conv 観測（OS poll・idle conv check の読み取り結果）を凍結すべきか。
+    ///
+    /// Shift conv 安全網のブリップ中（`is_guard_pending`）、または左Shift単独タップによる
+    /// 半角英数持続トグル中（`is_toggle_active`）は、awase 自身が意図して conv を動かして
+    /// いるので、観測を belief に反映してはならない。`key_pipeline.rs`・`ime_refresh.rs` の
+    /// 3 箇所が同じ式を持っていたものの単一の窓口（ECRS R2）。
+    #[must_use]
+    pub const fn freezes_conv_observation(&self) -> bool {
+        self.is_guard_pending() || self.is_toggle_active()
+    }
 }
 
 /// 直接観測の追随の結果から、持続トグルを手放すべきか（ADR-244 D3・D4）。
@@ -740,6 +751,18 @@ pub const fn shift_key_down_disarms_guard(
 #[cfg(test)]
 mod tests {
     use super::{plan_half_width_alnum_action as plan, HalfWidthAlnumAction, ShiftKeyUpKind};
+
+    #[test]
+    fn freezes_conv_observation_is_guard_or_toggle() {
+        let mut s = super::HalfWidthAlnumState::default();
+        assert!(!s.freezes_conv_observation());
+        s.arm_guard();
+        assert!(s.freezes_conv_observation());
+        s.disarm_guard();
+        assert!(!s.freezes_conv_observation());
+        s.toggle_held = true;
+        assert!(s.freezes_conv_observation());
+    }
 
     #[test]
     fn entry_only_on_inactive_left_shift_tap() {

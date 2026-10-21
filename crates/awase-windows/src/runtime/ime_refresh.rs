@@ -655,8 +655,11 @@ impl Runtime {
             is_typing(idle_ms) && self.platform_state.ime.mode_key_pass_mark_live(now);
         // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数持続トグル中
         // （`kp_stage_shift_conv_guard`）は OS poll を凍結する。
-        let shift_conv_guard_active = self.platform_state.gate.half_width_alnum.is_guard_pending()
-            || self.platform_state.gate.half_width_alnum.is_toggle_active();
+        let shift_conv_guard_active = self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .freezes_conv_observation();
         ReadStrategyFacts {
             idle_ms,
             skip_imm_query,
