@@ -287,9 +287,11 @@ fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::T
 
 // ── InjectionModeStore ────────────────────────────────────────────────────────
 
-/// 事後昇格学習ストア（読み取り専用）：`cache.toml` の `[injection_mode]` セクション
-/// （`class_name = "tsf"` の形式）に既に学習済みの class_name を読む。
-/// 事後昇格の書き込み側は ADR-276 で撤去した（既存の利用者の学習結果を壊さないため読み取りは残す）。
+/// 事後昇格学習ストア（読み取り専用）。
+///
+/// `cache.toml` の `[injection_mode]` セクション（`class_name = "tsf"` の形式）に既に学習済みの
+/// class_name を読む。事後昇格の書き込み側は ADR-276 で撤去した（既存の利用者の学習結果を壊さないため読み取りは残す）。
+///
 /// `ForceOverrides::injection_hint()` が未マッチのとき、このストアを参照して `ForceTsf` を返す。
 #[derive(Debug)]
 pub struct InjectionModeStore {
@@ -297,8 +299,8 @@ pub struct InjectionModeStore {
 }
 
 impl InjectionModeStore {
-    pub(crate) fn new(base_dir: std::path::PathBuf) -> Self {
-        let tsf_classes = Self::load(&base_dir);
+    pub(crate) fn new(base_dir: &std::path::Path) -> Self {
+        let tsf_classes = Self::load(base_dir);
         Self { tsf_classes }
     }
 

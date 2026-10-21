@@ -16,8 +16,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 /// VK INPUT に使うマーカー種別。
 ///
-/// - `Injected`: Chrome/VK モードの単発キー送信（LSHIFT・VK_ESCAPE・VK_BACK 等）、scan code なし
-///   （INJECTED_MARKER、`wScan=0`）
 /// - `InjectedWithScan`: Chrome composition 送信本体（scan code 付き、
 ///   INJECTED_MARKER。TSF 側の `make_tsf_key_input` と同じ construction を
 ///   使うが marker は `INJECTED_MARKER` のまま = 既存の自己注入識別を変えない）。
@@ -27,7 +25,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 /// LSHIFT は常に INJECTED_MARKER（scan なし）のため、このマーカーは VK 本体にのみ適用する。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VkMarker {
-    Injected,
     InjectedWithScan,
     Tsf,
 }
@@ -35,7 +32,6 @@ pub(crate) enum VkMarker {
 impl VkMarker {
     pub(crate) fn make_input(self, vk: VkCode, is_keyup: bool) -> INPUT {
         match self {
-            Self::Injected => make_key_input(vk, is_keyup),
             Self::InjectedWithScan => {
                 crate::tsf::output::make_scan_key_input(vk, is_keyup, INJECTED_MARKER)
             }

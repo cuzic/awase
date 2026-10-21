@@ -709,9 +709,6 @@ impl Output {
     /// 注入モードは `resolve_injection_mode()` で決定:
     /// - Vk: Win32/UWP/Chrome/Edge/Electron（既定、ADR-276）。Batched VK で IME composition。
     /// - Tsf: WezTerm 等。Sequential VK で TSF/IME に composition させる。
-    // 注入モード(Vk/Tsf)ごとの分岐が本質的に多いディスパッチャ。分割は挙動変更
-    // リスクが高いため、複雑度警告のみ抑制する。
-    #[expect(clippy::cognitive_complexity)]
     pub fn send_keys(&self, actions: &[KeyAction]) {
         // モード解決 + OutputActiveGuard 取得をセッションオブジェクトに委譲
         let session = OutputSession::begin(self);

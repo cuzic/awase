@@ -477,11 +477,10 @@ impl WindowsPlatform {
     }
 
     /// [`Self::dispatch_gji_response`] の起点付き版（ADR-203 決定3）。起点で分けていた Unicode long-cold の
-    /// reinit は ADR-212 P3/P5 で撤去したので、`origin` は今は再帰でしか使わない（同期の呼び出し側が起点を渡す形は残す）。
-    #[expect(clippy::only_used_in_recursion)]
+    /// reinit は ADR-212 P3/P5 で撤去したので、`_origin` は今は使わない（同期の呼び出し側が起点を渡す形は残す）。
     pub(crate) fn dispatch_gji_response_from(
         &mut self,
-        origin: crate::state::gji_direct_mechanism::GjiSyncOrigin,
+        _origin: crate::state::gji_direct_mechanism::GjiSyncOrigin,
         response: &timed_fsm::Response<
             crate::tsf::gji_fsm::GjiAction,
             crate::tsf::gji_fsm::GjiTimer,
