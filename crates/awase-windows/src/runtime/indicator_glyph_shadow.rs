@@ -10,8 +10,9 @@
 //! 同じ（確認された状態）で字形が落ち着いているときだけ、そのラベルの見本として足す（ADR-261 決定 2。belief の入力モードは
 //! ひらがな/カタカナ・半角/全角英数を区別しないので、ラベルは閉・かな・英数の 3 つ。`state::indicator_glyph::BeliefLabel`）。
 //!
-//! **belief には入れない・IME へ何も書かない・打鍵は変えない・画素は保存しない**。belief は読み取り（`effective_open()`・
-//! `input_mode()`）だけで、ラベルの作成と記録に使う。目的は、読める窓での一致率と、観測の無い窓での belief とのずれを、実ジャーナルで
+//! **IME へ何も書かない・打鍵は変えない・画素は保存しない**。belief は読み取り（`effective_open()`・`input_mode()`）で
+//! ラベルの作成と記録に使う。**belief への報告（ADR-273）は、実効の段階が `unobserved` 以上の対象の窓でだけ**（`report_glyph_to_belief`。
+//! 現状は `ui_max_level` が `Observe` なので動かない）。目的は、読める窓での一致率と、観測の無い窓での belief とのずれを、実ジャーナルで
 //! 確かめること。
 //!
 //! 有効なのは `[indicator_evidence] glyph` の実効の段階が `observe` 以上（既定は off のオプトイン。ADR-271）のときだけ。反映は再起動後
@@ -27,8 +28,9 @@ use windows::Win32::Foundation::HWND;
 use crate::focus::class_names::AppImeProfile;
 use crate::observer::indicator_glyph::GlyphReadRequest;
 use crate::state::indicator_glyph::{
-    apply_match, belief_label, collect_label, match_feature, AddOutcome, BeliefLabel, Capture,
-    GlyphFeature, GlyphSample, GlyphTable, ProbeOutcome, SampleOrigin, Thresholds,
+    apply_match, belief_label, classify_label, collect_label, match_feature, AddOutcome,
+    BeliefLabel, Capture, GlyphFeature, GlyphSample, GlyphTable, ProbeOutcome, SampleOrigin,
+    Thresholds,
 };
 use crate::state::indicator_glyph_store::{EnvFingerprint, GlyphSampleFile};
 
@@ -64,6 +66,10 @@ pub(super) struct IndicatorGlyphShadow {
     pending: VecDeque<Pending>,
     last_trigger: Option<Instant>,
     last_capture: Option<LastCapture>,
+    /// 1 回目（待ちが短い方）の取り込みの時点の（前面窓、フォーカスの世代）。2 回目の取り込みで、間にフォーカスが動いていないかを見る
+    /// （belief へ報告するときの `FenceCtx::focus_gen_unchanged`。前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点では
+    /// なく、追跡が追いついた後の 1 回目の時点を基準にする）
+    first_read_epoch: Option<(isize, u64)>,
     /// 見本の表（環境指紋別。矩形の大きさ〔DPI に比例〕・背景の明暗・IME の種類・取り込み方式の版）。内蔵の共通の見本で始め、
     /// 保存済みの同じ環境の見本を足す
     tables: HashMap<EnvFingerprint, GlyphTable>,
@@ -82,6 +88,7 @@ impl IndicatorGlyphShadow {
             pending: VecDeque::new(),
             last_trigger: None,
             last_capture: None,
+            first_read_epoch: None,
             tables: HashMap::new(),
             store: GlyphSampleFile::default(),
             store_path: None,
@@ -149,6 +156,60 @@ impl super::Runtime {
         &self,
     ) -> &crate::indicator_evidence::IndicatorGlyphCounters {
         &self.indicator_glyph.counters
+    }
+
+    /// 字形を belief に使ってよい窓・設定か（ADR-273 D3・Q2・R1）。**設定の実効の段階が `unobserved` 以上**のときだけ（現状は
+    /// `EvidenceSource::ui_max_level()` が `Observe` なので、実効の段階は上がらず、ここは常に偽）。
+    ///
+    /// 窓: 入力中継ツールと実質 TSF ネイティブの窓は常に除外。mozc-readable の共有メモリがある窓も除外（そちらが High で読める。
+    /// 共有メモリが割れている間に字形が belief を決めると、ADR-268 が避けた向きへ倒れる。R1）。`unobserved` は実測学習で降格された窓
+    /// （NULL 型）だけ、`all` は静的に `Standard` のプロファイルの窓（降格したものを含む。静的な `Imm32Unavailable` は除外）。
+    fn glyph_belief_in_scope(&self) -> bool {
+        use awase::config::EvidenceLevel;
+        let level = self.effective_glyph_level().unwrap_or(EvidenceLevel::Off);
+        if level < EvidenceLevel::Unobserved {
+            return false;
+        }
+        let profile = self.platform.current_app_profile();
+        if matches!(profile, AppImeProfile::InputRelay)
+            || profile.is_effectively_tsf_native(self.platform.focus.class_name())
+            || self.mozc_shm.block_present()
+        {
+            return false;
+        }
+        if level == EvidenceLevel::All {
+            profile == AppImeProfile::Standard
+        } else {
+            self.platform.focus.is_demoted_by_learning()
+        }
+    }
+
+    /// 字形の読みを belief に報告する（ADR-273 D1・D4）。**設定の実効の段階が `unobserved` 以上で、対象の窓のときだけ**
+    /// （`glyph_belief_in_scope`。現状は `ui_max_level` が `Observe` なので動かない）。判断・柵・記録は `ImeStateHub` 側。
+    fn report_glyph_to_belief(
+        &mut self,
+        reading: crate::state::indicator_glyph::LabelReading,
+        foreground: isize,
+        is_second: bool,
+    ) {
+        if !self.glyph_belief_in_scope() {
+            self.indicator_glyph.first_read_epoch = None;
+            return;
+        }
+        let epoch = self.platform_state.focus.focus_epoch;
+        let focus_gen_unchanged = if is_second {
+            self.indicator_glyph.first_read_epoch == Some((foreground, epoch))
+        } else {
+            self.indicator_glyph.first_read_epoch = Some((foreground, epoch));
+            true
+        };
+        let outcome = self.platform_state.ime.report_indicator_glyph(
+            reading,
+            focus_gen_unchanged,
+            self.lang_detect_focus_in_sync(),
+            crate::state::TickMs(crate::hook::current_tick_ms()),
+        );
+        tracing::debug!("[indicator-glyph] belief report: {outcome:?}");
     }
 
     /// `EVENT_SYSTEM_FOREGROUND`（`observer::indicator_glyph` の WinEvent）から呼ぶ。
@@ -223,8 +284,19 @@ impl super::Runtime {
         let profile_kind = self.platform.current_app_profile();
         let profile = super::lang_detect_shadow::profile_label(profile_kind);
         let belief_open = self.platform_state.ime.effective_open();
-        let label = belief_label(belief_open, self.platform_state.ime.input_mode());
+        // R2: 字形が決めた belief で字形の見本にラベルを付けない（誤読が見本に永続化して自分を強化する・一致の集計が同語反復になる）。
+        // 判定は hub の層の最終的な理由（`IntentStore` の上書きを字形由来と数えない。R6）。
+        let decided_by_glyph = self
+            .platform_state
+            .ime
+            .belief_is_decided_by_glyph(crate::state::TickMs(crate::hook::current_tick_ms()));
+        let label = if decided_by_glyph {
+            None
+        } else {
+            belief_label(belief_open, self.platform_state.ime.input_mode())
+        };
         let mut record = outcome.to_record(profile, Some(belief_open), pending.delay_ms);
+        let mut glyph_reading = None;
 
         if let Some(f) = feature {
             // 環境指紋: 矩形の大きさ（DPI）・背景の明暗・IME の種類・取り込み方式の版。違う環境の表は使わない。
@@ -245,6 +317,7 @@ impl super::Runtime {
                 });
             // 照合は、収集する前の表で行う（自分自身を見本にして一致させない）。
             let m = match_feature(table, &Thresholds::default(), &f);
+            glyph_reading = Some(classify_label(table, &Thresholds::default(), &f));
             // 収集: 2 回目（待ちが長い方）の取り込みで、同じ窓の 1 回目と比べて落ち着いていれば足す。
             let is_second = pending.delay_ms == u32::from(READ_DELAYS_MS[1]);
             let prev = self
@@ -282,6 +355,13 @@ impl super::Runtime {
                     label,
                 })
             };
+        }
+        if let Some(reading) = glyph_reading {
+            self.report_glyph_to_belief(
+                reading,
+                pending.foreground,
+                pending.delay_ms == u32::from(READ_DELAYS_MS[1]),
+            );
         }
         self.indicator_glyph.counters.record(&record);
         self.platform_state

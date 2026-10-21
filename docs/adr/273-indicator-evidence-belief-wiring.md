@@ -141,6 +141,15 @@ ADR-261 決定 4 は「この `FocusGen` で `direct-follow` の読みが N 回�
 - `promoted_by_staleness` は「字形が届いた時点では新鮮だった、字形と値の違う Medium 以上が、今は鮮度切れ」のときだけ付く(診断専用。GJI の窓で常に付いて過大に数えないため)。
 - reducer は字形で `update_drift` を呼ばない(`reconcile_key_effect_open` は呼ぶ)。
 
+### 段階 2a: 殻の入口を作る(2026-10-21、配線 PR 1。**まだ動かない**)
+
+`ImeStateHub::report_indicator_glyph`(`state/platform_state.rs`)を、字形を belief に報告する**唯一の入口**として作った。`Hit` は `fence_glyph`(柵)を通したものだけ `ObserverReported(TaskbarGlyph, Medium)` にし、`Miss` は `IndicatorGlyphMissed` で枠を消す。呼び出し元は `runtime/indicator_glyph_shadow.rs` の 1 件だけで、`glyph_belief_in_scope()` が真のときだけ呼ぶ。**`EvidenceSource::ui_max_level()` は `Observe` のまま**なので、実効の段階が `unobserved` 以上にならず、本番では動かない(挙動は変わらない)。
+
+- 対象の窓(`glyph_belief_in_scope`): 入力中継ツール・実質 TSF ネイティブの窓・**mozc-readable の共有メモリがある窓(R1)**は除外。`unobserved` は実測学習で降格された窓(D3)、`all` は静的に `Standard` の窓(Q2)。
+- **R2・R6**: `belief_is_decided_by_glyph`(hub の層の最終的な理由。`IntentStore` の上書きを字形由来と数えない)が真のとき、見本のラベルを付けない(収集も一致の記録もしない)。
+- `FenceCtx::focus_gen_unchanged`: 前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点でなく**1 回目(0.9 秒後)の取り込みの時点の(前面窓、フォーカスの世代)を基準**にし、2 回目(2.5 秒後)で変わっていれば捨てる。
+- 残る入口条件(`ui_max_level` を上げる前): 一太郎(NULL 型)の確認(段階 2)、D2 の(a)〜(e)の件数を shadow の journal で数える、R3(HWND キャッシュ)・R4(hwnd の意味)の扱いを決める。
+
 ### 配線 PR の注意(Opus レビュー、2026-10-20)
 
 - **R1 MozcShm が割れたとき**: ADR-268 は `tsf_open != effective_open` の間 MozcShm を報告しない。共有メモリが止まって TTL が切れたあとに字形(TIP の実状態を映す)が belief を決めると、ADR-268 が避けた向きへ倒れる。mozc 系の窓で割れている間(`AppliedDemoted{MozcShmSplit}` の間)は字形を報告しない。
