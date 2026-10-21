@@ -172,38 +172,26 @@ impl Runtime {
         tick_ms
     }
 
-    /// 非 TsfNative で、実測学習で降格された窓でもなく、IME が ON である belief を `applied` へ先同期し、GJI なら
-    /// GjiFsm へも ImeOn を通知する（呼び出し側が `state::applied_mirror_plan::may_mirror_applied_on_focus` で絞る。
+    /// 非 TsfNative で、実測学習で降格された窓でもなく、IME が ON である belief を `applied` へ先同期する
+    /// （GjiFsm への ImeOn 通知は ADR-276 で撤去した。呼び出し側が `state::applied_mirror_plan::may_mirror_applied_on_focus` で絞る。
     /// TsfNative と学習降格の窓は `applied` を Unknown のまま維持する。ADR-098 決定 1-a・ADR-262 段階 A）。
     ///
     /// フォーカス直後の OS 観測値を applied に先同期して、直後の Engine ON が古い applied を根拠に不要な再送へ進む
     /// ことを防ぐ。（旧: focus-resync / force-on の判断が古い状態を参照するため必要、としていたが、force-on は
     /// `621bf93c` で撤去、focus-resync は `applied` を読まない〔ADR-262 round 3 で確認〕。この「再送の防止」も、
     /// ActivationSync の撤去〔ADR-213〕と押下の書き込みの view 未知化〔ADR-208 D1〕で実質は残っていない。実際に残る目的は
-    /// 下の BUG-18 の GjiFsm への ImeOn 通知と、`press=None` の ON の already-matched の材料である。）
+    /// `press=None` の ON の already-matched の材料である。）
     ///
-    /// BUG-18: HwndCacheRestored / mirror_applied_open は belief 層（ImeModel）だけを ON に戻し、GjiFsm には一切通知
-    /// しない。無操作中の AppKind 往復（TsfNative⇔Uwp）で本経路を繰り返し通ると、直前の実 IME-OFF で
-    /// `GjiFsm::OffCold` に入ったまま belief だけが ON に戻り、再開後の StartComposition が OffCold で握りつぶされて
-    /// 最初の数文字が欠落する。`sync_ime_kind_from_observation`（runtime/message_handlers.rs）と同じ
-    /// 「belief=ON なら GjiFsm へも ImeOn を通知する」パターンを揃える。GjiFsm が既に ON なら ImeOn ハンドラ側で
-    /// no-op になる（gji_fsm.rs 558-565）。
+    /// BUG-18（無操作中の AppKind 往復で `GjiFsm` が `OffCold` に取り残され、最初の数文字が欠落する）は、かつてここで
+    /// GjiFsm へ ImeOn を通知して防いでいた。ADR-276 で撤去し、最初のローマ字の送信時の level 突合
+    /// （ADR-203 (i)、`needs_belief_sync_on`）に一本化した（VK 注入だけの世界では二重で、モデル検証
+    /// `tsf/gji_sync_model.rs` で同じ害の集合になることを確かめた）。
     pub(crate) fn presync_applied_open_on(&mut self, tick_ms: crate::state::TickMs) {
         self.platform_state.ime.record_confirmed(true, tick_ms.0);
         tracing::debug!(
             "[focus] Imm32Unavailable hard pre-sync applied=true \
              (prevent spurious VK_KANJI on first character key)"
         );
-        if matches!(
-            crate::tsf::observer::tsf_obs().active_ime_kind(),
-            crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-        ) {
-            let mode = self.platform.output.injection_mode;
-            self.platform.gji_on_ime_on(mode);
-            for entry in self.platform.drain_journal_entries() {
-                self.platform_state.ime.journal.absorb(entry);
-            }
-        }
     }
 
     /// bootstrap で確立した最初のフォーカススコープの同一性（`app_policy`・`current_focus`・

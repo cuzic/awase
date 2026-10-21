@@ -7421,8 +7421,8 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
 /// 入口を宣言して件数を固定しておけば、新しい入口（または既存入口の削除）が黙って増減しない。
 /// 入口を足す/消すときは、ADR-203 の決定表（`docs/adr/203-*.md`）と一緒にこの表を更新すること。
 ///
-/// - `gji_on_ime_on(`: receipt（`sync_gji` の `OnImeOn` 腕）・フォーカス復帰の presync
-///   （`focus_tracking.rs`、BUG-18）・IME 種別同期（`message_handlers.rs`）
+/// - `gji_on_ime_on(`: receipt（`sync_gji` の `OnImeOn` 腕）のみ（フォーカス復帰の presync〈BUG-18〉と
+///   IME 種別同期は ADR-276 で撤去し、送信時の level 突合に一本化した）
 /// - `gji_on_ime_off(`: receipt（`sync_gji` の `OnImeOff` 腕）のみ（OFF は awase の actuation 由来だけ）
 /// - `sync_gji(`（ungated 側の `state/gji_direct_mechanism.rs` を除く）: (i) `send_keys` の level 突合
 ///   （`platform.rs`）、(ii) `kp_reopen_gji_fsm`（`key_pipeline.rs`）
@@ -7431,14 +7431,7 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
 #[test]
 fn gji_fsm_sync_entry_points_are_accounted_for() {
     let table: &[(&str, &[(&str, usize)])] = &[
-        (
-            "gji_on_ime_on(",
-            &[
-                ("src/platform.rs", 1),
-                ("src/runtime/focus_tracking.rs", 1),
-                ("src/runtime/message_handlers.rs", 1),
-            ],
-        ),
+        ("gji_on_ime_on(", &[("src/platform.rs", 1)]),
         ("gji_on_ime_off(", &[("src/platform.rs", 1)]),
         (
             "sync_gji(",

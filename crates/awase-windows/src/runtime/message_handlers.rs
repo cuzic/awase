@@ -972,19 +972,6 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     let detected = obs.ime_kind_detected();
     tracing::info!("[runtime] IME kind sync ({source}): {kind:?} (detected={detected})");
     app.platform.output.set_active_ime_kind(kind);
-    if matches!(
-        kind,
-        crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-    ) && app.platform_state.ime.model().applied.applied_open() == Some(true)
-    {
-        let mode = app.platform.output.injection_mode;
-        tracing::debug!("[runtime] GJI warmup FSM sync: applied_open=true → ImeOn");
-        app.platform.gji_on_ime_on(mode);
-        for entry in app.platform.drain_journal_entries() {
-            app.platform_state.ime.journal.absorb(entry);
-        }
-    }
-
     if detected {
         app.check_state_dependent_mode_keys(matches!(
             kind,
@@ -994,7 +981,7 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
 
     // GJI 検出時に config1.db から無変換/変換/ひらがな/カタカナの意味論を自動判定して、
     // awase 自身が代行・上書きする経路は、ADR-191 で撤去した（GJI の設定どおりに GJI 自身が動く）。
-    // したがって GJI 検出時にここで行う副作用は、上の warmup FSM 同期だけである。
+    // （かつてここにあった GjiFsm への ImeOn 通知は ADR-276 で撤去した。送信時の level 突合が行う。）
     // config1.db の分類は、bug report（ADR-148）が必要なときに読む。
     //
     // 専用Fnキー変換（ADR-091 §D3.2）の自動判定・設定支援ポップアップ・
