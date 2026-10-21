@@ -238,6 +238,7 @@ unsafe fn probe_once(automation: &IUIAutomation) -> (ProbeOutcome, Option<GlyphF
                 height: h,
                 dots: 0,
                 read_ms: elapsed_ms_u16(started),
+                dark: false,
             },
             None,
         )
@@ -253,9 +254,14 @@ unsafe fn probe_once(automation: &IUIAutomation) -> (ProbeOutcome, Option<GlyphF
         u16::try_from(gray.width()).unwrap_or(u16::MAX),
         u16::try_from(gray.height()).unwrap_or(u16::MAX),
     );
+    let dark = gray.background_is_dark();
     // `preprocess` が返す失敗は、一様・前景が少ない画像だけ（表に関する `Miss` は分類側）。
     preprocess(&gray).map_or_else(
-        |_| miss(ProbeMiss::EmptyGlyph, w, h),
+        |_| {
+            let (mut o, f) = miss(ProbeMiss::EmptyGlyph, w, h);
+            o.dark = dark;
+            (o, f)
+        },
         |f| {
             (
                 ProbeOutcome {
@@ -264,6 +270,7 @@ unsafe fn probe_once(automation: &IUIAutomation) -> (ProbeOutcome, Option<GlyphF
                     height: h,
                     dots: u16::try_from(f.dots()).unwrap_or(u16::MAX),
                     read_ms: elapsed_ms_u16(started),
+                    dark,
                 },
                 Some(f),
             )
