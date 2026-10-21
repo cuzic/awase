@@ -126,7 +126,7 @@ struct World {
     /// 実 IME の開閉。
     real: bool,
     /// `applied`(awase が書いた/確認した開閉。`None` = 未知)。A1・G1 の条件に使う。
-    applied: Option<bool>,
+    applied_open: Option<bool>,
     /// IME 種別が GJI と検出済みか。
     kind_gji: bool,
     /// `GjiFsm` が `OffCold` か。
@@ -222,13 +222,13 @@ fn step(w: World, ev: Ev, v: Variant, unicode: bool) -> Option<Step> {
         Ev::ActOn => {
             n.real = true;
             n.belief = true;
-            n.applied = Some(true);
+            n.applied_open = Some(true);
             n.off = false; // ImeOn
         }
         Ev::ActOff => {
             n.real = false;
             n.belief = false;
-            n.applied = Some(false);
+            n.applied_open = Some(false);
             n.off = true; // ImeOff
         }
         Ev::PredOn => {
@@ -245,7 +245,7 @@ fn step(w: World, ev: Ev, v: Variant, unicode: bool) -> Option<Step> {
         Ev::ObsSync => n.belief = w.real,
         Ev::FocusRestore => {
             n.belief = true;
-            n.applied = Some(true); // presync_applied_open_on の record_confirmed(true)
+            n.applied_open = Some(true); // presync_applied_open_on の record_confirmed(true)
             if v.a1 && w.kind_gji {
                 n.off = false; // A1: gji_on_ime_on
             }
@@ -253,7 +253,7 @@ fn step(w: World, ev: Ev, v: Variant, unicode: bool) -> Option<Step> {
         Ev::Focus => {}
         Ev::KindDetect => {
             n.kind_gji = true;
-            if v.g1 && w.applied == Some(true) {
+            if v.g1 && w.applied_open == Some(true) {
                 n.off = false; // G1: gji_on_ime_on
             }
         }
@@ -281,7 +281,7 @@ fn initial_worlds() -> Vec<World> {
         .map(|b| World {
             belief: b,
             real: b,
-            applied: None,
+            applied_open: None,
             kind_gji: false,
             off: true,
         })
