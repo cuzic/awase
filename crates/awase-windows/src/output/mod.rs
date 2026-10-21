@@ -1775,7 +1775,7 @@ mod tests {
         };
         let stage = |o: &Output| {
             o.install_pending_tsf(Box::new(
-                crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+                crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
                     "x",
                     Generation::INITIAL,
                     crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
@@ -1839,7 +1839,7 @@ mod tests {
 
         // 予約が無い回は、世代が古くても無関係な deferred を捨てない。
         o.install_pending_tsf(Box::new(
-            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+            crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
                 "x",
                 Generation::INITIAL,
                 crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
@@ -1867,7 +1867,7 @@ mod tests {
         // 超過分が通常送信へ degrade して消えた。通常の打鍵量では上限に達しない。
         let o = make_output();
         o.install_pending_tsf(Box::new(
-            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+            crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
                 "x",
                 Generation::INITIAL,
                 crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
@@ -1890,7 +1890,7 @@ mod tests {
         // 固定。romaji版の同名テストと対をなす。
         let o = make_output();
         o.install_pending_tsf(Box::new(
-            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+            crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
                 "x",
                 Generation::INITIAL,
                 crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
@@ -1923,7 +1923,7 @@ mod tests {
         // raw_recovery_owns_deferred() の項だけ。
         let o = make_output();
         o.install_pending_tsf(Box::new(
-            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+            crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
                 "x",
                 Generation::INITIAL,
                 crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),
@@ -1952,7 +1952,7 @@ mod tests {
         // コメント参照）。
         let o = make_output();
         o.install_pending_tsf(Box::new(
-            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+            crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
                 "x",
                 Generation::INITIAL,
                 crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),

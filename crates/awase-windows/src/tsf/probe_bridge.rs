@@ -88,7 +88,7 @@ pub(crate) static OUTPUT_GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex
 /// 二度と一致しなくなり、`OUTPUT_GATE.active` が恒久的に `true` にならない
 /// （`tsf::warmup::ms_ime_ready_coro::tests::phase1_does_not_hold_output_gate_only_phase2_does`
 /// が実機で毎回決定論的に失敗していた真因。`output/probe_io.rs`・
-/// `tsf/warmup/chrome_probe.rs`・`tsf/warmup/probe_fsm.rs` の `noop_for_test()`
+/// `tsf/warmup/probe_fsm.rs` の `noop_for_test()`
 /// 呼び出しが同じプロセス内の他の全テストの `OUTPUT_GATE` を汚染し続けていた）。
 /// `real` で生成経路を保持し、`Drop`側でノーオペレーションを実際に無害化する。
 #[derive(Debug)]
