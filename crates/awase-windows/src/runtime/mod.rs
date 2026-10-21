@@ -1797,7 +1797,7 @@ impl Runtime {
 
                 // BUG-37: この `EVENT_OBJECT_FOCUS` 経路（Ctrl+T 新規タブ等、同一プロセス内の
                 // フォーカス移動を含む）は belief（desired_open/effective_open）を一切触らない。
-                // 判定ロジックは `should_reprime_on_lightweight_focus_sync` のドキュメント参照
+                // 判定ロジックは `!can_use_imm32_cross_process()`(実 IME の状態を問い合わせられない窓、BUG-37)かつ belief=ON のとき再プライムする
                 // （唯一の訂正チャネルである物理 IME キー押下が shadow-toggle の no-op に
                 // 握り潰される問題を、真のフォーカス変更と同じ再プライム機構で補う）。
                 // cold mark 自体は次に実際に入力するまで何も送信しない遅延フラグなので、
@@ -1815,10 +1815,9 @@ impl Runtime {
                     crate::focus::classify::AppImeProfile::resolve(&class_name, relay_apps, || {
                         crate::focus::classify::get_process_name(pid)
                     });
-                if profile.should_reprime_on_lightweight_focus_sync(
-                    &class_name,
-                    self.platform_state.ime.effective_open(),
-                ) {
+                if !profile.can_use_imm32_cross_process()
+                    && self.platform_state.ime.effective_open()
+                {
                     tracing::debug!(
                         "[focus-sync] belief=ON かつ実状態を問い合わせられないプロファイル \
                          (profile={profile:?}) → 次の入力で再プライムするため cold mark"

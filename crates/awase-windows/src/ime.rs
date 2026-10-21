@@ -860,7 +860,7 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     // ime_on=None を返して shadow 状態に委ねる。
     // - TsfNative（Alt/Win 一時オーバーレイ等）: imc_open=false で Engine 誤 deactivate
     // - Imm32Unavailable（Chrome/Edge: Chrome_WidgetWin_1 等）: 常に 0 を返す
-    if !profile.can_read_imm32_open_status() {
+    if !profile.can_use_imm32_cross_process() {
         tracing::debug!(
             "read_ime_state_fast: profile={profile:?} class={class_name} → ime_on=None (shadow preserving)"
         );

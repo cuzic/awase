@@ -387,7 +387,7 @@ pub struct PredictInput {
     pub composing: bool,
     /// 追跡中の隠れ状態。
     pub track: KeyTrack,
-    /// 前面窓が「IME の実状態を読めない」種類（`cannot_verify_real_ime_state`かつ`InputRelay`以外）で、
+    /// 前面窓が「IME の実状態を読めない」種類（`!can_use_imm32_cross_process`かつ`InputRelay`以外）で、
     /// 窓別の規則（ADR-209）を使ってよいか。設定で止められる（止めるとき`false`）。
     pub unreadable: bool,
     /// 表に無い受動のキー（プリセットで閉状態から開く F13、ADR-211）の規則を当ててよい打鍵か。イベント側の条件
