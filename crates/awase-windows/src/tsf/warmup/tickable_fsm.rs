@@ -6,9 +6,9 @@
 //!
 //! | 実装型 | ファイル | 用途 | 追加でオーバーライドするメソッド |
 //! |--------|---------|------|-----------------|
-//! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `apply_transmit_done`, `apply_vk_sent` |
+//! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `apply_vk_sent` |
 //! | `MsImeReadyCoro` | `ms_ime_ready_coro.rs` | MS-IME IMC 確認待ち confirm-then-transmit（StepCoro, BUG-13） | なし（Core のみ） |
-//! | `TsfProbeCoro` | `probe_fsm.rs` | Chrome cold-start probe + LiteralDetect（StepCoro、旧 `ChromeProbe` ラッパーは ECRS T05 で撤去） | `apply_transmit_done`, `apply_vk_sent` |
+//! | `TsfProbeCoro` | `probe_fsm.rs` | Chrome cold-start probe + LiteralDetect（StepCoro、旧 `ChromeProbe` ラッパーは ECRS T05 で撤去） | `apply_vk_sent` |
 //! | `LiteralDetectFsm` | `literal_detect_fsm.rs` | warm パスの post-transmit composition 確認（`LiteralDetectCore` ラッパー） | なし（Core のみ） |
 //! | `UnicodeColdWarmupFsm` | `unicode_cold_warmup_fsm.rs` | Unicode long-cold の deferred chars 送信（手書き FSM） | `push_deferred_unicode_chars` |
 //! | `MozcComposeCheckFsm` | `mozc_compose_check_fsm.rs` | Mozc の最初の送信の後、共有メモリの `phase` で入力中の文字ができたかを確認し、できなければリテラルとして回収（ADR-270） | なし（Core のみ） |
@@ -33,8 +33,7 @@
 //! `dyn TickableFsm` のオブジェクト安全性・一律呼び出しが崩れるため不採用）、
 //! **ラップ型を追加する場合は、オーバーライドする各メソッドについて「委譲が
 //! 効いているか」を確認する回帰テストを対で追加すること**。`probe_fsm.rs` の
-//! `chrome_apply_vk_sent_via_trait_reaches_coro` /
-//! `chrome_apply_transmit_done_via_trait_reaches_coro` がその実例
+//! `chrome_apply_vk_sent_via_trait_reaches_coro` がその実例
 //! （デフォルト no-op の戻り値・後続 tick の挙動と、委譲が効いた場合の戻り値・
 //! 挙動が異なることを利用して判別する）。
 
@@ -53,21 +52,6 @@ pub(crate) trait TickableFsm {
     fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction>;
     /// ログ相関用の cold_seq を返す。
     fn cold_seq_hint(&self) -> Generation;
-
-    // ── TransmitDone ケイパビリティ（GjiWarmupCoro / TsfProbeCoro）───────────
-    //
-    // TSF/Chrome 経由の送信完了後、inline LiteralDetect フェーズへの継続を制御する。
-    // `true` = この machine は完了扱い（Done）、`false` = 次 tick で LiteralDetect に続く（Continue）。
-
-    fn apply_transmit_done(
-        &mut self,
-        _romaji: String,
-        _ze_bs_count: usize,
-        _detector: Option<LiteralDetector>,
-        _literal_detect_ms: u64,
-    ) -> bool {
-        true
-    }
 
     // ── SetOpenTrue/IMEセッション最初の1文字 per-VK confirm ケイパビリティ
     // （GjiWarmupCoro、TsfProbeCoro、BUG-24 追補・BUG-27）───────

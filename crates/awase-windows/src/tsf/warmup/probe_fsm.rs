@@ -205,8 +205,7 @@ pub(crate) enum ProbeAction {
     /// TSF または Chrome バッチパイプラインで `romaji` を送信する。
     ///
     /// dispatcher は romaji 送信直後に `TsfWarmupCoordinator` の deferred キューを
-    /// フラッシュしてから warm マークし、`target == Tsf` なら
-    /// [`TsfProbeCoro::apply_transmit_done`] を呼ぶ。
+    /// フラッシュしてから warm マークする。
     Transmit {
         cold_seq: Generation,
         /// FSM が確定した実行方針。dispatcher はそのまま実行する（再導出不要）。
@@ -287,18 +286,7 @@ pub(crate) enum ProbeAction {
 /// 別々に定義されていたが、フィールド構成が完全に同一だったため共有した。
 pub(crate) struct ProbeTickInput {
     pub(crate) env: TsfEnvSnapshot,
-    pub(crate) transmit_done: Option<TransmitDonePayload>,
     pub(crate) vk_sent: Option<VkSentPayload>,
-}
-
-/// `apply_transmit_done(Some(detector))` のペイロード。次 tick で inline LiteralDetect に入る。
-/// Chrome (`TsfProbeCoro`) / TSF (`GjiWarmupCoro`) で共有。
-pub(crate) struct TransmitDonePayload {
-    pub(crate) romaji: String,
-    pub(crate) ze_bs_count: usize,
-    pub(crate) detector: LiteralDetector,
-    /// `apply_transmit_done` 呼び出し時点の `current_tick_ms() + literal_detect_ms`。
-    pub(crate) deadline_ms: u64,
 }
 
 /// `apply_vk_sent` のペイロード。次 tick の [`ProbeTickInput`] に載り、コルーチン本体が
@@ -680,7 +668,7 @@ async fn tsf_probe_coro_body(
     };
 
     // ── Phase 2b: 直接 Chrome 送信 ──
-    // gji_active なら inline LiteralDetect（Phase 3）/ per-VK confirm（Phase 2c）を
+    // gji_active なら per-VK confirm（Phase 2c）を
     // 安全網として有効化する。VK_A probe + Chrome reinit のフルコース
     // （StartSacrificialWarmup、2026-07-18 撤去）は踏まない。
     let needs_literal = env.gji_active;
@@ -697,7 +685,12 @@ async fn tsf_probe_coro_body(
         return;
     }
 
-    let transmit_input = yield_step(
+    // ここへ来るのは `needs_literal=false`(= `gji_active` でない)のときだけ。dispatcher が `apply_transmit_done(None)` → true で
+    // machine を drop するので、コルーチンは再開されない。`needs_literal=true` は上の per-VK confirm が必ず先に取る
+    // (ECRS MB-01、2026-10-21。`cold_seq` は cold start のたびに新規採番され、`literal_session_confirmed_gen` に
+    // 生成直後のコルーチンの `cold_seq` が入ることは無い。`gji_warmup_coro.rs` の同箇所のコメント参照)。
+    // 旧 Phase 3(inline LiteralDetect。StaleConfirm→romaji 再送を含む)は撤去した。
+    yield_step(
         ch.clone(),
         vec![ProbeAction::Transmit {
             cold_seq,
@@ -711,107 +704,6 @@ async fn tsf_probe_coro_body(
         }],
     )
     .await;
-
-    // ── Phase 3: Inline LiteralDetect（dispatcher が detector を渡した場合のみ）─
-    let Some(TransmitDonePayload {
-        romaji: recovery_romaji,
-        ze_bs_count,
-        detector,
-        deadline_ms,
-    }) = transmit_input.transmit_done
-    else {
-        return;
-    };
-
-    loop {
-        use crate::tsf::probe::DetectionResult;
-        let poll_input = yield_step(ch.clone(), vec![]).await;
-
-        let Some(detection) = detector.check_now(deadline_ms) else {
-            continue;
-        };
-        let facts = literal_facts(
-            &detection,
-            DetectRoute::CheckNow,
-            DetectPath::Word,
-            TransmitTarget::Chrome,
-            None,
-            0,
-            0,
-            detector.evidence_now(
-                poll_input.env.gji_candidate_visible_now,
-                deadline_ms,
-                cold_seq,
-            ),
-        );
-
-        let final_actions = match detection {
-            DetectionResult::SuspectedLiteral => {
-                crate::tsf::log_composition_probe(cold_seq, "suspected");
-                let (backs, escape_composition) =
-                    crate::tsf::warmup::literal_detect_fsm::word_level_recovery_params(
-                        false,
-                        ze_bs_count,
-                    );
-                vec![
-                    ProbeAction::RawTsfLiteralRecovery {
-                        cold_seq,
-                        backs,
-                        romaji: recovery_romaji,
-                        escape_composition,
-                        facts,
-                    },
-                    ProbeAction::Done,
-                ]
-            }
-            DetectionResult::CompositionConfirmed => {
-                tracing::debug!(
-                    "[raw-tsf-literal] cold={cold_seq} composition confirmed",
-                    cold_seq = cold_seq.value(),
-                );
-                crate::tsf::log_composition_probe(cold_seq, "confirmed");
-                vec![
-                    ProbeAction::LiteralDetectNote { cold_seq, facts },
-                    ProbeAction::Done,
-                ]
-            }
-            DetectionResult::StaleConfirm => {
-                // ADR-079 Stage 1 追補: 「検出のみ・recovery なし」は実機で
-                // 未送信 VK が欠落する回帰を引き起こした（run_per_vk_confirm 側の
-                // 同種修正のコメント参照）。romaji 再送自体は必要なので Done では
-                // 終わらせない。
-                //
-                // BUG-33 追補4: 一方 backspace は「literal である」証拠がない
-                // 限り送らない（`per_vk_recovery_params` のドキュメント参照）。
-                // StaleConfirm は confirm 根拠が古いことの検出であって literal の
-                // 証拠ではないため backs=0 とする。
-                tracing::warn!(
-                    "[raw-tsf-literal] cold={cold_seq} stale confirm 検出 → \
-                     backspace は送らず romaji 再送のみ行う",
-                    cold_seq = cold_seq.value(),
-                );
-                crate::tsf::log_composition_probe(cold_seq, "epoch-fence-stale");
-                let (backs, escape_composition) =
-                    crate::tsf::warmup::literal_detect_fsm::word_level_recovery_params(
-                        true,
-                        ze_bs_count,
-                    );
-                vec![
-                    ProbeAction::RawTsfLiteralRecovery {
-                        cold_seq,
-                        backs,
-                        romaji: recovery_romaji,
-                        escape_composition,
-                        facts,
-                    },
-                    ProbeAction::Done,
-                ]
-            }
-        };
-
-        yield_step(ch, final_actions).await;
-        return;
-    }
 }
 
 // ── TsfProbeCoro ──────────────────────────────────────────────────────────────
@@ -821,7 +713,7 @@ async fn tsf_probe_coro_body(
 /// `pending_tsf` (`RefCell<Option<Box<dyn TickableFsm>>>`) に格納し、
 /// `TIMER_TSF_PROBE` ハンドラが `tick()` で 1 ステップ進める。
 pub(crate) struct TsfProbeCoro {
-    /// `tick`/`apply_transmit_done`/`apply_vk_sent`/prime のラッパー配線
+    /// `tick`/`apply_vk_sent`/prime のラッパー配線
     /// （`GjiWarmupCoro` と共有、`probe_coro_state.rs` 参照）。
     state: ProbeCoroState,
     /// RAII guard。drop で `OUTPUT_GATE.active=false`。コルーチン生存中ずっと
@@ -856,21 +748,6 @@ impl TickableFsm for TsfProbeCoro {
 
     fn cold_seq_hint(&self) -> Generation {
         self.state.cold_seq()
-    }
-
-    /// dispatcher が `Transmit(Chrome)` を実行した後に呼ぶ。
-    ///
-    /// `detector` が `Some` なら `LiteralDetect` フェーズへ進む（`false` を返す）。
-    /// `None` なら Done（`true` を返す）。
-    fn apply_transmit_done(
-        &mut self,
-        romaji: String,
-        ze_bs_count: usize,
-        detector: Option<LiteralDetector>,
-        literal_detect_ms: u64,
-    ) -> bool {
-        self.state
-            .apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms)
     }
 
     /// Chrome per-VK confirm が1 VK 送信するたびに呼ぶ。
@@ -1163,8 +1040,8 @@ mod tests {
 
     // ── TickableFsm 経由の capability 到達(旧 ChromeProbe ラッパーの BUG-27 回帰を引き継ぐ) ──
     //
-    // 本番の `pending_tsf: Box<dyn TickableFsm>` と同じ経路で `apply_vk_sent` /
-    // `apply_transmit_done` を呼んでも、デフォルト no-op に落ちず実装に届くこと。
+    // 本番の `pending_tsf: Box<dyn TickableFsm>` と同じ経路で `apply_vk_sent` を
+    // 呼んでも、デフォルト no-op に落ちず実装に届くこと。
 
     #[test]
     fn chrome_apply_vk_sent_via_trait_reaches_coro() {
@@ -1188,24 +1065,6 @@ mod tests {
         // 届いていれば detection 待ちの polling(空の Vec)。no-op に落ちると即 Done。
         let after = TickableFsm::tick(&mut machine, env());
         assert!(after.is_empty(), "{after:?}");
-    }
-
-    #[test]
-    fn chrome_apply_transmit_done_via_trait_reaches_coro() {
-        use crate::tsf::warmup::tickable_fsm::TickableFsm;
-        let _g = crate::tsf::observer::TSF_OBS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut machine = ready_chrome_probe();
-        // 届けば pending に積んで false(Done ではない)。デフォルト no-op は常に true。
-        let is_done = TickableFsm::apply_transmit_done(
-            &mut machine,
-            "ka".to_string(),
-            2,
-            Some(LiteralDetector::new(false)),
-            1000,
-        );
-        assert!(!is_done);
     }
 
     #[test]

@@ -17,7 +17,7 @@
 //!   run_per_vk_confirm（Chrome/TSF 共通 per-VK confirm ループ）
 //! - [`gji_warmup_coro`]        — GjiWarmupCoro（GJI cold-start probe, StepCoro）
 //! - [`probe_coro_state`]       — ProbeCoroState（TsfProbeCoro/GjiWarmupCoro 共有の
-//!   TickableFsm ラッパー状態: tick/apply_transmit_done/apply_vk_sent/prime）
+//!   TickableFsm ラッパー状態: tick/apply_vk_sent/prime）
 //! - [`ms_ime_ready_coro`]      — MsImeReadyCoro（MS-IME IMC 確認待ち, StepCoro, BUG-13）
 //! - [`literal_detect_fsm`]     — LiteralDetectCore/Fsm（literal 検出 単一所在地）
 //! - [`mozc_compose_check_fsm`] — MozcComposeCheckFsm（Mozc の最初の送信の後、入力中の文字ができたかを共有メモリで確認。ADR-270）

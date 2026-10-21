@@ -16,22 +16,18 @@
 //!   │     romaji の VK を1つずつ送信し CompositionConfirmed/SuspectedLiteral を都度確認
 //!   │       ├─[全 VK 確認]─────────────► セッション確認 (literal_session_confirmed) → Done
 //!   │       └─[いずれか SuspectedLiteral]─► [RawTsfLiteralRecovery + Done]
-//!   └─[その他 needs_literal]──► [Transmit { needs_literal }] → inline LiteralDetect
-//!         LiteralDetect ループ（warm パスと共有の `LiteralDetectCore` に委譲）
-//!           ├─[composition 確認]─► Done
-//!           └─[partial/suspected literal]─► [RawTsfLiteralRecovery + Done]
 //! ```
 //!
 //! 捨て駒キー（`StartSacrificialWarmup`、VK_A+BS/VK_IME_OFF→ON）は 2026-07-16 に
-//! この2経路（per-VK・inline LiteralDetect）双方から撤去し、2026-07-18 に
+//! この2経路（per-VK・当時あった inline LiteralDetect）双方から撤去し、2026-07-18 に
 //! Chrome 側の long-cold 予防的 `StartSacrificialWarmup`（`probe_fsm.rs`）・
 //! `SacrificialWarmupCoro`/`ImeOffOnWarmupFsm` 自体も物理削除した。
 //! `RawTsfLiteralRecovery` の dispatcher が `consecutive_count()==0` のときだけ
 //! romaji 再送を自然に次の cold パス（per-VK confirm）へ委ねる
 //! （`literal_detect_fsm::emit_recovery_actions` 参照）。
 //!
-//! Phase 6 の LiteralDetect 判定は `literal_detect_fsm::LiteralDetectCore` に集約されており、
-//! warm パスの `LiteralDetectFsm` と同一ロジックを共有する（重複排除）。
+//! inline LiteralDetect(旧 Phase 6)は到達しないので撤去した(ECRS MB-01)。`LiteralDetectCore` は
+//! warm パスの `LiteralDetectFsm` だけが使う。
 
 use std::rc::Rc;
 
@@ -55,7 +51,6 @@ struct GjiProbeCtx {
     used_eager_path: bool,
     forces_prepend_f2: bool,
     is_long_cold: bool,
-    consecutive: u32,
 }
 
 // ── コルーチン本体 ────────────────────────────────────────────────────────────
@@ -71,7 +66,7 @@ async fn gji_coro_body(
     ctx: GjiProbeCtx,
 ) {
     // ── Phase 1: GJI probe ───────────────────────────────────────────────────
-    let (mut env, nc_fired, gji_settled) = {
+    let (env, nc_fired, gji_settled) = {
         // 最初の step() で input は消費されないため、env は 2 tick 目から更新される。
         // 10ms タイマー駆動の 1 tick ズレは動作に影響しない
         // （`GjiWarmupCoro::new` が construction 時に self-priming tick を行うため、
@@ -174,9 +169,16 @@ async fn gji_coro_body(
     }
 
     // ── Phase 5b: Transmit ───────────────────────────────────────────────────
-    // needs_literal=false: dispatcher が apply_transmit_done(None) → true → Done
-    // needs_literal=true:  dispatcher が apply_transmit_done(Some(det)) → false → Continue
-    let transmit_input = yield_step(
+    // ここへ来るのは `needs_literal=false` のときだけ。dispatcher が `apply_transmit_done(None)` → true で
+    // machine を drop するので、コルーチンは再開されない。
+    //
+    // `needs_literal=true` は上の per-VK confirm が必ず先に取る(ECRS MB-01、2026-10-21): `needs_literal` は
+    // `is_tsf_mode` のときだけ真で、そのとき `used_eager_path` は偽になる(`decide_transmit_plan`)。per-VK を外れるのは
+    // `env.literal_session_confirmed_gen == Some(cold_seq)` のときだけだが、`cold_seq` は cold start のたびに新しく採番され
+    // (`increment_cold_start_count` は `vk_send.rs`・`cold_warmup.rs` のコルーチン生成直前の 2 か所)、
+    // `mark_literal_session_confirmed` に渡るのは完了した per-VK/warm LiteralDetect 自身の `cold_seq` なので、
+    // 生成直後のコルーチンでは成り立たない。旧 Phase 6(inline LiteralDetect、`LiteralDetectCore` を warm パスと共有)は撤去した。
+    yield_step(
         ch.clone(),
         vec![ProbeAction::Transmit {
             cold_seq: ctx.cold_seq,
@@ -186,37 +188,6 @@ async fn gji_coro_body(
         }],
     )
     .await;
-
-    // needs_literal=false なら dispatcher が apply_transmit_done(None) → true で machine を
-    // drop するため、ここへは戻らない。万一再開されても transmit_done が None で return する。
-
-    // ── Phase 6: Inline LiteralDetect（warm パスと共有の LiteralDetectCore） ────
-    // literal 検出の判定は warm パス（LiteralDetectFsm）と同一の LiteralDetectCore に
-    // 委譲する（ロジックの単一所在地: literal_detect_fsm.rs）。
-    let Some(td) = transmit_input.transmit_done else {
-        return;
-    };
-
-    let mut core = crate::tsf::warmup::literal_detect_fsm::LiteralDetectCore::new(
-        ctx.cold_seq,
-        td.romaji,
-        observations,
-        td.detector,
-        crate::tsf::literal_facts::DetectTarget::Tsf,
-        td.deadline_ms,
-        td.ze_bs_count,
-        ctx.consecutive,
-    );
-
-    loop {
-        let detect_input = yield_step(ch.clone(), vec![]).await;
-        env = detect_input.env;
-
-        if let Some(final_actions) = core.poll(env) {
-            yield_step(ch.clone(), final_actions).await;
-            return;
-        }
-    }
 }
 
 // ── GjiWarmupCoro ─────────────────────────────────────────────────────────────
@@ -232,7 +203,7 @@ async fn gji_coro_body(
 /// inline LiteralDetect に入ったとき `literal_detect_guard` を追加で活性化する。
 /// `OutputActiveGuard` は参照カウント (`depth`) 方式なので 2 つのガードが重複しても安全。
 pub(crate) struct GjiWarmupCoro {
-    /// `tick`/`apply_transmit_done`/`apply_vk_sent`/prime のラッパー配線
+    /// `tick`/`apply_vk_sent`/prime のラッパー配線
     /// （`TsfProbeCoro` と共有、`probe_coro_state.rs` 参照）。
     state: ProbeCoroState,
     /// inline LiteralDetect フェーズ中に OUTPUT_GATE を active に保つ追加ガード。
@@ -240,7 +211,7 @@ pub(crate) struct GjiWarmupCoro {
 }
 
 impl GjiWarmupCoro {
-    /// `GjiWarmupFsm::new` と同等のシグネチャ。`consecutive` は LiteralDetect 判定用。
+    /// `GjiWarmupFsm::new` と同等のシグネチャ。
     pub(crate) fn new(
         romaji: &str,
         cold_seq: Generation,
@@ -249,14 +220,12 @@ impl GjiWarmupCoro {
         used_eager_path: bool,
         forces_prepend_f2: bool,
         is_long_cold: bool,
-        consecutive: u32,
     ) -> Self {
         let ctx = GjiProbeCtx {
             cold_seq,
             used_eager_path,
             forces_prepend_f2,
             is_long_cold,
-            consecutive,
         };
         let romaji = romaji.to_string();
         let coro = StepCoro::new(async move |ch| {
@@ -278,27 +247,6 @@ impl TickableFsm for GjiWarmupCoro {
 
     fn cold_seq_hint(&self) -> Generation {
         self.state.cold_seq()
-    }
-
-    /// `needs_literal=true` のとき `false`（Continue）を返してコルーチンに LiteralDetect を委譲する。
-    ///
-    /// `false` → `dispatch_probe_actions` が `DispatchResult::Continue` を返す
-    /// → 次 tick の `ProbeTickInput` に `transmit_done` が乗り、コルーチン本体が Phase 6 に入る。
-    fn apply_transmit_done(
-        &mut self,
-        romaji: String,
-        ze_bs_count: usize,
-        detector: Option<LiteralDetector>,
-        literal_detect_ms: u64,
-    ) -> bool {
-        let has_detector = detector.is_some();
-        let result =
-            self.state
-                .apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms);
-        if has_detector {
-            self.literal_detect_guard = Some(OutputActiveGuard::begin());
-        }
-        result
     }
 
     /// BUG-24 追補: IME セッション最初の1文字の per-VK confirm ループが1 VK 送信するたびに呼ぶ。

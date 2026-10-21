@@ -9616,24 +9616,6 @@ fn per_vk_confirm_takes_literal_baseline_before_send_input() {
     );
 }
 
-/// 一括送信の TSF 経路・Chrome 経路（BUG-030）: `LiteralDetector::new(true)` → 送信 → `apply_transmit_done`。
-#[test]
-fn batch_transmit_takes_literal_baseline_before_send_input() {
-    assert_markers_in_order(
-        "src/output/probe_io.rs",
-        &[
-            "LiteralDetector::new(true)",
-            "io.transmit_tsf(",
-            "machine.apply_transmit_done(",
-            "TransmitTarget::Chrome => {",
-            "LiteralDetector::new(true)",
-            "io.transmit_chrome(",
-            "machine.apply_transmit_done(",
-        ],
-        "送信後に baseline を取ると、応答の速い GJI の write が吸収されて composition を literal と誤る（BUG-030/210）",
-    );
-}
-
 /// warm パス（BUG-210）: 検出ベースラインは `TsfSendPipeline::transmit` の前に取り、`LiteralDetectFsm::new` へ渡す。
 #[test]
 fn warm_path_takes_literal_baseline_before_transmit() {

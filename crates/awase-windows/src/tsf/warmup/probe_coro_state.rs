@@ -2,7 +2,7 @@
 //!
 //! コルーチン本体（`tsf_probe_coro_body` / `gji_coro_body`）は既に
 //! `run_per_vk_confirm`（2026-07-17 統合）で共通化済みだったが、その周辺の
-//! `tick`/`apply_transmit_done`/`apply_vk_sent`/prime のラッパー配線は
+//! `tick`/`apply_vk_sent`/prime のラッパー配線は
 //! `TsfProbeCoro`（`probe_fsm.rs`）と `GjiWarmupCoro`（`gji_warmup_coro.rs`）に
 //! byte-identical に近い形で複製されていた。本モジュールはその共通部分だけを
 //! 切り出したものであり、各構造体固有の `OutputActiveGuard` 管理
@@ -12,18 +12,15 @@
 
 use crate::state::event_origin::Generation;
 use crate::tsf::probe::LiteralDetector;
-use crate::tsf::warmup::probe_fsm::{
-    ProbeAction, ProbeTickInput, TransmitDonePayload, TsfEnvSnapshot, VkSentPayload,
-};
+use crate::tsf::warmup::probe_fsm::{ProbeAction, ProbeTickInput, TsfEnvSnapshot, VkSentPayload};
 use timed_fsm::coro::{CoroStep, StepCoro};
 
 /// `TsfProbeCoro`/`GjiWarmupCoro` 共有の `TickableFsm` 状態。
 ///
-/// `pending_transmit_done`/`pending_vk_sent` は dispatcher からの `apply_*` 呼び出しで
+/// `pending_vk_sent` は dispatcher からの `apply_vk_sent` 呼び出しで
 /// セットされ、次の `tick()` で `ProbeTickInput` に載せて消費される（BUG-27 参照）。
 pub(crate) struct ProbeCoroState {
     coro: StepCoro<ProbeTickInput, Vec<ProbeAction>>,
-    pending_transmit_done: Option<TransmitDonePayload>,
     pending_vk_sent: Option<VkSentPayload>,
     cold_seq: Generation,
 }
@@ -49,7 +46,6 @@ impl ProbeCoroState {
         );
         Self {
             coro,
-            pending_transmit_done: None,
             pending_vk_sent: None,
             cold_seq,
         }
@@ -60,56 +56,25 @@ impl ProbeCoroState {
     }
 
     /// BUG-27 調査用ログ: 通常 tick（Phase 1 の 10ms ポーリング等）は毎回
-    /// vk_sent/transmit_done とも None のため、どちらかが Some の場合のみ出す
+    /// vk_sent が None のため、Some の場合のみ出す
     /// （毎 tick 出すと Phase 1 のポーリングだけでログが埋まる）。`log_tag` は
     /// 呼び出し元（`tsf-probe-vk-sent-trace`/`gji-coro-vk-sent-trace`）で書き分ける。
     pub(crate) fn tick(&mut self, env: TsfEnvSnapshot, log_tag: &str) -> Vec<ProbeAction> {
-        if self.pending_vk_sent.is_some() || self.pending_transmit_done.is_some() {
+        if self.pending_vk_sent.is_some() {
             tracing::debug!(
-                "[{log_tag}] cold={} tick consuming pending_vk_sent={} \
-                 pending_transmit_done={} t={}ms",
+                "[{log_tag}] cold={} tick consuming pending_vk_sent={} t={}ms",
                 self.cold_seq.value(),
                 self.pending_vk_sent.is_some(),
-                self.pending_transmit_done.is_some(),
                 crate::clock::current_tick_ms(),
             );
         }
         let input = ProbeTickInput {
             env,
-            transmit_done: self.pending_transmit_done.take(),
             vk_sent: self.pending_vk_sent.take(),
         };
         match self.coro.step(input) {
             CoroStep::Yielded(actions) => actions,
             CoroStep::Complete => vec![ProbeAction::Done],
-        }
-    }
-
-    /// dispatcher が `Transmit` を実行した後に呼ぶ。
-    ///
-    /// `detector` が `Some` なら `LiteralDetect` フェーズへ進む（`false` を返す）。
-    /// `None` なら Done（`true` を返す）。呼び出し元が `OutputActiveGuard` を追加で
-    /// 確保する必要がある場合は、戻り値 `false`（＝ `detector` が `Some` だった）を
-    /// 見て呼び出し元側で行う。
-    pub(crate) fn apply_transmit_done(
-        &mut self,
-        romaji: String,
-        ze_bs_count: usize,
-        detector: Option<LiteralDetector>,
-        literal_detect_ms: u64,
-    ) -> bool {
-        match detector {
-            Some(det) => {
-                let deadline_ms = crate::clock::current_tick_ms() + literal_detect_ms;
-                self.pending_transmit_done = Some(TransmitDonePayload {
-                    romaji,
-                    ze_bs_count,
-                    detector: det,
-                    deadline_ms,
-                });
-                false
-            }
-            None => true,
         }
     }
 
