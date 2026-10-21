@@ -46,10 +46,9 @@ impl FocusProbeOpenStatus {
         if !profile.can_use_imm32_cross_process() {
             return Self::NotObservable(profile);
         }
-        match probe_ime_on {
-            Some(on) => Self::Read(ObservedOpenValue(on)),
-            None => Self::NotObservable(profile),
-        }
+        probe_ime_on.map_or(Self::NotObservable(profile), |on| {
+            Self::Read(ObservedOpenValue(on))
+        })
     }
 }
 
