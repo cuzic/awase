@@ -127,6 +127,22 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
     ("apply_sync", &["apply", "dispatch_set_open"]),
     // dispatch_set_open（同）: executorのEngineのSetOpenの判断の核。殻の`dispatch_ime_set_open`だけが呼ぶ。
     ("dispatch_set_open", &["dispatch_ime_set_open"]),
+    // 記録系（`applied` を書く入口、INV-A97-1・BUG-69。`state/platform_state/shell.rs` の殻のラッパー）。
+    // ADR-275 の Opus レビュー: 呼び出し元ファイルの件数は `architecture_guard.rs::applied_state_recorders_call_sites_are_accounted_for`
+    // （`RECORDERS`）が固定するが、そちらは `.record_*(` で始まる文字列なので `ImeStateHub::record_confirmed(hub, ..)` の
+    // 完全修飾呼び出しを見逃す。この lint はその穴を塞ぐ（両方残す。許可は関数名で、件数は数えない）。
+    // 2026-10-21 時点で `fn record_optimistic|record_confirmed|record_ime_apply_result` の定義は殻の 3 つだけ（同名の無関係な関数なし）。
+    ("record_optimistic", &["ir_apply_drift_correction"]),
+    (
+        "record_confirmed",
+        &[
+            "presync_applied_open_on",
+            "ir_post_focus_change_snapshot",
+            "kp_shadow_actuate",
+            "process_deferred_keys",
+        ],
+    ),
+    ("record_ime_apply_result", &["on_ime_apply_complete"]),
 ];
 
 fn allowed_fns_for(target: &str) -> Option<&'static [&'static str]> {

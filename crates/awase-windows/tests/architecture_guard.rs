@@ -2152,7 +2152,7 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
 /// - `.record_optimistic(` = 1（`ir_apply_drift_correction`、ImmCross 分岐）。
 /// - `.record_confirmed(` = 5（`record_ime_apply_result` 内部/`ir_post_focus_change_snapshot`
 ///   〈決定1-a、TsfNative と実測学習で降格された窓ではスキップされる。ADR-262 段階 A〉/
-///   `kp_stage_shadow_ime_toggle`/`focus_tracking.rs` hard pre-sync〈同じく学習降格の窓ではスキップ〉/
+///   `kp_shadow_actuate`/`focus_tracking.rs` hard pre-sync〈同じく学習降格の窓ではスキップ〉/
 ///   `process_deferred_keys`〈本番到達不能なデッドコード、決定5参照〉）。
 #[test]
 fn applied_state_recorders_call_sites_are_accounted_for() {
