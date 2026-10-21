@@ -109,33 +109,6 @@ pub(crate) fn apply_mechanism(
     // site を見るのは ImmCross のときだけで、`WriteMechanism::ImmCross` を渡すのは
     // 同期チェーンからだけである（ADR-163 round3 U1 の設計）。
     match command {
-        Some(MechanismCommand::SetOpenCrossProcessSync(_)) => {
-            // ADR-117（issue #138 切り分け）: この経路は Standard プロファイル×MS-IME の
-            // 完全同期呼び出し（撤去済みの `try_force_on_bootstrap` 等）のみ到達した経路で、報告環境の
-            // 主経路（非同期 ImmCross）は `runtime/open_chain.rs::imm_cross_write` が
-            // 別途担う。
-            tracing::info!(
-                "[apply-ime] ImmCross sync: open={open} composition_active={} show_seq={} \
-                 change_seq={} (issue #138診断)",
-                view.observed.composition_active,
-                view.observed.ime_show_seq,
-                view.observed.ime_change_seq,
-            );
-            // SAFETY: send_ime_mode_key/set_ime_open_cross_process 等の Win32 呼び出しは
-            // メインスレッド（フックまたはメッセージループ）からのみ行われる
-            // （`apply_mechanism` の呼び出し元制約、上記 doc 参照）。
-            if unsafe { crate::ime::set_ime_open_cross_process(open) } {
-                // ADR-167: この機構は SendInput を伴わない（クロスプロセス
-                // IMM32 APIのみ）ため、実送信を意味する `Applied` とは
-                // 区別する。
-                ImeOpenOutcome::AppliedWithoutSendInput
-            } else {
-                tracing::info!(
-                    "[apply-ime] ImmCross sync: set_ime_open_cross_process failed → Failed"
-                );
-                ImeOpenOutcome::Failed
-            }
-        }
         Some(MechanismCommand::SendVk(vk)) if mechanism == WriteMechanism::GjiDirect => {
             tracing::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
             // SAFETY: 同上。
@@ -202,6 +175,18 @@ pub(crate) fn apply_mechanism(
                 );
                 ImeOpenOutcome::UnsafeToToggle
             }
+        }
+        Some(MechanismCommand::SetOpenCrossProcessSync(_)) => {
+            // 同期チェーンは ImmCross を適用しない(ECRS MA-01)。同期の入口は ImmCross が先頭で最初に適用可能なとき
+            // (`imm_cross_is_first_applicable`)は非同期チェーンへ回すので、ここへは来ない
+            // (`sync_actuation::tests::sync_chain_never_applies_imm_cross_for_any_profile_and_kind` が profile × kind の
+            // 全列挙で固定)。旧実装は `set_ime_open_cross_process(open)` を直接呼んでいたが、唯一の呼び出し元
+            // (`try_force_on_bootstrap`)は `621bf93c` で撤去済み。万一来ても入力を止めないよう、panic せず失敗として返し、
+            // チェーンの次の機構へフォールスルーさせる。
+            tracing::error!(
+                "[apply-ime] ImmCross sync は到達しないはずの経路: open={open} → Failed(次の機構へフォールスルー)"
+            );
+            ImeOpenOutcome::Failed
         }
         Some(
             MechanismCommand::SetOpenThenConvForTarget { .. }

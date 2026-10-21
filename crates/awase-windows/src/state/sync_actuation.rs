@@ -514,6 +514,40 @@ mod tests {
         }
     }
 
+    /// 同期チェーンは ImmCross を一度も適用しない(ECRS MA-01)。
+    ///
+    /// 同期の入口(`dispatch_set_open`・`kp_shadow_actuate`・drift correction)は、ImmCross が先頭で最初に適用可能なとき
+    /// (`imm_cross_is_first_applicable`)は非同期チェーンへ回し、同期チェーンへは来ない。したがって同期チェーンの走査で
+    /// `ImmCross` が `is_applicable` を通ることは無く、`ime_controller.rs::apply_mechanism` に
+    /// `SetOpenCrossProcessSync` を実際に実行する腕は要らない。`DecisionInputs` のうち機構チェーンと適用可否を決めるのは
+    /// `profile` と `kind` だけなので、全組み合わせの列挙で足りる。
+    /// 将来 `caps` に「ImmCross が先頭だが適用不能」な profile を足すとここで落ちる。
+    #[test]
+    fn sync_chain_never_applies_imm_cross_for_any_profile_and_kind() {
+        let profiles = [
+            AppImeProfile::Standard,
+            AppImeProfile::Imm32Unavailable,
+            AppImeProfile::TsfNative,
+            AppImeProfile::InputRelay,
+        ];
+        for profile in profiles {
+            for kind in ImeKindId::ALL {
+                let i = inputs(profile, kind, None);
+                let chain = decide_chain(i);
+                let imm_cross_applies = chain
+                    .iter()
+                    .any(|m| *m == WriteMechanism::ImmCross && mechanism_applicable(*m, i));
+                // ImmCross が適用可能になるなら、それは必ず「先頭で最初に適用可能」=非同期へ回る側。
+                assert_eq!(
+                    imm_cross_applies,
+                    imm_cross_is_first_applicable(i),
+                    "{profile:?} × {kind:?}: ImmCross が適用可能なのに非同期へ回らない(または逆)。\
+                     同期チェーンが ImmCross を実行する経路ができた"
+                );
+            }
+        }
+    }
+
     #[test]
     fn candidate_evidence_is_consumed_only_by_a_sent_gji_off() {
         let off = Some(MechanismCommand::SendVk(VK_IME_OFF));
