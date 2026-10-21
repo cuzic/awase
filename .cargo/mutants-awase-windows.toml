@@ -15,7 +15,7 @@
 # （= プラットフォーム非依存な）ファイルだけを examine_globs で明示的に
 # 許可する。ディレクトリ丸ごとの glob（例 `state/**`）を使わないのは、同じ
 # ディレクトリ内に #[cfg(windows)] ファイルが混在しているため
-# （例: state/platform_state.rs, state/ime_decision_view.rs 等は対象外）。
+# （例: state/ime_decision_view.rs は tsf::observer を読む cfg(windows) なので対象外）。
 #
 # 保守上の注意: このリストはメンテナンスが必要 —— 対象ファイルの
 # プラットフォーム依存性が変わったら（#[cfg(windows)] を追加/削除したら）、
@@ -26,6 +26,11 @@ examine_globs = [
     "crates/awase-windows/src/single_thread_cell.rs",
     "crates/awase-windows/src/lifetime_counter.rs",
     "crates/awase-windows/src/state/sync_actuation.rs",
+    # ADR-275(Opus レビュー): 本番 2,337 行は Linux でもコンパイルされる(`mod shell;` だけが cfg(windows))。
+    # 以前は「cfg(windows) なので対象外」と書いていたが古い記述だった。IME belief ファミリーの中心で、
+    # 単体テスト約 2,700 行が Linux で走る。**未実行**: 追加直後の mutants 実行(workflow_dispatch)で
+    # ベースラインが通るか・timeout になる変異(壁時計待ち)が無いかを確かめ、あれば exclude_re に理由付きで足す。
+    "crates/awase-windows/src/state/platform_state.rs",
     "crates/awase-windows/src/focus/cache.rs",
     # ADR-272 段階 A で Linux でもビルドされるようになった FSM 群。グローバル(TSF_OBS・OUTPUT_GATE)を
     # 直接触る observer.rs・probe_bridge.rs と、壁時計だけの clock.rs は対象にしない。
