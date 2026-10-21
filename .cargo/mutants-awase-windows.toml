@@ -34,7 +34,6 @@ examine_globs = [
     "crates/awase-windows/src/input_defer.rs",
     "crates/awase-windows/src/tsf/ime_mode_fsm.rs",
     "crates/awase-windows/src/tsf/probe.rs",
-    "crates/awase-windows/src/tsf/warmup/chrome_probe.rs",
     "crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs",
     "crates/awase-windows/src/tsf/warmup/mozc_compose_check_fsm.rs",
     "crates/awase-windows/src/tsf/warmup/ms_ime_ready_coro.rs",

@@ -1161,6 +1161,53 @@ mod tests {
         TsfProbeCoro::new_chrome("ka", Generation::INITIAL, probe, guard)
     }
 
+    // ── TickableFsm 経由の capability 到達(旧 ChromeProbe ラッパーの BUG-27 回帰を引き継ぐ) ──
+    //
+    // 本番の `pending_tsf: Box<dyn TickableFsm>` と同じ経路で `apply_vk_sent` /
+    // `apply_transmit_done` を呼んでも、デフォルト no-op に落ちず実装に届くこと。
+
+    #[test]
+    fn chrome_apply_vk_sent_via_trait_reaches_coro() {
+        use crate::tsf::warmup::tickable_fsm::TickableFsm;
+        let _g = crate::tsf::observer::TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::tsf::observer::reset_literal_session_confirmed();
+        let mut machine = ready_chrome_probe();
+        let env = || TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        };
+        let first = TickableFsm::tick(&mut machine, env());
+        assert!(
+            matches!(first.as_slice(), [ProbeAction::TransmitSingleVk { .. }]),
+            "{first:?}"
+        );
+        let deadline_ms = crate::clock::current_tick_ms() + 1000;
+        TickableFsm::apply_vk_sent(&mut machine, LiteralDetector::new(false), deadline_ms);
+        // 届いていれば detection 待ちの polling(空の Vec)。no-op に落ちると即 Done。
+        let after = TickableFsm::tick(&mut machine, env());
+        assert!(after.is_empty(), "{after:?}");
+    }
+
+    #[test]
+    fn chrome_apply_transmit_done_via_trait_reaches_coro() {
+        use crate::tsf::warmup::tickable_fsm::TickableFsm;
+        let _g = crate::tsf::observer::TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut machine = ready_chrome_probe();
+        // 届けば pending に積んで false(Done ではない)。デフォルト no-op は常に true。
+        let is_done = TickableFsm::apply_transmit_done(
+            &mut machine,
+            "ka".to_string(),
+            2,
+            Some(LiteralDetector::new(false)),
+            1000,
+        );
+        assert!(!is_done);
+    }
+
     #[test]
     fn chrome_gji_active_enters_per_vk_confirm_as_safety_net() {
         let _g = crate::tsf::observer::TSF_OBS_TEST_LOCK

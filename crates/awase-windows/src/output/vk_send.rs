@@ -188,7 +188,7 @@ impl Output {
     /// Batched モード: 全文字を1回の SendInput にまとめて送信（重畳押し順）
     ///
     /// cold 時は GJI プローブを開始し（ノンブロッキング）、TIMER_TSF_PROBE が
-    /// `ChromeProbe` フェーズを進めてローマ字を送信する。
+    /// Chrome probe フェーズを進めてローマ字を送信する。
     pub(super) fn send_romaji_batched(&self, romaji: &str) {
         self.send_romaji_batched_gated(romaji, DeferGate::Enforced);
     }
@@ -300,16 +300,18 @@ impl Output {
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックが
             // キーを INPUT_DEFER に退避し、cold start シーケンスと race しないようにする。
             //
-            // H-4-b: ChromeProbe を spawn_local より前に同期生成してインストールする。
+            // H-4-b: Chrome 用 TsfProbeCoro を spawn_local より前に同期生成してインストールする。
             // これにより async クロージャ内の with_app() → Runtime 逆参照が不要になり、
             // Runtime → Platform → Output → グローバル → Runtime の循環依存を断つ。
-            // guard は ChromeProbe に move され、probe 完了まで OUTPUT_GATE を保持する。
+            // guard は TsfProbeCoro に move され、probe 完了まで OUTPUT_GATE を保持する。
             // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
             // （sync パスと同一経路）。RuntimeRequest::StartTsfProbe は belt-and-suspenders として積む。
             let guard = OutputActiveGuard::begin();
             let probe = crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq);
             self.install_pending_tsf(Box::new(
-                crate::tsf::warmup::chrome_probe::ChromeProbe::new(romaji, cold_seq, probe, guard),
+                crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
+                    romaji, cold_seq, probe, guard,
+                ),
             ));
             self.runtime_outbox
                 .borrow_mut()
@@ -328,7 +330,7 @@ impl Output {
                         .is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
                 );
                 // 予防的な programmatic F2 送信は 2026-07-18 に撤去した（上記コメント参照）。
-                // romaji は per-VK confirm（ChromeProbe/tsf_probe_coro_body）がそのまま送る。
+                // romaji は per-VK confirm（tsf_probe_coro_body）がそのまま送る。
             });
 
             return;
@@ -826,7 +828,7 @@ mod tests {
         // このケースも e2e/golden シナリオでカバーする前提とする。
         let o = Output::new();
         o.install_pending_tsf(Box::new(
-            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+            crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
                 "x",
                 Generation::INITIAL,
                 crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL),

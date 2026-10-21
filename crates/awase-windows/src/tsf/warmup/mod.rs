@@ -23,14 +23,12 @@
 //! - [`mozc_compose_check_fsm`] — MozcComposeCheckFsm（Mozc の最初の送信の後、入力中の文字ができたかを共有メモリで確認。ADR-270）
 //! - [`unicode_cold_warmup_fsm`]— UnicodeColdWarmupFsm（Unicode long-cold deferred）
 //! - [`unicode_literal_observer`]— UnicodeLiteralObserverFsm（GJI write 観測 → Tsf 昇格）
-//! - [`chrome_probe`]           — ChromeProbe（Chrome cold-start GJI readiness）
 //! - [`cold_warmup`]            — ColdWarmupSequence（`run_start` 単一経路、事前待機なし）
 //! - [`warmup_strategy`]        — ImeWarmupStrategy トレイト, MsImeStrategy
 //!
 //! warm/cold の**判定**（`GjiFsm`）は ProbeAction を emit しない判断寄り状態機械のため
 //! Layer 2（`tsf` 直下）に残す。
 
-pub(crate) mod chrome_probe;
 #[cfg(windows)]
 pub(crate) mod cold_warmup;
 #[cfg(windows)]
