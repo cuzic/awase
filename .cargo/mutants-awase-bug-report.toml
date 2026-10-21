@@ -1,0 +1,13 @@
+# awase-bug-report 用スコープ限定設定（ADR-274 段階 1: 不具合報告の組み立ての核を別 crate にした）
+#
+# 使い方:
+#   cargo mutants -p awase-bug-report --config .cargo/mutants-awase-bug-report.toml
+#
+# 全ファイルが Linux でもコンパイルされるので、`#[cfg(windows)]` による false MISSED の心配は無い。
+# `test_package` にはこの crate より上の crate〔殻〕をすべて入れる（殻の統合テストでしか捕まらない変異が
+# false MISSED にならないように。`.cargo/mutants-awase-hook-core.toml` と同じ理由）。
+test_package = ["awase-bug-report", "awase-windows"]
+
+examine_globs = [
+    "crates/awase-bug-report/src/bug_report.rs",
+]
