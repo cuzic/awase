@@ -28,6 +28,9 @@ use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 
+/// 確認のあと、`key_seq` の進みをもう一度読むまでの時間（ms）。観測専用（判断には使わない）。
+const COMPOSE_SETTLE_RECHECK_MS: u32 = 30;
+
 /// 確認の対象（送った先のスレッドとローマ字）。
 #[derive(Debug, Clone)]
 pub(crate) struct MozcComposeTarget {
@@ -153,6 +156,29 @@ impl TickableFsm for MozcComposeCheckFsm {
                     self.target.key_seq_before,
                     key_seq
                 );
+                // 確認は入力中の文字ができた時点（最短 16ms）で終わるので、2 打目がまだ数えられていないだけかもしれない
+                // （確認済み 21 回のうち 2 回が送った文字数より 1 少なかった、2026-10-21）。少し置いてもう一度読み、
+                // 足りないままか（本物の素通り）、揃うか（読む時点の競合）をログに残す。判断には使わない。
+                let cold = self.target.cold_seq.value();
+                let (thread_id, process_id) = (self.target.thread_id, self.target.process_id);
+                let (before, sent) = (
+                    self.target.key_seq_before,
+                    compose_literal_backs(&self.target.romaji),
+                );
+                win32_async::spawn_local(async move {
+                    win32_async::sleep_ms(COMPOSE_SETTLE_RECHECK_MS).await;
+                    if let ComposeReading::Block(b) =
+                        crate::tsf::read_mozc_compose(thread_id, process_id)
+                    {
+                        // `settled` が送った文字数より多いのは、読み直すまでに次のキーが送られたとき（比較に使えない）。
+                        tracing::info!(
+                            "[mozc-compose] cold={cold} settled +{COMPOSE_SETTLE_RECHECK_MS}ms: sent {sent} chars, key_seq delta at confirm {}, settled {}, composition_key_seq {}",
+                            key_seq.wrapping_sub(before),
+                            b.key_seq.wrapping_sub(before),
+                            b.composition_key_seq.wrapping_sub(before)
+                        );
+                    }
+                });
             }
             ComposeVerdict::Literal => {
                 // 対象のスレッドが IME の同期呼び出し（Mozc サーバーの応答待ち）などで止まっていると、キーはまだ処理されて
