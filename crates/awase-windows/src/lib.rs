@@ -49,6 +49,9 @@ pub mod scancode_diagram;
 pub mod scancode_editor;
 pub mod scancode_map;
 pub mod scancode_pairs;
+// Windows Scancode Map のレジストリ I/O（`scancode_map` の純粋部から分けた殻のファイル。ADR-274）。
+#[cfg(windows)]
+pub mod scancode_registry;
 pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;
