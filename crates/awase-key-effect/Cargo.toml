@@ -1,0 +1,22 @@
+[package]
+name = "awase-key-effect"
+version = "2.2.0"
+edition = "2021"
+description = "awase-windows の OS 非依存な核のうち、キー効果の学習結果の読み取りと予測(ADR-274)。windows crate に依存しない"
+publish = false
+
+[lib]
+name = "awase_key_effect"
+path = "src/lib.rs"
+
+# この crate は windows crate に依存しない(`core_crates_do_not_depend_on_windows` が固定する)。
+[dependencies]
+awase = { path = "../.." }
+awase-windows-base = { path = "../awase-windows-base" }
+awase-gji-config = { path = "../awase-gji-config" }
+awase-keymap-learn = { path = "../awase-keymap-learn" }
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+
+[lints]
+workspace = true

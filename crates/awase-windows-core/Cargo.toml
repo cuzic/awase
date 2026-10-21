@@ -14,8 +14,9 @@ path = "src/lib.rs"
 awase = { path = "../.." }
 # 土台（定数・仮想キー・キーマップ表・世代・時計・IME 種別・アプリ分類。ADR-274 段階 2）
 awase-windows-base = { path = "../awase-windows-base" }
+# キー効果の学習結果の読み取りと予測（ADR-274 段階 2）
+awase-key-effect = { path = "../awase-key-effect" }
 awase-gji-config = { path = "../awase-gji-config" }
-awase-keymap-learn = { path = "../awase-keymap-learn" }
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
