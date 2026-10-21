@@ -4,10 +4,10 @@
 //! 他のどの core 系 crate にも依存しない。`windows` crate に依存しない（`layer_boundary_guard` の
 //! `core_crates_do_not_depend_on_windows` が固定する）。
 //!
-//! `awase-windows-core` から、分割前と同じ `src/` 内の相対パスのまま移した。上位の crate は
+//! `awase-ime-core` から、分割前と同じ `src/` 内の相対パスのまま移した。上位の crate は
 //! `pub use awase_windows_base::...` で再公開するので、`crate::state::...`・`crate::tuning::...` の経路は変わらない。
 
-// `awase-windows-core` の `lib.rs` と同じ allow（移したコードは分割前の core の中で、この allow のもとで lint を通っていた）。
+// `awase-ime-core` の `lib.rs` と同じ allow（移したコードは分割前の core の中で、この allow のもとで lint を通っていた）。
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,

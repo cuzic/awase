@@ -15,7 +15,7 @@
 )]
 
 // 土台（定数・仮想キー・キーマップ表・世代・時計・IME 種別・アプリ分類）は `awase-windows-base` に移した（ADR-274 段階 2）。
-// 上位の crate と殻が使う `awase_windows_core::{focus, keymap, tuning, vk}` の経路を変えないよう再公開する。
+// 上位の crate と殻が使う `awase_ime_core::{focus, keymap, tuning, vk}` の経路を変えないよう再公開する。
 pub use awase_windows_base::vk_table;
 pub use awase_windows_base::{focus, keymap, tuning, vk};
 

@@ -12,7 +12,7 @@ pub mod current;
 pub mod learning_store;
 pub mod thread_scope;
 
-pub use awase_windows_core::focus::{class_names, kinds, AppKind, FocusChangedAxes, FocusKind};
+pub use awase_ime_core::focus::{class_names, kinds, AppKind, FocusChangedAxes, FocusKind};
 // `hwnd_cache` は `awase-windows-plans`（`focus/` は複数の crate にまたがる。ADR-274 段階 1）。
 pub use awase_windows_plans::focus::hwnd_cache;
 

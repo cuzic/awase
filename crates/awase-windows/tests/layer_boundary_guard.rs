@@ -816,7 +816,7 @@ fn core_modules_have_no_tier2_violations() {
     );
 }
 
-/// 核 crate（`tools/core-split/core-crates.txt` の全 crate。`awase-windows-core`〔ADR-229 D4〕・`awase-hook-core`〔ADR-274〕など）は
+/// 核 crate（`tools/core-split/core-crates.txt` の全 crate。`awase-ime-core`〔ADR-229 D4〕・`awase-hook-core`〔ADR-274〕など）は
 /// windows crate にも殻の crate にも依存しない。
 /// 以前は `CORE_MODULES` の `#[cfg(windows)]` 検出（テキスト走査）で守っていた「OS 非依存」を、crate の
 /// 依存関係（コンパイラ）で守る。`Cargo.toml` に Windows 系の依存を足すと落ちる。

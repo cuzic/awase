@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 awase = { path = "../.." }
 awase-gji-config = { path = "../awase-gji-config" }
-awase-windows-core = { path = "../awase-windows-core" }
+awase-ime-core = { path = "../awase-ime-core" }
 awase-keymap-learn = { path = "../awase-keymap-learn" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

@@ -1,5 +1,5 @@
 # ADR-274 D1: モジュール → クラスタ(層)の割り当て。deps.py が読む。
-# モジュール名は `crates/awase-windows-core/src/` 以下の相対パス(`mod.rs` は親の名前)。
+# モジュール名は `crates/awase-ime-core/src/` 以下の相対パス(`mod.rs` は親の名前)。
 # 新しいモジュールを足したら、ここにも足す(`deps.py --check` が未割当で落ちる)。
 G = {}
 

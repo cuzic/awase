@@ -464,8 +464,8 @@ version = "2.2.0"
 dependencies = [
  "awase",
  "awase-gji-config",
+ "awase-ime-core",
  "awase-keymap-learn",
- "awase-windows-core",
  "base64",
  "flate2",
  "serde",
@@ -492,7 +492,26 @@ name = "awase-hook-core"
 version = "2.2.0"
 dependencies = [
  "awase",
- "awase-windows-core",
+ "awase-ime-core",
+]
+
+[[package]]
+name = "awase-ime-core"
+version = "2.2.0"
+dependencies = [
+ "awase",
+ "awase-gji-config",
+ "awase-key-effect",
+ "awase-replay",
+ "awase-windows-base",
+ "proptest",
+ "quanta",
+ "serde",
+ "serde_json",
+ "strum 0.27.2",
+ "thiserror 2.0.20",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -615,11 +634,11 @@ dependencies = [
  "awase-build-support",
  "awase-gji-config",
  "awase-hook-core",
+ "awase-ime-core",
  "awase-keymap-learn",
  "awase-replay",
  "awase-scancode",
  "awase-vkmap",
- "awase-windows-core",
  "awase-windows-plans",
  "itertools",
  "quanta",
@@ -652,30 +671,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "awase-windows-core"
-version = "2.2.0"
-dependencies = [
- "awase",
- "awase-gji-config",
- "awase-key-effect",
- "awase-replay",
- "awase-windows-base",
- "proptest",
- "quanta",
- "serde",
- "serde_json",
- "strum 0.27.2",
- "thiserror 2.0.20",
- "toml",
- "tracing",
-]
-
-[[package]]
 name = "awase-windows-plans"
 version = "2.2.0"
 dependencies = [
  "awase",
- "awase-windows-core",
+ "awase-ime-core",
  "tracing",
 ]
 

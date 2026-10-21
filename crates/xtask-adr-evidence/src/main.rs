@@ -266,7 +266,7 @@ fn run_core_registry(repo_root: &str, base_ref: &str) -> ExitCode {
     println!("CORE_MODULES に追加された名前: {added:?}");
     let violations = core_registry::check(
         &added,
-        // `.cargo/mutants-awase-*.toml` のすべて（殻・核 crate〔awase-windows-core・awase-hook-core など、ADR-274〕）。
+        // `.cargo/mutants-awase-*.toml` のすべて（殻・核 crate〔awase-ime-core・awase-hook-core など、ADR-274〕）。
         &all_mutants_configs(repo_root),
     );
     if violations.is_empty() {

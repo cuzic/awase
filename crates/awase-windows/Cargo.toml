@@ -27,7 +27,7 @@ awase = { path = "../.." }
 awase-gji-config = { path = "../awase-gji-config" }
 awase-vkmap = { path = "../awase-vkmap" }
 # 純粋な核(ADR-229 D4)。windows crate に依存しない。
-awase-windows-core = { path = "../awase-windows-core" }
+awase-ime-core = { path = "../awase-ime-core" }
 # フック・修飾キー・半角英数トグルの状態の核(ADR-274 段階 1)。windows crate に依存しない。
 awase-hook-core = { path = "../awase-hook-core" }
 # TSF とフォーカスの「計画」(Facts → Plan の純粋な判断)の核(ADR-274 段階 1)。windows crate に依存しない。
@@ -63,7 +63,7 @@ version = "0.1.0"
 
 [dev-dependencies]
 # 核のテスト専用の口（`set_desired_open_for_test` など）を殻のテストから使う。
-awase-windows-core = { path = "../awase-windows-core", features = ["testing"] }
+awase-ime-core = { path = "../awase-ime-core", features = ["testing"] }
 # journal 再生 fixture のハーネス(ADR-229)。非公開の dev 専用 crate。
 awase-replay = { path = "../awase-replay" }
 

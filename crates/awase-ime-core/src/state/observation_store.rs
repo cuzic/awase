@@ -63,8 +63,8 @@ impl FocusProbeOpenStatus {
 /// になる（BUG-92: BUG-33 の shadow フォールバック laundering を型で閉じた）。
 ///
 /// ```
-/// use awase_windows_core::state::observation_store::{FocusProbeOpenStatus, ObservedOpenValue};
-/// use awase_windows_core::focus::class_names::AppImeProfile;
+/// use awase_ime_core::state::observation_store::{FocusProbeOpenStatus, ObservedOpenValue};
+/// use awase_ime_core::focus::class_names::AppImeProfile;
 ///
 /// // Standard プロファイル + 実際の読み取り値がある場合のみ `Read` が返る。
 /// let status = FocusProbeOpenStatus::classify(Some(true), AppImeProfile::Standard);
@@ -78,8 +78,8 @@ impl FocusProbeOpenStatus {
 /// `NotObservable` からは作れない（belief 由来の値を観測として偽装できない）:
 ///
 /// ```compile_fail
-/// use awase_windows_core::state::observation_store::{FocusProbeOpenStatus, ObservedOpenValue};
-/// use awase_windows_core::focus::class_names::AppImeProfile;
+/// use awase_ime_core::state::observation_store::{FocusProbeOpenStatus, ObservedOpenValue};
+/// use awase_ime_core::focus::class_names::AppImeProfile;
 ///
 /// let status = FocusProbeOpenStatus::classify(None, AppImeProfile::TsfNative);
 /// let FocusProbeOpenStatus::NotObservable(_profile) = status else {
@@ -164,8 +164,8 @@ pub enum ReadBackQuery {
 /// 通る双子（crate 外からの**読み取り**は塞がない）:
 ///
 /// ```
-/// use awase_windows_core::state::ime_event::ObservationSource;
-/// use awase_windows_core::state::observation_store::ObservationStore;
+/// use awase_ime_core::state::ime_event::ObservationSource;
+/// use awase_ime_core::state::observation_store::ObservationStore;
 ///
 /// let store = ObservationStore::default();
 /// // 読み取り専用アクセサは crate 外から使える。
@@ -175,8 +175,8 @@ pub enum ReadBackQuery {
 /// crate 外からは構築できない:
 ///
 /// ```compile_fail
-/// use awase_windows_core::state::ime_event::{HwndId, ObservationConfidence, ObservationSource};
-/// use awase_windows_core::state::observation_store::ImeObservation;
+/// use awase_ime_core::state::ime_event::{HwndId, ObservationConfidence, ObservationSource};
+/// use awase_ime_core::state::observation_store::ImeObservation;
 ///
 /// // error[E0639]: cannot create non-exhaustive struct using struct expression
 /// let _obs = ImeObservation {

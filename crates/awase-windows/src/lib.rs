@@ -21,7 +21,7 @@
 //! `vk`（`parse_hotkey` のみ windows-gated）などの純粋モジュールのみコンパイルされる。
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
-pub use awase_windows_core::{indicator_evidence, journal, journal_policy, keymap, tuning, vk};
+pub use awase_ime_core::{indicator_evidence, journal, journal_policy, keymap, tuning, vk};
 // 不具合報告のペイロードの組み立てなどは OS 非依存の `awase-bug-report` に移した（ADR-274 段階 1）。
 // `awase_windows::bug_report` の経路を変えないよう再公開する。
 pub use awase_bug_report::bug_report;

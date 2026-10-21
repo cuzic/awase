@@ -4,13 +4,13 @@
 #   cargo mutants -p awase-windows-base --config .cargo/mutants-awase-windows-base.toml
 #
 # 全ファイルが Linux でもコンパイルされるので、`#[cfg(windows)]` による false MISSED の心配は小さい。
-# examine_globs で名指しするのは `.cargo/mutants-awase-windows-core.toml` と同じ理由（登録し忘れの検出）。
+# examine_globs で名指しするのは `.cargo/mutants-awase-ime-core.toml` と同じ理由（登録し忘れの検出）。
 # `test_package` には、この crate より上の crate をすべて入れる（上位の crate のテストでしか捕まらない変異が
 # false MISSED にならないように。Opus PR #574 C4）。土台は全員が依存するので、殻と葉の crate もすべて入る。
 test_package = [
     "awase-windows-base",
     "awase-key-effect",
-    "awase-windows-core",
+    "awase-ime-core",
     "awase-hook-core",
     "awase-windows-plans",
     "awase-bug-report",

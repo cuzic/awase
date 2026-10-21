@@ -1,12 +1,12 @@
 [package]
-name = "awase-windows-core"
+name = "awase-ime-core"
 version = "2.2.0"
 edition = "2021"
-description = "awase-windows の OS 非依存な核(IME 状態の判断・型・表)。windows crate に依存しない(ADR-229 D4)"
+description = "IME の核: IME の状態(belief)・観測・書き込み(actuation)の判断と journal。土台・キー効果の crate の上に立つ(ADR-229 D4・ADR-274)。windows crate に依存しない"
 publish = false
 
 [lib]
-name = "awase_windows_core"
+name = "awase_ime_core"
 path = "src/lib.rs"
 
 # この crate は windows crate に依存しない(`crate_does_not_depend_on_windows` が固定する)。
