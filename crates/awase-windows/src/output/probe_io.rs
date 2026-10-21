@@ -495,12 +495,6 @@ where
                                 );
                                 });
                             }
-                            // veto_eligible=true: 単語単位のバッチ送信のため、候補ウィンドウ可視性
-                            // veto（BUG-30）を適用してよい（前モーラ由来の誤 veto の懸念は per-VK
-                            // 単体確認のみ、下記 TransmitSingleVk ハンドラ参照）。
-                            let detector = plan
-                                .needs_literal
-                                .then(|| crate::tsf::probe::LiteralDetector::new(true));
                             // ADR-270: Mozc の最初の送信の後に、入力中の文字ができたかを確かめる（unicode 送信は組成を作らない
                             // ので対象外）。まだ入力中の文字が無いことを確かめるため、送信の直前に対象を決める。
                             let mozc_check = if plan.used_eager_path {
@@ -508,7 +502,7 @@ where
                             } else {
                                 io.mozc_compose_precheck(&romaji, cold_seq)
                             };
-                            let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
+                            let _ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                             // 注入の記録は io.transmit_tsf 自身が note_stage_injection で行う。
                             // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
                             if !plan.needs_literal {
@@ -520,27 +514,15 @@ where
                                         io.consecutive_count(),
                                     )));
                             }
-                            if machine.apply_transmit_done(
-                                romaji,
-                                ze_bs_count,
-                                detector,
-                                plan.literal_detect_ms,
-                            ) {
-                                if let Some(target) = mozc_check {
-                                    io.request_mozc_compose_check(target);
-                                }
-                                break 'stage Some(StageEndReason::ProbeDone);
+                            // `needs_literal=true` はここへ来ない(per-VK confirm が先に取る。ECRS MB-01)。
+                            if let Some(target) = mozc_check {
+                                io.request_mozc_compose_check(target);
                             }
+                            break 'stage Some(StageEndReason::ProbeDone);
                         }
                         TransmitTarget::Chrome => {
                             // plan.needs_literal は enter_transmit_chrome が env.gji_active で確定済み。
                             // 検出ベースラインは送信前に確定させること。
-                            // veto_eligible=true: 単語単位のバッチ送信のため veto を適用してよい
-                            // （TSF 分岐と同じ理由、上記コメント参照）。
-                            let detector = plan
-                                .needs_literal
-                                .then(|| crate::tsf::probe::LiteralDetector::new(true));
-                            let ze_bs_count = chars.len();
                             io.transmit_chrome(&romaji, &chars);
                             // 注入の記録は io.transmit_chrome 自身が note_stage_injection で行う。
                             if !plan.needs_literal {
@@ -552,14 +534,7 @@ where
                                         io.consecutive_count(),
                                     )));
                             }
-                            if machine.apply_transmit_done(
-                                romaji,
-                                ze_bs_count,
-                                detector,
-                                plan.literal_detect_ms,
-                            ) {
-                                break 'stage Some(StageEndReason::ProbeDone);
-                            }
+                            break 'stage Some(StageEndReason::ProbeDone);
                         }
                     }
                 }
@@ -848,7 +823,6 @@ mod tests {
             false,
             false,
             false,
-            0,
         )
     }
 
@@ -905,30 +879,6 @@ mod tests {
         assert!(result.is_done());
         assert!(io.transmit_chrome_called.get());
         assert!(!io.transmit_tsf_called.get());
-    }
-
-    #[test]
-    fn chrome_transmit_with_gji_healthy_installs_literal_detect() {
-        // plan.needs_literal=true のとき Chrome バッチ送信後も LiteralDetect フェーズへ遷移し、
-        // Done を即返さないことで literal 検出のための再ティックを許可する。
-        let io = FakeProbeIo::default();
-        let mut machine = make_chrome_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                used_eager_path: false,
-                needs_literal: true, // enter_transmit_chrome が gji_active=true のとき設定
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            romaji: "ka".to_string(),
-            target: TransmitTarget::Chrome,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(
-            !result.is_done(),
-            "should not be Done — LiteralDetect phase pending"
-        );
-        assert!(io.transmit_chrome_called.get());
     }
 
     #[test]
@@ -1246,38 +1196,6 @@ mod tests {
     }
 
     #[test]
-    fn tsf_mode_nc_not_fired_gji_long_idle_gji_healthy_enables_literal_detect() {
-        // decide_transmit_plan: nc_fired=false + is_tsf_mode=true + gji_active=true + gji_long_idle=true
-        // → used_eager_path=false (VK), needs_literal=true (TSF mode override)。
-        // VK path でリテラル化した場合に BS 再送で回収できるよう LiteralDetect を有効化する。
-        let _g = GATE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                used_eager_path: false, // is_tsf_mode → VK path
-                needs_literal: true,    // gji_active && (!gji_long_idle || is_tsf_mode)
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
-            },
-            romaji: "ko".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(
-            !result.is_done(),
-            "plan.needs_literal=true → LiteralDetect phase: Done を即返さないべき"
-        );
-        assert!(io.transmit_tsf_called.get());
-        assert!(
-            !io.last_used_eager_path.get(),
-            "plan.used_eager_path=false (VK path) は WarmupOutcome に反映されるべき"
-        );
-    }
-
-    #[test]
     fn tsf_mode_cold_start_nc_not_fired_not_long_idle_skips_literal_detect() {
         // nc_fired=false + is_tsf_mode=true + !gji_long_idle かつ needs_literal=false のとき、
         // LiteralDetect フェーズへ入らず Done を即返す。
@@ -1305,33 +1223,6 @@ mod tests {
     // 発火していなかった。当時の実機報告（WezTerm long_idle(120s) 後の 'と' 部分
     // リテラル誤判定、2026-06-20）は per-VK confirm（BUG-24 本体）が別の仕組みで
     // 解決済み。詳細は docs/known-bugs.md BUG-24 追補9参照。
-
-    #[test]
-    fn long_idle_tsf_mode_keeps_literal_detect() {
-        // gji_long_idle + tsf_mode: GJI 応答未確認 → LiteralDetect 有効。
-        // VK がリテラル化した場合の回収パスが必要。
-        let _g = GATE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                used_eager_path: false, // is_tsf_mode → VK path
-                needs_literal: true,    // LiteralDetect 有効
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
-            },
-            romaji: "to".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(
-            !result.is_done(),
-            "plan.needs_literal=true → LiteralDetect フェーズへ移行"
-        );
-        assert!(io.transmit_tsf_called.get());
-    }
 
     // ---- ADR-200 決定1: reinit は SuspectedLiteral の否定的証拠が累計2回そろったときだけ ----
 

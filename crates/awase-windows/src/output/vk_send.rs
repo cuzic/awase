@@ -463,7 +463,6 @@ impl Output {
                 used_eager_path,
                 probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
-                self.composition.consecutive_count(),
             ));
             self.install_pending_tsf(coro);
             // WindowsPlatform::send_keys が TIMER_TSF_PROBE をセットする
