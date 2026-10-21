@@ -41,6 +41,7 @@ pub mod app_ime_policy;
 // (IME ごとの表での完全一致・Observed/Inferred・メインスレッドへ渡す固定長の符号化)。Win32 を呼ばない(Linux でテストする)。
 pub mod indicator_glyph;
 pub mod indicator_glyph_seeds;
+pub mod indicator_glyph_store;
 pub mod indicator_menu;
 // ADR-265 段階 1: mozc-readable の共有メモリ(48 バイト、version 2)の解釈。受け入れ条件(magic・version・seq・pid・active)と
 // journal の記録への変換。Win32 を呼ばない(Linux でテストする)。belief には入れない。

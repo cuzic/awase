@@ -18,6 +18,7 @@
 //! （フックと読み取りスレッドは起動時に 1 度だけ作る。`app/bootstrap.rs`）。
 
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
@@ -29,6 +30,10 @@ use crate::state::indicator_glyph::{
     apply_match, belief_label, collect_label, match_feature, AddOutcome, BeliefLabel, Capture,
     GlyphFeature, GlyphSample, GlyphTable, ProbeOutcome, SampleOrigin, Thresholds,
 };
+use crate::state::indicator_glyph_store::{EnvFingerprint, GlyphSampleFile};
+
+/// 見本の保存ファイル名（exe と同じディレクトリ。`cache.toml` とは別ファイル。ADR-261 決定 2）。
+const SAMPLES_FILENAME: &str = "glyph_samples.json";
 
 /// 前面窓の変化から取り込むまでの待ち（ミリ秒）。字形の遅れ（最大 0.68 秒、ADR-261）より長い 2 点。
 const READ_DELAYS_MS: [u16; 2] = [900, 2500];
@@ -59,8 +64,12 @@ pub(super) struct IndicatorGlyphShadow {
     pending: VecDeque<Pending>,
     last_trigger: Option<Instant>,
     last_capture: Option<LastCapture>,
-    /// 見本の表（取り込んだ矩形の大きさ `(幅, 高さ)` 別。大きさは DPI に比例するので、環境の違いの代わりに使う）
-    tables: HashMap<(u16, u16), GlyphTable>,
+    /// 見本の表（環境指紋別。矩形の大きさ〔DPI に比例〕・背景の明暗・IME の種類・取り込み方式の版）。内蔵の共通の見本で始め、
+    /// 保存済みの同じ環境の見本を足す
+    tables: HashMap<EnvFingerprint, GlyphTable>,
+    /// 保存ファイルの内容（同じ環境で集めた見本。画素は持たない）と、その保存先（無効・保存先が無いときは `None`）
+    store: GlyphSampleFile,
+    store_path: Option<PathBuf>,
     /// 取り込みの件数（不具合報告の要約用。画像・画素は持たない。ADR-271 D5）
     counters: crate::indicator_evidence::IndicatorGlyphCounters,
 }
@@ -74,8 +83,29 @@ impl IndicatorGlyphShadow {
             last_trigger: None,
             last_capture: None,
             tables: HashMap::new(),
+            store: GlyphSampleFile::default(),
+            store_path: None,
             counters: crate::indicator_evidence::IndicatorGlyphCounters::new(),
         }
+    }
+}
+
+/// 見本の保存先へアトミックに書く。失敗しても何も変えない（見本は次の起動で集め直せる）。
+fn save_samples(path: &Path, store: &GlyphSampleFile) {
+    if let Err(e) = awase::fs_atomic::write_atomic(path, store.to_json().as_bytes()) {
+        tracing::warn!(
+            "[indicator-glyph] failed to save samples to {}: {e}",
+            path.display()
+        );
+    }
+}
+
+/// 環境指紋に使う IME の種類（`gji` / `ms-ime`。まだ同定できていなければ空）。
+fn ime_label() -> &'static str {
+    match crate::tsf::observer::tsf_obs().table_ime_kind() {
+        Some(crate::state::ime_kind::ImeKindId::Gji) => "gji",
+        Some(crate::state::ime_kind::ImeKindId::MsIme) => "ms-ime",
+        None => "",
     }
 }
 
@@ -93,10 +123,23 @@ impl super::Runtime {
         &mut self,
         tx: Option<Sender<GlyphReadRequest>>,
         rx_feature: Option<Receiver<Option<GlyphFeature>>>,
+        base_dir: &Path,
     ) {
+        // 保存済みの見本（同じ環境で集めたもの）を読む。壊れている・版が違う・無いときは空（集め直す）。
+        let store_path = base_dir.join(SAMPLES_FILENAME);
+        let store = std::fs::read_to_string(&store_path)
+            .map(|json| GlyphSampleFile::from_json(&json))
+            .unwrap_or_default();
+        tracing::info!(
+            "[indicator-glyph] stored sample environments: {} ({})",
+            store.env_count(),
+            store_path.display()
+        );
         self.indicator_glyph = IndicatorGlyphShadow {
             tx,
             rx_feature,
+            store,
+            store_path: Some(store_path),
             ..IndicatorGlyphShadow::disabled()
         };
     }
@@ -184,12 +227,22 @@ impl super::Runtime {
         let mut record = outcome.to_record(profile, Some(belief_open), pending.delay_ms);
 
         if let Some(f) = feature {
-            let key = (outcome.width, outcome.height);
+            // 環境指紋: 矩形の大きさ（DPI）・背景の明暗・IME の種類・取り込み方式の版。違う環境の表は使わない。
+            let fingerprint =
+                EnvFingerprint::new(outcome.width, outcome.height, outcome.dark, ime_label());
+            let store = &self.indicator_glyph.store;
             let table = self
                 .indicator_glyph
                 .tables
-                .entry(key)
-                .or_insert_with(crate::state::indicator_glyph_seeds::seeded_table);
+                .entry(fingerprint.clone())
+                .or_insert_with(|| {
+                    // 内蔵の共通の見本で始め、保存済みの同じ環境の見本を足す。
+                    let mut t = crate::state::indicator_glyph_seeds::seeded_table();
+                    for s in store.samples_for(&fingerprint) {
+                        let _ = t.add(s);
+                    }
+                    t
+                });
             // 照合は、収集する前の表で行う（自分自身を見本にして一致させない）。
             let m = match_feature(table, &Thresholds::default(), &f);
             // 収集: 2 回目（待ちが長い方）の取り込みで、同じ窓の 1 回目と比べて落ち着いていれば足す。
@@ -213,6 +266,13 @@ impl super::Runtime {
                     }) == AddOutcome::Added
                 });
             apply_match(&mut record, &m, label, collected, table.len());
+            if collected {
+                // 見本が増えたときだけ保存する（まれ。アトミックに書く）。
+                self.indicator_glyph.store.set_env(&fingerprint, table);
+                if let Some(path) = &self.indicator_glyph.store_path {
+                    save_samples(path, &self.indicator_glyph.store);
+                }
+            }
             self.indicator_glyph.last_capture = if is_second {
                 None
             } else {

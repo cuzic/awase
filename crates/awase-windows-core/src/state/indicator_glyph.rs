@@ -84,6 +84,11 @@ impl GlyphGray {
         self.width
     }
 
+    /// 背景(中央値)が暗いか(ダークテーマ)。環境指紋の一部(ADR-261 決定 3)。閾値は画素値の中間(128)。
+    pub fn background_is_dark(&self) -> bool {
+        median(&self.pixels) < 128
+    }
+
     pub fn height(&self) -> usize {
         self.height
     }
@@ -101,6 +106,20 @@ pub enum GlyphClass {
 }
 
 impl GlyphClass {
+    /// [`Self::label`] の逆(保存データの読み込み用)。
+    pub fn from_label(label: &str) -> Option<Self> {
+        [
+            Self::Closed,
+            Self::Hiragana,
+            Self::FullKatakana,
+            Self::FullAlnum,
+            Self::HalfKatakana,
+            Self::HalfAlnum,
+        ]
+        .into_iter()
+        .find(|c| c.label() == label)
+    }
+
     /// journal・ログ用の短い名前。
     pub const fn label(self) -> &'static str {
         match self {
@@ -152,6 +171,24 @@ pub struct GlyphFeature {
 }
 
 impl GlyphFeature {
+    /// 保存用に、2 通りの 20×20 の 2 値画像・縦横比・前景の点数を取り出す(距離変換は復元時に作り直す)。
+    pub fn to_parts(&self) -> ([[bool; FEATURE_AREA]; 2], f32, usize) {
+        (self.masks, self.aspect, self.dots)
+    }
+
+    /// [`Self::to_parts`] の逆。距離変換はここで作り直す。2 値画像のどちらかに前景が無ければ `None`(壊れた保存データ)。
+    pub fn from_parts(masks: [[bool; FEATURE_AREA]; 2], aspect: f32, dots: usize) -> Option<Self> {
+        if !aspect.is_finite() || masks.iter().any(|m| !m.iter().any(|&v| v)) {
+            return None;
+        }
+        Some(Self {
+            dts: [distance_transform(&masks[0]), distance_transform(&masks[1])],
+            masks,
+            aspect,
+            dots,
+        })
+    }
+
     /// 高さ 96 の画像での前景の点数(穴埋め後の方式)。
     pub fn dots(&self) -> usize {
         self.dots
@@ -319,6 +356,14 @@ impl GlyphTable {
 
     pub fn len(&self) -> usize {
         self.samples.len()
+    }
+
+    /// 同じ環境で集めた見本(出所が [`SampleOrigin::SameEnv`])。永続化の対象(内蔵の共通の見本は含まない)。
+    pub fn same_env_samples(&self) -> Vec<&GlyphSample> {
+        self.samples
+            .iter()
+            .filter(|s| s.origin == SampleOrigin::SameEnv)
+            .collect()
     }
 
     /// 共通の初期見本から表を作る(衝突・重複・上限の判定はしない。見本は出所が確かで、近い 2 クラスも意図的に持つ)。
@@ -794,11 +839,14 @@ pub struct ProbeOutcome {
     pub dots: u16,
     /// 取り込み〜前処理の所要(ミリ秒)
     pub read_ms: u16,
+    /// 取り込んだ矩形の背景が暗いか(ダークテーマ。環境指紋の一部)。取り込めなかったときは `false`
+    pub dark: bool,
 }
 
 impl ProbeOutcome {
     /// `WM_INDICATOR_GLYPH_READ` の `(wParam, lParam)` に符号化する(32 ビットでも収まる固定長)。
-    /// `wParam` = 結果の符号(4 ビット)| 幅(10 ビット)<< 4 | 高さ(10 ビット)<< 14。`lParam` = 点数(16)| 所要(16)<< 16。
+    /// `wParam` = 結果の符号(4 ビット)| 幅(10 ビット)<< 4 | 高さ(10 ビット)<< 14 | 背景が暗いか(1 ビット)<< 24。
+    /// `lParam` = 点数(16)| 所要(16)<< 16。
     pub fn pack(self) -> (usize, isize) {
         let code = match self.result {
             Ok(()) => 0,
@@ -806,7 +854,7 @@ impl ProbeOutcome {
         };
         let w = u32::from(self.width.min(1023));
         let h = u32::from(self.height.min(1023));
-        let wparam = code | (w << 4) | (h << 14);
+        let wparam = code | (w << 4) | (h << 14) | (u32::from(self.dark) << 24);
         let lparam = u32::from(self.dots) | (u32::from(self.read_ms) << 16);
         (wparam as usize, lparam as i32 as isize)
     }
@@ -827,6 +875,7 @@ impl ProbeOutcome {
             height: ((wp >> 14) & 0x3FF) as u16,
             dots: (lp & 0xFFFF) as u16,
             read_ms: (lp >> 16) as u16,
+            dark: (wp >> 24) & 1 == 1,
         })
     }
 
@@ -1719,6 +1768,17 @@ mod tests {
             let (w, l) = c.pack();
             assert_eq!(ProbeOutcome::unpack(w, l), Some(c));
         }
+        // 背景が暗いことも往復する。
+        let dark = ProbeOutcome {
+            result: Ok(()),
+            width: 32,
+            height: 24,
+            dots: 5,
+            read_ms: 1,
+            dark: true,
+        };
+        let (w, l) = dark.pack();
+        assert_eq!(ProbeOutcome::unpack(w, l), Some(dark));
         // 未知の符号は壊れたメッセージ。
         assert_eq!(ProbeOutcome::unpack(0xF, 0), None);
     }

@@ -43,6 +43,7 @@ examine_globs = [
     "crates/awase-windows-core/src/state/resume_observation.rs",
     "crates/awase-windows-core/src/state/indicator_glyph.rs",
     "crates/awase-windows-core/src/state/indicator_glyph_seeds.rs",
+    "crates/awase-windows-core/src/state/indicator_glyph_store.rs",
     "crates/awase-windows-core/src/state/indicator_menu.rs",
     "crates/awase-windows-core/src/state/mozc_shm.rs",
     "crates/awase-windows-core/src/focus/class_names.rs",
