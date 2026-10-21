@@ -259,7 +259,6 @@ pub(crate) struct GjiWarmupCoro {
 
 impl GjiWarmupCoro {
     /// `GjiWarmupFsm::new` と同等のシグネチャ。`consecutive` は LiteralDetect 判定用。
-    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         romaji: &str,
         cold_seq: Generation,

@@ -51,6 +51,7 @@ impl TsfReadinessProbe {
     }
 
     /// 現時点の観測スナップショット。
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn outcome(&self) -> GjiProbeOutcome {
         let now = crate::clock::current_tick_ms();
         let monitor_healthy = TSF_OBS.gji_monitor_ok.load(Ordering::Acquire);
