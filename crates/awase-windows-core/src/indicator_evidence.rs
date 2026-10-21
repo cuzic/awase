@@ -122,6 +122,13 @@ impl IndicatorMenuCounters {
     }
 }
 
+/// 開閉の軸の一致/不一致の件数。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgreeCount {
+    pub agree: u32,
+    pub disagree: u32,
+}
+
 /// 字形の取り込みの件数（不具合報告の要約用。画像・画素は含まない。ADR-271 D5）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IndicatorGlyphCounters {
@@ -142,6 +149,9 @@ pub struct IndicatorGlyphCounters {
     pub unobserved_disagree: u32,
     /// 見本として表に足した回数
     pub collected: u32,
+    /// 開閉の軸の一致/不一致を、窓の IME プロファイル（`standard`/`imm32-unavailable`/`tsf-native`/`input-relay`）ごとに。
+    /// 入力モードが不明でも数えられる。`standard` は直接の読みとの一致、それ以外は belief とのずれ
+    pub open_axis: BTreeMap<String, AgreeCount>,
 }
 
 impl IndicatorGlyphCounters {
@@ -158,6 +168,7 @@ impl IndicatorGlyphCounters {
             unobserved_agree: 0,
             unobserved_disagree: 0,
             collected: 0,
+            open_axis: BTreeMap::new(),
         }
     }
 
@@ -180,6 +191,15 @@ impl IndicatorGlyphCounters {
         }
         if r.collected {
             self.collected = self.collected.saturating_add(1);
+        }
+        if let Some(agree_open) = r.agree_open {
+            let c = self.open_axis.entry(r.profile.to_owned()).or_default();
+            let slot = if agree_open {
+                &mut c.agree
+            } else {
+                &mut c.disagree
+            };
+            *slot = slot.saturating_add(1);
         }
         let Some(agree) = r.agree else {
             return;
@@ -347,5 +367,32 @@ mod tests {
         m.match_miss = Some("empty-table");
         c.record(&m);
         assert_eq!(c.match_misses.get("empty-table"), Some(&1));
+    }
+
+    #[test]
+    fn glyph_counters_count_the_open_axis_per_profile_even_without_a_belief_mode() {
+        let rec = |profile, agree_open| crate::journal::IndicatorGlyphRecord {
+            verdict: "captured",
+            profile,
+            agree_open,
+            // 入力モードのラベルは不明（`agree` は None）。
+            agree: None,
+            ..Default::default()
+        };
+        let mut c = IndicatorGlyphCounters::default();
+        c.record(&rec("tsf-native", Some(false)));
+        c.record(&rec("tsf-native", Some(false)));
+        c.record(&rec("tsf-native", Some(true)));
+        c.record(&rec("standard", Some(true)));
+        c.record(&rec("imm32-unavailable", None));
+        let tsf = c.open_axis.get("tsf-native").copied().unwrap_or_default();
+        assert_eq!((tsf.agree, tsf.disagree), (1, 2));
+        assert_eq!(
+            c.open_axis.get("standard").map(|a| (a.agree, a.disagree)),
+            Some((1, 0))
+        );
+        assert!(!c.open_axis.contains_key("imm32-unavailable"));
+        // 入力モードのラベルの一致は数えていない。
+        assert_eq!((c.direct_agree, c.direct_disagree), (0, 0));
     }
 }
