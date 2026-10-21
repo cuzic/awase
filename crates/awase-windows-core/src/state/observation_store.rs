@@ -494,43 +494,31 @@ impl ObservationStore {
             tracing::debug!("[observation] {source:?} は open 観測プールに入らないため破棄");
             return;
         }
-        // ADR-273 D1: 指標以外の Medium 以上の観測が来たら、指標の枠を消す（書き込み時の削除。journal の再生でも同じ結果になる）。
-        // **窓の同一性が合うときだけ**消す: 前の窓の観測（admission を通らない timer 経路の MozcShm など）が、今の窓の正しい
-        // 字形を消さないように（Opus レビュー minor 3）。指標より新しい Medium 以上がある間は、指標は採られない
-        // （Medium が新しい読みを追い越さない）。
+        // 観測を 1 度だけ組み立てる（削除の判定と記録に同じ値を使う）。
         let new_obs = ImeObservation {
             open: observed.open(),
             source,
             at,
             hwnd: observed.hwnd(),
             confidence: observed.confidence(),
-            expires_at: None,
+            // ADR-268 D1: 共有メモリの観測だけが TTL を持つ（ほかの source は従来どおり無期限）。`at` から決まる値なので
+            // journal の再生でも同じ結果になる。`derive_any`・`most_recent_trusted`・`_excluding`・`consensus` の全読み手が
+            // `is_expired` を見るので、同時に失効する（`derive_filtered` の鮮度窓だけでは、フォールバックの
+            // `most_recent_trusted` が古い値を無期限に採ってしまう）。
+            expires_at: (source == ObservationSource::MozcShm)
+                .then(|| at + Duration::from_millis(crate::tuning::MOZC_SHM_OBSERVATION_TTL_MS)),
             focus_epoch: observed.focus_epoch(),
         };
+        // ADR-273 D1: 指標以外の Medium 以上の観測が来たら、指標の枠を消す（書き込み時の削除。journal の再生でも同じ結果になる）。
+        // **窓の同一性が合うときだけ**消す: 前の窓の観測（admission を通らない timer 経路の MozcShm など）が、今の窓の正しい
+        // 字形を消さないように。指標より新しい Medium 以上がある間は、指標は採られない（Medium が新しい読みを追い越さない）。
         if source != ObservationSource::TaskbarGlyph
-            && observed.confidence() >= ObservationConfidence::Medium
+            && new_obs.confidence >= ObservationConfidence::Medium
             && observation_identity_ok(&new_obs, self.current_fence)
         {
             self.per_source.clear_indicator();
         }
-        self.per_source.set(
-            source,
-            ImeObservation {
-                open: observed.open(),
-                source,
-                at,
-                hwnd: observed.hwnd(),
-                confidence: observed.confidence(),
-                // ADR-268 D1: 共有メモリの観測だけが TTL を持つ（ほかの source は従来どおり無期限）。`at` から決まる値なので
-                // journal の再生でも同じ結果になる。`derive_any`・`most_recent_trusted`・`_excluding`・`consensus` の全読み手が
-                // `is_expired` を見るので、同時に失効する（`derive_filtered` の鮮度窓だけでは、フォールバックの
-                // `most_recent_trusted` が古い値を無期限に採ってしまう）。
-                expires_at: (source == ObservationSource::MozcShm).then(|| {
-                    at + Duration::from_millis(crate::tuning::MOZC_SHM_OBSERVATION_TTL_MS)
-                }),
-                focus_epoch: observed.focus_epoch(),
-            },
-        );
+        self.per_source.set(source, new_obs);
     }
 
     /// 指定ソースの最新観測（**読み取り専用**、ADR-090 §2.C 設計案 1）。
@@ -660,21 +648,24 @@ impl ObservationStore {
             return None;
         }
         let fresh_window = Duration::from_millis(crate::tuning::OBSERVATION_FRESH_WINDOW_MS);
-        let blocked = self.per_source.iter().any(|o| {
-            o.confidence >= ObservationConfidence::Medium
-                && !o.is_expired(now)
-                && ((o.age(now) <= fresh_window && observation_identity_ok(o, self.current_fence))
-                    || o.at > glyph.at)
-        });
-        if blocked {
+        // 窓の同一性が合わない観測（前の窓の観測）は、(1)(2) とも数えない。
+        let candidates = || {
+            self.per_source.iter().filter(|o| {
+                o.confidence >= ObservationConfidence::Medium
+                    && !o.is_expired(now)
+                    && observation_identity_ok(o, self.current_fence)
+            })
+        };
+        // (1) 新鮮な Medium 以上が居る、または (2) 指標より新しい Medium 以上が居る → 指標は採られない。
+        if candidates().any(|o| o.age(now) <= fresh_window || o.at > glyph.at) {
             return None;
         }
-        // 時刻の経過だけで繰り上がったか（ADR-273 D2 d5）: 失効していない Medium 以上（指標より古い）が居るのに、鮮度が切れた
-        // ために指標が勝つ。journal・`[effective-open-flip]` で「入力が無いのに flip した」ことを区別する。
-        let promoted_by_staleness = self
-            .per_source
-            .iter()
-            .any(|o| o.confidence >= ObservationConfidence::Medium && !o.is_expired(now));
+        // 時刻の経過だけで繰り上がったか（ADR-273 D2 d5）: **字形が届いた時点では新鮮だった**、字形と値の違う Medium 以上
+        // （指標より古い）が、今は鮮度が切れている。journal・`[effective-open-flip]` で「入力が無いのに flip した」ことを
+        // 区別する。字形が届いた時点で既に鮮度切れだった観測・字形と同じ値の観測は数えない（過大に数えない）。
+        let promoted_by_staleness = candidates().any(|o| {
+            o.open != glyph.open && glyph.at.saturating_duration_since(o.at) < fresh_window
+        });
         Some(IndicatorReading {
             observation: glyph,
             promoted_by_staleness,
@@ -2880,8 +2871,8 @@ mod tests {
             .indicator_reading(t0 + Duration::from_secs(10))
             .expect("字形が勝つ");
         assert!(!r.observation.open);
-        // 古い High が居るのに鮮度が切れて字形が勝った: 時刻の経過だけで繰り上がった印が付く。
-        assert!(r.promoted_by_staleness);
+        // 古い High は字形が届いた時点で既に鮮度外（時刻の経過で繰り上がったのではない）: 印は付かない。
+        assert!(!r.promoted_by_staleness);
     }
 
     /// 時刻の経過だけで繰り上がった印（D2 d5）: 他の Medium 以上が無ければ付かない。
@@ -2895,12 +2886,30 @@ mod tests {
                 .expect("字形だけ")
                 .promoted_by_staleness
         );
-        // 古い（鮮度外）Medium が居る → 付く。
+        // 字形が届いた時点では新鮮だった、値の違う Medium が、今は鮮度切れ → 付く。
+        let mut s = ObservationStore::default();
+        rec(&mut s, obs(false, ObservationSource::ObserverPoll, t0));
+        rec(&mut s, glyph(true, t0 + Duration::from_millis(100)));
+        assert!(
+            s.indicator_reading(t0 + Duration::from_secs(10))
+                .expect("字形が勝つ")
+                .promoted_by_staleness
+        );
+        // 値が同じなら flip していない → 付かない。
+        let mut s = ObservationStore::default();
+        rec(&mut s, obs(true, ObservationSource::ObserverPoll, t0));
+        rec(&mut s, glyph(true, t0 + Duration::from_millis(100)));
+        assert!(
+            !s.indicator_reading(t0 + Duration::from_secs(10))
+                .expect("字形が勝つ")
+                .promoted_by_staleness
+        );
+        // 字形が届いた時点で既に鮮度切れだった観測は数えない。
         let mut s = ObservationStore::default();
         rec(&mut s, obs(false, ObservationSource::ObserverPoll, t0));
         rec(&mut s, glyph(true, t0 + Duration::from_secs(5)));
         assert!(
-            s.indicator_reading(t0 + Duration::from_secs(10))
+            !s.indicator_reading(t0 + Duration::from_secs(10))
                 .expect("字形が勝つ")
                 .promoted_by_staleness
         );

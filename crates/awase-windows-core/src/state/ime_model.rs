@@ -282,6 +282,12 @@ pub struct ImeModel {
     /// 打鍵時点の予測（ADR-191 決定3）。`reduce()`（`KeyEffectPredicted`/観測の照合/フォーカス変更/明示意図）
     /// だけが書く private フィールド。読み取りは`key_effect()`。
     key_effect: Option<KeyEffectPrediction>,
+
+    /// 最後の**モード系の入力**の時刻（envelope の `tick_ms`）。`UserImeSetIntent`・`ImeApplyRequested`（awase 自身の書き込み）・
+    /// `KeyEffectPredicted`・`ModeKeyPassedThrough` で更新し、`FocusChanged` で消す。ADR-273 D4 の柵の起点で、**観測による照合では消えない**
+    /// （`key_effect` は 170ms 後の Medium 以上の観測で消えるので、柵の起点にすると、予測が先に消えたあとに届く押す前の字形が
+    /// 素通しになる。Opus レビュー RM1）。読み取りは [`Self::since_last_mode_key_ms`]。
+    last_mode_key_tick_ms: Option<u64>,
     /// 打鍵履歴から追跡する隠れ状態（ADR-191 決定3・4: 変換モード5種・変換中の段階）。`reduce()`だけが書く
     /// private フィールド（`KeyEffectPredicted`/フォーカス変更/明示意図/観測）。読み取りは`key_track()`。
     key_track: crate::state::key_effect_predictor::KeyTrack,
@@ -346,6 +352,7 @@ impl ImeModel {
             applied: AppliedImeState::Unknown,
             current_focus: None,
             key_effect: None,
+            last_mode_key_tick_ms: None,
             key_track: crate::state::key_effect_predictor::KeyTrack {
                 conv: None,
                 stage: crate::state::key_effect_predictor::Stage::None,
@@ -366,6 +373,16 @@ impl ImeModel {
     #[must_use]
     pub const fn key_effect(&self) -> Option<KeyEffectPrediction> {
         self.key_effect
+    }
+
+    /// 最後のモード系の入力（物理モードキーの予測・通過・明示意図・awase 自身の書き込み）から `now_tick_ms` までの経過(ms)。
+    /// 無ければ `None`。字形の柵の文脈（`FenceCtx::since_last_mode_key_ms`）の起点（ADR-273 D4）。
+    #[must_use]
+    pub const fn since_last_mode_key_ms(&self, now_tick_ms: u64) -> Option<u64> {
+        match self.last_mode_key_tick_ms {
+            Some(t) => Some(now_tick_ms.saturating_sub(t)),
+            None => None,
+        }
     }
 
     /// 打鍵履歴から追跡している隠れ状態（変換モード5種・変換中の段階）。
@@ -792,6 +809,17 @@ impl ImeModel {
     #[expect(clippy::cognitive_complexity)]
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
+        // ADR-273 D4: 最後のモード系の入力の時刻（字形の柵の起点。観測による照合では消えない）。
+        // `ModeKeyPassedThrough` だけは dispatch 元を1箇所に固定するガードの都合で、自分のアームで書く。
+        match &envelope.event {
+            ImeEvent::UserImeSetIntent { .. }
+            | ImeEvent::ImeApplyRequested { .. }
+            | ImeEvent::KeyEffectPredicted { .. } => {
+                self.last_mode_key_tick_ms = Some(envelope.time.tick_ms);
+            }
+            ImeEvent::FocusChanged { .. } => self.last_mode_key_tick_ms = None,
+            _ => {}
+        }
         match envelope.event {
             ImeEvent::UserImeSetIntent { target, source } => {
                 self.key_effect = None;
@@ -822,35 +850,39 @@ impl ImeModel {
                 self.desired_is_placeholder = false;
             }
             ImeEvent::ObserverReported(observed) => {
-                // ADR-273 D4（二重の柵）: 殻は `fence_glyph` を通した字形だけを報告するが、**reducer も**、モード系の打鍵の予測が
-                // `GLYPH_KEY_FENCE_MS` 以内にあるときの字形を記録も照合もしない（journal の再生でも決定的。柵を殻だけに置くと
-                // 再生で確かめられない）。遅れて届いた押す前の状態の字形が、正しい予測を消して belief を押す前へ戻すのを防ぐ（B3）。
+                // ADR-273 D4（二重の柵）: 殻は `fence_glyph` を通した字形だけを報告するが、**reducer も**、最後のモード系の入力
+                // （`last_mode_key_tick_ms`。予測の有無に依らない）から `GLYPH_KEY_FENCE_MS` 以内の字形を記録も照合もしない
+                // （journal の再生でも決定的。柵を殻だけに置くと再生で確かめられない）。遅れて届いた押す前の状態の字形が、
+                // 正しい予測や awase 自身の書き込みの結果を消して belief を押す前へ戻すのを防ぐ（B3・RM1）。
                 if observed.source() == ObservationSource::TaskbarGlyph
-                    && self.key_effect.is_some_and(|p| {
-                        envelope.time.tick_ms.saturating_sub(p.at_ms)
-                            < crate::tuning::GLYPH_KEY_FENCE_MS
-                    })
+                    && self
+                        .since_last_mode_key_ms(envelope.time.tick_ms)
+                        .is_some_and(|ms| ms < crate::tuning::GLYPH_KEY_FENCE_MS)
                 {
-                    return;
-                }
-                // 絶対ルール: Observer は desired_open を直接書き換えない。
-                // 値としての観測を記録する唯一の口（ADR-089 §2.1）。
-                self.observations
-                    .record_replayed(observed, envelope.time.monotonic);
-                // drift 追跡 (desired と observed の乖離)。**字形（`TaskbarGlyph`）では追跡しない**（ADR-273 D1）:
-                // 指標が drift を `None` に戻すと、正当な補正（ObserverPoll の食い違い）を遅らせ、`drift_duration` も巻き戻る。
-                if observed.source() != ObservationSource::TaskbarGlyph {
-                    self.observations.update_drift(
-                        self.desired_open,
+                    tracing::debug!(
+                        "[glyph-fence] dropped: a glyph within {}ms of the last mode key input",
+                        crate::tuning::GLYPH_KEY_FENCE_MS
+                    );
+                } else {
+                    // 絶対ルール: Observer は desired_open を直接書き換えない。
+                    // 値としての観測を記録する唯一の口（ADR-089 §2.1）。
+                    self.observations
+                        .record_replayed(observed, envelope.time.monotonic);
+                    // drift 追跡 (desired と observed の乖離)。**字形（`TaskbarGlyph`）では追跡しない**（ADR-273 D1）:
+                    // 指標が drift を `None` に戻すと、正当な補正（ObserverPoll の食い違い）を遅らせ、`drift_duration` も巻き戻る。
+                    if observed.source() != ObservationSource::TaskbarGlyph {
+                        self.observations.update_drift(
+                            self.desired_open,
+                            observed.open(),
+                            envelope.time.monotonic,
+                        );
+                    }
+                    self.reconcile_key_effect_open(
                         observed.open(),
-                        envelope.time.monotonic,
+                        observed.confidence(),
+                        envelope.time.tick_ms,
                     );
                 }
-                self.reconcile_key_effect_open(
-                    observed.open(),
-                    observed.confidence(),
-                    envelope.time.tick_ms,
-                );
             }
             ImeEvent::IndicatorGlyphMissed => self.observations.retract_indicator(),
             ImeEvent::FocusChanged {
@@ -973,6 +1005,7 @@ impl ImeModel {
                 // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
                 // 直前の観測を固定してしまうため、観測成功後に意図だけ外す。
                 self.last_intent = None;
+                self.last_mode_key_tick_ms = Some(envelope.time.tick_ms);
                 // ADR-191 決定1（IMEが状態の正）: 通過させたモードキーの結果は実IMEが決めた。
                 // `desired_open`（awaseが最後に書こうとした意図）を古い値のまま残すと、
                 // `check_drift_correction` が「観測 ≠ desired」と見てユーザーの操作を約0.5〜1.3秒後に
@@ -1473,6 +1506,9 @@ mod tests {
         expected.desired_open = true;
         // `desired_open` を書いたので、「初期値のまま」でなくなる（BUG-163）。
         expected.desired_is_placeholder = false;
+        // モード系の入力の時刻（字形の柵の起点）も記録される。
+        expected.last_mode_key_tick_ms = model.last_mode_key_tick_ms;
+        assert!(model.last_mode_key_tick_ms.is_some());
         assert_eq!(
             format!("{model:?}"),
             format!("{expected:?}"),
@@ -2451,6 +2487,71 @@ mod tests {
             model.key_effect().is_none(),
             "柵の後の読みは予測を照合して消す"
         );
+    }
+
+    /// RM1: 予測が別の観測で照合されて消えた後でも、最後のモード系の入力から柵の間の字形は記録されない。
+    #[test]
+    fn reducer_fence_survives_the_prediction_being_reconciled() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        predict(&mut model, 1000, Some(false), None);
+        // settle（170ms）後の ObserverPoll（Medium）が予測を照合して消す。
+        observe_open(
+            &mut model,
+            2,
+            1000 + crate::tuning::KEY_EFFECT_SETTLE_MS,
+            false,
+            ObservationConfidence::Medium,
+        );
+        assert!(model.key_effect().is_none(), "予測は照合で消える");
+        // 押す前の状態を映した字形（開）が柵の中で届いても捨てられる。
+        report_glyph(&mut model, 3, 1400, BeliefLabel::Kana);
+        assert!(
+            model
+                .observations
+                .indicator_reading(Instant::now())
+                .is_none(),
+            "予測が消えた後でも、柵の中の字形は記録されない"
+        );
+        // 柵の後は記録される（新鮮な Medium が居るので読みとしては採られないが、枠には入る）。
+        report_glyph(
+            &mut model,
+            4,
+            1000 + crate::tuning::GLYPH_KEY_FENCE_MS,
+            BeliefLabel::Kana,
+        );
+        assert!(model.observations.per_source.indicator().is_some());
+    }
+
+    /// RM1: 明示意図（awase 自身の書き込み）の直後の字形も柵の中は記録されない。
+    #[test]
+    fn reducer_fence_starts_at_an_explicit_intent() {
+        use crate::state::indicator_glyph::BeliefLabel;
+        let mut model = ImeModel::new();
+        model.reduce(&envelope_at(
+            1,
+            Instant::now(),
+            5000,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        report_glyph(&mut model, 2, 5300, BeliefLabel::Kana);
+        assert!(model
+            .observations
+            .indicator_reading(Instant::now())
+            .is_none());
+        report_glyph(
+            &mut model,
+            3,
+            5000 + crate::tuning::GLYPH_KEY_FENCE_MS,
+            BeliefLabel::Kana,
+        );
+        assert!(model
+            .observations
+            .indicator_reading(Instant::now())
+            .is_some());
     }
 
     /// 字形が `Miss` になったら読みを取り消す: 枠が消え、元の順位（ここでは `desired_open` への fallback）に戻る。`desired_open` は書かない。

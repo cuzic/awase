@@ -659,6 +659,10 @@ pub fn classify_label(
 }
 
 /// 字形の読みを belief に報告してよいかの文脈（ADR-273 D4 の柵）。呼び出し側（殻）が持つ事実を値で渡す。
+///
+/// **3 つの事実は呼び出し側の自己申告**で、型が強制できるのは「柵の関数を通った」ことまで（`since_last_mode_key_ms: None` を
+/// 渡せば素通しになる）。だから reducer にも同じ柵を二重に置いている（`ImeModel::last_mode_key_tick_ms`。予測の有無に依らず、
+/// journal の再生でも決定的）。起点は「最後のモード系の入力」: 物理モードキーの予測・通過・明示意図・awase 自身の書き込み。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FenceCtx {
     /// 最後のモード系の打鍵（`KeyEffectPredicted` が付く打鍵）からの経過(ms)。打鍵が無ければ `None`
