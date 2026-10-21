@@ -2187,7 +2187,7 @@ impl ImeStateHub {
         if self
             .shadow_model
             .observations
-            .observation(crate::state::ime_event::ObservationSource::MozcShm)
+            .observation(ObservationSource::MozcShm)
             .is_some()
         {
             return GlyphPlan::MozcWindow;
