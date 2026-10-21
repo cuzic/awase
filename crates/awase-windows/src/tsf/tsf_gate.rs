@@ -22,15 +22,22 @@
 //! - [`TsfGateMachine`]: timed-fsm ベースの純粋ステートマシン。副作用なし。テスト可能。
 //! - [`TsfGate`]: `TsfGateMachine` を内包し、`RawKeyEvent` の保留を追加するラッパー。
 //!
+//! ## タイマーの所有者は殻だけ
+//!
+//! `TIMER_TSF_GATE`（`WARMUP_TIMEOUT_MS` の一発）は殻（`runtime/mod.rs`・`platform.rs`）が張り・kill する。
+//! 旧版はこの FSM も `Response` にタイマーの Set/Kill を宣言していたが、ラッパー [`TsfGate`] が戻り値を捨てていて
+//! 効いておらず、殻の実際の挙動（PendingWarmup 中の再フォーカスで期限を延ばす）とも食い違う二重の記述だったので
+//! 撤去した（ECRS DD4-04）。FSM は `on_timeout(WarmupTimeout)` を受けるだけ。
+//!
 //! ## 状態遷移
 //!
 //! ```text
 //! (起動時)  Bypass
 //!     │
-//!     ▼  FocusChange ── タイマー Set(WarmupTimeout, 500ms)
+//!     ▼  FocusChange
 //! PendingWarmup ─── キーを held に蓄積 ─────────────────────┐
 //!     │                                                      │
-//!     │ TsfConfirmed ── TimerKill     │ BypassConfirmed ── Kill
+//!     │ TsfConfirmed                  │ BypassConfirmed
 //!     ▼                              ▼
 //! Probing ─── (DrainHeld)        Bypass ─── (DrainHeld)
 //!     │
@@ -46,8 +53,6 @@
 // ための命名規約——上記ドキュメントコメント参照）。ファイル内の全アイテムに掛かるため
 // ここで一括allowする。
 #![allow(clippy::module_name_repetitions)]
-
-use std::time::Duration;
 
 use timed_fsm::{Response, TimedStateMachine};
 
@@ -145,21 +150,18 @@ impl TimedStateMachine for TsfGateMachine {
             // どの状態でもフォーカス変更 → PendingWarmup
             (_, FocusChange) => {
                 self.state = TsfGateState::PendingWarmup;
-                Response::emit_one(GateAction::InitiateHold).with_timer(
-                    GateTimer::WarmupTimeout,
-                    Duration::from_millis(WARMUP_TIMEOUT_MS),
-                )
+                Response::emit_one(GateAction::InitiateHold)
             }
             // PendingWarmup/Bypass + TSF 確定 → Probing + DrainHeld
             // Bypass からの遷移は WarmupTimeout 後に async タスクが遅れて confirm した回復パス。
             (TsfGateState::PendingWarmup | Bypass, TsfConfirmed) => {
                 self.state = Probing;
-                Response::emit_one(GateAction::DrainHeld).with_kill_timer(GateTimer::WarmupTimeout)
+                Response::emit_one(GateAction::DrainHeld)
             }
             // PendingWarmup/Probing + Bypass 確定 → Bypass + DrainHeld
             (TsfGateState::PendingWarmup | Probing, BypassConfirmed) => {
                 self.state = Bypass;
-                Response::emit_one(GateAction::DrainHeld).with_kill_timer(GateTimer::WarmupTimeout)
+                Response::emit_one(GateAction::DrainHeld)
             }
             // Probing + プローブ完了 → Ready
             (Probing, ProbeComplete) => {
@@ -315,7 +317,6 @@ impl Default for TsfGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use timed_fsm::TimerCommand;
 
     // ── ヘルパー ────────────────────────────────────────────────────────────
 
@@ -332,32 +333,9 @@ mod tests {
         resp.actions.contains(&action)
     }
 
-    fn timer_set(resp: &Response<GateAction, GateTimer>) -> bool {
-        resp.timers.iter().any(|t| {
-            matches!(
-                t,
-                TimerCommand::Set {
-                    id: GateTimer::WarmupTimeout,
-                    ..
-                }
-            )
-        })
-    }
-
-    fn timer_killed(resp: &Response<GateAction, GateTimer>) -> bool {
-        resp.timers.iter().any(|t| {
-            matches!(
-                t,
-                TimerCommand::Kill {
-                    id: GateTimer::WarmupTimeout
-                }
-            )
-        })
-    }
-
     // ── シナリオ A: 正常フロー (TSF アプリ) ────────────────────────────────
 
-    /// A1: FocusChange → PendingWarmup + タイマーセット
+    /// A1: FocusChange → PendingWarmup
     #[test]
     fn scenario_a1_focus_change_to_pending_warmup() {
         let mut m = TsfGateMachine::new();
@@ -366,11 +344,10 @@ mod tests {
         let r = m.on_event(GateEvent::FocusChange);
         assert_state(&m, TsfGateState::PendingWarmup);
         r.assert_consumed();
-        assert!(timer_set(&r), "WarmupTimeout タイマーがセットされるべき");
         assert!(!has_action(&r, GateAction::DrainHeld));
     }
 
-    /// A2: TsfConfirmed → Probing + DrainHeld + タイマーkill
+    /// A2: TsfConfirmed → Probing + DrainHeld
     #[test]
     fn scenario_a2_tsf_confirmed_to_probing() {
         let mut m = TsfGateMachine::new();
@@ -380,7 +357,6 @@ mod tests {
         assert_state(&m, TsfGateState::Probing);
         r.assert_consumed();
         assert!(has_action(&r, GateAction::DrainHeld));
-        assert!(timer_killed(&r), "WarmupTimeout タイマーが kill されるべき");
     }
 
     /// A3: ProbeComplete → Ready
@@ -427,7 +403,6 @@ mod tests {
         let r = m.on_event(GateEvent::FocusChange);
         assert_state(&m, TsfGateState::PendingWarmup);
         r.assert_consumed();
-        assert!(timer_set(&r), "再フォーカスでタイマーがリセットされるべき");
     }
 
     /// B2: Ready 状態でのフォーカス変更 → PendingWarmup
@@ -442,7 +417,6 @@ mod tests {
         let r = m.on_event(GateEvent::FocusChange);
         assert_state(&m, TsfGateState::PendingWarmup);
         r.assert_consumed();
-        assert!(timer_set(&r));
     }
 
     // ── シナリオ C: タイムアウトフォールバック ──────────────────────────────
@@ -451,9 +425,8 @@ mod tests {
     #[test]
     fn scenario_c_warmup_timeout_fallback() {
         let mut m = TsfGateMachine::new();
-        let r_focus = m.on_event(GateEvent::FocusChange);
+        let _ = m.on_event(GateEvent::FocusChange);
         assert_state(&m, TsfGateState::PendingWarmup);
-        assert!(timer_set(&r_focus));
 
         let r = m.on_timeout(GateTimer::WarmupTimeout);
         assert_state(&m, TsfGateState::Bypass);
@@ -475,7 +448,7 @@ mod tests {
 
     // ── シナリオ D: 非 TSF アプリ (Bypass) ─────────────────────────────────
 
-    /// D: BypassConfirmed → Bypass + DrainHeld + タイマーkill
+    /// D: BypassConfirmed → Bypass + DrainHeld
     #[test]
     fn scenario_d_bypass_app() {
         let mut m = TsfGateMachine::new();
@@ -485,7 +458,6 @@ mod tests {
         let r = m.on_event(GateEvent::BypassConfirmed);
         assert_state(&m, TsfGateState::Bypass);
         assert!(has_action(&r, GateAction::DrainHeld));
-        assert!(timer_killed(&r), "Bypass 確定でタイマーが kill されるべき");
     }
 
     /// D2: Bypass 確定済みに再度 BypassConfirmed → pass-through（べき等）
@@ -524,8 +496,6 @@ mod tests {
         assert_state(&m, TsfGateState::Probing);
         r.assert_consumed();
         assert!(has_action(&r, GateAction::DrainHeld));
-        // 死んだタイマーへの Kill は no-op だが、コマンドとして発行されることを確認
-        assert!(timer_killed(&r));
     }
 
     /// E2: Bypass→Probing→Ready の完全な回復フロー
@@ -539,43 +509,6 @@ mod tests {
         let r = m.on_event(GateEvent::ProbeComplete);
         assert_state(&m, TsfGateState::Ready);
         r.assert_consumed();
-    }
-
-    // ── タイマーコマンドの詳細検証 ────────────────────────────────────────
-
-    #[test]
-    fn focus_change_sets_timer_with_correct_duration() {
-        let mut m = TsfGateMachine::new();
-        let r = m.on_event(GateEvent::FocusChange);
-        let set_cmd = r.timers.iter().find(|t| {
-            matches!(
-                t,
-                TimerCommand::Set {
-                    id: GateTimer::WarmupTimeout,
-                    ..
-                }
-            )
-        });
-        let set_cmd = set_cmd.expect("Set コマンドが存在するべき");
-        if let TimerCommand::Set { duration, .. } = *set_cmd {
-            assert_eq!(duration, Duration::from_millis(WARMUP_TIMEOUT_MS));
-        }
-    }
-
-    #[test]
-    fn tsf_confirmed_kills_timer() {
-        let mut m = TsfGateMachine::new();
-        let _ = m.on_event(GateEvent::FocusChange);
-        let r = m.on_event(GateEvent::TsfConfirmed);
-        r.assert_timer_kill(GateTimer::WarmupTimeout);
-    }
-
-    #[test]
-    fn bypass_confirmed_kills_timer() {
-        let mut m = TsfGateMachine::new();
-        let _ = m.on_event(GateEvent::FocusChange);
-        let r = m.on_event(GateEvent::BypassConfirmed);
-        r.assert_timer_kill(GateTimer::WarmupTimeout);
     }
 
     // ── TsfGate ラッパーのテスト ──────────────────────────────────────────
