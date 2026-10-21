@@ -326,15 +326,6 @@ impl AppImeProfile {
     }
 }
 
-/// ブラウザ系・Electron 系のトップレベルウィンドウクラスかどうかを判定する。
-///
-/// Chrome 系（Chrome/Edge/Brave/Electron 等）および Firefox が対象。
-/// IME 制御経路の選択（VK_KANJI 戦略 vs IMM32）に使用する。
-#[must_use]
-pub fn is_chromium_widget(class_name: &str) -> bool {
-    class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass"
-}
-
 /// ウィンドウクラス名からアプリの UI フレームワーク種別を判定する。
 ///
 /// - `Chrome_*` / `TeamsWebView`: Chromium 系（Chrome, Edge, Electron, VS Code, Teams 等）
@@ -560,13 +551,6 @@ mod tests {
         assert!(!profile.is_effectively_tsf_native("Windows.UI.Input.InputSite.WindowClass"));
         assert!(profile.cannot_verify_real_ime_state("Notepad"));
         assert!(profile.should_reprime_on_lightweight_focus_sync("Notepad", true));
-    }
-
-    #[test]
-    fn is_chromium_widget_table() {
-        assert!(is_chromium_widget("Chrome_WidgetWin_1"));
-        assert!(is_chromium_widget("MozillaWindowClass"));
-        assert!(!is_chromium_widget("Notepad"));
     }
 
     /// `detect_app_kind` の3分岐を固定する。`teamswebview_is_chromium_like_imm32_unavailable`

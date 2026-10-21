@@ -67,11 +67,6 @@ impl FocusResyncGate {
         self.armed.store(true, Ordering::Relaxed);
     }
 
-    /// 明示的 IME 操作 / エンジン無効化時に呼ぶ。
-    pub fn disarm(&self) {
-        self.armed.store(false, Ordering::Relaxed);
-    }
-
     #[must_use]
     pub fn is_armed(&self) -> bool {
         self.armed.load(Ordering::Relaxed)
@@ -137,14 +132,6 @@ mod tests {
         g.arm(1_000);
         assert!(g.is_armed());
         assert_eq!(g.armed_at_ms(), 1_000);
-    }
-
-    #[test]
-    fn disarm_clears_armed() {
-        let g = FocusResyncGate::new();
-        g.arm(1_000);
-        g.disarm();
-        assert!(!g.is_armed());
     }
 
     #[test]

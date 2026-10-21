@@ -195,7 +195,7 @@ pub(crate) fn log_shadow_warrant(chain: &str, order: &ActuationOrder) {
     if order.would_have_blocked() {
         tracing::info!(
             "[warrant-shadow] chain={chain} open={} origin={:?} would_have_blocked=true \
-             (A-1 shadow: 書き込みは止めない。A-2 で強制する際の判断材料)",
+             (warrant が無いので書き込まない。A-2 強制済み)",
             order.open(),
             order.origin(),
         );
