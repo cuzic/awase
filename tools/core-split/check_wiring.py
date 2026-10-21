@@ -13,7 +13,7 @@ core 系 crate を足したとき、パスや `-p` を直書きしている場�
   - .github/workflows/ci.yml の doctest・dylint・clippy・nextest の `-p`、mutants の matrix の pkg
   - .github/workflows/mutants-windows.yml と mise.toml の `-p`
   - .cargo/mutants-<package>.toml が存在すること
-  - crates/xtask-adr-evidence/src/core_registry.rs が crate のディレクトリに触れていること
+  - crates/xtask-adr-evidence/src/core_registry.rs が crate 名を問わない形（crates/<crate>/src/state/<name>.rs）であること
   - layer_boundary_guard.rs が crate のディレクトリに触れていること(windows に依存しない検査)
   - .githooks/pre-push が一覧を読むこと
   - core 系 crate に統合テスト(`tests/*.rs`)を置かないこと。統合テストは殻の `crates/awase-windows/tests/` に置く
@@ -99,8 +99,10 @@ def check():
             errors.append(f"{pkg}: ci.yml の mutants matrix(pkg: [...])に無い")
         if not os.path.exists(os.path.join(ROOT, f".cargo/mutants-{pkg}.toml")):
             errors.append(f"{pkg}: .cargo/mutants-{pkg}.toml が無い")
-        if d not in registry and pkg not in registry:
-            errors.append(f"{pkg}: xtask-adr-evidence の core_registry.rs が {d} に触れていない(mutants の登録を数えない)")
+        # xtask は `crates/<crate>/src/state/<name>.rs` の形を crate 名を問わず受け付け、`.cargo/mutants-awase-*.toml` をすべて読む
+        # （ADR-274）。その一般化が外れて、crate の直書きに戻っていないことを確かめる。
+        if r"crates/[A-Za-z0-9_-]+/src/state/" not in registry:
+            errors.append(f"{pkg}: xtask-adr-evidence の core_registry.rs が crate 名を問わない形でなくなっている(mutants の登録を数えない)")
         tests_dir = os.path.join(ROOT, d, "tests")
         if os.path.isdir(tests_dir):
             stray = sorted(f for f in os.listdir(tests_dir) if f.endswith(".rs"))

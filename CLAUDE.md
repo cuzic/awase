@@ -98,6 +98,10 @@ crates/awase-hook-core/       OS-independent core: hook / modifier-key / half-wi
                               state/{hook_state,hook_watchdog,alt_impersonation,foreign_modifier,win_key_guard,
                               half_width_alnum,half_width_resume_hold}. Same `src/state/` relative paths as before the
                               move; depends only on `awase` and `awase-windows-core`.
+crates/awase-windows-plans/   OS-independent core: TSF / focus "plans" (Facts → Plan pure decisions, ADR-274 stage 1):
+                              state/{warm_send_plan,deferred_gate_plan,raw_recovery_plan,relay_plan,post_bypass,
+                              focus_classify_plan,focus_probe_plan,focus_resolve_plan,focus_resync_policy,
+                              msaa_role_plan}, focus/hwnd_cache. Same relative paths as before the move (`focus/` spans crates).
 crates/awase-linux/           Linux platform stub
 crates/awase-macos/           macOS platform stub
 crates/win32-async/           Async executor + blocking-API timeout isolation (run_with_timeout)

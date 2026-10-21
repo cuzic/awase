@@ -1,0 +1,19 @@
+[package]
+name = "awase-windows-plans"
+version = "2.2.0"
+edition = "2021"
+description = "awase-windows の OS 非依存な核のうち、TSF とフォーカスの「計画」(Facts → Plan の純粋な判断、ADR-274)。windows crate に依存しない"
+publish = false
+
+[lib]
+name = "awase_windows_plans"
+path = "src/lib.rs"
+
+# この crate は windows crate に依存しない(`core_crates_do_not_depend_on_windows` が固定する)。
+[dependencies]
+awase = { path = "../.." }
+awase-windows-core = { path = "../awase-windows-core" }
+tracing = "0.1"
+
+[lints]
+workspace = true

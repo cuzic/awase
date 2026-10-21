@@ -30,6 +30,8 @@ awase-vkmap = { path = "../awase-vkmap" }
 awase-windows-core = { path = "../awase-windows-core" }
 # フック・修飾キー・半角英数トグルの状態の核(ADR-274 段階 1)。windows crate に依存しない。
 awase-hook-core = { path = "../awase-hook-core" }
+# TSF とフォーカスの「計画」(Facts → Plan の純粋な判断)の核(ADR-274 段階 1)。windows crate に依存しない。
+awase-windows-plans = { path = "../awase-windows-plans" }
 # ADR-195段階4: T3の永続化スキーマ(`persist`モジュール)を読むためだけの依存。OS非依存クレート
 # なのでWindows限定にしない(coreがOS非依存クレートに依存されるだけ、という既存の向きに合わせる)。
 awase-keymap-learn = { path = "../awase-keymap-learn" }
