@@ -237,19 +237,6 @@ impl AppImeProfile {
         }
     }
 
-    /// 物理 IME キー（VK_KANJI / 半角/全角 等）を OS に届けてよいか。
-    ///
-    /// `Imm32Unavailable` アプリでは `apply_ime_open` が VK_KANJI を送信済みなので、
-    /// 物理キーをそのまま届けると二重制御になる。`false` のとき
-    /// `KeyEventPipeline::stage_execute` は `Decision::Consume` に変換する。
-    #[must_use]
-    pub const fn should_pass_physical_key(&self) -> bool {
-        match self {
-            Self::Standard | Self::TsfNative | Self::InputRelay => true,
-            Self::Imm32Unavailable => false,
-        }
-    }
-
     /// `*self == AppImeProfile::TsfNative` の代わりに使うべき「実質的に TSF ネイティブか」判定。
     ///
     /// `AppImeProfile::from_class_name` は `IMM32_UNAVAILABLE_CLASSES` を `is_tsf_native_window`
@@ -440,19 +427,19 @@ mod tests {
         }
     }
 
-    /// `AppImeProfile` の3つの bool getter（戦略選択の入口）を真理値表として固定する。
+    /// `AppImeProfile` の2つの bool getter（戦略選択の入口）を真理値表として固定する。
     /// これまで戻り値を直接 assert するテストが無く、反転（`matches!`/`!matches!` の
     /// 取り違え）が mutants で検知されなかった。
     #[test]
     fn app_ime_profile_getters_truth_table() {
-        // (profile, can_use_imm32_cross_process, uses_kanji_toggle, should_pass_physical_key)
+        // (profile, can_use_imm32_cross_process, uses_kanji_toggle)
         let table = [
-            (AppImeProfile::Standard, true, false, true),
-            (AppImeProfile::Imm32Unavailable, false, true, false),
-            (AppImeProfile::TsfNative, false, false, true),
-            (AppImeProfile::InputRelay, false, false, true),
+            (AppImeProfile::Standard, true, false),
+            (AppImeProfile::Imm32Unavailable, false, true),
+            (AppImeProfile::TsfNative, false, false),
+            (AppImeProfile::InputRelay, false, false),
         ];
-        for (profile, cross_process, kanji_toggle, pass_physical) in table {
+        for (profile, cross_process, kanji_toggle) in table {
             assert_eq!(
                 profile.can_use_imm32_cross_process(),
                 cross_process,
@@ -463,11 +450,6 @@ mod tests {
                 kanji_toggle,
                 "{profile:?}.uses_kanji_toggle()"
             );
-            assert_eq!(
-                profile.should_pass_physical_key(),
-                pass_physical,
-                "{profile:?}.should_pass_physical_key()"
-            );
         }
     }
 
@@ -476,7 +458,6 @@ mod tests {
         let profile = AppImeProfile::InputRelay;
         assert!(!profile.can_use_imm32_cross_process());
         assert!(!profile.uses_kanji_toggle());
-        assert!(profile.should_pass_physical_key());
         assert!(!profile.is_effectively_tsf_native("Windows.UI.Input.InputSite.WindowClass"));
     }
 
@@ -502,7 +483,7 @@ mod tests {
     //
     // `AppImeProfile::from_class_name` / `is_effectively_tsf_native` /
     // `cannot_verify_real_ime_state` / `should_reprime_on_lightweight_focus_sync` /
-    // 4つの getter は、いずれも「IMM32制御不可クラスか」「TSFネイティブクラスか」の
+    // 2つの getter は、いずれも「IMM32制御不可クラスか」「TSFネイティブクラスか」の
     // 2値から導出される派生関数のクラスタである。この2値の掛け合わせ(4通り)を
     // 個別に見るテストがこれまで無く、実際に CASCADIA_HOSTING_WINDOW_CLASS
     // （両方に該当）のケースで `profile == AppImeProfile::TsfNative` という直接比較
@@ -536,24 +517,22 @@ mod tests {
             AppImeProfile::Standard
         };
         let effectively_tsf_native = !is_input_relay && is_tsf_native_class;
-        // TsfNative と InputRelay はこの3述語の期待値がたまたま一致するが、
+        // TsfNative と InputRelay はこの2述語の期待値がたまたま一致するが、
         // このオラクルは profile ごとの行を明示的に書き下す真理値表として
         // 意図的に保つ（clippy::match_same_arms の統合提案には従わない —
         // 統合すると「どの profile がどの行か」が読みにくくなる）。
         #[allow(clippy::match_same_arms)]
-        let (can_use_imm32_cross_process, uses_kanji_toggle, should_pass_physical_key) =
-            match profile {
-                AppImeProfile::Standard => (true, false, true),
-                AppImeProfile::Imm32Unavailable => (false, true, false),
-                AppImeProfile::TsfNative => (false, false, true),
-                AppImeProfile::InputRelay => (false, false, true),
-            };
+        let (can_use_imm32_cross_process, uses_kanji_toggle) = match profile {
+            AppImeProfile::Standard => (true, false),
+            AppImeProfile::Imm32Unavailable => (false, true),
+            AppImeProfile::TsfNative => (false, false),
+            AppImeProfile::InputRelay => (false, false),
+        };
         OracleResult {
             profile,
             effectively_tsf_native,
             can_use_imm32_cross_process,
             uses_kanji_toggle,
-            should_pass_physical_key,
         }
     }
 
@@ -563,7 +542,6 @@ mod tests {
         effectively_tsf_native: bool,
         can_use_imm32_cross_process: bool,
         uses_kanji_toggle: bool,
-        should_pass_physical_key: bool,
     }
 
     fn actual_for(class_name: &str, process_name: &str, relay_apps: &[String]) -> OracleResult {
@@ -573,7 +551,6 @@ mod tests {
             effectively_tsf_native: profile.is_effectively_tsf_native(class_name),
             can_use_imm32_cross_process: profile.can_use_imm32_cross_process(),
             uses_kanji_toggle: profile.uses_kanji_toggle(),
-            should_pass_physical_key: profile.should_pass_physical_key(),
         }
     }
 

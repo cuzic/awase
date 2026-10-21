@@ -804,20 +804,12 @@ impl Runtime {
             );
             return;
         }
-        // この age 比較は spawn〜apply 間の変化検出には使わない（そちらは上の (b1) の
-        // ビット一致が担う）。ここは「suppress window 内かどうか」という独立した
-        // 業務ルールの判定であり、年齢は足切りとしてのみ使う
-        // （BUG-34 追補が否定したのは「経過時間で spawn〜apply 間の変化を判定する」
-        // パターンであり、この suppress window 判定はそれとは別軸）。
-        let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms(now_tick);
-        if explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS {
-            tracing::debug!(
-                "[idle-conv-check] apply 時に explicit IME action {explicit_age}ms 前 → \
-                 読み取り結果 conv=0x{conv:08X} を破棄 (suppress={}ms)",
-                crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
-            );
-            return;
-        }
+        // 旧版はここに「`explicit_ime_action_age_ms(now) < EXPLICIT_IME_SUPPRESS_MS` なら破棄」の足切りがあったが、
+        // 撤去した(ECRS DD2-01 = DD4-02、2026-10-21。2 人が独立に同じ結論)。spawn 前のガード 4
+        // (`should_run_idle_conv_check`)が `explicit_age >= EXPLICIT_IME_SUPPRESS_MS` を保証しており、上の (b) が
+        // `last_explicit_ime_action_ms` の値の一致で「spawn〜apply の間に新しい明示操作が無い」ことを保証するので、
+        // apply 時の age は spawn 時の age 以上(時刻は単調)で、この足切りは常に偽になる。
+        // (BUG-34 追補が否定したのは「経過時間で spawn〜apply 間の変化を判定する」パターン。(b) の値一致がそれを担う。)
 
         // (c) 自己出力の再検証: spawn〜apply の間に awase 自身が conv ワードを
         // 変えうる書き込み（VK_DBE_*/VK_KANA/VK_CONVERT 送信）を行っていれば、
