@@ -528,6 +528,19 @@ jobs:
             # run 36654801007: 撤去しても入力先のテキスト・cold 経路・固着は変わらず PASS した(awase 自身の ImeOn 遷移が GjiFsm を同期する)。修正の有無は --require-sync(journal 上の同期)だけが検出できる。
             cfg('sc-reopen-tsf-gji-gap600-nofix', 'fail', mutator='a8-no-gji-reopen-sync.sh', check='reopen', runs=3, wait=420, checkargs='--require-cold --require-sync',
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab'),
+            # 撤去実験 a12(GjiFsm への ImeOn 通知 2 か所を外す)の B2/BUG-18 側の対照(ECRS DD5-01、ADR-203 決定 4)。いずれも基準(撤去なし)と
+            # a12 を同じ入力で回して、判定・I4(gji_fsm_off_cold_composition)の差を見る。観測のみ(until までに pass/fail/削除へ)。
+            #  - sc-startup-gji-tsf-on(-a12): 起動時に IME が ON のまま awase が GJI 種別を検出する(GjiFsm は既定の OffCold で作られ、belief は ON)。B2 に最も近い。
+            #  - cal-driftrec-tsf-gji-atok-a12 / cal-driftrec-refocus-tsf-gji-atok-a12: 外部要因で IME を閉じ、(refocus 版は)フォーカスを外して戻してから打鍵する。
+            #    BUG-18(フォーカス復帰で belief だけが ON に戻り GjiFsm が OffCold のまま)の経路に近い。基準は cal-driftrec-(refocus-)tsf-gji-atok。
+            cfg('sc-startup-gji-tsf-on', 'observe', check='startup', runs=3, wait=180, until='2026-11-11',
+                stress='--form=tsf --mode=startup --startup-ime=on --layout=@REPO@/layout/nicola_keytop.yab'),
+            cfg('sc-startup-gji-tsf-on-a12', 'observe', mutator='a12-no-gji-point-sync.sh', check='startup', runs=3, wait=180, until='2026-11-11',
+                stress='--form=tsf --mode=startup --startup-ime=on --layout=@REPO@/layout/nicola_keytop.yab'),
+            cfg('cal-driftrec-tsf-gji-atok-a12', 'observe', mutator='a12-no-gji-point-sync.sh', check='driftrecovery', wait=200, until='2026-11-11',
+                stress='--form=tsf --mode=drift-on --trials=10 --layout=@REPO@/layout/nicola_keytop.yab'),
+            cfg('cal-driftrec-refocus-tsf-gji-atok-a12', 'observe', mutator='a12-no-gji-point-sync.sh', check='driftrecovery', wait=200, until='2026-11-11',
+                stress='--form=tsf --mode=drift-on --refocus --trials=10 --layout=@REPO@/layout/nicola_keytop.yab'),
             cfg('sc-reopen-tsf-msime-gap600', 'pass', check='reopen', ime='msime', runs=3, wait=420,
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab --msime'),
             cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900, checkargs='--require-cold --require-sync',
