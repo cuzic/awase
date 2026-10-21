@@ -333,8 +333,6 @@ impl InjectionModeStore {
         }
         classes
     }
-
-    }
 }
 
 #[cfg(test)]

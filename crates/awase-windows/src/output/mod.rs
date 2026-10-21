@@ -1041,7 +1041,7 @@ impl Output {
                     },
                     gji_response: None,
                     needs_gji_composition_reset,
-                        completed_cold_seq: None,
+                    completed_cold_seq: None,
                     literal_detect,
                 }
             }

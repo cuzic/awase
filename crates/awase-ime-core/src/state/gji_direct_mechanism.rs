@@ -305,10 +305,7 @@ pub const fn needs_belief_sync_on(
     gji_is_off_cold: bool,
     probe_or_recovery_blocking: bool,
 ) -> bool {
-    send_has_romaji
-        && strategy_is_gji_fsm
-        && gji_is_off_cold
-        && !probe_or_recovery_blocking
+    send_has_romaji && strategy_is_gji_fsm && gji_is_off_cold && !probe_or_recovery_blocking
 }
 
 /// `send_keys` の `actions` が、IME 経由のローマ字/文字の送信を含むか。
