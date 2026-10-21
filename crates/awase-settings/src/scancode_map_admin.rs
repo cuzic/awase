@@ -33,6 +33,7 @@ fn run_elevated_pairs_worker_windows(spec: &str) -> i32 {
         ApplyRequest, Decision, ReadBack, WorkerExit, classify_read_back, decide,
     };
     use awase_windows::scancode_map as sm;
+    use awase_windows::scancode_registry as reg;
 
     let request = match ApplyRequest::from_spec(spec) {
         Ok(request) => request,
@@ -41,7 +42,7 @@ fn run_elevated_pairs_worker_windows(spec: &str) -> i32 {
             return WorkerExit::BadArguments.code();
         }
     };
-    let original = match sm::read() {
+    let original = match reg::read() {
         Ok(raw) => raw,
         Err(e) => {
             tracing::error!("[scancode-pairs] 既存値の読み取りに失敗: {e}");
@@ -58,14 +59,14 @@ fn run_elevated_pairs_worker_windows(spec: &str) -> i32 {
         Decision::Write { entries } => entries,
     };
     let write_result = match sm::build_bytes(&entries) {
-        Some(bytes) => sm::write(&bytes),
-        None => sm::delete(),
+        Some(bytes) => reg::write(&bytes),
+        None => reg::delete(),
     };
     if let Err(e) = write_result {
         tracing::error!("[scancode-pairs] 書き込みに失敗: {e}");
         return WorkerExit::Failed.code();
     }
-    match sm::read() {
+    match reg::read() {
         Ok(raw) => match classify_read_back(&entries, original.as_deref(), raw.as_deref()) {
             ReadBack::Matches => WorkerExit::Ok.code(),
             ReadBack::ForeignWrite => {
@@ -91,17 +92,17 @@ fn run_elevated_pairs_worker_windows(spec: &str) -> i32 {
 #[cfg(windows)]
 fn rollback_windows(original: Option<&[u8]>) -> awase_windows::scancode_apply::WorkerExit {
     use awase_windows::scancode_apply::WorkerExit;
-    use awase_windows::scancode_map as sm;
+    use awase_windows::scancode_registry as reg;
 
     let restore_result = match original {
-        Some(bytes) => sm::write(bytes),
-        None => sm::delete(),
+        Some(bytes) => reg::write(bytes),
+        None => reg::delete(),
     };
     if let Err(e) = restore_result {
         tracing::error!("[scancode-pairs] 巻き戻しの書き込みに失敗: {e}");
         return WorkerExit::RollbackFailed;
     }
-    match sm::read() {
+    match reg::read() {
         Ok(now) if now.as_deref() == original => WorkerExit::RolledBack,
         _ => WorkerExit::RollbackFailed,
     }
@@ -230,7 +231,7 @@ pub fn read_raw_entries() -> ScancodeMapRead {
     #[cfg(windows)]
     {
         use awase_windows::scancode_apply::parse_entries_strict;
-        match awase_windows::scancode_map::read() {
+        match awase_windows::scancode_registry::read() {
             Ok(None) => ScancodeMapRead::Loaded(Vec::new()),
             Ok(Some(bytes)) if bytes.is_empty() => ScancodeMapRead::Loaded(Vec::new()),
             Ok(Some(bytes)) => parse_entries_strict(&bytes)
@@ -260,7 +261,7 @@ pub fn read_keyboard_filters() -> Vec<String> {
     {
         let mut all = Vec::new();
         for name in ["UpperFilters", "LowerFilters"] {
-            if let Ok(mut v) = awase_windows::scancode_map::read_keyboard_class_filters(name) {
+            if let Ok(mut v) = awase_windows::scancode_registry::read_keyboard_class_filters(name) {
                 all.append(&mut v);
             }
         }
