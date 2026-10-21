@@ -1412,10 +1412,7 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
     );
     // 判定本体は副作用なしの `resolve_effective`（`resolve_effective_open(` の唯一の呼び出し元。ADR-273 R2・R6 の
     // `belief_is_decided_by_glyph` と共有する）に切り出してある。`effective_open_at` はそれを通ること。
-    let resolvers = extract_all_balanced_blocks(
-        production,
-        "fn resolve_effective(\n        &self,\n        now_ms: TickMs,\n    ) -> (",
-    );
+    let resolvers = extract_all_balanced_blocks(production, "fn resolve_effective(");
     assert_eq!(
         resolvers.len(),
         1,
@@ -8887,19 +8884,19 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
     }
 
     // ランタイム側の platform_state への接触は、belief の読み取り（ラベルの作成・字形由来かの判定・フォーカスの世代）、
-    // 記録の 1 つ、記録だけの試算（`preview_indicator_glyph(`）、フォーカスの同一性（`focus_fence()` 2 箇所）、belief への入口（ADR-273。
-    // `report_indicator_glyph(` の 1 つだけ。判断・柵・記録は `ImeStateHub` 側）の 8 箇所だけ。
+    // 記録の 1 つ、記録だけの試算（`preview_indicator_glyph(`）、フォーカスの同一性（`focus_fence()` 1 箇所）、belief への入口（ADR-273。
+    // `report_indicator_glyph(` の 1 つだけ。判断・柵・記録は `ImeStateHub` 側）の 7 箇所だけ。
     assert_eq!(
         runtime.matches("platform_state").count(),
-        8,
-        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()・belief_is_decided_by_glyph(・focus_fence()×2（読み取り）、preview_indicator_glyph(（記録だけの試算）、journal.record(（記録）、report_indicator_glyph(（入口）の 8 箇所だけ"
+        7,
+        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()・belief_is_decided_by_glyph(・focus_fence()（読み取り）、preview_indicator_glyph(（記録だけの試算）、journal.record(（記録）、report_indicator_glyph(（入口）の 7 箇所だけ"
     );
     assert!(runtime.contains("platform_state.ime.effective_open()"));
     assert!(runtime.contains("platform_state.ime.input_mode()"));
     assert!(runtime.contains(".belief_is_decided_by_glyph("));
     assert_eq!(
         runtime.matches("platform_state.ime.focus_fence()").count(),
-        2
+        1
     );
     assert_eq!(runtime.matches(".preview_indicator_glyph(").count(), 1);
     assert_eq!(

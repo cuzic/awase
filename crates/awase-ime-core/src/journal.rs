@@ -219,9 +219,15 @@ pub struct IndicatorGlyphRecord {
     /// この窓が字形を belief に使う対象になる段階（`unobserved` / `all` / `none`。ADR-273 D3・Q2。記録だけで belief には入れない）。
     /// 設定が `observe` のままでも出る（段階 2 の前提の件数を数えるため）。取り込めなかったときは `None`
     pub would_scope: Option<&'static str>,
-    /// 対象の窓だったとして、柵を通って報告されたか（`reported` / `retracted` / `ignored` / `mozc-window` / `fenced:<理由>`）。
-    /// 記録だけで belief には入れない。対象外の窓・照合できなかったときは `None`
+    /// 対象の窓だったとして、柵を通って報告されたか（`reported` / `miss-changed` / `ignored` / `mozc-window` / `fenced:<理由>`）。
+    /// `miss-changed` は「字形が表に無い状態に変わった（取り消しの条件を満たした）」の意味で、observe の段階では枠が空なので実際に
+    /// 取り消したかは問わない。記録だけで belief には入れない。対象外の窓・照合できなかったときは `None`
     pub would_report: Option<&'static str>,
+    /// 柵を通った読みを今記録したら、belief を**字形が決めるか**（明示意図・予測・新鮮な Medium 以上などが勝てば偽）。
+    /// D2 の (a)〜(e) の件数（段階 2 の前提）。`would_report` が `reported` のときだけ出る
+    pub would_decide: Option<bool>,
+    /// `would_decide` が真のとき、字形の値が今の belief と**違うか**（belief を変える件数）
+    pub would_flip: Option<bool>,
 }
 
 /// ADR-265 段階 1: mozc-readable の共有メモリ（48 バイト、version 2）の読み（挙動を変えない観測。**belief には入れない**）。

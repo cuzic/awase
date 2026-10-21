@@ -191,7 +191,7 @@ impl AppliedImeState {
 ///
 /// Step 3 時点: desired_open + last_intent + observations (per-source + drift) + policy。
 /// pending transition / barrier / force guard は後続 Step で追加。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImeModel {
     /// awase が IME をこうしたい状態。UserIntent のみが書き換える。
     ///
@@ -383,6 +383,23 @@ impl ImeModel {
             Some(t) => Some(now_tick_ms.saturating_sub(t)),
             None => None,
         }
+    }
+
+    /// ADR-273 D2 (a)〜(e) の試算（副作用なし）: この字形の観測を**今記録したら**、belief を字形が決めるか。決めるなら `Some(flip)`
+    /// （`flip` は今の belief の値と違うか）、決めないなら（明示意図・予測・新鮮な Medium 以上など、他の根拠が勝つ）`None`。
+    /// 複製に対して記録して `resolve_open_at` を比べるだけで、モデルは変えない。設定が `observe` のときの journal に使う。
+    #[must_use]
+    pub fn would_glyph_decide(
+        &self,
+        glyph: crate::state::evidence::AnyObservation,
+        now: Instant,
+    ) -> Option<bool> {
+        let before = self.resolve_open_at(now).value;
+        let mut sim = self.clone();
+        sim.observations.record_replayed(glyph, now);
+        let after = sim.resolve_open_at(now);
+        matches!(after.decided_by.base, BaseDecision::IndicatorGlyph { .. })
+            .then_some(after.value != before)
     }
 
     /// 打鍵履歴から追跡している隠れ状態（変換モード5種・変換中の段階）。

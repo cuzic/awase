@@ -28,7 +28,7 @@ use windows::Win32::Foundation::HWND;
 use crate::focus::class_names::AppImeProfile;
 use crate::observer::indicator_glyph::GlyphReadRequest;
 use crate::state::indicator_glyph::{
-    apply_match, belief_label, classify_label, collect_label, glyph_scope_label,
+    apply_match, belief_label, classify_label, collect_label, first_read_fence, glyph_scope_label,
     glyph_window_in_scope, match_feature, AddOutcome, BeliefLabel, Capture, GlyphFeature,
     GlyphSample, GlyphScopeFacts, GlyphTable, ProbeOutcome, SampleOrigin, Thresholds,
 };
@@ -50,8 +50,6 @@ struct Pending {
     /// 依頼したときの前面窓（結果が返ったときに前面窓が変わっていれば古いので捨てる）
     foreground: isize,
     delay_ms: u32,
-    /// 依頼した時点のフォーカスの同一性（epoch + hwnd。1 回目の取り込みの報告の基準。ADR-273 D1 の M8）
-    fence: FocusFence,
 }
 
 /// 同じ窓の前回（待ちが短い方）の取り込み。収集の判断（字形が落ち着いているか）に使う。
@@ -183,7 +181,9 @@ impl super::Runtime {
         glyph_window_in_scope(level, self.glyph_scope_facts())
     }
 
-    /// 報告の基準となる同一性。1 回目は依頼の時点、2 回目は 1 回目を処理した時点（同じ前面窓のときだけ）。無ければ報告しない。
+    /// 報告の基準となる同一性（ADR-273 D1 の M8、Opus RE1）。1 回目は**処理した時点**の同一性（追跡が追いついているときだけ。
+    /// 前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点の値は切り替える前の窓のものになりうる）、2 回目は
+    /// 1 回目の基準（同じ前面窓のときだけ）。無ければ報告しない。
     fn glyph_read_fence(&self, pending: &Pending, is_second: bool) -> Option<FocusFence> {
         if is_second {
             self.indicator_glyph
@@ -191,7 +191,10 @@ impl super::Runtime {
                 .filter(|(f, _)| *f == pending.foreground)
                 .map(|(_, fence)| fence)
         } else {
-            Some(pending.fence)
+            first_read_fence(
+                self.platform_state.ime.focus_fence(),
+                self.lang_detect_focus_in_sync(),
+            )
         }
     }
 
@@ -248,7 +251,6 @@ impl super::Runtime {
             self.indicator_glyph.pending.push_back(Pending {
                 foreground,
                 delay_ms: u32::from(delay),
-                fence: self.platform_state.ime.focus_fence(),
             });
         }
         self.indicator_glyph.last_trigger = Some(now);
@@ -368,24 +370,25 @@ impl super::Runtime {
                 let scope = glyph_scope_label(facts);
                 record.would_scope = Some(scope);
                 if scope != "none" {
-                    record.would_report = Some(
-                        self.platform_state
-                            .ime
-                            .preview_indicator_glyph(
-                                reading,
-                                read_fence,
-                                self.lang_detect_focus_in_sync(),
-                                crate::state::TickMs(crate::hook::current_tick_ms()),
-                            )
-                            .label(),
+                    let preview = self.platform_state.ime.preview_indicator_glyph(
+                        reading,
+                        read_fence,
+                        self.lang_detect_focus_in_sync(),
+                        crate::state::TickMs(crate::hook::current_tick_ms()),
                     );
+                    record.would_report = Some(preview.report.label());
+                    if preview.report.is_reported() {
+                        record.would_decide = Some(preview.decides.is_some());
+                        record.would_flip = preview.decides;
+                    }
                 }
                 self.report_glyph_to_belief(reading, read_fence);
             }
             if !is_second {
-                // 2 回目の基準: 追跡が追いついた後の、1 回目を処理した時点の同一性。
-                self.indicator_glyph.baseline =
-                    Some((pending.foreground, self.platform_state.ime.focus_fence()));
+                // 2 回目の基準: 1 回目を処理した時点の同一性（追跡が追いついていなければ作らない。2 回目は報告しない）。
+                self.indicator_glyph.baseline = self
+                    .glyph_read_fence(&pending, false)
+                    .map(|fence| (pending.foreground, fence));
             }
         }
         self.indicator_glyph.counters.record(&record);

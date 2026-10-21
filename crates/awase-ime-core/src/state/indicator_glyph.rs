@@ -720,6 +720,23 @@ pub fn fence_glyph(hit: LabelHit, ctx: FenceCtx) -> Result<FencedGlyph, FenceMis
     Ok(FencedGlyph { hit })
 }
 
+/// 1 回目（前面窓の変化の 0.9 秒後）の取り込みの、報告の基準となるフォーカスの同一性（Opus RE1）。
+///
+/// 前面窓の変化の通知はフォーカス追跡より先に届くので、**依頼の時点の同一性は切り替える前の窓の値**になりうる。基準にするのは
+/// 1 回目を**処理した時点**の同一性 `current`（追跡が追いついた後）。ただし、前面が追跡中の窓と一致していない（`foreground_in_sync`
+/// が偽 = 追跡がまだ追いついていない）ときは、前の窓の同一性で新しい窓の字形を記録してしまうので、基準を作らない（`None`）。
+#[must_use]
+pub const fn first_read_fence(
+    current: crate::state::probe_admission::FocusFence,
+    foreground_in_sync: bool,
+) -> Option<crate::state::probe_admission::FocusFence> {
+    if foreground_in_sync {
+        Some(current)
+    } else {
+        None
+    }
+}
+
 /// 窓の種類についての事実（字形を belief に使ってよい窓かの判定の入力。ADR-273 D3・Q2・R1）。殻が集めて値で渡す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlyphScopeFacts {
@@ -2269,5 +2286,14 @@ mod tests {
         assert_eq!(glyph_scope_label(scope(false, true)), "unobserved");
         assert_eq!(glyph_scope_label(scope(true, false)), "all");
         assert_eq!(glyph_scope_label(scope(false, false)), "none");
+    }
+
+    /// 1 回目の基準: 追跡が追いついている（前面が一致）ときだけ、処理した時点の同一性。追いついていなければ作らない（RE1）。
+    #[test]
+    fn first_read_fence_requires_the_tracker_to_have_caught_up() {
+        use crate::state::probe_admission::FocusFence;
+        let cur = FocusFence::default();
+        assert_eq!(first_read_fence(cur, true), Some(cur));
+        assert_eq!(first_read_fence(cur, false), None);
     }
 }
