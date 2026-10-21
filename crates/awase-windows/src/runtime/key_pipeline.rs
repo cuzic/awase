@@ -543,8 +543,11 @@ impl Runtime {
         // awase 自身が意図的に設定した状態であり、ObservedEisu → DirectInput
         // （IME OFF 落ち）に反応させてはならない。Shift 解放時の復元が
         // explicit IME action として抑止を引き継ぐ。
-        if self.platform_state.gate.half_width_alnum.is_guard_pending()
-            || self.platform_state.gate.half_width_alnum.is_toggle_active()
+        if self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .freezes_conv_observation()
         {
             self.close_focus_resync_gate_if_current(resync_generation);
             return false;
@@ -768,8 +771,11 @@ impl Runtime {
         spawn_fence: crate::state::probe_admission::FocusFence,
     ) {
         // (a) shift ガード再検証: spawn 後に kp_stage_shift_conv_guard が立てた可能性がある。
-        if self.platform_state.gate.half_width_alnum.is_guard_pending()
-            || self.platform_state.gate.half_width_alnum.is_toggle_active()
+        if self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .freezes_conv_observation()
         {
             tracing::debug!(
                 "[idle-conv-check] apply 時に shift ガードが有効 → 読み取り結果 conv=0x{conv:08X} を破棄"
