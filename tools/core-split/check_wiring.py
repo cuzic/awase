@@ -19,6 +19,9 @@ core 系 crate を足したとき、パスや `-p` を直書きしている場�
   - core 系 crate に統合テスト(`tests/*.rs`)を置かないこと。統合テストは殻の `crates/awase-windows/tests/` に置く
     (`ci_test_coverage_guard.rs` が見るのは殻の tests/ だけで、`cargo nextest run --workspace --lib` は統合テストを
     走らせない。移した crate の統合テストは、どこからも実行されなくなる。ADR-274 段階 0 の 6)
+  - tools/・.github/・.githooks/・.cargo/・.claude/・mise.toml・CLAUDE.md が `crates/<crate>/src/<ファイル>.rs` の形で指すパスが実在すること
+    （crate を分けてファイルを動かすと、パスを直書きしたスクリプトが黙って壊れる。ADR-274 段階 2 で
+    gen_key_effect_table.py と ablation スクリプトが実際に壊れた）。`.cargo/mutants-bug158-scope.toml` は既知の古い参照なので除く
   - Cargo.toml が `[lints] workspace = true` で、ルートの `[workspace.lints]` を使うこと(lints が crate ごとに複製されて
     ずれるのを防ぐ。ADR-274 段階 0 の 4)
 """
@@ -53,6 +56,36 @@ def package_name(d):
 
 def lines_with(text, needle):
     return [l for l in text.splitlines() if needle in l]
+
+
+# 既知の古い参照（ADR-229 D4 より前からのもの。単発の調査用設定で、直す価値が無い）
+STALE_PATH_ALLOWLIST = {".cargo/mutants-bug158-scope.toml"}
+
+
+def stale_paths():
+    """スクリプト・設定が指す `crates/<crate>/src/<ファイル>.rs` のうち、実在しないもの。"""
+    import subprocess
+
+    pat = re.compile(r"crates/([A-Za-z0-9_-]+)/src/([A-Za-z0-9_./-]+?\.rs)")
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "tools", ".github", ".githooks", ".cargo", ".claude", "mise.toml", "CLAUDE.md"],
+        cwd=ROOT,
+        text=True,
+    ).split()
+    out = []
+    for t in tracked:
+        if t in STALE_PATH_ALLOWLIST or not os.path.isfile(os.path.join(ROOT, t)):
+            continue
+        try:
+            text = read(t)
+        except UnicodeDecodeError:
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            for m in pat.finditer(line):
+                rel = f"crates/{m.group(1)}/src/{m.group(2)}"
+                if not os.path.exists(os.path.join(ROOT, rel)):
+                    out.append(f"{t}:{n}: {rel}")
+    return out
 
 
 def check():
@@ -115,6 +148,8 @@ def check():
             errors.append(f"{pkg}: Cargo.toml が `[lints] workspace = true` でない(ルートの [workspace.lints] を使う)")
         if "core-crates.txt" not in lbg and d not in lbg and pkg not in lbg:
             errors.append(f"{pkg}: layer_boundary_guard.rs が core-crates.txt を読んでいない・{d} にも触れていない(windows 非依存の検査から外れる)")
+    for s in stale_paths():
+        errors.append(f"実在しないパスを指している（crate を分けたときの直し忘れ）: {s}")
     return errors
 
 
