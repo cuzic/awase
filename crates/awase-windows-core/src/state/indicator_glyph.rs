@@ -1741,6 +1741,7 @@ mod tests {
                 height: 24,
                 dots: 1234,
                 read_ms: 57,
+                dark: false,
             },
             ProbeOutcome {
                 result: Err(ProbeMiss::EmptyGlyph),
@@ -1748,6 +1749,7 @@ mod tests {
                 height: 48,
                 dots: 7,
                 read_ms: 187,
+                dark: false,
             },
             ProbeOutcome {
                 result: Err(ProbeMiss::NoIndicator),
@@ -1755,6 +1757,7 @@ mod tests {
                 height: 0,
                 dots: 0,
                 read_ms: 3,
+                dark: false,
             },
             ProbeOutcome {
                 result: Err(ProbeMiss::CaptureFailed),
@@ -1762,6 +1765,7 @@ mod tests {
                 height: 1023,
                 dots: u16::MAX,
                 read_ms: u16::MAX,
+                dark: false,
             },
         ];
         for c in cases {
@@ -1791,6 +1795,7 @@ mod tests {
             height: 24,
             dots: 3,
             read_ms: 40,
+            dark: false,
         };
         let r = o.to_record("imm32-unavailable", Some(true), 900);
         assert_eq!((r.verdict, r.miss_reason), ("miss", Some("empty-glyph")));
@@ -1808,6 +1813,7 @@ mod tests {
             height: 30,
             dots: 900,
             read_ms: 55,
+            dark: false,
         }
         .to_record("standard", None, 2500);
         assert_eq!((ok.verdict, ok.miss_reason), ("captured", None));
@@ -1924,6 +1930,7 @@ mod tests {
             height: 24,
             dots: 900,
             read_ms: 50,
+            dark: false,
         };
         let mut r = o.to_record("standard", Some(true), 900);
         let hit = MatchResult {
