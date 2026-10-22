@@ -8436,6 +8436,37 @@ fn warm_send_wiring_detector_catches_violations() {
     ));
 }
 
+/// ECRS DD5-03: 物理キーを伴わないユーザー操作（トレイ・`general.engine_toggle_hotkey` の `toggle_engine`、トレイの
+/// 「状態をリセット」の `force_engine_on`）の `SetOpen` には、`hook::allocate_command_press_id` で採番した押下 ID を載せる。
+/// 載せないと `press=None` の ON が `applied` で「すでに一致」と省かれ、実 IME が閉じたまま残る
+/// （実 Chrome × GJI の CI で再現。docs/tasks/mech-ecrs-2026-10-21/dd503-ci-result.md）。drift correction の `press=None` は
+/// 省略が正しいので、ここ以外（`stamp_set_open_press` の呼び出し元は Engine のキー経路と、この 2 つだけ）には広げない。
+#[test]
+fn user_commands_without_a_physical_key_stamp_a_command_press() {
+    let src = read_crate_file("src/runtime/mod.rs");
+    let prod = production_code_only(&src);
+    for name in ["fn toggle_engine(", "fn force_engine_on("] {
+        let body = non_comment_lines(extract_fn_body(prod, name));
+        assert!(
+            body.contains("stamp_set_open_press(Some(crate::hook::allocate_command_press_id()))"),
+            "{name} は SetOpen に `hook::allocate_command_press_id` の押下 ID を載せること（ECRS DD5-03）"
+        );
+    }
+    let total: usize = list_src_files()
+        .iter()
+        .map(|f| {
+            count_real_calls(
+                production_code_only(&read_crate_file(f)),
+                "hook::allocate_command_press_id()",
+            )
+        })
+        .sum();
+    assert_eq!(
+        total, 2,
+        "`allocate_command_press_id()` の呼び出しは toggle_engine と force_engine_on の 2 か所だけ"
+    );
+}
+
 /// ADR-238(BUG-190): 英数モードの候補(1 回目の英数の読み)の確認の読み直しは、`reschedule_ime_refresh` の
 /// `explicit_intent` による停止(早期 return)より**前**に予約する。後ろに置くと、明示意図があるときにポーリング自体が止まり、
 /// 確認の読みが届かず候補が確定も破棄もされない(F が黙って 500ms〈または停止〉に戻る)。

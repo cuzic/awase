@@ -1346,6 +1346,14 @@ fn build_raw_key_event(
 /// 次の `PressId` を採番する（ADR-208 決定2 D1）。フックスレッドだけが呼ぶ単調増加のカウンタ。
 static NEXT_PRESS_ID: AtomicU64 = AtomicU64::new(1);
 
+/// 物理キーを伴わないユーザー操作（トレイ・`general.engine_toggle_hotkey`）の `SetOpen` に載せる `PressId` を採番する
+/// （ECRS DD5-03）。キーの押下と同じカウンタなので、`PressLedger` の「1 押下 1 書き込み」と、
+/// `explicit_press_applied_pair` による `applied` の未知化（押下に由来する ON を「すでに一致」で省かない）が、
+/// そのまま効く。メインスレッドから呼んでよい（カウンタは `AtomicU64`）。
+pub(crate) fn allocate_command_press_id() -> awase::types::PressId {
+    awase::types::PressId::new(NEXT_PRESS_ID.fetch_add(1, Ordering::Relaxed))
+}
+
 /// 非注入の非リピート KeyDown（`awase::types::is_press_start`）にだけ `PressId` を振る。
 /// KeyUp・自動リピート・注入イベントは `None`（リピートは従来の `applied` 省略に任せる）。
 fn assign_press_id(
