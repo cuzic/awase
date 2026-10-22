@@ -779,14 +779,8 @@ impl Runtime {
         // では先同期しない。読めない窓の `applied=Confirmed(true)` は何も書いていない偽の確定で（ADR-098 が TsfNative で
         // 止めた型と同じ）、GJI の already-matched が後続の ON の書き込みを省く（#623）。GjiFsm の ImeOn は、最初の
         // ローマ字の送信時に ADR-203 (i) の level 突合（`OnImeOnBelief`）が代わりに行う。
-        if crate::state::applied_mirror_plan::may_mirror_applied_on_focus(
-            is_effectively_tsf_native_now,
-            self.platform.focus.is_demoted_by_learning(),
-        ) && !self.platform_state.ime.desired_is_placeholder()
-            && self.platform_state.ime.effective_open()
-        {
-            self.presync_applied_open_on(tick_ms);
-        }
+        // [experiment] DD5-02: A1 (focus presync) removed
+        let _ = (tick_ms, is_effectively_tsf_native_now);
 
         // ImmCross アプリ（Qt/LINE 等）: FocusChanged 直後に child hwnd の正確な IME 状態を
         // 非同期読み取りする。FocusProbe（first-key トリガー）より早く確定させることで
