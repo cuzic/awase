@@ -21,7 +21,7 @@ core 系 crate を足したとき、パスや `-p` を直書きしている場�
     走らせない。移した crate の統合テストは、どこからも実行されなくなる。ADR-274 段階 0 の 6)
   - tools/・.github/・.githooks/・.cargo/・.claude/・mise.toml・CLAUDE.md が `crates/<crate>/src/<ファイル>.rs` の形で指すパスが実在すること
     （crate を分けてファイルを動かすと、パスを直書きしたスクリプトが黙って壊れる。ADR-274 段階 2 で
-    gen_key_effect_table.py と ablation スクリプトが実際に壊れた）。`.cargo/mutants-bug158-scope.toml` は既知の古い参照なので除く
+    gen_key_effect_table.py と ablation スクリプトが実際に壊れた）。既知の古い参照は STALE_PATH_ALLOWLIST で除く（現在は空）
   - Cargo.toml が `[lints] workspace = true` で、ルートの `[workspace.lints]` を使うこと(lints が crate ごとに複製されて
     ずれるのを防ぐ。ADR-274 段階 0 の 4)
 """
@@ -58,8 +58,8 @@ def lines_with(text, needle):
     return [l for l in text.splitlines() if needle in l]
 
 
-# 既知の古い参照（ADR-229 D4 より前からのもの。単発の調査用設定で、直す価値が無い）
-STALE_PATH_ALLOWLIST = {".cargo/mutants-bug158-scope.toml"}
+# 既知の古い参照（直す価値が無いものだけを置く）。mutants-bug158-scope.toml は撤去したので空。
+STALE_PATH_ALLOWLIST: set[str] = set()
 
 
 def stale_paths():

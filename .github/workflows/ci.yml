@@ -656,11 +656,10 @@ jobs:
   # [target.'cfg(windows)'.dependencies])を cfg なしで直接参照しており、
   # cargo-mutantsのbaselineビルドはpackage全体(examples含む)を対象にするため、
   # ubuntu-latestだとE0433で即失敗し1件もmutantsをテストできない
-  # (mutants-scope-investigation.yml冒頭コメントに記載の同種症状、examples側の
-  # #![cfg(windows)]化はmain関数が丸ごと消えてE0601になるだけで解決しないことを
-  # 2026-09-23に確認済み)。姉妹ワークフロー
-  # mutants-actuation-confluence-windows.yml / mutants-scope-investigation.yml
-  # が採った解決(windows-latestへ切り替え)に倣う。
+  # (examples側の#![cfg(windows)]化はmain関数が丸ごと消えてE0601になるだけで
+  # 解決しないことを2026-09-23に確認済み)。そこで windows-latest へ切り替えた
+  # (撤去済みの一時ワークフロー mutants-scope-investigation.yml /
+  # mutants-actuation-confluence-windows.yml も同じ解決を採っていた)。
   mutants-awase-windows:
     if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
