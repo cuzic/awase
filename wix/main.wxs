@@ -259,8 +259,30 @@
                   ExeCommand=""
                   Return="asyncNoWait" />
 
+    <!-- アンインストール時に、このインストール先（%LOCALAPPDATA%\awase\awase.exe）の
+         通知領域アイコンの登録行（HKCU\Control Panel\NotifyIconSettings\<id>）だけを消す。
+         Windows は Shell_NotifyIcon で出したアイコンを exe のパスごとに設定の
+         「その他のシステムトレイアイコン」へ記録し、MSI は存在を知らないため
+         アンインストール後も一覧に残っていた。
+         ExecutablePath が自分のパスと完全一致する行だけを対象にする: ZIP 版や
+         開発ビルドなど他のインストール先の行には触れない（別の場所の awase.exe は
+         この MSI の管理外）。LocalAppData は既知フォルダ GUID 形式で保存される
+         場合があるため両方の表記を照合する。
+         遅延実行（Impersonate は既定で yes）なのでプロパティ展開は使えず、パスは
+         PowerShell 側で $env:LOCALAPPDATA から組み立てる。
+         Target 列は 255 文字を超えると ICE03（String overflow）の警告になるため、
+         コマンドは省略形（-nop・gci・gp・ri）で 255 文字以内に収めている。
+         Return="ignore": 掃除に失敗してもアンインストールは止めない。アップグレード時（旧版の削除）は新版が同じパスで
+         使い続けるため UPGRADINGPRODUCTCODE で除外する。 -->
+    <CustomAction Id="RemoveTrayIconRow"
+                  Directory="LocalAppDataFolder"
+                  ExeCommand="powershell -nop -w hidden -c &quot;$e=$env:LOCALAPPDATA+'\awase\awase.exe';gci 'HKCU:\Control Panel\NotifyIconSettings'|%{if((gp $_.PSPath).ExecutablePath -in $e,'{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}\awase\awase.exe'){ri $_.PSPath -r}}&quot;"
+                  Execute="deferred"
+                  Return="ignore" />
+
     <InstallExecuteSequence>
       <Custom Action="LaunchApplication" After="InstallFinalize">NOT Installed</Custom>
+      <Custom Action="RemoveTrayIconRow" After="InstallInitialize">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
   </Product>
 </Wix>

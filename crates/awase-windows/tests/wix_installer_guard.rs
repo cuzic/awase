@@ -368,3 +368,51 @@ fn embedded_layouts_layout_dir_and_wix_components_are_in_sync() {
          不可逆に効かない）。"
     );
 }
+
+/// アンインストール時に、自分のインストール先の通知領域アイコン登録行
+/// （`HKCU\Control Panel\NotifyIconSettings`）だけを消す遅延 CA が、
+/// アンインストール時のみ（アップグレードの旧版削除では走らせず）、失敗しても
+/// アンインストールを止めない形で配線されていることを固定する。
+#[test]
+fn tray_icon_row_cleanup_is_uninstall_only_and_scoped_to_own_path() {
+    let content = main_wxs();
+
+    let ca = extract_element(&content, r#"<CustomAction Id="RemoveTrayIconRow""#, "/>");
+    assert!(
+        ca.contains(r#"Execute="deferred""#) && ca.contains(r#"Return="ignore""#),
+        "RemoveTrayIconRow は遅延実行かつ Return=\"ignore\" であること（要素: {ca:?}）"
+    );
+    assert!(
+        ca.contains(r"awase\awase.exe") && ca.contains("-in $e,"),
+        "削除対象は自分のインストール先の awase.exe と完全一致する行に限ること\
+         （部分一致・全 awase 行の削除は ZIP 版など他の配置先を壊す。要素: {ca:?}）"
+    );
+    assert!(
+        !ca.contains("-match") && !ca.contains("-like"),
+        "ExecutablePath の照合に -match/-like を使わないこと（要素: {ca:?}）"
+    );
+
+    let target = ca
+        .split("ExeCommand=\"")
+        .nth(1)
+        .and_then(|r| r.split("\"\n").next())
+        .unwrap_or_else(|| panic!("RemoveTrayIconRow の ExeCommand が切り出せない: {ca:?}"));
+    // `&quot;` は MSI に入る時点で `"` 1 文字になる。
+    let target_len = target.replace("&quot;", "\"").chars().count();
+    assert!(
+        target_len <= 255,
+        "RemoveTrayIconRow の ExeCommand が {target_len} 文字ある。CustomAction.Target 列は \
+         255 文字を超えると ICE03（String overflow）の警告になる。コマンドを短くすること"
+    );
+
+    let seq = extract_element(
+        &content,
+        r#"<Custom Action="RemoveTrayIconRow""#,
+        "</Custom>",
+    );
+    assert!(
+        seq.contains(r#"REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE"#),
+        "RemoveTrayIconRow はアンインストール時のみ（アップグレードの旧版削除を除く）\
+         走ること（要素: {seq:?}）"
+    );
+}
