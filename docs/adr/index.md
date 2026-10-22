@@ -62,7 +62,7 @@
 | [046](046-gji-fsm-warm-cold-ssot.md) | GjiFsm — warm/cold 状態の FSM 一元管理 | 実装済み(一部撤去、2026-10-04 確認)。GjiFsm は tsf/gji_fsm.rs に現存(OffCold/OnCold/… |
 | [047](047-tickable-fsm-ime-warmup-strategy.md) | TickableFsm / ImeWarmupStrategy — 出力層 FSM 抽象化 | 実装済み(一部撤去、2026-10-04 確認)。TickableFsm・ImeWarmupStrategy は tsf/warmup/… |
 | [048](048-sacrificial-warmup-chrome-coldstart.md) | SacrificialWarmup — Chrome cold-start の不可視プローブ方式 | 撤去済み(d4956490、2026-07-18: 捨て駒キー機構〈StartSacrificialWarmup/Sacrificial… |
-| [049](049-tsf-mode-literal-detect-wezterm-warm.md) | TSF mode LiteralDetect と WezTerm long-idle warm 維持 | 一部撤去(2026-10-04 確認)。RawTsfLiteralRecovery・SuspectedLiteral による liter… |
+| [049](049-tsf-mode-literal-detect-wezterm-warm.md) | TSF mode LiteralDetect と WezTerm long-idle warm 維持 | 一部撤去(2026-10-22 追記: warm パスの LiteralDetectFsm も撤去、MB-02)。… |
 | [050](050-post-bypass-config.md) | post_bypass — バイパス後キーの NICOLA スキップ設定 | 採用・実装済み([[post_bypass]] は src/config.rs・PostBypassEntry に現存、2026-10-… |
 | [051](051-holding-gate-timed-fsm-migration.md) | HoldingGate の timed-fsm クレートへの移植 | 採用・実装済み(HoldingGate/GateAction は crates/timed-fsm/src/gate.rs に移植済みで… |
 | [052](052-tray-panic-reset.md) | トレイメニューからのパニックリセット | 採用・実装済み(WM_PANIC_RESET によるトレイからのパニックリセットは現存、2026-10-04 確認)。 |
