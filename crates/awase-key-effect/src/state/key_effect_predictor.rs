@@ -469,6 +469,27 @@ const fn is_char_vk(vk: u16) -> bool {
     matches!(vk, 0x30..=0x39 | 0x41..=0x5A | 0xBA..=0xC0 | 0xDB..=0xDF)
 }
 
+/// BUG-212: 追跡した変換モードが無く、観測した変換モードが、かな系（NATIVE ビットあり）なのに表せない値か。
+fn observed_conv_is_unrepresentable_kana(input: &PredictInput) -> bool {
+    input.track.conv.is_none()
+        && input
+            .conv_raw
+            .is_some_and(|raw| raw & 0x01 != 0 && Conv::from_raw(raw).is_none())
+}
+
+/// 表に無いキー（文字キー等）の後の入力中の段階。開いていて文字キーなら `Typing`、変換中は `Typing` へ戻る。
+/// 入力なし（`None`）はそのまま、「不明」（`Indeterminate`）は文字キー以外（矢印など）ではそのまま（BUG-211）。
+fn stage_after_non_table_key(vk: u16, input: &PredictInput) -> Stage {
+    if input.open && is_char_vk(vk) {
+        return Stage::Typing;
+    }
+    match input.track.stage {
+        Stage::None => Stage::None,
+        Stage::Indeterminate => Stage::Indeterminate,
+        _ => Stage::Typing,
+    }
+}
+
 /// BUG-211: 表に該当セルが無いときの、「入力中の BS の後」と「不明の段階」の規則。
 ///
 /// 入力中の BS のセルは、未確定文字の文字数で破棄/保持が割れるので表から除外されている（ADR-210 M2）。追跡の段階を
@@ -537,11 +558,7 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
     // （ADR-191: 表せない値は追わない）。入力モードへ落として「ひらがな」とみなすと、英数キーを逆向きに予測する。
     // 追跡した変換モードがあるときはそちらを正とする（従来どおり）。NATIVE ビットの無い値（0x00・0x08 など）は
     // 従来どおり入力モードから決める（半角英数トグル中の 0x0000 など）。
-    if input.track.conv.is_none()
-        && input
-            .conv_raw
-            .is_some_and(|raw| raw & 0x01 != 0 && Conv::from_raw(raw).is_none())
-    {
+    if observed_conv_is_unrepresentable_kana(input) {
         return None;
     }
     let conv = input
@@ -566,16 +583,7 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
     let Some(key) = TableKey::from_vk(vk) else {
         // 文字キー等: 開いていれば入力中（`Typing`）になる（変換中に打てば確定して新しい入力中）。閉なら段階なし。
         // 種（Unknown）は必ず反映する。
-        let new_stage = if input.open && is_char_vk(vk) {
-            Stage::Typing
-        } else if matches!(input.track.stage, Stage::None) {
-            Stage::None
-        } else if matches!(input.track.stage, Stage::Indeterminate) {
-            // 文字キー以外（矢印など）では、入力中かどうかは分からないまま（BUG-211）。
-            Stage::Indeterminate
-        } else {
-            Stage::Typing
-        };
+        let new_stage = stage_after_non_table_key(vk, input);
         let track = KeyTrack {
             conv: input.track.conv,
             stage: new_stage,
