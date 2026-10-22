@@ -8457,7 +8457,7 @@ fn user_commands_without_a_physical_key_stamp_a_command_press() {
         .map(|f| {
             count_real_calls(
                 production_code_only(&read_crate_file(f)),
-                "allocate_command_press_id()",
+                "hook::allocate_command_press_id()",
             )
         })
         .sum();
