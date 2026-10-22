@@ -33,7 +33,7 @@ put('imecore', [
     'state::eisu_candidate', 'state::eisu_recovery', 'state::resume_observation', 'state::transition',
     'state::actuation_chain', 'state::ime_actuation', 'state::ime_actuation_decision',
     'state::ime_set_open_plan', 'state::force_guard', 'state::gji_direct_mechanism',
-    'state::ime_read_strategy', 'state::ime_profile_driver', 'state::conv_after_open',
+    'state::ime_read_strategy', 'state::conv_after_open',
     'state::input_barrier', 'state::app_ime_policy',
     'state::key_sequence_policy', 'state::physical_disposition', 'state::mode_key_pass',
     'state::mozc_shm', 'state::indicator_menu', 'state::indicator_glyph', 'state::indicator_glyph_seeds', 'state::indicator_glyph_store', 'indicator_evidence',
