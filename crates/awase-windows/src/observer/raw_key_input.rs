@@ -1,3 +1,4 @@
+#![allow(unsafe_code)]
 //! 診断: Raw Input で物理キーボードの打鍵を、`WH_KEYBOARD_LL` フックとは別経路で観測する（issue #165）。
 //!
 //! 他のプロセスのフックが物理キーを握りつぶしても、Raw Input（`WM_INPUT`）には物理キーが届く。フックの
@@ -39,6 +40,7 @@ pub fn raw_physical_key_count() -> u32 {
 }
 
 /// 登録の RAII ガード。Drop で解除する。
+#[derive(Debug)]
 pub struct RawKeyInputGuard(HWND);
 
 impl Drop for RawKeyInputGuard {
@@ -51,7 +53,7 @@ impl Drop for RawKeyInputGuard {
         };
         // SAFETY: `device` は 1 要素の有効な配列。サイズは構造体のサイズ。
         let _ = unsafe {
-            RegisterRawInputDevices(&[device], std::mem::size_of::<RAWINPUTDEVICE>() as u32)
+            RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32)
         };
         tracing::info!("[raw-key] Raw Input keyboard observer unregistered (hwnd {:?})", self.0);
     }
@@ -67,7 +69,7 @@ pub fn register(hwnd: HWND) -> Option<RawKeyInputGuard> {
     };
     // SAFETY: `device` は 1 要素の有効な配列。サイズは構造体のサイズ。
     let result = unsafe {
-        RegisterRawInputDevices(&[device], std::mem::size_of::<RAWINPUTDEVICE>() as u32)
+        RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32)
     };
     match result {
         Ok(()) => {
@@ -87,13 +89,13 @@ pub fn on_wm_input(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     // SAFETY: `RAWINPUT` はゼロで初期化してよい POD。`GetRawInputData` は `size` バイトまで書く。
     unsafe {
         let mut raw: RAWINPUT = std::mem::zeroed();
-        let mut size = std::mem::size_of::<RAWINPUT>() as u32;
+        let mut size = size_of::<RAWINPUT>() as u32;
         let copied = GetRawInputData(
             HRAWINPUT(lparam.0 as *mut _),
             RID_INPUT,
             Some(std::ptr::from_mut(&mut raw).cast()),
             &raw mut size,
-            std::mem::size_of::<RAWINPUTHEADER>() as u32,
+            size_of::<RAWINPUTHEADER>() as u32,
         );
         if copied != u32::MAX
             && raw.header.dwType == RIM_TYPEKEYBOARD.0
