@@ -273,7 +273,7 @@
          アンインストールは止めない。アップグレード時（旧版の削除）は新版が同じパスで
          使い続けるため UPGRADINGPRODUCTCODE で除外する。 -->
     <CustomAction Id="RemoveTrayIconRow"
-                  Directory="TempFolder"
+                  Directory="LocalAppDataFolder"
                   ExeCommand="powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;$e = Join-Path $env:LOCALAPPDATA 'awase\awase.exe'; $g = '{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}\awase\awase.exe'; Get-ChildItem 'HKCU:\Control Panel\NotifyIconSettings' -ErrorAction SilentlyContinue | ForEach-Object { $p = (Get-ItemProperty $_.PSPath).ExecutablePath; if ($p -ieq $e -or $p -ieq $g) { Remove-Item $_.PSPath -Recurse -ErrorAction SilentlyContinue } }&quot;"
                   Execute="deferred"
                   Return="ignore" />
