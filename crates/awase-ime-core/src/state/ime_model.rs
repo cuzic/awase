@@ -1381,7 +1381,6 @@ mod tests {
         model.current_focus = Some(HwndId(0x1111));
         model.force_guards.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 3,
         });
         // 以下は 2026-08-31 の敵対的レビュー指摘 2-b で追加した分。`ime_event.rs` の
@@ -2875,7 +2874,6 @@ mod tests {
         ));
         model.force_guards.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         let now = Instant::now();
@@ -2901,7 +2899,6 @@ mod tests {
         let mut model = ImeModel::new(); // desired_open=true, 明示意図なし
         model.force_guards.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         let now = Instant::now();
@@ -3050,7 +3047,6 @@ mod tests {
         let mut model = ImeModel::new();
         model.force_guards.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         assert!(model.force_guards.requires_on());
@@ -3076,7 +3072,6 @@ mod tests {
         ));
         model.force_guards.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         assert!(

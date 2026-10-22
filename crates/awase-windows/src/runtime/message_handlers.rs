@@ -803,8 +803,6 @@ pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
         .executor
         .drain_deferred(&mut app.platform, &mut app.platform_state.ime);
     app.dispatch_outcomes(outcomes);
-    // H-4-a: Output が send_keys 中に積んだ RuntimeRequest を一括処理する。
-    app.drain_runtime_requests();
     recover_pending_drain_request();
 }
 
@@ -1854,11 +1852,6 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
         }
     });
 
-    // H-4-a: 全キー処理完了後に RuntimeOutbox を drain する。
-    // drain_output_queue 中の process_key_event → send_keys で積まれた RuntimeRequest を実行する。
-    let _ = with_app(|app| {
-        app.drain_runtime_requests();
-    });
     finish_drain();
 }
 

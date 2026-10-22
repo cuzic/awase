@@ -159,7 +159,7 @@ pub struct AppImePolicy {
     /// が `ActiveImeKind`（動的、GJI/MS-IME 検出）も加味して決める。TsfNative でも
     /// GJI/MS-IME が actuate する場合は物理キーを Suppress する（`owns_physical_kanji=false`
     /// のまま実際には所有している）。本フィールドを直接参照して suppress 判定を書かない
-    /// こと（`ime_profile_driver.rs` の Phase 1d SSOT 化時も同様）。
+    /// こと。
     pub owns_physical_kanji: bool,
 
     /// フォーカス変更後、observer を信頼できるようになるまでの待ち時間 (ms)。
@@ -186,8 +186,8 @@ impl AppImePolicy {
     /// **`focus_settle_ms` / `default_feedback` は [`caps`] の薄いファサード**で
     /// ある（ADR-089 §2.5、Phase C item 11）。値をここに二重に書くと
     /// `AppImePolicy` と `caps` の二重 SSOT になる——ADR-081 の
-    /// `ImeProfileDriver` が `AppImePolicy` と parity テストで同期を取り続けて
-    /// いるのと同じ負債を 3 本目として増やすことになるため、リテラルは
+    /// `ImeProfileDriver`（2026-10-22 撤去）が `AppImePolicy` と parity テストで
+    /// 同期を取り続けていたのと同じ負債になるため、リテラルは
     /// `caps` 側にしか置かない。
     ///
     /// `caps` は K（IME 種別）を取るが、この 2 フィールドは K 非依存である

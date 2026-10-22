@@ -6,10 +6,8 @@
 
 /// アプリケーションの UI フレームワーク種別
 ///
-/// フォーカス中のアプリに応じて出力方式を適応的に切り替えるために使用する。
-/// - Win32: ローマ字送信（デフォルト）
-/// - Chrome: VK キーストローク送信（KEYEVENTF_UNICODE だと全角→半角変換される問題の回避）
-/// - Uwp: Unicode 直接送信（VK キーストロークが正しく処理されない場合がある）
+/// フォーカス中のアプリの種類を表す。注入モードはこれとは別に `InjectionHint` から決まり、
+/// ADR-276（Unicode 注入の撤去）以後は VK ローマ字か TSF のどちらかになる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum AppKind {

@@ -33,14 +33,8 @@ use awase::types::VkCode;
 // ── 戦略選択の適用条件（ime_controller の is_applicable が引く述語）─────────────────
 
 /// `ImmCrossProcessStrategy` の適用条件: IMM32 クロスプロセス制御が使えるプロファイルか。
-///
-/// `#[track_caller]`（opus code review S3で追加、理由は`Runtime::
-/// can_use_imm32_cross_process`のdoc参照）: このラッパ自身も薄いため、無いと
-/// `AppImeProfile::can_use_imm32_cross_process`の観測ログに真の呼び出し元ではなく
-/// このラッパのfile:lineだけが記録される。
 #[must_use]
-#[track_caller]
-pub fn imm_cross_applicable(profile: AppImeProfile) -> bool {
+pub const fn imm_cross_applicable(profile: AppImeProfile) -> bool {
     profile.can_use_imm32_cross_process()
 }
 

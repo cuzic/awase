@@ -44,9 +44,9 @@ pub(crate) fn input_relay_apps_snapshot() -> Vec<String> {
 }
 
 // ── IMM capability / 学習ストア ──
-// `ImmCapability`・`ImmCapabilityStore`・`InjectionModeStore` は Win32 を呼ばない純粋な学習・永続化なので、
+// `ImmCapability`・`ImmCapabilityStore` は Win32 を呼ばない純粋な学習・永続化なので、
 // Linux でもビルド・テストされる `learning_store.rs` に置く(ADR-272 / ECRS F3)。従来の import 経路を保つため再エクスポートする。
-pub use super::learning_store::{ImmCapability, ImmCapabilityStore, InjectionModeStore};
+pub use super::learning_store::{ImmCapability, ImmCapabilityStore};
 
 // ── InjectionHint ──
 
@@ -58,9 +58,8 @@ pub use super::learning_store::{ImmCapability, ImmCapabilityStore, InjectionMode
 pub enum InjectionHint {
     /// config の `force_tsf` エントリにマッチ → TSF Sequential VK 注入
     ForceTsf,
-    /// config の `force_vk` エントリにマッチ → VK Batched 注入
-    ForceVk,
-    /// オーバーライドなし → AppKind に従って output 層が最終決定する
+    /// オーバーライドなし → VK Batched 注入（ADR-276 で既定が全部 Vk になったため、
+    /// 旧 `ForceVk`〈config の `force_vk`〉は 2026-10-22 に退役させてここへ畳んだ）
     Default,
 }
 
@@ -170,29 +169,22 @@ impl ForceOverrides {
         &self.inner.input_relay_apps
     }
 
-    /// 注入ヒントを返す（ForceTsf / ForceVk / Default）。
+    /// 注入ヒントを返す（ForceTsf / Default）。
     ///
     /// `process_name` の取得を1回にまとめ、ヘルパー関数経由で判定する。
     #[tracing::instrument(level = "debug", skip_all, fields(process_id = process_id, class_name = class_name))]
     pub(crate) fn injection_hint(&self, process_id: u32, class_name: &str) -> InjectionHint {
-        if self.inner.force_tsf.is_empty() && self.inner.force_vk.is_empty() {
+        if self.inner.force_tsf.is_empty() {
             return InjectionHint::Default;
         }
         let process_name = super::classify::get_process_name(process_id);
         // force_tsf チェック（InputSite フォールバック含む）
-        if !self.inner.force_tsf.is_empty() {
-            if matches_override_entry(&self.inner.force_tsf, &process_name, class_name) {
-                return InjectionHint::ForceTsf;
-            }
-            if unsafe {
+        if matches_override_entry(&self.inner.force_tsf, &process_name, class_name)
+            || unsafe {
                 input_site_fallback_matches(&self.inner.force_tsf, class_name, &process_name)
-            } {
-                return InjectionHint::ForceTsf;
             }
-        }
-        // force_vk チェック
-        if matches_override_entry(&self.inner.force_vk, &process_name, class_name) {
-            return InjectionHint::ForceVk;
+        {
+            return InjectionHint::ForceTsf;
         }
         InjectionHint::Default
     }

@@ -7,9 +7,7 @@ use crate::focus::FocusKind;
 use awase::engine::InputModeState;
 
 use crate::focus::cache::{DetectionSource, FocusCache};
-use crate::focus::classifier::{
-    ForceOverrides, ImmCapability, ImmCapabilityStore, InjectionHint, InjectionModeStore,
-};
+use crate::focus::classifier::{ForceOverrides, ImmCapability, ImmCapabilityStore, InjectionHint};
 use crate::focus::current::CurrentFocus;
 use crate::focus::hwnd_cache::{HwndImeCache, HwndImeSnapshot};
 
@@ -23,7 +21,6 @@ pub(crate) struct FocusTracker {
     cache: FocusCache,
     overrides: ForceOverrides,
     imm_learning: ImmCapabilityStore,
-    injection_mode_store: InjectionModeStore,
     hwnd_ime_cache: HwndImeCache,
     pub(crate) seen_threads: crate::focus::thread_scope::SeenThreads,
     /// 現在の `app_profile` が実測学習（`ImmCapability::Unavailable`）で静的分類の `Standard` から
@@ -43,14 +40,12 @@ impl FocusTracker {
         cache: FocusCache,
         overrides: ForceOverrides,
         imm_learning: ImmCapabilityStore,
-        injection_mode_store: InjectionModeStore,
     ) -> Self {
         Self {
             current: CurrentFocus::unfocused(),
             cache,
             overrides,
             imm_learning,
-            injection_mode_store,
             hwnd_ime_cache: HwndImeCache::new(),
             seen_threads: crate::focus::thread_scope::SeenThreads::default(),
             demoted_by_learning: false,
@@ -98,29 +93,14 @@ impl FocusTracker {
         if !self.current.is_focused() {
             return InjectionHint::Default;
         }
-        let hint = self
-            .overrides
-            .injection_hint(self.current.pid, &self.current.class_name);
-        if hint != InjectionHint::Default {
-            return hint;
-        }
-        if self.injection_mode_store.has_tsf(&self.current.class_name) {
-            return InjectionHint::ForceTsf;
-        }
-        InjectionHint::Default
+        self.overrides
+            .injection_hint(self.current.pid, &self.current.class_name)
     }
 
     /// 指定した pid/class に対する injection_hint を返す（フォーカス変更直後の stale 回避用）。
     /// `self.current` が更新される前に新ウィンドウの hint を引くために使う。
     pub(crate) fn injection_hint_for(&self, pid: u32, class_name: &str) -> InjectionHint {
-        let hint = self.overrides.injection_hint(pid, class_name);
-        if hint != InjectionHint::Default {
-            return hint;
-        }
-        if self.injection_mode_store.has_tsf(class_name) {
-            return InjectionHint::ForceTsf;
-        }
-        InjectionHint::Default
+        self.overrides.injection_hint(pid, class_name)
     }
 
     // ── フォーカス更新 ──────────────────────────────────────────────────────

@@ -533,14 +533,14 @@ impl Default for AutoDetectConfig {
     }
 }
 
-/// 入力インジケーターを読む証拠源（字形・右クリックメニュー）の使い方の段階（ADR-271）。段階は累積する（`Ord` は強さの順）。
+/// 入力インジケーターを読む証拠源（字形）の使い方の段階（ADR-271）。段階は累積する（`Ord` は強さの順）。
 ///
 /// どの段階でも IME へは何も書かない。`Unobserved`/`All` の belief への配線は別 ADR で決める
 /// ので、`awase-ime-core` の `ui_max_level()` を超える段階は実効値で丸める（保存は書き換えない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceLevel {
-    /// 読まない。既定（ウイルス対策ソフトの行動検出に当たりうるためオプトイン。ADR-261/264）。
+    /// 読まない。既定（ウイルス対策ソフトの行動検出に当たりうるためオプトイン。ADR-261）。
     #[default]
     Off,
     /// すべてのウィンドウで読み、journal・不具合報告に残す。belief の証拠にはしない。
@@ -564,14 +564,14 @@ impl EvidenceLevel {
     }
 }
 
-/// 入力インジケーターを読む証拠源ごとの段階（ADR-271）。字形とメニューは独立したスイッチ。
+/// 入力インジケーターを読む証拠源ごとの段階（ADR-271）。
+///
+/// 右クリックメニュー（ADR-264）の `menu` は 2026-10-22 に撤去した。旧 `config.toml` に残っていても無警告で無視する（`config_load_diag::REMOVED_KEYS`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IndicatorEvidenceConfig {
     /// タスクバーのインジケーターの字形（ADR-261）。
     pub glyph: EvidenceLevel,
-    /// インジケーターの右クリックメニュー（ADR-264）。
-    pub menu: EvidenceLevel,
 }
 
 // 既定はすべて空（`#[derive(Default)]`）。経緯:
@@ -791,16 +791,17 @@ pub struct KeystrokeMacro {
 ///
 /// - `force_text`: 常にテキスト入力として扱う (process, class) の組
 /// - `force_bypass`: 常に非テキストとしてバイパスする組
-/// - `force_vk`: ローマ字出力を VK キーストローク Batched モードで送る組（Chrome/Edge/Electron 等）
 /// - `force_tsf`: ローマ字出力を VK キーストローク Sequential モードで送る組（WezTerm 等 TSF 直結アプリ）
+///
+/// 旧 `force_vk`（VK Batched で送る組）は、ADR-276 で既定が全部 VK Batched になったため
+/// 2026-10-22 に退役させた。旧 `config.toml` に残っていても読み込みエラーにせず無視し、
+/// 空でなければ通知する（`config_load_diag::REMOVED_WITH_VALUE_NOTICE`）。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppOverrides {
     #[serde(default)]
     pub force_text: Vec<AppOverrideEntry>,
     #[serde(default)]
     pub force_bypass: Vec<AppOverrideEntry>,
-    #[serde(default)]
-    pub force_vk: Vec<AppOverrideEntry>,
     #[serde(default)]
     pub force_tsf: Vec<AppOverrideEntry>,
     /// フォーカス中このプロセス名（大文字小文字無視、`.exe` 有無どちらでも一致）
@@ -825,7 +826,6 @@ impl Default for AppOverrides {
         Self {
             force_text: Vec::new(),
             force_bypass: Vec::new(),
-            force_vk: Vec::new(),
             force_tsf: Vec::new(),
             disable_apps: default_disable_apps(),
             input_relay_apps: default_input_relay_apps(),
@@ -1449,7 +1449,6 @@ impl AppConfig {
     fn validate_app_override_entries(overrides: &AppOverrides, w: &mut Vec<String>) {
         Self::check_override_list(&overrides.force_text, "force_text", w);
         Self::check_override_list(&overrides.force_bypass, "force_bypass", w);
-        Self::check_override_list(&overrides.force_vk, "force_vk", w);
         Self::check_override_list(&overrides.force_tsf, "force_tsf", w);
         Self::check_disable_apps_list(&overrides.disable_apps, w);
         Self::check_input_relay_apps_list(&overrides.input_relay_apps, w);
@@ -2029,7 +2028,6 @@ engine_off_solo_triple = "VK_NONCONVERT"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.app_overrides.force_text.is_empty());
         assert!(config.app_overrides.force_bypass.is_empty());
-        assert!(config.app_overrides.force_vk.is_empty());
     }
 
     #[test]
@@ -2055,23 +2053,16 @@ engine_off_solo_triple = "VK_NONCONVERT"
 
     #[test]
     fn test_indicator_evidence_defaults_to_off() {
-        // 既定は両方 off(オプトイン。ADR-271 D4)。セクションが無くても、片方だけ指定しても。
+        // 既定は off(オプトイン。ADR-271 D4)。セクションが無くても。
         let config: AppConfig = toml::from_str("[general]\n").unwrap();
-        assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Off);
-        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::Off);
-        let config: AppConfig =
-            toml::from_str("[indicator_evidence]\nmenu = \"observe\"\n").unwrap();
-        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::Observe);
         assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Off);
     }
 
     #[test]
     fn test_indicator_evidence_levels_parse_and_order() {
         let config: AppConfig =
-            toml::from_str("[indicator_evidence]\nglyph = \"unobserved\"\nmenu = \"all\"\n")
-                .unwrap();
+            toml::from_str("[indicator_evidence]\nglyph = \"unobserved\"\n").unwrap();
         assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Unobserved);
-        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::All);
         assert!(
             EvidenceLevel::Off < EvidenceLevel::Observe
                 && EvidenceLevel::Observe < EvidenceLevel::Unobserved
@@ -2082,29 +2073,23 @@ engine_off_solo_triple = "VK_NONCONVERT"
     #[test]
     fn test_indicator_evidence_is_not_rounded_by_validate() {
         // ADR-271 D3: 設定画面の保存が利用者の `all` を恒久的に書き換えないよう、validate は段階を丸めない。
-        let config: AppConfig =
-            toml::from_str("[indicator_evidence]\nglyph = \"all\"\nmenu = \"all\"\n").unwrap();
+        let config: AppConfig = toml::from_str("[indicator_evidence]\nglyph = \"all\"\n").unwrap();
         let (validated, warnings) = config.validate();
-        assert_eq!(validated.indicator_evidence.menu, EvidenceLevel::All);
         assert_eq!(validated.indicator_evidence.glyph, EvidenceLevel::All);
         assert!(warnings.is_empty(), "{warnings:?}");
         let back: AppConfig = validated.into();
-        assert_eq!(back.indicator_evidence.menu, EvidenceLevel::All);
+        assert_eq!(back.indicator_evidence.glyph, EvidenceLevel::All);
     }
 
     #[test]
-    fn test_indicator_menu_shadow_old_key_is_noticed_only_when_true() {
-        // ADR-271 D4: 旧キーは撤去。true のときだけ通知し、読み替えない。false は無警告。
-        let load = |t: &str| AppConfig::from_toml_str(t).unwrap();
-        let (_, w) = load("[diagnostics]\nindicator_menu_shadow = true\n").validate();
-        assert!(
-            w.iter()
-                .any(|m| m.contains("indicator_menu_shadow") && m.contains("indicator_evidence")),
-            "{w:?}"
-        );
-        let config = load("[diagnostics]\nindicator_menu_shadow = true\n");
-        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::Off);
-        let (_, w) = load("[diagnostics]\nindicator_menu_shadow = false\n").validate();
+    fn test_removed_indicator_menu_keys_are_ignored_without_warning() {
+        // ADR-264 のメニュー読み取りの撤去(2026-10-22): 旧キー・新キーとも、読み込みエラーにも警告にもならない。
+        let config = AppConfig::from_toml_str(
+            "[diagnostics]\nindicator_menu_shadow = true\n\n[indicator_evidence]\nglyph = \"observe\"\nmenu = \"observe\"\n",
+        )
+        .expect("撤去した menu が残っていても読める");
+        assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Observe);
+        let (_, w) = config.validate();
         assert!(w.is_empty(), "{w:?}");
     }
 
@@ -2233,22 +2218,33 @@ disable_apps = ["mstsc.exe", ""]
         );
     }
 
+    /// `app_overrides.force_vk` は 2026-10-22 に退役させた（ADR-276 で既定が全部 VK になったため）。
+    /// 旧 `config.toml` に残っていても読み込みエラーにならず、他の設定は読める。空でなければ
+    /// 「不要になった」旨を 1 回だけ通知し、空（`force_vk = []`）なら黙って無視する。
     #[test]
-    fn test_app_overrides_force_vk_parse() {
-        let toml_str = r#"
-[general]
-
+    fn test_retired_force_vk_is_ignored_with_notice() {
+        let text = r#"
 [app_overrides]
 force_vk = [
     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
 ]
+force_tsf = [
+    { process = "a.exe", class = "A" },
+]
 "#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.app_overrides.force_vk.len(), 1);
-        assert_eq!(config.app_overrides.force_vk[0].process, "wezterm-gui.exe");
-        assert_eq!(
-            config.app_overrides.force_vk[0].class,
-            "org.wezfurlong.wezterm"
+        let config = AppConfig::from_toml_str(text).expect("旧 force_vk が残っていても読める");
+        assert_eq!(config.app_overrides.force_tsf.len(), 1);
+        let (_, warnings) = config.validate();
+        let hits: Vec<&String> = warnings.iter().filter(|w| w.contains("force_vk")).collect();
+        assert_eq!(hits.len(), 1, "{warnings:?}");
+        assert!(hits[0].contains("不要"), "{hits:?}");
+
+        let config = AppConfig::from_toml_str("[app_overrides]\nforce_vk = []\n")
+            .expect("空の旧 force_vk も読める");
+        let (_, warnings) = config.validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("force_vk")),
+            "{warnings:?}"
         );
     }
 

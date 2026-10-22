@@ -5,7 +5,8 @@ title: |-
 summary: |-
   IME 制御をプロファイル別 capability 駆動ドライバへ分離 — 共有ループの分岐面をやめ「アプリA向け修正がアプリBを壊す」波及を構造的に止める
 status: |-
-  完了(縮小して現存、2026-10-05 棚卸し): `ImeProfileDriver` trait と 3 つの ZST ドライバ(ImmCrossDriver・Imm32UnavailableDriver・TsfNativeDriver、state/ime_profile_driver.rs)が「コード構造契約の宣言」として現存、capability は ADR-089 の caps() に一本化。Phase 1d/1e は ADR-090 §2.F で凍結、着手しない。
+  完了(2026-10-22 撤去): 縮小して残っていた `ImeProfileDriver` trait・3 つの ZST ドライバ・contract test(state/ime_profile_driver.rs、本番の呼び出し元ゼロ)を所有者判断で撤去した(ADR-090 末尾の追補)。capability は ADR-089 の caps() に一本化済み。
+  旧(2026-10-22 更新前): 完了(縮小して現存、2026-10-05 棚卸し): `ImeProfileDriver` trait と 3 つの ZST ドライバ(ImmCrossDriver・Imm32UnavailableDriver・TsfNativeDriver、state/ime_profile_driver.rs)が「コード構造契約の宣言」として現存、capability は ADR-089 の caps() に一本化。Phase 1d/1e は ADR-090 §2.F で凍結、着手しない。
   旧(2026-10-05 更新前): 一部実装(縮小して現存、2026-10-04 コード確認)。Phase 1a/1b/1c のドライバ構造体(Imm32UnavailableDriver/TsfNativeDriver)は現行コードに無く、capability は ADR-089 の caps() に一本化。`ImeProfileDriver` trait のみ「コード構造契約の宣言」として縮小して現存(state/ime_profile_driver.rs)。Phase 1d/1e は ADR-090 §2.F で凍結(146934ec)、着手しない。
   旧(2026-10-04 更新前):
   Phase 1a/1b/1c 試験実装済み（未配線・Linux検証済み、実機ソーク未着手）

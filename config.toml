@@ -59,9 +59,11 @@ force_tsf = [
     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
     { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
 ]
-# force_vk = [
-#     { process = "chrome.exe", class = "Chrome_WidgetWin_1" },
-# ]
+# 旧 force_vk（VK で送る指定）は既定と同じになったため 2026-10-22 に退役した。書いてあっても
+# 無視される（起動時に「不要になった」と通知する）。
+# また、以前の版が TSF へ自動で切り替えて cache.toml の [injection_mode] に記録していた窓は、
+# この版から読まれなくなり VK で送られる。その窓で入力がおかしくなったら、上の force_tsf に
+# { process = "<exe 名>", class = "<ウィンドウクラス名>" } を足すこと。
 
 # Ctrl+key バイパス直後に次キーを NICOLA スキップするルール。
 #
@@ -92,13 +94,12 @@ force_tsf = [
 # mozc_shm_shadow = false  # mozc-readable の共有メモリを読んで IME の開閉・モードを journal に残す(観測のみ。ADR-265。反映は再起動後)
 # example-end
 
-# 入力インジケーターを読む補助の証拠源(ADR-271。上級者向け)。いずれも既定は "off"(ウイルス対策ソフトが行動を検出する場合があるため)。
+# 入力インジケーターを読む補助の証拠源(ADR-271。上級者向け)。既定は "off"(ウイルス対策ソフトが行動を検出する場合があるため)。
 # 段階: "off"(読まない) / "observe"(読んで journal・不具合報告に残すだけ。動作は変わらない)。
 # "unobserved"/"all" は設定できるが、この版では "observe" として動作する(保存は書き換えない)。IME へは何も書かない。反映は再起動後。
 # example-begin: config-indicator-evidence uncomment
 # [indicator_evidence]
-# menu = "off"   # 右クリックメニューを開いたとき現在のモードを読む(ADR-264)
-# glyph = "off"  # タスクバーのインジケーターの字形(ADR-261。この版では未実装で、設定しても何もしない)
+# glyph = "off"  # タスクバーのインジケーターの字形を読む(ADR-261)。右クリックメニュー(menu、ADR-264)は撤去した
 # example-end
 
 # 窓切替直後・長い無操作のあとの日本語入力の判定（ADR-263、上級者向け。設定画面の「上級者向け設定」タブからも変更できる）。

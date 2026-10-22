@@ -798,16 +798,11 @@ force_bypass = [
     <div class="card">
       <h3>Per-app output-mode override</h3>
       <div class="code-block" data-example="usage-en-9" data-mode="asis">[app_overrides]
-# Send as VK keystrokes (Chrome / Edge / VS Code and other Electron-based apps)
-force_vk = [
-    { process = "chrome.exe",  class = "Chrome_RenderWidgetHostHWND" },
-    { process = "code.exe",    class = "Chrome_RenderWidgetHostHWND" },
-]
-
-# Send in TSF native mode (Windows Terminal, etc.)
+# Send in TSF native mode (Windows Terminal, etc.). Apps not listed get VK keystrokes
 force_tsf = [
     { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
 ]</div>
+      <p class="note">The former <code>force_vk</code> has been retired because it now matches the default (it is ignored if present). If an app that older versions switched to TSF automatically now misbehaves, add it to <code>force_tsf</code>.</p>
     </div>
 
     <div class="card">

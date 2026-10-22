@@ -71,18 +71,18 @@
 | [055](055-engine-off-solo-triple.md) | 無変換3連打によるエンジン OFF 緊急回復 | 採用・実装済み(改称、2026-10-04 確認)。設定名は engine_off_solo_triple から engine_off_… |
 | [056](056-panic-reset-trigger-sequence.md) | パニックリセットトリガー: 同一キー連打 → OFF→ON→OFF シーケンス | 採用・実装済み(RapidPressTracker・PanicTriggerCombo は panic_detect.rs・app/mo… |
 | [057](057-gji-keybind-f13f14-to-f21f22.md) | GJI キーバインド F13/F14 → F21/F22 への移行 | 廃止済み(2026-06-28、ADR-067 に置換)。v2.0.0 時点でも gji.rs・GjiSetup/GjiTeardown… |
-| [058](058-injection-mode-cache-toml.md) | InjectionMode の cache.toml 永続化 | 採用・実装済み(InjectionModeStore は focus/classifier.rs、cache.toml の [injec… |
+| [058](058-injection-mode-cache-toml.md) | InjectionMode の cache.toml 永続化 | 撤去済み(2026-10-22): `InjectionModeStore` と `[injection_mode]` の読み込みを撤去(ADR-276 追補) |
 | [059](059-autostart-schtasks-to-hkcu-run.md) | 自動起動: schtasks → HKCU\Run レジストリへの移行 | 採用・実装済み(HKCU\Run 自動起動と migrate_from_schtasks は autostart.rs に現存、2026… |
 | [060](060-competing-software-detection.md) | 競合ソフトウェア起動時チェック | 採用・実装済み(競合ソフト検出 CONFLICTS は app/bootstrap.rs に現存、2026-10-04 確認)。 |
 | [061](061-win-key-ime-injection-skip.md) | Win キー押下中の IME キー注入スキップ | 実装済み(一部撤去、2026-10-04 確認)。send_ime_mode_key の Win キー押下中スキップ(hook::win… |
-| [062](062-injection-mode-auto-upgrade.md) | InjectionMode 事後昇格: GJI write_bytes 観測による自動昇格 | 採用・実装済み(UnicodeLiteralObserverFsm・InjectionHint::ForceTsf は現存、2026-1… |
+| [062](062-injection-mode-auto-upgrade.md) | InjectionMode 事後昇格: GJI write_bytes 観測による自動昇格 | 撤去済み: 書き込み側は ADR-276、読み込み側は 2026-10-22 に撤去 |
 | [063](063-ms-ime-tsf-separation.md) | TSF 共通層と IME 固有層の分離 + MS-IME 対応（案B） | 採用・実装済み(一部撤去、2026-10-04 確認)。ActiveImeKind・MsImeDirectStrategy・ImeWar… |
 | [064](064-conv-mode-policy-gate.md) | ConvModePolicy による conv mutation ゲートの導入 | 撤去済み(ADR-094 で ConvModePolicy を全撤去、10f238b5、2026-08-17、2026-10-04 確認… |
 | [065](065-conv-classifier-pure-fn-and-cfg-ungating.md) | conv 分類の純粋関数化と awase-windows の段階的プラットフォーム非依存化 | 実装済み(一部撤去、2026-10-04 確認)。conv 分類の純粋関数化・should_run_idle_conv_check は現… |
 | [066](066-gji-clsid-ime-detection.md) | GJI CLSID ベース IME 種別検出（gji_write_idle_ms ヒューリスティック廃止） | 採用・実装済み(CLSID ベースの active_ime_kind 判定、gji_write_idle_ms は現行コードに無い、20… |
 | [067](067-vk-ime-on-off-migration.md) | F21/F22 → VK_IME_ON/OFF への完全移行と config1.db バインド廃止 | 採用・実装済み(VK_IME_ON/OFF 移行、config1.db パッチ系の gji_keybinds_ok・GjiSetup/G… |
 | [068](068-jiskana-katakana-support.md) | JISかな・カタカナモードの完全サポート | 一部実装・一部撤去(2026-10-04 確認)。JISかな検出(ObservedKana)・ローマ字扱い(ObservedRomaji… |
-| [069](069-cohesion-refactor-h1-m5.md) | 凝集性リファクタ H-1〜M-5（循環依存・God Object・Reducer 不変条件） | 採用・実装済み(一部撤去、2026-10-04 確認)。ModifierState の engine 側移設・RuntimeOutbox… |
+| [069](069-cohesion-refactor-h1-m5.md) | 凝集性リファクタ H-1〜M-5（循環依存・God Object・Reducer 不変条件） | 採用・実装済み(一部撤去、2026-10-22 更新)。ModifierState の engine 側移設・TsfWarmupCoordinator… |
 | [070](070-open-belief-pure-fn.md) | `reduce_open_belief` — 観測値を純粋関数で単一ビリーフに還元 | 撤去済み(ADR-216 R1、fbe90204、2026-10-04 確認)。OpenBelief/OpenBeliefInputs/… |
 | [071](071-deferred-vk-queue-ownership.md) | deferred VK キュー所有権 → TsfWarmupCoordinator への移管 | 実装済み(一部撤去、2026-10-04 確認)。deferred VK キューの TsfWarmupCoordinator 所有(pe… |
 | [072](072-conv-mode-authority-apply-resync.md) | conv_mode_authority を apply 完了ごとに再同期する | 撤去済み(再同期は現存しない、2026-10-04 確認)。ADR-088 §1.7 が bf8727ac 時点で apply 完了ごと… |
@@ -94,7 +94,7 @@
 | [078](078-ime-mode-belief-desired-effective-constraint.md) | IME conv-mode belief の三分割（DesiredMode / EffectiveMode / ModeConstraint）と観測駆動書き込みの排除 | 一部実装→縮小(2026-10-04 確認)。DesiredMode/EffectiveMode/ModeConstraint/Mode… |
 | [079](079-epoch-fenced-literal-recovery-with-replay.md) | per-VK confirm の stale confirm 誤帰属 — epoch fencing + ESC ベース recovery + 変換トリガー除外 replay | 一部実装(2026-10-04 確認)。Stage 1(StaleConfirm 検出と回収: per_vk_recovery_para… |
 | [080](080-ime-actuation-lifecycle-and-epoch-fenced-drift-correction.md) | IME actuation（VK送信/IMM32呼び出し）を型付きトランザクション化し、closed-loop/open-loop の区別と有限終端を構造で強制する | Phase 1 実装済み(2026-10-04 確認)。FeedbackPolicy(Read/Blind)・decide_actuat… |
-| [081](081-per-profile-capability-driver-decomposition.md) | IME 制御ロジックをプロファイル別 capability 駆動ドライバへ分離し、汎用ループの分岐面を止める | 完了(縮小して現存、2026-10-05 棚卸し): `ImeProfileDriver` trait と 3 つの ZST ドライバ(ImmCrossDriver・Imm32UnavailableDriver・TsfN |
+| [081](081-per-profile-capability-driver-decomposition.md) | IME 制御ロジックをプロファイル別 capability 駆動ドライバへ分離し、汎用ループの分岐面を止める | 完了(2026-10-22 撤去): 縮小して残っていた `ImeProfileDriver` trait と ZST ドライバを撤去(ADR-090 追補)… |
 | [082](082-journal-structured-replay-and-event-origin.md) | `journal.rs` を事後ログから構造化リプレイ基盤へ格上げ — 出所(source)・世代(epoch)の規律を横断型 `EventOrigin` 1箇所に統合 | 一部実装(決定1・決定2・Phase 0.5 は実装済み、リプレイの全面適用は未完、2026-10-04 コード確認)。`EventOr… |
 | [083](083-injection-mode-per-vk-unification-investigation.md) | `InjectionMode`（文字送信経路）を GJI 専用に per-VK 確認方式へ統一する構想の検討記録 | 見送り(`InjectionMode` のGJI専用 per-VK 統一は NO-GO のまま、2026-10-04 時点で統一は未実施… |
 | [084](084-conv-mode-single-ownership-and-width-ssot.md) | conv-mode の単一所有権と「出力の幅を IME に委譲しない」原則 — 物理シフト面・belief キャッシュ・送信保証の責務再配置 | 北極星仕様のまま・一部の前提が変更。`actuate_conv_mode` 単一窓口(INV-1)は現存(output/conv_act… |
@@ -103,7 +103,7 @@
 | [087](087-open-belief-actuation-warrant-separation.md) | IME open/close belief における「内部信念」と「actuation の根拠」の分離（根拠軸の規律） | 一部実装・配線済み(2026-10-04 コード確認)。Phase 0〜2' の純粋ロジック(`issue_open_warrant`、… |
 | [088](088-ime-axis-capability-and-charset-owner.md) | IME 状態の軸分解（`AxisCapability`）と charset 軸の所有権（`CharsetOwner`）— および修飾キー汚染ハザードの未収束記録 | 却下・見送り(トラック A の `CharsetOwner` は ADR-094 で撤回、現行コードに無い)。トラック B(修飾キー汚染… |
 | [089](089-ime-typestate-and-capability-const-table.md) | IME 状態制御を Rust の型システムでどう表現するか — 型状態パターンの局所適用と capability const 表（trait 静的分岐の却下） | 一部実装(Phase A/B/C 実装済み、2026-08-12。残課題は ADR-090 が引き取り、2026-10-04 コード確認… |
-| [090](090-typestate-effectuation-and-adjacent-adr-closure.md) | ADR-089 の型保護を実効化し、隣接 ADR の後始末を確定する — warrant 実配線 / 読み戻し API / 裏口の可視性 / 非同期 caps / dylint 方… | 一部実装(2026-10-04 本文の実施記録で確認)。項A(A-1 shadow 配線 e3bf7af2・A-2 `into_actu… |
+| [090](090-typestate-effectuation-and-adjacent-adr-closure.md) | ADR-089 の型保護を実効化し、隣接 ADR の後始末を確定する — warrant 実配線 / 読み戻し API / 裏口の可視性 / 非同期 caps / dylint 方… | 一部実装。項F 追補(2026-10-22): `ime_profile_driver.rs` を撤去。項A・B・C・E・F・G 実施済み、項D 未着手… |
 | [091](091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md) | 冪等キー中心のIME制御 — open/romaji/charset 3軸の結論、GJI推奨・かな形状は設定+ベストエフォート助言(新規beliefなし)、MS-IME自己責任ポリ… | 一部実装・一部撤去(2026-10-04 確認)。決定(F21 1キー構成の推奨・MS-IME は自己責任)は本文のまま。自動判定・設定… |
 | [092](092-external-key-semantics-absorption-and-thumb-key-restructure.md) | 外部ソース由来のキー意味論の吸収と、親指キー設定群の再編 | 一部実装(Step1・2・6 実装済み、Step3-5 は先送りのまま、2026-10-04 確認)。`ModeKeyConfig`/`… |
 | [093](093-dbe-hotkey-observation-upgrades-japanese-ime-belief.md) | IME 専用ホットキーの受信を `is_japanese_ime()` の即時真更新トリガーにする | 実装済み(コード確認のみ、2026-10-04)。`vk.rs::is_synthetic_dbe_ime_hotkey` と `key… |
@@ -270,19 +270,19 @@
 | [261](261-taskbar-indicator-glyph-observation-for-unreadable-windows.md) | 観測の無い窓の IME 状態を、タスクバーの入力インジケーターの字形から読む(実行環境で表を作り、表に当たったときだけ証拠にする) | 起草(2026-10-15)。実装なし、D0(未測定)を先に |
 | [262](262-nicola-intent-evidence-for-unobserved-windows.md) | 観測の無い窓で、親指シフトの最初の同時打鍵を契機に IME ON を明示する(撤去した force-on の絞った復元、ADR-212 の例外) | round 3 レビューを受けて文面を直した(2026-10-17)。実装なし。段階 A(presync 停止)から |
 | [263](263-episode-start-key-hold-and-language-decision.md) | 観測の無い窓で、エピソード先頭の打鍵を保持し、日本語入力と判定できたときだけ IME ON を送る(ADR-262 の契機を置き換える) | 起草(2026-10-17)。Opus round 1 を受けて書き直し。round 2 待ち |
-| [264](264-indicator-menu-mode-evidence.md) | 利用者がタスクバーの入力インジケーターの右クリックメニューを開いたときだけ、メニューの現在のモードを読んで IME の実状態の証拠にする(読むだけ) | 起草(2026-10-17)。実装なし、CI で測定済み。決定は案 |
+| [264](264-indicator-menu-mode-evidence.md) | 利用者がタスクバーの入力インジケーターの右クリックメニューを開いたときだけ、メニューの現在のモードを読んで IME の実状態の証拠にする(読むだけ) | 撤去(ADR-276 の後続、2026-10-22)。実機で信頼できず shadow ごと撤去 |
 | [265](265-mozc-readable-integration.md) | mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定) | 提案。段階 1(observe のみ)は実装済み(PR #644)。段階 2 の基準は実機と CI で満たしたが、未測定の項目あり・belief への接続は利用者の判断待ち。段階 0 は未着手 |
 | [266](266-initial-input-mode-claims-observed.md) | belief の入力モードの初期値 ObservedRomaji が「観測済み」と名乗る問題(BUG-204)。実害の記録が出るまで挙動は変えず、機序と選択肢を記録する | 起草(2026-10-18)。実装なし。Opus レビュー round 1 を反映して書き直し。決定は保留(所有者判断 Q1) |
 | [267](267-mozc-readable-composition-state.md) | mozc-readable の共有メモリに組成の段階・候補の種類・キー通番・入力欄のモード指定を足す(version 3) | 提案(Opus round4 で収束)。実装は未着手 |
 | [268](268-mozc-shm-belief-connection.md) | mozc-readable の共有メモリを belief に High で接続し、食い違う applied を降格する | 実装済み・D5 まで実機で検証済み(#678・#679・#682・#687、CI 通過)。未確認: TTL の最終値、E1 の不一致、TSF ネイティブの窓・物理キーでの追随 |
 | [269](269-mozc-literal-detection-evidence.md) | Mozc 系では GJI の I/O を literal 判定の証拠にしない(BUG-207) | 実装中(2026-10-18)。段階 1 は PR #686、段階 2 以降は観測が先 |
 | [270](270-mozc-first-send-composition-check.md) | Mozc で、cold の最初のローマ字を送った直後に、入力中の文字ができたかを共有メモリで確かめ、リテラルなら消して送り直す | 実装中(2026-10-19)。実機は未確認(BUG-209) |
-| [271](271-indicator-evidence-settings-levels.md) | 入力インジケーターを読む 2 つの証拠源(字形・右クリックメニュー)を、設定画面の 4 段階(無効／観測のみ／読めないウィンドウだけ／すべて)で選べるようにする | 起草(2026-10-20)。実装なし。Opus レビュー round 3 で収束・所有者判断 Q1〜Q5 決定済み。第 3・第 4 段階の belief 配線は別 ADR |
+| [271](271-indicator-evidence-settings-levels.md) | 入力インジケーターを読む証拠源(字形。右クリックメニューは 2026-10-22 撤去)を、設定画面の 4 段階(無効／観測のみ／読めないウィンドウだけ／すべて)で選べるようにする | 起草(2026-10-20)。実装なし。Opus レビュー round 3 で収束・所有者判断 Q1〜Q5 決定済み。第 3・第 4 段階の belief 配線は別 ADR |
 | [272](272-thin-shell-move-pure-code-to-core.md) | shell を薄くする: 同じ crate 内で gate を外すのを先にし tsf/warmup から R7 として再開 | 段階 A 実装済み(2026-10-20)。段階 B は B0(仮想時計、#708)のみ、B1 は保留、C は未着手 |
-| [273](273-indicator-evidence-belief-wiring.md) | 入力インジケーターの証拠源(字形・メニュー)を belief へ入れる配線の入口条件と形(ADR-271 の第 3・第 4 段階) | 起草(2026-10-20)。段階 1(核の実装・配線なし)実装中。Opus 4 ラウンドで収束(確定可) |
+| [273](273-indicator-evidence-belief-wiring.md) | 入力インジケーターの証拠源(字形。メニューは断念・撤去)を belief へ入れる配線の入口条件と形(ADR-271 の第 3・第 4 段階) | 起草(2026-10-20)。段階 1(核の実装・配線なし)実装中。Opus 4 ラウンドで収束(確定可) |
 | [274](274-split-windows-core-by-role.md) | awase-windows-core を役割ごとの複数の core に分け、名前で責務が分かるようにする(葉から剥がす) | 段階 0・1・2 はすべて完了、core は 7 crate + 殻(2026-10-21) |
 | [275](275-platform-state-core-move-deferred.md) | platform_state.rs・sync_actuation.rs の core への移動は見送る(記録系の強制を強める小 PR を 3 本) | 決定: 移動は見送り。Opus レビュー反映済み |
-| [276](276-remove-unicode-injection.md) | Unicode 注入(既定モードと Tsf の eager かな送信)を撤去する(ADR-083 の申し送りを覆す) | 実装済み(P1〜P4、#767・#768。純減約 916 行) |
+| [276](276-remove-unicode-injection.md) | Unicode 注入(既定モードと Tsf の eager かな送信)を撤去する(ADR-083 の申し送りを覆す) | 実装済み(P1〜P4、#767・#768。純減約 916 行)。追補(2026-10-22): `force_vk` 退役・`[injection_mode]` 読み込み撤去 |
 | [277](277-pseudo-ime-transition-table-and-ablation.md) | 擬似 IME の遷移を 1 つの表にまとめ、全列挙・ファズ・防御の ablation を同じ表で回す | 起草・段階 1・2 実装 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029

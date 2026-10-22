@@ -1,5 +1,5 @@
 #![allow(unsafe_code)]
-// Win32 の共有メモリ・プロセストークン・ntdll を呼ぶため unsafe が必須(lib.rsのクレート全体allowから個別移管、indicator_menu.rs と同じ作法)
+// Win32 の共有メモリ・プロセストークン・ntdll を呼ぶため unsafe が必須(lib.rsのクレート全体allowから個別移管、indicator_glyph.rs と同じ作法)
 //! ADR-265 段階 1: mozc-readable の TIP が書き出す共有メモリ（48 バイト、version 2）を**読むだけ**の観測。
 //!
 //! 仕様の出典は mozc-readable の `readable/docs/shared-memory.md`（awase 側に写しは無い）。読み取りの規約（ADR-265 D3）:

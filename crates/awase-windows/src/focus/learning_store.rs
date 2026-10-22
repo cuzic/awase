@@ -1,10 +1,14 @@
-//! フォーカス層の学習ストア: IMM 能力(`ImmCapabilityStore`)と注入モード(`InjectionModeStore`)。
+//! フォーカス層の学習ストア: IMM 能力(`ImmCapabilityStore`)。
 //!
-//! `cache.toml` の `[imm_capability]` / `[injection_mode]` セクションを読み書きするだけの純粋なコードで、
+//! `cache.toml` の `[imm_capability]` セクションを読み書きするだけの純粋なコードで、
 //! Win32 を呼ばない。以前は `classifier.rs`(`#[cfg(windows)]`)にあったため、BUG-56/107/108 の回帰テストが
 //! Linux のテストバイナリに存在しなかった。ここへ分けて Linux でも走らせる(ADR-272 / ECRS F3)。
-//! 従来の `crate::focus::classifier::{ImmCapability, ImmCapabilityStore, InjectionModeStore}` の経路は
+//! 従来の `crate::focus::classifier::{ImmCapability, ImmCapabilityStore}` の経路は
 //! `classifier.rs` の再エクスポートが保つ。
+//!
+//! 注入モードの学習(`InjectionModeStore`、`cache.toml` の `[injection_mode]`)は、ADR-276 で
+//! 既定が Vk になり書き込み側も無くなったため、2026-10-22 に読み込みごと撤去した。既存の
+//! `cache.toml` に `[injection_mode]` が残っていても読まない(`save_section` は他セクションとして保つ)。
 
 // ── IMM capability cache ──
 
@@ -303,58 +307,6 @@ fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::T
         return false;
     }
     true
-}
-
-// ── InjectionModeStore ────────────────────────────────────────────────────────
-
-/// 事後昇格学習ストア（読み取り専用）。
-///
-/// `cache.toml` の `[injection_mode]` セクション（`class_name = "tsf"` の形式）に既に学習済みの
-/// class_name を読む。事後昇格の書き込み側は ADR-276 で撤去した（既存の利用者の学習結果を壊さないため読み取りは残す）。
-///
-/// `ForceOverrides::injection_hint()` が未マッチのとき、このストアを参照して `ForceTsf` を返す。
-#[derive(Debug)]
-pub struct InjectionModeStore {
-    tsf_classes: std::collections::HashSet<String>,
-}
-
-impl InjectionModeStore {
-    pub(crate) fn new(base_dir: &std::path::Path) -> Self {
-        let tsf_classes = Self::load(base_dir);
-        Self { tsf_classes }
-    }
-
-    /// class_name が Tsf モード必要と学習済みかどうか。
-    pub(crate) fn has_tsf(&self, class_name: &str) -> bool {
-        self.tsf_classes.contains(class_name)
-    }
-
-    fn load(base_dir: &std::path::Path) -> std::collections::HashSet<String> {
-        let path = base_dir.join(CACHE_FILENAME);
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            return std::collections::HashSet::new();
-        };
-        let table: toml::Table = match content.parse() {
-            Ok(t) => t,
-            Err(_) => return std::collections::HashSet::new(),
-        };
-        let mut classes = std::collections::HashSet::new();
-        if let Some(toml::Value::Table(section)) = table.get("injection_mode") {
-            for (class_name, value) in section {
-                if matches!(value, toml::Value::String(s) if s == "tsf") {
-                    classes.insert(class_name.clone());
-                }
-            }
-        }
-        if !classes.is_empty() {
-            tracing::info!(
-                "Loaded injection mode cache: {} TSF classes from {}",
-                classes.len(),
-                path.display()
-            );
-        }
-        classes
-    }
 }
 
 #[cfg(test)]

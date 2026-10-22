@@ -12,7 +12,7 @@
 //! - ImmGetDefaultIMEWnd の有無 (IMM bridge availability)
 //! - IMC_GETOPENSTATUS / IMC_GETCONVERSIONMODE のクロスプロセス値
 //! - awase の shadow ime_on
-//! - 解決された注入モード (Vk / Tsf / Unicode)
+//! - 解決された注入モード (Vk / Tsf)
 //! - 最後のフォーカス変更からの経過時間
 //!
 //! Phase 2 以降で ITfInputProcessorProfileMgr による active TIP 情報の追加を検討。
@@ -363,7 +363,7 @@ fn resolve_injection_mode_label() -> &'static str {
         let (hint, _) = app.injection_hint();
         match hint {
             InjectionHint::ForceTsf => "Tsf",
-            InjectionHint::ForceVk | InjectionHint::Default => "Vk",
+            InjectionHint::Default => "Vk",
         }
     })
     .unwrap_or("Unknown")

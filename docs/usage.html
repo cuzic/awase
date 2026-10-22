@@ -798,16 +798,11 @@ force_bypass = [
     <div class="card">
       <h3>アプリ別の出力モード上書き</h3>
       <div class="code-block" data-example="usage-ja-9" data-mode="asis">[app_overrides]
-# VK キーストロークで送信する（Chrome / Edge / VS Code 等 Electron ベースのアプリ）
-force_vk = [
-    { process = "chrome.exe",  class = "Chrome_RenderWidgetHostHWND" },
-    { process = "code.exe",    class = "Chrome_RenderWidgetHostHWND" },
-]
-
-# TSF ネイティブモードで送信する（Windows Terminal 等）
+# TSF ネイティブモードで送信する（Windows Terminal 等）。指定の無いアプリは VK キーストロークで送る
 force_tsf = [
     { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
 ]</div>
+      <p class="note">以前の <code>force_vk</code> は既定と同じになったため廃止しました（書いてあっても無視されます）。以前の版が自動で TSF に切り替えていたアプリで入力がおかしくなった場合は、<code>force_tsf</code> に追加してください。</p>
     </div>
 
     <div class="card">

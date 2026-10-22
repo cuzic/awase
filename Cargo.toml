@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-ime-core", "crates/awase-windows-base", "crates/awase-key-effect", "crates/awase-hook-core", "crates/awase-windows-plans", "crates/awase-scancode", "crates/awase-bug-report", "crates/awase-settings", "crates/awase-settings-wgpu", "crates/awase-gji-config", "crates/awase-vkmap", "crates/awase-replay", "crates/awase-keymap-learn", "crates/awase-keymap-learn-win", "crates/awase-build-support", "crates/xtask-adr-evidence", "crates/measured-macro", "crates/actuation-choke-point-macro"]
+members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-ime-core", "crates/awase-windows-base", "crates/awase-key-effect", "crates/awase-hook-core", "crates/awase-windows-plans", "crates/awase-scancode", "crates/awase-bug-report", "crates/awase-settings", "crates/awase-settings-wgpu", "crates/awase-gji-config", "crates/awase-vkmap", "crates/awase-replay", "crates/awase-keymap-learn", "crates/awase-keymap-learn-win", "crates/awase-build-support", "crates/xtask-adr-evidence", "crates/measured-macro"]
 
 # awase-settings が wgpu(Direct3D 12 / Vulkan) フォールバックを取り込んだこと
 # （crates/awase-settings/src/startup_failure.rs）でリリースバイナリのサイズが

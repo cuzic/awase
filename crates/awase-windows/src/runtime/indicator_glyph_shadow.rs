@@ -83,6 +83,8 @@ pub(super) struct IndicatorGlyphShadow {
     store_path: Option<PathBuf>,
     /// 取り込みの件数（不具合報告の要約用。画像・画素は持たない。ADR-271 D5）
     counters: crate::indicator_evidence::IndicatorGlyphCounters,
+    /// 起動時に固定した実効の段階（`min(設定値, ui_max_level())`）。無効のときも持つ（報告は `off` でも段階を出す）
+    effective: Option<crate::indicator_evidence::EffectiveEvidence>,
 }
 
 impl IndicatorGlyphShadow {
@@ -99,6 +101,7 @@ impl IndicatorGlyphShadow {
             store: GlyphSampleFile::default(),
             store_path: None,
             counters: crate::indicator_evidence::IndicatorGlyphCounters::new(),
+            effective: None,
         }
     }
 }
@@ -180,15 +183,34 @@ impl super::Runtime {
             rx_feature,
             store,
             store_path: Some(store_path),
+            effective: self.indicator_glyph.effective,
             ..IndicatorGlyphShadow::disabled()
         };
     }
 
-    /// 不具合報告の要約用に、字形の取り込みの件数を返す（読み取りだけ）。
-    pub(crate) const fn indicator_glyph_counters(
+    /// 起動時に実効の段階を固定する（有効・無効にかかわらず呼ぶ。不具合報告が `off` でも段階を出すため。ADR-271 D5）。
+    pub(crate) fn set_indicator_effective_evidence(
+        &mut self,
+        effective: crate::indicator_evidence::EffectiveEvidence,
+    ) {
+        self.indicator_glyph.effective = Some(effective);
+    }
+
+    /// 字形の実効の段階（起動時に固定したもの。まだ渡されていなければ `None`）。
+    fn effective_glyph_level(&self) -> Option<awase::config::EvidenceLevel> {
+        self.indicator_glyph.effective.map(|e| e.glyph)
+    }
+
+    /// 不具合報告の要約用に、実効の段階と取り込みの件数を返す（読み取りだけ）。
+    pub(crate) fn indicator_evidence_summary(
         &self,
-    ) -> &crate::indicator_evidence::IndicatorGlyphCounters {
-        &self.indicator_glyph.counters
+    ) -> crate::bug_report::BugReportIndicatorEvidence {
+        let eff = self.indicator_glyph.effective.unwrap_or(
+            crate::indicator_evidence::EffectiveEvidence {
+                glyph: awase::config::EvidenceLevel::Off,
+            },
+        );
+        crate::bug_report::BugReportIndicatorEvidence::new(eff, &self.indicator_glyph.counters)
     }
 
     /// 窓の種類の事実（D3・Q2・R1。判定は核の純粋関数 `glyph_window_in_scope`・`glyph_scope_label`）。
