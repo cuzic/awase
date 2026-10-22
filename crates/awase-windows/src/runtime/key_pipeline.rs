@@ -563,6 +563,17 @@ impl Runtime {
             .platform
             .current_app_profile()
             .is_effectively_tsf_native(self.platform.focus.class_name());
+        // [reach-probe] DD2-02: ガードの通過状況(挙動不変、数値と真偽値のみ。打鍵内容は出さない)。
+        if matches!(event.event_type, KeyEventType::KeyDown) {
+            tracing::info!(
+                "[reach-probe] DD2-02 idle-gate tsf_native={} in_flight_ms={} explicit_age_ms={} first_key={} mode_key={}",
+                is_tsf_native,
+                output_idle_ms_at_spawn,
+                explicit_age,
+                is_first_key_after_focus,
+                event.ime_relevance.is_ime_mode_key
+            );
+        }
         if !awase::engine::should_run_idle_conv_check(
             matches!(event.event_type, KeyEventType::KeyDown),
             is_tsf_native,

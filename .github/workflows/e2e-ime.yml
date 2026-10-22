@@ -788,6 +788,13 @@ jobs:
               for form in ('bugreport',)
               for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))
               for iv in (40, 10)],
+            # DD2-02(docs/tasks/mech-ecrs-2026-10-21/dd202-ci-result.md): ConvModeMgr::observe の IdleCheck 経路(TsfNative + 打鍵停止 500ms 超の最初の KeyDown)に
+            # 到達させる。入力先 tsfnative=窓クラスを Windows Terminal(CASCADIA_HOSTING_WINDOW_CLASS / Windows.UI.Input.InputSite.WindowClass)にした自前の RichEdit。
+            # 連続打鍵(base)・各試行の前に 1.5s/12s 止める(idle)・打鍵の途中で 800ms 止める(pause)。観測のみ。only='tsx-tsfnative-*'。
+            *[tsx(f'tsfnative-{ime_name}-{iv}ms{sfx}', 'tsfnative', ime, iv, extra=ex, kinds='single,mixed', trials=6, len=30, runs=3, wait=900)
+              for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))
+              for iv in (40, 10)
+              for sfx, ex in (('', ''), ('-idle1500', '--idle=1500'), ('-idle12s', '--idle=12000'), ('-pause', '--pause-after=5 --pause-ms=800'))],
             # ADR-212 P5: Unicode 注入モード(Edit/RichEdit)で GJI が long-cold(≥10s idle)のとき、各試行の最初の文字が欠けないこと。
             # Unicode long-cold warmup(VK_IME_ON+VK_A+BS と文字の保留)を撤去する前後の比較用。`[unicode-cold-warmup]` の件数で経路が通ったことを確認する。
             *[tsx(f'{form}-gji-10ms-idle12s', form, 'gji', 10, extra='--idle=12000', kinds='single,mixed', trials=3, runs=6, wait=900)
