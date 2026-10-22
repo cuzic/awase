@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### 変更
 
 - **旧設定 `muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action` は無視されるようになりました。** これまでは読み込み時に `keys.ime_on` / `ime_off` / `ime_toggle` 相当へ移していましたが、この移行を終えました。`config.toml` に残っていると起動時に通知が出ます（設定画面で保存するとその行は消えます）。無変換／変換の単独タップで IME を開閉するには、`keys.ime_on` / `keys.ime_off` に「無変換」「変換」を単独で書いてください（例: `ime_on = ["変換"]`、`ime_off = ["無変換"]`）。
+- **設定の `app_overrides.force_vk` を廃止し、以前の版が「TSF で送る」と自動で記録したアプリの一覧（`cache.toml` の `[injection_mode]`）を読まなくなりました。** Unicode の直接注入の撤去（ADR-276）で、指定の無いアプリはすべて VK キーストロークで送るようになり、`force_vk` は既定と同じになりました。`force_vk` が書いてあっても読み込みエラーにはならず、無視されます（空でないときは起動時に「不要になった」と通知します。設定画面で保存すると消えます）。以前の版で TSF に自動で切り替わっていたアプリ（WezTerm・Windows Terminal 以外）で入力がおかしくなった場合は、`config.toml` の `force_tsf` にそのアプリのプロセス名とウィンドウクラス名を追加してください。
 
 ## [2.2.0] - 2026-10-20
 

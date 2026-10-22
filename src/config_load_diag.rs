@@ -16,6 +16,8 @@ const REMOVED_KEYS: &[&str] = &[
     "general.gji_thumb_key_ime_toggle",
     // 値が true のときだけ通知する(`REMOVED_WITH_VALUE_NOTICE`、ADR-271 D4)。
     "diagnostics.indicator_menu_shadow",
+    // 2026-10-22 退役(ADR-276 で既定が全部 VK)。空でないときだけ通知する(`REMOVED_WITH_VALUE_NOTICE`)。
+    "app_overrides.force_vk",
     "calibration",
 ];
 
@@ -57,6 +59,7 @@ const REMOVED_WITH_VALUE_NOTICE: &[&str] = &[
     "general.gji_thumb_key_ime_toggle",
     "general.dbe_mode_key_policy",
     "diagnostics.indicator_menu_shadow",
+    "app_overrides.force_vk",
 ];
 
 /// 値が既定でない撤去済みキーの通知文を集める。`root` は config.toml 全体の表。
@@ -99,6 +102,22 @@ pub fn removed_value_notices(root: &toml::Table) -> Vec<String> {
             "diagnostics.indicator_menu_shadow は撤去されました。値は無視されます。代わりに \
              [indicator_evidence] の menu = \"observe\" を設定してください(反映は再起動後)。\
              config.toml から旧キーを削除してください（設定画面で保存しても消えます）"
+                .to_string(),
+        );
+    }
+    // 2026-10-22: force_vk は既定(VK)と同じになったので退役。旧版が自動昇格で TSF に上げていた窓は
+    // force_tsf に足す必要がある(cache.toml の [injection_mode] も読まなくなった)。
+    if root
+        .get("app_overrides")
+        .and_then(toml::Value::as_table)
+        .and_then(|a| a.get("force_vk"))
+        .and_then(toml::Value::as_array)
+        .is_some_and(|v| !v.is_empty())
+    {
+        out.push(
+            "app_overrides.force_vk は不要になりました(既定がすべて VK 注入になったため)。値は無視されます。\
+             TSF で送りたいアプリは force_tsf に書いてください。\
+             config.toml から削除してください（設定画面で保存しても消えます）"
                 .to_string(),
         );
     }
@@ -223,7 +242,7 @@ mod tests {
             assert!(!is_removed_key(p), "無警告の表に重複登録しない: {p}");
         }
         assert!(removed_notice("keys.engine_on").is_none());
-        assert_eq!(removed_notice_paths().count(), 7);
+        assert_eq!(removed_notice_paths().count(), 8);
     }
 
     #[test]
@@ -251,6 +270,15 @@ mod tests {
         assert!(
             removed_value_notices(&t("[diagnostics]\nindicator_menu_shadow = false\n")).is_empty()
         );
+        let m = removed_value_notices(&t(
+            "[app_overrides]\nforce_vk = [{ process = \"a.exe\", class = \"A\" }]\n",
+        ));
+        assert_eq!(m.len(), 1);
+        assert!(
+            m[0].contains("force_vk") && m[0].contains("force_tsf"),
+            "{m:?}"
+        );
+        assert!(removed_value_notices(&t("[app_overrides]\nforce_vk = []\n")).is_empty());
         for p in REMOVED_WITH_VALUE_NOTICE {
             assert!(is_removed_key(p), "ログ警告は出さない表にも載せる: {p}");
         }

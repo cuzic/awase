@@ -128,3 +128,7 @@ Opus・Fable・Codex（Codex CLI）の3系統に独立してこの構想の設�
 - ADR-023（adaptive output、「全アプリVK方式」却下の過去記録）
 - `docs/known-bugs.md` BUG-45（per-VK confirmの構造的欠陥、未解決）
 - `.claude/rules/experiment-logging.md`（過去の失敗実験の記録規約）
+
+## 追記(2026-10-22): force_vk の退役と `[injection_mode]` の読み込みの撤去
+
+所有者判断(2026-10-22)で、`config.toml` の `app_overrides.force_vk`(`InjectionHint::ForceVk`)を退役させ、`cache.toml` の `[injection_mode]`(`InjectionModeStore`)の読み込みを撤去した。ADR-276 で既定が全部 Vk になり、自動昇格の書き込み側も無くなっていたため。`InjectionHint` は `ForceTsf`/`Default` の 2 値で、`injection_mode_for` は `ForceTsf` → Tsf、`Default` → Vk。既存の設定は壊さない: `force_vk` は読み込みエラーにせず無視し、空でなければ起動時に「不要になった」と通知する(`config_load_diag::REMOVED_WITH_VALUE_NOTICE`、設定画面の保存で消える)。`[injection_mode]` は読まない(`ImmCapabilityStore` の保存は他セクションとして保つ)。**影響**: 以前の版が TSF へ自動昇格させていた窓(`force_tsf` に無いもの)は Vk で送られる。困る場合は `force_tsf` に足す。 本 ADR が「やってはいけない」とした `UnicodeLiteralObserverFsm` の撤去は ADR-276 で済んでおり、今回はその残りの読み手を外した。

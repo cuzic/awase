@@ -363,7 +363,7 @@ fn resolve_injection_mode_label() -> &'static str {
         let (hint, _) = app.injection_hint();
         match hint {
             InjectionHint::ForceTsf => "Tsf",
-            InjectionHint::ForceVk | InjectionHint::Default => "Vk",
+            InjectionHint::Default => "Vk",
         }
     })
     .unwrap_or("Unknown")

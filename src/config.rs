@@ -791,16 +791,17 @@ pub struct KeystrokeMacro {
 ///
 /// - `force_text`: 常にテキスト入力として扱う (process, class) の組
 /// - `force_bypass`: 常に非テキストとしてバイパスする組
-/// - `force_vk`: ローマ字出力を VK キーストローク Batched モードで送る組（Chrome/Edge/Electron 等）
 /// - `force_tsf`: ローマ字出力を VK キーストローク Sequential モードで送る組（WezTerm 等 TSF 直結アプリ）
+///
+/// 旧 `force_vk`（VK Batched で送る組）は、ADR-276 で既定が全部 VK Batched になったため
+/// 2026-10-22 に退役させた。旧 `config.toml` に残っていても読み込みエラーにせず無視し、
+/// 空でなければ通知する（`config_load_diag::REMOVED_WITH_VALUE_NOTICE`）。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppOverrides {
     #[serde(default)]
     pub force_text: Vec<AppOverrideEntry>,
     #[serde(default)]
     pub force_bypass: Vec<AppOverrideEntry>,
-    #[serde(default)]
-    pub force_vk: Vec<AppOverrideEntry>,
     #[serde(default)]
     pub force_tsf: Vec<AppOverrideEntry>,
     /// フォーカス中このプロセス名（大文字小文字無視、`.exe` 有無どちらでも一致）
@@ -825,7 +826,6 @@ impl Default for AppOverrides {
         Self {
             force_text: Vec::new(),
             force_bypass: Vec::new(),
-            force_vk: Vec::new(),
             force_tsf: Vec::new(),
             disable_apps: default_disable_apps(),
             input_relay_apps: default_input_relay_apps(),
@@ -1449,7 +1449,6 @@ impl AppConfig {
     fn validate_app_override_entries(overrides: &AppOverrides, w: &mut Vec<String>) {
         Self::check_override_list(&overrides.force_text, "force_text", w);
         Self::check_override_list(&overrides.force_bypass, "force_bypass", w);
-        Self::check_override_list(&overrides.force_vk, "force_vk", w);
         Self::check_override_list(&overrides.force_tsf, "force_tsf", w);
         Self::check_disable_apps_list(&overrides.disable_apps, w);
         Self::check_input_relay_apps_list(&overrides.input_relay_apps, w);
@@ -2029,7 +2028,6 @@ engine_off_solo_triple = "VK_NONCONVERT"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.app_overrides.force_text.is_empty());
         assert!(config.app_overrides.force_bypass.is_empty());
-        assert!(config.app_overrides.force_vk.is_empty());
     }
 
     #[test]
@@ -2233,22 +2231,33 @@ disable_apps = ["mstsc.exe", ""]
         );
     }
 
+    /// `app_overrides.force_vk` は 2026-10-22 に退役させた（ADR-276 で既定が全部 VK になったため）。
+    /// 旧 `config.toml` に残っていても読み込みエラーにならず、他の設定は読める。空でなければ
+    /// 「不要になった」旨を 1 回だけ通知し、空（`force_vk = []`）なら黙って無視する。
     #[test]
-    fn test_app_overrides_force_vk_parse() {
-        let toml_str = r#"
-[general]
-
+    fn test_retired_force_vk_is_ignored_with_notice() {
+        let text = r#"
 [app_overrides]
 force_vk = [
     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
 ]
+force_tsf = [
+    { process = "a.exe", class = "A" },
+]
 "#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.app_overrides.force_vk.len(), 1);
-        assert_eq!(config.app_overrides.force_vk[0].process, "wezterm-gui.exe");
-        assert_eq!(
-            config.app_overrides.force_vk[0].class,
-            "org.wezfurlong.wezterm"
+        let config = AppConfig::from_toml_str(text).expect("旧 force_vk が残っていても読める");
+        assert_eq!(config.app_overrides.force_tsf.len(), 1);
+        let (_, warnings) = config.validate();
+        let hits: Vec<&String> = warnings.iter().filter(|w| w.contains("force_vk")).collect();
+        assert_eq!(hits.len(), 1, "{warnings:?}");
+        assert!(hits[0].contains("不要"), "{hits:?}");
+
+        let config = AppConfig::from_toml_str("[app_overrides]\nforce_vk = []\n")
+            .expect("空の旧 force_vk も読める");
+        let (_, warnings) = config.validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("force_vk")),
+            "{warnings:?}"
         );
     }
 
