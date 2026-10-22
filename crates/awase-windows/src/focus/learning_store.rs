@@ -20,6 +20,26 @@ pub enum ImmCapability {
     Unavailable,
 }
 
+/// 学習済み IMM 能力による profile 降格の純粋判定（ADR-262 段階 A）。
+///
+/// 静的分類が `Standard` かつ実測学習が `Unavailable` のときだけ `Imm32Unavailable` に降格する。昇格方向
+/// （`Works` による `Imm32Unavailable`/`TsfNative` → `Standard`）は行わない — 静的リストの Imm32 不可・TSF ネイティブ
+/// 知識は実測 1 回の「読めた」より強いため。殻の `FocusTracker::apply_learned_imm_capability`（`focus/tracker.rs`、
+/// Windows 専用）と、閉ループのハーネスの窓モデル（`tests/support/harness.rs`、ADR-277 段階 2）が同じこの関数を呼ぶ。
+#[must_use]
+pub fn apply_learned_imm_capability(
+    static_profile: crate::focus::class_names::AppImeProfile,
+    learned: Option<ImmCapability>,
+) -> crate::focus::class_names::AppImeProfile {
+    use crate::focus::class_names::AppImeProfile;
+    match (static_profile, learned) {
+        (AppImeProfile::Standard, Some(ImmCapability::Unavailable)) => {
+            AppImeProfile::Imm32Unavailable
+        }
+        (p, _) => p,
+    }
+}
+
 // ── ImmCapabilityStore ──
 
 /// IMM 能力の学習・永続化を担う構造体。

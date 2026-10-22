@@ -36,7 +36,7 @@ pub struct Defense {
     pub evidence: &'static str,
 }
 
-/// 目録（2026-10-22 時点。段階 1 は 1 件だけ外せる。残りは ADR-277 の「次の段階」）。
+/// 目録（2026-10-22 時点。外せるのは段階 1 の 1 件と段階 2〈窓モデル〉の 1 件。残りは ADR-277 の「次の段階」）。
 pub const DEFENSES: &[Defense] = &[
     Defense {
         id: "placeholder-align",
@@ -44,6 +44,13 @@ pub const DEFENSES: &[Defense] = &[
         ablation: Ablation::HarnessSwitch("placeholder_align"),
         invariant: "p3_startup_aligns_desired_without_drift",
         evidence: "BUG-163 代案A",
+    },
+    Defense {
+        id: "app-profile-follow",
+        location: "awase-windows/src/runtime/focus_tracking.rs::notify_focus_hwnd_updated_if_needed（判断は awase-ime-core/src/state/app_ime_policy.rs::app_profile_follow_event）",
+        ablation: Ablation::HarnessSwitch("app_profile_follow"),
+        invariant: "w_drift_cap_follows_live_window",
+        evidence: "ECRS DD3-01、#779（AppProfileChanged）。窓モデルの全列挙（ADR-277 段階 2）",
     },
     Defense {
         id: "external-close-watch",

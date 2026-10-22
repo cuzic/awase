@@ -20,6 +20,13 @@
 //!   ImmCross で warrant が下りない補正を検知の手前で見送る早期 return（BUG-163 の1段目、`b6ab8980`）。
 //!   Blind/Read の再送打ち切り・settle 待ち・conv ラッチは写していない。
 //!
+//! - 窓モデル（ADR-277 段階 2、`Window`・`Setup::in_window`・`focus_to`・`demote_by_learning`）: 窓の live の profile は
+//!   本物の `AppImeProfile::from_class_and_process` と `learning_store::apply_learned_imm_capability`（学習による降格）で
+//!   求め、同じプロセスの中の窓の移動は `FocusHwndUpdated` と本物の `app_profile_follow_event`（`AppProfileChanged`、
+//!   DD3-01・#779）、別のプロセスへの移動は `FocusChanged` を流す。殻の `notify_focus_hwnd_updated_if_needed`
+//!   （`runtime/focus_tracking.rs`）は `#[cfg(windows)]` の `Runtime` のメソッドなので呼べず、その 2 つの dispatch の
+//!   **並びだけ**をここで写す（判断は核の関数）。`on_focus_process_changed` の他の処理（hwnd キャッシュの復元、
+//!   新しいスレッドの閉の仮定、settle 期限）は写さない。
 //! - ADR-205 の外部変化の監視窓は本物（`arm/follow_external_change_in_scope`、追随の副作用もハブの中）を呼ぶ。
 //!   `Setup::with_external_close_watch(true)` のときだけ働く（ADR-205 の有無で結果が分かれるシナリオ用）。
 //!
@@ -37,6 +44,9 @@ use awase::engine::{
 use awase::scanmap::KeyboardModel;
 use awase::types::VkCode;
 use awase::yab::YabLayout;
+use awase_windows::focus::class_names::AppImeProfile;
+use awase_windows::focus::learning_store::{apply_learned_imm_capability, ImmCapability};
+use awase_windows::state::app_ime_policy::{app_profile_follow_event, AppImePolicy};
 use awase_windows::state::conv_classify::ConvSyncReason;
 use awase_windows::state::drift_correction::{check_drift_correction, DriftCorrection};
 use awase_windows::state::evidence::{
@@ -56,7 +66,7 @@ use awase_windows::state::platform_state::ImeStateHub;
 use awase_windows::state::probe_admission::{Admission, FocusFence, ImmLikeTicket};
 use awase_windows::state::TickMs;
 
-use super::pseudo_ime::{Grid, PseudoIme, TrueState};
+use super::pseudo_ime::{Grid, PseudoIme, TrueStage, TrueState, CONV_HIRAGANA};
 
 /// 本番の `GetTickCount64` に相当する tick の起点（0 付近だと TTL 計算が境界に寄るため）。
 const TICK_BASE: u64 = 1_000_000;
@@ -144,6 +154,54 @@ pub struct StepRecord {
     pub explicit_intent: bool,
     /// このステップが成功した観測（`Source` から開閉を読めた）だったか。値は観測した開閉。
     pub observed_open: Option<bool>,
+    /// 核の `ImeModel::app_policy`（窓モデルの不変条件 (a)(b) 用、ADR-277 段階 2）。
+    pub core_policy: AppImePolicy,
+    /// 殻の live の profile（`FocusTracker.current.app_profile` 相当。窓モデルでは窓から求めた値、それ以外は `Setup::profile`）。
+    pub live_profile: ImePolicyProfile,
+    /// 殻の `can_use_imm32_cross_process()`（drift の書き込み経路）。
+    pub live_imm_cross: bool,
+    /// 核の focus epoch（プロセスが変わると進む。殻はこのとき進行中の試行を捨てる〈ADR-080 破棄条件2〉）。
+    pub focus_epoch: u64,
+}
+
+/// 窓 1 つの記述（ADR-277 段階 2）。殻の `FocusTracker.current`（pid・クラス・プロセス・学習による降格）に当たる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    /// golden・経過に出す短い名前。
+    pub name: &'static str,
+    pub hwnd: HwndId,
+    pub pid: u32,
+    /// IME の状態はスレッドごと（同じスレッドの窓は擬似 IME を共有する）。
+    pub thread: u32,
+    pub class: &'static str,
+    pub process: &'static str,
+    /// `app_overrides.input_relay_apps` に載っているか（`InputRelay`）。
+    pub input_relay: bool,
+    /// 実測学習で IMM が使えないと学習されたか（`ImmCapability::Unavailable`、ADR-262 段階 A）。
+    pub learned_unavailable: bool,
+}
+
+impl Window {
+    /// 殻の live の profile（本物の `from_class_and_process` + `apply_learned_imm_capability`）。
+    #[must_use]
+    pub fn live_profile(&self) -> AppImeProfile {
+        let relay = if self.input_relay {
+            vec![self.process.to_string()]
+        } else {
+            Vec::new()
+        };
+        apply_learned_imm_capability(
+            AppImeProfile::from_class_and_process(self.class, self.process, &relay),
+            self.learned_unavailable
+                .then_some(ImmCapability::Unavailable),
+        )
+    }
+
+    /// IME の実状態を IMM で読める窓か（`can_use_imm32_cross_process`）。読めない窓では観測を流さない。
+    #[must_use]
+    pub fn readable(&self) -> bool {
+        self.live_profile().can_use_imm32_cross_process()
+    }
 }
 
 /// シナリオの設定。
@@ -160,6 +218,8 @@ pub struct Setup {
     pub external_close_watch: bool,
     /// ハーネスが**呼び出し単位で**外せる防御（ablation、ADR-277 決定 3）。既定は全部有効（本番と同じ）。
     pub defenses: Defenses,
+    /// 窓モデルで起動するときの最初の窓（`Setup::in_window`）。`None` なら従来どおり窓の表を持たない。
+    pub window: Option<Window>,
 }
 
 /// ハーネスが呼び出しごと外せる防御のスイッチ（ablation）。
@@ -172,12 +232,16 @@ pub struct Defenses {
     /// BUG-163 代案A: 起動時の初期値のままの `desired_open` を最初の成功観測へ揃える
     /// （`ImeStateHub::align_placeholder_desired`、本番の呼び出し元は `ir_align_placeholder_desired`）。
     pub placeholder_align: bool,
+    /// ECRS DD3-01（#779）: 同じフォーカス中に殻の live の profile が変わったら核の `app_policy` を追随させる
+    /// （`app_profile_follow_event` → `AppProfileChanged`、本番の呼び出し元は `notify_focus_hwnd_updated_if_needed`）。
+    pub app_profile_follow: bool,
 }
 
 impl Defenses {
     /// 全部有効（本番と同じ）。
     pub const ALL_ON: Self = Self {
         placeholder_align: true,
+        app_profile_follow: true,
     };
 }
 
@@ -192,7 +256,17 @@ impl Setup {
             grid: Grid::Atok,
             external_close_watch: false,
             defenses: Defenses::ALL_ON,
+            window: None,
         }
+    }
+
+    /// 窓モデル（ADR-277 段階 2）で、`window` にフォーカスがある状態から起動する。profile は窓の live の値。
+    #[must_use]
+    pub fn in_window(initial: TrueState, window: Window) -> Self {
+        let mut s = Self::imm_cross(initial);
+        s.profile = ImePolicyProfile::from(window.live_profile());
+        s.window = Some(window);
+        s
     }
 
     /// 防御のスイッチを変える（ablation）。
@@ -245,6 +319,12 @@ pub struct Harness {
     pub predictions: Vec<PredictionRecord>,
     /// 本番の `is_japanese_ime`（ADR-223 でキー入力時にレイアウト言語から更新される）。既定 true。
     japanese_ime: bool,
+    /// 窓モデル: いまフォーカスのある窓（`Setup::in_window` のときだけ `Some`）。
+    window: Option<Window>,
+    /// 窓モデル: いまフォーカスの無いスレッドの擬似 IME（スレッドごとに状態を持つ）。
+    parked: Vec<(u32, PseudoIme)>,
+    /// 窓モデル: 実測学習の表（`ImmCapabilityStore` 相当、(プロセス, クラス) ごと）。戻ってきた窓にも効く。
+    learned_unavailable: Vec<(&'static str, &'static str)>,
 }
 
 /// ハーネスは単一のフォアグラウンドなのでスコープは固定。
@@ -279,7 +359,7 @@ impl Harness {
             .expect("同梱表のあるキーマップ"),
             setup,
             now_ms: 0,
-            focus: HwndId(0x1001),
+            focus: setup.window.map_or(HwndId(0x1001), |w| w.hwnd),
             epoch: 1,
             last_conv_raw: None,
             step: 0,
@@ -288,6 +368,9 @@ impl Harness {
             drift_fires: Vec::new(),
             predictions: Vec::new(),
             japanese_ime: true,
+            window: setup.window,
+            parked: Vec::new(),
+            learned_unavailable: Vec::new(),
         };
         h.hub.set_is_japanese_ime(true);
         h.reduce(ImeEvent::InitialFocusScopeEstablished {
@@ -482,6 +565,99 @@ impl Harness {
         self.handle_engine_decision(&decision);
         self.settle("focus_change_to_new_thread_unreadable()".into(), None);
         self
+    }
+
+    /// 窓モデル: 別の窓へフォーカスを移す（ADR-277 段階 2）。
+    ///
+    /// - 殻の live の profile（`Setup::profile` に持つ）は窓から求め直す。
+    /// - プロセスが変わったら `FocusChanged`（核の `app_policy`・epoch・観測プールを入れ直す）と Engine の `FocusChanged`。
+    /// - 同じプロセスなら `notify_focus_hwnd_updated_if_needed` の並び: hwnd が変われば `FocusHwndUpdated`、続けて
+    ///   `app_profile_follow_event`（防御 `app_profile_follow`、外すと #779 の前の挙動）。
+    /// - スレッドが変われば擬似 IME を入れ替える。初めてのスレッドは閉×ひらがな（ADR-191 §3.2）。
+    /// - 殻と同じく、直近に観測した conv（`prev_conversion_mode`）は毎回捨てる。
+    pub fn focus_to(&mut self, mut to: Window) -> &mut Self {
+        let from = self
+            .window
+            .expect("focus_to は窓モデル（Setup::in_window）で使う");
+        to.learned_unavailable |= self.learned_unavailable.contains(&(to.process, to.class));
+        self.switch_thread(from.thread, to.thread);
+        self.window = Some(to);
+        self.setup.profile = ImePolicyProfile::from(to.live_profile());
+        self.last_conv_raw = None;
+        if from.pid == to.pid {
+            self.notify_same_process(to.hwnd);
+        } else {
+            let prev = self.focus;
+            self.epoch += 1;
+            self.focus = to.hwnd;
+            self.reduce(ImeEvent::FocusChanged {
+                from: Some(prev),
+                to: self.focus,
+                profile: self.setup.profile,
+                focus_epoch: self.epoch,
+            });
+            let ctx = self.ctx();
+            let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
+            self.handle_engine_decision(&decision);
+        }
+        self.settle(format!("focus_to({})", to.name), None);
+        self
+    }
+
+    /// 窓モデル: いまの窓が実測学習で降格される（`ImmCapability::Unavailable` を学習した。同じ窓のまま、次の
+    /// フォーカスの更新で殻の live の profile だけが変わる。`FocusTracker::update_with_process_name` の 500ms 周期）。
+    pub fn demote_by_learning(&mut self) -> &mut Self {
+        let mut w = self
+            .window
+            .expect("demote_by_learning は窓モデル（Setup::in_window）で使う");
+        w.learned_unavailable = true;
+        self.learned_unavailable.push((w.process, w.class));
+        self.window = Some(w);
+        self.setup.profile = ImePolicyProfile::from(w.live_profile());
+        self.notify_same_process(w.hwnd);
+        self.settle(format!("demote_by_learning({})", w.name), None);
+        self
+    }
+
+    /// 窓モデル: いまフォーカスのある窓。
+    #[must_use]
+    pub const fn window(&self) -> Option<Window> {
+        self.window
+    }
+
+    /// `notify_focus_hwnd_updated_if_needed`（bootstrap でもプロセス変更でもないとき）の dispatch の並び。
+    fn notify_same_process(&mut self, new_hwnd: HwndId) {
+        if new_hwnd != self.focus {
+            self.focus = new_hwnd;
+            self.reduce(ImeEvent::FocusHwndUpdated { hwnd: new_hwnd });
+        }
+        if self.setup.defenses.app_profile_follow {
+            if let Some(event) =
+                app_profile_follow_event(&self.hub.model().app_policy, self.setup.profile)
+            {
+                self.reduce(event);
+            }
+        }
+    }
+
+    /// スレッドが変わったら擬似 IME を入れ替える（前のスレッドの擬似 IME は控える）。
+    fn switch_thread(&mut self, from: u32, to: u32) {
+        if from == to {
+            return;
+        }
+        let next = match self.parked.iter().position(|(t, _)| *t == to) {
+            Some(i) => self.parked.swap_remove(i).1,
+            None => PseudoIme::from_grid(
+                self.setup.grid,
+                TrueState {
+                    open: false,
+                    conv: CONV_HIRAGANA,
+                    stage: TrueStage::None,
+                },
+            ),
+        };
+        let prev = std::mem::replace(&mut self.ime, next);
+        self.parked.push((from, prev));
     }
 
     /// 現在の belief で、Engine が有効か(`Engine::compute_state`。IME ON・日本語 IME・ローマ字入力と判断できるか)。
@@ -782,6 +958,13 @@ impl Harness {
             engine_active: self.engine.compute_active(&ctx),
             explicit_intent: self.has_explicit_intent(),
             observed_open,
+            core_policy: self.hub.model().app_policy,
+            live_profile: self.setup.profile,
+            live_imm_cross: self.window.map_or(
+                matches!(self.setup.profile, ImePolicyProfile::ImmCross),
+                |w| w.live_profile().can_use_imm32_cross_process(),
+            ),
+            focus_epoch: self.epoch,
         });
     }
 }

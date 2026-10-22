@@ -1,0 +1,4 @@
+# 窓モデルの疑い（ADR-277 段階 2）。不変条件ではなく、現状の最短の列を固定する。
+# 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive
+carried-actuation-policy: 1 手 開始=off-c19-none@explorer 列=[FocusTo("xaml")]
+  step#1（start）で据えた Read の試行が step#2（focus_to(xaml)、Imm32Unavailable）まで残り Send(StrategyChain)。いまの窓の方針 Blind なら GiveUp(FirstTime)
