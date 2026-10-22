@@ -232,7 +232,7 @@ fn predictor_stage(r: &PredictionRecord) -> Stage {
         return Stage::None;
     }
     match r.input_track.stage {
-        Stage::None if r.input_composing => Stage::Typing,
+        Stage::None | Stage::Indeterminate if r.input_composing => Stage::Typing,
         s => s,
     }
 }
