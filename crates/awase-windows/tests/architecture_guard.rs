@@ -5954,12 +5954,14 @@ fn decide_gate_wiring_occurrence_counts_are_pinned() {
         );
     }
 
-    // open_chain.rs: 3つの`.await`境界それぞれが`is_input_relay(`を
-    // 関数本体内でちょうど1回呼んでいることを固定する（ADR-180決定1）。
+    // open_chain.rs: `.await`境界の後ろにある関数（`fallback_write`）と、チェーンに入る前の
+    // `run_open_chain_async`が`is_input_relay(`を関数本体内でちょうど1回呼んでいることを固定する
+    // （ADR-180決定1、ECRS DD1-01で`imm_cross_write`の再検出を撤去。`imm_cross_write`は
+    // `run_open_chain_async`のgateと同じポーリングの中で評価されるため、再検出は要らない）。
     let open_chain_rs = read_crate_file("src/runtime/open_chain.rs");
     let production = strip_any_test_module(&open_chain_rs);
     let per_fn_expectations: &[(&str, usize)] = &[
-        ("fn imm_cross_write", 1),
+        ("fn imm_cross_write", 0),
         ("fn fallback_write", 1),
         ("fn run_open_chain_async", 1),
     ];
@@ -5974,13 +5976,13 @@ fn decide_gate_wiring_occurrence_counts_are_pinned() {
              再検証が失われていないか確認すること。"
         );
     }
-    // 上記3関数以外にis_input_relay(が漏れ出していないかも固定する
-    // （合計4件: 上記3 + `ime_actuation_decision.rs`自身の定義1件）。
+    // 上記関数以外にis_input_relay(が漏れ出していないかも固定する
+    // （合計2件: `fallback_write` と `run_open_chain_async`）。
     let total_in_open_chain = production.matches("is_input_relay(").count();
     assert_eq!(
-        total_in_open_chain, 3,
+        total_in_open_chain, 2,
         "src/runtime/open_chain.rs 全体での `is_input_relay(` 呼び出し数が \
-         想定(3)と異なります(実際: {total_in_open_chain})。新しい呼び出し元が \
+         想定(2)と異なります(実際: {total_in_open_chain})。新しい呼び出し元が \
          増えた場合は上記per-fn期待値にも追加すること。"
     );
 }

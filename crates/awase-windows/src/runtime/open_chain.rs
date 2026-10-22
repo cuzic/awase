@@ -102,6 +102,8 @@ impl ImmCrossOp {
 struct AsyncChainWriter {
     /// 1 回だけ使える（`Actuation` 値のアフィン性と同じ理由で `Option`）。
     imm: Option<ImmCrossOp>,
+    /// `run_open_chain_async` の gate が作った記録用の入力（`with_app` が `None` だったときは `None`）。
+    gate_inputs: Option<DecisionInputs>,
     attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
     attempts_len: usize,
 }
@@ -135,7 +137,7 @@ impl AsyncMechanismWriter for AsyncChainWriter {
                 let Some(op) = self.imm.take() else {
                     return ImeOpenOutcome::Failed;
                 };
-                let (outcome, attempt) = imm_cross_write(op, open).await;
+                let (outcome, attempt) = imm_cross_write(op, open, self.gate_inputs).await;
                 self.record_attempt(attempt);
                 outcome
             }
@@ -220,44 +222,16 @@ fn record_actuation_decision_skipped(site: DecisionSite) {
 // 持つ）で Send は要求しない。
 #[allow(clippy::future_not_send)]
 #[tracing::instrument(level = "debug", skip_all, fields(open = open))]
-async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<AttemptRecord>) {
-    // issue #136 / BUG-90 決定4（/code-review指摘で追加）: `AsyncChainWriter::
-    // is_applicable(ImmCross)` は `self.imm.is_some()` しか見ておらず profile を
-    // 一切参照しないため、`run_open_chain_async` 冒頭の gate が `with_app` の
-    // 再入失敗で fail-open した場合、この関数まで到達すると以前は無条件で
-    // ImmCross write を実行していた。ここで fresh な view を取り直して
-    // 再検出する（`fallback_write` が GjiDirect/MsImeDirect に
-    // 対して行っているのと同じ防御をImmCrossにも及ぼす）。
-    // /code-review指摘（PR #201 B-1）: `with_app`がNone（再入）を返した場合、
-    // developの元実装は`.unwrap_or(false)`でfail-open（is_input_relay=false、
-    // 実書き込みへ進む）していた。本PRが一度これをfail-closed（即Failed・
-    // 一切書き込まない）に変えてしまっており、再入時にIME切替が無音で
-    // 消える実害のある回帰だった。`inputs`（記録用）と`is_input_relay`
-    // （実書き込み判定）を分離し、`with_app`失敗時は`inputs=None`
-    // （記録できない、163-T6のカウンタ対象）・`is_input_relay=false`
-    // （fail-open、書き込みは続行）に戻す。
-    // ADR-180決定1: この`with_app`クロージャを`run_open_chain_async`冒頭
-    // （下記）と共有ヘルパーへ統合しない。`fallback_write`は既に別の
-    // `with_app`クロージャの中でこの判定を行うため、`with_app`を内包する
-    // ヘルパーを導入すると`fallback_write`から呼んだ瞬間に再入で
-    // `try_borrow_mut`失敗→fail-open→このプロファイル非所有ゲートが
-    // 恒久的に無効化される（issue #136/BUG-90型の回帰）。
-    let gate = crate::with_app(|app| {
-        let view = app.shadow_ime_control_view();
-        let inputs = (&view).into();
-        let is_input_relay = crate::state::ime_actuation_decision::is_input_relay(inputs);
-        (inputs, is_input_relay)
-    });
-    let (inputs, is_input_relay) = if let Some((inputs, is_input_relay)) = gate {
-        (Some(inputs), is_input_relay)
-    } else {
-        tracing::info!(
-            "[apply-ime] ImmCross async: with_app returned None during gate \
-             (fail-open, proceeding without a decision record)"
-        );
-        record_actuation_decision_skipped(DecisionSite::ImmCrossWrite);
-        (None, false)
-    };
+async fn imm_cross_write(
+    op: ImmCrossOp,
+    open: bool,
+    inputs: Option<DecisionInputs>,
+) -> (ImeOpenOutcome, Option<AttemptRecord>) {
+    // 非所有の窓の gate は `run_open_chain_async` の冒頭だけが持つ（ADR-276 後続・ECRS DD1-01、ADR-180 決定1 を訂正）。
+    // チェーンの最初の機構は常に ImmCross で、`run_chain_async` は `is_applicable`（`imm.is_some()`）の直後に
+    // `write(ImmCross).await` へ進むため、この関数の先頭までに `.await` は無い。つまり `run_open_chain_async` の gate と
+    // 同じポーリングの中で評価され、同じ `with_app` の状態を見る（結果が必ず同じ）。ここで gate を取り直しても
+    // 何も新しく止めない。`inputs` は、その gate が作った記録用の入力を受け取る（`with_app` が `None` だったときは `None`）。
     // ADR-268 D3: 共有メモリの読みが「この書き込みより後の事実か」を判定する基準（ImmCross はフックを通らない）。
     crate::hook::note_imm_cross_write();
     let command = match &op {
@@ -269,23 +243,6 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
         }),
         ImmCrossOp::Untargeted => Some(MechanismCommand::SetOpenCrossProcessAsyncUntargeted(open)),
     };
-    if is_input_relay {
-        // `is_input_relay`はgate（`with_app`成功時のみ）由来なので、ここでは
-        // `inputs`が必ず`Some`（`with_app`失敗時は常にfalse、B-1修正参照）。
-        let inputs = inputs.expect("is_input_relay implies with_app succeeded and inputs is Some");
-        return (
-            ImeOpenOutcome::NotOwned,
-            Some(AttemptRecord {
-                inputs,
-                with_app_available: true,
-                mechanism: WriteMechanism::ImmCross,
-                command,
-                outcome: ImeOpenOutcome::NotOwned,
-                shadow_on_before_bug113_override: None,
-                post_failed_reobservation: None,
-            }),
-        );
-    }
     // ADR-117（issue #138 切り分け: MS-IME「直接入力モード許可」時の英数キー文字消失）:
     // 報告環境（Standard プロファイル×MS-IME）の主経路。`.await` に入る前の
     // live 読み取りであることが必須——完了後（`on_ime_apply_complete`）まで待つと
@@ -396,8 +353,8 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
         }
     };
     // `inputs`が`None`（gate時点の`with_app`失敗、B-1修正）の場合は記録先の
-    // 決定入力が無いため`AttemptRecord`を作らない——163-T6のカウンタが
-    // 既に`record_actuation_decision_skipped`でこのケースを計上済み。
+    // 決定入力が無いため`AttemptRecord`を作らない——163-T6のカウンタは
+    // `run_open_chain_async`の末尾で計上する。
     // 実際のImmCross書き込み自体（`outcome`）はfail-openで続行している。
     let record = inputs.map(|inputs| AttemptRecord {
         inputs,
@@ -462,7 +419,7 @@ fn fallback_write(
     mechanism: WriteMechanism,
     open: bool,
 ) -> (ImeOpenOutcome, Option<AttemptRecord>) {
-    // ADR-180決定1: `imm_cross_write`/`run_open_chain_async`と同じ理由で
+    // ADR-180決定1: `run_open_chain_async`と同じ理由で
     // `with_app`を内包する共有ゲートヘルパーへは統合しない——この関数自身が
     // その候補ヘルパーの唯一の再入元になる（下のBUG-113対策の`shadow_on =
     // None`上書きも`decide_gate`より前に必要なため、単純な委譲にもできない）。
@@ -580,16 +537,15 @@ pub(crate) async fn run_open_chain_async(
     // `ImeControlView` を持たないため、呼び出し元の分岐（`imm_cross_is_first_
     // applicable`）でこの経路に入らないよう InputRelay は排除されるのが通常
     // だが、ここでも念のため fresh な view で確認する（呼び出し元判断と
-    // await 開始の間で focus が変わる race への防御）。`fallback_write` も
-    // 同様の再検出を行う（そちらは各機構ごとに view を作り直すため独立に必要）。
+    // await 開始の間で focus が変わる race への防御）。`fallback_write` は
+    // ImmCross の `.await` の後なので、各機構ごとに view を作り直して再検出する（独立に必要）。
+    // `imm_cross_write` は、この gate と同じポーリングの中で（間に `.await` なしに）評価されるので、
+    // gate を持たない（ECRS DD1-01）。
     // `with_app` が `None`（再入時）なら fail-open（gate 無効化）を選ぶ
     // （`fail-closed` にして `with_app` 再入を `NotOwned` 化すると、InputRelay
     // と無関係な通常フォーカスでの再入時にも actuation 自体が止まってしまい、
-    // こちらの副作用の方が大きい）。この場合でも `imm_cross_write` /
-    // `fallback_write` がそれぞれ独立に fresh な view で再検出するため
-    // （/code-review指摘で発見・追加、修正前は `AsyncChainWriter::
-    // is_applicable(ImmCross)` が `self.imm.is_some()` しか見ておらず
-    // profile を素通りしていた）、最終的に write が実行されることはない。
+    // こちらの副作用の方が大きい）。この場合は `with_app` の借用がポーリングの外側で握られているので、
+    // `imm_cross_write` の ImmCross write も同じ状態で進む（fail-open のまま。PR #201 B-1 で両方をそろえた）。
     // /code-review指摘（PR #201 B-1）: 直前のコメントが明言する「with_appが
     // Noneならfail-open」を、以前のコードは`Failed`即終了（fail-closed）に
     // していた——コメントと実装が矛盾する回帰だった。`gate_inputs`を
@@ -686,6 +642,7 @@ pub(crate) async fn run_open_chain_async(
     let actuation = actuation.verify(imm.verified_target());
     let mut writer = AsyncChainWriter {
         imm: Some(imm),
+        gate_inputs,
         attempts: [None; MAX_WRITE_MECHANISMS],
         attempts_len: 0,
     };
