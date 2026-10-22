@@ -1,0 +1,3 @@
+# 防御を外すと破れる最短の事象列（ADR-277、support/defenses.rs の HarnessSwitch）。
+# 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive
+placeholder-align: 外すと 1 手で p3_startup_aligns_desired_without_drift が破れる 開始=off-c19-none 列=[Observe(ImmCross)]

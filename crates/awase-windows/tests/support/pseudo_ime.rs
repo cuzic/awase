@@ -20,8 +20,15 @@
 //! - **文字キー**（表に無い）: 開いていれば入力中になる（変換中なら確定して新しい入力中）。閉なら何もしない。
 //! - 生データに無い状態（例: ATOK の `on-c19-conv-muhenkan`）からの押下は **panic** する。
 //!   シナリオは実測のある範囲だけを通ること（推測で埋めない）。
+//!
+//! # 遷移表（ADR-277 段階 1）
+//!
+//! 遷移は状態を持たない `TransitionTable::step(状態, ImeInput, QuirkSwitches)` 1 つに集めてある。中身は
+//! 格子（実測）+ `KEPT_STAGE_RULES`（上の段階の仮定を表にしたもの）+ 文字キー・書き込み・外部変更の規則。
+//! `PseudoIme`（閉ループ）・`TransitionTable::reachable`（全列挙、`pseudo_ime_exhaustive.rs`）・ランダム探索が
+//! 同じ表を引く。時刻に依るクセ（Q3 の読み戻し遅延）だけは `PseudoIme` の側に置く。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
 /// クセの目録の1件。実 IME・アプリが「仕様に反して/表に無い形で」見せる挙動のうち、閉ループに影響するもの。
@@ -109,6 +116,9 @@ pub enum Grid {
 }
 
 impl Grid {
+    /// 全格子（全列挙で使う）。
+    pub const ALL: [Self; 3] = [Self::Atok, Self::GjiMsime, Self::MsimeNative];
+
     const fn file(self) -> &'static str {
         match self {
             Self::Atok => "atok.json",
@@ -116,10 +126,20 @@ impl Grid {
             Self::MsimeNative => "msime-native.json",
         }
     }
+
+    /// golden に書く短い名前（JSON のファイル名から拡張子を除いたもの）。
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Atok => "atok",
+            Self::GjiMsime => "msime",
+            Self::MsimeNative => "msime-native",
+        }
+    }
 }
 
 /// 入力中の段階（擬似 IME の真値）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TrueStage {
     None,
     Typing,
@@ -129,6 +149,15 @@ pub enum TrueStage {
 }
 
 impl TrueStage {
+    /// 全段階（格子の状態名を読み戻すときに使う）。
+    pub const ALL: [Self; 5] = [
+        Self::None,
+        Self::Typing,
+        Self::ConvSpace,
+        Self::ConvHenkan,
+        Self::ConvMuhenkan,
+    ];
+
     const fn grid_name(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -145,7 +174,7 @@ pub const CONV_HIRAGANA: u32 = 0x19;
 pub const CONV_ALNUM: u32 = 0x10;
 
 /// 擬似 IME の真の状態。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TrueState {
     pub open: bool,
     /// conv の生値（`CONV_HIRAGANA` / `CONV_ALNUM`）。閉でも保持する（生データの `OFF/0x19`）。
@@ -178,7 +207,8 @@ enum Disp {
 }
 
 /// 生データのキー名（`atok.json` のキー `state|key` の `key` 部分）。表に無いキーは `None`。
-const fn grid_key_name(vk: u16) -> Option<&'static str> {
+#[must_use]
+pub const fn grid_key_name(vk: u16) -> Option<&'static str> {
     Some(match vk {
         0x08 => "bs",
         0xF0 => "eisu",
@@ -197,23 +227,258 @@ const fn grid_key_name(vk: u16) -> Option<&'static str> {
     })
 }
 
-/// 格子のセル名（`on-c19-typing|esc` 形式）。閉のときの段階は常に `none`。
-fn cell_name(before: TrueState, key: &str) -> String {
+/// 格子の状態名（`on-c19-typing`・`on-c1B-none` 形式）。閉のときの段階は常に `none`。
+///
+/// conv の 16 進は**大文字**（格子の JSON が `on-c1B-none` と書く）。2026-10-22 まで小文字（`{:02x}`）で引いていたため、
+/// MS-IME の 2 格子で conv=0x1B の実測セル（`msime.json`・`msime-native.json` の `c1B` の状態、各 13 キー）が全て
+/// 「実測なし」になり、`knows` が偽を返してランダム探索が黙って飛ばしていた（`pseudo_ime_exhaustive.rs` の到達性の
+/// 全列挙で発見。ADR-277）。
+#[must_use]
+pub fn state_name(s: TrueState) -> String {
     format!(
-        "{}-c{:02x}-{}|{key}",
-        if before.open { "on" } else { "off" },
-        before.conv,
-        if before.open {
-            before.stage.grid_name()
-        } else {
-            "none"
-        },
+        "{}-c{:02X}-{}",
+        if s.open { "on" } else { "off" },
+        s.conv,
+        if s.open { s.stage.grid_name() } else { "none" },
     )
 }
 
+/// 格子のセル名（`on-c19-typing|esc` 形式）。
+fn cell_name(before: TrueState, key: &str) -> String {
+    format!("{}|{key}", state_name(before))
+}
+
+/// 格子の状態名を読み戻す（`state_name` の逆）。擬似 IME が表せない状態（`on-c19-typing-prev-esc` のように
+/// 直前のキーで分けた状態）は `None`。
+#[must_use]
+pub fn parse_state_name(name: &str) -> Option<TrueState> {
+    let (open, rest) = if let Some(r) = name.strip_prefix("on-c") {
+        (true, r)
+    } else {
+        (false, name.strip_prefix("off-c")?)
+    };
+    let (conv, stage) = rest.split_once('-')?;
+    let conv = u32::from_str_radix(conv, 16).ok()?;
+    let stage = TrueStage::ALL
+        .into_iter()
+        .find(|s| s.grid_name() == stage)?;
+    Some(TrueState { open, conv, stage })
+}
+
 /// 文字を入力するキー（英数字・記号）か（予測器の `is_char_vk` と同じ範囲）。
-const fn is_char_vk(vk: u16) -> bool {
+#[must_use]
+pub const fn is_char_vk(vk: u16) -> bool {
     matches!(vk, 0x30..=0x39 | 0x41..=0x5A | 0xBA..=0xC0 | 0xDB..=0xDF)
+}
+
+// ---------------------------------------------------------------------------
+// 宣言的な遷移表（ADR-277 段階 1）
+// ---------------------------------------------------------------------------
+
+/// 行方が「保持」のときの押下後の段階（**仮定**。生データには段階が無い。モジュール doc 参照）。
+/// 表に無いキーは直前の段階のまま。全列挙・ファズ・閉ループが同じこの表を引く。
+pub const KEPT_STAGE_RULES: &[(u16, TrueStage)] = &[
+    (0x20, TrueStage::ConvSpace),    // Space → 変換中(Space)
+    (0x1C, TrueStage::ConvHenkan),   // 変換 → 変換中(変換)
+    (0x1D, TrueStage::ConvMuhenkan), // 無変換 → 変換中(無変換)
+    (0x1B, TrueStage::Typing),       // Esc → 入力中（BUG-205、run 39092296146 で実測確定）
+];
+
+/// 擬似 IME への入力（全列挙・ファズ・閉ループが共有するアルファベット）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImeInput {
+    /// 物理キー1回の押下（生キーが IME に届いた）。
+    Press(u16),
+    /// awase からの開閉の書き込み（`VK_IME_ON`/`OFF`・`IMC_SETOPENSTATUS` を区別しない単純化）。
+    Write(bool),
+    /// awase の見ていない経路での開閉の変更（言語バーのマウス操作等）。入力中は捨てる。
+    External(bool),
+}
+
+/// 状態遷移に効くクセのスイッチ（観測側のクセ Q3〈読み戻し遅延〉は時刻に依るので `PseudoIme` 側に置く）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuirkSwitches {
+    /// awase からの書き込みを無視する（書き込みが効かないアプリの模擬）。
+    pub writes_blocked: bool,
+    /// クセ Q6: 入力中の OFF 書き込みが閉じず conv だけ半角英数にする（BUG-185、MS-IME）。
+    pub off_ignored_while_composing: bool,
+}
+
+/// 1 回の遷移の結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Transition {
+    /// 遷移先。`write_applied` は `ImeInput::Write` のときだけ `Some`（書き込みが効いたか）。
+    Next {
+        after: TrueState,
+        write_applied: Option<bool>,
+    },
+    /// 生データに実測の無いセル（推測で埋めない）。値は格子のセル名。
+    Unmeasured(String),
+}
+
+/// 到達性の全列挙の結果。
+#[derive(Debug, Clone, Default)]
+pub struct Reachability {
+    /// 開始状態から到達しうる状態（開始状態を含む）。
+    pub states: BTreeSet<TrueState>,
+    /// 到達しうるのに実測の無いセル: 状態名 → キー名の集合。
+    pub holes: BTreeMap<String, BTreeSet<&'static str>>,
+}
+
+/// 擬似 IME の遷移表: 格子（実測）+ `KEPT_STAGE_RULES`（仮定）+ 文字キー・書き込み・外部変更の規則。
+/// 状態を持たない純粋な表で、`step` が唯一の遷移関数。`PseudoIme` もこれを呼ぶだけ。
+#[derive(Debug, Clone)]
+pub struct TransitionTable {
+    grid: Grid,
+    cells: HashMap<String, GridOutcome>,
+}
+
+impl TransitionTable {
+    /// 指定した格子の生データを読む（セルごとに多数派。同数なら文字列順で先）。
+    #[must_use]
+    pub fn load(grid: Grid) -> Self {
+        let path = grid_path(grid.file());
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} が読めない: {e}", path.display()));
+        let raw: HashMap<String, HashMap<String, u32>> = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("{} の JSON が読めない: {e}", path.display()));
+        let mut cells = HashMap::new();
+        for (cell, outcomes) in raw {
+            // 格子での多数派（件数が最大、同数なら文字列順で先）を採る。ATOK の第3版は全セルが1種類。
+            let mut v: Vec<(&String, &u32)> = outcomes.iter().collect();
+            v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            let Some((best, _)) = v.first() else { continue };
+            cells.insert(cell, parse_outcome(best));
+        }
+        Self { grid, cells }
+    }
+
+    #[must_use]
+    pub const fn grid(&self) -> Grid {
+        self.grid
+    }
+
+    /// 生データに実測のある状態名（`state|key` の `state` 部分）すべて。
+    #[must_use]
+    pub fn measured_state_names(&self) -> BTreeSet<String> {
+        self.cells
+            .keys()
+            .filter_map(|c| c.split_once('|').map(|(s, _)| s.to_owned()))
+            .collect()
+    }
+
+    /// 実測のある状態のうち、擬似 IME が表せるもの（全列挙の開始状態）。
+    #[must_use]
+    pub fn measured_states(&self) -> BTreeSet<TrueState> {
+        self.measured_state_names()
+            .iter()
+            .filter_map(|n| parse_state_name(n))
+            .collect()
+    }
+
+    /// 唯一の遷移関数。
+    #[must_use]
+    pub fn step(&self, before: TrueState, input: ImeInput, quirks: QuirkSwitches) -> Transition {
+        match input {
+            ImeInput::Press(vk) => match grid_key_name(vk) {
+                Some(key) => {
+                    let cell = cell_name(before, key);
+                    match self.cells.get(&cell) {
+                        Some(&o) => Transition::Next {
+                            after: TrueState {
+                                open: o.open,
+                                conv: o.conv,
+                                stage: next_stage(before.stage, vk, o),
+                            },
+                            write_applied: None,
+                        },
+                        None => Transition::Unmeasured(cell),
+                    }
+                }
+                None if is_char_vk(vk) && before.open => Transition::Next {
+                    after: TrueState {
+                        stage: TrueStage::Typing,
+                        ..before
+                    },
+                    write_applied: None,
+                },
+                None => Transition::Next {
+                    after: before,
+                    write_applied: None,
+                },
+            },
+            ImeInput::Write(open) => {
+                let after = if quirks.writes_blocked {
+                    before
+                } else if !open
+                    && quirks.off_ignored_while_composing
+                    && before.stage != TrueStage::None
+                {
+                    // クセ Q6: 閉じず conv だけ変わる。入力中の段階も残る。
+                    TrueState {
+                        conv: CONV_ALNUM,
+                        ..before
+                    }
+                } else {
+                    // 開閉だけを変える（ATOK の VK_IME_OFF は入力中を破棄するが、ここでは書き込みの有無だけを見る）。
+                    TrueState {
+                        open,
+                        stage: TrueStage::None,
+                        ..before
+                    }
+                };
+                Transition::Next {
+                    after,
+                    write_applied: Some(!quirks.writes_blocked),
+                }
+            }
+            ImeInput::External(open) => Transition::Next {
+                after: TrueState {
+                    open,
+                    stage: TrueStage::None,
+                    ..before
+                },
+                write_applied: None,
+            },
+        }
+    }
+
+    /// `starts` から `inputs` で到達しうる状態と、到達しうるのに実測の無いセルを全列挙する（幅優先）。
+    #[must_use]
+    pub fn reachable(
+        &self,
+        starts: impl IntoIterator<Item = TrueState>,
+        inputs: &[ImeInput],
+        quirks: QuirkSwitches,
+    ) -> Reachability {
+        let mut r = Reachability::default();
+        let mut queue: VecDeque<TrueState> = VecDeque::new();
+        for s in starts {
+            if r.states.insert(s) {
+                queue.push_back(s);
+            }
+        }
+        while let Some(s) = queue.pop_front() {
+            for &input in inputs {
+                match self.step(s, input, quirks) {
+                    Transition::Next { after, .. } => {
+                        if r.states.insert(after) {
+                            queue.push_back(after);
+                        }
+                    }
+                    Transition::Unmeasured(cell) => {
+                        let ImeInput::Press(vk) = input else {
+                            unreachable!("実測なしは押下だけ")
+                        };
+                        let key = grid_key_name(vk).expect("実測なしは表のキーだけ");
+                        let (state, _) = cell.split_once('|').expect("セル名");
+                        r.holes.entry(state.to_owned()).or_default().insert(key);
+                    }
+                }
+            }
+        }
+        r
+    }
 }
 
 /// 1回の押下の真の結果（検査用）。
@@ -223,13 +488,12 @@ pub struct PressOutcome {
     pub after: TrueState,
 }
 
-/// 擬似 IME。
+/// 擬似 IME（遷移表 + 現在の状態 + 時刻に依るクセ）。
 #[derive(Debug)]
 pub struct PseudoIme {
     state: TrueState,
-    table: HashMap<String, GridOutcome>,
-    /// awase からの書き込み（`VK_IME_ON`/`OFF` 相当）を無視する（書き込みが効かないアプリの模擬）。
-    writes_blocked: bool,
+    table: TransitionTable,
+    quirks: QuirkSwitches,
     /// 受け取った書き込みの記録（`(open, 効いたか)`）。
     pub writes_received: Vec<(bool, bool)>,
     /// 仮想時計（ms）。`Harness::advance_ms` が進める。
@@ -238,8 +502,6 @@ pub struct PseudoIme {
     readback_lag_ms: Option<u64>,
     /// 直近の状態変更の `(時刻ms, 変更前の状態)`。
     last_change: Option<(u64, TrueState)>,
-    /// クセ Q6: 入力中(composition あり)の OFF 書き込みが閉じず conv だけ半角英数になる(MS-IME)。
-    off_ignored_while_composing: bool,
 }
 
 impl PseudoIme {
@@ -256,28 +518,14 @@ impl PseudoIme {
     /// クセ Q6（MS-IME の入力中 OFF 無視）は格子に含まれないので、別途 `set_off_ignored_while_composing` で足す。
     #[must_use]
     pub fn from_grid(grid: Grid, initial: TrueState) -> Self {
-        let path = grid_path(grid.file());
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{} が読めない: {e}", path.display()));
-        let raw: HashMap<String, HashMap<String, u32>> = serde_json::from_str(&text)
-            .unwrap_or_else(|e| panic!("{} の JSON が読めない: {e}", path.display()));
-        let mut table = HashMap::new();
-        for (cell, outcomes) in raw {
-            // 格子での多数派（件数が最大、同数なら文字列順で先）を採る。ATOK の第3版は全セルが1種類。
-            let mut v: Vec<(&String, &u32)> = outcomes.iter().collect();
-            v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-            let Some((best, _)) = v.first() else { continue };
-            table.insert(cell, parse_outcome(best));
-        }
         Self {
             state: initial,
-            table,
-            writes_blocked: false,
+            table: TransitionTable::load(grid),
+            quirks: QuirkSwitches::default(),
             writes_received: Vec::new(),
             clock_ms: 0,
             readback_lag_ms: None,
             last_change: None,
-            off_ignored_while_composing: false,
         }
     }
 
@@ -286,8 +534,14 @@ impl PseudoIme {
         self.state
     }
 
+    /// 遷移表（全列挙が同じ表を使うため）。
+    #[must_use]
+    pub const fn table(&self) -> &TransitionTable {
+        &self.table
+    }
+
     pub fn set_writes_blocked(&mut self, blocked: bool) {
-        self.writes_blocked = blocked;
+        self.quirks.writes_blocked = blocked;
     }
 
     /// 【経緯 2026-10-04】スイッチと単体テスト(下の `q6_*`)はあるが、閉ループのシナリオ(`closed_loop_scenarios.rs`)からはまだ
@@ -296,7 +550,7 @@ impl PseudoIme {
     /// クセ Q6: 入力中の OFF 書き込み(`write_open(false)`)が IME を閉じず、conv だけ半角英数にする(BUG-185、MS-IME)。
     /// 書き込み自体は「受理」される(`write_open` は true を返す)が、開閉は変わらない。入力中でなければ通常どおり閉じる。
     pub fn set_off_ignored_while_composing(&mut self, on: bool) {
-        self.off_ignored_while_composing = on;
+        self.quirks.off_ignored_while_composing = on;
     }
 
     /// 仮想時計を進める（`Harness::advance_ms` から呼ぶ）。
@@ -327,79 +581,58 @@ impl PseudoIme {
         }
     }
 
-    /// 状態を更新し、変わったなら読み戻し遅延の起点を記録する。
-    fn set_state(&mut self, new: TrueState) {
-        if new != self.state {
-            self.last_change = Some((self.clock_ms, self.state));
+    /// 遷移表を 1 回引いて状態を更新する。実測の無いセルは panic（シナリオを実測の範囲に収めること）。
+    fn apply(&mut self, input: ImeInput) -> Option<bool> {
+        match self.table.step(self.state, input, self.quirks) {
+            Transition::Next {
+                after,
+                write_applied,
+            } => {
+                if after != self.state {
+                    self.last_change = Some((self.clock_ms, self.state));
+                }
+                self.state = after;
+                write_applied
+            }
+            Transition::Unmeasured(cell) => panic!(
+                "擬似 IME の真値が無い: `{cell}`（grid-tables/{} に実測が無い状態・キー。\
+                 シナリオを実測のある範囲に収めること）",
+                self.table.grid.file()
+            ),
         }
-        self.state = new;
     }
 
     /// いまの状態から `vk` を押したときの真値が生データにあるか。無ければ `press` は panic する。
     /// ランダムなキー列が、実測のある範囲だけを通るための問い合わせ。
     #[must_use]
     pub fn knows(&self, vk: u16) -> bool {
-        grid_key_name(vk).is_none_or(|key| self.table.contains_key(&cell_name(self.state, key)))
+        !matches!(
+            self.table
+                .step(self.state, ImeInput::Press(vk), self.quirks),
+            Transition::Unmeasured(_)
+        )
     }
 
     /// 物理キー1回の押下（生キーが IME に届いた）。
     pub fn press(&mut self, vk: u16) -> PressOutcome {
         let before = self.state;
-        let after = match grid_key_name(vk) {
-            Some(key) => {
-                let cell = cell_name(before, key);
-                let o = self.table.get(&cell).copied().unwrap_or_else(|| {
-                    panic!(
-                        "擬似 IME の真値が無い: `{cell}`（grid-tables/atok.json に実測が無い状態・キー。\
-                         シナリオを実測のある範囲に収めること）"
-                    )
-                });
-                TrueState {
-                    open: o.open,
-                    conv: o.conv,
-                    stage: next_stage(before.stage, vk, o),
-                }
-            }
-            None if is_char_vk(vk) && before.open => TrueState {
-                stage: TrueStage::Typing,
-                ..before
-            },
-            None => before,
-        };
-        self.set_state(after);
-        PressOutcome { before, after }
+        self.apply(ImeInput::Press(vk));
+        PressOutcome {
+            before,
+            after: self.state,
+        }
     }
 
     /// awase の見ていない経路での開閉の変更（言語バーのマウス操作等）。入力中は捨てる。
     pub fn external_set_open(&mut self, open: bool) {
-        self.set_state(TrueState {
-            open,
-            stage: TrueStage::None,
-            ..self.state
-        });
+        self.apply(ImeInput::External(open));
     }
 
     /// awase からの開閉の書き込み。効いたら `true`。
     pub fn write_open(&mut self, open: bool) -> bool {
-        let applied = !self.writes_blocked;
-        if applied
-            && !open
-            && self.off_ignored_while_composing
-            && self.state.stage != TrueStage::None
-        {
-            // クセ Q6: 閉じず conv だけ変わる。入力中の段階も残る。
-            self.set_state(TrueState {
-                conv: CONV_ALNUM,
-                ..self.state
-            });
-        } else if applied {
-            // 開閉だけを変える（ATOK の VK_IME_OFF は入力中を破棄するが、ここでは書き込みの有無だけを見る）。
-            self.set_state(TrueState {
-                open,
-                stage: TrueStage::None,
-                ..self.state
-            });
-        }
+        let applied = self
+            .apply(ImeInput::Write(open))
+            .expect("書き込みは効いたかを返す");
         self.writes_received.push((open, applied));
         applied
     }
@@ -433,20 +666,17 @@ fn parse_outcome(s: &str) -> GridOutcome {
     GridOutcome { open, conv, disp }
 }
 
-/// 押下後の段階（モジュール doc の仮定）。
-const fn next_stage(prev: TrueStage, vk: u16, o: GridOutcome) -> TrueStage {
+/// 押下後の段階（モジュール doc の仮定。保持のときは `KEPT_STAGE_RULES` を引く）。
+fn next_stage(prev: TrueStage, vk: u16, o: GridOutcome) -> TrueStage {
     if !o.open {
         return TrueStage::None;
     }
     match o.disp {
         Disp::None | Disp::Discarded | Disp::Committed => TrueStage::None,
-        Disp::Kept => match vk {
-            0x20 => TrueStage::ConvSpace,
-            0x1C => TrueStage::ConvHenkan,
-            0x1D => TrueStage::ConvMuhenkan,
-            0x1B => TrueStage::Typing,
-            _ => prev,
-        },
+        Disp::Kept => KEPT_STAGE_RULES
+            .iter()
+            .find(|(k, _)| *k == vk)
+            .map_or(prev, |(_, s)| *s),
     }
 }
 
@@ -476,6 +706,38 @@ mod tests {
         native.press(0xF0);
         assert!(native.state().open);
         assert_eq!(native.state().conv, CONV_HIRAGANA);
+    }
+
+    /// 状態名は格子の JSON と同じ大文字の 16 進で、読み戻せる（`c1B` を小文字で引いて全セルを取りこぼした退行の防止）。
+    #[test]
+    fn state_name_matches_grid_spelling_and_round_trips() {
+        let s = TrueState {
+            open: true,
+            conv: 0x1B,
+            stage: TrueStage::ConvMuhenkan,
+        };
+        assert_eq!(state_name(s), "on-c1B-conv-muhenkan");
+        assert_eq!(parse_state_name("on-c1B-conv-muhenkan"), Some(s));
+        assert_eq!(parse_state_name("on-c19-typing-prev-esc"), None);
+        let msime = TransitionTable::load(Grid::GjiMsime);
+        assert!(
+            msime.measured_states().contains(&TrueState {
+                open: true,
+                conv: 0x1B,
+                stage: TrueStage::None,
+            }),
+            "msime.json の on-c1B-none を擬似 IME の状態として読める"
+        );
+        let mut ime = PseudoIme::from_grid(
+            Grid::GjiMsime,
+            TrueState {
+                open: true,
+                conv: 0x1B,
+                stage: TrueStage::None,
+            },
+        );
+        assert!(ime.knows(0x20), "on-c1B-none|space は実測あり");
+        ime.press(0x20);
     }
 
     #[test]

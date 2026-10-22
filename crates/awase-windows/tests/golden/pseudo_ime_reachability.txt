@@ -1,0 +1,20 @@
+# 擬似 IME の到達性（ADR-277）。自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive
+[atok] reachable=12 holes=26
+hole on-c10-conv-muhenkan: bs eisu enter esc hankaku-zenkaku henkan hiragana ime-off ime-on kanji katakana muhenkan space
+hole on-c19-conv-muhenkan: bs eisu enter esc hankaku-zenkaku henkan hiragana ime-off ime-on kanji katakana muhenkan space
+unreached on-c19-typing-prev-esc
+[msime] reachable=24 holes=13
+hole off-c10-none: bs eisu enter esc hankaku-zenkaku henkan hiragana ime-off ime-on kanji katakana muhenkan space
+unreached on-c19-typing-prev-esc
+unreached on-c19-typing-prev-hiragana
+[msime-native] reachable=24 holes=89
+hole on-c10-conv-henkan: bs eisu enter esc hankaku-zenkaku henkan hiragana ime-off ime-on kanji katakana muhenkan space
+hole on-c10-conv-muhenkan: bs eisu enter esc hankaku-zenkaku henkan hiragana ime-off ime-on kanji katakana muhenkan space
+hole on-c10-conv-space: bs eisu enter esc hankaku-zenkaku henkan hiragana ime-off ime-on kanji katakana muhenkan space
+hole on-c10-none: bs eisu enter esc hankaku-zenkaku henkan hiragana ime-off ime-on kanji katakana muhenkan space
+hole on-c10-typing: bs eisu enter esc hankaku-zenkaku henkan hiragana ime-off ime-on kanji katakana muhenkan space
+hole on-c13-conv-henkan: eisu henkan hiragana ime-off ime-on kanji katakana muhenkan space
+hole on-c13-conv-muhenkan: eisu hankaku-zenkaku henkan hiragana ime-off ime-on kanji katakana muhenkan space
+hole on-c13-conv-space: eisu hiragana ime-off ime-on space
+unreached on-c19-typing-prev-esc
+unreached on-c19-typing-prev-hiragana
