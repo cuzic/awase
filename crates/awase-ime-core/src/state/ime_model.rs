@@ -990,6 +990,11 @@ impl ImeModel {
                 // FocusChanged 側の責務のためここでは触らない（ADR-106 決定3）。
                 self.observations.update_focus_window(hwnd);
             }
+            ImeEvent::AppProfileChanged { profile } => {
+                // ECRS DD3-01: 殻の窓プロファイルが同じフォーカス中に変わった。`app_policy` だけを入れ直す
+                // （belief・観測・fence・`last_intent` は書かない。`FocusChanged` が送られない経路の追随専用）。
+                self.app_policy = AppImePolicy::from_profile(profile);
+            }
             ImeEvent::InitialFocusScopeEstablished {
                 to,
                 profile,
@@ -1403,6 +1408,42 @@ mod tests {
         model.observations.update_drift(false, true, now);
         model
     }
+
+    /// ECRS DD3-01: `AppProfileChanged` は `app_policy` **だけ**を入れ直し、belief・観測・fence・`last_intent` など
+    /// 他の一切のフィールドに触れない。モデル全体の `Debug` 表現を、`app_policy` を目的の値にそろえた比較用モデルと照合する
+    /// （フィールドが増えても書き漏れで見逃さない）。全プロファイルの組（5×5）で試す。
+    #[test]
+    fn app_profile_changed_touches_only_the_app_policy() {
+        let now = Instant::now();
+        for from in ALL_PROFILES_FOR_TEST {
+            for to in ALL_PROFILES_FOR_TEST {
+                let mut model = fully_populated_model(now);
+                model.app_policy = AppImePolicy::from_profile(from);
+                model.reduce(&envelope(1, ImeEvent::AppProfileChanged { profile: to }));
+                assert_eq!(
+                    model.app_policy,
+                    AppImePolicy::from_profile(to),
+                    "{from:?} → {to:?}: app_policy が live の profile に追随する"
+                );
+                // `app_policy` を除いた全体が変わらないことを、`app_policy` を同じ値にそろえて Debug で比べる。
+                let mut reference = fully_populated_model(now);
+                reference.app_policy = AppImePolicy::from_profile(to);
+                assert_eq!(
+                    format!("{model:?}"),
+                    format!("{reference:?}"),
+                    "{from:?} → {to:?}: AppProfileChanged は app_policy 以外を書き換えてはならない"
+                );
+            }
+        }
+    }
+
+    const ALL_PROFILES_FOR_TEST: [ImePolicyProfile; 5] = [
+        ImePolicyProfile::ImmCross,
+        ImePolicyProfile::Imm32Unavailable,
+        ImePolicyProfile::TsfNative,
+        ImePolicyProfile::Plain,
+        ImePolicyProfile::Unknown,
+    ];
 
     /// BUG-102・114・148 / ADR-102 決定3-b / ADR-232 D1: `InitialFocusScopeEstablished` は
     /// `app_policy`・`current_focus`・観測の fence の 3 つ**以外の一切のフィールドに触れない**。

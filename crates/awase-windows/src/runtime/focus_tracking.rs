@@ -472,14 +472,28 @@ impl Runtime {
         prev_hwnd: crate::state::ime_event::HwndId,
         new_hwnd: crate::state::ime_event::HwndId,
     ) {
-        if is_bootstrap || process_changed || new_hwnd == prev_hwnd {
+        if is_bootstrap || process_changed {
             return;
         }
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        self.platform_state.ime.dispatch_event(
-            crate::state::ime_event::ImeEvent::FocusHwndUpdated { hwnd: new_hwnd },
-            tick_ms,
-        );
+        if new_hwnd != prev_hwnd {
+            self.platform_state.ime.dispatch_event(
+                crate::state::ime_event::ImeEvent::FocusHwndUpdated { hwnd: new_hwnd },
+                tick_ms,
+            );
+        }
+        // ECRS DD3-01: 同じプロセスの中でクラスが変わった・学習で降格された、など `FocusChanged` が送られない
+        // 経路でも、核の `app_policy` を殻の live の profile に追随させる（ずれると drift の上限が効かない）。
+        let live =
+            crate::state::ime_event::ImePolicyProfile::from(self.platform.current_app_profile());
+        if self.platform_state.ime.model().app_policy
+            != crate::state::app_ime_policy::AppImePolicy::from_profile(live)
+        {
+            self.platform_state.ime.dispatch_event(
+                crate::state::ime_event::ImeEvent::AppProfileChanged { profile: live },
+                tick_ms,
+            );
+        }
     }
 
     /// `config.app_overrides.disable_apps` への出入りを検出し、フックへ伝達する

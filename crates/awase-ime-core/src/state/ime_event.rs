@@ -476,6 +476,16 @@ pub enum ImeEvent {
     /// （code review 2026-08-26 で発見された退行）。
     FocusHwndUpdated { hwnd: HwndId },
 
+    /// 同じフォーカス中に、殻が持つ窓の IME プロファイルが変わった（ECRS DD3-01）。
+    ///
+    /// `FocusChanged`(プロセス変更のときだけ送られる)は `app_policy` を入れ直すが、同じプロセスの中でクラスが変わる窓
+    /// (Explorer 本体と XAML ホストなど)や、学習による降格では送られない。殻の `app_profile` だけが変わって核の
+    /// `app_policy` が古いまま残ると、drift correction が「読める(Read)」前提と「読めない」live の facts を並べて、再送の
+    /// 上限が効かなくなる。このイベントは `app_policy` **だけ**を入れ直す(belief・観測・fence・`last_intent` には触れない)。
+    /// dispatch 元は `runtime/focus_tracking.rs::notify_focus_hwnd_updated_if_needed` の 1 か所で、bootstrap と
+    /// プロセス変更(`FocusChanged` が入れる)のときは送らない。
+    AppProfileChanged { profile: ImePolicyProfile },
+
     /// 起動直後（bootstrap）に確立した最初のフォーカススコープの同一性
     /// （`app_policy`・`current_focus`・観測の fence）を入れる（ADR-232 D1）。
     /// `establish_initial_focus_scope` からのみ dispatch される。
