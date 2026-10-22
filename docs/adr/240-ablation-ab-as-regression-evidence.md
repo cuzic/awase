@@ -226,7 +226,7 @@ PR の必須チェックにはしない。nofix 構成を足す・変える PR �
 
 | 内容 | 撤去・変更の対象 | 検証(CI) | 取りやめ条件 |
 |---|---|---|---|
-| a3 を消す | `ablations/a3-no-eisu-suppress.sh`、`run_experiments.sh:34` の E3 行。`results/E3.txt`・`results/SUMMARY.md` は過去の結果なので残す | `git grep -n a3-no-eisu -- .github tools docs .claude ':!tools/e2e/ime_key_matrix/results' ':!docs/adr/240-*'` が 0 件 | なし |
+| a3 を消す | `ablations/a3-no-eisu-suppress.sh`、`run_experiments.sh:34` の E3 行。`results/E3.txt`・`results/SUMMARY.md` は過去の結果で、作業ツリーからは撤去済み(`git show 675be51a:tools/e2e/ime_key_matrix/results/E3.txt`) | `git grep -n a3-no-eisu -- .github tools docs .claude ':!tools/e2e/ime_key_matrix/results' ':!docs/adr/240-*'` が 0 件 | なし |
 | a7 と構成を消す | `ablations/a7-no-follow.sh`、`e2e-ime.yml:170` の `atok-resync-nofollow`、`observe_grandfathered.txt:7`、`tools/e2e/ime_key_matrix/README.md:62` の a7 の説明、`docs/teardown-verification-guide.md:88` の例(`bug170-*` に差し替え)。`docs/adr/187-*.md:123` は履歴なので残す | `e2e-ime-smoke.yml` の `invariants-unit`(`test_e2e_plan.py` の `test_grandfathered_only_shrinks`〈`:51-56`〉を含む)と、e2e-ime の plan ジョブが通る | 所有者が修理を選んだら(所有者に聞く 2)、消さずに置換元を直す |
 | a8 を BUG 番号で改名 | `a8-no-gji-reopen-sync.sh` → `bug170-no-gji-reopen-sync.sh`(先頭に「直接変える量」の 1 行)、`e2e-ime.yml:430` の参照 | `ci/e2e-scenarios` へ push して、`sc-reopen-tsf-gji-gap600-nofix` が従来どおり OK | `ablations/**` を変えるので、baseline を含む全構成のビルドのキャッシュが 1 回外れる(背景 5)。それ以外の影響が出たら改名を戻す |
 | `teardown-verification-guide.md` | `:104` の「`a1`〜`a7`」の古い行(a1・a2 は削除済み、a3・a7 はこの段階で削除)。mutator の節(`:81-89`)に D1a の要点(3 行以内)と命名(D3)を足す | docs のみ | なし |

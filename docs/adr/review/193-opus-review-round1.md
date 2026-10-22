@@ -66,7 +66,7 @@ awase が注入キーを物理キーとして扱うための目印（`hook::TEST
 
 **失敗シナリオ**: 「作るかどうか」を go/no-go にしている前提が崩れており、スパイク1（RichEdit を
 作ってフォーカスする）は**すでに何十回も実行済みの操作**。ログは
-`tools/e2e/ime_key_matrix/results/` と `out/` に残っている。時間をかけて同じものを作り直す。
+`tools/e2e/ime_key_matrix/results/` と `out/` に残っていた(現在は作業ツリーから撤去。`git show 675be51a:tools/e2e/ime_key_matrix/results/...` で読める)。時間をかけて同じものを作り直す。
 
 **修正案**: 決定1を「既存 ROUND2（RichEdit）の実行ログから `AppKind`/`AppImeProfile` が何に
 なっているかを読み取り、記録する」に差し替える。作る作らないの判断は不要。

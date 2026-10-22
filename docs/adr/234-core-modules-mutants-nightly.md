@@ -39,8 +39,8 @@ FCIS(ADR-229)で `state/` に切り出した純粋関数は、`CORE_MODULES` と
 | `mutants` ジョブ | `.github/workflows/ci.yml:528` | ルート `awase` crate(`.cargo/mutants.toml`) | `if: github.event_name == 'workflow_dispatch'` | ubuntu-latest、4 shard |
 | `mutants-awase-windows` ジョブ | `ci.yml:564-605` | awase-windows の許可リスト 29 ファイル(`.cargo/mutants-awase-windows.toml`) | 同上 | windows-latest、8 shard、`timeout-minutes: 90` |
 | `mutants-windows.yml` | 単独 | awase-windows 全体(`--jobs 8`) | workflow_dispatch のみ | self-hosted(GCP Spot) |
-| `mutants-actuation-confluence-windows.yml` | 単独 | 合流点 5 関数(13 mutants) | workflow_dispatch のみ | windows-latest。冒頭に「棚卸しが終わったら削除してよい」 |
-| `mutants-scope-investigation.yml` | 単独 | `.cargo/mutants-bug158-scope.toml`(ADR-194 の再挑戦条件の検証用 4 ファイル) | workflow_dispatch のみ | windows-latest。冒頭に「検証が終わったら削除してよい」 |
+| `mutants-actuation-confluence-windows.yml` | 単独 | 合流点 5 関数(13 mutants) | workflow_dispatch のみ | 撤去済み(0722368d)。windows-latest。冒頭に「棚卸しが終わったら削除してよい」 |
+| `mutants-scope-investigation.yml` | 単独 | `.cargo/mutants-bug158-scope.toml`(ADR-194 の再挑戦条件の検証用 4 ファイル) | workflow_dispatch のみ | 撤去済み(0722368d、専用設定も)。windows-latest。冒頭に「検証が終わったら削除してよい」 |
 | `mise run mutants` | `mise.toml:30` | ルート crate | 手動 | ローカル |
 
 - PR で `mutants`・`mutants-awase-windows` が skipping になるのは、上の `if` が workflow_dispatch 以外を除いているため。設計どおりで、`ci.yml:525-527` に「フル実行は数十分かかるため、通常の push/PR ゲートには含めない」とある。確認: `gh pr view 528 -R cuzic/awase --json statusCheckRollup --jq '.statusCheckRollup[]|select(.name|test("mutants"))|[.name,.conclusion]|@tsv'` → 2 ジョブとも `SKIPPED`。

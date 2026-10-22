@@ -27,7 +27,7 @@ CIのrunは`https://github.com/cuzic/awase/actions/runs/<番号>`。
 - **A'**: awaseを完全にバイパス（`disable_apps`にスパイクを入れる）。IME単体の効果を見る。
 - **Ah/Bh**: awaseをスパイクの初期化の後に起動する（`[imm-learning]`による誤降格を避ける狙い）。
 
-出典: `origin/spike/ime-effect-learning`の`tools/e2e/ime_key_matrix/results/elw2`〜`elw16`（ローカルの実機で取得。elw16は途中で中止）。
+出典: `origin/spike/ime-effect-learning`の`tools/e2e/ime_key_matrix/results/elw2`〜`elw16`（作業ツリーからは撤去済み。`git show 675be51a:tools/e2e/ime_key_matrix/results/<dir>/...` で読める。ローカルの実機で取得。elw16は途中で中止）。
 
 ### 主な結果（ADR-191「実測」節が詳細）
 - IME単体（A'）の一段の効果は、Mozcの公開キーマップからほぼ予測でき、静的モデルの一段予測は約98.5%（保持セル200件で197件、トグルキー52/52）。

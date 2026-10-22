@@ -256,15 +256,16 @@ jobs:
             # --fast(押下後の待ち 2300→700ms。+400ms と +1500ms で表が変わらないことを264試行で確認済み) と --speed=2、
             # 探索後に到達不能な試行を外す([GRID-PRUNE])、--grid-adaptive(1パス目は全セル1回、2パス目は前回の表で非決定だったセル+履歴依存+10%の監査標本)、
             # セットアップ不能の連続で打ち切り([GRID-ABORT]→rc=3)。本番シャードは同じプリセットの smoke が成功してから中身を実行する(gate)。
+            # MS-IME 側の cal-fast-smoke-msime・cal-fast-msime-s{1..4} は、2026-09-20〜10-22 の e2e-ime 実行(呼び出し側を含む)で一度も走らなかったため撤去した。
             # cal-fast-val-* は速度の妥当性の比較用: 遅い版 cal-gridk3-atok-s1(--grid-trials=2)と同じ入力で --speed=1/4 を比べる。
             *[cfg(f'cal-fast-smoke-{pre}', 'observe', check='collect', awase='false', runs=1, wait=900, keymap=km,
                   args=f'--grid={sh} --grid-setup=keys --fast --speed=2 --grid-trials=1')
-              for pre, km, sh in (('atok', 1, 's1'), ('msime', 2, 's2'))],
+              for pre, km, sh in (('atok', 1, 's1'),)],
             *[cfg(f'cal-fast-{pre}-{sh}', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=km,
                   gate=f'cal-fast-smoke-{pre}',
                   args=f'--grid={sh} --grid-setup=keys --fast --speed=2 --grid-adaptive '
                        f'--grid-retry-file=@REPO@/tools/e2e/ime_key_matrix/grid-tables/nondet-{pre}.txt')
-              for pre, km in (('atok', 1), ('msime', 2)) for sh in ('s1', 's2', 's3', 's4')],
+              for pre, km in (('atok', 1),) for sh in ('s1', 's2', 's3', 's4')],
             *[cfg(f'cal-fast-val-atok-s1-k{k}', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=1,
                   args=f'--grid=s1 --grid-setup=keys --grid-trials=2 --fast --speed={k}')
               for k in (1, 4)],

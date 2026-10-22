@@ -66,10 +66,9 @@
 - 再利用できそうな既存構成: `cal-notify-atok-s{1..4}`・`cal-notify-msimenative-s{1..4}`
   （`--fast --speed=2 --grid-adaptive --notify`、4シャード、比較的高速）。ただし
   **MS-IMEプリセット用の`--notify`付き高速構成は存在しない**（`cal-fast-msime-s{1..4}`
-  は`--notify`無しの旧構成のみ）。再学習にはこのMS-IME側の高速構成を新設するか、
-  `cal-fast-msime-s{1..4}`をそのまま流用するかの判断が要る。
+  は`--notify`無しの旧構成のみで、一度も走らないまま撤去した）。再学習にはこのMS-IME側の高速構成を新設する必要がある。
 - 想定する配線案（叩き台）: (1) `workflow_dispatch`限定の新ジョブ群（既存の
-  `cal-notify-*`/`cal-fast-msime-*`と同等の構成を複製し3プリセット×シャードで
+  `cal-notify-*`と同等の構成を複製し3プリセット×シャードで
   格子再学習）→ (2) 各シャードの生ログを`grid_learn.py --json`でJSON化する新ステップ
   （現状人手の部分を初めて自動化）→ (3) 生成物を`gen_key_effect_table.py --diff-report`
   で現行コミットと比較 → (4) 決定的セルの値が変わっていれば（終了コード1）ジョブを

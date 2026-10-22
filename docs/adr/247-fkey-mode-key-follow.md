@@ -68,7 +68,7 @@ run 38016104665(commit d98c291d)。`ablations/a9`(観測を外す)・`a10`(予�
 
 ### 読めない窓の確認(Windows Terminal、TsfNative)
 
-案1が必要になる窓(直接観測が届かない窓)を探すため、実 Windows Terminal(`wt_probe.py` 相 F、`.github/workflows/f16-wt-verify.yml`、run 38018835598)で同じ A/B をした。
+案1が必要になる窓(直接観測が届かない窓)を探すため、実 Windows Terminal(`wt_probe.py` 相 F、`.github/workflows/f16-wt-verify.yml`〈撤去済み: `git show e2784f20^:.github/workflows/f16-wt-verify.yml` で戻せる〉、run 38018835598)で同じ A/B をした。
 GJI の CUSTOM 表(F16=半角英数、Hiragana=ひらがな、Enter=Commit)。かな(Engine ON)で `kata`→かな、F16 のあと `kata` が ASCII のまま届くか(各変種 6 回)。
 
 | 変種 | PASS / FAIL / INVALID |
