@@ -55,22 +55,6 @@ pub(crate) fn thumb_forced_open_actions(
     )
 }
 
-/// ADR-206 決定4: 非推奨の `*_solo_tap_ime_action`（親指キーに割り当てられているものだけ）を、
-/// 該当キーの bare コンボ（`keys.ime_on/off/toggle` に単独で書いたのと同じ）としてメモリ上の照合表へ移す。
-/// `SpecialKeyCombos` を組み立てた直後、`thumb_forced_open_actions` を求める**前**に呼ぶこと。
-pub(crate) fn migrate_legacy_solo_tap_actions(
-    general: &awase::config::GeneralConfig,
-    special: &mut SpecialKeyCombos,
-) {
-    let (muhenkan, henkan) = general.legacy_thumb_solo_tap_actions();
-    if let Some(action) = muhenkan {
-        special.set_bare_ime_action_if_absent(crate::vk::VK_NONCONVERT, action);
-    }
-    if let Some(action) = henkan {
-        special.set_bare_ime_action_if_absent(crate::vk::VK_CONVERT, action);
-    }
-}
-
 #[cfg(test)]
 mod adr192_tests {
     use super::*;
@@ -1585,7 +1569,7 @@ impl Runtime {
     }
 
     /// 状態依存キー警告の対象にする親指キーを、設定（抑止・専用Fnキー・bare `keys.ime_*`）から決める。
-    /// bare の開閉（旧 `*_solo_tap_ime_action` の移行分を含む）を持つキーは awase が単独タップを消費する。
+    /// bare の開閉を持つキーは awase が単独タップを消費する。
     /// IME 設定由来の役割は打鍵ごとにしか求まらず静的に判定できないため、ここでは含めない
     /// （役割のあるキーで警告が出ることがあるが、警告は案内であり動作には影響しない）。
     pub(crate) fn set_passthrough_thumb_mode_keys(

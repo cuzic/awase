@@ -32,10 +32,10 @@
 | [016](016-engine-responsibility-separation.md) | Engine 内部の責務分離（5層構造） | 実装済み(一部変更、2026-10-04 確認)。engine.rs・fsm_adapter.rs・nicola_fsm.rs・conf… |
 | [017](017-timing-judge.md) | TimingJudge によるタイミング判定の集中化 | 採用・実装済み(TimingJudge の is_simultaneous/three_key_pairing は src/engine… |
 | [018](018-lessons-from-other-emulators.md) | 他の親指シフトエミュレータからの教訓と対策 | 調査記録(採用済み、2026-10-04)。個別対応項目の現存は網羅確認していない。ping 方式のフック監視は ADR-024 のとお… |
-| [019](019-platform-independence.md) | lib クレートのプラットフォーム非依存化 | 採用・実装済み(KeyClassification/ModifierKey/ImeRelevance による事前分類は現存、2026-1… |
+| [019](019-platform-independence.md) | lib クレートのプラットフォーム非依存化 | 採用・実装済み、Linux・macOS のスタブ crate(awase-linux・awase-macos)は 2026-10-22 … |
 | [020](020-key-lifecycle.md) | KeyLifecycle による Down/Up ペア追跡 | 実装済み(一部撤去、2026-10-04 確認)。KeyLifecycle は src/engine/key_lifecycle.rs … |
 | [021](021-deferred-effect-execution.md) | Effect 遅延実行によるフックタイムアウト防止 | 採用・実装済み(execute_from_hook・WM_EXECUTE_EFFECTS・drain_deferred は runtim… |
-| [022](022-cross-platform-crate-structure.md) | クロスプラットフォームのクレート構造 | 採用・実装済み(awase-windows/linux/macos・timed-fsm 等のクレート構造は現存、2026-10-04 確… |
+| [022](022-cross-platform-crate-structure.md) | クロスプラットフォームのクレート構造 | 採用・実装済み、awase-linux・awase-macos のスタブ crate は 2026-10-22 に撤去(SF-06)。現… |
 | [023](023-adaptive-output-and-kana-bypass.md) | アプリ適応出力とかな入力バイパス | 実装済み(その後変更、2026-10-04 確認)。AppKind は現行 Win32/TsfNative/Uwp で、本 ADR の … |
 | [024](024-modifier-key-passthrough-and-ping-watchdog.md) | 修飾キーの PassThrough 保証と ping ベースフック監視 | 一部実装(一部置換、2026-10-04 確認)。Ctrl/Alt/Win の Engine バイパスは現存。ping ベースのフック監… |
 | [025](025-toml-customization-design.md) | TOML ベースのカスタマイズ設計 | 未実装(提案のまま、2026-10-04 確認)。本文の TOML+CSS 型 [class.*]/[style.*] カスケード設定は… |
@@ -212,7 +212,7 @@
 | [203](203-gji-fsm-follows-belief-open-transitions.md) | GjiFsm を belief の開閉変化に追随させる(BUG-170、OffCold 固着→毎打鍵 per-VK→StaleConfirm→ESC) | 実装済み(2026-09-29)・CI 検証済み(e2e の sc-reopen-*/--require-sync が GjiFsm 同… |
 | [204](204-gji-sync-obligation-cannot-be-silently-dropped.md) | ImeOpenOutcome の処遇の重複を1メソッドへ集約し legacy_gji_sync_obligation を網羅化する最小版(初稿の D2/D3/D4 は取り下げ) | 採択(縮小版)・未実装のまま(v2.0.0 時点、コード確認: ImeOpenOutcome::ALL は存在せず、legacy_gji… |
 | [205](205-observe-external-ime-close-in-imm32-unavailable-windows.md) | Imm32Unavailable(Chrome)で外部注入の IME キーによる close を窓内の 1→0 遷移観測で実状態へ追随する(BUG-172) | 採択・実装済み(PR #377 fd41bf88、v2.0.0 に含まれる)。CI 検証済み(GJI×実 Chrome で追随 10/1… |
-| [206](206-thumb-solo-tap-follows-role-suppress-and-inject.md) | 無変換/変換の単独タップ再設計(役割があれば生キー抑止＋belief に従う明示注入、なければ Suppress/Passthrough。`*_solo_tap_ime_action` 撤去) | 実装済み(PR #376 ほか、v2.0.0 に含まれる)。実機確認は X1 を 2026-09-30 に実施: 既定(Suppress… |
+| [206](206-thumb-solo-tap-follows-role-suppress-and-inject.md) | 無変換/変換の単独タップ再設計(役割があれば生キー抑止＋belief に従う明示注入、なければ Suppress/Passthrough。`*_solo_tap_ime_action` 撤去) | 実装済み(PR #376 ほか、v2.0.0 に含まれる)。決定4(旧設定の読込時移行)は 2026-10-22 に終了(SF-09、旧設定は無視)… |
 | [207](207-keys-ime-detect-default-empty-and-remove-engine-ime-keys.md) | keys.ime_detect.on/off の既定を空に、engine_on/off_ime_key(Engine ON/OFF 時の IME モードキー能動送信)を撤去 | 採択・実装済み(2026-09-29、v2.0.0 に含まれる)。CI/実機での確認(MS-IME ジョブ、フォーカス変更直後の物理 0… |
 | [208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md) | 明示的な IME キーを押すと、内部状態が何であっても最大2回の押下で実 IME が一致する(固着ゼロの保証) | 一部実装(L0・L1・L2・L3a 実装済み。L3 の Chrome〈Imm32Unavailable〉適用は L1+L3a で成立済み… |
 | [209](209-predict-open-effect-from-gji-config-when-not-learned.md) | GJI の MS-IME プリセットでは TSF の窓で変換が IME を開く(モードは閉じる前のまま)。読めない窓の打鍵時予測に「変換で開く」を足し、素通しの変換に Engine を追随させる(ADR-186/191/199/206) | 実装済み(2026-09-30、設定 general.predict_henkan_open_in_unreadable_windows… |

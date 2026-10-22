@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 変更
+
+- **旧設定 `muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action` は無視されるようになりました。** これまでは読み込み時に `keys.ime_on` / `ime_off` / `ime_toggle` 相当へ移していましたが、この移行を終えました。`config.toml` に残っていると起動時に通知が出ます（設定画面で保存するとその行は消えます）。無変換／変換の単独タップで IME を開閉するには、`keys.ime_on` / `keys.ime_off` に「無変換」「変換」を単独で書いてください（例: `ime_on = ["変換"]`、`ime_off = ["無変換"]`）。
+
 ## [2.2.0] - 2026-10-20
 
 > v2.1.0 のあとの追加と変更・修正です。大きな変更は、**ウィンドウを切り替えた直後の最初の打鍵から日本語入力かどうかを判定する設定（使いたい人だけが選ぶ機能）**、**Mozc と、その派生版 mozc-readable への対応**、**左 Shift の単独タップによる半角英数トグルを Google 日本語入力でも既定で使えるようにしたこと**の 3 つです。

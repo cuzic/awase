@@ -1237,37 +1237,6 @@ impl Output {
     }
 }
 
-impl awase::platform::CompositionOutput for Output {
-    fn send_romaji(&self, romaji: &str) {
-        match self.injection_mode {
-            InjectionMode::Vk => self.send_romaji_batched(romaji),
-            InjectionMode::Tsf => self.send_romaji_as_tsf(romaji),
-        }
-    }
-
-    fn send_kana_char(&self, ch: char) {
-        self.send_char_as_tsf(ch);
-    }
-
-    fn is_composition_warm(&self) -> bool {
-        self.is_composition_warm()
-    }
-
-    fn mark_cold(&self, reason: awase::platform::PlatformColdReason) {
-        use awase::platform::PlatformColdReason;
-        let cold_reason = match reason {
-            PlatformColdReason::FocusChange => ColdReason::FocusChange,
-            PlatformColdReason::ConfirmKey => ColdReason::PassthroughConfirmKey,
-            PlatformColdReason::ImeToggle => ColdReason::SetOpenTrue,
-        };
-        self.mark_composition_cold(cold_reason);
-    }
-
-    fn on_focus_changed(&self) {
-        self.on_focus_changed();
-    }
-}
-
 /// raw TSF literal 検出・回収メソッド群。
 ///
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼び出す。

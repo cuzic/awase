@@ -11,7 +11,7 @@ summary: |-
   belief OFF 側を独自に持ち(ケース2/3改、`explicit_ime_action_target`＋`transport.rs` の M19 例外)、belief ON 側も独自の経路(ケース1)を持つ二重系統になっている。
   本 ADR は「役割(config.toml の bare `keys.ime_*` または IME 設定由来)」を唯一の入力にして二重系統を1本にし、旧設定を読込時に bare `keys.ime_*` 相当へ移して警告する。
 status: |-
-  実装済み(PR #376 ほか、v2.0.0 に含まれる)。実機確認は X1 を 2026-09-30 に実施: 既定(Suppress)で IME OFF の無変換は awase が生キーを再注入して『@』が出る一方向の結果が出た(決定3〔iii〕に進むかは同日時点で所有者判断待ち、その後の決定は本ファイルから確認できず要確認)。Passthrough の役割由来は実機の GJI 設定が対象外で実機未確認。
+  実装済み(PR #376 ほか、v2.0.0 に含まれる)。決定4(旧 `*_solo_tap_ime_action` の読込時移行)は 2026-10-22 に終了(SF-09、所有者判断): 旧設定は値を無視し、読込時に撤去の通知を出して `keys.ime_on`/`keys.ime_off` を案内する(末尾「追補: 決定4の移行の終了」)。実機確認は X1 を 2026-09-30 に実施: 既定(Suppress)で IME OFF の無変換は awase が生キーを再注入して『@』が出る一方向の結果が出た(決定3〔iii〕に進むかは同日時点で所有者判断待ち、その後の決定は本ファイルから確認できず要確認)。Passthrough の役割由来は実機の GJI 設定が対象外で実機未確認。
   旧(2026-10-04 更新前):
   起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。opus round1〜5 で収束(round5=2026-09-29 夕の仕様訂正後。記述3点を反映済み)(round4: 設計変更不要、前提 P3/P4 等の記述3点を反映済み)。固着の定義(所有者)反映済み。コア・Windows・GUI・テスト・CI シナリオを実装済み(PR)。実機 A/B(「@」)と CI e2e は未検証。
 related_adr:
@@ -149,6 +149,8 @@ S3 は「@」抑止の同等性が S1/S2 経路で未検証のため v2.0 では
   根治(剥がすときに `prev_activation` を戻す、またはエンジンに通知する)は別 ADR の候補として残し、本 ADR の範囲外とする。窓は狭く、固着ではない(次の押下で状態が変わる)。
 
 ### 決定4: 旧設定の移行 — 親指キーのときだけ、読込時にメモリ上で S1 相当へ移し、警告する
+
+> **2026-10-22 終了(SF-09)。** 以下の移行は撤去した。旧設定は値を無視する(末尾「追補: 決定4の移行の終了」)。
 
 - `muhenkan/henkan_solo_tap_ime_action = "on"/"off"/"toggle"` が残っていて、そのキーが**親指キーに割り当てられている**config は、`SpecialKeyCombos` を組み立てる箇所(`app/mod.rs:845` の reload 経路と `app/bootstrap.rs:1214` の起動経路。`runtime/mod.rs::apply_config_update` は組み立て済みの値を受け取るだけで、冒頭で `thumb_forced_open_actions(&special_keys)` を求めるので、**その前=組み立ての時点**で足す)で
   該当キーの bare コンボを `ime_on`/`ime_off`/`ime_toggle` に**メモリ上でだけ**追加する(config.toml は書き換えない)。同じキーに既存の bare が**あれば旧設定は移行しない**(ユーザーが明示した `keys.ime_*` を優先し、黙って上書きしない。2026-09-29 コードレビュー指摘1で「旧 S3 が勝つ」から変更。警告は「無視されます」)。GUI の置き換えは旧設定を `None` に戻す(undo で復元)。
@@ -297,3 +299,16 @@ IME を状態の正とする ADR-191 の方針とも逆向き。
   `*_solo_tap_always_suppress=false` だけ書くと「idle だけ素通し、composing 中は Suppress」になる(`ModeKeyConfig::from_legacy_bools`)。
   この 3 状態目を 2 択に統合するかは、MS-IME で変換中に無変換を素通しして誤爆しないかの実測が先(未実施)。
 - Windows 実機での設定画面の見た目とボタンの動作は未確認(CI は windows-settings のビルド・テストまで)。
+
+## 追補: 決定4の移行の終了(2026-10-22、SF-09)
+
+所有者判断(2026-10-22): 決定4の移行を終える。旧 `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action` は**無視される**。
+
+- 撤去したもの: `GeneralConfig` の 2 項目と `ShadowImeActionConfig`、`GeneralConfig::legacy_thumb_solo_tap_actions`、
+  `AppConfig::validate_legacy_solo_tap_action`、`runtime/mod.rs::migrate_legacy_solo_tap_actions`(起動 `app/bootstrap.rs`・リロード `app/mod.rs` の 2 呼び出し)、
+  `SpecialKeyCombos::set_bare_ime_action_if_absent`、設定画面の ADR-192 置き換えの snapshot/undo の旧項目、関連テスト。
+- 読み込み: 2 項目は `config_load_diag::REMOVED_WITH_NOTICE`(ADR-207 の表)に載せた。残っていても読み込みエラーにならず、
+  読込のたびに通知を 1 件ずつ出す(`validate` の警告。`keys.ime_on`/`keys.ime_off` に「無変換」「変換」を単独で書くよう案内)。設定画面で保存すると行は消える(`config_save.rs` が同じ表で消す)。
+- 挙動の変化: 親指キーの無変換/変換に旧設定だけを書いていた利用者は、bare の開閉が無くなるので、単独タップが
+  `ModeKeyConfig`(Suppress/Passthrough)と IME 設定由来の役割(ADR-199 決定16)に従う。旧設定と同じ動作が欲しい場合は `keys.ime_*` に bare で書く。
+- 回帰テスト: `config.rs::test_removed_solo_tap_ime_action_is_ignored_with_notice`(無視されること・`keys.ime_off` へ移さないこと・通知 1 件ずつ)。

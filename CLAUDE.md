@@ -116,8 +116,6 @@ crates/awase-scancode/        OS-independent core: Scancode Map (key-swap) decis
                               awase-windows re-exports `awase_windows::scancode_*`.
 crates/awase-bug-report/      OS-independent core: bug-report payload build / size shrink / retry plan / gzip (ADR-274 stage 1):
                               bug_report. The learned-table file read stays in the shell (`key_effect_io`).
-crates/awase-linux/           Linux platform stub
-crates/awase-macos/           macOS platform stub
 crates/win32-async/           Async executor + blocking-API timeout isolation (run_with_timeout)
 crates/win32-worker/          Worker-thread primitives used by win32-async
 crates/awase-settings/        Settings GUI (eframe/egui) — separate binary, awase-settings.exe

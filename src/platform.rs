@@ -1,49 +1,8 @@
-//! Platform abstraction traits and types shared by the platform crates
-//! (composition output, platform runtime, IME actuation outcomes).
-
-// ─── CompositionOutput Trait ─────────────────────────────────
-
-/// composition context が cold になる理由（プラットフォーム非依存）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlatformColdReason {
-    /// フォーカス変更
-    FocusChange,
-    /// Enter/Space/Escape（composition 確定・キャンセル）
-    ConfirmKey,
-    /// IME ON/OFF 操作
-    ImeToggle,
-}
-
-/// IME composition context を管理する抽象インターフェース。
-///
-/// 各プラットフォーム（Windows TSF / macOS InputMethod / Linux IBus 等）が
-/// このトレイトを実装することで、awase エンジンが OS に依存せず
-/// composition 状態を操作できる。
-///
-/// # cold になるタイミング
-/// awase エンジンは `mark_cold(reason)` で cold 化を通知する:
-/// - `PlatformColdReason::FocusChange`: フォーカス変更
-/// - `PlatformColdReason::ConfirmKey`: Enter/Space/Escape
-/// - `PlatformColdReason::ImeToggle`: IME ON/OFF 操作
-///
-/// Windows TSF 実装は各 reason を `ColdReason::*` にマップする。
-/// macOS/Linux 実装は自身のセマンティクスに従って実装する。
-pub trait CompositionOutput {
-    /// ローマ字文字列を composition 経由で送信する。
-    fn send_romaji(&self, romaji: &str);
-
-    /// かな文字を composition 経由で送信する。
-    fn send_kana_char(&self, ch: char);
-
-    /// composition context が warm（受け付け可能）かどうかを返す。
-    fn is_composition_warm(&self) -> bool;
-
-    /// composition context を cold 化する。
-    fn mark_cold(&self, reason: PlatformColdReason);
-
-    /// フォーカス変更を通知する（epoch インクリメント）。
-    fn on_focus_changed(&self);
-}
+//! Platform abstraction traits and types used by the platform crate
+//! (platform runtime, TSF composition hooks, IME actuation outcomes).
+//!
+//! ADR-030 の `CompositionOutput` トレイト（呼び出し元ゼロ）と、Linux/macOS スタブ
+//! crate は 2026-10-22 に撤去した（SF-06・MB-07）。実装は Windows（`awase-windows`）だけ。
 
 // ─── PlatformRuntime Trait ──────────────────────────────────
 
@@ -114,17 +73,10 @@ impl ImeOpenOutcome {
     }
 }
 
-/// フォアグラウンドウィンドウ情報（プラットフォーム非依存）
-#[derive(Debug, Clone)]
-pub struct ForegroundInfo {
-    pub process_id: u32,
-    pub class_name: String,
-}
-
 /// プラットフォーム固有の副作用実行インターフェース。
 ///
 /// `DecisionExecutor` がこのトレイトを通じて OS 操作を行う。
-/// Windows/macOS/Linux でそれぞれ実装を提供する。
+/// 実装は Windows（`awase-windows` の `WindowsPlatform`）だけ。
 pub trait PlatformRuntime {
     // ── キー出力 ──
 
@@ -172,18 +124,11 @@ pub trait PlatformRuntime {
 ///
 /// `PlatformRuntime` のコア（キー出力・タイマー・トレイ・IME open/close 制御）とは分離し、
 /// TSF composition warmup 特有の判定・フック（warm/cold 判定、passthrough / reinject 時の
-/// composition 状態更新等）をまとめる。macOS/Linux 実装者は `PlatformRuntime` のコアだけを
-/// 実装すればよく、本トレイトは全メソッドがデフォルト実装（no-op / `false` / `None` /
-/// `u64::MAX`）を持つため、composition 機構が不要なら実装を省略できる。
+/// composition 状態更新等）をまとめる。本トレイトは全メソッドがデフォルト実装（no-op /
+/// `false` / `u64::MAX`）を持つ。
 ///
 /// Windows では `WindowsPlatform` が本トレイトを override し、`tsf` サブシステムに委譲する。
 pub trait TsfComposition {
-    /// composition 出力コンポーネントへの参照を返す。
-    /// `None` の場合は composition 不要（macOS のシンプルモード等）。
-    fn composition_output(&self) -> Option<&dyn CompositionOutput> {
-        None
-    }
-
     /// 最後のキー出力からの経過時間 (ms) を返す。一度も送信していなければ `u64::MAX`。
     fn output_in_flight_ms(&self) -> u64 {
         u64::MAX
@@ -226,15 +171,5 @@ mod tests {
         assert!(!ImeOpenOutcome::Failed.wrote_open_state());
         assert!(!ImeOpenOutcome::UnsafeToToggle.wrote_open_state());
         assert!(!ImeOpenOutcome::NotOwned.wrote_open_state());
-    }
-
-    #[test]
-    fn foreground_info_fields() {
-        let info = ForegroundInfo {
-            process_id: 42,
-            class_name: "Notepad".to_string(),
-        };
-        assert_eq!(info.process_id, 42);
-        assert_eq!(info.class_name, "Notepad");
     }
 }

@@ -110,6 +110,10 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>変更</h3>
+<ul>
+<li><strong>旧設定 <code>muhenkan_solo_tap_ime_action</code> / <code>henkan_solo_tap_ime_action</code> は無視されるようになりました。</strong> これまでは読み込み時に <code>keys.ime_on</code> / <code>ime_off</code> / <code>ime_toggle</code> 相当へ移していましたが、この移行を終えました。<code>config.toml</code> に残っていると起動時に通知が出ます（設定画面で保存するとその行は消えます）。無変換／変換の単独タップで IME を開閉するには、<code>keys.ime_on</code> / <code>keys.ime_off</code> に「無変換」「変換」を単独で書いてください（例: <code>ime_on = [&quot;変換&quot;]</code>、<code>ime_off = [&quot;無変換&quot;]</code>）。</li>
+</ul>
 <h2>[2.2.0] - 2026-10-20</h2>
 <blockquote>
 <p>v2.1.0 のあとの追加と変更・修正です。大きな変更は、<strong>ウィンドウを切り替えた直後の最初の打鍵から日本語入力かどうかを判定する設定（使いたい人だけが選ぶ機能）</strong>、<strong>Mozc と、その派生版 mozc-readable への対応</strong>、<strong>左 Shift の単独タップによる半角英数トグルを Google 日本語入力でも既定で使えるようにしたこと</strong>の 3 つです。</p>
