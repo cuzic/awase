@@ -166,7 +166,7 @@ pub struct TsfObservations {
 
     /// アクティブな TIP が Mozc 系で、GJI の I/O が証拠にならないと**確定している**か（`ConverterTarget::NoEvidence`、
     /// ADR-269 D1）。`gji_monitor_ok` が偽なだけ（本物の GJI で変換プロセスが未起動・再接続待ち）とは区別する
-    /// （BUG-208。応答待ち・eager unicode を止めるのは前者のときだけ）。
+    /// （BUG-208。応答待ちを止めるのは前者のときだけ）。
     pub(super) gji_evidence_absent: AtomicBool,
 
     /// GJI candidate が SHOW になってから次の `on_ime_applied` 呼び出しまでの間に

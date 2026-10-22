@@ -1273,7 +1273,7 @@ impl Runtime {
             // ここで belief（IME open observation）を書いてはならない。
             // かつて ce45b82 が「非TSFウィンドウには日本語IMEが存在しない」という誤った
             // 前提で write_focus_probe(false) の偽観測を注入していたが、Edge/Chrome
-            // （Imm32Unavailable, injection=Unicode）は非TSF注入かつ日本語IME有効であり、
+            // （Imm32Unavailable、当時は injection=Unicode）は非TSF注入かつ日本語IME有効であり、
             // 実観測経路を持たないため偽 Low false が most_recent_trusted() 経由で belief を
             // 支配し、フォーカス約500ms後（次ポーリング）に Engine が必ず OFF になった
             // （docs/known-bugs.md BUG-07）。ce45b82 の元バグ（Win+X メニューの1文字

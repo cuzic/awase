@@ -140,9 +140,8 @@ impl TsfSendPipeline {
 }
 
 impl Output {
-    /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
+    /// 表に無い文字を `KEYEVENTF_UNICODE` で直接送信する（`CharResolution::Unicode` のフォールバック）。
     ///
-    /// `unicode_cold_defer` フラグが立っている場合は実送信せず `unicode_cold_deferred` に蓄積する。
     /// 実際の送信処理は `KeyInjector::send_unicode_char` に委譲する。
     pub(super) fn send_unicode_char(&self, ch: char) {
         self.injector.send_unicode_char(ch);

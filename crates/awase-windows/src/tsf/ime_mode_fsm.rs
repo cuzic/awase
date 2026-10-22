@@ -162,7 +162,7 @@ impl ImeModeFsm {
     /// confirm-then-transmit ゲート）が「安全に送信してよい」と誤認し、
     /// フォーカス変更直後の TSF compose sink 未準備な状態へ romaji を
     /// 即送信してしまい先頭文字がリテラル化した（BUG-59）。`state` だけ
-    /// 更新すれば、他の消費者（`mod.rs` の Unicode cold-start 観測ゲート等）
+    /// 更新すれば、他の消費者
     /// にはヒントとして反映されつつ、`is_native_ready()` は
     /// `start_ms_ime_ready_poll`（`on_conversion_mode_read` を呼ぶ真の
     /// confirm-then-transmit ポーリング）が実際に確認するまで `false` のまま
@@ -279,7 +279,7 @@ mod tests {
         assert_eq!(
             fsm.state(),
             ImeModeState::Hiragana,
-            "ヒントでも state は更新される（Unicode cold-start 観測ゲート等の消費者向け）"
+            "ヒントでも state は更新される（state を読む消費者向け）"
         );
         assert!(
             !fsm.is_native_ready(),

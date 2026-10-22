@@ -511,8 +511,7 @@ impl WindowsPlatform {
             match action {
                 GjiAction::StartProbe { probe_id, params } => {
                     tracing::debug!(
-                        "[gji-fsm] StartProbe probe_id={probe_id:?} forces_f2={} long={}",
-                        params.forces_prepend_f2,
+                        "[gji-fsm] StartProbe probe_id={probe_id:?} long={}",
                         params.is_long_cold
                     );
                     self.output.gji_store_probe_id(*probe_id);
@@ -559,7 +558,7 @@ impl WindowsPlatform {
     /// （唯一の読み手 `compute_focus_probe_grace` はフォーカス変更で 0 に戻された値をフォーカス直後の最初の打鍵で読むため、
     /// F2 の latch は読まれない。BUG-06 の「新F2から500ms待機」自体も 2026-07-18 に撤去済み。Opus round2 R2-6）。
     /// - TSF mode: `GjiNativeF2Consumed` を使うことで GjiFsm が Medium/Long cold 状態を維持できる
-    ///   （`GjiCompositionReset` だと Short に降格して Long cold の forces_prepend_f2/is_long_cold が失われる）。
+    ///   （`GjiCompositionReset` だと Short に降格して Long cold の is_long_cold が失われる）。
     /// - 非 TSF・非 warm: cold mark と GjiFsm reset のみ（Chrome/Win32 向け）。
     /// - 非 TSF・warm: 何もしない（BUG-31: warm 中の無関係な物理 IME キーで cold 化すると、直後の無関係な
     ///   タイピングが cold-start 経路に落ちて GJI 候補ウィンドウ可視性のレースで文字が消える）。
@@ -930,8 +929,6 @@ impl WindowsPlatform {
             crate::output::TimerCommand::Kill { id } => self.timer.kill(id),
         }
     }
-
-    // ── Unicode cold-start warmup ヘルパー ────────────────────────────────
 }
 
 impl PlatformRuntime for WindowsPlatform {

@@ -21,7 +21,6 @@
 //! - [`ms_ime_ready_coro`]      — MsImeReadyCoro（MS-IME IMC 確認待ち, StepCoro, BUG-13）
 //! - [`literal_detect_fsm`]     — LiteralDetectCore/Fsm（literal 検出 単一所在地）
 //! - [`mozc_compose_check_fsm`] — MozcComposeCheckFsm（Mozc の最初の送信の後、入力中の文字ができたかを共有メモリで確認。ADR-270）
-//! - [`unicode_cold_warmup_fsm`]— UnicodeColdWarmupFsm（Unicode long-cold deferred）
 //! - [`cold_warmup`]            — ColdWarmupSequence（`run_start` 単一経路、事前待機なし）
 //! - [`warmup_strategy`]        — ImeWarmupStrategy トレイト, MsImeStrategy
 //!
