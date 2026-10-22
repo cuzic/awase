@@ -38,7 +38,8 @@ jobs:
       # 対象で、timed-fsm(38件)とawase-linux(9件)がCIで一度も実行されて
       # いなかった。2026-07-26、実測で `--workspace --lib` が
       # Linux上で937件(awase 702 + awase-windows 188 + timed-fsm 38 +
-      # awase-linux 9)全PASSすることを確認して統合した。awase-windows は
+      # awase-linux 9)全PASSすることを確認して統合した(awase-linux・awase-macos
+      # のスタブ crate は 2026-10-22 に撤去、SF-06)。awase-windows は
       # Windows 専用コードだが、state/ 層のユニットテストと architecture_guard
       # / golden_scenarios / layer_boundary_guard はソースをテキスト走査する
       # 第二防衛線でプラットフォーム非依存なため Linux でも走る。

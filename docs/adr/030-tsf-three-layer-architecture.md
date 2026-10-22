@@ -3,7 +3,7 @@ id: ADR-030
 title: |-
   TSF 状態管理の3層分離アーキテクチャ
 status: |-
-  採用・実装済み(拡張、2026-10-04 確認)。tsf/{observer,probe,output,probe_bridge}.rs は現存し tsf/warmup/ 等が追加された。WM_DRAIN_PROBE_QUEUE・PROBE_KEY_QUEUE・OBS_GJI_CANDIDATE_SHOW_SEQ は現行コードに無い(WM_DRAIN_OUTPUT_QUEUE に統合)。cold-start 待機行列は d4956490 で撤去。旧: 採用済み
+  採用・実装済み(拡張、2026-10-04 確認)。tsf/{observer,probe,output,probe_bridge}.rs は現存し tsf/warmup/ 等が追加された。WM_DRAIN_PROBE_QUEUE・PROBE_KEY_QUEUE・OBS_GJI_CANDIDATE_SHOW_SEQ は現行コードに無い(WM_DRAIN_OUTPUT_QUEUE に統合)。cold-start 待機行列は d4956490 で撤去。OS 拡張点の `CompositionOutput` trait(と `PlatformColdReason`・`TsfComposition::composition_output`)は呼び出し元ゼロのため 2026-10-22 に撤去(MB-07、Linux・macOS スタブの撤去 SF-06 と同時)。旧: 採用済み
 related_adr:
   - "ADR-046"
   - "ADR-047"
@@ -115,6 +115,8 @@ judgement 結果を元に Win32 API を呼び出す副作用層:
   完了後に呼び、退避キーを NICOLA に再配送する
 
 ### OS 拡張点: `CompositionOutput` trait
+
+> 状態更新(2026-10-22): OS 拡張点の `CompositionOutput` trait(と `PlatformColdReason`・`TsfComposition::composition_output`)は呼び出し元ゼロのため 2026-10-22 に撤去(MB-07、Linux・macOS スタブの撤去 SF-06 と同時)。以下は撤去前の記録。
 
 OS 非依存レイヤ（`awase` クレート）に `CompositionOutput` trait を定義し、
 Windows 実装が `tsf::output` を呼び出す形にする:

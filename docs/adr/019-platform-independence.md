@@ -3,7 +3,7 @@ id: ADR-019
 title: |-
   lib クレートのプラットフォーム非依存化
 status: |-
-  採用・実装済み(KeyClassification/ModifierKey/ImeRelevance による事前分類は現存、2026-10-04 確認)。旧: 採用済み
+  採用・実装済み、Linux・macOS のスタブ crate(awase-linux・awase-macos)は 2026-10-22 に撤去(SF-06、所有者判断: 移植の予定は無い)。lib の OS 非依存は Linux 上の単体テストのために維持する。(KeyClassification/ModifierKey/ImeRelevance による事前分類は現存、2026-10-04 確認)。旧: 採用済み
 related_adr: []
 ---
 
@@ -12,6 +12,8 @@ related_adr: []
 ## ステータス
 
 採用
+
+> 状態更新(2026-10-22): Linux・macOS のスタブ crate(awase-linux・awase-macos)は 2026-10-22 に撤去(SF-06、所有者判断: 移植の予定は無い)。lib の OS 非依存は Linux 上の単体テストのために維持する。
 
 ## コンテキスト
 

@@ -1,7 +1,7 @@
 //! 実行ファイルからの相対パスでリソース（`config.toml`, `layout/*.yab` 等）を
 //! 解決する共通ロジック。
 //!
-//! 各バイナリクレート（awase-windows / awase-linux / awase-macos / awase-settings）
+//! 各バイナリクレート（awase-windows / awase-settings。旧 awase-linux / awase-macos スタブは 2026-10-22 撤去）
 //! が同じ問題を別々に解決しようとして、`current_exe().parent()` だけを見る／
 //! `.exists()` チェックを忘れる、といった非対称なロジックが個別実装に紛れ込んで
 //! いた。ここに一本化する。
