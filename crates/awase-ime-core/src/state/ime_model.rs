@@ -24,6 +24,10 @@ use super::probe_admission::{FocusEpoch, FocusFence};
 use super::transition::ImeTransition;
 use std::time::Instant;
 
+/// [reach-probe] DD5-02: A1(`presync_applied_open_on` のフォーカス呼び出し)から A2(`ir_post_focus_change_snapshot`)までの間か。
+pub static PROBE_A1_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImeApplyAcceptance {
     /// 追跡中の apply の完了。composition/warmup 副作用を駆動してよい。
@@ -653,7 +657,17 @@ impl ImeModel {
 
     /// `AppliedImeState` を返す。executor の applied_snapshot 同期用。
     #[must_use]
-    pub const fn applied_state(&self) -> AppliedImeState {
+    #[track_caller]
+    pub fn applied_state(&self) -> AppliedImeState {
+        if PROBE_A1_PENDING.load(std::sync::atomic::Ordering::Relaxed) {
+            let loc = std::panic::Location::caller();
+            tracing::info!(
+                "[reach-probe] DD5-02 applied-read-between-A1-A2 via=applied_state at={}:{} known={}",
+                loc.file(),
+                loc.line(),
+                self.applied.applied_open().is_some()
+            );
+        }
         self.applied
     }
 

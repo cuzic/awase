@@ -665,8 +665,19 @@ impl Runtime {
             skip_imm_query,
             mode_key_pass_live,
             explicit_intent_present: self.platform_state.ime.explicit_intent().is_some(),
-            applied_known: self.platform_state.ime.model().applied
-                != crate::state::ime_model::AppliedImeState::Unknown,
+            applied_known: {
+                if crate::state::ime_model::PROBE_A1_PENDING
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::info!(
+                        "[reach-probe] DD5-02 applied-read-between-A1-A2 via=applied_known known={}",
+                        self.platform_state.ime.model().applied
+                            != crate::state::ime_model::AppliedImeState::Unknown
+                    );
+                }
+                self.platform_state.ime.model().applied
+                    != crate::state::ime_model::AppliedImeState::Unknown
+            },
             shift_conv_guard_active,
             eisu_candidate_pending: self
                 .platform_state
@@ -830,6 +841,14 @@ impl Runtime {
             self.platform_state
                 .ime
                 .record_confirmed(ime_on_now, tick_ms.0);
+        }
+        if crate::state::ime_model::PROBE_A1_PENDING
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            tracing::info!(
+                "[reach-probe] DD5-02 A2 closed effective_open={}",
+                self.platform_state.ime.effective_open()
+            );
         }
         self.platform.mark_composition_cold_focus_change();
         let mode = self.platform.output.injection_mode;

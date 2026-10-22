@@ -1386,6 +1386,7 @@ impl Runtime {
             crate::state::press_ledger::PressSource::Shadow,
         );
         if !claim.writes() {
+            tracing::info!("[reach-probe] DD1-02 ClaimDeclined claim={}", claim.label());
             self.kp_note_shadow_toggle(ShadowToggleRecord {
                 new_open: Some(open),
                 claim: Some(claim.label()),

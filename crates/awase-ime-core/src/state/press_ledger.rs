@@ -153,6 +153,20 @@ impl PressLedger {
     /// 押下 ID が無い（`None`）ときは何も記録しない。違う押下の予約は上書きする（押下 ID は単調増加で、
     /// 古い押下が後から来ても新しい押下の予約を壊さないよう「最後の予約」だけを持つ）。
     pub fn claim(&mut self, press: Option<PressId>, open: bool, source: PressSource) -> PressClaim {
+        let r = self.claim_inner(press, open, source);
+        tracing::info!(
+            "[reach-probe] DD1-02 claim source={source:?} result={}",
+            r.label()
+        );
+        r
+    }
+
+    fn claim_inner(
+        &mut self,
+        press: Option<PressId>,
+        open: bool,
+        source: PressSource,
+    ) -> PressClaim {
         let Some(press) = press else {
             return PressClaim::Unpressed;
         };

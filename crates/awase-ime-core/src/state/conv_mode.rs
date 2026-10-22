@@ -202,6 +202,11 @@ impl ConvModeMgr {
     /// 採用の上でモードが変化した場合のみ `true` を返す（呼び出し元は info ログを出す）。
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn observe(&self, obs: ConvObservation, current: FocusFence) -> bool {
+        tracing::info!(
+            "[reach-probe] DD2-02 observe source={:?} fence_match={}",
+            obs.source,
+            obs.fence == current
+        );
         if obs.fence != current {
             tracing::debug!(
                 "[conv-mode] stale focus context の観測を棄却: obs.epoch={} current.epoch={} \
@@ -216,6 +221,7 @@ impl ConvModeMgr {
         }
         if let Some(last) = self.last.get() {
             if obs.read_at < last.read_at {
+                tracing::info!("[reach-probe] DD2-02 stale-read_at source={:?}", obs.source);
                 tracing::debug!(
                     "[conv-mode] stale read_at の観測を棄却: obs={:?} last={:?} source={:?}",
                     obs.read_at,

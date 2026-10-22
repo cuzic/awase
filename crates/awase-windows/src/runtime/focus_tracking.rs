@@ -772,6 +772,9 @@ impl Runtime {
             && self.platform_state.ime.effective_open()
         {
             self.presync_applied_open_on(tick_ms);
+            tracing::info!("[reach-probe] DD5-02 A1 set");
+            crate::state::ime_model::PROBE_A1_PENDING
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
         // ImmCross アプリ（Qt/LINE 等）: FocusChanged 直後に child hwnd の正確な IME 状態を
