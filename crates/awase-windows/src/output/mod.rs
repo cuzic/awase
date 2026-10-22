@@ -169,13 +169,6 @@ pub struct Output {
     /// `send_eager_tsf_warmup` / `ImmSetConversionStatus` 等の conv mutation を一括ガードする。
     /// `Platform::set_conv_mode_authority` が `allows_conv_mutation()` の結果を push する。
     pub(crate) conv_mutation_allowed: std::cell::Cell<bool>,
-    /// Output → Runtime の遅延リクエストを蓄積するアウトボックス。
-    ///
-    /// キー注入中に `with_app` 経由で Runtime を直接呼ぶと再入するため、
-    /// `RuntimeRequest` を積んでキー処理境界で Runtime が `take_pending_requests` で drain する。
-    /// H-4-b: vk_send.rs Chrome cold パスが `StartTsfProbe` を積み、
-    /// drain_runtime_requests が TIMER_TSF_PROBE を起動する。
-    pub(crate) runtime_outbox: std::cell::RefCell<crate::runtime::outbox::RuntimeOutbox>,
     /// ADR-128: drain-before-send が実際に flush した件数を Platform へ渡す
     /// ための一時バッファ。0 は「未 flush」を表す（`vk_count` は 0 の場合
     /// push されないため曖昧さは無い、`suppressed_literal_confirms` と
@@ -297,17 +290,8 @@ impl Output {
                 crate::state::focus_gen::ShiftConvGuardGen::INITIAL,
             ),
             conv_mutation_allowed: std::cell::Cell::new(false),
-            runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
             pending_drain_before_send_flush: std::cell::Cell::new(0),
         }
-    }
-
-    /// Output が蓄積した `RuntimeRequest` を全件取り出す。
-    ///
-    /// Runtime がキー処理境界（`WM_EXECUTE_EFFECTS` / `WM_DRAIN_OUTPUT_QUEUE` 末尾）で呼び、
-    /// 各リクエストを実行する。H-4-b で push 側が配線されるまでは常に空を返す。
-    pub(crate) fn take_pending_requests(&self) -> Vec<crate::runtime::outbox::RuntimeRequest> {
-        self.runtime_outbox.borrow_mut().drain()
     }
 
     /// ADR-128: drain-before-send が実際に flush した `vk_count` を Platform

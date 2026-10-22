@@ -18,7 +18,6 @@ pub(crate) use lang_detect_shadow::LangDetectIntake;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;
-pub(crate) mod outbox;
 mod transport;
 
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
@@ -2312,32 +2311,6 @@ impl Runtime {
         let _ = self
             .engine
             .on_command(EngineCommand::SetNgramModel(model), &ctx);
-    }
-
-    /// Output が積んだ `RuntimeRequest` を drain して処理する。
-    ///
-    /// キー処理境界（`WM_EXECUTE_EFFECTS` / `WM_DRAIN_OUTPUT_QUEUE` 末尾）で呼ぶ。
-    ///
-    /// `Output` はキー注入中に `with_app` を再入させられないため、IME リフレッシュ・
-    /// TSF プローブ起動などの Runtime 操作を `RuntimeOutbox` に積んでおき、
-    /// ここで一括実行する（H-4-b: `StartTsfProbe` が Chrome cold パスから積まれる）。
-    pub(crate) fn drain_runtime_requests(&mut self) {
-        use crate::runtime::outbox::RuntimeRequest;
-        let requests = self.platform.output.take_pending_requests();
-        if requests.is_empty() {
-            return;
-        }
-        tracing::debug!("[runtime-outbox] {} request(s) を drain", requests.len());
-        for request in requests {
-            match request {
-                RuntimeRequest::StartTsfProbe => {
-                    tracing::debug!("[runtime-outbox] StartTsfProbe → pending TSF timer 適用");
-                    if let Some(cmd) = self.platform.output.pending_tsf_timer() {
-                        self.platform.apply_timer_command(cmd);
-                    }
-                }
-            }
-        }
     }
 
     /// パニックリセット: IME 関連キー連打で発動する緊急リセット。

@@ -266,8 +266,9 @@ impl Output {
             // これにより async クロージャ内の with_app() → Runtime 逆参照が不要になり、
             // Runtime → Platform → Output → グローバル → Runtime の循環依存を断つ。
             // guard は TsfProbeCoro に move され、probe 完了まで OUTPUT_GATE を保持する。
-            // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
-            // （sync パスと同一経路）。RuntimeRequest::StartTsfProbe は belt-and-suspenders として積む。
+            // TIMER_TSF_PROBE は WindowsPlatform::drain_output_post_send_effects が
+            // pending_tsf_timer() で起動する（send_keys・raw recovery の再送の両方の後に呼ばれる。
+            // sync パスと同一経路）。
             let guard = OutputActiveGuard::begin();
             let probe = crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq);
             self.install_pending_tsf(Box::new(
@@ -275,9 +276,6 @@ impl Output {
                     romaji, cold_seq, probe, guard,
                 ),
             ));
-            self.runtime_outbox
-                .borrow_mut()
-                .push(crate::runtime::outbox::RuntimeRequest::StartTsfProbe);
 
             win32_async::spawn_local(async move {
                 // 診断: pre-send IME conversion mode（旧 [cold-diag] log）
