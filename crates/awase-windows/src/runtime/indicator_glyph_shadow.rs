@@ -30,7 +30,7 @@ use crate::observer::indicator_glyph::GlyphReadRequest;
 use crate::state::indicator_glyph::{
     apply_match, belief_label, classify_label, collect_label, first_read_fence, glyph_scope_label,
     glyph_window_in_scope, match_feature, AddOutcome, BeliefLabel, Capture, GlyphFeature,
-    GlyphSample, GlyphScopeFacts, GlyphTable, ProbeOutcome, SampleOrigin, Thresholds,
+    GlyphMiss, GlyphSample, GlyphScopeFacts, GlyphTable, ProbeOutcome, SampleOrigin, Thresholds,
 };
 use crate::state::indicator_glyph_store::{EnvFingerprint, GlyphSampleFile};
 use crate::state::probe_admission::FocusFence;
@@ -44,6 +44,8 @@ const READ_DELAYS_MS: [u16; 2] = [900, 2500];
 const MIN_TRIGGER_INTERVAL_MS: u64 = 3000;
 /// 結果待ちの依頼の上限（これを超えて溜まっていたら新しい依頼は出さない）。
 const MAX_PENDING: usize = 4;
+/// 見本に無い字形の形をログに出す上限（起動ごと。同じ形は 1 度だけ）。
+const MAX_MISS_SHAPES: usize = 24;
 
 /// 結果待ちの依頼に付けておく文脈（結果が返ったら journal の記録に添える）。
 struct Pending {
@@ -71,6 +73,8 @@ pub(super) struct IndicatorGlyphShadow {
     /// （前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点ではなく、追跡が追いついた後の 1 回目の時点を基準にする）。
     /// 新しい依頼のたびに消す（1 回目が取り込めなかったときは基準が無く、2 回目は報告しない）
     baseline: Option<(isize, FocusFence)>,
+    /// 診断: 見本に無い字形（`TooFar`/`Ambiguous`）の形をログに出した指紋（同じ形は 1 度だけ。上限あり）
+    miss_shapes: std::collections::HashSet<u64>,
     /// 見本の表（環境指紋別。矩形の大きさ〔DPI に比例〕・背景の明暗・IME の種類・取り込み方式の版）。内蔵の共通の見本で始め、
     /// 保存済みの同じ環境の見本を足す
     tables: HashMap<EnvFingerprint, GlyphTable>,
@@ -90,6 +94,7 @@ impl IndicatorGlyphShadow {
             last_trigger: None,
             last_capture: None,
             baseline: None,
+            miss_shapes: std::collections::HashSet::new(),
             tables: HashMap::new(),
             store: GlyphSampleFile::default(),
             store_path: None,
@@ -345,6 +350,25 @@ impl super::Runtime {
                     }) == AddOutcome::Added
                 });
             apply_match(&mut record, &m, label, collected, table.len());
+            // 診断: 見本に無い字形の形（前処理後の 2 値画像。元の画素ではない）を、同じ形は 1 度だけログに出す。
+            if matches!(m.miss, Some(GlyphMiss::TooFar | GlyphMiss::Ambiguous))
+                && self.indicator_glyph.miss_shapes.len() < MAX_MISS_SHAPES
+                && self
+                    .indicator_glyph
+                    .miss_shapes
+                    .insert(f.mask_fingerprint())
+            {
+                tracing::info!(
+                    target: "awase::glyph_miss",
+                    "[indicator-glyph] miss-shape {} miss={} profile={profile} size={}x{} dark={} table={}",
+                    f.mask_art(),
+                    m.miss.map_or("", GlyphMiss::label),
+                    outcome.width,
+                    outcome.height,
+                    outcome.dark,
+                    table.len(),
+                );
+            }
             if collected {
                 // 見本が増えたときだけ保存する（まれ。アトミックに書く）。
                 self.indicator_glyph.store.set_env(&fingerprint, table);
