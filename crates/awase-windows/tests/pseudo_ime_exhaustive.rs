@@ -144,18 +144,28 @@ fn node_key(h: &Harness) -> String {
 
 // ---- 仕分け（ADR-277 の「仕分けの結果」の節） ----------------------------------
 
-/// 食い違いの分類。
+/// 食い違いの分類。各機序を (1) 実 IME の測定(格子)、(2) 予測器の現行の動作、(3) 本来あるべき動作(利用者にとって
+/// 正しい挙動) の 3 層で見て決める(不一致 = 予測器のバグ、とは決めつけない)。
+#[allow(dead_code)] // 現状の TRIAGE に件の無い分類（A・D・E）も、分類の定義として残す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Category {
     /// ハーネスの観測・擬似 IME の写し方の問題（直せるものはテスト側で直す）。
     A,
     /// 予測器の既知の制限（BUG・ADR に記録がある）。
     B,
-    /// 製品のバグの疑い（予測器の規則と実測の格子がずれている）。
+    /// 製品のバグの疑い（予測器の規則が実測とずれ、本来あるべき動作は実測の側）。根拠に「本来」を 1 行添える。
     C,
     /// 到達しても実害の無いもの。
     D,
+    /// 予測器が意図して実 IME と違う予測をしている、または実 IME の動作の方が利用者にとって望ましくない（格子を既知のくせとして扱う）。
+    E,
+    /// 所有者の判断待ち（本来あるべき動作がどちらか決められない。根拠は質問の形）。
+    P,
 }
+
+/// 閉じた打鍵の予測ずれが、閉の間（入力モードを観測しない）を経て、開く打鍵まで持ち越されたときのラベルの頭。
+/// 分類は起点の機序（`←` の後）に従う。
+const CARRY_PREFIX: &str = "閉の間の持ち越し←";
 
 /// 機序のラベル → (分類, 根拠)。**ここに無いラベルが出たらテストが落ちる**（新しい種類の食い違いは仕分けてから載せる）。
 /// ラベルは `mechanism` が作る。根拠は golden の冒頭に 1 行ずつ出る。
@@ -168,22 +178,27 @@ const TRIAGE: &[(&str, Category, &str)] = &[
     (
         "閉→開で入力モードを予測しない（閉じる前・閉の間のモードの持ち越し）",
         Category::B,
-        "BUG-204 と同じ機序: 閉じる直前の belief のモードが開くまで残るが、実 IME は閉じる打鍵・閉の間の打鍵・開く打鍵で変換モードを変えることがある（格子の after_conv）",
+        "BUG-204 と同じ機序: 閉じる打鍵の予測は合っていたが、実 IME は閉じる打鍵・閉の間の打鍵・開く打鍵で変換モードを変えることがあり（格子の after_conv）、belief のモードは開くまで観測されない",
     ),
     (
-        "段階のずれ 起点=0x08（押す前=Typing・予測なし）",
+        "段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］",
         Category::C,
-        "BUG-211: 入力中の BS は表から除外（文字数で割れる、ADR-210 M2）で予測なし→追跡の段階が Typing のまま残る。格子は 1 文字の入力中の BS で破棄（入力なし）。読める窓の composing=false も使わない",
+        "BUG-211: 入力中の BS は表から除外（文字数で割れる、ADR-210 M2）で予測なし→追跡の段階が Typing のまま残り、観測の composing=false（入力中の文字は無い）を予測器が使わない。本来: 観測に従い段階を None にする（ADR-191 決定3 は観測を正とする。予測器自身の注記も「読めるアプリでは composing が入力中を決める」）",
+    ),
+    (
+        "段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］",
+        Category::P,
+        "BUG-211 の観測できない窓の側。格子は 1 文字の入力中の BS で破棄、予測器は入力中のまま（2 文字以上なら予測器が正しい）。質問: 読めない窓で、入力中の BS の後に続くモードキーは「入力中」「入力なし」「予測しない」のどれで引くべきか",
     ),
     (
         "段階のずれ 起点=0x1B（押す前=Typing・予測あり）",
         Category::B,
-        "BUG-162 の残る限界: MS-IME 本体の入力中の Esc は予測なし（候補窓依存）で段階を None に捨てるが、格子は保持（入力中のまま）。入力中を観測できる窓は composing で直り、観測できない窓だけに残る（key_effect_predictor.rs の msime_native_henkan_none_and_typing_esc_are_not_predicted）",
+        "BUG-162 の残る限界: MS-IME 本体の入力中の Esc は予測なし（候補窓依存）で段階を None に捨てるが、格子は保持（入力中のまま）。入力中を観測できる窓は composing で直り、観測できない窓だけに残る（key_effect_predictor.rs の msime_native_henkan_none_and_typing_esc_are_not_predicted の注記）",
     ),
     (
         "変換モード 0x13 を予測器が表せない",
         Category::C,
-        "BUG-212: Conv::from_raw(0x13)=None で入力モードから C19 とみなし、GJI の MS-IME プリセットの 0x13 の英数キーを「半角英数へ」と予測する。格子は 0x13|英数→0x19（ひらがな）。0x13 は無変換 2 回で到達する（on-c1B-none|muhenkan=ON/0x13）",
+        "BUG-212: Conv::from_raw(0x13)=None で入力モードから C19 とみなし、GJI の MS-IME プリセットの 0x13 の英数キーを「半角英数へ」と予測する。格子は 0x13|英数→0x19（ひらがな）。0x13 は無変換 2 回で到達する（on-c1B-none|muhenkan=ON/0x13）。本来: 予測しない（ADR-191 は表せない conv を「予測なし」とする）か実 IME どおりひらがな。半角英数と予測すると Engine が止まり NICOLA が効かない",
     ),
 ];
 
@@ -236,7 +251,7 @@ fn predictor_conv(r: &PredictionRecord) -> Conv {
 
 /// 食い違い（`records[i]`）の機序のラベル。予測器の入力（belief・段階・変換モード）のどれが真値とずれていたかを、
 /// 上から順に調べる。段階のずれは、ずれが始まった打鍵（起点）まで遡ってラベルにする。
-fn mechanism(records: &[PredictionRecord], i: usize) -> String {
+fn mechanism(records: &[PredictionRecord], i: usize, composing_visible: bool) -> String {
     let r = &records[i];
     let before = r.truth_before;
     let predicted_open = r
@@ -244,14 +259,20 @@ fn mechanism(records: &[PredictionRecord], i: usize) -> String {
         .and_then(|p| p.effect.open)
         .unwrap_or(r.input_open);
     if !before.open && r.truth_after.open && predicted_open {
-        return if r.input_mode
+        if r.input_mode
             == (InputModeState::AssumedRomaji {
                 reason: AssumedReason::Startup,
-            }) {
-            "閉→開で入力モードを予測しない（起動時の初期値）".to_owned()
-        } else {
-            "閉→開で入力モードを予測しない（閉じる前・閉の間のモードの持ち越し）".to_owned()
-        };
+            })
+        {
+            return "閉→開で入力モードを予測しない（起動時の初期値）".to_owned();
+        }
+        // 閉じた打鍵（閉の間の直前で、押す前が開だった打鍵）の予測が外れていたら、その機序を起点とする。
+        if let Some(c) = (0..i).rev().find(|&k| records[k].truth_before.open) {
+            if prediction_mismatch(&records[c]).is_some() {
+                return format!("{CARRY_PREFIX}{}", mechanism(records, c, composing_visible));
+            }
+        }
+        return "閉→開で入力モードを予測しない（閉じる前・閉の間のモードの持ち越し）".to_owned();
     }
     if r.input_open != before.open
         || (before.open && mode_is_native(r.input_mode) != before.is_native())
@@ -266,13 +287,19 @@ fn mechanism(records: &[PredictionRecord], i: usize) -> String {
         }
         return match j.checked_sub(1).map(|k| &records[k]) {
             Some(o) => format!(
-                "段階のずれ 起点=0x{:02X}（押す前={:?}・予測{}）",
+                "段階のずれ 起点=0x{:02X}（押す前={:?}・予測{}）{}",
                 o.vk,
                 o.truth_before.stage,
                 if o.prediction.is_some() {
                     "あり"
                 } else {
                     "なし"
+                },
+                // 予測なしの起点は、入力中を観測できるか（`composing`）で本来の動作が変わる（BUG-211）。
+                match (o.prediction.is_none(), composing_visible) {
+                    (false, _) => "",
+                    (true, true) => "［入力中を観測できる窓］",
+                    (true, false) => "［入力中を観測できない窓］",
                 }
             ),
             None => "段階のずれ 起点=開始時".to_owned(),
@@ -300,9 +327,10 @@ fn mechanism(records: &[PredictionRecord], i: usize) -> String {
 
 /// ラベルの分類（`TRIAGE` に無ければ `None`=未仕分け）。
 fn category_of(label: &str) -> Option<(Category, &'static str)> {
+    let root = label.strip_prefix(CARRY_PREFIX).unwrap_or(label);
     TRIAGE
         .iter()
-        .find(|(l, _, _)| *l == label)
+        .find(|(l, _, _)| *l == root)
         .map(|&(_, c, why)| (c, why))
 }
 
@@ -351,7 +379,7 @@ fn explore(grid: Grid, composing_visible: bool) -> (usize, Vec<Mismatch>) {
             let r = &h.predictions[last];
             if let Some(m) = prediction_mismatch(r) {
                 let seq: Vec<String> = next_path.iter().map(|k| format!("{k:02X}")).collect();
-                let label = mechanism(&h.predictions, last);
+                let label = mechanism(&h.predictions, last, composing_visible);
                 lines.push(Mismatch {
                     class: format!(
                         "{} 観測可能={composing_visible} 押す前={} キー=0x{vk:02X} 機序={label}",
@@ -405,7 +433,8 @@ fn prediction_exhaustive_golden() {
     let mut out = String::from(
         "# 予測器と擬似 IME の真値の食い違い（各キーの直前に柵の外で観測して belief を合わせた上で、到達しうる抽象状態を全列挙。ADR-277）。\n\
          # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive\n\
-         # 仕分け（A=ハーネス・B=既知の制限・C=製品のバグの疑い・D=実害なし。ラベルと根拠は TRIAGE）:\n",
+         # 仕分け（A=ハーネス・B=既知の制限・C=製品のバグの疑い・D=実害なし・E=予測器が意図して違う/実 IME の方が望ましくない・\n\
+         # P=所有者の判断待ち。ラベルと根拠は TRIAGE。「閉の間の持ち越し←X」は X の分類に従う）:\n",
     );
     let mut by_category: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for (label, (classes, n)) in &by_label {
