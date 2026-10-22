@@ -61,6 +61,10 @@ struct HookState {
     /// 自己注入キー含む全コールバックで更新する。エンジンスレッドの
     /// watchdog がここを読む。
     hook_alive_tick_ms: AtomicU64,
+    /// フックが最後に受けた**物理キーのキーダウン**（注入ではない）の時刻（`GetTickCount64`）。0 = まだ無い。
+    /// `hook_alive_tick_ms` は自己注入キーやカナリアでも進むので、「物理キーが届いているか」を見るには別に要る
+    /// （Raw Input 経由の観測 `observer::raw_key_input` との突き合わせ用。診断専用、issue #165）。
+    hook_physical_key_tick_ms: AtomicU64,
     /// 最後に ImmCross で IME へ書き込みを**発行**した時刻（`GetTickCount64`）。0 = 未発行（ADR-268 D3）。
     /// ImmCross の書き込みはフックを通らない（`hook_alive_tick_ms` に入らない）ので、共有メモリの読みが
     /// 「awase の操作より後の事実か」を判定する基準（`max(hook_alive_tick_ms, この値)`）に別に足す。
@@ -157,6 +161,7 @@ impl HookState {
             last_ime_mode_hook_ms: AtomicU64::new(0),
             cached_thumb_vks: AtomicU32::new(0),
             hook_alive_tick_ms: AtomicU64::new(0),
+            hook_physical_key_tick_ms: AtomicU64::new(0),
             imm_cross_write_tick_ms: AtomicU64::new(0),
             hook_tid_init_slot: AtomicU32::new(0),
             physical_key_state: [const { AtomicBool::new(false) }; 256],
@@ -317,6 +322,12 @@ pub(crate) fn tick_hook_alive() {
     HOOK_STATE
         .hook_alive_tick_ms
         .store(current_tick_ms(), Ordering::Relaxed);
+}
+
+/// フックが最後に受けた物理キーのキーダウンの時刻（ms、`GetTickCount64`）。0 = まだ無い。診断専用。
+#[must_use]
+pub fn hook_physical_key_tick_ms() -> u64 {
+    HOOK_STATE.hook_physical_key_tick_ms.load(Ordering::Relaxed)
 }
 
 /// フックコールバックの最終活動タイムスタンプ（ms）を返す
@@ -1486,6 +1497,12 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // テストドライバの目印（`TEST_INJECTION_MARKER`）を付けた注入を物理キーとして扱う。
     // 本番では環境変数が無いため常に従来どおり（`LLKHF_INJECTED` = 注入）。
     let is_injected = (kb.flags.0 & LLKHF_INJECTED) != 0 && !is_test_injection(kb.dwExtraInfo);
+    // 診断（Raw Input との突き合わせ用、挙動は変えない）: 注入ではない物理キーのキーダウンの時刻を残す。
+    if is_keydown && !is_injected && !self_injected {
+        HOOK_STATE
+            .hook_physical_key_tick_ms
+            .store(current_tick_ms(), Ordering::Relaxed);
+    }
 
     // IME モードキー (VK_KANA/IME_ON/JUNJA/KANJI/IME_OFF/VK_DBE_*) 診断ログ。
     // 「Ctrl+無変換→Ctrl+変換 で IME-OFF Engine-ON になる」報告 (2026-07-06) の切り分け用:
