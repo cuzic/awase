@@ -40,6 +40,8 @@ related_adr:
   - "ADR-179"
 ---
 
+> **2026-10-22 訂正(ECRS DD1-01):** 下の表の 3(`run_open_chain_async`)と 4(`imm_cross_write`)は「別の `.await` 境界」ではなかった。`run_chain_async` は `is_applicable(ImmCross)`(`imm.is_some()` だけ)の直後に `write(ImmCross).await` へ進み、`imm_cross_write` はその最初のポーリングで先頭から走るので、3 の gate から 4 の gate までに `.await` は無い(シングルスレッドの executor では、間にフォーカス変更は処理されない)。`with_app` が `None`(再入)のときも、どちらの gate も fail-open で結果が同じになる。したがって 4 は何も新しく止めておらず、撤去した。`run_open_chain_async` の gate が作った記録用の入力を `imm_cross_write` へ渡す形にした。5(`fallback_write`)は `imm_cross_write` の `.await` の後なので、独立に要るまま(`architecture_guard` は `fallback_write` 1・`run_open_chain_async` 1・合計 2 を固定)。決定1(共有ヘルパーを作らない)の判断は変えない。
+
 # ADR-180: IME actuation決定レコードの組み立て方を統一する
 
 **2ラウンドのopus-adversarial-consultで、当初案（gate統合）と第一の代替案
