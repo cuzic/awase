@@ -1017,7 +1017,7 @@ impl ImeModel {
                 // epoch だけが進んで watermark が進まず、古い pending の完了を受理しうる（全列挙テストの反例）。
                 debug_assert!(
                     self.last_seen_generation.is_none(),
-                    "InitialFocusScopeEstablished は最初の ImeApplyRequested より前に来る前提(ECRS DD2-05)"
+                    "起動時のフォーカススコープ確立は最初の ImeApplyRequested より前に来る前提(ECRS DD2-05)"
                 );
                 self.app_policy = AppImePolicy::from_profile(profile);
                 self.current_focus = Some(to);

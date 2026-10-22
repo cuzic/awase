@@ -290,7 +290,7 @@ mod tests {
     /// `debug_assert` が落ちる(全列挙が見つけた唯一の反例の形。`[Req(1,_), Init]`)。
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "InitialFocusScopeEstablished は最初の ImeApplyRequested より前")]
+    #[should_panic(expected = "起動時のフォーカススコープ確立は最初の ImeApplyRequested より前")]
     fn init_after_the_first_request_is_rejected() {
         let mut st = St::new();
         st.dispatch(ImeEvent::ImeApplyRequested {
