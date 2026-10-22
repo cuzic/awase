@@ -1061,10 +1061,6 @@ impl crate::state::gji_direct_mechanism::GjiSyncSink for WindowsPlatform {
 }
 
 impl TsfComposition for WindowsPlatform {
-    fn composition_output(&self) -> Option<&dyn awase::platform::CompositionOutput> {
-        Some(&self.output)
-    }
-
     fn output_in_flight_ms(&self) -> u64 {
         self.output.ms_since_last_send()
     }

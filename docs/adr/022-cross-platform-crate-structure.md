@@ -3,7 +3,7 @@ id: ADR-022
 title: |-
   クロスプラットフォームのクレート構造
 status: |-
-  採用・実装済み(awase-windows/linux/macos・timed-fsm 等のクレート構造は現存、2026-10-04 確認)。旧: 採用
+  採用・実装済み、awase-linux・awase-macos のスタブ crate は 2026-10-22 に撤去(SF-06)。現存のプラットフォーム crate は awase-windows のみ。(2026-10-04 確認時点では awase-windows/linux/macos・timed-fsm 等のクレート構造が現存)。旧: 採用
 related_adr: []
 ---
 
@@ -12,6 +12,8 @@ related_adr: []
 ## ステータス
 
 採用
+
+> 状態更新(2026-10-22): awase-linux・awase-macos のスタブ crate は 2026-10-22 に撤去(SF-06)。現存のプラットフォーム crate は awase-windows のみ。
 
 ## コンテキスト
 

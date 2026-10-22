@@ -146,10 +146,6 @@ pub struct GeneralConfig {
     pub update_check: bool,
     /// 状態依存のIMEモードキーを検出したときに警告する（ADR-192）。
     pub warn_state_dependent_mode_keys: bool,
-    /// Linux 入力バックエンド ("evdev", "x11", "libinput")
-    pub linux_input_backend: String,
-    /// evdev バックエンド: キーボードデバイスパス（None = 自動検出）
-    pub linux_evdev_device: Option<String>,
     /// キーボードの物理レイアウトモデル（"jis" または "us"）。
     ///
     /// .yab のパース時の列数上限チェックと、プラットフォーム層の
@@ -403,8 +399,6 @@ impl Default for GeneralConfig {
             auto_start: "enabled".to_string(),
             update_check: true,
             warn_state_dependent_mode_keys: true,
-            linux_input_backend: "evdev".to_string(),
-            linux_evdev_device: None,
             keyboard_model: KeyboardModel::Jis,
             space_thumb_ignore_composing_guard: true,
             space_thumb_shift_literal: true,
@@ -1452,24 +1446,6 @@ impl AppConfig {
         }
     }
 
-    fn validate_linux_backend(g: &mut GeneralConfig, w: &mut Vec<String>) {
-        if !["evdev", "x11", "libinput"].contains(&g.linux_input_backend.as_str()) {
-            w.push(format!(
-                "linux_input_backend \"{}\" は不正です。evdev/x11/libinput のいずれかを指定してください。evdev にリセットします",
-                g.linux_input_backend
-            ));
-            g.linux_input_backend = "evdev".to_string();
-        }
-        if let Some(ref dev) = g.linux_evdev_device {
-            if !dev.starts_with("/dev/") {
-                w.push(format!(
-                    "linux_evdev_device \"{dev}\" は /dev/ で始まる必要があります。自動検出にリセットします"
-                ));
-                g.linux_evdev_device = None;
-            }
-        }
-    }
-
     fn validate_app_override_entries(overrides: &AppOverrides, w: &mut Vec<String>) {
         Self::check_override_list(&overrides.force_text, "force_text", w);
         Self::check_override_list(&overrides.force_bypass, "force_bypass", w);
@@ -1524,7 +1500,6 @@ impl AppConfig {
         Self::validate_dedicated_fn_key(&general, &mut warnings);
         Self::validate_thumb_key_in_ime_combos(&general, &self.keys, &mut warnings);
         Self::validate_keyboard_model(&general, &self.keys, &mut warnings);
-        Self::validate_linux_backend(&mut general, &mut warnings);
         Self::validate_app_override_entries(&app_overrides, &mut warnings);
 
         (
@@ -2804,67 +2779,22 @@ engine_on = ["Ctrl+VK_F10"]
         assert_eq!(config.keys.engine_on, vec!["Ctrl+VK_F10"]);
     }
 
-    // ── Linux 設定テスト ──
-
+    /// Linux スタブ crate（`awase-linux`）の撤去（2026-10-22、SF-06）で
+    /// `linux_input_backend`/`linux_evdev_device` を削除した。既存の`config.toml`に
+    /// 残っていても読み込みエラーにならず、無視されて他の設定が読める
+    /// （`deny_unknown_fields`を付けていない）。
     #[test]
-    fn test_linux_defaults() {
-        let toml_str = r#"
-[general]
-"#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.linux_input_backend, "evdev");
-        assert_eq!(config.general.linux_evdev_device, None);
-    }
-
-    #[test]
-    fn test_linux_custom_values() {
+    fn test_removed_linux_backend_keys_are_ignored_on_load() {
         let toml_str = r#"
 [general]
 linux_input_backend = "x11"
 linux_evdev_device = "/dev/input/event3"
+left_thumb_key = "無変換"
 "#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.linux_input_backend, "x11");
-        assert_eq!(
-            config.general.linux_evdev_device,
-            Some("/dev/input/event3".to_string())
-        );
-    }
-
-    #[test]
-    fn test_linux_libinput_backend() {
-        let toml_str = r#"
-[general]
-linux_input_backend = "libinput"
-"#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        let (validated, warnings) = config.validate();
-        assert!(warnings.iter().all(|w| !w.contains("linux_input_backend")));
-        assert_eq!(validated.general.linux_input_backend, "libinput");
-    }
-
-    #[test]
-    fn test_linux_invalid_backend_produces_warning() {
-        let toml_str = r#"
-[general]
-linux_input_backend = "wayland"
-"#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        let (validated, warnings) = config.validate();
-        assert!(warnings.iter().any(|w| w.contains("linux_input_backend")));
-        assert_eq!(validated.general.linux_input_backend, "evdev");
-    }
-
-    #[test]
-    fn test_linux_invalid_evdev_device_produces_warning() {
-        let toml_str = r#"
-[general]
-linux_evdev_device = "not/a/dev/path"
-"#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        let (validated, warnings) = config.validate();
-        assert!(warnings.iter().any(|w| w.contains("linux_evdev_device")));
-        assert_eq!(validated.general.linux_evdev_device, None);
+        let config: AppConfig = toml::from_str(toml_str).expect("旧キーが残っていても読める");
+        assert_eq!(config.general.left_thumb_key, "無変換");
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().all(|w| !w.contains("linux_")));
     }
 
     #[test]

@@ -5487,21 +5487,18 @@ fn late_keymap_stage_is_wired_after_engine_decision_and_before_journal() {
 /// `Engine::apply_general_config` へ一本化した（同コードレビュー7回目）。
 /// 同種の見落としを新しいプラットフォームエントリポイントが追加された際にも
 /// 機械的に検知する第二の防衛線として、このガードテストを維持する。
+/// （`awase-linux`/`awase-macos` スタブ crate は 2026-10-22 に撤去した〈SF-06〉。
+/// 現存するエントリポイントは Windows の `bootstrap.rs` だけ。）
 ///
 /// `apply_general_config` の呼び出しが `NicolaFsm::new` より**後**（テキスト
 /// 上のオフセットが大きい）にあることまで確認する（同7回目指摘: 単純な
 /// 部分文字列の有無だけだと、無関係な別インスタンスへの呼び出しやコメント中の
 /// 言及でも素通りしてしまう）。
 ///
-/// 相対パスは `crates/awase-windows`（このクレートの `CARGO_MANIFEST_DIR`）
-/// 基準。`awase-linux`/`awase-macos` は兄弟クレートのため `../` で辿る。
+/// 相対パスは `crates/awase-windows`（このクレートの `CARGO_MANIFEST_DIR`）基準。
 #[test]
 fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() {
-    const PLATFORM_ENTRY_POINTS: &[&str] = &[
-        "src/app/bootstrap.rs",
-        "../awase-linux/src/main.rs",
-        "../awase-macos/src/main.rs",
-    ];
+    const PLATFORM_ENTRY_POINTS: &[&str] = &["src/app/bootstrap.rs"];
     for path in PLATFORM_ENTRY_POINTS {
         let content = read_crate_file(path);
         // /code-review指摘（PR #127、8回目）: 単純な部分文字列一致だと、
@@ -6023,10 +6020,8 @@ fn deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass() {
 /// `WarmupImeOn::from_applied_or_belief` は core クレート（`../../src/`、
 /// `crates/awase-windows` から見て2階層上）の `pub const fn` であり、
 /// `list_src_files()`（`awase-windows` 自身の `src/` のみ走査）では取りこぼす。
-/// 兄弟クレート `awase-linux`/`awase-macos` も含めて漏れなく走査する
-/// （PR #127 のコードレビューで実際に見落とされた前例、上記
-/// `every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new`
-/// と同じ理由）。
+/// （かつては兄弟クレート `awase-linux`/`awase-macos` も走査していたが、両スタブは
+/// 2026-10-22 に撤去した〈SF-06〉。）
 fn list_rs_files_under(rel_root: &str) -> Vec<String> {
     // `"src"` は対象 crate すべて（`EXTRA_SRC_CRATES` の核 crate を含む）。ほかの根は元のまま。
     let crate_dirs = if rel_root == "src" {
@@ -6152,8 +6147,6 @@ fn extract_call_arg_lists(content: &str, needle: &str) -> Vec<Vec<String>> {
 fn warmup_gate_third_arg_is_never_a_bare_literal_in_production_code() {
     let mut files = list_rs_files_under("../../src");
     files.extend(list_src_files());
-    files.extend(list_rs_files_under("../awase-linux/src"));
-    files.extend(list_rs_files_under("../awase-macos/src"));
 
     let mut violations: Vec<String> = Vec::new();
     for path in &files {

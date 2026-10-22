@@ -16,7 +16,7 @@ PR レビューと定期的な audit のチェックリストとして使う。
 
 **ルール**: `src/` は Windows / macOS / Linux のいずれにも依存しない。
 
-**Why**: ADR-019。macOS/Linux 対応のため lib を OS API 非依存に保つ。
+**Why**: ADR-019。lib を OS API 非依存に保ち、Linux 上でエンジンを単体テストできるようにする（macOS/Linux のスタブ crate は 2026-10-22 に撤去し、移植の予定は無い。SF-06）。
 
 **禁則**:
 - `windows-rs` / `core-foundation` 等の OS crate を依存に追加する
@@ -408,7 +408,7 @@ architectural risk の高い順:
 1. C-1 (Intent → desired_open 経路) — 違反すると Observer/Intent の責務分離崩壊
 2. C-2 (Observer → ObserverReported 経由) — 違反すると intent 破壊復活
 3. C-3 (generation 照合) — 違反すると stale apply race 復活
-4. A-1, A-2 (lib プラットフォーム独立性) — 違反すると macOS/Linux 対応コスト爆発
+4. A-1, A-2 (lib プラットフォーム独立性) — 違反すると Linux 上の単体テストが成り立たなくなる
 5. その他
 
 ---

@@ -204,8 +204,7 @@ pub struct NicolaFsm {
     /// が実際に Shift かどうかを（Platform 層依存の判定になるため）core 層だけでは
     /// 判定できず、`false`（無効・従来面のみ）で初期化する。**Platform 層は
     /// 起動直後に必ず `set_thumb_shift_faces_enabled()` を呼んで実際の値を
-    /// 設定すること**（`crates/awase-windows/src/app/bootstrap.rs`・
-    /// `crates/awase-linux/src/main.rs`・`crates/awase-macos/src/main.rs` 参照）。
+    /// 設定すること**（`crates/awase-windows/src/app/bootstrap.rs` 参照）。
     /// 呼び忘れても「複合面が使えない」に留まり、親指自体が Shift のケースで
     /// 複合面が誤って有効化される（誤出力）方向には倒れない——`true` を既定にすると
     /// 呼び忘れ時にこの誤出力が起こるため、意図的に安全側の `false` を既定にしている。
@@ -371,8 +370,7 @@ pub struct NicolaFsm {
 
     /// ADR-120 決定0a 項目7(a)専用: 物理 BACKSPACE の VK コード。Platform 層が
     /// 判定して渡す（`space_thumb_vk` 等と同様、実際の VK 番号は Platform 層の
-    /// 責務）。`None`（既定）なら項目7(a)の集計は行わない
-    /// （`crates/awase-linux`/`crates/awase-macos` はまだ配線しない）。
+    /// 責務）。`None`（既定）なら項目7(a)の集計は行わない。
     backspace_vk: Option<VkCode>,
 
     /// ADR-120 決定0a 項目7(a) (should-fix所見S4対応): 物理 BACKSPACE が
@@ -1048,12 +1046,12 @@ impl NicolaFsm {
 
     /// `GeneralConfig` の調整可能フィールドを一括反映する。
     ///
-    /// プラットフォームエントリポイント（`bootstrap.rs`/`awase-linux`/
-    /// `awase-macos`）がそれぞれ個別に `set_timing_margins` 呼び出しを
-    /// コピペしていたが、この重複自体が `awase-linux`/`awase-macos` での
+    /// プラットフォームエントリポイント（`bootstrap.rs` と、2026-10-22 に撤去した
+    /// `awase-linux`/`awase-macos` スタブ）がそれぞれ個別に `set_timing_margins`
+    /// 呼び出しをコピペしていたが、この重複自体がスタブ側での
     /// 呼び忘れの原因になった（/code-review指摘、PR #127、7回目）。
     /// 将来 `GeneralConfig` に他のFSM調整項目が増えたら、ここに追加すれば
-    /// 全プラットフォームへ自動的に反映される。
+    /// エントリポイントへ自動的に反映される。
     pub fn apply_general_config(&mut self, config: &GeneralConfig) {
         self.set_timing_margins(
             config.timing_margin_percent,
