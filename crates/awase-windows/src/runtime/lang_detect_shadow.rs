@@ -226,19 +226,24 @@ impl super::Runtime {
         tracked_root == 0 || tracked_root == foreground.hwnd.unsigned_abs()
     }
 
-    /// `ime_on` の対象の窓か。既定は観測の無い窓（実測学習で降格された窓）だけ。`scope = all` なら読める窓も含める。
-    /// 実質 TSF ネイティブの窓（プロファイルが `Imm32Unavailable` でも `is_effectively_tsf_native` が真の Windows Terminal 等。
-    /// `FOCUS_RESYNC` が最初の打鍵を取り込み口で扱い、単発の `VK_IME_OFF` は BUG-124 型の「@」の条件になる）と、
-    /// 入力中継ツールの窓は常に対象外。
+    /// `ime_on` の対象の窓か。入力中継ツールの窓は常に対象外。
+    ///
+    /// - `scope = all`: それ以外の窓はすべて対象。実質 TSF ネイティブの窓（Windows Terminal・`Windows.UI.Input.InputSite` 等）も含む
+    ///   （2026-10-22、所有者判断。dragonflyg4 で、窓切替直後の TSF ネイティブ窓に belief ON × 実 IME OFF で入り、最初の打鍵が
+    ///   raw TSF リテラル回収の Backspace で消える〈BUG-200〉のに、`all` でも救済されなかった）。
+    /// - `scope = unobserved`（既定）: 観測の無い窓（実測学習で降格された窓）だけ。実質 TSF ネイティブの窓は含めない。
     fn lang_detect_window_in_scope(&self) -> bool {
         let profile = self.platform.current_app_profile();
-        if matches!(profile, AppImeProfile::InputRelay)
-            || profile.is_effectively_tsf_native(self.platform.focus.class_name())
-        {
+        if matches!(profile, AppImeProfile::InputRelay) {
             return false;
         }
-        self.lang_detect.scope == AutoDetectScope::All
-            || self.platform.focus.is_demoted_by_learning()
+        match self.lang_detect.scope {
+            AutoDetectScope::All => true,
+            AutoDetectScope::Unobserved => {
+                !profile.is_effectively_tsf_native(self.platform.focus.class_name())
+                    && self.platform.focus.is_demoted_by_learning()
+            }
+        }
     }
 
     /// awase の Engine が、今の belief で活性か（IME ON で、入力モードがローマ字入力と見られる）。

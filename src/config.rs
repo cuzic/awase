@@ -558,8 +558,8 @@ pub enum AutoDetectScope {
     #[default]
     Unobserved,
     /// 読める窓（Chrome 等）も対象にする。読める窓では awase の belief が観測で実状態に追随するので、判定の書き込みの
-    /// 結果が次の観測で揃うまで食い違うことがある。実質 TSF ネイティブの窓（Windows Terminal 等）と入力中継ツールの窓は
-    /// 常に対象外。
+    /// 結果が次の観測で揃うまで食い違うことがある。実質 TSF ネイティブの窓（Windows Terminal 等）も含む（既定の
+    /// `unobserved` では含めない）。入力中継ツールの窓だけは常に対象外。
     All,
 }
 
