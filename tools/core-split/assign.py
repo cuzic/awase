@@ -18,8 +18,8 @@ put('base', [
 ])
 # L1 キー効果: 学習済みのキー効果の表と予測、キー配置の仮説
 put('keyeffect', [
-    'state::key_effect_predictor', 'state::key_effect_rules', 'state::key_effect_runtime',
-    'state::key_effect_table', 'state::keymap_initial_hypothesis', 'state::keymap_latch',
+    'state::key_effect_predictor', 'state::key_effect_runtime',
+    'state::key_effect_table', 'state::keymap_latch',
     'state::late_keymap_plan', 'state::state_dependent_key_warning',
 ])
 # L2 IME の核: 状態(belief)・観測(証拠を含む)・書き込み(actuation)の判断。belief と actuation は辺が 8/10 本で

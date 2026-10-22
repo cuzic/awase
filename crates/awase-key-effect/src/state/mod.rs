@@ -12,13 +12,8 @@
 pub use awase_windows_base::state::*;
 
 pub mod key_effect_predictor;
-pub mod key_effect_rules;
 pub mod key_effect_runtime;
 pub mod key_effect_table;
-// ADR-195 段階0。key_effect_predictor（経路1）・awase-gji-config::keymap（経路2）・
-// msime_key_assignment（経路3、windows専用だが呼び出しはruntime層が担う）の出力を
-// 統合する薄い集約層。ungated（純粋関数のみで、レジストリ等のI/Oはしない）。
-pub mod keymap_initial_hypothesis;
 // 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
 // runtime/message_handlers.rs::deliver_key_event は #[cfg(windows)] のため
 // 非 Windows では未使用になる。

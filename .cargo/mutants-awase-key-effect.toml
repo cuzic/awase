@@ -18,7 +18,6 @@ test_package = [
 
 examine_globs = [
     "crates/awase-key-effect/src/state/key_effect_predictor.rs",
-    "crates/awase-key-effect/src/state/key_effect_rules.rs",
     "crates/awase-key-effect/src/state/key_effect_runtime.rs",
     "crates/awase-key-effect/src/state/late_keymap_plan.rs",
 ]
