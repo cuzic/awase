@@ -24,7 +24,9 @@
 - bootstrap でも watermark を進める案は、Init の前に払い出した generation の Superseded を旧判定より多く落とす(`[Req(1,_), Init, Req(2,_)]`)ので、同値の証拠にはならない。「Init が最初の要求より前」を表明する方が簡単。
 - Superseded の腕の epoch 照合も消す案(B)は、完了の generation が未払い出しでもよいとすると崩れる(`Req(1)`, `Focus`, 完了 gen 2)。本番は払い出し済みの generation にしか完了を返さないので成り立つが、前提に依存する。pending の `generation >= watermark` を両方の腕に残す案(A)は前提なしでも一致する。
 
-結論: epoch の撤去は、「Init は最初の要求より前」を型か `debug_assert` で表明するなら安全(案 A を推奨)。本番コードの変更は別 PR。
+結論: epoch の撤去は、「Init は最初の要求より前」を型か `debug_assert` で表明するなら安全(案 A を推奨)。
+
+**実施(2026-10-22)**: 案 A で撤去した(`ImeTransition.focus_epoch` と照合を削除、`InitialFocusScopeEstablished` に `debug_assert`)。全列挙テストは、撤去前の epoch 版を oracle としてテスト内に残し、本番の判定との一致(長さ 6・5 と未払い出しの完了)と、`debug_assert` が Init-after-request を拒むことを固定する形に変えた。
 
 ## DD2-02(`ConvModeMgr::observe` の fence 比較)は全列挙できない理由
 
