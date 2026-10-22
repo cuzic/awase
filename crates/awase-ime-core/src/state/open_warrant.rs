@@ -16,7 +16,7 @@
 //! ## Step 0〜4 の評価順序（§2.3 P15、round3 で確定）
 //!
 //! ```text
-//! Step 0: 真の安全弁（PanicReset/ProfilePolicy。active な guard は全て該当）が active
+//! Step 0: 真の安全弁（PanicReset。active な guard は全て該当）が active
 //!         → SafetyValve（意図より先に評価する。ForceGuardSet::effective_open()
 //!           の意味論そのもの。§7 round3 M2）
 //! Step 1: IntentStore に対象への有効な明示意図がある
@@ -75,7 +75,7 @@ pub enum WarrantBasis {
         a: ObservationSource,
         b: ObservationSource,
     },
-    /// override 権限を持つ真の安全弁（`PanicReset`/`ProfilePolicy`）。
+    /// override 権限を持つ真の安全弁（`PanicReset`）。
     SafetyValve(ForceOnReason),
     /// 観測が一切無い状況での、profile 依存の安全デフォルト推測。
     HeuristicGuess(HeuristicGuessSource),
@@ -373,7 +373,6 @@ mod tests {
         let mut guards = ForceGuardSet::default();
         guards.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         let policy = AppImePolicy::from_profile(ImePolicyProfile::TsfNative);
@@ -400,7 +399,6 @@ mod tests {
         let mut guards = ForceGuardSet::default();
         guards.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         let policy = AppImePolicy::from_profile(ImePolicyProfile::TsfNative);
@@ -968,7 +966,6 @@ mod tests {
                                         if override_guard {
                                             guards.add(ForceGuard {
                                                 reason: ForceOnReason::PanicReset,
-                                                expires_at: None,
                                                 generation: 1,
                                             });
                                         }
@@ -1343,12 +1340,10 @@ mod tests {
                                     GuardDim::Override => {
                                         model.force_guards.add(ForceGuard {
                                             reason: ForceOnReason::PanicReset,
-                                            expires_at: None,
                                             generation: 1,
                                         });
                                         guards_new.add(ForceGuard {
                                             reason: ForceOnReason::PanicReset,
-                                            expires_at: None,
                                             generation: 1,
                                         });
                                     }

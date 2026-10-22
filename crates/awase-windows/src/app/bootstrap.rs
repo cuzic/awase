@@ -914,7 +914,6 @@ unsafe extern "system" fn win_event_proc(
     // `tsf-gate` が `PendingWarmup` に戻って held の打鍵が捨てられ、フォーカス窓の分類も走る。
     // **重複排除（`LAST_FOCUS_HWND`）より前で弾く**: 後だと `LAST_FOCUS_HWND` がメニュー窓に
     // 上書きされ、メニューを閉じて元の窓へ戻る `FOCUS` が「新しい窓」として再び拾われる。
-    // 入力インジケーターの右クリックメニュー（ADR-264）もこの標準クラス。
     if crate::focus::class_names::is_popup_menu_window_class(
         &crate::focus::classify::get_class_name_string(hwnd),
     ) {
@@ -938,33 +937,10 @@ unsafe extern "system" fn win_event_proc(
     });
 }
 
-/// ADR-264 段階 1: 入力インジケーターの右クリックメニューの影の読み（観測のみ）の WinEvent コールバック。
-/// `EVENT_SYSTEM_MENUPOPUPSTART`（メニュー窓の表示）で、メッセージループ上で呼ばれる。重い判断はせず、
-/// `Runtime::indicator_menu_on_popup_start` へ渡すだけ（前置きのフィルタはそちらが行う）。
-/// `observer/` 内では `with_app` を呼べない（B-1）ので、`win_event_proc` と同じくここ（`app/`）に置く。
-unsafe extern "system" fn menu_popup_event_proc(
-    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
-    event: u32,
-    hwnd: HWND,
-    _id_object: i32,
-    _id_child: i32,
-    _event_thread: u32,
-    _event_time: u32,
-) {
-    use windows::Win32::UI::WindowsAndMessaging::EVENT_SYSTEM_MENUPOPUPSTART;
-    if event != EVENT_SYSTEM_MENUPOPUPSTART {
-        return;
-    }
-    let Some(hwnd) = hwnd.non_null() else {
-        return;
-    };
-    let _ = with_app(|app| app.indicator_menu_on_popup_start(hwnd));
-}
-
 /// ADR-261 段階 1: 入力インジケーターの字形の影の取り込み（観測のみ）の WinEvent コールバック。
 /// `EVENT_SYSTEM_FOREGROUND`（前面窓の変化）で、メッセージループ上で呼ばれる。重い判断はせず、
 /// `Runtime::indicator_glyph_on_foreground` へ渡すだけ（前置きのフィルタ・待ち時間はそちらとワーカーが扱う）。
-/// `observer/` 内では `with_app` を呼べない（B-1）ので、`menu_popup_event_proc` と同じくここ（`app/`）に置く。
+/// `observer/` 内では `with_app` を呼べない（B-1）ので、`win_event_proc` と同じくここ（`app/`）に置く。
 unsafe extern "system" fn indicator_glyph_foreground_event_proc(
     _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
     event: u32,
@@ -1343,23 +1319,10 @@ pub(super) fn run_all() -> Result<()> {
         tracing::warn!("{e}");
     }
     let _focus_hook_guard = install_focus_hook().map_err(|e| tracing::warn!("{e}")).ok();
-    // ADR-264 段階 1・ADR-271: `[indicator_evidence] menu` の実効の段階（`min(設定値, ui_max_level())`）が `observe` 以上のとき（既定は off のオプトイン）だけ、入力インジケーターの
-    // 右クリックメニューの読み取りワーカーと WinEvent フックを起動する（観測のみ。belief・IME には何もしない）。
-    // ガードは `run_all` の終わりまで保持する（drop でスレッド停止・フック解除）。設定の反映は再起動後。
+    // ADR-271: 実効の段階（`min(設定値, ui_max_level())`）は起動時に 1 度だけ決めて固定する（反映は再起動後）。
     let effective_evidence =
         crate::indicator_evidence::EffectiveEvidence::from_config(&config.indicator_evidence);
     let _ = with_app(|app| app.set_indicator_effective_evidence(effective_evidence));
-    let _indicator_menu_guards = if effective_evidence.menu >= awase::config::EvidenceLevel::Observe
-    {
-        let (worker, tx) = crate::observer::indicator_menu::spawn_indicator_menu_worker();
-        let _ = with_app(|app| app.init_indicator_menu(Some(tx)));
-        Some((
-            worker,
-            crate::observer::indicator_menu::install_menu_hook(menu_popup_event_proc),
-        ))
-    } else {
-        None
-    };
     // ADR-261 段階 1・ADR-271: `[indicator_evidence] glyph` の実効の段階が `observe` 以上のとき（既定は off のオプトイン）だけ、
     // 入力インジケーターの字形の取り込みワーカーと WinEvent フックを起動する（観測のみ。belief・IME には何もしない）。
     let _indicator_glyph_guards =

@@ -47,7 +47,6 @@ pub(crate) struct ProbeId(pub(crate) u32);
 /// `ColdKind` から `transition_to_cold` / `on_event(KeyInput NotStarted)` で生成する。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ProbeParams {
-    pub forces_prepend_f2: bool,
     pub is_long_cold: bool,
 }
 
@@ -92,11 +91,6 @@ pub(crate) enum ColdKind {
 }
 
 impl ColdKind {
-    /// F2 をバッチに強制同梱するか（GJI が寝ている可能性がある Medium/Long で true）。
-    pub(crate) const fn forces_prepend_f2(self) -> bool {
-        matches!(self, Self::Medium | Self::Long)
-    }
-
     /// Long cold（≥ LONG_IDLE_MS = 10s）か。`literal_detect_ms` 延長の判定に使う。
     pub(crate) const fn is_long(self) -> bool {
         matches!(self, Self::Long)
@@ -121,7 +115,6 @@ impl ColdKind {
     /// ProbeParams は ColdKind の純関数である。
     pub(crate) const fn probe_params(self) -> ProbeParams {
         ProbeParams {
-            forces_prepend_f2: self.forces_prepend_f2(),
             is_long_cold: self.is_long(),
         }
     }
@@ -1319,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn medium_cold_key_input_starts_probe_with_forces_prepend_f2() {
+    fn medium_cold_key_input_starts_probe() {
         let mut fsm = GjiFsm::new();
         fsm.on_event(ime_on());
         let ev = complete(&fsm);
@@ -1334,16 +1327,21 @@ mod tests {
             probe_action.is_some(),
             "Medium cold: KeyInput で StartProbe が必要"
         );
-        if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
-            assert!(
-                params.forces_prepend_f2,
-                "Medium cold: forces_prepend_f2=true"
-            );
-        }
+        assert!(
+            matches!(
+                fsm.state(),
+                GjiState::OnCold {
+                    kind: ColdKind::Medium,
+                    probe: ProbeStatus::Authorized { .. },
+                    ..
+                }
+            ),
+            "Medium cold: KeyInput → OnCold(Medium, Authorized)"
+        );
     }
 
     #[test]
-    fn long_cold_key_input_starts_probe_with_forces_prepend_f2() {
+    fn long_cold_key_input_starts_long_probe() {
         let mut fsm = GjiFsm::new();
         fsm.on_event(ime_on());
         let ev = complete(&fsm);
@@ -1356,17 +1354,14 @@ mod tests {
             .iter()
             .find(|a| matches!(a, GjiAction::StartProbe { .. }))
         {
-            assert!(
-                params.forces_prepend_f2,
-                "Long cold: forces_prepend_f2=true"
-            );
+            assert!(params.is_long_cold, "Long cold: is_long_cold=true");
         } else {
             panic!("Long cold KeyInput: StartProbe が必要");
         }
     }
 
     #[test]
-    fn short_cold_starts_probe_without_forces_prepend_f2() {
+    fn short_cold_starts_probe_without_long_cold() {
         let mut fsm = GjiFsm::new();
         // ImeOn → OnCold(Short) で即 StartProbe
         let r = fsm.on_event(ime_on());
@@ -1375,10 +1370,7 @@ mod tests {
             .iter()
             .find(|a| matches!(a, GjiAction::StartProbe { .. }))
         {
-            assert!(
-                !params.forces_prepend_f2,
-                "Short cold: forces_prepend_f2=false"
-            );
+            assert!(!params.is_long_cold, "Short cold: is_long_cold=false");
         } else {
             panic!("ImeOn: StartProbe が必要");
         }
@@ -1726,7 +1718,7 @@ mod tests {
     #[test]
     fn ime_on_with_long_idle_uses_long_probe_proactively() {
         // WezTerm で F2 を押した際に gji_idle > LONG_IDLE_MS なら
-        // forces_prepend_f2=true の probe を即開始する（FocusChange とは異なり NotStarted にしない）。
+        // is_long_cold=true の probe を即開始する（FocusChange とは異なり NotStarted にしない）。
         let mut fsm = GjiFsm::new();
         let r = fsm.on_event(ime_on_with_idle(tuning::LONG_IDLE_MS + 1000));
         let probe_action = r
@@ -1738,10 +1730,6 @@ mod tests {
             "long idle ImeOn: StartProbe を即開始すべき"
         );
         if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
-            assert!(
-                params.forces_prepend_f2,
-                "long idle ImeOn: forces_prepend_f2=true が必要"
-            );
             assert!(
                 params.is_long_cold,
                 "long idle ImeOn: is_long_cold=true が必要"
@@ -1772,12 +1760,6 @@ mod tests {
             probe_action.is_some(),
             "medium idle ImeOn: StartProbe を即開始すべき"
         );
-        if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
-            assert!(
-                params.forces_prepend_f2,
-                "medium idle ImeOn: forces_prepend_f2=true が必要"
-            );
-        }
         assert!(
             matches!(
                 fsm.state(),
@@ -2049,17 +2031,8 @@ mod tests {
         fsm.on_event(focus_change_with_idle(8_000)); // → OnCold(Medium, NotStarted)
         let start = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
         assert!(
-            matches!(
-                start.actions.first(),
-                Some(GjiAction::StartProbe {
-                    params: ProbeParams {
-                        forces_prepend_f2: true,
-                        ..
-                    },
-                    ..
-                })
-            ),
-            "Medium cold の最初の KeyInput は forces_prepend_f2=true で probe を認可するはず"
+            matches!(start.actions.first(), Some(GjiAction::StartProbe { .. })),
+            "Medium cold の最初の KeyInput は probe を認可するはず"
         );
         fsm.on_event(GjiEvent::StartComposition);
         assert!(matches!(
@@ -2078,15 +2051,9 @@ mod tests {
         match fsm.state() {
             GjiState::OnCold {
                 kind: ColdKind::Medium,
-                probe: ProbeStatus::Authorized { params, .. },
+                probe: ProbeStatus::Authorized { .. },
                 ..
-            } => {
-                assert!(
-                    params.forces_prepend_f2,
-                    "EndComposition は kind=Medium を運び、forces_prepend_f2 を \
-                     false へ捏造してはならない"
-                );
-            }
+            } => {}
             other => panic!(
                 "expected OnCold(Medium, Authorized) after EndComposition, got {}",
                 other.state_label()
@@ -2403,16 +2370,11 @@ mod tests {
         let r = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("na")));
         match r.actions.first() {
             Some(GjiAction::StartProbe {
-                probe_id: new_id,
-                params,
+                probe_id: new_id, ..
             }) => {
                 assert_ne!(
                     *new_id, probe_id,
                     "再認可では新しい probe_id を割り当てるはず"
-                );
-                assert!(
-                    params.forces_prepend_f2,
-                    "kind=Medium が保存されているので再認可時も forces_prepend_f2=true のはず"
                 );
             }
             other => panic!("expected StartProbe after re-authorization, got {other:?}"),
@@ -2592,7 +2554,7 @@ mod tests {
 
     #[test]
     fn reopen_after_long_idle_starts_long_cold_probe() {
-        // gji_idle ≥ LONG_IDLE_MS(10s)なら is_long_cold=true の probe(Unicode の poke/reinit の起点になる)。
+        // gji_idle ≥ LONG_IDLE_MS(10s)なら is_long_cold=true の probe を始める。
         let mut fsm = GjiFsm::new();
         let r = fsm.on_event(reopen_with_idle(tuning::LONG_IDLE_MS));
         match &r.actions[0] {

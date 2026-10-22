@@ -140,9 +140,8 @@ impl TsfSendPipeline {
 }
 
 impl Output {
-    /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
+    /// 表に無い文字を `KEYEVENTF_UNICODE` で直接送信する（`CharResolution::Unicode` のフォールバック）。
     ///
-    /// `unicode_cold_defer` フラグが立っている場合は実送信せず `unicode_cold_deferred` に蓄積する。
     /// 実際の送信処理は `KeyInjector::send_unicode_char` に委譲する。
     pub(super) fn send_unicode_char(&self, ch: char) {
         self.injector.send_unicode_char(ch);
@@ -210,11 +209,10 @@ impl Output {
         let WarmthContext {
             warm,
             elapsed,
-            session_expired,
             prepend_f2_warmup,
         } = self.assess_warmth();
         tracing::debug!(
-            "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
+            "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms prepend_f2_warmup={prepend_f2_warmup}",
             fmt_ms(elapsed)
         );
 
@@ -231,13 +229,7 @@ impl Output {
         }
 
         if prepend_f2_warmup {
-            if session_expired {
-                tracing::debug!(
-                    "[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)"
-                );
-            } else {
-                tracing::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
-            }
+            tracing::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
 
             let cold_seq = self.composition.increment_cold_start_count();
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
@@ -267,8 +259,9 @@ impl Output {
             // これにより async クロージャ内の with_app() → Runtime 逆参照が不要になり、
             // Runtime → Platform → Output → グローバル → Runtime の循環依存を断つ。
             // guard は TsfProbeCoro に move され、probe 完了まで OUTPUT_GATE を保持する。
-            // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
-            // （sync パスと同一経路）。RuntimeRequest::StartTsfProbe は belt-and-suspenders として積む。
+            // TIMER_TSF_PROBE は WindowsPlatform::drain_output_post_send_effects が
+            // pending_tsf_timer() で起動する（send_keys・raw recovery の再送の両方の後に呼ばれる。
+            // sync パスと同一経路）。
             let guard = OutputActiveGuard::begin();
             let probe = crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq);
             self.install_pending_tsf(Box::new(
@@ -276,9 +269,6 @@ impl Output {
                     romaji, cold_seq, probe, guard,
                 ),
             ));
-            self.runtime_outbox
-                .borrow_mut()
-                .push(crate::runtime::outbox::RuntimeRequest::StartTsfProbe);
 
             win32_async::spawn_local(async move {
                 // 診断: pre-send IME conversion mode（旧 [cold-diag] log）
@@ -373,12 +363,11 @@ impl Output {
         let WarmthContext {
             warm,
             elapsed,
-            session_expired,
             prepend_f2_warmup,
         } = self.assess_warmth();
 
         tracing::debug!(
-            "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
+            "[tsf-send] warm={warm} elapsed={}ms prepend_f2_warmup={prepend_f2_warmup}",
             fmt_ms(elapsed)
         );
 
@@ -391,8 +380,8 @@ impl Output {
 
         if prepend_f2_warmup {
             // ノンブロッキング warmup を開始して pending_tsf に保留
-            let started = crate::tsf::warmup::cold_warmup::ColdWarmupSequence::new(self)
-                .run_start(session_expired, elapsed);
+            let started =
+                crate::tsf::warmup::cold_warmup::ColdWarmupSequence::new(self).run_start(elapsed);
             let cold_seq = started.probe.cold_seq;
             self.gji_begin_probe_guard();
             let probe_params = self.gji_current_probe_params().unwrap_or_else(|| {

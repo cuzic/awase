@@ -8,7 +8,6 @@ mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
 mod indicator_glyph_shadow;
-mod indicator_menu_shadow;
 mod key_pipeline;
 mod lang_check;
 mod lang_detect_shadow;
@@ -18,7 +17,6 @@ pub(crate) use lang_detect_shadow::LangDetectIntake;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;
-pub(crate) mod outbox;
 mod transport;
 
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
@@ -315,8 +313,6 @@ pub struct Runtime {
     lang_check: lang_check::LangCheck,
     /// ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの影の判定（記録のみ、挙動を変えない）
     lang_detect: lang_detect_shadow::LangDetectShadow,
-    /// ADR-264 段階 1: 入力インジケーターの右クリックメニューの影の読み（記録のみ、挙動を変えない。既定は無効）
-    indicator_menu: indicator_menu_shadow::IndicatorMenuShadow,
     indicator_glyph: indicator_glyph_shadow::IndicatorGlyphShadow,
     /// ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ、挙動を変えない。既定は無効）
     mozc_shm: mozc_shm_shadow::MozcShmShadow,
@@ -580,19 +576,7 @@ impl Runtime {
     }
 
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
-    ///
-    /// ADR-158 TE3: `AppImeProfile::can_use_imm32_cross_process`が観測用の
-    /// `#[actuation_choke_point]`を付けた際に`const fn`ではなくなったため、
-    /// 以前ここにあった`#[expect(clippy::missing_const_for_fn)]`（「const化できる」
-    /// というclippy提案の抑制）は不要になった。
-    ///
-    /// `#[track_caller]`（opus code review S3で追加）: このメソッドは薄いラッパで、
-    /// `AppImeProfile::can_use_imm32_cross_process`が`std::panic::Location::caller()`で
-    /// 記録する呼び出し元は「直近1段」のみ。このラッパに`#[track_caller]`が無いと、
-    /// このラッパ経由の呼び出しがすべて`runtime/mod.rs`のこの行として記録され、
-    /// 真の呼び出し元（このラッパをさらに呼んでいる側）が観測ログから消える。
     #[must_use]
-    #[track_caller]
     pub fn can_use_imm32_cross_process(&self) -> bool {
         self.platform
             .current_app_profile()
@@ -1257,7 +1241,7 @@ impl Runtime {
             // ここで belief（IME open observation）を書いてはならない。
             // かつて ce45b82 が「非TSFウィンドウには日本語IMEが存在しない」という誤った
             // 前提で write_focus_probe(false) の偽観測を注入していたが、Edge/Chrome
-            // （Imm32Unavailable, injection=Unicode）は非TSF注入かつ日本語IME有効であり、
+            // （Imm32Unavailable、当時は injection=Unicode）は非TSF注入かつ日本語IME有効であり、
             // 実観測経路を持たないため偽 Low false が most_recent_trusted() 経由で belief を
             // 支配し、フォーカス約500ms後（次ポーリング）に Engine が必ず OFF になった
             // （docs/known-bugs.md BUG-07）。ce45b82 の元バグ（Win+X メニューの1文字
@@ -1498,7 +1482,6 @@ impl Runtime {
             ),
             lang_check: lang_check::LangCheck::default(),
             lang_detect: lang_detect_shadow::LangDetectShadow::disabled(),
-            indicator_menu: indicator_menu_shadow::IndicatorMenuShadow::disabled(),
             indicator_glyph: indicator_glyph_shadow::IndicatorGlyphShadow::disabled(),
             mozc_shm: mozc_shm_shadow::MozcShmShadow::disabled(),
             resume_hold: crate::state::half_width_resume_hold::ResumeHold::new(),
@@ -2296,32 +2279,6 @@ impl Runtime {
         let _ = self
             .engine
             .on_command(EngineCommand::SetNgramModel(model), &ctx);
-    }
-
-    /// Output が積んだ `RuntimeRequest` を drain して処理する。
-    ///
-    /// キー処理境界（`WM_EXECUTE_EFFECTS` / `WM_DRAIN_OUTPUT_QUEUE` 末尾）で呼ぶ。
-    ///
-    /// `Output` はキー注入中に `with_app` を再入させられないため、IME リフレッシュ・
-    /// TSF プローブ起動などの Runtime 操作を `RuntimeOutbox` に積んでおき、
-    /// ここで一括実行する（H-4-b: `StartTsfProbe` が Chrome cold パスから積まれる）。
-    pub(crate) fn drain_runtime_requests(&mut self) {
-        use crate::runtime::outbox::RuntimeRequest;
-        let requests = self.platform.output.take_pending_requests();
-        if requests.is_empty() {
-            return;
-        }
-        tracing::debug!("[runtime-outbox] {} request(s) を drain", requests.len());
-        for request in requests {
-            match request {
-                RuntimeRequest::StartTsfProbe => {
-                    tracing::debug!("[runtime-outbox] StartTsfProbe → pending TSF timer 適用");
-                    if let Some(cmd) = self.platform.output.pending_tsf_timer() {
-                        self.platform.apply_timer_command(cmd);
-                    }
-                }
-            }
-        }
     }
 
     /// パニックリセット: IME 関連キー連打で発動する緊急リセット。

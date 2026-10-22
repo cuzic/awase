@@ -5,7 +5,8 @@ title: |-
 summary: |-
   ADR-089 の型保護を実効化し、隣接 ADR の後始末を確定する — `issue_open_warrant()` の実配線（`ActuationOrder` による warrant の運搬、shadow→enforce の二段階）、`ConvergedReceipt` の制御フロー配線と `most_recent_trusted_after` の private 化、観測ストアの裏口の可視性縮小と「閉じられない witness」の理由確定、非同期チェーンの `caps` 再抽選化、dylint 2 crate を恒久的に実行時 lint とする決定、**ADR-081 Phase 1d/1e の凍結決定**、golden の stale な関数名。INV-47〜52、P22
 status: |-
-  一部実装(2026-10-04 本文の実施記録で確認)。項A(A-1 shadow 配線 e3bf7af2・A-2 `into_actuation` による強制、2026-09-19)・項B(ConvergedReceipt 配線 a33a94e2)・項C(観測ストアの裏口)・項E(dylint 残置)・項F(ADR-081 Phase 1d/1e 凍結 146934ec)・項G(golden 名)は実施済み。項D(非同期チェーンの caps 化)は実施記録なく未着手。実機ソーク未実施。
+  一部実装。項F の追補(2026-10-22、所有者判断): 凍結して残していた `ImeProfileDriver` trait・3 つの ZST ドライバ・contract test(`state/ime_profile_driver.rs`、約 400 行、本番の呼び出し元ゼロ)を撤去した(§4.7 の「契約宣言として残す」を取り下げ。末尾「追補: ime_profile_driver.rs の撤去」参照)。
+  旧(2026-10-22 更新前): 一部実装(2026-10-04 本文の実施記録で確認)。項A(A-1 shadow 配線 e3bf7af2・A-2 `into_actuation` による強制、2026-09-19)・項B(ConvergedReceipt 配線 a33a94e2)・項C(観測ストアの裏口)・項E(dylint 残置)・項F(ADR-081 Phase 1d/1e 凍結 146934ec)・項G(golden 名)は実施済み。項D(非同期チェーンの caps 化)は実施記録なく未着手。実機ソーク未実施。
   旧(2026-10-04 更新前):
   **項A: A-1（shadow配線）実施済み（2026-08-12）。A-2（強制）も実装済み・
   push待ち（2026-09-19、ユーザー指示によりリスクを受容し実機ソーク前に
@@ -1782,6 +1783,8 @@ ADR-089 §9-20 の恒久策候補 (a) の素朴な形。実コードでは `fall
 
 ### 4.7 却下: `ImeProfileDriver` を trait ごと削除する（項 F）
 
+> **2026-10-22 追補**: この却下は取り下げた。trait ごと撤去済み（末尾「追補: ime_profile_driver.rs の撤去」）。
+
 contract test 不変条件1（`has_ime_on_path()==true` のドライバは stale
 `ObservedEisu` 救済を対で持つ、BUG-07/22/37 ファミリー）に自然な置き場所が
 `caps` に無い——これは**capability の値**ではなく**コード構造についての契約**で
@@ -2155,3 +2158,18 @@ ADR-087 Phase 3 の差分テストが「判明した中で最大の挙動変化�
   ADR レベルでの適用（ADR-089 §4 と同じ）
 - `.claude/rules/tuning-constants.md`: 項 F で `probe_budget_ms` を削除する
   根拠（`ColdReason` 軸の精緻化は実測義務により着手不能）
+
+## 追補: ime_profile_driver.rs の撤去（2026-10-22）
+
+所有者の判断（2026-10-22、「挙動が変わってもシンプルになるものを選ぶ」）で、項F が凍結して
+残していた `crates/awase-ime-core/src/state/ime_profile_driver.rs`（`ImeProfileDriver` trait・
+`ImmCrossDriver`/`Imm32UnavailableDriver`/`TsfNativeDriver`・`driver_for`・contract test、400 行）を
+撤去した。本番の呼び出し元はゼロ（モジュール全体が `#[allow(dead_code)]`）で、挙動は変わらない。
+
+- 失うもの: contract test 不変条件1（ON 経路を持つドライバは stale `ObservedEisu` 救済と対、
+  BUG-07/22/37）と、`owns_physical_kanji` の `AppImePolicy` との parity テスト。どちらも
+  ZST ドライバ自身の宣言を照合するだけで、本番の分岐（`caps(p, k)`・`AppImePolicy::from_profile`・
+  `runtime/transport.rs` の配送判断）を検査していなかった。`owns_physical_kanji` の値は
+  `app_ime_policy.rs` の単体テストが引き続き固定する。
+- 合わせて更新: `state/mod.rs`、`layer_boundary_guard.rs` の `CORE_MODULES`、
+  `.cargo/mutants-awase-ime-core.toml` の `examine_globs`、`tools/core-split/assign.py`。

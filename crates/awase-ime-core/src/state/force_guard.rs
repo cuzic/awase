@@ -23,24 +23,16 @@ use std::time::Instant;
 pub enum ForceOnReason {
     /// panic_reset 直後の stale poll 上書き防止
     PanicReset,
-    /// AppImePolicy が常時 force-on を要求
-    ProfilePolicy,
 }
 
 /// 単一の force-on ガード。
+///
+/// 期限（旧 `expires_at`・`purge_expired`）は本番で一度も設定・参照されなかったため撤去した（MC-E2）。
+/// ガードは `remove`・`clear`・`clear_for_focus_change` でだけ外れる。
 #[derive(Debug, Clone, Copy)]
 pub struct ForceGuard {
     pub reason: ForceOnReason,
-    pub expires_at: Option<Instant>,
     pub generation: u64,
-}
-
-impl ForceGuard {
-    /// 期限切れか
-    #[must_use]
-    pub fn is_expired(&self, now: Instant) -> bool {
-        self.expires_at.is_some_and(|exp| now >= exp)
-    }
 }
 
 /// 発火中の force-on ガード集合。
@@ -53,11 +45,6 @@ pub struct ForceGuardSet {
 }
 
 impl ForceGuardSet {
-    /// 期限切れの guard を除去する。
-    pub fn purge_expired(&mut self, now: Instant) {
-        self.guards.retain(|g| !g.is_expired(now));
-    }
-
     /// すべての guard を解除する。
     ///
     /// `guards` フィールドは非 `pub`（過去に `platform_state.rs` から
@@ -70,8 +57,7 @@ impl ForceGuardSet {
     /// フォーカス変更時にすべての guard を解除する。
     ///
     /// force_guard は旧フォーカスアプリの文脈で発火したものであり、
-    /// 新しいアプリには引き継ぐべきでない。ProfilePolicy 由来のものも
-    /// FocusChanged で app_policy が更新されるため再評価が必要。
+    /// 新しいアプリには引き継ぐべきでない。
     pub fn clear_for_focus_change(&mut self) {
         self.clear();
     }
@@ -95,7 +81,7 @@ impl ForceGuardSet {
 
     /// `desired_open` を guard で override した最終値を返す。
     ///
-    /// guard は全て安全弁（`PanicReset`・`ProfilePolicy`）で、ユーザーの明示意図があっても
+    /// guard は全て安全弁（`PanicReset`。旧 `ProfilePolicy` は構築元が無く MC-E2 で撤去）で、ユーザーの明示意図があっても
     /// 常に override する。かつては「観測できない」ことの推測で立つヒューリスティック guard
     /// （`BrokenAppBootstrap`）だけ明示意図に譲る区別があったが、追加元が `621bf93c` で撤去され、
     /// 区別ごと削除した。
@@ -128,11 +114,6 @@ impl ForceGuardSet {
     /// `guards` フィールドは private のため（過去の直接フィールド操作の迂回を
     /// 塞ぐための設計、本ファイル冒頭コメント参照）、`iter()` を公開する代わりに
     /// 目的別のアクセサとして追加する。
-    ///
-    /// **`expires_at`（`ForceGuard::is_expired`）を見ない**——`effective_open()`
-    /// と同じ意味論（`purge_expired()` は production から一度も呼ばれておらず、
-    /// `expires_at` は事実上機能していない）。期限を見るように変える場合は
-    /// `effective_open()`/`resolve()` も同時に変えること（ADR-087 §7 round4 S-D）。
     #[must_use]
     pub fn active_reason(&self) -> Option<ForceOnReason> {
         self.guards.first().map(|g| g.reason)
@@ -180,34 +161,6 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// `expires_at: None`（無期限ガード）は期限切れ扱いにしてはならない。
-    /// `is_expired -> true` に壊れると PanicReset 等の
-    /// 無期限ガードが即座に無効化され、安全弁として機能しなくなる。
-    #[test]
-    fn is_expired_false_when_no_expiry_set() {
-        let guard = ForceGuard {
-            reason: ForceOnReason::PanicReset,
-            expires_at: None,
-            generation: 1,
-        };
-        assert!(!guard.is_expired(Instant::now()));
-    }
-
-    #[test]
-    fn is_expired_true_after_expiry_time() {
-        let now = Instant::now();
-        let guard = ForceGuard {
-            reason: ForceOnReason::PanicReset,
-            expires_at: Some(now),
-            generation: 1,
-        };
-        assert!(guard.is_expired(now + Duration::from_millis(1)));
-        assert!(!guard.is_expired(
-            now.checked_sub(Duration::from_millis(1))
-                .expect("test instant can be backdated")
-        ));
-    }
-
     /// `record_miss` の `consecutive_miss_count == 0` ガードが反転すると、
     /// 初回 miss で `first_miss_at` が記録されず、drift 窓の起点がずれる。
     #[test]
@@ -233,7 +186,6 @@ mod tests {
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         assert!(set.requires_on());
@@ -245,13 +197,11 @@ mod tests {
     fn guard_set_replaces_same_reason() {
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
-            reason: ForceOnReason::ProfilePolicy,
-            expires_at: None,
+            reason: ForceOnReason::PanicReset,
             generation: 1,
         });
         set.add(ForceGuard {
-            reason: ForceOnReason::ProfilePolicy,
-            expires_at: None,
+            reason: ForceOnReason::PanicReset,
             generation: 2,
         });
         assert_eq!(set.guards.len(), 1);
@@ -264,7 +214,6 @@ mod tests {
         assert!(!set.effective_open(false), "guard なし → desired そのまま");
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         assert!(
@@ -278,26 +227,12 @@ mod tests {
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         assert!(
             set.effective_open(false),
             "PanicReset は安全弁のため明示的意図があっても override する"
         );
-    }
-
-    #[test]
-    fn purge_expired_removes_old_guards() {
-        let mut set = ForceGuardSet::default();
-        let t0 = Instant::now();
-        set.add(ForceGuard {
-            reason: ForceOnReason::PanicReset,
-            expires_at: Some(t0),
-            generation: 1,
-        });
-        set.purge_expired(t0 + Duration::from_millis(1));
-        assert!(set.guards.is_empty());
     }
 
     #[test]
@@ -321,7 +256,6 @@ mod tests {
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         assert_eq!(
@@ -329,17 +263,6 @@ mod tests {
             Some(ForceOnReason::PanicReset),
             "override 権限を持つ PanicReset が見つかるべき"
         );
-    }
-
-    #[test]
-    fn active_reason_finds_profile_policy() {
-        let mut set = ForceGuardSet::default();
-        set.add(ForceGuard {
-            reason: ForceOnReason::ProfilePolicy,
-            expires_at: None,
-            generation: 1,
-        });
-        assert_eq!(set.active_reason(), Some(ForceOnReason::ProfilePolicy));
     }
 
     #[test]
@@ -356,7 +279,6 @@ mod tests {
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         assert_eq!(
@@ -371,7 +293,6 @@ mod tests {
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         assert_eq!(
@@ -394,26 +315,10 @@ mod tests {
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: 1,
         });
         for desired in [true, false] {
             assert_eq!(set.resolve(desired).0, set.effective_open(desired));
         }
-    }
-
-    #[test]
-    fn resolve_profile_policy_also_overrides() {
-        // ProfilePolicy も PanicReset と同じく、明示意図の有無に関わらず override する。
-        let mut set = ForceGuardSet::default();
-        set.add(ForceGuard {
-            reason: ForceOnReason::ProfilePolicy,
-            expires_at: None,
-            generation: 1,
-        });
-        assert_eq!(
-            set.resolve(false),
-            (true, Some(ForceOnReason::ProfilePolicy))
-        );
     }
 }

@@ -40,7 +40,7 @@ impl<'a> ColdWarmupSequence<'a> {
     /// IMM32 ローマ字モード復元のみ即座に行い、F2 warmup 送信・
     /// `TsfReadinessProbe` の事前待機は行わない（即座に per-VK confirm へ進む
     /// [`WarmupStarted`] を返す）。
-    pub(crate) fn run_start(&self, session_expired: bool, elapsed_ms: u64) -> WarmupStarted {
+    pub(crate) fn run_start(&self, elapsed_ms: u64) -> WarmupStarted {
         // 診断ログ (get_ime_conversion_mode_raw_timeout) と IMM32 ローマ字モード復元
         // (set_ime_romaji_mode) は SendMessageTimeoutW を呼ぶため、メインスレッドで
         // 同期実行すると `with_app` 再入の原因になる。ワーカースレッドに offload する
@@ -103,7 +103,7 @@ impl<'a> ColdWarmupSequence<'a> {
         let win_class = unsafe { crate::ime::get_foreground_window_class() };
         let cold_reason = self.output.composition.last_cold_reason();
         tracing::debug!(
-            "[h1-warmup] cold={cold_seq} class={win_class} session_expired={session_expired} \
+            "[h1-warmup] cold={cold_seq} class={win_class} \
              elapsed={elapsed_ms}ms reason={cold_reason:?} → F2/probe待機省略、per-VK confirm へ",
             cold_seq = cold_seq.value(),
         );

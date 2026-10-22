@@ -8,7 +8,6 @@ pub mod focus_observer;
 pub mod gji_observer;
 pub mod ime_observer;
 pub mod indicator_glyph;
-pub mod indicator_menu;
 pub mod kana_lock;
 pub mod layout_observer;
 pub mod mozc_shm;

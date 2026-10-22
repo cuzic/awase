@@ -329,11 +329,9 @@ pub fn send_carries_romaji(actions: &[KeyAction]) -> bool {
 /// 何もしない）。入力の途中で cold に落とすと per-VK confirm → StaleConfirm → ESC で未確定文字が
 /// 消える（BUG-171、BUG-033 追補3・4 と同型）。
 ///
-/// **Unicode 注入モードでも出す**（PR #354 のコードレビュー M2 で一度「Unicode では出さない」にしたが、
-/// e2e-ime-smoke の baseline/atok-passthrough-cold（Unicode モードで動く）で GjiFsm が OffCold に固着して
-/// I4 が FAIL したため取り下げた）。Reopen 後の long-idle で `needs_unicode_cold_warmup` が VK_IME_ON poke
-/// を出すのは Unicode long-cold の既存設計（同期が正常に届く Unicode ユーザーでは元から起きる挙動）で、
-/// OffCold に固着すると失われるのは「long-cold の defer」であり、それを取り戻すのが同期の目的である。
+/// 注入モードでは分けない（PR #354 のコードレビュー M2 で一度「Unicode 注入モードでは出さない」にしたが、
+/// e2e-ime-smoke の baseline/atok-passthrough-cold で GjiFsm が OffCold に固着して I4 が FAIL したため
+/// 取り下げた。Unicode 注入モード自体は ADR-276 で撤去した）。
 #[must_use]
 pub const fn reopen_obligation(
     candidate_visible: bool,

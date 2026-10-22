@@ -95,7 +95,7 @@ pub enum TsfGateState {
     Probing,
     /// TSF プローブ完了。通常動作中。
     Ready,
-    /// 非 TSF アプリ（VK/Unicode モード）。保留しない。
+    /// 非 TSF アプリ（VK モード）。保留しない。
     Bypass,
 }
 

@@ -533,14 +533,14 @@ impl Default for AutoDetectConfig {
     }
 }
 
-/// 入力インジケーターを読む証拠源（字形・右クリックメニュー）の使い方の段階（ADR-271）。段階は累積する（`Ord` は強さの順）。
+/// 入力インジケーターを読む証拠源（字形）の使い方の段階（ADR-271）。段階は累積する（`Ord` は強さの順）。
 ///
 /// どの段階でも IME へは何も書かない。`Unobserved`/`All` の belief への配線は別 ADR で決める
 /// ので、`awase-ime-core` の `ui_max_level()` を超える段階は実効値で丸める（保存は書き換えない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceLevel {
-    /// 読まない。既定（ウイルス対策ソフトの行動検出に当たりうるためオプトイン。ADR-261/264）。
+    /// 読まない。既定（ウイルス対策ソフトの行動検出に当たりうるためオプトイン。ADR-261）。
     #[default]
     Off,
     /// すべてのウィンドウで読み、journal・不具合報告に残す。belief の証拠にはしない。
@@ -564,14 +564,14 @@ impl EvidenceLevel {
     }
 }
 
-/// 入力インジケーターを読む証拠源ごとの段階（ADR-271）。字形とメニューは独立したスイッチ。
+/// 入力インジケーターを読む証拠源ごとの段階（ADR-271）。
+///
+/// 右クリックメニュー（ADR-264）の `menu` は 2026-10-22 に撤去した。旧 `config.toml` に残っていても無警告で無視する（`config_load_diag::REMOVED_KEYS`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IndicatorEvidenceConfig {
     /// タスクバーのインジケーターの字形（ADR-261）。
     pub glyph: EvidenceLevel,
-    /// インジケーターの右クリックメニュー（ADR-264）。
-    pub menu: EvidenceLevel,
 }
 
 // 既定はすべて空（`#[derive(Default)]`）。経緯:
@@ -2053,23 +2053,16 @@ engine_off_solo_triple = "VK_NONCONVERT"
 
     #[test]
     fn test_indicator_evidence_defaults_to_off() {
-        // 既定は両方 off(オプトイン。ADR-271 D4)。セクションが無くても、片方だけ指定しても。
+        // 既定は off(オプトイン。ADR-271 D4)。セクションが無くても。
         let config: AppConfig = toml::from_str("[general]\n").unwrap();
-        assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Off);
-        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::Off);
-        let config: AppConfig =
-            toml::from_str("[indicator_evidence]\nmenu = \"observe\"\n").unwrap();
-        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::Observe);
         assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Off);
     }
 
     #[test]
     fn test_indicator_evidence_levels_parse_and_order() {
         let config: AppConfig =
-            toml::from_str("[indicator_evidence]\nglyph = \"unobserved\"\nmenu = \"all\"\n")
-                .unwrap();
+            toml::from_str("[indicator_evidence]\nglyph = \"unobserved\"\n").unwrap();
         assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Unobserved);
-        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::All);
         assert!(
             EvidenceLevel::Off < EvidenceLevel::Observe
                 && EvidenceLevel::Observe < EvidenceLevel::Unobserved
@@ -2080,29 +2073,23 @@ engine_off_solo_triple = "VK_NONCONVERT"
     #[test]
     fn test_indicator_evidence_is_not_rounded_by_validate() {
         // ADR-271 D3: 設定画面の保存が利用者の `all` を恒久的に書き換えないよう、validate は段階を丸めない。
-        let config: AppConfig =
-            toml::from_str("[indicator_evidence]\nglyph = \"all\"\nmenu = \"all\"\n").unwrap();
+        let config: AppConfig = toml::from_str("[indicator_evidence]\nglyph = \"all\"\n").unwrap();
         let (validated, warnings) = config.validate();
-        assert_eq!(validated.indicator_evidence.menu, EvidenceLevel::All);
         assert_eq!(validated.indicator_evidence.glyph, EvidenceLevel::All);
         assert!(warnings.is_empty(), "{warnings:?}");
         let back: AppConfig = validated.into();
-        assert_eq!(back.indicator_evidence.menu, EvidenceLevel::All);
+        assert_eq!(back.indicator_evidence.glyph, EvidenceLevel::All);
     }
 
     #[test]
-    fn test_indicator_menu_shadow_old_key_is_noticed_only_when_true() {
-        // ADR-271 D4: 旧キーは撤去。true のときだけ通知し、読み替えない。false は無警告。
-        let load = |t: &str| AppConfig::from_toml_str(t).unwrap();
-        let (_, w) = load("[diagnostics]\nindicator_menu_shadow = true\n").validate();
-        assert!(
-            w.iter()
-                .any(|m| m.contains("indicator_menu_shadow") && m.contains("indicator_evidence")),
-            "{w:?}"
-        );
-        let config = load("[diagnostics]\nindicator_menu_shadow = true\n");
-        assert_eq!(config.indicator_evidence.menu, EvidenceLevel::Off);
-        let (_, w) = load("[diagnostics]\nindicator_menu_shadow = false\n").validate();
+    fn test_removed_indicator_menu_keys_are_ignored_without_warning() {
+        // ADR-264 のメニュー読み取りの撤去(2026-10-22): 旧キー・新キーとも、読み込みエラーにも警告にもならない。
+        let config = AppConfig::from_toml_str(
+            "[diagnostics]\nindicator_menu_shadow = true\n\n[indicator_evidence]\nglyph = \"observe\"\nmenu = \"observe\"\n",
+        )
+        .expect("撤去した menu が残っていても読める");
+        assert_eq!(config.indicator_evidence.glyph, EvidenceLevel::Observe);
+        let (_, w) = config.validate();
         assert!(w.is_empty(), "{w:?}");
     }
 

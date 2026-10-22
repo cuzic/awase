@@ -118,12 +118,6 @@ pub const LONG_IDLE_MS: u64 = 10_000;
 #[measured_macro::measured(pending = true)]
 pub const CHROME_LONG_IDLE_MS: u64 = 5_000;
 
-/// Composition タイムアウト (ms): 変換確定待機の最大時間。
-///
-/// warm 状態で elapsed がこれを超えた場合、composition が終了したと判断する。
-#[measured_macro::measured(pending = true)]
-pub const COMPOSITION_TIMEOUT_MS: u64 = 2000;
-
 /// RAW TSF リテラル検出ウィンドウ (ms)。
 ///
 /// warmup_sent_ms からこの時間内に TSF リテラル文字が来た場合、

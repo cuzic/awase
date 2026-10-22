@@ -15,7 +15,6 @@ test_package = ["awase-ime-core", "awase-hook-core", "awase-windows-plans", "awa
 
 examine_globs = [
     "crates/awase-ime-core/src/state/ime_model.rs",
-    "crates/awase-ime-core/src/state/ime_profile_driver.rs",
     "crates/awase-ime-core/src/state/observation_store.rs",
     "crates/awase-ime-core/src/state/conv_classify.rs",
     "crates/awase-ime-core/src/state/conv_mode.rs",
@@ -39,7 +38,6 @@ examine_globs = [
     "crates/awase-ime-core/src/state/indicator_glyph.rs",
     "crates/awase-ime-core/src/state/indicator_glyph_seeds.rs",
     "crates/awase-ime-core/src/state/indicator_glyph_store.rs",
-    "crates/awase-ime-core/src/state/indicator_menu.rs",
     "crates/awase-ime-core/src/state/mozc_shm.rs",
 ]
 

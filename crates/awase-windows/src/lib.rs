@@ -309,10 +309,7 @@ pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_AP
 // WM_APP+11 (旧 WM_PROCESS_DEFERRED) / +12 (旧 WM_FOCUS_KIND_UPDATE、UIA 非同期判定の通知。ECRS F1 で撤去) / +13 / +14 (旧 WM_IME_KEY_DETECTED) は欠番。
 // +11/+14 は post 側がモジュール分割リファクタで消えた孤児ハンドラを 2026-07-06 の
 // 到達不能パス監査で撤去したもの。再利用より欠番のままが安全。
-/// 入力インジケーターの右クリックメニューの読み取りワーカーの結果（ADR-264 段階 1）。
-/// `wParam`/`lParam` は `state::indicator_menu::MenuOutcome::pack` の符号化。
-#[cfg(windows)]
-pub const WM_INDICATOR_MENU_READ: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 28;
+// WM_APP+28 (旧 WM_INDICATOR_MENU_READ、ADR-264 のメニュー読み取り。2026-10-22 撤去) は欠番。
 /// 入力インジケーターの字形の取り込みワーカーの結果（ADR-261 段階 1）。
 /// `wParam`/`lParam` は `state::indicator_glyph::ProbeOutcome::pack` の符号化。
 #[cfg(windows)]

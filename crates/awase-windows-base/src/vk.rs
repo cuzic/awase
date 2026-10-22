@@ -65,7 +65,7 @@ impl KeyEntry {
 macro_rules! vk_table {
     ($cb:ident) => {
         $cb! {
-        /// VK_A (0x41) — 'A' キー。GJI cold-start warmup の犠牲キー (`send_unicode_cold_warmup_keys`) 用途。
+        /// VK_A (0x41) — 'A' キー。
         VK_A = 0x41;
         VK_B = 0x42;
         VK_C = 0x43;

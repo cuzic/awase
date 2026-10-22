@@ -11,7 +11,7 @@ summary: |-
   帰結として、指標が効くのは **IMM が NULL を返して ObserverPoll が来ない窓**に限られ、IMM が嘘の値を返す窓・GJI の I/O 推論が ObserverPoll を書く窓では負ける(B1)。便益は小さく、その窓の型(一太郎)は未確定(ADR-261 D0-2)なので、段階 2 の前提にする。
   ③「観測の無い窓」の述語は `is_demoted_by_learning`(=NULL 型)を採る。④遅れ対策: 字形は最後のモード系打鍵から最大遅れ+余裕が経つまで報告しない(必須)。窓の同一性と FocusGen・前面の一致を照合する。
 status: |-
-  起草(2026-10-20)。**段階 1(核の実装、本番への配線なし)を実装中(2026-10-20、feat/adr273-indicator-source-core)**。Opus レビュー round 1(Blocker 3・Major 10・minor 10)・round 2(Blocker 1・Major 3・minor 5)・round 3(Blocker 1・Major 3・minor 4)・round 4(収束の確認: Blocker/Major なし、minor 6)を反映。**確定可**(Opus round 4、2026-10-20)。所有者判断 Q1・Q2・Q5 は 2026-10-20 に決定済み。**メニューの配線は 2026-10-20 に断念(Q3 の「メニュー先行」は取り下げ)**。決定は案。所有者判断 Q1〜Q3 は本文末尾。
+  起草(2026-10-20)。**段階 1(核の実装、本番への配線なし)を実装中(2026-10-20、feat/adr273-indicator-source-core)**。Opus レビュー round 1(Blocker 3・Major 10・minor 10)・round 2(Blocker 1・Major 3・minor 5)・round 3(Blocker 1・Major 3・minor 4)・round 4(収束の確認: Blocker/Major なし、minor 6)を反映。**確定可**(Opus round 4、2026-10-20)。所有者判断 Q1・Q2・Q5 は 2026-10-20 に決定済み。**メニューの配線は 2026-10-20 に断念(Q3 の「メニュー先行」は取り下げ)、メニューの読み取り(ADR-264 段階 1 の shadow)そのものも 2026-10-22 に撤去**。決定は案。所有者判断 Q1〜Q3 は本文末尾。
 related_adr:
   - "ADR-233"
   - "ADR-261"

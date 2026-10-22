@@ -51,7 +51,7 @@ pub(crate) const fn make_key_input(vk: VkCode, is_keyup: bool) -> INPUT {
 /// `Output` は Facade として本構造体を保持し、
 /// 低レベルのキー注入操作を `KeyInjector` へ委譲する。
 pub(crate) struct KeyInjector {
-    /// ローマ字↔かな双方向テーブル（Unicode モード・Chrome VK モード両用）
+    /// ローマ字↔かな双方向テーブル
     pub(super) kana_table: KanaTable,
     /// Chrome VK モード用: 記号→VK コードマッピング
     pub(super) symbol_to_vk: HashMap<char, (VkCode, bool)>,
