@@ -564,8 +564,9 @@ impl EvidenceLevel {
     }
 }
 
-/// 入力インジケーターを読む証拠源ごとの段階（ADR-271）。右クリックメニュー（ADR-264）の `menu` は 2026-10-22 に
-/// 撤去した。旧 `config.toml` に残っていても無警告で無視する（`config_load_diag::REMOVED_KEYS`）。
+/// 入力インジケーターを読む証拠源ごとの段階（ADR-271）。
+///
+/// 右クリックメニュー（ADR-264）の `menu` は 2026-10-22 に撤去した。旧 `config.toml` に残っていても無警告で無視する（`config_load_diag::REMOVED_KEYS`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IndicatorEvidenceConfig {

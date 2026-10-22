@@ -838,6 +838,7 @@ impl From<&awase::engine::RetroEvalStats> for BugReportRetroEvalStats {
 }
 
 /// ADR-271 D5: 入力インジケーターを読む補助の実効の段階と、読みの件数。件数だけで内容（字形）は含まない。
+///
 /// 右クリックメニューの要約（`menu`）は ADR-264 の撤去（2026-10-22）で削った。旧版の報告の `menu` は読み込みで無視される。
 /// 段階は**設定値ではなく実効の段階**（`min(設定値, ui_max_level())`）で、`off` でも常に出す（旧版との区別のため）。
 /// `SCHEMA_VERSION` は上げていない（追加のみ。`#[serde(default)]` 必須）。
