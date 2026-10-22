@@ -269,12 +269,14 @@
          この MSI の管理外）。LocalAppData は既知フォルダ GUID 形式で保存される
          場合があるため両方の表記を照合する。
          遅延実行（Impersonate は既定で yes）なのでプロパティ展開は使えず、パスは
-         PowerShell 側で $env:LOCALAPPDATA から組み立てる。Return="ignore": 掃除に失敗しても
-         アンインストールは止めない。アップグレード時（旧版の削除）は新版が同じパスで
+         PowerShell 側で $env:LOCALAPPDATA から組み立てる。
+         Target 列は 255 文字を超えると ICE03（String overflow）の警告になるため、
+         コマンドは省略形（-nop・gci・gp・ri）で 255 文字以内に収めている。
+         Return="ignore": 掃除に失敗してもアンインストールは止めない。アップグレード時（旧版の削除）は新版が同じパスで
          使い続けるため UPGRADINGPRODUCTCODE で除外する。 -->
     <CustomAction Id="RemoveTrayIconRow"
                   Directory="LocalAppDataFolder"
-                  ExeCommand="powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command &quot;$e = Join-Path $env:LOCALAPPDATA 'awase\awase.exe'; $g = '{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}\awase\awase.exe'; Get-ChildItem 'HKCU:\Control Panel\NotifyIconSettings' -ErrorAction SilentlyContinue | ForEach-Object { $p = (Get-ItemProperty $_.PSPath).ExecutablePath; if ($p -ieq $e -or $p -ieq $g) { Remove-Item $_.PSPath -Recurse -ErrorAction SilentlyContinue } }&quot;"
+                  ExeCommand="powershell -nop -w hidden -c &quot;$e=$env:LOCALAPPDATA+'\awase\awase.exe';gci 'HKCU:\Control Panel\NotifyIconSettings'|%{if((gp $_.PSPath).ExecutablePath -in $e,'{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}\awase\awase.exe'){ri $_.PSPath -r}}&quot;"
                   Execute="deferred"
                   Return="ignore" />
 
