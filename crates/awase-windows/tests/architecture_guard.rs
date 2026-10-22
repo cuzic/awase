@@ -5056,23 +5056,6 @@ fn direct_follow_holds_reads_for_unconfirmed_awase_write() {
     );
 }
 
-/// ADR-158 TE3 / PR #377 レビュー M6-1: `Runtime::can_use_imm32_cross_process` は `#[track_caller]` を持つ。
-/// 直前に別の関数を挿入すると属性と doc だけが新しい関数へ移り、呼び出し元の棚卸しが黙って壊れる。
-#[test]
-fn can_use_imm32_cross_process_wrapper_keeps_track_caller() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = fs::read_to_string(Path::new(manifest_dir).join("src/runtime/mod.rs")).unwrap();
-    let lines: Vec<&str> = src.lines().collect();
-    let idx = lines
-        .iter()
-        .position(|l| l.contains("pub fn can_use_imm32_cross_process(&self)"))
-        .expect("ラッパが無い");
-    let prev = lines[idx - 1].trim();
-    let prev2 = lines[idx - 2].trim();
-    assert_eq!(prev, "#[track_caller]", "直前の行: {prev}");
-    assert_eq!(prev2, "#[must_use]", "その前の行: {prev2}");
-}
-
 // ── ADR-103 決定4: probe 段の唯一の出口 ────────────────────────────────────
 
 /// `dispatch_probe_actions` の本体から `return DispatchResult` を1件残らず消す

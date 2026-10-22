@@ -131,7 +131,6 @@ crates/awase-keymap-learn-win/ Windows real-machine driver for the above: indepe
 crates/awase-build-support/   Shared build.rs logic (manifest embedding etc.)
 crates/xtask-adr-evidence/    Checks that fix-requires-evidence.md's family table is covered by the pre-push target regex (CI adr-evidence-consistency, ADR-158 TB2)
 crates/measured-macro/        `#[measured(...)]` attribute macro forcing value_ms/commit metadata on tuning.rs constants (ADR-158 TE1)
-crates/actuation-choke-point-macro/  `#[actuation_choke_point(callers = ...)]` observation-phase attribute macro (ADR-158 TE3 prerequisite)
 crates/timed-fsm/             Standalone timer-aware FSM framework (published to crates.io independently)
 ```
 
