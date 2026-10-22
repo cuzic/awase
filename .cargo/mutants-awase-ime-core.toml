@@ -26,6 +26,7 @@ examine_globs = [
     "crates/awase-ime-core/src/state/belief.rs",
     "crates/awase-ime-core/src/state/app_ime_policy.rs",
     "crates/awase-ime-core/src/state/ime_event.rs",
+    "crates/awase-ime-core/src/state/exhaustive_seq.rs",
     "crates/awase-ime-core/src/state/input_barrier.rs",
     "crates/awase-ime-core/src/state/probe_admission.rs",
     "crates/awase-ime-core/src/state/physical_disposition.rs",

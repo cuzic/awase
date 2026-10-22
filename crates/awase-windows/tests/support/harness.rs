@@ -31,7 +31,7 @@ use std::time::Instant;
 
 use awase::config::ConfirmMode;
 use awase::engine::{
-    ActivationState, Decision, Effect, Engine, EngineCommand, ImeEffect, InputContext,
+    ActivationState, ConvMode, Decision, Effect, Engine, EngineCommand, ImeEffect, InputContext,
     InputModeState, NicolaFsm, SpecialKeyCombos,
 };
 use awase::scanmap::KeyboardModel;
@@ -49,14 +49,14 @@ use awase_windows::state::ime_event::{
 };
 use awase_windows::state::ime_model::ImeModel;
 use awase_windows::state::key_effect_predictor::{
-    plan_key_effect_track, KeyEffectKeymap, KeyTrackFacts, PredictInput, Prediction,
+    plan_key_effect_track, KeyEffectKeymap, KeyTrack, KeyTrackFacts, PredictInput, Prediction,
 };
 use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant};
 use awase_windows::state::platform_state::ImeStateHub;
 use awase_windows::state::probe_admission::{Admission, FocusFence, ImmLikeTicket};
 use awase_windows::state::TickMs;
 
-use super::pseudo_ime::{Grid, PseudoIme, TrueState, CONV_ALNUM};
+use super::pseudo_ime::{Grid, PseudoIme, TrueState};
 
 /// 本番の `GetTickCount64` に相当する tick の起点（0 付近だと TTL 計算が境界に寄るため）。
 const TICK_BASE: u64 = 1_000_000;
@@ -121,6 +121,10 @@ pub struct PredictionRecord {
     /// 予測の入力（打鍵前の belief）。
     pub input_open: bool,
     pub input_mode: InputModeState,
+    /// 予測の入力の追跡（打鍵前の `key_track`）・入力中の観測・直近に観測した conv（食い違いの仕分けに使う、ADR-277）。
+    pub input_track: KeyTrack,
+    pub input_composing: bool,
+    pub input_conv_raw: Option<u32>,
     pub prediction: Option<Prediction>,
     pub truth_before: TrueState,
     pub truth_after: TrueState,
@@ -353,6 +357,9 @@ impl Harness {
             vk,
             input_open: input.open,
             input_mode: input.mode,
+            input_track: input.track,
+            input_composing: input.composing,
+            input_conv_raw: input.conv_raw,
             prediction,
             truth_before: press.before,
             truth_after: press.after,
@@ -401,7 +408,10 @@ impl Harness {
         let conv = self.ime.read_state().conv;
         self.last_conv_raw = Some(conv);
         if open {
-            let mode = if conv == CONV_ALNUM {
+            // 英数かは本番と同じく NATIVE ビットで決める（`ConvMode::from_u32`、`is_eisu_evidence`）。以前は `conv == 0x10`
+            // だけを英数としていた。格子に出る conv（0x10・0x13・0x19・0x1B）では結果は同じで、これが原因の食い違いは
+            // 無かった（ADR-277 の仕分け）が、0x18（全角英数）・0x00 等で本番とずれるので揃えた。
+            let mode = if ConvMode::from_u32(conv).is_eisu() {
                 InputModeState::ObservedEisu
             } else {
                 InputModeState::ObservedRomaji
