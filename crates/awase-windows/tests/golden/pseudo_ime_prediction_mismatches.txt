@@ -2,286 +2,119 @@
 # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive
 # 仕分け（A=ハーネス・B=既知の制限・C=製品のバグの疑い・D=実害なし・E=予測器が意図して違う/実 IME の方が望ましくない・
 # P=所有者の判断待ち。ラベルと根拠は TRIAGE。「閉の間の持ち越し←X」は X の分類に従う）:
-# [B] 種類=39 件=64
-# [C] 種類=62 件=263
-# [P] 種類=52 件=247
-# [C] 変換モード 0x13 を予測器が表せない: 種類=10 件=16
-#     根拠: BUG-212: Conv::from_raw(0x13)=None で入力モードから C19 とみなし、GJI の MS-IME プリセットの 0x13 の英数キーを「半角英数へ」と予測する。格子は 0x13|英数→0x19（ひらがな）。0x13 は無変換 2 回で到達する（on-c1B-none|muhenkan=ON/0x13）。本来: 予測しない（ADR-191 は表せない conv を「予測なし」とする）か実 IME どおりひらがな。半角英数と予測すると Engine が止まり NICOLA が効かない
-# [P] 段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］: 種類=14 件=77
-#     根拠: BUG-211 の観測できない窓の側。格子は 1 文字の入力中の BS で破棄、予測器は入力中のまま（2 文字以上なら予測器が正しい）。質問: 読めない窓で、入力中の BS の後に続くモードキーは「入力中」「入力なし」「予測しない」のどれで引くべきか
-# [C] 段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］: 種類=14 件=77
-#     根拠: BUG-211: 入力中の BS は表から除外（文字数で割れる、ADR-210 M2）で予測なし→追跡の段階が Typing のまま残り、観測の composing=false（入力中の文字は無い）を予測器が使わない。本来: 観測に従い段階を None にする（ADR-191 決定3 は観測を正とする。予測器自身の注記も「読めるアプリでは composing が入力中を決める」）
-# [B] 段階のずれ 起点=0x1B（押す前=Typing・予測あり）: 種類=29 件=54
+# [B] 種類=34 件=52
+# [C] 種類=27 件=141
+# [P] 種類=27 件=141
+# [P] 段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］: 種類=6 件=36
+#     根拠: BUG-211 は修正済み(見えない窓では、入力中の BS の後を「不明」にして予測しない。所有者の判断 2026-10-22)。ここに残る分は、最短の開始がすべて on-c13-none(半角カタカナ 0x13)で、予測器が 0x13 に入ったことを知らない別原因(BUG-212 の残り)が、起点の BS に帰属して数えられている
+# [C] 段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］: 種類=6 件=36
+#     根拠: BUG-211 は修正済み(入力中の BS の後は段階を「不明」にして次のモードキーを予測しない。観測できる窓は composing で Typing に戻る)。ここに残る分は、最短の開始がすべて on-c13-none(半角カタカナ 0x13)で、予測器が 0x13 に入ったことを知らない別原因(BUG-212 の残り)が、起点の BS に帰属して数えられている。BUG-212 の追跡の印の変更で解消する想定
+# [B] 段階のずれ 起点=0x1B（押す前=Typing・予測あり）: 種類=24 件=42
 #     根拠: BUG-162 の残る限界: MS-IME 本体の入力中の Esc は予測なし（候補窓依存）で段階を None に捨てるが、格子は保持（入力中のまま）。入力中を観測できる窓は composing で直り、観測できない窓だけに残る（key_effect_predictor.rs の msime_native_henkan_none_and_typing_esc_are_not_predicted の注記）
 # [B] 閉→開で入力モードを予測しない（起動時の初期値）: 種類=10 件=10
 #     根拠: BUG-204: 閉の間は入力モードを観測せず（is_eisu_evidence が ime_on=false で None）、閉のセルは after_conv=None で mode を予測しないので、起動時の AssumedRomaji{Startup} が開くまで残る
-# [P] 閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］: 種類=38 件=170
-#     根拠: BUG-211 の観測できない窓の側。格子は 1 文字の入力中の BS で破棄、予測器は入力中のまま（2 文字以上なら予測器が正しい）。質問: 読めない窓で、入力中の BS の後に続くモードキーは「入力中」「入力なし」「予測しない」のどれで引くべきか
-# [C] 閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］: 種類=38 件=170
-#     根拠: BUG-211: 入力中の BS は表から除外（文字数で割れる、ADR-210 M2）で予測なし→追跡の段階が Typing のまま残り、観測の composing=false（入力中の文字は無い）を予測器が使わない。本来: 観測に従い段階を None にする（ADR-191 決定3 は観測を正とする。予測器自身の注記も「読めるアプリでは composing が入力中を決める」）
-[atok 観測可能=false] 抽象状態=45 食い違い=49 種類=19
+# [P] 閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］: 種類=21 件=105
+#     根拠: BUG-211 は修正済み(見えない窓では、入力中の BS の後を「不明」にして予測しない。所有者の判断 2026-10-22)。ここに残る分は、最短の開始がすべて on-c13-none(半角カタカナ 0x13)で、予測器が 0x13 に入ったことを知らない別原因(BUG-212 の残り)が、起点の BS に帰属して数えられている
+# [C] 閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］: 種類=21 件=105
+#     根拠: BUG-211 は修正済み(入力中の BS の後は段階を「不明」にして次のモードキーを予測しない。観測できる窓は composing で Typing に戻る)。ここに残る分は、最短の開始がすべて on-c13-none(半角カタカナ 0x13)で、予測器が 0x13 に入ったことを知らない別原因(BUG-212 の残り)が、起点の BS に帰属して数えられている。BUG-212 の追跡の印の変更で解消する想定
+[atok 観測可能=false] 抽象状態=31 食い違い=5 種類=5
   1 件 [B] atok 観測可能=false 押す前=off-c10-none キー=0x16 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[16]
     step#8 vk=0x16: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [P] atok 観測可能=false 押す前=off-c10-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D 16]
-    step#24 vk=0x16: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
   1 件 [B] atok 観測可能=false 押す前=off-c10-none キー=0x19 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[19]
     step#8 vk=0x19: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [P] atok 観測可能=false 押す前=off-c10-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D 19]
-    step#24 vk=0x19: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
   1 件 [B] atok 観測可能=false 押す前=off-c10-none キー=0x1C 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[1C]
     step#8 vk=0x1C: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [P] atok 観測可能=false 押す前=off-c10-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D 1C]
-    step#24 vk=0x1C: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
   1 件 [B] atok 観測可能=false 押す前=off-c10-none キー=0x1D 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[1D]
     step#8 vk=0x1D: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [P] atok 観測可能=false 押す前=off-c10-none キー=0x1D 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D 1D]
-    step#24 vk=0x1D: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
   1 件 [B] atok 観測可能=false 押す前=off-c10-none キー=0xF3 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[F3]
     step#8 vk=0xF3: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [P] atok 観測可能=false 押す前=off-c10-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D F3]
-    step#24 vk=0xF3: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [P] atok 観測可能=false 押す前=off-c19-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  3 件 [P] atok 観測可能=false 押す前=off-c19-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  3 件 [P] atok 観測可能=false 押す前=off-c19-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  3 件 [P] atok 観測可能=false 押す前=off-c19-none キー=0x1D 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D 1D]
-    step#20 vk=0x1D: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  3 件 [P] atok 観測可能=false 押す前=off-c19-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  2 件 [P] atok 観測可能=false 押す前=on-c10-none キー=0x1C 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F0 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: None } track=KeyTrack { conv: Some(C10), stage: ConvHenkan }) ／ 真値 open=false conv=0x10 None
-  2 件 [P] atok 観測可能=false 押す前=on-c10-none キー=0x1D 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F0 1D]
-    step#20 vk=0x1D: 予測 open=true かな=true (effect=PredictedEffect { open: None, mode: Some(AssumedRomaji { reason: KeyEffectPrediction }) } track=KeyTrack { conv: Some(C19), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x10 None
-  5 件 [P] atok 観測可能=false 押す前=on-c19-none キー=0x1C 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 1C]
-    step#16 vk=0x1C: 予測 open=true かな=true (effect=PredictedEffect { open: None, mode: None } track=KeyTrack { conv: Some(C19), stage: ConvHenkan }) ／ 真値 open=false conv=0x19 None
-  5 件 [P] atok 観測可能=false 押す前=on-c19-none キー=0x1D 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 1D]
-    step#16 vk=0x1D: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x19 None
-[atok 観測可能=true] 抽象状態=45 食い違い=49 種類=19
+[atok 観測可能=true] 抽象状態=31 食い違い=5 種類=5
   1 件 [B] atok 観測可能=true 押す前=off-c10-none キー=0x16 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[16]
     step#8 vk=0x16: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [C] atok 観測可能=true 押す前=off-c10-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D 16]
-    step#24 vk=0x16: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
   1 件 [B] atok 観測可能=true 押す前=off-c10-none キー=0x19 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[19]
     step#8 vk=0x19: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [C] atok 観測可能=true 押す前=off-c10-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D 19]
-    step#24 vk=0x19: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
   1 件 [B] atok 観測可能=true 押す前=off-c10-none キー=0x1C 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[1C]
     step#8 vk=0x1C: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [C] atok 観測可能=true 押す前=off-c10-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D 1C]
-    step#24 vk=0x1C: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
   1 件 [B] atok 観測可能=true 押す前=off-c10-none キー=0x1D 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[1D]
     step#8 vk=0x1D: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [C] atok 観測可能=true 押す前=off-c10-none キー=0x1D 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D 1D]
-    step#24 vk=0x1D: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
   1 件 [B] atok 観測可能=true 押す前=off-c10-none キー=0xF3 機序=閉→開で入力モードを予測しない（起動時の初期値）
     最短 開始=off-c10-none mode=AssumedRomaji { reason: Startup } 列=[F3]
     step#8 vk=0xF3: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [C] atok 観測可能=true 押す前=off-c10-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=AssumedRomaji { reason: KeyEffectPrediction } 列=[41 08 F0 1D F3]
-    step#24 vk=0xF3: 予測 open=true かな=true (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 None
-  3 件 [C] atok 観測可能=true 押す前=off-c19-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  3 件 [C] atok 観測可能=true 押す前=off-c19-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  3 件 [C] atok 観測可能=true 押す前=off-c19-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  3 件 [C] atok 観測可能=true 押す前=off-c19-none キー=0x1D 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D 1D]
-    step#20 vk=0x1D: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  3 件 [C] atok 観測可能=true 押す前=off-c19-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 1D F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  2 件 [C] atok 観測可能=true 押す前=on-c10-none キー=0x1C 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F0 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: None } track=KeyTrack { conv: Some(C10), stage: ConvHenkan }) ／ 真値 open=false conv=0x10 None
-  2 件 [C] atok 観測可能=true 押す前=on-c10-none キー=0x1D 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F0 1D]
-    step#20 vk=0x1D: 予測 open=true かな=true (effect=PredictedEffect { open: None, mode: Some(AssumedRomaji { reason: KeyEffectPrediction }) } track=KeyTrack { conv: Some(C19), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x10 None
-  5 件 [C] atok 観測可能=true 押す前=on-c19-none キー=0x1C 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 1C]
-    step#16 vk=0x1C: 予測 open=true かな=true (effect=PredictedEffect { open: None, mode: None } track=KeyTrack { conv: Some(C19), stage: ConvHenkan }) ／ 真値 open=false conv=0x19 None
-  5 件 [C] atok 観測可能=true 押す前=on-c19-none キー=0x1D 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 1D]
-    step#16 vk=0x1D: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x19 None
-[msime 観測可能=false] 抽象状態=88 食い違い=14 種類=6
-  1 件 [C] msime 観測可能=false 押す前=on-c13-conv-henkan キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 1C F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvHenkan }) ／ 真値 open=true conv=0x19 ConvHenkan
-  1 件 [C] msime 観測可能=false 押す前=on-c13-conv-muhenkan キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 1D F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=true conv=0x19 ConvMuhenkan
-  1 件 [C] msime 観測可能=false 押す前=on-c13-conv-space キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 20 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvSpace }) ／ 真値 open=true conv=0x19 ConvSpace
-  3 件 [C] msime 観測可能=false 押す前=on-c13-none キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[F0]
-    step#8 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: None }) ／ 真値 open=true conv=0x19 None
-  6 件 [P] msime 観測可能=false 押す前=on-c13-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=true conv=0x19 None
-  2 件 [C] msime 観測可能=false 押す前=on-c13-typing キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 F0]
-    step#12 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=true conv=0x19 Typing
-[msime 観測可能=true] 抽象状態=88 食い違い=14 種類=6
-  1 件 [C] msime 観測可能=true 押す前=on-c13-conv-henkan キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 1C F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvHenkan }) ／ 真値 open=true conv=0x19 ConvHenkan
-  1 件 [C] msime 観測可能=true 押す前=on-c13-conv-muhenkan キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 1D F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=true conv=0x19 ConvMuhenkan
-  1 件 [C] msime 観測可能=true 押す前=on-c13-conv-space キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 20 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvSpace }) ／ 真値 open=true conv=0x19 ConvSpace
-  3 件 [C] msime 観測可能=true 押す前=on-c13-none キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[F0]
-    step#8 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: None }) ／ 真値 open=true conv=0x19 None
-  6 件 [C] msime 観測可能=true 押す前=on-c13-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=true conv=0x19 None
-  2 件 [C] msime 観測可能=true 押す前=on-c13-typing キー=0xF0 機序=変換モード 0x13 を予測器が表せない
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 F0]
-    step#12 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=true conv=0x19 Typing
-[msime-native 観測可能=false] 抽象状態=108 食い違い=251 種類=66
+[msime 観測可能=false] 抽象状態=158 食い違い=0 種類=0
+[msime 観測可能=true] 抽象状態=124 食い違い=0 種類=0
+[msime-native 観測可能=false] 抽象状態=99 食い違い=183 種類=51
   5 件 [P] msime-native 観測可能=false 押す前=off-c10-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 16]
+    step#24 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c10-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 19]
+    step#24 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c10-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 1C]
+    step#24 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c10-none キー=0xF0 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 F0]
-    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 F0]
+    step#24 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c10-none キー=0xF1 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 F1]
-    step#20 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 F1]
+    step#24 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c10-none キー=0xF2 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 F2]
-    step#20 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 F2]
+    step#24 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c10-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  5 件 [P] msime-native 観測可能=false 押す前=off-c13-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  5 件 [P] msime-native 観測可能=false 押す前=off-c13-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [P] msime-native 観測可能=false 押す前=off-c13-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [P] msime-native 観測可能=false 押す前=off-c13-none キー=0xF0 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 F0]
-    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [P] msime-native 観測可能=false 押す前=off-c13-none キー=0xF1 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 F1]
-    step#20 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [P] msime-native 観測可能=false 押す前=off-c13-none キー=0xF2 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 F2]
-    step#20 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [P] msime-native 観測可能=false 押す前=off-c13-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 F3]
+    step#24 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c19-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 16]
+    step#24 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c19-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 19]
+    step#24 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c19-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 1C]
+    step#24 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c19-none キー=0xF0 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 F0]
-    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 F0]
+    step#24 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c19-none キー=0xF1 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 F1]
-    step#20 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 F1]
+    step#24 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c19-none キー=0xF2 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 F2]
-    step#20 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 F2]
+    step#24 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c19-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 F3]
+    step#24 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c1B-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 16]
+    step#28 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [P] msime-native 観測可能=false 押す前=off-c1B-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 19]
+    step#28 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [P] msime-native 観測可能=false 押す前=off-c1B-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 1C]
+    step#28 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [P] msime-native 観測可能=false 押す前=off-c1B-none キー=0xF0 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 F0]
-    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 F0]
+    step#28 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [P] msime-native 観測可能=false 押す前=off-c1B-none キー=0xF1 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 F1]
-    step#20 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 F1]
+    step#28 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [P] msime-native 観測可能=false 押す前=off-c1B-none キー=0xF2 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 F2]
-    step#20 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 F2]
+    step#28 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [P] msime-native 観測可能=false 押す前=off-c1B-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
-  1 件 [B] msime-native 観測可能=false 押す前=on-c13-conv-henkan キー=0xF3 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 1B 1C F3]
-    step#20 vk=0xF3: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 ConvHenkan
-  2 件 [B] msime-native 観測可能=false 押す前=on-c13-conv-space キー=0xF3 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 1B 20 F3]
-    step#20 vk=0xF3: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 ConvSpace
-  8 件 [P] msime-native 観測可能=false 押す前=on-c13-none キー=0x1A 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 1A]
-    step#16 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x13 None
-  8 件 [P] msime-native 観測可能=false 押す前=on-c13-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x10 None
-  8 件 [P] msime-native 観測可能=false 押す前=on-c13-none キー=0xF3 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F3]
-    step#16 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x13 None
-  3 件 [B] msime-native 観測可能=false 押す前=on-c13-typing キー=0x1A 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 1B 1A]
-    step#16 vk=0x1A: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 Typing
-  3 件 [B] msime-native 観測可能=false 押す前=on-c13-typing キー=0xF0 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 1B F0]
-    step#16 vk=0xF0: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 Typing
-  3 件 [B] msime-native 観測可能=false 押す前=on-c13-typing キー=0xF3 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 1B F3]
-    step#16 vk=0xF3: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 Typing
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 F3]
+    step#28 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   2 件 [B] msime-native 観測可能=false 押す前=on-c19-conv-henkan キー=0x1A 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
     最短 開始=on-c19-none mode=ObservedRomaji 列=[41 1B 1C 1A]
     step#20 vk=0x1A: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 ConvHenkan
@@ -309,15 +142,15 @@
   1 件 [B] msime-native 観測可能=false 押す前=on-c19-conv-space キー=0xF3 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
     最短 開始=on-c19-none mode=ObservedRomaji 列=[41 1B 20 F3]
     step#20 vk=0xF3: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 ConvSpace
-  5 件 [P] msime-native 観測可能=false 押す前=on-c19-none キー=0x1A 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 1A]
-    step#16 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x19 None
-  5 件 [P] msime-native 観測可能=false 押す前=on-c19-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x10 None
-  5 件 [P] msime-native 観測可能=false 押す前=on-c19-none キー=0xF3 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 F3]
-    step#16 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x19 None
+  6 件 [P] msime-native 観測可能=false 押す前=on-c19-none キー=0x1A 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 1A]
+    step#20 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x19 None
+  6 件 [P] msime-native 観測可能=false 押す前=on-c19-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 F0]
+    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x10 None
+  6 件 [P] msime-native 観測可能=false 押す前=on-c19-none キー=0xF3 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 F3]
+    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x19 None
   2 件 [B] msime-native 観測可能=false 押す前=on-c19-typing キー=0x1A 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
     最短 開始=on-c19-none mode=ObservedRomaji 列=[41 1B 1A]
     step#16 vk=0x1A: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 Typing
@@ -355,14 +188,14 @@
     最短 開始=on-c1B-none mode=ObservedRomaji 列=[41 1B 20 F3]
     step#20 vk=0xF3: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 ConvSpace
   6 件 [P] msime-native 観測可能=false 押す前=on-c1B-none キー=0x1A 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedRomaji 列=[41 08 1A]
-    step#16 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 1D 1A]
+    step#24 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x1B None
   6 件 [P] msime-native 観測可能=false 押す前=on-c1B-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedRomaji 列=[41 08 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x10 None
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 1D F0]
+    step#24 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x10 None
   6 件 [P] msime-native 観測可能=false 押す前=on-c1B-none キー=0xF3 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できない窓］
-    最短 開始=on-c1B-none mode=ObservedRomaji 列=[41 08 F3]
-    step#16 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 1D F3]
+    step#24 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x1B None
   2 件 [B] msime-native 観測可能=false 押す前=on-c1B-typing キー=0x1A 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
     最短 開始=on-c1B-none mode=ObservedRomaji 列=[41 1B 1A]
     step#16 vk=0x1A: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 Typing
@@ -372,115 +205,85 @@
   2 件 [B] msime-native 観測可能=false 押す前=on-c1B-typing キー=0xF3 機序=段階のずれ 起点=0x1B（押す前=Typing・予測あり）
     最短 開始=on-c1B-none mode=ObservedRomaji 列=[41 1B F3]
     step#16 vk=0xF3: 予測 open=false かな=true (effect=PredictedEffect { open: Some(false), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x10 Typing
-[msime-native 観測可能=true] 抽象状態=86 食い違い=197 種類=37
+[msime-native 観測可能=true] 抽象状態=83 食い違い=141 種類=27
   5 件 [C] msime-native 観測可能=true 押す前=off-c10-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 16]
+    step#24 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c10-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 19]
+    step#24 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c10-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 1C]
+    step#24 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c10-none キー=0xF0 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 F0]
-    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 F0]
+    step#24 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c10-none キー=0xF1 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 F1]
-    step#20 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 F1]
+    step#24 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c10-none キー=0xF2 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 F2]
-    step#20 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 F2]
+    step#24 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c10-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F0 F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  5 件 [C] msime-native 観測可能=true 押す前=off-c13-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
-  5 件 [C] msime-native 観測可能=true 押す前=off-c13-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [C] msime-native 観測可能=true 押す前=off-c13-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [C] msime-native 観測可能=true 押す前=off-c13-none キー=0xF0 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 F0]
-    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [C] msime-native 観測可能=true 押す前=off-c13-none キー=0xF1 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 F1]
-    step#20 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [C] msime-native 観測可能=true 押す前=off-c13-none キー=0xF2 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 F2]
-    step#20 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
-  5 件 [C] msime-native 観測可能=true 押す前=off-c13-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F3 F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x13 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F0 F3]
+    step#24 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c19-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 16]
+    step#24 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c19-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 19]
+    step#24 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c19-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 1C]
+    step#24 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c19-none キー=0xF0 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 F0]
-    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 F0]
+    step#24 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c19-none キー=0xF1 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 F1]
-    step#20 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 F1]
+    step#24 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c19-none キー=0xF2 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 F2]
-    step#20 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 F2]
+    step#24 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c19-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedEisu 列=[41 08 F3 F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 F3 F3]
+    step#24 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c1B-none キー=0x16 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 16]
-    step#20 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 16]
+    step#28 vk=0x16: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x19 None
   5 件 [C] msime-native 観測可能=true 押す前=off-c1B-none キー=0x19 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 19]
-    step#20 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 19]
+    step#28 vk=0x19: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [C] msime-native 観測可能=true 押す前=off-c1B-none キー=0x1C 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 1C]
-    step#20 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 1C]
+    step#28 vk=0x1C: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [C] msime-native 観測可能=true 押す前=off-c1B-none キー=0xF0 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 F0]
-    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 F0]
+    step#28 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [C] msime-native 観測可能=true 押す前=off-c1B-none キー=0xF1 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 F1]
-    step#20 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 F1]
+    step#28 vk=0xF1: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [C] msime-native 観測可能=true 押す前=off-c1B-none キー=0xF2 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 F2]
-    step#20 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 F2]
+    step#28 vk=0xF2: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
   5 件 [C] msime-native 観測可能=true 押す前=off-c1B-none キー=0xF3 機序=閉の間の持ち越し←段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedEisu 列=[41 08 F3 F3]
-    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
-  8 件 [C] msime-native 観測可能=true 押す前=on-c13-none キー=0x1A 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 1A]
-    step#16 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x13 None
-  8 件 [C] msime-native 観測可能=true 押す前=on-c13-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x10 None
-  8 件 [C] msime-native 観測可能=true 押す前=on-c13-none キー=0xF3 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F3]
-    step#16 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x13 None
-  5 件 [C] msime-native 観測可能=true 押す前=on-c19-none キー=0x1A 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 1A]
-    step#16 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x19 None
-  5 件 [C] msime-native 観測可能=true 押す前=on-c19-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x10 None
-  5 件 [C] msime-native 観測可能=true 押す前=on-c19-none キー=0xF3 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c19-none mode=ObservedRomaji 列=[41 08 F3]
-    step#16 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x19 None
+    最短 開始=on-c13-none mode=ObservedEisu 列=[41 08 F2 1D F3 F3]
+    step#28 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: Some(true), mode: None } track=KeyTrack { conv: None, stage: None }) ／ 真値 open=true conv=0x1B None
+  6 件 [C] msime-native 観測可能=true 押す前=on-c19-none キー=0x1A 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 1A]
+    step#20 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x19 None
+  6 件 [C] msime-native 観測可能=true 押す前=on-c19-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 F0]
+    step#20 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x10 None
+  6 件 [C] msime-native 観測可能=true 押す前=on-c19-none キー=0xF3 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 F3]
+    step#20 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x19 None
   6 件 [C] msime-native 観測可能=true 押す前=on-c1B-none キー=0x1A 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedRomaji 列=[41 08 1A]
-    step#16 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 1D 1A]
+    step#24 vk=0x1A: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x1B None
   6 件 [C] msime-native 観測可能=true 押す前=on-c1B-none キー=0xF0 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedRomaji 列=[41 08 F0]
-    step#16 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x10 None
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 1D F0]
+    step#24 vk=0xF0: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x10 None
   6 件 [C] msime-native 観測可能=true 押す前=on-c1B-none キー=0xF3 機序=段階のずれ 起点=0x08（押す前=Typing・予測なし）［入力中を観測できる窓］
-    最短 開始=on-c1B-none mode=ObservedRomaji 列=[41 08 F3]
-    step#16 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: Typing }) ／ 真値 open=false conv=0x1B None
+    最短 開始=on-c13-none mode=ObservedRomaji 列=[41 08 F2 1D F3]
+    step#24 vk=0xF3: 予測 open=true かな=false (effect=PredictedEffect { open: None, mode: Some(ObservedEisu) } track=KeyTrack { conv: Some(C10), stage: ConvMuhenkan }) ／ 真値 open=false conv=0x1B None

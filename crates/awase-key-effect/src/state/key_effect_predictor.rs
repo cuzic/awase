@@ -142,6 +142,11 @@ pub enum Stage {
     ConvHenkan,
     /// 無変換で入る英数変換中（`ToggleAlphanumericMode`の変換系状態）。
     ConvMuhenkan,
+    /// 入力中の BS（表に無いセル）の後。未確定文字が残っているか空になったかが、文字数しだいで決まらない（BUG-211）。
+    /// 次の変換・無変換・英数などは予測しない（観測に委ねる。観測できない窓では不定のまま）。TSF の観測で入力中
+    /// （`composing`）と分かれば `Typing` に戻り、文字キーを打てば `Typing`、Enter・Esc では `None`（確定・破棄・改行の
+    /// どれでも入力なしになる）。
+    Indeterminate,
 }
 
 /// 表が持つキー（学習した13種）。
@@ -464,6 +469,56 @@ const fn is_char_vk(vk: u16) -> bool {
     matches!(vk, 0x30..=0x39 | 0x41..=0x5A | 0xBA..=0xC0 | 0xDB..=0xDF)
 }
 
+/// BUG-212: 追跡した変換モードが無く、観測した変換モードが、かな系（NATIVE ビットあり）なのに表せない値か。
+fn observed_conv_is_unrepresentable_kana(input: &PredictInput) -> bool {
+    input.track.conv.is_none()
+        && input
+            .conv_raw
+            .is_some_and(|raw| raw & 0x01 != 0 && Conv::from_raw(raw).is_none())
+}
+
+/// 表に無いキー（文字キー等）の後の入力中の段階。開いていて文字キーなら `Typing`、変換中は `Typing` へ戻る。
+/// 入力なし（`None`）はそのまま、「不明」（`Indeterminate`）は文字キー以外（矢印など）ではそのまま（BUG-211）。
+fn stage_after_non_table_key(vk: u16, input: &PredictInput) -> Stage {
+    if input.open && is_char_vk(vk) {
+        return Stage::Typing;
+    }
+    match input.track.stage {
+        Stage::None => Stage::None,
+        Stage::Indeterminate => Stage::Indeterminate,
+        _ => Stage::Typing,
+    }
+}
+
+/// BUG-211: 表に該当セルが無いときの、「入力中の BS の後」と「不明の段階」の規則。
+///
+/// 入力中の BS のセルは、未確定文字の文字数で破棄/保持が割れるので表から除外されている（ADR-210 M2）。追跡の段階を
+/// `Typing` のまま残すと、文字が空になった後の変換・無変換・英数などを「入力中」の行で誤予測する。文字数が分からない
+/// ので、BS の後は段階を「不明」（[`Stage::Indeterminate`]）にして、次のモードキーは予測しない（観測に委ねる）。
+/// 「不明」の段階の Enter（確定・改行）と Esc（破棄）は、どちらでも入力なしになる。該当しなければ `None`。
+fn indeterminate_stage_without_cell(
+    key: TableKey,
+    stage: Stage,
+    seeded: bool,
+    input: &PredictInput,
+) -> Option<Prediction> {
+    let next_stage = match (key, stage) {
+        (TableKey::Bs, Stage::Typing) => Stage::Indeterminate,
+        (TableKey::Enter | TableKey::Esc, Stage::Indeterminate) => Stage::None,
+        _ => return None,
+    };
+    Some(Prediction {
+        effect: PredictedEffect {
+            open: None,
+            mode: seeded.then(kana_mode),
+        },
+        track: KeyTrack {
+            conv: input.track.conv,
+            stage: next_stage,
+        },
+    })
+}
+
 /// 表に（段階, Esc）のセルが無いときの、Esc の後の入力中の段階。`None` は「触らない」（段階を更新せず、予測も返さない）。
 ///
 /// - 入力中（`Typing`）の Esc は未確定文字列を破棄するので `Stage::None`（`next_stage` の Esc の規則と同じ。BUG-162）。
@@ -512,7 +567,7 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
     // 観測が無いので、追跡した段階（文字キーで`Typing`、変換系キーで変換中）を正とする（開いている間だけ）。
     let stage = if input.open {
         match input.track.stage {
-            Stage::None if input.composing => Stage::Typing,
+            Stage::None | Stage::Indeterminate if input.composing => Stage::Typing,
             s => s,
         }
     } else {
@@ -521,13 +576,7 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
     let Some(key) = TableKey::from_vk(vk) else {
         // 文字キー等: 開いていれば入力中（`Typing`）になる（変換中に打てば確定して新しい入力中）。閉なら段階なし。
         // 種（Unknown）は必ず反映する。
-        let new_stage = if input.open && is_char_vk(vk) {
-            Stage::Typing
-        } else if matches!(input.track.stage, Stage::None) {
-            Stage::None
-        } else {
-            Stage::Typing
-        };
+        let new_stage = stage_after_non_table_key(vk, input);
         let track = KeyTrack {
             conv: input.track.conv,
             stage: new_stage,
@@ -538,6 +587,13 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
         };
         return (!effect.is_noop() || track != input.track).then_some(Prediction { effect, track });
     };
+    // BUG-212: 観測した変換モードが、かな系（NATIVE ビットあり）なのに表せない値（半角カタカナ 0x13 など）のときは予測しない
+    // （ADR-191: 表せない値は追わない）。入力モードへ落として「ひらがな」とみなすと、英数キーを逆向きに予測する。
+    // 追跡した変換モードがあるときはそちらを正とする（従来どおり）。NATIVE ビットの無い値（0x00・0x08 など）は
+    // 従来どおり入力モードから決める（半角英数トグル中の 0x0000 など）。
+    if observed_conv_is_unrepresentable_kana(input) {
+        return None;
+    }
     // 追跡した変換中の段階が、この表に**行として全く無い**とき（例: ATOKに`ConvMuhenkan`の行は無い）は、
     // 「入力中」の行で代用する。代用しないと予測が返らず、追跡した段階が古いまま残って以後の打鍵の予測が
     // 全て外れる（CI blind: ATOKで入力中の無変換の後、Enter/半角全角が予測なしのまま OFF/ON がずれ続けた）。
@@ -555,6 +611,9 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
         .then(|| find_in(table, input.open, conv, Stage::Typing, key))
         .flatten()
     }) else {
+        if let Some(p) = indeterminate_stage_without_cell(key, stage, seeded, input) {
+            return Some(p);
+        }
         // BUG-162: 表に該当セルが無い（ATOK の入力中/変換中〈Space〉の Esc は保持/破棄が割れるので生成時に除外される）
         // ときは、開閉・入力モードは予測しない（観測に委ねる）が、入力中の段階の追跡は更新する（段階の規則は
         // [`esc_stage_without_cell`]）。更新しないと古い段階が残り、次の無変換などが古い行で誤予測され、Engine が活性化して
@@ -1804,6 +1863,85 @@ mod tests {
         stage: Stage::None,
     };
 
+    /// BUG-211: 入力中の BS（表に無いセル）の後は、段階が「不明」になり、次の変換・無変換・英数は予測しない
+    /// （文字数が分からない。観測に委ねる）。文字キーで `Typing`、Enter・Esc で `None` に戻る。
+    #[test]
+    fn bs_while_typing_makes_the_stage_indeterminate_and_suppresses_the_next_mode_key() {
+        for preset in [
+            KeymapPreset::Atok,
+            KeymapPreset::MsIme,
+            KeymapPreset::MsImeNative,
+        ] {
+            let c19 = KeyTrack {
+                conv: Some(Conv::C19),
+                stage: Stage::Typing,
+            };
+            let typing = input(true, ROMAJI, false, c19);
+            // 表に（入力中, BS）のセルが無いプリセットだけが対象（あれば表の予測を使う）。
+            let table = table_of(preset);
+            if find_in(table, true, Conv::C19, Stage::Typing, TableKey::Bs).is_some() {
+                continue;
+            }
+            let bs = predict(preset, 0x08, &typing).expect("BS は段階を更新する予測を返す");
+            assert_eq!(bs.track.stage, Stage::Indeterminate, "{preset:?}");
+            assert_eq!(bs.effect.open, None, "{preset:?}");
+            // 次の変換・無変換・英数は予測しない。
+            let after = input(true, ROMAJI, false, bs.track);
+            for vk in [0x1C_u16, 0x1D, 0xF0] {
+                assert_eq!(predict(preset, vk, &after), None, "{preset:?} vk={vk:#x}");
+            }
+            // 文字キーで `Typing`、Enter・Esc で `None`。
+            let ch = predict(preset, 0x41, &after).expect("文字キーは段階を更新する");
+            assert_eq!(ch.track.stage, Stage::Typing, "{preset:?}");
+            for vk in [0x0D_u16, 0x1B] {
+                let p = predict(preset, vk, &after).expect("Enter/Esc は段階を None にする");
+                assert_eq!(p.track.stage, Stage::None, "{preset:?} vk={vk:#x}");
+                assert_eq!(p.effect.open, None, "{preset:?} vk={vk:#x}");
+            }
+            // TSF の観測で入力中と分かれば、`Typing` に戻って表を引く（従来どおり）。
+            let observed = input(true, ROMAJI, true, bs.track);
+            let again = predict(preset, 0x41, &observed).expect("文字キー");
+            assert_eq!(again.track.stage, Stage::Typing, "{preset:?}");
+        }
+    }
+
+    /// BUG-212: 観測した変換モードが、かな系（NATIVE あり）なのに表せない値（半角カタカナ 0x13）のときは予測しない。
+    /// 追跡した変換モードがあるときは従来どおり。NATIVE の無い値（0x0000 = 半角英数トグル中）は入力モードから決める。
+    #[test]
+    fn unrepresentable_kana_conv_raw_gives_no_prediction() {
+        let mut observed = input(true, ROMAJI, false, NOTRACK);
+        observed.conv_raw = Some(0x13);
+        for preset in [KeymapPreset::MsIme, KeymapPreset::MsImeNative] {
+            assert_eq!(predict(preset, 0xF0, &observed), None, "{preset:?} 0x13");
+        }
+        // 文字キーは変換モードに依らない（入力中の段階の追跡は続ける）。予測しないのは、変換モードを引くキーだけ。
+        let ch = predict(KeymapPreset::MsIme, 0x41, &observed).expect("文字キーは段階を更新する");
+        assert_eq!(ch.track.stage, Stage::Typing);
+        // 追跡した変換モードがあれば、そちらを正とする（観測の 0x13 は無視される）。
+        let tracked = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::None,
+        };
+        let mut with_track = input(true, ROMAJI, false, tracked);
+        with_track.conv_raw = Some(0x13);
+        assert_eq!(
+            predict(KeymapPreset::MsIme, 0xF0, &with_track),
+            predict(
+                KeymapPreset::MsIme,
+                0xF0,
+                &input(true, ROMAJI, false, tracked)
+            ),
+        );
+        // NATIVE の無い値（0x0000）は従来どおり入力モードから決める（予測なしにしない）。
+        let mut toggle = input(true, InputModeState::ObservedEisu, false, NOTRACK);
+        toggle.conv_raw = Some(0x0000);
+        let plain = input(true, InputModeState::ObservedEisu, false, NOTRACK);
+        assert_eq!(
+            predict(KeymapPreset::MsIme, 0xF0, &toggle),
+            predict(KeymapPreset::MsIme, 0xF0, &plain),
+        );
+    }
+
     /// 読めないアプリ（観測の`composing`が常に偽）でも、文字キーで入力中を追跡し、その後の無変換/Escが
     /// 「入力中」のセルを引く（CI blind: `k`のあとの無変換が「入力中でない」セルを引いてOFFと予測していた）。
     #[test]
@@ -2203,7 +2341,10 @@ mod tests {
         .expect("変換中〈Space〉の Esc は段階を更新する");
         assert!(esc.effect.is_noop());
         assert_eq!(esc.track.stage, Stage::Typing);
-        assert_eq!(predict(KeymapPreset::Atok, 0x08, &typing), None);
+        // 入力中の BS（表に無いセル）は、開閉・入力モードを予測せず、段階を「不明」にする（BUG-211）。
+        let bs = predict(KeymapPreset::Atok, 0x08, &typing).expect("BS は段階を更新する");
+        assert!(bs.effect.is_noop());
+        assert_eq!(bs.track.stage, Stage::Indeterminate);
     }
 
     #[test]

@@ -822,7 +822,9 @@ fn random_key_walks_keep_predictions_consistent_with_truth() {
 /// 変換モードの取り違えではない)。0x1B に限らず 0x19・0x13 でも同じ(全列挙の golden)。
 /// それまで擬似 IME は conv=0x1B のセルを 16 進の大文字小文字の違いで引けず(`knows` が偽)、このキーを飛ばしていたので
 /// 見えなかった。初出: seed=45 のキー列 `[19 1D 4B 41 08 F0 ...]`、窓 2 通り = 2(CI run 39735589024)。
-const EXPECTED_MSIME_NATIVE_1B_EISU_GAP: usize = 2;
+///
+/// **BUG-211 の修正(入力中の BS の後の段階を「不明」にして予測しない)で 2 → 0 になった**。0 のまま、増えたら退行。
+const EXPECTED_MSIME_NATIVE_1B_EISU_GAP: usize = 0;
 
 /// 閉から始め、この歩みで IME が一度も開く前に最初に開くキーで、belief の入力モードの初期値(`AssumedRomaji{Startup}`)が
 /// 残って食い違う件数(固定)。BUG-204。初期値を「観測済み」と名乗らない値にしても、閉のキーは `mode: None` なので理由は
