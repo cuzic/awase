@@ -133,8 +133,15 @@ fn node_key(h: &Harness) -> String {
     )
 }
 
-/// 1 つの構成（格子 × 入力中を観測できるか）の幅優先。戻り値は (抽象状態の数, 食い違いの行)。
-fn explore(grid: Grid, composing_visible: bool) -> (usize, Vec<String>) {
+/// 食い違い 1 件。golden には `class`(格子・窓・押す前の真値・キー)ごとに件数と最短の例だけを載せる。
+struct Mismatch {
+    class: String,
+    path_len: usize,
+    example: String,
+}
+
+/// 1 つの構成（格子 × 入力中を観測できるか）の幅優先。戻り値は (抽象状態の数, 食い違い)。
+fn explore(grid: Grid, composing_visible: bool) -> (usize, Vec<Mismatch>) {
     /// 抽象状態の数の上限（爆発したら抽象化を見直す合図）。
     const MAX_NODES: usize = 5_000;
     let table = TransitionTable::load(grid);
@@ -164,14 +171,20 @@ fn explore(grid: Grid, composing_visible: bool) -> (usize, Vec<String>) {
             let r = h.predictions.last().expect("最後のキーの予測の記録");
             if let Some(m) = prediction_mismatch(r) {
                 let seq: Vec<String> = next_path.iter().map(|k| format!("{k:02X}")).collect();
-                lines.push(format!(
-                    "{} 観測可能={composing_visible} 押す前={} mode={:?} キー=0x{vk:02X} 開始={} 列=[{}]\n    {m}",
-                    grid.name(),
-                    state_name(r.truth_before),
-                    r.input_mode,
-                    state_name(start),
-                    seq.join(" ")
-                ));
+                lines.push(Mismatch {
+                    class: format!(
+                        "{} 観測可能={composing_visible} 押す前={} キー=0x{vk:02X}",
+                        grid.name(),
+                        state_name(r.truth_before),
+                    ),
+                    path_len: next_path.len(),
+                    example: format!(
+                        "    最短 開始={} mode={:?} 列=[{}]\n    {m}",
+                        state_name(start),
+                        r.input_mode,
+                        seq.join(" ")
+                    ),
+                });
             }
             if seen.insert(node_key(&h)) {
                 assert!(
@@ -193,21 +206,33 @@ fn prediction_exhaustive_golden() {
         "# 予測器と擬似 IME の真値の食い違い（各キーの直前に観測して belief を合わせた上で、到達しうる抽象状態を全列挙。ADR-277）。\n\
          # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive\n",
     );
-    let mut by_config: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+    let mut by_config: BTreeMap<String, (usize, Vec<Mismatch>)> = BTreeMap::new();
     for grid in Grid::ALL {
         for composing_visible in [true, false] {
-            let (nodes, mut lines) = explore(grid, composing_visible);
-            lines.sort();
             by_config.insert(
                 format!("{} 観測可能={composing_visible}", grid.name()),
-                (nodes, lines),
+                explore(grid, composing_visible),
             );
         }
     }
-    for (config, (nodes, lines)) in &by_config {
-        let _ = writeln!(out, "[{config}] 抽象状態={nodes} 食い違い={}", lines.len());
-        for l in lines {
-            let _ = writeln!(out, "{l}");
+    for (config, (nodes, mismatches)) in &by_config {
+        // class → (件数, 最短の例〈列の長さ, 例の文字列〉の最小)
+        let mut classes: BTreeMap<&str, (usize, (usize, &str))> = BTreeMap::new();
+        for m in mismatches {
+            let e = classes
+                .entry(m.class.as_str())
+                .or_insert((0, (m.path_len, m.example.as_str())));
+            e.0 += 1;
+            e.1 = e.1.min((m.path_len, m.example.as_str()));
+        }
+        let _ = writeln!(
+            out,
+            "[{config}] 抽象状態={nodes} 食い違い={} 種類={}",
+            mismatches.len(),
+            classes.len()
+        );
+        for (class, (n, (_, example))) in &classes {
+            let _ = writeln!(out, "{n:3} 件 {class}\n{example}");
         }
     }
     eprintln!("prediction_exhaustive: {:?}", started.elapsed());

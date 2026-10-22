@@ -83,7 +83,7 @@ related_adr:
 - `tests/support/pseudo_ime.rs`: `TransitionTable`・`ImeInput`・`QuirkSwitches`・`KEPT_STAGE_RULES`・`reachable` を抽出。`PseudoIme` は表を呼ぶだけにした(挙動は 0x1B の修正以外は同じ)。状態名の 16 進を大文字に直した。
 - `tests/pseudo_ime_exhaustive.rs`(新規、CI の `--test` に追加):
   1. 到達性の golden(`tests/golden/pseudo_ime_reachability.txt`): 3 格子の到達しうる状態の数と穴。例: ATOK は `next_stage` の仮定が「変換中(無変換)」を作るが格子にその状態が無い(26 セル)。msime-native は `on-c10-*` と `on-c13-conv-*` に穴がある(89 セル)。
-  2. 予測の全列挙の golden(`tests/golden/pseudo_ime_prediction_mismatches.txt`): ランダム探索と同じ手順で、到達しうる抽象状態(真値・`key_track`・入力モード)を全部たどり、予測の食い違いを最短のキー列つきで固定する。毎回ハーネスを最初から再生するので写しは増えない。
+  2. 予測の全列挙の golden(`tests/golden/pseudo_ime_prediction_mismatches.txt`): ランダム探索と同じ手順で、到達しうる抽象状態(真値・`key_track`・入力モード)を全部たどり、予測の食い違いを (格子・窓・押す前の真値・キー) の種類ごとに件数と最短のキー列で固定する。毎回ハーネスを最初から再生するので写しは増えない。初回の結果(CI run 39736837371): 抽象状態 55〜156/構成、食い違い 1,001 件・種類 297(6 構成の合計)、実行 14.6 秒。ランダム探索(360 本)が見つけていたのは BUG-204 の 32 件と 0x1B の英数キーの 2 件だけ。**未仕分け**: ATOK の先頭の種類は BUG-204(閉の間の入力モードの初期値)と同じ形だが、MS-IME 系の多く(conv=0x13・0x1B)はハーネスの観測の写し(conv が 0x10 のときだけ英数とする)に由来する偽の陽性の可能性があり、本番の不具合とは言えない。仕分けは段階 1 の次の作業。
   3. ablation の golden(`tests/golden/defense_ablation.txt`): `placeholder-align` 1 件。
 - `tests/support/harness.rs`: `Setup::defenses`(`Defenses { placeholder_align }`)を足した。既定は全部有効で、既存のシナリオの挙動は変わらない。
 - `tests/support/defenses.rs`(新規): 目録 4 件(外せる 1・`Mutant` 1・`NotReached` 2)。
