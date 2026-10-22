@@ -681,16 +681,20 @@ impl ImeModel {
         let Some(pending) = self.pending.as_ref() else {
             return ImeApplyAcceptance::Stale;
         };
-        let current_epoch = self.observations.current_fence().epoch;
+        // ECRS DD2-05: 「この apply はフォーカス変更より前に払い出したものか」は watermark（`FocusChanged` が
+        // `last_seen_generation` の直後へ進める）だけで判定する。かつては `pending.focus_epoch == current_epoch` も
+        // 見ていたが、本番の前提（`InitialFocusScopeEstablished` は最初の apply 要求より前、generation は単調）の下では
+        // 同じ判定になる（全列挙テスト `ime_model_apply_acceptance_exhaustive.rs` が一致を示す）。
+        let pending_is_current = pending.generation >= self.focus_generation_watermark;
         if pending.generation == generation {
-            if pending.focus_epoch == current_epoch {
+            if pending_is_current {
                 ImeApplyAcceptance::Accepted
             } else {
                 ImeApplyAcceptance::Stale
             }
         } else if (outcome.wrote_open_state() || outcome == ImeOpenOutcome::AlreadyMatched)
             && generation >= self.focus_generation_watermark
-            && pending.focus_epoch == current_epoch
+            && pending_is_current
             && pending.target == open
             && self.applied.applied_open() != Some(open)
         {
@@ -1009,6 +1013,12 @@ impl ImeModel {
                 // belief（`last_intent`・`applied`・観測プール等）は書かない（ADR-102 決定3-b。
                 // `clear_on_focus_change` を通すと観測プールと drift を消すので、fence は
                 // `establish_initial_fence` で入れる）。
+                // ECRS DD2-05: 起動時のスコープ確立は最初の apply 要求より前でなければならない。後だと fence の
+                // epoch だけが進んで watermark が進まず、古い pending の完了を受理しうる（全列挙テストの反例）。
+                debug_assert!(
+                    self.last_seen_generation.is_none(),
+                    "起動時のフォーカススコープ確立は最初の ImeApplyRequested より前に来る前提(ECRS DD2-05)"
+                );
                 self.app_policy = AppImePolicy::from_profile(profile);
                 self.current_focus = Some(to);
                 self.observations.establish_initial_fence(FocusFence {
@@ -1200,13 +1210,11 @@ impl ImeModel {
         // （FocusChanged 時点で pending が既に None でも watermark を
         // 正しく前進させるため）。
         self.last_seen_generation = Some(generation);
-        // Step 7 / ADR-108 決定1: pending transition を立てる。
-        // `ObservationStore::current_fence().epoch` でスタンプし、完了時にも同じ
-        // カウンタで照合する。`FocusStore` 側の epoch とは混ぜないこと。
+        // Step 7 / ADR-108 決定1: pending transition を立てる。フォーカス変更をまたいだ完了の判定は
+        // generation と watermark で行う（ECRS DD2-05。かつては fence の epoch でもスタンプしていた）。
         self.pending = Some(ImeTransition {
             target,
             generation,
-            focus_epoch: self.observations.current_fence().epoch,
             timeout_at: envelope.time.monotonic
                 + std::time::Duration::from_millis(crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS),
         });
@@ -1391,7 +1399,6 @@ mod tests {
         model.pending = Some(ImeTransition {
             target: true,
             generation: ApplyGeneration::new(7).expect("nonzero"),
-            focus_epoch: 1,
             // ADR-108 決定4 のパージは `reduce()` の match **後**に無条件で走る。
             // bootstrap では `pending` は必ず `None` なので実害は無いが、この
             // フィクスチャでは意図せずパージされないよう十分先の期限を置く。
@@ -1494,6 +1501,10 @@ mod tests {
         model.app_policy = AppImePolicy::from_profile(profile);
         model.current_focus = Some(to);
         model.observations.establish_initial_fence(fence);
+        // ECRS DD2-05: `InitialFocusScopeEstablished` は最初の apply 要求より前に来る前提（reducer が `debug_assert` で表明）。
+        // フィクスチャは `last_seen_generation` を持つので、この前提を満たすよう `None` に戻してから比べる
+        // （`Init` はこのフィールドを書かないので、巻き添え書き込みの検出力は変わらない）。
+        model.last_seen_generation = None;
         let before = format!("{model:?}");
         model.reduce(&envelope(1, ev()));
         assert_eq!(

@@ -17,7 +17,6 @@
 //! ```
 
 use super::ApplyGeneration;
-use crate::state::probe_admission::FocusEpoch;
 use std::time::Instant;
 
 /// OS への apply transaction。
@@ -27,22 +26,9 @@ pub struct ImeTransition {
     pub target: bool,
     /// 世代 ID (apply 要求ごとに increment、stale 照合に使う)
     pub generation: ApplyGeneration,
-    /// この apply が送られたフォーカスプロセス epoch。
-    ///
-    /// `ObservationStore::current_fence().epoch` と同じ値を使う。`FocusStore` 側の
-    /// epoch とは混ぜないこと ——両者を揃えるイベントを落とすと即座にずれる。
-    /// bootstrap で実際にずれていた（`FocusStore` 側が 1、`ObservationStore` 側が
-    /// 0 のまま）のが BUG-102 で、`ImeEvent::InitialFocusScopeEstablished`（旧 `InitialFocusFenceEstablished`）の新設に
-    /// より現在は揃っている。それでも参照元は `current_fence()` に統一する
-    /// ——ここで守りたいのは「`applied` を張り替えたのと同じ epoch か」であり、
-    /// その張り替えを行う `FocusChanged` アームが書くのは `current_fence` 側だから。
-    ///
-    /// actuation の `applied` 汚染防止では epoch 単独で十分。`applied = Unknown`
-    /// へのリセットは `ImeEvent::FocusChanged` アームだけで起き、同じアームが
-    /// `current_fence().epoch` を張り替えるため、完了側はその epoch と一致するかだけを
-    /// 見ればフォーカスプロセス跨ぎを弾ける。`FocusHwndUpdated` のような hwnd だけの
-    /// 変更は `applied` に触れないので、ここで守るべき不変条件を新しく作らない。
-    pub focus_epoch: FocusEpoch,
+    // （旧 `focus_epoch`〈この apply が送られたときの fence の epoch〉は ECRS DD2-05 で撤去した。
+    // フォーカス変更をまたいだ完了の判定は、`generation` と `ImeModel::focus_generation_watermark`
+    // （`FocusChanged` が `last_seen_generation` の直後へ進める）で行う。）
     /// この transition のタイムアウト時刻
     pub timeout_at: Instant,
 }
@@ -66,7 +52,6 @@ mod tests {
         let trans = ImeTransition {
             target: true,
             generation: ApplyGeneration::new(10).unwrap(),
-            focus_epoch: 0,
             timeout_at: t0 + Duration::from_millis(100),
         };
         assert!(!trans.is_timed_out(t0));
