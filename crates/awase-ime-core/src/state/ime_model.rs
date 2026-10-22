@@ -1501,6 +1501,10 @@ mod tests {
         model.app_policy = AppImePolicy::from_profile(profile);
         model.current_focus = Some(to);
         model.observations.establish_initial_fence(fence);
+        // ECRS DD2-05: `InitialFocusScopeEstablished` は最初の apply 要求より前に来る前提（reducer が `debug_assert` で表明）。
+        // フィクスチャは `last_seen_generation` を持つので、この前提を満たすよう `None` に戻してから比べる
+        // （`Init` はこのフィールドを書かないので、巻き添え書き込みの検出力は変わらない）。
+        model.last_seen_generation = None;
         let before = format!("{model:?}");
         model.reduce(&envelope(1, ev()));
         assert_eq!(
