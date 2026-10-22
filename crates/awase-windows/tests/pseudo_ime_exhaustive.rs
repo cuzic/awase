@@ -6,12 +6,13 @@
 //! 1. **到達性**（`reachability_golden`）: 実測のある状態から、表のキー 13 種・文字キー・awase の書き込み（開/閉）で
 //!    到達しうる状態と、到達しうるのに実測の無いセル（穴）を全列挙し、golden に固定する。穴は「閉ループのシナリオが
 //!    panic する所」「ランダム探索が黙って飛ばす所」「格子の測定を足すべき所」の一覧。
-//! 2. **予測の全列挙**（`prediction_exhaustive_golden`）: ランダム探索（`closed_loop_scenarios.rs` の
-//!    `random_key_walks_keep_predictions_consistent_with_truth`）と同じ手順（各キーの直前に観測して belief を真値に
-//!    合わせる）で、到達しうる抽象状態（真値・`key_track`・入力モード）を幅優先で全部たどり、予測器の予測が真値と
-//!    食い違う点を、そこへ至る**最短の**キー列つきで golden に固定する。抽象状態はハーネスの実物を毎回最初から
-//!    再生して作るので、写しは増えない（ハブの他の隠れ状態は抽象状態に入れていないので、履歴に依るずれは
-//!    ランダム探索の側に残す）。
+//! 2. **予測の全列挙**（`prediction_exhaustive_golden`）: 各キーの直前に観測して belief を真値に合わせた上で、
+//!    到達しうる抽象状態（真値・`key_track`・入力モード）を幅優先で全部たどり、予測器の予測が真値と
+//!    食い違う点を、そこへ至る**最短の**キー列と**機序の仕分け**（`TRIAGE`）つきで golden に固定する。抽象状態は
+//!    ハーネスの実物を毎回最初から再生して作るので、写しは増えない（ハブの他の隠れ状態は抽象状態に入れていないので、
+//!    履歴に依るずれはランダム探索の側に残す）。観測は打鍵から予測の柵（`KEY_EFFECT_SETTLE_MS`）の外で行う
+//!    （ランダム探索の手順〈打鍵の 50ms 後に観測〉は柵の内側で、観測が捨てられて前のずれが次の打鍵へ持ち越され、
+//!    1 つの原因が何種類にも数えられていた。ADR-277 の仕分けの節）。
 //! 3. **防御の ablation**（`defense_ablation_finds_shortest_violation`）: 防御の目録（`support/defenses.rs`）のうち
 //!    ハーネスで外せるものについて、外さなければ違反が無く、外すと違反が出る最短の事象列を出す。
 //!
@@ -19,13 +20,15 @@
 
 mod support;
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use awase::engine::{AssumedReason, InputModeState};
+use awase_windows::state::key_effect_predictor::{Conv, Stage};
 use support::defenses::{Ablation, DEFENSES};
-use support::harness::{Defenses, Harness, Setup, Source};
+use support::harness::{Defenses, Harness, PredictionRecord, Setup, Source};
 use support::invariants::{
     p1_no_warranted_write_without_intent, p3_startup_aligns_desired_without_drift,
     prediction_mismatch,
@@ -108,14 +111,20 @@ fn reachability_golden() {
 // 2. 予測の全列挙
 // ---------------------------------------------------------------------------
 
-/// ランダム探索と同じ手順で、開始状態から `path` を再生したハーネス。
+/// 打鍵から次の観測までの間隔（ms）。予測の柵（`KEY_EFFECT_SETTLE_MS`、ADR-191 決定3）より長くし、観測が必ず
+/// belief に入るようにする。柵の内側（ランダム探索の 50ms）だと、予測の付いた打鍵の直後の観測は捨てられ
+/// （`ImeModel::reconcile_key_effect_open`/`reconcile_key_effect_mode`）、ずれが次の打鍵へ持ち越される。持ち越しは本番でも
+/// 起きる（柵は設計どおり）が、原因は前の打鍵のずれと同じなので、全列挙では原因ごとに 1 回だけ数える。
+const OBSERVE_AFTER_KEY_MS: u64 = awase_windows::tuning::KEY_EFFECT_SETTLE_MS + 30;
+
+/// 開始状態から `path` を再生したハーネス。各キーの前に、柵の外で観測して belief を真値に合わせる。
 fn replay(grid: Grid, composing_visible: bool, start: TrueState, path: &[u16]) -> Harness {
     let mut setup = Setup::imm_cross(start).with_grid(grid);
     setup.composing_visible = composing_visible;
     let mut h = Harness::start(setup);
     h.advance_ms(100).observe(Source::ImmCross).advance_ms(200);
     for &vk in path {
-        h.advance_ms(50)
+        h.advance_ms(OBSERVE_AFTER_KEY_MS)
             .observe(Source::ImmCross)
             .advance_ms(50)
             .key(vk);
@@ -133,9 +142,179 @@ fn node_key(h: &Harness) -> String {
     )
 }
 
-/// 食い違い 1 件。golden には `class`(格子・窓・押す前の真値・キー)ごとに件数と最短の例だけを載せる。
+// ---- 仕分け（ADR-277 の「仕分けの結果」の節） ----------------------------------
+
+/// 食い違いの分類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Category {
+    /// ハーネスの観測・擬似 IME の写し方の問題（直せるものはテスト側で直す）。
+    A,
+    /// 予測器の既知の制限（BUG・ADR に記録がある）。
+    B,
+    /// 製品のバグの疑い（予測器の規則と実測の格子がずれている）。
+    C,
+    /// 到達しても実害の無いもの。
+    D,
+}
+
+/// 機序のラベル → (分類, 根拠)。**ここに無いラベルが出たらテストが落ちる**（新しい種類の食い違いは仕分けてから載せる）。
+/// ラベルは `mechanism` が作る。根拠は golden の冒頭に 1 行ずつ出る。
+const TRIAGE: &[(&str, Category, &str)] = &[
+    (
+        "閉→開で入力モードを予測しない（起動時の初期値）",
+        Category::B,
+        "BUG-204: 閉の間は入力モードを観測せず（is_eisu_evidence が ime_on=false で None）、閉のセルは after_conv=None で mode を予測しないので、起動時の AssumedRomaji{Startup} が開くまで残る",
+    ),
+    (
+        "閉→開で入力モードを予測しない（閉じる前・閉の間のモードの持ち越し）",
+        Category::B,
+        "BUG-204 と同じ機序: 閉じる直前の belief のモードが開くまで残るが、実 IME は閉じる打鍵・閉の間の打鍵・開く打鍵で変換モードを変えることがある（格子の after_conv）",
+    ),
+    (
+        "段階のずれ 起点=0x08（押す前=Typing・予測なし）",
+        Category::C,
+        "BUG-211: 入力中の BS は表から除外（文字数で割れる、ADR-210 M2）で予測なし→追跡の段階が Typing のまま残る。格子は 1 文字の入力中の BS で破棄（入力なし）。読める窓の composing=false も使わない",
+    ),
+    (
+        "段階のずれ 起点=0x1B（押す前=Typing・予測あり）",
+        Category::B,
+        "BUG-162 の残る限界: MS-IME 本体の入力中の Esc は予測なし（候補窓依存）で段階を None に捨てるが、格子は保持（入力中のまま）。入力中を観測できる窓は composing で直り、観測できない窓だけに残る（key_effect_predictor.rs の msime_native_henkan_none_and_typing_esc_are_not_predicted）",
+    ),
+    (
+        "変換モード 0x13 を予測器が表せない",
+        Category::C,
+        "BUG-212: Conv::from_raw(0x13)=None で入力モードから C19 とみなし、GJI の MS-IME プリセットの 0x13 の英数キーを「半角英数へ」と予測する。格子は 0x13|英数→0x19（ひらがな）。0x13 は無変換 2 回で到達する（on-c1B-none|muhenkan=ON/0x13）",
+    ),
+];
+
+/// 打鍵前の belief の入力モードが「かな入力系」か（`invariants.rs::mode_is_native` と同じ）。
+const fn mode_is_native(mode: InputModeState) -> bool {
+    !matches!(mode, InputModeState::ObservedEisu)
+}
+
+fn as_stage(s: TrueStage) -> Stage {
+    match s {
+        TrueStage::None => Stage::None,
+        TrueStage::Typing => Stage::Typing,
+        TrueStage::ConvSpace => Stage::ConvSpace,
+        TrueStage::ConvHenkan => Stage::ConvHenkan,
+        TrueStage::ConvMuhenkan => Stage::ConvMuhenkan,
+    }
+}
+
+/// 真値の段階（閉なら `None`）。
+fn truth_stage(s: TrueState) -> Stage {
+    if s.open {
+        as_stage(s.stage)
+    } else {
+        Stage::None
+    }
+}
+
+/// 予測器が表を引く段階（`predict_in_table` の `stage` の決め方。仕分けのための写し）。
+fn predictor_stage(r: &PredictionRecord) -> Stage {
+    if !r.input_open {
+        return Stage::None;
+    }
+    match r.input_track.stage {
+        Stage::None if r.input_composing => Stage::Typing,
+        s => s,
+    }
+}
+
+/// 予測器が表を引く変換モード（`predict_in_table` の `conv` の決め方。仕分けのための写し）。
+fn predictor_conv(r: &PredictionRecord) -> Conv {
+    r.input_track
+        .conv
+        .or_else(|| r.input_conv_raw.and_then(Conv::from_raw))
+        .unwrap_or(if matches!(r.input_mode, InputModeState::ObservedEisu) {
+            Conv::C10
+        } else {
+            Conv::C19
+        })
+}
+
+/// 食い違い（`records[i]`）の機序のラベル。予測器の入力（belief・段階・変換モード）のどれが真値とずれていたかを、
+/// 上から順に調べる。段階のずれは、ずれが始まった打鍵（起点）まで遡ってラベルにする。
+fn mechanism(records: &[PredictionRecord], i: usize) -> String {
+    let r = &records[i];
+    let before = r.truth_before;
+    let predicted_open = r
+        .prediction
+        .and_then(|p| p.effect.open)
+        .unwrap_or(r.input_open);
+    if !before.open && r.truth_after.open && predicted_open {
+        return if r.input_mode
+            == (InputModeState::AssumedRomaji {
+                reason: AssumedReason::Startup,
+            }) {
+            "閉→開で入力モードを予測しない（起動時の初期値）".to_owned()
+        } else {
+            "閉→開で入力モードを予測しない（閉じる前・閉の間のモードの持ち越し）".to_owned()
+        };
+    }
+    if r.input_open != before.open
+        || (before.open && mode_is_native(r.input_mode) != before.is_native())
+    {
+        return "打鍵前の belief が真値と違う（観測が belief に入っていない）".to_owned();
+    }
+    if predictor_stage(r) != truth_stage(before) {
+        let mut j = i;
+        while j > 0 && predictor_stage(&records[j - 1]) != truth_stage(records[j - 1].truth_before)
+        {
+            j -= 1;
+        }
+        return match j.checked_sub(1).map(|k| &records[k]) {
+            Some(o) => format!(
+                "段階のずれ 起点=0x{:02X}（押す前={:?}・予測{}）",
+                o.vk,
+                o.truth_before.stage,
+                if o.prediction.is_some() {
+                    "あり"
+                } else {
+                    "なし"
+                }
+            ),
+            None => "段階のずれ 起点=開始時".to_owned(),
+        };
+    }
+    if before.open {
+        match Conv::from_raw(before.conv) {
+            None => return format!("変換モード 0x{:02X} を予測器が表せない", before.conv),
+            Some(c) if c != predictor_conv(r) => {
+                return format!(
+                    "変換モードのずれ（予測器={:?}・真値=0x{:02X}）",
+                    predictor_conv(r),
+                    before.conv
+                )
+            }
+            Some(_) => {}
+        }
+    }
+    if r.prediction.is_none() {
+        "予測なし（表にセルが無い）".to_owned()
+    } else {
+        "表と格子が食い違う（入力は真値どおり）".to_owned()
+    }
+}
+
+/// ラベルの分類（`TRIAGE` に無ければ `None`=未仕分け）。
+fn category_of(label: &str) -> Option<(Category, &'static str)> {
+    TRIAGE
+        .iter()
+        .find(|(l, _, _)| *l == label)
+        .map(|&(_, c, why)| (c, why))
+}
+
+/// golden に書く分類の札（`TRIAGE` に無ければ「未仕分け」）。
+fn tag(label: &str) -> String {
+    category_of(label).map_or_else(|| "未仕分け".to_owned(), |(c, _)| format!("{c:?}"))
+}
+
+/// 食い違い 1 件。golden には `class`(格子・窓・押す前の真値・キー・機序)ごとに件数と最短の例だけを載せる。
 struct Mismatch {
     class: String,
+    label: String,
     path_len: usize,
     example: String,
 }
@@ -168,15 +347,18 @@ fn explore(grid: Grid, composing_visible: bool) -> (usize, Vec<Mismatch>) {
             let mut next_path = path.clone();
             next_path.push(vk);
             let h = replay(grid, composing_visible, start, &next_path);
-            let r = h.predictions.last().expect("最後のキーの予測の記録");
+            let last = h.predictions.len() - 1;
+            let r = &h.predictions[last];
             if let Some(m) = prediction_mismatch(r) {
                 let seq: Vec<String> = next_path.iter().map(|k| format!("{k:02X}")).collect();
+                let label = mechanism(&h.predictions, last);
                 lines.push(Mismatch {
                     class: format!(
-                        "{} 観測可能={composing_visible} 押す前={} キー=0x{vk:02X}",
+                        "{} 観測可能={composing_visible} 押す前={} キー=0x{vk:02X} 機序={label}",
                         grid.name(),
                         state_name(r.truth_before),
                     ),
+                    label,
                     path_len: next_path.len(),
                     example: format!(
                         "    最短 開始={} mode={:?} 列=[{}]\n    {m}",
@@ -202,10 +384,6 @@ fn explore(grid: Grid, composing_visible: bool) -> (usize, Vec<Mismatch>) {
 #[test]
 fn prediction_exhaustive_golden() {
     let started = Instant::now();
-    let mut out = String::from(
-        "# 予測器と擬似 IME の真値の食い違い（各キーの直前に観測して belief を合わせた上で、到達しうる抽象状態を全列挙。ADR-277）。\n\
-         # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive\n",
-    );
     let mut by_config: BTreeMap<String, (usize, Vec<Mismatch>)> = BTreeMap::new();
     for grid in Grid::ALL {
         for composing_visible in [true, false] {
@@ -215,13 +393,47 @@ fn prediction_exhaustive_golden() {
             );
         }
     }
-    for (config, (nodes, mismatches)) in &by_config {
-        // class → (件数, 最短の例〈列の長さ, 例の文字列〉の最小)
-        let mut classes: BTreeMap<&str, (usize, (usize, &str))> = BTreeMap::new();
+    // 仕分けの集計: ラベル → (種類, 件数)。
+    let mut by_label: BTreeMap<&str, (BTreeSet<&str>, usize)> = BTreeMap::new();
+    for (_, mismatches) in by_config.values() {
         for m in mismatches {
-            let e = classes
-                .entry(m.class.as_str())
-                .or_insert((0, (m.path_len, m.example.as_str())));
+            let e = by_label.entry(m.label.as_str()).or_default();
+            e.0.insert(m.class.as_str());
+            e.1 += 1;
+        }
+    }
+    let mut out = String::from(
+        "# 予測器と擬似 IME の真値の食い違い（各キーの直前に柵の外で観測して belief を合わせた上で、到達しうる抽象状態を全列挙。ADR-277）。\n\
+         # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive\n\
+         # 仕分け（A=ハーネス・B=既知の制限・C=製品のバグの疑い・D=実害なし。ラベルと根拠は TRIAGE）:\n",
+    );
+    let mut by_category: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for (label, (classes, n)) in &by_label {
+        let e = by_category.entry(tag(label)).or_default();
+        e.0 += classes.len();
+        e.1 += n;
+    }
+    for (cat, (classes, n)) in &by_category {
+        let _ = writeln!(out, "# [{cat}] 種類={classes} 件={n}");
+    }
+    for (label, (classes, n)) in &by_label {
+        let why = category_of(label).map_or("（TRIAGE に無い）", |(_, why)| why);
+        let _ = writeln!(
+            out,
+            "# [{}] {label}: 種類={} 件={n}\n#     根拠: {why}",
+            tag(label),
+            classes.len()
+        );
+    }
+    for (config, (nodes, mismatches)) in &by_config {
+        // class → (件数, 最短の例〈列の長さ, 例の文字列〉の最小, ラベル)
+        let mut classes: BTreeMap<&str, (usize, (usize, &str), &str)> = BTreeMap::new();
+        for m in mismatches {
+            let e = classes.entry(m.class.as_str()).or_insert((
+                0,
+                (m.path_len, m.example.as_str()),
+                m.label.as_str(),
+            ));
             e.0 += 1;
             e.1 = e.1.min((m.path_len, m.example.as_str()));
         }
@@ -231,12 +443,20 @@ fn prediction_exhaustive_golden() {
             mismatches.len(),
             classes.len()
         );
-        for (class, (n, (_, example))) in &classes {
-            let _ = writeln!(out, "{n:3} 件 {class}\n{example}");
+        for (class, (n, (_, example), label)) in &classes {
+            let _ = writeln!(out, "{n:3} 件 [{}] {class}\n{example}", tag(label));
         }
     }
     eprintln!("prediction_exhaustive: {:?}", started.elapsed());
     check_golden("pseudo_ime_prediction_mismatches.txt", &out);
+    let unclassified: Vec<&&str> = by_label
+        .keys()
+        .filter(|l| category_of(l).is_none())
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "仕分けていない機序がある（TRIAGE に分類と根拠を足すこと）: {unclassified:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
