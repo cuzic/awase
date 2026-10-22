@@ -1171,28 +1171,6 @@ fn matches_key_combo(combo: ParsedKeyCombo, event: &RawKeyEvent, modifiers: Modi
 }
 
 impl SpecialKeyCombos {
-    /// ADR-206 決定4: 旧 `*_solo_tap_ime_action` の移行用。`vk` に**無修飾の bare が既にあれば何もしない**
-    /// （ユーザーが明示した `keys.ime_*` を優先。旧設定が残ったまま新しい bare を足した場合に黙って上書きしない）。
-    /// 無ければ `action` の一覧へ bare を加える。修飾付きのコンボには触れない。config.toml は書き換えず、メモリ上の照合表だけを変える。
-    /// 戻り値は移行したか。
-    pub fn set_bare_ime_action_if_absent(&mut self, vk: VkCode, action: ShadowImeAction) -> bool {
-        if self.bare_ime_action(vk).is_some() {
-            return false;
-        }
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk,
-        };
-        match action {
-            ShadowImeAction::TurnOn => self.ime_on.push(combo),
-            ShadowImeAction::TurnOff => self.ime_off.push(combo),
-            ShadowImeAction::Toggle => self.ime_toggle.push(combo),
-        }
-        true
-    }
-
     /// 修飾なしの `vk` に対する open 軸操作。通常の特殊キー照合と同じく方向固定を toggle より優先し、
     /// on を off より先に評価する（ADR-192 決定3b。Platform 層の `thumb_forced_open_actions` と
     /// ADR-199 決定16 の役割合成が共有する）。

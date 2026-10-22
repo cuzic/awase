@@ -25,6 +25,19 @@ const REMOVED_KEYS: &[&str] = &[
 /// 消すと、ユーザーは挙動が変わった理由に気づけないため、読込時に警告して無視する
 /// (`AppConfig::validate` が警告として返し、トレイに出る。設定の保存で該当行は消える)。
 const REMOVED_WITH_NOTICE: &[(&str, &str)] = &[
+    // ADR-206 決定4 の移行期間を SF-09（2026-10-22）で終えた。値は keys.ime_* へ移さず無視する。
+    (
+        "general.muhenkan_solo_tap_ime_action",
+        "general.muhenkan_solo_tap_ime_action は撤去されました。値は無視されます。無変換の単独タップで IME を開閉するには、\
+         keys.ime_on / keys.ime_off（または keys.ime_toggle）に「無変換」を単独で書いてください（設定画面の「IME を強制的に ON/OFF にそろえるキー」でも設定できます）。\
+         config.toml から削除してください（設定画面で保存しても消えます）",
+    ),
+    (
+        "general.henkan_solo_tap_ime_action",
+        "general.henkan_solo_tap_ime_action は撤去されました。値は無視されます。変換の単独タップで IME を開閉するには、\
+         keys.ime_on / keys.ime_off（または keys.ime_toggle）に「変換」を単独で書いてください（設定画面の「IME を強制的に ON/OFF にそろえるキー」でも設定できます）。\
+         config.toml から削除してください（設定画面で保存しても消えます）",
+    ),
     (
         "keys.engine_on_ime_key",
         "keys.engine_on_ime_key は撤去されました。値は無視されます。エンジンの ON/OFF に合わせて \
@@ -199,13 +212,18 @@ mod tests {
 
     #[test]
     fn removed_with_notice_keys_have_a_notice_and_are_not_silent() {
-        for p in ["keys.engine_on_ime_key", "keys.engine_off_ime_key"] {
+        for p in [
+            "keys.engine_on_ime_key",
+            "keys.engine_off_ime_key",
+            "general.muhenkan_solo_tap_ime_action",
+            "general.henkan_solo_tap_ime_action",
+        ] {
             let m = removed_notice(p).expect("通知文がある");
             assert!(m.contains(p) && m.contains("撤去"), "{m}");
             assert!(!is_removed_key(p), "無警告の表に重複登録しない: {p}");
         }
         assert!(removed_notice("keys.engine_on").is_none());
-        assert_eq!(removed_notice_paths().count(), 5);
+        assert_eq!(removed_notice_paths().count(), 7);
     }
 
     #[test]

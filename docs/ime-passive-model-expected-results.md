@@ -104,7 +104,7 @@ ADR-191 実測5の「Bで仕様から外れた31件」は、撤去後は**仕様
 
 回避は「内部状態に依るキーを、依らないキーに置き換える」こと。
 
-- 親指キーの単独打鍵の挙動を awase 側で決める（既存の `muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action`、`keys.ime_on/off/toggle`。ADR-153・ADR-192 決定3）。
+- 親指キーの単独打鍵の挙動を awase 側で決める（`keys.ime_on/off/toggle` に無変換・変換を単独で書く。旧 `muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action` は撤去済み。ADR-153・ADR-192 決定3）。
   awase が物理キーを消費し、冪等な `VK_IME_ON`/`VK_IME_OFF`（トグルは belief 基づき）で書くので、IME 側の状態依存の割り当ては届かない。
 - IME 側のキーマップを冪等なキー（変換=IME ON、無変換=IME OFF など）へ変更する。awase は `config1.db`・レジストリを書き換えない（ADR-192 決定4）。
 

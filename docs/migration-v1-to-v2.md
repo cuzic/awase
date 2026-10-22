@@ -32,7 +32,7 @@ v2 は方針を変えました。
 | `keys.ime_toggle` | 既定 `VK_KANJI`（半角/全角） | **既定は空**。v1 の旧既定と**ちょうど同じ**値（`["VK_KANJI"]`）は読み込み時に空として扱い、保存で消える。IME 側の設定に従う |
 | `keys.ime_detect.on` / `off` | 既定 `IMEオン` / `IMEオフ` | **既定は空**。IMEオン/オフ キー（`VK_IME_ON/OFF`）への追随は指定なしで自動 |
 | `keys.engine_on_ime_key` / `engine_off_ime_key` | エンジン ON/OFF 時に IME のモードキーを送る | **撤去**。残っていれば無視し、起動時にトレイで通知。設定画面で保存すると消える |
-| `muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action` | 無変換/変換の単独タップで IME 操作 | **撤去**。読み込み時に `keys.ime_*` 相当へ移行して警告（同じキーの設定が既にあれば移行しない）。保存すると消える |
+| `muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action` | 無変換/変換の単独タップで IME 操作 | **撤去**。残っていても値は無視し、起動時に通知（`keys.ime_on` / `keys.ime_off` に「無変換」「変換」を単独で書くよう案内）。保存すると消える。v2.2.0 までは読み込み時に `keys.ime_*` 相当へ移行していた（SF-09 で終了） |
 | `confirm_mode` | 複数の値 | **`wait` と `ngram_predictive` の 2 択**。旧値は `wait` 扱い＋警告、保存時に `wait` へ書き換わる |
 | キー名の書き方 | 項目ごとに規則が違い、書き方が合わないと**黙って無視** | **全項目で同じ寛容な規則**（前後の空白無視・大文字小文字不問・`VK_` は任意・`Enter` などの一般名・矢印キー）。今まで無視されていた設定が**有効になる**ことがある |
 | `[[keymap]]`（旧表記） | 効かなかった | 実際の項目名 `[[keymaps]]` として読まれる（**効き始める**） |
