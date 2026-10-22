@@ -785,13 +785,13 @@ impl WindowsPlatform {
     ///
     /// `observation_event_proc` が `pending_end_composition` を set した後、
     /// `advance_tsf_probe` / `send_keys` で `take_pending_end_composition()` が true を返したときに呼ぶ。
-    /// `OnComposing` 以外の状態では epoch が取れないためスキップする（GjiFsm 側でも無視される）。
+    /// `OnComposing` 以外の状態ではスキップする（GjiFsm 側でも無視される）。
     pub(crate) fn gji_on_end_composition(&mut self) {
-        if let Some(epoch) = self.output.gji_current_composition_epoch() {
-            tracing::debug!("[gji-fsm] EndComposition (candidate HIDE) epoch={epoch:?}");
+        if self.output.gji_is_composing() {
+            tracing::debug!("[gji-fsm] EndComposition (candidate HIDE)");
             self.dispatch_gji_event(
-                format!("EndComposition(candidate HIDE, epoch={epoch:?})"),
-                crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch },
+                "EndComposition(candidate HIDE)",
+                crate::tsf::gji_fsm::GjiEvent::EndComposition,
             );
             // BUG-24 追補: 候補ウィンドウ HIDE = IME セッションの終了。次のセッションの
             // 最初の1文字は改めて literal-detect の確認を受けるようリセットする。

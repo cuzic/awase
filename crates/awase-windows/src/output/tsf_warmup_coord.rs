@@ -13,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
 use crate::tsf::gji_fsm::GjiTimer;
-use crate::tsf::gji_fsm::{FocusEpoch, GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams};
+use crate::tsf::gji_fsm::{GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{DeferredOrigin, DeferredVk};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
@@ -127,9 +127,9 @@ impl TsfWarmupCoordinator {
         self.tsf_warmup.borrow_mut().on_gji_long_idle()
     }
 
-    /// `OnComposing` 状態の現在 epoch を返す。それ以外の状態では `None`。
-    pub(crate) fn gji_current_composition_epoch(&self) -> Option<FocusEpoch> {
-        self.tsf_warmup.borrow().gji_current_composition_epoch()
+    /// GjiFsm が `OnComposing` 状態か。
+    pub(crate) fn gji_is_composing(&self) -> bool {
+        self.tsf_warmup.borrow().gji_is_composing()
     }
 
     /// `Authorized` 状態の `ProbeParams` を返す。それ以外なら `None`。
