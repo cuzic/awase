@@ -221,3 +221,4 @@ a map of what to expect, not a substitute for reading them when the relevant are
   families" need either a regression test or a new `docs/known-bugs/BUG-NNN.md` entry.
 - `ime-belief-architecture.md` — see Architecture section above.
 - `agent-handoff.md` — 並列のエージェント開発での PR 本文・DIRTY の確認、報告と主張の再確認、取り消しの書き方、push の仕方(ADR-242・ADR-243)。
+- `one-off-verification-workflows.md` — 1 回限りの検証 workflow・`ci/*` ブランチ・スクリプトは、結果を docs/ADR/BUG に書いたら同じ PR で撤去し、撤去コミットのハッシュを BUG/ADR に書く。`e2e-ime.yml` の observe 構成には `until=` を付ける。
