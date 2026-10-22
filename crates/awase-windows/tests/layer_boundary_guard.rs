@@ -558,7 +558,6 @@ const CORE_MODULES: &[&str] = &[
     "ime_event_log",
     "ime_kind",
     "ime_model",
-    "ime_profile_driver",
     "ime_read_strategy",
     "ime_set_open_plan",
     "ime_update",

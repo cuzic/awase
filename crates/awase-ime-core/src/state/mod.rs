@@ -42,12 +42,6 @@ pub mod press_ledger;
 // 規則を Linux で全数テストするため）。実 write は Windows 側の
 // `MechanismWriter` 実装（`ime_controller.rs`）が担う。
 pub mod actuation_chain;
-// ADR-081 Phase 1a/1b/1c の「コード構造についての契約宣言」とそのテストのみのモジュール
-// （本番の呼び出し元は無い）。Phase 1d/1e は ADR-090 §2.F で凍結した。app_ime_policy と
-// 同じ ungated パターンで Linux 上の `cargo test -p awase-windows --lib` から実行できるようにし、
-// 両ターゲットで dead_code を許可する。
-#[allow(dead_code)]
-pub mod ime_profile_driver;
 // ADR-089 §2.4: `GjiFsm` 同期義務（INV-42/43）。ADR-081 Phase 1c の共有 GJI 機構
 // として起こされ、Phase B（2026-08-12）で `ActuationReceipt` + `GjiSyncSink` へ
 // 置き換えて本番（`platform.rs::on_ime_applied`）へ配線した。
@@ -103,7 +97,7 @@ pub mod external_change_watch;
 pub(crate) mod exhaustive_seq;
 pub mod ime_model;
 pub mod ime_read_strategy;
-// ADR-087 Phase 1' 試験実装。app_ime_policy/ime_profile_driver と同じ ungated
+// ADR-087 Phase 1' 試験実装。app_ime_policy と同じ ungated
 // パターンで Linux 上の `cargo test -p awase-windows --lib` から実行できるように
 // する。runtime への配線（既存 `ImeModel.last_intent` との統合）はまだ無い
 // （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
