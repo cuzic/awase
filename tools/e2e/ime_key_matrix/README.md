@@ -162,7 +162,7 @@ B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず
 
 ## 未確定文字(preedit)の読み取り(`typing_stress --mode=preedit`、`check_preedit.py`)
 
-最終テキストとは別に「今、未確定文字があるか」を読む部品。`sc-preedit-*`(observe、既定・`sc-*` からは除外)を `preedit-verify.yml`(ci/preedit-verify への push)で回す。
+最終テキストとは別に「今、未確定文字があるか」を読む部品。`sc-preedit-*`(observe、既定・`sc-*` からは除外)を回す(旧 `preedit-verify.yml` は撤去。`gh workflow run e2e-ime.yml --ref <ブランチ> -f only='sc-preedit-*'`、旧 workflow は `git show fd4fa44a^:.github/workflows/preedit-verify.yml`)。
 読み取り可否(run 37276470334、各 6 試行、GJI/MS-IME、終端=Enter。真値は「打鍵前 なし/かな打鍵中 あり/Enter 後 なし」):
 
 | 入力先 | uia(`GetActiveComposition`) | imm(`ImmGetCompositionString`) |
