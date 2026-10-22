@@ -100,7 +100,7 @@ crates/awase-windows-base/    OS-independent core base (ADR-274 stage 2): tuning
                               scoped_latch} + TickMs, focus/{kinds,class_names}, tsf/converter_target. No dependency on other
                               core crates; every other core crate sits above it. Same relative paths as before the move.
 crates/awase-key-effect/      OS-independent core (ADR-274 stage 2): key-effect tables and prediction: state/{key_effect_predictor,
-                              key_effect_rules,key_effect_runtime,key_effect_table,keymap_initial_hypothesis,keymap_latch,
+                              key_effect_runtime,key_effect_table,keymap_latch,
                               late_keymap_plan,state_dependent_key_warning}. Depends only on awase-windows-base.
 crates/awase-hook-core/       OS-independent core: hook / modifier-key / half-width-alnum toggle state (ADR-274 stage 1):
                               state/{hook_state,hook_watchdog,alt_impersonation,foreign_modifier,win_key_guard,

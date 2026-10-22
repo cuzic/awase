@@ -70,7 +70,7 @@ awase-replay = { path = "../awase-replay" }
 [target.'cfg(windows)'.dev-dependencies]
 # `#[implement(...)]` マクロ展開が `::windows_core::...` を直接参照するため、
 # `windows::core` の再エクスポート越しではなく実クレートとして必要
-# (`examples/spike_langbar_input_mode.rs` 専用、本体コードは未使用)。
+# (`examples/ime_key_matrix_spike.rs` など、`#[implement]` を使う example 用。本体コードは未使用)。
 windows-core = "0.62"
 
 [target.'cfg(windows)'.dependencies.windows]
