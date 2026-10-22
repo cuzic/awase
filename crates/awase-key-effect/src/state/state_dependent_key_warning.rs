@@ -185,7 +185,7 @@ impl WarningTracker {
 }
 
 /// 無変換/変換の単独タップ設定から、IMEへ素通しされる親指キーのVKを求める。
-/// 抑止（`always_suppress`）・専用Fnキー・bare `keys.ime_*`（旧`*_solo_tap_ime_action`の移行分を含む）のいずれかがあれば、
+/// 抑止（`always_suppress`）・専用Fnキー・bare `keys.ime_*`のいずれかがあれば、
 /// awaseが単独タップを消費するので素通しではない。
 #[must_use]
 pub fn passthrough_thumb_vks(

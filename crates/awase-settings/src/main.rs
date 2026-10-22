@@ -638,8 +638,6 @@ fn load_keymap_table_state(
 struct Adr192ReplacementSnapshot {
     ime_on: Vec<String>,
     ime_off: Vec<String>,
-    muhenkan_legacy_action: Option<awase::config::ShadowImeActionConfig>,
-    henkan_legacy_action: Option<awase::config::ShadowImeActionConfig>,
 }
 
 fn apply_adr192_recommended_replacement(
@@ -648,15 +646,9 @@ fn apply_adr192_recommended_replacement(
     let snapshot = Adr192ReplacementSnapshot {
         ime_on: config.keys.ime_on.clone(),
         ime_off: config.keys.ime_off.clone(),
-        muhenkan_legacy_action: config.general.muhenkan_solo_tap_ime_action,
-        henkan_legacy_action: config.general.henkan_solo_tap_ime_action,
     };
-    // 非推奨の `*_solo_tap_ime_action` は消す: 残すと、読込時に同じキーの旧設定が新しい bare と食い違う
-    // （bare が優先されるが、警告が出続け、消し忘れの原因になる。ADR-206 決定4）。置き換えの undo で元へ戻す。
-    config.general.muhenkan_solo_tap_ime_action = None;
-    config.general.henkan_solo_tap_ime_action = None;
     // ADR-206: 単独タップの開閉は「開閉の役割（bare `keys.ime_*`）があれば生キーを抑止して awase が絶対指定で書く」に
-    // 一本化した。親指キーでも `*_solo_tap_ime_action`/`always_suppress` は書かず、bare のコンボを書く。
+    // 一本化した（旧 `*_solo_tap_ime_action` は SF-09 で撤去）。親指キーでも `always_suppress` は書かず、bare のコンボを書く。
     // 親指キーのときは既存のリスト（既定の `Ctrl+無変換` 等）を消さないよう追記する。親指でない無変換/変換は
     // 従来どおり置き換える（同時打鍵に使わないので `Ctrl` 付き等の他の割り当てより単独が確実、ADR-192）。
     let henkan_is_thumb = is_henkan_thumb_key(&config.general.left_thumb_key)
@@ -688,8 +680,6 @@ fn undo_adr192_recommended_replacement(
 ) {
     config.keys.ime_on = snapshot.ime_on;
     config.keys.ime_off = snapshot.ime_off;
-    config.general.muhenkan_solo_tap_ime_action = snapshot.muhenkan_legacy_action;
-    config.general.henkan_solo_tap_ime_action = snapshot.henkan_legacy_action;
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -9071,7 +9061,7 @@ mod layout_tab_repro {
     #[test]
     fn adr192_replacement_appends_bare_combos_when_key_is_a_thumb_key() {
         // AppConfig::default()の親指キーは無変換/変換(標準NICOLA配置)。ADR-206以降は
-        // `*_solo_tap_ime_action`/`always_suppress`を書かず、bareの`keys.ime_on`/`ime_off`へ
+        // `always_suppress`を書かず、bareの`keys.ime_on`/`ime_off`へ
         // 既存の要素（既定のCtrl+無変換等）を消さずに追記する。
         let mut config = awase::config::AppConfig::default();
         let original_ime_on = config.keys.ime_on.clone();
@@ -9086,23 +9076,10 @@ mod layout_tab_repro {
         }
         assert!(config.keys.ime_on.iter().any(|k| k == "変換"));
         assert!(config.keys.ime_off.iter().any(|k| k == "無変換"));
-        assert_eq!(config.general.muhenkan_solo_tap_ime_action, None);
-        assert_eq!(config.general.henkan_solo_tap_ime_action, None);
         assert_eq!(
             config.general.muhenkan_solo_tap_always_suppress, original_muhenkan_suppress,
             "always_suppressは書き換えない"
         );
-        // 旧設定が残っている場合の経路: 置き換えで旧設定は None に戻り、undo で元に戻る。
-        let mut legacy = awase::config::AppConfig::default();
-        legacy.general.muhenkan_solo_tap_ime_action =
-            Some(awase::config::ShadowImeActionConfig::Toggle);
-        legacy.general.henkan_solo_tap_ime_action = Some(awase::config::ShadowImeActionConfig::On);
-        let before = toml::to_string(&legacy).unwrap();
-        let snapshot = apply_adr192_recommended_replacement(&mut legacy);
-        assert_eq!(legacy.general.muhenkan_solo_tap_ime_action, None);
-        assert_eq!(legacy.general.henkan_solo_tap_ime_action, None);
-        undo_adr192_recommended_replacement(&mut legacy, snapshot);
-        assert_eq!(toml::to_string(&legacy).unwrap(), before);
         // 2回適用しても重複しない。
         let _ = apply_adr192_recommended_replacement(&mut config);
         assert_eq!(
@@ -9120,8 +9097,6 @@ mod layout_tab_repro {
         let _snapshot = apply_adr192_recommended_replacement(&mut config);
         assert_eq!(config.keys.ime_on, ["変換"]);
         assert_eq!(config.keys.ime_off, ["無変換"]);
-        assert_eq!(config.general.henkan_solo_tap_ime_action, None);
-        assert_eq!(config.general.muhenkan_solo_tap_ime_action, None);
     }
 
     #[test]
