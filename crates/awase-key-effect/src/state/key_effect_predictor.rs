@@ -554,13 +554,6 @@ pub fn predict(preset: KeymapPreset, vk: u16, input: &PredictInput) -> Option<Pr
 #[must_use]
 pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option<Prediction> {
     let seeded = matches!(input.mode, InputModeState::Unknown);
-    // BUG-212: 観測した変換モードが、かな系（NATIVE ビットあり）なのに表せない値（半角カタカナ 0x13 など）のときは予測しない
-    // （ADR-191: 表せない値は追わない）。入力モードへ落として「ひらがな」とみなすと、英数キーを逆向きに予測する。
-    // 追跡した変換モードがあるときはそちらを正とする（従来どおり）。NATIVE ビットの無い値（0x00・0x08 など）は
-    // 従来どおり入力モードから決める（半角英数トグル中の 0x0000 など）。
-    if observed_conv_is_unrepresentable_kana(input) {
-        return None;
-    }
     let conv = input
         .track
         .conv
@@ -594,6 +587,13 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
         };
         return (!effect.is_noop() || track != input.track).then_some(Prediction { effect, track });
     };
+    // BUG-212: 観測した変換モードが、かな系（NATIVE ビットあり）なのに表せない値（半角カタカナ 0x13 など）のときは予測しない
+    // （ADR-191: 表せない値は追わない）。入力モードへ落として「ひらがな」とみなすと、英数キーを逆向きに予測する。
+    // 追跡した変換モードがあるときはそちらを正とする（従来どおり）。NATIVE ビットの無い値（0x00・0x08 など）は
+    // 従来どおり入力モードから決める（半角英数トグル中の 0x0000 など）。
+    if observed_conv_is_unrepresentable_kana(input) {
+        return None;
+    }
     // 追跡した変換中の段階が、この表に**行として全く無い**とき（例: ATOKに`ConvMuhenkan`の行は無い）は、
     // 「入力中」の行で代用する。代用しないと予測が返らず、追跡した段階が古いまま残って以後の打鍵の予測が
     // 全て外れる（CI blind: ATOKで入力中の無変換の後、Enter/半角全角が予測なしのまま OFF/ON がずれ続けた）。
@@ -1914,6 +1914,9 @@ mod tests {
         for preset in [KeymapPreset::MsIme, KeymapPreset::MsImeNative] {
             assert_eq!(predict(preset, 0xF0, &observed), None, "{preset:?} 0x13");
         }
+        // 文字キーは変換モードに依らない（入力中の段階の追跡は続ける）。予測しないのは、変換モードを引くキーだけ。
+        let ch = predict(KeymapPreset::MsIme, 0x41, &observed).expect("文字キーは段階を更新する");
+        assert_eq!(ch.track.stage, Stage::Typing);
         // 追跡した変換モードがあれば、そちらを正とする（観測の 0x13 は無視される）。
         let tracked = KeyTrack {
             conv: Some(Conv::C19),
