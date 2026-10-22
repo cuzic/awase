@@ -103,6 +103,33 @@ impl IndicatorGlyphShadow {
     }
 }
 
+/// 診断: 見本に無い字形（`TooFar`/`Ambiguous`）の形（前処理後の 2 値画像。元の画素ではない）を、同じ形は 1 度だけログに出す
+/// （起動ごとに最大 `MAX_MISS_SHAPES` 件）。実機で曖昧になる窓の字形を後から確かめ、見本に足すか決める材料。
+fn log_miss_shape(
+    shapes: &mut std::collections::HashSet<u64>,
+    feature: &GlyphFeature,
+    miss: Option<GlyphMiss>,
+    profile: &str,
+    outcome: &ProbeOutcome,
+    table_len: usize,
+) {
+    let Some(miss @ (GlyphMiss::TooFar | GlyphMiss::Ambiguous)) = miss else {
+        return;
+    };
+    if shapes.len() >= MAX_MISS_SHAPES || !shapes.insert(feature.mask_fingerprint()) {
+        return;
+    }
+    tracing::info!(
+        target: "awase::glyph_miss",
+        "[indicator-glyph] miss-shape {} miss={} profile={profile} size={}x{} dark={} table={table_len}",
+        feature.mask_art(),
+        miss.label(),
+        outcome.width,
+        outcome.height,
+        outcome.dark,
+    );
+}
+
 /// 見本の保存先へアトミックに書く。失敗しても何も変えない（見本は次の起動で集め直せる）。
 fn save_samples(path: &Path, store: &GlyphSampleFile) {
     if let Err(e) = awase::fs_atomic::write_atomic(path, store.to_json().as_bytes()) {
@@ -350,25 +377,14 @@ impl super::Runtime {
                     }) == AddOutcome::Added
                 });
             apply_match(&mut record, &m, label, collected, table.len());
-            // 診断: 見本に無い字形の形（前処理後の 2 値画像。元の画素ではない）を、同じ形は 1 度だけログに出す。
-            if matches!(m.miss, Some(GlyphMiss::TooFar | GlyphMiss::Ambiguous))
-                && self.indicator_glyph.miss_shapes.len() < MAX_MISS_SHAPES
-                && self
-                    .indicator_glyph
-                    .miss_shapes
-                    .insert(f.mask_fingerprint())
-            {
-                tracing::info!(
-                    target: "awase::glyph_miss",
-                    "[indicator-glyph] miss-shape {} miss={} profile={profile} size={}x{} dark={} table={}",
-                    f.mask_art(),
-                    m.miss.map_or("", GlyphMiss::label),
-                    outcome.width,
-                    outcome.height,
-                    outcome.dark,
-                    table.len(),
-                );
-            }
+            log_miss_shape(
+                &mut self.indicator_glyph.miss_shapes,
+                &f,
+                m.miss,
+                profile,
+                &outcome,
+                table.len(),
+            );
             if collected {
                 // 見本が増えたときだけ保存する（まれ。アトミックに書く）。
                 self.indicator_glyph.store.set_env(&fingerprint, table);
