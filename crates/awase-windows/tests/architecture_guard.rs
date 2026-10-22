@@ -900,20 +900,6 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
 fn forced_thumb_path_lives_in_the_engine_special_key_match() {
     let kp = read_crate_file("src/runtime/key_pipeline.rs");
     let kp_production = production_code_only(&kp);
-    for banned in [
-        "explicit_ime_action_target",
-        "ExplicitImeActionOutcome",
-        "explicit_ime_action_consumed",
-        "explicit_action_for_pipeline",
-    ] {
-        assert!(
-            !kp_production.contains(banned),
-            "key_pipeline.rs に旧ケース2/3改の `{banned}` が再導入されています。無変換/変換の開閉は \
-             エンジンの特殊キー照合（`Engine::thumb_open_role_action`）と FSM の単独タップ解決が担い、\
-             生キーの抑止は Decision::Consume/UpDuty::Consume に任せる（ADR-206。旧経路は belief を書くだけで \
-             実 IME へ ON を書かず、NotRomajiInput 等で「抑止したのに何も書かない」空振りになった）。"
-        );
-    }
     let shadow = extract_fn_body(kp_production, "fn kp_stage_shadow_ime_toggle(");
     assert!(
         !shadow.contains("forced_open_action") && !shadow.contains("VK_NONCONVERT"),
@@ -977,41 +963,12 @@ fn forced_thumb_path_lives_in_the_engine_special_key_match() {
 /// ADR-206 / BUG-174 の回帰ガード（所有者のマージ条件、2026-09-29）: **Ctrl を離したとき（Ctrl↑）に awase は
 /// IME への actuation（SendInput・ImmSetOpenStatus・apply_ime_open_*）をしない。**
 /// 旧 `CompositionEvent::CtrlUp` の eager warmup は Ctrl 押下中に `VK_IME_ON` を注入し、GJI + Windows Terminal で
-/// 「@」の被疑箇所だった（BUG-174、`aa53eb4b` で撤去）。再導入と、Ctrl↑ 経路への actuation の混入を検知する。
+/// 「@」の被疑箇所だった（BUG-174、`aa53eb4b` で撤去）。Ctrl↑ 経路への actuation の混入を検知する
+/// （旧識別子の名前の走査は、型ごと無いので 2026-10-22 に外した）。
 /// 「@」そのものの再現は実機 A/B で、ここでは Ctrl↑ 経路に actuation 呼び出しが存在しないことをホストで固定する。
 #[test]
 fn ctrl_key_up_never_actuates_ime() {
-    // 1. 旧 CtrlUp warmup の識別子が復活していない（crate 全体）。
-    let mut stack: Vec<std::path::PathBuf> =
-        src_crate_dirs().iter().map(|d| d.join("src")).collect();
-    while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir).expect("read_dir") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                let content = fs::read_to_string(&path)
-                    .expect("read")
-                    .replace("\r\n", "\n");
-                let production = production_code_only(&content);
-                for banned in [
-                    "CompositionEvent::CtrlUp",
-                    "WarmupReason::CtrlUp",
-                    "composition_ctrl_up",
-                    "handle_ctrl_up_recovery",
-                ] {
-                    assert!(
-                        !production.contains(banned),
-                        "{} に `{banned}` が復活しています。Ctrl↑ で awase が VK_IME_ON を注入する経路は \
-                         BUG-174（Windows Terminal + GJI の「@」被疑、`aa53eb4b` で撤去）です。",
-                        path.display()
-                    );
-                }
-            }
-        }
-    }
-
-    // 2. Ctrl↑ 専用のハンドラ（`on_ctrl_key_up`）は belief のバリア解除だけで、actuation を呼ばない。
+    // 1. Ctrl↑ 専用のハンドラ（`on_ctrl_key_up`）は belief のバリア解除だけで、actuation を呼ばない。
     let ps = read_crate_file("src/state/platform_state.rs");
     let body = extract_fn_body(production_code_only(&ps), "fn on_ctrl_key_up(");
     for banned in [
@@ -1030,7 +987,7 @@ fn ctrl_key_up_never_actuates_ime() {
         );
     }
 
-    // 3. パイプラインの Ctrl 系 KeyUp ブロックは `on_ctrl_key_up` を呼ぶだけ。
+    // 2. パイプラインの Ctrl 系 KeyUp ブロックは `on_ctrl_key_up` を呼ぶだけ。
     let kp = read_crate_file("src/runtime/key_pipeline.rs");
     let kp_prod = production_code_only(&kp);
     let start = kp_prod
@@ -2001,12 +1958,11 @@ fn any_observation_replay_door_is_not_used_in_production() {
     }
 }
 
-/// 実 IME actuation 入口 6 種（`apply_ime_open_with_belief` / `_with_view` /
-/// `_with_applied` / `set_ime_open` / `set_ime_open_ordered` / `apply_ime_open`）の
-/// **呼び出し箇所数**を、入口ごとに crate 全域で固定する（`_with_belief` と
-/// `_with_applied` は ADR-216 R3 / ADR-179 で呼び出し元がなくなり、0 のまま
-/// 「復活したら気づく」ために残している）
-/// （各関数の定義行 `fn ...(` は数えない）。
+/// 実 IME actuation 入口 3 種（`apply_ime_open_with_view` / `set_ime_open` /
+/// `set_ime_open_ordered`）の **呼び出し箇所数**を、入口ごとに crate 全域で固定する
+/// （各関数の定義行 `fn ...(` は数えない）。`apply_ime_open_with_belief` /
+/// `_with_applied` / `apply_ime_open` はメソッドごと撤去済みで、呼べばコンパイルが
+/// 通らないため、件数 0 の項目は 2026-10-22 に外した。
 ///
 /// これは「唯一の窓口」への統合テストではなく、**新しい未レビューの呼び出し元が
 /// 増えたら気づく**ための count guard である。旧版（`apply_ime_open_with_belief`
@@ -2062,31 +2018,7 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
     //   内部委譲の消滅）。
     // - `.apply_ime_open_with_applied(` 1 → **0**（メソッドごと削除。ガードは
     //   残す——0 でなくなったら死んだ API が復活したことを意味する）。
-    const ENTRY_POINTS: [(&str, usize); 6] = [
-        // 外部 2（ime_refresh.rs drift correction / key_pipeline.rs idle-conv-check、
-        // ADR-087 §5 item14 表 #11/#4）。ADR-098 決定2 で内部委譲元
-        // （apply_ime_open_with_applied）が消えたため 3→2。
-        //
-        // **2026-08-19（BUG-34 横展開 D）**: 表 #7 の mod.rs try_force_on_bootstrap は
-        // ここから外れた。同期 ImmCrossProcessStrategy::apply（150ms 宣言
-        // タイムアウトの SendMessageTimeoutW をエンジンスレッドで直接ブロックする
-        // 経路）を経由しなくなり、executor.rs の ImmCross async path と同じ
-        // run_open_chain_async へ委譲するようになったため
-        // （`async_imm_cross_actuation_goes_through_the_single_chain_entry` 参照）。
-        //
-        // **2026-09-08（ADR-153決定1実装）**: 表 #12（`key_pipeline.rs::
-        // kp_stage_shadow_ime_toggle`のケース3、無変換/変換単独タップの
-        // 明示config`"off"`×belief既にOFF）が新規追加され 2→3。
-        //
-        // **2026-09-08（同日、ケース3撤回）**: 実機A/B実験で「@」再現の
-        // 直接原因と確定し撤回したため、表 #12 の入口が消えて 3→2 に戻った
-        // （`docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25）。
-        // **2026-09-19（ADR-185）**: `key_pipeline.rs::kp_apply_conv_engine_sync`の`DirectInput`分岐
-        // （半角英数検出時のIME OFF実送信、BUG-146）を撤去したため 2→1（残りは`ime_refresh.rs`の
-        // drift correction のみ）。
-        // ADR-216 R3: 唯一の呼び出し元にインライン化し、1→0。
-        // 死んだ API が復活したら気づくためガードは残す。
-        (".apply_ime_open_with_belief(", 0),
+    const ENTRY_POINTS: [(&str, usize); 3] = [
         // 外部 2（executor.rs engine decision / ime_refresh.rs drift correction）。
         //
         // **2026-09-08（ADR-121 D3）**: `mod.rs::reassert_explicit_physical_key`
@@ -2105,9 +2037,6 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // 直接呼ぶようになったため 2→1（残りは drift correction）。合流点への呼び出し元は
         // `sync_confluence_entries_are_pinned_for_adr241` が固定する。
         (".apply_ime_open_with_view(", 1),
-        // ADR-098 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
-        // TsfNative 強制 ON ブロック）を撤去し、メソッド自体も削除した。
-        (".apply_ime_open_with_applied(", 0),
         // ADR-090 A-1 で `set_ime_open_ordered` へ移したため本番呼び出しゼロ。
         // **ガードは残す**——ここが 0 でなくなったら、warrant を通さない
         // actuation 入口が復活したことを意味する。
@@ -2116,9 +2045,6 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // **2026-09-25**: focus change 強制 OFF（`focus_change_enforce_off`）を撤去したため
         // 2→1（docs/adr/191-calibration-experiments.md「A/B-1」）。
         (".set_ime_open_ordered(", 1),
-        // 呼び出し元ゼロ(死んだ入口)。`WindowsPlatform` のオーバーライドは
-        // ADR-090 A-1 で削除し、`awase` 側のトレイト既定実装だけが残る。
-        (".apply_ime_open(", 0),
     ];
 
     let files = list_src_files();
@@ -2633,64 +2559,11 @@ fn bug_report_journal_truncation_does_not_slice_from_the_front() {
     }
 }
 
-/// ADR-086 §4 INV-14/INV-19（2026-08-08、全 6 経路の移行完了に伴い更新）:
-/// `set_ime_romaji_mode_with_target`/`_async`（実行時に `get_focused_hwnd()` を
-/// ライブクエリして書き込み先を決める、ターゲット同一性を持たない低レベル API）
-/// は `ime.rs` から**削除済み**。このテストは再導入されないことを固定する
-/// tripwire として残す（`known_sites` は空 = 出現数 0 が唯一の正しい状態）。
-///
-/// この関数は起案時点と実行時点で書き込み先ウィンドウが変わっても検知できない
-/// （ADR-086 §1.2 欠陥1）。BUG-59 追補（`9c102b02`）は `platform.rs` に7番目の
-/// 直接呼び出しを追加したが、当時このテストが存在せず検知できなかった（実機で
-/// LINE の全打鍵が「い」になる等の実害が出て revert 済み、`docs/known-bugs.md`
-/// BUG-59 追補参照）。このテストが失敗したら、新しい呼び出しは
-/// `ActuationTarget::capture` → `set_ime_conv_for_target`/
-/// `set_ime_open_then_conv_for_target` 経由に置き換えること（低レベル関数を
-/// 再実装しないこと）。
-#[test]
-fn conv_write_call_sites_are_target_explicit() {
-    const NEEDLE: &str = "set_ime_romaji_mode_with_target_async(";
-    let known_sites: &[(&str, usize)] = &[];
-
-    // BUG-59 追補（`9c102b02`）は当時の known_sites のどのファイルにも無かった
-    // `platform.rs` に直接呼び出しを追加した。固定リストへの grep だけでは
-    // 「新しいファイルに呼び出しが増えた」ケースを検知できないため、
-    // `src/` 全体を走査して実際に呼び出しを含むファイル集合を求め、
-    // known_sites のキー集合と完全一致することも別途検証する。
-    let all_files = list_src_files();
-    let mut files_with_calls: Vec<(String, usize)> = Vec::new();
-    for path in &all_files {
-        let content = read_crate_file(path);
-        let production = production_code_only(&content);
-        let count = count_real_calls(production, NEEDLE);
-        if count > 0 {
-            files_with_calls.push((path.clone(), count));
-        }
-    }
-    files_with_calls.sort();
-
-    let mut expected: Vec<(String, usize)> = known_sites
-        .iter()
-        .map(|(p, c)| ((*p).to_string(), *c))
-        .collect();
-    expected.sort();
-
-    assert_eq!(
-        files_with_calls, expected,
-        "`{NEEDLE}` を含むファイル集合/出現数が想定（空）と異なります。\n\
-         想定: {expected:?}\n実際: {files_with_calls:?}\n\
-         `set_ime_romaji_mode_with_target(_async)` は ADR-086 §5 Phase1b step6 \
-         で削除済みの低レベル API です。再実装せず、`ActuationTarget::capture` \
-         → `set_ime_conv_for_target`/`set_ime_open_then_conv_for_target` \
-         経由で書き込むこと。"
-    );
-}
-
 /// ADR-086 §4 INV-14/INV-19（2026-08-08、全 6 経路の移行完了に伴い新設）:
 /// `ActuationTarget::capture` の呼び出し箇所数をファイルごとに固定する。
 ///
 /// 旧 `set_ime_romaji_mode_with_target_async` の出現数チェック
-/// （`conv_write_call_sites_are_target_explicit`）は、そのライブクエリ版
+/// （`conv_write_call_sites_are_target_explicit`、2026-10-22 撤去）は、そのライブクエリ版
 /// 自体が削除された今、「新しい force-write 経路が追加されたこと」を検知する
 /// 力を失った（呼び出す対象が無いので誰も呼べない）。代わりに
 /// `ActuationTarget::capture` — 全ての target-aware 書き込みが必ず通る
@@ -2992,26 +2865,6 @@ fn actuation_is_only_requested_through_actuation_order() {
          実 actuation は `ActuationOrder::issue()`（= `issue_open_warrant()` を\
          必ず通る）から起案してください（ADR-090 §2.A・INV-47）。"
     );
-    // 素通し入口が復活していないこと（ADR-090 A-1 で削除済み）。
-    // コメント行は除外する——`state/actuation_chain.rs` のモジュール doc は
-    // 「Phase B ではこの入口があった / A-1 で削除した」という経緯を
-    // 名前付きで残しており（`.claude/rules/experiment-logging.md` の
-    // 「なぜ前回それを捨てたのかを辿れるようにする」規約）、それは残すべき記録
-    // である。塞ぎたいのは**実際の呼び出しと定義**の復活だけ。
-    for path in &files {
-        let content = read_crate_file(path);
-        let production = production_code_only(&content);
-        let live = production
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .filter(|line| line.contains("warrant_pending_adr087"))
-            .count();
-        assert_eq!(
-            live, 0,
-            "{path}: `warrant_pending_adr087` は ADR-090 A-1 で削除した。\
-             warrant を素通しする入口を再導入しないこと（INV-47）。"
-        );
-    }
 }
 
 /// `WarrantContext` の組み立てが `ImeStateHub::warrant_context()` 1 箇所に
@@ -3072,18 +2925,7 @@ fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
     ];
     let files = list_src_files();
 
-    // 1. `apply_skipping_imm` は完全に消えていること。
-    for path in &files {
-        let content = read_crate_file(path);
-        let production = production_code_only(&content);
-        assert_eq!(
-            count_real_calls(production, "apply_skipping_imm("),
-            0,
-            "{path} に `apply_skipping_imm(` が残っています（ADR-089 Phase B で撤去済み）"
-        );
-    }
-
-    // 2. ImmCross の実書き込み API を、機構チェーン外から呼ぶ箇所を固定する。
+    // 1. ImmCross の実書き込み API を、機構チェーン外から呼ぶ箇所を固定する。
     //
     // `set_ime_open_then_conv_for_target`（ADR-086 INV-14 準拠の open+conv 書き込み）は
     // チェーン専用。`set_ime_open_cross_process_async` は「open を 1 回書く」だけの
@@ -3123,7 +2965,7 @@ fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
         );
     }
 
-    // 3. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 2）。
+    // 2. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 2）。
     //
     // **2026-08-19（BUG-34 横展開 D）**: mod.rs::try_force_on_bootstrap が
     // 3本目の呼び出し元として加わった（executor.rs / key_pipeline.rs は既存）。
@@ -3345,32 +3187,6 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
         "`fallback_write(` は `impl AsyncMechanismWriter for AsyncChainWriter` の\
          外から呼ばないこと（ADR-089 §2.3）"
     );
-
-    // 4. 並行する裏口（戦略の型の `apply` の直接呼び出し）が無いこと。
-    //    旧 `ImeOpenStrategy` と 3 つの戦略の型は、`is_applicable` だけを持つ型になった後、
-    //    ADR-241 決定2 で核の `state::sync_actuation::mechanism_applicable` へ移して撤去した。
-    //    戦略の型（特に `pub(crate)` のもの）が復活すると、`apply_mechanism` を経由せずに
-    //    1 機構分の実 write を起こす口になりうるので、宣言の再導入を禁じる（旧ガードは「宣言を
-    //    `pub` へ広げないこと」だった。型そのものが無いので、より強い）。
-    for path in &files {
-        let content = read_crate_file(path);
-        for decl in [
-            "trait ImeOpenStrategy",
-            "struct ImmCrossProcessStrategy",
-            "struct GjiDirectStrategy",
-            "struct MsImeDirectStrategy",
-        ] {
-            let live = content
-                .lines()
-                .filter(|line| line.contains(decl) && !line.trim_start().starts_with("//"))
-                .count();
-            assert_eq!(
-                live, 0,
-                "{path}: `{decl}` を再導入しないこと（ADR-089 §2.3・ADR-241。適用可否は \
-                 `state::sync_actuation::mechanism_applicable`、実 write は `apply_mechanism`）"
-            );
-        }
-    }
 }
 
 /// ADR-171: `candidate_was_seen` を消費する呼び出し箇所を固定する。
@@ -3914,44 +3730,19 @@ fn stale_ime_on_heuristic_skips_awase_own_windows() {
 /// 1 箇所へ統合し、`ActuationTarget::capture_blocking` →
 /// `set_ime_romaji_mode_for_target_blocking` を通す形にした。
 ///
-/// 本テストが守るのは次の 3 点:
+/// 本テストが守るのは次の 2 点（削除したライブクエリ版 `set_ime_romaji_mode()` / `_async()` の
+/// 復活検知は 2026-10-22 に外した。関数が無く、conv の唯一の書き手 `modify_conv_mode(` の件数を
+/// `conv_write_call_sites_are_fixed_to_the_inventory` が固定している）:
 ///
-/// 1. 削除したライブクエリ版（`set_ime_romaji_mode()` / `_async()`）が
-///    本番コードに復活していないこと。
-/// 2. 同期捕獲（`ActuationTarget::capture_blocking`）と同期 ROMAN write の
+/// 1. 同期捕獲（`ActuationTarget::capture_blocking`）と同期 ROMAN write の
 ///    呼び出し元が `ime_controller.rs` の 1 箇所ずつであること。
-/// 3. その 1 箇所が `romaji_pre_write` の中にあること
+/// 2. その 1 箇所が `romaji_pre_write` の中にあること
 ///    （= `decide_needs_romaji_pre_write` の条件判定を必ず通ること）。
 #[test]
 fn sync_romaji_write_goes_through_a_captured_target() {
     let files = list_src_files();
 
-    // 1. 削除済みライブクエリ版の復活検知。
-    for removed in ["set_ime_romaji_mode()", "set_ime_romaji_mode_async("] {
-        let mut sites: Vec<(String, usize)> = Vec::new();
-        for path in &files {
-            let content = read_crate_file(path);
-            let production = production_code_only(&content);
-            let count = production
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("//"))
-                .filter(|line| line.contains(removed))
-                .count();
-            if count > 0 {
-                sites.push((path.clone(), count));
-            }
-        }
-        assert!(
-            sites.is_empty(),
-            "`{removed}`（宛先をライブクエリで自己決定する同期 IMC write）は \
-             ADR-089 §6 Phase C item 12 で削除済みです。再実装せず、\
-             `ActuationTarget::capture_blocking` → \
-             `set_ime_romaji_mode_for_target_blocking` 経由で書き込むこと。\n\
-             実際: {sites:?}"
-        );
-    }
-
-    // 2. 同期捕獲と同期 ROMAN write の呼び出し元。
+    // 1. 同期捕獲と同期 ROMAN write の呼び出し元。
     for needle in [
         "ActuationTarget::capture_blocking(",
         "set_ime_romaji_mode_for_target_blocking(",
@@ -3975,7 +3766,7 @@ fn sync_romaji_write_goes_through_a_captured_target() {
         );
     }
 
-    // 3. その 1 箇所が `romaji_pre_write` の中にあること。
+    // 2. その 1 箇所が `romaji_pre_write` の中にあること。
     let controller = read_crate_file("src/ime_controller.rs");
     let pre_write = extract_fn_body(&controller, "fn romaji_pre_write");
     for needle in [
@@ -5563,22 +5354,6 @@ fn strip_any_test_module(content: &str) -> &str {
     content
 }
 
-/// ADR-153 決定1「ケース3」（"off"×belief既にOFFの強制actuate）は、ADR-206 で `*_solo_tap_ime_action` ごと撤去した。
-/// 旧ケース3専用のアクチュエーション理由タグが復活しないことだけを固定する（強制 actuate が「@」の直接原因と
-/// 確定した経緯は BUG-113/BUG-124、`docs/experiments.md` エントリ25）。ADR-206 の OFF 方向は、
-/// エンジンの `SetOpen(false)`（`applied` の陽性証拠があれば `already_matches` で省略）であり、
-/// `shadow_on: None` バイパスの毎回強制 actuate ではない。
-#[test]
-fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
-    let content = read_crate_file("src/runtime/key_pipeline.rs");
-    let production = production_code_only(&content);
-    assert!(
-        !production.contains("explicit_ime_action_case3_off"),
-        "旧ケース3専用のアクチュエーション理由タグ`explicit_ime_action_case3_off`が再導入されています。\
-         この設計は「beliefが変化しなくても毎回強制actuateする」ことが「@」再現の直接原因と確定済みです。"
-    );
-}
-
 #[test]
 fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[
@@ -5995,16 +5770,9 @@ fn deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass() {
     }
 }
 
-// ── BUG-110/ADR-132 Phase 2: WarmupImeOn の gate 迂回防止 ──────────────
-
 /// `manifest_dir` 相対の `rel_root` 以下の `.rs` ファイルを再帰的に列挙し、
 /// `read_crate_file` が使える形（`CARGO_MANIFEST_DIR` 相対パス文字列）で返す。
 ///
-/// `WarmupImeOn::from_applied_or_belief` は core クレート（`../../src/`、
-/// `crates/awase-windows` から見て2階層上）の `pub const fn` であり、
-/// `list_src_files()`（`awase-windows` 自身の `src/` のみ走査）では取りこぼす。
-/// （かつては兄弟クレート `awase-linux`/`awase-macos` も走査していたが、両スタブは
-/// 2026-10-22 に撤去した〈SF-06〉。）
 fn list_rs_files_under(rel_root: &str) -> Vec<String> {
     // `"src"` は対象 crate すべて（`EXTRA_SRC_CRATES` の核 crate を含む）。ほかの根は元のまま。
     let crate_dirs = if rel_root == "src" {
@@ -6032,134 +5800,6 @@ fn list_rs_files_under(rel_root: &str) -> Vec<String> {
     out
 }
 
-/// `needle` の実呼び出し（`fn {name}(` という定義行、および行コメント
-/// `//`/`///`/`//!` は除外——`non_comment_lines` を内部で適用する。ADR等の
-/// doc コメントに引用されたコード片や `#[cfg(test)]` 内の正当なリテラル
-/// 使用が「本番コードの迂回」として誤検知されるのを防ぐ、敵対的コード
-/// レビュー N3 指摘）ごとに、対応する閉じ括弧までの引数リスト文字列
-/// （深さカウントを尊重した「トップレベル」の `,` で分割、トリム済み）を
-/// 返す。文字列リテラル内の括弧・カンマは非対応（本テストが対象とする
-/// 呼び出しはいずれも識別子/真偽値リテラルのみの単純な引数なので十分）。
-/// 対応する閉じ括弧が見つからない場合（構文的に不完全な部分一致等）は
-/// その出現を明示的にスキップする（N4 指摘: 見つからない場合に
-/// `args_start` を終端扱いすると、続く走査が非 UTF-8 境界で panic しうる
-/// バグがあった）。
-fn extract_call_arg_lists(content: &str, needle: &str) -> Vec<Vec<String>> {
-    let content = non_comment_lines(content);
-    let content = content.as_str();
-    let fn_name = needle.trim_end_matches('(');
-    let def_needle = format!("fn {fn_name}(");
-    let mut results = Vec::new();
-    let mut search_from = 0;
-    while let Some(rel) = content[search_from..].find(needle) {
-        let call_start = search_from + rel;
-        let args_start = call_start + needle.len();
-        let is_definition = content[..call_start]
-            .rfind('\n')
-            .map(|i| i + 1)
-            .is_some_and(|line_start| content[line_start..args_start].contains(&def_needle));
-        if is_definition {
-            search_from = args_start;
-            continue;
-        }
-        let mut depth: i32 = 1;
-        let mut args_end = None;
-        for (offset, ch) in content[args_start..].char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        args_end = Some(args_start + offset);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let Some(args_end) = args_end else {
-            // 対応する閉じ括弧が見つからなかった（構文的に不完全）。
-            // これ以上この occurrence を安全に解釈できないため、次の
-            // needle 検索へ進む（args_start から1バイトだけ進めると
-            // マルチバイト文字の途中を指す可能性があるため、次の
-            // needle 出現へ直接ジャンプする）。
-            search_from = args_start;
-            continue;
-        };
-        let args_text = &content[args_start..args_end];
-        // トップレベルの `,` でのみ分割する（N5 指摘: 深さカウントを
-        // 終端検出だけでなく分割自体にも使う。ネストした関数呼び出しや
-        // クロージャの引数内カンマで誤分割しない）。
-        let mut args: Vec<String> = Vec::new();
-        let mut arg_depth: i32 = 0;
-        let mut current_start = 0usize;
-        for (offset, ch) in args_text.char_indices() {
-            match ch {
-                '(' | '[' | '{' => arg_depth += 1,
-                ')' | ']' | '}' => arg_depth -= 1,
-                ',' if arg_depth == 0 => {
-                    args.push(args_text[current_start..offset].trim().to_owned());
-                    current_start = offset + 1;
-                }
-                _ => {}
-            }
-        }
-        let tail = args_text[current_start..].trim();
-        if !tail.is_empty() {
-            args.push(tail.to_owned());
-        }
-        results.push(args);
-        search_from = args_end + 1;
-    }
-    results
-}
-
-/// `WarmupImeOn::from_applied_or_belief_unless_off_drift` の第3引数
-/// （`off_drift_active`）に本番コードがリテラル `true`/`false` を直書きして
-/// いないことを確認する（敵対的コードレビュー指摘）。
-///
-/// 上の `warmup_ime_on_from_applied_or_belief_is_called_only_from_the_gated_constructor`
-/// は `from_applied_or_belief(` の呼び出し件数をゲート版内部の1箇所に固定するが、
-/// その1箇所自体が迂回された場合——新しい呼び出し元がゲート版へ第3引数として
-/// リテラル `false` を直書きし、実際には `check_drift_correction` 由来の判定を
-/// 一切行わない——は検出できない。これが「ゲートを迂回する新しい呼び出し元を
-/// 防ぐ」という宣言目的に対して最も安直な迂回手段であるため、引数が bool 型
-/// リテラルでないことを機械的に確認する。`#[cfg(test)]` 側（`src/platform.rs`
-/// の12通り全数テスト）はリテラルを渡すのが正しい用途なので対象外とする。
-#[test]
-fn warmup_gate_third_arg_is_never_a_bare_literal_in_production_code() {
-    let mut files = list_rs_files_under("../../src");
-    files.extend(list_src_files());
-
-    let mut violations: Vec<String> = Vec::new();
-    for path in &files {
-        let content = read_crate_file(path);
-        let production = production_code_only(&content);
-        for args in extract_call_arg_lists(production, "from_applied_or_belief_unless_off_drift(") {
-            let Some(third) = args.get(2) else {
-                violations.push(format!(
-                    "{path}: from_applied_or_belief_unless_off_drift の引数が \
-                     3個未満 ({args:?})"
-                ));
-                continue;
-            };
-            if third == "true" || third == "false" {
-                violations.push(format!(
-                    "{path}: 第3引数(off_drift_active)にリテラル `{third}` を \
-                     直書き（引数全体: {args:?}）"
-                ));
-            }
-        }
-    }
-    assert!(
-        violations.is_empty(),
-        "`from_applied_or_belief_unless_off_drift` の第3引数にリテラル \
-         `true`/`false` を直書きする呼び出しが本番コードに見つかりました: \
-         {violations:?}。BUG-110/ADR-132 Phase 2 のゲートを実質的に無効化 \
-         （常に開く/常に閉じる）する迂回であり、`check_drift_correction` \
-         由来の判定変数を渡すべきです。"
-    );
-}
 // ── `half_width_alnum` 機能カプセル化（旧 `GateStore` 4フィールド + 旧
 //    `Runtime::half_width_alnum_toggle_policy` の統合） ──────────────────
 
@@ -6449,22 +6089,9 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
              する（ADR-191/199）"
         );
     }
-    assert!(
-        !transport.contains("is_open_toggle_for"),
-        "runtime/transport.rs の本番コードに撤去済みの `is_open_toggle_for` が再び現れています（ADR-199 T4）"
-    );
     // 撤去後は awase が書かない英数(0xF0)・カタカナ(0xF1)を VK で列挙して Suppress してはならない
-    // （握りつぶすと OS にも awase にも誰も何もしない二重の空振りになる）。BUG-116 の
-    // Shift+0xF1 の特例（`shift_katakana_passthrough`）も、0xF1 が常に Allow になったため撤去済み。
-    for token in [
-        "VK_DBE_ALPHANUMERIC",
-        "VK_DBE_KATAKANA",
-        "fn shift_katakana_passthrough",
-        "DbeModeKeyContext",
-        // 設定 `dbe_mode_key_policy` は撤去済み（Passthrough が実質死んでいたため、B-M3）。
-        // 復活させるなら 0xF3/0xF4 の `shadow_toggled` Suppress との関係を決め直すこと。
-        "DbeModeKeyPolicy",
-    ] {
+    // （握りつぶすと OS にも awase にも誰も何もしない二重の空振りになる）。
+    for token in ["VK_DBE_ALPHANUMERIC", "VK_DBE_KATAKANA"] {
         assert!(
             !transport.contains(token),
             "runtime/transport.rs の本番コードに `{token}` が再び現れています（ADR-191: \
@@ -8507,11 +8134,11 @@ fn eisu_candidate_is_cleared_only_when_focus_actually_changes() {
 /// ADR-239: 分類で `prev_conversion_mode`(直近に観測した conv)を読む `classify_transition`/`input_mode_from_conversion` は撤去した。
 /// それは読み取りのたびにリセットされて refresh の経路で一度も結果を返さず(約 6 か月)、返せる結果は他の場所で採らないと決めた形
 /// (閉じた IME の conv=0 を英数とみなす=BUG-57、ROMAN ビットなしを ObservedKana とみなす)だけだった。分類に prev を戻す変更を、
-/// その経緯を知らずに足すと BUG-57 を再発させるので、(a) `classify_transition` が本番コードに無いこと、(b) `prev_conversion_mode()` を読む
-/// 本番コードは予測の `conv_raw:` の 1 か所だけであること、(c) `observer/ime_observer.rs` が prev を扱わないことを固定する。
+/// その経緯を知らずに足すと BUG-57 を再発させるので、(b) `prev_conversion_mode()` を読む本番コードは予測の `conv_raw:` の
+/// 1 か所だけであること、(c) `observer/ime_observer.rs` が prev を扱わないことを固定する（(a)「`classify_transition` が本番コードに
+/// 無いこと」は、関数が無く prev を読めば (b) で落ちるので 2026-10-22 に外した）。
 #[test]
 fn classification_does_not_read_prev_conversion_mode() {
-    let mut classify_transition_hits = Vec::new();
     let mut reads = Vec::new();
     for rel in [
         "src/observer/ime_observer.rs",
@@ -8525,17 +8152,10 @@ fn classification_does_not_read_prev_conversion_mode() {
     ] {
         let src = read_crate_file(rel);
         let code = non_comment_lines(production_code_only(&src));
-        if code.contains("classify_transition(") || code.contains("input_mode_from_conversion") {
-            classify_transition_hits.push(rel);
-        }
         if code.contains(".prev_conversion_mode()") {
             reads.push(rel);
         }
     }
-    assert!(
-        classify_transition_hits.is_empty(),
-        "classify_transition/input_mode_from_conversion を本番コードに戻さないこと(ADR-239): {classify_transition_hits:?}"
-    );
     assert_eq!(
         reads,
         vec!["src/runtime/key_pipeline.rs"],
