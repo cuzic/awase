@@ -469,6 +469,35 @@ const fn is_char_vk(vk: u16) -> bool {
     matches!(vk, 0x30..=0x39 | 0x41..=0x5A | 0xBA..=0xC0 | 0xDB..=0xDF)
 }
 
+/// BUG-211: 表に該当セルが無いときの、「入力中の BS の後」と「不明の段階」の規則。
+///
+/// 入力中の BS のセルは、未確定文字の文字数で破棄/保持が割れるので表から除外されている（ADR-210 M2）。追跡の段階を
+/// `Typing` のまま残すと、文字が空になった後の変換・無変換・英数などを「入力中」の行で誤予測する。文字数が分からない
+/// ので、BS の後は段階を「不明」（[`Stage::Indeterminate`]）にして、次のモードキーは予測しない（観測に委ねる）。
+/// 「不明」の段階の Enter（確定・改行）と Esc（破棄）は、どちらでも入力なしになる。該当しなければ `None`。
+fn indeterminate_stage_without_cell(
+    key: TableKey,
+    stage: Stage,
+    seeded: bool,
+    input: &PredictInput,
+) -> Option<Prediction> {
+    let next_stage = match (key, stage) {
+        (TableKey::Bs, Stage::Typing) => Stage::Indeterminate,
+        (TableKey::Enter | TableKey::Esc, Stage::Indeterminate) => Stage::None,
+        _ => return None,
+    };
+    Some(Prediction {
+        effect: PredictedEffect {
+            open: None,
+            mode: seeded.then(kana_mode),
+        },
+        track: KeyTrack {
+            conv: input.track.conv,
+            stage: next_stage,
+        },
+    })
+}
+
 /// 表に（段階, Esc）のセルが無いときの、Esc の後の入力中の段階。`None` は「触らない」（段階を更新せず、予測も返さない）。
 ///
 /// - 入力中（`Typing`）の Esc は未確定文字列を破棄するので `Stage::None`（`next_stage` の Esc の規則と同じ。BUG-162）。
@@ -574,33 +603,8 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
         .then(|| find_in(table, input.open, conv, Stage::Typing, key))
         .flatten()
     }) else {
-        // BUG-211: 入力中の BS のセルは、未確定文字の文字数で破棄/保持が割れるので表から除外されている（ADR-210 M2）。
-        // 追跡の段階を `Typing` のまま残すと、文字が空になった後の変換・無変換・英数などを「入力中」の行で誤予測する。
-        // 文字数が分からないので、段階を「不明」にして、次のモードキーは予測しない（観測に委ねる）。
-        if matches!(key, TableKey::Bs) && stage == Stage::Typing {
-            return Some(Prediction {
-                effect: PredictedEffect {
-                    open: None,
-                    mode: seeded.then(kana_mode),
-                },
-                track: KeyTrack {
-                    conv: input.track.conv,
-                    stage: Stage::Indeterminate,
-                },
-            });
-        }
-        // 「不明」の段階では、Enter（確定・改行）と Esc（破棄）はどちらでも入力なしになる。ほかのキーは予測しない。
-        if stage == Stage::Indeterminate && matches!(key, TableKey::Enter | TableKey::Esc) {
-            return Some(Prediction {
-                effect: PredictedEffect {
-                    open: None,
-                    mode: seeded.then(kana_mode),
-                },
-                track: KeyTrack {
-                    conv: input.track.conv,
-                    stage: Stage::None,
-                },
-            });
+        if let Some(p) = indeterminate_stage_without_cell(key, stage, seeded, input) {
+            return Some(p);
         }
         // BUG-162: 表に該当セルが無い（ATOK の入力中/変換中〈Space〉の Esc は保持/破棄が割れるので生成時に除外される）
         // ときは、開閉・入力モードは予測しない（観測に委ねる）が、入力中の段階の追跡は更新する（段階の規則は
@@ -2326,7 +2330,10 @@ mod tests {
         .expect("変換中〈Space〉の Esc は段階を更新する");
         assert!(esc.effect.is_noop());
         assert_eq!(esc.track.stage, Stage::Typing);
-        assert_eq!(predict(KeymapPreset::Atok, 0x08, &typing), None);
+        // 入力中の BS（表に無いセル）は、開閉・入力モードを予測せず、段階を「不明」にする（BUG-211）。
+        let bs = predict(KeymapPreset::Atok, 0x08, &typing).expect("BS は段階を更新する");
+        assert!(bs.effect.is_noop());
+        assert_eq!(bs.track.stage, Stage::Indeterminate);
     }
 
     #[test]
