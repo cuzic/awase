@@ -7932,9 +7932,12 @@ fn deferred_gate_wiring_detector_catches_violations() {
     assert!(!deferred_gate_wiring_violations(&m, &direct).is_empty());
 }
 
-/// FCIS F6b: TSF 送信パイプラインの warm/cold・LiteralDetect 設置の判断は
-/// `state/warm_send_plan.rs`。殻が純粋関数の**結果を使い**、判断をインラインに書き戻さず、
-/// 引数の取り違え・定数の差し替えをしていないことの違反を返す（空白を潰した文字列で照合する）。
+/// FCIS F6b: TSF 送信パイプラインの warm/cold の判断は `state/warm_send_plan.rs`。殻が純粋関数の**結果を使い**、
+/// 判断をインラインに書き戻さず、引数の取り違えをしていないことの違反を返す（空白を潰した文字列で照合する）。
+///
+/// warm パス（`send_romaji_as_tsf_warm`）は送るだけで、語単位の事後確認（旧 `LiteralDetectFsm`）を置かない。
+/// 設置の条件（`TsfGate` が Probing かつ非 Tsf モード）は GitHub の Windows CI で 1 度も成立せず撤去した（ECRS MB-02、
+/// docs/tasks/mech-ecrs-2026-10-21/probe-mb0203-result.md）。戻すときは到達の証拠を添えて、このガードを外すこと。
 fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static str> {
     fn squash(s: &str) -> String {
         s.chars().filter(|c| !c.is_whitespace()).collect()
@@ -7957,18 +7960,17 @@ fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static 
         production_code_only(vk_send),
         "fn send_romaji_as_tsf_warm(",
     )));
-    for needle in [
-        "warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts{now_ms:crate::hook::current_tick_ms(),gji_last_io_ms:crate::tsf::observer::gji_last_io_ms(),threshold:crate::tuning::LONG_IDLE_MS,})",
-        "warm_send_plan::plan_literal_detect(",
-        "long_idle:probe_long_idle",
-        "matches!(literal_detect,warm_send_plan::LiteralDetectPlan::Install)",
-    ] {
-        if !warm.contains(needle) {
-            v.push("send_romaji_as_tsf_warm が warm_send_plan の結果/引数の形を使っていない");
-        }
+    if !warm.contains("TsfSendPipeline::transmit(romaji,chars,&outcome)") {
+        v.push("send_romaji_as_tsf_warm が TsfSendPipeline::transmit で送っていない");
     }
-    if warm.contains(">=crate::tuning::LONG_IDLE_MS") || warm.contains("TsfGateState::Probing&&") {
-        v.push("send_romaji_as_tsf_warm が判断をインラインに書き戻している");
+    for forbidden in [
+        "install_pending_tsf(",
+        "LiteralDetector",
+        "LiteralDetectFsm",
+    ] {
+        if warm.contains(forbidden) {
+            v.push("send_romaji_as_tsf_warm が語単位の事後確認を置いている（ECRS MB-02 で撤去）");
+        }
     }
     v
 }
@@ -8009,21 +8011,15 @@ fn warm_send_wiring_detector_catches_violations() {
         "needs_f2_probe: true,",
         1,
     ));
-    // 引数の入れ替え・定数の差し替え
+    // warm パスに語単位の事後確認を戻す
     check_v(v.replacen(
-        "now_ms: crate::hook::current_tick_ms(),",
-        "now_ms: crate::tsf::observer::gji_last_io_ms(),",
+        "let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);",
+        "let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);\n        let _d = crate::tsf::probe::LiteralDetector::new_with_pre_send_baseline(0);",
         1,
     ));
     check_v(v.replacen(
-        "threshold: crate::tuning::LONG_IDLE_MS,",
-        "threshold: crate::tuning::MEDIUM_IDLE_PROBE_MS,",
-        1,
-    ));
-    // plan_literal_detect を残したまま結果を捨てる
-    check_v(v.replacen(
-        "matches!(literal_detect, warm_send_plan::LiteralDetectPlan::Install)",
-        "self.tsf_gate.state() == crate::tsf::TsfGateState::Probing",
+        "let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);",
+        "let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);\n        self.install_pending_tsf(todo!());",
         1,
     ));
 }
@@ -9221,37 +9217,6 @@ fn per_vk_confirm_takes_literal_baseline_before_send_input() {
             "machine.apply_vk_sent(detector, deadline_ms)",
         ],
         "送信後に baseline を取ると、当該 VK の write が吸収されて literal を見逃す/誤る（BUG-027/029、ADR-079）",
-    );
-}
-
-/// warm パス（BUG-210）: 検出ベースラインは `TsfSendPipeline::transmit` の前に取り、`LiteralDetectFsm::new` へ渡す。
-#[test]
-fn warm_path_takes_literal_baseline_before_transmit() {
-    assert_markers_in_order(
-        "src/output/vk_send.rs",
-        &[
-            "let literal_detector = crate::tsf::probe::LiteralDetector::new(true);",
-            "TsfSendPipeline::transmit(romaji, chars, &outcome)",
-            "LiteralDetectFsm::new(",
-            "literal_detector,",
-        ],
-        "warm パスの baseline が送信後だと、warm の GJI の即応答が吸収され誤って literal 判定になりうる（BUG-210）",
-    );
-    // `LiteralDetectFsm::new` が detector を内部で作る形（送信後の baseline）に戻らないこと。
-    let fsm = read_crate_file("src/tsf/warmup/literal_detect_fsm.rs");
-    let fsm: String = production_code_only(&fsm).split_whitespace().collect();
-    let imp = fsm
-        .find("implLiteralDetectFsm{")
-        .expect("impl LiteralDetectFsm");
-    let start = imp + fsm[imp..].find("fnnew(").expect("LiteralDetectFsm::new");
-    let body = &fsm[start..];
-    let end = body
-        .find("Self{core:")
-        .expect("LiteralDetectFsm::new の本体");
-    assert!(
-        body[..end].contains("detector:LiteralDetector,")
-            && !body[..end].contains("LiteralDetector::new("),
-        "LiteralDetectFsm::new は detector を引数で受け、内部で作らないこと（BUG-210）"
     );
 }
 

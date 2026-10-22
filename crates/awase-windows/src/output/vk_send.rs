@@ -5,7 +5,6 @@ use super::{fmt_ms, WarmthContext, WarmupOutcome};
 use super::{Output, VkSequence};
 use crate::state::deferred_gate_plan;
 use crate::state::event_origin::Generation;
-use crate::state::warm_send_plan;
 use crate::tsf::output::ColdReason;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{DeferredOrigin, TransmitTarget};
@@ -434,8 +433,7 @@ impl Output {
     /// false になり no-op（GJI には別途 F2 probe / LiteralDetect の保護がある）。
     /// この no-op は偶然ではなく、raw literal の記録自体が常に `gji_active`
     /// （`gji_is_active_ime()` / `env.gji_active`）でゲートされているため
-    /// （`send_romaji_as_tsf_warm` の `LiteralDetectFsm` 設置、`probe_fsm.rs` の
-    /// `enter_transmit_chrome`）に成り立つ。記録から `WM_DRAIN_OUTPUT_QUEUE` 経由の
+    /// （`probe_fsm.rs` の `enter_transmit_chrome`。warm パスの `LiteralDetectFsm` 設置は ECRS MB-02 で撤去）に成り立つ。記録から `WM_DRAIN_OUTPUT_QUEUE` 経由の
     /// flush までの間に `active_ime_kind` が GJI→MS-IME に切り替わるレースは、TIP 検出が
     /// 2 秒間隔ポーリング + 2 tick 連続一致デバウンス（`gji_monitor.rs`）であるのに対し
     /// flush は同一メッセージループ内で完結するため、実質的に起こり得ない。
@@ -523,53 +521,10 @@ impl Output {
             });
         }
 
-        // 検出ベースラインは送信**前**に取る（BUG-210。送信後に取ると、warm の GJI が即応答した
-        // write がベースラインに吸収され、composition が成立していても差分 0 の literal 判定になりうる。
-        // `LiteralDetector::new` のドキュメント「ローマ字送信直前に呼ぶこと」）。使うかは送信後に決める。
-        let literal_detector = crate::tsf::probe::LiteralDetector::new(true);
-        let ze_bs_count = TsfSendPipeline::transmit(romaji, chars, &outcome);
-
-        // cold-start probe 機構を持つ IME（GJI 等）が LONG_IDLE_MS 以上静止している場合は
-        // LiteralDetector が常にタイムアウト → SuspectedLiteral の false positive になる。
-        // 長期静止時は composition が TSF で正常に処理されたと見なして LiteralDetect をスキップ。
-        // 判断は `warm_send_plan::plan_literal_detect`（FCIS F6b）。
-        let probe_long_idle = warm_send_plan::is_long_idle(warm_send_plan::LongIdleFacts {
-            now_ms: crate::hook::current_tick_ms(),
-            gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
-            threshold: crate::tuning::LONG_IDLE_MS,
-        });
-        let literal_detect =
-            warm_send_plan::plan_literal_detect(warm_send_plan::LiteralDetectFacts {
-                gate_probing: self.tsf_gate.state() == crate::tsf::TsfGateState::Probing,
-                gji_active: crate::tsf::observer::gji_is_active_ime(),
-                long_idle: probe_long_idle,
-                is_tsf_mode: self.is_tsf_mode(),
-            });
-        if matches!(literal_detect, warm_send_plan::LiteralDetectPlan::Install) {
-            // detector は送信前に取った `literal_detector` を渡す（guard は LiteralDetectFsm::new が内部生成）。
-            // ze_bs_count は実際の値を渡す。
-            self.install_pending_tsf(Box::new(
-                crate::tsf::warmup::literal_detect_fsm::LiteralDetectFsm::new(
-                    cold_seq,
-                    romaji.to_owned(),
-                    literal_detector,
-                    crate::tsf::warmup::probe_fsm::ProbeObservations {
-                        nc_fired: false,
-                        ..Default::default()
-                    },
-                    ze_bs_count,
-                    crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                    self.composition.consecutive_count(),
-                ),
-            ));
-        } else {
-            // ze_bs_count は Probing+GJI 健全パスでのみ使う。
-            // 他パスでは warm マーク済みで LiteralDetect 不要。
-            let _ = (ze_bs_count, literal_detector);
-            if let warm_send_plan::LiteralDetectPlan::Skip(reason) = literal_detect {
-                tracing::trace!("[literal-detect] skip reason={reason:?}");
-            }
-        }
+        // warm パスは送るだけで、語単位の事後確認（旧 `LiteralDetectFsm`）は置かない。設置の条件
+        // （`TsfGate` が Probing かつ非 Tsf モード）は CI で 1 度も成立しなかったため撤去した
+        // （ECRS MB-02、docs/tasks/mech-ecrs-2026-10-21/probe-mb0203-result.md）。
+        let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);
     }
 
     /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）

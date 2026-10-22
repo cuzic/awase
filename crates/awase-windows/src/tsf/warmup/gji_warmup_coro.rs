@@ -1,6 +1,6 @@
 //! GJI cold-start warmup コルーチン実装。
 //!
-//! [`GjiWarmupCoro`] は [`GjiWarmupFsm`] + [`LiteralDetectFsm`] を `StepCoro` で置き換えた。
+//! [`GjiWarmupCoro`] は `GjiWarmupFsm` + `LiteralDetectFsm`（いずれも撤去済み）を `StepCoro` で置き換えた。
 //! フェーズ遷移が単一の async 関数本体に直線的に記述されており、
 //! `StartLiteralDetect` → `SwitchMachine` → `LiteralDetectFsm` の機械切り替えが不要。
 //!
@@ -26,8 +26,8 @@
 //! romaji 再送を自然に次の cold パス（per-VK confirm）へ委ねる
 //! （`literal_detect_fsm::emit_recovery_actions` 参照）。
 //!
-//! inline LiteralDetect(旧 Phase 6)は到達しないので撤去した(ECRS MB-01)。`LiteralDetectCore` は
-//! warm パスの `LiteralDetectFsm` だけが使う。
+//! inline LiteralDetect(旧 Phase 6)は到達しないので撤去した(ECRS MB-01)。残っていた warm パスの
+//! `LiteralDetectFsm`・`LiteralDetectCore` も ECRS MB-02 で撤去した。
 
 use std::rc::Rc;
 

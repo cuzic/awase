@@ -19,7 +19,7 @@
 //! - [`probe_coro_state`]       — ProbeCoroState（TsfProbeCoro/GjiWarmupCoro 共有の
 //!   TickableFsm ラッパー状態: tick/apply_vk_sent/prime）
 //! - [`ms_ime_ready_coro`]      — MsImeReadyCoro（MS-IME IMC 確認待ち, StepCoro, BUG-13）
-//! - [`literal_detect_fsm`]     — LiteralDetectCore/Fsm（literal 検出 単一所在地）
+//! - [`literal_detect_fsm`]     — per-VK confirm の literal 回収パラメータと回収アクション（語単位の検出コアは ECRS MB-02 で撤去）
 //! - [`mozc_compose_check_fsm`] — MozcComposeCheckFsm（Mozc の最初の送信の後、入力中の文字ができたかを共有メモリで確認。ADR-270）
 //! - [`cold_warmup`]            — ColdWarmupSequence（`run_start` 単一経路、事前待機なし）
 //! - [`warmup_strategy`]        — ImeWarmupStrategy トレイト, MsImeStrategy

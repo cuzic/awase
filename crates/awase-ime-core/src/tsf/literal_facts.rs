@@ -121,7 +121,7 @@ pub struct LiteralDetectRecord {
     pub session_marked: bool,
     /// BUG-74/ADR-100 決定3 案L: `RawTsfLiteralRecovery`（初回疑い・give-up 双方）で
     /// 送信対象だった romaji。`None` はこの verdict が romaji を持たない（`Composition
-    /// Confirmed`/`LiteralDetectNote`/`PlanSkippedLiteral`/`AbortedNoVerdict`）ことを表す
+    /// Confirmed`/旧 `LiteralDetectNote`/`PlanSkippedLiteral`/`AbortedNoVerdict`）ことを表す
     /// — 空文字列との混同（「記録し忘れ」なのか「そもそも romaji を持たない verdict」
     /// なのか区別できなくなる）を避けるため、`String::new()` ではなく `Option` にする。
     ///

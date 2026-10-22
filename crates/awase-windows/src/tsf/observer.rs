@@ -111,7 +111,7 @@ pub struct TsfObservations {
     /// F2（モード切り替え）は WriteTransferCount が増加しない（w_KB=+0.0）のに対し、
     /// 文字変換は +0.2KB 以上増加する。ベースラインとの差分で
     /// 「モード切り替えのみか文字コンポジションが発生したか」を区別できる。
-    /// [`LiteralDetector::new`]/[`LiteralDetector::new_with_pre_send_baseline`]
+    /// [`LiteralDetector::new_with_pre_send_baseline`]
     /// の composition 確認シグナルとして使用する（BUG-30 で TSF/Chrome 共通化）。
     /// 観測・状態推定用。0 = 未取得。
     pub(super) gji_write_bytes: AtomicU64,
@@ -176,7 +176,7 @@ pub struct TsfObservations {
     /// `GjiDirectStrategy`（ADR-171）が shadow=false でも desync を検出して必要な再送を行えるようにする。
     pub(super) candidate_was_seen: AtomicBool,
 
-    /// `LiteralDetectCore` が最後に `CompositionConfirmed`（かつ非 partial-literal）を
+    /// per-VK confirm（`run_per_vk_confirm`）が最後に全 VK の `CompositionConfirmed` を
     /// 確認できた **`cold_seq`（`CompositionState::cold_start_count`）世代**。未確認なら `0`
     /// （`cold_start_count` は 0 始まりで、確認は必ず何らかの cold-start 後にしか
     /// 起こらないため `0` を「未確認」の番人値として使える）。
@@ -184,7 +184,7 @@ pub struct TsfObservations {
     /// 「確認済みかどうか」は真偽値ではなく **この値が現在の `cold_seq` と一致するか**
     /// で判定する（[`literal_session_confirmed()`] 参照）。一致する間は、同一 cold
     /// 世代内の以降の文字は literal-detect 自体をスキップし即送信する（BUG-24:
-    /// `is_partial_literal()` の判定材料である `nc_fired` が `SetOpenTrue`/`FocusChange`/
+    /// 旧 `is_partial_literal()`〈ECRS MB-02 で撤去〉の判定材料である `nc_fired` が `SetOpenTrue`/`FocusChange`/
     /// `NativeF2Consumed` 等の cold 直後は構造的に信頼できず、正しく変換されているのに
     /// 不要な ESC+BS 訂正が発生していた）。
     ///
@@ -599,10 +599,9 @@ pub(crate) fn reset_candidate_was_seen() {
 /// （＝その後 `FocusChange`/`NativeF2Consumed` 等で新しい cold-start が実際に走り、
 /// `cold_seq` が進んでいた）場合は `false` を返す。これにより、フォーカス変更や
 /// 長時間 idle をまたいで「前の cold 世代で確認済み」がそのまま信頼され続けることは
-/// 構造的に起こらない。`true` の間、`LiteralDetectCore::poll` は検出処理自体を
-/// スキップして即 `Done` を返す。
+/// 構造的に起こらない。
 ///
-/// 決定分岐の呼び出し元（`probe_fsm.rs`/`literal_detect_fsm.rs`/`gji_warmup_coro.rs`）は
+/// 決定分岐の呼び出し元（`probe_fsm.rs`/`gji_warmup_coro.rs`）は
 /// `TsfEnvSnapshot::literal_session_confirmed_gen` 経由の比較へ移行済み（belief 監査、
 /// `.claude/rules/ime-belief-architecture.md` 参照）。現在の呼び出し元は
 /// `tsf/probe.rs::evidence_now` のみで、journal に記録する診断専用の値
@@ -633,7 +632,7 @@ pub(crate) fn literal_session_confirmed_gen_snapshot() -> Option<Generation> {
 /// `reset_literal_session_confirmed()`（候補ウィンドウ HIDE）が呼ばれるまで、以降の
 /// 同世代内の文字の literal-detect をスキップさせる。
 ///
-/// `cold_seq` は呼び出し元（`run_per_vk_confirm`/`LiteralDetectCore`）が確認した VK を
+/// `cold_seq` は呼び出し元（`run_per_vk_confirm`）が確認した VK を
 /// 送信した時点の `CompositionState::cold_start_count()` であること（`0` は「未確認」の番人値
 /// のため渡さない）。
 pub(crate) fn mark_literal_session_confirmed(cold_seq: Generation) {

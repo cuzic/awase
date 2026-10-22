@@ -251,11 +251,6 @@ pub struct LiteralDetector {
     gji_show_baseline: Baseline,
     /// 送信前の WriteTransferCount 累積値
     write_bytes_baseline: u64,
-    /// 候補ウィンドウ可視性による backspace veto（BUG-30）を適用してよいか。
-    ///
-    /// per-VK 単体確認（`TransmitSingleVk`）では前モーラ由来の誤 veto の恐れが
-    /// あるため `false` を渡すこと。単語単位のバッチ確認では `true`。
-    veto_eligible: bool,
     /// この detector が対応する送信（VK 送信 or romaji バッチ送信）の epoch。
     ///
     /// 構築時点（VK/バッチ送信の直前）の `current_tick_ms()`。ADR-079 の
@@ -313,19 +308,10 @@ impl LiteralDetector {
     /// この値を必要とするため。
     pub(crate) const EPOCH_FENCE_GRACE_MS: u64 = crate::tuning::GJI_SAMPLE_INTERVAL_MS as u64 * 2;
 
-    /// 現在の観測値からベースラインを取得して `LiteralDetector` を生成する。
-    ///
-    /// ローマ字送信直前に呼ぶこと。`veto_eligible` は
-    /// [`veto_eligible`](Self::veto_eligible) を参照。
-    #[must_use]
-    pub fn new(veto_eligible: bool) -> Self {
-        Self::new_with_pre_send_baseline(crate::tsf::observer::gji_write_bytes(), veto_eligible)
-    }
-
     /// VK 送信前に取得済みの WriteTransferCount ベースラインを使う `LiteralDetector` を生成する。
     ///
     /// `SacrificialWarmup` の Chrome パス・per-VK confirm で使用する。VK 送信後に
-    /// [`Self::new`] を呼ぶと、タイミングによっては当該 VK の write がベースラインに
+    /// ベースラインを取ると、タイミングによっては当該 VK の write がベースラインに
     /// 吸収されて検出できない。VK 送信直前に取得したベースラインを引数で渡すことで
     /// この race を解消する。
     ///
@@ -337,11 +323,10 @@ impl LiteralDetector {
     ///
     /// [`COMPOSITION_BYTES_THRESHOLD`] = 350 バイトで cold/warm を分離できる。
     #[must_use]
-    pub fn new_with_pre_send_baseline(write_bytes_before_vk: u64, veto_eligible: bool) -> Self {
+    pub fn new_with_pre_send_baseline(write_bytes_before_vk: u64) -> Self {
         Self {
             gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
             write_bytes_baseline: write_bytes_before_vk,
-            veto_eligible,
             epoch_send_ms: crate::clock::current_tick_ms(),
             show_stale_hold_since_ms: std::cell::Cell::new(None),
             write_ops_baseline: crate::tsf::observer::gji_write_ops(),
@@ -442,8 +427,8 @@ impl LiteralDetector {
         // SHOW カウンタは「新規表示」でのみ増分するため、続く VK では SHOW が
         // 増えないケースがあり得る。その場合は write-bytes 閾値に委ねる
         // （OR 条件なので write-bytes 側が拾えば確認できる）。両方とも拾えない
-        // 残存ケースは `LiteralDetectCore::veto_decision`（BUG-30）が
-        // 候補ウィンドウ可視性ベースの veto で補う。
+        // 残存ケースはかつて語単位の `LiteralDetectCore::veto_decision`（BUG-30）が候補ウィンドウ
+        // 可視性ベースの veto で補っていたが、その経路は ECRS MB-02 で撤去した（per-VK 経路は元々通らない）。
         let write_confirmed = crate::tsf::observer::gji_write_bytes()
             > self
                 .write_bytes_baseline
@@ -536,15 +521,6 @@ impl LiteralDetector {
         let fencing_active = last_write_ms != 0;
         let evidence_is_fresh = !fencing_active || last_write_ms >= self.epoch_send_ms;
         self.grace_hold_verdict(now, deadline_ms, evidence_is_fresh)
-    }
-
-    /// 候補ウィンドウ可視性による backspace veto（BUG-30）を適用してよいかどうか。
-    ///
-    /// 構築時に渡された `veto_eligible` をそのまま返す。per-VK 単体確認では
-    /// 前モーラ由来の誤 veto の恐れがあるため `false` で構築すること。
-    #[must_use]
-    pub(crate) fn veto_eligible(&self) -> bool {
-        self.veto_eligible
     }
 }
 
@@ -665,7 +641,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(1_000, SeqCst);
 
-        let detector = LiteralDetector::new_with_pre_send_baseline(1_000, true);
+        let detector = LiteralDetector::new_with_pre_send_baseline(1_000);
 
         // write_bytes は閾値未満のまま（子音単体で完結した1文字分の書き込みが
         // 起きないケースを模擬）。
@@ -694,7 +670,7 @@ mod tests {
         let baseline_show = TSF_OBS.gji_candidate_show.baseline();
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);
 
-        let detector = LiteralDetector::new_with_pre_send_baseline(2_000, true);
+        let detector = LiteralDetector::new_with_pre_send_baseline(2_000);
 
         // write_bytes・candidate_show とも変化なし（本物の literal 化を模擬）。
         assert!(!TSF_OBS.gji_candidate_show.has_changed(baseline_show));
@@ -718,7 +694,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(4_000, SeqCst);
-        let detector = LiteralDetector::new_with_pre_send_baseline(4_000, true);
+        let detector = LiteralDetector::new_with_pre_send_baseline(4_000);
         let now_ms = crate::clock::current_tick_ms();
         TSF_OBS.gji_last_write_ms.store(now_ms, SeqCst); // epoch_send_ms 以降
         TSF_OBS.gji_write_bytes.store(4_400, SeqCst); // 閾値(350B)超過
@@ -741,15 +717,15 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(5_000, SeqCst);
-        let detector = LiteralDetector::new_with_pre_send_baseline(5_000, true); // epoch > stale_write_ms
-                                                                                 // detector構築時刻(epoch_send_ms)より確実に前のwrite根拠を模擬する。
-                                                                                 // GetTickCount64は解像度が粗い(既定~15.6ms)ため、実時間sleep(5ms)で
-                                                                                 // 「epochより後」を作ろうとすると同一tickに丸められることがあり、
-                                                                                 // evidence_is_fresh(tieをfresh扱いする`>=`比較)が意図せずtrueになって
-                                                                                 // flakyに失敗する(2026-07-25実CI実行で初めてWindows実機上でこのテストが
-                                                                                 // 実行され、この非決定性が顕在化した)。saturating_subで明示的に確実な
-                                                                                 // 過去時刻を作ることで解像度に依存しないようにする(下のcheck_now_show_only_confirm_*
-                                                                                 // テストと同じ手法)。
+        let detector = LiteralDetector::new_with_pre_send_baseline(5_000); // epoch > stale_write_ms
+                                                                           // detector構築時刻(epoch_send_ms)より確実に前のwrite根拠を模擬する。
+                                                                           // GetTickCount64は解像度が粗い(既定~15.6ms)ため、実時間sleep(5ms)で
+                                                                           // 「epochより後」を作ろうとすると同一tickに丸められることがあり、
+                                                                           // evidence_is_fresh(tieをfresh扱いする`>=`比較)が意図せずtrueになって
+                                                                           // flakyに失敗する(2026-07-25実CI実行で初めてWindows実機上でこのテストが
+                                                                           // 実行され、この非決定性が顕在化した)。saturating_subで明示的に確実な
+                                                                           // 過去時刻を作ることで解像度に依存しないようにする(下のcheck_now_show_only_confirm_*
+                                                                           // テストと同じ手法)。
         let stale_write_ms = crate::clock::current_tick_ms().saturating_sub(50);
         TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
         TSF_OBS.gji_write_bytes.store(5_400, SeqCst); // 閾値超過だが根拠は stale
@@ -779,7 +755,7 @@ mod tests {
             .gji_last_write_ms
             .store(epoch_ms.saturating_sub(50), SeqCst); // stale
 
-        let detector = LiteralDetector::new_with_pre_send_baseline(6_000, true);
+        let detector = LiteralDetector::new_with_pre_send_baseline(6_000);
         TSF_OBS.gji_candidate_show.notify(); // write_bytes は閾値未満のまま
 
         let far_deadline = crate::clock::current_tick_ms() + 10_000;
@@ -815,7 +791,7 @@ mod tests {
             .gji_last_write_ms
             .store(epoch_ms.saturating_sub(50), SeqCst); // stale のまま追いつかない
 
-        let detector = LiteralDetector::new_with_pre_send_baseline(7_000, true);
+        let detector = LiteralDetector::new_with_pre_send_baseline(7_000);
         TSF_OBS.gji_candidate_show.notify();
 
         let far_deadline = crate::clock::current_tick_ms() + 10_000;
@@ -846,7 +822,7 @@ mod tests {
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);
         TSF_OBS.gji_write_bytes.store(8_000, SeqCst);
 
-        let detector = LiteralDetector::new_with_pre_send_baseline(8_000, true);
+        let detector = LiteralDetector::new_with_pre_send_baseline(8_000);
         TSF_OBS.gji_candidate_show.notify(); // write_bytes は閾値未満のまま
 
         let far_deadline = crate::clock::current_tick_ms() + 10_000;
@@ -876,7 +852,7 @@ mod tests {
         TSF_OBS.gji_read_ops.store(20, SeqCst);
         TSF_OBS.gji_other_ops.store(5, SeqCst);
 
-        let detector = LiteralDetector::new_with_pre_send_baseline(1_000, true);
+        let detector = LiteralDetector::new_with_pre_send_baseline(1_000);
 
         // write_bytes は閾値未満のまま（子音単体を模擬）だが、I/O 回数は増える。
         TSF_OBS.gji_write_bytes.store(1_100, SeqCst); // +100B < 350B 閾値
@@ -916,7 +892,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::tsf::observer::reset_literal_session_confirmed();
 
-        let detector = LiteralDetector::new(true);
+        let detector =
+            LiteralDetector::new_with_pre_send_baseline(crate::tsf::observer::gji_write_bytes());
         let deadline = crate::clock::current_tick_ms() + 10_000;
 
         let before = detector.evidence_now(false, deadline, Generation::new(301));

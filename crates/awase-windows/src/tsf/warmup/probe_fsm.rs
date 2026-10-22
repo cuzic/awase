@@ -137,7 +137,7 @@ pub(crate) fn decide_transmit_plan(
     // 場合に限り、NameChange 発火とみなして救済する（`3ffbe66`）。gji_settled=false の
     // ままこの救済を効かせると、genuinely cold なセッションまで誤救済されて reactive
     // LiteralDetect が丸ごとスキップされる（BUG-40）。nc_fired 自体は書き換えない
-    // （呼び出し元・`is_partial_literal` が生値として参照するため）。
+    // （呼び出し元が生値として参照するため。旧 `is_partial_literal` は ECRS MB-02 で撤去）。
     let nc_confirmed = obs.nc_fired || (obs.confirm_key_tsf_hint && obs.gji_settled);
 
     // NameChangeWait タイムアウトで IME 準備が未確認のまま transmit したケースを
@@ -189,7 +189,7 @@ pub(crate) enum ProbeAction {
     },
     /// IME セッション最初の1文字専用（BUG-24 追補）: romaji の VK を1つだけ送信する。
     ///
-    /// `is_partial_literal()` が送信前の無関係な代理指標（`nc_fired`）に
+    /// 旧 `is_partial_literal()`（ECRS MB-02 で撤去）が送信前の無関係な代理指標（`nc_fired`）に
     /// 頼っているため、cold 直後の最初の1文字は VK を1個ずつ送って「送ったVK自身」への
     /// `CompositionConfirmed`/`SuspectedLiteral` を確認してから次の VK を送る。
     /// dispatcher は送信直前に `LiteralDetector::new_with_pre_send_baseline()` でベースラインを取り、1 VK だけ
@@ -235,11 +235,6 @@ pub(crate) enum ProbeAction {
     CompositionConfirmed {
         cold_seq: Generation,
         mark_literal_session: bool,
-        facts: LiteralDetectFacts,
-    },
-    /// literal-detect の判定は確定したが、dispatcher 側の副作用が不要な診断専用 action。
-    LiteralDetectNote {
-        cold_seq: Generation,
         facts: LiteralDetectFacts,
     },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
@@ -941,7 +936,11 @@ mod tests {
             "{first:?}"
         );
         let deadline_ms = crate::clock::current_tick_ms() + 1000;
-        TickableFsm::apply_vk_sent(&mut machine, LiteralDetector::new(false), deadline_ms);
+        TickableFsm::apply_vk_sent(
+            &mut machine,
+            LiteralDetector::new_with_pre_send_baseline(crate::tsf::observer::gji_write_bytes()),
+            deadline_ms,
+        );
         // 届いていれば detection 待ちの polling(空の Vec)。no-op に落ちると即 Done。
         let after = TickableFsm::tick(&mut machine, env());
         assert!(after.is_empty(), "{after:?}");
@@ -1101,10 +1100,8 @@ mod tests {
             "per-VK confirm ループの最初の VK 送信要求のはず: {first_actions:?}"
         );
 
-        let detector = LiteralDetector::new_with_pre_send_baseline(
-            crate::tsf::observer::gji_write_bytes(),
-            false,
-        );
+        let detector =
+            LiteralDetector::new_with_pre_send_baseline(crate::tsf::observer::gji_write_bytes());
         let deadline_ms = crate::clock::current_tick_ms() + 10_000;
 
         // 前世代の残存 GJI I/O（今回の VK 送信より前）だけがある状態を模擬する。
@@ -1196,10 +1193,8 @@ mod tests {
             .gji_last_write_ms
             .store(epoch_ms.saturating_sub(50), SeqCst); // stale（epoch より前）
 
-        let detector = LiteralDetector::new_with_pre_send_baseline(
-            crate::tsf::observer::gji_write_bytes(),
-            false,
-        );
+        let detector =
+            LiteralDetector::new_with_pre_send_baseline(crate::tsf::observer::gji_write_bytes());
         let deadline_ms = crate::clock::current_tick_ms() + 10_000;
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
@@ -1270,7 +1265,7 @@ mod tests {
 
         // VK0 ('k') を write-bytes 閾値超過（genuinely fresh）で confirm する。
         let baseline = crate::tsf::observer::gji_write_bytes();
-        let detector0 = LiteralDetector::new_with_pre_send_baseline(baseline, false);
+        let detector0 = LiteralDetector::new_with_pre_send_baseline(baseline);
         let deadline0 = crate::clock::current_tick_ms() + 10_000;
         machine.apply_vk_sent(detector0, deadline0);
         let after_send0 = machine.tick(TsfEnvSnapshot {
@@ -1299,10 +1294,8 @@ mod tests {
 
         // VK1 ('a') は候補ウィンドウ非可視のまま、deadline を既に過ぎた状態にして
         // 本物の SuspectedLiteral（「既に可視」ショートカットではない）を起こす。
-        let detector1 = LiteralDetector::new_with_pre_send_baseline(
-            crate::tsf::observer::gji_write_bytes(),
-            false,
-        );
+        let detector1 =
+            LiteralDetector::new_with_pre_send_baseline(crate::tsf::observer::gji_write_bytes());
         let deadline1 = crate::clock::current_tick_ms(); // 既に期限切れ
         machine.apply_vk_sent(detector1, deadline1);
         let after_send1 = machine.tick(TsfEnvSnapshot {
