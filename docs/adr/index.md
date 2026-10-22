@@ -71,11 +71,11 @@
 | [055](055-engine-off-solo-triple.md) | 無変換3連打によるエンジン OFF 緊急回復 | 採用・実装済み(改称、2026-10-04 確認)。設定名は engine_off_solo_triple から engine_off_… |
 | [056](056-panic-reset-trigger-sequence.md) | パニックリセットトリガー: 同一キー連打 → OFF→ON→OFF シーケンス | 採用・実装済み(RapidPressTracker・PanicTriggerCombo は panic_detect.rs・app/mo… |
 | [057](057-gji-keybind-f13f14-to-f21f22.md) | GJI キーバインド F13/F14 → F21/F22 への移行 | 廃止済み(2026-06-28、ADR-067 に置換)。v2.0.0 時点でも gji.rs・GjiSetup/GjiTeardown… |
-| [058](058-injection-mode-cache-toml.md) | InjectionMode の cache.toml 永続化 | 採用・実装済み(InjectionModeStore は focus/classifier.rs、cache.toml の [injec… |
+| [058](058-injection-mode-cache-toml.md) | InjectionMode の cache.toml 永続化 | 撤去済み(2026-10-22): `InjectionModeStore` と `[injection_mode]` の読み込みを撤去(ADR-276 追補) |
 | [059](059-autostart-schtasks-to-hkcu-run.md) | 自動起動: schtasks → HKCU\Run レジストリへの移行 | 採用・実装済み(HKCU\Run 自動起動と migrate_from_schtasks は autostart.rs に現存、2026… |
 | [060](060-competing-software-detection.md) | 競合ソフトウェア起動時チェック | 採用・実装済み(競合ソフト検出 CONFLICTS は app/bootstrap.rs に現存、2026-10-04 確認)。 |
 | [061](061-win-key-ime-injection-skip.md) | Win キー押下中の IME キー注入スキップ | 実装済み(一部撤去、2026-10-04 確認)。send_ime_mode_key の Win キー押下中スキップ(hook::win… |
-| [062](062-injection-mode-auto-upgrade.md) | InjectionMode 事後昇格: GJI write_bytes 観測による自動昇格 | 採用・実装済み(UnicodeLiteralObserverFsm・InjectionHint::ForceTsf は現存、2026-1… |
+| [062](062-injection-mode-auto-upgrade.md) | InjectionMode 事後昇格: GJI write_bytes 観測による自動昇格 | 撤去済み: 書き込み側は ADR-276、読み込み側は 2026-10-22 に撤去 |
 | [063](063-ms-ime-tsf-separation.md) | TSF 共通層と IME 固有層の分離 + MS-IME 対応（案B） | 採用・実装済み(一部撤去、2026-10-04 確認)。ActiveImeKind・MsImeDirectStrategy・ImeWar… |
 | [064](064-conv-mode-policy-gate.md) | ConvModePolicy による conv mutation ゲートの導入 | 撤去済み(ADR-094 で ConvModePolicy を全撤去、10f238b5、2026-08-17、2026-10-04 確認… |
 | [065](065-conv-classifier-pure-fn-and-cfg-ungating.md) | conv 分類の純粋関数化と awase-windows の段階的プラットフォーム非依存化 | 実装済み(一部撤去、2026-10-04 確認)。conv 分類の純粋関数化・should_run_idle_conv_check は現… |
@@ -282,7 +282,7 @@
 | [273](273-indicator-evidence-belief-wiring.md) | 入力インジケーターの証拠源(字形。メニューは断念・撤去)を belief へ入れる配線の入口条件と形(ADR-271 の第 3・第 4 段階) | 起草(2026-10-20)。段階 1(核の実装・配線なし)実装中。Opus 4 ラウンドで収束(確定可) |
 | [274](274-split-windows-core-by-role.md) | awase-windows-core を役割ごとの複数の core に分け、名前で責務が分かるようにする(葉から剥がす) | 段階 0・1・2 はすべて完了、core は 7 crate + 殻(2026-10-21) |
 | [275](275-platform-state-core-move-deferred.md) | platform_state.rs・sync_actuation.rs の core への移動は見送る(記録系の強制を強める小 PR を 3 本) | 決定: 移動は見送り。Opus レビュー反映済み |
-| [276](276-remove-unicode-injection.md) | Unicode 注入(既定モードと Tsf の eager かな送信)を撤去する(ADR-083 の申し送りを覆す) | 実装済み(P1〜P4、#767・#768。純減約 916 行) |
+| [276](276-remove-unicode-injection.md) | Unicode 注入(既定モードと Tsf の eager かな送信)を撤去する(ADR-083 の申し送りを覆す) | 実装済み(P1〜P4、#767・#768。純減約 916 行)。追補(2026-10-22): `force_vk` 退役・`[injection_mode]` 読み込み撤去 |
 | [277](277-pseudo-ime-transition-table-and-ablation.md) | 擬似 IME の遷移を 1 つの表にまとめ、全列挙・ファズ・防御の ablation を同じ表で回す | 起草・段階 1・2 実装 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029

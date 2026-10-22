@@ -3633,7 +3633,7 @@ impl SettingsApp {
     /// 設定のため常時表示する（2026-08-26、BUG-90: PowerToys Mouse Without Borders
     /// 使用中に物理「英数」キーが効かない不具合の回避策としてユーザーが自分で
     /// `disable_apps` に中継ウィンドウのプロセス名を追加できるようにする）。
-    /// アプリ別上書き（force_text/force_bypass/force_vk/force_tsf、`post_bypass`）の
+    /// アプリ別上書き（force_text/force_bypass/force_tsf、`post_bypass`）の
     /// 設定画面は ADR-217 で撤去した（config.toml の直接編集では引き続き有効）。
     fn tab_disable_apps(&mut self, ui: &mut egui::Ui) {
         ui.heading("アプリを無効化");
@@ -4855,7 +4855,7 @@ impl eframe::App for SettingsApp {
             .default_width(100.0)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
-                // アプリ別上書き（force_text/force_bypass/force_vk/force_tsf、
+                // アプリ別上書き（force_text/force_bypass/force_tsf、
                 // `post_bypass`）の画面は ADR-217 で撤去した（config.toml の直接編集に
                 // 委ねる）。disable_apps だけはプロセス名のみで完結する単純な設定のため、
                 // 2026-08-26（BUG-90）に「アプリ無効化」タブとして切り出して表示している。

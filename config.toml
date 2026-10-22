@@ -59,9 +59,11 @@ force_tsf = [
     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
     { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
 ]
-# force_vk = [
-#     { process = "chrome.exe", class = "Chrome_WidgetWin_1" },
-# ]
+# 旧 force_vk（VK で送る指定）は既定と同じになったため 2026-10-22 に退役した。書いてあっても
+# 無視される（起動時に「不要になった」と通知する）。
+# また、以前の版が TSF へ自動で切り替えて cache.toml の [injection_mode] に記録していた窓は、
+# この版から読まれなくなり VK で送られる。その窓で入力がおかしくなったら、上の force_tsf に
+# { process = "<exe 名>", class = "<ウィンドウクラス名>" } を足すこと。
 
 # Ctrl+key バイパス直後に次キーを NICOLA スキップするルール。
 #

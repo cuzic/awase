@@ -10,6 +10,8 @@ related_adr: []
 # ADR 0004: InjectionMode 三分岐設計
 
 > **2026-10-21 追記:** Unicode 分岐は [ADR-276](276-remove-unicode-injection.md) で撤去した。現在の `InjectionMode` は Vk / Tsf の 2 つで、`force_tsf` 以外は Vk。以下は撤去前の設計記録。
+>
+> **2026-10-22 追記:** 所有者判断(2026-10-22)で、`config.toml` の `app_overrides.force_vk`(`InjectionHint::ForceVk`)を退役させ、`cache.toml` の `[injection_mode]`(`InjectionModeStore`)の読み込みを撤去した。ADR-276 で既定が全部 Vk になり、自動昇格の書き込み側も無くなっていたため。`InjectionHint` は `ForceTsf`/`Default` の 2 値で、`injection_mode_for` は `ForceTsf` → Tsf、`Default` → Vk。既存の設定は壊さない: `force_vk` は読み込みエラーにせず無視し、空でなければ起動時に「不要になった」と通知する(`config_load_diag::REMOVED_WITH_VALUE_NOTICE`、設定画面の保存で消える)。`[injection_mode]` は読まない(`ImmCapabilityStore` の保存は他セクションとして保つ)。**影響**: 以前の版が TSF へ自動昇格させていた窓(`force_tsf` に無いもの)は Vk で送られる。困る場合は `force_tsf` に足す。
 
 **Status:** 安定（2026-05-19 現在）  
 **関連コミット:** `3e444b4`, `50c5b4b`, `a444984`, `73b69ebb`, `73ddbb8`, `41d8fee`, `a57fc81`, `281cebd`
