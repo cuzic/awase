@@ -1542,7 +1542,7 @@ impl ImeStateHub {
     }
 
     /// conv 観測由来の engine ON 同期（`EngineSync::SetOpen`）が陽性証拠を得たとき、
-    /// `PanicReset` ガードだけを解除する（他 reason のガードは残す）。
+    /// `PanicReset` ガードを解除する。
     ///
     /// 旧 `handle_conv_engine_on_sync` が `on_set_open_requested` 経由で全ガードを
     /// 消していたうちの、PanicReset 解除だけを引き継ぐ（ADR-213 P2d-1）。
@@ -1576,7 +1576,6 @@ impl ImeStateHub {
         self.shadow_model.force_guards.clear();
         self.shadow_model.force_guards.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
-            expires_at: None,
             generation: self.event_log.next_seq(),
         });
         // PanicReset は desired_open=true に戻すが last_intent を設定しない。
@@ -3009,26 +3008,17 @@ mod tests {
     }
 
     #[test]
-    fn release_panic_guard_removes_only_panic_reset_reason() {
+    fn release_panic_guard_removes_panic_reset_reason() {
         let mut ps = ps_for_test();
-        let guard = |reason| ForceGuard {
-            reason,
-            expires_at: None,
+        ps.ime.shadow_model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
             generation: 0,
-        };
-        ps.ime
-            .shadow_model
-            .force_guards
-            .add(guard(ForceOnReason::PanicReset));
-        ps.ime
-            .shadow_model
-            .force_guards
-            .add(guard(ForceOnReason::ProfilePolicy));
+        });
         ps.ime.release_panic_reset_guard_on_positive_evidence();
         assert_eq!(
             ps.ime.shadow_model.force_guards.active_reason(),
-            Some(ForceOnReason::ProfilePolicy),
-            "PanicReset だけが外れ、ProfilePolicy ガードは残る"
+            None,
+            "PanicReset ガードが外れる"
         );
     }
 
