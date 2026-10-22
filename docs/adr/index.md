@@ -270,16 +270,16 @@
 | [261](261-taskbar-indicator-glyph-observation-for-unreadable-windows.md) | 観測の無い窓の IME 状態を、タスクバーの入力インジケーターの字形から読む(実行環境で表を作り、表に当たったときだけ証拠にする) | 起草(2026-10-15)。実装なし、D0(未測定)を先に |
 | [262](262-nicola-intent-evidence-for-unobserved-windows.md) | 観測の無い窓で、親指シフトの最初の同時打鍵を契機に IME ON を明示する(撤去した force-on の絞った復元、ADR-212 の例外) | round 3 レビューを受けて文面を直した(2026-10-17)。実装なし。段階 A(presync 停止)から |
 | [263](263-episode-start-key-hold-and-language-decision.md) | 観測の無い窓で、エピソード先頭の打鍵を保持し、日本語入力と判定できたときだけ IME ON を送る(ADR-262 の契機を置き換える) | 起草(2026-10-17)。Opus round 1 を受けて書き直し。round 2 待ち |
-| [264](264-indicator-menu-mode-evidence.md) | 利用者がタスクバーの入力インジケーターの右クリックメニューを開いたときだけ、メニューの現在のモードを読んで IME の実状態の証拠にする(読むだけ) | 起草(2026-10-17)。実装なし、CI で測定済み。決定は案 |
+| [264](264-indicator-menu-mode-evidence.md) | 利用者がタスクバーの入力インジケーターの右クリックメニューを開いたときだけ、メニューの現在のモードを読んで IME の実状態の証拠にする(読むだけ) | 撤去(ADR-276 の後続、2026-10-22)。実機で信頼できず shadow ごと撤去 |
 | [265](265-mozc-readable-integration.md) | mozc-readable の配布・追随と、awase が共有メモリから IME 状態を読む(自動判定) | 提案。段階 1(observe のみ)は実装済み(PR #644)。段階 2 の基準は実機と CI で満たしたが、未測定の項目あり・belief への接続は利用者の判断待ち。段階 0 は未着手 |
 | [266](266-initial-input-mode-claims-observed.md) | belief の入力モードの初期値 ObservedRomaji が「観測済み」と名乗る問題(BUG-204)。実害の記録が出るまで挙動は変えず、機序と選択肢を記録する | 起草(2026-10-18)。実装なし。Opus レビュー round 1 を反映して書き直し。決定は保留(所有者判断 Q1) |
 | [267](267-mozc-readable-composition-state.md) | mozc-readable の共有メモリに組成の段階・候補の種類・キー通番・入力欄のモード指定を足す(version 3) | 提案(Opus round4 で収束)。実装は未着手 |
 | [268](268-mozc-shm-belief-connection.md) | mozc-readable の共有メモリを belief に High で接続し、食い違う applied を降格する | 実装済み・D5 まで実機で検証済み(#678・#679・#682・#687、CI 通過)。未確認: TTL の最終値、E1 の不一致、TSF ネイティブの窓・物理キーでの追随 |
 | [269](269-mozc-literal-detection-evidence.md) | Mozc 系では GJI の I/O を literal 判定の証拠にしない(BUG-207) | 実装中(2026-10-18)。段階 1 は PR #686、段階 2 以降は観測が先 |
 | [270](270-mozc-first-send-composition-check.md) | Mozc で、cold の最初のローマ字を送った直後に、入力中の文字ができたかを共有メモリで確かめ、リテラルなら消して送り直す | 実装中(2026-10-19)。実機は未確認(BUG-209) |
-| [271](271-indicator-evidence-settings-levels.md) | 入力インジケーターを読む 2 つの証拠源(字形・右クリックメニュー)を、設定画面の 4 段階(無効／観測のみ／読めないウィンドウだけ／すべて)で選べるようにする | 起草(2026-10-20)。実装なし。Opus レビュー round 3 で収束・所有者判断 Q1〜Q5 決定済み。第 3・第 4 段階の belief 配線は別 ADR |
+| [271](271-indicator-evidence-settings-levels.md) | 入力インジケーターを読む証拠源(字形。右クリックメニューは 2026-10-22 撤去)を、設定画面の 4 段階(無効／観測のみ／読めないウィンドウだけ／すべて)で選べるようにする | 起草(2026-10-20)。実装なし。Opus レビュー round 3 で収束・所有者判断 Q1〜Q5 決定済み。第 3・第 4 段階の belief 配線は別 ADR |
 | [272](272-thin-shell-move-pure-code-to-core.md) | shell を薄くする: 同じ crate 内で gate を外すのを先にし tsf/warmup から R7 として再開 | 段階 A 実装済み(2026-10-20)。段階 B は B0(仮想時計、#708)のみ、B1 は保留、C は未着手 |
-| [273](273-indicator-evidence-belief-wiring.md) | 入力インジケーターの証拠源(字形・メニュー)を belief へ入れる配線の入口条件と形(ADR-271 の第 3・第 4 段階) | 起草(2026-10-20)。段階 1(核の実装・配線なし)実装中。Opus 4 ラウンドで収束(確定可) |
+| [273](273-indicator-evidence-belief-wiring.md) | 入力インジケーターの証拠源(字形。メニューは断念・撤去)を belief へ入れる配線の入口条件と形(ADR-271 の第 3・第 4 段階) | 起草(2026-10-20)。段階 1(核の実装・配線なし)実装中。Opus 4 ラウンドで収束(確定可) |
 | [274](274-split-windows-core-by-role.md) | awase-windows-core を役割ごとの複数の core に分け、名前で責務が分かるようにする(葉から剥がす) | 段階 0・1・2 はすべて完了、core は 7 crate + 殻(2026-10-21) |
 | [275](275-platform-state-core-move-deferred.md) | platform_state.rs・sync_actuation.rs の core への移動は見送る(記録系の強制を強める小 PR を 3 本) | 決定: 移動は見送り。Opus レビュー反映済み |
 | [276](276-remove-unicode-injection.md) | Unicode 注入(既定モードと Tsf の eager かな送信)を撤去する(ADR-083 の申し送りを覆す) | 実装済み(P1〜P4、#767・#768。純減約 916 行) |

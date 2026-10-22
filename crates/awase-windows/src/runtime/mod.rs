@@ -8,7 +8,6 @@ mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
 mod indicator_glyph_shadow;
-mod indicator_menu_shadow;
 mod key_pipeline;
 mod lang_check;
 mod lang_detect_shadow;
@@ -315,8 +314,6 @@ pub struct Runtime {
     lang_check: lang_check::LangCheck,
     /// ADR-263 PR 2a: 窓切替直後・長い無操作のあとのエピソードの影の判定（記録のみ、挙動を変えない）
     lang_detect: lang_detect_shadow::LangDetectShadow,
-    /// ADR-264 段階 1: 入力インジケーターの右クリックメニューの影の読み（記録のみ、挙動を変えない。既定は無効）
-    indicator_menu: indicator_menu_shadow::IndicatorMenuShadow,
     indicator_glyph: indicator_glyph_shadow::IndicatorGlyphShadow,
     /// ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ、挙動を変えない。既定は無効）
     mozc_shm: mozc_shm_shadow::MozcShmShadow,
@@ -1498,7 +1495,6 @@ impl Runtime {
             ),
             lang_check: lang_check::LangCheck::default(),
             lang_detect: lang_detect_shadow::LangDetectShadow::disabled(),
-            indicator_menu: indicator_menu_shadow::IndicatorMenuShadow::disabled(),
             indicator_glyph: indicator_glyph_shadow::IndicatorGlyphShadow::disabled(),
             mozc_shm: mozc_shm_shadow::MozcShmShadow::disabled(),
             resume_hold: crate::state::half_width_resume_hold::ResumeHold::new(),

@@ -30,8 +30,8 @@ use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
     WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST,
     WM_EXECUTE_EFFECTS, WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED, WM_INDICATOR_GLYPH_READ,
-    WM_INDICATOR_MENU_READ, WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
-    WM_RELOAD_CONFIG, WM_RESUME_HOLD_DONE,
+    WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG,
+    WM_RESUME_HOLD_DONE,
 };
 
 // ── 定数 ──
@@ -615,13 +615,6 @@ pub(crate) fn dispatch_engine_message(
         // 診断（issue #165）: Raw Input で見た物理キーの時刻を残す。観測だけ。後始末の `DefWindowProcW` は中で呼ぶ。
         WM_INPUT => {
             crate::observer::raw_key_input::on_wm_input(hwnd, wparam, lparam);
-        }
-        // ADR-264 段階 1: 入力インジケーターの右クリックメニューの読み取りワーカーの結果（記録のみ。挙動を変えない）。
-        WM_INDICATOR_MENU_READ => {
-            let (wparam, lparam) = (wparam.0, lparam.0);
-            with_app_or_repost_with(WM_INDICATOR_MENU_READ, wparam, lparam, |app| {
-                app.indicator_menu_on_result(wparam, lparam);
-            });
         }
         // ADR-261 段階 1: 入力インジケーターの字形の取り込みワーカーの結果（記録のみ。挙動を変えない）。
         WM_INDICATOR_GLYPH_READ => {

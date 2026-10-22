@@ -837,14 +837,14 @@ impl From<&awase::engine::RetroEvalStats> for BugReportRetroEvalStats {
     }
 }
 
-/// ADR-271 D5: 入力インジケーターを読む補助の実効の段階と、読みの件数。件数だけで内容（メニューの項目名・字形）は含まない。
+/// ADR-271 D5: 入力インジケーターを読む補助の実効の段階と、読みの件数。件数だけで内容（字形）は含まない。
+/// 右クリックメニューの要約（`menu`）は ADR-264 の撤去（2026-10-22）で削った。旧版の報告の `menu` は読み込みで無視される。
 /// 段階は**設定値ではなく実効の段階**（`min(設定値, ui_max_level())`）で、`off` でも常に出す（旧版との区別のため）。
 /// `SCHEMA_VERSION` は上げていない（追加のみ。`#[serde(default)]` 必須）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BugReportIndicatorEvidence {
     /// 字形の実効の段階（`off`/`observe`/`unobserved`/`all`）。字形の読み取りは未実装の間は常に `off`
     pub glyph_level: String,
-    pub menu: BugReportIndicatorMenuSummary,
     /// 字形の取り込みの件数（ADR-261 段階 1）。旧版の報告には無いので `#[serde(default)]` が必須
     #[serde(default)]
     pub glyph: BugReportIndicatorGlyphSummary,
@@ -890,43 +890,14 @@ pub struct BugReportAgreeCount {
     pub disagree: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BugReportIndicatorMenuSummary {
-    /// 右クリックメニューの実効の段階
-    pub level: String,
-    /// 読み取りの結果を受けた回数
-    pub reads: u32,
-    /// 同定できた回数
-    pub hits: u32,
-    /// 同定できなかった理由ごとの回数
-    pub miss_reasons: std::collections::BTreeMap<String, u32>,
-    /// 読める窓（`standard`）で、belief（直接の読みに追随）と一致した/しなかった回数
-    pub direct_match: u32,
-    pub direct_mismatch: u32,
-    /// 観測の無い窓（`imm32-unavailable`）で、belief と一致した/しなかった回数（意味が違うので分けて数える）
-    pub belief_match: u32,
-    pub belief_mismatch: u32,
-}
-
 impl BugReportIndicatorEvidence {
     #[must_use]
     pub fn new(
         effective: crate::indicator_evidence::EffectiveEvidence,
-        menu: &crate::indicator_evidence::IndicatorMenuCounters,
         glyph: &crate::indicator_evidence::IndicatorGlyphCounters,
     ) -> Self {
         Self {
             glyph_level: effective.glyph.label().to_owned(),
-            menu: BugReportIndicatorMenuSummary {
-                level: effective.menu.label().to_owned(),
-                reads: menu.reads,
-                hits: menu.hits,
-                miss_reasons: menu.miss_reasons.clone(),
-                direct_match: menu.direct_match,
-                direct_mismatch: menu.direct_mismatch,
-                belief_match: menu.unobserved_match,
-                belief_mismatch: menu.unobserved_mismatch,
-            },
             glyph: BugReportIndicatorGlyphSummary {
                 reads: glyph.reads,
                 captured: glyph.captured,
@@ -1783,10 +1754,8 @@ mod tests {
             running_processes: Some(vec!["explorer.exe".to_owned(), "powertoys.exe".to_owned()]),
             indicator_evidence: Some(BugReportIndicatorEvidence::new(
                 crate::indicator_evidence::EffectiveEvidence {
-                    glyph: awase::config::EvidenceLevel::Off,
-                    menu: awase::config::EvidenceLevel::Observe,
+                    glyph: awase::config::EvidenceLevel::Observe,
                 },
-                &crate::indicator_evidence::IndicatorMenuCounters::new(),
                 &crate::indicator_evidence::IndicatorGlyphCounters::new(),
             )),
             reported_at: "2026-08-19T12:34:56Z",
@@ -2243,8 +2212,7 @@ mod tests {
         let mut inp = input("説明", true, None);
         let payload = build_payload(&inp).unwrap();
         let ev = payload.indicator_evidence.expect("添付される");
-        assert_eq!(ev.menu.level, "observe");
-        assert_eq!(ev.glyph_level, "off");
+        assert_eq!(ev.glyph_level, "observe");
         // 添付しないときは出さない。
         inp.attach_state_snapshot = false;
         assert!(build_payload(&inp).unwrap().indicator_evidence.is_none());

@@ -4411,10 +4411,6 @@ fn evidence_level_text(
     use awase_windows::indicator_evidence::EvidenceSource;
     match (source, level) {
         (_, EvidenceLevel::Off) => ("使わない", "内容を読みません。"),
-        (EvidenceSource::Menu, EvidenceLevel::Observe) => (
-            "記録だけする",
-            "入力インジケーターを右クリックしてメニューを開いたときだけ、現在のモードを記録します。\n動作は変わりません。不具合報告に件数が含まれます。",
-        ),
         (EvidenceSource::Glyph, EvidenceLevel::Observe) => (
             "記録だけする",
             "前面のウィンドウが変わったときに、タスクバーの入力インジケーターの小さな範囲を画面から取り込み、\n取り込めたか・失敗の理由だけを記録します。画像は保存も送信もしません。動作は変わりません。\nウイルス対策ソフトが画面の取り込みを検出する場合があります。不具合報告に件数が含まれます。",
@@ -4492,17 +4488,9 @@ fn indicator_evidence_section(ui: &mut egui::Ui, cfg: &mut awase::config::Indica
     ui.add_space(4.0);
     ui.label(
         "IME の状態が読めないウィンドウで、タスクバーの入力インジケーターから現在の状態を知る補助です。\n\
-         画面の一部（字形）または UI の項目（メニュー）を読みます。ウイルス対策ソフトによっては\n\
+         画面の一部（字形）を読みます。ウイルス対策ソフトによっては\n\
          不審な動作として検出することがあるため、既定は「使わない」です。IME へは何も書き込みません。\n\
          反映は awase の再起動後です。",
-    );
-    ui.add_space(4.0);
-    evidence_row(
-        ui,
-        "indicator_evidence_menu",
-        "右クリックメニュー:",
-        EvidenceSource::Menu,
-        &mut cfg.menu,
     );
     // 字形はコードが入るまで選べない（`ui_max_level()` が `Off` の間は行ごと出さない）。
     if EvidenceSource::Glyph.ui_max_level() >= awase::config::EvidenceLevel::Observe {
@@ -7667,11 +7655,7 @@ mod layout_tab_repro {
     fn indicator_evidence_section_hides_levels_above_the_ui_max_and_keeps_the_saved_value() {
         use awase::config::{EvidenceLevel, IndicatorEvidenceConfig};
         use awase_windows::indicator_evidence::EvidenceSource;
-        // メニュー・字形とも off/observe の 2 段階だけ見せる（belief への配線は別 ADR。ADR-273）。
-        assert_eq!(
-            evidence_levels_shown(EvidenceSource::Menu),
-            vec![EvidenceLevel::Off, EvidenceLevel::Observe]
-        );
+        // 字形は off/observe の 2 段階だけ見せる（belief への配線は別 ADR。ADR-273）。
         assert_eq!(
             evidence_levels_shown(EvidenceSource::Glyph),
             vec![EvidenceLevel::Off, EvidenceLevel::Observe]
@@ -7679,7 +7663,6 @@ mod layout_tab_repro {
         // 上限を超える設定値（all）は、描画しても書き換えない。
         let mut cfg = IndicatorEvidenceConfig {
             glyph: EvidenceLevel::All,
-            menu: EvidenceLevel::All,
         };
         let ctx = eframe::egui::Context::default();
         let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
@@ -7687,7 +7670,6 @@ mod layout_tab_repro {
                 indicator_evidence_section(ui, &mut cfg);
             });
         });
-        assert_eq!(cfg.menu, EvidenceLevel::All);
         assert_eq!(cfg.glyph, EvidenceLevel::All);
     }
 
