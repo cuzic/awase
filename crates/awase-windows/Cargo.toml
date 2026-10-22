@@ -67,6 +67,12 @@ awase-ime-core = { path = "../awase-ime-core", features = ["testing"] }
 # journal 再生 fixture のハーネス(ADR-229)。非公開の dev 専用 crate。
 awase-replay = { path = "../awase-replay" }
 
+[target.'cfg(windows)'.dev-dependencies]
+# `#[implement(...)]` マクロ展開が `::windows_core::...` を直接参照するため、
+# `windows::core` の再エクスポート越しではなく実クレートとして必要
+# (`examples/ime_key_matrix_spike.rs` など、`#[implement]` を使う example 用。本体コードは未使用)。
+windows-core = "0.62"
+
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
 features = [
