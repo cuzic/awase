@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
     SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
@@ -35,7 +36,7 @@ use windows::Win32::UI::Accessibility::{
     HWINEVENTHOOK,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetForegroundWindow, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
+    FindWindowW, GetForegroundWindow, GetWindowRect, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
 };
 
 use crate::state::indicator_glyph::{
@@ -116,15 +117,20 @@ fn elapsed_ms_u16(since: Instant) -> u16 {
     u16::try_from(since.elapsed().as_millis()).unwrap_or(u16::MAX)
 }
 
-/// 画面の矩形 `(left, top, right, bottom)`（物理ピクセル）を GDI で取り込み、グレースケールにする。
+/// 画面の矩形 `(left, top, right, bottom)`（物理ピクセル）を GDI で取り込み、上位から `0xAARRGGBB` の画素列として返す
+/// （幅・高さ・画素。`max_w`/`max_h` を超える矩形は取り込まない）。
 ///
 /// # Safety
 /// GDI の呼び出しだけ。ハンドルはこの関数の中で作って必ず解放する。
 #[allow(clippy::many_single_char_names)]
-unsafe fn capture_gray(rect: (i32, i32, i32, i32)) -> Option<GlyphGray> {
+unsafe fn capture_bgra(
+    rect: (i32, i32, i32, i32),
+    max_w: i32,
+    max_h: i32,
+) -> Option<(usize, usize, Vec<u32>)> {
     let (l, t, r, b) = rect;
     let (w, h) = (r.checked_sub(l)?, b.checked_sub(t)?);
-    if w <= 0 || h <= 0 || w > 1024 || h > 1024 {
+    if w <= 0 || h <= 0 || w > max_w || h > max_h {
         return None;
     }
     let screen = GetDC(None);
@@ -153,7 +159,7 @@ unsafe fn capture_gray(rect: (i32, i32, i32, i32)) -> Option<GlyphGray> {
         None,
         0,
     );
-    let gray = match dib {
+    let out = match dib {
         Ok(bmp) if !bits.is_null() => {
             let old = SelectObject(mem, bmp.into());
             let blit = BitBlt(mem, 0, 0, w, h, Some(screen), l, t, SRCCOPY);
@@ -161,15 +167,7 @@ unsafe fn capture_gray(rect: (i32, i32, i32, i32)) -> Option<GlyphGray> {
                 let (uw, uh) = (usize::try_from(w).ok()?, usize::try_from(h).ok()?);
                 // SAFETY: `bits` は `CreateDIBSection` が保証する、32 ビット × w × h の有効なバッファ。
                 let px = std::slice::from_raw_parts(bits.cast::<u32>(), uw * uh);
-                let g: Vec<u8> = px
-                    .iter()
-                    .map(|&p| {
-                        // BGRA（リトルエンディアンの u32 では 0xAARRGGBB）。輝度 = (77R + 150G + 29B) / 256。
-                        let (r8, g8, b8) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
-                        ((77 * r8 + 150 * g8 + 29 * b8) >> 8) as u8
-                    })
-                    .collect();
-                GlyphGray::new(uw, uh, g)
+                Some((uw, uh, px.to_vec()))
             } else {
                 None
             };
@@ -181,7 +179,136 @@ unsafe fn capture_gray(rect: (i32, i32, i32, i32)) -> Option<GlyphGray> {
     };
     let _ = DeleteDC(mem);
     ReleaseDC(None, screen);
-    gray
+    out
+}
+
+/// 画面の矩形 `(left, top, right, bottom)`（物理ピクセル）を GDI で取り込み、グレースケールにする。
+///
+/// # Safety
+/// `capture_bgra` と同じ。
+unsafe fn capture_gray(rect: (i32, i32, i32, i32)) -> Option<GlyphGray> {
+    let (w, h, px) = capture_bgra(rect, 1024, 1024)?;
+    let g: Vec<u8> = px
+        .iter()
+        .map(|&p| {
+            // BGRA（リトルエンディアンの u32 では 0xAARRGGBB）。輝度 = (77R + 150G + 29B) / 256。
+            let (r8, g8, b8) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
+            ((77 * r8 + 150 * g8 + 29 * b8) >> 8) as u8
+        })
+        .collect();
+    GlyphGray::new(w, h, g)
+}
+
+/// 実験: 取り込んだ矩形の周辺を画像で残す（`AWASE_GLYPH_DUMP_DIR` を指定したときだけ。既定オフ）。
+///
+/// 残すのは**タスクバーの帯**（`Shell_TrayWnd` の窓矩形）と**切り抜き**（インジケーターの矩形）の 2 枚の BMP だけで、
+/// 画面全体や他の窓は撮らない（文書・チャットの本文を写さないため）。目的は、切り抜きの位置がずれて見本に合わない
+/// （`miss-shape`）原因を、帯の画像と切り抜きの座標から確かめること。古いファイルは `DUMP_KEEP_FILES` 件を超えたら消す。
+struct DumpSink {
+    dir: std::path::PathBuf,
+    seq: u32,
+}
+
+/// 帯の最大の大きさ（物理ピクセル）。
+const DUMP_STRIP_MAX_W: i32 = 8192;
+const DUMP_STRIP_MAX_H: i32 = 512;
+/// 残すファイル数の上限（帯 + 切り抜きで 2 件ずつ）。
+const DUMP_KEEP_FILES: usize = 80;
+
+impl DumpSink {
+    fn from_env() -> Option<Self> {
+        let dir = std::path::PathBuf::from(std::env::var_os("AWASE_GLYPH_DUMP_DIR")?);
+        std::fs::create_dir_all(&dir).ok()?;
+        tracing::info!(
+            "[indicator-glyph] debug dump enabled: {} (taskbar strip + crop only)",
+            dir.display()
+        );
+        Some(Self { dir, seq: 0 })
+    }
+
+    /// 24 ビットの BMP（上から下）として書く。
+    fn write_bmp(path: &std::path::Path, w: usize, h: usize, px: &[u32]) -> std::io::Result<()> {
+        let row = (w * 3).div_ceil(4) * 4;
+        let size = 54 + row * h;
+        let mut buf = Vec::with_capacity(size);
+        buf.extend_from_slice(b"BM");
+        buf.extend_from_slice(&u32::try_from(size).unwrap_or(0).to_le_bytes());
+        buf.extend_from_slice(&[0; 4]);
+        buf.extend_from_slice(&54u32.to_le_bytes());
+        buf.extend_from_slice(&40u32.to_le_bytes());
+        buf.extend_from_slice(&i32::try_from(w).unwrap_or(0).to_le_bytes());
+        buf.extend_from_slice(&(-i32::try_from(h).unwrap_or(0)).to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&24u16.to_le_bytes());
+        buf.extend_from_slice(&[0; 24]);
+        for y in 0..h {
+            for x in 0..w {
+                let p = px[y * w + x];
+                buf.extend_from_slice(&[
+                    (p & 0xFF) as u8,
+                    ((p >> 8) & 0xFF) as u8,
+                    ((p >> 16) & 0xFF) as u8,
+                ]);
+            }
+            buf.extend(std::iter::repeat_n(0u8, row - w * 3));
+        }
+        std::fs::write(path, buf)
+    }
+
+    /// 帯と切り抜きを書き、座標をログに残す。
+    ///
+    /// # Safety
+    /// `capture_bgra` と同じ。
+    unsafe fn dump(&mut self, crop: (i32, i32, i32, i32)) {
+        let mut tray = RECT::default();
+        let strip_rect = match FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) {
+            Ok(h) if GetWindowRect(h, &raw mut tray).is_ok() => {
+                (tray.left, tray.top, tray.right, tray.bottom)
+            }
+            _ => return,
+        };
+        let Some((sw, sh, strip)) = capture_bgra(strip_rect, DUMP_STRIP_MAX_W, DUMP_STRIP_MAX_H)
+        else {
+            return;
+        };
+        let Some((cw, ch, cropped)) = capture_bgra(crop, 1024, 1024) else {
+            return;
+        };
+        self.seq += 1;
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let stem = format!("glyph-{ms}-{:03}", self.seq);
+        let _ = Self::write_bmp(&self.dir.join(format!("{stem}-strip.bmp")), sw, sh, &strip);
+        let _ = Self::write_bmp(&self.dir.join(format!("{stem}-crop.bmp")), cw, ch, &cropped);
+        tracing::info!(
+            "[indicator-glyph] dump {stem} strip_rect={strip_rect:?} crop_rect={crop:?} crop_in_strip=({},{},{},{}) strip={sw}x{sh} crop={cw}x{ch}",
+            crop.0 - strip_rect.0,
+            crop.1 - strip_rect.1,
+            cw,
+            ch,
+        );
+        self.prune();
+    }
+
+    /// `glyph-*.bmp` を新しい順に `DUMP_KEEP_FILES` 件だけ残す。
+    fn prune(&self) {
+        let Ok(rd) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut names: Vec<_> = rd
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .filter(|n| {
+                let n = n.to_string_lossy();
+                n.starts_with("glyph-") && n.ends_with(".bmp")
+            })
+            .collect();
+        names.sort();
+        let excess = names.len().saturating_sub(DUMP_KEEP_FILES);
+        for n in names.into_iter().take(excess) {
+            let _ = std::fs::remove_file(self.dir.join(n));
+        }
+    }
 }
 
 /// インジケーターの要素を探して矩形を返す（名前が接頭辞に当たる要素から、純粋関数で 1 つ選ぶ）。
@@ -228,7 +355,10 @@ unsafe fn find_indicator_rect(
 ///
 /// # Safety
 /// `automation` は有効な `IUIAutomation`（COM 初期化済みのスレッドで作ったもの）でなければならない。
-unsafe fn probe_once(automation: &IUIAutomation) -> (ProbeOutcome, Option<GlyphFeature>) {
+unsafe fn probe_once(
+    automation: &IUIAutomation,
+    dump: Option<&mut DumpSink>,
+) -> (ProbeOutcome, Option<GlyphFeature>) {
     let started = Instant::now();
     let miss = |m: ProbeMiss, w: u16, h: u16| {
         (
@@ -247,6 +377,9 @@ unsafe fn probe_once(automation: &IUIAutomation) -> (ProbeOutcome, Option<GlyphF
         Ok(r) => r,
         Err(m) => return miss(m, 0, 0),
     };
+    if let Some(d) = dump {
+        d.dump(rect);
+    }
     let Some(gray) = capture_gray(rect) else {
         return miss(ProbeMiss::CaptureFailed, 0, 0);
     };
@@ -309,6 +442,7 @@ pub fn spawn_indicator_glyph_worker() -> (
             return;
         };
         tracing::info!("[indicator-glyph] worker thread started");
+        let mut dump = DumpSink::from_env();
 
         loop {
             // recv_timeout でシャットダウン通知も定期的に確認する
@@ -323,7 +457,7 @@ pub fn spawn_indicator_glyph_worker() -> (
                         break;
                     }
                     // SAFETY: `automation` は上で作った有効な COM オブジェクトで、同じスレッドから呼ぶ。
-                    let (outcome, feature) = unsafe { probe_once(&automation) };
+                    let (outcome, feature) = unsafe { probe_once(&automation, dump.as_mut()) };
                     // 特徴は結果のメッセージより先に送る（メインスレッドは結果を受けたら特徴を 1 つ取り出す。依頼の順に対応する）。
                     let _ = tx_feature.send(feature);
                     let (wp, lp) = outcome.pack();
