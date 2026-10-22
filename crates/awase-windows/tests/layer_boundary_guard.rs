@@ -565,7 +565,6 @@ const CORE_MODULES: &[&str] = &[
     "indicator_glyph",
     "indicator_glyph_seeds",
     "indicator_glyph_store",
-    "indicator_menu",
     "injection_mode",
     "input_barrier",
     "intent_store",

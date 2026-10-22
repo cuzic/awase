@@ -14,8 +14,10 @@ const REMOVED_KEYS: &[&str] = &[
     "general.apply_calibrated_mode_keys",
     "general.dbe_mode_key_policy",
     "general.gji_thumb_key_ime_toggle",
-    // 値が true のときだけ通知する(`REMOVED_WITH_VALUE_NOTICE`、ADR-271 D4)。
+    // ADR-264 のメニュー読み取りの撤去(2026-10-22)。旧キー・新キーとも無警告で無視する
+    // (観測だけで挙動を変えない設定だったので、通知しない)。
     "diagnostics.indicator_menu_shadow",
+    "indicator_evidence.menu",
     "calibration",
 ];
 
@@ -56,7 +58,6 @@ const REMOVED_WITH_NOTICE: &[(&str, &str)] = &[
 const REMOVED_WITH_VALUE_NOTICE: &[&str] = &[
     "general.gji_thumb_key_ime_toggle",
     "general.dbe_mode_key_policy",
-    "diagnostics.indicator_menu_shadow",
 ];
 
 /// 値が既定でない撤去済みキーの通知文を集める。`root` は config.toml 全体の表。
@@ -84,21 +85,6 @@ pub fn removed_value_notices(root: &toml::Table) -> Vec<String> {
         out.push(
             "general.dbe_mode_key_policy は撤去されました。値は無視されます。\
              config.toml から削除してください（設定画面で保存しても消えます）"
-                .to_string(),
-        );
-    }
-    // ADR-271 D4: 旧キーは読み替えない(ADR-217 の意図的な例外)。true だった利用者に新キーを案内する。
-    if root
-        .get("diagnostics")
-        .and_then(toml::Value::as_table)
-        .and_then(|d| d.get("indicator_menu_shadow"))
-        .and_then(toml::Value::as_bool)
-        == Some(true)
-    {
-        out.push(
-            "diagnostics.indicator_menu_shadow は撤去されました。値は無視されます。代わりに \
-             [indicator_evidence] の menu = \"observe\" を設定してください(反映は再起動後)。\
-             config.toml から旧キーを削除してください（設定画面で保存しても消えます）"
                 .to_string(),
         );
     }
@@ -223,7 +209,7 @@ mod tests {
             assert!(!is_removed_key(p), "無警告の表に重複登録しない: {p}");
         }
         assert!(removed_notice("keys.engine_on").is_none());
-        assert_eq!(removed_notice_paths().count(), 7);
+        assert_eq!(removed_notice_paths().count(), 6);
     }
 
     #[test]
@@ -245,11 +231,8 @@ mod tests {
         let m = removed_value_notices(&t("[general]\ndbe_mode_key_policy = \"passthrough\"\n"));
         assert_eq!(m.len(), 1);
         assert!(m[0].contains("dbe_mode_key_policy"), "{m:?}");
-        let m = removed_value_notices(&t("[diagnostics]\nindicator_menu_shadow = true\n"));
-        assert_eq!(m.len(), 1);
-        assert!(m[0].contains("indicator_evidence"), "{m:?}");
         assert!(
-            removed_value_notices(&t("[diagnostics]\nindicator_menu_shadow = false\n")).is_empty()
+            removed_value_notices(&t("[diagnostics]\nindicator_menu_shadow = true\n")).is_empty()
         );
         for p in REMOVED_WITH_VALUE_NOTICE {
             assert!(is_removed_key(p), "ログ警告は出さない表にも載せる: {p}");

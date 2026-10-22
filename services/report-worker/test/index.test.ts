@@ -628,7 +628,7 @@ describe("payload validation", () => {
   });
 
   it("keeps indicator_evidence when attach_state_snapshot is true and rejects it otherwise", () => {
-    const evidence = { glyph_level: "off", menu: { level: "observe", reads: 2 } };
+    const evidence = { glyph_level: "observe", glyph: { reads: 2 } };
     const attached = {
       ...validPayload,
       attach_state_snapshot: true,

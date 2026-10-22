@@ -11,7 +11,8 @@ summary: |-
   CI(windows-latest)の実測: MS-IME 本体・GJI とも、通常の窓と、IMM が読めない/嘘をつく窓の近似(自前の TSF text store の窓)で、開く瞬間の検知と現在のモードの読み取りが成立した(15 状態、各 n=1)。
   **一太郎の実機・一太郎が管理者権限で動く場合・H1(インジケーター自体が実状態と逆)は未確認で、go/no-go(M0-1)**。IME へは何も書かない。
 status: |-
-  起草(2026-10-17)。実装なし。CI での測定のみ(ブランチ `ci/indicator-menu-verify`、run 39076456897・39077002621・39079041821・39081235242)。**Opus レビュー round 1(Blocker 2・Major 8・minor 9)を反映して書き直し**、round 2(Blocker 0・新規 Major 2・minor 9。「Major 2 件を直せば確定してよい」)を反映し、**round 3(収束の確認)は Blocker 0・Major 0・minor 6、確定可**(minor 6 件も反映済み)(2026-10-17)。
+  撤去(ADR-276 の後続、2026-10-22)。段階 1 の shadow をすべて撤去した(実機で信頼できず、belief への配線は ADR-273 で断念済み)。決定 7(BUG-202)は独立で残る。
+  以下は撤去前の経緯。起草(2026-10-17)。実装なし。CI での測定のみ(ブランチ `ci/indicator-menu-verify`、run 39076456897・39077002621・39079041821・39081235242)。**Opus レビュー round 1(Blocker 2・Major 8・minor 9)を反映して書き直し**、round 2(Blocker 0・新規 Major 2・minor 9。「Major 2 件を直せば確定してよい」)を反映し、**round 3(収束の確認)は Blocker 0・Major 0・minor 6、確定可**(minor 6 件も反映済み)(2026-10-17)。
   round 1 の B1(メニュー選択直後の GJI I/O 推論が ON を立てる)は BUG-203、ホバーでの focus-sync は BUG-202 として起票済み(ともに develop)。決定は案。
   **マージ条件**: ADR-261(PR #628)・ADR-260(PR #626)・ADR-259(PR #624)のマージ後。ADR-262・263 は別ブランチで起票中(リンクはそのマージ後に有効になる)。
 related_adr:
@@ -27,6 +28,8 @@ related_adr:
 # ADR-264: 入力インジケーターの右クリックメニューを読んで、字形の表の正解ラベルと shadow の証拠にする
 
 ## ステータス
+
+**撤去(ADR-276 の後続、2026-10-22)。** 所有者判断で、段階 1 の shadow(読み取りワーカー・WinEvent フック・journal の `IndicatorMenu`・不具合報告の `menu` の要約・設定 `[indicator_evidence] menu`)をすべて撤去した。実機で信頼できず belief への配線を断念済み(ADR-273)で、観測を続ける理由が無くなったため。旧 `config.toml` の `menu`・`diagnostics.indicator_menu_shadow` は無警告で無視する。字形(ADR-261・273)は続ける。決定 7(BUG-202、コンテキストメニューのホバーでフォーカスの切替を起こさない)はメニュー読み取りとは独立で、残る。
 
 **【2026-10-20 追記】belief への配線(段階 2)は取り下げた([ADR-273](273-indicator-evidence-belief-wiring.md) の「メニューの配線を見送る」)。** 実機(Windows 11・日本語・GJI)で、メニューのチェックが元の窓の状態と一致しなかった(1 回目 6/6、2 回目 4/12、3 回目は判定不能でメニューの 10/12 がひらがな)。読み取りは、.NET の UIA(UIA2)では項目が 0 件で MSAA では読めた(awase が使うネイティブの UIA3+`LegacyIAccessible` の経路は未確認)。決定 3 の `AutomationId` の読み方が実機で成立するかは、この経路では未確認。shadow(journal・不具合報告)は残す。
 
