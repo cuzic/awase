@@ -154,6 +154,27 @@ pub struct Setup {
     pub grid: Grid,
     /// ADR-205（外部クローズの監視窓）が有効か。無効なら Q4（外部注入の閉じが観測されない）のまま。
     pub external_close_watch: bool,
+    /// ハーネスが**呼び出し単位で**外せる防御（ablation、ADR-277 決定 3）。既定は全部有効（本番と同じ）。
+    pub defenses: Defenses,
+}
+
+/// ハーネスが呼び出しごと外せる防御のスイッチ（ablation）。
+///
+/// 外せるのは、ハーネス（=本番の殻の写し）が**別の呼び出しとして**呼んでいる防御だけ。核の関数の内側の条件
+/// （例: `issue_open_warrant` の `is_japanese_ime` 棄却）は外せない。そちらは `cargo mutants` の変異で調べる
+/// （ADR-277 決定 3 の理由: 本番のコードにテスト用の分岐を足さない）。防御の目録は `support/defenses.rs`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Defenses {
+    /// BUG-163 代案A: 起動時の初期値のままの `desired_open` を最初の成功観測へ揃える
+    /// （`ImeStateHub::align_placeholder_desired`、本番の呼び出し元は `ir_align_placeholder_desired`）。
+    pub placeholder_align: bool,
+}
+
+impl Defenses {
+    /// 全部有効（本番と同じ）。
+    pub const ALL_ON: Self = Self {
+        placeholder_align: true,
+    };
 }
 
 impl Setup {
@@ -166,7 +187,15 @@ impl Setup {
             composing_visible: true,
             grid: Grid::Atok,
             external_close_watch: false,
+            defenses: Defenses::ALL_ON,
         }
+    }
+
+    /// 防御のスイッチを変える（ablation）。
+    #[must_use]
+    pub const fn with_defenses(mut self, defenses: Defenses) -> Self {
+        self.defenses = defenses;
+        self
     }
 
     /// 読めない窓（`Imm32Unavailable`、実 Chrome 相当）で、指定した真の初期状態から起動する。
@@ -702,9 +731,11 @@ impl Harness {
 
         // `ir_align_placeholder_desired`（`runtime/ime_refresh.rs`）が呼ぶ本物（BUG-163、代案A）: 起動時の初期値のままの
         // `desired_open` を、明示意図が無く、観測から導ける開閉があるとき、最初の成功観測へ 1 回だけ揃える。
-        let _ = self
-            .hub
-            .align_placeholder_desired(self.now(), TickMs(self.tick()));
+        if self.setup.defenses.placeholder_align {
+            let _ = self
+                .hub
+                .align_placeholder_desired(self.now(), TickMs(self.tick()));
+        }
 
         if let Some(drift) = check_drift_correction(self.hub.model(), self.now()) {
             // `ir_apply_drift_correction`（`runtime/ime_refresh.rs`）: ImmCross（書き込み経路が

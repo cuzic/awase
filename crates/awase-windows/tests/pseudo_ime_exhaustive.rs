@@ -1,0 +1,345 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
+//! ADR-277 段階 1: 擬似 IME の遷移表（`support/pseudo_ime.rs::TransitionTable`）を使う全列挙。
+//!
+//! 3 本の検査。どれも Linux で走り、実機 CI を待たずに答えが出る。
+//!
+//! 1. **到達性**（`reachability_golden`）: 実測のある状態から、表のキー 13 種・文字キー・awase の書き込み（開/閉）で
+//!    到達しうる状態と、到達しうるのに実測の無いセル（穴）を全列挙し、golden に固定する。穴は「閉ループのシナリオが
+//!    panic する所」「ランダム探索が黙って飛ばす所」「格子の測定を足すべき所」の一覧。
+//! 2. **予測の全列挙**（`prediction_exhaustive_golden`）: ランダム探索（`closed_loop_scenarios.rs` の
+//!    `random_key_walks_keep_predictions_consistent_with_truth`）と同じ手順（各キーの直前に観測して belief を真値に
+//!    合わせる）で、到達しうる抽象状態（真値・`key_track`・入力モード）を幅優先で全部たどり、予測器の予測が真値と
+//!    食い違う点を、そこへ至る**最短の**キー列つきで golden に固定する。抽象状態はハーネスの実物を毎回最初から
+//!    再生して作るので、写しは増えない（ハブの他の隠れ状態は抽象状態に入れていないので、履歴に依るずれは
+//!    ランダム探索の側に残す）。
+//! 3. **防御の ablation**（`defense_ablation_finds_shortest_violation`）: 防御の目録（`support/defenses.rs`）のうち
+//!    ハーネスで外せるものについて、外さなければ違反が無く、外すと違反が出る最短の事象列を出す。
+//!
+//! 再生成: `UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive`
+
+mod support;
+
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::fmt::Write as _;
+use std::path::PathBuf;
+use std::time::Instant;
+
+use support::defenses::{Ablation, DEFENSES};
+use support::harness::{Defenses, Harness, Setup, Source};
+use support::invariants::{
+    p1_no_warranted_write_without_intent, p3_startup_aligns_desired_without_drift,
+    prediction_mismatch,
+};
+use support::pseudo_ime::{
+    state_name, Grid, ImeInput, QuirkSwitches, TransitionTable, TrueStage, TrueState, CONV_HIRAGANA,
+};
+
+/// 表にある 13 種のキー（`grid_key_name`。0xF4 は 0xF3 と同じ列なので除く）と文字キー 1 つ。
+const KEYS: [u16; 14] = [
+    0x08, 0xF0, 0x0D, 0x1B, 0xF3, 0x1C, 0xF2, 0x1A, 0x16, 0x19, 0xF1, 0x1D, 0x20, 0x41,
+];
+
+fn golden_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
+        .join(name)
+}
+
+/// golden と比べる（`UPDATE_GOLDEN=1` なら書き換える）。食い違ったら現状の全文を出す（CI のログから写せるように）。
+fn check_golden(name: &str, actual: &str) {
+    let path = golden_path(name);
+    if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
+        std::fs::write(&path, actual).expect("golden を書けない");
+        eprintln!("golden を更新しました: {}", path.display());
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    assert!(
+        actual == expected,
+        "golden {} が現状と一致しない。意図した変化なら UPDATE_GOLDEN=1 で再生成して差分を確認すること。\n\
+         ---- 現状の全文 ----\n{actual}---- ここまで ----",
+        path.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 1. 到達性
+// ---------------------------------------------------------------------------
+
+fn render_reachability() -> String {
+    let mut inputs: Vec<ImeInput> = KEYS.iter().map(|&vk| ImeInput::Press(vk)).collect();
+    inputs.push(ImeInput::Write(true));
+    inputs.push(ImeInput::Write(false));
+    let mut out = String::from(
+        "# 擬似 IME の到達性（ADR-277）。自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive\n",
+    );
+    for grid in Grid::ALL {
+        let table = TransitionTable::load(grid);
+        let r = table.reachable(table.measured_states(), &inputs, QuirkSwitches::default());
+        let holes: usize = r.holes.values().map(|k| k.len()).sum();
+        let _ = writeln!(
+            out,
+            "[{}] reachable={} holes={holes}",
+            grid.name(),
+            r.states.len()
+        );
+        for (state, keys) in &r.holes {
+            let keys: Vec<&str> = keys.iter().copied().collect();
+            let _ = writeln!(out, "hole {state}: {}", keys.join(" "));
+        }
+        let reached: std::collections::BTreeSet<String> =
+            r.states.iter().map(|s| state_name(*s)).collect();
+        for unreached in table.measured_state_names().difference(&reached) {
+            let _ = writeln!(out, "unreached {unreached}");
+        }
+    }
+    out
+}
+
+#[test]
+fn reachability_golden() {
+    check_golden("pseudo_ime_reachability.txt", &render_reachability());
+}
+
+// ---------------------------------------------------------------------------
+// 2. 予測の全列挙
+// ---------------------------------------------------------------------------
+
+/// ランダム探索と同じ手順で、開始状態から `path` を再生したハーネス。
+fn replay(grid: Grid, composing_visible: bool, start: TrueState, path: &[u16]) -> Harness {
+    let mut setup = Setup::imm_cross(start).with_grid(grid);
+    setup.composing_visible = composing_visible;
+    let mut h = Harness::start(setup);
+    h.advance_ms(100).observe(Source::ImmCross).advance_ms(200);
+    for &vk in path {
+        h.advance_ms(50)
+            .observe(Source::ImmCross)
+            .advance_ms(50)
+            .key(vk);
+    }
+    h
+}
+
+/// 抽象状態（重複の判定に使う）: 真値・予測器の追跡・入力モード。
+fn node_key(h: &Harness) -> String {
+    format!(
+        "{}|{:?}|{:?}",
+        state_name(h.ime.state()),
+        h.model().key_track(),
+        h.model().input_mode()
+    )
+}
+
+/// 1 つの構成（格子 × 入力中を観測できるか）の幅優先。戻り値は (抽象状態の数, 食い違いの行)。
+fn explore(grid: Grid, composing_visible: bool) -> (usize, Vec<String>) {
+    /// 抽象状態の数の上限（爆発したら抽象化を見直す合図）。
+    const MAX_NODES: usize = 5_000;
+    let table = TransitionTable::load(grid);
+    let starts: Vec<TrueState> = table
+        .measured_states()
+        .into_iter()
+        .filter(|s| s.stage == TrueStage::None)
+        .collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<(TrueState, Vec<u16>)> = VecDeque::new();
+    for &s in &starts {
+        let h = replay(grid, composing_visible, s, &[]);
+        if seen.insert(node_key(&h)) {
+            queue.push_back((s, Vec::new()));
+        }
+    }
+    let mut lines = Vec::new();
+    while let Some((start, path)) = queue.pop_front() {
+        let base = replay(grid, composing_visible, start, &path);
+        for vk in KEYS {
+            if !base.ime.knows(vk) {
+                continue; // 実測の無いセル（到達性の golden に載る）
+            }
+            let mut next_path = path.clone();
+            next_path.push(vk);
+            let h = replay(grid, composing_visible, start, &next_path);
+            let r = h.predictions.last().expect("最後のキーの予測の記録");
+            if let Some(m) = prediction_mismatch(r) {
+                let seq: Vec<String> = next_path.iter().map(|k| format!("{k:02X}")).collect();
+                lines.push(format!(
+                    "{} 観測可能={composing_visible} 押す前={} mode={:?} キー=0x{vk:02X} 開始={} 列=[{}]\n    {m}",
+                    grid.name(),
+                    state_name(r.truth_before),
+                    r.input_mode,
+                    state_name(start),
+                    seq.join(" ")
+                ));
+            }
+            if seen.insert(node_key(&h)) {
+                assert!(
+                    seen.len() <= MAX_NODES,
+                    "抽象状態が {MAX_NODES} を超えた（{} 観測可能={composing_visible}）。抽象化を見直すこと",
+                    grid.name()
+                );
+                queue.push_back((start, next_path));
+            }
+        }
+    }
+    (seen.len(), lines)
+}
+
+#[test]
+fn prediction_exhaustive_golden() {
+    let started = Instant::now();
+    let mut out = String::from(
+        "# 予測器と擬似 IME の真値の食い違い（各キーの直前に観測して belief を合わせた上で、到達しうる抽象状態を全列挙。ADR-277）。\n\
+         # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive\n",
+    );
+    let mut by_config: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+    for grid in Grid::ALL {
+        for composing_visible in [true, false] {
+            let (nodes, mut lines) = explore(grid, composing_visible);
+            lines.sort();
+            by_config.insert(
+                format!("{} 観測可能={composing_visible}", grid.name()),
+                (nodes, lines),
+            );
+        }
+    }
+    for (config, (nodes, lines)) in &by_config {
+        let _ = writeln!(out, "[{config}] 抽象状態={nodes} 食い違い={}", lines.len());
+        for l in lines {
+            let _ = writeln!(out, "{l}");
+        }
+    }
+    eprintln!("prediction_exhaustive: {:?}", started.elapsed());
+    check_golden("pseudo_ime_prediction_mismatches.txt", &out);
+}
+
+// ---------------------------------------------------------------------------
+// 3. 防御の ablation（最短の違反列）
+// ---------------------------------------------------------------------------
+
+/// ablation の探索に使う事象。
+#[derive(Debug, Clone, Copy)]
+enum Event {
+    Advance(u64),
+    Observe(Source),
+}
+
+const EVENTS: [Event; 3] = [
+    Event::Advance(500),
+    Event::Observe(Source::ImmCross),
+    Event::Observe(Source::Poll),
+];
+
+/// 探索の深さ（事象の数）の上限。
+const MAX_DEPTH: usize = 3;
+
+fn run_events(start: TrueState, defenses: Defenses, events: &[Event]) -> Harness {
+    let mut h = Harness::start(Setup::imm_cross(start).with_defenses(defenses));
+    for e in events {
+        match *e {
+            Event::Advance(ms) => {
+                h.advance_ms(ms);
+            }
+            Event::Observe(src) => {
+                h.observe(src);
+            }
+        }
+    }
+    h
+}
+
+fn invariant_by_name(name: &str) -> fn(&Harness) -> Result<(), String> {
+    match name {
+        "p1_no_warranted_write_without_intent" => p1_no_warranted_write_without_intent,
+        "p3_startup_aligns_desired_without_drift" => p3_startup_aligns_desired_without_drift,
+        other => panic!("目録の不変条件 {other} がこのテストに無い"),
+    }
+}
+
+fn switch_off(name: &str) -> Defenses {
+    let mut d = Defenses::ALL_ON;
+    match name {
+        "placeholder_align" => d.placeholder_align = false,
+        other => panic!("目録のスイッチ {other} が Defenses に無い"),
+    }
+    d
+}
+
+/// 短い順（深さ 0 から `MAX_DEPTH` まで、各深さは辞書順）に事象列を全列挙し、最初の違反を返す。
+fn shortest_violation(
+    defenses: Defenses,
+    check: fn(&Harness) -> Result<(), String>,
+) -> Option<(TrueState, Vec<Event>)> {
+    let starts = [
+        TrueState {
+            open: false,
+            conv: CONV_HIRAGANA,
+            stage: TrueStage::None,
+        },
+        TrueState {
+            open: true,
+            conv: CONV_HIRAGANA,
+            stage: TrueStage::None,
+        },
+    ];
+    let mut frontier: Vec<Vec<Event>> = vec![Vec::new()];
+    for _depth in 0..=MAX_DEPTH {
+        for seq in &frontier {
+            for &start in &starts {
+                if check(&run_events(start, defenses, seq)).is_err() {
+                    return Some((start, seq.clone()));
+                }
+            }
+        }
+        frontier = frontier
+            .iter()
+            .flat_map(|seq| {
+                EVENTS.iter().map(move |&e| {
+                    let mut s = seq.clone();
+                    s.push(e);
+                    s
+                })
+            })
+            .collect();
+    }
+    None
+}
+
+#[test]
+fn defense_ablation_finds_shortest_violation() {
+    let mut out = String::from(
+        "# 防御を外すと破れる最短の事象列（ADR-277、support/defenses.rs の HarnessSwitch）。\n\
+         # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive\n",
+    );
+    for d in DEFENSES {
+        let Ablation::HarnessSwitch(switch) = d.ablation else {
+            continue;
+        };
+        let check = invariant_by_name(d.invariant);
+        if let Some((start, seq)) = shortest_violation(Defenses::ALL_ON, check) {
+            panic!(
+                "{}: 防御が有効なのに {} が破れた（開始={} 列={seq:?}）",
+                d.id,
+                d.invariant,
+                state_name(start)
+            );
+        }
+        let found = shortest_violation(switch_off(switch), check);
+        let Some((start, seq)) = found else {
+            panic!(
+                "{}: 外しても深さ {MAX_DEPTH} までに {} が破れない。防御が要らないか、事象の集合が足りない",
+                d.id, d.invariant
+            );
+        };
+        let _ = writeln!(
+            out,
+            "{}: 外すと {} 手で {} が破れる 開始={} 列={seq:?}",
+            d.id,
+            seq.len(),
+            d.invariant,
+            state_name(start)
+        );
+    }
+    check_golden("defense_ablation.txt", &out);
+}
