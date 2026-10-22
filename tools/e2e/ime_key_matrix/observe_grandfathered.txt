@@ -22,12 +22,7 @@ cal-fast-atok-s1
 cal-fast-atok-s2
 cal-fast-atok-s3
 cal-fast-atok-s4
-cal-fast-msime-s1
-cal-fast-msime-s2
-cal-fast-msime-s3
-cal-fast-msime-s4
 cal-fast-smoke-atok
-cal-fast-smoke-msime
 cal-fast-val-atok-s1-k1
 cal-fast-val-atok-s1-k4
 cal-grid-atok-s1
