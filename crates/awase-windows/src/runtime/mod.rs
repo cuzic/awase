@@ -1031,7 +1031,11 @@ impl Runtime {
         // （issue #137 3周目のレビューで指摘・修正）。
         let was_user_enabled = self.engine.is_user_enabled();
         let ctx = self.build_ctx();
-        let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
+        let mut decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
+        // ECRS DD5-03: トレイ・ホットキー起点の ON/OFF は、1 回のユーザー操作として押下 ID を載せる。載せないと、
+        // `press=None` の ON が `applied`（フォーカス時の写しや、書かれなかった OFF の後の古い値）で「すでに一致」と
+        // 省かれ、実 IME が閉じたまま残る（実 Chrome × GJI の CI で再現。docs/tasks/mech-ecrs-2026-10-21/dd503-ci-result.md）。
+        decision.stamp_set_open_press(Some(crate::hook::allocate_command_press_id()));
         self.execute_decision(decision);
         if was_user_enabled && !self.engine.is_user_enabled() {
             // エンジンが無効化されている間は romaji VK を送信しないため
@@ -1050,7 +1054,9 @@ impl Runtime {
     /// トレイの「状態をリセット」等、現在の ON/OFF に関わらず必ず有効化したい場合に使う。
     pub fn force_engine_on(&mut self) {
         let ctx = self.build_ctx();
-        let decision = self.engine.on_command(EngineCommand::ForceEngineOn, &ctx);
+        let mut decision = self.engine.on_command(EngineCommand::ForceEngineOn, &ctx);
+        // ECRS DD5-03: `toggle_engine` と同じ理由で、1 回のユーザー操作として押下 ID を載せる。
+        decision.stamp_set_open_press(Some(crate::hook::allocate_command_press_id()));
         self.execute_decision(decision);
     }
 
