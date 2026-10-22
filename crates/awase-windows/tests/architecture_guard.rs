@@ -8343,18 +8343,12 @@ fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static 
     )));
     for needle in [
         "warm_send_plan::plan_warmth(",
-        "session_expired:plan.session_expired",
         "prepend_f2_warmup:plan.prepend_f2_warmup",
-        "composition_timeout_ms:crate::tuning::COMPOSITION_TIMEOUT_MS",
+        "needs_f2_probe:self.warmup_coord.needs_f2_probe()",
     ] {
         if !assess.contains(needle) {
-            v.push("assess_warmth が plan_warmth の結果/定数を使っていない");
+            v.push("assess_warmth が plan_warmth の結果/引数を使っていない");
         }
-    }
-    if assess.contains("elapsed>crate::tuning::COMPOSITION_TIMEOUT_MS")
-        || assess.contains("elapsed>")
-    {
-        v.push("assess_warmth が期限判定をインラインに書き戻している");
     }
     let warm = squash(&non_comment_lines(extract_fn_body(
         production_code_only(vk_send),
@@ -8402,19 +8396,14 @@ fn warm_send_wiring_detector_catches_violations() {
     };
     // plan_warmth を残したまま結果を使わずインラインに戻す
     check_m(m.replacen(
-        "session_expired: plan.session_expired,",
-        "session_expired: warm && elapsed > crate::tuning::COMPOSITION_TIMEOUT_MS,",
-        1,
-    ));
-    check_m(m.replacen(
         "prepend_f2_warmup: plan.prepend_f2_warmup,",
         "prepend_f2_warmup: !warm,",
         1,
     ));
-    // 定数の差し替え
+    // 引数の差し替え
     check_m(m.replacen(
-        "composition_timeout_ms: crate::tuning::COMPOSITION_TIMEOUT_MS,",
-        "composition_timeout_ms: crate::tuning::LONG_IDLE_MS,",
+        "needs_f2_probe: self.warmup_coord.needs_f2_probe(),",
+        "needs_f2_probe: true,",
         1,
     ));
     // 引数の入れ替え・定数の差し替え
@@ -8425,7 +8414,7 @@ fn warm_send_wiring_detector_catches_violations() {
     ));
     check_v(v.replacen(
         "threshold: crate::tuning::LONG_IDLE_MS,",
-        "threshold: crate::tuning::COMPOSITION_TIMEOUT_MS,",
+        "threshold: crate::tuning::MEDIUM_IDLE_PROBE_MS,",
         1,
     ));
     // plan_literal_detect を残したまま結果を捨てる

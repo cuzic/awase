@@ -232,7 +232,6 @@ pub(crate) enum RawRecoveryOutcome {
 pub(super) struct WarmthContext {
     pub warm: bool,
     pub elapsed: u64,
-    pub session_expired: bool,
     pub prepend_f2_warmup: bool,
 }
 
@@ -792,15 +791,12 @@ impl Output {
         let elapsed = self.ms_since_last_send();
         let plan = warm_send_plan::plan_warmth(warm_send_plan::WarmthFacts {
             warm,
-            elapsed_ms: elapsed,
             needs_f2_probe: self.warmup_coord.needs_f2_probe(),
-            composition_timeout_ms: crate::tuning::COMPOSITION_TIMEOUT_MS,
         });
         tracing::trace!("[warmth] reason={:?}", plan.reason);
         WarmthContext {
             warm,
             elapsed,
-            session_expired: plan.session_expired,
             prepend_f2_warmup: plan.prepend_f2_warmup,
         }
     }

@@ -209,11 +209,10 @@ impl Output {
         let WarmthContext {
             warm,
             elapsed,
-            session_expired,
             prepend_f2_warmup,
         } = self.assess_warmth();
         tracing::debug!(
-            "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
+            "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms prepend_f2_warmup={prepend_f2_warmup}",
             fmt_ms(elapsed)
         );
 
@@ -230,13 +229,7 @@ impl Output {
         }
 
         if prepend_f2_warmup {
-            if session_expired {
-                tracing::debug!(
-                    "[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)"
-                );
-            } else {
-                tracing::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
-            }
+            tracing::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
 
             let cold_seq = self.composition.increment_cold_start_count();
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
@@ -370,12 +363,11 @@ impl Output {
         let WarmthContext {
             warm,
             elapsed,
-            session_expired,
             prepend_f2_warmup,
         } = self.assess_warmth();
 
         tracing::debug!(
-            "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
+            "[tsf-send] warm={warm} elapsed={}ms prepend_f2_warmup={prepend_f2_warmup}",
             fmt_ms(elapsed)
         );
 
@@ -388,8 +380,8 @@ impl Output {
 
         if prepend_f2_warmup {
             // ノンブロッキング warmup を開始して pending_tsf に保留
-            let started = crate::tsf::warmup::cold_warmup::ColdWarmupSequence::new(self)
-                .run_start(session_expired, elapsed);
+            let started =
+                crate::tsf::warmup::cold_warmup::ColdWarmupSequence::new(self).run_start(elapsed);
             let cold_seq = started.probe.cold_seq;
             self.gji_begin_probe_guard();
             let probe_params = self.gji_current_probe_params().unwrap_or_else(|| {
