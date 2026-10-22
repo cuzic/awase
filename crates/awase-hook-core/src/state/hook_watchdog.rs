@@ -74,6 +74,45 @@
 //!   間はカナリアを送らず直接再インストールを試みるようにした——確認する
 //!   相手（自分のフック）が存在しない以上、カナリアには情報的な意味も無い。
 
+/// Raw Input（`WH_KEYBOARD_LL` とは別経路）が見た物理キーと、フックが見た物理キーの照らし合わせ結果（診断専用、
+/// issue #165。判断には使わない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawVsHook {
+    /// Raw Input が物理キーをまだ一度も見ていない（キー操作が無い、または Raw Input が届かない）。
+    NoPhysicalKeyYet,
+    /// フックの最後の物理キーが Raw Input の最後の物理キーに追いついている（フックは物理キーを取れている）。
+    HookSawIt,
+    /// Raw Input が物理キーを見たのに、フックの最後の物理キーはそれより `gap_ms` 以上古い（フックが物理キーを取りこぼしている疑い）。
+    /// フックがまだ物理キーを一度も見ていないときは `gap_ms` が `None`。
+    HookMissedPhysicalKeys { gap_ms: Option<u64> },
+}
+
+/// Raw Input とフックの物理キーが「追いついている」とみなす許容差（ミリ秒）。
+///
+/// `GetTickCount64` の分解能（約 15.6ms）と、2 経路の配送順の差（フックは打鍵の同期呼び出し、Raw Input はメッセージ配送）を
+/// 吸収するための目安。`tuning.rs` の実測 ms の対象ではなく、診断のログの分類にだけ使う（判断には使わない）。
+pub const RAW_VS_HOOK_MARGIN_MS: u64 = 300;
+
+/// 照らし合わせる。`raw_age_ms` は Raw Input の最後の物理キーからの経過、`hook_phys_age_ms` はフックの最後の物理キー
+/// （注入ではないキーダウン）からの経過。どちらも `None` = まだ一度も無い。
+#[must_use]
+pub fn raw_vs_hook_verdict(
+    raw_age_ms: Option<u64>,
+    hook_phys_age_ms: Option<u64>,
+    margin_ms: u64,
+) -> RawVsHook {
+    let Some(raw_age) = raw_age_ms else {
+        return RawVsHook::NoPhysicalKeyYet;
+    };
+    match hook_phys_age_ms {
+        Some(hook_age) if hook_age <= raw_age.saturating_add(margin_ms) => RawVsHook::HookSawIt,
+        Some(hook_age) => RawVsHook::HookMissedPhysicalKeys {
+            gap_ms: Some(hook_age - raw_age),
+        },
+        None => RawVsHook::HookMissedPhysicalKeys { gap_ms: None },
+    }
+}
+
 /// hook_starved 検知 tick で watchdog が取るべきアクション。
 ///
 /// `SendCanary` 以外は全て「自己修復を行わない」を意味し、バリアントの違いは
@@ -726,5 +765,57 @@ mod tests {
         );
         // backoff_delay_ms(0)==0なので、next_retry_at_ms<=now_ms+3_000は常に真
         assert_eq!(still_starved_next_tick, HookWatchdogAction::SendCanary);
+    }
+
+    #[test]
+    fn raw_vs_hook_verdict_without_any_raw_physical_key_is_no_physical_key_yet() {
+        assert_eq!(
+            raw_vs_hook_verdict(None, None, RAW_VS_HOOK_MARGIN_MS),
+            RawVsHook::NoPhysicalKeyYet
+        );
+        assert_eq!(
+            raw_vs_hook_verdict(None, Some(10), RAW_VS_HOOK_MARGIN_MS),
+            RawVsHook::NoPhysicalKeyYet
+        );
+    }
+
+    #[test]
+    fn raw_vs_hook_verdict_hook_within_the_margin_saw_the_key() {
+        // フックの最後の物理キーが Raw Input のそれと同じか、許容差以内に追いついている。
+        assert_eq!(
+            raw_vs_hook_verdict(Some(1_000), Some(1_000), RAW_VS_HOOK_MARGIN_MS),
+            RawVsHook::HookSawIt
+        );
+        assert_eq!(
+            raw_vs_hook_verdict(Some(1_000), Some(1_300), RAW_VS_HOOK_MARGIN_MS),
+            RawVsHook::HookSawIt
+        );
+        // フックの方が新しいのは問題ない（Raw Input がフックより少し遅れて届いた）。
+        assert_eq!(
+            raw_vs_hook_verdict(Some(1_000), Some(900), RAW_VS_HOOK_MARGIN_MS),
+            RawVsHook::HookSawIt
+        );
+    }
+
+    #[test]
+    fn raw_vs_hook_verdict_hook_older_than_raw_by_more_than_the_margin_missed_keys() {
+        assert_eq!(
+            raw_vs_hook_verdict(Some(1_000), Some(1_301), RAW_VS_HOOK_MARGIN_MS),
+            RawVsHook::HookMissedPhysicalKeys { gap_ms: Some(301) }
+        );
+        assert_eq!(
+            raw_vs_hook_verdict(Some(50), Some(120_000), RAW_VS_HOOK_MARGIN_MS),
+            RawVsHook::HookMissedPhysicalKeys {
+                gap_ms: Some(119_950)
+            }
+        );
+    }
+
+    #[test]
+    fn raw_vs_hook_verdict_hook_never_saw_a_physical_key_while_raw_did() {
+        assert_eq!(
+            raw_vs_hook_verdict(Some(2_000), None, RAW_VS_HOOK_MARGIN_MS),
+            RawVsHook::HookMissedPhysicalKeys { gap_ms: None }
+        );
     }
 }

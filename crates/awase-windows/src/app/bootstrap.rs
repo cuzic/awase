@@ -1410,6 +1410,9 @@ pub(super) fn run_all() -> Result<()> {
     let _wts_guard = register_session_notification()
         .map_err(|e| tracing::warn!("{e}"))
         .ok();
+    // 診断（issue #165）: フックとは別経路（Raw Input）で物理キーを観測する。失敗しても本体の動作に影響しない。
+    let _raw_key_guard = crate::runtime::engine_window::engine_hwnd()
+        .and_then(crate::observer::raw_key_input::register);
     let _ = with_app(Runtime::establish_initial_focus_scope);
     initialize_ime_cache();
 

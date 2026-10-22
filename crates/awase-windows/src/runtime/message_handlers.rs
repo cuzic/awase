@@ -634,6 +634,7 @@ pub(crate) unsafe fn handle_wm_timer(
                             }
                         );
                         if hook_starved {
+                            log_raw_vs_hook_physical_keys(now);
                             // SAFETY: WM_TIMER ハンドラはメッセージループスレッド上で実行される。
                             unsafe {
                                 sample_watchdog_kana_lock_edge(app, stale_ms, os_idle_ms);
@@ -745,6 +746,26 @@ pub(crate) unsafe fn handle_wm_timer(
         }
     }
     recover_pending_drain_request();
+}
+
+/// 診断（issue #165、観測専用）: Raw Input が見た物理キーと、フックが見た物理キーを並べてログに出す。
+/// フックが死んだ疑いの tick（`hook_starved`）でだけ呼ぶ。
+fn log_raw_vs_hook_physical_keys(now_ms: u64) {
+    use crate::state::hook_watchdog::{raw_vs_hook_verdict, RawVsHook, RAW_VS_HOOK_MARGIN_MS};
+    let age = |tick: u64| (tick != 0).then(|| now_ms.saturating_sub(tick));
+    let raw_age = age(crate::observer::raw_key_input::raw_physical_key_tick_ms());
+    let hook_age = age(hook::hook_physical_key_tick_ms());
+    let verdict = raw_vs_hook_verdict(raw_age, hook_age, RAW_VS_HOOK_MARGIN_MS);
+    let line = format!(
+        "[hook-watchdog] raw-input vs hook: raw's last physical key {raw_age:?}ms ago \
+         (total {}), hook's last physical key {hook_age:?}ms ago → {verdict:?}",
+        crate::observer::raw_key_input::raw_physical_key_count()
+    );
+    if matches!(verdict, RawVsHook::HookMissedPhysicalKeys { .. }) {
+        tracing::warn!("{line}");
+    } else {
+        tracing::info!("{line}");
+    }
 }
 
 /// hook watchdog が「フック詰まり」を検知した瞬間、OS のかな入力ロック状態を

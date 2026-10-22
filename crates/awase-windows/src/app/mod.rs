@@ -15,7 +15,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
-    WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
+    WM_INPUT, WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
 };
 
 use awase::config::{AppConfig, ImeDetectConfig, ParsedKeyCombo, ValidatedConfig};
@@ -611,6 +611,10 @@ pub(crate) fn dispatch_engine_message(
         }
         WM_INPUTLANGCHANGE => {
             let _ = with_app(|app| unsafe { message_handlers::handle_wm_inputlangchange(app) });
+        }
+        // 診断（issue #165）: Raw Input で見た物理キーの時刻を残す。観測だけ。後始末の `DefWindowProcW` は中で呼ぶ。
+        WM_INPUT => {
+            crate::observer::raw_key_input::on_wm_input(hwnd, wparam, lparam);
         }
         // ADR-264 段階 1: 入力インジケーターの右クリックメニューの読み取りワーカーの結果（記録のみ。挙動を変えない）。
         WM_INDICATOR_MENU_READ => {
