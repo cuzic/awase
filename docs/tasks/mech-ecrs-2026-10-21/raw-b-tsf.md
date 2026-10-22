@@ -4,7 +4,7 @@
 再報告しないもの: UIA 非同期、TsfReadinessProbe の待機(T01、HEAD で適用済みを確認)、ChromeProbe、WarmEpoch/ColdContext、`gji_coro_body` の `!needs_literal` 分岐、platform_state.rs の core 移動、R4。
 `raw-tsf.md`(コード単位の ECRS)の T03/T04/T13/T14/T15/T17/T21 は重ねて書かず、必要な箇所だけ番号で参照する。
 
-実機ログの一次資料として、リポジトリ内の `tools/e2e/ime_key_matrix/results/*/awase-full.log`(94 ディレクトリ、2026-09-19〜20 の CI 実機、DEBUG レベル)を数えた。
+実機ログの一次資料として、リポジトリ内の `tools/e2e/ime_key_matrix/results/*/awase-full.log`(その後撤去。以下の grep は `675be51a` を `git archive 675be51a tools/e2e/ime_key_matrix/results | tar -x -C <空ディレクトリ>` で展開して打つ)(94 ディレクトリ、2026-09-19〜20 の CI 実機、DEBUG レベル)を数えた。
 **母数が小さい**(Tsf モード送信 32 件・cold-start の transmit-plan 2 件、主に Windows Terminal×GJI と Win32 窓)ので、「0 件」は「その構成で到達しなかった」までしか言えない。各項目に件数を書く。
 
 ---

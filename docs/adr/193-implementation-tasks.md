@@ -218,7 +218,7 @@ rcのANDに潰れると、ベースラインの1回のflakeで`NG`、撤去側�
 - ログ回収: `chrome_probe.log`と、`[vk-send]`行（`elapsed`/`warm`/`prepend_f2_warmup`）突き合わせ用の`awase.log`の**両方**を回収する
   （`clipwire-targets.example.toml`の`Get-Content chrome_probe.log`の系統）。
 - 実施: clipwireで実機へ（push→Windows側チェックアウトブランチ確認→ビルド→実行）。
-- 成果物: 結果表を`tools/e2e/ime_key_matrix/results/`に置く。ADR-193へ「症状の兆候の有無」を追記（**G0は確定しない**）。
+- 成果物: 結果表を`tools/e2e/ime_key_matrix/results/`に置いた（のち作業ツリーから撤去。固定の参照は`git show 675be51a:tools/e2e/ime_key_matrix/results/...`）。ADR-193へ「症状の兆候の有無」を追記（**G0は確定しない**）。
 - 受け入れ基準: 掃引点ごとに`text`と、対応する`[vk-send]`の`elapsed`/`warm`/`prepend_f2_warmup`が記録される。
 - 依存: なし。
 

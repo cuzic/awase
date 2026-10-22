@@ -72,7 +72,7 @@
 
 ## 4. 読み手の台帳
 
-範囲: `tools/**`・`.github/**`・`crates/*/tests/**`・`docs/tasks/*verification*`(`tools/e2e/ime_key_matrix/results/**` の過去のログ置き場と `testdata/**` は読み手ではなく**入力データ**なので除く。`testdata/*.awase.log` は 22 本で別に数える)。184 ファイルを対象にした。
+範囲: `tools/**`・`.github/**`・`crates/*/tests/**`・`docs/tasks/*verification*`(`tools/e2e/ime_key_matrix/results/**` の過去のログ置き場〈当時。撤去後は `git show 675be51a:` で読む〉と `testdata/**` は読み手ではなく**入力データ**なので除く。`testdata/*.awase.log` は 22 本で別に数える)。184 ファイルを対象にした。
 
 方法: Rust の `"[タグ]` で始まる文字列リテラル 146 種(`git grep -ohE '"\[[a-z][a-z0-9_-]+\]'`)ごとに、対象ファイルでの出現を `grep -F` で調べた。手書きの文言そのもの(タグを持たない行)は 4.2 に別に挙げる。
 
@@ -125,7 +125,7 @@
 - `architecture_guard.rs`: `:403`(output/tsf は journal を参照しない)、`:2498` の `DRIFT_SEND_LOG_MARKER = "[drift] correction: observed="`、`:6123`(`emit_tracing` の `?`/`%`/ワイルドカード禁止)、`:6167`(`KeyInput` の構築は 1 か所)、`hook_callback` のログマクロ 7 件。
 - `tools/e2e/ime_key_matrix/testdata/*.awase.log`: 22 本。`on_ime_apply_complete{…}:` のような span 名の前置きを含む。
 - `crates/awase-settings/src/bug_report.rs:947-954`: `"type":"KeyInput"` の文字列一致(「打鍵の行をすべて削除」)。
-- 台帳に**含まれない**もの: `tools/e2e/ime_key_matrix/results/**`(過去の run の保存ログ)。`.old`(`awase.log.old`)を読む workflow は無い(ADR の記述どおり)。
+- 台帳に**含まれない**もの: `tools/e2e/ime_key_matrix/results/**`(過去の run の保存ログ。撤去済み、`git show 675be51a:` で読む)。`.old`(`awase.log.old`)を読む workflow は無い(ADR の記述どおり)。
 
 ## 5. 組ごとの収支表(見積もり。判定ではなく PR 説明用)
 
