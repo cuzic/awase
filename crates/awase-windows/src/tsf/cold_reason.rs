@@ -25,8 +25,8 @@ pub enum ColdReason {
     F2NonTsf,
     // 旧 SessionExpired は 2026-07-06 の到達不能パス監査で撤去 — production の
     // 構築サイトゼロ。session-expiry は `assess_warmth` の bool（session_expired）
-    // 経由で F2 prepend バッチを駆動する別パスで実装されており、この ColdReason
-    // variant で mark_composition_cold する経路は一度も配線されなかった。
+    // 経由の別パスで実装されていたが、それも経過時間が常に ~0ms で成立しないため
+    // 撤去した（MB-05、2026-10-22）。
     /// raw TSF literal 検出後のリカバリ（バックスペース後に再 cold 扱い）
     RawTsfLiteralRecovery,
     /// Ctrl+key パススルー時の composition キャンセル（IME ショートカット横取り防止）

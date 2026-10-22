@@ -17,7 +17,6 @@ pub(crate) use lang_detect_shadow::LangDetectIntake;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;
-pub(crate) mod outbox;
 mod transport;
 
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
@@ -1254,7 +1253,7 @@ impl Runtime {
             // ここで belief（IME open observation）を書いてはならない。
             // かつて ce45b82 が「非TSFウィンドウには日本語IMEが存在しない」という誤った
             // 前提で write_focus_probe(false) の偽観測を注入していたが、Edge/Chrome
-            // （Imm32Unavailable, injection=Unicode）は非TSF注入かつ日本語IME有効であり、
+            // （Imm32Unavailable、当時は injection=Unicode）は非TSF注入かつ日本語IME有効であり、
             // 実観測経路を持たないため偽 Low false が most_recent_trusted() 経由で belief を
             // 支配し、フォーカス約500ms後（次ポーリング）に Engine が必ず OFF になった
             // （docs/known-bugs.md BUG-07）。ce45b82 の元バグ（Win+X メニューの1文字
@@ -2292,32 +2291,6 @@ impl Runtime {
         let _ = self
             .engine
             .on_command(EngineCommand::SetNgramModel(model), &ctx);
-    }
-
-    /// Output が積んだ `RuntimeRequest` を drain して処理する。
-    ///
-    /// キー処理境界（`WM_EXECUTE_EFFECTS` / `WM_DRAIN_OUTPUT_QUEUE` 末尾）で呼ぶ。
-    ///
-    /// `Output` はキー注入中に `with_app` を再入させられないため、IME リフレッシュ・
-    /// TSF プローブ起動などの Runtime 操作を `RuntimeOutbox` に積んでおき、
-    /// ここで一括実行する（H-4-b: `StartTsfProbe` が Chrome cold パスから積まれる）。
-    pub(crate) fn drain_runtime_requests(&mut self) {
-        use crate::runtime::outbox::RuntimeRequest;
-        let requests = self.platform.output.take_pending_requests();
-        if requests.is_empty() {
-            return;
-        }
-        tracing::debug!("[runtime-outbox] {} request(s) を drain", requests.len());
-        for request in requests {
-            match request {
-                RuntimeRequest::StartTsfProbe => {
-                    tracing::debug!("[runtime-outbox] StartTsfProbe → pending TSF timer 適用");
-                    if let Some(cmd) = self.platform.output.pending_tsf_timer() {
-                        self.platform.apply_timer_command(cmd);
-                    }
-                }
-            }
-        }
     }
 
     /// パニックリセット: IME 関連キー連打で発動する緊急リセット。

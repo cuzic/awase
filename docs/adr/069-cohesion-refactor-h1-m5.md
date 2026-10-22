@@ -3,7 +3,7 @@ id: ADR-069
 title: |-
   凝集性リファクタ（H-1〜M-5）— 循環依存・God Object・Reducer 不変条件の一括改善
 status: |-
-  採用・実装済み(一部撤去、2026-10-04 確認)。ModifierState の engine 側移設・RuntimeOutbox・TsfWarmupCoordinator は現存。ImeApplyPlanner は ADR-216 R1(fbe90204)で撤去。旧: 採用済み
+  採用・実装済み(一部撤去、2026-10-04 確認)。ModifierState の engine 側移設・TsfWarmupCoordinator は現存。ImeApplyPlanner は ADR-216 R1(fbe90204)で撤去。RuntimeOutbox(H-4-a/b)は 2026-10-22 に撤去(TSF probe タイマーは drain_output_post_send_effects が起動済みで二重だった)。旧: 採用済み
 related_adr:
   - "ADR-032"
   - "ADR-036"
@@ -13,7 +13,7 @@ related_adr:
 
 # ADR-069: 凝集性リファクタ（H-1〜M-5）— 循環依存・God Object・Reducer 不変条件の一括改善
 
-> 状態更新(2026-10-04): 採用・実装済み(一部撤去、2026-10-04 確認)。ModifierState の engine 側移設・RuntimeOutbox・TsfWarmupCoordinator は現存。ImeApplyPlanner は ADR-216 R1(fbe90204)で撤去
+> 状態更新(2026-10-04): 採用・実装済み(一部撤去、2026-10-04 確認)。ModifierState の engine 側移設・TsfWarmupCoordinator は現存。ImeApplyPlanner は ADR-216 R1(fbe90204)で撤去。RuntimeOutbox(H-4-a/b)は 2026-10-22 に撤去(TSF probe タイマーは drain_output_post_send_effects が起動済みで二重だった)
 
 ## ステータス
 

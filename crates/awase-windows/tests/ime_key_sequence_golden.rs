@@ -108,17 +108,14 @@ const WARMUP_DOC: &str = "\
 # dispatch_probe_actions が呼ぶ ProbeIo メソッドと、Output 実装が送るキー。キーは Output 側に
 # ハードコードされており分岐は主に TransmitTarget（Chrome / Tsf）で切り替わる。
 #
-# SendFreshF2         → send_fresh_f2(): VK_DBE_HIRAGANA (0xF2) down/up。
-#                       Medium/Long cold（forces_prepend_f2）では send_extra_f2() で F2×2 連続。
 # RawTsfLiteralRecovery → set_raw_literal(backs, romaji) で BS×backs + 再送を予約し mark_cold。
 #                         consecutive>0 のときは再送せず BS のみ（give-up）。
 #
 # 捨て駒キー機構（StartSacrificialWarmup/SacrificialResend、VK_A+BS・VK_IME_OFF→ON、
 # SacrificialWarmupCoro/ImeOffOnWarmupFsm）は 2026-07-18 に物理削除した。実機ソークで
 # per-VK confirm（TransmitSingleVk、上記とは別の cold-start パス）のみで安全網として
-# 十分と確認済み（docs/known-bugs.md 参照）。send_chrome_gji_reinit_and_poll() は
-# Unicode injection mode の long-cold GJI 再初期化として probe_io.rs に残っているが、
-# ProbeAction 経由ではなく Output::send_f22_f21_reinit() から直接呼ばれる。
+# 十分と確認済み（docs/known-bugs.md 参照）。Unicode 注入モードの long-cold GJI 再初期化
+# （send_chrome_gji_reinit_and_poll()）も ADR-212・ADR-276 で撤去した。
 ";
 
 /// 戦略選択テーブル（実行結果）+ ドキュメント section を連結したゴールデン本文を生成する。

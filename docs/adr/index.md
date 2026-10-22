@@ -82,7 +82,7 @@
 | [066](066-gji-clsid-ime-detection.md) | GJI CLSID ベース IME 種別検出（gji_write_idle_ms ヒューリスティック廃止） | 採用・実装済み(CLSID ベースの active_ime_kind 判定、gji_write_idle_ms は現行コードに無い、20… |
 | [067](067-vk-ime-on-off-migration.md) | F21/F22 → VK_IME_ON/OFF への完全移行と config1.db バインド廃止 | 採用・実装済み(VK_IME_ON/OFF 移行、config1.db パッチ系の gji_keybinds_ok・GjiSetup/G… |
 | [068](068-jiskana-katakana-support.md) | JISかな・カタカナモードの完全サポート | 一部実装・一部撤去(2026-10-04 確認)。JISかな検出(ObservedKana)・ローマ字扱い(ObservedRomaji… |
-| [069](069-cohesion-refactor-h1-m5.md) | 凝集性リファクタ H-1〜M-5（循環依存・God Object・Reducer 不変条件） | 採用・実装済み(一部撤去、2026-10-04 確認)。ModifierState の engine 側移設・RuntimeOutbox… |
+| [069](069-cohesion-refactor-h1-m5.md) | 凝集性リファクタ H-1〜M-5（循環依存・God Object・Reducer 不変条件） | 採用・実装済み(一部撤去、2026-10-22 更新)。ModifierState の engine 側移設・TsfWarmupCoordinator… |
 | [070](070-open-belief-pure-fn.md) | `reduce_open_belief` — 観測値を純粋関数で単一ビリーフに還元 | 撤去済み(ADR-216 R1、fbe90204、2026-10-04 確認)。OpenBelief/OpenBeliefInputs/… |
 | [071](071-deferred-vk-queue-ownership.md) | deferred VK キュー所有権 → TsfWarmupCoordinator への移管 | 実装済み(一部撤去、2026-10-04 確認)。deferred VK キューの TsfWarmupCoordinator 所有(pe… |
 | [072](072-conv-mode-authority-apply-resync.md) | conv_mode_authority を apply 完了ごとに再同期する | 撤去済み(再同期は現存しない、2026-10-04 確認)。ADR-088 §1.7 が bf8727ac 時点で apply 完了ごと… |

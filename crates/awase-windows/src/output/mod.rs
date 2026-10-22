@@ -63,7 +63,7 @@ pub(crate) fn fmt_ms(ms: u64) -> String {
 pub struct Output {
     /// SendInput / VK 送信コンポーネント。
     ///
-    /// `kana_table`・`symbol_to_vk`・`unicode_cold_defer` 等を内包し、
+    /// `kana_table`・`symbol_to_vk` 等を内包し、
     /// 低レベルのキー注入操作を一括して管理する。
     pub(crate) injector: KeyInjector,
     /// TSF composition context の warm/cold 状態管理。
@@ -169,13 +169,6 @@ pub struct Output {
     /// `send_eager_tsf_warmup` / `ImmSetConversionStatus` 等の conv mutation を一括ガードする。
     /// `Platform::set_conv_mode_authority` が `allows_conv_mutation()` の結果を push する。
     pub(crate) conv_mutation_allowed: std::cell::Cell<bool>,
-    /// Output → Runtime の遅延リクエストを蓄積するアウトボックス。
-    ///
-    /// キー注入中に `with_app` 経由で Runtime を直接呼ぶと再入するため、
-    /// `RuntimeRequest` を積んでキー処理境界で Runtime が `take_pending_requests` で drain する。
-    /// H-4-b: vk_send.rs Chrome cold パスが `StartTsfProbe` を積み、
-    /// drain_runtime_requests が TIMER_TSF_PROBE を起動する。
-    pub(crate) runtime_outbox: std::cell::RefCell<crate::runtime::outbox::RuntimeOutbox>,
     /// ADR-128: drain-before-send が実際に flush した件数を Platform へ渡す
     /// ための一時バッファ。0 は「未 flush」を表す（`vk_count` は 0 の場合
     /// push されないため曖昧さは無い、`suppressed_literal_confirms` と
@@ -239,7 +232,6 @@ pub(crate) enum RawRecoveryOutcome {
 pub(super) struct WarmthContext {
     pub warm: bool,
     pub elapsed: u64,
-    pub session_expired: bool,
     pub prepend_f2_warmup: bool,
 }
 
@@ -297,17 +289,8 @@ impl Output {
                 crate::state::focus_gen::ShiftConvGuardGen::INITIAL,
             ),
             conv_mutation_allowed: std::cell::Cell::new(false),
-            runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
             pending_drain_before_send_flush: std::cell::Cell::new(0),
         }
-    }
-
-    /// Output が蓄積した `RuntimeRequest` を全件取り出す。
-    ///
-    /// Runtime がキー処理境界（`WM_EXECUTE_EFFECTS` / `WM_DRAIN_OUTPUT_QUEUE` 末尾）で呼び、
-    /// 各リクエストを実行する。H-4-b で push 側が配線されるまでは常に空を返す。
-    pub(crate) fn take_pending_requests(&self) -> Vec<crate::runtime::outbox::RuntimeRequest> {
-        self.runtime_outbox.borrow_mut().drain()
     }
 
     /// ADR-128: drain-before-send が実際に flush した `vk_count` を Platform
@@ -457,7 +440,7 @@ impl Output {
         self.warmup_coord.store_probe_id(id);
     }
 
-    /// `GjiAction::StartProbe` の forces_prepend_f2 / is_long_cold を記録する。
+    /// `GjiAction::StartProbe` の is_long_cold を記録する。
     ///
     /// `send_romaji_as_tsf` が `GjiWarmupCoro::new` を生成する際に参照する。
     /// GjiFsm の `Authorized` 状態から `ProbeParams` を読み出す。
@@ -808,15 +791,12 @@ impl Output {
         let elapsed = self.ms_since_last_send();
         let plan = warm_send_plan::plan_warmth(warm_send_plan::WarmthFacts {
             warm,
-            elapsed_ms: elapsed,
             needs_f2_probe: self.warmup_coord.needs_f2_probe(),
-            composition_timeout_ms: crate::tuning::COMPOSITION_TIMEOUT_MS,
         });
         tracing::trace!("[warmth] reason={:?}", plan.reason);
         WarmthContext {
             warm,
             elapsed,
-            session_expired: plan.session_expired,
             prepend_f2_warmup: plan.prepend_f2_warmup,
         }
     }

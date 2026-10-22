@@ -2,7 +2,7 @@
 //!
 //! 10ms タイマー (`TIMER_TSF_PROBE`) から `tick()` が呼ばれるパターンを型として表現する。
 //!
-//! ## 実装一覧（本番実装 8 種 + テスト用 StubMachine）
+//! ## 実装一覧（本番実装 5 種 + テスト用 StubMachine）
 //!
 //! | 実装型 | ファイル | 用途 | 追加でオーバーライドするメソッド |
 //! |--------|---------|------|-----------------|
@@ -10,7 +10,6 @@
 //! | `MsImeReadyCoro` | `ms_ime_ready_coro.rs` | MS-IME IMC 確認待ち confirm-then-transmit（StepCoro, BUG-13） | なし（Core のみ） |
 //! | `TsfProbeCoro` | `probe_fsm.rs` | Chrome cold-start probe + LiteralDetect（StepCoro、旧 `ChromeProbe` ラッパーは ECRS T05 で撤去） | `apply_vk_sent` |
 //! | `LiteralDetectFsm` | `literal_detect_fsm.rs` | warm パスの post-transmit composition 確認（`LiteralDetectCore` ラッパー） | なし（Core のみ） |
-//! | `UnicodeColdWarmupFsm` | `unicode_cold_warmup_fsm.rs` | Unicode long-cold の deferred chars 送信（手書き FSM） | `push_deferred_unicode_chars` |
 //! | `MozcComposeCheckFsm` | `mozc_compose_check_fsm.rs` | Mozc の最初の送信の後、共有メモリの `phase` で入力中の文字ができたかを確認し、できなければリテラルとして回収（ADR-270） | なし（Core のみ） |
 //!
 //! `Core`（`tick` / `cold_seq_hint`）は全実装型が実装する。上表は core 以外に
@@ -65,11 +64,4 @@ pub(crate) trait TickableFsm {
     // 実装対象メソッドの委譲漏れが無いか、この表と実装を必ず突き合わせること。
 
     fn apply_vk_sent(&mut self, _detector: LiteralDetector, _deadline_ms: u64) {}
-
-    // ── Unicode deferred chars 追記（UnicodeColdWarmupFsm のみ）──────────
-    //
-    // drain 処理中に2文字目以降の long-cold Unicode char が届いたとき、
-    // 既存 FSM に追記することで FSM の上書きと文字消失を防ぐ。
-    //
-    // 対応していない FSM は `false` を返す（デフォルト）。
 }
