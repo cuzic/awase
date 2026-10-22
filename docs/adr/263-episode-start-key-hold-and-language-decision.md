@@ -42,7 +42,7 @@ related_adr:
 round 2 までの本文から、実装で変えた点:
 
 1. **書き込みはひらがなキー単独**(旧: `VK_IME_ON`。D5)。所有者判断。報告が「ON・全角英数」の可能性があり、`VK_IME_ON` は既に開いていれば何も変えないため。
-2. **対象の窓に `scope`**(`unobserved` 既定 / `all`)。`all` は読める窓でも判定・書き込みをする(利用者の責任)。TSF ネイティブ窓と入力中継ツールの窓は `all` でも対象外。
+2. **対象の窓に `scope`**(`unobserved` 既定 / `all`)。`all` は読める窓でも判定・書き込みをする(利用者の責任)。`all` は TSF ネイティブ窓も含む(2026-10-22 改訂)。入力中継ツールの窓だけは `all` でも対象外。
 3. **英数側の動作 `ime_on_eisu`**(旧: 範囲外・IME OFF)。IME OFF ではなく**半角英数トグルに入る**。IME OFF は belief を動かさないと Engine が止まらず、授権も通らないため断念した(D5 の理由は維持)。
 4. **書き込み前の確認**: Alt/Win が押されていたら書かない(Ctrl/Shift は送信口が一時解放する)。Alt を押したままひらがなを送る選択肢は作らない(所有者判断)。
 5. **設定は 5 択に集約**(D6)。数値・アプリ指定は折りたたみの「詳細」。
@@ -71,7 +71,7 @@ round 2 までの本文から、実装で変えた点:
 ### D1: 対象とエピソード
 
 - **対象の窓**: 既定(`scope = "unobserved"`)は観測の無い窓(`FocusTracker::demoted_by_learning`。実測学習で `Standard` から降格された窓。静的リスト由来の `Imm32Unavailable`〔Chrome/Edge/UWP〕・TsfNative・InputRelay は含まない)で、かつ **Engine が活性**のエピソードだけ(`compute_active`。IME ON かつローマ字入力と見られること)。
-  Engine が非活性の窓は保持しても何も変わらない(保持しない)。`scope = "all"` は読める窓も対象にする(**利用者の責任**。読める窓では belief が実状態に追随するので、書き込みの結果が次の観測で揃うまで食い違いうる)。実質 TSF ネイティブの窓(Windows Terminal 等)と入力中継ツールの窓は `all` でも対象外。
+  Engine が非活性の窓は保持しても何も変わらない(保持しない)。`scope = "all"` は読める窓も対象にする(**利用者の責任**。読める窓では belief が実状態に追随するので、書き込みの結果が次の観測で揃うまで食い違いうる)。**2026-10-22 改訂**: `all` は実質 TSF ネイティブの窓(Windows Terminal・`InputSite` 等)も含む(入力中継ツールの窓だけが `all` でも対象外)。旧仕様は TSF ネイティブも除外していたが、dragonflyg4 で窓切替直後の TSF ネイティブ窓に belief ON × 実 IME OFF で入り、最初の打鍵が BUG-200 の回収 Backspace で消えるのに `all` でも救済されなかった。`unobserved`(既定)は従来どおり TSF ネイティブを含めない。
 - **エピソードの開始**: 前面窓(`ForegroundScope` の hwnd)が変わった直後、または最後のフック打鍵から長い無操作のあとの最初の Down。hwnd 単位にする(一太郎の複数文書の窓の切替は `focus_epoch`〔プロセス単位〕では拾えない)。
   無操作の長さは `deliver_key_event` が `last_hook_activity_ms` を上書きする**前**に読む。無操作の閾値は新しい定数として `#[measured]` と実測を添える(`LONG_IDLE_MS` は GJI の cold 判定用で意味が違うので流用しない)。
 - **保持を始めるのは判定の材料になる打鍵だけ**: 文字キー(`Char`)・親指・Shift の Down。矢印・Tab・Delete・F キー・Home/End 等の Down で始まるエピソードは保持しない(無操作のあとのカーソル移動が止まる)。
@@ -135,7 +135,7 @@ round 2 までの本文から、実装で変えた点:
 [auto_detect]
 mode = "observe"      # "off" | "observe"(既定。保持せず、同じ打鍵列で判定器を影として走らせ journal に残す。挙動は変えない)
                       # | "ime_on"(保持+日本語のときひらがなキー) | "ime_on_eisu"(ime_on に加えて、英数と判定したら半角英数トグルに入る。利用者の責任)
-scope = "unobserved"  # "unobserved"(観測の無い窓だけ。既定) | "all"(読める窓も。利用者の責任。TSF ネイティブ窓・入力中継ツールの窓は対象外)
+scope = "unobserved"  # "unobserved"(観測の無い窓だけ。既定) | "all"(読める窓も。利用者の責任。TSF ネイティブ窓も含む。入力中継ツールの窓は対象外)
 idle_ms = 3000        # この時間以上の無操作のあとの最初の打鍵でも判定を始める(窓切替でも始まる)
 max_ms = 2500
 max_keys = 7
