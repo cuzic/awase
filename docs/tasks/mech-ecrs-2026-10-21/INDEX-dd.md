@@ -5,6 +5,20 @@ created: 2026-10-21
 related_adr: ["ADR-119", "ADR-180", "ADR-203", "ADR-208", "ADR-212", "ADR-241", "ADR-275"]
 ---
 
+## 実施状況(2026-10-22 追記)
+
+| ID | 状況 |
+|---|---|
+| DD2-01=DD4-02、DD3(`should_pass_physical_key`)、DD3-C、DD4-01、DD4-03、DD4-04、DD2-03 | 実施済み(#760 ほか、前日までに develop へ) |
+| DD2-04(GjiFsm の `FocusEpoch`) | 実施済み(#770)。`EndComposition` の唯一の作り手が同じ呼び出しの中で状態から読んだ値なので恒真だった |
+| DD5-01(A1・G1) | 実施済み(ADR-276 P3、#768)。Unicode 注入の撤去で G2 が全送信で働くようになり、モデル検証(#765)で二重と確認 |
+| DD1-01(`imm_cross_write` の gate) | 実施済み(#773)。ADR-180 を訂正。e2e(edit・reopen)PASS |
+| DD5-02(フォーカス時の先同期の写し) | **見送り**。「同じ `ir_execute` の中で必ず上書きされる」は成り立たない: 先同期は `on_focus_process_changed`(フォーカス直後)、snapshot は後の `ir_execute` で、その間に打鍵が来ると `applied` が読まれる。削れるのは約 10 行 |
+| DD2-05(apply 完了の受理: epoch と watermark) | **見送り**。削れるのは約 10 行で、(i) `InitialFocusScopeEstablished` が fence の epoch だけ進める例外が未解消(起動時に pending があるか未確認)、belief の reducer は最もバグが出やすい領域(CLAUDE.md)。やるなら先に全列挙テストで旧判定と新判定の一致を示してから |
+| DD1-02(台帳の「shadow が後から来る」分岐) | 未着手。不具合報告 journal の `PressWriteClaim` の集計が要る(リポジトリにデータ無し) |
+| DD2-02(`ConvModeMgr::observe` の fence) | 未着手。ADR-104 決定 7 を正式に見送るかの所有者判断 |
+| DD3-01、DD5-03(不具合の疑い) | 未着手。実機または窓ごとの profile を持つ窓モデルが要る |
+
 # 二重に守っている処理の調査
 
 所有者の指摘: 「もっと Eliminate/Combine できるところがあるはず。特に二重に守っている処理」。
