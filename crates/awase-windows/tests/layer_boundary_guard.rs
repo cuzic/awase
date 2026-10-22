@@ -516,6 +516,7 @@ fn e1_send_message_confined_to_low_level_wrappers() {
 
 /// Tier-2 の対象（`state/<名前>.rs`）。`state/mod.rs` 自体は含めない（`#[cfg(windows)]` の再公開を持つ）。
 const CORE_MODULES: &[&str] = &[
+    "exhaustive_seq",
     "actuation_chain",
     "actuation_decision_record",
     "alt_impersonation",
