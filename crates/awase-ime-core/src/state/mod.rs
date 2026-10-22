@@ -99,6 +99,8 @@ pub mod mode_key_pass;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod external_change_watch;
 // FCIS F1: `runtime/ime_refresh.rs::ir_decide_read_strategy` の純粋な核（読み取り方針の決定と理由）。
+#[cfg(test)]
+pub(crate) mod exhaustive_seq;
 pub mod ime_model;
 pub mod ime_read_strategy;
 // ADR-087 Phase 1' 試験実装。app_ime_policy/ime_profile_driver と同じ ungated

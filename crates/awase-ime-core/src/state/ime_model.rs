@@ -1295,6 +1295,10 @@ impl ImeModel {
 }
 
 #[cfg(test)]
+#[path = "ime_model_apply_acceptance_exhaustive.rs"]
+mod apply_acceptance_exhaustive;
+
+#[cfg(test)]
 mod tests {
     use super::super::ime_event::{
         ApplyError, ChordKind, EventTime, HwndId, ImePolicyProfile, ObservationConfidence,
