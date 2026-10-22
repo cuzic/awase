@@ -1385,14 +1385,8 @@ impl Runtime {
             open,
             crate::state::press_ledger::PressSource::Shadow,
         );
-        if !claim.writes() {
-            self.kp_note_shadow_toggle(ShadowToggleRecord {
-                new_open: Some(open),
-                claim: Some(claim.label()),
-                ..ShadowToggleRecord::new(ShadowToggleStep::ClaimDeclined)
-            });
-            return;
-        }
+        // [experiment] DD1-02: ClaimDeclined branch removed
+        let _ = claim;
         self.platform_state.ime.note_explicit_ime_action(tick_ms);
         // P2c で ActivationSync（打鍵前に予約した TIMER_IME_REFRESH を kill していた経路）を撤去したため、この書き込みの
         // 直後に予約済みの refresh → drift correction が同じ向きを重ねうる（BUG-113 型。PR #408 Opus M-1 が strip 経路で
