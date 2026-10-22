@@ -670,9 +670,15 @@ impl Runtime {
                     .load(std::sync::atomic::Ordering::Relaxed)
                 {
                     tracing::info!(
-                        "[reach-probe] DD5-02 applied-read-between-A1-A2 via=applied_known known={}",
+                        "[reach-probe] DD5-02 applied-read-between-A1-A2 via=applied_known known={} typing={} intent={} skip_imm={} relevant={}",
                         self.platform_state.ime.model().applied
-                            != crate::state::ime_model::AppliedImeState::Unknown
+                            != crate::state::ime_model::AppliedImeState::Unknown,
+                        is_typing(idle_ms),
+                        self.platform_state.ime.explicit_intent().is_some(),
+                        skip_imm_query,
+                        is_typing(idle_ms)
+                            && self.platform_state.ime.explicit_intent().is_some()
+                            && !skip_imm_query
                     );
                 }
                 self.platform_state.ime.model().applied
