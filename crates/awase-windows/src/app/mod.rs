@@ -14,8 +14,8 @@ use anyhow::{Context, Result};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
-    WM_INPUT, WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
+    DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUT,
+    WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
 };
 
 use awase::config::{AppConfig, ImeDetectConfig, ParsedKeyCombo, ValidatedConfig};

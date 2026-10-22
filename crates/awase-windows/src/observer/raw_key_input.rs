@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::{
-    GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE,
-    RAWINPUTHEADER, RIDEV_INPUTSINK, RIDEV_REMOVE, RID_INPUT, RIM_TYPEKEYBOARD,
+    GetRawInputData, RegisterRawInputDevices, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
+    RIDEV_INPUTSINK, RIDEV_REMOVE, RID_INPUT, RIM_TYPEKEYBOARD,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, WM_INPUT};
 
@@ -52,10 +52,11 @@ impl Drop for RawKeyInputGuard {
             hwndTarget: HWND::default(), // RIDEV_REMOVE では NULL にする
         };
         // SAFETY: `device` は 1 要素の有効な配列。サイズは構造体のサイズ。
-        let _ = unsafe {
-            RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32)
-        };
-        tracing::info!("[raw-key] Raw Input keyboard observer unregistered (hwnd {:?})", self.0);
+        let _ = unsafe { RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32) };
+        tracing::info!(
+            "[raw-key] Raw Input keyboard observer unregistered (hwnd {:?})",
+            self.0
+        );
     }
 }
 
@@ -68,9 +69,7 @@ pub fn register(hwnd: HWND) -> Option<RawKeyInputGuard> {
         hwndTarget: hwnd,
     };
     // SAFETY: `device` は 1 要素の有効な配列。サイズは構造体のサイズ。
-    let result = unsafe {
-        RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32)
-    };
+    let result = unsafe { RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32) };
     match result {
         Ok(()) => {
             tracing::info!("[raw-key] Raw Input keyboard observer registered (hwnd {hwnd:?})");
