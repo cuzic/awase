@@ -189,6 +189,41 @@ impl GlyphFeature {
         })
     }
 
+    /// 診断用の文字絵: 2 通りの 20×20 の 2 値画像を、`#`（前景）と `.` で、行を `/` で区切って 1 行にしたもの
+    /// （`dots=… aspect=… m0=<20 行> m1=<20 行>`）。**元の画素ではなく、前処理後の 2 値画像だけ**（見本に無い字形の形を後から確かめる用。
+    /// ADR-261 の曖昧・遠い `Miss`）。
+    #[must_use]
+    pub fn mask_art(&self) -> String {
+        let rows = |m: &[bool; FEATURE_AREA]| {
+            m.chunks(FEATURE_SIZE)
+                .map(|r| {
+                    r.iter()
+                        .map(|&v| if v { '#' } else { '.' })
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        format!(
+            "dots={} aspect={:.2} m0={} m1={}",
+            self.dots,
+            self.aspect,
+            rows(&self.masks[0]),
+            rows(&self.masks[1])
+        )
+    }
+
+    /// 2 値画像の指紋（FNV-1a。同じ形を診断で重複して出さないため）。
+    #[must_use]
+    pub fn mask_fingerprint(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &v in self.masks.iter().flatten() {
+            h ^= u64::from(v);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
+
     /// 高さ 96 の画像での前景の点数(穴埋め後の方式)。
     pub fn dots(&self) -> usize {
         self.dots
@@ -1561,6 +1596,30 @@ mod tests {
 
     fn feature(shape: &[&str; 9], w: usize, h: usize, dark: bool, framed: bool) -> GlyphFeature {
         preprocess(&render(shape, w, h, dark, framed)).expect("前景がある")
+    }
+
+    /// 診断用の文字絵は 20×20 の 2 枚（行は `/` 区切り）で、同じ形は同じ指紋、違う形は違う指紋になる。元の画素は含まない。
+    #[test]
+    fn mask_art_is_a_compact_shape_dump_with_a_stable_fingerprint() {
+        let a = feature(&SHAPE_A, 32, 24, false, false);
+        let art = a.mask_art();
+        assert!(art.starts_with("dots="));
+        for key in [" m0=", " m1="] {
+            let rest = &art[art.find(key).expect(key) + key.len()..];
+            let rows: Vec<&str> = rest.split(' ').next().unwrap().split('/').collect();
+            assert_eq!(rows.len(), FEATURE_SIZE, "{key}");
+            assert!(rows
+                .iter()
+                .all(|r| r.len() == FEATURE_SIZE && r.chars().all(|c| c == '#' || c == '.')));
+        }
+        assert_eq!(
+            a.mask_fingerprint(),
+            feature(&SHAPE_A, 32, 24, false, false).mask_fingerprint()
+        );
+        assert_ne!(
+            a.mask_fingerprint(),
+            feature(&SHAPE_BOX, 32, 24, false, false).mask_fingerprint()
+        );
     }
 
     #[test]
