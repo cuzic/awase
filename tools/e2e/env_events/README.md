@@ -1,7 +1,7 @@
 # 環境イベント probe(再現用の語彙: キー入力以外の環境の変化)
 
 `probe.py`(ctypes のみ、Rust ビルド不要)が、CI の windows-latest 実機で次のイベントを起こす。`run.py` が awase 起動中の awase.log の反応を抜粋する。
-動かす: `ci/env-events-probe` へ push(`.github/workflows/env-events-probe.yml`、撤去済み。`git show fd4fa44a^:.github/workflows/env-events-probe.yml` を `ci/env-events-probe` へ置いて push)。単体: `python probe.py --events=tab,minrestore,vdesk[,lock] --marker=1`。
+動かす: `ci/env-events-probe` へ push(`.github/workflows/env-events-probe.yml`、撤去済み。`git show e2784f20^:.github/workflows/env-events-probe.yml` を `ci/env-events-probe` へ置いて push)。単体: `python probe.py --events=tab,minrestore,vdesk[,lock] --marker=1`。
 
 ## 実機での可否(run 37275688147、2026-10-05、windows-latest)
 
