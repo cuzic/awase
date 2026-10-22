@@ -208,13 +208,8 @@ impl FocusTracker {
         static_profile: crate::focus::class_names::AppImeProfile,
         learned: Option<ImmCapability>,
     ) -> crate::focus::class_names::AppImeProfile {
-        use crate::focus::class_names::AppImeProfile;
-        match (static_profile, learned) {
-            (AppImeProfile::Standard, Some(ImmCapability::Unavailable)) => {
-                AppImeProfile::Imm32Unavailable
-            }
-            (p, _) => p,
-        }
+        // 本体は Linux でも走る `learning_store.rs`（閉ループのハーネスの窓モデルも同じ関数を呼ぶ、ADR-277 段階 2）。
+        crate::focus::learning_store::apply_learned_imm_capability(static_profile, learned)
     }
 
     // ── フォーカスキャッシュ ────────────────────────────────────────────────

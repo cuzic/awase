@@ -234,9 +234,45 @@ impl From<ImePolicyProfile> for AppImePolicy {
     }
 }
 
+/// 同じフォーカス中に殻の live の profile が変わったとき、核の `app_policy` を追随させるイベント（ECRS DD3-01）。
+///
+/// `current`（核の `ImeModel::app_policy`）が `live` から導いた方針と違うときだけ
+/// `ImeEvent::AppProfileChanged { profile: live }` を返す。殻の
+/// `runtime/focus_tracking.rs::notify_focus_hwnd_updated_if_needed`（bootstrap とプロセス変更以外）と、閉ループの
+/// ハーネス（`crates/awase-windows/tests/support/harness.rs`、ADR-277 段階 2）が同じこの関数を呼ぶ。
+#[must_use]
+pub fn app_profile_follow_event(
+    current: &AppImePolicy,
+    live: ImePolicyProfile,
+) -> Option<super::ime_event::ImeEvent> {
+    (*current != AppImePolicy::from_profile(live))
+        .then_some(super::ime_event::ImeEvent::AppProfileChanged { profile: live })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_profile_follow_event_fires_only_when_policy_differs() {
+        use super::super::ime_event::ImeEvent;
+        let read = AppImePolicy::from_profile(ImePolicyProfile::ImmCross);
+        assert!(app_profile_follow_event(&read, ImePolicyProfile::ImmCross).is_none());
+        assert!(matches!(
+            app_profile_follow_event(&read, ImePolicyProfile::Imm32Unavailable),
+            Some(ImeEvent::AppProfileChanged {
+                profile: ImePolicyProfile::Imm32Unavailable
+            })
+        ));
+        let blind = AppImePolicy::from_profile(ImePolicyProfile::Imm32Unavailable);
+        assert!(app_profile_follow_event(&blind, ImePolicyProfile::Imm32Unavailable).is_none());
+        assert!(matches!(
+            app_profile_follow_event(&blind, ImePolicyProfile::ImmCross),
+            Some(ImeEvent::AppProfileChanged {
+                profile: ImePolicyProfile::ImmCross
+            })
+        ));
+    }
 
     /// `ImePolicyProfile` の全 variant。`caps` の全数テスト用。
     ///

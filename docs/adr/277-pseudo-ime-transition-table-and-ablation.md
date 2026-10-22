@@ -10,7 +10,7 @@ summary: |-
   (d) 防御の目録を機械可読にし(`tests/support/defenses.rs`)、外すと違反が出る最短の事象列を自動で出す。
   段階 1(本 ADR と同時の PR)は (a) の抽出、到達性と予測の全列挙 golden、(c)(d) の 1 件(BUG-163 代案A)だけ。段階 1 の全列挙で、MS-IME の 2 格子の conv=0x1B の実測セルを 16 進の大文字小文字の違いで全て取りこぼしていた不具合が見つかり、直した。
 status: |-
-  起草・段階 1 実装(2026-10-22、PR は本文参照)。予測の全列挙の食い違いの仕分け済み(2026-10-22、本文「仕分けの結果」、BUG-211・BUG-212)。段階 2 以降は未着手。
+  起草・段階 1 実装(2026-10-22、PR は本文参照)。予測の全列挙の食い違いの仕分け済み(2026-10-22、本文「仕分けの結果」、BUG-211・BUG-212)。段階 2(窓モデル)実装(2026-10-22、本文「段階 2 の実施結果」)。段階 3 以降は未着手。
 related_adr:
   - "ADR-163"
   - "ADR-191"
@@ -114,11 +114,27 @@ BUG-204 の「閉じる前のモードの持ち越し」(閉じる打鍵の予�
 1. 入力中を観測できない窓(実 Chrome 等)で、入力中の BS の後に押したモードキーを、予測器は「入力中」「入力なし」「予測しない」のどれで引くべきか。格子は 1 文字の入力中しか測っておらず(BS で破棄)、2 文字以上なら現行(入力中のまま)が正しい。打った文字数を予測器が数える案もあるが、IME ごとの文字の単位(ローマ字 2 打で 1 文字)の扱いが要る。
 2. (関連)BUG-211 の観測できる窓の直し(composing=false で段階を下げる)を入れるとき、`predict_after_resent_uses_tracked_stage_not_stale_composing`(再送後は古い composing を使わない)と両立させる方針でよいか。
 
+## 段階 2 の実施結果(窓モデル、2026-10-22)
+
+範囲は決定 2 のうち、DD3-01(#779 `ImeEvent::AppProfileChanged`)の回帰を閉ループの全列挙で固定するのに要る分だけにした。`Desktop` という別の型は作らず、`Harness` に窓とスレッドの表を持たせた。
+
+| 足したもの | 中身 | これで検証できること / 効く撤去候補・疑い |
+|---|---|---|
+| `support/harness.rs::Window` | name・hwnd・pid・thread・class・process・`input_relay`・`learned_unavailable`。live の profile は本物の `AppImeProfile::from_class_and_process` と `learning_store::apply_learned_imm_capability`、「読めるか」は `can_use_imm32_cross_process` | ImmCross・Imm32Unavailable・TsfNative・InputRelay の窓をシナリオに載せられる / DD3-03(読めないかの述語の写し)の比較の土台 |
+| `Setup::in_window`・`Harness::focus_to`・`demote_by_learning` | 同じ pid: `FocusHwndUpdated` → 本物の `app_profile_follow_event`(`AppProfileChanged`)。別の pid: `FocusChanged` と Engine の `FocusChanged`。スレッドが変われば擬似 IME を入れ替え(初めてのスレッドは閉×ひらがな)。学習の表は (プロセス, クラス) ごとに残り、戻ってきた窓にも効く | 同じプロセスの中のクラスの変化・学習による降格を事象として並べられる / DD3-01 |
+| `Defenses::app_profile_follow`・目録 `app-profile-follow`(`HarnessSwitch`) | 外すと #779 の前の挙動 | #779 の要否を最短列で示す |
+| 不変条件 `w_app_policy_follows_live_profile`(a)・`w_drift_cap_follows_live_window`(b) | (b) は殻の `ir_observe_drift_facts` と同じ式の facts に試行 1000 回の進行中の試行を載せ、本物の `decide_drift_plan` の段を「核の方針」と「live から導いた方針」で比べる | Read/Blind の再送の上限が窓の種類に応じて効くか |
+| `pseudo_ime_exhaustive.rs::window_model_exhaustive` | 窓 5 つ(explorer・xaml〈同じ pid〉・wezterm・notepad・relay)、事象 9 種(窓 5 つへのフォーカス・降格・文字キー・外からの開閉の反転・読める窓の観測)、長さ 4 まで、開始は explorer と xaml。意味の無い事象(いまの窓へのフォーカス・読めない窓の観測・降格しない窓の降格)は飛ばす | DD3-01 の回帰。新しい窓の事象を足したときの (a)(b) の破れ |
+
+**殻の経路を通せない部分と代替**: 殻の `notify_focus_hwnd_updated_if_needed`・`on_focus_process_changed` は `#[cfg(windows)]` の `Runtime` のメソッドで Linux のテストから呼べない。そこで判断(`app_policy` と live から導いた方針が違うときだけ `AppProfileChanged` を出す)を核の `awase-ime-core/src/state/app_ime_policy.rs::app_profile_follow_event` に移し、殻とハーネスが同じ関数を呼ぶ形にした(殻の挙動は変えていない)。学習による降格の判定(`FocusTracker::apply_learned_imm_capability`、`focus/tracker.rs` は Windows 専用)も本体を `focus/learning_store.rs`(Linux でも走る)へ移した。ハーネスが写すのは dispatch の並び(`FocusHwndUpdated` → 追随)だけ。`on_focus_process_changed` の他の処理(hwnd キャッシュの復元・新しいスレッドの閉の仮定・settle 期限)は写していない。
+
+**疑い(未修正、不変条件にはしていない)**: 殻は進行中の drift の試行(`active_actuation`)をプロセスが変わったときだけ捨てる(`ir_notify_focus_changed` の `discard_actuation`、ADR-080 破棄条件2)。`resolve_actuation` は同じ目標の試行の方針を見ない(ADR-080 不変条件4)。このため、読める窓(Read)で始まった試行は、同じプロセスの中で読めない窓(XAML ホスト)へ移っても、学習で同じ窓が降格されても、Read のまま回数で打ち切られずに再送を続けうる。#779 は**新しく据える**試行の方針しか直していない。最短の列(1 手、`FocusTo("xaml")`)を `tests/golden/pseudo_ime_window_model.txt` に固定した。降格は IMM の読み取りの失敗から学習されるので、drift の試行の最中に起きやすい。直すなら `AppProfileChanged` でも試行を捨てる(または方針が変わったら捨てる)案になるが、実機で再送が続くかは未確認。
+
 ## 次の段階
 
 | 段階 | 内容 | 検証できるようになること / 効く撤去候補 |
 |---|---|---|
-| 2 | 決定 2 の窓モデル(`Desktop`・`focus_to`・`class_change`、スレッドごとの `PseudoIme`)と `Setup` の TsfNative/Plain/InputRelay の構築子 | DD3-01 の害の有無 / DD3-01・DD3-03 の統合 |
+| 2 | 決定 2 の窓モデル。**実施済み**(上の「段階 2 の実施結果」。`Desktop`・`class_change` は作らず `Window`+`focus_to` で表した) | DD3-01 の害の有無 / DD3-01・DD3-03 の統合 |
 | 3 | ME-1 と合わせて、drift の写しを `decide_drift_plan` に置き換え、`drift-immcross-skip-unwarranted` を `HarnessSwitch` に昇格 | BUG-163 の二重の防御のどちらかで足りるか / `b6ab8980` の見送りの撤去 |
 | 4 | ablation の事象に外部注入・prefetch・キー・明示操作を足し、`external-close-watch` を探索に載せる | ADR-205 の要否の最短列 / ADR-205 と mode-key-follow の重複の有無(mech-c) |
 | 5 | `Mutant` の行から `cargo mutants -F` の引数を作る小さなスクリプト(目録を読むだけ) | 核の内側の防御の要否 / drift と warrant の `is_japanese_ime` の二重の関門(raw-e 1.3-2) |

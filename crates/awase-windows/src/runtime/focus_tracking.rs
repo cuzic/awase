@@ -484,15 +484,14 @@ impl Runtime {
         }
         // ECRS DD3-01: 同じプロセスの中でクラスが変わった・学習で降格された、など `FocusChanged` が送られない
         // 経路でも、核の `app_policy` を殻の live の profile に追随させる（ずれると drift の上限が効かない）。
+        // 判断は核の `app_profile_follow_event`（閉ループのハーネスも同じ関数を呼ぶ、ADR-277 段階 2）。
         let live =
             crate::state::ime_event::ImePolicyProfile::from(self.platform.current_app_profile());
-        if self.platform_state.ime.model().app_policy
-            != crate::state::app_ime_policy::AppImePolicy::from_profile(live)
-        {
-            self.platform_state.ime.dispatch_event(
-                crate::state::ime_event::ImeEvent::AppProfileChanged { profile: live },
-                tick_ms,
-            );
+        if let Some(event) = crate::state::app_ime_policy::app_profile_follow_event(
+            &self.platform_state.ime.model().app_policy,
+            live,
+        ) {
+            self.platform_state.ime.dispatch_event(event, tick_ms);
         }
     }
 

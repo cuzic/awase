@@ -16,6 +16,12 @@
 //! 3. **防御の ablation**（`defense_ablation_finds_shortest_violation`）: 防御の目録（`support/defenses.rs`）のうち
 //!    ハーネスで外せるものについて、外さなければ違反が無く、外すと違反が出る最短の事象列を出す。
 //!
+//! 4. **窓モデル**（ADR-277 段階 2、`window_model_exhaustive`）: 窓の切り替え（同じプロセスの中のクラスの変化・別の
+//!    プロセス・学習による降格）・打鍵・IME の外部操作・観測を長さ 4 まで全部並べ、各ステップの後に (a) 核の
+//!    `app_policy` が殻の live の profile に追随する、(b) drift の再送の上限が窓の種類（Read/Blind）に応じて効く、を
+//!    検査する（DD3-01・#779 の回帰）。外すと破れる最短の列は 3. の golden に載る（`app-profile-follow`）。
+//!    進行中の試行の持ち越し（不変条件ではなく疑い）の最短の列は `pseudo_ime_window_model.txt` に固定する。
+//!
 //! 再生成: `UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive`
 
 mod support;
@@ -26,12 +32,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use awase::engine::{AssumedReason, InputModeState};
+use awase_windows::focus::class_names::AppImeProfile;
+use awase_windows::state::ime_event::HwndId;
 use awase_windows::state::key_effect_predictor::{Conv, Stage};
 use support::defenses::{Ablation, DEFENSES};
-use support::harness::{Defenses, Harness, PredictionRecord, Setup, Source};
+use support::harness::{Defenses, Harness, PredictionRecord, Setup, Source, Window};
 use support::invariants::{
     p1_no_warranted_write_without_intent, p3_startup_aligns_desired_without_drift,
-    prediction_mismatch,
+    prediction_mismatch, w_app_policy_follows_live_profile,
+    w_carried_actuation_matches_live_window, w_drift_cap_follows_live_window,
 };
 use support::pseudo_ime::{
     state_name, Grid, ImeInput, QuirkSwitches, TransitionTable, TrueStage, TrueState, CONV_HIRAGANA,
@@ -523,10 +532,37 @@ fn run_events(start: TrueState, defenses: Defenses, events: &[Event]) -> Harness
     h
 }
 
-fn invariant_by_name(name: &str) -> fn(&Harness) -> Result<(), String> {
-    match name {
-        "p1_no_warranted_write_without_intent" => p1_no_warranted_write_without_intent,
-        "p3_startup_aligns_desired_without_drift" => p3_startup_aligns_desired_without_drift,
+type Check = fn(&Harness) -> Result<(), String>;
+
+/// 最短の違反列 1 件（golden の 1 行の後半）。
+struct Violation {
+    len: usize,
+    /// `開始=… 列=[…]`。
+    desc: String,
+}
+
+/// 目録の不変条件に合う探索で、最短の違反列を返す（窓モデルの不変条件 `w_*` は窓の事象で、それ以外は段階 1 の事象で）。
+fn shortest_violation_for(invariant: &str, defenses: Defenses) -> Option<Violation> {
+    let classic = |check: Check| {
+        shortest_violation(defenses, check).map(|(start, seq)| Violation {
+            len: seq.len(),
+            desc: format!("開始={} 列={seq:?}", state_name(start)),
+        })
+    };
+    let window = |check: Check| {
+        shortest_window_violation(defenses, check)
+            .violation
+            .map(|(start, seq)| Violation {
+                len: seq.len(),
+                desc: format!("開始={}@{start} 列={seq:?}", state_name(W_INITIAL)),
+            })
+    };
+    match invariant {
+        "p1_no_warranted_write_without_intent" => classic(p1_no_warranted_write_without_intent),
+        "p3_startup_aligns_desired_without_drift" => {
+            classic(p3_startup_aligns_desired_without_drift)
+        }
+        "w_drift_cap_follows_live_window" => window(w_drift_cap_follows_live_window),
         other => panic!("目録の不変条件 {other} がこのテストに無い"),
     }
 }
@@ -535,6 +571,7 @@ fn switch_off(name: &str) -> Defenses {
     let mut d = Defenses::ALL_ON;
     match name {
         "placeholder_align" => d.placeholder_align = false,
+        "app_profile_follow" => d.app_profile_follow = false,
         other => panic!("目録のスイッチ {other} が Defenses に無い"),
     }
     d
@@ -590,30 +627,273 @@ fn defense_ablation_finds_shortest_violation() {
         let Ablation::HarnessSwitch(switch) = d.ablation else {
             continue;
         };
-        let check = invariant_by_name(d.invariant);
-        if let Some((start, seq)) = shortest_violation(Defenses::ALL_ON, check) {
+        if let Some(v) = shortest_violation_for(d.invariant, Defenses::ALL_ON) {
             panic!(
-                "{}: 防御が有効なのに {} が破れた（開始={} 列={seq:?}）",
-                d.id,
-                d.invariant,
-                state_name(start)
+                "{}: 防御が有効なのに {} が破れた（{}）",
+                d.id, d.invariant, v.desc
             );
         }
-        let found = shortest_violation(switch_off(switch), check);
-        let Some((start, seq)) = found else {
+        let Some(v) = shortest_violation_for(d.invariant, switch_off(switch)) else {
             panic!(
-                "{}: 外しても深さ {MAX_DEPTH} までに {} が破れない。防御が要らないか、事象の集合が足りない",
+                "{}: 外しても探索の深さまでに {} が破れない。防御が要らないか、事象の集合が足りない",
                 d.id, d.invariant
             );
         };
         let _ = writeln!(
             out,
-            "{}: 外すと {} 手で {} が破れる 開始={} 列={seq:?}",
-            d.id,
-            seq.len(),
-            d.invariant,
-            state_name(start)
+            "{}: 外すと {} 手で {} が破れる {}",
+            d.id, v.len, d.invariant, v.desc
         );
     }
     check_golden("defense_ablation.txt", &out);
+}
+
+// ---------------------------------------------------------------------------
+// 4. 窓モデル（ADR-277 段階 2）
+// ---------------------------------------------------------------------------
+
+/// 窓の表。Explorer 本体と XAML ホストは同じプロセスでクラスが違う（DD3-01 の場面）。メモ帳は学習で降格しうる
+/// `Standard`、wezterm は `TsfNative`、relay は `input_relay_apps` に載った `InputRelay`。
+const WINDOWS: [Window; 5] = [
+    Window {
+        name: "explorer",
+        hwnd: HwndId(0x1001),
+        pid: 10,
+        thread: 1,
+        class: "CabinetWClass",
+        process: "explorer.exe",
+        input_relay: false,
+        learned_unavailable: false,
+    },
+    Window {
+        name: "xaml",
+        hwnd: HwndId(0x1002),
+        pid: 10,
+        thread: 2,
+        class: "XamlExplorerHostIslandWindow",
+        process: "explorer.exe",
+        input_relay: false,
+        learned_unavailable: false,
+    },
+    Window {
+        name: "wezterm",
+        hwnd: HwndId(0x2001),
+        pid: 20,
+        thread: 3,
+        class: "org.wezfurlong.wezterm",
+        process: "wezterm-gui.exe",
+        input_relay: false,
+        learned_unavailable: false,
+    },
+    Window {
+        name: "notepad",
+        hwnd: HwndId(0x3001),
+        pid: 30,
+        thread: 4,
+        class: "Notepad",
+        process: "notepad.exe",
+        input_relay: false,
+        learned_unavailable: false,
+    },
+    Window {
+        name: "relay",
+        hwnd: HwndId(0x4001),
+        pid: 40,
+        thread: 5,
+        class: "RelayMainWindow",
+        process: "relay.exe",
+        input_relay: true,
+        learned_unavailable: false,
+    },
+];
+
+fn window_named(name: &str) -> Window {
+    *WINDOWS
+        .iter()
+        .find(|w| w.name == name)
+        .unwrap_or_else(|| panic!("窓 {name} が表に無い"))
+}
+
+/// 窓モデルの事象。
+#[derive(Debug, Clone, Copy)]
+enum WEvent {
+    /// その窓へフォーカスを移す（同じプロセスなら `FocusHwndUpdated`+追随、違えば `FocusChanged`）。
+    FocusTo(&'static str),
+    /// いまの窓が学習で降格される。
+    Demote,
+    /// 文字キー 1 回。
+    Key,
+    /// 外から IME の開閉を反転する（awase は見ていない）。
+    ExternalToggle,
+    /// 読める窓で IME の実状態を観測する（ImmCross）。
+    Observe,
+}
+
+const W_EVENTS: [WEvent; 9] = [
+    WEvent::FocusTo("explorer"),
+    WEvent::FocusTo("xaml"),
+    WEvent::FocusTo("wezterm"),
+    WEvent::FocusTo("notepad"),
+    WEvent::FocusTo("relay"),
+    WEvent::Demote,
+    WEvent::Key,
+    WEvent::ExternalToggle,
+    WEvent::Observe,
+];
+
+/// 窓モデルの探索の深さ（事象の数）の上限。
+const W_MAX_DEPTH: usize = 4;
+
+/// 起動する窓（読める窓と読めない窓）。
+const W_STARTS: [&str; 2] = ["explorer", "xaml"];
+
+/// 起動時の IME の真値（閉×ひらがな）。
+const W_INITIAL: TrueState = TrueState {
+    open: false,
+    conv: CONV_HIRAGANA,
+    stage: TrueStage::None,
+};
+
+/// 事象 1 つを流す。意味の無い事象（いまの窓へのフォーカス・読めない窓の観測・降格しない窓の降格）は流さず `false`。
+fn apply_wevent(h: &mut Harness, e: WEvent) -> bool {
+    let w = h.window().expect("窓モデル");
+    match e {
+        WEvent::FocusTo(name) => {
+            let to = window_named(name);
+            if to.hwnd == w.hwnd {
+                return false;
+            }
+            h.focus_to(to);
+        }
+        WEvent::Demote => {
+            if w.learned_unavailable || w.live_profile() != AppImeProfile::Standard {
+                return false;
+            }
+            h.demote_by_learning();
+        }
+        WEvent::Key => {
+            h.key(0x41);
+        }
+        WEvent::ExternalToggle => {
+            let open = h.ime.state().open;
+            h.external_set_open(!open);
+        }
+        WEvent::Observe => {
+            if !w.readable() {
+                return false;
+            }
+            h.observe(Source::ImmCross);
+        }
+    }
+    true
+}
+
+/// 事象列を最初から流す。意味の無い事象を含む列は `None`。
+fn run_window_events(start: &str, defenses: Defenses, events: &[WEvent]) -> Option<Harness> {
+    let mut h =
+        Harness::start(Setup::in_window(W_INITIAL, window_named(start)).with_defenses(defenses));
+    for &e in events {
+        if !apply_wevent(&mut h, e) {
+            return None;
+        }
+    }
+    Some(h)
+}
+
+/// 窓モデルの探索の結果。
+struct WSearch {
+    /// 最初に見つかった違反（開始の窓・事象列）。
+    violation: Option<(&'static str, Vec<WEvent>)>,
+    /// 検査した（意味のある）事象列の数。
+    checked: usize,
+}
+
+/// 短い順（深さ 0 から `W_MAX_DEPTH` まで、各深さは開始の窓 → 事象の表の順）に、意味のある事象列を全部流して `check`
+/// する。不変条件は全ステップを見るので、列の途中の状態も検査される。意味の無い列は伸ばさない。
+fn shortest_window_violation(defenses: Defenses, check: Check) -> WSearch {
+    let mut frontiers: Vec<Vec<Vec<WEvent>>> = W_STARTS.iter().map(|_| vec![Vec::new()]).collect();
+    let mut checked = 0;
+    for depth in 0..=W_MAX_DEPTH {
+        for (&start, frontier) in W_STARTS.iter().zip(frontiers.iter_mut()) {
+            let mut alive = Vec::new();
+            for seq in frontier.drain(..) {
+                let Some(h) = run_window_events(start, defenses, &seq) else {
+                    continue;
+                };
+                checked += 1;
+                if check(&h).is_err() {
+                    return WSearch {
+                        violation: Some((start, seq)),
+                        checked,
+                    };
+                }
+                alive.push(seq);
+            }
+            if depth < W_MAX_DEPTH {
+                *frontier = alive
+                    .iter()
+                    .flat_map(|seq| {
+                        W_EVENTS.iter().map(move |&e| {
+                            let mut s = seq.clone();
+                            s.push(e);
+                            s
+                        })
+                    })
+                    .collect();
+            }
+        }
+    }
+    WSearch {
+        violation: None,
+        checked,
+    }
+}
+
+fn window_invariants(h: &Harness) -> Result<(), String> {
+    w_app_policy_follows_live_profile(h)?;
+    w_drift_cap_follows_live_window(h)
+}
+
+#[test]
+fn window_model_exhaustive() {
+    let started = Instant::now();
+    let all = shortest_window_violation(Defenses::ALL_ON, window_invariants);
+    if let Some((start, seq)) = &all.violation {
+        let h = run_window_events(start, Defenses::ALL_ON, seq).expect("再生できる");
+        panic!(
+            "窓モデルの不変条件が破れた（開始={start} 列={seq:?}）: {}\n経過:\n{}",
+            window_invariants(&h).unwrap_err(),
+            h.trace()
+        );
+    }
+    eprintln!(
+        "窓モデル: {} 本の事象列（深さ {W_MAX_DEPTH} まで）で (a)(b) の違反なし、{:?}",
+        all.checked,
+        started.elapsed()
+    );
+    assert!(all.checked > 1000, "列が少なすぎる: {}", all.checked);
+
+    // 疑いの記録: 同じプロセスの中で窓の種類が変わる前に据えた試行の方針の持ち越し（DD3-01 の残り）。
+    let mut out = String::from(
+        "# 窓モデルの疑い（ADR-277 段階 2）。不変条件ではなく、現状の最短の列を固定する。\n\
+         # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test pseudo_ime_exhaustive\n",
+    );
+    let carried =
+        shortest_window_violation(Defenses::ALL_ON, w_carried_actuation_matches_live_window);
+    match &carried.violation {
+        Some((start, seq)) => {
+            let h = run_window_events(start, Defenses::ALL_ON, seq).expect("再生できる");
+            let _ = writeln!(
+                out,
+                "carried-actuation-policy: {} 手 開始={}@{start} 列={seq:?}\n  {}",
+                seq.len(),
+                state_name(W_INITIAL),
+                w_carried_actuation_matches_live_window(&h).unwrap_err()
+            );
+        }
+        None => {
+            let _ = writeln!(out, "carried-actuation-policy: 深さ {W_MAX_DEPTH} まで無し");
+        }
+    }
+    check_golden("pseudo_ime_window_model.txt", &out);
 }
