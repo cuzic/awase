@@ -9224,8 +9224,13 @@ fn physical_f2_cold_and_mozc_check_window_are_wired() {
         );
     }
     let probe_io = read_crate_file("src/output/probe_io.rs");
+    // トレイトの既定(no-op)ではなく `impl ProbeIo for Output` の実装を見る。
+    let prod = production_code_only(&probe_io);
+    let impl_at = prod
+        .find("impl ProbeIo for Output {")
+        .expect("impl ProbeIo for Output");
     let pre = non_comment_lines(extract_fn_body(
-        production_code_only(&probe_io),
+        &prod[impl_at..],
         "fn mozc_compose_precheck(",
     ));
     assert!(
