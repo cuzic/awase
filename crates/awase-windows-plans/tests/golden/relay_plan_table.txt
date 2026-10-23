@@ -1,0 +1,79 @@
+# relay_plan・warm_send_plan の決定表(全列挙) golden (ME-3)
+#
+# 生成元: crates/awase-windows-plans/src/state/relay_plan_exhaustive.rs
+# このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成するか、CI の失敗ログの BEGIN/END の間を写すこと。
+# 撤去・統合の PR でこのファイルが変わらなければ、下の関数の決定は列挙した全入力で不変。
+#
+OUTPUT_GUARD_MS	50
+
+## plan_relay(kind × physical)
+
+PassThrough Allow => PassThroughIdle
+PassThrough Suppress => PassThroughPhysicalSuppressed
+PassThroughWith Allow => FlushWithReinject
+PassThroughWith Suppress => FlushPhysicalSuppressedNoReinject
+Consume Allow => EngineConsumed
+Consume Suppress => EngineConsumed
+
+## plan_consume_effect(is_timer)
+
+is_timer=F => Queue
+is_timer=T => Immediate
+
+## output_in_flight(defer 側)と reinject_wait_remaining(drain 側)(guard × elapsed × confirm_held_by_tsf)
+
+guard=0 elapsed=0 => in_flight=F wait[confirm=F=>None confirm=T=>Some(10)]
+guard=0 elapsed=1 => in_flight=F wait[confirm=F=>None confirm=T=>Some(10)]
+guard=0 elapsed=18446744073709551615 => in_flight=F wait[confirm=F=>None confirm=T=>Some(10)]
+guard=1 elapsed=0 => in_flight=T wait[confirm=F=>Some(1) confirm=T=>Some(10)]
+guard=1 elapsed=1 => in_flight=F wait[confirm=F=>None confirm=T=>Some(10)]
+guard=1 elapsed=2 => in_flight=F wait[confirm=F=>None confirm=T=>Some(10)]
+guard=1 elapsed=18446744073709551615 => in_flight=F wait[confirm=F=>None confirm=T=>Some(10)]
+guard=50 elapsed=0 => in_flight=T wait[confirm=F=>Some(50) confirm=T=>Some(10)]
+guard=50 elapsed=49 => in_flight=T wait[confirm=F=>Some(1) confirm=T=>Some(10)]
+guard=50 elapsed=50 => in_flight=F wait[confirm=F=>None confirm=T=>Some(10)]
+guard=50 elapsed=51 => in_flight=F wait[confirm=F=>None confirm=T=>Some(10)]
+guard=50 elapsed=18446744073709551615 => in_flight=F wait[confirm=F=>None confirm=T=>Some(10)]
+
+## drain_needs_wait_check(item × guard_passed)
+
+Held guard_passed=F => T
+Held guard_passed=T => T
+QueuedReinject guard_passed=F => T
+QueuedReinject guard_passed=T => F
+QueuedOther guard_passed=F => F
+QueuedOther guard_passed=T => F
+
+## plan_drain_step(item × guard_passed × wait_remaining)
+
+Held guard_passed=F wait=None => DrainStep { action: Execute { guard_passed_after: true }, reason: HeldReleased }
+Held guard_passed=F wait=Some(0) => DrainStep { action: Park { remaining: 0 }, reason: HeldStillGuarded }
+Held guard_passed=F wait=Some(1) => DrainStep { action: Park { remaining: 1 }, reason: HeldStillGuarded }
+Held guard_passed=F wait=Some(50) => DrainStep { action: Park { remaining: 50 }, reason: HeldStillGuarded }
+Held guard_passed=T wait=None => DrainStep { action: Execute { guard_passed_after: true }, reason: HeldReleased }
+Held guard_passed=T wait=Some(0) => DrainStep { action: Park { remaining: 0 }, reason: HeldStillGuarded }
+Held guard_passed=T wait=Some(1) => DrainStep { action: Park { remaining: 1 }, reason: HeldStillGuarded }
+Held guard_passed=T wait=Some(50) => DrainStep { action: Park { remaining: 50 }, reason: HeldStillGuarded }
+QueuedReinject guard_passed=F wait=None => DrainStep { action: Execute { guard_passed_after: true }, reason: ReinjectGuardPassed }
+QueuedReinject guard_passed=F wait=Some(0) => DrainStep { action: Park { remaining: 0 }, reason: ReinjectStillGuarded }
+QueuedReinject guard_passed=F wait=Some(1) => DrainStep { action: Park { remaining: 1 }, reason: ReinjectStillGuarded }
+QueuedReinject guard_passed=F wait=Some(50) => DrainStep { action: Park { remaining: 50 }, reason: ReinjectStillGuarded }
+QueuedReinject guard_passed=T wait=None => DrainStep { action: Execute { guard_passed_after: true }, reason: ReinjectBatchedAfterGuard }
+QueuedReinject guard_passed=T wait=Some(0) => DrainStep { action: Execute { guard_passed_after: true }, reason: ReinjectBatchedAfterGuard }
+QueuedReinject guard_passed=T wait=Some(1) => DrainStep { action: Execute { guard_passed_after: true }, reason: ReinjectBatchedAfterGuard }
+QueuedReinject guard_passed=T wait=Some(50) => DrainStep { action: Execute { guard_passed_after: true }, reason: ReinjectBatchedAfterGuard }
+QueuedOther guard_passed=F wait=None => DrainStep { action: Execute { guard_passed_after: false }, reason: NonReinjectResetsGuard }
+QueuedOther guard_passed=F wait=Some(0) => DrainStep { action: Execute { guard_passed_after: false }, reason: NonReinjectResetsGuard }
+QueuedOther guard_passed=F wait=Some(1) => DrainStep { action: Execute { guard_passed_after: false }, reason: NonReinjectResetsGuard }
+QueuedOther guard_passed=F wait=Some(50) => DrainStep { action: Execute { guard_passed_after: false }, reason: NonReinjectResetsGuard }
+QueuedOther guard_passed=T wait=None => DrainStep { action: Execute { guard_passed_after: false }, reason: NonReinjectResetsGuard }
+QueuedOther guard_passed=T wait=Some(0) => DrainStep { action: Execute { guard_passed_after: false }, reason: NonReinjectResetsGuard }
+QueuedOther guard_passed=T wait=Some(1) => DrainStep { action: Execute { guard_passed_after: false }, reason: NonReinjectResetsGuard }
+QueuedOther guard_passed=T wait=Some(50) => DrainStep { action: Execute { guard_passed_after: false }, reason: NonReinjectResetsGuard }
+
+## plan_warmth(warm × needs_f2_probe)
+
+warm=F needs_f2_probe=F => WarmthPlan { prepend_f2_warmup: false, reason: Cold }
+warm=F needs_f2_probe=T => WarmthPlan { prepend_f2_warmup: true, reason: Cold }
+warm=T needs_f2_probe=F => WarmthPlan { prepend_f2_warmup: false, reason: WarmFresh }
+warm=T needs_f2_probe=T => WarmthPlan { prepend_f2_warmup: false, reason: WarmFresh }
