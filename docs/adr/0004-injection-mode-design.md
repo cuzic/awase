@@ -128,3 +128,5 @@ fn resolve_injection_mode() -> InjectionMode {
 - 既存の設定は壊さない: `force_tsf` は読み込みエラーにせず無視し、空でなければ起動時に「不要になった」と通知する(`config_load_diag::REMOVED_WITH_VALUE_NOTICE`。`force_vk` と同じ形)。`cache.toml` は触らない。
 
 **確かめていないこと:** WezTerm(CI に無い)。TsfGate の保留が効く状況(フォーカス直後 500ms 以内の打鍵)は測定で 1 件も作れていない(`tsf-gate-hold` 0 件)。候補窓の表示は観測できていない(composition ができることで代えた)。窓切替直後(典型 60〜150ms)の打鍵の扱い(M1)。Mozc Readable + Windows Terminal のひらがなキー直後の確認(M2 で cold にするようにしたが実機は未確認)。実機(dragonflyg4)の Windows Terminal・WezTerm での確認が要る。
+
+**追記(2026-10-23、M1 の修正。BUG-214):** CI の測定(`docs/tasks/mech-ecrs-2026-10-21/verify-809-unconfirmed-result.md`、PR #816)で、撤去後は窓切替から 0〜30ms の最初の 1 打鍵がほぼ全件前の窓の状態で処理され(撤去前 0 件、60ms 以降は 0 件)、実 Windows Terminal・WezTerm × GJI では素通しの変換キーで GJI が閉じて以後ローマ字のまま残った。所有者判断で、TsfGate を戻すのではなく、全窓に短い保持を入れて直す(`state/focus_switch_hold.rs`・`runtime/focus_switch_hold.rs`、`tuning::FOCUS_SWITCH_HOLD_MAX_MS` = 250ms)。TsfGate との違い: 窓の種類・TSF の確定(Probing/Ready)を持たない。保持を始めるのは refresh 前に届いた文字・親指キーの修飾なしの物理 KeyDown だけ(Alt+Tab の Tab・ショートカット・KeyUp では始めず、保持の外で押された Down の Up は止めない)。期限は保持の開始から 250ms(TsfGate はフォーカスから 500ms)。解放は spawn 時の世代がフォーカス変更以後の refresh の完了。

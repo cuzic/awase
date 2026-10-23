@@ -157,7 +157,9 @@ pub(crate) fn deliver_key_event(
     // (drain の途中で保持が始まっても、同じバッチの後続が追い越さない)。保持の外で既に OS に届いた Down の Up は
     // 足さず通す(`resume_hold_on_key` が判断する)。順序は「保持の判定 → `[[keymap]]` のラッチ」。ime-off-rescue の
     // 再生は保持の外で先に処理する(chronological に古く、origin の `skip_rescue_defer` を保つため。M-4')。
-    if app.resume_hold_on_delivery(&event, origin) {
+    // PR #809 の M1: 窓切替直後、refresh が新しい窓を読み終える前の打鍵の保持も同じ所で判定する
+    // (`hold_on_delivery` が窓切替直後の保持 → 戻り待ちの保持の順に見る)。
+    if app.hold_on_delivery(&event, origin) {
         return KeyDelivery::Consumed;
     }
 
@@ -526,6 +528,11 @@ pub(crate) unsafe fn handle_wm_timer(
             if let Some(first) = app.platform.take_first_literal_evidence() {
                 app.ir_observe_first_literal(first);
             }
+        }
+        Some(id) if id == crate::TIMER_FOCUS_SWITCH_HOLD => {
+            // 一発タイマー(PR #809 の M1)。冒頭で自ら kill する。
+            app.platform.timer.kill(crate::TIMER_FOCUS_SWITCH_HOLD);
+            app.focus_switch_hold_on_timer();
         }
         Some(id) if id == crate::TIMER_RESUME_HOLD => {
             // 一発タイマー(ADR-245 追補 2 R2)。冒頭で自ら kill する。
@@ -945,6 +952,7 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
         None,
         crate::state::half_width_resume_hold::ReleaseReason::PanicReset,
     );
+    app.focus_switch_hold_release_all("PanicReset");
     app.panic_reset();
 }
 

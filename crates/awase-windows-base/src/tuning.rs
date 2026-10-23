@@ -511,3 +511,20 @@ pub const FOREIGN_CTRL_TTL_MS: u64 = 1_000;
 /// コミット本文に書くこと)。
 #[measured_macro::measured(value_ms = 100, margin_ms = 93, commit = "3842b651")]
 pub const HALF_WIDTH_RESUME_HOLD_MAX_MS: u64 = 100;
+
+/// 窓切替直後の打鍵の保持(PR #809 の M1、`state/focus_switch_hold.rs`)の待機の長さと保持の期限 (ms)。
+///
+/// フォーカス変更から refresh が新しい窓の分類・belief・Engine の活性を反映するまでの間に届いた最初の打鍵を保持し、
+/// refresh の完了で再生する。この値は「refresh が終わらないときに、どこで打ち切って素通しで再生するか」の上限で、
+/// 通常の遅れは refresh の完了までの残り(下記の中央 ~67ms から打鍵の時刻を引いた分)で、この値まで待たない。
+///
+/// **測ったもの**: awase.log の `[focus-sync]`(`on_window_focus_event`、フォーカス変更の検知)から、その後最初の
+/// `[notify-refresh]`(`ir_stage_notify`、refresh が新しい窓を反映した点)までの時間。CI `e2e-ime` の `tsx-sw809-b-*`
+/// (窓 A⇄B の往復、EDIT・RichEdit・実 Chrome・実 Windows Terminal・WezTerm × GJI・MS-IME)、#809 の前(run
+/// 39952240514、`a1757efd`)と後(run 39952236830、`bcb9e2dd`)の 36 構成、n=1,564。
+/// **数値**: P50/P90/P95/P99/max = 67/77/81/109/228ms(上位: 152・164・166・175・184・228ms)。崩れの境界(切替から
+/// 0〜30ms の打鍵で崩れ、60ms 以降は 0 件)は中央 67ms と合う(打鍵の 60ms は前面の観測からで、検知はそれより数 ms 早い)。
+/// **導出**: 実測最大 228ms + マージン 22ms = 250ms(最大の外れ値まで覆う。旧 TsfGate の 500ms の半分)。実機の
+/// フォーカス検出・refresh は CI より遅いことがあり、250ms を超える窓では期限で素通しの再生になる(#809 の後と同じ挙動)。
+#[measured_macro::measured(value_ms = 250, margin_ms = 22, commit = "bcb9e2dd")]
+pub const FOCUS_SWITCH_HOLD_MAX_MS: u64 = 250;

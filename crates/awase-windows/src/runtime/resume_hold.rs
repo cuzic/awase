@@ -76,7 +76,7 @@ pub(crate) fn notify_done(slot: &mut Option<ResumeDoneToken>, reason: ReleaseRea
 /// 打鍵の物理キーとしての同一性(Down と Up で同じ値になること。`vk` では判定しない: `VK_DBE_*` は Down/Up で vk が変わる)。
 /// scan が主。左右の Alt/Ctrl は raw の scan が同じで拡張ビットだけが違うが、`RawKeyEvent` には拡張ビットが無いので、
 /// vk が左右を区別するキーだけ vk を畳み込む。
-fn key_facts(event: &RawKeyEvent) -> KeyFacts {
+pub(super) fn key_facts(event: &RawKeyEvent) -> KeyFacts {
     let side_vk = if [
         crate::vk::VK_LMENU,
         crate::vk::VK_RMENU,

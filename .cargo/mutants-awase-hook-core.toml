@@ -14,6 +14,7 @@ examine_globs = [
     "crates/awase-hook-core/src/state/hook_state.rs",
     "crates/awase-hook-core/src/state/half_width_alnum.rs",
     "crates/awase-hook-core/src/state/half_width_resume_hold.rs",
+    "crates/awase-hook-core/src/state/focus_switch_hold.rs",
     "crates/awase-hook-core/src/state/foreign_modifier.rs",
 ]
 

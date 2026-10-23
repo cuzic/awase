@@ -549,6 +549,7 @@ const CORE_MODULES: &[&str] = &[
     "half_width_alnum",
     "resume_observation",
     "half_width_resume_hold",
+    "focus_switch_hold",
     "foreign_modifier",
     "hook_state",
     "hub_clock",

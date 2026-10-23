@@ -304,6 +304,9 @@ pub const TIMER_MOZC_SHM: usize = 113;
 /// 根拠になって IME を書き直すので、読みだけを切り離して回す。一発タイマーで、ハンドラ冒頭で自ら `kill` し、対象の窓の間だけ
 /// 読む前に張り直す(`runtime/drift_follow_would.rs`)。
 pub const TIMER_DRIFT_FOLLOW_WOULD: usize = 114;
+/// PR #809 の M1: 窓切替直後の打鍵の保持の期限タイマー ID(`tuning::FOCUS_SWITCH_HOLD_MAX_MS`)。一発タイマーで、ハンドラ冒頭で
+/// 自ら `kill` する。保持の解放(refresh の完了・上限・panic・設定再読み込み)でも必ず kill される(`runtime/focus_switch_hold.rs`)。
+pub const TIMER_FOCUS_SWITCH_HOLD: usize = 115;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 
