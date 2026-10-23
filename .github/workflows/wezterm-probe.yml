@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fe: ['', 'Software', 'OpenGL', 'WebGpu']
+        fe: ['Software', 'WebGpu']
     steps:
       - uses: actions/checkout@v4
       - shell: pwsh

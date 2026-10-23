@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Continue'
 $exe = 'C:\wezterm\WezTerm-windows-20240203-110809-5046fc22\wezterm-gui.exe'
 $env:WEZTERM_LOG = 'info'
 $a = @()
-if ($FrontEnd -ne '') { $a += @('--config', "front_end=`"$FrontEnd`"") }
+if ($FrontEnd -ne '') { $a += @('--config', "front_end='$FrontEnd'") }
 $a += @('start', '--always-new-process', '--', 'powershell.exe', '-NoProfile')
 Write-Host "args: $($a -join ' ')"
 $p = Start-Process -FilePath $exe -ArgumentList $a -PassThru -RedirectStandardError "$PWD\wz-err.txt" -RedirectStandardOutput "$PWD\wz-out.txt"
