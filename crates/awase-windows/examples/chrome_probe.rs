@@ -1974,8 +1974,12 @@ fn main() {
                 let _ = SendInput(&[input], size_of::<INPUT>() as i32);
             }
         };
+        // MS-IME の ensure が残す未確定の「きう」が次の試行に混ざらないよう、probe のあと Esc で取り消す。
+        p.cancel_after = true;
         for i in 0..n {
-            let kind = if i % 2 == 0 { "open" } else { "ctl" };
+            // ctlclose: 開け直す代わりに WM_IME_CONTROL(IMC_SETOPENSTATUS=0)で実 IME を外から閉じる(MS-IME × Chrome の
+            // Ctrl+無変換は閉じずに半角英数になる〈BUG-185〉ので、閉の対照を別に作る)。
+            let kind = ["open", "ctl", "ctlclose"][i % 3];
             p.focus_lost = false;
             bring_to_front();
             if !ensure(&mut p, Setup::Kana, awase) {
@@ -1996,6 +2000,12 @@ fn main() {
                     hidden(0x16, false);
                     reopen_ms = Some(t);
                     p.log.line(&format!("M1_REOPEN i={i} t={t}"));
+                    continue;
+                }
+                if kind == "ctlclose" && reopen_ms.is_none() && t >= 400 {
+                    let r = ime_control(0x0006, 0);
+                    reopen_ms = Some(t);
+                    p.log.line(&format!("M1_CLOSE i={i} t={t} ret={r:?}"));
                     continue;
                 }
                 // SAFETY: awase の prefetch と同じ読み取り専用の IMM 呼び出し(前面の窓へ IMC_GET* を送るだけ)。

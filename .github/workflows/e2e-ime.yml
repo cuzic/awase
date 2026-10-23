@@ -569,9 +569,9 @@ jobs:
             cfg('sc-driftrecovery-ctrlmuhenkan-gji-chrome', 'observe', check='driftrecovery', runs=1, wait=400, chrome='--close-ime=10 --ctrl-muhenkan-off --settle=800'),
             cfg('sc-driftrecovery-ctrlmuhenkan-msime-chrome', 'observe', check='driftrecovery', ime='msime', keymap=2, runs=1, wait=400, chrome='--close-ime=10 --ctrl-muhenkan-off --settle=800 --msime'),
             # --- スパイク M1(ci/spike-m1m2 だけ。develop には入れない): 実 Chrome で明示 OFF・実 ON を作り、prefetch と同じ IMM の読みが実状態と一致するか ---
-            cfg('spike-m1-gji', 'observe', check='chromeprobe', keymap=1, runs=2, wait=900, until='2026-11-06', chrome='--m1=40 --settle=800'),
-            cfg('spike-m1-gjimspreset', 'observe', check='chromeprobe', keymap=2, runs=2, wait=900, until='2026-11-06', chrome='--m1=40 --settle=800'),
-            cfg('spike-m1-msime', 'observe', check='chromeprobe', ime='msime', keymap=2, runs=2, wait=900, until='2026-11-06', chrome='--m1=40 --settle=800 --msime'),
+            cfg('spike-m1-gji', 'observe', check='chromeprobe', keymap=1, runs=2, wait=900, until='2026-11-06', chrome='--m1=60 --settle=800'),
+            cfg('spike-m1-gjimspreset', 'observe', check='chromeprobe', keymap=2, runs=2, wait=900, until='2026-11-06', chrome='--m1=60 --settle=800'),
+            cfg('spike-m1-msime', 'observe', check='chromeprobe', ime='msime', keymap=2, runs=2, wait=900, until='2026-11-06', chrome='--m1=60 --settle=800 --msime'),
             # --- 半角英数トグル中のフォーカス変更(typing_stress --mode=focus-restore、観測のみ。only='sc-focusrestore-*' か ci/e2e-focus-restore-13-17 への push で回す) ---
             # 窓 A(自前 EDIT)で左 Shift 単独タップ(half_width_alnum_toggle=all)→ 窓 B(別スレッドの EDIT)へ移す → A へ戻す、の各時点で A/B の open・conv を
             # IMM と WM_IME_CONTROL の 2 経路で記録する。ctl は B へ移さない対照。判定はせず check_focusrestore.py が表と awase.log の該当行を出す。
