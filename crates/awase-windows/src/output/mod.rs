@@ -576,8 +576,10 @@ impl Output {
         // 内部の send_romaji_batched 等での ms_since_last_send() は常に ~0ms を返す。
         // 真の「前回送信からの経過時間」はここで記録する。
         let prev_elapsed_ms = self.ms_since_last_send();
+        // `mode=Vk` は固定(注入は Batched VK だけ)。e2e のスクリプト(`check_startup.py` 等)が
+        // この文字列を手がかりに読むので形を変えない(`test_log_anchors_in_rust_source.py`)。
         tracing::debug!(
-            "send_keys: actions={actions:?} prev_elapsed={}ms",
+            "send_keys: mode=Vk actions={actions:?} prev_elapsed={}ms",
             fmt_ms(prev_elapsed_ms)
         );
 
