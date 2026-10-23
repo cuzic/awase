@@ -49,6 +49,15 @@ dragonflyg4 の実機ログ・利用者の不具合報告の journal は読ん�
 - ADR §2 の予想(役割ありは awase が `SetOpen` を書き、右親指で明示 ON)とは違い、どの構成でも親指は生キーとして IME に届き(`mode-key-follow PassThrough`)、awase の `SetOpen` は出なかった。
 - drift correction は判定の間も OFF を送り続けるはずだった(ADR round 2 n2)が、この測定では観測が無く発火 0 だったので、awase 自身の OFF で閉じた試行は 0。
 
+### MS-IME の左親指・重なりでカタカナになる理由(仮説 A: MS-IME 自身の無変換キー)
+
+run 39901109196 のログだけで切り分けた(新しい実験はしていない)。**MS-IME が素通しされた無変換を、既定の「ひらがな→カタカナ」の切り替えとして処理した(仮説 A)。awase は conv mode を書いていない(仮説 B は否定)。**
+
+- 無変換は IME へ素通しされた。`msime-norole-left` の 1 回目(親指 `04:37:53.166`)の `[engine-input] vk=0x1D KeyDown … extra=0x5350494B`(マーカー付き=物理扱い)→ `[mode-key-follow] mode key PassThrough(vk=0x1D)` → `[reinject] vk=0x1d down (queued passthrough now firing)` → `sent input … event_count=1`。KeyUp も同じ。この窓で awase が送った入力は、この 0x1D の Down と Up の 2 件だけ。
+- conv は無変換の直後に変わった。直前の読みは `conv=0x19`(NATIVE|FULLSHAPE|ROMAN=ひらがな)で、親指の 22ms 後の最初の読みは `0x1B`(+KATAKANA)。10 試行とも同じ(各試行の前に開け直すので `0x19` に戻り、親指のあとで `0x1B` になる)。
+- awase は書いていない。`msime-{norole,role}-{left,overlap}` の 4 本の awase.log で、`vk=0xF1`/`VK_DBE_KATAKANA` は 0 行、conv の書き込み(`cmd=0x0002`・`SETCONVERSION`・`InputModeApplied`・conv actuation)も 0 行。`KeyEffectPredicted` は `open=None mode=None` で、予測なし。`[direct-follow]` は観測した `conv=Some(27)`(=0x1B)に belief を合わせただけ(「awase は IME を書かない」と出ている)。
+- 右親指(変換)では conv は `0x19` のまま(`msime-norole-right`)。変換は開閉にも conv にも効かず、ここでは直る(上の表)。
+
 ## S0-3: `LangDetectRecord.evidence` の分布
 
 - 既存の CI の journal(`e2e-ime`・`e2e-ime-smoke` の 71 run、2026-10-19〜10-23、awase.log 3,648 本): **全 3,648 本が「影の判定は無効」**(n-gram の表が dist に無く `lang_detect` が `Off`)。LangDetect は 0 件。
