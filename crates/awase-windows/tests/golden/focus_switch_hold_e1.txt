@@ -11,7 +11,7 @@
 loss | 0 | 0 | 0 | 0
 dup | 0 | 0 | 0 | 0
 order | 0 | 0 | 0 | 0
-order_exempt(参考) | 4251 | 2928 | 5044 | 1808
+order_exempt(参考) | 5974 | 3912 | 6667 | 2384
 modifier | 0 | 0 | 0 | 0
 delay | 0 | 0 | 0 | 0
 bound | 0 | 0 | 0 | 0
@@ -19,11 +19,11 @@ cap | 0 | 0 | 0 | 0
 stuck | 0 | 0 | 0 | 0
 content | 0 | 0 | 0 | 0
 stale_release | 0 | 0 | 0 | 0
-stale_start | 13329 | 14207 | 46726 | 26892
+stale_start | 13489 | 14603 | 48026 | 27648
 stale_other(参考) | 46980 | 22776 | 40596 | 14364
 stale_regress(参考) | 0 | 0 | 0 | 0
-fix | 9816 | 7401 | 25692 | 15318
-route | 12716 | 6766 | 10908 | 3708
+fix | 7512 | 6255 | 24180 | 15030
+route | 13260 | 7156 | 11644 | 3996
 unmeasured(参考) | 0 | 0 | 0 | 0
 ### 最短の再現(不変条件ごと、読み直しの区分が実測の範囲〈R≤228〉の組を優先)
 - order_exempt — 最初の打鍵=外部注入の文字 遅延=0ms 読み直し=55ms 離し=+25ms 追加=+10ms に右親指(同時打鍵) 同時刻=refresh が先
@@ -40,10 +40,39 @@ unmeasured(参考) | 0 | 0 | 0 | 0
        +55ms   処理 #1 thumbR↓ 文脈=B フォーカス=B
        +55ms   処理 #3 thumbR↑ 文脈=B フォーカス=B
     違反: order_exempt=1 stale_other=1
-- stale_start — 最初の打鍵=文字 遅延=0ms 読み直し=55ms 離し=+25ms 追加=6ms 間隔で文字 12 打 同時刻=refresh が先
+- stale_start — 最初の打鍵=Alt+Tab の Tab 遅延=0ms 読み直し=200ms 離し=+70ms 追加=+10ms に右親指(同時打鍵) 同時刻=refresh が先
+    窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
+       -30ms 打鍵 #0 alt↓
+       -30ms   処理 #0 alt↓ 文脈=A フォーカス=A
+        +0ms フォーカス → B(読み直しの完了 +200)
+        +0ms 打鍵 #1 tab↓+A
+        +0ms   処理 #1 tab↓+A 文脈=A フォーカス=B
+       +10ms 打鍵 #2 thumbR↓+A
+       +15ms 打鍵 #3 tab↑+A
+       +15ms   処理 #3 tab↑+A 文脈=A フォーカス=B
+       +70ms 打鍵 #4 alt↑
+       +71ms フォーカス → C(読み直しの完了 +271)
+       +80ms 打鍵 #5 thumbR↑
+      +200ms refresh の完了 seq=1 読んだ窓=B
+      +260ms 保持の解放 Deadline 3 件(古い窓の文脈)
+      +260ms   処理 #2 thumbR↓+A 文脈=B フォーカス=C
+      +260ms   処理 #4 alt↑ 文脈=B フォーカス=C
+      +260ms   処理 #5 thumbR↑ 文脈=B フォーカス=C
+      +271ms refresh の完了 seq=2 読んだ窓=C
+    違反: order_exempt=1 stale_start=1 stale_other=1 route=2
+- stale_other — 最初の打鍵=外部注入の文字 遅延=0ms 読み直し=55ms 離し=+25ms 追加=なし 同時刻=refresh が先
     窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
         +0ms フォーカス → B(読み直しの完了 +55)
-        +0ms 打鍵 #0 char↓
+        +0ms 打鍵 #0 char↓(inj)
+        +0ms   処理 #0 char↓(inj) 文脈=A フォーカス=B
+       +25ms 打鍵 #1 char↑(inj)
+       +25ms   処理 #1 char↑(inj) 文脈=A フォーカス=B
+       +55ms refresh の完了 seq=1 読んだ窓=B
+    違反: stale_other=1
+- fix — 最初の打鍵=右親指(変換) 遅延=0ms 読み直し=55ms 離し=+25ms 追加=6ms 間隔で文字 12 打 同時刻=refresh が先
+    窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
+        +0ms フォーカス → B(読み直しの完了 +55)
+        +0ms 打鍵 #0 thumbR↓
         +5ms 打鍵 #1 char↓
         +8ms 打鍵 #2 char↑
        +11ms 打鍵 #3 char↓
@@ -51,7 +80,7 @@ unmeasured(参考) | 0 | 0 | 0 | 0
        +17ms 打鍵 #5 char↓
        +20ms 打鍵 #6 char↑
        +23ms 打鍵 #7 char↓
-       +25ms 打鍵 #8 char↑
+       +25ms 打鍵 #8 thumbR↑
        +26ms 打鍵 #9 char↑
        +29ms 打鍵 #10 char↓
        +32ms 打鍵 #11 char↑
@@ -61,7 +90,7 @@ unmeasured(参考) | 0 | 0 | 0 | 0
        +44ms 打鍵 #15 char↑
        +47ms 打鍵 #16 char↓
        +47ms 保持の解放 Cap 17 件(古い窓の文脈)
-       +47ms   処理 #0 char↓ 文脈=A フォーカス=B
+       +47ms   処理 #0 thumbR↓ 文脈=A フォーカス=B
        +47ms   処理 #1 char↓ 文脈=A フォーカス=B
        +47ms   処理 #2 char↑ 文脈=A フォーカス=B
        +47ms   処理 #3 char↓ 文脈=A フォーカス=B
@@ -69,7 +98,7 @@ unmeasured(参考) | 0 | 0 | 0 | 0
        +47ms   処理 #5 char↓ 文脈=A フォーカス=B
        +47ms   処理 #6 char↑ 文脈=A フォーカス=B
        +47ms   処理 #7 char↓ 文脈=A フォーカス=B
-       +47ms   処理 #8 char↑ 文脈=A フォーカス=B
+       +47ms   処理 #8 thumbR↑ 文脈=A フォーカス=B
        +47ms   処理 #9 char↑ 文脈=A フォーカス=B
        +47ms   処理 #10 char↓ 文脈=A フォーカス=B
        +47ms   処理 #11 char↑ 文脈=A フォーカス=B
@@ -97,33 +126,7 @@ unmeasured(参考) | 0 | 0 | 0 | 0
        +71ms   処理 #24 char↓ 文脈=B フォーカス=B
        +74ms 打鍵 #25 char↑
        +74ms   処理 #25 char↑ 文脈=B フォーカス=B
-    違反: stale_start=10
-- stale_other — 最初の打鍵=外部注入の文字 遅延=0ms 読み直し=55ms 離し=+25ms 追加=なし 同時刻=refresh が先
-    窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
-        +0ms フォーカス → B(読み直しの完了 +55)
-        +0ms 打鍵 #0 char↓(inj)
-        +0ms   処理 #0 char↓(inj) 文脈=A フォーカス=B
-       +25ms 打鍵 #1 char↑(inj)
-       +25ms   処理 #1 char↑(inj) 文脈=A フォーカス=B
-       +55ms refresh の完了 seq=1 読んだ窓=B
-    違反: stale_other=1
-- fix — 最初の打鍵=Ctrl+文字 遅延=0ms 読み直し=55ms 離し=+25ms 追加=+10ms に右親指(同時打鍵) 同時刻=refresh が先
-    窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
-       -15ms 打鍵 #0 ctrl↓
-       -15ms   処理 #0 ctrl↓ 文脈=A フォーカス=A
-        +0ms フォーカス → B(読み直しの完了 +55)
-        +0ms 打鍵 #1 char↓+C
-        +0ms   処理 #1 char↓+C 文脈=A フォーカス=B
-       +10ms 打鍵 #2 thumbR↓+C
-       +10ms   処理 #2 thumbR↓+C 文脈=A フォーカス=B
-       +15ms 打鍵 #3 char↑+C
-       +15ms   処理 #3 char↑+C 文脈=A フォーカス=B
-       +25ms 打鍵 #4 ctrl↑
-       +25ms   処理 #4 ctrl↑ 文脈=A フォーカス=B
-       +35ms 打鍵 #5 thumbR↑
-       +35ms   処理 #5 thumbR↑ 文脈=A フォーカス=B
-       +55ms refresh の完了 seq=1 読んだ窓=B
-    違反: stale_other=2 fix=1
+    違反: stale_start=10 fix=1
 - route — 最初の打鍵=文字 遅延=0ms 読み直し=55ms 離し=+25ms 追加=+20ms に窓 C へフォーカス 同時刻=refresh が先
     窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
         +0ms フォーカス → B(読み直しの完了 +55)
@@ -144,8 +147,8 @@ unmeasured(参考) | 0 | 0 | 0 | 0
 親指でない変換 | 0 | 0 | 1878 | 1128 | 1878 | 2112 | 0 | 0
 半角/全角 | 0 | 0 | 1878 | 1128 | 1878 | 2112 | 0 | 0
 Shift+文字 | 0 | 0 | 1878 | 1128 | 0 | 2112 | 0 | 0
-Ctrl+文字 | 0 | 0 | 0 | 12600 | 1152 | 0 | 0 | 0
-Alt+Tab の Tab | 0 | 0 | 0 | 12600 | 1152 | 44 | 0 | 0
+Ctrl+文字 | 0 | 0 | 0 | 12600 | 0 | 0 | 0 | 0
+Alt+Tab の Tab | 0 | 0 | 160 | 12600 | 0 | 588 | 0 | 0
 キーアップだけ | 0 | 0 | 687 | 1206 | 0 | 0 | 0 | 0
 リピート | 0 | 0 | 687 | 1206 | 0 | 0 | 0 | 0
 外部注入の文字 | 0 | 0 | 687 | 12600 | 0 | 0 | 0 | 0
@@ -154,7 +157,7 @@ Alt+Tab の Tab | 0 | 0 | 0 | 12600 | 1152 | 44 | 0 | 0
 追加 | modifier | order | stale_start | stale_other | fix | route | delay | bound
 なし | 0 | 0 | 0 | 3780 | 0 | 0 | 0 | 0
 +40ms に文字 | 0 | 0 | 0 | 3780 | 0 | 0 | 0 | 0
-+10ms に右親指(同時打鍵) | 0 | 0 | 0 | 3780 | 2304 | 0 | 0 | 0
++10ms に右親指(同時打鍵) | 0 | 0 | 160 | 3780 | 0 | 544 | 0 | 0
 6ms 間隔で文字 12 打 | 0 | 0 | 6561 | 3780 | 3000 | 0 | 0 | 0
 40ms 間隔で文字 6 打 | 0 | 0 | 0 | 3780 | 0 | 44 | 0 | 0
 +20ms に窓 C へフォーカス | 0 | 0 | 0 | 3780 | 0 | 6336 | 0 | 0
