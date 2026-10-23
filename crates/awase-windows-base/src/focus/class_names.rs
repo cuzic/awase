@@ -75,8 +75,10 @@ pub fn is_mozc_compose_check_window(foreground_class: &str) -> bool {
     )
 }
 
-/// ADR-270 の確認を張るか(`mozc_compose_precheck` の前段)と、物理 F2 で warm でも cold にするか
-/// (`physical_f2_marks_cold` の第 2 引数)を、同じ述語で決める(PR #809 再レビュー N1・N2)。
+/// ADR-270 の確認を張るか(Mozc 系 × WT/WezTerm の窓)。
+///
+/// `mozc_compose_precheck` の前段と、物理 F2 で warm でも cold にするか(`physical_f2_marks_cold` の
+/// 第 2 引数)を、同じ述語で決める(PR #809 再レビュー N1・N2)。
 /// Mozc 系(`gji_evidence_absent`)で、前景窓が [`is_mozc_compose_check_window`] のときだけ真。
 /// 範囲を広げるときはここ 1 か所を直す。
 #[must_use]

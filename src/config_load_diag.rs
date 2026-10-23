@@ -75,8 +75,9 @@ fn app_override_list_is_nonempty(root: &toml::Table, key: &str) -> bool {
         .is_some_and(|v| !v.is_empty())
 }
 
-/// 旧版の同梱 `config.toml` の `force_tsf` の値。v1.5.0 以降は WezTerm・Windows Terminal の 2 件、
-/// v0.1.0〜v1.4.0 は WezTerm の 1 件(`4e49ee1b` で WT を足す前)。
+/// 旧版の同梱 `config.toml` の `force_tsf` の値。
+///
+/// v1.5.0 以降は WezTerm・Windows Terminal の 2 件、v0.1.0〜v1.4.0 は WezTerm の 1 件(`4e49ee1b` で WT を足す前)。
 /// 更新した利用者の `config.toml`(Scoop は persist する)には、自分で書いていないこの値が残っているので、
 /// どちらかとちょうど同じときは通知しない(PR #809 レビュー m4・再レビュー N3。既定値は通知しない方針、上の表の doc)。
 const RETIRED_DEFAULT_FORCE_TSF: &[&[(&str, &str)]] = &[
