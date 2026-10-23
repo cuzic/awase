@@ -909,6 +909,24 @@ jobs:
                            kinds='single', trials=4, len=25, runs=_spec.get('runs', 2), wait=900)
                   _r.update(setup=_spec.get('setup', 'none'), prepare=' ; '.join(_spec.get('prepare', [])), until='2026-12-01')
                   configs.append(_r)
+          # --- 撤去後の検証(refactor/remove-tsf-path、PR #809): Tsf 注入経路と force_tsf を撤去したビルドで、measure-no-force-tsf と同じ入力先・同じ打鍵を回す。---
+          # 撤去前(Tsf/Vk/Vk+保留なし)の数字は docs/tasks/mech-ecrs-2026-10-21/measure-no-force-tsf-result.md。観測のみ。only='tsx-rmtsf-*,sc-rmtsf-*'。
+          for _ime_name, _ime, _ms in (('gji', 'gji', ''), ('msime', 'msime', ' --msime')):
+            for _iv in (40, 10):
+              for _sfx, _ex in (('', ''), ('-cold', '--cold'), ('-idle12s', '--idle=12000'), ('-switch', '--switch-focus'), ('-switch0', '--switch-focus --start-delay=0'), ('-pause', '--pause-after=5 --pause-ms=800')):
+                _c = tsx(f'rmtsf-tsfnative-{_ime_name}-{_iv}ms{_sfx}', 'tsfnative', _ime, _iv, extra=_ex, kinds='single,thumb,mixed', trials=6, len=30, runs=6 if (_sfx == '-idle12s' and _ime == 'msime') else 2, wait=1500 if _sfx == '-idle12s' else 900)
+                _c.update(until='2026-12-01')
+                configs.append(_c)
+            configs.append(cfg(f'sc-rmtsf-preedit-tsfnative-{_ime_name}', 'observe', check='preedit', ime=_ime, keymap=1, runs=1, wait=420, until='2026-12-01',
+                               stress=f'--form=tsfnative --mode=preedit --trials=6 --settle-read --preedit-end=enter --layout=@REPO@/layout/nicola_keytop.yab{_ms}'))
+            configs.append(cfg(f'sc-rmtsf-preedit-tsf-{_ime_name}', 'observe', check='preedit', ime=_ime, keymap=1, runs=1, wait=420, until='2026-12-01',
+                               stress=f'--form=tsf --mode=preedit --trials=6 --settle-read --preedit-end=enter --layout=@REPO@/layout/nicola_keytop.yab{_ms}'))
+            for _wsfx, _wex in (('', ''), ('-cold', ' --cold'), ('-idle12s', ' --idle=12000'), ('-switch', ' --switch-focus')):
+              _w = tsx(f'rmtsf-ext-windows-terminal-{_ime_name}-20ms{_wsfx}', 'ext', _ime, 20,
+                       extra='--ext=windows-terminal --ext-manifest=@REPO@/tools/e2e/input_forms/forms.toml --ext-repo=@REPO@' + _wex,
+                       kinds='single,thumb,mixed', trials=4, len=25, runs=2, wait=1500 if _wsfx == '-idle12s' else 900)
+              _w.update(setup='none', until='2026-12-01')
+              configs.append(_w)
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(fnmatch.fnmatchcase(c['name'], o) for o in only)]

@@ -50,7 +50,7 @@ pub(crate) trait InputTarget: Send + Sync {
 /// `--form=` に対応する入力先を起動(または作成)する。`TOP`/`CHILD` もここで設定する。
 pub(crate) fn launch(form: Form) -> Box<dyn InputTarget> {
     match form {
-        Form::Edit | Form::Multi | Form::Rich | Form::Tsf => {
+        Form::Edit | Form::Multi | Form::Rich | Form::Tsf | Form::TsfNative => {
             crate::create_own_window(form);
             Box::new(OwnWindow)
         }

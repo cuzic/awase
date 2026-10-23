@@ -255,6 +255,8 @@ enum Form {
     Multi,
     Rich,
     Tsf,
+    /// `tsf` と同じ RichEdit のスーパークラス化だが、窓クラス名を Windows Terminal(TsfNative)のものにする(DD2-02 の IdleCheck 到達用)。
+    TsfNative,
     ChromeBar,
     ChromePage,
     BugReport,
@@ -268,6 +270,7 @@ impl Form {
             "multi" => Some(Self::Multi),
             "rich" => Some(Self::Rich),
             "tsf" => Some(Self::Tsf),
+            "tsfnative" => Some(Self::TsfNative),
             "chromebar" => Some(Self::ChromeBar),
             "chromepage" => Some(Self::ChromePage),
             "bugreport" => Some(Self::BugReport),
@@ -281,6 +284,7 @@ impl Form {
             Self::Multi => "multi",
             Self::Rich => "rich",
             Self::Tsf => "tsf",
+            Self::TsfNative => "tsfnative",
             Self::ChromeBar => "chromebar",
             Self::ChromePage => "chromepage",
             Self::BugReport => "bugreport",
@@ -340,10 +344,10 @@ fn create_own_window(form: Form) {
     unsafe {
         let _ = LoadLibraryW(w!("Msftedit.dll"));
         let instance = GetModuleHandleW(None).expect("module");
-        let top_class = if form == Form::Tsf {
-            "Chrome_WidgetWin_1"
-        } else {
-            "TypingStressTop"
+        let top_class = match form {
+            Form::Tsf => "Chrome_WidgetWin_1",
+            Form::TsfNative => "CASCADIA_HOSTING_WINDOW_CLASS",
+            _ => "TypingStressTop",
         };
         let top_w = wide(top_class);
         let top_wc = WNDCLASSEXW {
@@ -382,8 +386,13 @@ fn create_own_window(form: Form) {
                 unreachable!("別プロセスの入力先は target::launch が扱う")
             }
             Form::Rich => ("RICHEDIT50W".into(), WS_BORDER.0 | ES_AUTOHSCROLL, 700, 240),
-            Form::Tsf => {
-                // RICHEDIT50W をスーパークラス化して、Chrome の描画窓のクラス名で登録し直す(ADR-193)。
+            Form::Tsf | Form::TsfNative => {
+                // RICHEDIT50W をスーパークラス化して、Chrome の描画窓(TsfNative は Windows Terminal の入力窓)のクラス名で登録し直す(ADR-193)。
+                let child_class = if form == Form::TsfNative {
+                    "Windows.UI.Input.InputSite.WindowClass"
+                } else {
+                    "Chrome_RenderWidgetHostHWND"
+                };
                 let mut wc = WNDCLASSEXW {
                     cbSize: size_of::<WNDCLASSEXW>() as u32,
                     ..Default::default()
@@ -393,17 +402,12 @@ fn create_own_window(form: Form) {
                     "[init] GetClassInfoExW(RICHEDIT50W) ok={}",
                     got.is_ok()
                 ));
-                let nm = wide("Chrome_RenderWidgetHostHWND");
+                let nm = wide(child_class);
                 wc.lpszClassName = PCWSTR(nm.as_ptr());
                 wc.hInstance = instance.into();
                 let atom = RegisterClassExW(&raw const wc);
                 log(&format!("[init] superclass atom={atom}"));
-                (
-                    "Chrome_RenderWidgetHostHWND".into(),
-                    WS_BORDER.0 | ES_AUTOHSCROLL,
-                    700,
-                    240,
-                )
+                (child_class.into(), WS_BORDER.0 | ES_AUTOHSCROLL, 700, 240)
             }
         };
         let cw = wide(&class);
@@ -1951,8 +1955,10 @@ fn main() {
     if matches!(
         arg_value("--mode=").as_deref(),
         Some("drift" | "drift-on" | "keymatrix" | "focus-restore")
-    ) && !matches!(form, Form::Edit | Form::Multi | Form::Rich | Form::Tsf)
-    {
+    ) && !matches!(
+        form,
+        Form::Edit | Form::Multi | Form::Rich | Form::Tsf | Form::TsfNative
+    ) {
         log("[FATAL] 引数エラー: --mode=drift|drift-on|keymatrix|focus-restore は --form=edit|multi|rich|tsf でのみ使える");
         std::process::exit(2);
     }
