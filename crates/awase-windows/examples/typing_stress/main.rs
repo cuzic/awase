@@ -93,6 +93,7 @@ mod lateorder;
 mod perturb;
 mod preedit;
 mod suspend;
+mod switchime;
 mod target;
 mod uia;
 
@@ -1835,7 +1836,11 @@ fn worker(form: Form) {
                 .wrapping_add(n_total * 7919)
                 .wrapping_add(kind.len() as u64);
             let seq = gen_sequence(kind, len, trial_seed, &cells);
-            let expect = expect_string(&seq);
+            let expect = if switchime::expects_raw() {
+                switchime::raw_expect(&seq)
+            } else {
+                expect_string(&seq)
+            };
             let mut evs = if raw {
                 raw_events(&seq, iv_us)
             } else if jit.is_active() {
@@ -1844,9 +1849,13 @@ fn worker(form: Form) {
                 nicola_events(&seq, iv_us)
             };
             perturb.apply_pause(&mut evs, iv_us);
-            perturb.before_trial(target());
-            clear_text(child);
-            sleep_ms(perturb.start_delay_ms);
+            // 検証専用(ci/ ブランチ): --sw-mode= のときは窓切替・ひらがなキーの直後に打つ(switchime.rs)。
+            let sw = switchime::before_trial(child, n_total - 1);
+            if sw.is_none() {
+                perturb.before_trial(target());
+                clear_text(child);
+                sleep_ms(perturb.start_delay_ms);
+            }
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }
@@ -1854,6 +1863,11 @@ fn worker(form: Form) {
             let stats = run_schedule(&evs);
             if let Some(h) = suspender {
                 let _ = h.join();
+            }
+            if let Some(mut v) = sw {
+                v["kind"] = json!(kind);
+                v["n"] = json!(t);
+                rec(&v);
             }
             perturb.after_inject(kind, t);
             // 最後の同時打鍵判定・出力の落ち着きを待ってから確定(Enter)。
@@ -1919,6 +1933,7 @@ fn worker(form: Form) {
 }
 
 fn finish() {
+    switchime::kill_b();
     rec(&json!({"type":"done","driver_sends":driver_inject::SENT.load(Ordering::Relaxed)}));
     log("=== 完了 ===");
     target().shutdown();
