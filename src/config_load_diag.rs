@@ -240,7 +240,7 @@ mod tests {
             assert!(!is_removed_key(p), "無警告の表に重複登録しない: {p}");
         }
         assert!(removed_notice("keys.engine_on").is_none());
-        assert_eq!(removed_notice_paths().count(), 7);
+        assert_eq!(removed_notice_paths().count(), 8);
     }
 
     #[test]
