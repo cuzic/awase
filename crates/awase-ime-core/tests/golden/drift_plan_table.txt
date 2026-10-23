@@ -1,8 +1,9 @@
 # decide_drift_plan の決定表(全列挙) golden (ME-3)
 #
-# 生成元: crates/awase-ime-core/src/state/drift_plan_exhaustive.rs
+# 生成元: crates/awase-ime-core/src/state/drift_plan_exhaustive_tests.rs
 # このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成するか、CI の失敗ログの BEGIN/END の間を写すこと。
 # 撤去・統合の PR でこのファイルが変わらなければ、decide_drift_plan の決定は列挙した全入力で不変。
+# 後段は殻(ir_observe_drift_facts)が作る事実の組だけ(契約外の組は列挙しない)。
 # cd = DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS、max = Blind.max_attempts。
 #
 cd_ms	3000	max	3
@@ -73,423 +74,414 @@ cd_ms	3000	max	3
 [engine=T jp=T drift=Err(StaleObservation) settling=T] => Idle(StaleObservation) basis=Observation
 [engine=T jp=T drift=Err(ObservationMatchesDesired) settling=F] => Idle(ObservationMatchesDesired) basis=Observation
 [engine=T jp=T drift=Err(ObservationMatchesDesired) settling=T] => Idle(ObservationMatchesDesired) basis=Observation
-[engine=T jp=T drift=Ok(desired=F dur=cd-1) settling=F] => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
+[engine=T jp=T drift=Ok(desired=F dur=cd-1) settling=F] => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
 [engine=T jp=T drift=Ok(desired=F dur=cd-1) settling=T] => DeferToSettle(FocusSettle) basis=FocusSettle drift=in
-[engine=T jp=T drift=Ok(desired=F dur=cd) settling=F] => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
+[engine=T jp=T drift=Ok(desired=F dur=cd) settling=F] => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
 [engine=T jp=T drift=Ok(desired=F dur=cd) settling=T] => DeferToSettle(FocusSettle) basis=FocusSettle drift=in
-[engine=T jp=T drift=Ok(desired=T dur=cd-1) settling=F] => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
+[engine=T jp=T drift=Ok(desired=T dur=cd-1) settling=F] => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
 [engine=T jp=T drift=Ok(desired=T dur=cd-1) settling=T] => DeferToSettle(FocusSettle) basis=FocusSettle drift=in
-[engine=T jp=T drift=Ok(desired=T dur=cd) settling=F] => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
+[engine=T jp=T drift=Ok(desired=T dur=cd) settling=F] => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
 [engine=T jp=T drift=Ok(desired=T dur=cd) settling=T] => DeferToSettle(FocusSettle) basis=FocusSettle drift=in
 
 ## 後段: desired × duration × active × default_policy ごとに、
 ## ビット列 imm_cross,warrant_would_block,diag_already_notified,converged,fresh_evidence_after_giveup の結果
+## (殻が作る組だけ。* はその組の殻が作るビット列すべて)
 
 [desired=F dur=cd-1 active=none default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
 [desired=F dur=cd-1 active=none default=Read]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111,10000,10001,10010,10011,10100,10101,10110,10111} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111,10000,10001,10010,10011,10100,10101,10110,10111} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111,10000,10001,10010,10011,10100,10101,10110,10111} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111,10000,10001,10010,10011,10100,10101,10110,10111} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00010,00100,00110,01000,01010,01100,01110,10000,10010,10100,10110} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00001,00011,00101,00111,01001,01011,01101,01111,10001,10011,10101,10111} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00010,00100,00110,01000,01010,01100,01110,10000,10010,10100,10110} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00001,00011,00101,00111,01001,01011,01101,01111,10001,10011,10101,10111} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=same(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=other(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=other(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=other(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=F dur=cd-1 active=other(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2) default=Blind]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2) default=Read]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2) default=Blind]
+  {00000,00001,00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2) default=Read]
+  {00000,00001,00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2) default=Blind]
+  {00000,00001,00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2) default=Read]
+  {00000,00001,00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3) default=Blind]
+  {00000,00100,10000,10100} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3) default=Read]
+  {00000,00100,10000,10100} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3) default=Blind]
+  {00000,00001,00100,00101,10000,10001,10100,10101} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3) default=Read]
+  {00000,00001,00100,00101,10000,10001,10100,10101} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Blind]
+  {00000,00100,10000,10100} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00001,00101,10001,10101} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+[desired=F dur=cd-1 active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Read]
+  {00000,00100,10000,10100} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00001,00101,10001,10101} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+[desired=F dur=cd-1 active=same(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Blind]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+[desired=F dur=cd-1 active=same(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Read]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+[desired=F dur=cd-1 active=other(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Blind]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=F dur=cd-1 active=other(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Read]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=F dur=cd-1 active=other(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Blind]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=F dur=cd-1 active=other(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Read]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
 [desired=F dur=cd active=none default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
 [desired=F dur=cd active=none default=Read]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011,10000,10001,10010,10011} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111,10100,10101,10110,10111} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011,10000,10001,10010,10011} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111,10100,10101,10110,10111} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011,10000,10001,10010,10011} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111,10100,10101,10110,10111} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011,10000,10001,10010,10011} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111,10100,10101,10110,10111} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00010,01000,01010,10000,10010} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00001,00011,01001,01011,10001,10011} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00100,00110,01100,01110,10100,10110} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00101,00111,01101,01111,10101,10111} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00010,01000,01010,10000,10010} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00001,00011,01001,01011,10001,10011} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00100,00110,01100,01110,10100,10110} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00101,00111,01101,01111,10101,10111} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=F dur=cd active=same(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd active=same(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-[desired=F dur=cd active=other(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=F dur=cd active=other(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=F dur=cd active=other(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=F dur=cd active=other(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2) default=Blind]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10000} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2) default=Read]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10000} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2) default=Blind]
+  {00000,00001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2) default=Read]
+  {00000,00001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2) default=Blind]
+  {00000,00001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2) default=Read]
+  {00000,00001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3) default=Blind]
+  {00000,10000} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {00100,10100} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3) default=Read]
+  {00000,10000} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {00100,10100} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3) default=Blind]
+  {00000,00001,10000,10001} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {00100,00101,10100,10101} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3) default=Read]
+  {00000,00001,10000,10001} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {00100,00101,10100,10101} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Blind]
+  {00000,10000} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00001,10001} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00100,10100} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00101,10101} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+[desired=F dur=cd active=same(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Read]
+  {00000,10000} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00001,10001} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=T act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00100,10100} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00101,10101} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+[desired=F dur=cd active=same(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Blind]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10000} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+[desired=F dur=cd active=same(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Read]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10000} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+[desired=F dur=cd active=other(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Blind]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=F dur=cd active=other(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Read]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=F dur=cd active=other(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Blind]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=F dur=cd active=other(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Read]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=F Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
 [desired=T dur=cd-1 active=none default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
 [desired=T dur=cd-1 active=none default=Read]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111,10000,10001,10010,10011,10100,10101,10110,10111} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111,10000,10001,10010,10011,10100,10101,10110,10111} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111,10000,10001,10010,10011,10100,10101,10110,10111} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111,10000,10001,10010,10011,10100,10101,10110,10111} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00010,00100,00110,01000,01010,01100,01110,10000,10010,10100,10110} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00001,00011,00101,00111,01001,01011,01101,01111,10001,10011,10101,10111} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00010,00100,00110,01000,01010,01100,01110,10000,10010,10100,10110} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00001,00011,00101,00111,01001,01011,01101,01111,10001,10011,10101,10111} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=same(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=other(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=other(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=other(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,00100,00101,00110,00111,01000,01001,01010,01011,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011,10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=T dur=cd-1 active=other(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00100,00101,01000,01001,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,00110,00111,01010,01011,01110,01111,10010,10011,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2) default=Blind]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2) default=Read]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2) default=Blind]
+  {00000,00001,00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2) default=Read]
+  {00000,00001,00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2) default=Blind]
+  {00000,00001,00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2) default=Read]
+  {00000,00001,00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10000,10001,10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3) default=Blind]
+  {00000,00100,10000,10100} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3) default=Read]
+  {00000,00100,10000,10100} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3) default=Blind]
+  {00000,00001,00100,00101,10000,10001,10100,10101} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3) default=Read]
+  {00000,00001,00100,00101,10000,10001,10100,10101} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Blind]
+  {00000,00100,10000,10100} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00001,00101,10001,10101} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+[desired=T dur=cd-1 active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Read]
+  {00000,00100,10000,10100} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00001,00101,10001,10101} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+[desired=T dur=cd-1 active=same(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Blind]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+[desired=T dur=cd-1 active=same(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Read]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+[desired=T dur=cd-1 active=other(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Blind]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=T dur=cd-1 active=other(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Read]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=T dur=cd-1 active=other(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Blind]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=T dur=cd-1 active=other(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Read]
+  {00000,00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000,10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
 [desired=T dur=cd active=none default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
 [desired=T dur=cd active=none default=Read]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011,10000,10001,10010,10011} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111,10100,10101,10110,10111} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011,10000,10001,10010,10011} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111,10100,10101,10110,10111} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011,10000,10001,10010,10011} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111,10100,10101,10110,10111} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL) default=Read]
-  {00000,00001,00010,00011,01000,01001,01010,01011,10000,10001,10010,10011} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111,10100,10101,10110,10111} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00010,01000,01010,10000,10010} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00001,00011,01001,01011,10001,10011} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00100,00110,01100,01110,10100,10110} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00101,00111,01101,01111,10101,10111} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00010,01000,01010,10000,10010} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00001,00011,01001,01011,10001,10011} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00100,00110,01100,01110,10100,10110} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {00101,00111,01101,01111,10101,10111} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL)
-[desired=T dur=cd active=same(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd active=same(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL)
-[desired=T dur=cd active=other(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=T dur=cd active=other(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=INITIAL) default=Read]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=T dur=cd active=other(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Blind]
-  {00000,00001,00010,00011,01000,01001,01010,01011} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,00110,00111,01100,01101,01110,01111} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001,10010,10011} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101,10110,10111} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=INITIAL)
-[desired=T dur=cd active=other(target=F Read{ObserverPoll} attempts=0 sent=now-10s gave_up=- origin=INITIAL) default=Read]
-  {00000,00001,01000,01001} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00010,00011,01010,01011,10010,10011} => Act(Confirmed) basis=FreshRead drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00100,00101,01100,01101} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {00110,00111,01110,01111,10110,10111} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10000,10001} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {10100,10101} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
-  {11000,11001,11010,11011,11100,11101,11110,11111} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=INITIAL)
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2) default=Blind]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10000} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2) default=Read]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10000} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=- origin=policy@2)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2) default=Blind]
+  {00000,00001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2) default=Read]
+  {00000,00001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-(cd-1) origin=policy@2)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2) default=Blind]
+  {00000,00001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2) default=Read]
+  {00000,00001} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {00100,00101} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10000,10001} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {10100,10101} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=2 sent=now-10s gave_up=now-cd origin=policy@2)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3) default=Blind]
+  {00000,10000} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {00100,10100} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3) default=Read]
+  {00000,10000} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {00100,10100} => Act(GiveUpFirstTime) basis=AttemptBudget drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=- origin=policy@3)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3) default=Blind]
+  {00000,00001,10000,10001} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {00100,00101,10100,10101} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3) default=Read]
+  {00000,00001,10000,10001} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {00100,00101,10100,10101} => Act(GiveUpCooldownPending) basis=Cooldown drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-(cd-1) origin=policy@3)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Blind]
+  {00000,10000} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00001,10001} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00100,10100} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00101,10101} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+[desired=T dur=cd active=same(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Read]
+  {00000,10000} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00001,10001} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=T act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00100,10100} => Act(GiveUpStillParked) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {00101,10101} => Act(GiveUpRearm) basis=FreshRead drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+  {11000,11001,11100,11101} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3)
+[desired=T dur=cd active=same(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Blind]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10000} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+[desired=T dur=cd active=same(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Read]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10000} => Act(SendImmCross) basis=- drift=in install=F notify=T act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {10100} => Act(SendImmCross) basis=- drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=F notify=F act=(target=T Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1)
+[desired=T dur=cd active=other(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Blind]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=T dur=cd active=other(target=F Blind{max=3} attempts=3 sent=now-10s gave_up=now-cd origin=policy@3) default=Read]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=T dur=cd active=other(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Blind]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11100} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Blind{max=3} attempts=0 sent=now gave_up=- origin=policy@0)
+[desired=T dur=cd active=other(target=F Read{ObserverPoll} attempts=1 sent=now-10s gave_up=- origin=policy@1) default=Read]
+  {00000} => Act(SendStrategyChain) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00010,00110,10010,10110} => Act(Confirmed) basis=FreshRead drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {00100} => Act(SendStrategyChain) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10000} => Act(SendImmCross) basis=- drift=in install=T notify=T act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {10100} => Act(SendImmCross) basis=- drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
+  {11000,11010,11100,11110} => Act(SkipWarrantWouldBlock) basis=Warrant drift=in install=T notify=F act=(target=T Read{ObserverPoll} attempts=0 sent=now gave_up=- origin=policy@0)
 
-# 前段 72 通り、後段 2560 通り
+# 前段 72 通り、後段 792 通り
