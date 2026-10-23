@@ -412,7 +412,7 @@ pub fn decide_drift_plan(f: &DriftFacts) -> DriftPlan {
         });
     }
 
-    let notify_diagnostic = should_notify_diagnostic(drift.duration_ms, f.diag_already_notified);
+    let long_drift = should_notify_diagnostic(drift.duration_ms, f.diag_already_notified);
     let send = DriftStep::Send(if f.imm_cross {
         SendPath::ImmCross
     } else {
@@ -438,6 +438,12 @@ pub fn decide_drift_plan(f: &DriftFacts) -> DriftPlan {
             }
         }
     };
+    // 「IME状態を確認できません」の診断は、ずれが続いていて補正を続ける（送る・打ち切る）tick だけ。`Read` が
+    // 収束を確認した tick（`Confirmed`）は、読み戻しで状態を確認できているので出さない（ME-3 の golden の
+    // レビュー R1 で判明。以前は step より前に継続時間だけで決めていたので、`Confirmed` でも出た）。
+    // `Read` の送信は従来どおり出す（BUG-109 追補 1・8f9fe040: `Read` は打ち切らないので、継続時間で出さないと
+    // 長いずれでも一度も出ない）。
+    let notify_diagnostic = long_drift && step != DriftStep::Confirmed;
 
     DriftPlan::Act(DriftAct {
         drift,
@@ -736,6 +742,28 @@ mod tests {
         }
     }
 
+    /// R1(ME-3 レビュー): `Read` が収束を確認した tick では、ずれが長く続いていても診断を出さない。
+    /// `Read` の送信 tick では出す（BUG-109 追補 1、8f9fe040）。
+    #[test]
+    fn diagnostic_is_not_shown_when_read_back_confirms_convergence() {
+        let now = Instant::now();
+        let cool = crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS;
+        for (converged, want_step, want_notify) in [
+            (true, DriftStep::Confirmed, false),
+            (false, DriftStep::Send(SendPath::StrategyChain), true),
+        ] {
+            let f = DriftFacts {
+                drift: Ok(drift(false, cool)),
+                default_policy: read(),
+                converged,
+                ..facts(now)
+            };
+            let a = act(&f);
+            assert_eq!(a.step, want_step, "converged={converged}");
+            assert_eq!(a.notify_diagnostic, want_notify, "converged={converged}");
+        }
+    }
+
     #[test]
     fn blind_sends_below_max_and_gives_up_at_max_without_ever_resuming() {
         let now = Instant::now();
@@ -1015,5 +1043,5 @@ mod tests {
 
 // ME-3: decide_drift_plan の決定表の全列挙 golden（`tests/golden/drift_plan_table.txt`）。
 #[cfg(test)]
-#[path = "drift_plan_exhaustive.rs"]
+#[path = "drift_plan_exhaustive_tests.rs"]
 mod exhaustive;

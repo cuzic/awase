@@ -9,8 +9,13 @@
 //!   `drift`(`NoDrift` 5 + `Ok` 4〈desired 2 × duration 2〉) × `settling` 2 = 72 通り。後段の材料は既定値に固定
 //!   (前段で返るときは後段の材料を読まない、`DriftFacts` の doc)。
 //! - **後段(試行の解決 → 授権 → 診断 → 方針ごとの打ち切り/収束/送信)**: 稼働・ずれあり・settle なしで、
-//!   desired 2 × duration 2 × `active` 10 × `default_policy` 2 × `imm_cross` 2 × `warrant_would_block` 2 ×
-//!   `diag_already_notified` 2 × `converged` 2 × `fresh_evidence_after_giveup` 2 = 2,560 通り。
+//!   desired 2 × duration 2 × `active` 10 × `default_policy` 2 × `imm_cross`・`warrant_would_block`・
+//!   `diag_already_notified`・`converged`・`fresh_evidence_after_giveup` の 5 ビットのうち、**殻が作る組だけ**の 792 通り。
+//!
+//! 殻(`runtime/ime_refresh.rs::ir_observe_drift_facts`)が作らない組は列挙しない(`plan_core` の (injected, toggled)=(T,T)
+//! を除くのと同じ方針。契約外の組を golden に固定すると、到達できる挙動を変えない統合でも golden が落ち、偽の警告になる)。
+//! 殻の約束(`produced_by_shell`): `warrant_would_block` は `imm_cross` のときだけ真になりうる。`converged` は解決した試行
+//! (`resolve_actuation`)の方針が `Read` のときだけ、`fresh_evidence_after_giveup` は `Blind` で `gave_up_at` があるときだけ読む。
 //!
 //! 列挙しない(1 値に固定する)軸と理由:
 //! - `DriftCorrection.observed`・`source`・`confidence`: `decide_drift_plan` は読まず、`DriftAct.drift` /
@@ -21,10 +26,15 @@
 //! - 時刻: `now` を基準に、試行の `sent_at` は `now-10s`、`gave_up_at` は再武装クールダウンの直前 `now-(cd-1)` と
 //!   境界 `now-cd` だけ(`blind_rearm_cooldown_elapsed` は `>=`)。
 //! - `Read.source`: `ObserverPoll` だけ(`decide_drift_plan` は方針の種類しか見ない)。
+//! - 試行の世代(`origin.epoch`): 殻と同じく送信ごとに進む値(`attempts` と同じ)にする。再利用した試行の `origin` を作り直す
+//!   変異(INITIAL に戻る)を検出するため、INITIAL 以外の世代を含める。
 //!
-//! 後段の 32 通り(`imm_cross`・`warrant_would_block`・`diag_already_notified`・`converged`・
-//! `fresh_evidence_after_giveup` の 5 ビット)は、同じ結果になるビット列をまとめて 1 行に書く
-//! (まとめ方は結果から機械的に決まり、情報は落とさない)。
+//! 後段の 5 ビット(`imm_cross`・`warrant_would_block`・`diag_already_notified`・`converged`・
+//! `fresh_evidence_after_giveup`)は、同じ結果になるビット列をまとめて 1 行に書く
+//! (まとめ方は結果から機械的に決まり、情報は落とさない。その組の殻が作るビット列すべてが同じ結果なら `*`)。
+//!
+//! tuning の定数(`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`)だけを変える PR では、見出しの `cd_ms` の 1 行だけが変わる
+//! (行はラベル `cd`・`now-cd` で書く)。
 //! enum に variant が増えると下の `match` がコンパイルエラーになる(列挙の取りこぼし防止)。
 //!
 //! 再生成: `UPDATE_GOLDEN=1 cargo test -p awase-ime-core --lib drift_plan::exhaustive`
@@ -36,8 +46,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::{
-    decide_drift_plan, ActuationSnapshot, DriftAct, DriftFacts, DriftIdle, DriftPlan, DriftStep,
-    GiveUpPark, SendPath,
+    decide_drift_plan, resolve_actuation, ActuationSnapshot, DriftAct, DriftFacts, DriftIdle,
+    DriftPlan, DriftStep, GiveUpPark, SendPath,
 };
 use crate::state::drift_correction::{DriftCorrection, NoDrift};
 use crate::state::event_origin::Generation;
@@ -161,17 +171,20 @@ fn fmt_snapshot(c: &Clock, a: &ActuationSnapshot) -> String {
         FeedbackPolicy::Read { source } => format!("Read{{{source:?}}}"),
     };
     let gave_up = a.gave_up_at.map_or("-", |t| c.label(t));
-    let origin_ok = a.origin == a.policy.origin(Generation::INITIAL);
+    // 出所(strategy)は方針から決まる。世代は値をそのまま書く(作り直しで INITIAL=0 に戻れば差分になる)。
+    let source_ok = a.origin.source == a.policy.origin(Generation::INITIAL).source;
     format!(
-        "(target={} {policy} attempts={} sent={} gave_up={gave_up} origin={})",
+        "(target={} {policy} attempts={} sent={} gave_up={gave_up} origin={}@{})",
         tf(a.target),
         a.attempts,
         c.label(a.sent_at),
-        if origin_ok { "INITIAL" } else { "other" }
+        if source_ok { "policy" } else { "other" },
+        a.origin.epoch.value()
     )
 }
 
 /// 試行の入力(`active`)の 10 通り。`desired` に対する `target` の一致/不一致で作る。
+/// 世代は殻と同じく送信ごとに進む(`advance_epoch` が `attempts` と世代を同時に進める)ので `attempts` と同じ値にする。
 fn actives(c: &Clock, desired: bool) -> Vec<(String, Option<ActuationSnapshot>)> {
     let snap =
         |policy: FeedbackPolicy, target: bool, attempts: u32, gave_up_at: Option<Instant>| {
@@ -181,7 +194,7 @@ fn actives(c: &Clock, desired: bool) -> Vec<(String, Option<ActuationSnapshot>)>
                 attempts,
                 sent_at: c.sent(),
                 gave_up_at,
-                origin: policy.origin(Generation::INITIAL),
+                origin: policy.origin(Generation::new(u64::from(attempts))),
             }
         };
     let mut out = vec![("none".to_string(), None)];
@@ -191,7 +204,7 @@ fn actives(c: &Clock, desired: bool) -> Vec<(String, Option<ActuationSnapshot>)>
             out.push((format!("same{}", fmt_snapshot(c, &a)), Some(a)));
         }
     }
-    let read_same = snap(READ, desired, 0, None);
+    let read_same = snap(READ, desired, 1, None);
     out.push((
         format!("same{}", fmt_snapshot(c, &read_same)),
         Some(read_same),
@@ -201,12 +214,25 @@ fn actives(c: &Clock, desired: bool) -> Vec<(String, Option<ActuationSnapshot>)>
         format!("other{}", fmt_snapshot(c, &blind_other)),
         Some(blind_other),
     ));
-    let read_other = snap(READ, !desired, 0, None);
+    let read_other = snap(READ, !desired, 1, None);
     out.push((
         format!("other{}", fmt_snapshot(c, &read_other)),
         Some(read_other),
     ));
     out
+}
+
+/// 殻(`ir_observe_drift_facts`)が作りうる後段の事実か。
+fn produced_by_shell(f: &DriftFacts) -> bool {
+    let Ok(d) = f.drift else {
+        return true;
+    };
+    let (act, _) = resolve_actuation(f.active.as_ref(), d.desired, f.default_policy, f.now);
+    let read = matches!(act.policy, FeedbackPolicy::Read { .. });
+    let fresh_readable = !read && act.gave_up_at.is_some();
+    (!f.warrant_would_block || f.imm_cross)
+        && (!f.converged || read)
+        && (!f.fresh_evidence_after_giveup || fresh_readable)
 }
 
 fn drift(desired: bool, duration_ms: u64) -> DriftCorrection {
@@ -293,9 +319,10 @@ fn render() -> String {
     out.push_str(
         "# decide_drift_plan の決定表(全列挙) golden (ME-3)\n\
          #\n\
-         # 生成元: crates/awase-ime-core/src/state/drift_plan_exhaustive.rs\n\
+         # 生成元: crates/awase-ime-core/src/state/drift_plan_exhaustive_tests.rs\n\
          # このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成するか、CI の失敗ログの BEGIN/END の間を写すこと。\n\
          # 撤去・統合の PR でこのファイルが変わらなければ、decide_drift_plan の決定は列挙した全入力で不変。\n\
+         # 後段は殻(ir_observe_drift_facts)が作る事実の組だけ(契約外の組は列挙しない)。\n\
          # cd = DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS、max = Blind.max_attempts。\n\
          #\n",
     );
@@ -342,7 +369,8 @@ fn render() -> String {
     // ── 後段 ──
     out.push_str(
         "\n## 後段: desired × duration × active × default_policy ごとに、\n\
-         ## ビット列 imm_cross,warrant_would_block,diag_already_notified,converged,fresh_evidence_after_giveup の結果\n\n",
+         ## ビット列 imm_cross,warrant_would_block,diag_already_notified,converged,fresh_evidence_after_giveup の結果\n\
+         ## (殻が作る組だけ。* はその組の殻が作るビット列すべて)\n\n",
     );
     let mut post_count = 0usize;
     for desired in [false, true] {
@@ -357,6 +385,7 @@ fn render() -> String {
                         fmt_policy(default_policy)
                     );
                     let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+                    let mut produced = 0usize;
                     for bits in 0u8..32 {
                         let bit = |i: u8| bits & (1 << (4 - i)) != 0;
                         let f = DriftFacts {
@@ -370,6 +399,10 @@ fn render() -> String {
                             fresh_evidence_after_giveup: bit(4),
                             ..base_facts(&c)
                         };
+                        if !produced_by_shell(&f) {
+                            continue;
+                        }
+                        produced += 1;
                         post_count += 1;
                         let key = fmt_plan(&c, &f, &decide_drift_plan(&f));
                         let name: String = (0..5).map(|i| if bit(i) { '1' } else { '0' }).collect();
@@ -379,7 +412,7 @@ fn render() -> String {
                         }
                     }
                     for (key, names) in groups {
-                        let names = if names.len() == 32 {
+                        let names = if names.len() == produced {
                             "*".to_string()
                         } else {
                             names.join(",")
@@ -407,7 +440,7 @@ fn input_space_size_is_as_documented() {
     assert_eq!(actives(&c, true).len(), 10);
     let text = render();
     assert!(
-        text.contains("# 前段 72 通り、後段 2560 通り"),
+        text.contains("# 前段 72 通り、後段 792 通り"),
         "列挙の数が doc と違う"
     );
     assert!(
@@ -453,7 +486,7 @@ fn drift_plan_table_matches_golden() {
     eprintln!("----- END drift_plan_table -----");
     panic!(
         "decide_drift_plan の決定表が golden({}) と一致しません。最初の差: {first_diff}\n\
-         撤去・統合で決定を変えないはずの PR なら、変えた箇所を見直すこと。意図した変更なら\n\
+         撤去・統合で決定を変えないはずの PR なら、変えた箇所を見直すこと。意図した変更(tuning の定数の変更を含む)なら\n\
          `UPDATE_GOLDEN=1 cargo test -p awase-ime-core --lib drift_plan::exhaustive` で再生成するか、\n\
          上の BEGIN/END の間(現状の全文)を golden に写して、差分を PR で説明すること。",
         path.display()
