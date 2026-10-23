@@ -94,14 +94,15 @@ impl ProbeIo for Output {
         romaji: &str,
         cold_seq: Generation,
     ) -> Option<MozcComposeTarget> {
-        // GJI の証拠が無いと確定している（Mozc 系）ときだけ（ADR-269 D1、`gji_evidence_absent`）。
-        if !crate::tsf::observer::gji_evidence_absent() {
+        // GJI の証拠が無いと確定している（Mozc 系、ADR-269 D1、`gji_evidence_absent`）かつ、旧来の範囲
+        // (前景窓が Windows Terminal・WezTerm)のときだけ(PR #809 レビュー M3・再レビュー N2、`mozc_compose_check_applies`)。
+        let mozc = crate::tsf::observer::gji_evidence_absent();
+        if !mozc {
             return None;
         }
-        // 旧来の範囲(Windows Terminal・WezTerm)に限る(PR #809 レビュー M3、`is_mozc_compose_check_window`)。
         // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
         let fg_class = unsafe { crate::ime::get_foreground_window_class() };
-        if !crate::focus::class_names::is_mozc_compose_check_window(&fg_class) {
+        if !crate::focus::class_names::mozc_compose_check_applies(mozc, &fg_class) {
             return None;
         }
         let (hwnd_addr, thread_id, process_id) =

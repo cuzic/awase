@@ -528,15 +528,23 @@ impl WindowsPlatform {
     /// - 非 warm: cold mark と GjiFsm reset のみ。
     /// - warm の GJI 系: 何もしない（BUG-31: warm 中の無関係な物理 IME キーで cold 化すると、直後の無関係な
     ///   タイピングが cold-start 経路に落ちて GJI 候補ウィンドウ可視性のレースで文字が消える）。
-    /// - warm の Mozc 系（`gji_evidence_absent`）: cold にする（BUG-209。ADR-270 の確認は cold の送信でしか張られない）。
+    /// - warm の Mozc 系で、ADR-270 の確認を張る窓（`mozc_compose_check_applies`、Windows Terminal・WezTerm）:
+    ///   cold にする（BUG-209。確認は cold の送信でしか張られない）。他の窓では確認が張られないので cold にしない
+    ///   （無益な保持を入れない。PR #809 再レビュー N1）。
     ///
     /// 旧 Tsf 注入モード（`force_tsf`）では warm でも `NativeF2Consumed` で cold にしていたが、
     /// Tsf 注入経路の撤去（2026-10-22、ADR-0004 追記）で分岐ごと削除した（Mozc 系の分だけ上で残す）。
     pub(crate) fn composition_native_f2_down(&mut self) {
-        if crate::tsf::cold_reason::physical_f2_marks_cold(
-            self.output.is_composition_warm(),
-            crate::tsf::observer::gji_evidence_absent(),
-        ) {
+        let warm = self.output.is_composition_warm();
+        let mozc_check = warm && {
+            // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
+            let fg_class = unsafe { crate::ime::get_foreground_window_class() };
+            crate::focus::class_names::mozc_compose_check_applies(
+                crate::tsf::observer::gji_evidence_absent(),
+                &fg_class,
+            )
+        };
+        if crate::tsf::cold_reason::physical_f2_marks_cold(warm, mozc_check) {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::F2NonTsf);
             self.gji_on_composition_reset();

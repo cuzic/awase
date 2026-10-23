@@ -75,12 +75,16 @@ fn app_override_list_is_nonempty(root: &toml::Table, key: &str) -> bool {
         .is_some_and(|v| !v.is_empty())
 }
 
-/// 旧版の同梱 `config.toml` の `force_tsf` の値(Windows Terminal・WezTerm の 2 件)。
+/// 旧版の同梱 `config.toml` の `force_tsf` の値。v1.5.0 以降は WezTerm・Windows Terminal の 2 件、
+/// v0.1.0〜v1.4.0 は WezTerm の 1 件(`4e49ee1b` で WT を足す前)。
 /// 更新した利用者の `config.toml`(Scoop は persist する)には、自分で書いていないこの値が残っているので、
-/// ちょうどこの 2 件のときは通知しない(PR #809 レビュー m4。既定値は通知しない方針、上の表の doc)。
-const RETIRED_DEFAULT_FORCE_TSF: &[(&str, &str)] = &[
-    ("wezterm-gui.exe", "org.wezfurlong.wezterm"),
-    ("WindowsTerminal.exe", "CASCADIA_HOSTING_WINDOW_CLASS"),
+/// どちらかとちょうど同じときは通知しない(PR #809 レビュー m4・再レビュー N3。既定値は通知しない方針、上の表の doc)。
+const RETIRED_DEFAULT_FORCE_TSF: &[&[(&str, &str)]] = &[
+    &[
+        ("wezterm-gui.exe", "org.wezfurlong.wezterm"),
+        ("WindowsTerminal.exe", "CASCADIA_HOSTING_WINDOW_CLASS"),
+    ],
+    &[("wezterm-gui.exe", "org.wezfurlong.wezterm")],
 ];
 
 /// `app_overrides.force_tsf` が旧版の同梱の既定値(順不同、大文字小文字は区別しない)とちょうど同じか。
@@ -111,13 +115,15 @@ fn force_tsf_is_retired_default(root: &toml::Table) -> bool {
         }
         entries.push((process, class));
     }
-    let mut expected: Vec<(String, String)> = RETIRED_DEFAULT_FORCE_TSF
-        .iter()
-        .map(|(p, c)| (p.to_ascii_lowercase(), c.to_ascii_lowercase()))
-        .collect();
     entries.sort();
-    expected.sort();
-    entries == expected
+    RETIRED_DEFAULT_FORCE_TSF.iter().any(|default| {
+        let mut expected: Vec<(String, String)> = default
+            .iter()
+            .map(|(p, c)| (p.to_ascii_lowercase(), c.to_ascii_lowercase()))
+            .collect();
+        expected.sort();
+        entries == expected
+    })
 }
 
 /// 値が既定でない撤去済みキーの通知文を集める。`root` は config.toml 全体の表。
@@ -322,14 +328,26 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert!(m[0].contains("force_tsf") && m[0].contains("不要"), "{m:?}");
         assert!(removed_value_notices(&t("[app_overrides]\nforce_tsf = []\n")).is_empty());
-        // 旧版の同梱の既定値(2 件、順不同)だけなら通知しない(m4)。1 件でも違えば通知する。
+        // 旧版の同梱の既定値(v1.5.0 以降の 2 件〈順不同〉・v1.4.0 以前の WezTerm 1 件)だけなら通知しない(m4・N3)。
+        // 違えば通知する。
         assert!(removed_value_notices(&t(
             "[app_overrides]\nforce_tsf = [\n  { process = \"WindowsTerminal.exe\", class = \"CASCADIA_HOSTING_WINDOW_CLASS\" },\n  { process = \"wezterm-gui.exe\", class = \"org.wezfurlong.wezterm\" },\n]\n"
         ))
         .is_empty());
+        assert!(removed_value_notices(&t(
+            "[app_overrides]\nforce_tsf = [\n  { process = \"wezterm-gui.exe\", class = \"org.wezfurlong.wezterm\" },\n]\n"
+        ))
+        .is_empty());
         assert_eq!(
             removed_value_notices(&t(
-                "[app_overrides]\nforce_tsf = [\n  { process = \"wezterm-gui.exe\", class = \"org.wezfurlong.wezterm\" },\n]\n"
+                "[app_overrides]\nforce_tsf = [\n  { process = \"WindowsTerminal.exe\", class = \"CASCADIA_HOSTING_WINDOW_CLASS\" },\n]\n"
+            ))
+            .len(),
+            1
+        );
+        assert_eq!(
+            removed_value_notices(&t(
+                "[app_overrides]\nforce_tsf = [\n  { process = \"wezterm-gui.exe\", class = \"org.wezfurlong.wezterm\" },\n  { process = \"alacritty.exe\", class = \"Window Class\" },\n]\n"
             ))
             .len(),
             1

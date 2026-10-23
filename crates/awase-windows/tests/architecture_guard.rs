@@ -9213,14 +9213,15 @@ fn physical_f2_cold_and_mozc_check_window_are_wired() {
         production_code_only(&platform),
         "fn composition_native_f2_down(",
     ));
+    let squashed_body: String = body.split_whitespace().collect();
     for needle in [
-        "physical_f2_marks_cold(",
-        "self.output.is_composition_warm()",
-        "gji_evidence_absent()",
+        "letwarm=self.output.is_composition_warm();",
+        "mozc_compose_check_applies(crate::tsf::observer::gji_evidence_absent(),",
+        "ifcrate::tsf::cold_reason::physical_f2_marks_cold(warm,mozc_check){",
     ] {
         assert!(
-            body.contains(needle),
-            "composition_native_f2_down が `{needle}` を使っていない(BUG-209、PR #809 M2)"
+            squashed_body.contains(needle),
+            "composition_native_f2_down が `{needle}` の形でない(BUG-209、PR #809 M2・N1)"
         );
     }
     let probe_io = read_crate_file("src/output/probe_io.rs");
@@ -9233,8 +9234,12 @@ fn physical_f2_cold_and_mozc_check_window_are_wired() {
         &prod[impl_at..],
         "fn mozc_compose_precheck(",
     ));
+    // 判断の結果で早期 return する形(条件の反転・結果の捨てを許さない)。判断表は class_names.rs の単体テスト。
+    let squashed_pre: String = pre.split_whitespace().collect();
     assert!(
-        pre.contains("is_mozc_compose_check_window("),
-        "mozc_compose_precheck が窓の範囲(is_mozc_compose_check_window)を見ていない(PR #809 M3)"
+        squashed_pre.contains(
+            "if!crate::focus::class_names::mozc_compose_check_applies(mozc,&fg_class){returnNone;}"
+        ),
+        "mozc_compose_precheck が mozc_compose_check_applies の偽で return None していない(PR #809 M3・N2)"
     );
 }

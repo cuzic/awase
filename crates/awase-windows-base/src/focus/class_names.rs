@@ -75,6 +75,15 @@ pub fn is_mozc_compose_check_window(foreground_class: &str) -> bool {
     )
 }
 
+/// ADR-270 の確認を張るか(`mozc_compose_precheck` の前段)と、物理 F2 で warm でも cold にするか
+/// (`physical_f2_marks_cold` の第 2 引数)を、同じ述語で決める(PR #809 再レビュー N1・N2)。
+/// Mozc 系(`gji_evidence_absent`)で、前景窓が [`is_mozc_compose_check_window`] のときだけ真。
+/// 範囲を広げるときはここ 1 か所を直す。
+#[must_use]
+pub fn mozc_compose_check_applies(gji_evidence_absent: bool, foreground_class: &str) -> bool {
+    gji_evidence_absent && is_mozc_compose_check_window(foreground_class)
+}
+
 /// Win32 のポップアップメニュー窓（`TrackPopupMenu` 等が作るコンテキストメニュー）のクラス名。
 ///
 /// どのアプリの右クリックメニューも、この標準クラスの窓として出る。入力インジケーターの
@@ -294,6 +303,7 @@ pub fn detect_app_kind(class_name: &str) -> AppKind {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     /// ADR-270 の確認は旧 `force_tsf` の既定の窓(Windows Terminal・WezTerm)だけ(PR #809 レビュー M3)。
     #[test]
@@ -313,7 +323,23 @@ mod tests {
             assert!(!is_mozc_compose_check_window(other), "{other}");
         }
     }
-    use super::*;
+
+    /// Mozc × WT/WezTerm だけ真。GJI(証拠あり)や他の窓は偽(PR #809 再レビュー N1・N2)。
+    #[test]
+    fn mozc_compose_check_applies_table() {
+        assert!(mozc_compose_check_applies(
+            true,
+            "CASCADIA_HOSTING_WINDOW_CLASS"
+        ));
+        assert!(mozc_compose_check_applies(true, "org.wezfurlong.wezterm"));
+        assert!(!mozc_compose_check_applies(true, "Chrome_WidgetWin_1"));
+        assert!(!mozc_compose_check_applies(true, "OpusApp"));
+        assert!(!mozc_compose_check_applies(
+            false,
+            "CASCADIA_HOSTING_WINDOW_CLASS"
+        ));
+        assert!(!mozc_compose_check_applies(false, "Chrome_WidgetWin_1"));
+    }
 
     // BUG-202: コンテキストメニュー（クラス `#32768`）へのフォーカスは窓の切替ではない。
     // 判定は完全一致(クラス名の部分一致で他の窓を巻き込まないこと)。
