@@ -243,6 +243,32 @@ pub struct MozcShmRecord {
     pub process_id: u32,
 }
 
+/// ADR-279 案 P の段階 P0(観測だけ): 明示 OFF の意図が残っている間の IMM の読みの、開の連続の節目
+/// (`state::drift_follow_would`)。**挙動を変えない**(IME へは書かず、belief・Engine・意図も変えない)。
+///
+/// 連続の始まり(`start`)、`follow_after_ms`(`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`=3000ms)に初めて達したとき
+/// (`class=open-native` なら「追随すべきだった」= `would-follow`、`open-alnum` なら `alnum-open`)、連続の終わり(`end`)
+/// にだけ残す(読みごとには残さない)。打鍵の内容・窓のクラス名・タイトルは含めない。
+#[derive(Debug, Clone, Serialize)]
+pub struct DriftFollowWouldRecord {
+    /// 節目(`start` / `would-follow` / `alnum-open` / `end`)
+    pub event: &'static str,
+    /// 連続の種類(`open-native` / `open-alnum`)
+    pub class: &'static str,
+    /// 連続の長さ(最初から最後の柵の後の読みまで、ms)
+    pub elapsed_ms: u64,
+    /// `end` のとき、`follow_after_ms` に達していたか
+    pub crossed: Option<bool>,
+    /// `end` のとき、終わった理由(`EndReason::label`)
+    pub end_reason: Option<&'static str>,
+    /// 読んだ conv(`end` で読みが連続の終わりの理由のとき、その読みの conv)
+    pub conv: Option<u32>,
+    /// 窓の IME 種別(`gji` / `ms-ime`)
+    pub ime: &'static str,
+    /// 窓の IME プロファイル(`imm32-unavailable` など)
+    pub profile: &'static str,
+}
+
 /// shadow IME トグル(`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` ほか)の判断の段(ADR-250 段階 4-1)。
 ///
 /// 手書きの `[shadow-toggle]` ログ 11 行を置き換える(1:1)。`emit_tracing` は段ごとに**元の手書き行と同じレベル**
@@ -685,6 +711,8 @@ pub enum JournalEntry {
     IndicatorGlyph { record: IndicatorGlyphRecord },
     /// ADR-265 段階 1: mozc-readable の共有メモリの読み(挙動を変えない観測。belief には入れない)。
     MozcShm { record: MozcShmRecord },
+    /// ADR-279 案 P の段階 P0: 明示 OFF の意図の間の IMM の読みの開の連続の節目(挙動を変えない観測)。
+    DriftFollowWould { record: DriftFollowWouldRecord },
     /// ADR-132 Phase 1: hook の IME-mode 診断ログを journal にも残す。
     HookImeModeDiagnostic { record: HookImeModeDiagnosticRecord },
     /// ADR-132 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
@@ -1055,6 +1083,7 @@ impl JournalEntry {
             | Self::LangDetect { .. }
             | Self::IndicatorGlyph { .. }
             | Self::MozcShm { .. }
+            | Self::DriftFollowWould { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::FirstLiteralObserve { .. }
@@ -1074,6 +1103,7 @@ impl JournalEntry {
             | Self::LangDetect { .. }
             | Self::IndicatorGlyph { .. }
             | Self::MozcShm { .. }
+            | Self::DriftFollowWould { .. }
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
             | Self::LiteralDetect { .. }
@@ -1507,6 +1537,23 @@ impl JournalEntry {
                     thread_id = record.thread_id,
                     process_id = record.process_id,
                     "[mozc-shm]"
+                );
+            }
+            Self::DriftFollowWould { record } => {
+                // debug（既定の app log には出さない。節目は殻が `[drift-follow-would]` として info でも出す）。
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    event = record.event,
+                    class = record.class,
+                    run_elapsed_ms = record.elapsed_ms,
+                    crossed = record.crossed,
+                    end_reason = record.end_reason,
+                    conv = record.conv,
+                    ime = record.ime,
+                    profile = record.profile,
+                    "[drift-follow-would]"
                 );
             }
             Self::HookImeModeDiagnostic { record } => {

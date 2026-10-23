@@ -529,6 +529,7 @@ const CORE_MODULES: &[&str] = &[
     "conv_mode",
     "deferred_gate_plan",
     "drift_correction",
+    "drift_follow_would",
     "drift_plan",
     "eisu_candidate",
     "eisu_recovery",

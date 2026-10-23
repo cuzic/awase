@@ -298,6 +298,12 @@ pub const TIMER_RESUME_HOLD: usize = 112;
 /// 走らせないため)ので、共有メモリの読み・追随だけを切り離して回す。一発タイマーで、ハンドラ冒頭で自ら `kill` し、
 /// 共有メモリのブロックがある間だけ読んだ後に張り直す(`runtime/mozc_shm_shadow.rs`)。
 pub const TIMER_MOZC_SHM: usize = 113;
+/// ADR-279 案 P の段階 P0(観測だけ): 明示 OFF の意図の間の IMM の読みの専用タイマー ID。
+///
+/// refresh の tick(`TIMER_IME_REFRESH`)は明示意図があると止まる。refresh を再開すると GJI の I/O 推論が drift correction の
+/// 根拠になって IME を書き直すので、読みだけを切り離して回す。一発タイマーで、ハンドラ冒頭で自ら `kill` し、対象の窓の間だけ
+/// 読む前に張り直す(`runtime/drift_follow_would.rs`)。
+pub const TIMER_DRIFT_FOLLOW_WOULD: usize = 114;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 
