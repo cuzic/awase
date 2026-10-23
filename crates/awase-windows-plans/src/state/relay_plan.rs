@@ -460,3 +460,8 @@ mod tests {
         assert!(drain_needs_wait_check(DrainItem::QueuedReinject, false));
     }
 }
+
+// ME-3: relay_plan・warm_send_plan の決定表の全列挙 golden（`tests/golden/relay_plan_table.txt`）。
+#[cfg(test)]
+#[path = "relay_plan_exhaustive.rs"]
+mod exhaustive;
