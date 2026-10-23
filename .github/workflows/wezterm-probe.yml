@@ -1,0 +1,19 @@
+name: wezterm-probe
+# 検証専用(ci/verify-809-wezterm-probe、develop に入れない): WezTerm のポータブル版がランナーで起動するか・窓のクラス。
+on:
+  push:
+    branches: [ci/verify-809-wezterm-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        fe: ['', 'Software', 'OpenGL', 'WebGpu']
+    steps:
+      - uses: actions/checkout@v4
+      - shell: pwsh
+        run: ./tools/e2e/wezterm_probe/probe.ps1 -FrontEnd '${{ matrix.fe }}'
