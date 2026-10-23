@@ -53,36 +53,5 @@ pub const fn plan_warmth(facts: WarmthFacts) -> WarmthPlan {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn w(warm: bool, f2: bool) -> WarmthPlan {
-        plan_warmth(WarmthFacts {
-            warm,
-            needs_f2_probe: f2,
-        })
-    }
-
-    #[test]
-    fn plan_warmth_exhaustive() {
-        use WarmthReason::*;
-        // (warm, f2, prepend, reason)
-        let table = [
-            (false, false, false, Cold), // MS-IME は F2 を足さない
-            (false, true, true, Cold),
-            (true, false, false, WarmFresh),
-            (true, true, false, WarmFresh),
-        ];
-        for (warm, f2, prepend, reason) in table {
-            assert_eq!(
-                w(warm, f2),
-                WarmthPlan {
-                    prepend_f2_warmup: prepend,
-                    reason
-                },
-                "warm={warm} f2={f2}"
-            );
-        }
-    }
-}
+// 決定表（warm × needs_f2_probe の全 4 通り）は `relay_plan.rs` の ME-3 golden
+// （`tests/golden/relay_warm_plan_table.txt`）が固定する。
