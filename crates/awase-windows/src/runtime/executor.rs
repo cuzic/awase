@@ -363,7 +363,7 @@ impl DecisionExecutor {
         };
         let plan = relay_plan::plan_relay(relay_plan::RelayFacts { kind, physical });
         // フックのコールバック上なので panic しうる `unreachable!` は使わず、Decision の種別ごとに
-        // plan を読む（種別と plan の対応は `plan_relay_exhaustive` が固定）。
+        // plan を読む（種別と plan の対応は `awase-windows-plans` の `tests/golden/relay_warm_plan_table.txt` が固定）。
         match decision {
             Decision::PassThrough => {
                 // physical=Suppress（KANJI 物理キー抑止）の場合は OS に届けず Consume する。

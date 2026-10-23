@@ -231,46 +231,6 @@ pub const fn plan_drain_step(
 mod tests {
     use super::*;
 
-    const KINDS: [RelayDecisionKind; 3] = [
-        RelayDecisionKind::PassThrough,
-        RelayDecisionKind::PassThroughWith,
-        RelayDecisionKind::Consume,
-    ];
-    const PHYS: [PhysicalKeyDisposition; 2] = [
-        PhysicalKeyDisposition::Allow,
-        PhysicalKeyDisposition::Suppress,
-    ];
-
-    #[test]
-    fn plan_relay_exhaustive() {
-        use PhysicalKeyDisposition::{Allow, Suppress};
-        use RelayDecisionKind::*;
-        use RelayPlan::*;
-        let table = [
-            (PassThrough, Allow, PassThroughIdle),
-            (PassThrough, Suppress, PassThroughPhysicalSuppressed),
-            (PassThroughWith, Allow, FlushWithReinject),
-            (PassThroughWith, Suppress, FlushPhysicalSuppressedNoReinject),
-            (Consume, Allow, EngineConsumed),
-            (Consume, Suppress, EngineConsumed),
-        ];
-        assert_eq!(table.len(), KINDS.len() * PHYS.len());
-        for (kind, physical, plan) in table {
-            assert_eq!(
-                plan_relay(RelayFacts { kind, physical }),
-                plan,
-                "{kind:?} {physical:?}"
-            );
-        }
-    }
-
-    /// e12: Timer だけが即時でキューを追い越し、他はキュー。
-    #[test]
-    fn e12_consume_runs_only_timer_immediately() {
-        assert_eq!(plan_consume_effect(true), EffectRoute::Immediate);
-        assert_eq!(plan_consume_effect(false), EffectRoute::Queue);
-    }
-
     /// c23（executor キューの閾値の対）: defer 側の in-flight と drain 側の待ちが、確定キー待ち以外では同じ閾値を使う。
     #[test]
     fn defer_and_drain_share_output_guard_threshold() {
@@ -290,126 +250,6 @@ mod tests {
                     assert_eq!(r, guard_ms - elapsed);
                 }
             }
-        }
-    }
-
-    /// 境界（`<` と `<=` の取り違えを検出する。リテラルで固定）。
-    #[test]
-    fn output_guard_boundary_literals() {
-        assert_eq!(output_guard_remaining_ms(49, 50), Some(1));
-        assert_eq!(output_guard_remaining_ms(50, 50), None);
-        assert_eq!(output_guard_remaining_ms(51, 50), None);
-        assert_eq!(output_guard_remaining_ms(0, 50), Some(50));
-        assert_eq!(output_guard_remaining_ms(u64::MAX, 50), None);
-        assert!(output_in_flight(49, 50));
-        assert!(!output_in_flight(50, 50));
-        assert!(!output_in_flight(51, 50));
-        let wait = |elapsed| {
-            reinject_wait_remaining(ReinjectWaitFacts {
-                confirm_held_by_tsf: false,
-                output_elapsed_ms: elapsed,
-                guard_ms: 50,
-            })
-        };
-        assert_eq!(wait(49), Some(1));
-        assert_eq!(wait(50), None);
-        assert_eq!(wait(51), None);
-    }
-
-    #[test]
-    fn reinject_wait_confirm_key_takes_priority() {
-        for elapsed in [0, 49, 50, u64::MAX] {
-            assert_eq!(
-                reinject_wait_remaining(ReinjectWaitFacts {
-                    confirm_held_by_tsf: true,
-                    output_elapsed_ms: elapsed,
-                    guard_ms: 50,
-                }),
-                Some(10)
-            );
-        }
-    }
-
-    #[test]
-    fn needs_wait_check_exhaustive() {
-        for passed in [false, true] {
-            assert!(drain_needs_wait_check(DrainItem::Held, passed));
-            assert_eq!(
-                drain_needs_wait_check(DrainItem::QueuedReinject, passed),
-                !passed
-            );
-            assert!(!drain_needs_wait_check(DrainItem::QueuedOther, passed));
-        }
-    }
-
-    #[test]
-    fn plan_drain_step_exhaustive() {
-        use DrainAction::{Execute, Park};
-        use DrainReason::*;
-        let ex = |b| Execute {
-            guard_passed_after: b,
-        };
-        // (item, guard_passed, wait, action, reason)
-        let table = [
-            (
-                DrainItem::Held,
-                false,
-                Some(7),
-                Park { remaining: 7 },
-                HeldStillGuarded,
-            ),
-            (DrainItem::Held, false, None, ex(true), HeldReleased),
-            (
-                DrainItem::Held,
-                true,
-                Some(7),
-                Park { remaining: 7 },
-                HeldStillGuarded,
-            ),
-            (DrainItem::Held, true, None, ex(true), HeldReleased),
-            (
-                DrainItem::QueuedReinject,
-                false,
-                Some(3),
-                Park { remaining: 3 },
-                ReinjectStillGuarded,
-            ),
-            (
-                DrainItem::QueuedReinject,
-                false,
-                None,
-                ex(true),
-                ReinjectGuardPassed,
-            ),
-            // guard 通過済みでは wait は読まれない（None を渡す）。
-            (
-                DrainItem::QueuedReinject,
-                true,
-                None,
-                ex(true),
-                ReinjectBatchedAfterGuard,
-            ),
-            (
-                DrainItem::QueuedOther,
-                false,
-                None,
-                ex(false),
-                NonReinjectResetsGuard,
-            ),
-            (
-                DrainItem::QueuedOther,
-                true,
-                None,
-                ex(false),
-                NonReinjectResetsGuard,
-            ),
-        ];
-        for (item, passed, wait, action, reason) in table {
-            assert_eq!(
-                plan_drain_step(item, passed, wait),
-                DrainStep { action, reason },
-                "{item:?} passed={passed} wait={wait:?}"
-            );
         }
     }
 
@@ -460,3 +300,10 @@ mod tests {
         assert!(drain_needs_wait_check(DrainItem::QueuedReinject, false));
     }
 }
+
+// ME-3: relay_plan・warm_send_plan の決定表の全列挙 golden（`tests/golden/relay_warm_plan_table.txt`）。
+// 入力の全域（u64 は境界）の決定表はこの golden が固定する。上の `mod tests` は関係（defer と drain の閾値の対）と
+// 列（park → 再開 → 一括送出）だけを書く。
+#[cfg(test)]
+#[path = "relay_warm_plan_exhaustive_tests.rs"]
+mod exhaustive;
