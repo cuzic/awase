@@ -1322,3 +1322,8 @@ mod tests {
         );
     }
 }
+
+// ME-3: plan_core の決定表の全列挙 golden（`tests/golden/physical_disposition_table.txt`）。
+#[cfg(test)]
+#[path = "physical_disposition_exhaustive_tests.rs"]
+mod exhaustive;

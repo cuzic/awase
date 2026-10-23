@@ -1301,7 +1301,7 @@ impl Runtime {
         duration_ms: u64,
         now: std::time::Instant,
     ) {
-        // 出すかどうか（継続時間・通知済み）は `decide_drift_plan` の `notify_diagnostic`。
+        // 出すかどうか（継続時間・通知済み・`Read` の収束確認〈Confirmed〉でないこと）は `decide_drift_plan` の `notify_diagnostic`。
         self.show_tray_balloon(
             "awase",
             "このアプリではIME状態を確認できません。\n入力に違和感があれば、該当のIME切替キーをもう一度押してください。",
