@@ -14,6 +14,8 @@
 判定は付けない(観測と可否表)。実機で何が起きたかの事実だけを残す。
 """
 import argparse
+import ctypes
+import ctypes.wintypes as cw
 import json
 import os
 import shutil
@@ -85,7 +87,7 @@ def awase_lines(work: Path):
 
 # ---------------------------------------------------------------- 共通の準備
 
-def open_terminal(results, out: Path, tag: str, seconds=240):
+def open_terminal(results, out: Path, tag: str, seconds=600):
     """wt を echo 付きで起動して前面化する。(hwnd, echo パス) を返す。失敗は (None, echo)。"""
     echo = out / "work" / f"{tag}.echo.txt"
     echo.parent.mkdir(parents=True, exist_ok=True)
@@ -295,6 +297,77 @@ def make_body_f16(reps):
     return body
 
 
+
+# ---------------------------------------------------------------- 相 M(スパイク M2、ci/spike-m1m2 だけ)
+
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", cw.DWORD), ("flags", cw.DWORD), ("hwndActive", cw.HWND), ("hwndFocus", cw.HWND),
+                ("hwndCapture", cw.HWND), ("hwndMenuOwner", cw.HWND), ("hwndMoveSize", cw.HWND), ("hwndCaret", cw.HWND),
+                ("rcCaret", cw.RECT)]
+
+
+def imm_read(hwnd_top):
+    """awase の read_ime_state_full と同じ経路(GetGUIThreadInfo の hwndFocus → ImmGetDefaultIMEWnd →
+    SendMessageTimeout(WM_IME_CONTROL, IMC_GETOPENSTATUS / IMC_GETCONVERSIONMODE, SMTO_ABORTIFHUNG, 50ms))を、
+    クラス名での門前払い(is_tsf_native_window)をせずに読む。トップレベル hwnd 経由の読みも併記する。"""
+    w = cw
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    imm = ctypes.WinDLL("imm32", use_last_error=True)
+    imm.ImmGetDefaultIMEWnd.restype = w.HWND
+    imm.ImmGetDefaultIMEWnd.argtypes = [w.HWND]
+    u.SendMessageTimeoutW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM, w.UINT, w.UINT, ctypes.POINTER(ctypes.c_size_t)]
+    u.SendMessageTimeoutW.restype = ctypes.c_size_t
+    u.GetGUIThreadInfo.argtypes = [w.DWORD, ctypes.POINTER(GUITHREADINFO)]
+    tid = u.GetWindowThreadProcessId(w.HWND(hwnd_top), None)
+    gti = GUITHREADINFO()
+    gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+    focus = 0
+    if u.GetGUIThreadInfo(tid, ctypes.byref(gti)):
+        focus = int(gti.hwndFocus or 0)
+
+    def ctl(h, cmd):
+        if not h:
+            return None
+        ime = imm.ImmGetDefaultIMEWnd(w.HWND(h))
+        if not ime:
+            return None
+        res = ctypes.c_size_t(0)
+        ok = u.SendMessageTimeoutW(ime, 0x0283, cmd, 0, 0x0002, 50, ctypes.byref(res))
+        return int(res.value) if ok else None
+
+    fo = ctl(focus, 0x0005)
+    fc = ctl(focus, 0x0001)
+    to = ctl(hwnd_top, 0x0005)
+    tc = ctl(hwnd_top, 0x0001)
+    return dict(focus_class=W._cls(focus) if focus else "", on=(None if fo is None else fo != 0), conv=fc,
+                top_on=(None if to is None else to != 0), top_conv=tc)
+
+
+def make_body_m2(reps):
+    """IME を IME_ON / IME_OFF / 半角/全角(0x19、IME 自身のトグル)で動かし、IMM の読みを 10 回(100ms 間隔)取ってから
+    k,a,Enter をシェルへ送り、受け取った文字(かな=開・英字=閉)で実状態を確かめる。awase は動かさない。"""
+    def body(results, out, tag, hwnd, echo, work):
+        actions = [("IME_ON", W.VK["IME_ON"]), ("IME_OFF", W.VK["IME_OFF"]), ("KANJI", W.VK["KANJI"])]
+        for i in range(reps):
+            name, vk = actions[i % len(actions)]
+            W.press(vk, 50)
+            time.sleep(0.8)
+            reads = []
+            for _ in range(10):
+                reads.append(imm_read(hwnd))
+                time.sleep(0.1)
+            base = len(W.read_rows(echo))
+            W.type_vks([0x4B, 0x41], 80)
+            time.sleep(0.5)
+            W.press(W.VK["RETURN"], 40)
+            time.sleep(1.2)
+            rows = W.read_rows(echo)[base:]
+            c = P.classify(rows)
+            truth = "open" if c["kana"] > 0 else ("closed" if c["ascii_alpha"] >= 2 else "unknown")
+            rec(results, type="m2_trial", tag=tag, i=i, action=name, truth=truth, received=P.text_of(rows), counts=c,
+                fg_is_terminal=(W.foreground_hwnd() == hwnd), reads=reads)
+    return body
+
 # ---------------------------------------------------------------- summary
 
 def md(results):
@@ -362,6 +435,8 @@ def main():
                 with_awase(results, out, dist, repo, "F-f16", True, make_body_f16(a.presses))
             elif ph == "Fn":
                 with_awase(results, out, dist, repo, "F-f16-noawase", False, make_body_f16(a.presses))
+            elif ph == "M":
+                with_awase(results, out, dist, repo, f"M-imm-{os.environ.get('M2_IME', 'gji')}", False, make_body_m2(a.presses))
             elif ph == "N":
                 with_awase(results, out, dist, repo, "N-bug113-noawase", False, make_body_bug113(a.presses))
         except Exception as e:  # 1 相の失敗で全体を止めない

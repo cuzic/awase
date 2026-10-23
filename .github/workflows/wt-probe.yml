@@ -6,7 +6,7 @@ name: wt-probe
 # 判定は付けない(観測と可否表のみ)。e2e-ime.yml には組み込まない(別のハーネスで、共有ファイルを避けるため)。
 on:
   push:
-    branches: [ci/wt-probe, ci/vocab-windows-terminal]
+    branches: [ci/spike-m1m2, ci/wt-probe, ci/vocab-windows-terminal]
   workflow_dispatch:
 
 permissions:
@@ -23,6 +23,11 @@ jobs:
   probe:
     runs-on: windows-latest
     timeout-minutes: 40
+    # スパイク M2(ci/spike-m1m2 だけ): GJI と MS-IME 本体の 2 通りで、awase なしに Windows Terminal の IMM の読みを測る(相 M)。
+    strategy:
+      fail-fast: false
+      matrix:
+        ime: [gji, msime]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,9 +46,11 @@ jobs:
 
       # e2e-ime.yml の e2e ジョブと同じ手順(GJI 導入 → 入力言語を ja-JP+GJI → ATOK プリセットの config1.db)。
       - name: Google 日本語入力をインストール
+        if: matrix.ime == 'gji'
         shell: pwsh
         run: ./tools/ci/install-gji.ps1
       - name: 入力言語を ja-JP + GJI に設定(ATOK プリセット)
+        if: matrix.ime == 'gji'
         shell: pwsh
         run: |
           $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
@@ -64,6 +71,24 @@ jobs:
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
 
+      - name: 入力言語を ja-JP + Microsoft IME に設定(スパイク M2)
+        if: matrix.ime == 'msime'
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $list = New-WinUserLanguageList ja-JP
+          Set-WinUserLanguageList -LanguageList $list -Force
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          "TIP_REGISTERED=$(Test-Path $tipKey)"
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
       - name: 環境の記録(wt.exe・pwsh・既存の Windows Terminal)
         shell: pwsh
         run: |
@@ -76,7 +101,8 @@ jobs:
         shell: pwsh
         env:
           PYTHONUTF8: '1'
-        run: python tools\e2e\wt\wt_probe.py --dist dist --out out --phases V,I,B,N,S,H
+          M2_IME: ${{ matrix.ime }}
+        run: python tools\e2e\wt\wt_probe.py --dist dist --out out --phases M --presses 60
       - name: 概要を表示
         if: always()
         shell: pwsh
@@ -84,7 +110,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wt-probe-out
+          name: wt-probe-out-${{ matrix.ime }}
           path: |
             out/summary.md
             out/results.json

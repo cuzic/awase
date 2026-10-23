@@ -1944,6 +1944,86 @@ fn main() {
         let _ = child.kill();
         return;
     }
+    // `--m1=N`(スパイク M1、ci/spike-m1m2 だけ。develop には入れない): 実 Chrome で BUG-110 型(明示 OFF・実 ON)を作り、
+    // awase の prefetch と同じ読み(`read_ime_state_full_with_timeout(300ms)`)が実状態と一致するかを測る。
+    // 試行は open(Ctrl+無変換の 400ms 後に、awase が自己注入として素通しする目印付き VK_IME_ON で実 IME だけ開け直す)と
+    // ctl(開け直さない。実 IME は閉のまま)を交互に。読みは 50ms ごとに 4.4 秒。最後に k,a で実状態を確かめる(か=開・ka=閉)。
+    if let Some(n) = args.iter().find_map(|a| {
+        a.strip_prefix("--m1=")
+            .and_then(|v| v.parse::<usize>().ok())
+    }) {
+        const INJECTED_MARKER: usize = 0x4B45_594D;
+        let hidden = |vk: u16, down: bool| {
+            let input = INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: VIRTUAL_KEY(vk),
+                        wScan: 0,
+                        dwFlags: if down {
+                            KEYBD_EVENT_FLAGS(0)
+                        } else {
+                            KEYEVENTF_KEYUP
+                        },
+                        time: 0,
+                        dwExtraInfo: INJECTED_MARKER,
+                    },
+                },
+            };
+            unsafe {
+                let _ = SendInput(&[input], size_of::<INPUT>() as i32);
+            }
+        };
+        for i in 0..n {
+            let kind = if i % 2 == 0 { "open" } else { "ctl" };
+            p.focus_lost = false;
+            bring_to_front();
+            if !ensure(&mut p, Setup::Kana, awase) {
+                p.log.line(&format!(
+                    "M1_TRIAL i={i} kind={kind} truth=INVALID reason=setup"
+                ));
+                continue;
+            }
+            sleep(300);
+            send_ctrl_muhenkan();
+            let t0 = Instant::now();
+            let mut reopen_ms: Option<u64> = None;
+            while t0.elapsed() < Duration::from_millis(4400) {
+                let t = u64::try_from(t0.elapsed().as_millis()).unwrap_or(0);
+                if kind == "open" && reopen_ms.is_none() && t >= 400 {
+                    hidden(0x16, true);
+                    sleep(50);
+                    hidden(0x16, false);
+                    reopen_ms = Some(t);
+                    p.log.line(&format!("M1_REOPEN i={i} t={t}"));
+                    continue;
+                }
+                // SAFETY: awase の prefetch と同じ読み取り専用の IMM 呼び出し(前面の窓へ IMC_GET* を送るだけ)。
+                let s = unsafe {
+                    awase_windows::ime::read_ime_state_full_with_timeout(Duration::from_millis(300))
+                };
+                let top = ime_control(0x0005, 0);
+                p.log.line(&format!(
+                    "M1_READ i={i} kind={kind} t={t} on={:?} conv={:?} class={:?} timed_out={} top_open={top:?}",
+                    s.ime_on,
+                    s.conversion_mode,
+                    s.focused_class.as_deref().unwrap_or(""),
+                    s.probe_timed_out
+                ));
+                sleep(50);
+            }
+            let open_late = ime_control(0x0005, 0);
+            let (c, text, process) = p.probe();
+            p.log.line(&format!(
+                "M1_TRIAL i={i} kind={kind} reopen_ms={reopen_ms:?} truth={:?} text={text:?} process={process} top_open_at_probe={open_late:?} focus_lost={}",
+                c, p.focus_lost
+            ));
+            p.log.line(&format!("RESULT PASS: m1 i={i}"));
+        }
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
     // `--close-ime=N`(BUG-172 の実 Chrome 確認): IME を ON にそろえた後、実 IME を WM_IME_CONTROL で直接閉じ、
     // 3 秒待ってからかな単打(k,a)を打って結果を見る。閉じたまま `ka`/ローマ字が出れば BUG-172 が実 Chrome でも起きる。
     // `open=` は awase と同じ経路(IMC_GETOPENSTATUS)の読み取り値(TsfNative では信頼できない可能性がある)。
