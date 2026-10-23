@@ -6299,6 +6299,11 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
              runtime/mod.rs::on_ime_apply_completeが担い、そちらに#[instrument]済み。",
         ),
         (
+            "focus/classifier.rs",
+            "唯一の計装対象だった `ForceOverrides::injection_hint` を Tsf 注入経路の撤去（2026-10-22）で\
+             削除した。残りは設定の照合だけで、相関情報を持つ処理単位が無い。",
+        ),
+        (
             "tsf/observer.rs",
             "ほぼ全てatomicのアクセサ（notify/baseline/has_changed/reset/value等）で、\
              相関情報を持つ意味のある処理単位が無い。",

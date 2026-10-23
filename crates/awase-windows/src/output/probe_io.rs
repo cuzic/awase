@@ -365,7 +365,6 @@ impl DispatchResult {
 /// `platform.rs` の `dispatch_probe_actions` を置き換える。
 /// `io: &impl ProbeIo` で Win32 副作用を注入することでテスト可能。
 #[expect(clippy::too_many_lines)]
-#[expect(clippy::cognitive_complexity)]
 #[tracing::instrument(level = "debug", skip_all)]
 pub(crate) fn dispatch_probe_actions<M, I>(
     machine: &mut M,

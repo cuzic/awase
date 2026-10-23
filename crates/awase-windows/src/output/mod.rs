@@ -976,7 +976,7 @@ impl Output {
     /// 呼び出し元は `step_probe` の `Ended` アームただ1つ（machine が drop される
     /// 唯一の点）。`cancel_probe` は別途、段を畳んで捨てる形で同じ資源を後始末する。
     fn finish_probe_stage(
-        &mut self,
+        &self,
         end: probe_io::StageEnd,
     ) -> Option<timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>>
     {
