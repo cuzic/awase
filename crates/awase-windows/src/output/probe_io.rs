@@ -3,17 +3,16 @@
 //! `Output` が本番実装。`#[cfg(test)]` ブロック内の `FakeProbeIo` がテスト実装。
 //! `dispatch_probe_actions` は `ProbeIo` を受け取り、Win32 呼び出しを直接行わない。
 
-use crate::output::{KeyInjector, Output, VkMarker, VkSequence, WarmupOutcome};
+use crate::output::{KeyInjector, Output, VkMarker, VkSequence};
 use crate::state::event_origin::Generation;
 use crate::tsf::gji_fsm::StageEndReason;
 use crate::tsf::literal_facts::{
-    DetectEvidence, DetectPath, DetectRoute, LiteralDetectFacts, LiteralDetectRecord,
+    DetectEvidence, DetectPath, DetectRoute, DetectTarget, LiteralDetectFacts, LiteralDetectRecord,
     LiteralDetectTrace, LiteralDetectTraceItem, LiteralVerdict,
 };
 use crate::tsf::output::ColdReason;
 use crate::tsf::warmup::mozc_compose_check_fsm::MozcComposeTarget;
 use crate::tsf::warmup::probe_fsm::DeferredVk;
-use crate::tsf::TsfGateState;
 use awase::types::VkCode;
 use win32_async;
 
@@ -22,23 +21,10 @@ use win32_async;
 /// - `Output` が本番実装（Win32 SendInput・グローバル原子値の操作）
 /// - `FakeProbeIo` がテスト実装（状態変化をフラグで記録し、返値を制御）
 pub(crate) trait ProbeIo {
-    /// TSF ゲートが `Bypass` 状態かどうかを返す。
-    fn gate_is_bypass(&self) -> bool;
-    /// TSF 送信パイプラインを実行し、backspace 相当数を返す。
-    fn transmit_tsf(
-        &self,
-        romaji: &str,
-        chars: &[(VkCode, bool)],
-        outcome: &WarmupOutcome,
-    ) -> usize;
     /// Chrome バッチ送信を実行する。
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]);
-    /// IME セッション最初の1文字の per-VK confirm ループ専用（BUG-24 追補）: 1 VK の
-    /// DOWN+UP を単独の SendInput で送信する。`transmit_tsf` と異なり F2 prepend を行わない。
-    fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool);
-    /// Chrome per-VK confirm 専用: 1 VK の
+    /// per-VK confirm 専用: 1 VK の
     /// DOWN+UP を `VkMarker::InjectedWithScan`（scan code 付き）で単独送信する。
-    /// `send_single_tsf_vk` の Chrome版。
     fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool);
     /// deferred VKs を送信する。段末（`Output::flush_pending_deferred_vks`）専用。
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker);
@@ -67,30 +53,9 @@ pub(crate) trait ProbeIo {
 }
 
 impl ProbeIo for Output {
-    fn gate_is_bypass(&self) -> bool {
-        self.tsf_gate.state() == TsfGateState::Bypass
-    }
-
-    fn transmit_tsf(
-        &self,
-        romaji: &str,
-        chars: &[(VkCode, bool)],
-        outcome: &WarmupOutcome,
-    ) -> usize {
-        // カタカナ/英数 charset への追従送信（VK_DBE_KATAKANA 等の leading warmup）は
-        // BUG-19 のロックイン事故を受けて撤去した（`docs/known-bugs.md` BUG-19 参照）。
-        self.warmup_coord.note_stage_injection();
-        crate::output::TsfSendPipeline::transmit(romaji, chars, outcome)
-    }
-
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]) {
         self.warmup_coord.note_stage_injection();
         Self::send_romaji_batch_immediate(romaji, chars);
-    }
-
-    fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool) {
-        self.warmup_coord.note_stage_injection();
-        KeyInjector::send_vk_pair(vk, needs_shift, VkMarker::Tsf);
     }
 
     fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool) {
@@ -151,11 +116,6 @@ impl ProbeIo for Output {
     fn request_mozc_compose_check(&self, target: MozcComposeTarget) {
         *self.mozc_compose_request.borrow_mut() = Some(target);
     }
-}
-
-/// `Option<u32>` の IMC conversion mode 値をログ用文字列にフォーマットする。
-fn fmt_conv(conv: Option<u32>) -> String {
-    conv.map_or_else(|| "none".to_owned(), |v| format!("0x{v:08X}"))
 }
 
 /// [`Output::start_ms_ime_ready_poll`] の `with_app` クロージャ戻り値。
@@ -358,18 +318,14 @@ impl Output {
     }
 }
 
-fn plan_skipped_record(
-    cold_seq: Generation,
-    target: crate::tsf::warmup::probe_fsm::TransmitTarget,
-    consecutive_before: u32,
-) -> LiteralDetectRecord {
+fn plan_skipped_record(cold_seq: Generation, consecutive_before: u32) -> LiteralDetectRecord {
     LiteralDetectRecord {
         cold_seq,
         facts: LiteralDetectFacts {
             verdict: LiteralVerdict::PlanSkippedLiteral,
             route: DetectRoute::PlanDecision,
             path: DetectPath::Word,
-            target: target.into(),
+            target: DetectTarget::Chrome,
             vk: None,
             idx: 0,
             last_idx: 0,
@@ -421,7 +377,7 @@ where
     M: crate::tsf::warmup::tickable_fsm::TickableFsm + ?Sized,
     I: ProbeIo,
 {
-    use crate::tsf::warmup::probe_fsm::{ProbeAction, TransmitTarget};
+    use crate::tsf::warmup::probe_fsm::ProbeAction;
     use std::collections::VecDeque;
 
     let mut queue: VecDeque<ProbeAction> = initial_actions.into();
@@ -435,85 +391,35 @@ where
                     cold_seq,
                     plan,
                     romaji,
-                    target,
                 } => {
                     let chars: VkSequence = romaji
                         .chars()
                         .filter_map(crate::output::resolve_ascii_to_vk)
                         .collect();
-                    match target {
-                        TransmitTarget::Tsf => {
-                            if io.gate_is_bypass() {
-                                tracing::debug!(
-                                    "[do-transmit] gate=Bypass, skipping TSF injection"
-                                );
-                                break 'stage Some(StageEndReason::GateBypass);
-                            }
-                            if chars.is_empty() {
-                                break 'stage Some(StageEndReason::NoResolvableVk);
-                            }
-                            // plan は FSM の enter_transmit_tsf が confirm 時点の env で確定済み。
-                            // dispatcher は再導出せずそのまま使う。
-                            let outcome = WarmupOutcome { cold_seq };
-                            {
-                                // 診断ログ: IMC_GETCONVERSIONMODE は SendMessageTimeoutW を呼ぶため、
-                                // with_app 再入を避けるため async タスクへオフロードする (Step 3)。
-                                // ログ出力タイミングが数 ms 遅れるが診断用途のため許容。
-                                let gji_idle = crate::tsf::observer::gji_idle_ms();
-                                let romaji_owned: String = romaji.clone();
-                                let chars_len = chars.len();
-                                win32_async::spawn_local(async move {
-                                    let conv =
-                                        crate::ime::get_ime_conversion_mode_raw_timeout_async(10)
-                                            .await;
-                                    tracing::debug!(
-                                    "[h1-send] cold={cold_seq} romaji={romaji_owned:?} chars={chars_len} \
-                                     gji_idle={gji_idle}ms conv={} ROMAN={} NATIVE={}",
-                                    fmt_conv(conv),
-                                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
-                                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
-                                    cold_seq = cold_seq.value(),
-                                );
-                                });
-                            }
-                            // ADR-270: Mozc の最初の送信の後に、入力中の文字ができたかを確かめる。
-                            // まだ入力中の文字が無いことを確かめるため、送信の直前に対象を決める。
-                            let mozc_check = io.mozc_compose_precheck(&romaji, cold_seq);
-                            let _ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
-                            // 注入の記録は io.transmit_tsf 自身が note_stage_injection で行う。
-                            // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
-                            if !plan.needs_literal {
-                                trace
-                                    .0
-                                    .push(LiteralDetectTraceItem::Verdict(plan_skipped_record(
-                                        cold_seq,
-                                        target,
-                                        io.consecutive_count(),
-                                    )));
-                            }
-                            // `needs_literal=true` はここへ来ない(per-VK confirm が先に取る。ECRS MB-01)。
-                            if let Some(target) = mozc_check {
-                                io.request_mozc_compose_check(target);
-                            }
-                            break 'stage Some(StageEndReason::ProbeDone);
-                        }
-                        TransmitTarget::Chrome => {
-                            // plan.needs_literal は enter_transmit_chrome が env.gji_active で確定済み。
-                            // 検出ベースラインは送信前に確定させること。
-                            io.transmit_chrome(&romaji, &chars);
-                            // 注入の記録は io.transmit_chrome 自身が note_stage_injection で行う。
-                            if !plan.needs_literal {
-                                trace
-                                    .0
-                                    .push(LiteralDetectTraceItem::Verdict(plan_skipped_record(
-                                        cold_seq,
-                                        target,
-                                        io.consecutive_count(),
-                                    )));
-                            }
-                            break 'stage Some(StageEndReason::ProbeDone);
-                        }
+                    if chars.is_empty() {
+                        break 'stage Some(StageEndReason::NoResolvableVk);
                     }
+                    // ADR-270: Mozc の最初の送信の後に、入力中の文字ができたかを確かめる。
+                    // まだ入力中の文字が無いことを確かめるため、送信の直前に対象を決める。
+                    // (Tsf 注入経路の撤去〈2026-10-22〉までは Tsf の送信だけがこれを呼んでいた。)
+                    let mozc_check = io.mozc_compose_precheck(&romaji, cold_seq);
+                    // plan.needs_literal は tsf_probe_coro_body が env.gji_active で確定済み。
+                    io.transmit_chrome(&romaji, &chars);
+                    // 注入の記録は io.transmit_chrome 自身が note_stage_injection で行う。
+                    // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
+                    if !plan.needs_literal {
+                        trace
+                            .0
+                            .push(LiteralDetectTraceItem::Verdict(plan_skipped_record(
+                                cold_seq,
+                                io.consecutive_count(),
+                            )));
+                    }
+                    // `needs_literal=true` はここへ来ない(per-VK confirm が先に取る。ECRS MB-01)。
+                    if let Some(target) = mozc_check {
+                        io.request_mozc_compose_check(target);
+                    }
+                    break 'stage Some(StageEndReason::ProbeDone);
                 }
 
                 ProbeAction::TransmitSingleVk {
@@ -524,19 +430,8 @@ where
                     is_last,
                     idx,
                     last_idx,
-                    target,
                 } => {
                     debug_assert_eq!(is_last, idx == last_idx);
-                    // `gate_is_bypass()` は TSF composition context の readiness ゲートで
-                    // Chrome には適用されない（Chrome は常に gate=Bypass 運用）。
-                    // Tsf 向けのときだけ確認する。
-                    if target == TransmitTarget::Tsf && idx == 0 && io.gate_is_bypass() {
-                        tracing::debug!(
-                        "[do-transmit] cold={cold_seq} gate=Bypass, skipping per-VK TSF injection",
-                        cold_seq = cold_seq.value(),
-                    );
-                        break 'stage Some(StageEndReason::GateBypass);
-                    }
                     // ベースラインは SendInput **前**に取得する（送信中の SHOW/I-O 変化を見逃さないため）。
                     // TSF/Chrome 共通で write-bytes 閾値 + 候補ウィンドウ SHOW の OR 判定を使う
                     // （BUG-30 で target 分岐を撤去して統一）。
@@ -546,19 +441,16 @@ where
                     let detector = crate::tsf::probe::LiteralDetector::new_with_pre_send_baseline(
                         crate::tsf::observer::gji_write_bytes(),
                     );
-                    // 注入の記録は send_single_*_vk 自身が note_stage_injection で行う。
+                    // 注入の記録は send_single_chrome_vk 自身が note_stage_injection で行う。
                     // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
-                    match target {
-                        TransmitTarget::Tsf => io.send_single_tsf_vk(vk, needs_shift),
-                        TransmitTarget::Chrome => io.send_single_chrome_vk(vk, needs_shift),
-                    }
+                    io.send_single_chrome_vk(vk, needs_shift);
                     let deadline_ms = crate::hook::current_tick_ms() + timeout_ms;
                     trace.0.push(LiteralDetectTraceItem::VkSent {
                         cold_seq: cold_seq.value(),
                         vk: vk.0,
                         idx,
                         last_idx,
-                        target: target.into(),
+                        target: DetectTarget::Chrome,
                     });
                     machine.apply_vk_sent(detector, deadline_ms);
                 }
@@ -655,14 +547,7 @@ where
 mod tests {
     use super::*;
     use crate::tsf::probe_bridge::OutputActiveGuard;
-    /// `make_gji_machine()` 経由で `plan.needs_literal=true` を dispatch するテストは
-    /// `GjiWarmupCoro::apply_transmit_done`（`literal_detect_guard`）を通じて
-    /// プロセス全体で共有される `OUTPUT_GATE`（`tsf/probe_bridge.rs`）を実際に
-    /// ミューテートする（`TsfProbeCoro` 用の `make_chrome_machine()` と異なり
-    /// `noop_for_test()` を経由しない）。`tsf::warmup::ms_ime_ready_coro` と共有する
-    /// ロックで直列化する（BUG-65 追補、詳細は `OUTPUT_GATE_TEST_LOCK` のdoc参照）。
-    use crate::tsf::probe_bridge::OUTPUT_GATE_TEST_LOCK as GATE_TEST_LOCK;
-    use crate::tsf::warmup::probe_fsm::{ProbeAction, TransmitPlan, TransmitTarget};
+    use crate::tsf::warmup::probe_fsm::{ProbeAction, TransmitPlan};
     use std::cell::Cell;
 
     // ── gji_reinit_poll_tick_outcome テスト（ADR-101/BUG-74 コードレビュー指摘:
@@ -671,12 +556,8 @@ mod tests {
 
     /// テスト用フェイク ProbeIo。Win32 副作用を no-op にし、呼び出しをフラグで記録する。
     struct FakeProbeIo {
-        bypass: bool,
-        tsf_transmit_result: usize,
         consecutive: u32,
-        transmit_tsf_called: Cell<bool>,
         transmit_chrome_called: Cell<bool>,
-        send_single_tsf_vk_call_count: Cell<u32>,
         send_single_chrome_vk_call_count: Cell<u32>,
         deferred_vks_called: Cell<bool>,
         set_raw_literal_called: Cell<bool>,
@@ -687,12 +568,8 @@ mod tests {
     impl Default for FakeProbeIo {
         fn default() -> Self {
             Self {
-                bypass: false,
-                tsf_transmit_result: 1,
                 consecutive: 0,
-                transmit_tsf_called: Cell::new(false),
                 transmit_chrome_called: Cell::new(false),
-                send_single_tsf_vk_call_count: Cell::new(0),
                 send_single_chrome_vk_call_count: Cell::new(0),
                 deferred_vks_called: Cell::new(false),
                 set_raw_literal_called: Cell::new(false),
@@ -703,24 +580,8 @@ mod tests {
     }
 
     impl ProbeIo for FakeProbeIo {
-        fn gate_is_bypass(&self) -> bool {
-            self.bypass
-        }
-        fn transmit_tsf(
-            &self,
-            _romaji: &str,
-            _chars: &[(VkCode, bool)],
-            _outcome: &WarmupOutcome,
-        ) -> usize {
-            self.transmit_tsf_called.set(true);
-            self.tsf_transmit_result
-        }
         fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
             self.transmit_chrome_called.set(true);
-        }
-        fn send_single_tsf_vk(&self, _vk: VkCode, _needs_shift: bool) {
-            self.send_single_tsf_vk_call_count
-                .set(self.send_single_tsf_vk_call_count.get() + 1);
         }
         fn send_single_chrome_vk(&self, _vk: VkCode, _needs_shift: bool) {
             self.send_single_chrome_vk_call_count
@@ -754,17 +615,6 @@ mod tests {
         )
     }
 
-    fn make_gji_machine() -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
-        let probe = crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL);
-        crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro::new(
-            "ka",
-            Generation::INITIAL,
-            probe,
-            ColdReason::FocusChange,
-            false,
-        )
-    }
-
     fn dispatch_for_test<M>(
         machine: &mut M,
         actions: Vec<ProbeAction>,
@@ -782,7 +632,7 @@ mod tests {
             verdict,
             route: DetectRoute::CheckNow,
             path: DetectPath::Word,
-            target: crate::tsf::literal_facts::DetectTarget::Tsf,
+            target: DetectTarget::Chrome,
             vk: None,
             idx: 0,
             last_idx: 0,
@@ -796,7 +646,6 @@ mod tests {
         let mut machine = make_chrome_machine();
         let result = dispatch_for_test(&mut machine, vec![ProbeAction::Done], &io);
         assert!(result.is_done());
-        assert!(!io.transmit_tsf_called.get());
         assert!(!io.transmit_chrome_called.get());
     }
 
@@ -811,42 +660,10 @@ mod tests {
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
             romaji: "ka".to_string(),
-            target: TransmitTarget::Chrome,
         }];
         let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(io.transmit_chrome_called.get());
-        assert!(!io.transmit_tsf_called.get());
-    }
-
-    #[test]
-    fn tsf_transmit_bypass_returns_true_without_transmit() {
-        let io = FakeProbeIo {
-            bypass: true,
-            ..Default::default()
-        };
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                needs_literal: false,
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            romaji: "ka".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(result.is_done());
-        assert!(
-            matches!(
-                result,
-                DispatchResult::Ended(StageEnd {
-                    reason: StageEndReason::GateBypass
-                })
-            ),
-            "gate=Bypass での batch Transmit は GateBypass 理由で終わるはず: {result:?}"
-        );
-        assert!(!io.transmit_tsf_called.get());
     }
 
     // ── ADR-103 決定4: dispatch_probe_actions の唯一の出口（StageEndReason）──
@@ -854,7 +671,7 @@ mod tests {
     #[test]
     fn no_resolvable_vk_ends_stage_without_transmit() {
         let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
+        let mut machine = make_chrome_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
@@ -862,7 +679,6 @@ mod tests {
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
             romaji: String::new(),
-            target: TransmitTarget::Tsf,
         }];
         let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(
@@ -874,13 +690,13 @@ mod tests {
             ),
             "romaji が空(chars 解決不能)の Transmit は NoResolvableVk で終わるはず: {result:?}"
         );
-        assert!(!io.transmit_tsf_called.get());
+        assert!(!io.transmit_chrome_called.get());
     }
 
     #[test]
     fn probe_action_done_ends_stage_with_probe_done_reason() {
         let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
+        let mut machine = make_chrome_machine();
         let result = dispatch_for_test(&mut machine, vec![ProbeAction::Done], &io);
         assert!(
             matches!(
@@ -893,50 +709,11 @@ mod tests {
         );
     }
 
+    /// per-VK 列は段を終わらせず、1 VK を送って次 tick を待つ。
     #[test]
-    fn per_vk_idx_zero_gate_bypass_ends_stage_without_sending() {
-        let io = FakeProbeIo {
-            bypass: true,
-            ..Default::default()
-        };
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::TransmitSingleVk {
-            cold_seq: Generation::INITIAL,
-            vk: VkCode(0x4B),
-            needs_shift: false,
-            timeout_ms: 100,
-            is_last: false,
-            idx: 0,
-            last_idx: 2,
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(
-            matches!(
-                result,
-                DispatchResult::Ended(StageEnd {
-                    reason: StageEndReason::GateBypass
-                })
-            ),
-            "per-VK idx==0 での gate=Bypass は GateBypass で終わるはず: {result:?}"
-        );
-        assert_eq!(
-            io.send_single_tsf_vk_call_count.get(),
-            0,
-            "gate=Bypass のとき idx==0 は1文字も送信してはいけない"
-        );
-    }
-
-    /// ADR-103 決定4-c（INV-E）: per-VK 列の途中（idx>0）で gate が Bypass に
-    /// 落ちても列は捨てられず、gate を再確認せず送り切る。中断が最も破壊的
-    /// （送信済み VK は生文字として残り、未送信 VK は永久に送られない）ため。
-    #[test]
-    fn per_vk_idx_nonzero_continues_sending_even_if_gate_is_bypass() {
-        let io = FakeProbeIo {
-            bypass: true,
-            ..Default::default()
-        };
-        let mut machine = make_gji_machine();
+    fn per_vk_sends_one_vk_and_continues() {
+        let io = FakeProbeIo::default();
+        let mut machine = make_chrome_machine();
         let actions = vec![ProbeAction::TransmitSingleVk {
             cold_seq: Generation::INITIAL,
             vk: VkCode(0x41),
@@ -945,60 +722,13 @@ mod tests {
             is_last: false,
             idx: 1,
             last_idx: 2,
-            target: TransmitTarget::Tsf,
         }];
         let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(
             matches!(result, DispatchResult::Continue),
-            "idx>0 では gate を再確認せず列を継続するはず（段を終わらせない）: {result:?}"
+            "per-VK は段を終わらせず列を継続するはず: {result:?}"
         );
-        assert_eq!(
-            io.send_single_tsf_vk_call_count.get(),
-            1,
-            "idx>0 では gate=Bypass でも送信は行われるはず"
-        );
-    }
-
-    #[test]
-    fn tsf_transmit_skips_literal_detect_when_gji_long_idle() {
-        // plan.needs_literal=false のとき (gji_long_idle で decide_transmit_plan が設定)
-        // LiteralDetect を入れない → Done を即返す。
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                needs_literal: false, // gji_long_idle + !is_tsf_mode → false
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            romaji: "ka".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(
-            result.is_done(),
-            "should be Done — LiteralDetect must be skipped when GJI is long-idle"
-        );
-        assert!(io.transmit_tsf_called.get());
-    }
-
-    #[test]
-    fn tsf_transmit_calls_transmit_tsf_and_mark_warm() {
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                needs_literal: false,
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            romaji: "ka".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(result.is_done());
-        assert!(io.transmit_tsf_called.get());
-        assert!(!io.transmit_chrome_called.get());
+        assert_eq!(io.send_single_chrome_vk_call_count.get(), 1);
     }
 
     // NOTE: `raw_tsf_literal_recovery_skips_set_literal_when_consecutive`（consecutive>0 で
@@ -1008,29 +738,9 @@ mod tests {
     // 呼び、romaji を空にして BS のみ送る（terminal に 'k'(literal)+composition が残ると
     // 文字化けするため）」という設計に意図的に変更された。この変更時に古いテストが
     // 削除されず、単一の生産コード経路に対して直下の
-    // `raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark`（set_raw_literal を
+    // `raw_tsf_literal_recovery_consecutive_gives_up_with_cold_mark`（set_raw_literal を
     // 呼ぶことを期待）と正反対の期待値を持つ矛盾したテストペアが残っていた。
     // 現在の意図（84e6942）と一致する後者のみを残す。
-
-    #[test]
-    fn tsf_mode_cold_start_nc_not_fired_not_long_idle_skips_literal_detect() {
-        // nc_fired=false + is_tsf_mode=true + !gji_long_idle かつ needs_literal=false のとき、
-        // LiteralDetect フェーズへ入らず Done を即返す。
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: Generation::INITIAL,
-            plan: TransmitPlan {
-                needs_literal: false,
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            romaji: "ko".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_for_test(&mut machine, actions, &io);
-        assert!(result.is_done(), "plan.needs_literal=false → Done を即返す");
-        assert!(io.transmit_tsf_called.get());
-    }
 
     // 旧 gji_resumed_skips_literal_detect_to_prevent_false_positive テストは
     // ProbeObservations.gji_resumed 撤去（BUG-24 追補9）に伴い削除した。この signal は
@@ -1045,7 +755,7 @@ mod tests {
     #[test]
     fn raw_tsf_literal_recovery_sets_literal_and_marks_cold_when_first_time() {
         let io = FakeProbeIo::default(); // consecutive == 0
-        let mut machine = make_gji_machine();
+        let mut machine = make_chrome_machine();
         let actions = vec![
             ProbeAction::RawTsfLiteralRecovery {
                 cold_seq: Generation::INITIAL,
@@ -1072,14 +782,14 @@ mod tests {
     }
 
     #[test]
-    fn raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark() {
-        // TSF mode でも consecutive > 0 のときは諦める。
+    fn raw_tsf_literal_recovery_consecutive_gives_up_with_cold_mark() {
+        // consecutive > 0 のときは諦める。
         // ただし terminal に 'k'(literal) + composition が残らないよう BS のみ送る (romaji 再送なし)。
         let io = FakeProbeIo {
             consecutive: 1, // already attempted once
             ..Default::default()
         };
-        let mut machine = make_gji_machine();
+        let mut machine = make_chrome_machine();
         let actions = vec![
             ProbeAction::RawTsfLiteralRecovery {
                 cold_seq: Generation::INITIAL,

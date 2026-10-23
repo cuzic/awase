@@ -12,7 +12,7 @@
 | [0001](0001-ime-detection-strategy.md) | IME 状態検出戦略 | 履歴文書(2026-05-19 時点のスナップショット)。方針(shadow・3値意味論・IMM能力キャッシュ・TSFネイティブ識別)は… |
 | [0002](0002-tsf-coldstart-warmup.md) | TSF cold-start warmup 戦略 | 履歴文書(2026-05-19 時点のスナップショット)。「現在の設計」節の warmup(eager F2 送信+EAGER_SETT… |
 | [0003](0003-chrome-vk-injection.md) | Chrome VK injection と F2 warmup | 実験の記録(「実験中」は解消済み、2026-10-04 確認)。F2 先行送信+probe(案A)と send_f2_via_sendm… |
-| [0004](0004-injection-mode-design.md) | InjectionMode 三分岐設計 | 採用・実装済み(InjectionMode の Unicode/Vk/Tsf 3分岐は state/injection_mode.rs … |
+| [0004](0004-injection-mode-design.md) | InjectionMode 三分岐設計 | 撤去済み(2026-10-22): Unicode は ADR-276、Tsf と `force_tsf` も撤去し型ごと削除(Batched VK だけ) |
 | [0005](0005-focus-classification.md) | フォーカス判定と AppKind 設計 | 採用・実装済み(一部置換、2026-10-04 確認)。AppKind は現行 Win32/TsfNative/Uwp(focus/ki… |
 | [001](001-ime-reliability-detection.md) | UIA FrameworkId ベースの IME 信頼度判定 | 置換(部分)。UIA FrameworkId による Reliable/Unreliable/Unknown の信頼度(ImeRelia… |
 | [002](002-input-processing-output-layers.md) | 入力・処理・出力の3層分離 | 採用・実装済み(InputTracker は src/engine/input_tracker.rs に現存、2026-10-04 確認)。 |
@@ -96,7 +96,7 @@
 | [080](080-ime-actuation-lifecycle-and-epoch-fenced-drift-correction.md) | IME actuation（VK送信/IMM32呼び出し）を型付きトランザクション化し、closed-loop/open-loop の区別と有限終端を構造で強制する | Phase 1 実装済み(2026-10-04 確認)。FeedbackPolicy(Read/Blind)・decide_actuat… |
 | [081](081-per-profile-capability-driver-decomposition.md) | IME 制御ロジックをプロファイル別 capability 駆動ドライバへ分離し、汎用ループの分岐面を止める | 完了(2026-10-22 撤去): 縮小して残っていた `ImeProfileDriver` trait と ZST ドライバを撤去(ADR-090 追補)… |
 | [082](082-journal-structured-replay-and-event-origin.md) | `journal.rs` を事後ログから構造化リプレイ基盤へ格上げ — 出所(source)・世代(epoch)の規律を横断型 `EventOrigin` 1箇所に統合 | 一部実装(決定1・決定2・Phase 0.5 は実装済み、リプレイの全面適用は未完、2026-10-04 コード確認)。`EventOr… |
-| [083](083-injection-mode-per-vk-unification-investigation.md) | `InjectionMode`（文字送信経路）を GJI 専用に per-VK 確認方式へ統一する構想の検討記録 | 見送り(`InjectionMode` のGJI専用 per-VK 統一は NO-GO のまま、2026-10-04 時点で統一は未実施… |
+| [083](083-injection-mode-per-vk-unification-investigation.md) | `InjectionMode`（文字送信経路）を GJI 専用に per-VK 確認方式へ統一する構想の検討記録 | 見送り(統一は NO-GO のまま)。2026-10-22: Unicode・Tsf の撤去で注入は Batched VK だけになり解消 |
 | [084](084-conv-mode-single-ownership-and-width-ssot.md) | conv-mode の単一所有権と「出力の幅を IME に委譲しない」原則 — 物理シフト面・belief キャッシュ・送信保証の責務再配置 | 北極星仕様のまま・一部の前提が変更。`actuate_conv_mode` 単一窓口(INV-1)は現存(output/conv_act… |
 | [085](085-conv-mode-force-policy.md) | `conv_mode_policy = force` — cold 転換時に awase トレイの目標 conv モードを強制する opt-in 設定 | 撤去済み(ADR-094 で `conv_mode_policy` 設定と force ポリシーを全撤去、2026-08-17)。現行コ… |
 | [086](086-force-write-trigger-and-target-identity.md) | force-write の単一規律 — 「観測を信じない書き込み」のトリガー条件と書き込みターゲット同一性 | 一部撤去・一部現存(2026-10-06 裏取り): force-write のトリガー側と reassert・force-on は ADR-094・ADR-179 で撤去、ActuationTarget(ime.rs) |
@@ -282,7 +282,7 @@
 | [273](273-indicator-evidence-belief-wiring.md) | 入力インジケーターの証拠源(字形。メニューは断念・撤去)を belief へ入れる配線の入口条件と形(ADR-271 の第 3・第 4 段階) | 起草(2026-10-20)。段階 1(核の実装・配線なし)実装中。Opus 4 ラウンドで収束(確定可) |
 | [274](274-split-windows-core-by-role.md) | awase-windows-core を役割ごとの複数の core に分け、名前で責務が分かるようにする(葉から剥がす) | 段階 0・1・2 はすべて完了、core は 7 crate + 殻(2026-10-21) |
 | [275](275-platform-state-core-move-deferred.md) | platform_state.rs・sync_actuation.rs の core への移動は見送る(記録系の強制を強める小 PR を 3 本) | 決定: 移動は見送り。Opus レビュー反映済み |
-| [276](276-remove-unicode-injection.md) | Unicode 注入(既定モードと Tsf の eager かな送信)を撤去する(ADR-083 の申し送りを覆す) | 実装済み(P1〜P4、#767・#768。純減約 916 行)。追補(2026-10-22): `force_vk` 退役・`[injection_mode]` 読み込み撤去 |
+| [276](276-remove-unicode-injection.md) | Unicode 注入(既定モードと Tsf の eager かな送信)を撤去する(ADR-083 の申し送りを覆す) | 実装済み(P1〜P4、#767・#768。純減約 916 行)。追補(2026-10-22): `force_vk` 退役・`[injection_mode]` 読み込み撤去。追補 2: Tsf 注入経路・`force_tsf` 撤去(ADR-0004) |
 | [277](277-pseudo-ime-transition-table-and-ablation.md) | 擬似 IME の遷移を 1 つの表にまとめ、全列挙・ファズ・防御の ablation を同じ表で回す | 起草・段階 1・2 実装 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029

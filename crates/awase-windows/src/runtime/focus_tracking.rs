@@ -86,13 +86,6 @@ impl Runtime {
         let (process_changed, prev_pid) = self.advance_focus_tracking(&classified, false);
         let next = self.focus_identity_snapshot();
         self.record_focus_transition_if_changed(&prev, &next, prev_started_ms);
-        // injection_mode を push — advance_focus_tracking() で last_focus_info が更新された後に
-        // 呼ぶことで injection_hint() が新ウィンドウ (WezTerm 等) を正しく参照できる。
-        {
-            let hint = self.platform.injection_hint();
-            let new_mode = crate::output::types::injection_mode_for(hint);
-            self.platform.update_injection_mode(new_mode);
-        }
         if process_changed {
             self.on_focus_process_changed(&classified, prev_pid, &prev);
         }
@@ -128,12 +121,6 @@ impl Runtime {
         // `enter_focus_scope` も走っておらず live 側 epoch も 0 のままなので、両側は
         // 既定値で一致したままになる（BUG-102 の desync は起きない）。
         self.sync_initial_focus_scope(&classified, tick_ms);
-
-        // injection_mode の再計算は呼び出し元に残す（指摘9: `on_focus_process_changed`
-        // とは呼び出し順序が異なるため `enter_focus_scope` には含めない）。
-        let hint = self.platform.injection_hint();
-        let new_mode = crate::output::types::injection_mode_for(hint);
-        self.platform.update_injection_mode(new_mode);
     }
 
     /// フォーカス確定処理の共通シーケンス（`last_focus_change_ms`/`focus_epoch`
@@ -143,11 +130,6 @@ impl Runtime {
     /// `establish_initial_focus_scope`（bootstrap、まだ一度も IME を観測していない）
     /// と `on_focus_process_changed`（定常経路）が、この処理列を独立に手動コピー
     /// していた。
-    ///
-    /// **`injection_mode` の再計算はここに含めない**（各呼び出し元に残す）。
-    /// 2箇所で呼び出し順序が異なる（`establish_initial_focus_scope` はこの直後、
-    /// `on_focus_process_changed` は IME belief dispatch・cache restore の後）ため、
-    /// 統合すると挙動が変わるリスクがある。
     ///
     /// 戻り値の `TickMs` は、呼び出し元がこの後の処理（`dispatch_event` 等）で
     /// 同じ時刻を使い回すために返す。
@@ -244,7 +226,6 @@ impl Runtime {
 
     /// プローブ結果を検証・分類し、platform_state (app_kind / focus_kind) を更新する。
     ///
-    /// injection_mode の更新は `apply_focus_probe_result` が `advance_focus_tracking` 後に行う。
     /// None を返した場合は呼び出し元が early return すること。
     fn classify_focus_probe(
         &mut self,

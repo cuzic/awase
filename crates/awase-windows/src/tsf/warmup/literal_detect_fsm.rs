@@ -56,7 +56,7 @@ pub(crate) const fn per_vk_recovery_params(is_stale: bool, failed_idx: usize) ->
 /// 常に `RawTsfLiteralRecovery + Done`（backspace のみ、捨て駒キーには頼らない）。
 /// `RawTsfLiteralRecovery` の dispatcher が `consecutive_count()==0` のときだけ
 /// romaji の再送を `RAW_TSF_LITERAL` 経由でスケジュールする（`output/mod.rs::
-/// record_raw_tsf_literal` → 次イベントで `send_romaji_as_tsf` を通常の cold パス
+/// record_raw_tsf_literal` → 次イベントで `send_romaji_batched_bypass_gate` を通常の cold パス
 /// として再実行）。cold パスは per-VK confirm がデフォルトのため、この再送は
 /// 自然に per-VK として実行される — 1文字失敗した後の再送も per-VK のままにする、
 /// という設計（ユーザー方針、2026-07-16。以前あった「TSF mode かつ consecutive==0

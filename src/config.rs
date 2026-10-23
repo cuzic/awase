@@ -10,8 +10,9 @@ use crate::types::VkCode;
 // #[serde(default)] + 未知フィールド無視により残っていても無害）:
 // - HookMode (hook_mode): Relay に一本化。Filter はリレー系機能（relay-defer/
 //   INPUT_DEFER 対称性/NonText パススルー等）の登場以降テストされておらず撤去。
-// - OutputMode (output_mode): per-window の InjectionMode（injection_hint + AppKind
-//   から自動決定）に完全置換済みで、フィールドは書き込みのみの死に設定だった。
+// - OutputMode (output_mode): per-window の注入モード（当時の injection_hint + AppKind
+//   から自動決定。注入モード自体も 2026-10-22 に VK だけになった）に置換済みで、
+//   フィールドは書き込みのみの死に設定だった。
 // - ConvModePolicy (conv_mode_policy): 2026-08-17、ADR-094 で charset 軸
 //   （ひらがな/カタカナ×全角/半角の追跡）自体を撤去したのに伴い削除。
 //   `Observe`/`Force` という2値のうち `Force`（conv モードの能動的な強制
@@ -791,19 +792,17 @@ pub struct KeystrokeMacro {
 ///
 /// - `force_text`: 常にテキスト入力として扱う (process, class) の組
 /// - `force_bypass`: 常に非テキストとしてバイパスする組
-/// - `force_tsf`: ローマ字出力を VK キーストローク Sequential モードで送る組（WezTerm 等 TSF 直結アプリ）
 ///
 /// 旧 `force_vk`（VK Batched で送る組）は、ADR-276 で既定が全部 VK Batched になったため
-/// 2026-10-22 に退役させた。旧 `config.toml` に残っていても読み込みエラーにせず無視し、
-/// 空でなければ通知する（`config_load_diag::REMOVED_WITH_VALUE_NOTICE`）。
+/// 2026-10-22 に退役させた。旧 `force_tsf`（VK Sequential〈Tsf 注入〉で送る組）も、Tsf 注入経路の
+/// 撤去（2026-10-22、ADR-0004 追記）で削除した。どちらも旧 `config.toml` に残っていても
+/// 読み込みエラーにせず無視し、空でなければ通知する（`config_load_diag::REMOVED_WITH_VALUE_NOTICE`）。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppOverrides {
     #[serde(default)]
     pub force_text: Vec<AppOverrideEntry>,
     #[serde(default)]
     pub force_bypass: Vec<AppOverrideEntry>,
-    #[serde(default)]
-    pub force_tsf: Vec<AppOverrideEntry>,
     /// フォーカス中このプロセス名（大文字小文字無視、`.exe` 有無どちらでも一致）
     /// にマッチしたら awase を丸ごと無効化する（force_bypass と異なり class 指定不要、
     /// フックレベルで生キーをそのまま OS に通す）。
@@ -826,7 +825,6 @@ impl Default for AppOverrides {
         Self {
             force_text: Vec::new(),
             force_bypass: Vec::new(),
-            force_tsf: Vec::new(),
             disable_apps: default_disable_apps(),
             input_relay_apps: default_input_relay_apps(),
         }
@@ -1449,7 +1447,6 @@ impl AppConfig {
     fn validate_app_override_entries(overrides: &AppOverrides, w: &mut Vec<String>) {
         Self::check_override_list(&overrides.force_text, "force_text", w);
         Self::check_override_list(&overrides.force_bypass, "force_bypass", w);
-        Self::check_override_list(&overrides.force_tsf, "force_tsf", w);
         Self::check_disable_apps_list(&overrides.disable_apps, w);
         Self::check_input_relay_apps_list(&overrides.input_relay_apps, w);
     }
@@ -2218,11 +2215,12 @@ disable_apps = ["mstsc.exe", ""]
         );
     }
 
-    /// `app_overrides.force_vk` は 2026-10-22 に退役させた（ADR-276 で既定が全部 VK になったため）。
-    /// 旧 `config.toml` に残っていても読み込みエラーにならず、他の設定は読める。空でなければ
-    /// 「不要になった」旨を 1 回だけ通知し、空（`force_vk = []`）なら黙って無視する。
+    /// `app_overrides.force_vk`・`force_tsf` は 2026-10-22 に退役させた（ADR-276 で既定が全部 VK になり、
+    /// Tsf 注入経路も撤去したため。ADR-0004 追記）。旧 `config.toml` に残っていても読み込みエラーに
+    /// ならず、他の設定は読める。空でなければ「不要になった」旨をそれぞれ 1 回だけ通知し、空
+    /// （`force_vk = []`・`force_tsf = []`）なら黙って無視する。
     #[test]
-    fn test_retired_force_vk_is_ignored_with_notice() {
+    fn test_retired_force_vk_and_force_tsf_are_ignored_with_notice() {
         let text = r#"
 [app_overrides]
 force_vk = [
@@ -2231,19 +2229,27 @@ force_vk = [
 force_tsf = [
     { process = "a.exe", class = "A" },
 ]
+force_text = [
+    { process = "b.exe", class = "B" },
+]
 "#;
-        let config = AppConfig::from_toml_str(text).expect("旧 force_vk が残っていても読める");
-        assert_eq!(config.app_overrides.force_tsf.len(), 1);
+        let config =
+            AppConfig::from_toml_str(text).expect("旧 force_vk・force_tsf が残っていても読める");
+        assert_eq!(config.app_overrides.force_text.len(), 1, "他の設定は読める");
         let (_, warnings) = config.validate();
-        let hits: Vec<&String> = warnings.iter().filter(|w| w.contains("force_vk")).collect();
-        assert_eq!(hits.len(), 1, "{warnings:?}");
-        assert!(hits[0].contains("不要"), "{hits:?}");
+        for key in ["force_vk", "force_tsf"] {
+            let hits: Vec<&String> = warnings.iter().filter(|w| w.contains(key)).collect();
+            assert_eq!(hits.len(), 1, "{key}: {warnings:?}");
+            assert!(hits[0].contains("不要"), "{hits:?}");
+        }
 
-        let config = AppConfig::from_toml_str("[app_overrides]\nforce_vk = []\n")
-            .expect("空の旧 force_vk も読める");
+        let config = AppConfig::from_toml_str("[app_overrides]\nforce_vk = []\nforce_tsf = []\n")
+            .expect("空の旧 force_vk・force_tsf も読める");
         let (_, warnings) = config.validate();
         assert!(
-            !warnings.iter().any(|w| w.contains("force_vk")),
+            !warnings
+                .iter()
+                .any(|w| w.contains("force_vk") || w.contains("force_tsf")),
             "{warnings:?}"
         );
     }

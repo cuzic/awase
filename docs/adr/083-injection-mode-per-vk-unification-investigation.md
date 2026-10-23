@@ -3,7 +3,7 @@ id: ADR-083
 title: |-
   `InjectionMode`（文字送信経路）をGJI専用にper-VK確認方式へ統一する構想の検討記録
 status: |-
-  見送り(`InjectionMode` のGJI専用 per-VK 統一は NO-GO のまま、2026-10-04 時点で統一は未実施)。`InjectionMode` は現行コードに現存(state/injection_mode.rs)。観測専用の診断配線の現存は本確認では未検証。
+  見送り(`InjectionMode` のGJI専用 per-VK 統一は NO-GO のまま)。2026-10-22 追記: Unicode(ADR-276)と Tsf(ADR-0004 の追補)の撤去で、`InjectionMode` は型ごと無くなり、注入は Batched VK だけになった(cold の per-VK 確認は `TsfProbeCoro` が担う)。本 ADR の問い(経路の統一)は撤去によって別の形で解消した。
   旧(2026-10-04 更新前):
   検討フェーズ・統一自体は NO-GO（観測専用の診断配線のみ実施済み）
 related_adr:
@@ -132,3 +132,7 @@ Opus・Fable・Codex（Codex CLI）の3系統に独立してこの構想の設�
 ## 追記(2026-10-22): force_vk の退役と `[injection_mode]` の読み込みの撤去
 
 所有者判断(2026-10-22)で、`config.toml` の `app_overrides.force_vk`(`InjectionHint::ForceVk`)を退役させ、`cache.toml` の `[injection_mode]`(`InjectionModeStore`)の読み込みを撤去した。ADR-276 で既定が全部 Vk になり、自動昇格の書き込み側も無くなっていたため。`InjectionHint` は `ForceTsf`/`Default` の 2 値で、`injection_mode_for` は `ForceTsf` → Tsf、`Default` → Vk。既存の設定は壊さない: `force_vk` は読み込みエラーにせず無視し、空でなければ起動時に「不要になった」と通知する(`config_load_diag::REMOVED_WITH_VALUE_NOTICE`、設定画面の保存で消える)。`[injection_mode]` は読まない(`ImmCapabilityStore` の保存は他セクションとして保つ)。**影響**: 以前の版が TSF へ自動昇格させていた窓(`force_tsf` に無いもの)は Vk で送られる。困る場合は `force_tsf` に足す。 本 ADR が「やってはいけない」とした `UnicodeLiteralObserverFsm` の撤去は ADR-276 で済んでおり、今回はその残りの読み手を外した。
+
+## 追補(2026-10-22): 経路は撤去で 1 つになった
+
+本 ADR が検討した「経路を GJI 専用の per-VK 確認方式へ統一する」は見送ったままだが、Unicode 注入(ADR-276、2026-10-21)と Tsf 注入(ADR-0004 の追補、2026-10-22)の撤去で、注入経路は Batched VK だけになった。cold 開始の per-VK 確認は `TsfProbeCoro`(`tsf/warmup/probe_fsm.rs::run_per_vk_confirm`)だけが担う。

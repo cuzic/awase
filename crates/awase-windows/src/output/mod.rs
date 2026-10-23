@@ -1,5 +1,4 @@
 use crate::state::deferred_gate_plan;
-use crate::state::event_origin::Generation;
 use crate::state::half_width_alnum::HalfWidthAlnumAction;
 use crate::state::warm_send_plan;
 use crate::tsf::warmup::probe_fsm::DeferredOrigin;
@@ -11,9 +10,7 @@ pub use crate::tsf::output::ColdReason;
 pub use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER};
 
 pub mod sender;
-pub(crate) mod types;
 pub(crate) use sender::OutputSession;
-pub(crate) use types::InjectionMode;
 
 pub(crate) mod conv_actuation;
 pub(crate) mod held_modifiers;
@@ -29,8 +26,6 @@ pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 pub(crate) use crate::vk::ascii_to_vk as resolve_ascii_to_vk;
 /// SendInput / VK 送信コンポーネント。
 pub(crate) use key_injector::{KeyInjector, VkMarker};
-/// 公開ヘルパー: TSF 送信パイプライン（`platform.rs` の dispatcher 用）。
-pub(crate) use vk_send::TsfSendPipeline;
 
 /// VK コード＋シフトフラグのペアを要素とする VK シーケンス型。
 pub(crate) type VkSequence = Vec<(VkCode, bool)>;
@@ -77,20 +72,10 @@ pub struct Output {
     /// GJI FSM 橋渡しバッファ群を集約する。詳細は [`TsfWarmupCoordinator`] を参照。
     /// `output` モジュール外からは `Output` の公開メソッド経由でのみ操作する。
     warmup_coord: TsfWarmupCoordinator,
-    /// フォーカス変更直後の TSF モード確定前にキーを一時保留するゲート。
-    ///
-    /// PendingWarmup 状態中のみキーを保留し、run_with_prefetched 完了後に
-    /// Probing または Bypass に遷移して保留キーを再処理する。
-    pub(crate) tsf_gate: crate::tsf::TsfGate,
-    /// フォーカス変更時に Runtime から push される注入モード。
-    ///
-    /// フォーカスが確定するたびに `update_injection_mode()` で更新される。
-    /// `with_app_ref` によるグローバル読み取りを排除し、output 層を self-contained にする。
-    pub(crate) injection_mode: InjectionMode,
     /// IME 変換モード管理コンポーネント。
     ///
     /// `kp_stage_idle_conv_check` が `observe()` で更新し、
-    /// `cold_warmup` と `transmit_tsf` が warmup VK と `ImmSetConversionStatus` 目標値の選択に使う。
+    /// `ImmSetConversionStatus` 目標値の選択に使う。
     pub(crate) conv_mode: crate::state::ConvModeMgr,
     /// IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
     ///
@@ -249,15 +234,9 @@ pub(crate) struct StepProbeResult {
     pub literal_detect: crate::tsf::literal_facts::LiteralDetectTrace,
 }
 
-/// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
-pub(crate) struct WarmupOutcome {
-    /// cold start シーケンス番号（ログ相関用）
-    pub cold_seq: Generation,
-}
-
 /// 状態管理・キー送信・TSF プローブ FSM を含む主実装ブロック。
 ///
-/// - 状態アクセサ（warmth、composition、injection_mode、TsfGate）
+/// - 状態アクセサ（warmth、composition）
 /// - キー送信（`send_keys`、`send_romaji_*`、`send_char_*`、`send_unicode_char`）
 /// - ノンブロッキング TSF/Chrome プローブ FSM（`advance_tsf_probe` とその内部メソッド群）
 impl Default for Output {
@@ -273,8 +252,6 @@ impl Output {
             injector: KeyInjector::new(),
             composition: crate::tsf::probe::CompositionState::new(),
             warmup_coord: TsfWarmupCoordinator::new(),
-            tsf_gate: crate::tsf::TsfGate::new(),
-            injection_mode: InjectionMode::Vk,
             conv_mode: crate::state::ConvModeMgr::default(),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(crate::state::focus_gen::FocusGen::INITIAL),
@@ -306,11 +283,6 @@ impl Output {
     /// `Platform::set_conv_mode_authority` が `ConvModeAuthority::allows_conv_mutation()` の結果を push する。
     pub(crate) fn set_conv_mutation_allowed(&self, allowed: bool) {
         self.conv_mutation_allowed.set(allowed);
-    }
-
-    /// フォーカス変更時に Runtime から呼ばれ、注入モードを更新する。
-    pub(crate) const fn update_injection_mode(&mut self, mode: InjectionMode) {
-        self.injection_mode = mode;
     }
 
     // ── GjiFsm ヘルパー ─────────────────────────────────────────────────────
@@ -440,33 +412,9 @@ impl Output {
         self.warmup_coord.store_probe_id(id);
     }
 
-    /// `GjiAction::StartProbe` の is_long_cold を記録する。
-    ///
-    /// `send_romaji_as_tsf` が `GjiWarmupCoro::new` を生成する際に参照する。
-    /// GjiFsm の `Authorized` 状態から `ProbeParams` を読み出す。
-    ///
-    /// `Authorized` でない場合は `None` を返す。
-    pub(crate) fn gji_current_probe_params(&self) -> Option<crate::tsf::gji_fsm::ProbeParams> {
-        self.warmup_coord.current_probe_params()
-    }
-
     /// 現在の GJI probe_id を返す（確認用、消費しない）。
     pub(crate) fn gji_current_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
         self.warmup_coord.current_probe_id()
-    }
-
-    /// GJI probe の OUTPUT_GATE ガードを開始する。
-    ///
-    /// `send_romaji_as_tsf` の cold パスで `GjiWarmupCoro::new` を呼ぶ直前に使う。
-    pub(crate) fn gji_begin_probe_guard(&self) {
-        self.warmup_coord.begin_probe_guard();
-    }
-
-    /// GJI probe の OUTPUT_GATE ガードを解放する。
-    ///
-    /// `step_probe` 完了時 / `CancelProbe` 時に呼ぶ。
-    pub(crate) fn gji_end_probe_guard(&self) {
-        self.warmup_coord.end_probe_guard();
     }
 
     /// `pending_gji_key_responses` を全件取り出す。
@@ -492,13 +440,6 @@ impl Output {
     /// 次の VK / TSF composition 送信時に VK_IME_ON ウォームアップを
     /// 先行送信させる。Enter/Space/Escape の reinject・エンジン toggle 等のタイミングで呼ぶ。
     /// フォーカス変更は `on_focus_changed()` を使うこと（epoch も更新される）。
-    ///
-    /// # NativeF2Consumed でも eager_warmup_sent_ms をリセットする理由
-    ///
-    /// 物理 F2 が押された = 新しい F2 が届き TSF 初期化が再トリガーされる。FocusChange 時の
-    /// タイムスタンプを保持すると「古い F2 からの経過時間」を elapsed として計算してしまう
-    /// （"hoんらい" 化け: BUG-06 の派生形）。BUG-173 以降は物理 F2 の代わりの warmup を送らないので、
-    /// 基準点は 0（未送信）のまま次の送信まで残る。
     ///
     pub fn mark_composition_cold(&self, reason: ColdReason) {
         self.composition.mark_composition_cold(reason);
@@ -545,67 +486,6 @@ impl Output {
         self.composition.on_focus_changed();
         // deferred_vks は TsfProbeData に内包されているため、
         // pending_tsf が Some の場合は probe と一緒にドロップされる。
-    }
-
-    // ── TsfGate ラッパー ──────────────────────────────────────────────────
-
-    /// フォーカス変更時に `tsf_gate` を `PendingWarmup` に遷移させる。
-    ///
-    /// 呼び出し後に `TIMER_TSF_GATE` を `WARMUP_TIMEOUT_MS` ms でセットすること。
-    ///
-    /// Chrome/Edge は複数の focus イベントを連続発生させる（タブ・アドレスバー・コンテンツ等）。
-    /// すでに `PendingWarmup` 中なら `on_focus_change()` を呼ばず held バッファを保持する。
-    /// 呼び出し元がタイマーをリセットするため warmup 期間は延長されるが、
-    /// Ctrl+T 等のショートカットが複数回のフォーカスイベントで消去されることを防ぐ。
-    pub fn on_focus_change_tsf(&mut self) {
-        if self.tsf_gate.state() == crate::tsf::TsfGateState::PendingWarmup {
-            tracing::debug!(
-                "[tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)"
-            );
-            return;
-        }
-        self.tsf_gate.on_focus_change();
-    }
-
-    /// TSF モード確定時に `tsf_gate` を `Probing` に遷移させ、保留キーを返す。
-    ///
-    /// 呼び出し後に `TIMER_TSF_GATE` を kill すること。
-    #[must_use]
-    pub(crate) fn confirm_tsf(&mut self) -> Vec<awase::types::RawKeyEvent> {
-        self.tsf_gate.on_tsf_confirmed()
-    }
-
-    /// 非 TSF モード確定時に `tsf_gate` を `Bypass` に遷移させ、保留キーを返す。
-    ///
-    /// 呼び出し後に `TIMER_TSF_GATE` を kill すること。
-    #[must_use]
-    pub(crate) fn bypass_tsf(&mut self) -> Vec<awase::types::RawKeyEvent> {
-        self.tsf_gate.on_bypass()
-    }
-
-    /// `TIMER_TSF_GATE` タイムアウト時に呼ぶ。`Bypass` にフォールバックし、保留キーを返す。
-    #[must_use]
-    pub fn on_tsf_warmup_timeout(&mut self) -> Vec<awase::types::RawKeyEvent> {
-        self.tsf_gate.on_warmup_timeout()
-    }
-
-    /// キーを `tsf_gate` で処理する。`true` = 保留（呼び出し元は Consumed を返すこと）。
-    pub fn try_hold_key(&mut self, event: awase::types::RawKeyEvent) -> bool {
-        self.tsf_gate.try_hold(event)
-    }
-
-    /// TSF プローブ完了時に `tsf_gate` を `Probing` → `Ready` に遷移させる。
-    pub(crate) fn on_tsf_probe_ready(&mut self) {
-        self.tsf_gate.on_ready();
-    }
-
-    /// 現在のフォーカス先が TSF 注入モードかどうかを返す。
-    ///
-    /// TSF モード（WezTerm 等）では物理 F2 の扱いが特殊なため、
-    /// executor がこのメソッドで判定してキー処理を切り替える。
-    #[must_use]
-    pub fn is_tsf_mode(&self) -> bool {
-        self.injection_mode == InjectionMode::Tsf
     }
 
     /// BUG-25 GJI 用の「IME-ON 半角英数」entry/exit トグルを送信する。
@@ -686,20 +566,18 @@ impl Output {
 
     /// アクション列を順に実行する
     ///
-    /// 注入モードは `resolve_injection_mode()` で決定:
-    /// - Vk: Win32/UWP/Chrome/Edge/Electron（既定、ADR-276）。Batched VK で IME composition。
-    /// - Tsf: WezTerm 等。Sequential VK で TSF/IME に composition させる。
+    /// 文字・ローマ字は常に Batched VK で送り、IME に composition させる（ADR-276 で Unicode 注入、
+    /// 2026-10-22 に Tsf〈Sequential VK〉注入を撤去した。ADR-0004 追記）。
     pub fn send_keys(&self, actions: &[KeyAction]) {
         // モード解決 + OutputActiveGuard 取得をセッションオブジェクトに委譲
         let session = OutputSession::begin(self);
 
         // mark_send() より前に elapsed を読む。mark_send() は last_send_ms を上書きするため、
-        // 内部の send_romaji_as_tsf 等での ms_since_last_send() は常に ~0ms を返す。
+        // 内部の send_romaji_batched 等での ms_since_last_send() は常に ~0ms を返す。
         // 真の「前回送信からの経過時間」はここで記録する。
         let prev_elapsed_ms = self.ms_since_last_send();
         tracing::debug!(
-            "send_keys: mode={:?} actions={actions:?} prev_elapsed={}ms",
-            session.mode,
+            "send_keys: actions={actions:?} prev_elapsed={}ms",
             fmt_ms(prev_elapsed_ms)
         );
 
@@ -727,18 +605,18 @@ impl Output {
                     self.injector.send_key(*vk, true);
                 }
                 KeyAction::Char(ch) => {
-                    tracing::debug!("  → Char('{ch}') via {}", sender.mode_label());
+                    tracing::debug!("  → Char('{ch}')");
                     sender.send_char(*ch);
                 }
                 KeyAction::Suppress => {
                     tracing::debug!("  → Suppress");
                 }
                 KeyAction::Romaji(s) => {
-                    tracing::debug!("  → Romaji(\"{s}\") via {}", sender.mode_label());
+                    tracing::debug!("  → Romaji(\"{s}\")");
                     sender.send_romaji(s);
                 }
                 KeyAction::KeySequence(s) => {
-                    tracing::debug!("  → KeySequence(\"{s}\") via {}", sender.mode_label());
+                    tracing::debug!("  → KeySequence(\"{s}\")");
                     sender.send_key_sequence(s);
                 }
                 KeyAction::CtrlChord(vk) => {
@@ -816,7 +694,7 @@ impl Output {
     }
 
     /// `defer_if_probe_in_flight` から `raw_recovery_owns_deferred()` の条件だけを
-    /// 除いた版。`send_romaji_batched_bypass_gate`/`send_romaji_as_tsf_bypass_gate`
+    /// 除いた版。`send_romaji_batched_bypass_gate`
     /// （raw recovery 回収再送・ADR-101 決定3 retry 専用）が使う。
     ///
     /// `raw_recovery_owns_deferred()` は「今まさに自分が処理している recovery か」
@@ -926,7 +804,7 @@ impl Output {
     /// probe/recovery 進行中なら単一 VK を deferred_vks に追記し true を返す。
     /// 進行中でなければ何もせず false を返す。
     ///
-    /// 呼び出し元 (`vk_send.rs` の `send_char_as_tsf`/`send_char_as_vk`) は
+    /// 呼び出し元 (`vk_send.rs` の `send_char_as_vk`) は
     /// `CharResolution::Vk` の生 VK フォールバック経路にあり、2026-08-05 の
     /// BUG-47 追補修正で `vk_pair_to_ascii` が `build_symbol_to_vk` の全記号を
     /// カバーするようになったため、現状この2箇所は理論上到達しない
@@ -967,7 +845,6 @@ impl Output {
         let env = {
             let ime_fsm = self.ime_mode_fsm.borrow();
             crate::tsf::warmup::probe_fsm::TsfEnvSnapshot {
-                is_tsf_mode: self.is_tsf_mode(),
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
                 stage_origin_now: Some(self.current_stage_origin()),
                 ime_mode: ime_fsm.state(),
@@ -1118,9 +995,8 @@ impl Output {
                 tracing::debug!("[stage-end] {:?}: deferred {n} VK(s) を flush", end.reason);
             }
         }
-        // (c) TsfGate / OUTPUT_GATE ガード。deferred を送り切ってからゲートを開ける。
-        self.on_tsf_probe_ready();
-        self.gji_end_probe_guard();
+        // (c) 旧 GJI probe の OUTPUT_GATE ガード（`gji_probe_guard`）は、張る側の Tsf 注入経路
+        // （`GjiWarmupCoro`）とともに 2026-10-22 に撤去した。`TsfProbeCoro` は自分のガードを持つ。
         // (b) GjiFsm への通知。
         let rec = self.warmup_coord.take_stage_record();
         // ADR-270: 段末に確認の FSM が続いているなら、終わる段の宛先を、空になった記録へ引き継ぐ。確認の FSM が
@@ -1181,17 +1057,15 @@ impl Output {
         self.warmup_coord.pending_deferred_len()
     }
 
-    /// GJI probe をキャンセルし、OUTPUT_GATE ガードを解放する。
+    /// GJI probe をキャンセルする。
     ///
     /// `GjiAction::CancelProbe` ハンドラが呼ぶ。内部で以下を一括実行する:
-    /// 1. `pending_tsf` をクリア
-    /// 2. OUTPUT_GATE ガードを解放
-    /// 3. `current_gji_probe_id` をクリア
+    /// 1. `pending_tsf` をクリア（`TsfProbeCoro` のガードも一緒に drop される）
+    /// 2. `current_gji_probe_id` をクリア
     ///
     /// 呼び出し元は続けて `TIMER_TSF_PROBE` を kill すること（タイマー操作は platform の責務）。
     pub(crate) fn cancel_probe(&self) {
         self.warmup_coord.clear_pending_tsf();
-        self.gji_end_probe_guard();
         let _ = self.warmup_coord.take_probe_id();
         let _ = self.warmup_coord.take_stage_record();
         // ADR-103 決定4-f: cancel_probe が発火するのは ImeOff / FocusChange /
@@ -1210,7 +1084,7 @@ impl Output {
 
     /// `warmup_coord` の composition reset フラグを取り出す。
     ///
-    /// `SymbolVkSent` 等の VK 記号送信直後に `send_char_as_tsf` が立てたフラグを
+    /// raw literal 回収（`mark_cold_raw_tsf`）等が立てたフラグを
     /// `platform.rs::send_keys` が drain して `gji_on_composition_reset` を呼ぶために使う。
     pub(crate) fn take_composition_reset(&self) -> bool {
         self.warmup_coord.take_composition_reset()
@@ -1326,7 +1200,7 @@ impl Output {
 
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
     ///
-    /// `RAW_TSF_LITERAL.romaji` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
+    /// `RAW_TSF_LITERAL.romaji` に退避されたローマ字を読み取り、`send_romaji_batched_bypass_gate` で再送する。
     /// cold 状態（RawTsfLiteralRecovery）で呼ばれるため warmup probe が走り正しく compose される。
     /// drain キーの前に呼ぶことで「backspace → raw TSF literal char → drain keys」の順を保証する。
     pub fn flush_raw_tsf_literal_romaji(&self) {
@@ -1341,28 +1215,22 @@ impl Output {
             return;
         }
         tracing::debug!("[raw-tsf-literal] re-sending raw TSF literal romaji={romaji:?}");
-        self.send_romaji_dispatching_on_gate(&romaji);
+        self.send_romaji_recovery(&romaji);
     }
 
-    /// TSF gate の状態に応じて `romaji` を通常送信経路へ振り分ける。
+    /// raw literal の回収再送・give-up 後の retry の `romaji` を送る。
     ///
-    /// Bypass (Chrome) では `send_romaji_as_tsf` が GJI probe (`TransmitTarget::Tsf`) を
-    /// 起動するが、Chrome は gate=Bypass のため `dispatch_probe_actions` でスキップされる。
-    /// Chrome バッチパス (`TransmitTarget::Chrome`) を使うことで正しく送信できる。
+    /// 常に Batched VK（`send_romaji_batched_bypass_gate`）で送る。以前は TsfGate が Bypass でない間
+    /// （フォーカス直後の PendingWarmup 中を含む）Tsf 経路へ振り分けていたが、Tsf 注入経路と TsfGate は
+    /// 2026-10-22 に撤去した（ADR-0004 追記）。
     /// `flush_raw_tsf_literal_romaji`（consecutive==0 の通常リカバリ）と
     /// `resend_gji_reinit_retry_romaji`（give-up 後、reinit confirmed 後の retry、
-    /// ADR-101）が共有する — コードレビュー指摘: 以前は同じ分岐が2箇所に
-    /// 手書きで重複していた。
-    fn send_romaji_dispatching_on_gate(&self, romaji: &str) {
-        use probe_io::ProbeIo as _;
+    /// ADR-101）が共有する。
+    fn send_romaji_recovery(&self, romaji: &str) {
         // ADR-123 変更A+C 決定4-2: 新設した defer gate をこの2経路（raw recovery
         // 回収再送・ADR-101 決定3 retry）には適用しない。理由は
         // `send_romaji_batched_bypass_gate` の doc コメント参照。
-        if self.gate_is_bypass() {
-            self.send_romaji_batched_bypass_gate(romaji);
-        } else {
-            self.send_romaji_as_tsf_bypass_gate(romaji);
-        }
+        self.send_romaji_batched_bypass_gate(romaji);
     }
 
     /// raw TSF literal 回収を一括実行: backspace 送信 → romaji 再送 → (あれば) GJI reinit
@@ -1429,7 +1297,7 @@ impl Output {
     }
 
     /// `warmup_coord.pending_deferred`（probe実行中に届いた後続キーの退避キュー）
-    /// を条件付きで取り出し、TSF gate状態に応じた marker で送信する共通コア。
+    /// を条件付きで取り出し、scan code 付き（`VkMarker::InjectedWithScan`）で送信する共通コア。
     ///
     /// `flush_stale_deferred_vks_after_recovery`（raw recovery直後、`Polling`中は
     /// 呼び出し元が事前ガードする）と `flush_deferred_vks_after_gji_reinit_completion`
@@ -1462,12 +1330,7 @@ impl Output {
                 order_tokens
             );
         }
-        let marker = if self.gate_is_bypass() {
-            VkMarker::InjectedWithScan
-        } else {
-            VkMarker::Tsf
-        };
-        self.send_deferred_vks(&vks, marker);
+        self.send_deferred_vks(&vks, VkMarker::InjectedWithScan);
         len
     }
 }
@@ -1477,6 +1340,7 @@ pub use crate::tsf::output::flush_raw_tsf_literal_backspaces;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::event_origin::Generation;
     use crate::tsf::probe_bridge::OutputActiveGuard;
 
     // ── ColdReason impl メソッドテスト ────────────────────────────────────────
@@ -1488,16 +1352,6 @@ mod tests {
         assert!(!ColdReason::FocusChange.is_confirm_key());
         assert!(!ColdReason::RawTsfLiteralRecovery.is_confirm_key());
         assert!(!ColdReason::SetOpenFalse.is_confirm_key());
-    }
-
-    #[test]
-    fn cold_reason_requires_settle() {
-        assert!(ColdReason::FocusChange.requires_settle());
-        assert!(ColdReason::NativeF2Consumed.requires_settle());
-        assert!(ColdReason::SetOpenTrue.requires_settle());
-        assert!(!ColdReason::PassthroughConfirmKey.requires_settle());
-        assert!(!ColdReason::RawTsfLiteralRecovery.requires_settle());
-        assert!(!ColdReason::SetOpenFalse.requires_settle());
     }
 
     // ── Output 状態管理テスト ───────────────────────────────────────────────────

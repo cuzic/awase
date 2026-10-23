@@ -644,7 +644,7 @@ pub const fn kanji_passive_when_unidentified(ime_identified: bool, is_japanese_i
 /// - 最初の Down（非injected・`!was_down`、`fresh_first_down`）: `(scan, 実際に書いたか→Some(Toggle)/None)` で上書き。
 /// - 非injectedの Up（`fresh_up`）でラッチの scan が一致したら**ラッチを捨てる**: 残すと、次の同じキーの Down が
 ///   `kp_run_inner` を通らない（`deliver_key_event` の早期 return 等）とき、Up だけが前回の `Some` で Suppress され
-///   Down=Allow・Up=Suppress の非対称になる（Opus レビュー PR #328）。保留（`try_hold_key`）からの再入では
+///   Down=Allow・Up=Suppress の非対称になる（Opus レビュー PR #328）。保留（旧 `try_hold_key`、2026-10-22 撤去）からの再入では
 ///   settle に届く前に return するので、Up の判定が2回目で変わることはない。
 #[must_use]
 pub fn settle_fkey_latch(

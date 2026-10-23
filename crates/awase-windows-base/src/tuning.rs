@@ -103,7 +103,7 @@ pub const LONG_IDLE_MS: u64 = 10_000;
 
 /// Chrome VK パスでの「長期 idle」判定閾値 (ms)。
 ///
-/// `GjiFsm::long_idle_ms_for(InjectionMode::Vk)` が参照し、`OnWarm` 入場時に開始する
+/// `GjiFsm::transition_to_warm` が参照し、`OnWarm` 入場時に開始する
 /// `GjiTimer::LongIdle` の長さになる（満了すると `OnCold(Long)` へ落ちる）。
 /// `ColdKind::classify` の Short/Medium/Long 分岐は `LONG_IDLE_MS` と `MEDIUM_IDLE_PROBE_MS`
 /// だけを見ており、この定数は参照しない。
@@ -114,7 +114,8 @@ pub const LONG_IDLE_MS: u64 = 10_000;
 /// ~145ms かかった事例, cold=1040）は撤去された機構向けだったため、値は実測で
 /// 裏付けられていない（`measured(pending = true)`）。
 ///
-/// TSF/GJI パス（WezTerm 等）は GJI セッション生存期間に依存するため `LONG_IDLE_MS` を使用する。
+/// 旧 Tsf 注入モード（WezTerm 等）は `LONG_IDLE_MS` を使っていたが、Tsf 注入経路は 2026-10-22 に
+/// 撤去したので、`LongIdle` タイマーは常にこの値になる。
 #[measured_macro::measured(pending = true)]
 pub const CHROME_LONG_IDLE_MS: u64 = 5_000;
 
@@ -125,14 +126,9 @@ pub const CHROME_LONG_IDLE_MS: u64 = 5_000;
 #[measured_macro::measured(pending = true)]
 pub const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
 
-/// GJI long idle + TSF mode (WezTerm 等) での RAW TSF リテラル検出ウィンドウ (ms)。
-///
-/// gji_idle > LONG_IDLE_MS(10000ms) 時、GJI は F2 warmup に対して候補ウィンドウを
-/// 表示するまで最大 ~370ms かかる実測がある（通常 300ms 以内に収まる）。
-/// FreshF2 パス (eager_elapsed > eager_settle_ms) では NameChangeWait を経由しないため
-/// LiteralDetect のタイムアウトで補う必要がある。500ms = 実測最大 ~370ms + 130ms マージン。
-#[measured_macro::measured(value_ms = 500, margin_ms = 130, commit = "a6b4c0dd")]
-pub const RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE: u64 = 500;
+// 旧 `RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE`（500ms、GJI long idle + TSF mode の検出ウィンドウ、`a6b4c0dd`）は、
+// 唯一の読み手（`decide_transmit_plan` の `is_long_cold && is_tsf_mode`）が Tsf 注入経路の撤去
+// （2026-10-22、ADR-0004 追記）で消えたので削除した。
 
 /// GJI セッションが「中程度の idle」と判断する GJI アイドル閾値 (ms)。
 ///

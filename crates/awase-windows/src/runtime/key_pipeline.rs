@@ -66,17 +66,6 @@ impl Runtime {
         self.enrich_key_role(&mut event);
         self.enrich_thumb_key_role(&event);
 
-        // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
-        // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
-        if self.platform.try_hold_key(event) {
-            tracing::debug!(
-                "[tsf-gate-hold] vk=0x{:02X} {:?} held by TsfGate (PendingWarmup)",
-                event.vk_code,
-                event.event_type
-            );
-            return CallbackResult::Consumed;
-        }
-
         // Phase A: 既存の pending IME OFF rescue を解決する。
         // 現在 event が Ctrl↑ なら保留キーを破棄（thumb shift 防止）、
         // それ以外なら救済中止（原 event を発火 → IME OFF）。

@@ -4,7 +4,7 @@
 //!
 //! 以前は `runtime::mod` に置かれていたが、focus 層に移動した（逆依存解消）。
 
-use awase::config::{AppOverrideEntry, AppOverrides};
+use awase::config::AppOverrides;
 use std::sync::{OnceLock, RwLock};
 
 /// `app_overrides.input_relay_apps`（issue #136 / BUG-90 決定4）の
@@ -48,63 +48,16 @@ pub(crate) fn input_relay_apps_snapshot() -> Vec<String> {
 // Linux でもビルド・テストされる `learning_store.rs` に置く(ADR-272 / ECRS F3)。従来の import 経路を保つため再エクスポートする。
 pub use super::learning_store::{ImmCapability, ImmCapabilityStore};
 
-// ── InjectionHint ──
-
-/// output 層が注入モードを決定するために必要な、focus 層の公開セマンティクス。
-///
-/// `AppKindClassifier::injection_hint()` が返す型。
-/// output 層はこの型のみを参照し、focus 内部フィールドに直接アクセスしない。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InjectionHint {
-    /// config の `force_tsf` エントリにマッチ → TSF Sequential VK 注入
-    ForceTsf,
-    /// オーバーライドなし → VK Batched 注入（ADR-276 で既定が全部 Vk になったため、
-    /// 旧 `ForceVk`〈config の `force_vk`〉は 2026-10-22 に退役させてここへ畳んだ）
-    Default,
-}
-
-// ── override-entry helpers ──
-
-/// `entries` の中に `(process_name, class_name)` にマッチするものがあるか。
-fn matches_override_entry(
-    entries: &[AppOverrideEntry],
-    process_name: &str,
-    class_name: &str,
-) -> bool {
-    entries.iter().any(|entry| {
-        entry.process.eq_ignore_ascii_case(process_name)
-            && entry.class.eq_ignore_ascii_case(class_name)
-    })
-}
-
-/// `Windows.UI.Input.InputSite.WindowClass` フォーカス時に前景ウィンドウのクラスを使って
-/// フォールバック判定する。マッチすれば `true`。
-unsafe fn input_site_fallback_matches(
-    entries: &[AppOverrideEntry],
-    class_name: &str,
-    process_name: &str,
-) -> bool {
-    if !class_name.eq_ignore_ascii_case("Windows.UI.Input.InputSite.WindowClass") {
-        return false;
-    }
-    let fg_class = crate::ime::get_foreground_window_class();
-    if fg_class.is_empty() || fg_class.eq_ignore_ascii_case(class_name) {
-        return false;
-    }
-    let matched = matches_override_entry(entries, process_name, &fg_class);
-    tracing::debug!(
-        "[force-tsf] InputSite fallback: fg_class={fg_class:?} process={process_name:?} → matched={matched}"
-    );
-    matched
-}
-
 // ── ForceOverrides ──
 
-/// アプリごとの注入モード・フォーカス種別オーバーライド設定を保持し、
+/// アプリごとのフォーカス種別オーバーライド設定を保持し、
 /// 判断ロジックを提供する構造体。
 ///
-/// `AppOverrides` をラップし、injection_hint/check_app_override を
+/// `AppOverrides` をラップし、check_app_override 等を
 /// メソッドとして集約することで呼び出し側 API を統一する。
+///
+/// 注入モードのオーバーライド（`force_tsf`・`InjectionHint`）は Tsf 注入経路の撤去
+/// （2026-10-22、ADR-0004 追記）で削除した。すべて Batched VK で送る。
 #[derive(Debug)]
 pub struct ForceOverrides {
     inner: AppOverrides,
@@ -167,25 +120,5 @@ impl ForceOverrides {
     #[must_use]
     pub(crate) fn input_relay_apps(&self) -> &[String] {
         &self.inner.input_relay_apps
-    }
-
-    /// 注入ヒントを返す（ForceTsf / Default）。
-    ///
-    /// `process_name` の取得を1回にまとめ、ヘルパー関数経由で判定する。
-    #[tracing::instrument(level = "debug", skip_all, fields(process_id = process_id, class_name = class_name))]
-    pub(crate) fn injection_hint(&self, process_id: u32, class_name: &str) -> InjectionHint {
-        if self.inner.force_tsf.is_empty() {
-            return InjectionHint::Default;
-        }
-        let process_name = super::classify::get_process_name(process_id);
-        // force_tsf チェック（InputSite フォールバック含む）
-        if matches_override_entry(&self.inner.force_tsf, &process_name, class_name)
-            || unsafe {
-                input_site_fallback_matches(&self.inner.force_tsf, class_name, &process_name)
-            }
-        {
-            return InjectionHint::ForceTsf;
-        }
-        InjectionHint::Default
     }
 }

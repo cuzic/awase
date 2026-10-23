@@ -86,7 +86,6 @@ exclude_re = [
     #  すべて除外対象というわけではない。)
     "platform\\.rs:260:9: replace .*output_in_flight_ms.*",
     "platform\\.rs:265:9: replace .*is_composition_warm.*",
-    "platform\\.rs:270:9: replace .*is_tsf_mode.*",
     "platform\\.rs:292:9: replace .*on_passthrough_key.*",
 
     # 等価変異体（equivalent mutant）: ConvMode::imm_conv_target (src/engine/conv.rs:122,125)

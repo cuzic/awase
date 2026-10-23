@@ -1,21 +1,16 @@
-//! `TsfProbeCoro` / `GjiWarmupCoro` が共有する `TickableFsm` ラッパー配線。
+//! `TsfProbeCoro` の `TickableFsm` ラッパー配線（`tick`/`apply_vk_sent`/prime）。
 //!
-//! コルーチン本体（`tsf_probe_coro_body` / `gji_coro_body`）は既に
-//! `run_per_vk_confirm`（2026-07-17 統合）で共通化済みだったが、その周辺の
-//! `tick`/`apply_vk_sent`/prime のラッパー配線は
-//! `TsfProbeCoro`（`probe_fsm.rs`）と `GjiWarmupCoro`（`gji_warmup_coro.rs`）に
-//! byte-identical に近い形で複製されていた。本モジュールはその共通部分だけを
-//! 切り出したものであり、各構造体固有の `OutputActiveGuard` 管理
-//! （`TsfProbeCoro::_guard` は construction 時から drop まで固定、
-//! `GjiWarmupCoro::literal_detect_guard` は LiteralDetect フェーズ突入時に
-//! 遅延生成）はここに含めない（各呼び出し元で個別に保持する）。
+//! もとは `TsfProbeCoro`（`probe_fsm.rs`）と Tsf 注入モード用の `GjiWarmupCoro` が共有していた
+//! 部分を切り出したもの。`GjiWarmupCoro` は Tsf 注入経路の撤去（2026-10-22）で削除したため、
+//! 使い手は `TsfProbeCoro` だけになった。`OutputActiveGuard` の管理（construction 時から drop まで
+//! 固定）は `TsfProbeCoro` 側が持つ。
 
 use crate::state::event_origin::Generation;
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, ProbeTickInput, TsfEnvSnapshot, VkSentPayload};
 use timed_fsm::coro::{CoroStep, StepCoro};
 
-/// `TsfProbeCoro`/`GjiWarmupCoro` 共有の `TickableFsm` 状態。
+/// `TsfProbeCoro` の `TickableFsm` 状態。
 ///
 /// `pending_vk_sent` は dispatcher からの `apply_vk_sent` 呼び出しで
 /// セットされ、次の `tick()` で `ProbeTickInput` に載せて消費される（BUG-27 参照）。

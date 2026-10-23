@@ -894,9 +894,8 @@ unsafe extern "system" fn win_event_proc(
 ) {
     use std::sync::atomic::{AtomicIsize, Ordering as AtomicOrdering};
     // 同一 HWND からの連続 EVENT_OBJECT_FOCUS は Chrome / UWP の子オブジェクト由来で
-    // 数 ms 間隔で多発する。毎回 TsfGate を PendingWarmup に巻き戻すと、
-    // ユーザーが押下した文字キーが held queue ごと破棄されて入力ロスする
-    // （特に Chrome で文字入力不能になる症状）。
+    // 数 ms 間隔で多発する。毎回フォーカス変更として扱うと、IME リフレッシュの再スケジュール等が
+    // 連発する（当初の理由は旧 TsfGate〈2026-10-22 撤去〉の held queue が破棄されて入力ロスすることだった）。
     // HWND が変わっていない場合は早期 return する。
     static LAST_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
 

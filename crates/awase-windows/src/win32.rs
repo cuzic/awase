@@ -213,7 +213,7 @@ fn input_may_mutate_conv(input: &INPUT) -> bool {
 /// という誤読を招く（この診断が防ごうとしている罠そのもの）。
 ///
 /// **`TSF_MARKER`単独では判定しない**: このマーカーは通常のローマ字文字出力
-/// （`output/key_injector.rs::InjectionMode::Tsf`）やF2 warmup
+/// （旧 Tsf 注入モード〈2026-10-22 撤去〉）やF2 warmup
 /// （`VK_DBE_HIRAGANA`）にも広く使われる「サブシステム単位」のマーカーであり、
 /// これだけで actuation と判定すると通常の文字出力のたびに誤検出（ノイズ）を
 /// 生む。`TSF_MARKER`は`VK_IME_ON`/`VK_IME_OFF`（open/close軸）と組み合わさった

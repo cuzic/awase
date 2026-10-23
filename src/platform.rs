@@ -139,11 +139,6 @@ pub trait TsfComposition {
         false
     }
 
-    /// 現在のフォーカスウィンドウが TSF 注入モードかどうかを返す。
-    fn is_tsf_mode(&self) -> bool {
-        false
-    }
-
     /// IME apply 完了後の platform 状態更新フック。
     ///
     /// `applied_snapshot` 更新・latch・mark_cold・eager warmup を platform 内で処理する。

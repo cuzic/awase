@@ -1,4 +1,4 @@
-//! 入力遅延キュー — OUTPUT_GATE active 中・TsfGate drain など複数の退避経路を集約する。
+//! 入力遅延キュー — OUTPUT_GATE active 中など複数の退避経路を集約する。
 //!
 //! すべての退避経路は classify 済みの `RawKeyEvent` として同一キューに積む。
 //! `enrich_ime_relevance`（sync key 判定）のみ drain 側で `with_app` 内に実行する。
@@ -52,7 +52,7 @@ impl InputDeferQueue {
         self.push_with_cap(&mut q, event);
     }
 
-    /// TsfGate・タイムアウト等から保留キーをまとめて再投入する。空でも安全（no-op）。
+    /// タイムアウト等から保留キーをまとめて再投入する。空でも安全（no-op）。
     pub fn replay_later(&self, events: impl IntoIterator<Item = RawKeyEvent>) {
         let mut q = match self.queue.lock() {
             Ok(q) => q,

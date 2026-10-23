@@ -12,7 +12,7 @@ def put(name, mods):
 # L0 土台: 定数・仮想キー・キーマップ表・世代・時計・IME 種別・アプリ分類の型。他のどれにも依存しない
 put('base', [
     'tuning', 'vk', 'keymap', 'state', 'state::generation', 'state::event_origin', 'state::hub_clock',
-    'state::foreground_scope', 'state::injection_mode', 'state::layout_language', 'state::ime_kind',
+    'state::foreground_scope', 'state::layout_language', 'state::ime_kind',
     'state::focus_gen', 'state::app_suppression', 'state::scoped_latch',
     'focus', 'focus::kinds', 'focus::class_names', 'tsf', 'tsf::converter_target',
 ])

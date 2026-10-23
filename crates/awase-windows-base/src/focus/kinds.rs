@@ -6,7 +6,7 @@
 
 /// アプリケーションの UI フレームワーク種別
 ///
-/// フォーカス中のアプリの種類を表す。注入モードはこれとは別に `InjectionHint` から決まり、
+/// フォーカス中のアプリの種類を表す。注入モードは常に Batched VK で（旧 `InjectionHint` は 2026-10-22 に撤去）、
 /// ADR-276（Unicode 注入の撤去）以後は VK ローマ字か TSF のどちらかになる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

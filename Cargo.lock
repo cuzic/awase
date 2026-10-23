@@ -604,7 +604,6 @@ dependencies = [
  "awase-scancode",
  "awase-vkmap",
  "awase-windows-plans",
- "itertools",
  "quanta",
  "serde",
  "serde_json",

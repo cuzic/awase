@@ -8,7 +8,7 @@ summary: |-
   残すもの: `.yab` の `\u`・クォートの直接指定と、表に無い文字(`－` など)の `KEYEVENTF_UNICODE`(BUG-066)、他アプリが注入した `VK_PACKET` の再注入(ADR-253)。
   A1・G1(GjiFsm への ImeOn 通知 2 か所)は、VK 注入だけの世界では G2 と二重であることをモデル検証(`tsf/gji_sync_model.rs`)で厳密に示した。Unicode 撤去と同時に外せる。
 status: |-
-  実装済み(2026-10-21)。追補(2026-10-22): `force_vk` の退役と `[injection_mode]` の読み込みの撤去(末尾の追補)。P1〜P2 は PR #767、P3〜P4 は PR #768 で develop にマージ。コードは 25+15 ファイルで約 916 行の純減(挿入 116・削除 1,032)。e2e は標準フォーム・Java・LibreOffice・Qt・WinForms・WPF・wx の typing が全て PASS、sc-reopen は期待どおり。未確認は WinUI3・Notepad++・Flutter・Electron の入力先と、実機(dragonflyg4)での LINE・Word・Excel。
+  実装済み(2026-10-21)。追補(2026-10-22): `force_vk` の退役と `[injection_mode]` の読み込みの撤去(末尾の追補)。追補 2(2026-10-22): Tsf 注入経路と `force_tsf` の撤去(ADR-0004 の追補)。P1〜P2 は PR #767、P3〜P4 は PR #768 で develop にマージ。コードは 25+15 ファイルで約 916 行の純減(挿入 116・削除 1,032)。e2e は標準フォーム・Java・LibreOffice・Qt・WinForms・WPF・wx の typing が全て PASS、sc-reopen は期待どおり。未確認は WinUI3・Notepad++・Flutter・Electron の入力先と、実機(dragonflyg4)での LINE・Word・Excel。
 related_adr:
   - "ADR-0004"
   - "ADR-006"
@@ -97,3 +97,7 @@ ADR-083 の「やってはいけないこと」(`InjectionMode::Unicode` の廃�
 所有者判断(2026-10-22)で、`config.toml` の `app_overrides.force_vk`(`InjectionHint::ForceVk`)を退役させ、`cache.toml` の `[injection_mode]`(`InjectionModeStore`)の読み込みを撤去した。ADR-276 で既定が全部 Vk になり、自動昇格の書き込み側も無くなっていたため。`InjectionHint` は `ForceTsf`/`Default` の 2 値で、`injection_mode_for` は `ForceTsf` → Tsf、`Default` → Vk。既存の設定は壊さない: `force_vk` は読み込みエラーにせず無視し、空でなければ起動時に「不要になった」と通知する(`config_load_diag::REMOVED_WITH_VALUE_NOTICE`、設定画面の保存で消える)。`[injection_mode]` は読まない(`ImmCapabilityStore` の保存は他セクションとして保つ)。**影響**: 以前の版が TSF へ自動昇格させていた窓(`force_tsf` に無いもの)は Vk で送られる。困る場合は `force_tsf` に足す。
 
 本 ADR の D1 で「`force_vk` は Vk のまま」とし、学習済みの Tsf(`[injection_mode]`)の読み手を残していた(棚卸しの PR-5 の所有者判断待ち)。その判断が「撤去する」に決まったため、`focus/learning_store.rs::InjectionModeStore`・`focus/tracker.rs` の参照・`InjectionHint::ForceVk`・`AppOverrides::force_vk` を消した。
+
+## 追補 2(2026-10-22): Tsf 注入経路(`force_tsf`)の撤去
+
+上の追補の「困る場合は `force_tsf` に足す」は無効になった。所有者判断(2026-10-22)で Tsf 注入経路と `force_tsf` も撤去し、注入は Batched VK だけになった(`InjectionMode`・`InjectionHint` は型ごと削除)。根拠(CI の測定)・消したもの・挙動の変化・確かめていないことは [ADR-0004](0004-injection-mode-design.md) の追補にまとめた。

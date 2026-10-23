@@ -1,75 +1,43 @@
-use super::types::InjectionMode;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 
-/// モード別出力ディスパッチのトレイト。
+/// 文字・ローマ字の送信口（Batched VK）。
 ///
-/// `send_keys()` が `InjectionMode` ごとに match を繰り返す代わりに、
-/// このトレイトで一本化する。
-pub(crate) trait InjectionSender {
-    fn send_char(&self, ch: char);
-    fn send_romaji(&self, romaji: &str);
-    fn send_key_sequence(&self, s: &str) {
+/// 以前は注入モード（`InjectionMode::Vk`/`Tsf`）ごとの送信口をトレイトで切り替えていたが、
+/// Tsf 注入経路の撤去（2026-10-22、ADR-0004 追記）で送信口は Batched VK の 1 つになった。
+pub(crate) struct VkSender<'a>(pub &'a super::Output);
+
+impl VkSender<'_> {
+    pub(crate) fn send_char(&self, ch: char) {
+        self.0.send_char_as_vk(ch);
+    }
+    pub(crate) fn send_romaji(&self, romaji: &str) {
+        self.0.send_romaji_batched(romaji);
+    }
+    pub(crate) fn send_key_sequence(&self, s: &str) {
         for ch in s.chars() {
             self.send_char(ch);
         }
-    }
-    fn mode_label(&self) -> &'static str;
-}
-
-pub(crate) struct VkSender<'a>(pub &'a super::Output);
-pub(crate) struct TsfSender<'a>(pub &'a super::Output);
-
-impl InjectionSender for VkSender<'_> {
-    fn send_char(&self, ch: char) {
-        self.0.send_char_as_vk(ch);
-    }
-    fn send_romaji(&self, romaji: &str) {
-        self.0.send_romaji_batched(romaji);
-    }
-    fn mode_label(&self) -> &'static str {
-        "VK Batched (Chrome)"
-    }
-}
-
-impl InjectionSender for TsfSender<'_> {
-    fn send_char(&self, ch: char) {
-        self.0.send_char_as_tsf(ch);
-    }
-    fn send_romaji(&self, romaji: &str) {
-        self.0.send_romaji_as_tsf(romaji);
-    }
-    fn mode_label(&self) -> &'static str {
-        "VK Sequential (TSF)"
     }
 }
 
 /// `send_keys()` 1回分の出力セッション。
 ///
-/// - `begin()` で `InjectionMode` を解決し `OutputActiveGuard` を取得する
-/// - `sender()` で `InjectionSender` の動的ディスパッチオブジェクトを返す
+/// - `begin()` で `OutputActiveGuard` を取得する
+/// - `sender()` で送信口を返す
 /// - Drop 時に Guard が `OUTPUT_GATE.active=false` + drain を自動実行する
 pub(crate) struct OutputSession<'a> {
     pub output: &'a super::Output,
-    pub mode: InjectionMode,
     #[allow(dead_code)] // RAII: Drop が OUTPUT_GATE.active=false を実行する
     pub guard: OutputActiveGuard,
 }
 
 impl<'a> OutputSession<'a> {
     pub(crate) fn begin(output: &'a super::Output) -> Self {
-        let mode = output.injection_mode;
         let guard = OutputActiveGuard::begin();
-        Self {
-            output,
-            mode,
-            guard,
-        }
+        Self { output, guard }
     }
 
-    pub(crate) fn sender(&self) -> Box<dyn InjectionSender + '_> {
-        match self.mode {
-            InjectionMode::Vk => Box::new(VkSender(self.output)),
-            InjectionMode::Tsf => Box::new(TsfSender(self.output)),
-        }
+    pub(crate) const fn sender(&self) -> VkSender<'_> {
+        VkSender(self.output)
     }
 }

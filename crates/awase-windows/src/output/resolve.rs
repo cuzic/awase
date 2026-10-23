@@ -22,7 +22,7 @@ pub(super) const fn special_key_to_vk(sk: SpecialKey) -> VkCode {
     }
 }
 
-/// `send_char_as_tsf` / `send_char_as_vk` 共通の文字解決結果。
+/// `send_char_as_vk` の文字解決結果。
 pub(super) enum CharResolution<'a> {
     /// かな → ローマ字（VK / TSF 経由で IME に渡す）
     Romaji(&'a str),

@@ -53,7 +53,6 @@ struct AppStateView {
     shadow_ime_on: bool,
     shadow_is_romaji: bool,
     shadow_is_japanese: bool,
-    injection_mode: &'static str,
     ms_since_focus_change: Option<u64>,
     ms_since_last_activity: Option<u64>,
 }
@@ -93,8 +92,6 @@ pub struct ImeDiagnosticSnapshot {
     pub shadow_is_romaji: bool,
     /// shadow が日本語キーボードと判定しているか
     pub shadow_is_japanese: bool,
-    /// 解決された注入モード
-    pub injection_mode: &'static str,
     /// 最後のフォアグラウンド変更からの経過時間（None=未発生）
     pub ms_since_focus_change: Option<u64>,
     /// 最後のキー活動からの経過時間（typing 判定用）
@@ -126,7 +123,6 @@ impl ImeDiagnosticSnapshot {
                 shadow_ime_on: false,
                 shadow_is_romaji: false,
                 shadow_is_japanese: false,
-                injection_mode: "Unknown",
                 ms_since_focus_change: None,
                 ms_since_last_activity: None,
             },
@@ -142,7 +138,6 @@ impl ImeDiagnosticSnapshot {
                     shadow_ime_on: s.shadow_ime_on,
                     shadow_is_romaji: s.shadow_is_romaji,
                     shadow_is_japanese: s.shadow_is_japanese,
-                    injection_mode: resolve_injection_mode_label(),
                     ms_since_focus_change: dt_focus,
                     ms_since_last_activity: dt_activity,
                 }
@@ -187,7 +182,6 @@ impl ImeDiagnosticSnapshot {
             shadow_ime_on: view.shadow_ime_on,
             shadow_is_romaji: view.shadow_is_romaji,
             shadow_is_japanese: view.shadow_is_japanese,
-            injection_mode: view.injection_mode,
             ms_since_focus_change: view.ms_since_focus_change,
             ms_since_last_activity: view.ms_since_last_activity,
         }
@@ -216,7 +210,7 @@ impl ImeDiagnosticSnapshot {
              hkl={hkl:08x} lang={lang:04x} imm_bridge={bridge} \
              imc_open={imc_open} imc_conv={conv} \
              shadow_on={shadow_on} shadow_romaji={romaji} shadow_jp={jp} \
-             inject={inject} dt_focus_ms={dt_focus} dt_activity_ms={dt_act}",
+             dt_focus_ms={dt_focus} dt_activity_ms={dt_act}",
             label = self.label,
             t = self.timestamp_ms,
             hwnd = self.focus_hwnd_raw,
@@ -229,7 +223,6 @@ impl ImeDiagnosticSnapshot {
             shadow_on = self.shadow_ime_on,
             romaji = self.shadow_is_romaji,
             jp = self.shadow_is_japanese,
-            inject = self.injection_mode,
         );
     }
 }
@@ -353,18 +346,4 @@ pub fn log_composition_probe(cold_seq: Generation, label: &'static str) {
         shadow_on = view.2,
         jp = view.3,
     );
-}
-
-/// 解決される注入モードのラベル文字列を返す（出力経路と同じロジックを参照する）。
-fn resolve_injection_mode_label() -> &'static str {
-    use crate::focus::classifier::InjectionHint;
-
-    crate::with_app_ref(|app| {
-        let (hint, _) = app.injection_hint();
-        match hint {
-            InjectionHint::ForceTsf => "Tsf",
-            InjectionHint::Default => "Vk",
-        }
-    })
-    .unwrap_or("Unknown")
 }

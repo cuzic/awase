@@ -65,7 +65,7 @@ MS-IME	TsfNative	async_fallback	MsImeDirect
 # ── warmup / sacrificial キー選択 ─────────────────────────────────
 # ソース: crates/awase-windows/src/output/probe_io.rs（impl ProbeIo for Output）。
 # dispatch_probe_actions が呼ぶ ProbeIo メソッドと、Output 実装が送るキー。キーは Output 側に
-# ハードコードされており分岐は主に TransmitTarget（Chrome / Tsf）で切り替わる。
+# ハードコードされており、送信先は Batched VK だけ（Tsf 注入経路は 2026-10-22 に撤去）。
 #
 # RawTsfLiteralRecovery → set_raw_literal(backs, romaji) で BS×backs + 再送を予約し mark_cold。
 #                         consecutive>0 のときは再送せず BS のみ（give-up）。

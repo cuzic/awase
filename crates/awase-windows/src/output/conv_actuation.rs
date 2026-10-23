@@ -16,7 +16,7 @@
 //! **INV-14: 全 7 経路が移行完了（2026-08-08）。** 旧
 //! `set_ime_romaji_mode_with_target`/`_async`（宛先をライブクエリで自己決定する
 //! target 非対応の低レベル API）は `ime.rs` から削除済み。移行済み経路:
-//! `actuate_conv_mode`（本モジュール）、`cold_warmup.rs::run_start`、
+//! `actuate_conv_mode`（本モジュール）、`cold_warmup.rs::run_start`（2026-10-22 撤去）、
 //! `executor.rs::dispatch_ime_set_open`（`set_ime_open_then_conv_for_target`、
 //! open と conv を同一 hwnd に対して行う特殊版）、`key_pipeline.rs` の
 //! `kp_stage_idle_conv_check`（BUG-08 ローマ字復元）・

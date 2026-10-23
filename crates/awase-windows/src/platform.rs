@@ -11,7 +11,7 @@ use awase::platform::{PlatformRuntime, TsfComposition};
 use awase::types::{KeyAction, RawKeyEvent};
 
 use crate::focus::class_names::AppImeProfile;
-use crate::focus::classifier::{ImmCapability, InjectionHint};
+use crate::focus::classifier::ImmCapability;
 use crate::focus::tracker::FocusTracker;
 use crate::output::Output;
 use crate::timer::Win32Timer;
@@ -360,42 +360,9 @@ impl WindowsPlatform {
         self.gji_on_composition_reset();
     }
 
-    /// フォーカス変更時に injection_mode を更新する（runtime 用）。
-    pub(crate) const fn update_injection_mode(
-        &mut self,
-        mode: crate::output::types::InjectionMode,
-    ) {
-        self.output.update_injection_mode(mode);
-    }
-
     /// フォーカス変更を Output に通知し、warm epoch をリセットする（runtime 用）。
     pub(crate) fn notify_focus_changed(&self) {
         self.output.on_focus_changed();
-    }
-
-    /// TSF モード確定時に TsfGate を Probing に遷移させ、保留キーを返す（runtime 用）。
-    pub(crate) fn confirm_tsf(&mut self) -> Vec<RawKeyEvent> {
-        self.output.confirm_tsf()
-    }
-
-    /// 非 TSF モード確定時に TsfGate を Bypass に遷移させ、保留キーを返す（runtime 用）。
-    pub(crate) fn bypass_tsf(&mut self) -> Vec<RawKeyEvent> {
-        self.output.bypass_tsf()
-    }
-
-    /// フォーカス変更時に TsfGate を PendingWarmup に遷移させる（bootstrap 用）。
-    pub(crate) fn on_focus_change_tsf(&mut self) {
-        self.output.on_focus_change_tsf();
-    }
-
-    /// TIMER_TSF_GATE タイムアウト時に TsfGate を Bypass にフォールバックし、保留キーを返す。
-    pub(crate) fn on_tsf_warmup_timeout(&mut self) -> Vec<RawKeyEvent> {
-        self.output.on_tsf_warmup_timeout()
-    }
-
-    /// キーを TsfGate で処理する。`true` = 保留（呼び出し元は Consumed を返すこと）。
-    pub(crate) fn try_hold_key(&mut self, event: RawKeyEvent) -> bool {
-        self.output.try_hold_key(event)
     }
 
     /// `send_keys()` が開始した TSF/GJI probe がまだ完了していないか。
@@ -557,17 +524,14 @@ impl WindowsPlatform {
     /// SendInput 2連送になり、ADR-149/BUG-113 の「@」の必要条件を作る）。`eager_warmup_sent_ms` の latch もしない
     /// （唯一の読み手 `compute_focus_probe_grace` はフォーカス変更で 0 に戻された値をフォーカス直後の最初の打鍵で読むため、
     /// F2 の latch は読まれない。BUG-06 の「新F2から500ms待機」自体も 2026-07-18 に撤去済み。Opus round2 R2-6）。
-    /// - TSF mode: `GjiNativeF2Consumed` を使うことで GjiFsm が Medium/Long cold 状態を維持できる
-    ///   （`GjiCompositionReset` だと Short に降格して Long cold の is_long_cold が失われる）。
-    /// - 非 TSF・非 warm: cold mark と GjiFsm reset のみ（Chrome/Win32 向け）。
-    /// - 非 TSF・warm: 何もしない（BUG-31: warm 中の無関係な物理 IME キーで cold 化すると、直後の無関係な
+    /// - 非 warm: cold mark と GjiFsm reset のみ。
+    /// - warm: 何もしない（BUG-31: warm 中の無関係な物理 IME キーで cold 化すると、直後の無関係な
     ///   タイピングが cold-start 経路に落ちて GJI 候補ウィンドウ可視性のレースで文字が消える）。
+    ///
+    /// 旧 Tsf 注入モード（`force_tsf`）では warm でも `NativeF2Consumed` で cold にしていたが、
+    /// Tsf 注入経路の撤去（2026-10-22、ADR-0004 追記）で分岐ごと削除した。
     pub(crate) fn composition_native_f2_down(&mut self) {
-        if self.output.is_tsf_mode() {
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
-            self.gji_on_native_f2_consumed();
-        } else if !self.output.is_composition_warm() {
+        if !self.output.is_composition_warm() {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::F2NonTsf);
             self.gji_on_composition_reset();
@@ -577,10 +541,7 @@ impl WindowsPlatform {
     // ── GjiFsm イベント通知 ──────────────────────────────────────────────────
 
     /// フォーカス変更を GjiFsm に通知する（`ir_post_focus_change_snapshot` から呼ぶ）。
-    pub(crate) fn gji_on_focus_change(
-        &mut self,
-        injection_mode: crate::output::types::InjectionMode,
-    ) {
+    pub(crate) fn gji_on_focus_change(&mut self) {
         if crate::tsf::observer::discard_pending_composition_events() {
             tracing::debug!(
                 "[gji-fsm] FocusChange: 前セッションの保留 composition イベント(SHOW/HIDE)を破棄"
@@ -590,10 +551,7 @@ impl WindowsPlatform {
         let state_before = self.gji_state_label();
         let resp = self
             .output
-            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::FocusChange {
-                injection_mode,
-                gji_idle_ms,
-            });
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::FocusChange { gji_idle_ms });
         self.note_gji_transition(
             format!("FocusChange(gji_idle_ms={gji_idle_ms})"),
             state_before,
@@ -667,15 +625,12 @@ impl WindowsPlatform {
     }
 
     /// IME ON を GjiFsm に通知する（`on_ime_applied(open=true)` から呼ぶ）。
-    pub(crate) fn gji_on_ime_on(&mut self, injection_mode: crate::output::types::InjectionMode) {
+    pub(crate) fn gji_on_ime_on(&mut self) {
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
         let state_before = self.gji_state_label();
         let resp = self
             .output
-            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOn {
-                injection_mode,
-                gji_idle_ms,
-            });
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOn { gji_idle_ms });
         self.note_gji_transition(format!("ImeOn(gji_idle_ms={gji_idle_ms})"), state_before);
         self.dispatch_gji_response(&resp);
     }
@@ -755,19 +710,6 @@ impl WindowsPlatform {
         );
     }
 
-    /// TSF mode で物理 F2 が消費されたことを GjiFsm に通知する（`on_reinject_key` の NativeF2Consumed パス）。
-    ///
-    /// Medium/Long cold 中は probe が継続（saw_native_f2=true）。Short cold / OnWarm / OnComposing は
-    /// CompositionReset 相当として処理される（GjiFsm 側で分岐、`gji_idle_ms` による
-    /// 再検証込み）。
-    pub(crate) fn gji_on_native_f2_consumed(&mut self) {
-        let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
-        self.dispatch_gji_event(
-            format!("NativeF2Consumed(gji_idle_ms={gji_idle_ms})"),
-            crate::tsf::gji_fsm::GjiEvent::NativeF2Consumed { gji_idle_ms },
-        );
-    }
-
     /// GJI candidate SHOW → GjiFsm::StartComposition を dispatch する。
     ///
     /// `observation_event_proc` が `pending_start_composition` を set した後、
@@ -813,7 +755,7 @@ impl WindowsPlatform {
 
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラ用: raw TSF literal 回収 + probe タイマーをセット。
     ///
-    /// `output.flush_raw_tsf_literal_recovery()` は内部で `send_romaji_as_tsf` /
+    /// `output.flush_raw_tsf_literal_recovery()` は内部で
     /// `send_romaji_batched` を呼ぶため、`send_keys()` と同様に `GjiFsm::KeyInput` の
     /// `Response`（`pending_gji_key_responses`）や `composition_reset` フラグが
     /// 発生しうる。`platform.send_keys` を経由しないため、`drain_output_post_send_effects`
@@ -1028,29 +970,16 @@ impl crate::state::gji_direct_mechanism::GjiSyncSink for WindowsPlatform {
     fn sync_gji(&mut self, sync: crate::state::gji_direct_mechanism::GjiFsmSync) {
         use crate::state::gji_direct_mechanism::GjiFsmSync;
         match sync {
-            GjiFsmSync::OnImeOn => {
-                // settle 時点の値を読む（receipt 生成時に積むと、actuation 中に
-                // mode が変わった場合に古い値で同期する。ADR-089 §2.4 細目2）。
-                let mode = self.output.injection_mode;
-                self.gji_on_ime_on(mode);
-            }
+            GjiFsmSync::OnImeOn => self.gji_on_ime_on(),
             GjiFsmSync::OnImeOff => self.gji_on_ime_off(),
             GjiFsmSync::OnImeOnBelief => {
-                let injection_mode = self.output.injection_mode;
                 self.gji_sync_from_belief(sync, "ImeOn(BeliefSync:level)", |gji_idle_ms| {
-                    crate::tsf::gji_fsm::GjiEvent::ImeOn {
-                        injection_mode,
-                        gji_idle_ms,
-                    }
+                    crate::tsf::gji_fsm::GjiEvent::ImeOn { gji_idle_ms }
                 });
             }
             GjiFsmSync::Reopen(source) => {
-                let injection_mode = self.output.injection_mode;
                 self.gji_sync_from_belief(sync, source.trigger(), |gji_idle_ms| {
-                    crate::tsf::gji_fsm::GjiEvent::Reopen {
-                        injection_mode,
-                        gji_idle_ms,
-                    }
+                    crate::tsf::gji_fsm::GjiEvent::Reopen { gji_idle_ms }
                 });
             }
         }
@@ -1064,10 +993,6 @@ impl TsfComposition for WindowsPlatform {
 
     fn is_composition_warm(&self) -> bool {
         self.output.is_composition_warm()
-    }
-
-    fn is_tsf_mode(&self) -> bool {
-        self.output.is_tsf_mode()
     }
 
     fn on_ime_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
@@ -1162,8 +1087,6 @@ impl WindowsPlatform {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
         }
-        // `injection_mode` は receipt にも settle の引数にも積まない。
-        // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
         receipt.settle(self);
     }
 
@@ -1277,18 +1200,6 @@ impl WindowsPlatform {
     #[must_use]
     pub const fn current_app_profile(&self) -> AppImeProfile {
         self.focus.current_profile()
-    }
-
-    /// 現在のフォーカス先に対する注入ヒントを返す。
-    #[must_use]
-    pub fn injection_hint(&self) -> InjectionHint {
-        self.focus.injection_hint()
-    }
-
-    /// 指定した pid/class に対する injection_hint を返す（フォーカス変更直後の stale 回避用）。
-    #[must_use]
-    pub(crate) fn injection_hint_for(&self, pid: u32, class_name: &str) -> InjectionHint {
-        self.focus.injection_hint_for(pid, class_name)
     }
 
     /// 同一フォーカスプローブ内で取得済みの process_name を再利用して更新する。

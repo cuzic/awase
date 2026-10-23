@@ -4,7 +4,7 @@
 //! GJI FSM への橋渡しバッファ群を一括して管理する。`Output` はこの構造体への
 //! Facade として残り、各操作をメソッド委譲する。
 //!
-//! `step_probe` のように `Output` 全体（`ime_mode_fsm`・`tsf_gate` 等）へのアクセスが
+//! `step_probe` のように `Output` 全体（`ime_mode_fsm` 等）へのアクセスが
 //! 必要な処理は `Output` 側に残し、ここではプローブ状態の take/set を提供する。
 
 use super::TimerCommand;
@@ -13,8 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
 use crate::tsf::gji_fsm::GjiTimer;
-use crate::tsf::gji_fsm::{GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams};
-use crate::tsf::probe_bridge::OutputActiveGuard;
+use crate::tsf::gji_fsm::{GjiAction, GjiEvent, GjiFsm, ProbeId};
 use crate::tsf::warmup::probe_fsm::{DeferredOrigin, DeferredVk};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 use crate::tsf::warmup::warmup_strategy::ImeWarmupStrategy;
@@ -42,17 +41,15 @@ pub(crate) struct TsfWarmupCoordinator {
     pub(super) pending_tsf: RefCell<Option<Box<dyn TickableFsm>>>,
     /// 現在実行中の GJI probe の ID（`GjiAction::StartProbe` 受信時にセット）。
     pub(super) current_gji_probe_id: Cell<Option<ProbeId>>,
-    /// GJI probe 中に OUTPUT_GATE を活性化するガード。
-    gji_probe_guard: RefCell<Option<OutputActiveGuard>>,
     /// 現在の probe 段における注入/回収事実。
     stage: Cell<StageRecord>,
     /// `ProbeIo::mark_cold_raw_tsf` → `GjiFsm::CompositionReset` の橋渡しフラグ。
     pub(super) pending_gji_composition_reset: Cell<bool>,
-    /// `send_romaji_as_tsf` / `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
+    /// `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
     pending_gji_key_responses: RefCell<Vec<GjiResponse>>,
     /// probe 進行中に届いた後続 VK の単一キュー。
     ///
-    /// 個々の probe machine（`GjiWarmupCoro` 等）ではなく coordinator が直接所有する。
+    /// 個々の probe machine（`TsfProbeCoro` 等）ではなく coordinator が直接所有する。
     /// これにより「最初の tick で握り潰される」「probe が上書きされて drop される」という
     /// 2種類のデータ消失を構造的に防ぐ（probe の生存期間に依存しない単一の書き込み先）。
     pending_deferred: RefCell<Vec<DeferredVk>>,
@@ -66,7 +63,6 @@ impl TsfWarmupCoordinator {
             tsf_warmup: RefCell::new(Box::new(GjiFsm::new())),
             pending_tsf: RefCell::new(None),
             current_gji_probe_id: Cell::new(None),
-            gji_probe_guard: RefCell::new(None),
             stage: Cell::new(StageRecord::default()),
             pending_gji_composition_reset: Cell::new(false),
             pending_gji_key_responses: RefCell::new(Vec::new()),
@@ -132,11 +128,6 @@ impl TsfWarmupCoordinator {
         self.tsf_warmup.borrow().gji_is_composing()
     }
 
-    /// `Authorized` 状態の `ProbeParams` を返す。それ以外なら `None`。
-    pub(crate) fn current_probe_params(&self) -> Option<ProbeParams> {
-        self.tsf_warmup.borrow().current_probe_params()
-    }
-
     // ── probe_id ──────────────────────────────────────────────────────────
 
     /// `GjiAction::StartProbe` を受信したとき probe_id を記録する。
@@ -152,18 +143,6 @@ impl TsfWarmupCoordinator {
     /// 現在の GJI probe_id を取り出してクリアする。
     pub(crate) fn take_probe_id(&self) -> Option<ProbeId> {
         self.current_gji_probe_id.take()
-    }
-
-    // ── OUTPUT_GATE ガード ─────────────────────────────────────────────────
-
-    /// GJI probe の OUTPUT_GATE ガードを開始する。
-    pub(crate) fn begin_probe_guard(&self) {
-        *self.gji_probe_guard.borrow_mut() = Some(OutputActiveGuard::begin());
-    }
-
-    /// GJI probe の OUTPUT_GATE ガードを解放する。
-    pub(crate) fn end_probe_guard(&self) {
-        *self.gji_probe_guard.borrow_mut() = None;
     }
 
     // ── stage record ─────────────────────────────────────────────────────

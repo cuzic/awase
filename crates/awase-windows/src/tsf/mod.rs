@@ -12,8 +12,7 @@
 //!
 //! windows crate、または gated なモジュール(`hook`・`tsf::observer` など)に依存するサブモジュールは
 //! `#[cfg(windows)]`。windows crate 依存が
-//! ゼロの `gji_fsm`（TSF composition の warm/cold 状態機械）・`literal_facts`・
-//! `tsf_gate`（TSF ゲート状態機械）は ungated にし、`cargo test -p awase-windows --lib`
+//! ゼロの `gji_fsm`（TSF composition の warm/cold 状態機械）・`literal_facts` は ungated にし、`cargo test -p awase-windows --lib`
 //! から Linux でも常時実行できるようにしている（ADR-082 決定1実施記録の次の一歩、
 //! BUG-33 追補3・4、ADR-229 T2）。
 //! 上記リストの相互参照は intra-doc link にすると非 Windows ビルドで解決できなく
@@ -48,15 +47,10 @@ pub(super) mod tip_detector;
 // crate外から呼べるようにする。
 #[cfg(windows)]
 pub use tip_detector::query_tip_identity_on_current_sta;
-pub(crate) mod tsf_gate;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod warmup;
 #[cfg(windows)]
 mod win_event_obs;
-
-pub use tsf_gate::{
-    GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, WARMUP_TIMEOUT_MS,
-};
 
 // ── Windows 専用の副作用への入口(ADR-272 段階 A-2c) ──
 //

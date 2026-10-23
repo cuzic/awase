@@ -32,7 +32,6 @@ use awase::types::Timestamp;
 use awase::types::{ContextChange, RawKeyEvent, VkCode};
 
 use crate::focus::cache::DetectionSource;
-use crate::focus::classifier::InjectionHint;
 use crate::platform::WindowsPlatform;
 use crate::runtime::executor::ImeApplyPair;
 use crate::vk::VkCodeExt as _;
@@ -505,19 +504,6 @@ impl Runtime {
             &modifiers,
             left_thumb_down,
             right_thumb_down,
-        )
-    }
-
-    /// output 層が注入モードを決定するために呼ぶ公開 API。
-    ///
-    /// focus の `injection_hint()` と `platform_state.app_kind` を組み合わせて
-    /// `InjectionHint` を返す。output 層はこのメソッドのみを呼び、
-    /// focus/classify の内部型に直接アクセスしない。
-    #[must_use]
-    pub fn injection_hint(&self) -> (InjectionHint, crate::focus::AppKind) {
-        (
-            self.platform.injection_hint(),
-            self.platform_state.focus.app_kind,
         )
     }
 
@@ -1059,19 +1045,11 @@ impl Runtime {
     pub fn spawn_ime_refresh(&mut self) {
         self.platform.timer.kill(crate::TIMER_IME_REFRESH);
 
-        // NOTE: ここで send_eager_tsf_warmup() を呼ばない。
-        // focus_transition_pending=true の時点では injection_mode が前ウィンドウ（WezTerm 等）
-        // の stale な Tsf のままであり、新しいウィンドウが Chrome/Edge の場合に誤って
-        // VK_DBE_HIRAGANA を送信して Chrome の IME を ON にしてしまうバグがあった。
-        // eager warmup は post_focus_change_snapshot (run_with_prefetched 内) で injection_mode
-        // 確定後に正しく送信される。
-
         win32_async::spawn_local(async {
             let focus = crate::focus::probe::run_focus_probe_async().await;
             let snap = crate::ime::read_ime_state_full_async().await;
             let _ = crate::with_app(|app| {
                 app.run_ime_refresh_with_prefetched(focus, &snap);
-                app.settle_tsf_gate_after_refresh();
             });
         });
     }
@@ -1225,38 +1203,6 @@ impl Runtime {
             return;
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
-    }
-
-    /// `spawn_ime_refresh` の async タスク内で IME リフレッシュ後に TsfGate を遷移させる。
-    ///
-    /// `run_ime_refresh_with_prefetched` 完了後に呼ぶ。`last_focus_info` が更新済みのため
-    /// `injection_hint` を読んで正しい TsfGate 状態に遷移できる。
-    fn settle_tsf_gate_after_refresh(&mut self) {
-        // PendingWarmup 以外（Probing/Ready/Bypass）なら空 Vec が返る。
-        // confirm_tsf は PendingWarmup/Bypass → Probing、bypass_tsf は PendingWarmup/Probing → Bypass。
-        let is_tsf = matches!(self.platform.injection_hint(), InjectionHint::ForceTsf);
-        let held = if is_tsf {
-            self.platform.confirm_tsf()
-        } else {
-            // ここで belief（IME open observation）を書いてはならない。
-            // かつて ce45b82 が「非TSFウィンドウには日本語IMEが存在しない」という誤った
-            // 前提で write_focus_probe(false) の偽観測を注入していたが、Edge/Chrome
-            // （Imm32Unavailable、当時は injection=Unicode）は非TSF注入かつ日本語IME有効であり、
-            // 実観測経路を持たないため偽 Low false が most_recent_trusted() 経由で belief を
-            // 支配し、フォーカス約500ms後（次ポーリング）に Engine が必ず OFF になった
-            // （docs/known-bugs.md BUG-07）。ce45b82 の元バグ（Win+X メニューの1文字
-            // ショートカットが NICOLA 変換される）は、現在は classify.rs の既知 NonText
-            // クラス判定 + message_handlers.rs の NonText パススルーが belief と独立に防ぐ。
-            self.platform.bypass_tsf()
-        };
-        self.platform.timer.kill(crate::TIMER_TSF_GATE);
-        if !held.is_empty() {
-            tracing::debug!(
-                "[tsf-gate] draining {} held keys via INPUT_DEFER",
-                held.len()
-            );
-            crate::INPUT_DEFER.replay_later(held);
-        }
     }
 
     /// IME を実際に ON/OFF する直接呼び出し（`Decision`/`Effect` を経由しない経路）が、
@@ -1749,9 +1695,9 @@ impl Runtime {
             .ime
             .try_set_focus_transition_barrier(hwnd_id, now);
 
-        // デバウンスタイマー（~50ms）が完了する前にキーが来た場合でも injection_mode が
-        // 正しくなるよう、フォーカス変更直後に新ウィンドウの class/pid から同期更新する。
-        // WezTerm(ForceTsf) → Chrome 等の遷移でも hint を新ウィンドウから引くため stale にならない。
+        // フォーカス変更直後に新ウィンドウの class/pid を読み、ログと BUG-37 の再プライム判定に使う。
+        // （以前はここで注入モード〈`force_tsf` の Tsf/Vk〉も同期更新していたが、Tsf 注入経路は
+        // 2026-10-22 に撤去した。）
         {
             use crate::win32::HwndIdExt as _;
             let hwnd = hwnd_id.to_hwnd();
@@ -1759,12 +1705,8 @@ impl Runtime {
             if !class_name.is_empty() {
                 let pid = crate::focus::classify::get_window_process_id(hwnd);
                 let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
-                let hint = self.platform.injection_hint_for(pid, &class_name);
-                let new_mode = crate::output::types::injection_mode_for(hint);
-                self.platform.update_injection_mode(new_mode);
                 tracing::debug!(
-                    "[focus-sync] hwnd=0x{:X} class={class_name:?} \
-                     app_kind={new_app_kind:?} hint={hint:?} → mode={new_mode:?}",
+                    "[focus-sync] hwnd=0x{:X} class={class_name:?} app_kind={new_app_kind:?}",
                     hwnd_id.0
                 );
 
@@ -1800,11 +1742,6 @@ impl Runtime {
             }
         }
 
-        self.platform.on_focus_change_tsf();
-        self.platform.timer.set(
-            crate::TIMER_TSF_GATE,
-            std::time::Duration::from_millis(crate::tsf::WARMUP_TIMEOUT_MS),
-        );
         let debounce_ms = u64::from(self.platform_state.focus.focus_debounce_ms);
         self.schedule_ime_refresh(debounce_ms);
     }

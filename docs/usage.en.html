@@ -796,13 +796,8 @@ force_bypass = [
     </div>
 
     <div class="card">
-      <h3>Per-app output-mode override</h3>
-      <div class="code-block" data-example="usage-en-9" data-mode="asis">[app_overrides]
-# Send in TSF native mode (Windows Terminal, etc.). Apps not listed get VK keystrokes
-force_tsf = [
-    { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
-]</div>
-      <p class="note">The former <code>force_vk</code> has been retired because it now matches the default (it is ignored if present). If an app that older versions switched to TSF automatically now misbehaves, add it to <code>force_tsf</code>.</p>
+      <h3>Per-app output-mode override (retired)</h3>
+      <p class="note">Characters are sent to every app as VK keystrokes (through the IME). The former <code>force_vk</code> and <code>force_tsf</code> (which chose how to send) are no longer needed and have been retired (they are ignored if present; a "no longer needed" notice is shown at startup when they are not empty).</p>
     </div>
 
     <div class="card">
