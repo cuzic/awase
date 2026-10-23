@@ -13,7 +13,9 @@ summary: |-
   IME へは何も書かない。`effective_open` は信頼できる観測(ON)に従い、Engine が戻り、drift correction も `NotExplicitIntent` で止まる。
   英数・判定不能では何もしない。導線を実装して closed-loop・Windows CI・実機で効くのを確かめてから、バルーンだけを撤去する(journal の診断は残す)。
 status: |-
-  起草(2026-10-22、実装なし)。所有者判断待ち(末尾「所有者に聞くこと」)。
+  決定済み(2026-10-23、所有者回答反映)。実装はまだ。未確認事項は実装段階で潰す(末尾「未確認」)。
+  所有者回答: Q1 この導線だけ observe でも動かす(例外)・Q2 日本語の証拠は親指と文字の重なりだけ・Q3 再試行は制限なし(エピソードごと、窓切替で破棄)・
+  Q4 バルーンだけ撤去し drift の journal の診断は残す・Q5 逆方向(明示 ON・実 IME OFF)は扱わない(事例が出てから)。
 related_adr:
   - "ADR-132"
   - "ADR-187"
@@ -26,7 +28,8 @@ related_adr:
 
 ## ステータス
 
-起草(2026-10-22)。実装はしていない。行番号はすべて origin/develop `9375c91e` 時点。
+**決定済み(2026-10-23、所有者回答反映)**。起草は 2026-10-22。実装はしていない。行番号はすべて origin/develop `9375c91e` 時点。
+§7 の未確認事項は、実装の段階(D1〜D4 の PR)で潰す。
 調査の元資料は、撤去可否の調査(同日、読み取りのみ)。本 ADR はその「導線を拡張してから撤去」という結論を、所有者の方針に合わせて決定案にしたもの。
 
 ## 1. 背景
@@ -72,10 +75,10 @@ related_adr:
 
 - `src/lang_detect.rs::Trigger`(`:385`)に `Drift` を足す。`label()` は `"drift"`。
 - `EpisodeTracker::arm`(`:573`)が、殻から渡される `drift_hint: bool` を受ける。`on_key_step`(`:518`)・`HoldController::on_key`(`:727`)の引数に足す。
-  - エピソードが無く、`drift_hint` が真で、この scope でまだ `Drift` のエピソードを始めていないときに武装する。
+  - エピソードが無く、`drift_hint` が真のときに武装する。
   - 窓切替・無操作より優先度は低い(どちらも成り立てば既存の契機を使う。判定の材料は同じ)。
-  - 1 つのずれの区間で 1 回だけ。判定が出ずに閉じたら(`Timeout`・`MaxKeys` で判定不能)、同じ区間でもう 1 回まで再武装してよい(回数は所有者に聞く、§7 Q3)。
-    回数の記録は tracker の中に持ち、scope が変わったら消す。
+  - **再試行の回数は制限しない**(所有者回答 Q3)。判定はエピソードごとに行い、判定が出ずに閉じたら(`Timeout`・`MaxKeys`)、ずれが続いている限り次の Down で
+    また武装する。窓切替(scope の変化)でエピソードと武装は破棄する。回数の記録は持たない。
 - 純粋なので、Linux の単体テストで固定する。
 
 `drift_hint` は殻(`lang_detect_shadow.rs::lang_detect_on_key`、`:374`)が集める。事実は次の 3 つで、判断は D2 の純粋関数に置く。
@@ -106,7 +109,7 @@ pub fn plan_refute(f: RefuteFacts) -> Result<(), RefuteSkip>;
 - 取り下げるのは次のすべてを満たすときだけ。満たさない理由は `RefuteSkip` の列挙で返し、journal に残す。
   - 明示意図が OFF、信頼できる観測が ON で新しい、ずれが 3000ms 以上続いている。
   - 同じ窓で、フォーカス追跡が前面窓に追いついている。
-  - 日本語の判定が**親指と文字の重なり**による(n-gram の対数尤度比だけの日本語判定では取り下げない。理由は §4)。
+  - 日本語の判定が**親指と文字の重なり**による(n-gram の対数尤度比だけの日本語判定では取り下げない。所有者回答 Q2、理由は §4)。
   - Space を親指にした構成でない(英文の Space と文字の重なりを親指の重なりと見分けられないため)。
 - 判断の表は `drift_plan.rs` と同じく、全列挙のテストで固定する(`tests/` の exhaustive の形)。
 
@@ -140,7 +143,8 @@ pub fn plan_refute(f: RefuteFacts) -> Result<(), RefuteSkip>;
   `Ok` なら `refute_explicit_intent_by_typing` を呼ぶ。journal の `LangDetectRecord.action` は `"explicit-off-refuted"` か `RefuteSkip` のラベル。
 - `Trigger::Drift` のエピソードは**保持しない**(Engine が非活性で、打鍵は既に OS へ流れている)。今の `"observe-only"`(`:437-442`)と同じ流れで判定だけ使う。
   したがって `may_hold` の条件(`mode`・`scope`)は変えない。
-- この動作は `mode` が `off` 以外(既定の `observe` を含む)で働かせる。IME に書かないので、ADR-263 の「`observe` は挙動を変えない」の例外になる(所有者に確認、§7 Q1)。
+- **例外: この導線だけは既定の `mode = "observe"` でも動かす**(所有者回答 Q1)。`mode = "off"` では動かさない。IME に書かないが belief は変わるので、
+  ADR-263 の「`observe` は挙動を変えない」の例外として扱う。**他の `lang_detect` の経路(保持・ひらがなキー・半角英数トグル)は `observe` では今までどおり何もしない。**
   `scope` と `include/exclude_apps` は見ない(ずれが観測で確かめられている窓だけが対象なので)。入力中継ツール(`InputRelay`)は除く。
 
 ## 3. 英数と判定したとき・判定不能のとき
@@ -148,7 +152,7 @@ pub fn plan_refute(f: RefuteFacts) -> Result<(), RefuteSkip>;
 - **何もしない**を既定にする。明示 OFF の意図を残し、drift correction とバルーン(撤去前)は今と同じ。
   - 英数の判定は「利用者は OFF のつもりで英字を打っている」と整合する。実 IME は ON なので打鍵は IME に入っているが、それを直すのは drift correction の仕事で、本 ADR は足さない(却下案 §6.1)。
   - `ime_on_eisu` の「半角英数トグルに入る」動作も、`Trigger::Drift` のエピソードでは呼ばない(belief OFF の窓でトグルの前提が成り立たない。`lang_detect_shadow.rs:337-339` の `entry_ime_ok`)。
-- 判定不能(期限・打鍵数の上限)は、同じずれの区間で再武装の上限(D1)まで次のエピソードを待つ。上限に達したら何もしない。
+- 判定不能(期限・打鍵数の上限)は、そのエピソードでは何もしない。ずれが続いていれば次のエピソードでまた判定する(回数の制限なし、D1)。
 - journal には `verdict`・`trigger="drift"`・`action="none"` を残す(撤去後の分析の材料)。
 
 ## 4. 誤判定の害と歯止め
@@ -159,7 +163,7 @@ pub fn plan_refute(f: RefuteFacts) -> Result<(), RefuteSkip>;
 | 信頼できる観測が誤り(実 IME は OFF なのに ON と読めた) | Engine が戻り、ローマ字が素の英字として出る(BUG-002 型のリテラル) | 観測は drift と同じ「信頼できる観測」に限り、新しさ(`DRIFT_CORRECTION_OBS_MAX_AGE_MS`)を要する。ずれが 3000ms 以上続いていることも要する(一瞬の食い違いでは動かない) |
 | 判定中に利用者が別の明示操作をした | 新しい意図を消してしまう | reduce の腕で `refuted_target` と今の `last_intent` を照合する。違えば何もしない |
 | 窓を切り替えた直後の誤適用 | 前の窓の判定で次の窓の意図を消す | 窓切替で `last_intent` は既に消える。加えて `same_scope`・`focus_in_sync` を要する。エピソードは scope の変化で閉じる(`close_if_stale` `:561`) |
-| 同じずれで何度も動く | journal が増える・判定のたびに belief が揺れる | 1 つのずれの区間で 1 回(判定不能の再武装を含めても上限付き)。取り下げたあとは明示意図が無いのでずれの開始条件そのものが成り立たない |
+| 同じずれで何度も動く | journal が増える | 取り下げは 1 回で済む(取り下げたあとは明示意図が無いので開始条件が成り立たない)。判定不能の再試行は制限しないが(Q3)、エピソードは最大 7 打鍵・2.5 秒で、journal は 1 エピソード 1 行 |
 
 判定の単位はエピソード(最大 7 打鍵・2.5 秒、ADR-263 の既定)のまま。「連続何打鍵」の新しい閾値は足さない(既存のエピソードの上限で足りるかは CI と実機の journal で確かめる、§5)。
 
@@ -167,7 +171,7 @@ pub fn plan_refute(f: RefuteFacts) -> Result<(), RefuteSkip>;
 
 ### 5.1 Linux(PR の CI で走る)
 
-1. `src/lang_detect.rs` の単体テスト: `Trigger::Drift` の武装(区間で 1 回・scope 変化で消える・窓切替/無操作が優先)。
+1. `src/lang_detect.rs` の単体テスト: `Trigger::Drift` の武装(判定不能のあとも再武装する・scope 変化で破棄・窓切替/無操作が優先)。
 2. `intent_refute_plan.rs` の全列挙テスト(`RefuteFacts` の全組み合わせと `RefuteSkip` の優先順位)。
 3. `ime_model.rs` の reduce のテスト: `refuted_target` 一致/不一致、`desired_open` の揃え(観測あり/なし)、`applied` の降格。
 4. `crates/awase-windows/tests/closed_loop_scenarios.rs` に BUG-110 型のシナリオ(擬似 IME `tests/support/pseudo_ime.rs` を使う):
@@ -193,7 +197,7 @@ pub fn plan_refute(f: RefuteFacts) -> Result<(), RefuteSkip>;
 
 1. 導線(D1〜D4)の PR。バルーンは残す。
 2. 5.1・5.2 が緑、5.3 で BUG-110 型が直ることを確かめる。
-3. バルーンだけを撤去する(調査の案 A。`ir_notify_drift_giveup_diagnostic` の `show_tray_balloon` 呼び出しと文言、約 5〜15 行)。
+3. バルーンだけを撤去する(所有者回答 Q4。調査の案 A。`ir_notify_drift_giveup_diagnostic` の `show_tray_balloon` 呼び出しと文言、約 5〜15 行)。
    **journal の `DriftGiveUpDiagnostic`・`DriftGiveUpIntervalEnded` は残す**(BUG-110 追補3 で不具合報告の分析に実際に使った。導線が効かなかった事例を後から見つける唯一の材料)。
    関数名を残せば `architecture_guard.rs:3440-3507` の件数ガードと `drift_plan_table.txt` の golden は変わらない。
 4. 診断ごとの撤去(調査の案 B、本番約 150 行・テスト約 130 行・golden 差し替え)は、本 ADR の範囲外。導線を入れて数か月の journal で
@@ -222,9 +226,12 @@ BUG-110 追補1 で、`FeedbackPolicy::Read` の drift correction は 341 秒・
 reduce の効果はほぼ同じだが、その variant は `pass_through_observed` 専用で、dispatch 元をガードで 1 箇所に固定している(`ime_model.rs:863`)。
 意味(モードキーの通過)も違い、journal で区別できなくなる。腕の中身はヘルパーで共有し、variant は分ける。
 
-## 7. 未確認と所有者に聞くこと
+## 7. 未確認と所有者の回答
 
-### 未確認
+### 未確認(実装段階で潰す)
+
+以下は D1〜D4 の実装の PR で、コードを読む・テストを書くことで確かめる。確かめた結果で決定案が変わる場合は本 ADR に追記する。
+
 
 - Engine の活性が `effective_open` だけから導かれ、明示 OFF の押下で別のラッチ(engine deactivate のフラグ等)が立っていないか。BUG-110 のログの「vk=0xF3 で engine deactivate」が belief 経由かどうかをコードで確かめていない。
 - Engine が非活性のとき、親指キー(無変換/変換)は IME へ素通りしている。素通りした無変換が GJI の状態を変え、判定の途中で観測が OFF に変わる場合の扱い(D2 の `trusted_open` で弾かれるはず、未検証)。
@@ -233,10 +240,10 @@ reduce の効果はほぼ同じだが、その variant は `pass_through_observe
 - 実利用でバルーンがどれだけ出ているか(`DriftGiveUpDiagnostic` の件数)。降格された窓で信頼できる観測が入ってずれが起きる実例。
 - ADR-191/212 の規律(明示意図を観測で外す)との整合。ADR-187(観測成功後に意図だけ外す)を前例として扱ったが、打鍵の判定で外す前例は無い。
 
-### 所有者に聞くこと
+### 所有者の回答(2026-10-23)
 
-- **Q1**: この動作を既定の `mode = "observe"` で働かせてよいか(IME へは書かないが、belief は変わる。ADR-263 の「observe は挙動を変えない」の例外になる)。働かせないとバルーン撤去の代わりにならない。
-- **Q2**: 日本語の証拠を親指の重なりだけに絞る(n-gram だけの日本語判定では取り下げない)ことでよいか。取りこぼしは増えるが誤判定の害は小さくなる。
-- **Q3**: 判定不能のときの再武装の回数(1 つのずれの区間で 1 回か、2 回か)。
-- **Q4**: 撤去はバルーンだけ(journal の診断は残す)でよいか。
-- **Q5**: 逆向き(明示 ON・実 OFF)にも `Trigger::Drift` を開くか。この向きは drift correction が `VK_IME_ON` を送っており、今の `ime_on` のひらがなキーで足りるので、本 ADR は OFF 向きだけを決める。
+- **Q1**(既定の `observe` で働かせるか): **この導線だけ `observe` でも動かす**。例外として D4 に明記した。他の `lang_detect` の経路は `observe` のまま何もしない。
+- **Q2**(日本語の証拠): **親指キーと文字キーの重なりだけ**。n-gram だけの日本語判定では取り下げない(D2)。
+- **Q3**(判定不能のときの再試行): **制限なし**。エピソードごとに判定し、窓切替で破棄する(D1)。
+- **Q4**(撤去の範囲): **バルーンだけ撤去し、drift の journal の診断(`DriftGiveUpDiagnostic`・`DriftGiveUpIntervalEnded`)は残す**(§5.4)。
+- **Q5**(逆向き、明示 ON・実 IME OFF): **今回は扱わない**。事例が出てから別に判断する。本 ADR は明示 OFF・実 IME ON の向きだけを決める。

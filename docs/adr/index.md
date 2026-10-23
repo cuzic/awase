@@ -285,7 +285,7 @@
 | [276](276-remove-unicode-injection.md) | Unicode 注入(既定モードと Tsf の eager かな送信)を撤去する(ADR-083 の申し送りを覆す) | 実装済み(P1〜P4、#767・#768。純減約 916 行)。追補(2026-10-22): `force_vk` 退役・`[injection_mode]` 読み込み撤去。追補 2: Tsf 注入経路・`force_tsf` 撤去(ADR-0004) |
 | [277](277-pseudo-ime-transition-table-and-ablation.md) | 擬似 IME の遷移を 1 つの表にまとめ、全列挙・ファズ・防御の ablation を同じ表で回す | 起草・段階 1・2 実装 |
 | [278](278-corpus-decision-diff-replay.md) | 実機 CI のジャーナルをコーパスにし、撤去・変更の候補の決定の差分を Linux で再生し、差分とコーパスの穴だけを実機で確かめる | 見送り(2026-10-22) |
-| [279](279-drift-episode-refutes-stale-explicit-off.md) | ずれが続く窓で打鍵列から日本語と判定したら残った明示 OFF の意図を取り下げて Engine を戻し、そのあとで drift 診断バルーンを撤去する | 起草(2026-10-22、実装なし) |
+| [279](279-drift-episode-refutes-stale-explicit-off.md) | ずれが続く窓で打鍵列から日本語と判定したら残った明示 OFF の意図を取り下げて Engine を戻し、そのあとで drift 診断バルーンを撤去する | 決定済み(2026-10-23、所有者回答反映)。実装はまだ |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
