@@ -8949,6 +8949,135 @@ fn resume_observation_r1_shares_recording_and_floor_adr245_add2() {
     );
 }
 
+/// PR #809 の M1: 窓切替直後の打鍵の保持(`state/focus_switch_hold.rs`・`runtime/focus_switch_hold.rs`)の配線の形を固定する。
+///
+/// - 待機の入口は `on_window_focus_event`(`schedule_ime_refresh` より前)。
+/// - 判定は `deliver_key_event` の先頭(`[[keymap]]` のラッチより前)の `hold_on_delivery` で、窓切替直後の保持を
+///   戻り待ちの保持(ADR-245 追補 2 R2)より先に見る。ime-off-rescue の再生は対象外。
+/// - 解放は refresh の完了の両方の経路(`run_ime_refresh`・`run_ime_refresh_with_prefetched`)・期限のタイマー・
+///   `WM_PANIC_RESET`・設定の再読み込み。非同期の refresh は spawn 時点の世代(`focus_event_seq`)を渡す。
+/// - 再生は `INPUT_DEFER.replay_later` の 1 か所(defer/replay の窓口を増やさない。drain 側は既存の
+///   `handle_wm_drain_output_queue` → `deliver_key_event`)。IME へ書かない・belief を更新しない。
+/// - `TIMER_FOCUS_SWITCH_HOLD` は保持の開始で 1 回 set し、解放の出口とタイマーのハンドラで kill する。
+#[test]
+fn focus_switch_hold_wiring_m1() {
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
+    let code = |rel: &str| {
+        squash(&non_comment_lines(production_code_only(&read_crate_file(
+            rel,
+        ))))
+    };
+
+    // 待機の入口
+    let rt = code("src/runtime/mod.rs");
+    let focus_at = rt
+        .find("fnon_window_focus_event(")
+        .expect("on_window_focus_event");
+    let arm_at = rt[focus_at..]
+        .find("self.focus_switch_hold_on_focus_event();")
+        .map(|i| focus_at + i)
+        .expect("on_window_focus_event で待機に入る");
+    let sched_at = rt[focus_at..]
+        .find("self.schedule_ime_refresh(debounce_ms);")
+        .map(|i| focus_at + i)
+        .expect("on_window_focus_event の refresh の予約");
+    assert!(arm_at < sched_at, "待機は refresh の予約より前に入る");
+    assert!(
+        rt.contains("letfocus_seq=self.focus_event_seq;")
+            && rt.contains("app.run_ime_refresh_with_prefetched(focus,&snap,focus_seq);"),
+        "非同期の refresh は spawn 時点の世代を渡す(フォーカス変更より前に spawn された refresh で解放しない)"
+    );
+
+    // 解放の入口(refresh の完了の両方の経路)
+    let refresh = code("src/runtime/ime_refresh.rs");
+    assert!(
+        refresh.contains("self.ir_execute(IoMode::Sync);self.focus_switch_hold_on_refresh_settled(self.focus_event_seq);"),
+        "同期の refresh の完了で解放する"
+    );
+    assert!(
+        refresh.contains("self.focus_switch_hold_on_refresh_settled(focus_seq);"),
+        "非同期の refresh の完了で解放する"
+    );
+
+    // deliver_key_event の先頭
+    let mh = code("src/runtime/message_handlers.rs");
+    let deliver_at = mh.find("fndeliver_key_event(").expect("deliver_key_event");
+    let latch_at = mh[deliver_at..]
+        .find("keymap_latch.is_latched(")
+        .map(|i| deliver_at + i)
+        .expect("keymap_latch の判定");
+    assert!(
+        mh[deliver_at..latch_at].contains("app.hold_on_delivery(&event,origin)"),
+        "deliver_key_event の先頭(ラッチより前)で保持を判定する"
+    );
+    assert!(
+        mh.contains("TIMER_FOCUS_SWITCH_HOLD=>")
+            && mh.contains("timer.kill(crate::TIMER_FOCUS_SWITCH_HOLD)")
+            && mh.contains("app.focus_switch_hold_on_timer()"),
+        "タイマーのハンドラは冒頭で kill してから解放する"
+    );
+    assert!(
+        mh.contains("app.focus_switch_hold_release_all(\"PanicReset\");"),
+        "WM_PANIC_RESET で保持を再生する"
+    );
+    assert!(
+        code("src/runtime/lang_detect_shadow.rs")
+            .contains("self.focus_switch_hold_release_all(\"ConfigReload\");"),
+        "設定の再読み込みで保持を再生する"
+    );
+
+    // 殻
+    let fh = code("src/runtime/focus_switch_hold.rs");
+    assert!(
+        fh.contains(
+            "self.focus_switch_hold_on_delivery(event,origin)||self.resume_hold_on_delivery(event,origin)"
+        ),
+        "窓切替直後の保持を戻り待ちの保持より先に見る"
+    );
+    assert!(
+        fh.contains("KeyOrigin::ImeOffRescueReplay"),
+        "ime-off-rescue の再生は保持の対象外"
+    );
+    assert!(
+        fh.contains("self.focus_switch_hold.on_key(now,hold_key(event),*event)")
+            && fh.contains("crate::vk::is_ime_mode_key_for_ime(event.vk_code)")
+            && fh.contains("modifier_snapshot"),
+        "保持を始める打鍵の分類(文字・親指/IME のモードキー)と押下時の修飾を殻が渡す。判断は純粋側の starts_hold(V1・V2)"
+    );
+    assert_eq!(
+        fh.matches(".replay_later(").count(),
+        1,
+        "保持の再生は INPUT_DEFER.replay_later の 1 か所だけ"
+    );
+    for forbidden in [
+        "send_input",
+        "SendInput",
+        "VK_BACK",
+        "apply_",
+        "record_explicit_intent",
+        "set_ime_open",
+        "dispatch_event",
+        "with_app(",
+    ] {
+        assert!(
+            !fh.contains(forbidden),
+            "focus_switch_hold.rs は {forbidden} を使わない(IME へ書かない・belief を更新しない)"
+        );
+    }
+    assert_eq!(
+        fh.matches("timer.set(crate::TIMER_FOCUS_SWITCH_HOLD")
+            .count(),
+        1,
+        "期限タイマーは保持の開始で 1 回だけ set する"
+    );
+    assert_eq!(
+        fh.matches("timer.kill(crate::TIMER_FOCUS_SWITCH_HOLD)")
+            .count(),
+        1,
+        "解放の出口(1 か所)が kill する"
+    );
+}
+
 /// ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持の配線の形を固定する。
 ///
 /// - 保持の足し込みは取り込み口(`handle_hook_key_event`)で `OUTPUT_GATE`/`FOCUS_RESYNC` の判定より前、かつ
@@ -8993,8 +9122,11 @@ fn resume_hold_r2_wiring_adr245_add2() {
         .find("keymap_latch.is_latched(")
         .map(|i| deliver_at + i)
         .expect("keymap_latch の判定");
+    // 2026-10-23(PR #809 の M1): 窓切替直後の保持と合わせて `hold_on_delivery` の 1 回の呼び出しにした
+    // (deliver_key_event の複雑度を増やさない)。`hold_on_delivery` が戻り待ちの保持を呼ぶことは
+    // `focus_switch_hold_wiring_m1` が固定する。
     let hold_in_deliver = mh[deliver_at..latch_at]
-        .find("app.resume_hold_on_delivery(&event,origin)")
+        .find("app.hold_on_delivery(&event,origin)")
         .expect("deliver_key_event の先頭に保持の判定がある");
     assert!(hold_in_deliver > 0);
     assert!(

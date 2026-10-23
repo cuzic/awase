@@ -3,6 +3,7 @@ mod drift_follow_would;
 #[cfg(windows)]
 pub(crate) mod engine_window;
 pub(crate) mod executor;
+mod focus_switch_hold;
 mod focus_tracker;
 mod focus_tracking;
 mod ime_actuation;
@@ -320,6 +321,10 @@ pub struct Runtime {
     drift_follow_would: drift_follow_would::DriftFollowWould,
     /// ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持(MS-IME 本体の復元後、R1 の観測が記録されるまで)。
     resume_hold: crate::state::half_width_resume_hold::ResumeHold<RawKeyEvent>,
+    /// PR #809 の M1: 窓切替直後、refresh が新しい窓を読み終える前に届いた打鍵の保持(`runtime/focus_switch_hold.rs`)。
+    focus_switch_hold: crate::state::focus_switch_hold::FocusSwitchHold<RawKeyEvent>,
+    /// フォーカス変更の世代(`on_window_focus_event` ごとに 1 増える)。refresh は spawn 時に読んだ値で保持を解放する。
+    focus_event_seq: u64,
     /// R2: Resume の段が作った R1 の ticket と完了の札。`kp_restore_kana_from_half_width` が取り出して復元タスクへ渡す
     /// (取り出されなかった札は段が `NotOwner` で通知する)。
     pending_resume_r1: Option<(
@@ -1048,11 +1053,14 @@ impl Runtime {
     pub fn spawn_ime_refresh(&mut self) {
         self.platform.timer.kill(crate::TIMER_IME_REFRESH);
 
-        win32_async::spawn_local(async {
+        // 窓切替直後の打鍵の保持(M1)は、この refresh が spawn 時点で見ていたフォーカスの世代で解放する
+        // (フォーカス変更より前に spawn された refresh の完了で解放しない)。
+        let focus_seq = self.focus_event_seq;
+        win32_async::spawn_local(async move {
             let focus = crate::focus::probe::run_focus_probe_async().await;
             let snap = crate::ime::read_ime_state_full_async().await;
             let _ = crate::with_app(|app| {
-                app.run_ime_refresh_with_prefetched(focus, &snap);
+                app.run_ime_refresh_with_prefetched(focus, &snap, focus_seq);
             });
         });
     }
@@ -1441,6 +1449,10 @@ impl Runtime {
             mozc_shm: mozc_shm_shadow::MozcShmShadow::disabled(),
             drift_follow_would: drift_follow_would::DriftFollowWould::default(),
             resume_hold: crate::state::half_width_resume_hold::ResumeHold::new(),
+            focus_switch_hold: crate::state::focus_switch_hold::FocusSwitchHold::new(
+                crate::tuning::FOCUS_SWITCH_HOLD_MAX_MS,
+            ),
+            focus_event_seq: 0,
             pending_resume_r1: None,
             platform_state,
             all_keymaps,
@@ -1752,6 +1764,9 @@ impl Runtime {
             }
         }
 
+        // PR #809 の M1: この後の refresh が新しい窓を読み終えるまでに届いた最初の打鍵を保持する(全窓。期限は
+        // `tuning::FOCUS_SWITCH_HOLD_MAX_MS`)。旧 TsfGate の保持とは別の小さな機構(`state/focus_switch_hold.rs`)。
+        self.focus_switch_hold_on_focus_event();
         let debounce_ms = u64::from(self.platform_state.focus.focus_debounce_ms);
         self.schedule_ime_refresh(debounce_ms);
     }

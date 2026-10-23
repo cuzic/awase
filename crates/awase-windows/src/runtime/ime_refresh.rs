@@ -38,6 +38,8 @@ struct FocusInfo {
 impl Runtime {
     pub(super) fn run_ime_refresh(&mut self) {
         self.ir_execute(IoMode::Sync);
+        // PR #809 の M1: 窓切替直後に保持した打鍵を、新しい窓を読んだ後に再生する(同期の refresh は今の世代を読んでいる)。
+        self.focus_switch_hold_on_refresh_settled(self.focus_event_seq);
     }
 
     /// pre-fetch 済みデータを使ってパイプラインを実行（blocking なし）。
@@ -46,11 +48,14 @@ impl Runtime {
         &mut self,
         focus_probe: Option<crate::focus::probe::FocusSnapshot>,
         ime_snap: &crate::ime::ImeSnapshot,
+        focus_seq: u64,
     ) {
         self.ir_execute(IoMode::Prefetched {
             focus: focus_probe,
             ime: ime_snap,
         });
+        // PR #809 の M1: 窓切替直後に保持した打鍵を、新しい窓を読んだ後に再生する。`focus_seq` は spawn 時点の世代。
+        self.focus_switch_hold_on_refresh_settled(focus_seq);
     }
 
     fn ir_execute(&mut self, mode: IoMode<'_>) {

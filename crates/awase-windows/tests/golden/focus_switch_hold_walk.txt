@@ -1,0 +1,698 @@
+# PR #817 の閉ループ検証: ランダムウォーク(3000 本 × 30 手、seed 0..3000)。
+# 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test focus_switch_hold_closed_loop
+# 読み直しの時間: CI 実測の分位点(P50 67・P90 77・P95 81・P99 109・max 228)の区分一様。250ms 超 0.2%・取りこぼし 0.1% は仮定。
+# 区分は、その walk の中で最も遅い読み直し。写し(Mirror)は全本で本物と同じ軌跡を出した。
+
+## ランダムウォーク 本物(#817)
+組の数: 3000(内訳 R≤228=2951 228<R≤250=4 R>250=24 取りこぼし=21)
+不変条件 | R≤228 | 228<R≤250 | R>250 | 取りこぼし (違反のあった組の数)
+loss | 0 | 0 | 0 | 0
+dup | 0 | 0 | 0 | 0
+order | 0 | 0 | 0 | 0
+order_exempt(参考) | 2053 | 4 | 21 | 16
+modifier | 0 | 0 | 0 | 0
+delay | 0 | 0 | 0 | 0
+bound | 0 | 0 | 0 | 0
+cap | 0 | 0 | 0 | 0
+stuck | 0 | 0 | 0 | 0
+content | 0 | 0 | 0 | 0
+stale_release | 0 | 0 | 0 | 0
+stale_start | 20 | 0 | 7 | 8
+stale_other(参考) | 1055 | 1 | 12 | 13
+stale_regress(参考) | 552 | 1 | 9 | 2
+fix | 109 | 1 | 5 | 1
+route | 914 | 2 | 15 | 14
+unmeasured(参考) | 0 | 0 | 0 | 0
+### 最短の再現(不変条件ごと、読み直しの区分が実測の範囲〈R≤228〉の組を優先)
+- order_exempt — ランダムウォーク seed=47
+    窓: A=MS-IMEOFF/読める B=GJIOFF/読めない C=GJIOFF/読める(開始時のフォーカスは A)
+       +13ms 打鍵 #0 char↓
+       +13ms   処理 #0 char↓ 文脈=A フォーカス=A
+       +27ms フォーカス → B(読み直しの完了 +102)
+       +42ms 打鍵 #1 char↓
+       +82ms 打鍵 #2 char↑
+       +82ms   処理 #2 char↑ 文脈=A フォーカス=B
+      +102ms refresh の完了 seq=1 読んだ窓=B
+      +102ms 保持の解放 Refreshed 1 件
+      +102ms   処理 #1 char↓ 文脈=B フォーカス=B
+      +124ms 打鍵 #3 char↑
+      +124ms   処理 #3 char↑ 文脈=B フォーカス=B
+      +125ms 打鍵 #4 thumbR↓
+      +125ms   処理 #4 thumbR↓ 文脈=B フォーカス=B
+      +136ms refresh の spawn(完了 +242)
+      +150ms フォーカス → C(読み直しの完了 +225)
+      +150ms 打鍵 #5 hanzen↓
+      +160ms フォーカス → B(読み直しの完了 +230)
+      +171ms 打鍵 #6 char↓
+      +196ms 打鍵 #7 hanzen↑
+      +230ms refresh の完了 seq=3 読んだ窓=B
+      +230ms 保持の解放 Refreshed 3 件
+      +230ms   処理 #5 hanzen↓ 文脈=B フォーカス=B
+      +230ms   処理 #6 char↓ 文脈=B フォーカス=B
+      +230ms   処理 #7 hanzen↑ 文脈=B フォーカス=B
+      +236ms フォーカス → A(読み直しの完了 +302)
+      +242ms refresh の完了 seq=1 読んだ窓=B
+      +244ms 打鍵 #8 conv↓
+      +270ms フォーカス → B(読み直しの完了 +333)
+      +277ms 打鍵 #9 char↓(inj)
+      +285ms 打鍵 #10 thumbR↑
+      +285ms   処理 #10 thumbR↑ 文脈=B フォーカス=B
+      +322ms 打鍵 #11 char↑(inj)
+      +333ms refresh の完了 seq=5 読んだ窓=B
+      +333ms 保持の解放 Refreshed 3 件
+      +333ms   処理 #8 conv↓ 文脈=B フォーカス=B
+      +333ms   処理 #9 char↓(inj) 文脈=B フォーカス=B
+      +333ms   処理 #11 char↑(inj) 文脈=B フォーカス=B
+      +335ms 打鍵 #12 char↑
+      +335ms   処理 #12 char↑ 文脈=B フォーカス=B
+      +348ms 打鍵 #13 char↓
+      +348ms   処理 #13 char↓ 文脈=B フォーカス=B
+      +367ms フォーカス → C(読み直しの完了 +443)
+      +401ms 打鍵 #14 conv↑
+      +401ms   処理 #14 conv↑ 文脈=B フォーカス=C
+      +443ms refresh の完了 seq=6 読んだ窓=C
+      +466ms 打鍵 #15 shift↓
+      +466ms   処理 #15 shift↓ 文脈=C フォーカス=C
+      +476ms 打鍵 #16 char↓+S
+      +476ms   処理 #16 char↓+S 文脈=C フォーカス=C
+      +490ms 打鍵 #17 thumbR↓+S
+      +490ms   処理 #17 thumbR↓+S 文脈=C フォーカス=C
+      +507ms 打鍵 #18 char↑+S
+      +507ms   処理 #18 char↑+S 文脈=C フォーカス=C
+      +509ms 打鍵 #19 char↓+S
+      +509ms   処理 #19 char↓+S 文脈=C フォーカス=C
+      +518ms 打鍵 #20 char↑+S
+      +518ms   処理 #20 char↑+S 文脈=C フォーカス=C
+      +530ms フォーカス → A(読み直しの完了 +602)
+      +536ms 打鍵 #21 shift↑
+      +536ms   処理 #21 shift↑ 文脈=C フォーカス=A
+      +583ms 打鍵 #22 char↓
+      +602ms refresh の完了 seq=7 読んだ窓=A
+      +602ms 保持の解放 Refreshed 1 件
+      +602ms   処理 #22 char↓ 文脈=A フォーカス=A
+      +649ms 打鍵 #23 char↑
+      +649ms   処理 #23 char↑ 文脈=A フォーカス=A
+      +683ms 打鍵 #24 thumbR↑
+      +683ms   処理 #24 thumbR↑ 文脈=A フォーカス=A
+      +690ms refresh の spawn(完了 +853)
+      +748ms 打鍵 #25 char↑
+      +748ms   処理 #25 char↑ 文脈=A フォーカス=A
+      +775ms 打鍵 #26 char↓
+      +775ms   処理 #26 char↓ 文脈=A フォーカス=A
+      +813ms 打鍵 #27 thumbR↓
+      +813ms   処理 #27 thumbR↓ 文脈=A フォーカス=A
+      +822ms 打鍵 #28 char↓
+      +822ms   処理 #28 char↓ 文脈=A フォーカス=A
+      +851ms 打鍵 #29 char↑
+      +851ms   処理 #29 char↑ 文脈=A フォーカス=A
+      +852ms フォーカス → C(読み直しの完了 +926)
+      +853ms refresh の完了 seq=7 読んだ窓=A
+      +874ms 打鍵 #30 thumbR↑
+      +874ms   処理 #30 thumbR↑ 文脈=A フォーカス=C
+      +919ms 打鍵 #31 char↓
+      +926ms refresh の完了 seq=8 読んだ窓=C
+      +926ms 保持の解放 Refreshed 1 件
+      +926ms   処理 #31 char↓ 文脈=C フォーカス=C
+      +933ms refresh の spawn(完了 +963)
+      +937ms 打鍵 #32 char↓
+      +937ms   処理 #32 char↓ 文脈=C フォーカス=C
+      +951ms 打鍵 #33 char↓
+      +951ms   処理 #33 char↓ 文脈=C フォーカス=C
+      +956ms 打鍵 #34 char↑
+      +956ms   処理 #34 char↑ 文脈=C フォーカス=C
+      +963ms refresh の完了 seq=8 読んだ窓=C
+      +969ms 打鍵 #35 char↑
+      +969ms   処理 #35 char↑ 文脈=C フォーカス=C
+      +973ms フォーカス → A(読み直しの完了 +1053)
+      +973ms 打鍵 #36 char↑
+      +973ms   処理 #36 char↑ 文脈=C フォーカス=A
+     +1053ms refresh の完了 seq=9 読んだ窓=A
+     +1063ms 打鍵 #37 char↑
+     +1063ms   処理 #37 char↑ 文脈=A フォーカス=A
+    違反: order_exempt=3 route=2
+- stale_start — ランダムウォーク seed=1272
+    窓: A=MS-IMEON/読めない B=MS-IMEON/読めない C=GJION/読める(開始時のフォーカスは A)
+       +31ms 打鍵 #0 thumbL↓
+       +31ms   処理 #0 thumbL↓ 文脈=A フォーカス=A
+       +73ms 打鍵 #1 thumbL↓
+       +73ms   処理 #1 thumbL↓ 文脈=A フォーカス=A
+      +166ms 打鍵 #2 thumbL↑
+      +166ms   処理 #2 thumbL↑ 文脈=A フォーカス=A
+      +177ms 打鍵 #3 char↓
+      +177ms   処理 #3 char↓ 文脈=A フォーカス=A
+      +262ms 打鍵 #4 char↑
+      +262ms 打鍵 #5 char↓
+      +262ms   処理 #4 char↑ 文脈=A フォーカス=A
+      +262ms   処理 #5 char↓ 文脈=A フォーカス=A
+      +264ms 打鍵 #6 thumbL↑
+      +264ms   処理 #6 thumbL↑ 文脈=A フォーカス=A
+      +290ms 打鍵 #7 char↓
+      +290ms   処理 #7 char↓ 文脈=A フォーカス=A
+      +302ms フォーカス → B(読み直しの完了 +370)
+      +302ms 打鍵 #8 shift↓
+      +302ms   処理 #8 shift↓ 文脈=A フォーカス=B
+      +312ms 打鍵 #9 char↓+S
+      +317ms 打鍵 #10 char↓+S(inj)
+      +321ms 打鍵 #11 char↑+S
+      +329ms フォーカス → C(読み直しの完了 +390)
+      +380ms 打鍵 #12 char↓+S
+      +380ms 打鍵 #13 thumbR↓+S
+      +385ms 打鍵 #14 shift↓
+      +385ms 打鍵 #15 ctrl↓
+      +386ms フォーカス → A(読み直しの完了 +456)
+      +390ms refresh の完了 seq=2 読んだ窓=C
+      +395ms 打鍵 #16 char↓+S+C
+      +395ms 打鍵 #17 char↓+S+C
+      +404ms 打鍵 #18 char↑+S+C
+      +404ms   処理 #18 char↑+S+C 文脈=C フォーカス=A
+      +411ms 打鍵 #19 char↑+S+C
+      +419ms 打鍵 #20 ctrl↑
+      +440ms 打鍵 #21 shift↑
+      +440ms 打鍵 #22 char↑+S
+      +444ms フォーカス → C(読み直しの完了 +509)
+      +444ms 打鍵 #23 char↑+S
+      +450ms 打鍵 #24 char↑+S
+      +450ms   処理 #24 char↑+S 文脈=C フォーカス=C
+      +456ms refresh の完了 seq=3 読んだ窓=A
+      +457ms 打鍵 #25 char↓+S
+      +457ms 保持の解放 Cap 15 件(古い窓の文脈)
+      +457ms   処理 #9 char↓+S 文脈=A フォーカス=C
+      +457ms   処理 #10 char↓+S(inj) 文脈=A フォーカス=C
+      +457ms   処理 #11 char↑+S 文脈=A フォーカス=C
+      +457ms   処理 #12 char↓+S 文脈=A フォーカス=C
+      +457ms   処理 #13 thumbR↓+S 文脈=A フォーカス=C
+      +457ms   処理 #14 shift↓ 文脈=A フォーカス=C
+      +457ms   処理 #15 ctrl↓ 文脈=A フォーカス=C
+      +457ms   処理 #16 char↓+S+C 文脈=A フォーカス=C
+      +457ms   処理 #17 char↓+S+C 文脈=A フォーカス=C
+      +457ms   処理 #19 char↑+S+C 文脈=A フォーカス=C
+      +457ms   処理 #20 ctrl↑ 文脈=A フォーカス=C
+      +457ms   処理 #21 shift↑ 文脈=A フォーカス=C
+      +457ms   処理 #22 char↑+S 文脈=A フォーカス=C
+      +457ms   処理 #23 char↑+S 文脈=A フォーカス=C
+      +457ms   処理 #25 char↓+S 文脈=A フォーカス=C
+      +470ms 打鍵 #26 conv↓+S
+      +470ms   処理 #26 conv↓+S 文脈=A フォーカス=C
+      +490ms 打鍵 #27 conv↑+S
+      +490ms   処理 #27 conv↑+S 文脈=A フォーカス=C
+      +508ms 打鍵 #28 char↑+S(inj)
+      +508ms   処理 #28 char↑+S(inj) 文脈=A フォーカス=C
+      +509ms refresh の完了 seq=4 読んだ窓=C
+      +519ms 打鍵 #29 shift↑
+      +519ms   処理 #29 shift↑ 文脈=C フォーカス=C
+      +535ms 打鍵 #30 thumbR↑
+      +535ms   処理 #30 thumbR↑ 文脈=C フォーカス=C
+      +556ms 打鍵 #31 char↑
+      +556ms   処理 #31 char↑ 文脈=C フォーカス=C
+      +585ms フォーカス → A(読み直しの完了 +641)
+      +634ms 打鍵 #32 thumbR↓
+      +639ms フォーカス → B(読み直しの完了 +720)
+      +641ms refresh の完了 seq=5 読んだ窓=A
+      +671ms 打鍵 #33 thumbR↑
+      +710ms 打鍵 #34 thumbL↓
+      +720ms refresh の完了 seq=6 読んだ窓=B
+      +720ms 保持の解放 Refreshed 3 件
+      +720ms   処理 #32 thumbR↓ 文脈=B フォーカス=B
+      +720ms   処理 #33 thumbR↑ 文脈=B フォーカス=B
+      +720ms   処理 #34 thumbL↓ 文脈=B フォーカス=B
+      +788ms 打鍵 #35 char↓
+      +788ms   処理 #35 char↓ 文脈=B フォーカス=B
+      +803ms 打鍵 #36 char↓
+      +803ms   処理 #36 char↓ 文脈=B フォーカス=B
+      +841ms 打鍵 #37 char↑
+      +841ms   処理 #37 char↑ 文脈=B フォーカス=B
+      +892ms 打鍵 #38 thumbL↑
+      +892ms   処理 #38 thumbL↑ 文脈=B フォーカス=B
+      +907ms 打鍵 #39 char↑
+      +907ms   処理 #39 char↑ 文脈=B フォーカス=B
+      +921ms 打鍵 #40 shift↓
+      +921ms   処理 #40 shift↓ 文脈=B フォーカス=B
+      +931ms 打鍵 #41 char↓+S
+      +931ms   処理 #41 char↓+S 文脈=B フォーカス=B
+      +938ms refresh の spawn(完了 +1008)
+      +951ms 打鍵 #42 char↓+S
+      +951ms   処理 #42 char↓+S 文脈=B フォーカス=B
+      +953ms 打鍵 #43 char↑+S
+      +953ms   処理 #43 char↑+S 文脈=B フォーカス=B
+      +954ms 打鍵 #44 char↓+S
+      +954ms   処理 #44 char↓+S 文脈=B フォーカス=B
+      +965ms 打鍵 #45 shift↑
+      +965ms   処理 #45 shift↑ 文脈=B フォーカス=B
+      +984ms 打鍵 #46 char⟳
+      +984ms   処理 #46 char⟳ 文脈=B フォーカス=B
+     +1008ms refresh の完了 seq=6 読んだ窓=B
+     +1014ms 打鍵 #47 char⟳
+     +1014ms   処理 #47 char⟳ 文脈=B フォーカス=B
+     +1033ms 打鍵 #48 char↑
+     +1033ms   処理 #48 char↑ 文脈=B フォーカス=B
+     +1039ms 打鍵 #49 char↓
+     +1039ms   処理 #49 char↓ 文脈=B フォーカス=B
+     +1044ms 打鍵 #50 char⟳
+     +1044ms   処理 #50 char⟳ 文脈=B フォーカス=B
+     +1046ms 打鍵 #51 char↓
+     +1046ms   処理 #51 char↓ 文脈=B フォーカス=B
+     +1059ms 打鍵 #52 thumbL↓
+     +1059ms   処理 #52 thumbL↓ 文脈=B フォーカス=B
+     +1074ms 打鍵 #53 char↑
+     +1074ms   処理 #53 char↑ 文脈=B フォーカス=B
+     +1090ms 打鍵 #54 char↑
+     +1090ms   処理 #54 char↑ 文脈=B フォーカス=B
+     +1194ms 打鍵 #55 thumbL↑
+     +1194ms   処理 #55 thumbL↑ 文脈=B フォーカス=B
+     +1239ms 打鍵 #56 char↑
+     +1239ms   処理 #56 char↑ 文脈=B フォーカス=B
+    違反: order_exempt=23 stale_start=5 stale_other=3 route=10
+- stale_other — ランダムウォーク seed=607
+    窓: A=MS-IMEON/読めない B=MS-IMEOFF/読める C=GJIOFF/読めない(開始時のフォーカスは A)
+       +14ms 打鍵 #0 char↓
+       +14ms   処理 #0 char↓ 文脈=A フォーカス=A
+       +45ms 打鍵 #1 char↑
+       +45ms   処理 #1 char↑ 文脈=A フォーカス=A
+       +80ms フォーカス → B(読み直しの完了 +145)
+      +119ms 打鍵 #2 char↓
+      +145ms refresh の完了 seq=1 読んだ窓=B
+      +145ms 保持の解放 Refreshed 1 件
+      +145ms   処理 #2 char↓ 文脈=B フォーカス=B
+      +213ms 打鍵 #3 char↑
+      +213ms   処理 #3 char↑ 文脈=B フォーカス=B
+      +218ms 打鍵 #4 hanzen↓
+      +218ms   処理 #4 hanzen↓ 文脈=B フォーカス=B
+      +232ms 打鍵 #5 char↓
+      +232ms   処理 #5 char↓ 文脈=B フォーカス=B
+      +341ms 打鍵 #6 hanzen↑
+      +341ms   処理 #6 hanzen↑ 文脈=B フォーカス=B
+      +342ms 打鍵 #7 char↓
+      +342ms   処理 #7 char↓ 文脈=B フォーカス=B
+      +360ms 打鍵 #8 char↑
+      +360ms   処理 #8 char↑ 文脈=B フォーカス=B
+      +422ms refresh の spawn(完了 +587)
+      +423ms フォーカス → C(読み直しの完了 +504)
+      +426ms refresh の spawn(完了 +460)
+      +460ms refresh の完了 seq=2 読んだ窓=C
+      +463ms 打鍵 #9 char↓
+      +463ms   処理 #9 char↓ 文脈=C フォーカス=C
+      +484ms 打鍵 #10 char↓
+      +484ms   処理 #10 char↓ 文脈=C フォーカス=C
+      +496ms 打鍵 #11 thumbR↓
+      +496ms   処理 #11 thumbR↓ 文脈=C フォーカス=C
+      +504ms refresh の完了 seq=2 読んだ窓=C
+      +533ms refresh の spawn(完了 +657)
+      +538ms 打鍵 #12 char↑
+      +538ms   処理 #12 char↑ 文脈=C フォーカス=C
+      +542ms 打鍵 #13 thumbL↓
+      +542ms   処理 #13 thumbL↓ 文脈=C フォーカス=C
+      +561ms 打鍵 #14 char↑
+      +561ms   処理 #14 char↑ 文脈=C フォーカス=C
+      +578ms 打鍵 #15 thumbR↑
+      +578ms   処理 #15 thumbR↑ 文脈=C フォーカス=C
+      +587ms refresh の完了 seq=1 読んだ窓=B
+      +593ms 打鍵 #16 thumbL↑
+      +593ms   処理 #16 thumbL↑ 文脈=B フォーカス=C
+      +639ms 打鍵 #17 char↓
+      +639ms   処理 #17 char↓ 文脈=B フォーカス=C
+      +645ms 打鍵 #18 char↑
+      +645ms   処理 #18 char↑ 文脈=B フォーカス=C
+      +652ms refresh の spawn(完了 +922)
+      +657ms refresh の完了 seq=2 読んだ窓=C
+      +681ms 打鍵 #19 thumbL↓
+      +681ms   処理 #19 thumbL↓ 文脈=C フォーカス=C
+      +729ms 打鍵 #20 thumbL↑
+      +729ms   処理 #20 thumbL↑ 文脈=C フォーカス=C
+      +735ms 打鍵 #21 char↑
+      +735ms   処理 #21 char↑ 文脈=C フォーカス=C
+      +788ms 打鍵 #22 thumbL↓
+      +788ms   処理 #22 thumbL↓ 文脈=C フォーカス=C
+      +793ms 打鍵 #23 char↓
+      +793ms   処理 #23 char↓ 文脈=C フォーカス=C
+      +802ms 打鍵 #24 thumbL↓
+      +802ms   処理 #24 thumbL↓ 文脈=C フォーカス=C
+      +806ms 打鍵 #25 char↓
+      +806ms   処理 #25 char↓ 文脈=C フォーカス=C
+      +820ms 打鍵 #26 ctrl↓
+      +820ms   処理 #26 ctrl↓ 文脈=C フォーカス=C
+      +830ms フォーカス → B(読み直しの完了 +896)
+      +830ms 打鍵 #27 char↓+C
+      +830ms   処理 #27 char↓+C 文脈=C フォーカス=B
+      +838ms 打鍵 #28 hanzen↓+C
+      +842ms 打鍵 #29 char↓+C
+      +846ms 打鍵 #30 thumbL↑+C
+      +846ms   処理 #30 thumbL↑+C 文脈=C フォーカス=B
+      +868ms refresh の spawn(完了 +901)
+      +868ms 打鍵 #31 thumbL↑+C
+      +868ms   処理 #31 thumbL↑+C 文脈=C フォーカス=B
+      +883ms 打鍵 #32 char↑+C
+      +883ms   処理 #32 char↑+C 文脈=C フォーカス=B
+      +896ms refresh の完了 seq=3 読んだ窓=B
+      +896ms 保持の解放 Refreshed 2 件
+      +896ms   処理 #28 hanzen↓+C 文脈=B フォーカス=B
+      +896ms   処理 #29 char↓+C 文脈=B フォーカス=B
+      +901ms refresh の完了 seq=3 読んだ窓=B
+      +919ms 打鍵 #33 char↑+C
+      +919ms   処理 #33 char↑+C 文脈=B フォーカス=B
+      +922ms refresh の完了 seq=2 読んだ窓=C
+      +929ms 打鍵 #34 hanzen↑+C
+      +929ms   処理 #34 hanzen↑+C 文脈=C フォーカス=B
+      +936ms フォーカス → C(読み直しの完了 +994)
+      +939ms 打鍵 #35 char↓+C
+      +939ms   処理 #35 char↓+C 文脈=C フォーカス=C
+      +940ms 打鍵 #36 char↑+C
+      +940ms   処理 #36 char↑+C 文脈=C フォーカス=C
+      +954ms 打鍵 #37 ctrl↑
+      +954ms   処理 #37 ctrl↑ 文脈=C フォーカス=C
+      +958ms 打鍵 #38 char↑
+      +958ms   処理 #38 char↑ 文脈=C フォーカス=C
+      +971ms フォーカス → A(読み直しの完了 +1032)
+      +980ms 打鍵 #39 char↓(inj)
+      +980ms   処理 #39 char↓(inj) 文脈=C フォーカス=A
+     +1001ms 打鍵 #40 char↑
+     +1001ms   処理 #40 char↑ 文脈=C フォーカス=A
+     +1032ms refresh の完了 seq=5 読んだ窓=A
+     +1139ms 打鍵 #41 char↑(inj)
+     +1139ms   処理 #41 char↑(inj) 文脈=A フォーカス=A
+    違反: order_exempt=6 stale_other=1 stale_regress=2
+- stale_regress — ランダムウォーク seed=1075
+    窓: A=MS-IMEON/読める B=MS-IMEON/読める C=GJIOFF/読める(開始時のフォーカスは A)
+        +9ms 打鍵 #0 shift↓
+        +9ms   処理 #0 shift↓ 文脈=A フォーカス=A
+       +10ms 打鍵 #1 thumbL↓+S
+       +10ms   処理 #1 thumbL↓+S 文脈=A フォーカス=A
+       +19ms 打鍵 #2 char↓+S
+       +19ms 打鍵 #3 char↓+S(inj)
+       +19ms   処理 #2 char↓+S 文脈=A フォーカス=A
+       +19ms   処理 #3 char↓+S(inj) 文脈=A フォーカス=A
+       +28ms フォーカス → C(読み直しの完了 +89)
+       +37ms 打鍵 #4 char↓+S
+       +51ms 打鍵 #5 char↓+S(inj)
+       +78ms 打鍵 #6 char↑+S
+       +78ms   処理 #6 char↑+S 文脈=A フォーカス=C
+       +82ms 打鍵 #7 shift↑
+       +89ms refresh の完了 seq=1 読んだ窓=C
+       +89ms 保持の解放 Refreshed 3 件
+       +89ms   処理 #4 char↓+S 文脈=C フォーカス=C
+       +89ms   処理 #5 char↓+S(inj) 文脈=C フォーカス=C
+       +89ms   処理 #7 shift↑ 文脈=C フォーカス=C
+      +105ms フォーカス → B(読み直しの完了 +180)
+      +106ms 打鍵 #8 char↑(inj)
+      +106ms   処理 #8 char↑(inj) 文脈=C フォーカス=B
+      +112ms 打鍵 #9 char↓
+      +117ms 打鍵 #10 char↑(inj)
+      +117ms   処理 #10 char↑(inj) 文脈=C フォーカス=B
+      +131ms 打鍵 #11 thumbL↑
+      +131ms   処理 #11 thumbL↑ 文脈=C フォーカス=B
+      +157ms 打鍵 #12 char↑
+      +176ms 打鍵 #13 char↑
+      +176ms   処理 #13 char↑ 文脈=C フォーカス=B
+      +180ms refresh の完了 seq=2 読んだ窓=B
+      +180ms 保持の解放 Refreshed 2 件
+      +180ms   処理 #9 char↓ 文脈=B フォーカス=B
+      +180ms   処理 #12 char↑ 文脈=B フォーカス=B
+      +184ms フォーカス → C(読み直しの完了 +251)
+      +187ms 打鍵 #14 char↓
+      +199ms 打鍵 #15 thumbL↓
+      +251ms refresh の完了 seq=3 読んだ窓=C
+      +251ms 保持の解放 Refreshed 2 件
+      +251ms   処理 #14 char↓ 文脈=C フォーカス=C
+      +251ms   処理 #15 thumbL↓ 文脈=C フォーカス=C
+      +263ms 打鍵 #16 char↓
+      +263ms   処理 #16 char↓ 文脈=C フォーカス=C
+      +319ms 打鍵 #17 char↑
+      +319ms   処理 #17 char↑ 文脈=C フォーカス=C
+      +324ms refresh の spawn(完了 +366)
+      +346ms 打鍵 #18 thumbL↑
+      +346ms   処理 #18 thumbL↑ 文脈=C フォーカス=C
+      +353ms 打鍵 #19 char↑
+      +353ms   処理 #19 char↑ 文脈=C フォーカス=C
+      +366ms refresh の完了 seq=3 読んだ窓=C
+      +377ms refresh の spawn(完了 +675)
+      +384ms 打鍵 #20 char↓
+      +384ms   処理 #20 char↓ 文脈=C フォーカス=C
+      +436ms 打鍵 #21 hanzen↓
+      +436ms   処理 #21 hanzen↓ 文脈=C フォーカス=C
+      +443ms フォーカス → A(読み直しの完了 +505)
+      +505ms refresh の完了 seq=4 読んだ窓=A
+      +530ms 打鍵 #22 char↑
+      +530ms   処理 #22 char↑ 文脈=A フォーカス=A
+      +556ms フォーカス → B(読み直しの完了 +633)
+      +560ms フォーカス → A(読み直しの完了 +651)
+      +617ms 打鍵 #23 hanzen↑
+      +617ms   処理 #23 hanzen↑ 文脈=A フォーカス=A
+      +651ms refresh の完了 seq=6 読んだ窓=A
+      +662ms 打鍵 #24 char↓
+      +662ms   処理 #24 char↓ 文脈=A フォーカス=A
+      +675ms refresh の完了 seq=3 読んだ窓=C
+      +744ms 打鍵 #25 char↓
+      +744ms   処理 #25 char↓ 文脈=C フォーカス=A
+      +752ms 打鍵 #26 char↓
+      +752ms   処理 #26 char↓ 文脈=C フォーカス=A
+      +763ms 打鍵 #27 thumbR↓
+      +763ms   処理 #27 thumbR↓ 文脈=C フォーカス=A
+      +786ms refresh の spawn(完了 +1009)
+      +794ms フォーカス → B(読み直しの完了 +861)
+      +794ms 打鍵 #28 thumbR↑
+      +794ms   処理 #28 thumbR↑ 文脈=C フォーカス=B
+      +830ms 打鍵 #29 char↑
+      +830ms   処理 #29 char↑ 文脈=C フォーカス=B
+      +861ms refresh の完了 seq=7 読んだ窓=B
+      +910ms 打鍵 #30 thumbR↓
+      +910ms   処理 #30 thumbR↓ 文脈=B フォーカス=B
+      +915ms 打鍵 #31 char↑
+      +915ms   処理 #31 char↑ 文脈=B フォーカス=B
+      +935ms 打鍵 #32 char↑
+      +935ms   処理 #32 char↑ 文脈=B フォーカス=B
+     +1009ms refresh の完了 seq=6 読んだ窓=A
+     +1028ms フォーカス → A(読み直しの完了 +1093)
+     +1031ms 打鍵 #33 char↓
+     +1033ms 打鍵 #34 char↓
+     +1043ms 打鍵 #35 char↓
+     +1084ms 打鍵 #36 thumbR↑
+     +1084ms   処理 #36 thumbR↑ 文脈=A フォーカス=A
+     +1093ms refresh の完了 seq=8 読んだ窓=A
+     +1093ms 保持の解放 Refreshed 3 件
+     +1093ms   処理 #33 char↓ 文脈=A フォーカス=A
+     +1093ms   処理 #34 char↓ 文脈=A フォーカス=A
+     +1093ms   処理 #35 char↓ 文脈=A フォーカス=A
+     +1145ms 打鍵 #37 char↑
+     +1145ms   処理 #37 char↑ 文脈=A フォーカス=A
+     +1152ms 打鍵 #38 char↑
+     +1152ms   処理 #38 char↑ 文脈=A フォーカス=A
+     +1166ms 打鍵 #39 char↑
+     +1166ms   処理 #39 char↑ 文脈=A フォーカス=A
+    違反: order_exempt=9 stale_regress=3
+- fix — ランダムウォーク seed=1003
+    窓: A=GJION/読めない B=MS-IMEOFF/読めない C=GJIOFF/読めない(開始時のフォーカスは A)
+        +4ms 打鍵 #0 char↓
+        +4ms   処理 #0 char↓ 文脈=A フォーカス=A
+       +27ms 打鍵 #1 char↓
+       +27ms   処理 #1 char↓ 文脈=A フォーカス=A
+       +33ms フォーカス → B(読み直しの完了 +95)
+       +63ms 打鍵 #2 char↑
+       +63ms   処理 #2 char↑ 文脈=A フォーカス=B
+       +90ms 打鍵 #3 char↓
+       +95ms refresh の完了 seq=1 読んだ窓=B
+       +95ms 保持の解放 Refreshed 1 件
+       +95ms   処理 #3 char↓ 文脈=B フォーカス=B
+      +172ms フォーカス → A(読み直しの完了 +231)
+      +176ms 打鍵 #4 char↑
+      +176ms   処理 #4 char↑ 文脈=B フォーカス=A
+      +219ms 打鍵 #5 char↓
+      +231ms refresh の完了 seq=2 読んだ窓=A
+      +231ms 打鍵 #6 char↑
+      +231ms 保持の解放 Refreshed 1 件
+      +231ms   処理 #6 char↑ 文脈=B フォーカス=A
+      +231ms   処理 #5 char↓ 文脈=A フォーカス=A
+      +249ms 打鍵 #7 char⟳
+      +249ms   処理 #7 char⟳ 文脈=A フォーカス=A
+      +279ms 打鍵 #8 char⟳
+      +279ms   処理 #8 char⟳ 文脈=A フォーカス=A
+      +282ms 打鍵 #9 char↓
+      +282ms   処理 #9 char↓ 文脈=A フォーカス=A
+      +291ms フォーカス → B(読み直しの完了 +355)
+      +309ms 打鍵 #10 char⟳
+      +309ms   処理 #10 char⟳ 文脈=A フォーカス=B
+      +339ms 打鍵 #11 char↑
+      +339ms   処理 #11 char↑ 文脈=A フォーカス=B
+      +354ms フォーカス → C(読み直しの完了 +423)
+      +355ms refresh の完了 seq=3 読んだ窓=B
+      +416ms 打鍵 #12 char↑
+      +416ms   処理 #12 char↑ 文脈=B フォーカス=C
+      +423ms refresh の完了 seq=4 読んだ窓=C
+      +438ms フォーカス → B(読み直しの完了 +493)
+      +493ms refresh の完了 seq=5 読んだ窓=B
+      +517ms 打鍵 #13 char↓
+      +517ms   処理 #13 char↓ 文脈=B フォーカス=B
+      +525ms 打鍵 #14 char↓
+      +525ms   処理 #14 char↓ 文脈=B フォーカス=B
+      +531ms refresh の spawn(完了 +709)
+      +629ms refresh の spawn(完了 +802)
+      +641ms フォーカス → C(読み直しの完了 +718)
+      +641ms 打鍵 #15 char↓
+      +650ms refresh の spawn(完了 +707)
+      +650ms 打鍵 #16 char↓(inj)
+      +654ms 打鍵 #17 thumbR↓
+      +662ms 打鍵 #18 char↑
+      +662ms   処理 #18 char↑ 文脈=B フォーカス=C
+      +663ms 打鍵 #19 thumbL↓
+      +671ms refresh の spawn(完了 +938)
+      +687ms 打鍵 #20 char↑
+      +687ms   処理 #20 char↑ 文脈=B フォーカス=C
+      +707ms refresh の完了 seq=6 読んだ窓=C
+      +707ms 打鍵 #21 char↑(inj)
+      +707ms 保持の解放 Refreshed 5 件
+      +707ms   処理 #15 char↓ 文脈=C フォーカス=C
+      +707ms   処理 #16 char↓(inj) 文脈=C フォーカス=C
+      +707ms   処理 #17 thumbR↓ 文脈=C フォーカス=C
+      +707ms   処理 #19 thumbL↓ 文脈=C フォーカス=C
+      +707ms   処理 #21 char↑(inj) 文脈=C フォーカス=C
+      +709ms refresh の完了 seq=5 読んだ窓=B
+      +718ms refresh の完了 seq=6 読んだ窓=C
+      +735ms 打鍵 #22 thumbR↑
+      +735ms   処理 #22 thumbR↑ 文脈=C フォーカス=C
+      +760ms 打鍵 #23 char↑
+      +760ms   処理 #23 char↑ 文脈=C フォーカス=C
+      +762ms 打鍵 #24 thumbL↑
+      +762ms   処理 #24 thumbL↑ 文脈=C フォーカス=C
+      +770ms 打鍵 #25 thumbL↓
+      +770ms   処理 #25 thumbL↓ 文脈=C フォーカス=C
+      +777ms 打鍵 #26 thumbR↓
+      +777ms   処理 #26 thumbR↓ 文脈=C フォーカス=C
+      +796ms 打鍵 #27 thumbL↑
+      +796ms   処理 #27 thumbL↑ 文脈=C フォーカス=C
+      +802ms refresh の完了 seq=5 読んだ窓=B
+      +860ms 打鍵 #28 thumbR↓
+      +860ms   処理 #28 thumbR↓ 文脈=B フォーカス=C
+      +869ms 打鍵 #29 char↓
+      +869ms   処理 #29 char↓ 文脈=B フォーカス=C
+      +870ms フォーカス → B(読み直しの完了 +931)
+      +895ms 打鍵 #30 char↓
+      +897ms 打鍵 #31 char↓
+      +912ms 打鍵 #32 char↑
+      +912ms   処理 #32 char↑ 文脈=B フォーカス=B
+      +927ms 打鍵 #33 char↓
+      +931ms refresh の完了 seq=7 読んだ窓=B
+      +931ms 保持の解放 Refreshed 3 件
+      +931ms   処理 #30 char↓ 文脈=B フォーカス=B
+      +931ms   処理 #31 char↓ 文脈=B フォーカス=B
+      +931ms   処理 #33 char↓ 文脈=B フォーカス=B
+      +935ms 打鍵 #34 thumbR↑
+      +935ms 打鍵 #35 char↓
+      +935ms   処理 #34 thumbR↑ 文脈=B フォーカス=B
+      +935ms   処理 #35 char↓ 文脈=B フォーカス=B
+      +938ms refresh の完了 seq=6 読んだ窓=C
+      +959ms 打鍵 #36 char↑
+      +959ms   処理 #36 char↑ 文脈=C フォーカス=B
+     +1022ms 打鍵 #37 thumbR↑
+     +1022ms   処理 #37 thumbR↑ 文脈=C フォーカス=B
+     +1069ms 打鍵 #38 char↑
+     +1069ms   処理 #38 char↑ 文脈=C フォーカス=B
+     +1070ms 打鍵 #39 char↑
+     +1070ms   処理 #39 char↑ 文脈=C フォーカス=B
+     +1090ms 打鍵 #40 char↑
+     +1090ms   処理 #40 char↑ 文脈=C フォーカス=B
+    違反: order_exempt=10 stale_regress=2 fix=2
+- route — ランダムウォーク seed=47
+    窓: A=MS-IMEOFF/読める B=GJIOFF/読めない C=GJIOFF/読める(開始時のフォーカスは A)
+       +13ms 打鍵 #0 char↓
+       +13ms   処理 #0 char↓ 文脈=A フォーカス=A
+       +27ms フォーカス → B(読み直しの完了 +102)
+       +42ms 打鍵 #1 char↓
+       +82ms 打鍵 #2 char↑
+       +82ms   処理 #2 char↑ 文脈=A フォーカス=B
+      +102ms refresh の完了 seq=1 読んだ窓=B
+      +102ms 保持の解放 Refreshed 1 件
+      +102ms   処理 #1 char↓ 文脈=B フォーカス=B
+      +124ms 打鍵 #3 char↑
+      +124ms   処理 #3 char↑ 文脈=B フォーカス=B
+      +125ms 打鍵 #4 thumbR↓
+      +125ms   処理 #4 thumbR↓ 文脈=B フォーカス=B
+      +136ms refresh の spawn(完了 +242)
+      +150ms フォーカス → C(読み直しの完了 +225)
+      +150ms 打鍵 #5 hanzen↓
+      +160ms フォーカス → B(読み直しの完了 +230)
+      +171ms 打鍵 #6 char↓
+      +196ms 打鍵 #7 hanzen↑
+      +230ms refresh の完了 seq=3 読んだ窓=B
+      +230ms 保持の解放 Refreshed 3 件
+      +230ms   処理 #5 hanzen↓ 文脈=B フォーカス=B
+      +230ms   処理 #6 char↓ 文脈=B フォーカス=B
+      +230ms   処理 #7 hanzen↑ 文脈=B フォーカス=B
+      +236ms フォーカス → A(読み直しの完了 +302)
+      +242ms refresh の完了 seq=1 読んだ窓=B
+      +244ms 打鍵 #8 conv↓
+      +270ms フォーカス → B(読み直しの完了 +333)
+      +277ms 打鍵 #9 char↓(inj)
+      +285ms 打鍵 #10 thumbR↑
+      +285ms   処理 #10 thumbR↑ 文脈=B フォーカス=B
+      +322ms 打鍵 #11 char↑(inj)
+      +333ms refresh の完了 seq=5 読んだ窓=B
+      +333ms 保持の解放 Refreshed 3 件
+      +333ms   処理 #8 conv↓ 文脈=B フォーカス=B
+      +333ms   処理 #9 char↓(inj) 文脈=B フォーカス=B
+      +333ms   処理 #11 char↑(inj) 文脈=B フォーカス=B
+      +335ms 打鍵 #12 char↑
+      +335ms   処理 #12 char↑ 文脈=B フォーカス=B
+      +348ms 打鍵 #13 char↓
+      +348ms   処理 #13 char↓ 文脈=B フォーカス=B
+      +367ms フォーカス → C(読み直しの完了 +443)
+      +401ms 打鍵 #14 conv↑
+      +401ms   処理 #14 conv↑ 文脈=B フォーカス=C
+      +443ms refresh の完了 seq=6 読んだ窓=C
+      +466ms 打鍵 #15 shift↓
+      +466ms   処理 #15 shift↓ 文脈=C フォーカス=C
+      +476ms 打鍵 #16 char↓+S
+      +476ms   処理 #16 char↓+S 文脈=C フォーカス=C
+      +490ms 打鍵 #17 thumbR↓+S
+      +490ms   処理 #17 thumbR↓+S 文脈=C フォーカス=C
+      +507ms 打鍵 #18 char↑+S
+      +507ms   処理 #18 char↑+S 文脈=C フォーカス=C
+      +509ms 打鍵 #19 char↓+S
+      +509ms   処理 #19 char↓+S 文脈=C フォーカス=C
+      +518ms 打鍵 #20 char↑+S
+      +518ms   処理 #20 char↑+S 文脈=C フォーカス=C
+      +530ms フォーカス → A(読み直しの完了 +602)
+      +536ms 打鍵 #21 shift↑
+      +536ms   処理 #21 shift↑ 文脈=C フォーカス=A
+      +583ms 打鍵 #22 char↓
+      +602ms refresh の完了 seq=7 読んだ窓=A
+      +602ms 保持の解放 Refreshed 1 件
+      +602ms   処理 #22 char↓ 文脈=A フォーカス=A
+      +649ms 打鍵 #23 char↑
+      +649ms   処理 #23 char↑ 文脈=A フォーカス=A
+      +683ms 打鍵 #24 thumbR↑
+      +683ms   処理 #24 thumbR↑ 文脈=A フォーカス=A
+      +690ms refresh の spawn(完了 +853)
+      +748ms 打鍵 #25 char↑
+      +748ms   処理 #25 char↑ 文脈=A フォーカス=A
+      +775ms 打鍵 #26 char↓
+      +775ms   処理 #26 char↓ 文脈=A フォーカス=A
+      +813ms 打鍵 #27 thumbR↓
+      +813ms   処理 #27 thumbR↓ 文脈=A フォーカス=A
+      +822ms 打鍵 #28 char↓
+      +822ms   処理 #28 char↓ 文脈=A フォーカス=A
+      +851ms 打鍵 #29 char↑
+      +851ms   処理 #29 char↑ 文脈=A フォーカス=A
+      +852ms フォーカス → C(読み直しの完了 +926)
+      +853ms refresh の完了 seq=7 読んだ窓=A
+      +874ms 打鍵 #30 thumbR↑
+      +874ms   処理 #30 thumbR↑ 文脈=A フォーカス=C
+      +919ms 打鍵 #31 char↓
+      +926ms refresh の完了 seq=8 読んだ窓=C
+      +926ms 保持の解放 Refreshed 1 件
+      +926ms   処理 #31 char↓ 文脈=C フォーカス=C
+      +933ms refresh の spawn(完了 +963)
+      +937ms 打鍵 #32 char↓
+      +937ms   処理 #32 char↓ 文脈=C フォーカス=C
+      +951ms 打鍵 #33 char↓
+      +951ms   処理 #33 char↓ 文脈=C フォーカス=C
+      +956ms 打鍵 #34 char↑
+      +956ms   処理 #34 char↑ 文脈=C フォーカス=C
+      +963ms refresh の完了 seq=8 読んだ窓=C
+      +969ms 打鍵 #35 char↑
+      +969ms   処理 #35 char↑ 文脈=C フォーカス=C
+      +973ms フォーカス → A(読み直しの完了 +1053)
+      +973ms 打鍵 #36 char↑
+      +973ms   処理 #36 char↑ 文脈=C フォーカス=A
+     +1053ms refresh の完了 seq=9 読んだ窓=A
+     +1063ms 打鍵 #37 char↑
+     +1063ms   処理 #37 char↑ 文脈=A フォーカス=A
+    違反: order_exempt=3 route=2
+

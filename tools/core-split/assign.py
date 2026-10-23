@@ -51,6 +51,7 @@ put('plans', [
 put('hookinput', [
     'state::hook_state', 'state::hook_watchdog', 'state::alt_impersonation', 'state::foreign_modifier',
     'state::win_key_guard', 'state::half_width_alnum', 'state::half_width_resume_hold',
+    'state::focus_switch_hold',
 ])
 # 独立の葉: Scancode Map（キー入れ替え）。外部の依存を持たない（core の他のクラスタに依存しない）
 put('scancode', [

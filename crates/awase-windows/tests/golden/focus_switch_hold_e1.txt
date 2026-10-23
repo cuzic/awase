@@ -1,0 +1,168 @@
+# PR #817(窓切替直後の保持)の閉ループ検証 E1: タイミングの全列挙。
+# 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test focus_switch_hold_closed_loop
+# 軸: 最初の打鍵 11 種 × 遅延 0〜300ms(5ms 刻み+249/251) × 読み直しの完了 15 点 × 離し 3 × 追加の事象 10 × 同時刻の順 2
+# 窓: A=GJI(ATOK)OFF/読める(開始時のフォーカス) → B=GJI(ATOK)ON/読めない(Windows Terminal 相当) / C=MS-IME ON/読める
+# 読み直しの時間は CI 実測の分位点を入力として与えている。cfg(windows) の配線は写し(Sim)で、対象外。
+# 写し(Mirror、防御を外さない)は全組で本物と同じ軌跡を出した(違えばこのテストが落ちる)。
+
+## E1 本物(#817)
+組の数: 623700(内訳 R≤228=374220 228<R≤250=83160 R>250=124740 取りこぼし=41580)
+不変条件 | R≤228 | 228<R≤250 | R>250 | 取りこぼし (違反のあった組の数)
+loss | 0 | 0 | 0 | 0
+dup | 0 | 0 | 0 | 0
+order | 0 | 0 | 0 | 0
+order_exempt(参考) | 5974 | 3912 | 6667 | 2384
+modifier | 0 | 0 | 0 | 0
+delay | 0 | 0 | 0 | 0
+bound | 0 | 0 | 0 | 0
+cap | 0 | 0 | 0 | 0
+stuck | 0 | 0 | 0 | 0
+content | 0 | 0 | 0 | 0
+stale_release | 0 | 0 | 0 | 0
+stale_start | 13489 | 14603 | 48026 | 27648
+stale_other(参考) | 46980 | 22776 | 40596 | 14364
+stale_regress(参考) | 0 | 0 | 0 | 0
+fix | 7512 | 6255 | 24180 | 15030
+route | 13260 | 7156 | 11644 | 3996
+unmeasured(参考) | 0 | 0 | 0 | 0
+### 最短の再現(不変条件ごと、読み直しの区分が実測の範囲〈R≤228〉の組を優先)
+- order_exempt — 最初の打鍵=外部注入の文字 遅延=0ms 読み直し=55ms 離し=+25ms 追加=+10ms に右親指(同時打鍵) 同時刻=refresh が先
+    窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
+        +0ms フォーカス → B(読み直しの完了 +55)
+        +0ms 打鍵 #0 char↓(inj)
+        +0ms   処理 #0 char↓(inj) 文脈=A フォーカス=B
+       +10ms 打鍵 #1 thumbR↓
+       +25ms 打鍵 #2 char↑(inj)
+       +25ms   処理 #2 char↑(inj) 文脈=A フォーカス=B
+       +35ms 打鍵 #3 thumbR↑
+       +55ms refresh の完了 seq=1 読んだ窓=B
+       +55ms 保持の解放 Refreshed 2 件
+       +55ms   処理 #1 thumbR↓ 文脈=B フォーカス=B
+       +55ms   処理 #3 thumbR↑ 文脈=B フォーカス=B
+    違反: order_exempt=1 stale_other=1
+- stale_start — 最初の打鍵=Alt+Tab の Tab 遅延=0ms 読み直し=200ms 離し=+70ms 追加=+10ms に右親指(同時打鍵) 同時刻=refresh が先
+    窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
+       -30ms 打鍵 #0 alt↓
+       -30ms   処理 #0 alt↓ 文脈=A フォーカス=A
+        +0ms フォーカス → B(読み直しの完了 +200)
+        +0ms 打鍵 #1 tab↓+A
+        +0ms   処理 #1 tab↓+A 文脈=A フォーカス=B
+       +10ms 打鍵 #2 thumbR↓+A
+       +15ms 打鍵 #3 tab↑+A
+       +15ms   処理 #3 tab↑+A 文脈=A フォーカス=B
+       +70ms 打鍵 #4 alt↑
+       +71ms フォーカス → C(読み直しの完了 +271)
+       +80ms 打鍵 #5 thumbR↑
+      +200ms refresh の完了 seq=1 読んだ窓=B
+      +260ms 保持の解放 Deadline 3 件(古い窓の文脈)
+      +260ms   処理 #2 thumbR↓+A 文脈=B フォーカス=C
+      +260ms   処理 #4 alt↑ 文脈=B フォーカス=C
+      +260ms   処理 #5 thumbR↑ 文脈=B フォーカス=C
+      +271ms refresh の完了 seq=2 読んだ窓=C
+    違反: order_exempt=1 stale_start=1 stale_other=1 route=2
+- stale_other — 最初の打鍵=外部注入の文字 遅延=0ms 読み直し=55ms 離し=+25ms 追加=なし 同時刻=refresh が先
+    窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
+        +0ms フォーカス → B(読み直しの完了 +55)
+        +0ms 打鍵 #0 char↓(inj)
+        +0ms   処理 #0 char↓(inj) 文脈=A フォーカス=B
+       +25ms 打鍵 #1 char↑(inj)
+       +25ms   処理 #1 char↑(inj) 文脈=A フォーカス=B
+       +55ms refresh の完了 seq=1 読んだ窓=B
+    違反: stale_other=1
+- fix — 最初の打鍵=右親指(変換) 遅延=0ms 読み直し=55ms 離し=+25ms 追加=6ms 間隔で文字 12 打 同時刻=refresh が先
+    窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
+        +0ms フォーカス → B(読み直しの完了 +55)
+        +0ms 打鍵 #0 thumbR↓
+        +5ms 打鍵 #1 char↓
+        +8ms 打鍵 #2 char↑
+       +11ms 打鍵 #3 char↓
+       +14ms 打鍵 #4 char↑
+       +17ms 打鍵 #5 char↓
+       +20ms 打鍵 #6 char↑
+       +23ms 打鍵 #7 char↓
+       +25ms 打鍵 #8 thumbR↑
+       +26ms 打鍵 #9 char↑
+       +29ms 打鍵 #10 char↓
+       +32ms 打鍵 #11 char↑
+       +35ms 打鍵 #12 char↓
+       +38ms 打鍵 #13 char↑
+       +41ms 打鍵 #14 char↓
+       +44ms 打鍵 #15 char↑
+       +47ms 打鍵 #16 char↓
+       +47ms 保持の解放 Cap 17 件(古い窓の文脈)
+       +47ms   処理 #0 thumbR↓ 文脈=A フォーカス=B
+       +47ms   処理 #1 char↓ 文脈=A フォーカス=B
+       +47ms   処理 #2 char↑ 文脈=A フォーカス=B
+       +47ms   処理 #3 char↓ 文脈=A フォーカス=B
+       +47ms   処理 #4 char↑ 文脈=A フォーカス=B
+       +47ms   処理 #5 char↓ 文脈=A フォーカス=B
+       +47ms   処理 #6 char↑ 文脈=A フォーカス=B
+       +47ms   処理 #7 char↓ 文脈=A フォーカス=B
+       +47ms   処理 #8 thumbR↑ 文脈=A フォーカス=B
+       +47ms   処理 #9 char↑ 文脈=A フォーカス=B
+       +47ms   処理 #10 char↓ 文脈=A フォーカス=B
+       +47ms   処理 #11 char↑ 文脈=A フォーカス=B
+       +47ms   処理 #12 char↓ 文脈=A フォーカス=B
+       +47ms   処理 #13 char↑ 文脈=A フォーカス=B
+       +47ms   処理 #14 char↓ 文脈=A フォーカス=B
+       +47ms   処理 #15 char↑ 文脈=A フォーカス=B
+       +47ms   処理 #16 char↓ 文脈=A フォーカス=B
+       +50ms 打鍵 #17 char↑
+       +50ms   処理 #17 char↑ 文脈=A フォーカス=B
+       +53ms 打鍵 #18 char↓
+       +53ms   処理 #18 char↓ 文脈=A フォーカス=B
+       +55ms refresh の完了 seq=1 読んだ窓=B
+       +56ms 打鍵 #19 char↑
+       +56ms   処理 #19 char↑ 文脈=B フォーカス=B
+       +59ms 打鍵 #20 char↓
+       +59ms   処理 #20 char↓ 文脈=B フォーカス=B
+       +62ms 打鍵 #21 char↑
+       +62ms   処理 #21 char↑ 文脈=B フォーカス=B
+       +65ms 打鍵 #22 char↓
+       +65ms   処理 #22 char↓ 文脈=B フォーカス=B
+       +68ms 打鍵 #23 char↑
+       +68ms   処理 #23 char↑ 文脈=B フォーカス=B
+       +71ms 打鍵 #24 char↓
+       +71ms   処理 #24 char↓ 文脈=B フォーカス=B
+       +74ms 打鍵 #25 char↑
+       +74ms   処理 #25 char↑ 文脈=B フォーカス=B
+    違反: stale_start=10 fix=1
+- route — 最初の打鍵=文字 遅延=0ms 読み直し=55ms 離し=+25ms 追加=+20ms に窓 C へフォーカス 同時刻=refresh が先
+    窓: A=GJIOFF/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
+        +0ms フォーカス → B(読み直しの完了 +55)
+        +0ms 打鍵 #0 char↓
+       +20ms フォーカス → C(読み直しの完了 +75)
+       +25ms 打鍵 #1 char↑
+       +75ms refresh の完了 seq=2 読んだ窓=C
+       +75ms 保持の解放 Refreshed 2 件
+       +75ms   処理 #0 char↓ 文脈=C フォーカス=C
+       +75ms   処理 #1 char↑ 文脈=C フォーカス=C
+    違反: route=1
+
+## E1 最初の打鍵の種類ごと(読み直し R≤228 の組で違反のあった組の数)
+種類 | modifier | order | stale_start | stale_other | fix | route | delay | bound
+文字 | 0 | 0 | 1878 | 1128 | 0 | 2112 | 0 | 0
+右親指(変換) | 0 | 0 | 1878 | 1128 | 1878 | 2112 | 0 | 0
+左親指(無変換) | 0 | 0 | 1878 | 1128 | 1878 | 2112 | 0 | 0
+親指でない変換 | 0 | 0 | 1878 | 1128 | 1878 | 2112 | 0 | 0
+半角/全角 | 0 | 0 | 1878 | 1128 | 1878 | 2112 | 0 | 0
+Shift+文字 | 0 | 0 | 1878 | 1128 | 0 | 2112 | 0 | 0
+Ctrl+文字 | 0 | 0 | 0 | 12600 | 0 | 0 | 0 | 0
+Alt+Tab の Tab | 0 | 0 | 160 | 12600 | 0 | 588 | 0 | 0
+キーアップだけ | 0 | 0 | 687 | 1206 | 0 | 0 | 0 | 0
+リピート | 0 | 0 | 687 | 1206 | 0 | 0 | 0 | 0
+外部注入の文字 | 0 | 0 | 687 | 12600 | 0 | 0 | 0 | 0
+
+## E1 追加の事象ごと(読み直し R≤228 の組で違反のあった組の数)
+追加 | modifier | order | stale_start | stale_other | fix | route | delay | bound
+なし | 0 | 0 | 0 | 3780 | 0 | 0 | 0 | 0
++40ms に文字 | 0 | 0 | 0 | 3780 | 0 | 0 | 0 | 0
++10ms に右親指(同時打鍵) | 0 | 0 | 160 | 3780 | 0 | 544 | 0 | 0
+6ms 間隔で文字 12 打 | 0 | 0 | 6561 | 3780 | 3000 | 0 | 0 | 0
+40ms 間隔で文字 6 打 | 0 | 0 | 0 | 3780 | 0 | 44 | 0 | 0
++20ms に窓 C へフォーカス | 0 | 0 | 0 | 3780 | 0 | 6336 | 0 | 0
++20ms に窓 A へ戻る | 0 | 0 | 0 | 3780 | 0 | 6336 | 0 | 0
+変更前の refresh が打鍵の 5ms 前に完了 | 0 | 0 | 0 | 3780 | 0 | 0 | 0 | 0
+変更前の refresh が打鍵の 5ms 後に完了 | 0 | 0 | 0 | 3780 | 0 | 0 | 0 | 0
+1ms 間隔で外部注入 20 打 | 0 | 0 | 6768 | 12960 | 4512 | 0 | 0 | 0
+

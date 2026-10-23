@@ -32,4 +32,6 @@ pub mod half_width_alnum;
 pub mod win_key_guard;
 // ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持(純粋な状態機械。殻は runtime/resume_hold.rs)。
 pub mod half_width_resume_hold;
+// PR #809 の M1: 窓切替直後、refresh が新しい窓を読み終える前の打鍵の保持(純粋な状態機械。殻は runtime/focus_switch_hold.rs)。
+pub mod focus_switch_hold;
 pub use hook_state::*;
