@@ -537,6 +537,18 @@ pub(crate) unsafe fn handle_wm_timer(
             app.platform.timer.kill(crate::TIMER_MOZC_SHM);
             app.mozc_shm_on_timer();
         }
+        Some(id) if id == crate::TIMER_ADR279_DIAG => {
+            // 測定専用(ADR-279 段階 0、ci/adr279-stage0 だけ)。判断には使わない。
+            let ctx = app.build_ctx();
+            tracing::debug!(
+                "[adr279-diag] engine_active={} ime_on={} class={} profile={:?} {}",
+                app.engine.compute_active(&ctx),
+                ctx.ime_on,
+                app.platform.focus.class_name(),
+                app.platform.current_app_profile(),
+                app.platform_state.ime.adr279_diag_line(),
+            );
+        }
         Some(id) if id == crate::TIMER_LANG_HOLD => {
             // 一発タイマー（ADR-263 PR 2b）。冒頭で自ら kill する。
             app.platform.timer.kill(crate::TIMER_LANG_HOLD);

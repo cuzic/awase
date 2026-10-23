@@ -802,6 +802,16 @@ impl Runtime {
                 || ime.and_then(|ime| self.derive_key_shadow_action(ime, vk)),
             )
         };
+        // 測定専用(ADR-279 段階 0、ci/adr279-stage0 だけ): 親指の役割の有無。
+        tracing::debug!(
+            "[adr279-role] vk=0x{:02X} ime={:?} configured={:?} role={:?} injected={} modified={}",
+            vk.0,
+            ime,
+            configured,
+            action,
+            event.injected,
+            modified,
+        );
         // **押した側だけ**書く。もう一方の押下中の値を巻き込んで変えない。
         let (muhenkan, henkan) = self.engine.thumb_role_open_actions();
         if is_muhenkan {
@@ -1751,6 +1761,11 @@ impl Runtime {
         self.platform.timer.set(
             crate::TIMER_HOOK_WATCHDOG,
             std::time::Duration::from_secs(3),
+        );
+        // 測定専用(ADR-279 段階 0): belief の内訳の周期ログ。
+        self.platform.timer.set(
+            crate::TIMER_ADR279_DIAG,
+            std::time::Duration::from_millis(200),
         );
     }
 

@@ -36,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, feat/adr260-eisu-toggle-guard, feat/adr245-r2-resume-hold, fix/bug-207-mozc-server-io-monitor]
+    branches: [ci/adr279-stage0, ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, feat/adr260-eisu-toggle-guard, feat/adr245-r2-resume-hold, fix/bug-207-mozc-server-io-monitor]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || (github.ref_name == 'fix/bug-207-mozc-server-io-monitor' && '*-mozc-*,ts-raw-*-gji-cold-*,ts-raw-*-gji-idle-*,ts-raw-*-gji-longidle-*,ts-tsf-gji-40ms,ts-tsf-gji-10ms,ts-tsf-msime-40ms,ts-tsf-msime-10ms') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/adr279-stage0' && 'adr279-*,sc-driftrecovery-ctrlmuhenkan-*') || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || (github.ref_name == 'fix/bug-207-mozc-server-io-monitor' && '*-mozc-*,ts-raw-*-gji-cold-*,ts-raw-*-gji-idle-*,ts-raw-*-gji-longidle-*,ts-tsf-gji-40ms,ts-tsf-gji-10ms,ts-tsf-msime-40ms,ts-tsf-msime-10ms') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -568,6 +568,16 @@ jobs:
               for ime_name, ime, km, msime in (('gji', 'gji', 1, ''), ('msime', 'msime', 1, ' --msime'))],
             cfg('sc-driftrecovery-ctrlmuhenkan-gji-chrome', 'observe', check='driftrecovery', runs=1, wait=400, chrome='--close-ime=10 --ctrl-muhenkan-off --settle=800'),
             cfg('sc-driftrecovery-ctrlmuhenkan-msime-chrome', 'observe', check='driftrecovery', ime='msime', keymap=2, runs=1, wait=400, chrome='--close-ime=10 --ctrl-muhenkan-off --settle=800 --msime'),
+            # --- ADR-279 段階 0(ci/adr279-stage0 だけ。develop には入れない): 物理 Ctrl+無変換で明示 OFF にした後、awase のフックが素通しする
+            # 目印付きの VK_IME_ON で実 IME だけを開け直す(明示 OFF・実 ON = BUG-110 と同じ向きのずれ)。+0.5/2/3.5/5 秒の実 IME と、
+            # awase.log の [adr279-diag](200ms ごとの belief の内訳)を突き合わせる(S0-1)。thumb=right/left/overlap はそのあと親指を打つ(S0-2)。
+            # role=GJI は CUSTOM 表で無変換/変換を開閉のトグル、MS-IME は KeyAssignmentMuhenkan/Henkan=2(トグル)。norole=GJI は ATOK プリセット、MS-IME は既定。
+            *[cfg(f'adr279-s0-{ime_name}-{role}-{thumb}', 'observe', check='driftrecovery', ime=ime, keymap=(0 if (ime == 'gji' and role == 'role') else km), runs=1, wait=420,
+                  tsv=('DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff|DirectInput,Henkan,IMEOn|Precomposition,Henkan,IMEOff|Composition,Henkan,IMEOff|Conversion,Henkan,IMEOff' if (ime == 'gji' and role == 'role') else ''),
+                  prepare=("reg add HKCU\\Software\\Microsoft\\IME\\15.0\\IMEJP\\MSIME /v IsKeyAssignmentEnabled /t REG_DWORD /d 1 /f ; reg add HKCU\\Software\\Microsoft\\IME\\15.0\\IMEJP\\MSIME /v KeyAssignmentMuhenkan /t REG_DWORD /d 2 /f ; reg add HKCU\\Software\\Microsoft\\IME\\15.0\\IMEJP\\MSIME /v KeyAssignmentHenkan /t REG_DWORD /d 2 /f" if (ime == 'msime' and role == 'role') else ''),
+                  stress=f'--form=tsf --mode=drift-on --drift-off-ctrl-muhenkan --drift-reopen-hidden --drift-checks=500,2000,3500,5000 --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}' + ('' if thumb == 'none' else f' --drift-thumb={thumb}'))
+              for ime_name, ime, km, msime in (('gji', 'gji', 1, ''), ('msime', 'msime', 1, ' --msime'))
+              for role in ('role', 'norole') for thumb in ('none', 'right', 'left', 'overlap')],
             # --- 半角英数トグル中のフォーカス変更(typing_stress --mode=focus-restore、観測のみ。only='sc-focusrestore-*' か ci/e2e-focus-restore-13-17 への push で回す) ---
             # 窓 A(自前 EDIT)で左 Shift 単独タップ(half_width_alnum_toggle=all)→ 窓 B(別スレッドの EDIT)へ移す → A へ戻す、の各時点で A/B の open・conv を
             # IMM と WM_IME_CONTROL の 2 経路で記録する。ctl は B へ移さない対照。判定はせず check_focusrestore.py が表と awase.log の該当行を出す。
@@ -919,7 +929,7 @@ jobs:
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-', 'sc-focusrestore-'))]
+            configs = [c for c in configs if not c['name'].startswith(('adr279-', 'cal-', 'ts-', 'tsx-', 'tsj-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-', 'sc-offrca-', 'sc-bug149-', 'sc-f16-', 'sc-table-', 'sc-preedit-', 'sc-late-space-', 'sc-focusrestore-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])

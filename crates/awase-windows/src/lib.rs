@@ -298,6 +298,8 @@ pub const TIMER_RESUME_HOLD: usize = 112;
 /// 走らせないため)ので、共有メモリの読み・追随だけを切り離して回す。一発タイマーで、ハンドラ冒頭で自ら `kill` し、
 /// 共有メモリのブロックがある間だけ読んだ後に張り直す(`runtime/mozc_shm_shadow.rs`)。
 pub const TIMER_MOZC_SHM: usize = 113;
+/// **測定専用(ADR-279 段階 0、ci/adr279-stage0 だけ)**: belief の内訳を 200ms ごとにログへ出す周期タイマー。
+pub const TIMER_ADR279_DIAG: usize = 199;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 

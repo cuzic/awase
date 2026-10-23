@@ -859,6 +859,35 @@ fn send_key(vk: u32, scan: u16, down: bool) -> bool {
     unsafe { SendInput(&[input], size_of::<INPUT>() as i32) == 1 }
 }
 
+/// ADR-279 段階 0: awase のフックが自己注入として素通しする目印(`output::INJECTED_MARKER`)付きで押す。
+/// awase はこの打鍵を処理しない(明示意図にならない)ので、実 IME だけが変わる。
+fn press_hidden(vk: u32, scan: u16, hold_ms: u64) {
+    const INJECTED_MARKER: usize = 0x4B45_594D;
+    let mk = |down: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
+                wScan: scan,
+                dwFlags: if down {
+                    KEYBD_EVENT_FLAGS(0)
+                } else {
+                    KEYEVENTF_KEYUP
+                },
+                time: 0,
+                dwExtraInfo: INJECTED_MARKER,
+            },
+        },
+    };
+    unsafe {
+        let _ = SendInput(&[mk(true)], size_of::<INPUT>() as i32);
+    }
+    sleep_ms(hold_ms);
+    unsafe {
+        let _ = SendInput(&[mk(false)], size_of::<INPUT>() as i32);
+    }
+}
+
 fn press(vk: u32, scan: u16, hold_ms: u64) {
     send_key(vk, scan, true);
     sleep_ms(hold_ms);
@@ -1359,7 +1388,11 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     let trials: usize = arg_value("--trials=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
-    const CHECKPOINTS_MS: [u64; 2] = [500, 2000];
+    // ADR-279 段階 0(ci/adr279-stage0 だけ): `--drift-checks=500,2000,3500,5000` でチェックポイントを差し替える。
+    let checkpoints: Vec<u64> = arg_value("--drift-checks=")
+        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .filter(|v: &Vec<u64>| !v.is_empty())
+        .unwrap_or_else(|| vec![500, 2000]);
     let Some(probe) = cells[0]
         .iter()
         .find(|c| c.romaji == "ka")
@@ -1404,6 +1437,18 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         let ctrl_muhenkan = has_flag("--drift-off-ctrl-muhenkan");
         let set_ret = if ctrl_muhenkan {
             press_ctrl_muhenkan();
+            // ADR-279 段階 0: `--drift-reopen-hidden` で、awase の OFF の後に awase のフックが素通しする目印
+            // (自己注入の INJECTED_MARKER)付きの VK_IME_ON で実 IME だけを開け直す(明示 OFF・実 ON のずれ。BUG-110 と同じ向き)。
+            if has_flag("--drift-reopen-hidden") {
+                sleep_ms(400);
+                let before = real_ime_open(child);
+                let reopen_utc = utc_hms();
+                press_hidden(VK_IME_ON, 0x70, 50);
+                sleep_ms(150);
+                rec(
+                    &json!({"type":"drift_on_reopen","n":n,"utc":reopen_utc,"before_open":before,"real_ime_open":real_ime_open(child)}),
+                );
+            }
             None
         } else {
             force_close_real_ime(child)
@@ -1424,11 +1469,42 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             );
         }
         let mut waited_ms = 0u64;
-        for &cp in &CHECKPOINTS_MS {
-            sleep_ms(cp - waited_ms);
+        for &cp in &checkpoints {
+            sleep_ms(cp.saturating_sub(waited_ms));
             waited_ms = cp;
             rec(
-                &json!({"type":"drift_on_check","n":n,"checkpoint_ms":cp,"real_ime_open":real_ime_open(child)}),
+                &json!({"type":"drift_on_check","n":n,"checkpoint_ms":cp,"utc":utc_hms(),"real_ime_open":real_ime_open(child)}),
+            );
+        }
+        // ADR-279 段階 0(S0-2): `--drift-thumb=right|left|overlap` で、ずれの後に親指を打つ(マーカー付き=awase は物理キー扱い)。
+        if let Some(th) = arg_value("--drift-thumb=") {
+            clear_text(child);
+            sleep_ms(200);
+            let before = real_ime_open(child);
+            let thumb_utc = utc_hms();
+            match th.as_str() {
+                "right" => press(VK_HENKAN, SCAN_HENKAN, 60),
+                "left" => press(VK_MUHENKAN, SCAN_MUHENKAN, 60),
+                _ => {
+                    // 親指と文字の重なり: 左右の親指面のセルを 2 つずつ交互に(nicola_events と同じ重ね方、1 文字 200ms)。
+                    let seq: Vec<Cell> = [&cells[1], &cells[2], &cells[1], &cells[2]]
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, v)| v.get(i / 2).cloned())
+                        .collect();
+                    let _ = run_schedule(&nicola_events(&seq, 200_000));
+                }
+            }
+            sleep_ms(300);
+            let o300 = real_ime_open(child);
+            sleep_ms(1200);
+            let o1500 = real_ime_open(child);
+            press(VK_RETURN, 0x1C, 50);
+            sleep_ms(500);
+            let text = read_text(child);
+            rec(
+                &json!({"type":"drift_on_thumb","n":n,"utc":thumb_utc,"end_utc":utc_hms(),"thumb":th,"before_open":before,
+                    "open_300":o300,"open_1500":o1500,"text":text,"real_ime_open":real_ime_open(child)}),
             );
         }
         let focus_lost = !focus_ok();

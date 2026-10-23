@@ -1462,6 +1462,54 @@ impl ImeStateHub {
         super::drift_correction::evaluate_drift(&self.shadow_model, now)
     }
 
+    /// **測定専用(ADR-279 段階 0、ci/adr279-stage0 ブランチだけ。develop には入れない)**: belief の内訳を 1 行にする。
+    /// 明示意図・IntentStore の上書き・`resolve_open_at` の根拠・`derive_any`(意図を外したと仮定したときの観測の結論)・
+    /// drift の継続時間と `evaluate_drift` の結果・ソースごとの観測(開閉/信頼度/経過 ms)。判断には使わない。
+    pub(crate) fn adr279_diag_line(&self) -> String {
+        use std::fmt::Write as _;
+        let now = self.clock.now_instant();
+        let now_ms = TickMs(self.clock.now_tick());
+        let (resolution, decision) = self.resolve_effective(now_ms);
+        let model = &self.shadow_model;
+        let derive = model.observations.derive_any(now);
+        let drift_ms = model
+            .observations
+            .drift_duration(now)
+            .map(|d| d.as_millis());
+        let drift_eval = match super::drift_correction::evaluate_drift(model, now) {
+            Ok(c) => format!("Fire(src={:?},obs={})", c.source, c.observed),
+            Err(e) => e.label().to_owned(),
+        };
+        let mut obs = String::new();
+        for o in model.observations.per_source.iter() {
+            let _ = write!(
+                obs,
+                "{:?}:{}/{:?}/{}ms,",
+                o.source,
+                o.open,
+                o.confidence,
+                o.age(now).as_millis()
+            );
+        }
+        if let Some(g) = model.observations.per_source.indicator() {
+            let _ = write!(obs, "Glyph:{}/{}ms,", g.open, g.age(now).as_millis());
+        }
+        format!(
+            "explicit={:?} desired={} base={:?} shadow={} effective={} store_intent={:?} derive_any={:?} \
+             drift_ms={:?} drift_eval={} obs=[{}]",
+            self.explicit_intent(),
+            model.desired_open(),
+            resolution.decided_by,
+            resolution.value,
+            decision.value,
+            decision.intent.map(|i| (i.open, i.source)),
+            derive,
+            drift_ms,
+            drift_eval,
+            obs,
+        )
+    }
+
     /// [`Self::evaluate_drift`] から理由を捨てたもの。本番の呼び出し元は `evaluate_drift` に移ったので、
     /// これは既存の単体テスト（`check_drift_correction_*`）の窓口として残している。
     #[cfg(test)]
