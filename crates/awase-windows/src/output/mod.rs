@@ -842,7 +842,7 @@ impl Output {
     /// `WindowsPlatform::advance_tsf_probe` は `timer_cmd` を `apply_timer_command` に渡し、
     /// `gji_response` を `dispatch_gji_response` に渡す。
     /// pending_tsf の有無とタイマー kill/set の判断はここで完結する。
-    pub(crate) fn step_probe(&mut self) -> StepProbeResult {
+    pub(crate) fn step_probe(&self) -> StepProbeResult {
         let tick_t = crate::hook::current_tick_ms();
         let env = {
             let ime_fsm = self.ime_mode_fsm.borrow();
