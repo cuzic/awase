@@ -789,3 +789,8 @@ mod tests {
         assert!(sink.sent.is_empty());
     }
 }
+
+// ME-3: actuation の純粋な判断の決定表の全列挙 golden（`tests/golden/actuation_decision_table.txt`）。
+#[cfg(test)]
+#[path = "sync_actuation_exhaustive.rs"]
+mod exhaustive;
