@@ -1284,6 +1284,16 @@ mod tests {
         }
     }
 
+    // ── BUG-33 追補3: CompositionReset の observation(gji_idle_ms) ゲート ──
+
+    /// 回帰テスト: 実機バグ「リーク」→「リーを」の前提条件。
+    ///
+    /// Ctrl+key bypass 等で composition キャンセルが起きても、実測
+    /// `gji_idle_ms` が小さい（`ColdKind::Short` = GJI 確実に生存）場合は
+    /// `OnCold` へ倒さず `OnWarm` に留まるべき。以前は無条件で `OnCold(Short)`
+    /// に落としており、これが cold-start（per-VK confirm + epoch fencing）を
+    /// 誘発し、genuinely warm なセッションでも false-positive の backspace が
+    /// 発生する温床になっていた。
     #[test]
     fn composition_reset_while_genuinely_warm_stays_warm() {
         let mut fsm = GjiFsm::new();
@@ -1383,7 +1393,7 @@ mod tests {
     }
 
     /// 境界値プロパティテスト（ADR-082 決定1実施記録の次の一歩・BUG-33、Linux 実行化に
-    /// 伴い追加）: 上記3件は 63ms/8_000ms/50ms という特定の値のみを点で押さえていた。
+    /// 伴い追加）: 上記のテスト（当初は NativeF2Consumed の 2 件を含む 3 件）は 63ms 等の特定の値のみを点で押さえていた。
     /// `CompositionReset` が `OnWarm` から倒す先は、常に
     /// `ColdKind::classify(gji_idle_ms)` の結果と一致すべき（`handle_composition_reset`
     /// が `ColdKind::Short` のときだけ `OnWarm` を維持し、それ以外は分類結果通りの

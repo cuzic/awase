@@ -75,6 +75,51 @@ fn app_override_list_is_nonempty(root: &toml::Table, key: &str) -> bool {
         .is_some_and(|v| !v.is_empty())
 }
 
+/// 旧版の同梱 `config.toml` の `force_tsf` の値(Windows Terminal・WezTerm の 2 件)。
+/// 更新した利用者の `config.toml`(Scoop は persist する)には、自分で書いていないこの値が残っているので、
+/// ちょうどこの 2 件のときは通知しない(PR #809 レビュー m4。既定値は通知しない方針、上の表の doc)。
+const RETIRED_DEFAULT_FORCE_TSF: &[(&str, &str)] = &[
+    ("wezterm-gui.exe", "org.wezfurlong.wezterm"),
+    ("WindowsTerminal.exe", "CASCADIA_HOSTING_WINDOW_CLASS"),
+];
+
+/// `app_overrides.force_tsf` が旧版の同梱の既定値(順不同、大文字小文字は区別しない)とちょうど同じか。
+fn force_tsf_is_retired_default(root: &toml::Table) -> bool {
+    let Some(list) = root
+        .get("app_overrides")
+        .and_then(toml::Value::as_table)
+        .and_then(|a| a.get("force_tsf"))
+        .and_then(toml::Value::as_array)
+    else {
+        return false;
+    };
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for v in list {
+        let Some(t) = v.as_table() else {
+            return false;
+        };
+        let field = |k: &str| {
+            t.get(k)
+                .and_then(toml::Value::as_str)
+                .map(str::to_ascii_lowercase)
+        };
+        let (Some(process), Some(class)) = (field("process"), field("class")) else {
+            return false;
+        };
+        if t.len() != 2 {
+            return false;
+        }
+        entries.push((process, class));
+    }
+    let mut expected: Vec<(String, String)> = RETIRED_DEFAULT_FORCE_TSF
+        .iter()
+        .map(|(p, c)| (p.to_ascii_lowercase(), c.to_ascii_lowercase()))
+        .collect();
+    entries.sort();
+    expected.sort();
+    entries == expected
+}
+
 /// 値が既定でない撤去済みキーの通知文を集める。`root` は config.toml 全体の表。
 #[must_use]
 pub fn removed_value_notices(root: &toml::Table) -> Vec<String> {
@@ -112,7 +157,7 @@ pub fn removed_value_notices(root: &toml::Table) -> Vec<String> {
         );
     }
     // 2026-10-22: Tsf 注入経路(VK Sequential)を撤去したので force_tsf も不要(ADR-0004 追記)。
-    if app_override_list_is_nonempty(root, "force_tsf") {
+    if app_override_list_is_nonempty(root, "force_tsf") && !force_tsf_is_retired_default(root) {
         out.push(
             "app_overrides.force_tsf は不要になりました(すべて VK で送るため)。値は無視されます。\
              config.toml から削除してください（設定画面で保存しても消えます）"
@@ -277,6 +322,18 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert!(m[0].contains("force_tsf") && m[0].contains("不要"), "{m:?}");
         assert!(removed_value_notices(&t("[app_overrides]\nforce_tsf = []\n")).is_empty());
+        // 旧版の同梱の既定値(2 件、順不同)だけなら通知しない(m4)。1 件でも違えば通知する。
+        assert!(removed_value_notices(&t(
+            "[app_overrides]\nforce_tsf = [\n  { process = \"WindowsTerminal.exe\", class = \"CASCADIA_HOSTING_WINDOW_CLASS\" },\n  { process = \"wezterm-gui.exe\", class = \"org.wezfurlong.wezterm\" },\n]\n"
+        ))
+        .is_empty());
+        assert_eq!(
+            removed_value_notices(&t(
+                "[app_overrides]\nforce_tsf = [\n  { process = \"wezterm-gui.exe\", class = \"org.wezfurlong.wezterm\" },\n]\n"
+            ))
+            .len(),
+            1
+        );
         for p in REMOVED_WITH_VALUE_NOTICE {
             assert!(is_removed_key(p), "ログ警告は出さない表にも載せる: {p}");
         }

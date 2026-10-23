@@ -114,7 +114,7 @@ footer p{margin:0.3rem 0}
 <ul>
 <li><strong>旧設定 <code>muhenkan_solo_tap_ime_action</code> / <code>henkan_solo_tap_ime_action</code> は無視されるようになりました。</strong> これまでは読み込み時に <code>keys.ime_on</code> / <code>ime_off</code> / <code>ime_toggle</code> 相当へ移していましたが、この移行を終えました。<code>config.toml</code> に残っていると起動時に通知が出ます（設定画面で保存するとその行は消えます）。無変換／変換の単独タップで IME を開閉するには、<code>keys.ime_on</code> / <code>keys.ime_off</code> に「無変換」「変換」を単独で書いてください（例: <code>ime_on = [&quot;変換&quot;]</code>、<code>ime_off = [&quot;無変換&quot;]</code>）。</li>
 <li><strong>設定の <code>app_overrides.force_vk</code> を廃止し、以前の版が「TSF で送る」と自動で記録したアプリの一覧（<code>cache.toml</code> の <code>[injection_mode]</code>）を読まなくなりました。</strong> Unicode の直接注入の撤去（ADR-276）で、指定の無いアプリはすべて VK キーストロークで送るようになり、<code>force_vk</code> は既定と同じになりました。<code>force_vk</code> が書いてあっても読み込みエラーにはならず、無視されます（空でないときは起動時に「不要になった」と通知します。設定画面で保存すると消えます）。</li>
-<li><strong>設定の <code>app_overrides.force_tsf</code> も廃止し、文字はすべてのアプリに VK キーストローク（IME 経由、まとめて送る方式）で送るようにしました。</strong> これまで既定で <code>force_tsf</code> に入っていた WezTerm と Windows Terminal も、ほかのアプリと同じ送り方になります。<code>force_tsf</code> が書いてあっても読み込みエラーにはならず、無視されます（空でないときは起動時に「不要になった」と通知します。設定画面で保存すると消えます）。</li>
+<li><strong>設定の <code>app_overrides.force_tsf</code> も廃止し、文字はすべてのアプリに VK キーストローク（IME 経由、まとめて送る方式）で送るようにしました。</strong> これまで既定で <code>force_tsf</code> に入っていた WezTerm と Windows Terminal も、ほかのアプリと同じ送り方になります。<code>force_tsf</code> が書いてあっても読み込みエラーにはならず、無視されます（空でなく、以前の版の同梱の既定値〈WezTerm・Windows Terminal の 2 件〉とも違うときは、起動時に「不要になった」と通知します。設定画面で保存すると消えます）。</li>
 </ul>
 <h2>[2.2.0] - 2026-10-20</h2>
 <blockquote>

@@ -226,7 +226,7 @@ private 化ではなく、`gji_idle_ms`（実観測値）をイベントの必�
 
 この教訓を受けて `ImeModel` 以外の belief 的トラッカー全体を監査した結果、
 `ImeModeFsm`/conv mode/`TsfGate`/injection_mode/focus 分類は実観測でゲート
-済みだったが、以下2箇所は「規約・コメントのみで守られている」構造的な弱さが
+済みだった（`TsfGate`・injection_mode は 2026-10-22 に Tsf 注入経路とともに撤去）が、以下2箇所は「規約・コメントのみで守られている」構造的な弱さが
 見つかり是正した:
 
 - **`state/force_guard.rs::ForceGuardSet.guards`**: 全 `pub` フィールドで、

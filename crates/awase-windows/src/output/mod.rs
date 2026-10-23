@@ -997,8 +997,8 @@ impl Output {
                 tracing::debug!("[stage-end] {:?}: deferred {n} VK(s) を flush", end.reason);
             }
         }
-        // (c) 旧 GJI probe の OUTPUT_GATE ガード（`gji_probe_guard`）は、張る側の Tsf 注入経路
-        // （`GjiWarmupCoro`）とともに 2026-10-22 に撤去した。`TsfProbeCoro` は自分のガードを持つ。
+        // （旧 (c): GJI probe の OUTPUT_GATE ガード〈`gji_probe_guard`〉は、張る側の Tsf 注入経路
+        // 〈`GjiWarmupCoro`〉とともに 2026-10-22 に撤去した。`TsfProbeCoro` は自分のガードを持つ。）
         // (b) GjiFsm への通知。
         let rec = self.warmup_coord.take_stage_record();
         // ADR-270: 段末に確認の FSM が続いているなら、終わる段の宛先を、空になった記録へ引き継ぐ。確認の FSM が

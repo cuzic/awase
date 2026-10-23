@@ -59,6 +59,22 @@ pub fn is_tsf_native_window(class_name: &str) -> bool {
     )
 }
 
+/// ADR-270 の確認(Mozc の最初の送信の後に入力中の文字ができたか。0.3 秒で判断して、できていなければ
+/// Backspace で消して送り直す)を張ってよい前景窓のクラスか。
+///
+/// 旧 Tsf 注入モードの既定の対象(`force_tsf` の Windows Terminal・WezTerm)だけに限る。確認は旧来この窓でしか
+/// 張られず、期限 0.3 秒(`MOZC_COMPOSE_CHECK_MS`、実測は Windows Terminal の 1 台だけ)の根拠もこの窓にしか無い。
+/// Chrome は TSF composition context の再初期化に ~326ms かかる実測(`79134f5`)があり、期限を越えて遅れて
+/// できた入力中の文字を Backspace が消し、確定済みの文字まで消しうる(PR #809 レビュー M3)。広げるときは、
+/// その窓で `[mozc-compose] ... confirmed after Nms` の分布を取ってからにする。
+#[must_use]
+pub fn is_mozc_compose_check_window(foreground_class: &str) -> bool {
+    matches!(
+        foreground_class,
+        "CASCADIA_HOSTING_WINDOW_CLASS" | "org.wezfurlong.wezterm"
+    )
+}
+
 /// Win32 のポップアップメニュー窓（`TrackPopupMenu` 等が作るコンテキストメニュー）のクラス名。
 ///
 /// どのアプリの右クリックメニューも、この標準クラスの窓として出る。入力インジケーターの
@@ -70,8 +86,8 @@ pub const POPUP_MENU_WINDOW_CLASS: &str = "#32768";
 /// メニューの項目がハイライトされる（マウスのホバー・キーボード）と、メニュー窓へ
 /// `EVENT_OBJECT_FOCUS` が出る。**メニューは元の窓にフォーカスを残したまま別の窓（メニュー窓）へ
 /// このイベントを出すだけで、入力先の窓は変わらない**。これを窓の切替として扱うと、
-/// `tsf-gate` が `PendingWarmup` に戻って保持中の打鍵が捨てられ、フォーカス窓の分類
-/// （`HwndCache`・UIA）が走る（BUG-202、ADR-264 決定 7）。
+/// フォーカス窓の分類（`HwndCache`・UIA）が走る（BUG-202、ADR-264 決定 7。当時は旧 TsfGate が
+/// `PendingWarmup` に戻って保持中の打鍵も捨てられたが、TsfGate は 2026-10-22 に撤去した）。
 #[must_use]
 pub fn is_popup_menu_window_class(class_name: &str) -> bool {
     class_name == POPUP_MENU_WINDOW_CLASS
@@ -278,6 +294,25 @@ pub fn detect_app_kind(class_name: &str) -> AppKind {
 
 #[cfg(test)]
 mod tests {
+
+    /// ADR-270 の確認は旧 `force_tsf` の既定の窓(Windows Terminal・WezTerm)だけ(PR #809 レビュー M3)。
+    #[test]
+    fn mozc_compose_check_window_is_limited_to_old_force_tsf_defaults() {
+        assert!(is_mozc_compose_check_window(
+            "CASCADIA_HOSTING_WINDOW_CLASS"
+        ));
+        assert!(is_mozc_compose_check_window("org.wezfurlong.wezterm"));
+        for other in [
+            "Chrome_WidgetWin_1",
+            "Chrome_RenderWidgetHostHWND",
+            "OpusApp",
+            "Notepad",
+            "Windows.UI.Input.InputSite.WindowClass",
+            "",
+        ] {
+            assert!(!is_mozc_compose_check_window(other), "{other}");
+        }
+    }
     use super::*;
 
     // BUG-202: コンテキストメニュー（クラス `#32768`）へのフォーカスは窓の切替ではない。

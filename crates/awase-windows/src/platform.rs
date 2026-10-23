@@ -524,14 +524,19 @@ impl WindowsPlatform {
     /// SendInput 2連送になり、ADR-149/BUG-113 の「@」の必要条件を作る）。`eager_warmup_sent_ms` の latch もしない
     /// （唯一の読み手 `compute_focus_probe_grace` はフォーカス変更で 0 に戻された値をフォーカス直後の最初の打鍵で読むため、
     /// F2 の latch は読まれない。BUG-06 の「新F2から500ms待機」自体も 2026-07-18 に撤去済み。Opus round2 R2-6）。
+    /// cold にするかは `tsf::cold_reason::physical_f2_marks_cold` が決める:
     /// - 非 warm: cold mark と GjiFsm reset のみ。
-    /// - warm: 何もしない（BUG-31: warm 中の無関係な物理 IME キーで cold 化すると、直後の無関係な
+    /// - warm の GJI 系: 何もしない（BUG-31: warm 中の無関係な物理 IME キーで cold 化すると、直後の無関係な
     ///   タイピングが cold-start 経路に落ちて GJI 候補ウィンドウ可視性のレースで文字が消える）。
+    /// - warm の Mozc 系（`gji_evidence_absent`）: cold にする（BUG-209。ADR-270 の確認は cold の送信でしか張られない）。
     ///
     /// 旧 Tsf 注入モード（`force_tsf`）では warm でも `NativeF2Consumed` で cold にしていたが、
-    /// Tsf 注入経路の撤去（2026-10-22、ADR-0004 追記）で分岐ごと削除した。
+    /// Tsf 注入経路の撤去（2026-10-22、ADR-0004 追記）で分岐ごと削除した（Mozc 系の分だけ上で残す）。
     pub(crate) fn composition_native_f2_down(&mut self) {
-        if !self.output.is_composition_warm() {
+        if crate::tsf::cold_reason::physical_f2_marks_cold(
+            self.output.is_composition_warm(),
+            crate::tsf::observer::gji_evidence_absent(),
+        ) {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::F2NonTsf);
             self.gji_on_composition_reset();

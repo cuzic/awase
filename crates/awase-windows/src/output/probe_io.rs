@@ -88,6 +88,7 @@ impl ProbeIo for Output {
         self.warmup_coord.mark_composition_reset();
     }
 
+    #[allow(unsafe_code)] // 前景窓のクラス名の読み取り(Win32)
     fn mozc_compose_precheck(
         &self,
         romaji: &str,
@@ -95,6 +96,12 @@ impl ProbeIo for Output {
     ) -> Option<MozcComposeTarget> {
         // GJI の証拠が無いと確定している（Mozc 系）ときだけ（ADR-269 D1、`gji_evidence_absent`）。
         if !crate::tsf::observer::gji_evidence_absent() {
+            return None;
+        }
+        // 旧来の範囲(Windows Terminal・WezTerm)に限る(PR #809 レビュー M3、`is_mozc_compose_check_window`)。
+        // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
+        let fg_class = unsafe { crate::ime::get_foreground_window_class() };
+        if !crate::focus::class_names::is_mozc_compose_check_window(&fg_class) {
             return None;
         }
         let (hwnd_addr, thread_id, process_id) =
@@ -562,6 +569,10 @@ mod tests {
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
         reset_consecutive_called: Cell<bool>,
+        /// `mozc_compose_precheck` が返す対象(`None` = 張らない)。
+        mozc_target: Option<MozcComposeTarget>,
+        /// precheck・送信・request の呼び出し順(ADR-270 の配線の固定用)。
+        calls: std::cell::RefCell<Vec<&'static str>>,
     }
 
     impl Default for FakeProbeIo {
@@ -574,6 +585,8 @@ mod tests {
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
                 reset_consecutive_called: Cell::new(false),
+                mozc_target: None,
+                calls: std::cell::RefCell::new(Vec::new()),
             }
         }
     }
@@ -581,6 +594,18 @@ mod tests {
     impl ProbeIo for FakeProbeIo {
         fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
             self.transmit_chrome_called.set(true);
+            self.calls.borrow_mut().push("transmit");
+        }
+        fn mozc_compose_precheck(
+            &self,
+            _romaji: &str,
+            _cold_seq: Generation,
+        ) -> Option<MozcComposeTarget> {
+            self.calls.borrow_mut().push("precheck");
+            self.mozc_target.clone()
+        }
+        fn request_mozc_compose_check(&self, _target: MozcComposeTarget) {
+            self.calls.borrow_mut().push("request");
         }
         fn send_single_chrome_vk(&self, _vk: VkCode, _needs_shift: bool) {
             self.send_single_chrome_vk_call_count
@@ -663,6 +688,71 @@ mod tests {
         let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(io.transmit_chrome_called.get());
+    }
+
+    // ── ADR-270: Mozc の確認の配線(Tsf 注入経路の撤去で Batched の Transmit へ移した。PR #809 レビュー m1) ──
+
+    fn mozc_target() -> MozcComposeTarget {
+        MozcComposeTarget {
+            cold_seq: Generation::INITIAL,
+            romaji: "wo".to_string(),
+            hwnd_addr: 0x1234,
+            thread_id: 1,
+            process_id: 2,
+            key_seq_before: 0,
+        }
+    }
+
+    fn transmit(romaji: &str) -> Vec<ProbeAction> {
+        vec![ProbeAction::Transmit {
+            cold_seq: Generation::INITIAL,
+            plan: TransmitPlan {
+                needs_literal: false,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            romaji: romaji.to_string(),
+        }]
+    }
+
+    /// precheck は送信の**前**(まだ入力中の文字が無いことを確かめるため)、request は送信の後。
+    #[test]
+    fn transmit_prechecks_mozc_before_sending_and_requests_after() {
+        let io = FakeProbeIo {
+            mozc_target: Some(mozc_target()),
+            ..Default::default()
+        };
+        let mut machine = make_chrome_machine();
+        let result = dispatch_for_test(&mut machine, transmit("wo"), &io);
+        assert!(result.is_done());
+        assert_eq!(*io.calls.borrow(), ["precheck", "transmit", "request"]);
+    }
+
+    /// precheck が対象を返さない(Mozc 系でない・窓が対象外など)ときは request しない。
+    #[test]
+    fn transmit_does_not_request_mozc_check_without_target() {
+        let io = FakeProbeIo::default();
+        let mut machine = make_chrome_machine();
+        let result = dispatch_for_test(&mut machine, transmit("wo"), &io);
+        assert!(result.is_done());
+        assert_eq!(*io.calls.borrow(), ["precheck", "transmit"]);
+    }
+
+    /// 送るキーが無い(NoResolvableVk)ときは precheck も request もしない。
+    #[test]
+    fn no_resolvable_vk_skips_mozc_precheck_and_request() {
+        let io = FakeProbeIo {
+            mozc_target: Some(mozc_target()),
+            ..Default::default()
+        };
+        let mut machine = make_chrome_machine();
+        let result = dispatch_for_test(&mut machine, transmit(""), &io);
+        assert!(matches!(
+            result,
+            DispatchResult::Ended(StageEnd {
+                reason: StageEndReason::NoResolvableVk
+            })
+        ));
+        assert!(io.calls.borrow().is_empty(), "{:?}", io.calls.borrow());
     }
 
     // ── ADR-103 決定4: dispatch_probe_actions の唯一の出口（StageEndReason）──

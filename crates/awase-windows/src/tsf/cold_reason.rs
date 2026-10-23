@@ -43,3 +43,39 @@ impl ColdReason {
         matches!(self, Self::PassthroughConfirmKey | Self::ReinjectConfirmKey)
     }
 }
+
+/// 物理 F2(ひらがな)の KeyDown で composition を cold にするか(`platform.rs::composition_native_f2_down` の判断)。
+///
+/// - warm でない: cold にする(従来どおり)。
+/// - warm で GJI 系(GJI の I/O の証拠がある): cold にしない(BUG-31: warm 中の無関係な物理 IME キーで cold 化すると、
+///   直後のタイピングが cold-start 経路に落ちて候補ウィンドウ可視性のレースで文字が消える)。
+/// - warm でも Mozc 系(`gji_evidence_absent`、GJI の I/O の証拠が無い): cold にする。ADR-270 の確認(Mozc の最初の
+///   送信の後に入力中の文字ができたか)は cold の送信でしか張られず、BUG-209(「をもと」→「wo もと」)の再現経路は
+///   ひらがなキーの直後だった。旧 Tsf 注入モードは warm でも `NativeF2Consumed` で cold にしてこの確認を張っていたが、
+///   Tsf 注入経路の撤去(2026-10-22)で無くなったので、Mozc 系に限ってここで同じ効果を残す(PR #809 レビュー M2)。
+#[must_use]
+pub(crate) const fn physical_f2_marks_cold(warm: bool, gji_evidence_absent: bool) -> bool {
+    !warm || gji_evidence_absent
+}
+
+#[cfg(test)]
+mod tests {
+    use super::physical_f2_marks_cold;
+
+    /// BUG-209 の再発防止: warm のまま Mozc 系でひらがなキーを押したら cold にする(ADR-270 の確認を張らせる)。
+    /// GJI 系は BUG-31 の方針どおり warm なら cold にしない。
+    #[test]
+    fn physical_f2_cold_decision_table() {
+        // (warm, gji_evidence_absent) -> cold
+        assert!(physical_f2_marks_cold(false, false), "cold のまま(GJI)");
+        assert!(physical_f2_marks_cold(false, true), "cold のまま(Mozc)");
+        assert!(
+            !physical_f2_marks_cold(true, false),
+            "BUG-31: warm の GJI は cold にしない"
+        );
+        assert!(
+            physical_f2_marks_cold(true, true),
+            "BUG-209: warm でも Mozc は cold にする"
+        );
+    }
+}

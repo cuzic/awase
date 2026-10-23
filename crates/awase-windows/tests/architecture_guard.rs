@@ -1060,8 +1060,8 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
 /// 経由で belief を支配し、フォーカス約 500ms 後に Engine が必ず OFF になった
 /// （docs/known-bugs.md BUG-07）。
 ///
-/// TsfGate の状態確定（`bypass_tsf`/`confirm_tsf`）は injection 層の関心事であり、
-/// IME open belief とは独立に行うこと。「この種のウィンドウに IME は無いはず」という
+/// （TsfGate は 2026-10-22 に撤去した。）注入・フォーカス確定の都合で
+/// IME open belief を書かないこと。「この種のウィンドウに IME は無いはず」という
 /// 推測を belief に書きたくなったら、それは観測の偽装である（`ObservationSource::FocusProbe`
 /// は「実際に read_ime_state_fast を実行した」ことを意味する）。
 #[test]
@@ -4143,7 +4143,7 @@ fn timer_ime_off_rescue_calls_begin_key_batch_before_deliver_key_event() {
 /// BUG-202: `win_event_proc`（`EVENT_OBJECT_FOCUS`）は、コンテキストメニュー（クラス `#32768`）へのフォーカスを
 /// 窓の切替として扱わない。**判定は重複排除（`LAST_FOCUS_HWND.swap`）より前**でなければならない。後だと
 /// `LAST_FOCUS_HWND` がメニュー窓に上書きされ、メニューを閉じて元の窓へ戻る `FOCUS` が「新しい窓」として
-/// 再び拾われる（`tsf-gate` の `PendingWarmup`・held 破棄）。ADR-264 決定 7。
+/// 再び拾われる（フォーカス窓の分類が走る。当時は旧 TsfGate の held 破棄も起きた）。ADR-264 決定 7。
 #[test]
 fn win_event_proc_ignores_popup_menu_focus_before_dedup_and_dispatch() {
     let content = read_crate_file("src/app/bootstrap.rs");
@@ -9199,5 +9199,37 @@ fn probe_actuation_fence_bump_precedes_send_input() {
             "unsafe { SendInput(inputs, size) }",
         ],
         "bump が SendInput より後だと、フェンスが actuation を検出できない（ADR-140 決定B）",
+    );
+}
+
+/// PR #809 レビュー M2(BUG-209 の再発防止): 物理 F2(ひらがな)の cold 判断は `physical_f2_marks_cold` を通し、
+/// Mozc 系の判定(`gji_evidence_absent`)を渡す。warm の Mozc でも cold にしないと、ADR-270 の確認が張られず
+/// 「をもと」→「wo もと」が戻る(判断表は `tsf/cold_reason.rs` の単体テストが固定する)。
+/// ADR-270 の確認を張る窓は `is_mozc_compose_check_window` で旧来の範囲(Windows Terminal・WezTerm)に限る(M3)。
+#[test]
+fn physical_f2_cold_and_mozc_check_window_are_wired() {
+    let platform = read_crate_file("src/platform.rs");
+    let body = non_comment_lines(extract_fn_body(
+        production_code_only(&platform),
+        "fn composition_native_f2_down(",
+    ));
+    for needle in [
+        "physical_f2_marks_cold(",
+        "self.output.is_composition_warm()",
+        "gji_evidence_absent()",
+    ] {
+        assert!(
+            body.contains(needle),
+            "composition_native_f2_down が `{needle}` を使っていない(BUG-209、PR #809 M2)"
+        );
+    }
+    let probe_io = read_crate_file("src/output/probe_io.rs");
+    let pre = non_comment_lines(extract_fn_body(
+        production_code_only(&probe_io),
+        "fn mozc_compose_precheck(",
+    ));
+    assert!(
+        pre.contains("is_mozc_compose_check_window("),
+        "mozc_compose_precheck が窓の範囲(is_mozc_compose_check_window)を見ていない(PR #809 M3)"
     );
 }

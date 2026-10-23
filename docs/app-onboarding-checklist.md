@@ -30,9 +30,8 @@ awase は「どのアプリか」を複数の軸で分類する。新アプリ�
 
 - [ ] **AppKind**（`focus/kinds.rs`）: `Win32` / `TsfNative` / `Uwp` のどれか。
       Chrome・Edge・VS Code・Electron・WezTerm 等は `TsfNative`。
-- [ ] **InjectionMode**（`output/types.rs`）: 文字の送り方。
-      `Unicode`（Win32/UWP 既定）/ `Vk`（Chrome/Edge/Electron — IME composition 経由）/
-      `Tsf`（WezTerm — TSF 直結、VK Sequential）。
+- [ ] ~~InjectionMode~~: 文字の送り方の選択肢は無くなった（Unicode は ADR-276、Tsf は 2026-10-22 に撤去。
+      すべて Batched VK で IME composition 経由。ADR-0004 の追補）。
 - [ ] **IMM32 クロスプロセス制御が効くか**: 子 hwnd に `ImmGetOpenStatus` 等で
       読み書きできるアプリ（IMM 系）か、できない TSF アプリ（Chrome/Edge 等）か。
       ADR-075 の通り、効くアプリは `ImmCrossProbe`（High confidence 観測）で belief を

@@ -118,11 +118,13 @@ fn resolve_injection_mode() -> InjectionMode {
 
 **挙動の変化:**
 - WezTerm・Windows Terminal(既定の `config.toml` が `force_tsf` に入れていた)も、ほかの窓と同じ Batched VK で送る。cold 開始は `TsfProbeCoro::new_chrome` が一手に担う。
-- フォーカス直後(最大 500ms)のキーの保留(TsfGate の PendingWarmup)が無くなった。
+- フォーカス直後(最大 500ms)のキーの保留(TsfGate の PendingWarmup)が無くなった。**これは Tsf 窓だけでなく全アプリの挙動変更**(TsfGate は窓の種類に関係なくフォーカスイベントのたびに PendingWarmup になり、新しい窓の IME リフレッシュが済むまで打鍵を保留していた。PR #809 レビュー M1)。撤去後は、この間(典型 60〜150ms)の打鍵が前の窓の belief のまま処理されうる。所有者判断(2026-10-22)で今回は戻さず、実機(dragonflyg4)で窓切替直後の打鍵を測って要否を決める。
 - raw リテラルの回収再送(`send_romaji_recovery`、旧 `send_romaji_dispatching_on_gate`)は、ゲートの状態によらず常に Batched VK で送る。
-- 物理 F2(ひらがな)は、warm のときは cold にしない(旧 Tsf だけは warm でも `NativeF2Consumed` で cold にしていた。BUG-31 の方針に揃った)。
-- ADR-270(Mozc の最初の送信の確認)は Tsf の送信からしか呼ばれていなかったので、Batched VK の `Transmit`(`gji_active` でないとき = Mozc)へ移した。Chrome 等の Vk 窓でも Mozc なら確認が張られる。
+- GJI 系では、物理 F2(ひらがな)は warm のとき cold にしない(旧 Tsf だけは warm でも `NativeF2Consumed` で cold にしていた。BUG-31 の方針に揃った)。
+- Windows Terminal・WezTerm の `GjiFsm` の `LongIdle`(warm から cold へ落ちるまでの無操作時間)が 10 秒(`LONG_IDLE_MS`)から 5 秒(`CHROME_LONG_IDLE_MS`、`measured(pending)`)になった。あわせて cold 開始は `TsfProbeCoro`(`needs_literal = gji_active`)なので、GJI では cold のたびに 1 VK ずつ確認する(旧 `GjiWarmupCoro` は NameChange を確認できたら一括送信していた)。測定の「12 秒停止」は両方の閾値を超えるので、5〜10 秒の停止の差は見ていない(PR #809 レビュー m3)。
+- ADR-270(Mozc の最初の送信の確認)は Tsf の送信からしか呼ばれていなかったので、Batched VK の `Transmit`(`gji_active` でないとき = Mozc)へ移した。**張る窓は旧来の範囲(前景窓が Windows Terminal・WezTerm、`is_mozc_compose_check_window`)に限る**(PR #809 レビュー M3): 期限 0.3 秒の根拠は Windows Terminal の 1 台だけで、Chrome は TSF composition context の再初期化に ~326ms かかる実測(`79134f5`)があり、遅れてできた入力中の文字を Backspace が消して確定済みの文字まで消しうる。Chrome 等へ広げるのは、その窓で `[mozc-compose] ... confirmed after Nms` の分布を取ってから。期限の定数は実測が無いので動かしていない。
+- 物理 F2(ひらがな)は、warm でも Mozc 系(`gji_evidence_absent`)なら cold にする(`tsf::cold_reason::physical_f2_marks_cold`)。BUG-209 の再現経路はひらがなキーの直後で、ADR-270 の確認は cold の送信でしか張られないため(旧 Tsf は `NativeF2Consumed` で cold にしていた。PR #809 レビュー M2)。
 - Tsf の cold 開始が行っていた変換モードの ROMAN ビットの保護書き込み(`set_ime_conv_for_target(target, None)`、`conv_mutation_allowed` のときだけ)は無くなった。
 - 既存の設定は壊さない: `force_tsf` は読み込みエラーにせず無視し、空でなければ起動時に「不要になった」と通知する(`config_load_diag::REMOVED_WITH_VALUE_NOTICE`。`force_vk` と同じ形)。`cache.toml` は触らない。
 
-**確かめていないこと:** WezTerm(CI に無い)。TsfGate の保留が効く状況(フォーカス直後 500ms 以内の打鍵)は測定で 1 件も作れていない(`tsf-gate-hold` 0 件)。候補窓の表示は観測できていない(composition ができることで代えた)。Mozc Readable + Windows Terminal で、ひらがなキーの直後(warm のまま)の最初の打鍵に ADR-270 の確認が張られなくなった(旧 Tsf は `NativeF2Consumed` で cold にして張っていた。BUG-209 の再発を見ること)。実機(dragonflyg4)の Windows Terminal・WezTerm での確認が要る。
+**確かめていないこと:** WezTerm(CI に無い)。TsfGate の保留が効く状況(フォーカス直後 500ms 以内の打鍵)は測定で 1 件も作れていない(`tsf-gate-hold` 0 件)。候補窓の表示は観測できていない(composition ができることで代えた)。窓切替直後(典型 60〜150ms)の打鍵の扱い(M1)。Mozc Readable + Windows Terminal のひらがなキー直後の確認(M2 で cold にするようにしたが実機は未確認)。実機(dragonflyg4)の Windows Terminal・WezTerm での確認が要る。
