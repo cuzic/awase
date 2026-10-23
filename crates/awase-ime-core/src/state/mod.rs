@@ -89,6 +89,9 @@ pub mod mode_key_pass;
 // ADR-205: 外部注入 IME キー直後の監視窓（`ImeStateHub::follow_external_change` からしか呼ばれない純粋な状態機械）。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod external_change_watch;
+// ADR-279 案 P の段階 P0(観測だけ): 明示 OFF の意図が残っている間の IMM の読みが「追随すべきだった」形かの判定の核。
+// 殻は `runtime/drift_follow_would.rs`(専用のタイマーで読み、journal と awase.log に残すだけ)。
+pub mod drift_follow_would;
 // FCIS F1: `runtime/ime_refresh.rs::ir_decide_read_strategy` の純粋な核（読み取り方針の決定と理由）。
 #[cfg(test)]
 pub(crate) mod exhaustive_seq;

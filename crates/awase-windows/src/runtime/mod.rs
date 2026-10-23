@@ -1,4 +1,5 @@
 mod conv_actuation;
+mod drift_follow_would;
 #[cfg(windows)]
 pub(crate) mod engine_window;
 pub(crate) mod executor;
@@ -315,6 +316,8 @@ pub struct Runtime {
     indicator_glyph: indicator_glyph_shadow::IndicatorGlyphShadow,
     /// ADR-265 段階 1: mozc-readable の共有メモリの影の読み（記録のみ、挙動を変えない。既定は無効）
     mozc_shm: mozc_shm_shadow::MozcShmShadow,
+    /// ADR-279 案 P の段階 P0: 明示 OFF の意図の間の IMM の読みの開の連続（記録のみ、挙動を変えない）
+    drift_follow_would: drift_follow_would::DriftFollowWould,
     /// ADR-245 追補 2 R2: 戻った窓の最初の打鍵の保持(MS-IME 本体の復元後、R1 の観測が記録されるまで)。
     resume_hold: crate::state::half_width_resume_hold::ResumeHold<RawKeyEvent>,
     /// R2: Resume の段が作った R1 の ticket と完了の札。`kp_restore_kana_from_half_width` が取り出して復元タスクへ渡す
@@ -1195,6 +1198,10 @@ impl Runtime {
             if self.platform_state.ime.explicit_intent().is_some()
                 || self.platform_state.ime.mode_key_pass_mark_live(now_ms)
             {
+                // ADR-279 案 P の段階 P0（観測だけ）: refresh は止めたまま、明示 OFF の意図の間の IMM の読みを専用の
+                // タイマーで取る（refresh を再開しない。GJI の I/O 推論が drift correction の根拠になるため、
+                // `runtime/drift_follow_would.rs` 参照）。対象外の窓では何もしない。
+                self.drift_follow_would_ensure_timer();
                 return;
             }
         } else if let Some(remaining) = self
@@ -1210,6 +1217,8 @@ impl Runtime {
             return;
         }
         if self.platform_state.ime.explicit_intent().is_some() {
+            // ADR-279 P0: 上と同じ（対象は `Imm32Unavailable` の窓だけなので、読める窓では何もしない）。
+            self.drift_follow_would_ensure_timer();
             return;
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
@@ -1440,6 +1449,7 @@ impl Runtime {
             lang_detect: lang_detect_shadow::LangDetectShadow::disabled(),
             indicator_glyph: indicator_glyph_shadow::IndicatorGlyphShadow::disabled(),
             mozc_shm: mozc_shm_shadow::MozcShmShadow::disabled(),
+            drift_follow_would: drift_follow_would::DriftFollowWould::default(),
             resume_hold: crate::state::half_width_resume_hold::ResumeHold::new(),
             pending_resume_r1: None,
             platform_state,

@@ -32,6 +32,7 @@ examine_globs = [
     "crates/awase-ime-core/src/state/transition.rs",
     "crates/awase-ime-core/src/state/drift_plan.rs",
     "crates/awase-ime-core/src/state/drift_correction.rs",
+    "crates/awase-ime-core/src/state/drift_follow_would.rs",
     "crates/awase-ime-core/src/state/ime_set_open_plan.rs",
     "crates/awase-ime-core/src/state/applied_mirror_plan.rs",
     "crates/awase-ime-core/src/state/resume_observation.rs",

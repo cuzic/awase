@@ -8757,6 +8757,144 @@ fn adr260_eisu_toggle_guard_and_per_axis_follow_are_wired_as_decided() {
     );
 }
 
+/// ADR-279 案 P の段階 P0（観測だけ）: 明示 OFF の意図の間の IMM の読みは、**IME・belief・観測ストア・Engine・意図・
+/// drift correction のどれにも入らない**。
+///
+/// - 殻（`runtime/drift_follow_would.rs`）と核（`state/drift_follow_would.rs`）は、belief・IME 制御・観測ストアに入れる
+///   型/関数（`ImeEvent`・`write_observer_poll`・`dispatch_event`・`intent_store`・`pass_through_observed` など）を使わない。
+/// - 殻は refresh のパイプラインを**再開しない**（`TIMER_IME_REFRESH`・`schedule_ime_refresh`・`spawn_ime_refresh`・`ir_*`
+///   を使わない）。refresh を再開すると `Imm32Unavailable` の窓では GJI の I/O 推論が `ObserverPoll(true)` を書き、drift
+///   correction が明示 OFF に向けて IME を書き直す（設計メモ X1）。読みは `read_ime_state_full_async` の 1 つだけ。
+/// - 殻が `platform_state` に触れるのは、明示意図の読み取り・無効アプリの判定・ポーリング間隔の読み取り・journal の記録だけ。
+///   `platform` に触れるのは、専用のタイマー・プロファイル・クラス名の読み取りだけ。
+/// - `reschedule_ime_refresh` は、明示意図で refresh を止める 2 か所で専用のタイマーを張るだけで、refresh の予約は変えない。
+///
+/// 複数行のメソッドチェーンを見逃さないよう、コメント行を除いて空白を詰めてから照合する。
+#[test]
+fn drift_follow_would_p0_is_observation_only_adr279() {
+    fn compact(rel: &str) -> String {
+        read_crate_file(rel)
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<String>()
+            .split_whitespace()
+            .collect()
+    }
+    let shell = compact("src/runtime/drift_follow_would.rs");
+    // 核は本番部分だけ（テストは定数を参照するだけだが、念のため `#[cfg(test)]` 以降を除く）。
+    let kernel_all = compact("src/state/drift_follow_would.rs");
+    let kernel = kernel_all.split("#[cfg(test)]").next().unwrap_or_default();
+
+    for (name, code) in [
+        ("runtime/drift_follow_would.rs", shell.as_str()),
+        ("state/drift_follow_would.rs", kernel),
+    ] {
+        for forbidden in [
+            "ImeEvent",
+            "ObserverReported",
+            "InputModeObserved",
+            "ObservationSource",
+            "write_observer_poll",
+            "dispatch_event",
+            "intent_store",
+            "pass_through_observed",
+            "follow_external_change",
+            "follow_direct_read",
+            "invalidate_intents",
+            "report_mozc_shm",
+            "report_indicator_glyph",
+            "SendInput",
+            "send_input",
+            "apply_ime",
+            "set_ime_open",
+            "set_ime_conv",
+            "desired_open",
+            "actuate",
+            "KeyEffect",
+            "self.engine",
+            "EngineCommand",
+            "TIMER_IME_REFRESH",
+            "schedule_ime_refresh",
+            "spawn_ime_refresh",
+            "run_ime_refresh",
+            "self.ir_",
+            "drift_plan",
+            "evaluate_drift",
+        ] {
+            assert!(
+                !code.contains(forbidden),
+                "{name} は観測だけ（ADR-279 P0）。`{forbidden}` を使わないこと（IME・belief・意図・drift correction に入れない、refresh を再開しない）"
+            );
+        }
+    }
+
+    // 殻の platform_state への接触は、許可した読み取りと記録だけ。
+    let allowed_state = [
+        "platform_state.ime.explicit_intent()",
+        "platform_state.focus.app_disabled",
+        "platform_state.focus.ime_poll_interval_ms",
+        "platform_state.ime.journal.record(crate::journal::JournalEntry::DriftFollowWould{record})",
+    ];
+    let mut touches = 0;
+    for (i, _) in shell.match_indices("platform_state") {
+        touches += 1;
+        let rest = &shell[i..];
+        assert!(
+            allowed_state.iter().any(|a| rest.starts_with(a)),
+            "drift_follow_would.rs の platform_state への接触は {allowed_state:?} だけ。実際: {}",
+            rest.chars().take(80).collect::<String>()
+        );
+    }
+    assert!(
+        touches > 0,
+        "drift_follow_would.rs が platform_state を読まなくなった（ガードの前提が変わった）"
+    );
+    // `platform` への接触は、専用のタイマー・プロファイル・クラス名の読み取りだけ。
+    let allowed_platform = [
+        "platform.timer.is_active(crate::TIMER_DRIFT_FOLLOW_WOULD)",
+        "platform.timer.set(crate::TIMER_DRIFT_FOLLOW_WOULD,",
+        "platform.current_app_profile()",
+        "platform.focus.class_name()",
+    ];
+    for (i, _) in shell.match_indices("platform.") {
+        // `platform_state.` は上で見た。
+        let rest = &shell[i..];
+        assert!(
+            allowed_platform.iter().any(|a| rest.starts_with(a)),
+            "drift_follow_would.rs の platform への接触は {allowed_platform:?} だけ。実際: {}",
+            rest.chars().take(80).collect::<String>()
+        );
+    }
+    // 読みは prefetch と同じ読み取り専用の 1 つだけ。
+    assert_eq!(
+        shell.matches("crate::ime::").count(),
+        2,
+        "drift_follow_would.rs が使う crate::ime:: は read_ime_state_full_async と ImeSnapshot の 2 つだけ"
+    );
+    assert_eq!(
+        shell
+            .matches("crate::ime::read_ime_state_full_async()")
+            .count(),
+        1
+    );
+    assert_eq!(shell.matches("crate::ime::ImeSnapshot").count(), 1);
+
+    // reschedule_ime_refresh は、明示意図で止める 2 か所でタイマーを張るだけ（refresh の予約は変えない）。
+    let rt = compact("src/runtime/mod.rs");
+    assert_eq!(
+        rt.matches("self.drift_follow_would_ensure_timer();return;").count(),
+        2,
+        "reschedule_ime_refresh の明示意図による停止の 2 か所でだけ P0 のタイマーを張る（停止の return は残す）"
+    );
+    assert_eq!(rt.matches("drift_follow_would_ensure_timer").count(), 2);
+
+    // タイマーのハンドラは冒頭で kill して on_timer を呼ぶだけ。
+    let mh = compact("src/runtime/message_handlers.rs");
+    assert!(mh.contains(
+        "Some(id)ifid==crate::TIMER_DRIFT_FOLLOW_WOULD=>{app.platform.timer.kill(crate::TIMER_DRIFT_FOLLOW_WOULD);app.drift_follow_would_on_timer();}"
+    ));
+}
+
 /// ADR-245 追補 2 R1: MS-IME 本体の戻り待ちの復元の書き込み直後の読み直しは、FocusProbe の ImmCrossProbe と
 /// 記録を共有し(新しい belief 更新経路を作らない)、書き込みより前に始まった読みを floor で棄却する。
 ///
