@@ -13,11 +13,49 @@
 
 use std::time::Duration;
 
-use awase::types::RawKeyEvent;
+use awase::types::{KeyClassification, ModifierKey, RawKeyEvent};
 
-use crate::state::focus_switch_hold::OnKey;
+use crate::state::focus_switch_hold::{
+    HoldKey, OnKey, StartKind, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN,
+};
 use crate::state::TickMs;
 use crate::Runtime;
+
+/// `RawKeyEvent` から保持の判断に使う事実を作る(分類だけ。判断は `state::focus_switch_hold::starts_hold` と状態機械)。
+///
+/// 種類: 文字・親指(`KeyClassification::{Char, LeftThumb, RightThumb}`)か、IME のモードキー
+/// (`vk::is_ime_mode_key_for_ime`)か、その他。修飾は押下時の `modifier_snapshot` と、この打鍵自体の `modifier_key`。
+fn hold_key(event: &RawKeyEvent) -> HoldKey {
+    let m = event.modifier_snapshot;
+    let mods_at_press = (if m.shift { MOD_SHIFT } else { 0 })
+        | (if m.ctrl { MOD_CTRL } else { 0 })
+        | (if m.alt { MOD_ALT } else { 0 })
+        | (if m.win { MOD_WIN } else { 0 });
+    let modifier = match event.modifier_key {
+        Some(ModifierKey::Shift) => MOD_SHIFT,
+        Some(ModifierKey::Ctrl) => MOD_CTRL,
+        Some(ModifierKey::Alt) => MOD_ALT,
+        Some(ModifierKey::Meta) => MOD_WIN,
+        None => 0,
+    };
+    let kind = if matches!(
+        event.key_classification,
+        KeyClassification::Char | KeyClassification::LeftThumb | KeyClassification::RightThumb
+    ) {
+        StartKind::CharOrThumb
+    } else if crate::vk::is_ime_mode_key_for_ime(event.vk_code) {
+        StartKind::ImeKey
+    } else {
+        StartKind::Other
+    };
+    HoldKey {
+        facts: super::resume_hold::key_facts(event),
+        mods_at_press,
+        modifier,
+        injected: event.injected,
+        kind,
+    }
+}
 
 impl Runtime {
     /// フォーカス変更を見た(`on_window_focus_event` から)。世代を進めて待機に入る。
@@ -59,12 +97,7 @@ impl Runtime {
         let now = TickMs(crate::hook::current_tick_ms());
         let started_at = self.focus_switch_hold.started_at();
         let held_before = self.focus_switch_hold.len();
-        match self.focus_switch_hold.on_key(
-            now,
-            super::resume_hold::key_facts(event),
-            event.starts_focus_resync(),
-            *event,
-        ) {
+        match self.focus_switch_hold.on_key(now, hold_key(event), *event) {
             OnKey::Pass(_) => false,
             OnKey::Started => {
                 self.platform.timer.set(

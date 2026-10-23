@@ -9039,8 +9039,10 @@ fn focus_switch_hold_wiring_m1() {
         "ime-off-rescue の再生は保持の対象外"
     );
     assert!(
-        fh.contains("event.starts_focus_resync()"),
-        "保持を始める打鍵は starts_focus_resync(文字・親指の修飾なしの物理 KeyDown)"
+        fh.contains("self.focus_switch_hold.on_key(now,hold_key(event),*event)")
+            && fh.contains("crate::vk::is_ime_mode_key_for_ime(event.vk_code)")
+            && fh.contains("modifier_snapshot"),
+        "保持を始める打鍵の分類(文字・親指/IME のモードキー)と押下時の修飾を殻が渡す。判断は純粋側の starts_hold(V1・V2)"
     );
     assert_eq!(
         fh.matches(".replay_later(").count(),
