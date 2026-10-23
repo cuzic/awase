@@ -158,7 +158,7 @@ fn replay_actuation_decision(entry: &Value) -> Result<(), String> {
     let record_value = entry.get("record").ok_or("record が無い")?;
     let record: ActuationDecisionRecord =
         serde_json::from_value(record_value.clone()).map_err(|e| format!("読めない: {e}"))?;
-    let failures = crate::state::actuation_decision_record::tests::replay_record(&record);
+    let failures = crate::state::actuation_decision_record::replay_record_for_corpus(&record);
     if failures.is_empty() {
         Ok(())
     } else {

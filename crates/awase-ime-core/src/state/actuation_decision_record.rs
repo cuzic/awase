@@ -405,8 +405,14 @@ impl<'de> serde::Deserialize<'de> for ActuationDecisionRecord {
     }
 }
 
+/// ADR-278 段階 1: コーパスの再生(`crate::corpus_replay`)から 1 レコードを再生する口(テスト専用)。
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) fn replay_record_for_corpus(record: &ActuationDecisionRecord) -> Vec<String> {
+    tests::replay_record(record)
+}
+
+#[cfg(test)]
+mod tests {
     use super::*;
     use crate::focus::class_names::AppImeProfile;
     use crate::state::actuation_chain::{
@@ -505,7 +511,7 @@ pub(crate) mod tests {
     /// 1レコード分の再生。`decide_gate`/`decide_chain`/`decide_attempt`を
     /// 記録済み入力へ再度通し、記録済みの判定・chain・commandと不一致な点を
     /// 文字列のVecとして返す（空なら全一致）。
-    pub(crate) fn replay_record(record: &ActuationDecisionRecord) -> Vec<String> {
+    pub(super) fn replay_record(record: &ActuationDecisionRecord) -> Vec<String> {
         let mut failures = Vec::new();
 
         let gate = decide_gate(record.gate_inputs);
