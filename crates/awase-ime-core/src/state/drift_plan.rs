@@ -1012,3 +1012,8 @@ mod tests {
         }
     }
 }
+
+// ME-3: decide_drift_plan の決定表の全列挙 golden（`tests/golden/drift_plan_table.txt`）。
+#[cfg(test)]
+#[path = "drift_plan_exhaustive.rs"]
+mod exhaustive;
