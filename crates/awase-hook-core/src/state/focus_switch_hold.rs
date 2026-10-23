@@ -53,7 +53,8 @@ pub const MOD_WIN: u8 = 8;
 pub enum StartKind {
     /// 文字・親指キー(`KeyClassification::{Char, LeftThumb, RightThumb}`)。
     CharOrThumb,
-    /// IME のモードキー(`vk::is_ime_mode_key_for_ime`: 変換・無変換・半角/全角・かな・ひらがな・英数など)。
+    /// IME のモードキー(`vk::is_ime_mode_key_for_ime`: 変換・無変換・半角/全角・かな・ひらがな・英数など。親指に設定した
+    /// 変換・無変換もこちら。殻が先に判定する)。
     /// 親指として設定されていない変換キー・半角/全角が古い窓の文脈で素通しになると、効きの予測が前の窓の belief に
     /// 付き(`advance_focus_tracking` が refresh の時点の belief を前の窓のキャッシュへ保存する)、読めない窓の実 IME と
     /// 食い違ったまま残る(閉ループ検証の V2)。

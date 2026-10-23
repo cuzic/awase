@@ -164,8 +164,9 @@ impl Ev {
             modifier: self.modifier_bit(),
             injected: self.injected,
             kind: match self.kind {
-                Kind::Char | Kind::ThumbR | Kind::ThumbL => StartKind::CharOrThumb,
-                Kind::ConvKey | Kind::HanZen => StartKind::ImeKey,
+                // 親指は変換・無変換(IME のモードキー)。殻は IME のモードキーを先に見る。
+                Kind::ThumbR | Kind::ThumbL | Kind::ConvKey | Kind::HanZen => StartKind::ImeKey,
+                Kind::Char => StartKind::CharOrThumb,
                 _ => StartKind::Other,
             },
         }

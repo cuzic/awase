@@ -16,10 +16,10 @@ cap | 0 | 0 | 0 | 0
 stuck | 0 | 0 | 0 | 0
 content | 0 | 0 | 0 | 0
 stale_release | 0 | 0 | 0 | 0
-stale_start | 0 | 0 | 2304 | 0
-stale_other(参考) | 5248 | 0 | 4352 | 0
+stale_start | 0 | 0 | 3840 | 0
+stale_other(参考) | 0 | 0 | 0 | 0
 stale_regress(参考) | 0 | 0 | 0 | 0
-fix | 3567 | 0 | 3390 | 0
+fix | 0 | 0 | 1476 | 0
 route | 0 | 0 | 0 | 0
 unmeasured(参考) | 0 | 0 | 0 | 0
 ### 最短の再現(不変条件ごと、読み直しの区分が実測の範囲〈R≤228〉の組を優先)
@@ -33,24 +33,16 @@ unmeasured(参考) | 0 | 0 | 0 | 0
       +250ms   処理 #1 char↑ 文脈=A フォーカス=B
       +300ms refresh の完了 seq=1 読んだ窓=B
     違反: stale_start=1
-- stale_other — A=GJION/読める B=GJION/読める 最初の打鍵=親指でない変換 遅延=0ms 読み直し=67ms
-    窓: A=GJION/読める B=GJION/読める C=MS-IMEON/読める(開始時のフォーカスは A)
-        +0ms フォーカス → B(読み直しの完了 +67)
-        +0ms 打鍵 #0 conv↓
-        +0ms   処理 #0 conv↓ 文脈=A フォーカス=B
-       +67ms refresh の完了 seq=1 読んだ窓=B
-       +70ms 打鍵 #1 conv↑
-       +70ms   処理 #1 conv↑ 文脈=B フォーカス=B
-    違反: stale_other=1
-- fix — A=GJION/読める B=GJION/読めない 最初の打鍵=親指でない変換 遅延=0ms 読み直し=67ms
+- fix — A=GJION/読める B=GJION/読めない 最初の打鍵=親指でない変換 遅延=0ms 読み直し=300ms
     窓: A=GJION/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
-        +0ms フォーカス → B(読み直しの完了 +67)
+        +0ms フォーカス → B(読み直しの完了 +300)
         +0ms 打鍵 #0 conv↓
-        +0ms   処理 #0 conv↓ 文脈=A フォーカス=B
-       +67ms refresh の完了 seq=1 読んだ窓=B
        +70ms 打鍵 #1 conv↑
-       +70ms   処理 #1 conv↑ 文脈=B フォーカス=B
-    違反: stale_other=1 fix=1
+      +250ms 保持の解放 Deadline 2 件(古い窓の文脈)
+      +250ms   処理 #0 conv↓ 文脈=A フォーカス=B
+      +250ms   処理 #1 conv↑ 文脈=A フォーカス=B
+      +300ms refresh の完了 seq=1 読んだ窓=B
+    違反: stale_start=1 fix=1
 
 ## E2 保持なし(#809 の後・#817 の前)
 組の数: 44800(内訳 R≤228=33600 228<R≤250=0 R>250=11200 取りこぼし=0)
@@ -66,8 +58,8 @@ cap | 0 | 0 | 0 | 0
 stuck | 0 | 0 | 0 | 0
 content | 0 | 0 | 0 | 0
 stale_release | 0 | 0 | 0 | 0
-stale_start | 7872 | 0 | 6528 | 0
-stale_other(参考) | 5248 | 0 | 4352 | 0
+stale_start | 13120 | 0 | 10880 | 0
+stale_other(参考) | 0 | 0 | 0 | 0
 stale_regress(参考) | 0 | 0 | 0 | 0
 fix | 5043 | 0 | 4182 | 0
 route | 0 | 0 | 0 | 0
@@ -82,15 +74,6 @@ unmeasured(参考) | 0 | 0 | 0 | 0
        +70ms 打鍵 #1 char↑
        +70ms   処理 #1 char↑ 文脈=B フォーカス=B
     違反: stale_start=1
-- stale_other — A=GJION/読める B=GJION/読める 最初の打鍵=親指でない変換 遅延=0ms 読み直し=67ms
-    窓: A=GJION/読める B=GJION/読める C=MS-IMEON/読める(開始時のフォーカスは A)
-        +0ms フォーカス → B(読み直しの完了 +67)
-        +0ms 打鍵 #0 conv↓
-        +0ms   処理 #0 conv↓ 文脈=A フォーカス=B
-       +67ms refresh の完了 seq=1 読んだ窓=B
-       +70ms 打鍵 #1 conv↑
-       +70ms   処理 #1 conv↑ 文脈=B フォーカス=B
-    違反: stale_other=1
 - fix — A=GJION/読める B=GJION/読めない 最初の打鍵=親指でない変換 遅延=0ms 読み直し=67ms
     窓: A=GJION/読める B=GJION/読めない C=MS-IMEON/読める(開始時のフォーカスは A)
         +0ms フォーカス → B(読み直しの完了 +67)
@@ -99,285 +82,326 @@ unmeasured(参考) | 0 | 0 | 0 | 0
        +67ms refresh の完了 seq=1 読んだ窓=B
        +70ms 打鍵 #1 conv↑
        +70ms   処理 #1 conv↑ 文脈=B フォーカス=B
-    違反: stale_other=1 fix=1
+    違反: stale_start=1 fix=1
 
 ## E2 窓の組 × 打鍵の種類ごとの固着(fix)と古い文脈(stale_start)の組の数(R≤228)。本物 / 保持なし。どちらも 0 の行は省く
 A=GJION/読める B=GJION/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJION/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJION/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=GJION/読める B=GJION/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJION/読める B=GJION/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJION/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJION/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJION/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読める B=GJION/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読める B=GJION/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読める B=GJION/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読める B=GJION/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読める B=GJIOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJIOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJIOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=GJION/読める B=GJIOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJION/読める B=GJIOFF/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJIOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJIOFF/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=GJIOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読める B=GJIOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読める B=GJIOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読める B=GJIOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読める B=GJIOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読める B=MS-IMEON/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEON/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEON/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=GJION/読める B=MS-IMEON/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJION/読める B=MS-IMEON/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEON/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEON/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEON/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読める B=MS-IMEON/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読める B=MS-IMEON/読めない 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJION/読める B=MS-IMEON/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読める B=MS-IMEOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=GJION/読める B=MS-IMEOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJION/読める B=MS-IMEOFF/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEOFF/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読める B=MS-IMEOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読める B=MS-IMEOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読める B=MS-IMEOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読める B=MS-IMEOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読める B=MS-IMEOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読めない B=GJION/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=GJION/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=GJION/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読めない B=GJION/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読めない B=GJION/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読めない B=GJION/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読めない B=GJION/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読めない B=GJION/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=GJION/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=GJION/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読めない B=GJION/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読めない B=GJION/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読めない B=GJION/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読めない B=GJION/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読めない B=GJIOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=GJIOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=GJIOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読めない B=GJIOFF/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読めない B=GJIOFF/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読めない B=GJIOFF/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読めない B=GJIOFF/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読めない B=GJIOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=GJIOFF/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=GJIOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読めない B=GJIOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読めない B=GJIOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読めない B=GJIOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読めない B=GJIOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEON/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEON/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEON/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読めない B=MS-IMEON/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読めない B=MS-IMEON/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読めない B=MS-IMEON/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読めない B=MS-IMEON/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEON/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEON/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEON/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読めない B=MS-IMEON/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読めない B=MS-IMEON/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読めない B=MS-IMEON/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読めない B=MS-IMEON/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読めない B=MS-IMEOFF/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読めない B=MS-IMEOFF/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読めない B=MS-IMEOFF/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読めない B=MS-IMEOFF/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEOFF/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJION/読めない B=MS-IMEOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJION/読めない B=MS-IMEOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJION/読めない B=MS-IMEOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJION/読めない B=MS-IMEOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJION/読めない B=MS-IMEOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読める B=GJION/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=GJION/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=GJION/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=GJIOFF/読める B=GJION/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJIOFF/読める B=GJION/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=GJION/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=GJION/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読める B=GJION/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読める B=GJION/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読める B=GJION/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読める B=GJION/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読める B=GJION/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読める B=GJIOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=GJIOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=GJIOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=GJIOFF/読める B=GJIOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJIOFF/読める B=GJIOFF/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=GJIOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=GJIOFF/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読める B=GJIOFF/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読める B=GJIOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読める B=GJIOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読める B=GJIOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読める B=GJIOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEON/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEON/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEON/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=GJIOFF/読める B=MS-IMEON/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJIOFF/読める B=MS-IMEON/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEON/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEON/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEON/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJIOFF/読める B=MS-IMEON/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読める B=MS-IMEON/読めない 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJIOFF/読める B=MS-IMEON/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=GJIOFF/読める B=MS-IMEOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=GJIOFF/読める B=MS-IMEOFF/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEOFF/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読める B=MS-IMEOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=GJIOFF/読める B=MS-IMEOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読める B=MS-IMEOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読める B=MS-IMEOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読める B=MS-IMEOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=GJION/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読めない B=GJION/読める 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=GJION/読める 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読めない B=GJION/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読めない B=GJION/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読めない B=GJION/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読めない B=GJION/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=GJION/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読めない B=GJION/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=GJION/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読めない B=GJION/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読めない B=GJION/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読めない B=GJION/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読めない B=GJION/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=GJIOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読めない B=GJIOFF/読める 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=GJIOFF/読める 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読めない B=GJIOFF/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読めない B=GJIOFF/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読めない B=GJIOFF/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読めない B=GJIOFF/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=GJIOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読めない B=GJIOFF/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=GJIOFF/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読めない B=GJIOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読めない B=GJIOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読めない B=GJIOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読めない B=GJIOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEON/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEON/読める 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEON/読める 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読めない B=MS-IMEON/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読めない B=MS-IMEON/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読めない B=MS-IMEON/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読めない B=MS-IMEON/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEON/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEON/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEON/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読めない B=MS-IMEON/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読めない B=MS-IMEON/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読めない B=MS-IMEON/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読めない B=MS-IMEON/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEOFF/読める 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEOFF/読める 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読めない B=MS-IMEOFF/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読めない B=MS-IMEOFF/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読めない B=MS-IMEOFF/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読めない B=MS-IMEOFF/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEOFF/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=GJIOFF/読めない B=MS-IMEOFF/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=GJIOFF/読めない B=MS-IMEOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=GJIOFF/読めない B=MS-IMEOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=GJIOFF/読めない B=MS-IMEOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=GJIOFF/読めない B=MS-IMEOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読める B=GJION/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJION/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJION/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読める B=GJION/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読める B=GJION/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJION/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJION/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJION/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読める B=GJION/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEON/読める B=GJION/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読める B=GJION/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEON/読める B=GJION/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読める B=GJIOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJIOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJIOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読める B=GJIOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読める B=GJIOFF/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJIOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJIOFF/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=GJIOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読める B=GJIOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEON/読める B=GJIOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読める B=GJIOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEON/読める B=GJIOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEON/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEON/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEON/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読める B=MS-IMEON/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読める B=MS-IMEON/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEON/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEON/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEON/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読める B=MS-IMEON/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読める B=MS-IMEON/読めない 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読める B=MS-IMEON/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読める B=MS-IMEOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読める B=MS-IMEOFF/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEOFF/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読める B=MS-IMEOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読める B=MS-IMEOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEON/読める B=MS-IMEOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読める B=MS-IMEOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEON/読める B=MS-IMEOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJION/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJION/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJION/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読めない B=GJION/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読めない B=GJION/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読めない B=GJION/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJION/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJION/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJION/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読めない B=GJION/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEON/読めない B=GJION/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読めない B=GJION/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEON/読めない B=GJION/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJIOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJIOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJIOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読めない B=GJIOFF/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読めない B=GJIOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読めない B=GJIOFF/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJIOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJIOFF/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=GJIOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読めない B=GJIOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEON/読めない B=GJIOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読めない B=GJIOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEON/読めない B=GJIOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEON/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEON/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEON/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読めない B=MS-IMEON/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読めない B=MS-IMEON/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読めない B=MS-IMEON/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEON/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEON/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEON/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読めない B=MS-IMEON/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読めない B=MS-IMEON/読めない 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読めない B=MS-IMEON/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読めない B=MS-IMEOFF/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読めない B=MS-IMEOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEON/読めない B=MS-IMEOFF/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEOFF/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEON/読めない B=MS-IMEOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEON/読めない B=MS-IMEOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEON/読めない B=MS-IMEOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEON/読めない B=MS-IMEOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEON/読めない B=MS-IMEOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJION/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJION/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJION/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=MS-IMEOFF/読める B=GJION/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEOFF/読める B=GJION/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJION/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJION/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJION/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=MS-IMEOFF/読める B=GJION/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読める B=GJION/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読める B=GJION/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読める B=GJION/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJIOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJIOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJIOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=MS-IMEOFF/読める B=GJIOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEOFF/読める B=GJIOFF/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJIOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJIOFF/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読める B=GJIOFF/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=MS-IMEOFF/読める B=GJIOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読める B=GJIOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読める B=GJIOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読める B=GJIOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEON/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEON/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEON/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=MS-IMEOFF/読める B=MS-IMEON/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEOFF/読める B=MS-IMEON/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEON/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEON/読めない 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEON/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEOFF/読める B=MS-IMEON/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読める B=MS-IMEON/読めない 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEOFF/読める B=MS-IMEON/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEOFF/読める 右親指(変換): fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
+A=MS-IMEOFF/読める B=MS-IMEOFF/読める 親指でない変換: fix 0 / 0, stale_start 0 / 41
+A=MS-IMEOFF/読める B=MS-IMEOFF/読める 半角/全角: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEOFF/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読める B=MS-IMEOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEOFF/読める B=MS-IMEOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読める B=MS-IMEOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読める B=MS-IMEOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読める B=MS-IMEOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJION/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJION/読める 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJION/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEOFF/読めない B=GJION/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読めない B=GJION/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読めない B=GJION/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読めない B=GJION/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJION/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJION/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJION/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=MS-IMEOFF/読めない B=GJION/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読めない B=GJION/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読めない B=GJION/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読めない B=GJION/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJIOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJIOFF/読める 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJIOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEOFF/読めない B=GJIOFF/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読めない B=GJIOFF/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読めない B=GJIOFF/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読めない B=GJIOFF/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJIOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJIOFF/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=GJIOFF/読めない 左親指(無変換): fix 0 / 41, stale_start 0 / 41
-A=MS-IMEOFF/読めない B=GJIOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読めない B=GJIOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読めない B=GJIOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読めない B=GJIOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEON/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEON/読める 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEON/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEOFF/読めない B=MS-IMEON/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読めない B=MS-IMEON/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読めない B=MS-IMEON/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読めない B=MS-IMEON/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEON/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEON/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEON/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEOFF/読めない B=MS-IMEON/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読めない B=MS-IMEON/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読めない B=MS-IMEON/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読めない B=MS-IMEON/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEOFF/読める 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEOFF/読める 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEOFF/読める 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEOFF/読めない B=MS-IMEOFF/読める 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読めない B=MS-IMEOFF/読める 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読めない B=MS-IMEOFF/読める 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読めない B=MS-IMEOFF/読める 半角/全角: fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEOFF/読めない 文字: fix 0 / 0, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEOFF/読めない 右親指(変換): fix 0 / 41, stale_start 0 / 41
 A=MS-IMEOFF/読めない B=MS-IMEOFF/読めない 左親指(無変換): fix 0 / 0, stale_start 0 / 41
-A=MS-IMEOFF/読めない B=MS-IMEOFF/読めない 親指でない変換: fix 41 / 41, stale_start 0 / 0
-A=MS-IMEOFF/読めない B=MS-IMEOFF/読めない 半角/全角: fix 41 / 41, stale_start 0 / 0
+A=MS-IMEOFF/読めない B=MS-IMEOFF/読めない 親指でない変換: fix 0 / 41, stale_start 0 / 41
+A=MS-IMEOFF/読めない B=MS-IMEOFF/読めない 半角/全角: fix 0 / 41, stale_start 0 / 41

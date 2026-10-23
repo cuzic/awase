@@ -5,52 +5,62 @@
 
 組の数: 82200
 ## no-hold(保持そのもの(基準: #809 の後)を外す): 検出
-増: stale_start=15610 stale_other(参考)=871 stale_regress(参考)=199 fix=6350
-減: order_exempt(参考)=7844 modifier=2998 stale_start=2 stale_other(参考)=4 stale_regress(参考)=1 fix=87 route=3772
+増: stale_start=18513 stale_other(参考)=735 stale_regress(参考)=213 fix=11124
+減: order_exempt(参考)=3889 stale_start=3 stale_other(参考)=3 stale_regress(参考)=1 fix=36 route=5323
 最短の例: 最初の打鍵=文字 遅延=0ms 読み直し=67ms 離し=+25ms 追加=なし 同時刻=refresh が先 (stale_start=0→1)
 
 ## no-cap(上限 8 Downを外す): 検出
-増: order_exempt(参考)=1252 modifier=470 cap=4368 route=3
-減: stale_start=2583 stale_other(参考)=932 stale_regress(参考)=1 fix=854
+増: order_exempt(参考)=459 cap=5190 route=3
+減: stale_start=3081 stale_other(参考)=1388 stale_regress(参考)=1 fix=1699
 最短の例: 最初の打鍵=文字 遅延=0ms 読み直し=67ms 離し=+25ms 追加=6ms 間隔で文字 12 打 同時刻=refresh が先 (cap=0→7)
 
 ## no-generation(世代の照合を外す): 検出
-増: order_exempt(参考)=9 modifier=3 stale_release=4122 stale_start=3561 stale_other(参考)=182 stale_regress(参考)=57 fix=1102 route=8
-減: order_exempt(参考)=1025 modifier=742 stale_start=4 stale_other(参考)=4 fix=15 route=84
+増: order_exempt(参考)=13 stale_release=5745 stale_start=4942 stale_other(参考)=150 stale_regress(参考)=61 fix=2499 route=10
+減: order_exempt(参考)=317 stale_start=4 stale_other(参考)=4 fix=5 route=97
 最短の例: 最初の打鍵=文字 遅延=0ms 読み直し=67ms 離し=+25ms 追加=変更前の refresh が打鍵の 5ms 前に完了 同時刻=refresh が先 (stale_release=0→1 stale_start=0→1)
 
 ## start-any-down(保持を始める打鍵の絞り込み(種類・修飾・注入)を外す): 検出
-増: order_exempt(参考)=1979 modifier=69 delay=28824 stale_start=679 stale_other(参考)=7 fix=29 route=7232
-減: order_exempt(参考)=4461 modifier=2439 stale_start=539 stale_other(参考)=11117 stale_regress(参考)=95 fix=5556 route=1
-最短の例: 最初の打鍵=親指でない変換 遅延=0ms 読み直し=67ms 離し=+25ms 追加=なし 同時刻=refresh が先 (delay=0→1)
+増: order_exempt(参考)=942 delay=20498 stale_start=552 stale_other(参考)=7 fix=19 route=5687
+減: order_exempt(参考)=723 stale_start=365 stale_other(参考)=6567 stale_regress(参考)=80 fix=728 route=2
+最短の例: 最初の打鍵=外部注入の文字 遅延=0ms 読み直し=67ms 離し=+25ms 追加=なし 同時刻=refresh が先 (delay=0→1)
 
 ## start-any-event(保持を始める打鍵の絞り込み(Down だけ)を外す): 検出
-増: order_exempt(参考)=3838 modifier=69 delay=42650 stale_start=777 stale_other(参考)=9 fix=53 route=9443
-減: order_exempt(参考)=5647 modifier=2439 stale_start=713 stale_other(参考)=11140 stale_regress(参考)=95 fix=5610
-最短の例: 最初の打鍵=親指でない変換 遅延=0ms 読み直し=67ms 離し=+25ms 追加=なし 同時刻=refresh が先 (delay=0→1)
+増: order_exempt(参考)=2345 delay=34704 stale_start=650 stale_other(参考)=9 fix=43 route=7927
+減: order_exempt(参考)=1941 stale_start=539 stale_other(参考)=6590 stale_regress(参考)=80 fix=782 route=1
+最短の例: 最初の打鍵=キーアップだけ 遅延=0ms 読み直し=67ms 離し=+25ms 追加=なし 同時刻=refresh が先 (delay=0→1)
 
 ## hold-outside-up(保持対象の絞り込み(保持の外の Down の Up を通す)を外す): 検出
-増: delay=7774 route=290
-減: order_exempt(参考)=7844 modifier=2998
-最短の例: 最初の打鍵=親指でない変換 遅延=0ms 読み直し=67ms 離し=+25ms 追加=+10ms に右親指(同時打鍵) 同時刻=refresh が先 (delay=0→1)
+増: delay=3805 route=303
+減: order_exempt(参考)=3889
+最短の例: 最初の打鍵=外部注入の文字 遅延=0ms 読み直し=67ms 離し=+25ms 追加=+10ms に右親指(同時打鍵) 同時刻=refresh が先 (delay=0→1)
 
 ## no-deadline-timer(期限のタイマーを外す): 検出
-増: loss=3895 bound=3916 stuck=3895
-減: order_exempt(参考)=1314 modifier=630 stale_start=6665 stale_other(参考)=2 fix=2089 route=730
+増: loss=4747 bound=5165 stuck=4747
+減: order_exempt(参考)=364 stale_start=8196 stale_other(参考)=2 fix=3956 route=1090
 最短の例: 最初の打鍵=文字 遅延=0ms 読み直し=255ms 離し=+25ms 追加=なし 同時刻=refresh が先 (bound=0→1)
 
 ## no-armed-expiry(待機の期限(フォーカスから 250ms)を外す): 検出
-増: order_exempt(参考)=1505 modifier=440 delay=4993 route=525
-減: order_exempt(参考)=1 stale_start=2200 fix=1011
+増: order_exempt(参考)=619 delay=5485 route=765
+減: order_exempt(参考)=1 stale_start=2446 fix=1671
 最短の例: 最初の打鍵=文字 遅延=251ms 読み直し=255ms 離し=+25ms 追加=なし 同時刻=refresh が先 (delay=0→1)
 
 ## keep-seq-on-focus(保持中のフォーカス変更で世代を新しくするを外す): 検出
-増: order_exempt(参考)=3 modifier=2 stale_release=1793 stale_start=948 stale_other(参考)=124 stale_regress(参考)=4 fix=38 route=11
-減: order_exempt(参考)=243 modifier=117 stale_start=3 stale_other(参考)=3 stale_regress(参考)=1 fix=8 route=22
+増: order_exempt(参考)=4 stale_release=2543 stale_start=1289 stale_other(参考)=111 stale_regress(参考)=4 fix=380 route=13
+減: order_exempt(参考)=137 stale_start=3 stale_other(参考)=2 stale_regress(参考)=1 fix=1 route=23
 最短の例: 最初の打鍵=文字 遅延=40ms 読み直し=67ms 離し=+25ms 追加=+20ms に窓 C へフォーカス 同時刻=refresh が先 (stale_release=0→1 stale_start=0→1)
 
 ## no-expiry-on-key(期限超えの打鍵での解放を外す): 検出できない
 増: なし
 減: なし
 
-検出率: 9/10(基準の no-hold を含む)
+## no-ime-key-start(IME のモードキーから保持を始める(V2 の修正)を外す): 検出
+増: order_exempt(参考)=1378 stale_start=4803 stale_other(参考)=140 stale_regress(参考)=19 fix=4832
+減: order_exempt(参考)=317 stale_start=127 stale_other(参考)=1 fix=13 route=1596
+最短の例: 最初の打鍵=親指でない変換 遅延=0ms 読み直し=67ms 離し=+25ms 追加=なし 同時刻=refresh が先 (stale_start=0→1 fix=0→1)
+
+## no-modifier-join(保持中の打鍵が使った修飾キーの Up を足す(V1 の修正)を外す): 検出
+増: order_exempt(参考)=3088 modifier=3000
+減: order_exempt(参考)=26 route=73
+最短の例: 最初の打鍵=Shift+文字 遅延=0ms 読み直し=67ms 離し=+25ms 追加=なし 同時刻=refresh が先 (modifier=0→1)
+
+検出率: 11/12(基準の no-hold を含む)

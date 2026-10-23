@@ -23,8 +23,8 @@ use crate::Runtime;
 
 /// `RawKeyEvent` から保持の判断に使う事実を作る(分類だけ。判断は `state::focus_switch_hold::starts_hold` と状態機械)。
 ///
-/// 種類: 文字・親指(`KeyClassification::{Char, LeftThumb, RightThumb}`)か、IME のモードキー
-/// (`vk::is_ime_mode_key_for_ime`)か、その他。修飾は押下時の `modifier_snapshot` と、この打鍵自体の `modifier_key`。
+/// 種類: IME のモードキー(`vk::is_ime_mode_key_for_ime`。親指に設定した変換・無変換を含む)か、文字・親指
+/// (`KeyClassification::{Char, LeftThumb, RightThumb}`)か、その他。修飾は押下時の `modifier_snapshot` と、この打鍵自体の `modifier_key`。
 fn hold_key(event: &RawKeyEvent) -> HoldKey {
     let m = event.modifier_snapshot;
     let mods_at_press = (if m.shift { MOD_SHIFT } else { 0 })
@@ -38,13 +38,15 @@ fn hold_key(event: &RawKeyEvent) -> HoldKey {
         Some(ModifierKey::Meta) => MOD_WIN,
         None => 0,
     };
-    let kind = if matches!(
+    // IME のモードキーを先に見る: 親指に設定した変換・無変換を Ctrl/Alt つきで押したときも IME の操作として保持を始める
+    // (文字・親指の判定だと修飾つきは始めず、古い窓の文脈で素通しになる。閉ループ検証の E1 の「+10ms に右親指」)。
+    let kind = if crate::vk::is_ime_mode_key_for_ime(event.vk_code) {
+        StartKind::ImeKey
+    } else if matches!(
         event.key_classification,
         KeyClassification::Char | KeyClassification::LeftThumb | KeyClassification::RightThumb
     ) {
         StartKind::CharOrThumb
-    } else if crate::vk::is_ime_mode_key_for_ime(event.vk_code) {
-        StartKind::ImeKey
     } else {
         StartKind::Other
     };
