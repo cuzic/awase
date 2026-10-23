@@ -142,6 +142,7 @@ impl Output {
         self.send_romaji_batched_gated(romaji, DeferGate::Exempt);
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(romaji = romaji))]
     fn send_romaji_batched_gated(&self, romaji: &str, gate: DeferGate) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
