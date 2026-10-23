@@ -909,6 +909,42 @@ jobs:
                            kinds='single', trials=4, len=25, runs=_spec.get('runs', 2), wait=900)
                   _r.update(setup=_spec.get('setup', 'none'), prepare=' ; '.join(_spec.get('prepare', [])), until='2026-12-01')
                   configs.append(_r)
+          # --- 検証専用(ci/verify-809-*、develop に入れない): PR #809 の「実機未確認」M1・M2 を測る(typing_stress の --sw-mode=、switchime.rs)。---
+          # M1: 窓 B(別プロセス)で IME を OFF(b-off)/ON(b-on)にして入力先 A へ戻り、--sw-delays の各 ms 後に打つ。1500 は対照。
+          # M2: Mozc Readable × 実 Windows Terminal で、warm のままひらがなキーを押して delay ms 後に打つ(f2)。nof2 は対照。only='tsx-sw809-*'。
+          _EXT_WT = '--ext=windows-terminal --ext-manifest=@REPO@/tools/e2e/input_forms/forms.toml --ext-repo=@REPO@'
+          for _ime_name, _ime in (('gji', 'gji'), ('msime', 'msime')):
+            for _form, _fx in (('edit', ''), ('tsf', ''), ('chromepage', ''), ('ext-windows-terminal', _EXT_WT)):
+              for _dir, _kinds in (('b-off', 'single,mixed'), ('b-on', 'single')):
+                _c = tsx(f'sw809-{_dir}-{_form}-{_ime_name}', 'ext' if _fx else _form, _ime, 40,
+                         extra=(_fx + ' ' if _fx else '') + f'--sw-mode={_dir} --sw-delays=0_30_60_100_150_300_500_1500',
+                         kinds=_kinds, trials=16, len=6, runs=1, wait=1500)
+                _c.update(until='2026-11-30')
+                if _fx: _c.update(setup='none')
+                configs.append(_c)
+          for _form, _fx in (('ext-windows-terminal', _EXT_WT), ('tsf', '')):
+            for _sfx, _sw in (('f2', ' --sw-mode=f2 --sw-delays=0_30_100_300'), ('nof2', '')):
+              _c = tsx(f'sw809-{_sfx}-{_form}-mozc', 'ext' if _fx else _form, 'mozc', 40,
+                       extra=(_fx + ' ' if _fx else '') + '--mozc' + _sw, kinds='single,mixed', trials=8, len=6, runs=3, wait=1200)
+              _c.update(until='2026-11-30')
+              if _fx: _c.update(setup='none')
+              configs.append(_c)
+          # WezTerm(ポータブル版、setup/wezterm.ps1 でバージョンと SHA-256 を固定): Windows Terminal と同じ打鍵列(rmtsf と同じ形)・M1(b-off)・M2(f2)。
+          _EXT_WZ = '--ext=wezterm --ext-manifest=@REPO@/tools/e2e/input_forms/forms.toml --ext-repo=@REPO@'
+          for _ime_name, _ime, _xm in (('gji', 'gji', ''), ('msime', 'msime', '')):
+            for _wsfx, _wex in (('', ''), ('-cold', ' --cold'), ('-switch', ' --switch-focus')):
+              _c = tsx(f'sw809-wezterm-{_ime_name}-20ms{_wsfx}', 'ext', _ime, 20, extra=_EXT_WZ + _wex,
+                       kinds='single,thumb,mixed', trials=4, len=25, runs=2, wait=900)
+              _c.update(setup='wezterm', until='2026-11-30')
+              configs.append(_c)
+            _c = tsx(f'sw809-b-off-wezterm-{_ime_name}', 'ext', _ime, 40, extra=_EXT_WZ + ' --sw-mode=b-off --sw-delays=0_30_60_100_150_300_500_1500',
+                     kinds='single,mixed', trials=16, len=6, runs=1, wait=1500)
+            _c.update(setup='wezterm', until='2026-11-30')
+            configs.append(_c)
+          for _sfx, _sw in (('f2', ' --sw-mode=f2 --sw-delays=0_30_100_300'), ('nof2', '')):
+            _c = tsx(f'sw809-{_sfx}-wezterm-mozc', 'ext', 'mozc', 40, extra=_EXT_WZ + ' --mozc' + _sw, kinds='single,mixed', trials=8, len=6, runs=3, wait=1200)
+            _c.update(setup='wezterm', until='2026-11-30')
+            configs.append(_c)
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(fnmatch.fnmatchcase(c['name'], o) for o in only)]
