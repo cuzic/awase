@@ -277,8 +277,7 @@ pub const TIMER_POWER_RESUME: usize = 103;
 pub const TIMER_OUTPUT_GUARD: usize = 104;
 /// TSF ウォームアッププローブのポーリングタイマー ID
 pub const TIMER_TSF_PROBE: usize = 105;
-/// TsfGate の PendingWarmup フォールバックタイマー ID
-pub const TIMER_TSF_GATE: usize = 106;
+// 106 は旧 `TIMER_TSF_GATE`（TsfGate の PendingWarmup フォールバック。2026-10-22 撤去）。
 /// Ctrl+無変換 IME OFF ミスタイプ救済の先読みタイマー ID
 pub const TIMER_IME_OFF_RESCUE: usize = 107;
 /// GjiFsm の LongIdle タイムアウトタイマー ID
@@ -286,8 +285,7 @@ pub const TIMER_GJI_LONG_IDLE: usize = 108;
 /// フォーカス復帰後 resync のハード期限タイマー ID（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）
 pub const TIMER_FOCUS_RESYNC: usize = 109;
 /// hook watchdog カナリア確認タイマー ID（issue #165 自己修復 round2 B1(i)）。
-/// 一発タイマーで、ハンドラ冒頭で自ら `kill` する（`TIMER_TSF_GATE`/
-/// `TIMER_POWER_RESUME`と同じ流儀）。
+/// 一発タイマーで、ハンドラ冒頭で自ら `kill` する（`TIMER_POWER_RESUME`と同じ流儀）。
 pub const TIMER_HOOK_WATCHDOG_CANARY_CHECK: usize = 110;
 /// ADR-263 PR 2b: エピソード先頭の打鍵の保持の期限タイマー ID。一発タイマーで、ハンドラ冒頭で自ら `kill` する。
 pub const TIMER_LANG_HOLD: usize = 111;

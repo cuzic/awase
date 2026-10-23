@@ -74,7 +74,7 @@ const DOC_BASELINE: &[(&str, usize)] = &[
     ("usage-ja-6", 0),
     ("usage-ja-7", 0),
     ("usage-ja-8", 0),
-    ("usage-ja-9", 0),
+    // usage-ja-9・usage-en-9(force_tsf の例)は、Tsf 注入経路の撤去(2026-10-22)で例ごと消した。
     ("usage-ja-10", 0),
     ("usage-ja-11", 0),
     ("usage-ja-12", 0),
@@ -87,7 +87,6 @@ const DOC_BASELINE: &[(&str, usize)] = &[
     ("usage-en-6", 0),
     ("usage-en-7", 0),
     ("usage-en-8", 0),
-    ("usage-en-9", 0),
     ("usage-en-10", 0),
     ("usage-en-11", 0),
     ("usage-en-12", 0),

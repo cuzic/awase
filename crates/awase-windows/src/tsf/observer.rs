@@ -96,7 +96,7 @@ pub struct TsfObservations {
     /// GJI の最終 I/O 変化時刻 (GetTickCount64 ms)。0 = 未観測。
     ///
     /// バックグラウンドモニタースレッドが更新する。
-    /// `send_romaji_as_tsf` や `TsfReadinessJudge` が参照する。
+    /// `TsfReadinessJudge` 等が参照する。
     pub(super) gji_last_io_ms: AtomicU64,
 
     /// GJI モニターが GJI プロセスへ（再）接続した時刻 (GetTickCount64 ms)。0 = 未接続。
@@ -601,7 +601,7 @@ pub(crate) fn reset_candidate_was_seen() {
 /// 長時間 idle をまたいで「前の cold 世代で確認済み」がそのまま信頼され続けることは
 /// 構造的に起こらない。
 ///
-/// 決定分岐の呼び出し元（`probe_fsm.rs`/`gji_warmup_coro.rs`）は
+/// 決定分岐の呼び出し元（`probe_fsm.rs`。`gji_warmup_coro.rs` は 2026-10-22 に撤去）は
 /// `TsfEnvSnapshot::literal_session_confirmed_gen` 経由の比較へ移行済み（belief 監査、
 /// `.claude/rules/ime-belief-architecture.md` 参照）。現在の呼び出し元は
 /// `tsf/probe.rs::evidence_now` のみで、journal に記録する診断専用の値

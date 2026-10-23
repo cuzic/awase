@@ -1,4 +1,4 @@
-//! `output/` の TSF 送信パイプライン（`assess_warmth`・`send_romaji_as_tsf_warm`）が下す「composition は温かいか」
+//! `output/` の TSF 送信パイプライン（`assess_warmth`）が下す「composition は温かいか」
 //! の判断の核（FCIS F6b）。warm パスの「LiteralDetect を仕掛けるか」の判断（`plan_literal_detect`）は、設置の条件が
 //! CI で 1 度も成立しなかったため撤去した（ECRS MB-02）。
 //!
@@ -8,7 +8,7 @@
 //! （`ms_since_last_send`・`gji_last_io_ms` など。いずれも Cell/atomic/RefCell の副作用の無い読み）と
 //! 実行（ログ・`spawn_local`・`install_pending_tsf`）は殻（`Output`）に残る。
 //!
-//! ADR-156 の窓口: `assess_warmth` の呼び出し元は `send_romaji_batched_gated`・`send_romaji_as_tsf_gated` の 2 つで、
+//! ADR-156 の窓口: `assess_warmth` の呼び出し元は `send_romaji_batched_gated` の 1 つ（Tsf 側の `send_romaji_as_tsf_gated` は 2026-10-22 に撤去）で、
 //! どちらも drain-before-send（`deferred_gate_plan`）の**後**に呼ぶ順序（e7）を保つ。本モジュールはその順序に触れない。
 
 /// `assess_warmth` の入力。

@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// SendInput 出力中にキー入力を保留するゲート。
 ///
-/// # OutputGate vs TsfGate
+/// # OutputGate と旧 TsfGate
 /// - `OutputGate`: `send_keys` 実行中に外部キー入力を defer するゲート（再入防止）。
-/// - `TsfGate` (in `probe.rs`): TSF warm-up 完了まで出力キューを保留するゲート。
+/// - 旧 `TsfGate`: フォーカス直後のキーを保留したゲート（Tsf 注入経路とともに 2026-10-22 に撤去）。
 ///   両者は独立した目的を持ち、混同しないこと。
 ///
 /// ## 内部フィールド（クロススレッド共有）

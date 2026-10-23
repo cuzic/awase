@@ -1053,15 +1053,15 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
 /// `write_focus_probe` は実際に FocusProbe（first-key の `read_ime_state_fast`）を
 /// 実行した経路のみが呼べる。
 ///
-/// 2026-07-06: TsfGate の bypass 確定処理（`settle_tsf_gate_after_refresh`）が、probe を
+/// 2026-07-06: TsfGate（2026-10-22 撤去）の bypass 確定処理（`settle_tsf_gate_after_refresh`）が、probe を
 /// 一切実行していないのに `write_focus_probe(false)` を毎リフレッシュ注入していた
 /// （ce45b82、「非TSFウィンドウには日本語IMEが存在しない」という誤前提）。実観測経路を
 /// 持たない Imm32Unavailable（Edge/Chrome）ではこの偽 Low false が `most_recent_trusted()`
 /// 経由で belief を支配し、フォーカス約 500ms 後に Engine が必ず OFF になった
 /// （docs/known-bugs.md BUG-07）。
 ///
-/// TsfGate の状態確定（`bypass_tsf`/`confirm_tsf`）は injection 層の関心事であり、
-/// IME open belief とは独立に行うこと。「この種のウィンドウに IME は無いはず」という
+/// （TsfGate は 2026-10-22 に撤去した。）注入・フォーカス確定の都合で
+/// IME open belief を書かないこと。「この種のウィンドウに IME は無いはず」という
 /// 推測を belief に書きたくなったら、それは観測の偽装である（`ObservationSource::FocusProbe`
 /// は「実際に read_ime_state_fast を実行した」ことを意味する）。
 #[test]
@@ -2574,8 +2574,9 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
     const NEEDLE: &str = "ActuationTarget::capture(";
     let known_sites: &[(&str, usize)] = &[
         ("src/output/conv_actuation.rs", 1), // actuate_conv_mode（ADR-084 INV-1 単一窓口、2026-08-08 Runtime→Output移設）
-        ("src/tsf/warmup/cold_warmup.rs", 1), // ColdWarmupSequence::run_start
-        ("src/runtime/executor.rs", 1),      // dispatch_ime_set_open（ImmCross async path）
+        // `src/tsf/warmup/cold_warmup.rs`（ColdWarmupSequence::run_start、Tsf 注入の cold 開始）は
+        // Tsf 注入経路の撤去（2026-10-22、ADR-0004 追記）でファイルごと削除した。
+        ("src/runtime/executor.rs", 1), // dispatch_ime_set_open（ImmCross async path）
         ("src/runtime/key_pipeline.rs", 3), // kp_shadow_actuate（ADR-213 決定1、OFF→ON の Targeted 書き込み） / kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width（apply_focus_probe の ImmCrossProbe kana修正は2026-09-26に撤去、docs/adr/191-calibration-experiments.md A/B-2。apply_idle_conv_check の restore_roman(BUG-08 Apply(3))経路は2026-08-17 BUG-61に伴い撤去）
                                             // 2026-09-19（領域A撤去、ユーザー指示）: `src/runtime/mod.rs` の
                                             // try_force_on_bootstrap（force-ON bootstrap）を撤去したため、
@@ -2629,7 +2630,6 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
 fn actuation_target_capture_is_first_await_in_spawn_local_block() {
     let target_files = [
         "src/output/conv_actuation.rs",
-        "src/tsf/warmup/cold_warmup.rs",
         "src/runtime/executor.rs",
         "src/runtime/key_pipeline.rs",
     ];
@@ -2675,10 +2675,11 @@ fn actuation_target_capture_is_first_await_in_spawn_local_block() {
             );
         }
     }
+    // 2026-10-22: cold_warmup.rs の 1 ブロックを撤去して 6→5（Tsf 注入経路の撤去）。
     assert_eq!(
-        checked, 6,
+        checked, 5,
         "ActuationTarget::capture を含む spawn_local ブロックの検査対象数が \
-         想定(6)と異なります。新しい経路を追加/削除した場合は \
+         想定(5)と異なります。新しい経路を追加/削除した場合は \
          actuation_target_capture_call_sites_are_accounted_for と合わせて \
          この期待値も更新すること。"
     );
@@ -3320,8 +3321,8 @@ fn send_input_and_send_message_timeout_w_have_single_production_call_site() {
 /// 意図した追加・撤去のときは、この件数と棚卸しの表を同じコミットで更新すること。
 ///
 /// - `modify_conv_mode(`（`IMC_SETCONVERSIONMODE` の唯一の書き手）: `ime.rs` の3入口のみ。
-/// - `set_ime_conv_for_target(`: 5か所（cold-start の ROMAN 保護、`actuate_conv_mode`、
-///   Ctrl+変換のリセット、半角英数トグルの復元、焦点プローブのかなモード修正）。
+/// - `set_ime_conv_for_target(`: 3か所（`actuate_conv_mode`、Ctrl+変換のリセット、半角英数トグルの復元）。
+///   cold-start の ROMAN 保護（`cold_warmup.rs`）は Tsf 注入経路の撤去（2026-10-22）で削除した。
 #[test]
 fn conv_write_call_sites_are_fixed_to_the_inventory() {
     let files = list_src_files();
@@ -3352,11 +3353,11 @@ fn conv_write_call_sites_are_fixed_to_the_inventory() {
         vec![
             ("src/output/conv_actuation.rs".to_string(), 1),
             ("src/runtime/key_pipeline.rs".to_string(), 2),
-            ("src/tsf/warmup/cold_warmup.rs".to_string(), 1),
         ],
-        "`set_ime_conv_for_target(` の本番呼び出し元は4か所に固定されています\
-         （`docs/tasks/conv-write-paths-inventory.md` の経路3・4・5・8。経路9=焦点プローブの\
-         ROMAN 修正は 2026-09-26 に撤去済みで、ここに戻さないこと）。\
+        "`set_ime_conv_for_target(` の本番呼び出し元は3か所に固定されています\
+         （`docs/tasks/conv-write-paths-inventory.md` の経路4・5・8。経路9=焦点プローブの\
+         ROMAN 修正は 2026-09-26 に、経路3=cold-start の ROMAN 保護〈cold_warmup.rs〉は 2026-10-22 に\
+         撤去済みで、ここに戻さないこと）。\
          増やすなら棚卸しの表に分類（A 撤去候補／B 例外／C warmup）を書いて、この件数を更新すること。\
          撤去したなら件数を減らすこと。"
     );
@@ -4142,7 +4143,7 @@ fn timer_ime_off_rescue_calls_begin_key_batch_before_deliver_key_event() {
 /// BUG-202: `win_event_proc`（`EVENT_OBJECT_FOCUS`）は、コンテキストメニュー（クラス `#32768`）へのフォーカスを
 /// 窓の切替として扱わない。**判定は重複排除（`LAST_FOCUS_HWND.swap`）より前**でなければならない。後だと
 /// `LAST_FOCUS_HWND` がメニュー窓に上書きされ、メニューを閉じて元の窓へ戻る `FOCUS` が「新しい窓」として
-/// 再び拾われる（`tsf-gate` の `PendingWarmup`・held 破棄）。ADR-264 決定 7。
+/// 再び拾われる（フォーカス窓の分類が走る。当時は旧 TsfGate の held 破棄も起きた）。ADR-264 決定 7。
 #[test]
 fn win_event_proc_ignores_popup_menu_focus_before_dedup_and_dispatch() {
     let content = read_crate_file("src/app/bootstrap.rs");
@@ -4889,12 +4890,12 @@ fn note_stage_recovery_is_called_only_from_mark_cold_raw_tsf() {
     );
 }
 
-/// `note_stage_injection` を呼ぶのは `impl ProbeIo for Output` の注入メソッド4つ
-/// （`transmit_tsf`/`transmit_chrome`/`send_single_tsf_vk`/`send_single_chrome_vk`）
-/// だけ（ADR-103 決定4-d）。dispatcher からは1行も呼ばない——「実際に注入したか」
-/// は注入した関数自身が記録することで、呼び忘れを構造的に防ぐ。
+/// `note_stage_injection` を呼ぶのは `impl ProbeIo for Output` の注入メソッド2つ
+/// （`transmit_chrome`/`send_single_chrome_vk`）だけ（ADR-103 決定4-d。Tsf 側の
+/// `transmit_tsf`/`send_single_tsf_vk` は 2026-10-22 に撤去して 4→2）。dispatcher からは1行も呼ばない——
+/// 「実際に注入したか」は注入した関数自身が記録することで、呼び忘れを構造的に防ぐ。
 #[test]
-fn note_stage_injection_is_called_only_from_the_four_injection_methods() {
+fn note_stage_injection_is_called_only_from_the_injection_methods() {
     let path = "src/output/probe_io.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
@@ -4902,9 +4903,9 @@ fn note_stage_injection_is_called_only_from_the_four_injection_methods() {
         .matches(".warmup_coord.note_stage_injection()")
         .count();
     assert_eq!(
-        count, 4,
-        "{path} 内で `note_stage_injection` の呼び出し箇所数が想定(4 = \
-         transmit_tsf/transmit_chrome/send_single_tsf_vk/send_single_chrome_vk)と \
+        count, 2,
+        "{path} 内で `note_stage_injection` の呼び出し箇所数が想定(2 = \
+         transmit_chrome/send_single_chrome_vk)と \
          異なります(実際: {count})。dispatch_probe_actions からは呼ばないこと。"
     );
 }
@@ -4974,8 +4975,8 @@ fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
         .expect("finish_probe_stage");
     let body = &squash[start..];
     let end = body
-        .find("self.on_tsf_probe_ready()")
-        .expect("段末のゲート解放");
+        .find("letrec=self.warmup_coord.take_stage_record();")
+        .expect("段末の GjiFsm 通知");
     // `if let Some(reason) = <判定> { 見送り } else { flush }` の形（判定の結果を捨てた無条件 flush・分岐の反転を許さない）。
     let region = &body[..end];
     let guard = region.find("ifletSome(reason)=self.probe_or_recovery_block_reason(true){");
@@ -6296,6 +6297,11 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
             "runtime/ime_coordinator.rs",
             "29行、ImeCoordinator::new()のみ。実際のIME適用結果の集約は\
              runtime/mod.rs::on_ime_apply_completeが担い、そちらに#[instrument]済み。",
+        ),
+        (
+            "focus/classifier.rs",
+            "唯一の計装対象だった `ForceOverrides::injection_hint` を Tsf 注入経路の撤去（2026-10-22）で\
+             削除した。残りは設定の照合だけで、相関情報を持つ処理単位が無い。",
         ),
         (
             "tsf/observer.rs",
@@ -7932,13 +7938,12 @@ fn deferred_gate_wiring_detector_catches_violations() {
     assert!(!deferred_gate_wiring_violations(&m, &direct).is_empty());
 }
 
-/// FCIS F6b: TSF 送信パイプラインの warm/cold の判断は `state/warm_send_plan.rs`。殻が純粋関数の**結果を使い**、
+/// FCIS F6b: 送信パイプラインの warm/cold の判断は `state/warm_send_plan.rs`。殻が純粋関数の**結果を使い**、
 /// 判断をインラインに書き戻さず、引数の取り違えをしていないことの違反を返す（空白を潰した文字列で照合する）。
 ///
-/// warm パス（`send_romaji_as_tsf_warm`）は送るだけで、語単位の事後確認（旧 `LiteralDetectFsm`）を置かない。
-/// 設置の条件（`TsfGate` が Probing かつ非 Tsf モード）は GitHub の Windows CI で 1 度も成立せず撤去した（ECRS MB-02、
-/// docs/tasks/mech-ecrs-2026-10-21/probe-mb0203-result.md）。戻すときは到達の証拠を添えて、このガードを外すこと。
-fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static str> {
+/// 以前は Tsf 注入の warm パス（`send_romaji_as_tsf_warm`）が語単位の事後確認を置かないことも固定していたが、
+/// Tsf 注入経路は 2026-10-22 に撤去した（ADR-0004 追記）。
+fn warm_send_wiring_violations(output_mod: &str) -> Vec<&'static str> {
     fn squash(s: &str) -> String {
         s.chars().filter(|c| !c.is_whitespace()).collect()
     }
@@ -7956,48 +7961,24 @@ fn warm_send_wiring_violations(output_mod: &str, vk_send: &str) -> Vec<&'static 
             v.push("assess_warmth が plan_warmth の結果/引数を使っていない");
         }
     }
-    let warm = squash(&non_comment_lines(extract_fn_body(
-        production_code_only(vk_send),
-        "fn send_romaji_as_tsf_warm(",
-    )));
-    if !warm.contains("TsfSendPipeline::transmit(romaji,chars,&outcome)") {
-        v.push("send_romaji_as_tsf_warm が TsfSendPipeline::transmit で送っていない");
-    }
-    for forbidden in [
-        "install_pending_tsf(",
-        "LiteralDetector",
-        "LiteralDetectFsm",
-    ] {
-        if warm.contains(forbidden) {
-            v.push("send_romaji_as_tsf_warm が語単位の事後確認を置いている（ECRS MB-02 で撤去）");
-        }
-    }
     v
 }
 
 #[test]
-fn warm_send_plan_is_wired_into_assess_warmth_and_tsf_warm_send() {
-    let v = warm_send_wiring_violations(
-        &read_crate_file("src/output/mod.rs"),
-        &read_crate_file("src/output/vk_send.rs"),
-    );
+fn warm_send_plan_is_wired_into_assess_warmth() {
+    let v = warm_send_wiring_violations(&read_crate_file("src/output/mod.rs"));
     assert!(v.is_empty(), "warm_send_plan の配線違反: {v:?}");
 }
 
 /// 違反例を検出できること（V2-3）。呼び出しを消す形だけでなく、**呼び出しを残したまま**判断をインラインに戻す・
-/// 引数を入れ替える・定数を差し替える形も試す。
+/// 引数を入れ替える形も試す。
 #[test]
 fn warm_send_wiring_detector_catches_violations() {
     let m = read_crate_file("src/output/mod.rs");
-    let v = read_crate_file("src/output/vk_send.rs");
-    assert!(warm_send_wiring_violations(&m, &v).is_empty());
+    assert!(warm_send_wiring_violations(&m).is_empty());
     let check_m = |mutated: String| {
         assert_ne!(mutated, m);
-        assert!(!warm_send_wiring_violations(&mutated, &v).is_empty());
-    };
-    let check_v = |mutated: String| {
-        assert_ne!(mutated, v);
-        assert!(!warm_send_wiring_violations(&m, &mutated).is_empty());
+        assert!(!warm_send_wiring_violations(&mutated).is_empty());
     };
     // plan_warmth を残したまま結果を使わずインラインに戻す
     check_m(m.replacen(
@@ -8009,17 +7990,6 @@ fn warm_send_wiring_detector_catches_violations() {
     check_m(m.replacen(
         "needs_f2_probe: self.warmup_coord.needs_f2_probe(),",
         "needs_f2_probe: true,",
-        1,
-    ));
-    // warm パスに語単位の事後確認を戻す
-    check_v(v.replacen(
-        "let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);",
-        "let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);\n        let _d = crate::tsf::probe::LiteralDetector::new_with_pre_send_baseline(0);",
-        1,
-    ));
-    check_v(v.replacen(
-        "let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);",
-        "let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);\n        self.install_pending_tsf(todo!());",
         1,
     ));
 }
@@ -8976,7 +8946,7 @@ fn resume_hold_r2_wiring_adr245_add2() {
 ///   `actuation_call_guard` の呼び出し元の関数名の許可リストが落ちる)。
 /// - `engine_owns_open_key` は式 1 か所(`matches_ime_set_open` を呼ぶのはその関数だけ)・`kp_run_inner` での評価 2 回
 ///   (戻り待ちの段の前と shadow toggle の前。R4-2)。
-/// - 戻り待ちの段は `try_hold_key`/ime-off-rescue の後、`kp_stage_idle_conv_check` と shadow toggle の前。
+/// - 戻り待ちの段は ime-off-rescue の後、`kp_stage_idle_conv_check` と shadow toggle の前（`try_hold_key`〈TsfGate〉は 2026-10-22 に撤去）。
 /// - `kp_shift_conv_guard_key_down` の早期 return は戻り待ち(`pending_for_scope`)を見る(R4-1)。
 /// - `commit_enter_*` は Enter 時のスコープを受け取る(S-PR2-1)。
 #[test]
@@ -9044,21 +9014,20 @@ fn half_width_return_wiring_adr245_pr2() {
         "戻り待ちの段で engine_owns_open_key を評価するのは 1 回(行 2 の事実用)"
     );
 
-    // 段の位置: try_hold_key → ime-off-rescue → 戻り待ちの段 → idle-conv-check → engine_owns_open_key → shadow toggle。
+    // 段の位置: ime-off-rescue → 戻り待ちの段 → idle-conv-check → engine_owns_open_key → shadow toggle。
     let pos = |needle: &str| {
         run_inner
             .find(needle)
             .unwrap_or_else(|| panic!("kp_run_inner に {needle} が無い"))
     };
-    let hold = pos("self.platform.try_hold_key(");
     let rescue = pos("self.take_ime_off_rescue_pending()");
     let ret = pos("self.kp_stage_half_width_return(");
     let idle = pos("self.kp_stage_idle_conv_check(");
     let owns = pos("self.engine_owns_open_key(");
     let shadow = pos("self.kp_stage_shadow_ime_toggle(");
     assert!(
-        hold < rescue && rescue < ret && ret < idle && idle < owns && owns < shadow,
-        "戻り待ちの段は try_hold_key/ime-off-rescue の後・idle-conv-check と shadow toggle の前(ADR-245 決定3)"
+        rescue < ret && ret < idle && idle < owns && owns < shadow,
+        "戻り待ちの段は ime-off-rescue の後・idle-conv-check と shadow toggle の前(ADR-245 決定3)"
     );
 
     // KeyDown 側のガード: 戻り待ちを見る(R4-1)。
@@ -9213,7 +9182,7 @@ fn per_vk_confirm_takes_literal_baseline_before_send_input() {
         &[
             "LiteralDetector::new_with_pre_send_baseline(",
             "crate::tsf::observer::gji_write_bytes()",
-            "io.send_single_tsf_vk(vk, needs_shift)",
+            "io.send_single_chrome_vk(vk, needs_shift)",
             "machine.apply_vk_sent(detector, deadline_ms)",
         ],
         "送信後に baseline を取ると、当該 VK の write が吸収されて literal を見逃す/誤る（BUG-027/029、ADR-079）",
@@ -9230,5 +9199,47 @@ fn probe_actuation_fence_bump_precedes_send_input() {
             "unsafe { SendInput(inputs, size) }",
         ],
         "bump が SendInput より後だと、フェンスが actuation を検出できない（ADR-140 決定B）",
+    );
+}
+
+/// PR #809 レビュー M2(BUG-209 の再発防止): 物理 F2(ひらがな)の cold 判断は `physical_f2_marks_cold` を通し、
+/// Mozc 系の判定(`gji_evidence_absent`)を渡す。warm の Mozc でも cold にしないと、ADR-270 の確認が張られず
+/// 「をもと」→「wo もと」が戻る(判断表は `tsf/cold_reason.rs` の単体テストが固定する)。
+/// ADR-270 の確認を張る窓は `is_mozc_compose_check_window` で旧来の範囲(Windows Terminal・WezTerm)に限る(M3)。
+#[test]
+fn physical_f2_cold_and_mozc_check_window_are_wired() {
+    let platform = read_crate_file("src/platform.rs");
+    let body = non_comment_lines(extract_fn_body(
+        production_code_only(&platform),
+        "fn composition_native_f2_down(",
+    ));
+    let squashed_body: String = body.split_whitespace().collect();
+    for needle in [
+        "letwarm=self.output.is_composition_warm();",
+        "mozc_compose_check_applies(crate::tsf::observer::gji_evidence_absent(),",
+        "ifcrate::tsf::cold_reason::physical_f2_marks_cold(warm,mozc_check){",
+    ] {
+        assert!(
+            squashed_body.contains(needle),
+            "composition_native_f2_down が `{needle}` の形でない(BUG-209、PR #809 M2・N1)"
+        );
+    }
+    let probe_io = read_crate_file("src/output/probe_io.rs");
+    // トレイトの既定(no-op)ではなく `impl ProbeIo for Output` の実装を見る。
+    let prod = production_code_only(&probe_io);
+    let impl_at = prod
+        .find("impl ProbeIo for Output {")
+        .expect("impl ProbeIo for Output");
+    let pre = non_comment_lines(extract_fn_body(
+        &prod[impl_at..],
+        "fn mozc_compose_precheck(",
+    ));
+    // 判断の結果で早期 return する形(条件の反転・結果の捨てを許さない)。判断表は class_names.rs の単体テスト。
+    let squashed_pre: String = pre.split_whitespace().collect();
+    assert!(
+        squashed_pre.contains(
+            "if!crate::focus::class_names::mozc_compose_check_applies(mozc,&fg_class){returnNone;}"
+        ),
+        "mozc_compose_precheck が mozc_compose_check_applies の偽で return None していない(PR #809 M3・N2)"
     );
 }

@@ -215,13 +215,11 @@ force_text = [
 force_bypass = [
     { process = "launcher.exe", class = "LauncherClass" },
 ]
-# TSF ネイティブモード（WezTerm 等）
-force_tsf = [
-    { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
-]
 ```
 
 You can find the process name and class name in the log output of `RUST_LOG=debug awase.exe`.
+
+Characters are sent to every app as VK keystrokes (through the IME), except characters that are not in the table and characters given directly in a `.yab` (such as `\u`), which are sent directly as Unicode. The former `force_vk` and `force_tsf` (which chose how to send) are no longer needed and have been retired (they are ignored if present).
 
 ---
 

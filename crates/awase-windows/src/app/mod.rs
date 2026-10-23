@@ -711,7 +711,7 @@ fn handle_hook_key_event(mut event: awase::types::RawKeyEvent) {
         return;
     }
     // ADR-245 追補 2 R2: 戻った窓の最初の打鍵を保持している間に届いた打鍵は保持に足す(OUTPUT_GATE・FOCUS_RESYNC の
-    // 判定より前。`[[keymap]]` 照合・Nested/NonText の即時 reinject・TsfGate などが先に取って順序が入れ替わらない)。
+    // 判定より前。`[[keymap]]` 照合・Nested/NonText の即時 reinject などが先に取って順序が入れ替わらない)。
     // `with_app` が `None`(再入)のときは足さず後段へ進む(`deliver_key_event` の先頭でも足す)。
     if with_app(|app| app.resume_hold_on_key(&event)).unwrap_or(false) {
         return;

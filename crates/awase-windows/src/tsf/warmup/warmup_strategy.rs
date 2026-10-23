@@ -9,7 +9,7 @@
 //! GJI 固有のイベント（`GjiEvent::ImeOn`、`FocusChange` 等）は依然 [`crate::tsf::gji_fsm::GjiFsm`]
 //! が直接処理する。このトレイトは `Output` が MS IME 対応を追加する際の足場として用意する。
 
-use crate::tsf::gji_fsm::{GjiAction, GjiEvent, GjiTimer, ProbeParams};
+use crate::tsf::gji_fsm::{GjiAction, GjiEvent, GjiTimer};
 use timed_fsm::Response;
 
 // ── トレイト定義 ──────────────────────────────────────────────────────────────
@@ -21,11 +21,6 @@ use timed_fsm::Response;
 pub(crate) trait ImeWarmupStrategy {
     /// IME/TSF が現在 warm（ローマ字を即送信できる）かどうか。
     fn is_warm(&self) -> bool;
-
-    /// `Authorized` 状態の場合に probe パラメータを返す。
-    ///
-    /// `None` は「probe 不要」を意味する（`NotStarted` 状態、または MS IME）。
-    fn current_probe_params(&self) -> Option<ProbeParams>;
 
     /// GJI イベントを処理し `Response<GjiAction, GjiTimer>` を返す。
     ///
@@ -84,10 +79,6 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
         )
     }
 
-    fn current_probe_params(&self) -> Option<ProbeParams> {
-        Self::current_probe_params(self)
-    }
-
     fn on_gji_event(&mut self, event: GjiEvent) -> Response<GjiAction, GjiTimer> {
         use timed_fsm::TimedStateMachine as _;
         Self::on_event(self, event)
@@ -120,10 +111,6 @@ pub(crate) struct MsImeStrategy;
 impl ImeWarmupStrategy for MsImeStrategy {
     fn is_warm(&self) -> bool {
         true
-    }
-
-    fn current_probe_params(&self) -> Option<ProbeParams> {
-        None
     }
 
     fn needs_f2_probe(&self) -> bool {

@@ -110,6 +110,10 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>Changed</h3>
+<ul>
+<li><strong>Retired <code>app_overrides.force_vk</code> and <code>app_overrides.force_tsf</code>; every app now gets VK keystrokes (through the IME, sent as a batch).</strong> WezTerm and Windows Terminal, which were in <code>force_tsf</code> by default, now use the same path as other apps. If either setting is present it is ignored without a load error (a "no longer needed" notice is shown at startup when it is not empty and not the old bundled default; saving from the settings window removes it).</li>
+</ul>
 <h2>[2.2.0] - 2026-10-20</h2>
 <blockquote>
 <p>Additions, changes and fixes since v2.1.0. The three big ones are <strong>a setting that judges, from your first keystrokes after switching windows, whether you are typing Japanese (opt-in; only people who choose it get it)</strong>, <strong>support for Mozc and its derivative mozc-readable</strong>, and <strong>the left-Shift tap half-width alphanumeric toggle now being on by default for Google Japanese Input too</strong>.</p>

@@ -96,7 +96,7 @@ crates/awase-ime-core/        The IME core (ADR-229 D4, renamed from awase-windo
                               (wiring checked by `tools/core-split/check_wiring.py`, layer direction by
                               `tools/core-split/deps.py --check`, both in the CI `core-layers` job).
 crates/awase-windows-base/    OS-independent core base (ADR-274 stage 2): tuning, vk, keymap, state/{generation,event_origin,
-                              hub_clock,foreground_scope,injection_mode,layout_language,ime_kind,focus_gen,app_suppression,
+                              hub_clock,foreground_scope,layout_language,ime_kind,focus_gen,app_suppression,
                               scoped_latch} + TickMs, focus/{kinds,class_names}, tsf/converter_target. No dependency on other
                               core crates; every other core crate sits above it. Same relative paths as before the move.
 crates/awase-key-effect/      OS-independent core (ADR-274 stage 2): key-effect tables and prediction: state/{key_effect_predictor,

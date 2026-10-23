@@ -48,22 +48,10 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # ]
 # example-end
 
-# ローマ字出力の送り方の明示指定。既定では、すべてのアプリに VK キーストローク
-# （IME composition 経由）で送る（Unicode 直接注入は ADR-276 で撤去した）。
-#
-# force_tsf: VK Sequential モード（WezTerm 等 TSF 直結アプリ）
-#   IME composition + 漢字変換を有効にする。NICOLA フックはスルーして
-#   WezTerm の TSF に通常のキーストロークとして届ける。
-[app_overrides]
-force_tsf = [
-    { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
-    { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
-]
-# 旧 force_vk（VK で送る指定）は既定と同じになったため 2026-10-22 に退役した。書いてあっても
-# 無視される（起動時に「不要になった」と通知する）。
-# また、以前の版が TSF へ自動で切り替えて cache.toml の [injection_mode] に記録していた窓は、
-# この版から読まれなくなり VK で送られる。その窓で入力がおかしくなったら、上の force_tsf に
-# { process = "<exe 名>", class = "<ウィンドウクラス名>" } を足すこと。
+# ローマ字出力は、すべてのアプリに VK キーストローク（IME composition 経由、Batched）で送る。
+# 送り方を選ぶ設定は無い（Unicode 直接注入は ADR-276 で、VK Sequential〈Tsf〉注入は 2026-10-22 に
+# 撤去した。ADR-0004 追記）。旧 force_vk・force_tsf は書いてあっても無視される
+# （空でなければ起動時に「不要になった」と通知する）。
 
 # Ctrl+key バイパス直後に次キーを NICOLA スキップするルール。
 #

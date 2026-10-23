@@ -796,13 +796,8 @@ force_bypass = [
     </div>
 
     <div class="card">
-      <h3>アプリ別の出力モード上書き</h3>
-      <div class="code-block" data-example="usage-ja-9" data-mode="asis">[app_overrides]
-# TSF ネイティブモードで送信する（Windows Terminal 等）。指定の無いアプリは VK キーストロークで送る
-force_tsf = [
-    { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
-]</div>
-      <p class="note">以前の <code>force_vk</code> は既定と同じになったため廃止しました（書いてあっても無視されます）。以前の版が自動で TSF に切り替えていたアプリで入力がおかしくなった場合は、<code>force_tsf</code> に追加してください。</p>
+      <h3>アプリ別の出力モード上書き（廃止）</h3>
+      <p class="note">文字はすべてのアプリに VK キーストローク（IME 経由）で送ります（表に無い文字と、<code>.yab</code> で <code>\u</code> などを使って直接指定した文字だけは Unicode で直接送ります）。以前の <code>force_vk</code>・<code>force_tsf</code>（送り方の指定）は不要になったため廃止しました（書いてあっても無視されます。空でないときは起動時に「不要になった」と通知します）。</p>
     </div>
 
     <div class="card">

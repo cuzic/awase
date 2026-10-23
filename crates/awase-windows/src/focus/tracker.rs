@@ -7,7 +7,7 @@ use crate::focus::FocusKind;
 use awase::engine::InputModeState;
 
 use crate::focus::cache::{DetectionSource, FocusCache};
-use crate::focus::classifier::{ForceOverrides, ImmCapability, ImmCapabilityStore, InjectionHint};
+use crate::focus::classifier::{ForceOverrides, ImmCapability, ImmCapabilityStore};
 use crate::focus::current::CurrentFocus;
 use crate::focus::hwnd_cache::{HwndImeCache, HwndImeSnapshot};
 
@@ -87,20 +87,6 @@ impl FocusTracker {
     /// できる呼び出し元はこちらを使うこと。
     pub(crate) fn input_relay_apps(&self) -> &[String] {
         self.overrides.input_relay_apps()
-    }
-
-    pub(crate) fn injection_hint(&self) -> InjectionHint {
-        if !self.current.is_focused() {
-            return InjectionHint::Default;
-        }
-        self.overrides
-            .injection_hint(self.current.pid, &self.current.class_name)
-    }
-
-    /// 指定した pid/class に対する injection_hint を返す（フォーカス変更直後の stale 回避用）。
-    /// `self.current` が更新される前に新ウィンドウの hint を引くために使う。
-    pub(crate) fn injection_hint_for(&self, pid: u32, class_name: &str) -> InjectionHint {
-        self.overrides.injection_hint(pid, class_name)
     }
 
     // ── フォーカス更新 ──────────────────────────────────────────────────────

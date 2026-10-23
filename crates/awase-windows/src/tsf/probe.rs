@@ -15,7 +15,7 @@ use crate::tsf::observer::{Baseline, TSF_OBS};
 
 /// cold-start 送信時点の GJI I/O 観測を切り出す probe（待機はしない）。
 ///
-/// 本番の producer（`cold_warmup.rs::run_start`・`vk_send.rs` の Chrome cold パス）は
+/// 本番の producer（`vk_send.rs` の cold パス。Tsf 側の `cold_warmup.rs::run_start` は 2026-10-22 に撤去）は
 /// 予防 F2 / 事前待機の撤去（2026-07-18）以後 `min_ms=0`・`total_max_ms=0` しか渡さず（旧 API）、
 /// 旧 `check_now` の GJI 静止待ち（`GJI_IDLE_MS`/`POST_IDLE_MARGIN_MS`）は一度も通らなかった。
 /// 待機ロジックと 2 定数を撤去し、`warmup_sent_ms` 以後の GJI I/O の有無を返す
@@ -222,7 +222,7 @@ impl CompositionState {
 
 // ── LiteralDetector ──
 
-/// `send_romaji_as_tsf` が文字を送信した直後に生成し、
+/// per-VK confirm が文字を送信する直前に生成し、
 /// GJI 候補ウィンドウの変化を監視して composition が成功したか判定する検出器。
 ///
 /// ## 確認シグナル（TSF/Chrome 共通、BUG-30 で統一）

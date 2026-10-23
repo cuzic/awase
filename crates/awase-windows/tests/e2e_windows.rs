@@ -2575,10 +2575,10 @@ fn e2e_message_long_text() {
 // TsfNative app (Windows Terminal), not just our own IMM32 Edit control.
 //
 // project memory msime-coldstart-vk-mode-gap: BUG-13's fix
-// (`ms_ime_gate_defer`) only guards the Tsf injection path
-// (`send_romaji_as_tsf`). The Vk injection path (`send_romaji_batched`,
-// used for `AppKind::TsfNative` apps like Windows Terminal in the default,
-// non-`force_tsf` config) has no such gate. This section drives Windows
+// (`ms_ime_gate_defer`) originally guarded only the Tsf injection path
+// (`send_romaji_as_tsf`, removed 2026-10-22 together with `force_tsf`);
+// it was later extended to the Vk path (`send_romaji_batched`), which is
+// now the only injection path. This section drives Windows
 // Terminal directly via SendInput with NO gate/delay after turning the IME
 // on, to check whether the literal-leak race described in BUG-13
 // ("を" -> "wお") is reproducible for real against a TSF-native target.

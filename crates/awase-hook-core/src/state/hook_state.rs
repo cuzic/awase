@@ -27,19 +27,7 @@ pub struct HookConfig {
 ///
 /// この処理はフックコールバック（`hook::apply_ime_gate`）で起動される。
 ///
-/// # `TsfGate` との違い
-///
-/// `crate::tsf::TsfGate` はフォーカス変更後の TSF probe ウォームアップ用のステートマシンで、
-/// 別目的・別タイミング・別レイヤー（Engine 出力側）で動作する:
-///
-/// | | `SyncKeyGate`（本構造体） | [`TsfGate`](crate::tsf::TsfGate) |
-/// |--|--|--|
-/// | トリガー | sync key（IME ON/OFF キー）KeyDown | フォーカス変更 |
-/// | レイヤー | Platform 層（フックコールバック） | Output 層（TSF 注入直前） |
-/// | 解除タイミング | sync key KeyUp + IME 再観測完了 | TSF/Bypass モード確定 or 500ms タイムアウト |
-/// | 保留対象 | sync key 後に到着した全キー | フォーカス直後に到着した全キー |
-///
-/// 両者は独立に動作する（同時に active になることもある）。
+/// （フォーカス変更直後のキーを保留していた旧 `TsfGate` は、Tsf 注入経路とともに 2026-10-22 に撤去した。）
 type SyncKeyItem = (RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState);
 
 /// `SyncKeyGate` 内のバッファ最大件数。

@@ -28,44 +28,31 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use timed_fsm::TimedStateMachine;
 
-use crate::state::injection_mode::InjectionMode;
 use crate::tsf::gji_fsm::{GjiEvent, GjiFsm, GjiState, GjiTimer, PendingInput};
 
 // ── 1. 抽象の検証 ───────────────────────────────────────────────────────────
 
-const REAL_EVENT_KINDS: usize = 8;
+const REAL_EVENT_KINDS: usize = 7;
 
 fn run_real(fsm: &mut GjiFsm, kind: usize) {
     match kind {
         0 => {
-            let _ = fsm.on_event(GjiEvent::ImeOn {
-                injection_mode: InjectionMode::Vk,
-                gji_idle_ms: 0,
-            });
+            let _ = fsm.on_event(GjiEvent::ImeOn { gji_idle_ms: 0 });
         }
         1 => {
-            let _ = fsm.on_event(GjiEvent::Reopen {
-                injection_mode: InjectionMode::Vk,
-                gji_idle_ms: 0,
-            });
+            let _ = fsm.on_event(GjiEvent::Reopen { gji_idle_ms: 0 });
         }
         2 => {
             let _ = fsm.on_event(GjiEvent::ImeOff);
         }
         3 => {
-            let _ = fsm.on_event(GjiEvent::FocusChange {
-                injection_mode: InjectionMode::Vk,
-                gji_idle_ms: 0,
-            });
+            let _ = fsm.on_event(GjiEvent::FocusChange { gji_idle_ms: 0 });
         }
         4 => {
             let _ = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("k")));
         }
         5 => {
             let _ = fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms: 0 });
-        }
-        6 => {
-            let _ = fsm.on_event(GjiEvent::NativeF2Consumed { gji_idle_ms: 0 });
         }
         _ => {
             let _ = fsm.on_timeout(GjiTimer::LongIdle);
@@ -115,7 +102,8 @@ fn off_cold_abstraction_matches_the_real_fsm_for_every_event_sequence() {
     }
     let mut checked = 0u64;
     rec(&mut Vec::new(), 6, &mut checked);
-    assert!(checked > 200_000, "列挙が空振りしている: {checked}");
+    // 7 種 × 長さ 6 までで (7^7-1)/6 = 137,257 列。
+    assert!(checked > 130_000, "列挙が空振りしている: {checked}");
 }
 
 // ── 2. 到達可能性の厳密な列挙 ───────────────────────────────────────────────

@@ -216,14 +216,12 @@ force_text = [
 force_bypass = [
     { process = "launcher.exe", class = "LauncherClass" },
 ]
-# TSF ネイティブモード（WezTerm 等）
-force_tsf = [
-    { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
-]
 ```
 <!-- example-end -->
 
 プロセス名とクラス名は `RUST_LOG=debug awase.exe` のログで確認できます。
+
+文字はすべてのアプリに VK キーストローク（IME 経由）で送ります（表に無い文字と、`.yab` で `\u` などを使って直接指定した文字だけは Unicode で直接送ります）。以前の `force_vk`・`force_tsf`（送り方の指定）は不要になったため廃止しました（書いてあっても無視されます）。
 
 ---
 

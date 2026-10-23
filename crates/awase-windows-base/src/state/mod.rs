@@ -38,10 +38,6 @@ pub mod event_origin;
 pub mod hub_clock;
 // FCIS P1: 純粋なデータ型を ungated へ移したもの(元の場所から pub use で再公開)。
 pub mod foreground_scope;
-// output/types.rs から移設（InjectionHint 依存の From 実装のみ output/ に残す）。
-// 唯一の ungated 呼び出し元は tsf::gji_fsm。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub mod injection_mode;
 // ADR-223 段階 0: 入力言語(HKL)の判定(純粋関数。Win32 を呼ばないので Linux でもテストできる)。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod layout_language;

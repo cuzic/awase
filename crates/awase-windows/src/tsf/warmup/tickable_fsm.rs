@@ -2,11 +2,10 @@
 //!
 //! 10ms タイマー (`TIMER_TSF_PROBE`) から `tick()` が呼ばれるパターンを型として表現する。
 //!
-//! ## 実装一覧（本番実装 4 種 + テスト用 StubMachine）
+//! ## 実装一覧（本番実装 3 種 + テスト用 StubMachine）
 //!
 //! | 実装型 | ファイル | 用途 | 追加でオーバーライドするメソッド |
 //! |--------|---------|------|-----------------|
-//! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `apply_vk_sent` |
 //! | `MsImeReadyCoro` | `ms_ime_ready_coro.rs` | MS-IME IMC 確認待ち confirm-then-transmit（StepCoro, BUG-13） | なし（Core のみ） |
 //! | `TsfProbeCoro` | `probe_fsm.rs` | Chrome cold-start probe + LiteralDetect（StepCoro、旧 `ChromeProbe` ラッパーは ECRS T05 で撤去） | `apply_vk_sent` |
 //! | `MozcComposeCheckFsm` | `mozc_compose_check_fsm.rs` | Mozc の最初の送信の後、共有メモリの `phase` で入力中の文字ができたかを確認し、できなければリテラルとして回収（ADR-270） | なし（Core のみ） |
@@ -51,7 +50,7 @@ pub(crate) trait TickableFsm {
     fn cold_seq_hint(&self) -> Generation;
 
     // ── SetOpenTrue/IMEセッション最初の1文字 per-VK confirm ケイパビリティ
-    // （GjiWarmupCoro、TsfProbeCoro、BUG-24 追補・BUG-27）───────
+    // （TsfProbeCoro、BUG-24 追補・BUG-27）───────
     //
     // romaji を VK 単位に分割送信する際、各 VK 送信直後に生成した detector を
     // コルーチンへ渡す。複数 VK にわたって呼ばれる。

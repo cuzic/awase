@@ -26,7 +26,7 @@ use crate::win32::post_to_main_thread;
 use crate::{
     with_app, with_app_ref, Runtime, TIMER_GJI_LONG_IDLE, TIMER_HOOK_WATCHDOG,
     TIMER_HOOK_WATCHDOG_CANARY_CHECK, TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME,
-    TIMER_TSF_GATE, TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
+    TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
 };
 use awase::platform::ImeOpenOutcome;
 use awase::types::{ContextChange, VkCode};
@@ -527,17 +527,6 @@ pub(crate) unsafe fn handle_wm_timer(
                 app.ir_observe_first_literal(first);
             }
         }
-        Some(id) if id == TIMER_TSF_GATE => {
-            app.platform.timer.kill(TIMER_TSF_GATE);
-            let held = app.platform.on_tsf_warmup_timeout();
-            if !held.is_empty() {
-                tracing::debug!(
-                    "[tsf-gate-timeout] draining {} held keys via INPUT_DEFER",
-                    held.len()
-                );
-                crate::INPUT_DEFER.replay_later(held);
-            }
-        }
         Some(id) if id == crate::TIMER_RESUME_HOLD => {
             // 一発タイマー(ADR-245 追補 2 R2)。冒頭で自ら kill する。
             app.platform.timer.kill(crate::TIMER_RESUME_HOLD);
@@ -686,7 +675,7 @@ pub(crate) unsafe fn handle_wm_timer(
             recover_pending_drain_request();
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG_CANARY_CHECK => {
-            // 一発タイマー（issue #165自己修復 round2 B1(i)）。`TIMER_TSF_GATE`/
+            // 一発タイマー（issue #165自己修復 round2 B1(i)）。
             // `TIMER_POWER_RESUME`と同じ流儀で冒頭に自ら`kill`する。
             app.platform.timer.kill(TIMER_HOOK_WATCHDOG_CANARY_CHECK);
             let now = hook::current_tick_ms();

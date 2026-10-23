@@ -67,7 +67,6 @@ use timed_fsm::coro::{yield_step, Channel, StepCoro};
 /// テストでは任意値を注入できる。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TsfEnvSnapshot {
-    pub is_tsf_mode: bool,
     pub gji_active: bool,
     /// この tick の時点の宛先の識別（focus 世代 + 前景窓）。段の途中で宛先の窓が変わったかを、
     /// `state::raw_recovery_plan::plan_raw_recovery` で判断するのに使う（ADR-270 の確認の FSM）。`None` = 採っていない。
@@ -91,26 +90,7 @@ pub(crate) struct TsfEnvSnapshot {
     pub literal_session_confirmed_gen: Option<Generation>,
 }
 
-/// probe 中に観測した事実。`decide_transmit_plan` の入力に使う。
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct ProbeObservations {
-    /// TSF の NameChange イベントが実際に発火したか（生の観測値、呼び出し元での上書き禁止）。
-    pub nc_fired: bool,
-    /// GJI probe が実際に新規 I/O を確認できたか（`GjiProbeOutcome.settled`）。
-    /// `confirm_key_tsf_hint` の救済を効かせてよいかどうかの実測ゲートに使う（BUG-40）。
-    pub gji_settled: bool,
-    /// `cold_reason` が confirm-key 系（ReinjectConfirmKey/PassthroughConfirmKey）かつ
-    /// TSF mode か。WezTerm 等で Enter/Space 後に NameChange が発火しないが GJI は
-    /// 正常に合成中というケースの救済ヒント（`3ffbe66` 参照）。`gji_settled` が
-    /// true（GJI が実際に I/O を返している）の場合に限り `nc_fired=false` を
-    /// 救済してよい。`gji_settled=false`（例: 88s idle 後に probe がわずか16msで
-    /// 完了した genuinely cold なセッション）まで無条件に救済すると、reactive
-    /// LiteralDetect が丸ごとスキップされ、漏れた romaji が無補正で出力される
-    /// （BUG-40、`docs/known-bugs.md` 参照）。
-    pub confirm_key_tsf_hint: bool,
-}
-
-/// `decide_transmit_plan` が確定した実行方針。dispatcher がそのまま実行する。
+/// コルーチンが確定した送信方針。dispatcher がそのまま実行する。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TransmitPlan {
     /// raw TSF literal の LiteralDetect フェーズを有効にするか。
@@ -119,64 +99,10 @@ pub(crate) struct TransmitPlan {
     pub literal_detect_ms: u64,
 }
 
-/// probe 観測値・環境スナップショット・コンテキストから送信方針を決定する純粋計算関数。
-///
-/// `GjiWarmupCoro` 内から呼ばれるが、単独でテストも可能。副作用なし。
-pub(crate) fn decide_transmit_plan(
-    obs: ProbeObservations,
-    env: TsfEnvSnapshot,
-    is_long_cold: bool,
-) -> TransmitPlan {
-    // romaji バッチへの F2 直接同梱（第3の防御層）は DIAG_DISABLE_PROACTIVE_TSF_WARMUP を
-    // 2026-07-19 に恒久化したことで撤去した。reactive な LiteralDetect のみに委ねる
-    // （`docs/known-bugs.md` BUG-24 参照）。
-    // かな直接（Unicode）の eager 送信は ADR-276 で撤去した（常に VK ローマ字）。
-
-    // nc_fired=false でも、confirm_key_tsf_hint（WezTerm 等で NameChange が発火しない
-    // 既知ケース）かつ gji_settled（GJI が実際に I/O を返しており genuinely warm）の
-    // 場合に限り、NameChange 発火とみなして救済する（`3ffbe66`）。gji_settled=false の
-    // ままこの救済を効かせると、genuinely cold なセッションまで誤救済されて reactive
-    // LiteralDetect が丸ごとスキップされる（BUG-40）。nc_fired 自体は書き換えない
-    // （呼び出し元が生値として参照するため。旧 `is_partial_literal` は ECRS MB-02 で撤去）。
-    let nc_confirmed = obs.nc_fired || (obs.confirm_key_tsf_hint && obs.gji_settled);
-
-    // NameChangeWait タイムアウトで IME 準備が未確認のまま transmit したケースを
-    // LiteralDetect で回収する。F2 をバッチに含めない場合も IME が cold の可能性がある。
-    // （既知バグ: gji_idle ~1.4s で 300ms NameChangeWait が間に合わなかったケース）
-    let needs_literal = !nc_confirmed && env.is_tsf_mode && env.gji_active;
-
-    let literal_detect_ms = if is_long_cold && env.is_tsf_mode {
-        crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE
-    } else {
-        crate::tuning::RAW_TSF_LITERAL_DETECT_MS
-    };
-
-    TransmitPlan {
-        needs_literal,
-        literal_detect_ms,
-    }
-}
-
-/// [`ProbeAction::Transmit`] の送信先。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TransmitTarget {
-    Tsf,
-    Chrome,
-}
-
-impl From<TransmitTarget> for DetectTarget {
-    fn from(value: TransmitTarget) -> Self {
-        match value {
-            TransmitTarget::Tsf => Self::Tsf,
-            TransmitTarget::Chrome => Self::Chrome,
-        }
-    }
-}
-
 /// ステートマシン → dispatcher 方向の宣言的アクション。
 #[derive(Debug)]
 pub(crate) enum ProbeAction {
-    /// TSF または Chrome バッチパイプラインで `romaji` を送信する。
+    /// Chrome バッチパイプライン（Batched VK）で `romaji` を送信する。
     ///
     /// dispatcher は romaji 送信直後に `TsfWarmupCoordinator` の deferred キューを
     /// フラッシュしてから warm マークする。
@@ -185,7 +111,6 @@ pub(crate) enum ProbeAction {
         /// FSM が確定した実行方針。dispatcher はそのまま実行する（再導出不要）。
         plan: TransmitPlan,
         romaji: String,
-        target: TransmitTarget,
     },
     /// IME セッション最初の1文字専用（BUG-24 追補）: romaji の VK を1つだけ送信する。
     ///
@@ -204,10 +129,6 @@ pub(crate) enum ProbeAction {
         is_last: bool,
         idx: u16,
         last_idx: u16,
-        /// 送信先（`Tsf`: WezTerm 等 TSF-native、`Chrome`: Chrome/Edge）。
-        /// dispatcher が VK 送信関数（`send_single_tsf_vk`/`send_single_chrome_vk`）と
-        /// detector 構築方式（SHOW ベース/write-bytes ベース）を切り替えるために使う。
-        target: TransmitTarget,
     },
     /// `RAW_TSF_LITERAL` を設定し、composition を `RawTsfLiteralRecovery` で cold マークする。
     RawTsfLiteralRecovery {
@@ -243,7 +164,7 @@ pub(crate) enum ProbeAction {
 
 // ── TickInput ─────────────────────────────────────────────────────────────────
 
-/// probe コルーチン (`TsfProbeCoro`/`GjiWarmupCoro`) 共有の tick 入力。
+/// probe コルーチン (`TsfProbeCoro`) の tick 入力。
 ///
 /// 統合前（2026-07-17 以前）は `TsfProbeTickInput`（Chrome）/ `TickInput`（TSF）として
 /// 別々に定義されていたが、フィールド構成が完全に同一だったため共有した。
@@ -253,8 +174,7 @@ pub(crate) struct ProbeTickInput {
 }
 
 /// `apply_vk_sent` のペイロード。次 tick の [`ProbeTickInput`] に載り、コルーチン本体が
-/// そのVK専用の detector をポーリングする。Chrome per-VK confirm (`TsfProbeCoro`) と
-/// TSF per-VK confirm (`GjiWarmupCoro`) で共有する（統合前は別々に定義されていた）。
+/// そのVK専用の detector をポーリングする（`TsfProbeCoro` の per-VK confirm）。
 pub(crate) struct VkSentPayload {
     pub(crate) detector: LiteralDetector,
     pub(crate) deadline_ms: u64,
@@ -267,33 +187,19 @@ pub(crate) struct VkSentPayload {
 /// 次の VK へ進む。バッチ送信特有の「どの文字が化けたか区別できない」曖昧さ（BUG-03 が
 /// Chrome で解決できなかった原因）を、そもそもバッチにしないことで回避する。
 ///
-/// 統合前は `probe_fsm.rs::tsf_probe_coro_body`（Chrome Phase 2c）と
-/// `gji_warmup_coro.rs::gji_coro_body`（TSF Phase 5b）にほぼ同一のループが重複していた。
-/// 差分はログ/診断タグの接頭辞のみで、`target` から導出できるためここに統合できた
-/// （BUG-29 の候補ウィンドウ可視時 polling スキップは元々 Chrome 限定だったが、
-/// BUG-30 で検出ロジック自体が統一されたため両ターゲット共通になった）。
+/// かつては Tsf 注入モード用の `GjiWarmupCoro`（TSF Phase 5b）と共有していたが、Tsf 注入経路の
+/// 撤去（2026-10-22）で使い手は `tsf_probe_coro_body`（Chrome Phase 2c）だけになった。
 ///
 /// 全 VK 確認できたらセッション確認 (`mark_literal_session=true`) + `Done` を、
 /// `SuspectedLiteral` を検出したら `RawTsfLiteralRecovery` を、dispatcher が
 /// `apply_vk_sent` を呼ばなかった場合（BUG-27）は無リカバリで中断する。いずれの場合も
 /// 必要なアクションは内部で yield 済み（または `CoroStep::Complete` の `Done` フォール
 /// バックに委ねる）で、呼び出し元は `.await` 後にそのまま `return` すればよい。
-/// [`run_per_vk_confirm`] のログ・診断タグ（Chrome/TSF で従来通り書き分ける。
-/// docs/known-bugs.md のデバッグキーワード表・実機ログ grep パターンとの互換性を保つため）。
-fn per_vk_confirm_tags(target: TransmitTarget) -> (&'static str, &'static str, &'static str) {
-    match target {
-        TransmitTarget::Chrome => (
-            "tsf-probe",
-            "chrome-per-vk-literal",
-            "chrome-per-vk-confirmed",
-        ),
-        TransmitTarget::Tsf => (
-            "gji-coro",
-            "setopen-per-vk-literal",
-            "setopen-per-vk-confirmed",
-        ),
-    }
-}
+/// [`run_per_vk_confirm`] のログ・診断タグ（docs/known-bugs.md のデバッグキーワード表・
+/// 実機ログ grep パターンとの互換性を保つため、従来の Chrome のタグのまま）。
+const PER_VK_LOG_TAG: &str = "tsf-probe";
+const PER_VK_LITERAL_TAG: &str = "chrome-per-vk-literal";
+const PER_VK_CONFIRMED_TAG: &str = "chrome-per-vk-confirmed";
 
 fn idx_u16(idx: usize) -> u16 {
     u16::try_from(idx).unwrap_or(u16::MAX)
@@ -303,7 +209,6 @@ fn literal_facts(
     detection: &crate::tsf::probe::DetectionResult,
     route: DetectRoute,
     path: DetectPath,
-    target: TransmitTarget,
     vk: Option<VkCode>,
     idx: usize,
     last_idx: usize,
@@ -313,7 +218,7 @@ fn literal_facts(
         verdict: LiteralVerdict::from(detection),
         route,
         path,
-        target: target.into(),
+        target: DetectTarget::Chrome,
         vk: vk.map(|vk| vk.0),
         idx: idx_u16(idx),
         last_idx: idx_u16(last_idx),
@@ -412,11 +317,11 @@ pub(crate) async fn run_per_vk_confirm(
     cold_seq: Generation,
     romaji: &str,
     plan: TransmitPlan,
-    target: TransmitTarget,
 ) {
     use crate::tsf::probe::DetectionResult;
 
-    let (log_tag, literal_tag, confirmed_tag) = per_vk_confirm_tags(target);
+    let (log_tag, literal_tag, confirmed_tag) =
+        (PER_VK_LOG_TAG, PER_VK_LITERAL_TAG, PER_VK_CONFIRMED_TAG);
 
     let vk_chars: Vec<(VkCode, bool)> = romaji.chars().filter_map(crate::vk::ascii_to_vk).collect();
     if vk_chars.is_empty() {
@@ -443,7 +348,6 @@ pub(crate) async fn run_per_vk_confirm(
             is_last,
             idx: idx_u16(idx),
             last_idx: idx_u16(last_idx),
-            target,
         });
         let vk_input = yield_step(ch.clone(), actions).await;
         let Some(sent) = vk_input.vk_sent else {
@@ -484,7 +388,6 @@ pub(crate) async fn run_per_vk_confirm(
             &detection,
             route,
             DetectPath::PerVk,
-            target,
             Some(vk),
             idx,
             last_idx,
@@ -591,7 +494,7 @@ pub(crate) async fn run_per_vk_confirm(
                     verdict: LiteralVerdict::CompositionConfirmed,
                     route: DetectRoute::CheckNow,
                     path: DetectPath::PerVk,
-                    target: target.into(),
+                    target: DetectTarget::Chrome,
                     vk: None,
                     idx: idx_u16(last_idx),
                     last_idx: idx_u16(last_idx),
@@ -637,20 +540,20 @@ async fn tsf_probe_coro_body(
     let needs_literal = env.gji_active;
 
     // ── Phase 2c（per-VK confirm）──
-    // TSF 側 gji_coro_body の Phase 5b と共通実装（`run_per_vk_confirm`、2026-07-17 統合）。
+    // `run_per_vk_confirm`（2026-07-17 統合。Tsf 側の利用者は 2026-10-22 に撤去）。
     if needs_literal && env.literal_session_confirmed_gen != Some(cold_seq) {
         let plan = TransmitPlan {
             needs_literal: true,
             literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
         };
-        run_per_vk_confirm(ch.clone(), cold_seq, &romaji, plan, TransmitTarget::Chrome).await;
+        run_per_vk_confirm(ch.clone(), cold_seq, &romaji, plan).await;
         return;
     }
 
     // ここへ来るのは `needs_literal=false`(= `gji_active` でない)のときだけ。dispatcher が `apply_transmit_done(None)` → true で
     // machine を drop するので、コルーチンは再開されない。`needs_literal=true` は上の per-VK confirm が必ず先に取る
     // (ECRS MB-01、2026-10-21。`cold_seq` は cold start のたびに新規採番され、`literal_session_confirmed_gen` に
-    // 生成直後のコルーチンの `cold_seq` が入ることは無い。`gji_warmup_coro.rs` の同箇所のコメント参照)。
+    // 生成直後のコルーチンの `cold_seq` が入ることは無い)。
     // 旧 Phase 3(inline LiteralDetect。StaleConfirm→romaji 再送を含む)は撤去した。
     yield_step(
         ch.clone(),
@@ -661,7 +564,6 @@ async fn tsf_probe_coro_body(
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
             romaji,
-            target: TransmitTarget::Chrome,
         }],
     )
     .await;
@@ -674,12 +576,10 @@ async fn tsf_probe_coro_body(
 /// `pending_tsf` (`RefCell<Option<Box<dyn TickableFsm>>>`) に格納し、
 /// `TIMER_TSF_PROBE` ハンドラが `tick()` で 1 ステップ進める。
 pub(crate) struct TsfProbeCoro {
-    /// `tick`/`apply_vk_sent`/prime のラッパー配線
-    /// （`GjiWarmupCoro` と共有、`probe_coro_state.rs` 参照）。
+    /// `tick`/`apply_vk_sent`/prime のラッパー配線（`probe_coro_state.rs` 参照）。
     state: ProbeCoroState,
     /// RAII guard。drop で `OUTPUT_GATE.active=false`。コルーチン生存中ずっと
-    /// active を保持する（`GjiWarmupCoro::literal_detect_guard` と異なり、
-    /// LiteralDetect フェーズ突入を待たず construction 時点から確保する）。
+    /// active を保持する（construction 時点から確保する）。
     _guard: OutputActiveGuard,
 }
 
@@ -711,8 +611,7 @@ impl TickableFsm for TsfProbeCoro {
         self.state.cold_seq()
     }
 
-    /// Chrome per-VK confirm が1 VK 送信するたびに呼ぶ。
-    /// `GjiWarmupCoro::apply_vk_sent` の Chrome 版。`_guard` がコルーチン生存中ずっと
+    /// Chrome per-VK confirm が1 VK 送信するたびに呼ぶ。`_guard` がコルーチン生存中ずっと
     /// active を保持しているため、追加のガード確保は不要。
     fn apply_vk_sent(&mut self, detector: LiteralDetector, deadline_ms: u64) {
         self.state
@@ -723,175 +622,6 @@ impl TickableFsm for TsfProbeCoro {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── decide_transmit_plan 回帰テスト ──────────────────────────────────────
-
-    #[test]
-    fn decide_plan_nc_not_fired_tsf_not_long_idle_keeps_literal() {
-        // nc_fired=false + TSF mode + Short cold:
-        // IME 準備完了が未確認のため LiteralDetect は有効にして回収する。
-        let obs = ProbeObservations {
-            nc_fired: false,
-            ..Default::default()
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: true,
-            ..Default::default()
-        };
-
-        let plan = decide_transmit_plan(obs, env, false);
-
-        assert!(
-            plan.needs_literal,
-            "nc_fired=false + tsf: IME 準備未確認 → LiteralDetect で保護"
-        );
-    }
-
-    #[test]
-    fn decide_plan_nc_not_fired_tsf_long_idle_keeps_literal() {
-        // Long cold: LiteralDetect が有効（GJI 応答未確認）。
-        let obs = ProbeObservations {
-            nc_fired: false,
-            ..Default::default()
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: true,
-            ..Default::default()
-        };
-
-        let plan = decide_transmit_plan(obs, env, true);
-
-        assert!(plan.needs_literal, "tsf mode: LiteralDetect 有効");
-    }
-
-    #[test]
-    fn decide_plan_nc_fired_suppresses_literal_even_when_gji_active() {
-        // BUG-40（docs/known-bugs.md）で `nc_confirmed = nc_fired || (confirm_key_tsf_hint
-        // && gji_settled)` に整理されて以降、nc_fired=true（NameChange が実発火 = 合成が
-        // 実際に確認された）は常に needs_literal=false になる。この関数は
-        // `426a7f2`（2026-07-19）で追加された旧テスト（旧実装では
-        // `should_prepend_f2` 由来の第1節があり、nc_fired=true でも
-        // gji_active+!is_long_cold なら literal 有効、という別の分岐が生きていた）の
-        // 期待値が、その後の削除・BUG-40整理で古くなったまま残っていたもの。
-        // BUG-40の副次的発見として記録済み（本テスト自体は未修正のまま放置されて
-        // いた）で、2026-07-25にWindows実機CIで実際にassertion failureとして
-        // 顕在化したのを機に、現在の意図された挙動に合わせて更新した。
-        let obs = ProbeObservations {
-            nc_fired: true,
-            ..Default::default()
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: true,
-            ..Default::default()
-        };
-
-        let plan = decide_transmit_plan(obs, env, false);
-
-        assert!(
-            !plan.needs_literal,
-            "nc_fired=true(NameChange確認済み)ならgji_active/is_long_cold問わずLiteralDetect不要のはず(BUG-40)"
-        );
-    }
-
-    #[test]
-    fn decide_plan_medium_cold_keeps_literal_on_ncwait_timeout() {
-        // Medium cold + nc_fired=false → GJI 応答未確認のため
-        // LiteralDetect は有効なまま。
-        let obs = ProbeObservations {
-            nc_fired: false,
-            ..Default::default()
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: true,
-            ..Default::default()
-        };
-
-        let plan = decide_transmit_plan(obs, env, false); // Medium cold
-
-        assert!(plan.needs_literal, "GJI 応答未確認: LiteralDetect 有効");
-    }
-
-    // ── BUG-40 回帰テスト: confirm_key_tsf_hint は gji_settled 必須 ────────────
-    //
-    // `nc_for_plan = nc_fired || (cold_reason.is_confirm_key() && env.is_tsf_mode)`
-    // という旧実装（gji_settled を一切見ない）は、WezTerm の Enter/Space 後に
-    // NameChange が発火しないが GJI は実際に合成中というケース（`3ffbe66`）を
-    // 救済するために書かれた。しかし gji_settled を見ないため、88s idle 後に
-    // probe がわずか16msで完了した genuinely cold なセッション（GJI は未確定、
-    // gji_settled=false）まで同じ条件で誤救済し、reactive LiteralDetect が
-    // 丸ごとスキップされて漏れた romaji ("ke" 等) が無補正で出力された。
-
-    #[test]
-    fn decide_plan_confirm_key_hint_without_settled_keeps_literal() {
-        // confirm_key_tsf_hint=true だが gji_settled=false（genuinely cold, BUG-40
-        // の実トレース相当）: 救済せず LiteralDetect を有効なままにする。
-        let obs = ProbeObservations {
-            nc_fired: false,
-            gji_settled: false,
-            confirm_key_tsf_hint: true,
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: true,
-            ..Default::default()
-        };
-
-        let plan = decide_transmit_plan(obs, env, false);
-
-        assert!(
-            plan.needs_literal,
-            "BUG-40: gji_settled=false のまま confirm_key_tsf_hint だけで救済してはならない"
-        );
-    }
-
-    #[test]
-    fn decide_plan_confirm_key_hint_with_settled_suppresses_literal() {
-        // confirm_key_tsf_hint=true かつ gji_settled=true（WezTerm が実際に I/O を
-        // 返している、3ffbe66 の対象シナリオ）: NameChange 欠落を救済し、誤検出の
-        // backspace で確定済み文字を消さないよう LiteralDetect を抑制する。
-        let obs = ProbeObservations {
-            nc_fired: false,
-            gji_settled: true,
-            confirm_key_tsf_hint: true,
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: true,
-            ..Default::default()
-        };
-
-        let plan = decide_transmit_plan(obs, env, false);
-
-        assert!(
-            !plan.needs_literal,
-            "3ffbe66: gji_settled=true なら NameChange 欠落を救済し LiteralDetect を抑制する"
-        );
-    }
-
-    #[test]
-    fn decide_plan_confirm_key_hint_without_tsf_mode_has_no_effect() {
-        // confirm_key_tsf_hint は is_tsf_mode 前提の救済ヒントであり、それ単体
-        // （gji_settled=true でも）non-TSF では needs_literal に影響しない
-        // （non-TSF は元々 needs_literal の第3項 `env.is_tsf_mode` で false 固定）。
-        let obs = ProbeObservations {
-            nc_fired: false,
-            gji_settled: true,
-            confirm_key_tsf_hint: true,
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: false,
-            gji_active: true,
-            ..Default::default()
-        };
-
-        let plan = decide_transmit_plan(obs, env, false);
-
-        assert!(!plan.needs_literal, "non-TSF: needs_literal は常に false");
-    }
 
     // ── TsfProbeCoro (Chrome) — 犠牲キー撤去後の直接送信回帰テスト ────────────
     //
@@ -961,13 +691,7 @@ mod tests {
         });
 
         assert!(
-            matches!(
-                actions.as_slice(),
-                [ProbeAction::TransmitSingleVk {
-                    target: TransmitTarget::Chrome,
-                    ..
-                }]
-            ),
+            matches!(actions.as_slice(), [ProbeAction::TransmitSingleVk { .. }]),
             "gji_active: per-VK confirm（TransmitSingleVk）を安全網として使う: {actions:?}"
         );
     }
@@ -987,11 +711,7 @@ mod tests {
         assert!(
             actions.iter().any(|a| matches!(
                 a,
-                ProbeAction::Transmit {
-                    plan,
-                    target: TransmitTarget::Chrome,
-                    ..
-                } if !plan.needs_literal
+                ProbeAction::Transmit { plan, .. } if !plan.needs_literal
             )),
             "!gji_active: LiteralDetect 不要のまま直接送信する: {actions:?}"
         );

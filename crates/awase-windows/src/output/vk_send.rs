@@ -1,20 +1,17 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 use super::key_injector::{KeyInjector, VkMarker};
 use super::resolve::{ascii_to_vk, CharResolution};
-use super::{fmt_ms, WarmthContext, WarmupOutcome};
+use super::{fmt_ms, WarmthContext};
 use super::{Output, VkSequence};
 use crate::state::deferred_gate_plan;
-use crate::state::event_origin::Generation;
-use crate::tsf::output::ColdReason;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::warmup::probe_fsm::{DeferredOrigin, TransmitTarget};
+use crate::tsf::warmup::probe_fsm::DeferredOrigin;
 use awase::types::VkCode;
 
-/// ADR-123 変更A+C 決定4-2: `send_romaji_batched`/`send_romaji_as_tsf` の
+/// ADR-123 変更A+C 決定4-2: `send_romaji_batched` の
 /// 新設 `defer_if_probe_in_flight` gate を適用するかどうか。
-/// 既存の TSF gate（`gate_is_bypass()`/`TsfGate::Bypass`、composition context
-/// の bypass 状態）とは無関係の別概念のため命名を分けている。`Exempt` は
-/// `send_romaji_batched_bypass_gate`/`send_romaji_as_tsf_bypass_gate`
+/// （撤去済みの TsfGate とは無関係の別概念。）`Exempt` は
+/// `send_romaji_batched_bypass_gate`
 /// （raw recovery 回収再送・ADR-101 決定3 retry 専用）だけが使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeferGate {
@@ -110,34 +107,6 @@ impl Output {
     }
 }
 
-/// TSF 送信パイプライン（transmit フェーズのみ）。
-///
-/// - `transmit`: VK run で romaji を WezTerm に送信（かな直接の Unicode 送信は ADR-276 で撤去した）
-///
-/// warm パス（`send_romaji_as_tsf` の non-cold ブランチ）と
-/// `do_transmit_tsf`（タイマー FSM からの遅延送信）が使用する。
-pub(crate) struct TsfSendPipeline;
-
-impl TsfSendPipeline {
-    /// VK run を送信し、バックスペース数を返す。
-    #[tracing::instrument(level = "debug", skip_all, fields(romaji = romaji))]
-    pub(crate) fn transmit(
-        romaji: &str,
-        chars: &[(VkCode, bool)],
-        outcome: &WarmupOutcome,
-    ) -> usize {
-        let t_send = crate::hook::current_tick_ms();
-        tracing::debug!(
-            "[tsf-transmit] cold={} romaji={:?} → vk-run t={}ms",
-            outcome.cold_seq.value(),
-            romaji,
-            t_send,
-        );
-        Output::send_vk_runs(chars, outcome.cold_seq);
-        chars.len()
-    }
-}
-
 impl Output {
     /// 表に無い文字を `KEYEVENTF_UNICODE` で直接送信する（`CharResolution::Unicode` のフォールバック）。
     ///
@@ -154,7 +123,7 @@ impl Output {
         self.send_romaji_batched_gated(romaji, DeferGate::Enforced);
     }
 
-    /// ADR-123 変更A+C 決定4-2: `send_romaji_dispatching_on_gate` 経由の
+    /// ADR-123 変更A+C 決定4-2: `send_romaji_recovery` 経由の
     /// raw recovery 回収再送・ADR-101 決定3 retry 専用。新設した
     /// `defer_if_probe_in_flight` の `raw_recovery_owns_deferred()` 判定を
     /// この2経路にだけ適用してはならない——`raw_recovery_owns_deferred()` は
@@ -173,6 +142,7 @@ impl Output {
         self.send_romaji_batched_gated(romaji, DeferGate::Exempt);
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(romaji = romaji))]
     fn send_romaji_batched_gated(&self, romaji: &str, gate: DeferGate) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
@@ -296,7 +266,7 @@ impl Output {
         // 計測値）でも即送信すると先頭 VK がリテラル化する（「を」→「wお」、BUG-13）。
         // 従来 Tsf モードにしか配線していなかったが、IMC_GETCONVERSIONMODE の観測
         // 自体は injection mode に依存しないため Vk モードにも展開する。
-        if self.ms_ime_gate_defer(romaji, TransmitTarget::Chrome, gate) {
+        if self.ms_ime_gate_defer(romaji, gate) {
             return;
         }
 
@@ -310,110 +280,6 @@ impl Output {
         KeyInjector::send_romaji_batch_immediate(romaji, chars);
     }
 
-    /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
-    /// `KeyInjector::send_vk_runs` に委譲する。
-    pub(super) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: Generation) {
-        KeyInjector::send_vk_runs(chars, cold_seq);
-    }
-
-    pub(super) fn send_romaji_as_tsf(&self, romaji: &str) {
-        self.send_romaji_as_tsf_gated(romaji, DeferGate::Enforced);
-    }
-
-    /// `send_romaji_batched_bypass_gate` と対になる TSF 側。理由は同関数の
-    /// doc コメント参照。
-    pub(super) fn send_romaji_as_tsf_bypass_gate(&self, romaji: &str) {
-        self.send_romaji_as_tsf_gated(romaji, DeferGate::Exempt);
-    }
-
-    fn send_romaji_as_tsf_gated(&self, romaji: &str, gate: DeferGate) {
-        let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
-        if chars.is_empty() {
-            return;
-        }
-
-        // KeyInput shadow routing: FSM state track のためだけ（actual send は既存ロジックが担う）。
-        // Response のタイマー操作（LongIdle リセット）は Platform の send_keys が dispatch する。
-        {
-            let resp = self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::KeyInput(
-                crate::tsf::gji_fsm::PendingInput::new(romaji),
-            ));
-            self.warmup_coord.push_key_response(resp);
-        }
-
-        {
-            let ime_suffix = if self.warmup_coord.needs_f2_probe() {
-                let now_ms = crate::hook::current_tick_ms();
-                let last_write_ms = crate::tsf::observer::gji_last_write_ms();
-                let ago = if last_write_ms == 0 {
-                    "never".to_string()
-                } else {
-                    format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
-                };
-                format!("ime=GJI last_write={ago}")
-            } else {
-                "ime=MsIme".to_string()
-            };
-            tracing::info!("[key-output] KeyInput(tsf): romaji={romaji:?} {ime_suffix}");
-        }
-
-        self.drain_pending_deferred_before_send_if_queue_only(gate);
-
-        let WarmthContext {
-            warm,
-            elapsed,
-            prepend_f2_warmup,
-        } = self.assess_warmth();
-
-        tracing::debug!(
-            "[tsf-send] warm={warm} elapsed={}ms prepend_f2_warmup={prepend_f2_warmup}",
-            fmt_ms(elapsed)
-        );
-
-        // ADR-123 変更A+C 決定4-4: `send_romaji_batched_gated` と同じ理由で
-        // `assess_warmth()` の cold/warm 分岐の外に置く（warm 判定でも
-        // gate を通す）。
-        if self.defer_respecting_gate(romaji, gate) {
-            return;
-        }
-
-        if prepend_f2_warmup {
-            // ノンブロッキング warmup を開始して pending_tsf に保留
-            let started =
-                crate::tsf::warmup::cold_warmup::ColdWarmupSequence::new(self).run_start(elapsed);
-            let cold_seq = started.probe.cold_seq;
-            self.gji_begin_probe_guard();
-            let probe_params = self.gji_current_probe_params().unwrap_or_else(|| {
-                tracing::warn!(
-                    "[tsf-send] cold パスだが GjiFsm に Authorized probe が無い（state={})",
-                    self.gji_state_label()
-                );
-                crate::tsf::gji_fsm::ColdKind::Short.probe_params()
-            });
-            let coro = Box::new(crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro::new(
-                romaji,
-                cold_seq,
-                started.probe,
-                started.cold_reason,
-                probe_params.is_long_cold,
-            ));
-            self.install_pending_tsf(coro);
-            // WindowsPlatform::send_keys が TIMER_TSF_PROBE をセットする
-            return;
-        }
-
-        // MS-IME confirm-then-transmit ゲート（BUG-13）:
-        // MsImeStrategy は needs_f2_probe()=false のため上の GJI probe 分岐に入らず、
-        // IME ON 遷移直後（OS 準備に実測 ~130-300ms）でも即送信して先頭 VK がリテラル化
-        // していた（「を」→「wお」）。ImeModeFsm の NATIVE 確認が取れるまで defer する。
-        if self.ms_ime_gate_defer(romaji, TransmitTarget::Tsf, gate) {
-            return;
-        }
-
-        // warm パス: 即座に送信
-        self.send_romaji_as_tsf_warm(romaji, &chars);
-    }
-
     /// MS-IME confirm-then-transmit ゲート（BUG-13）。defer した場合 `true` を返す。
     ///
     /// 発動条件: MS-IME 戦略（GJI probe 非対象）+ `ImeModeFsm` が NATIVE 未確認 +
@@ -421,11 +287,7 @@ impl Output {
     /// ポーリングを開始する。probe 進行中の後続キーは順序維持のため無条件で
     /// deferred キューに積む。
     ///
-    /// `target` は呼び出し元の injection mode に対応する送信先
-    /// （`send_romaji_as_tsf` → `Tsf`、`send_romaji_batched` → `Chrome`）。
-    /// `IMC_GETCONVERSIONMODE` の観測自体は injection mode に依存しないため、
-    /// 呼び出し元を切り替えるだけで両モードに同じゲートを展開できる
-    ///
+    /// 呼び出し元は `send_romaji_batched` だけ（Tsf 注入経路は 2026-10-22 に撤去した）。
     ///
     /// GJI の raw TSF literal 再送経路（`Output::flush_raw_tsf_literal_romaji` から
     /// `send_romaji_batched`/`send_romaji_batched_bypass_gate` 経由で呼ばれる）
@@ -441,7 +303,7 @@ impl Output {
     /// **`gate` を呼び出し元からそのまま引き継ぐこと（2026-09-03 code review
     /// 指摘で修正）**: 以前は内部で無条件に `defer_if_probe_in_flight`
     /// （常に `Enforced` 相当）を直接呼んでおり、`send_romaji_batched_bypass_gate`/
-    /// `send_romaji_as_tsf_bypass_gate`（raw recovery回収再送・ADR-101決定3
+    /// （raw recovery回収再送・ADR-101決定3
     /// retry専用）経由でここに到達した場合でも`raw_recovery_owns_deferred()`
     /// を評価してしまっていた。上記の「GJI由来なら`needs_f2_probe()`で
     /// no-op」という前提が成り立つ間は無害だが、MS-IME戦略の下でこの2経路に
@@ -450,7 +312,7 @@ impl Output {
     /// 防げていなかった）。`defer_respecting_gate`経由にすることで
     /// `gate`が`Exempt`の場合は`raw_recovery_owns_deferred()`を見ない
     /// （`has_pending_tsf()`のみ、PR4以前からの挙動）よう統一した。
-    fn ms_ime_gate_defer(&self, romaji: &str, target: TransmitTarget, gate: DeferGate) -> bool {
+    fn ms_ime_gate_defer(&self, romaji: &str, gate: DeferGate) -> bool {
         // GJI 戦略時は F2 probe 機構（prepend_f2_warmup 分岐）が cold-start を担う。
         if self.warmup_coord.needs_f2_probe() {
             return false;
@@ -469,7 +331,7 @@ impl Output {
             }
             let cold_seq = self.composition.cold_start_count();
             tracing::info!(
-                "[msime-ready] cold={cold_seq} target={target:?} IME mode 未確認 \
+                "[msime-ready] cold={cold_seq} IME mode 未確認 \
                  (state={:?} confirmed={}) → {romaji:?} を defer して IMC 確認待ち",
                 fsm.state(),
                 fsm.is_confirmed(),
@@ -483,109 +345,10 @@ impl Output {
             romaji,
             cold_seq,
             deadline_ms,
-            target,
         ));
         self.install_pending_tsf(coro);
         // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
         true
-    }
-
-    fn send_romaji_as_tsf_warm(&self, romaji: &str, chars: &VkSequence) {
-        let t_warm = crate::hook::current_tick_ms();
-        let cold_seq = self.composition.cold_start_count();
-
-        tracing::debug!(
-            "[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={t_warm}ms",
-            cold_seq = cold_seq.value(),
-        );
-        let outcome = WarmupOutcome { cold_seq };
-
-        {
-            // 診断ログ: IMC_GETCONVERSIONMODE は SendMessageTimeoutW を呼ぶため、
-            // with_app 再入を避けるため async タスクへオフロードする (Step 3)。
-            // ログ出力タイミングが数 ms 遅れるが診断用途のため許容。
-            let last_io = crate::tsf::observer::gji_last_io_ms();
-            let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
-            let romaji_owned: String = romaji.to_string();
-            let chars_len = chars.len();
-            win32_async::spawn_local(async move {
-                let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
-                tracing::debug!(
-                    "[h1-send] cold={cold_seq} romaji={romaji_owned:?} chars={chars_len} gji_idle={gji_idle}ms \
-                     conv={} ROMAN={} NATIVE={}",
-                    conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
-                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
-                    cold_seq = cold_seq.value(),
-                );
-            });
-        }
-
-        // warm パスは送るだけで、語単位の事後確認（旧 `LiteralDetectFsm`）は置かない。設置の条件
-        // （`TsfGate` が Probing かつ非 Tsf モード）は CI で 1 度も成立しなかったため撤去した
-        // （ECRS MB-02、docs/tasks/mech-ecrs-2026-10-21/probe-mb0203-result.md）。
-        let _ = TsfSendPipeline::transmit(romaji, chars, &outcome);
-    }
-
-    /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）
-    ///
-    /// かな文字はローマ字に逆変換してから `send_romaji_as_tsf` で送信する。
-    /// 記号は symbol_to_vk テーブルで直接 VK コードに変換する。
-    /// マッチしない場合は Unicode 直接出力にフォールバックする。
-    pub(super) fn send_char_as_tsf(&self, ch: char) {
-        match self.injector.resolve_char(ch) {
-            CharResolution::Romaji(romaji) => {
-                tracing::debug!("    send_char_as_tsf: '{ch}' → romaji \"{romaji}\"");
-                self.send_romaji_as_tsf(romaji);
-            }
-            CharResolution::Vk(vk, needs_shift) => {
-                // ASCII 1 文字で表現できる記号（。→'.'、、→','、ー→'-'、Shift 付きの
-                // ！→'!'/？→'?'/～→'~' 等も含め build_symbol_to_vk の全記号）は
-                // romaji 送信経路（send_romaji_as_tsf）へ合流させる。これにより
-                // assess_warmth() によるcold-startウォームアップ判定・probe設置・
-                // MS-IME confirmゲートを記号送信でも通す（2026-08-03/2026-08-05
-                // ユーザー報告 BUG-47: cold な TSF へ記号 VK を無条件送信すると
-                // 変換されず半角のまま出力される。docs/known-bugs.md BUG-47 参照）。
-                // warm パスは既存の send_vk_pair(vk, needs_shift, VkMarker::Tsf) と
-                // バイト列が同一になるよう vk_pair_to_ascii を ascii_to_vk の厳密な
-                // 逆写像として設計してある（vk.rs のラウンドトリップテスト参照）。
-                if let Some(ascii) = crate::vk::vk_pair_to_ascii(vk, needs_shift) {
-                    tracing::debug!(
-                        "    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift} \
-                         → romaji \"{ascii}\" 経由 (cold-start保護あり)"
-                    );
-                    let mut buf = [0u8; 4];
-                    self.send_romaji_as_tsf(ascii.encode_utf8(&mut buf));
-                    return;
-                }
-                tracing::debug!("    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
-                // probe 進行中は VK を後回しにして romaji との送信順序を保証する
-                // （このフォールバック自体が現状理論上到達しない。理由は下の
-                // send_vk_pair 直後のコメント参照）。
-                if self.defer_vk_if_probe_in_flight(vk, needs_shift, DeferredOrigin::UserInput) {
-                    tracing::debug!(
-                        "    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)"
-                    );
-                    return;
-                }
-                Self::send_vk_pair(vk, needs_shift, VkMarker::Tsf);
-                // 2026-08-05 修正で vk_pair_to_ascii が build_symbol_to_vk の全記号
-                // （Shift 付きを含む）をカバーしたため、このフォールバックは
-                // resolve_char が build_symbol_to_vk 以外から VK を返すようになった
-                // 場合の保険としてのみ残る（現状は理論上到達しない）。到達した場合の
-                // 安全側の挙動として常に cold マークする。
-                self.mark_composition_cold(ColdReason::SymbolVkSent);
-                self.warmup_coord.mark_composition_reset();
-                // eager warmup は送らない(以前は、実送信されない `WarmupImeOn::off()` を渡す呼び出しがあった。デッドコード。ADR-212 P1)。
-            }
-            CharResolution::Unicode(ch) => {
-                tracing::debug!(
-                    "    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode",
-                    ch as u32
-                );
-                self.send_unicode_char(ch);
-            }
-        }
     }
 
     /// 文字を VK キーストロークとして送信する（Chrome モード用）
@@ -610,7 +373,6 @@ impl Output {
             CharResolution::Vk(vk, needs_shift) => {
                 // ASCII 1 文字で表現できる記号（Shift 付きを含む build_symbol_to_vk
                 // の全記号）は romaji 送信経路（send_romaji_batched）へ合流させる。
-                // send_char_as_tsf 側の同種修正と対称（コメント参照）。
                 // 2026-08-03/2026-08-05 ユーザー報告 BUG-47。
                 if let Some(ascii) = crate::vk::vk_pair_to_ascii(vk, needs_shift) {
                     tracing::debug!(
@@ -664,6 +426,7 @@ impl Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::event_origin::Generation;
 
     // ── drain_pending_deferred_before_send_if_queue_only テスト（ADR-123
     // 変更A+C 決定4-3）────────────────────────────────────────────────

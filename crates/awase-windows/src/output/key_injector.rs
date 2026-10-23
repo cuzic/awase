@@ -3,12 +3,10 @@
 //! `Output` は Facade として本構造体を保持し、低レベルのキー注入操作を委譲する。
 
 use super::resolve::CharResolution;
-use crate::state::event_origin::Generation;
 use crate::tsf::output::{make_key_input_ex, INJECTED_MARKER};
 use crate::vk::VK_LSHIFT;
 use awase::kana_table::KanaTable;
 use awase::types::VkCode;
-use itertools::Itertools as _;
 use std::collections::HashMap;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY,
@@ -20,13 +18,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 ///   INJECTED_MARKER。TSF 側の `make_tsf_key_input` と同じ construction を
 ///   使うが marker は `INJECTED_MARKER` のまま = 既存の自己注入識別を変えない）。
 ///   2026-07-19 に scan code 付与を実機ソークで確認済み（`f3a39a0`）、恒久仕様。
-/// - `Tsf`:      WezTerm TSF モード、scan code 付き（TSF_MARKER）
+///
+/// 旧 `Tsf`（WezTerm 等の Tsf 注入モード、TSF_MARKER）は Tsf 注入経路の撤去（2026-10-22）で削除した。
 ///
 /// LSHIFT は常に INJECTED_MARKER（scan なし）のため、このマーカーは VK 本体にのみ適用する。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VkMarker {
     InjectedWithScan,
-    Tsf,
 }
 
 impl VkMarker {
@@ -35,7 +33,6 @@ impl VkMarker {
             Self::InjectedWithScan => {
                 crate::tsf::output::make_scan_key_input(vk, is_keyup, INJECTED_MARKER)
             }
-            Self::Tsf => crate::tsf::output::make_tsf_key_input(vk, is_keyup),
         }
     }
 }
@@ -69,7 +66,7 @@ impl KeyInjector {
 
     /// 文字の送信方法をルックアップテーブルで解決する。
     ///
-    /// `send_char_as_tsf` / `send_char_as_vk` が共通で使う 3 段ルックアップ。
+    /// `send_char_as_vk` が使う 3 段ルックアップ。
     #[must_use]
     pub(super) fn resolve_char(&self, ch: char) -> CharResolution<'_> {
         if let Some(romaji) = self.kana_table.romaji_for_kana(ch) {
@@ -218,34 +215,6 @@ impl KeyInjector {
         for run in Self::split_vk_runs(chars) {
             let n = Self::send_vk_run_batch(run, VkMarker::InjectedWithScan);
             tracing::debug!("[vk-send] romaji={romaji:?} batch {n} inputs");
-        }
-    }
-
-    fn format_vk_run(run: &[(VkCode, bool)]) -> String {
-        run.iter()
-            .map(|&(v, s)| {
-                if s {
-                    format!("S{v:02X}")
-                } else {
-                    format!("{v:02X}")
-                }
-            })
-            .join(",")
-    }
-
-    /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
-    pub(crate) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: Generation) {
-        let runs = Self::split_vk_runs(chars);
-        let total_runs = runs.len();
-
-        for (run_idx, run) in runs.into_iter().enumerate() {
-            let run_gji_idle = crate::tsf::observer::gji_idle_ms();
-            tracing::debug!(
-                "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
-                Self::format_vk_run(run),
-                cold_seq = cold_seq.value(),
-            );
-            Self::send_vk_run_batch(run, VkMarker::Tsf);
         }
     }
 

@@ -19,6 +19,8 @@ const REMOVED_KEYS: &[&str] = &[
     "diagnostics.indicator_menu_shadow",
     // 2026-10-22 退役(ADR-276 で既定が全部 VK)。空でないときだけ通知する(`REMOVED_WITH_VALUE_NOTICE`)。
     "app_overrides.force_vk",
+    // 2026-10-22 撤去(Tsf 注入経路の撤去、ADR-0004 追記。すべて VK で送る)。空でないときだけ通知する。
+    "app_overrides.force_tsf",
     "indicator_evidence.menu",
     "calibration",
 ];
@@ -61,7 +63,69 @@ const REMOVED_WITH_VALUE_NOTICE: &[&str] = &[
     "general.gji_thumb_key_ime_toggle",
     "general.dbe_mode_key_policy",
     "app_overrides.force_vk",
+    "app_overrides.force_tsf",
 ];
+
+/// `app_overrides.<key>` が空でない配列か。
+fn app_override_list_is_nonempty(root: &toml::Table, key: &str) -> bool {
+    root.get("app_overrides")
+        .and_then(toml::Value::as_table)
+        .and_then(|a| a.get(key))
+        .and_then(toml::Value::as_array)
+        .is_some_and(|v| !v.is_empty())
+}
+
+/// 旧版の同梱 `config.toml` の `force_tsf` の値。
+///
+/// v1.5.0 以降は WezTerm・Windows Terminal の 2 件、v0.1.0〜v1.4.0 は WezTerm の 1 件(`4e49ee1b` で WT を足す前)。
+/// 更新した利用者の `config.toml`(Scoop は persist する)には、自分で書いていないこの値が残っているので、
+/// どちらかとちょうど同じときは通知しない(PR #809 レビュー m4・再レビュー N3。既定値は通知しない方針、上の表の doc)。
+const RETIRED_DEFAULT_FORCE_TSF: &[&[(&str, &str)]] = &[
+    &[
+        ("wezterm-gui.exe", "org.wezfurlong.wezterm"),
+        ("WindowsTerminal.exe", "CASCADIA_HOSTING_WINDOW_CLASS"),
+    ],
+    &[("wezterm-gui.exe", "org.wezfurlong.wezterm")],
+];
+
+/// `app_overrides.force_tsf` が旧版の同梱の既定値(順不同、大文字小文字は区別しない)とちょうど同じか。
+fn force_tsf_is_retired_default(root: &toml::Table) -> bool {
+    let Some(list) = root
+        .get("app_overrides")
+        .and_then(toml::Value::as_table)
+        .and_then(|a| a.get("force_tsf"))
+        .and_then(toml::Value::as_array)
+    else {
+        return false;
+    };
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for v in list {
+        let Some(t) = v.as_table() else {
+            return false;
+        };
+        let field = |k: &str| {
+            t.get(k)
+                .and_then(toml::Value::as_str)
+                .map(str::to_ascii_lowercase)
+        };
+        let (Some(process), Some(class)) = (field("process"), field("class")) else {
+            return false;
+        };
+        if t.len() != 2 {
+            return false;
+        }
+        entries.push((process, class));
+    }
+    entries.sort();
+    RETIRED_DEFAULT_FORCE_TSF.iter().any(|default| {
+        let mut expected: Vec<(String, String)> = default
+            .iter()
+            .map(|(p, c)| (p.to_ascii_lowercase(), c.to_ascii_lowercase()))
+            .collect();
+        expected.sort();
+        entries == expected
+    })
+}
 
 /// 値が既定でない撤去済みキーの通知文を集める。`root` は config.toml 全体の表。
 #[must_use]
@@ -91,18 +155,18 @@ pub fn removed_value_notices(root: &toml::Table) -> Vec<String> {
                 .to_string(),
         );
     }
-    // 2026-10-22: force_vk は既定(VK)と同じになったので退役。旧版が自動昇格で TSF に上げていた窓は
-    // force_tsf に足す必要がある(cache.toml の [injection_mode] も読まなくなった)。
-    if root
-        .get("app_overrides")
-        .and_then(toml::Value::as_table)
-        .and_then(|a| a.get("force_vk"))
-        .and_then(toml::Value::as_array)
-        .is_some_and(|v| !v.is_empty())
-    {
+    // 2026-10-22: force_vk は既定(VK)と同じになったので退役。
+    if app_override_list_is_nonempty(root, "force_vk") {
         out.push(
-            "app_overrides.force_vk は不要になりました(既定がすべて VK 注入になったため)。値は無視されます。\
-             TSF で送りたいアプリは force_tsf に書いてください。\
+            "app_overrides.force_vk は不要になりました(すべて VK で送るため)。値は無視されます。\
+             config.toml から削除してください（設定画面で保存しても消えます）"
+                .to_string(),
+        );
+    }
+    // 2026-10-22: Tsf 注入経路(VK Sequential)を撤去したので force_tsf も不要(ADR-0004 追記)。
+    if app_override_list_is_nonempty(root, "force_tsf") && !force_tsf_is_retired_default(root) {
+        out.push(
+            "app_overrides.force_tsf は不要になりました(すべて VK で送るため)。値は無視されます。\
              config.toml から削除してください（設定画面で保存しても消えます）"
                 .to_string(),
         );
@@ -228,7 +292,7 @@ mod tests {
             assert!(!is_removed_key(p), "無警告の表に重複登録しない: {p}");
         }
         assert!(removed_notice("keys.engine_on").is_none());
-        assert_eq!(removed_notice_paths().count(), 7);
+        assert_eq!(removed_notice_paths().count(), 8);
     }
 
     #[test]
@@ -257,11 +321,38 @@ mod tests {
             "[app_overrides]\nforce_vk = [{ process = \"a.exe\", class = \"A\" }]\n",
         ));
         assert_eq!(m.len(), 1);
-        assert!(
-            m[0].contains("force_vk") && m[0].contains("force_tsf"),
-            "{m:?}"
-        );
+        assert!(m[0].contains("force_vk") && m[0].contains("不要"), "{m:?}");
         assert!(removed_value_notices(&t("[app_overrides]\nforce_vk = []\n")).is_empty());
+        let m = removed_value_notices(&t(
+            "[app_overrides]\nforce_tsf = [{ process = \"a.exe\", class = \"A\" }]\n",
+        ));
+        assert_eq!(m.len(), 1);
+        assert!(m[0].contains("force_tsf") && m[0].contains("不要"), "{m:?}");
+        assert!(removed_value_notices(&t("[app_overrides]\nforce_tsf = []\n")).is_empty());
+        // 旧版の同梱の既定値(v1.5.0 以降の 2 件〈順不同〉・v1.4.0 以前の WezTerm 1 件)だけなら通知しない(m4・N3)。
+        // 違えば通知する。
+        assert!(removed_value_notices(&t(
+            "[app_overrides]\nforce_tsf = [\n  { process = \"WindowsTerminal.exe\", class = \"CASCADIA_HOSTING_WINDOW_CLASS\" },\n  { process = \"wezterm-gui.exe\", class = \"org.wezfurlong.wezterm\" },\n]\n"
+        ))
+        .is_empty());
+        assert!(removed_value_notices(&t(
+            "[app_overrides]\nforce_tsf = [\n  { process = \"wezterm-gui.exe\", class = \"org.wezfurlong.wezterm\" },\n]\n"
+        ))
+        .is_empty());
+        assert_eq!(
+            removed_value_notices(&t(
+                "[app_overrides]\nforce_tsf = [\n  { process = \"WindowsTerminal.exe\", class = \"CASCADIA_HOSTING_WINDOW_CLASS\" },\n]\n"
+            ))
+            .len(),
+            1
+        );
+        assert_eq!(
+            removed_value_notices(&t(
+                "[app_overrides]\nforce_tsf = [\n  { process = \"wezterm-gui.exe\", class = \"org.wezfurlong.wezterm\" },\n  { process = \"alacritty.exe\", class = \"Window Class\" },\n]\n"
+            ))
+            .len(),
+            1
+        );
         for p in REMOVED_WITH_VALUE_NOTICE {
             assert!(is_removed_key(p), "ログ警告は出さない表にも載せる: {p}");
         }

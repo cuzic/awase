@@ -894,9 +894,8 @@ unsafe extern "system" fn win_event_proc(
 ) {
     use std::sync::atomic::{AtomicIsize, Ordering as AtomicOrdering};
     // 同一 HWND からの連続 EVENT_OBJECT_FOCUS は Chrome / UWP の子オブジェクト由来で
-    // 数 ms 間隔で多発する。毎回 TsfGate を PendingWarmup に巻き戻すと、
-    // ユーザーが押下した文字キーが held queue ごと破棄されて入力ロスする
-    // （特に Chrome で文字入力不能になる症状）。
+    // 数 ms 間隔で多発する。毎回フォーカス変更として扱うと、IME リフレッシュの再スケジュール等が
+    // 連発する（当初の理由は旧 TsfGate〈2026-10-22 撤去〉の held queue が破棄されて入力ロスすることだった）。
     // HWND が変わっていない場合は早期 return する。
     static LAST_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
 
@@ -911,7 +910,7 @@ unsafe extern "system" fn win_event_proc(
     // BUG-202: コンテキストメニュー（クラス `#32768`）の項目がハイライトされると（マウスのホバー・
     // キーボード）、メニュー窓へ `EVENT_OBJECT_FOCUS` が出る。メニューは元の窓にフォーカスを残した
     // まま別の窓へこのイベントを出すだけで、入力先は変わらない。これを窓の切替として扱うと
-    // `tsf-gate` が `PendingWarmup` に戻って held の打鍵が捨てられ、フォーカス窓の分類も走る。
+    // フォーカス窓の分類が走る（当時は旧 TsfGate の held 破棄も起きた。TsfGate は 2026-10-22 撤去）。
     // **重複排除（`LAST_FOCUS_HWND`）より前で弾く**: 後だと `LAST_FOCUS_HWND` がメニュー窓に
     // 上書きされ、メニューを閉じて元の窓へ戻る `FOCUS` が「新しい窓」として再び拾われる。
     if crate::focus::class_names::is_popup_menu_window_class(
