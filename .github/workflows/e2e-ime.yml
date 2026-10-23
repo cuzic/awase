@@ -78,7 +78,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/adr279-stage0' && 'adr279-*,sc-driftrecovery-ctrlmuhenkan-*') || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || (github.ref_name == 'fix/bug-207-mozc-server-io-monitor' && '*-mozc-*,ts-raw-*-gji-cold-*,ts-raw-*-gji-idle-*,ts-raw-*-gji-longidle-*,ts-tsf-gji-40ms,ts-tsf-gji-10ms,ts-tsf-msime-40ms,ts-tsf-msime-10ms') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/adr279-stage0' && 'adr279-*,sc-driftrecovery-ctrlmuhenkan-*,ts-tsf-gji-40ms,ts-edit-gji-40ms,ts-tsf-msime-40ms,ts-edit-msime-40ms') || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || ((github.ref_name == 'ci/e2e-focus-restore-13-17' || github.ref_name == 'ci/adr245-pr3-strict-focusrestore' || github.ref_name == 'feat/adr245-r2-resume-hold') && 'sc-focusrestore-*') || (github.ref_name == 'ci/e2e-f16-alnum-chrome' && 'sc-f16-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-java-office' && 'tsx-ext-*,tsx-raw-ext-*') || (github.ref_name == 'fix/bug189-most-recent-trusted' && 'tsx-ext-flutter-*,tsx-ext-libreoffice-*,tsx-ext-wx-*,tsx-ext-qt-*,tsx-ext-wf-textbox-*') || (github.ref_name == 'feat/adr260-eisu-toggle-guard' && 'sc-eisu-km-*,sc-bug186-*,sc-shift-*') || (github.ref_name == 'fix/bug-207-mozc-server-io-monitor' && '*-mozc-*,ts-raw-*-gji-cold-*,ts-raw-*-gji-idle-*,ts-raw-*-gji-longidle-*,ts-tsf-gji-40ms,ts-tsf-gji-10ms,ts-tsf-msime-40ms,ts-tsf-msime-10ms') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -998,6 +998,9 @@ jobs:
           Copy-Item target\debug\examples\compartment_notify_probe.exe dist\
           Copy-Item target\debug\examples\compartment_notify_probe_diag.exe dist\
           Copy-Item target\debug\examples\typing_stress.exe dist\
+          # ADR-279 段階 0(S0-3、ci/adr279-stage0 だけ): lang_detect の影の判定に要る n-gram を exe の隣へ置く(無いと影の判定ごと Off)。
+          New-Item -ItemType Directory -Force -Path dist\data | Out-Null
+          Copy-Item data\ngram_hiragana.csv.gz dist\data\
           # tsx-bugreport-*(typing_stress --form=bugreport)が実体を起動するのに要る。typing_stress.exe と同じ dist\ に置く。
           if ('${{ matrix.cfg.name }}' -eq 'baseline') { Copy-Item target\debug\awase-settings.exe dist\ }
           Copy-Item target\debug\examples\chrome_probe.exe dist\
