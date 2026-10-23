@@ -3,7 +3,7 @@ id: ADR-049
 title: |-
   TSF mode LiteralDetect と WezTerm long-idle warm 維持パターン
 status: |-
-  一部撤去(2026-10-04 確認)。RawTsfLiteralRecovery・SuspectedLiteral による literal 検出・回収は現存。WezTerm long-idle 対策の NameChangeWait/eager F2 待機は d4956490 で撤去され per-VK confirm に一本化。旧: 採用済み
+  一部撤去(2026-10-22 追記: warm パスの LiteralDetectFsm・LiteralDetectCore も撤去、ECRS MB-02)。一部撤去(2026-10-04 確認)。RawTsfLiteralRecovery・SuspectedLiteral による literal 検出・回収は現存。WezTerm long-idle 対策の NameChangeWait/eager F2 待機は d4956490 で撤去され per-VK confirm に一本化。旧: 採用済み
 related_adr:
   - "ADR-034"
   - "ADR-046"
@@ -128,6 +128,21 @@ LiteralDetect の `is_tsf_mode()` が誤った値を返す問題があった（c
 
 > タイミング競合を固定値で回避しようとすると別の閾値に競合が移るだけ。
 > リテラルを検出してから warm 状態で再送する方が、アプリの初期化遅延に依存しない。
+
+## 追記(2026-10-22): warm パスの LiteralDetect を撤去(ECRS MB-02)
+
+本 ADR が置いた warm パスの語単位 literal 検出(`send_romaji_as_tsf_warm` の `LiteralDetectFsm`、判定コア
+`LiteralDetectCore`、候補可視 veto と `GJI_CANDIDATE_VETO_CAP_MS`)を撤去した。
+
+- 設置の条件は `TsfGate` が Probing かつ GJI かつ long idle でない かつ**非 Tsf モード**だった。WezTerm 等の Tsf モード
+  (本 ADR の対象)は後の変更で `Skip(TsfMode)` になっており、本 ADR の目的の経路には既に届いていなかった。
+- GitHub の Windows CI(e2e-ime.yml)で到達を数えた。Windows Terminal(force_tsf=Tsf モード)を含む 2 run・約 470 ジョブで、
+  warm 送信 4,800 回は全件 `gate=Ready`・`is_tsf_mode=true`、`Install` は 0 件。Tsf モード以外の構成では warm パス自体に
+  1 度も入らなかった(raw recovery の再送 72 回はすべて gate=Bypass の一括送信)。**0 件は証明ではなく証拠**。
+  手順と数字は `docs/tasks/mech-ecrs-2026-10-21/probe-mb0203-result.md`。
+- 残したもの: per-VK confirm(`run_per_vk_confirm`)の回収(`per_vk_recovery_params`・`emit_recovery_actions`)、
+  `RawTsfLiteralRecovery`、`TsfGate` の Probing/Ready の区別(MB-03 は、Probing が `BypassConfirmed` を受け、Ready が無視する
+  違いがあるため、同じ PR では統合しない)。
 
 ## 関連 ADR
 

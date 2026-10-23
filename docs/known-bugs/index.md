@@ -220,7 +220,7 @@
 | [BUG-207](BUG-207.md) | 修正を PR にした(2026-10-18、CI 待ち)。実機の確認は未実施 | Mozc Readable で入力すると、awase が raw-tsf-literal と誤判定して入力した文字をバックスペースで消す(I/O の監視が GoogleIMEJaConverter に固定され、Mozc 系の mozc_server を見ていない) |
 | [BUG-208](BUG-208.md) | 修正を PR にした(2026-10-19)。実機の確認は未実施 | Mozc Readable で、ひらがなにはなるのに変換候補にならない(GJI 用の PendingGjiConfirm と eager unicode が Mozc で永久に続き、かなが直接送られる) |
 | [BUG-209](BUG-209.md) | 修正を PR にした(2026-10-19)。実機は未確認 | Mozc Readable で、cold の最初のローマ字がリテラルになる(「をもと」→「wo もと」。BUG-208 の修正が露出させた) |
-| [BUG-210](BUG-210.md) | 修正を PR にした(2026-10-20)。実害は未確認 | warm パスの literal 検出ベースラインが送信後に取られ、応答の速い GJI の write が吸収されて literal と誤判定しうる |
+| [BUG-210](BUG-210.md) | 対象のコードごと撤去(2026-10-22、ECRS MB-02) | warm パスの literal 検出ベースラインが送信後に取られ、応答の速い GJI の write が吸収されて literal と誤判定しうる |
 | [BUG-211](BUG-211.md) | 未修正(2026-10-22、擬似 IME の全列挙で発見)。実害は未確認 | 入力中の BS(予測なし)の後、予測器の追跡の段階が Typing のまま残り、未確定文字が空になった後の変換・無変換・英数・半角/全角・IME OFF の開閉を誤予測する |
 | [BUG-212](BUG-212.md) | 未修正(2026-10-22、擬似 IME の全列挙で発見)。実害は未確認 | GJI の MS-IME プリセットで半角カタカナ(conv 0x13)のとき、予測器は 0x13 を表せずひらがなとみなし、英数キーを「半角英数へ」と予測する(実 IME はひらがなへ) |
 | [BUG-213](BUG-213.md) | 修正を PR にした(2026-10-22)。実害は CI で再現 | トレイ・engine_toggle_hotkey 起点の ON が、押下 ID が無い(press=None)ため applied の「すでに一致」で省かれ、実 IME が閉じたまま残る(実 Chrome × GJI)

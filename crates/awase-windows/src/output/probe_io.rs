@@ -541,21 +541,10 @@ where
                     // TSF/Chrome 共通で write-bytes 閾値 + 候補ウィンドウ SHOW の OR 判定を使う
                     // （BUG-30 で target 分岐を撤去して統一）。
                     //
-                    // veto_eligible=false: この per-VK 経路（`run_per_vk_confirm` /
-                    // `await_vk_detection`）は `LiteralDetector` を `check_now`/
-                    // `visible_fencing_verdict`/`evidence_now` から直接呼ぶだけで、
-                    // `veto_eligible()` の唯一の読み手である `LiteralDetectCore::poll`
-                    // （`tsf/warmup/literal_detect_fsm.rs`）は経由しない。したがって
-                    // この `false` は現状どの経路からも読まれない（ADR-122 round 2
-                    // で確認、`docs/adr/122-cold-start-per-vk-confirm-race-recovery.md`
-                    // 参照）。値そのものは「前の VK が開いた候補ウィンドウを今回の
-                    // VK の証拠に誤用しない」という意図を保持するため `false` の
-                    // ままにしてあるが、per-VK 経路に候補可視 veto を実際に効かせる
-                    // には別途 `LiteralDetectCore`/`veto_decision` 相当のゲートを
-                    // このループに新設する必要がある（未実装、ADR-122 決定案参照）。
+                    // 候補可視による backspace の veto（旧 `LiteralDetectCore::veto_decision`）は
+                    // per-VK 経路には無い（ADR-122 round 2）。語単位の検出コアは ECRS MB-02 で撤去した。
                     let detector = crate::tsf::probe::LiteralDetector::new_with_pre_send_baseline(
                         crate::tsf::observer::gji_write_bytes(),
-                        false,
                     );
                     // 注入の記録は send_single_*_vk 自身が note_stage_injection で行う。
                     // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
@@ -652,21 +641,6 @@ where
                     if mark_literal_session {
                         crate::tsf::observer::mark_literal_session_confirmed(cold_seq);
                     }
-                }
-
-                ProbeAction::LiteralDetectNote { cold_seq, facts } => {
-                    trace
-                        .0
-                        .push(LiteralDetectTraceItem::Verdict(LiteralDetectRecord {
-                            cold_seq,
-                            facts,
-                            consecutive_before: io.consecutive_count(),
-                            gave_up: false,
-                            backs: 0,
-                            escape_composition: false,
-                            session_marked: false,
-                            romaji: None,
-                        }));
                 }
             }
         }
