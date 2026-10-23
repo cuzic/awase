@@ -35,6 +35,16 @@ on:
         type: string
         required: false
         default: ''
+      journal_json:
+        description: "ADR-278: 'on' で journal の JSON 行(コーパス)を result-*/journal.jsonl に出し、corpus-replay ジョブで再生する"
+        type: string
+        required: false
+        default: ''
+      replay_run:
+        description: 'ADR-278: 別の run の result-*/journal.jsonl をこの ref のコードで再生だけする(run ID。指定すると e2e は回さない)'
+        type: string
+        required: false
+        default: ''
   push:
     branches: [ci/e2e-ime, ci/e2e-f16-alnum-chrome, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-java-office, fix/bug189-most-recent-trusted, feat/adr260-eisu-toggle-guard, feat/adr245-r2-resume-hold, fix/bug-207-mozc-server-io-monitor]
     paths:
@@ -48,6 +58,14 @@ on:
     inputs:
       only:
         description: '実行する構成名(カンマ区切り、空なら全構成、末尾*は前方一致)。例: baseline,a5-no-refresh20,sc-*'
+        required: false
+        default: ''
+      journal_json:
+        description: "ADR-278: 'on' で journal の JSON 行(コーパス)を result-*/journal.jsonl に出し、corpus-replay ジョブで再生する"
+        required: false
+        default: ''
+      replay_run:
+        description: 'ADR-278: 別の run の result-*/journal.jsonl をこの ref のコードで再生だけする(run ID。指定すると e2e は回さない)'
         required: false
         default: ''
 
@@ -68,6 +86,8 @@ env:
 
 jobs:
   plan:
+    # ADR-278: replay_run を指定したときは e2e を回さず、corpus-replay だけを動かす。
+    if: ${{ !inputs.replay_run }}
     runs-on: ubuntu-latest
     outputs:
       configs: ${{ steps.p.outputs.configs }}
@@ -1328,6 +1348,11 @@ jobs:
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n[imm_capability.`"typing_stress.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
+          # ADR-278: コーパスを集める run だけ、journal の JSON 行を別ファイル(journal.jsonl)へ出す。awase.log には混ぜない。
+          if ('${{ inputs.journal_json }}' -eq 'on') {
+            $env:RUST_LOG = 'debug,awase::journal_json=trace'
+            $env:AWASE_JOURNAL_JSON = "$env:GITHUB_WORKSPACE\journal.jsonl"
+          }
           # 順序: スパイクを先に起動し、初期化(TSF/ActivateProfile)が終わってから awase を起動する。
           # スパイクの初期化中に awase がIMMをプローブすると応答が無く、3回連続の miss で Edit を「IMM不可」と
           # 誤学習して conv を読まなくなる。--activate-gji はキーフックをawase起動後に遅延インストールし、
@@ -1598,6 +1623,7 @@ jobs:
             dist/chrome_probe.log
             awase-stderr.log
             awase-filtered.log
+            journal.jsonl
             invariants.txt
             invariants.json
             inv_rc.txt
@@ -1606,9 +1632,42 @@ jobs:
             cpu.csv
           retention-days: 7
 
+  # ADR-278 段階 1: コーパス(result-*/journal.jsonl)を、この ref のコードの純粋な決定関数で再生し、記録と食い違う件を全件出す。
+  # journal_json=on の run では同じ run の記録を(自己一致の確認)、replay_run を指定した run ではその run の記録を(基準版で取った
+  # コーパスを候補版で再生する 2 コミットの比較)。一致は「再生した決定関数の出力が同じ」ことだけを言う(殻・実 IME の結果は見ない)。
+  corpus-replay:
+    needs: [e2e]
+    if: ${{ always() && (inputs.journal_json == 'on' || inputs.replay_run) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: コーパスを取得する
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.replay_run || github.run_id }}
+        run: |
+          mkdir -p corpus
+          gh run download "$RUN" -R "${{ github.repository }}" -p 'result-*' -D corpus
+          find corpus -name journal.jsonl | wc -l
+          find corpus -name journal.jsonl -exec wc -c {} + | tail -1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 再生する
+        run: |
+          AWASE_CORPUS_DIR="$PWD/corpus" cargo test -p awase-ime-core --lib corpus_replay::tests::env_corpus_replays_without_mismatch -- --nocapture 2>&1 | tee replay.txt
+          { echo '## corpus replay (ADR-278)'; echo "run: ${{ inputs.replay_run || github.run_id }} / code: ${{ github.sha }}"; echo '```'; grep -E '^corpus:|^  (type|MISMATCH) ' replay.txt | head -300; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep -q 'test result: ok. 1 passed' replay.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corpus-replay
+          path: replay.txt
+          retention-days: 7
+
   summary:
     needs: [plan, e2e]
-    if: always()
+    if: ${{ always() && !inputs.replay_run }}
     runs-on: ubuntu-latest
     steps:
       # Wilson 区間(stats_util.py)を使うため。

@@ -406,7 +406,7 @@ impl<'de> serde::Deserialize<'de> for ActuationDecisionRecord {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::focus::class_names::AppImeProfile;
     use crate::state::actuation_chain::{
@@ -505,7 +505,7 @@ mod tests {
     /// 1レコード分の再生。`decide_gate`/`decide_chain`/`decide_attempt`を
     /// 記録済み入力へ再度通し、記録済みの判定・chain・commandと不一致な点を
     /// 文字列のVecとして返す（空なら全一致）。
-    fn replay_record(record: &ActuationDecisionRecord) -> Vec<String> {
+    pub(crate) fn replay_record(record: &ActuationDecisionRecord) -> Vec<String> {
         let mut failures = Vec::new();
 
         let gate = decide_gate(record.gate_inputs);

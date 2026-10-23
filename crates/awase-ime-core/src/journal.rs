@@ -1755,6 +1755,7 @@ impl JournalEnvelope {
     /// `UnifiedJournal::absorb` の内側だけ（1箇所）。
     fn emit_tracing(&self) {
         self.entry.emit_tracing(self.seq, self.elapsed_ms);
+        emit_json_line(self);
     }
 }
 
@@ -1767,6 +1768,28 @@ pub struct UnifiedJournal {
     start: quanta::Instant,
     lanes: JournalLanes,
     next_seq: Arc<AtomicU64>,
+}
+
+/// [`emit_json_line`] の tracing target。CI は `RUST_LOG=debug,awase::journal_json=trace` で有効にし、
+/// `awase.log` の行からこの target の後ろを切り出す(`.github/workflows/e2e-ime.yml` の入力 `journal_json`)。
+pub const JOURNAL_JSON_TARGET: &str = "awase::journal_json";
+
+/// ADR-278 決定 1: target `awase::journal_json` が TRACE で有効なときだけ、envelope 全体を 1 行の JSON で出す
+/// (既定の `RUST_LOG` では出ない)。実機 CI のコーパス(決定の差分の再生の入力)用。リングを通らないので消えず、
+/// `Stop-Process -Force` で止めても書いた分は残る。`awase::journal` の行(`JournalEntry::emit_tracing`)は要約で、
+/// 再生には足りない(ADR-226 の B)。variant ごとの arm ではないので `emit_tracing` の外に置く。
+fn emit_json_line(envelope: &JournalEnvelope) {
+    if !tracing::enabled!(target: JOURNAL_JSON_TARGET, tracing::Level::TRACE) {
+        return;
+    }
+    match serde_json::to_string(envelope) {
+        Ok(json) => tracing::trace!(target: JOURNAL_JSON_TARGET, "{json}"),
+        Err(e) => tracing::trace!(
+            target: JOURNAL_JSON_TARGET,
+            "serialize failed seq={}: {e}",
+            envelope.seq
+        ),
+    }
 }
 
 #[derive(Debug, Clone)]

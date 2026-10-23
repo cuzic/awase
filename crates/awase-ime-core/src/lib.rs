@@ -19,6 +19,9 @@
 pub use awase_windows_base::vk_table;
 pub use awase_windows_base::{focus, keymap, tuning, vk};
 
+// ADR-278 段階 1: 実機 CI のジャーナル(コーパス)の決定の再生(テスト専用)。
+#[cfg(test)]
+mod corpus_replay;
 pub mod indicator_evidence;
 pub mod journal;
 pub mod journal_policy;

@@ -160,6 +160,16 @@ pub(crate) fn log_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("awase.log"))
 }
 
+/// `AWASE_JOURNAL_JSON` が指すファイルを追記で開く(ADR-278 決定 1)。未設定・開けないときは `None`(awase.log だけに書く)。
+fn journal_json_file() -> Option<std::fs::File> {
+    let path = std::env::var_os("AWASE_JOURNAL_JSON")?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
 pub(super) fn init_logging(debug_console: bool) {
     use tracing_subscriber::util::SubscriberInitExt as _;
     use tracing_subscriber::EnvFilter;
@@ -191,16 +201,27 @@ pub(super) fn init_logging(debug_console: bool) {
         // exists() 契約を壊すため採用しない。
         let writer = logging::RotatingLogWriter::init_global(log_path.clone());
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-        tracing_subscriber::fmt()
+        let builder = tracing_subscriber::fmt()
             .with_env_filter(filter)
-            .with_writer(writer)
             // ファイル出力にANSIエスケープシーケンスを混入させない
             // （env_loggerのWriteStyle::Autoは非端末出力で自動的に無効化していたが、
             // tracing-subscriberは既定でansi featureが有効なため明示指定が必要。
             // 不具合報告に添付されるawase.logが読めなくなるのを防ぐ）。
-            .with_ansi(false)
-            .finish()
-            .init();
+            .with_ansi(false);
+        // ADR-278 決定 1(実機 CI のコーパス用、既定では無効): 環境変数 `AWASE_JOURNAL_JSON` がファイルを指し、かつ
+        // `RUST_LOG` が `awase::journal_json=trace` を有効にしているときだけ、journal の JSON 行をそのファイルへ分けて書く
+        // (awase.log を大きくしない・`check_*.py` が読む行に混ぜない)。追記なので awase を起動し直しても前の分は残る。
+        match journal_json_file() {
+            Some(file) => {
+                use tracing_subscriber::fmt::writer::MakeWriterExt as _;
+                let json =
+                    std::sync::Mutex::new(file).with_filter(|meta: &tracing::Metadata<'_>| {
+                        meta.target() == crate::journal::JOURNAL_JSON_TARGET
+                    });
+                builder.with_writer(json.or_else(writer)).finish().init();
+            }
+            None => builder.with_writer(writer).finish().init(),
+        }
         tracing::info!(
             "Keyboard Layout Emulator starting... (log → {})",
             log_path.display()
