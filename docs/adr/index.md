@@ -284,6 +284,7 @@
 | [275](275-platform-state-core-move-deferred.md) | platform_state.rs・sync_actuation.rs の core への移動は見送る(記録系の強制を強める小 PR を 3 本) | 決定: 移動は見送り。Opus レビュー反映済み |
 | [276](276-remove-unicode-injection.md) | Unicode 注入(既定モードと Tsf の eager かな送信)を撤去する(ADR-083 の申し送りを覆す) | 実装済み(P1〜P4、#767・#768。純減約 916 行)。追補(2026-10-22): `force_vk` 退役・`[injection_mode]` 読み込み撤去 |
 | [277](277-pseudo-ime-transition-table-and-ablation.md) | 擬似 IME の遷移を 1 つの表にまとめ、全列挙・ファズ・防御の ablation を同じ表で回す | 起草・段階 1・2 実装 |
+| [278](278-corpus-decision-diff-replay.md) | 実機 CI のジャーナルをコーパスにし、撤去・変更の候補の決定の差分を Linux で再生し、差分とコーパスの穴だけを実機で確かめる | 起草(段階 0) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
