@@ -112,10 +112,11 @@ related_adr:
 
 - `JournalEnvelope::emit_tracing`(全記録が通る 1 か所)で、target `awase::journal_json` が TRACE で有効なときだけ、envelope を `serde_json` で 1 行に出す。
   既定の `RUST_LOG`(info・debug)では出ない。リングを通らないので消えず、`Stop-Process -Force` でも書いた分は残る。
-- e2e-ime の `workflow_dispatch` に入力 `journal_json`(既定オフ)を足し、オンの run だけ `RUST_LOG` に `awase::journal_json=trace` を足す。
-  ジョブの最後に `awase.log`(と `awase.log.old`)からその行を抜き出して `journal.jsonl` にし、`result-*` に入れる。
-  既存の `check_*.py` が読む `awase.log` を大きくして 20MB のローテーションで前半を失う危険があるので、既定ではオンにしない。
-- 新しいファイル書き出し・新しい journal の種類は足さない。
+- 殻(`app/bootstrap.rs`)は、環境変数 `AWASE_JOURNAL_JSON` がファイルを指すときだけ、この target の行をそのファイルへ追記で分けて書く
+  (`MakeWriterExt::with_filter`・`or_else`)。`awase.log` を大きくしない(20MB のローテーションで `check_*.py` が読む前半を失わない)・
+  `check_*.py` が読む行に混ぜないため。env も `RUST_LOG` も無い利用者の環境では何も変わらない。
+- e2e-ime の `workflow_dispatch`・`workflow_call` に入力 `journal_json`(既定オフ)を足し、オンの run だけ上の 2 つを設定して `journal.jsonl` を `result-*` に入れる。
+- 新しい journal の種類は足さない。
 
 ### 決定 2: コーパスの置き場
 
