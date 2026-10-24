@@ -369,6 +369,61 @@ impl DispatchResult {
     }
 }
 
+/// `RawTsfLiteralRecovery` の予約の入力(判断済みの値)。
+struct RawLiteralPlan {
+    /// これまでの連続 literal 回数。0 のときだけ Backspace + 再送を予約する。
+    consecutive: u32,
+    backs: usize,
+    escape_composition: bool,
+    /// 疑いが出た VK より後ろの、まだ送っていないローマ字。諦める分岐でも、これだけは送る(BUG-215)。
+    rest: String,
+}
+
+/// 疑いが出た VK(`failed_idx`、0 始まり)より後ろの、まだ送っていないローマ字を返す。
+fn romaji_after(romaji: &str, failed_idx: usize) -> String {
+    romaji
+        .chars()
+        .filter(|c| crate::vk::ascii_to_vk(*c).is_some())
+        .skip(failed_idx + 1)
+        .collect()
+}
+
+/// `RawTsfLiteralRecovery` の Backspace・再送の予約を決めて `io` に書く。
+fn reserve_raw_literal_recovery<I: ProbeIo>(
+    io: &I,
+    cold_seq: Generation,
+    plan: RawLiteralPlan,
+    romaji: String,
+) {
+    let RawLiteralPlan {
+        consecutive,
+        backs,
+        escape_composition,
+        rest,
+    } = plan;
+    if consecutive == 0 {
+        tracing::warn!(
+            "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
+             → backspace ×{backs} + re-send {romaji:?} scheduled + mark cold",
+            cold_seq = cold_seq.value(),
+        );
+        io.set_raw_literal(backs, romaji, escape_composition);
+    } else {
+        tracing::warn!(
+            "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
+             (count={}) → giving up, no backspace, re-send only the rest {rest:?}",
+            consecutive + 1,
+            cold_seq = cold_seq.value(),
+        );
+        // 以前はここで VK_IME_OFF→VK_IME_ON の reinit を予約していた(BUG-33/36/168)が、
+        // 実 Chrome×GJI で 0/10 と効かず、入力中文字を消す副作用もあったので撤去した(ADR-212 P3)。
+        // 見た目の掃除(BS)も、正しく入った文字を消すので送らない(Zoom 実測、BUG-215)。
+        // 疑いが出た VK で per-VK の確認は終わり、後ろの VK は送られていない。「ki」の `i` が届かず「k」だけが
+        // 出るのを避けるため、後ろの分だけは送る(`k` を消して `ki` を送り直すことはしない)。
+        io.set_raw_literal(0, rest, escape_composition);
+    }
+}
+
 ///
 /// `platform.rs` の `dispatch_probe_actions` を置き換える。
 /// `io: &impl ProbeIo` で Win32 副作用を注入することでテスト可能。
@@ -473,13 +528,19 @@ where
                     // には倒れない、2026-07-16 撤去）。consecutive==0 なら backspace + romaji
                     // 再送を scheduled し、次の cold パス（per-VK confirm）へ自然に委ねる。
                     let consecutive = io.consecutive_count();
+                    let failed_idx = usize::from(facts.idx);
+                    // 諦める分岐(連続 2 回目以降)は再送しないので、Backspace も送らない(BUG-215)。
+                    // 文字が実際に入っていたとき、正しく入った文字を毎回 1 つ消してしまうため。
+                    // (判定を信用できない窓は、そもそもここへ来ない。`Output::step_probe` が per-VK の確認を外す。)
+                    let gave_up = consecutive != 0;
+                    let backs = if gave_up { 0 } else { backs };
                     trace
                         .0
                         .push(LiteralDetectTraceItem::Verdict(LiteralDetectRecord {
                             cold_seq,
                             facts,
                             consecutive_before: consecutive,
-                            gave_up: consecutive != 0,
+                            gave_up,
                             backs,
                             escape_composition,
                             session_marked: false,
@@ -490,26 +551,17 @@ where
                             // 破棄する、いずれも下の if/else より前）に行うため clone が要る。
                             romaji: Some(romaji.clone()),
                         }));
-                    if consecutive == 0 {
-                        tracing::warn!(
-                            "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
-                        → backspace ×{backs} + re-send {romaji:?} scheduled \
-                        + mark cold",
-                            cold_seq = cold_seq.value(),
-                        );
-                        io.set_raw_literal(backs, romaji, escape_composition);
-                    } else {
-                        tracing::warn!(
-                            "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
-                        (count={}) → giving up, backs={backs} cleanup only (no re-send)",
-                            consecutive + 1,
-                            cold_seq = cold_seq.value(),
-                        );
-                        // 以前はここで VK_IME_OFF→VK_IME_ON の reinit を予約していた(BUG-33/36/168)が、
-                        // 実 Chrome×GJI で 0/10 と効かず、入力中文字を消す副作用もあったので撤去した(ADR-212 P3)。
-                        // 見た目の掃除(BS)だけを予約する。
-                        io.set_raw_literal(backs, String::new(), escape_composition);
-                    }
+                    reserve_raw_literal_recovery(
+                        io,
+                        cold_seq,
+                        RawLiteralPlan {
+                            consecutive,
+                            backs,
+                            escape_composition,
+                            rest: romaji_after(&romaji, failed_idx),
+                        },
+                        romaji,
+                    );
                     io.mark_cold_raw_tsf();
                 }
 
@@ -570,6 +622,8 @@ mod tests {
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
         reset_consecutive_called: Cell<bool>,
+        /// `set_raw_literal` に渡された `(backs, romaji, escape_composition)`。
+        raw_literal_args: std::cell::RefCell<Option<(usize, String, bool)>>,
         /// `mozc_compose_precheck` が返す対象(`None` = 張らない)。
         mozc_target: Option<MozcComposeTarget>,
         /// precheck・送信・request の呼び出し順(ADR-270 の配線の固定用)。
@@ -586,6 +640,7 @@ mod tests {
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
                 reset_consecutive_called: Cell::new(false),
+                raw_literal_args: std::cell::RefCell::new(None),
                 mozc_target: None,
                 calls: std::cell::RefCell::new(Vec::new()),
             }
@@ -621,8 +676,9 @@ mod tests {
         fn reset_consecutive_count(&self) {
             self.reset_consecutive_called.set(true);
         }
-        fn set_raw_literal(&self, _backs: usize, _romaji: String, _escape_composition: bool) {
+        fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool) {
             self.set_raw_literal_called.set(true);
+            *self.raw_literal_args.borrow_mut() = Some((backs, romaji, escape_composition));
         }
         fn mark_cold_raw_tsf(&self) {
             self.mark_cold_raw_tsf_called.set(true);
@@ -874,7 +930,7 @@ mod tests {
     #[test]
     fn raw_tsf_literal_recovery_consecutive_gives_up_with_cold_mark() {
         // consecutive > 0 のときは諦める。
-        // ただし terminal に 'k'(literal) + composition が残らないよう BS のみ送る (romaji 再送なし)。
+        // BUG-215 以降は Backspace を送らず、後ろのキーだけ送る(旧: BS のみ送っていたが、正しく入った文字を消し、後ろのキーも落ちた)。
         let io = FakeProbeIo {
             consecutive: 1, // already attempted once
             ..Default::default()
@@ -915,11 +971,29 @@ mod tests {
         );
         assert!(
             io.set_raw_literal_called.get(),
-            "consecutive > 0: BS cleanup のため set_raw_literal を呼ぶべき (romaji は空で再送なし)"
+            "consecutive > 0: 予約(直後の deferred の flush を駆動する)のため set_raw_literal を呼ぶべき"
+        );
+        assert_eq!(
+            io.raw_literal_args.borrow().clone(),
+            Some((0, "o".to_string(), false)),
+            "BUG-215: 諦める分岐は Backspace を送らず、疑いが出た VK より後ろ(ko の o)だけ送る"
         );
         assert!(
             io.mark_cold_raw_tsf_called.get(),
             "consecutive > 0: mark_cold_raw_tsf で cold に戻すべき"
         );
+    }
+
+    #[test]
+    fn romaji_after_returns_the_vks_after_the_failed_one() {
+        assert_eq!(romaji_after("ki", 0), "i");
+        assert_eq!(romaji_after("kya", 0), "ya");
+        assert_eq!(romaji_after("kya", 1), "a");
+        assert_eq!(
+            romaji_after("ki", 1),
+            "",
+            "最後の VK で疑いが出たなら、送るものは無い"
+        );
+        assert_eq!(romaji_after("", 0), "");
     }
 }

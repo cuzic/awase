@@ -837,6 +837,14 @@ impl Output {
         )
     }
 
+    /// 前景窓が、per-VK の確認の「2 番目以降の疑い」を信用できないクラスか(BUG-215)。
+    #[allow(unsafe_code)] // 前景窓のクラス名の読み取り(Win32)
+    fn foreground_later_vk_literal_check_unreliable() -> bool {
+        // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
+        let fg_class = unsafe { crate::ime::get_foreground_window_class() };
+        crate::focus::class_names::is_later_vk_literal_check_unreliable_window(&fg_class)
+    }
+
     /// TIMER_TSF_PROBE ハンドラから呼ぶ。probe を 1 ステップ進め、結果を返す。
     ///
     /// `WindowsPlatform::advance_tsf_probe` は `timer_cmd` を `apply_timer_command` に渡し、
@@ -848,6 +856,8 @@ impl Output {
             let ime_fsm = self.ime_mode_fsm.borrow();
             crate::tsf::warmup::probe_fsm::TsfEnvSnapshot {
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
+                later_vk_literal_check_unreliable:
+                    Self::foreground_later_vk_literal_check_unreliable(),
                 stage_origin_now: Some(self.current_stage_origin()),
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),
