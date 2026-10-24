@@ -158,6 +158,11 @@ impl KeyInjector {
 
     /// VK の DOWN+UP ペアを（オプション shift 付きで）1回の SendInput で送信する。
     pub(crate) fn send_vk_pair(vk: VkCode, needs_shift: bool, marker: VkMarker) {
+        let hold_ms = Self::key_hold_ms();
+        if hold_ms > 0 {
+            Self::send_vk_with_hold(vk, needs_shift, marker, hold_ms);
+            return;
+        }
         let mut inputs = Vec::with_capacity(4);
         if needs_shift {
             inputs.push(make_key_input(VK_LSHIFT, false));
@@ -170,8 +175,44 @@ impl KeyInjector {
         let _ = crate::win32::send_input_safe(&inputs);
     }
 
+    /// 前景窓が、注入キーの「↓から↑まで」に時間を空けないと取りこぼす窓なら、その待ち(ms)を返す。そうでなければ 0。
+    #[allow(unsafe_code)] // 前景窓のクラス名の読み取り(Win32)
+    fn key_hold_ms() -> u64 {
+        // SAFETY: Win32 GetForegroundWindow + GetClassName; returns a placeholder string on failure.
+        let fg_class = unsafe { crate::ime::get_foreground_window_class() };
+        if crate::focus::class_names::needs_key_hold_window(&fg_class) {
+            crate::tuning::ZOOM_KEY_HOLD_MS
+        } else {
+            0
+        }
+    }
+
+    /// 1 キーを「↓ → `hold_ms` 待つ → ↑」で送る(Shift が要るなら、その内側で押す)。メッセージループを `hold_ms` ブロックする。
+    fn send_vk_with_hold(vk: VkCode, needs_shift: bool, marker: VkMarker, hold_ms: u64) {
+        let mut down = Vec::with_capacity(2);
+        if needs_shift {
+            down.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+        }
+        down.push(marker.make_input(vk, false));
+        let _ = crate::win32::send_input_safe(&down);
+        std::thread::sleep(std::time::Duration::from_millis(hold_ms));
+        let mut up = vec![marker.make_input(vk, true)];
+        if needs_shift {
+            up.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+        }
+        let _ = crate::win32::send_input_safe(&up);
+    }
+
     /// 1 ラン分の INPUT を構築して送信し、送信した INPUT 数を返す。
     fn send_vk_run_batch(run: &[(VkCode, bool)], marker: VkMarker) -> usize {
+        let hold_ms = Self::key_hold_ms();
+        if hold_ms > 0 {
+            // 前景窓が、↓から↑まで時間を空けないとキーを取りこぼす窓(Zoom のチャット): キーを 1 つずつ順に送る。
+            for &(vk, needs_shift) in run {
+                Self::send_vk_with_hold(vk, needs_shift, marker, hold_ms);
+            }
+            return run.len() * 2;
+        }
         let mut inputs = Vec::with_capacity(run.len() * 4);
         for &(vk, needs_shift) in run {
             if needs_shift {
