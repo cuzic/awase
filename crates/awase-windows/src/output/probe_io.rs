@@ -989,7 +989,11 @@ mod tests {
         assert_eq!(romaji_after("ki", 0), "i");
         assert_eq!(romaji_after("kya", 0), "ya");
         assert_eq!(romaji_after("kya", 1), "a");
-        assert_eq!(romaji_after("ki", 1), "", "最後の VK で疑いが出たなら、送るものは無い");
+        assert_eq!(
+            romaji_after("ki", 1),
+            "",
+            "最後の VK で疑いが出たなら、送るものは無い"
+        );
         assert_eq!(romaji_after("", 0), "");
     }
 }

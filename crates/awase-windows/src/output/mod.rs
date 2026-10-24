@@ -856,7 +856,8 @@ impl Output {
             let ime_fsm = self.ime_mode_fsm.borrow();
             crate::tsf::warmup::probe_fsm::TsfEnvSnapshot {
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
-                later_vk_literal_check_unreliable: Self::foreground_later_vk_literal_check_unreliable(),
+                later_vk_literal_check_unreliable:
+                    Self::foreground_later_vk_literal_check_unreliable(),
                 stage_origin_now: Some(self.current_stage_origin()),
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),

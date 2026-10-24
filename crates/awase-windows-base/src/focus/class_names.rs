@@ -330,7 +330,9 @@ mod tests {
             "ConfMultiTabContentWndClass"
         ));
         // Chrome は literal を実測で回収できている窓なので対象外。
-        assert!(!is_later_vk_literal_check_unreliable_window("Chrome_WidgetWin_1"));
+        assert!(!is_later_vk_literal_check_unreliable_window(
+            "Chrome_WidgetWin_1"
+        ));
         assert!(!is_later_vk_literal_check_unreliable_window(""));
     }
 

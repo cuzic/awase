@@ -314,6 +314,29 @@ async fn await_vk_detection(
     }
 }
 
+/// 2 番目以降の疑いを信用しない窓(Zoom のチャット)で、疑いを無視して「確認済み」として進めるための
+/// アクションを返す(BUG-215)。`run_per_vk_confirm` の複雑度を抑えるために切り出した。
+fn ignored_later_suspicion(
+    log_tag: &str,
+    cold_seq: Generation,
+    idx: usize,
+    last_idx: usize,
+    vk: VkCode,
+    facts: LiteralDetectFacts,
+) -> ProbeAction {
+    tracing::debug!(
+        "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] 2 番目以降の疑いは信用しない窓 \
+         → 確認済みとして続行 (vk=0x{:02X})",
+        vk.0,
+        cold_seq = cold_seq.value(),
+    );
+    ProbeAction::CompositionConfirmed {
+        cold_seq,
+        mark_literal_session: false,
+        facts,
+    }
+}
+
 #[expect(clippy::future_not_send)]
 pub(crate) async fn run_per_vk_confirm(
     ch: Rc<Channel<ProbeTickInput, Vec<ProbeAction>>>,
@@ -416,17 +439,9 @@ pub(crate) async fn run_per_vk_confirm(
             // BUG-215: Zoom のチャットでは 2 番目以降の疑いを信用しない(直前のキーは確認済み)。ESC + 全体の再送の連鎖を
             // 起こすだけなので、確認済みとして次のキーへ進む。1 番目のキーの疑いは下の回収に任せる。
             DetectionResult::SuspectedLiteral if idx > 0 && later_unreliable => {
-                tracing::debug!(
-                    "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] 2 番目以降の疑いは信用しない窓 \
-                     → 確認済みとして続行 (vk=0x{:02X})",
-                    vk.0,
-                    cold_seq = cold_seq.value(),
-                );
-                pending_confirm = Some(ProbeAction::CompositionConfirmed {
-                    cold_seq,
-                    mark_literal_session: false,
-                    facts,
-                });
+                pending_confirm = Some(ignored_later_suspicion(
+                    log_tag, cold_seq, idx, last_idx, vk, facts,
+                ));
             }
             DetectionResult::SuspectedLiteral => {
                 let (backs, escape_composition) =
