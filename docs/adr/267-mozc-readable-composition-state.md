@@ -3,7 +3,7 @@ id: ADR-267
 title: |-
   mozc-readable の共有メモリに「組成の段階・候補の種類・未確定文字列の長さ・処理したキーの通番・入力欄のモード指定」を足す(version 3)
 status: |-
-  提案(2026-10-18、起草。Opus round1〈致命3・重要6・軽微5〉・round2〈致命1・重要4・軽微5〉・round3〈重要1・軽微4〉の指摘を反映した第4版。round4 で収束、軽微3件を反映済み)。version 3 の publisher は mozc-readable PR #4 で実装済み(2026-10-18、`readable` に `a0c5074c`)。D12(version 4 の診断カウンタ)は PR #9(未マージ)。awase 側の読み手は未実装
+  提案(2026-10-18、起草。Opus round1〈致命3・重要6・軽微5〉・round2〈致命1・重要4・軽微5〉・round3〈重要1・軽微4〉の指摘を反映した第4版。round4 で収束、軽微3件を反映済み)。version 3 の publisher は mozc-readable PR #4 で実装済み(2026-10-18、`readable` に `a0c5074c`)。D12(version 4 の診断カウンタ)は mozc-readable PR #9 でマージ済み(2026-10-19)。awase 側の読み手は未実装
 related_adr:
   - "ADR-191"
   - "ADR-265"
@@ -124,7 +124,7 @@ ADR-265 の共有メモリ(`TipSharedState` version 2、48 バイト)が外に�
 
 背景: 実機(Mozc Readable + Windows Terminal)で、約 7 秒間(UTC 2026-10-19 06:47:00.7〜06:47:07.8)、awase が 18 打鍵を送っても `phase=0`・`preedit_utf16_len=0` のままで、7 秒後に自然に戻る区間が記録された([ADR-270](270-mozc-no-composition-detection.md))。利用者は「ひらがなにはなるが候補にならない」と見ている。rust-nicola-89 のコード調査(2026-10-19、`origin/readable` の `a0c5074c`)で、有力な仮説は「打鍵ごとに TIP が SUBMIT を要求していて、`phase=1` の時間が数 ms で、20ms ごとの記録が取りこぼしている」(H1)。version 3 の項目では、これを確かめられない。
 
-- オフセット 0〜79 は変えない。80 から u32 を 8 個、合計 **112 バイト**、`version` は 4。実装は mozc-readable PR #9(head `56eaba794`)。
+- オフセット 0〜79 は変えない。80 から u32 を 8 個、合計 **112 バイト**、`version` は 4。実装は mozc-readable PR #9(head `56eaba794`、2026-10-19 にマージ済み)。
 
 | オフセット | 名前 | 意味 |
 | --- | --- | --- |
