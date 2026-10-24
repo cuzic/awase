@@ -6,8 +6,8 @@
 //! あるときは何もしない」）から、方針の表として別の形で書く。
 
 use awase::config::HalfWidthAlnumTogglePolicy;
-use awase_hook_core::state::foreground_scope::ForegroundScope;
-use awase_hook_core::state::half_width_alnum::{HalfWidthAlnumEffect, HalfWidthAlnumState};
+use awase_windows::state::foreground_scope::ForegroundScope;
+use awase_windows::state::half_width_alnum::{HalfWidthAlnumEffect, HalfWidthAlnumState};
 
 const POLICIES: [HalfWidthAlnumTogglePolicy; 3] = [
     HalfWidthAlnumTogglePolicy::Off,
