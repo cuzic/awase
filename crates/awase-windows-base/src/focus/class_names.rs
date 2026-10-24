@@ -86,6 +86,18 @@ pub fn mozc_compose_check_applies(gji_evidence_absent: bool, foreground_class: &
     gji_evidence_absent && is_mozc_compose_check_window(foreground_class)
 }
 
+/// 「リテラル化した」という判定を信用できない窓のクラスか(自動回収の Backspace・再送をしない)。
+///
+/// raw TSF literal の判定は、打鍵の約 313ms 後に GJI の書き込みや候補窓が見えるかで決める。Zoom のチャット欄
+/// (`ZConfChatPopupContainerWndClass`、`himc_null=true`)は、文字が正しく入っていてもこの確認が取れず、
+/// 打鍵のたびに `SuspectedLiteral` になった。実機(dragonflyg4、2026-10-24)で冷えた状態から `ki` を 3 秒おきに
+/// 12 回打つと 12/12 で判定され、2 回目以降は「諦める」分岐の Backspace が毎回 1 文字を消した。
+/// ここに足すのは、その窓で誤判定を実測したクラスだけにする。
+#[must_use]
+pub fn is_literal_recovery_unreliable_window(foreground_class: &str) -> bool {
+    foreground_class == "ZConfChatPopupContainerWndClass"
+}
+
 /// Win32 のポップアップメニュー窓（`TrackPopupMenu` 等が作るコンテキストメニュー）のクラス名。
 ///
 /// どのアプリの右クリックメニューも、この標準クラスの窓として出る。入力インジケーターの
@@ -305,6 +317,16 @@ pub fn detect_app_kind(class_name: &str) -> AppKind {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zoom_chat_window_is_literal_recovery_unreliable() {
+        assert!(is_literal_recovery_unreliable_window(
+            "ZConfChatPopupContainerWndClass"
+        ));
+        // Chrome は literal を実測で回収できている窓なので対象外。
+        assert!(!is_literal_recovery_unreliable_window("Chrome_WidgetWin_1"));
+        assert!(!is_literal_recovery_unreliable_window(""));
+    }
+
     use super::*;
 
     /// ADR-270 の確認は旧 `force_tsf` の既定の窓(Windows Terminal・WezTerm)だけ(PR #809 レビュー M3)。

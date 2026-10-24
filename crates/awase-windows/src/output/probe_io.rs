@@ -39,6 +39,11 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
+    /// 前景窓が、リテラル判定を信用できないクラスか(Zoom のチャット欄など)。真なら回収の Backspace も再送もしない。
+    /// 既定は偽(テスト用の stub)。
+    fn literal_recovery_unreliable(&self) -> bool {
+        false
+    }
     /// ADR-270: Mozc で、この送信の後に入力中の文字の確認を張るなら、その対象を返す。**送信の直前**に呼ぶ
     /// （まだ入力中の文字が無いことを確かめるため）。既定は張らない（テスト用の stub と、Mozc 系でない環境）。
     fn mozc_compose_precheck(
@@ -86,6 +91,13 @@ impl ProbeIo for Output {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         self.warmup_coord.note_stage_recovery();
         self.warmup_coord.mark_composition_reset();
+    }
+
+    #[allow(unsafe_code)] // 前景窓のクラス名の読み取り(Win32)
+    fn literal_recovery_unreliable(&self) -> bool {
+        // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
+        let fg_class = unsafe { crate::ime::get_foreground_window_class() };
+        crate::focus::class_names::is_literal_recovery_unreliable_window(&fg_class)
     }
 
     #[allow(unsafe_code)] // 前景窓のクラス名の読み取り(Win32)
@@ -473,13 +485,19 @@ where
                     // には倒れない、2026-07-16 撤去）。consecutive==0 なら backspace + romaji
                     // 再送を scheduled し、次の cold パス（per-VK confirm）へ自然に委ねる。
                     let consecutive = io.consecutive_count();
+                    // BUG-215: Zoom のチャット欄など、判定を信用できない窓では回収しない(案 A)。
+                    let unreliable = io.literal_recovery_unreliable();
+                    // 諦める分岐(連続 2 回目以降)は再送しないので、Backspace も送らない(案 B)。
+                    // 文字が実際に入っていたとき、正しく入った文字を毎回 1 つ消してしまうため。
+                    let gave_up = consecutive != 0 || unreliable;
+                    let backs = if gave_up { 0 } else { backs };
                     trace
                         .0
                         .push(LiteralDetectTraceItem::Verdict(LiteralDetectRecord {
                             cold_seq,
                             facts,
                             consecutive_before: consecutive,
-                            gave_up: consecutive != 0,
+                            gave_up,
                             backs,
                             escape_composition,
                             session_marked: false,
@@ -490,7 +508,14 @@ where
                             // 破棄する、いずれも下の if/else より前）に行うため clone が要る。
                             romaji: Some(romaji.clone()),
                         }));
-                    if consecutive == 0 {
+                    if unreliable {
+                        tracing::warn!(
+                            "[raw-tsf-literal] cold={cold_seq} literal 判定を信用できない窓 \
+                        (Zoom チャット欄等) → backspace も再送もしない",
+                            cold_seq = cold_seq.value(),
+                        );
+                        io.set_raw_literal(0, String::new(), false);
+                    } else if consecutive == 0 {
                         tracing::warn!(
                             "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
                         → backspace ×{backs} + re-send {romaji:?} scheduled \
@@ -501,14 +526,14 @@ where
                     } else {
                         tracing::warn!(
                             "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
-                        (count={}) → giving up, backs={backs} cleanup only (no re-send)",
+                        (count={}) → giving up, no backspace, no re-send",
                             consecutive + 1,
                             cold_seq = cold_seq.value(),
                         );
                         // 以前はここで VK_IME_OFF→VK_IME_ON の reinit を予約していた(BUG-33/36/168)が、
                         // 実 Chrome×GJI で 0/10 と効かず、入力中文字を消す副作用もあったので撤去した(ADR-212 P3)。
-                        // 見た目の掃除(BS)だけを予約する。
-                        io.set_raw_literal(backs, String::new(), escape_composition);
+                        // 見た目の掃除(BS)も、正しく入った文字を消すので送らない(Zoom 実測、BUG-215)。
+                        io.set_raw_literal(0, String::new(), escape_composition);
                     }
                     io.mark_cold_raw_tsf();
                 }
@@ -570,6 +595,10 @@ mod tests {
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
         reset_consecutive_called: Cell<bool>,
+        /// `set_raw_literal` に渡された `(backs, romaji, escape_composition)`。
+        raw_literal_args: std::cell::RefCell<Option<(usize, String, bool)>>,
+        /// `literal_recovery_unreliable` が返す値(Zoom のチャット欄など)。
+        unreliable: bool,
         /// `mozc_compose_precheck` が返す対象(`None` = 張らない)。
         mozc_target: Option<MozcComposeTarget>,
         /// precheck・送信・request の呼び出し順(ADR-270 の配線の固定用)。
@@ -586,6 +615,8 @@ mod tests {
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
                 reset_consecutive_called: Cell::new(false),
+                raw_literal_args: std::cell::RefCell::new(None),
+                unreliable: false,
                 mozc_target: None,
                 calls: std::cell::RefCell::new(Vec::new()),
             }
@@ -621,11 +652,15 @@ mod tests {
         fn reset_consecutive_count(&self) {
             self.reset_consecutive_called.set(true);
         }
-        fn set_raw_literal(&self, _backs: usize, _romaji: String, _escape_composition: bool) {
+        fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool) {
             self.set_raw_literal_called.set(true);
+            *self.raw_literal_args.borrow_mut() = Some((backs, romaji, escape_composition));
         }
         fn mark_cold_raw_tsf(&self) {
             self.mark_cold_raw_tsf_called.set(true);
+        }
+        fn literal_recovery_unreliable(&self) -> bool {
+            self.unreliable
         }
     }
 
@@ -874,7 +909,7 @@ mod tests {
     #[test]
     fn raw_tsf_literal_recovery_consecutive_gives_up_with_cold_mark() {
         // consecutive > 0 のときは諦める。
-        // ただし terminal に 'k'(literal) + composition が残らないよう BS のみ送る (romaji 再送なし)。
+        // BUG-215 以降は Backspace も再送もしない(旧: BS のみ送っていたが、正しく入った文字を消した)。
         let io = FakeProbeIo {
             consecutive: 1, // already attempted once
             ..Default::default()
@@ -915,11 +950,52 @@ mod tests {
         );
         assert!(
             io.set_raw_literal_called.get(),
-            "consecutive > 0: BS cleanup のため set_raw_literal を呼ぶべき (romaji は空で再送なし)"
+            "consecutive > 0: 予約(直後の deferred の flush を駆動する)のため set_raw_literal を呼ぶべき"
+        );
+        assert_eq!(
+            io.raw_literal_args.borrow().clone(),
+            Some((0, String::new(), false)),
+            "BUG-215: 諦める分岐は Backspace も再送もしない(正しく入った文字を毎回消すため)"
         );
         assert!(
             io.mark_cold_raw_tsf_called.get(),
             "consecutive > 0: mark_cold_raw_tsf で cold に戻すべき"
+        );
+    }
+
+    #[test]
+    fn raw_tsf_literal_recovery_does_nothing_in_unreliable_window() {
+        // BUG-215: Zoom のチャット欄(判定を信用できない窓)では、初回でも Backspace も再送もしない。
+        let io = FakeProbeIo {
+            unreliable: true, // consecutive == 0 でも
+            ..Default::default()
+        };
+        let mut machine = make_chrome_machine();
+        let actions = vec![
+            ProbeAction::RawTsfLiteralRecovery {
+                cold_seq: Generation::INITIAL,
+                backs: 1,
+                romaji: "ki".to_string(),
+                escape_composition: true,
+                facts: test_facts(LiteralVerdict::SuspectedLiteral),
+            },
+            ProbeAction::Done,
+        ];
+        let mut trace = LiteralDetectTrace::default();
+        let result = dispatch_probe_actions(&mut machine, actions, &io, &mut trace);
+        assert!(result.is_done());
+        assert_eq!(
+            io.raw_literal_args.borrow().clone(),
+            Some((0, String::new(), false)),
+            "Backspace・ESC・再送のどれも予約しない"
+        );
+        assert!(
+            trace.0.iter().any(|item| matches!(
+                item,
+                LiteralDetectTraceItem::Verdict(record)
+                    if record.gave_up && record.backs == 0
+            )),
+            "journal には回収しなかった(backs=0, gave_up)ことを残す: {trace:?}"
         );
     }
 }
