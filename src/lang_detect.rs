@@ -1566,7 +1566,10 @@ mod tests {
         let ngram = NgramModel::from_file(&root.join("data/ngram_hiragana.csv.gz"), 0, 0, 0)
             .expect("ngram file");
         let yab = std::fs::read_to_string(root.join("layout/nicola.yab")).expect("yab");
-        let layout = YabLayout::parse(&yab, KeyboardModel::Jis).expect("layout");
+        // 本番（bootstrap）と同じく、読み込み直後に仮名を解決する。これを忘れると全キーが「仮名に読めない」扱いになる。
+        let layout = YabLayout::parse(&yab, KeyboardModel::Jis)
+            .expect("layout")
+            .resolve_kana();
         KanaModel::new(&ngram, &layout.normal)
     }
 
@@ -1616,23 +1619,20 @@ mod tests {
     }
 
     #[test]
+    fn real_model_reads_kana_keys_and_treats_symbols_as_neutral() {
+        // w=か は仮名に読める（増分が 0 でない）。q=。 と数字キーは仮名に読めず中立（0）。
+        let model = real_model();
+        assert!(model.delta(None, qwerty('w')).abs() > 0.1);
+        assert!(model.delta(None, qwerty('q')).abs() < f64::EPSILON);
+        assert!(model.delta(None, qwerty('1')).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn english_code_is_released_early_as_not_japanese() {
         let model = real_model();
         // 「thequickbrown」は 2 打鍵目で尤度比が -9.3（1 打鍵目 -2.2）となり、en_threshold = 8 を超える。7 打鍵を待たずに解放できる。
-        let mut diag =
-            EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
-        for c in "thequickbrown".chars() {
-            diag.observe(&model, DetectEvent::CharDown(qwerty(c)));
-            diag.observe(&model, DetectEvent::CharUp(qwerty(c)));
-        }
         let (verdict, presses) = run(&model, "thequickbrown");
-        assert_eq!(
-            verdict,
-            Verdict::NotJapanese,
-            "presses={presses} trace={:?} verdict={:?}",
-            diag.llr_trace(),
-            diag.verdict()
-        );
+        assert_eq!(verdict, Verdict::NotJapanese);
         assert!(presses <= 3, "保持が長すぎる: {presses} 打鍵");
     }
 }
