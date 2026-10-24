@@ -39,11 +39,6 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
-    /// 前景窓が、リテラル判定を信用できないクラスか(Zoom のチャット欄など)。真なら回収の Backspace も再送もしない。
-    /// 既定は偽(テスト用の stub)。
-    fn literal_recovery_unreliable(&self) -> bool {
-        false
-    }
     /// ADR-270: Mozc で、この送信の後に入力中の文字の確認を張るなら、その対象を返す。**送信の直前**に呼ぶ
     /// （まだ入力中の文字が無いことを確かめるため）。既定は張らない（テスト用の stub と、Mozc 系でない環境）。
     fn mozc_compose_precheck(
@@ -91,13 +86,6 @@ impl ProbeIo for Output {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         self.warmup_coord.note_stage_recovery();
         self.warmup_coord.mark_composition_reset();
-    }
-
-    #[allow(unsafe_code)] // 前景窓のクラス名の読み取り(Win32)
-    fn literal_recovery_unreliable(&self) -> bool {
-        // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
-        let fg_class = unsafe { crate::ime::get_foreground_window_class() };
-        crate::focus::class_names::is_literal_recovery_unreliable_window(&fg_class)
     }
 
     #[allow(unsafe_code)] // 前景窓のクラス名の読み取り(Win32)
@@ -383,8 +371,6 @@ impl DispatchResult {
 
 /// `RawTsfLiteralRecovery` の予約の入力(判断済みの値)。
 struct RawLiteralPlan {
-    /// 判定を信用できない窓(Zoom チャット欄等)。真なら何も予約しない(BUG-215 案 A)。
-    unreliable: bool,
     /// これまでの連続 literal 回数。0 のときだけ Backspace + 再送を予約する。
     consecutive: u32,
     backs: usize,
@@ -399,19 +385,11 @@ fn reserve_raw_literal_recovery<I: ProbeIo>(
     romaji: String,
 ) {
     let RawLiteralPlan {
-        unreliable,
         consecutive,
         backs,
         escape_composition,
     } = plan;
-    if unreliable {
-        tracing::warn!(
-            "[raw-tsf-literal] cold={cold_seq} literal 判定を信用できない窓 \
-             (Zoom チャット欄等) → backspace も再送もしない",
-            cold_seq = cold_seq.value(),
-        );
-        io.set_raw_literal(0, String::new(), false);
-    } else if consecutive == 0 {
+    if consecutive == 0 {
         tracing::warn!(
             "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
              → backspace ×{backs} + re-send {romaji:?} scheduled + mark cold",
@@ -536,11 +514,10 @@ where
                     // には倒れない、2026-07-16 撤去）。consecutive==0 なら backspace + romaji
                     // 再送を scheduled し、次の cold パス（per-VK confirm）へ自然に委ねる。
                     let consecutive = io.consecutive_count();
-                    // BUG-215: Zoom のチャット欄など、判定を信用できない窓では回収しない(案 A)。
-                    let unreliable = io.literal_recovery_unreliable();
-                    // 諦める分岐(連続 2 回目以降)は再送しないので、Backspace も送らない(案 B)。
+                    // 諦める分岐(連続 2 回目以降)は再送しないので、Backspace も送らない(BUG-215)。
                     // 文字が実際に入っていたとき、正しく入った文字を毎回 1 つ消してしまうため。
-                    let gave_up = consecutive != 0 || unreliable;
+                    // (判定を信用できない窓は、そもそもここへ来ない。`Output::step_probe` が per-VK の確認を外す。)
+                    let gave_up = consecutive != 0;
                     let backs = if gave_up { 0 } else { backs };
                     trace
                         .0
@@ -563,7 +540,6 @@ where
                         io,
                         cold_seq,
                         RawLiteralPlan {
-                            unreliable,
                             consecutive,
                             backs,
                             escape_composition,
@@ -632,8 +608,6 @@ mod tests {
         reset_consecutive_called: Cell<bool>,
         /// `set_raw_literal` に渡された `(backs, romaji, escape_composition)`。
         raw_literal_args: std::cell::RefCell<Option<(usize, String, bool)>>,
-        /// `literal_recovery_unreliable` が返す値(Zoom のチャット欄など)。
-        unreliable: bool,
         /// `mozc_compose_precheck` が返す対象(`None` = 張らない)。
         mozc_target: Option<MozcComposeTarget>,
         /// precheck・送信・request の呼び出し順(ADR-270 の配線の固定用)。
@@ -651,7 +625,6 @@ mod tests {
                 mark_cold_raw_tsf_called: Cell::new(false),
                 reset_consecutive_called: Cell::new(false),
                 raw_literal_args: std::cell::RefCell::new(None),
-                unreliable: false,
                 mozc_target: None,
                 calls: std::cell::RefCell::new(Vec::new()),
             }
@@ -693,9 +666,6 @@ mod tests {
         }
         fn mark_cold_raw_tsf(&self) {
             self.mark_cold_raw_tsf_called.set(true);
-        }
-        fn literal_recovery_unreliable(&self) -> bool {
-            self.unreliable
         }
     }
 
@@ -995,42 +965,6 @@ mod tests {
         assert!(
             io.mark_cold_raw_tsf_called.get(),
             "consecutive > 0: mark_cold_raw_tsf で cold に戻すべき"
-        );
-    }
-
-    #[test]
-    fn raw_tsf_literal_recovery_does_nothing_in_unreliable_window() {
-        // BUG-215: Zoom のチャット欄(判定を信用できない窓)では、初回でも Backspace も再送もしない。
-        let io = FakeProbeIo {
-            unreliable: true, // consecutive == 0 でも
-            ..Default::default()
-        };
-        let mut machine = make_chrome_machine();
-        let actions = vec![
-            ProbeAction::RawTsfLiteralRecovery {
-                cold_seq: Generation::INITIAL,
-                backs: 1,
-                romaji: "ki".to_string(),
-                escape_composition: true,
-                facts: test_facts(LiteralVerdict::SuspectedLiteral),
-            },
-            ProbeAction::Done,
-        ];
-        let mut trace = LiteralDetectTrace::default();
-        let result = dispatch_probe_actions(&mut machine, actions, &io, &mut trace);
-        assert!(result.is_done());
-        assert_eq!(
-            io.raw_literal_args.borrow().clone(),
-            Some((0, String::new(), false)),
-            "Backspace・ESC・再送のどれも予約しない"
-        );
-        assert!(
-            trace.0.iter().any(|item| matches!(
-                item,
-                LiteralDetectTraceItem::Verdict(record)
-                    if record.gave_up && record.backs == 0
-            )),
-            "journal には回収しなかった(backs=0, gave_up)ことを残す: {trace:?}"
         );
     }
 }

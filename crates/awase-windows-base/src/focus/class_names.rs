@@ -86,16 +86,22 @@ pub fn mozc_compose_check_applies(gji_evidence_absent: bool, foreground_class: &
     gji_evidence_absent && is_mozc_compose_check_window(foreground_class)
 }
 
-/// 「リテラル化した」という判定を信用できない窓のクラスか(自動回収の Backspace・再送をしない)。
+/// 「リテラル化した」という判定(per-VK の確認)を信用できない窓のクラスか。
 ///
-/// raw TSF literal の判定は、打鍵の約 313ms 後に GJI の書き込みや候補窓が見えるかで決める。Zoom のチャット欄
-/// (`ZConfChatPopupContainerWndClass`、`himc_null=true`)は、文字が正しく入っていてもこの確認が取れず、
-/// 打鍵のたびに `SuspectedLiteral` になった。実機(dragonflyg4、2026-10-24)で冷えた状態から `ki` を 3 秒おきに
-/// 12 回打つと 12/12 で判定され、2 回目以降は「諦める」分岐の Backspace が毎回 1 文字を消した。
-/// ここに足すのは、その窓で誤判定を実測したクラスだけにする。
+/// raw TSF literal の判定は、打鍵の約 313ms 後に GJI の書き込みや候補窓が見えるかで決める。Zoom のチャット欄は
+/// 文字が入っていても、この確認が取れなかった。実機(dragonflyg4、GJI、2026-10-24)で冷えた状態から 1 文字を
+/// 3 秒おきに打つと、ポップアップのチャット欄(`ZConfChatPopupContainerWndClass`)で 12/12、メイン会議ウィンドウ内の
+/// チャットタブ(`ConfMultiTabContentWndClass`)でも毎回 `SuspectedLiteral` になった。
+///
+/// 疑いが出ると per-VK の確認は**残りのキーを送らずに**終わる(`ki` の `i` が届かず、入力欄が「っっっｋkkk」になった)。
+/// そのため、これらの窓では per-VK の確認をやめて、ローマ字を全部まとめて送る(`gji_active` を偽にして、
+/// 確認なしの直接送信に入る)。ここに足すのは、誤判定を実測したクラスだけにする。
 #[must_use]
 pub fn is_literal_recovery_unreliable_window(foreground_class: &str) -> bool {
-    foreground_class == "ZConfChatPopupContainerWndClass"
+    matches!(
+        foreground_class,
+        "ZConfChatPopupContainerWndClass" | "ConfMultiTabContentWndClass"
+    )
 }
 
 /// Win32 のポップアップメニュー窓（`TrackPopupMenu` 等が作るコンテキストメニュー）のクラス名。
@@ -318,9 +324,12 @@ pub fn detect_app_kind(class_name: &str) -> AppKind {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn zoom_chat_window_is_literal_recovery_unreliable() {
+    fn zoom_chat_windows_are_literal_recovery_unreliable() {
         assert!(is_literal_recovery_unreliable_window(
             "ZConfChatPopupContainerWndClass"
+        ));
+        assert!(is_literal_recovery_unreliable_window(
+            "ConfMultiTabContentWndClass"
         ));
         // Chrome は literal を実測で回収できている窓なので対象外。
         assert!(!is_literal_recovery_unreliable_window("Chrome_WidgetWin_1"));
