@@ -207,15 +207,21 @@ impl KanaModel {
     /// 1 打鍵ぶんの対数尤度比の増分 `ln P_ja(token | prev) − ln(1/N_keys)`。
     ///
     /// `prev` は直前の打鍵の仮名（直前が仮名に読めなかった・先頭なら `None`）。
+    ///
+    /// **仮名に読めないキー（記号・数字・未定義）は 0（中立）**。仮名 n-gram は仮名の並びの自然さしか測れず、
+    /// 記号は日本語（`、` `。` `ー` 数字）にも英文にも現れるので、どちらの証拠にもならない。以前は表の最小値の 1/10 を
+    /// 総和で割った下限（約 -33 nats、`en_threshold` の 4 倍）を課していて、親指なしの `¥` や `。` 1 打で
+    /// 「日本語でない」と確定し、日本語の入力中に半角英数へ落ちた（2026-10-24、実機の journal で
+    /// `llr=-43.1` と `llr=-33.2`）。評価（`research-private/v3-eval/eval8_symbols.py`）で、文中から打ち始めた
+    /// NICOLA の親指なし区間の英数への誤判定は 22.1%（先頭が記号なら 100%）から 7.0% に下がる。
     #[allow(clippy::cast_precision_loss)] // 語彙の数（高々数百）なので精度は問題にならない
     fn delta(&self, prev: Option<char>, pos: PhysicalPos) -> f64 {
         let background = -self.key_count.ln();
-        let low = (self.floor / self.total.max(self.floor)).ln();
         let Some(&token) = self.key_kana.get(&pos) else {
-            return low - background;
+            return 0.0;
         };
         if !self.vocab.contains(&token) {
-            return low - background;
+            return 0.0;
         }
         let vocab_len = self.vocab.len() as f64;
         let ja = match prev {
@@ -981,14 +987,46 @@ mod tests {
     #[test]
     fn unnatural_sequence_becomes_not_japanese() {
         let model = tiny_model();
-        // 記号キー(0,0)は仮名に読めず、尤度が下限になる。en_threshold を低くして早く「日本語でない」になる。
+        // さ(1,4) は行頭にも「さ」の後にも表に無く、尤度が低い。en_threshold を低くして早く「日本語でない」になる。
         let mut d = EpisodeDetector::new(params(100.0, 5.0, 7), ThumbOverlap::Enabled, [false; 2]);
         let mut last = Verdict::Pending;
         for _ in 0..3 {
-            last = d.observe(&model, DetectEvent::CharDown(pos(0, 0)));
-            d.observe(&model, DetectEvent::CharUp(pos(0, 0)));
+            last = d.observe(&model, DetectEvent::CharDown(pos(1, 4)));
+            d.observe(&model, DetectEvent::CharUp(pos(1, 4)));
         }
         assert_eq!(last, Verdict::NotJapanese);
+    }
+
+    #[test]
+    fn symbol_keys_are_neutral_evidence() {
+        // 記号キー(0,0)は仮名に読めない。どちらの証拠にもならないので、何度押しても llr は動かず、
+        // 英数とも日本語とも確定しない（以前は 1 打で約 -33 nats になり NotJapanese に確定した）。
+        let model = tiny_model();
+        let mut d = EpisodeDetector::new(params(4.0, 8.0, 7), ThumbOverlap::Enabled, [false; 2]);
+        for _ in 0..6 {
+            assert_eq!(
+                d.observe(&model, DetectEvent::CharDown(pos(0, 0))),
+                Verdict::Pending
+            );
+            d.observe(&model, DetectEvent::CharUp(pos(0, 0)));
+        }
+        assert!(d.llr().abs() < f64::EPSILON);
+        assert_eq!(d.presses(), 6);
+    }
+
+    #[test]
+    fn symbol_key_does_not_hide_the_kana_after_it() {
+        // 「、」のような記号のあとの仮名は、行頭と同じに数える（直前の仮名の文脈は切れる）。
+        let model = tiny_model();
+        let mut with_symbol =
+            EpisodeDetector::new(params(100.0, 100.0, 7), ThumbOverlap::Enabled, [false; 2]);
+        with_symbol.observe(&model, DetectEvent::CharDown(pos(0, 0)));
+        with_symbol.observe(&model, DetectEvent::CharUp(pos(0, 0)));
+        with_symbol.observe(&model, DetectEvent::CharDown(pos(1, 1)));
+        let mut head =
+            EpisodeDetector::new(params(100.0, 100.0, 7), ThumbOverlap::Enabled, [false; 2]);
+        head.observe(&model, DetectEvent::CharDown(pos(1, 1)));
+        assert!((with_symbol.llr() - head.llr()).abs() < 1e-12);
     }
 
     #[test]
@@ -1347,8 +1385,8 @@ mod tests {
         let mut cfg = tracker_cfg();
         cfg.params = params(100.0, 5.0, 7);
         let mut c: HoldController<u32> = HoldController::new(cfg);
-        // 記号キー(0,0)は仮名に読めず、1 打鍵目で NotJapanese になる。
-        let s = c.on_key(&model, key(KeyRole::Char(pos(0, 0)), true, 10), 1, 1, true);
+        // さ(1,4) は行頭の尤度が低く、1 打鍵目で NotJapanese になる。
+        let s = c.on_key(&model, key(KeyRole::Char(pos(1, 4)), true, 10), 1, 1, true);
         assert_eq!(s.release, vec![1]);
         assert!(!s.japanese);
         assert_eq!(s.outcomes[0].verdict, Verdict::NotJapanese);
@@ -1419,11 +1457,11 @@ mod tests {
         cfg.params = params(100.0, 5.0, 7);
         // 保持するエピソードで NotJapanese に確定: english = true。
         let mut c: HoldController<u32> = HoldController::new(cfg);
-        let s = c.on_key(&model, key(KeyRole::Char(pos(0, 0)), true, 10), 1, 1, true);
+        let s = c.on_key(&model, key(KeyRole::Char(pos(1, 4)), true, 10), 1, 1, true);
         assert!(s.english && !s.japanese);
         // 保持しないエピソード（観測だけ）では立たない。
         let mut c: HoldController<u32> = HoldController::new(cfg);
-        let s = c.on_key(&model, key(KeyRole::Char(pos(0, 0)), true, 10), 1, 1, false);
+        let s = c.on_key(&model, key(KeyRole::Char(pos(1, 4)), true, 10), 1, 1, false);
         assert!(!s.english);
         // 未決（max_keys）や打ち切りでは立たない。
         let mut c: HoldController<u32> = HoldController::new(tracker_cfg());
