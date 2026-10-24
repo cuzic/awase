@@ -102,6 +102,22 @@ pub fn is_later_vk_literal_check_unreliable_window(foreground_class: &str) -> bo
     )
 }
 
+/// 注入したキーの「↓から↑まで」に時間を空けないと、キーを取りこぼす窓のクラスか(Zoom のチャット)。
+///
+/// awase は、ローマ字を `SendInput` で注入する。↓と↑の間隔がほぼ 0 だと、Zoom のチャット入力欄は、
+/// 一部のキー(主に母音)を取りこぼした(実機 dragonflyg4、GJI、2026-10-24。`かくにんをおねがいします` が
+/// `かｋにんをんぎします。` になる)。ユーザーの実際の打鍵を awase を通して再生し、入力欄を読んで比べた
+/// (各 8 回): 従来 0/8、キーを順に送って押している時間を 5ms にすると 2/8、10ms にすると 8/8。キーを重ねて押すと、
+/// 待っても 0/8。人間の打鍵は押している時間が数十 ms あるので、起きない。
+/// 待つ長さは `tuning::ZOOM_KEY_HOLD_MS`。ここに足すのは、取りこぼしを実測した窓のクラスだけにする。
+#[must_use]
+pub fn needs_key_hold_window(foreground_class: &str) -> bool {
+    matches!(
+        foreground_class,
+        "ZConfChatPopupContainerWndClass" | "ConfMultiTabContentWndClass"
+    )
+}
+
 /// Win32 のポップアップメニュー窓（`TrackPopupMenu` 等が作るコンテキストメニュー）のクラス名。
 ///
 /// どのアプリの右クリックメニューも、この標準クラスの窓として出る。入力インジケーターの
@@ -321,6 +337,14 @@ pub fn detect_app_kind(class_name: &str) -> AppKind {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zoom_chat_windows_need_key_hold() {
+        assert!(needs_key_hold_window("ZConfChatPopupContainerWndClass"));
+        assert!(needs_key_hold_window("ConfMultiTabContentWndClass"));
+        assert!(!needs_key_hold_window("Chrome_WidgetWin_1"));
+        assert!(!needs_key_hold_window(""));
+    }
+
     #[test]
     fn zoom_chat_windows_have_unreliable_later_vk_literal_check() {
         assert!(is_later_vk_literal_check_unreliable_window(

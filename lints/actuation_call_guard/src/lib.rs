@@ -82,6 +82,11 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             "send_unicode_char",
             "send_vk_pair",
             "send_vk_run_batch",
+            // BUG-217: Zoom のチャット窓向けに、↓と↑の間に待ちを置く送信を `send_vk_run_batch`/`send_vk_pair` から
+            // 切り出した 2 関数（2026-10-24追記。複雑性予算制は発効条件未達のため1-in-1-out対象外、
+            // `.claude/rules/complexity-budget.md`）。
+            "send_vk_with_hold",
+            "send_vk_without_hold",
             "flush_raw_tsf_literal_backspaces",
             "kp_restore_kana_from_half_width",
             "send_all_modifier_key_ups",
