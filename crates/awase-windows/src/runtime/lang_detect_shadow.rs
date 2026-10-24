@@ -110,6 +110,23 @@ impl LangDetectShadow {
         } else {
             AutoDetectMode::Off
         };
+        // 設定が判定器の閾値まで届いたかを実機（CI）で確かめるための観測（ADR-280 C0。挙動は変えない）。
+        if mode != AutoDetectMode::Off {
+            tracing::info!(
+                "[lang-detect] config: mode={:?} scope={:?} en_threshold_effective={} eisu_threshold={} en_threshold={} \
+                 ja_threshold={} idle_ms={} max_ms={} max_keys={} hold_config_ok={}",
+                mode,
+                cfg.scope,
+                tracker_cfg.params.en_threshold,
+                cfg.eisu_threshold,
+                cfg.en_threshold,
+                tracker_cfg.params.ja_threshold,
+                cfg.idle_ms,
+                cfg.max_ms,
+                tracker_cfg.params.max_keys,
+                hold_config_ok,
+            );
+        }
         Self {
             mode,
             controller: HoldController::new(tracker_cfg),
