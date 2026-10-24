@@ -1,0 +1,80 @@
+name: ime-write-profile
+
+# 窓の種類ごとの「GJI の書き込み量」(1 打鍵あたり)を実測して、擬似窓の証拠のプロファイルの元データにする。
+# 実機(dragonflyg4、Zoom のチャット)の測定と同じスクリプト(tools/e2e/write_profile/profile.ps1)を、
+# windows-latest の Edge・メモ帳・Windows Terminal で回す。判定のゲートではなく、数値を取るだけ(情報のみ)。
+# ci/write-profile ブランチへの push でだけ動く。
+on:
+  push:
+    branches: [ ci/write-profile ]
+    paths:
+      - 'tools/e2e/write_profile/**'
+      - 'tools/ci/install-gji.ps1'
+      - '.github/workflows/ime-write-profile.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [ edge, notepad, wt ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Google 日本語入力をインストール(chocolatey)
+        shell: pwsh
+        run: |
+          ./tools/ci/install-gji.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 入力言語を ja-JP + GJI に設定
+        shell: pwsh
+        run: |
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          # 「既定の IME にしますか」の初回ダイアログを出さない(e2e-ime.yml と同じ)。
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+
+      - name: 書き込み量を測る(${{ matrix.mode }})
+        shell: pwsh
+        run: |
+          $out = "$PWD\profile-${{ matrix.mode }}.log"
+          & "$PWD\tools\e2e\write_profile\profile.ps1" -Mode ${{ matrix.mode }} -Lens 0,12,30 -Trials 3 *>&1 | Tee-Object -FilePath $out
+          "exit=$LASTEXITCODE"
+
+      - name: 集計(情報のみ)
+        if: always()
+        shell: pwsh
+        run: |
+          $f = "$PWD\profile-${{ matrix.mode }}.log"
+          if (-not (Test-Path $f)) { 'no log'; exit 0 }
+          $rows = Get-Content $f | Where-Object { $_ -match '^(edge|notepad|wt|zoom),len=' } | ForEach-Object {
+            $p = $_ -split ','
+            [pscustomobject]@{ mode=$p[0]; len=$p[1]; gap=$p[2]; key=$p[3]; first=[int]($p[4] -replace 'first=',''); b313=[int]($p[5] -replace 'b313=',''); b500=[int]($p[6] -replace 'b500=','') }
+          }
+          $md = @("### ${{ matrix.mode }}: 1 打鍵あたりの GJI 書き込み量(バイト)", '', '| len | key | n | min | median | max | 最初の書き込みまで(ms, median) |', '|---|---|---|---|---|---|---|')
+          foreach ($g in ($rows | Group-Object len, key)) {
+            $b = @($g.Group | ForEach-Object { $_.b313 } | Sort-Object); $fi = @($g.Group | ForEach-Object { $_.first } | Sort-Object)
+            $md += ('| {0} | {1} | {2} | {3} | {4} | {5} | {6} |' -f $g.Group[0].len, $g.Group[0].key, $b.Count, $b[0], $b[[int]($b.Count/2)], $b[-1], $fi[[int]($fi.Count/2)])
+          }
+          $md += ''; $md += '閾値 `COMPOSITION_BYTES_THRESHOLD` = 350B(`tsf/probe.rs`)'
+          $md | Out-File -Append $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          $md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile-${{ matrix.mode }}
+          path: profile-${{ matrix.mode }}.log
