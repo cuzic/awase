@@ -68,6 +68,9 @@ use timed_fsm::coro::{yield_step, Channel, StepCoro};
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TsfEnvSnapshot {
     pub gji_active: bool,
+    /// 前景窓が、per-VK の確認の「2 番目以降の疑い」を信用できないクラス(Zoom のチャット)か(BUG-215)。
+    /// 真なら 2 番目以降の `SuspectedLiteral` を確認済みとみなして、残りのキーを送り続ける。
+    pub later_vk_literal_check_unreliable: bool,
     /// この tick の時点の宛先の識別（focus 世代 + 前景窓）。段の途中で宛先の窓が変わったかを、
     /// `state::raw_recovery_plan::plan_raw_recovery` で判断するのに使う（ADR-270 の確認の FSM）。`None` = 採っていない。
     pub stage_origin_now: Option<crate::state::raw_recovery_plan::StageOrigin>,
@@ -373,6 +376,7 @@ pub(crate) async fn run_per_vk_confirm(
         // スナップショット）を全 VK で使い回すと、後続 VK の可視性変化を無視してしまい
         // 挙動が変わる。`ProbeTickInput.env` は tick ごとに更新されるため、これが
         // 旧実装のライブ読みに最も近い等価物。
+        let later_unreliable = vk_input.env.later_vk_literal_check_unreliable;
         let (detection, route, evidence) = await_vk_detection(
             &ch,
             &sent,
@@ -403,6 +407,21 @@ pub(crate) async fn run_per_vk_confirm(
                 );
                 // BUG-27 追補4: この VK 自身の confirm で consecutive_count を
                 // リセットする（セッション確認はまだ、全 VK 確認後にまとめて行う）。
+                pending_confirm = Some(ProbeAction::CompositionConfirmed {
+                    cold_seq,
+                    mark_literal_session: false,
+                    facts,
+                });
+            }
+            // BUG-215: Zoom のチャットでは 2 番目以降の疑いを信用しない(直前のキーは確認済み)。ESC + 全体の再送の連鎖を
+            // 起こすだけなので、確認済みとして次のキーへ進む。1 番目のキーの疑いは下の回収に任せる。
+            DetectionResult::SuspectedLiteral if idx > 0 && later_unreliable => {
+                tracing::debug!(
+                    "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] 2 番目以降の疑いは信用しない窓 \
+                     → 確認済みとして続行 (vk=0x{:02X})",
+                    vk.0,
+                    cold_seq = cold_seq.value(),
+                );
                 pending_confirm = Some(ProbeAction::CompositionConfirmed {
                     cold_seq,
                     mark_literal_session: false,
@@ -1043,6 +1062,101 @@ mod tests {
             "直前の VK が confirmed 済みの SuspectedLiteral は ESC のみ・backspace \
              なしのはず（実機で確定済みの直前文字を誤って消す実害が確認された）: \
              {actions_vk1:?}"
+        );
+
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+    }
+
+    /// BUG-215 の回帰テスト: Zoom のチャット（`later_vk_literal_check_unreliable`）では、2 番目以降の VK が
+    /// `SuspectedLiteral` になっても回収（ESC + 全体の再送）に入らず、確認済みとして最後まで進む。
+    /// 実機では 1 打鍵で `ki` が 6 回再送された。
+    #[test]
+    fn chrome_per_vk_later_vk_suspicion_is_ignored_in_unreliable_window() {
+        use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let _g = TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::tsf::observer::reset_literal_session_confirmed();
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+
+        let mut machine = ready_chrome_probe(); // romaji "ka" (2 VK)
+        let first_actions = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            matches!(
+                first_actions.as_slice(),
+                [ProbeAction::TransmitSingleVk { .. }]
+            ),
+            "per-VK confirm ループの最初の VK 送信要求のはず: {first_actions:?}"
+        );
+
+        // VK0 ('k') を write-bytes 閾値超過（genuinely fresh）で confirm する。
+        let baseline = crate::tsf::observer::gji_write_bytes();
+        let detector0 = LiteralDetector::new_with_pre_send_baseline(baseline);
+        let deadline0 = crate::clock::current_tick_ms() + 10_000;
+        machine.apply_vk_sent(detector0, deadline0);
+        let after_send0 = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            after_send0.is_empty(),
+            "confirm 待ちの1 tick 目は空のはず: {after_send0:?}"
+        );
+
+        TSF_OBS.gji_write_bytes.store(baseline + 400, SeqCst); // 閾値超過、fresh write
+        TSF_OBS
+            .gji_last_write_ms
+            .store(crate::clock::current_tick_ms(), SeqCst);
+        let actions_vk0_confirmed = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            actions_vk0_confirmed
+                .iter()
+                .any(|a| matches!(a, ProbeAction::TransmitSingleVk { .. })),
+            "VK0 confirm 後は VK1 の送信要求が来るはず: {actions_vk0_confirmed:?}"
+        );
+
+        // VK1 ('a') は候補ウィンドウ非可視のまま、deadline を既に過ぎた状態にして
+        // 本物の SuspectedLiteral（「既に可視」ショートカットではない）を起こす。
+        let detector1 =
+            LiteralDetector::new_with_pre_send_baseline(crate::tsf::observer::gji_write_bytes());
+        let deadline1 = crate::clock::current_tick_ms(); // 既に期限切れ
+        machine.apply_vk_sent(detector1, deadline1);
+        let after_send1 = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            later_vk_literal_check_unreliable: true,
+            ..Default::default()
+        });
+        assert!(
+            after_send1.is_empty(),
+            "confirm 待ちの1 tick 目は空のはず: {after_send1:?}"
+        );
+
+        let actions_vk1 = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            later_vk_literal_check_unreliable: true,
+            ..Default::default()
+        });
+        assert!(
+            !actions_vk1
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "信用できない窓の 2 番目の VK の疑いは回収しない: {actions_vk1:?}"
+        );
+        assert!(
+            actions_vk1
+                .iter()
+                .any(|a| matches!(a, ProbeAction::CompositionConfirmed { .. })),
+            "確認済みとして最後まで進み、セッション確認で終わる: {actions_vk1:?}"
         );
 
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
