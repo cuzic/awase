@@ -58,8 +58,22 @@ pub(super) struct Profile {
     consonant: &'static [(usize, u64)],
     /// 母音(子音と合わせて 1 文字が完成する打鍵)の書き込みバイト。
     vowel: &'static [(usize, u64)],
-    /// IME ON 直後の最初の 1 打鍵が、IME に届かず ASCII のまま出る(本物のリテラル化)。
-    first_key_literal: bool,
+    /// 窓全体で `n` 番目(0 始まり)の打鍵が、IME に届かず ASCII のまま出る(本物のリテラル化)。1 回だけ起きる。
+    /// Zoom は `Some(0)`(IME ON 直後の最初の 1 文字、実機の「kいききき」)。Chrome 型の部分リテラルは `Some(1)`(語の途中)。
+    literal_at: Option<usize>,
+    /// 候補窓(`GoogleJapaneseInputCandidateWindow`)の SHOW の出方。書き込みバイトとは別の証拠の経路。
+    candidate: Candidate,
+}
+
+/// 候補窓の SHOW の出方(`EVENT_OBJECT_SHOW` の WinEvent、`LiteralDetector` の `show_confirmed` / 「既に可視」ショートカット)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Candidate {
+    /// 候補窓の証拠は無い(書き込みバイトだけ)。
+    None,
+    /// 打鍵ごとに SHOW が来る。表示中のフラグは立たない(単独の子音でも出る型)。
+    ShowEachKey { after_ms: u64 },
+    /// 最初の打鍵で SHOW が来て、その後は表示されたまま(2 打鍵目以降は SHOW が来ない)。
+    ShowOnceThenVisible { after_ms: u64 },
 }
 
 impl Profile {
@@ -70,7 +84,8 @@ impl Profile {
         first_write_ms: 45,
         consonant: &[(0, 407), (12, 280)],
         vowel: &[(0, 535), (12, 324)],
-        first_key_literal: true,
+        literal_at: Some(0),
+        candidate: Candidate::None,
     };
     /// メモ帳。windows-latest、2026-10-24(run 40065722169)。
     pub(super) const NOTEPAD: Self = Self {
@@ -79,7 +94,8 @@ impl Profile {
         first_write_ms: 30,
         consonant: &[(0, 170), (12, 556), (30, 992)],
         vowel: &[(0, 268), (12, 606), (30, 1098)],
-        first_key_literal: false,
+        literal_at: None,
+        candidate: Candidate::None,
     };
     /// Windows Terminal(cmd)。windows-latest、2026-10-24(run 40065722169)。
     pub(super) const WINDOWS_TERMINAL: Self = Self {
@@ -88,7 +104,8 @@ impl Profile {
         first_write_ms: 32,
         consonant: &[(0, 157), (12, 281), (30, 499)],
         vowel: &[(0, 111), (12, 325), (30, 599)],
-        first_key_literal: false,
+        literal_at: None,
+        candidate: Candidate::None,
     };
     /// 閾値を常に超える窓(測定ではなく、対照用)。Chrome の「warm な composition は +400B」(`probe.rs` のコメント)を元にした。
     pub(super) const ALWAYS_REACHES: Self = Self {
@@ -97,7 +114,8 @@ impl Profile {
         first_write_ms: 30,
         consonant: &[(0, 450)],
         vowel: &[(0, 450)],
-        first_key_literal: false,
+        literal_at: None,
+        candidate: Candidate::None,
     };
     /// 子音は届くが、母音の書き込みが閾値に届かない窓(対照用。Zoom の「2 番目のキーの疑い」を単独で再現する)。
     /// クラス名は Zoom ではない(= 本番では 2 番目以降の疑いを信用する窓)。
@@ -107,7 +125,52 @@ impl Profile {
         first_write_ms: 30,
         consonant: &[(0, 450)],
         vowel: &[(0, 150)],
-        first_key_literal: false,
+        literal_at: None,
+        candidate: Candidate::None,
+    };
+    /// Teams 型(測定ではなく、`probe.rs` のコメントの BUG-27 追補5 を元にした対照): 書き込みは閾値に届かないが、
+    /// 候補窓の SHOW は打鍵ごとに来る。SHOW だけで確認できること(正しく入った文字を Backspace で消さない)を守る。
+    pub(super) const TEAMS_LIKE: Self = Self {
+        name: "teams-like",
+        class: "TeamsWebView",
+        first_write_ms: 30,
+        consonant: &[(0, 120)],
+        vowel: &[(0, 120)],
+        literal_at: None,
+        candidate: Candidate::ShowEachKey { after_ms: 40 },
+    };
+    /// 書き込みが判定の期限(300ms)より遅く届く窓(遅い GJI。測定ではなく対照)。古い書き込みを次の送信の証拠と
+    /// 取り違えないか、遅れても文字が崩れないかを見る。
+    pub(super) const LATE_WRITE: Self = Self {
+        name: "late-write",
+        class: "SomeOtherWndClass",
+        first_write_ms: 450,
+        consonant: &[(0, 450)],
+        vowel: &[(0, 450)],
+        literal_at: None,
+        candidate: Candidate::None,
+    };
+    /// Chrome 型の部分リテラル(対照): 最初の語の 2 番目のキーだけが一度リテラルになる。直前のキーは確認済みなので、
+    /// 本番は Backspace を送らず ESC だけで回収する設計(BUG-33 追補4)。
+    pub(super) const PARTIAL_LITERAL: Self = Self {
+        name: "partial-literal",
+        class: "Chrome_WidgetWin_1",
+        first_write_ms: 30,
+        consonant: &[(0, 450)],
+        vowel: &[(0, 450)],
+        literal_at: Some(1),
+        candidate: Candidate::None,
+    };
+    /// 候補窓が一度出たら表示されたままの窓(対照): 2 打鍵目以降は SHOW が来ず、`LiteralDetector` の「候補窓が既に可視」
+    /// ショートカット(ADR-079 の世代の突き合わせ)に入る。書き込みは閾値未満だが、猶予(20ms)の内に着く。
+    pub(super) const CANDIDATE_STAYS_VISIBLE: Self = Self {
+        name: "candidate-stays-visible",
+        class: "SomeOtherWndClass",
+        first_write_ms: 10,
+        consonant: &[(0, 120)],
+        vowel: &[(0, 120)],
+        literal_at: None,
+        candidate: Candidate::ShowOnceThenVisible { after_ms: 5 },
     };
 }
 
@@ -171,10 +234,14 @@ pub(super) struct PseudoWindow {
     committed: RefCell<String>,
     composing: RefCell<Vec<char>>,
     pending_consonant: Cell<Option<char>>,
-    /// 次の 1 打鍵が IME に届かず ASCII のまま出る(IME ON 直後の最初の 1 文字)。
-    literal_next: Cell<bool>,
+    /// 窓全体で何打鍵目か(0 始まり)。`Profile::literal_at` と比べる。
+    key_count: Cell<usize>,
     /// `(見えるようになる時刻 ms, バイト)`。
     writes: RefCell<Vec<(u64, u64)>>,
+    /// 候補窓の SHOW が見えるようになる時刻 ms。
+    shows: RefCell<Vec<u64>>,
+    /// 候補窓が一度でも表示されたか(`Candidate::ShowOnceThenVisible` 用)。
+    candidate_shown: Cell<bool>,
     consecutive: Cell<u32>,
     reservation: RefCell<Option<Reservation>>,
     cold_seq: Cell<u64>,
@@ -194,8 +261,10 @@ impl PseudoWindow {
             committed: RefCell::new(String::new()),
             composing: RefCell::new(Vec::new()),
             pending_consonant: Cell::new(None),
-            literal_next: Cell::new(profile.first_key_literal),
+            key_count: Cell::new(0),
             writes: RefCell::new(Vec::new()),
+            shows: RefCell::new(Vec::new()),
+            candidate_shown: Cell::new(false),
             consecutive: Cell::new(0),
             reservation: RefCell::new(None),
             cold_seq: Cell::new(0),
@@ -223,8 +292,10 @@ impl PseudoWindow {
         } else {
             KeyKind::Consonant
         };
-        if self.literal_next.replace(false) {
-            // IME に届かなかった: ASCII のまま出る。GJI の書き込みは起きない。
+        let n = self.key_count.get();
+        self.key_count.set(n + 1);
+        if self.profile.literal_at == Some(n) {
+            // IME に届かなかった: ASCII のまま出る。GJI の書き込みも候補窓も起きない。
             self.committed.borrow_mut().push(ch);
             return;
         }
@@ -234,10 +305,19 @@ impl PseudoWindow {
             KeyKind::Vowel => self.profile.vowel,
         };
         let bytes = lerp(table, len);
-        self.writes.borrow_mut().push((
-            crate::clock::current_tick_ms() + self.profile.first_write_ms,
-            bytes,
-        ));
+        let now = crate::clock::current_tick_ms();
+        self.writes
+            .borrow_mut()
+            .push((now + self.profile.first_write_ms, bytes));
+        match self.profile.candidate {
+            Candidate::None => {}
+            Candidate::ShowEachKey { after_ms } => self.shows.borrow_mut().push(now + after_ms),
+            Candidate::ShowOnceThenVisible { after_ms } => {
+                if !self.candidate_shown.get() {
+                    self.shows.borrow_mut().push(now + after_ms);
+                }
+            }
+        }
         match kind {
             KeyKind::Vowel => {
                 let c = self.pending_consonant.take();
@@ -263,6 +343,24 @@ impl PseudoWindow {
                 TSF_OBS.gji_write_bytes.fetch_add(bytes, SeqCst);
                 TSF_OBS.gji_write_ops.fetch_add(1, SeqCst);
                 TSF_OBS.gji_last_write_ms.store(due, SeqCst);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// 候補窓の SHOW を `TSF_OBS` へ反映する(`EVENT_OBJECT_SHOW` の WinEvent に相当)。
+    fn apply_due_shows(&self) {
+        let now = crate::clock::current_tick_ms();
+        let mut shows = self.shows.borrow_mut();
+        shows.retain(|&due| {
+            if due <= now {
+                TSF_OBS.gji_candidate_show.notify();
+                if let Candidate::ShowOnceThenVisible { .. } = self.profile.candidate {
+                    TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+                    self.candidate_shown.set(true);
+                }
                 false
             } else {
                 true
@@ -328,12 +426,13 @@ impl PseudoWindow {
         );
         for _ in 0..400 {
             self.apply_due_writes();
+            self.apply_due_shows();
             let env = TsfEnvSnapshot {
                 gji_active: true,
                 later_vk_literal_check_unreliable: unreliable,
                 literal_session_confirmed_gen:
                     crate::tsf::observer::literal_session_confirmed_gen_snapshot(),
-                gji_candidate_visible_now: false,
+                gji_candidate_visible_now: crate::tsf::observer::gji_candidate_visible_now(),
                 ..Default::default()
             };
             let actions = TickableFsm::tick(&mut machine, env);
@@ -503,6 +602,9 @@ mod tests {
             Profile::WINDOWS_TERMINAL,
             Profile::ALWAYS_REACHES,
             Profile::SECOND_KEY_WEAK,
+            Profile::TEAMS_LIKE,
+            Profile::CANDIDATE_STAYS_VISIBLE,
+            Profile::LATE_WRITE,
         ] {
             with_window(profile, |w| {
                 let n = 12;
@@ -524,5 +626,66 @@ mod tests {
                 );
             });
         }
+    }
+
+    /// 証拠の経路(候補窓): Teams 型は書き込みが閾値(350B)に届かないが、候補窓の SHOW は打鍵ごとに来る。SHOW だけで
+    /// 確認でき、正しく入った文字に回収(Backspace・ESC・再送)が起きない(BUG-27 追補5 の回帰)。
+    #[test]
+    fn teams_like_window_confirms_by_candidate_show_without_recovery() {
+        with_window(Profile::TEAMS_LIKE, |w| {
+            for _ in 0..6 {
+                w.type_cold("ki");
+            }
+            assert_eq!(w.text(), "き".repeat(6), "{:?}", w.stats());
+            assert_eq!(w.stats(), Stats::default());
+        });
+    }
+
+    /// 証拠の経路(候補窓が既に可視): 2 打鍵目以降は SHOW が来ないが、書き込みが猶予の内に着くので、
+    /// 回収は起きない。
+    #[test]
+    fn candidate_that_stays_visible_does_not_trigger_recovery_when_the_write_catches_up() {
+        with_window(Profile::CANDIDATE_STAYS_VISIBLE, |w| {
+            for _ in 0..4 {
+                w.type_cold("ki");
+            }
+            let s = w.stats();
+            assert_eq!(w.text(), "き".repeat(4), "{s:?}");
+            assert!(!s.runaway, "{s:?}");
+            assert_eq!(s.backspaces, 0, "{s:?}");
+        });
+    }
+
+    /// タイミング: 書き込みが判定の期限(300ms)より遅く届く窓でも、文字は崩れず暴走しない。遅れて届いた古い書き込みが
+    /// 次の送信の証拠と取り違えられても、結果の文字列は変わらない。
+    #[test]
+    fn a_write_that_lands_after_the_deadline_does_not_corrupt_text() {
+        with_window(Profile::LATE_WRITE, |w| {
+            for _ in 0..6 {
+                w.type_cold("ki");
+            }
+            let s = w.stats();
+            assert_eq!(w.text(), "き".repeat(6), "{s:?}");
+            assert!(!s.runaway, "{s:?}");
+        });
+    }
+
+    /// リテラルの出方(Chrome 型の部分リテラル): 最初の語の 2 番目のキーだけが一度リテラルになる。直前のキーは確認済み
+    /// なので、本番は Backspace を送らず ESC だけで回収する(BUG-33 追補4: 確定済みの直前の文字を誤って消した実機の事例)。
+    /// その代わり、リテラルになった 1 文字(`i`)は残る。**現状の設計の特性を固定するテスト**で、`i` が残るのが望ましいという
+    /// 意味ではない。直す(例: リテラルの 1 文字だけを消す)なら、この期待を反転する。
+    #[test]
+    fn partial_literal_is_recovered_with_esc_only_and_leaves_the_literal_char() {
+        with_window(Profile::PARTIAL_LITERAL, |w| {
+            w.type_cold("ki");
+            let s = w.stats();
+            assert_eq!(w.text(), "iき", "{s:?}");
+            assert_eq!(s.backspaces, 0, "{s:?}");
+            assert_eq!(s.escapes, 1, "{s:?}");
+            assert!(!s.runaway, "{s:?}");
+            // 次の語は、残った `i` に影響されず正しく入る。
+            w.type_cold("ki");
+            assert_eq!(w.text(), "iきき", "{:?}", w.stats());
+        });
     }
 }
