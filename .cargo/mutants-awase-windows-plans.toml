@@ -13,6 +13,7 @@ examine_globs = [
     "crates/awase-windows-plans/src/state/focus_resolve_plan.rs",
     "crates/awase-windows-plans/src/state/relay_plan.rs",
     "crates/awase-windows-plans/src/state/raw_recovery_plan.rs",
+    "crates/awase-windows-plans/src/state/paced_queue.rs",
     "crates/awase-windows-plans/src/state/deferred_gate_plan.rs",
     "crates/awase-windows-plans/src/state/warm_send_plan.rs",
 ]

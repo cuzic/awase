@@ -83,13 +83,11 @@ impl<T> PacedQueue<T> {
 
     /// 待ちが終わったあとに呼ぶ。次に送るものを返す。何も無ければ送り出しを終える。
     pub fn take_next(&mut self) -> Next<T> {
-        match self.waiting.pop_front() {
-            Some((item, wait_ms)) => Next::Send { item, wait_ms },
-            None => {
-                self.pacing = false;
-                Next::Idle
-            }
+        if let Some((item, wait_ms)) = self.waiting.pop_front() {
+            return Next::Send { item, wait_ms };
         }
+        self.pacing = false;
+        Next::Idle
     }
 }
 
