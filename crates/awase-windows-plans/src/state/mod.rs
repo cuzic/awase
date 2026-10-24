@@ -42,3 +42,7 @@ pub mod focus_resolve_plan;
 pub mod focus_resync_policy;
 // MSAA ロール値の表引き（純粋）。本番の呼び出し元 focus/msaa.rs は #[cfg(windows)]、Linux ではテストだけが使う。
 pub mod msaa_role_plan;
+// BUG-217: ペース付き送信のキュー(メッセージループを止めずに、送信の間に待ちを置く)。純粋。
+// 呼び出し元(`key_pacer.rs`)は `#[cfg(windows)]` のため非 Windows では未使用。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod paced_queue;

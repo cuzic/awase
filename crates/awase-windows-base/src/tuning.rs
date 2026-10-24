@@ -546,16 +546,7 @@ pub const FOCUS_SWITCH_HOLD_MAX_MS: u64 = 250;
 /// | キーを順に、↑の後だけ 10ms | 6/8 |
 ///
 /// 導出: 5ms で 2/8、10ms で 8/8。10ms が最小とは言えない(6〜9ms は未測定)。マージンは足していない。
-/// 1 つの音(2 キー)で約 20ms ブロックする。実機の再測定と `commit` の紐付けは未了のため `pending`。
+/// 待ちは `key_pacer`(`SetTimer`)で進めるので、メッセージループは止まらない。タイマーの粒度のため、実効の待ちは約 15.6ms 単位
+/// (指定以上になる)。実機の再測定と `commit` の紐付けは未了のため `pending`。
 #[measured_macro::measured(pending = true)]
 pub const ZOOM_KEY_HOLD_MS: u64 = 10;
-
-/// Zoom のチャット窓で、1 回の送信(1 語の `send_romaji_batch_immediate`、または保留キーの一括送出)で、
-/// 押している時間 [`ZOOM_KEY_HOLD_MS`] を空けるキーの上限 (個)。
-///
-/// 上限を超えたキーは、押している時間を空けずに送る(取りこぼしうる)。上限を設ける理由は、メッセージループを 1 キーあたり
-/// `ZOOM_KEY_HOLD_MS` ブロックするため、保留キーを一度に出すときに無制限だとブロックが長くなること。
-/// 20 キー × 10ms = 約 200ms をブロックの上限にした。**測定値ではなく、設計上の選択**(1 語は通常 2〜4 キー)。
-/// 非ブロックのペース付き送信ができれば不要になる(BUG-217 の「限界」)。
-#[measured_macro::measured(pending = true)]
-pub const ZOOM_KEY_HOLD_MAX_KEYS: usize = 20;

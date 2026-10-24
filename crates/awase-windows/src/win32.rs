@@ -356,6 +356,10 @@ fn sent_key_events(inputs: &[INPUT]) -> Vec<SentKeyEvent> {
 /// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
 #[must_use]
 pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
+    // BUG-217: ペース付き送信で待っている間は、他の送信も順序を守るため、キューの後ろに回す(`key_pacer`)。
+    if crate::key_pacer::divert(inputs) {
+        return u32::try_from(inputs.len()).unwrap_or(u32::MAX);
+    }
     if inputs.iter().any(input_may_mutate_conv) {
         crate::conv_mutation::bump();
     }
