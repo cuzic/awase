@@ -125,7 +125,7 @@ D1〜D3 で足りない失敗(belief ON・実 IME が閉の窓で半角英数に
 
 ### C0 の測定結果(#823、2026-10-24)
 
-実効の閾値 `max(eisu_threshold, en_threshold)` ごとの率(合成を含まない実文評価。#819 の表を 14 までは再現: 日本語→英数 7.02/3.48/1.57/0.95%、英文の判定率は 0.1〜0.9 ポイントのずれ)。
+実効の閾値 `max(eisu_threshold, en_threshold)` ごとの率(リポジトリ外の `research-private/` の文による評価。その文はエージェント生成で、読みは未検証、出典・ライセンスも確認できていない。#819 の表を 14 までは再現: 日本語→英数 7.02/3.48/1.57/0.95%、英文の判定率は 0.1〜0.9 ポイントのずれ)。
 
 | 実効の閾値 | 日本語→英数の誤判定 | 英文 NotJapanese 率(平均打鍵/p90) | 英文 Undecided | コード NotJapanese 率 |
 |---|---|---|---|---|
@@ -142,7 +142,7 @@ D1〜D3 で足りない失敗(belief ON・実 IME が閉の窓で半角英数に
 | 段階 | 内容 | 終わりの判定 |
 |---|---|---|
 | 0 | **完了**(2026-10-24): dragonflyg4 は `ime_on_eisu`・`scope = all`・`eisu_threshold` 未設定(既定 14)。#819 はマージ済み。Edge の分類はコードで確認(Imm32Unavailable。C4 却下) | 実効の閾値が確定した |
-| 1 | **実装済み**(#826): `tests/lang_detect_eval.rs` と `tools/lang-detect-eval-fixture/`、`tests/fixtures/lang_detect_eval.tsv`(44KB、seed 280、`ngram_hiragana` と配列から生成)。出典・ライセンスは**確認できなかった**(`research-private/` の資料は「エージェント生成、読みは未検証」とだけ)ため、生のコーパスは使っていない。日本語の列は判定器自身の分布から作るので、実文の評価(#819。8 で 7.0%、14 で 1.0%)より楽観的で、アサートは**退行の検出用**であって絶対的な誤り率ではない。D1: 評価をリポジトリに置き、率を固定。**入口条件**: 読み付きの日本語 1400 文の出典・ライセンスを確かめる。確かめられなければ、ライセンスの明らかなコーパスか、`data/ngram_hiragana` の元データからの生成に代える | CI で率が固定される |
+| 1 | **実装済み**(#826): `tests/lang_detect_eval.rs` と `tools/lang-detect-eval-fixture/`、`tests/fixtures/lang_detect_eval.tsv`(44KB、seed 280、`ngram_hiragana` と配列から生成)。出典・ライセンスは**確認できなかった**(`research-private/` の資料は「エージェント生成、読みは未検証」とだけ)ため、生のコーパスは使っていない。日本語の列は判定器自身の分布から作るので、リポジトリ外の文による評価(#819。8 で 7.0%、14 で 1.0%。この文もエージェント生成で未検証)より楽観的で、アサートは**退行の検出用**であって絶対的な誤り率ではない。D1: 評価をリポジトリに置き、率を固定。**入口条件**: 読み付きの日本語 1400 文の出典・ライセンスを確かめる。確かめられなければ、ライセンスの明らかなコーパスか、`data/ngram_hiragana` の元データからの生成に代える | CI で率が固定される |
 | 2 | **実装済み**(#824): 全列挙 3 本(`HoldStep` 12+8+4 通り、`hiragana`/`eisu_write_skip_reason` 各 64 通り、`plan_entry_for_language_detect` 48 通り)。置き場所は `crates/awase-windows/tests/` に変更(`awase-hook-core/tests/` とルートの `tests/` は CI で走らず、`core-layers` と `ci_test_coverage_guard` に落とされた)。`ci.yml` の `--test` に 2 本を足した。期待値の表と実装の食い違いは見つからなかった。D2: 3 本の全列挙 golden | 現行の挙動が golden で固定される |
 | 3 | D3: **C0 は測定済み**(#823、`docs/tasks/adr280-c0-eisu-threshold-measurement-2026-10-24.md`。下の表)で、dragonflyg4 で `eisu_threshold = 16` を実機試行中。**journal の項目は追加済み**(#825: C1 用の `prev_verdict`・`prev_elapsed_ms`、D4 用の `belief_basis`。C2 用は、入った後に Engine が非活性で重なりを見る既存の経路が無く新しい監視が要るため見送り)。C1・C3 は C0 の結果を見て所有者が決める。C2 は所有者の判断。C5 は最後 | 候補ごとに数値、または判断の記録がある |
 
