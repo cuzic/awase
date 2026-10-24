@@ -34,9 +34,13 @@ pub struct Defense {
     pub invariant: &'static str,
     /// 根拠（BUG・ADR・コミット）。
     pub evidence: &'static str,
+    /// 別の防御（`HarnessSwitch` の名前）があれば、この防御は要らないはず、という仮説（二重の防御の片方）。
+    /// `Some` のとき、`pseudo_ime_exhaustive.rs` は「この防御だけ外しても破れない」ことと、「両方を外すと破れる」ことを
+    /// 確かめる（どちらかで足りるか、の答え。ADR-277 段階 3）。
+    pub shadowed_by: Option<&'static str>,
 }
 
-/// 目録（2026-10-22 時点。外せるのは段階 1 の 1 件と段階 2〈窓モデル〉の 1 件。残りは ADR-277 の「次の段階」）。
+/// 目録（2026-10-24 時点。外せるのは段階 1 の 1 件・段階 2〈窓モデル〉の 1 件・段階 3〈drift の写しの置換〉の 1 件。残りは ADR-277 の「次の段階」）。
 pub const DEFENSES: &[Defense] = &[
     Defense {
         id: "placeholder-align",
@@ -44,6 +48,7 @@ pub const DEFENSES: &[Defense] = &[
         ablation: Ablation::HarnessSwitch("placeholder_align"),
         invariant: "p3_startup_aligns_desired_without_drift",
         evidence: "BUG-163 代案A",
+        shadowed_by: None,
     },
     Defense {
         id: "app-profile-follow",
@@ -51,6 +56,7 @@ pub const DEFENSES: &[Defense] = &[
         ablation: Ablation::HarnessSwitch("app_profile_follow"),
         invariant: "w_drift_cap_follows_live_window",
         evidence: "ECRS DD3-01、#779（AppProfileChanged）。窓モデルの全列挙（ADR-277 段階 2）",
+        shadowed_by: None,
     },
     Defense {
         id: "external-close-watch",
@@ -60,15 +66,16 @@ pub const DEFENSES: &[Defense] = &[
         ),
         invariant: "belief_matches_truth_at_end",
         evidence: "ADR-205、BUG-172、closed_loop_scenarios.rs の q4_* 2 本",
+        shadowed_by: None,
     },
     Defense {
         id: "drift-immcross-skip-unwarranted",
-        location: "awase-windows/src/runtime/ime_refresh.rs::ir_apply_drift_correction",
-        ablation: Ablation::NotReached(
-            "ハーネスは decide_drift_plan を呼ばず 1 条件だけを写している（harness.rs の settle）。写しを外しても本番の要否は言えない",
-        ),
+        location: "awase-windows/src/runtime/ime_refresh.rs::ir_apply_drift_correction（判断は awase-ime-core/src/state/drift_plan.rs::decide_drift_plan の DriftStep::SkipWarrantWouldBlock）",
+        ablation: Ablation::HarnessSwitch("drift_skip_unwarranted"),
         invariant: "p3_startup_aligns_desired_without_drift",
-        evidence: "BUG-163 の 1 段目 b6ab8980",
+        evidence: "BUG-163 の 1 段目 b6ab8980。ハーネスは本物の decide_drift_plan を呼ぶ（ADR-277 段階 3）",
+        // 2 段目の `placeholder-align`（代案A）が起動時の食い違いを先に揃えるので、1 段目だけを外しても破れないはず。
+        shadowed_by: Some("placeholder_align"),
     },
     Defense {
         id: "warrant-rejects-non-japanese-ime",
@@ -79,6 +86,7 @@ pub const DEFENSES: &[Defense] = &[
         },
         invariant: "p1_no_warranted_write_without_intent",
         evidence: "ADR-223、DD3-11。drift_plan の Idle(NotJapaneseIme) と二重（mech-ecrs raw-e 1.3-2）",
+        shadowed_by: None,
     },
 ];
 
