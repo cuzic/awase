@@ -375,6 +375,17 @@ struct RawLiteralPlan {
     consecutive: u32,
     backs: usize,
     escape_composition: bool,
+    /// 疑いが出た VK より後ろの、まだ送っていないローマ字。諦める分岐でも、これだけは送る(BUG-215)。
+    rest: String,
+}
+
+/// 疑いが出た VK(`failed_idx`、0 始まり)より後ろの、まだ送っていないローマ字を返す。
+fn romaji_after(romaji: &str, failed_idx: usize) -> String {
+    romaji
+        .chars()
+        .filter(|c| crate::vk::ascii_to_vk(*c).is_some())
+        .skip(failed_idx + 1)
+        .collect()
 }
 
 /// `RawTsfLiteralRecovery` の Backspace・再送の予約を決めて `io` に書く。
@@ -388,6 +399,7 @@ fn reserve_raw_literal_recovery<I: ProbeIo>(
         consecutive,
         backs,
         escape_composition,
+        rest,
     } = plan;
     if consecutive == 0 {
         tracing::warn!(
@@ -399,14 +411,16 @@ fn reserve_raw_literal_recovery<I: ProbeIo>(
     } else {
         tracing::warn!(
             "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
-             (count={}) → giving up, no backspace, no re-send",
+             (count={}) → giving up, no backspace, re-send only the rest {rest:?}",
             consecutive + 1,
             cold_seq = cold_seq.value(),
         );
         // 以前はここで VK_IME_OFF→VK_IME_ON の reinit を予約していた(BUG-33/36/168)が、
         // 実 Chrome×GJI で 0/10 と効かず、入力中文字を消す副作用もあったので撤去した(ADR-212 P3)。
         // 見た目の掃除(BS)も、正しく入った文字を消すので送らない(Zoom 実測、BUG-215)。
-        io.set_raw_literal(0, String::new(), escape_composition);
+        // 疑いが出た VK で per-VK の確認は終わり、後ろの VK は送られていない。「ki」の `i` が届かず「k」だけが
+        // 出るのを避けるため、後ろの分だけは送る(`k` を消して `ki` を送り直すことはしない)。
+        io.set_raw_literal(0, rest, escape_composition);
     }
 }
 
@@ -514,6 +528,7 @@ where
                     // には倒れない、2026-07-16 撤去）。consecutive==0 なら backspace + romaji
                     // 再送を scheduled し、次の cold パス（per-VK confirm）へ自然に委ねる。
                     let consecutive = io.consecutive_count();
+                    let failed_idx = usize::from(facts.idx);
                     // 諦める分岐(連続 2 回目以降)は再送しないので、Backspace も送らない(BUG-215)。
                     // 文字が実際に入っていたとき、正しく入った文字を毎回 1 つ消してしまうため。
                     // (判定を信用できない窓は、そもそもここへ来ない。`Output::step_probe` が per-VK の確認を外す。)
@@ -543,6 +558,7 @@ where
                             consecutive,
                             backs,
                             escape_composition,
+                            rest: romaji_after(&romaji, failed_idx),
                         },
                         romaji,
                     );
@@ -914,7 +930,7 @@ mod tests {
     #[test]
     fn raw_tsf_literal_recovery_consecutive_gives_up_with_cold_mark() {
         // consecutive > 0 のときは諦める。
-        // BUG-215 以降は Backspace も再送もしない(旧: BS のみ送っていたが、正しく入った文字を消した)。
+        // BUG-215 以降は Backspace を送らず、後ろのキーだけ送る(旧: BS のみ送っていたが、正しく入った文字を消し、後ろのキーも落ちた)。
         let io = FakeProbeIo {
             consecutive: 1, // already attempted once
             ..Default::default()
@@ -959,12 +975,21 @@ mod tests {
         );
         assert_eq!(
             io.raw_literal_args.borrow().clone(),
-            Some((0, String::new(), false)),
-            "BUG-215: 諦める分岐は Backspace も再送もしない(正しく入った文字を毎回消すため)"
+            Some((0, "o".to_string(), false)),
+            "BUG-215: 諦める分岐は Backspace を送らず、疑いが出た VK より後ろ(ko の o)だけ送る"
         );
         assert!(
             io.mark_cold_raw_tsf_called.get(),
             "consecutive > 0: mark_cold_raw_tsf で cold に戻すべき"
         );
+    }
+
+    #[test]
+    fn romaji_after_returns_the_vks_after_the_failed_one() {
+        assert_eq!(romaji_after("ki", 0), "i");
+        assert_eq!(romaji_after("kya", 0), "ya");
+        assert_eq!(romaji_after("kya", 1), "a");
+        assert_eq!(romaji_after("ki", 1), "", "最後の VK で疑いが出たなら、送るものは無い");
+        assert_eq!(romaji_after("", 0), "");
     }
 }
