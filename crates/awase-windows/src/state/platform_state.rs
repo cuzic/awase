@@ -2162,6 +2162,20 @@ impl ImeStateHub {
         ) && decision.value == resolution.value
     }
 
+    /// 今の `effective_open()` の値が、どの経路で決まったかの分類名（ADR-280 D4。journal 用。副作用なし・belief は書かない）。
+    ///
+    /// `IntentStore` が上書きしているときは `intent-store`、そうでなければ `shadow_model` の `DecidedBy`（`force-guard`・
+    /// `explicit-intent`・`derive-high`・`derive-medium`・`most-recent-trusted`・`desired-fallback` など）。
+    #[must_use]
+    pub(crate) fn effective_open_basis(&self) -> &'static str {
+        let (resolution, decision) = self.resolve_effective(TickMs(self.clock.now_tick()));
+        if decision.value == resolution.value {
+            resolution.decided_by.label()
+        } else {
+            "intent-store"
+        }
+    }
+
     /// 今のフォーカスの同一性（epoch + hwnd）。殻が字形の取り込みを依頼した時点の値として持ち、報告のときに
     /// [`Self::report_indicator_glyph`] へ渡す（取り込みの間にフォーカスが動いたかを見る。ADR-273 D1 の M8）。
     #[must_use]

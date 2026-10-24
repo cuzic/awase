@@ -128,6 +128,34 @@ pub enum BaseDecision {
     DesiredFallback,
 }
 
+impl BaseDecision {
+    /// journal 用の粗い分類名（情報源〈`ObservationSource`〉までは出さない。ADR-280 D4 の内訳）。副作用なし。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ExplicitIntent => "explicit-intent",
+            Self::KeyEffectPrediction => "key-effect",
+            Self::DeriveHigh(_) => "derive-high",
+            Self::DeriveMedium { .. } => "derive-medium",
+            Self::IndicatorGlyph { .. } => "indicator-glyph",
+            Self::MostRecentTrusted(_) => "most-recent-trusted",
+            Self::DesiredFallback => "desired-fallback",
+        }
+    }
+}
+
+impl DecidedBy {
+    /// journal 用の分類名。`force_guards` が実際に値を変えたときは `force-guard`、そうでなければ `base` の分類。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        if self.guard_override.is_some() {
+            "force-guard"
+        } else {
+            self.base.label()
+        }
+    }
+}
+
 // ── AppliedImeState ──────────────────────────────────────────────────────────
 
 /// generation を持たない apply 完了で、`applied` に書く open 値。
@@ -4281,5 +4309,47 @@ mod tests {
             decide(true).is_some(),
             "押下付きなら applied を未知にして送る(ADR-208 L1。対照)"
         );
+    }
+
+    /// ADR-280 D4: journal に残す belief の根拠の分類名は、`BaseDecision` の全 variant で固定。
+    #[test]
+    fn base_decision_labels_are_pinned_for_journal() {
+        use super::super::ime_event::ObservationSource as S;
+        let cases = [
+            (BaseDecision::ExplicitIntent, "explicit-intent"),
+            (BaseDecision::KeyEffectPrediction, "key-effect"),
+            (BaseDecision::DeriveHigh(S::FocusProbe), "derive-high"),
+            (
+                BaseDecision::DeriveMedium {
+                    first: S::FocusProbe,
+                    second: None,
+                },
+                "derive-medium",
+            ),
+            (
+                BaseDecision::IndicatorGlyph {
+                    promoted_by_staleness: false,
+                },
+                "indicator-glyph",
+            ),
+            (
+                BaseDecision::MostRecentTrusted(S::FocusProbe),
+                "most-recent-trusted",
+            ),
+            (BaseDecision::DesiredFallback, "desired-fallback"),
+        ];
+        for (base, want) in cases {
+            assert_eq!(base.label(), want);
+            let d = DecidedBy {
+                base,
+                guard_override: None,
+            };
+            assert_eq!(d.label(), want);
+        }
+        let guarded = DecidedBy {
+            base: BaseDecision::DesiredFallback,
+            guard_override: Some(ForceOnReason::PanicReset),
+        };
+        assert_eq!(guarded.label(), "force-guard");
     }
 }

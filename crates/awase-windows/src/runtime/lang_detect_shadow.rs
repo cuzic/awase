@@ -16,8 +16,8 @@ use std::time::Duration;
 use awase::config::{AutoDetectConfig, AutoDetectMode, AutoDetectScope};
 use awase::lang_detect::{
     eisu_write_skip_reason, hiragana_write_skip_reason, DetectParams, HoldController, HoldStep,
-    JapaneseEvidence, KanaModel, KeyRole, ObservedKey, ThumbOverlap, TrackerConfig, Verdict,
-    WriteFacts,
+    JapaneseEvidence, KanaModel, KeyRole, ObservedKey, StopReason, ThumbOverlap, TrackerConfig,
+    Verdict, WriteFacts,
 };
 use awase::ngram::NgramModel;
 use awase::platform::{ImeOpenOutcome, TsfComposition as _};
@@ -52,7 +52,23 @@ pub(super) struct LangDetectShadow {
     max_ms: u32,
     /// `ime_on` の対象にする窓の範囲（既定は観測の無い窓だけ。`all` は利用者の責任）
     scope: AutoDetectScope,
+    /// 直近の `on_key` の前面窓の識別子（`window-changed` で閉じたエピソードの窓を知るため。ADR-280 C1 の観測）
+    last_key_scope: Option<u64>,
+    /// 今の呼び出し（打鍵・タイマー）の前面窓の識別子
+    scope_now: u64,
+    /// 窓ごとの直前のエピソードの記憶（直近 `PREV_EPISODE_CAP` 窓まで。ADR-280 C1 の観測。記録だけで判断には使わない）
+    prev_episodes: Vec<PrevEpisode>,
 }
+
+/// 窓ごとの直前のエピソード（判定の分類名と、閉じた時刻）
+#[derive(Clone, Copy)]
+struct PrevEpisode {
+    scope: u64,
+    verdict: &'static str,
+    closed_at_ms: u64,
+}
+
+const PREV_EPISODE_CAP: usize = 8;
 
 /// 設定のプロセス名の正規化（小文字化し、末尾の `.exe` を落とす）
 fn normalize_app(name: &str) -> String {
@@ -105,7 +121,33 @@ impl LangDetectShadow {
             exclude_apps: cfg.exclude_apps.iter().map(|a| normalize_app(a)).collect(),
             max_ms: cfg.max_ms,
             scope: cfg.scope,
+            last_key_scope: None,
+            scope_now: 0,
+            prev_episodes: Vec::new(),
         }
+    }
+
+    /// 閉じたエピソードの窓を記憶へ入れ、**入れる前の**同じ窓の直前を返す（純粋に近い。時刻は呼び出し側が渡す）。
+    fn swap_prev_episode(
+        &mut self,
+        scope: u64,
+        verdict: &'static str,
+        closed_at_ms: u64,
+    ) -> Option<PrevEpisode> {
+        let prev = self
+            .prev_episodes
+            .iter()
+            .position(|p| p.scope == scope)
+            .map(|i| self.prev_episodes.remove(i));
+        self.prev_episodes.push(PrevEpisode {
+            scope,
+            verdict,
+            closed_at_ms,
+        });
+        if self.prev_episodes.len() > PREV_EPISODE_CAP {
+            self.prev_episodes.remove(0);
+        }
+        prev
     }
 
     const fn is_active(&self) -> bool {
@@ -386,10 +428,13 @@ impl super::Runtime {
         let key = observed_key(event);
         let scope = scope_id(crate::win32::foreground_scope());
         let may_hold = self.lang_detect_may_hold();
+        self.lang_detect.scope_now = scope;
         let Some(step) = self.lang_detect.on_key(key, *event, scope, may_hold) else {
             return LangDetectIntake::Pass;
         };
-        self.lang_detect_apply(step)
+        let intake = self.lang_detect_apply(step);
+        self.lang_detect.last_key_scope = Some(scope);
+        intake
     }
 
     /// 保持の期限のタイマー（`TIMER_LANG_HOLD`）。保持中のエピソードを閉じて、保持した打鍵を解放する。
@@ -397,6 +442,7 @@ impl super::Runtime {
     /// 前面窓が保持の開始時と違えば、保持した打鍵は捨てる（マウスで窓を変えたあとに次の打鍵が来なかった場合）。
     pub(crate) fn lang_detect_on_timer(&mut self) {
         let scope = scope_id(crate::win32::foreground_scope());
+        self.lang_detect.scope_now = scope;
         let step = self.lang_detect.controller.on_timer(scope);
         let _ = self.lang_detect_apply(step);
     }
@@ -405,6 +451,9 @@ impl super::Runtime {
     fn lang_detect_apply(&mut self, step: HoldStep<RawKeyEvent>) -> LangDetectIntake {
         // 判定時点の belief（書き込みの**前**に読む）。
         let belief_before = self.platform_state.ime.effective_open();
+        // ADR-280 D4: belief の根拠の内訳（読み取りのみ。書き込みの前に読む）。
+        let belief_basis = self.platform_state.ime.effective_open_basis();
+        let now_ms = crate::hook::current_tick_ms();
         let action = if step.japanese {
             self.lang_detect_write_hiragana()
         } else if step.english {
@@ -421,6 +470,16 @@ impl super::Runtime {
             let llr = outcome.llr as f32;
             let japanese = matches!(outcome.verdict, Verdict::Japanese(_));
             let not_japanese = outcome.verdict == Verdict::NotJapanese;
+            // ADR-280 C1: 同じ窓の直前のエピソード。`window-changed` で閉じたエピソードは**前の窓**のもの
+            // （この呼び出しの前の打鍵の窓）、それ以外は今の窓のもの。観測だけで、判断には使わない。
+            let outcome_scope = if outcome.stop == StopReason::WindowChanged {
+                self.lang_detect.last_key_scope
+            } else {
+                Some(self.lang_detect.scope_now)
+            };
+            let prev = outcome_scope
+                .and_then(|scope| self.lang_detect.swap_prev_episode(scope, verdict, now_ms));
+            let started_at_ms = now_ms.saturating_sub(outcome.duration_ms);
             let record = crate::journal::LangDetectRecord {
                 trigger: outcome.trigger.label(),
                 verdict,
@@ -446,6 +505,9 @@ impl super::Runtime {
                     "none"
                 },
                 discarded,
+                prev_verdict: prev.map(|p| p.verdict),
+                prev_elapsed_ms: prev.map(|p| started_at_ms.saturating_sub(p.closed_at_ms)),
+                belief_basis,
             };
             self.platform_state
                 .ime
@@ -503,6 +565,7 @@ impl super::Runtime {
         self.focus_switch_hold_release_all("ConfigReload");
         // 設定リロードで作り直す前に、保持中の打鍵を解放する（作り直しで黙って消えないように）。
         let scope = scope_id(crate::win32::foreground_scope());
+        self.lang_detect.scope_now = scope;
         let step = self.lang_detect.controller.on_timer(scope);
         let _ = self.lang_detect_apply(step);
         self.platform.timer.kill(crate::TIMER_LANG_HOLD);

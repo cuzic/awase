@@ -139,6 +139,15 @@ pub struct LangDetectRecord {
     pub action: &'static str,
     /// 保持中に前面窓が変わって捨てた打鍵の数
     pub discarded: u32,
+    /// 同じ窓の直前のエピソードの判定（`japanese` / `not-japanese` / `undecided`。ADR-280 C1 を測る観測）。直前が無い・
+    /// 記憶から落ちた（窓ごとの記憶は直近 8 窓まで）・起動後の最初のエピソードなら `None`
+    pub prev_verdict: Option<&'static str>,
+    /// 直前のエピソードが閉じてから、このエピソードが**始まる**までの経過（ミリ秒。`prev_verdict` が `None` なら `None`）
+    pub prev_elapsed_ms: Option<u64>,
+    /// 判定時点の belief（`belief_open`）が、どの経路で決まったかの分類名（ADR-280 D4 の内訳。書き込みの**前**の値。
+    /// `intent-store` / `force-guard` / `explicit-intent` / `key-effect` / `derive-high` / `derive-medium` / `indicator-glyph` /
+    /// `most-recent-trusted` / `desired-fallback`）
+    pub belief_basis: &'static str,
 }
 
 /// 入力インジケーターの字形の取り込み 1 回の結果(ADR-261 段階 1。挙動を変えない観測。**belief には入れない**)。
@@ -1482,6 +1491,9 @@ impl JournalEntry {
                     belief_open = record.belief_open,
                     action = record.action,
                     discarded = record.discarded,
+                    prev_verdict = record.prev_verdict,
+                    prev_elapsed_ms = record.prev_elapsed_ms,
+                    belief_basis = record.belief_basis,
                     "[lang-detect]"
                 );
             }
@@ -2924,10 +2936,17 @@ mod tests {
                 belief_open: Some(true),
                 action: "hiragana-sent",
                 discarded: 0,
+                prev_verdict: Some("not-japanese"),
+                prev_elapsed_ms: Some(1500),
+                belief_basis: "derive-high",
             },
         });
         let json = j.to_json().unwrap();
         assert!(json.contains("LangDetect"));
+        // 追加項目（ADR-280）。キー位置・文字は含めず、分類名と数値だけ。
+        assert!(json.contains("prev_verdict"));
+        assert!(json.contains("prev_elapsed_ms"));
+        assert!(json.contains("derive-high"));
         assert!(json.contains("thumb-overlap"));
         assert!(json.contains("llr_trace"));
         assert!(json.contains("hiragana-sent"));
