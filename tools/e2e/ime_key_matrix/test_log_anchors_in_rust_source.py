@@ -20,6 +20,7 @@ ROOT = HERE.parents[2]
 # (Rust ソースに現れるべき断片, 読むチェッカー)
 ANCHORS = [
     ("[gji-fsm] StartComposition while engine off", "check_invariants.py"),
+    ("[lang-detect] config:", "check_langdetect.py"),
     ("[gji-fsm] StartComposition while engine off", "check_reopen.py"),
     ("stale confirm 検出", "check_invariants.py"),
     ("stale confirm 検出", "check_reopen.py"),
