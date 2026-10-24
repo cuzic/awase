@@ -581,6 +581,7 @@ const CORE_MODULES: &[&str] = &[
     "msaa_role_plan",
     "observation_store",
     "open_warrant",
+    "paced_queue",
     "physical_disposition",
     "platform_state",
     "post_bypass",

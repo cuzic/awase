@@ -7,23 +7,23 @@
 //! 後ろに並べる。**送信の順序は、提出の順序のまま変わらない**。
 //!
 //! 呼び出し側の使い方:
-//! 1. `submit(item, delay)`。`SendNow` なら今すぐ送る。`arm_wait_ms` が `Some(ms)` なら、`ms` 待ってから `next()` を呼ぶ
+//! 1. `submit(item, delay)`。`SendNow` なら今すぐ送る。`arm_wait_ms` が `Some(ms)` なら、`ms` 待ってから `take_next()` を呼ぶ
 //!    タスクを 1 つ起動する(`Queued` ならすでにタスクが動いているので何もしない)。
-//! 2. タスクは `ms` 待ち → `next()` を呼ぶ。`Send` なら送り、`wait_ms > 0` ならその間待ってからまた `next()`、
-//!    `wait_ms == 0` ならすぐ `next()`。`Idle` ならタスクを終える。
+//! 2. タスクは `ms` 待ち → `take_next()` を呼ぶ。`Send` なら送り、`wait_ms > 0` ならその間待ってからまた `take_next()`、
+//!    `wait_ms == 0` ならすぐ `take_next()`。`Idle` ならタスクを終える。
 
 use std::collections::VecDeque;
 
 /// [`PacedQueue::submit`] の結果。
 #[derive(Debug, PartialEq, Eq)]
 pub enum Submit<T> {
-    /// いま送る。`arm_wait_ms` が `Some` なら、その時間待ってから [`PacedQueue::next`] を呼ぶタスクを起動する。
+    /// いま送る。`arm_wait_ms` が `Some` なら、その時間待ってから [`PacedQueue::take_next`] を呼ぶタスクを起動する。
     SendNow { item: T, arm_wait_ms: Option<u32> },
     /// 待っている間なので、後ろに並べた(タスクはすでに動いている)。
     Queued,
 }
 
-/// [`PacedQueue::next`] の結果。
+/// [`PacedQueue::take_next`] の結果。
 #[derive(Debug, PartialEq, Eq)]
 pub enum Next<T> {
     /// `item` を送る。送ったあと `wait_ms` だけ待つ(0 ならすぐ次を取る)。
@@ -82,7 +82,7 @@ impl<T> PacedQueue<T> {
     }
 
     /// 待ちが終わったあとに呼ぶ。次に送るものを返す。何も無ければ送り出しを終える。
-    pub fn next(&mut self) -> Next<T> {
+    pub fn take_next(&mut self) -> Next<T> {
         match self.waiting.pop_front() {
             Some((item, wait_ms)) => Next::Send { item, wait_ms },
             None => {
@@ -130,20 +130,20 @@ mod tests {
         assert_eq!(q.submit("up", 0), Submit::Queued);
         assert_eq!(q.submit("other", 0), Submit::Queued);
         assert_eq!(
-            q.next(),
+            q.take_next(),
             Next::Send {
                 item: "up",
                 wait_ms: 0
             }
         );
         assert_eq!(
-            q.next(),
+            q.take_next(),
             Next::Send {
                 item: "other",
                 wait_ms: 0
             }
         );
-        assert_eq!(q.next(), Next::Idle);
+        assert_eq!(q.take_next(), Next::Idle);
         assert!(!q.is_pacing());
     }
 
@@ -163,7 +163,7 @@ mod tests {
         for (item, d) in [("k↑", 0), ("a↓", 10), ("a↑", 0)] {
             assert_eq!(q.submit(item, d), Submit::Queued);
         }
-        while let Next::Send { item, wait_ms } = q.next() {
+        while let Next::Send { item, wait_ms } = q.take_next() {
             sent.push(item);
             if wait_ms > 0 {
                 waits.push(wait_ms);
@@ -178,7 +178,7 @@ mod tests {
     fn after_idle_a_new_item_starts_fresh() {
         let mut q = PacedQueue::new();
         let _ = q.submit("x", 10);
-        assert_eq!(q.next(), Next::Idle);
+        assert_eq!(q.take_next(), Next::Idle);
         assert_eq!(
             q.submit("y", 0),
             Submit::SendNow {

@@ -66,7 +66,7 @@ fn start_pacing_task(first_wait_ms: u32) {
         loop {
             win32_async::sleep_ms(wait_ms).await;
             loop {
-                let next = QUEUE.with(|q| q.borrow_mut().next());
+                let next = QUEUE.with(|q| q.borrow_mut().take_next());
                 match next {
                     Next::Send { item, wait_ms: w } => {
                         send_now(&item);
