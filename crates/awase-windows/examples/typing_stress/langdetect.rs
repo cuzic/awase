@@ -5,7 +5,7 @@
 //! (既定 4000。`max_ms` 既定 2500 を超える)待つ。列は次の 3 種類(親指なしの未シフト面、Space を含まない):
 //!  - `B`(境界): `ayre`。llr = 1.5741 → -4.6360 → -8.5266 → -14.9978。閾値 14 なら 4 打目で NotJapanese、16 なら決まらない。
 //!  - `E`(英数): `build`。llr = -6.4998 → -15.6293 → -19.4536。閾値 14 でも 16 でも NotJapanese。
-//!  - `J`(日本語): 左親指(無変換)を押したまま `k` を打つ(親指との重なり)。どの閾値でも Japanese。
+//!  - `J`(日本語): `k` を押している間に左親指(無変換)を重ねる(文字先行の親指との重なり)。どの閾値でも Japanese。
 //! 記録は `langdetect` 行(試行の開始・終了の UTC 時刻。check_langdetect.py が awase.log を時刻で切り出す)。
 
 use serde_json::json;
@@ -66,11 +66,12 @@ pub(crate) fn langdetect_scenario(child: HWND) {
             sleep_ms(idle);
             let t0 = utc_hms();
             if kind == "J" {
-                // 左親指を押したまま文字を打つ(NICOLA の同時打鍵)。
-                send_key(VK_MUHENKAN, SCAN_MUHENKAN, true);
-                sleep_ms(30);
+                // 文字を先に押し、押している間に左親指を重ねる(NICOLA の文字先行の同時打鍵)。親指を先に押すと、
+                // 親指の Down が無操作の長さをリセットして、文字がエピソードの開始(idle)にならない(初回 CI: 記録 0 件)。
                 let vk = u32::from(keys.as_bytes()[0].to_ascii_uppercase());
                 send_key(vk, scan_of(vk), true);
+                sleep_ms(30);
+                send_key(VK_MUHENKAN, SCAN_MUHENKAN, true);
                 sleep_ms(60);
                 send_key(vk, scan_of(vk), false);
                 sleep_ms(30);
