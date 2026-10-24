@@ -39,7 +39,7 @@ PR #819 の本文より: Edge / tsf-native・GJI で、4.7 秒の無操作のあ
 
 - **直接の原因**: `KanaModel::delta`(`src/lang_detect.rs`)が、仮名に読めないキー(記号・数字・未定義)に約 -33 nats の下限を課していた。#819 は、これを 0(中立)にする。
 - **構成要因**: 設定画面の 5 択(`crates/awase-settings/src/main.rs` の `AUTO_DETECT_PRESETS`)は、`ime_on_eisu` を **`scope = all` とだけ**組み合わせて出す(`ime_on_eisu + unobserved` は選択肢に無く、config を手書きしたときだけ)。`scope = all` が TSF ネイティブの窓を含むようになったのは `2097538a`(2026-10-22、BUG-200 の救済が目的)で、Edge(tsf-native)の事故はその後に起きている。#819 が足す ADR-263 の追記(未マージ)も、journal の構成を `ime_on_eisu`・`scope = "all"` と書いている。`ime_on_eisu` と `scope = all` は、どちらも `src/config.rs` の doc で「利用者の責任」で選ぶ設定。
-- **閾値**: `ime_on_eisu` の入りの実効の閾値は `max(eisu_threshold, en_threshold)`(`lang_detect_shadow.rs:79-83`)で、既定は `max(14, 8) = 14`。-33.2・-43.1 は 14 を大きく超えるので、事故の説明は変わらない。dragonflyg4 の実際の `eisu_threshold` は未確認。
+- **閾値**: `ime_on_eisu` の入りの実効の閾値は `max(eisu_threshold, en_threshold)`(`lang_detect_shadow.rs:79-83`)で、既定は `max(14, 8) = 14`。-33.2・-43.1 は 14 を大きく超えるので、事故の説明は変わらない。dragonflyg4 の `config.toml`(`C:\Users\cuzic\awase-latest\config.toml`、開発ビルドなのでワークスペース直下)の `[auto_detect]` は `mode = "ime_on_eisu"`・`scope = "all"` だけで、`eisu_threshold` の記述は無い(2026-10-24 に clipwire で取得)ので、既定の 14 が効いている。
 - **事故の再現条件**: 「NICOLA を打っている途中の無操作 4.7 秒」(`idle_ms` 既定 3000)。窓は変わっていない。
 
 ### #819 の評価(出典: PR #819 の本文。評価スクリプトは `research-private/v3-eval/eval8_symbols.py`、リポジトリ外)
@@ -126,7 +126,7 @@ D1〜D3 で足りない失敗(belief ON・実 IME が閉の窓で半角英数に
 
 | 段階 | 内容 | 終わりの判定 |
 |---|---|---|
-| 0 | #819 のマージを待つ。dragonflyg4 の `eisu_threshold` の実際の値を確かめる(`mode`・`scope` は journal と UI の構成から確定済み) | 実効の閾値が確定する |
+| 0 | **確認済み**(2026-10-24): dragonflyg4 は `ime_on_eisu`・`scope = all`・`eisu_threshold` 未設定(既定 14)。残りは #819 のマージを待つことと、Edge の `profile` の確認(C4 の効果がこの分類に依存する) | 実効の閾値が確定した |
 | 1 | D1: 評価をリポジトリに置き、率を固定。**入口条件**: 読み付きの日本語 1400 文の出典・ライセンスを確かめる。確かめられなければ、ライセンスの明らかなコーパスか、`data/ngram_hiragana` の元データからの生成に代える | CI で率が固定される |
 | 2 | D2: 3 本の全列挙 golden | 現行の挙動が golden で固定される |
 | 3 | D3: C0 を D1 の評価で測る。C1・C2 は journal の項目を足してから測る(または所有者の判断)。C3〜C5 は所有者の判断を受ける | 候補ごとに数値、または判断の記録がある |
@@ -154,7 +154,7 @@ D1〜D3 で足りない失敗(belief ON・実 IME が閉の窓で半角英数に
 
 ## リスク・未確認
 
-- 事故の構成は、UI の 5 択と #819 の ADR-263 追記から `ime_on_eisu + scope = all` と見てよい。残る未確認は dragonflyg4 の `eisu_threshold` の値(段階 0)。
+- 事故の構成は `ime_on_eisu + scope = all`・`eisu_threshold` 既定 14 と確認済み(2026-10-24)。残る未確認は、Edge が tsf-native と分類された経路(段階 0 の残り)。
 - LINE・Edge の読みは、この ADR では救えない(上の表)。LINE の切替直後の読みの出典は、手元の docs(`adr279-stage0-result`・`spike-m1m2`)に無い(どちらも LINE を測っていない)。journal の報告 ID を添えて別途扱う。
 - C1 の「直前の文脈」は、`EpisodeTracker` に状態を足す。純粋さを保つ形(入力に文脈を渡す)を段階 3 の最初に確かめる。
 - D1 の評価データの代表性。人工データは実利用の打鍵列と違う。実ジャーナル由来の分は、利用者の本文を含めずに集める手順が要る。
@@ -164,4 +164,4 @@ D1〜D3 で足りない失敗(belief ON・実 IME が閉の窓で半角英数に
 
 1. 範囲は D1〜D3 に絞る。擬似窓・擬似 IME を使った再設計は本 ADR で行わず、別の ADR で扱う。窓クラス別の信頼度(D4)は保留。
 2. 事故への対策は C0 → C4 の順で試す(C5 は最後)。
-3. dragonflyg4 の `eisu_threshold` の実際の値は、clipwire で取得する(段階 0)。
+3. dragonflyg4 の `eisu_threshold` の実際の値は、clipwire で取得する(段階 0)。→ 取得済み: 未設定で既定 14。
