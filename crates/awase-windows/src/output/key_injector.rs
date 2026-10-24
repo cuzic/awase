@@ -172,6 +172,47 @@ impl KeyInjector {
 
     /// 1 ラン分の INPUT を構築して送信し、送信した INPUT 数を返す。
     fn send_vk_run_batch(run: &[(VkCode, bool)], marker: VkMarker) -> usize {
+        // 実験用(Zoom で母音が落ちる件の切り分け。本番には入れない): 環境変数 AWASE_ROMAJI_SEND で送り方を切り替える。
+        //   seq      … キーごとに「↓↑」を順に 1 回の SendInput で送る(重ならない)
+        //   gap<N>   … キーごとに ↓ と ↑ を別の SendInput にし、間に N ms 待つ
+        // 未設定・それ以外は従来(全キーの ↓ を送ってから ↑ を送る、1 回の SendInput)。
+        if let Ok(mode) = std::env::var("AWASE_ROMAJI_SEND") {
+            if mode == "seq" || mode.starts_with("gap") {
+                let gap_ms: u64 = mode.trim_start_matches("gap").parse().unwrap_or(0);
+                let mut n = 0;
+                for &(vk, needs_shift) in run {
+                    if mode == "seq" {
+                        let mut inputs = Vec::with_capacity(4);
+                        if needs_shift {
+                            inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                        }
+                        inputs.push(marker.make_input(vk, false));
+                        inputs.push(marker.make_input(vk, true));
+                        if needs_shift {
+                            inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                        }
+                        n += inputs.len();
+                        let _ = crate::win32::send_input_safe(&inputs);
+                    } else {
+                        let mut down = Vec::with_capacity(2);
+                        if needs_shift {
+                            down.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                        }
+                        down.push(marker.make_input(vk, false));
+                        let mut up = vec![marker.make_input(vk, true)];
+                        if needs_shift {
+                            up.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                        }
+                        n += down.len() + up.len();
+                        let _ = crate::win32::send_input_safe(&down);
+                        std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+                        let _ = crate::win32::send_input_safe(&up);
+                        std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+                    }
+                }
+                return n;
+            }
+        }
         let mut inputs = Vec::with_capacity(run.len() * 4);
         for &(vk, needs_shift) in run {
             if needs_shift {
