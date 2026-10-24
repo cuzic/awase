@@ -177,8 +177,23 @@ impl KeyInjector {
         //   gap<N>   … キーごとに ↓ と ↑ を別の SendInput にし、間に N ms 待つ
         // 未設定・それ以外は従来(全キーの ↓ を送ってから ↑ を送る、1 回の SendInput)。
         if let Ok(mode) = std::env::var("AWASE_ROMAJI_SEND") {
-            if mode == "seq" || mode.starts_with("gap") {
-                let gap_ms: u64 = mode.trim_start_matches("gap").parse().unwrap_or(0);
+            if mode == "seq"
+                || mode.starts_with("gap")
+                || mode.starts_with("hold")
+                || mode.starts_with("post")
+            {
+                // gap<N>: ↓の後と↑の後の両方に N ms / hold<N>: ↓の後(押している時間)だけ / post<N>: ↑の後(キーの間)だけ。
+                let ms: u64 = mode
+                    .trim_start_matches(|c: char| c.is_ascii_alphabetic())
+                    .parse()
+                    .unwrap_or(0);
+                let (down_wait, up_wait) = if mode.starts_with("hold") {
+                    (ms, 0)
+                } else if mode.starts_with("post") {
+                    (0, ms)
+                } else {
+                    (ms, ms)
+                };
                 let mut n = 0;
                 for &(vk, needs_shift) in run {
                     if mode == "seq" {
@@ -205,9 +220,9 @@ impl KeyInjector {
                         }
                         n += down.len() + up.len();
                         let _ = crate::win32::send_input_safe(&down);
-                        std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+                        std::thread::sleep(std::time::Duration::from_millis(down_wait));
                         let _ = crate::win32::send_input_safe(&up);
-                        std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+                        std::thread::sleep(std::time::Duration::from_millis(up_wait));
                     }
                 }
                 return n;
