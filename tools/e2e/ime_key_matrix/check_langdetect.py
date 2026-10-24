@@ -3,12 +3,12 @@
 
 `[auto_detect] eisu_threshold`(`--eisu` で期待値を渡す)が実際の awase.exe の判定器の閾値に届いたかを、次の 2 つで見る。
  1. awase.log の起動時の観測行 `[lang-detect] config: ... en_threshold_effective=<値>` が `max(eisu_threshold, en_threshold)` と一致する。
- 2. 固定の合成列(B 境界 `ayre`: llr -14.9978、E 英数 `build`、J 親指重なり)の判定(`[lang-detect]` の journal 行の verdict)が期待どおり。
-    B は閾値 14 なら not-japanese、16 なら undecided。E は not-japanese、J は japanese。
+ 2. 固定の合成列(B 境界 `ayre`: llr -14.9978〈nicola_keytop では -14.734〉、E 英数 `build`)の判定(`[lang-detect]` の journal 行の verdict)が期待どおり。
+    B は閾値 14 なら not-japanese、16 なら undecided。E は not-japanese。J(親指+k)は CI では Japanese にならない(無変換が excluded-key)ので、記録だけ表示して合否に含めない。
 列の打鍵時刻(typing_stress.log の langdetect 行の start/end)で awase.log を切り出す。本文は読まない。
 INVALID(終了コード 3)は「実行できなかった」だけ: abort・完走マーカー無し・config 行/試行の記録が無い。FAIL は終了コード 1。
 使い方: check_langdetect.py --eisu 14|16 [--json out.json] <typing_stress.log> <awase.log>
-出力の最後の行: `LANGDETECT: verdict=PASS|FAIL|INVALID eisu=… effective=… B=<ok>/<n> E=<ok>/<n> J=<ok>/<n>`
+出力の最後の行: `LANGDETECT: verdict=PASS|FAIL|INVALID eisu=… effective=… B=<ok>/<n> E=<ok>/<n> J=<ok>/<n>(J は情報のみ)`
 """
 import argparse
 import json
@@ -77,10 +77,11 @@ def analyze(recs: list, timed: list, eisu: float, done: bool) -> dict:
             stat[kind][0] += 1
         detail.append({"n": r.get("n"), "kind": kind, "want": want, "episodes": eps, "ok": ok})
     for kind, (_ok, n) in stat.items():
-        if n == 0 and rows:
+        if n == 0 and rows and kind != "J":
             reasons.append(f"{kind} の試行が 0 件")
     wired = effective is not None and abs(effective - max(eisu, 8.0)) < 1e-6
-    ok_all = wired and all(a == b for a, b in stat.values())
+    # J は情報のみ(合否に含めない): 無変換が IME キー扱いで excluded-key となりエピソードが Japanese に届かない(2026-10-24 の CI 実測)。
+    ok_all = wired and all(stat[k][0] == stat[k][1] for k in ("B", "E"))
     return {
         "verdict": "INVALID" if reasons else ("PASS" if ok_all else "FAIL"),
         "invalid_reasons": reasons, "eisu": eisu, "effective": effective, "wired": wired,
