@@ -1619,8 +1619,20 @@ mod tests {
     fn english_code_is_released_early_as_not_japanese() {
         let model = real_model();
         // 「thequickbrown」は 2 打鍵目で尤度比が -9.3（1 打鍵目 -2.2）となり、en_threshold = 8 を超える。7 打鍵を待たずに解放できる。
+        let mut diag =
+            EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
+        for c in "thequickbrown".chars() {
+            diag.observe(&model, DetectEvent::CharDown(qwerty(c)));
+            diag.observe(&model, DetectEvent::CharUp(qwerty(c)));
+        }
         let (verdict, presses) = run(&model, "thequickbrown");
-        assert_eq!(verdict, Verdict::NotJapanese);
+        assert_eq!(
+            verdict,
+            Verdict::NotJapanese,
+            "presses={presses} trace={:?} verdict={:?}",
+            diag.llr_trace(),
+            diag.verdict()
+        );
         assert!(presses <= 3, "保持が長すぎる: {presses} 打鍵");
     }
 }
