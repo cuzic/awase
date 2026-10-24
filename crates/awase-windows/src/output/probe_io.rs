@@ -420,7 +420,8 @@ fn reserve_raw_literal_recovery<I: ProbeIo>(
         // 見た目の掃除(BS)も、正しく入った文字を消すので送らない(Zoom 実測、BUG-215)。
         // 疑いが出た VK で per-VK の確認は終わり、後ろの VK は送られていない。「ki」の `i` が届かず「k」だけが
         // 出るのを避けるため、後ろの分だけは送る(`k` を消して `ki` を送り直すことはしない)。
-        io.set_raw_literal(0, rest, escape_composition);
+        // ESC も送らない(BUG-216): 諦める時点で入力中の文字は正しく入っていることが多く、破棄すると消える。
+        io.set_raw_literal(0, rest, false);
     }
 }
 
@@ -584,11 +585,15 @@ where
                             romaji: None,
                         }));
                     // BUG-27 追補4: consecutive_count は「連続失敗」の抑止用カウンタ。
-                    // 本物の CompositionConfirmed が挟まれば連続ではなくなるため、
-                    // 必ずリセットする（従来は FocusChange/SetOpenTrue でしかリセット
-                    // されず、セッション中に一度でも literal 化すると以後ずっと
-                    // give-up=backspace-onlyに固定される regression があった）。
-                    io.reset_consecutive_count();
+                    // 語の最後の VK まで本物の CompositionConfirmed が取れたとき(= `mark_literal_session`)だけ、連続では
+                    // なくなるのでリセットする。途中の VK の確認ではリセットしない(BUG-216): 2 番目のキーの疑いで
+                    // ESC + 全体を再送した時、再送した 1 番目のキーの確認でカウントが 0 に戻ると、2 番目でまた疑われて
+                    // 同じ回収に入り、ESC が入力中の文字を毎回破棄して文字が消えた(擬似窓で 8 回連鎖)。
+                    // (従来の「セッション中に一度でも literal 化すると以後ずっと give-up に固定される」regression は、
+                    // 語を最後まで確認できればリセットされるので再発しない。)
+                    if mark_literal_session {
+                        io.reset_consecutive_count();
+                    }
                     if mark_literal_session {
                         crate::tsf::observer::mark_literal_session_confirmed(cold_seq);
                     }

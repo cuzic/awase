@@ -463,22 +463,33 @@ mod tests {
         });
     }
 
-    /// BUG-216(既知の問題、現状の挙動を固定): 2 番目のキーの書き込みだけが閾値に届かない窓で、本番が
-    /// 「2 番目以降の疑いを信用する」窓(Zoom 以外)だと、2 番目の疑いが ESC + 全体の再送を起こす。再送した
-    /// 1 番目のキーは確認できて連続カウントが 0 に戻るため、同じことが止まらず、ESC が入力中の文字を毎回
-    /// 破棄して文字が全部消える。Zoom の実機(修正前)で `ki` が 6 回再送されたのと同じ型。
-    /// 直したら、`runaway` と空文字の期待を `text() == "き"` と `!runaway` に反転する。
+    /// BUG-216: 2 番目のキーの書き込みだけが閾値に届かない窓で、本番が「2 番目以降の疑いを信用する」窓(Zoom 以外)でも、
+    /// ESC + 全体の再送は 1 回で止まり、文字は消えない。修正前は、再送した 1 番目のキーの確認で連続カウントが 0 に
+    /// 戻って同じ回収が止まらず、ESC が入力中の文字を毎回破棄して文字が全部消えた(escapes: 8, resends: 8)。
     #[test]
-    fn known_bug_216_weak_second_key_in_an_untrusted_window_loops_and_loses_text() {
+    fn bug_216_weak_second_key_in_an_untrusted_window_recovers_once_and_keeps_text() {
         with_window(Profile::SECOND_KEY_WEAK, |w| {
             w.type_cold("ki");
             let s = w.stats();
-            assert!(
-                s.runaway,
-                "BUG-216 が直ったなら、このテストを反転する: {s:?}"
-            );
-            assert!(s.escapes >= MAX_ROUNDS - 1, "{s:?}");
-            assert_eq!(w.text(), "", "ESC が入力中の文字を毎回破棄する: {s:?}");
+            assert_eq!(w.text(), "き", "{s:?}");
+            assert!(!s.runaway, "{s:?}");
+            assert_eq!(s.escapes, 1, "ESC は最初の 1 回だけ: {s:?}");
+            assert_eq!(s.resends, 1, "{s:?}");
+        });
+    }
+
+    /// BUG-216: その窓で続けて打っても、2 語目以降は ESC も再送も起こさない(連続カウントが残るので諦める分岐になる)。
+    #[test]
+    fn bug_216_weak_second_key_window_does_not_escape_again_on_later_words() {
+        with_window(Profile::SECOND_KEY_WEAK, |w| {
+            for _ in 0..6 {
+                w.type_cold("ki");
+            }
+            let s = w.stats();
+            assert_eq!(w.text(), "き".repeat(6), "{s:?}");
+            assert!(!s.runaway, "{s:?}");
+            assert_eq!(s.escapes, 1, "ESC は最初の語の 1 回だけ: {s:?}");
+            assert_eq!(s.backspaces, 0, "{s:?}");
         });
     }
 
@@ -491,6 +502,7 @@ mod tests {
             Profile::NOTEPAD,
             Profile::WINDOWS_TERMINAL,
             Profile::ALWAYS_REACHES,
+            Profile::SECOND_KEY_WEAK,
         ] {
             with_window(profile, |w| {
                 let n = 12;
