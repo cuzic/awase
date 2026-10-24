@@ -49,6 +49,7 @@ use awase_windows::focus::learning_store::{apply_learned_imm_capability, ImmCapa
 use awase_windows::state::app_ime_policy::{app_profile_follow_event, AppImePolicy};
 use awase_windows::state::conv_classify::ConvSyncReason;
 use awase_windows::state::drift_correction::{check_drift_correction, DriftCorrection};
+use awase_windows::state::drift_plan::{decide_drift_plan, DriftFacts, DriftPlan, DriftStep};
 use awase_windows::state::evidence::{
     ConvOpenInference, HeuristicDefault, ImmCrossProbe, Observed, ObserverPoll,
 };
@@ -235,6 +236,10 @@ pub struct Defenses {
     /// ECRS DD3-01（#779）: 同じフォーカス中に殻の live の profile が変わったら核の `app_policy` を追随させる
     /// （`app_profile_follow_event` → `AppProfileChanged`、本番の呼び出し元は `notify_focus_hwnd_updated_if_needed`）。
     pub app_profile_follow: bool,
+    /// BUG-163 の 1 段目（`b6ab8980`）: 授権（warrant）が下りない ImmCross の補正は「検知」の手前で見送る
+    /// （`decide_drift_plan` の `DriftStep::SkipWarrantWouldBlock`、本番の呼び出し元は `ir_apply_drift_correction`）。
+    /// 外すと `warrant_would_block` を常に偽にして `decide_drift_plan` を呼ぶ（ADR-277 段階 3）。
+    pub drift_skip_unwarranted: bool,
 }
 
 impl Defenses {
@@ -242,6 +247,7 @@ impl Defenses {
     pub const ALL_ON: Self = Self {
         placeholder_align: true,
         app_profile_follow: true,
+        drift_skip_unwarranted: true,
     };
 }
 
@@ -924,11 +930,31 @@ impl Harness {
         }
 
         if let Some(drift) = check_drift_correction(self.hub.model(), self.now()) {
-            // `ir_apply_drift_correction`（`runtime/ime_refresh.rs`）: ImmCross（書き込み経路が
-            // `set_ime_open_ordered`）で warrant が下りない補正は、「検知」の手前で見送る（`b6ab8980`）。
+            // `ir_apply_drift_correction`（`runtime/ime_refresh.rs`）が呼ぶ本物の `decide_drift_plan`（ADR-277 段階 3）。
+            // 以前は「ImmCross で warrant が下りないなら見送る」の 1 条件だけをここに写していた。facts は殻の
+            // `ir_observe_drift_facts` と同じ式で、ずれ・方針・書き込み経路・授権の有無を載せる（進行中の試行・settle 中・
+            // 収束・診断済みは、このハーネスが模していないので既定の値）。
             let warranted = self.warrant_for(drift.desired).is_some();
             let imm_cross = matches!(self.setup.profile, ImePolicyProfile::ImmCross);
-            let detected = !(imm_cross && !warranted);
+            let facts = DriftFacts {
+                now: Instant::now(),
+                engine_enabled: true,
+                japanese_ime: true,
+                drift: Ok(drift),
+                settling: false,
+                active: None,
+                default_policy: self.hub.model().app_policy.default_feedback,
+                imm_cross,
+                // 防御 `drift_skip_unwarranted` を外すと、授権が下りなくても見送らない（#BUG-163 の 1 段目の前の挙動）。
+                warrant_would_block: self.setup.defenses.drift_skip_unwarranted && !warranted,
+                diag_already_notified: false,
+                converged: false,
+                fresh_evidence_after_giveup: false,
+            };
+            let detected = !matches!(
+                decide_drift_plan(&facts),
+                DriftPlan::Act(a) if a.step == DriftStep::SkipWarrantWouldBlock
+            );
             self.drift_fires.push(DriftFire {
                 step: self.step + 1,
                 at_ms: self.now_ms,

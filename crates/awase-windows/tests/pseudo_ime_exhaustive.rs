@@ -572,9 +572,20 @@ fn switch_off(name: &str) -> Defenses {
     match name {
         "placeholder_align" => d.placeholder_align = false,
         "app_profile_follow" => d.app_profile_follow = false,
+        "drift_skip_unwarranted" => d.drift_skip_unwarranted = false,
         other => panic!("目録のスイッチ {other} が Defenses に無い"),
     }
     d
+}
+
+/// 2 つの防御を同時に外した状態（二重の防御の片方が要らないかを調べるとき）。
+fn switch_off_both(a: &str, b: &str) -> Defenses {
+    let (da, db) = (switch_off(a), switch_off(b));
+    Defenses {
+        placeholder_align: da.placeholder_align && db.placeholder_align,
+        app_profile_follow: da.app_profile_follow && db.app_profile_follow,
+        drift_skip_unwarranted: da.drift_skip_unwarranted && db.drift_skip_unwarranted,
+    }
 }
 
 /// 短い順（深さ 0 から `MAX_DEPTH` まで、各深さは辞書順）に事象列を全列挙し、最初の違反を返す。
@@ -632,6 +643,28 @@ fn defense_ablation_finds_shortest_violation() {
                 "{}: 防御が有効なのに {} が破れた（{}）",
                 d.id, d.invariant, v.desc
             );
+        }
+        if let Some(other) = d.shadowed_by {
+            // 二重の防御の片方: 単独で外しても破れない(= 他方で足りる)ことと、両方を外すと破れる(= 二重の意味)ことを確かめる。
+            if let Some(v) = shortest_violation_for(d.invariant, switch_off(switch)) {
+                panic!(
+                    "{}: 単独で外すと {} が破れた（{}）。{other} で足りる、という仮説が外れた",
+                    d.id, d.invariant, v.desc
+                );
+            }
+            let Some(v) = shortest_violation_for(d.invariant, switch_off_both(switch, other))
+            else {
+                panic!(
+                    "{}: {other} と両方を外しても {} が破れない。探索の事象が足りない",
+                    d.id, d.invariant
+                );
+            };
+            let _ = writeln!(
+                out,
+                "{}: 単独で外しても破れない({other} で足りる)。{other} と両方を外すと {} 手で {} が破れる {}",
+                d.id, v.len, d.invariant, v.desc
+            );
+            continue;
         }
         let Some(v) = shortest_violation_for(d.invariant, switch_off(switch)) else {
             panic!(

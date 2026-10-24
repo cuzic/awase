@@ -10,7 +10,7 @@ summary: |-
   (d) 防御の目録を機械可読にし(`tests/support/defenses.rs`)、外すと違反が出る最短の事象列を自動で出す。
   段階 1(本 ADR と同時の PR)は (a) の抽出、到達性と予測の全列挙 golden、(c)(d) の 1 件(BUG-163 代案A)だけ。段階 1 の全列挙で、MS-IME の 2 格子の conv=0x1B の実測セルを 16 進の大文字小文字の違いで全て取りこぼしていた不具合が見つかり、直した。
 status: |-
-  起草・段階 1 実装(2026-10-22、PR は本文参照)。予測の全列挙の食い違いの仕分け済み(2026-10-22、本文「仕分けの結果」、BUG-211・BUG-212)。段階 2(窓モデル)実装(2026-10-22、本文「段階 2 の実施結果」)。段階 3 以降は未着手。
+  起草・段階 1 実装(2026-10-22、PR は本文参照)。予測の全列挙の食い違いの仕分け済み(2026-10-22、本文「仕分けの結果」、BUG-211・BUG-212)。段階 2(窓モデル)実装(2026-10-22、本文「段階 2 の実施結果」)。段階 3(drift の写しの置換)実施(2026-10-24、本文「段階 3 の実施結果」)。段階 4 以降は未着手。
 related_adr:
   - "ADR-163"
   - "ADR-191"
@@ -130,12 +130,21 @@ BUG-204 の「閉じる前のモードの持ち越し」(閉じる打鍵の予�
 
 **疑い(未修正、不変条件にはしていない)**: 殻は進行中の drift の試行(`active_actuation`)をプロセスが変わったときだけ捨てる(`ir_notify_focus_changed` の `discard_actuation`、ADR-080 破棄条件2)。`resolve_actuation` は同じ目標の試行の方針を見ない(ADR-080 不変条件4)。このため、読める窓(Read)で始まった試行は、同じプロセスの中で読めない窓(XAML ホスト)へ移っても、学習で同じ窓が降格されても、Read のまま回数で打ち切られずに再送を続けうる。#779 は**新しく据える**試行の方針しか直していない。最短の列(1 手、`FocusTo("xaml")`)を `tests/golden/pseudo_ime_window_model.txt` に固定した。降格は IMM の読み取りの失敗から学習されるので、drift の試行の最中に起きやすい。直すなら `AppProfileChanged` でも試行を捨てる(または方針が変わったら捨てる)案になるが、実機で再送が続くかは未確認。
 
+## 段階 3 の実施結果(drift の写しの置換、2026-10-24)
+
+`support/harness.rs` の `settle` は、ImmCross で授権(warrant)が下りない補正を「検知」の手前で見送る 1 条件だけを写していた(`b6ab8980`)。これを、殻の `ir_observe_drift_facts` と同じ式の `DriftFacts` を作って本物の `decide_drift_plan` を呼ぶ形に置き換えた(進行中の試行・settle 中・収束・診断済みは、このハーネスが模していないので既定の値)。見送りは `DriftStep::SkipWarrantWouldBlock` が選ばれたときだけ。
+
+- 防御 `drift-immcross-skip-unwarranted` を `HarnessSwitch("drift_skip_unwarranted")` に昇格した(外すと `warrant_would_block` を常に偽にする)。目録の `Defense` に `shadowed_by`(別の防御があれば要らないはず、という仮説)を足し、`pseudo_ime_exhaustive.rs` が「単独で外しても破れない」ことと「両方を外すと破れる」ことを確かめる。
+- **結果(`tests/golden/defense_ablation.txt`)**: 1 段目(`drift_skip_unwarranted`)だけを外しても `p3_startup_aligns_desired_without_drift` は破れない。2 段目(`placeholder_align`、代案A)と両方を外すと、`開始=off-c19-none 列=[Observe(ImmCross)]` の 1 手で破れる。すなわち BUG-163 の二重の防御は、**代案A があれば 1 段目は要らない**(このハーネスの事象の集合・深さの範囲で)。
+- **限界(結論の強さ)**: 事象は段階 1 の集合(時間の経過・観測)で、外部注入・prefetch・キー・明示操作は載せていない(段階 4)。実機の根拠ではない。`b6ab8980` の見送りを撤去してよい、とはまだ言えない(撤去は本番のコードの変更で、実機 CI での確認が要る)。判断材料が 1 つ増えた段階。
+- 既存のシナリオ(閉ループ 29 本、全列挙 11 本)は、置換後もそのまま通った。
+
 ## 次の段階
 
 | 段階 | 内容 | 検証できるようになること / 効く撤去候補 |
 |---|---|---|
 | 2 | 決定 2 の窓モデル。**実施済み**(上の「段階 2 の実施結果」。`Desktop`・`class_change` は作らず `Window`+`focus_to` で表した) | DD3-01 の害の有無 / DD3-01・DD3-03 の統合 |
-| 3 | ME-1 と合わせて、drift の写しを `decide_drift_plan` に置き換え、`drift-immcross-skip-unwarranted` を `HarnessSwitch` に昇格 | BUG-163 の二重の防御のどちらかで足りるか / `b6ab8980` の見送りの撤去 |
+| 3 | ME-1 と合わせて、drift の写しを `decide_drift_plan` に置き換え、`drift-immcross-skip-unwarranted` を `HarnessSwitch` に昇格。**実施済み**(下の「段階 3 の実施結果」。ME-1 のうち drift の写しの置換だけ。予測入力の `unreliable`/`observable_toggle_guard` は未) | BUG-163 の二重の防御のどちらかで足りるか(**1 段目だけを外しても破れない**) / `b6ab8980` の見送りの撤去(要否の判断材料) |
 | 4 | ablation の事象に外部注入・prefetch・キー・明示操作を足し、`external-close-watch` を探索に載せる | ADR-205 の要否の最短列 / ADR-205 と mode-key-follow の重複の有無(mech-c) |
 | 5 | `Mutant` の行から `cargo mutants -F` の引数を作る小さなスクリプト(目録を読むだけ) | 核の内側の防御の要否 / drift と warrant の `is_japanese_ime` の二重の関門(raw-e 1.3-2) |
 | 6 | `write_open` を書き込み経路ごとに格子のセル(`ime-off`/`ime-on`)で引く(ME-2 の `CommandSink` と同時) | GjiDirect と ImmCross の書き込みの違い / 機構チェーンの整理 |
