@@ -381,6 +381,57 @@ impl DispatchResult {
     }
 }
 
+/// `RawTsfLiteralRecovery` の予約の入力(判断済みの値)。
+struct RawLiteralPlan {
+    /// 判定を信用できない窓(Zoom チャット欄等)。真なら何も予約しない(BUG-215 案 A)。
+    unreliable: bool,
+    /// これまでの連続 literal 回数。0 のときだけ Backspace + 再送を予約する。
+    consecutive: u32,
+    backs: usize,
+    escape_composition: bool,
+}
+
+/// `RawTsfLiteralRecovery` の Backspace・再送の予約を決めて `io` に書く。
+fn reserve_raw_literal_recovery<I: ProbeIo>(
+    io: &I,
+    cold_seq: Generation,
+    plan: RawLiteralPlan,
+    romaji: String,
+) {
+    let RawLiteralPlan {
+        unreliable,
+        consecutive,
+        backs,
+        escape_composition,
+    } = plan;
+    if unreliable {
+        tracing::warn!(
+            "[raw-tsf-literal] cold={cold_seq} literal 判定を信用できない窓 \
+             (Zoom チャット欄等) → backspace も再送もしない",
+            cold_seq = cold_seq.value(),
+        );
+        io.set_raw_literal(0, String::new(), false);
+    } else if consecutive == 0 {
+        tracing::warn!(
+            "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
+             → backspace ×{backs} + re-send {romaji:?} scheduled + mark cold",
+            cold_seq = cold_seq.value(),
+        );
+        io.set_raw_literal(backs, romaji, escape_composition);
+    } else {
+        tracing::warn!(
+            "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
+             (count={}) → giving up, no backspace, no re-send",
+            consecutive + 1,
+            cold_seq = cold_seq.value(),
+        );
+        // 以前はここで VK_IME_OFF→VK_IME_ON の reinit を予約していた(BUG-33/36/168)が、
+        // 実 Chrome×GJI で 0/10 と効かず、入力中文字を消す副作用もあったので撤去した(ADR-212 P3)。
+        // 見た目の掃除(BS)も、正しく入った文字を消すので送らない(Zoom 実測、BUG-215)。
+        io.set_raw_literal(0, String::new(), escape_composition);
+    }
+}
+
 ///
 /// `platform.rs` の `dispatch_probe_actions` を置き換える。
 /// `io: &impl ProbeIo` で Win32 副作用を注入することでテスト可能。
@@ -508,33 +559,17 @@ where
                             // 破棄する、いずれも下の if/else より前）に行うため clone が要る。
                             romaji: Some(romaji.clone()),
                         }));
-                    if unreliable {
-                        tracing::warn!(
-                            "[raw-tsf-literal] cold={cold_seq} literal 判定を信用できない窓 \
-                        (Zoom チャット欄等) → backspace も再送もしない",
-                            cold_seq = cold_seq.value(),
-                        );
-                        io.set_raw_literal(0, String::new(), false);
-                    } else if consecutive == 0 {
-                        tracing::warn!(
-                            "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
-                        → backspace ×{backs} + re-send {romaji:?} scheduled \
-                        + mark cold",
-                            cold_seq = cold_seq.value(),
-                        );
-                        io.set_raw_literal(backs, romaji, escape_composition);
-                    } else {
-                        tracing::warn!(
-                            "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
-                        (count={}) → giving up, no backspace, no re-send",
-                            consecutive + 1,
-                            cold_seq = cold_seq.value(),
-                        );
-                        // 以前はここで VK_IME_OFF→VK_IME_ON の reinit を予約していた(BUG-33/36/168)が、
-                        // 実 Chrome×GJI で 0/10 と効かず、入力中文字を消す副作用もあったので撤去した(ADR-212 P3)。
-                        // 見た目の掃除(BS)も、正しく入った文字を消すので送らない(Zoom 実測、BUG-215)。
-                        io.set_raw_literal(0, String::new(), escape_composition);
-                    }
+                    reserve_raw_literal_recovery(
+                        io,
+                        cold_seq,
+                        RawLiteralPlan {
+                            unreliable,
+                            consecutive,
+                            backs,
+                            escape_composition,
+                        },
+                        romaji,
+                    );
                     io.mark_cold_raw_tsf();
                 }
 
