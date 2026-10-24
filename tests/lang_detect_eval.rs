@@ -24,7 +24,12 @@ use awase::yab::YabLayout;
 const FIXTURE: &str = include_str!("fixtures/lang_detect_eval.tsv");
 
 /// QWERTY の物理位置(yab の行・列。JIS)。gen_fixture.py の `GRID` と同じ。
-const GRID: [&str; 4] = ["1234567890-^\\", "qwertyuiop@[", "asdfghjkl;:]", "zxcvbnm,./"];
+const GRID: [&str; 4] = [
+    "1234567890-^\\",
+    "qwertyuiop@[",
+    "asdfghjkl;:]",
+    "zxcvbnm,./",
+];
 
 /// 未シフト面で仮名に読めないキー(数字行・`。` `、` `[` `:`〈後〉 `]`〈逃〉 `．` `／`)
 const NEUTRAL_KEYS: &str = "1234567890-^\\qp@[:]z/";
@@ -83,7 +88,8 @@ fn rows(label: &str) -> Vec<&'static str> {
 }
 
 fn rate(count: usize, total: usize) -> f64 {
-    f64::from(u32::try_from(count).expect("count")) / f64::from(u32::try_from(total).expect("total"))
+    f64::from(u32::try_from(count).expect("count"))
+        / f64::from(u32::try_from(total).expect("total"))
 }
 
 /// `NotJapanese` に達した行の割合と、達した行の平均打鍵数
@@ -111,7 +117,12 @@ fn japanese_rate(model: &KanaModel, label: &str) -> f64 {
     assert!(!all.is_empty(), "{label} の行が無い");
     let hits = all
         .iter()
-        .filter(|keys| matches!(judge(model, DetectParams::default(), keys).0, Verdict::Japanese(_)))
+        .filter(|keys| {
+            matches!(
+                judge(model, DetectParams::default(), keys).0,
+                Verdict::Japanese(_)
+            )
+        })
         .count();
     rate(hits, all.len())
 }
@@ -139,7 +150,12 @@ fn japanese_is_rarely_misjudged_as_not_japanese() {
     let misjudged = |th: f64| {
         let n = ja
             .iter()
-            .filter(|k| matches!(judge(&model, with_en_threshold(th), k).0, Verdict::NotJapanese))
+            .filter(|k| {
+                matches!(
+                    judge(&model, with_en_threshold(th), k).0,
+                    Verdict::NotJapanese
+                )
+            })
             .count();
         rate(n, ja.len())
     };
@@ -147,7 +163,10 @@ fn japanese_is_rarely_misjudged_as_not_japanese() {
     let at14 = misjudged(14.0);
     assert!(at8 <= 0.03, "en_threshold=8 の誤判定率: {at8}");
     assert!(at14 <= 0.01, "en_threshold=14 の誤判定率: {at14}");
-    assert!(at14 <= at8, "閾値を上げて誤判定が増えた: 8 → {at8}, 14 → {at14}");
+    assert!(
+        at14 <= at8,
+        "閾値を上げて誤判定が増えた: 8 → {at8}, 14 → {at14}"
+    );
 }
 
 #[test]
@@ -165,10 +184,16 @@ fn english_side_is_released_early() {
         ("rand", 14.0, 0.28),
     ] {
         let (released, _) = not_japanese_stats(&model, with_en_threshold(th), label);
-        assert!(released >= min_rate, "{label} en_threshold={th}: 流れる率 {released} < {min_rate}");
+        assert!(
+            released >= min_rate,
+            "{label} en_threshold={th}: 流れる率 {released} < {min_rate}"
+        );
     }
     let (_, mean_en) = not_japanese_stats(&model, with_en_threshold(8.0), "en");
-    assert!(mean_en <= 4.0, "英文が解放されるまでの平均打鍵数: {mean_en}");
+    assert!(
+        mean_en <= 4.0,
+        "英文が解放されるまでの平均打鍵数: {mean_en}"
+    );
 }
 
 #[test]
@@ -189,10 +214,15 @@ fn a_symbol_alone_is_neutral_and_never_decides_not_japanese() {
     // 仮名に読めないキー(記号・数字・未定義)は尤度比に 0 を足す。1 打で NotJapanese になる事故(#819 の `¥` 1 打)の再発防止。
     let model = real_model();
     for c in NEUTRAL_KEYS.chars() {
-        let mut d = EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
+        let mut d =
+            EpisodeDetector::new(DetectParams::default(), ThumbOverlap::Enabled, [false; 2]);
         d.observe(&model, DetectEvent::CharDown(qwerty(c)));
         assert_eq!(d.verdict(), Verdict::Pending, "{c:?} の 1 打");
-        assert!(d.llr().abs() < f64::EPSILON, "{c:?} の増分が 0 でない: {}", d.llr());
+        assert!(
+            d.llr().abs() < f64::EPSILON,
+            "{c:?} の増分が 0 でない: {}",
+            d.llr()
+        );
     }
     // 記号だけが max_keys まで続いても、決まるのは Undecided で NotJapanese にはならない。
     let run: String = NEUTRAL_KEYS.chars().cycle().take(7).collect();
