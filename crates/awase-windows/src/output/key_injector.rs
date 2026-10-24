@@ -177,6 +177,29 @@ impl KeyInjector {
         //   gap<N>   … キーごとに ↓ と ↑ を別の SendInput にし、間に N ms 待つ
         // 未設定・それ以外は従来(全キーの ↓ を送ってから ↑ を送る、1 回の SendInput)。
         if let Ok(mode) = std::env::var("AWASE_ROMAJI_SEND") {
+            if let Some(n) = mode.strip_prefix("ovl") {
+                // ovl<N>: 従来どおり全キーの ↓ を送ってから、N ms 待って、全キーの ↑ を送る(1 つの音につき待ちは 1 回)。
+                let ms: u64 = n.parse().unwrap_or(0);
+                let mut downs = Vec::with_capacity(run.len() * 2);
+                let mut ups = Vec::with_capacity(run.len() * 2);
+                for &(vk, needs_shift) in run {
+                    if needs_shift {
+                        downs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                    }
+                    downs.push(marker.make_input(vk, false));
+                }
+                for &(vk, needs_shift) in run {
+                    ups.push(marker.make_input(vk, true));
+                    if needs_shift {
+                        ups.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                    }
+                }
+                let total = downs.len() + ups.len();
+                let _ = crate::win32::send_input_safe(&downs);
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                let _ = crate::win32::send_input_safe(&ups);
+                return total;
+            }
             if mode == "seq"
                 || mode.starts_with("gap")
                 || mode.starts_with("hold")
