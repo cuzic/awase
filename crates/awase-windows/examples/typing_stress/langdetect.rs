@@ -12,8 +12,8 @@ use serde_json::json;
 use windows::Win32::Foundation::HWND;
 
 use crate::{
-    arg_value, clear_text, focus_ok, press, rec, refocus, send_key, sleep_ms, turn_ime_on,
-    utc_hms, VK_RETURN,
+    arg_value, clear_text, focus_ok, press, rec, refocus, send_key, sleep_ms, turn_ime_on, utc_hms,
+    VK_RETURN,
 };
 
 const VK_MUHENKAN: u32 = 0x1D;
@@ -47,14 +47,18 @@ pub(crate) fn langdetect_scenario(child: HWND) {
     let iv: u64 = arg_value("--interval=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(40);
-    rec(&json!({"type":"langdetect_config","trials":trials,"idle_ms":idle,"wait_ms":wait,"interval_ms":iv}));
+    rec(
+        &json!({"type":"langdetect_config","trials":trials,"idle_ms":idle,"wait_ms":wait,"interval_ms":iv}),
+    );
     for n in 0..trials {
         for (kind, keys) in [("B", "ayre"), ("E", "build"), ("J", "k")] {
             if !focus_ok() {
                 refocus();
             }
             if !focus_ok() {
-                rec(&json!({"type":"abort","reason":format!("langdetect 試行前にフォーカスが外れた n={n} kind={kind}")}));
+                rec(
+                    &json!({"type":"abort","reason":format!("langdetect 試行前にフォーカスが外れた n={n} kind={kind}")}),
+                );
                 return;
             }
             turn_ime_on(0);

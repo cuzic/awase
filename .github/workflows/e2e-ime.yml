@@ -1314,6 +1314,8 @@ jobs:
           }
           # [auto_detect] への追加設定(;区切りの `key = value`)。既にあれば値を置き換え、無ければ末尾に [auto_detect] を作って足す。
           $autodetect = '${{ matrix.cfg.autodetect }}'
+          # auto_detect は n-gram 表(config.toml の ngram_file、exe からの相対)を読む。無いと判定器が無効になる。他の構成には置かない(Engine の n-gram が変わるため)。
+          if ($autodetect) { Copy-Item data dist\ -Recurse -Force }
           foreach ($line in ($autodetect -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
             $key = ($line -split '=')[0].Trim()
             if ($cfg -notmatch '(?m)^\[auto_detect\]\s*$') { $cfg = $cfg.TrimEnd() + "`r`n`r`n[auto_detect]`r`n" }
