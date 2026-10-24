@@ -31,5 +31,8 @@ pub(crate) mod mozc_compose_check_fsm;
 pub(crate) mod ms_ime_ready_coro;
 pub(crate) mod probe_coro_state;
 pub(crate) mod probe_fsm;
+// `output::probe_io` が Windows 専用のため、擬似窓のテストも Windows でだけ動く(実行は CI の windows-test)。
+#[cfg(all(test, windows))]
+mod pseudo_window;
 pub(crate) mod tickable_fsm;
 pub(crate) mod warmup_strategy;
