@@ -705,10 +705,10 @@ struct StepFacts<T> {
     release: Vec<T>,
     discarded: usize,
     outcomes: Vec<EpisodeOutcome>,
-    japanese: bool,
-    english: bool,
-    holding: bool,
-    started_holding: bool,
+    /// IME への書き込みの命令（`WriteHiragana`/`EnterHalfWidthAlnum`）
+    write: Option<HoldCommand<T>>,
+    /// 期限のタイマーの命令（`ArmDeadline`/`DisarmDeadline`）
+    deadline: Option<HoldCommand<T>>,
 }
 
 impl<T> StepFacts<T> {
@@ -718,11 +718,20 @@ impl<T> StepFacts<T> {
             release: Vec::new(),
             discarded: 0,
             outcomes: Vec::new(),
-            japanese: false,
-            english: false,
-            holding: false,
-            started_holding: false,
+            write: None,
+            deadline: None,
         }
+    }
+
+    /// ステップの終わりに、保持が続くか・この打鍵で保持が始まったかからタイマーの命令を決める。
+    fn set_deadline(&mut self, holding: bool, started_holding: bool) {
+        self.deadline = if !holding {
+            Some(HoldCommand::DisarmDeadline)
+        } else if started_holding {
+            Some(HoldCommand::ArmDeadline)
+        } else {
+            None
+        };
     }
 
     /// 命令の列にする。順序は [`HoldCommand`] の doc のとおり。`consume` は `on_key` のときだけ真。
@@ -731,20 +740,12 @@ impl<T> StepFacts<T> {
         if self.discarded > 0 {
             out.push(HoldCommand::DiscardHeld(self.discarded));
         }
-        if self.japanese {
-            out.push(HoldCommand::WriteHiragana);
-        } else if self.english {
-            out.push(HoldCommand::EnterHalfWidthAlnum);
-        }
+        out.extend(self.write);
         out.extend(self.outcomes.into_iter().map(HoldCommand::Record));
         if !self.release.is_empty() {
             out.push(HoldCommand::Replay(self.release));
         }
-        if !self.holding {
-            out.push(HoldCommand::DisarmDeadline);
-        } else if self.started_holding {
-            out.push(HoldCommand::ArmDeadline);
-        }
+        out.extend(self.deadline);
         if let Some(event) = self.pass {
             out.push(HoldCommand::Pass(event));
         } else if consume {
@@ -791,6 +792,7 @@ impl<T> HoldController<T> {
         let step = self.tracker.on_key_step(model, key, scope);
 
         let mut closed_prev = false;
+        let mut started_holding = false;
         if let Some(prev) = step.closed_prev {
             closed_prev = true;
             if prev.stop == StopReason::WindowChanged {
@@ -807,7 +809,7 @@ impl<T> HoldController<T> {
             // この打鍵でエピソードが始まった: 進行中のエピソードが無かった、またはいま古いものを閉じた。
             if !was_active || closed_prev {
                 self.holding = may_hold;
-                out.started_holding = may_hold;
+                started_holding = may_hold;
             }
             if self.holding {
                 self.held.push(event);
@@ -815,8 +817,11 @@ impl<T> HoldController<T> {
                 out.pass = Some(event);
             }
             if let Some(now) = step.closed_now {
-                out.japanese = self.holding && matches!(now.verdict, Verdict::Japanese(_));
-                out.english = self.holding && now.verdict == Verdict::NotJapanese;
+                if self.holding && matches!(now.verdict, Verdict::Japanese(_)) {
+                    out.write = Some(HoldCommand::WriteHiragana);
+                } else if self.holding && now.verdict == Verdict::NotJapanese {
+                    out.write = Some(HoldCommand::EnterHalfWidthAlnum);
+                }
                 out.release.append(&mut self.held);
                 self.holding = false;
                 out.outcomes.push(now);
@@ -824,7 +829,7 @@ impl<T> HoldController<T> {
         } else {
             out.pass = Some(event);
         }
-        out.holding = self.holding;
+        out.set_deadline(self.holding, started_holding);
         out.into_commands(true)
     }
 
@@ -837,6 +842,7 @@ impl<T> HoldController<T> {
         let deadline = self.tracker.active_deadline_ms().unwrap_or(0);
         let Some(started_scope) = self.tracker.active_scope() else {
             self.holding = false;
+            out.set_deadline(false, false);
             return out.into_commands(false);
         };
         let (stop, discard) = if started_scope == scope {
@@ -854,6 +860,7 @@ impl<T> HoldController<T> {
             out.outcomes.push(outcome);
         }
         self.holding = false;
+        out.set_deadline(false, false);
         out.into_commands(false)
     }
 }
