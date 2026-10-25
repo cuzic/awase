@@ -15,6 +15,8 @@ pub mod thread_scope;
 pub use awase_ime_core::focus::{class_names, kinds, AppKind, FocusChangedAxes, FocusKind};
 // `hwnd_cache` は `awase-windows-plans`（`focus/` は複数の crate にまたがる。ADR-274 段階 1）。
 pub use awase_windows_plans::focus::hwnd_cache;
+// BUG-218: TsfNative 窓へ入るときの HWND キャッシュの ON 復元の判断（純粋）も `awase-windows-plans`。
+pub use awase_windows_plans::focus::tsf_cache_restore;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
 #[cfg(windows)]

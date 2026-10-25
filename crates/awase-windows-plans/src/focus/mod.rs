@@ -6,3 +6,6 @@
 pub use awase_ime_core::focus::*;
 
 pub mod hwnd_cache;
+
+// BUG-218: TsfNative 窓へ入るときの、HWND キャッシュの ON 復元の判断（純粋）。
+pub mod tsf_cache_restore;
