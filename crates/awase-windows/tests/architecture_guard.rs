@@ -4577,6 +4577,11 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
         pred.contains("ActiveImeKind::GoogleJapaneseInput"),
         "{pred}"
     );
+    // BUG-219: Mozc 系（GJI 系だが Google 版でない）は共有メモリが開閉を担うので、IMM の読みでの追随から外す。
+    assert!(
+        pred.contains("!crate::tsf::observer::gji_evidence_absent()"),
+        "{pred}"
+    );
     assert!(
         mod_rs.contains("external_change_watch_applies_for(self.platform.current_app_profile())"),
         "Runtime::external_change_watch_applies は述語本体を呼ぶこと"
@@ -4598,6 +4603,8 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
     );
     assert!(direct.contains("table_ime_kind()"), "{direct}");
     assert!(direct.contains("direct_watch_kind("), "{direct}");
+    // BUG-219: Mozc 系は直接観測の対象外（`gji_evidence_absent()` を述語へ渡す）。
+    assert!(direct.contains("gji_evidence_absent()"), "{direct}");
     assert!(
         mod_rs.contains("direct_mode_key_watch_kind_for(self.platform.current_app_profile())"),
         "Runtime::direct_mode_key_watch_kind は述語本体を呼ぶこと"
