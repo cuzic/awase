@@ -1923,6 +1923,68 @@ mod tests {
         );
     }
 
+    /// BUG-219 の特性テスト(現状の挙動を固定する。直したらこのテストの期待を反転する)。
+    ///
+    /// 実機(dragonflyg4、Mozc Readable × Chrome)で、`MozcShm`(High)が TTL で失効すると、
+    /// IMM の誤読由来の新鮮な `ObserverPoll=false`(Medium)が単独で採られ、belief が OFF に倒れた。
+    /// 実際の IME は ON のままで、倒れていた約 1 秒の間の打鍵が NICOLA 変換されず素通りした。
+    /// 実機の流れ: 04.340 `ime_on=Some(false) conv=0x19` → 04.475 `flip → false DeriveMedium{ObserverPoll}`
+    /// → 05.623 `flip → true DeriveHigh(MozcShm)`(`docs/known-bugs/BUG-219.md`)。
+    #[test]
+    fn bug_219_expired_mozc_shm_lets_lone_medium_poll_false_override_belief() {
+        let t0 = Instant::now();
+        let ttl = std::time::Duration::from_millis(crate::tuning::MOZC_SHM_OBSERVATION_TTL_MS);
+        let mut model = ImeModel::new();
+        // 明示意図が無い状態（= 観測で決まる状態）にする。
+        model.last_intent = None;
+
+        // Mozc の共有メモリは「ON」(High)。TTL は `at` から数える。
+        model.observations.record_replayed(
+            AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::MozcShm,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            ),
+            t0,
+        );
+        // IMM の誤読(実際は ON なのに `ime_on=false`)。新鮮窓(3 秒)の内で、TTL より後まで残る。
+        let poll_at = t0 + ttl / 4;
+        model.observations.record_replayed(
+            AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            ),
+            poll_at,
+        );
+
+        // TTL の直前: High が生きていて勝つ。
+        let alive = model.resolve_open_at(t0 + ttl - std::time::Duration::from_millis(1));
+        assert!(alive.value, "TTL の前は MozcShm(true) が勝つ");
+        assert_eq!(
+            alive.decided_by.base,
+            BaseDecision::DeriveHigh(ObservationSource::MozcShm),
+        );
+
+        // TTL の瞬間: High が消え、Medium 単独の false が belief を OFF に倒す(BUG-219)。
+        let expired = model.resolve_open_at(t0 + ttl);
+        assert!(
+            !expired.value,
+            "現状: MozcShm の失効で、新鮮な ObserverPoll(false) が単独で採られる(BUG-219)"
+        );
+        assert_eq!(
+            expired.decided_by.base,
+            BaseDecision::DeriveMedium {
+                first: ObservationSource::ObserverPoll,
+                second: None,
+            },
+        );
+    }
+
     #[test]
     fn applied_ime_state_applied_open_and_related_getters() {
         assert_eq!(AppliedImeState::Unknown.applied_open(), None);
