@@ -39,6 +39,8 @@ const KO: P = (1, 3);
 const SA: P = (1, 4);
 /// 記号（仮名に読めない）
 const SYM: P = (0, 0);
+/// ん（仮名に読めるが、n-gram の表に現れない = 語彙の外）
+const NN: P = (1, 5);
 
 const MAX_MS: u64 = 2500;
 const IDLE_MS: u64 = 3000;
@@ -71,6 +73,7 @@ fn kana_model() -> &'static KanaModel {
             (TA, "ta", 'た'),
             (KO, "ko", 'こ'),
             (SA, "sa", 'さ'),
+            (NN, "nn", 'ん'),
         ] {
             face.insert(
                 pp(p),
@@ -104,6 +107,7 @@ struct RefKana {
     freq: HashMap<(char, char), f64>,
     left: HashMap<char, f64>,
     listed: HashMap<char, f64>,
+    vocab: BTreeSet<char>,
     vocab_len: f64,
     floor: f64,
     total: f64,
@@ -134,11 +138,12 @@ fn ref_kana() -> &'static RefKana {
             left,
             listed,
             vocab_len: vocab.len() as f64,
+            vocab,
             floor: min * 0.1,
             total,
-            // 定義されたキー: か・た・こ・さ・記号
-            key_count: 5.0,
-            kana_of: HashMap::from([(KA, 'か'), (TA, 'た'), (KO, 'こ'), (SA, 'さ')]),
+            // 定義されたキー: か・た・こ・さ・ん・記号
+            key_count: 6.0,
+            kana_of: HashMap::from([(KA, 'か'), (TA, 'た'), (KO, 'こ'), (SA, 'さ'), (NN, 'ん')]),
         }
     })
 }
@@ -149,16 +154,20 @@ impl RefKana {
         let Some(&token) = self.kana_of.get(&p) else {
             return 0.0;
         };
+        // 語彙の外の仮名は表で測れないので中立
+        if !self.vocab.contains(&token) {
+            return 0.0;
+        }
         let background = -self.key_count.ln();
         let ja = match prev {
-            Some(a) => {
+            Some(a) if self.vocab.contains(&a) => {
                 let denominator = (self.vocab_len - self.listed.get(&a).copied().unwrap_or(0.0))
                     * self.floor
                     + self.left.get(&a).copied().unwrap_or(0.0);
                 let numerator = self.freq.get(&(a, token)).copied().unwrap_or(self.floor);
                 (numerator / denominator).ln()
             }
-            None => {
+            _ => {
                 let left = self.left.get(&token).copied().unwrap_or(0.0);
                 ((left + self.floor) / (self.vocab_len * self.floor + self.total)).ln()
             }
@@ -823,7 +832,7 @@ const MOD_DOWN: Ev = Ev::Key {
     excluded: false,
 };
 
-/// 字母全部（19 種）。
+/// 字母全部（21 種）。
 fn full_alphabet() -> Vec<Ev> {
     vec![
         ch(KA, true),
@@ -834,6 +843,8 @@ fn full_alphabet() -> Vec<Ev> {
         ch(SA, false),
         ch(SYM, true),
         ch(SYM, false),
+        ch(NN, true),
+        ch(NN, false),
         th(ThumbSide::Left, true),
         th(ThumbSide::Left, false),
         th(ThumbSide::Right, true),
@@ -848,13 +859,14 @@ fn full_alphabet() -> Vec<Ev> {
     ]
 }
 
-/// 小さい字母（11 種）。長い列の全列挙用。
+/// 小さい字母（12 種）。長い列の全列挙用。
 fn core_alphabet() -> Vec<Ev> {
     vec![
         ch(KA, true),
         ch(KA, false),
         ch(TA, true),
         ch(SA, true),
+        ch(NN, true),
         th(ThumbSide::Left, true),
         th(ThumbSide::Left, false),
         OTHER_DOWN,
@@ -996,17 +1008,17 @@ fn enumerate(alphabet: &[Ev], len: usize) -> usize {
 #[test]
 fn full_alphabet_all_sequences_up_to_length_4() {
     let a = full_alphabet();
-    assert_eq!(a.len(), 19);
+    assert_eq!(a.len(), 21);
     let total: usize = (1..=4).map(|len| enumerate(&a, len)).sum();
-    // 2 × (19 + 19^2 + 19^3 + 19^4)
-    assert_eq!(total, 2 * (19 + 361 + 6859 + 130_321));
+    // 2 × (21 + 21^2 + 21^3 + 21^4)
+    assert_eq!(total, 2 * (21 + 441 + 9261 + 194_481));
 }
 
 #[test]
 fn core_alphabet_all_sequences_of_length_5() {
     let a = core_alphabet();
-    assert_eq!(a.len(), 11);
-    assert_eq!(enumerate(&a, 5), 2 * 161_051);
+    assert_eq!(a.len(), 12);
+    assert_eq!(enumerate(&a, 5), 2 * 248_832);
 }
 
 #[test]
@@ -1057,10 +1069,10 @@ struct DetCfg {
 
 fn det_alphabet() -> Vec<DetectEvent> {
     let mut v = Vec::new();
-    for p in [KA, TA, SA, SYM] {
+    for p in [KA, TA, SA, SYM, NN] {
         v.push(DetectEvent::CharDown(pp(p)));
     }
-    for p in [KA, TA, SA, SYM] {
+    for p in [KA, TA, SA, SYM, NN] {
         v.push(DetectEvent::CharUp(pp(p)));
     }
     for s in [ThumbSide::Left, ThumbSide::Right] {
@@ -1234,8 +1246,9 @@ fn det_cfg(overlap: ThumbOverlap, thumbs_held: [bool; 2]) -> DetCfg {
 #[test]
 fn detector_all_sequences_of_length_5_with_overlap() {
     let m = kana_model();
+    assert!(m.usable(), "表のある合成モデルは使える");
     let n = enumerate_detector(m, true, det_cfg(ThumbOverlap::Enabled, [false; 2]), 5);
-    assert_eq!(n, 12_usize.pow(5));
+    assert_eq!(n, 14_usize.pow(5));
 }
 
 #[test]
@@ -1249,7 +1262,7 @@ fn detector_all_sequences_up_to_length_4_in_every_configuration() {
             }
         }
     }
-    assert_eq!(total, 6 * (12 + 144 + 1728 + 20_736));
+    assert_eq!(total, 6 * (14 + 196 + 2744 + 38_416));
 }
 
 #[test]
@@ -1257,7 +1270,12 @@ fn detector_with_an_unusable_table_decides_only_by_overlap() {
     // 表が空: 尤度を積まず、日本語は重なりだけ、max_keys で未決。
     let ngram = NgramModel::new(0, 0, 0);
     let mut face = YabFace::new();
-    for (p, romaji, kana) in [(KA, "ka", 'か'), (TA, "ta", 'た'), (SA, "sa", 'さ')] {
+    for (p, romaji, kana) in [
+        (KA, "ka", 'か'),
+        (TA, "ta", 'た'),
+        (SA, "sa", 'さ'),
+        (NN, "nn", 'ん'),
+    ] {
         face.insert(
             pp(p),
             YabValue::Romaji {
@@ -1277,5 +1295,30 @@ fn detector_with_an_unusable_table_decides_only_by_overlap() {
             len,
         );
     }
-    assert_eq!(total, 12 + 144 + 1728 + 20_736);
+    assert_eq!(total, 14 + 196 + 2744 + 38_416);
+}
+
+/// journal の `LangDetect` 記録に出る文字列（`trigger`・`stop`）。観測の契約なので、値を固定する。
+#[test]
+fn journal_labels_are_stable_and_distinct() {
+    let triggers = [
+        (Trigger::WindowSwitch, "window-switch"),
+        (Trigger::Idle, "idle"),
+    ];
+    for (t, want) in triggers {
+        assert_eq!(t.label(), want);
+    }
+    let stops = [
+        (StopReason::Decided, "decided"),
+        (StopReason::MaxKeys, "max-keys"),
+        (StopReason::Timeout, "timeout"),
+        (StopReason::WindowChanged, "window-changed"),
+        (StopReason::ExcludedKey, "excluded-key"),
+        (StopReason::NonMaterialKey, "non-material-key"),
+    ];
+    for (st, want) in stops {
+        assert_eq!(st.label(), want);
+    }
+    let distinct: BTreeSet<_> = stops.iter().map(|(st, _)| st.label()).collect();
+    assert_eq!(distinct.len(), stops.len());
 }
