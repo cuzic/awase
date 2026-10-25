@@ -157,6 +157,9 @@ impl KeyInjector {
     }
 
     /// VK の DOWN+UP ペアを（オプション shift 付きで）1回の SendInput で送信する。
+    ///
+    /// 前景窓が、↓から↑まで時間を空けないと取りこぼす窓(Zoom のチャット)なら、↓の後に待ちを置く
+    /// (`key_pacer`、メッセージループは止めない)。
     pub(crate) fn send_vk_pair(vk: VkCode, needs_shift: bool, marker: VkMarker) {
         let hold_ms = Self::key_hold_ms();
         if hold_ms > 0 {
@@ -187,62 +190,29 @@ impl KeyInjector {
         }
     }
 
-    /// 1 キーを「↓ → `hold_ms` 待つ → ↑」で送る(Shift が要るなら、その内側で押す)。メッセージループを `hold_ms` ブロックする。
+    /// 1 キーを「↓ → `hold_ms` 待つ → ↑」で送る(Shift が要るなら、その内側で押す)。
+    /// 待ちは `key_pacer` のタイマーで進めるので、メッセージループは止まらない。送信の順序は提出の順。
     fn send_vk_with_hold(vk: VkCode, needs_shift: bool, marker: VkMarker, hold_ms: u64) {
         let mut down = Vec::with_capacity(2);
         if needs_shift {
             down.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
         }
         down.push(marker.make_input(vk, false));
-        let _ = crate::win32::send_input_safe(&down);
-        std::thread::sleep(std::time::Duration::from_millis(hold_ms));
         let mut up = vec![marker.make_input(vk, true)];
         if needs_shift {
             up.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
         }
-        let _ = crate::win32::send_input_safe(&up);
-    }
-
-    /// 1 キーを「↓↑」の 1 回の `SendInput` で送る(押している時間を空けない)。
-    fn send_vk_without_hold(vk: VkCode, needs_shift: bool, marker: VkMarker) {
-        let mut inputs = Vec::with_capacity(4);
-        if needs_shift {
-            inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
-        }
-        inputs.push(marker.make_input(vk, false));
-        inputs.push(marker.make_input(vk, true));
-        if needs_shift {
-            inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
-        }
-        let _ = crate::win32::send_input_safe(&inputs);
+        crate::key_pacer::send_paced(down, u32::try_from(hold_ms).unwrap_or(u32::MAX));
+        crate::key_pacer::send_paced(up, 0);
     }
 
     /// 1 ラン分の INPUT を構築して送信し、送信した INPUT 数を返す。
-    fn send_vk_run_batch(
-        run: &[(VkCode, bool)],
-        marker: VkMarker,
-        hold_budget: &mut usize,
-    ) -> usize {
-        let hold_ms = if *hold_budget > 0 {
-            Self::key_hold_ms()
-        } else {
-            0
-        };
+    fn send_vk_run_batch(run: &[(VkCode, bool)], marker: VkMarker) -> usize {
+        let hold_ms = Self::key_hold_ms();
         if hold_ms > 0 {
             // 前景窓が、↓から↑まで時間を空けないとキーを取りこぼす窓(Zoom のチャット): キーを 1 つずつ順に送る。
-            // 1 回の送信で空けるキーの数には上限がある(`tuning::ZOOM_KEY_HOLD_MAX_KEYS`)。超えた分は空けずに送る。
-            let (held, fast) = split_hold_budget(run.len(), *hold_budget);
-            *hold_budget -= held;
-            for &(vk, needs_shift) in &run[..held] {
+            for &(vk, needs_shift) in run {
                 Self::send_vk_with_hold(vk, needs_shift, marker, hold_ms);
-            }
-            if fast > 0 {
-                tracing::warn!(
-                    "[vk-send] 押している時間を空けるキーの上限に達したので、残り {fast} キーは空けずに送る"
-                );
-                for &(vk, needs_shift) in &run[held..] {
-                    Self::send_vk_without_hold(vk, needs_shift, marker);
-                }
             }
             return run.len() * 2;
         }
@@ -286,9 +256,8 @@ impl KeyInjector {
         // Chrome composition 送信は scan code 付き（VkMarker::InjectedWithScan）で
         // 恒久化済み（`f3a39a0`、2026-07-19 実機ソーク確認）。TSF 側で WezTerm の
         // 初回 composition 失敗を修正した経緯（`99f56a2`/`2d4d85c`）と同じ理屈。
-        let mut hold_budget = crate::tuning::ZOOM_KEY_HOLD_MAX_KEYS;
         for run in Self::split_vk_runs(chars) {
-            let n = Self::send_vk_run_batch(run, VkMarker::InjectedWithScan, &mut hold_budget);
+            let n = Self::send_vk_run_batch(run, VkMarker::InjectedWithScan);
             tracing::debug!("[vk-send] romaji={romaji:?} batch {n} inputs");
         }
     }
@@ -302,32 +271,8 @@ impl KeyInjector {
             "[tsf-probe] deferred {} VK(s) を romaji 直後に送出 ({marker:?})",
             vks.len()
         );
-        let mut hold_budget = crate::tuning::ZOOM_KEY_HOLD_MAX_KEYS;
         for run in Self::split_vk_runs(vks) {
-            Self::send_vk_run_batch(run, marker, &mut hold_budget);
+            Self::send_vk_run_batch(run, marker);
         }
-    }
-}
-
-/// 押している時間を空けるキーの数と、空けずに送るキーの数に分ける(`budget` は残りの上限)。
-const fn split_hold_budget(len: usize, budget: usize) -> (usize, usize) {
-    let held = if len < budget { len } else { budget };
-    (held, len - held)
-}
-
-#[cfg(test)]
-mod hold_budget_tests {
-    use super::split_hold_budget;
-
-    #[test]
-    fn keys_within_the_budget_are_all_held() {
-        assert_eq!(split_hold_budget(2, 20), (2, 0));
-        assert_eq!(split_hold_budget(20, 20), (20, 0));
-    }
-
-    #[test]
-    fn keys_over_the_budget_are_sent_without_hold() {
-        assert_eq!(split_hold_budget(25, 20), (20, 5));
-        assert_eq!(split_hold_budget(3, 0), (0, 3));
     }
 }
