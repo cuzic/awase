@@ -177,7 +177,10 @@ mod tests {
                 item,
                 arm: Some(arm),
             } => (item, arm),
-            other => panic!("SendNow(arm あり)のはず: {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "SendNow(arm あり)のはず: {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -306,10 +309,7 @@ mod tests {
     fn a_late_old_task_is_superseded_after_recovery() {
         let mut q = PacedQueue::new(STALL);
         let (_, old) = arm_of(q.submit("down", 10, 0));
-        let Submit::Recovered {
-            arm: Some(new), ..
-        } = q.submit("late", 10, STALL + 1)
-        else {
+        let Submit::Recovered { arm: Some(new), .. } = q.submit("late", 10, STALL + 1) else {
             panic!("Recovered(arm あり)のはず")
         };
         let _ = q.submit("more", 0, STALL + 2);
