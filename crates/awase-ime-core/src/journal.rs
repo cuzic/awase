@@ -135,7 +135,7 @@ pub struct LangDetectRecord {
     /// 判定に応じた動作（`none` / `hiragana-sent`〔日本語→ひらがなキー〕/ `ime-off-sent`〔英数→IME OFF〕/
     /// `observe-only`〔保持しなかったエピソードの日本語判定〕/ `skipped-belief-off` / `skipped-observed-window` /
     /// `skipped-focus-lag` / `skipped-explicit-off` / `skipped-explicit-on` / `skipped-modifier-held` /
-    /// `skipped-send-failed`）。`observe` では日本語と判定したエピソードが `observe-only`、それ以外は `none`
+    /// `skipped-send-failed` / `half-width-alnum-entered` / `half-width-alnum-rebuilt-from-return`〔戻り待ちのある窓で入り直さず立て直した。BUG-220〕 / `skipped-toggle-unavailable`）。`observe` では日本語と判定したエピソードが `observe-only`、それ以外は `none`
     pub action: &'static str,
     /// 保持中に前面窓が変わって捨てた打鍵の数
     pub discarded: u32,

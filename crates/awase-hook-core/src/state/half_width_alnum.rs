@@ -336,6 +336,35 @@ impl HalfWidthAlnumState {
         }
     }
 
+    /// 打鍵列から英数入力と判定したとき（ADR-263 `ime_on_eisu`）、**戻り待ちのある窓**では、入り直さずに戻り待ちから
+    /// トグルを立て直すか（BUG-220）。真なら殻は戻り待ちを取り出し、注入せずにトグルを立てる（`rebuild_toggle_from_entry`
+    /// と `ObservedEisu` の belief。ADR-245 決定 8 の `RebuildToggle` と同じ実行）。
+    ///
+    /// 戻り待ちのある窓 A の実 IME は、離脱で何も送っていないので**半角英数のまま**（ADR-245 の事実）。そこへ英数の打鍵が来た
+    /// ので、入り直す（`plan_entry_for_language_detect`）と二重になり、かといって見送ると、保持した打鍵が流れた先の
+    /// 戻り待ちの復元（最初の打鍵で Resume）が実 IME をかなへ戻し、英字がかなになる。打鍵列の判定（利用者の意図）に従い、
+    /// 半角英数のまま保つ。
+    ///
+    /// 条件は `plan_entry_for_language_detect` の入りの条件（`entry_policy`・`entry_ime_ok`）と同じで、持続トグルが無く、
+    /// 戻り待ちが積まれた時と今の IME 種別が同じこと（種別が違えば `plan_key_stage` の `Drop` と同じく何もしない）。
+    #[must_use]
+    pub fn plan_rebuild_from_return_for_language_detect(
+        &self,
+        entry_ime_ok: bool,
+        uses_imc_conv_write: bool,
+        entry: Option<ReturnPendingEntry>,
+    ) -> bool {
+        let policy_allows_entry = match self.entry_policy {
+            HalfWidthAlnumTogglePolicy::Off => false,
+            HalfWidthAlnumTogglePolicy::MsImeOnly => uses_imc_conv_write,
+            HalfWidthAlnumTogglePolicy::All => true,
+        };
+        !self.toggle_held
+            && policy_allows_entry
+            && entry_ime_ok
+            && entry.is_some_and(|e| e.uses_imc_conv_write == uses_imc_conv_write)
+    }
+
     /// IMC(MS-IME)経路のcommit。呼び出し元は現行`key_pipeline.rs`と同じく
     /// `actuate_conv_mode`呼び出しの**前**に無条件で呼ぶこと（順序を変えると
     /// 挙動変更になる、§3原則2）。
@@ -1812,6 +1841,67 @@ mod tests {
             st.plan_entry_for_language_detect(true, false, true),
             HalfWidthAlnumEffect::Nothing,
             "戻り待ちのある窓では入らない（戻ったときの復元と食い違う）"
+        );
+    }
+
+    /// BUG-220 の再現: 窓 A で入る → 別プロセスの窓 B へ離脱（戻り待ちに積む）→ A へ戻って英数と判定。
+    /// 入り直しの計画は `Nothing`（`skipped-toggle-unavailable`）で、これは設計どおり（二重に入らない）。
+    /// 不具合は殻がそのまま見送り、保持した打鍵が戻り待ちの Resume（かなへ復元）に先に取られたこと。
+    #[test]
+    fn bug_220_return_to_window_with_pending_then_english_detected() {
+        let mut st = HalfWidthAlnumState::default();
+        st.set_policy(HalfWidthAlnumTogglePolicy::All);
+        let a = scope(1, 10);
+        st.commit_enter_gji(a);
+        // B へ離脱: トグルは下り、A が戻り待ちに積まれる。
+        let out = st.suspend_toggle_for_return(TickMs(1000));
+        assert!(out.lowered && out.queued);
+        let pending = st.find_return_pending(a);
+        assert!(pending.is_some(), "A に戻り待ちが残る");
+        // A に戻って英数と判定: 入り直しは見送り（現状どおり）。
+        assert_eq!(
+            st.plan_entry_for_language_detect(true, false, pending.is_some()),
+            HalfWidthAlnumEffect::Nothing
+        );
+        // 修正: 戻り待ちから立て直す（A の実 IME は半角英数のまま）。
+        assert!(st.plan_rebuild_from_return_for_language_detect(true, false, pending));
+    }
+
+    #[test]
+    fn rebuild_from_return_for_language_detect_conditions() {
+        let mut st = HalfWidthAlnumState::default();
+        st.set_policy(HalfWidthAlnumTogglePolicy::All);
+        let e = Some(entry(1, 10, false, 0));
+        assert!(st.plan_rebuild_from_return_for_language_detect(true, false, e));
+        assert!(
+            !st.plan_rebuild_from_return_for_language_detect(true, false, None),
+            "戻り待ちが無ければ立て直さない（通常の入りの計画に任せる）"
+        );
+        assert!(
+            !st.plan_rebuild_from_return_for_language_detect(false, false, e),
+            "entry_ime_ok が偽なら立て直さない"
+        );
+        assert!(
+            !st.plan_rebuild_from_return_for_language_detect(true, true, e),
+            "IME 種別が積んだときと違えば立て直さない（plan_key_stage の Drop と同じ）"
+        );
+        st.set_policy(HalfWidthAlnumTogglePolicy::Off);
+        assert!(!st.plan_rebuild_from_return_for_language_detect(true, false, e));
+        st.set_policy(HalfWidthAlnumTogglePolicy::MsImeOnly);
+        assert!(
+            !st.plan_rebuild_from_return_for_language_detect(true, false, e),
+            "MS-IME だけを許す設定では GJI に入らない"
+        );
+        assert!(st.plan_rebuild_from_return_for_language_detect(
+            true,
+            true,
+            Some(entry(1, 10, true, 0))
+        ));
+        st.set_policy(HalfWidthAlnumTogglePolicy::All);
+        st.commit_enter_gji(scope(1, 10));
+        assert!(
+            !st.plan_rebuild_from_return_for_language_detect(true, false, e),
+            "持続トグル中は立て直さない"
         );
     }
 }

@@ -2403,7 +2403,7 @@ impl Runtime {
 
     /// 現在の前面スコープに一致する半角英数の戻り待ち(ADR-245 決定6)。戻り待ちが空のときは
     /// `foreground_scope()` を呼ばない(決定2、S2-3)。寿命切れはここで捨てる。
-    fn half_width_return_entry_for_foreground(
+    pub(super) fn half_width_return_entry_for_foreground(
         &mut self,
     ) -> Option<(
         crate::state::foreground_scope::ForegroundScope,
@@ -2528,16 +2528,7 @@ impl Runtime {
                 tracing::info!(
                     "[half-width-return] GJI のひらがなキーが SET と確かめられない → 注入せずトグルを立て直す"
                 );
-                self.platform_state
-                    .gate
-                    .half_width_alnum
-                    .rebuild_toggle_from_entry(entry);
-                self.platform_state.ime.note_explicit_ime_action(now);
-                self.apply_input_mode_correction(
-                    InputModeState::ObservedEisu,
-                    crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
-                    now,
-                );
+                self.kp_rebuild_half_width_toggle(entry, now);
             }
             KeyStagePlan::Resume => {
                 tracing::info!("[half-width-return] 戻った窓の最初の打鍵 → 半角英数トグルを復元");
@@ -2562,6 +2553,25 @@ impl Runtime {
             }
         }
         held
+    }
+
+    /// 注入せずにトグルを立て直し、belief を `ObservedEisu` にする(ADR-245 決定 8 の `RebuildToggle` の実行。BUG-220 の
+    /// 打鍵列の判定による入りも同じ実行を使う)。戻り待ちの取り出しは呼び出し側が済ませている。
+    pub(super) fn kp_rebuild_half_width_toggle(
+        &mut self,
+        entry: crate::state::half_width_alnum::ReturnPendingEntry,
+        now: crate::state::TickMs,
+    ) {
+        self.platform_state
+            .gate
+            .half_width_alnum
+            .rebuild_toggle_from_entry(entry);
+        self.platform_state.ime.note_explicit_ime_action(now);
+        self.apply_input_mode_correction(
+            InputModeState::ObservedEisu,
+            crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            now,
+        );
     }
 
     /// ImmCrossProbe の読み(`read_ime_state_full_async` の結果)を High の観測として記録する。FocusProbe の
