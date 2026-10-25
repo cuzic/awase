@@ -15,7 +15,7 @@ summary: |-
 status: |-
   起草(2026-10-24)→ Opus レビュー 3 回で収束 → 所有者の判断済み → **段階 0〜2 実装済み、D3 の C0 は配線を CI で確認**(2026-10-24〜25 に #823〜#828 を develop へマージ)。
   **C4 は前提が誤りと分かり却下**。C0(`eisu_threshold = 16`)は dragonflyg4 で実機試行中(2026-10-24 設定、2026-10-25 に develop f09c6351 をデプロイして `[lang-detect] config:` で実効の閾値 16 を確認。実機の記録はまだ 4 件で、判断できる件数ではない)。
-  判定の構造の整理も進めた: B(`HoldStep` → 命令の列 `HoldCommand`、#834)、打鍵列の有限モデル検査と参照モデル・突然変異テスト(#836、`src/lang_detect.rs` の突然変異は caught 120 / missed 0)。状態の enum 化は着手中。
+  判定の構造の整理も進めた: B(`HoldStep` → 命令の列 `HoldCommand`、#834)、打鍵列の有限モデル検査と参照モデル・突然変異テスト(#836、`src/lang_detect.rs` の突然変異は caught 120 / missed 0)。状態の enum 化も実装済み(#843。`TrackPhase`・`EpisodePhase`、`held` は `Holding` の中。突然変異は caught 117 / missed 0)。
   **3 連(トライグラム)は見送り**(2026-10-25、#841。改善は中程度で、再検討の条件は下記)。D3 の残り(C1・C3、C2 は見送り)は C0 の実機結果を見て決める。
 related_adr:
   - "ADR-089"
@@ -157,7 +157,7 @@ D1〜D3 で足りない失敗(belief ON・実 IME が閉の窓で半角英数に
 
 **見送りの理由**: 効果が実機で体感できる大きさとは限らない(C0 と同じく、数%の誤入りがさらに減る話)。実装は表の読み込み(+36,930 件)と `KanaModel` の拡張を伴い、状態の enum 化(下記)より前に複雑さを足したくない。**測定の限界**: 評価データはエージェント生成(出典・ライセンス不明)、日本語は 1400 文 × 4 開始位置の相関のある標本で、誤判定率 0.3% 未満の差は数件の違いで有意とは言えない。表に無い 3 連を一律 `floor3` にした仮定が実データの稀な並びでどう効くかは未確認。interp の重み 0.7 は掃いていない。D1 のフィクスチャは 2 連の分布から作ったので 3 連の評価には使えない。
 
-**再検討の条件**: (1) C0 の実機の結果が出たあとも、日本語の誤入りが実機で問題になるとき、(2) 出典の確かな評価データ、または実機の journal の打鍵列が使えるようになったとき、(3) 状態の enum 化が済んだあと。再検討では、interp の重みを掃き、実機の journal で `NotJapanese` の確定が 3 打目以降だった割合を先に数える。
+**再検討の条件**: (1) C0 の実機の結果が出たあとも、日本語の誤入りが実機で問題になるとき、(2) 出典の確かな評価データ、または実機の journal の打鍵列が使えるようになったとき、(3) 状態の enum 化が済んだあと(#843 で済んだ。再検討できる状態にはなった)。再検討では、interp の重みを掃き、実機の journal で `NotJapanese` の確定が 3 打目以降だった割合を先に数える。
 
 ## 段階
 
@@ -167,7 +167,7 @@ D1〜D3 で足りない失敗(belief ON・実 IME が閉の窓で半角英数に
 | 1 | **実装済み**(#826): `tests/lang_detect_eval.rs` と `tools/lang-detect-eval-fixture/`、`tests/fixtures/lang_detect_eval.tsv`(44KB、seed 280、`ngram_hiragana` と配列から生成)。出典・ライセンスは**確認できなかった**(`research-private/` の資料は「エージェント生成、読みは未検証」とだけ)ため、生のコーパスは使っていない。日本語の列は判定器自身の分布から作るので、リポジトリ外の文による評価(#819。8 で 7.0%、14 で 1.0%。この文もエージェント生成で未検証)より楽観的で、アサートは**退行の検出用**であって絶対的な誤り率ではない。D1: 評価をリポジトリに置き、率を固定。**入口条件**: 読み付きの日本語 1400 文の出典・ライセンスを確かめる。確かめられなければ、ライセンスの明らかなコーパスか、`data/ngram_hiragana` の元データからの生成に代える | CI で率が固定される |
 | 2 | **実装済み**(#824): 全列挙 3 本(`HoldStep` 12+8+4 通り、`hiragana`/`eisu_write_skip_reason` 各 64 通り、`plan_entry_for_language_detect` 48 通り)。置き場所は `crates/awase-windows/tests/` に変更(`awase-hook-core/tests/` とルートの `tests/` は CI で走らず、`core-layers` と `ci_test_coverage_guard` に落とされた)。`ci.yml` の `--test` に 2 本を足した。期待値の表と実装の食い違いは見つからなかった。D2: 3 本の全列挙 golden | 現行の挙動が golden で固定される |
 | 3 | D3: **C0 は測定済み**(#823、`docs/tasks/adr280-c0-eisu-threshold-measurement-2026-10-24.md`。下の表)で、dragonflyg4 で `eisu_threshold = 16` を実機試行中。**journal の項目は追加済み**(#825: C1 用の `prev_verdict`・`prev_elapsed_ms`、D4 用の `belief_basis`。C2 用は、入った後に Engine が非活性で重なりを見る既存の経路が無く新しい監視が要るため見送り)。C1・C3 は C0 の結果を見て所有者が決める。C2 は所有者の判断。C5 は最後 | 候補ごとに数値、または判断の記録がある |
-| 4 | **構造の整理**(所有者の方針: FCIS をもっと意識する): B = `HoldStep` → 命令の列 `HoldCommand`、`episode_live` を削除(**実装済み**、#834)。打鍵列の有限モデル検査と参照モデルとの差分(`src/lang_detect/model_check.rs`)・突然変異テスト(`src/lang_detect.rs` で caught 120 / missed 0)(**実装済み**、#836)。状態の enum 化(`Idle` → `Armed` → `Observing` → `Holding`、`held` は `Holding` の中。決定と更新を新しい状態を返す純粋な関数に分ける)(**着手中**) | D2 の全列挙・#836 のモデル検査・突然変異テストを、期待値を変えずに通す |
+| 4 | **構造の整理**(所有者の方針: FCIS をもっと意識する): B = `HoldStep` → 命令の列 `HoldCommand`、`episode_live` を削除(**実装済み**、#834)。打鍵列の有限モデル検査と参照モデルとの差分(`src/lang_detect/model_check.rs`)・突然変異テスト(`src/lang_detect.rs` で caught 120 / missed 0)(**実装済み**、#836)。状態の enum 化(`TrackPhase { Idle, Armed, Observing }` と `EpisodePhase<T> { Idle, Armed, Observing, Holding { active, held } }`。`held` は `Holding` の中にしかなく、`armed`・`active` の Option と `holding` の bool を削除。遷移は新しい位相を返す純粋な関数 `track_step`・`hold_key_step`・`hold_timer_step`、`&mut self` の API は `mem::replace` で位相を渡す薄い殻)(**実装済み**、#843。位相の遷移表は全字母・長さ 3 までの全列から実際に起きる 14 組が参照の表と一致。突然変異は `src/lang_detect.rs` で caught 117 / missed 0) | D2 の全列挙・#836 のモデル検査・突然変異テストを、期待値を変えずに通す |
 
 ## 却下した案(初版の内容を含む)
 
