@@ -915,15 +915,30 @@ fn run(seq: &[Ev], may_hold: bool) -> Result<(), String> {
 /// 各ステップのあと、実装の位相が参照の位相と一致し、保持の可否と矛盾しないことを確かめて、遷移を記録する。
 fn check_phase(
     imp: PhaseKind,
-    trk: PhaseKind,
-    want: PhaseKind,
+    trk: &EpisodeTracker,
+    rf: &RefHold,
     may_hold: bool,
     prev: &mut PhaseKind,
     obs: &mut Transitions,
 ) -> Result<(), String> {
+    let want = rf.kind();
     if imp != want {
         return Err(format!("位相が参照 {want:?} と違う: 実装 {imp:?}"));
     }
+    // 追跡器の公開の問い合わせ（進行中か・窓・期限）も参照と一致する
+    let active = rf.tr.active.as_ref();
+    if trk.is_active() != active.is_some()
+        || trk.active_scope() != active.map(|a| a.scope)
+        || trk.active_deadline_ms() != active.map(|a| a.start + MAX_MS)
+    {
+        return Err(format!(
+            "追跡器の is_active/active_scope/active_deadline_ms が参照と違う: {} {:?} {:?}",
+            trk.is_active(),
+            trk.active_scope(),
+            trk.active_deadline_ms()
+        ));
+    }
+    let trk = trk.phase_kind();
     // 追跡器は保持を知らないので、保持中も `Observing`
     let want_trk = if want == PhaseKind::Holding {
         PhaseKind::Observing
@@ -1006,15 +1021,8 @@ fn run_observing(seq: &[Ev], may_hold: bool, obs: &mut Transitions) -> Result<()
                 }
                 inv.check(&got, Some(id), may_hold, imp.held_len(), imp.is_holding())
                     .map_err(|e| fail(i, &e))?;
-                check_phase(
-                    imp.phase_kind(),
-                    trk.phase_kind(),
-                    rf.kind(),
-                    may_hold,
-                    &mut prev,
-                    obs,
-                )
-                .map_err(|e| fail(i, &e))?;
+                check_phase(imp.phase_kind(), &trk, &rf, may_hold, &mut prev, obs)
+                    .map_err(|e| fail(i, &e))?;
             }
             Ev::Timer => {
                 let got = normalize(&imp.on_timer(scope));
@@ -1028,15 +1036,8 @@ fn run_observing(seq: &[Ev], may_hold: bool, obs: &mut Transitions) -> Result<()
                 }
                 inv.check(&got, None, may_hold, imp.held_len(), imp.is_holding())
                     .map_err(|e| fail(i, &e))?;
-                check_phase(
-                    imp.phase_kind(),
-                    trk.phase_kind(),
-                    rf.kind(),
-                    may_hold,
-                    &mut prev,
-                    obs,
-                )
-                .map_err(|e| fail(i, &e))?;
+                check_phase(imp.phase_kind(), &trk, &rf, may_hold, &mut prev, obs)
+                    .map_err(|e| fail(i, &e))?;
             }
         }
     }
@@ -1049,15 +1050,8 @@ fn run_observing(seq: &[Ev], may_hold: bool, obs: &mut Transitions) -> Result<()
     }
     inv.check(&got, None, may_hold, imp.held_len(), imp.is_holding())
         .map_err(|e| format!("最後のタイマー: {e}"))?;
-    check_phase(
-        imp.phase_kind(),
-        trk.phase_kind(),
-        rf.kind(),
-        may_hold,
-        &mut prev,
-        obs,
-    )
-    .map_err(|e| format!("最後のタイマー: {e}"))?;
+    check_phase(imp.phase_kind(), &trk, &rf, may_hold, &mut prev, obs)
+        .map_err(|e| format!("最後のタイマー: {e}"))?;
     inv.all_resolved(id, rf.tr.started_total)
         .map_err(|e| format!("終了時: {e}"))
 }
