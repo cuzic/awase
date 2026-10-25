@@ -444,3 +444,10 @@ opus-adversarial-consult round1（Must-fix 6件反映）・round2（Must-fix 1�
 （設計判断そのものへの Must-fix ゼロ、収束確認）・round5（dragonflyg4
 実機検証結果を反映、Must-fix ゼロ、収束確認）・round6（実装差分レビュー、
 Must-fix 2件——hwnd 不一致時のログ欠如とステータス節の未更新——反映）実施済み。
+
+## 追記(2026-10-25、BUG-218)
+
+hwnd 一致を満たしても、キャッシュの ON 復元が**直近の明示 OFF を上書きする**場面が残っていた。フォーカスの検出は周期で動くため、追跡が実際の前面より遅れる。遅れている間に、ユーザーはすでに入場先の窓の中で Ctrl+無変換 を押している。その OFF は、窓を離れたときの古い ON(キャッシュ)より新しい。これを復元すると、IME は OFF のままエンジンだけが ON になる(実機: `zoom` が `zotumo`)。
+
+案 A(時間だけで抑制)の却下理由(35230fd の救済を壊す)は変わらない。弁別子は時間ではなく、**OFF を押したのが入場先と同じプロセスか**: 35230fd の場面は OFF が別プロセス(Chrome)、今回は同じプロセス(Windows Terminal)。`ImeStateHub` が OFF を押した瞬間の前面プロセスを記録し、`focus::tsf_cache_restore::plan_tsf_cache_restore` が「OFF がキャッシュより新しく、入場先と同じプロセスなら復元しない」を加えた。OFF の時点のプロセスが不明なら従来どおり復元する。詳細は [BUG-218](../known-bugs/BUG-218.md)。
+

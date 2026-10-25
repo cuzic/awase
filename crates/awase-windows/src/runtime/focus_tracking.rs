@@ -635,7 +635,16 @@ impl Runtime {
                 let desired_open = self.platform_state.ime.model().desired_open();
                 let new_hwnd = classified.hwnd.0 as usize;
                 let cache_hwnd = cache_hit.as_ref().map(|snap| snap.hwnd);
-                if should_restore_tsf_cache_on(cache_hit.as_ref(), desired_open, new_hwnd) {
+                // BUG-218: 明示 OFF が、入場先と同じプロセスで、キャッシュより新しく押されていたら復元しない
+                // （フォーカス検出が遅れている間に、すでに入場先の窓の中で押された OFF を古い ON で上書きしない）。
+                let decision = crate::focus::tsf_cache_restore::plan_tsf_cache_restore(
+                    cache_hit.as_ref(),
+                    desired_open,
+                    new_hwnd,
+                    classified.process_id,
+                    self.platform_state.ime.persistent_explicit_off(),
+                );
+                if decision.restores() {
                     // Imm32Unavailable コンテキストで desired_open が false に汚染された可能性。
                     // キャッシュの true を復元して TsfNative 窓の状態を回復する。
                     self.platform_state
@@ -647,6 +656,18 @@ impl Runtime {
                          new_hwnd={new_hwnd} — 汚染を修正)"
                     );
                 } else {
+                    if decision
+                        == crate::focus::tsf_cache_restore::TsfCacheDecision::SkipOffNewerInSameProcess
+                    {
+                        tracing::info!(
+                            "[focus] TsfNative: cache restore を見送り — 明示 OFF がキャッシュより新しく、\
+                             入場先と同じプロセスで押されている (BUG-218) \
+                             explicit_off={:?} cache_recorded_ms={:?} new_pid={}",
+                            self.platform_state.ime.persistent_explicit_off(),
+                            cache_hit.as_ref().map(|snap| snap.recorded_ms),
+                            classified.process_id,
+                        );
+                    }
                     // SSOT: desired_open を前窓の値のまま維持。
                     // FocusChanged が applied=Unknown を設定済みのため、最初のキー入力で
                     // dispatch_ime が desired_open を窓へ apply する。
@@ -881,23 +902,6 @@ impl From<&FocusIdentity> for crate::journal::FocusEndpoint {
     }
 }
 
-/// TsfNative 窓入場時に、`(pid, class_name)` キャッシュの `ime_on=true` を
-/// 復元してよいか判定する（BUG-128、ADR-165）。
-///
-/// `snap.hwnd == new_hwnd` を要求することで、`(pid, class_name)` キーが
-/// 同一クラス名を共有する複数の無関係なウィンドウ（例:
-/// `Windows.UI.Input.InputSite.WindowClass` を共有する explorer.exe 内の
-/// 複数の UWP 入力面）を取り違えないようにする。時間条件は設けない
-/// （`docs/adr/165-tsf-cache-restore-recency-guard.md` 参照、実機検証済み）。
-fn should_restore_tsf_cache_on(
-    snap: Option<&crate::focus::hwnd_cache::HwndImeSnapshot>,
-    desired_open: bool,
-    new_hwnd: usize,
-) -> bool {
-    let Some(snap) = snap else { return false };
-    snap.ime_on && !desired_open && snap.hwnd == new_hwnd
-}
-
 fn should_discard_imm_broken_cache(
     cache_hit: Option<crate::focus::hwnd_cache::HwndImeSnapshot>,
     is_imm_broken: bool,
@@ -967,51 +971,5 @@ mod tests {
             20_000,
             19_000,
         ));
-    }
-
-    // ── should_restore_tsf_cache_on（BUG-128、ADR-165）──────────────────────
-
-    #[test]
-    fn tsf_cache_restore_fires_when_hwnd_matches() {
-        // 35230fd の救済シナリオ: 同じウィンドウ（同じ hwnd）へ戻ってきた場合は復元する。
-        assert!(should_restore_tsf_cache_on(
-            Some(&snap(true, false, 42)),
-            false,
-            42,
-        ));
-    }
-
-    #[test]
-    fn tsf_cache_restore_is_suppressed_when_hwnd_differs() {
-        // report_id 01M27VXD4SPAD4STQ9TG1PZSCD の再現: 同じ (pid, class_name) でも
-        // 別のウィンドウインスタンス（別 hwnd）への入場では復元しない。
-        assert!(!should_restore_tsf_cache_on(
-            Some(&snap(true, false, 42)),
-            false,
-            999,
-        ));
-    }
-
-    #[test]
-    fn tsf_cache_restore_skips_when_desired_open_already_true() {
-        assert!(!should_restore_tsf_cache_on(
-            Some(&snap(true, false, 42)),
-            true,
-            42,
-        ));
-    }
-
-    #[test]
-    fn tsf_cache_restore_skips_when_cache_says_off() {
-        assert!(!should_restore_tsf_cache_on(
-            Some(&snap(false, false, 42)),
-            false,
-            42,
-        ));
-    }
-
-    #[test]
-    fn tsf_cache_restore_skips_when_no_cache_entry() {
-        assert!(!should_restore_tsf_cache_on(None, false, 42));
     }
 }

@@ -64,6 +64,18 @@ pub struct ImeStateHub {
     /// 表す実ユーザー操作専用ソースであり、SyncKey/PhysicalImeKey と同じ扱いにできる。
     last_user_explicit_off_ms: u64,
 
+    /// `last_user_explicit_off_ms` を記録した時点の前面プロセスの ID。0 = 不明（BUG-218）。
+    ///
+    /// フォーカスの検出は周期で動くので、追跡中の窓（`FocusStore`）は実際の前面より遅れることがある。
+    /// 遅れている間に押された明示 OFF が「どのプロセスの中で押されたか」は、押した瞬間の前面を
+    /// 読まないと分からない。TsfNative 窓へ入るときのキャッシュの ON 復元が、入場先と同じプロセスで
+    /// 押された新しい OFF を古い ON で上書きしないための弁別子（`focus::tsf_cache_restore`）。
+    last_user_explicit_off_pid: u32,
+
+    /// 前面プロセスの読み口。実機は殻が `win32::foreground_scope` を渡す（state 層が Win32 に依存しない）。
+    /// 既定は常に不明（テスト・閉ループ）。
+    foreground_scope_source: fn() -> crate::state::foreground_scope::ForegroundScope,
+
     /// エンジンが明示的 IME ON/OFF を適用した最終時刻 (tick_ms)。0 = 未操作。
     ///
     /// `handle_engine_set_open` が実際に apply を実行したときに更新される。
@@ -168,6 +180,8 @@ impl ImeStateHub {
             ),
             shadow_model: ImeModel::default(),
             last_user_explicit_off_ms: 0,
+            last_user_explicit_off_pid: 0,
+            foreground_scope_source: || crate::state::foreground_scope::ForegroundScope::INVALID,
             last_explicit_ime_action_ms: 0,
             press_axes: None,
             conv_read_ok_scope: None,
@@ -208,8 +222,10 @@ impl ImeStateHub {
             ) {
                 if *target {
                     self.last_user_explicit_off_ms = 0;
+                    self.last_user_explicit_off_pid = 0;
                 } else {
                     self.last_user_explicit_off_ms = tick_ms.0;
+                    self.last_user_explicit_off_pid = (self.foreground_scope_source)().pid;
                 }
                 // IntentStore への record() はここでは行わない（BUG-51 追補 v3 で移設）。
                 // Command ソースは conv 由来の内部同期（EngineSync::DirectInput〈ADR-185で撤去済み〉 →
@@ -1076,6 +1092,25 @@ impl ImeStateHub {
     /// のみを追跡し、FocusChanged でリセットしない。
     pub(crate) fn persistent_explicit_off_ms(&self) -> u64 {
         self.last_user_explicit_off_ms
+    }
+
+    /// `persistent_explicit_off_ms()` と、その OFF を押した時点の前面プロセス（BUG-218）。
+    pub(crate) fn persistent_explicit_off(&self) -> crate::focus::tsf_cache_restore::ExplicitOff {
+        crate::focus::tsf_cache_restore::ExplicitOff {
+            at_ms: self.last_user_explicit_off_ms,
+            pid: self.last_user_explicit_off_pid,
+        }
+    }
+
+    /// 前面プロセスの読み口を差し替える。実機は殻（`state/platform_state/shell.rs`）が
+    /// `win32::foreground_scope` を渡す。テストは固定値の関数を渡せる。
+    #[must_use]
+    pub fn with_foreground_scope_source(
+        mut self,
+        source: fn() -> crate::state::foreground_scope::ForegroundScope,
+    ) -> Self {
+        self.foreground_scope_source = source;
+        self
     }
 
     /// `ImeModel::effective_open()`（Engine の `ctx.ime_on` に直結する belief）に、
@@ -2939,6 +2974,45 @@ mod tests {
             0,
             "Command ソースの明示 ON はタイムスタンプをリセットすること"
         );
+    }
+
+    // BUG-218: 明示 OFF を押した瞬間の前面プロセスを覚え、明示 ON でリセットすること。
+    // TsfNative 窓へ入るときのキャッシュの ON 復元（`focus::tsf_cache_restore`）が、フォーカス検出の遅れの間に
+    // 入場先の窓の中で押された OFF を古い ON で上書きしないための弁別子。
+    #[test]
+    fn explicit_off_records_the_foreground_pid_at_that_moment_and_on_resets_it() {
+        use crate::focus::tsf_cache_restore::ExplicitOff;
+        let mut ime = ImeStateHub::with_clock(
+            crate::state::hub_clock::HubClock::manual(10_000, std::time::Instant::now()),
+            quanta::Clock::new(),
+        )
+        .with_foreground_scope_source(|| crate::state::foreground_scope::ForegroundScope {
+            pid: 4321,
+            hwnd: 7,
+        });
+        assert_eq!(ime.persistent_explicit_off(), ExplicitOff::NONE);
+        ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::Command,
+            },
+            TickMs(12_345),
+        );
+        assert_eq!(
+            ime.persistent_explicit_off(),
+            ExplicitOff {
+                at_ms: 12_345,
+                pid: 4321
+            }
+        );
+        ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::Command,
+            },
+            TickMs(20_000),
+        );
+        assert_eq!(ime.persistent_explicit_off(), ExplicitOff::NONE);
     }
 
     // Ctrl+無変換 のデフォルトキーバインドが実際にたどる呼び出し経路

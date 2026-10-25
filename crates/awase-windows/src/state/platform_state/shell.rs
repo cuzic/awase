@@ -25,6 +25,7 @@ impl ImeStateHub {
             HubClock::wall(crate::hook::current_tick_ms, Instant::now),
             quanta::Clock::new(),
         )
+        .with_foreground_scope_source(crate::win32::foreground_scope)
     }
 }
 
