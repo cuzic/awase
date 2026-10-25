@@ -18,8 +18,8 @@ use std::sync::OnceLock;
 
 use super::{
     DetectEvent, DetectParams, EpisodeDetector, EpisodeTracker, HoldCommand, HoldController,
-    JapaneseEvidence, KanaModel, KeyRole, ObservedKey, StopReason, ThumbOverlap, TrackerConfig,
-    Trigger, Verdict,
+    JapaneseEvidence, KanaModel, KeyRole, ObservedKey, PhaseKind, StopReason, ThumbOverlap,
+    TrackerConfig, Trigger, Verdict,
 };
 use crate::engine::fsm_types::ThumbSide;
 use crate::ngram::NgramModel;
@@ -458,6 +458,21 @@ struct RefHold {
 }
 
 impl RefHold {
+    /// 参照の位相（武装・エピソード・保持の有無から導く）。
+    fn kind(&self) -> PhaseKind {
+        if self.tr.active.is_some() {
+            if self.holding {
+                PhaseKind::Holding
+            } else {
+                PhaseKind::Observing
+            }
+        } else if self.tr.armed.is_some() {
+            PhaseKind::Armed
+        } else {
+            PhaseKind::Idle
+        }
+    }
+
     fn new() -> Self {
         Self {
             tr: RefTracker::new(),
@@ -890,7 +905,73 @@ fn tiny_alphabet() -> Vec<Ev> {
     ]
 }
 
+/// 位相の遷移（前の種類, 後の種類）の集合。
+type Transitions = BTreeSet<(PhaseKind, PhaseKind)>;
+
 fn run(seq: &[Ev], may_hold: bool) -> Result<(), String> {
+    run_observing(seq, may_hold, &mut Transitions::new())
+}
+
+/// 各ステップのあと、実装の位相が参照の位相と一致し、保持の可否と矛盾しないことを確かめて、遷移を記録する。
+fn check_phase(
+    imp: PhaseKind,
+    trk: &EpisodeTracker,
+    rf: &RefHold,
+    may_hold: bool,
+    prev: &mut PhaseKind,
+    obs: &mut Transitions,
+) -> Result<(), String> {
+    let want = rf.kind();
+    if imp != want {
+        return Err(format!("位相が参照 {want:?} と違う: 実装 {imp:?}"));
+    }
+    // 追跡器の公開の問い合わせ（進行中か・窓・期限）も参照と一致する
+    let active = rf.tr.active.as_ref();
+    if trk.is_active() != active.is_some()
+        || trk.active_scope() != active.map(|a| a.scope)
+        || trk.active_deadline_ms() != active.map(|a| a.start + MAX_MS)
+    {
+        return Err(format!(
+            "追跡器の is_active/active_scope/active_deadline_ms が参照と違う: {} {:?} {:?}",
+            trk.is_active(),
+            trk.active_scope(),
+            trk.active_deadline_ms()
+        ));
+    }
+    let trk = trk.phase_kind();
+    // 追跡器は保持を知らないので、保持中も `Observing`
+    let want_trk = if want == PhaseKind::Holding {
+        PhaseKind::Observing
+    } else {
+        want
+    };
+    if trk != want_trk {
+        return Err(format!("追跡器の位相が {want_trk:?} でない: {trk:?}"));
+    }
+    // 保持できる構成ではエピソードは必ず `Holding`、できない構成では `Observing` だけ
+    if (may_hold && imp == PhaseKind::Observing) || (!may_hold && imp == PhaseKind::Holding) {
+        return Err(format!("may_hold={may_hold} なのに位相が {imp:?}"));
+    }
+    obs.insert((*prev, imp));
+    *prev = imp;
+    Ok(())
+}
+
+/// 期限のタイマーを、単体の追跡器にも同じように反映する（`HoldController` は内部で同じ閉じ方をする）。
+fn mirror_timer(trk: &mut EpisodeTracker, scope: u64) {
+    if let Some(s) = trk.active_scope() {
+        let deadline = trk.active_deadline_ms().unwrap_or(0);
+        let stop = if s == scope {
+            StopReason::Timeout
+        } else {
+            StopReason::WindowChanged
+        };
+        trk.force_close(stop, deadline);
+    }
+}
+
+fn run_observing(seq: &[Ev], may_hold: bool, obs: &mut Transitions) -> Result<(), String> {
+    let mut prev = PhaseKind::Idle;
     let m = kana_model();
     let mut imp: HoldController<u32> = HoldController::new(tracker_cfg());
     let mut trk = EpisodeTracker::new(tracker_cfg());
@@ -940,18 +1021,12 @@ fn run(seq: &[Ev], may_hold: bool) -> Result<(), String> {
                 }
                 inv.check(&got, Some(id), may_hold, imp.held_len(), imp.is_holding())
                     .map_err(|e| fail(i, &e))?;
+                check_phase(imp.phase_kind(), &trk, &rf, may_hold, &mut prev, obs)
+                    .map_err(|e| fail(i, &e))?;
             }
             Ev::Timer => {
                 let got = normalize(&imp.on_timer(scope));
-                if let Some(s) = trk.active_scope() {
-                    let deadline = trk.active_deadline_ms().unwrap_or(0);
-                    let stop = if s == scope {
-                        StopReason::Timeout
-                    } else {
-                        StopReason::WindowChanged
-                    };
-                    trk.force_close(stop, deadline);
-                }
+                mirror_timer(&mut trk, scope);
                 let want = rf.on_timer(scope);
                 if got != want {
                     return Err(fail(
@@ -961,16 +1036,21 @@ fn run(seq: &[Ev], may_hold: bool) -> Result<(), String> {
                 }
                 inv.check(&got, None, may_hold, imp.held_len(), imp.is_holding())
                     .map_err(|e| fail(i, &e))?;
+                check_phase(imp.phase_kind(), &trk, &rf, may_hold, &mut prev, obs)
+                    .map_err(|e| fail(i, &e))?;
             }
         }
     }
     // 最後に期限のタイマーを発火して、保持を全部解決させる。
     let got = normalize(&imp.on_timer(scope));
+    mirror_timer(&mut trk, scope);
     let want = rf.on_timer(scope);
     if got != want {
         return Err(format!("最後のタイマー: 実装 {got:?} 参照 {want:?}"));
     }
     inv.check(&got, None, may_hold, imp.held_len(), imp.is_holding())
+        .map_err(|e| format!("最後のタイマー: {e}"))?;
+    check_phase(imp.phase_kind(), &trk, &rf, may_hold, &mut prev, obs)
         .map_err(|e| format!("最後のタイマー: {e}"))?;
     inv.all_resolved(id, rf.tr.started_total)
         .map_err(|e| format!("終了時: {e}"))
@@ -1321,4 +1401,69 @@ fn journal_labels_are_stable_and_distinct() {
     }
     let distinct: BTreeSet<_> = stops.iter().map(|(st, _)| st.label()).collect();
     assert_eq!(distinct.len(), stops.len());
+}
+
+/// 位相の遷移表（全列挙）。字母全部で長さ ≤3 の全列から実際に起きる (前, 後) の組が、参照の表と**ちょうど**一致する。
+///
+/// 参照の表（`Idle`→`Armed`→`Observing`/`Holding`→`Idle` の遷移）:
+/// - `Idle` からは、そのまま `Idle`、武装して `Armed`、武装して即始まり `Observing`（保持しない）/`Holding`（保持する）。
+/// - `Armed` からは、`Armed` のまま（Up・修飾）、使い切って `Idle`（材料でない Down）、始まって `Observing`/`Holding`。
+/// - `Observing`（保持しない構成だけ）からは、続く `Observing`、閉じて `Idle`、窓が変わって閉じ新しい武装で `Armed`。
+/// - `Holding`（保持する構成だけ）からは、続く `Holding`、閉じて `Idle`、窓が変わって閉じ新しい武装で `Armed`。
+/// - `Observing` ↔ `Holding` の直接の遷移は無い（保持の可否はエピソードの開始で決まり、途中で変わらない）。
+///
+/// 型で防げるようになった組み合わせ（保持中なのにエピソードが無い・保持していないのに保持列がある）は、
+/// 以前の `Inv` の「タイマーと保持列の整合」検査が見ていたが、位相の enum で構成できなくなったので、
+/// この表とその整合（`phase` と `held_len` の一致、`Inv::check` の末尾）に役割を移した。
+#[test]
+fn phase_transition_table_matches_the_reference() {
+    use PhaseKind::{Armed, Holding, Idle, Observing};
+    let a = full_alphabet();
+    let mut obs = Transitions::new();
+    let mut runs = 0;
+    for len in 1..=3 {
+        let n = a.len();
+        let mut idx = vec![0_usize; len];
+        'outer: loop {
+            let seq: Vec<Ev> = idx.iter().map(|&k| a[k]).collect();
+            for may_hold in [false, true] {
+                if let Err(e) = run_observing(&seq, may_hold, &mut obs) {
+                    panic!("may_hold={may_hold} 列 {seq:?}\n{e}");
+                }
+                runs += 1;
+            }
+            let mut pos = len;
+            loop {
+                if pos == 0 {
+                    break 'outer;
+                }
+                pos -= 1;
+                idx[pos] += 1;
+                if idx[pos] < n {
+                    break;
+                }
+                idx[pos] = 0;
+            }
+        }
+    }
+    assert_eq!(runs, 2 * (21 + 441 + 9261));
+    let expected: Transitions = [
+        (Idle, Idle),
+        (Idle, Armed),
+        (Idle, Observing),
+        (Idle, Holding),
+        (Armed, Idle),
+        (Armed, Armed),
+        (Armed, Observing),
+        (Armed, Holding),
+        (Observing, Idle),
+        (Observing, Observing),
+        (Observing, Armed),
+        (Holding, Idle),
+        (Holding, Holding),
+        (Holding, Armed),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(obs, expected);
 }
