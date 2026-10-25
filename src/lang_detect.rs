@@ -916,6 +916,9 @@ pub const fn eisu_write_skip_reason(f: WriteFacts) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+mod model_check;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::scanmap::KeyboardModel;
