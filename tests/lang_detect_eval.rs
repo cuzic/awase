@@ -35,10 +35,14 @@ const GRID: [&str; 4] = [
 const NEUTRAL_KEYS: &str = "1234567890-^\\qp@[:]z/";
 
 fn real_model() -> KanaModel {
+    real_model_for("layout/nicola.yab")
+}
+
+fn real_model_for(layout_file: &str) -> KanaModel {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let ngram = NgramModel::from_file(&root.join("data/ngram_hiragana.csv.gz"), 0, 0, 0)
         .expect("ngram file");
-    let yab = std::fs::read_to_string(root.join("layout/nicola.yab")).expect("yab");
+    let yab = std::fs::read_to_string(root.join(layout_file)).expect("yab");
     // 本番(bootstrap)と同じく、読み込み直後に仮名を解決する。
     let layout = YabLayout::parse(&yab, KeyboardModel::Jis)
         .expect("layout")
@@ -229,4 +233,41 @@ fn a_symbol_alone_is_neutral_and_never_decides_not_japanese() {
     let (verdict, presses) = judge(&model, DetectParams::default(), &run);
     assert_eq!(verdict, Verdict::Undecided, "{run:?}");
     assert_eq!(presses, 7);
+}
+
+#[test]
+fn eisu_threshold_boundary_sequence_flips_between_14_and_16() {
+    // ADR-280 C0 の配線確認(CI の実機検証 sc-langdetect-*)で打つ固定の合成列。Python 再現の推移
+    // (配列ごとに定義済みキー数 N が違い、1 打ごとに `+ln N` が乗る。nicola.yab は N=44、CI の既定 nicola_keytop.yab は N=47):
+    //   `ayre`(境界 B): N=44 で llr = 1.5741 → -4.6360 → -8.5266 → -14.9978、N=47 で -14.7340。閾値 14 で 4 打目に NotJapanese、16 では決まらない。
+    //   `build`(英数 E): N=44 で llr = -6.4998 → -15.6293 → -19.4536。閾値 14 で 2 打目、16 でも 3 打目に NotJapanese。
+    // Rust の判定が Python の再現と一致することの確認を兼ねる(`docs/tasks/adr280-c0-wiring-ci-result-2026-10-24.md`)。
+    for (file, ayre_llr) in [
+        ("layout/nicola.yab", -14.9978),
+        ("layout/nicola_keytop.yab", -14.7340),
+    ] {
+        let model = real_model_for(file);
+        let (v14, n14) = judge(&model, with_en_threshold(14.0), "ayre");
+        assert_eq!((v14, n14), (Verdict::NotJapanese, 4), "ayre @14 {file}");
+        let (v16, n16) = judge(&model, with_en_threshold(16.0), "ayre");
+        assert_ne!(v16, Verdict::NotJapanese, "ayre @16 {file}");
+        assert_eq!(n16, 4, "{file}");
+
+        let mut d =
+            EpisodeDetector::new(with_en_threshold(16.0), ThumbOverlap::Enabled, [false; 2]);
+        for c in "ayre".chars() {
+            d.observe(&model, DetectEvent::CharDown(qwerty(c)));
+            d.observe(&model, DetectEvent::CharUp(qwerty(c)));
+        }
+        assert!(
+            (d.llr() - ayre_llr).abs() < 0.01,
+            "ayre の最終 llr {file}: {}",
+            d.llr()
+        );
+
+        let (e14, en14) = judge(&model, with_en_threshold(14.0), "build");
+        assert_eq!((e14, en14), (Verdict::NotJapanese, 2), "build @14 {file}");
+        let (e16, en16) = judge(&model, with_en_threshold(16.0), "build");
+        assert_eq!((e16, en16), (Verdict::NotJapanese, 3), "build @16 {file}");
+    }
 }

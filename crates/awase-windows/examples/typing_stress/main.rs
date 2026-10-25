@@ -89,6 +89,7 @@
 mod focusrestore;
 mod jitter;
 mod keymatrix;
+mod langdetect;
 mod lateorder;
 mod perturb;
 mod preedit;
@@ -1660,6 +1661,7 @@ fn worker(form: Form) {
     let reopen = mode_arg.as_deref() == Some("reopen");
     let preedit = mode_arg.as_deref() == Some("preedit");
     let lateorder = mode_arg.as_deref() == Some("lateorder");
+    let langdetect = mode_arg.as_deref() == Some("langdetect");
     let keymatrix = mode_arg.as_deref() == Some("keymatrix");
     let focus_restore = mode_arg.as_deref() == Some("focus-restore");
     let startup = mode_arg.as_deref() == Some("startup");
@@ -1712,7 +1714,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if focus_restore {"focus-restore"} else if reopen {"reopen"} else if preedit {"preedit"} else if lateorder {"lateorder"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if focus_restore {"focus-restore"} else if reopen {"reopen"} else if preedit {"preedit"} else if lateorder {"lateorder"} else if langdetect {"langdetect"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "no_awase":has_flag("--no-awase"),"startup_skip_refocus2":has_flag("--startup-skip-refocus2"),
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
@@ -1812,6 +1814,11 @@ fn worker(form: Form) {
     }
     if lateorder {
         lateorder::lateorder_scenario(child);
+        finish();
+        return;
+    }
+    if langdetect {
+        langdetect::langdetect_scenario(child);
         finish();
         return;
     }
