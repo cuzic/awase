@@ -85,7 +85,7 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             // BUG-217: ペース付き送信（`key_pacer.rs`）が、キューから取り出した INPUT を実際に送る関数
             // （2026-10-24追記。旧 `send_vk_with_hold`/`send_vk_without_hold` の2件を撤去して1件を足したので、
             // 複雑性予算制〈`.claude/rules/complexity-budget.md`〉の1-in-1-out も満たす）。
-            "send_now",
+            "send_direct",
             "flush_raw_tsf_literal_backspaces",
             "kp_restore_kana_from_half_width",
             "send_all_modifier_key_ups",
