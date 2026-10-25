@@ -651,31 +651,67 @@ impl EpisodeTracker {
     }
 }
 
-/// [`HoldController::on_key`]・[`HoldController::on_timer`] の結果。呼び出し側（殻）が順に実行する。
-#[derive(Debug)]
-#[allow(clippy::struct_excessive_bools)] // 独立した判定フラグ（日本語/英数/保持中/保持開始）を 1:1 で表している
-pub struct HoldStep<T> {
-    /// 保持せず、通常どおり流す打鍵（エピソードに属さない、または保持しないエピソードの打鍵）
-    pub pass: Option<T>,
-    /// 解放して、順序どおりに流す打鍵（保持していた打鍵と、解放の契機になった打鍵）
-    pub release: Vec<T>,
-    /// 捨てた打鍵の数（保持中に前面窓が変わった）
-    pub discarded: usize,
-    /// 閉じたエピソードの結果（古いものが先）
-    pub outcomes: Vec<EpisodeOutcome>,
-    /// **保持していたエピソード**で日本語と確定した（`release` を流す**前**に、IME への書き込みの対象にしてよい）。
-    /// 保持しなかったエピソード（観測だけ）の判定は `outcomes` の `verdict` で見る
-    pub japanese: bool,
-    /// **保持していたエピソード**で、日本語でないと確定した（`NotJapanese`。`ime_on_eisu` の半角英数への切替の対象にしてよい）。
-    /// 未決（`Undecided`）や打ち切りでは立たない
-    pub english: bool,
-    /// このステップのあとも保持が続いている（期限のタイマーを動かしておく）
-    pub holding: bool,
-    /// このステップで保持するエピソードが始まった（期限のタイマーを起動する）
-    pub started_holding: bool,
+/// [`HoldController::on_key`]・[`HoldController::on_timer`] が返す命令（defunctionalization）。
+///
+/// 殻は返された**列を先頭から順に**実行する。実行の順序は列の並びが表す（殻のコードの順序に暗黙に頼らない）。
+/// 並びは常に次の順で、該当する命令だけが出る:
+///
+/// 1. [`Self::DiscardHeld`]（保持列を捨てた）
+/// 2. [`Self::WriteHiragana`]／[`Self::EnterHalfWidthAlnum`]（IME への書き込み。**解放の前**）
+/// 3. [`Self::Record`]（閉じたエピソードの記録。古いものが先。書き込みの結果を記録に使うので、書き込みの後）
+/// 4. [`Self::Replay`]（保持していた打鍵の解放。書き込みの**後**に順序どおりに流す）
+/// 5. [`Self::ArmDeadline`]／[`Self::DisarmDeadline`]（期限のタイマー）
+/// 6. [`Self::Pass`]／[`Self::Consume`]（この打鍵の行き先。`on_key` だけ）
+#[derive(Debug, Clone, PartialEq)]
+pub enum HoldCommand<T> {
+    /// 保持列を捨てた（保持中に前面窓が変わった）。捨てた打鍵の数（1 以上）
+    DiscardHeld(usize),
+    /// **保持していたエピソード**で日本語と確定した。ひらがなキーを送る（`release` を流す**前**に、IME への書き込みの
+    /// 対象にしてよい）。保持しなかったエピソード（観測だけ）では出ない（判定は `Record` の `verdict` で見る）
+    WriteHiragana,
+    /// **保持していたエピソード**で日本語でないと確定した（`NotJapanese`）。`ime_on_eisu` の半角英数への切替の対象に
+    /// してよい。未決（`Undecided`）や打ち切りでは出ない
+    EnterHalfWidthAlnum,
+    /// 閉じたエピソードの結果を記録する
+    Record(EpisodeOutcome),
+    /// 保持していた打鍵（と、解放の契機になった打鍵）を、順序どおりに流す。空のときは出ない
+    Replay(Vec<T>),
+    /// このあとも保持が続き、**この打鍵で保持が始まった**: 期限のタイマーを起動する
+    ArmDeadline,
+    /// 保持が続いていない: 期限のタイマーを外す（同じ打鍵で始まって確定した場合を含む）
+    DisarmDeadline,
+    /// この打鍵は保持も解放もせず、通常どおり流す（エピソードに属さない、または保持しないエピソードの打鍵）
+    Pass(T),
+    /// この打鍵は元の経路へ流さない（保持列に入り、`Replay` で流れる、または `DiscardHeld` で捨てる）
+    Consume,
 }
 
-impl<T> HoldStep<T> {
+/// エピソード先頭の打鍵を保持し、判定が出たら順序どおりに解放するコントローラ（ADR-263 D2、純粋）。
+///
+/// 保持するのは**エピソードの全打鍵**（Down も Up も、判定の材料でない打鍵も）。保持しないエピソード
+/// （`may_hold = false`）でも判定と結果の記録は行う（観測）。窓が変わっていたら保持した打鍵は捨てる。
+/// 結果は [`HoldCommand`] の列で返す。殻は `WriteHiragana` を実行してから `Replay` を流す。
+#[derive(Debug)]
+pub struct HoldController<T> {
+    tracker: EpisodeTracker,
+    held: Vec<T>,
+    /// 進行中のエピソードで打鍵を保持しているか
+    holding: bool,
+}
+
+/// 1 ステップで起きたことの集計（命令の列を組み立てる前の途中結果）。
+struct StepFacts<T> {
+    pass: Option<T>,
+    release: Vec<T>,
+    discarded: usize,
+    outcomes: Vec<EpisodeOutcome>,
+    japanese: bool,
+    english: bool,
+    holding: bool,
+    started_holding: bool,
+}
+
+impl<T> StepFacts<T> {
     const fn empty() -> Self {
         Self {
             pass: None,
@@ -688,21 +724,34 @@ impl<T> HoldStep<T> {
             started_holding: false,
         }
     }
-}
 
-/// エピソード先頭の打鍵を保持し、判定が出たら順序どおりに解放するコントローラ（ADR-263 D2、純粋）。
-///
-/// 保持するのは**エピソードの全打鍵**（Down も Up も、判定の材料でない打鍵も）。保持しないエピソード
-/// （`may_hold = false`）でも判定と結果の記録は行う（観測）。窓が変わっていたら保持した打鍵は捨てる。
-/// 殻は `japanese` なら IME への書き込みを行ってから `release` を流す。
-#[derive(Debug)]
-pub struct HoldController<T> {
-    tracker: EpisodeTracker,
-    held: Vec<T>,
-    /// 進行中のエピソードがある（`tracker` が持つ）か
-    episode_live: bool,
-    /// 進行中のエピソードで打鍵を保持しているか
-    holding: bool,
+    /// 命令の列にする。順序は [`HoldCommand`] の doc のとおり。`consume` は `on_key` のときだけ真。
+    fn into_commands(self, consume: bool) -> Vec<HoldCommand<T>> {
+        let mut out = Vec::new();
+        if self.discarded > 0 {
+            out.push(HoldCommand::DiscardHeld(self.discarded));
+        }
+        if self.japanese {
+            out.push(HoldCommand::WriteHiragana);
+        } else if self.english {
+            out.push(HoldCommand::EnterHalfWidthAlnum);
+        }
+        out.extend(self.outcomes.into_iter().map(HoldCommand::Record));
+        if !self.release.is_empty() {
+            out.push(HoldCommand::Replay(self.release));
+        }
+        if !self.holding {
+            out.push(HoldCommand::DisarmDeadline);
+        } else if self.started_holding {
+            out.push(HoldCommand::ArmDeadline);
+        }
+        if let Some(event) = self.pass {
+            out.push(HoldCommand::Pass(event));
+        } else if consume {
+            out.push(HoldCommand::Consume);
+        }
+        out
+    }
 }
 
 impl<T> HoldController<T> {
@@ -711,7 +760,6 @@ impl<T> HoldController<T> {
         Self {
             tracker: EpisodeTracker::new(cfg),
             held: Vec::new(),
-            episode_live: false,
             holding: false,
         }
     }
@@ -737,25 +785,27 @@ impl<T> HoldController<T> {
         event: T,
         scope: u64,
         may_hold: bool,
-    ) -> HoldStep<T> {
-        let mut out = HoldStep::empty();
+    ) -> Vec<HoldCommand<T>> {
+        let mut out = StepFacts::empty();
+        let was_active = self.tracker.is_active();
         let step = self.tracker.on_key_step(model, key, scope);
 
+        let mut closed_prev = false;
         if let Some(prev) = step.closed_prev {
+            closed_prev = true;
             if prev.stop == StopReason::WindowChanged {
                 out.discarded += self.held.len();
                 self.held.clear();
             } else {
                 out.release.append(&mut self.held);
             }
-            self.episode_live = false;
             self.holding = false;
             out.outcomes.push(prev);
         }
 
         if step.in_episode {
-            if !self.episode_live {
-                self.episode_live = true;
+            // この打鍵でエピソードが始まった: 進行中のエピソードが無かった、またはいま古いものを閉じた。
+            if !was_active || closed_prev {
                 self.holding = may_hold;
                 out.started_holding = may_hold;
             }
@@ -768,7 +818,6 @@ impl<T> HoldController<T> {
                 out.japanese = self.holding && matches!(now.verdict, Verdict::Japanese(_));
                 out.english = self.holding && now.verdict == Verdict::NotJapanese;
                 out.release.append(&mut self.held);
-                self.episode_live = false;
                 self.holding = false;
                 out.outcomes.push(now);
             }
@@ -776,20 +825,19 @@ impl<T> HoldController<T> {
             out.pass = Some(event);
         }
         out.holding = self.holding;
-        out
+        out.into_commands(true)
     }
 
     /// 期限のタイマーが発火した。保持中のエピソードを閉じる。`scope` は今の前面窓の識別子。
     ///
     /// 前面窓が保持の開始時と違えば（マウスで窓を変えたあとに次の打鍵が来なかった場合）、保持した打鍵は**捨てる**
     /// （元の窓の打鍵が新しい窓へ出る誤送信を避ける）。同じなら解放する。
-    pub fn on_timer(&mut self, scope: u64) -> HoldStep<T> {
-        let mut out = HoldStep::empty();
+    pub fn on_timer(&mut self, scope: u64) -> Vec<HoldCommand<T>> {
+        let mut out = StepFacts::empty();
         let deadline = self.tracker.active_deadline_ms().unwrap_or(0);
         let Some(started_scope) = self.tracker.active_scope() else {
-            self.episode_live = false;
             self.holding = false;
-            return out;
+            return out.into_commands(false);
         };
         let (stop, discard) = if started_scope == scope {
             (StopReason::Timeout, false)
@@ -805,9 +853,8 @@ impl<T> HoldController<T> {
             }
             out.outcomes.push(outcome);
         }
-        self.episode_live = false;
         self.holding = false;
-        out
+        out.into_commands(false)
     }
 }
 
@@ -1283,8 +1330,76 @@ mod tests {
 
     // ---- HoldController ----
 
-    fn hold_controller() -> HoldController<u32> {
-        HoldController::new(tracker_cfg())
+    /// 命令の列を、旧 `HoldStep` と同じ意味のフィールドに読み替えた見え方（既存の単体テスト用）。
+    /// 命令の並びそのものの固定は `crates/awase-windows/tests/lang_detect_decision_exhaustive.rs` が持つ。
+    struct View {
+        pass: Option<u32>,
+        release: Vec<u32>,
+        discarded: usize,
+        outcomes: Vec<EpisodeOutcome>,
+        japanese: bool,
+        english: bool,
+        holding: bool,
+        started_holding: bool,
+    }
+
+    fn view(cmds: Vec<HoldCommand<u32>>) -> View {
+        let mut v = View {
+            pass: None,
+            release: Vec::new(),
+            discarded: 0,
+            outcomes: Vec::new(),
+            japanese: false,
+            english: false,
+            // 保持が続くのは、DisarmDeadline が出ないとき（保持が続かないステップでは必ず出る）。
+            holding: true,
+            started_holding: false,
+        };
+        for cmd in cmds {
+            match cmd {
+                HoldCommand::DiscardHeld(n) => v.discarded = n,
+                HoldCommand::WriteHiragana => v.japanese = true,
+                HoldCommand::EnterHalfWidthAlnum => v.english = true,
+                HoldCommand::Record(o) => v.outcomes.push(o),
+                HoldCommand::Replay(keys) => v.release = keys,
+                HoldCommand::ArmDeadline => v.started_holding = true,
+                HoldCommand::DisarmDeadline => v.holding = false,
+                HoldCommand::Pass(e) => v.pass = Some(e),
+                HoldCommand::Consume => {}
+            }
+        }
+        v
+    }
+
+    struct Ctl(HoldController<u32>);
+
+    impl Ctl {
+        fn new(cfg: TrackerConfig) -> Self {
+            Self(HoldController::new(cfg))
+        }
+
+        fn on_key(
+            &mut self,
+            model: &KanaModel,
+            key: ObservedKey,
+            event: u32,
+            scope: u64,
+            may_hold: bool,
+        ) -> View {
+            view(self.0.on_key(model, key, event, scope, may_hold))
+        }
+
+        fn on_timer(&mut self, scope: u64) -> View {
+            view(self.0.on_timer(scope))
+        }
+
+        fn is_holding(&self) -> bool {
+            self.0.is_holding()
+        }
+    }
+
+    fn hold_controller() -> Ctl {
+        Ctl::new(tracker_cfg())
     }
 
     #[test]
@@ -1384,7 +1499,7 @@ mod tests {
         let model = tiny_model();
         let mut cfg = tracker_cfg();
         cfg.params = params(100.0, 5.0, 7);
-        let mut c: HoldController<u32> = HoldController::new(cfg);
+        let mut c = Ctl::new(cfg);
         // さ(1,4) は行頭の尤度が低く、1 打鍵目で NotJapanese になる。
         let s = c.on_key(&model, key(KeyRole::Char(pos(1, 4)), true, 10), 1, 1, true);
         assert_eq!(s.release, vec![1]);
@@ -1456,15 +1571,15 @@ mod tests {
         let mut cfg = tracker_cfg();
         cfg.params = params(100.0, 5.0, 7);
         // 保持するエピソードで NotJapanese に確定: english = true。
-        let mut c: HoldController<u32> = HoldController::new(cfg);
+        let mut c = Ctl::new(cfg);
         let s = c.on_key(&model, key(KeyRole::Char(pos(1, 4)), true, 10), 1, 1, true);
         assert!(s.english && !s.japanese);
         // 保持しないエピソード（観測だけ）では立たない。
-        let mut c: HoldController<u32> = HoldController::new(cfg);
+        let mut c = Ctl::new(cfg);
         let s = c.on_key(&model, key(KeyRole::Char(pos(1, 4)), true, 10), 1, 1, false);
         assert!(!s.english);
         // 未決（max_keys）や打ち切りでは立たない。
-        let mut c: HoldController<u32> = HoldController::new(tracker_cfg());
+        let mut c = Ctl::new(tracker_cfg());
         c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
         let s = c.on_key(&model, key(KeyRole::Other, true, 20), 2, 1, true);
         assert!(!s.english && !s.japanese);

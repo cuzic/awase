@@ -1,18 +1,37 @@
 //! ADR-280 D2: 入力言語の判定まわりの純粋な関数の全列挙（現状の挙動の固定。挙動は変えない）。
 //!
-//! - `HoldController::on_key`/`on_timer` の `HoldStep`: 契機（窓切替/idle）× 判定（Japanese/NotJapanese/Undecided）×
-//!   保持の可否。加えて、保持中の期限（同じ窓/別の窓）と、保持中の窓切替。
+//! - `HoldController::on_key`/`on_timer` が返す命令の列（`HoldCommand`）: 契機（窓切替/idle）×
+//!   判定（Japanese/NotJapanese/Undecided）× 保持の可否。加えて、保持中の期限（同じ窓/別の窓）と、保持中の窓切替。
 //! - `hiragana_write_skip_reason`/`eisu_write_skip_reason`（共通の `write_skip_reason`）: `WriteFacts` の 6 つの bool の
 //!   2^6 = 64 通り。
 //!
 //! 期待値は実装の分岐を写さず、ADR-263 の doc と各関数の doc の仕様から、宣言的な表として別の形で書く。
 //! 判定器（`EpisodeDetector`）は golden の外で、判定を引き起こす入力列だけを用意する。
+//!
+//! ## 旧 `HoldStep` から `HoldCommand` の列への対応（ADR-280 B。挙動は変えない）
+//!
+//! 期待値は、旧 `HoldStep` のどのフィールドが立つかと**同じ意味**の命令の列として、各ケースにリテラルで書く。
+//!
+//! | 旧 `HoldStep` | 新（命令の列） |
+//! |---|---|
+//! | `discarded = n`（n > 0） | `DiscardHeld(n)` |
+//! | `japanese` | `WriteHiragana`（`Replay` の**前**） |
+//! | `english` | `EnterHalfWidthAlnum`（`Replay` の**前**） |
+//! | `outcomes`（古い順） | `Record(outcome)` を同じ順に（書き込みの後、`Replay` の前） |
+//! | `release`（空でない） | `Replay(keys)` |
+//! | `holding = false` | `DisarmDeadline`（同じ打鍵で始まって確定した場合を含む。保持しない打鍵・タイマーでも毎回） |
+//! | `holding && started_holding` | `ArmDeadline` |
+//! | `holding && !started_holding` | 何も出ない |
+//! | `pass = Some(e)` | `Pass(e)` |
+//! | `pass = None`（`on_key` のみ） | `Consume` |
+//!
+//! 並びは常に: DiscardHeld → Write/Enter → Record… → Replay → Arm/Disarm → Pass/Consume。
 
 use awase::engine::fsm_types::ThumbSide;
 use awase::lang_detect::{
-    eisu_write_skip_reason, hiragana_write_skip_reason, DetectParams, HoldController, HoldStep,
-    KanaModel, KeyRole, ObservedKey, StopReason, ThumbOverlap, TrackerConfig, Trigger, Verdict,
-    WriteFacts,
+    eisu_write_skip_reason, hiragana_write_skip_reason, DetectParams, HoldCommand, HoldController,
+    JapaneseEvidence, KanaModel, KeyRole, ObservedKey, StopReason, ThumbOverlap, TrackerConfig,
+    Trigger, Verdict, WriteFacts,
 };
 use awase::ngram::NgramModel;
 use awase::scanmap::PhysicalPos;
@@ -67,56 +86,64 @@ fn cfg(ja: f64, en: f64, max_keys: usize) -> TrackerConfig {
 const SCOPE: u64 = 1;
 const OTHER_SCOPE: u64 = 2;
 
+/// 比べやすい形にした命令（`Record` は (判定, 止まった理由) だけ。契機は `check` が別に見る）。
+#[derive(Debug, Clone, PartialEq)]
+enum Cmd {
+    Discard(usize),
+    WriteHiragana,
+    EnterEisu,
+    Record(Verdict, StopReason),
+    Replay(Vec<u32>),
+    Arm,
+    Disarm,
+    Pass(u32),
+    Consume,
+}
+
+/// 実装の出力を `Cmd` に写す（期待値の側は、この写しを通さずリテラルで書く）。
+fn normalize(cmds: &[HoldCommand<u32>]) -> Vec<Cmd> {
+    cmds.iter()
+        .map(|c| match c {
+            HoldCommand::DiscardHeld(n) => Cmd::Discard(*n),
+            HoldCommand::WriteHiragana => Cmd::WriteHiragana,
+            HoldCommand::EnterHalfWidthAlnum => Cmd::EnterEisu,
+            HoldCommand::Record(o) => Cmd::Record(o.verdict, o.stop),
+            HoldCommand::Replay(keys) => Cmd::Replay(keys.clone()),
+            HoldCommand::ArmDeadline => Cmd::Arm,
+            HoldCommand::DisarmDeadline => Cmd::Disarm,
+            HoldCommand::Pass(e) => Cmd::Pass(*e),
+            HoldCommand::Consume => Cmd::Consume,
+        })
+        .collect()
+}
+
+fn check(got: &[HoldCommand<u32>], want: &[Cmd], trigger: Trigger, label: &str) {
+    assert_eq!(normalize(got), want, "{label}");
+    for c in got {
+        if let HoldCommand::Record(o) = c {
+            assert_eq!(o.trigger, trigger, "{label}: outcome の契機");
+        }
+    }
+}
+
 /// 契機を作る。窓切替: 最初の打鍵がそのまま窓切替（直前の窓が無い）。idle: 同じ窓で矢印キー（エピソードにならない）を
-/// 打ったあと、idle 閾値以上あけて始める。`t0` は最初の材料の打鍵の時刻。流した打鍵は保持されず通る（`pass`）。
+/// 打ったあと、idle 閾値以上あけて始める。`t0` は最初の材料の打鍵の時刻。流した打鍵は保持されず通る。
 fn arm(c: &mut HoldController<u32>, m: &KanaModel, trigger: Trigger) -> u64 {
     match trigger {
         Trigger::WindowSwitch => 10,
         Trigger::Idle => {
             let s = c.on_key(m, key(KeyRole::Other, true, 0), 100, SCOPE, true);
             assert_eq!(
-                s.pass,
-                Some(100),
+                normalize(&s),
+                vec![Cmd::Disarm, Cmd::Pass(100)],
                 "idle の準備の打鍵はエピソードにならず通る"
             );
-            assert!(!s.holding && s.release.is_empty() && s.outcomes.is_empty());
             3010
         }
     }
 }
 
 const TRIGGERS: [Trigger; 2] = [Trigger::WindowSwitch, Trigger::Idle];
-
-/// `HoldStep` の期待値（`outcomes` は (契機, 判定, 止まった理由) の列）。
-#[derive(Debug, Default)]
-struct Exp {
-    pass: Option<u32>,
-    release: Vec<u32>,
-    discarded: usize,
-    outcomes: Vec<(Verdict, StopReason)>,
-    japanese: bool,
-    english: bool,
-    holding: bool,
-    started_holding: bool,
-}
-
-fn check(step: &HoldStep<u32>, exp: &Exp, trigger: Trigger, label: &str) {
-    assert_eq!(step.pass, exp.pass, "{label}: pass");
-    assert_eq!(step.release, exp.release, "{label}: release");
-    assert_eq!(step.discarded, exp.discarded, "{label}: discarded");
-    assert_eq!(step.japanese, exp.japanese, "{label}: japanese");
-    assert_eq!(step.english, exp.english, "{label}: english");
-    assert_eq!(step.holding, exp.holding, "{label}: holding");
-    assert_eq!(
-        step.started_holding, exp.started_holding,
-        "{label}: started_holding"
-    );
-    let got: Vec<_> = step.outcomes.iter().map(|o| (o.verdict, o.stop)).collect();
-    assert_eq!(got, exp.outcomes, "{label}: outcomes");
-    for o in &step.outcomes {
-        assert_eq!(o.trigger, trigger, "{label}: outcome の契機");
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 enum Want {
@@ -149,37 +176,63 @@ fn scenario_keys(want: Want, t0: u64) -> Vec<ObservedKey> {
     }
 }
 
-/// 仕様の表: 判定 × 保持の可否 → 最終打鍵の期待値。保持していたエピソードだけが `japanese`/`english` を立て、
-/// 保持していたぶんを（保持した順に）解放する。保持しないエピソードは各打鍵がそのまま通る（観測だけ）。
-/// `n` は列の打鍵数。打鍵 `i` のイベントは `i + 1`。
-fn expected_final(want: Want, may_hold: bool, n: u32) -> Exp {
-    let (verdict, stop) = match want {
-        Want::Japanese => (
-            Verdict::Japanese(awase::lang_detect::JapaneseEvidence::ThumbOverlap),
-            StopReason::Decided,
-        ),
-        Want::NotJapanese => (Verdict::NotJapanese, StopReason::Decided),
-        Want::Undecided => (Verdict::Undecided, StopReason::MaxKeys),
-    };
+const OVERLAP: Verdict = Verdict::Japanese(JapaneseEvidence::ThumbOverlap);
+
+/// 確定前の打鍵（Japanese の 1 打目）の期待値。保持するなら保持が始まる（`ArmDeadline`、`Consume`）。
+/// 保持しないならそのまま通る（`DisarmDeadline`、`Pass`）。
+fn expected_before_decision(may_hold: bool) -> Vec<Cmd> {
     if may_hold {
-        Exp {
-            release: (1..=n).collect(),
-            outcomes: vec![(verdict, stop)],
-            japanese: matches!(want, Want::Japanese),
-            english: matches!(want, Want::NotJapanese),
-            ..Exp::default()
-        }
+        vec![Cmd::Arm, Cmd::Consume]
     } else {
-        Exp {
-            pass: Some(n),
-            outcomes: vec![(verdict, stop)],
-            ..Exp::default()
-        }
+        vec![Cmd::Disarm, Cmd::Pass(1)]
+    }
+}
+
+/// 確定の打鍵の期待値（仕様の表）。保持していたエピソードだけが書き込みの命令を出し、書き込み → 記録 → 解放の順。
+/// 保持しないエピソードは各打鍵がそのまま通る（観測だけ）。
+fn expected_final(want: Want, may_hold: bool) -> Vec<Cmd> {
+    match (want, may_hold) {
+        (Want::Japanese, true) => vec![
+            Cmd::WriteHiragana,
+            Cmd::Record(OVERLAP, StopReason::Decided),
+            Cmd::Replay(vec![1, 2]),
+            Cmd::Disarm,
+            Cmd::Consume,
+        ],
+        (Want::Japanese, false) => vec![
+            Cmd::Record(OVERLAP, StopReason::Decided),
+            Cmd::Disarm,
+            Cmd::Pass(2),
+        ],
+        (Want::NotJapanese, true) => vec![
+            Cmd::EnterEisu,
+            Cmd::Record(Verdict::NotJapanese, StopReason::Decided),
+            Cmd::Replay(vec![1]),
+            Cmd::Disarm,
+            Cmd::Consume,
+        ],
+        (Want::NotJapanese, false) => vec![
+            Cmd::Record(Verdict::NotJapanese, StopReason::Decided),
+            Cmd::Disarm,
+            Cmd::Pass(1),
+        ],
+        // 未決（上限）は書き込みの命令を出さない。
+        (Want::Undecided, true) => vec![
+            Cmd::Record(Verdict::Undecided, StopReason::MaxKeys),
+            Cmd::Replay(vec![1]),
+            Cmd::Disarm,
+            Cmd::Consume,
+        ],
+        (Want::Undecided, false) => vec![
+            Cmd::Record(Verdict::Undecided, StopReason::MaxKeys),
+            Cmd::Disarm,
+            Cmd::Pass(1),
+        ],
     }
 }
 
 #[test]
-fn hold_step_for_every_trigger_verdict_and_may_hold() {
+fn hold_commands_for_every_trigger_verdict_and_may_hold() {
     let m = model();
     let mut cases = 0;
     for trigger in TRIGGERS {
@@ -190,30 +243,24 @@ fn hold_step_for_every_trigger_verdict_and_may_hold() {
                 let mut c: HoldController<u32> = HoldController::new(scenario_cfg(want));
                 let t0 = arm(&mut c, &m, trigger);
                 let keys = scenario_keys(want, t0);
-                let n = u32::try_from(keys.len()).expect("n");
+                let last = keys.len() - 1;
                 for (i, k) in keys.iter().enumerate() {
                     let ev = u32::try_from(i).expect("i") + 1;
-                    let step = c.on_key(&m, *k, ev, SCOPE, may_hold);
-                    if u32::try_from(i).expect("i") + 1 < n {
-                        // 確定前の打鍵: 保持するなら保持（開始の打鍵だけ started_holding）、しないなら通す。
-                        let exp = if may_hold {
-                            Exp {
-                                holding: true,
-                                started_holding: i == 0,
-                                ..Exp::default()
-                            }
-                        } else {
-                            Exp {
-                                pass: Some(ev),
-                                ..Exp::default()
-                            }
-                        };
-                        check(&step, &exp, trigger, &format!("{label}/step{i}"));
+                    let got = c.on_key(&m, *k, ev, SCOPE, may_hold);
+                    if i < last {
+                        check(
+                            &got,
+                            &expected_before_decision(may_hold),
+                            trigger,
+                            &format!("{label}/step{i}"),
+                        );
                     } else {
-                        // 1 打で確定する列では、確定の打鍵が開始の打鍵でもある。
-                        let mut exp = expected_final(want, may_hold, n);
-                        exp.started_holding = may_hold && n == 1;
-                        check(&step, &exp, trigger, &format!("{label}/final"));
+                        check(
+                            &got,
+                            &expected_final(want, may_hold),
+                            trigger,
+                            &format!("{label}/final"),
+                        );
                     }
                 }
                 assert!(!c.is_holding(), "{label}: 確定後は保持しない");
@@ -224,8 +271,37 @@ fn hold_step_for_every_trigger_verdict_and_may_hold() {
     assert_eq!(cases, 12);
 }
 
-/// 保持中の期限（`on_timer`）: 判定は出ず（Pending のまま閉じる）、`japanese`/`english` は立たない。
-/// 同じ窓なら保持を解放（Timeout）、別の窓なら捨てる（WindowChanged）。保持していないなら、どちらも空。
+/// 書き込みの命令は、保持した打鍵の解放（`Replay`）より前に出る（書き込みの合成キーが先に届く）。記録はその間。
+#[test]
+fn write_command_comes_before_record_and_replay() {
+    let m = model();
+    for (want, write) in [
+        (Want::Japanese, HoldCommand::WriteHiragana),
+        (Want::NotJapanese, HoldCommand::EnterHalfWidthAlnum),
+    ] {
+        let mut c: HoldController<u32> = HoldController::new(scenario_cfg(want));
+        let t0 = arm(&mut c, &m, Trigger::WindowSwitch);
+        let mut last = Vec::new();
+        for (i, k) in scenario_keys(want, t0).iter().enumerate() {
+            last = c.on_key(&m, *k, u32::try_from(i).expect("i") + 1, SCOPE, true);
+        }
+        let index = |pred: fn(&HoldCommand<u32>) -> bool| last.iter().position(pred).expect("命令");
+        let w = index(|c| {
+            matches!(
+                c,
+                HoldCommand::WriteHiragana | HoldCommand::EnterHalfWidthAlnum
+            )
+        });
+        let r = index(|c| matches!(c, HoldCommand::Record(_)));
+        let p = index(|c| matches!(c, HoldCommand::Replay(_)));
+        assert_eq!(last[w], write);
+        assert!(w < r && r < p, "{want:?}: 書き込み < 記録 < 解放");
+    }
+}
+
+/// 保持中の期限（`on_timer`）: 判定は出ず（Pending のまま閉じる）、書き込みの命令は出ない。
+/// 同じ窓なら保持を解放（Timeout）、別の窓なら捨てる（WindowChanged）。保持していないなら、解放も破棄も無い。
+/// どの場合も最後にタイマーを外す。
 #[test]
 fn on_timer_for_every_trigger_may_hold_and_scope() {
     let m = model();
@@ -245,25 +321,30 @@ fn on_timer_for_every_trigger_may_hold_and_scope() {
                     SCOPE,
                     may_hold,
                 );
-                assert_eq!(first.holding, may_hold, "{label}: 開始の打鍵");
+                check(&first, &expected_before_decision(may_hold), trigger, &label);
                 let scope = if same_scope { SCOPE } else { OTHER_SCOPE };
-                let step = c.on_timer(scope);
-                let stop = if same_scope {
-                    StopReason::Timeout
-                } else {
-                    StopReason::WindowChanged
+                let got = c.on_timer(scope);
+                let want = match (may_hold, same_scope) {
+                    (true, true) => vec![
+                        Cmd::Record(Verdict::Pending, StopReason::Timeout),
+                        Cmd::Replay(vec![1]),
+                        Cmd::Disarm,
+                    ],
+                    (true, false) => vec![
+                        Cmd::Discard(1),
+                        Cmd::Record(Verdict::Pending, StopReason::WindowChanged),
+                        Cmd::Disarm,
+                    ],
+                    (false, true) => vec![
+                        Cmd::Record(Verdict::Pending, StopReason::Timeout),
+                        Cmd::Disarm,
+                    ],
+                    (false, false) => vec![
+                        Cmd::Record(Verdict::Pending, StopReason::WindowChanged),
+                        Cmd::Disarm,
+                    ],
                 };
-                let exp = Exp {
-                    release: if may_hold && same_scope {
-                        vec![1]
-                    } else {
-                        vec![]
-                    },
-                    discarded: usize::from(may_hold && !same_scope),
-                    outcomes: vec![(Verdict::Pending, stop)],
-                    ..Exp::default()
-                };
-                check(&step, &exp, trigger, &label);
+                check(&got, &want, trigger, &label);
                 assert!(
                     !c.is_holding() && c.held_len() == 0,
                     "{label}: 期限のあとは保持しない"
@@ -273,17 +354,17 @@ fn on_timer_for_every_trigger_may_hold_and_scope() {
     }
     assert_eq!(cases, 8);
 
-    // エピソードが無いときのタイマーは何もしない。
+    // エピソードが無いときのタイマーは、タイマーを外すだけ。
     let mut c: HoldController<u32> = HoldController::new(cfg(100.0, 100.0, 7));
     check(
         &c.on_timer(SCOPE),
-        &Exp::default(),
+        &[Cmd::Disarm],
         Trigger::WindowSwitch,
         "no episode",
     );
 }
 
-/// 保持中に別の窓の打鍵が来た: 保持していた打鍵は捨て（`discarded`）、止まった理由は WindowChanged。
+/// 保持中に別の窓の打鍵が来た: 保持していた打鍵は捨て（`DiscardHeld`）、止まった理由は WindowChanged。
 /// その打鍵は新しい窓の窓切替の契機で新しいエピソードを始める（保持するかは `may_hold`）。
 #[test]
 fn key_in_another_window_during_an_episode_discards_held_keys() {
@@ -302,23 +383,29 @@ fn key_in_another_window_during_an_episode_discards_held_keys() {
                 SCOPE,
                 may_hold,
             );
-            let step = c.on_key(
+            let got = c.on_key(
                 &m,
                 key(KeyRole::Char(pos(1, 2)), true, t0 + 10),
                 2,
                 OTHER_SCOPE,
                 may_hold,
             );
-            // 閉じた古いエピソードの契機は元のもの、新しいエピソードは窓切替。outcomes の契機は古い側だけ。
-            let exp = Exp {
-                pass: if may_hold { None } else { Some(2) },
-                discarded: usize::from(may_hold),
-                outcomes: vec![(Verdict::Pending, StopReason::WindowChanged)],
-                holding: may_hold,
-                started_holding: may_hold,
-                ..Exp::default()
+            // 閉じた古いエピソードの契機は元のもの（Record の契機は古い側だけ）。新しいエピソードは窓切替。
+            let want = if may_hold {
+                vec![
+                    Cmd::Discard(1),
+                    Cmd::Record(Verdict::Pending, StopReason::WindowChanged),
+                    Cmd::Arm,
+                    Cmd::Consume,
+                ]
+            } else {
+                vec![
+                    Cmd::Record(Verdict::Pending, StopReason::WindowChanged),
+                    Cmd::Disarm,
+                    Cmd::Pass(2),
+                ]
             };
-            check(&step, &exp, trigger, &label);
+            check(&got, &want, trigger, &label);
             assert_eq!(
                 c.held_len(),
                 usize::from(may_hold),

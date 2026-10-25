@@ -15,9 +15,9 @@ use std::time::Duration;
 
 use awase::config::{AutoDetectConfig, AutoDetectMode, AutoDetectScope};
 use awase::lang_detect::{
-    eisu_write_skip_reason, hiragana_write_skip_reason, DetectParams, HoldController, HoldStep,
-    JapaneseEvidence, KanaModel, KeyRole, ObservedKey, StopReason, ThumbOverlap, TrackerConfig,
-    Verdict, WriteFacts,
+    eisu_write_skip_reason, hiragana_write_skip_reason, DetectParams, EpisodeOutcome, HoldCommand,
+    HoldController, JapaneseEvidence, KanaModel, KeyRole, ObservedKey, StopReason, ThumbOverlap,
+    TrackerConfig, Verdict, WriteFacts,
 };
 use awase::ngram::NgramModel;
 use awase::platform::{ImeOpenOutcome, TsfComposition as _};
@@ -203,7 +203,7 @@ impl LangDetectShadow {
         event: RawKeyEvent,
         scope: u64,
         may_hold: bool,
-    ) -> Option<HoldStep<RawKeyEvent>> {
+    ) -> Option<Vec<HoldCommand<RawKeyEvent>>> {
         let model = self.model.as_ref()?;
         Some(self.controller.on_key(model, key, event, scope, may_hold))
     }
@@ -249,6 +249,18 @@ pub(super) fn observed_key(event: &RawKeyEvent) -> ObservedKey {
 fn scope_id(scope: crate::win32::ForegroundScope) -> u64 {
     let hwnd = u64::try_from(scope.hwnd.unsigned_abs()).unwrap_or(0);
     u64::from(scope.pid).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ hwnd
+}
+
+/// `lang_detect_apply` が命令の列を実行する間に持つ、`Record` の記録に要る文脈。
+struct RecordContext {
+    belief_before: bool,
+    belief_basis: &'static str,
+    now_ms: u64,
+    discarded: u32,
+    /// 同じステップで `WriteHiragana` が出ていたときの結果
+    hiragana_action: Option<&'static str>,
+    /// 同じステップで `EnterHalfWidthAlnum` が出ていたときの結果
+    eisu_action: Option<&'static str>,
 }
 
 pub(super) const fn profile_label(profile: AppImeProfile) -> &'static str {
@@ -464,105 +476,112 @@ impl super::Runtime {
         let _ = self.lang_detect_apply(step);
     }
 
-    /// `HoldStep` を実行する: journal、IME への書き込み、保持した打鍵の再生、タイマー。
-    fn lang_detect_apply(&mut self, step: HoldStep<RawKeyEvent>) -> LangDetectIntake {
+    /// `HoldController` が返した命令の列を、先頭から順に実行する解釈器: journal、IME への書き込み、保持した打鍵の再生、
+    /// タイマー。実行の順序（書き込み → 記録 → 解放 → タイマー）は、列の並びが決める（`HoldCommand` の doc）。
+    fn lang_detect_apply(&mut self, commands: Vec<HoldCommand<RawKeyEvent>>) -> LangDetectIntake {
         // 判定時点の belief（書き込みの**前**に読む）。
         let belief_before = self.platform_state.ime.effective_open();
         // ADR-280 D4: belief の根拠の内訳（読み取りのみ。書き込みの前に読む）。
         let belief_basis = self.platform_state.ime.effective_open_basis();
         let now_ms = crate::hook::current_tick_ms();
-        let action = if step.japanese {
-            self.lang_detect_write_hiragana()
-        } else if step.english {
-            self.lang_detect_enter_half_width_alnum()
-        } else {
-            "none"
-        };
-        let discarded = u32::try_from(step.discarded).unwrap_or(u32::MAX);
-        let step_japanese = step.japanese;
-        let step_english = step.english;
-        for outcome in step.outcomes {
-            let (verdict, evidence) = verdict_labels(outcome.verdict);
-            #[allow(clippy::cast_possible_truncation)] // ログ用。f32 の精度で足りる
-            let llr = outcome.llr as f32;
-            let japanese = matches!(outcome.verdict, Verdict::Japanese(_));
-            let not_japanese = outcome.verdict == Verdict::NotJapanese;
-            // ADR-280 C1: 同じ窓の直前のエピソード。`window-changed` で閉じたエピソードは**前の窓**のもの
-            // （この呼び出しの前の打鍵の窓）、それ以外は今の窓のもの。観測だけで、判断には使わない。
-            let outcome_scope = if outcome.stop == StopReason::WindowChanged {
-                self.lang_detect.last_key_scope
-            } else {
-                Some(self.lang_detect.scope_now)
-            };
-            let prev = outcome_scope
-                .and_then(|scope| self.lang_detect.swap_prev_episode(scope, verdict, now_ms));
-            let started_at_ms = now_ms.saturating_sub(outcome.duration_ms);
-            let record = crate::journal::LangDetectRecord {
-                trigger: outcome.trigger.label(),
-                verdict,
-                evidence,
-                stop: outcome.stop.label(),
-                presses: u32::try_from(outcome.presses).unwrap_or(u32::MAX),
-                llr,
-                llr_trace: outcome.llr_trace,
-                idle_ms: outcome.idle_ms,
-                duration_ms: outcome.duration_ms,
-                profile: profile_label(self.platform.current_app_profile()),
-                belief_open: Some(belief_before),
-                // 日本語と判定したが保持していなかった（観測だけのエピソード）は `observe-only`。
-                action: if japanese {
-                    if step_japanese {
-                        action
-                    } else {
-                        "observe-only"
-                    }
-                } else if not_japanese && step_english {
-                    action
-                } else {
-                    "none"
-                },
-                discarded,
-                prev_verdict: prev.map(|p| p.verdict),
-                prev_elapsed_ms: prev.map(|p| started_at_ms.saturating_sub(p.closed_at_ms)),
-                belief_basis,
-            };
-            self.platform_state
-                .ime
-                .journal
-                .record(crate::journal::JournalEntry::LangDetect { record });
-        }
-        if step.discarded > 0 {
-            tracing::debug!(
-                "[lang-detect] 保持中に前面窓が変わったので {} 打鍵を捨てた",
-                step.discarded
-            );
-        }
-
-        // 保持した打鍵は、書き込みのあとに順序どおりに流す（先頭に書き込みの合成キー、続いて元の打鍵）。
-        // 英数と判定して半角英数トグルに入った場合は、`input_mode = ObservedEisu` で Engine が非活性なので、
-        // 再生された打鍵は Engine を通らず、そのまま OS へ流れる（順序どおり）。
-        if !step.release.is_empty() {
-            crate::INPUT_DEFER.replay_later(step.release);
-        }
-
-        // 保持が続くなら、始まったときにだけ期限のタイマーを置く。保持が終わったなら、同じ打鍵で始まって確定した
-        // 場合を含めて必ず外す（残すと、次の（保持しない）エピソードをタイマーが途中で閉じてしまう）。
-        if step.holding {
-            if step.started_holding {
-                self.platform.timer.set(
+        // 書き込みの結果（`Record` の `action` に使う）。書き込みの命令が出なかったときは `None`。
+        let mut hiragana_action: Option<&'static str> = None;
+        let mut eisu_action: Option<&'static str> = None;
+        let mut discarded = 0_u32;
+        let mut intake = LangDetectIntake::Consumed;
+        for command in commands {
+            match command {
+                HoldCommand::DiscardHeld(count) => {
+                    discarded = u32::try_from(count).unwrap_or(u32::MAX);
+                    tracing::debug!(
+                        "[lang-detect] 保持中に前面窓が変わったので {count} 打鍵を捨てた"
+                    );
+                }
+                HoldCommand::WriteHiragana => {
+                    hiragana_action = Some(self.lang_detect_write_hiragana());
+                }
+                HoldCommand::EnterHalfWidthAlnum => {
+                    eisu_action = Some(self.lang_detect_enter_half_width_alnum());
+                }
+                HoldCommand::Record(outcome) => self.lang_detect_record(
+                    outcome,
+                    &RecordContext {
+                        belief_before,
+                        belief_basis,
+                        now_ms,
+                        discarded,
+                        hiragana_action,
+                        eisu_action,
+                    },
+                ),
+                // 保持した打鍵は、書き込みのあとに順序どおりに流す（先頭に書き込みの合成キー、続いて元の打鍵）。
+                // 英数と判定して半角英数トグルに入った場合は、`input_mode = ObservedEisu` で Engine が非活性なので、
+                // 再生された打鍵は Engine を通らず、そのまま OS へ流れる（順序どおり）。
+                HoldCommand::Replay(keys) => crate::INPUT_DEFER.replay_later(keys),
+                // 保持が始まったときにだけ期限のタイマーを置く。
+                HoldCommand::ArmDeadline => self.platform.timer.set(
                     crate::TIMER_LANG_HOLD,
                     Duration::from_millis(u64::from(self.lang_detect.max_ms)),
-                );
+                ),
+                // 保持が終わったなら、同じ打鍵で始まって確定した場合を含めて必ず外す（残すと、次の（保持しない）
+                // エピソードをタイマーが途中で閉じてしまう）。
+                HoldCommand::DisarmDeadline => self.platform.timer.kill(crate::TIMER_LANG_HOLD),
+                HoldCommand::Pass(_) => intake = LangDetectIntake::Pass,
+                HoldCommand::Consume => intake = LangDetectIntake::Consumed,
             }
-        } else {
-            self.platform.timer.kill(crate::TIMER_LANG_HOLD);
         }
+        intake
+    }
 
-        if step.pass.is_some() {
-            LangDetectIntake::Pass
+    /// 閉じたエピソード 1 つぶんを journal に記録する（観測のみ）。`hiragana_action`/`eisu_action` は、同じステップで
+    /// 書き込みの命令が出ていたときの結果。
+    fn lang_detect_record(&mut self, outcome: EpisodeOutcome, ctx: &RecordContext) {
+        let (verdict, evidence) = verdict_labels(outcome.verdict);
+        #[allow(clippy::cast_possible_truncation)] // ログ用。f32 の精度で足りる
+        let llr = outcome.llr as f32;
+        let japanese = matches!(outcome.verdict, Verdict::Japanese(_));
+        let not_japanese = outcome.verdict == Verdict::NotJapanese;
+        // ADR-280 C1: 同じ窓の直前のエピソード。`window-changed` で閉じたエピソードは**前の窓**のもの
+        // （この呼び出しの前の打鍵の窓）、それ以外は今の窓のもの。観測だけで、判断には使わない。
+        let outcome_scope = if outcome.stop == StopReason::WindowChanged {
+            self.lang_detect.last_key_scope
         } else {
-            LangDetectIntake::Consumed
-        }
+            Some(self.lang_detect.scope_now)
+        };
+        let prev = outcome_scope.and_then(|scope| {
+            self.lang_detect
+                .swap_prev_episode(scope, verdict, ctx.now_ms)
+        });
+        let started_at_ms = ctx.now_ms.saturating_sub(outcome.duration_ms);
+        let record = crate::journal::LangDetectRecord {
+            trigger: outcome.trigger.label(),
+            verdict,
+            evidence,
+            stop: outcome.stop.label(),
+            presses: u32::try_from(outcome.presses).unwrap_or(u32::MAX),
+            llr,
+            llr_trace: outcome.llr_trace,
+            idle_ms: outcome.idle_ms,
+            duration_ms: outcome.duration_ms,
+            profile: profile_label(self.platform.current_app_profile()),
+            belief_open: Some(ctx.belief_before),
+            // 日本語と判定したが保持していなかった（観測だけのエピソード）は `observe-only`。
+            action: if japanese {
+                ctx.hiragana_action.unwrap_or("observe-only")
+            } else if not_japanese {
+                ctx.eisu_action.unwrap_or("none")
+            } else {
+                "none"
+            },
+            discarded: ctx.discarded,
+            prev_verdict: prev.map(|p| p.verdict),
+            prev_elapsed_ms: prev.map(|p| started_at_ms.saturating_sub(p.closed_at_ms)),
+            belief_basis: ctx.belief_basis,
+        };
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::LangDetect { record });
     }
 
     /// 起動時・設定リロード時に、`[auto_detect]` と n-gram の表で判定を作り直す。
