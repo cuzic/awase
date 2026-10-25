@@ -481,17 +481,239 @@ struct ActiveEpisode {
     started_ms: u64,
 }
 
+impl ActiveEpisode {
+    /// エピソードを `stop` の理由で閉じて、結果にする。
+    fn finish(self, stop: StopReason, now: u64) -> EpisodeOutcome {
+        EpisodeOutcome {
+            trigger: self.trigger,
+            verdict: self.detector.verdict(),
+            stop,
+            presses: self.detector.presses(),
+            llr: self.detector.llr(),
+            llr_trace: self.detector.llr_trace().to_vec(),
+            idle_ms: self.idle_ms,
+            duration_ms: now.saturating_sub(self.started_ms),
+        }
+    }
+}
+
+/// エピソード追跡・保持の位相の種類（外から見える名前。テスト・ログ用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PhaseKind {
+    /// エピソードも武装も無い
+    Idle,
+    /// 窓切替・長い無操作を検出して、次の最初の Down を待っている
+    Armed,
+    /// エピソードを判定中（打鍵は保持していない）
+    Observing,
+    /// エピソードを判定中で、打鍵を保持している
+    Holding,
+}
+
+/// 追跡器の位相。**`Armed` と `Observing` は同時に成り立たない**（武装はエピソードを始めるときに使い切る）ので、
+/// `Option` を 2 つ持つ代わりに 1 つの enum にしている。
+#[derive(Debug)]
+enum TrackPhase {
+    Idle,
+    Armed { trigger: Trigger, idle_ms: u64 },
+    Observing { active: ActiveEpisode },
+}
+
+impl TrackPhase {
+    const fn kind(&self) -> PhaseKind {
+        match self {
+            Self::Idle => PhaseKind::Idle,
+            Self::Armed { .. } => PhaseKind::Armed,
+            Self::Observing { .. } => PhaseKind::Observing,
+        }
+    }
+}
+
+/// 位相とは別の、打鍵をまたいで持ち越す文脈（直前の窓と打鍵の時刻）。
+#[derive(Debug, Clone, Copy, Default)]
+struct TrackContext {
+    last_scope: Option<u64>,
+    last_key_ms: Option<u64>,
+}
+
+/// 追跡器の 1 打鍵ぶんの遷移（純粋。`evolve` に当たる）。新しい位相・文脈と、この打鍵の結果を返す。
+fn track_step(
+    cfg: &TrackerConfig,
+    ctx: TrackContext,
+    phase: TrackPhase,
+    model: &KanaModel,
+    key: ObservedKey,
+    scope: u64,
+) -> (TrackPhase, TrackContext, KeyStep) {
+    let now = key.timestamp_ms;
+    let (phase, closed_prev) = close_if_stale(cfg, phase, scope, now);
+    let (phase, ctx) = arm(cfg, ctx, phase, scope, now);
+    let phase = maybe_start(cfg, phase, key, scope);
+    let in_episode = matches!(phase, TrackPhase::Observing { .. });
+    let (phase, closed_now) = if in_episode {
+        feed(model, phase, key, now)
+    } else {
+        (phase, None)
+    };
+    (
+        phase,
+        ctx,
+        KeyStep {
+            closed_prev,
+            closed_now,
+            in_episode,
+        },
+    )
+}
+
+/// 進行中のエピソードが、窓の変化・期限で閉じる。
+fn close_if_stale(
+    cfg: &TrackerConfig,
+    phase: TrackPhase,
+    scope: u64,
+    now: u64,
+) -> (TrackPhase, Option<EpisodeOutcome>) {
+    match phase {
+        TrackPhase::Observing { active } => {
+            if active.scope != scope {
+                (
+                    TrackPhase::Idle,
+                    Some(active.finish(StopReason::WindowChanged, now)),
+                )
+            } else if now.saturating_sub(active.started_ms) >= cfg.max_ms {
+                (
+                    TrackPhase::Idle,
+                    Some(active.finish(StopReason::Timeout, now)),
+                )
+            } else {
+                (TrackPhase::Observing { active }, None)
+            }
+        }
+        other => (other, None),
+    }
+}
+
+/// 窓切替・無操作を検出して武装する（エピソードが無いときだけ）。窓切替が無操作より優先される。
+fn arm(
+    cfg: &TrackerConfig,
+    ctx: TrackContext,
+    phase: TrackPhase,
+    scope: u64,
+    now: u64,
+) -> (TrackPhase, TrackContext) {
+    let idle = ctx.last_key_ms.map_or(0, |last| now.saturating_sub(last));
+    let phase = match phase {
+        observing @ TrackPhase::Observing { .. } => observing,
+        other => {
+            if ctx.last_scope != Some(scope) {
+                TrackPhase::Armed {
+                    trigger: Trigger::WindowSwitch,
+                    idle_ms: idle,
+                }
+            } else if matches!(other, TrackPhase::Idle) && idle >= cfg.idle_threshold_ms {
+                TrackPhase::Armed {
+                    trigger: Trigger::Idle,
+                    idle_ms: idle,
+                }
+            } else {
+                other
+            }
+        }
+    };
+    (
+        phase,
+        TrackContext {
+            last_scope: Some(scope),
+            last_key_ms: Some(now),
+        },
+    )
+}
+
+/// 武装後の最初の Down で、エピソードを始めるか見送る（Shift 等の修飾キー自身は数えない）。
+/// 武装は、始めても見送っても使い切る。
+fn maybe_start(cfg: &TrackerConfig, phase: TrackPhase, key: ObservedKey, scope: u64) -> TrackPhase {
+    if !key.down || key.role == KeyRole::Modifier {
+        return phase;
+    }
+    match phase {
+        TrackPhase::Armed { trigger, idle_ms } => {
+            let material =
+                !key.excluded && matches!(key.role, KeyRole::Char(_) | KeyRole::Thumb(_));
+            if material {
+                TrackPhase::Observing {
+                    active: ActiveEpisode {
+                        detector: EpisodeDetector::new(cfg.params, cfg.thumb_overlap, [false; 2]),
+                        trigger,
+                        idle_ms,
+                        scope,
+                        started_ms: key.timestamp_ms,
+                    },
+                }
+            } else {
+                TrackPhase::Idle
+            }
+        }
+        other => other,
+    }
+}
+
+/// 進行中のエピソードに打鍵を渡す。閉じたら結果を返し、位相は `Idle` になる。
+fn feed(
+    model: &KanaModel,
+    phase: TrackPhase,
+    key: ObservedKey,
+    now: u64,
+) -> (TrackPhase, Option<EpisodeOutcome>) {
+    let mut active = match phase {
+        TrackPhase::Observing { active } => active,
+        other => return (other, None),
+    };
+    if key.down && key.excluded {
+        return (
+            TrackPhase::Idle,
+            Some(active.finish(StopReason::ExcludedKey, now)),
+        );
+    }
+    let event = match key.role {
+        KeyRole::Modifier => return (TrackPhase::Observing { active }, None),
+        KeyRole::Other => {
+            return if key.down {
+                (
+                    TrackPhase::Idle,
+                    Some(active.finish(StopReason::NonMaterialKey, now)),
+                )
+            } else {
+                (TrackPhase::Observing { active }, None)
+            };
+        }
+        KeyRole::Char(pos) if key.down => DetectEvent::CharDown(pos),
+        KeyRole::Char(pos) => DetectEvent::CharUp(pos),
+        KeyRole::Thumb(side) if key.down => DetectEvent::ThumbDown(side),
+        KeyRole::Thumb(side) => DetectEvent::ThumbUp(side),
+    };
+    match active.detector.observe(model, event) {
+        Verdict::Pending => (TrackPhase::Observing { active }, None),
+        Verdict::Undecided => (
+            TrackPhase::Idle,
+            Some(active.finish(StopReason::MaxKeys, now)),
+        ),
+        Verdict::Japanese(_) | Verdict::NotJapanese => (
+            TrackPhase::Idle,
+            Some(active.finish(StopReason::Decided, now)),
+        ),
+    }
+}
+
 /// 窓切替直後・長い無操作のあとのエピソードを見つけ、判定器を回して結果を返す追跡器（挙動を変えない観測用）。
 ///
 /// 殻は取り込み口（フックの打鍵が届いた順）で `on_key` を呼ぶ。`scope` は前面窓を表す識別子
 /// （hwnd と pid から作る。窓が変わったかの比較にだけ使う）。
+/// 中身は位相（`TrackPhase`）と文脈を持つだけで、遷移は純粋関数 `track_step`。
 #[derive(Debug)]
 pub struct EpisodeTracker {
     cfg: TrackerConfig,
-    last_scope: Option<u64>,
-    last_key_ms: Option<u64>,
-    armed: Option<(Trigger, u64)>,
-    active: Option<ActiveEpisode>,
+    ctx: TrackContext,
+    phase: TrackPhase,
 }
 
 impl EpisodeTracker {
@@ -499,10 +721,11 @@ impl EpisodeTracker {
     pub const fn new(cfg: TrackerConfig) -> Self {
         Self {
             cfg,
-            last_scope: None,
-            last_key_ms: None,
-            armed: None,
-            active: None,
+            ctx: TrackContext {
+                last_scope: None,
+                last_key_ms: None,
+            },
+            phase: TrackPhase::Idle,
         }
     }
 
@@ -522,132 +745,54 @@ impl EpisodeTracker {
 
     /// [`Self::on_key`] の詳細版。閉じたエピソードがこの打鍵に属するか（`in_episode`）を返す。
     pub fn on_key_step(&mut self, model: &KanaModel, key: ObservedKey, scope: u64) -> KeyStep {
-        let now = key.timestamp_ms;
-        let closed_prev = self.close_if_stale(scope, now);
-        self.arm(scope, now);
-        self.maybe_start(key, scope);
-        let in_episode = self.active.is_some();
-        let closed_now = if in_episode {
-            self.feed(model, key, now)
-        } else {
-            None
-        };
-        KeyStep {
-            closed_prev,
-            closed_now,
-            in_episode,
-        }
+        let phase = std::mem::replace(&mut self.phase, TrackPhase::Idle);
+        let (phase, ctx, step) = track_step(&self.cfg, self.ctx, phase, model, key, scope);
+        self.phase = phase;
+        self.ctx = ctx;
+        step
+    }
+
+    /// 今の位相の種類
+    #[must_use]
+    pub const fn phase_kind(&self) -> PhaseKind {
+        self.phase.kind()
     }
 
     /// 進行中のエピソードがあるか
     #[must_use]
     pub const fn is_active(&self) -> bool {
-        self.active.is_some()
+        matches!(self.phase, TrackPhase::Observing { .. })
     }
 
     /// 進行中のエピソードが始まった前面窓の識別子
     #[must_use]
     pub fn active_scope(&self) -> Option<u64> {
-        self.active.as_ref().map(|a| a.scope)
+        match &self.phase {
+            TrackPhase::Observing { active } => Some(active.scope),
+            _ => None,
+        }
     }
 
     /// 進行中のエピソードの期限の時刻（開始 + `max_ms`）
     #[must_use]
     pub fn active_deadline_ms(&self) -> Option<u64> {
-        self.active
-            .as_ref()
-            .map(|a| a.started_ms.saturating_add(self.cfg.max_ms))
+        match &self.phase {
+            TrackPhase::Observing { active } => {
+                Some(active.started_ms.saturating_add(self.cfg.max_ms))
+            }
+            _ => None,
+        }
     }
 
     /// 進行中のエピソードを、期限（タイマー）などの外部の理由で閉じる。
     pub fn force_close(&mut self, stop: StopReason, now_ms: u64) -> Option<EpisodeOutcome> {
-        self.finish(stop, now_ms)
-    }
-
-    /// 進行中のエピソードが、窓の変化・期限で閉じる。
-    fn close_if_stale(&mut self, scope: u64, now: u64) -> Option<EpisodeOutcome> {
-        let active = self.active.as_ref()?;
-        if active.scope != scope {
-            self.finish(StopReason::WindowChanged, now)
-        } else if now.saturating_sub(active.started_ms) >= self.cfg.max_ms {
-            self.finish(StopReason::Timeout, now)
-        } else {
-            None
-        }
-    }
-
-    /// 窓切替・無操作を検出して武装する（エピソードが無いときだけ）。窓切替が無操作より優先される。
-    fn arm(&mut self, scope: u64, now: u64) {
-        let idle = self.last_key_ms.map_or(0, |last| now.saturating_sub(last));
-        if self.active.is_none() {
-            if self.last_scope != Some(scope) {
-                self.armed = Some((Trigger::WindowSwitch, idle));
-            } else if self.armed.is_none() && idle >= self.cfg.idle_threshold_ms {
-                self.armed = Some((Trigger::Idle, idle));
+        match std::mem::replace(&mut self.phase, TrackPhase::Idle) {
+            TrackPhase::Observing { active } => Some(active.finish(stop, now_ms)),
+            other => {
+                self.phase = other;
+                None
             }
         }
-        self.last_scope = Some(scope);
-        self.last_key_ms = Some(now);
-    }
-
-    /// 武装後の最初の Down で、エピソードを始めるか見送る（Shift 等の修飾キー自身は数えない）。
-    fn maybe_start(&mut self, key: ObservedKey, scope: u64) {
-        if !key.down || self.active.is_some() || key.role == KeyRole::Modifier {
-            return;
-        }
-        let Some((trigger, idle_ms)) = self.armed.take() else {
-            return;
-        };
-        let material = !key.excluded && matches!(key.role, KeyRole::Char(_) | KeyRole::Thumb(_));
-        if material {
-            self.active = Some(ActiveEpisode {
-                detector: EpisodeDetector::new(self.cfg.params, self.cfg.thumb_overlap, [false; 2]),
-                trigger,
-                idle_ms,
-                scope,
-                started_ms: key.timestamp_ms,
-            });
-        }
-    }
-
-    fn feed(&mut self, model: &KanaModel, key: ObservedKey, now: u64) -> Option<EpisodeOutcome> {
-        if key.down && key.excluded {
-            return self.finish(StopReason::ExcludedKey, now);
-        }
-        let event = match key.role {
-            KeyRole::Modifier => return None,
-            KeyRole::Other => {
-                return key
-                    .down
-                    .then(|| self.finish(StopReason::NonMaterialKey, now))
-                    .flatten();
-            }
-            KeyRole::Char(pos) if key.down => DetectEvent::CharDown(pos),
-            KeyRole::Char(pos) => DetectEvent::CharUp(pos),
-            KeyRole::Thumb(side) if key.down => DetectEvent::ThumbDown(side),
-            KeyRole::Thumb(side) => DetectEvent::ThumbUp(side),
-        };
-        let active = self.active.as_mut()?;
-        let verdict = active.detector.observe(model, event);
-        match verdict {
-            Verdict::Pending => None,
-            Verdict::Undecided => self.finish(StopReason::MaxKeys, now),
-            Verdict::Japanese(_) | Verdict::NotJapanese => self.finish(StopReason::Decided, now),
-        }
-    }
-
-    fn finish(&mut self, stop: StopReason, now: u64) -> Option<EpisodeOutcome> {
-        let active = self.active.take()?;
-        Some(EpisodeOutcome {
-            trigger: active.trigger,
-            verdict: active.detector.verdict(),
-            stop,
-            presses: active.detector.presses(),
-            llr: active.detector.llr(),
-            llr_trace: active.detector.llr_trace().to_vec(),
-            idle_ms: active.idle_ms,
-            duration_ms: now.saturating_sub(active.started_ms),
-        })
     }
 }
 
@@ -686,17 +831,66 @@ pub enum HoldCommand<T> {
     Consume,
 }
 
-/// エピソード先頭の打鍵を保持し、判定が出たら順序どおりに解放するコントローラ（ADR-263 D2、純粋）。
+/// 保持コントローラの位相。**保持列 `held` は `Holding` の中だけにある**（保持していないのに打鍵が溜まっている、
+/// 保持中なのにエピソードが無い、を型で作れない）。追跡器の位相（`TrackPhase`）に `Holding` を足したもの。
+#[derive(Debug)]
+enum EpisodePhase<T> {
+    Idle,
+    Armed { trigger: Trigger, idle_ms: u64 },
+    Observing { active: ActiveEpisode },
+    Holding { active: ActiveEpisode, held: Vec<T> },
+}
+
+impl<T> EpisodePhase<T> {
+    const fn kind(&self) -> PhaseKind {
+        match self {
+            Self::Idle => PhaseKind::Idle,
+            Self::Armed { .. } => PhaseKind::Armed,
+            Self::Observing { .. } => PhaseKind::Observing,
+            Self::Holding { .. } => PhaseKind::Holding,
+        }
+    }
+
+    /// 追跡器の位相と、保持列（`Holding` のときだけ `Some`）に分ける。
+    fn split(self) -> (TrackPhase, Option<Vec<T>>) {
+        match self {
+            Self::Idle => (TrackPhase::Idle, None),
+            Self::Armed { trigger, idle_ms } => (TrackPhase::Armed { trigger, idle_ms }, None),
+            Self::Observing { active } => (TrackPhase::Observing { active }, None),
+            Self::Holding { active, held } => (TrackPhase::Observing { active }, Some(held)),
+        }
+    }
+
+    /// [`Self::split`] の逆。エピソードが閉じた位相（`Observing` でない）に保持列が残っていてはならない。
+    fn join(track: TrackPhase, held: Option<Vec<T>>) -> Self {
+        match (track, held) {
+            (TrackPhase::Observing { active }, Some(held)) => Self::Holding { active, held },
+            (TrackPhase::Observing { active }, None) => Self::Observing { active },
+            (TrackPhase::Armed { trigger, idle_ms }, held) => {
+                debug_assert!(held.is_none(), "武装中に保持列が残った");
+                Self::Armed { trigger, idle_ms }
+            }
+            (TrackPhase::Idle, held) => {
+                debug_assert!(held.is_none(), "エピソードが無いのに保持列が残った");
+                Self::Idle
+            }
+        }
+    }
+}
+
+/// エピソード先頭の打鍵を保持し、判定が出たら順序どおりに解放するコントローラ（ADR-263 D2）。
 ///
 /// 保持するのは**エピソードの全打鍵**（Down も Up も、判定の材料でない打鍵も）。保持しないエピソード
 /// （`may_hold = false`）でも判定と結果の記録は行う（観測）。窓が変わっていたら保持した打鍵は捨てる。
 /// 結果は [`HoldCommand`] の列で返す。殻は `WriteHiragana` を実行してから `Replay` を流す。
+///
+/// 中身は位相（`EpisodePhase`）と文脈を持つだけの薄い殻で、遷移は新しい位相を返す純粋関数
+/// （`hold_key_step`・`hold_timer_step`。Decider の `decide`/`evolve` に当たる）。
 #[derive(Debug)]
 pub struct HoldController<T> {
-    tracker: EpisodeTracker,
-    held: Vec<T>,
-    /// 進行中のエピソードで打鍵を保持しているか
-    holding: bool,
+    cfg: TrackerConfig,
+    ctx: TrackContext,
+    phase: EpisodePhase<T>,
 }
 
 /// 1 ステップで起きたことの集計（命令の列を組み立てる前の途中結果）。
@@ -755,26 +949,136 @@ impl<T> StepFacts<T> {
     }
 }
 
+/// 打鍵 1 つの遷移（純粋）。新しい位相・文脈と、殻が順に実行する命令の列を返す。
+#[allow(clippy::too_many_arguments)] // 状態（cfg・文脈・位相）と入力（モデル・打鍵・事象・窓・保持の可否）を 1:1 で渡す
+fn hold_key_step<T>(
+    cfg: &TrackerConfig,
+    ctx: TrackContext,
+    phase: EpisodePhase<T>,
+    model: &KanaModel,
+    key: ObservedKey,
+    event: T,
+    scope: u64,
+    may_hold: bool,
+) -> (EpisodePhase<T>, TrackContext, Vec<HoldCommand<T>>) {
+    let (track, mut held) = phase.split();
+    let was_active = matches!(track, TrackPhase::Observing { .. });
+    let (track, ctx, step) = track_step(cfg, ctx, track, model, key, scope);
+    let mut out = StepFacts::empty();
+    let mut closed_prev = false;
+    let mut started_holding = false;
+
+    if let Some(prev) = step.closed_prev {
+        closed_prev = true;
+        let prev_held = held.take().unwrap_or_default();
+        if prev.stop == StopReason::WindowChanged {
+            out.discarded += prev_held.len();
+        } else {
+            out.release.extend(prev_held);
+        }
+        out.outcomes.push(prev);
+    }
+
+    if step.in_episode {
+        // この打鍵でエピソードが始まった: 進行中のエピソードが無かった、またはいま古いものを閉じた。
+        if !was_active || closed_prev {
+            held = may_hold.then(Vec::new);
+            started_holding = may_hold;
+        }
+        match held.as_mut() {
+            Some(buffer) => buffer.push(event),
+            None => out.pass = Some(event),
+        }
+        if let Some(now) = step.closed_now {
+            let holding = held.is_some();
+            if holding && matches!(now.verdict, Verdict::Japanese(_)) {
+                out.write = Some(HoldCommand::WriteHiragana);
+            } else if holding && now.verdict == Verdict::NotJapanese {
+                out.write = Some(HoldCommand::EnterHalfWidthAlnum);
+            }
+            out.release.extend(held.take().unwrap_or_default());
+            out.outcomes.push(now);
+        }
+    } else {
+        out.pass = Some(event);
+    }
+    out.set_deadline(held.is_some(), started_holding);
+    (
+        EpisodePhase::join(track, held),
+        ctx,
+        out.into_commands(true),
+    )
+}
+
+/// 期限のタイマーの遷移（純粋）。保持中のエピソードを閉じる。`scope` は今の前面窓の識別子。
+fn hold_timer_step<T>(
+    cfg: &TrackerConfig,
+    ctx: TrackContext,
+    phase: EpisodePhase<T>,
+    scope: u64,
+) -> (EpisodePhase<T>, TrackContext, Vec<HoldCommand<T>>) {
+    let (track, held) = phase.split();
+    let mut out = StepFacts::empty();
+    let track = match track {
+        TrackPhase::Observing { active } => {
+            let deadline = active.started_ms.saturating_add(cfg.max_ms);
+            let same_window = active.scope == scope;
+            let stop = if same_window {
+                StopReason::Timeout
+            } else {
+                StopReason::WindowChanged
+            };
+            let held = held.unwrap_or_default();
+            if same_window {
+                out.release.extend(held);
+            } else {
+                out.discarded += held.len();
+            }
+            out.outcomes.push(active.finish(stop, deadline));
+            TrackPhase::Idle
+        }
+        other => other,
+    };
+    out.set_deadline(false, false);
+    (
+        EpisodePhase::join(track, None),
+        ctx,
+        out.into_commands(false),
+    )
+}
+
 impl<T> HoldController<T> {
     #[must_use]
     pub const fn new(cfg: TrackerConfig) -> Self {
         Self {
-            tracker: EpisodeTracker::new(cfg),
-            held: Vec::new(),
-            holding: false,
+            cfg,
+            ctx: TrackContext {
+                last_scope: None,
+                last_key_ms: None,
+            },
+            phase: EpisodePhase::Idle,
         }
     }
 
     /// 保持中か
     #[must_use]
     pub const fn is_holding(&self) -> bool {
-        self.holding
+        matches!(self.phase, EpisodePhase::Holding { .. })
     }
 
     /// 保持している打鍵の数
     #[must_use]
-    pub const fn held_len(&self) -> usize {
-        self.held.len()
+    pub fn held_len(&self) -> usize {
+        match &self.phase {
+            EpisodePhase::Holding { held, .. } => held.len(),
+            _ => 0,
+        }
+    }
+
+    /// 今の位相の種類
+    #[must_use]
+    pub const fn phase_kind(&self) -> PhaseKind {
+        self.phase.kind()
     }
 
     /// 取り込み口の打鍵を 1 つ渡す。`may_hold` は、この打鍵で**エピソードが始まる場合に**保持するか
@@ -787,81 +1091,25 @@ impl<T> HoldController<T> {
         scope: u64,
         may_hold: bool,
     ) -> Vec<HoldCommand<T>> {
-        let mut out = StepFacts::empty();
-        let was_active = self.tracker.is_active();
-        let step = self.tracker.on_key_step(model, key, scope);
-
-        let mut closed_prev = false;
-        let mut started_holding = false;
-        if let Some(prev) = step.closed_prev {
-            closed_prev = true;
-            if prev.stop == StopReason::WindowChanged {
-                out.discarded += self.held.len();
-                self.held.clear();
-            } else {
-                out.release.append(&mut self.held);
-            }
-            self.holding = false;
-            out.outcomes.push(prev);
-        }
-
-        if step.in_episode {
-            // この打鍵でエピソードが始まった: 進行中のエピソードが無かった、またはいま古いものを閉じた。
-            if !was_active || closed_prev {
-                self.holding = may_hold;
-                started_holding = may_hold;
-            }
-            if self.holding {
-                self.held.push(event);
-            } else {
-                out.pass = Some(event);
-            }
-            if let Some(now) = step.closed_now {
-                if self.holding && matches!(now.verdict, Verdict::Japanese(_)) {
-                    out.write = Some(HoldCommand::WriteHiragana);
-                } else if self.holding && now.verdict == Verdict::NotJapanese {
-                    out.write = Some(HoldCommand::EnterHalfWidthAlnum);
-                }
-                out.release.append(&mut self.held);
-                self.holding = false;
-                out.outcomes.push(now);
-            }
-        } else {
-            out.pass = Some(event);
-        }
-        out.set_deadline(self.holding, started_holding);
-        out.into_commands(true)
+        let phase = std::mem::replace(&mut self.phase, EpisodePhase::Idle);
+        let (phase, ctx, commands) = hold_key_step(
+            &self.cfg, self.ctx, phase, model, key, event, scope, may_hold,
+        );
+        self.phase = phase;
+        self.ctx = ctx;
+        commands
     }
 
     /// 期限のタイマーが発火した。保持中のエピソードを閉じる。`scope` は今の前面窓の識別子。
     ///
-    /// 前面窓が保持の開始時と違えば（マウスで窓を変えたあとに次の打鍵が来なかった場合）、保持した打鍵は**捨てる**
+    /// 前面窓が保持の開始時と違えば（マウスで窓を変えたあと次の打鍵が来なかった場合）、保持した打鍵は**捨てる**
     /// （元の窓の打鍵が新しい窓へ出る誤送信を避ける）。同じなら解放する。
     pub fn on_timer(&mut self, scope: u64) -> Vec<HoldCommand<T>> {
-        let mut out = StepFacts::empty();
-        let deadline = self.tracker.active_deadline_ms().unwrap_or(0);
-        let Some(started_scope) = self.tracker.active_scope() else {
-            self.holding = false;
-            out.set_deadline(false, false);
-            return out.into_commands(false);
-        };
-        let (stop, discard) = if started_scope == scope {
-            (StopReason::Timeout, false)
-        } else {
-            (StopReason::WindowChanged, true)
-        };
-        if let Some(outcome) = self.tracker.force_close(stop, deadline) {
-            if discard {
-                out.discarded += self.held.len();
-                self.held.clear();
-            } else {
-                out.release.append(&mut self.held);
-            }
-            out.outcomes.push(outcome);
-        }
-        self.holding = false;
-        out.set_deadline(false, false);
-        out.into_commands(false)
+        let phase = std::mem::replace(&mut self.phase, EpisodePhase::Idle);
+        let (phase, ctx, commands) = hold_timer_step(&self.cfg, self.ctx, phase, scope);
+        self.phase = phase;
+        self.ctx = ctx;
+        commands
     }
 }
 
