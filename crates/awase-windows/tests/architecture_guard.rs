@@ -4577,7 +4577,7 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
         pred.contains("ActiveImeKind::GoogleJapaneseInput"),
         "{pred}"
     );
-    // BUG-219: Mozc 系（GJI 系だが Google 版でない）は IMM の開閉の読みが信用できないので外す。
+    // BUG-219: Mozc 系（GJI 系だが Google 版でない）は共有メモリが開閉を担うので、IMM の読みでの追随から外す。
     assert!(
         pred.contains("!crate::tsf::observer::gji_evidence_absent()"),
         "{pred}"

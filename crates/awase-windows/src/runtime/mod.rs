@@ -2504,7 +2504,7 @@ pub(crate) fn direct_mode_key_watch_kind_for(
     crate::state::external_change_watch::direct_watch_kind(
         profile == crate::focus::class_names::AppImeProfile::Imm32Unavailable,
         crate::tsf::observer::tsf_obs().table_ime_kind(),
-        // Mozc 系は IMM の開閉の読みが信用できない（BUG-219）。共有メモリ（ADR-268）が担う。
+        // Mozc 系は開閉を共有メモリ（ADR-268、High）が担う。IMM の開閉は入力モードを区別できず、実機で偽の「閉」が追随を通った（BUG-219、出所は未解明）。
         crate::tsf::observer::gji_evidence_absent(),
     )
 }
@@ -2517,6 +2517,6 @@ pub(crate) fn external_change_watch_applies_for(
     profile == crate::focus::class_names::AppImeProfile::Imm32Unavailable
         && crate::tsf::observer::tsf_obs().active_ime_kind()
             == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-        // Mozc 系（GJI 系だが Google 版でない）は対象外（BUG-219）。IMM の開閉の読みが信用できない。
+        // Mozc 系（GJI 系だが Google 版でない）は対象外（BUG-219）。開閉は共有メモリが担い、実機で IMM の偽の「閉」が追随を通った。
         && !crate::tsf::observer::gji_evidence_absent()
 }
