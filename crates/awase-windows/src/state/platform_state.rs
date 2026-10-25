@@ -1105,7 +1105,7 @@ impl ImeStateHub {
     /// 前面プロセスの読み口を差し替える。実機は殻（`state/platform_state/shell.rs`）が
     /// `win32::foreground_scope` を渡す。テストは固定値の関数を渡せる。
     #[must_use]
-    pub fn with_foreground_scope_source(
+    pub(crate) fn with_foreground_scope_source(
         mut self,
         source: fn() -> crate::state::foreground_scope::ForegroundScope,
     ) -> Self {
