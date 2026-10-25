@@ -942,6 +942,19 @@ fn check_phase(
     Ok(())
 }
 
+/// 期限のタイマーを、単体の追跡器にも同じように反映する（`HoldController` は内部で同じ閉じ方をする）。
+fn mirror_timer(trk: &mut EpisodeTracker, scope: u64) {
+    if let Some(s) = trk.active_scope() {
+        let deadline = trk.active_deadline_ms().unwrap_or(0);
+        let stop = if s == scope {
+            StopReason::Timeout
+        } else {
+            StopReason::WindowChanged
+        };
+        trk.force_close(stop, deadline);
+    }
+}
+
 fn run_observing(seq: &[Ev], may_hold: bool, obs: &mut Transitions) -> Result<(), String> {
     let mut prev = PhaseKind::Idle;
     let m = kana_model();
@@ -1005,15 +1018,7 @@ fn run_observing(seq: &[Ev], may_hold: bool, obs: &mut Transitions) -> Result<()
             }
             Ev::Timer => {
                 let got = normalize(&imp.on_timer(scope));
-                if let Some(s) = trk.active_scope() {
-                    let deadline = trk.active_deadline_ms().unwrap_or(0);
-                    let stop = if s == scope {
-                        StopReason::Timeout
-                    } else {
-                        StopReason::WindowChanged
-                    };
-                    trk.force_close(stop, deadline);
-                }
+                mirror_timer(&mut trk, scope);
                 let want = rf.on_timer(scope);
                 if got != want {
                     return Err(fail(
@@ -1037,6 +1042,7 @@ fn run_observing(seq: &[Ev], may_hold: bool, obs: &mut Transitions) -> Result<()
     }
     // 最後に期限のタイマーを発火して、保持を全部解決させる。
     let got = normalize(&imp.on_timer(scope));
+    mirror_timer(&mut trk, scope);
     let want = rf.on_timer(scope);
     if got != want {
         return Err(format!("最後のタイマー: 実装 {got:?} 参照 {want:?}"));

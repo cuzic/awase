@@ -766,7 +766,7 @@ impl EpisodeTracker {
 
     /// 進行中のエピソードが始まった前面窓の識別子
     #[must_use]
-    pub fn active_scope(&self) -> Option<u64> {
+    pub const fn active_scope(&self) -> Option<u64> {
         match &self.phase {
             TrackPhase::Observing { active } => Some(active.scope),
             _ => None,
@@ -775,7 +775,7 @@ impl EpisodeTracker {
 
     /// 進行中のエピソードの期限の時刻（開始 + `max_ms`）
     #[must_use]
-    pub fn active_deadline_ms(&self) -> Option<u64> {
+    pub const fn active_deadline_ms(&self) -> Option<u64> {
         match &self.phase {
             TrackPhase::Observing { active } => {
                 Some(active.started_ms.saturating_add(self.cfg.max_ms))
@@ -1068,7 +1068,7 @@ impl<T> HoldController<T> {
 
     /// 保持している打鍵の数
     #[must_use]
-    pub fn held_len(&self) -> usize {
+    pub const fn held_len(&self) -> usize {
         match &self.phase {
             EpisodePhase::Holding { held, .. } => held.len(),
             _ => 0,
