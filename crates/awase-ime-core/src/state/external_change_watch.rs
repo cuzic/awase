@@ -463,12 +463,17 @@ pub fn classify_direct_read(
 /// ATOK・第三者 IME・IMM32 HKL のみ・起動直後の未検出（`table_ime_kind() == None`）と、`Imm32Unavailable` 以外の窓は `None`。
 ///
 /// ADR-205 の外部変化の監視（開閉の基準値を持つ）は GJI 限定のまま——こちらは基準値を持たず窓内の現在値だけを見る。
+///
+/// `mozc_family`（GJI 系だが Google 版でない = Mozc 系）は常に `None`（BUG-219）。Mozc では IMM の開閉の読みが
+/// 信用できず（実機: conv=0x19 のひらがなで `ime_on=false` を返す）、これで `ObserverPoll(false)` を書くと、
+/// 共有メモリ（High）の期限が切れた瞬間に単独の Medium として勝ち、belief が OFF に倒れる。Mozc 系の開閉は共有メモリが担う（ADR-268）。
 #[must_use]
 pub const fn direct_watch_kind(
     imm32_unavailable: bool,
     table_kind: Option<crate::state::ime_kind::ImeKindId>,
+    mozc_family: bool,
 ) -> Option<crate::state::ime_kind::ImeKindId> {
-    if imm32_unavailable {
+    if imm32_unavailable && !mozc_family {
         table_kind
     } else {
         None
@@ -789,18 +794,33 @@ mod tests {
     fn direct_watch_kind_requires_imm32_unavailable_and_a_table_ime() {
         use crate::state::ime_kind::ImeKindId;
         assert_eq!(
-            direct_watch_kind(true, Some(ImeKindId::Gji)),
+            direct_watch_kind(true, Some(ImeKindId::Gji), false),
             Some(ImeKindId::Gji)
         );
         assert_eq!(
-            direct_watch_kind(true, Some(ImeKindId::MsIme)),
+            direct_watch_kind(true, Some(ImeKindId::MsIme), false),
             Some(ImeKindId::MsIme)
         );
         // ATOK・第三者 IME・IMM32 HKL のみ・起動直後の未検出は `table_ime_kind() == None`。
-        assert_eq!(direct_watch_kind(true, None), None);
+        assert_eq!(direct_watch_kind(true, None, false), None);
         // Imm32Unavailable 以外の窓（Win32 EDIT、TsfNative 等）は対象外。
-        assert_eq!(direct_watch_kind(false, Some(ImeKindId::Gji)), None);
-        assert_eq!(direct_watch_kind(false, Some(ImeKindId::MsIme)), None);
+        assert_eq!(direct_watch_kind(false, Some(ImeKindId::Gji), false), None);
+        assert_eq!(
+            direct_watch_kind(false, Some(ImeKindId::MsIme), false),
+            None
+        );
+    }
+
+    /// BUG-219: Mozc 系（GJI 系だが Google 版でない）は、Imm32Unavailable の窓でも直接観測の対象外。
+    /// IMM の開閉の読みが信用できず（conv=0x19 のひらがなで `ime_on=false`）、これで書く `ObserverPoll(false)` が
+    /// 共有メモリ（High）の失効の瞬間に belief を OFF に倒した。
+    #[test]
+    fn direct_watch_kind_excludes_the_mozc_family() {
+        use crate::state::ime_kind::ImeKindId;
+        // Mozc 系は table_ime_kind() が Gji を返す（GJI 系に分類されている）ので、述語の引数で外す。
+        assert_eq!(direct_watch_kind(true, Some(ImeKindId::Gji), true), None);
+        assert_eq!(direct_watch_kind(true, Some(ImeKindId::MsIme), true), None);
+        assert_eq!(direct_watch_kind(true, None, true), None);
     }
 
     /// ADR-244 D4: MS-IME 本体は英数の軸と「閉→開」の開閉だけ。閉の読みでは何も追随しない（「開いているのに 0」の型を踏まない）。
