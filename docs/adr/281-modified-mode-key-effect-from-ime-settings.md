@@ -139,30 +139,37 @@ GJI では、F2 の後の Converter I/O(`gji_last_write_ms`、10ms 周期)が増
 - M2(**CI で観測、Ctrl だけ開く**。runs を増やして再確認してから足す): MS-IME 本体の `Ctrl × 5 キー` の格子(D2)。
 - M3: 利用者の `config1.db` は、`session_keymap` の値と、ADR-174 の実機観測(`session_keymap` が MSIME=2 でも表の行が効く)と ADR-186 決定(c)〈ATOK 限定〉との食い違いの再確認に限る(キーマップの行以外は読まない)。BUG-221 の結論には効かない。
 
-## CI 実測の結果(2026-10-26、e2e-ime run 40271764639、`sc-adr281-*` 12 構成、各 1〜2 回)
+## CI 実測の結果(2026-10-26、e2e-ime、`sc-adr281-*`)
 
-スパイクの `--chord=<修飾VK>,F2 --chord-prep=1A`(閉じた状態から、修飾を押したまま VK 0xF2 をタップ)。GitHub Windows ランナーの自前の窓(読める窓)。判定は `check_modifier_mode_key.py`。
+スパイクの `--chord=<修飾VK>,<キー>`(閉じた状態〈`--chord-prep=1A`〉から、修飾を押したまま VK をタップ)。GitHub Windows ランナーの自前の窓(読める窓)。判定は `check_modifier_mode_key.py`。
+1 回目(run 40271764639、各 1〜2 回)で傾向を見て、2 回目(run 40272737475、**16 構成 × 3 回、48 ジョブ、すべて同じ結果で INVALID なし**)で確定した。
 
-| IME | none(対照) | Ctrl | Shift | Alt |
+実 IME が開くか(awase なし。「開く」は 3/3):
+
+| IME・キー | none(対照) | Ctrl | Shift | Alt |
 |---|---|---|---|---|
-| GJI(MS-IME プリセット)の実 IME(awase なし) | 開く | 開く | 開く | 開く |
-| Microsoft IME 本体の実 IME(awase なし) | 開く | 開く | **開かない** | **開かない** |
+| GJI(MS-IME プリセット)・ひらがな 0xF2 | 開く | 開く | 開く | 開く |
+| GJI(MS-IME プリセット)・半角/全角 0xF3 | 開く | 開く | 開く | 開く |
+| Microsoft IME 本体・ひらがな 0xF2 | 開く | 開く | **開かない** | **開かない** |
 
-awase 起動中(GJI の MS-IME プリセット、F2 の KeyDown の `mods(` が物理の修飾付きで届くことも確認):
+awase 起動中(GJI の MS-IME プリセット、F2。KeyDown の `mods(` が物理の修飾付きで届くことも確認):
 
-| 修飾 | `[key-effect-predict] vk=0xF2` | effective-open-flip → true | Engine activated |
+| 修飾 | `[key-effect-predict] vk=0xF2` | belief → ON | Engine 活性化 |
 |---|---|---|---|
 | none | open=Some(true) | あり | あり |
 | Ctrl | open=Some(true) | あり | あり |
 | Shift | open=Some(true) | あり | あり |
-| Alt | 予測なし(従来どおり) | あり(観測の経路) | あり |
+| Alt | 予測なし(2 回目の測定時点。広げる前の挙動) | あり(読める窓の観測の経路) | あり |
 
 読み取れること:
-- **M1 は解決(GJI)**: Ctrl・Shift・Alt のどれを押しても F2 で開く。Mozc のクライアントが 0xF0〜0xF4 の修飾を捨てるというソースの読みと矛盾しない。
-- **A′ は実 Windows で働く**: Ctrl・Shift 付きの F2 で、予測 → belief ON → Engine 活性化が起きる。
-- **M1'(Alt、GJI)**: Alt を押したままの VK 0xF2 も IME に届き、開く。`WM_SYSKEYDOWN` が TIP に届かないという Opus の懸念は、この注入(`SendInput`)では当たらなかった。ただし実キーボードの Alt+ひらがなは別の VK(VK_DBE_ROMAN/NOROMAN)になるので、実機のキーでの再現ではない。各 1〜2 回の観測なので、Alt を A′ に足すなら `runs` を増やして確かめてからにする。
-- **M2(MS-IME 本体)**: Ctrl は素のキーと同じ(開く)が、Shift・Alt では開かない。MS-IME 本体を A′ に足すなら Ctrl だけで、Shift・Alt を足してはいけない(足すと実 IME が開かないのに ON と予測する BUG-162 型の誤予測)。各 1 回の観測。
+- **M1(GJI)は解決**: Ctrl・Shift・Alt のどれを押しても、F2 と F3 で開く(3/3)。Mozc のクライアントが 0xF0〜0xF4 の修飾を捨てるというソースの読みと矛盾しない。
+- **A′ は実 Windows で働く**: Ctrl・Shift 付きの F2 で、予測 → belief ON → Engine 活性化が起きる(3/3)。
+- **M1'(Alt、GJI)**: Alt を押したままの VK 0xF2・0xF3 も IME に届いて開く(3/3)。`WM_SYSKEYDOWN` が TIP に届かないという Opus の懸念は、この注入(`SendInput`)では当たらなかった。
+  実キーボードの Alt+ひらがなは別の VK(VK_DBE_ROMAN/NOROMAN)になり、A′ の VK の条件(0xF0〜0xF4)で除かれるので、Alt を足しても実機のキーの挙動は変わらない(リマップした構成でだけ効く)。
+- **M2(MS-IME 本体)**: Ctrl は素のキーと同じで開く(3/3)が、Shift・Alt では開かない(3/3)。A′ を広げるなら Ctrl だけ。測ったのはひらがな(0xF2)だけで、英数・カタカナ・半角/全角(0xF0・0xF1・0xF3・0xF4)は未測定。
 - この CI は「F2 の予測が最初の文字より前に起きる」ことまでを見ており、修飾付きの F2 の直後に文字を打つ手順(最初の NICOLA 打鍵が漏れないこと)は含まない。
+
+この結果を受けて、PR で A′ を広げた: GJI/Mozc 系の 0xF0〜0xF4 に Alt を加える(Win は除外のまま)。Microsoft IME 本体は CLSID で本体と同定できたときだけ、0xF2 の Ctrl を加える。
 
 ## 未決(所有者に確認したい点)
 
