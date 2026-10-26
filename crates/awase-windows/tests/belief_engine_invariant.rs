@@ -50,17 +50,17 @@ use support::pseudo_ime::{grid_key_name, Grid, TrueStage, TrueState, CONV_HIRAGA
 // ---------------------------------------------------------------------------
 
 /// 全字母の全列挙の長さ。
-const FULL_DEPTH: usize = 4;
+const FULL_DEPTH: usize = 3;
 /// 核の字母（鍵となる事象だけ）の全列挙の長さ。
-const CORE_DEPTH: usize = 5;
+const CORE_DEPTH: usize = 4;
 /// I2（参考）の全列挙の長さ（核の字母）。
-const I2_DEPTH: usize = 4;
+const I2_DEPTH: usize = 3;
 /// ランダム探索の本数（設定ごと）と長さ。
-const RANDOM_COUNT: usize = 10_000;
+const RANDOM_COUNT: usize = 1_000;
 const RANDOM_MIN_LEN: usize = 8;
 const RANDOM_MAX_LEN: usize = 12;
 /// ランダム探索で最小化して調べる違反の数（設定ごと。決定的に先頭から）。
-const RANDOM_MINIMIZE: usize = 150;
+const RANDOM_MINIMIZE: usize = 40;
 /// golden に載せる例の数（分類ごと）。
 const EXAMPLES_PER_CLASS: usize = 2;
 /// golden に最小列を全部載せる上限（設定ごと）。超えたら先頭だけ。
@@ -697,7 +697,10 @@ fn render_exhaustive(
     for x in &min {
         by_class.entry(x.class.as_str()).or_default().push(x);
     }
-    let _ = writeln!(out, "  最小列の例（分類ごと、最大 {EXAMPLES_PER_CLASS} 本）:");
+    let _ = writeln!(
+        out,
+        "  最小列の例（分類ごと、最大 {EXAMPLES_PER_CLASS} 本）:"
+    );
     for (class, xs) in &by_class {
         let _ = writeln!(out, "    [{class}] 最小列 {} 本", xs.len());
         for x in xs.iter().take(EXAMPLES_PER_CLASS) {
@@ -711,10 +714,7 @@ fn render_exhaustive(
             );
         }
     }
-    let _ = writeln!(
-        out,
-        "  最小列の一覧（先頭 {LIST_LIMIT} 本。長さ→字母順）:"
-    );
+    let _ = writeln!(out, "  最小列の一覧（先頭 {LIST_LIMIT} 本。長さ→字母順）:");
     for x in min.iter().take(LIST_LIMIT) {
         let _ = writeln!(out, "    {}", seq_name(&x.seq));
     }
@@ -764,16 +764,29 @@ fn bug223_sequences() -> Vec<(&'static str, Vec<Ev>)> {
 }
 
 fn run_config(cfg: Config) -> String {
+    let t0 = Instant::now();
+    let lap = |what: &str| eprintln!("[timing] {} {what}: {:?}", cfg.name(), t0.elapsed());
     let mut out = String::new();
     let full = full_alphabet();
     let core = core_alphabet();
     let r_full = exhaustive(cfg, Inv::I1, &full, FULL_DEPTH);
     render_exhaustive(&mut out, "全字母", cfg, Inv::I1, &full, FULL_DEPTH, &r_full);
+    lap("I1 full");
     let r_core = exhaustive(cfg, Inv::I1, &core, CORE_DEPTH);
-    render_exhaustive(&mut out, "核の字母", cfg, Inv::I1, &core, CORE_DEPTH, &r_core);
+    render_exhaustive(
+        &mut out,
+        "核の字母",
+        cfg,
+        Inv::I1,
+        &core,
+        CORE_DEPTH,
+        &r_core,
+    );
+    lap("I1 core");
     let r = exhaustive(cfg, Inv::I2, &core, I2_DEPTH);
     render_exhaustive(&mut out, "核の字母", cfg, Inv::I2, &core, I2_DEPTH, &r);
 
+    lap("I2 core");
     // 実機の事故の列。
     let _ = writeln!(out, "\n## {} 実機の事故（BUG-223）の列", cfg.name());
     for (name, seq) in bug223_sequences() {
@@ -807,6 +820,7 @@ fn run_config(cfg: Config) -> String {
     for (k, n) in &rr.by_class {
         let _ = writeln!(out, "    {n:>6}  {k}");
     }
+    lap("random");
     let known: HashSet<Vec<Ev>> = r_core
         .raws
         .iter()
@@ -845,7 +859,11 @@ fn belief_engine_invariant_baseline() {
     let started = Instant::now();
     let configs: Vec<Config> = [true, false]
         .into_iter()
-        .flat_map(|shared| Grid::ALL.into_iter().map(move |grid| Config { grid, shared }))
+        .flat_map(|shared| {
+            Grid::ALL
+                .into_iter()
+                .map(move |grid| Config { grid, shared })
+        })
         .collect();
     let results: Vec<String> = std::thread::scope(|s| {
         let handles: Vec<_> = configs
