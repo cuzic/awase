@@ -408,12 +408,34 @@ impl super::Runtime {
         let entry_ime_ok = self.platform_state.ime.effective_open()
             && self.platform_state.ime.belief.is_japanese_ime()
             && self.engine.is_user_enabled();
-        let pending_for_scope = self
-            .platform_state
-            .gate
-            .half_width_alnum
-            .find_return_pending(crate::win32::foreground_scope())
-            .is_some();
+        // 戻り待ち（ADR-245）。寿命切れはここで捨てる。
+        let pending = self.half_width_return_entry_for_foreground();
+        let pending_for_scope = pending.is_some();
+        // BUG-220: 戻り待ちのある窓の実 IME は半角英数のまま。入り直さず、戻り待ちから立て直して半角英数を保つ
+        // （見送ると、保持した打鍵が最初の打鍵の Resume でかなへ戻され、英字がかなになる）。
+        if let Some((scope, entry)) = pending {
+            if self
+                .platform_state
+                .gate
+                .half_width_alnum
+                .plan_rebuild_from_return_for_language_detect(
+                    entry_ime_ok,
+                    uses_imc_conv_write,
+                    Some(entry),
+                )
+            {
+                let _ = self
+                    .platform_state
+                    .gate
+                    .half_width_alnum
+                    .take_return_pending(scope);
+                self.kp_rebuild_half_width_toggle(
+                    entry,
+                    crate::state::TickMs(crate::hook::current_tick_ms()),
+                );
+                return "half-width-alnum-rebuilt-from-return";
+            }
+        }
         match self
             .platform_state
             .gate
