@@ -534,3 +534,22 @@ for jt in (4, 10, 14):
         t = next((t for t in [x / 2 for x in range(4, 160)] if err_at_j(new_c, t, jt) <= e), None)
         out.append(f'旧{th_old}({e:.2f}%)->新{t}')
     print(f'ja_th={jt}: ' + ' ; '.join(out))
+
+
+# ---------- [E] 保持の長さ: 日本語の親指なし区間が、判定が出ないまま何打鍵保持されるか(ADR-280 の調査) ----------
+print('\n[E] 日本語の親指なし区間(評価データ 3247 本)の保持の長さ。構成: 従来(bi+U, ja4/en14) と 新(tri-interp+SHIPPED, ja14/en13)')
+for nm, c, jt, th in (('従来 ja4/en14', ('bi', 'U'), 4.0, 14.0), ('新 ja14/en13', ('tri-interp', 'SHIPPED'), 14.0, 13.0)):
+    res = [verdict(x, th, jt) for x in TJ[c]]
+    n = len(res)
+    cnt = collections.Counter(v for v, _ in res)
+    und = [(i, len(x)) for (v, i), x in zip(res, TJ[c]) if v == 'und']
+    ended_by_thumb = sum(1 for i, L in und if L < 7)  # 区間が 7 打鍵未満で尽きた = 親指(重なり)が出て日本語確定
+    reach7 = sum(1 for i, L in und if L >= 7)
+    lens = [len(x) for x in TJ[c]]
+    held_ge4 = sum(1 for (v, i), L in zip(res, lens) if v == 'und' and L >= 4)
+    held_ge3 = sum(1 for (v, i), L in zip(res, lens) if v == 'und' and L >= 3)
+    mean_hold = statistics.mean(i for v, i in res)
+    print(f'{nm}: NotJapanese {cnt["en"] / n * 100:.2f}% Japanese(尤度) {cnt["ja"] / n * 100:.2f}% 決まらないまま区間が尽きる/7 打 {cnt["und"] / n * 100:.1f}%'
+          f'(うち区間が 7 打鍵に届いた = max_keys まで保持 {reach7 / n * 100:.1f}%)')
+    print(f'    区間が 3 打鍵以上・決まらない {held_ge3 / n * 100:.1f}%、4 打鍵以上・決まらない {held_ge4 / n * 100:.1f}%、保持される平均打鍵数 {mean_hold:.2f}')
+    print('    区間の長さ(打鍵)の分布: ' + ', '.join(f'{k}:{v / n * 100:.1f}%' for k, v in sorted(collections.Counter(lens).items())))
