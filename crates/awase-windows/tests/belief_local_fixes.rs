@@ -189,6 +189,8 @@ enum Ev {
     External(bool),
     /// 3500ms 経過（観測の鮮度切れ 3000ms を越える）。
     Advance,
+    /// 指定 ms の経過（`IntentStore` の TTL 10/30 秒を越えるため 11000・31000）。
+    AdvanceN(u64),
     /// いまの窓が実測学習で降格される。
     Demote,
 }
@@ -220,6 +222,7 @@ impl Ev {
             },
             Self::External(b) => format!("external-{}", if b { "on" } else { "off" }),
             Self::Advance => format!("advance:{ADVANCE_MS}ms"),
+            Self::AdvanceN(n) => format!("advance:{n}ms"),
             Self::Demote => "demote-by-learning".into(),
         }
     }
@@ -244,6 +247,7 @@ impl Ev {
             Self::External(true) => "external-on",
             Self::External(false) => "external-off",
             Self::Advance => "advance",
+            Self::AdvanceN(_) => "advance-long",
             Self::Demote => "demote",
         }
     }
@@ -259,7 +263,7 @@ fn seq_name(seq: &[Ev]) -> String {
 }
 
 /// 全字母（19 種）。文字キー・明示 ON・ImmCross の観測（Poll と同じ性質）は時間の予算のため外した。
-fn full_alphabet() -> Vec<Ev> {
+fn full_alphabet(long: bool) -> Vec<Ev> {
     let mut v = vec![
         Ev::Key(VK_EISU),
         Ev::Key(VK_HIRAGANA),
@@ -279,6 +283,10 @@ fn full_alphabet() -> Vec<Ev> {
         Ev::Advance,
         Ev::Demote,
     ]);
+    if long {
+        v.push(Ev::AdvanceN(11_000));
+        v.push(Ev::AdvanceN(31_000));
+    }
     v
 }
 
@@ -364,6 +372,9 @@ fn apply(h: &mut Harness, wins: &[Window; 5], ev: Ev) -> bool {
         Ev::Advance => {
             h.advance_ms(ADVANCE_MS);
         }
+        Ev::AdvanceN(n) => {
+            h.advance_ms(n);
+        }
         Ev::Demote => {
             if w.learned_unavailable || w.live_profile() != AppImeProfile::Standard {
                 return false;
@@ -448,13 +459,16 @@ struct Config {
     shared: bool,
     /// 局所修正のビット（`local_fixes::L1|L2|L3`）。
     fixes: u8,
+    /// 字母に 11000ms・31000ms の経過を足す（`IntentStore` の TTL 切れを見る）。
+    long: bool,
 }
 
 impl Config {
     fn name(self) -> String {
         format!(
-            "[{}] {} {}",
+            "[{}{}] {} {}",
             fixes_name(self.fixes),
+            if self.long { "+long" } else { "" },
             self.grid.name(),
             if self.shared { "shared" } else { "per-thread" }
         )
@@ -665,7 +679,7 @@ struct RandomResult {
 }
 
 fn random_search(cfg: Config, inv: Inv, seed: u64, started: Instant) -> RandomResult {
-    let alphabet = full_alphabet();
+    let alphabet = full_alphabet(false);
     let mut rng = SplitMix(seed);
     let mut res = RandomResult {
         total: 0,
@@ -862,13 +876,13 @@ fn bug223_sequences() -> Vec<(&'static str, Vec<Ev>)> {
 }
 
 fn fixes_name(f: u8) -> String {
-    use awase_windows::state::local_fixes::{L1, L2, L3};
+    use awase_windows::state::local_fixes::{L1, L2, L2B, L3};
     let mut v = Vec::new();
     if f & L1 != 0 {
         v.push("L1");
     }
     if f & L2 != 0 {
-        v.push("L2");
+        v.push(if f & L2B != 0 { "L2b" } else { "L2" });
     }
     if f & L3 != 0 {
         v.push("L3");
@@ -880,10 +894,30 @@ fn fixes_name(f: u8) -> String {
     }
 }
 
+/// 固定 seed のランダムな列（長さ 10、200 本、止めずに最後まで流す）で出た `WriteCommand` の総数。
+fn write_count(cfg: Config) -> usize {
+    let alphabet = full_alphabet(false);
+    let mut rng = SplitMix(0x5EED_0001);
+    let mut total = 0;
+    for _ in 0..200 {
+        let (mut h, wins) = cfg.start();
+        for _ in 0..10 {
+            for _ in 0..30 {
+                let e = alphabet[rng.below(alphabet.len())];
+                if apply(&mut h, &wins, e) {
+                    break;
+                }
+            }
+        }
+        total += h.writes.len();
+    }
+    total
+}
+
 fn run_config(cfg: Config) -> String {
     let t0 = Instant::now();
     let mut out = String::new();
-    let full = full_alphabet();
+    let full = full_alphabet(cfg.long);
     let core = core_alphabet();
     let r1 = exhaustive(cfg, Inv::I1, &full, FULL_DEPTH, t0);
     render_exhaustive(&mut out, "全字母", cfg, Inv::I1, &full, FULL_DEPTH, &r1);
@@ -921,10 +955,11 @@ fn run_config(cfg: Config) -> String {
     let min2 = irreducible(&r2.raws);
     let _ = writeln!(
         out,
-        "SUMMARY|{}|{}|{}|I1 raw={} persist={} poll={} min={} clean_min={}|I2 raw={} min={}|probes_violating={}/{}",
-        fixes_name(cfg.fixes),
+        "SUMMARY|{}|{}|{}|writes={}|I1 raw={} persist={} poll={} min={} clean_min={}|I2 raw={} min={}|probes_violating={}/{}",
+        format!("{}{}", fixes_name(cfg.fixes), if cfg.long { "+long" } else { "" }),
         cfg.grid.name(),
         if cfg.shared { "shared" } else { "per-thread" },
+        write_count(cfg),
         r1.raws.len(),
         r1.raws.iter().filter(|x| x.persists).count(),
         r1.raws.iter().filter(|x| x.persists_poll).count(),
@@ -947,12 +982,25 @@ fn golden_path() -> PathBuf {
 
 #[test]
 fn belief_local_fixes_measurement() {
-    use awase_windows::state::local_fixes::{L1, L2, L3};
-    let variants: [u8; 6] = [0, L1, L2, L3, L1 | L2, L1 | L2 | L3];
+    use awase_windows::state::local_fixes::{L1, L2, L2B, L3};
+    // (局所修正のビット, 字母に長い経過を足すか)
+    let variants: [(u8, bool); 11] = [
+        (0, false),
+        (L1, false),
+        (L2, false),
+        (L2 | L2B, false),
+        (L3, false),
+        (L1 | L2, false),
+        (L2 | L3, false),
+        (0, true),
+        (L3, true),
+        (L2 | L3, true),
+        (L1, true),
+    ];
     let results: Vec<String> = std::thread::scope(|s| {
         let handles: Vec<_> = variants
             .iter()
-            .map(|&fixes| {
+            .map(|&(fixes, long)| {
                 std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(s, move || {

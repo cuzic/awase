@@ -2,12 +2,14 @@
 //! 1 つのテストプロセスの中で複数の変種を並列に測れる。
 use std::cell::Cell;
 
-/// L1: 開の予測のとき `desired_open` も true に書く。
+/// L1: 開閉の予測（true/false とも）で `desired_open` も書く（`last_intent` は作らない）。
 pub const L1: u8 = 1;
-/// L2: 読めない窓への窓切替で、直前に明示意図が無ければ `desired_open` を true にする。
+/// L2: 読めない窓（TsfNative/Imm32Unavailable）への窓切替で `desired_open` を true にする（無条件。明示意図の行は hub の IntentStore が上書きする）。
 pub const L2: u8 = 2;
 /// L3: `IntentStore` の鍵をスレッド（IME の持ち主）にし、開閉の予測も入れる。
 pub const L3: u8 = 4;
+/// L2 の拡張: 同じフォーカス中の学習による降格（`AppProfileChanged`）で読めない窓になったときも `desired_open` を true にする。
+pub const L2B: u8 = 8;
 
 /// 既定（実験ブランチごとに変える）。
 pub const DEFAULT: u8 = 0;

@@ -1026,6 +1026,15 @@ impl ImeModel {
                 // ECRS DD3-01: 殻の窓プロファイルが同じフォーカス中に変わった。`app_policy` だけを入れ直す
                 // （belief・観測・fence・`last_intent` は書かない。`FocusChanged` が送られない経路の追随専用）。
                 self.app_policy = AppImePolicy::from_profile(profile);
+                // 実験 L2B: 学習による降格で読めない窓になったときも true にする。
+                if crate::state::local_fixes::has(crate::state::local_fixes::L2B)
+                    && matches!(
+                        profile,
+                        ImePolicyProfile::Imm32Unavailable | ImePolicyProfile::TsfNative
+                    )
+                {
+                    self.desired_open = true;
+                }
             }
             ImeEvent::InitialFocusScopeEstablished {
                 to,
@@ -1075,10 +1084,12 @@ impl ImeModel {
                 if open.is_some() {
                     self.last_intent = None;
                 }
-                // 実験 L1: 開の予測は desired_open も書く（last_intent は作らない）。
-                if open == Some(true) && crate::state::local_fixes::has(crate::state::local_fixes::L1) {
-                    self.desired_open = true;
-                    self.desired_is_placeholder = false;
+                // 実験 L1: 開閉の予測は desired_open も書く（last_intent は作らない）。
+                if let Some(v) = open {
+                    if crate::state::local_fixes::has(crate::state::local_fixes::L1) {
+                        self.desired_open = v;
+                        self.desired_is_placeholder = false;
+                    }
                 }
                 // 予測が開閉を動かしたとき、awase自身の直近の書き込みの記録（`applied`）が予測と食い違うなら、
                 // それはもう実状態の証拠ではない（書き込み以外の源でbeliefが動いた）。`Unknown`（未確認）へ
@@ -1175,18 +1186,15 @@ impl ImeModel {
         self.current_focus = Some(to);
         // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
         // (旧アプリの観測値が新アプリで有効と勘違いされないため)
-        let had_intent = self.last_intent.is_some();
         self.last_intent = None;
-        // 実験 L2: 読めない窓へ移るとき、直前に明示意図が無ければ desired_open を true にする。
+        // 実験 L2: 読めない窓へ移るなら desired_open を true にする（無条件）。
         if crate::state::local_fixes::has(crate::state::local_fixes::L2)
             && matches!(
                 profile,
                 ImePolicyProfile::Imm32Unavailable | ImePolicyProfile::TsfNative
             )
-            && !had_intent
         {
             self.desired_open = true;
-            self.desired_is_placeholder = false;
         }
         // 打鍵時点の予測・追跡状態も旧アプリの文脈のものなので捨てる。
         self.key_effect = None;
