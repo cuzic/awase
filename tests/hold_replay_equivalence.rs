@@ -141,7 +141,7 @@ fn apply(decision: &Decision, wall: Timestamp, timers: &mut Timers, out: &mut St
                     match a {
                         KeyAction::Char(c) => out.push(*c),
                         KeyAction::Romaji(s) => out.push_str(s),
-                        _ => out.push_str("[k]"),
+                        other => out.push_str(&format!("[{other:?}]")),
                     }
                 }
                 out.push('|');
@@ -205,9 +205,19 @@ fn run_replay(events: &[Ev], wall: Timestamp) -> String {
 
 /// 出力から、文字・ローマ字だけを取り出す(`[k]` などの印と区切りは落とす)。
 fn text_only(out: &str) -> String {
-    out.replace("[k]", "")
-        .replace("[pt]", "<pt>")
-        .replace('|', "")
+    let mut text = String::new();
+    let mut rest = out;
+    while let Some(open) = rest.find('[') {
+        text.push_str(&rest[..open]);
+        let close = rest[open..].find(']').map_or(rest.len(), |c| open + c + 1);
+        let group = &rest[open..close];
+        if group == "[pt]" || group == "[re]" {
+            text.push_str(group);
+        }
+        rest = &rest[close..];
+    }
+    text.push_str(rest);
+    text.replace('|', "")
 }
 
 struct Rng(u64);
@@ -292,6 +302,7 @@ fn replay_of_held_keys_matches_realtime_engine_output() {
     let mut mismatches = 0_usize;
     let mut text_mismatches = 0_usize;
     let mut shown = 0;
+    let mut detail_shown = 0;
     // 解放の時刻: 最後の打鍵の後 0ms / 300ms / 2000ms
     for n in 1..=5 {
         for _ in 0..1500 {
@@ -303,6 +314,14 @@ fn replay_of_held_keys_matches_realtime_engine_output() {
                 let b = run_replay(&events, last + extra);
                 if a != b {
                     mismatches += 1;
+                    if detail_shown < 8 && n <= 2 {
+                        detail_shown += 1;
+                        report.push_str(&format!(
+                            "[印の差] n={n} extra={}ms\n  {}\n  A {a}\n  B {b}\n",
+                            extra / 1000,
+                            describe(&events)
+                        ));
+                    }
                 }
                 if text_only(&a) != text_only(&b) {
                     text_mismatches += 1;
@@ -319,7 +338,7 @@ fn replay_of_held_keys_matches_realtime_engine_output() {
         }
     }
     assert!(
-        text_mismatches == 0,
+        text_mismatches == 0 && mismatches == 0,
         "再生が実時間と一致しない(文字の列): {text_mismatches}/{total}(印も含めると {mismatches})\n{report}"
     );
 }
