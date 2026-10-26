@@ -6,6 +6,7 @@
   2. awase(フルデバッグ log、awase を起動した構成のみ): F2 の KeyDown が物理の修飾付きで届き(`mods(c=…`)、予測(`[key-effect-predict] vk=0xF2 open=Some(true)`)と
      Engine の活性化(`Engine activated`)が F2 の押下から WINDOW_MS のあいだに出ること(ADR-281 の A′)。
 
+--key=F2|F3                  タップするキー(既定 F2。F3=半角/全角、MS-IME プリセットでは閉からの IME ON)。
 --mod=none|ctrl|shift|alt    押しっぱなしにした修飾(none=対照。修飾でないキーを押したまま)。awase の `mods(` と照らす。
 --expect=observe             判定せずに表示するだけ(実 IME の挙動の測定用。INVALID 以外は rc=0)。
 --expect=predict             awase のログで予測と Engine の活性化が出ていることを要求する(出なければ FAIL=rc=1)。実 IME が開いていることも要求する。
@@ -19,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_consistency import to_ms  # noqa: E402
 
 WINDOW_MS = 1500
-TAP_VK = "0xF2"
+TAP_VK = "0xF2"  # --key= で上書き(F2 / F3)
 # awase の `[engine-input]` 行の `mods(c=… s=… a=… w=…)` で、押しっぱなしにした修飾が立っていること。
 MOD_FLAG = {"ctrl": "c", "shift": "s", "alt": "a"}
 
@@ -64,11 +65,11 @@ def awase_events(path, press):
         if not (press - 50 <= t <= press + WINDOW_MS):
             continue
         body = m.group(2)
-        if re.search(r"\[engine-input\] vk=0x[fF]2 KeyDown", body) and ev["keydown_mods"] is None:
+        if re.search(r"\[engine-input\] vk=" + TAP_VK + " KeyDown", body) and ev["keydown_mods"] is None:
             mm = re.search(r"mods\(c=(\w+) s=(\w+) a=(\w+) w=(\w+)\)", body)
             if mm:
                 ev["keydown_mods"] = dict(zip("csaw", (v == "true" for v in mm.groups())))
-        if "[key-effect-predict] vk=0xF2" in body:
+        if "[key-effect-predict] vk=" + TAP_VK in body:
             mo = re.search(r"open=(Some\(true\)|Some\(false\)|None|true|false)", body)
             ev["predict_open"] = mo.group(1) if mo else "?"
         if "Engine activated" in body:
@@ -79,10 +80,16 @@ def awase_events(path, press):
 
 
 def main():
+    global TAP_VK
     flags = [a for a in sys.argv[1:] if a.startswith("--")]
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     mod = next((a.split("=", 1)[1] for a in flags if a.startswith("--mod=")), "")
     expect = next((a.split("=", 1)[1] for a in flags if a.startswith("--expect=")), "")
+    key = next((a.split("=", 1)[1] for a in flags if a.startswith("--key=")), "F2").upper()
+    if key not in ("F2", "F3"):
+        print(__doc__)
+        return 2
+    TAP_VK = "0x" + key
     if mod not in ("none", "ctrl", "shift", "alt") or expect not in ("observe", "predict") or not 1 <= len(args) <= 2:
         print(__doc__)
         return 2

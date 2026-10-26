@@ -353,11 +353,15 @@ jobs:
             #   (M1・M1'・M2。Mozc/GJI がこの 4 キーの修飾を捨てるか、Alt が届くか、MS-IME 本体で A′ の条件を広げてよいかの根拠)。
             # awase-*(awase 起動中): GJI(MS-IME プリセット)で、none・Ctrl・Shift は F2 を予測して Engine が活性化すること(A′)。Alt は予測しない(従来どおり)ことを観測する。
             # 押しっぱなしにする VK: none=0x87(F24、修飾でない対照)/ ctrl=A2 / shift=A0 / alt=A4。only='sc-adr281-*' で回す。
-            *[cfg(f'sc-adr281-nat-{iname}-{mod}', 'observe', check=f'modkey-{mod}-observe', ime=ime, keymap=km, awase='false', runs=1,
+            *[cfg(f'sc-adr281-nat-{iname}-{mod}', 'observe', check=f'modkey-{mod}-observe', ime=ime, keymap=km, awase='false', runs=3,
                   args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A{extra}', until='2026-11-10')
               for iname, ime, km, extra in (('gji-msime', 'gji', 2, ''), ('msime-native', 'msime', 1, ' --msime'))
               for mod, vk in (('none', '87'), ('ctrl', 'A2'), ('shift', 'A0'), ('alt', 'A4'))],
-            *[cfg(f'sc-adr281-awase-gji-msime-{mod}', exp, check=f'modkey-{mod}-{chk}', ime='gji', keymap=2, awase='true', runs=2,
+            # 半角/全角(0xF3)でも修飾を捨てるか(GJI の実 IME のみ、awase なし。MS-IME プリセットの DirectInput の Hankaku/Zenkaku は IMEOn)。
+            *[cfg(f'sc-adr281-nat-gji-msime-f3-{mod}', 'observe', check=f'modkey-{mod}-observe-f3', ime='gji', keymap=2, awase='false', runs=3,
+                  args=f'--chord={vk},F3 --chord-at=20000 --chord-prep=1A', until='2026-11-10')
+              for mod, vk in (('none', '87'), ('ctrl', 'A2'), ('shift', 'A0'), ('alt', 'A4'))],
+            *[cfg(f'sc-adr281-awase-gji-msime-{mod}', exp, check=f'modkey-{mod}-{chk}', ime='gji', keymap=2, awase='true', runs=3,
                   args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A', **({'until': '2026-11-10'} if exp == 'observe' else {}))
               for mod, vk, exp, chk in (('none', '87', 'pass', 'predict'), ('ctrl', 'A2', 'pass', 'predict'),
                                         ('shift', 'A0', 'pass', 'predict'), ('alt', 'A4', 'observe', 'observe'))],
@@ -1504,10 +1508,11 @@ jobs:
           } elseif ('${{ matrix.cfg.check }}' -like 'modkey-*') {
             # modkey-<修飾>-<observe|predict>(ADR-281)。awase なしの構成では awase.log が無い。
             $mk = '${{ matrix.cfg.check }}'.Split('-')
+            $mkey = if ($mk.Length -ge 4) { $mk[3] } else { 'f2' }
             if (Test-Path dist\awase.log) {
-              python tools\e2e\ime_key_matrix\check_modifier_mode_key.py --mod=$($mk[1]) --expect=$($mk[2]) dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
+              python tools\e2e\ime_key_matrix\check_modifier_mode_key.py --mod=$($mk[1]) --expect=$($mk[2]) --key=$mkey dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
             } else {
-              python tools\e2e\ime_key_matrix\check_modifier_mode_key.py --mod=$($mk[1]) --expect=$($mk[2]) dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
+              python tools\e2e\ime_key_matrix\check_modifier_mode_key.py --mod=$($mk[1]) --expect=$($mk[2]) --key=$mkey dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
             }
           } elseif ('${{ matrix.cfg.check }}' -like 'kanjirole-*') {
             $kexp = '${{ matrix.cfg.check }}'.Substring('kanjirole-'.Length)
