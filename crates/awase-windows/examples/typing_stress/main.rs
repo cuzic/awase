@@ -93,6 +93,7 @@ mod langdetect;
 mod lateorder;
 mod perturb;
 mod preedit;
+mod scope;
 mod suspend;
 mod target;
 mod uia;
@@ -1738,6 +1739,12 @@ fn worker(form: Form) {
             &json!({"type":"startup_pre","initial":if startup_on {"on"} else {"off"},
             "utc":utc_hms(),"real_ime_open":real_ime_open(child)}),
         );
+    }
+    if mode_arg.as_deref() == Some("scope") {
+        // ADR-282 の測定: IME の状態は scope.rs が作る/読むだけ。awase は起動しない。
+        scope::scope_scenario(child);
+        finish();
+        return;
     }
     log("[TS] READY-FOR-AWASE");
     if !has_flag("--no-awase") {
