@@ -42,7 +42,7 @@ use std::time::Instant;
 
 use awase_windows::focus::class_names::AppImeProfile;
 use awase_windows::state::ime_event::HwndId;
-use support::harness::{Harness, Setup, Source, StepRecord, Window};
+use support::harness::{Harness, Setup, Source, StepRecord, Window, ALT_NAMES};
 use support::pseudo_ime::{grid_key_name, Grid, TrueStage, TrueState, CONV_HIRAGANA};
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ const EXAMPLES_PER_CLASS: usize = 2;
 /// golden に最小列を全部載せる上限（設定ごと）。超えたら先頭だけ。
 const LIST_LIMIT: usize = 60;
 /// 1 設定あたりの時間の上限（秒）。超えたら、どの段で何本まで進んだかを添えて panic する（規模を CI で調整するための安全弁）。
-const BUDGET_SECS: u64 = 100;
+const BUDGET_SECS: u64 = 240;
 
 fn check_budget(cfg: Config, started: Instant, phase: &str, progress: usize) {
     assert!(
@@ -384,11 +384,9 @@ enum Inv {
     I1,
     I2,
     /// ADR-282 V0: 同じ不変条件を候補 Z(`ScopeBelief`)の Engine の活性で見たもの。
-    I1Z,
-    I2Z,
-    /// ADR-282 V0: 候補 Z に U2 の案(新しいスレッドは閉の実測の事前)を足した変種。
-    I1Zp,
-    I2Zp,
+    /// ADR-282 V0: 同じ不変条件を比較用のモデル(`ALT_NAMES` の添字: Z・Z+U2・S′・S′+U2)の Engine の活性で見たもの。
+    I1Alt(usize),
+    I2Alt(usize),
 }
 
 impl Inv {
@@ -396,10 +394,14 @@ impl Inv {
         match self {
             Self::I1 => "I1",
             Self::I2 => "I2",
-            Self::I1Z => "I1(Z)",
-            Self::I2Z => "I2(Z)",
-            Self::I1Zp => "I1(Z+U2)",
-            Self::I2Zp => "I2(Z+U2)",
+            Self::I1Alt(0) => "I1(Z)",
+            Self::I1Alt(1) => "I1(Z+U2)",
+            Self::I1Alt(2) => "I1(S′)",
+            Self::I1Alt(_) => "I1(S′+U2)",
+            Self::I2Alt(0) => "I2(Z)",
+            Self::I2Alt(1) => "I2(Z+U2)",
+            Self::I2Alt(2) => "I2(S′)",
+            Self::I2Alt(_) => "I2(S′+U2)",
         }
     }
 }
@@ -439,35 +441,21 @@ fn violation(inv: Inv, s: &StepRecord) -> Option<String> {
             s.engine_active
                 .then(|| format!("truth-{kind}-but-engine-on/{}", s.basis))
         }
-        Inv::I1Z => {
-            let active = s.z_engine_active?;
-            (truth_is_hiragana_on(s.truth) && !active).then(|| {
-                if s.z_open == Some(true) {
-                    "z-belief-on-but-engine-off".to_string()
+        Inv::I1Alt(k) => {
+            let a = s.alts.get(k)?;
+            (truth_is_hiragana_on(s.truth) && !a.engine_active).then(|| {
+                if a.open {
+                    "alt-belief-on-but-engine-off".to_string()
                 } else {
-                    format!("z-belief-off/{}", s.z_basis.unwrap_or("?"))
+                    format!("alt-belief-off/{}", a.basis)
                 }
             })
         }
-        Inv::I1Zp => {
-            let active = s.zp_engine_active?;
-            (truth_is_hiragana_on(s.truth) && !active).then(|| {
-                if s.zp_open == Some(true) {
-                    "z-belief-on-but-engine-off".to_string()
-                } else {
-                    format!("z-belief-off/{}", s.zp_basis.unwrap_or("?"))
-                }
-            })
-        }
-        Inv::I2Zp => {
+        Inv::I2Alt(k) => {
             let kind = truth_is_off_or_alnum(s.truth)?;
-            let active = s.zp_engine_active?;
-            active.then(|| format!("truth-{kind}-but-engine-on/{}", s.zp_basis.unwrap_or("?")))
-        }
-        Inv::I2Z => {
-            let kind = truth_is_off_or_alnum(s.truth)?;
-            let active = s.z_engine_active?;
-            active.then(|| format!("truth-{kind}-but-engine-on/{}", s.z_basis.unwrap_or("?")))
+            let a = s.alts.get(k)?;
+            a.engine_active
+                .then(|| format!("truth-{kind}-but-engine-on/{}", a.basis))
         }
     }
 }
@@ -687,23 +675,23 @@ fn i6_sweep(
                     check_budget(cfg, started, "i6 sweep", checked);
                 }
                 let mut elapsed = 0;
-                let mut z_changed = false;
+                let mut alt_changed = [false; ALT_NAMES.len()];
                 for ms in I6_ADVANCES_MS {
                     let before = h.steps.last().expect("step").clone();
                     h.advance_ms(ms);
                     elapsed += ms;
                     let after = h.steps.last().expect("step").clone();
-                    if !z_changed && before.z_open != after.z_open {
-                        z_changed = true;
-                        let key = format!(
-                            "(Z) +{elapsed}ms: {}({:?}) → {}({:?})",
-                            before.z_basis.unwrap_or("?"),
-                            before.z_open,
-                            after.z_basis.unwrap_or("?"),
-                            after.z_open
-                        );
-                        let entry = by_change.entry(key).or_insert_with(|| (0, seq_name(&cand)));
-                        entry.0 += 1;
+                    for (k, (b, a)) in before.alts.iter().zip(after.alts.iter()).enumerate() {
+                        if !alt_changed[k] && b.open != a.open {
+                            alt_changed[k] = true;
+                            let key = format!(
+                                "({}) +{elapsed}ms: {}({}) → {}({})",
+                                ALT_NAMES[k], b.basis, b.open, a.basis, a.open
+                            );
+                            let entry =
+                                by_change.entry(key).or_insert_with(|| (0, seq_name(&cand)));
+                            entry.0 += 1;
+                        }
                     }
                     if before.effective_open != after.effective_open {
                         let key = format!(
@@ -721,6 +709,133 @@ fn i6_sweep(
         frontier = next;
     }
     (checked, by_change)
+}
+
+/// I3・I4 の掃き出しの列の長さ。
+const SCOPE_DEPTH: usize = 3;
+
+struct ScopeSweep {
+    checked: usize,
+    /// (モデル名, (I3 の違反した列の数, 最初の列), (I4 の違反した列の数, 最初の列))。旧 + `ALT_NAMES`。
+    rows: Vec<(
+        &'static str,
+        (usize, Option<String>),
+        (usize, Option<String>),
+    )>,
+}
+
+/// ADR-282 I3・I4 の掃き出し。列を流しながら、オラクルの側でスレッドごとに次を追う(モデルには依存しない):
+/// - I3: 利用者の明示操作(`user-on/off`)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。
+/// - I4: スレッドを離れて戻ったとき(そのスレッドで事象が無い。窓の事象はフォーカスのあるスレッドでしか起きない)、belief が
+///   離れたときの値のままか。開を引き継ぐスレッド(O5 の写し)は I3・I4 とも除く。
+/// 旧(`effective_open`)と比較用のモデルを同じ列で調べる。
+fn scope_sweep(cfg: Config, alphabet: &[Ev], depth: usize, started: Instant) -> ScopeSweep {
+    let n_models = 1 + ALT_NAMES.len();
+    let mut i3 = vec![(0usize, None::<String>); n_models];
+    let mut i4 = vec![(0usize, None::<String>); n_models];
+    let mut frontier: Vec<Vec<Ev>> = vec![Vec::new()];
+    let mut checked = 0;
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for seq in &frontier {
+            for &e in alphabet {
+                let mut cand = seq.clone();
+                cand.push(e);
+                let (mut h, wins) = cfg.start();
+                let inherit_thread =
+                    (cfg.tsf_inherit == Some(true)).then(|| wins[W_WEZTERM].thread);
+                // スレッドごとの (I3 の記録, I4 の離れたときの値〈モデルごと〉)
+                let mut rec: Vec<(u32, Option<bool>, Option<Vec<bool>>)> = Vec::new();
+                let mut ok = true;
+                let mut viol3 = vec![false; n_models];
+                let mut viol4 = vec![false; n_models];
+                let opens = |h: &Harness| -> Vec<bool> {
+                    let last = h.steps.last().expect("step");
+                    std::iter::once(last.effective_open)
+                        .chain(last.alts.iter().map(|a| a.open))
+                        .collect()
+                };
+                for &ev in &cand {
+                    let cur = h.window().expect("窓モデル").thread;
+                    if let Ev::Focus(i) = ev {
+                        let to = wins[i].thread;
+                        if to != cur {
+                            let snap = opens(&h);
+                            match rec.iter_mut().find(|r| r.0 == cur) {
+                                Some(r) => r.2 = Some(snap),
+                                None => rec.push((cur, None, Some(snap))),
+                            }
+                        }
+                    }
+                    if !apply(&mut h, &wins, ev) {
+                        ok = false;
+                        break;
+                    }
+                    let now = h.window().expect("窓モデル").thread;
+                    match ev {
+                        Ev::Focus(_) => {
+                            if now != cur && Some(now) != inherit_thread {
+                                let got = opens(&h);
+                                if let Some(r) = rec.iter().find(|r| r.0 == now) {
+                                    if let Some(v) = r.1 {
+                                        for (m, g) in got.iter().enumerate() {
+                                            viol3[m] |= *g != v;
+                                        }
+                                    }
+                                    if let Some(snap) = &r.2 {
+                                        for (m, (g, s0)) in got.iter().zip(snap.iter()).enumerate()
+                                        {
+                                            viol4[m] |= g != s0;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ev::UserSet(v) => match rec.iter_mut().find(|r| r.0 == now) {
+                            Some(r) => r.1 = Some(v),
+                            None => rec.push((now, Some(v), None)),
+                        },
+                        _ => {
+                            // そのスレッドで他の事象があったら、I3 の記録は無効にする。
+                            if let Some(r) = rec.iter_mut().find(|r| r.0 == now) {
+                                r.1 = None;
+                            }
+                        }
+                    }
+                }
+                if !ok {
+                    continue;
+                }
+                checked += 1;
+                if checked % 200 == 0 {
+                    check_budget(cfg, started, "scope sweep", checked);
+                }
+                for m in 0..n_models {
+                    if viol3[m] {
+                        i3[m].0 += 1;
+                        i3[m].1.get_or_insert_with(|| seq_name(&cand));
+                    }
+                    if viol4[m] {
+                        i4[m].0 += 1;
+                        i4[m].1.get_or_insert_with(|| seq_name(&cand));
+                    }
+                }
+                next.push(cand);
+            }
+        }
+        frontier = next;
+    }
+    let names: Vec<&'static str> = std::iter::once("旧")
+        .chain(ALT_NAMES.iter().copied())
+        .collect();
+    ScopeSweep {
+        checked,
+        rows: names
+            .into_iter()
+            .zip(i3.into_iter().zip(i4))
+            .map(|(n, (a, b))| (n, a, b))
+            .collect(),
+    }
 }
 
 /// `raws`（`exhaustive` の結果）のうち、**事象を 1 つ削っても違反が残らない**（最小の）列。
@@ -1055,37 +1170,6 @@ fn run_config(cfg: Config) -> String {
     render_exhaustive(&mut out, "核の字母", cfg, Inv::I2, &core, I2_DEPTH, &r);
 
     lap("I2 core");
-    // ADR-282 V0: 候補 Z の I1・I2(同じ字母・同じ長さ。旧と並べて比べる)。
-    let rz = exhaustive(cfg, Inv::I1Z, main_alphabet, FULL_DEPTH, t0);
-    render_exhaustive(
-        &mut out,
-        main_label,
-        cfg,
-        Inv::I1Z,
-        main_alphabet,
-        FULL_DEPTH,
-        &rz,
-    );
-    let rz2 = exhaustive(cfg, Inv::I2Z, &core, I2_DEPTH, t0);
-    render_exhaustive(&mut out, "核の字母", cfg, Inv::I2Z, &core, I2_DEPTH, &rz2);
-    lap("Z");
-    // ADR-282 V0: U2 の案(新しいスレッドは閉)を足した Z。窓をまたいで同じスレッドの shared では Z と同じなので、窓ごとに
-    // 別スレッドの設定(per-thread・混ぜた窓モデル)だけ回す。
-    if !cfg.shared {
-        let rp = exhaustive(cfg, Inv::I1Zp, main_alphabet, FULL_DEPTH, t0);
-        render_exhaustive(
-            &mut out,
-            main_label,
-            cfg,
-            Inv::I1Zp,
-            main_alphabet,
-            FULL_DEPTH,
-            &rp,
-        );
-        let rp2 = exhaustive(cfg, Inv::I2Zp, &core, I2_DEPTH, t0);
-        render_exhaustive(&mut out, "核の字母", cfg, Inv::I2Zp, &core, I2_DEPTH, &rp2);
-        lap("Z+U2");
-    }
     // ADR-282 I6: 時間の経過だけで belief が変わる列(核の字母・長さ 2。O3 を S′ にも課す所有者の決定の基準の測定)。
     let (i6_checked, i6) = i6_sweep(cfg, &core, I6_DEPTH, t0);
     let total: usize = i6.values().map(|(n, _)| n).sum();
@@ -1135,11 +1219,15 @@ fn run_config(cfg: Config) -> String {
                     Some(class) => format!("I1 違反 [{class}]"),
                     None => "違反なし".to_string(),
                 };
-                let z = match steps.iter().find_map(|s| violation(Inv::I1Z, s)) {
-                    Some(class) => format!("I1 違反 [{class}]"),
-                    None => "違反なし".to_string(),
-                };
-                format!("旧: {old} / Z: {z}")
+                let mut parts = vec![format!("旧: {old}")];
+                for k in 0..ALT_NAMES.len() {
+                    let v = match steps.iter().find_map(|s| violation(Inv::I1Alt(k), s)) {
+                        Some(class) => format!("I1 違反 [{class}]"),
+                        None => "違反なし".to_string(),
+                    };
+                    parts.push(format!("{}: {v}", ALT_NAMES[k]));
+                }
+                parts.join(" / ")
             }
         };
         let _ = writeln!(out, "  {name}: {} → {verdict}", seq_name(&seq));
@@ -1186,6 +1274,89 @@ fn run_config(cfg: Config) -> String {
         let _ = writeln!(out, "    {n}");
     }
     out
+}
+
+/// ADR-282 V0: 比較用のモデル(Z・Z+U2・S′・S′+U2)の I1・I2 と I3・I4 の掃き出し(`belief_engine_alt_comparison`)。
+/// 旧の測定(`run_config`)とは別のテストにして、時間の予算を分ける。
+fn run_alt_config(cfg: Config) -> String {
+    let t0 = Instant::now();
+    let lap = |what: &str| eprintln!("[timing] {} {what}: {:?}", cfg.name(), t0.elapsed());
+    let mut out = String::new();
+    let full = full_alphabet();
+    let core = core_alphabet();
+    let (main_label, main_alphabet) = if cfg.shared {
+        ("全字母", &full)
+    } else {
+        ("核の字母", &core)
+    };
+    // ADR-282 V0: 比較用のモデル(Z・Z+U2・S′・S′+U2)の I1・I2(同じ字母・同じ長さ。旧と並べて比べる)。U2 の案(新しい
+    // スレッドは閉)は、窓をまたいで同じスレッドの shared では変わらないので、窓ごとに別スレッドの設定だけ回す。
+    for k in 0..ALT_NAMES.len() {
+        let u2 = ALT_NAMES[k].ends_with("+U2");
+        if u2 && cfg.shared {
+            continue;
+        }
+        let r1 = exhaustive(cfg, Inv::I1Alt(k), main_alphabet, FULL_DEPTH, t0);
+        render_exhaustive(
+            &mut out,
+            main_label,
+            cfg,
+            Inv::I1Alt(k),
+            main_alphabet,
+            FULL_DEPTH,
+            &r1,
+        );
+        let r2 = exhaustive(cfg, Inv::I2Alt(k), &core, I2_DEPTH, t0);
+        render_exhaustive(
+            &mut out,
+            "核の字母",
+            cfg,
+            Inv::I2Alt(k),
+            &core,
+            I2_DEPTH,
+            &r2,
+        );
+        lap(ALT_NAMES[k]);
+    }
+    // ADR-282 V0: I3(最後の明示操作が勝つ)・I4(スコープの独立)の掃き出し(核の字母・長さ 3)。
+    let sc = scope_sweep(cfg, &core, SCOPE_DEPTH, t0);
+    let _ = writeln!(
+        out,
+        "\n## {} I3・I4 の掃き出し（核の字母・長さ {SCOPE_DEPTH} まで・検査した列 {}。違反した列の数）",
+        cfg.name(),
+        sc.checked
+    );
+    let _ = writeln!(
+        out,
+        "  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。"
+    );
+    let _ = writeln!(
+        out,
+        "  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。"
+    );
+    for (name, (i3, i3_ex), (i4, i4_ex)) in &sc.rows {
+        let _ = writeln!(
+            out,
+            "  {name:<8} I3 {i3:>4} 本{}  I4 {i4:>4} 本{}",
+            i3_ex
+                .as_ref()
+                .map(|e| format!("(例: {e})"))
+                .unwrap_or_default(),
+            i4_ex
+                .as_ref()
+                .map(|e| format!("(例: {e})"))
+                .unwrap_or_default()
+        );
+    }
+    lap("I3/I4");
+    out
+}
+
+fn alt_golden_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
+        .join("belief_engine_alt_comparison.txt")
 }
 
 fn golden_path() -> PathBuf {
@@ -1271,4 +1442,58 @@ fn bug223_sequences_are_i1_violations_when_ime_state_is_shared() {
             );
         }
     }
+}
+
+/// ADR-282 V0: 旧と比較用のモデル(Z・Z+U2・S′・S′+U2)を同じ事象列で並べる(I1・I2・I3・I4)。数値は golden
+/// `tests/golden/belief_engine_alt_comparison.txt`。旧だけの測定は `belief_engine_invariant_baseline`。
+#[test]
+fn belief_engine_alt_comparison() {
+    let started = Instant::now();
+    let configs = [
+        Config::plain(Grid::Atok, true),
+        Config::plain(Grid::GjiMsime, true),
+        Config::plain(Grid::GjiMsime, false),
+        Config::mixed(Grid::MsimeNative, true),
+        Config::mixed(Grid::GjiMsime, false),
+        Config::mixed(Grid::GjiMsime, true),
+    ];
+    let results: Vec<String> = std::thread::scope(|s| {
+        let handles: Vec<_> = configs
+            .iter()
+            .map(|&cfg| {
+                std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(s, move || run_alt_config(cfg))
+                    .expect("spawn")
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("設定ごとの測定"))
+            .collect()
+    });
+    let mut out = String::from(
+        "# ADR-282 V0: 旧(今の本物の belief)と比較用のモデル(Z・Z+U2・S′・S′+U2)を同じ事象列で並べる。\n\
+         # Z は crates/awase-ime-core/src/state/scope_belief.rs、S′ は tests/support/sprime.rs。旧の数値は\n\
+         # belief_engine_invariant_violations.txt。読み方は docs/adr/282-per-scope-latched-ime-belief-zero-base.md §14。\n\
+         # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test belief_engine_invariant\n",
+    );
+    for r in &results {
+        out.push_str(r);
+    }
+    eprintln!("belief_engine_alt_comparison: {:?}", started.elapsed());
+    let path = alt_golden_path();
+    if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
+        std::fs::write(&path, &out).expect("golden を書けない");
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    assert!(
+        out == expected,
+        "golden {} が現状と一致しない。意図した変化なら UPDATE_GOLDEN=1 で再生成して差分を確認すること。\n\
+         ---- 現状の全文 ----\n{out}---- ここまで ----",
+        path.display()
+    );
 }

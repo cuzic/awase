@@ -171,13 +171,43 @@ pub struct StepRecord {
     /// 診断専用（`belief_engine_invariant.rs` の違反の分類）。
     pub basis: &'static str,
     /// ADR-282 V0: 候補 Z(`ScopeBelief`)を並走させているときの、Z の開閉・Engine の活性・根拠(`None` は並走していない)。
-    pub z_open: Option<bool>,
-    pub z_engine_active: Option<bool>,
-    pub z_basis: Option<&'static str>,
-    /// ADR-282 V0: 候補 Z に U2 の案(新しいスレッドは閉の実測の事前)を足した変種の同じ値。
-    pub zp_open: Option<bool>,
-    pub zp_engine_active: Option<bool>,
-    pub zp_basis: Option<&'static str>,
+    /// ADR-282 V0: 並走させている比較用のモデル(`ALT_NAMES` の順: Z・Z+U2・S′・S′+U2)の、開閉・Engine の活性・根拠。
+    /// 並走させていなければ空。
+    pub alts: Vec<AltView>,
+}
+
+/// ADR-282 V0: 比較用のモデル 1 つの読み出し(`StepRecord::alts`)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AltView {
+    pub open: bool,
+    pub engine_active: bool,
+    pub basis: &'static str,
+}
+
+/// ADR-282 V0: 並走させる比較用のモデルの名前(`StepRecord::alts` の添字の順)。
+pub const ALT_NAMES: [&str; 4] = ["Z", "Z+U2", "S′", "S′+U2"];
+
+/// ADR-282 V0: 比較用のモデル。Z は本物の核(`scope_belief.rs`、本番からは呼ばない)、S′ は `support/sprime.rs` の写し。
+#[derive(Debug, Clone)]
+enum Alt {
+    Z(ScopeBelief),
+    S(super::sprime::GlobalLatch),
+}
+
+impl Alt {
+    fn view(&self) -> awase_windows::state::scope_belief::ScopeView {
+        match self {
+            Self::Z(z) => z.view(),
+            Self::S(s) => s.view(),
+        }
+    }
+
+    fn evolve(&mut self, e: ScopeEvent) {
+        match self {
+            Self::Z(z) => z.evolve(e),
+            Self::S(s) => s.evolve(e),
+        }
+    }
 }
 
 /// 窓 1 つの記述（ADR-277 段階 2）。殻の `FocusTracker.current`（pid・クラス・プロセス・学習による降格）に当たる。
@@ -348,9 +378,8 @@ pub struct Harness {
     /// Windows Terminal の向きで、CI で 6/6 測った振る舞いの写し。閉の向き・変換モードは引き継がない)。既定は空(引き継がない)。
     inherit_open_threads: Vec<u32>,
     /// ADR-282 V0: 候補 Z を本物の hub と並走させる(`with_scope_belief`)。本物の belief・Engine には効かせない。
-    z: Option<ScopeBelief>,
-    /// 候補 Z に U2 の案(新しいスレッドは閉)を足した変種(`with_scope_belief` が `z` と一緒に作る)。
-    zp: Option<ScopeBelief>,
+    /// `ALT_NAMES` の順の比較用のモデル(`with_scope_belief` が作る。空なら並走させていない)。
+    alts: Vec<Alt>,
     /// 窓モデル: 実測学習の表（`ImmCapabilityStore` 相当、(プロセス, クラス) ごと）。戻ってきた窓にも効く。
     learned_unavailable: Vec<(&'static str, &'static str)>,
 }
@@ -399,8 +428,7 @@ impl Harness {
             window: setup.window,
             parked: Vec::new(),
             inherit_open_threads: Vec::new(),
-            z: None,
-            zp: None,
+            alts: Vec::new(),
             learned_unavailable: Vec::new(),
         };
         h.hub.set_is_japanese_ime(true);
@@ -1101,35 +1129,36 @@ impl Harness {
             ),
             focus_epoch: self.epoch,
             basis: self.effective_basis(),
-            z_open: self.z.as_ref().map(|z| z.view().open),
-            z_engine_active: self
-                .z_ctx(self.z.as_ref())
-                .map(|c| self.engine.compute_active(&c)),
-            z_basis: self.z.as_ref().map(|z| z.view().basis),
-            zp_open: self.zp.as_ref().map(|z| z.view().open),
-            zp_engine_active: self
-                .z_ctx(self.zp.as_ref())
-                .map(|c| self.engine.compute_active(&c)),
-            zp_basis: self.zp.as_ref().map(|z| z.view().basis),
+            alts: self
+                .alts
+                .iter()
+                .map(|a| {
+                    let v = a.view();
+                    let ctx = InputContext {
+                        ime_on: v.open,
+                        input_mode: v.input_mode,
+                        ..self.ctx()
+                    };
+                    AltView {
+                        open: v.open,
+                        engine_active: self.engine.compute_active(&ctx),
+                        basis: v.basis,
+                    }
+                })
+                .collect(),
         });
-    }
-
-    /// ADR-282 V0: 候補 Z の belief から作った Engine の文脈(`ctx` の `ime_on`・`input_mode` だけを Z に替えたもの)。
-    fn z_ctx(&self, z: Option<&ScopeBelief>) -> Option<InputContext> {
-        let v = z?.view();
-        Some(InputContext {
-            ime_on: v.open,
-            input_mode: v.input_mode,
-            ..self.ctx()
-        })
     }
 
     /// ADR-282 V0: 候補 Z を並走させる。いまの窓へのフォーカスを Z に流してから使う。窓モデル(`Setup::in_window`)専用。
     pub fn with_scope_belief(&mut self) -> &mut Self {
         let w = self.window.expect("with_scope_belief は窓モデルで使う");
         let settle = awase_windows::tuning::KEY_EFFECT_SETTLE_MS;
-        self.z = Some(ScopeBelief::new(settle));
-        self.zp = Some(ScopeBelief::with_new_thread_prior(settle));
+        self.alts = vec![
+            Alt::Z(ScopeBelief::new(settle)),
+            Alt::Z(ScopeBelief::with_new_thread_prior(settle)),
+            Alt::S(super::sprime::GlobalLatch::new(settle, false)),
+            Alt::S(super::sprime::GlobalLatch::new(settle, true)),
+        ];
         self.z_focus(w, false);
         self
     }
@@ -1149,8 +1178,8 @@ impl Harness {
     }
 
     fn z_evolve(&mut self, e: ScopeEvent) {
-        for z in [self.z.as_mut(), self.zp.as_mut()].into_iter().flatten() {
-            z.evolve(e);
+        for a in &mut self.alts {
+            a.evolve(e);
         }
     }
 
@@ -1164,7 +1193,7 @@ impl Harness {
         let conv_raw = self.last_conv_raw;
         let at_ms = self.now_ms;
         let keymap = &self.keymap;
-        for z in [self.z.as_mut(), self.zp.as_mut()].into_iter().flatten() {
+        for z in &mut self.alts {
             let v = z.view();
             let input = PredictInput {
                 open: v.open,
