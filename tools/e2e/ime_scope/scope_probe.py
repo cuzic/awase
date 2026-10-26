@@ -97,7 +97,8 @@ class Ctx:
 def ts_args(ctx, kind, log, extra):
     flag = "--msime" if ctx.ime == "msime" else "--activate-gji"
     return [str(ctx.dist / "typing_stress.exe"), f"--form={FORM[kind]}", "--mode=scope", "--no-awase", flag,
-            f"--layout={ctx.layout}", "--settle-read", f"--log={log}"] + extra
+            f"--layout={ctx.layout}", "--settle-read", f"--log={log}"] + extra + (
+        [f"--chrome-path={os.environ['SCOPE_CHROME_PATH']}"] if os.environ.get("SCOPE_CHROME_PATH") else [])
 
 
 class ProcA:
