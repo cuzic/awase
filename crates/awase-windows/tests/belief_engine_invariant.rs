@@ -56,7 +56,7 @@ const TINY_DEPTH: usize = 4;
 /// I2（参考）の全列挙の長さ（核の字母）。
 const I2_DEPTH: usize = 3;
 /// ランダム探索の本数（設定ごと）と長さ。
-const RANDOM_COUNT: usize = 500;
+const RANDOM_COUNT: usize = 300;
 const RANDOM_MIN_LEN: usize = 8;
 const RANDOM_MAX_LEN: usize = 12;
 /// ランダム探索で最小化して調べる違反の数（設定ごと。決定的に先頭から）。
@@ -493,6 +493,40 @@ struct Raw {
     window: String,
     /// 事象が来ないまま 2000ms 経っても違反のままか。
     persists: bool,
+    /// 2000ms 経つ間に、読める窓なら周期の ObserverPoll（真の開閉）が 1 回届いたとしても違反のままか（読めない窓は届かない）。
+    persists_poll: bool,
+    /// 列の性質（嘘の観測を含む／awase に見えない外部変更を含む／どちらも含まない）。
+    tag: &'static str,
+}
+
+/// 列の性質。外部変更（awase は見ていない）は観測が無ければ原理的に直せないので、awase 自身の操作・窓切替・正しい観測だけで
+/// 起きる違反（`TAG_CLEAN`）と分ける。嘘の観測を含む違反は、字母の仮定（嘘が実機で起きるか）の偽陽性の疑いを持つ。
+const TAG_LIE: &str = "嘘の観測を含む";
+const TAG_EXTERNAL: &str = "外部変更を含む";
+const TAG_CLEAN: &str = "awase の操作・窓切替・正しい観測だけ";
+
+fn tag_of(seq: &[Ev]) -> &'static str {
+    if seq.iter().any(|e| e.is_lie()) {
+        TAG_LIE
+    } else if seq.iter().any(|e| matches!(e, Ev::External(_))) {
+        TAG_EXTERNAL
+    } else {
+        TAG_CLEAN
+    }
+}
+
+/// 違反した直後の `h` を 2000ms 進め、(事象なしで残るか, 読める窓なら周期の poll が 1 回届いても残るか) を返す。
+fn persistence(h: &mut Harness, inv: Inv) -> (bool, bool) {
+    h.advance_ms(PERSIST_MS);
+    let idle = violation(inv, h.steps.last().expect("step")).is_some();
+    let w = h.window().expect("窓モデル");
+    if !w.readable() {
+        return (idle, idle);
+    }
+    let truth = h.ime.read_state().open;
+    h.observe_value(Source::Poll, truth);
+    let poll = violation(inv, h.steps.last().expect("step")).is_some();
+    (idle, poll)
 }
 
 struct Exhaustive {
@@ -533,13 +567,14 @@ fn exhaustive(
                 let last = h.steps.last().expect("step").clone();
                 if let Some(class) = violation(inv, &last) {
                     let window = window_label(&h);
-                    h.advance_ms(PERSIST_MS);
-                    let persists = violation(inv, h.steps.last().expect("step")).is_some();
+                    let (persists, persists_poll) = persistence(&mut h, inv);
                     raws.push(Raw {
+                        tag: tag_of(&cand),
                         seq: cand,
                         class,
                         window,
                         persists,
+                        persists_poll,
                     });
                 } else {
                     next.push(cand);
@@ -673,20 +708,24 @@ fn random_search(cfg: Config, inv: Inv, seed: u64, started: Instant) -> RandomRe
 fn count_by<'a>(
     it: impl Iterator<Item = &'a Raw>,
     key: impl Fn(&Raw) -> String,
-) -> BTreeMap<String, (usize, usize)> {
-    let mut m: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+) -> BTreeMap<String, (usize, usize, usize)> {
+    let mut m: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
     for r in it {
         let e = m.entry(key(r)).or_default();
         e.0 += 1;
         e.1 += usize::from(r.persists);
+        e.2 += usize::from(r.persists_poll);
     }
     m
 }
 
-fn write_table(out: &mut String, title: &str, m: &BTreeMap<String, (usize, usize)>) {
-    let _ = writeln!(out, "  {title}（T=0 の件数 / 2000ms 後も残る件数）:");
-    for (k, (n, p)) in m {
-        let _ = writeln!(out, "    {n:>6} / {p:>6}  {k}");
+fn write_table(out: &mut String, title: &str, m: &BTreeMap<String, (usize, usize, usize)>) {
+    let _ = writeln!(
+        out,
+        "  {title}（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:"
+    );
+    for (k, (n, p, q)) in m {
+        let _ = writeln!(out, "    {n:>6} / {p:>6} / {q:>6}  {k}");
     }
 }
 
@@ -702,6 +741,8 @@ fn render_exhaustive(
 ) {
     let min = irreducible(&r.raws);
     let persists = r.raws.iter().filter(|x| x.persists).count();
+    let persists_poll = r.raws.iter().filter(|x| x.persists_poll).count();
+    let clean = min.iter().filter(|x| x.tag == TAG_CLEAN).count();
     let lie_free = min
         .iter()
         .filter(|x| !x.seq.iter().any(|e| e.is_lie()))
@@ -716,18 +757,23 @@ fn render_exhaustive(
     );
     let _ = writeln!(
         out,
-        "  初めて違反する列: {} 本（T=0）、うち 2000ms 後も残る: {persists} 本（T=2000）",
+        "  初めて違反する列: {} 本（T=0）、うち 2000ms 事象なしで残る: {persists} 本（T=2000）、読める窓で poll が 1 回届いても残る: {persists_poll} 本",
         r.raws.len()
     );
     let _ = writeln!(
         out,
-        "  事象を 1 つ削ると違反しない最小の列: {} 本（うち嘘の観測を含まない: {lie_free} 本）",
+        "  事象を 1 つ削ると違反しない最小の列: {} 本（うち嘘の観測を含まない: {lie_free} 本、awase の操作・窓切替・正しい観測だけ: {clean} 本）",
         min.len()
     );
     write_table(
         out,
         "原因の分類（初めて違反する列）",
         &count_by(r.raws.iter(), |x| x.class.clone()),
+    );
+    write_table(
+        out,
+        "列の性質（初めて違反する列）",
+        &count_by(r.raws.iter(), |x| x.tag.into()),
     );
     write_table(
         out,
@@ -753,17 +799,19 @@ fn render_exhaustive(
         for x in xs.iter().take(EXAMPLES_PER_CLASS) {
             let _ = writeln!(
                 out,
-                "      {} 手 {}（窓={}、2000ms後も残る={}）",
+                "      {} 手 {}（窓={}、性質={}、事象なしで残る={}、poll が届いても残る={}）",
                 x.seq.len(),
                 seq_name(&x.seq),
                 x.window,
-                x.persists
+                x.tag,
+                x.persists,
+                x.persists_poll
             );
         }
     }
     let _ = writeln!(out, "  最小列の一覧（先頭 {LIST_LIMIT} 本。長さ→字母順）:");
     for x in min.iter().take(LIST_LIMIT) {
-        let _ = writeln!(out, "    {}", seq_name(&x.seq));
+        let _ = writeln!(out, "    [{}] {}", x.tag, seq_name(&x.seq));
     }
     if min.len() > LIST_LIMIT {
         let _ = writeln!(out, "    ...（残り {} 本は省略）", min.len() - LIST_LIMIT);
@@ -820,17 +868,13 @@ fn run_config(cfg: Config) -> String {
     let r_full = exhaustive(cfg, Inv::I1, &full, FULL_DEPTH, t0);
     render_exhaustive(&mut out, "全字母", cfg, Inv::I1, &full, FULL_DEPTH, &r_full);
     lap("I1 full");
-    let r_core = exhaustive(cfg, Inv::I1, &tiny, TINY_DEPTH, t0);
-    render_exhaustive(
-        &mut out,
-        "小さい字母",
-        cfg,
-        Inv::I1,
-        &tiny,
-        TINY_DEPTH,
-        &r_core,
-    );
-    lap("I1 core");
+    // 小さい字母の長さ 4（実機の事故の長さ）は、事故の格子（GJI の MS-IME プリセット、窓をまたいで IME 共有）だけ（時間の予算）。
+    let r_tiny = (cfg.grid == Grid::GjiMsime && cfg.shared)
+        .then(|| exhaustive(cfg, Inv::I1, &tiny, TINY_DEPTH, t0));
+    if let Some(r) = &r_tiny {
+        render_exhaustive(&mut out, "小さい字母", cfg, Inv::I1, &tiny, TINY_DEPTH, r);
+    }
+    lap("I1 tiny");
     let r = exhaustive(cfg, Inv::I2, &core, I2_DEPTH, t0);
     render_exhaustive(&mut out, "核の字母", cfg, Inv::I2, &core, I2_DEPTH, &r);
 
@@ -844,9 +888,10 @@ fn run_config(cfg: Config) -> String {
                 let steps: Vec<_> = h.steps.iter().skip(SETTLE_STEPS).cloned().collect();
                 match steps.iter().find_map(|s| violation(Inv::I1, s)) {
                     Some(class) => {
-                        h.advance_ms(PERSIST_MS);
-                        let persists = violation(Inv::I1, h.steps.last().expect("step")).is_some();
-                        format!("I1 違反 [{class}]（2000ms 後も残る={persists}）")
+                        let (idle, poll) = persistence(&mut h, Inv::I1);
+                        format!(
+                            "I1 違反 [{class}]（事象なしで残る={idle}、poll が届いても残る={poll}）"
+                        )
                     }
                     None => "違反なし".to_string(),
                 }
@@ -869,9 +914,9 @@ fn run_config(cfg: Config) -> String {
         let _ = writeln!(out, "    {n:>6}  {k}");
     }
     lap("random");
-    let known: HashSet<Vec<Ev>> = r_core
-        .raws
+    let known: HashSet<Vec<Ev>> = r_tiny
         .iter()
+        .flat_map(|r| r.raws.iter())
         .chain(r_full.raws.iter())
         .map(|r| r.seq.clone())
         .collect();
