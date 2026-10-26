@@ -12,7 +12,7 @@ pub const L3: u8 = 4;
 pub const L2B: u8 = 8;
 
 /// 既定（実験ブランチごとに変える）。
-pub const DEFAULT: u8 = 0;
+pub const DEFAULT: u8 = 6;
 
 thread_local! {
     static FIXES: Cell<Option<u8>> = const { Cell::new(None) };
