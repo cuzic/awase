@@ -16,8 +16,8 @@ use std::time::Duration;
 use awase::config::{AutoDetectConfig, AutoDetectMode, AutoDetectScope};
 use awase::lang_detect::{
     eisu_write_skip_reason, hiragana_write_skip_reason, DetectParams, EpisodeOutcome, HoldCommand,
-    HoldController, JapaneseEvidence, KanaModel, KeyRole, ObservedKey, StopReason, ThumbOverlap,
-    TrackerConfig, Verdict, WriteFacts,
+    HoldController, JapaneseEvidence, KanaModel, KeyRole, LatinBackground, ObservedKey, StopReason,
+    ThumbOverlap, TrackerConfig, Verdict, WriteFacts, PRODUCTION_KANA_SIDE,
 };
 use awase::ngram::NgramModel;
 use awase::platform::{ImeOpenOutcome, TsfComposition as _};
@@ -114,7 +114,7 @@ impl LangDetectShadow {
         if mode != AutoDetectMode::Off {
             tracing::info!(
                 "[lang-detect] config: mode={:?} scope={:?} en_threshold_effective={} eisu_threshold={} en_threshold={} \
-                 ja_threshold={} idle_ms={} max_ms={} max_keys={} hold_config_ok={}",
+                 ja_threshold={} idle_ms={} max_ms={} max_keys={} hold_config_ok={} model={}",
                 mode,
                 cfg.scope,
                 tracker_cfg.params.en_threshold,
@@ -125,6 +125,7 @@ impl LangDetectShadow {
                 cfg.max_ms,
                 tracker_cfg.params.max_keys,
                 hold_config_ok,
+                awase::lang_detect::production_model_id(),
             );
         }
         Self {
@@ -184,7 +185,13 @@ impl LangDetectShadow {
         let (Some(ngram), Some(normal)) = (self.ngram.as_ref(), normal) else {
             return;
         };
-        self.model = Some(KanaModel::new(ngram, normal));
+        // 仮名側は 3 連の補間、背景はラテン文字の 2 連(ADR-280)。従来の `KanaModel::new` は使わない。
+        self.model = Some(KanaModel::with_models(
+            ngram,
+            normal,
+            PRODUCTION_KANA_SIDE,
+            Some(LatinBackground::embedded()),
+        ));
         self.model_layout = layout_name.to_string();
     }
 

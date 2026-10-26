@@ -3,11 +3,11 @@
 
 `[auto_detect] eisu_threshold`(`--eisu` で期待値を渡す)が実際の awase.exe の判定器の閾値に届いたかを、次の 2 つで見る。
  1. awase.log の起動時の観測行 `[lang-detect] config: ... en_threshold_effective=<値>` が `max(eisu_threshold, en_threshold)` と一致する。
- 2. 固定の合成列(B 境界 `ayre`: llr -14.9978〈nicola_keytop では -14.734〉、E 英数 `build`)の判定(`[lang-detect]` の journal 行の verdict)が期待どおり。
-    B は閾値 14 なら not-japanese、16 なら undecided。E は not-japanese。J(親指+k)は CI では Japanese にならない(無変換が excluded-key)ので、記録だけ表示して合否に含めない。
+ 2. 固定の合成列(B 境界 `wkxd`: llr -14.05〈新しい構成: 仮名 3 連の補間 + ラテン文字の 2 連、ADR-280。旧構成の境界は `ayre` -14.9978〉、E 英数 `build`)の判定(`[lang-detect]` の journal 行の verdict)が期待どおり。
+    B は閾値 13 なら not-japanese、15 なら undecided。E は not-japanese。J(親指+k)は CI では Japanese にならない(無変換が excluded-key)ので、記録だけ表示して合否に含めない。
 列の打鍵時刻(typing_stress.log の langdetect 行の start/end)で awase.log を切り出す。本文は読まない。
 INVALID(終了コード 3)は「実行できなかった」だけ: abort・完走マーカー無し・config 行/試行の記録が無い。FAIL は終了コード 1。
-使い方: check_langdetect.py --eisu 14|16 [--json out.json] <typing_stress.log> <awase.log>
+使い方: check_langdetect.py --eisu 13|15 [--json out.json] <typing_stress.log> <awase.log>
 出力の最後の行: `LANGDETECT: verdict=PASS|FAIL|INVALID eisu=… effective=… B=<ok>/<n> E=<ok>/<n> J=<ok>/<n>(J は情報のみ)`
 """
 import argparse
@@ -35,7 +35,7 @@ def expected_verdict(kind: str, eisu: float) -> str:
         return "japanese"
     if kind == "E":
         return "not-japanese"
-    return "not-japanese" if eisu <= 14.5 else "undecided"  # B: llr -14.9978
+    return "not-japanese" if eisu <= 14.0 else "undecided"  # B: llr -14.05
 
 
 def episodes(timed, start: str, end: str, slack_ms: int = 300) -> list:

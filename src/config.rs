@@ -517,6 +517,12 @@ pub struct AutoDetectConfig {
 
 impl Default for AutoDetectConfig {
     /// 閾値は人工データのオフライン評価による（`lang_detect::DetectParams::default` の doc 参照）。
+    ///
+    /// **尺度の注意（ADR-280）**: 判定の背景を一様分布からラテン文字の 2 連に替えたので、対数尤度比の尺度が変わった。
+    /// 同じ「日本語→英数の誤判定率」になる閾値の対応（旧 = 従来の構成 `ja_threshold = 4`、新 = 今の構成）:
+    /// 旧 8 → 新 8.0（誤判定 7.0%）、旧 10 → 9.5（3.5%）、旧 12 → 11.5（1.6%）、旧 14 → 13.0（0.95%）、旧 16 → 14.5（0.43%）、
+    /// 旧 18 → 16.0（0.22%）、旧 20 → 16.5（0.15%）。`config.toml` に旧尺度の値を書いている場合は、この表で読み替える。
+    /// `ja_threshold` は旧 4 → 新 14（非日本語を日本語と誤確定する率を従来以下にするため。旧尺度の 4 のままだとコードの 5.8% を誤確定する）。
     /// `idle_ms` は影の観測で再校正するため、短め（3 秒）にして多めに記録する。
     fn default() -> Self {
         Self {
@@ -527,9 +533,9 @@ impl Default for AutoDetectConfig {
             max_keys: 7,
             max_ms: 2500,
             idle_ms: 3000,
-            ja_threshold: 4.0,
+            ja_threshold: 14.0,
             en_threshold: 8.0,
-            eisu_threshold: 14.0,
+            eisu_threshold: 13.0,
         }
     }
 }
@@ -3232,9 +3238,9 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
         assert_eq!(config.auto_detect.scope, AutoDetectScope::Unobserved);
         assert_eq!(config.auto_detect.max_keys, 7);
         assert_eq!(config.auto_detect.max_ms, 2500);
-        assert!((config.auto_detect.ja_threshold - 4.0).abs() < f64::EPSILON);
+        assert!((config.auto_detect.ja_threshold - 14.0).abs() < f64::EPSILON);
         assert!((config.auto_detect.en_threshold - 8.0).abs() < f64::EPSILON);
-        assert!((config.auto_detect.eisu_threshold - 14.0).abs() < f64::EPSILON);
+        assert!((config.auto_detect.eisu_threshold - 13.0).abs() < f64::EPSILON);
     }
 
     #[test]

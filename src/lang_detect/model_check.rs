@@ -18,8 +18,8 @@ use std::sync::OnceLock;
 
 use super::{
     DetectEvent, DetectParams, EpisodeDetector, EpisodeTracker, HoldCommand, HoldController,
-    JapaneseEvidence, KanaModel, KeyRole, ObservedKey, PhaseKind, StopReason, ThumbOverlap,
-    TrackerConfig, Trigger, Verdict,
+    JapaneseEvidence, KanaModel, KanaSide, KeyRole, LatinBackground, ObservedKey, PhaseKind,
+    StopReason, ThumbOverlap, TrackerConfig, Trigger, Verdict,
 };
 use crate::engine::fsm_types::ThumbSide;
 use crate::ngram::NgramModel;
@@ -44,9 +44,32 @@ const NN: P = (1, 5);
 
 const MAX_MS: u64 = 2500;
 const IDLE_MS: u64 = 3000;
-const JA: f64 = 2.0;
-const EN: f64 = 5.0;
 const MAX_KEYS: usize = 4;
+
+/// 検査するモデルの構成。`Legacy` = 従来（`KanaModel::new`: 2 連 + 一様分布）、`Extended` = 新（`with_models`: 3 連の補間 +
+/// ラテン文字の 2 連。同梱の `data/latin_bigram.txt`）。閾値は、字母の 1 打ごとの増分が閾値を挟んで色々な判定に分かれるように、
+/// 構成ごとに選んだ合成の値（実機の既定値ではない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Variant {
+    Legacy,
+    Extended,
+}
+
+impl Variant {
+    const fn ja(self) -> f64 {
+        match self {
+            Self::Legacy => 2.0,
+            Self::Extended => 6.0,
+        }
+    }
+
+    const fn en(self) -> f64 {
+        match self {
+            Self::Legacy => 5.0,
+            Self::Extended => 5.5,
+        }
+    }
+}
 
 const BIGRAMS: [(char, char, f64); 4] = [
     ('か', 'た', 0.0),
@@ -55,17 +78,32 @@ const BIGRAMS: [(char, char, f64); 4] = [
     ('か', 'こ', -3.0),
 ];
 
+const TRIGRAMS: [(char, char, char, f64); 4] = [
+    ('か', 'た', 'こ', 0.0),
+    ('た', 'こ', 'さ', 0.0),
+    ('か', 'た', 'さ', -2.0),
+    ('か', 'こ', 'さ', -1.0),
+];
+
 fn pp(p: P) -> PhysicalPos {
     PhysicalPos::new(p.0, p.1)
 }
 
-fn kana_model() -> &'static KanaModel {
-    static MODEL: OnceLock<KanaModel> = OnceLock::new();
-    MODEL.get_or_init(|| {
-        let csv: String = BIGRAMS
+fn kana_model(v: Variant) -> &'static KanaModel {
+    static LEGACY: OnceLock<KanaModel> = OnceLock::new();
+    static EXTENDED: OnceLock<KanaModel> = OnceLock::new();
+    let cell = match v {
+        Variant::Legacy => &LEGACY,
+        Variant::Extended => &EXTENDED,
+    };
+    cell.get_or_init(|| {
+        let mut csv: String = BIGRAMS
             .iter()
             .map(|(a, b, s)| format!("2,{a}{b},{s:?}\n"))
             .collect();
+        for (a, b, c, s) in TRIGRAMS {
+            csv.push_str(&format!("3,{a}{b}{c},{s:?}\n"));
+        }
         let ngram = NgramModel::from_csv(&csv, 0, 0, 0).expect("csv");
         let mut face = YabFace::new();
         for (p, romaji, kana) in [
@@ -84,15 +122,23 @@ fn kana_model() -> &'static KanaModel {
             );
         }
         face.insert(pp(SYM), YabValue::Literal("1".to_string()));
-        KanaModel::new(&ngram, &face)
+        match v {
+            Variant::Legacy => KanaModel::new(&ngram, &face),
+            Variant::Extended => KanaModel::with_models(
+                &ngram,
+                &face,
+                KanaSide::TrigramInterp,
+                Some(LatinBackground::embedded()),
+            ),
+        }
     })
 }
 
-fn tracker_cfg() -> TrackerConfig {
+fn tracker_cfg(v: Variant) -> TrackerConfig {
     TrackerConfig {
         params: DetectParams {
-            ja_threshold: JA,
-            en_threshold: EN,
+            ja_threshold: v.ja(),
+            en_threshold: v.en(),
             max_keys: MAX_KEYS,
         },
         thumb_overlap: ThumbOverlap::Enabled,
@@ -103,7 +149,67 @@ fn tracker_cfg() -> TrackerConfig {
 
 // ---- 仮名の尤度（KanaModel の doc の式から別に計算する）----
 
+/// 参照のラテン文字の 2 連（`data/latin_bigram.txt` を、実装とは別の書き方で読む。値は `-ln p` の 1/16 刻みの 16 進 2 桁）。
+struct RefLatin {
+    chars: Vec<char>,
+    uni: Vec<f64>,
+    bi: Vec<Vec<f64>>,
+}
+
+const LATIN_TEXT: &str = include_str!("../../data/latin_bigram.txt");
+const LATIN_ROWS: [&str; 4] = ["1234567890-", "qwertyuiop@[", "asdfghjkl;:]", "zxcvbnm,./"];
+
+impl RefLatin {
+    fn parse() -> Self {
+        let body: Vec<&str> = LATIN_TEXT
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .collect();
+        let chars: Vec<char> = body[0].trim_start_matches("chars=").chars().collect();
+        let row = |t: &str| -> Vec<f64> {
+            t.as_bytes()
+                .chunks(2)
+                .map(|h| {
+                    -f64::from(
+                        u8::from_str_radix(std::str::from_utf8(h).expect("hex"), 16).expect("hex"),
+                    ) / 16.0
+                })
+                .collect()
+        };
+        let uni = row(body[1].trim_start_matches("uni="));
+        let bi = body[2..].iter().map(|l| row(l)).collect();
+        Self { chars, uni, bi }
+    }
+
+    fn index(&self, c: char) -> usize {
+        self.chars.iter().position(|&x| x == c).expect("格子の文字")
+    }
+
+    fn ln_p(&self, prev: Option<char>, c: char) -> f64 {
+        match prev {
+            Some(p) => self.bi[self.index(p)][self.index(c)],
+            None => self.uni[self.index(c)],
+        }
+    }
+}
+
+/// 位置に対応する格子の文字（格子の外は `None`）。
+fn latin_char(p: P) -> Option<char> {
+    LATIN_ROWS
+        .get(usize::from(p.0))
+        .and_then(|row| row.chars().nth(usize::from(p.1)))
+}
+
+/// 参照が打鍵ごとに持ち越す文脈。
+#[derive(Clone, Copy, Default)]
+struct RefCtx {
+    prev2: Option<char>,
+    prev: Option<char>,
+    prevc: Option<char>,
+}
+
 struct RefKana {
+    variant: Variant,
     freq: HashMap<(char, char), f64>,
     left: HashMap<char, f64>,
     listed: HashMap<char, f64>,
@@ -113,11 +219,22 @@ struct RefKana {
     total: f64,
     key_count: f64,
     kana_of: HashMap<P, char>,
+    /// 3 連: 頻度
+    tri: HashMap<(char, char, char), f64>,
+    /// 3 連: 接頭辞ごとの (頻度の和, 表にある数)
+    pre: HashMap<(char, char), (f64, f64)>,
+    floor3: f64,
+    latin: RefLatin,
 }
 
-fn ref_kana() -> &'static RefKana {
-    static REF: OnceLock<RefKana> = OnceLock::new();
-    REF.get_or_init(|| {
+fn ref_kana(v: Variant) -> &'static RefKana {
+    static LEGACY: OnceLock<RefKana> = OnceLock::new();
+    static EXTENDED: OnceLock<RefKana> = OnceLock::new();
+    let cell = match v {
+        Variant::Legacy => &LEGACY,
+        Variant::Extended => &EXTENDED,
+    };
+    cell.get_or_init(|| {
         let mut freq = HashMap::new();
         let mut left: HashMap<char, f64> = HashMap::new();
         let mut listed: HashMap<char, f64> = HashMap::new();
@@ -133,7 +250,19 @@ fn ref_kana() -> &'static RefKana {
             min = min.min(f);
         }
         let total = left.values().sum();
+        let mut tri = HashMap::new();
+        let mut pre: HashMap<(char, char), (f64, f64)> = HashMap::new();
+        let mut min3 = f64::INFINITY;
+        for (a, b, c, score) in TRIGRAMS {
+            let f = 10_f64.powf(score);
+            tri.insert((a, b, c), f);
+            let e = pre.entry((a, b)).or_insert((0.0, 0.0));
+            e.0 += f;
+            e.1 += 1.0;
+            min3 = min3.min(f);
+        }
         RefKana {
+            variant: v,
             freq,
             left,
             listed,
@@ -144,22 +273,18 @@ fn ref_kana() -> &'static RefKana {
             // 定義されたキー: か・た・こ・さ・ん・記号
             key_count: 6.0,
             kana_of: HashMap::from([(KA, 'か'), (TA, 'た'), (KO, 'こ'), (SA, 'さ'), (NN, 'ん')]),
+            tri,
+            pre,
+            floor3: min3 * 0.1,
+            latin: RefLatin::parse(),
         }
     })
 }
 
 impl RefKana {
-    /// 1 打鍵ぶんの対数尤度比の増分。仮名に読めないキーは 0（中立）。
-    fn delta(&self, prev: Option<char>, p: P) -> f64 {
-        let Some(&token) = self.kana_of.get(&p) else {
-            return 0.0;
-        };
-        // 語彙の外の仮名は表で測れないので中立
-        if !self.vocab.contains(&token) {
-            return 0.0;
-        }
-        let background = -self.key_count.ln();
-        let ja = match prev {
+    /// 仮名 2 連の `ln P_ja(token | prev)`。
+    fn ln_ja2(&self, prev: Option<char>, token: char) -> f64 {
+        match prev {
             Some(a) if self.vocab.contains(&a) => {
                 let denominator = (self.vocab_len - self.listed.get(&a).copied().unwrap_or(0.0))
                     * self.floor
@@ -171,8 +296,49 @@ impl RefKana {
                 let left = self.left.get(&token).copied().unwrap_or(0.0);
                 ((left + self.floor) / (self.vocab_len * self.floor + self.total)).ln()
             }
+        }
+    }
+
+    /// 1 打鍵ぶんの増分と次の文脈。`Legacy` は従来（2 連 + 一様。語彙の外の仮名は直前の文脈に残す）、`Extended` は
+    /// `ln P_ja(仮名 | 直前の 2 仮名または 1 仮名) − ln P_lat(文字 | 直前の文字)`（記号・語彙の外・格子の外は文脈を切って 0）。
+    fn step(&self, ctx: RefCtx, p: P) -> (f64, RefCtx) {
+        let token = self.kana_of.get(&p).copied();
+        if self.variant == Variant::Legacy {
+            let next = RefCtx {
+                prev: token,
+                ..RefCtx::default()
+            };
+            let Some(token) = token else {
+                return (0.0, next);
+            };
+            if !self.vocab.contains(&token) {
+                return (0.0, next); // 語彙の外の仮名は表で測れないので中立
+            }
+            return (self.ln_ja2(ctx.prev, token) + self.key_count.ln(), next);
+        }
+        let reset = (0.0, RefCtx::default());
+        let Some(token) = token else {
+            return reset;
         };
-        ja - background
+        let (true, Some(c)) = (self.vocab.contains(&token), latin_char(p)) else {
+            return reset;
+        };
+        let mut ja = self.ln_ja2(ctx.prev, token);
+        if let (Some(a), Some(b)) = (ctx.prev2, ctx.prev) {
+            if let Some(&(sum, n)) = self.pre.get(&(a, b)) {
+                let q3 = self.tri.get(&(a, b, token)).copied().unwrap_or(self.floor3)
+                    / ((self.vocab_len - n) * self.floor3 + sum);
+                ja = (0.7 * q3 + 0.3 * ja.exp()).ln();
+            }
+        }
+        (
+            ja - self.latin.ln_p(ctx.prevc, c),
+            RefCtx {
+                prev2: ctx.prev,
+                prev: Some(token),
+                prevc: Some(c),
+            },
+        )
     }
 }
 
@@ -240,22 +406,24 @@ fn normalize(cmds: &[HoldCommand<u32>]) -> Vec<Cmd> {
 
 /// 参照の判定器（ADR-263 D3）。
 struct RefDet {
+    rk: &'static RefKana,
     thumbs: [bool; 2],
     chars: BTreeSet<P>,
     presses: usize,
     llr: f64,
-    prev: Option<char>,
+    ctx: RefCtx,
     verdict: Verdict,
 }
 
 impl RefDet {
-    fn new() -> Self {
+    fn new(rk: &'static RefKana) -> Self {
         Self {
+            rk,
             thumbs: [false; 2],
             chars: BTreeSet::new(),
             presses: 0,
             llr: 0.0,
-            prev: None,
+            ctx: RefCtx::default(),
             verdict: Verdict::Pending,
         }
     }
@@ -269,12 +437,12 @@ impl RefDet {
             return;
         }
         self.presses += 1;
-        let k = ref_kana();
-        self.llr += k.delta(self.prev, p);
-        self.prev = k.kana_of.get(&p).copied();
-        self.verdict = if self.llr >= JA {
+        let (delta, ctx) = self.rk.step(self.ctx, p);
+        self.llr += delta;
+        self.ctx = ctx;
+        self.verdict = if self.llr >= self.rk.variant.ja() {
             Verdict::Japanese(JapaneseEvidence::Likelihood)
-        } else if self.llr <= -EN {
+        } else if self.llr <= -self.rk.variant.en() {
             Verdict::NotJapanese
         } else if self.presses >= MAX_KEYS {
             Verdict::Undecided
@@ -323,6 +491,7 @@ struct RefStep {
 
 /// 参照の追跡器（ADR-263 D1: 窓切替・長い無操作の最初の Down でエピソードを始める）。
 struct RefTracker {
+    rk: &'static RefKana,
     last_scope: Option<u64>,
     last_key: Option<u64>,
     armed: Option<(Trigger, u64)>,
@@ -331,8 +500,9 @@ struct RefTracker {
 }
 
 impl RefTracker {
-    fn new() -> Self {
+    fn new(rk: &'static RefKana) -> Self {
         Self {
+            rk,
             last_scope: None,
             last_key: None,
             armed: None,
@@ -382,7 +552,7 @@ impl RefTracker {
                         idle: idle_ms,
                         scope,
                         start: now,
-                        det: RefDet::new(),
+                        det: RefDet::new(self.rk),
                     });
                     self.started_total += 1;
                     started = true;
@@ -473,9 +643,9 @@ impl RefHold {
         }
     }
 
-    fn new() -> Self {
+    fn new(v: Variant) -> Self {
         Self {
-            tr: RefTracker::new(),
+            tr: RefTracker::new(ref_kana(v)),
             held: Vec::new(),
             holding: false,
         }
@@ -972,10 +1142,10 @@ fn mirror_timer(trk: &mut EpisodeTracker, scope: u64) {
 
 fn run_observing(seq: &[Ev], may_hold: bool, obs: &mut Transitions) -> Result<(), String> {
     let mut prev = PhaseKind::Idle;
-    let m = kana_model();
-    let mut imp: HoldController<u32> = HoldController::new(tracker_cfg());
-    let mut trk = EpisodeTracker::new(tracker_cfg());
-    let mut rf = RefHold::new();
+    let m = kana_model(Variant::Extended);
+    let mut imp: HoldController<u32> = HoldController::new(tracker_cfg(Variant::Extended));
+    let mut trk = EpisodeTracker::new(tracker_cfg(Variant::Extended));
+    let mut rf = RefHold::new(Variant::Extended);
     let mut inv = Inv::default();
     let (mut now, mut scope, mut id) = (0_u64, 1_u64, 0_u32);
     let fail = |i: usize, what: &str| format!("step {i} ({:?}): {what}", seq.get(i));
@@ -1142,6 +1312,7 @@ fn random_long_sequences_with_a_fixed_seed() {
 
 #[derive(Clone, Copy, Debug)]
 struct DetCfg {
+    variant: Variant,
     params: DetectParams,
     overlap: ThumbOverlap,
     thumbs_held: [bool; 2],
@@ -1181,8 +1352,8 @@ fn check_detector(
     let mut thumbs = cfg.thumbs_held;
     let mut presses = 0_usize;
     let mut llr = 0.0_f64;
-    let mut prev: Option<char> = None;
-    let k = ref_kana();
+    let mut ctx = RefCtx::default();
+    let k = ref_kana(cfg.variant);
     for (i, ev) in seq.iter().enumerate() {
         let before = (d.verdict(), d.llr(), d.presses());
         let v = d.observe(model, *ev);
@@ -1213,8 +1384,9 @@ fn check_detector(
                         counted = true;
                         presses += 1;
                         if usable {
-                            llr += k.delta(prev, q);
-                            prev = k.kana_of.get(&q).copied();
+                            let (delta, next) = k.step(ctx, q);
+                            llr += delta;
+                            ctx = next;
                         }
                     }
                 }
@@ -1311,11 +1483,12 @@ fn enumerate_detector(model: &KanaModel, usable: bool, cfg: DetCfg, len: usize) 
     }
 }
 
-fn det_cfg(overlap: ThumbOverlap, thumbs_held: [bool; 2]) -> DetCfg {
+fn det_cfg(variant: Variant, overlap: ThumbOverlap, thumbs_held: [bool; 2]) -> DetCfg {
     DetCfg {
+        variant,
         params: DetectParams {
-            ja_threshold: JA,
-            en_threshold: EN,
+            ja_threshold: variant.ja(),
+            en_threshold: variant.en(),
             max_keys: MAX_KEYS,
         },
         overlap,
@@ -1325,24 +1498,67 @@ fn det_cfg(overlap: ThumbOverlap, thumbs_held: [bool; 2]) -> DetCfg {
 
 #[test]
 fn detector_all_sequences_of_length_5_with_overlap() {
-    let m = kana_model();
+    let m = kana_model(Variant::Extended);
     assert!(m.usable(), "表のある合成モデルは使える");
-    let n = enumerate_detector(m, true, det_cfg(ThumbOverlap::Enabled, [false; 2]), 5);
+    let n = enumerate_detector(
+        m,
+        true,
+        det_cfg(Variant::Extended, ThumbOverlap::Enabled, [false; 2]),
+        5,
+    );
     assert_eq!(n, 14_usize.pow(5));
 }
 
 #[test]
 fn detector_all_sequences_up_to_length_4_in_every_configuration() {
-    let m = kana_model();
     let mut total = 0;
-    for overlap in [ThumbOverlap::Enabled, ThumbOverlap::Disabled] {
-        for thumbs_held in [[false; 2], [true, false], [false, true]] {
-            for len in 1..=4 {
-                total += enumerate_detector(m, true, det_cfg(overlap, thumbs_held), len);
+    for variant in [Variant::Legacy, Variant::Extended] {
+        let m = kana_model(variant);
+        for overlap in [ThumbOverlap::Enabled, ThumbOverlap::Disabled] {
+            for thumbs_held in [[false; 2], [true, false], [false, true]] {
+                for len in 1..=4 {
+                    total +=
+                        enumerate_detector(m, true, det_cfg(variant, overlap, thumbs_held), len);
+                }
             }
         }
     }
-    assert_eq!(total, 6 * (14 + 196 + 2744 + 38_416));
+    assert_eq!(total, 2 * 6 * (14 + 196 + 2744 + 38_416));
+}
+
+/// 新しい構成が `new`（従来）と違う振る舞いをする点を、判定器の入力の列で固定する:
+/// 3 連の文脈が効くこと、語彙の外の仮名・記号で文脈が切れること、ラテン文字の背景が効くこと。
+#[test]
+fn extended_model_uses_trigram_context_and_latin_background() {
+    let ext = kana_model(Variant::Extended);
+    let leg = kana_model(Variant::Legacy);
+    let llr_of = |m: &KanaModel, keys: &[P]| {
+        let mut d = EpisodeDetector::new(
+            DetectParams {
+                ja_threshold: 1e9,
+                en_threshold: 1e9,
+                max_keys: 99,
+            },
+            ThumbOverlap::Enabled,
+            [false; 2],
+        );
+        for &k in keys {
+            d.observe(m, DetectEvent::CharDown(pp(k)));
+            d.observe(m, DetectEvent::CharUp(pp(k)));
+        }
+        d.llr()
+    };
+    // 「かたこ」は 3 連の表にある並び。3 連を引いた分、従来の 2 連 + 一様分布とは違う値になる。
+    assert!((llr_of(ext, &[KA, TA, KO]) - llr_of(leg, &[KA, TA, KO])).abs() > 0.5);
+    // 語彙の外の仮名(ん)は増分 0 で文脈を切る: 「ん」を挟むと、前後が別々の先頭として数えられる。
+    let split = llr_of(ext, &[KA, NN, TA]);
+    let alone = llr_of(ext, &[KA]) + llr_of(ext, &[TA]);
+    assert!((split - alone).abs() < 1e-9, "{split} vs {alone}");
+    // 記号も同じ。
+    let split = llr_of(ext, &[KA, SYM, TA]);
+    assert!((split - alone).abs() < 1e-9, "{split} vs {alone}");
+    // 英語の並び(w→e→r)は日本語の仮名の並び(か→た→こ)より背景が高く、同じ仮名の表でも増分が小さい。
+    assert!(llr_of(ext, &[SA]) < -5.0, "さ(t)は先頭で強く英数側");
 }
 
 #[test]
@@ -1371,7 +1587,7 @@ fn detector_with_an_unusable_table_decides_only_by_overlap() {
         total += enumerate_detector(
             &model,
             false,
-            det_cfg(ThumbOverlap::Enabled, [false; 2]),
+            det_cfg(Variant::Legacy, ThumbOverlap::Enabled, [false; 2]),
             len,
         );
     }

@@ -3,8 +3,9 @@
 //!
 //! 1 試行 = IME を ON にそろえる → 無操作を `--ld-idle=MS`(既定 3800。`idle_ms` 既定 3000 を超える)置く → 列を打つ → `--ld-wait=MS`
 //! (既定 4000。`max_ms` 既定 2500 を超える)待つ。列は次の 3 種類(親指なしの未シフト面、Space を含まない):
-//!  - `B`(境界): `ayre`。llr = 1.5741 → -4.6360 → -8.5266 → -14.9978。閾値 14 なら 4 打目で NotJapanese、16 なら決まらない。
-//!  - `E`(英数): `build`。llr = -6.4998 → -15.6293 → -19.4536。閾値 14 でも 16 でも NotJapanese。
+//!  - `B`(境界): `wkxd`。llr = -1.45 → -0.55 → -10.47 → -14.05(新しい構成: 仮名 3 連の補間 + ラテン文字の 2 連、ADR-280)。閾値 13 なら 4 打目で
+//!    NotJapanese、15 なら決まらない。旧構成の境界は `ayre`(-14.9978。閾値 14/16)だったが、尺度が変わったので取り替えた。
+//!  - `E`(英数): `build`。llr = -6.16 → -16.82 → -21.24。閾値 13 でも 15 でも 2 打目で NotJapanese。
 //!  - `J`(日本語): `k` を押している間に左親指(無変換)を重ねる(文字先行の親指との重なり)。どの閾値でも Japanese。
 //! 記録は `langdetect` 行(試行の開始・終了の UTC 時刻。check_langdetect.py が awase.log を時刻で切り出す)。
 
@@ -51,7 +52,7 @@ pub(crate) fn langdetect_scenario(child: HWND) {
         &json!({"type":"langdetect_config","trials":trials,"idle_ms":idle,"wait_ms":wait,"interval_ms":iv}),
     );
     for n in 0..trials {
-        for (kind, keys) in [("B", "ayre"), ("E", "build"), ("J", "k")] {
+        for (kind, keys) in [("B", "wkxd"), ("E", "build"), ("J", "k")] {
             if !focus_ok() {
                 refocus();
             }
