@@ -82,21 +82,40 @@ pub(crate) fn send_paced(inputs: Vec<INPUT>, delay_after_ms: u32) {
 }
 
 /// 待っている間に `send_input_safe` が呼ばれたら、その送信をキューの後ろに回す。回したら `true`(呼び出し側は送らない)。
+///
+/// 待ちが [`STALL_RECOVERY_MS`] を超えて止まっていたら、並んでいた分を先に流してガードを手放し、`false` を返す
+/// (呼び出し側が自分の分をそのあとに送るので、順序は保たれる)。流さずに捨てると、並んでいたキーの↑が
+/// 届かず、ガードも残って物理キーが保留されたままになる。
 pub(crate) fn divert(inputs: &[INPUT]) -> bool {
-    PACER
+    let submit = PACER
         .try_with(|p| {
             if p.direct.get() {
-                return false;
+                return None;
             }
             let mut queue = p.queue.borrow_mut();
             // 待っている間だけ回す(待っていなければ、`submit` は何も並べずに `SendNow` を返してしまう)。
-            queue.is_pacing()
-                && matches!(
-                    queue.submit(inputs.to_vec(), 0, crate::clock::current_tick_ms()),
-                    Submit::Queued
-                )
+            queue
+                .is_pacing()
+                .then(|| queue.submit(inputs.to_vec(), 0, crate::clock::current_tick_ms()))
         })
-        .unwrap_or(false)
+        .ok()
+        .flatten();
+    match submit {
+        Some(Submit::Queued) => true,
+        Some(Submit::Recovered { flushed, .. }) => {
+            tracing::warn!(
+                "[key-pacer] 待ちが {STALL_RECOVERY_MS}ms 進まなかったので復帰する(溜まっていた {} 件を流す)",
+                flushed.len()
+            );
+            for stale in &flushed {
+                send_direct(stale);
+            }
+            // 遅延 0 の提出なので `arm` は無い: 状態は `Idle` に戻っており、ガードだけが残っている。
+            release_gate();
+            false
+        }
+        Some(Submit::SendNow { .. }) | None => false,
+    }
 }
 
 /// キューを通さずに、実際に `SendInput` へ送る(`divert` に並べ直されない)。
