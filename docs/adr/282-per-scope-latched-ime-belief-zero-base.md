@@ -15,11 +15,13 @@ summary: |-
   (5) 不確実なときは所有者の判断どおり、読めない窓は ON(かな)、読める窓は観測、(6) **belief のラッチと、書き込み(drift correction・授権)の根拠の寿命を分け**、
   書き込みの根拠は利用者の操作(`UserIntentSource` の範囲)だけ・今の寿命のままにする。IME への書き込みの方針は変えない(ADR-191・212 のまま)。
   局所修正(L1〜L3)を同じオラクルで測った結果(PR #868): 真が shared なら L1(予測で `desired_open` を書く、+7 行)で msime の I1 405 → 153・核の最小列 36 → 0。
-  真が per-thread なら I1・I2 を同時に減らす局所修正は無い(L1 は I2 を 57 → 109)。残る 153 本は嘘の観測・外部変更で、どちらの案でも観測の手段と既定の設計が要る。ゼロベースが要るかは実機の保持単位の測定で決まる(§13.2)。
+  真が per-thread なら I1・I2 を同時に減らす局所修正は無い(L1 は I2 を 57 → 109)。残る 153 本は嘘の観測・外部変更で、どちらの案でも観測の手段と既定の設計が要る。
+  保持単位の CI 測定(run 40327981441)では窓の種類で振る舞いが違い(読める窓・実 Chrome はスレッドごと、MS-IME × Windows Terminal は入場時に開を引き継ぐ、GJI × WT は未確定)、単一の局所修正は片方の窓で I2 を増やす。
+  よって少なくとも「窓の種類ごとに持ち越すかの規則」(中間案 L4)が要り、それ以上のゼロベースが要るかは V0 で L4 と比べて決める(§13.2)。
 status: |-
   起草(2026-10-26)→ Opus レビュー round 1(Blocker 2・Major 9・Minor 9)を反映した改訂(2026-10-26)。未確定(round 2 待ち)。
   所有者の判断 4 件(かなの範囲・不確実なときの既定・最後の明示操作が勝つ・窓ごとに独立)を決定として反映。BUG-221・ADR-281 の残りを範囲に含めた(所有者判断 2026-10-26)。
-  依存する PR: #857(基準の測定)は 2026-10-26 にマージ済み(`gh pr view 857`)。#854(BUG-223)は OPEN。局所修正 L1〜L3 の測定は PR #868(OPEN、docs のみ)で出た(§13)。保持単位の CI 測定は別担当が実施中(結果待ち)。
+  依存する PR: #857(基準の測定)は 2026-10-26 にマージ済み(`gh pr view 857`)。#854(BUG-223)は OPEN。局所修正 L1〜L3 の測定は PR #868(OPEN、docs のみ)で出た(§13)。保持単位の CI 測定は run 40327981441 で一部出た(§1.4。読める窓・実 Chrome はスレッドごと、MS-IME × WT は入場時に開を引き継ぐ、GJI × WT は未確定)。
   別セッションの Opus コードレビューの入力 4 件を §4.14 に反映(コードで確認、症状は未確認)。CI 検証バッチ(§5.5)は未実施。未決 U1〜U13 は所有者の確認待ち。実装はまだ(コード・テストは不変)。
 related_adr:
   - "ADR-082"
@@ -79,7 +81,7 @@ Opus レビュー round 1 の指摘 ID(B1・B2・M1〜M9・m1〜m9)への対応�
 
 | # | 案 | 前提 |
 |---|---|---|
-| P1 | belief を **IME の保持単位(スコープ)ごと**に持つ。粒度は (IME, 窓の種類, 設定) ごとのデータ `ScopeModel ∈ {PerThread, Shared}`。PerThread の鍵は (pid, フォーカス先のスレッド) | 保持単位がスレッドという CI 実測は、読める Win32 EDIT の窓・Windows Server・SPI=0・IMM32 同定の MS-IME に限られる(§1.4)。読めない窓は未測定(U4、§5.5 B1)。**V0 の前に B1 を回す** |
+| P1 | belief を **IME の保持単位(スコープ)ごと**に持つ。粒度は (IME, 窓の種類, 軸) ごとのデータ `ScopeModel ∈ {PerThread, InheritOnEntry, Shared}`。PerThread の鍵は (pid, フォーカス先のスレッド) | CI 測定(run 40327981441、§1.4): 読める Win32 窓・実 Chrome は GJI・MS-IME とも PerThread、MS-IME × Windows Terminal の開閉は入場時に他の窓の開を引き継ぐ(InheritOnEntry)、GJI × WT・WezTerm・UWP は未確定(U4、§5.5 B1 の残り) |
 | P6 | **ポーリングを明示意図から切り離す**(D6) | 今の早期 return が担う 3 つの役割(ADR-187 の通過マークの保護・ADR-279 P0 の起点・GJI の I/O 推論を drift の根拠にしない)と、「@」(BUG-113 系)との関係を置き換え・確認してから(§4.12、§5.5 B8)。満たせなければ D6 は採らず、予測の主張は止まったポーリングのまま保持する |
 
 ## 1. 背景
@@ -136,6 +138,24 @@ journal の `effective-open-flip → false` のうち、所有者の IME-OFF キ
 MS-IME の構成は TIP を `MicrosoftIme (Other)`(IMM32 HKL)と同定していた(同 §3 の 2)。**TSF ネイティブのアプリ(Chrome・VS Code・WezTerm)は同 §4 が未確認と書いている**。
 生データの artifact は保持期限 7 日で失効しており、プローブのブランチも今は無い(`git branch -r` に無く、`git log --all -- crates/awase-windows/examples/gji_state_scope_probe.rs` も空)。
 よって「GJI・MS-IME とも保持単位はスレッド」は上の範囲での事実で、BUG-223 の起きた読めない窓には未確認。
+
+**保持単位の CI 測定(2026-10-26、ブランチ `ci/adr282-ime-scope`、run 40327981441〈success、head `ef6e3d4e0`〉、ジョブ `scope (msime)` 121589556404・`scope (gji)` 121589557165 のログの `SCOPE:` 行を `gh api .../jobs/<id>/logs` で読んで引いた。文書と PR は別担当が準備中)**:
+窓 A で IME を設定(ひらがなで ON・半角英数・閉)し、別プロセスの窓 B で `ka` を打つ。対照: B 単独で `ka` は `ka`、IME ON キーの後は `か`。各セル 2 試行。環境は windows-latest(Windows Server)。
+
+| IME | A > B | 開閉 | 変換モード | 備考(ログの値) |
+|---|---|---|---|---|
+| MS-IME 本体 | edit > edit・edit > chrome・chrome > edit・wt > edit | independent | independent | s1=`ka` 2/2 |
+| MS-IME 本体 | **edit > wt**(B = Windows Terminal、tsf-native) | **shared-open** | independent | s1=`hira` 2/2(A を ON にしておくと B の WT で `ka` が `か`) |
+| GJI | edit > edit・edit > chrome・chrome > edit | independent | independent | s1=`ka` 2/2 |
+| GJI | wt > edit | independent | independent | s1=`ka` **1/1**(2 試行中 1 回だけ有効) |
+| GJI | edit > wt | **inconclusive**(s1=mixed) | inconclusive(B で ON キーが効いていない、ctl_on=mixed 1/2) | GJI × WT の共有は未確定 |
+
+読み取れること(小標本・Windows Server の範囲):
+- 読める Win32 EDIT と**実 Chrome**(読めない窓、imm32-unavailable)の間では、GJI・MS-IME 本体とも開閉・変換モードは独立(スレッド/プロセスごと)。
+- MS-IME 本体で、**WT(tsf-native)へ入ると、他の窓の開の状態が WT に効く**(edit > wt が shared-open)。ただし**逆向き(wt > edit)は independent** で、全窓で対称に共有されているわけではない(WT 側が入場時に他から開の状態を取り込む、のような一方向の振る舞いに見える。仕組みは未検証。TSF の keyboard open-close コンパートメントが候補)。
+- GJI × WT、WezTerm、UWP/XAML、同じプロセスの別スレッド、マウス・タスクバーの切替、Windows 11 実機は未測定。
+- BUG-223(GJI の tsf-native 窓を行き来して IME は ON のまま)は、MS-IME の WT の振る舞いと同じ型(入場先の tsf-native 窓が開を引き継ぐ)なら説明できるが、GJI × WT は inconclusive で確認できていない。
+
 
 ## 2. 不変条件(設計の目標)
 
@@ -196,11 +216,22 @@ MS-IME の構成は TIP を `MicrosoftIme (Other)`(IMM32 HKL)と同定してい�
 **粒度をデータにする**: `ScopeModel` を (IME の種類, 窓の種類, `SPI_GETTHREADLOCALINPUTSETTINGS`) ごとの表で持つ。
 - `PerThread`: スコープの鍵 = (pid, フォーカス先のスレッド)。
 - `Shared`: スコープは 1 つ(全窓共通)。新設計は「グローバル 1 つの主張をラッチする」形になり、今の `desired_open` の持ち越しに近いが、予測の ON も主張になる点と寿命切れで後退しない点が違う。
-- 初期値: 読める窓(Standard)× GJI/MS-IME × SPI=0 は `PerThread`(191 spec の CI 実測の範囲)。**読めない窓は未測定**なので、§5.5 B1 の結果が出るまで決めない。V0 では両方の値で回す。
+- 初期値(§1.4 の測定 run 40327981441 による。小標本・Windows Server):
+
+| 窓の種類 | IME | 開閉軸 | 変換モード軸 | 根拠 |
+|---|---|---|---|---|
+| 読める Win32 窓・実 Chrome(imm32-unavailable) | GJI・MS-IME 本体 | `PerThread` | `PerThread` | edit/chrome の 4 組が independent |
+| tsf-native(Windows Terminal) | MS-IME 本体 | **`InheritOnEntry`**(新設): その窓に入ったとき、他のスコープの最新の開の主張を引き継ぐ。WT から出たときは相手に効かない | `PerThread` | edit > wt が shared-open、wt > edit が independent |
+| tsf-native(Windows Terminal) | GJI | 未確定(U4) | 未確定 | edit > wt が inconclusive |
+| WezTerm・UWP/XAML・その他の tsf-native | 任意 | 未確定 | 未確定 | 未測定 |
+
+  `Shared`(全窓で 1 つ)は今の測定では当てはまる組が無い。未確定の組は、V0 で `PerThread`・`InheritOnEntry` の両方で回す。
+  `InheritOnEntry` の窓に入ったときは、そのスコープの直前の記録より、**他のスコープの最新の開閉の主張が新しければそちらを採る**(時刻の新しいほう)。WT の中での明示操作はそのスコープの主張になるが、出た先には伝えない。
 
 **両立するか(B1 の問い)**: 真のモデルと `ScopeModel` が一致すれば、I1(予測の外れ・外部変更を除く)と I3 は両立する。理由: I3 の「スコープ」は真が状態を共有する範囲そのものなので、最後の明示操作 = 真を最後に変えた操作になる。
 - 例(レビューの例): `key:explicit-off @W(wezterm)` → `focus:A` → `key:hiragana @A` → `focus:W`。真が shared なら W も ON。`ScopeModel=Shared` なら主張は 1 つで、最後の操作(A の F2)の ON → I1・I3 とも満たす。
   `ScopeModel=PerThread` なら W の主張は OFF のまま → I3(PerThread の定義)は満たすが I1 違反。
+- 測定(§1.4)の結果、窓の種類で振る舞いが違う(IMM32 系と実 Chrome はスレッドごと、MS-IME × WT は入場時に開を引き継ぐ一方向)。よって粒度は単一に決めず、窓の種類 × IME × 軸ごとのデータにする(上の表)。
 - **一致しないとき、両方を満たす規則は無い**: 新しい窓に入ったとき、PerThread の真ではその窓自身の直前の状態が正しく、Shared の真では全体の最新の操作が正しい。両者は同じ入力(どちらの窓で何をしたか)から逆の結論を求めるので、粒度を知らずに両方を満たす規則は作れない。
   「別スコープの明示操作を弱い証拠として伝播する」案も検討したが、伝播した値が当たるのは Shared のときだけで、PerThread では I2/I1 の違反を作る(どちらに倒しても片方のモデルで外れる)。よって**粒度は測って決める**(B1 の CI 測定を V0 の前提条件にする)。
 - **所有者の判断 O4 との関係(U11)**: 真が Shared の構成では、O4(窓ごとに独立、持ち越さない)そのものが真と食い違う(持ち越しが正しい)。その構成があると B1 で分かったら、O4 をその構成に適用するかを所有者に問う。
@@ -549,6 +580,7 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 | 修飾付きのモードキー | I10。MS-IME 本体の Shift/Alt+F2 は開かないのに、今の擬似 IME は開く | 擬似 IME の遷移表に「届いた VK × 修飾」の行。初期値は ADR-281 の CI の結果、未測定のセルは §5.5 B4 |
 | 予測の入力(`unreadable`・`observable_toggle_guard`・`conv_raw`) | §4.13 の作り直しの検査 | 本番と同じ入力の作り方を写す。BUG-222 の列 |
 | 授権の入力・`WriteCommand` | I7・§4.9 の表 | 授権 Step 4c に届く入力を写す |
+| 窓の種類で混ぜた窓モデル(Win32・実 Chrome は per-thread、MS-IME の WT は入場時に開を引き継ぐ。§1.4 の測定) | V0 の評価、中間案 L4 の評価 | 擬似 IME の窓モデルに「入場時に開を引き継ぐ」窓の種類を足す |
 | 長い時間の経過(`advance:11000ms`・`31000ms`・`3599000ms`) | TTL を持つ局所修正 L3 の比較・I6 | 字母に足す |
 | `Engine::on_input`・flush | I9 | Engine の単体テスト |
 | TSF の composition・cold/warm | 新設計は扱わない | 実機 CI と所有者の実機 |
@@ -575,7 +607,7 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 
 | # | 何を測るか | 構成(既存のハーネス) | 合否・読み方の基準 | 結果で設計がどう変わるか | 実施に要る変更(粗い規模) |
 |---|---|---|---|---|---|
-| B1 | **IME の開閉・変換モードの保持単位**(スレッドか、窓か、全体か)を、**実アプリ**(Chrome・Edge・Windows Terminal・WezTerm・VS Code・WebView2 のホスト・UWP)と SPI=0/1 で。GJI(ATOK/MS-IME プリセット)・MS-IME 本体(**TSF で本体と同定された構成**)・Mozc。加えて、`scope_of(foreground_tid)`(§4.1)の鍵と IME の状態が切り替わる単位が一致するか | 既存の結果は 191 spec の CI(自前の Win32 EDIT、SPI=0、IMM32 同定の MS-IME)。プローブとブランチは今は無い。実アプリの窓の作り方は e2e-ime の `sc-bug149-chrome-*`(実 Chrome)・`wt-probe.yml`(Windows Terminal) | 各セル(IME × アプリ × SPI × 移動の種類)で、移動先・戻った後の開閉・変換モードを 2 回以上一致して読めること。読めない窓は TSF の compartment で読む | `ScopeModel` の表の初期値が決まる。Shared の構成があれば U11(O4 との衝突)を所有者に問う。鍵の関数が単位と合わなければ §4.1 を直す | プローブの作り直し(examples に 1 本、数百行)、ワークフロー 1 本、集計スクリプト 1 本。実アプリの起動は e2e-ime の部品を流用 |
+| B1 | **(一部実施済み: run 40327981441。§1.4。残り: GJI × WT・WezTerm・UWP/XAML・同じプロセスの別スレッド・マウス/タスクバー・試行数の追加)** **IME の開閉・変換モードの保持単位**(スレッドか、窓か、全体か)を、**実アプリ**(Chrome・Edge・Windows Terminal・WezTerm・VS Code・WebView2 のホスト・UWP)と SPI=0/1 で。GJI(ATOK/MS-IME プリセット)・MS-IME 本体(**TSF で本体と同定された構成**)・Mozc。加えて、`scope_of(foreground_tid)`(§4.1)の鍵と IME の状態が切り替わる単位が一致するか | 既存の結果は 191 spec の CI(自前の Win32 EDIT、SPI=0、IMM32 同定の MS-IME)。プローブとブランチは今は無い。実アプリの窓の作り方は e2e-ime の `sc-bug149-chrome-*`(実 Chrome)・`wt-probe.yml`(Windows Terminal) | 各セル(IME × アプリ × SPI × 移動の種類)で、移動先・戻った後の開閉・変換モードを 2 回以上一致して読めること。読めない窓は TSF の compartment で読む | `ScopeModel` の表の初期値が決まる。Shared の構成があれば U11(O4 との衝突)を所有者に問う。鍵の関数が単位と合わなければ §4.1 を直す | プローブの作り直し(examples に 1 本、数百行)、ワークフロー 1 本、集計スクリプト 1 本。実アプリの起動は e2e-ime の部品を流用 |
 | B2 | **新しいスレッドの窓は閉で始まるか**(U2)を、TSF で同定した MS-IME 本体 × 新スレッドと、実アプリ(Chrome の新しい窓)で | B1 と同じプローブ。191 spec §3.2 は「同定済み MS-IME 本体 × 新スレッド=閉の経路は CI で未検証」 | 各構成で 3/3 閉 | U2 の判断材料(実測の事前を使うか) | B1 に含める |
 | B3 | **窓切替から IME の状態が確かになるまでの遅れ**(読める窓で最初の受け入れ可能な観測まで。読めない窓で MozcShm・監視窓・字形まで) | `sc-focusrestore-*`(`typing_stress --mode=focus-restore`)に、journal の「窓切替 → 最初の受け入れた観測」の時刻差を集計する判定を足す | 分布(中央値・最大)。測定 | 読める窓の既定(§4.6-1 の待ちの間)とリスク 9 の見積もりに使う。TTL の根拠にはしない | 判定スクリプト 1 本、構成の追加数行 |
 | B4 | **BUG-221 の残り (1)**: MS-IME 本体の 0xF0・0xF1・0xF3・0xF4 × Ctrl・Shift・Alt の効果(閉と開から) | `sc-adr281-nat-*`(`--chord`、`tools/e2e/ime_key_matrix/check_modifier_mode_key.py`)をキーの数だけ広げる | 各セル 3/3 一致。素のセル(`msime-native.json`)と一致するか。Ctrl の KeyUp 後の競合(ADR-281 D2)が出ないこと | 一致したセルを §4.13 の写像表と擬似 IME の修飾の行に足す | `e2e-ime.yml` の構成の追加(十数行)、判定のキーの追加 |
@@ -734,14 +766,14 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 | U1 | 方針の例外に `disable_apps`(BUG-78)・`FocusKind::NonText`(experiments エントリ 02)・日本語でない IME を含めるか | 3 つとも Engine OFF の例外(今の挙動と同じ。`disable_apps`・`NonText` は `compute_state` の外にあるので I1 の対象外) |
 | U2 | 不確実なときの既定で、実測の事前(「awase の起動後に作られたスレッドは閉で始まる」)を O2 の ON 寄りより先に使ってよいか(使うと、新しいスレッドの読めない窓で O2 を部分的に反転させる) | 所有者の判断を待つ。判断材料: B2 の結果、ハーネスで「使う/使わない」の I1・I2 の差 |
 | U3 | InputRelay(RDP・VM・PowerToys MWB 等)を O2 の「読めない窓」として ON 寄りにするか。**今の事実**: awase は actuation を所有しない(`decide_gate` が `NotOwned`、`ime_actuation_decision.rs:152`)、物理モードキーを Suppress しない、この窓由来の open 観測を belief に取り込まない(`class_names.rs:192-193`)、lang-detect の対象外(`lang_detect_shadow.rs:315`)、予測の `unreadable` からも除く(`key_pipeline.rs` の `kp_predict_key_effect`)。窓切替の後処理での扱いは本 ADR では読んでいない | ON 寄りの対象から外す(中継先の IME は awase から見えず、Engine を ON にする根拠が無い)。既定は「主張なし = 今と同じ扱い」 |
-| U4 | O4 の「窓ごと」を「IME が状態を持つ単位ごと」と読んでよいか。単位は B1 で測る | B1 の結果を待つ。読める Win32 EDIT ではスレッドごと |
+| U4 | O4 の「窓ごと」を「IME が状態を持つ単位ごと」と読んでよいか。測定(run 40327981441)では、読める窓・実 Chrome はスレッドごと、MS-IME × WT は入場時に他の窓の開を引き継ぐ(一方向)、GJI × WT は未確定 | 窓の種類ごとのデータ(§4.1 の表)にする。MS-IME × WT のように実 IME が開を引き継ぐ窓では、O4(持ち越さない)を開閉軸には適用しない(U11) |
 | U5 | JIS かな入力方式(`ObservedKana`)のときの Engine | OFF のまま |
 | U6 | `compute_state` の外の入口(X7)を本 ADR でそろえるか | そろえない |
 | U7 | 信頼表の未確定のセル(読めない窓 × MS-IME 本体の IMM、直接観測の開閉軸) | V0 の全列挙と実機 CI で決める |
 | U8 | lang-detect などの awase 起点の明示操作を、belief 側で利用者の操作と同じ重さにするか(書き込み側には入れない) | 同じ重さ |
 | U9 | 修飾付きのモードキーの写像表に、IME の設定の読み取りで修飾付きの割り当てを足す範囲 | 今は扱わない。設定に修飾付きの割り当てがあれば、そのキーは抑止 |
 | U10 | O2 の適用範囲: 端末アプリ(Windows Terminal・WezTerm、英字のコマンド入力が主)を ON 寄りの対象から外すか | 判断材料: 窓の種類・アプリ別の I2 の増加件数(V0)、§4.6 の端末での影響。提案はしない(所有者の判断 O2 の範囲の問題のため) |
-| U11 | B1 で「IME の状態を全体で共有する構成」が見つかった場合、その構成にも O4(持ち越さない)を適用するか | その構成では `ScopeModel=Shared`(持ち越し)を提案する |
+| U11 | 実 IME が窓をまたいで開を引き継ぐ構成(測定で MS-IME × WT が該当。全体で対称に共有する構成は見つかっていない)に O4(持ち越さない)を適用するか | 適用しない(その窓の開閉軸は `InheritOnEntry`)。O4 の「持ち越さない」は実 IME が窓ごとに独立な組(読める窓・実 Chrome)に適用する |
 | U13 | 共有メモリの block が無い Mozc 系(公式 Mozc など)で、読めない窓の ADR-188 の直接読み・ADR-205 の監視窓を戻すか(今は「Mozc 系」として外れていて、外部切替に追随する証拠が無い。§4.14-2) | B9 の結果を見て決める。IMM の偽の閉(BUG-219)の出所が未解明なので、戻すなら開閉の遷移だけ(ADR-205)から |
 | U12 | V0 で局所修正(L1〜L3)が合格条件を満たした場合、ゼロベースではなく局所修正を採るか | 局所修正を採り、§4.13(写像表)・D8(書き込みの根拠の分離)など必要な部分だけを別に進める |
 
@@ -802,8 +834,16 @@ I2(核の字母):
 - **真が per-thread なら、I1 と I2 を同時に減らす局所修正は無い**: L1 は I1 を変えず(185 → 185、核の最小列 20 → 32)I2 を約 2 倍(57 → 109)、L2 は I2 を約 3 倍(57 → 165)、L3 は I1 をわずかに減らす(185 → 181)が TTL 切れで悪化する。
   per-thread の場合に要るのは、持ち越さない(O4)・窓ごとに直前の記録を持つ(新設計の `ScopeModel=PerThread` のスコープ表)・I2 を増やさない既定、で、これは局所修正の範囲を超える。**ゼロベース(少なくともスコープ表)が要るのはこの場合**。新設計がこの場合に I1・I2 を同時に減らせるかは V0 で示す(まだ示していない)。
 - **L2(読めない窓の窓切替で ON)の I2 の増加は、O2(読めない窓は ON 寄り)を今の構造に入れたときのコストの実測値**: msime shared で 35 → 99、per-thread で 57 → 165。新設計の D5 も同じ向きのコストを持つ(§4.6)。U10(端末を外すか)の判断材料にする。
+- **窓の種類別の結論(保持単位の測定 run 40327981441 を受けて)**:
+  - **読める Win32 窓・実 Chrome(スレッドごと = per-thread)**: 局所修正は I1 を減らさず I2 を増やす(L1 で I2 57 → 109、per-thread・全字母)。ここで要るのは「持ち越さない・窓ごとの直前の記録」で、新設計のスコープ表(`PerThread`)の範囲。**L1 をこの窓に効かせてはいけない**(新しいスレッドの窓は閉で始まるので、持ち越した ON が I2 になる)。
+  - **MS-IME × Windows Terminal(入場時に開を引き継ぐ)**: shared に近い振る舞いで、L1 の「予測の ON を持ち越す」が実 IME の振る舞いに合う。新設計では `InheritOnEntry` の窓だけ他のスコープの最新の開を採る。
+  - **GJI × tsf-native(BUG-223 の窓)**: 未確定(inconclusive)。BUG-223 は shared 型に合うが、確認できていない。
+  - よって、**単一の局所修正(L1 を全窓に)は、窓の種類が混ざる実機では片方の窓で I2 を増やす**。窓の種類で持ち越すか否かを分けること自体が、今の構造(グローバルな `desired_open` 1 つ)では表せず、スコープ表(少なくとも「窓の種類ごとに持ち越すかの規則」)が要る。
+    最小の形は「L1 + 持ち越しを `InheritOnEntry` の窓への入場に限る(per-thread の窓へ入るときは `desired_open` を持ち越さず、窓の記録/既定を使う)」で、これは局所修正と新設計の中間(グローバルな値は残し、入場時の規則だけを窓の種類で分ける)。V0 でこの中間案(L4 と呼ぶ)も同じオラクルで測る。
+  - V0 の評価は、基準の測定の字母を窓の種類で混ぜた窓モデル(Win32・Chrome は per-thread、MS-IME の WT は入場時に開を引き継ぐ)で行う(ハーネス拡張。§5.2)。
 - 所有者の判断(2026-10-26、team-lead 経由): 「L1 は、shared か per-thread かを測ってから入れるか決める」。保持単位の測定(読めない窓を含む)は別担当が CI で実施中(結果は `docs/tasks/adr282-ime-state-scope-measurement-2026-10-26.md` の予定。本改訂の時点で、どのリモートブランチにもまだ無い)。
   P1(スコープの粒度)はその結果が出るまで確定しない。
+  測定は一部出た(run 40327981441)が、GJI × WT は未確定なので、L1 の判断は窓の種類別の中間案 L4 の測定と GJI × WT の追加測定の後にする(提案)。
 
 ## 14. Opus レビュー round 1 への対応(2026-10-26)
 
