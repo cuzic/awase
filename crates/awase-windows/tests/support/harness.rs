@@ -61,11 +61,12 @@ use awase_windows::state::ime_event::{
 use awase_windows::state::ime_model::ImeModel;
 use awase_windows::state::key_effect_predictor::{
     plan_key_effect_track, KeyEffectKeymap, KeyTrack, KeyTrackFacts, ModeKeyModifiers,
-    PredictInput, Prediction,
+    PredictInput, Prediction, TableKey,
 };
 use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant};
 use awase_windows::state::platform_state::ImeStateHub;
 use awase_windows::state::probe_admission::{Admission, FocusFence, ImmLikeTicket};
+use awase_windows::state::scope_belief::{ModeClass, ScopeBelief, ScopeEvent, WindowFacts};
 use awase_windows::state::TickMs;
 
 use super::pseudo_ime::{Grid, PseudoIme, TrueStage, TrueState, CONV_HIRAGANA};
@@ -169,6 +170,10 @@ pub struct StepRecord {
     /// `effective_open` がどの経路で決まったか（`DecidedBy::label`。`IntentStore` が上書きしていれば `intent-store`）。
     /// 診断専用（`belief_engine_invariant.rs` の違反の分類）。
     pub basis: &'static str,
+    /// ADR-282 V0: 候補 Z(`ScopeBelief`)を並走させているときの、Z の開閉・Engine の活性・根拠(`None` は並走していない)。
+    pub z_open: Option<bool>,
+    pub z_engine_active: Option<bool>,
+    pub z_basis: Option<&'static str>,
 }
 
 /// 窓 1 つの記述（ADR-277 段階 2）。殻の `FocusTracker.current`（pid・クラス・プロセス・学習による降格）に当たる。
@@ -338,6 +343,8 @@ pub struct Harness {
     /// 入場したときに、直前のスレッドの擬似 IME が「開」なら開を引き継ぐスレッド(ADR-282 §1.4・O5: MS-IME 本体の Win32 EDIT →
     /// Windows Terminal の向きで、CI で 6/6 測った振る舞いの写し。閉の向き・変換モードは引き継がない)。既定は空(引き継がない)。
     inherit_open_threads: Vec<u32>,
+    /// ADR-282 V0: 候補 Z を本物の hub と並走させる(`with_scope_belief`)。本物の belief・Engine には効かせない。
+    z: Option<ScopeBelief>,
     /// 窓モデル: 実測学習の表（`ImmCapabilityStore` 相当、(プロセス, クラス) ごと）。戻ってきた窓にも効く。
     learned_unavailable: Vec<(&'static str, &'static str)>,
 }
@@ -386,6 +393,7 @@ impl Harness {
             window: setup.window,
             parked: Vec::new(),
             inherit_open_threads: Vec::new(),
+            z: None,
             learned_unavailable: Vec::new(),
         };
         h.hub.set_is_japanese_ime(true);
@@ -489,6 +497,7 @@ impl Harness {
         if let Some(p) = prediction {
             self.apply_key_effect_prediction(p);
         }
+        self.z_key(vk, passive_rule_eligible, input.composing);
         self.predictions.push(PredictionRecord {
             step: self.step + 1,
             vk,
@@ -564,6 +573,24 @@ impl Harness {
                 confidence,
             });
         }
+        let z_mode = open.then(|| {
+            if ConvMode::from_u32(conv).is_eisu() {
+                ModeClass::Eisu
+            } else {
+                ModeClass::Kana
+            }
+        });
+        let read_started_ms = self.now_ms;
+        self.z_evolve(ScopeEvent::Observed {
+            open: Some(open),
+            mode: z_mode,
+            source: obs_source,
+            confidence,
+            // 4 つの源(ImmCross・Poll・FocusProbe・ConvInference)はどれも IMM の読み・conv のビットからの推測で、
+            // 読めない窓では反証に使わない(ADR-282 §4.4 の信頼表)。
+            imm_family: true,
+            read_started_ms,
+        });
         self.settle(format!("observe({source:?}, open={open})"), Some(open));
         self
     }
@@ -641,6 +668,7 @@ impl Harness {
         to.learned_unavailable |= self.learned_unavailable.contains(&(to.process, to.class));
         self.switch_thread(from.thread, to.thread);
         self.window = Some(to);
+        self.z_focus(to);
         self.setup.profile = ImePolicyProfile::from(to.live_profile());
         self.last_conv_raw = None;
         if from.pid == to.pid {
@@ -674,6 +702,7 @@ impl Harness {
         self.window = Some(w);
         self.setup.profile = ImePolicyProfile::from(w.live_profile());
         self.notify_same_process(w.hwnd);
+        self.z_focus(w);
         self.settle(format!("demote_by_learning({})", w.name), None);
         self
     }
@@ -748,6 +777,12 @@ impl Harness {
         self.hub
             .record_explicit_intent(open, UserIntentSource::Command, now);
         self.issue_write(WriteOrigin::ExplicitUserCommand, open);
+        let at_ms = self.now_ms;
+        self.z_evolve(ScopeEvent::Explicit {
+            open: Some(open),
+            mode: None,
+            at_ms,
+        });
         self.settle(format!("user_set_open({open})"), None);
         self
     }
@@ -1057,6 +1092,85 @@ impl Harness {
             ),
             focus_epoch: self.epoch,
             basis: self.effective_basis(),
+            z_open: self.z.as_ref().map(|z| z.view().open),
+            z_engine_active: self.z_ctx().map(|c| self.engine.compute_active(&c)),
+            z_basis: self.z.as_ref().map(|z| z.view().basis),
+        });
+    }
+
+    /// ADR-282 V0: 候補 Z の belief から作った Engine の文脈(`ctx` の `ime_on`・`input_mode` だけを Z に替えたもの)。
+    fn z_ctx(&self) -> Option<InputContext> {
+        let v = self.z.as_ref()?.view();
+        Some(InputContext {
+            ime_on: v.open,
+            input_mode: v.input_mode,
+            ..self.ctx()
+        })
+    }
+
+    /// ADR-282 V0: 候補 Z を並走させる。いまの窓へのフォーカスを Z に流してから使う。窓モデル(`Setup::in_window`)専用。
+    pub fn with_scope_belief(&mut self) -> &mut Self {
+        let w = self.window.expect("with_scope_belief は窓モデルで使う");
+        self.z = Some(ScopeBelief::new(
+            awase_windows::tuning::KEY_EFFECT_SETTLE_MS,
+        ));
+        self.z_focus(w);
+        self
+    }
+
+    fn z_focus(&mut self, w: Window) {
+        let facts = WindowFacts {
+            imm_trusted: w.readable(),
+            inherit_open_on_entry: self.inherit_open_threads.contains(&w.thread),
+        };
+        let at_ms = self.now_ms;
+        if let Some(z) = self.z.as_mut() {
+            z.evolve(ScopeEvent::Focus {
+                scope: w.thread,
+                facts,
+                at_ms,
+            });
+        }
+    }
+
+    fn z_evolve(&mut self, e: ScopeEvent) {
+        if let Some(z) = self.z.as_mut() {
+            z.evolve(e);
+        }
+    }
+
+    /// ADR-282 V0: 候補 Z の明示操作(表のセルで決まるモードキー)。Z 自身の belief を入力に予測し、押した後の状態(L1′)で記録する。
+    /// 追跡(`key_track`)は本物の hub のものを借りる(Z のスコープごとの追跡は持たない近似)。
+    fn z_key(&mut self, vk: u16, passive_rule_eligible: bool, composing: bool) {
+        let Some(v) = self.z.as_ref().map(ScopeBelief::view) else {
+            return;
+        };
+        if TableKey::from_vk(vk).is_none() {
+            return;
+        }
+        let input = PredictInput {
+            open: v.open,
+            mode: v.input_mode,
+            conv_raw: self.last_conv_raw,
+            composing,
+            track: self.hub.model().key_track(),
+            unreadable: false,
+            passive_rule_eligible,
+            observable_toggle_guard: false,
+        };
+        let Some(p) = self.keymap.predict(vk, &input) else {
+            return;
+        };
+        let mode = p.effect.mode.map(|m| match m {
+            InputModeState::ObservedEisu => ModeClass::Eisu,
+            InputModeState::ObservedKana => ModeClass::KanaInputMethod,
+            _ => ModeClass::Kana,
+        });
+        let at_ms = self.now_ms;
+        self.z_evolve(ScopeEvent::Explicit {
+            open: Some(p.effect.open.unwrap_or(v.open)),
+            mode,
+            at_ms,
         });
     }
 

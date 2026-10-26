@@ -26,7 +26,7 @@ put('keyeffect', [
 # 実質 1 つの塊。観測源(mozc_shm・インジケーターの証拠)は journal の記録型ではなく、ここに置く
 put('imecore', [
     'state::ime_model', 'state::ime_event', 'state::ime_update', 'state::observation_store',
-    'state::evidence', 'state::imm_evidence', 'state::belief', 'state::intent_store',
+    'state::evidence', 'state::imm_evidence', 'state::belief', 'state::intent_store', 'state::scope_belief',
     'state::probe_admission', 'state::explicit_press', 'state::press_ledger', 'state::open_warrant',
     'state::applied_mirror_plan', 'state::external_change_watch', 'state::drift_correction',
     'state::drift_plan', 'state::conv_mode', 'state::conv_classify', 'state::snapshot_input_mode',
