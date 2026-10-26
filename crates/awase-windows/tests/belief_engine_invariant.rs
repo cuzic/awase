@@ -85,6 +85,7 @@ const W_EXPLORER: usize = 0;
 const W_XAML: usize = 1;
 const W_WEZTERM: usize = 2;
 const W_CHROME: usize = 3;
+#[allow(dead_code)]
 const W_RELAY: usize = 4;
 const WINDOW_NAMES: [&str; 5] = ["explorer", "xaml", "wezterm", "chrome", "relay"];
 
@@ -196,6 +197,8 @@ const VK_IME_OFF: u16 = 0x1A;
 const VK_IME_ON: u16 = 0x16;
 const VK_HANZEN: u16 = 0xF3;
 const VK_CHAR: u16 = 0x41;
+/// 列の前の準備のステップ数（`start` と、最初の観測）。検査は列の事象の後だけ。
+const SETTLE_STEPS: usize = 2;
 const ADVANCE_MS: u64 = 3500;
 const PERSIST_MS: u64 = 2000;
 
@@ -443,7 +446,11 @@ impl Config {
 
     fn start(self) -> (Harness, [Window; 5]) {
         let wins = windows(self.shared);
-        let h = Harness::start(Setup::in_window(INITIAL, wins[W_EXPLORER]).with_grid(self.grid));
+        let mut h =
+            Harness::start(Setup::in_window(INITIAL, wins[W_EXPLORER]).with_grid(self.grid));
+        // 起動直後の belief は placeholder（`desired_open=true`）で、真（閉）と食い違っている（BUG-163 の領分。起動の事象は
+        // ここでは測らない）。最初の観測で揃えた「動いている awase」の状態から列を始める。
+        h.observe(Source::ImmCross);
         (h, wins)
     }
 }
@@ -819,7 +826,7 @@ fn run_config(cfg: Config) -> String {
         let verdict = match replay(cfg, &seq) {
             None => "（この窓モデルでは再生できない）".to_string(),
             Some((mut h, _)) => {
-                let steps: Vec<_> = h.steps.iter().skip(1).cloned().collect();
+                let steps: Vec<_> = h.steps.iter().skip(SETTLE_STEPS).cloned().collect();
                 match steps.iter().find_map(|s| violation(Inv::I1, s)) {
                     Some(class) => {
                         h.advance_ms(PERSIST_MS);
@@ -937,14 +944,15 @@ fn belief_engine_invariant_baseline() {
 /// 実機の事故の列は、IME の状態が窓をまたいで共有される窓モデル（`shared`）では必ず I1 の違反として出る（所有者の要件）。
 #[test]
 fn bug223_sequences_are_i1_violations_when_ime_state_is_shared() {
-    for grid in Grid::ALL {
+    // F2 が閉から ON にする格子（GJI の MS-IME プリセットと MS-IME 本体。ATOK プリセットの F2 は閉のまま変わらない）。
+    for grid in [Grid::GjiMsime, Grid::MsimeNative] {
         let cfg = Config { grid, shared: true };
         for (name, seq) in bug223_sequences() {
             let (h, _) = replay(cfg, &seq).expect("shared では再生できる");
             assert!(
                 h.steps
                     .iter()
-                    .skip(1)
+                    .skip(SETTLE_STEPS)
                     .any(|s| violation(Inv::I1, s).is_some()),
                 "{}: BUG-223 の列「{name}」が I1 の違反として出ない\n{}",
                 cfg.name(),
