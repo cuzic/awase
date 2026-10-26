@@ -96,6 +96,10 @@
     [嘘の観測を含む] focus:wezterm > obs:conv-infer-open(lie-if-closed)
     [嘘の観測を含む] focus:chrome > obs:conv-infer-open(lie-if-closed)
 
+## atok shared I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 1 本
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
+
 ## atok shared 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
   明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → 違反なし
@@ -280,6 +284,10 @@
     [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:wezterm > key:eisu
     [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:chrome > key:eisu
 
+## msime shared I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 1 本
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
+
 ## msime shared 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
   明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
@@ -436,6 +444,10 @@
     [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:wezterm > key:eisu
     [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:chrome > key:eisu
 
+## msime-native shared I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 1 本
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
+
 ## msime-native shared 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
   明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
@@ -526,6 +538,10 @@
     [嘘の観測を含む] focus:chrome > obs:conv-infer-open(lie-if-closed)
     [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:eisu > focus:explorer
     [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:hiragana > focus:explorer
+
+## msime per-thread I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 1 本
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## msime per-thread 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
@@ -627,6 +643,10 @@
     [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:eisu > focus:explorer
     [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:hiragana > focus:explorer
 
+## msime-native mixed(tsf-native=inherit-open) I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 1 本
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
+
 ## msime-native mixed(tsf-native=inherit-open) 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
   明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
@@ -723,6 +743,10 @@
     [嘘の観測を含む] focus:chrome > obs:conv-infer-open(lie-if-closed)
     [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:eisu > focus:explorer
     [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:hiragana > focus:explorer
+
+## msime mixed(tsf-native=independent) I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 1 本
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## msime mixed(tsf-native=independent) 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
@@ -825,6 +849,10 @@
     [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:wezterm > key:eisu
     [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:eisu > focus:explorer
     [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:hiragana > focus:explorer
+
+## msime mixed(tsf-native=inherit-open) I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 1 本
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## msime mixed(tsf-native=inherit-open) 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
