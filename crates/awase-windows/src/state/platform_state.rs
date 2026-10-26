@@ -356,11 +356,32 @@ impl ImeStateHub {
         // （読めないアプリでは観測が来ず、意図のTTL〈約30秒〉が切れるまで開閉の予測が無視される）。
         // 「同一対象では最新の決定が古い意図を置換する」という`IntentStore`自身の設計と、通過マークの
         // 観測（`consume_mode_key_pass_mark`）が同じ対象の意図を消す扱いに揃える。
-        if prediction.effect.open.is_some() {
-            if let Some(hwnd) = self.shadow_model.current_focus() {
-                self.intent_store.remove(hwnd);
+        if let Some(open) = prediction.effect.open {
+            if let Some(hwnd) = self.intent_key() {
+                if crate::state::local_fixes::has(crate::state::local_fixes::L3) {
+                    // 実験 L3: 予測も IntentStore に入れる（鍵はスレッド）。
+                    self.intent_store.record(
+                        hwnd,
+                        open,
+                        UserIntentSource::PhysicalImeKey,
+                        tick_ms,
+                    );
+                } else {
+                    self.intent_store.remove(hwnd);
+                }
             }
         }
+    }
+
+    /// 実験 L3: `IntentStore` の鍵。L3 が有効でスコープ（スレッド）が設定されていれば、窓でなくスレッドで引く。
+    fn intent_key(&self) -> Option<HwndId> {
+        if crate::state::local_fixes::has(crate::state::local_fixes::L3) {
+            let scope = crate::state::local_fixes::scope();
+            if scope != 0 {
+                return Some(HwndId(0x4000_0000 + scope));
+            }
+        }
+        self.shadow_model.current_focus()
     }
 
     // ── 通過マーク（ADR-187）: 寿命判断は `ModeKeyPassLatch`（`state/mode_key_pass.rs`）に委譲する ──
@@ -461,7 +482,7 @@ impl ImeStateHub {
             return false;
         };
         if effect.remove_intent {
-            if let Some(hwnd) = self.shadow_model.current_focus() {
+            if let Some(hwnd) = self.intent_key() {
                 self.intent_store.remove(hwnd);
             }
         }
@@ -544,7 +565,7 @@ impl ImeStateHub {
             return None;
         };
         self.write_observer_poll(v, tick_ms, accepted);
-        if let Some(hwnd) = self.shadow_model.current_focus() {
+        if let Some(hwnd) = self.intent_key() {
             self.intent_store.remove(hwnd);
         }
         self.pass_through_observed(tick_ms, true, true);
@@ -656,7 +677,7 @@ impl ImeStateHub {
         }
         if let Some(open) = follow.open {
             self.write_observer_poll(open, tick_ms, accepted);
-            if let Some(hwnd) = self.shadow_model.current_focus() {
+            if let Some(hwnd) = self.intent_key() {
                 self.intent_store.remove(hwnd);
             }
             self.pass_through_observed(tick_ms, true, true);
@@ -1637,7 +1658,7 @@ impl ImeStateHub {
         // IME OFF）が残っていると、`effective_open()` の IntentStore 優先ロジックが
         // 全面リセットより古い意図を優先してしまう。「同一対象では最新の決定が
         // 古い意図を置換する」という IntentStore 自身の設計を守るため、無効化する。
-        if let Some(hwnd) = self.shadow_model.current_focus() {
+        if let Some(hwnd) = self.intent_key() {
             self.intent_store.remove(hwnd);
         }
         // panic reset はフォーカスエポック/hwnd を変えない（同じフォーカスコンテキスト
@@ -1758,7 +1779,7 @@ impl ImeStateHub {
             //
             // 判定本体は `IntentStore::invalidate_for_cache_restore()`（ungated、
             // Linux CI で走る）にある。ここはログだけ（追補4）。
-            if let Some(hwnd) = self.shadow_model.current_focus() {
+            if let Some(hwnd) = self.intent_key() {
                 if let crate::state::intent_store::CacheRestoreVerdict::Kept {
                     intent_recorded_at_ms,
                 } =
@@ -1825,7 +1846,7 @@ impl ImeStateHub {
         // 意味する。last_intent と同じ扱いで safety-net（HeuristicDefault ON）を
         // 書かずに温存する。エントリを消して heuristic を通すのは「観測ゼロの推測が
         // 明示意図に勝つ」逆転になるため行わない（pre-mortem #2）。
-        if let Some(hwnd) = self.shadow_model.current_focus() {
+        if let Some(hwnd) = self.intent_key() {
             if let Some(intent) = self.intent_store.lookup(hwnd, tick_ms) {
                 tracing::debug!(
                     "Imm32Unavailable entry: preserving stored intent open={} (source={:?})",
@@ -1982,7 +2003,7 @@ impl ImeStateHub {
         source: UserIntentSource,
         tick_ms: TickMs,
     ) {
-        if let Some(hwnd) = self.shadow_model.current_focus() {
+        if let Some(hwnd) = self.intent_key() {
             self.intent_store.record(hwnd, target, source, tick_ms);
         }
     }
@@ -2169,7 +2190,7 @@ impl ImeStateHub {
             tick_ms,
         );
         if disagrees {
-            if let Some(hwnd) = self.shadow_model.current_focus() {
+            if let Some(hwnd) = self.intent_key() {
                 self.intent_store.remove(hwnd);
             }
             self.pass_through_observed(tick_ms, true, true);
@@ -2192,7 +2213,7 @@ impl ImeStateHub {
     ) {
         let resolution = self.shadow_model.resolve_open_at(self.clock.now_instant());
         let decision = self.intent_store.resolve_effective_open(
-            self.shadow_model.current_focus(),
+            self.intent_key(),
             resolution.value,
             now_ms,
         );

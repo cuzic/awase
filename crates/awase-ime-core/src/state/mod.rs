@@ -96,6 +96,7 @@ pub mod drift_follow_would;
 #[cfg(test)]
 pub(crate) mod exhaustive_seq;
 pub mod ime_model;
+pub mod local_fixes;
 pub mod ime_read_strategy;
 // ADR-087 Phase 1' 試験実装。app_ime_policy と同じ ungated
 // パターンで Linux 上の `cargo test -p awase-windows --lib` から実行できるように

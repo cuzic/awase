@@ -385,6 +385,8 @@ impl Harness {
             learned_unavailable: Vec::new(),
         };
         h.hub.set_is_japanese_ime(true);
+        // 実験 L3 の鍵（IME の持ち主のスレッド）。
+        awase_windows::state::local_fixes::set_scope(setup.window.map_or(0, |w| w.thread as usize));
         h.reduce(ImeEvent::InitialFocusScopeEstablished {
             to: h.focus,
             profile: setup.profile,
@@ -636,6 +638,7 @@ impl Harness {
             .expect("focus_to は窓モデル（Setup::in_window）で使う");
         to.learned_unavailable |= self.learned_unavailable.contains(&(to.process, to.class));
         self.switch_thread(from.thread, to.thread);
+        awase_windows::state::local_fixes::set_scope(to.thread as usize);
         self.window = Some(to);
         self.setup.profile = ImePolicyProfile::from(to.live_profile());
         self.last_conv_raw = None;
