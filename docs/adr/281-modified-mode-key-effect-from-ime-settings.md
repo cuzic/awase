@@ -8,7 +8,7 @@ summary: |-
   としたが、Opus レビューで両方とも BUG-221 の症状(最初の打鍵)を直さないと判明し、方針を反転した。Mozc のクライアントは
   この 4 キーの修飾をソースの上で意図的に捨てるので、修飾付きの割り当てという概念がこのキーに無い。範囲を限った「素のキーとして予測」(A′)を採る。
 status: |-
-  採用・実装済み(2026-10-26、PR #849、`43359222b`)。dragonflyg4 で所有者が実機確認済み(BUG-221)。未実施: M1(読める窓での GJI の確認)、M1'(Alt)、M2(MS-IME 本体の CI 格子)、D2'(Converter I/O による確認)。単体テスト (a)〜(j) は追加済み(#849 と本 PR)。
+  採用・実装済み(2026-10-26、#849・#856)。dragonflyg4 で所有者が実機確認済み(BUG-221、Ctrl+F2)。CI 実測は e2e-ime run 40272737475(16 構成 × 3 回)。未実施: M2 の残り(MS-IME 本体の 0xF0・0xF1・0xF3・0xF4)、D2'(Converter I/O による確認)。単体テスト (a)〜(j) は追加済み。
 related_adr:
   - "ADR-199"
   - "ADR-186"
@@ -69,26 +69,30 @@ Shift と Ctrl は届くので広げる。Alt は届くかを確かめていな�
 
 ## 決定(提案)
 
-**D1. 範囲を限った案 A′: 次の 3 条件をすべて満たす打鍵は、修飾による抑止をせず素のキーとして予測する。**
-1. IME の種別が GJI/Mozc 系(`ActiveImeKind::GoogleJapaneseInput`。#663 で Mozc 系もここに入る)。
-2. 届いた VK が 0xF0/0xF1/0xF2/0xF3/0xF4 のいずれか(キーボードのレイアウトが修飾で VK を変える〈例: 日本語 106/109 では Shift+ひらがな が 0xF1、Alt+ひらがな が VK_DBE_ROMAN/NOROMAN、Alt+半角/全角 が 0x19、ADR-202〉ので、物理キーではなく届いた VK で判定する)。
-3. 押されている修飾は Ctrl・Shift のどちらか、またはその組み合わせ。**Alt と Win は含めない**(従来どおり抑止する)。
-   Alt: Mozc が修飾を消すのは、キーが Mozc の key handler に届いた後の話である。Alt 押下中の打鍵は `WM_SYSKEYDOWN` になり、TSF が TIP の key event sink へ渡す保証をソースだけでは確かめられない
-   (Mozc 自身、Alt 付きの特殊キーを通常の key event ではなく予約キー〈`{VK_OEM_3, TF_MOD_ALT}` など、`tip_text_service.cc:326-356`〉として登録している)。
-   Mozc は素の F10(これも `WM_SYSKEYDOWN` を出す)も予約キーとして登録して受けているので、`WM_SYSKEYDOWN` は通常の入口に届かないと読める(Opus の補足。TSF の仕様自体は未確認)。0xF0〜0xF4 は予約キーに無い。
-   届かなければ IME は何もしないのに ON と予測する BUG-162 型の誤予測になる。日本語 106/109 では Alt+ひらがな が VK_DBE_ROMAN/NOROMAN、Alt+半角/全角 が 0x19 になり、Alt 付きの 0xF0〜0xF4 が届く場面もほとんど無い。
-   広げる利益が小さく危険が未確認なので、M1 の実機測定の結果を見てから判断する。
-   Win: Mozc は Win を修飾として見ないが、OS のショートカットが IME より先に食う可能性があり未確認。
-   Shift は `WM_KEYDOWN` のままで key handler に届く。Shift+ひらがな は 0xF1 として届き、届いた VK の素のキーとして予測される。
-   ただし ADR-187 の追随(`mode_key_pass.rs:257-267` `mode_key_follow_admits_modifiers`)は Shift で止まるので、読める窓での外れの訂正は `may_change_ime` の 20ms の読み直し(`key_pipeline.rs:1646-1652`)に頼る。
+**D1. 範囲を限った案 A′: 次の組み合わせの打鍵は、修飾による抑止をせず素のキーとして予測する(`ModeKeyModifiers`)。**
 
-実装の形: `KeyTrackFacts` に IME 種別(または「修飾を捨てる IME か」の真偽値)を 1 つ足し、`plan_key_effect_track`/`modifiers_suppress_prediction` の述語に条件を足す。
-書き込みは既存の `KeyEffectPredicted`(`apply_key_effect_prediction`)を通るので、belief の規約の範囲に収まり、新しいイベントや `ObservationSource` は要らない。
+| IME | キー(届いた VK) | 修飾 | 根拠 |
+|---|---|---|---|
+| GJI/Mozc 系(`ActiveImeKind::GoogleJapaneseInput`。#663 で Mozc 系もここに入る) | 0xF0〜0xF4 | Ctrl・Shift・Alt のどれか、またはその組み合わせ | Mozc のソース(`keyevent_handler.cc:330-352`)と CI(GJI の F2・F3 が none/Ctrl/Shift/Alt のどれでも開く、3/3) |
+| Microsoft IME 本体(CLSID で本体と同定できたときだけ) | 0xF2 | Ctrl のみ | CI(Ctrl は開き、Shift・Alt は開かない、3/3)。0xF0・0xF1・0xF3・0xF4 は未測定なので含めない |
+| 上記以外(ATOK 製品、IME 種別の未検出、MS-IME 本体の未測定のキー・修飾) | — | — | 従来どおり抑止する(`Unknown`) |
+
+共通: **Win 付きは抑止する**(OS のショートカットが IME より先に食う可能性があり、未確認)。修飾によって届く VK が変わる(日本語 106/109 では Shift+ひらがな が 0xF1、Alt+ひらがな が VK_DBE_ROMAN/NOROMAN、
+Alt+半角/全角 が 0x19、ADR-202)ので、判定は物理キーではなく**届いた VK**で行う。VK_DBE_ROMAN/NOROMAN(0xF5/0xF6)と VK_KANJI(0x19)は TSF の予約キーとして別経路で扱われるので含めない。
+
+Alt の扱いの経緯: 初版は Ctrl・Shift だけにした。Mozc が修飾を消すのはキーが key handler に届いた後の話で、Alt 押下中の打鍵は `WM_SYSKEYDOWN` になり TIP に届かない可能性があった
+(Mozc は素の F10 や Alt+` を予約キーとして登録している)ため。CI の実測(GJI で Alt を押したままの VK 0xF2・0xF3 も開く、3/3)でこの懸念は当たらなかったので、GJI/Mozc 系に Alt を加えた。
+実キーボードの Alt+ひらがなは別の VK になって条件 2 で除かれるので、Alt を足しても実機のキーの挙動は変わらず、リマップした構成でだけ効く。
+
+Shift の注意: ADR-187 の追随(`mode_key_pass.rs:257-267` `mode_key_follow_admits_modifiers`)は Shift で止まるので、読める窓での外れの訂正は `may_change_ime` の 20ms の読み直し(`key_pipeline.rs:1646-1652`)に頼る。
+
+実装の形: `KeyTrackFacts` に `mode_key_modifiers: ModeKeyModifiers`(`Unknown` / `DroppedByGjiMozc` / `MsImeNativeCtrlOnHiragana`)を持たせ、`plan_key_effect_track` の述語で上の表を判定する。
+殻は `ActiveImeKind::mode_key_modifiers(ms_ime_native_identified)` で作る。書き込みは既存の `KeyEffectPredicted`(`apply_key_effect_prediction`)を通るので、belief の規約の範囲に収まり、新しいイベントや `ObservationSource` は要らない。
 最初の打鍵は F2 の KeyDown の時点で ON と予測されるので、漏れない。
 
-**D2. MS-IME 本体・ATOK 製品・Mozc 以外は、測るまで従来どおり抑止する。** MS-IME 本体だけは CI の格子(実機の利用者側ではない)で、
-`Ctrl × {0xF0, 0xF1, 0xF2, 0xF3, 0xF4}` の 5 キーを、閉じた状態と開いた状態について測る。セルは「届いた VK × 修飾」で定義し、素のセル(`msime-native.json`)と一致するかを見る。
-一致すれば D1 の条件 1 に MS-IME 本体を足す。MS-IME 本体では「Ctrl の KeyUp より後に F2 が処理された競合」がまだ意味を持つので、競合の有無もここで測る。
+**D2. MS-IME 本体・ATOK 製品・Mozc 以外の残りは、測るまで従来どおり抑止する。** MS-IME 本体は CI で 0xF2 の Ctrl だけ測れて加えた(上の表)。残りは、
+`{0xF0, 0xF1, 0xF3, 0xF4} × Ctrl`、および Shift・Alt が開かない理由(MS-IME 本体は別の割り当てを持つ)を、CI の格子で閉じた状態と開いた状態について測ってから足す。セルは「届いた VK × 修飾」で定義し、素のセル(`msime-native.json`)と一致するかを見る。
+MS-IME 本体では「Ctrl の KeyUp より後に F2 が処理された競合」がまだ意味を持つので、競合の有無もここで測る。
 
 **D2'. 安全網と GJI の確認(任意の追加)。** A′ が外れた場合(GJI の閉じたバイナリが Mozc と違い、実際には開かなかった)は、既存の cold の per-VK confirm と回収(`tsf/gji_fsm.rs:532-539`、`tsf/warmup/probe_fsm.rs`)が働く。
 `ImeOn` が GjiFsm に届くと cold に入って probe を張るため、追加の仕組みは要らない。ただし IME が実は OFF だった場合、回収は「t・BS・t・BS」で打ち切って「た」を消し、読めない窓では打ち切り後の追随(ADR-227)も照合できない(Opus レビューの追跡)。
@@ -105,8 +109,8 @@ GJI では、F2 の後の Converter I/O(`gji_last_write_ms`、10ms 周期)が増
 
 **D4. 検証。**
 - Linux の単体テスト(`key_effect_predictor.rs`):
-  (a) GJI 系で Ctrl+0xF2、Shift+0xF2、Ctrl+Shift+0xF2 → 予測が出る。(b) MS-IME 本体で Ctrl+0xF2 → 予測しない。(c) GJI 系で Ctrl+変換(0x1C。修飾を消さないキー)→ 予測しない。
-  (d) GJI 系で Alt+0xF2、Win+0xF2 → 予測しない。(e) GJI 系で Ctrl+0xF5(VK_DBE_ROMAN。範囲外)→ 予測しない。
+  (a) GJI 系で Ctrl・Shift・Alt+0xF2(と組み合わせ)→ 予測が出る。(b) MS-IME 本体で Ctrl+0xF2 → 予測が出る。Shift・Alt+0xF2、Ctrl+(0xF0・0xF1・0xF3・0xF4)→ 予測しない。(c) GJI 系で Ctrl+変換(0x1C。修飾を消さないキー)→ 予測しない。
+  (d) どの IME でも Win+0xF2 → 予測しない。(e) GJI 系で Ctrl+0xF5(VK_DBE_ROMAN。範囲外)→ 予測しない。
   (f) 0xF3/0xF4 + Ctrl: GJI で役割が `ImeToggle` のとき、`shadow_action=None` → `plan_key_effect_track` が `Some` → トグルの予測が 1 回だけ出て、shadow toggle は発火しない(二重にならない)。
   (g) 0xF3/0xF4 を Ctrl 付きで Down し、Ctrl を離してから Up する。Up も Allow のまま(既存のラッチのテストがあれば参照で足りる)。
   (h) IME が ON のときの Ctrl+0xF2: 閉ループで Engine ON・IME ON から押して belief が ON のままで、開閉が反転しない。
@@ -135,8 +139,8 @@ GJI では、F2 の後の Converter I/O(`gji_last_write_ms`、10ms 周期)が増
 
 - M1(読み取りのみ。D1 の確認。**CI で GJI について解決**、下の「CI 実測の結果」): 読める窓(Win32 EDIT/RichEdit、ImmCross)で、実 GJI について Ctrl を押す → F2 を押して離す → **Ctrl を押したまま 500ms 以上待つ** → IME の開閉を読む → Ctrl を離す → 読む。
   Ctrl を押している間に ON なら競合ではなく、Mozc と同じく修飾を捨てている。Windows Terminal(TSF ネイティブ)では IME の状態が読めないので、この窓では測れない。
-- M1'(Alt。**CI で GJI は開くと観測**、runs を増やして再確認してから足す): Alt を押したまま 0xF0〜0xF4 が届く構成(外付けキーボードやリマップ)で IME の状態を読む。結果を見て条件 3 に Alt を足すか決める。
-- M2(**CI で観測、Ctrl だけ開く**。runs を増やして再確認してから足す): MS-IME 本体の `Ctrl × 5 キー` の格子(D2)。
+- M1'(Alt。**CI で GJI は開く(3/3)。GJI/Mozc 系に加えた**): Alt を押したまま 0xF0〜0xF4 が届く構成(外付けキーボードやリマップ)で IME の状態を読む。結果を見て条件 3 に Alt を足すか決める。
+- M2(**CI で観測、F2 は Ctrl だけ開く(3/3)。0xF2 の Ctrl を加えた。残りのキーは未測定**): MS-IME 本体の `Ctrl × 5 キー` の格子(D2)。
 - M3: 利用者の `config1.db` は、`session_keymap` の値と、ADR-174 の実機観測(`session_keymap` が MSIME=2 でも表の行が効く)と ADR-186 決定(c)〈ATOK 限定〉との食い違いの再確認に限る(キーマップの行以外は読まない)。BUG-221 の結論には効かない。
 
 ## CI 実測の結果(2026-10-26、e2e-ime、`sc-adr281-*`)
@@ -169,7 +173,7 @@ awase 起動中(GJI の MS-IME プリセット、F2。KeyDown の `mods(` が物
 - **M2(MS-IME 本体)**: Ctrl は素のキーと同じで開く(3/3)が、Shift・Alt では開かない(3/3)。A′ を広げるなら Ctrl だけ。測ったのはひらがな(0xF2)だけで、英数・カタカナ・半角/全角(0xF0・0xF1・0xF3・0xF4)は未測定。
 - この CI は「F2 の予測が最初の文字より前に起きる」ことまでを見ており、修飾付きの F2 の直後に文字を打つ手順(最初の NICOLA 打鍵が漏れないこと)は含まない。
 
-この結果を受けて、PR で A′ を広げた: GJI/Mozc 系の 0xF0〜0xF4 に Alt を加える(Win は除外のまま)。Microsoft IME 本体は CLSID で本体と同定できたときだけ、0xF2 の Ctrl を加える。
+この結果を受けて、PR #856 で A′ を広げた: GJI/Mozc 系の 0xF0〜0xF4 に Alt を加える(Win は除外のまま)。Microsoft IME 本体は CLSID で本体と同定できたときだけ、0xF2 の Ctrl を加える。
 
 ## 未決(所有者に確認したい点)
 

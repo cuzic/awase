@@ -9,6 +9,7 @@
 --key=F2|F3                  タップするキー(既定 F2。F3=半角/全角、MS-IME プリセットでは閉からの IME ON)。
 --mod=none|ctrl|shift|alt    押しっぱなしにした修飾(none=対照。修飾でないキーを押したまま)。awase の `mods(` と照らす。
 --expect=observe             判定せずに表示するだけ(実 IME の挙動の測定用。INVALID 以外は rc=0)。
+--expect=nopredict           awase が F2 を open=Some(true) と予測していないことを要求する(実 IME が開かない修飾の組。誤予測の検出)。
 --expect=predict             awase のログで予測と Engine の活性化が出ていることを要求する(出なければ FAIL=rc=1)。実 IME が開いていることも要求する。
 使い方: check_modifier_mode_key.py --mod=ctrl --expect=predict <スパイクのlog> [awaseのフルデバッグlog]   終了コード: 0=OK / 1=NG / 3=INVALID
 """
@@ -90,7 +91,7 @@ def main():
         print(__doc__)
         return 2
     TAP_VK = "0x" + key
-    if mod not in ("none", "ctrl", "shift", "alt") or expect not in ("observe", "predict") or not 1 <= len(args) <= 2:
+    if mod not in ("none", "ctrl", "shift", "alt") or expect not in ("observe", "predict", "nopredict") or not 1 <= len(args) <= 2:
         print(__doc__)
         return 2
     rows, invalid = parse_rows(args[0])
@@ -114,6 +115,9 @@ def main():
             mods = ev["keydown_mods"]
             line += (f" | awase: mods={mods} predict_open={ev['predict_open']} "
                      f"flip_true={ev['flip_true']} Engine activated={ev['activated']}")
+            if expect == "nopredict":
+                if ev["predict_open"] == "Some(true)":
+                    why.append("F2 を open=Some(true) と予測した(この修飾の組では実 IME が開かない=誤予測)")
             if expect == "predict":
                 flag = MOD_FLAG.get(mod)
                 if mods is None:
@@ -126,7 +130,7 @@ def main():
                     why.append(f"F2 の予測が open=Some(true) でない({ev['predict_open']})")
                 if not ev["flip_true"] and not ev["activated"]:
                     why.append("belief が ON に追随していない(effective-open-flip → true も Engine activated も無い)")
-        elif expect == "predict":
+        elif expect in ("predict", "nopredict"):
             why.append("awase のログが無い")
         fails += bool(why)
         print(f"{i}: {line} → " + ("PASS" if not why else "FAIL: " + " / ".join(why)))
