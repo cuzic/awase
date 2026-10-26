@@ -21,7 +21,7 @@ summary: |-
 status: |-
   起草(2026-10-26)→ Opus レビュー round 1(Blocker 2・Major 9・Minor 9)を反映した改訂(2026-10-26)。未確定(round 2 待ち)。
   所有者の判断 4 件(かなの範囲・不確実なときの既定・最後の明示操作が勝つ・窓ごとに独立)を決定として反映。BUG-221・ADR-281 の残りを範囲に含めた(所有者判断 2026-10-26)。
-  依存する PR: #857(基準の測定)は 2026-10-26 にマージ済み(`gh pr view 857`)。#854(BUG-223)は OPEN。局所修正 L1〜L3 の測定は PR #868(OPEN、docs のみ)で出た(§13)。保持単位の CI 測定は run 40327981441 で一部出た(§1.4。読める窓・実 Chrome はスレッドごと、MS-IME × WT は入場時に開を引き継ぐ、GJI × WT は未確定)。
+  依存する PR: #857(基準の測定)は 2026-10-26 にマージ済み(`gh pr view 857`)。#854(BUG-223)は OPEN。局所修正 L1〜L3 の測定は PR #868(OPEN、docs のみ)で出た(§13)。保持単位の CI 測定は run 40327981441 で一部出た(§1.4。読める窓・実 Chrome はスレッドごと、MS-IME × WT は入場時に開を引き継ぐ、GJI × WT は未確定)。実機(GJI・Windows 11)でも読める窓・Edge はスレッドごと(team-lead の報告)。tsf-native の窓は実機で未測定。
   別セッションの Opus コードレビューの入力 4 件を §4.14 に反映(コードで確認、症状は未確認)。CI 検証バッチ(§5.5)は未実施。未決 U1〜U13 は所有者の確認待ち。実装はまだ(コード・テストは不変)。
 related_adr:
   - "ADR-082"
@@ -154,6 +154,10 @@ MS-IME の構成は TIP を `MicrosoftIme (Other)`(IMM32 HKL)と同定してい�
 - 読める Win32 EDIT と**実 Chrome**(読めない窓、imm32-unavailable)の間では、GJI・MS-IME 本体とも開閉・変換モードは独立(スレッド/プロセスごと)。
 - MS-IME 本体で、**WT(tsf-native)へ入ると、他の窓の開の状態が WT に効く**(edit > wt が shared-open)。ただし**逆向き(wt > edit)は independent** で、全窓で対称に共有されているわけではない(WT 側が入場時に他から開の状態を取り込む、のような一方向の振る舞いに見える。仕組みは未検証。TSF の keyboard open-close コンパートメントが候補)。
 - GJI × WT、WezTerm、UWP/XAML、同じプロセスの別スレッド、マウス・タスクバーの切替、Windows 11 実機は未測定。
+- **実機(所有者の dragonflyg4)での同じ測定(2026-10-26、team-lead の報告。本 ADR の起草者は生ログを見ていない)**: GJI、Windows 11 23H2(ビルド 22631)、`SPI_GETTHREADLOCALINPUTSETTINGS = 0`、awase 停止。
+  ハーネスは同じ(`tools/e2e/ime_scope/scope_probe.py`、ブランチ `exp/ime-scope-realmachine` の `37ab1cf86` で Chrome の代わりに Edge を使う 1 行の差分。ブランチとコミットの実在は `git log origin/exp/ime-scope-realmachine` で確認)。
+  edit > edit・edit > Edge・Edge > edit は、開閉・変換モードとも independent(各 2/2)。**読める Win32 窓と Edge(Chromium、imm32-unavailable)では、実機でもスレッドごと**(CI と一致)。
+  実機には Windows Terminal・Chrome が無く、**tsf-native の窓(WT・WezTerm)は実機で測れていない**。BUG-223 の起きた窓の種類は未測定のまま。
 - BUG-223(GJI の tsf-native 窓を行き来して IME は ON のまま)は、MS-IME の WT の振る舞いと同じ型(入場先の tsf-native 窓が開を引き継ぐ)なら説明できるが、GJI × WT は inconclusive で確認できていない。
 
 
@@ -608,6 +612,9 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 | # | 何を測るか | 構成(既存のハーネス) | 合否・読み方の基準 | 結果で設計がどう変わるか | 実施に要る変更(粗い規模) |
 |---|---|---|---|---|---|
 | B1 | **(一部実施済み: run 40327981441。§1.4。残り: GJI × WT・WezTerm・UWP/XAML・同じプロセスの別スレッド・マウス/タスクバー・試行数の追加)** **IME の開閉・変換モードの保持単位**(スレッドか、窓か、全体か)を、**実アプリ**(Chrome・Edge・Windows Terminal・WezTerm・VS Code・WebView2 のホスト・UWP)と SPI=0/1 で。GJI(ATOK/MS-IME プリセット)・MS-IME 本体(**TSF で本体と同定された構成**)・Mozc。加えて、`scope_of(foreground_tid)`(§4.1)の鍵と IME の状態が切り替わる単位が一致するか | 既存の結果は 191 spec の CI(自前の Win32 EDIT、SPI=0、IMM32 同定の MS-IME)。プローブとブランチは今は無い。実アプリの窓の作り方は e2e-ime の `sc-bug149-chrome-*`(実 Chrome)・`wt-probe.yml`(Windows Terminal) | 各セル(IME × アプリ × SPI × 移動の種類)で、移動先・戻った後の開閉・変換モードを 2 回以上一致して読めること。読めない窓は TSF の compartment で読む | `ScopeModel` の表の初期値が決まる。Shared の構成があれば U11(O4 との衝突)を所有者に問う。鍵の関数が単位と合わなければ §4.1 を直す | プローブの作り直し(examples に 1 本、数百行)、ワークフロー 1 本、集計スクリプト 1 本。実アプリの起動は e2e-ime の部品を流用 |
+| B1a | **(最優先)GJI × Windows Terminal の再測定**: CI の `edit > wt` が inconclusive(B で ON キーが効かなかった、ctl_on=mixed 1/2)。まず B で ON キーが効かない原因を切り分け(注入の宛先・WT の起動直後の状態・GJI の TSF の warm/cold)、試行数を増やして開閉の共有を判定する | `ime-scope.yml`(ブランチ `ci/adr282-ime-scope`)の GJI 構成 | 対照(B 単独で ON キー → `か`)が 3/3 以上になったうえで、edit > wt・wt > edit を判定 | GJI × tsf-native が InheritOnEntry なら BUG-223 の窓は shared 型で、L1 型の持ち越しがこの窓では正しい。independent なら BUG-223 の説明は別に要る | ハーネスの修正(切り分けのログ・試行数)。数十行 |
+| B1b | **WezTerm・UWP/XAML(`Windows.UI.Input.InputSite` 等)・同じプロセスの別スレッド**の保持単位 | `ime-scope.yml` に窓の種類を足す | 各セル 3 試行以上で判定 | §4.1 の表の未確定の行を埋める | 起動部品の追加(WezTerm の導入、UWP の窓の作り方)。数十〜百行 |
+| B1c | **実機の tsf-native 窓での手動確認**(所有者の操作。dragonflyg4 には WT・Chrome が無いので、WT か WezTerm を入れて行う) | 手順書(A で ON にして B の tsf-native 窓で `ka`、逆向き、各 3 回)を用意し、所有者が打って結果を記録する。awase は停止 | 3/3 で同じ結果 | CI(Windows Server)と実機(Windows 11)の差を確かめる。BUG-223 の窓の種類での決め手 | 手順書のみ(実施は所有者) |
 | B2 | **新しいスレッドの窓は閉で始まるか**(U2)を、TSF で同定した MS-IME 本体 × 新スレッドと、実アプリ(Chrome の新しい窓)で | B1 と同じプローブ。191 spec §3.2 は「同定済み MS-IME 本体 × 新スレッド=閉の経路は CI で未検証」 | 各構成で 3/3 閉 | U2 の判断材料(実測の事前を使うか) | B1 に含める |
 | B3 | **窓切替から IME の状態が確かになるまでの遅れ**(読める窓で最初の受け入れ可能な観測まで。読めない窓で MozcShm・監視窓・字形まで) | `sc-focusrestore-*`(`typing_stress --mode=focus-restore`)に、journal の「窓切替 → 最初の受け入れた観測」の時刻差を集計する判定を足す | 分布(中央値・最大)。測定 | 読める窓の既定(§4.6-1 の待ちの間)とリスク 9 の見積もりに使う。TTL の根拠にはしない | 判定スクリプト 1 本、構成の追加数行 |
 | B4 | **BUG-221 の残り (1)**: MS-IME 本体の 0xF0・0xF1・0xF3・0xF4 × Ctrl・Shift・Alt の効果(閉と開から) | `sc-adr281-nat-*`(`--chord`、`tools/e2e/ime_key_matrix/check_modifier_mode_key.py`)をキーの数だけ広げる | 各セル 3/3 一致。素のセル(`msime-native.json`)と一致するか。Ctrl の KeyUp 後の競合(ADR-281 D2)が出ないこと | 一致したセルを §4.13 の写像表と擬似 IME の修飾の行に足す | `e2e-ime.yml` の構成の追加(十数行)、判定のキーの追加 |
@@ -618,7 +625,7 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 | B10 | **打鍵中の共有メモリの読みが `Held` になる割合と、MozcShm の観測の失効の回数**(§4.14-1) | `mozc-shm-e2e.yml`(Mozc Readable)で打鍵ストレスを流し、`[mozc-shm]` の診断(`mozc_shm_shadow = true`)に `Held` の件数と失効を出す(観測専用のログを足す) | 割合と失効の回数を記録 | §4.4 の「同じ値の `Held` で年齢を延ばす」の効果の見積もり。旧(今の develop)で BUG-219 型の窓が開く頻度 | 観測専用のログ(数十行)、ワークフローの手順の追加 |
 | B8 | **P6 の副作用**: 明示意図があっても読める窓でポーリングを続けたとき、打鍵中のクロスプロセス読み取りで「@」(BUG-113 系)が出ないか。GJI の I/O 推論が drift の材料に入らないか | P6 を V1 の shadow で有効にした版で、GJI × Windows Terminal の `sc-*` と打鍵ストレス `ts-*` | 「@」0 件、drift の送信件数が旧と同じ | 出るなら P6 を採らない(§4.12) | V1 の段階 |
 
-- B1・B2 は P1・U2 の前提そのものなので最初に回し、**V0 の前提条件**にする。B4〜B6 は §4.13 の写像表を埋める。B3・B7 は基準線。B8 は V1 以降。
+- B1a〜B1c(tsf-native の窓の保持単位)・B2 は P1・U2 の前提そのもので、BUG-223 の窓の種類が未測定なので**最優先**に回し、**V0 の前提条件**にする(読める窓・実 Chrome/Edge は CI と実機で測定済み)。B4〜B6 は §4.13 の写像表を埋める。B3・B7 は基準線。B8 は V1 以降。
 - いずれも GitHub Actions の windows-latest(Windows Server)での結果で、所有者の実機とは違いうる。
 
 ## 6. 台帳との照合(棚卸し 02-ledger の各規則)
