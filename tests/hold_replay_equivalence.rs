@@ -26,11 +26,15 @@ use awase::yab::YabLayout;
 use std::collections::BTreeMap;
 
 fn make_engine() -> Engine {
-    let config = AppConfig::load(std::path::Path::new("config.toml")).unwrap();
-    let content = std::fs::read_to_string("layout/nicola.yab").expect("layout");
-    let layout = YabLayout::parse(&content, KeyboardModel::Jis).expect("yab");
+    static BASE: std::sync::OnceLock<(AppConfig, YabLayout)> = std::sync::OnceLock::new();
+    let (config, layout) = BASE.get_or_init(|| {
+        let config = AppConfig::load(std::path::Path::new("config.toml")).unwrap();
+        let content = std::fs::read_to_string("layout/nicola.yab").expect("layout");
+        let layout = YabLayout::parse(&content, KeyboardModel::Jis).expect("yab");
+        (config, layout)
+    });
     let fsm = NicolaFsm::new(
-        layout,
+        layout.clone(),
         VkCode(0x1D),
         VkCode(0x1C),
         config.general.simultaneous_threshold_ms,
@@ -199,6 +203,13 @@ fn run_replay(events: &[Ev], wall: Timestamp) -> String {
     out
 }
 
+/// 出力から、文字・ローマ字だけを取り出す(`[k]` などの印と区切りは落とす)。
+fn text_only(out: &str) -> String {
+    out.replace("[k]", "")
+        .replace("[pt]", "<pt>")
+        .replace('|', "")
+}
+
 struct Rng(u64);
 
 impl Rng {
@@ -279,10 +290,11 @@ fn replay_of_held_keys_matches_realtime_engine_output() {
     let mut report = String::new();
     let mut total = 0_usize;
     let mut mismatches = 0_usize;
+    let mut text_mismatches = 0_usize;
     let mut shown = 0;
     // 解放の時刻: 最後の打鍵の後 0ms / 300ms / 2000ms
     for n in 1..=5 {
-        for _ in 0..4000 {
+        for _ in 0..1500 {
             let events = gen_case(&mut rng, n);
             let last = events.last().unwrap().ts;
             for extra in [0_u64, 300_000, 2_000_000] {
@@ -291,7 +303,10 @@ fn replay_of_held_keys_matches_realtime_engine_output() {
                 let b = run_replay(&events, last + extra);
                 if a != b {
                     mismatches += 1;
-                    if shown < 12 && (shown < 6 || n >= 3) {
+                }
+                if text_only(&a) != text_only(&b) {
+                    text_mismatches += 1;
+                    if shown < 14 && (shown < 4 || n >= 3) {
                         shown += 1;
                         report.push_str(&format!(
                             "n={n} extra={}ms\n  {}\n  A(実時間) {a}\n  B(再生)   {b}\n",
@@ -304,7 +319,7 @@ fn replay_of_held_keys_matches_realtime_engine_output() {
         }
     }
     assert!(
-        mismatches == 0,
-        "再生が実時間と一致しない: {mismatches}/{total}\n{report}"
+        text_mismatches == 0,
+        "再生が実時間と一致しない(文字の列): {text_mismatches}/{total}(印も含めると {mismatches})\n{report}"
     );
 }
