@@ -1801,6 +1801,27 @@ mod tests {
         }
     }
 
+    /// ADR-281 (j): Shift+ひらがなが 0xF1 として届いたら、素のカタカナキーと同じセルを引く。
+    ///
+    /// 日本語 106/109 では Shift+ひらがなが 0xF1 として届く。MS-IME プリセットは全角ひらがな 0x19 → 全角カタカナ 0x1B。
+    #[test]
+    fn adr281_shift_hiragana_arriving_as_0xf1_is_predicted_as_the_plain_katakana_cell() {
+        let mut f = track_facts(0xF1);
+        f.shift = true;
+        f.ime_drops_mode_key_modifiers = true;
+        let eligible = plan_key_effect_track(&f).expect("Shift 付きでも追跡する");
+        let hira = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::None,
+        };
+        let mut shifted = input(true, ROMAJI, false, hira);
+        shifted.passive_rule_eligible = eligible;
+        let p = predict(KeymapPreset::MsIme, 0xF1, &shifted).expect("カタカナのセル");
+        assert_eq!(p.track.conv, Some(Conv::C1B));
+        let plain = predict(KeymapPreset::MsIme, 0xF1, &input(true, ROMAJI, false, hira));
+        assert_eq!(Some(p), plain, "素の 0xF1 と同じ予測");
+    }
+
     #[test]
     fn adr281_range_is_exactly_f0_to_f4() {
         for vk in 0u16..=0x1FF {

@@ -704,6 +704,17 @@ pub(crate) enum ActiveImeKind {
     MicrosoftIme,
 }
 
+impl ActiveImeKind {
+    /// この IME が 0xF0〜0xF4 の修飾を捨てるか（ADR-281）。
+    ///
+    /// 対象はひらがな・カタカナ・英数・半角/全角。GJI/Mozc 系だけ真。未検出（`tsf_active_kind=0`）は安全デフォルトの `MicrosoftIme` なので偽
+    /// （起動直後と TIP の切り替え直後の約 2〜4 秒は、従来どおり修飾付きを予測しない）。
+    #[must_use]
+    pub(crate) const fn drops_mode_key_modifiers(self) -> bool {
+        matches!(self, Self::GoogleJapaneseInput)
+    }
+}
+
 /// ADR-089 §2.8: windows-gated な観測型から ungated な `ImeKindId` への唯一の
 /// 変換点（`focus/class_names.rs` の `From<AppImeProfile> for ImePolicyProfile`
 /// と同じ形）。
@@ -733,6 +744,22 @@ mod tests {
     /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック
     /// (`probe.rs`/`literal_detect_fsm.rs`と共有、詳細は`TSF_OBS_TEST_LOCK`のdoc参照)。
     use super::TSF_OBS_TEST_LOCK as TEST_LOCK;
+
+    /// ADR-281 (i): IME 種別が未検出の間は、修飾付きの 0xF0〜0xF4 を予測しない。
+    ///
+    /// 未検出（`tsf_active_kind=0`）は `MicrosoftIme` の安全デフォルト。GJI と判定されたときだけ予測する。
+    #[test]
+    fn adr281_undetected_ime_kind_does_not_drop_mode_key_modifiers() {
+        let obs = TsfObservations::new();
+        assert!(!obs.ime_kind_detected(), "初期値は未検出");
+        assert_eq!(obs.active_ime_kind(), ActiveImeKind::MicrosoftIme);
+        assert!(!obs.active_ime_kind().drops_mode_key_modifiers());
+        obs.set_tsf_active_kind(ActiveImeKind::GoogleJapaneseInput);
+        assert!(obs.active_ime_kind().drops_mode_key_modifiers());
+        // GJI から MS-IME 本体へ切り替えたら、予測しない側へ戻る。
+        obs.set_tsf_active_kind(ActiveImeKind::MicrosoftIme);
+        assert!(!obs.active_ime_kind().drops_mode_key_modifiers());
+    }
 
     /// BUG-176: 接続直後の `gji_last_io_ms`（累積カウンタ初回読み）は実 I/O ではない。接続後の実 I/O は区別できる。
     #[test]

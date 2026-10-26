@@ -1616,6 +1616,71 @@ mod tests {
         assert_eq!(cache.toggle_contradiction(k), None);
     }
 
+    /// ADR-281 (f): 半角/全角(0xF3/0xF4)は、開閉を動かす仕組みが 1 打鍵に 1 つだけ(二重にならない)。
+    ///
+    /// 素の打鍵は役割がトグルなら shadow toggle(能動)が付き、予測の段には来ない。
+    /// Ctrl 付きは役割を引かない(受動)ので shadow が付かず、予測の段へ来る。
+    #[test]
+    fn adr281_ctrl_hankaku_zenkaku_is_predicted_not_shadow_toggled() {
+        use super::super::key_effect_predictor::{plan_key_effect_track, KeyTrackFacts};
+        use awase::types::ShadowImeAction;
+        use awase_gji_config::role::KeyRole;
+        for vk in [0xF3_u16, 0xF4] {
+            let facts = |has_shadow_action: bool, ctrl: bool| KeyTrackFacts {
+                vk,
+                is_physical_key_down: true,
+                is_modifier_key: false,
+                ctrl,
+                alt: false,
+                shift: false,
+                win: false,
+                was_down: false,
+                consumed: false,
+                has_shadow_action,
+                has_sync_direction: false,
+                ime_drops_mode_key_modifiers: true,
+            };
+            // 素の打鍵: 役割がトグルなら shadow toggle(能動)。予測の段には来ない。
+            let plain = key_shadow_action(false, Some(Some(KeyRole::ImeToggle)), false, false);
+            assert_eq!(plain, Some(ShadowImeAction::Toggle), "0x{vk:02X}");
+            assert_eq!(
+                plan_key_effect_track(&facts(plain.is_some(), false)),
+                None,
+                "0x{vk:02X}: shadow toggle に任せる"
+            );
+            // Ctrl 付き: 修飾付きは役割を引かず受動(半角/全角は F13〜F24 ではない)。shadow が付かず、予測の段へ来る。
+            assert!(passive_without_lookup(false, true, false, false, false));
+            let ctrl: Option<ShadowImeAction> = None;
+            assert_eq!(
+                plan_key_effect_track(&facts(ctrl.is_some(), true)),
+                Some(false),
+                "0x{vk:02X}: 予測の段で追跡する"
+            );
+        }
+    }
+
+    /// ADR-281 (g): Ctrl を先に離しても、半角/全角の Up は Down の判定を引き継ぐ。
+    ///
+    /// Ctrl 付きの Down は受動(None)。その後の Up(修飾なし)は判定し直さずラッチの None を使う
+    /// (Up だけ Toggle と判定されて Down=Allow・Up=Suppress の非対称にならない、BUG-131/132)。
+    #[test]
+    fn adr281_ctrl_released_before_up_keeps_the_down_verdict() {
+        use awase::types::{ScanCode, ShadowImeAction};
+        let scan = ScanCode(0x29);
+        let modified_down = passive_without_lookup(false, true, false, false, false);
+        let (v, latch) = latch_step::<Option<ShadowImeAction>>(None, false, true, scan, || {
+            if modified_down {
+                None
+            } else {
+                Some(ShadowImeAction::Toggle)
+            }
+        });
+        assert_eq!(v, None, "Ctrl 付きの Down は受動");
+        // Ctrl を離した後の Up。素の打鍵として判定し直せば Toggle になる所で、ラッチの None を使う。
+        let (v, _) = latch_step(latch, true, false, scan, || panic!("fresh must not run"));
+        assert_eq!(v, None, "Up は Down の判定を引き継ぐ");
+    }
+
     /// ADR-195追記: KeyDownで確定した判定がKeyUpへ持ち越され、途中で表が変わっても揃う。
     #[test]
     fn latch_carries_down_verdict_to_up() {
