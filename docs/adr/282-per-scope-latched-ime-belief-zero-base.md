@@ -16,7 +16,7 @@ summary: |-
 status: |-
   起草(2026-10-26)→ Opus レビュー round 1(B2・M9・m9)→ round 2(B1・M6・m7)→ round 3(B1・M4・m6)を反映(2026-10-26)。所有者の決定 2 件(O3・O4 は S にも課す、U14 は「IME ON かつかな」を優先)を反映。未確定。
   構造を「ゼロベース設計の提案」から「小さな修正とゼロベース案の比較(決定は比較の結果と所有者の判断の後)」へ作り直した(round 2 RM3)。
-  依存: PR #857(基準の測定)はマージ済み。PR #868(局所修正 L1〜L3 の測定)は OPEN。保持単位の CI 測定は run 40327981441(ブランチ `ci/adr282-ime-scope`)、文書・PR は別担当が準備中。
+  依存: PR #857(基準の測定)はマージ済み。PR #868(局所修正 L1〜L3 の測定)は OPEN。保持単位の CI 測定は run 40327981441・再測定 run 40397245969(ブランチ `ci/adr282-ime-scope`。MS-IME × WT の開の共有は 6/6、GJI × WT は未確定)、文書・PR は別担当が準備中。
   PR #854(BUG-223)は OPEN。CI 検証バッチ(§6.5)の B1a〜B1c(tsf-native の保持単位)が最優先で未実施。L1 は B1a〜B1c の結果と、O3・O4 を S に課す決定(round 3 R3B1 への所有者の回答)の後に決める(round 2 は済んだ)。
   未決 U1〜U13(U14 は所有者の決定で確定)。BUG-223 の区間 2・3・5 は元のログが失われ型が未検証(§1.1)。実装はまだ(コード・テストは不変)。
 related_adr:
@@ -170,7 +170,12 @@ related_adr:
 | 同 | 同 | GJI | wt>edit | independent | independent | **1/1**(2 試行中 1 回有効) |
 | 同 | 同 | GJI | edit>wt | **inconclusive**(B で ON キーが効かない、ctl_on=mixed 1/2) | inconclusive | — |
 | 実機(team-lead の報告。ブランチ `exp/ime-scope-realmachine` `37ab1cf86` で Chrome の代わりに Edge。起草者は生ログ未読) | Windows 11 23H2(ビルド 22631)、SPI=0、awase 停止 | GJI | edit>edit・edit>Edge・Edge>edit | independent | independent | 各 2/2 |
+| **再測定** run 40397245969(head `8f80eec2e`、ジョブ `scope (msime)` 121833875821・`scope (gji)` 121833875179 のログの `SCOPE:` 行を確認) | Windows Server | MS-IME 本体 | **edit>wt** | **shared-open** | independent | **6/6**(ctl_direct=`ka` 6/6、ctl_on=`hira` 6/6、s1=`hira` 6/6) |
+| 同 | 同 | MS-IME 本体 | wt>edit | inconclusive(対照が取れず ctl=none) | inconclusive | s1=`ka` 6/6・s3=`hira` 6/6(傾向は独立) |
+| 同 | 同 | GJI | edit>wt | **inconclusive**(s1=mixed 3/6) | inconclusive(ctl_on=mixed 3/6) | **B 単独の対照も不安定**(ctl_direct=`ka` 4/6、ctl_on=mixed 3/6) |
+| 同 | 同 | GJI | wt>edit | inconclusive(ctl=none) | inconclusive | 有効 3 ラウンド: s1=`ka` 3/3・s3=`hira` 3/3(傾向は独立) |
 
+- **再測定の読み**: MS-IME × WT の `edit>wt` の開の共有は 6/6 で再現した(測定済み)。GJI × WT は 6 ラウンドでも、B 単独の対照(WT で ON キーを押す)が安定せず判定できない(ハーネスの雑音か GJI の WT での挙動かは切り分けられていない)。**BUG-223 の窓(GJI × tsf-native)の保持単位は未確定のまま**で、MS-IME × WT の結果を GJI に当てはめる証拠は無い。
 - 測っていないもの: GJI × tsf-native(実機・CI とも決まらず。**BUG-223 と §1.1.1 の窓の種類**)、WezTerm、UWP/XAML、同じプロセスの別スレッド、閉の向き(A を閉にして WT へ)・往復・WT の起動順(A を設定した後に WT を起動したなら「引き継ぎ」ではなく新しい窓の初期化かもしれない)、マウス・タスクバーの切替。
 - MS-IME × WT の振る舞いの仕組みは未検証(TSF の keyboard open-close コンパートメントは候補の 1 つ)。**測ったのは「開の一方向」だけ**。
 
@@ -437,7 +442,7 @@ P6(明示意図があってもポーリングを止めない)は別の目的の�
 | # | 何を測るか | 構成 | 合否・読み方 | 結果で何が変わるか | 規模 |
 |---|---|---|---|---|---|
 | B0 | **観測のみのログの改善(挙動は変えない)**: `[effective-open-flip]` の行に、上書きした `IntentStore` の行の記録時刻・hwnd・経過、`desired_open` の値、直前の明示操作の種類(`UserIntentSource`・予測・lang-detect など)を足す。BUG-223 の区間 2・3・5 のように型を後から確かめられない事態を防ぐ(team-lead の提案) | 本番(develop)に診断として入れ、所有者の実機の次の事象で読む | — | 次の実機の事象で、`IntentStore` の上書き・`desired_open` の後退・予測の型を区別できる | `platform_state.rs` のログの 1 行の拡張(数十行)。V0 より前に入れてよい |
-| B1a | **(最優先)GJI × Windows Terminal の保持単位**。CI の `edit>wt` が inconclusive(B で ON キーが効かない)。原因(注入の宛先・WT の起動直後・GJI の TSF の warm/cold)を切り分け、試行数を増やす。**MS-IME × WT も含め、閉の向き(A を閉にして WT へ)・往復(WT で変えて A へ、A で変えて WT へ)・起動順(WT を A の設定の前/後に起動)のセルを足す**(round 2 RM2) | `ime-scope.yml`(`ci/adr282-ime-scope`) | 対照(B 単独で ON キー → `か`)が 3/3 以上のうえで各セル 3 試行以上 | 開を共有する組の表(L4・L5a・Z の `ScopeModel`、U11)。BUG-223・§1.1.1 の窓の種類の説明 | ハーネスの修正、数十行 |
+| B1a | **(最優先。一部実施済み: run 40397245969、6 ラウンド。MS-IME × WT の開の共有は 6/6 で確定、GJI × WT は対照が不安定で未確定。次の手: ハーネスの待ち・ウォームアップの見直しで GJI × WT の対照〈B 単独で ON キー → `か`〉を安定させる、または実機の WT〈B1c〉)** **GJI × Windows Terminal の保持単位**。CI の `edit>wt` が inconclusive(B で ON キーが効かない)。原因(注入の宛先・WT の起動直後・GJI の TSF の warm/cold)を切り分け、試行数を増やす。**MS-IME × WT も含め、閉の向き(A を閉にして WT へ)・往復(WT で変えて A へ、A で変えて WT へ)・起動順(WT を A の設定の前/後に起動)のセルを足す**(round 2 RM2) | `ime-scope.yml`(`ci/adr282-ime-scope`) | 対照(B 単独で ON キー → `か`)が 3/3 以上のうえで各セル 3 試行以上 | 開を共有する組の表(L4・L5a・Z の `ScopeModel`、U11)。BUG-223・§1.1.1 の窓の種類の説明 | ハーネスの修正、数十行 |
 | B1b | WezTerm・UWP/XAML・同じプロセスの別スレッド・WebView2 のホスト | 同 | 各セル 3 試行以上 | 表の未確定の行 | 起動部品、数十〜百行 |
 | B1c | 実機の tsf-native 窓での手動確認(所有者。dragonflyg4 に WT か WezTerm を入れる) | 手順書(A で ON にして B で `ka`、逆向き、閉の向き、各 3 回、awase 停止) | 3/3 | CI と実機の差、BUG-223 の窓の種類での決め手 | 手順書のみ |
 | B2 | 新しいスレッドの窓は閉で始まるか(U2)。TSF で同定した MS-IME 本体・実アプリの新しい窓 | B1 と同じ | 3/3 閉 | U2 の判断材料 | B1 に含める |
@@ -552,7 +557,7 @@ V1 の shadow で殻(ADR-275 で core へ移さないと決めた `platform_stat
 | U8 | awase 起点の明示操作(lang-detect 等)の belief での重さ | 同じ重さ(書き込みには入れない) |
 | U9 | 修飾付きの割り当てを IME の設定から読む範囲 | 今は扱わない |
 | U10 | O2 の適用範囲: 端末(WT・WezTerm)を ON 寄りから外すか | **判断は V0 の後にする(その了承を求める)**。判断材料: 窓の種類別の I2 の増加(L2 の実測: msime shared 35 → 99、per-thread 57 → 165。増えたのは読めない窓) |
-| U11 | 実 IME が窓をまたいで開を引き継ぐと測れた組(候補: MS-IME × WT、開の一方向・2 試行)に O4 を適用するか | B1a の閉の向き・往復・起動順の結果を見て問う。それまで初期値は `PerThread` |
+| U11 | 実 IME が窓をまたいで開を引き継ぐと測れた組(MS-IME × WT の `edit>wt` の開の共有は 6/6 で測定済み。逆向き・閉の向き・往復は未確定)に O4 を適用するか | B1a の閉の向き・往復・起動順の結果を見て問う。それまで初期値は `PerThread` |
 | U12 | V0 で候補 S が合格したら、Z ではなく S を採るか | 採る |
 | U13 | 共有メモリの無い Mozc 系で直接読み・監視窓を戻すか | B9 の後 |
 | (U14、確定) | O3 と方針の衝突 | **所有者の決定(2026-10-26)**: 「IME ON かつかな」を優先。O3′(§0.1・§5) |
@@ -594,6 +599,7 @@ I1(T=0。括弧は読める窓の poll が 1 回届いた後も残る本数):
 - **残る 153 本(L1 の後、msime shared)は嘘の観測 32・外部変更 121** で、どの候補でも減らない。観測の手段(信頼表・MozcShm・ADR-205・字形・ADR-279)と既定の設計が要る。
 - **per-thread の窓では、L1〜L3 は I1 と I2 を同時に減らさない**。O2 を守る限り、Z の既定も L2 と同じ向きで I2 を増やす(§2.1)。per-thread の窓で I2 を増やさない条件は U2・U10 で、Z を採ること自体ではない(round 2 RM1 で訂正。round 1 版の「per-thread ではゼロベースが要る」は支えられない)。
 - **窓の種類で保持単位が違う**(読める窓・Chromium は独立、MS-IME × WT は開の一方向の引き継ぎの候補、GJI × tsf-native は未確定)。単一の局所修正は片方の窓で I2 を増やすので、窓の種類で規則を分ける L4(と L5a)を V0 で測る。L4・L5a は「窓の組の共有の表」を今の構造に足すだけで、Z ほどの移行は要らない。
+- **窓の組の共有の表(2026-10-26 時点)**: 読める Win32 窓・Chromium どうし = 独立(CI 各 2/2、実機 GJI 各 2/2)。MS-IME × WT(Win32 EDIT → WT)= **開を共有(6/6、測定済み)**、変換モードは独立。GJI × WT = **未確定(対照が不安定)**。WezTerm・UWP/XAML = 未測定。L4・L5a・Z の初期値はこの表に従い、未確定の組は O3′・§6.1 のとおり両方の値で合格を要件にする。
 - **Z が要るのは、L4・L5a の組み合わせでも消えない型が残り、Z がそれを消すと示せたときだけ**。今は示せていない(§4.0)。
 
 ## 15. Opus レビュー round 1 への対応(2026-10-26)
