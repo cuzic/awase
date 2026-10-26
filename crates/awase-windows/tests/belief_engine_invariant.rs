@@ -159,6 +159,7 @@ fn profile_name(w: &Window) -> &'static str {
 // 事象の字母
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Obs {
     /// 読める窓の ObserverPoll（Medium）で真の開閉を読む。
