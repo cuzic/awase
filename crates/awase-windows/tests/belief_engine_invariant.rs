@@ -55,6 +55,8 @@ const FULL_DEPTH: usize = 3;
 const TINY_DEPTH: usize = 4;
 /// I2（参考）の全列挙の長さ（核の字母）。
 const I2_DEPTH: usize = 3;
+/// I6(時間の経過だけで belief が変わる)の列の長さ(時間の予算。列ごとに 2 回時間を進める)。
+const I6_DEPTH: usize = 2;
 /// ランダム探索の本数（設定ごと）と長さ。
 const RANDOM_COUNT: usize = 300;
 const RANDOM_MIN_LEN: usize = 8;
@@ -615,6 +617,56 @@ fn exhaustive(
     Exhaustive { checked, raws }
 }
 
+/// ADR-282 I6(寿命で後退しない)の基準の測定。列を流した後、事象を何も足さずに時間だけを進め、belief(`effective_open`)が
+/// 変わる列を数える。今の構造では `IntentStore` の TTL(ON 10 秒・OFF 30 秒)と観測の鮮度(3 秒)・寿命で変わりうる。
+/// 戻り値: (調べた列の数, 進めた時間 ms → 「前の根拠 → 後の根拠(値)」ごとの列の数)。
+const I6_ADVANCES_MS: [u64; 2] = [11_000, 20_000];
+
+fn i6_sweep(
+    cfg: Config,
+    alphabet: &[Ev],
+    depth: usize,
+    started: Instant,
+) -> (usize, BTreeMap<String, usize>) {
+    let mut frontier: Vec<Vec<Ev>> = vec![Vec::new()];
+    let mut checked = 0;
+    let mut by_change: BTreeMap<String, usize> = BTreeMap::new();
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for seq in &frontier {
+            for &e in alphabet {
+                let mut cand = seq.clone();
+                cand.push(e);
+                let Some((mut h, _)) = replay(cfg, &cand) else {
+                    continue;
+                };
+                checked += 1;
+                if checked % 200 == 0 {
+                    check_budget(cfg, started, "i6 sweep", checked);
+                }
+                let mut elapsed = 0;
+                for ms in I6_ADVANCES_MS {
+                    let before = h.steps.last().expect("step").clone();
+                    h.advance_ms(ms);
+                    elapsed += ms;
+                    let after = h.steps.last().expect("step").clone();
+                    if before.effective_open != after.effective_open {
+                        let key = format!(
+                            "+{elapsed}ms: {}({}) → {}({})",
+                            before.basis, before.effective_open, after.basis, after.effective_open
+                        );
+                        *by_change.entry(key).or_default() += 1;
+                        break;
+                    }
+                }
+                next.push(cand);
+            }
+        }
+        frontier = next;
+    }
+    (checked, by_change)
+}
+
 /// `raws`（`exhaustive` の結果）のうち、**事象を 1 つ削っても違反が残らない**（最小の）列。
 /// 削った列が違反するのは、その列のどれかの接頭辞が `raws` にあるとき（`exhaustive` は全ての意味のある短い列を調べている）。
 fn irreducible(raws: &[Raw]) -> Vec<&Raw> {
@@ -947,6 +999,19 @@ fn run_config(cfg: Config) -> String {
     render_exhaustive(&mut out, "核の字母", cfg, Inv::I2, &core, I2_DEPTH, &r);
 
     lap("I2 core");
+    // ADR-282 I6: 時間の経過だけで belief が変わる列(核の字母・長さ 2。O3 を S′ にも課す所有者の決定の基準の測定)。
+    let (i6_checked, i6) = i6_sweep(cfg, &core, I6_DEPTH, t0);
+    let total: usize = i6.values().sum();
+    let _ = writeln!(
+        out,
+        "\n## {} I6 時間の経過だけで belief が変わる列（核の字母・長さ {I6_DEPTH} まで・検査した列 {i6_checked}。列の後に +11000ms、さらに +20000ms）",
+        cfg.name()
+    );
+    let _ = writeln!(out, "  変わった列: {total} 本");
+    for (k, n) in &i6 {
+        let _ = writeln!(out, "    {n:>6}  {k}");
+    }
+    lap("I6");
     // 実機の事故の列。
     let _ = writeln!(out, "\n## {} 実機の事故（BUG-223）の列", cfg.name());
     for (name, seq) in bug223_sequences() {
