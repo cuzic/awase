@@ -445,21 +445,52 @@ const INITIAL: TrueState = TrueState {
 struct Config {
     grid: Grid,
     shared: bool,
+    /// ADR-282 V0: 窓の種類で保持単位を混ぜた窓モデル(`shared` は偽で窓ごとに別スレッド)。`Some(true)` なら tsf-native の窓
+    /// (wezterm)が入場時に直前のスレッドの「開」を引き継ぐ(O5: MS-IME 本体の Win32 EDIT → Windows Terminal の向き、CI 6/6 の写し。
+    /// 測ったのは Windows Terminal で、ここでは同じ tsf-native の wezterm の窓に当てはめる近似)。`Some(false)` は引き継がない
+    /// (O6 の既定〈独立〉。GJI × tsf-native は未確定なので両方で回す)。`None` は従来の shared / per-thread。
+    tsf_inherit: Option<bool>,
 }
 
 impl Config {
+    const fn plain(grid: Grid, shared: bool) -> Self {
+        Self {
+            grid,
+            shared,
+            tsf_inherit: None,
+        }
+    }
+
+    const fn mixed(grid: Grid, tsf_inherit: bool) -> Self {
+        Self {
+            grid,
+            shared: false,
+            tsf_inherit: Some(tsf_inherit),
+        }
+    }
+
     fn name(self) -> String {
-        format!(
-            "{} {}",
-            self.grid.name(),
-            if self.shared { "shared" } else { "per-thread" }
-        )
+        match self.tsf_inherit {
+            Some(i) => format!(
+                "{} mixed(tsf-native={})",
+                self.grid.name(),
+                if i { "inherit-open" } else { "independent" }
+            ),
+            None => format!(
+                "{} {}",
+                self.grid.name(),
+                if self.shared { "shared" } else { "per-thread" }
+            ),
+        }
     }
 
     fn start(self) -> (Harness, [Window; 5]) {
         let wins = windows(self.shared);
         let mut h =
             Harness::start(Setup::in_window(INITIAL, wins[W_EXPLORER]).with_grid(self.grid));
+        if self.tsf_inherit == Some(true) {
+            h.inherit_open_on_entry(wins[W_WEZTERM].thread);
+        }
         // 起動直後の belief は placeholder（`desired_open=true`）で、真（閉）と食い違っている（BUG-163 の領分。起動の事象は
         // ここでは測らない）。最初の観測で揃えた「動いている awase」の状態から列を始める。
         h.observe(Source::ImmCross);
@@ -817,6 +848,31 @@ fn render_exhaustive(
 }
 
 /// 実機の事故（BUG-223）の列。必ず I1 の違反として出ること。
+/// ADR-282 §1.1.1 の型の列(窓 A で明示 OFF → 窓 B で F2 → A に戻る。`IntentStore` の OFF の行は 30 秒の内側)。
+fn intent_store_override_sequences() -> Vec<(&'static str, Vec<Ev>)> {
+    vec![
+        (
+            "読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る",
+            vec![
+                Ev::UserSet(false),
+                Ev::Focus(W_WEZTERM),
+                Ev::Key(VK_HIRAGANA),
+                Ev::Focus(W_EXPLORER),
+            ],
+        ),
+        (
+            "imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る",
+            vec![
+                Ev::Focus(W_CHROME),
+                Ev::UserSet(false),
+                Ev::Focus(W_WEZTERM),
+                Ev::Key(VK_HIRAGANA),
+                Ev::Focus(W_CHROME),
+            ],
+        ),
+    ]
+}
+
 fn bug223_sequences() -> Vec<(&'static str, Vec<Ev>)> {
     vec![
         (
@@ -911,9 +967,32 @@ fn run_config(cfg: Config) -> String {
         };
         let _ = writeln!(out, "  {name}: {} → {verdict}", seq_name(&seq));
     }
+    // ADR-282 §1.1.1: 実機の再現(「r;にちは」)の型。窓 A の明示 OFF が `IntentStore` の行(TTL 30 秒)に残り、別の窓 B で ON に
+    // した後に A へ戻ると、その行が `resolve_open_at` の結果を上書きする。A・B が開を共有する窓モデルでだけ I1 の違反になる見込み。
+    let _ = writeln!(
+        out,
+        "\n## {} 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列",
+        cfg.name()
+    );
+    for (name, seq) in intent_store_override_sequences() {
+        let verdict = match replay(cfg, &seq) {
+            None => "(この窓モデルでは再生できない)".to_string(),
+            Some((h, _)) => {
+                let steps: Vec<_> = h.steps.iter().skip(SETTLE_STEPS).cloned().collect();
+                match steps.iter().find_map(|s| violation(Inv::I1, s)) {
+                    Some(class) => format!("I1 違反 [{class}]"),
+                    None => "違反なし".to_string(),
+                }
+            }
+        };
+        let _ = writeln!(out, "  {name}: {} → {verdict}", seq_name(&seq));
+    }
 
     // ランダム探索（I1）。
-    let seed = 0x00B0_0AC1_E000 + (cfg.grid as u64) * 16 + u64::from(cfg.shared);
+    let seed = 0x00B0_0AC1_E000
+        + (cfg.grid as u64) * 16
+        + u64::from(cfg.shared)
+        + cfg.tsf_inherit.map_or(0, |i| 2 + u64::from(i));
     let rr = random_search(cfg, Inv::I1, seed, t0);
     let _ = writeln!(
         out,
@@ -965,12 +1044,14 @@ fn belief_engine_invariant_baseline() {
     // IME の状態を共有する窓モデルは全格子、窓ごとに別スレッドの窓モデルは F2 が ON にする GJI の MS-IME プリセットだけ（時間の予算）。
     let mut configs: Vec<Config> = Grid::ALL
         .into_iter()
-        .map(|grid| Config { grid, shared: true })
+        .map(|grid| Config::plain(grid, true))
         .collect();
-    configs.push(Config {
-        grid: Grid::GjiMsime,
-        shared: false,
-    });
+    configs.push(Config::plain(Grid::GjiMsime, false));
+    // ADR-282 V0: 窓の種類で保持単位を混ぜた窓モデル(測った事実: 読める窓・Chromium は独立、MS-IME 本体 × WT は入場時に開を
+    // 引き継ぐ〈O5〉、GJI × tsf-native は未確定なので両方)。核の字母(時間の予算)。
+    configs.push(Config::mixed(Grid::MsimeNative, true));
+    configs.push(Config::mixed(Grid::GjiMsime, false));
+    configs.push(Config::mixed(Grid::GjiMsime, true));
     let results: Vec<String> = std::thread::scope(|s| {
         let handles: Vec<_> = configs
             .iter()
@@ -1019,7 +1100,7 @@ fn belief_engine_invariant_baseline() {
 fn bug223_sequences_are_i1_violations_when_ime_state_is_shared() {
     // F2 が閉から ON にする格子（GJI の MS-IME プリセットと MS-IME 本体。ATOK プリセットの F2 は閉のまま変わらない）。
     for grid in [Grid::GjiMsime, Grid::MsimeNative] {
-        let cfg = Config { grid, shared: true };
+        let cfg = Config::plain(grid, true);
         for (name, seq) in bug223_sequences() {
             let (h, _) = replay(cfg, &seq).expect("shared では再生できる");
             assert!(
