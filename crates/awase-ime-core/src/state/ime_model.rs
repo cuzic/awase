@@ -4414,4 +4414,42 @@ mod tests {
         };
         assert_eq!(guarded.label(), "force-guard");
     }
+
+    /// BUG-223(区間 2・3・5 の核): 窓 A で明示の IME OFF（`desired_open=false`）を押したあと、別プロセスの TSF ネイティブ窓 B
+    /// へ移ると、`FocusChanged` が明示意図と観測を捨てても `desired_open` は引き継がれ、B で観測が無い間の
+    /// `effective_open` は `DesiredFallback` の false になる（実 IME が B で ON でも Engine だけ OFF）。
+    /// 現状の挙動の固定（修正の前の再現。方針は所有者が決める）。
+    #[test]
+    fn bug_223_explicit_off_in_a_is_carried_into_b_as_desired_fallback() {
+        use super::super::ime_event::UserIntentSource;
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        let in_a = model.resolve_open_at(Instant::now());
+        assert!(!in_a.value);
+        assert_eq!(in_a.decided_by.base, BaseDecision::ExplicitIntent);
+        // 別プロセスの TSF ネイティブ窓 B へ移る（観測なし）。
+        model.reduce(&envelope(
+            2,
+            ImeEvent::FocusChanged {
+                from: None,
+                to: HwndId(0xB),
+                profile: ImePolicyProfile::TsfNative,
+                focus_epoch: 2,
+            },
+        ));
+        assert!(!model.has_user_explicit_intent(), "明示意図は捨てられる");
+        let in_b = model.resolve_open_at(Instant::now());
+        assert_eq!(
+            in_b.decided_by.base,
+            BaseDecision::DesiredFallback,
+            "B では観測が無く desired_open へ後退する"
+        );
+        assert!(!in_b.value, "A の OFF が B へ持ち越される（現状。BUG-223）");
+    }
 }
