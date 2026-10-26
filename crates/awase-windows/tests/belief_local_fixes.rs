@@ -1011,6 +1011,7 @@ fn belief_local_fixes_measurement() {
                                     grid,
                                     shared,
                                     fixes,
+                                    long,
                                 }));
                             }
                         }
