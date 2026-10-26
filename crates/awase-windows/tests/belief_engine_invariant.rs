@@ -255,7 +255,7 @@ fn seq_name(seq: &[Ev]) -> String {
     seq.iter().map(|e| e.name()).collect::<Vec<_>>().join(" > ")
 }
 
-/// 全字母（22 種）。
+/// 全字母（19 種）。文字キー・明示 ON・ImmCross の観測（Poll と同じ性質）は時間の予算のため外した。
 fn full_alphabet() -> Vec<Ev> {
     let mut v = vec![
         Ev::Key(VK_EISU),
@@ -263,14 +263,11 @@ fn full_alphabet() -> Vec<Ev> {
         Ev::Key(VK_IME_OFF),
         Ev::Key(VK_IME_ON),
         Ev::Key(VK_HANZEN),
-        Ev::Key(VK_CHAR),
         Ev::UserSet(false),
-        Ev::UserSet(true),
     ];
     v.extend((0..5).map(Ev::Focus));
     v.extend([
         Ev::Obs(Obs::PollTruth),
-        Ev::Obs(Obs::ImmTruth),
         Ev::Obs(Obs::ProbeTruth),
         Ev::Obs(Obs::ConvInferOpen),
         Ev::Obs(Obs::PollLie),
@@ -300,7 +297,7 @@ fn core_alphabet() -> Vec<Ev> {
     ]
 }
 
-/// 小さい字母（8 種。実機の事故の列〈OFF キー・F2・明示 OFF・窓切替・時間〉だけ）。長さ 4 まで全列挙する。
+/// 小さい字母（7 種。実機の事故の列〈OFF キー・F2・明示 OFF・窓切替・時間〉だけ）。長さ 4 まで全列挙する。
 fn tiny_alphabet() -> Vec<Ev> {
     vec![
         Ev::Key(VK_HIRAGANA),
@@ -309,7 +306,6 @@ fn tiny_alphabet() -> Vec<Ev> {
         Ev::Focus(W_XAML),
         Ev::Focus(W_WEZTERM),
         Ev::Focus(W_CHROME),
-        Ev::Obs(Obs::ProbeTruth),
         Ev::Advance,
     ]
 }
@@ -865,8 +861,22 @@ fn run_config(cfg: Config) -> String {
     let full = full_alphabet();
     let core = core_alphabet();
     let tiny = tiny_alphabet();
-    let r_full = exhaustive(cfg, Inv::I1, &full, FULL_DEPTH, t0);
-    render_exhaustive(&mut out, "全字母", cfg, Inv::I1, &full, FULL_DEPTH, &r_full);
+    // 窓ごとに別スレッドの窓モデルは、全字母ではなく核の字母（時間の予算）。
+    let (main_label, main_alphabet) = if cfg.shared {
+        ("全字母", &full)
+    } else {
+        ("核の字母", &core)
+    };
+    let r_full = exhaustive(cfg, Inv::I1, main_alphabet, FULL_DEPTH, t0);
+    render_exhaustive(
+        &mut out,
+        main_label,
+        cfg,
+        Inv::I1,
+        main_alphabet,
+        FULL_DEPTH,
+        &r_full,
+    );
     lap("I1 full");
     // 小さい字母の長さ 4（実機の事故の長さ）は、事故の格子（GJI の MS-IME プリセット、窓をまたいで IME 共有）だけ（時間の予算）。
     let r_tiny = (cfg.grid == Grid::GjiMsime && cfg.shared)
