@@ -260,7 +260,7 @@ pub(crate) const fn should_align_after_expired_mode_key_pass(
 /// Shift 押下中（ATOK ではかな⇔半角英数、ADR-186 残る問題2）だけ追随を止める。Ctrl/Alt/Win は見ない
 /// ——Ctrl+無変換→Ctrl+変換（Ctrl 保持のまま、spike `--resync` のリセット操作）はこれまでどおり追随する
 /// 必要がある。`kp_stage_key_effect_track` の予測抑止（`modifiers_suppress_prediction`、
-/// Ctrl/Alt/Win も含めて表のセルの予測を止める）とは理由が別物なので、述語を共有しない。
+/// Ctrl/Alt/Win も含めて表のセルの予測を止める。ADR-281: GJI/Mozc 系の 0xF0〜0xF4 の Ctrl・Shift 付きだけは例外で素のキーとして予測する）とは理由が別物なので、述語を共有しない。
 #[must_use]
 pub const fn mode_key_follow_admits_modifiers(shift: bool) -> bool {
     !shift

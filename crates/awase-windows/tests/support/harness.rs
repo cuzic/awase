@@ -411,8 +411,9 @@ impl Harness {
     }
 
     /// Ctrl を押したままの物理キー1回。実 IME はキーを受けて普通に動く（擬似 IME は修飾を知らない。実機の
-    /// GJI は Ctrl 押下中のひらがなキー〈0xF2〉でも ON になった、2026-10-26 dragonflyg4 の awase.log）が、
-    /// awase の追跡・予測は修飾付きを抑止する（`plan_key_effect_track` が `None`）ので、belief へは何も反映されない。
+    /// GJI は Ctrl 押下中のひらがなキー〈0xF2〉でも ON になった、2026-10-26 dragonflyg4 の awase.log。Mozc のクライアントは
+    /// 0xF0〜0xF4 の修飾を捨てる〈`keyevent_handler.cc:330-352`〉ので、素のキーと同じ）。awase の追跡・予測は、修飾付きを抑止する
+    /// （`plan_key_effect_track` が `None`）が、ADR-281 で GJI 系の 0xF0〜0xF4 の Ctrl・Shift 付きだけは素のキーとして予測する。
     pub fn key_ctrl(&mut self, vk: u16) -> &mut Self {
         self.key_mods(vk, true)
     }
@@ -433,6 +434,8 @@ impl Harness {
             consumed: false,
             has_shadow_action: false,
             has_sync_direction: false,
+            // ADR-281: GJI 系の格子（ATOK・MS-IME プリセット）は 0xF0〜0xF4 の修飾を捨てる IME。Microsoft IME 本体は測るまで捨てない扱い。
+            ime_drops_mode_key_modifiers: !matches!(self.setup.grid, Grid::MsimeNative),
         });
         // 本番は追跡しない打鍵（`None`）では予測も呼ばない。無修飾の物理 KeyDown は必ず `Some`。
         assert!(

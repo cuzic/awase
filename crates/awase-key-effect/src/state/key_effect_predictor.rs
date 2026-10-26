@@ -855,6 +855,17 @@ pub struct KeyTrackFacts {
     pub has_shadow_action: bool,
     /// 同期キー（`sync_direction`）か。従来の経路に任せる。
     pub has_sync_direction: bool,
+    /// この IME が 0xF0〜0xF4 の修飾を捨てるか（ADR-281。Mozc のクライアントは `keyevent_handler.cc:330-352` で
+    /// ひらがな・カタカナ・英数・半角/全角の Shift/Ctrl/Alt/Caps をすべて消す。GJI/Mozc 系で真）。殻が `active_ime_kind()` から作る。
+    pub ime_drops_mode_key_modifiers: bool,
+}
+
+/// Mozc のクライアントが修飾を捨てる special key の VK（ひらがな・カタカナ・英数・半角/全角、ADR-281）。
+/// 修飾によって届く VK が変わる（日本語 106/109 の Shift+ひらがな → 0xF1 など）ので、物理キーではなく届いた VK で判定する。
+/// VK_DBE_ROMAN/NOROMAN（0xF5/0xF6）と VK_KANJI（0x19）は TSF の予約キーとして別経路で扱われるので含めない。
+#[must_use]
+pub const fn is_modifier_dropping_mode_key_vk(vk: u16) -> bool {
+    matches!(vk, 0xF0..=0xF4)
 }
 
 /// 打鍵ごとの予測・追跡を行うか。`None`=行わない、`Some(passive_rule_eligible)`=行う。
@@ -863,7 +874,9 @@ pub struct KeyTrackFacts {
 ///   `shadow_action`・`sync_direction` 付きは従来の経路に任せる。
 /// - 表に無いキー（文字キー）: エンジンが消費しても（ローマ字を IME へ再注入して入力中にするため）
 ///   変換中の段階を戻す追跡だけを更新する。
-/// - 修飾付きは [`modifiers_suppress_prediction`] で抑止する。
+/// - 修飾付きは [`modifiers_suppress_prediction`] で抑止する。ただし ADR-281: IME が 0xF0〜0xF4 の修飾を捨てる
+///   （GJI/Mozc 系）とき、これらのキーは Ctrl・Shift（とその組み合わせ）付きでも素のキーとして追跡・予測する。
+///   Alt・Win 付きは従来どおり抑止する（Alt は TIP に届くか未確認、Win は OS のショートカットが先に食いうる）。
 ///
 /// `passive_rule_eligible`（ADR-211 決定2）は、表に無い受動のキー（プリセットの F13）の規則を当ててよい打鍵。
 /// 表のキーの除外は `in_table` のときだけなので、表に無いキーではここで明示する。自動リピート・エンジンが
@@ -874,7 +887,17 @@ pub fn plan_key_effect_track(f: &KeyTrackFacts) -> Option<bool> {
         return None;
     }
     let in_table = TableKey::from_vk(f.vk).is_some();
-    if modifiers_suppress_prediction(in_table, f.ctrl, f.alt, f.shift, f.win) {
+    // ADR-281: 修飾を捨てる IME の 0xF0〜0xF4 は、Ctrl・Shift だけなら素のキーとして扱う。
+    let modifiers_dropped = f.ime_drops_mode_key_modifiers
+        && is_modifier_dropping_mode_key_vk(f.vk)
+        && !f.alt
+        && !f.win;
+    let (ctrl, alt, shift, win) = if modifiers_dropped {
+        (false, false, false, false)
+    } else {
+        (f.ctrl, f.alt, f.shift, f.win)
+    };
+    if modifiers_suppress_prediction(in_table, ctrl, alt, shift, win) {
         // Shift+変換（ATOKで開閉トグルではない）やCtrl+文字（ショートカット）は「素のキー」の結果と違う。
         return None;
     }
@@ -882,7 +905,7 @@ pub fn plan_key_effect_track(f: &KeyTrackFacts) -> Option<bool> {
     if in_table && delegated {
         return None;
     }
-    let any_modifier = f.ctrl || f.alt || f.shift || f.win;
+    let any_modifier = ctrl || alt || shift || win;
     Some(!in_table && !f.was_down && !delegated && !any_modifier)
 }
 
@@ -1634,6 +1657,7 @@ mod tests {
             consumed: false,
             has_shadow_action: false,
             has_sync_direction: false,
+            ime_drops_mode_key_modifiers: false,
         }
     }
 
@@ -1717,6 +1741,72 @@ mod tests {
                 plan_key_effect_track(&f),
                 None,
                 "ショートカットは追跡しない"
+            );
+        }
+    }
+
+    /// ADR-281: 修飾を捨てる IME（GJI/Mozc 系）では、0xF0〜0xF4 は Ctrl・Shift 付きでも素のキーとして追跡・予測する。
+    /// BUG-221（Ctrl を押したままのひらがなキー〈0xF2〉で belief が閉のまま残り、最初の打鍵が素の E になった）。
+    #[test]
+    fn adr281_modifier_dropping_ime_predicts_mode_keys_with_ctrl_or_shift() {
+        for vk in [0xF0_u16, 0xF1, 0xF2, 0xF3, 0xF4] {
+            for (c, sh) in [(true, false), (false, true), (true, true)] {
+                let mut f = track_facts(vk);
+                f.ime_drops_mode_key_modifiers = true;
+                f.ctrl = c;
+                f.shift = sh;
+                assert_eq!(
+                    plan_key_effect_track(&f),
+                    Some(false),
+                    "0x{vk:02X} ctrl={c} shift={sh}: 素のキーとして追跡する"
+                );
+            }
+        }
+    }
+
+    /// Alt・Win 付きは従来どおり抑止する（Alt は TIP に届くか未確認、Win は OS のショートカットが先に食いうる）。
+    #[test]
+    fn adr281_alt_and_win_still_suppress_mode_keys() {
+        for (a, w) in [(true, false), (false, true), (true, true)] {
+            let mut f = track_facts(0xF2);
+            f.ime_drops_mode_key_modifiers = true;
+            f.alt = a;
+            f.win = w;
+            assert_eq!(plan_key_effect_track(&f), None, "alt={a} win={w}");
+            // Ctrl を併せて押していても同じ。
+            f.ctrl = true;
+            assert_eq!(plan_key_effect_track(&f), None, "ctrl+alt={a} win={w}");
+        }
+    }
+
+    /// 修飾を捨てない IME（Microsoft IME 本体など、測るまで）は従来どおり抑止する。
+    #[test]
+    fn adr281_ime_that_keeps_modifiers_still_suppresses_mode_keys() {
+        let mut f = track_facts(0xF2);
+        f.ctrl = true;
+        f.ime_drops_mode_key_modifiers = false;
+        assert_eq!(plan_key_effect_track(&f), None);
+    }
+
+    /// 範囲外のキー（修飾を消さない変換 0x1C、予約キーの VK_DBE_ROMAN 0xF5/NOROMAN 0xF6、VK_KANJI 0x19、文字キー）は、
+    /// 修飾を捨てる IME でも従来どおり抑止する。
+    #[test]
+    fn adr281_keys_outside_the_four_mode_keys_are_still_suppressed_with_modifiers() {
+        for vk in [0x1C_u16, 0x1D, 0xF5, 0xF6, 0x19, VK_TABLE, VK_CHAR] {
+            let mut f = track_facts(vk);
+            f.ime_drops_mode_key_modifiers = true;
+            f.ctrl = true;
+            assert_eq!(plan_key_effect_track(&f), None, "0x{vk:02X}");
+        }
+    }
+
+    #[test]
+    fn adr281_range_is_exactly_f0_to_f4() {
+        for vk in 0u16..=0x1FF {
+            assert_eq!(
+                is_modifier_dropping_mode_key_vk(vk),
+                (0xF0..=0xF4).contains(&vk),
+                "0x{vk:02X}"
             );
         }
     }
