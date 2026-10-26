@@ -196,6 +196,7 @@ const VK_HIRAGANA: u16 = 0xF2;
 const VK_IME_OFF: u16 = 0x1A;
 const VK_IME_ON: u16 = 0x16;
 const VK_HANZEN: u16 = 0xF3;
+#[allow(dead_code)]
 const VK_CHAR: u16 = 0x41;
 /// 列の前の準備のステップ数（`start` と、最初の観測）。検査は列の事象の後だけ。
 const SETTLE_STEPS: usize = 2;
