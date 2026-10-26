@@ -141,12 +141,12 @@ impl ScopeBelief {
     }
 
     fn row_mut(&mut self, scope: ScopeKey) -> &mut ScopeRow {
-        if let Some(i) = self.rows.iter().position(|(k, _)| *k == scope) {
-            &mut self.rows[i].1
-        } else {
+        let found = self.rows.iter().position(|(k, _)| *k == scope);
+        let i = found.unwrap_or_else(|| {
             self.rows.push((scope, ScopeRow::default()));
-            &mut self.rows.last_mut().expect("pushed").1
-        }
+            self.rows.len() - 1
+        });
+        &mut self.rows[i].1
     }
 
     /// 事象で状態を更新する(唯一の書き込み口)。
@@ -243,10 +243,9 @@ impl ScopeBelief {
     #[must_use]
     pub fn view(&self) -> ScopeView {
         let row = self.focused.map(|(k, _)| self.row(k)).unwrap_or_default();
-        let (open, basis) = match row.open {
-            Some(c) => (c.value, c.basis.label()),
-            None => (true, "z-default"),
-        };
+        let (open, basis) = row
+            .open
+            .map_or((true, "z-default"), |c| (c.value, c.basis.label()));
         let input_mode = match row.mode.map(|c| (c.value, c.basis)) {
             Some((ModeClass::Eisu, _)) => InputModeState::ObservedEisu,
             Some((ModeClass::KanaInputMethod, _)) => InputModeState::ObservedKana,
