@@ -2678,7 +2678,10 @@ impl std::fmt::Display for FlipDiag {
         write!(f, "desired_open={} ", self.desired_open)?;
         match self.last_intent {
             Some((open, source, age)) => {
-                write!(f, "last_intent=(open={open} source={source:?} age={age}ms) ")?;
+                write!(
+                    f,
+                    "last_intent=(open={open} source={source:?} age={age}ms) "
+                )?;
             }
             None => write!(f, "last_intent=none ")?,
         }
@@ -3537,7 +3540,10 @@ mod tests {
             line.contains("intent_store_row=(target=") && line.contains("age=6100ms"),
             "{line}"
         );
-        assert!(line.contains("desired_open=false last_intent=none"), "{line}");
+        assert!(
+            line.contains("desired_open=false last_intent=none"),
+            "{line}"
+        );
     }
 
     /// ADR-282 B0: `IntentStore` の行も意図も予測も無いときは、それぞれ `none` と出す(行の形が固定であること)。
