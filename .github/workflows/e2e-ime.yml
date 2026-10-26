@@ -348,6 +348,23 @@ jobs:
             # 0x19 は Kanji 行にも従うか(Hankaku/Zenkaku 行なし・Kanji 行=IMEOff の表)。開いたままなら Kanji 行は見ない(0x19 は Hankaku/Zenkaku 行だけ)。
             cfg('sc-t1b-kanji-row-only', 'observe', check='consistency', awase='false', keymap=0, runs=1,
                 args='--chord=A4,19 --chord-at=20000 --chord-prep=1C', tsv='DirectInput,Henkan,IMEOn|Precomposition,Kanji,IMEOff'),
+            # ADR-281(BUG-221、判定は check_modifier_mode_key.py): 修飾を押したままのひらがなキー(0xF2)。閉じた状態(--chord-prep=1A=VK_IME_OFF)から押す。
+            # nat-*(awase なし、観測のみ): 修飾付きの F2 で実 IME が開くか。GJI(MS-IME プリセット)と Microsoft IME 本体で、none(対照)・Ctrl・Shift・Alt を比べる
+            #   (M1・M1'・M2。Mozc/GJI がこの 4 キーの修飾を捨てるか、Alt が届くか、MS-IME 本体で A′ の条件を広げてよいかの根拠)。
+            # awase-*(awase 起動中): GJI(MS-IME プリセット)で、none・Ctrl・Shift は F2 を予測して Engine が活性化すること(A′)。Alt は予測しない(従来どおり)ことを観測する。
+            # 押しっぱなしにする VK: none=0x87(F24、修飾でない対照)/ ctrl=A2 / shift=A0 / alt=A4。only='sc-adr281-*' で回す。
+            *[cfg(f'sc-adr281-nat-{iname}-{mod}', 'observe', check=f'modkey-{mod}-observe', ime=ime, keymap=km, awase='false', runs=3,
+                  args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A{extra}', until='2026-11-10')
+              for iname, ime, km, extra in (('gji-msime', 'gji', 2, ''), ('msime-native', 'msime', 1, ' --msime'))
+              for mod, vk in (('none', '87'), ('ctrl', 'A2'), ('shift', 'A0'), ('alt', 'A4'))],
+            # 半角/全角(0xF3)でも修飾を捨てるか(GJI の実 IME のみ、awase なし。MS-IME プリセットの DirectInput の Hankaku/Zenkaku は IMEOn)。
+            *[cfg(f'sc-adr281-nat-gji-msime-f3-{mod}', 'observe', check=f'modkey-{mod}-observe-f3', ime='gji', keymap=2, awase='false', runs=3,
+                  args=f'--chord={vk},F3 --chord-at=20000 --chord-prep=1A', until='2026-11-10')
+              for mod, vk in (('none', '87'), ('ctrl', 'A2'), ('shift', 'A0'), ('alt', 'A4'))],
+            *[cfg(f'sc-adr281-awase-gji-msime-{mod}', exp, check=f'modkey-{mod}-{chk}', ime='gji', keymap=2, awase='true', runs=3,
+                  args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A', **({'until': '2026-11-10'} if exp == 'observe' else {}))
+              for mod, vk, exp, chk in (('none', '87', 'pass', 'predict'), ('ctrl', 'A2', 'pass', 'predict'),
+                                        ('shift', 'A0', 'pass', 'predict'), ('alt', 'A4', 'observe', 'observe'))],
             # ADR-202 T16-3(判定は check_kanji_role.py): awase 起動中に、GJI の CUSTOM 表の Hankaku/Zenkaku 行を変えた利用者の Alt+半角/全角(0x19)で、実 IME と Engine(belief)がずれないこと。
             # VK_IME_ON で IME を開き、Alt+0x19。nontoggle=行が閉じないコマンド(InputModeHiragana)なので IME は開いたまま、Engine も ON のまま(修正前は静的 Toggle で belief だけ反転してずれる)。
             # toggle=行がトグルなので IME が閉じ、Engine も OFF に追随する。表には awase の書き込み手段(ON/OFF 行)を必ず入れる。
@@ -1488,6 +1505,15 @@ jobs:
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'charthumb') {
             python tools\e2e\ime_key_matrix\check_charthumb.py dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -like 'modkey-*') {
+            # modkey-<修飾>-<observe|predict>(ADR-281)。awase なしの構成では awase.log が無い。
+            $mk = '${{ matrix.cfg.check }}'.Split('-')
+            $mkey = if ($mk.Length -ge 4) { $mk[3] } else { 'f2' }
+            if (Test-Path dist\awase.log) {
+              python tools\e2e\ime_key_matrix\check_modifier_mode_key.py --mod=$($mk[1]) --expect=$($mk[2]) --key=$mkey dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
+            } else {
+              python tools\e2e\ime_key_matrix\check_modifier_mode_key.py --mod=$($mk[1]) --expect=$($mk[2]) --key=$mkey dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
+            }
           } elseif ('${{ matrix.cfg.check }}' -like 'kanjirole-*') {
             $kexp = '${{ matrix.cfg.check }}'.Substring('kanjirole-'.Length)
             python tools\e2e\ime_key_matrix\check_kanji_role.py --expect=$kexp dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
