@@ -368,7 +368,7 @@ jobs:
             # Microsoft IME 本体(ADR-281 の拡大後): 0xF2 の Ctrl は予測して Engine が活性化、Shift・Alt は実 IME が開かないので予測しない(誤予測の検出)。
             *[cfg(f'sc-adr281-awase-msime-native-{mod}', exp, check=f'modkey-{mod}-{chk}', ime='msime', keymap=1, awase='true', runs=3,
                   args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A --msime', **({'until': '2026-11-10'} if exp == 'observe' else {}))
-              for mod, vk, exp, chk in (('ctrl', 'A2', 'observe', 'predict'), ('shift', 'A0', 'observe', 'nopredict'), ('alt', 'A4', 'observe', 'nopredict'))],
+              for mod, vk, exp, chk in (('ctrl', 'A2', 'pass', 'predict'), ('shift', 'A0', 'pass', 'nopredict'), ('alt', 'A4', 'pass', 'nopredict'))],
             # ADR-202 T16-3(判定は check_kanji_role.py): awase 起動中に、GJI の CUSTOM 表の Hankaku/Zenkaku 行を変えた利用者の Alt+半角/全角(0x19)で、実 IME と Engine(belief)がずれないこと。
             # VK_IME_ON で IME を開き、Alt+0x19。nontoggle=行が閉じないコマンド(InputModeHiragana)なので IME は開いたまま、Engine も ON のまま(修正前は静的 Toggle で belief だけ反転してずれる)。
             # toggle=行がトグルなので IME が閉じ、Engine も OFF に追随する。表には awase の書き込み手段(ON/OFF 行)を必ず入れる。

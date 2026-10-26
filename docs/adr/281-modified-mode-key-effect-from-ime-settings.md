@@ -175,6 +175,16 @@ awase 起動中(GJI の MS-IME プリセット、F2。KeyDown の `mods(` が物
 
 この結果を受けて、PR #856 で A′ を広げた: GJI/Mozc 系の 0xF0〜0xF4 に Alt を加える(Win は除外のまま)。Microsoft IME 本体は CLSID で本体と同定できたときだけ、0xF2 の Ctrl を加える。
 
+### 拡大後の再確認(e2e-ime run 40274039585、awase あり、7 構成 × 3 回、すべて期待どおり)
+
+| IME | 修飾 | 実 IME(F2) | `[key-effect-predict] vk=0xF2` | Engine |
+|---|---|---|---|---|
+| GJI | none・Ctrl・Shift・**Alt** | 開く | open=Some(true) | 活性化 |
+| Microsoft IME 本体 | Ctrl | 開く | open=Some(true) | 活性化 |
+| Microsoft IME 本体 | Shift・Alt | 開かない | 予測なし | 活性化しない |
+
+MS-IME 本体の Shift・Alt で誤って ON と予測しないこと(実 IME が開かないのに Engine を活性化しない)を、`--expect=nopredict` で pass の構成にした。
+
 ## 未決(所有者に確認したい点)
 
 - Q1(解決、2026-10-26). Shift・Alt まで広げるか → Mozc のソースで 4 キーは全修飾を捨てると確認したので、Ctrl・Shift・Alt に広げる(Win は除く)。
