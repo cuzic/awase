@@ -304,18 +304,19 @@ impl KanaModel {
     /// 使っているモデルの識別子（ログ用）。例: `tri-interp+latin-bigram-v1`、`bi+uniform`
     #[must_use]
     pub fn model_id(&self) -> String {
-        match &self.extended {
-            None => "bi+uniform".to_string(),
-            Some(ext) => format!(
-                "{}+{}",
-                if ext.tri.is_some() {
-                    "tri-interp"
-                } else {
-                    "bi"
-                },
-                ext.latin.as_ref().map_or("uniform", LatinBackground::id)
-            ),
-        }
+        self.extended.as_ref().map_or_else(
+            || model_id_of(KanaSide::Bigram, None),
+            |ext| {
+                model_id_of(
+                    if ext.tri.is_some() {
+                        KanaSide::TrigramInterp
+                    } else {
+                        KanaSide::Bigram
+                    },
+                    ext.latin.as_ref().map(LatinBackground::id),
+                )
+            },
+        )
     }
 
     /// 仮名 n-gram の表が使えるか
@@ -432,7 +433,7 @@ impl TriTable {
         let Some(&(sum, listed)) = self.prefix.get(&(a, b)) else {
             return ln_p2;
         };
-        let denominator = (base.vocab.len() - listed) as f64 * self.floor3 + sum;
+        let denominator = ((base.vocab.len() - listed) as f64).mul_add(self.floor3, sum);
         let q3 = self
             .freq
             .get(&(a, b, token))

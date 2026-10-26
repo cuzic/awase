@@ -107,10 +107,7 @@ impl LatinBackground {
     /// `ln P(cur | prev)`。`prev` が `None`（先頭・直前が仮名に読めない）なら `ln P(cur)`。
     #[must_use]
     pub fn ln_p(&self, prev: Option<usize>, cur: usize) -> f64 {
-        match prev {
-            Some(p) => self.ln_bi[p * self.n + cur],
-            None => self.ln_uni[cur],
-        }
+        prev.map_or_else(|| self.ln_uni[cur], |p| self.ln_bi[p * self.n + cur])
     }
 }
 
