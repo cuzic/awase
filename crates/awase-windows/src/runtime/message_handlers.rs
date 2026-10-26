@@ -953,6 +953,8 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
         crate::state::half_width_resume_hold::ReleaseReason::PanicReset,
     );
     app.focus_switch_hold_release_all("PanicReset");
+    // ADR-263: 入力言語判定の保持も、リセットの前に解放する（期限のタイマーがリセット後に発火しないように）。
+    app.lang_detect_release_for_panic_reset();
     app.panic_reset();
 }
 
