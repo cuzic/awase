@@ -96,6 +96,26 @@ journal の `effective-open-flip → false` のうち、所有者の IME-OFF キ
   窓切替(`reduce_focus_changed`、`crates/awase-ime-core/src/state/ime_model.rs:1157`)が予測 `key_effect` を捨てると、前の OFF キーが書いた `desired_open=false` に戻る。
 - BUG-223 自身が未確認としている点: (b) の各区間の直前に明示 OFF があったか。**実機で窓切替の後も IME が ON だった理由が「全窓で共有」か「移動先のスレッド自身の状態が ON」かも未確認**(どちらでも BUG-223 の記述と合う)。
 
+### 1.1.1 実機の再現(2026-10-26、team-lead の報告。本 ADR の起草者は `awase.log` を読んでいない。状態の行だけで、キー単位の文字は読んでいない)
+
+所有者の dragonflyg4(GJI、develop `aa208a1c`、lang-detect `mode=ImeOnEisu scope=All eisu_threshold=13 ja_threshold=14`)。手順: 窓 A で自動の半角英数 → 窓 B で F2 → 窓 A に戻って親指シフトで「こんにちは」→ 結果「r;にちは」(最初の 2 文字が素の英数)。時刻は UTC。
+
+1. 20:31:10.522 `[effective-open-flip] → false decided_by=ExplicitIntent`(`desired_open` = false)。
+2. 20:31:12.585 `apply_focus_probe_result → true decided_by=DesiredFallback`、`Engine activated`。
+3. 20:31:13.976 `[engine-input] vk=0xF2 KeyDown` → `[key-effect-predict] vk=0xF2 open=None mode=None track=KeyTrack{conv:Some(C19), stage:None}`(F2 の開閉の予測が付かない。`desired_open` は false のまま)。
+4. 20:31:16.629 `[effective-open-flip] → false decided_by=DecidedBy { base: DesiredFallback } shadow_model=true`、`Engine deactivated (... Inactive(ImeOff))`(窓切替の直後)。
+5. 20:31:17.933 `[lang-detect] ... trigger="window-switch" verdict="undecided" stop="excluded-key" presses=2`(この 2 打鍵が Engine OFF の間に打たれた)→ 20:31:17.934 `→ true decided_by=KeyEffectPrediction`、`Engine activated`。
+
+約 1.3 秒、IME は ON なのに Engine が OFF で、最初の 2 打鍵が素の `r;` になった。`DesiredFallback`(明示 OFF の後、窓切替で `desired_open` の false へ戻る)の型。ほかに単独の `DeriveMedium{ObserverPoll, second: None}` による OFF への反転が 2 回(20:29:08.757 → 0.5 秒後に true、20:32:06.059 → 0.7 秒後に true。BUG-223 の区間 1 と同じ型)。
+
+本 ADR の起草者がコードで確かめて足すこと:
+- **手順 3 で F2 の開閉の予測が `None` になる理由**: 予測器は開閉を**変化があるときだけ**出す(`predict_in_table` の `open: (c.after_open != input.open).then_some(c.after_open)`、`crates/awase-key-effect/src/state/key_effect_predictor.rs:641`)。
+  手順 2 で belief が既に開(true)だったので、表のセル(GJI の MS-IME プリセットの `on-c19-none|hiragana → ON/0x19`、`grid-tables/msime.json`)の「押した後は開」が予測の開閉に出ない。
+  **よって今の `KeyEffectPredicted` も局所修正 L1(`open: Some(v)` のときだけ `desired_open` を書く)も、この F2 を開の記録にしない**。L1 は基準の測定の BUG-223 の列(F2 が閉から開にする)を全部消したが、この実機の列(F2 を押した時点で belief が既に開)は消さない見込み(ハーネスでは未確認)。
+- 新設計では、明示操作の値を「変化」ではなく「表のセルの押した後の状態(`after_open`)」で記録する(§4.13 の 5)。これで手順 3 は B のスコープ(または引き継ぐスコープ)に開の明示操作として残る。
+- **未確認**: A・B の窓の種類(読める窓か tsf-native か)、手順 1 の OFF がどちらの窓で何の操作だったか、窓 A の実 IME が ON だったのは A 自身の状態か B からの引き継ぎか。PerThread のスコープなら、手順 1 の OFF が A の明示操作である限り、新設計でも A に戻ったとき A の主張は OFF のままで、同じ症状になる(実 IME が A でも ON だった理由は、B から開を引き継ぐ窓の種類か、手順 1 が A の実 IME を閉じていなかったかのどちらか)。窓の種類と手順 1 の中身を、team-lead が再取得するログで確かめる必要がある。
+- 単独の Poll の OFF への反転 2 回は、その窓が読める窓なら新設計でも信頼表で「反証可」なので反転する。読めない窓 × GJI なら「反証不可」で反転しない。窓の種類は未確認。
+
 ### 1.2 基準の測定(PR #857)が示したこと: 405 本は shared、per-thread では 9 本
 
 数値は §5.1.1 に表で再掲する。要点:
@@ -490,6 +510,10 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 3. D2'(GJI の F2 の後の Converter I/O で予測を確定・取り消す)は、読めない窓 × GJI 系の開閉の観測の源の候補(信頼表の 1 列)。まず観測のみ(§5.5 B6)。
 4. ADR-281 の Shift の注意(ADR-187 の追随 `mode_key_follow_admits_modifiers`〈`mode_key_pass.rs:265`〉は Shift で止まるので、読める窓の訂正は `may_change_ime` の 20ms の読み直しに頼る)を引き継ぐ。
 
+5. **明示操作の値は「押した後の状態」で記録する**(§1.1.1 の実機の再現から): 今の予測器は開閉を変化があるときだけ出す(`key_effect_predictor.rs:641`)ので、belief が既に開のときの F2 は開の記録にならない。
+   新設計では、表のセルが決まっているモードキーは、`after_open`(と押した後の変換モード)をそのまま明示操作の値にする(変化が無くても「利用者がこの状態を選んだ」記録として主張と時刻を更新する)。
+   予測器の出力を変えるので、`KeyEffectPredicted` を使う既存の読み手(`apply_key_effect_prediction` の `IntentStore` の扱い、`applied` の降格、fence)への影響を V0 で確かめる。
+
 **予測の入力の作り直し(別件の報告の扱い)**: 「`ObservedEisu` 中の F2 は no prediction で Engine が活性に戻らない」(BUG-221 とは別件。BUG-222〈未マージ〉のログにも「F2 6 回とも no prediction」)。起草時に読んで確かめたこと:
 - `kp_predict_key_effect`(`key_pipeline.rs:1908`)の `PredictInput` は、`open` = `ime.effective_open()`(`IntentStore` の上書きを含むグローバル値)、`mode` = グローバルな `input_mode()`、`conv_raw` = `belief.prev_conversion_mode()`、
   `track` = `key_track()` を持続半角英数トグル中は変換モードを捨てて渡す(`without_conv_while_half_width_alnum`、ADR-244 M-2・BUG-192)、ほかに `unreadable`・`observable_toggle_guard`(ADR-260)。
@@ -846,11 +870,12 @@ I2(核の字母):
   - **MS-IME × Windows Terminal(入場時に開を引き継ぐ)**: shared に近い振る舞いで、L1 の「予測の ON を持ち越す」が実 IME の振る舞いに合う。新設計では `InheritOnEntry` の窓だけ他のスコープの最新の開を採る。
   - **GJI × tsf-native(BUG-223 の窓)**: 未確定(inconclusive)。BUG-223 は shared 型に合うが、確認できていない。
   - よって、**単一の局所修正(L1 を全窓に)は、窓の種類が混ざる実機では片方の窓で I2 を増やす**。窓の種類で持ち越すか否かを分けること自体が、今の構造(グローバルな `desired_open` 1 つ)では表せず、スコープ表(少なくとも「窓の種類ごとに持ち越すかの規則」)が要る。
+    なお L1 は開閉の予測が `Some` のときだけ書くので、§1.1.1 の実機の再現(F2 を押した時点で belief が既に開)は L1 では消えない見込み。L1 を評価するなら、表のセルの押した後の状態で書く変種 L1′ も測る。
     最小の形は「L1 + 持ち越しを `InheritOnEntry` の窓への入場に限る(per-thread の窓へ入るときは `desired_open` を持ち越さず、窓の記録/既定を使う)」で、これは局所修正と新設計の中間(グローバルな値は残し、入場時の規則だけを窓の種類で分ける)。V0 でこの中間案(L4 と呼ぶ)も同じオラクルで測る。
   - V0 の評価は、基準の測定の字母を窓の種類で混ぜた窓モデル(Win32・Chrome は per-thread、MS-IME の WT は入場時に開を引き継ぐ)で行う(ハーネス拡張。§5.2)。
 - 所有者の判断(2026-10-26、team-lead 経由): 「L1 は、shared か per-thread かを測ってから入れるか決める」。保持単位の測定(読めない窓を含む)は別担当が CI で実施中(結果は `docs/tasks/adr282-ime-state-scope-measurement-2026-10-26.md` の予定。本改訂の時点で、どのリモートブランチにもまだ無い)。
   P1(スコープの粒度)はその結果が出るまで確定しない。
-  測定は一部出た(run 40327981441)が、GJI × WT は未確定なので、L1 の判断は窓の種類別の中間案 L4 の測定と GJI × WT の追加測定の後にする(提案)。
+  測定は一部出た(run 40327981441)が、GJI × WT は未確定なので、L1 の判断は窓の種類別の中間案 L4 の測定と GJI × WT の追加測定の後にする(提案)。所有者の判断(2026-10-26): L1 は tsf-native の CI 測定(B1a〜B1c)と本 ADR の round 2 を待ってから決める。
 
 ## 14. Opus レビュー round 1 への対応(2026-10-26)
 
