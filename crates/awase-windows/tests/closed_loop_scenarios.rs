@@ -852,3 +852,28 @@ fn esc_in_conversion_next_key_stage() {
     }
     assert_ok(&h, predictions_agree_with_truth(&h));
 }
+
+/// BUG-221: Ctrl を押したままひらがなキー（0xF2）を押すと、実 IME は ON になるのに belief は閉のまま残る。
+///
+/// 実機（2026-10-26 dragonflyg4、Windows Terminal×GJI）: Ctrl+無変換で閉じた直後、Ctrl を離す前に F2 を押した。
+/// GJI は ON（直後の `E` で候補窓が出た）だが、予測は修飾付きのため抑止され（`plan_key_effect_track` が `None`）、
+/// TSF ネイティブの窓は IMM で読めない（`ime_on=None`）ので観測でも直らず、Engine は OFF のまま `E`（た）を素通しした
+/// （約 0.5 秒後に変換キーの予測が効くまで）。ここでは「読めない窓で、予測も観測も無いまま実 IME だけが開く」を再現する。
+#[test]
+#[ignore = "BUG-221: 未修正。修正後に外す"]
+fn bug220_ctrl_held_hiragana_key_leaves_belief_closed_in_unreadable_window() {
+    // 実機の GJI は F2 で閉→開になった(ATOK プリセットの F2 は開かないので MS-IME 系の格子を使う)。
+    let mut setup = Setup::imm_cross(state(true, CONV_HIRAGANA)).with_grid(Grid::GjiMsime);
+    setup.profile = awase_windows::state::ime_event::ImePolicyProfile::TsfNative;
+    let mut h = Harness::start(setup);
+    // Ctrl+無変換で閉じた直後(belief も閉)。続けて Ctrl を離す前に F2。
+    h.advance_ms(200)
+        .user_set_open(false)
+        .advance_ms(50)
+        .key_ctrl(VK_HIRAGANA)
+        .advance_ms(150)
+        .key(VK_K)
+        .advance_ms(100);
+    assert!(h.ime.state().open, "擬似 IME: F2 で開く\n{}", h.trace());
+    assert_ok(&h, belief_matches_truth_at_end(&h));
+}
