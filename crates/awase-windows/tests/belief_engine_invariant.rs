@@ -68,7 +68,7 @@ const EXAMPLES_PER_CLASS: usize = 2;
 /// golden に最小列を全部載せる上限（設定ごと）。超えたら先頭だけ。
 const LIST_LIMIT: usize = 60;
 /// 1 設定あたりの時間の上限（秒）。超えたら、どの段で何本まで進んだかを添えて panic する（規模を CI で調整するための安全弁）。
-const BUDGET_SECS: u64 = 100;
+const BUDGET_SECS: u64 = 240;
 
 fn check_budget(cfg: Config, started: Instant, phase: &str, progress: usize) {
     assert!(
@@ -1170,66 +1170,6 @@ fn run_config(cfg: Config) -> String {
     render_exhaustive(&mut out, "核の字母", cfg, Inv::I2, &core, I2_DEPTH, &r);
 
     lap("I2 core");
-    // ADR-282 V0: 比較用のモデル(Z・Z+U2・S′・S′+U2)の I1・I2(同じ字母・同じ長さ。旧と並べて比べる)。U2 の案(新しい
-    // スレッドは閉)は、窓をまたいで同じスレッドの shared では変わらないので、窓ごとに別スレッドの設定だけ回す。
-    for k in 0..ALT_NAMES.len() {
-        let u2 = ALT_NAMES[k].ends_with("+U2");
-        if u2 && cfg.shared {
-            continue;
-        }
-        let r1 = exhaustive(cfg, Inv::I1Alt(k), main_alphabet, FULL_DEPTH, t0);
-        render_exhaustive(
-            &mut out,
-            main_label,
-            cfg,
-            Inv::I1Alt(k),
-            main_alphabet,
-            FULL_DEPTH,
-            &r1,
-        );
-        let r2 = exhaustive(cfg, Inv::I2Alt(k), &core, I2_DEPTH, t0);
-        render_exhaustive(
-            &mut out,
-            "核の字母",
-            cfg,
-            Inv::I2Alt(k),
-            &core,
-            I2_DEPTH,
-            &r2,
-        );
-        lap(ALT_NAMES[k]);
-    }
-    // ADR-282 V0: I3(最後の明示操作が勝つ)・I4(スコープの独立)の掃き出し(核の字母・長さ 3)。
-    let sc = scope_sweep(cfg, &core, SCOPE_DEPTH, t0);
-    let _ = writeln!(
-        out,
-        "\n## {} I3・I4 の掃き出し（核の字母・長さ {SCOPE_DEPTH} まで・検査した列 {}。違反した列の数）",
-        cfg.name(),
-        sc.checked
-    );
-    let _ = writeln!(
-        out,
-        "  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。"
-    );
-    let _ = writeln!(
-        out,
-        "  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。"
-    );
-    for (name, (i3, i3_ex), (i4, i4_ex)) in &sc.rows {
-        let _ = writeln!(
-            out,
-            "  {name:<8} I3 {i3:>4} 本{}  I4 {i4:>4} 本{}",
-            i3_ex
-                .as_ref()
-                .map(|e| format!("(例: {e})"))
-                .unwrap_or_default(),
-            i4_ex
-                .as_ref()
-                .map(|e| format!("(例: {e})"))
-                .unwrap_or_default()
-        );
-    }
-    lap("I3/I4");
     // ADR-282 I6: 時間の経過だけで belief が変わる列(核の字母・長さ 2。O3 を S′ にも課す所有者の決定の基準の測定)。
     let (i6_checked, i6) = i6_sweep(cfg, &core, I6_DEPTH, t0);
     let total: usize = i6.values().map(|(n, _)| n).sum();
@@ -1336,6 +1276,89 @@ fn run_config(cfg: Config) -> String {
     out
 }
 
+/// ADR-282 V0: 比較用のモデル(Z・Z+U2・S′・S′+U2)の I1・I2 と I3・I4 の掃き出し(`belief_engine_alt_comparison`)。
+/// 旧の測定(`run_config`)とは別のテストにして、時間の予算を分ける。
+fn run_alt_config(cfg: Config) -> String {
+    let t0 = Instant::now();
+    let lap = |what: &str| eprintln!("[timing] {} {what}: {:?}", cfg.name(), t0.elapsed());
+    let mut out = String::new();
+    let full = full_alphabet();
+    let core = core_alphabet();
+    let (main_label, main_alphabet) = if cfg.shared {
+        ("全字母", &full)
+    } else {
+        ("核の字母", &core)
+    };
+    // ADR-282 V0: 比較用のモデル(Z・Z+U2・S′・S′+U2)の I1・I2(同じ字母・同じ長さ。旧と並べて比べる)。U2 の案(新しい
+    // スレッドは閉)は、窓をまたいで同じスレッドの shared では変わらないので、窓ごとに別スレッドの設定だけ回す。
+    for k in 0..ALT_NAMES.len() {
+        let u2 = ALT_NAMES[k].ends_with("+U2");
+        if u2 && cfg.shared {
+            continue;
+        }
+        let r1 = exhaustive(cfg, Inv::I1Alt(k), main_alphabet, FULL_DEPTH, t0);
+        render_exhaustive(
+            &mut out,
+            main_label,
+            cfg,
+            Inv::I1Alt(k),
+            main_alphabet,
+            FULL_DEPTH,
+            &r1,
+        );
+        let r2 = exhaustive(cfg, Inv::I2Alt(k), &core, I2_DEPTH, t0);
+        render_exhaustive(
+            &mut out,
+            "核の字母",
+            cfg,
+            Inv::I2Alt(k),
+            &core,
+            I2_DEPTH,
+            &r2,
+        );
+        lap(ALT_NAMES[k]);
+    }
+    // ADR-282 V0: I3(最後の明示操作が勝つ)・I4(スコープの独立)の掃き出し(核の字母・長さ 3)。
+    let sc = scope_sweep(cfg, &core, SCOPE_DEPTH, t0);
+    let _ = writeln!(
+        out,
+        "\n## {} I3・I4 の掃き出し（核の字母・長さ {SCOPE_DEPTH} まで・検査した列 {}。違反した列の数）",
+        cfg.name(),
+        sc.checked
+    );
+    let _ = writeln!(
+        out,
+        "  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。"
+    );
+    let _ = writeln!(
+        out,
+        "  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。"
+    );
+    for (name, (i3, i3_ex), (i4, i4_ex)) in &sc.rows {
+        let _ = writeln!(
+            out,
+            "  {name:<8} I3 {i3:>4} 本{}  I4 {i4:>4} 本{}",
+            i3_ex
+                .as_ref()
+                .map(|e| format!("(例: {e})"))
+                .unwrap_or_default(),
+            i4_ex
+                .as_ref()
+                .map(|e| format!("(例: {e})"))
+                .unwrap_or_default()
+        );
+    }
+    lap("I3/I4");
+    out
+}
+
+fn alt_golden_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
+        .join("belief_engine_alt_comparison.txt")
+}
+
 fn golden_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -1419,4 +1442,58 @@ fn bug223_sequences_are_i1_violations_when_ime_state_is_shared() {
             );
         }
     }
+}
+
+/// ADR-282 V0: 旧と比較用のモデル(Z・Z+U2・S′・S′+U2)を同じ事象列で並べる(I1・I2・I3・I4)。数値は golden
+/// `tests/golden/belief_engine_alt_comparison.txt`。旧だけの測定は `belief_engine_invariant_baseline`。
+#[test]
+fn belief_engine_alt_comparison() {
+    let started = Instant::now();
+    let configs = [
+        Config::plain(Grid::Atok, true),
+        Config::plain(Grid::GjiMsime, true),
+        Config::plain(Grid::GjiMsime, false),
+        Config::mixed(Grid::MsimeNative, true),
+        Config::mixed(Grid::GjiMsime, false),
+        Config::mixed(Grid::GjiMsime, true),
+    ];
+    let results: Vec<String> = std::thread::scope(|s| {
+        let handles: Vec<_> = configs
+            .iter()
+            .map(|&cfg| {
+                std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(s, move || run_alt_config(cfg))
+                    .expect("spawn")
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("設定ごとの測定"))
+            .collect()
+    });
+    let mut out = String::from(
+        "# ADR-282 V0: 旧(今の本物の belief)と比較用のモデル(Z・Z+U2・S′・S′+U2)を同じ事象列で並べる。\n\
+         # Z は crates/awase-ime-core/src/state/scope_belief.rs、S′ は tests/support/sprime.rs。旧の数値は\n\
+         # belief_engine_invariant_violations.txt。読み方は docs/adr/282-per-scope-latched-ime-belief-zero-base.md §14。\n\
+         # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test belief_engine_invariant\n",
+    );
+    for r in &results {
+        out.push_str(r);
+    }
+    eprintln!("belief_engine_alt_comparison: {:?}", started.elapsed());
+    let path = alt_golden_path();
+    if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
+        std::fs::write(&path, &out).expect("golden を書けない");
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    assert!(
+        out == expected,
+        "golden {} が現状と一致しない。意図した変化なら UPDATE_GOLDEN=1 で再生成して差分を確認すること。\n\
+         ---- 現状の全文 ----\n{out}---- ここまで ----",
+        path.display()
+    );
 }
