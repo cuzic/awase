@@ -505,6 +505,13 @@ impl super::Runtime {
         let _ = self.lang_detect_apply(step);
     }
 
+    /// パニックリセット: 保持中の打鍵を、期限を待たずに解放する（リセットのあとに古い打鍵や判定の書き込みが
+    /// 出ないように）。保持の期限と同じ経路（同じ窓なら再生、違えば修飾キーの Up 以外は捨てる）で閉じ、タイマーも外す。
+    pub(crate) fn lang_detect_release_for_panic_reset(&mut self) {
+        self.platform.timer.kill(crate::TIMER_LANG_HOLD);
+        self.lang_detect_on_timer();
+    }
+
     /// `HoldController` が返した命令の列を、先頭から順に実行する解釈器: journal、IME への書き込み、保持した打鍵の再生、
     /// タイマー。実行の順序（書き込み → 記録 → 解放 → タイマー）は、列の並びが決める（`HoldCommand` の doc）。
     fn lang_detect_apply(&mut self, commands: Vec<HoldCommand<RawKeyEvent>>) -> LangDetectIntake {

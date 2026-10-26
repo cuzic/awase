@@ -1014,7 +1014,8 @@ impl EpisodeTracker {
 /// 6. [`Self::Pass`]／[`Self::Consume`]（この打鍵の行き先。`on_key` だけ）
 #[derive(Debug, Clone, PartialEq)]
 pub enum HoldCommand<T> {
-    /// 保持列を捨てた（保持中に前面窓が変わった）。捨てた打鍵の数（1 以上）
+    /// 保持列を捨てた（保持中に前面窓が変わった）。捨てた打鍵の数（1 以上）。修飾キーの Up は捨てずに `Replay` で
+    /// 流すので、この数に含めない（Down が OS へ届いているので、Up を捨てると押されたままになる）
     DiscardHeld(usize),
     /// **保持していたエピソード**で日本語と確定した。ひらがなキーを送る（`release` を流す**前**に、IME への書き込みの
     /// 対象にしてよい）。保持しなかったエピソード（観測だけ）では出ない（判定は `Record` の `verdict` で見る）
@@ -1036,14 +1037,51 @@ pub enum HoldCommand<T> {
     Consume,
 }
 
+/// 保持列の 1 要素。`modifier_up` は修飾キーの KeyUp か。
+///
+/// 保持中に窓が変わって列を捨てるとき、**修飾キーの Up だけは捨てない**。その Down はエピソードの前に OS へ
+/// 届いている（修飾キーはエピソードを始めない）ので、Up を捨てると OS で押されたままになる（Shift が固着して
+/// 新しい窓の文字が大文字になる）。
+#[derive(Debug)]
+struct Held<T> {
+    event: T,
+    modifier_up: bool,
+}
+
+impl<T> Held<T> {
+    /// 解放（順序どおりに流す）する側の事象。
+    fn into_event(self) -> T {
+        self.event
+    }
+}
+
+/// 窓が変わって保持列を捨てる。捨てた数を `out.discarded` に足し、修飾キーの Up は `out.release` へ回す。
+fn discard_held<T>(held: Vec<Held<T>>, out: &mut StepFacts<T>) {
+    for entry in held {
+        if entry.modifier_up {
+            out.release.push(entry.event);
+        } else {
+            out.discarded += 1;
+        }
+    }
+}
+
 /// 保持コントローラの位相。**保持列 `held` は `Holding` の中だけにある**（保持していないのに打鍵が溜まっている、
 /// 保持中なのにエピソードが無い、を型で作れない）。追跡器の位相（`TrackPhase`）に `Holding` を足したもの。
 #[derive(Debug)]
 enum EpisodePhase<T> {
     Idle,
-    Armed { trigger: Trigger, idle_ms: u64 },
-    Observing { active: ActiveEpisode },
-    Holding { active: ActiveEpisode, held: Vec<T> },
+    Armed {
+        trigger: Trigger,
+        idle_ms: u64,
+    },
+    Observing {
+        active: ActiveEpisode,
+    },
+    Holding {
+        active: ActiveEpisode,
+        held: Vec<Held<T>>,
+    },
 }
 
 impl<T> EpisodePhase<T> {
@@ -1057,7 +1095,7 @@ impl<T> EpisodePhase<T> {
     }
 
     /// 追跡器の位相と、保持列（`Holding` のときだけ `Some`）に分ける。
-    fn split(self) -> (TrackPhase, Option<Vec<T>>) {
+    fn split(self) -> (TrackPhase, Option<Vec<Held<T>>>) {
         match self {
             Self::Idle => (TrackPhase::Idle, None),
             Self::Armed { trigger, idle_ms } => (TrackPhase::Armed { trigger, idle_ms }, None),
@@ -1067,7 +1105,7 @@ impl<T> EpisodePhase<T> {
     }
 
     /// [`Self::split`] の逆。エピソードが閉じた位相（`Observing` でない）に保持列が残っていてはならない。
-    fn join(track: TrackPhase, held: Option<Vec<T>>) -> Self {
+    fn join(track: TrackPhase, held: Option<Vec<Held<T>>>) -> Self {
         match (track, held) {
             (TrackPhase::Observing { active }, Some(held)) => Self::Holding { active, held },
             (TrackPhase::Observing { active }, None) => Self::Observing { active },
@@ -1177,9 +1215,10 @@ fn hold_key_step<T>(
         closed_prev = true;
         let prev_held = held.take().unwrap_or_default();
         if prev.stop == StopReason::WindowChanged {
-            out.discarded += prev_held.len();
+            discard_held(prev_held, &mut out);
         } else {
-            out.release.extend(prev_held);
+            out.release
+                .extend(prev_held.into_iter().map(Held::into_event));
         }
         out.outcomes.push(prev);
     }
@@ -1191,7 +1230,10 @@ fn hold_key_step<T>(
             started_holding = may_hold;
         }
         match held.as_mut() {
-            Some(buffer) => buffer.push(event),
+            Some(buffer) => buffer.push(Held {
+                event,
+                modifier_up: key.role == KeyRole::Modifier && !key.down,
+            }),
             None => out.pass = Some(event),
         }
         if let Some(now) = step.closed_now {
@@ -1201,7 +1243,12 @@ fn hold_key_step<T>(
             } else if holding && now.verdict == Verdict::NotJapanese {
                 out.write = Some(HoldCommand::EnterHalfWidthAlnum);
             }
-            out.release.extend(held.take().unwrap_or_default());
+            out.release.extend(
+                held.take()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Held::into_event),
+            );
             out.outcomes.push(now);
         }
     } else {
@@ -1235,9 +1282,9 @@ fn hold_timer_step<T>(
             };
             let held = held.unwrap_or_default();
             if same_window {
-                out.release.extend(held);
+                out.release.extend(held.into_iter().map(Held::into_event));
             } else {
-                out.discarded += held.len();
+                discard_held(held, &mut out);
             }
             out.outcomes.push(active.finish(stop, deadline));
             TrackPhase::Idle
@@ -2059,6 +2106,32 @@ mod tests {
         assert!(s.release.is_empty());
         assert_eq!(s.discarded, 2);
         assert_eq!(s.outcomes[0].stop, StopReason::WindowChanged);
+        assert!(!s.holding);
+    }
+
+    #[test]
+    fn window_change_replays_a_held_modifier_up_instead_of_discarding_it() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        // Shift の Down はエピソードの前に OS へ届いている。文字キーでエピソードが始まり、Up は保持列に入る。
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), false, 15), 2, 1, true);
+        c.on_key(&model, key(KeyRole::Modifier, false, 18), 3, 1, true);
+        let s = c.on_key(&model, key(KeyRole::Char(pos(1, 2)), true, 20), 4, 2, true);
+        assert_eq!(s.discarded, 2, "文字の Down・Up だけを捨てる");
+        assert_eq!(s.release, vec![3], "修飾キーの Up は流す");
+        assert_eq!(s.outcomes[0].stop, StopReason::WindowChanged);
+    }
+
+    #[test]
+    fn timer_after_the_window_changed_replays_a_held_modifier_up() {
+        let model = tiny_model();
+        let mut c = hold_controller();
+        c.on_key(&model, key(KeyRole::Char(pos(1, 1)), true, 10), 1, 1, true);
+        c.on_key(&model, key(KeyRole::Modifier, false, 15), 2, 1, true);
+        let s = c.on_timer(2);
+        assert_eq!(s.discarded, 1);
+        assert_eq!(s.release, vec![2]);
         assert!(!s.holding);
     }
 
