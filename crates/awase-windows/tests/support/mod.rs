@@ -5,3 +5,4 @@ pub mod defenses;
 pub mod harness;
 pub mod invariants;
 pub mod pseudo_ime;
+pub mod sprime;
