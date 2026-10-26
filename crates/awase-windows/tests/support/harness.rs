@@ -60,7 +60,8 @@ use awase_windows::state::ime_event::{
 };
 use awase_windows::state::ime_model::ImeModel;
 use awase_windows::state::key_effect_predictor::{
-    plan_key_effect_track, KeyEffectKeymap, KeyTrack, KeyTrackFacts, PredictInput, Prediction,
+    plan_key_effect_track, KeyEffectKeymap, KeyTrack, KeyTrackFacts, ModeKeyModifiers,
+    PredictInput, Prediction,
 };
 use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant};
 use awase_windows::state::platform_state::ImeStateHub;
@@ -434,8 +435,11 @@ impl Harness {
             consumed: false,
             has_shadow_action: false,
             has_sync_direction: false,
-            // ADR-281: GJI 系の格子（ATOK・MS-IME プリセット）は 0xF0〜0xF4 の修飾を捨てる IME。Microsoft IME 本体は測るまで捨てない扱い。
-            ime_drops_mode_key_modifiers: !matches!(self.setup.grid, Grid::MsimeNative),
+            // ADR-281: GJI 系の格子（ATOK・MS-IME プリセット）は 0xF0〜0xF4 の修飾を捨てる IME。Microsoft IME 本体は 0xF2 の Ctrl だけ。
+            mode_key_modifiers: match self.setup.grid {
+                Grid::MsimeNative => ModeKeyModifiers::MsImeNativeCtrlOnHiragana,
+                Grid::Atok | Grid::GjiMsime => ModeKeyModifiers::DroppedByGjiMozc,
+            },
         });
         // 本番は追跡しない打鍵（`None`）では予測も呼ばない。無修飾の物理 KeyDown は必ず `Some`。
         assert!(
