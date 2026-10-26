@@ -1071,8 +1071,13 @@ fn discard_held<T>(held: Vec<Held<T>>, out: &mut StepFacts<T>) {
 #[derive(Debug)]
 enum EpisodePhase<T> {
     Idle,
-    Armed { trigger: Trigger, idle_ms: u64 },
-    Observing { active: ActiveEpisode },
+    Armed {
+        trigger: Trigger,
+        idle_ms: u64,
+    },
+    Observing {
+        active: ActiveEpisode,
+    },
     Holding {
         active: ActiveEpisode,
         held: Vec<Held<T>>,
