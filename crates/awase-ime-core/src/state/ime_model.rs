@@ -4414,4 +4414,124 @@ mod tests {
         };
         assert_eq!(guarded.label(), "force-guard");
     }
+
+    /// BUG-223(区間 2・3・5 の核): 窓 A で明示の IME OFF（`desired_open=false`）を押したあと、別プロセスの TSF ネイティブ窓 B
+    /// へ移ると、`FocusChanged` が明示意図と観測を捨てても `desired_open` は引き継がれ、B で観測が無い間の
+    /// `effective_open` は `DesiredFallback` の false になる（実 IME が B で ON でも Engine だけ OFF）。
+    /// 現状の挙動の固定（修正の前の再現。方針は所有者が決める）。
+    #[test]
+    fn bug_223_explicit_off_in_a_is_carried_into_b_as_desired_fallback() {
+        use super::super::ime_event::UserIntentSource;
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        let in_a = model.resolve_open_at(Instant::now());
+        assert!(!in_a.value);
+        assert_eq!(in_a.decided_by.base, BaseDecision::ExplicitIntent);
+        // 別プロセスの TSF ネイティブ窓 B へ移る（観測なし）。
+        model.reduce(&envelope(
+            2,
+            ImeEvent::FocusChanged {
+                from: None,
+                to: HwndId(0xB),
+                profile: ImePolicyProfile::TsfNative,
+                focus_epoch: 2,
+            },
+        ));
+        assert!(!model.has_user_explicit_intent(), "明示意図は捨てられる");
+        let in_b = model.resolve_open_at(Instant::now());
+        assert_eq!(
+            in_b.decided_by.base,
+            BaseDecision::DesiredFallback,
+            "B では観測が無く desired_open へ後退する"
+        );
+        assert!(!in_b.value, "A の OFF が B へ持ち越される（現状。BUG-223）");
+    }
+
+    /// BUG-223(強い仮説の再現): 明示 OFF（`desired_open=false`）のあとに物理の F2（ひらがな）で ON にしても、F2 は
+    /// `KeyEffectPredicted` としてしか記録されず `desired_open` は false のまま。`effective_open` は予測で true だが、
+    /// 予測は観測が無い窓では寿命が無く、窓切替（`FocusChanged`）で捨てられると `DesiredFallback` の false に戻る。
+    /// 現状の挙動の固定（修正の前の再現）。
+    #[test]
+    fn bug_223_explicit_off_then_f2_prediction_is_lost_on_focus_change() {
+        use super::super::ime_event::UserIntentSource;
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        // F2: 開閉の予測（open=Some(true)、mode=None）。
+        predict(&mut model, 1000, Some(true), None);
+        let after_f2 = model.resolve_open_at(Instant::now());
+        assert!(after_f2.value);
+        assert_eq!(after_f2.decided_by.base, BaseDecision::KeyEffectPrediction);
+        assert!(
+            !model.desired_open(),
+            "F2 は desired_open を書かない（OFF キー=ExplicitIntent との非対称）"
+        );
+        // 予測に寿命（時間切れ）は無い: 観測が来ない窓では 1 時間後も true のまま。
+        let later = model.resolve_open_at(Instant::now() + std::time::Duration::from_secs(3600));
+        assert_eq!(later.decided_by.base, BaseDecision::KeyEffectPrediction);
+        // 窓切替（TSF ネイティブ窓 B、観測なし）で予測が捨てられ、desired_open=false へ後退する。
+        model.reduce(&envelope(
+            2,
+            ImeEvent::FocusChanged {
+                from: None,
+                to: HwndId(0xB),
+                profile: ImePolicyProfile::TsfNative,
+                focus_epoch: 2,
+            },
+        ));
+        let in_b = model.resolve_open_at(Instant::now());
+        assert_eq!(in_b.decided_by.base, BaseDecision::DesiredFallback);
+        assert!(
+            !in_b.value,
+            "F2 で ON にしたのに、窓切替で DesiredFallback の false に戻る（現状。BUG-223）"
+        );
+    }
+
+    /// BUG-223: ADR-187 の `ModeKeyPassedThrough { align_desired: true }` は、観測から導ける開閉（`derive_any`）が
+    /// あるときだけ `desired_open` を揃える。観測が無い窓（GJI の tsf-native 等）では F2 の後も揃わない。
+    #[test]
+    fn bug_223_mode_key_pass_does_not_align_desired_without_observation() {
+        use super::super::ime_event::UserIntentSource;
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        predict(&mut model, 1000, Some(true), None);
+        model.reduce(&envelope(
+            3,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: false,
+            },
+        ));
+        assert!(
+            !model.desired_open(),
+            "観測が無いので desired_open は揃わない（現状）"
+        );
+        // 観測があれば（読める窓）揃う（対照）。
+        observe_open(&mut model, 4, 2000, true, ObservationConfidence::Medium);
+        model.reduce(&envelope(
+            5,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: false,
+            },
+        ));
+        assert!(model.desired_open(), "観測があれば desired_open は揃う");
+    }
 }
