@@ -496,14 +496,14 @@ jobs:
             *[cfg(f'sc-late-space-fast-{nm}', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', rules=rl,
                   stress=f'--form=edit --mode=lateorder --trials=4 --reps=5 --interval={iv} --lateorder-key={k} --layout=@REPO@/layout/nicola_keytop.yab')
               for nm, iv, k, rl in (('iv40', 40, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv20', 20, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('iv8', 8, '1D', 'VK_NONCONVERT,VK_SPACE,off'), ('ctl-iv8', 8, '20', ''))],
-            # ADR-280 C0 の配線確認: `[auto_detect] eisu_threshold`(14/16)が実際の awase.exe の判定器へ届き、境界の打鍵列(B=ayre, llr -14.9978)で
-            # 14 は not-japanese・16 は undecided、英数 E(build)は not-japanese、日本語 J(親指+k)は japanese になるか。typing_stress --mode=langdetect、
+            # ADR-280 C0 の配線確認: `[auto_detect] eisu_threshold`(13/15)が実際の awase.exe の判定器へ届き、境界の打鍵列(B=wkxd, llr -14.05。ADR-280 で尺度が変わり ayre から取り替えた)で
+            # 13 は not-japanese・15 は undecided、英数 E(build)は not-japanese、日本語 J(親指+k)は japanese になるか。typing_stress --mode=langdetect、
             # 判定は check_langdetect.py(awase.log の `[lang-detect]` 行を時刻で切り出す。本文は読まない)。ci/adr280-c0-wiring への push では sc-langdetect-* だけ回る。
             *[cfg(f'sc-langdetect-eisu{th}', 'observe', check='langdetect', checkargs=f'--eisu {th}', keymap=1, runs=1, wait=420, until='2026-11-10',
                   general='half_width_alnum_toggle = "all"',
                   autodetect=f'mode = "ime_on_eisu"; scope = "all"; eisu_threshold = {th}.0',
                   stress='--form=edit --mode=langdetect --trials=2 --layout=@REPO@/layout/nicola_keytop.yab')
-              for th in (14, 16)],
+              for th in (13, 15)],
             # ADR-255 の通し: 設定画面(awase-settings)のプリセットボタン+Ctrl+S が書いた [[keymaps]] を awase が読み、連打・押しっぱなしで Space が出るか。
             # rules ではなく via_settings='preset'。typing_stress --mode=lateorder は keymap=2(MS-IME プリセット)。
             cfg('sc-late-space-saved-iv20', 'observe', check='lateorder', keymap=2, runs=1, wait=420, until='2026-11-10', via_settings='preset',

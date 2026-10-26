@@ -8,8 +8,10 @@
 //!    英文の打鍵に現れないので重なりを証拠にできるが、Space を親指キーにした構成は英文のロールオーバーでも
 //!    重なりが成立するので、呼び出し側（殻）がエピソードごと対象外にすること（ADR-263 D3）。
 //! 2. **仮名 n-gram の対数尤度比**: 親指が出ていない間は、未シフト面でデコードした仮名列が日本語として自然かを、
-//!    言語非依存（一様）の背景モデルと比べる。`LLR = Σ [ln P_ja(仮名_i | 仮名_i-1) − ln(1/N_keys)]`。
-//!    英語専用のモデルは持たない（コーディング・他言語との併用のため）。
+//!    背景モデルと比べる。従来（`KanaModel::new`）は一様分布の背景 `LLR = Σ [ln P_ja(仮名_i | 仮名_i-1) − ln(1/N_keys)]`。
+//!    実機が使う新しい構成（`KanaModel::with_models`、ADR-280）は仮名側を 3 連の補間、背景を**ラテン文字の多言語・コード・英語の
+//!    混合の 2 連** `ln P_lat(文字_i | 文字_i-1)` にする（英単語の文字の並びの自然さも証拠になる）。ADR-263 は「英語専用のモデルは持たない」
+//!    としたが、背景は英語専用ではなく 18 言語・コードの混合の 2 連で、言語に依らない（所有者の判断で見直した。ADR-280）。
 //!
 //! 結果は次の 4 つ。**「日本語でない」と「決められない」は殻では同じ扱い**（保持した打鍵を今までと同じ流れに戻す）
 //! なので、`en_threshold` は小さめ（英数側を早く流す）、`ja_threshold` は大きめ（日本語を慎重に）の非対称にする。
@@ -23,6 +25,9 @@
 //!
 //! このモジュールは OS・時刻・生の VK を持たない。入力は分類済みの `PhysicalPos` だけ（ADR-019）。
 
+mod latin;
+
+pub use latin::LatinBackground;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::engine::fsm_types::ThumbSide;
@@ -105,14 +110,30 @@ pub struct DetectParams {
 }
 
 impl Default for DetectParams {
-    /// 人工データのオフライン評価（2026-10-17。出典: `research-private/v3-eval/eval7.py` と
-    /// `2026-10-17-v3-eval-first-run.md` の「第4回」）。`ja_threshold = 4` で他言語の日本語への誤確定 0.2%。
-    /// `en_threshold` ごとの（日本語の確定, 他言語の保持の平均打鍵）は 4: (79.6%, 1.9)、8: (91.9%, 2.9)、
-    /// 14: (95.1%, 4.0)、100: (98.2%, 6.7)。8 は日本語の取り逃し 8% と英数側の保持 3 打鍵弱の折り合い。
-    /// 日本語の確定のほぼ全部は親指の重なりで、尤度比は『英数側を早く流す』ために効く。実ジャーナルで再校正する（PR 2a）。
+    /// 新しい構成（仮名側 `KanaSide::TrigramInterp` + 背景 `LatinBackground::embedded()`、実機が使うもの）の閾値（ADR-280）。
+    ///
+    /// **測ったもの**: 読み付きの日本語 1400 文を文中から 4 点で打ち始めた親指なし区間 3247 本（日本語→英数の誤判定）と、
+    /// 英文 900・コード 379・他言語 669 区間（英数側の決まる率・Japanese の誤確定。評価の奇数番の文だけ、`max_keys = 7`、seed 5）。
+    /// 背景の表は評価データを使わず、ライセンスの明らかな元だけで作る（`data/latin_bigram.txt`、生成は
+    /// `tools/lang-detect-eval/gen_latin_bigram.py`）。再現は `tools/lang-detect-eval/eval_licensed_background.py`（[D] 節）。
+    ///
+    /// **数値と導出**（新しい構成。括弧は従来の bi + 一様分布）:
+    /// - `en_threshold = 8`（`ime_on` 側）: 日本語→英数の誤判定 6.8%（従来 8 で 7.0%）。同じ誤判定率になる値が従来と同じ 8 なので据え置き。
+    ///   英文 97.8%・コード 90.8% が決まる（従来 8 は 95.3%・90.5%）。
+    /// - `eisu_threshold = 13`（`ime_on_eisu` の入り。`AutoDetectConfig`）: 日本語→英数の誤判定 0.71%（従来 14 で 0.95%）。
+    ///   13 → 12.5 で 1% を超えない最小の格子点（12 は 1.0% 超）。英文 96.6%・コード 90.5%・他言語 93.0%（従来 14 は 82.9・78.1・83.6%）、
+    ///   先頭 3 打までに日本語を誤判定する率 0.25%（従来 0.40%）。
+    /// - `ja_threshold = 14`: 非日本語の `Japanese` 誤確定を、英文 0%・コード 0.53%・他言語 0%（全体 0.10%。従来の `ja_threshold = 4` は
+    ///   全体 0.56%、他言語 1.64%）に抑える最小級の値。新しい背景では仮名のキーが英語として「めずらしい」と評価され、`ja_threshold = 4`
+    ///   のままだとコードの 5.8% を日本語に誤確定する（10 で 0.79%、14 で 0.53%、20 で 0.26%）。14 の日本語の尤度確定は 1.39%
+    ///   （従来 1.20%）で、従来の挙動に近い。
+    ///
+    /// 事例（`eisu_threshold = 13`）: windows 5 打目・window 5・hello 5・google 4・function 3・chrome 4・build 2 で確定、
+    /// setup は 5 打（-12.7）で届かない（`en_threshold = 8` なら 4 打目）。旧尺度の閾値との対応は `AutoDetectConfig::default` の doc。
+    /// 実ジャーナル・実機での再校正は未実施。
     fn default() -> Self {
         Self {
-            ja_threshold: 4.0,
+            ja_threshold: 14.0,
             en_threshold: 8.0,
             max_keys: 7,
         }
@@ -140,6 +161,70 @@ pub struct KanaModel {
     total: f64,
     /// 表が使えるか（語彙が空でない）。使えないとき尤度比は計算せず、日本語を尤度だけで確定しない
     usable: bool,
+    /// 3 連の仮名側・ラテン文字の背景（`with_models` で作ったときだけ。`None` は従来の 2 連 + 一様分布）
+    extended: Option<Extended>,
+}
+
+/// 仮名側の確率の作り方。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KanaSide {
+    /// 仮名 2 連 `P(仮名 | 直前の仮名)`
+    Bigram,
+    /// 3 連との補間 `0.7 * P3(仮名 | 直前の 2 仮名) + 0.3 * P2(仮名 | 直前の仮名)`（3 連の文脈が無いときは 2 連へ後退）
+    TrigramInterp,
+}
+
+/// 実機（殻）が使う仮名側。
+pub const PRODUCTION_KANA_SIDE: KanaSide = KanaSide::TrigramInterp;
+
+/// モデルの識別子 `<仮名側>+<背景>`（ログ用）。`latin` が `None` は一様分布。
+#[must_use]
+pub fn model_id_of(side: KanaSide, latin: Option<&str>) -> String {
+    format!(
+        "{}+{}",
+        match side {
+            KanaSide::Bigram => "bi",
+            KanaSide::TrigramInterp => "tri-interp",
+        },
+        latin.unwrap_or("uniform")
+    )
+}
+
+/// 実機が使うモデルの識別子（`PRODUCTION_KANA_SIDE` + 同梱のラテン文字の背景）。
+#[must_use]
+pub fn production_model_id() -> String {
+    model_id_of(PRODUCTION_KANA_SIDE, Some(LatinBackground::embedded_id()))
+}
+
+/// 3 連の補間の重み（`P = λ * P3 + (1 - λ) * P2`）。ADR-280 の測定（#841）のとおり。
+const TRIGRAM_WEIGHT: f64 = 0.7;
+
+/// 仮名 3 連の表。`P3(c | a b) = f(abc) / (Σ_x f(abx) + (V − 列挙数) * floor3)`、表に無い `abc` は `floor3`。
+#[derive(Debug)]
+struct TriTable {
+    freq: FxHashMap<(char, char, char), f64>,
+    /// 接頭辞 `ab` ごとの (頻度の和, 表にある 3 連の数)
+    prefix: FxHashMap<(char, char), (f64, usize)>,
+    /// 表に無い 3 連の相対頻度（表の最小値の 1/10）
+    floor3: f64,
+}
+
+/// `with_models` で足す部分（3 連の仮名側・ラテン文字の背景）。
+#[derive(Debug)]
+struct Extended {
+    tri: Option<TriTable>,
+    latin: Option<LatinBackground>,
+}
+
+/// 判定器が 1 打鍵ごとに持ち越す文脈（直前までの仮名・キー）。
+#[derive(Debug, Clone, Copy, Default)]
+struct KanaContext {
+    /// 2 つ前の仮名
+    prev2: Option<char>,
+    /// 直前の仮名
+    prev: Option<char>,
+    /// 直前のキーのラテン文字の添字（`LatinBackground::index_of`）
+    prev_key: Option<usize>,
 }
 
 impl KanaModel {
@@ -195,7 +280,43 @@ impl KanaModel {
             floor,
             total,
             usable,
+            extended: None,
         }
+    }
+
+    /// 仮名側（2 連・3 連の補間）と背景（一様分布・ラテン文字の 2 連）を選んで作る（ADR-280）。
+    ///
+    /// `latin = None` は背景が一様分布（`ln(1/N_keys)`）。この構成では、仮名に読めないキーに加え、n-gram の語彙に無い仮名
+    /// （表に現れない文字）も、文脈を切って増分 0 にする（`new` は語彙の外の仮名を直前の文脈に残す）。
+    #[must_use]
+    pub fn with_models(
+        ngram: &NgramModel,
+        normal: &YabFace,
+        side: KanaSide,
+        latin: Option<LatinBackground>,
+    ) -> Self {
+        let mut model = Self::new(ngram, normal);
+        let tri = (side == KanaSide::TrigramInterp).then(|| TriTable::from_ngram(ngram));
+        model.extended = Some(Extended { tri, latin });
+        model
+    }
+
+    /// 使っているモデルの識別子（ログ用）。例: `tri-interp+latin-bigram-v1`、`bi+uniform`
+    #[must_use]
+    pub fn model_id(&self) -> String {
+        self.extended.as_ref().map_or_else(
+            || model_id_of(KanaSide::Bigram, None),
+            |ext| {
+                model_id_of(
+                    if ext.tri.is_some() {
+                        KanaSide::TrigramInterp
+                    } else {
+                        KanaSide::Bigram
+                    },
+                    ext.latin.as_ref().map(LatinBackground::id),
+                )
+            },
+        )
     }
 
     /// 仮名 n-gram の表が使えるか
@@ -214,7 +335,6 @@ impl KanaModel {
     /// 「日本語でない」と確定し、日本語の入力中に半角英数へ落ちた（2026-10-24、実機の journal で
     /// `llr=-43.1` と `llr=-33.2`）。評価（`research-private/v3-eval/eval8_symbols.py`）で、文中から打ち始めた
     /// NICOLA の親指なし区間の英数への誤判定は 22.1%（先頭が記号なら 100%）から 7.0% に下がる。
-    #[allow(clippy::cast_precision_loss)] // 語彙の数（高々数百）なので精度は問題にならない
     fn delta(&self, prev: Option<char>, pos: PhysicalPos) -> f64 {
         let background = -self.key_count.ln();
         let Some(&token) = self.key_kana.get(&pos) else {
@@ -223,8 +343,14 @@ impl KanaModel {
         if !self.vocab.contains(&token) {
             return 0.0;
         }
+        self.ln_ja2(prev, token) - background
+    }
+
+    /// 仮名 2 連の `ln P_ja(token | prev)`。`prev` が語彙に無い・先頭なら、`token` の左側の頻度での無条件の式。
+    #[allow(clippy::cast_precision_loss)] // 語彙の数（高々数百）なので精度は問題にならない
+    fn ln_ja2(&self, prev: Option<char>, token: char) -> f64 {
         let vocab_len = self.vocab.len() as f64;
-        let ja = match prev {
+        match prev {
             Some(a) if self.vocab.contains(&a) => {
                 let listed = self.listed.get(&a).copied().unwrap_or(0) as f64;
                 let denominator = (vocab_len - listed)
@@ -236,8 +362,87 @@ impl KanaModel {
                 let left = self.left.get(&token).copied().unwrap_or(0.0);
                 ((left + self.floor) / vocab_len.mul_add(self.floor, self.total)).ln()
             }
+        }
+    }
+
+    /// 1 打鍵ぶんの増分と、次の打鍵へ持ち越す文脈（純粋）。`with_models` で作ったモデルは
+    /// `ln P_ja(仮名 | 直前の 2 仮名または 1 仮名) − ln P_bg(文字 | 直前の文字)`、`new` のモデルは従来どおり。
+    fn step(&self, ctx: KanaContext, pos: PhysicalPos) -> (f64, KanaContext) {
+        let Some(ext) = &self.extended else {
+            let next = KanaContext {
+                prev: self.key_kana.get(&pos).copied(),
+                ..KanaContext::default()
+            };
+            return (self.delta(ctx.prev, pos), next);
         };
-        ja - background
+        let reset = (0.0, KanaContext::default());
+        let Some(&token) = self.key_kana.get(&pos) else {
+            return reset;
+        };
+        if !self.vocab.contains(&token) {
+            return reset;
+        }
+        let (background, key) = match &ext.latin {
+            Some(latin) => {
+                let Some(i) = latin.index_of(pos) else {
+                    return reset;
+                };
+                (latin.ln_p(ctx.prev_key, i), Some(i))
+            }
+            None => (-self.key_count.ln(), None),
+        };
+        let ja = self.ln_ja2(ctx.prev, token);
+        let ja = match (&ext.tri, ctx.prev2, ctx.prev) {
+            (Some(tri), Some(a), Some(b)) => tri.interpolate(self, a, b, token, ja),
+            _ => ja,
+        };
+        (
+            ja - background,
+            KanaContext {
+                prev2: ctx.prev,
+                prev: Some(token),
+                prev_key: key,
+            },
+        )
+    }
+}
+
+impl TriTable {
+    fn from_ngram(ngram: &NgramModel) -> Self {
+        let mut freq = FxHashMap::default();
+        let mut prefix: FxHashMap<(char, char), (f64, usize)> = FxHashMap::default();
+        let mut min = f64::INFINITY;
+        for ((a, b, c), score) in ngram.trigram_scores() {
+            let f = 10_f64.powf(f64::from(score));
+            freq.insert((a, b, c), f);
+            let entry = prefix.entry((a, b)).or_insert((0.0, 0));
+            entry.0 += f;
+            entry.1 += 1;
+            min = min.min(f);
+        }
+        Self {
+            freq,
+            prefix,
+            floor3: if min.is_finite() { min * 0.1 } else { 1e-12 },
+        }
+    }
+
+    /// 接頭辞 `ab` が 3 連の表にあれば、`ln(λ * P3 + (1 − λ) * P2)`。無ければ 2 連の `ln_p2` のまま。
+    #[allow(clippy::cast_precision_loss)] // 語彙の数（高々数百）なので精度は問題にならない
+    fn interpolate(&self, base: &KanaModel, a: char, b: char, token: char, ln_p2: f64) -> f64 {
+        let Some(&(sum, listed)) = self.prefix.get(&(a, b)) else {
+            return ln_p2;
+        };
+        let denominator = ((base.vocab.len() - listed) as f64).mul_add(self.floor3, sum);
+        let q3 = self
+            .freq
+            .get(&(a, b, token))
+            .copied()
+            .unwrap_or(self.floor3)
+            / denominator;
+        TRIGRAM_WEIGHT
+            .mul_add(q3, (1.0 - TRIGRAM_WEIGHT) * ln_p2.exp())
+            .ln()
     }
 }
 
@@ -251,7 +456,7 @@ pub struct EpisodeDetector {
     held_chars: FxHashSet<PhysicalPos>,
     held_thumbs: [bool; 2],
     presses: usize,
-    prev: Option<char>,
+    ctx: KanaContext,
     llr: f64,
     /// 打鍵ごとの対数尤度比の増分（ログ用。キー位置は含まない）
     trace: Vec<f32>,
@@ -271,7 +476,7 @@ impl EpisodeDetector {
             held_chars: FxHashSet::default(),
             held_thumbs: thumbs_held,
             presses: 0,
-            prev: None,
+            ctx: KanaContext::default(),
             llr: 0.0,
             trace: Vec::new(),
             verdict: Verdict::Pending,
@@ -338,11 +543,11 @@ impl EpisodeDetector {
         }
         self.presses += 1;
         if model.usable {
-            let delta = model.delta(self.prev, pos);
+            let (delta, ctx) = model.step(self.ctx, pos);
             self.llr += delta;
             #[allow(clippy::cast_possible_truncation)] // ログ用の増分。f32 の精度で足りる
             self.trace.push(delta as f32);
-            self.prev = model.key_kana.get(&pos).copied();
+            self.ctx = ctx;
         }
 
         let by_likelihood = if self.llr >= self.params.ja_threshold {

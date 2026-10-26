@@ -247,6 +247,11 @@ impl NgramModel {
         self.bigram.iter().map(|(&k, &v)| (k, v))
     }
 
+    /// 3 連の表を `((1 つ目, 2 つ目, 3 つ目), score)` で列挙する（`bigram_scores` と同じ形。`lang_detect` が条件付き確率を作る）。
+    pub fn trigram_scores(&self) -> impl Iterator<Item = ((char, char, char), f32)> + '_ {
+        self.trigram.iter().map(|(&k, &v)| (k, v))
+    }
+
     /// Compute the frequency score for a candidate character given recent output.
     ///
     /// Tries 3-gram first (if enough history), then falls back to 2-gram.
