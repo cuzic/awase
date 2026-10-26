@@ -19,7 +19,7 @@ status: |-
   起草(2026-10-26)→ Opus レビュー round 1(Blocker 2・Major 9・Minor 9)を反映した改訂(2026-10-26)。未確定(round 2 待ち)。
   所有者の判断 4 件(かなの範囲・不確実なときの既定・最後の明示操作が勝つ・窓ごとに独立)を決定として反映。BUG-221・ADR-281 の残りを範囲に含めた(所有者判断 2026-10-26)。
   依存する PR: #857(基準の測定)は 2026-10-26 にマージ済み(`gh pr view 857`)。#854(BUG-223)は OPEN。局所修正 L1〜L3 の測定(belief-oracle)は未着手・結果待ち。
-  CI 検証バッチ(§5.5)は未実施。未決 U1〜U12 は所有者の確認待ち。実装はまだ(コード・テストは不変)。
+  別セッションの Opus コードレビューの入力 4 件を §4.14 に反映(コードで確認、症状は未確認)。CI 検証バッチ(§5.5)は未実施。未決 U1〜U13 は所有者の確認待ち。実装はまだ(コード・テストは不変)。
 related_adr:
   - "ADR-082"
   - "ADR-087"
@@ -295,10 +295,12 @@ enum ModeClass { Kana, Eisu, KanaInputMethod, Unknown }   // Kana = ひらがな
 |---|---|---|---|---|---|
 | 読める窓 × GJI 系 | 反証可 | 反証可 | — | — | 設定が belief 配線のときだけ(今は `ui_max_level` が Observe なので不可) |
 | 読める窓 × MS-IME 本体(IMC 経路) | 反証可。**ただし半角英数トグル中の開閉の読み(閉)は反証不可**(M3。`half_width_alnum.rs` の `plan_key_stage` のコメント: MS-IME 本体はトグル中の窓を `imm=C` と読む、CI run 39119247220) | — | — | — | 同上 |
-| tsf-native・imm32-unavailable × GJI 系(Mozc 含む) | **反証不可**(BUG-223(a)・BUG-219) | 反証可(ADR-268) | 反証可(開閉の遷移のみ) | モード軸のみ反証可(開閉軸は要確認) | 同上 |
+| tsf-native・imm32-unavailable × GJI 系(Google 版、または Mozc 系で共有メモリの block がある) | **反証不可**(BUG-223(a)・BUG-219) | 反証可(ADR-268) | 反証可(開閉の遷移のみ。今は Mozc 系を外している) | モード軸のみ反証可(開閉軸は要確認。今は Mozc 系を外している) | 同上 |
+| tsf-native・imm32-unavailable × Mozc 系で**共有メモリの block が無い**(公式 Mozc など、mozc-readable でないもの) | 反証不可(BUG-219 と同じ扱い。IMM の偽の閉の出所は未解明) | —(block が無い) | **未確定(U13)**。今は外れている(§4.14-2) | 未確定(U13) | 同上 |
 | tsf-native・imm32-unavailable × MS-IME 本体 | 未確定(U7。今は TsfNative で poll が走らない) | — | 反証可 | モード軸のみ反証可 | 同上 |
 | InputRelay | 反証不可(InputRelay は「この窓由来の open 観測も belief に取り込まない」、`crates/awase-windows-base/src/focus/class_names.rs:192-193`) | — | — | — | — |
 
+- **共有メモリの `Held` の読み(§4.14-1)**: `decide_use` が `Held` を返した読み(awase の最後の操作から settle 未満で、IME の処理前かもしれない)は、今は何も報告しない。新設計では、`Held` の読みの開閉が**今の主張(MozcShm 由来)と同じとき**は観測プールの MozcShm の観測の年齢を延ばす(確認として扱う。値は変えない)。違うときは今どおり捨てる。主張はラッチなので、`Held` が続いても主張は後退しない(I6)が、観測プールを読む授権 Step 3・drift の材料のために年齢を延ばす。
 - **M3 の経路**: MS-IME 本体の半角英数トグル中、読める窓では poll が「閉」を返す。これを受け入れると開閉の主張が閉にラッチされ、トグルを出る操作(モード軸だけの明示操作)の後も Engine が `ImeOff` のまま残る(I1 違反)。
   上の表の「トグル中は反証不可」で防ぐ。今は明示意図があるとポーリングが止まり、この経路に落ちないので、P6(ポーリングを止めない)を採るならこの行が必須。ハーネスにこの列を入れる(§5.2)。
 
@@ -460,6 +462,29 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 - よって GJI で `ObservedEisu`・開・段階なしなら予測が出るはずで、原因は `conv_raw`・`Indeterminate`・`observable_toggle_guard`・開閉の入力のどれか。**未確認**。
 - 新設計では、予測の入力をフォーカス中のスコープの主張から作る(`open`・`mode`・`track`・`conv` をスコープの行から。他のスコープ・古い文脈の `prev_conversion_mode` を使わない)。トグル中の扱いは変えない。V0 で BUG-222 の列をハーネスに入れて原因を特定してから決める。
 
+### 4.14 別セッションの Opus コードレビューからの入力 4 件(team-lead 経由、`origin/develop` `82e00b655` で確認した結果)
+
+1. **共有メモリ観測が打鍵中に失効する**(確認: コードの読み): `report_mozc_shm`(`crates/awase-windows/src/state/platform_state.rs:2138-2182`)は `decide_use`(`crates/awase-ime-core/src/state/mozc_shm.rs:397-418`)が `Use` のときだけ `ObserverReported` を出し、
+   `Held`・`Split` では何も報告しない。`Held` の条件は `read_is_after_baseline` が偽(読んだブロックの `update_tick_ms` が基準より古く、かつ基準から `KEY_EFFECT_SETTLE_MS` 未満)。
+   基準は `hook::last_operation_tick_ms()` = `max(hook_alive_tick_ms, 最後の ImmCross の書き込み)`(`crates/awase-windows/src/hook.rs:345-350`、doc に「全キー〈自分の SendInput と KeyUp を含む〉」)。
+   IME の状態が変わらない打鍵中はブロックの `update_tick_ms` が進まないので、170ms より短い間隔でキーが続くと `Held` が続き、`MOZC_SHM_OBSERVATION_TTL_MS`(1000)で観測が失効しうる。
+   **打鍵中に実際にどのくらい `Held` が続くかは未実測**(§5.5 B10)。設計への反映: 主張のラッチ(D2・I6)で、失効しても主張は後退しない。加えて §4.4 の「`Held` の読みの開閉が今の主張と同じなら観測の年齢を延ばす」。
+2. **`gji_evidence_absent()` が「共有メモリがある」ことを確かめていない**(確認: コードの読み): `direct_mode_key_watch_kind_for`・`external_change_watch_applies_for`(`crates/awase-windows/src/runtime/mod.rs:2501-2522`)は、
+   `gji_evidence_absent()`(`crates/awase-windows/src/tsf/observer.rs:545`、`converter_target` が `NoEvidence` = GJI 系〈表示名の "Google"/"mozc" 一致〉で Google 版でない、`crates/awase-windows-base/src/tsf/converter_target.rs:30-35`)のとき、
+   ADR-188 の直接読みと ADR-205 の外部変更の監視を外す。コメントの理由は「Mozc 系は開閉を共有メモリ(ADR-268、High)が担う」。共有メモリの block が実在するか(`MozcShmShadow::block_present()`、`runtime/mozc_shm_shadow.rs:34`)は見ていない。
+   よって公式 Mozc など共有メモリを出さない Mozc 系では、読めない窓で外から IME を切り替えても追随する証拠が無い(**実機での症状は未確認**)。設計への反映: 信頼表に「共有メモリの block があるか」の軸を足した(§4.4)。block が無い行で直接読み・監視窓を戻すかは U13(§5.5 B9 で測る)。
+3. **BUG-220 の修正が、戻った窓 A の実 IME は半角英数のままと仮定している**(確認: コードの読み): `lang_detect_shadow.rs:418-444` は、戻り待ちのある窓で英数と判定すると、`plan_rebuild_from_return_for_language_detect`(`crates/awase-hook-core/src/state/half_width_alnum.rs:351-366`)が真なら、
+   IME へ送らずにトグルを立て直す(doc: 「窓 A の実 IME は、離脱で何も送っていないので半角英数のまま〈ADR-245 の事実〉」)。条件は入りの方針・`entry_ime_ok`・IME 経路の一致だけで、窓 B での操作や `hiragana_key_is_set` は見ていない。
+   一方 `half_width_alnum.rs` の `plan_key_stage` のコメント(`:738-740`)は「偽を持ち越しとみなすのは TSF 系(GJI)の窓だけ」と書き、GJI の TSF 窓では窓をまたいで状態が持ち越されうる前提を持つ。
+   **2 つの前提が食い違う**: A と B が IME の状態を共有するなら、B でひらがなにした後 A に戻ると実 IME はひらがなで、A のトグルの立て直しは Engine を非活性のまま素の英字をひらがなの IME へ流す(**実機で起きるかは未確認**。BUG-220.md も実機未確認)。
+   設計への反映: これは §4.1 の粒度(PerThread か Shared か)の問題そのもの。PerThread なら B の操作は A のスコープに届かず、A のラッチ(`Eisu`)が正しい。Shared なら B の操作が A に効くので、A の `Eisu` は B の操作で上書きされているべき。
+   新設計では、戻り待ち(ADR-245)の行もスコープの行に持たせ、`ScopeModel` が Shared の構成では B の明示操作が A の戻り待ちを無効にする(同じスコープなので)。BUG-220 の修正のコードは本 ADR では変えない。§5.5 B1 に「GJI の TSF 窓で B でひらがなにして A に戻る」セルを入れる。
+4. **BUG-212 の早期 return が段階の追跡の更新まで飛ばす**(確認: コードの読み): `predict_in_table` の `observed_conv_is_unrepresentable_kana(input)` の `return None`(`crates/awase-key-effect/src/state/key_effect_predictor.rs:594-596`)は、
+   `find_in`・`indeterminate_stage_without_cell`・Esc の段階の規則(BUG-162、`:610-633`)より前にある。よって半角カナ(conv 0x13 など)のまま Enter/Esc を押すと、段階の追跡(`track.stage`)が更新されず古い `Typing` が残りうる(**再現は未確認**。テストも未確認)。
+   設計への反映: §4.13 の予測の入力の作り直しで、「開閉・モードを予測しない(表せない値)」と「段階の追跡を更新する」を分ける(BUG-162 の規則は表せない値でも働かせる)。スコープの行の `key_track` に入る値の正しさに関わる。
+
+含めないもの(team-lead の指示どおり別経路): Zoom の key_pacer の Recovered 取りこぼし、lang-detect の保持破棄で Shift が押されたままになる件、パニックリセットが lang-detect の保持を解放しない件。
+
 ## 5. 検証計画
 
 ### 5.1 基準の測定(PR #857)との関係: shared と per-thread の両方を主にする
@@ -556,6 +581,8 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 | B5 | **BUG-221 の残り (2)**: 修飾付き F2 の直後の最初の NICOLA 打鍵が漏れないことを文字レベルで | `sc-adr281-awase-*` に F2 直後の NICOLA 打鍵を流し、窓の文字を読む判定を足す(Windows Terminal と自前の窓) | 3/3 で期待の仮名、素の `E` が出ない | 漏れるなら明示操作の反映の時点を見直す | 構成の追加と文字の判定(`typing_stress` の文字照合を流用) |
 | B6 | **D2'(観測のみ)**: GJI で F2(素・修飾付き)の後の Converter I/O(`gji_last_write_ms`)の増加と実 IME の開閉の一致。閉のまま残った場合に増えないこと。変換(Reconvert)の I/O との区別 | GJI 構成で awase を起動し、journal に「予測・I/O の増分・実 IME の読み」を記録(belief は書かない) | 一致率と遅れの分布(待ち時間の定数の実測) | 信頼表に入れるか決める(§4.13-3) | 観測専用のログ(数十行)、判定スクリプト 1 本 |
 | B7 | **TSF 窓の ON キャッシュ復元の効き方**(BUG-128・218。基準の測定の偽陽性の疑い) | 実 Chrome・Windows Terminal の構成にフォーカスの往復を足す | 旧(develop)の結果を記録(合否なし) | 旧で救われる列を基準線にする(§5.2) | 構成の追加 |
+| B9 | **共有メモリの無い Mozc 系(公式 Mozc)× 読めない窓(実 Chrome)で、外から IME を切り替えたとき(タスクバー・マウス・注入キー)に追随する証拠があるか**(§4.14-2) | e2e-ime の Mozc 構成(`*-mozc-*`)に公式 Mozc を足し、`sc-bug149-chrome-*` の実 Chrome の窓で外部切替の手順を流す | 外部切替から Engine が追随するまでの時間(または追随しない)を記録 | 追随しないなら U13(block の無い行で直接読み・監視窓を戻すか)の判断材料。IMM の偽の閉が出るかも記録 | 構成の追加(数十行)、公式 Mozc の導入手順 |
+| B10 | **打鍵中の共有メモリの読みが `Held` になる割合と、MozcShm の観測の失効の回数**(§4.14-1) | `mozc-shm-e2e.yml`(Mozc Readable)で打鍵ストレスを流し、`[mozc-shm]` の診断(`mozc_shm_shadow = true`)に `Held` の件数と失効を出す(観測専用のログを足す) | 割合と失効の回数を記録 | §4.4 の「同じ値の `Held` で年齢を延ばす」の効果の見積もり。旧(今の develop)で BUG-219 型の窓が開く頻度 | 観測専用のログ(数十行)、ワークフローの手順の追加 |
 | B8 | **P6 の副作用**: 明示意図があっても読める窓でポーリングを続けたとき、打鍵中のクロスプロセス読み取りで「@」(BUG-113 系)が出ないか。GJI の I/O 推論が drift の材料に入らないか | P6 を V1 の shadow で有効にした版で、GJI × Windows Terminal の `sc-*` と打鍵ストレス `ts-*` | 「@」0 件、drift の送信件数が旧と同じ | 出るなら P6 を採らない(§4.12) | V1 の段階 |
 
 - B1・B2 は P1・U2 の前提そのものなので最初に回し、**V0 の前提条件**にする。B4〜B6 は §4.13 の写像表を埋める。B3・B7 は基準線。B8 は V1 以降。
@@ -580,12 +607,13 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 | BUG-189・ADR-233 | 新しい Medium が古い High に勝つ | 引き継ぐ | §4.4(1 ソースの新しい観測で覆す) |
 | BUG-193・ADR-245 | 離脱時に書かず、戻った窓の最初の打鍵で復元 | 引き継ぐ | §4.10 |
 | BUG-194・200・207 | raw TSF リテラル回収の宛先照合・Mozc 時の監視外し | 引き継ぐ | BUG-200 は既定 ON で機会が増えうる(§4.6) |
-| BUG-205・211・212 | 予測器の段階規則・表 | 引き継ぐ | 外れが窓切替をまたいで残る(§2.1) |
+| BUG-205・211・212 | 予測器の段階規則・表 | 引き継ぐ | 外れが窓切替をまたいで残る(§2.1)。BUG-212 の早期 return が段階の追跡まで飛ばす点(§4.14-4)は、予測の入力の作り直しで「予測しない」と「追跡を更新する」を分ける |
 | BUG-221・ADR-281 | A′(修飾付きを素のキーとして予測) | 引き継ぐ+範囲を本 ADR に含める | §4.13。残りは §5.5 B4〜B6 |
 | (別件)`ObservedEisu` 中の F2 が no prediction | (原因未特定) | 確認の対象 | §4.13 の最後 |
 | BUG-218 | 入場先と同じプロセスで押された、記録より新しい明示 OFF があれば復元しない | 代替で守る | 押下時点のスコープに記録し、新しいほうが勝つ(§4.5) |
-| BUG-219 | Mozc 系を `[direct-follow]` から外す | 代替で守る | 信頼表で GJI 系の読めない窓の IMM を反証不可(順位では防がない) |
-| BUG-220 | 戻り待ちのある窓で英数と判定したら戻り待ちから立て直す | 引き継ぐ | §4.10 |
+| BUG-219 | Mozc 系を `[direct-follow]` から外す | 代替で守る | 信頼表で GJI 系の読めない窓の IMM を反証不可(順位では防がない)。外す条件は「Mozc 系」ではなく「共有メモリの block がある」に寄せる案(§4.14-2、U13) |
+| (入力)MozcShm の `Held` の読みで観測が失効 | (規則なし) | 代替で守る | 主張のラッチ + 同じ値の `Held` で年齢を延ばす(§4.4・§4.14-1)。頻度は B10 |
+| BUG-220 | 戻り待ちのある窓で英数と判定したら戻り待ちから立て直す | 引き継ぐ(前提を確認) | 「A の実 IME は半角英数のまま」という前提は粒度が PerThread のときだけ正しい(§4.14-3)。Shared の構成では B の操作で無効にする。コードは本 ADR では変えない |
 | BUG-222(未マージ) | lang-detect が入れたトグルは、tsf-native × GJI 系で素の F2 で手放す | 引き継ぐ(マージされた形で) | 範囲を広げない |
 | BUG-223 | (修正なし) | 新設計の目標 | §5.1(真のモデル別の合格条件) |
 | C-b3 | キャッシュの `ObservedEisu` が Engine を塞ぎ続けない | 代替で守る | §4.10 |
@@ -713,6 +741,7 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 | U9 | 修飾付きのモードキーの写像表に、IME の設定の読み取りで修飾付きの割り当てを足す範囲 | 今は扱わない。設定に修飾付きの割り当てがあれば、そのキーは抑止 |
 | U10 | O2 の適用範囲: 端末アプリ(Windows Terminal・WezTerm、英字のコマンド入力が主)を ON 寄りの対象から外すか | 判断材料: 窓の種類・アプリ別の I2 の増加件数(V0)、§4.6 の端末での影響。提案はしない(所有者の判断 O2 の範囲の問題のため) |
 | U11 | B1 で「IME の状態を全体で共有する構成」が見つかった場合、その構成にも O4(持ち越さない)を適用するか | その構成では `ScopeModel=Shared`(持ち越し)を提案する |
+| U13 | 共有メモリの block が無い Mozc 系(公式 Mozc など)で、読めない窓の ADR-188 の直接読み・ADR-205 の監視窓を戻すか(今は「Mozc 系」として外れていて、外部切替に追随する証拠が無い。§4.14-2) | B9 の結果を見て決める。IMM の偽の閉(BUG-219)の出所が未解明なので、戻すなら開閉の遷移だけ(ADR-205)から |
 | U12 | V0 で局所修正(L1〜L3)が合格条件を満たした場合、ゼロベースではなく局所修正を採るか | 局所修正を採り、§4.13(写像表)・D8(書き込みの根拠の分離)など必要な部分だけを別に進める |
 
 ## 12. 所有者の判断(2026-10-26、決定)
