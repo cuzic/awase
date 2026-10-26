@@ -98,7 +98,7 @@
 
 ## atok shared I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
   変わった列: 1 本
-         1  +11000ms: derive-medium(true) → most-recent-trusted(false)
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## atok shared 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
@@ -286,7 +286,7 @@
 
 ## msime shared I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
   変わった列: 1 本
-         1  +11000ms: derive-medium(true) → most-recent-trusted(false)
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## msime shared 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
@@ -446,7 +446,7 @@
 
 ## msime-native shared I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
   変わった列: 1 本
-         1  +11000ms: derive-medium(true) → most-recent-trusted(false)
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## msime-native shared 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
@@ -541,7 +541,7 @@
 
 ## msime per-thread I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
   変わった列: 1 本
-         1  +11000ms: derive-medium(true) → most-recent-trusted(false)
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## msime per-thread 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
@@ -645,7 +645,7 @@
 
 ## msime-native mixed(tsf-native=inherit-open) I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
   変わった列: 1 本
-         1  +11000ms: derive-medium(true) → most-recent-trusted(false)
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## msime-native mixed(tsf-native=inherit-open) 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
@@ -746,7 +746,7 @@
 
 ## msime mixed(tsf-native=independent) I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
   変わった列: 1 本
-         1  +11000ms: derive-medium(true) → most-recent-trusted(false)
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## msime mixed(tsf-native=independent) 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
@@ -852,7 +852,7 @@
 
 ## msime mixed(tsf-native=inherit-open) I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
   変わった列: 1 本
-         1  +11000ms: derive-medium(true) → most-recent-trusted(false)
+         1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
 
 ## msime mixed(tsf-native=inherit-open) 実機の事故（BUG-223）の列
   OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
