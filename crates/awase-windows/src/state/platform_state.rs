@@ -1251,10 +1251,11 @@ impl ImeStateHub {
             .is_some_and(|prev| prev != decision.value)
         {
             tracing::info!(
-                "[effective-open-flip] → {} decided_by={:?} shadow_model={shadow} intent_store_override={}",
+                "[effective-open-flip] → {} decided_by={:?} shadow_model={shadow} intent_store_override={} {}",
                 decision.value,
                 resolution.decided_by,
                 decision.value != shadow,
+                FlipDiag::capture(&self.shadow_model, decision.intent, now_ms),
             );
         }
         // 診断(ADR-233): フォールバックに落ちたとき、旧と案 A' で選ぶ観測が食い違えば 1 行出す(値の判断には使わない)。
@@ -2608,6 +2609,90 @@ pub struct PlatformState {
     pub(crate) keymap: KeymapStore,
 }
 
+/// `[effective-open-flip]` の行に添える診断(ADR-282 B0)。値の判断には使わない。
+///
+/// BUG-223 の区間 2・3・5 は、行が途中で切れていて `IntentStore` の上書きか `desired_open` への後退かを後から
+/// 区別できなかった(ADR-282 §1.1)。flip の時点で効いている `IntentStore` の行(記録時刻・対象・経過)、
+/// `desired_open`、直前の明示操作(`last_intent`)・打鍵時予測(`key_effect`)の種類と経過を残す。
+/// 状態だけで、キーの内容(VK・文字)は含まない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FlipDiag {
+    focus: Option<HwndId>,
+    intent_store: Option<FlipIntentStoreRow>,
+    desired_open: bool,
+    last_intent: Option<(bool, UserIntentSource, u64)>,
+    key_effect_open: Option<(bool, u64)>,
+    since_last_mode_key_ms: Option<u64>,
+}
+
+/// flip の時点で対象の窓に効いている `IntentStore` の行(上書きしたかどうかは `intent_store_override` が示す)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FlipIntentStoreRow {
+    target: HwndId,
+    open: bool,
+    source: UserIntentSource,
+    recorded_at_ms: u64,
+    age_ms: u64,
+}
+
+impl FlipDiag {
+    fn capture(
+        model: &ImeModel,
+        intent: Option<crate::state::intent_store::RecordedTargetIntent>,
+        now_ms: TickMs,
+    ) -> Self {
+        let now = now_ms.0;
+        Self {
+            focus: model.current_focus(),
+            intent_store: intent.map(|i| FlipIntentStoreRow {
+                target: i.target,
+                open: i.open,
+                source: i.source,
+                recorded_at_ms: i.recorded_at_ms.0,
+                age_ms: now.saturating_sub(i.recorded_at_ms.0),
+            }),
+            desired_open: model.desired_open(),
+            last_intent: model
+                .last_intent
+                .as_ref()
+                .map(|i| (i.target, i.source, now.saturating_sub(i.at_ms))),
+            key_effect_open: model
+                .key_effect()
+                .and_then(|k| k.open.map(|open| (open, now.saturating_sub(k.at_ms)))),
+            since_last_mode_key_ms: model.since_last_mode_key_ms(now),
+        }
+    }
+}
+
+impl std::fmt::Display for FlipDiag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "focus={:?} ", self.focus)?;
+        match self.intent_store {
+            Some(r) => write!(
+                f,
+                "intent_store_row=(target={:?} open={} source={:?} recorded_at={} age={}ms) ",
+                r.target, r.open, r.source, r.recorded_at_ms, r.age_ms
+            )?,
+            None => write!(f, "intent_store_row=none ")?,
+        }
+        write!(f, "desired_open={} ", self.desired_open)?;
+        match self.last_intent {
+            Some((open, source, age)) => {
+                write!(f, "last_intent=(open={open} source={source:?} age={age}ms) ")?;
+            }
+            None => write!(f, "last_intent=none ")?,
+        }
+        match self.key_effect_open {
+            Some((open, age)) => write!(f, "key_effect_open=(open={open} age={age}ms) ")?,
+            None => write!(f, "key_effect_open=none ")?,
+        }
+        match self.since_last_mode_key_ms {
+            Some(ms) => write!(f, "since_last_mode_key={ms}ms"),
+            None => write!(f, "since_last_mode_key=none"),
+        }
+    }
+}
+
 #[cfg(test)]
 impl PlatformState {
     /// 時計を注入して初期化するテスト用の構築口（`new()` は実時計 `hook::current_tick_ms` を読む）。
@@ -3415,6 +3500,58 @@ mod tests {
     /// `GetTickCount64()`（実機では数分〜数日）を読むため、合成 tick で記録した
     /// エントリは常に TTL 超過となり、上書きが一度も発火しないまま「テストは
     /// 通っている」状態になる（実際に 2026-08-13 の windows-build 失敗を招いた）。
+    /// ADR-282 B0: 窓 A の明示 OFF が `IntentStore` に残ったまま窓 B を経て A へ戻ったとき、
+    /// `[effective-open-flip]` に添える診断が、効いている行(対象・向き・記録時刻・経過)・`desired_open`・
+    /// 窓切替で捨てられた `last_intent` を区別して出す(実機の再現〈ADR-282 §1.1.1〉の型を後から読めるように)。
+    #[test]
+    fn flip_diag_reports_the_intent_store_row_that_survives_a_window_round_trip() {
+        const OTHER_HWND: HwndId = HwndId(0x5678);
+        let mut ps = ps_for_test();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, BASE_TICK);
+        dispatch_and_record_explicit_intent(&mut ps, false, BASE_TICK + 10);
+        let at_off = ps.ime.model().last_intent.as_ref().map(|i| i.at_ms);
+        dispatch_focus_changed(&mut ps, OTHER_HWND, 2, BASE_TICK + 2_000);
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 3, BASE_TICK + 6_000);
+        let now = TickMs(BASE_TICK + 6_110);
+        let (_, decision) = ps.ime.resolve_effective(now);
+        let diag = FlipDiag::capture(ps.ime.model(), decision.intent, now);
+        assert_eq!(
+            diag.intent_store,
+            Some(FlipIntentStoreRow {
+                target: TARGET_HWND,
+                open: false,
+                source: UserIntentSource::Command,
+                recorded_at_ms: BASE_TICK + 10,
+                age_ms: 6_100,
+            }),
+            "A の hwnd に残る OFF の行(TTL 30 秒の内側)が、記録時刻と経過つきで出る"
+        );
+        assert_eq!(diag.focus, Some(TARGET_HWND));
+        assert!(!diag.desired_open);
+        assert_eq!(
+            diag.last_intent, None,
+            "窓切替で last_intent は捨てられ、IntentStore の行だけが残る(at_off={at_off:?})"
+        );
+        let line = diag.to_string();
+        assert!(
+            line.contains("intent_store_row=(target=") && line.contains("age=6100ms"),
+            "{line}"
+        );
+        assert!(line.contains("desired_open=false last_intent=none"), "{line}");
+    }
+
+    /// ADR-282 B0: `IntentStore` の行も意図も予測も無いときは、それぞれ `none` と出す(行の形が固定であること)。
+    #[test]
+    fn flip_diag_prints_none_for_absent_rows() {
+        let ps = ps_for_test();
+        let diag = FlipDiag::capture(ps.ime.model(), None, TickMs(BASE_TICK));
+        let line = diag.to_string();
+        assert!(line.contains("intent_store_row=none"), "{line}");
+        assert!(line.contains("last_intent=none"), "{line}");
+        assert!(line.contains("key_effect_open=none"), "{line}");
+        assert!(line.ends_with("since_last_mode_key=none"), "{line}");
+    }
+
     fn dispatch_and_record_explicit_intent(ps: &mut PlatformState, target: bool, tick_ms: u64) {
         ps.ime.dispatch_event(
             ImeEvent::UserImeSetIntent {
