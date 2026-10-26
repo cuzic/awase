@@ -102,6 +102,10 @@
   tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
 
+## atok shared 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 違反なし
+
 ## atok shared I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 182 本
         41  belief-off/derive-high
@@ -282,6 +286,10 @@
   tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
 
+## msime shared 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → I1 違反 [belief-off/desired-fallback]
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → I1 違反 [belief-off/desired-fallback]
+
 ## msime shared I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 220 本
         30  belief-off/derive-high
@@ -434,6 +442,10 @@
   tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
 
+## msime-native shared 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → I1 違反 [belief-off/desired-fallback]
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → I1 違反 [belief-off/desired-fallback]
+
 ## msime-native shared I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 218 本
         29  belief-off/derive-high
@@ -521,6 +533,10 @@
   tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
 
+## msime per-thread 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 違反なし
+
 ## msime per-thread I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 171 本
         24  belief-off/derive-high
@@ -539,3 +555,299 @@
     4 手 [belief-off/desired-fallback] key:eisu > key:eisu > focus:relay > key:hiragana
     4 手 [belief-off/desired-fallback] key:eisu > key:eisu > focus:wezterm > key:hankaku-zenkaku
     5 手 [belief-off/desired-fallback] key:hankaku-zenkaku > external-off > external-on > focus:wezterm > focus:explorer
+
+## msime-native mixed(tsf-native=inherit-open) I1 核の字母（字母 12 種・長さ 3 まで・検査した列 1090）
+  初めて違反する列: 31 本（T=0）、うち 2000ms 事象なしで残る: 31 本（T=2000）、読める窓で poll が 1 回届いても残る: 29 本
+  事象を 1 つ削ると違反しない最小の列: 9 本（うち嘘の観測を含まない: 6 本、awase の操作・窓切替・正しい観測だけ: 6 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /     24  belief-off/desired-fallback
+         5 /      5 /      5  belief-off/key-effect
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        28 /     28 /     26  awase の操作・窓切替・正しい観測だけ
+         3 /      3 /      3  嘘の観測を含む
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         1 /      1 /      1  chrome(imm32-unavailable)
+         2 /      2 /      0  explorer(std)
+        25 /     25 /     25  wezterm(tsf-native)
+         3 /      3 /      3  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /     24  focus
+         5 /      5 /      5  key:eisu(F0)
+  最小列の例（分類ごと、最大 2 本）:
+    [belief-off/desired-fallback] 最小列 4 本
+      2 手 key:eisu > focus:wezterm（窓=wezterm(tsf-native)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+      2 手 key:hiragana > focus:wezterm（窓=wezterm(tsf-native)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+    [belief-off/key-effect] 最小列 5 本
+      3 手 key:eisu > focus:xaml > key:eisu（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+      3 手 key:hiragana > focus:xaml > key:eisu（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:wezterm
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:wezterm
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:xaml > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:chrome > focus:explorer
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:xaml > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:chrome > focus:explorer
+    [嘘の観測を含む] focus:xaml > obs:conv-infer-open(lie-if-closed) > key:eisu
+    [嘘の観測を含む] focus:wezterm > obs:conv-infer-open(lie-if-closed) > key:eisu
+    [嘘の観測を含む] focus:chrome > obs:conv-infer-open(lie-if-closed) > key:eisu
+
+## msime-native mixed(tsf-native=inherit-open) I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1060）
+  初めて違反する列: 57 本（T=0）、うち 2000ms 事象なしで残る: 57 本（T=2000）、読める窓で poll が 1 回届いても残る: 55 本
+  事象を 1 つ削ると違反しない最小の列: 9 本（うち嘘の観測を含まない: 6 本、awase の操作・窓切替・正しい観測だけ: 6 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        33 /     33 /     33  truth-closed-but-engine-on/derive-medium
+        24 /     24 /     22  truth-closed-but-engine-on/key-effect
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        24 /     24 /     22  awase の操作・窓切替・正しい観測だけ
+        33 /     33 /     33  嘘の観測を含む
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        13 /     13 /     13  chrome(imm32-unavailable)
+         2 /      2 /      0  explorer(std)
+        13 /     13 /     13  wezterm(tsf-native)
+        29 /     29 /     29  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        22 /     22 /     20  focus
+         2 /      2 /      2  key:eisu(F0)
+        33 /     33 /     33  obs:conv-infer-open
+  最小列の例（分類ごと、最大 2 本）:
+    [truth-closed-but-engine-on/derive-medium] 最小列 3 本
+      2 手 focus:xaml > obs:conv-infer-open(lie-if-closed)（窓=xaml(imm32-unavailable)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=true）
+      2 手 focus:wezterm > obs:conv-infer-open(lie-if-closed)（窓=wezterm(tsf-native)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=true）
+    [truth-closed-but-engine-on/key-effect] 最小列 6 本
+      2 手 key:eisu > focus:xaml（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+      2 手 key:hiragana > focus:xaml（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:xaml
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:xaml
+    [嘘の観測を含む] focus:xaml > obs:conv-infer-open(lie-if-closed)
+    [嘘の観測を含む] focus:wezterm > obs:conv-infer-open(lie-if-closed)
+    [嘘の観測を含む] focus:chrome > obs:conv-infer-open(lie-if-closed)
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:wezterm > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:wezterm > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:eisu > focus:explorer
+    [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:hiragana > focus:explorer
+
+## msime-native mixed(tsf-native=inherit-open) 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
+
+## msime-native mixed(tsf-native=inherit-open) 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 違反なし
+
+## msime-native mixed(tsf-native=inherit-open) I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 173 本
+        30  belief-off/derive-high
+         1  belief-off/derive-medium
+        92  belief-off/desired-fallback
+        14  belief-off/explicit-intent
+        28  belief-off/key-effect
+         5  belief-off/most-recent-trusted
+         3  belief-on-but-engine-off/mode=ObservedEisu
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 8 本
+    1 手 [belief-off/desired-fallback] external-on
+    2 手 [belief-off/desired-fallback] key:ime-on > focus:wezterm
+    3 手 [belief-off/desired-fallback] focus:chrome > obs:conv-infer-open(lie-if-closed) > key:hankaku-zenkaku
+    3 手 [belief-off/desired-fallback] key:hankaku-zenkaku > focus:relay > focus:explorer
+    3 手 [belief-off/key-effect] key:hankaku-zenkaku > external-off > key:eisu
+    3 手 [belief-off/key-effect] key:hiragana > focus:xaml > key:hankaku-zenkaku
+    3 手 [belief-off/key-effect] obs:poll-LIE > focus:xaml > key:hankaku-zenkaku
+    4 手 [belief-off/desired-fallback] key:hiragana > key:hankaku-zenkaku > key:eisu > focus:wezterm
+
+## msime mixed(tsf-native=independent) I1 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 9 本（T=0）、うち 2000ms 事象なしで残る: 9 本（T=2000）、読める窓で poll が 1 回届いても残る: 5 本
+  事象を 1 つ削ると違反しない最小の列: 9 本（うち嘘の観測を含まない: 6 本、awase の操作・窓切替・正しい観測だけ: 6 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         4 /      4 /      0  belief-off/desired-fallback
+         5 /      5 /      5  belief-on-but-engine-off/mode=ObservedEisu
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         6 /      6 /      2  awase の操作・窓切替・正しい観測だけ
+         3 /      3 /      3  嘘の観測を含む
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         1 /      1 /      1  chrome(imm32-unavailable)
+         4 /      4 /      0  explorer(std)
+         1 /      1 /      1  wezterm(tsf-native)
+         3 /      3 /      3  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         4 /      4 /      0  focus
+         5 /      5 /      5  key:eisu(F0)
+  最小列の例（分類ごと、最大 2 本）:
+    [belief-off/desired-fallback] 最小列 4 本
+      3 手 key:eisu > focus:wezterm > focus:explorer（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:eisu > focus:chrome > focus:explorer（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+    [belief-on-but-engine-off/mode=ObservedEisu] 最小列 5 本
+      3 手 key:eisu > focus:xaml > key:eisu（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+      3 手 key:hiragana > focus:xaml > key:eisu（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:xaml > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:wezterm > focus:explorer
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:chrome > focus:explorer
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:xaml > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:wezterm > focus:explorer
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:chrome > focus:explorer
+    [嘘の観測を含む] focus:xaml > obs:conv-infer-open(lie-if-closed) > key:eisu
+    [嘘の観測を含む] focus:wezterm > obs:conv-infer-open(lie-if-closed) > key:eisu
+    [嘘の観測を含む] focus:chrome > obs:conv-infer-open(lie-if-closed) > key:eisu
+
+## msime mixed(tsf-native=independent) I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1060）
+  初めて違反する列: 57 本（T=0）、うち 2000ms 事象なしで残る: 57 本（T=2000）、読める窓で poll が 1 回届いても残る: 55 本
+  事象を 1 つ削ると違反しない最小の列: 7 本（うち嘘の観測を含まない: 4 本、awase の操作・窓切替・正しい観測だけ: 4 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        35 /     35 /     35  truth-closed-but-engine-on/derive-medium
+        22 /     22 /     20  truth-closed-but-engine-on/key-effect
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        22 /     22 /     20  awase の操作・窓切替・正しい観測だけ
+        35 /     35 /     35  嘘の観測を含む
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        13 /     13 /     13  chrome(imm32-unavailable)
+         2 /      2 /      0  explorer(std)
+        13 /     13 /     13  wezterm(tsf-native)
+        29 /     29 /     29  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        22 /     22 /     20  focus
+        35 /     35 /     35  obs:conv-infer-open
+  最小列の例（分類ごと、最大 2 本）:
+    [truth-closed-but-engine-on/derive-medium] 最小列 3 本
+      2 手 focus:xaml > obs:conv-infer-open(lie-if-closed)（窓=xaml(imm32-unavailable)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=true）
+      2 手 focus:wezterm > obs:conv-infer-open(lie-if-closed)（窓=wezterm(tsf-native)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=true）
+    [truth-closed-but-engine-on/key-effect] 最小列 4 本
+      2 手 key:eisu > focus:xaml（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+      2 手 key:hiragana > focus:xaml（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:xaml
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:xaml
+    [嘘の観測を含む] focus:xaml > obs:conv-infer-open(lie-if-closed)
+    [嘘の観測を含む] focus:wezterm > obs:conv-infer-open(lie-if-closed)
+    [嘘の観測を含む] focus:chrome > obs:conv-infer-open(lie-if-closed)
+    [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:eisu > focus:explorer
+    [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:hiragana > focus:explorer
+
+## msime mixed(tsf-native=independent) 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → 違反なし
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
+
+## msime mixed(tsf-native=independent) 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 違反なし
+
+## msime mixed(tsf-native=independent) I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 169 本
+        29  belief-off/derive-high
+         2  belief-off/derive-medium
+        63  belief-off/desired-fallback
+        14  belief-off/explicit-intent
+        21  belief-off/key-effect
+        12  belief-off/most-recent-trusted
+        28  belief-on-but-engine-off/mode=ObservedEisu
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 6 本
+    1 手 [belief-off/explicit-intent] external-on
+    3 手 [belief-off/desired-fallback] key:hiragana > focus:relay > focus:explorer
+    3 手 [belief-on-but-engine-off/mode=ObservedEisu] focus:relay > obs:conv-infer-open(lie-if-closed) > key:eisu
+    4 手 [belief-off/desired-fallback] focus:chrome > key:hankaku-zenkaku > focus:xaml > focus:chrome
+    4 手 [belief-on-but-engine-off/mode=ObservedEisu] focus:chrome > key:ime-on > focus:explorer > focus:chrome
+    4 手 [belief-on-but-engine-off/mode=ObservedEisu] key:hiragana > key:eisu > focus:xaml > external-on
+
+## msime mixed(tsf-native=inherit-open) I1 核の字母（字母 12 種・長さ 3 まで・検査した列 1090）
+  初めて違反する列: 33 本（T=0）、うち 2000ms 事象なしで残る: 33 本（T=2000）、読める窓で poll が 1 回届いても残る: 31 本
+  事象を 1 つ削ると違反しない最小の列: 9 本（うち嘘の観測を含まない: 6 本、awase の操作・窓切替・正しい観測だけ: 6 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        28 /     28 /     26  belief-off/desired-fallback
+         5 /      5 /      5  belief-on-but-engine-off/mode=ObservedEisu
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        30 /     30 /     28  awase の操作・窓切替・正しい観測だけ
+         3 /      3 /      3  嘘の観測を含む
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         1 /      1 /      1  chrome(imm32-unavailable)
+         2 /      2 /      0  explorer(std)
+        27 /     27 /     27  wezterm(tsf-native)
+         3 /      3 /      3  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        28 /     28 /     26  focus
+         5 /      5 /      5  key:eisu(F0)
+  最小列の例（分類ごと、最大 2 本）:
+    [belief-off/desired-fallback] 最小列 4 本
+      2 手 key:eisu > focus:wezterm（窓=wezterm(tsf-native)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+      2 手 key:hiragana > focus:wezterm（窓=wezterm(tsf-native)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+    [belief-on-but-engine-off/mode=ObservedEisu] 最小列 5 本
+      3 手 key:eisu > focus:xaml > key:eisu（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+      3 手 key:hiragana > focus:xaml > key:eisu（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:wezterm
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:wezterm
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:xaml > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:chrome > focus:explorer
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:xaml > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:chrome > focus:explorer
+    [嘘の観測を含む] focus:xaml > obs:conv-infer-open(lie-if-closed) > key:eisu
+    [嘘の観測を含む] focus:wezterm > obs:conv-infer-open(lie-if-closed) > key:eisu
+    [嘘の観測を含む] focus:chrome > obs:conv-infer-open(lie-if-closed) > key:eisu
+
+## msime mixed(tsf-native=inherit-open) I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1060）
+  初めて違反する列: 57 本（T=0）、うち 2000ms 事象なしで残る: 57 本（T=2000）、読める窓で poll が 1 回届いても残る: 55 本
+  事象を 1 つ削ると違反しない最小の列: 9 本（うち嘘の観測を含まない: 6 本、awase の操作・窓切替・正しい観測だけ: 6 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      2  truth-alnum-but-engine-on/key-effect
+        33 /     33 /     33  truth-closed-but-engine-on/derive-medium
+        22 /     22 /     20  truth-closed-but-engine-on/key-effect
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        24 /     24 /     22  awase の操作・窓切替・正しい観測だけ
+        33 /     33 /     33  嘘の観測を含む
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        13 /     13 /     13  chrome(imm32-unavailable)
+         2 /      2 /      0  explorer(std)
+        13 /     13 /     13  wezterm(tsf-native)
+        29 /     29 /     29  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        22 /     22 /     20  focus
+         2 /      2 /      2  key:eisu(F0)
+        33 /     33 /     33  obs:conv-infer-open
+  最小列の例（分類ごと、最大 2 本）:
+    [truth-alnum-but-engine-on/key-effect] 最小列 2 本
+      3 手 key:eisu > focus:wezterm > key:eisu（窓=wezterm(tsf-native)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+      3 手 key:hiragana > focus:wezterm > key:eisu（窓=wezterm(tsf-native)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+    [truth-closed-but-engine-on/derive-medium] 最小列 3 本
+      2 手 focus:xaml > obs:conv-infer-open(lie-if-closed)（窓=xaml(imm32-unavailable)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=true）
+      2 手 focus:wezterm > obs:conv-infer-open(lie-if-closed)（窓=wezterm(tsf-native)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=true）
+    [truth-closed-but-engine-on/key-effect] 最小列 4 本
+      2 手 key:eisu > focus:xaml（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+      2 手 key:hiragana > focus:xaml（窓=xaml(imm32-unavailable)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=true）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:xaml
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:xaml
+    [嘘の観測を含む] focus:xaml > obs:conv-infer-open(lie-if-closed)
+    [嘘の観測を含む] focus:wezterm > obs:conv-infer-open(lie-if-closed)
+    [嘘の観測を含む] focus:chrome > obs:conv-infer-open(lie-if-closed)
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > focus:wezterm > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > focus:wezterm > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:eisu > focus:explorer
+    [awase の操作・窓切替・正しい観測だけ] focus:xaml > key:hiragana > focus:explorer
+
+## msime mixed(tsf-native=inherit-open) 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
+
+## msime mixed(tsf-native=inherit-open) 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 違反なし
+
+## msime mixed(tsf-native=inherit-open) I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 179 本
+        28  belief-off/derive-high
+         2  belief-off/derive-medium
+        92  belief-off/desired-fallback
+        10  belief-off/explicit-intent
+        15  belief-off/key-effect
+        10  belief-off/most-recent-trusted
+        22  belief-on-but-engine-off/mode=ObservedEisu
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 5 本
+    1 手 [belief-off/desired-fallback] external-on
+    2 手 [belief-off/desired-fallback] key:ime-on > focus:wezterm
+    3 手 [belief-off/desired-fallback] key:eisu > focus:relay > focus:explorer
+    3 手 [belief-on-but-engine-off/mode=ObservedEisu] key:ime-on > external-off > key:eisu
+    4 手 [belief-off/desired-fallback] focus:chrome > key:hiragana > focus:xaml > focus:chrome
