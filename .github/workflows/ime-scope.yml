@@ -22,7 +22,7 @@ env:
 jobs:
   scope:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -107,14 +107,14 @@ jobs:
         env:
           PYTHONUTF8: '1'
         run: |
-          python tools\e2e\ime_scope\scope_probe.py --dist dist --out out --ime ${{ matrix.ime }} --layout layout\nicola_keytop.yab 2>&1 | Tee-Object -FilePath out-console.log
+          python tools\e2e\ime_scope\scope_probe.py --dist dist --out out --ime ${{ matrix.ime }} --layout layout\nicola_keytop.yab --pairs "edit>wt,wt>edit" --rounds 0 --wt-rounds 6 --wt-settle 3 --on-wait 2.5 --on-times 2 --wt-variants base,scan0,newproc,both --deadline-min 120 2>&1 | Tee-Object -FilePath out-console.log
           exit 0
       - name: 概要を表示
         if: always()
         shell: pwsh
         run: |
           if (Test-Path out\summary.md) { Get-Content out\summary.md -Encoding utf8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
-          if (Test-Path out-console.log) { Select-String -Path out-console.log -Pattern '^SCOPE:|^ENV' | ForEach-Object { $_.Line } }
+          if (Test-Path out-console.log) { Select-String -Path out-console.log -Pattern '^SCOPE:|^ENV|^VARIANT' | ForEach-Object { $_.Line } }
       - uses: actions/upload-artifact@v4
         if: always()
         with:

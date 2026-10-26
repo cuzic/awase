@@ -91,6 +91,13 @@ class Ctx:
         self.layout = str(Path(a.layout).resolve()).replace("\\", "/")
         self.n = 0
         self.results = []
+        # B1a(ADR-282 §6.5): WT のセルの変種。scan0 = ON キーの scan を MapVirtualKey の値にする(0x70 を付けない)、
+        # newproc = セルごとにこのハーネスが起動した WindowsTerminal.exe を終了し、次の B を別プロセスにする。
+        self.variant = "base"
+        self.scan0 = False
+        self.newproc = False
+        self.wt_pids_at_start = set()
+        self.last_b_wt = None
 
     def next_tag(self, what):
         self.n += 1
@@ -144,7 +151,7 @@ class ProcA:
             return self
         W.foreground(hwnd)
         time.sleep(c.wt_settle)
-        set_state_wt(W, c.ime, self.state, c.on_wait, c.on_times)
+        set_state_wt(W, c.ime, self.state, c.on_wait, c.on_times, scan=on_scan(c))
         self.self_text = type_ka_wt(W, echo)
         self.ok = True
         return self
@@ -167,7 +174,47 @@ class ProcA:
                 self.proc.kill()
 
 
-def set_state_wt(W, ime, state, on_wait=1.5, on_times=1):
+def on_scan(ctx):
+    """WT へ送る ON キーの scan。base は 0x70(かなキーの scan)、scan0 は None(wt_vocab が MapVirtualKey で決める)。"""
+    return None if ctx.scan0 else 0x70
+
+
+def wt_pids():
+    """いま動いている WindowsTerminal.exe の PID の集合(tasklist)。"""
+    try:
+        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq WindowsTerminal.exe", "/FO", "CSV", "/NH"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    out = set()
+    for line in r.stdout.splitlines():
+        cols = [c.strip('"') for c in line.split('","')]
+        if len(cols) >= 2 and cols[1].strip('"').isdigit():
+            out.add(int(cols[1].strip('"')))
+    return out
+
+
+def kill_own_wt(ctx):
+    """このハーネスが起動した WindowsTerminal.exe だけを終了する(実行の開始時から居たものは触らない)。"""
+    killed = []
+    for pid in sorted(wt_pids() - ctx.wt_pids_at_start):
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+        killed.append(pid)
+    if killed:
+        time.sleep(1.0)
+    return killed
+
+
+def window_pid_tid(hwnd):
+    try:
+        pid = ctypes.c_ulong(0)
+        tid = ctypes.windll.user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+        return int(pid.value), int(tid)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def set_state_wt(W, ime, state, on_wait=1.5, on_times=1, scan=0x70):
     on = IME_ON_VK[ime]
     if state == "off":
         W.press(0x1A, hold_ms=50, scan=0x70)
@@ -176,7 +223,7 @@ def set_state_wt(W, ime, state, on_wait=1.5, on_times=1):
     W.press(0x1A, hold_ms=50, scan=0x70)
     time.sleep(0.6)
     for _ in range(on_times):
-        W.press(on, hold_ms=50, scan=0x70)
+        W.press(on, hold_ms=50, scan=scan)
         time.sleep(on_wait)
     if state == "eisu":
         W.press(0xF0, hold_ms=50, scan=0x3A)
@@ -204,14 +251,18 @@ def run_b(ctx, kind, act):
         if not hwnd or not W.wait_ready(echo):
             return {"ok": False, "why": f"wt 起動失敗 {info}"}
         W.foreground(hwnd)
+        pid, tid = window_pid_tid(hwnd)
+        same = ctx.last_b_wt is not None and ctx.last_b_wt == pid
+        ctx.last_b_wt = pid
         time.sleep(ctx.wt_settle)
         if act == "ime-on":
             for _ in range(ctx.on_times):
-                W.press(IME_ON_VK[ctx.ime], hold_ms=50, scan=0x70)
+                W.press(IME_ON_VK[ctx.ime], hold_ms=50, scan=on_scan(ctx))
                 time.sleep(ctx.on_wait)
         text = type_ka_wt(W, echo)
         W.close(hwnd)
-        return {"ok": True, "text": text}
+        return {"ok": True, "text": text, "b_wt_pid": pid, "b_wt_tid": tid, "b_wt_same_pid_as_prev": same,
+                "wt_procs": len(wt_pids())}
     log = str(ctx.out / "logs" / f"{tag}.log")
     proc = subprocess.Popen(ts_args(ctx, kind, log, ["--scope-role=b", f"--scope-act={act}"]))
     PROCS.append(proc)
@@ -227,6 +278,8 @@ def run_b(ctx, kind, act):
 
 
 def reset(ctx):
+    if ctx.newproc:
+        kill_own_wt(ctx)
     a = ProcA(ctx, "edit", "off").start()
     a.release()
     kill_all()
@@ -235,7 +288,7 @@ def reset(ctx):
 def run_cell(ctx, a_kind, b_kind, cell, rnd):
     reset(ctx)
     a = None
-    rec = {"a": a_kind, "b": b_kind, "cell": cell, "round": rnd}
+    rec = {"a": a_kind, "b": b_kind, "cell": cell, "round": rnd, "variant": ctx.variant}
     if cell in ("s1", "s3"):
         a = ProcA(ctx, a_kind, "hira" if cell == "s1" else "eisu").start()
         want = "hira" if cell == "s1" else "ka"
@@ -247,6 +300,9 @@ def run_cell(ctx, a_kind, b_kind, cell, rnd):
     rec["b_class"] = P.classify(b.get("text", "")) if b.get("ok") else "none"
     rec["b_open_before"] = b.get("open_before")
     rec["b_open_after_act"] = b.get("open_after_act")
+    for k in ("b_wt_pid", "b_wt_tid", "b_wt_same_pid_as_prev", "wt_procs"):
+        if k in b:
+            rec[k] = b[k]
     if not b.get("ok"):
         rec["why"] = b.get("why")
     if a:
@@ -261,8 +317,8 @@ def usable(rows):
     return [r["b_class"] for r in rows if r["b_ok"] and r.get("a_self_ok", True)]
 
 
-def summarize(ctx, pairs):
-    rs = ctx.results
+def summarize(ctx, pairs, variant="base"):
+    rs = [r for r in ctx.results if r.get("variant", "base") == variant]
     lines = []
     for a_kind, b_kind in pairs:
         def cls(cell, a=None):
@@ -274,7 +330,7 @@ def summarize(ctx, pairs):
         o = P.judge_open(cd[0] or "none", s1[0] or "none")
         v = P.judge_conv(co[0] or "none", s3[0] or "none")
         lines.append({
-            "ime": ctx.ime, "pair": f"{a_kind}>{b_kind}", "open": o, "conv": v,
+            "ime": ctx.ime, "variant": variant, "pair": f"{a_kind}>{b_kind}", "open": o, "conv": v,
             "ctl_direct": cd, "ctl_on": co, "s1": s1, "s3": s3, "s1_runs": n_s1, "s3_runs": n_s3})
     return lines
 
@@ -312,6 +368,8 @@ def main():
     ap.add_argument("--wt-settle", type=float, default=1.5, help="WT を前面化してからキーを送るまでの待ち(秒)")
     ap.add_argument("--on-wait", type=float, default=0.8, help="WT で ON キーを押したあとの待ち(秒)")
     ap.add_argument("--on-times", type=int, default=1, help="WT で ON キーを押す回数")
+    ap.add_argument("--wt-variants", default="base",
+                    help="B1a: WT のセルの変種をカンマ区切りで(base / scan0 / newproc / both)。変種ごとに同じセルを回す")
     a = ap.parse_args()
     ctx = Ctx(a)
     pairs = [tuple(p.split(">")) for p in a.pairs.split(",") if p]
@@ -319,30 +377,39 @@ def main():
     env = env_info()
     print("ENV", json.dumps(env, ensure_ascii=False), flush=True)
     kill_all()
+    ctx.wt_pids_at_start = wt_pids()
     b_kinds = []
     for _, b in pairs:
         if b not in b_kinds:
             b_kinds.append(b)
-    for rnd in range(max(a.rounds, a.wt_rounds)):
-        for b in b_kinds:
-            for cell in ("ctl_direct", "ctl_on"):
-                if time.time() < t_end and (rnd < a.rounds or (b == "wt" and rnd < a.wt_rounds)):
-                    run_cell(ctx, "edit", b, cell, rnd)
-        for a_kind, b_kind in pairs:
-            is_wt = "wt" in (a_kind, b_kind)
-            for cell in ("s1", "s3"):
-                if time.time() < t_end and (rnd < a.rounds or (is_wt and rnd < a.wt_rounds)):
-                    run_cell(ctx, a_kind, b_kind, cell, rnd)
-    summary = summarize(ctx, pairs)
+    variants = [v for v in a.wt_variants.split(",") if v]
+    for variant in variants:
+        ctx.variant = variant
+        ctx.scan0 = variant in ("scan0", "both")
+        ctx.newproc = variant in ("newproc", "both")
+        ctx.last_b_wt = None
+        print(f"VARIANT {variant} scan0={ctx.scan0} newproc={ctx.newproc}", flush=True)
+        for rnd in range(max(a.rounds, a.wt_rounds)):
+            for b in b_kinds:
+                for cell in ("ctl_direct", "ctl_on"):
+                    if time.time() < t_end and (rnd < a.rounds or (b == "wt" and rnd < a.wt_rounds)):
+                        run_cell(ctx, "edit", b, cell, rnd)
+            for a_kind, b_kind in pairs:
+                is_wt = "wt" in (a_kind, b_kind)
+                for cell in ("s1", "s3"):
+                    if time.time() < t_end and (rnd < a.rounds or (is_wt and rnd < a.wt_rounds)):
+                        run_cell(ctx, a_kind, b_kind, cell, rnd)
+    kill_own_wt(ctx)
+    summary = [s for v in variants for s in summarize(ctx, pairs, v)]
     for s in summary:
-        print(f"SCOPE: ime={s['ime']} pair={s['pair']} open={s['open']} conv={s['conv']} "
+        print(f"SCOPE: ime={s['ime']} variant={s['variant']} pair={s['pair']} open={s['open']} conv={s['conv']} "
               f"ctl_direct={s['ctl_direct']} ctl_on={s['ctl_on']} s1={s['s1']}(runs {s['s1_runs']}) s3={s['s3']}(runs {s['s3_runs']})")
     (ctx.out / "results.json").write_text(
         json.dumps({"env": env, "runs": ctx.results, "summary": summary}, ensure_ascii=False, indent=1), encoding="utf-8")
     md = ["# IME scope probe", "", f"ime={a.ime}", "", "```", json.dumps(env, ensure_ascii=False, indent=1), "```", "",
-          "| pair | open | conv | ctl_direct | ctl_on | s1 | s3 |", "|---|---|---|---|---|---|---|"]
+          "| variant | pair | open | conv | ctl_direct | ctl_on | s1 | s3 |", "|---|---|---|---|---|---|---|---|"]
     for s in summary:
-        md.append(f"| {s['pair']} | {s['open']} | {s['conv']} | {s['ctl_direct']} | {s['ctl_on']} | {s['s1']} | {s['s3']} |")
+        md.append(f"| {s['variant']} | {s['pair']} | {s['open']} | {s['conv']} | {s['ctl_direct']} | {s['ctl_on']} | {s['s1']} | {s['s3']} |")
     (ctx.out / "summary.md").write_text("\n".join(md), encoding="utf-8")
     return 0
 
