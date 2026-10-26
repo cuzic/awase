@@ -17,9 +17,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::OnceLock;
 
 use super::{
-    DetectEvent, DetectParams, EpisodeDetector, EpisodeTracker, HoldCommand, HoldController,
-    JapaneseEvidence, KanaModel, KanaSide, KeyRole, LatinBackground, ObservedKey, PhaseKind,
-    StopReason, ThumbOverlap, TrackerConfig, Trigger, Verdict,
+    model_id_of, production_model_id, DetectEvent, DetectParams, EpisodeDetector, EpisodeTracker,
+    HoldCommand, HoldController, JapaneseEvidence, KanaModel, KanaSide, KeyRole, LatinBackground,
+    ObservedKey, PhaseKind, StopReason, ThumbOverlap, TrackerConfig, Trigger, Verdict,
 };
 use crate::engine::fsm_types::ThumbSide;
 use crate::ngram::NgramModel;
@@ -89,6 +89,36 @@ fn pp(p: P) -> PhysicalPos {
     PhysicalPos::new(p.0, p.1)
 }
 
+/// 合成の n-gram（2 連と 3 連）と、未シフト面（か・た・こ・さ・ん と記号）。
+fn synthetic() -> (NgramModel, YabFace) {
+    let mut csv: String = BIGRAMS
+        .iter()
+        .map(|(a, b, s)| format!("2,{a}{b},{s:?}\n"))
+        .collect();
+    for (a, b, c, s) in TRIGRAMS {
+        csv.push_str(&format!("3,{a}{b}{c},{s:?}\n"));
+    }
+    let ngram = NgramModel::from_csv(&csv, 0, 0, 0).expect("csv");
+    let mut face = YabFace::new();
+    for (p, romaji, kana) in [
+        (KA, "ka", 'か'),
+        (TA, "ta", 'た'),
+        (KO, "ko", 'こ'),
+        (SA, "sa", 'さ'),
+        (NN, "nn", 'ん'),
+    ] {
+        face.insert(
+            pp(p),
+            YabValue::Romaji {
+                romaji: romaji.to_string(),
+                kana: Some(kana),
+            },
+        );
+    }
+    face.insert(pp(SYM), YabValue::Literal("1".to_string()));
+    (ngram, face)
+}
+
 fn kana_model(v: Variant) -> &'static KanaModel {
     static LEGACY: OnceLock<KanaModel> = OnceLock::new();
     static EXTENDED: OnceLock<KanaModel> = OnceLock::new();
@@ -97,31 +127,7 @@ fn kana_model(v: Variant) -> &'static KanaModel {
         Variant::Extended => &EXTENDED,
     };
     cell.get_or_init(|| {
-        let mut csv: String = BIGRAMS
-            .iter()
-            .map(|(a, b, s)| format!("2,{a}{b},{s:?}\n"))
-            .collect();
-        for (a, b, c, s) in TRIGRAMS {
-            csv.push_str(&format!("3,{a}{b}{c},{s:?}\n"));
-        }
-        let ngram = NgramModel::from_csv(&csv, 0, 0, 0).expect("csv");
-        let mut face = YabFace::new();
-        for (p, romaji, kana) in [
-            (KA, "ka", 'か'),
-            (TA, "ta", 'た'),
-            (KO, "ko", 'こ'),
-            (SA, "sa", 'さ'),
-            (NN, "nn", 'ん'),
-        ] {
-            face.insert(
-                pp(p),
-                YabValue::Romaji {
-                    romaji: romaji.to_string(),
-                    kana: Some(kana),
-                },
-            );
-        }
-        face.insert(pp(SYM), YabValue::Literal("1".to_string()));
+        let (ngram, face) = synthetic();
         match v {
             Variant::Legacy => KanaModel::new(&ngram, &face),
             Variant::Extended => KanaModel::with_models(
@@ -1458,7 +1464,16 @@ fn check_detector(
 }
 
 fn enumerate_detector(model: &KanaModel, usable: bool, cfg: DetCfg, len: usize) -> usize {
-    let alphabet = det_alphabet();
+    enumerate_detector_over(&det_alphabet(), model, usable, cfg, len)
+}
+
+fn enumerate_detector_over(
+    alphabet: &[DetectEvent],
+    model: &KanaModel,
+    usable: bool,
+    cfg: DetCfg,
+    len: usize,
+) -> usize {
     let n = alphabet.len();
     let mut idx = vec![0_usize; len];
     let mut count = 0;
@@ -1682,4 +1697,94 @@ fn phase_transition_table_matches_the_reference() {
     .into_iter()
     .collect();
     assert_eq!(obs, expected);
+}
+
+/// 判定器に `keys` を 1 打ずつ（Down→Up）渡したときの llr（閾値に達しても止まらない設定）。
+fn llr_over(m: &KanaModel, keys: &[P]) -> f64 {
+    let mut d = EpisodeDetector::new(
+        DetectParams {
+            ja_threshold: 1e9,
+            en_threshold: 1e9,
+            max_keys: 99,
+        },
+        ThumbOverlap::Enabled,
+        [false; 2],
+    );
+    for &k in keys {
+        d.observe(m, DetectEvent::CharDown(pp(k)));
+        d.observe(m, DetectEvent::CharUp(pp(k)));
+    }
+    d.llr()
+}
+
+/// 仮名のキー(か・た・こ・さ)だけの全列(長さ 6)。3 連の接頭辞(`たこ`→`さ` など、字母に `こ` を含む)を全部踏む。
+#[test]
+fn detector_kana_keys_only_sequences_of_length_6_with_the_extended_model() {
+    let alphabet: Vec<DetectEvent> = [KA, TA, KO, SA]
+        .iter()
+        .flat_map(|&p| [DetectEvent::CharDown(pp(p)), DetectEvent::CharUp(pp(p))])
+        .collect();
+    let n = enumerate_detector_over(
+        &alphabet,
+        kana_model(Variant::Extended),
+        true,
+        det_cfg(Variant::Extended, ThumbOverlap::Enabled, [false; 2]),
+        6,
+    );
+    assert_eq!(n, 8_usize.pow(6));
+}
+
+/// 背景がラテン文字でない（`latin = None`）構成は、一様分布 `ln(1/N_keys)` を背景にする。仮名側が 2 連なら従来の
+/// `KanaModel::new` と同じ増分、3 連の補間なら 3 連の文脈が無い最初の 2 打までは 2 連と同じ。
+#[test]
+fn models_without_a_latin_background_use_the_uniform_background() {
+    let (ngram, face) = synthetic();
+    let legacy = kana_model(Variant::Legacy);
+    let bi = KanaModel::with_models(&ngram, &face, KanaSide::Bigram, None);
+    let tri = KanaModel::with_models(&ngram, &face, KanaSide::TrigramInterp, None);
+    let reference = ref_kana(Variant::Legacy);
+    // 1 打目: ln P_ja(か) + ln(N_keys)。符号の取り違え（背景を足す/引く）を検出する。
+    let first = reference.step(RefCtx::default(), KA).0;
+    assert!((llr_over(&bi, &[KA]) - first).abs() < 1e-9);
+    assert!((llr_over(&tri, &[KA]) - first).abs() < 1e-9);
+    for keys in [&[KA, TA][..], &[KA, TA, KO], &[TA, KO, SA]] {
+        assert!(
+            (llr_over(&bi, keys) - llr_over(legacy, keys)).abs() < 1e-9,
+            "{keys:?}"
+        );
+    }
+    assert!((llr_over(&tri, &[KA, TA]) - llr_over(&bi, &[KA, TA])).abs() < 1e-9);
+    // 3 連の文脈がある 3 打目から、補間で値が変わる。
+    assert!((llr_over(&tri, &[TA, KO, SA]) - llr_over(&bi, &[TA, KO, SA])).abs() > 1e-4);
+}
+
+/// ログに出るモデルの識別子（観測の契約）。
+#[test]
+fn model_ids_are_stable() {
+    assert_eq!(kana_model(Variant::Legacy).model_id(), "bi+uniform");
+    assert_eq!(
+        kana_model(Variant::Extended).model_id(),
+        "tri-interp+latin-bigram-v1"
+    );
+    let (ngram, face) = synthetic();
+    let bi_latin = KanaModel::with_models(
+        &ngram,
+        &face,
+        KanaSide::Bigram,
+        Some(LatinBackground::embedded()),
+    );
+    assert_eq!(bi_latin.model_id(), "bi+latin-bigram-v1");
+    let tri_uniform = KanaModel::with_models(&ngram, &face, KanaSide::TrigramInterp, None);
+    assert_eq!(tri_uniform.model_id(), "tri-interp+uniform");
+    assert_eq!(model_id_of(KanaSide::Bigram, None), "bi+uniform");
+    assert_eq!(
+        model_id_of(KanaSide::TrigramInterp, Some("x")),
+        "tri-interp+x"
+    );
+    assert_eq!(production_model_id(), "tri-interp+latin-bigram-v1");
+    assert_eq!(LatinBackground::embedded_id(), "latin-bigram-v1");
+    assert_eq!(
+        LatinBackground::embedded().id(),
+        LatinBackground::embedded_id()
+    );
 }
