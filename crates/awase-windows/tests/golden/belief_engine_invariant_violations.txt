@@ -799,6 +799,47 @@
     [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu
     [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu
 
+## msime per-thread I1(Z+U2) 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 2 本（T=0）、うち 2000ms 事象なしで残る: 2 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 2 本（うち嘘の観測を含まない: 2 本、awase の操作・窓切替・正しい観測だけ: 2 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  z-belief-on-but-engine-off
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  awase の操作・窓切替・正しい観測だけ
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  explorer(std)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  key:eisu(F0)
+  最小列の例（分類ごと、最大 2 本）:
+    [z-belief-on-but-engine-off] 最小列 2 本
+      3 手 key:eisu > key:eisu > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:hiragana > key:eisu > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu > key:eisu
+
+## msime per-thread I2(Z+U2) 核の字母（字母 12 種・長さ 3 まで・検査した列 1090）
+  初めて違反する列: 26 本（T=0）、うち 2000ms 事象なしで残る: 26 本（T=2000）、読める窓で poll が 1 回届いても残る: 6 本
+  事象を 1 つ削ると違反しない最小の列: 2 本（うち嘘の観測を含まない: 2 本、awase の操作・窓切替・正しい観測だけ: 2 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /      6  truth-alnum-but-engine-on/z-explicit
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /      6  awase の操作・窓切替・正しい観測だけ
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      2  chrome(imm32-unavailable)
+        20 /     20 /      0  explorer(std)
+         2 /      2 /      2  wezterm(tsf-native)
+         2 /      2 /      2  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /      6  key:eisu(F0)
+  最小列の例（分類ごと、最大 2 本）:
+    [truth-alnum-but-engine-on/z-explicit] 最小列 2 本
+      2 手 key:eisu > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+      2 手 key:hiragana > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu
+
 ## msime per-thread I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
   変わった列: 1 本
          1  +11000ms: derive-medium(true) → most-recent-trusted(false)(例: focus:xaml > obs:conv-infer-open(lie-if-closed))
@@ -949,6 +990,26 @@
     [awase の操作・窓切替・正しい観測だけ] focus:chrome
     [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu > focus:wezterm
     [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu > focus:wezterm
+
+## msime-native mixed(tsf-native=inherit-open) I1(Z+U2) 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime-native mixed(tsf-native=inherit-open) I2(Z+U2) 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
 
 ## msime-native mixed(tsf-native=inherit-open) I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
   変わった列: 1 本
@@ -1103,6 +1164,47 @@
     [awase の操作・窓切替・正しい観測だけ] focus:xaml
     [awase の操作・窓切替・正しい観測だけ] focus:wezterm
     [awase の操作・窓切替・正しい観測だけ] focus:chrome
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu
+
+## msime mixed(tsf-native=independent) I1(Z+U2) 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 2 本（T=0）、うち 2000ms 事象なしで残る: 2 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 2 本（うち嘘の観測を含まない: 2 本、awase の操作・窓切替・正しい観測だけ: 2 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  z-belief-on-but-engine-off
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  awase の操作・窓切替・正しい観測だけ
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  explorer(std)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  key:eisu(F0)
+  最小列の例（分類ごと、最大 2 本）:
+    [z-belief-on-but-engine-off] 最小列 2 本
+      3 手 key:eisu > key:eisu > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:hiragana > key:eisu > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu > key:eisu
+
+## msime mixed(tsf-native=independent) I2(Z+U2) 核の字母（字母 12 種・長さ 3 まで・検査した列 1090）
+  初めて違反する列: 26 本（T=0）、うち 2000ms 事象なしで残る: 26 本（T=2000）、読める窓で poll が 1 回届いても残る: 6 本
+  事象を 1 つ削ると違反しない最小の列: 2 本（うち嘘の観測を含まない: 2 本、awase の操作・窓切替・正しい観測だけ: 2 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /      6  truth-alnum-but-engine-on/z-explicit
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /      6  awase の操作・窓切替・正しい観測だけ
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      2  chrome(imm32-unavailable)
+        20 /     20 /      0  explorer(std)
+         2 /      2 /      2  wezterm(tsf-native)
+         2 /      2 /      2  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /      6  key:eisu(F0)
+  最小列の例（分類ごと、最大 2 本）:
+    [truth-alnum-but-engine-on/z-explicit] 最小列 2 本
+      2 手 key:eisu > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+      2 手 key:hiragana > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
     [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu
     [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu
 
@@ -1264,6 +1366,47 @@
     [awase の操作・窓切替・正しい観測だけ] focus:xaml
     [awase の操作・窓切替・正しい観測だけ] focus:wezterm
     [awase の操作・窓切替・正しい観測だけ] focus:chrome
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu
+
+## msime mixed(tsf-native=inherit-open) I1(Z+U2) 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 2 本（T=0）、うち 2000ms 事象なしで残る: 2 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 2 本（うち嘘の観測を含まない: 2 本、awase の操作・窓切替・正しい観測だけ: 2 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  z-belief-on-but-engine-off
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  awase の操作・窓切替・正しい観測だけ
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  explorer(std)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      0  key:eisu(F0)
+  最小列の例（分類ごと、最大 2 本）:
+    [z-belief-on-but-engine-off] 最小列 2 本
+      3 手 key:eisu > key:eisu > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:hiragana > key:eisu > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu > key:eisu
+    [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu > key:eisu
+
+## msime mixed(tsf-native=inherit-open) I2(Z+U2) 核の字母（字母 12 種・長さ 3 まで・検査した列 1090）
+  初めて違反する列: 26 本（T=0）、うち 2000ms 事象なしで残る: 26 本（T=2000）、読める窓で poll が 1 回届いても残る: 6 本
+  事象を 1 つ削ると違反しない最小の列: 2 本（うち嘘の観測を含まない: 2 本、awase の操作・窓切替・正しい観測だけ: 2 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /      6  truth-alnum-but-engine-on/z-explicit
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /      6  awase の操作・窓切替・正しい観測だけ
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+         2 /      2 /      2  chrome(imm32-unavailable)
+        20 /     20 /      0  explorer(std)
+         2 /      2 /      2  wezterm(tsf-native)
+         2 /      2 /      2  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        26 /     26 /      6  key:eisu(F0)
+  最小列の例（分類ごと、最大 2 本）:
+    [truth-alnum-but-engine-on/z-explicit] 最小列 2 本
+      2 手 key:eisu > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+      2 手 key:hiragana > key:eisu（窓=explorer(std)、性質=awase の操作・窓切替・正しい観測だけ、事象なしで残る=true、poll が届いても残る=false）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
     [awase の操作・窓切替・正しい観測だけ] key:eisu > key:eisu
     [awase の操作・窓切替・正しい観測だけ] key:hiragana > key:eisu
 
