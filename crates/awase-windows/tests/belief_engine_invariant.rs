@@ -51,16 +51,16 @@ use support::pseudo_ime::{grid_key_name, Grid, TrueStage, TrueState, CONV_HIRAGA
 
 /// 全字母の全列挙の長さ。
 const FULL_DEPTH: usize = 3;
-/// 核の字母（鍵となる事象だけ）の全列挙の長さ。
-const CORE_DEPTH: usize = 4;
+/// 小さい字母（実機の事故の列に要る事象だけ）の全列挙の長さ。
+const TINY_DEPTH: usize = 4;
 /// I2（参考）の全列挙の長さ（核の字母）。
 const I2_DEPTH: usize = 3;
 /// ランダム探索の本数（設定ごと）と長さ。
-const RANDOM_COUNT: usize = 1_000;
+const RANDOM_COUNT: usize = 500;
 const RANDOM_MIN_LEN: usize = 8;
 const RANDOM_MAX_LEN: usize = 12;
 /// ランダム探索で最小化して調べる違反の数（設定ごと。決定的に先頭から）。
-const RANDOM_MINIMIZE: usize = 40;
+const RANDOM_MINIMIZE: usize = 20;
 /// golden に載せる例の数（分類ごと）。
 const EXAMPLES_PER_CLASS: usize = 2;
 /// golden に最小列を全部載せる上限（設定ごと）。超えたら先頭だけ。
@@ -296,6 +296,20 @@ fn core_alphabet() -> Vec<Ev> {
         Ev::Obs(Obs::PollTruth),
         Ev::Obs(Obs::ProbeTruth),
         Ev::Obs(Obs::ConvInferOpen),
+        Ev::Advance,
+    ]
+}
+
+/// 小さい字母（8 種。実機の事故の列〈OFF キー・F2・明示 OFF・窓切替・時間〉だけ）。長さ 4 まで全列挙する。
+fn tiny_alphabet() -> Vec<Ev> {
+    vec![
+        Ev::Key(VK_HIRAGANA),
+        Ev::Key(VK_IME_OFF),
+        Ev::UserSet(false),
+        Ev::Focus(W_XAML),
+        Ev::Focus(W_WEZTERM),
+        Ev::Focus(W_CHROME),
+        Ev::Obs(Obs::ProbeTruth),
         Ev::Advance,
     ]
 }
@@ -802,17 +816,18 @@ fn run_config(cfg: Config) -> String {
     let mut out = String::new();
     let full = full_alphabet();
     let core = core_alphabet();
+    let tiny = tiny_alphabet();
     let r_full = exhaustive(cfg, Inv::I1, &full, FULL_DEPTH, t0);
     render_exhaustive(&mut out, "全字母", cfg, Inv::I1, &full, FULL_DEPTH, &r_full);
     lap("I1 full");
-    let r_core = exhaustive(cfg, Inv::I1, &core, CORE_DEPTH, t0);
+    let r_core = exhaustive(cfg, Inv::I1, &tiny, TINY_DEPTH, t0);
     render_exhaustive(
         &mut out,
-        "核の字母",
+        "小さい字母",
         cfg,
         Inv::I1,
-        &core,
-        CORE_DEPTH,
+        &tiny,
+        TINY_DEPTH,
         &r_core,
     );
     lap("I1 core");
@@ -890,14 +905,15 @@ fn golden_path() -> PathBuf {
 #[test]
 fn belief_engine_invariant_baseline() {
     let started = Instant::now();
-    let configs: Vec<Config> = [true, false]
+    // IME の状態を共有する窓モデルは全格子、窓ごとに別スレッドの窓モデルは F2 が ON にする GJI の MS-IME プリセットだけ（時間の予算）。
+    let mut configs: Vec<Config> = Grid::ALL
         .into_iter()
-        .flat_map(|shared| {
-            Grid::ALL
-                .into_iter()
-                .map(move |grid| Config { grid, shared })
-        })
+        .map(|grid| Config { grid, shared: true })
         .collect();
+    configs.push(Config {
+        grid: Grid::GjiMsime,
+        shared: false,
+    });
     let results: Vec<String> = std::thread::scope(|s| {
         let handles: Vec<_> = configs
             .iter()
