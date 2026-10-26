@@ -589,6 +589,7 @@ const CORE_MODULES: &[&str] = &[
     "press_ledger",
     "raw_recovery_plan",
     "relay_plan",
+    "scope_belief",
     "scoped_latch",
     "snapshot_input_mode",
     "state_dependent_key_warning",

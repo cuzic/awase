@@ -383,6 +383,9 @@ fn apply(h: &mut Harness, wins: &[Window; 5], ev: Ev) -> bool {
 enum Inv {
     I1,
     I2,
+    /// ADR-282 V0: 同じ不変条件を候補 Z(`ScopeBelief`)の Engine の活性で見たもの。
+    I1Z,
+    I2Z,
 }
 
 impl Inv {
@@ -390,6 +393,8 @@ impl Inv {
         match self {
             Self::I1 => "I1",
             Self::I2 => "I2",
+            Self::I1Z => "I1(Z)",
+            Self::I2Z => "I2(Z)",
         }
     }
 }
@@ -428,6 +433,21 @@ fn violation(inv: Inv, s: &StepRecord) -> Option<String> {
             let kind = truth_is_off_or_alnum(s.truth)?;
             s.engine_active
                 .then(|| format!("truth-{kind}-but-engine-on/{}", s.basis))
+        }
+        Inv::I1Z => {
+            let active = s.z_engine_active?;
+            (truth_is_hiragana_on(s.truth) && !active).then(|| {
+                if s.z_open == Some(true) {
+                    "z-belief-on-but-engine-off".to_string()
+                } else {
+                    format!("z-belief-off/{}", s.z_basis.unwrap_or("?"))
+                }
+            })
+        }
+        Inv::I2Z => {
+            let kind = truth_is_off_or_alnum(s.truth)?;
+            let active = s.z_engine_active?;
+            active.then(|| format!("truth-{kind}-but-engine-on/{}", s.z_basis.unwrap_or("?")))
         }
     }
 }
@@ -493,6 +513,8 @@ impl Config {
         if self.tsf_inherit == Some(true) {
             h.inherit_open_on_entry(wins[W_WEZTERM].thread);
         }
+        // ADR-282 V0: 候補 Z を並走させる(本物の belief・Engine には効かせない。違反は I1(Z)・I2(Z) で別に数える)。
+        h.with_scope_belief();
         // 起動直後の belief は placeholder（`desired_open=true`）で、真（閉）と食い違っている（BUG-163 の領分。起動の事象は
         // ここでは測らない）。最初の観測で揃えた「動いている awase」の状態から列を始める。
         h.observe(Source::ImmCross);
@@ -645,11 +667,24 @@ fn i6_sweep(
                     check_budget(cfg, started, "i6 sweep", checked);
                 }
                 let mut elapsed = 0;
+                let mut z_changed = false;
                 for ms in I6_ADVANCES_MS {
                     let before = h.steps.last().expect("step").clone();
                     h.advance_ms(ms);
                     elapsed += ms;
                     let after = h.steps.last().expect("step").clone();
+                    if !z_changed && before.z_open != after.z_open {
+                        z_changed = true;
+                        let key = format!(
+                            "(Z) +{elapsed}ms: {}({:?}) → {}({:?})",
+                            before.z_basis.unwrap_or("?"),
+                            before.z_open,
+                            after.z_basis.unwrap_or("?"),
+                            after.z_open
+                        );
+                        let entry = by_change.entry(key).or_insert_with(|| (0, seq_name(&cand)));
+                        entry.0 += 1;
+                    }
                     if before.effective_open != after.effective_open {
                         let key = format!(
                             "+{elapsed}ms: {}({}) → {}({})",
@@ -1000,6 +1035,20 @@ fn run_config(cfg: Config) -> String {
     render_exhaustive(&mut out, "核の字母", cfg, Inv::I2, &core, I2_DEPTH, &r);
 
     lap("I2 core");
+    // ADR-282 V0: 候補 Z の I1・I2(同じ字母・同じ長さ。旧と並べて比べる)。
+    let rz = exhaustive(cfg, Inv::I1Z, main_alphabet, FULL_DEPTH, t0);
+    render_exhaustive(
+        &mut out,
+        main_label,
+        cfg,
+        Inv::I1Z,
+        main_alphabet,
+        FULL_DEPTH,
+        &rz,
+    );
+    let rz2 = exhaustive(cfg, Inv::I2Z, &core, I2_DEPTH, t0);
+    render_exhaustive(&mut out, "核の字母", cfg, Inv::I2Z, &core, I2_DEPTH, &rz2);
+    lap("Z");
     // ADR-282 I6: 時間の経過だけで belief が変わる列(核の字母・長さ 2。O3 を S′ にも課す所有者の決定の基準の測定)。
     let (i6_checked, i6) = i6_sweep(cfg, &core, I6_DEPTH, t0);
     let total: usize = i6.values().map(|(n, _)| n).sum();
@@ -1045,10 +1094,15 @@ fn run_config(cfg: Config) -> String {
             None => "(この窓モデルでは再生できない)".to_string(),
             Some((h, _)) => {
                 let steps: Vec<_> = h.steps.iter().skip(SETTLE_STEPS).cloned().collect();
-                match steps.iter().find_map(|s| violation(Inv::I1, s)) {
+                let old = match steps.iter().find_map(|s| violation(Inv::I1, s)) {
                     Some(class) => format!("I1 違反 [{class}]"),
                     None => "違反なし".to_string(),
-                }
+                };
+                let z = match steps.iter().find_map(|s| violation(Inv::I1Z, s)) {
+                    Some(class) => format!("I1 違反 [{class}]"),
+                    None => "違反なし".to_string(),
+                };
+                format!("旧: {old} / Z: {z}")
             }
         };
         let _ = writeln!(out, "  {name}: {} → {verdict}", seq_name(&seq));
