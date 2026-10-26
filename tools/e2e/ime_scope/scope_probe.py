@@ -85,6 +85,9 @@ class Ctx:
         (self.out / "logs").mkdir(parents=True, exist_ok=True)
         (self.out / "work").mkdir(parents=True, exist_ok=True)
         self.ime = a.ime
+        self.wt_settle = a.wt_settle
+        self.on_wait = a.on_wait
+        self.on_times = a.on_times
         self.layout = str(Path(a.layout).resolve()).replace("\\", "/")
         self.n = 0
         self.results = []
@@ -140,8 +143,8 @@ class ProcA:
         if not hwnd or not W.wait_ready(echo):
             return self
         W.foreground(hwnd)
-        time.sleep(1.5)
-        set_state_wt(W, c.ime, self.state)
+        time.sleep(c.wt_settle)
+        set_state_wt(W, c.ime, self.state, c.on_wait, c.on_times)
         self.self_text = type_ka_wt(W, echo)
         self.ok = True
         return self
@@ -164,7 +167,7 @@ class ProcA:
                 self.proc.kill()
 
 
-def set_state_wt(W, ime, state):
+def set_state_wt(W, ime, state, on_wait=1.5, on_times=1):
     on = IME_ON_VK[ime]
     if state == "off":
         W.press(0x1A, hold_ms=50, scan=0x70)
@@ -172,8 +175,9 @@ def set_state_wt(W, ime, state):
         return
     W.press(0x1A, hold_ms=50, scan=0x70)
     time.sleep(0.6)
-    W.press(on, hold_ms=50, scan=0x70)
-    time.sleep(1.5)
+    for _ in range(on_times):
+        W.press(on, hold_ms=50, scan=0x70)
+        time.sleep(on_wait)
     if state == "eisu":
         W.press(0xF0, hold_ms=50, scan=0x3A)
         time.sleep(0.8)
@@ -200,10 +204,11 @@ def run_b(ctx, kind, act):
         if not hwnd or not W.wait_ready(echo):
             return {"ok": False, "why": f"wt 起動失敗 {info}"}
         W.foreground(hwnd)
-        time.sleep(1.5)
+        time.sleep(ctx.wt_settle)
         if act == "ime-on":
-            W.press(IME_ON_VK[ctx.ime], hold_ms=50, scan=0x70)
-            time.sleep(0.8)
+            for _ in range(ctx.on_times):
+                W.press(IME_ON_VK[ctx.ime], hold_ms=50, scan=0x70)
+                time.sleep(ctx.on_wait)
         text = type_ka_wt(W, echo)
         W.close(hwnd)
         return {"ok": True, "text": text}
@@ -303,6 +308,10 @@ def main():
     ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--layout", default="layout/nicola_keytop.yab")
     ap.add_argument("--deadline-min", type=float, default=50)
+    ap.add_argument("--wt-rounds", type=int, default=0, help="WT を含むセルだけ、この回数まで繰り返す(0 なら --rounds)")
+    ap.add_argument("--wt-settle", type=float, default=1.5, help="WT を前面化してからキーを送るまでの待ち(秒)")
+    ap.add_argument("--on-wait", type=float, default=0.8, help="WT で ON キーを押したあとの待ち(秒)")
+    ap.add_argument("--on-times", type=int, default=1, help="WT で ON キーを押す回数")
     a = ap.parse_args()
     ctx = Ctx(a)
     pairs = [tuple(p.split(">")) for p in a.pairs.split(",") if p]
@@ -314,14 +323,15 @@ def main():
     for _, b in pairs:
         if b not in b_kinds:
             b_kinds.append(b)
-    for rnd in range(a.rounds):
+    for rnd in range(max(a.rounds, a.wt_rounds)):
         for b in b_kinds:
             for cell in ("ctl_direct", "ctl_on"):
-                if time.time() < t_end:
+                if time.time() < t_end and (rnd < a.rounds or (b == "wt" and rnd < a.wt_rounds)):
                     run_cell(ctx, "edit", b, cell, rnd)
         for a_kind, b_kind in pairs:
+            is_wt = "wt" in (a_kind, b_kind)
             for cell in ("s1", "s3"):
-                if time.time() < t_end:
+                if time.time() < t_end and (rnd < a.rounds or (is_wt and rnd < a.wt_rounds)):
                     run_cell(ctx, a_kind, b_kind, cell, rnd)
     summary = summarize(ctx, pairs)
     for s in summary:
