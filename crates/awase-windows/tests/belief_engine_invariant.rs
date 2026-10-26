@@ -386,6 +386,9 @@ enum Inv {
     /// ADR-282 V0: 同じ不変条件を候補 Z(`ScopeBelief`)の Engine の活性で見たもの。
     I1Z,
     I2Z,
+    /// ADR-282 V0: 候補 Z に U2 の案(新しいスレッドは閉の実測の事前)を足した変種。
+    I1Zp,
+    I2Zp,
 }
 
 impl Inv {
@@ -395,6 +398,8 @@ impl Inv {
             Self::I2 => "I2",
             Self::I1Z => "I1(Z)",
             Self::I2Z => "I2(Z)",
+            Self::I1Zp => "I1(Z+U2)",
+            Self::I2Zp => "I2(Z+U2)",
         }
     }
 }
@@ -443,6 +448,21 @@ fn violation(inv: Inv, s: &StepRecord) -> Option<String> {
                     format!("z-belief-off/{}", s.z_basis.unwrap_or("?"))
                 }
             })
+        }
+        Inv::I1Zp => {
+            let active = s.zp_engine_active?;
+            (truth_is_hiragana_on(s.truth) && !active).then(|| {
+                if s.zp_open == Some(true) {
+                    "z-belief-on-but-engine-off".to_string()
+                } else {
+                    format!("z-belief-off/{}", s.zp_basis.unwrap_or("?"))
+                }
+            })
+        }
+        Inv::I2Zp => {
+            let kind = truth_is_off_or_alnum(s.truth)?;
+            let active = s.zp_engine_active?;
+            active.then(|| format!("truth-{kind}-but-engine-on/{}", s.zp_basis.unwrap_or("?")))
         }
         Inv::I2Z => {
             let kind = truth_is_off_or_alnum(s.truth)?;
@@ -1049,6 +1069,23 @@ fn run_config(cfg: Config) -> String {
     let rz2 = exhaustive(cfg, Inv::I2Z, &core, I2_DEPTH, t0);
     render_exhaustive(&mut out, "核の字母", cfg, Inv::I2Z, &core, I2_DEPTH, &rz2);
     lap("Z");
+    // ADR-282 V0: U2 の案(新しいスレッドは閉)を足した Z。窓をまたいで同じスレッドの shared では Z と同じなので、窓ごとに
+    // 別スレッドの設定(per-thread・混ぜた窓モデル)だけ回す。
+    if !cfg.shared {
+        let rp = exhaustive(cfg, Inv::I1Zp, main_alphabet, FULL_DEPTH, t0);
+        render_exhaustive(
+            &mut out,
+            main_label,
+            cfg,
+            Inv::I1Zp,
+            main_alphabet,
+            FULL_DEPTH,
+            &rp,
+        );
+        let rp2 = exhaustive(cfg, Inv::I2Zp, &core, I2_DEPTH, t0);
+        render_exhaustive(&mut out, "核の字母", cfg, Inv::I2Zp, &core, I2_DEPTH, &rp2);
+        lap("Z+U2");
+    }
     // ADR-282 I6: 時間の経過だけで belief が変わる列(核の字母・長さ 2。O3 を S′ にも課す所有者の決定の基準の測定)。
     let (i6_checked, i6) = i6_sweep(cfg, &core, I6_DEPTH, t0);
     let total: usize = i6.values().map(|(n, _)| n).sum();

@@ -37,6 +37,8 @@ pub enum Basis {
     Observed(ObservationSource, ObservationConfidence),
     /// 入場時に直前のスコープの開を引き継いだ(O5)。
     Inherited,
+    /// 実測の事前(新しいスレッドは閉で始まる、ADR-282 U2 の案)。主張なしと同じく、観測 1 つで覆る。
+    MeasuredPrior,
 }
 
 impl Basis {
@@ -49,6 +51,7 @@ impl Basis {
             Self::Observed(_, ObservationConfidence::Medium) => "z-observed-medium",
             Self::Observed(_, ObservationConfidence::Low) => "z-observed-low",
             Self::Inherited => "z-inherited",
+            Self::MeasuredPrior => "z-measured-prior",
         }
     }
 }
@@ -76,6 +79,9 @@ pub struct WindowFacts {
     pub imm_trusted: bool,
     /// 入場時に直前のスコープの開を引き継ぐ窓の種類か(O5)。
     pub inherit_open_on_entry: bool,
+    /// このスコープに初めて入場し、awase の起動後に作られたスレッドと分かっているか(実測の事前「新しいスレッドは閉で始まる」の
+    /// 条件。ADR-282 U2。`ScopeBelief::with_new_thread_prior` のときだけ使う)。
+    pub new_thread: bool,
 }
 
 /// Z に流す事象。
@@ -119,6 +125,7 @@ pub struct ScopeBelief {
     rows: Vec<(ScopeKey, ScopeRow)>,
     focused: Option<(ScopeKey, WindowFacts)>,
     settle_ms: u64,
+    new_thread_prior: bool,
 }
 
 impl ScopeBelief {
@@ -129,6 +136,19 @@ impl ScopeBelief {
             rows: Vec::new(),
             focused: None,
             settle_ms,
+            new_thread_prior: false,
+        }
+    }
+
+    /// ADR-282 U2 の案: 新しいスレッドの窓(`WindowFacts::new_thread`)に初めて入場したとき、主張なしなら閉の実測の事前を置く。
+    /// U2 は所有者の判断待ちで、V0 の比較のための変種。
+    #[must_use]
+    pub const fn with_new_thread_prior(settle_ms: u64) -> Self {
+        Self {
+            rows: Vec::new(),
+            focused: None,
+            settle_ms,
+            new_thread_prior: true,
         }
     }
 
@@ -155,7 +175,7 @@ impl ScopeBelief {
             ScopeEvent::Focus {
                 scope,
                 facts,
-                at_ms: _,
+                at_ms,
             } => {
                 let prev = self.focused.map(|(k, _)| k);
                 self.focused = Some((scope, facts));
@@ -173,6 +193,17 @@ impl ScopeBelief {
                                 });
                             }
                         }
+                    }
+                }
+                if self.new_thread_prior && facts.new_thread {
+                    let row = self.row_mut(scope);
+                    if row.open.is_none() {
+                        row.open = Some(Claim {
+                            value: false,
+                            basis: Basis::MeasuredPrior,
+                            at_ms,
+                            fence_ms: at_ms,
+                        });
                     }
                 }
             }
@@ -272,14 +303,14 @@ fn accepts<T>(
         return true;
     };
     match confidence {
-        // Low は主張なし・既定だけを覆す(既定は主張なしで表す)。明示操作・観測の主張は覆さない。
-        ObservationConfidence::Low => false,
+        // Low は主張なし・既定・実測の事前だけを覆す(既定は主張なしで表す)。明示操作・観測の主張は覆さない。
+        ObservationConfidence::Low => c.basis == Basis::MeasuredPrior,
         ObservationConfidence::Medium | ObservationConfidence::High => {
             if read_started_ms < c.fence_ms {
                 return false;
             }
             match c.basis {
-                Basis::Explicit | Basis::Inherited => true,
+                Basis::Explicit | Basis::Inherited | Basis::MeasuredPrior => true,
                 // 新しいほうが勝つ。同時刻なら信頼度の高いほう(古い High は新しい Medium に勝たない、ADR-233 A')。
                 Basis::Observed(_, cur) => {
                     read_started_ms > c.at_ms || (read_started_ms == c.at_ms && confidence >= cur)
@@ -296,10 +327,12 @@ mod tests {
     const READABLE: WindowFacts = WindowFacts {
         imm_trusted: true,
         inherit_open_on_entry: false,
+        new_thread: false,
     };
     const UNREADABLE: WindowFacts = WindowFacts {
         imm_trusted: false,
         inherit_open_on_entry: false,
+        new_thread: false,
     };
 
     fn focus(z: &mut ScopeBelief, scope: ScopeKey, facts: WindowFacts, at_ms: u64) {
@@ -365,6 +398,7 @@ mod tests {
         let wt = WindowFacts {
             imm_trusted: false,
             inherit_open_on_entry: true,
+            new_thread: false,
         };
         let mut z = ScopeBelief::new(170);
         focus(&mut z, 3, wt, 0);
@@ -408,5 +442,47 @@ mod tests {
             read_started_ms: 300,
         });
         assert!(z.view().open, "Low は観測の主張を覆さない");
+    }
+
+    /// U2 の案: 新しいスレッドに初めて入場したら閉の実測の事前を置く。観測 1 つ(Low でも)で覆り、明示操作でも覆る。
+    /// 開を引き継ぐ窓では、引き継いだ開が先に入る(O5 の CI 実測は新しいプロセスの WT で開を引き継いだ)。
+    #[test]
+    fn new_thread_prior_is_closed_and_yields_to_any_evidence() {
+        let fresh = WindowFacts {
+            new_thread: true,
+            ..UNREADABLE
+        };
+        let mut z = ScopeBelief::with_new_thread_prior(170);
+        focus(&mut z, 1, READABLE, 0);
+        focus(&mut z, 2, fresh, 10);
+        assert!(!z.view().open);
+        assert_eq!(z.view().basis, "z-measured-prior");
+        explicit(&mut z, true, 20);
+        assert!(z.view().open);
+        let fresh_readable = WindowFacts {
+            new_thread: true,
+            ..READABLE
+        };
+        focus(&mut z, 3, fresh_readable, 30);
+        z.evolve(ScopeEvent::Observed {
+            open: Some(true),
+            mode: None,
+            source: ObservationSource::FocusProbe,
+            confidence: ObservationConfidence::Low,
+            imm_family: true,
+            read_started_ms: 40,
+        });
+        assert!(z.view().open, "Low の観測でも実測の事前は覆る");
+        let fresh_wt = WindowFacts {
+            new_thread: true,
+            inherit_open_on_entry: true,
+            ..UNREADABLE
+        };
+        focus(&mut z, 4, fresh_wt, 50);
+        assert!(
+            z.view().open,
+            "直前のスコープの開を引き継ぐ窓では、引き継ぎが先"
+        );
+        assert_eq!(z.view().basis, "z-inherited");
     }
 }
