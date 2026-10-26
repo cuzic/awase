@@ -1839,10 +1839,9 @@ impl Runtime {
             has_shadow_action: event.ime_relevance.shadow_action.is_some(),
             has_sync_direction: event.ime_relevance.sync_direction.is_some(),
             // ADR-281: GJI/Mozc 系は 0xF0〜0xF4 の修飾を捨てる（`kp_predict_key_effect` が GJI の表を選ぶ条件と同じ）。
-            ime_drops_mode_key_modifiers: matches!(
-                crate::tsf::observer::tsf_obs().active_ime_kind(),
-                crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-            ),
+            ime_drops_mode_key_modifiers: crate::tsf::observer::tsf_obs()
+                .active_ime_kind()
+                .drops_mode_key_modifiers(),
         };
         let Some(passive_rule_eligible) =
             crate::state::key_effect_predictor::plan_key_effect_track(&facts)
