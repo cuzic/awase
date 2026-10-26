@@ -16,7 +16,7 @@ summary: |-
 status: |-
   起草(2026-10-26)→ Opus レビュー round 1(B2・M9・m9)→ round 2(B1・M6・m7)→ round 3(B1・M4・m6)を反映(2026-10-26)。所有者の決定 2 件(O3・O4 は S にも課す、U14 は「IME ON かつかな」を優先)を反映。未確定。
   構造を「ゼロベース設計の提案」から「小さな修正とゼロベース案の比較(決定は比較の結果と所有者の判断の後)」へ作り直した(round 2 RM3)。
-  依存: PR #857(基準の測定)はマージ済み。PR #868(局所修正 L1〜L3 の測定)は OPEN。保持単位の CI 測定は run 40327981441・再測定 run 40397245969(ブランチ `ci/adr282-ime-scope`。MS-IME × WT の開の共有は 6/6、GJI × WT は未確定)、文書・PR は別担当が準備中。
+  依存: PR #857(基準の測定)はマージ済み。PR #868(局所修正 L1〜L3 の測定)は OPEN。保持単位の CI 測定は run 40327981441・再測定 run 40397245969(ブランチ `ci/adr282-ime-scope`。MS-IME × WT の開の共有は EDIT → WT の向きだけ 6/6、GJI × WT は未確定)、文書は PR #872(OPEN)。
   PR #854(BUG-223)は OPEN。CI 検証バッチ(§6.5)の B1a〜B1c(tsf-native の保持単位)が最優先で未実施。S′ と Z のどちらにするかは、B1a〜B1c の結果(決まらなければ §6.5 の B1a の出口)と V0 の比較の後に決める(L1 は単独では O4・D8 に反して不合格、§3)。Opus レビュー round 4(M3・m5)を反映。
   未決 U1〜U13・U15(U14 は所有者の決定で確定。U11・U15 は今すぐ問える)。BUG-223 の区間 2・3・5 は元のログが失われ型が未検証(§1.1)。実装はまだ(コード・テストは不変)。
 related_adr:
@@ -615,11 +615,13 @@ I1(T=0。括弧は読める窓の poll が 1 回届いた後も残る本数):
 |---|---|---|---|---|
 | GJI・MS-IME | Win32 EDIT → Win32 EDIT、EDIT → Chromium、Chromium → EDIT | 独立 | 独立 | CI 各 2/2(run 40327981441)、実機 GJI 各 2/2(Edge) |
 | MS-IME | Win32 EDIT → WT | **共有(開)** | 独立 | CI 6/6(run 40397245969) |
-| MS-IME | WT → Win32 EDIT | 独立の傾向(対照が取れず判定は inconclusive) | 同 | CI s1=`ka` 6/6 |
+| MS-IME | WT → Win32 EDIT | 独立の傾向(対照が取れず判定は inconclusive) | 同 | CI s1=`ka` 6/6(conv の s3 は か 6/6 で独立) |
 | GJI | Win32 EDIT → WT | **未確定**(対照が不安定) | 未確定 | CI 3/6 |
 | GJI | WT → Win32 EDIT | 独立の傾向(有効 3 ラウンド) | 同 | CI 3/3 |
-| 任意 | Chromium → WT、WT → WezTerm、UWP/XAML、同じプロセスの別スレッド、ほか | 未測定 | 未測定 | — |
+| 任意 | WT → Chromium、Chromium → WT、WT → WT、Chromium → Chromium、WT → WezTerm、UWP/XAML、同じプロセスの別スレッド、ほか | 未測定 | 未測定 | — |
 
+  出典の文書: PR #872(OPEN、`docs/adr282-ime-scope-measurement` `9e4606f36` の `docs/tasks/adr282-ime-state-scope-measurement-2026-10-26.md`)。環境は windows-latest = Windows Server 2025 Datacenter(build 26100)、`SPI_GETTHREADLOCALINPUTSETTINGS = 0`、B は毎回新しいプロセス、操作はキー(SendInput)だけ。
+  同文書の読み: **変換モード(半角英数)は測れた全構成で引き継がない**。MS-IME × WT は向きで非対称(EDIT → WT の開だけ共有、原因は未解明)。GJI × WT は回ごとに結果が偶数/奇数で入れ替わり(直前のセルの持ち越しか WT 内での ON キーの受け方かは切り分けられていない)、共有とも独立とも言えない。
   L4・L5a・Z の初期値はこの表の**測った向きだけ**に従う。共有と測れた組でも測った向き(MS-IME の EDIT → WT)以外には共有を当てはめない。未確定・未測定の組は §6.1 のとおり両方の値で合格を要件にし、既定は U15。
 - **Z が要るのは、L4・L5a の組み合わせでも消えない型が残り、Z がそれを消すと示せたときだけ**。今は示せていない(§4.0)。
 
@@ -692,3 +694,5 @@ U2・U10 は「判断を V0 の後にすることの了承」に絞った(§12)�
 | m3 | 反映: B0 は V0 にも測定にも依存しないので、V0 より前に別の PR で入れる(§6.4・§6.5) |
 | m4 | 反映: S′ の規模の見当を §3 に書いた(Z より小さいが、L1〜L3 より 1〜2 桁大きい) |
 | m5 | 反映: status の条件を「S′ と Z のどちらにするか」に直し、「B1a〜B1c(または出口)と V0 の後」に絞った |
+
+追記(2026-10-26): 保持単位の測定の文書 PR #872 を §14.2 の向きつきの表に取り込んだ(出典・環境〈Windows Server 2025 build 26100〉・「変換モードは測れた全構成で引き継がない」・未測定の向き〈WT → Chromium・Chromium → WT・WT → WT〉・GJI × WT の回ごとの入れ替わり)。
