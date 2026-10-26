@@ -231,4 +231,4 @@
 | [BUG-218](BUG-218.md) | 修正を PR にした(2026-10-25)。実機は未確認 | Windows Terminal で Ctrl+無変換(IME OFF)の直後に、フォーカス検出の遅れで古いキャッシュの ON が復元され、エンジンだけが ON になる(「zoom」が「zotumo」)|
 | [BUG-219](BUG-219.md) | 未修正(2026-10-25)。原因の一部は確定、再現は未了 | Mozc Readable + Chrome で、打鍵中に belief が一瞬 IME OFF に倒れ、その間の打鍵が変換されず素通りする(「かんけいできますか？」が「かんけいできますw１」に) |
 | [BUG-220](BUG-220.md) | 修正を PR にした(2026-10-25)。実機は未確認 | ime_on_eisu が、半角英数の戻り待ちのある窓へ戻った直後に入りを見送り、「function」がかなになる |
-| [BUG-221](BUG-221.md) | 未修正(2026-10-26)。再現テストあり(赤) | Ctrl を押したままひらがなキー(F2)を押すと、実 IME は ON なのに awase の belief は OFF のまま残り、直後の「た」が素の E になる(Windows Terminal×GJI) |
+| [BUG-221](BUG-221.md) | 修正済み・実機確認済み(2026-10-26、#849) | Ctrl を押したままひらがなキー(F2)を押すと、実 IME は ON なのに awase の belief は OFF のまま残り、直後の「た」が素の E になる(Windows Terminal×GJI) |
