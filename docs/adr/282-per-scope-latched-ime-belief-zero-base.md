@@ -183,6 +183,8 @@ related_adr:
 | 同 | 同 | MS-IME 本体 | wt>edit | inconclusive(対照が取れず ctl=none) | inconclusive | s1=`ka` 6/6・s3=`hira` 6/6(傾向は独立) |
 | 同 | 同 | GJI | edit>wt | **inconclusive**(s1=mixed 3/6) | inconclusive(ctl_on=mixed 3/6) | **B 単独の対照も不安定**(ctl_direct=`ka` 4/6、ctl_on=mixed 3/6) |
 | 同 | 同 | GJI | wt>edit | inconclusive(ctl=none) | inconclusive | 有効 3 ラウンド: s1=`ka` 3/3・s3=`hira` 3/3(傾向は独立) |
+| **B1a**(run 40409165055、変種 4 つ × 6 回。§6.5) | 同 | GJI | edit>wt | **inconclusive**(4 変種とも。対照が安定しない) | inconclusive | WT の窓は全部、実行の開始時から居た 1 つの WT のプロセス(pid 3084)に開いた。同じ回の 4 セルの結果がそろい回ごとに入れ替わる。WT のプロセスの状態が閉の回(3/3)では A=EDIT の開は B=WT に伝わらない(対の読み) |
+| 同 | 同 | MS-IME 本体 | edit>wt | shared-open(4 変種とも) | independent | 6/6(ON キーの scan を変えても同じ) |
 
 - **再測定の読み**: MS-IME × WT の `edit>wt` の開の共有は 6/6 で再現した(測定済み)。GJI × WT は 6 ラウンドでも、B 単独の対照(WT で ON キーを押す)が安定せず判定できない(ハーネスの雑音か GJI の WT での挙動かは切り分けられていない)。**BUG-223 の窓(GJI × tsf-native)の保持単位は未確定のまま**で、MS-IME × WT の結果を GJI に当てはめる証拠は無い。
 - 測っていないもの: GJI × tsf-native(実機・CI とも決まらず。**BUG-223 と §1.1.1 の窓の種類**)、WezTerm、UWP/XAML、同じプロセスの別スレッド、閉の向き(A を閉にして WT へ)・往復・WT の起動順(A を設定した後に WT を起動したなら「引き継ぎ」ではなく新しい窓の初期化かもしれない)、マウス・タスクバーの切替。
@@ -455,7 +457,7 @@ P6(明示意図があってもポーリングを止めない)は別の目的の�
 | # | 何を測るか | 構成 | 合否・読み方 | 結果で何が変わるか | 規模 |
 |---|---|---|---|---|---|
 | B0 | **観測のみのログの改善(挙動は変えない)**: `[effective-open-flip]` の行に、上書きした `IntentStore` の行の記録時刻・hwnd・経過、`desired_open` の値、直前の明示操作の種類(`UserIntentSource`・予測・lang-detect など)を足す。BUG-223 の区間 2・3・5 のように型を後から確かめられない事態を防ぐ(team-lead の提案) | 本番(develop)に診断として入れ、所有者の実機の次の事象で読む | — | 次の実機の事象で、`IntentStore` の上書き・`desired_open` の後退・予測の型を区別できる | `platform_state.rs` のログの 1 行の拡張(数十行)。**V0 にも測定にも依存しないので、V0 より前に別の PR で入れる**(round 4 m3) |
-| B1a | **(最優先。一部実施済み: run 40397245969、6 ラウンド。MS-IME × WT の開の共有は 6/6 で確定、GJI × WT は対照が不安定で未確定。次の手: ハーネスの待ち・ウォームアップの見直しで GJI × WT の対照〈B 単独で ON キー → `か`〉を安定させる、または実機の WT〈B1c〉)** **GJI × Windows Terminal の保持単位**。CI の `edit>wt` が inconclusive(B で ON キーが効かない)。原因(注入の宛先・WT の起動直後・GJI の TSF の warm/cold)を切り分け、試行数を増やす。**MS-IME × WT も含め、閉の向き(A を閉にして WT へ)・往復(WT で変えて A へ、A で変えて WT へ)・起動順(WT を A の設定の前/後に起動)のセルを足す**(round 2 RM2) | `ime-scope.yml`(`ci/adr282-ime-scope`) | 対照(B 単独で ON キー → `か`)が 3/3 以上のうえで各セル 3 試行以上 | 開を共有する組の表(L4・L5a・Z の `ScopeModel`、U11)。BUG-223・§1.1.1 の窓の種類の説明 | ハーネスの修正、数十行 |
+| B1a | **(実施済み・対照は安定せず: run 40409165055〈変種 4 つ × 6 回〉。H1〈ON キーの scan〉は否定、H2〈WT のプロセス〉は既存の 1 プロセスで変種が効かず未検証。出口 (a) B1c へ。詳細は `docs/tasks/adr282-ime-state-scope-measurement-2026-10-26.md` の B1a の節。測定コミット `7bb82b98a`、撤去コミット `ab6e5eb5e`)** (旧: 一部実施済み: run 40397245969、6 ラウンド。MS-IME × WT の開の共有は 6/6 で確定、GJI × WT は対照が不安定で未確定。次の手: ハーネスの待ち・ウォームアップの見直しで GJI × WT の対照〈B 単独で ON キー → `か`〉を安定させる、または実機の WT〈B1c〉)** **GJI × Windows Terminal の保持単位**。CI の `edit>wt` が inconclusive(B で ON キーが効かない)。原因(注入の宛先・WT の起動直後・GJI の TSF の warm/cold)を切り分け、試行数を増やす。**MS-IME × WT も含め、閉の向き(A を閉にして WT へ)・往復(WT で変えて A へ、A で変えて WT へ)・起動順(WT を A の設定の前/後に起動)のセルを足す**(round 2 RM2) | `ime-scope.yml`(`ci/adr282-ime-scope`) | 対照(B 単独で ON キー → `か`)が 3/3 以上のうえで各セル 3 試行以上 | 開を共有する組の表(L4・L5a・Z の `ScopeModel`、U11)。BUG-223・§1.1.1 の窓の種類の説明 | ハーネスの修正、数十行 |
 | B1a の出口 | **B1a が決まらないとき(round 4 R4M2)**: run 40397245969 の 6 ラウンドでも GJI × WT は対照(B 単独で ON キー → `か`)が不安定で判定できなかった。出口の順: (c) まず対照の不安定の原因(GJI × WT で注入した ON キーが効かない)を直すことを B1a の前提に置き、ハーネスの待ち・ウォームアップを見直して 1 回だけ再測定する。(a) それでも決まらなければ B1c(所有者の実機の手動確認)の結果で決める。(b) B1c もできなければ、未確定の組は O6 の既定(独立)で扱って V0・V1 へ進み、V1 の shadow の journal(B0 のログの項目)で確かめる | — | — | B1a が決まらないことで手順が止まらない | — |
 | B1b | WezTerm・UWP/XAML・同じプロセスの別スレッド・WebView2 のホスト | 同 | 各セル 3 試行以上 | 表の未確定の行 | 起動部品、数十〜百行 |
 | B1c | 実機の tsf-native 窓での手動確認(所有者。dragonflyg4 に WT か WezTerm を入れる) | 手順書(A で ON にして B で `ka`、逆向き、閉の向き、各 3 回、awase 停止) | 3/3 | CI と実機の差、BUG-223 の窓の種類での決め手 | 手順書のみ |
@@ -626,7 +628,7 @@ I1(T=0。括弧は読める窓の poll が 1 回届いた後も残る本数):
 | GJI・MS-IME | Win32 EDIT → Win32 EDIT、EDIT → Chromium、Chromium → EDIT | 独立 | 独立 | CI 各 2/2(run 40327981441)、実機 GJI 各 2/2(Edge) |
 | MS-IME | Win32 EDIT → WT | **共有(開)** | 独立 | CI 6/6(run 40397245969) |
 | MS-IME | WT → Win32 EDIT | 独立の傾向(対照が取れず判定は inconclusive) | 同 | CI s1=`ka` 6/6(conv の s3 は か 6/6 で独立) |
-| GJI | Win32 EDIT → WT | **未確定**(対照が不安定) | 未確定 | CI 3/6 |
+| GJI | Win32 EDIT → WT | **未確定**(対照が不安定。B1a の変種でも安定せず) | 未確定 | CI 3/6。B1a の対の読みでは、WT のプロセスの状態が閉の回に EDIT の開は伝わらない(3/3)。新しい WT の窓は同じ WT のプロセスの前の窓の状態を持つ傾向 |
 | GJI | WT → Win32 EDIT | 独立の傾向(有効 3 ラウンド) | 同 | CI 3/3 |
 | 任意 | WT → Chromium、Chromium → WT、WT → WT、Chromium → Chromium、WT → WezTerm、UWP/XAML、同じプロセスの別スレッド、ほか | 未測定 | 未測定 | — |
 

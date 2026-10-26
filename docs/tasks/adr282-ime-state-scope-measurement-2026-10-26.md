@@ -64,6 +64,29 @@ edit/chrome の組では ctl_direct=`ka`(2/2)・ctl_on=か(2/2)で、判定の�
   wt→edit の A=WT は、round 1・3・5 で A の自己検証が合わず(hira 状態で `ka`、eisu 状態で か)、同じ入れ替わりが A 側にも出ている。
 - WT の B が前面化・フォーカスできていたかの個別の確認は取っていない(`wt_echo` の READY 後にキーが届いた結果が `ka` か か で読めた試行だけを集計し、読めなかった試行は無い)。
 
+### B1a: GJI × WT の対照の不安定の切り分け(run 40409165055、測定コミット `7bb82b98a`、撤去コミット `ab6e5eb5e`。ADR-282 §6.5)
+
+目的: GJI × WT で B 単独の対照(ctl_direct・ctl_on)が回ごとに入れ替わる原因を、仮説ごとの変種で直して 1 回だけ再測定する。
+変種(同じ run で各 6 回、`edit>wt`・`wt>edit`): base(今まで。ON キーを scan 0x70 で送る)・scan0(scan を `MapVirtualKey` の値にする。仮説 H1: VK_IME_ON にかなキーの scan を付けるとトグル扱いになる)・
+newproc(セルごとにこのハーネスが起動した WindowsTerminal.exe だけを終了する。仮説 H2: WT の窓が同じプロセスにまとまる)・both。待ち・ON キー 2 回は再測定と同じ。
+各試行に B の WT の pid と、前の B と同じプロセスかを記録した(キーの内容は記録していない。結果は ka/かな の分類だけ)。
+
+結果(ジョブ `scope (gji)` 121874787938・`scope (msime)` 121874788481 の `SCOPE:` 行と試行の記録):
+
+| IME | 変種 | `edit>wt` の判定 | 対照 ctl_direct / ctl_on | 備考 |
+|---|---|---|---|---|
+| GJI | base・scan0・newproc・both | すべて **inconclusive**(ctl=mixed) | `ka` 3〜4/6、mixed 3/6 | 4 変種とも同じ。**対照は安定しなかった** |
+| MS-IME | base・scan0・newproc・both | すべて **shared-open**(conv は independent) | `ka` 6/6 / か 6/6 | 4 変種とも 6/6 で安定(scan の変更で崩れない) |
+
+試行の記録から分かったこと(GJI):
+- **WT の窓は、すべて実行の開始時から居た 1 つの WindowsTerminal.exe(pid 3084)の中に開いた**(全試行で同じ pid、WT のプロセス数は 1)。このプロセスはハーネスが起動したものではないので、newproc の終了の対象外で、**H2 の変種は実際には効いていない**(別プロセスにする手段が無かった)。MS-IME の実行でも同じく 1 つの既存プロセス(pid 3260)だった。
+- **同じ回の 4 セル(ctl_direct・ctl_on・s1・s3)の B の結果がそろい、回ごとに入れ替わる**(回 0 を除く。回 1・3・5 はすべて `ka`、回 2・4 はすべて か)。B で ON キーを 2 回押しても(ctl_on)、何も押さない(ctl_direct)のと同じ結果になる。A=WT の自己検証も回 1・3・5 で合わない。scan を変えても(scan0)同じなので、**H1 は否定**。
+- よって GJI × WT では、新しい WT の窓の IME の状態は、同じ WT のプロセスの前の窓の状態(前の回の `wt>edit` のセルで WT の中で押したキーの結果)で決まり、B で押した ON キーは確実には効かない、と読める(仕組みは未検証。VK_IME_ON/OFF が WT 上の GJI でトグルとして働く、という仮説 H4 とも合うが確かめていない)。
+- **EDIT の開が WT へ伝わるか**: WT のプロセスの状態が閉の回(1・3・5)では、A=EDIT を開にしても B=WT は `ka`(3/3)。この 3 回の対の読みでは、GJI の EDIT → WT は開を伝えない(独立)。ただし対照が安定していないので、判定(scope_pure.py)の上では inconclusive のまま。
+
+結論: 計画した変種では GJI × WT の対照は安定しなかった。ADR-282 §6.5 の B1a の出口に従い、**(a) B1c(所有者の実機での手動確認)へ戻す**。
+MS-IME × WT の `edit>wt` の開の共有は、ON キーの scan の変更と関係なく 6/6 で再現した(O5 の根拠はそのまま)。
+
 ## 実機(dragonflyg4、所有者の測定の報告)
 
 条件: Windows 11 build 22631、GJI、**実機に `wt.exe` と Chrome は無い**(ブラウザは Edge)。**edit→edit、edit→chrome(Edge)、chrome(Edge)→edit は independent**
