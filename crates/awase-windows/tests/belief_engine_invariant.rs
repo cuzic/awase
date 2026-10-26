@@ -65,6 +65,17 @@ const RANDOM_MINIMIZE: usize = 40;
 const EXAMPLES_PER_CLASS: usize = 2;
 /// golden に最小列を全部載せる上限（設定ごと）。超えたら先頭だけ。
 const LIST_LIMIT: usize = 60;
+/// 1 設定あたりの時間の上限（秒）。超えたら、どの段で何本まで進んだかを添えて panic する（規模を CI で調整するための安全弁）。
+const BUDGET_SECS: u64 = 100;
+
+fn check_budget(cfg: Config, started: Instant, phase: &str, progress: usize) {
+    assert!(
+        started.elapsed().as_secs() < BUDGET_SECS,
+        "[budget] {} が {BUDGET_SECS} 秒を超えた: 段={phase} 進んだ数={progress} 経過={:?}",
+        cfg.name(),
+        started.elapsed()
+    );
+}
 
 // ---------------------------------------------------------------------------
 // 窓
@@ -470,7 +481,13 @@ struct Exhaustive {
 
 /// 幅優先に、`alphabet` の意味のある列を長さ `depth` まで全部流し、`inv` の違反を**最初の違反で打ち切って**集める
 /// （違反した列は延ばさない＝集めた列は「最後の事象で初めて違反する列」。短い順・字母の順で決定的）。
-fn exhaustive(cfg: Config, inv: Inv, alphabet: &[Ev], depth: usize) -> Exhaustive {
+fn exhaustive(
+    cfg: Config,
+    inv: Inv,
+    alphabet: &[Ev],
+    depth: usize,
+    started: Instant,
+) -> Exhaustive {
     let mut frontier: Vec<Vec<Ev>> = vec![Vec::new()];
     let mut raws = Vec::new();
     let mut checked = 0;
@@ -484,6 +501,14 @@ fn exhaustive(cfg: Config, inv: Inv, alphabet: &[Ev], depth: usize) -> Exhaustiv
                     continue;
                 };
                 checked += 1;
+                if checked % 200 == 0 {
+                    check_budget(
+                        cfg,
+                        started,
+                        &format!("exhaustive {} depth<={depth}", inv.name()),
+                        checked,
+                    );
+                }
                 let last = h.steps.last().expect("step").clone();
                 if let Some(class) = violation(inv, &last) {
                     let window = window_label(&h);
@@ -580,7 +605,7 @@ struct RandomResult {
     minimized: Vec<(Vec<Ev>, String)>,
 }
 
-fn random_search(cfg: Config, inv: Inv, seed: u64) -> RandomResult {
+fn random_search(cfg: Config, inv: Inv, seed: u64, started: Instant) -> RandomResult {
     let alphabet = full_alphabet();
     let mut rng = SplitMix(seed);
     let mut res = RandomResult {
@@ -594,6 +619,7 @@ fn random_search(cfg: Config, inv: Inv, seed: u64) -> RandomResult {
         let (mut h, wins) = cfg.start();
         let mut seq: Vec<Ev> = Vec::new();
         res.total += 1;
+        check_budget(cfg, started, "random", res.total);
         for _ in 0..len {
             // 意味の無い事象は引き直す（最大 30 回。副作用は流したときだけ）。
             let mut applied = None;
@@ -769,10 +795,10 @@ fn run_config(cfg: Config) -> String {
     let mut out = String::new();
     let full = full_alphabet();
     let core = core_alphabet();
-    let r_full = exhaustive(cfg, Inv::I1, &full, FULL_DEPTH);
+    let r_full = exhaustive(cfg, Inv::I1, &full, FULL_DEPTH, t0);
     render_exhaustive(&mut out, "全字母", cfg, Inv::I1, &full, FULL_DEPTH, &r_full);
     lap("I1 full");
-    let r_core = exhaustive(cfg, Inv::I1, &core, CORE_DEPTH);
+    let r_core = exhaustive(cfg, Inv::I1, &core, CORE_DEPTH, t0);
     render_exhaustive(
         &mut out,
         "核の字母",
@@ -783,7 +809,7 @@ fn run_config(cfg: Config) -> String {
         &r_core,
     );
     lap("I1 core");
-    let r = exhaustive(cfg, Inv::I2, &core, I2_DEPTH);
+    let r = exhaustive(cfg, Inv::I2, &core, I2_DEPTH, t0);
     render_exhaustive(&mut out, "核の字母", cfg, Inv::I2, &core, I2_DEPTH, &r);
 
     lap("I2 core");
@@ -809,7 +835,7 @@ fn run_config(cfg: Config) -> String {
 
     // ランダム探索（I1）。
     let seed = 0x00B0_0AC1_E000 + (cfg.grid as u64) * 16 + u64::from(cfg.shared);
-    let rr = random_search(cfg, Inv::I1, seed);
+    let rr = random_search(cfg, Inv::I1, seed, t0);
     let _ = writeln!(
         out,
         "\n## {} I1 ランダム探索（固定 seed・全字母・長さ {RANDOM_MIN_LEN}〜{RANDOM_MAX_LEN}・{} 本）",
