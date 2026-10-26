@@ -51,7 +51,7 @@ use awase_windows::state::conv_classify::ConvSyncReason;
 use awase_windows::state::drift_correction::{check_drift_correction, DriftCorrection};
 use awase_windows::state::drift_plan::{decide_drift_plan, DriftFacts, DriftPlan, DriftStep};
 use awase_windows::state::evidence::{
-    ConvOpenInference, HeuristicDefault, ImmCrossProbe, Observed, ObserverPoll,
+    ConvOpenInference, FocusProbe, HeuristicDefault, ImmCrossProbe, Observed, ObserverPoll,
 };
 use awase_windows::state::foreground_scope::ForegroundScope;
 use awase_windows::state::hub_clock::HubClock;
@@ -82,6 +82,8 @@ pub enum Source {
     /// `ConvOpenInference`（Medium、conv ビットからの間接推測。`classify_conv_transition` の
     /// `ReportOpenInference`）。GJI×TsfNative では IME を閉じても conv の NATIVE が残るため誤って「開」と推測する。
     ConvInference,
+    /// `FocusProbe`（Low、フォーカス変更直後の同期プローブ。`BeliefOnly`）。`belief_oracle`（`belief_engine_invariant.rs`）が使う。
+    FocusProbe,
 }
 
 /// 書き込み命令の出所。
@@ -163,6 +165,9 @@ pub struct StepRecord {
     pub live_imm_cross: bool,
     /// 核の focus epoch（プロセスが変わると進む。殻はこのとき進行中の試行を捨てる〈ADR-080 破棄条件2〉）。
     pub focus_epoch: u64,
+    /// `effective_open` がどの経路で決まったか（`DecidedBy::label`。`IntentStore` が上書きしていれば `intent-store`）。
+    /// 診断専用（`belief_engine_invariant.rs` の違反の分類）。
+    pub basis: &'static str,
 }
 
 /// 窓 1 つの記述（ADR-277 段階 2）。殻の `FocusTracker.current`（pid・クラス・プロセス・学習による降格）に当たる。
@@ -515,6 +520,11 @@ impl Harness {
                 Observed::<ObserverPoll>::from_poll(&accepted, open).into(),
                 ObservationSource::ObserverPoll,
                 ObservationConfidence::Medium,
+            ),
+            Source::FocusProbe => (
+                Observed::<FocusProbe>::from_probe(&accepted, open).into(),
+                ObservationSource::FocusProbe,
+                ObservationConfidence::Low,
             ),
             Source::ConvInference => (
                 Observed::<ConvOpenInference>::from_conv(
@@ -1026,15 +1036,33 @@ impl Harness {
                 |w| w.live_profile().can_use_imm32_cross_process(),
             ),
             focus_epoch: self.epoch,
+            basis: self.effective_basis(),
         });
+    }
+
+    /// `effective_open` の根拠の分類名（殻の `ImeStateHub::effective_open_basis` と同じ式。あちらは `pub(crate)`）。
+    fn effective_basis(&self) -> &'static str {
+        let resolution = self.hub.model().resolve_open_at(self.now());
+        if self.effective_open() == resolution.value {
+            resolution.decided_by.label()
+        } else {
+            "intent-store"
+        }
     }
 }
 
 fn make_engine() -> Engine {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layout/nicola.yab");
-    let content = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} が読めない: {e}", path.display()));
-    let layout = YabLayout::parse(&content, KeyboardModel::Jis).expect("nicola.yab");
+    // 全列挙のテストが何十万回も起動するので、パース結果は 1 回だけ作って複製する。
+    static LAYOUT: std::sync::OnceLock<YabLayout> = std::sync::OnceLock::new();
+    let layout = LAYOUT
+        .get_or_init(|| {
+            let path =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layout/nicola.yab");
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{} が読めない: {e}", path.display()));
+            YabLayout::parse(&content, KeyboardModel::Jis).expect("nicola.yab")
+        })
+        .clone();
     let fsm = NicolaFsm::new(
         layout,
         VkCode(0x1D),
