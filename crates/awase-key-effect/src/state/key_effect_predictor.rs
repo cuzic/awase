@@ -4269,4 +4269,32 @@ mod tests {
             "MS-IME 本体"
         );
     }
+
+    /// BUG-222（GJI 本体）: 持続トグル中（追跡の変換モードを捨てた状態）に、入力中の段階が「不明」（`Indeterminate`。
+    /// 入力中の BS の後、BUG-211）だと、表に（不明, ひらがな）のセルが無く、F2 は予測なしになる。予測が付く段階
+    /// （入力なし・入力中）では付く。F2 が予測なしになりうる原因の 1 つの特性テスト（実機の `no prediction` の
+    /// 原因は断定できていない。修正は予測に依らず、自動の入りのトグル中の F2 で手放す）。
+    #[test]
+    fn bug_222_f2_has_no_prediction_in_the_indeterminate_stage_for_gji_tables() {
+        let input = |stage: Stage| PredictInput {
+            open: true,
+            mode: InputModeState::ObservedEisu,
+            conv_raw: None,
+            composing: false,
+            track: KeyTrack { conv: None, stage },
+            unreadable: true,
+            passive_rule_eligible: false,
+            observable_toggle_guard: false,
+        };
+        for preset in [KeymapPreset::MsIme, KeymapPreset::Atok] {
+            assert!(
+                predict(preset, 0xF2, &input(Stage::None)).is_some(),
+                "{preset:?}: 入力なしの段階では F2 に予測が付く"
+            );
+            assert!(
+                predict(preset, 0xF2, &input(Stage::Indeterminate)).is_none(),
+                "{preset:?}: 不明の段階では F2 は予測なし"
+            );
+        }
+    }
 }

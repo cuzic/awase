@@ -160,6 +160,10 @@ pub struct HalfWidthAlnumState {
     /// クリアは `begin_restore_kana`・`abandon_on_observed_follow`・`suspend_toggle_for_return`、
     /// `rearm_after_failed_gji_exit` は触らない。
     entered_in: Option<(ForegroundScope, bool)>,
+    /// 今の持続トグルが、打鍵列からの英数判定（ADR-263 `ime_on_eisu`）で入ったものか（BUG-222）。左Shift単独タップの
+    /// 手動のトグルは偽。`commit_enter_*` が偽に戻し、殻が入りの成功後に [`Self::mark_entered_by_lang_detect`] で立てる。
+    /// 戻り待ちには引き継がない（離脱で偽に戻る。戻った窓の復元は手動のトグルと同じ扱い）。
+    entered_by_lang_detect: bool,
 }
 
 impl HalfWidthAlnumState {
@@ -365,6 +369,35 @@ impl HalfWidthAlnumState {
             && entry.is_some_and(|e| e.uses_imc_conv_write == uses_imc_conv_write)
     }
 
+    /// 持続トグルが打鍵列からの英数判定で入ったものだと記録する（BUG-222）。トグルが立っているときだけ効く。
+    /// 殻は `commit_enter_*` の後（入りが成功したとき）に呼ぶ。
+    pub fn mark_entered_by_lang_detect(&mut self) {
+        self.entered_by_lang_detect = self.toggle_held;
+    }
+
+    /// 持続トグルが打鍵列からの英数判定で入ったものか。
+    #[must_use]
+    pub const fn is_entered_by_lang_detect(&self) -> bool {
+        self.entered_by_lang_detect
+    }
+
+    /// BUG-222: 打鍵列からの英数判定で入ったトグル中に、素のひらがなキー（F2）が来たら、トグルを手放すか。
+    ///
+    /// 手動のトグル（左Shift単独タップ）は対象外（`024ca336`→`6b1e91b8` の取り下げの影響を自動の入りに閉じ込める。
+    /// 所有者決定 2026-10-26）。対象は `entered_by_lang_detect` のトグル中の、物理（非注入）・非リピートの KeyDown・修飾なしの
+    /// VK_DBE_HIRAGANA（0xF2）で、IME が GJI 系（Mozc を含む。クライアントが F2 を特殊キーとして処理する）かつ窓が
+    /// TSF ネイティブのときだけ。OS へは書かない（キーは IME にそのまま届く）。
+    #[must_use]
+    pub fn plan_exit_on_hiragana_key(&self, f: &HiraganaKeyFacts) -> bool {
+        self.toggle_held
+            && self.entered_by_lang_detect
+            && f.vk == 0xF2
+            && f.is_fresh_physical_key_down
+            && !f.modifier_held
+            && f.ime_is_gji_family
+            && f.window_is_tsf_native
+    }
+
     /// IMC(MS-IME)経路のcommit。呼び出し元は現行`key_pipeline.rs`と同じく
     /// `actuate_conv_mode`呼び出しの**前**に無条件で呼ぶこと（順序を変えると
     /// 挙動変更になる、§3原則2）。
@@ -372,6 +405,7 @@ impl HalfWidthAlnumState {
     /// `scope` は Enter 時の `win32::foreground_scope()`（無効なら控えない。離脱時に戻り待ちへ積まない）。
     pub fn commit_enter_imc(&mut self, scope: ForegroundScope) {
         self.toggle_held = true;
+        self.entered_by_lang_detect = false;
         self.entered_in = scope.is_valid().then_some((scope, true));
     }
 
@@ -379,6 +413,7 @@ impl HalfWidthAlnumState {
     /// `true`を返した場合のみ呼ぶこと（真のcommit-on-success、§3原則2）。
     pub fn commit_enter_gji(&mut self, scope: ForegroundScope) {
         self.toggle_held = true;
+        self.entered_by_lang_detect = false;
         self.entered_in = scope.is_valid().then_some((scope, false));
     }
 
@@ -391,6 +426,7 @@ impl HalfWidthAlnumState {
     /// 判定に使う）。
     pub fn begin_restore_kana(&mut self) -> bool {
         self.entered_in = None;
+        self.entered_by_lang_detect = false;
         std::mem::replace(&mut self.toggle_held, false)
     }
 
@@ -412,6 +448,7 @@ impl HalfWidthAlnumState {
     /// 手放さないと凍結（`ShiftConvGuard`）が続き、次の左 Shift タップが「開始」でなく「解除」になる。
     pub fn abandon_on_observed_follow(&mut self) -> bool {
         self.entered_in = None;
+        self.entered_by_lang_detect = false;
         std::mem::replace(&mut self.toggle_held, false)
     }
 
@@ -455,6 +492,7 @@ impl HalfWidthAlnumState {
     /// 次の離脱で再び戻り待ちへ積める。
     pub fn rebuild_toggle_from_entry(&mut self, entry: ReturnPendingEntry) {
         self.toggle_held = true;
+        self.entered_by_lang_detect = false;
         self.entered_in = Some((entry.scope, entry.uses_imc_conv_write));
     }
 
@@ -526,6 +564,20 @@ pub fn should_abandon_on_observed_follow(
 // 必ず中断し、F2 等は移動先 B に届く。ADR-245 は離脱時に IME へ何も送らず、A を覚えておいて、
 // A に戻って最初の打鍵の手前で復元する。このブロックはその判断の核（純関数と小さな型）。
 // 事実の収集（前面スコープ・物理の修飾キー・予測の答え等）と OS への書き込みは殻（PR 2）の仕事。
+
+/// [`HalfWidthAlnumState::plan_exit_on_hiragana_key`] が読む打鍵と窓の事実（BUG-222）。
+#[derive(Debug, Clone, Copy)]
+pub struct HiraganaKeyFacts {
+    pub vk: u16,
+    /// 非注入・非リピートの KeyDown か。
+    pub is_fresh_physical_key_down: bool,
+    /// Shift/Ctrl/Alt/Win のいずれかが押されているか（`modifier_snapshot`）。
+    pub modifier_held: bool,
+    /// `active_ime_kind() == GoogleJapaneseInput`（Mozc 系を含む）。
+    pub ime_is_gji_family: bool,
+    /// 窓が実質 TSF ネイティブか（`is_effectively_tsf_native`）。
+    pub window_is_tsf_native: bool,
+}
 
 /// 戻り待ちの最大件数（ADR-245 決定2）。超えたら古いものから捨てる。
 pub const RETURN_PENDING_CAPACITY: usize = 4;
@@ -1183,8 +1235,8 @@ mod tests {
 
     use super::{
         exit_owns_write, plan_key_stage, plan_leave, return_pending_expired,
-        shift_key_down_disarms_guard, DropReason, HalfWidthAlnumEffect, KeyStageFacts,
-        KeyStagePlan, LeavePlan, ReturnPending, ReturnPendingEntry, SuspendOutcome,
+        shift_key_down_disarms_guard, DropReason, HalfWidthAlnumEffect, HiraganaKeyFacts,
+        KeyStageFacts, KeyStagePlan, LeavePlan, ReturnPending, ReturnPendingEntry, SuspendOutcome,
         RETURN_PENDING_CAPACITY,
     };
     use crate::state::foreground_scope::ForegroundScope;
@@ -1903,5 +1955,80 @@ mod tests {
             !st.plan_rebuild_from_return_for_language_detect(true, false, e),
             "持続トグル中は立て直さない"
         );
+    }
+
+    fn f2_facts() -> HiraganaKeyFacts {
+        HiraganaKeyFacts {
+            vk: 0xF2,
+            is_fresh_physical_key_down: true,
+            modifier_held: false,
+            ime_is_gji_family: true,
+            window_is_tsf_native: true,
+        }
+    }
+
+    /// BUG-222 の再現（修正前は存在しない判断）: lang-detect が入れたトグル中の素の F2 でトグルを手放す。
+    #[test]
+    fn bug_222_f2_exits_the_lang_detect_toggle() {
+        let mut st = HalfWidthAlnumState::default();
+        st.set_policy(HalfWidthAlnumTogglePolicy::All);
+        st.commit_enter_gji(scope(1, 10));
+        st.mark_entered_by_lang_detect();
+        assert!(st.is_entered_by_lang_detect());
+        assert!(st.plan_exit_on_hiragana_key(&f2_facts()));
+        // 殻は OS 書き込みなしで手放す。
+        assert!(st.abandon_on_observed_follow());
+        assert!(!st.is_toggle_active());
+        assert!(!st.is_entered_by_lang_detect());
+    }
+
+    /// 対照: 手動のトグル（左Shift単独タップ。由来なし）は F2 で手放さない。
+    #[test]
+    fn bug_222_manual_toggle_is_not_exited_by_f2() {
+        let mut st = HalfWidthAlnumState::default();
+        st.set_policy(HalfWidthAlnumTogglePolicy::All);
+        st.commit_enter_gji(scope(1, 10));
+        assert!(!st.plan_exit_on_hiragana_key(&f2_facts()));
+        // 由来の印は、トグルが立っていなければ付かない。
+        let mut st = HalfWidthAlnumState::default();
+        st.mark_entered_by_lang_detect();
+        assert!(!st.is_entered_by_lang_detect());
+    }
+
+    #[test]
+    fn bug_222_f2_exit_conditions() {
+        let mut st = HalfWidthAlnumState::default();
+        st.commit_enter_imc(scope(1, 10));
+        st.mark_entered_by_lang_detect();
+        let ok = f2_facts();
+        assert!(st.plan_exit_on_hiragana_key(&ok));
+        let cases = [
+            HiraganaKeyFacts { vk: 0xF0, ..ok },
+            HiraganaKeyFacts {
+                is_fresh_physical_key_down: false,
+                ..ok
+            },
+            HiraganaKeyFacts {
+                modifier_held: true,
+                ..ok
+            },
+            HiraganaKeyFacts {
+                ime_is_gji_family: false,
+                ..ok
+            },
+            HiraganaKeyFacts {
+                window_is_tsf_native: false,
+                ..ok
+            },
+        ];
+        for c in cases {
+            assert!(!st.plan_exit_on_hiragana_key(&c), "{c:?}");
+        }
+        // 再入り・窓の離脱・手放しで由来は消える。
+        st.commit_enter_imc(scope(1, 10));
+        assert!(!st.is_entered_by_lang_detect(), "手動の入りは由来なし");
+        st.mark_entered_by_lang_detect();
+        let _ = st.suspend_toggle_for_return(TickMs(1));
+        assert!(!st.is_entered_by_lang_detect(), "離脱で由来は消える");
     }
 }

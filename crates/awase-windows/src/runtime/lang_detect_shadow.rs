@@ -440,6 +440,10 @@ impl super::Runtime {
                     entry,
                     crate::state::TickMs(crate::hook::current_tick_ms()),
                 );
+                self.platform_state
+                    .gate
+                    .half_width_alnum
+                    .mark_entered_by_lang_detect();
                 return "half-width-alnum-rebuilt-from-return";
             }
         }
@@ -454,10 +458,18 @@ impl super::Runtime {
                     crate::state::ConvMutationReason::LangDetectEnglish,
                     "打鍵列から英数と判定",
                 );
+                self.platform_state
+                    .gate
+                    .half_width_alnum
+                    .mark_entered_by_lang_detect();
                 "half-width-alnum-entered"
             }
             HalfWidthAlnumEffect::EnterViaGjiSendInput => {
                 if self.kp_enter_half_width_alnum_gji(false, "打鍵列から英数と判定") {
+                    self.platform_state
+                        .gate
+                        .half_width_alnum
+                        .mark_entered_by_lang_detect();
                     "half-width-alnum-entered"
                 } else {
                     "skipped-send-failed"

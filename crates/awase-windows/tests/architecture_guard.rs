@@ -9520,3 +9520,38 @@ fn physical_f2_cold_and_mozc_check_window_are_wired() {
         "mozc_compose_precheck が mozc_compose_check_applies の偽で return None していない(PR #809 M3・N2)"
     );
 }
+
+/// BUG-222: 打鍵列からの英数判定で入ったトグルだけを、素の F2 で手放す（手動のトグルは変えない）配線を固定する。
+/// 由来の印は `lang_detect_shadow.rs` の 3 つの入り（IMC・GJI・戻り待ちからの立て直し）の成功後にだけ立て、
+/// 手放しは判断の純関数を通る。
+#[test]
+fn lang_detect_toggle_is_exited_by_hiragana_key_only_when_marked() {
+    let ld = read_crate_file("src/runtime/lang_detect_shadow.rs");
+    let ld = production_code_only(&ld);
+    let ld_squashed: String = ld.split_whitespace().collect();
+    assert_eq!(
+        ld_squashed
+            .matches(".mark_entered_by_lang_detect()")
+            .count(),
+        3,
+        "由来の印は lang-detect の入り 3 経路だけで立てる（BUG-222）"
+    );
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let kp = production_code_only(&kp);
+    let kp_squashed: String = kp.split_whitespace().collect();
+    assert!(
+        !kp_squashed.contains(".mark_entered_by_lang_detect()"),
+        "手動のトグル（key_pipeline の入り）には由来の印を付けない（BUG-222）"
+    );
+    for needle in [
+        "fnkp_exit_lang_detect_toggle_on_hiragana(",
+        ".plan_exit_on_hiragana_key(",
+        ".abandon_on_observed_follow()",
+        "InputModeApplyStrategy::UserTurnOnEisuReset",
+    ] {
+        assert!(
+            kp_squashed.contains(needle),
+            "key_pipeline に {needle} が無い（BUG-222）"
+        );
+    }
+}

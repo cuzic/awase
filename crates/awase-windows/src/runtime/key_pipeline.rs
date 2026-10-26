@@ -1845,6 +1845,8 @@ impl Runtime {
                     .mode_key_modifiers(obs.ms_ime_native_identified())
             },
         };
+        // BUG-222: 打鍵列からの英数判定で入ったトグル中の素の F2 は、トグルを出る契機にする（予測より先）。
+        self.kp_exit_lang_detect_toggle_on_hiragana(event);
         let Some(passive_rule_eligible) =
             crate::state::key_effect_predictor::plan_key_effect_track(&facts)
         else {
@@ -1853,6 +1855,81 @@ impl Runtime {
         // ADR-188 案2: FSM がこの打鍵の前に送り直す親指（保留中の単独タップ）の効果を予測に重ねる。
         let resent = crate::state::key_effect_predictor::fsm_resent_mode_keys(decision);
         self.kp_predict_key_effect(event.vk_code, passive_rule_eligible, &resent);
+    }
+
+    /// BUG-222（所有者決定 2026-10-26）: ADR-263 `ime_on_eisu` が入れた半角英数トグル中に、素のひらがなキー（F2）が
+    /// 物理で押されたら、トグルを OS 書き込みなしで手放し、belief の `ObservedEisu` を `AssumedRomaji` に戻して Engine を
+    /// 活性にする。キーは IME にそのまま届く（Mozc のクライアントは F2 を特殊キーとして処理する）。
+    ///
+    /// 判断は `HalfWidthAlnumState::plan_exit_on_hiragana_key`（純粋）。左Shift単独タップの手動のトグルは変えない
+    /// （`024ca336`→`6b1e91b8` の取り下げの影響を自動の入りに閉じ込める）。実 IME が応答しなかったときは Engine だけ ON に
+    /// なりうるので、手放した時点の `conv_raw` をログに残す（後の `[idle-conv-check]`・`[mozc-shm]` と突き合わせる）。
+    fn kp_exit_lang_detect_toggle_on_hiragana(&mut self, event: &RawKeyEvent) {
+        use crate::state::half_width_alnum::HiraganaKeyFacts;
+        if !self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .is_entered_by_lang_detect()
+        {
+            return;
+        }
+        let m = event.modifier_snapshot;
+        let facts = HiraganaKeyFacts {
+            vk: event.vk_code.0,
+            is_fresh_physical_key_down: matches!(event.event_type, KeyEventType::KeyDown)
+                && !event.injected
+                && !event.was_down,
+            modifier_held: m.ctrl || m.alt || m.shift || m.win,
+            ime_is_gji_family: crate::tsf::observer::tsf_obs().active_ime_kind()
+                == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput,
+            window_is_tsf_native: self
+                .platform
+                .current_app_profile()
+                .is_effectively_tsf_native(self.platform.focus.class_name()),
+        };
+        if !self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .plan_exit_on_hiragana_key(&facts)
+        {
+            return;
+        }
+        if !self
+            .platform_state
+            .gate
+            .half_width_alnum
+            .abandon_on_observed_follow()
+        {
+            return;
+        }
+        // トグル開始が与えた確認ゲートの期限延長と、走行中の古い hold の再設定を解除する（直接観測の手放しと同じ形）。
+        self.platform
+            .output
+            .confirm_gate_deadline_override_ms
+            .set(0);
+        self.platform.output.bump_shift_conv_guard_gen();
+        tracing::info!(
+            "[lang-detect-exit] 打鍵列から入った半角英数トグル中に F2 → トグルを手放す (OS 書き込みなし、BUG-222)。\
+             実 IME が hiragana になったかは後続の [idle-conv-check] conv と [mozc-shm] で確認する"
+        );
+        let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+        if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
+            true,
+            self.platform_state.ime.input_mode(),
+        ) {
+            self.apply_input_mode_correction(
+                new_mode,
+                crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
+                tick_ms,
+            );
+        }
+        self.kp_note_shadow_toggle(ShadowToggleRecord {
+            vk_code: Some(event.vk_code.0),
+            ..ShadowToggleRecord::new(ShadowToggleStep::TurnOnEisuReset)
+        });
+        self.notify_engine_refresh();
     }
 
     /// ADR-203 (ii): 確かな ON 系イベント（物理キー予測 ON・shadow toggle ON。`sync_direction` の on キーは
