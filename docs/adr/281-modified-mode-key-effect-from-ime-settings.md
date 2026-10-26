@@ -75,6 +75,7 @@ Shift と Ctrl は届くので広げる。Alt は届くかを確かめていな�
 3. 押されている修飾は Ctrl・Shift のどちらか、またはその組み合わせ。**Alt と Win は含めない**(従来どおり抑止する)。
    Alt: Mozc が修飾を消すのは、キーが Mozc の key handler に届いた後の話である。Alt 押下中の打鍵は `WM_SYSKEYDOWN` になり、TSF が TIP の key event sink へ渡す保証をソースだけでは確かめられない
    (Mozc 自身、Alt 付きの特殊キーを通常の key event ではなく予約キー〈`{VK_OEM_3, TF_MOD_ALT}` など、`tip_text_service.cc:326-356`〉として登録している)。
+   Mozc は素の F10(これも `WM_SYSKEYDOWN` を出す)も予約キーとして登録して受けているので、`WM_SYSKEYDOWN` は通常の入口に届かないと読める(Opus の補足。TSF の仕様自体は未確認)。0xF0〜0xF4 は予約キーに無い。
    届かなければ IME は何もしないのに ON と予測する BUG-162 型の誤予測になる。日本語 106/109 では Alt+ひらがな が VK_DBE_ROMAN/NOROMAN、Alt+半角/全角 が 0x19 になり、Alt 付きの 0xF0〜0xF4 が届く場面もほとんど無い。
    広げる利益が小さく危険が未確認なので、M1 の実機測定の結果を見てから判断する。
    Win: Mozc は Win を修飾として見ないが、OS のショートカットが IME より先に食う可能性があり未確認。

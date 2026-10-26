@@ -860,8 +860,9 @@ pub struct KeyTrackFacts {
     pub ime_drops_mode_key_modifiers: bool,
 }
 
-/// Mozc のクライアントが修飾を捨てる special key の VK（ひらがな・カタカナ・英数・半角/全角、ADR-281）。
-/// 修飾によって届く VK が変わる（日本語 106/109 の Shift+ひらがな → 0xF1 など）ので、物理キーではなく届いた VK で判定する。
+/// Mozc のクライアントが修飾を捨てる special key の VK か（ADR-281）。
+///
+/// 対象はひらがな・カタカナ・英数・半角/全角。修飾によって届く VK が変わる（日本語 106/109 の Shift+ひらがな → 0xF1 など）ので、物理キーではなく届いた VK で判定する。
 /// VK_DBE_ROMAN/NOROMAN（0xF5/0xF6）と VK_KANJI（0x19）は TSF の予約キーとして別経路で扱われるので含めない。
 #[must_use]
 pub const fn is_modifier_dropping_mode_key_vk(vk: u16) -> bool {
