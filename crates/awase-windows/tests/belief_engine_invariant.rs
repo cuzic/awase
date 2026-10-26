@@ -619,7 +619,7 @@ fn exhaustive(
 
 /// ADR-282 I6(寿命で後退しない)の基準の測定。列を流した後、事象を何も足さずに時間だけを進め、belief(`effective_open`)が
 /// 変わる列を数える。今の構造では `IntentStore` の TTL(ON 10 秒・OFF 30 秒)と観測の鮮度(3 秒)・寿命で変わりうる。
-/// 戻り値: (調べた列の数, 進めた時間 ms → 「前の根拠 → 後の根拠(値)」ごとの列の数)。
+/// 戻り値: (調べた列の数, 「進めた時間・前の根拠(値) → 後の根拠(値)」ごとの (列の数, 最初の列))。
 const I6_ADVANCES_MS: [u64; 2] = [11_000, 20_000];
 
 fn i6_sweep(
@@ -627,10 +627,10 @@ fn i6_sweep(
     alphabet: &[Ev],
     depth: usize,
     started: Instant,
-) -> (usize, BTreeMap<String, usize>) {
+) -> (usize, BTreeMap<String, (usize, String)>) {
     let mut frontier: Vec<Vec<Ev>> = vec![Vec::new()];
     let mut checked = 0;
-    let mut by_change: BTreeMap<String, usize> = BTreeMap::new();
+    let mut by_change: BTreeMap<String, (usize, String)> = BTreeMap::new();
     for _ in 0..depth {
         let mut next = Vec::new();
         for seq in &frontier {
@@ -655,7 +655,8 @@ fn i6_sweep(
                             "+{elapsed}ms: {}({}) → {}({})",
                             before.basis, before.effective_open, after.basis, after.effective_open
                         );
-                        *by_change.entry(key).or_default() += 1;
+                        let entry = by_change.entry(key).or_insert_with(|| (0, seq_name(&cand)));
+                        entry.0 += 1;
                         break;
                     }
                 }
@@ -1001,15 +1002,15 @@ fn run_config(cfg: Config) -> String {
     lap("I2 core");
     // ADR-282 I6: 時間の経過だけで belief が変わる列(核の字母・長さ 2。O3 を S′ にも課す所有者の決定の基準の測定)。
     let (i6_checked, i6) = i6_sweep(cfg, &core, I6_DEPTH, t0);
-    let total: usize = i6.values().sum();
+    let total: usize = i6.values().map(|(n, _)| n).sum();
     let _ = writeln!(
         out,
         "\n## {} I6 時間の経過だけで belief が変わる列（核の字母・長さ {I6_DEPTH} まで・検査した列 {i6_checked}。列の後に +11000ms、さらに +20000ms）",
         cfg.name()
     );
     let _ = writeln!(out, "  変わった列: {total} 本");
-    for (k, n) in &i6 {
-        let _ = writeln!(out, "    {n:>6}  {k}");
+    for (k, (n, example)) in &i6 {
+        let _ = writeln!(out, "    {n:>6}  {k}(例: {example})");
     }
     lap("I6");
     // 実機の事故の列。
