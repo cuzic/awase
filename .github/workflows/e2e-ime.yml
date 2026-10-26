@@ -351,7 +351,7 @@ jobs:
             # ADR-281(BUG-221、判定は check_modifier_mode_key.py): 修飾を押したままのひらがなキー(0xF2)。閉じた状態(--chord-prep=1A=VK_IME_OFF)から押す。
             # nat-*(awase なし、観測のみ): 修飾付きの F2 で実 IME が開くか。GJI(MS-IME プリセット)と Microsoft IME 本体で、none(対照)・Ctrl・Shift・Alt を比べる
             #   (M1・M1'・M2。Mozc/GJI がこの 4 キーの修飾を捨てるか、Alt が届くか、MS-IME 本体で A′ の条件を広げてよいかの根拠)。
-            # awase-*(awase 起動中): GJI(MS-IME プリセット)で、none・Ctrl・Shift は F2 を予測して Engine が活性化すること(A′)。Alt は予測しない(従来どおり)ことを観測する。
+            # awase-*(awase 起動中): GJI(MS-IME プリセット)で、none・Ctrl・Shift・Alt は F2 を予測して Engine が活性化すること(A′、Alt は拡大後)。
             # 押しっぱなしにする VK: none=0x87(F24、修飾でない対照)/ ctrl=A2 / shift=A0 / alt=A4。only='sc-adr281-*' で回す。
             *[cfg(f'sc-adr281-nat-{iname}-{mod}', 'observe', check=f'modkey-{mod}-observe', ime=ime, keymap=km, awase='false', runs=3,
                   args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A{extra}', until='2026-11-10')
@@ -364,7 +364,11 @@ jobs:
             *[cfg(f'sc-adr281-awase-gji-msime-{mod}', exp, check=f'modkey-{mod}-{chk}', ime='gji', keymap=2, awase='true', runs=3,
                   args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A', **({'until': '2026-11-10'} if exp == 'observe' else {}))
               for mod, vk, exp, chk in (('none', '87', 'pass', 'predict'), ('ctrl', 'A2', 'pass', 'predict'),
-                                        ('shift', 'A0', 'pass', 'predict'), ('alt', 'A4', 'observe', 'observe'))],
+                                        ('shift', 'A0', 'pass', 'predict'), ('alt', 'A4', 'pass', 'predict'))],
+            # Microsoft IME 本体(ADR-281 の拡大後): 0xF2 の Ctrl は予測して Engine が活性化、Shift・Alt は実 IME が開かないので予測しない(誤予測の検出)。
+            *[cfg(f'sc-adr281-awase-msime-native-{mod}', exp, check=f'modkey-{mod}-{chk}', ime='msime', keymap=1, awase='true', runs=3,
+                  args=f'--chord={vk},F2 --chord-at=20000 --chord-prep=1A --msime', **({'until': '2026-11-10'} if exp == 'observe' else {}))
+              for mod, vk, exp, chk in (('ctrl', 'A2', 'pass', 'predict'), ('shift', 'A0', 'pass', 'nopredict'), ('alt', 'A4', 'pass', 'nopredict'))],
             # ADR-202 T16-3(判定は check_kanji_role.py): awase 起動中に、GJI の CUSTOM 表の Hankaku/Zenkaku 行を変えた利用者の Alt+半角/全角(0x19)で、実 IME と Engine(belief)がずれないこと。
             # VK_IME_ON で IME を開き、Alt+0x19。nontoggle=行が閉じないコマンド(InputModeHiragana)なので IME は開いたまま、Engine も ON のまま(修正前は静的 Toggle で belief だけ反転してずれる)。
             # toggle=行がトグルなので IME が閉じ、Engine も OFF に追随する。表には awase の書き込み手段(ON/OFF 行)を必ず入れる。
