@@ -167,6 +167,54 @@ impl Runtime {
         }
     }
 
+    /// BUG-219 の観測（観測専用）: prefetch 済みの IMM の開閉の読みが、共有メモリ（`MozcShm`）の開閉と食い違ったときだけ、
+    /// その瞬間の文脈を 1 行（1 秒に 1 行まで）残す。belief・actuation には一切使わない。
+    ///
+    /// 実機（Mozc Readable × Chrome）で、IMM が conv=0x19 のひらがなに `ime_on=false` を返した読みが
+    /// `ObserverPoll(false)` を書いて belief を OFF に倒した（BUG-219）。CI・実機の制御した測定では再現できなかったので、
+    /// 次に起きたときに、読んだ窓のクラス・conv・読み取り方針・直前のキー・フォーカス変更からの時間・共有メモリの鮮度を残す。
+    /// 読んだ窓のハンドルは、直前の `read_ime_state_full: focused_hwnd=` 行（debug）を見る。
+    fn ir_note_imm_vs_shm(
+        &mut self,
+        strategy: ImeReadStrategy,
+        ime_snap: Option<&crate::ime::ImeSnapshot>,
+    ) {
+        use crate::state::mozc_shm::{imm_vs_shm, ImmVsShm};
+        let Some(snap) = ime_snap else {
+            return;
+        };
+        let shm = self.platform_state.ime.mozc_shm_view();
+        let ImmVsShm::Disagree {
+            imm_open,
+            shm_open,
+            shm_age_ms,
+            shm_expired,
+        } = imm_vs_shm(snap.ime_on, shm)
+        else {
+            return;
+        };
+        let now_ms = crate::hook::current_tick_ms();
+        let last = self.platform_state.gate.last_imm_vs_shm_log_ms;
+        if last != 0 && now_ms.saturating_sub(last) < 1000 {
+            return;
+        }
+        self.platform_state.gate.last_imm_vs_shm_log_ms = now_ms;
+        let since_key_ms = now_ms.saturating_sub(self.platform_state.gate.last_hook_activity_ms);
+        let since_focus_ms = now_ms.saturating_sub(self.platform_state.focus.last_focus_change_ms);
+        tracing::info!(
+            "[imm-vs-shm] imm_open={imm_open} shm_open={shm_open} shm_age_ms={shm_age_ms} shm_expired={shm_expired} \
+             conv={:?} romaji={:?} class={:?} tsf_native={} timed_out={} strategy={strategy:?} belief_on={} \
+             explicit_intent={:?} since_key_ms={since_key_ms} since_focus_ms={since_focus_ms}",
+            snap.conversion_mode.map(|v| format!("0x{v:08X}")),
+            snap.is_romaji,
+            snap.focused_class,
+            snap.is_tsf_native,
+            snap.probe_timed_out,
+            self.platform_state.ime.effective_open(),
+            self.platform_state.ime.explicit_intent(),
+        );
+    }
+
     fn ir_stage_observe(
         &mut self,
         focus: &FocusInfo,
@@ -185,6 +233,8 @@ impl Runtime {
         self.ir_follow_external_change(ime_snap);
         // ADR-188: 物理のモードキー通過／FSM 再送出の直接観測の窓の中の読みを belief と照合して追随する。
         self.ir_follow_direct_mode_key_read(ime_snap);
+        // BUG-219 の観測（観測専用）: 読みが共有メモリと食い違った瞬間の文脈を残す。belief・actuation には触れない。
+        self.ir_note_imm_vs_shm(strategy, ime_snap);
         match strategy {
             ImeReadStrategy::SkipTyping => Self::ir_log_skip_typing_read(ime_snap),
             ImeReadStrategy::Blacklist => {

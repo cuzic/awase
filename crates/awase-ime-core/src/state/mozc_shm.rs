@@ -1290,3 +1290,95 @@ mod tests {
         );
     }
 }
+
+// ── BUG-219 の観測: IMM の開閉の読みと共有メモリの開閉の食い違い（観測専用、belief に触れない）──
+
+/// prefetch 済みの IMM の開閉の読み（`imm_open`）と、共有メモリ（`MozcShm`）の観測の食い違い。
+///
+/// 観測専用: `awase-windows` の `[imm-vs-shm]` ログのためだけに使い、belief・actuation の判断には使わない。
+/// 実機（Mozc Readable × Chrome、2026-10-25 17:49 JST）で、conv=0x19 のひらがなの IMM が `ime_on=false` を返した
+/// 読みが `ObserverPoll(false)` を書き、belief を約 1.15 秒 OFF に倒した。CI と実機の制御した測定では再現できなかった
+/// ので、次に実機で起きたときの文脈（読んだ窓のクラス・conv・直前のキー・フォーカス変更からの時間・共有メモリの鮮度）を残す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImmVsShm {
+    /// 比べられない（IMM が読めなかった、または共有メモリの観測が無い）。
+    Skip,
+    /// 一致。
+    Agree,
+    /// 食い違い。`shm_expired` は共有メモリの観測が TTL で失効済みか（失効後の食い違いは別に扱う）。
+    Disagree {
+        imm_open: bool,
+        shm_open: bool,
+        shm_age_ms: u64,
+        shm_expired: bool,
+    },
+}
+
+/// `shm` は `(開閉, 観測からの経過 ms, 失効済みか)`。
+#[must_use]
+pub const fn imm_vs_shm(imm_open: Option<bool>, shm: Option<(bool, u64, bool)>) -> ImmVsShm {
+    let (Some(imm_open), Some((shm_open, shm_age_ms, shm_expired))) = (imm_open, shm) else {
+        return ImmVsShm::Skip;
+    };
+    if imm_open == shm_open {
+        ImmVsShm::Agree
+    } else {
+        ImmVsShm::Disagree {
+            imm_open,
+            shm_open,
+            shm_age_ms,
+            shm_expired,
+        }
+    }
+}
+
+#[cfg(test)]
+mod imm_vs_shm_tests {
+    use super::*;
+
+    #[test]
+    fn skips_when_either_side_is_missing() {
+        assert_eq!(imm_vs_shm(None, Some((true, 10, false))), ImmVsShm::Skip);
+        assert_eq!(imm_vs_shm(Some(true), None), ImmVsShm::Skip);
+        assert_eq!(imm_vs_shm(None, None), ImmVsShm::Skip);
+    }
+
+    #[test]
+    fn agrees_when_both_say_the_same() {
+        assert_eq!(
+            imm_vs_shm(Some(true), Some((true, 10, false))),
+            ImmVsShm::Agree
+        );
+        assert_eq!(
+            imm_vs_shm(Some(false), Some((false, 900, true))),
+            ImmVsShm::Agree
+        );
+    }
+
+    /// BUG-219 の形: 共有メモリは開、IMM の読みは閉。
+    #[test]
+    fn reports_the_bug_219_shape_with_the_shm_age() {
+        assert_eq!(
+            imm_vs_shm(Some(false), Some((true, 340, false))),
+            ImmVsShm::Disagree {
+                imm_open: false,
+                shm_open: true,
+                shm_age_ms: 340,
+                shm_expired: false,
+            }
+        );
+    }
+
+    #[test]
+    fn keeps_the_expired_flag() {
+        assert_eq!(
+            imm_vs_shm(Some(true), Some((false, 1200, true))),
+            ImmVsShm::Disagree {
+                imm_open: true,
+                shm_open: false,
+                shm_age_ms: 1200,
+                shm_expired: true,
+            }
+        );
+    }
+}

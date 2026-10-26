@@ -1113,6 +1113,23 @@ impl ImeStateHub {
         self
     }
 
+    /// 共有メモリ（`MozcShm`）の観測の `(開閉, 観測からの経過 ms, 失効済みか)`。観測が無ければ `None`。
+    ///
+    /// BUG-219 の観測（`[imm-vs-shm]` ログ）専用の読み取り。belief・actuation の判断には使わない。
+    pub(crate) fn mozc_shm_view(&self) -> Option<(bool, u64, bool)> {
+        let now = self.clock.now_instant();
+        self.model()
+            .observations
+            .observation(ObservationSource::MozcShm)
+            .map(|o| {
+                (
+                    o.open,
+                    u64::try_from(o.age(now).as_millis()).unwrap_or(u64::MAX),
+                    o.is_expired(now),
+                )
+            })
+    }
+
     /// `ImeModel::effective_open()`（Engine の `ctx.ime_on` に直結する belief）に、
     /// `IntentStore`（ADR-087 §5 Phase 1'、BUG-51 追補で配線）による上書きを重ねる。
     ///
@@ -2486,6 +2503,8 @@ impl Default for FocusStore {
 #[derive(Debug)]
 pub(crate) struct GateStore {
     pub last_hook_activity_ms: u64,
+    /// `[imm-vs-shm]` ログ（BUG-219 の観測、観測専用）を最後に出した時刻（ms）。1 秒に 1 行までに絞る。判定には使わない。
+    pub last_imm_vs_shm_log_ms: u64,
     /// Ctrl+key bypass 直後 latch。
     ///
     /// Ctrl+非修飾キーが PassThrough として素通りした後、次の非修飾 non-Ctrl キー 1 つを
@@ -2535,6 +2554,7 @@ impl GateStore {
     pub(crate) fn new() -> Self {
         Self {
             last_hook_activity_ms: 0,
+            last_imm_vs_shm_log_ms: 0,
             post_bypass: ScopedOneShot::new(),
             sync_key_gate: SyncKeyGate::new(),
             half_width_alnum: crate::state::half_width_alnum::HalfWidthAlnumState::default(),
