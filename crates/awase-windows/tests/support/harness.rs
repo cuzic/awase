@@ -335,6 +335,9 @@ pub struct Harness {
     window: Option<Window>,
     /// 窓モデル: いまフォーカスの無いスレッドの擬似 IME（スレッドごとに状態を持つ）。
     parked: Vec<(u32, PseudoIme)>,
+    /// 入場したときに、直前のスレッドの擬似 IME が「開」なら開を引き継ぐスレッド(ADR-282 §1.4・O5: MS-IME 本体の Win32 EDIT →
+    /// Windows Terminal の向きで、CI で 6/6 測った振る舞いの写し。閉の向き・変換モードは引き継がない)。既定は空(引き継がない)。
+    inherit_open_threads: Vec<u32>,
     /// 窓モデル: 実測学習の表（`ImmCapabilityStore` 相当、(プロセス, クラス) ごと）。戻ってきた窓にも効く。
     learned_unavailable: Vec<(&'static str, &'static str)>,
 }
@@ -382,6 +385,7 @@ impl Harness {
             japanese_ime: true,
             window: setup.window,
             parked: Vec::new(),
+            inherit_open_threads: Vec::new(),
             learned_unavailable: Vec::new(),
         };
         h.hub.set_is_japanese_ime(true);
@@ -712,7 +716,19 @@ impl Harness {
             ),
         };
         let prev = std::mem::replace(&mut self.ime, next);
+        let prev_open = prev.state().open;
         self.parked.push((from, prev));
+        if prev_open && !self.ime.state().open && self.inherit_open_threads.contains(&to) {
+            self.ime.external_set_open(true);
+        }
+    }
+
+    /// 窓モデル: スレッド `thread` を「入場時に直前のスレッドの開を引き継ぐ」スレッドにする(ADR-282 O5 の写し)。
+    pub fn inherit_open_on_entry(&mut self, thread: u32) -> &mut Self {
+        if !self.inherit_open_threads.contains(&thread) {
+            self.inherit_open_threads.push(thread);
+        }
+        self
     }
 
     /// 現在の belief で、Engine が有効か(`Engine::compute_state`。IME ON・日本語 IME・ローマ字入力と判断できるか)。
