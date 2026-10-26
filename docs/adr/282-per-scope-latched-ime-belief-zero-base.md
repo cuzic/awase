@@ -12,10 +12,11 @@ summary: |-
   **ラッチ**し、寿命切れで別の値へ後退しない、(3) 明示操作は ON・OFF・モードを同じ型で記録し(F2 の予測も明示操作の値として持つ)、新しい信頼できる観測だけが覆す、
   (4) 観測を信頼するかは「窓の種類 × IME × 証拠源」の表で決め、読めない窓の IMM の読みは反証に使わない、(5) 不確実なとき(単位に何も無い)は、読めない窓は ON 寄り、読める窓は観測、
   (6) 明示意図があってもポーリングを止めない(BUG-151 原因③の再発を防ぐのは、ポーリングを意図から切り離すことで行う)、(7) 授権(OpenWarrant)には既定値を入れない、とする。
-  IME への書き込み(actuation)の方針は変えない(ADR-191・212 のまま)。純粋な核をまず擬似 IME の上で実装して基準の測定と比べ、shadow → 切替 → 旧の撤去の順で移る。
+  修飾付きのモードキー(BUG-221・ADR-281 の A′)も明示操作に含め、修飾の扱いを IME ごとの写像表のデータにする。
+  IME への書き込み(actuation)の方針は変えない(ADR-191・212 のまま)。設計の前提の実機の事実(保持単位・新スレッドの初期状態・修飾付きの効果など)は CI 検証バッチで一括して確かめる。純粋な核をまず擬似 IME の上で実装して基準の測定と比べ、shadow → 切替 → 旧の撤去の順で移る。
 status: |-
-  起草(2026-10-26)。所有者の判断 4 件(かなの範囲・不確実なときの既定・最後の明示操作が勝つ・窓ごとに独立)を決定として反映。
-  未レビュー(Opus の批判的レビュー待ち)。未決 U1〜U8 は所有者の確認待ち。実装はまだ(コード・テストは不変)。
+  起草(2026-10-26)。BUG-221・ADR-281 の残り(修飾付きのモードキー)を範囲に含めた(所有者判断 2026-10-26)。CI 検証バッチ(§5.5)は未実施。所有者の判断 4 件(かなの範囲・不確実なときの既定・最後の明示操作が勝つ・窓ごとに独立)を決定として反映。
+  未レビュー(Opus の批判的レビュー待ち)。未決 U1〜U9 は所有者の確認待ち。実装はまだ(コード・テストは不変)。
 related_adr:
   - "ADR-087"
   - "ADR-089"
@@ -43,6 +44,7 @@ related_adr:
   - "ADR-277"
   - "ADR-279"
   - "ADR-280"
+  - "ADR-281"
 ---
 
 # ADR-282: IME の開閉と Engine の活性の belief をゼロベースで作り直す
@@ -59,7 +61,7 @@ related_adr:
 |---|---|---|
 | D1 | belief を **IME の保持単位(スコープ)ごと**に持つ。スコープの鍵は(プロセス, スレッド)、取れなければ hwnd | 今はグローバルな `ImeModel` 1 つ + hwnd ごとの `IntentStore` + hwnd キャッシュ |
 | D2 | 各スコープは開閉軸・モード軸それぞれに **「最後に受け入れた主張(claim)」を 1 つだけ**持つ。主張は寿命切れで消えない(ラッチ) | 今は 6 段の優先順位 + 鮮度 3 秒 + `DesiredFallback` で、寿命が切れると別の値へ後退する |
-| D3 | **明示操作**(IME-ON/OFF キー・トグル・ひらがな/カタカナ/英数キー・`keys.ime_*`・Engine の `SetOpen`)は、方向・キーの種類によらず同じ型 `ExplicitOp` で主張になる。値の出所(awase が書いた/表の予測)は `certainty` に持つ | 今は `UserImeSetIntent`(OFF キーなど)と `KeyEffectPredicted`(F2 など)に分かれ、F2 の ON だけ窓切替で消える(A1・A9、BUG-223) |
+| D3 | **明示操作**(IME-ON/OFF キー・トグル・ひらがな/カタカナ/英数キー〈修飾付きを含む。§4.13、BUG-221・ADR-281〉・`keys.ime_*`・Engine の `SetOpen`)は、方向・キーの種類・修飾によらず同じ型 `ExplicitOp` で主張になる。値の出所(awase が書いた/表の予測)は `certainty` に持つ | 今は `UserImeSetIntent`(OFF キーなど)と `KeyEffectPredicted`(F2 など)に分かれ、F2 の ON だけ窓切替で消える(A1・A9、BUG-223) |
 | D4 | 主張を覆せるのは、**より新しい明示操作**か、**受け入れ基準を満たす新しい観測**だけ。観測の受け入れは「窓の種類 × IME × 証拠源」の信頼表と、柵(settle 170ms・字形 1300ms・フォーカス epoch+hwnd)で決める | 今は Medium 合意・High 単独なら窓の種類を問わず `derive_any` が勝つ(BUG-219・223(a)) |
 | D5 | **不確実なとき**(スコープに主張が無い)の既定: 読めない窓は **ON(かな)寄り**、読める窓は最初の観測。測定済みの事実(新しいスレッドは閉で始まる、ADR-191 付属の CI 実測)は既定より強い「実測の事前」として使う | 今は前窓の `desired_open` を持ち越す / ON の HeuristicDefault / OFF の HeuristicDefault が窓の種類ごとに混在(A5・A9) |
 | D6 | **ポーリングを明示意図から切り離す**。読める窓では、明示操作の直後も settle 後の読み直しと周期の poll を続ける(打鍵中の読み取りの抑止〈typing-idle〉は残す) | 今は明示意図があると `reschedule_ime_refresh` が止まる(`crates/awase-windows/src/runtime/mod.rs:1196,1217`) |
@@ -139,6 +141,7 @@ O4 の「窓ごと」は、本 ADR では **「IME が実際に状態を持つ�
 | I7 | 既定は書き込みを授権しない: スコープの主張の根拠が D5 の既定のとき、`issue_open_warrant` に渡す awase 自身の意図は `None` | 既定だけのスコープで、授権の入力(`warrant_context` 相当)を検査する。書き込み命令(ハーネスの `WriteCommand`)の件数が今より増えないこと | 違反 0、書き込み件数は今以下 |
 | I8 | 例外: `user_enabled` が偽なら、どの列でも Inactive(`UserDisabled`) | 列の途中で `user_enabled` を切り替える事象をハーネスに足す(今は常に真。§5.2 の拡張) | 違反 0 |
 | I9 | Engine が非活性になった瞬間に保留中のキーを flush する(今の `check_active_transition`) | ハーネスは `on_input` を呼ばないので、今は Engine の単体テストで守る(§5.2) | 今のテストを維持 |
+| I10 | 修飾付きのモードキー(Ctrl・Shift・Alt を押したままの 0xF0〜0xF4)でも、効果が「開 ∧ かな」に変わったなら、その KeyDown の直後に Engine は Active(最初の NICOLA 打鍵が素の英字にならない。BUG-221)。逆に、効果が無い修飾付きの打鍵(MS-IME 本体の Shift/Alt+F2 は開かない)で Engine を Active にしない(I2 側) | 格子の「届いた VK × 修飾」のセルごとに、閉の状態から `key_mods(vk, mods)` を 1 回流し、直後の `activation()` と擬似 IME の真を比べる(I1・I2 のオラクルに修飾付きの事象を足す)。**今の擬似 IME は修飾を知らない**(`harness.rs` の `key_ctrl` の doc「擬似 IME は修飾を知らない」、`tools/e2e/ime_key_matrix/grid-tables/*.json` に修飾付きのセルが無い〈`grep -ciE 'ctrl\|shift\|alt'` が 3 ファイルとも 0〉)ので、修飾付きのセルを足すハーネス拡張が要る(§5.2) | 違反 0。(team-lead の指示書の「I5」に当たる。本 ADR では I5 を古い観測の柵に使ったので I10 とした) |
 
 ### 2.1 0 にできない違反(弱点として明記する)
 
@@ -410,6 +413,47 @@ ADR-191 決定 3 は、打鍵時の予測を `UserImeSetIntent` にしなかっ�
   逆に settle 後の信頼できる観測には負ける(ADR-191 決定 3「観測は確認と訂正」と同じ)。
 - 予測を観測なしで連鎖させる(開ループ)のは読めない窓だけ、という ADR-191 決定 3 の注意はそのまま当てはまる(読める窓では毎回照合する)。
 
+### 4.13 モードキーの効果の表(修飾付きを含む。BUG-221・ADR-281 を本 ADR に含める)
+
+所有者の判断(2026-10-26、team-lead 経由): 「BUG-221 の残りは、ゼロベース設計の中でやる」。
+
+**今の状態(origin/develop `ebd744b6d` で確認)**: BUG-221(`docs/known-bugs/BUG-221.md`)は ADR-281 の A′ で修正済み・所有者の実機確認済み(Windows Terminal × GJI、Ctrl+F2)。
+A′ の範囲(ADR-281 D1 の表): GJI/Mozc 系(`ActiveImeKind::GoogleJapaneseInput`)は 0xF0〜0xF4 × Ctrl・Shift・Alt(とその組み合わせ)を素のキーとして予測、
+Microsoft IME 本体(CLSID で本体と同定できたときだけ)は 0xF2 × Ctrl だけ、それ以外は抑止。Win 付きは抑止。判定は物理キーではなく届いた VK(日本語 106/109 では Shift+ひらがな が 0xF1 等)。
+根拠は Mozc `keyevent_handler.cc:330-352`(この 4 キーの修飾を全部消す)と CI(e2e-ime `sc-adr281-*`、run 40272737475 で 16 構成 × 3 回、拡大後 run 40274039585 で 7 構成 × 3 回。いずれも ADR-281 の記載)。
+ADR-281 の未実施: M2 の残り(MS-IME 本体の 0xF0・0xF1・0xF3・0xF4 × 修飾)、D2'(GJI の Converter I/O による確認)。
+
+**新設計での扱い**:
+1. **明示操作の定義に含める**: 修飾付きのモードキーも、A′ の表で効果が決まるセルなら、素のキーと同じく `ExplicitOp{certainty: Predicted}`(開閉・モード)になり、「最後の明示操作が勝つ」の対象(D3)。
+   表で決まらないセル(未測定・非決定)は明示操作にしない(観測に委ねる。ADR-191 決定 3 の「非決定セルは観測に委ねる」と同じ)。
+2. **効果の表を設計の入力(データ)にする**: 鍵は `(IME の種類, キー表のプリセット, 届いた VK, 修飾の組, 状態〈開閉・変換モード・段階〉)`。今のコードは修飾を表の外の述語
+   (`plan_key_effect_track` の `ModeKeyModifiers::{Unknown, DroppedByGjiMozc, MsImeNativeCtrlOnHiragana}`)で扱い、表(`grid-tables/{atok,msime,msime-native}.json` から生成)には修飾の列が無い。
+   新設計では「修飾 → 素のセルへ写す/抑止する」の規則を、IME の種類ごとのデータ(写像表)として核に持ち、述語を 1 か所にする。写像表の各行には根拠の種類を付ける:
+   (a) 実測の格子(CI の `sc-adr281-*`、将来は格子に修飾の列を足す)、(b) IME の仕様の読み(Mozc のソース。GJI はクローズドなので (a) で裏付ける)、
+   (c) IME の設定の読み取り(GJI の `config1.db`・MS-IME 本体のレジストリ。今の `key_effect_keymap`。修飾付きの割り当てを持てる IME があればここで読む)、
+   (d) 注入学習(ADR-195。ただし ADR-281 の却下案のとおり、利用者の機械で修飾付きを注入すると Alt+F4・単語登録・ローマ字/かな切替などを踏むので、修飾付きは学習しない)。
+   根拠が (a)〜(c) のどれも無いセルは抑止(今の `Unknown`)。
+3. **値の確定・取り消し(D2')**: ADR-281 D2' の「GJI では F2 の後の Converter I/O(`gji_last_write_ms`)が増えたかで予測を確定・取り消す」は、新設計では「読めない窓 × GJI 系でも使える、
+   開閉軸の観測の源」の候補になる(信頼表の 1 列)。待ち時間の定数が実測を要し(tuning-constants)、DirectInput の行の IMEOn 以外のキー(変換 = Reconvert)でも I/O が出る(ADR-281 の注意)。
+   **まず観測のみ**(journal に「予測と I/O の一致・不一致」を残すだけ)で、信頼表に入れるかは §5.5 の測定の後に決める。
+4. **ADR-281 の Shift の注意を引き継ぐ**: ADR-187 の追随(`mode_key_pass.rs` の `mode_key_follow_admits_modifiers`)は Shift で止まるので、読める窓での外れの訂正は
+   `may_change_ime` の 20ms の読み直しに頼る(ADR-281 D1 の記述)。新設計の D6(ポーリングを意図から切り離す)では settle 後の読み直しが常に予約されるので、この穴は狭まる見込み(未検証)。
+
+**予測の入力を作り直す(別件の報告の扱い)**: team-lead からの報告「`ObservedEisu` 中の F2 は no prediction で Engine が活性に戻らない(BUG-221 とは別件)」。
+BUG-222(未マージ、`origin/fix/half-width-exit-on-hiragana-key`、棚卸し 02-ledger)でも「F2 6 回とも no prediction」と記録されている。本 ADR の起草時に読んで確かめたこと:
+- `kp_predict_key_effect`(`crates/awase-windows/src/runtime/key_pipeline.rs:1908`)の `PredictInput` は、`open` = `ime.effective_open()`(`IntentStore` の上書きを含むグローバルな値)、
+  `mode` = グローバルな `input_mode()`、`conv_raw` = `belief.prev_conversion_mode()`、`track` = `key_track()` を**持続半角英数トグル中は変換モードを捨てて**渡す
+  (`without_conv_while_half_width_alnum`、ADR-244 M-2・BUG-192)、ほかに `unreadable`・`observable_toggle_guard`(ADR-260)。
+- `predict_in_table`(`crates/awase-key-effect/src/state/key_effect_predictor.rs:555`)は、変換モードを `track.conv` → `conv_raw` → (`mode` が `ObservedEisu` なら `C10`、でなければ `C19`)の順で決め、
+  `observed_conv_is_unrepresentable_kana`(BUG-212)なら `None` を返す。段階 `Stage::Indeterminate`(BS の後、BUG-211)は次のモードキーを予測しない。
+- GJI の表(`grid-tables/atok.json`・`msime.json`)には `on-c10-none|hiragana → ON/0x19` のセルがある(`python3` で JSON を読んで確認)。`msime-native.json` には `on-c10-*|hiragana` のセルが無い。
+- よって GJI で `ObservedEisu`・開・段階なしなら予測が出るはずで、「no prediction」になる原因は、`conv_raw`(古い `prev_conversion_mode` が表せない値)・段階(`Indeterminate`)・
+  `observable_toggle_guard`・開閉の入力(`effective_open` が偽)のどれかと考えられる。**どれかは未確認**(実機のログを読んでいない。BUG-222 のログの `open=`・`composing=` の値と、
+  その時点の `prev_conversion_mode` を見れば絞れる)。
+- 新設計では、予測の入力をフォーカス中のスコープの主張から作る: `open` = スコープの開閉の主張、`mode` = スコープのモードの主張、`track` = スコープの行の追跡、`conv` = スコープの追跡か、
+  そのスコープの直近の受け入れた観測の変換モード(他のスコープ・古い文脈の `prev_conversion_mode` を使わない)。半角英数トグル中の扱い(ADR-244 M-2)は変えない(取り下げ #6)。
+  これで「入力がグローバルな値と窓ごとの値の混在」になる経路は無くなるが、上の原因が `Indeterminate` やトグルの規則にある場合は直らない。V0 で BUG-222 の列をハーネスに入れ、原因を特定してから決める。
+
 ## 5. 検証計画
 
 ### 5.1 基準の測定(PR #857)との関係
@@ -421,6 +465,37 @@ ADR-191 決定 3 は、打鍵時の予測を `UserImeSetIntent` にしなかっ�
 - ハーネスのスレッドの扱いが結果を左右する: 新設計の鍵はスレッドなので、shared(全窓が同じスレッド)では全窓が 1 つのスコープになり、per-thread では窓ごとに別のスコープになる。
   **基準の測定の主の設定(shared)は、CI 実測(保持単位はスレッド)と合わない可能性がある**(基準の測定は BUG-223 の記述から shared を主にした)。新設計の評価は per-thread を主にし、
   shared は感度の確認として並べる。
+
+#### 5.1.1 基準の測定の数値(再確認した値)と、違反の型ごとの新設計の対応
+
+数値は `origin/test/belief-engine-invariant`(PR #857、HEAD `37fc37e75`)の `docs/tasks/belief-engine-invariant-baseline-2026-10-26.md` と golden を、本 ADR の起草者が `git show` で読んで引いた。
+
+| 設定 | 範囲 | I1 違反(T=0) | 2000ms 事象なしで残る | poll が 1 回届いても残る | 最小列 | うち「awase の操作・窓切替・正しい観測だけ」 |
+|---|---|---:|---:|---:|---:|---:|
+| atok shared | 全字母 19 種・長さ 3 | 315 | 315 | 290 | 31 | 18 |
+| msime shared | 同 | 405 | 405 | 375 | 65 | 36 |
+| msime-native shared | 同 | 405 | 405 | 375 | 65 | 36 |
+| msime shared | 小さい字母 7 種・長さ 4 | 136 | 136 | 136 | 4 | 4 |
+| msime per-thread | 核の字母 12 種・長さ 3 | 9 | 9 | 5 | 9 | 6 |
+
+- I2(参考): 核の字母・長さ 3 で atok 43・msime 35・msime-native 35・msime per-thread 57。最小列の大半は嘘の観測(`obs:conv-infer-open`)を含む。
+- 違反が出た時点の窓(msime shared): chrome 93・relay 93・wezterm 93・xaml 30・explorer(std) 84・explorer(imm32-unavailable) 12。読めない窓で終わる違反は poll が届いても 100% 残る。
+- BUG-223 の 4 本は msime・msime-native の shared で I1 違反(`desired-fallback`)。atok(F2 が閉から開けない格子)と per-thread では違反にならない。
+
+違反の型(msime shared の分類。T=0 の件数)ごとの対応:
+
+| 型(`decided_by`) | 件数 | 何が起きているか(基準の測定の説明) | 新設計での扱い | 期待 |
+|---|---:|---|---|---|
+| `belief-off/desired-fallback` | 297 | ON の予測(F2・F0・ON キー・半角/全角)が窓切替で捨てられ、前窓の `desired_open`(false)に戻る。最小列 `key:hiragana > focus:wezterm` | グローバルな `desired_open` が無い(D1)。予測は明示操作としてスコープに残る(D3)。shared(同じスレッド)では窓切替後も同じスコープの ON が効き、per-thread では新しいスコープの記録/既定が効く | 0(「awase の操作・窓切替・正しい観測だけ」の列)。外部変更を含む列は §2.1 |
+| `belief-off/derive-high` | 30 | 起動時に揃えた High(ImmCross の閉)が鮮度 3000ms の間、後の Medium より勝つ。最小列 `external-on` | 読める窓では新しい受け入れ可能な観測が勝つ(§4.4)。ただし U7 の「High の後の Medium 単独は 2 つそろうまで待つ」を採ると、poll が 2 回届くまで残る(約 1 秒、500ms 周期と仮定。未実測)。`external-on` は外部変更なので、観測が届くまでは原理的に残る | 外部変更の列なので 0 は目標にしない。poll が届いた後に残らないこと |
+| `belief-off/explicit-intent` | 23 | 明示意図の `desired_open=false` が真の ON と食い違ったまま残る | 明示操作の OFF の後に真が ON に変わったのは外部変更か予測の外れ。読める窓では settle 後の観測が覆す(D4・D6)。読めない窓では残る(§2.1) | 読める窓で poll 後に 0、読めない窓は件数を報告 |
+| `belief-off/most-recent-trusted` | 21 | 観測が鮮度切れでフォールバックした値が閉 | 鮮度切れでの後退そのものが無い(I6)。主張は最後に受け入れた証拠のまま。閉の観測を受け入れた後に真が開に変わった(外部変更)なら残る | 外部変更を含まない列で 0 |
+| `belief-off/key-effect` | 18 | 予測の閉が真の ON を覆っている(外部変更との組み合わせ) | 予測の閉は明示操作。外部変更で真が変わったなら §2.1 | 外部変更の列なので件数を報告 |
+| `belief-on-but-engine-off`(mode=`ObservedEisu`) | 10 | belief は開だが入力モードが半角英数の観測のまま | モード軸もスコープの主張。F2 などのモード軸の明示操作で `Kana` になる(§4.13 の予測の入力の作り直し)。半角英数トグル中の規則は変えないので、トグル由来の型は残りうる | 予測の入力の作り直しで減るか V0 で確かめる |
+| `belief-off/derive-medium` | 6 | Poll の単独の false(嘘の観測 `poll-LIE`) | 読める窓の Poll は信頼表で「反証可」なので、嘘の Poll 単独は主張を覆す(U7 で「Medium 単独は 2 つそろうまで待つ」を採れば覆さない) | U7 の選択で変わる。件数を報告 |
+
+- `key:ime-on`・`key:hankaku-zenkaku` で始まる最小列は、ハーネスが本番と違う経路(予測)で流している(§1.2)。新設計では本番の経路(`Written` の明示操作)も予測の経路も同じ `ExplicitOp` になるので、この経路の違いは新の評価には影響しない(旧の評価にだけ影響する)。
+- 長さ 5〜6 の全列挙は基準の測定でも未実施。V0 では長さ 4 の全列挙(小さい字母)と、ランダム探索(長さ 8〜12)で新を見る。
 
 ### 5.2 ハーネスの拡張(擬似窓が写していないもの)
 
@@ -434,6 +509,8 @@ ADR-191 決定 3 は、打鍵時の予測を `UserImeSetIntent` にしなかっ�
 | 周期の poll・settle 後の読み直し(D6) | 読める窓で I1 が治るまでの時間 | 事象として足す(基準の測定の「優先 (3)」) |
 | 読めない窓の IMM の嘘(BUG-223(a)) | 信頼表の「反証不可」を検査する | 字母に足す(基準の測定の「優先 (2)」) |
 | `user_enabled` の切り替え | I8 | 事象として足す |
+| 修飾付きのモードキー(擬似 IME は修飾を知らない。格子に修飾の列が無い) | I10。MS-IME 本体の Shift/Alt+F2 は開かない(ADR-281 の CI)のに、今の擬似 IME は素の F2 として開く | **ハーネス拡張が要る**: 擬似 IME の遷移表に「届いた VK × 修飾 → 素のセルへ写す/効果なし」の行を足す。初期値は ADR-281 の CI の結果(GJI は F2・F3 × none/Ctrl/Shift/Alt で開く、MS-IME 本体の F2 は Ctrl だけ開く)。未測定のセル(MS-IME 本体の 0xF0・0xF1・0xF3・0xF4)は §5.5 の測定で埋める |
+| 予測の入力(`unreadable`・`observable_toggle_guard`・`conv_raw`) | ハーネスの `PredictInput` は `unreadable: false`・`observable_toggle_guard: false` 固定(`harness.rs` の `key_mods`)で、本番と違う | §4.13 の予測の入力の作り直しを検査するのに、本番と同じ入力の作り方を写す。BUG-222 の列(lang-detect が入れたトグル中の F2)を入れる |
 | `Engine::on_input`(打鍵の出力)・flush | I9 | Engine の単体テストで守る(ハーネスには入れない) |
 | TSF の composition・cold/warm・実 IME の遅れ | 新設計は扱わない | 実機 CI(`sc-*`)と所有者の実機 |
 
@@ -452,6 +529,25 @@ ADR-191 決定 3 は、打鍵時の予測を `UserImeSetIntent` にしなかっ�
 3. **終わりの判定**: I1(核の列)0、BUG-223 の 4 本が新で違反なし、I3〜I7 の検査が全部通る、台帳の回帰列が全部通る、§5.2 の拡張のうち「必要」の行がそろっている。
    所有者が §2.1 の残る違反(既定の区分・外部変更)の件数を見て受け入れる。
 4. 戻し方: 本番に配線していないので、モジュールを消すだけ。
+
+### 5.5 CI 検証バッチ(設計が前提にしている実機の事実をまとめて確かめる。今は実施しない)
+
+所有者の了承(2026-10-26、team-lead 経由): 「ゼロベース設計の文脈の中で、必要なら CI を使った検証をまとめてやる」。本 ADR の起草後に一括で実行する。
+設計の判断が分かれる未確認の事実を優先した。順番は優先度順。構成名は案。
+
+| # | 何を測るか | 構成(既存のハーネス) | 合否・読み方の基準 | 結果で設計がどう変わるか | 実施に要る変更(粗い規模) |
+|---|---|---|---|---|---|
+| B1 | **IME の開閉・変換モードの保持単位**(スレッドか、窓か、全体か)を、**実アプリ**(Chrome・Edge・Windows Terminal・WezTerm・VS Code)と、`SPI_GETTHREADLOCALINPUTSETTINGS` = 0/1 の両方で。GJI(ATOK/MS-IME プリセット)・MS-IME 本体・Mozc。加えて、フォーカス hwnd のスレッドと、IME の状態が切り替わる単位が一致するか(U4) | 既存の結果は `191-gji-state-scope-spec.md` の CI(自前の窓、SPI=0)。そのプローブ `gji_state_scope_probe.rs` とブランチ `ci/e2e-gji-scope` は**今は無い**(`git branch -r` に無く、`git log --all -- crates/awase-windows/examples/gji_state_scope_probe.rs` も空)。実アプリの窓の作り方は e2e-ime の `sc-bug149-chrome-*`(実 Chrome)・`wt-probe.yml`(Windows Terminal)にある | 各セル(IME × アプリ × SPI × 移動の種類〈同じ窓の別欄・同じスレッドの別窓・別スレッド・別プロセス〉)で、移動先・戻った後の開閉・変換モードを 2 回以上一致して読めること。読めない窓は TSF の compartment を読む | スレッド単位なら D1 のまま。窓(hwnd)単位なら鍵を hwnd に変える(案 B を見直す)。全体共有の構成があれば、その構成では「持ち越し」が正しいので、スコープの粒度を IME・設定ごとのデータにする(リスク 3)。shared/per-thread のどちらを基準の測定の主にするかもこれで決まる | プローブの作り直し(examples に 1 本、数百行)、ワークフロー 1 本(`e2e-gji-scope.yml` 相当、`.github/workflows/`)、集計スクリプト(`tools/e2e/ime_key_matrix/` に 1 本)。実アプリを起動する部分は e2e-ime の既存の起動部品を流用 |
+| B2 | **新しいスレッドの窓は閉で始まるか**(§4.6 の実測の事前、U2)を、同定済み MS-IME 本体 × 新スレッドと、実アプリ(Chrome の新しい窓・新しいタブ)で | B1 と同じプローブ。`191-gji-state-scope-spec.md` §3.2 は「同定済み MS-IME 本体 × 新スレッド=閉の経路は CI で一度も通っておらず未検証」と書いている | 各構成で 3/3 閉 | 閉なら実測の事前を使う(U2 の提案どおり)。開で始まる構成があれば、その構成は実測の事前から外して O2 の既定(ON)に戻す | B1 に含める |
+| B3 | **窓切替から IME の状態が確かになるまでの遅れ**(読める窓で最初の受け入れ可能な観測が届くまで。読めない窓で MozcShm・ADR-205 の監視窓・字形が届くまで) | e2e-ime の既存のフォーカス系(`sc-focusrestore-*` の `typing_stress --mode=focus-restore`)に、awase の journal の「窓切替 → 最初の受け入れた観測」の時刻差を集計する判定を足す | 構成ごとの分布(中央値・最大)を出す。合否ではなく測定 | 読める窓で数百 ms 以内なら、§4.6-2(読める窓は最初の観測)の待ちの間の誤りは小さい。長ければ読める窓の既定も決める必要がある。読めない窓で証拠が来ない時間は、§10 リスク 9(寿命の無い主張の最悪持続時間)の見積もりに使う。**TTL の根拠にはしない**(新設計は TTL を持たない) | 判定スクリプト 1 本(`tools/e2e/` に数十〜百行)、e2e-ime の構成の追加(数行) |
+| B4 | **BUG-221 の残り (1)**: MS-IME 本体の 0xF0 英数・0xF1 カタカナ・0xF3/0xF4 半角/全角 × Ctrl(と Shift・Alt)の効果を、閉と開の両方の状態から(ADR-281 D2・M2) | e2e-ime の `sc-adr281-nat-*`(`--chord=<修飾VK>,<キー>`、`check_modifier_mode_key.py`)をキーの数だけ広げる | 各セル 3/3 一致。素のセル(`msime-native.json`)と一致するかを見る。Ctrl の KeyUp より後に処理された競合(ADR-281 D2)が出ないこと | 一致したセルを §4.13 の写像表に足す(MS-IME 本体の修飾の行)。一致しないセルは抑止のまま。擬似 IME の修飾の行(§5.2)の初期値にする | `e2e-ime.yml` の構成の行の追加(十数行)、判定スクリプトのキーの追加 |
+| B5 | **BUG-221 の残り (2)**: 修飾付き F2 の直後の最初の NICOLA 打鍵が漏れない(素の英字にならない)ことを**文字レベル**で(今の CI は予測と活性化までで、文字は見ていない。ADR-281 の CI の表) | `sc-adr281-awase-*` に、F2 の直後に NICOLA の打鍵(例: 「た」= E の位置)を流し、窓の文字を読む判定を足す。実アプリは Windows Terminal(BUG-221 の窓)と自前の窓 | 3/3 で期待の仮名が入り、素の `E` が出ない | 漏れるなら A′ の予測が KeyDown の時点で効いていない(Engine の再評価の順序)ので、§4.13 の明示操作の反映の時点を見直す | 構成の追加と文字を読む判定(既存の `typing_stress` の文字照合を流用) |
+| B6 | **D2'(観測のみ)**: GJI で F2(素・修飾付き)の後に Converter I/O(`gji_last_write_ms`)が増えるかと、そのときの実 IME の開閉の一致。IME が閉のまま残った場合(A′ が外れた場合)に I/O が増えないこと。変換(Reconvert)など他のキーの I/O との区別 | e2e-ime の GJI 構成で awase を起動し、journal に「予測・I/O の増分・実 IME の読み」を並べて記録する(belief は書かない) | 一致率と、I/O が来るまでの遅れの分布(待ち時間の定数を決める実測。tuning-constants) | 一致率が高く遅れが短ければ、読めない窓 × GJI 系の開閉の観測の源として信頼表に入れる(§4.13-3)。そうでなければ入れない | awase 側に観測専用のログ(journal の 1 項目、数十行)、判定スクリプト 1 本 |
+| B7 | **TSF 窓の ON キャッシュ復元の効き方**(BUG-128・218。基準の測定の偽陽性の疑い)。今の develop で、TSF 窓へ「戻る」列(A で F2 → B → A)と、BUG-128・218 の列で、実際に Engine が戻るか | e2e-ime の既存の実 Chrome・Windows Terminal の構成に、フォーカスの往復の手順を足す | 旧(develop)の結果を記録するだけ(合否なし) | 旧で救われる列は、基準の測定の I1 の数から除いて旧新を比べる(新が旧より悪くならないかの判定の基準線)。新の V1 shadow でも同じ列を流し、新が救えない列があれば §4.5 を見直す | 構成の追加(数行〜十数行)。新の確認は V1 の段階で同じ構成を使う |
+| B8 | **D6 の副作用**: 明示意図があっても読める窓でポーリングを続けたとき、打鍵中のクロスプロセス読み取りで「@」(BUG-113 系)が出ないか | V1 以降(新の挙動が本番にあるとき)に、e2e-ime の GJI × Windows Terminal の構成(`sc-*`)で打鍵ストレス(`ts-*`)を回す | 「@」0 件(旧と同じ) | 出るなら、意図の間の読み取りを typing-idle より強く抑える条件を足す(新しい定数なら実測を添える) | V1 の段階で実施。構成の追加のみ |
+
+- B1・B2 は D1・D5 の前提そのもので、結果次第で設計が変わるので最初に回す。B4〜B6 は §4.13 の写像表の中身を埋める。B3・B7 は旧新の比較の基準線。B8 は V1 以降。
+- いずれも GitHub Actions の windows-latest(Windows Server)での結果で、所有者の実機(Windows 11、利用者のキー設定)とは違いうる(`191-gji-state-scope-spec.md` §4 と同じ限界)。
 
 ## 6. 台帳との照合(棚卸し 02-ledger の各規則)
 
@@ -472,6 +568,8 @@ ADR-191 決定 3 は、打鍵時の予測を `UserImeSetIntent` にしなかっ�
 | BUG-193・ADR-245 | 離脱時に書かず、戻った窓の最初の打鍵で復元 | 引き継ぐ | §4.10。belief を離脱時に戻す操作は不要になる |
 | BUG-194・200・207 | raw TSF リテラル回収の宛先照合・Mozc 時の監視外し | 引き継ぐ | 出力・回収の層。BUG-200(belief ON × 実 IME OFF で最初の打鍵が消える)は §4.6 の既定 ON で機会が増えうる(弱点) |
 | BUG-205・211・212、ADR-281 | 予測器の段階規則・表 | 引き継ぐ | 表の予測は明示操作の値になる。外れが窓切替をまたいで残る分、影響が長くなる(§2.1) |
+| BUG-221・ADR-281 | GJI/Mozc 系の 0xF0〜0xF4 × Ctrl・Shift・Alt と MS-IME 本体の 0xF2 × Ctrl を素のキーとして予測(A′)。Win 付きは抑止。判定は届いた VK | 引き継ぐ+範囲を本 ADR に含める | 修飾付きも明示操作(§4.13-1)。述語を IME ごとの写像表のデータにし、根拠の種類を持たせる(§4.13-2)。残り(MS-IME 本体の 4 キー・文字レベルの確認・D2')は §5.5 の B4〜B6 |
+| (別件の報告)`ObservedEisu` 中の F2 が no prediction(BUG-222 のログにも記録) | (規則なし。原因未特定) | 確認の対象 | 予測の入力(`PredictInput`)がグローバルな値と窓ごとの値の混在。新設計ではスコープの主張から作る(§4.13 の最後)。原因(`conv_raw`・`Indeterminate`・`observable_toggle_guard`・開閉の入力)は未確認 |
 | BUG-218 | 入場先と同じプロセスで押された、記録より新しい明示 OFF があれば復元しない | 代替で守る | 押下時点の前面のスコープに記録し、新しいほうが勝つ(§4.3-1・§4.5)。対称(ON にも効く) |
 | BUG-219 | Mozc 系を `[direct-follow]` から外す | 代替で守る | 信頼表で GJI 系の読めない窓の IMM を反証不可(§4.4) |
 | BUG-220 | 戻り待ちのある窓で英数と判定したら戻り待ちから立て直す | 引き継ぐ | §4.10 |
@@ -536,6 +634,9 @@ ADR-191 決定 3 は、打鍵時の予測を `UserImeSetIntent` にしなかっ�
 | `crates/awase-ime-core/src/state/ime_model.rs`・`ime_event.rs`・`intent_store.rs`・`open_warrant.rs`・`drift_correction.rs` | 新事象の追加、入力の差し替え、V3 で撤去 | 中〜大 |
 | `crates/awase-windows/tests/architecture_guard.rs`、`lints/ime_event_guard` | 書き込み点の固定を新の構造に合わせる | 中 |
 | `src/engine/`(ルート crate) | 変えない(`InputContext` の作り方だけが変わる) | 0 |
+| `crates/awase-key-effect/src/state/key_effect_predictor.rs`(`plan_key_effect_track`・`ModeKeyModifiers`・`PredictInput`) | 修飾の述語を IME ごとの写像表のデータへ(§4.13-2)、予測の入力をスコープの主張から作る | 中 |
+| `crates/awase-windows/tests/support/pseudo_ime.rs`・`harness.rs` | 擬似 IME に修飾の行、本番と同じ予測の入力 | 中 |
+| CI 検証バッチ(§5.5) | プローブの作り直し・`e2e-ime.yml` の構成の追加・判定スクリプト・観測専用のログ | 中(B1 のプローブが最大、数百行) |
 
 ## 9. 却下した案
 
@@ -587,6 +688,7 @@ ADR-191 決定 3 は、打鍵時の予測を `UserImeSetIntent` にしなかっ�
 | U5 | JIS かな入力方式(`ObservedKana`)のときの Engine | OFF のまま(NICOLA はローマ字を出すので、かな入力方式では文字が化ける)。O1 の「かな入力の全般」がかな入力方式を含む意味なら、出力方式の変更が要り本 ADR の範囲外 |
 | U6 | `compute_state` の外にある入口(`app_disabled`・lang-detect の保持・戻り待ちの保持・`FocusTransition` の settle)を本 ADR で 1 か所にそろえるか(X7) | そろえない(本 ADR は belief の入力だけを変える)。理由の journal の統一は別 ADR |
 | U7 | 信頼表の未確定のセル(tsf-native/imm32-unavailable × MS-IME 本体の IMM、直接観測の開閉軸)と、「High の主張の後の Medium 単独」を何で覆すか | V0 の全列挙と実機 CI で決める。Medium 単独は 2 つそろうまで待つ案(BUG-219 の型)を初期値にし、BUG-189 の列で悪化しないことを確かめる |
+| U9 | 修飾付きのモードキーの写像表に、IME の設定の読み取り(根拠 (c))で修飾付きの割り当てを足す範囲。MS-IME 本体のキー設定で修飾付きの割り当てを変えた利用者をどう扱うか | 今は扱わない(A′ の範囲 + §5.5 B4 で測れたセルだけ)。設定に修飾付きの割り当てがあれば、そのキーは抑止する(誤予測より観測待ちを選ぶ) |
 | U8 | lang-detect・半角英数トグル・パニックリセットなど awase が起こした明示操作を、利用者の操作と同じ重さにするか | 同じ重さ(O3 の対称を優先)。lang-detect の誤判定の害は ADR-280 の候補(C0 等)で小さくする方向。重さを分けると「どちらが勝つか」の規則が 1 つ増える |
 
 ## 12. 所有者の判断(2026-10-26、決定)
@@ -599,5 +701,5 @@ ADR-191 決定 3 は、打鍵時の予測を `UserImeSetIntent` にしなかっ�
 
 ## 13. 基準の測定の結果で補う節
 
-基準の測定(PR #857)は起草時点で OPEN。本 ADR は PR #857 の `docs/tasks/belief-engine-invariant-baseline-2026-10-26.md` と golden(CI run 40275882156 で一致と同文書が記録)の値を引いた。
-PR #857 の字母・規模が変わったら、§1.2・§5.1 の数値をその版で引き直す。V0 で新の核を同じオラクルに当てた結果(旧新の違反の表)は、この節に追記する。
+基準の測定(PR #857)は起草時点で OPEN。本 ADR は PR #857(`origin/test/belief-engine-invariant` の HEAD `37fc37e75`)の `docs/tasks/belief-engine-invariant-baseline-2026-10-26.md` と golden(CI run 40275882156 で一致と同文書が記録)の値を引いた(違反の型ごとの対応は §5.1.1)。
+PR #857 の字母・規模が変わったら、§1.2・§5.1.1 の数値をその版で引き直す。V0 で新の核を同じオラクルに当てた結果(旧新の違反の表)は、この節に追記する。
