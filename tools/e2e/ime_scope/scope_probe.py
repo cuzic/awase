@@ -62,9 +62,19 @@ def wait_until(fn, timeout, step=0.5):
     return False
 
 
+PROCS = []
+
+
 def kill_all():
-    for im in ("typing_stress.exe", "chrome.exe", "WindowsTerminal.exe"):
-        subprocess.run(["taskkill", "/f", "/im", im], capture_output=True)
+    """自分が起動した typing_stress だけを止める(名前での一括 taskkill は、初回の CI でランナーごと止まったので使わない)。
+    Chrome・Windows Terminal は、typing_stress の shutdown と wt_vocab.close が閉じる。"""
+    for p in PROCS:
+        try:
+            if p.poll() is None:
+                p.kill()
+        except OSError:
+            pass
+    PROCS.clear()
     time.sleep(1.0)
 
 
@@ -112,6 +122,7 @@ class ProcA:
             os.remove(self.hold)
         self.proc = subprocess.Popen(ts_args(c, self.kind, log, ["--scope-role=a", f"--scope-state={self.state}",
                                                                   f"--scope-hold={self.hold}"]))
+        PROCS.append(self.proc)
         wait_until(lambda: log_has(log, "[SCOPE] A-READY") or log_has(log, "=== 完了 ==="), 120)
         recs = [r for r in ts_records(log) if r.get("type") == "scope_a"]
         if recs:
@@ -198,6 +209,7 @@ def run_b(ctx, kind, act):
         return {"ok": True, "text": text}
     log = str(ctx.out / "logs" / f"{tag}.log")
     proc = subprocess.Popen(ts_args(ctx, kind, log, ["--scope-role=b", f"--scope-act={act}"]))
+    PROCS.append(proc)
     done = wait_until(lambda: log_has(log, "=== 完了 ==="), 150)
     if not done:
         proc.kill()
