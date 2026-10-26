@@ -14,11 +14,12 @@ summary: |-
   新しい明示操作か受け入れ基準を満たす新しい観測だけが覆す、(4) 観測の信頼は「窓の種類 × IME × 証拠源」の表で決め、読めない窓の IMM の読みと MS-IME 本体の半角英数トグル中の閉の読みは反証に使わない、
   (5) 不確実なときは所有者の判断どおり、読めない窓は ON(かな)、読める窓は観測、(6) **belief のラッチと、書き込み(drift correction・授権)の根拠の寿命を分け**、
   書き込みの根拠は利用者の操作(`UserIntentSource` の範囲)だけ・今の寿命のままにする。IME への書き込みの方針は変えない(ADR-191・212 のまま)。
-  局所修正(L1〜L3)と同じオラクルで比べ、ゼロベースの規模が正当化されるかを V0 で判断する。
+  局所修正(L1〜L3)を同じオラクルで測った結果(PR #868): 真が shared なら L1(予測で `desired_open` を書く、+7 行)で msime の I1 405 → 153・核の最小列 36 → 0。
+  真が per-thread なら I1・I2 を同時に減らす局所修正は無い(L1 は I2 を 57 → 109)。残る 153 本は嘘の観測・外部変更で、どちらの案でも観測の手段と既定の設計が要る。ゼロベースが要るかは実機の保持単位の測定で決まる(§13.2)。
 status: |-
   起草(2026-10-26)→ Opus レビュー round 1(Blocker 2・Major 9・Minor 9)を反映した改訂(2026-10-26)。未確定(round 2 待ち)。
   所有者の判断 4 件(かなの範囲・不確実なときの既定・最後の明示操作が勝つ・窓ごとに独立)を決定として反映。BUG-221・ADR-281 の残りを範囲に含めた(所有者判断 2026-10-26)。
-  依存する PR: #857(基準の測定)は 2026-10-26 にマージ済み(`gh pr view 857`)。#854(BUG-223)は OPEN。局所修正 L1〜L3 の測定(belief-oracle)は未着手・結果待ち。
+  依存する PR: #857(基準の測定)は 2026-10-26 にマージ済み(`gh pr view 857`)。#854(BUG-223)は OPEN。局所修正 L1〜L3 の測定は PR #868(OPEN、docs のみ)で出た(§13)。保持単位の CI 測定は別担当が実施中(結果待ち)。
   別セッションの Opus コードレビューの入力 4 件を §4.14 に反映(コードで確認、症状は未確認)。CI 検証バッチ(§5.5)は未実施。未決 U1〜U13 は所有者の確認待ち。実装はまだ(コード・テストは不変)。
 related_adr:
   - "ADR-082"
@@ -101,7 +102,7 @@ journal の `effective-open-flip → false` のうち、所有者の IME-OFF キ
 - **窓ごとに別スレッドのモデル(per-thread)**: msime・核の字母・長さ 3 で **9 本**(poll 後 5 本)。原因は窓切替の持ち越しではなく、F0 で入力モードが半角英数の観測のまま残る軸と、戻った窓で起きる `desired-fallback`(`key:eisu > focus:wezterm > focus:explorer`)。BUG-223 の 4 本は違反にならない。
 - 基準の測定は shared を主にした(理由: BUG-223 の「窓切替の後も IME は ON」に合う)。上の 1.1 のとおり、この記述は per-thread とも矛盾しない。
 - **ゼロベースの規模の根拠の再検討(B1 の指摘)**: 実機が per-thread に近ければ、今のコードの I1 違反は 9 本で、構造を作り直す根拠は「違反の数」ではなく、(i) 明示意図の保管場所 5 つの非対称(X1・X3)が BUG-223 のような型を作り続けること、(ii) 所有者の判断 O3(寿命切れで戻らない)・O4(窓ごとに独立)を今の構造に入れると保管場所がさらに増えること、の 2 つになる。
-  実機が shared に近ければ 405 本の大半(`desired-fallback`)が対象だが、その場合は局所修正(§9 の L1・L2)で多くが消える見込みもある。**どちらの場合も、局所修正 L1〜L3 を同じオラクルで数えてから、ゼロベースを採るかを V0 で判断する**(§5.4)。
+  実機が shared に近ければ 405 本の大半(`desired-fallback`)が対象だが、その場合は局所修正(§9 の L1・L2)で多くが消える見込みもある。**どちらの場合も、局所修正 L1〜L3 を同じオラクルで数えてから、ゼロベースを採るかを V0 で判断する**(§5.4)。 測定の結果と結論は §13。
 - 本 ADR の起草時に `crates/awase-windows/tests/support/harness.rs` の `key_mods` を読んで確かめたこと: ハーネスの物理キーは全部 `has_shadow_action: false`・`unreadable: false`・`observable_toggle_guard: false` で予測の経路に流す。
   本番の 0x16(IME-ON)・トグル解決キーは `UserImeSetIntent` の経路(棚卸し 01-map §4.1)なので、`key:ime-on`・`key:hankaku-zenkaku` で始まる最小列は本番と経路が違う(本番で同じ違反になるかは未確認)。F2 は本番でも予測の経路。
 
@@ -694,15 +695,15 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 
 | 案 | 変えること | 効く見込み | 副作用 |
 |---|---|---|---|
-| L1 | `KeyEffectPredicted{open: Some(v)}` の reduce で `desired_open = v` を書く(`last_intent` は今どおり `None`) | `desired-fallback` の主因に直接効く。`explicit_intent()` は `last_intent` だけを見る(`platform_state.rs:319-321`)ので、ポーリングは止まらない | 窓切替で v を持ち越す(per-thread の真の新しいスレッドでは I2 が増えうる)。授権 Step 4c が予測の方向へ変わる。`architecture_guard` の固定を外す要 |
-| L2 | `reduce_focus_changed` の最後で、profile が TsfNative/Imm32Unavailable(InputRelay を除く)なら `desired_open = true` | O2 の最小形。shared の `desired-fallback` の大半に効く見込み | 読めない窓で真が閉のとき I2 が増える |
-| L3 | `IntentStore` の鍵を窓のスレッドにし、`apply_key_effect_prediction` の `intent_store.remove` を予測値の記録(TTL 10/30 秒のまま)に置き換える | 戻った窓(同じスレッド)で予測が効く。shared では全窓で効く | TTL 切れで今と同じく後退する。授権 Step 1 に予測が入る(ADR-087 に反するので本番に入れるなら別の行の種類が要る) |
+| L1 | `KeyEffectPredicted{open: Some(v)}` の reduce で `desired_open = v` を書く(`last_intent` は今どおり `None`) | **測定(§13.1)**: msime shared の I1 405 → 153、核の最小列 36 → 0。per-thread は I1 185 → 185、I2 57 → 109。`desired-fallback` の主因に直接効く。`explicit_intent()` は `last_intent` だけを見る(`platform_state.rs:319-321`)ので、ポーリングは止まらない | 窓切替で v を持ち越す(per-thread の真の新しいスレッドでは I2 が増えうる)。授権 Step 4c が予測の方向へ変わる。`architecture_guard` の固定を外す要 |
+| L2 | `reduce_focus_changed` の最後で、profile が TsfNative/Imm32Unavailable(InputRelay を除く)なら `desired_open = true` | **測定**: msime shared の I1 405 → 256、I2 35 → 99。per-thread の I2 57 → 165。O2 の最小形。shared の `desired-fallback` の大半に効く見込み | 読めない窓で真が閉のとき I2 が増える |
+| L3 | `IntentStore` の鍵を窓のスレッドにし、`apply_key_effect_prediction` の `intent_store.remove` を予測値の記録(TTL 10/30 秒のまま)に置き換える | **測定**: msime shared の I1 405 → 165、長い静止の字母で核の最小列 36 → 80(TTL 切れで悪化)。戻った窓(同じスレッド)で予測が効く。shared では全窓で効く | TTL 切れで今と同じく後退する。授権 Step 1 に予測が入る(ADR-087 に反するので本番に入れるなら別の行の種類が要る) |
 
 **却下した案**(§7 に加えて):
 
 | 案 | 捨てた理由 |
 |---|---|
-| A. 局所修正だけで済ませる | **まだ捨てていない**(M5)。§5.4 の V0 で L1〜L3 と比べて判断する。旧版の却下理由「予測で `desired_open` を書くと BUG-151 原因③を広げる」は誤り(ポーリングの停止は `last_intent` だけを見る。ADR-191 QB1 の 2 つの理由を混同していた)。「窓切替で捨てた後の値が決まらない」も誤り(値は O2 で決まっている) |
+| A. 局所修正だけで済ませる | **まだ捨てていない**(M5)。測定(§13.1)の結論は §13.2: 真が shared なら L1 で BUG-223 の核は消える。per-thread なら I1・I2 を同時に減らす局所修正は無い。旧版の却下理由「予測で `desired_open` を書くと BUG-151 原因③を広げる」は誤り(ポーリングの停止は `last_intent` だけを見る。ADR-191 QB1 の 2 つの理由を混同していた)。「窓切替で捨てた後の値が決まらない」も誤り(値は O2 で決まっている) |
 | B. hwnd を鍵にする | 読める Win32 EDIT の窓の CI 実測では、同じスレッドの別 hwnd は状態を共有する(191 spec §3.1)。読めない窓では未測定なので、B1 の結果で見直す |
 | C. グローバル 1 つの belief のまま、窓切替で既定へリセットする | O4 に合わない。戻った窓で利用者の明示 OFF を失う |
 | D. belief の主張に TTL を付ける | O3 に合わない。書き込みの根拠には今の寿命を残す(D8)ので、M-A の固着は書き込み側では起きない |
@@ -751,10 +752,58 @@ Microsoft IME 本体(CLSID で同定できたときだけ)は 0xF2 × Ctrl だ�
 3. 最後の明示操作が勝つ(ON も OFF も対称)。窓切替や観測の寿命切れでその効果が消えて古い値に戻らない。観測が反証する場合の扱いは設計する。→ D2・D3・D4・§4.4(書き込みの根拠の寿命は分ける、D8)。
 4. 窓切替では IME の状態(開閉)を窓ごとに独立させ、持ち越さない。→ P1・§4.1・§4.5(「窓ごと」の単位は U4・B1、共有の構成は U11)。
 
-## 13. 基準の測定・局所修正の結果で補う節
+## 13. 基準の測定・局所修正の結果(V0 の比較表)
 
-基準の測定(PR #857、マージ済み)の数値は §1.2・§5.1.1(`37fc37e75` の文書と golden、CI run 40275882156 で一致と同文書が記録)。
-局所修正 L1〜L3 の測定結果(belief-oracle)と、V0 の新の核の結果は、この節に追記する(未着手・結果待ち)。
+基準の測定(PR #857、マージ済み)の数値は §1.2・§5.1.1(`37fc37e75` の文書と golden、CI run 40275882156)。
+
+### 13.1 局所修正 L1〜L3 の測定(PR #868、OPEN、`origin/docs/belief-local-fixes` HEAD `5efea3527` の `docs/tasks/belief-engine-invariant-local-fixes-2026-10-26.md` を読んで引いた)
+
+測ったのは belief-oracle(別担当)。変種の定義は §9 の L1〜L3(本 ADR の定義どおり)。差分はブランチ `exp/belief-local-fixes`(draft PR #862)、CI run 40296295547 で決定的に一致。
+同じオラクル・同じ字母(I1 は全字母 19 種・長さ 3、I2 は核の字母 12 種・長さ 3)。括弧は読める窓の poll が 1 回届いた後も残る本数。
+
+**注意**: ここの per-thread の base(msime 185)は**全字母**の値で、§5.1.1 の 9 本(**核の字母** 12 種)とは字母が違う。
+
+I1(T=0):
+
+| 変種 | atok shared | msime shared | msime-native shared | atok per-thread | msime per-thread |
+|---|---:|---:|---:|---:|---:|
+| base | 315 (290) | 405 (375) | 405 (375) | 197 (172) | 185 (155) |
+| L1 | 183 (164) | **153 (135)** | 153 (135) | 191 (172) | 185 (167) |
+| L2 | 229 (208) | 256 (232) | 256 (232) | 201 (180) | 216 (192) |
+| L3 | 189 (173) | 165 (148) | 165 (153) | 195 (179) | 181 (164) |
+| L1+L2 | 191 (172) | 184 (164) | 184 (164) | 199 (180) | 216 (196) |
+| L2+L3 | 197 (183) | 194 (177) | 194 (184) | 203 (189) | 220 (203) |
+
+核の最小列(「awase の操作・窓切替・正しい観測だけ」): msime shared で base 36 → **L1 0**・L2 14・L3 16・L1+L2 6・L2+L3 22。atok shared 18 → L1 0。msime per-thread 20 → L1 **32**・L2 18・L3 20。
+長い静止を足した字母(`advance:11000ms`・`31000ms`)では msime shared の核の最小列が base 36 → **L3 80**(TTL 切れ後に悪化)、L1 は 0 のまま。
+
+I2(核の字母):
+
+| 変種 | atok shared | msime shared | atok per-thread | msime per-thread |
+|---|---:|---:|---:|---:|
+| base | 43 | 35 | 43 | 57 |
+| L1 | 43 | 31 | 43 | **109** |
+| L2(= L2b = L1+L2) | 155 | **99** | 155 | **165** |
+| L3 | 41 | 29 | 43 | 57 |
+| L2+L3 | 123 | 67 | 155 | 165 |
+
+- BUG-223 の 4 本 + `key:hiragana > focus:wezterm`: base の msime/msime-native shared で 5/5 違反、全変種で 0/5。
+- T=2000ms(事象なし)では全変種で本数が変わらない。`WriteCommand` の件数は base 131〜136、全変種 131〜136(固定 seed のランダム列。差は 1〜5 件)。
+- L1 の後に msime shared で残る 153 本は、全部「嘘の観測を含む」(32)か「外部変更を含む」(121)。
+- L2 の I2 の増加は読めない窓(chrome・wezterm 各 46、xaml 7、msime shared)。per-thread では 57 → 165。
+- 壊れる既存テスト: L1 は `ime_model` の 2 本(予測は `desired_open` を書かない)と `architecture_guard` の `key_effect_predicted_event_is_constructed_only_in_apply_key_effect_prediction`。L2 は `warmup_gate_focus_scope` の 2 本と `check_drift_correction_ignores_heuristic_default_alone_without_explicit_intent`。L3 は `architecture_guard` の `intent_store_record_call_sites_are_limited_to_explicit_user_actions`・`random_key_walks_keep_predictions_consistent_with_truth`・`prediction_exhaustive_golden`。
+- 測定文書の限界: TSF 窓・hwnd キャッシュの復元を写していない(L2 は本物では `HwndCacheRestored` と重なる)。L3 の授権の参照は窓の鍵のまま。
+
+### 13.2 結論: 局所修正で足りるか、ゼロベースが要るか(現時点。実機の粒度の測定待ち)
+
+- **真が shared(全窓で共有)なら、BUG-223 の核は L1(+7 行)で消える**: msime shared で I1 405 → 153、核の最小列 36 → 0、I2 は 35 → 31 で悪化しない。新設計の `ScopeModel=Shared` と同じ効果を、今の構造の 1 か所の変更で得られる。
+  この場合、ゼロベースを BUG-223 のために払う必要は無い(U12 の提案どおり L1 を採る)。ただし L1 は「予測は `desired_open` を書かない」という ADR-191 決定 3 の実装の固定(`architecture_guard`・単体テスト 2 本)を変える決定になる。
+- **残る 153 本は、局所修正でもゼロベースの主張のラッチでも減らない種類**(嘘の観測 32・外部変更 121)。減らすのは観測の手段(信頼表、MozcShm・ADR-205 の監視窓・字形・ADR-279 型の打鍵列の反証)と、観測が無い・嘘のときの既定(D5)の設計で、これはゼロベースか局所修正かと独立に必要。
+- **真が per-thread なら、I1 と I2 を同時に減らす局所修正は無い**: L1 は I1 を変えず(185 → 185、核の最小列 20 → 32)I2 を約 2 倍(57 → 109)、L2 は I2 を約 3 倍(57 → 165)、L3 は I1 をわずかに減らす(185 → 181)が TTL 切れで悪化する。
+  per-thread の場合に要るのは、持ち越さない(O4)・窓ごとに直前の記録を持つ(新設計の `ScopeModel=PerThread` のスコープ表)・I2 を増やさない既定、で、これは局所修正の範囲を超える。**ゼロベース(少なくともスコープ表)が要るのはこの場合**。新設計がこの場合に I1・I2 を同時に減らせるかは V0 で示す(まだ示していない)。
+- **L2(読めない窓の窓切替で ON)の I2 の増加は、O2(読めない窓は ON 寄り)を今の構造に入れたときのコストの実測値**: msime shared で 35 → 99、per-thread で 57 → 165。新設計の D5 も同じ向きのコストを持つ(§4.6)。U10(端末を外すか)の判断材料にする。
+- 所有者の判断(2026-10-26、team-lead 経由): 「L1 は、shared か per-thread かを測ってから入れるか決める」。保持単位の測定(読めない窓を含む)は別担当が CI で実施中(結果は `docs/tasks/adr282-ime-state-scope-measurement-2026-10-26.md` の予定。本改訂の時点で、どのリモートブランチにもまだ無い)。
+  P1(スコープの粒度)はその結果が出るまで確定しない。
 
 ## 14. Opus レビュー round 1 への対応(2026-10-26)
 
