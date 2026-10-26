@@ -1912,8 +1912,7 @@ impl Runtime {
         self.platform.output.bump_shift_conv_guard_gen();
         tracing::info!(
             "[lang-detect-exit] 打鍵列から入った半角英数トグル中に F2 → トグルを手放す (OS 書き込みなし、BUG-222)。\
-             実 IME が hiragana になったかは後続の [idle-conv-check] conv と [mozc-shm] で確認する: belief_conv_raw={:?}",
-            self.platform_state.ime.belief.prev_conversion_mode()
+             実 IME が hiragana になったかは後続の [idle-conv-check] conv と [mozc-shm] で確認する"
         );
         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
         if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
