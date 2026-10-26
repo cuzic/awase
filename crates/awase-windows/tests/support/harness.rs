@@ -407,6 +407,18 @@ impl Harness {
     /// 本番の順序（`kp_stage_key_effect_track` → `kp_predict_key_effect`）: 打鍵前の belief で予測し、
     /// 生キーが IME に届き、予測を belief へ反映し、Engine を再評価する。
     pub fn key(&mut self, vk: u16) -> &mut Self {
+        self.key_mods(vk, false)
+    }
+
+    /// Ctrl を押したままの物理キー1回。実 IME はキーを受けて普通に動く（擬似 IME は修飾を知らない。実機の
+    /// GJI は Ctrl 押下中のひらがなキー〈0xF2〉でも ON になった、2026-10-26 dragonflyg4 の awase.log。Mozc のクライアントは
+    /// 0xF0〜0xF4 の修飾を捨てる〈`keyevent_handler.cc:330-352`〉ので、素のキーと同じ）。awase の追跡・予測は、修飾付きを抑止する
+    /// （`plan_key_effect_track` が `None`）が、ADR-281 で GJI 系の 0xF0〜0xF4 の Ctrl・Shift 付きだけは素のキーとして予測する。
+    pub fn key_ctrl(&mut self, vk: u16) -> &mut Self {
+        self.key_mods(vk, true)
+    }
+
+    fn key_mods(&mut self, vk: u16, ctrl: bool) -> &mut Self {
         let truth_before = self.ime.state();
         // 本物の `kp_stage_key_effect_track` の判断（`plan_key_effect_track`）。物理の無修飾の KeyDown で、エンジンが消費せず
         // IME へ通した打鍵なので、`None`（追跡しない）にはならない。
@@ -414,7 +426,7 @@ impl Harness {
             vk,
             is_physical_key_down: true,
             is_modifier_key: false,
-            ctrl: false,
+            ctrl,
             alt: false,
             shift: false,
             win: false,
@@ -422,8 +434,31 @@ impl Harness {
             consumed: false,
             has_shadow_action: false,
             has_sync_direction: false,
-        })
-        .expect("修飾キーでない無修飾の物理 KeyDown は追跡する");
+            // ADR-281: GJI 系の格子（ATOK・MS-IME プリセット）は 0xF0〜0xF4 の修飾を捨てる IME。Microsoft IME 本体は測るまで捨てない扱い。
+            ime_drops_mode_key_modifiers: !matches!(self.setup.grid, Grid::MsimeNative),
+        });
+        // 本番は追跡しない打鍵（`None`）では予測も呼ばない。無修飾の物理 KeyDown は必ず `Some`。
+        assert!(
+            ctrl || passive_rule_eligible.is_some(),
+            "修飾キーでない無修飾の物理 KeyDown は追跡する"
+        );
+        let Some(passive_rule_eligible) = passive_rule_eligible else {
+            let press = self.ime.press(vk);
+            self.predictions.push(PredictionRecord {
+                step: self.step + 1,
+                vk,
+                input_open: self.effective_open(),
+                input_mode: self.hub.model().input_mode(),
+                input_track: self.hub.model().key_track(),
+                input_composing: false,
+                input_conv_raw: self.last_conv_raw,
+                prediction: None,
+                truth_before: press.before,
+                truth_after: press.after,
+            });
+            self.settle(format!("key_ctrl(0x{vk:02X})"), None);
+            return self;
+        };
         let input = PredictInput {
             open: self.effective_open(),
             mode: self.hub.model().input_mode(),

@@ -852,3 +852,65 @@ fn esc_in_conversion_next_key_stage() {
     }
     assert_ok(&h, predictions_agree_with_truth(&h));
 }
+
+/// BUG-221: Ctrl を押したままひらがなキー（0xF2）を押すと、実 IME は ON になるのに belief は閉のまま残る。
+///
+/// 実機（2026-10-26 dragonflyg4、Windows Terminal×GJI）: Ctrl+無変換で閉じた直後、Ctrl を離す前に F2 を押した。
+/// GJI は ON（直後の `E` で候補窓が出た）だが、予測は修飾付きのため抑止され（`plan_key_effect_track` が `None`）、
+/// TSF ネイティブの窓は IMM で読めない（`ime_on=None`）ので観測でも直らず、Engine は OFF のまま `E`（た）を素通しした
+/// （約 0.5 秒後に変換キーの予測が効くまで）。ADR-281 の A′（GJI/Mozc 系の 0xF0〜0xF4 は Ctrl・Shift 付きでも素のキーとして予測）で直す。
+///
+/// 判定は終わりの belief だけでなく、**最初の打鍵〈`K`〉を押した時点の belief が真値と一致する**ことを見る（症状は最初の打鍵が漏れること。
+/// 終わりだけ見ると、最初の打鍵を直さない修正でも緑になる）。
+#[test]
+fn bug221_ctrl_held_hiragana_key_leaves_belief_closed_in_unreadable_window() {
+    // 実機の GJI は F2 で閉→開になった(ATOK プリセットの F2 は開かないので MS-IME 系の格子を使う)。
+    let mut setup = Setup::imm_cross(state(true, CONV_HIRAGANA)).with_grid(Grid::GjiMsime);
+    setup.profile = awase_windows::state::ime_event::ImePolicyProfile::TsfNative;
+    let mut h = Harness::start(setup);
+    // Ctrl+無変換で閉じた直後(belief も閉)。続けて Ctrl を離す前に F2。
+    h.advance_ms(200)
+        .user_set_open(false)
+        .advance_ms(50)
+        .key_ctrl(VK_HIRAGANA)
+        .advance_ms(150)
+        .key(VK_K)
+        .advance_ms(100);
+    assert!(h.ime.state().open, "擬似 IME: F2 で開く\n{}", h.trace());
+    let f2 = h
+        .predictions
+        .iter()
+        .find(|p| p.vk == VK_HIRAGANA)
+        .expect("F2 の記録");
+    assert!(
+        f2.prediction.is_some(),
+        "Ctrl+F2 でも素のキーとして予測する(ADR-281)\n{}",
+        h.trace()
+    );
+    let k = h
+        .predictions
+        .iter()
+        .find(|p| p.vk == VK_K)
+        .expect("K の記録");
+    assert!(
+        k.input_open && k.truth_before.open,
+        "最初の打鍵〈K〉の時点で belief が開(真値と一致)であること\n{}",
+        h.trace()
+    );
+    assert_ok(&h, belief_matches_truth_at_end(&h));
+}
+
+/// ADR-281 (h): IME が ON のときの Ctrl+0xF2 でも、belief は ON のまま開閉が反転しない。
+#[test]
+fn adr281_ctrl_hiragana_key_while_open_keeps_belief_open() {
+    let mut setup = Setup::imm_cross(state(true, CONV_HIRAGANA)).with_grid(Grid::GjiMsime);
+    setup.profile = awase_windows::state::ime_event::ImePolicyProfile::TsfNative;
+    let mut h = Harness::start(setup);
+    h.advance_ms(200)
+        .key_ctrl(VK_HIRAGANA)
+        .advance_ms(150)
+        .key(VK_K)
+        .advance_ms(100);
+    assert!(h.ime.state().open, "擬似 IME: 開のまま\n{}", h.trace());
+    assert_ok(&h, belief_matches_truth_at_end(&h));
+}
