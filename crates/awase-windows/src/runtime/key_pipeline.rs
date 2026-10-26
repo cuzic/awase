@@ -1813,7 +1813,7 @@ impl Runtime {
     }
 
     /// 物理キーの押下ごとに、打鍵時点の予測と隠れ状態の追跡（`kp_predict_key_effect`）を呼ぶ。
-    /// 修飾キー付きの打鍵は予測・追跡しない（`modifiers_suppress_prediction`。ただし GJI/Mozc 系の 0xF0〜0xF4 の Ctrl・Shift 付きは ADR-281 で素のキーとして扱う）。キーマップは
+    /// 修飾キー付きの打鍵は予測・追跡しない（`modifiers_suppress_prediction`。ただし GJI/Mozc 系の 0xF0〜0xF4 の Ctrl・Shift・Alt 付きと MS-IME 本体の 0xF2 の Ctrl 付きは ADR-281 で素のキーとして扱う）。キーマップは
     /// `KeymapCache`が版の変化時だけ読む（打鍵ごとにconfig1.dbを読まない）。
     /// - 表が持つキー（モードキー、Space/Esc/Enter/BS等）: エンジンが消費せずIMEへ通したときだけ。
     ///   ADR-189の固定セット（`shadow_action`）と同期キー（`sync_direction`）は従来の経路に任せる。
@@ -1838,10 +1838,12 @@ impl Runtime {
             consumed: decision.is_consumed(),
             has_shadow_action: event.ime_relevance.shadow_action.is_some(),
             has_sync_direction: event.ime_relevance.sync_direction.is_some(),
-            // ADR-281: GJI/Mozc 系は 0xF0〜0xF4 の修飾を捨てる（`kp_predict_key_effect` が GJI の表を選ぶ条件と同じ）。
-            ime_drops_mode_key_modifiers: crate::tsf::observer::tsf_obs()
-                .active_ime_kind()
-                .drops_mode_key_modifiers(),
+            // ADR-281: 修飾付きのモードキーを素のキーと同じに扱う IME・キー（`kp_predict_key_effect` が表を選ぶ条件と同じ見方）。
+            mode_key_modifiers: {
+                let obs = crate::tsf::observer::tsf_obs();
+                obs.active_ime_kind()
+                    .mode_key_modifiers(obs.ms_ime_native_identified())
+            },
         };
         let Some(passive_rule_eligible) =
             crate::state::key_effect_predictor::plan_key_effect_track(&facts)

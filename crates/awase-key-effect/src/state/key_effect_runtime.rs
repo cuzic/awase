@@ -1638,7 +1638,8 @@ mod tests {
                 consumed: false,
                 has_shadow_action,
                 has_sync_direction: false,
-                ime_drops_mode_key_modifiers: true,
+                mode_key_modifiers:
+                    super::super::key_effect_predictor::ModeKeyModifiers::DroppedByGjiMozc,
             };
             // 素の打鍵: 役割がトグルなら shadow toggle(能動)。予測の段には来ない。
             let plain = key_shadow_action(false, Some(Some(KeyRole::ImeToggle)), false, false);

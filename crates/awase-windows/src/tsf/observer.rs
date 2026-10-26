@@ -705,13 +705,24 @@ pub(crate) enum ActiveImeKind {
 }
 
 impl ActiveImeKind {
-    /// この IME が 0xF0〜0xF4 の修飾を捨てるか（ADR-281）。
+    /// この IME が修飾付きのモードキー（0xF0〜0xF4）を素のキーと同じに扱うか（ADR-281）。
     ///
-    /// 対象はひらがな・カタカナ・英数・半角/全角。GJI/Mozc 系だけ真。未検出（`tsf_active_kind=0`）は安全デフォルトの `MicrosoftIme` なので偽
-    /// （起動直後と TIP の切り替え直後の約 2〜4 秒は、従来どおり修飾付きを予測しない）。
+    /// GJI/Mozc 系は 0xF0〜0xF4 の Ctrl・Shift・Alt を捨てる。Microsoft IME 本体は、CLSID で本体と同定できたときだけ
+    /// ひらがな（0xF2）の Ctrl が素のキーと同じ（CI 実測）。未検出（`tsf_active_kind=0`）は安全デフォルトの
+    /// `MicrosoftIme` で、本体と同定されていないので `Unknown`（起動直後と TIP の切り替え直後の約 2〜4 秒は従来どおり予測しない）。
     #[must_use]
-    pub(crate) const fn drops_mode_key_modifiers(self) -> bool {
-        matches!(self, Self::GoogleJapaneseInput)
+    pub(crate) const fn mode_key_modifiers(
+        self,
+        ms_ime_native_identified: bool,
+    ) -> crate::state::key_effect_predictor::ModeKeyModifiers {
+        use crate::state::key_effect_predictor::ModeKeyModifiers;
+        match self {
+            Self::GoogleJapaneseInput => ModeKeyModifiers::DroppedByGjiMozc,
+            Self::MicrosoftIme if ms_ime_native_identified => {
+                ModeKeyModifiers::MsImeNativeCtrlOnHiragana
+            }
+            Self::MicrosoftIme => ModeKeyModifiers::Unknown,
+        }
     }
 }
 
@@ -747,18 +758,39 @@ mod tests {
 
     /// ADR-281 (i): IME 種別が未検出の間は、修飾付きの 0xF0〜0xF4 を予測しない。
     ///
-    /// 未検出（`tsf_active_kind=0`）は `MicrosoftIme` の安全デフォルト。GJI と判定されたときだけ予測する。
+    /// 未検出（`tsf_active_kind=0`）は `MicrosoftIme` の安全デフォルトで、本体と同定されていないので `Unknown`。
+    /// GJI と判定されたときだけ予測し、MS-IME 本体と同定できたときは 0xF2 の Ctrl だけ予測する。
     #[test]
-    fn adr281_undetected_ime_kind_does_not_drop_mode_key_modifiers() {
+    fn adr281_ime_kind_decides_which_mode_key_modifiers_are_dropped() {
+        use crate::state::key_effect_predictor::ModeKeyModifiers as M;
         let obs = TsfObservations::new();
         assert!(!obs.ime_kind_detected(), "初期値は未検出");
         assert_eq!(obs.active_ime_kind(), ActiveImeKind::MicrosoftIme);
-        assert!(!obs.active_ime_kind().drops_mode_key_modifiers());
+        assert_eq!(
+            obs.active_ime_kind()
+                .mode_key_modifiers(obs.ms_ime_native_identified()),
+            M::Unknown
+        );
         obs.set_tsf_active_kind(ActiveImeKind::GoogleJapaneseInput);
-        assert!(obs.active_ime_kind().drops_mode_key_modifiers());
-        // GJI から MS-IME 本体へ切り替えたら、予測しない側へ戻る。
+        assert_eq!(
+            obs.active_ime_kind()
+                .mode_key_modifiers(obs.ms_ime_native_identified()),
+            M::DroppedByGjiMozc
+        );
+        // GJI から MS-IME 本体へ切り替えたら、本体と同定されるまでは予測しない側へ戻る。
         obs.set_tsf_active_kind(ActiveImeKind::MicrosoftIme);
-        assert!(!obs.active_ime_kind().drops_mode_key_modifiers());
+        assert_eq!(
+            obs.active_ime_kind()
+                .mode_key_modifiers(obs.ms_ime_native_identified()),
+            M::Unknown
+        );
+        obs.ms_ime_native_identified
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(
+            obs.active_ime_kind()
+                .mode_key_modifiers(obs.ms_ime_native_identified()),
+            M::MsImeNativeCtrlOnHiragana
+        );
     }
 
     /// BUG-176: 接続直後の `gji_last_io_ms`（累積カウンタ初回読み）は実 I/O ではない。接続後の実 I/O は区別できる。
