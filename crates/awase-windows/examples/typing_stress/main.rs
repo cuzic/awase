@@ -90,10 +90,12 @@ mod focusrestore;
 mod jitter;
 mod keymatrix;
 mod langdetect;
+mod immread;
 mod lateorder;
 mod perturb;
 mod preedit;
 mod suspend;
+mod switchime;
 mod target;
 mod uia;
 
@@ -1661,6 +1663,9 @@ fn worker(form: Form) {
     let reopen = mode_arg.as_deref() == Some("reopen");
     let preedit = mode_arg.as_deref() == Some("preedit");
     let lateorder = mode_arg.as_deref() == Some("lateorder");
+    let immread = mode_arg.as_deref() == Some("immread");
+    let immtime = mode_arg.as_deref() == Some("immtime");
+    let immswitch = mode_arg.as_deref() == Some("immswitch");
     let langdetect = mode_arg.as_deref() == Some("langdetect");
     let keymatrix = mode_arg.as_deref() == Some("keymatrix");
     let focus_restore = mode_arg.as_deref() == Some("focus-restore");
@@ -1714,7 +1719,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if focus_restore {"focus-restore"} else if reopen {"reopen"} else if preedit {"preedit"} else if lateorder {"lateorder"} else if langdetect {"langdetect"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if keymatrix {"keymatrix"} else if focus_restore {"focus-restore"} else if reopen {"reopen"} else if preedit {"preedit"} else if lateorder {"lateorder"} else if immread {"immread"} else if immtime {"immtime"} else if immswitch {"immswitch"} else if langdetect {"langdetect"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "no_awase":has_flag("--no-awase"),"startup_skip_refocus2":has_flag("--startup-skip-refocus2"),
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
@@ -1776,7 +1781,7 @@ fn worker(form: Form) {
     // 確定入力になり、「起動直後にユーザーが最初に打つ文字」を素通りさせてしまうため。
     if perturb.cold {
         rec(&json!({"type":"ready","attempt":0,"skipped":true,"reason":"--cold"}));
-    } else if !ime_ready(raw, &cells, child) {
+    } else if !ime_ready(raw || immread || immtime || immswitch, &cells, child) {
         rec(&json!({"type":"abort","reason":"IME/awase の準備確認に失敗(ready の text を参照)"}));
         finish();
         return;
@@ -1817,6 +1822,21 @@ fn worker(form: Form) {
         finish();
         return;
     }
+    if immread {
+        immread::immread_scenario(child);
+        finish();
+        return;
+    }
+    if immtime {
+        immread::immtime_scenario(child);
+        finish();
+        return;
+    }
+    if immswitch {
+        focusrestore::immswitch_scenario(child);
+        finish();
+        return;
+    }
     if langdetect {
         langdetect::langdetect_scenario(child);
         finish();
@@ -1842,7 +1862,11 @@ fn worker(form: Form) {
                 .wrapping_add(n_total * 7919)
                 .wrapping_add(kind.len() as u64);
             let seq = gen_sequence(kind, len, trial_seed, &cells);
-            let expect = expect_string(&seq);
+            let expect = if switchime::expects_raw() {
+                switchime::raw_expect(&seq)
+            } else {
+                expect_string(&seq)
+            };
             let mut evs = if raw {
                 raw_events(&seq, iv_us)
             } else if jit.is_active() {
@@ -1851,9 +1875,13 @@ fn worker(form: Form) {
                 nicola_events(&seq, iv_us)
             };
             perturb.apply_pause(&mut evs, iv_us);
-            perturb.before_trial(target());
-            clear_text(child);
-            sleep_ms(perturb.start_delay_ms);
+            // 検証専用(ci/ ブランチ): --sw-mode= のときは窓切替・ひらがなキーの直後に打つ(switchime.rs)。
+            let sw = switchime::before_trial(child, n_total - 1);
+            if sw.is_none() {
+                perturb.before_trial(target());
+                clear_text(child);
+                sleep_ms(perturb.start_delay_ms);
+            }
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }
@@ -1861,6 +1889,11 @@ fn worker(form: Form) {
             let stats = run_schedule(&evs);
             if let Some(h) = suspender {
                 let _ = h.join();
+            }
+            if let Some(mut v) = sw {
+                v["kind"] = json!(kind);
+                v["n"] = json!(t);
+                rec(&v);
             }
             perturb.after_inject(kind, t);
             // 最後の同時打鍵判定・出力の落ち着きを待ってから確定(Enter)。
@@ -1926,6 +1959,7 @@ fn worker(form: Form) {
 }
 
 fn finish() {
+    switchime::kill_b();
     rec(&json!({"type":"done","driver_sends":driver_inject::SENT.load(Ordering::Relaxed)}));
     log("=== 完了 ===");
     target().shutdown();
@@ -1939,6 +1973,11 @@ fn main() {
     // focus-restore の窓 B 用の別プロセス(ログも入力先も作らない)。
     if has_flag("--fr-helper") {
         focusrestore::helper_main();
+        return;
+    }
+    // immread の別プロセスの読み手(窓もログも作らない)。
+    if let Some(path) = arg_value("--immread-reader=") {
+        immread::reader_main(&path);
         return;
     }
     let log_path = arg_value("--log=").unwrap_or_else(|| "typing_stress.log".into());
