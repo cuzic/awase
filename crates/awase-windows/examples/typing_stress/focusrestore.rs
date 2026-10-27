@@ -588,3 +588,72 @@ fn run(child: HWND, cells: &[Vec<Cell>; 3]) {
         sleep_ms(500);
     }
 }
+
+/// `--mode=immswitch`(BUG-219 の調査、ci/imm-read-matrix 専用): 窓 A(ハーネスの入力先。実機では専用 Chrome)を IME 開、
+/// 別プロセスの窓 B を IME 閉にして、A と B を素早く交互に前面化しながら、次の 3 つの読みを一緒に記録する。
+///  - `imc_read(A)`・`imc_read(B)`: 窓ハンドルを渡して既定 IME 窓へ `WM_IME_CONTROL`(前面かどうかに関係なく、その窓のスレッドを読む)
+///  - `prod`: 前面の窓を読む awase と同じ `read_ime_state_full_with_timeout`
+/// 各切り替えの直後 500ms を約 15ms 刻みで `t:前面:A:B:prod`(1=開・0=閉・n=読めず)の列にする。A=開・B=閉は一定のはず。
+pub(crate) fn immswitch_scenario(_child: HWND) {
+    let trials: usize = arg_value("--trials=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    let Some(b) = window_b() else {
+        rec(&json!({"type":"abort","reason":"窓 B(別プロセス)を作れなかった"}));
+        return;
+    };
+    let a = hwnd_of(&TOP);
+    let tri = |v: Option<bool>| match v {
+        Some(true) => '1',
+        Some(false) => '0',
+        None => 'n',
+    };
+    rec(&json!({"type":"immswitch_config","trials":trials}));
+    for n in 0..trials {
+        // A を開にする。
+        refocus();
+        turn_ime_on(0);
+        // B を閉にする。
+        if !to_b(b) {
+            rec(&json!({"type":"abort","reason":"B を前面にできなかった"}));
+            break;
+        }
+        sleep_ms(400);
+        press(0x1A, 0x70, 50);
+        sleep_ms(1000);
+        rec(
+            &json!({"type":"immswitch_pre","n":n,"stage":"at_B","fg":fg_name(b),"A":win_json(a),"B":win_json(b)}),
+        );
+        refocus();
+        sleep_ms(800);
+        rec(
+            &json!({"type":"immswitch_pre","n":n,"stage":"back_to_A","fg":fg_name(b),"A":win_json(a),"B":win_json(b)}),
+        );
+        for k in 0..12u32 {
+            let to = if k % 2 == 0 { "B" } else { "A" };
+            let t0 = Instant::now();
+            if to == "B" {
+                raise_foreign(b);
+            } else {
+                raise_foreign(a);
+            }
+            let mut series = String::new();
+            while t0.elapsed() < Duration::from_millis(500) {
+                let t = t0.elapsed().as_millis();
+                let fg = fg_name(b);
+                let ia = imc_read(a, 5).map(|v| v != 0);
+                let ib = imc_read(b, 5).map(|v| v != 0);
+                // SAFETY: awase の prefetch と同じ読み取り専用の IMM 呼び出し。
+                let p = unsafe {
+                    awase_windows::ime::read_ime_state_full_with_timeout(Duration::from_millis(300))
+                }
+                .ime_on;
+                series.push_str(&format!("{t}:{fg}:{}:{}:{} ", tri(ia), tri(ib), tri(p)));
+                sleep_ms(15);
+            }
+            rec(&json!({"type":"immswitch","n":n,"k":k,"to":to,"samples":series}));
+            sleep_ms(300);
+        }
+    }
+    kill_b();
+}
