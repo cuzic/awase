@@ -1,7 +1,7 @@
 //! ADR-282 候補 Z の純粋な核: IME の保持単位(スコープ)ごとに「最後に受け入れた主張」をラッチする belief。
 //!
-//! **V0(擬似 IME・擬似窓の上で S′ と同じオラクルで比べる)専用で、本番からは呼ばない**(ADR-282 §6.4)。
-//! 本番の belief(`ImeModel`・`ImeStateHub`)は変えない。
+//! 所有者の決定 O8(2026-10-26)で本番へ進める。V1 では殻が shadow として並走させ、旧の belief との食い違いを journal に
+//! 残すだけで、本番の belief(`ImeModel`・`ImeStateHub`)・Engine・IME への書き込みは変えない(ADR-282 §9)。
 //!
 //! 規則(ADR-282 §4 の要約。所有者の決定 O1〜O7 に従う):
 //! - スコープの行は窓切替で消さない。戻ればその主張がそのまま効く(O3・O4。寿命で後退しない = I6)。
@@ -12,13 +12,28 @@
 //! - 入場時に開を引き継ぐ窓の種類(O5: MS-IME 本体の Win32 EDIT → Windows Terminal)は、直前のスコープの開の主張が
 //!   この窓の主張より新しければ開を引き継ぐ(開だけ。閉・変換モードは引き継がない)。それ以外は独立(O6)。
 //!
+//! - 変換モード・変換中の段階の追跡(`KeyTrack`)もスコープの行に持つ(ADR-282 §4.5、191 spec §3.4)。窓切替で捨てない。
+//!
 //! 時刻は呼び出し元が渡す単調な ms(壁時計を読まない)。
 
-use super::ime_event::{ObservationConfidence, ObservationSource};
+use super::ime_event::{
+    ImeEvent, InputModeApplyResult, InputModeApplyStrategy, ObservationConfidence,
+    ObservationSource,
+};
+use super::key_effect_predictor::{KeyTrack, Prediction, Stage, TableKey};
+use super::probe_admission::FocusEpoch;
 use awase::engine::{AssumedReason, InputModeState};
 
-/// スコープの鍵(V0 では擬似窓のスレッド。本番で使うなら (pid, tid) の正規化が要る、ADR-282 §4.1)。
-pub type ScopeKey = u32;
+/// スコープの鍵。本番は [`scope_key`] で (pid, フォーカス先のスレッド) から作る(ADR-282 §4.1)。擬似窓はスレッドの番号。
+pub type ScopeKey = u64;
+
+/// スコープの鍵を作る(ADR-282 §4.1)。スレッドが取れたら (pid, tid)、取れなければ窓のハンドル(最上位ビットで区別する)。
+#[must_use]
+pub fn scope_key(pid: u32, tid: Option<u32>, hwnd: usize) -> ScopeKey {
+    tid.map_or((1 << 63) | (hwnd as u64 & !(1 << 63)), |tid| {
+        (u64::from(pid) << 32) | u64::from(tid)
+    })
+}
 
 /// 入力モードの軸の主張(O1: かな = ひらがな・カタカナ)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +85,8 @@ struct Claim<T> {
 struct ScopeRow {
     open: Option<Claim<bool>>,
     mode: Option<Claim<ModeClass>>,
+    /// 変換モード・変換中の段階の追跡(予測の入力)。
+    track: KeyTrack,
 }
 
 /// 窓の種類のうち、Z の規則に効くもの。
@@ -93,12 +110,15 @@ pub enum ScopeEvent {
         facts: WindowFacts,
         at_ms: u64,
     },
-    /// 明示操作。値は押した後の状態(変化が無くても記録する、L1′)。
+    /// 明示操作。値は押した後の状態(変化が無くても記録する、L1′)。`track` は押した後の追跡(`None` は変えない)。
     Explicit {
         open: Option<bool>,
         mode: Option<ModeClass>,
+        track: Option<KeyTrack>,
         at_ms: u64,
     },
+    /// 開閉・入力モードの主張にならない打鍵(表に無いキー)の、押した後の追跡。
+    Track { track: KeyTrack },
     /// 観測。`imm_family` は IMM 系の源か(読めない窓では捨てる)。
     Observed {
         open: Option<bool>,
@@ -117,6 +137,8 @@ pub struct ScopeView {
     pub input_mode: InputModeState,
     /// 開閉の根拠(`Basis::label`、主張なしは `z-default`)。
     pub basis: &'static str,
+    /// フォーカス中のスコープの追跡(予測の入力)。
+    pub track: KeyTrack,
 }
 
 /// 候補 Z の belief(スコープ表)。
@@ -176,58 +198,16 @@ impl ScopeBelief {
                 scope,
                 facts,
                 at_ms,
-            } => {
-                let prev = self.focused.map(|(k, _)| k);
-                self.focused = Some((scope, facts));
-                if facts.inherit_open_on_entry {
-                    if let Some(prev) = prev.filter(|p| *p != scope) {
-                        if let Some(src) = self.row(prev).open.filter(|c| c.value) {
-                            let row = self.row_mut(scope);
-                            let newer = row.open.is_none_or(|c| c.at_ms < src.at_ms);
-                            if newer {
-                                row.open = Some(Claim {
-                                    value: true,
-                                    basis: Basis::Inherited,
-                                    at_ms: src.at_ms,
-                                    fence_ms: src.fence_ms,
-                                });
-                            }
-                        }
-                    }
-                }
-                if self.new_thread_prior && facts.new_thread {
-                    let row = self.row_mut(scope);
-                    if row.open.is_none() {
-                        row.open = Some(Claim {
-                            value: false,
-                            basis: Basis::MeasuredPrior,
-                            at_ms,
-                            fence_ms: at_ms,
-                        });
-                    }
-                }
-            }
-            ScopeEvent::Explicit { open, mode, at_ms } => {
-                let Some((scope, _)) = self.focused else {
-                    return;
-                };
-                let fence_ms = at_ms.saturating_add(self.settle_ms);
-                let row = self.row_mut(scope);
-                if let Some(v) = open {
-                    row.open = Some(Claim {
-                        value: v,
-                        basis: Basis::Explicit,
-                        at_ms,
-                        fence_ms,
-                    });
-                }
-                if let Some(m) = mode {
-                    row.mode = Some(Claim {
-                        value: m,
-                        basis: Basis::Explicit,
-                        at_ms,
-                        fence_ms,
-                    });
+            } => self.on_focus(scope, facts, at_ms),
+            ScopeEvent::Explicit {
+                open,
+                mode,
+                track,
+                at_ms,
+            } => self.on_explicit(open, mode, track, at_ms),
+            ScopeEvent::Track { track } => {
+                if let Some((scope, _)) = self.focused {
+                    self.row_mut(scope).track = track;
                 }
             }
             ScopeEvent::Observed {
@@ -244,28 +224,108 @@ impl ScopeBelief {
                 if imm_family && !facts.imm_trusted {
                     return;
                 }
-                let basis = Basis::Observed(source, confidence);
-                let row = self.row_mut(scope);
-                if let Some(v) = open {
-                    if accepts(row.open.as_ref(), confidence, read_started_ms) {
+                self.on_observed(scope, open, mode, source, confidence, read_started_ms);
+            }
+        }
+    }
+
+    fn on_focus(&mut self, scope: ScopeKey, facts: WindowFacts, at_ms: u64) {
+        let prev = self.focused.map(|(k, _)| k);
+        self.focused = Some((scope, facts));
+        if facts.inherit_open_on_entry {
+            if let Some(prev) = prev.filter(|p| *p != scope) {
+                if let Some(src) = self.row(prev).open.filter(|c| c.value) {
+                    let row = self.row_mut(scope);
+                    let newer = row.open.is_none_or(|c| c.at_ms < src.at_ms);
+                    if newer {
                         row.open = Some(Claim {
-                            value: v,
-                            basis,
-                            at_ms: read_started_ms,
-                            fence_ms: read_started_ms,
+                            value: true,
+                            basis: Basis::Inherited,
+                            at_ms: src.at_ms,
+                            fence_ms: src.fence_ms,
                         });
                     }
                 }
-                if let Some(m) = mode {
-                    if accepts(row.mode.as_ref(), confidence, read_started_ms) {
-                        row.mode = Some(Claim {
-                            value: m,
-                            basis,
-                            at_ms: read_started_ms,
-                            fence_ms: read_started_ms,
-                        });
-                    }
-                }
+            }
+        }
+        if self.new_thread_prior && facts.new_thread {
+            let row = self.row_mut(scope);
+            if row.open.is_none() {
+                row.open = Some(Claim {
+                    value: false,
+                    basis: Basis::MeasuredPrior,
+                    at_ms,
+                    fence_ms: at_ms,
+                });
+            }
+        }
+    }
+
+    fn on_explicit(
+        &mut self,
+        open: Option<bool>,
+        mode: Option<ModeClass>,
+        track: Option<KeyTrack>,
+        at_ms: u64,
+    ) {
+        let Some((scope, _)) = self.focused else {
+            return;
+        };
+        let fence_ms = at_ms.saturating_add(self.settle_ms);
+        let row = self.row_mut(scope);
+        if let Some(t) = track {
+            row.track = t;
+        }
+        if let Some(v) = open {
+            row.open = Some(Claim {
+                value: v,
+                basis: Basis::Explicit,
+                at_ms,
+                fence_ms,
+            });
+        }
+        if let Some(m) = mode {
+            row.mode = Some(Claim {
+                value: m,
+                basis: Basis::Explicit,
+                at_ms,
+                fence_ms,
+            });
+        }
+    }
+
+    fn on_observed(
+        &mut self,
+        scope: ScopeKey,
+        open: Option<bool>,
+        mode: Option<ModeClass>,
+        source: ObservationSource,
+        confidence: ObservationConfidence,
+        read_started_ms: u64,
+    ) {
+        let basis = Basis::Observed(source, confidence);
+        let row = self.row_mut(scope);
+        if let Some(v) = open {
+            if accepts(row.open.as_ref(), confidence, read_started_ms) {
+                row.open = Some(Claim {
+                    value: v,
+                    basis,
+                    at_ms: read_started_ms,
+                    fence_ms: read_started_ms,
+                });
+            }
+        }
+        if let Some(m) = mode {
+            if accepts(row.mode.as_ref(), confidence, read_started_ms) {
+                row.mode = Some(Claim {
+                    value: m,
+                    basis,
+                    at_ms: read_started_ms,
+                    fence_ms: read_started_ms,
+                });
+                // 観測が来たので、変換モードの追跡は観測へ戻す。`ImeModel` と違い、Low の観測でも主張が無ければ受け入れて消す
+                // (V1 の意図した差。`ImeModel` は Medium 未満の入力モード観測を無視する)。
+                row.track.conv = None;
             }
         }
     }
@@ -289,7 +349,146 @@ impl ScopeBelief {
             open,
             input_mode,
             basis,
+            track: row.track,
         }
+    }
+}
+
+/// 入力モードを Z の軸の値へ写す(O1)。`Unknown` は主張にしない。
+#[must_use]
+pub const fn mode_class_of(mode: InputModeState) -> Option<ModeClass> {
+    match mode {
+        InputModeState::ObservedEisu => Some(ModeClass::Eisu),
+        InputModeState::ObservedKana => Some(ModeClass::KanaInputMethod),
+        InputModeState::ObservedRomaji | InputModeState::AssumedRomaji { .. } => {
+            Some(ModeClass::Kana)
+        }
+        InputModeState::Unknown => None,
+    }
+}
+
+/// IMM の読み・conv のビット・GJI の I/O からの推測の源か(読めない窓では反証に使わない、ADR-282 §4.4 の信頼表)。
+/// ここに挙げない源(TSF・共有メモリ・字形)は窓の種類に関わらず使う。
+#[must_use]
+pub const fn is_imm_family(source: ObservationSource) -> bool {
+    matches!(
+        source,
+        ObservationSource::FocusProbe
+            | ObservationSource::ObserverPoll
+            | ObservationSource::Gji
+            | ObservationSource::ImmGetOpenStatus
+            | ObservationSource::ConvBitsInference
+            | ObservationSource::GjiIoInference
+            | ObservationSource::ConvOpenInference
+            | ObservationSource::ImmCrossProbe
+            | ObservationSource::HwndCache
+            | ObservationSource::HeuristicDefault
+    )
+}
+
+/// 打鍵の予測を Z の事象へ写す。表のキー(`table_key`)は押した後の状態で明示操作として記録し(L1′。開閉の予測が無ければ
+/// 打鍵前の Z の開)、それ以外は追跡だけを進める。予測の入力は Z 自身の読み出し(`view`)から作ること。
+#[must_use]
+pub fn scope_event_of_prediction(
+    table_key: bool,
+    prediction: &Prediction,
+    view: &ScopeView,
+    at_ms: u64,
+) -> ScopeEvent {
+    if !table_key {
+        return ScopeEvent::Track {
+            track: prediction.track,
+        };
+    }
+    ScopeEvent::Explicit {
+        open: Some(prediction.effect.open.unwrap_or(view.open)),
+        mode: prediction.effect.mode.and_then(mode_class_of),
+        track: Some(prediction.track),
+        at_ms,
+    }
+}
+
+/// 表のキーか(明示操作として記録するか)。
+#[must_use]
+pub const fn is_table_key(vk: u16) -> bool {
+    TableKey::from_vk(vk).is_some()
+}
+
+/// 本番の `ImeEvent` を Z の事象へ写す(V1 の shadow。ADR-282 §4.3・§4.4)。
+///
+/// - 利用者の明示 ON/OFF(`UserImeSetIntent`、3 つの源とも)と、パニックリセット(`PanicReset`)は開の明示操作。変換中の段階は捨てる(`ImeModel` と同じ)。
+/// - 開閉の観測は、今のフォーカスの世代(`epoch`)のものだけ。キャッシュの復元・既定の推測は観測ではないので写さない(I7)。
+/// - 入力モードの観測は、`Unknown` 以外。
+/// - 打鍵の予測(`KeyEffectPredicted`)は写さない(Z は自分の読み出しを入力にした予測を別に受ける。
+///   [`scope_event_of_prediction`])。窓切替も写さない(殻がスコープの鍵と窓の種類を添えて別に渡す)。
+/// - 半角英数トグルの出入りと、パニックリセットのローマ字の強制
+///   (`InputModeApplied` の `UserHalfWidthAlnumToggle`・`PanicReset`、適用できたときだけ)は入力モードの明示操作
+///   (ADR-282 §4.9 の表: belief の主張には入る。入らないのは drift・授権の根拠であり、ここではなく殻の側の規律)。
+/// - それ以外(キャッシュの復元・送信の結果・drift・上記以外の `InputModeApplied` など)は Z の belief に入れない
+///   (キャッシュの復元と既定は観測ではない〈I7〉。他の `InputModeApplied` は §4.9 の表に無く、V1 では写さない)。
+///
+/// 観測の時刻は事象を受けた時刻で代える(読み取りの開始時刻を `ImeEvent` が持たないため。V1 の近似)。
+#[must_use]
+pub fn scope_event_of(
+    event: &ImeEvent,
+    view: &ScopeView,
+    epoch: FocusEpoch,
+    at_ms: u64,
+) -> Option<ScopeEvent> {
+    match event {
+        ImeEvent::UserImeSetIntent { target, .. } | ImeEvent::PanicReset { target } => {
+            Some(ScopeEvent::Explicit {
+                open: Some(*target),
+                mode: None,
+                track: Some(KeyTrack {
+                    stage: Stage::None,
+                    ..view.track
+                }),
+                at_ms,
+            })
+        }
+        ImeEvent::ObserverReported(o) => {
+            let source = o.source();
+            if matches!(
+                source,
+                ObservationSource::HwndCache | ObservationSource::HeuristicDefault
+            ) || o.focus_epoch() != epoch
+            {
+                return None;
+            }
+            Some(ScopeEvent::Observed {
+                open: Some(o.open()),
+                mode: None,
+                source,
+                confidence: o.confidence(),
+                imm_family: is_imm_family(source),
+                read_started_ms: at_ms,
+            })
+        }
+        ImeEvent::InputModeObserved {
+            mode,
+            source,
+            confidence,
+        } => mode_class_of(*mode).map(|m| ScopeEvent::Observed {
+            open: None,
+            mode: Some(m),
+            source: *source,
+            confidence: *confidence,
+            imm_family: is_imm_family(*source),
+            read_started_ms: at_ms,
+        }),
+        ImeEvent::InputModeApplied {
+            mode,
+            strategy:
+                InputModeApplyStrategy::UserHalfWidthAlnumToggle | InputModeApplyStrategy::PanicReset,
+            result: InputModeApplyResult::Applied,
+        } => mode_class_of(*mode).map(|m| ScopeEvent::Explicit {
+            open: None,
+            mode: Some(m),
+            track: None,
+            at_ms,
+        }),
+        _ => None,
     }
 }
 
@@ -347,6 +546,7 @@ mod tests {
         z.evolve(ScopeEvent::Explicit {
             open: Some(open),
             mode: None,
+            track: None,
             at_ms,
         });
     }
@@ -484,5 +684,318 @@ mod tests {
             "直前のスコープの開を引き継ぐ窓では、引き継ぎが先"
         );
         assert_eq!(z.view().basis, "z-inherited");
+    }
+
+    /// 追跡はスコープの行に持ち、窓切替で捨てない(§4.5)。入力モードの観測で変換モードの追跡は観測へ戻る。
+    #[test]
+    fn key_track_is_kept_per_scope_and_cleared_by_mode_observation() {
+        use crate::state::key_effect_predictor::Conv;
+        let typing = KeyTrack {
+            conv: Some(Conv::C10),
+            stage: Stage::Typing,
+        };
+        let mut z = ScopeBelief::new(170);
+        focus(&mut z, 1, READABLE, 0);
+        z.evolve(ScopeEvent::Track { track: typing });
+        focus(&mut z, 2, READABLE, 10);
+        assert_eq!(z.view().track, KeyTrack::default(), "B は自分の追跡");
+        focus(&mut z, 1, READABLE, 20);
+        assert_eq!(z.view().track, typing, "A に戻れば A の追跡");
+        z.evolve(ScopeEvent::Observed {
+            open: None,
+            mode: Some(ModeClass::Kana),
+            source: ObservationSource::ObserverPoll,
+            confidence: ObservationConfidence::Medium,
+            imm_family: true,
+            read_started_ms: 30,
+        });
+        assert_eq!(z.view().track.conv, None);
+        assert_eq!(z.view().track.stage, Stage::Typing, "段階は残す");
+    }
+
+    /// 表のキーは押した後の状態で明示操作(開閉の予測が無ければ打鍵前の Z の開)、それ以外は追跡だけ。
+    #[test]
+    fn prediction_maps_table_keys_to_explicit_and_others_to_track() {
+        use crate::state::key_effect_predictor::PredictedEffect;
+        let mut z = ScopeBelief::new(170);
+        focus(&mut z, 1, READABLE, 0);
+        explicit(&mut z, false, 5);
+        let p = Prediction {
+            effect: PredictedEffect {
+                open: None,
+                mode: Some(InputModeState::ObservedEisu),
+            },
+            track: KeyTrack::default(),
+        };
+        let e = scope_event_of_prediction(true, &p, &z.view(), 10);
+        assert_eq!(
+            e,
+            ScopeEvent::Explicit {
+                open: Some(false),
+                mode: Some(ModeClass::Eisu),
+                track: Some(KeyTrack::default()),
+                at_ms: 10,
+            }
+        );
+        assert_eq!(
+            scope_event_of_prediction(false, &p, &z.view(), 10),
+            ScopeEvent::Track {
+                track: KeyTrack::default()
+            }
+        );
+    }
+
+    /// `ImeEvent` の写像: 明示 ON/OFF は明示操作、キャッシュ・既定の観測は写さない、観測は今の世代のものだけ。
+    #[test]
+    fn ime_event_mapping_keeps_only_user_ops_and_current_observations() {
+        use crate::state::evidence::AnyObservation;
+        use crate::state::ime_event::{HwndId, UserIntentSource};
+        let view = ScopeBelief::new(170).view();
+        let epoch = FocusEpoch::default();
+        let user = ImeEvent::UserImeSetIntent {
+            target: false,
+            source: UserIntentSource::PhysicalImeKey,
+        };
+        assert!(matches!(
+            scope_event_of(&user, &view, epoch, 1),
+            Some(ScopeEvent::Explicit {
+                open: Some(false),
+                ..
+            })
+        ));
+        let obs = |source| {
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                source,
+                HwndId(1),
+                ObservationConfidence::Medium,
+                epoch,
+            ))
+        };
+        assert!(matches!(
+            scope_event_of(&obs(ObservationSource::ObserverPoll), &view, epoch, 2),
+            Some(ScopeEvent::Observed {
+                imm_family: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            scope_event_of(&obs(ObservationSource::MozcShm), &view, epoch, 2),
+            Some(ScopeEvent::Observed {
+                imm_family: false,
+                ..
+            })
+        ));
+        assert_eq!(
+            scope_event_of(&obs(ObservationSource::HwndCache), &view, epoch, 2),
+            None
+        );
+        assert_eq!(
+            scope_event_of(&obs(ObservationSource::HeuristicDefault), &view, epoch, 2),
+            None
+        );
+    }
+
+    /// 別の世代(`focus_epoch` が今と違う)の観測は写さない。`ObserverPoll` のように普段は写す源でも。
+    #[test]
+    fn ime_event_mapping_drops_observation_of_another_focus_epoch() {
+        use crate::state::evidence::AnyObservation;
+        use crate::state::ime_event::HwndId;
+        let view = ScopeBelief::new(170).view();
+        let obs = |epoch| {
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId(1),
+                ObservationConfidence::Medium,
+                epoch,
+            ))
+        };
+        assert!(scope_event_of(&obs(7), &view, 7, 1).is_some());
+        assert_eq!(scope_event_of(&obs(6), &view, 7, 1), None);
+        assert_eq!(scope_event_of(&obs(8), &view, 7, 1), None);
+    }
+
+    /// 明示 ON/OFF は変換中の段階だけ捨て、変換モードの追跡(`conv`)は残す。
+    #[test]
+    fn user_intent_drops_stage_but_keeps_conv_track() {
+        use crate::state::ime_event::UserIntentSource;
+        use crate::state::key_effect_predictor::Conv;
+        let track = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::ConvSpace,
+        };
+        let view = ScopeView {
+            track,
+            ..ScopeBelief::new(170).view()
+        };
+        let ev = ImeEvent::UserImeSetIntent {
+            target: true,
+            source: UserIntentSource::SyncKey,
+        };
+        assert_eq!(
+            scope_event_of(&ev, &view, 0, 9),
+            Some(ScopeEvent::Explicit {
+                open: Some(true),
+                mode: None,
+                track: Some(KeyTrack {
+                    conv: Some(Conv::C19),
+                    stage: Stage::None,
+                }),
+                at_ms: 9,
+            })
+        );
+    }
+
+    /// 入力モードの観測は `Unknown` 以外を、軸の値へ写して観測として渡す。
+    #[test]
+    fn input_mode_observation_maps_to_mode_class_and_skips_unknown() {
+        let view = ScopeBelief::new(170).view();
+        let ev = |mode| ImeEvent::InputModeObserved {
+            mode,
+            source: ObservationSource::MozcShm,
+            confidence: ObservationConfidence::High,
+        };
+        assert_eq!(
+            scope_event_of(&ev(InputModeState::Unknown), &view, 0, 1),
+            None
+        );
+        assert_eq!(
+            scope_event_of(&ev(InputModeState::ObservedEisu), &view, 0, 4),
+            Some(ScopeEvent::Observed {
+                open: None,
+                mode: Some(ModeClass::Eisu),
+                source: ObservationSource::MozcShm,
+                confidence: ObservationConfidence::High,
+                imm_family: false,
+                read_started_ms: 4,
+            })
+        );
+        assert!(matches!(
+            scope_event_of(&ev(InputModeState::ObservedKana), &view, 0, 4),
+            Some(ScopeEvent::Observed {
+                mode: Some(ModeClass::KanaInputMethod),
+                ..
+            })
+        ));
+        assert!(matches!(
+            scope_event_of(&ev(InputModeState::ObservedRomaji), &view, 0, 4),
+            Some(ScopeEvent::Observed {
+                mode: Some(ModeClass::Kana),
+                ..
+            })
+        ));
+    }
+
+    /// ADR-282 §4.9: パニックリセットは開の主張に入る。半角英数トグルの出入りは入力モードの主張に入る。
+    /// 適用できなかった(`Skipped`)もの・§4.9 に無い手段の `InputModeApplied` は写さない。
+    #[test]
+    fn panic_reset_and_half_width_toggle_enter_the_claims() {
+        use crate::state::key_effect_predictor::Conv;
+        let mut z = ScopeBelief::new(170);
+        focus(&mut z, 1, READABLE, 0);
+        explicit(&mut z, false, 5);
+        assert!(!z.view().open);
+
+        // パニックリセット: 開が主張として入り、追跡は段階だけ捨てる。
+        let track = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::Typing,
+        };
+        z.evolve(ScopeEvent::Track { track });
+        let view = z.view();
+        let e = scope_event_of(&ImeEvent::PanicReset { target: true }, &view, 0, 400)
+            .expect("パニックリセットは写す");
+        z.evolve(e);
+        assert!(z.view().open);
+        assert_eq!(z.view().basis, "z-explicit");
+        assert_eq!(
+            z.view().track,
+            KeyTrack {
+                conv: Some(Conv::C19),
+                stage: Stage::None
+            }
+        );
+
+        // 半角英数トグル ON: モード軸が半角英数になり、開は変わらず、追跡も変えない。
+        let applied = |mode, strategy, result| ImeEvent::InputModeApplied {
+            mode,
+            strategy,
+            result,
+        };
+        let on = applied(
+            InputModeState::ObservedEisu,
+            InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            InputModeApplyResult::Applied,
+        );
+        let before = z.view();
+        z.evolve(scope_event_of(&on, &before, 0, 500).expect("トグルは写す"));
+        assert_eq!(z.view().input_mode, InputModeState::ObservedEisu);
+        assert_eq!(z.view().open, before.open);
+        assert_eq!(z.view().track, before.track);
+
+        // トグル OFF(AssumedRomaji)はかなに戻る。
+        let off = applied(
+            InputModeState::AssumedRomaji {
+                reason: AssumedReason::KeyEffectPrediction,
+            },
+            InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            InputModeApplyResult::Applied,
+        );
+        z.evolve(scope_event_of(&off, &z.view(), 0, 600).expect("トグル OFF も写す"));
+        assert_ne!(z.view().input_mode, InputModeState::ObservedEisu);
+
+        // 適用しなかったもの・表に無い手段は写さない。
+        let view = z.view();
+        for (strategy, result) in [
+            (
+                InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                InputModeApplyResult::Skipped,
+            ),
+            (
+                InputModeApplyStrategy::CacheRestore,
+                InputModeApplyResult::Applied,
+            ),
+            (
+                InputModeApplyStrategy::ImmBrokenCorrection,
+                InputModeApplyResult::Applied,
+            ),
+        ] {
+            let ev = applied(InputModeState::ObservedEisu, strategy, result);
+            assert_eq!(scope_event_of(&ev, &view, 0, 700), None, "{strategy:?}");
+        }
+        // キャッシュの復元(`HwndCacheRestored`)は観測でも操作でもないので写さない(§4.5)。
+        assert_eq!(
+            scope_event_of(&ImeEvent::HwndCacheRestored { target: true }, &view, 0, 700),
+            None
+        );
+    }
+
+    /// `track: None` の明示操作は追跡を変えない(`Some` は置き換える)。
+    #[test]
+    fn explicit_with_no_track_keeps_the_track() {
+        use crate::state::key_effect_predictor::Conv;
+        let mut z = ScopeBelief::new(170);
+        focus(&mut z, 1, READABLE, 0);
+        let t = KeyTrack {
+            conv: Some(Conv::C10),
+            stage: Stage::Typing,
+        };
+        z.evolve(ScopeEvent::Track { track: t });
+        explicit(&mut z, true, 5);
+        assert_eq!(z.view().track, t);
+        z.evolve(ScopeEvent::Explicit {
+            open: None,
+            mode: None,
+            track: Some(KeyTrack::default()),
+            at_ms: 6,
+        });
+        assert_eq!(z.view().track, KeyTrack::default());
+    }
+
+    #[test]
+    fn scope_key_separates_thread_keys_from_hwnd_fallback() {
+        assert_eq!(scope_key(2, Some(3), 99), (2 << 32) | 3);
+        assert_ne!(scope_key(0, None, 3), scope_key(0, Some(3), 0));
     }
 }

@@ -16,6 +16,7 @@
 
 use awase::engine::{AssumedReason, InputModeState};
 use awase_windows::state::ime_event::{ObservationConfidence, ObservationSource};
+use awase_windows::state::key_effect_predictor::KeyTrack;
 use awase_windows::state::scope_belief::{ModeClass, ScopeEvent, ScopeView, WindowFacts};
 
 /// 観測の鮮度(本番の `OBSERVATION_FRESH_WINDOW_MS`)。
@@ -54,6 +55,8 @@ struct Claim<T> {
 struct Snapshot {
     open: Option<Claim<bool>>,
     mode: Option<Claim<ModeClass>>,
+    /// 追跡(窓ごとの記録に一緒に持つ)。
+    track: KeyTrack,
 }
 
 /// 今の観測プールの写し(ソースごとに最新 1 件、窓切替で全消し)。
@@ -70,8 +73,8 @@ struct Obs {
 pub struct GlobalLatch {
     current: Snapshot,
     /// (c) 窓ごとの記録(窓から出たときの値)。
-    by_scope: Vec<(u32, Snapshot)>,
-    focused: Option<(u32, WindowFacts)>,
+    by_scope: Vec<(u64, Snapshot)>,
+    focused: Option<(u64, WindowFacts)>,
     pool: Vec<Obs>,
     settle_ms: u64,
     new_thread_prior: bool,
@@ -84,6 +87,10 @@ impl GlobalLatch {
             current: Snapshot {
                 open: None,
                 mode: None,
+                track: KeyTrack {
+                    conv: None,
+                    stage: awase_windows::state::key_effect_predictor::Stage::None,
+                },
             },
             by_scope: Vec::new(),
             focused: None,
@@ -93,14 +100,14 @@ impl GlobalLatch {
         }
     }
 
-    fn saved(&self, scope: u32) -> Option<Snapshot> {
+    fn saved(&self, scope: u64) -> Option<Snapshot> {
         self.by_scope
             .iter()
             .find(|(k, _)| *k == scope)
             .map(|(_, s)| *s)
     }
 
-    fn save(&mut self, scope: u32, snap: Snapshot) {
+    fn save(&mut self, scope: u64, snap: Snapshot) {
         if let Some(i) = self.by_scope.iter().position(|(k, _)| *k == scope) {
             self.by_scope[i].1 = snap;
         } else {
@@ -150,8 +157,16 @@ impl GlobalLatch {
                 }
                 self.current = next;
             }
-            ScopeEvent::Explicit { open, mode, at_ms } => {
+            ScopeEvent::Explicit {
+                open,
+                mode,
+                track,
+                at_ms,
+            } => {
                 let fence_ms = at_ms + self.settle_ms;
+                if let Some(t) = track {
+                    self.current.track = t;
+                }
                 if let Some(v) = open {
                     self.current.open = Some(Claim {
                         value: v,
@@ -169,6 +184,7 @@ impl GlobalLatch {
                     });
                 }
             }
+            ScopeEvent::Track { track } => self.current.track = track,
             ScopeEvent::Observed {
                 open,
                 mode,
@@ -201,6 +217,7 @@ impl GlobalLatch {
                             at_ms: read_started_ms,
                             fence_ms: read_started_ms,
                         });
+                        self.current.track.conv = None;
                     }
                 }
             }
@@ -294,6 +311,7 @@ impl GlobalLatch {
             open,
             input_mode,
             basis,
+            track: self.current.track,
         }
     }
 }

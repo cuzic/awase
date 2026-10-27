@@ -61,12 +61,12 @@ use awase_windows::state::ime_event::{
 use awase_windows::state::ime_model::ImeModel;
 use awase_windows::state::key_effect_predictor::{
     plan_key_effect_track, KeyEffectKeymap, KeyTrack, KeyTrackFacts, ModeKeyModifiers,
-    PredictInput, Prediction, TableKey,
+    PredictInput, Prediction,
 };
 use awase_windows::state::open_warrant::{issue_open_warrant, OpenWarrant};
 use awase_windows::state::platform_state::ImeStateHub;
 use awase_windows::state::probe_admission::{Admission, FocusFence, ImmLikeTicket};
-use awase_windows::state::scope_belief::{ModeClass, ScopeBelief, ScopeEvent, WindowFacts};
+use awase_windows::state::scope_belief::{self, ModeClass, ScopeBelief, ScopeEvent, WindowFacts};
 use awase_windows::state::TickMs;
 
 use super::pseudo_ime::{Grid, PseudoIme, TrueStage, TrueState, CONV_HIRAGANA};
@@ -815,11 +815,15 @@ impl Harness {
             .record_explicit_intent(open, UserIntentSource::Command, now);
         self.issue_write(WriteOrigin::ExplicitUserCommand, open);
         let at_ms = self.now_ms;
-        self.z_evolve(ScopeEvent::Explicit {
-            open: Some(open),
-            mode: None,
-            at_ms,
-        });
+        let event = ImeEvent::UserImeSetIntent {
+            target: open,
+            source: UserIntentSource::Command,
+        };
+        for a in &mut self.alts {
+            if let Some(e) = scope_belief::scope_event_of(&event, &a.view(), 0, at_ms) {
+                a.evolve(e);
+            }
+        }
         self.settle(format!("user_set_open({open})"), None);
         self
     }
@@ -1171,7 +1175,7 @@ impl Harness {
         };
         let at_ms = self.now_ms;
         self.z_evolve(ScopeEvent::Focus {
-            scope: w.thread,
+            scope: u64::from(w.thread),
             facts,
             at_ms,
         });
@@ -1183,13 +1187,10 @@ impl Harness {
         }
     }
 
-    /// ADR-282 V0: 候補 Z の明示操作(表のセルで決まるモードキー)。Z 自身の belief を入力に予測し、押した後の状態(L1′)で記録する。
-    /// 追跡(`key_track`)は本物の hub のものを借りる(Z のスコープごとの追跡は持たない近似)。
+    /// ADR-282 V0・V1: 比較用のモデルの打鍵。各モデル自身の belief と追跡(スコープごとの `key_track`)を入力に予測し、
+    /// 表のキーは押した後の状態(L1′)で明示操作として、それ以外は追跡だけを記録する(`scope_event_of_prediction`)。
     fn z_key(&mut self, vk: u16, passive_rule_eligible: bool, composing: bool) {
-        if TableKey::from_vk(vk).is_none() {
-            return;
-        }
-        let track = self.hub.model().key_track();
+        let table_key = scope_belief::is_table_key(vk);
         let conv_raw = self.last_conv_raw;
         let at_ms = self.now_ms;
         let keymap = &self.keymap;
@@ -1200,7 +1201,7 @@ impl Harness {
                 mode: v.input_mode,
                 conv_raw,
                 composing,
-                track,
+                track: v.track,
                 unreadable: false,
                 passive_rule_eligible,
                 observable_toggle_guard: false,
@@ -1208,16 +1209,9 @@ impl Harness {
             let Some(p) = keymap.predict(vk, &input) else {
                 continue;
             };
-            let mode = p.effect.mode.map(|m| match m {
-                InputModeState::ObservedEisu => ModeClass::Eisu,
-                InputModeState::ObservedKana => ModeClass::KanaInputMethod,
-                _ => ModeClass::Kana,
-            });
-            z.evolve(ScopeEvent::Explicit {
-                open: Some(p.effect.open.unwrap_or(v.open)),
-                mode,
-                at_ms,
-            });
+            z.evolve(scope_belief::scope_event_of_prediction(
+                table_key, &p, &v, at_ms,
+            ));
         }
     }
 
