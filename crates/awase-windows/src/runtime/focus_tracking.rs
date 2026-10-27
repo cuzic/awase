@@ -936,9 +936,8 @@ impl Runtime {
     /// スレッドを「見た」ことは記録しない(`focus_thread_of`)ので、新しいスレッドの事前(O9)は使わない。
     fn scope_shadow_focus_now(&mut self, hwnd: crate::state::ime_event::HwndId) {
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        let ids = crate::focus::thread_scope::focus_thread_of(windows::Win32::Foundation::HWND(
-            hwnd.0 as *mut core::ffi::c_void,
-        ));
+        let ids =
+            crate::focus::thread_scope::focus_thread_of(HWND(hwnd.0 as *mut core::ffi::c_void));
         let scope = crate::state::scope_belief::scope_key(
             ids.map_or(self.platform.focus.pid(), |(pid, _)| pid),
             ids.map(|(_, tid)| tid),
