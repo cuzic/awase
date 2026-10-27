@@ -482,6 +482,8 @@ struct Config {
     /// 測ったのは Windows Terminal で、ここでは同じ tsf-native の wezterm の窓に当てはめる近似)。`Some(false)` は引き継がない
     /// (O6 の既定〈独立〉。GJI × tsf-native は未確定なので両方で回す)。`None` は従来の shared / per-thread。
     tsf_inherit: Option<bool>,
+    /// ADR-282 V2-2: Engine の入力の belief を Z(本物の hub の shadow)から読む(設定 `general.belief_v2 = true`)。
+    adopt: bool,
 }
 
 impl Config {
@@ -490,6 +492,7 @@ impl Config {
             grid,
             shared,
             tsf_inherit: None,
+            adopt: false,
         }
     }
 
@@ -498,11 +501,19 @@ impl Config {
             grid,
             shared: false,
             tsf_inherit: Some(tsf_inherit),
+            adopt: false,
+        }
+    }
+
+    const fn adopted(self) -> Self {
+        Self {
+            adopt: true,
+            ..self
         }
     }
 
     fn name(self) -> String {
-        match self.tsf_inherit {
+        let base = match self.tsf_inherit {
             Some(i) => format!(
                 "{} mixed(tsf-native={})",
                 self.grid.name(),
@@ -513,6 +524,11 @@ impl Config {
                 self.grid.name(),
                 if self.shared { "shared" } else { "per-thread" }
             ),
+        };
+        if self.adopt {
+            format!("{base} 採用Z")
+        } else {
+            base
         }
     }
 
@@ -525,6 +541,9 @@ impl Config {
         }
         // ADR-282 V0: 候補 Z を並走させる(本物の belief・Engine には効かせない。違反は I1(Z)・I2(Z) で別に数える)。
         h.with_scope_belief();
+        if self.adopt {
+            h.adopt_scope_belief();
+        }
         // 起動直後の belief は placeholder（`desired_open=true`）で、真（閉）と食い違っている（BUG-163 の領分。起動の事象は
         // ここでは測らない）。最初の観測で揃えた「動いている awase」の状態から列を始める。
         h.observe(Source::ImmCross);
@@ -1409,6 +1428,68 @@ fn belief_engine_invariant_baseline() {
 
     eprintln!("belief_engine_invariant: {:?}", started.elapsed());
     let path = golden_path();
+    if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
+        std::fs::write(&path, &out).expect("golden を書けない");
+        eprintln!("golden を更新しました: {}", path.display());
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    assert!(
+        out == expected,
+        "golden {} が現状と一致しない。意図した変化なら UPDATE_GOLDEN=1 で再生成して差分を確認すること。\n\
+         ---- 現状の全文 ----\n{out}---- ここまで ----",
+        path.display()
+    );
+}
+
+fn adopted_golden_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
+        .join("belief_engine_adopted.txt")
+}
+
+/// ADR-282 V2-2: Engine の入力の belief を Z にした(設定 `general.belief_v2 = true`)awase を、基準の測定と同じ設定・字母・
+/// 不変条件で測る。「旧」の列が採用した Z の値になる。数値は golden `tests/golden/belief_engine_adopted.txt`。
+#[test]
+fn belief_engine_adopted() {
+    let started = Instant::now();
+    let mut configs: Vec<Config> = Grid::ALL
+        .into_iter()
+        .map(|grid| Config::plain(grid, true).adopted())
+        .collect();
+    configs.push(Config::plain(Grid::GjiMsime, false).adopted());
+    configs.push(Config::mixed(Grid::MsimeNative, true).adopted());
+    configs.push(Config::mixed(Grid::GjiMsime, false).adopted());
+    configs.push(Config::mixed(Grid::GjiMsime, true).adopted());
+    let results: Vec<String> = std::thread::scope(|s| {
+        let handles: Vec<_> = configs
+            .iter()
+            .map(|&cfg| {
+                std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(s, move || run_config(cfg))
+                    .expect("spawn")
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("設定ごとの測定"))
+            .collect()
+    });
+    let mut out = String::from(
+        "# ADR-282 V2-2: Engine の入力の belief を候補 Z(本物の hub の shadow、U2・U3 込み)にした awase の、基準の測定と同じ\n\
+         # 不変条件 I1/I2・I6 の測定。各節の「旧」は採用した Z。旧のままの数値は belief_engine_invariant_violations.txt。\n\
+         # 読み方は docs/adr/282-per-scope-latched-ime-belief-zero-base.md §14。\n\
+         # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test belief_engine_invariant\n",
+    );
+    for r in &results {
+        out.push_str(r);
+    }
+    eprintln!("belief_engine_adopted: {:?}", started.elapsed());
+    let path = adopted_golden_path();
     if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
         std::fs::write(&path, &out).expect("golden を書けない");
         eprintln!("golden を更新しました: {}", path.display());

@@ -368,6 +368,11 @@ pub struct GeneralConfig {
     /// 予測して Engine を追随させる。`false`で止める（偽 ON が出たとき、ビルドし直さずに戻すため）。
     #[serde(default = "default_predict_henkan_open_in_unreadable_windows")]
     pub predict_henkan_open_in_unreadable_windows: bool,
+    /// ADR-282 V2-2(隠し設定、既定 `false`): Engine の入力(IME の開閉・入力モード)を、IME の保持単位ごとに最後に受け入れた
+    /// 主張をラッチする belief(候補 Z、`state::scope_belief`)から読む。`false` は従来の belief。IME への書き込み・drift
+    /// correction・授権はどちらでも従来の belief のまま。既定を `true` にするかは所有者の判断(ADR-282 O8)。
+    #[serde(default)]
+    pub belief_v2: bool,
 }
 
 const fn default_predict_henkan_open_in_unreadable_windows() -> bool {
@@ -415,6 +420,7 @@ impl Default for GeneralConfig {
             swallow_alt_kana_input_method_switch: true,
             use_learned_keymap_table: true,
             predict_henkan_open_in_unreadable_windows: true,
+            belief_v2: false,
         }
     }
 }

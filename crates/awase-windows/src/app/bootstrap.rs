@@ -816,6 +816,8 @@ pub(super) fn initialize_app(
         app.set_predict_henkan_open_in_unreadable_windows(
             config.general.predict_henkan_open_in_unreadable_windows,
         );
+        // ADR-282 V2-2: Engine の入力の belief を候補 Z から読むか(隠し設定、既定 false)。
+        app.set_belief_v2(config.general.belief_v2);
         app.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
         app.set_hook_self_heal_enabled(config.diagnostics.hook_self_heal);
         // ADR-265 段階 1: mozc-readable の共有メモリの影の読み（観測のみ。既定は無効のオプトイン。反映は再起動後）
