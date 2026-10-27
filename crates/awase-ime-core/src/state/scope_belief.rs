@@ -416,15 +416,15 @@ pub const fn is_table_key(vk: u16) -> bool {
 
 /// 本番の `ImeEvent` を Z の事象へ写す(V1 の shadow。ADR-282 §4.3・§4.4)。
 ///
-/// - 利用者の明示 ON/OFF(`UserImeSetIntent`、3 つの源とも)は明示操作。変換中の段階は捨てる(`ImeModel` と同じ)。
+/// - 利用者の明示 ON/OFF(`UserImeSetIntent`、3 つの源とも)と、パニックリセット(`PanicReset`)は開の明示操作。変換中の段階は捨てる(`ImeModel` と同じ)。
 /// - 開閉の観測は、今のフォーカスの世代(`epoch`)のものだけ。キャッシュの復元・既定の推測は観測ではないので写さない(I7)。
 /// - 入力モードの観測は、`Unknown` 以外。
 /// - 打鍵の予測(`KeyEffectPredicted`)は写さない(Z は自分の読み出しを入力にした予測を別に受ける。
 ///   [`scope_event_of_prediction`])。窓切替も写さない(殻がスコープの鍵と窓の種類を添えて別に渡す)。
-/// - パニックリセット(`PanicReset`)は開の明示操作。半角英数トグルの出入りと、パニックリセットのローマ字の強制
+/// - 半角英数トグルの出入りと、パニックリセットのローマ字の強制
 ///   (`InputModeApplied` の `UserHalfWidthAlnumToggle`・`PanicReset`、適用できたときだけ)は入力モードの明示操作
 ///   (ADR-282 §4.9 の表: belief の主張には入る。入らないのは drift・授権の根拠であり、ここではなく殻の側の規律)。
-/// - それ以外(キャッシュの復元・送信の結果・drift・上の 2 つ以外の `InputModeApplied` など)は Z の belief に入れない
+/// - それ以外(キャッシュの復元・送信の結果・drift・上記以外の `InputModeApplied` など)は Z の belief に入れない
 ///   (キャッシュの復元と既定は観測ではない〈I7〉。他の `InputModeApplied` は §4.9 の表に無く、V1 では写さない)。
 ///
 /// 観測の時刻は事象を受けた時刻で代える(読み取りの開始時刻を `ImeEvent` が持たないため。V1 の近似)。
@@ -436,15 +436,17 @@ pub fn scope_event_of(
     at_ms: u64,
 ) -> Option<ScopeEvent> {
     match event {
-        ImeEvent::UserImeSetIntent { target, .. } => Some(ScopeEvent::Explicit {
-            open: Some(*target),
-            mode: None,
-            track: Some(KeyTrack {
-                stage: Stage::None,
-                ..view.track
-            }),
-            at_ms,
-        }),
+        ImeEvent::UserImeSetIntent { target, .. } | ImeEvent::PanicReset { target } => {
+            Some(ScopeEvent::Explicit {
+                open: Some(*target),
+                mode: None,
+                track: Some(KeyTrack {
+                    stage: Stage::None,
+                    ..view.track
+                }),
+                at_ms,
+            })
+        }
         ImeEvent::ObserverReported(o) => {
             let source = o.source();
             if matches!(
@@ -474,15 +476,6 @@ pub fn scope_event_of(
             confidence: *confidence,
             imm_family: is_imm_family(*source),
             read_started_ms: at_ms,
-        }),
-        ImeEvent::PanicReset { target } => Some(ScopeEvent::Explicit {
-            open: Some(*target),
-            mode: None,
-            track: Some(KeyTrack {
-                stage: Stage::None,
-                ..view.track
-            }),
-            at_ms,
         }),
         ImeEvent::InputModeApplied {
             mode,
