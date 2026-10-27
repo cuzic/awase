@@ -8,7 +8,8 @@
 //! - 明示操作(利用者の明示 ON/OFF・表のセルで決まるモードキー)は常に主張を覆す(O3)。値は押した後の状態(L1′)。
 //! - 観測は、読めない窓の IMM 系(反証不可、BUG-223(a)・BUG-219)を捨て、Low は主張なし・既定だけを覆し、
 //!   Medium 以上は明示操作の柵(`KEY_EFFECT_SETTLE_MS`)より後に読み始めたものだけが覆す。古い High は新しい Medium に勝たない。
-//! - 不確実なとき(主張なし)は ON(かな)に倒す(O2)。読める窓でも最初の観測が来るまでは同じ。
+//! - 不確実なとき(主張なし)は ON(かな)に倒す(O2)。読める窓でも最初の観測が来るまでは同じ。InputRelay の窓は O2 の
+//!   対象に入れず、主張なしは閉(U3、所有者の決定 2026-10-26)。
 //! - 入場時に開を引き継ぐ窓の種類(O5: MS-IME 本体の Win32 EDIT → Windows Terminal)は、直前のスコープの開の主張が
 //!   この窓の主張より新しければ開を引き継ぐ(開だけ。閉・変換モードは引き継がない)。それ以外は独立(O6)。
 //!
@@ -99,6 +100,8 @@ pub struct WindowFacts {
     /// このスコープに初めて入場し、awase の起動後に作られたスレッドと分かっているか(実測の事前「新しいスレッドは閉で始まる」の
     /// 条件。ADR-282 U2。`ScopeBelief::with_new_thread_prior` のときだけ使う)。
     pub new_thread: bool,
+    /// 不確実なとき(主張なし)に ON に倒す窓か(O2)。InputRelay の窓は `false` で、主張なしは閉(U3)。
+    pub on_lean: bool,
 }
 
 /// Z に流す事象。
@@ -135,7 +138,7 @@ pub enum ScopeEvent {
 pub struct ScopeView {
     pub open: bool,
     pub input_mode: InputModeState,
-    /// 開閉の根拠(`Basis::label`、主張なしは `z-default`)。
+    /// 開閉の根拠(`Basis::label`、主張なしは `z-default`、O2 の対象外の窓の主張なしは `z-default-off`)。
     pub basis: &'static str,
     /// フォーカス中のスコープの追跡(予測の入力)。
     pub track: KeyTrack,
@@ -343,9 +346,13 @@ impl ScopeBelief {
     #[must_use]
     pub fn view(&self) -> ScopeView {
         let row = self.focused.map(|(k, _)| self.row(k)).unwrap_or_default();
-        let (open, basis) = row
-            .open
-            .map_or((true, "z-default"), |c| (c.value, c.basis.label()));
+        let on_lean = self.focused.is_none_or(|(_, f)| f.on_lean);
+        let default = if on_lean {
+            (true, "z-default")
+        } else {
+            (false, "z-default-off")
+        };
+        let (open, basis) = row.open.map_or(default, |c| (c.value, c.basis.label()));
         let input_mode = match row.mode.map(|c| (c.value, c.basis)) {
             Some((ModeClass::Eisu, _)) => InputModeState::ObservedEisu,
             Some((ModeClass::KanaInputMethod, _)) => InputModeState::ObservedKana,
@@ -571,11 +578,13 @@ mod tests {
         imm_trusted: true,
         inherit_open_on_entry: false,
         new_thread: false,
+        on_lean: true,
     };
     const UNREADABLE: WindowFacts = WindowFacts {
         imm_trusted: false,
         inherit_open_on_entry: false,
         new_thread: false,
+        on_lean: true,
     };
 
     fn focus(z: &mut ScopeBelief, scope: ScopeKey, facts: WindowFacts, at_ms: u64) {
@@ -643,6 +652,7 @@ mod tests {
             imm_trusted: false,
             inherit_open_on_entry: true,
             new_thread: false,
+            on_lean: true,
         };
         let mut z = ScopeBelief::new(170);
         focus(&mut z, 3, wt, 0);
@@ -728,6 +738,23 @@ mod tests {
             "直前のスコープの開を引き継ぐ窓では、引き継ぎが先"
         );
         assert_eq!(z.view().basis, "z-inherited");
+    }
+
+    /// U3: InputRelay の窓(O2 の対象外)は主張なしで閉。明示操作・観測の主張はほかの窓と同じに効く。
+    #[test]
+    fn input_relay_window_is_closed_without_a_claim() {
+        let relay = WindowFacts {
+            on_lean: false,
+            ..UNREADABLE
+        };
+        let mut z = ScopeBelief::new(170);
+        focus(&mut z, 5, relay, 0);
+        assert!(!z.view().open);
+        assert_eq!(z.view().basis, "z-default-off");
+        explicit(&mut z, true, 10);
+        assert!(z.view().open, "明示 ON は効く");
+        focus(&mut z, 6, UNREADABLE, 20);
+        assert!(z.view().open, "ほかの窓は O2 のまま");
     }
 
     /// 追跡はスコープの行に持ち、窓切替で捨てない(§4.5)。入力モードの観測で変換モードの追跡は観測へ戻る。
