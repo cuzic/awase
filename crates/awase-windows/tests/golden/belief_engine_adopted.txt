@@ -1,0 +1,510 @@
+# ADR-282 V2-2: Engine の入力の belief を候補 Z(本物の hub の shadow、U2・U3 込み)にした awase の、基準の測定と同じ
+# 不変条件 I1/I2・I6 と I3・I4 の掃き出しの測定。各節の「旧」は採用した Z。旧のままの数値は belief_engine_invariant_violations.txt。
+# 読み方は docs/adr/282-per-scope-latched-ime-belief-zero-base.md §14。
+# 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test belief_engine_invariant
+
+## atok shared 採用Z I1 全字母（字母 19 種・長さ 3 まで・検査した列 3496）
+  初めて違反する列: 183 本（T=0）、うち 2000ms 事象なしで残る: 183 本（T=2000）、読める窓で poll が 1 回届いても残る: 96 本
+  事象を 1 つ削ると違反しない最小の列: 8 本（うち嘘の観測を含まない: 5 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+       101 /    101 /     40  belief-off/z-explicit
+        79 /     79 /     56  belief-off/z-observed-high
+         3 /      3 /      0  belief-off/z-observed-medium
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        28 /     28 /     10  嘘の観測を含む
+       155 /    155 /     86  外部変更を含む
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        20 /     20 /     20  chrome(imm32-unavailable)
+        16 /     16 /     16  explorer(imm32-unavailable)
+        87 /     87 /      0  explorer(std)
+        20 /     20 /     20  relay(relay)
+        20 /     20 /     20  wezterm(tsf-native)
+        20 /     20 /     20  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+       178 /    178 /     96  external-on
+         3 /      3 /      0  key:hankaku-zenkaku
+         2 /      2 /      0  obs:poll-LIE
+  最小列の例（分類ごと、最大 2 本）:
+    [belief-off/z-explicit] 最小列 5 本
+      3 手 key:ime-on > key:hankaku-zenkaku > external-on（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:ime-on > external-off > key:hankaku-zenkaku（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+    [belief-off/z-observed-high] 最小列 1 本
+      1 手 external-on（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+    [belief-off/z-observed-medium] 最小列 2 本
+      3 手 key:ime-on > advance:3500ms > obs:poll-LIE（窓=explorer(std)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:hankaku-zenkaku > advance:3500ms > obs:poll-LIE（窓=explorer(std)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=false）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [外部変更を含む] external-on
+    [外部変更を含む] key:ime-on > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:ime-on > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:ime-on > advance:3500ms > obs:poll-LIE
+    [外部変更を含む] key:hankaku-zenkaku > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:hankaku-zenkaku > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:hankaku-zenkaku > advance:3500ms > obs:poll-LIE
+    [嘘の観測を含む] advance:3500ms > obs:poll-LIE > key:hankaku-zenkaku
+
+## atok shared 採用Z I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## atok shared 採用Z I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 0 本
+
+## atok shared 採用Z 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → 違反なし
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
+
+## atok shared 採用Z 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+
+## atok shared 採用Z I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 131 本
+        82  belief-off/z-explicit
+        44  belief-off/z-observed-high
+         2  belief-off/z-observed-medium
+         3  belief-on-but-engine-off/mode=ObservedEisu
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 2 本
+    4 手 [belief-on-but-engine-off/mode=ObservedEisu] advance:3500ms > obs:poll-LIE > key:hiragana > key:ime-on
+    4 手 [belief-on-but-engine-off/mode=ObservedEisu] key:hankaku-zenkaku > external-off > key:eisu > key:ime-on
+
+## atok shared 採用Z I3・I4 の掃き出し（核の字母・長さ 3 まで・検査した列 1110。違反した列の数）
+  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。
+  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。
+  旧        I3    0 本  I4    0 本
+  Z        I3    0 本  I4    0 本
+  Z+U2     I3    0 本  I4    0 本
+  S′       I3    0 本  I4    0 本
+  S′+U2    I3    0 本  I4    0 本
+  配線Z+U2   I3    0 本  I4    0 本
+
+## msime shared 採用Z I1 全字母（字母 19 種・長さ 3 まで・検査した列 3528）
+  初めて違反する列: 148 本（T=0）、うち 2000ms 事象なしで残る: 148 本（T=2000）、読める窓で poll が 1 回届いても残る: 76 本
+  事象を 1 つ削ると違反しない最小の列: 19 本（うち嘘の観測を含まない: 13 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        59 /     59 /     20  belief-off/z-explicit
+        79 /     79 /     56  belief-off/z-observed-high
+         5 /      5 /      0  belief-off/z-observed-medium
+         5 /      5 /      0  belief-on-but-engine-off/mode=ObservedEisu
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        27 /     27 /     10  嘘の観測を含む
+       121 /    121 /     66  外部変更を含む
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        16 /     16 /     16  chrome(imm32-unavailable)
+        12 /     12 /     12  explorer(imm32-unavailable)
+        72 /     72 /      0  explorer(std)
+        16 /     16 /     16  relay(relay)
+        16 /     16 /     16  wezterm(tsf-native)
+        16 /     16 /     16  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+       134 /    134 /     76  external-on
+         5 /      5 /      0  key:eisu(F0)
+         5 /      5 /      0  key:hankaku-zenkaku
+         4 /      4 /      0  obs:poll-LIE
+  最小列の例（分類ごと、最大 2 本）:
+    [belief-off/z-explicit] 最小列 9 本
+      3 手 key:eisu > key:hankaku-zenkaku > external-on（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:eisu > external-off > key:hankaku-zenkaku（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+    [belief-off/z-observed-high] 最小列 1 本
+      1 手 external-on（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+    [belief-off/z-observed-medium] 最小列 4 本
+      3 手 key:eisu > advance:3500ms > obs:poll-LIE（窓=explorer(std)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:hiragana > advance:3500ms > obs:poll-LIE（窓=explorer(std)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=false）
+    [belief-on-but-engine-off/mode=ObservedEisu] 最小列 5 本
+      3 手 key:eisu > external-off > key:eisu（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:hiragana > external-off > key:eisu（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [外部変更を含む] external-on
+    [外部変更を含む] key:eisu > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:eisu > external-off > key:eisu
+    [外部変更を含む] key:eisu > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:eisu > advance:3500ms > obs:poll-LIE
+    [外部変更を含む] key:hiragana > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:hiragana > external-off > key:eisu
+    [外部変更を含む] key:hiragana > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:hiragana > advance:3500ms > obs:poll-LIE
+    [外部変更を含む] key:ime-on > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:ime-on > external-off > key:eisu
+    [外部変更を含む] key:ime-on > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:ime-on > advance:3500ms > obs:poll-LIE
+    [外部変更を含む] key:hankaku-zenkaku > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:hankaku-zenkaku > external-off > key:eisu
+    [外部変更を含む] key:hankaku-zenkaku > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:hankaku-zenkaku > advance:3500ms > obs:poll-LIE
+    [嘘の観測を含む] advance:3500ms > obs:poll-LIE > key:eisu
+    [嘘の観測を含む] advance:3500ms > obs:poll-LIE > key:hankaku-zenkaku
+
+## msime shared 採用Z I1 小さい字母（字母 7 種・長さ 4 まで・検査した列 2161）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime shared 採用Z I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime shared 採用Z I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 0 本
+
+## msime shared 採用Z 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → 違反なし
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
+
+## msime shared 採用Z 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+
+## msime shared 採用Z I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 104 本
+        47  belief-off/z-explicit
+        46  belief-off/z-observed-high
+         3  belief-off/z-observed-medium
+         1  belief-on-but-engine-off/mode=AssumedRomaji { reason: Startup }
+         7  belief-on-but-engine-off/mode=ObservedEisu
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 1 本
+    5 手 [belief-off/z-observed-medium] key:hiragana > focus:relay > advance:3500ms > focus:explorer > obs:poll-LIE
+
+## msime shared 採用Z I3・I4 の掃き出し（核の字母・長さ 3 まで・検査した列 1110。違反した列の数）
+  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。
+  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。
+  旧        I3    0 本  I4    0 本
+  Z        I3    0 本  I4    0 本
+  Z+U2     I3    0 本  I4    0 本
+  S′       I3    0 本  I4    0 本
+  S′+U2    I3    0 本  I4    0 本
+  配線Z+U2   I3    0 本  I4    0 本
+
+## msime-native shared 採用Z I1 全字母（字母 19 種・長さ 3 まで・検査した列 3528）
+  初めて違反する列: 148 本（T=0）、うち 2000ms 事象なしで残る: 148 本（T=2000）、読める窓で poll が 1 回届いても残る: 76 本
+  事象を 1 つ削ると違反しない最小の列: 19 本（うち嘘の観測を含まない: 13 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        64 /     64 /     20  belief-off/z-explicit
+        79 /     79 /     56  belief-off/z-observed-high
+         5 /      5 /      0  belief-off/z-observed-medium
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        27 /     27 /     10  嘘の観測を含む
+       121 /    121 /     66  外部変更を含む
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+        16 /     16 /     16  chrome(imm32-unavailable)
+        12 /     12 /     12  explorer(imm32-unavailable)
+        72 /     72 /      0  explorer(std)
+        16 /     16 /     16  relay(relay)
+        16 /     16 /     16  wezterm(tsf-native)
+        16 /     16 /     16  xaml(imm32-unavailable)
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+       134 /    134 /     76  external-on
+         5 /      5 /      0  key:eisu(F0)
+         5 /      5 /      0  key:hankaku-zenkaku
+         4 /      4 /      0  obs:poll-LIE
+  最小列の例（分類ごと、最大 2 本）:
+    [belief-off/z-explicit] 最小列 14 本
+      3 手 key:eisu > key:hankaku-zenkaku > external-on（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:eisu > external-off > key:eisu（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+    [belief-off/z-observed-high] 最小列 1 本
+      1 手 external-on（窓=explorer(std)、性質=外部変更を含む、事象なしで残る=true、poll が届いても残る=false）
+    [belief-off/z-observed-medium] 最小列 4 本
+      3 手 key:eisu > advance:3500ms > obs:poll-LIE（窓=explorer(std)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=false）
+      3 手 key:hiragana > advance:3500ms > obs:poll-LIE（窓=explorer(std)、性質=嘘の観測を含む、事象なしで残る=true、poll が届いても残る=false）
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+    [外部変更を含む] external-on
+    [外部変更を含む] key:eisu > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:eisu > external-off > key:eisu
+    [外部変更を含む] key:eisu > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:eisu > advance:3500ms > obs:poll-LIE
+    [外部変更を含む] key:hiragana > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:hiragana > external-off > key:eisu
+    [外部変更を含む] key:hiragana > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:hiragana > advance:3500ms > obs:poll-LIE
+    [外部変更を含む] key:ime-on > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:ime-on > external-off > key:eisu
+    [外部変更を含む] key:ime-on > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:ime-on > advance:3500ms > obs:poll-LIE
+    [外部変更を含む] key:hankaku-zenkaku > key:hankaku-zenkaku > external-on
+    [外部変更を含む] key:hankaku-zenkaku > external-off > key:eisu
+    [外部変更を含む] key:hankaku-zenkaku > external-off > key:hankaku-zenkaku
+    [嘘の観測を含む] key:hankaku-zenkaku > advance:3500ms > obs:poll-LIE
+    [嘘の観測を含む] advance:3500ms > obs:poll-LIE > key:eisu
+    [嘘の観測を含む] advance:3500ms > obs:poll-LIE > key:hankaku-zenkaku
+
+## msime-native shared 採用Z I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime-native shared 採用Z I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 0 本
+
+## msime-native shared 採用Z 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → 違反なし
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
+
+## msime-native shared 採用Z 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+
+## msime-native shared 採用Z I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 110 本
+        58  belief-off/z-explicit
+        51  belief-off/z-observed-high
+         1  belief-on-but-engine-off/mode=ObservedEisu
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 2 本
+    4 手 [belief-on-but-engine-off/mode=ObservedEisu] key:hiragana > key:eisu > obs:poll-LIE > key:ime-on
+    5 手 [belief-off/z-explicit] key:hiragana > key:hankaku-zenkaku > key:hankaku-zenkaku > external-off > key:hankaku-zenkaku
+
+## msime-native shared 採用Z I3・I4 の掃き出し（核の字母・長さ 3 まで・検査した列 1110。違反した列の数）
+  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。
+  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。
+  旧        I3    0 本  I4    0 本
+  Z        I3    0 本  I4    0 本
+  Z+U2     I3    0 本  I4    0 本
+  S′       I3    0 本  I4    0 本
+  S′+U2    I3    0 本  I4    0 本
+  配線Z+U2   I3    0 本  I4    0 本
+
+## msime per-thread 採用Z I1 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime per-thread 採用Z I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime per-thread 採用Z I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 0 本
+
+## msime per-thread 採用Z 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → 違反なし
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
+
+## msime per-thread 採用Z 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+
+## msime per-thread 採用Z I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 118 本
+        44  belief-off/z-explicit
+        42  belief-off/z-measured-prior
+        27  belief-off/z-observed-high
+         5  belief-on-but-engine-off/mode=ObservedEisu
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 3 本
+    1 手 [belief-off/z-measured-prior] external-on
+    3 手 [belief-off/z-explicit] key:eisu > external-off > key:hankaku-zenkaku
+    3 手 [belief-off/z-explicit] key:hiragana > key:hankaku-zenkaku > external-on
+
+## msime per-thread 採用Z I3・I4 の掃き出し（核の字母・長さ 3 まで・検査した列 1110。違反した列の数）
+  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。
+  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。
+  旧        I3    0 本  I4    0 本
+  Z        I3    0 本  I4    0 本
+  Z+U2     I3    0 本  I4    0 本
+  S′       I3    0 本  I4    0 本
+  S′+U2    I3    0 本  I4    0 本
+  配線Z+U2   I3    0 本  I4    0 本
+
+## msime-native mixed(tsf-native=inherit-open) 採用Z I1 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime-native mixed(tsf-native=inherit-open) 採用Z I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime-native mixed(tsf-native=inherit-open) 採用Z I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 0 本
+
+## msime-native mixed(tsf-native=inherit-open) 採用Z 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → 違反なし
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
+
+## msime-native mixed(tsf-native=inherit-open) 採用Z 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+
+## msime-native mixed(tsf-native=inherit-open) 採用Z I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 120 本
+        43  belief-off/z-explicit
+        43  belief-off/z-measured-prior
+        32  belief-off/z-observed-high
+         1  belief-off/z-observed-medium
+         1  belief-on-but-engine-off/mode=ObservedEisu
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 4 本
+    1 手 [belief-off/z-observed-high] external-on
+    3 手 [belief-off/z-explicit] key:hankaku-zenkaku > external-off > key:eisu
+    3 手 [belief-off/z-explicit] key:hiragana > external-off > key:eisu
+    4 手 [belief-off/z-measured-prior] key:eisu > key:eisu > external-on > focus:wezterm
+
+## msime-native mixed(tsf-native=inherit-open) 採用Z I3・I4 の掃き出し（核の字母・長さ 3 まで・検査した列 1110。違反した列の数）
+  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。
+  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。
+  旧        I3    0 本  I4    0 本
+  Z        I3    0 本  I4    0 本
+  Z+U2     I3    0 本  I4    0 本
+  S′       I3    0 本  I4    0 本
+  S′+U2    I3    0 本  I4    0 本
+  配線Z+U2   I3    0 本  I4    0 本
+
+## msime mixed(tsf-native=independent) 採用Z I1 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime mixed(tsf-native=independent) 採用Z I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime mixed(tsf-native=independent) 採用Z I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 0 本
+
+## msime mixed(tsf-native=independent) 採用Z 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → 違反なし
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
+
+## msime mixed(tsf-native=independent) 採用Z 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+
+## msime mixed(tsf-native=independent) 採用Z I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 123 本
+        35  belief-off/z-explicit
+        46  belief-off/z-measured-prior
+        32  belief-off/z-observed-high
+         3  belief-off/z-observed-medium
+         6  belief-on-but-engine-off/mode=ObservedEisu
+         1  belief-on-but-engine-off/mode=ObservedRomaji
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 1 本
+    1 手 [belief-off/z-explicit] external-on
+
+## msime mixed(tsf-native=independent) 採用Z I3・I4 の掃き出し（核の字母・長さ 3 まで・検査した列 1110。違反した列の数）
+  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。
+  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。
+  旧        I3    0 本  I4    0 本
+  Z        I3    0 本  I4    0 本
+  Z+U2     I3    0 本  I4    0 本
+  S′       I3    0 本  I4    0 本
+  S′+U2    I3    0 本  I4    0 本
+  配線Z+U2   I3    0 本  I4    0 本
+
+## msime mixed(tsf-native=inherit-open) 採用Z I1 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime mixed(tsf-native=inherit-open) 採用Z I2 核の字母（字母 12 種・長さ 3 まで・検査した列 1110）
+  初めて違反する列: 0 本（T=0）、うち 2000ms 事象なしで残る: 0 本（T=2000）、読める窓で poll が 1 回届いても残る: 0 本
+  事象を 1 つ削ると違反しない最小の列: 0 本（うち嘘の観測を含まない: 0 本、awase の操作・窓切替・正しい観測だけ: 0 本）
+  原因の分類（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  列の性質（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  違反した時点の窓（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最後の事象（初めて違反する列）（T=0 の件数 / 2000ms 事象なしで残る / 2000ms 内に poll が 1 回届いても残る）:
+  最小列の例（分類ごと、最大 2 本）:
+  最小列の一覧（先頭 60 本。長さ→字母順）:
+
+## msime mixed(tsf-native=inherit-open) 採用Z I6 時間の経過だけで belief が変わる列（核の字母・長さ 2 まで・検査した列 110。列の後に +11000ms、さらに +20000ms）
+  変わった列: 0 本
+
+## msime mixed(tsf-native=inherit-open) 採用Z 実機の事故（BUG-223）の列
+  OFF キー → F2 → 窓切替（tsf-native）: key:ime-off > key:hiragana > focus:wezterm → 違反なし
+  明示 OFF → F2 → 窓切替（tsf-native）: user-off > key:hiragana > focus:wezterm → 違反なし
+  tsf-native で OFF キー → F2 → imm32-unavailable へ: focus:wezterm > key:ime-off > key:hiragana > focus:chrome → 違反なし
+  imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
+
+## msime mixed(tsf-native=inherit-open) 採用Z 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+
+## msime mixed(tsf-native=inherit-open) 採用Z I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
+  違反した列: 105 本
+        37  belief-off/z-explicit
+        39  belief-off/z-measured-prior
+        23  belief-off/z-observed-high
+         1  belief-off/z-observed-medium
+         1  belief-on-but-engine-off/mode=AssumedRomaji { reason: Startup }
+         3  belief-on-but-engine-off/mode=ObservedEisu
+         1  belief-on-but-engine-off/mode=ObservedRomaji
+  最小化した 20 本のうち、全列挙の最小列に無い（長さが全列挙の範囲外か、別の最小列）: 2 本
+    1 手 [belief-off/z-measured-prior] external-on
+    3 手 [belief-on-but-engine-off/mode=ObservedEisu] key:hiragana > external-off > key:eisu
+
+## msime mixed(tsf-native=inherit-open) 採用Z I3・I4 の掃き出し（核の字母・長さ 3 まで・検査した列 1110。違反した列の数）
+  I3 = 利用者の明示操作(user-on/off)をしたスレッドへ、そのスレッドで他の事象が無いまま戻ったとき、belief がその値か。
+  I4 = スレッドを離れて戻ったとき(そのスレッドで事象が無いとき)、belief が離れたときの値のままか。開を引き継ぐスレッドは除く。
+  旧        I3    0 本  I4    0 本
+  Z        I3    0 本  I4    0 本
+  Z+U2     I3    0 本  I4    0 本
+  S′       I3    0 本  I4    0 本
+  S′+U2    I3    0 本  I4    0 本
+  配線Z+U2   I3    0 本  I4    0 本
