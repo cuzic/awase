@@ -155,6 +155,8 @@ pub struct ImeStateHub {
     /// 窓切替の処理の途中(`scope_shadow_focus` から `scope_shadow_end_focus` まで)は比較しない(旧の窓切替の後処理が
     /// 終わる前の中間の値を記録しない)。
     scope_shadow_hold: bool,
+    /// ADR-282 V2-2: Engine の入力の belief([`Self::engine_belief`])を Z から読むか(設定 `general.belief_v2`、既定 `false`)。
+    engine_belief_z: bool,
 }
 
 /// ADR-282 V2: Engine の入力に渡す belief([`ImeStateHub::engine_belief`])。
@@ -219,6 +221,7 @@ impl ImeStateHub {
             ),
             scope_shadow_last: None,
             scope_shadow_hold: false,
+            engine_belief_z: false,
         }
     }
 }
@@ -1500,16 +1503,33 @@ impl ImeStateHub {
 
     /// ADR-282 V2: Engine の入力(`InputContext` の `ime_on`・`input_mode`)に渡す belief の**唯一の切替点**。
     ///
-    /// `build_input_context` の呼び出し元はすべてここから読む(`tests/architecture_guard.rs` が固定)。V2-1 では旧
-    /// (`effective_open`・`input_mode`)を返す(挙動不変)。IME への書き込み・drift・授権は旧の belief のまま(D8・D9)。
+    /// `build_input_context` の呼び出し元はすべてここから読む(`tests/architecture_guard.rs` が固定)。設定
+    /// `general.belief_v2`([`Self::set_engine_belief_z`])が偽なら旧(`effective_open`・`input_mode`)、真なら候補 Z の
+    /// shadow の読み出し(フォーカス中のスコープの主張、無ければ O2・U3 の既定)。IME への書き込み・drift・授権は、どちらでも
+    /// 旧の belief のまま(D8・D9)。
     ///
     /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
     pub fn engine_belief(&self) -> EngineBelief {
+        if self.engine_belief_z {
+            let z = self.scope_shadow.view();
+            return EngineBelief {
+                open: z.open,
+                input_mode: z.input_mode,
+            };
+        }
         EngineBelief {
             open: self.effective_open(),
             input_mode: self.input_mode(),
         }
+    }
+
+    /// ADR-282 V2-2: Engine の入力の belief を Z から読むかを切り替える(設定 `general.belief_v2`)。起動時と設定の再読み込みで
+    /// 呼ぶ(`tests/architecture_guard.rs` が固定)。
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn set_engine_belief_z(&mut self, enabled: bool) {
+        self.engine_belief_z = enabled;
     }
 
     /// 最後に actuator が成功させた IME 開閉状態の確信度を返す（BugReport 診断用）。

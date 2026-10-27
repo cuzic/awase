@@ -5991,6 +5991,7 @@ fn declares_pub_field_detects_qualified_visibility() {
 /// `config.general.use_learned_keymap_table`・`predict_henkan_open_in_unreadable_windows` の反映が、起動時（`app/bootstrap.rs`）と
 /// 設定リロード時（`Runtime::apply_config_update`）の**両方**から setter 経由で呼ばれていることを固定する。
 /// 以前は再読込でしか反映されず、起動時は既定の true のままだった（opt-out が効かない。ADR-209 の CI の対照が PASS してしまい発覚）。
+/// ADR-282 V2-2 の `general.belief_v2`（`set_belief_v2`）も同じ形で固定する。
 #[test]
 fn general_keymap_prediction_flags_are_wired_at_bootstrap_and_reload() {
     let bootstrap = read_crate_file("src/app/bootstrap.rs");
@@ -6000,6 +6001,7 @@ fn general_keymap_prediction_flags_are_wired_at_bootstrap_and_reload() {
     for setter in [
         "set_use_learned_keymap_table(",
         "set_predict_henkan_open_in_unreadable_windows(",
+        "set_belief_v2(",
     ] {
         assert_eq!(
             count_real_calls(&bootstrap_production, setter),
@@ -7403,6 +7405,8 @@ const PLATFORM_STATE_PUB_FNS: &[&str] = &[
     "scope_shadow_focus",
     "scope_shadow_key",
     "scope_shadow_view",
+    // ADR-282 V2-2: Engine の入力の belief を Z から読むか(設定 general.belief_v2。ハーネスの「採用Z」も同じ口で切り替える)。
+    "set_engine_belief_z",
     "set_is_japanese_ime",
     "warrant_context",
     "with_clock",

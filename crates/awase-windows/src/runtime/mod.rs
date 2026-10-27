@@ -1511,6 +1511,11 @@ impl Runtime {
         self.predict_henkan_open_in_unreadable_windows = enabled;
     }
 
+    /// ADR-282 V2-2: `config.general.belief_v2`(隠し設定、既定 false)。Engine の入力の belief を候補 Z から読むか。
+    pub(crate) fn set_belief_v2(&mut self, enabled: bool) {
+        self.platform_state.ime.set_engine_belief_z(enabled);
+    }
+
     pub(crate) const fn set_update_check_enabled(&mut self, enabled: bool) {
         self.update_check_enabled = enabled;
     }
@@ -2119,6 +2124,7 @@ impl Runtime {
         self.set_predict_henkan_open_in_unreadable_windows(
             config.general.predict_henkan_open_in_unreadable_windows,
         );
+        self.set_belief_v2(config.general.belief_v2);
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
         self.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);

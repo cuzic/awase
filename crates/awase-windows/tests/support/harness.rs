@@ -382,6 +382,8 @@ pub struct Harness {
     /// 入場したときに、直前のスレッドの擬似 IME が「開」なら開を引き継ぐスレッド(ADR-282 §1.4・O5: MS-IME 本体の Win32 EDIT →
     /// Windows Terminal の向きで、CI で 6/6 測った振る舞いの写し。閉の向き・変換モードは引き継がない)。既定は空(引き継がない)。
     inherit_open_threads: Vec<u32>,
+    /// ADR-282 V2-2: Engine の入力の belief を Z(本物の hub の shadow)から読んでいるか(`adopt_scope_belief`)。
+    adopted: bool,
     /// ADR-282 V0: 候補 Z を本物の hub と並走させる(`with_scope_belief`)。本物の belief・Engine には効かせない。
     /// `ALT_NAMES` の順の比較用のモデル(`with_scope_belief` が作る。空なら並走させていない)。
     alts: Vec<Alt>,
@@ -433,6 +435,7 @@ impl Harness {
             window: setup.window,
             parked: Vec::new(),
             inherit_open_threads: Vec::new(),
+            adopted: false,
             alts: Vec::new(),
             learned_unavailable: Vec::new(),
         };
@@ -1240,8 +1243,21 @@ impl Harness {
         }
     }
 
+    /// ADR-282 V2-2: Engine の入力の belief を本物の hub の Z shadow から読む(設定 `general.belief_v2 = true` と同じ口、
+    /// `ImeStateHub::set_engine_belief_z`)。`with_scope_belief` の後に呼ぶ(Z に窓切替を渡すため)。以後の `StepRecord` の
+    /// `effective_open`・`engine_active`・`basis` は採用した Z のもの。
+    pub fn adopt_scope_belief(&mut self) -> &mut Self {
+        self.hub.set_engine_belief_z(true);
+        self.adopted = true;
+        self
+    }
+
     /// `effective_open` の根拠の分類名（殻の `ImeStateHub::effective_open_basis` と同じ式。あちらは `pub(crate)`）。
+    /// Z を採用しているときは Z の根拠。
     fn effective_basis(&self) -> &'static str {
+        if self.adopted {
+            return self.hub.scope_shadow_view().basis;
+        }
         let resolution = self.hub.model().resolve_open_at(self.now());
         if self.effective_open() == resolution.value {
             resolution.decided_by.label()
