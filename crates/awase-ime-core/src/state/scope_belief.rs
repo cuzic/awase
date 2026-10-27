@@ -195,68 +195,13 @@ impl ScopeBelief {
                 scope,
                 facts,
                 at_ms,
-            } => {
-                let prev = self.focused.map(|(k, _)| k);
-                self.focused = Some((scope, facts));
-                if facts.inherit_open_on_entry {
-                    if let Some(prev) = prev.filter(|p| *p != scope) {
-                        if let Some(src) = self.row(prev).open.filter(|c| c.value) {
-                            let row = self.row_mut(scope);
-                            let newer = row.open.is_none_or(|c| c.at_ms < src.at_ms);
-                            if newer {
-                                row.open = Some(Claim {
-                                    value: true,
-                                    basis: Basis::Inherited,
-                                    at_ms: src.at_ms,
-                                    fence_ms: src.fence_ms,
-                                });
-                            }
-                        }
-                    }
-                }
-                if self.new_thread_prior && facts.new_thread {
-                    let row = self.row_mut(scope);
-                    if row.open.is_none() {
-                        row.open = Some(Claim {
-                            value: false,
-                            basis: Basis::MeasuredPrior,
-                            at_ms,
-                            fence_ms: at_ms,
-                        });
-                    }
-                }
-            }
+            } => self.on_focus(scope, facts, at_ms),
             ScopeEvent::Explicit {
                 open,
                 mode,
                 track,
                 at_ms,
-            } => {
-                let Some((scope, _)) = self.focused else {
-                    return;
-                };
-                let fence_ms = at_ms.saturating_add(self.settle_ms);
-                let row = self.row_mut(scope);
-                if let Some(t) = track {
-                    row.track = t;
-                }
-                if let Some(v) = open {
-                    row.open = Some(Claim {
-                        value: v,
-                        basis: Basis::Explicit,
-                        at_ms,
-                        fence_ms,
-                    });
-                }
-                if let Some(m) = mode {
-                    row.mode = Some(Claim {
-                        value: m,
-                        basis: Basis::Explicit,
-                        at_ms,
-                        fence_ms,
-                    });
-                }
-            }
+            } => self.on_explicit(open, mode, track, at_ms),
             ScopeEvent::Track { track } => {
                 if let Some((scope, _)) = self.focused {
                     self.row_mut(scope).track = track;
@@ -276,30 +221,107 @@ impl ScopeBelief {
                 if imm_family && !facts.imm_trusted {
                     return;
                 }
-                let basis = Basis::Observed(source, confidence);
-                let row = self.row_mut(scope);
-                if let Some(v) = open {
-                    if accepts(row.open.as_ref(), confidence, read_started_ms) {
+                self.on_observed(scope, open, mode, source, confidence, read_started_ms);
+            }
+        }
+    }
+
+    fn on_focus(&mut self, scope: ScopeKey, facts: WindowFacts, at_ms: u64) {
+        let prev = self.focused.map(|(k, _)| k);
+        self.focused = Some((scope, facts));
+        if facts.inherit_open_on_entry {
+            if let Some(prev) = prev.filter(|p| *p != scope) {
+                if let Some(src) = self.row(prev).open.filter(|c| c.value) {
+                    let row = self.row_mut(scope);
+                    let newer = row.open.is_none_or(|c| c.at_ms < src.at_ms);
+                    if newer {
                         row.open = Some(Claim {
-                            value: v,
-                            basis,
-                            at_ms: read_started_ms,
-                            fence_ms: read_started_ms,
+                            value: true,
+                            basis: Basis::Inherited,
+                            at_ms: src.at_ms,
+                            fence_ms: src.fence_ms,
                         });
                     }
                 }
-                if let Some(m) = mode {
-                    if accepts(row.mode.as_ref(), confidence, read_started_ms) {
-                        row.mode = Some(Claim {
-                            value: m,
-                            basis,
-                            at_ms: read_started_ms,
-                            fence_ms: read_started_ms,
-                        });
-                        // 観測が来たので、変換モードの追跡は観測へ戻す(`ImeModel` の `InputModeObserved` と同じ)。
-                        row.track.conv = None;
-                    }
-                }
+            }
+        }
+        if self.new_thread_prior && facts.new_thread {
+            let row = self.row_mut(scope);
+            if row.open.is_none() {
+                row.open = Some(Claim {
+                    value: false,
+                    basis: Basis::MeasuredPrior,
+                    at_ms,
+                    fence_ms: at_ms,
+                });
+            }
+        }
+    }
+
+    fn on_explicit(
+        &mut self,
+        open: Option<bool>,
+        mode: Option<ModeClass>,
+        track: Option<KeyTrack>,
+        at_ms: u64,
+    ) {
+        let Some((scope, _)) = self.focused else {
+            return;
+        };
+        let fence_ms = at_ms.saturating_add(self.settle_ms);
+        let row = self.row_mut(scope);
+        if let Some(t) = track {
+            row.track = t;
+        }
+        if let Some(v) = open {
+            row.open = Some(Claim {
+                value: v,
+                basis: Basis::Explicit,
+                at_ms,
+                fence_ms,
+            });
+        }
+        if let Some(m) = mode {
+            row.mode = Some(Claim {
+                value: m,
+                basis: Basis::Explicit,
+                at_ms,
+                fence_ms,
+            });
+        }
+    }
+
+    fn on_observed(
+        &mut self,
+        scope: ScopeKey,
+        open: Option<bool>,
+        mode: Option<ModeClass>,
+        source: ObservationSource,
+        confidence: ObservationConfidence,
+        read_started_ms: u64,
+    ) {
+        let basis = Basis::Observed(source, confidence);
+        let row = self.row_mut(scope);
+        if let Some(v) = open {
+            if accepts(row.open.as_ref(), confidence, read_started_ms) {
+                row.open = Some(Claim {
+                    value: v,
+                    basis,
+                    at_ms: read_started_ms,
+                    fence_ms: read_started_ms,
+                });
+            }
+        }
+        if let Some(m) = mode {
+            if accepts(row.mode.as_ref(), confidence, read_started_ms) {
+                row.mode = Some(Claim {
+                    value: m,
+                    basis,
+                    at_ms: read_started_ms,
+                    fence_ms: read_started_ms,
+                });
+                // 観測が来たので、変換モードの追跡は観測へ戻す(`ImeModel` の `InputModeObserved` と同じ)。
+                row.track.conv = None;
             }
         }
     }
@@ -341,13 +363,22 @@ pub const fn mode_class_of(mode: InputModeState) -> Option<ModeClass> {
     }
 }
 
-/// IMM の読み・conv のビットからの推測の源か(読めない窓では反証に使わない、ADR-282 §4.4 の信頼表)。
-/// TSF・共有メモリ・字形は窓の種類に関わらず使う。
+/// IMM の読み・conv のビット・GJI の I/O からの推測の源か(読めない窓では反証に使わない、ADR-282 §4.4 の信頼表)。
+/// ここに挙げない源(TSF・共有メモリ・字形)は窓の種類に関わらず使う。
 #[must_use]
 pub const fn is_imm_family(source: ObservationSource) -> bool {
-    !matches!(
+    matches!(
         source,
-        ObservationSource::Tsf | ObservationSource::MozcShm | ObservationSource::TaskbarGlyph
+        ObservationSource::FocusProbe
+            | ObservationSource::ObserverPoll
+            | ObservationSource::Gji
+            | ObservationSource::ImmGetOpenStatus
+            | ObservationSource::ConvBitsInference
+            | ObservationSource::GjiIoInference
+            | ObservationSource::ConvOpenInference
+            | ObservationSource::ImmCrossProbe
+            | ObservationSource::HwndCache
+            | ObservationSource::HeuristicDefault
     )
 }
 
