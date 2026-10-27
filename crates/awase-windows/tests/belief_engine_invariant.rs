@@ -1546,18 +1546,98 @@ fn glyph_alphabet() -> Vec<Ev> {
     v
 }
 
+/// [`exhaustive`] を複数の不変条件について 1 回の列挙で行う(列を 1 回だけ流す。比較用のモデルが多いときの時間の予算のため)。
+/// 不変条件ごとの意味は `exhaustive` と同じ: 列の最後の事象の後に初めて違反した列を数え、違反した列は(その不変条件では)延ばさない。
+/// 列は、どれか 1 つの不変条件でまだ違反していなければ延ばす。`checked` は流した列の数(全不変条件で共通)。
+fn exhaustive_multi(
+    cfg: Config,
+    invs: &[Inv],
+    alphabet: &[Ev],
+    depth: usize,
+    started: Instant,
+) -> Vec<Exhaustive> {
+    let mut frontier: Vec<Vec<Ev>> = vec![Vec::new()];
+    let mut raws: Vec<Vec<Raw>> = vec![Vec::new(); invs.len()];
+    let mut checked = 0;
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for seq in &frontier {
+            for &e in alphabet {
+                let mut cand = seq.clone();
+                cand.push(e);
+                let (mut h, wins) = cfg.start();
+                let mut marks = Vec::with_capacity(cand.len());
+                let mut ok = true;
+                for &ev in &cand {
+                    if !apply(&mut h, &wins, ev) {
+                        ok = false;
+                        break;
+                    }
+                    marks.push(h.steps.len() - 1);
+                }
+                if !ok {
+                    continue;
+                }
+                checked += 1;
+                if checked % 200 == 0 {
+                    check_budget(
+                        cfg,
+                        started,
+                        &format!("exhaustive_multi depth<={depth}"),
+                        checked,
+                    );
+                }
+                let (last_mark, earlier) = marks.split_last().expect("1 つ以上の事象");
+                let mut open_any = false;
+                for (i, &inv) in invs.iter().enumerate() {
+                    if earlier
+                        .iter()
+                        .any(|&m| violation(inv, &h.steps[m]).is_some())
+                    {
+                        continue;
+                    }
+                    match violation(inv, &h.steps[*last_mark]) {
+                        Some(class) => {
+                            let window = window_label(&h);
+                            let (mut hp, _) = replay(cfg, &cand).expect("同じ列は再生できる");
+                            let (persists, persists_poll) = persistence(&mut hp, inv);
+                            raws[i].push(Raw {
+                                tag: tag_of(&cand),
+                                seq: cand.clone(),
+                                class,
+                                window,
+                                persists,
+                                persists_poll,
+                            });
+                        }
+                        None => open_any = true,
+                    }
+                }
+                if open_any {
+                    next.push(cand);
+                }
+            }
+        }
+        frontier = next;
+    }
+    raws.into_iter()
+        .map(|r| Exhaustive { checked, raws: r })
+        .collect()
+}
+
 /// ADR-283 G1: 字形の比較用のモデル(`GLYPH_ALT_NAMES`)の I1・I2(字形の字母・長さ 3)と I3・I4 の掃き出し。
 fn run_glyph_config(cfg: Config) -> String {
     let t0 = Instant::now();
     let lap = |what: &str| eprintln!("[timing] {} {what}: {:?}", cfg.name(), t0.elapsed());
     let mut out = String::new();
     let alphabet = glyph_alphabet();
-    for k in 0..GLYPH_ALT_NAMES.len() {
-        for inv in [Inv::I1G(k), Inv::I2G(k)] {
-            let r = exhaustive(cfg, inv, &alphabet, I2_DEPTH, t0);
-            render_exhaustive(&mut out, "字形の字母", cfg, inv, &alphabet, I2_DEPTH, &r);
-        }
-        lap(GLYPH_ALT_NAMES[k]);
+    let invs: Vec<Inv> = (0..GLYPH_ALT_NAMES.len())
+        .flat_map(|k| [Inv::I1G(k), Inv::I2G(k)])
+        .collect();
+    let results = exhaustive_multi(cfg, &invs, &alphabet, I2_DEPTH, t0);
+    lap("exhaustive_multi");
+    for (inv, r) in invs.iter().zip(&results) {
+        render_exhaustive(&mut out, "字形の字母", cfg, *inv, &alphabet, I2_DEPTH, r);
     }
     render_scope_sweep(&mut out, cfg, &core_alphabet(), t0);
     lap("I3/I4");
