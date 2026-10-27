@@ -291,3 +291,16 @@ read = "dump"
 intervals = [20]
 imes = []
 close = "wm_close"
+
+# WezTerm(検証専用、ci/ ブランチ。PR #809 の未確認点)。ポータブル版の zip をバージョンと SHA-256 を固定して入れる(setup/wezterm.ps1)。
+# GPU の無いランナー向けに front_end を Software にする。入力欄は Windows Terminal と同じ term_form.ps1。
+[forms.wezterm]
+toolkit = "WezTerm (TSF)"
+setup = "wezterm"
+exe = ["C:/wezterm/WezTerm-windows-20240203-110809-5046fc22/wezterm-gui.exe"]
+args = ["--config", "front_end=\"Software\"", "start", "--always-new-process", "--", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{repo}/tools/e2e/input_apps/terminal/term_form.ps1", "{dump}"]
+window = { class = "org.wezfurlong.wezterm" }
+any_pid = true
+read = "dump"
+intervals = [20]
+imes = []
