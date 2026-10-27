@@ -2036,8 +2036,31 @@ impl Runtime {
             passive_rule_eligible,
             observable_toggle_guard,
         };
+        // ADR-282 V1: 候補 Z の shadow 自身の予測(観測のみ)。入力は Z の読み出しと Z のスコープの追跡で、それ以外は旧と同じ。
+        let z_view = ime.scope_shadow_view();
+        let z_input = PredictInput {
+            open: z_view.open,
+            mode: z_view.input_mode,
+            track: z_view.track.without_conv_while_half_width_alnum(
+                self.platform_state.gate.half_width_alnum.is_toggle_active(),
+            ),
+            ..input
+        };
+        let z_event = keymap
+            .predict_after_resent(resent, vk.0, &z_input, override_table)
+            .map(|p| {
+                crate::state::scope_belief::scope_event_of_prediction(
+                    crate::state::scope_belief::is_table_key(vk.0),
+                    &p,
+                    &z_view,
+                    now_ms,
+                )
+            });
         let Some(prediction) = keymap.predict_after_resent(resent, vk.0, &input, override_table)
         else {
+            self.platform_state
+                .ime
+                .scope_shadow_key(z_event, crate::state::TickMs(now_ms));
             tracing::debug!(
                 "[key-effect-predict] vk=0x{:02X} open={} composing={} resent={:02X?}: no prediction",
                 vk.0,
@@ -2059,6 +2082,7 @@ impl Runtime {
         self.platform_state
             .ime
             .apply_key_effect_prediction(prediction, tick);
+        self.platform_state.ime.scope_shadow_key(z_event, tick);
         // ADR-203 (ii): 予測で ON になったら GjiFsm を開き直す（BUG-170）。
         if prediction.effect.open == Some(true) {
             self.kp_reopen_gji_fsm(crate::state::gji_direct_mechanism::ReopenSource::Predict);

@@ -59,6 +59,13 @@ pub fn is_tsf_native_window(class_name: &str) -> bool {
     )
 }
 
+/// Windows Terminal の上位ホストの窓か(ADR-282 O5: MS-IME 本体で、読める Win32 の窓からこの窓へ入ると IME の開を
+/// 引き継ぐと CI で測った窓。候補 Z の shadow が入場時の引き継ぎに使う)。
+#[must_use]
+pub fn is_windows_terminal_window(class_name: &str) -> bool {
+    class_name == "CASCADIA_HOSTING_WINDOW_CLASS"
+}
+
 /// ADR-270 の確認(Mozc の最初の送信の後に入力中の文字ができたか。0.3 秒で判断して、できていなければ
 /// Backspace で消して送り直す)を張ってよい前景窓のクラスか。
 ///

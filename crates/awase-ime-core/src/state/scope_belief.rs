@@ -330,6 +330,15 @@ impl ScopeBelief {
         }
     }
 
+    /// フォーカス中のスコープに渡した窓の事実(まだ窓切替を受けていなければ `None`)。
+    #[must_use]
+    pub const fn focused_facts(&self) -> Option<WindowFacts> {
+        match self.focused {
+            Some((_, facts)) => Some(facts),
+            None => None,
+        }
+    }
+
     /// フォーカス中のスコープの belief。主張なしは ON・かな(O2)。開で入力モードの主張が無ければかな(§4.6)。
     #[must_use]
     pub fn view(&self) -> ScopeView {
@@ -365,6 +374,26 @@ pub const fn mode_class_of(mode: InputModeState) -> Option<ModeClass> {
         }
         InputModeState::Unknown => None,
     }
+}
+
+/// 入力モードの短い名前(journal 用。`kana` はローマ字入力のかな、`kana-input` は JIS かな入力)。
+#[must_use]
+pub const fn mode_label(mode: InputModeState) -> &'static str {
+    match mode {
+        InputModeState::ObservedRomaji | InputModeState::AssumedRomaji { .. } => "kana",
+        InputModeState::ObservedEisu => "eisu",
+        InputModeState::ObservedKana => "kana-input",
+        InputModeState::Unknown => "unknown",
+    }
+}
+
+/// 「開かつかな」(Engine の活性の入力、O1。JIS かな入力は含めない、U5)。
+#[must_use]
+pub const fn kana_on(open: bool, mode: InputModeState) -> bool {
+    open && matches!(
+        mode,
+        InputModeState::ObservedRomaji | InputModeState::AssumedRomaji { .. }
+    )
 }
 
 /// IMM の読み・conv のビット・GJI の I/O からの推測の源か(読めない窓では反証に使わない、ADR-282 §4.4 の信頼表)。
