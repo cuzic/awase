@@ -312,7 +312,7 @@ mod seen_tests {
 }
 
 #[cfg(windows)]
-pub(crate) use win::{probe_focus_thread, read_thread_local_input_settings};
+pub(crate) use win::{focus_thread_of, probe_focus_thread, read_thread_local_input_settings};
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -342,15 +342,10 @@ mod win {
         (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime)
     }
 
-    /// 分類済み HWND のフォーカス先スレッドを観測し、そのスレッドを「見た」ことを記録する。
-    #[must_use]
-    pub(crate) fn probe_focus_thread(
-        classified_hwnd: HWND,
-        classified_pid: u32,
-        seen_threads: &mut SeenThreads,
-    ) -> Option<FocusThreadProbe> {
-        // SAFETY: 読み取り専用の Win32 呼び出し。out 引数はスタック上のローカルで、
-        // OpenThread のハンドルは必ず CloseHandle する。
+    /// 分類済み HWND の窓のスレッドと、そのフォーカス先(`hwndFocus`、取れなければ分類済み HWND)の (pid, tid)。
+    /// 戻り値は (窓の pid, 窓の tid, フォーカス先の pid, フォーカス先の tid)。
+    fn focus_target_ids(classified_hwnd: HWND) -> Option<(u32, u32, u32, u32)> {
+        // SAFETY: 読み取り専用の Win32 呼び出し。out 引数はスタック上のローカル。
         unsafe {
             let mut classified_window_pid = 0_u32;
             let window_tid =
@@ -374,6 +369,27 @@ mod win {
             if tid == 0 {
                 return None;
             }
+            Some((classified_window_pid, window_tid, pid, tid))
+        }
+    }
+
+    /// 分類済み HWND のフォーカス先スレッドの (pid, tid)。「見た」ことは記録しない(ADR-282 V1 の shadow のスコープの鍵)。
+    #[must_use]
+    pub(crate) fn focus_thread_of(classified_hwnd: HWND) -> Option<(u32, u32)> {
+        focus_target_ids(classified_hwnd).map(|(_, _, pid, tid)| (pid, tid))
+    }
+
+    /// 分類済み HWND のフォーカス先スレッドを観測し、そのスレッドを「見た」ことを記録する。
+    #[must_use]
+    pub(crate) fn probe_focus_thread(
+        classified_hwnd: HWND,
+        classified_pid: u32,
+        seen_threads: &mut SeenThreads,
+    ) -> Option<FocusThreadProbe> {
+        let (classified_window_pid, window_tid, pid, tid) = focus_target_ids(classified_hwnd)?;
+        // SAFETY: 読み取り専用の Win32 呼び出し。out 引数はスタック上のローカルで、
+        // OpenThread のハンドルは必ず CloseHandle する。
+        unsafe {
             let (mut created, mut exited, mut kernel, mut user) = (
                 FILETIME::default(),
                 FILETIME::default(),

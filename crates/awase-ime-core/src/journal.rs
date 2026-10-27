@@ -278,6 +278,39 @@ pub struct DriftFollowWouldRecord {
     pub profile: &'static str,
 }
 
+/// ADR-282 V1(shadow、観測のみ): 旧の belief(`effective_open`・`input_mode`)と、並走させた候補 Z(`state::scope_belief`)の
+/// 読み出しの比較。**挙動を変えない**(Z は Engine・IME への書き込み・意図に何も入れない)。
+///
+/// 窓切替(`trigger=focus`)では毎回、それ以外は「開閉」「開かつかな(Engine の活性に効く、O1)」の旧・Z の組が変わったときだけ
+/// 残す。打鍵の内容・窓のクラス名・タイトルは含めない。
+#[derive(Debug, Clone, Serialize)]
+pub struct BeliefV2Record {
+    /// 記録の契機(`focus` / `explicit` / `observed` / `key` / `other`)
+    pub trigger: &'static str,
+    /// 旧の開閉(`effective_open`)
+    pub old_open: bool,
+    /// 旧の開閉の根拠(`effective_open_basis` と同じ分類)
+    pub old_basis: &'static str,
+    /// 旧の入力モード(`kana` / `eisu` / `kana-input` / `unknown`)
+    pub old_mode: &'static str,
+    /// Z の開閉
+    pub z_open: bool,
+    /// Z の開閉の根拠(`z-explicit` / `z-observed-*` / `z-inherited` / `z-measured-prior` / `z-default`)
+    pub z_basis: &'static str,
+    /// Z の入力モード
+    pub z_mode: &'static str,
+    /// 開閉が食い違っているか
+    pub open_differs: bool,
+    /// 「開かつかな」(Engine の活性の入力、O1)が食い違っているか
+    pub kana_on_differs: bool,
+    /// Z に渡した窓の事実: IMM 系の観測を反証に使える窓か
+    pub imm_trusted: bool,
+    /// Z に渡した窓の事実: 入場時に開を引き継ぐ窓か(O5)
+    pub inherit_open_on_entry: bool,
+    /// Z に渡した窓の事実: awase の起動後に作られたスレッドに初めて入ったか(O9)
+    pub new_thread: bool,
+}
+
 /// shadow IME トグル(`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` ほか)の判断の段(ADR-250 段階 4-1)。
 ///
 /// 手書きの `[shadow-toggle]` ログ 11 行を置き換える(1:1)。`emit_tracing` は段ごとに**元の手書き行と同じレベル**
@@ -722,6 +755,8 @@ pub enum JournalEntry {
     MozcShm { record: MozcShmRecord },
     /// ADR-279 案 P の段階 P0: 明示 OFF の意図の間の IMM の読みの開の連続の節目(挙動を変えない観測)。
     DriftFollowWould { record: DriftFollowWouldRecord },
+    /// ADR-282 V1: 旧の belief と候補 Z の比較(shadow、観測のみ)
+    BeliefV2 { record: BeliefV2Record },
     /// ADR-132 Phase 1: hook の IME-mode 診断ログを journal にも残す。
     HookImeModeDiagnostic { record: HookImeModeDiagnosticRecord },
     /// ADR-132 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
@@ -1093,6 +1128,7 @@ impl JournalEntry {
             | Self::IndicatorGlyph { .. }
             | Self::MozcShm { .. }
             | Self::DriftFollowWould { .. }
+            | Self::BeliefV2 { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::GiveUpFollow { .. }
             | Self::FirstLiteralObserve { .. }
@@ -1113,6 +1149,7 @@ impl JournalEntry {
             | Self::IndicatorGlyph { .. }
             | Self::MozcShm { .. }
             | Self::DriftFollowWould { .. }
+            | Self::BeliefV2 { .. }
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
             | Self::LiteralDetect { .. }
@@ -1566,6 +1603,27 @@ impl JournalEntry {
                     ime = record.ime,
                     profile = record.profile,
                     "[drift-follow-would]"
+                );
+            }
+            Self::BeliefV2 { record } => {
+                // debug(既定の app log には出さない。食い違いの始まりと終わりは殻が `[belief-v2]` として info でも出す)。
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    trigger = record.trigger,
+                    old_open = record.old_open,
+                    old_basis = record.old_basis,
+                    old_mode = record.old_mode,
+                    z_open = record.z_open,
+                    z_basis = record.z_basis,
+                    z_mode = record.z_mode,
+                    open_differs = record.open_differs,
+                    kana_on_differs = record.kana_on_differs,
+                    imm_trusted = record.imm_trusted,
+                    inherit_open_on_entry = record.inherit_open_on_entry,
+                    new_thread = record.new_thread,
+                    "[belief-v2]"
                 );
             }
             Self::HookImeModeDiagnostic { record } => {

@@ -145,6 +145,16 @@ pub struct ImeStateHub {
     /// 「この押下で既に書いた」の予約（`last_written_press`、ADR-208 決定2 D1）。belief ではない
     /// （`ImeModel` の外。`ImeEvent` を介さず、order の発行時点で `claim_press_write` が更新する）。
     press_ledger: super::press_ledger::PressLedger,
+
+    /// ADR-282 V1: 候補 Z(スコープごとのラッチ、O8・O9)の shadow。**観測のみ**: 旧の belief・Engine・IME への書き込み・
+    /// 意図・drift には何も入れず、旧との比較を journal(`JournalEntry::BeliefV2`)と `[belief-v2]` に残すだけ。
+    /// 入力は `dispatch_event` を通る事象の写像(`scope_belief::scope_event_of`)・殻が渡す窓切替と Z 自身の打鍵の予測。
+    scope_shadow: crate::state::scope_belief::ScopeBelief,
+    /// 直近に比較した (旧の開, Z の開, 旧の開かつかな, Z の開かつかな)。変わったときだけ journal に残す。
+    scope_shadow_last: Option<(bool, bool, bool, bool)>,
+    /// 窓切替の処理の途中(`scope_shadow_focus` から `scope_shadow_end_focus` まで)は比較しない(旧の窓切替の後処理が
+    /// 終わる前の中間の値を記録しない)。
+    scope_shadow_hold: bool,
 }
 
 /// [`ImeStateHub::capture_poll_state`] で取得する IME ポーリング入力スナップショット。
@@ -195,6 +205,11 @@ impl ImeStateHub {
             last_mrt_shadow: std::cell::Cell::new(None),
             generation_alloc: super::GenerationAllocator::new(),
             press_ledger: super::press_ledger::PressLedger::default(),
+            scope_shadow: crate::state::scope_belief::ScopeBelief::with_new_thread_prior(
+                crate::tuning::KEY_EFFECT_SETTLE_MS,
+            ),
+            scope_shadow_last: None,
+            scope_shadow_hold: false,
         }
     }
 }
@@ -256,6 +271,7 @@ impl ImeStateHub {
             }
             _ => false,
         };
+        let (scope_event, compare) = self.scope_shadow_map(&event, tick_ms);
         let time = self
             .event_log
             .record_at(&event, tick_ms, self.clock.now_instant());
@@ -268,6 +284,157 @@ impl ImeStateHub {
                 tick_ms: time.tick_ms,
             });
         }
+        self.scope_shadow_after_dispatch(scope_event, compare, tick_ms);
+    }
+
+    /// ADR-282 V1: 事象を候補 Z の shadow へ写す(観測のみ。写す前の Z の読み出しと、今のフォーカスの世代で決める)。
+    /// 2 つ目の値は、この事象の後に旧と Z を比べるか。窓切替(Z は殻の `scope_shadow_focus` が動かす)と打鍵の予測(殻の
+    /// `scope_shadow_key` が Z の予測と一緒に比べる)は、ここでは比べない(旧だけが先に動いた中間の値を記録しない)。
+    fn scope_shadow_map(
+        &self,
+        event: &ImeEvent,
+        tick_ms: TickMs,
+    ) -> (Option<crate::state::scope_belief::ScopeEvent>, bool) {
+        let scope_event = crate::state::scope_belief::scope_event_of(
+            event,
+            &self.scope_shadow.view(),
+            self.shadow_model.observations.current_fence().epoch,
+            tick_ms.0,
+        );
+        let compare = crate::state::scope_belief::compares_after_dispatch(event);
+        (scope_event, compare)
+    }
+
+    /// ADR-282 V1: 旧の reduce の後に、写した事象を Z の shadow へ渡して比べる。
+    fn scope_shadow_after_dispatch(
+        &mut self,
+        scope_event: Option<crate::state::scope_belief::ScopeEvent>,
+        compare: bool,
+        tick_ms: TickMs,
+    ) {
+        let trigger = match scope_event {
+            Some(crate::state::scope_belief::ScopeEvent::Explicit { .. }) => "explicit",
+            Some(crate::state::scope_belief::ScopeEvent::Observed { .. }) => "observed",
+            _ => "other",
+        };
+        if let Some(e) = scope_event {
+            self.scope_shadow.evolve(e);
+        }
+        if compare {
+            self.scope_shadow_compare(trigger, tick_ms, false);
+        }
+    }
+
+    /// ADR-282 V1: 窓切替を Z の shadow へ渡す(観測のみ)。殻が、旧の窓切替の事象(`FocusChanged` など)を dispatch した直後に、
+    /// スコープの鍵(`scope_belief::scope_key`)と窓の事実を添えて呼ぶ。比較は [`Self::scope_shadow_end_focus`] まで止める。
+    pub(crate) fn scope_shadow_focus(
+        &mut self,
+        scope: crate::state::scope_belief::ScopeKey,
+        facts: crate::state::scope_belief::WindowFacts,
+        tick_ms: TickMs,
+    ) {
+        self.scope_shadow
+            .evolve(crate::state::scope_belief::ScopeEvent::Focus {
+                scope,
+                facts,
+                at_ms: tick_ms.0,
+            });
+        self.scope_shadow_hold = true;
+    }
+
+    /// ADR-282 V1: 窓切替の後処理が終わったら呼ぶ。比較を再開し、窓切替の時点の旧と Z を必ず 1 件残す。
+    pub(crate) fn scope_shadow_end_focus(&mut self, tick_ms: TickMs) {
+        self.scope_shadow_hold = false;
+        self.scope_shadow_compare("focus", tick_ms, true);
+    }
+
+    /// ADR-282 V1: Z の shadow の読み出し(殻が Z 自身の打鍵の予測の入力を作るのに使う)。
+    #[must_use]
+    pub(crate) fn scope_shadow_view(&self) -> crate::state::scope_belief::ScopeView {
+        self.scope_shadow.view()
+    }
+
+    /// 今の Z の shadow の窓の事実(殻が O5 の「直前の窓が読める Win32 の窓か」を判定するのに使う)。
+    #[must_use]
+    pub(crate) const fn scope_shadow_facts(
+        &self,
+    ) -> Option<crate::state::scope_belief::WindowFacts> {
+        self.scope_shadow.focused_facts()
+    }
+
+    /// ADR-282 V1: 打鍵の後に呼ぶ。Z 自身の予測(`scope_belief::scope_event_of_prediction`、無ければ `None`)を Z へ渡し、
+    /// 旧の予測(`apply_key_effect_prediction`)を反映した後の旧と比べる。
+    pub(crate) fn scope_shadow_key(
+        &mut self,
+        event: Option<crate::state::scope_belief::ScopeEvent>,
+        tick_ms: TickMs,
+    ) {
+        if let Some(e) = event {
+            self.scope_shadow.evolve(e);
+        }
+        self.scope_shadow_compare("key", tick_ms, false);
+    }
+
+    /// 旧の belief と Z の shadow を比べ、組が変わったとき(`always` なら必ず)journal に残す。食い違いの始まりと終わりは
+    /// `[belief-v2]` として info でも出す。旧の値は `resolve_effective`(副作用なし)で読む。
+    fn scope_shadow_compare(&mut self, trigger: &'static str, tick_ms: TickMs, always: bool) {
+        use crate::state::scope_belief::{kana_on, mode_label};
+        // 窓切替の後処理の途中と、まだ窓切替を受けていない(スコープが無い)間は比べない。
+        if self.scope_shadow_hold || self.scope_shadow.focused_facts().is_none() {
+            return;
+        }
+        let (resolution, decision) = self.resolve_effective(tick_ms);
+        let old_open = decision.value;
+        let old_basis = if decision.value == resolution.value {
+            resolution.decided_by.label()
+        } else {
+            "intent-store"
+        };
+        let old_mode = self.shadow_model.input_mode();
+        let z = self.scope_shadow.view();
+        let key = (
+            old_open,
+            z.open,
+            kana_on(old_open, old_mode),
+            kana_on(z.open, z.input_mode),
+        );
+        let prev = self.scope_shadow_last.replace(key);
+        if !always && prev == Some(key) {
+            return;
+        }
+        let differs = |k: (bool, bool, bool, bool)| k.0 != k.1 || k.2 != k.3;
+        if prev.map_or_else(|| differs(key), |p| differs(p) != differs(key)) {
+            tracing::info!(
+                "[belief-v2] {} trigger={trigger} old=(open={old_open} mode={} basis={old_basis}) \
+                 z=(open={} mode={} basis={})",
+                if differs(key) {
+                    "食い違い開始"
+                } else {
+                    "食い違い終了"
+                },
+                mode_label(old_mode),
+                z.open,
+                mode_label(z.input_mode),
+                z.basis,
+            );
+        }
+        let facts = self.scope_shadow.focused_facts();
+        self.journal.record(JournalEntry::BeliefV2 {
+            record: crate::journal::BeliefV2Record {
+                trigger,
+                old_open,
+                old_basis,
+                old_mode: mode_label(old_mode),
+                z_open: z.open,
+                z_basis: z.basis,
+                z_mode: mode_label(z.input_mode),
+                open_differs: key.0 != key.1,
+                kana_on_differs: key.2 != key.3,
+                imm_trusted: facts.is_some_and(|f| f.imm_trusted),
+                inherit_open_on_entry: facts.is_some_and(|f| f.inherit_open_on_entry),
+                new_thread: facts.is_some_and(|f| f.new_thread),
+            },
+        });
     }
 
     /// 明示キー押下 `press` の向き `open` の書き込みを**予約**する（order の発行直前に呼ぶ。ADR-208 決定2 D1）。
@@ -5773,5 +5940,127 @@ mod tests {
         );
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         assert!(!ps.ime.conv_read_ok_in_scope(a), "FocusChanged で失効する");
+    }
+}
+
+/// ADR-282 V1: 候補 Z の shadow(観測のみ)。旧の belief を変えないことと、食い違いを journal に残すことを固定する。
+#[cfg(test)]
+mod scope_shadow_tests {
+    use super::*;
+    use crate::state::scope_belief::WindowFacts;
+
+    const UNREADABLE: WindowFacts = WindowFacts {
+        imm_trusted: false,
+        inherit_open_on_entry: false,
+        new_thread: false,
+    };
+    const T0: u64 = 1_000_000;
+
+    fn focus(ps: &mut PlatformState, hwnd: usize, epoch: u64, tick: u64, shadow: bool) {
+        ps.ime.dispatch_event(
+            ImeEvent::FocusChanged {
+                from: None,
+                to: HwndId(hwnd),
+                profile: ImePolicyProfile::TsfNative,
+                focus_epoch: epoch,
+            },
+            TickMs(tick),
+        );
+        if shadow {
+            ps.ime
+                .scope_shadow_focus(hwnd as u64, UNREADABLE, TickMs(tick));
+            ps.ime.scope_shadow_end_focus(TickMs(tick));
+        }
+    }
+
+    /// 窓 A で明示 OFF、窓 B(別スコープ)へ移る列(BUG-223 の核の `desired-fallback` の型)を、shadow を配線した hub と
+    /// 配線しない hub に同じに流す。旧の belief は両者で同じ(観測のみ)。shadow は B で Z=ON・旧=OFF の食い違いを残す。
+    fn run(shadow: bool) -> PlatformState {
+        let mut ps = PlatformState::for_test(crate::state::hub_clock::HubClock::manual(
+            T0,
+            std::time::Instant::now(),
+        ));
+        focus(&mut ps, 1, 1, T0, shadow);
+        ps.ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+            TickMs(T0 + 10),
+        );
+        focus(&mut ps, 2, 2, T0 + 20, shadow);
+        ps
+    }
+
+    fn belief_v2_rows(ps: &PlatformState) -> Vec<serde_json::Value> {
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&ps.ime.journal.to_json().unwrap()).unwrap();
+        rows.into_iter()
+            .map(|r| r["entry"].clone())
+            .filter(|e| e["type"].as_str() == Some("BeliefV2"))
+            .collect()
+    }
+
+    #[test]
+    fn scope_shadow_does_not_change_old_belief() {
+        let (with, without) = (run(true), run(false));
+        let now = TickMs(T0 + 20);
+        assert_eq!(
+            with.ime.effective_open_at(now),
+            without.ime.effective_open_at(now)
+        );
+        assert_eq!(with.ime.input_mode(), without.ime.input_mode());
+        assert_eq!(with.ime.desired_open(), without.ime.desired_open());
+        assert!(
+            belief_v2_rows(&without).is_empty(),
+            "窓切替を渡さなければ比較は残らない"
+        );
+    }
+
+    #[test]
+    fn scope_shadow_records_disagreement_on_window_switch() {
+        let ps = run(true);
+        let rows = belief_v2_rows(&ps);
+        let last = rows.last().expect("BeliefV2 の記録がある");
+        assert_eq!(last["record"]["trigger"].as_str(), Some("focus"));
+        assert_eq!(
+            last["record"]["z_open"].as_bool(),
+            Some(true),
+            "B は独立で、主張なしは ON(O2・O6)"
+        );
+        assert_eq!(
+            last["record"]["old_open"].as_bool(),
+            Some(false),
+            "旧は A の desired_open=false を持ち越す"
+        );
+        assert_eq!(last["record"]["open_differs"].as_bool(), Some(true));
+        assert!(
+            rows.iter()
+                .any(|r| r["record"]["trigger"].as_str() == Some("explicit")
+                    && r["record"]["z_open"].as_bool() == Some(false)),
+            "A の明示 OFF は Z にも入る: {rows:?}"
+        );
+    }
+
+    /// 窓切替の後処理の途中(`scope_shadow_focus` から `scope_shadow_end_focus` まで)は比べない。
+    #[test]
+    fn scope_shadow_holds_comparison_until_focus_processing_ends() {
+        let mut ps = PlatformState::for_test(crate::state::hub_clock::HubClock::manual(
+            T0,
+            std::time::Instant::now(),
+        ));
+        focus(&mut ps, 1, 1, T0, true);
+        let n = belief_v2_rows(&ps).len();
+        ps.ime.scope_shadow_focus(2, UNREADABLE, TickMs(T0 + 5));
+        ps.ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+            TickMs(T0 + 6),
+        );
+        assert_eq!(belief_v2_rows(&ps).len(), n, "保持中は記録しない");
+        ps.ime.scope_shadow_end_focus(TickMs(T0 + 7));
+        assert_eq!(belief_v2_rows(&ps).len(), n + 1);
     }
 }

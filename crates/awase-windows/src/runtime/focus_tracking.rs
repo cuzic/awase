@@ -121,6 +121,8 @@ impl Runtime {
         // `enter_focus_scope` も走っておらず live 側 epoch も 0 のままなので、両側は
         // 既定値で一致したままになる（BUG-102 の desync は起きない）。
         self.sync_initial_focus_scope(&classified, tick_ms);
+        // ADR-282 V1: 起動時のフォーカスを Z の shadow へ渡す(観測のみ。belief は書かない)。
+        self.scope_shadow_focus_now(crate::state::ime_event::HwndId(classified.hwnd.0 as usize));
     }
 
     /// フォーカス確定処理の共通シーケンス（`last_focus_change_ms`/`focus_epoch`
@@ -462,6 +464,7 @@ impl Runtime {
                 crate::state::ime_event::ImeEvent::FocusHwndUpdated { hwnd: new_hwnd },
                 tick_ms,
             );
+            self.scope_shadow_focus_now(new_hwnd);
         }
         // ECRS DD3-01: 同じプロセスの中でクラスが変わった・学習で降格された、など `FocusChanged` が送られない
         // 経路でも、核の `app_policy` を殻の live の profile に追随させる（ずれると drift の上限が効かない）。
@@ -595,6 +598,29 @@ impl Runtime {
             },
             tick_ms,
         );
+        // ADR-282 V1: 候補 Z の shadow へ窓切替を渡す(観測のみ)。新しいスレッドの事前(O9)は、今の
+        // `assume_closed_for_new_thread` と同じ条件(測定済みの入力設定の共有と IME の種類)のときだけ。
+        {
+            let new_thread = thread_probe.is_some_and(|probe| {
+                matches!(
+                    probe.scope,
+                    crate::focus::thread_scope::ThreadScope::NewSinceStart
+                ) && crate::focus::thread_scope::closed_assumption(
+                    crate::focus::thread_scope::read_thread_local_input_settings(),
+                    crate::tsf::observer::tsf_obs().table_ime_kind(),
+                )
+                .applied()
+            });
+            let scope = crate::state::scope_belief::scope_key(
+                thread_probe.map_or(classified.process_id, |probe| probe.pid),
+                thread_probe.map(|probe| probe.tid),
+                classified.hwnd.0 as usize,
+            );
+            let facts = self.scope_shadow_window_facts(new_thread);
+            self.platform_state
+                .ime
+                .scope_shadow_focus(scope, facts, tick_ms);
+        }
 
         {
             let cache_hit = self
@@ -872,6 +898,56 @@ impl Runtime {
         ) {
             crate::focus_resync::FOCUS_RESYNC.arm(tick_ms.0);
         }
+        // ADR-282 V1: 窓切替の後処理が終わった時点の旧と Z を比べる(観測のみ)。
+        self.platform_state.ime.scope_shadow_end_focus(tick_ms);
+    }
+
+    /// ADR-282 V1: 候補 Z の shadow に渡す、今のフォーカス先の窓の事実(観測のみ)。窓切替を Z へ渡す前に呼ぶ
+    /// (O5 の「直前の窓が読める Win32 の窓か」に、Z がまだ持っている直前の窓の事実を使う)。
+    fn scope_shadow_window_facts(
+        &self,
+        new_thread: bool,
+    ) -> crate::state::scope_belief::WindowFacts {
+        use crate::tsf::observer::{tsf_obs, ActiveImeKind};
+        let imm_trusted = self
+            .platform
+            .current_app_profile()
+            .can_use_imm32_cross_process()
+            && !self.platform.focus.is_demoted_by_learning();
+        let obs = tsf_obs();
+        let inherit_open_on_entry = matches!(obs.active_ime_kind(), ActiveImeKind::MicrosoftIme)
+            && obs.ms_ime_native_identified()
+            && crate::focus::class_names::is_windows_terminal_window(
+                self.platform.focus.class_name(),
+            )
+            && self
+                .platform_state
+                .ime
+                .scope_shadow_facts()
+                .is_some_and(|f| f.imm_trusted);
+        crate::state::scope_belief::WindowFacts {
+            imm_trusted,
+            inherit_open_on_entry,
+            new_thread,
+        }
+    }
+
+    /// ADR-282 V1: 同じプロセスの中の窓切替・起動時のフォーカス確立を Z の shadow へ渡し、すぐ比べる(観測のみ)。
+    /// スレッドを「見た」ことは記録しない(`focus_thread_of`)ので、新しいスレッドの事前(O9)は使わない。
+    fn scope_shadow_focus_now(&mut self, hwnd: crate::state::ime_event::HwndId) {
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        let ids =
+            crate::focus::thread_scope::focus_thread_of(HWND(hwnd.0 as *mut core::ffi::c_void));
+        let scope = crate::state::scope_belief::scope_key(
+            ids.map_or_else(|| self.platform.focus.pid(), |(pid, _)| pid),
+            ids.map(|(_, tid)| tid),
+            hwnd.0,
+        );
+        let facts = self.scope_shadow_window_facts(false);
+        self.platform_state
+            .ime
+            .scope_shadow_focus(scope, facts, tick_ms);
+        self.platform_state.ime.scope_shadow_end_focus(tick_ms);
     }
 
     /// 現在のフォーカス先を検出し、focus_kind / app_kind を更新する。

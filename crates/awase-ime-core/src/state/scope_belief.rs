@@ -330,6 +330,15 @@ impl ScopeBelief {
         }
     }
 
+    /// フォーカス中のスコープに渡した窓の事実(まだ窓切替を受けていなければ `None`)。
+    #[must_use]
+    pub const fn focused_facts(&self) -> Option<WindowFacts> {
+        match self.focused {
+            Some((_, facts)) => Some(facts),
+            None => None,
+        }
+    }
+
     /// フォーカス中のスコープの belief。主張なしは ON・かな(O2)。開で入力モードの主張が無ければかな(§4.6)。
     #[must_use]
     pub fn view(&self) -> ScopeView {
@@ -365,6 +374,26 @@ pub const fn mode_class_of(mode: InputModeState) -> Option<ModeClass> {
         }
         InputModeState::Unknown => None,
     }
+}
+
+/// 入力モードの短い名前(journal 用。`kana` はローマ字入力のかな、`kana-input` は JIS かな入力)。
+#[must_use]
+pub const fn mode_label(mode: InputModeState) -> &'static str {
+    match mode {
+        InputModeState::ObservedRomaji | InputModeState::AssumedRomaji { .. } => "kana",
+        InputModeState::ObservedEisu => "eisu",
+        InputModeState::ObservedKana => "kana-input",
+        InputModeState::Unknown => "unknown",
+    }
+}
+
+/// 「開かつかな」(Engine の活性の入力、O1。JIS かな入力は含めない、U5)。
+#[must_use]
+pub const fn kana_on(open: bool, mode: InputModeState) -> bool {
+    open && matches!(
+        mode,
+        InputModeState::ObservedRomaji | InputModeState::AssumedRomaji { .. }
+    )
 }
 
 /// IMM の読み・conv のビット・GJI の I/O からの推測の源か(読めない窓では反証に使わない、ADR-282 §4.4 の信頼表)。
@@ -490,6 +519,21 @@ pub fn scope_event_of(
         }),
         _ => None,
     }
+}
+
+/// shadow で、この事象の後に旧と Z を比べるか。窓切替(Z は殻の `scope_shadow_focus` が動かす)と打鍵の予測(殻の
+/// `scope_shadow_key` が Z の予測と一緒に比べる)は、ここでは比べない(旧だけが先に動いた中間の値を記録しない)。
+///
+/// 事象の名前を殻(`platform_state.rs`)に書かないために核に置く(`architecture_guard` は殻の中の事象名の出現数を数える)。
+#[must_use]
+pub const fn compares_after_dispatch(event: &ImeEvent) -> bool {
+    !matches!(
+        event,
+        ImeEvent::FocusChanged { .. }
+            | ImeEvent::FocusHwndUpdated { .. }
+            | ImeEvent::InitialFocusScopeEstablished { .. }
+            | ImeEvent::KeyEffectPredicted { .. }
+    )
 }
 
 /// 観測 1 つが今の主張を覆すか(ADR-282 §4.4 の表)。
@@ -991,6 +1035,22 @@ mod tests {
             at_ms: 6,
         });
         assert_eq!(z.view().track, KeyTrack::default());
+    }
+
+    /// 窓切替系と打鍵の予測の事象の後は旧と Z を比べない。明示操作・観測の後は比べる。
+    #[test]
+    fn shadow_compares_only_after_non_focus_non_prediction_events() {
+        use crate::state::ime_event::{HwndId, UserIntentSource};
+        assert!(compares_after_dispatch(&ImeEvent::UserImeSetIntent {
+            target: true,
+            source: UserIntentSource::SyncKey,
+        }));
+        assert!(compares_after_dispatch(&ImeEvent::PanicReset {
+            target: true
+        }));
+        assert!(!compares_after_dispatch(&ImeEvent::FocusHwndUpdated {
+            hwnd: HwndId(1)
+        }));
     }
 
     #[test]
