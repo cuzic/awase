@@ -8525,7 +8525,7 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
 /// （`list_src_files()` は awase-windows と awase-ime-core の `src` を合成して列挙する。）
 #[test]
 fn taskbar_glyph_is_reported_only_through_the_hub_entry() {
-    const CORE_FILES: [&str; 7] = [
+    const CORE_FILES: [&str; 8] = [
         "src/state/drift_correction.rs",
         "src/state/evidence.rs",
         "src/state/ime_event.rs",
@@ -8533,6 +8533,8 @@ fn taskbar_glyph_is_reported_only_through_the_hub_entry() {
         "src/state/indicator_glyph.rs",
         "src/state/observation_store.rs",
         "src/state/platform_state.rs",
+        // ADR-283: 採用した belief(Z)の核。字形の写像(遅れ・2 軸・窓の述語)を持つ。
+        "src/state/scope_belief.rs",
     ];
     const HUB: &str = "src/state/platform_state.rs";
     const SHELL: &str = "src/runtime/indicator_glyph_shadow.rs";
