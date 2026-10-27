@@ -197,7 +197,7 @@ enum Ev {
 }
 
 /// ADR-283 G1: 字形の擬似への事象。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum GlyphEv {
     /// 次の読みが欠落する(Miss・取り込めない)。
     Miss,
