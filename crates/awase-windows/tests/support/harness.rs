@@ -994,9 +994,11 @@ impl Harness {
     }
 
     fn ctx(&self) -> InputContext {
+        // 本番の `build_input_context` の呼び出し元と同じく、Engine の入力は唯一の切替点(ADR-282 V2)から読む。
+        let belief = self.hub.engine_belief();
         InputContext {
-            ime_on: self.effective_open(),
-            input_mode: self.hub.model().input_mode(),
+            ime_on: belief.open,
+            input_mode: belief.input_mode,
             is_japanese_ime: self.japanese_ime,
             composing: false,
             modifiers: awase::engine::ModifierState::default(),

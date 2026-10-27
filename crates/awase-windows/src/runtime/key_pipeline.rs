@@ -129,9 +129,10 @@ impl Runtime {
             event.left_thumb_down_snapshot,
             event.right_thumb_down_snapshot,
         );
+        let belief = self.platform_state.ime.engine_belief();
         let ctx = super::build_input_context(
-            self.platform_state.ime.effective_open(),
-            self.platform_state.ime.input_mode(),
+            belief.open,
+            belief.input_mode,
             self.platform_state.ime.belief.is_japanese_ime(),
             crate::tsf::observer::ime_composition_active_now(),
             &event.modifier_snapshot,
@@ -2495,9 +2496,10 @@ impl Runtime {
     /// 変わりうる〈`is_bare_thumb` が `ctx.input_mode` に依る〉ので、計算を前へ寄せて 1 回で共有してはいけない）。
     fn engine_owns_open_key(&self, event: &RawKeyEvent) -> bool {
         matches!(event.event_type, KeyEventType::KeyDown) && {
+            let belief = self.platform_state.ime.engine_belief();
             let pre_ctx = super::build_input_context(
-                self.platform_state.ime.effective_open(),
-                self.platform_state.ime.input_mode(),
+                belief.open,
+                belief.input_mode,
                 self.platform_state.ime.belief.is_japanese_ime(),
                 crate::tsf::observer::ime_composition_active_now(),
                 &event.modifier_snapshot,
