@@ -87,10 +87,10 @@
 #![allow(unsafe_code)]
 
 mod focusrestore;
+mod immread;
 mod jitter;
 mod keymatrix;
 mod langdetect;
-mod immread;
 mod lateorder;
 mod perturb;
 mod preedit;

@@ -205,7 +205,10 @@ mod app {
                 })
                 .collect::<Vec<_>>()
                 .join("/");
-            let gray: Vec<u8> = luma.iter().map(|&l| u8::try_from(l.min(255)).unwrap_or(255)).collect();
+            let gray: Vec<u8> = luma
+                .iter()
+                .map(|&l| u8::try_from(l.min(255)).unwrap_or(255))
+                .collect();
             Some((hash, art, gray, w, h))
         }
     }
@@ -382,7 +385,9 @@ mod app {
         let t0 = Instant::now();
         let mut tick = 0u64;
         let shots_every: Option<u64> = arg("--shots=").and_then(|v| v.parse().ok());
-        let mut shot_t = std::time::Instant::now().checked_sub(Duration::from_secs(3600)).unwrap_or_else(std::time::Instant::now);
+        let mut shot_t = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or_else(std::time::Instant::now);
         let mut shots_n = 0u32;
         let (mut cost_sum, mut cost_n, mut cost_max) = (0f64, 0u32, 0f64);
         while t0.elapsed() < Duration::from_secs(duration) {
@@ -418,7 +423,9 @@ mod app {
             // ADR-261 D0-4: タスクバーの状態(自動非表示・位置・オーバーフロー)で、矩形・画面外・中心の窓がどう変わるか(変化点だけ記録)。
             {
                 use windows::Win32::Foundation::POINT;
-                use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowRect, WindowFromPoint};
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetClassNameW, GetWindowRect, WindowFromPoint,
+                };
                 let mut trect = RECT::default();
                 if !tray.0.is_null() {
                     // SAFETY: tray は有効なウィンドウ。
@@ -433,14 +440,24 @@ mod app {
                             // SAFETY: ind は有効。
                             let r = unsafe { ind.CurrentBoundingRectangle() }.unwrap_or_default();
                             // SAFETY: ind は有効。
-                            let off = unsafe { ind.CurrentIsOffscreen() }.map(|b| b.as_bool()).ok();
-                            let pt = POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+                            let off = unsafe { ind.CurrentIsOffscreen() }
+                                .map(|b| b.as_bool())
+                                .ok();
+                            let pt = POINT {
+                                x: (r.left + r.right) / 2,
+                                y: (r.top + r.bottom) / 2,
+                            };
                             // SAFETY: 座標から窓を引くだけ。
                             let w = unsafe { WindowFromPoint(pt) };
                             let mut buf = [0u16; 64];
                             // SAFETY: buf は有効。
-                            let n = if w.0.is_null() { 0 } else { unsafe { GetClassNameW(w, &mut buf) } };
-                            let cls = String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)]);
+                            let n = if w.0.is_null() {
+                                0
+                            } else {
+                                unsafe { GetClassNameW(w, &mut buf) }
+                            };
+                            let cls =
+                                String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)]);
                             format!(
                                 "found rect=({},{},{},{}) offscreen={off:?} wfp_class={cls:?} tray_rect=({},{},{},{})",
                                 r.left, r.top, r.right, r.bottom, trect.left, trect.top, trect.right, trect.bottom
@@ -476,7 +493,10 @@ mod app {
                                 let _ = std::fs::create_dir_all(&dir);
                                 let mut data = format!("P5\n{gw} {gh}\n255\n").into_bytes();
                                 data.extend_from_slice(&gray);
-                                let _ = std::fs::write(format!("{dir}/{tick:06}-{hash:016x}.pgm"), data);
+                                let _ = std::fs::write(
+                                    format!("{dir}/{tick:06}-{hash:016x}.pgm"),
+                                    data,
+                                );
                             }
                         }
                     }
@@ -490,7 +510,10 @@ mod app {
                     cost_max = ms;
                 }
                 if tick % 50 == 0 && cost_n > 0 {
-                    log.line(&format!("IND-COST n={cost_n} avg_ms={:.1} max_ms={cost_max:.1}", cost_sum / f64::from(cost_n)));
+                    log.line(&format!(
+                        "IND-COST n={cost_n} avg_ms={:.1} max_ms={cost_max:.1}",
+                        cost_sum / f64::from(cost_n)
+                    ));
                 }
             }
             if let Some(every) = shots_every {

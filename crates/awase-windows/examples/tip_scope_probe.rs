@@ -52,22 +52,20 @@ mod imp {
         }
     }
 
-    fn describe(
-        profiles: &ITfInputProcessorProfiles,
-        p: &TF_INPUTPROCESSORPROFILE,
-    ) -> String {
+    fn describe(profiles: &ITfInputProcessorProfiles, p: &TF_INPUTPROCESSORPROFILE) -> String {
         unsafe {
             profiles
-                .GetLanguageProfileDescription(&raw const p.clsid, p.langid, &raw const p.guidProfile)
+                .GetLanguageProfileDescription(
+                    &raw const p.clsid,
+                    p.langid,
+                    &raw const p.guidProfile,
+                )
                 .map(|b| b.to_string())
                 .unwrap_or_default()
         }
     }
 
-    fn active(
-        mgr: &ITfInputProcessorProfileMgr,
-        profiles: &ITfInputProcessorProfiles,
-    ) -> String {
+    fn active(mgr: &ITfInputProcessorProfileMgr, profiles: &ITfInputProcessorProfiles) -> String {
         unsafe {
             let mut p = TF_INPUTPROCESSORPROFILE::default();
             match mgr.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut p) {
@@ -209,7 +207,11 @@ mod imp {
                         ki: KEYBDINPUT {
                             wVk: VIRTUAL_KEY(vk),
                             wScan: 0,
-                            dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                            dwFlags: if up {
+                                KEYEVENTF_KEYUP
+                            } else {
+                                KEYBD_EVENT_FLAGS(0)
+                            },
                             time: 0,
                             dwExtraInfo: 0,
                         },
@@ -217,7 +219,12 @@ mod imp {
                 };
                 for i in 0..4 {
                     std::thread::sleep(Duration::from_millis(1500));
-                    let seq = [key(0x5B, false), key(0x20, false), key(0x20, true), key(0x5B, true)];
+                    let seq = [
+                        key(0x5B, false),
+                        key(0x20, false),
+                        key(0x20, true),
+                        key(0x5B, true),
+                    ];
                     let n = SendInput(&seq, std::mem::size_of::<INPUT>() as i32);
                     std::thread::sleep(Duration::from_millis(1200));
                     let a = active(&wmgr, &wprofiles);

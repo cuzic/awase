@@ -5,7 +5,14 @@
 //! ログ: `SW …`(前面化の時刻)/ `PRESS vk=…` / `TRUTH <名> open=.. conv=..`(窓のスレッドの IME の実状態、IMC で読む)/ `FOCUS fg_tid=.. focus_tid=..` / `=== 完了 ===`。
 
 #[cfg(windows)]
-#[allow(dead_code, unused_imports, clippy::all, clippy::pedantic, clippy::nursery, unsafe_code)]
+#[allow(
+    dead_code,
+    unused_imports,
+    clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    unsafe_code
+)]
 #[path = "text_store_probe.rs"]
 mod tsp;
 
@@ -22,20 +29,23 @@ mod app {
     };
     use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-    use windows::Win32::UI::Input::Ime::{ImmAssociateContextEx, ImmDisableIME, ImmGetDefaultIMEWnd};
+    use windows::Win32::UI::Input::Ime::{
+        ImmAssociateContextEx, ImmDisableIME, ImmGetDefaultIMEWnd,
+    };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         MapVirtualKeyW, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
         KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
     };
     use windows::Win32::UI::TextServices::{
-        CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfContext, ITfInputProcessorProfileMgr, ITfThreadMgr,
+        CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfContext,
+        ITfInputProcessorProfileMgr, ITfThreadMgr,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-        GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, SendMessageW, WM_GETTEXT, WM_SETTEXT,
-        RegisterClassW, SendMessageTimeoutW, SetForegroundWindow, TranslateMessage, GUITHREADINFO,
-        MSG, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_IME_CONTROL, WNDCLASSW,
-        WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
+        GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, RegisterClassW,
+        SendMessageTimeoutW, SendMessageW, SetForegroundWindow, TranslateMessage, GUITHREADINFO,
+        MSG, SMTO_ABORTIFHUNG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_GETTEXT, WM_IME_CONTROL,
+        WM_SETTEXT, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     fn arg(prefix: &str) -> Option<String> {
@@ -47,16 +57,22 @@ mod app {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
         let secs = d.as_secs() % 86_400;
-        format!("{:02}:{:02}:{:02}.{:03}Z", secs / 3600, (secs / 60) % 60, secs % 60, d.subsec_millis())
+        format!(
+            "{:02}:{:02}:{:02}.{:03}Z",
+            secs / 3600,
+            (secs / 60) % 60,
+            secs % 60,
+            d.subsec_millis()
+        )
     }
 
     static LOG_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     fn log(s: &str) {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(LOG_PATH.get().map_or("indicator_scenario.log", String::as_str))
-        {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            LOG_PATH
+                .get()
+                .map_or("indicator_scenario.log", String::as_str),
+        ) {
             let _ = writeln!(f, "[{}] {s}", utc_stamp());
         }
     }
@@ -152,7 +168,13 @@ mod app {
     }
 
     /// `rich`=EDIT の代わりに TSF 対応の RichEdit(`RICHEDIT50W`)を作る。
-    fn spawn_window_cls(name: &'static str, x: i32, disable_ime: bool, assoc_null: bool, rich: bool) -> Win {
+    fn spawn_window_cls(
+        name: &'static str,
+        x: i32,
+        disable_ime: bool,
+        assoc_null: bool,
+        rich: bool,
+    ) -> Win {
         let (tx, rx) = mpsc::channel::<(isize, isize, u32)>();
         std::thread::spawn(move || {
             register_class();
@@ -196,7 +218,11 @@ mod app {
                 )
                 .unwrap_or_default();
                 if assoc_null {
-                    let _ = ImmAssociateContextEx(edit, windows::Win32::UI::Input::Ime::HIMC(std::ptr::null_mut()), 0);
+                    let _ = ImmAssociateContextEx(
+                        edit,
+                        windows::Win32::UI::Input::Ime::HIMC(std::ptr::null_mut()),
+                        0,
+                    );
                 }
                 let _ = tx.send((top.0 as isize, edit.0 as isize, GetCurrentThreadId()));
             }
@@ -224,7 +250,9 @@ mod app {
                 if imm == "disable" {
                     let _ = ImmDisableIME(0);
                 }
-                let thread_mgr: ITfThreadMgr = CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER).expect("ThreadMgr");
+                let thread_mgr: ITfThreadMgr =
+                    CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)
+                        .expect("ThreadMgr");
                 let client_id = thread_mgr.Activate().expect("Activate");
                 let hi = GetModuleHandleW(None).unwrap_or_default();
                 let top = CreateWindowExW(
@@ -243,16 +271,29 @@ mod app {
                 )
                 .unwrap_or_default();
                 if imm == "assoc" {
-                    let _ = ImmAssociateContextEx(top, windows::Win32::UI::Input::Ime::HIMC(std::ptr::null_mut()), 0);
+                    let _ = ImmAssociateContextEx(
+                        top,
+                        windows::Win32::UI::Input::Ime::HIMC(std::ptr::null_mut()),
+                        0,
+                    );
                 }
                 crate::tsp::store::TOP.store(top.0 as isize, std::sync::atomic::Ordering::SeqCst);
                 let t0 = std::time::Instant::now();
-                let slog: crate::tsp::store::Log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-                let store: windows::core::IUnknown = crate::tsp::store::Store::new(std::sync::Arc::clone(&slog), t0, 0, false, false).into();
+                let slog: crate::tsp::store::Log =
+                    std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let store: windows::core::IUnknown = crate::tsp::store::Store::new(
+                    std::sync::Arc::clone(&slog),
+                    t0,
+                    0,
+                    false,
+                    false,
+                )
+                .into();
                 let doc = thread_mgr.CreateDocumentMgr().expect("CreateDocumentMgr");
                 let mut ctx: Option<ITfContext> = None;
                 let mut cookie = 0u32;
-                doc.CreateContext(client_id, 0, &store, &raw mut ctx, &raw mut cookie).expect("CreateContext");
+                doc.CreateContext(client_id, 0, &store, &raw mut ctx, &raw mut cookie)
+                    .expect("CreateContext");
                 doc.Push(&ctx.expect("ctx")).expect("Push");
                 let _ = thread_mgr.AssociateFocus(top, &doc);
                 let _ = thread_mgr.SetFocus(&doc);
@@ -313,9 +354,14 @@ mod app {
         // SAFETY: 前面化と入力の結合(spike と同じ定番の手順)。
         unsafe {
             let fg = GetForegroundWindow();
-            let fg_tid = if fg.0.is_null() { 0 } else { GetWindowThreadProcessId(fg, None) };
+            let fg_tid = if fg.0.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(fg, None)
+            };
             let my = GetCurrentThreadId();
-            let attached_fg = fg_tid != 0 && fg_tid != my && AttachThreadInput(my, fg_tid, true).as_bool();
+            let attached_fg =
+                fg_tid != 0 && fg_tid != my && AttachThreadInput(my, fg_tid, true).as_bool();
             let target_tid = GetWindowThreadProcessId(w.top, None);
             let attached_t = target_tid != my && AttachThreadInput(my, target_tid, true).as_bool();
             let _ = BringWindowToTop(w.top);
@@ -356,7 +402,11 @@ mod app {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
                     wScan: scan,
-                    dwFlags: if down { KEYBD_EVENT_FLAGS(0) } else { KEYEVENTF_KEYUP },
+                    dwFlags: if down {
+                        KEYBD_EVENT_FLAGS(0)
+                    } else {
+                        KEYEVENTF_KEYUP
+                    },
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -364,7 +414,10 @@ mod app {
         };
         // SAFETY: 1 イベントの注入。
         unsafe {
-            let _ = SendInput(&[input], i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(40));
+            let _ = SendInput(
+                &[input],
+                i32::try_from(std::mem::size_of::<INPUT>()).unwrap_or(40),
+            );
         }
     }
 
@@ -379,7 +432,15 @@ mod app {
         let mut r: usize = 0;
         // SAFETY: 他スレッドの IME 窓への WM_IME_CONTROL(タイムアウト付き)。
         let ok = unsafe {
-            SendMessageTimeoutW(ime, WM_IME_CONTROL, WPARAM(cmd), LPARAM(0), SMTO_ABORTIFHUNG, 300, Some(&raw mut r))
+            SendMessageTimeoutW(
+                ime,
+                WM_IME_CONTROL,
+                WPARAM(cmd),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG,
+                300,
+                Some(&raw mut r),
+            )
         };
         (ok.0 != 0).then_some(r)
     }
@@ -388,7 +449,15 @@ mod app {
         let mut r: usize = 0;
         // SAFETY: 他スレッドの IME 窓への WM_IME_CONTROL(タイムアウト付き)。
         let ok = unsafe {
-            SendMessageTimeoutW(ime, WM_IME_CONTROL, WPARAM(cmd), LPARAM(lp), SMTO_ABORTIFHUNG, 300, Some(&raw mut r))
+            SendMessageTimeoutW(
+                ime,
+                WM_IME_CONTROL,
+                WPARAM(cmd),
+                LPARAM(lp),
+                SMTO_ABORTIFHUNG,
+                300,
+                Some(&raw mut r),
+            )
         };
         (ok.0 != 0).then_some(r)
     }
@@ -418,19 +487,37 @@ mod app {
             let text = slog
                 .lock()
                 .ok()
-                .and_then(|l| l.iter().rev().find(|r| r.tag == "LockReleased").map(|r| r.detail.clone()))
+                .and_then(|l| {
+                    l.iter()
+                        .rev()
+                        .find(|r| r.tag == "LockReleased")
+                        .map(|r| r.detail.clone())
+                })
                 .unwrap_or_default();
             log(&format!("TYPED {} store={text:?}", w.name));
             return;
         }
         let mut buf = [0u16; 64];
         // SAFETY: 同一プロセスの窓へのメッセージ。buf はローカル。
-        let n = unsafe { SendMessageW(w.edit, WM_GETTEXT, Some(WPARAM(buf.len())), Some(LPARAM(buf.as_mut_ptr() as isize))) }.0;
+        let n = unsafe {
+            SendMessageW(
+                w.edit,
+                WM_GETTEXT,
+                Some(WPARAM(buf.len())),
+                Some(LPARAM(buf.as_mut_ptr() as isize)),
+            )
+        }
+        .0;
         let text = String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0).min(63)]);
         log(&format!("TYPED {} text={text:?}", w.name));
         // SAFETY: 同上。
         unsafe {
-            let _ = SendMessageW(w.edit, WM_SETTEXT, Some(WPARAM(0)), Some(LPARAM(w!("").as_ptr() as isize)));
+            let _ = SendMessageW(
+                w.edit,
+                WM_SETTEXT,
+                Some(WPARAM(0)),
+                Some(LPARAM(w!("").as_ptr() as isize)),
+            );
         }
     }
 
@@ -438,12 +525,19 @@ mod app {
         // SAFETY: 読み取りのみ。
         unsafe {
             let fg = GetForegroundWindow();
-            let fg_tid = if fg.0.is_null() { 0 } else { GetWindowThreadProcessId(fg, None) };
+            let fg_tid = if fg.0.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(fg, None)
+            };
             let mut gti = GUITHREADINFO {
                 cbSize: u32::try_from(std::mem::size_of::<GUITHREADINFO>()).unwrap_or(0),
                 ..Default::default()
             };
-            let focus_tid = if fg_tid != 0 && GetGUIThreadInfo(fg_tid, &raw mut gti).is_ok() && !gti.hwndFocus.0.is_null() {
+            let focus_tid = if fg_tid != 0
+                && GetGUIThreadInfo(fg_tid, &raw mut gti).is_ok()
+                && !gti.hwndFocus.0.is_null()
+            {
                 GetWindowThreadProcessId(gti.hwndFocus, None)
             } else {
                 0
@@ -511,7 +605,11 @@ mod app {
                     Some("disable") => "disable",
                     _ => "default",
                 };
-                let a = if tsf { spawn_tsf_window("A", 40, imm) } else { spawn_window("A", 40, false, false) };
+                let a = if tsf {
+                    spawn_tsf_window("A", 40, imm)
+                } else {
+                    spawn_window("A", 40, false, false)
+                };
                 focus(&a);
                 sleep_ms(800);
                 press(0x16);
@@ -522,7 +620,10 @@ mod app {
                         v.split(',')
                             .filter_map(|t| {
                                 let (o, c) = t.split_once(':')?;
-                                Some((isize::from_str_radix(o, 16).ok()?, isize::from_str_radix(c, 16).ok()?))
+                                Some((
+                                    isize::from_str_radix(o, 16).ok()?,
+                                    isize::from_str_radix(c, 16).ok()?,
+                                ))
                             })
                             .collect()
                     })
@@ -612,7 +713,10 @@ mod app {
                         sleep_ms(2200);
                         type_probe(&t);
                         truth(&t);
-                        log(&format!("ROUND phase={phase} i={i} shown=T prev={}", prev.name));
+                        log(&format!(
+                            "ROUND phase={phase} i={i} shown=T prev={}",
+                            prev.name
+                        ));
                     }
                 }
             }
@@ -638,7 +742,10 @@ mod app {
                         focus(&t);
                         sleep_ms(2200);
                         type_probe(&t);
-                        log(&format!("ROUND phase={phase} i={i} shown=T prev={}", prev.name));
+                        log(&format!(
+                            "ROUND phase={phase} i={i} shown=T prev={}",
+                            prev.name
+                        ));
                     }
                 }
             }
