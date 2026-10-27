@@ -7353,6 +7353,11 @@ const PLATFORM_STATE_PUB_FNS: &[&str] = &[
     "model",
     "new", // `PlatformState::new`（`shell.rs`、実時計の構築口）
     "record_explicit_intent",
+    // ADR-282 V1: 候補 Z の shadow(観測のみ)。ハーネスが本番の配線を同じ口で動かす(配線Z+U2)。
+    "scope_shadow_end_focus",
+    "scope_shadow_focus",
+    "scope_shadow_key",
+    "scope_shadow_view",
     "set_is_japanese_ime",
     "warrant_context",
     "with_clock",
