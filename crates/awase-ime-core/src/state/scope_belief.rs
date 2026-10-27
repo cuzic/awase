@@ -16,7 +16,10 @@
 //!
 //! 時刻は呼び出し元が渡す単調な ms(壁時計を読まない)。
 
-use super::ime_event::{ImeEvent, ObservationConfidence, ObservationSource};
+use super::ime_event::{
+    ImeEvent, InputModeApplyResult, InputModeApplyStrategy, ObservationConfidence,
+    ObservationSource,
+};
 use super::key_effect_predictor::{KeyTrack, Prediction, Stage, TableKey};
 use super::probe_admission::FocusEpoch;
 use awase::engine::{AssumedReason, InputModeState};
@@ -320,7 +323,8 @@ impl ScopeBelief {
                     at_ms: read_started_ms,
                     fence_ms: read_started_ms,
                 });
-                // 観測が来たので、変換モードの追跡は観測へ戻す(`ImeModel` の `InputModeObserved` と同じ)。
+                // 観測が来たので、変換モードの追跡は観測へ戻す。`ImeModel` と違い、Low の観測でも主張が無ければ受け入れて消す
+                // (V1 の意図した差。`ImeModel` は Medium 未満の入力モード観測を無視する)。
                 row.track.conv = None;
             }
         }
@@ -417,7 +421,11 @@ pub const fn is_table_key(vk: u16) -> bool {
 /// - 入力モードの観測は、`Unknown` 以外。
 /// - 打鍵の予測(`KeyEffectPredicted`)は写さない(Z は自分の読み出しを入力にした予測を別に受ける。
 ///   [`scope_event_of_prediction`])。窓切替も写さない(殻がスコープの鍵と窓の種類を添えて別に渡す)。
-/// - それ以外(パニックリセット・キャッシュの復元・送信の結果・drift など)は Z の belief に入れない(D8・I7)。
+/// - パニックリセット(`PanicReset`)は開の明示操作。半角英数トグルの出入りと、パニックリセットのローマ字の強制
+///   (`InputModeApplied` の `UserHalfWidthAlnumToggle`・`PanicReset`、適用できたときだけ)は入力モードの明示操作
+///   (ADR-282 §4.9 の表: belief の主張には入る。入らないのは drift・授権の根拠であり、ここではなく殻の側の規律)。
+/// - それ以外(キャッシュの復元・送信の結果・drift・上の 2 つ以外の `InputModeApplied` など)は Z の belief に入れない
+///   (キャッシュの復元と既定は観測ではない〈I7〉。他の `InputModeApplied` は §4.9 の表に無く、V1 では写さない)。
 ///
 /// 観測の時刻は事象を受けた時刻で代える(読み取りの開始時刻を `ImeEvent` が持たないため。V1 の近似)。
 #[must_use]
@@ -466,6 +474,26 @@ pub fn scope_event_of(
             confidence: *confidence,
             imm_family: is_imm_family(*source),
             read_started_ms: at_ms,
+        }),
+        ImeEvent::PanicReset { target } => Some(ScopeEvent::Explicit {
+            open: Some(*target),
+            mode: None,
+            track: Some(KeyTrack {
+                stage: Stage::None,
+                ..view.track
+            }),
+            at_ms,
+        }),
+        ImeEvent::InputModeApplied {
+            mode,
+            strategy:
+                InputModeApplyStrategy::UserHalfWidthAlnumToggle | InputModeApplyStrategy::PanicReset,
+            result: InputModeApplyResult::Applied,
+        } => mode_class_of(*mode).map(|m| ScopeEvent::Explicit {
+            open: None,
+            mode: Some(m),
+            track: None,
+            at_ms,
         }),
         _ => None,
     }
@@ -724,7 +752,7 @@ mod tests {
         );
     }
 
-    /// `ImeEvent` の写像: 明示 ON/OFF は明示操作、別の世代・キャッシュ・既定の観測は写さない、予測・パニックは写さない。
+    /// `ImeEvent` の写像: 明示 ON/OFF は明示操作、キャッシュ・既定の観測は写さない、観測は今の世代のものだけ。
     #[test]
     fn ime_event_mapping_keeps_only_user_ops_and_current_observations() {
         use crate::state::evidence::AnyObservation;
@@ -773,10 +801,203 @@ mod tests {
             scope_event_of(&obs(ObservationSource::HeuristicDefault), &view, epoch, 2),
             None
         );
+    }
+
+    /// 別の世代(`focus_epoch` が今と違う)の観測は写さない。`ObserverPoll` のように普段は写す源でも。
+    #[test]
+    fn ime_event_mapping_drops_observation_of_another_focus_epoch() {
+        use crate::state::evidence::AnyObservation;
+        use crate::state::ime_event::HwndId;
+        let view = ScopeBelief::new(170).view();
+        let obs = |epoch| {
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId(1),
+                ObservationConfidence::Medium,
+                epoch,
+            ))
+        };
+        assert!(scope_event_of(&obs(7), &view, 7, 1).is_some());
+        assert_eq!(scope_event_of(&obs(6), &view, 7, 1), None);
+        assert_eq!(scope_event_of(&obs(8), &view, 7, 1), None);
+    }
+
+    /// 明示 ON/OFF は変換中の段階だけ捨て、変換モードの追跡(`conv`)は残す。
+    #[test]
+    fn user_intent_drops_stage_but_keeps_conv_track() {
+        use crate::state::ime_event::UserIntentSource;
+        use crate::state::key_effect_predictor::Conv;
+        let track = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::ConvSpace,
+        };
+        let view = ScopeView {
+            track,
+            ..ScopeBelief::new(170).view()
+        };
+        let ev = ImeEvent::UserImeSetIntent {
+            target: true,
+            source: UserIntentSource::SyncKey,
+        };
         assert_eq!(
-            scope_event_of(&ImeEvent::PanicReset { target: true }, &view, epoch, 3),
+            scope_event_of(&ev, &view, 0, 9),
+            Some(ScopeEvent::Explicit {
+                open: Some(true),
+                mode: None,
+                track: Some(KeyTrack {
+                    conv: Some(Conv::C19),
+                    stage: Stage::None,
+                }),
+                at_ms: 9,
+            })
+        );
+    }
+
+    /// 入力モードの観測は `Unknown` 以外を、軸の値へ写して観測として渡す。
+    #[test]
+    fn input_mode_observation_maps_to_mode_class_and_skips_unknown() {
+        let view = ScopeBelief::new(170).view();
+        let ev = |mode| ImeEvent::InputModeObserved {
+            mode,
+            source: ObservationSource::MozcShm,
+            confidence: ObservationConfidence::High,
+        };
+        assert_eq!(
+            scope_event_of(&ev(InputModeState::Unknown), &view, 0, 1),
             None
         );
+        assert_eq!(
+            scope_event_of(&ev(InputModeState::ObservedEisu), &view, 0, 4),
+            Some(ScopeEvent::Observed {
+                open: None,
+                mode: Some(ModeClass::Eisu),
+                source: ObservationSource::MozcShm,
+                confidence: ObservationConfidence::High,
+                imm_family: false,
+                read_started_ms: 4,
+            })
+        );
+        assert!(matches!(
+            scope_event_of(&ev(InputModeState::ObservedKana), &view, 0, 4),
+            Some(ScopeEvent::Observed {
+                mode: Some(ModeClass::KanaInputMethod),
+                ..
+            })
+        ));
+        assert!(matches!(
+            scope_event_of(&ev(InputModeState::ObservedRomaji), &view, 0, 4),
+            Some(ScopeEvent::Observed {
+                mode: Some(ModeClass::Kana),
+                ..
+            })
+        ));
+    }
+
+    /// ADR-282 §4.9: パニックリセットは開の主張に入る。半角英数トグルの出入りは入力モードの主張に入る。
+    /// 適用できなかった(`Skipped`)もの・§4.9 に無い手段の `InputModeApplied` は写さない。
+    #[test]
+    fn panic_reset_and_half_width_toggle_enter_the_claims() {
+        use crate::state::key_effect_predictor::Conv;
+        let mut z = ScopeBelief::new(170);
+        focus(&mut z, 1, READABLE, 0);
+        explicit(&mut z, false, 5);
+        assert!(!z.view().open);
+
+        // パニックリセット: 開が主張として入り、追跡は段階だけ捨てる。
+        let track = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::Typing,
+        };
+        z.evolve(ScopeEvent::Track { track });
+        let view = z.view();
+        let e = scope_event_of(&ImeEvent::PanicReset { target: true }, &view, 0, 400)
+            .expect("パニックリセットは写す");
+        z.evolve(e);
+        assert!(z.view().open);
+        assert_eq!(z.view().basis, "z-explicit");
+        assert_eq!(
+            z.view().track,
+            KeyTrack {
+                conv: Some(Conv::C19),
+                stage: Stage::None
+            }
+        );
+
+        // 半角英数トグル ON: モード軸が半角英数になり、開は変わらず、追跡も変えない。
+        let applied = |mode, strategy, result| ImeEvent::InputModeApplied {
+            mode,
+            strategy,
+            result,
+        };
+        let on = applied(
+            InputModeState::ObservedEisu,
+            InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            InputModeApplyResult::Applied,
+        );
+        let before = z.view();
+        z.evolve(scope_event_of(&on, &before, 0, 500).expect("トグルは写す"));
+        assert_eq!(z.view().input_mode, InputModeState::ObservedEisu);
+        assert_eq!(z.view().open, before.open);
+        assert_eq!(z.view().track, before.track);
+
+        // トグル OFF(AssumedRomaji)はかなに戻る。
+        let off = applied(
+            InputModeState::AssumedRomaji {
+                reason: AssumedReason::KeyEffectPrediction,
+            },
+            InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            InputModeApplyResult::Applied,
+        );
+        z.evolve(scope_event_of(&off, &z.view(), 0, 600).expect("トグル OFF も写す"));
+        assert_ne!(z.view().input_mode, InputModeState::ObservedEisu);
+
+        // 適用しなかったもの・表に無い手段は写さない。
+        let view = z.view();
+        for (strategy, result) in [
+            (
+                InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                InputModeApplyResult::Skipped,
+            ),
+            (
+                InputModeApplyStrategy::CacheRestore,
+                InputModeApplyResult::Applied,
+            ),
+            (
+                InputModeApplyStrategy::ImmBrokenCorrection,
+                InputModeApplyResult::Applied,
+            ),
+        ] {
+            let ev = applied(InputModeState::ObservedEisu, strategy, result);
+            assert_eq!(scope_event_of(&ev, &view, 0, 700), None, "{strategy:?}");
+        }
+        // キャッシュの復元(`HwndCacheRestored`)は観測でも操作でもないので写さない(§4.5)。
+        assert_eq!(
+            scope_event_of(&ImeEvent::HwndCacheRestored { target: true }, &view, 0, 700),
+            None
+        );
+    }
+
+    /// `track: None` の明示操作は追跡を変えない(`Some` は置き換える)。
+    #[test]
+    fn explicit_with_no_track_keeps_the_track() {
+        use crate::state::key_effect_predictor::Conv;
+        let mut z = ScopeBelief::new(170);
+        focus(&mut z, 1, READABLE, 0);
+        let t = KeyTrack {
+            conv: Some(Conv::C10),
+            stage: Stage::Typing,
+        };
+        z.evolve(ScopeEvent::Track { track: t });
+        explicit(&mut z, true, 5);
+        assert_eq!(z.view().track, t);
+        z.evolve(ScopeEvent::Explicit {
+            open: None,
+            mode: None,
+            track: Some(KeyTrack::default()),
+            at_ms: 6,
+        });
+        assert_eq!(z.view().track, KeyTrack::default());
     }
 
     #[test]
