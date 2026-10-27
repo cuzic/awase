@@ -185,6 +185,8 @@ impl GlobalLatch {
                 }
             }
             ScopeEvent::Track { track } => self.current.track = track,
+            // 字形(ADR-283)は S′ の比較の対象外。
+            ScopeEvent::Glyph { .. } | ScopeEvent::StateChange { .. } => {}
             ScopeEvent::Observed {
                 open,
                 mode,

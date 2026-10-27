@@ -21,6 +21,7 @@ use super::ime_event::{
     ImeEvent, InputModeApplyResult, InputModeApplyStrategy, ObservationConfidence,
     ObservationSource,
 };
+use super::indicator_glyph::BeliefLabel;
 use super::key_effect_predictor::{KeyTrack, Prediction, Stage, TableKey};
 use super::probe_admission::FocusEpoch;
 use awase::engine::{AssumedReason, InputModeState};
@@ -63,6 +64,7 @@ impl Basis {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Explicit => "z-explicit",
+            Self::Observed(ObservationSource::TaskbarGlyph, _) => "z-glyph",
             Self::Observed(_, ObservationConfidence::High) => "z-observed-high",
             Self::Observed(_, ObservationConfidence::Medium) => "z-observed-medium",
             Self::Observed(_, ObservationConfidence::Low) => "z-observed-low",
@@ -88,6 +90,36 @@ struct ScopeRow {
     mode: Option<Claim<ModeClass>>,
     /// 変換モード・変換中の段階の追跡(予測の入力)。
     track: KeyTrack,
+    /// ADR-283 D2-1: このスコープで最後に状態を変えうる事象(入場・明示操作・[`ScopeEvent::StateChange`])があった時刻。
+    last_event_ms: Option<u64>,
+    /// ADR-283 D2-3: 字形の主張が立った後に状態を変えうる事象があった(読み直されるまで弱い主張)。
+    glyph_stale: bool,
+    /// ADR-283 D2-5: 値を変える字形の読みの 1 回目(2 回の一致を待つ)。
+    pending_glyph: Option<(BeliefLabel, u64)>,
+    /// ADR-283 D3-b: 直近の字形の読みの窓が MS-IME 本体と同定されていたか。
+    ms_ime_native: bool,
+}
+
+/// ADR-283: 字形(タスクバーの入力インジケーター)を Z に入れるときの方針。G1 のオラクルで案を比べる(本番の既定は `None` = 入れない)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphPolicy {
+    /// 字形が映しうる最大の遅れ `L`(本番は `GLYPH_KEY_FENCE_MS`)。証拠の時刻を `L` さかのぼらせ、`(c − L, c]` に事象がある読みは捨てる(D2-1・D2-2)。
+    pub lag_ms: u64,
+    /// D2-3: 事象の後の字形の主張を stale(Low 相当)にするか。偽なら何もしない(読み直しを待つ)。
+    pub stale: bool,
+    /// D2-5: Z の値を変える読みに、`lag_ms` 以上離れた 2 回の一致を要するか。
+    pub two_reads: bool,
+    /// D3-b: 英数の字形の扱い。
+    pub eisu: EisuGlyph,
+}
+
+/// ADR-283 D3-b の 2 案(G1 のオラクルで比べる)。どちらも英数の字形は入力モードの軸だけに入れる(D3)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EisuGlyph {
+    /// (a) MS-IME 本体の窓で開の明示操作が来たら、字形由来の英数を、開閉の主張が閉のとき**と、開閉が確かめられていないとき**に外す。
+    ResetWhenOpenUnconfirmed,
+    /// (b) MS-IME 本体の窓では英数の字形を写さない。開の明示操作は、開閉の主張が閉のときだけ字形由来の英数を外す。
+    SkipOnMsIme,
 }
 
 /// 窓の種類のうち、Z の規則に効くもの。
@@ -122,6 +154,16 @@ pub enum ScopeEvent {
     },
     /// 開閉・入力モードの主張にならない打鍵(表に無いキー)の、押した後の追跡。
     Track { track: KeyTrack },
+    /// ADR-283: 字形の読み 1 件(取り込み時刻 `captured_ms`)。`eligible` は D5 の窓(`glyph_window_ok`)で、かつ D4 のテキストの欄の読みか。
+    /// `ms_ime_native` は窓が MS-IME 本体と同定されているか(D3-b)。方針(`with_glyph`)が無ければ捨てる。
+    Glyph {
+        label: BeliefLabel,
+        captured_ms: u64,
+        eligible: bool,
+        ms_ime_native: bool,
+    },
+    /// ADR-283 D2-1: Z の主張にならないが IME の状態を変えうる事象(表に無いモードキー・同じ窓の中の欄の移動・awase の送信)。
+    StateChange { at_ms: u64 },
     /// 観測。`imm_family` は IMM 系の源か(読めない窓では捨てる)。
     Observed {
         open: Option<bool>,
@@ -151,6 +193,8 @@ pub struct ScopeBelief {
     focused: Option<(ScopeKey, WindowFacts)>,
     settle_ms: u64,
     new_thread_prior: bool,
+    /// ADR-283: 字形を入れる方針(`None` は入れない)。
+    glyph: Option<GlyphPolicy>,
 }
 
 impl ScopeBelief {
@@ -162,6 +206,7 @@ impl ScopeBelief {
             focused: None,
             settle_ms,
             new_thread_prior: false,
+            glyph: None,
         }
     }
 
@@ -174,7 +219,15 @@ impl ScopeBelief {
             focused: None,
             settle_ms,
             new_thread_prior: true,
+            glyph: None,
         }
+    }
+
+    /// ADR-283: 字形を Z に入れる(G1 ではオラクルだけが使う。本番は `None` のまま)。
+    #[must_use]
+    pub const fn with_glyph(mut self, policy: GlyphPolicy) -> Self {
+        self.glyph = Some(policy);
+        self
     }
 
     fn row(&self, scope: ScopeKey) -> ScopeRow {
@@ -213,6 +266,17 @@ impl ScopeBelief {
                     self.row_mut(scope).track = track;
                 }
             }
+            ScopeEvent::Glyph {
+                label,
+                captured_ms,
+                eligible,
+                ms_ime_native,
+            } => self.on_glyph(label, captured_ms, eligible, ms_ime_native),
+            ScopeEvent::StateChange { at_ms } => {
+                if let Some((scope, _)) = self.focused {
+                    self.note_state_event(scope, at_ms);
+                }
+            }
             ScopeEvent::Observed {
                 open,
                 mode,
@@ -232,9 +296,25 @@ impl ScopeBelief {
         }
     }
 
+    /// ADR-283 D2-1・D2-3: 状態を変えうる事象をスコープの行に記録し、字形の主張を stale にする。字形を入れないときは何もしない。
+    fn note_state_event(&mut self, scope: ScopeKey, at_ms: u64) {
+        let Some(policy) = self.glyph else {
+            return;
+        };
+        let row = self.row_mut(scope);
+        row.last_event_ms = Some(row.last_event_ms.map_or(at_ms, |e| e.max(at_ms)));
+        row.pending_glyph = None;
+        if policy.stale {
+            row.glyph_stale = true;
+        }
+    }
+
     fn on_focus(&mut self, scope: ScopeKey, facts: WindowFacts, at_ms: u64) {
         let prev = self.focused.map(|(k, _)| k);
         self.focused = Some((scope, facts));
+        if prev != Some(scope) {
+            self.note_state_event(scope, at_ms);
+        }
         if facts.inherit_open_on_entry {
             if let Some(prev) = prev.filter(|p| *p != scope) {
                 if let Some(src) = self.row(prev).open.filter(|c| c.value) {
@@ -274,6 +354,10 @@ impl ScopeBelief {
         let Some((scope, _)) = self.focused else {
             return;
         };
+        self.note_state_event(scope, at_ms);
+        if open == Some(true) {
+            self.reset_glyph_eisu_on_open(scope);
+        }
         let fence_ms = at_ms.saturating_add(self.settle_ms);
         let row = self.row_mut(scope);
         if let Some(t) = track {
@@ -297,6 +381,127 @@ impl ScopeBelief {
         }
     }
 
+    /// ADR-283 D3-b: MS-IME 本体の窓で開の明示操作が来たら、字形由来の英数の主張を外す(閉→開でひらがなに戻る IME だけ、191 spec §2.1)。
+    /// 外すのは、開閉の主張が閉のとき。案 (a) では、開閉が確かめられていない(主張なし・引き継ぎ・事前・英数の字形より古い字形)ときも外す。
+    fn reset_glyph_eisu_on_open(&mut self, scope: ScopeKey) {
+        let Some(policy) = self.glyph else {
+            return;
+        };
+        let row = self.row_mut(scope);
+        let Some(mode) = row.mode else {
+            return;
+        };
+        if !row.ms_ime_native || mode.value != ModeClass::Eisu || !is_glyph(mode.basis) {
+            return;
+        }
+        let closed = row.open.is_some_and(|c| !c.value);
+        let unconfirmed = row.open.is_none_or(|c| match c.basis {
+            Basis::Inherited | Basis::MeasuredPrior => true,
+            b if is_glyph(b) => c.at_ms <= mode.at_ms,
+            _ => false,
+        });
+        let reset = closed || (policy.eisu == EisuGlyph::ResetWhenOpenUnconfirmed && unconfirmed);
+        if reset {
+            row.mode = None;
+        }
+    }
+
+    /// ADR-283: 字形の読み 1 件を受ける(D1〜D5)。
+    fn on_glyph(
+        &mut self,
+        label: BeliefLabel,
+        captured_ms: u64,
+        eligible: bool,
+        ms_ime_native: bool,
+    ) {
+        let Some(policy) = self.glyph else {
+            return;
+        };
+        let Some((scope, facts)) = self.focused else {
+            return;
+        };
+        if !eligible {
+            return;
+        }
+        let evidence_ms = captured_ms.saturating_sub(policy.lag_ms);
+        let row = self.row_mut(scope);
+        row.ms_ime_native = ms_ime_native;
+        // D2-1: 区間 (c − L, c] とその後(報告まで)に事象がある読みは捨てる。
+        if row.last_event_ms.is_some_and(|e| e > evidence_ms) {
+            row.pending_glyph = None;
+            return;
+        }
+        // D3: 閉 → 閉、かな → 開・かな、英数 → 入力モードだけ英数(案 (b) では MS-IME 本体の英数は写さない)。
+        let (open, mode) = match label {
+            BeliefLabel::Closed => (Some(false), None),
+            BeliefLabel::Kana => (Some(true), Some(ModeClass::Kana)),
+            BeliefLabel::Eisu => {
+                if policy.eisu == EisuGlyph::SkipOnMsIme && ms_ime_native {
+                    return;
+                }
+                (None, Some(ModeClass::Eisu))
+            }
+        };
+        // D2-5: 値を変える読みは、`L` 以上離れた 2 回の一致を待つ。比べるのは読み出しの値(主張が無ければ O2・U3 の既定、モードはかな)。
+        let cur_open = row.open.map_or(facts.on_lean, |c| c.value);
+        let cur_mode = row.mode.map_or(ModeClass::Kana, |c| c.value);
+        let changes = open.is_some_and(|v| v != cur_open) || mode.is_some_and(|m| m != cur_mode);
+        if policy.two_reads && changes {
+            let confirmed = row.pending_glyph.is_some_and(|(l, c0)| {
+                l == label && captured_ms.saturating_sub(c0) >= policy.lag_ms
+            });
+            if !confirmed {
+                if row.pending_glyph.is_none_or(|(l, _)| l != label) {
+                    row.pending_glyph = Some((label, captured_ms));
+                }
+                return;
+            }
+        }
+        row.pending_glyph = None;
+        let basis = Basis::Observed(
+            ObservationSource::TaskbarGlyph,
+            ObservationConfidence::Medium,
+        );
+        let weak = row.glyph_stale;
+        let mut applied = false;
+        if let Some(v) = open {
+            if accepts(
+                row.open.as_ref(),
+                ObservationConfidence::Medium,
+                evidence_ms,
+                weak,
+            ) {
+                row.open = Some(Claim {
+                    value: v,
+                    basis,
+                    at_ms: evidence_ms,
+                    fence_ms: evidence_ms,
+                });
+                applied = true;
+            }
+        }
+        if let Some(m) = mode {
+            if accepts(
+                row.mode.as_ref(),
+                ObservationConfidence::Medium,
+                evidence_ms,
+                weak,
+            ) {
+                row.mode = Some(Claim {
+                    value: m,
+                    basis,
+                    at_ms: evidence_ms,
+                    fence_ms: evidence_ms,
+                });
+                row.track.conv = None;
+                applied = true;
+            }
+        }
+        if applied || !changes {
+            row.glyph_stale = false;
+        }
+    }
+
     fn on_observed(
         &mut self,
         scope: ScopeKey,
@@ -308,8 +513,9 @@ impl ScopeBelief {
     ) {
         let basis = Basis::Observed(source, confidence);
         let row = self.row_mut(scope);
+        let weak = row.glyph_stale;
         if let Some(v) = open {
-            if accepts(row.open.as_ref(), confidence, read_started_ms) {
+            if accepts(row.open.as_ref(), confidence, read_started_ms, weak) {
                 row.open = Some(Claim {
                     value: v,
                     basis,
@@ -319,7 +525,7 @@ impl ScopeBelief {
             }
         }
         if let Some(m) = mode {
-            if accepts(row.mode.as_ref(), confidence, read_started_ms) {
+            if accepts(row.mode.as_ref(), confidence, read_started_ms, weak) {
                 row.mode = Some(Claim {
                     value: m,
                     basis,
@@ -485,9 +691,12 @@ pub fn scope_event_of(
         }
         ImeEvent::ObserverReported(o) => {
             let source = o.source();
+            // 字形は `ObserverReported` では写さない(遅れの扱い・2 軸・窓の述語が要るので、殻が [`ScopeEvent::Glyph`] で渡す。ADR-283 §1.1 の穴)。
             if matches!(
                 source,
-                ObservationSource::HwndCache | ObservationSource::HeuristicDefault
+                ObservationSource::HwndCache
+                    | ObservationSource::HeuristicDefault
+                    | ObservationSource::TaskbarGlyph
             ) || o.focus_epoch() != epoch
             {
                 return None;
@@ -543,18 +752,32 @@ pub const fn compares_after_dispatch(event: &ImeEvent) -> bool {
     )
 }
 
-/// 観測 1 つが今の主張を覆すか(ADR-282 §4.4 の表)。
+/// 字形由来の主張か(ADR-283)。
+fn is_glyph(basis: Basis) -> bool {
+    matches!(basis, Basis::Observed(ObservationSource::TaskbarGlyph, _))
+}
+
+/// 字形を使ってよい窓か(ADR-283 D5。旧の `glyph_window_in_scope` の置き換えで、対象を変えるときはここだけを変える)。
+/// 直接の読み(High)が無い窓のうち、入力中継(U3)と mozc の共有メモリ(High)がある窓を除く。
+#[must_use]
+pub const fn glyph_window_ok(imm_trusted: bool, input_relay: bool, mozc_block: bool) -> bool {
+    !imm_trusted && !input_relay && !mozc_block
+}
+
+/// 観測 1 つが今の主張を覆すか(ADR-282 §4.4 の表)。`weak` は今の主張が stale の字形のとき(ADR-283 D2-3、Low でも覆る)。
 fn accepts<T>(
     current: Option<&Claim<T>>,
     confidence: ObservationConfidence,
     read_started_ms: u64,
+    weak: bool,
 ) -> bool {
     let Some(c) = current else {
         return true;
     };
+    let weak = weak && is_glyph(c.basis);
     match confidence {
-        // Low は主張なし・既定・実測の事前だけを覆す(既定は主張なしで表す)。明示操作・観測の主張は覆さない。
-        ObservationConfidence::Low => c.basis == Basis::MeasuredPrior,
+        // Low は主張なし・既定・実測の事前・stale の字形だけを覆す(既定は主張なしで表す)。明示操作・観測の主張は覆さない。
+        ObservationConfidence::Low => c.basis == Basis::MeasuredPrior || weak,
         ObservationConfidence::Medium | ObservationConfidence::High => {
             if read_started_ms < c.fence_ms {
                 return false;
@@ -1084,5 +1307,142 @@ mod tests {
     fn scope_key_separates_thread_keys_from_hwnd_fallback() {
         assert_eq!(scope_key(2, Some(3), 99), (2 << 32) | 3);
         assert_ne!(scope_key(0, None, 3), scope_key(0, Some(3), 0));
+    }
+
+    const POLICY: GlyphPolicy = GlyphPolicy {
+        lag_ms: 1300,
+        stale: true,
+        two_reads: false,
+        eisu: EisuGlyph::ResetWhenOpenUnconfirmed,
+    };
+
+    fn glyph(z: &mut ScopeBelief, label: BeliefLabel, captured_ms: u64, ms_ime_native: bool) {
+        z.evolve(ScopeEvent::Glyph {
+            label,
+            captured_ms,
+            eligible: true,
+            ms_ime_native,
+        });
+    }
+
+    /// ADR-283: 方針が無ければ字形は捨てる(本番の既定)。`ObserverReported` の字形も写さない(§1.1 の穴)。
+    #[test]
+    fn glyph_is_ignored_without_policy_and_not_mapped_from_observer_reported() {
+        use crate::state::evidence::AnyObservation;
+        use crate::state::ime_event::HwndId;
+        let mut z = ScopeBelief::new(170);
+        focus(&mut z, 1, UNREADABLE, 0);
+        glyph(&mut z, BeliefLabel::Closed, 5000, false);
+        assert!(z.view().open);
+        let e = ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+            false,
+            ObservationSource::TaskbarGlyph,
+            HwndId(1),
+            ObservationConfidence::Medium,
+            FocusEpoch::default(),
+        ));
+        assert_eq!(
+            scope_event_of(&e, &z.view(), FocusEpoch::default(), 1),
+            None
+        );
+    }
+
+    /// D2-1・D2-2: 証拠の時刻を `L` さかのぼらせる。明示操作の柵(t + 170)より前の状態を映しうる読みは覆さない。
+    #[test]
+    fn glyph_evidence_time_is_backdated_by_lag() {
+        let mut z = ScopeBelief::new(170).with_glyph(POLICY);
+        focus(&mut z, 1, UNREADABLE, 0);
+        explicit(&mut z, true, 1000);
+        glyph(&mut z, BeliefLabel::Closed, 2300, false);
+        assert!(z.view().open, "証拠の時刻 1000 は柵 1170 より前");
+        glyph(&mut z, BeliefLabel::Closed, 2500, false);
+        assert!(!z.view().open, "証拠の時刻 1200 は柵の後");
+        assert_eq!(z.view().basis, "z-glyph");
+    }
+
+    /// D2-1: 区間 (c − L, c] に状態を変えうる事象がある読みは捨てる。D2-3: 事象の後の字形の主張は Low でも覆る。
+    #[test]
+    fn glyph_read_overlapping_a_state_event_is_dropped_and_claim_goes_stale() {
+        let mut z = ScopeBelief::new(170).with_glyph(POLICY);
+        focus(&mut z, 1, UNREADABLE, 0);
+        glyph(&mut z, BeliefLabel::Closed, 2000, false);
+        assert!(!z.view().open);
+        z.evolve(ScopeEvent::StateChange { at_ms: 3000 });
+        glyph(&mut z, BeliefLabel::Kana, 4000, false);
+        assert!(
+            !z.view().open,
+            "事象 3000 は区間 (2700, 4000] に入るので捨てる"
+        );
+        z.evolve(ScopeEvent::Observed {
+            open: Some(true),
+            mode: None,
+            source: ObservationSource::Tsf,
+            confidence: ObservationConfidence::Low,
+            imm_family: false,
+            read_started_ms: 4100,
+        });
+        assert!(z.view().open, "stale の字形の主張は Low でも覆る");
+    }
+
+    /// D3: 英数の字形は入力モードの軸だけ。D3-b: MS-IME 本体の窓で、開の明示操作は字形由来の英数を外す
+    /// (案 (a) は開閉が確かめられていないときも。案 (b) は MS-IME 本体の英数を写さない)。
+    #[test]
+    fn eisu_glyph_is_mode_only_and_reset_by_open_on_ms_ime() {
+        let mut a = ScopeBelief::new(170).with_glyph(POLICY);
+        focus(&mut a, 1, UNREADABLE, 0);
+        glyph(&mut a, BeliefLabel::Eisu, 2000, true);
+        assert!(a.view().open, "開閉は既定の ON のまま");
+        assert_eq!(a.view().input_mode, InputModeState::ObservedEisu);
+        explicit(&mut a, true, 3000);
+        assert_ne!(
+            a.view().input_mode,
+            InputModeState::ObservedEisu,
+            "案 (a): 開閉が確かめられていないので外す"
+        );
+        let mut gji = ScopeBelief::new(170).with_glyph(POLICY);
+        focus(&mut gji, 1, UNREADABLE, 0);
+        glyph(&mut gji, BeliefLabel::Eisu, 2000, false);
+        explicit(&mut gji, true, 3000);
+        assert_eq!(
+            gji.view().input_mode,
+            InputModeState::ObservedEisu,
+            "GJI は前のモードを保つので外さない"
+        );
+        let mut b = ScopeBelief::new(170).with_glyph(GlyphPolicy {
+            eisu: EisuGlyph::SkipOnMsIme,
+            ..POLICY
+        });
+        focus(&mut b, 1, UNREADABLE, 0);
+        glyph(&mut b, BeliefLabel::Eisu, 2000, true);
+        assert_ne!(
+            b.view().input_mode,
+            InputModeState::ObservedEisu,
+            "案 (b): MS-IME 本体の英数は写さない"
+        );
+    }
+
+    /// D2-5: 値を変える読みは、`L` 以上離れた 2 回の一致を待つ。変えない読みは 1 回でよい。
+    #[test]
+    fn two_reads_policy_waits_for_agreement_before_changing_value() {
+        let mut z = ScopeBelief::new(170).with_glyph(GlyphPolicy {
+            two_reads: true,
+            ..POLICY
+        });
+        focus(&mut z, 1, UNREADABLE, 0);
+        glyph(&mut z, BeliefLabel::Closed, 2000, false);
+        assert!(z.view().open, "1 回目は保留");
+        glyph(&mut z, BeliefLabel::Closed, 2500, false);
+        assert!(z.view().open, "`L` 未満の 2 回目は一致に数えない");
+        glyph(&mut z, BeliefLabel::Closed, 3300, false);
+        assert!(!z.view().open, "`L` 以上離れて一致");
+    }
+
+    /// D5: 字形を使う窓の述語。
+    #[test]
+    fn glyph_window_predicate() {
+        assert!(glyph_window_ok(false, false, false));
+        assert!(!glyph_window_ok(true, false, false));
+        assert!(!glyph_window_ok(false, true, false));
+        assert!(!glyph_window_ok(false, false, true));
     }
 }
