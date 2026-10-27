@@ -909,11 +909,11 @@ impl Runtime {
         new_thread: bool,
     ) -> crate::state::scope_belief::WindowFacts {
         use crate::tsf::observer::{tsf_obs, ActiveImeKind};
-        let imm_trusted = self
-            .platform
-            .current_app_profile()
-            .can_use_imm32_cross_process()
-            && !self.platform.focus.is_demoted_by_learning();
+        let profile = self.platform.current_app_profile();
+        let imm_trusted =
+            profile.can_use_imm32_cross_process() && !self.platform.focus.is_demoted_by_learning();
+        // U3: InputRelay の窓は O2 の ON 寄りに入れない。
+        let on_lean = profile != crate::focus::class_names::AppImeProfile::InputRelay;
         let obs = tsf_obs();
         let inherit_open_on_entry = matches!(obs.active_ime_kind(), ActiveImeKind::MicrosoftIme)
             && obs.ms_ime_native_identified()
@@ -929,6 +929,7 @@ impl Runtime {
             imm_trusted,
             inherit_open_on_entry,
             new_thread,
+            on_lean,
         }
     }
 

@@ -5953,6 +5953,7 @@ mod scope_shadow_tests {
         imm_trusted: false,
         inherit_open_on_entry: false,
         new_thread: false,
+        on_lean: true,
     };
     const T0: u64 = 1_000_000;
 

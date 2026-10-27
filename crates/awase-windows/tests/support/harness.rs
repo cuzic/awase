@@ -1172,6 +1172,7 @@ impl Harness {
             imm_trusted: w.readable(),
             inherit_open_on_entry: self.inherit_open_threads.contains(&w.thread),
             new_thread,
+            on_lean: true,
         };
         let at_ms = self.now_ms;
         self.z_evolve(ScopeEvent::Focus {
