@@ -107,8 +107,8 @@
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
 
 ## atok shared 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
-  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
-  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
 
 ## atok shared I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 182 本
@@ -295,8 +295,8 @@
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
 
 ## msime shared 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
-  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: I1 違反 [belief-off/desired-fallback] / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
-  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: I1 違反 [belief-off/desired-fallback] / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: I1 違反 [belief-off/desired-fallback] / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: I1 違反 [belief-off/desired-fallback] / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
 
 ## msime shared I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 220 本
@@ -455,8 +455,8 @@
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
 
 ## msime-native shared 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
-  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: I1 違反 [belief-off/desired-fallback] / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
-  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: I1 違反 [belief-off/desired-fallback] / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: I1 違反 [belief-off/desired-fallback] / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: I1 違反 [belief-off/desired-fallback] / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
 
 ## msime-native shared I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 218 本
@@ -550,8 +550,8 @@
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
 
 ## msime per-thread 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
-  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
-  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
 
 ## msime per-thread I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 171 本
@@ -654,8 +654,8 @@
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
 
 ## msime-native mixed(tsf-native=inherit-open) 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
-  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
-  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
 
 ## msime-native mixed(tsf-native=inherit-open) I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 173 本
@@ -755,8 +755,8 @@
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → 違反なし
 
 ## msime mixed(tsf-native=independent) 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
-  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
-  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
 
 ## msime mixed(tsf-native=independent) I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 169 本
@@ -861,8 +861,8 @@
   imm32-unavailable で 明示 OFF → F2 → 同じプロセスの tsf へ: focus:chrome > user-off > key:hiragana > focus:wezterm → I1 違反 [belief-off/desired-fallback]（事象なしで残る=true、poll が届いても残る=true）
 
 ## msime mixed(tsf-native=inherit-open) 実機の再現(ADR-282 §1.1.1、IntentStore の行の上書き)の列
-  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
-  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし
+  読める窓 A で明示 OFF → tsf-native の B で F2 → A に戻る: user-off > focus:wezterm > key:hiragana > focus:explorer → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
+  imm32-unavailable の A で明示 OFF → tsf-native の B で F2 → A に戻る: focus:chrome > user-off > focus:wezterm > key:hiragana > focus:chrome → 旧: 違反なし / Z: 違反なし / Z+U2: 違反なし / S′: 違反なし / S′+U2: 違反なし / 配線Z+U2: 違反なし
 
 ## msime mixed(tsf-native=inherit-open) I1 ランダム探索（固定 seed・全字母・長さ 8〜12・300 本）
   違反した列: 179 本
