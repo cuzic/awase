@@ -73,8 +73,8 @@ struct Obs {
 pub struct GlobalLatch {
     current: Snapshot,
     /// (c) 窓ごとの記録(窓から出たときの値)。
-    by_scope: Vec<(u32, Snapshot)>,
-    focused: Option<(u32, WindowFacts)>,
+    by_scope: Vec<(u64, Snapshot)>,
+    focused: Option<(u64, WindowFacts)>,
     pool: Vec<Obs>,
     settle_ms: u64,
     new_thread_prior: bool,
@@ -100,14 +100,14 @@ impl GlobalLatch {
         }
     }
 
-    fn saved(&self, scope: u32) -> Option<Snapshot> {
+    fn saved(&self, scope: u64) -> Option<Snapshot> {
         self.by_scope
             .iter()
             .find(|(k, _)| *k == scope)
             .map(|(_, s)| *s)
     }
 
-    fn save(&mut self, scope: u32, snap: Snapshot) {
+    fn save(&mut self, scope: u64, snap: Snapshot) {
         if let Some(i) = self.by_scope.iter().position(|(k, _)| *k == scope) {
             self.by_scope[i].1 = snap;
         } else {
