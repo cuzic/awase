@@ -327,7 +327,9 @@ impl ImeStateHub {
 
     /// ADR-282 V1: 窓切替を Z の shadow へ渡す(観測のみ)。殻が、旧の窓切替の事象(`FocusChanged` など)を dispatch した直後に、
     /// スコープの鍵(`scope_belief::scope_key`)と窓の事実を添えて呼ぶ。比較は [`Self::scope_shadow_end_focus`] まで止める。
-    pub(crate) fn scope_shadow_focus(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn scope_shadow_focus(
         &mut self,
         scope: crate::state::scope_belief::ScopeKey,
         facts: crate::state::scope_belief::WindowFacts,
@@ -343,14 +345,18 @@ impl ImeStateHub {
     }
 
     /// ADR-282 V1: 窓切替の後処理が終わったら呼ぶ。比較を再開し、窓切替の時点の旧と Z を必ず 1 件残す。
-    pub(crate) fn scope_shadow_end_focus(&mut self, tick_ms: TickMs) {
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn scope_shadow_end_focus(&mut self, tick_ms: TickMs) {
         self.scope_shadow_hold = false;
         self.scope_shadow_compare("focus", tick_ms, true);
     }
 
     /// ADR-282 V1: Z の shadow の読み出し(殻が Z 自身の打鍵の予測の入力を作るのに使う)。
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
     #[must_use]
-    pub(crate) fn scope_shadow_view(&self) -> crate::state::scope_belief::ScopeView {
+    pub fn scope_shadow_view(&self) -> crate::state::scope_belief::ScopeView {
         self.scope_shadow.view()
     }
 
@@ -364,7 +370,9 @@ impl ImeStateHub {
 
     /// ADR-282 V1: 打鍵の後に呼ぶ。Z 自身の予測(`scope_belief::scope_event_of_prediction`、無ければ `None`)を Z へ渡し、
     /// 旧の予測(`apply_key_effect_prediction`)を反映した後の旧と比べる。
-    pub(crate) fn scope_shadow_key(
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn scope_shadow_key(
         &mut self,
         event: Option<crate::state::scope_belief::ScopeEvent>,
         tick_ms: TickMs,

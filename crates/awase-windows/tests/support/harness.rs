@@ -185,20 +185,24 @@ pub struct AltView {
 }
 
 /// ADR-282 V0: 並走させる比較用のモデルの名前(`StepRecord::alts` の添字の順)。
-pub const ALT_NAMES: [&str; 4] = ["Z", "Z+U2", "S′", "S′+U2"];
+pub const ALT_NAMES: [&str; 5] = ["Z", "Z+U2", "S′", "S′+U2", "配線Z+U2"];
 
-/// ADR-282 V0: 比較用のモデル。Z は本物の核(`scope_belief.rs`、本番からは呼ばない)、S′ は `support/sprime.rs` の写し。
+/// ADR-282 V0・V1: 比較用のモデル。Z は核(`scope_belief.rs`)をハーネスの写像で動かすもの、S′ は `support/sprime.rs` の写し。
+/// `Wired` は本物の hub の shadow(`ImeStateHub::scope_shadow_*`、V1 で本番に配線したもの)。hub が自分で写す事象
+/// (`dispatch_event` を通る明示 ON/OFF・観測)はハーネスから渡さず、窓切替と打鍵の予測だけを殻と同じ口で渡す。
 #[derive(Debug, Clone)]
 enum Alt {
     Z(ScopeBelief),
     S(super::sprime::GlobalLatch),
+    Wired,
 }
 
 impl Alt {
-    fn view(&self) -> awase_windows::state::scope_belief::ScopeView {
+    fn view(&self, hub: &ImeStateHub) -> awase_windows::state::scope_belief::ScopeView {
         match self {
             Self::Z(z) => z.view(),
             Self::S(s) => s.view(),
+            Self::Wired => hub.scope_shadow_view(),
         }
     }
 
@@ -206,6 +210,7 @@ impl Alt {
         match self {
             Self::Z(z) => z.evolve(e),
             Self::S(s) => s.evolve(e),
+            Self::Wired => {}
         }
     }
 }
@@ -819,8 +824,9 @@ impl Harness {
             target: open,
             source: UserIntentSource::Command,
         };
+        let hub = &self.hub;
         for a in &mut self.alts {
-            if let Some(e) = scope_belief::scope_event_of(&event, &a.view(), 0, at_ms) {
+            if let Some(e) = scope_belief::scope_event_of(&event, &a.view(hub), 0, at_ms) {
                 a.evolve(e);
             }
         }
@@ -1137,7 +1143,7 @@ impl Harness {
                 .alts
                 .iter()
                 .map(|a| {
-                    let v = a.view();
+                    let v = a.view(&self.hub);
                     let ctx = InputContext {
                         ime_on: v.open,
                         input_mode: v.input_mode,
@@ -1162,6 +1168,7 @@ impl Harness {
             Alt::Z(ScopeBelief::with_new_thread_prior(settle)),
             Alt::S(super::sprime::GlobalLatch::new(settle, false)),
             Alt::S(super::sprime::GlobalLatch::new(settle, true)),
+            Alt::Wired,
         ];
         self.z_focus(w, false);
         self
@@ -1180,6 +1187,11 @@ impl Harness {
             facts,
             at_ms,
         });
+        // 本物の hub の shadow へも、殻(`focus_tracking.rs`)と同じ口で窓切替を渡す。
+        let tick = TickMs(self.tick());
+        self.hub
+            .scope_shadow_focus(u64::from(w.thread), facts, tick);
+        self.hub.scope_shadow_end_focus(tick);
     }
 
     fn z_evolve(&mut self, e: ScopeEvent) {
@@ -1195,8 +1207,10 @@ impl Harness {
         let conv_raw = self.last_conv_raw;
         let at_ms = self.now_ms;
         let keymap = &self.keymap;
+        let tick = TickMs(self.tick());
+        let hub = &mut self.hub;
         for z in &mut self.alts {
-            let v = z.view();
+            let v = z.view(hub);
             let input = PredictInput {
                 open: v.open,
                 mode: v.input_mode,
@@ -1207,7 +1221,15 @@ impl Harness {
                 passive_rule_eligible,
                 observable_toggle_guard: false,
             };
-            let Some(p) = keymap.predict(vk, &input) else {
+            let p = keymap.predict(vk, &input);
+            if matches!(z, Alt::Wired) {
+                // 殻の `kp_predict_key_effect` と同じく、予測が無くても比較のために呼ぶ。
+                let e =
+                    p.map(|p| scope_belief::scope_event_of_prediction(table_key, &p, &v, tick.0));
+                hub.scope_shadow_key(e, tick);
+                continue;
+            }
+            let Some(p) = p else {
                 continue;
             };
             z.evolve(scope_belief::scope_event_of_prediction(
