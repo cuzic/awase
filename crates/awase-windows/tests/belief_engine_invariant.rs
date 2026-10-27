@@ -1340,7 +1340,14 @@ fn run_alt_config(cfg: Config) -> String {
         lap(ALT_NAMES[k]);
     }
     // ADR-282 V0: I3(最後の明示操作が勝つ)・I4(スコープの独立)の掃き出し(核の字母・長さ 3)。
-    let sc = scope_sweep(cfg, &core, SCOPE_DEPTH, t0);
+    render_scope_sweep(&mut out, cfg, &core, t0);
+    lap("I3/I4");
+    out
+}
+
+/// ADR-282: I3・I4 の掃き出し(核の字母・長さ 3)を `out` に書く。
+fn render_scope_sweep(out: &mut String, cfg: Config, core: &[Ev], t0: Instant) {
+    let sc = scope_sweep(cfg, core, SCOPE_DEPTH, t0);
     let _ = writeln!(
         out,
         "\n## {} I3・I4 の掃き出し（核の字母・長さ {SCOPE_DEPTH} まで・検査した列 {}。違反した列の数）",
@@ -1369,8 +1376,6 @@ fn run_alt_config(cfg: Config) -> String {
                 .unwrap_or_default()
         );
     }
-    lap("I3/I4");
-    out
 }
 
 fn alt_golden_path() -> PathBuf {
@@ -1470,7 +1475,12 @@ fn belief_engine_adopted() {
             .map(|&cfg| {
                 std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
-                    .spawn_scoped(s, move || run_config(cfg))
+                    .spawn_scoped(s, move || {
+                        let mut out = run_config(cfg);
+                        // 採用した Z の I3・I4(「旧」の行が採用した Z)。
+                        render_scope_sweep(&mut out, cfg, &core_alphabet(), Instant::now());
+                        out
+                    })
                     .expect("spawn")
             })
             .collect();
@@ -1481,7 +1491,7 @@ fn belief_engine_adopted() {
     });
     let mut out = String::from(
         "# ADR-282 V2-2: Engine の入力の belief を候補 Z(本物の hub の shadow、U2・U3 込み)にした awase の、基準の測定と同じ\n\
-         # 不変条件 I1/I2・I6 の測定。各節の「旧」は採用した Z。旧のままの数値は belief_engine_invariant_violations.txt。\n\
+         # 不変条件 I1/I2・I6 と I3・I4 の掃き出しの測定。各節の「旧」は採用した Z。旧のままの数値は belief_engine_invariant_violations.txt。\n\
          # 読み方は docs/adr/282-per-scope-latched-ime-belief-zero-base.md §14。\n\
          # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test belief_engine_invariant\n",
     );
