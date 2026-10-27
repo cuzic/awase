@@ -268,6 +268,49 @@ fn build_input_context_callers_do_not_drop_thumb_down_state() {
     }
 }
 
+/// ADR-282 V2: Engine の入力(`InputContext` の `ime_on`・`input_mode`)は、唯一の切替点
+/// `ImeStateHub::engine_belief()` から読む。`build_input_context(` の呼び出しはすべて第 1・第 2 引数が
+/// `belief.open`・`belief.input_mode`(直前で `let belief = ...engine_belief();`)で、`effective_open()` などを
+/// 直接渡さない(旧と Z の切り替えを 1 か所で済ませるため)。
+#[test]
+fn build_input_context_reads_engine_belief_only() {
+    let mut calls = 0usize;
+    for rel_path in [
+        "src/runtime/key_pipeline.rs",
+        "src/runtime/message_handlers.rs",
+        "src/runtime/mod.rs",
+    ] {
+        let content = read_crate_file(rel_path);
+        let squashed: String = production_code_only(&content).split_whitespace().collect();
+        for (i, _) in squashed.match_indices("build_input_context(") {
+            if squashed[..i].ends_with("fn") {
+                continue;
+            }
+            calls += 1;
+            let rest = &squashed[i + "build_input_context(".len()..];
+            assert!(
+                rest.starts_with("belief.open,belief.input_mode,"),
+                "{rel_path} の build_input_context の呼び出しが engine_belief() の値を渡していない: {}",
+                &rest[..rest.len().min(80)]
+            );
+        }
+        let beliefs = squashed
+            .matches("letbelief=self.platform_state.ime.engine_belief();")
+            .count();
+        let uses = squashed
+            .matches("build_input_context(belief.open,belief.input_mode,")
+            .count();
+        assert_eq!(
+            beliefs, uses,
+            "{rel_path}: build_input_context の呼び出しごとに engine_belief() を読むこと"
+        );
+    }
+    assert_eq!(
+        calls, 3,
+        "build_input_context の呼び出しは key_pipeline 2・build_ctx 1 の 3 か所"
+    );
+}
+
 /// ADR-129 (a-1): `hook::thumb_down_timestamps()`（親指ダウンタイムスタンプの
 /// ライブクエリ）の呼び出し許可箇所を固定する。`key_pipeline.rs` は
 /// capture 時点のスナップショット（`event.left_thumb_down_snapshot` /
@@ -7349,6 +7392,8 @@ const PLATFORM_STATE_PUB_FNS: &[&str] = &[
     "clock",
     "dispatch_event",
     "effective_open_at",
+    // ADR-282 V2: Engine の入力に渡す belief の唯一の切替点(ハーネスの `ctx()` も同じ口で読む)。
+    "engine_belief",
     "follow_external_change_in_scope",
     "model",
     "new", // `PlatformState::new`（`shell.rs`、実時計の構築口）

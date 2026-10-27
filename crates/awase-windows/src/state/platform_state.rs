@@ -157,6 +157,15 @@ pub struct ImeStateHub {
     scope_shadow_hold: bool,
 }
 
+/// ADR-282 V2: Engine の入力に渡す belief([`ImeStateHub::engine_belief`])。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineBelief {
+    /// IME が開いているか(`InputContext::ime_on`)。
+    pub open: bool,
+    /// 入力モード(`InputContext::input_mode`)。
+    pub input_mode: InputModeState,
+}
+
 /// [`ImeStateHub::capture_poll_state`] で取得する IME ポーリング入力スナップショット。
 ///
 /// `poll_and_classify_ime` / `classify_fetched_snapshot` の 4 引数をひとつにまとめることで
@@ -1487,6 +1496,20 @@ impl ImeStateHub {
     /// 呼び出し元はすべてこのメソッドを使うこと。
     pub(crate) fn input_mode(&self) -> InputModeState {
         self.shadow_model.input_mode()
+    }
+
+    /// ADR-282 V2: Engine の入力(`InputContext` の `ime_on`・`input_mode`)に渡す belief の**唯一の切替点**。
+    ///
+    /// `build_input_context` の呼び出し元はすべてここから読む(`tests/architecture_guard.rs` が固定)。V2-1 では旧
+    /// (`effective_open`・`input_mode`)を返す(挙動不変)。IME への書き込み・drift・授権は旧の belief のまま(D8・D9)。
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    #[must_use]
+    pub fn engine_belief(&self) -> EngineBelief {
+        EngineBelief {
+            open: self.effective_open(),
+            input_mode: self.input_mode(),
+        }
     }
 
     /// 最後に actuator が成功させた IME 開閉状態の確信度を返す（BugReport 診断用）。

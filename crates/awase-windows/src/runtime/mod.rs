@@ -129,8 +129,7 @@ pub(crate) fn resolve_dedicated_fn_key(name: Option<&str>) -> (Option<VkCode>, O
 /// `modifiers` はフック時点でキャプチャした `ModifierState` を渡すこと。
 /// タイマー等のイベント非同期パスでは呼び出し元が `read_os_modifiers()` で取得する。
 ///
-/// `ime_on` は呼び出し元が `platform_state.ime.effective_open()` を評価して渡す。
-/// `input_mode` は `ImeStateHub::input_mode()`（SSOT = `shadow_model.input_mode`）から取得する。
+/// `ime_on`・`input_mode` は呼び出し元が `platform_state.ime.engine_belief()`（ADR-282 V2 の唯一の切替点）から渡す。
 /// `is_japanese_ime` は `ImeBelief::is_japanese_ime()` から取得する。
 /// `composing` は呼び出し元が `tsf::observer::ime_composition_active_now()` を評価して渡す。
 #[must_use]
@@ -504,9 +503,10 @@ impl Runtime {
             modifiers.alt = false;
         }
         let (left_thumb_down, right_thumb_down) = crate::hook::thumb_down_timestamps();
+        let belief = self.platform_state.ime.engine_belief();
         build_input_context(
-            self.platform_state.ime.effective_open(),
-            self.platform_state.ime.input_mode(),
+            belief.open,
+            belief.input_mode,
             self.platform_state.ime.belief.is_japanese_ime(),
             crate::tsf::observer::ime_composition_active_now(),
             &modifiers,
