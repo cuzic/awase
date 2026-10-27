@@ -233,5 +233,5 @@
 | [BUG-220](BUG-220.md) | 修正を PR にした(2026-10-25)。実機は未確認 | ime_on_eisu が、半角英数の戻り待ちのある窓へ戻った直後に入りを見送り、「function」がかなになる |
 | [BUG-221](BUG-221.md) | 修正済み・実機確認済み(2026-10-26、#849) | Ctrl を押したままひらがなキー(F2)を押すと、実 IME は ON なのに awase の belief は OFF のまま残り、直後の「た」が素の E になる(Windows Terminal×GJI) |
 | [BUG-222](BUG-222.md) | 修正を PR にした(2026-10-26)。実機は未確認 | ime_on_eisu で入った半角英数のあと F2 を押しても、tsf-native × Mozc で Engine が活性に戻らない |
-| [BUG-223](BUG-223.md) | 未修正(2026-10-26)。原因の分類と再現テストあり、方針は判断待ち | 窓切替で desired_open の false が持ち越され、IME は ON なのに belief が OFF のまま Engine OFF で「こうしき」が「るしき」になる(GJI) |
+| [BUG-223](BUG-223.md) | 修正済み(2026-10-27、ADR-282 の Z を既定に、#893)。CI で確認、実機は未確認 | 窓切替で desired_open の false が持ち越され、IME は ON なのに belief が OFF のまま Engine OFF で「こうしき」が「るしき」になる(GJI) |
 | [BUG-224](BUG-224.md) | 修正を PR にした(2026-10-26)。実機は未確認 | lang_detect の保持中に窓が変わって保持列を捨てると、修飾キー(Shift)の Up も捨てて OS で押されたままになる。パニックリセットが保持を解放しない |
