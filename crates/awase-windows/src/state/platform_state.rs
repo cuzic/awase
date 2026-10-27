@@ -271,22 +271,7 @@ impl ImeStateHub {
             }
             _ => false,
         };
-        // ADR-282 V1: 候補 Z の shadow へ写す(観測のみ。写す前の Z の読み出しと、今のフォーカスの世代で決める)。
-        let scope_event = crate::state::scope_belief::scope_event_of(
-            &event,
-            &self.scope_shadow.view(),
-            self.shadow_model.observations.current_fence().epoch,
-            tick_ms.0,
-        );
-        // 窓切替(Z は殻の `scope_shadow_focus` が動かす)と打鍵の予測(殻の `scope_shadow_key` が Z の予測と一緒に比べる)は、
-        // ここでは比べない(旧だけが先に動いた中間の値を記録しない)。
-        let compare = !matches!(
-            event,
-            ImeEvent::FocusChanged { .. }
-                | ImeEvent::FocusHwndUpdated { .. }
-                | ImeEvent::InitialFocusScopeEstablished { .. }
-                | ImeEvent::KeyEffectPredicted { .. }
-        );
+        let (scope_event, compare) = self.scope_shadow_map(&event, tick_ms);
         let time = self
             .event_log
             .record_at(&event, tick_ms, self.clock.now_instant());
@@ -299,6 +284,40 @@ impl ImeStateHub {
                 tick_ms: time.tick_ms,
             });
         }
+        self.scope_shadow_after_dispatch(scope_event, compare, tick_ms);
+    }
+
+    /// ADR-282 V1: 事象を候補 Z の shadow へ写す(観測のみ。写す前の Z の読み出しと、今のフォーカスの世代で決める)。
+    /// 2 つ目の値は、この事象の後に旧と Z を比べるか。窓切替(Z は殻の `scope_shadow_focus` が動かす)と打鍵の予測(殻の
+    /// `scope_shadow_key` が Z の予測と一緒に比べる)は、ここでは比べない(旧だけが先に動いた中間の値を記録しない)。
+    fn scope_shadow_map(
+        &self,
+        event: &ImeEvent,
+        tick_ms: TickMs,
+    ) -> (Option<crate::state::scope_belief::ScopeEvent>, bool) {
+        let scope_event = crate::state::scope_belief::scope_event_of(
+            event,
+            &self.scope_shadow.view(),
+            self.shadow_model.observations.current_fence().epoch,
+            tick_ms.0,
+        );
+        let compare = !matches!(
+            event,
+            ImeEvent::FocusChanged { .. }
+                | ImeEvent::FocusHwndUpdated { .. }
+                | ImeEvent::InitialFocusScopeEstablished { .. }
+                | ImeEvent::KeyEffectPredicted { .. }
+        );
+        (scope_event, compare)
+    }
+
+    /// ADR-282 V1: 旧の reduce の後に、写した事象を Z の shadow へ渡して比べる。
+    fn scope_shadow_after_dispatch(
+        &mut self,
+        scope_event: Option<crate::state::scope_belief::ScopeEvent>,
+        compare: bool,
+        tick_ms: TickMs,
+    ) {
         let trigger = match scope_event {
             Some(crate::state::scope_belief::ScopeEvent::Explicit { .. }) => "explicit",
             Some(crate::state::scope_belief::ScopeEvent::Observed { .. }) => "observed",
@@ -366,7 +385,8 @@ impl ImeStateHub {
     /// `[belief-v2]` として info でも出す。旧の値は `resolve_effective`(副作用なし)で読む。
     fn scope_shadow_compare(&mut self, trigger: &'static str, tick_ms: TickMs, always: bool) {
         use crate::state::scope_belief::{kana_on, mode_label};
-        if self.scope_shadow_hold {
+        // 窓切替の後処理の途中と、まだ窓切替を受けていない(スコープが無い)間は比べない。
+        if self.scope_shadow_hold || self.scope_shadow.focused_facts().is_none() {
             return;
         }
         let (resolution, decision) = self.resolve_effective(tick_ms);
@@ -389,7 +409,7 @@ impl ImeStateHub {
             return;
         }
         let differs = |k: (bool, bool, bool, bool)| k.0 != k.1 || k.2 != k.3;
-        if prev.map_or(differs(key), |p| differs(p) != differs(key)) {
+        if prev.map_or_else(|| differs(key), |p| differs(p) != differs(key)) {
             tracing::info!(
                 "[belief-v2] {} trigger={trigger} old=(open={old_open} mode={} basis={old_basis}) \
                  z=(open={} mode={} basis={})",

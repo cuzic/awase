@@ -939,7 +939,7 @@ impl Runtime {
         let ids =
             crate::focus::thread_scope::focus_thread_of(HWND(hwnd.0 as *mut core::ffi::c_void));
         let scope = crate::state::scope_belief::scope_key(
-            ids.map_or(self.platform.focus.pid(), |(pid, _)| pid),
+            ids.map_or_else(|| self.platform.focus.pid(), |(pid, _)| pid),
             ids.map(|(_, tid)| tid),
             hwnd.0,
         );
