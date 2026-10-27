@@ -395,14 +395,11 @@ impl ScopeBelief {
             return;
         }
         let closed = row.open.is_some_and(|c| !c.value);
-        let unconfirmed = match row.open {
-            None => true,
-            Some(c) => match c.basis {
-                Basis::Inherited | Basis::MeasuredPrior => true,
-                b if is_glyph(b) => c.at_ms <= mode.at_ms,
-                _ => false,
-            },
-        };
+        let unconfirmed = row.open.is_none_or(|c| match c.basis {
+            Basis::Inherited | Basis::MeasuredPrior => true,
+            b if is_glyph(b) => c.at_ms <= mode.at_ms,
+            _ => false,
+        });
         let reset = closed || (policy.eisu == EisuGlyph::ResetWhenOpenUnconfirmed && unconfirmed);
         if reset {
             row.mode = None;
