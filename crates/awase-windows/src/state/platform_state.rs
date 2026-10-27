@@ -301,13 +301,7 @@ impl ImeStateHub {
             self.shadow_model.observations.current_fence().epoch,
             tick_ms.0,
         );
-        let compare = !matches!(
-            event,
-            ImeEvent::FocusChanged { .. }
-                | ImeEvent::FocusHwndUpdated { .. }
-                | ImeEvent::InitialFocusScopeEstablished { .. }
-                | ImeEvent::KeyEffectPredicted { .. }
-        );
+        let compare = crate::state::scope_belief::compares_after_dispatch(event);
         (scope_event, compare)
     }
 

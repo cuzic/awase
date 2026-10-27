@@ -4445,9 +4445,6 @@ fn initial_focus_scope_event_is_dispatched_from_one_place() {
                 ("state/ime_model.rs", 1),
                 // variant 定義そのもの。
                 ("state/ime_event.rs", 1),
-                // ADR-282 V1 の shadow(`scope_shadow_map`)の `matches!` に並ぶ 1 件。窓切替系の事象は旧と Z を
-                // 比べない、という除外リストで、dispatch ではない(読むだけ。事象を作らない)。
-                ("state/platform_state.rs", 1),
             ],
         ),
         (
