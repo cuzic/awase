@@ -187,6 +187,24 @@ pub struct AltView {
 /// ADR-282 V0: 並走させる比較用のモデルの名前(`StepRecord::alts` の添字の順)。
 pub const ALT_NAMES: [&str; 5] = ["Z", "Z+U2", "S′", "S′+U2", "配線Z+U2"];
 
+/// ADR-283 G1: 字形の比較用のモデルの名前(`with_glyph_alts` の順)。0 番は字形なしの Z+U2(採用した Z と同じ核)。
+pub const GLYPH_ALT_NAMES: [&str; 5] = [
+    "Z+U2",
+    "字形(a)",
+    "字形(b)",
+    "字形(a)+2回一致",
+    "字形(a)+staleなし",
+];
+
+/// ADR-283 G1: 字形の読みを起こす契機(D1)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlyphTrigger {
+    Enter,
+    FieldMove,
+    ModeKey,
+    TypingPause,
+}
+
 /// ADR-282 V0・V1: 比較用のモデル。Z は核(`scope_belief.rs`)をハーネスの写像で動かすもの、S′ は `support/sprime.rs` の写し。
 /// `Wired` は本物の hub の shadow(`ImeStateHub::scope_shadow_*`、V1 で本番に配線したもの)。hub が自分で写す事象
 /// (`dispatch_event` を通る明示 ON/OFF・観測)はハーネスから渡さず、窓切替と打鍵の予測だけを殻と同じ口で渡す。
@@ -389,6 +407,27 @@ pub struct Harness {
     alts: Vec<Alt>,
     /// 窓モデル: 実測学習の表（`ImmCapabilityStore` 相当、(プロセス, クラス) ごと）。戻ってきた窓にも効く。
     learned_unavailable: Vec<(&'static str, &'static str)>,
+    /// ADR-283 G1: 字形の擬似(`with_glyph_alts` で有効)。`None` なら字形は読まない。
+    glyph: Option<GlyphSim>,
+}
+
+/// ADR-283 G1: タスクバーの字形の擬似。字形は、取り込み時刻 `c` の `lag_true_ms` 前に前面だったスレッドの真を映す。
+#[derive(Debug, Clone, Default)]
+struct GlyphSim {
+    /// 字形が実際に遅れる量(ms)。核の `L`(`GLYPH_KEY_FENCE_MS`)以下。
+    lag_true_ms: u64,
+    /// (時刻, 前面のスレッドの真)。`record_step` ごとに足す。
+    truth_log: Vec<(u64, TrueState)>,
+    /// 予定の読み(時刻, 契機)。
+    pending: Vec<(u64, GlyphTrigger)>,
+    /// 次の読みを Miss にする(欠落)。
+    next_miss: bool,
+    /// 次の読みの開閉を逆に読む(誤読・前面の取り違え。嘘の観測)。
+    next_lie: bool,
+    /// いまの欄がテキストか(D4)。窓に入るとテキストに戻る。
+    field_text: bool,
+    /// 最後に T4(打鍵の途切れ)で読んだ時刻。
+    last_pause_read_ms: Option<u64>,
 }
 
 /// ハーネスは単一のフォアグラウンドなのでスコープは固定。
@@ -438,6 +477,7 @@ impl Harness {
             adopted: false,
             alts: Vec::new(),
             learned_unavailable: Vec::new(),
+            glyph: None,
         };
         h.hub.set_is_japanese_ime(true);
         h.reduce(ImeEvent::InitialFocusScopeEstablished {
@@ -456,9 +496,19 @@ impl Harness {
 
     /// 時刻を進める（その後、drift 判定と Engine の再評価を1回行う）。
     pub fn advance_ms(&mut self, ms: u64) -> &mut Self {
-        self.now_ms += ms;
-        self.hub.advance_clock_ms(ms);
-        self.ime.advance(ms);
+        let target = self.now_ms + ms;
+        // ADR-283 G1: 途中に予定の字形の読みがあれば、その時刻まで進めて読む。
+        while let Some(due) = self.next_glyph_due(target) {
+            let step = due - self.now_ms;
+            self.now_ms = due;
+            self.hub.advance_clock_ms(step);
+            self.ime.advance(step);
+            self.glyph_read(due);
+        }
+        let rest = target - self.now_ms;
+        self.now_ms = target;
+        self.hub.advance_clock_ms(rest);
+        self.ime.advance(rest);
         self.settle(format!("advance_ms({ms})"), None);
         self
     }
@@ -541,6 +591,7 @@ impl Harness {
             self.apply_key_effect_prediction(p);
         }
         self.z_key(vk, passive_rule_eligible, input.composing);
+        self.glyph_on_key(vk);
         self.predictions.push(PredictionRecord {
             step: self.step + 1,
             vk,
@@ -714,6 +765,7 @@ impl Harness {
         self.switch_thread(from.thread, to.thread);
         self.window = Some(to);
         self.z_focus(to, new_thread);
+        self.glyph_on_enter();
         self.setup.profile = ImePolicyProfile::from(to.live_profile());
         self.last_conv_raw = None;
         if from.pid == to.pid {
@@ -1123,6 +1175,9 @@ impl Harness {
     }
 
     fn record_step(&mut self, label: String, observed_open: Option<bool>) {
+        if let Some(g) = &mut self.glyph {
+            g.truth_log.push((self.now_ms, self.ime.state()));
+        }
         let ctx = self.ctx();
         self.step += 1;
         self.steps.push(StepRecord {
@@ -1264,6 +1319,163 @@ impl Harness {
         } else {
             "intent-store"
         }
+    }
+}
+
+/// ADR-283 G1: 字形の擬似と、比較用のモデル(字形の方針の案)。
+impl Harness {
+    /// 字形の比較用のモデルを並走させる(`GLYPH_ALT_NAMES` の順)。`with_scope_belief` の代わりに使う。窓モデル専用。
+    pub fn with_glyph_alts(&mut self, lag_true_ms: u64) -> &mut Self {
+        use awase_windows::state::scope_belief::{EisuGlyph, GlyphPolicy};
+        let w = self.window.expect("with_glyph_alts は窓モデルで使う");
+        let settle = awase_windows::tuning::KEY_EFFECT_SETTLE_MS;
+        let base = GlyphPolicy {
+            lag_ms: awase_windows::tuning::GLYPH_KEY_FENCE_MS,
+            stale: true,
+            two_reads: false,
+            eisu: EisuGlyph::ResetWhenOpenUnconfirmed,
+        };
+        let z = || ScopeBelief::with_new_thread_prior(settle);
+        self.alts = vec![
+            Alt::Z(z()),
+            Alt::Z(z().with_glyph(base)),
+            Alt::Z(z().with_glyph(GlyphPolicy {
+                eisu: EisuGlyph::SkipOnMsIme,
+                ..base
+            })),
+            Alt::Z(z().with_glyph(GlyphPolicy {
+                two_reads: true,
+                ..base
+            })),
+            Alt::Z(z().with_glyph(GlyphPolicy {
+                stale: false,
+                ..base
+            })),
+        ];
+        self.glyph = Some(GlyphSim {
+            lag_true_ms,
+            field_text: true,
+            ..GlyphSim::default()
+        });
+        self.z_focus(w, false);
+        self.record_step("with_glyph_alts".into(), None);
+        self
+    }
+
+    /// 読む時刻: 事象 + `L` + δ(ADR-283 D1 の `R` = 1500ms)。
+    const GLYPH_READ_AFTER_MS: u64 = 1500;
+
+    fn schedule_glyph(&mut self, due: u64, trigger: GlyphTrigger, coalesce: bool) {
+        if let Some(g) = &mut self.glyph {
+            if coalesce {
+                g.pending.retain(|(_, t)| *t != trigger);
+            }
+            g.pending.push((due, trigger));
+        }
+    }
+
+    /// T1: 窓に入った(`f + 1500`・`f + 3000`)。欄はテキストに戻る。
+    fn glyph_on_enter(&mut self) {
+        let Some(g) = &mut self.glyph else {
+            return;
+        };
+        g.field_text = true;
+        // 前の窓の予定の読みは捨てる(本番では柵〈フォーカスの世代・前面の一致〉が捨てる)。
+        g.pending.clear();
+        let now = self.now_ms;
+        self.schedule_glyph(now + Self::GLYPH_READ_AFTER_MS, GlyphTrigger::Enter, false);
+        self.schedule_glyph(now + 3000, GlyphTrigger::Enter, false);
+    }
+
+    /// T3(モード系の打鍵、表のキー)・T4(文字の打鍵の途切れ、その窓の前回の読みから 10 秒)。
+    fn glyph_on_key(&mut self, vk: u16) {
+        let Some(g) = &self.glyph else {
+            return;
+        };
+        let now = self.now_ms;
+        if scope_belief::is_table_key(vk) {
+            self.schedule_glyph(now + Self::GLYPH_READ_AFTER_MS, GlyphTrigger::ModeKey, true);
+        } else if g.last_pause_read_ms.is_none_or(|t| now >= t + 10_000) {
+            self.schedule_glyph(now + 2000, GlyphTrigger::TypingPause, true);
+        }
+    }
+
+    /// T2: 同じ窓の中の欄の移動(`text` はテキストの欄か)。Z には状態を変えうる事象として渡す(D2-1)。
+    pub fn field_move(&mut self, text: bool) -> &mut Self {
+        let now = self.now_ms;
+        if let Some(g) = &mut self.glyph {
+            g.field_text = text;
+        }
+        self.z_evolve(ScopeEvent::StateChange { at_ms: now });
+        self.schedule_glyph(
+            now + Self::GLYPH_READ_AFTER_MS,
+            GlyphTrigger::FieldMove,
+            true,
+        );
+        self.settle(format!("field_move(text={text})"), None);
+        self
+    }
+
+    /// 次の読みを欠落させる / 逆に読ませる(嘘の観測)。
+    pub fn glyph_next(&mut self, miss: bool, lie: bool) -> &mut Self {
+        if let Some(g) = &mut self.glyph {
+            g.next_miss |= miss;
+            g.next_lie |= lie;
+        }
+        self.settle(format!("glyph_next(miss={miss}, lie={lie})"), None);
+        self
+    }
+
+    fn next_glyph_due(&self, target: u64) -> Option<u64> {
+        let g = self.glyph.as_ref()?;
+        g.pending
+            .iter()
+            .map(|(d, _)| *d)
+            .filter(|d| *d <= target && *d >= self.now_ms)
+            .min()
+    }
+
+    /// 予定の読み(時刻 `due`)を 1 つ行い、字形を比較用のモデルへ渡す。
+    fn glyph_read(&mut self, due: u64) {
+        use awase_windows::state::indicator_glyph::BeliefLabel;
+        let w = self.window.expect("窓モデル");
+        let grid = self.setup.grid;
+        let Some(g) = &mut self.glyph else {
+            return;
+        };
+        let Some(i) = g.pending.iter().position(|(d, _)| *d == due) else {
+            return;
+        };
+        let (_, trigger) = g.pending.remove(i);
+        if trigger == GlyphTrigger::TypingPause {
+            g.last_pause_read_ms = Some(due);
+        }
+        if std::mem::take(&mut g.next_miss) {
+            return;
+        }
+        let at = due.saturating_sub(g.lag_true_ms);
+        let Some(&(_, truth)) = g.truth_log.iter().rev().find(|(t, _)| *t <= at) else {
+            return;
+        };
+        let lie = std::mem::take(&mut g.next_lie);
+        let open = truth.open != lie;
+        let label = if !open {
+            BeliefLabel::Closed
+        } else if truth.is_native() {
+            BeliefLabel::Kana
+        } else {
+            BeliefLabel::Eisu
+        };
+        let eligible =
+            scope_belief::glyph_window_ok(w.readable(), w.input_relay, false) && g.field_text;
+        let ms_ime_native = matches!(grid, Grid::MsimeNative);
+        self.z_evolve(ScopeEvent::Glyph {
+            label,
+            captured_ms: due,
+            eligible,
+            ms_ime_native,
+        });
+        self.record_step(format!("glyph({trigger:?}, {})", label.label()), None);
     }
 }
 

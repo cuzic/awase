@@ -42,7 +42,7 @@ use std::time::Instant;
 
 use awase_windows::focus::class_names::AppImeProfile;
 use awase_windows::state::ime_event::HwndId;
-use support::harness::{Harness, Setup, Source, StepRecord, Window, ALT_NAMES};
+use support::harness::{Harness, Setup, Source, StepRecord, Window, ALT_NAMES, GLYPH_ALT_NAMES};
 use support::pseudo_ime::{grid_key_name, Grid, TrueStage, TrueState, CONV_HIRAGANA};
 
 // ---------------------------------------------------------------------------
@@ -192,6 +192,21 @@ enum Ev {
     Advance,
     /// いまの窓が実測学習で降格される。
     Demote,
+    /// ADR-283 G1: 字形の擬似への事象(`Config::glyph_lag` があるときだけ意味がある)。
+    Glyph(GlyphEv),
+}
+
+/// ADR-283 G1: 字形の擬似への事象。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum GlyphEv {
+    /// 次の読みが欠落する(Miss・取り込めない)。
+    Miss,
+    /// 次の読みの開閉を逆に読む(誤読・前面の取り違え。嘘)。
+    Lie,
+    /// 同じ窓の中で非テキストの欄へ移る(D4・T2)。
+    NonTextField,
+    /// 同じ窓の中でテキストの欄へ移る(T2)。
+    TextField,
 }
 
 const VK_EISU: u16 = 0xF0;
@@ -222,6 +237,12 @@ impl Ev {
             Self::External(b) => format!("external-{}", if b { "on" } else { "off" }),
             Self::Advance => format!("advance:{ADVANCE_MS}ms"),
             Self::Demote => "demote-by-learning".into(),
+            Self::Glyph(g) => match g {
+                GlyphEv::Miss => "glyph:next-miss".into(),
+                GlyphEv::Lie => "glyph:next-LIE".into(),
+                GlyphEv::NonTextField => "field:non-text".into(),
+                GlyphEv::TextField => "field:text".into(),
+            },
         }
     }
 
@@ -246,12 +267,19 @@ impl Ev {
             Self::External(false) => "external-off",
             Self::Advance => "advance",
             Self::Demote => "demote",
+            Self::Glyph(GlyphEv::Miss) => "glyph:next-miss",
+            Self::Glyph(GlyphEv::Lie) => "glyph:next-LIE",
+            Self::Glyph(GlyphEv::NonTextField) => "field:non-text",
+            Self::Glyph(GlyphEv::TextField) => "field:text",
         }
     }
 
     /// 嘘・誤読を流す事象か（偽陽性の疑いの仕分け用）。`ConvInferOpen` は閉のときだけ嘘だが、保守的に嘘の側に数える。
     fn is_lie(self) -> bool {
-        matches!(self, Self::Obs(Obs::PollLie | Obs::ConvInferOpen))
+        matches!(
+            self,
+            Self::Obs(Obs::PollLie | Obs::ConvInferOpen) | Self::Glyph(GlyphEv::Lie)
+        )
     }
 }
 
@@ -371,6 +399,20 @@ fn apply(h: &mut Harness, wins: &[Window; 5], ev: Ev) -> bool {
             }
             h.demote_by_learning();
         }
+        Ev::Glyph(g) => match g {
+            GlyphEv::Miss => {
+                h.glyph_next(true, false);
+            }
+            GlyphEv::Lie => {
+                h.glyph_next(false, true);
+            }
+            GlyphEv::NonTextField => {
+                h.field_move(false);
+            }
+            GlyphEv::TextField => {
+                h.field_move(true);
+            }
+        },
     }
     true
 }
@@ -387,6 +429,9 @@ enum Inv {
     /// ADR-282 V0: 同じ不変条件を比較用のモデル(`ALT_NAMES` の添字: Z・Z+U2・S′・S′+U2・配線Z+U2)の Engine の活性で見たもの。
     I1Alt(usize),
     I2Alt(usize),
+    /// ADR-283 G1: 同じ不変条件を字形の比較用のモデル(`GLYPH_ALT_NAMES` の添字)の Engine の活性で見たもの。
+    I1G(usize),
+    I2G(usize),
 }
 
 impl Inv {
@@ -404,6 +449,16 @@ impl Inv {
             Self::I2Alt(2) => "I2(S′)",
             Self::I2Alt(3) => "I2(S′+U2)",
             Self::I2Alt(_) => "I2(配線Z+U2)",
+            Self::I1G(0) => "I1(Z+U2)",
+            Self::I1G(1) => "I1(字形(a))",
+            Self::I1G(2) => "I1(字形(b))",
+            Self::I1G(3) => "I1(字形(a)+2回一致)",
+            Self::I1G(_) => "I1(字形(a)+staleなし)",
+            Self::I2G(0) => "I2(Z+U2)",
+            Self::I2G(1) => "I2(字形(a))",
+            Self::I2G(2) => "I2(字形(b))",
+            Self::I2G(3) => "I2(字形(a)+2回一致)",
+            Self::I2G(_) => "I2(字形(a)+staleなし)",
         }
     }
 }
@@ -443,7 +498,7 @@ fn violation(inv: Inv, s: &StepRecord) -> Option<String> {
             s.engine_active
                 .then(|| format!("truth-{kind}-but-engine-on/{}", s.basis))
         }
-        Inv::I1Alt(k) => {
+        Inv::I1Alt(k) | Inv::I1G(k) => {
             let a = s.alts.get(k)?;
             (truth_is_hiragana_on(s.truth) && !a.engine_active).then(|| {
                 if a.open {
@@ -453,7 +508,7 @@ fn violation(inv: Inv, s: &StepRecord) -> Option<String> {
                 }
             })
         }
-        Inv::I2Alt(k) => {
+        Inv::I2Alt(k) | Inv::I2G(k) => {
             let kind = truth_is_off_or_alnum(s.truth)?;
             let a = s.alts.get(k)?;
             a.engine_active
@@ -482,6 +537,8 @@ struct Config {
     /// 測ったのは Windows Terminal で、ここでは同じ tsf-native の wezterm の窓に当てはめる近似)。`Some(false)` は引き継がない
     /// (O6 の既定〈独立〉。GJI × tsf-native は未確定なので両方で回す)。`None` は従来の shared / per-thread。
     tsf_inherit: Option<bool>,
+    /// ADR-283 G1: 字形の比較用のモデルを並走させる(字形が実際に遅れる量 ms)。`None` は従来の比較用のモデル。
+    glyph_lag: Option<u64>,
     /// ADR-282 V2-2: Engine の入力の belief を Z(本物の hub の shadow)から読む(設定 `general.belief_v2 = true`)。
     adopt: bool,
 }
@@ -492,6 +549,7 @@ impl Config {
             grid,
             shared,
             tsf_inherit: None,
+            glyph_lag: None,
             adopt: false,
         }
     }
@@ -501,7 +559,16 @@ impl Config {
             grid,
             shared: false,
             tsf_inherit: Some(tsf_inherit),
+            glyph_lag: None,
             adopt: false,
+        }
+    }
+
+    /// ADR-283 G1: 字形の比較用のモデルを並走させる(字形が実際に遅れる量 `lag` ms)。
+    const fn with_glyph(self, lag: u64) -> Self {
+        Self {
+            glyph_lag: Some(lag),
+            ..self
         }
     }
 
@@ -525,6 +592,10 @@ impl Config {
                 if self.shared { "shared" } else { "per-thread" }
             ),
         };
+        let base = match self.glyph_lag {
+            Some(lag) => format!("{base} 字形(遅れ {lag}ms)"),
+            None => base,
+        };
         if self.adopt {
             format!("{base} 採用Z")
         } else {
@@ -540,7 +611,15 @@ impl Config {
             h.inherit_open_on_entry(wins[W_WEZTERM].thread);
         }
         // ADR-282 V0: 候補 Z を並走させる(本物の belief・Engine には効かせない。違反は I1(Z)・I2(Z) で別に数える)。
-        h.with_scope_belief();
+        // ADR-283 G1: 字形の比較では、字形の方針の案を並走させる。
+        match self.glyph_lag {
+            Some(lag) => {
+                h.with_glyph_alts(lag);
+            }
+            None => {
+                h.with_scope_belief();
+            }
+        }
         if self.adopt {
             h.adopt_scope_belief();
         }
@@ -751,7 +830,12 @@ struct ScopeSweep {
 ///   離れたときの値のままか。開を引き継ぐスレッド(O5 の写し)は I3・I4 とも除く。
 /// 旧(`effective_open`)と比較用のモデルを同じ列で調べる。
 fn scope_sweep(cfg: Config, alphabet: &[Ev], depth: usize, started: Instant) -> ScopeSweep {
-    let n_models = 1 + ALT_NAMES.len();
+    let alt_names: [&'static str; 5] = if cfg.glyph_lag.is_some() {
+        GLYPH_ALT_NAMES
+    } else {
+        ALT_NAMES
+    };
+    let n_models = 1 + alt_names.len();
     let mut i3 = vec![(0usize, None::<String>); n_models];
     let mut i4 = vec![(0usize, None::<String>); n_models];
     let mut frontier: Vec<Vec<Ev>> = vec![Vec::new()];
@@ -847,7 +931,7 @@ fn scope_sweep(cfg: Config, alphabet: &[Ev], depth: usize, started: Instant) -> 
         frontier = next;
     }
     let names: Vec<&'static str> = std::iter::once("旧")
-        .chain(ALT_NAMES.iter().copied())
+        .chain(alt_names.iter().copied())
         .collect();
     ScopeSweep {
         checked,
@@ -1433,6 +1517,181 @@ fn belief_engine_invariant_baseline() {
 
     eprintln!("belief_engine_invariant: {:?}", started.elapsed());
     let path = golden_path();
+    if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
+        std::fs::write(&path, &out).expect("golden を書けない");
+        eprintln!("golden を更新しました: {}", path.display());
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    assert!(
+        out == expected,
+        "golden {} が現状と一致しない。意図した変化なら UPDATE_GOLDEN=1 で再生成して差分を確認すること。\n\
+         ---- 現状の全文 ----\n{out}---- ここまで ----",
+        path.display()
+    );
+}
+
+/// ADR-283 G1: 字形の比較の字母(核の字母 + 明示の IME-ON キー + 字形の欠落・誤読・欄の移動。17 種)。
+fn glyph_alphabet() -> Vec<Ev> {
+    let mut v = core_alphabet();
+    v.extend([
+        Ev::Key(VK_IME_ON),
+        Ev::Glyph(GlyphEv::Miss),
+        Ev::Glyph(GlyphEv::Lie),
+        Ev::Glyph(GlyphEv::NonTextField),
+        Ev::Glyph(GlyphEv::TextField),
+    ]);
+    v
+}
+
+/// [`exhaustive`] を複数の不変条件について 1 回の列挙で行う(列を 1 回だけ流す。比較用のモデルが多いときの時間の予算のため)。
+/// 不変条件ごとの意味は `exhaustive` と同じ: 列の最後の事象の後に初めて違反した列を数え、違反した列は(その不変条件では)延ばさない。
+/// 列は、どれか 1 つの不変条件でまだ違反していなければ延ばす。`checked` は流した列の数(全不変条件で共通)。
+fn exhaustive_multi(
+    cfg: Config,
+    invs: &[Inv],
+    alphabet: &[Ev],
+    depth: usize,
+    started: Instant,
+) -> Vec<Exhaustive> {
+    let mut frontier: Vec<Vec<Ev>> = vec![Vec::new()];
+    let mut raws: Vec<Vec<Raw>> = vec![Vec::new(); invs.len()];
+    let mut checked = 0;
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for seq in &frontier {
+            for &e in alphabet {
+                let mut cand = seq.clone();
+                cand.push(e);
+                let (mut h, wins) = cfg.start();
+                let mut marks = Vec::with_capacity(cand.len());
+                let mut ok = true;
+                for &ev in &cand {
+                    if !apply(&mut h, &wins, ev) {
+                        ok = false;
+                        break;
+                    }
+                    marks.push(h.steps.len() - 1);
+                }
+                if !ok {
+                    continue;
+                }
+                checked += 1;
+                if checked % 200 == 0 {
+                    check_budget(
+                        cfg,
+                        started,
+                        &format!("exhaustive_multi depth<={depth}"),
+                        checked,
+                    );
+                }
+                let (last_mark, earlier) = marks.split_last().expect("1 つ以上の事象");
+                let mut open_any = false;
+                for (i, &inv) in invs.iter().enumerate() {
+                    if earlier
+                        .iter()
+                        .any(|&m| violation(inv, &h.steps[m]).is_some())
+                    {
+                        continue;
+                    }
+                    match violation(inv, &h.steps[*last_mark]) {
+                        Some(class) => {
+                            let window = window_label(&h);
+                            let (mut hp, _) = replay(cfg, &cand).expect("同じ列は再生できる");
+                            let (persists, persists_poll) = persistence(&mut hp, inv);
+                            raws[i].push(Raw {
+                                tag: tag_of(&cand),
+                                seq: cand.clone(),
+                                class,
+                                window,
+                                persists,
+                                persists_poll,
+                            });
+                        }
+                        None => open_any = true,
+                    }
+                }
+                if open_any {
+                    next.push(cand);
+                }
+            }
+        }
+        frontier = next;
+    }
+    raws.into_iter()
+        .map(|r| Exhaustive { checked, raws: r })
+        .collect()
+}
+
+/// ADR-283 G1: 字形の比較用のモデル(`GLYPH_ALT_NAMES`)の I1・I2(字形の字母・長さ 3)と I3・I4 の掃き出し。
+fn run_glyph_config(cfg: Config) -> String {
+    let t0 = Instant::now();
+    let lap = |what: &str| eprintln!("[timing] {} {what}: {:?}", cfg.name(), t0.elapsed());
+    let mut out = String::new();
+    let alphabet = glyph_alphabet();
+    let invs: Vec<Inv> = (0..GLYPH_ALT_NAMES.len())
+        .flat_map(|k| [Inv::I1G(k), Inv::I2G(k)])
+        .collect();
+    let results = exhaustive_multi(cfg, &invs, &alphabet, I2_DEPTH, t0);
+    lap("exhaustive_multi");
+    for (inv, r) in invs.iter().zip(&results) {
+        render_exhaustive(&mut out, "字形の字母", cfg, *inv, &alphabet, I2_DEPTH, r);
+    }
+    render_scope_sweep(&mut out, cfg, &core_alphabet(), t0);
+    lap("I3/I4");
+    out
+}
+
+fn glyph_golden_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
+        .join("belief_engine_glyph_comparison.txt")
+}
+
+/// ADR-283 G1: 字形を Z に入れる方針の案(D2-3 の stale の有無・D2-5 の 2 回の一致・D3-b の (a)/(b))を、採用した Z(Z+U2、字形なし)と
+/// 同じ事象列で並べる。字形は擬似(遅れ・契機 T1〜T4・欠落・誤読・非テキストの欄)。数値は golden
+/// `tests/golden/belief_engine_glyph_comparison.txt`。本番の挙動は変えない(本番の Z は字形の方針を持たない)。
+#[test]
+fn belief_engine_glyph_comparison() {
+    let started = Instant::now();
+    let configs = [
+        Config::plain(Grid::GjiMsime, true).with_glyph(900),
+        Config::plain(Grid::MsimeNative, true).with_glyph(900),
+        Config::plain(Grid::GjiMsime, false).with_glyph(900),
+        Config::plain(Grid::GjiMsime, false).with_glyph(350),
+        Config::mixed(Grid::MsimeNative, true).with_glyph(900),
+        Config::mixed(Grid::GjiMsime, false).with_glyph(900),
+    ];
+    let results: Vec<String> = std::thread::scope(|s| {
+        let handles: Vec<_> = configs
+            .iter()
+            .map(|&cfg| {
+                std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(s, move || run_glyph_config(cfg))
+                    .expect("spawn")
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("設定ごとの測定"))
+            .collect()
+    });
+    let mut out = String::from(
+        "# ADR-283 G1: 字形を Z に入れる方針の案を、採用した Z(Z+U2、字形なし)と同じ事象列で並べる。\n\
+         # 案: (a) 英数は開閉が確かめられていなければ開の明示操作で外す / (b) MS-IME 本体の英数は写さない / 2回一致 / staleなし。\n\
+         # 字形は擬似(取り込み時刻の『遅れ』前の真を映す。契機は窓に入った +1500・+3000、欄の移動・表のキー +1500、文字の途切れ +2000)。\n\
+         # 読み方は docs/adr/283-glyph-evidence-in-scope-belief.md §3.1。\n\
+         # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test belief_engine_invariant\n",
+    );
+    for r in &results {
+        out.push_str(r);
+    }
+    eprintln!("belief_engine_glyph_comparison: {:?}", started.elapsed());
+    let path = glyph_golden_path();
     if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
         std::fs::write(&path, &out).expect("golden を書けない");
         eprintln!("golden を更新しました: {}", path.display());
