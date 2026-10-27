@@ -15,7 +15,7 @@ summary: |-
   段階: G1(核とオラクル)→ G2(契機の追加と試算を Z へ、観測のみ)→ G3(既存の設定 `[indicator_evidence] glyph = "unobserved"` で採用)。
   旧の belief の字形の分岐(本番で一度も有効にしていない)は G3 で削除する(複雑性予算の相手)。
 status: |-
-  起草(2026-10-27)。実装なし。Opus レビュー round 1(B1・M4・m6)を受けた後、所有者の見解(字形は時間差を除けば正しい)でタイミング中心に作り直した。round 2(作り直す前の版への R2-M1・R2-M2・minor 4)、作り直した版への round 2(B1・M4・m5)、実機の読み取りの費用のデータを反映。round 3(R3-M3: D3-b を MS-IME 本体の閉→開に限る)を反映。round 4(R4-M1・R4-M2・minor 4)を反映。round 5 待ち。
+  起草(2026-10-27)。実装なし。Opus レビュー round 1(B1・M4・m6)を受けた後、所有者の見解(字形は時間差を除けば正しい)でタイミング中心に作り直した。round 2(作り直す前の版への R2-M1・R2-M2・minor 4)、作り直した版への round 2(B1・M4・m5)、実機の読み取りの費用のデータを反映。round 3(R3-M3: D3-b を MS-IME 本体の閉→開に限る)を反映。round 4(R4-M1・R4-M2・minor 4)・round 5(minor 2)を反映。**Opus round 5 で収束(Blocker 0・Major 0、確定してよい、G1 に進んでよい)**。
 related_adr:
   - "ADR-261"
   - "ADR-271"
@@ -125,7 +125,8 @@ related_adr:
    - 同じスコープの中の欄の移動(D1 の T2 の定義)
    - そのスコープへの入場(前面窓の変化・スコープの切替)
    - **awase の IME の状態を変えうる送信**(round 2 改の M2、round 4 の R4-M1 で狭めた): 文字の出力(`send_key`・`transmit`・`reinject` 等)は入れない。次の 2 つで定義する:
-     - `send_input_safe` の中で conv を変えうる VK(`vk::vk_may_mutate_conv`)を検知して立てる bump(`probe_actuation_fence.rs` の `bump`)と、IMC の conv の書き込み(同じ bump の対象)。
+     - `send_input_safe` の中で conv を変えうる VK(`vk::vk_may_mutate_conv`)を検知して立てる `conv_mutation::bump`(`win32.rs`)と、IMC の conv の書き込みで立つ同じ bump(`imm.rs`)。
+     - 印の付いた注入と `IMC_SETOPENSTATUS` などの操作で立つ `probe_actuation_fence::bump`(`conv_mutation` は開閉だけの VK〈`VK_IME_ON`/`OFF`/`KANJI`〉を数えないので、ADR-262 の ON・shadow toggle はこちらで拾う)。両方を事象にする(round 5 の m1)。
      - 開閉の書き込み(`set_ime_open`・`actuate_ime_control`)。
      lang-detect のひらがなキー・ADR-262 の最初の同時打鍵の ON・半角英数トグルの出入り・ADR-245 の復元は、モードキーか IMC の書き込みなので上の bump で拾えるはず(実装時に確かめる)。
      ADR-255 の Space への置き換えは IME の状態を変えないので入れない。
@@ -235,6 +236,7 @@ related_adr:
   個々の列では増えうる)。増えた列は型ごとに列挙する(round 2 改の M4)。嘘の字形を含む列は分けて数える。
   - I3 は戻った瞬間で測る(字形の読みは戻った後の別の事象)。
   - I6 の検査は「観測の事象を含まない `advance_ms` の列」で測る。ハーネスが T4 の字形を自分で起こすときは、その読みは観測の事象として列に現れ、I6 の対象外(round 2 改の m1)。
+- D3-b の (a)・(b) の選び方: msime の 2 列(D3-b)で I1・I2 の総数が少ないほうを採る。差が無ければ規則の少ない (b) を採る(round 5 の m2)。
 - 追加の列: 「字形(英数)→ `key:ime-on`」と「poll(英数)→ `user-on`」を msime・atok の両方で(D3-b の規則の有無と、IME の種類の分け方を並べる)。D2-5 の「1 回」と「2 回の一致」を並べる。
   D2-3 の stale の有無を並べる。
 - I7 は構成上 0(字形は観測。既定・予測・awase 起点ではない)。
@@ -365,3 +367,10 @@ round 3 は、作り直した版への round 2 の対応(`fe8285b08`)より前�
 | m2 | U-G1 の上限を 20 回にそろえた |
 | m3 | D1 に T2 の代わりの定義 |
 | m4 | D2-5 に反映の遅れを比較の観点として足した |
+
+### round 5(`778333046`)の指摘の対応(収束)
+
+| ID | 対応 |
+|---|---|
+| m1(bump の出所) | D2-1 に `conv_mutation::bump` と `probe_actuation_fence::bump` の両方を書いた |
+| m2(D3-b の選び方) | §3.1 に選び方(総数の少ないほう、差が無ければ (b))を足した |
