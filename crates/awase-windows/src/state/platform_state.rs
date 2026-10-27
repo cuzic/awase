@@ -155,7 +155,8 @@ pub struct ImeStateHub {
     /// 窓切替の処理の途中(`scope_shadow_focus` から `scope_shadow_end_focus` まで)は比較しない(旧の窓切替の後処理が
     /// 終わる前の中間の値を記録しない)。
     scope_shadow_hold: bool,
-    /// ADR-282 V2-2: Engine の入力の belief([`Self::engine_belief`])を Z から読むか(設定 `general.belief_v2`、既定 `false`)。
+    /// ADR-282 V2: Engine の入力の belief([`Self::engine_belief`])を Z から読むか(設定 `general.belief_v2`、設定の既定は `true`〈V2-3〉。
+    /// ここの初期値は偽で、起動時に設定から入る。ハーネス・単体テストは明示的に切り替えない限り旧)。
     engine_belief_z: bool,
 }
 
