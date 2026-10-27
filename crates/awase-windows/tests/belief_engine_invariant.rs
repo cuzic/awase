@@ -384,7 +384,7 @@ enum Inv {
     I1,
     I2,
     /// ADR-282 V0: 同じ不変条件を候補 Z(`ScopeBelief`)の Engine の活性で見たもの。
-    /// ADR-282 V0: 同じ不変条件を比較用のモデル(`ALT_NAMES` の添字: Z・Z+U2・S′・S′+U2)の Engine の活性で見たもの。
+    /// ADR-282 V0: 同じ不変条件を比較用のモデル(`ALT_NAMES` の添字: Z・Z+U2・S′・S′+U2・配線Z+U2)の Engine の活性で見たもの。
     I1Alt(usize),
     I2Alt(usize),
 }
@@ -397,11 +397,13 @@ impl Inv {
             Self::I1Alt(0) => "I1(Z)",
             Self::I1Alt(1) => "I1(Z+U2)",
             Self::I1Alt(2) => "I1(S′)",
-            Self::I1Alt(_) => "I1(S′+U2)",
+            Self::I1Alt(3) => "I1(S′+U2)",
+            Self::I1Alt(_) => "I1(配線Z+U2)",
             Self::I2Alt(0) => "I2(Z)",
             Self::I2Alt(1) => "I2(Z+U2)",
             Self::I2Alt(2) => "I2(S′)",
-            Self::I2Alt(_) => "I2(S′+U2)",
+            Self::I2Alt(3) => "I2(S′+U2)",
+            Self::I2Alt(_) => "I2(配線Z+U2)",
         }
     }
 }
@@ -1276,7 +1278,7 @@ fn run_config(cfg: Config) -> String {
     out
 }
 
-/// ADR-282 V0: 比較用のモデル(Z・Z+U2・S′・S′+U2)の I1・I2 と I3・I4 の掃き出し(`belief_engine_alt_comparison`)。
+/// ADR-282 V0: 比較用のモデル(Z・Z+U2・S′・S′+U2・配線Z+U2)の I1・I2 と I3・I4 の掃き出し(`belief_engine_alt_comparison`)。
 /// 旧の測定(`run_config`)とは別のテストにして、時間の予算を分ける。
 fn run_alt_config(cfg: Config) -> String {
     let t0 = Instant::now();
@@ -1289,7 +1291,7 @@ fn run_alt_config(cfg: Config) -> String {
     } else {
         ("核の字母", &core)
     };
-    // ADR-282 V0: 比較用のモデル(Z・Z+U2・S′・S′+U2)の I1・I2(同じ字母・同じ長さ。旧と並べて比べる)。U2 の案(新しい
+    // ADR-282 V0: 比較用のモデル(Z・Z+U2・S′・S′+U2・配線Z+U2)の I1・I2(同じ字母・同じ長さ。旧と並べて比べる)。U2 の案(新しい
     // スレッドは閉)は、窓をまたいで同じスレッドの shared では変わらないので、窓ごとに別スレッドの設定だけ回す。
     for k in 0..ALT_NAMES.len() {
         let u2 = ALT_NAMES[k].ends_with("+U2");
@@ -1444,7 +1446,7 @@ fn bug223_sequences_are_i1_violations_when_ime_state_is_shared() {
     }
 }
 
-/// ADR-282 V0: 旧と比較用のモデル(Z・Z+U2・S′・S′+U2)を同じ事象列で並べる(I1・I2・I3・I4)。数値は golden
+/// ADR-282 V0: 旧と比較用のモデル(Z・Z+U2・S′・S′+U2・配線Z+U2)を同じ事象列で並べる(I1・I2・I3・I4)。数値は golden
 /// `tests/golden/belief_engine_alt_comparison.txt`。旧だけの測定は `belief_engine_invariant_baseline`。
 #[test]
 fn belief_engine_alt_comparison() {
@@ -1473,8 +1475,9 @@ fn belief_engine_alt_comparison() {
             .collect()
     });
     let mut out = String::from(
-        "# ADR-282 V0: 旧(今の本物の belief)と比較用のモデル(Z・Z+U2・S′・S′+U2)を同じ事象列で並べる。\n\
-         # Z は crates/awase-ime-core/src/state/scope_belief.rs、S′ は tests/support/sprime.rs。旧の数値は\n\
+        "# ADR-282 V0: 旧(今の本物の belief)と比較用のモデル(Z・Z+U2・S′・S′+U2・配線Z+U2)を同じ事象列で並べる。\n\
+         # Z は crates/awase-ime-core/src/state/scope_belief.rs、S′ は tests/support/sprime.rs。配線Z+U2 は本物の hub の\n\
+         # shadow(ImeStateHub::scope_shadow_*、V1)を殻と同じ口で動かしたもの。旧の数値は\n\
          # belief_engine_invariant_violations.txt。読み方は docs/adr/282-per-scope-latched-ime-belief-zero-base.md §14。\n\
          # 自動生成: UPDATE_GOLDEN=1 cargo test -p awase-windows --test belief_engine_invariant\n",
     );
