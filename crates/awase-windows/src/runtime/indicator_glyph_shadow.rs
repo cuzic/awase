@@ -276,9 +276,23 @@ impl super::Runtime {
         glyph_window_ok(imm_trusted, input_relay, self.mozc_shm.block_present())
     }
 
+    /// `read_fence`(フォーカス追跡が新しい窓に追いついている読みか、B2)が `Some` のときだけ
+    /// [`Self::preview_glyph_for_z`] を呼ぶ(ガード節を呼び出し元から切り出し、cognitive complexity を抑える)。
+    fn preview_glyph_for_z_if_fenced(
+        &self,
+        reading: crate::state::indicator_glyph::LabelReading,
+        read_fence: Option<FocusFence>,
+        read_ms: u16,
+        record: &mut crate::journal::IndicatorGlyphRecord,
+    ) {
+        if read_fence.is_some() {
+            self.preview_glyph_for_z(reading, read_ms, record);
+        }
+    }
+
     /// ADR-283 G2(観測のみ、2026-10-28 Opus レビューを受けて直接配線から戻した): この字形の読みを今候補 Z へ
     /// 入れたら、という試算を journal に記録する(**副作用なし。belief には一切書かない**)。呼び出し元
-    /// ([`Self::indicator_glyph_on_result`])が、フォーカス追跡が新しい窓に追いついている読みだけに絞る(B2)。
+    /// ([`Self::preview_glyph_for_z_if_fenced`])が、フォーカス追跡が新しい窓に追いついている読みだけに絞る(B2)。
     ///
     /// D4(テキストの欄の読みか、`FocusKind::TextInput` を要求。`Undetermined` は通さない。Opus レビュー指摘 B3)・
     /// D5(`glyph_z_window_ok`)・D3-b(MS-IME 本体か)をここで決め、柵・写像・2回一致の要否は核
@@ -506,9 +520,7 @@ impl super::Runtime {
             let read_fence = self.glyph_read_fence(&pending, is_second);
             // ADR-283 G2(観測のみ): 旧経路と同じ柵(フォーカス追跡が新しい窓に追いついている読みだけ、B2)を通った
             // ときだけ、候補 Z への試算を記録する(belief には書かない)。
-            if read_fence.is_some() {
-                self.preview_glyph_for_z(reading, outcome.read_ms, &mut record);
-            }
+            self.preview_glyph_for_z_if_fenced(reading, read_fence, outcome.read_ms, &mut record);
             // 設定が observe のままでも、対象の窓だったとして柵を通るかを記録する（belief には入れない）。段階 2 の前提の件数。
             // 基準が作れなかった読み（追跡のずれ）も分母に入れるため、窓の種類は基準の有無によらず出す。
             let scope = glyph_scope_label(self.glyph_scope_facts());
