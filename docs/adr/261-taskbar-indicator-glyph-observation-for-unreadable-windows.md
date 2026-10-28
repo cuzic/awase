@@ -220,6 +220,29 @@ Windows のタスクバーは入力インジケーター(「あ」/「A」など
 - 使ったスパイク(`crates/awase-windows/examples/spike_printwindow_indicator_probe.rs`、ワークフロー
   `.github/workflows/printwindow-indicator-probe.yml`)は結果記録後に撤去する(撤去コミット: 本 PR 内)。
 
+#### 決定5 追補2: `PrintWindow` をエッジケース込みで測る(2026-10-28 測定)
+
+先の追補(静止状態1通りの比較)に続けて、所有者から「エッジケースも含めて測ってほしい」との依頼を受け、
+`spike_printwindow_edge_cases_probe.rs` で次の軸を GJI・MS-IME 双方・windows-latest CI で測った
+(CI run [40651532252](https://github.com/cuzic/awase/actions/runs/40651532252))。
+
+| 軸 | `BitBlt`(既存) | `PrintWindow`+`PW_RENDERFULLCONTENT` | 備考 |
+| --- | --- | --- | --- |
+| ベースライン(ライト) | 非空 | **一致率100%** | 先の追補と同じ |
+| ダークテーマ | 非空 | **一致率100%** | `AppsUseLightTheme`/`SystemUsesLightTheme`を0にして`explorer.exe`再起動 |
+| タスクバー自動非表示 | `indicator_found=false` | `indicator_found=false`(同条件) | UIA でインジケーター要素自体が見つからず、両手法に差は無い(既知の制約の再確認。決定5 参照) |
+| IME状態の切り替え前後 | 前後で変化(非一致) | **前後とも基準と一致率100%** | 地の正解(`GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`、`ITfCompartmentMgr`で直接読む)で実際に `0→1` へ切り替わったことを確認した上で比較。古い内容のまま固まる様子は無い |
+
+**結論**: 測った4軸すべてで `PrintWindow(PW_RENDERFULLCONTENT)` は `BitBlt` と同じ結果を返す(自動非表示は両手法とも等しく失敗するので差が無い)。状態が実際に変わった後も追随し、古い内容で固まることは無い。**本番の取り込み経路(`indicator_glyph.rs::capture_bgra`/`capture_gray`)を `PrintWindow` に替えても、字形の読み取り結果自体は変わらないと見込める**。
+ただし測ったのは `Shell_TrayWnd` が実在し続ける前提下の4ケースのみで、DPI違いは windows-latest ランナーの表示環境の制約で測っていない(別途確認が要る場合は追補する)。取り込み方式を実際に切り替えるかは所有者判断(本 ADR では決めない)。
+
+検証で分かった注意点(スパイク実装上の罠、将来同種の注入テストを書くときのため):
+- `SendInput` で VK だけ(`wScan=0`)を注入すると GJI 側が無視することがある。`ime_key_matrix_spike.rs::scan_for` と同じ物理スキャンコード(ひらがなキーは`0x70`)を一緒に送る必要がある。
+- 注入したキーが実際に `WM_KEYDOWN`/IME 処理まで届くには、注入先の窓のスレッドが `GetMessageW`/`DispatchMessageW` でメッセージを捌いている必要がある。`sleep` だけで待つと、メッセージキューに溜まったまま処理されない。
+
+使ったスパイク(`crates/awase-windows/examples/spike_printwindow_edge_cases_probe.rs`、ワークフロー
+`.github/workflows/printwindow-edge-cases-probe.yml`)は結果記録後に撤去する(撤去コミット: 本 PR 内)。
+
 ### 決定 6: belief への入れ方 — 段階 1(shadow)と、段階 2 の入口条件
 
 - **段階 1(shadow)**: belief には入れない。journal と不具合報告(ADR-148 型の allowlist: `glyph_probe { env_match, hits, misses, reason 別件数 }`。字形の画像は環境固有で個人情報ではないが、
