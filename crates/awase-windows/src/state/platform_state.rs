@@ -185,6 +185,22 @@ pub(crate) struct ImePollState {
 /// `state/drift_correction.rs` へ移した（Linux ホストのテストから判定本体を呼ぶため）。
 pub(crate) use super::drift_correction::DriftCorrection;
 
+/// ADR-283 G2: 字形(タスクバーの入力インジケーター)を候補 Z([`ImeStateHub::scope_shadow`])の証拠に入れる方針。
+///
+/// G1 のオラクル(`belief_engine_glyph_comparison`、2026-10-28 実測)では、ここで選んだ値とその対抗案(2回一致あり・
+/// staleなし)との間で I1・I2・I3・I4 の件数に差が無かった(全て 0 件で引き分け)。引き分けのときの規則:
+/// - `eisu`: ADR-283 の規則(「差が無ければ規則の少ない方」) に従い `SkipOnMsIme`((b)案)を採る。
+/// - `two_reads`: オラクルで益が確認できなかったので、規則を増やさない(`false`)。
+/// - `stale`: U-G2 の決定(事象ベースの鮮度)をそのまま採る(`true`)。
+/// - `lag_ms`: 本番の `GLYPH_KEY_FENCE_MS`(実機の押下→字形の遅れの実測、1300ms)と同じにする。
+const GLYPH_POLICY: crate::state::scope_belief::GlyphPolicy =
+    crate::state::scope_belief::GlyphPolicy {
+        lag_ms: crate::tuning::GLYPH_KEY_FENCE_MS,
+        stale: true,
+        two_reads: false,
+        eisu: crate::state::scope_belief::EisuGlyph::SkipOnMsIme,
+    };
+
 impl ImeStateHub {
     /// 時計を注入して初期化する。`hook` に依存しないので、テスト・閉ループは仮想時計
     /// （`HubClock::manual`）を渡せる。
@@ -219,7 +235,8 @@ impl ImeStateHub {
             press_ledger: super::press_ledger::PressLedger::default(),
             scope_shadow: crate::state::scope_belief::ScopeBelief::with_new_thread_prior(
                 crate::tuning::KEY_EFFECT_SETTLE_MS,
-            ),
+            )
+            .with_glyph(GLYPH_POLICY),
             scope_shadow_last: None,
             scope_shadow_hold: false,
             engine_belief_z: false,
@@ -394,6 +411,21 @@ impl ImeStateHub {
             self.scope_shadow.evolve(e);
         }
         self.scope_shadow_compare("key", tick_ms, false);
+    }
+
+    /// ADR-283 G2: 字形(タスクバーの入力インジケーター)の読み 1 件を Z へ渡す。殻([`crate::runtime::indicator_glyph_shadow`])
+    /// が、見本の表に照合してラベルが付いたとき(`LabelReading::Hit`)だけ呼ぶ。`event` は
+    /// [`crate::state::scope_belief::ScopeEvent::Glyph`] 固定(呼び出し元が D4・D5 の `eligible`・`ms_ime_native` を決める)。
+    /// 対象外・柵に当たった読みは核([`crate::state::scope_belief::ScopeBelief::evolve`])が無視する(`eligible` 参照)。
+    ///
+    /// 閉ループのハーネス（`tests/support/harness.rs`）からも呼ぶ。本番の呼び出し元は crate 内だけ。
+    pub fn scope_shadow_glyph(
+        &mut self,
+        event: crate::state::scope_belief::ScopeEvent,
+        tick_ms: TickMs,
+    ) {
+        self.scope_shadow.evolve(event);
+        self.scope_shadow_compare("glyph", tick_ms, false);
     }
 
     /// 旧の belief と Z の shadow を比べ、組が変わったとき(`always` なら必ず)journal に残す。食い違いの始まりと終わりは

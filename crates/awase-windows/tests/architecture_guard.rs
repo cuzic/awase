@@ -7403,6 +7403,8 @@ const PLATFORM_STATE_PUB_FNS: &[&str] = &[
     // ADR-282 V1: 候補 Z の shadow(観測のみ)。ハーネスが本番の配線を同じ口で動かす(配線Z+U2)。
     "scope_shadow_end_focus",
     "scope_shadow_focus",
+    // ADR-283 G2: 字形の読みを Z へ渡す唯一の口(本番。belief への他の書き込みは一切しない)。
+    "scope_shadow_glyph",
     "scope_shadow_key",
     "scope_shadow_view",
     // ADR-282 V2-2: Engine の入力の belief を Z から読むか(設定 general.belief_v2。ハーネスの「採用Z」も同じ口で切り替える)。
@@ -8419,12 +8421,16 @@ fn raw_key_event_reinject_builds_input_from_reinject_key_spec() {
     );
 }
 
-/// ADR-261 段階 1: 入力インジケーターの字形の影の取り込みは**観測だけ**で、belief・IME・打鍵に書かない。
+/// ADR-261 段階 1: 入力インジケーターの字形の影の取り込みは、旧モデルの belief・IME・打鍵には書かない
+/// （旧モデル向けの入口 `report_indicator_glyph(` は ADR-273 の対象外窓判定で現状は常に偽、実質 no-op）。
+/// **ADR-283 G2 からは、候補 Z（本番の `ImeStateHub::scope_shadow`、`engine_belief()` の既定の入力源）へ
+/// `scope_shadow_glyph(` で書き込む**（唯一の入口）。
 ///
-/// - 取り込み（`observer/indicator_glyph.rs`）と記録（`runtime/indicator_glyph_shadow.rs`）は、belief・IME 制御・
-///   観測ストアに入れる型/関数を一切使わない（belief への入口は `ImeStateHub::report_indicator_glyph` の 1 つだけ。ADR-273）。
-/// - ランタイム側が `platform_state` に触れるのは、belief の読み取り（`effective_open()`・`input_mode()`。見本のラベルと一致の記録に使う）と
-///   記録（`journal.record(`）の 3 箇所だけ。
+/// - 取り込み（`observer/indicator_glyph.rs`）と記録（`runtime/indicator_glyph_shadow.rs`）は、`ImeEvent`・
+///   IME 制御・観測ストアに入れる型/関数を一切使わない（旧モデルへの入口は `ImeStateHub::report_indicator_glyph`・
+///   候補 Z への入口は `ImeStateHub::scope_shadow_glyph` の、合わせて 2 つだけ）。
+/// - ランタイム側が `platform_state` に触れるのは、belief の読み取り（`effective_open()`・`input_mode()`・
+///   `focus_kind`。見本のラベルと一致の記録・D4 の判定に使う）と記録（`journal.record(`）、上記 2 つの入口だけ。
 /// - 取り込みワーカーと WinEvent フックの起動は、`[indicator_evidence] glyph` の実効の段階（`min(設定値, ui_max_level())`）が
 ///   `observe` 以上のときだけ（既定は off のオプトイン。ADR-271）。
 /// - 画素は journal・メッセージに載せない（`ProbeOutcome` は大きさ・点数・所要・理由だけ。ADR-261 決定 7）。
@@ -8467,13 +8473,14 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
         }
     }
 
-    // ランタイム側の platform_state への接触は、belief の読み取り（ラベルの作成・字形由来かの判定・フォーカスの世代）、
-    // 記録の 1 つ、記録だけの試算（`preview_indicator_glyph(`）、フォーカスの同一性（`focus_fence()` 1 箇所）、belief への入口（ADR-273。
-    // `report_indicator_glyph(` の 1 つだけ。判断・柵・記録は `ImeStateHub` 側）の 7 箇所だけ。
+    // ランタイム側の platform_state への接触は、belief の読み取り（ラベルの作成・字形由来かの判定・フォーカスの世代・
+    // D4 のテキストの欄か）、記録の 1 つ、記録だけの試算（`preview_indicator_glyph(`）、フォーカスの同一性
+    // （`focus_fence()` 1 箇所）、belief への入口 2 つ（旧モデル向け ADR-273 `report_indicator_glyph(`・候補 Z 向け
+    // ADR-283 G2 `scope_shadow_glyph(`。判断・柵・記録はどちらも `ImeStateHub`/核側）の 9 箇所だけ。
     assert_eq!(
         runtime.matches("platform_state").count(),
-        7,
-        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()・belief_is_decided_by_glyph(・focus_fence()（読み取り）、preview_indicator_glyph(（記録だけの試算）、journal.record(（記録）、report_indicator_glyph(（入口）の 7 箇所だけ"
+        9,
+        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()・belief_is_decided_by_glyph(・focus_fence()・focus_kind（読み取り）、preview_indicator_glyph(（記録だけの試算）、journal.record(（記録）、report_indicator_glyph(・scope_shadow_glyph(（入口の 2 つ）の 9 箇所だけ"
     );
     assert!(runtime.contains("platform_state.ime.effective_open()"));
     assert!(runtime.contains("platform_state.ime.input_mode()"));
@@ -8488,7 +8495,19 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
             .matches("platform_state.ime.report_indicator_glyph(")
             .count(),
         1,
-        "字形の belief への入口は ImeStateHub::report_indicator_glyph の 1 つだけ"
+        "字形の旧モデルの belief への入口は ImeStateHub::report_indicator_glyph の 1 つだけ"
+    );
+    // ADR-283 G2: 字形を候補 Z へ渡す唯一の入口（D4 のテキストの欄かは `platform_state.focus.focus_kind` で読む）。
+    assert_eq!(
+        runtime
+            .matches("platform_state.ime.scope_shadow_glyph(")
+            .count(),
+        1,
+        "字形の候補 Z への入口は ImeStateHub::scope_shadow_glyph の 1 つだけ"
+    );
+    assert_eq!(
+        runtime.matches("platform_state.focus.focus_kind").count(),
+        1
     );
     assert!(runtime.contains(
         "platform_state.ime.journal.record(crate::journal::JournalEntry::IndicatorGlyph{record})"
