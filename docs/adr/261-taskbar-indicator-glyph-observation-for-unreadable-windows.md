@@ -238,7 +238,9 @@ Windows のタスクバーは入力インジケーター(「あ」/「A」など
   (`capture_via_print_window`)へ替える。失敗したら(窓が見つからない・`PrintWindow` が `false` を返す・
   切り出した結果の RGB が全ゼロ)既存の `BitBlt` 経路(`capture_bgra_screen`)へフォールバックする。
   呼び出し元(`capture_gray`・`DumpSink::dump`)の変更は無い(`capture_bgra` の呼び出し規約は変わらない)。
-  どちらの経路を使ったかは `tracing::debug!` に残す(観測からの切り分け用)。
+  どちらの経路を使ったかは tracing に残す(成功時は `debug!`、フォールバック発生時は既定の実行時ログ
+  フィルタ〔info、`app/bootstrap.rs`〕でも残るよう `info!` にする。不具合報告の `app_log_excerpt_gz` から
+  この切り替わりを追跡できる)。
 - **効果**: `BitBlt`(画面 DC から直接読む)とは異なる経路であり、決定7が懸念する EDR の行動検出への
   当たり方が変わる可能性はあるが、**上がるか下がるかも分からない**(Opus レビューで指摘: 他プロセスの窓への
   `PrintWindow` は RAT・インフォスティーラーが使う画面取得手法としても EDR の監視対象であり、`BitBlt` より
