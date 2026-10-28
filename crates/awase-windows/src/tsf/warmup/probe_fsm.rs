@@ -133,6 +133,11 @@ pub(crate) enum ProbeAction {
         idx: u16,
         last_idx: u16,
     },
+    /// ADR-285: Mozc の cold の最初の 1 キーの確認ができたあとの、残りのローマ字の送信。
+    ///
+    /// `Transmit` と違い、Mozc の確認を張り直さない（最初の 1 キーで入力中の文字ができたので、残りは確認の対象外）。
+    /// 確認が結論を出せずに終わった場合（判断しない）にも、残りは必ず送る。
+    TransmitRest { romaji: String },
     /// `RAW_TSF_LITERAL` を設定し、composition を `RawTsfLiteralRecovery` で cold マークする。
     RawTsfLiteralRecovery {
         cold_seq: Generation,

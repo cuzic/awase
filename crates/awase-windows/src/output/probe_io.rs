@@ -118,6 +118,7 @@ impl ProbeIo for Output {
             thread_id,
             process_id,
             key_seq_before: before.key_seq,
+            rest: String::new(),
         })
     }
 
@@ -379,6 +380,44 @@ struct RawLiteralPlan {
     rest: String,
 }
 
+/// ADR-285: Mozc の確認を張る送信は、最初の 1 キーだけ送り、残りを確認の対象に持たせる(per-VK)。
+///
+/// リテラルなら素通りしているのは最初の 1 キーだけなので、Backspace は 1 回に決まる。送るローマ字の長さ(バイト数 =
+/// 文字数、英小文字のみ)を返す。確認を張らない、または分けられない(1 文字)ときは `None`(全体を送る)。
+fn split_for_mozc_check(romaji: &str, target: Option<&mut MozcComposeTarget>) -> Option<usize> {
+    let target = target?;
+    let (first, rest) = crate::state::mozc_shm::split_first_key(romaji)?;
+    target.romaji = first.to_string();
+    target.rest = rest.to_string();
+    Some(first.len())
+}
+
+/// `Transmit` の送信。Mozc の確認を張るなら最初の 1 キーだけ、そうでなければ全体を送る(ADR-285)。
+fn transmit_first_or_whole<I: ProbeIo>(
+    io: &I,
+    romaji: &str,
+    chars: &[(VkCode, bool)],
+    target: Option<&mut MozcComposeTarget>,
+) {
+    match split_for_mozc_check(romaji, target) {
+        Some(n) => io.transmit_chrome(&romaji[..n], &chars[..n]),
+        None => io.transmit_chrome(romaji, chars),
+    }
+}
+
+/// `TransmitRest` の送信(ADR-285)。確認は張り直さない。段を終える理由を返す。
+fn transmit_rest<I: ProbeIo>(io: &I, romaji: &str) -> StageEndReason {
+    let chars: VkSequence = romaji
+        .chars()
+        .filter_map(crate::output::resolve_ascii_to_vk)
+        .collect();
+    if chars.is_empty() {
+        return StageEndReason::NoResolvableVk;
+    }
+    io.transmit_chrome(romaji, &chars);
+    StageEndReason::ProbeDone
+}
+
 /// 疑いが出た VK(`failed_idx`、0 始まり)より後ろの、まだ送っていないローマ字を返す。
 fn romaji_after(romaji: &str, failed_idx: usize) -> String {
     romaji
@@ -465,9 +504,10 @@ where
                     // ADR-270: Mozc の最初の送信の後に、入力中の文字ができたかを確かめる。
                     // まだ入力中の文字が無いことを確かめるため、送信の直前に対象を決める。
                     // (Tsf 注入経路の撤去〈2026-10-22〉までは Tsf の送信だけがこれを呼んでいた。)
-                    let mozc_check = io.mozc_compose_precheck(&romaji, cold_seq);
+                    let mut mozc_check = io.mozc_compose_precheck(&romaji, cold_seq);
                     // plan.needs_literal は tsf_probe_coro_body が env.gji_active で確定済み。
-                    io.transmit_chrome(&romaji, &chars);
+                    // ADR-285: Mozc の確認を張るときは最初の 1 キーだけを送る(per-VK)。残りは確認の FSM が送る。
+                    transmit_first_or_whole(io, &romaji, &chars, mozc_check.as_mut());
                     // 注入の記録は io.transmit_chrome 自身が note_stage_injection で行う。
                     // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
                     if !plan.needs_literal {
@@ -483,6 +523,11 @@ where
                         io.request_mozc_compose_check(target);
                     }
                     break 'stage Some(StageEndReason::ProbeDone);
+                }
+
+                ProbeAction::TransmitRest { romaji } => {
+                    // ADR-285: 最初の 1 キーの確認のあとの残り。確認は張り直さない。
+                    break 'stage Some(transmit_rest(io, &romaji));
                 }
 
                 ProbeAction::TransmitSingleVk {
@@ -633,6 +678,10 @@ mod tests {
         mozc_target: Option<MozcComposeTarget>,
         /// precheck・送信・request の呼び出し順(ADR-270 の配線の固定用)。
         calls: std::cell::RefCell<Vec<&'static str>>,
+        /// `transmit_chrome` に渡された romaji(送った順)。
+        transmitted: std::cell::RefCell<Vec<String>>,
+        /// `request_mozc_compose_check` に渡された対象。
+        requested: std::cell::RefCell<Option<MozcComposeTarget>>,
     }
 
     impl Default for FakeProbeIo {
@@ -648,13 +697,16 @@ mod tests {
                 raw_literal_args: std::cell::RefCell::new(None),
                 mozc_target: None,
                 calls: std::cell::RefCell::new(Vec::new()),
+                transmitted: std::cell::RefCell::new(Vec::new()),
+                requested: std::cell::RefCell::new(None),
             }
         }
     }
 
     impl ProbeIo for FakeProbeIo {
-        fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
+        fn transmit_chrome(&self, romaji: &str, _chars: &[(VkCode, bool)]) {
             self.transmit_chrome_called.set(true);
+            self.transmitted.borrow_mut().push(romaji.to_string());
             self.calls.borrow_mut().push("transmit");
         }
         fn mozc_compose_precheck(
@@ -665,7 +717,8 @@ mod tests {
             self.calls.borrow_mut().push("precheck");
             self.mozc_target.clone()
         }
-        fn request_mozc_compose_check(&self, _target: MozcComposeTarget) {
+        fn request_mozc_compose_check(&self, target: MozcComposeTarget) {
+            *self.requested.borrow_mut() = Some(target);
             self.calls.borrow_mut().push("request");
         }
         fn send_single_chrome_vk(&self, _vk: VkCode, _needs_shift: bool) {
@@ -762,6 +815,7 @@ mod tests {
             thread_id: 1,
             process_id: 2,
             key_seq_before: 0,
+            rest: String::new(),
         }
     }
 
@@ -787,6 +841,60 @@ mod tests {
         let result = dispatch_for_test(&mut machine, transmit("wo"), &io);
         assert!(result.is_done());
         assert_eq!(*io.calls.borrow(), ["precheck", "transmit", "request"]);
+    }
+
+    /// ADR-285: Mozc の確認を張るときは、最初の 1 キーだけを送り、残りは確認の対象に持たせる(per-VK)。
+    #[test]
+    fn mozc_check_sends_only_the_first_key_and_keeps_the_rest() {
+        let io = FakeProbeIo {
+            mozc_target: Some(mozc_target()),
+            ..Default::default()
+        };
+        let mut machine = make_chrome_machine();
+        let result = dispatch_for_test(&mut machine, transmit("ko"), &io);
+        assert!(result.is_done());
+        assert_eq!(*io.transmitted.borrow(), ["k"]);
+        let requested = io.requested.borrow();
+        let target = requested.as_ref().expect("確認が張られる");
+        assert_eq!((target.romaji.as_str(), target.rest.as_str()), ("k", "o"));
+    }
+
+    /// 1 文字のローマ字は分けない。確認を張らないときは全体を一度に送る(従来どおり)。
+    #[test]
+    fn single_char_romaji_and_no_check_are_sent_whole() {
+        let io = FakeProbeIo {
+            mozc_target: Some(mozc_target()),
+            ..Default::default()
+        };
+        let mut machine = make_chrome_machine();
+        let _ = dispatch_for_test(&mut machine, transmit("a"), &io);
+        assert_eq!(*io.transmitted.borrow(), ["a"]);
+
+        let io = FakeProbeIo::default();
+        let mut machine = make_chrome_machine();
+        let _ = dispatch_for_test(&mut machine, transmit("ko"), &io);
+        assert_eq!(*io.transmitted.borrow(), ["ko"]);
+        assert!(io.requested.borrow().is_none());
+    }
+
+    /// 残りの送信は確認を張り直さない(precheck を呼ばない)。
+    #[test]
+    fn transmit_rest_sends_without_a_new_check() {
+        let io = FakeProbeIo {
+            mozc_target: Some(mozc_target()),
+            ..Default::default()
+        };
+        let mut machine = make_chrome_machine();
+        let result = dispatch_for_test(
+            &mut machine,
+            vec![ProbeAction::TransmitRest {
+                romaji: "o".to_string(),
+            }],
+            &io,
+        );
+        assert!(result.is_done());
+        assert_eq!(*io.transmitted.borrow(), ["o"]);
+        assert_eq!(*io.calls.borrow(), ["transmit"]);
     }
 
     /// precheck が対象を返さない(Mozc 系でない・窓が対象外など)ときは request しない。

@@ -291,6 +291,7 @@
 | [282](282-per-scope-latched-ime-belief-zero-base.md) | IME の開閉と Engine の活性の belief: 小さな修正(局所修正)と、保持単位ごとに主張をラッチするゼロベース案を同じオラクルで比べて決める(書き込みの根拠は belief から分ける) | Z 採用(既定、2026-10-27、#893)。旧へは belief_v2 = false。判定は §14.6、実機は未確認 |
 | [283](283-glyph-evidence-in-scope-belief.md) | タスクバーの入力インジケーターの字形を、採用した belief(候補 Z)の証拠に加える: いつ読み、いつまで信じるか | 所有者の決定(2026-10-27、U-G1・U-G3・U-G5・U-G6)。G1(核・オラクル)を実施中 |
 | [284](284-mozc-partial-literal-recovery.md) | Mozc の cold 最初の送信で先頭だけ素通りした部分リテラルを検出して回収する(key_seq の進みの読み直し + Escape + Backspace + 再送) | 起草・実装済み(2026-10-28)、実機未確認 |
+| [285](285-mozc-first-key-per-vk-and-wider-check-windows.md) | Mozc の cold の最初の送信を最初の 1 キーと残りに分け(per-VK)、確認を Chrome 系と空以外のすべての窓に張る | 起草・実装(2026-10-28)、実機未確認 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

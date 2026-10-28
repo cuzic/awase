@@ -17,6 +17,11 @@
 //!   `Done` だけ。サーバーが応答できないとき、または対象のスレッドが IME の同期呼び出しなどで止まっているときは、キーが
 //!   握りつぶされた・まだ処理されていない可能性があり、Backspace で直前の文字を消すおそれがあるので消さない。
 //!
+//! **per-VK（ADR-285）**: 張るときの最初の送信は、ローマ字の**最初の 1 キーだけ**（残りは `MozcComposeTarget::rest`）。
+//! 確認できたら（判断しない場合も）`TransmitRest` で残りを送る。リテラルなら素通りしているのは最初の 1 キーだけなので
+//! Backspace は 1 回で、全体を送り直す。ADR-284 の `key_seq` による部分リテラルの検出は、最初の 1 キーを確かめたあとの
+//! 残りには起きないはずなので安全網として残す（実機で効かなければ撤去する）。
+//!
 //! この FSM が張られている間（`pending_tsf`）、後続のキーは保留される（`defer_vks_if_probe_or_recovery_in_flight`）。
 //! 消す文字数を「送ったローマ字の文字数」と決められるのは、確認の対象を最初の 1 回の送信だけにして、その間に別の
 //! キーが文書に出ないから。待ちは、正常なときは最初の打鍵から約 0.06 秒以内（実測、ADR-270）。
@@ -38,13 +43,23 @@ use crate::tsf::warmup::tickable_fsm::TickableFsm;
 #[derive(Debug, Clone)]
 pub(crate) struct MozcComposeTarget {
     pub(crate) cold_seq: Generation,
+    /// 実際に送ったローマ字。最初の 1 キーだけ送ったとき（ADR-285）はその 1 文字、そうでなければ全体。
     pub(crate) romaji: String,
+    /// 最初の 1 キーだけ送ったときの、まだ送っていない残り（空なら全体を送った）。確認が終わったら `TransmitRest` で送る。
+    pub(crate) rest: String,
     /// 送った先のフォーカスの窓（hwnd のアドレス）。止まっていないかの確認に使う。
     pub(crate) hwnd_addr: usize,
     pub(crate) thread_id: u32,
     pub(crate) process_id: u32,
     /// 送信の直前の `key_seq`（ログ用。リテラルと判断した件で、TIP がキーを見たかを後から区別する）。
     pub(crate) key_seq_before: u32,
+}
+
+impl MozcComposeTarget {
+    /// 再送するローマ字の全体（送った分 + 残り）。リテラルの回収は、送った分だけ Backspace して全体を送り直す。
+    fn full_romaji(&self) -> String {
+        format!("{}{}", self.romaji, self.rest)
+    }
 }
 
 pub(crate) struct MozcComposeCheckFsm {
@@ -120,7 +135,7 @@ impl MozcComposeCheckFsm {
                 ProbeAction::RawTsfLiteralRecovery {
                     cold_seq,
                     backs: compose_literal_backs(&self.target.romaji),
-                    romaji: self.target.romaji.clone(),
+                    romaji: self.target.full_romaji(),
                     escape_composition: false,
                     facts: facts(LiteralVerdict::SuspectedLiteral),
                 },
@@ -173,7 +188,7 @@ impl MozcComposeCheckFsm {
                 ProbeAction::RawTsfLiteralRecovery {
                     cold_seq,
                     backs: missing,
-                    romaji: self.target.romaji.clone(),
+                    romaji: self.target.full_romaji(),
                     escape_composition: true,
                     facts: facts_at(
                         LiteralVerdict::SuspectedLiteral,
@@ -273,8 +288,42 @@ fn facts_at(verdict: LiteralVerdict, idx: u16) -> LiteralDetectFacts {
     }
 }
 
+impl MozcComposeCheckFsm {
+    /// 段を終える action（`Done`）を、残りの送信（`TransmitRest`）に置き換える（ADR-285）。
+    ///
+    /// 最初の 1 キーだけ送ったとき、確認が「確認できた」でも「判断しない」でも、残りは必ず送る。リテラルの回収
+    /// （`RawTsfLiteralRecovery`）のときは、回収が全体を送り直すので、残りは送らない（二重にしない）。
+    /// まだ待つ（`Done` が無い）ときは何もしない。
+    fn attach_rest(&self, mut actions: Vec<ProbeAction>) -> Vec<ProbeAction> {
+        if self.target.rest.is_empty()
+            || actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. }))
+        {
+            return actions;
+        }
+        if matches!(actions.last(), Some(ProbeAction::Done)) {
+            actions.pop();
+            actions.push(ProbeAction::TransmitRest {
+                romaji: self.target.rest.clone(),
+            });
+        }
+        actions
+    }
+}
+
 impl TickableFsm for MozcComposeCheckFsm {
     fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
+        self.tick_inner(env)
+    }
+
+    fn cold_seq_hint(&self) -> Generation {
+        self.target.cold_seq
+    }
+}
+
+impl MozcComposeCheckFsm {
+    fn tick_inner(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         let now_ms = crate::clock::current_tick_ms();
         let elapsed_ms = now_ms.saturating_sub(self.sent_ms);
         // 宛先の窓が変わったら、確認も回収もやめる（変わった窓へ Backspace を送らない）。
@@ -283,11 +332,13 @@ impl TickableFsm for MozcComposeCheckFsm {
                 "[mozc-compose] cold={} skipped after {elapsed_ms}ms: target window changed",
                 self.target.cold_seq.value()
             );
+            // 残りは送らない: 変わった窓へ文字を送らない（最初の 1 キーは元の窓に入っている）。
             return vec![ProbeAction::Done];
         }
         let reading = crate::tsf::read_mozc_compose(self.target.thread_id, self.target.process_id);
         if self.settling {
-            return self.tick_settled(now_ms, reading);
+            let actions = self.tick_settled(now_ms, reading);
+            return self.attach_rest(actions);
         }
         let (verdict, mut actions) = self.step(now_ms, reading);
         let (key_seq, composition_key_seq) = match reading {
@@ -362,11 +413,7 @@ impl TickableFsm for MozcComposeCheckFsm {
                 );
             }
         }
-        actions
-    }
-
-    fn cold_seq_hint(&self) -> Generation {
-        self.target.cold_seq
+        self.attach_rest(actions)
     }
 }
 
@@ -384,6 +431,7 @@ mod tests {
                 thread_id: 1,
                 process_id: 2,
                 key_seq_before: 0,
+                rest: String::new(),
             },
             origin: None,
             sent_ms,
@@ -417,6 +465,73 @@ mod tests {
             key_seq,
             composition_key_seq: key_seq,
         })
+    }
+
+    fn fsm_with_rest(rest: &str) -> MozcComposeCheckFsm {
+        let mut f = fsm(1_000);
+        f.target.romaji = "k".to_string();
+        f.target.rest = rest.to_string();
+        f
+    }
+
+    /// ADR-285: 最初の 1 キーだけ送ったとき、確認できても判断しなくても、`Done` は残りの送信に変わる。
+    #[test]
+    fn attach_rest_turns_done_into_transmit_rest() {
+        let f = fsm_with_rest("o");
+        for before in [
+            vec![
+                ProbeAction::CompositionConfirmed {
+                    cold_seq: Generation::INITIAL,
+                    mark_literal_session: false,
+                    facts: facts(LiteralVerdict::CompositionConfirmed),
+                },
+                ProbeAction::Done,
+            ],
+            vec![ProbeAction::Done],
+        ] {
+            let after = f.attach_rest(before);
+            assert!(
+                matches!(after.last(), Some(ProbeAction::TransmitRest { romaji }) if romaji == "o"),
+                "{after:?}"
+            );
+            assert!(!after.iter().any(|a| matches!(a, ProbeAction::Done)));
+        }
+    }
+
+    /// 回収（`RawTsfLiteralRecovery`）は全体を送り直すので、残りは送らない。まだ待つ間（`Done` なし）も何もしない。
+    #[test]
+    fn attach_rest_leaves_recovery_and_pending_alone() {
+        let f = fsm_with_rest("o");
+        assert!(f.attach_rest(Vec::new()).is_empty());
+        let (_, actions) = f.step(1_300, block(0, true));
+        let after = f.attach_rest(actions);
+        assert!(matches!(
+            after.as_slice(),
+            [ProbeAction::RawTsfLiteralRecovery { .. }, ProbeAction::Done]
+        ));
+    }
+
+    /// 最初の 1 キー（`k`）がリテラルなら、素通りは 1 文字: Backspace ×1 + 全体（`ko`）の再送。
+    #[test]
+    fn literal_of_the_first_key_backs_once_and_resends_the_whole_romaji() {
+        let f = fsm_with_rest("o");
+        let (verdict, actions) = f.step(1_300, block(0, true));
+        assert_eq!(verdict, ComposeVerdict::Literal);
+        match actions.as_slice() {
+            [ProbeAction::RawTsfLiteralRecovery { backs, romaji, .. }, ProbeAction::Done] => {
+                assert_eq!(*backs, 1);
+                assert_eq!(romaji, "ko");
+            }
+            other => panic!("unexpected actions: {other:?}"),
+        }
+    }
+
+    /// 残りが無い（全体を送った）ときは何も変えない。
+    #[test]
+    fn attach_rest_is_a_no_op_without_a_rest() {
+        let f = fsm(1_000);
+        let after = f.attach_rest(vec![ProbeAction::Done]);
+        assert!(matches!(after.as_slice(), [ProbeAction::Done]));
     }
 
     #[test]

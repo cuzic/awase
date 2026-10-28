@@ -683,6 +683,19 @@ pub fn compose_literal_backs(romaji: &str) -> usize {
     romaji.chars().count()
 }
 
+/// cold の最初の送信を「最初の 1 キー」と「残り」に分ける（ADR-285、per-VK 化）。
+///
+/// 2 文字以上の英小文字だけのローマ字（`should_check_compose` の対象と同じ条件）のときだけ `Some((最初の 1 文字, 残り))`。
+/// 最初の 1 キーだけを送って入力中の文字ができたかを確かめ、できてから残りを送る。リテラルなら素通りしているのは
+/// その 1 キーだけなので、Backspace は 1 回に決まる（バッチ送信では、どの文字が素通りしたかを数える必要があった）。
+#[must_use]
+pub fn split_first_key(romaji: &str) -> Option<(&str, &str)> {
+    if romaji.len() < 2 || !romaji.chars().all(|c| c.is_ascii_lowercase()) {
+        return None;
+    }
+    Some(romaji.split_at(1))
+}
+
 /// 入力中の文字ができたあと、`key_seq` の進みが送った文字数に揃ったか（ADR-284、BUG-225）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettleVerdict {
@@ -1438,5 +1451,15 @@ mod imm_vs_shm_tests {
                 shm_expired: true,
             }
         );
+    }
+
+    #[test]
+    fn split_first_key_splits_only_multi_char_lowercase_romaji() {
+        assert_eq!(split_first_key("ko"), Some(("k", "o")));
+        assert_eq!(split_first_key("ltu"), Some(("l", "tu")));
+        assert_eq!(split_first_key("a"), None);
+        assert_eq!(split_first_key(""), None);
+        assert_eq!(split_first_key("K0"), None);
+        assert_eq!(split_first_key("k."), None);
     }
 }

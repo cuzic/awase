@@ -66,23 +66,29 @@ pub fn is_windows_terminal_window(class_name: &str) -> bool {
     class_name == "CASCADIA_HOSTING_WINDOW_CLASS"
 }
 
-/// ADR-270 の確認(Mozc の最初の送信の後に入力中の文字ができたか。0.3 秒で判断して、できていなければ
-/// Backspace で消して送り直す)を張ってよい前景窓のクラスか。
+/// ADR-270 の確認(Mozc の最初の送信の後に、入力中の文字ができたか。できていなければ Backspace で消して送り直す)を
+/// 張ってよい前景窓のクラスか。
 ///
-/// 旧 Tsf 注入モードの既定の対象(`force_tsf` の Windows Terminal・WezTerm)だけに限る。確認は旧来この窓でしか
-/// 張られず、期限 0.3 秒(`MOZC_COMPOSE_CHECK_MS`、実測は Windows Terminal の 1 台だけ)の根拠もこの窓にしか無い。
-/// Chrome は TSF composition context の再初期化に ~326ms かかる実測(`79134f5`)があり、期限を越えて遅れて
-/// できた入力中の文字を Backspace が消し、確定済みの文字まで消しうる(PR #809 レビュー M3)。広げるときは、
-/// その窓で `[mozc-compose] ... confirmed after Nms` の分布を取ってからにする。
+/// **Chrome 系(`Chrome_WidgetWin_1`・`Chrome_RenderWidgetHostHWND`)と空のクラスだけを除き、それ以外はすべて張る**
+/// (ADR-285、BUG-226)。以前は Windows Terminal・WezTerm の許可リストだったが、測っていない窓を既定で外す形だったため、
+/// LINE(`Qt663QWindowIcon`)で cold の最初の `ko` の `k` が素通りして `kおちら` になっても、確認も ADR-284 の回収も
+/// 張られなかった(2026-10-28 16:41 JST、dragonflyg4)。外す根拠は実測のあるものだけにする。
+///
+/// Chrome を除く理由: TSF composition context の再初期化に ~326ms かかる実測(`79134f5`)があり、確認の期限
+/// (`MOZC_COMPOSE_CHECK_MS`、300ms)を越えて遅れてできた入力中の文字を、誤判定の Backspace が消しうる
+/// (PR #809 レビュー M3)。ADR-285 の per-VK 化で消す文字は最初の 1 キーだけになったが、Chrome では誤判定自体が
+/// 起きうるので、`confirmed after Nms` の分布を取るまで外したままにする。
+/// 他の窓で除く必要が見つかったら、実測の根拠と一緒にここへ足す。
 #[must_use]
 pub fn is_mozc_compose_check_window(foreground_class: &str) -> bool {
-    matches!(
-        foreground_class,
-        "CASCADIA_HOSTING_WINDOW_CLASS" | "org.wezfurlong.wezterm"
-    )
+    !foreground_class.is_empty()
+        && !matches!(
+            foreground_class,
+            "Chrome_WidgetWin_1" | "Chrome_RenderWidgetHostHWND"
+        )
 }
 
-/// ADR-270 の確認を張るか(Mozc 系 × WT/WezTerm の窓)。
+/// ADR-270 の確認を張るか(Mozc 系 × Chrome 系と空以外の窓)。
 ///
 /// `mozc_compose_precheck` の前段と、物理 F2 で warm でも cold にするか(`physical_f2_marks_cold` の
 /// 第 2 引数)を、同じ述語で決める(PR #809 再レビュー N1・N2)。
@@ -369,26 +375,25 @@ mod tests {
 
     use super::*;
 
-    /// ADR-270 の確認は旧 `force_tsf` の既定の窓(Windows Terminal・WezTerm)だけ(PR #809 レビュー M3)。
+    /// ADR-270 の確認は Chrome 系と空のクラス以外のすべての窓に張る(ADR-285、BUG-226)。
     #[test]
-    fn mozc_compose_check_window_is_limited_to_old_force_tsf_defaults() {
-        assert!(is_mozc_compose_check_window(
-            "CASCADIA_HOSTING_WINDOW_CLASS"
-        ));
-        assert!(is_mozc_compose_check_window("org.wezfurlong.wezterm"));
-        for other in [
-            "Chrome_WidgetWin_1",
-            "Chrome_RenderWidgetHostHWND",
+    fn mozc_compose_check_window_excludes_only_chrome_and_empty() {
+        for applies in [
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "org.wezfurlong.wezterm",
+            "Qt663QWindowIcon",
             "OpusApp",
             "Notepad",
             "Windows.UI.Input.InputSite.WindowClass",
-            "",
         ] {
+            assert!(is_mozc_compose_check_window(applies), "{applies}");
+        }
+        for other in ["Chrome_WidgetWin_1", "Chrome_RenderWidgetHostHWND", ""] {
             assert!(!is_mozc_compose_check_window(other), "{other}");
         }
     }
 
-    /// Mozc × WT/WezTerm だけ真。GJI(証拠あり)や他の窓は偽(PR #809 再レビュー N1・N2)。
+    /// Mozc × Chrome 系と空以外の窓だけ真。GJI(証拠あり)や他の窓は偽(PR #809 再レビュー N1・N2)。
     #[test]
     fn mozc_compose_check_applies_table() {
         assert!(mozc_compose_check_applies(
@@ -396,8 +401,11 @@ mod tests {
             "CASCADIA_HOSTING_WINDOW_CLASS"
         ));
         assert!(mozc_compose_check_applies(true, "org.wezfurlong.wezterm"));
+        assert!(mozc_compose_check_applies(true, "Qt663QWindowIcon"));
+        assert!(!mozc_compose_check_applies(false, "Qt663QWindowIcon"));
         assert!(!mozc_compose_check_applies(true, "Chrome_WidgetWin_1"));
-        assert!(!mozc_compose_check_applies(true, "OpusApp"));
+        assert!(mozc_compose_check_applies(true, "OpusApp"));
+        assert!(!mozc_compose_check_applies(true, ""));
         assert!(!mozc_compose_check_applies(
             false,
             "CASCADIA_HOSTING_WINDOW_CLASS"
