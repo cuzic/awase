@@ -28,6 +28,7 @@ use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
     SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
 };
+use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
@@ -36,7 +37,8 @@ use windows::Win32::UI::Accessibility::{
     HWINEVENTHOOK,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetForegroundWindow, GetWindowRect, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
+    FindWindowW, GetForegroundWindow, GetWindowRect, EVENT_SYSTEM_FOREGROUND, PW_RENDERFULLCONTENT,
+    WINEVENT_OUTOFCONTEXT,
 };
 
 use crate::state::indicator_glyph::{
@@ -117,12 +119,17 @@ fn elapsed_ms_u16(since: Instant) -> u16 {
     u16::try_from(since.elapsed().as_millis()).unwrap_or(u16::MAX)
 }
 
-/// 画面の矩形 `(left, top, right, bottom)`（物理ピクセル）を GDI で取り込み、上位から `0xAARRGGBB` の画素列として返す
+/// 画面の矩形 `(left, top, right, bottom)`（物理ピクセル）を取り込み、上位から `0xAARRGGBB` の画素列として返す
 /// （幅・高さ・画素。`max_w`/`max_h` を超える矩形は取り込まない）。
+///
+/// ADR-261 決定8: まず [`capture_via_print_window`]（`Shell_TrayWnd` 自身に `PrintWindow` で描かせる、
+/// 画面キャプチャではない経路）を試す。実測（ベースライン・ダークテーマ・IME状態の切り替え前後の4軸、
+/// GJI/MS-IME 双方）では `BitBlt`(画面キャプチャ) と画素完全一致したが、未測定の環境（DPI 違い・将来の
+/// Windows バージョン等）での失敗に備え、`None` が返ったら既存の画面キャプチャ（[`capture_bgra_screen`]）へ
+/// フォールバックする。
 ///
 /// # Safety
 /// GDI の呼び出しだけ。ハンドルはこの関数の中で作って必ず解放する。
-#[allow(clippy::many_single_char_names)]
 unsafe fn capture_bgra(
     rect: (i32, i32, i32, i32),
     max_w: i32,
@@ -131,6 +138,139 @@ unsafe fn capture_bgra(
     let (l, t, r, b) = rect;
     let (w, h) = (r.checked_sub(l)?, b.checked_sub(t)?);
     if w <= 0 || h <= 0 || w > max_w || h > max_h {
+        return None;
+    }
+    if let Some(out) = capture_via_print_window(rect) {
+        return Some(out);
+    }
+    capture_bgra_screen(rect, w, h)
+}
+
+/// `Shell_TrayWnd` を `PrintWindow(PW_RENDERFULLCONTENT)` で描かせ、`crop`（画面座標、物理ピクセル）を
+/// 切り出す。窓が見つからない・`PrintWindow` が失敗したら `None`（呼び出し側は画面キャプチャへフォールバック
+/// する、ADR-261 決定8）。
+///
+/// # Safety
+/// GDI の呼び出しだけ。ハンドルはこの関数の中で作って必ず解放する。
+#[allow(clippy::many_single_char_names)]
+unsafe fn capture_via_print_window(crop: (i32, i32, i32, i32)) -> Option<(usize, usize, Vec<u32>)> {
+    let tray = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()).ok()?;
+    let mut tray_rect = RECT::default();
+    GetWindowRect(tray, &raw mut tray_rect).ok()?;
+    let (fl, ft, fr, fb) = (
+        tray_rect.left,
+        tray_rect.top,
+        tray_rect.right,
+        tray_rect.bottom,
+    );
+    let (fw, fh) = (fr.checked_sub(fl)?, fb.checked_sub(ft)?);
+    // 2026-10-28 の実測(ADR-261)では Shell_TrayWnd は 1 画面分(最大 8192×2048 程度)を超えない。
+    // 想定外に大きい値が返ったら(マルチモニタの異常系等)取り込まない。
+    if fw <= 0 || fh <= 0 || fw > 8192 || fh > 2048 {
+        return None;
+    }
+    let screen = GetDC(None);
+    if screen.is_invalid() {
+        return None;
+    }
+    let mem = CreateCompatibleDC(Some(screen));
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: u32::try_from(size_of::<BITMAPINFOHEADER>()).unwrap_or(0),
+            biWidth: fw,
+            biHeight: -fh, // top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let dib = CreateDIBSection(
+        Some(mem),
+        &raw const bmi,
+        DIB_RGB_COLORS,
+        &raw mut bits,
+        None,
+        0,
+    );
+    let out = match dib {
+        Ok(bmp) if !bits.is_null() => {
+            let old = SelectObject(mem, bmp.into());
+            let ok = PrintWindow(tray, mem, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT)).as_bool();
+            let out = if ok {
+                let dims = (usize::try_from(fw).ok(), usize::try_from(fh).ok());
+                if let (Some(uw), Some(uh)) = dims {
+                    // SAFETY: `bits` は `CreateDIBSection` が保証する、32 ビット × fw × fh の有効なバッファ。
+                    let px = std::slice::from_raw_parts(bits.cast::<u32>(), uw * uh);
+                    crop_from(px, uw, uh, (fl, ft), crop)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            SelectObject(mem, old);
+            let _ = DeleteObject(bmp.into());
+            out
+        }
+        _ => None,
+    };
+    let _ = DeleteDC(mem);
+    ReleaseDC(None, screen);
+    out
+}
+
+/// `full`(原点 `origin` からの幅 `fw`・高さ `fh` の画素列)から、画面座標の `crop` 矩形を切り出す。
+/// `crop` が `full` の外へ出る部分は `0`(透明黒)で埋める。
+fn crop_from(
+    full: &[u32],
+    fw: usize,
+    fh: usize,
+    origin: (i32, i32),
+    crop: (i32, i32, i32, i32),
+) -> Option<(usize, usize, Vec<u32>)> {
+    let (ox, oy) = origin;
+    let (cl, ct, cr, cb) = crop;
+    let (cw, ch) = (
+        usize::try_from((cr - cl).max(0)).unwrap_or(0),
+        usize::try_from((cb - ct).max(0)).unwrap_or(0),
+    );
+    if cw == 0 || ch == 0 {
+        return None;
+    }
+    let (sx0, sy0) = (
+        usize::try_from((cl - ox).max(0)).unwrap_or(0),
+        usize::try_from((ct - oy).max(0)).unwrap_or(0),
+    );
+    let mut cropped = Vec::with_capacity(cw * ch);
+    for y in 0..ch {
+        for x in 0..cw {
+            let (sx, sy) = (sx0 + x, sy0 + y);
+            cropped.push(if sx < fw && sy < fh {
+                full[sy * fw + sx]
+            } else {
+                0
+            });
+        }
+    }
+    Some((cw, ch, cropped))
+}
+
+/// 画面の矩形 `(left, top, right, bottom)`（物理ピクセル）を `BitBlt` で画面 DC から直接取り込む
+/// ([`capture_via_print_window`] のフォールバック、または `w`/`h` が既知のときの近道)。
+///
+/// # Safety
+/// GDI の呼び出しだけ。ハンドルはこの関数の中で作って必ず解放する。
+#[allow(clippy::many_single_char_names)]
+unsafe fn capture_bgra_screen(
+    rect: (i32, i32, i32, i32),
+    w: i32,
+    h: i32,
+) -> Option<(usize, usize, Vec<u32>)> {
+    let (l, t, ..) = rect;
+    if w <= 0 || h <= 0 {
         return None;
     }
     let screen = GetDC(None);

@@ -216,6 +216,32 @@ Windows のタスクバーは入力インジケーター(「あ」/「A」など
   決定 5 の回数上限、README/設定画面で説明。段階 1 の一致率は、オプトインした利用者・CI・実機(dragonflyg4)からしか集まらないので、**報告者(#623)にオプトインを依頼する**(依頼の手順は段階 1 で決める)。
   D0 で Defender の反応を確かめるが、「Defender で検出されない」は必要条件にすぎず(企業 EDR の行動検出の閾値は別)、オプトインの既定はこの結果に依らず維持する。
 
+### 決定 8: 取り込み経路を `PrintWindow(PW_RENDERFULLCONTENT)` に替える(実装、2026-10-28)
+
+決定5 追補・追補2(本ファイル上部)の実測を受け、所有者判断により実装へ進める。
+
+- **変更**: `observer/indicator_glyph.rs::capture_bgra` の既定経路を、画面 DC からの `BitBlt`
+  (画面キャプチャ)から、`Shell_TrayWnd` 自身に `PrintWindow(PW_RENDERFULLCONTENT)` で描かせる経路
+  (`capture_via_print_window`)へ替える。失敗したら(窓が見つからない・`PrintWindow` が `false` を返す・
+  DPI 違いなど未測定の環境)既存の `BitBlt` 経路(`capture_bgra_screen`)へフォールバックする。
+  呼び出し元(`capture_gray`・`DumpSink::dump`)の変更は無い(`capture_bgra` の呼び出し規約は変わらない)。
+- **根拠**: 測定した4軸(ベースライン・ダークテーマ・タスクバー自動非表示・IME状態の切り替え前後、
+  GJI/MS-IME 双方、windows-latest CI)のうち3軸で画素完全一致(CI run
+  [40644052180](https://github.com/cuzic/awase/actions/runs/40644052180)・
+  [40651532252](https://github.com/cuzic/awase/actions/runs/40651532252))。自動非表示は両手法とも
+  等しく失敗するため差は無い。切り替え前後は地の正解(`GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`)で実際の
+  状態変化を確認した上での一致であり、古い内容のまま固まる様子は無い。
+- **効果**: 「対象窓に描画を依頼する」API であり、`BitBlt`(画面 DC から直接読む)とは異なる経路。
+  決定7が懸念する EDR の行動検出に当たる可能性が多少下がる見込みだが、**実測・検証はしていない**
+  (推測の域。最終的に取り込むのは依然ビットマップであり、モード情報を「データ」として得られるわけではない
+  点は変わらない)。
+- **未測定・既知の限界**:
+  - DPI 違い(windows-latest ランナーの表示環境の制約で測っていない)。
+  - マルチモニタ構成・`Shell_SecondaryTrayWnd`(決定1の対象外、字形検出自体が対象外)。
+  - リモートデスクトップ(RDP)・コンソールセッション0など、`PrintWindow` が DWM 合成を前提にできない環境。
+  - フォールバック自体(既存の `BitBlt` 経路)は従来どおり動作する前提のため、新しい失敗モードは
+    「`PrintWindow` が例外的に失敗する」場合の遅延(2経路分の処理)程度に限られると見込む。
+
 ## 却下案
 
 - **UIA の Name・HelpText・LegacyIAccessible で状態を読む**: Name は「IME が有効か」の 2 値しか運ばない(実測)。状態は運ばないので字形が要る。
