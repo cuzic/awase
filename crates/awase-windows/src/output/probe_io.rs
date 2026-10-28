@@ -380,6 +380,21 @@ struct RawLiteralPlan {
     rest: String,
 }
 
+/// ADR-285: Mozc の確認を張る送信は、最初の 1 キーだけ送り、残りを確認の対象に持たせる(per-VK)。
+///
+/// リテラルなら素通りしているのは最初の 1 キーだけなので、Backspace は 1 回に決まる。送るローマ字の長さ(バイト数 =
+/// 文字数、英小文字のみ)を返す。確認を張らない、または分けられない(1 文字)ときは `None`(全体を送る)。
+fn split_for_mozc_check(
+    romaji: &str,
+    target: Option<&mut crate::tsf::warmup::mozc_compose_check_fsm::MozcComposeTarget>,
+) -> Option<usize> {
+    let target = target?;
+    let (first, rest) = crate::state::mozc_shm::split_first_key(romaji)?;
+    target.romaji = first.to_string();
+    target.rest = rest.to_string();
+    Some(first.len())
+}
+
 /// 疑いが出た VK(`failed_idx`、0 始まり)より後ろの、まだ送っていないローマ字を返す。
 fn romaji_after(romaji: &str, failed_idx: usize) -> String {
     romaji
@@ -467,24 +482,11 @@ where
                     // まだ入力中の文字が無いことを確かめるため、送信の直前に対象を決める。
                     // (Tsf 注入経路の撤去〈2026-10-22〉までは Tsf の送信だけがこれを呼んでいた。)
                     let mut mozc_check = io.mozc_compose_precheck(&romaji, cold_seq);
-                    // ADR-285: Mozc の確認を張るときは、最初の 1 キーだけを送り、入力中の文字ができたと確かめてから残りを
-                    // 送る（per-VK）。リテラルなら素通りしているのは最初の 1 キーだけなので、Backspace は 1 回に決まる。
-                    // 残りは確認の FSM が `TransmitRest` で送る。
-                    let mut first_only = false;
-                    if let Some(target) = mozc_check.as_mut() {
-                        if let Some((first, rest)) =
-                            crate::state::mozc_shm::split_first_key(&romaji)
-                        {
-                            target.romaji = first.to_string();
-                            target.rest = rest.to_string();
-                            first_only = true;
-                        }
-                    }
                     // plan.needs_literal は tsf_probe_coro_body が env.gji_active で確定済み。
-                    if first_only {
-                        io.transmit_chrome(&romaji[..1], &chars[..1]);
-                    } else {
-                        io.transmit_chrome(&romaji, &chars);
+                    // ADR-285: Mozc の確認を張るときは最初の 1 キーだけを送る(per-VK)。残りは確認の FSM が送る。
+                    match split_for_mozc_check(&romaji, mozc_check.as_mut()) {
+                        Some(n) => io.transmit_chrome(&romaji[..n], &chars[..n]),
+                        None => io.transmit_chrome(&romaji, &chars),
                     }
                     // 注入の記録は io.transmit_chrome 自身が note_stage_injection で行う。
                     // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
