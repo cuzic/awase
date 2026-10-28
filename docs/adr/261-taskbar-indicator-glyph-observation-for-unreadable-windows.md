@@ -187,6 +187,39 @@ Windows のタスクバーは入力インジケーター(「あ」/「A」など
   ([tuning-constants](../../.claude/rules/tuning-constants.md))。await をまたぐ失効判定は `FocusGen` で行い、読んだ時点と適用時点でフォーカスが変わっていれば捨てる。
 - 字形が前面スレッドとフォーカススレッドのどちらを映すかは D0-2/D0-10 で決まるまで未確定なので、**段階 1 では「前面窓が対象窓でないとき捨てる」を置かず、両方のスレッド ID を記録する**。捨てる条件は D0-10 の結果で決める(段階 2)。
 
+#### 決定5 追補: `BitBlt`(画面キャプチャ)以外の取り込み経路の有無(2026-10-28 測定)
+
+所有者から「スクリーンショットではない方法で取れないか」との問いを受け、`BitBlt`(画面 DC からの取り込み)以外の
+取り込み経路を検討した。
+
+- **UIA プロパティ・パターンで「データ」として取れる経路は無い**: `Name`/`Value`/`LegacyIAccessibleValue`/
+  `LegacyIAccessibleState`/`LegacyIAccessibleDescription`/`HelpText`/`IsOffscreen` はいずれもモードを運ばない
+  (本追補の前の測定、CI run 40634212172)。インジケーター要素自身は `GetSupportedPatterns` で問い合わせても、
+  状態を運ぶ公開パターン(`TogglePattern` 等)を実装している様子は無い(Name/Value 系が全て固定・空であることから、
+  レガシー互換のために通常は一緒に埋まるはずの値も無いと判断し、個別の `GetCurrentPattern` 呼び出しでの再確認は
+  行わなかった)。
+- **`PrintWindow`(`PW_RENDERFULLCONTENT`)は「窓自身への描画依頼」であり、画面キャプチャとは異なる経路**: インジケーター
+  自身は HWND を持たない UIA 論理要素なので、対象窓は親の `Shell_TrayWnd`(XAML/DirectComposition で描かれる)にした。
+  `spike_printwindow_indicator_probe.rs` で `BitBlt(画面DC)` の基準画像と比較した結果(CI run 40644052180、GJI 導入後の
+  windows-latest):
+
+  | 方式 | 結果 | 基準(`BitBlt`)との一致率 |
+  | --- | --- | --- |
+  | `BitBlt`(既存方式、画面 DC) | 32×48、非空 | (基準) |
+  | `PrintWindow` + `PW_RENDERFULLCONTENT` | 32×48、非空 | **100%(画素完全一致)** |
+  | `PrintWindow`(フラグ無し、`PW_DEFAULT`) | 32×48、**全面空白** | 0% |
+
+  **`PW_RENDERFULLCONTENT` を付けた `PrintWindow` は `BitBlt` と画素単位で同一の結果を返す**(フラグ無しだと
+  DWM 合成窓からは何も取れない)。「対象窓に描画を依頼する」API であり、`BitBlt` のような「画面を直接読む」API とは
+  区別できる可能性がある(Windows の「画面の取り込み」権限確認が出ない点は `BitBlt` と同様で未確認。EDR の見え方の
+  違いは測定していない)。
+- **結論**: 取り込み経路を `BitBlt` → `PrintWindow(PW_RENDERFULLCONTENT)` に替える余地はあるが、**モード情報を
+  「データ」として得られる経路は依然存在しない**(上記1点目の結論は変わらない)。取り込みそのものを画像以外の
+  手段に置き換えることはできず、この追補は「画像の取り方」の選択肢を 1 つ増やしたに留まる。実装の切り替えは
+  所有者判断(本 ADR では決めない)。
+- 使ったスパイク(`crates/awase-windows/examples/spike_printwindow_indicator_probe.rs`、ワークフロー
+  `.github/workflows/printwindow-indicator-probe.yml`)は結果記録後に撤去する(撤去コミット: 本 PR 内)。
+
 ### 決定 6: belief への入れ方 — 段階 1(shadow)と、段階 2 の入口条件
 
 - **段階 1(shadow)**: belief には入れない。journal と不具合報告(ADR-148 型の allowlist: `glyph_probe { env_match, hits, misses, reason 別件数 }`。字形の画像は環境固有で個人情報ではないが、
