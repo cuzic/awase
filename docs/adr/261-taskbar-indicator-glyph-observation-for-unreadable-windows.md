@@ -258,6 +258,10 @@ Windows のタスクバーは入力インジケーター(「あ」/「A」など
   (ground truth の TSF compartment POLL は 3〜52ms)で、ground truth と同じ桁。`SetWinEventHook` 版が 0/6 だったのに対し 6/6。
   ただし `new_value` は常に固定文字列(ツールチップ文)で、**「何かが変わった」ことしか伝えない(どう変わったかは運ばない)**。1回の実変化に対し通知が2回連続で来る(デバウンスが要る)。
   MS-IME 本体側は CI の入力方式設定(TIP の GUID)が適用できておらず未測定(ground truth の POLL も無変化のまま。設定側の不具合、否定的な結果ではない)。
+- **`Name` 以外のプロパティも状態を運ぶか(CI run 40634212172)**: `GetCurrentPropertyValue` で `Value`/`LegacyIAccessibleValue`/`LegacyIAccessibleState`/`LegacyIAccessibleDescription`/
+  `HelpText`/`IsOffscreen` を通知の瞬間にまとめて読んだが、GJI の 6 打鍵・16 回の通知すべてで**完全に同じ値**(`Value`/`LegacyValue`/`LegacyDescription`/`HelpText` は空文字列、
+  `LegacyState=1048576`〈`STATE_SYSTEM_FOCUSABLE` のみの固定フラグ〉、`IsOffscreen=0`)。**UIA が持つ読み取り可能なプロパティのどれにも IME モードは入っていない**(本ADRが字形〈見た目の画像〉を
+  読む方式を採った理由そのものを再確認した形)。UIA のイベント通知は「何かが変わった」の push トリガーとしてのみ使え、内容は引き続き字形読み取り(決定1)に委ねる。
 - **結論**: 決定5の隙を埋める押し込み口として**成立する**。`AddPropertyChangedEventHandler` を「字形を今すぐ再読みしてよい」という push トリガーに使い、
   実際の状態の読み取りは既存の字形読み取りワーカー(本ADR決定1・決定5)に委ねる形が現実的。本番配線(決定6の belief 入り口条件と同じ扱いが必要)は別途判断する。
   検証用のスパイク3本・CI workflow は本追記と同時に削除した(使い捨てブランチ `exp/indicator-namechange-probe`、最終コミットは本追記の git blame 参照、`.claude/rules/one-off-verification-workflows.md`)。MS-IME 本体の再測定は TIP 設定の修正から。
