@@ -11,12 +11,16 @@
 //! 3. ワーカーは専用スレッド（STA）で UI Automation を使い、タスクバーの入力インジケーターの要素を探して矩形を得る。
 //!    **名前が接頭辞に当たる要素が複数あるときの選び方は純粋関数**（`state::indicator_glyph::select_indicator`。実機の発見:
 //!    「あ」のボタンは名前が 1 行、IME 自身のアイコンは複数行）。DPI 対応のプロセスなので矩形は物理ピクセル。
-//! 4. 矩形を GDI で取り込み（`BitBlt`）、グレースケールにして純粋な前処理（`state::indicator_glyph::preprocess`）にかけ、
-//!    結果（大きさ・前景の点数・所要・失敗の理由だけ。**画素は返さない・保存しない**）を `WM_INDICATOR_GLYPH_READ` で返す。
+//! 4. 矩形を取り込み（ADR-261 決定8: 既定は `Shell_TrayWnd` 自身に描かせる `PrintWindow`、失敗したら画面 DC からの
+//!    `BitBlt` へフォールバック。[`capture_bgra`] 参照）、グレースケールにして純粋な前処理（`state::indicator_glyph::preprocess`）
+//!    にかけ、結果（大きさ・前景の点数・所要・失敗の理由だけ。**画素は返さない・保存しない**）を `WM_INDICATOR_GLYPH_READ` で返す。
 //!
 //! 取り込む前に「矩形の中心が `Shell_TrayWnd` 系の窓の上か」は確かめない: 実機（Windows 11・XAML のタスクバー）では
-//! `WindowFromPoint` がタスクバーではなくデスクトップを返した（ADR-261 追記）。覆われている場合は一様・別の画像になるので、
-//! 前処理の `EmptyGlyph`・段階 1 後半の表への照合の `Miss` に倒れる。
+//! `WindowFromPoint` がタスクバーではなくデスクトップを返した（ADR-261 追記）。`BitBlt` フォールバック時、覆われている
+//! 場合は一様・別の画像になるので、前処理の `EmptyGlyph`・段階 1 後半の表への照合の `Miss` に倒れる。
+//! `PrintWindow` 経路では、覆われていても `Shell_TrayWnd` 自身の内容を返す可能性があるため、この「覆われたら Miss」
+//! という前提が成り立たない場合がある。全画面アプリの手前での DWM 側の描画の鮮度（古い内容のまま返るか）は未測定
+//! （ADR-261 決定8 の既知の限界）。
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -123,13 +127,16 @@ fn elapsed_ms_u16(since: Instant) -> u16 {
 /// （幅・高さ・画素。`max_w`/`max_h` を超える矩形は取り込まない）。
 ///
 /// ADR-261 決定8: まず [`capture_via_print_window`]（`Shell_TrayWnd` 自身に `PrintWindow` で描かせる、
-/// 画面キャプチャではない経路）を試す。実測（ベースライン・ダークテーマ・IME状態の切り替え前後の4軸、
-/// GJI/MS-IME 双方）では `BitBlt`(画面キャプチャ) と画素完全一致したが、未測定の環境（DPI 違い・将来の
-/// Windows バージョン等）での失敗に備え、`None` が返ったら既存の画面キャプチャ（[`capture_bgra_screen`]）へ
-/// フォールバックする。
+/// 画面キャプチャではない経路）を試す。実測（ベースライン・ダークテーマ・IME状態の切り替え前後の3軸、
+/// GJI/MS-IME 双方）では `BitBlt`(画面キャプチャ) と画素完全一致したが、未測定の環境（DPI 違い・覆われた
+/// 状態・RDP・将来の Windows バージョン等）では `PrintWindow` が **`TRUE` を返しながら空・古い画素を返す**
+/// 恐れがある（Opus レビューで指摘、2026-10-28）ため、`capture_via_print_window` 側で RGB 全ゼロを検知して
+/// `None` に倒す。それでも検知できない「古い内容のまま」という失敗は未解決（既知の限界、ADR-261 決定8）。
+/// いずれかで `None` が返ったら、既存の画面キャプチャ（[`capture_bgra_screen`]）へフォールバックする。
 ///
 /// # Safety
-/// GDI の呼び出しだけ。ハンドルはこの関数の中で作って必ず解放する。
+/// GDI・UI Automation 以外の Win32 API（`FindWindowW`/`GetWindowRect`/`PrintWindow`）も呼ぶ。ハンドルは
+/// この関数の中で作って必ず解放する。
 unsafe fn capture_bgra(
     rect: (i32, i32, i32, i32),
     max_w: i32,
@@ -141,14 +148,17 @@ unsafe fn capture_bgra(
         return None;
     }
     if let Some(out) = capture_via_print_window(rect) {
+        tracing::debug!("[indicator-glyph] capture_bgra: via PrintWindow");
         return Some(out);
     }
+    tracing::debug!("[indicator-glyph] capture_bgra: PrintWindow 失敗・フォールバック(BitBlt)");
     capture_bgra_screen(rect, w, h)
 }
 
 /// `Shell_TrayWnd` を `PrintWindow(PW_RENDERFULLCONTENT)` で描かせ、`crop`（画面座標、物理ピクセル）を
-/// 切り出す。窓が見つからない・`PrintWindow` が失敗したら `None`（呼び出し側は画面キャプチャへフォールバック
-/// する、ADR-261 決定8）。
+/// 切り出す。窓が見つからない・`PrintWindow` が失敗した・切り出した結果の RGB が全ゼロ（`PrintWindow` が
+/// `TRUE` を返しながら実際には何も描かなかった、DWM/DComp 側の既知の失敗モード）なら `None`（呼び出し側は
+/// 画面キャプチャへフォールバックする、ADR-261 決定8）。
 ///
 /// # Safety
 /// GDI の呼び出しだけ。ハンドルはこの関数の中で作って必ず解放する。
@@ -164,8 +174,9 @@ unsafe fn capture_via_print_window(crop: (i32, i32, i32, i32)) -> Option<(usize,
         tray_rect.bottom,
     );
     let (fw, fh) = (fr.checked_sub(fl)?, fb.checked_sub(ft)?);
-    // 2026-10-28 の実測(ADR-261)では Shell_TrayWnd は 1 画面分(最大 8192×2048 程度)を超えない。
-    // 想定外に大きい値が返ったら(マルチモニタの異常系等)取り込まない。
+    // 2026-10-28 の実測(CI、1024×48 の解像度 1 通り)では Shell_TrayWnd はこの範囲に収まった。
+    // 8192×2048 はマルチモニタ・縦置きタスクバーも含めた想定上限であり、実測した上限ではない。
+    // これを超えたら(異常系・未対応の構成)取り込まず、画面キャプチャへフォールバックする。
     if fw <= 0 || fh <= 0 || fw > 8192 || fh > 2048 {
         return None;
     }
@@ -204,7 +215,7 @@ unsafe fn capture_via_print_window(crop: (i32, i32, i32, i32)) -> Option<(usize,
                 if let (Some(uw), Some(uh)) = dims {
                     // SAFETY: `bits` は `CreateDIBSection` が保証する、32 ビット × fw × fh の有効なバッファ。
                     let px = std::slice::from_raw_parts(bits.cast::<u32>(), uw * uh);
-                    crop_from(px, uw, uh, (fl, ft), crop)
+                    crop_from(px, uw, uh, (fl, ft), crop).filter(|(_, _, c)| !all_rgb_zero(c))
                 } else {
                     None
                 }
@@ -222,8 +233,15 @@ unsafe fn capture_via_print_window(crop: (i32, i32, i32, i32)) -> Option<(usize,
     out
 }
 
+/// 画素列の RGB（下位24ビット、alpha は見ない）が全てゼロ(真っ黒)か。`PrintWindow` が `TRUE` を返しながら
+/// 実際には何も描かなかった場合の検知用(ADR-261 決定8、Opus レビューで指摘)。
+fn all_rgb_zero(px: &[u32]) -> bool {
+    !px.is_empty() && px.iter().all(|&p| p & 0x00FF_FFFF == 0)
+}
+
 /// `full`(原点 `origin` からの幅 `fw`・高さ `fh` の画素列)から、画面座標の `crop` 矩形を切り出す。
-/// `crop` が `full` の外へ出る部分は `0`(透明黒)で埋める。
+/// `crop` が `full` の外に出る部分(上下左右いずれも)は位置をずらさずに `0`(透明黒)で埋める。`crop` と
+/// `full` の交差が空(矩形が完全に外)なら `None` を返す。
 fn crop_from(
     full: &[u32],
     fw: usize,
@@ -240,26 +258,37 @@ fn crop_from(
     if cw == 0 || ch == 0 {
         return None;
     }
-    let (sx0, sy0) = (
-        usize::try_from((cl - ox).max(0)).unwrap_or(0),
-        usize::try_from((ct - oy).max(0)).unwrap_or(0),
-    );
-    let mut cropped = Vec::with_capacity(cw * ch);
+    let fw_i = i32::try_from(fw).unwrap_or(i32::MAX);
+    let fh_i = i32::try_from(fh).unwrap_or(i32::MAX);
+    // crop(画面座標)と full(origin 起点、0..fw_i × 0..fh_i)の交差が空なら、切り出す画素が1つも無い
+    // (タスクバーの矩形がインジケーター取得後に動いた等)ので None(フォールバックへ)。
+    if cr <= ox || cl >= ox.saturating_add(fw_i) || cb <= oy || ct >= oy.saturating_add(fh_i) {
+        return None;
+    }
+    let mut cropped = vec![0u32; cw * ch];
     for y in 0..ch {
+        let Some(sy) = (ct - oy).checked_add(i32::try_from(y).unwrap_or(0)) else {
+            continue;
+        };
+        if sy < 0 || sy >= fh_i {
+            continue;
+        }
+        let usy = usize::try_from(sy).unwrap_or(0);
         for x in 0..cw {
-            let (sx, sy) = (sx0 + x, sy0 + y);
-            cropped.push(if sx < fw && sy < fh {
-                full[sy * fw + sx]
-            } else {
-                0
-            });
+            let Some(sx) = (cl - ox).checked_add(i32::try_from(x).unwrap_or(0)) else {
+                continue;
+            };
+            if sx < 0 || sx >= fw_i {
+                continue;
+            }
+            cropped[y * cw + x] = full[usy * fw + usize::try_from(sx).unwrap_or(0)];
         }
     }
     Some((cw, ch, cropped))
 }
 
 /// 画面の矩形 `(left, top, right, bottom)`（物理ピクセル）を `BitBlt` で画面 DC から直接取り込む
-/// ([`capture_via_print_window`] のフォールバック、または `w`/`h` が既知のときの近道)。
+/// ([`capture_via_print_window`] のフォールバック)。
 ///
 /// # Safety
 /// GDI の呼び出しだけ。ハンドルはこの関数の中で作って必ず解放する。
@@ -619,4 +648,59 @@ pub fn spawn_indicator_glyph_worker() -> (
         }
     });
     (worker, tx, rx_feature)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{all_rgb_zero, crop_from};
+
+    /// `fw`×`fh` の盤目(値 = y*fw+x+1、0 は使わない)を作る。
+    fn checker(fw: usize, fh: usize) -> Vec<u32> {
+        (0..fw * fh)
+            .map(|i| u32::try_from(i + 1).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn crop_fully_inside_matches_source() {
+        let full = checker(10, 10);
+        let (w, h, px) = crop_from(&full, 10, 10, (0, 0), (2, 3, 5, 6)).expect("inside crop");
+        assert_eq!((w, h), (3, 3));
+        // origin=(0,0) なので画面座標 = full の添字そのもの。
+        assert_eq!(px[0], full[3 * 10 + 2]);
+        assert_eq!(px[w * h - 1], full[5 * 10 + 4]);
+    }
+
+    #[test]
+    fn crop_overflowing_top_left_does_not_shift_content() {
+        // full は原点 (100, 100) から 10x10。crop は左へ2・上へ3はみ出す。
+        let full = checker(10, 10);
+        let (w, h, px) =
+            crop_from(&full, 10, 10, (100, 100), (98, 97, 104, 103)).expect("partial overlap");
+        assert_eq!((w, h), (6, 6));
+        // はみ出した左2列・上3行は0で埋まり、ずれて中身が詰まってはいけない。
+        assert_eq!(px[0], 0); // (0,0): full の (-2,-3) 相当 → 範囲外
+        assert_eq!(px[1], 0); // (1,0): full の (-1,-3) 相当 → 範囲外
+        assert_eq!(px[2 + 3 * w], full[0]); // (2,3): full の (0,0) 相当 → 1
+    }
+
+    #[test]
+    fn crop_fully_outside_returns_none() {
+        let full = checker(10, 10);
+        assert!(crop_from(&full, 10, 10, (0, 0), (100, 100, 110, 110)).is_none());
+        assert!(crop_from(&full, 10, 10, (0, 0), (-50, -50, -40, -40)).is_none());
+    }
+
+    #[test]
+    fn crop_zero_size_returns_none() {
+        let full = checker(10, 10);
+        assert!(crop_from(&full, 10, 10, (0, 0), (2, 2, 2, 5)).is_none());
+    }
+
+    #[test]
+    fn all_rgb_zero_ignores_alpha() {
+        assert!(all_rgb_zero(&[0xFF00_0000, 0x0000_0000]));
+        assert!(!all_rgb_zero(&[0x0000_0001]));
+        assert!(!all_rgb_zero(&[]));
+    }
 }
