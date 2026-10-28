@@ -384,15 +384,38 @@ struct RawLiteralPlan {
 ///
 /// リテラルなら素通りしているのは最初の 1 キーだけなので、Backspace は 1 回に決まる。送るローマ字の長さ(バイト数 =
 /// 文字数、英小文字のみ)を返す。確認を張らない、または分けられない(1 文字)ときは `None`(全体を送る)。
-fn split_for_mozc_check(
-    romaji: &str,
-    target: Option<&mut crate::tsf::warmup::mozc_compose_check_fsm::MozcComposeTarget>,
-) -> Option<usize> {
+fn split_for_mozc_check(romaji: &str, target: Option<&mut MozcComposeTarget>) -> Option<usize> {
     let target = target?;
     let (first, rest) = crate::state::mozc_shm::split_first_key(romaji)?;
     target.romaji = first.to_string();
     target.rest = rest.to_string();
     Some(first.len())
+}
+
+/// `Transmit` の送信。Mozc の確認を張るなら最初の 1 キーだけ、そうでなければ全体を送る(ADR-285)。
+fn transmit_first_or_whole<I: ProbeIo>(
+    io: &I,
+    romaji: &str,
+    chars: &[(VkCode, bool)],
+    target: Option<&mut MozcComposeTarget>,
+) {
+    match split_for_mozc_check(romaji, target) {
+        Some(n) => io.transmit_chrome(&romaji[..n], &chars[..n]),
+        None => io.transmit_chrome(romaji, chars),
+    }
+}
+
+/// `TransmitRest` の送信(ADR-285)。確認は張り直さない。段を終える理由を返す。
+fn transmit_rest<I: ProbeIo>(io: &I, romaji: &str) -> StageEndReason {
+    let chars: VkSequence = romaji
+        .chars()
+        .filter_map(crate::output::resolve_ascii_to_vk)
+        .collect();
+    if chars.is_empty() {
+        return StageEndReason::NoResolvableVk;
+    }
+    io.transmit_chrome(romaji, &chars);
+    StageEndReason::ProbeDone
 }
 
 /// 疑いが出た VK(`failed_idx`、0 始まり)より後ろの、まだ送っていないローマ字を返す。
@@ -484,10 +507,7 @@ where
                     let mut mozc_check = io.mozc_compose_precheck(&romaji, cold_seq);
                     // plan.needs_literal は tsf_probe_coro_body が env.gji_active で確定済み。
                     // ADR-285: Mozc の確認を張るときは最初の 1 キーだけを送る(per-VK)。残りは確認の FSM が送る。
-                    match split_for_mozc_check(&romaji, mozc_check.as_mut()) {
-                        Some(n) => io.transmit_chrome(&romaji[..n], &chars[..n]),
-                        None => io.transmit_chrome(&romaji, &chars),
-                    }
+                    transmit_first_or_whole(io, &romaji, &chars, mozc_check.as_mut());
                     // 注入の記録は io.transmit_chrome 自身が note_stage_injection で行う。
                     // deferred VK の解放は段末（finish_probe_stage）へ一元化した（決定4-b）。
                     if !plan.needs_literal {
@@ -507,15 +527,7 @@ where
 
                 ProbeAction::TransmitRest { romaji } => {
                     // ADR-285: 最初の 1 キーの確認のあとの残り。確認は張り直さない。
-                    let chars: VkSequence = romaji
-                        .chars()
-                        .filter_map(crate::output::resolve_ascii_to_vk)
-                        .collect();
-                    if chars.is_empty() {
-                        break 'stage Some(StageEndReason::NoResolvableVk);
-                    }
-                    io.transmit_chrome(&romaji, &chars);
-                    break 'stage Some(StageEndReason::ProbeDone);
+                    break 'stage Some(transmit_rest(io, &romaji));
                 }
 
                 ProbeAction::TransmitSingleVk {
