@@ -137,6 +137,7 @@ fn elapsed_ms_u16(since: Instant) -> u16 {
 /// # Safety
 /// GDI・UI Automation 以外の Win32 API（`FindWindowW`/`GetWindowRect`/`PrintWindow`）も呼ぶ。ハンドルは
 /// この関数の中で作って必ず解放する。
+#[allow(clippy::many_single_char_names)]
 unsafe fn capture_bgra(
     rect: (i32, i32, i32, i32),
     max_w: i32,
@@ -241,7 +242,7 @@ unsafe fn capture_via_print_window(crop: (i32, i32, i32, i32)) -> Option<(usize,
 /// 画素列の RGB（下位24ビット、alpha は見ない）が全てゼロ(真っ黒)か。`PrintWindow` が `TRUE` を返しながら
 /// 実際には何も描かなかった場合の検知用(ADR-261 決定8、Opus レビューで指摘)。
 fn all_rgb_zero(px: &[u32]) -> bool {
-    !px.is_empty() && px.iter().all(|&p| p & 0x00FF_FFFF == 0)
+    !px.is_empty() && px.iter().all(|&p| p.trailing_zeros() >= 24)
 }
 
 /// `full`(原点 `origin` からの幅 `fw`・高さ `fh` の画素列)から、画面座標の `crop` 矩形を切り出す。
@@ -263,11 +264,12 @@ fn crop_from(
     if cw == 0 || ch == 0 {
         return None;
     }
-    let fw_i = i32::try_from(fw).unwrap_or(i32::MAX);
-    let fh_i = i32::try_from(fh).unwrap_or(i32::MAX);
-    // crop(画面座標)と full(origin 起点、0..fw_i × 0..fh_i)の交差が空なら、切り出す画素が1つも無い
+    let bound_w = i32::try_from(fw).unwrap_or(i32::MAX);
+    let bound_h = i32::try_from(fh).unwrap_or(i32::MAX);
+    // crop(画面座標)と full(origin 起点、0..bound_w × 0..bound_h)の交差が空なら、切り出す画素が1つも無い
     // (タスクバーの矩形がインジケーター取得後に動いた等)ので None(フォールバックへ)。
-    if cr <= ox || cl >= ox.saturating_add(fw_i) || cb <= oy || ct >= oy.saturating_add(fh_i) {
+    if cr <= ox || cl >= ox.saturating_add(bound_w) || cb <= oy || ct >= oy.saturating_add(bound_h)
+    {
         return None;
     }
     let mut cropped = vec![0u32; cw * ch];
@@ -275,7 +277,7 @@ fn crop_from(
         let Some(sy) = (ct - oy).checked_add(i32::try_from(y).unwrap_or(0)) else {
             continue;
         };
-        if sy < 0 || sy >= fh_i {
+        if sy < 0 || sy >= bound_h {
             continue;
         }
         let usy = usize::try_from(sy).unwrap_or(0);
@@ -283,7 +285,7 @@ fn crop_from(
             let Some(sx) = (cl - ox).checked_add(i32::try_from(x).unwrap_or(0)) else {
                 continue;
             };
-            if sx < 0 || sx >= fw_i {
+            if sx < 0 || sx >= bound_w {
                 continue;
             }
             cropped[y * cw + x] = full[usy * fw + usize::try_from(sx).unwrap_or(0)];
