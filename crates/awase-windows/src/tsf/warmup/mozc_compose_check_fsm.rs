@@ -467,11 +467,7 @@ mod tests {
     #[test]
     fn settle_never_recovers_when_the_composition_is_gone_or_nothing_was_counted() {
         // 入力中の文字が消えている（phase 0）・キーが 1 つも数えられていない・読めない → 消さない（期限を待たず終える）
-        for reading in [
-            block_seq(0, 1),
-            block_seq(1, 0),
-            ComposeReading::Unreadable,
-        ] {
+        for reading in [block_seq(0, 1), block_seq(1, 0), ComposeReading::Unreadable] {
             let (v, a) = fsm(1_000).settle_step(1_020, reading).unwrap();
             assert_eq!(v, SettleVerdict::Skip);
             assert!(matches!(a.as_slice(), [ProbeAction::Done]));
