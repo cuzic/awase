@@ -15,11 +15,12 @@ summary: |-
   段階: G1(核とオラクル)→ G2(契機の追加と試算を Z へ、観測のみ)→ G3(既存の設定 `[indicator_evidence] glyph = "unobserved"` で採用)。
   旧の belief の字形の分岐(本番で一度も有効にしていない)は G3 で削除する(複雑性予算の相手)。
 status: |-
-  **所有者の決定(2026-10-28、§9)**: G1 のオラクル実測(§9.1、全構成・全案で合格条件を満たす)の後、**計画(§5)の G2(観測のみの試算段階)を
-  省き、本番の候補 Z(`scope_shadow`)へ直接配線した**(理由は §9.2。ADR-282 V2-3 で `scope_shadow` 自体が既に本番の入力源になって
-  いたため、字義どおりの「観測のみのG2」は別インスタンスの新設が要り計画より重くなること、ウィンドウ切り替え直後・打鍵直後の鮮度リスクは
-  ADR-261 決定8の待ち時間設計で既に対処済みと判断できたことが根拠)。トリガーは T1(前面窓の変化)のみ実装、T2〜T4 は未実装(§9.3)。
-  既定(`[indicator_evidence] glyph = off`)の利用者には挙動の変化は無い(オプトインしたときだけ効く)。G3(`unobserved` への格上げ・
+  **実装(2026-10-28、§9)**: G1 のオラクル実測(§9.1。ただし #897 未マージ・golden 未コミットで本番の構成とは前提が異なる、§9.3の
+  既知の限界参照)の後、当初は計画(§5)の観測のみの G2 を省いて本番の候補 Z(`scope_shadow`)へ直接配線したが、
+  `opus-adversarial-consult` のレビューで Blocker 3件・Major 5件(`observe`設定の約束が崩れる・フォーカス追跡の柵が無い・
+  D4の判定誤り等、§9.2)が見つかり、所有者判断で**観測のみ(`ScopeBelief`のクローンでの試算、journal記録のみ)の形へ戻した**
+  (§9.3)。トリガーは T1(前面窓の変化)のみ実装、T2〜T4・`StateChange`(D2-1)は未実装。既定(`[indicator_evidence] glyph = off`)の
+  利用者には挙動の変化は無く、オプトインした利用者も belief は変わらない(journal に試算が残るだけ)。G3(`unobserved` への格上げ・
   旧分岐の削除)は未着手のまま。
   **所有者の決定(2026-10-27)**: U-G1 は T2・T3・T4 を足す(既定は off のオプトインのまま)。読む時刻は事象から 1.5 秒以上後(T1 は 1500/3000ms。窓の種類ごとの実測の遅れで早めるのは実測が揃うまでしない〈U-G6〉)。鮮度は事象ベース(U-G2、提案どおり)。2 回の一致の要否と D3-b の (a)/(b) は G1 のオラクルで決める。U-G5 は静的な imm32-unavailable と tsf-native を最初から対象に含める。U-G3 の CI の実測(実 Chrome と Windows Terminal)は G1 の後に足す。G1 は #896(核)・#897(オラクル)。
   起草(2026-10-27)。Opus レビュー round 1(B1・M4・m6)を受けた後、所有者の見解(字形は時間差を除けば正しい)でタイミング中心に作り直した。round 2(作り直す前の版への R2-M1・R2-M2・minor 4)、作り直した版への round 2(B1・M4・m5)、実機の読み取りの費用のデータを反映。round 3(R3-M3: D3-b を MS-IME 本体の閉→開に限る)を反映。round 4(R4-M1・R4-M2・minor 4)・round 5(minor 2)を反映。**Opus round 5 で収束(Blocker 0・Major 0、確定してよい、G1 に進んでよい)**。
@@ -383,7 +384,7 @@ round 3 は、作り直した版への round 2 の対応(`fe8285b08`)より前�
 | m1(bump の出所) | D2-1 に `conv_mutation::bump` と `probe_actuation_fence::bump` の両方を書いた |
 | m2(D3-b の選び方) | §3.1 に選び方(総数の少ないほう、差が無ければ (b))を足した |
 
-## 9. G2 実装(2026-10-28、所有者判断: observe を経ず本番 Z へ直接配線)
+## 9. G2 実装(2026-10-28。当初は observe を経ず直接配線したが、Opus レビューを受けて観測のみに戻した)
 
 ### 9.1 G1 オラクルの実測結果
 
@@ -396,49 +397,63 @@ D3-b((a)/(b))・2回一致の有無・staleの有無は、いずれも I1・I2 �
 D3-b は **(b)** を採る。2回一致・stale の有無は ADR に明記のタイブレークが無いが、複雑性予算の方針(不要な規則を増やさない)に従い
 **2回一致は要らない(`two_reads: false`)**、stale は U-G2 の既存の決定(事象ベース、`stale: true`)のまま採る。
 
-### 9.2 所有者判断: 段階 G2(観測のみ)を経ず、本番の候補 Z へ直接配線する
+### 9.2 当初の判断(直接配線)と、Opus レビューで判明した誤り
 
 当初の計画(§5)は、G2 を「観測のみ(`would_decide_z`・`would_flip_z` の試算、belief には入れない)」とし、実機の journal を集計してから
 G3 で本番配線する、という2段階だった。この計画は、ADR 起草時点(2026-10-27)では `scope_shadow`(候補 Z)が旧 belief との比較用の
 「shadow」(観測のみ)だったことを前提にしていたが、**ADR-282 V2-3(`#893`、2026-10-27 マージ)で `scope_shadow` 自体が
-`general.belief_v2`(既定 `true`)経由で Engine の入力の既定の入力源になった**。つまり G2 の「観測のみ」計画を字義どおり実装するには、
-`scope_shadow` とは別に「字形入りの試算専用」のもう一つの候補 Z(shadow-of-shadow)を新設し、`scope_shadow` へ渡している全イベントを
-二重に渡す必要があり、計画時の想定(百〜二百行)より重くなることが実装中に判明した(設計の詳細は本セッションの記録に残す。コードには残さない)。
+`general.belief_v2`(既定 `true`)経由で Engine の入力の既定の入力源になった**。実装中、「字義どおりの観測のみ」には別インスタンスが
+要って重いと判断し、**所有者判断で観測段階を経ず直接 `scope_shadow` へ配線した版を一度実装した**(打鍵直後・ウィンドウ切替直後の
+鮮度は既存の設計で対処済み、覆われた間は `PrintWindow` の利点、排他フルスクリーンのみレアで両手法共通の限界、という整理による)。
 
-この重さを所有者に報告した上で、改めてリスクを検討した結果、**観測段階を経ず、直接本番の `scope_shadow` へ配線する**ことに決めた。
-根拠(所有者とのやり取り、2026-10-28):
+この版を `opus-adversarial-consult` で読み取り専用レビューした結果、**Blocker 3件・Major 5件**が見つかった(詳細はレビュー記録。
+要点のみここに残す):
 
-1. **打鍵直後の鮮度は心配しなくてよい**: 打鍵自体から狙った IME モードは高精度に予測できるので、字形はここでは要らない。
-   `lag_ms` 柵は「予測と矛盾する字形で誤って上書きしない」ためのもので、字形自体が間違っているという話ではない。
-2. **ウィンドウ切り替え直後の鮮度も、通常は問題ない**: `EVENT_SYSTEM_FOREGROUND` を受けてから遅延(900ms/2500ms、字形の実測の遅れ
-   〔中央0.2秒・最大0.68〜0.885秒〕より長い)を置いて `PrintWindow` で読む今の作り(ADR-261 決定8)では、古い内容を読む心配は無い。
-3. **他窓に覆われている間の鮮度は、むしろ `PrintWindow` の利点**: DWM は覆われた窓も通常は裏で合成し続けるので、`BitBlt` なら
-   覆っている窓の画素を拾って `Miss` になる場面でも、`PrintWindow` はタスクバー自身の内容を返せる可能性が高い。
-4. **唯一残る未測定の鮮度リスクは、排他フルスクリーン**(DWM合成が止まる間、タスクバー自身が内部的に再描画されない可能性)だが、
-   これは `BitBlt`/`PrintWindow` どちらでも同じ限界であり、字形を Z へ入れること自体に固有のリスクではない。レアケースでもある。
+- **B1**: `observe` 設定は「belief には入れない」と設定画面・ADR自身(§2 D7)が約束している段階だが、直接配線は `observe` のままで
+  Z に書き込んでいた。`ui_max_level`(ADR-233 の入口条件)を経由せず、戻し方(`observe` に戻す)も機能しなくなっていた。
+- **B2**: フォーカス追跡が新しい窓に追いついたかの柵(旧経路の `glyph_read_fence`)を経由せず、追跡が遅れると新しい窓の字形が
+  前の窓のスコープに書かれる恐れがあった。
+- **B3**: D4(テキストの欄か)の判定が `FocusKind::Undetermined` を通してしまい、ADR の定義(`TextInput` 限定)と違っていた。
+- **M1・M2**: 本番は `ScopeEvent::StateChange`(D2-1)を一度も Z へ渡しておらず、G1 オラクル(かつ #897 は未マージ・golden 未コミット)の
+  前提(契機・読み時刻・`StateChange` の有無)と本番の構成が食い違っていた。
+- **「観測のみは重い」という前提自体が誤り**: `ScopeBelief` は `Clone` なので、クローンに `with_glyph` を付けて1回評価するだけで
+  `would_decide_z`/`would_flip_z` の試算ができる(約20行)。別インスタンスを持ち続けて全イベントを二重配送する必要は無かった。
 
-以上から、observe 段階を別途設けて実機データを集める価値は、当初想定より薄いと判断した。
+このリポジトリの既存の規律(IME belief への変更は実測してから進める。`experiment-logging.md` が記録する「IME OFFキー選択が
+5日間で6回反転した」事故等)を踏まえ、**所有者判断でこの指摘を全て受け入れ、観測のみ(クローンでの試算)の案へ戻した**。
 
-### 9.3 実装した範囲
+### 9.3 実装した範囲(観測のみ、最終版)
 
-- **変更点**: `ImeStateHub::scope_shadow`(本番の候補 Z)の構築時に `.with_glyph(GLYPH_POLICY)` を付け、唯一の入口
-  `ImeStateHub::scope_shadow_glyph` を新設。`runtime/indicator_glyph_shadow.rs::feed_glyph_to_z` が、見本の表に照合して
-  ラベルが付いた読み(`LabelReading::Hit`)だけをここへ渡す。旧モデル向けの `report_glyph_to_belief`(ADR-273、現状常に偽で
-  実質 no-op)はそのまま残す(G3 で削除予定、§4 のとおり)。
+- **変更点**: `ImeStateHub::scope_shadow`(本番の候補 Z)には `with_glyph` を**付けない**(観測のみに戻した)。唯一の入口
+  `ImeStateHub::scope_shadow_glyph_preview`(`&self`、副作用なし)が、`scope_shadow` を [`GLYPH_POLICY`] 付きでクローンして
+  1回評価し、`scope_shadow` 自身の値と比べるだけ。`runtime/indicator_glyph_shadow.rs::preview_glyph_for_z` が、見本の表に
+  照合してラベルが付いた読み(`LabelReading::Hit`)だけをここへ渡し、結果(`would_decide_z`・`would_flip_z`)を journal に記録する
+  (belief には一切書かない)。旧モデル向けの `report_glyph_to_belief`(ADR-273、現状常に偽で実質 no-op)はそのまま残す
+  (G3 で削除予定、§4 のとおり)。
 - **方針**: `GLYPH_POLICY = { lag_ms: GLYPH_KEY_FENCE_MS(1300), stale: true, two_reads: false, eisu: SkipOnMsIme }`(§9.1 の選び方)。
-- **D4(テキストの欄か)**: `platform_state.focus.focus_kind != FocusKind::NonText`(ADR-280 で使う既存の判定を再利用)。
-- **D5(窓の信頼)**: 核の `glyph_window_ok(imm_trusted, input_relay, mozc_block)` を、Z 自身の `WindowFacts.imm_trusted` と同じ式
-  (`focus_tracking.rs::scope_shadow_window_facts` と同じ: `profile.can_use_imm32_cross_process() && !is_demoted_by_learning()`)で呼ぶ
-  (旧モデルの `glyph_window_in_scope`/`glyph_scope_facts` とは窓の信頼の定義が別なので使い分ける)。
+- **B2 の修正**: `preview_glyph_for_z` は、旧経路と同じフォーカスの同一性の柵(`glyph_read_fence` が `Some` を返した読み)だけに
+  絞って呼ぶ。
+- **B3 の修正**: D4(テキストの欄か)は `platform_state.focus.focus_kind == FocusKind::TextInput` を要求する(`Undetermined` は通さない)。
+- **M3 の修正**: `captured_ms` は「取り込みを処理した今」から取り込みの所要(`outcome.read_ms`)を引いた近似値にする(柵の区間が
+  実際の取り込みより後ろへずれて緩む問題を避ける)。
+- **M4 の修正**: D5(窓の信頼)の `imm_trusted` は、読みの時点で再計算するのではなく、Z 自身が入場時に固定した値
+  (`ImeStateHub::scope_shadow_facts()`)を読む。
 - **D3-b(MS-IME本体か)**: `tsf_obs().active_ime_kind() == MicrosoftIme && tsf_obs().ms_ime_native_identified()`
-  (`inherit_open_on_entry` と同じ判定)。
-- **トリガーは T1(前面窓の変化)だけ**。T2(欄の移動)・T3(モード系の打鍵)・T4(途切れ)は未実装(別途、必要性を見てから追加する)。
+  (`inherit_open_on_entry` の前半と同じ判定)。
+- **トリガーは T1(前面窓の変化)だけ**。T2(欄の移動)・T3(モード系の打鍵)・T4(途切れ)は未実装。
 - **既定では無効のまま**: `[indicator_evidence] glyph` の実効の段階が `observe` 以上(既定は `off` のオプトイン、ADR-271)でなければ、
-  取り込みワーカー・WinEvent フック自体が起動しないため、`feed_glyph_to_z` は一度も呼ばれない。**既定の利用者には挙動の変化は無い**。
-  オプトインした利用者だけ、`general.belief_v2`(既定 `true`)が効いていれば本番の belief に効く。
-- **architecture_guard の更新**: `indicator_glyph_shadow_is_observe_only_and_opt_in`(`platform_state` への接触を 7→9 箇所、
-  `scope_shadow_glyph`・`focus_kind` を新しい正当な入口として追加)・`platform_state_pub_fns_are_fixed_and_exclude_recorders`
-  (`scope_shadow_glyph` を許可リストに追加)。
-- **未解決・既知の限界**: `feed_glyph_to_z`(殻側の D4・D5・D3-b 判定)を直接演習するテストが無い(Windows 専用コードで、
-  TSF/フォーカス追跡の実行時状態に依存するため、ホスト上の単体テストでは組みにくい)。核(`scope_belief.rs::on_glyph`)側は
-  G1 のオラクルで厚く検証済み。実機での確認は今後の課題。
+  取り込みワーカー・WinEvent フック自体が起動しないため、`preview_glyph_for_z` は一度も呼ばれない。既定の利用者には挙動の変化は無い。
+  オプトインした利用者も、**belief は一切変わらない**(journal に試算が残るだけ)。
+- **architecture_guard の更新**: `indicator_glyph_shadow_is_observe_only_and_opt_in`(`platform_state` への接触を 7→10 箇所、
+  `scope_shadow_glyph_preview`・`focus_kind`・`scope_shadow_facts` を新しい正当な入口として追加)・
+  `platform_state_pub_fns_are_fixed_and_exclude_recorders`(`scope_shadow_glyph_preview` を許可リストに追加)。
+- **未解決・既知の限界(Opus レビュー指摘のうち、今回のスコープでは直していないもの)**:
+  - **M1(`StateChange` 未配線)**: `conv_mutation::bump`・`probe_actuation_fence::bump` 等、D2-1 の「状態を変えうる事象」は
+    まだ Z へ渡していない。試算(`would_decide_z`・`would_flip_z`)はこれらの事象を考慮しない状態での参考値に留まる。
+  - **M2(オラクルの前提と本番の食い違い)**: #897(G1オラクル)は未マージ・golden 未コミットで、オラクルの契機・読み時刻は
+    本番(T1のみ・900/2500ms)と異なる。§9.1 の「合格条件を満たした」は、本番そのままの構成での検証ではない。
+  - **M5(入口条件の再評価)**: ADR-233「Medium が High を追い越さない」をこの試算が緩めているかは未検討。
+  - `preview_glyph_for_z`(殻側の D4・D5・D3-b 判定)を直接演習するテストが無い(Windows 専用コードで、TSF/フォーカス追跡の
+    実行時状態に依存するため、ホスト上の単体テストでは組みにくい)。核(`scope_belief.rs::on_glyph`)側は G1 のオラクルで
+    厚く検証済み。
+  - 実機での試算の確認(journal の集計)は今後の課題。

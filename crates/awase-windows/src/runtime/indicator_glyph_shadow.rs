@@ -15,16 +15,23 @@
 //! 現状は `ui_max_level` が `Observe` なので動かない）。目的は、読める窓での一致率と、観測の無い窓での belief とのずれを、実ジャーナルで
 //! 確かめること。
 //!
-//! **ADR-283 G2(2026-10-28、所有者判断): 候補 Z([`crate::state::scope_belief::ScopeBelief`]、本番の `engine_belief()` の
-//! 既定の入力源)には、見本の表に照合してラベルが付いた読み(`LabelReading::Hit`)を`[feed_glyph_to_z]`経由で渡す**
-//! (`ImeStateHub::scope_shadow_glyph`、唯一の入口)。D4(テキストの欄の読みか)・D5(窓の信頼)・D3-b(MS-IME本体か)を
-//! 殻側で判定し、柵(事象の直後は捨てる)・写像・2回一致の要否は核([`crate::state::scope_belief::ScopeBelief::evolve`])
-//! が判断する。トリガーは今のところ前面窓の変化(T1)だけ(ADR-283のT2〜T4は未実装)。
+//! **ADR-283 G2(観測のみ、2026-10-28): 候補 Z([`crate::state::scope_belief::ScopeBelief`]、本番の `engine_belief()` の
+//! 既定の入力源)へ、見本の表に照合してラベルが付いた読み(`LabelReading::Hit`)を今入れたら、という試算を
+//! `[preview_glyph_for_z]` が journal に記録する(`ImeStateHub::scope_shadow_glyph_preview`、唯一の入口。副作用なし。
+//! 本番の `scope_shadow` 自体には `with_glyph` を付けない。[`crate::state::scope_belief::GlyphPolicy`] を付けたクローンで
+//! 試算するだけ)**。当初(2026-10-28)は直接 `scope_shadow` へ書く案で実装したが、Opus レビューで複数の正しさの問題
+//! (フォーカス追跡が新しい窓に追いついたかの柵が無い・`observe` 設定の「belief には入れない」という約束が崩れる等)が
+//! 見つかり、観測のみの案(当初「別インスタンスが要って重い」と判断していたが、実際はクローンで十分軽い)へ戻した。
+//! D4(テキストの欄の読みか、`FocusKind::TextInput` 限定)・D5(窓の信頼、Z 自身の `scope_shadow_facts()` を読む)・
+//! D3-b(MS-IME本体か)を殻側で判定し、旧経路と同じフォーカスの同一性の柵(`glyph_read_fence`)を通った読みだけ試算する。
+//! トリガーは今のところ前面窓の変化(T1)だけ(ADR-283のT2〜T4は未実装)。`StateChange`(欄の移動・モード系打鍵)は
+//! まだ核へ渡していない(ADR-283 D2-1、今後の課題)。
 //!
 //! 有効なのは `[indicator_evidence] glyph` の実効の段階が `observe` 以上（既定は off のオプトイン。ADR-271）のときだけ。反映は再起動後
-//! （フックと読み取りスレッドは起動時に 1 度だけ作る。`app/bootstrap.rs`）。**候補 Z への配線(上記)もこの設定に従う**:
+//! （フックと読み取りスレッドは起動時に 1 度だけ作る。`app/bootstrap.rs`）。候補 Z への試算(上記)もこの設定に従う:
 //! 取り込みワーカー・WinEvent フック自体がこの設定で起動するかどうかを決めるので、既定(off)のままなら
-//! `feed_glyph_to_z` は一度も呼ばれない。既定を変えて `observe` 以上にした利用者だけに効く。
+//! `preview_glyph_for_z` は一度も呼ばれない。既定を変えて `observe` 以上にした利用者だけ、journal に試算が残る
+//! (belief への書き込みは、observe の間は一切無い)。
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -251,42 +258,57 @@ impl super::Runtime {
         glyph_window_in_scope(level, self.glyph_scope_facts())
     }
 
-    /// ADR-283 G2: この字形の読みを候補 Z([`crate::state::scope_belief::ScopeBelief`])へ渡してよいか(D5: 窓の信頼)・
-    /// 渡すなら MS-IME 本体として同定済みか(D3-b)。D4(テキストの欄の読みか)は呼び出し元([`Self::indicator_glyph_on_result`])
-    /// が `FocusKind` で判定する。
+    /// ADR-283 D5: この字形の読みを候補 Z([`crate::state::scope_belief::ScopeBelief`])の試算に使ってよい窓か。
     ///
-    /// Z 自身の `WindowFacts.imm_trusted`(`runtime/focus_tracking.rs::scope_shadow_window_facts`)と同じ式を使う
-    /// (旧モデルの `glyph_scope_facts` とは窓の信頼の定義が別のため、使い分ける)。
+    /// `imm_trusted` は Z 自身が入場時に固定した値([`crate::state::platform_state::ImeStateHub::scope_shadow_facts`]、
+    /// `runtime/focus_tracking.rs::scope_shadow_window_facts` が作る)を読む(読みの時点で再計算すると、入場後に学習で
+    /// 降格された場合に Z の判定とずれる。Opus レビュー指摘 M4、2026-10-28)。未入場なら信頼できない側(`false`)。
     fn glyph_z_window_ok(&self) -> bool {
         use crate::state::scope_belief::glyph_window_ok;
+        let imm_trusted = self
+            .platform_state
+            .ime
+            .scope_shadow_facts()
+            .is_some_and(|f| f.imm_trusted);
         let profile = self.platform.current_app_profile();
-        let imm_trusted =
-            profile.can_use_imm32_cross_process() && !self.platform.focus.is_demoted_by_learning();
         let input_relay = matches!(profile, AppImeProfile::InputRelay);
         glyph_window_ok(imm_trusted, input_relay, self.mozc_shm.block_present())
     }
 
-    /// ADR-283 G2: 字形の読みを候補 Z へ渡す(`Miss` は渡さない。核が D1〜D5 を判断するので、ここでは渡してよい窓か
-    /// 〔D5〕・テキストの欄か〔D4〕・MS-IME 本体か〔D3-b〕だけを決める)。belief(旧モデル)には触れない。
-    fn feed_glyph_to_z(&mut self, reading: crate::state::indicator_glyph::LabelReading) {
-        use crate::focus::FocusKind;
+    /// ADR-283 G2(観測のみ、2026-10-28 Opus レビューを受けて直接配線から戻した): この字形の読みを今候補 Z へ
+    /// 入れたら、という試算を journal に記録する(**副作用なし。belief には一切書かない**)。呼び出し元
+    /// ([`Self::indicator_glyph_on_result`])が、フォーカス追跡が新しい窓に追いついている読みだけに絞る(B2)。
+    ///
+    /// D4(テキストの欄の読みか、`FocusKind::TextInput` を要求。`Undetermined` は通さない。Opus レビュー指摘 B3)・
+    /// D5(`glyph_z_window_ok`)・D3-b(MS-IME 本体か)をここで決め、柵・写像・2回一致の要否は核
+    /// ([`crate::state::scope_belief::ScopeBelief::evolve`])が判断する。`captured_ms` は取り込みの所要
+    /// (`read_ms`)を引いた近似値(Opus レビュー指摘 M3: 処理した「今」のままだと柵の区間が実際の取り込みより
+    /// 後ろへずれ、緩む方向に働く)。
+    fn preview_glyph_for_z(
+        &self,
+        reading: crate::state::indicator_glyph::LabelReading,
+        read_ms: u16,
+        record: &mut crate::journal::IndicatorGlyphRecord,
+    ) {
         use crate::state::indicator_glyph::LabelReading;
         let LabelReading::Hit(hit) = reading else {
             return;
         };
-        let is_text_field = self.platform_state.focus.focus_kind != FocusKind::NonText;
+        let is_text_field =
+            self.platform_state.focus.focus_kind == crate::focus::FocusKind::TextInput;
         let eligible = is_text_field && self.glyph_z_window_ok();
         let ms_ime_native = glyph_ms_ime_native();
-        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        self.platform_state.ime.scope_shadow_glyph(
+        let captured_ms = crate::hook::current_tick_ms().saturating_sub(u64::from(read_ms));
+        let flip = self.platform_state.ime.scope_shadow_glyph_preview(
             crate::state::scope_belief::ScopeEvent::Glyph {
                 label: hit.label,
-                captured_ms: tick_ms.0,
+                captured_ms,
                 eligible,
                 ms_ime_native,
             },
-            tick_ms,
         );
+        record.would_decide_z = Some(flip.is_some());
+        record.would_flip_z = flip;
     }
 
     /// 報告の基準となる同一性（ADR-273 D1 の M8、Opus RE1）。1 回目は**処理した時点**の同一性（追跡が追いついているときだけ。
@@ -479,10 +501,13 @@ impl super::Runtime {
             };
         }
         if let Some(reading) = glyph_reading {
-            // ADR-283 G2: 候補 Z へ渡す(本番。旧モデルの柵・scopeとは別の判定〈D4・D5〉、下記参照)。
-            self.feed_glyph_to_z(reading);
             let is_second = pending.delay_ms == u32::from(READ_DELAYS_MS[1]);
             let read_fence = self.glyph_read_fence(&pending, is_second);
+            // ADR-283 G2(観測のみ): 旧経路と同じ柵(フォーカス追跡が新しい窓に追いついている読みだけ、B2)を通った
+            // ときだけ、候補 Z への試算を記録する(belief には書かない)。
+            if read_fence.is_some() {
+                self.preview_glyph_for_z(reading, outcome.read_ms, &mut record);
+            }
             // 設定が observe のままでも、対象の窓だったとして柵を通るかを記録する（belief には入れない）。段階 2 の前提の件数。
             // 基準が作れなかった読み（追跡のずれ）も分母に入れるため、窓の種類は基準の有無によらず出す。
             let scope = glyph_scope_label(self.glyph_scope_facts());

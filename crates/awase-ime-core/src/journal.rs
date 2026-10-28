@@ -208,6 +208,12 @@ pub struct IndicatorGlyphRecord {
     pub would_decide: Option<bool>,
     /// `would_decide` が真のとき、字形の値が今の belief と**違うか**（belief を変える件数）
     pub would_flip: Option<bool>,
+    /// ADR-283 G2(観測のみ): 今この読みを候補 Z([`crate::state::scope_belief::ScopeBelief`])へ入れたら、Z が
+    /// 試算に使ったか（対象の窓・D4〔テキストの欄〕・柵を通ったか。`scope_shadow_glyph_preview` が `Some` を返したか）。
+    /// 記録だけで、本番の Z（`belief_v2` の入力源）には一切書かない
+    pub would_decide_z: Option<bool>,
+    /// `would_decide_z` が真のとき、今の Z の値と**違うか**（Z を変えうる件数）
+    pub would_flip_z: Option<bool>,
 }
 
 /// ADR-265 段階 1: mozc-readable の共有メモリ（48 バイト、version 2）の読み（挙動を変えない観測。**belief には入れない**）。
