@@ -74,15 +74,20 @@ pub fn is_windows_terminal_window(class_name: &str) -> bool {
 /// Chrome は TSF composition context の再初期化に ~326ms かかる実測(`79134f5`)があり、期限を越えて遅れて
 /// できた入力中の文字を Backspace が消し、確定済みの文字まで消しうる(PR #809 レビュー M3)。広げるときは、
 /// その窓で `[mozc-compose] ... confirmed after Nms` の分布を取ってからにする。
+///
+/// LINE(`Qt663QWindowIcon`、Qt 6.6.3)は BUG-226 で足した: 実機(dragonflyg4、Mozc 系、2026-10-28 16:41 JST)で、
+/// 70.9 秒空いたあとの cold の最初の送信 `ko` が `kおちら` になったが、確認が張られておらず(`[mozc-compose]` の行なし)
+/// ADR-284 の回収も働かなかった。Qt は Chrome のような再初期化の遅れの実測が無いので、足したあとの
+/// `confirmed after Nms` の分布は未測定(実機で観察する)。
 #[must_use]
 pub fn is_mozc_compose_check_window(foreground_class: &str) -> bool {
     matches!(
         foreground_class,
-        "CASCADIA_HOSTING_WINDOW_CLASS" | "org.wezfurlong.wezterm"
+        "CASCADIA_HOSTING_WINDOW_CLASS" | "org.wezfurlong.wezterm" | "Qt663QWindowIcon"
     )
 }
 
-/// ADR-270 の確認を張るか(Mozc 系 × WT/WezTerm の窓)。
+/// ADR-270 の確認を張るか(Mozc 系 × WT/WezTerm/LINE の窓)。
 ///
 /// `mozc_compose_precheck` の前段と、物理 F2 で warm でも cold にするか(`physical_f2_marks_cold` の
 /// 第 2 引数)を、同じ述語で決める(PR #809 再レビュー N1・N2)。
@@ -369,13 +374,14 @@ mod tests {
 
     use super::*;
 
-    /// ADR-270 の確認は旧 `force_tsf` の既定の窓(Windows Terminal・WezTerm)だけ(PR #809 レビュー M3)。
+    /// ADR-270 の確認は旧 `force_tsf` の既定の窓(Windows Terminal・WezTerm)と LINE(BUG-226)だけ(PR #809 レビュー M3)。
     #[test]
-    fn mozc_compose_check_window_is_limited_to_old_force_tsf_defaults() {
+    fn mozc_compose_check_window_is_limited_to_old_force_tsf_defaults_and_line() {
         assert!(is_mozc_compose_check_window(
             "CASCADIA_HOSTING_WINDOW_CLASS"
         ));
         assert!(is_mozc_compose_check_window("org.wezfurlong.wezterm"));
+        assert!(is_mozc_compose_check_window("Qt663QWindowIcon"));
         for other in [
             "Chrome_WidgetWin_1",
             "Chrome_RenderWidgetHostHWND",
@@ -388,7 +394,7 @@ mod tests {
         }
     }
 
-    /// Mozc × WT/WezTerm だけ真。GJI(証拠あり)や他の窓は偽(PR #809 再レビュー N1・N2)。
+    /// Mozc × WT/WezTerm/LINE だけ真。GJI(証拠あり)や他の窓は偽(PR #809 再レビュー N1・N2)。
     #[test]
     fn mozc_compose_check_applies_table() {
         assert!(mozc_compose_check_applies(
@@ -396,6 +402,8 @@ mod tests {
             "CASCADIA_HOSTING_WINDOW_CLASS"
         ));
         assert!(mozc_compose_check_applies(true, "org.wezfurlong.wezterm"));
+        assert!(mozc_compose_check_applies(true, "Qt663QWindowIcon"));
+        assert!(!mozc_compose_check_applies(false, "Qt663QWindowIcon"));
         assert!(!mozc_compose_check_applies(true, "Chrome_WidgetWin_1"));
         assert!(!mozc_compose_check_applies(true, "OpusApp"));
         assert!(!mozc_compose_check_applies(
