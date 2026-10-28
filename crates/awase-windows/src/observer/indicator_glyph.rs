@@ -151,7 +151,12 @@ unsafe fn capture_bgra(
         tracing::debug!("[indicator-glyph] capture_bgra: via PrintWindow");
         return Some(out);
     }
-    tracing::debug!("[indicator-glyph] capture_bgra: PrintWindow 失敗・フォールバック(BitBlt)");
+    // 既定の実行時ログ(info、`app/bootstrap.rs`)でも残す: フォールバックは「何かが期待通りでなかった」
+    // 兆候であり、不具合報告(ADR-148型 allowlist)からこの切り替わりを追跡できるようにする(Opus レビュー
+    // round2 指摘A、2026-10-28)。`debug!` だと既定フィルタで落ちて観測できない。
+    tracing::info!(
+        "[indicator-glyph] capture_bgra: PrintWindow 失敗・フォールバック(BitBlt)へ切り替え"
+    );
     capture_bgra_screen(rect, w, h)
 }
 
