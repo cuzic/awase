@@ -683,6 +683,37 @@ pub fn compose_literal_backs(romaji: &str) -> usize {
     romaji.chars().count()
 }
 
+/// 入力中の文字ができたあと、`key_seq` の進みが送った文字数に揃ったか（ADR-284、BUG-225）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettleVerdict {
+    /// 送った文字数だけ TIP がキーを見た（正常）
+    Complete,
+    /// 一部のキーを TIP が見ていない。`missing` 文字は文書へリテラルで届いたと判断する
+    PartialLiteral { missing: usize },
+    /// 判断しない（TIP がキーを 1 つも数えていない。カウンタの巻き戻しなど、読みが信用できない）
+    Skip,
+}
+
+/// 送ったローマ字の文字数（`sent`）に対し、送信の前から `key_seq` が `delta` 進んだ時点の結論。
+///
+/// 確認は入力中の文字ができた時点（最短 16ms）で終わるので、その時点の `delta` は 2 打目がまだ数えられていないだけ
+/// かもしれない（確認済み 21 回のうち 2 回が 1 少なく、`settled +30ms` では揃った、2026-10-21）。呼び出し側は
+/// 確認から少し置いて読んだ値をここへ渡す。`delta >= sent` は正常（後続のキーが数えられた場合を含む）。
+/// `delta == 0` は、入力中の文字ができているのにキーが 1 つも数えられていない矛盾なので判断しない。
+#[must_use]
+pub fn judge_settled(sent: usize, delta: u32) -> SettleVerdict {
+    let delta = usize::try_from(delta).unwrap_or(usize::MAX);
+    if delta >= sent {
+        SettleVerdict::Complete
+    } else if delta == 0 {
+        SettleVerdict::Skip
+    } else {
+        SettleVerdict::PartialLiteral {
+            missing: sent - delta,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,6 +1283,33 @@ mod tests {
             judge_compose(400, 300, compose_block(|b| b.effective_open = false)),
             ComposeVerdict::Skip(ComposeSkip::ImeNotActive)
         );
+    }
+
+    #[test]
+    fn judge_settled_complete_when_every_sent_key_was_counted() {
+        assert_eq!(judge_settled(2, 2), SettleVerdict::Complete);
+        assert_eq!(judge_settled(1, 1), SettleVerdict::Complete);
+        // 読む前に次のキーが数えられた場合は超えてもよい
+        assert_eq!(judge_settled(2, 3), SettleVerdict::Complete);
+    }
+
+    #[test]
+    fn judge_settled_reports_the_missing_head_keys() {
+        // 2026-10-28 の実機: `ko` を送って key_seq が 330→331（1 つだけ）
+        assert_eq!(
+            judge_settled(2, 1),
+            SettleVerdict::PartialLiteral { missing: 1 }
+        );
+        assert_eq!(
+            judge_settled(3, 1),
+            SettleVerdict::PartialLiteral { missing: 2 }
+        );
+    }
+
+    #[test]
+    fn judge_settled_skips_when_no_key_was_counted() {
+        // 入力中の文字ができたのに 1 つも数えられていない読みは信用しない（全部リテラルは `judge_compose` の担当）
+        assert_eq!(judge_settled(2, 0), SettleVerdict::Skip);
     }
 
     #[test]
