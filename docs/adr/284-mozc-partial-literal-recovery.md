@@ -1,14 +1,14 @@
 ---
 id: ADR-284
 title: |-
-  Mozc の cold 最初の送信で、先頭の文字だけ素通りした部分リテラルを検出して回収する(key_seq の進みの読み直し + Escape + Backspace + 再送)
+  Mozc の cold 最初の送信で、先頭の文字だけ素通りした部分リテラルを検出して回収する(key_seq の進みを期限まで読み直し + Escape + Backspace + 再送)
 summary: |-
   ADR-270 の確認(`MozcComposeCheckFsm`)は、入力中の文字ができれば確認済みとして終わる。`ko` の `k` だけを TIP が見ず `o` から入力中になる型(「kおちら」、BUG-225、2026-10-28 実機)は確認済み扱いで見逃されていた。
-  共有メモリの `key_seq`(TIP が見たキーダウンの通番)の進みが送った文字数より少なければ部分リテラルと判断する。
-  確認の読みは最短 16ms で、2 打目がまだ数えられていないだけのことがある(確認済み 21 回中 2 回、+30ms で揃った)ので、進みが足りないときだけ 30ms 待って読み直し、まだ足りなければ回収する。
-  回収は既存の `RawTsfLiteralRecovery`(`escape_composition: true`): Escape で入力中の文字(TIP が見た分)を捨て、足りない文字数だけ Backspace で文書の素通り分を消し、ローマ字全体を再送する。連続 2 回目は既存の打ち切りで消さない。
+  共有メモリの `key_seq`(TIP が見たキーダウンの通番)の進みが送った文字数より少なければ部分リテラルの疑いとして、確認で終えず毎 tick 読み直す。揃えば(2 打目の処理が遅いだけ)通常の確認。
+  期限(送信から `MOZC_COMPOSE_CHECK_MS`=300ms、全体リテラルと同じ)まで足りず、対象スレッドが応答し、応答確認のあとにもう一度読んでも足りなければ、足りない分が文書へ素通りしたと判断して回収する。
+  回収は既存の `RawTsfLiteralRecovery`(`escape_composition: true`): Escape で入力中の文字を捨て、足りない文字数だけ Backspace で文書の素通り分を消し、ローマ字全体を再送する。連続 2 回目は既存の打ち切りで何も送らない。
 status: |-
-  起草(2026-10-28)。実装済み(PR)。実機は未確認。
+  起草(2026-10-28)。実装済み(PR)。Opus レビュー round 1(Blocker 0・Major 3・Minor 5)を反映し、round 2 の再確認待ち。実機は未確認。
 related_adr:
   - "ADR-270"
 ---
@@ -17,25 +17,30 @@ related_adr:
 
 ## 背景(実測)
 
-2026-10-28 00:33:38 UTC、dragonflyg4(Mozc Readable)。フォーカス移動のあと F2→R で `ko` を送信し、`[mozc-compose] composition confirmed after 15ms (sent 2 chars, key_seq 330→331)`、`settled +30ms ... settled 1`。画面は `kおちら`(BUG-225)。`ti`・`ra` は正常。10-21 の「`dえ`・`kおちら`」「先頭だけ素通りは検出できていない」の実測での確認。
+2026-10-28 00:33:38 UTC、dragonflyg4(Mozc Readable、Windows Terminal 系の窓)。フォーカス移動のあと F2→R で `ko` を送信し、`[mozc-compose] composition confirmed after 15ms (sent 2 chars, key_seq 330→331)`、`settled +30ms ... settled 1`。画面は `kおちら`(BUG-225)。`ti`・`ra` は正常。10-21 の「`dえ`・`kおちら`」「先頭だけ素通りは検出できていない」の実測での確認。
+
+確認が張られる窓は `mozc_compose_check_applies`(`awase-windows-base/src/focus/class_names.rs`)で **Windows Terminal・WezTerm だけ**。物理 F2 でも cold になる(`composition_native_f2_down`、BUG-209)ので、F2 を押すたびの最初の送信が対象になる。
 
 ## 決定
 
-1. **検出**: 確認(`phase >= 1`)の時点で `key_seq − 送信前` が送った文字数(`compose_literal_backs`)に満たなければ、`Done` にせず `COMPOSE_SETTLE_MS`(30ms)待つ。待つ間も後続のキーは既存の保留(`pending_tsf`)で止まっているので、進みは他のキーで増えない。
-2. **判断**(純粋、`state/mozc_shm.rs::judge_settled`): 読み直した進みが送った文字数以上なら通常の確認。1 以上で足りなければ `PartialLiteral { missing }`。0 は矛盾(入力中の文字があるのにキー 0)なので判断しない。
-3. **回収**: `RawTsfLiteralRecovery { backs: missing, escape_composition: true, romaji: 全体 }`。Escape で入力中の文字を捨てるので、Backspace は文書へ出た分(`missing`)だけでよい(入力中の文字の長さはローマ字の長さと一致しない: `o`→`お`)。再送は既存どおり cold の印付けから。
-4. **安全側**: 次は回収しない(`Done` のみ): 入力中の文字が消えている(`phase 0`)・IME が閉じた・読めない・宛先の窓が変わった・対象のスレッドが応答しない(`window_thread_responds`、`Literal` と同じ)・連続 2 回目(`probe_io` の打ち切り)。
+1. **疑い**: 確認(`phase >= 1`)の時点で `key_seq − 送信前` が 1 以上で、送った文字数(`compose_literal_backs`)に満たなければ、`Done` にせず待つ(`settling`)。待つ間も後続のキーは既存の保留(`pending_tsf`)で止まっているので、進みは他のキーで増えない。進みが 0 の矛盾した読みは待たず従来どおり確認で終える(journal に確認が残る)。
+2. **判断**(純粋、`state/mozc_shm.rs::judge_settled`): 進みが送った文字数以上なら通常の確認。1 以上で足りなければ `PartialLiteral { missing }`。0 は矛盾なので判断しない。
+3. **待ち**: 毎 tick(10ms)読み直す。揃えば期限を待たず確認(2 打目の処理が遅いだけ)。足りないままなら送信から `MOZC_COMPOSE_CHECK_MS`(300ms)まで待つ。本物の素通りは何 ms 待っても進みが増えず、遅いだけなら待てば揃う非対称性による(Opus M2)。待ちは後続キーの保留が最大 300ms に延びる代償だが、全体リテラルの回収と同じ。**新しい定数は足さない**(10-21 の観測専用の 30ms 読み直しは撤去)。
+4. **回収**: `RawTsfLiteralRecovery { backs: missing, escape_composition: true, romaji: 全体 }`。Escape で入力中の文字を捨てるので、Backspace は文書へ出た分(`missing`)だけでよい(入力中の文字の長さはローマ字の長さと一致しない: `o`→`お`)。再送は既存どおり cold の印付けから。`facts.idx` は最後の文字の位置にする: 連続 2 回目の諦める分岐は `romaji_after(romaji, idx)` で後ろの文字を送るが、Mozc は全体を 1 回で送るので後ろの文字は TIP が受け取り済みで、送ると `kおお` になる(Opus M3)。
+5. **安全側**: 次は回収しない(`Done` のみ): 入力中の文字が消えている(`phase 0`)・IME が閉じた・読めない・宛先の窓が変わった・対象のスレッドが応答しない(`window_thread_responds`、`Literal` と同じ)・連続 2 回目(`probe_io` の打ち切り、何も送らない)。**応答確認のあとにもう一度読み直し**、揃っていたら回収を取り下げる(確認の間に遅れていた 2 打目が処理されると、古い読みで直前の正しい文字を消す。Opus M1)。
 
-## 数値の根拠(`COMPOSE_SETTLE_MS` = 30)
+## 未確認・限界(実機で測る)
 
-新しい定数ではなく、10-21 に観測専用で置いた読み直しの待ち(30ms)を判断に使うだけ。実測: 確認済み 21 回中 2 回が送った文字数より 1 少なく、+30ms 後は揃った(10-21)。BUG-225 の件は +30ms 後も 1 のまま。
+- 欠落が常に先頭の文字か。末尾の欠落(`k` だけ入力中)は、端末では `o` がシェルへ届き、Escape + Backspace で直る見込み(Opus の読み)だが実測していない。
+- Mozc の候補(サジェスト)表示中は、Escape が入力中の文字を捨てずにサジェストを閉じるだけの可能性がある(共有メモリの `candidate_category`)。その場合は Backspace が入力中の `お` を消し、`k` が残って `kこ`(修正前より悪くはならないが直らない)。カスタムのキーマップで Escape が別の命令なら IME が閉じるおそれもある。
+- 端末で Escape を TIP が受け取らずシェルへ届くと、readline では `ESC` + `Backspace` が M-Backspace(直前の**単語ごと**削除)、vim の挿入モードでは通常モードに抜けて再送がコマンドになる。TIP は `o` を見ているので確率は低いが、起きたときの被害は Backspace 単独より大きい。実機の頻度の観察が要る。
+- 全体リテラル(`ComposeVerdict::Literal`)の連続 2 回目の諦める分岐にも同じ `romaji_after` の欠陥がある(`wo` → `woお`)。実測が無いので本 ADR では触らない(別件)。
+- 部分リテラルの journal 記録は、全体リテラルと `escape_composition=true` と `backs` でしか区別できない(ログの `partial literal` の行で数える)。
 
-## 未確認(実機で測る)
+## 後続の案(予防)
 
-- 欠落が常に先頭の文字か。末尾の欠落では文書の順序が違い、Escape + Backspace で直らない可能性がある。
-- Escape が Chrome・Windows Terminal・Electron で入力中以外の副作用(ダイアログを閉じる等)を起こさないか(GJI の部分リテラル回収で既に使っている)。
-- 回収の再送が再び部分リテラルになるときは、既存の打ち切り(2 回目は消さない)に任せる。
+原因は cold で TIP がまだキーを受け取る側になっていない間に `k` が届くこと。FSM が既に読んでいる `[mozc-focus]`(version 5)で、TIP のキーボードフォーカス取得が送信より後なら送信を待つ柵にすれば、破壊的な回収は要らない。BUG-225 の件の値を見て成立するかを先に測る(本 ADR の回収は、この予防が効くまでの安全網)。
 
 ## 検証
 
-`judge_settled` の単体テスト 3 本。FSM の `settle_step` 4 本は windows-build CI。Opus レビューを通す。
+`judge_settled` の単体テスト 3 本(Linux)。FSM の `settle_step` 4 本は `#[cfg(all(test, windows))]` で windows-build CI(実行される)。Opus レビュー round 1 を反映、round 2 で再確認。
