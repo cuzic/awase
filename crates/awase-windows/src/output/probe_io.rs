@@ -614,6 +614,7 @@ where
                 ProbeAction::CompositionConfirmed {
                     cold_seq,
                     mark_literal_session,
+                    resets_consecutive,
                     facts,
                 } => {
                     let consecutive = io.consecutive_count();
@@ -636,7 +637,8 @@ where
                     // 同じ回収に入り、ESC が入力中の文字を毎回破棄して文字が消えた(擬似窓で 8 回連鎖)。
                     // (従来の「セッション中に一度でも literal 化すると以後ずっと give-up に固定される」regression は、
                     // 語を最後まで確認できればリセットされるので再発しない。)
-                    if mark_literal_session {
+                    // Mozc の最初の 1 キーの確認(BUG-227)は語の確認済み印を付けずに、数えだけ戻す。
+                    if mark_literal_session || resets_consecutive {
                         io.reset_consecutive_count();
                     }
                     if mark_literal_session {
@@ -777,6 +779,28 @@ mod tests {
             last_idx: 0,
             evidence: DetectEvidence::default(),
         }
+    }
+
+    /// BUG-227: Mozc の最初の 1 キーの確認(`mark_literal_session=false`、`resets_consecutive=true`)は連続失敗の数を戻す。
+    /// 戻さないと、以前のリテラルの数え残りで次のリテラルが「連続 2 回目」になり、`s` を消さずに `a` だけ送って `sあ` になる。
+    #[test]
+    fn composition_confirmed_with_resets_consecutive_resets_the_count_without_marking_session() {
+        let io = FakeProbeIo {
+            consecutive: 1,
+            ..FakeProbeIo::default()
+        };
+        let mut machine = make_chrome_machine();
+        let confirmed = |resets_consecutive| ProbeAction::CompositionConfirmed {
+            cold_seq: Generation::INITIAL,
+            mark_literal_session: false,
+            resets_consecutive,
+            facts: test_facts(LiteralVerdict::CompositionConfirmed),
+        };
+        // Chrome の途中の VK の確認(BUG-216): 戻さない。
+        dispatch_for_test(&mut machine, vec![confirmed(false)], &io);
+        assert!(!io.reset_consecutive_called.get());
+        dispatch_for_test(&mut machine, vec![confirmed(true)], &io);
+        assert!(io.reset_consecutive_called.get());
     }
 
     #[test]
