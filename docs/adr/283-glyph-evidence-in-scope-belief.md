@@ -19,7 +19,8 @@ status: |-
   既知の限界参照)の後、当初は計画(§5)の観測のみの G2 を省いて本番の候補 Z(`scope_shadow`)へ直接配線したが、
   `opus-adversarial-consult` のレビューで Blocker 3件・Major 5件(`observe`設定の約束が崩れる・フォーカス追跡の柵が無い・
   D4の判定誤り等、§9.2)が見つかり、所有者判断で**観測のみ(`ScopeBelief`のクローンでの試算、journal記録のみ)の形へ戻した**
-  (§9.3)。トリガーは T1(前面窓の変化)のみ実装、T2〜T4・`StateChange`(D2-1)は未実装。既定(`[indicator_evidence] glyph = off`)の
+  (§9.3)。観測のみ版の round2 レビューでも、試算の質に関わる Major 2件(D2-1の柵が試算で一度も効かない・`would_flip_z`が
+  値以外の変化も数える)が見つかり修正済み(§9.4)。トリガーは T1(前面窓の変化)のみ実装、T2〜T4・`StateChange`(D2-1)は未実装。既定(`[indicator_evidence] glyph = off`)の
   利用者には挙動の変化は無く、オプトインした利用者も belief は変わらない(journal に試算が残るだけ)。G3(`unobserved` への格上げ・
   旧分岐の削除)は未着手のまま。
   **所有者の決定(2026-10-27)**: U-G1 は T2・T3・T4 を足す(既定は off のオプトインのまま)。読む時刻は事象から 1.5 秒以上後(T1 は 1500/3000ms。窓の種類ごとの実測の遅れで早めるのは実測が揃うまでしない〈U-G6〉)。鮮度は事象ベース(U-G2、提案どおり)。2 回の一致の要否と D3-b の (a)/(b) は G1 のオラクルで決める。U-G5 は静的な imm32-unavailable と tsf-native を最初から対象に含める。U-G3 の CI の実測(実 Chrome と Windows Terminal)は G1 の後に足す。G1 は #896(核)・#897(オラクル)。
@@ -447,13 +448,36 @@ G3 で本番配線する、という2段階だった。この計画は、ADR 起
 - **architecture_guard の更新**: `indicator_glyph_shadow_is_observe_only_and_opt_in`(`platform_state` への接触を 7→10 箇所、
   `scope_shadow_glyph_preview`・`focus_kind`・`scope_shadow_facts` を新しい正当な入口として追加)・
   `platform_state_pub_fns_are_fixed_and_exclude_recorders`(`scope_shadow_glyph_preview` を許可リストに追加)。
-- **未解決・既知の限界(Opus レビュー指摘のうち、今回のスコープでは直していないもの)**:
-  - **M1(`StateChange` 未配線)**: `conv_mutation::bump`・`probe_actuation_fence::bump` 等、D2-1 の「状態を変えうる事象」は
-    まだ Z へ渡していない。試算(`would_decide_z`・`would_flip_z`)はこれらの事象を考慮しない状態での参考値に留まる。
-  - **M2(オラクルの前提と本番の食い違い)**: #897(G1オラクル)は未マージ・golden 未コミットで、オラクルの契機・読み時刻は
-    本番(T1のみ・900/2500ms)と異なる。§9.1 の「合格条件を満たした」は、本番そのままの構成での検証ではない。
-  - **M5(入口条件の再評価)**: ADR-233「Medium が High を追い越さない」をこの試算が緩めているかは未検討。
-  - `preview_glyph_for_z`(殻側の D4・D5・D3-b 判定)を直接演習するテストが無い(Windows 専用コードで、TSF/フォーカス追跡の
-    実行時状態に依存するため、ホスト上の単体テストでは組みにくい)。核(`scope_belief.rs::on_glyph`)側は G1 のオラクルで
-    厚く検証済み。
-  - 実機での試算の確認(journal の集計)は今後の課題。
+
+### 9.4 round2 レビューで見つかった、試算の質に関わる問題(修正済み)
+
+観測のみに戻した版をもう一度 `opus-adversarial-consult` でレビューしたところ、belief には影響しない(Blocker ではない)が
+`would_decide_z`/`would_flip_z` の値そのものが G3 判断の材料として使えない問題が 2 件見つかり、修正した:
+
+- **R2-M1(試算では D2-1 の柵が一度も効かない)**: 本番の `scope_shadow` は方針が無いので `note_state_event`(入場・明示操作で
+  `last_event_ms` を記録する核の関数)が早期 return していた。試算のクローンは「後から」方針を付けるので、`last_event_ms` が
+  一度も記録されておらず、D2-1 の柵(証拠の時刻より後に事象があれば捨てる)が試算では常に素通りしていた。入場直後(1回目、
+  900ms)の読みが毎回「有効」と記録され、`would_flip_z` が水増しされていた。**修正**: `note_state_event` を、`last_event_ms` の
+  記録は方針の有無に関わらず行い、字形専用の `pending_glyph`/`glyph_stale` だけ方針があるときに限るよう分けた(`last_event_ms` を
+  読むのは `on_glyph` だけなので、方針なしの本番の挙動は変わらない)。核の単体テストを1本追加(方針なしで入場→方針を付けた
+  クローンで試算→入場直後の読みが正しく捨てられることを確認。修正前は実際にこのテストが落ちることを確認済み)。
+- **R2-M2(`would_flip_z` が値ではなく `ScopeView` 全体の変化を見ていた)**: 字形の読みが受け入れられると、値が同じでも根拠
+  (`basis`)が `z-glyph` に変わり、打鍵の追跡(`track`)も変わる。`ScopeView` の `PartialEq` はこれらも含むため、字形が
+  **正しく**今の値を読んだだけでも `would_flip_z = true` になっていた(「字形が Z の値を変えた件数」が求まらない)。
+  **修正**: 比較を `(open, input_mode)` だけに絞った。
+
+**今回直していない残り(§9.1〜§9.3 と合わせた最終的な既知の限界)**:
+- **M1(`StateChange` 未配線)**: `conv_mutation::bump`・`probe_actuation_fence::bump` 等、D2-1 の「状態を変えうる事象」のうち
+  明示操作・入場以外(欄の移動・awase の送信)は、まだ Z(本番・試算のどちらにも)へ渡していない。
+- **M2(オラクルの前提と本番の食い違い)**: #897(G1オラクル)は未マージ・golden 未コミットで、オラクルの契機・読み時刻は
+  本番(T1のみ・900/2500ms)と異なる。§9.1 の「合格条件を満たした」は、本番そのままの構成での検証ではない。
+- **M5(入口条件の再評価)**: ADR-233「Medium が High を追い越さない」をこの試算が緩めているかは未検討。
+- **R2-m1(`would_decide_z` が核の拒否理由を区別できない)**: 柵・`SkipOnMsIme`・`accepts` の拒否のどれで捨てられても
+  `would_decide_z = Some(true)`・`would_flip_z = Some(false)` になり、「受け入れたが値は同じ」としか分からない。核に
+  `GlyphPreview` 列挙(`Ineligible`/`Fenced`/`Skipped`/`Rejected`/`Applied{value_changes}`)を足す案が提案されたが、今回は未実装。
+- **R2-m2(D4 の基準時点)**: ADR の定義は「読みの基準の時点と報告する時点の両方」で `FocusKind` を確かめるが、実装は報告の
+  時点だけ。2回目の読みで、1回目の処理時点の `FocusKind` も確かめる baseline が無い。
+- `preview_glyph_for_z`(殻側の D4・D5・D3-b 判定)を直接演習するテストが無い(Windows 専用コードで、TSF/フォーカス追跡の
+  実行時状態に依存するため、ホスト上の単体テストでは組みにくい)。核(`scope_belief.rs::on_glyph`・`note_state_event`)側は
+  G1 のオラクルと単体テストで厚く検証済み。
+- 実機での試算の確認(journal の集計)は今後の課題。

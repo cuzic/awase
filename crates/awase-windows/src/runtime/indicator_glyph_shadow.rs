@@ -17,7 +17,7 @@
 //!
 //! **ADR-283 G2(観測のみ、2026-10-28): 候補 Z([`crate::state::scope_belief::ScopeBelief`]、本番の `engine_belief()` の
 //! 既定の入力源)へ、見本の表に照合してラベルが付いた読み(`LabelReading::Hit`)を今入れたら、という試算を
-//! `[preview_glyph_for_z]` が journal に記録する(`ImeStateHub::scope_shadow_glyph_preview`、唯一の入口。副作用なし。
+//! `preview_glyph_for_z` が journal に記録する(`ImeStateHub::scope_shadow_glyph_preview`、唯一の入口。副作用なし。
 //! 本番の `scope_shadow` 自体には `with_glyph` を付けない。[`crate::state::scope_belief::GlyphPolicy`] を付けたクローンで
 //! 試算するだけ)**。当初(2026-10-28)は直接 `scope_shadow` へ書く案で実装したが、Opus レビューで複数の正しさの問題
 //! (フォーカス追跡が新しい窓に追いついたかの柵が無い・`observe` 設定の「belief には入れない」という約束が崩れる等)が
@@ -168,7 +168,8 @@ fn ime_label() -> &'static str {
 }
 
 /// ADR-283 D3-b: 今の窓が MS-IME 本体と同定済みか(`focus_tracking.rs::scope_shadow_window_facts` の
-/// `inherit_open_on_entry` と同じ判定)。
+/// `inherit_open_on_entry` の前半 2 項〔WT 判定〕と同じ判定。`inherit_open_on_entry` 自身は後半に `imm_trusted` も
+/// 含むが、ここでは含めない)。
 fn glyph_ms_ime_native() -> bool {
     use crate::tsf::observer::{tsf_obs, ActiveImeKind};
     matches!(tsf_obs().active_ime_kind(), ActiveImeKind::MicrosoftIme)

@@ -426,6 +426,10 @@ impl ImeStateHub {
     ///
     /// journal への記録は呼び出し元(`crate::runtime::indicator_glyph_shadow::preview_glyph_for_z`)の責任。belief は
     /// 読むだけで書かない。閉ループのハーネス(`tests/support/harness.rs`)からはまだ呼んでいない(2026-10-28 時点)。
+    ///
+    /// 比較は `(open, input_mode)` だけ(2026-10-28、Opus round2 R2-M2 の指摘: `ScopeView` を丸ごと比べると、字形が
+    /// 読み取り時の値と同じ値を正しく読んだだけでも、根拠〔`basis`〕が `z-glyph` に変わる・打鍵の追跡〔`track`〕が
+    /// 変わることで「違う」と判定されてしまい、「字形が Z の値を変えるか」を測れない)。
     #[must_use]
     pub fn scope_shadow_glyph_preview(
         &self,
@@ -440,7 +444,8 @@ impl ImeStateHub {
         let before = self.scope_shadow.view();
         let mut trial = self.scope_shadow.clone().with_glyph(GLYPH_POLICY);
         trial.evolve(event);
-        Some(trial.view() != before)
+        let after = trial.view();
+        Some((after.open, after.input_mode) != (before.open, before.input_mode))
     }
 
     /// 旧の belief と Z の shadow を比べ、組が変わったとき(`always` なら必ず)journal に残す。食い違いの始まりと終わりは

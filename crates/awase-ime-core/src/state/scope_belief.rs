@@ -296,13 +296,19 @@ impl ScopeBelief {
         }
     }
 
-    /// ADR-283 D2-1・D2-3: 状態を変えうる事象をスコープの行に記録し、字形の主張を stale にする。字形を入れないときは何もしない。
+    /// ADR-283 D2-1・D2-3: 状態を変えうる事象をスコープの行の `last_event_ms` に記録する(**字形の方針が無くても記録する**。
+    /// 2026-10-28、Opus round2 R2-M1 の指摘: `scope_shadow_glyph_preview` が字形の方針を付けたクローンで試算するとき、
+    /// 本番の `scope_shadow`(方針なし)がこの時刻を記録していないと D2-1 の柵〔証拠の時刻より後に事象があれば捨てる〕が
+    /// 試算では一度も効かず、`would_decide_z`/`would_flip_z` が水増しされる)。`last_event_ms` を読むのは `on_glyph` だけ
+    /// なので、方針なしの本番の挙動はこの変更で変わらない。字形の主張を stale にする(`pending_glyph`・`glyph_stale`)のは、
+    /// 方針があるときだけ(字形を入れないときは字形由来の主張が無いので意味が無い)。
     fn note_state_event(&mut self, scope: ScopeKey, at_ms: u64) {
-        let Some(policy) = self.glyph else {
-            return;
-        };
+        let policy = self.glyph;
         let row = self.row_mut(scope);
         row.last_event_ms = Some(row.last_event_ms.map_or(at_ms, |e| e.max(at_ms)));
+        let Some(policy) = policy else {
+            return;
+        };
         row.pending_glyph = None;
         if policy.stale {
             row.glyph_stale = true;
@@ -1344,6 +1350,28 @@ mod tests {
         assert_eq!(
             scope_event_of(&e, &z.view(), FocusEpoch::default(), 1),
             None
+        );
+    }
+
+    /// ADR-283 G2(観測のみ、2026-10-28 Opus round2 R2-M1): 本番の Z は方針を持たないが、`last_event_ms` は
+    /// 方針が無くても記録されている必要がある。そうでなければ、後から方針を付けたクローンで字形を試算しても、
+    /// D2-1 の柵(証拠の時刻より後に事象があれば捨てる)が一度も効かず、入場直後の古い読みが「有効」と誤判定される。
+    #[test]
+    fn state_events_are_recorded_even_without_a_glyph_policy_so_a_trial_clone_can_fence_them() {
+        let mut z = ScopeBelief::new(170); // 本番と同じ、方針なし
+        focus(&mut z, 1, UNREADABLE, 1000); // 入場(方針が無くても last_event_ms は残るはず)。UNREADABLE は on_lean=true(既定 ON)。
+        let mut trial = z.clone().with_glyph(POLICY);
+        // 入場(1000)の直後、柵の区間 (evidence_ms, ...] の evidence_ms がまだ 1000 未満の、閉と誤読する古い字形。
+        glyph(
+            &mut trial,
+            BeliefLabel::Closed,
+            1000 + POLICY.lag_ms - 1,
+            false,
+        );
+        assert!(
+            trial.view().open,
+            "入場直後の読みは D2-1 の柵で捨てられ、既定の ON(on_lean) のままのはず \
+             (last_event_ms が方針なしの間も記録されていないと、この閉の誤読がそのまま通ってしまう)"
         );
     }
 
