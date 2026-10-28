@@ -168,8 +168,8 @@ fn ime_label() -> &'static str {
 }
 
 /// ADR-283 D3-b: 今の窓が MS-IME 本体と同定済みか(`focus_tracking.rs::scope_shadow_window_facts` の
-/// `inherit_open_on_entry` の前半 2 項〔WT 判定〕と同じ判定。`inherit_open_on_entry` 自身は後半に `imm_trusted` も
-/// 含むが、ここでは含めない)。
+/// `inherit_open_on_entry` の前半 2 項(`ActiveImeKind::MicrosoftIme` か・`ms_ime_native_identified()`)と同じ判定。
+/// `inherit_open_on_entry` 自身はこの後に WT(Windows Terminal)判定・`imm_trusted` も掛けるが、ここでは含めない)。
 fn glyph_ms_ime_native() -> bool {
     use crate::tsf::observer::{tsf_obs, ActiveImeKind};
     matches!(tsf_obs().active_ime_kind(), ActiveImeKind::MicrosoftIme)
