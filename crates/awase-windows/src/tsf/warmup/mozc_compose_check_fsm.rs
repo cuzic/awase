@@ -168,6 +168,7 @@ impl MozcComposeCheckFsm {
                 ProbeAction::CompositionConfirmed {
                     cold_seq,
                     mark_literal_session: false,
+                    resets_consecutive: true,
                     facts: facts(LiteralVerdict::CompositionConfirmed, seq),
                 },
                 ProbeAction::Done,
@@ -217,6 +218,7 @@ impl MozcComposeCheckFsm {
                 ProbeAction::CompositionConfirmed {
                     cold_seq,
                     mark_literal_session: false,
+                    resets_consecutive: true,
                     facts: facts(LiteralVerdict::CompositionConfirmed, seq),
                 },
                 ProbeAction::Done,
@@ -530,6 +532,7 @@ mod tests {
                 ProbeAction::CompositionConfirmed {
                     cold_seq: Generation::INITIAL,
                     mark_literal_session: false,
+                    resets_consecutive: true,
                     facts: facts(LiteralVerdict::CompositionConfirmed, None),
                 },
                 ProbeAction::Done,
@@ -660,6 +663,7 @@ mod tests {
             [
                 ProbeAction::CompositionConfirmed {
                     mark_literal_session: false,
+                    resets_consecutive: true,
                     ..
                 },
                 ProbeAction::Done

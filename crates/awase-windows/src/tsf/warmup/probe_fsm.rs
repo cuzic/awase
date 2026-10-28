@@ -161,9 +161,15 @@ pub(crate) enum ProbeAction {
     /// スキップ対象としてマークする（`tsf::observer::mark_literal_session_confirmed`、
     /// BUG-39 で世代付きに変更）。per-VK confirm では各 VK の confirm で
     /// `mark_literal_session=false`、全 VK 確認済みの最終確認でのみ `true` を使う。
+    ///
+    /// `resets_consecutive=true` の場合、`mark_literal_session` とは別に連続失敗の数を 0 に戻す(BUG-227)。
+    /// Mozc は最初の 1 キーだけを確かめるので `mark_literal_session` を使わない(語の確認済み印を付けると次の語の
+    /// 確認が飛ぶ)が、確認できたなら以前のリテラルとは連続しない。戻さないと、13 分前のリテラルの数え残りで
+    /// 次のリテラルが「連続 2 回目」になり、`s` を消さずに `a` だけ送って `sあ` になった。
     CompositionConfirmed {
         cold_seq: Generation,
         mark_literal_session: bool,
+        resets_consecutive: bool,
         facts: LiteralDetectFacts,
     },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
@@ -338,6 +344,7 @@ fn ignored_later_suspicion(
     ProbeAction::CompositionConfirmed {
         cold_seq,
         mark_literal_session: false,
+        resets_consecutive: false,
         facts,
     }
 }
@@ -438,6 +445,7 @@ pub(crate) async fn run_per_vk_confirm(
                 pending_confirm = Some(ProbeAction::CompositionConfirmed {
                     cold_seq,
                     mark_literal_session: false,
+                    resets_consecutive: false,
                     facts,
                 });
             }
@@ -529,6 +537,7 @@ pub(crate) async fn run_per_vk_confirm(
             ProbeAction::CompositionConfirmed {
                 cold_seq,
                 mark_literal_session: true,
+                resets_consecutive: false,
                 facts: LiteralDetectFacts {
                     verdict: LiteralVerdict::CompositionConfirmed,
                     route: DetectRoute::CheckNow,
