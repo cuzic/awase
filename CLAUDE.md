@@ -67,7 +67,7 @@ even when the code is correct — that failure is expected here, not a signal).
 
 ```sh
 # Custom dylint lints (layer-boundary enforcement — see Architecture below)
-cargo install cargo-dylint dylint-link --version 6.0.0 --locked   # once
+cargo install cargo-dylint dylint-link --version 6.3.0 --locked   # once
 DYLINT_RUSTFLAGS="-D warnings" cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc
 
 # Mutation testing (slow — validity of tests, not coverage)

@@ -170,7 +170,7 @@ jobs:
           cache-directories: /home/runner/.cache/cargo-xwin
       - uses: taiki-e/install-action@cargo-xwin
       - name: Install cargo-dylint
-        run: cargo install cargo-dylint dylint-link --version 6.0.0 --locked
+        run: cargo install cargo-dylint dylint-link --version 6.3.0 --locked
       # dylint には windows-cross-check ジョブの `cargo xwin build/clippy` のような
       # 専用サブコマンドが無いため、`cargo xwin env` が出力するクロスリンク用の
       # 環境変数（リンカ・Windows SDK/CRT のパス指定）を同じステップ内で `eval` して
