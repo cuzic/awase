@@ -243,6 +243,29 @@ Windows のタスクバーは入力インジケーター(「あ」/「A」など
 使ったスパイク(`crates/awase-windows/examples/spike_printwindow_edge_cases_probe.rs`、ワークフロー
 `.github/workflows/printwindow-edge-cases-probe.yml`)は結果記録後に撤去する(撤去コミット: 本 PR 内)。
 
+#### 決定5 追補3: フォーカス非経由の変化を push で検知できるか(CTF ALPC から派生、2026-10-28 測定)
+
+決定5の①(`EVENT_SYSTEM_FOREGROUND`/`EVENT_OBJECT_FOCUS`)は**フォーカス変化が起点**であり、言語バー操作等でフォーカスが変わらずにモードだけ変わるケースを拾えない。
+この隙を、**インジケーター要素自身の変化を push で受ける**(完全に受動的、文書化された公開 API のみ、他プロセスへの呼び出し・注入なし)ことで埋められるかを測った。
+
+- **経緯**: ADR-107 付録で CTF ALPC プロトコル自体の到達性を測った際、「実際に IME 状態を読むには `callstub` 等で対象プロセスに関数を呼ばせる必要があり、exploit chain の構築と同種の作業になる」
+  と判明し、それより大幅に軽い完全に受動的な経路を検討する流れでこの測定に至った。
+- **1回目(`SetWinEventHook(EVENT_OBJECT_NAMECHANGE|VALUECHANGE)` を `Shell_TrayWnd` の所有プロセスにスコープ、CI run 40629595339)**: GJI で 6 打鍵・2 回の実変化すべてで検知ゼロ、`NOISE`(インジケーター以外の名前解決失敗)も 0 件。
+- **原因確認(`spike_indicator_owner_pid_probe`、CI run 40632156799)**: `IUIAutomationElement::CurrentProcessId` はタスクバー(`explorer.exe`)と一致していた(スコープは的外れではなかった)が、
+  `CurrentNativeWindowHandle=HWND(0x0)`。インジケーターは **HWND を持たない UIA 独自の論理要素(XAML/WinUI のオートメーションピア)**であり、`SetWinEventHook` の `EVENT_OBJECT_*` は
+  `WM_GETOBJECT` 経由の古典的 MSAA(HWND に紐づく)が前提なので届かない。
+- **2回目(`IUIAutomation::AddPropertyChangedEventHandler`〈`UIA_NamePropertyId` を監視〉に差し替え、CI run 40632943535)**: GJI で **6 打鍵すべてを検知**。打鍵→検知の遅延は 56〜80ms
+  (ground truth の TSF compartment POLL は 3〜52ms)で、ground truth と同じ桁。`SetWinEventHook` 版が 0/6 だったのに対し 6/6。
+  ただし `new_value` は常に固定文字列(ツールチップ文)で、**「何かが変わった」ことしか伝えない(どう変わったかは運ばない)**。1回の実変化に対し通知が2回連続で来る(デバウンスが要る)。
+  MS-IME 本体側は CI の入力方式設定(TIP の GUID)が適用できておらず未測定(ground truth の POLL も無変化のまま。設定側の不具合、否定的な結果ではない)。
+- **`Name` 以外のプロパティも状態を運ぶか(CI run 40634212172)**: `GetCurrentPropertyValue` で `Value`/`LegacyIAccessibleValue`/`LegacyIAccessibleState`/`LegacyIAccessibleDescription`/
+  `HelpText`/`IsOffscreen` を通知の瞬間にまとめて読んだが、GJI の 6 打鍵・16 回の通知すべてで**完全に同じ値**(`Value`/`LegacyValue`/`LegacyDescription`/`HelpText` は空文字列、
+  `LegacyState=1048576`〈`STATE_SYSTEM_FOCUSABLE` のみの固定フラグ〉、`IsOffscreen=0`)。**UIA が持つ読み取り可能なプロパティのどれにも IME モードは入っていない**(本ADRが字形〈見た目の画像〉を
+  読む方式を採った理由そのものを再確認した形)。UIA のイベント通知は「何かが変わった」の push トリガーとしてのみ使え、内容は引き続き字形読み取り(決定1)に委ねる。
+- **結論**: 決定5の隙を埋める押し込み口として**成立する**。`AddPropertyChangedEventHandler` を「字形を今すぐ再読みしてよい」という push トリガーに使い、
+  実際の状態の読み取りは既存の字形読み取りワーカー(本ADR決定1・決定5)に委ねる形が現実的。本番配線(決定6の belief 入り口条件と同じ扱いが必要)は別途判断する。
+  検証用のスパイク3本・CI workflow は本追記と同時に削除した(使い捨てブランチ `exp/indicator-namechange-probe`、最終コミットは本追記の git blame 参照、`.claude/rules/one-off-verification-workflows.md`)。MS-IME 本体の再測定は TIP 設定の修正から。
+
 ### 決定 6: belief への入れ方 — 段階 1(shadow)と、段階 2 の入口条件
 
 - **段階 1(shadow)**: belief には入れない。journal と不具合報告(ADR-148 型の allowlist: `glyph_probe { env_match, hits, misses, reason 別件数 }`。字形の画像は環境固有で個人情報ではないが、
