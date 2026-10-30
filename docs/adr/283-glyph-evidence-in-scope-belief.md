@@ -598,3 +598,35 @@ T2(欄の移動)・T3(モード系の打鍵)・T4(途切れ)は、いずれも�
   `would_decide_z`/`would_flip_z`(真の件数)を追加し、不具合報告(`BugReportIndicatorGlyphSummary`)にも同じ
   フィールドを追加した(旧版の報告との互換は `#[serde(default)]`)。
 - belief には一切書かない(観測のみの枠は変えていない)。集計の配線だけを直した。
+
+### 10.6 本番コードパスでの配線確認(2026-10-30、CI実測)
+
+§10.5 の修正が単独probe(§10.4 の UIA push 通知の原理確認)だけでなく、**awase.exe 本体**の
+コードパスで実際に機能するかを GitHub Actions(windows-latest)で確認した。one-off ブランチ
+`exp/glyph-push-trigger-ci-verify`(結果記録後に削除、`.claude/rules/one-off-verification-workflows.md`)
+で以下を実施:
+
+- `config.toml` に `[indicator_evidence]\nglyph = "observe"\nglyph_push_trigger = true` を追加した
+  awase.exe を実際に起動(`RUST_LOG=debug`)。
+- Mozc Readable を入力方式にし、`typing_stress.exe --form=edit --mode=reopen --trials=4
+  --reopen-gap=600 --activate-gji --mozc` で物理 IME OFF→ON を4回繰り返させた(push 通知の
+  デバウンス500ms・読み取り遅延1500msの両方を超える間隔)。
+- `dist\awase.log` を確認: UIA push 通知登録のログの後、4回の OFF→ON それぞれで
+  `[indicator-glyph] UIA push notify → glyph read requested` → `capture_bgra: via PrintWindow` →
+  `[indicator-glyph] seq=... verdict="captured" ... would_scope="none" would_decide_z=false` という
+  journal 行が実際に出力された(run 41025377246、例: `seq=74 elapsed_ms=14140 verdict="captured"
+  width=32 height=48 dots=485 ... belief_open=true reading="kana" ... collected=false table_size=12
+  would_scope="none" would_decide_z=false`)。
+- tracing は `Option` フィールドが `None` だとキー自体を省略するため、`would_report`/`would_decide`/
+  `would_flip`/`would_flip_z`(ADR-273 D2・ADR-283 G2 のうち今回の条件では該当しなかった側)は
+  この run のどの行にも出ていない。これは欠落ではなく「該当しない」の表現であり、`would_scope`/
+  `would_decide_z` が実際に値を持って出ている(=§10.5 の配線が本番コードパスで機能している)ことが
+  このrunで確認できた一次情報。
+- 今回の条件(定常的な GJI family/kana 入力)では `would_scope` は常に `"none"`、`would_decide_z` は
+  常に `false` だった。実際に `true`/非`"none"` になる条件(字形とbeliefの不一致・曖昧一致時の試算)は
+  未確認のまま — これは実機での長期集計(§10.5 冒頭の目的)で初めて意味のある分布が得られる想定であり、
+  CIの数回の打鍵では確認しない。
+
+一連の試行錯誤(layout 相対パスの解決失敗、tracing の Option 省略仕様による誤判定)も含め、
+ワークフロー全文は `exp/glyph-push-trigger-ci-verify`(削除済み、run 41024348045→41024863800→41025377246)
+の履歴に残っている。
