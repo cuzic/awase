@@ -24,8 +24,12 @@
 //! 見つかり、観測のみの案(当初「別インスタンスが要って重い」と判断していたが、実際はクローンで十分軽い)へ戻した。
 //! D4(テキストの欄の読みか、`FocusKind::TextInput` 限定)・D5(窓の信頼、Z 自身の `scope_shadow_facts()` を読む)・
 //! D3-b(MS-IME本体か)を殻側で判定し、旧経路と同じフォーカスの同一性の柵(`glyph_read_fence`)を通った読みだけ試算する。
-//! トリガーは今のところ前面窓の変化(T1)だけ(ADR-283のT2〜T4は未実装)。`StateChange`(欄の移動・モード系打鍵)は
-//! まだ核へ渡していない(ADR-283 D2-1、今後の課題)。
+//!
+//! トリガーは、前面窓の変化(T1、`indicator_glyph_on_foreground`)と、ADR-283 §10(2026-10-29・10-30)の
+//! UIA push 通知(T2〜T4 共通、`indicator_glyph_on_push_notify`)の 2 つ。T2(欄の移動)・T3(モード系の打鍵)・
+//! T4(途切れ)を個別のプロキシ事象(欄移動検知・モードキー押下・打鍵途切れタイマー)で配線する計画(ADR-283 §2 D1)は、
+//! インジケーター要素自身の `Name` の変化を push で直接観測できることが分かったため(ADR-261 決定5追補3)、
+//! この push 通知 1 本に統合した。`StateChange`(ADR-283 D2-1 の核の柵)自体はまだ核へ渡していない(今後の課題)。
 //!
 //! 有効なのは `[indicator_evidence] glyph` の実効の段階が `observe` 以上（既定は off のオプトイン。ADR-271）のときだけ。反映は再起動後
 //! （フックと読み取りスレッドは起動時に 1 度だけ作る。`app/bootstrap.rs`）。候補 Z への試算(上記)もこの設定に従う:
@@ -57,6 +61,13 @@ const SAMPLES_FILENAME: &str = "glyph_samples.json";
 const READ_DELAYS_MS: [u16; 2] = [900, 2500];
 /// 前面窓の変化の受け付け間隔の下限（Alt+Tab の連打で依頼が溜まらないように）。
 const MIN_TRIGGER_INTERVAL_MS: u64 = 3000;
+/// ADR-283 §10(T2〜T4 共通の push トリガー): 通知を受けてから取り込むまでの待ち（D1 の `R` = 1500ms。字形の遅れ
+/// 〔最大 0.68 秒、ADR-261〕より長い。T1 と違って 1 回だけ読む（push 自体が「実際に変わった」ことを伝えるので、
+/// T1 の 2 回読み〔900/2500ms〕のような確認読みは不要、ADR-283 §10.2）。
+const PUSH_READ_DELAY_MS: u16 = 1500;
+/// push 通知のデバウンス（ミリ秒）。1 回の実変化に対し通知が 2 回連続で来る（ADR-261 決定5追補3の実測）ため、
+/// 直前の通知からこの間隔未満の通知は同じ変化とみなして読み取りを起こさない。
+const PUSH_DEBOUNCE_MS: u64 = 500;
 /// 結果待ちの依頼の上限（これを超えて溜まっていたら新しい依頼は出さない）。
 const MAX_PENDING: usize = 4;
 /// 見本に無い字形の形をログに出す上限（起動ごと。同じ形は 1 度だけ）。
@@ -88,6 +99,8 @@ pub(super) struct IndicatorGlyphShadow {
     /// （前面窓の変化の通知はフォーカス追跡より先に届くので、依頼の時点ではなく、追跡が追いついた後の 1 回目の時点を基準にする）。
     /// 新しい依頼のたびに消す（1 回目が取り込めなかったときは基準が無く、2 回目は報告しない）
     baseline: Option<(isize, FocusFence)>,
+    /// ADR-283 §10: 直前に受け付けた push 通知の時刻（デバウンス判定用、`PUSH_DEBOUNCE_MS` 未満の通知は捨てる）。
+    last_push_notify: Option<Instant>,
     /// 診断: 見本に無い字形（`TooFar`/`Ambiguous`）の形をログに出した指紋（同じ形は 1 度だけ。上限あり）
     miss_shapes: std::collections::HashSet<u64>,
     /// 見本の表（環境指紋別。矩形の大きさ〔DPI に比例〕・背景の明暗・IME の種類・取り込み方式の版）。内蔵の共通の見本で始め、
@@ -111,6 +124,7 @@ impl IndicatorGlyphShadow {
             last_trigger: None,
             last_capture: None,
             baseline: None,
+            last_push_notify: None,
             miss_shapes: std::collections::HashSet::new(),
             tables: HashMap::new(),
             store: GlyphSampleFile::default(),
@@ -402,6 +416,49 @@ impl super::Runtime {
         self.indicator_glyph.last_capture = None;
         self.indicator_glyph.baseline = None;
         tracing::debug!("[indicator-glyph] foreground changed → glyph reads requested");
+    }
+
+    /// ADR-283 §10: `WM_INDICATOR_GLYPH_PUSH_NOTIFY`（インジケーター要素自身の `Name` の変化、
+    /// `observer::indicator_glyph` の UIA push）から呼ぶ。T2〜T4(欄の移動・モード系の打鍵・途切れ)の個別の
+    /// プロキシ事象配線の代わりに、この push 通知 1 本を共通トリガーとして使う。
+    ///
+    /// 前置きのフィルタ: 有効・デバウンス(`PUSH_DEBOUNCE_MS` 未満の連続通知は同じ変化とみなして捨てる)・
+    /// 結果待ちが溜まっていない。通ったときだけ、今の前面窓を基準に 1 回だけの取り込みの依頼を送る
+    /// （T1 と違い 2 回読まない。push 自体が「実際に変わった」ことを伝えるので確認読みは不要、§10.2）。
+    /// 何も変えない（観測のみ、belief には書かない。結果は既存の `indicator_glyph_on_result` が処理する）。
+    pub(crate) fn indicator_glyph_on_push_notify(&mut self) {
+        let Some(tx) = self.indicator_glyph.tx.clone() else {
+            return;
+        };
+        let now = Instant::now();
+        let since_last_ms = self
+            .indicator_glyph
+            .last_push_notify
+            .map(|t| u64::try_from(now.duration_since(t).as_millis()).unwrap_or(u64::MAX));
+        if since_last_ms.is_some_and(|ms| ms < PUSH_DEBOUNCE_MS)
+            || self.indicator_glyph.pending.len() + 1 > MAX_PENDING
+        {
+            return;
+        }
+        self.indicator_glyph.last_push_notify = Some(now);
+        let foreground = crate::observer::indicator_glyph::foreground_window_value();
+        if tx
+            .send(GlyphReadRequest {
+                delay_ms: PUSH_READ_DELAY_MS,
+            })
+            .is_err()
+        {
+            // ワーカーが終了している。以後は何もしない。
+            tracing::warn!("[indicator-glyph] worker is gone; shadow disabled");
+            self.indicator_glyph.tx = None;
+            self.indicator_glyph.pending.clear();
+            return;
+        }
+        self.indicator_glyph.pending.push_back(Pending {
+            foreground,
+            delay_ms: u32::from(PUSH_READ_DELAY_MS),
+        });
+        tracing::debug!("[indicator-glyph] UIA push notify → glyph read requested");
     }
 
     /// 読み取りワーカーの結果（`WM_INDICATOR_GLYPH_READ`）を受け、照合・収集して journal に残す。何も変えない。

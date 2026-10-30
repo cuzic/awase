@@ -21,6 +21,17 @@
 //! `PrintWindow` 経路では、覆われていても `Shell_TrayWnd` 自身の内容を返す可能性があるため、この「覆われたら Miss」
 //! という前提が成り立たない場合がある。全画面アプリの手前での DWM 側の描画の鮮度（古い内容のまま返るか）は未測定
 //! （ADR-261 決定8 の既知の限界）。
+//!
+//! **ADR-283 §10(2026-10-29・10-30): T2〜T4 の共通トリガーとして、インジケーター要素自身の `Name` プロパティの
+//! 変化を UIA push（`IUIAutomation::AddPropertyChangedEventHandler`）で受ける**（ADR-261 決定5追補3の実測を本番へ
+//! 配線。GJI で 6/6 検知・遅延 56〜80ms、`SetWinEventHook` 系は HWND を持たない UIA 論理要素には届かず不採用）。
+//! 読み取りワーカーのスレッド（[`spawn_indicator_glyph_worker`]）自身が、起動時に 1 度だけ
+//! [`find_indicator_element`] で要素を見つけて登録する（UIA のイベント配送は呼び出し元スレッドのメッセージポンプを
+//! 要求しない。実測〔CI run 40632943535〕で、登録元スレッドが `SendInput` の間隔待ちで休止中でも通知が届くことを確認
+//! 済み）。登録に失敗しても T1 の動作には影響しない（ログだけ、フェイルセーフ）。通知は `WM_INDICATOR_GLYPH_PUSH_NOTIFY`
+//! でメインスレッドへ渡し、実際の字形の読み取りは [`Runtime::indicator_glyph_on_push_notify`]（`runtime/indicator_glyph_shadow.rs`）
+//! が既存の取り込み依頼（[`GlyphReadRequest`]）として送る。`new_value` 自体は状態の内容を運ばない（固定文字列）ため、
+//! 「字形を今すぐ再読みしてよい」という契機のトリガーとしてだけ使う。
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -37,7 +48,8 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, SetWinEventHook, TreeScope_Descendants, UnhookWinEvent,
+    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationPropertyChangedEventHandler,
+    SetWinEventHook, TreeScope_Descendants, TreeScope_Element, UIA_NamePropertyId, UnhookWinEvent,
     HWINEVENTHOOK,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -49,6 +61,35 @@ use crate::state::indicator_glyph::{
     name_is_indicator, preprocess, select_indicator, GlyphFeature, GlyphGray, IndicatorCandidate,
     ProbeMiss, ProbeOutcome,
 };
+
+/// [`push_sink::GlyphPushSink`]（`#[implement(...)]` 生成コードが pedantic/nursery lint に触れるため、
+/// `examples/compartment_notify_probe.rs` と同じく専用モジュールへまとめて `allow` する）。
+#[allow(clippy::ref_as_ptr, clippy::inline_always)]
+mod push_sink {
+    use windows::core::implement;
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::UI::Accessibility::{
+        IUIAutomationElement, IUIAutomationPropertyChangedEventHandler_Impl, UIA_PROPERTY_ID,
+    };
+
+    /// UIA push 通知の受け口。中身は運ばず、`WM_INDICATOR_GLYPH_PUSH_NOTIFY` をメインスレッドへ送るだけ
+    /// （ADR-283 §10: `new_value` は固定文字列で状態を運ばないため読まない）。
+    #[implement(windows::Win32::UI::Accessibility::IUIAutomationPropertyChangedEventHandler)]
+    pub(super) struct GlyphPushSink;
+
+    impl IUIAutomationPropertyChangedEventHandler_Impl for GlyphPushSink_Impl {
+        fn HandlePropertyChangedEvent(
+            &self,
+            _sender: windows_core::Ref<IUIAutomationElement>,
+            _propertyid: UIA_PROPERTY_ID,
+            _newvalue: &VARIANT,
+        ) -> windows_core::Result<()> {
+            crate::win32::post_to_main_thread_with(crate::WM_INDICATOR_GLYPH_PUSH_NOTIFY, 0, 0);
+            Ok(())
+        }
+    }
+}
+use push_sink::GlyphPushSink;
 
 /// 読み取りワーカーへの依頼。
 #[derive(Clone, Copy, Debug)]
@@ -487,13 +528,15 @@ impl DumpSink {
     }
 }
 
-/// インジケーターの要素を探して矩形を返す（名前が接頭辞に当たる要素から、純粋関数で 1 つ選ぶ）。
+/// インジケーターの候補の要素（名前が接頭辞に当たるもの）を、矩形つきで列挙する。[`find_indicator_rect`]・
+/// [`find_indicator_element`] の共有部分（名前が接頭辞に当たる要素が複数あるときの選び方自体は純粋関数
+/// `select_indicator`、ここでは COM の走査だけを行う）。
 ///
 /// # Safety
 /// `automation` は有効な `IUIAutomation`（COM 初期化済みのスレッドで作ったもの）でなければならない。
-unsafe fn find_indicator_rect(
+unsafe fn collect_indicator_candidates(
     automation: &IUIAutomation,
-) -> Result<(i32, i32, i32, i32), ProbeMiss> {
+) -> Result<(Vec<IndicatorCandidate>, Vec<IUIAutomationElement>), ProbeMiss> {
     let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) else {
         return Err(ProbeMiss::NoIndicator);
     };
@@ -507,6 +550,7 @@ unsafe fn find_indicator_rect(
         return Err(ProbeMiss::NoIndicator);
     };
     let mut candidates: Vec<IndicatorCandidate> = Vec::new();
+    let mut elements: Vec<IUIAutomationElement> = Vec::new();
     for i in 0..all.Length().unwrap_or(0) {
         let Ok(el) = all.GetElement(i) else {
             continue;
@@ -522,9 +566,34 @@ unsafe fn find_indicator_rect(
             name,
             rect: (r.left, r.top, r.right, r.bottom),
         });
+        elements.push(el);
     }
+    Ok((candidates, elements))
+}
+
+/// インジケーターの要素を探して矩形を返す（名前が接頭辞に当たる要素から、純粋関数で 1 つ選ぶ）。
+///
+/// # Safety
+/// `automation` は有効な `IUIAutomation`（COM 初期化済みのスレッドで作ったもの）でなければならない。
+unsafe fn find_indicator_rect(
+    automation: &IUIAutomation,
+) -> Result<(i32, i32, i32, i32), ProbeMiss> {
+    let (candidates, _elements) = collect_indicator_candidates(automation)?;
     let chosen = select_indicator(&candidates).map_err(ProbeMiss::from)?;
     Ok(candidates[chosen].rect)
+}
+
+/// インジケーターの要素そのもの（push 通知の登録対象）を探す。選び方は [`find_indicator_rect`] と同じ
+/// （ADR-283 §10: T2〜T4 共通トリガーの登録先。起動時に 1 度だけ呼ぶ）。
+///
+/// # Safety
+/// `automation` は有効な `IUIAutomation`（COM 初期化済みのスレッドで作ったもの）でなければならない。
+unsafe fn find_indicator_element(
+    automation: &IUIAutomation,
+) -> Result<IUIAutomationElement, ProbeMiss> {
+    let (candidates, elements) = collect_indicator_candidates(automation)?;
+    let chosen = select_indicator(&candidates).map_err(ProbeMiss::from)?;
+    Ok(elements[chosen].clone())
 }
 
 /// 1 回取り込んで前処理まで進める。返すのは結果と**前処理後の特徴**（20×20 の 2 値画像など。**元の画素は返さない**）。
@@ -620,6 +689,46 @@ pub fn spawn_indicator_glyph_worker() -> (
         tracing::info!("[indicator-glyph] worker thread started");
         let mut dump = DumpSink::from_env();
 
+        // ADR-283 §10: T2〜T4 共通の push トリガー。起動時に 1 度だけ登録する。登録に失敗しても
+        // T1（前面窓の変化）には影響しない（フェイルセーフ、ログだけ）。UIA のイベント配送はこのスレッドの
+        // メッセージポンプを要求しないため、下の `rx.recv_timeout` のポーリングループのままでよい
+        // （実測で、登録元スレッドが休止中でも通知が届くことを確認済み。モジュール doc 参照）。
+        // `handler` はここで作ってループの終わりまで（この関数のスコープの終わりまで）生かし続ける
+        // （COM 側の参照保持に依存せず、Rust 側のドロップ順でも登録が切れないようにする）。
+        let push_registered = match unsafe { find_indicator_element(&automation) } {
+            Ok(element) => {
+                let handler: IUIAutomationPropertyChangedEventHandler = GlyphPushSink.into();
+                // SAFETY: `automation`・`element`・`handler` はいずれもこのスレッドで作った有効な COM オブジェクト。
+                let registered = unsafe {
+                    automation.AddPropertyChangedEventHandlerNativeArray(
+                        &element,
+                        TreeScope_Element,
+                        None,
+                        &handler,
+                        &[UIA_NamePropertyId],
+                    )
+                };
+                match registered {
+                    Ok(()) => {
+                        tracing::info!(
+                            "[indicator-glyph] UIA push notify registered (ADR-283 §10, T2-T4 trigger)"
+                        );
+                        Some(handler)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[indicator-glyph] AddPropertyChangedEventHandlerNativeArray failed: {e:?}"
+                        );
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[indicator-glyph] push notify: indicator element not found: {e:?}");
+                None
+            }
+        };
+
         loop {
             // recv_timeout でシャットダウン通知も定期的に確認する
             match rx.recv_timeout(Duration::from_millis(50)) {
@@ -652,6 +761,10 @@ pub fn spawn_indicator_glyph_worker() -> (
                     break;
                 }
             }
+        }
+        if push_registered.is_some() {
+            // SAFETY: `automation` はこのスレッドで作った有効な COM オブジェクトで、まだ生きている。
+            let _ = unsafe { automation.RemoveAllEventHandlers() };
         }
     });
     (worker, tx, rx_feature)

@@ -29,9 +29,9 @@ use crate::vk::VkCodeExt;
 use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
     WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST,
-    WM_EXECUTE_EFFECTS, WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED, WM_INDICATOR_GLYPH_READ,
-    WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG,
-    WM_RESUME_HOLD_DONE,
+    WM_EXECUTE_EFFECTS, WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED,
+    WM_INDICATOR_GLYPH_PUSH_NOTIFY, WM_INDICATOR_GLYPH_READ, WM_KANA_LOCK_WARNING_CHANGED,
+    WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG, WM_RESUME_HOLD_DONE,
 };
 
 // ── 定数 ──
@@ -622,6 +622,10 @@ pub(crate) fn dispatch_engine_message(
             with_app_or_repost_with(WM_INDICATOR_GLYPH_READ, wparam, lparam, |app| {
                 app.indicator_glyph_on_result(wparam, lparam);
             });
+        }
+        // ADR-283 §10: T2〜T4 共通の push トリガー（インジケーター要素自身の `Name` の変化、記録のみ）。
+        WM_INDICATOR_GLYPH_PUSH_NOTIFY => {
+            let _ = with_app(|app| app.indicator_glyph_on_push_notify());
         }
         WM_HOTKEY if wparam.0 == HOTKEY_ID_TOGGLE as usize => {
             let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });

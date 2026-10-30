@@ -323,6 +323,12 @@ pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_AP
 /// `wParam`/`lParam` は `state::indicator_glyph::ProbeOutcome::pack` の符号化。
 #[cfg(windows)]
 pub const WM_INDICATOR_GLYPH_READ: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 30;
+/// 入力インジケーター要素自身の `Name` プロパティの変化を UIA push で検知した通知（ADR-261 決定5追補3・ADR-283 §10）。
+/// 字形を今すぐ再読みしてよい、という契機のトリガーのみ（`wParam`/`lParam` は使わない）。T2〜T4(欄の移動・モード系の
+/// 打鍵・途切れ)の個別のプロキシ事象配線の代わりに、この push 通知 1 本を共通トリガーとして使う。
+#[cfg(windows)]
+pub const WM_INDICATOR_GLYPH_PUSH_NOTIFY: u32 =
+    windows::Win32::UI::WindowsAndMessaging::WM_APP + 31;
 /// フックコールバックからキューされた Effects の実行要求
 #[cfg(windows)]
 pub const WM_EXECUTE_EFFECTS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
