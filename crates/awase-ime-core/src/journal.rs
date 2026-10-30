@@ -1566,6 +1566,12 @@ impl JournalEntry {
                     agree_open = record.agree_open,
                     collected = record.collected,
                     table_size = record.table_size,
+                    would_scope = record.would_scope,
+                    would_report = record.would_report,
+                    would_decide = record.would_decide,
+                    would_flip = record.would_flip,
+                    would_decide_z = record.would_decide_z,
+                    would_flip_z = record.would_flip_z,
                     "[indicator-glyph]"
                 );
             }

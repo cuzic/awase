@@ -85,6 +85,17 @@ pub struct IndicatorGlyphCounters {
     /// 開閉の軸の一致/不一致を、窓の IME プロファイル（`standard`/`imm32-unavailable`/`tsf-native`/`input-relay`）ごとに。
     /// 入力モードが不明でも数えられる。`standard` は直接の読みとの一致、それ以外は belief とのずれ
     pub open_axis: BTreeMap<String, AgreeCount>,
+    /// 対象の窓だったとしての段階ごとの回数（ADR-273 D3・Q2、段階 2 の前提。`unobserved`/`all`/`none`）
+    pub would_scope: BTreeMap<String, u32>,
+    /// 柵を通って報告されたかの結果ごとの回数（`reported`/`miss-changed`/`ignored`/`mozc-window`/`fenced:<理由>`）
+    pub would_report: BTreeMap<String, u32>,
+    /// `would_report` が `reported` のとき、字形が belief を決めた/決めてかつ値が違った（flip した）回数
+    /// （ADR-273 D2。実際には書かない試算）
+    pub would_decide: u32,
+    pub would_flip: u32,
+    /// ADR-283 G2: 候補 Z の試算に使った/かつ Z の値を変えうった（flip した）回数（実際には書かない試算）
+    pub would_decide_z: u32,
+    pub would_flip_z: u32,
 }
 
 impl IndicatorGlyphCounters {
@@ -102,6 +113,12 @@ impl IndicatorGlyphCounters {
             unobserved_disagree: 0,
             collected: 0,
             open_axis: BTreeMap::new(),
+            would_scope: BTreeMap::new(),
+            would_report: BTreeMap::new(),
+            would_decide: 0,
+            would_flip: 0,
+            would_decide_z: 0,
+            would_flip_z: 0,
         }
     }
 
@@ -124,6 +141,26 @@ impl IndicatorGlyphCounters {
         }
         if r.collected {
             self.collected = self.collected.saturating_add(1);
+        }
+        if let Some(scope) = r.would_scope {
+            let n = self.would_scope.entry(scope.to_owned()).or_insert(0);
+            *n = n.saturating_add(1);
+        }
+        if let Some(report) = r.would_report {
+            let n = self.would_report.entry(report.to_owned()).or_insert(0);
+            *n = n.saturating_add(1);
+        }
+        if r.would_decide == Some(true) {
+            self.would_decide = self.would_decide.saturating_add(1);
+        }
+        if r.would_flip == Some(true) {
+            self.would_flip = self.would_flip.saturating_add(1);
+        }
+        if r.would_decide_z == Some(true) {
+            self.would_decide_z = self.would_decide_z.saturating_add(1);
+        }
+        if r.would_flip_z == Some(true) {
+            self.would_flip_z = self.would_flip_z.saturating_add(1);
         }
         if let Some(agree_open) = r.agree_open {
             let c = self.open_axis.entry(r.profile.to_owned()).or_default();
@@ -275,5 +312,56 @@ mod tests {
         assert!(!c.open_axis.contains_key("imm32-unavailable"));
         // 入力モードのラベルの一致は数えていない。
         assert_eq!((c.direct_agree, c.direct_disagree), (0, 0));
+    }
+
+    #[test]
+    fn glyph_counters_count_would_scope_would_report_and_would_decide_or_flip() {
+        let rec =
+            |would_scope, would_report, would_decide, would_flip, would_decide_z, would_flip_z| {
+                crate::journal::IndicatorGlyphRecord {
+                    verdict: "captured",
+                    would_scope,
+                    would_report,
+                    would_decide,
+                    would_flip,
+                    would_decide_z,
+                    would_flip_z,
+                    ..Default::default()
+                }
+            };
+        let mut c = IndicatorGlyphCounters::default();
+        // 段階2(ADR-273 D2)の試算: 決めた(flipを伴う)・決めた(flipなし)・対象外の3件。
+        c.record(&rec(
+            Some("unobserved"),
+            Some("reported"),
+            Some(true),
+            Some(true),
+            None,
+            None,
+        ));
+        c.record(&rec(
+            Some("unobserved"),
+            Some("reported"),
+            Some(true),
+            Some(false),
+            None,
+            None,
+        ));
+        c.record(&rec(Some("none"), None, None, None, None, None));
+        // 候補Z(ADR-283 G2)の試算: flipを伴う1件。
+        c.record(&rec(
+            Some("all"),
+            Some("reported"),
+            None,
+            None,
+            Some(true),
+            Some(true),
+        ));
+        assert_eq!(c.would_scope.get("unobserved"), Some(&2));
+        assert_eq!(c.would_scope.get("none"), Some(&1));
+        assert_eq!(c.would_scope.get("all"), Some(&1));
+        assert_eq!(c.would_report.get("reported"), Some(&3));
+        assert_eq!((c.would_decide, c.would_flip), (2, 1));
+        assert_eq!((c.would_decide_z, c.would_flip_z), (1, 1));
     }
 }
