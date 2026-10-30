@@ -838,3 +838,30 @@ pub enum HalfWidthAlnumTogglePolicy {
 これらはいずれも Windows XP 時代からある公開・文書化された TSF COM インタフェースであり、
 [[feedback_no_private_ipc_reverse_engineering]]（他社 IME の私的 IPC を覗かない）には
 抵触しない——タスクバーの言語バー/IME インジケータ UI 自体がこれらを使っている。
+
+### `ITfLangBarMgr` が別プロセスを読めない理由（CTF ALPC プロトコル自体の到達性、2026-10-28 測定）
+
+ADR-261 の D0-0′（公開 API `GetThreadLangBarItemMgr` は別プロセスで `E_FAIL`）の背後にある
+下層プロトコル（CTF、ctfmon.exe が仲介する ALPC）自体が、現行 Windows でも未認証のまま
+到達可能かを、所有者判断で `taviso/ctftool`（Project Zero 2019「Down the Rabbit Hole」、
+CVE-2019-1162 の PoC・観測ツール）を使って測った。読み取り専用コマンド
+（`connect`/`scan`/`info`）のみ実行し、exploit スクリプト・`hijack`・`sendinput` は実行していない。
+
+**結果（CI run 40625640924、windows-latest、ビルド 10.0.26100.0、2026-10-28）**: 自分の低権限
+プロセス（`ctftool.exe`）から、認証なしで ALPC ポート `\BaseNamedObjects\msctf.serverDefault2`
+に接続でき、`scan` で他プロセス（`explorer.exe` ×2 スレッド、`SystemPropertiesPerformance.exe`、
+`ctfmon.exe` 自身、`WindowsTerminal.exe`）のクライアント一覧（Tid・Hwnd・Pid・exe 名）が
+読めた。2019年の README の実行例と構造的に同一。**CVE-2019-1162 が修正したのはメモリ破壊
+exploit chain で、「誰でも未認証でこのポートに繋がれる」というプロトコル自体の構造は
+2026年現在も残っている。**
+
+ここで判断を止めた: 実際に「ある窓の IME ON/OFF 状態」を読むには、この先 `callstub`
+（クライアントへの関数呼び出し依頼）や `marshal`/`getarg` で CTF の生メッセージを組み立てる
+必要があり、これは README の「edit session attacks」と同じ操作感になる（読み取り専用の
+つもりでも、構造を誤れば他プロセスへの書き込み相当になりうる）。この先へ進めるかは
+別途判断する。検証 workflow は develop へは一度も入れず、`push` トリガーの使い捨てブランチ
+`ci/ctftool-probe`（最終コミット `f9428b852efa706518020caab993743e4744a328`、
+`.github/workflows/ctftool-probe.yml`）だけに置き、本追記と同時にブランチ自体を削除した
+（`.claude/rules/one-off-verification-workflows.md`。再実行する場合は上記コミットを
+チェックアウトして `git push --force -u <remote> HEAD:ci/ctftool-probe` で復元すれば
+同じ手順で再現できる）。
