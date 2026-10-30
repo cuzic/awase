@@ -567,7 +567,14 @@ T2(欄の移動)・T3(モード系の打鍵)・T4(途切れ)は、いずれも�
   見本追加)の対象には今は入らない(`is_second` 判定が常に偽になる。既知の限界、残課題)。
 - **既知の限界**:
   - MS-IME 本体での push 発火は CI の TIP 設定が未解決で未測定のまま(ADR-261 決定5追補3)。本番で
-    `observe` 以上にした利用者の journal で確かめる。
+    `observe` 以上にした利用者の journal で確かめる。**「旧検証〔run 40632943535〕が e2e-ime.yml と
+    違う Profile GUID(`{A028AE76-...}`)を使っていたのが原因」という仮説は 2026-10-30 に棄却した**
+    (`exp/indicator-msime-push-probe`、結果記録後に削除): e2e-ime.yml と同じ正しい GUID
+    (`{A76C93D9-...}`)に直し、TIP 登録完了(`HKLM:\...\CTF\TIP\{03B5835F-...}`)を待つ処理を足しても、
+    `TIP_REGISTERED=True` 後に同じ打鍵列(フォーカス確保も GJI/Mozc と同じ)を送っても IME の開閉が
+    一度も変化しなかった(`open=Some(0)` のまま、run 41016492298)。CI 環境で MS-IME 本体だけがこの
+    打鍵列に反応しない、GUID よりさらに根深い原因が別にある。これ以上の深追いはせず、実機の journal
+    での確認に委ねる。
   - Mozc 系(mozc-readable)は CI 実測で確認済み(2026-10-30、run 41014735250。6 打鍵すべてで push 通知と
     POLL〔ground truth〕が連動、遅延 63〜102ms。GJI の実測〔56〜80ms〕と同水準)。検証用の
     `exp/indicator-mozc-push-probe` ブランチ(`spike_indicator_uia_property_probe` example +
