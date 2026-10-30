@@ -572,3 +572,17 @@ T2(欄の移動)・T3(モード系の打鍵)・T4(途切れ)は、いずれも�
     上書きしうる(§10.2 で触れた非対称性と同種。belief へは書かないため安全側に失敗するだけ〔T1 の 2 回目が
     報告されなくなるだけ〕だが、journal の件数には影響する可能性がある)。
   - `[indicator_evidence] glyph` が `observe` 以上のときだけ登録される(既定は `off`。T1 と同じ有効化条件)。
+
+### 10.5 試算の集計配線の欠落を修正(2026-10-30)
+
+実機での集計を始める前に、`would_decide_z`/`would_flip_z`(§10.2〜§10.4 が記録しているはずの試算)が
+**実際には一切集計も awase.log 出力もされていなかった**欠落が見つかった(`IndicatorGlyphRecord` 構造体には
+フィールドがあるが、`journal.rs` の `tracing::debug!` ログ出力と `IndicatorGlyphCounters::record` のどちらにも
+配線されていなかった)。同じ穴は `would_scope`/`would_report`/`would_decide`/`would_flip`(ADR-273 D2 の試算)にも
+あった。
+
+- `journal.rs` の `[indicator-glyph]` デバッグログに6フィールドすべてを追加(awase.log を直接 grep する実機調査で見える)。
+- `IndicatorGlyphCounters` に `would_scope`/`would_report`(ラベルごとの件数)と `would_decide`/`would_flip`/
+  `would_decide_z`/`would_flip_z`(真の件数)を追加し、不具合報告(`BugReportIndicatorGlyphSummary`)にも同じ
+  フィールドを追加した(旧版の報告との互換は `#[serde(default)]`)。
+- belief には一切書かない(観測のみの枠は変えていない)。集計の配線だけを直した。

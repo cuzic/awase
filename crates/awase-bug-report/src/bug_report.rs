@@ -882,6 +882,22 @@ pub struct BugReportIndicatorGlyphSummary {
     /// それ以外は belief とのずれ。旧版の報告には無いので `#[serde(default)]`）
     #[serde(default)]
     pub open_axis: std::collections::BTreeMap<String, BugReportAgreeCount>,
+    /// 対象の窓だったとしての段階ごとの回数（ADR-273 D3・Q2、段階 2 の前提。旧版の報告には無いので `#[serde(default)]`）
+    #[serde(default)]
+    pub would_scope: std::collections::BTreeMap<String, u32>,
+    /// 柵を通って報告されたかの結果ごとの回数（旧版の報告には無いので `#[serde(default)]`）
+    #[serde(default)]
+    pub would_report: std::collections::BTreeMap<String, u32>,
+    /// ADR-273 D2 の試算（belief を決めた/flip した回数。実際には書かない。旧版の報告には無いので `#[serde(default)]`）
+    #[serde(default)]
+    pub would_decide: u32,
+    #[serde(default)]
+    pub would_flip: u32,
+    /// ADR-283 G2 の試算（候補 Z を決めた/flip した回数。実際には書かない。旧版の報告には無いので `#[serde(default)]`）
+    #[serde(default)]
+    pub would_decide_z: u32,
+    #[serde(default)]
+    pub would_flip_z: u32,
 }
 
 /// 一致/不一致の件数。
@@ -923,6 +939,12 @@ impl BugReportIndicatorEvidence {
                         )
                     })
                     .collect(),
+                would_scope: glyph.would_scope.clone(),
+                would_report: glyph.would_report.clone(),
+                would_decide: glyph.would_decide,
+                would_flip: glyph.would_flip,
+                would_decide_z: glyph.would_decide_z,
+                would_flip_z: glyph.would_flip_z,
             },
         }
     }
