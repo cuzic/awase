@@ -656,15 +656,70 @@ unsafe fn probe_once(
     )
 }
 
+/// ADR-283 §10: T2〜T4 共通の push トリガーを登録する（`enabled` が偽なら何もしない）。登録に成功したら
+/// `Some(handler)` を返す（呼び出し側がこれをループの終わりまで生かし続けることで、登録が切れないようにする）。
+/// 失敗(要素が見つからない・登録 API が失敗)はログだけ、T1(前面窓の変化)の動作には影響しない。
+///
+/// # Safety
+/// `automation` は有効な `IUIAutomation`（COM 初期化済みのスレッドで作ったもの）でなければならない。
+unsafe fn register_push_notify(
+    automation: &IUIAutomation,
+    enabled: bool,
+) -> Option<IUIAutomationPropertyChangedEventHandler> {
+    if !enabled {
+        tracing::info!(
+            "[indicator-glyph] UIA push notify disabled by config (glyph_push_trigger=false)"
+        );
+        return None;
+    }
+    let element = match find_indicator_element(automation) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("[indicator-glyph] push notify: indicator element not found: {e:?}");
+            return None;
+        }
+    };
+    let handler: IUIAutomationPropertyChangedEventHandler = GlyphPushSink.into();
+    // SAFETY: `automation`・`element`・`handler` はいずれも呼び出し元が保証する有効な COM オブジェクト。
+    let registered = unsafe {
+        automation.AddPropertyChangedEventHandlerNativeArray(
+            &element,
+            TreeScope_Element,
+            None,
+            &handler,
+            &[UIA_NamePropertyId],
+        )
+    };
+    match registered {
+        Ok(()) => {
+            tracing::info!(
+                "[indicator-glyph] UIA push notify registered (ADR-283 §10, T2-T4 trigger)"
+            );
+            Some(handler)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "[indicator-glyph] AddPropertyChangedEventHandlerNativeArray failed: {e:?}"
+            );
+            None
+        }
+    }
+}
+
 /// 読み取りワーカーを起動する。
 ///
 /// 専用スレッドで COM（STA）と `IUIAutomation` を持ち、依頼を 1 件ずつ処理して、前処理後の特徴を別のチャネル（戻り値の
 /// `Receiver`）へ送り、`WM_INDICATOR_GLYPH_READ`（`wParam`/`lParam` = [`ProbeOutcome::pack`]）をメインスレッドへ返す。
 /// 依頼は届いた順に処理するので、結果も依頼の順に返る（呼び出し側はその順で文脈を対応づける）。
 ///
+/// `push_trigger_enabled`（`[indicator_evidence] glyph_push_trigger`、ADR-283 §10）が真のときだけ、
+/// T2〜T4 共通の UIA push 通知も登録する（偽なら T1〔前面窓の変化〕だけになる。既定は偽）。
+///
 /// 戻り値の `WorkerThread` をアプリ終了まで保持すること（drop 時に停止・join される）。
 #[must_use]
-pub fn spawn_indicator_glyph_worker() -> (
+pub fn spawn_indicator_glyph_worker(
+    push_trigger_enabled: bool,
+) -> (
     win32_worker::WorkerThread,
     mpsc::Sender<GlyphReadRequest>,
     mpsc::Receiver<Option<GlyphFeature>>,
@@ -689,45 +744,14 @@ pub fn spawn_indicator_glyph_worker() -> (
         tracing::info!("[indicator-glyph] worker thread started");
         let mut dump = DumpSink::from_env();
 
-        // ADR-283 §10: T2〜T4 共通の push トリガー。起動時に 1 度だけ登録する。登録に失敗しても
-        // T1（前面窓の変化）には影響しない（フェイルセーフ、ログだけ）。UIA のイベント配送はこのスレッドの
-        // メッセージポンプを要求しないため、下の `rx.recv_timeout` のポーリングループのままでよい
-        // （実測で、登録元スレッドが休止中でも通知が届くことを確認済み。モジュール doc 参照）。
-        // `handler` はここで作ってループの終わりまで（この関数のスコープの終わりまで）生かし続ける
+        // ADR-283 §10: T2〜T4 共通の push トリガー。`push_trigger_enabled`（設定、既定は偽）が真のときだけ、
+        // 起動時に 1 度だけ登録する。登録に失敗しても T1（前面窓の変化）には影響しない（フェイルセーフ、ログだけ）。
+        // UIA のイベント配送はこのスレッドのメッセージポンプを要求しないため、下の `rx.recv_timeout` の
+        // ポーリングループのままでよい（実測で、登録元スレッドが休止中でも通知が届くことを確認済み。モジュール
+        // doc 参照）。`handler` はここで作ってループの終わりまで（この関数のスコープの終わりまで）生かし続ける
         // （COM 側の参照保持に依存せず、Rust 側のドロップ順でも登録が切れないようにする）。
-        let push_registered = match unsafe { find_indicator_element(&automation) } {
-            Ok(element) => {
-                let handler: IUIAutomationPropertyChangedEventHandler = GlyphPushSink.into();
-                // SAFETY: `automation`・`element`・`handler` はいずれもこのスレッドで作った有効な COM オブジェクト。
-                let registered = unsafe {
-                    automation.AddPropertyChangedEventHandlerNativeArray(
-                        &element,
-                        TreeScope_Element,
-                        None,
-                        &handler,
-                        &[UIA_NamePropertyId],
-                    )
-                };
-                match registered {
-                    Ok(()) => {
-                        tracing::info!(
-                            "[indicator-glyph] UIA push notify registered (ADR-283 §10, T2-T4 trigger)"
-                        );
-                        Some(handler)
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "[indicator-glyph] AddPropertyChangedEventHandlerNativeArray failed: {e:?}"
-                        );
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("[indicator-glyph] push notify: indicator element not found: {e:?}");
-                None
-            }
-        };
+        // SAFETY: `automation` は上で作った有効な COM オブジェクトで、同じスレッドから呼ぶ。
+        let push_registered = unsafe { register_push_notify(&automation, push_trigger_enabled) };
 
         loop {
             // recv_timeout でシャットダウン通知も定期的に確認する

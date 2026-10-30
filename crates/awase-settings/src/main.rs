@@ -4502,6 +4502,18 @@ fn indicator_evidence_section(ui: &mut egui::Ui, cfg: &mut awase::config::Indica
             EvidenceSource::Glyph,
             &mut cfg.glyph,
         );
+        // ADR-283 §10: 字形を「使わない」のときは意味を持たないので出さない。
+        if EvidenceSource::Glyph.effective(cfg.glyph) >= awase::config::EvidenceLevel::Observe {
+            ui.add_space(4.0);
+            ui.checkbox(
+                &mut cfg.glyph_push_trigger,
+                "欄の移動・モード系の打鍵・途切れでも再読みする（push 通知。既定は使わない）",
+            )
+            .on_hover_text(
+                "前面窓を切り替えたとき以外にも、タスクバーのインジケーターの見た目が変わったら\n\
+                 すぐ再読みします（ADR-283 §10）。MS-IME 本体での動作は未確認です。",
+            );
+        }
     }
 }
 
@@ -7664,6 +7676,7 @@ mod layout_tab_repro {
         // 上限を超える設定値（all）は、描画しても書き換えない。
         let mut cfg = IndicatorEvidenceConfig {
             glyph: EvidenceLevel::All,
+            ..IndicatorEvidenceConfig::default()
         };
         let ctx = eframe::egui::Context::default();
         let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {

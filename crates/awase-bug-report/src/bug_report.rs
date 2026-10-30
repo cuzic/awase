@@ -1756,6 +1756,7 @@ mod tests {
             indicator_evidence: Some(BugReportIndicatorEvidence::new(
                 crate::indicator_evidence::EffectiveEvidence {
                     glyph: awase::config::EvidenceLevel::Observe,
+                    glyph_push_trigger: false,
                 },
                 &crate::indicator_evidence::IndicatorGlyphCounters::new(),
             )),

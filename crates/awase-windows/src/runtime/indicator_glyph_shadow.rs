@@ -246,6 +246,7 @@ impl super::Runtime {
         let eff = self.indicator_glyph.effective.unwrap_or(
             crate::indicator_evidence::EffectiveEvidence {
                 glyph: awase::config::EvidenceLevel::Off,
+                glyph_push_trigger: false,
             },
         );
         crate::bug_report::BugReportIndicatorEvidence::new(eff, &self.indicator_glyph.counters)
