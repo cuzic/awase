@@ -39,13 +39,18 @@ impl EvidenceSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EffectiveEvidence {
     pub glyph: EvidenceLevel,
+    /// ADR-283 §10: T2〜T4 共通の UIA push トリガーを使うか。`glyph` が `Off` なら（ワーカー自体が起動しないので）
+    /// 常に意味を持たない `false` に落とす。
+    pub glyph_push_trigger: bool,
 }
 
 impl EffectiveEvidence {
     #[must_use]
     pub fn from_config(cfg: &IndicatorEvidenceConfig) -> Self {
+        let glyph = EvidenceSource::Glyph.effective(cfg.glyph);
         Self {
-            glyph: EvidenceSource::Glyph.effective(cfg.glyph),
+            glyph,
+            glyph_push_trigger: glyph != EvidenceLevel::Off && cfg.glyph_push_trigger,
         }
     }
 }
@@ -151,9 +156,30 @@ mod tests {
     fn effective_is_min_of_configured_and_ui_max() {
         let cfg = IndicatorEvidenceConfig {
             glyph: EvidenceLevel::All,
+            ..IndicatorEvidenceConfig::default()
         };
         let e = EffectiveEvidence::from_config(&cfg);
         assert_eq!(e.glyph, EvidenceLevel::Observe);
+    }
+
+    #[test]
+    fn push_trigger_is_false_when_glyph_is_off_even_if_configured_true() {
+        let cfg = IndicatorEvidenceConfig {
+            glyph: EvidenceLevel::Off,
+            glyph_push_trigger: true,
+        };
+        let e = EffectiveEvidence::from_config(&cfg);
+        assert!(!e.glyph_push_trigger);
+    }
+
+    #[test]
+    fn push_trigger_follows_config_when_glyph_is_observe_or_above() {
+        let cfg = IndicatorEvidenceConfig {
+            glyph: EvidenceLevel::Observe,
+            glyph_push_trigger: true,
+        };
+        let e = EffectiveEvidence::from_config(&cfg);
+        assert!(e.glyph_push_trigger);
     }
 
     #[test]

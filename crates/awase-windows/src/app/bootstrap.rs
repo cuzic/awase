@@ -1329,7 +1329,9 @@ pub(super) fn run_all() -> Result<()> {
     let _indicator_glyph_guards =
         if effective_evidence.glyph >= awase::config::EvidenceLevel::Observe {
             let (worker, tx, rx_feature) =
-                crate::observer::indicator_glyph::spawn_indicator_glyph_worker();
+                crate::observer::indicator_glyph::spawn_indicator_glyph_worker(
+                    effective_evidence.glyph_push_trigger,
+                );
             // 見本の保存先は exe と同じディレクトリ（`cache.toml` と同じ。別ファイル `glyph_samples.json`）。
             let base_dir = std::env::current_exe()
                 .ok()

@@ -88,6 +88,8 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # example-begin: config-indicator-evidence uncomment
 # [indicator_evidence]
 # glyph = "off"  # タスクバーのインジケーターの字形を読む(ADR-261)。右クリックメニュー(menu、ADR-264)は撤去した
+# glyph_push_trigger = false  # glyphがobserve以上のときだけ、UIA push通知(インジケーター自身の変化)も
+#   字形の再読みのトリガーに使う(ADR-283 §10)。既定は使わない(前面窓の変化だけ)
 # example-end
 
 # 窓切替直後・長い無操作のあとの日本語入力の判定（ADR-263、上級者向け。設定画面の「上級者向け設定」タブからも変更できる）。

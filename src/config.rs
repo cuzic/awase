@@ -590,6 +590,12 @@ impl EvidenceLevel {
 pub struct IndicatorEvidenceConfig {
     /// タスクバーのインジケーターの字形（ADR-261）。
     pub glyph: EvidenceLevel,
+    /// `glyph` が `observe` 以上のときに限り、T2〜T4(欄の移動・モード系の打鍵・途切れ)共通のトリガーとして
+    /// UIA push 通知(インジケーター要素自身の `Name` の変化)も使うか（ADR-283 §10）。既定は `false`
+    /// （T1〔前面窓の変化〕だけになる。MS-IME 本体での push 発火は未測定・既知の限界が残るため、`glyph` の
+    /// 有効化とは別にオプトインできるようにした）。`glyph` が `off` のままならこの値は意味を持たない
+    /// （取り込みワーカー自体が起動しない）。
+    pub glyph_push_trigger: bool,
 }
 
 // 既定はすべて空（`#[derive(Default)]`）。経緯:

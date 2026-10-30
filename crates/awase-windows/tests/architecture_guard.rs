@@ -8527,7 +8527,7 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
         .find("ifeffective_evidence.glyph>=awase::config::EvidenceLevel::Observe{")
         .expect("bootstrap.rs は `[indicator_evidence] glyph` の実効の段階が observe 以上のときだけ起動すること");
     let worker = boot
-        .find("spawn_indicator_glyph_worker()")
+        .find("spawn_indicator_glyph_worker(")
         .expect("取り込みワーカーを起動すること");
     let hook = boot
         .find("install_foreground_hook(indicator_glyph_foreground_event_proc")
@@ -8536,7 +8536,7 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
         gate < worker && worker < hook,
         "ワーカーとフックの起動は設定のガードの内側（この順）"
     );
-    assert_eq!(boot.matches("spawn_indicator_glyph_worker()").count(), 1);
+    assert_eq!(boot.matches("spawn_indicator_glyph_worker(").count(), 1);
     assert_eq!(boot.matches("install_foreground_hook(").count(), 1);
 }
 
