@@ -289,7 +289,7 @@
 | [280](280-language-detect-false-fire-measurement.md) | 入力言語の判定の誤発火を実機の前に数値で測り、半角英数トグルへの入りの害を小さくする候補を比べて選ぶ | 段階 0〜2・構造の整理(B・モデル検査・状態の enum 化)を実装済み(#823〜#843)・C4 却下・3 連は見送り(#841)・C0 を実機試行中(2026-10-25)。 |
 | [281](281-modified-mode-key-effect-from-ime-settings.md) | GJI/Mozc 系の Ctrl/Shift/Alt 付きひらがな系 4 キー(0xF0〜0xF4)と MS-IME 本体の Ctrl+ひらがなを素のキーとして予測する。それ以外の修飾付きは測るまで抑止し、組成開始は観測だけ | 採用・実装済み(2026-10-26、#849)。実機確認済み(BUG-221)。 |
 | [282](282-per-scope-latched-ime-belief-zero-base.md) | IME の開閉と Engine の活性の belief: 小さな修正(局所修正)と、保持単位ごとに主張をラッチするゼロベース案を同じオラクルで比べて決める(書き込みの根拠は belief から分ける) | Z 採用(既定、2026-10-27、#893)。旧へは belief_v2 = false。判定は §14.6、実機は未確認 |
-| [283](283-glyph-evidence-in-scope-belief.md) | タスクバーの入力インジケーターの字形を、採用した belief(候補 Z)の証拠に加える: いつ読み、いつまで信じるか | 所有者の決定(2026-10-27、U-G1・U-G3・U-G5・U-G6)。G1(核・オラクル)を実施中 |
+| [283](283-glyph-evidence-in-scope-belief.md) | タスクバーの入力インジケーターの字形を、採用した belief(候補 Z)の証拠に加える: いつ読み、いつまで信じるか | 実装(2026-10-28、§9)。G1(核・オラクル)完了・G2は観測のみ(クローンでの試算、journal記録だけ、T1のみ、既定offのオプトイン)。直接配線版はOpusレビューでBlocker3件が見つかり撤回。T2〜T4・StateChange配線・G3は未着手 |
 | [284](284-mozc-partial-literal-recovery.md) | Mozc の cold 最初の送信で先頭だけ素通りした部分リテラルを検出して回収する(key_seq の進みの読み直し + Escape + Backspace + 再送) | 起草・実装済み(2026-10-28)、実機未確認 |
 | [285](285-mozc-first-key-per-vk-and-wider-check-windows.md) | Mozc の cold の最初の送信を最初の 1 キーと残りに分け(per-VK)、確認を Chrome 系と空以外のすべての窓に張る | 起草・実装(2026-10-28)、実機未確認 |
 

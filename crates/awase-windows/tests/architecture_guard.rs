@@ -7403,6 +7403,8 @@ const PLATFORM_STATE_PUB_FNS: &[&str] = &[
     // ADR-282 V1: 候補 Z の shadow(観測のみ)。ハーネスが本番の配線を同じ口で動かす(配線Z+U2)。
     "scope_shadow_end_focus",
     "scope_shadow_focus",
+    // ADR-283 G2(観測のみ): 字形の読みを今 Z へ入れたらという試算の唯一の口(副作用なし、belief には書かない)。
+    "scope_shadow_glyph_preview",
     "scope_shadow_key",
     "scope_shadow_view",
     // ADR-282 V2-2: Engine の入力の belief を Z から読むか(設定 general.belief_v2。ハーネスの「採用Z」も同じ口で切り替える)。
@@ -8419,12 +8421,17 @@ fn raw_key_event_reinject_builds_input_from_reinject_key_spec() {
     );
 }
 
-/// ADR-261 段階 1: 入力インジケーターの字形の影の取り込みは**観測だけ**で、belief・IME・打鍵に書かない。
+/// ADR-261 段階 1・ADR-283 G2(観測のみ): 入力インジケーターの字形の影の取り込みは、**belief には一切書かない**
+/// （旧モデル向けの入口 `report_indicator_glyph(` は ADR-273 の対象外窓判定で現状は常に偽、実質 no-op。候補 Z
+/// 向けの `scope_shadow_glyph_preview(` は副作用なしの試算で、journal にだけ記録する。2026-10-28、Opus レビューを
+/// 受けて本番の Z へ直接書く版から戻した）。
 ///
-/// - 取り込み（`observer/indicator_glyph.rs`）と記録（`runtime/indicator_glyph_shadow.rs`）は、belief・IME 制御・
-///   観測ストアに入れる型/関数を一切使わない（belief への入口は `ImeStateHub::report_indicator_glyph` の 1 つだけ。ADR-273）。
-/// - ランタイム側が `platform_state` に触れるのは、belief の読み取り（`effective_open()`・`input_mode()`。見本のラベルと一致の記録に使う）と
-///   記録（`journal.record(`）の 3 箇所だけ。
+/// - 取り込み（`observer/indicator_glyph.rs`）と記録（`runtime/indicator_glyph_shadow.rs`）は、`ImeEvent`・
+///   IME 制御・観測ストアに入れる型/関数を一切使わない。
+/// - ランタイム側が `platform_state` に触れるのは、belief・Z の読み取り（`effective_open()`・`input_mode()`・
+///   `belief_is_decided_by_glyph(`・`focus_fence()`・`focus_kind`〔D4〕・`scope_shadow_facts()`〔D5、Z 自身の
+///   窓の信頼を読む〕）と、記録だけの試算 2 つ（`preview_indicator_glyph(`・`scope_shadow_glyph_preview(`）、
+///   記録（`journal.record(`）、旧モデルへの入口（`report_indicator_glyph(`、実質 no-op）の 10 箇所だけ。
 /// - 取り込みワーカーと WinEvent フックの起動は、`[indicator_evidence] glyph` の実効の段階（`min(設定値, ui_max_level())`）が
 ///   `observe` 以上のときだけ（既定は off のオプトイン。ADR-271）。
 /// - 画素は journal・メッセージに載せない（`ProbeOutcome` は大きさ・点数・所要・理由だけ。ADR-261 決定 7）。
@@ -8467,13 +8474,14 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
         }
     }
 
-    // ランタイム側の platform_state への接触は、belief の読み取り（ラベルの作成・字形由来かの判定・フォーカスの世代）、
-    // 記録の 1 つ、記録だけの試算（`preview_indicator_glyph(`）、フォーカスの同一性（`focus_fence()` 1 箇所）、belief への入口（ADR-273。
-    // `report_indicator_glyph(` の 1 つだけ。判断・柵・記録は `ImeStateHub` 側）の 7 箇所だけ。
+    // ランタイム側の platform_state への接触は、belief・Z の読み取り 6 箇所(effective_open・input_mode・
+    // belief_is_decided_by_glyph・focus_fence・focus_kind〔D4〕・scope_shadow_facts〔D5〕)、記録だけの試算 2 箇所
+    // (preview_indicator_glyph・scope_shadow_glyph_preview)、記録 1 箇所(journal.record)、旧モデルへの
+    // 実質 no-op の入口 1 箇所(report_indicator_glyph)の 10 箇所だけ。
     assert_eq!(
         runtime.matches("platform_state").count(),
-        7,
-        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()・belief_is_decided_by_glyph(・focus_fence()（読み取り）、preview_indicator_glyph(（記録だけの試算）、journal.record(（記録）、report_indicator_glyph(（入口）の 7 箇所だけ"
+        10,
+        "indicator_glyph_shadow.rs が platform_state に触れるのは effective_open()・input_mode()・belief_is_decided_by_glyph(・focus_fence()・focus_kind・scope_shadow_facts()（読み取り）、preview_indicator_glyph(・scope_shadow_glyph_preview(（記録だけの試算）、journal.record(（記録）、report_indicator_glyph(（旧モデルの入口、実質no-op）の10箇所だけ"
     );
     assert!(runtime.contains("platform_state.ime.effective_open()"));
     assert!(runtime.contains("platform_state.ime.input_mode()"));
@@ -8488,7 +8496,26 @@ fn indicator_glyph_shadow_is_observe_only_and_opt_in() {
             .matches("platform_state.ime.report_indicator_glyph(")
             .count(),
         1,
-        "字形の belief への入口は ImeStateHub::report_indicator_glyph の 1 つだけ"
+        "字形の旧モデルの belief への入口は ImeStateHub::report_indicator_glyph の 1 つだけ(実質 no-op)"
+    );
+    // ADR-283 G2(観測のみ): 字形を候補 Z へ入れたら、という試算の唯一の入口(副作用なし。belief には書かない)。
+    // D4(テキストの欄か)は `focus_kind`、D5(窓の信頼)は Z 自身の `scope_shadow_facts()` で読む。
+    assert_eq!(
+        runtime
+            .matches("platform_state.ime.scope_shadow_glyph_preview(")
+            .count(),
+        1,
+        "字形の候補 Z への試算の入口は ImeStateHub::scope_shadow_glyph_preview の 1 つだけ(副作用なし)"
+    );
+    assert_eq!(
+        runtime.matches("platform_state.focus.focus_kind").count(),
+        1
+    );
+    assert_eq!(
+        runtime
+            .matches("platform_state.ime.scope_shadow_facts()")
+            .count(),
+        1
     );
     assert!(runtime.contains(
         "platform_state.ime.journal.record(crate::journal::JournalEntry::IndicatorGlyph{record})"

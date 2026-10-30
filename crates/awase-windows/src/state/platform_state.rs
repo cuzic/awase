@@ -185,6 +185,26 @@ pub(crate) struct ImePollState {
 /// `state/drift_correction.rs` へ移した（Linux ホストのテストから判定本体を呼ぶため）。
 pub(crate) use super::drift_correction::DriftCorrection;
 
+/// ADR-283 G2(観測のみ、2026-10-28 Opus レビューを受けて直接配線から戻した): 字形(タスクバーの入力インジケーター)を
+/// 候補 Z([`ImeStateHub::scope_shadow`])の証拠に入れたら、という**試算専用**の方針。本番の `scope_shadow` には付けない
+/// ([`ImeStateHub::scope_shadow_glyph_preview`] がこの方針を付けたクローンで試算するだけ)。
+///
+/// G1 のオラクル(`belief_engine_glyph_comparison`、2026-10-28 実測。ただし #897 未マージ・golden 未コミットで
+/// 本番の構成〔契機・読み時刻・`StateChange` の有無〕とは前提が異なる、Opus レビュー指摘 M1・M2 参照)では、
+/// ここで選んだ値とその対抗案(2回一致あり・staleなし)との間で I1・I2・I3・I4 の件数に差が無かった(全て 0 件で引き分け)。
+/// 引き分けのときの規則:
+/// - `eisu`: ADR-283 の規則(「差が無ければ規則の少ない方」) に従い `SkipOnMsIme`((b)案)を採る。
+/// - `two_reads`: オラクルで益が確認できなかったので、規則を増やさない(`false`)。
+/// - `stale`: U-G2 の決定(事象ベースの鮮度)をそのまま採る(`true`)。
+/// - `lag_ms`: 本番の `GLYPH_KEY_FENCE_MS`(実機の押下→字形の遅れの実測、1300ms)と同じにする。
+const GLYPH_POLICY: crate::state::scope_belief::GlyphPolicy =
+    crate::state::scope_belief::GlyphPolicy {
+        lag_ms: crate::tuning::GLYPH_KEY_FENCE_MS,
+        stale: true,
+        two_reads: false,
+        eisu: crate::state::scope_belief::EisuGlyph::SkipOnMsIme,
+    };
+
 impl ImeStateHub {
     /// 時計を注入して初期化する。`hook` に依存しないので、テスト・閉ループは仮想時計
     /// （`HubClock::manual`）を渡せる。
@@ -217,6 +237,8 @@ impl ImeStateHub {
             last_mrt_shadow: std::cell::Cell::new(None),
             generation_alloc: super::GenerationAllocator::new(),
             press_ledger: super::press_ledger::PressLedger::default(),
+            // ADR-283 G2: 本番の Z には字形の方針を付けない(観測のみに戻す。`scope_shadow_glyph_preview` が
+            // クローンに付けて試算する)。
             scope_shadow: crate::state::scope_belief::ScopeBelief::with_new_thread_prior(
                 crate::tuning::KEY_EFFECT_SETTLE_MS,
             ),
@@ -394,6 +416,36 @@ impl ImeStateHub {
             self.scope_shadow.evolve(e);
         }
         self.scope_shadow_compare("key", tick_ms, false);
+    }
+
+    /// ADR-283 G2(観測のみ): 今この字形の読み 1 件を候補 Z へ入れたら、Z の値が変わるか(**副作用なし**。本番の
+    /// `scope_shadow` は変えない。[`GLYPH_POLICY`] を付けたクローンで試算する)。殻([`crate::runtime::indicator_glyph_shadow`])
+    /// が、見本の表に照合してラベルが付いたとき(`LabelReading::Hit`)だけ呼ぶ。`event` は
+    /// [`crate::state::scope_belief::ScopeEvent::Glyph`] 固定(呼び出し元が D4・D5 の `eligible`・D3-b の `ms_ime_native` を決める)。
+    /// `eligible=false`・まだどのスコープにも入場していないときは `None`(対象外。核が無視するので試算しても情報が無い)。
+    ///
+    /// journal への記録は呼び出し元(`crate::runtime::indicator_glyph_shadow::preview_glyph_for_z`)の責任。belief は
+    /// 読むだけで書かない。閉ループのハーネス(`tests/support/harness.rs`)からはまだ呼んでいない(2026-10-28 時点)。
+    ///
+    /// 比較は `(open, input_mode)` だけ(2026-10-28、Opus round2 R2-M2 の指摘: `ScopeView` を丸ごと比べると、字形が
+    /// 読み取り時の値と同じ値を正しく読んだだけでも、根拠〔`basis`〕が `z-glyph` に変わる・打鍵の追跡〔`track`〕が
+    /// 変わることで「違う」と判定されてしまい、「字形が Z の値を変えるか」を測れない)。
+    #[must_use]
+    pub fn scope_shadow_glyph_preview(
+        &self,
+        event: crate::state::scope_belief::ScopeEvent,
+    ) -> Option<bool> {
+        let crate::state::scope_belief::ScopeEvent::Glyph { eligible, .. } = event else {
+            return None;
+        };
+        if !eligible || self.scope_shadow.focused_facts().is_none() {
+            return None;
+        }
+        let before = self.scope_shadow.view();
+        let mut trial = self.scope_shadow.clone().with_glyph(GLYPH_POLICY);
+        trial.evolve(event);
+        let after = trial.view();
+        Some((after.open, after.input_mode) != (before.open, before.input_mode))
     }
 
     /// 旧の belief と Z の shadow を比べ、組が変わったとき(`always` なら必ず)journal に残す。食い違いの始まりと終わりは
