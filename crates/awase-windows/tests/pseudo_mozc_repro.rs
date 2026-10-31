@@ -14,16 +14,16 @@
 //! 限界（正直に）: `run` の流れ自体は `awase-windows` の `MozcComposeCheckFsm::tick_inner` の写しで、FSM 本体
 //! （`cfg(windows)`）は Linux では走らない。判断関数は本物だが、つなぎ（settle への遷移・回収の順序）は写し。
 //! つなぎが食い違えば Windows 側の単体テストが先に壊れるが、写しの食い違い自体は検出しない。
-//! 後続でつなぎの判断も `awase-ime-core` へ移して写しをなくす。
+//! 後続でつなぎの判断も `awase-ime-core` へ移して写しをなくす(試験は殻の tests/ に置く: core-layers の配線検査)。
 //!
 //! 時間は仮想（ms の整数）。実測の出典: BUG-225（sent 2 chars, key_seq 330→331）、BUG-226（LINE、cold=184）。
 
-use awase_ime_core::state::mozc_shm::{
+use awase_windows::state::mozc_shm::{
     compose_literal_backs, judge_compose, judge_settled, should_check_compose, split_first_key,
     ComposeBlock, ComposeReading, ComposeVerdict, SettleVerdict,
 };
-use awase_windows_base::focus::class_names::mozc_compose_check_applies;
-use awase_windows_base::tuning::MOZC_COMPOSE_CHECK_MS;
+use awase_windows::focus::class_names::mozc_compose_check_applies;
+use awase_windows::tuning::MOZC_COMPOSE_CHECK_MS;
 
 /// 確認の tick 間隔（実機の `TIMER_TSF_PROBE` は 10ms）。
 const TICK_MS: u64 = 10;
