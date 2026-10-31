@@ -18,11 +18,11 @@
 //!
 //! 時間は仮想（ms の整数）。実測の出典: BUG-225（sent 2 chars, key_seq 330→331）、BUG-226（LINE、cold=184）。
 
+use awase_windows::focus::class_names::mozc_compose_check_applies;
 use awase_windows::state::mozc_shm::{
     compose_literal_backs, judge_compose, judge_settled, should_check_compose, split_first_key,
     ComposeBlock, ComposeReading, ComposeVerdict, SettleVerdict,
 };
-use awase_windows::focus::class_names::mozc_compose_check_applies;
 use awase_windows::tuning::MOZC_COMPOSE_CHECK_MS;
 
 /// 確認の tick 間隔（実機の `TIMER_TSF_PROBE` は 10ms）。
