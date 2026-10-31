@@ -96,6 +96,20 @@ pub struct DetectEvidence {
     /// ベース判断案）の判断材料。BUG-39 により、フォーカス変更等をまたいで
     /// stale になりうる既知の不正確さがあることに注意。
     pub literal_session_confirmed: bool,
+    /// Mozc の確認（ADR-270/284/285）が見た共有メモリの `key_seq`（送信の前と、この verdict 確定時点）。診断専用
+    /// （判定には使わない）。`None` は Mozc の確認でない verdict（GJI など）。journal から Mozc の cold の
+    /// 最初の送信の結末（TIP がキーを何個見たか）を機械可読に復元し、擬似 Mozc の再現と突き合わせるために残す。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mozc_key_seq: Option<MozcKeySeq>,
+}
+
+/// Mozc の共有メモリの `key_seq`（TIP が見たキーダウンの通番）の、送信の前後。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct MozcKeySeq {
+    /// 送信の直前の値
+    pub before: u32,
+    /// この verdict を出した tick の読み
+    pub after: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

@@ -12,8 +12,10 @@
 //! 限界（正直に）:
 //! - [`run`] の流れは `awase-windows` の `MozcComposeCheckFsm::tick_inner` の写しで、FSM 本体（`cfg(windows)`）は
 //!   Linux では走らない。判断関数は本物だが、つなぎの食い違いは検出しない。
-//! - `MozcShmRecord` は開閉とモードだけを持ち、`key_seq`・`phase` は journal に無い（確認の結末は `tracing` のログ
-//!   `[mozc-compose]` にだけ出る）。実機側の突き合わせには、その結末の記録が要る（段階 2 の課題）。
+//! - `MozcShmRecord` は開閉とモードだけを持つ。確認の結末と `key_seq` の前後は、`JournalEntry::LiteralDetect` の
+//!   `facts.evidence.mozc_key_seq`（`{before, after}`）に残る（Mozc の確認が出した verdict のとき。回収・
+//!   `notable` な確認のみ。健全な確認の繰り返しは畳まれる）。経過の時刻は journal の envelope と
+//!   `evidence.epoch_send_ms` で復元する。擬似トレースとの突き合わせ（journal → シナリオ）は段階 2 の課題。
 
 use awase_windows::focus::class_names::mozc_compose_check_applies;
 use awase_windows::journal::MozcShmRecord;
