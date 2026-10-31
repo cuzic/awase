@@ -380,6 +380,7 @@ impl LiteralDetector {
                 .get()
                 .map(|hold_since| now.saturating_sub(hold_since)),
             literal_session_confirmed: crate::tsf::observer::literal_session_confirmed(cold_seq),
+            mozc_key_seq: None,
         }
     }
 

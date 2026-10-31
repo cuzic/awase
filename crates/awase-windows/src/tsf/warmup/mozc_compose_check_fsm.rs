@@ -34,6 +34,7 @@ use crate::state::mozc_shm::{
 use crate::state::raw_recovery_plan::{plan_raw_recovery, RawRecoveryDisposition, StageOrigin};
 use crate::tsf::literal_facts::{
     DetectEvidence, DetectPath, DetectRoute, DetectTarget, LiteralDetectFacts, LiteralVerdict,
+    MozcKeySeq,
 };
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
@@ -106,6 +107,17 @@ impl MozcComposeCheckFsm {
         }
     }
 
+    /// この読みの `key_seq` を、送信の前の値と並べる（journal の診断用）。読めなければ `None`。
+    fn key_seq_of(&self, reading: ComposeReading) -> Option<MozcKeySeq> {
+        match reading {
+            ComposeReading::Block(b) => Some(MozcKeySeq {
+                before: self.target.key_seq_before,
+                after: b.key_seq,
+            }),
+            ComposeReading::Unreadable => None,
+        }
+    }
+
     /// 宛先の窓が変わったか（段の宛先と、この tick の宛先から、既存の回収と同じ判断）。
     fn target_moved(&self, now: Option<StageOrigin>) -> bool {
         match (self.origin, now) {
@@ -121,13 +133,14 @@ impl MozcComposeCheckFsm {
         let elapsed_ms = now_ms.saturating_sub(self.sent_ms);
         let verdict = judge_compose(elapsed_ms, self.check_ms, reading);
         let cold_seq = self.target.cold_seq;
+        let seq = self.key_seq_of(reading);
         let actions = match verdict {
             ComposeVerdict::Pending => Vec::new(),
             ComposeVerdict::Confirmed => vec![
                 ProbeAction::CompositionConfirmed {
                     cold_seq,
                     mark_literal_session: false,
-                    facts: facts(LiteralVerdict::CompositionConfirmed),
+                    facts: facts(LiteralVerdict::CompositionConfirmed, seq),
                 },
                 ProbeAction::Done,
             ],
@@ -137,7 +150,7 @@ impl MozcComposeCheckFsm {
                     backs: compose_literal_backs(&self.target.romaji),
                     romaji: self.target.full_romaji(),
                     escape_composition: false,
-                    facts: facts(LiteralVerdict::SuspectedLiteral),
+                    facts: facts(LiteralVerdict::SuspectedLiteral, seq),
                 },
                 ProbeAction::Done,
             ],
@@ -156,6 +169,7 @@ impl MozcComposeCheckFsm {
         reading: ComposeReading,
     ) -> Option<(SettleVerdict, Vec<ProbeAction>)> {
         let cold_seq = self.target.cold_seq;
+        let seq = self.key_seq_of(reading);
         let sent = compose_literal_backs(&self.target.romaji);
         let verdict = match reading {
             // 入力中の文字が消えている（phase 0）・IME が閉じた・読めないときは、足りない分の行き先が分からない。判断しない。
@@ -175,7 +189,7 @@ impl MozcComposeCheckFsm {
                 ProbeAction::CompositionConfirmed {
                     cold_seq,
                     mark_literal_session: false,
-                    facts: facts(LiteralVerdict::CompositionConfirmed),
+                    facts: facts(LiteralVerdict::CompositionConfirmed, seq),
                 },
                 ProbeAction::Done,
             ],
@@ -193,6 +207,7 @@ impl MozcComposeCheckFsm {
                     facts: facts_at(
                         LiteralVerdict::SuspectedLiteral,
                         u16::try_from(sent.saturating_sub(1)).unwrap_or(u16::MAX),
+                        seq,
                     ),
                 },
                 ProbeAction::Done,
@@ -269,13 +284,13 @@ impl MozcComposeCheckFsm {
 }
 
 /// journal に残す判定の記録。証拠（GJI の I/O 等）は無いので既定値。
-fn facts(verdict: LiteralVerdict) -> LiteralDetectFacts {
-    facts_at(verdict, 0)
+fn facts(verdict: LiteralVerdict, seq: Option<MozcKeySeq>) -> LiteralDetectFacts {
+    facts_at(verdict, 0, seq)
 }
 
 /// `idx`（疑いが出たキーの位置）を指定する版。連続 2 回目の諦める分岐が `romaji_after(idx)` で後ろの文字を送るので、
 /// 部分リテラルでは最後の文字の位置にして何も送らせない。
-fn facts_at(verdict: LiteralVerdict, idx: u16) -> LiteralDetectFacts {
+fn facts_at(verdict: LiteralVerdict, idx: u16, seq: Option<MozcKeySeq>) -> LiteralDetectFacts {
     LiteralDetectFacts {
         verdict,
         route: DetectRoute::ProbeEnd,
@@ -284,7 +299,11 @@ fn facts_at(verdict: LiteralVerdict, idx: u16) -> LiteralDetectFacts {
         vk: None,
         idx,
         last_idx: idx,
-        evidence: DetectEvidence::default(),
+        // 診断専用: TIP が見たキーの数を journal に残す（判定には使わない）。
+        evidence: DetectEvidence {
+            mozc_key_seq: seq,
+            ..DetectEvidence::default()
+        },
     }
 }
 
@@ -483,7 +502,7 @@ mod tests {
                 ProbeAction::CompositionConfirmed {
                     cold_seq: Generation::INITIAL,
                     mark_literal_session: false,
-                    facts: facts(LiteralVerdict::CompositionConfirmed),
+                    facts: facts(LiteralVerdict::CompositionConfirmed, None),
                 },
                 ProbeAction::Done,
             ],
@@ -574,6 +593,14 @@ mod tests {
                 assert_eq!(facts.verdict, LiteralVerdict::SuspectedLiteral);
                 // 諦める分岐の `romaji_after(romaji, idx)` が空になる位置（最後の文字）。`kおお` を防ぐ（Opus M3）
                 assert_eq!(facts.idx, 1);
+                // journal の診断: TIP が見たキーの数（送信の前 0 → 1）が残る（擬似 Mozc の再現と突き合わせる材料）。
+                assert_eq!(
+                    facts.evidence.mozc_key_seq,
+                    Some(MozcKeySeq {
+                        before: 0,
+                        after: 1
+                    })
+                );
             }
             other => panic!("unexpected actions: {other:?}"),
         }
